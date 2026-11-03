@@ -4,6 +4,7 @@
 #include <cassert>
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
 #include <fstream>
 #include <iterator>
 #include <limits>
@@ -43,15 +44,21 @@ static void checkMatches(const NorthlightGI::WorldScene& scene,const std::vector
         for(const auto& light:lights)assert(NorthlightWmoLampShadow::unique(light,reused.batches)!=size_t(-1));
     }
 }
-int main(int argc,char** argv){assert(argc==6);NorthlightGI::WorldScene scene;std::string error;assert(NorthlightGI::loadScene(argv[1],scene,error));
+int main(int argc,char** argv){assert(argc==7);NorthlightGI::WorldScene scene;std::string error;assert(NorthlightGI::loadScene(argv[1],scene,error));
     checkTags(argv[1]);
-    std::vector<NorthlightLocalLights::Light> lights;assert(NorthlightLocalLights::readFile(argv[2],lights)&&lights.size()==27);
+    const size_t expected=std::strtoul(argv[6],nullptr,10);
+    std::vector<NorthlightLocalLights::Light> lights;assert(NorthlightLocalLights::readFile(argv[2],lights)&&lights.size()==expected);
     NorthlightWorldMesh::WorldMeshUploadPlan flat;assert(NorthlightWorldMesh::buildUploadPlan(scene,flat,error));for(const auto& light:lights)assert(NorthlightWmoLampShadow::unique(light,flat.batches)==size_t(-1));
     const NorthlightGI::Vec3 low{-100000,-100000,-100000},high{100000,100000,100000};const std::vector<std::string> tiles={argv[3]};NorthlightGI::WorldScene instanced;
     assert(NorthlightGI::loadInstancedScenes(tiles,argv[4],low,high,instanced,error));checkMatches(instanced,lights);
     auto native=lights;for(auto& light:native){light.kind=1;light.flags|=NorthlightLocalLights::Baked;light.attenuationStart=0.f;assert(NorthlightLocalLights::valid(light));}checkMatches(instanced,native);
     NorthlightGI::LocalSceneCache cache;NorthlightGI::BVH incremental;assert(cache.build(tiles,argv[4],"Azeroth",low,high,incremental,error));checkMatches(incremental.scene(),lights);
     NorthlightGI::BVH reused;assert(cache.build(tiles,argv[4],"Azeroth",low,high,reused,error)&&cache.stats().pieceReuses>0);checkMatches(reused.scene(),lights);
+    if(lights.empty()){
+        NorthlightWorldMesh::WorldMeshUploadPlan plan;assert(NorthlightWorldMesh::buildUploadPlan(instanced,plan,error));
+        for(const auto& batch:plan.batches)assert(batch.lampSourceId==0);
+        std::puts("PASS custom hidden lamps: empty light cache, no shadow exemptions, scene and cache reuse retained");return 0;
+    }
     NorthlightGI::WorldScene overlap;assert(NorthlightGI::loadInstancedScenes({argv[5]},argv[4],low,high,overlap,error));NorthlightWorldMesh::WorldMeshUploadPlan overlapPlan;assert(NorthlightWorldMesh::buildUploadPlan(overlap,overlapPlan,error));
     const auto ownIndex=NorthlightWmoLampShadow::unique(lights[0],overlapPlan.batches);assert(ownIndex!=size_t(-1));auto otherSource=lights[0];otherSource.sourceId^=1;assert(NorthlightWmoLampShadow::unique(otherSource,overlapPlan.batches)==size_t(-1));
     unsigned coincidentOthers=0;const auto& ownBatch=overlapPlan.batches[ownIndex];for(const auto& candidate:overlapPlan.batches)if(candidate.lampSourceId&&candidate.lampSourceId!=ownBatch.lampSourceId&&candidate.count==8&&candidate.boundsLow.x==ownBatch.boundsLow.x&&candidate.boundsHigh.x==ownBatch.boundsHigh.x&&candidate.boundsLow.y==ownBatch.boundsLow.y&&candidate.boundsHigh.y==ownBatch.boundsHigh.y)++coincidentOthers;assert(coincidentOthers==1);
@@ -64,5 +71,5 @@ int main(int argc,char** argv){assert(argc==6);NorthlightGI::WorldScene scene;st
     for(const auto& triangle:full.scene().triangles)if(triangle.material==batch.material){const auto a=full.scene().vertices[triangle.v0].position,b=full.scene().vertices[triangle.v1].position,c=full.scene().vertices[triangle.v2].position;const auto dir=NorthlightGI::normalized((a+b+c)/3.f-origin);
         const auto before=full.trace(origin,dir,.01f,source.attenuationStart*1.2f),after=point.trace(origin,dir,.01f,source.attenuationStart*1.2f);
         if(before.hit&&before.triangle<full.scene().triangles.size()&&full.scene().triangles[before.triangle].material==batch.material){assert(!after.hit||after.distance>=before.distance);++visible;}}
-    assert(visible>0);std::printf("PASS 27 real lamp matches; shared geometry retained; %u enclosure rays tested\n",visible);
+    assert(visible>0);std::printf("PASS %zu real lamp matches; shared geometry retained; %u enclosure rays tested\n",lights.size(),visible);
 }

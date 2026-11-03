@@ -17,7 +17,7 @@ import sys
 
 sys.path[:0] = [str(Path(__file__).resolve().parents[1]), str(Path(__file__).resolve().parent)]
 import client_archives
-from world_scene_builder import Assets, Builder, array, decode_blp, matvec, string, unpack
+from world_scene_builder import Assets, Builder, array, decode_blp, matvec, skin_vertex_indices, string, unpack
 from world_lights_builder import constant_track, static_bone_offset
 
 INSTANCE = struct.Struct('<32sQI18f')
@@ -120,8 +120,7 @@ def model(assets, path):
     if unpack('<I',skin,12)[0] > MAX_TRIANGLES*3:
         raise ValueError('Transmission source triangle bound')
     vertices = _array(blob,60,'<3f4B4B3f4f')
-    lookup = [v[0] for v in _array(skin,4,'<H')]
-    indices = [lookup[v[0]] for v in _array(skin,12,'<H')]
+    indices = skin_vertex_indices(blob,skin)
     subsets = _array(skin,28,'<10H7f'); units = _array(skin,36,'<2B11H')
     textures = _array(blob,80,'<4I'); texlookup = _array(blob,128,'<H')
     opacitylookup = _array(blob,144,'<h'); uvlookup = _array(blob,152,'<h')

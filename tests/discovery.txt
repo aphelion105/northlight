@@ -82,6 +82,7 @@ test_contact_normal_endpoints.py
 test_cpu_gpu_optimizations.py
 test_cpu_optimizations.py
 test_crystal_overlay_gpu.py
+test_custom_pack_inputs.py
 test_dalaran_candle_geometry.py
 test_detail_doodad_shadow.py
 test_dev_tuning_build.py

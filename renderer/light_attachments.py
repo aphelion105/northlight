@@ -144,7 +144,10 @@ def templates(assets, path, blob, lights):
             first = subset[4] + (subset[1] << 16)
             if subset[5] < 3 or first+3 > len(indices):
                 continue
-            witness = tuple(x for i in indices[first:first+3] for x in vertices[lookup[i]][:3])
+            triangle=indices[first:first+3]
+            if any(i>=len(lookup) or lookup[i]>=len(vertices) for i in triangle):
+                continue
+            witness = tuple(x for i in triangle for x in vertices[lookup[i]][:3])
             if not all(math.isfinite(x) and abs(x) < 100000 for x in (*witness, *point, *reference[1])):
                 raise ValueError('Nonfinite attachment geometry')
             result.append((index, palette.index(source_bone), reference[0], witness, tuple(source_point), reference[1]))

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # northlight-test: requires=client,stormlib
-"""Winning WMO lamp evidence, native deduplication and non-destructive scene tags."""
+"""Strict stock lamp evidence plus winning custom geometry and non-destructive tags."""
 import collections
 import math
 import struct
@@ -11,7 +11,8 @@ from pathlib import Path
 from unittest import mock
 sys.path[:0]=[str(Path(__file__).resolve().parents[1]),str(Path(__file__).resolve().parents[1]/'renderer')]
 import client_archives,mpq,northlight_paths as fp,wmo_lamp_emission as lamps
-from world_scene_builder import Builder
+from world_scene_builder import Builder,array,chunks,wmo_group
+from world_emitter_coverage import triangle_area
 from world_lights_builder import extract_wmo,instance_lights
 
 ROOT='world/wmo/azeroth/buildings/stormwind/stormwind.wmo'.replace('/',chr(92))
@@ -25,19 +26,26 @@ class Assets:
         if path not in self.files:raise FileNotFoundError(path)
         return self.files[path]
 
+
+def fixture_files(view):
+    client=fp.client_root();winners={}
+    for path in client_archives.chain(client,view,client_archives.detect_locale(client)):
+        try:
+            with mpq.Archive(path) as archive:
+                for name in (ROOT,GROUP,TEXTURE):
+                    if archive.has(name):winners[name]=archive.read(name)
+        except OSError:
+            if not client_archives.is_custom_patch(path):raise
+    if len(winners)!=3:raise AssertionError('WMO fixture members missing: '+view)
+    return winners
+
+
 class WmoLamps(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        client=fp.client_root();winners={}
-        for path in client_archives.chain(client,'all',client_archives.detect_locale(client)):
-            try:
-                with mpq.Archive(path) as archive:
-                    for name in (ROOT,GROUP,TEXTURE):
-                        if archive.has(name):winners[name]=archive.read(name)
-            except OSError:
-                if not client_archives.is_custom_patch(path):raise
-        if len(winners)!=3:raise AssertionError('Winning WMO fixture members missing')
+        winners=fixture_files('stock')
         cls.files=winners;cls.root=winners[ROOT];cls.group=winners[GROUP]
+        cls.active_files=fixture_files('all')
     def detect(self,root=None,group=None,files=None):
         assets=Assets(files or self.files)
         return lamps.analyze(self.root if root is None else root,self.group if group is None else group,assets.read,94)
@@ -91,5 +99,33 @@ class WmoLamps(unittest.TestCase):
             *_,cutoff,size=struct.unpack_from('<3fIIfI',data,offset);offset+=28+size
             count+=-8388607<=cutoff<=-1 and cutoff==int(cutoff)
         self.assertEqual(count,27);self.assertEqual(offset,len(data))
+
+    def test_installed_custom_geometry_is_not_replaced_by_stock_lamps(self):
+        files=self.active_files;assets=Assets(files)
+        lights,faces=lamps.analyze(files[ROOT],files[GROUP],assets.read,94)
+        if lights:
+            self.assertEqual(len(faces),8*len(lights))
+            self.assertEqual(set(faces.values()),{s[4] for s in lights})
+        else:
+            # Patch D intentionally collapses these panels to points. They
+            # provide no luminous surface or enclosure to exempt from shadows.
+            sub={}
+            for tag,data in chunks(wmo_group(files[GROUP])[0]['MOGP'],68):sub.setdefault(tag,data)
+            vertices=array(sub['MOVT'],0,len(sub['MOVT'])//12,'<3f')
+            indices=[i[0] for i in array(sub['MOVI'],0,len(sub['MOVI'])//2,'<H')]
+            candidates=lamps.candidates(files[ROOT]);areas=[]
+            for batch in array(sub['MOBA'],0,len(sub['MOBA'])//24,'<6hI3H2B'):
+                if batch[11] in candidates:
+                    for i in range(batch[6],batch[6]+batch[7],3):
+                        areas.append(triangle_area(*(vertices[j] for j in indices[i:i+3])))
+            self.assertTrue(areas)
+            self.assertTrue(all(area==0 for area in areas))
+            self.assertEqual(faces,{})
+            native=extract_wmo(files[ROOT],collections.Counter())
+            self.assertEqual(lamps.merge_native(native,lights),native)
+            print('PASS custom hidden lamp panels:',len(areas),'degenerate triangles; native lights preserved')
+        mesh=Builder(assets).wmo(ROOT)
+        tagged={m[3] for m in mesh[2] if len(m)==4}
+        self.assertEqual(len(tagged),len(lights))
 
 if __name__=='__main__':unittest.main()

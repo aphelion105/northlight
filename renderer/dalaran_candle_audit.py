@@ -11,11 +11,12 @@ import json
 import math
 from pathlib import Path
 import re
+import struct
 import sys
 
 sys.path[:0] = [str(Path(__file__).resolve().parents[1]), str(Path(__file__).resolve().parent)]
 import client_archives
-from world_scene_builder import Assets, Builder, array, chunks, doodad_indices, matvec, placement, quaternion_matrix, string, unpack, wmo_group
+from world_scene_builder import Assets, Builder, array, chunks, doodad_indices, matvec, placement, quaternion_matrix, skin_vertex_indices, string, unpack, wmo_group
 from world_light_placements import names, wmo_doodads
 from world_emitter_coverage import inspect_model
 from emitter_pin_report import batches
@@ -102,10 +103,7 @@ def visible_mesh(assets, path):
     blob = assets.read(path); skin = assets.read(path[:-3]+'00.skin')
     count, offset = unpack('<II',blob,60)
     vertices = array(blob,offset,count,'<3f4B4B3f4f')
-    count, offset = unpack('<II',skin,4)
-    lookup = [v[0] for v in array(skin,offset,count,'<H')]
-    count, offset = unpack('<II',skin,12)
-    indices = [lookup[v[0]] for v in array(skin,offset,count,'<H')]
+    indices = skin_vertex_indices(blob,skin)
     if len(indices)%3 or max(indices,default=0) >= len(vertices):
         raise ValueError('Invalid table skin triangle indices')
     return vertices, [indices[i:i+3] for i in range(0,len(indices),3)], []
@@ -171,6 +169,14 @@ def audit(assets):
                     continue
                 if path not in measured:
                     measured[path] = inspect_model(assets,path,cache=source_cache)
+                    if measured[path]['status']=='native':
+                        # Existing lights do not erase the original luminous geometry.
+                        # This disposable evidence view never contributes another runtime light.
+                        native=measured[path];view=bytearray(assets.read(path))
+                        struct.pack_into('<II',view,264,0,0)
+                        evidence=inspect_model(assets,path,blob=bytes(view),cache=source_cache)
+                        measured[path]={**evidence,'asset_sha256':native['asset_sha256'],
+                                        'native_records':native['native_records'],'source_kind':'native-geometry-evidence'}
                 proof = measured[path]
                 if proof['status'] != 'addable':
                     excluded.append({'group':name,'doodad':candle_index,'asset':path,'status':proof['status'],

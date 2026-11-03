@@ -106,6 +106,17 @@ def array(b,offset,count,fmt):
     if count>10000000 or offset+count*size>len(b):raise ValueError('Invalid array')
     return list(struct.iter_unpack(fmt,b[offset:offset+count*size]))
 
+def skin_vertex_indices(model,skin):
+    """Resolve a SKIN against its winning M2; never borrow another archive's mesh."""
+    if skin[:4]!=b'SKIN':raise ValueError('Unsupported skin')
+    n,off=unpack('<II',skin,4);lookup=[v[0] for v in array(skin,off,n,'<H')]
+    n,off=unpack('<II',skin,12);indices=[v[0] for v in array(skin,off,n,'<H')]
+    vertex_count=unpack('<I',model,60)[0]
+    if any(i>=vertex_count for i in lookup):raise ValueError('SKIN vertex lookup exceeds winning M2')
+    if any(i>=len(lookup) for i in indices):raise ValueError('SKIN triangle lookup exceeds vertex table')
+    return [lookup[i] for i in indices]
+
+
 def normalize(v):
     length=math.sqrt(sum(x*x for x in v))
     return tuple(x/length for x in v) if length>1e-8 else (0.,0.,1.)
@@ -226,15 +237,48 @@ class Assets:
 
 def rgb565(value):return ((value>>11)*255//31,((value>>5)&63)*255//63,(value&31)*255//31)
 
-def decode_blp(b,maximum=128):
+def blp_mips(b):
+    """Validated mip extents, bounded by image dimensions rather than spare header slots."""
     if b[:4]!=b'BLP2':raise ValueError('Only BLP2 texture decoding is implemented')
     encoding,alpha_depth,alpha_encoding,has_mips=unpack('<4B',b,8)
     w,h=unpack('<II',b,12); offsets=unpack('<16I',b,20);sizes=unpack('<16I',b,84)
     if not w or not h or max(w,h)>16384:raise ValueError('Invalid BLP dimensions')
-    level=0
-    while max(w,h)>maximum and level<15 and offsets[level+1]:w=max(1,w//2);h=max(1,h//2);level+=1
-    offset,size=offsets[level],sizes[level]
-    if not offset or offset+size>len(b):raise ValueError('Invalid BLP mip')
+    if encoding==1 and alpha_depth not in (0,1,4,8):raise ValueError('Unsupported palette alpha')
+    if encoding not in (1,2,3):raise ValueError('Unsupported BLP encoding')
+    result=[]
+    for level in range(max(w,h).bit_length()):
+        offset,size=offsets[level],sizes[level]
+        if not offset or not size or offset==len(b):
+            # Some packers leave repeated EOF offsets or stale sizes after a
+            # partial mip chain. Preserve its valid prefix, never read the tail.
+            if any(0<offsets[i]<len(b) and sizes[i] for i in range(level+1,max(w,h).bit_length())):
+                raise ValueError('Noncontiguous BLP mip chain')
+            break
+        mw,mh=max(1,w>>level),max(1,h>>level)
+        required=(mw*mh*4 if encoding==3 else mw*mh+(mw*mh*alpha_depth+7)//8 if encoding==1 else
+                  ((mw+3)//4)*((mh+3)//4)*(8 if alpha_depth in (0,1) else 16))
+        # Keep the last complete level when packers omit sub-byte alpha or
+        # undersize a rectangular BC mip below one block in its short axis.
+        if result and encoding==1 and alpha_depth in (1,4) and mw*mh*alpha_depth<8 and size==mw*mh and 1172<=offset and offset+size<=len(b):
+            break
+        block_size=8 if alpha_depth in (0,1) else 16
+        if result and encoding==2 and min(mw,mh)<4 and block_size<=size<required and size%block_size==0 and 148<=offset and offset+size<=len(b):
+            break
+        if offset<(1172 if encoding==1 else 148) or size<required or offset+size>len(b):
+            raise ValueError('Invalid BLP mip extent at level '+str(level))
+        result.append((level,mw,mh,offset,required))
+    if not result:raise ValueError('Missing BLP base mip')
+    return result
+
+
+def decode_blp(b,maximum=128):
+    if maximum<1:raise ValueError('Invalid BLP decode limit')
+    mips=blp_mips(b)
+    level,w,h,offset,size=mips[-1]
+    for mip in mips:
+        level,w,h,offset,size=mip
+        if max(w,h)<=maximum:break
+    encoding,alpha_depth,alpha_encoding,has_mips=unpack('<4B',b,8)
     data=b[offset:offset+size];result=bytearray(w*h*4)
     if encoding==3:
         if len(data)<w*h*4:raise ValueError('Truncated RGBA mip')
@@ -328,8 +372,7 @@ class Builder:
         vertices=[tuple(v[:3])+tuple(v[11:14])+tuple(v[14:16]) for v in data]
         skin=self.assets.read(path[:-3]+'00.skin')
         if skin[:4]!=b'SKIN':raise ValueError('Unsupported skin')
-        n,off=unpack('<II',skin,4);lookup=[x[0] for x in array(skin,off,n,'<H')]
-        n,off=unpack('<II',skin,12);indices=[lookup[x[0]] for x in array(skin,off,n,'<H')]
+        indices=skin_vertex_indices(b,skin)
         n,off=unpack('<II',skin,28);subsets=array(skin,off,n,'<10H7f')
         n,off=unpack('<II',skin,36);batches=array(skin,off,n,'<2B11H')
         n,off=unpack('<II',b,80);textures=array(b,off,n,'<4I')

@@ -19,7 +19,7 @@ sys.path[:0] = [str(Path(__file__).resolve().parents[1]), str(Path(__file__).res
 import client_archives
 import instance_maps
 from build_equipment_emitters import lifetime_track, lifetime_colour
-from world_scene_builder import Assets, array, chunks, decode_blp, srgb_to_linear, string, unpack
+from world_scene_builder import Assets, array, chunks, decode_blp, skin_vertex_indices, srgb_to_linear, string, unpack
 from world_lights_builder import constant_track, static_bone_offset, static_bone_point, extract_m2, extract_wmo
 from world_light_placements import discover, discover_global, wmo_doodads, group_refs, group_blobs
 
@@ -70,10 +70,7 @@ def surface_sources(assets, path, blob, cache, refusals):
         raise ValueError('Unsupported skin')
     n, off = unpack('<II', blob, 60)
     vertices = array(blob, off, n, '<3f4B4B3f4f')
-    n, off = unpack('<II', skin, 4)
-    lookup = [v[0] for v in array(skin, off, n, '<H')]
-    n, off = unpack('<II', skin, 12)
-    indices = [lookup[v[0]] for v in array(skin, off, n, '<H')]
+    indices = skin_vertex_indices(blob,skin)
     n, off = unpack('<II', skin, 28)
     subsets = array(skin, off, n, '<10H7f')
     n, off = unpack('<II', skin, 36)
