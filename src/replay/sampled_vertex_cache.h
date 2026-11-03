@@ -37,7 +37,7 @@ public:
         hash*=0xc4ceb9fe1a85ec53ULL;hash^=hash>>33;
         const auto slot=(hash%(entries_.size()/2))*2;
         auto matches=[&](const Entry& e){
-        bool same=e.key==&mesh&&e.program==&program&&e.declaration==declaration&&e.owner.lock()==owner&&
+        bool same=e.key==&mesh&&e.program==&program&&e.declaration==declaration&&(NorthlightSourceIdentity::sameOwner(e.owner,owner)||e.owner.lock()==owner)&&
             e.inputs.size()==program.inputs.size()&&e.elements.size()==count;
         if(same)for(size_t i=0;i<e.inputs.size();++i){const auto& a=e.inputs[i];const auto& b=program.inputs[i];
             if(a.reg!=b.reg||a.usage!=b.usage||a.index!=b.index){same=false;break;}}
@@ -114,7 +114,7 @@ public:
             bool same=e.key==&mesh&&e.declaration==declaration&&e.count==count&&e.lanes==lanes;
             if(same)for(size_t i=0;i<count;++i){const auto& a=e.elements[i];const auto& b=elements[i];
                 if(a.Stream!=b.Stream||a.Offset!=b.Offset||a.Type!=b.Type||a.Method!=b.Method||a.Usage!=b.Usage||a.UsageIndex!=b.UsageIndex){same=false;break;}}
-            if(same&&e.owner.lock()==owner){e.touched=clock_;++hits;return e.bone;}}
+            if(same&&(NorthlightSourceIdentity::sameOwner(e.owner,owner)||e.owner.lock()==owner)){e.touched=clock_;++hits;return e.bone;}}
         ++misses;const float result=scanMesh(mesh,elements,count,lanes);
         Entry* victim=&entries_[slot];for(unsigned way=1;way<Ways;++way)if(entries_[slot+way].touched<victim->touched)victim=&entries_[slot+way];
         victim->owner=owner;victim->key=&mesh;victim->declaration=declaration;std::memcpy(victim->elements,elements,count*sizeof *elements);

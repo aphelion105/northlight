@@ -41,6 +41,7 @@ test_auto_normal_reuse_gpu.py
 test_backend_proxy.py
 test_band_retime.py
 test_blob_shadow_toggle.py
+test_blp_mip_guard.py
 test_build_source_identity.py
 test_cache_shadow_optimizations.py
 test_cache_variant.py
@@ -78,6 +79,7 @@ test_concurrent_geometry_build.py
 test_contact_fog.py
 test_contact_lighting.py
 test_contact_normal_endpoints.py
+test_cpu_optimizations.py
 test_crystal_overlay_gpu.py
 test_dalaran_candle_geometry.py
 test_detail_doodad_shadow.py

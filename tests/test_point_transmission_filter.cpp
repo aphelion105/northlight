@@ -23,6 +23,13 @@ int main(){
     IDirect3DDevice9 native;
     {NorthlightPointTransmissionFilter filter;assert(filter.begin(&native,false)==S_OK);}
     assert(!native.calls&&native.minFilter==3&&native.magFilter==5);
+    for(unsigned mask=0;mask<4;++mask){
+        IDirect3DDevice9 device;device.minFilter=mask&1?D3DTEXF_POINT:3;device.magFilter=mask&2?D3DTEXF_POINT:5;
+        const auto min=device.minFilter,mag=device.magFilter;
+        {NorthlightPointTransmissionFilter filter;assert(filter.begin(&device,true)==S_OK);assert(device.minFilter==D3DTEXF_POINT&&device.magFilter==D3DTEXF_POINT);}
+        assert(device.minFilter==min&&device.magFilter==mag);
+        assert(device.calls==2+2*unsigned(!(mask&1))+2*unsigned(!(mask&2)));
+    }
     for(unsigned failure=0;failure<4;++failure){
         IDirect3DDevice9 device;device.fail=failure;
         {NorthlightPointTransmissionFilter filter;assert(FAILED(filter.begin(&device,true)));}

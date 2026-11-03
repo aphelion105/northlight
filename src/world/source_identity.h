@@ -30,6 +30,9 @@ struct Key {
     size_t bytes()const{return sizeof(Key)+words.capacity()*sizeof(std::uint64_t)+32;}
 };
 using Handle=std::shared_ptr<const Key>;
+// The caller also checks its stored object address. A live shared owner proves
+// the matching control block is alive without an atomic weak_ptr promotion.
+template<class T,class U> bool sameOwner(const std::weak_ptr<T>& a,const std::shared_ptr<U>& b){return !a.owner_before(b)&&!b.owner_before(a);}
 inline bool same(const Handle& a,const Handle& b){return a&&b&&(a==b||(a->hash==b->hash&&a->words==b->words));}
 inline Handle make(std::vector<std::uint64_t> words){return std::make_shared<const Key>(std::move(words));}
 template<class Snapshot> auto of(const Snapshot& snapshot,int)->decltype(snapshot.sourceIdentity){return snapshot.sourceIdentity;}

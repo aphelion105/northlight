@@ -56,7 +56,7 @@ private:
         size_t vertex=0,index=0,indexCount=0;bool unsupported=false,ready=false;
         std::uint64_t touched=0,programHash=0,lastEvaluationNs=0,serial=0;size_t bytes=0,baseBytes=0;
         unsigned constantFirst=0,constantCount=256,memoSlot=64;
-        bool copyDefinitions=true; /* false: no DEF can shadow a register this evaluator reads from the API bank */
+        bool copyDefinitions=true,singleBone=false; /* singleBone resolves its control DEF directly */
     };
     static constexpr size_t MaxGroups=512,Limit=8u*1024u*1024u,MaxEntries=2048;
     static constexpr size_t MemoSlots=64,MemoLimit=256u*1024u;
@@ -130,6 +130,12 @@ private:
            rows c31..c255. Copying the 3.6 KiB bank then changes no value read. */
         e.copyDefinitions=!p.definitions.empty();
         if(e.skin){e.copyDefinitions=false;for(const auto& d:p.definitions)e.copyDefinitions|=d.reg>=31;}
+        // The single-bone evaluator resolves its c0 literal directly; an ordinary
+        // palette needs no 4 KiB copy just to replace that control register.
+        e.singleBone=p.kernel.valid&&p.kernel.ops.size()==p.operations.size()&&p.kernel.singleSkin();
+        if(e.singleBone){
+            e.copyDefinitions=false;for(const auto& d:p.definitions)e.copyDefinitions|=d.reg!=0;
+        }
         // A superset of EVERY original API constant read by this evaluator.
         // The exact skin template reads palette rows c31..c255. Generic relative
         // addressing retains the full bank; no observed vertex narrows it.
@@ -284,11 +290,14 @@ private:
         }
         for(unsigned sinceCheck=0;e.vertex<mesh.vertexCount;++sinceCheck){
             if(budget.vertices>=budget.maxVertices){++stats_.vertexDeferred;return Status::Budget;}
-            if((sinceCheck%BuildClockStride)==0&&timer.expired())return timeBudget();NorthlightActorDeformation::Four inputs[16]={};std::string groupKey;
+            if((sinceCheck%BuildClockStride)==0&&timer.expired())return timeBudget();NorthlightActorDeformation::Four inputs[16];std::string groupKey;
             for(const auto& binding:e.bindings){const auto& s=mesh.streams[binding.element.Stream];auto& input=inputs[binding.reg];
                 if(!NorthlightActorDeformation::decodeElement(s.bytes.data()+e.vertex*s.stride+binding.element.Offset,binding.element.Type,input)){discardGroups(e);++stats_.invalid;return Status::Invalid;}
                 for(float f:input)if(!std::isfinite(f)){discardGroups(e);++stats_.invalid;return Status::Invalid;}
-                if(!e.skin&&binding.element.Usage==2)groupKey.append(reinterpret_cast<const char*>(input.data()),16);
+                // Audited single-bone programs address only v1.x. Unused YZW
+                // must not split one bone into hundreds of cold groups.
+                if(!e.skin&&binding.element.Usage==2)groupKey.append(reinterpret_cast<const char*>(input.data()),
+                    e.singleBone&&binding.reg==1?4:16);
             }
             if(e.skin){if(!e.skin->add(inputs)){discardGroups(e);++stats_.unsupported;return Status::Unsupported;}}
             else {
@@ -406,7 +415,7 @@ private:
             const auto& limits=pair.second.limits;
             for(size_t i=0;i<e.bindings.size();++i)for(unsigned j=0;j<4;++j){const float lo=limits[i*8+j],hi=limits[i*8+4+j],mid=float((double(lo)+hi)*.5);inputs[e.bindings[i].reg][j]={mid,std::max(double(mid)-lo,double(hi)-mid)};}
             detail::Vector position;
-            if(!detail::singleSkinIntervals(p,inputs,constants,position)&&!detail::evaluateIntervals(p,inputs,constants,position,true))return Status::Unsupported;
+            if(!detail::singleSkinIntervals(p,inputs,constants,position,e.copyDefinitions)&&!detail::evaluateIntervals(p,inputs,constants,position,e.copyDefinitions))return Status::Unsupported;
             for(unsigned axis=0;axis<3;++axis){detail::Value world=detail::mul(position[3],{inverse[12+axis],0});double magnitude=std::fabs(world.value)+world.error;
                 for(unsigned k=0;k<3;++k){auto term=detail::mul(position[k],{inverse[4*k+axis],0});magnitude+=std::fabs(term.value)+term.error;world=detail::add(world,term);}
                 world.error+=detail::roundError(magnitude)*8+.001;

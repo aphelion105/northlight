@@ -15,6 +15,7 @@
 
 namespace NorthlightParticleTextures {
 inline std::atomic<bool> enabled{false}; // Set by the device's EquipmentLights quality setting.
+inline const std::array<float,256>& linearRGBTable(){static const std::array<float,256> table=[](){std::array<float,256> a{};for(unsigned i=0;i<256;++i){const float s=float(i)/255;a[i]=s<=.04045f?s/12.92f:std::pow((s+.055f)/1.055f,2.4f);}return a;}();return table;}
 // Replay-thread only. Views borrow a complete CPU-uploaded mip until the next
 // cache mutation; no driver lock, readback, COM reference or game-side shadow.
 struct View {
@@ -35,7 +36,7 @@ struct View {
             if(mode==2){const int period=int(n)*2;i%=period;if(i<0)i+=period;return unsigned(i<int(n)?i:period-1-i);}
             i%=int(n);if(i<0)i+=int(n);return unsigned(i);
         };
-        static const std::array<float,256> linearRGB=[](){std::array<float,256> a{};for(unsigned i=0;i<256;++i){const float s=float(i)/255;a[i]=s<=.04045f?s/12.92f:std::pow((s+.055f)/1.055f,2.4f);}return a;}();
+        const auto* linearRGB=srgb?linearRGBTable().data():nullptr;
         if(!linear){const auto* p=rgba+(std::size_t(texel(int(std::floor(y+.5f)),height,addressV))*width+texel(int(std::floor(x+.5f)),width,addressU))*4;
             for(unsigned c=0;c<4;++c)out[c]=srgb&&c<3?linearRGB[p[c]]:float(p[c])/255;return true;}
         const int ix=int(std::floor(x)),iy=int(std::floor(y));
@@ -98,7 +99,7 @@ private:
         }
     }
     Entry& slot(const void* raw,const void* owner){
-        if(auto* e=find(raw)){if(e->owner==owner)return *e;drop(*e);*e={};}
+        if(auto* e=find(raw)){if(e->owner==owner)return *e;drop(*e);*e={};e->raw=raw;e->owner=owner;e->lifetime=++serial_;e->used=++clock_;return *e;}
         Entry& e=entries_[raw];e={};e.raw=raw;e.owner=owner;e.lifetime=++serial_;e.used=++clock_;return e;
     }
     static bool format(unsigned d3d,NorthlightActorTexture::Format& out){
@@ -184,7 +185,7 @@ private:
     void drop(Entry& e){bytes_-=e.pixels.size();std::vector<std::uint8_t>().swap(e.pixels);e.width=e.height=0;}
     Entry* oldest(const Entry* except=nullptr){Entry* result=nullptr;for(auto& e:entries_)if(e.raw && &e!=except&&(!result||e.used<result->used))result=&e;return result;}
     Entry& slot(const void* raw,const void* owner){
-        if(auto* e=find(raw)){if(e->owner==owner)return *e;drop(*e);*e={};}
+        if(auto* e=find(raw)){if(e->owner==owner)return *e;drop(*e);*e={};e->raw=raw;e->owner=owner;e->lifetime=++serial_;e->used=++clock_;return *e;}
         Entry* selected=nullptr;for(auto& e:entries_)if(!e.raw){selected=&e;break;}
         if(!selected){selected=oldest();drop(*selected);++counts.evictions;}
         *selected={};selected->raw=raw;selected->owner=owner;selected->lifetime=++serial_;selected->used=++clock_;return *selected;
@@ -211,12 +212,27 @@ private:
     template<NorthlightActorTexture::Format Format>static bool reduceColor(const void* source,std::size_t bytes,unsigned width,unsigned height,std::size_t pitch,std::vector<std::uint8_t>& output){
         using F=NorthlightActorTexture::Format;
         constexpr bool wide=Format==F::BGRA8||Format==F::BGRX8;
+        constexpr bool opaque=Format==F::BGRX8||Format==F::RGB565||Format==F::XRGB1555;
         constexpr unsigned pixelBytes=wide?4:2;
         const size_t rowBytes=size_t(width)*pixelBytes;
         if(pitch<rowBytes||bytes<rowBytes||height-1>(bytes-rowBytes)/pitch)return false;
         const unsigned tw=std::min(width,MaxDimension),th=std::min(height,MaxDimension);output.resize(size_t(tw)*th*4);
         const bool evenX=width%tw==0,evenY=height%th==0;const unsigned scaleX=width/tw,scaleY=height/th;
 #if defined(__SSE2__)
+        if constexpr(wide){if(evenX&&evenY&&scaleX==1&&scaleY>=2&&scaleY<=8&&tw>=4){
+            const auto* data=static_cast<const unsigned char*>(source);const auto zero=_mm_setzero_si128();const unsigned n=scaleY;
+            const auto reciprocal=std::uint32_t(((UINT64_C(1)<<32)+n-1)/n);
+            for(unsigned y=0;y<th;++y){unsigned x=0;
+                for(;tw-x>=4;x+=4){auto lo=zero,hi=zero;
+                    for(unsigned dy=0;dy<n;++dy){const auto p=_mm_loadu_si128(reinterpret_cast<const __m128i*>(data+size_t(y*n+dy)*pitch+size_t(x)*4));lo=_mm_add_epi16(lo,_mm_unpacklo_epi8(p,zero));hi=_mm_add_epi16(hi,_mm_unpackhi_epi8(p,zero));}
+                    alignas(16) std::uint16_t sums[16];_mm_store_si128(reinterpret_cast<__m128i*>(sums),lo);_mm_store_si128(reinterpret_cast<__m128i*>(sums+8),hi);
+                    for(unsigned i=0;i<4;++i){auto* dst=output.data()+(size_t(y)*tw+x+i)*4;const auto* sum=sums+i*4;
+                        dst[0]=std::uint8_t((std::uint64_t(sum[2]+n/2)*reciprocal)>>32);dst[1]=std::uint8_t((std::uint64_t(sum[1]+n/2)*reciprocal)>>32);dst[2]=std::uint8_t((std::uint64_t(sum[0]+n/2)*reciprocal)>>32);dst[3]=opaque?255:std::uint8_t((std::uint64_t(sum[3]+n/2)*reciprocal)>>32);}
+                }
+                for(;x<tw;++x){unsigned sum[4]={};for(unsigned dy=0;dy<n;++dy){const auto* p=data+size_t(y*n+dy)*pitch+size_t(x)*4;for(unsigned c=0;c<(opaque?3u:4u);++c)sum[c]+=p[c];}
+                    auto* dst=output.data()+(size_t(y)*tw+x)*4;dst[0]=std::uint8_t((sum[2]+n/2)/n);dst[1]=std::uint8_t((sum[1]+n/2)/n);dst[2]=std::uint8_t((sum[0]+n/2)/n);dst[3]=opaque?255:std::uint8_t((sum[3]+n/2)/n);}
+            }return true;
+        }}
         if constexpr(wide){if(evenX&&evenY&&scaleX==2&&scaleY<=8){reduceTwo<Format>(source,pitch,tw,th,scaleY,output);return true;}}
         // At most 64 texels per box: each 16-bit channel sum stays below 16321.
         if constexpr(wide){if(evenX&&evenY&&(scaleX%4)==0&&scaleX<=8&&scaleY<=8){
@@ -236,15 +252,15 @@ private:
             const unsigned x0=evenX?x*scaleX:x*width/tw,x1=evenX?(x+1)*scaleX:(x+1)*width/tw;
             for(unsigned sy=y0;sy<y1;++sy)for(unsigned sx=x0;sx<x1;++sx){
                 const auto* pixel=static_cast<const unsigned char*>(source)+size_t(sy)*pitch+sx*pixelBytes;
-                if constexpr(wide){for(unsigned c=0;c<4;++c)sum[c]+=pixel[c];}
+                if constexpr(wide){for(unsigned c=0;c<(opaque?3u:4u);++c)sum[c]+=pixel[c];}
                 else{std::uint16_t value;std::memcpy(&value,pixel,2);
                     const auto rgba=Format==F::RGB565?NorthlightActorTexture::rgb565(value):Format==F::ARGB4444?NorthlightActorTexture::argb4444(value):NorthlightActorTexture::argb1555(value,Format==F::ARGB1555);
-                    for(unsigned c=0;c<4;++c)sum[c]+=rgba[c];}
+                    for(unsigned c=0;c<(opaque?3u:4u);++c)sum[c]+=rgba[c];}
                 ++n;
             }
             auto* pixel=output.data()+(size_t(y)*tw+x)*4;
             pixel[0]=std::uint8_t((sum[wide?2:0]+n/2)/n);pixel[1]=std::uint8_t((sum[1]+n/2)/n);pixel[2]=std::uint8_t((sum[wide?0:2]+n/2)/n);
-            pixel[3]=Format==F::BGRX8?255:std::uint8_t((sum[3]+n/2)/n);
+            pixel[3]=opaque?255:std::uint8_t((sum[3]+n/2)/n);
         }}
         return true;
     }

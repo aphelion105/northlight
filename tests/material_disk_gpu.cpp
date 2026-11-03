@@ -6,7 +6,11 @@
 
 struct DiskMeter:Meter {
     unsigned generated=0,readbacks=0,failedUploads=0,generatorCreates=0;bool queuedReadback=false,denyCapture=false,failUpload=false;
+    unsigned stateReads=0,constantReads=0,constantWrites=0;
     explicit DiskMeter(IDirect3DDevice9* d):Meter(d){}
+    HRESULT STDMETHODCALLTYPE GetRenderTarget(DWORD i,IDirect3DSurface9** out)override{++stateReads;return real->GetRenderTarget(i,out);}
+    HRESULT STDMETHODCALLTYPE GetVertexShaderConstantF(UINT first,float* out,UINT count)override{++constantReads;return real->GetVertexShaderConstantF(first,out,count);}
+    HRESULT STDMETHODCALLTYPE SetVertexShaderConstantF(UINT first,const float* data,UINT count)override{++constantWrites;return real->SetVertexShaderConstantF(first,data,count);}
     HRESULT STDMETHODCALLTYPE CreatePixelShader(const DWORD* code,IDirect3DPixelShader9** out)override{if(code==kAutoNormalShader||code==kAutoNormalModelShader)++generatorCreates;return real->CreatePixelShader(code,out);}
     HRESULT STDMETHODCALLTYPE DrawPrimitiveUP(D3DPRIMITIVETYPE t,UINT n,const void* data,UINT stride)override{++generated;return Meter::DrawPrimitiveUP(t,n,data,stride);}
     HRESULT STDMETHODCALLTYPE GetRenderTargetData(IDirect3DSurface9* a,IDirect3DSurface9* b)override{++readbacks;assert(queuedReadback);return real->GetRenderTargetData(a,b);}
@@ -48,6 +52,17 @@ struct BusySurface:IDirect3DSurface9 {
 };
 struct MaterialDiskGpuTestAccess {
     static void busy(NorthlightAutoNormalCache& c,BusyState& state){assert(c.disk&&!c.disk->saves.empty());auto& s=*c.disk->saves.front();s.event=new BusyQuery(s.event,state);s.surface=new BusySurface(s.surface,state);}
+    static void admission(IDirect3DDevice9* device,const std::filesystem::path& root){
+        NorthlightAutoNormalCache cache(device);
+        auto* source=texture(device,{1,1,D3DFMT_A8R8G8B8,4,{20,40,80,255}});
+        auto* other=texture(device,{1,1,D3DFMT_A8R8G8B8,4,{40,80,20,255}});
+        ok(device->BeginScene());assert(cache.resolve(source));ok(device->EndScene());cache.endFrame();
+        assert(cache.resolve(source));cache.budget=cache.bytes;cache.setPersistentCache(root/"admission","native");
+        for(unsigned i=0;i<100;++i)assert(!cache.resolve(other));
+        assert(!cache.disk->captured&&cache.disk->reads.empty()&&cache.entries.size()==1);
+        cache.reset();drop(source);drop(other);
+        std::puts("MATERIAL_NORMAL_ADMISSION_PASS rejected=100 diskSnapshots=0 visible_map_preserved=1");
+    }
 };
 static IDirect3DTexture9* sourceTexture(IDirect3DDevice9* d,const Image& image,const std::string& format){
     if(format=="rgba")return texture(d,image);
@@ -80,6 +95,7 @@ int main(int argc,char** argv){
     IDirect3DDevice9* raw=nullptr;ok(api->CreateDevice(0,D3DDEVTYPE_HAL,window,D3DCREATE_HARDWARE_VERTEXPROCESSING|D3DCREATE_FPU_PRESERVE,&pp,&raw));
     DiskMeter meter(raw);meter.queuedReadback=std::strstr(argv[1],"dxvk")!=nullptr;const char* backend=meter.queuedReadback?(std::strstr(argv[1],"dxvk2")?"dxvk2":"dxvk"):"native";unsigned checked=0,expectedGenerations=0,expectedFailures=0;
     {
+        MaterialDiskGpuTestAccess::admission(&meter,root);
         NorthlightAutoNormalCache cache(&meter),reference(&meter);cache.setPersistentCache(root/"maps",backend,nullptr,meter.queuedReadback);
         Image im{256,128,D3DFMT_A8R8G8B8,4,std::vector<unsigned char>(256*128*4)};
         if(argc>=5&&std::strlen(argv[4]))im=image(argv[4]);else for(size_t i=0;i<im.pixels.size();i+=4){im.pixels[i]=std::uint8_t(i/4*23);im.pixels[i+1]=std::uint8_t(i/19*13);im.pixels[i+2]=std::uint8_t(i/7*31);im.pixels[i+3]=255;}
@@ -92,7 +108,7 @@ int main(int argc,char** argv){
             const bool cold=basicCold||(mode=="equivalent"&&!model);expectedGenerations+=cold;expectedFailures+=!cold;
             ok(raw->SetVertexShaderConstantF(0,constants,256));ok(raw->BeginScene());auto fresh=reference.acquire(source,model);assert(fresh);ok(raw->EndScene());
             const auto expected=pixels(raw,fresh.get()),expectedMips=mipSamples(raw,fresh.get());lastExpected=expected;lastMips=expectedMips;reference.reset();reference.endFrame();
-            const auto before=meter.generated,beforeShaders=meter.generatorCreates;NorthlightAutoNormalCache::Lease normal;BusyState busy;meter.failUpload=!cold;
+            const auto before=meter.generated,beforeShaders=meter.generatorCreates,beforeState=meter.stateReads,beforeRead=meter.constantReads,beforeWrite=meter.constantWrites;NorthlightAutoNormalCache::Lease normal;BusyState busy;meter.failUpload=!cold;
             for(unsigned f=0;f<1200&&!normal;++f){
                 ok(raw->SetVertexShaderConstantF(0,constants,256));ok(raw->BeginScene());normal=cache.acquire(source,model);ok(raw->EndScene());
                 ok(raw->GetVertexShaderConstantF(0,restored,256));assert(!std::memcmp(constants,restored,sizeof constants));
@@ -100,6 +116,7 @@ int main(int argc,char** argv){
                 cache.endFrame();ok(raw->Present(nullptr,nullptr,nullptr,nullptr));std::this_thread::sleep_for(std::chrono::milliseconds(1));
             }
             assert(normal);const auto actual=pixels(raw,normal.get());
+            if(!cold)assert(meter.stateReads==beforeState&&meter.constantReads==beforeRead&&meter.constantWrites==beforeWrite);
             if(actual!=expected){size_t count=0,first=actual.size();unsigned peak=0;for(size_t i=0;i<actual.size();++i)if(actual[i]!=expected[i]){++count;first=std::min(first,i);peak=std::max(peak,unsigned(std::abs(int(actual[i])-expected[i])));}std::fprintf(stderr,"DISK_PIXEL_MISMATCH mode=%s model=%u generated=%u count=%zu first=%zu actual=%u expected=%u peak=%u\n",mode.c_str(),unsigned(model),meter.generated-before,count,first,unsigned(actual[first]),unsigned(expected[first]),peak);std::ofstream a(root/"actual.bin",std::ios::binary),e(root/"expected.bin",std::ios::binary);a.write(reinterpret_cast<const char*>(actual.data()),actual.size());e.write(reinterpret_cast<const char*>(expected.data()),expected.size());}assert(actual==expected);++checked;
             const auto work=meter.generated-before;
             std::printf("MATERIAL_DISK_GPU_MAP mode=%s model=%u generated=%u exactBytes=%zu\n",mode.c_str(),unsigned(model),work,actual.size());

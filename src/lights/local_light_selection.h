@@ -48,7 +48,7 @@ template<unsigned N> struct DirectBatchView {
     DirectBatchView(const std::array<Constant,Slots>& p,const std::array<Constant,Slots>& c,unsigned available,unsigned first){
         available=std::min(available,Slots);count=first<available?std::min(N,available-first):0;
         if(count==N){position=p.data()+first;color=c.data()+first;}
-        else{paddedPosition.fill({});paddedColor.fill({});std::copy_n(p.data()+std::min(first,available),count,paddedPosition.begin());std::copy_n(c.data()+std::min(first,available),count,paddedColor.begin());position=paddedPosition.data();color=paddedColor.data();}
+        else{std::copy_n(p.data()+std::min(first,available),count,paddedPosition.begin());std::copy_n(c.data()+std::min(first,available),count,paddedColor.begin());std::fill(paddedPosition.begin()+count,paddedPosition.end(),Constant{});std::fill(paddedColor.begin()+count,paddedColor.end(),Constant{});position=paddedPosition.data();color=paddedColor.data();}
     }
     DirectBatchView(const DirectBatchView&)=delete;DirectBatchView& operator=(const DirectBatchView&)=delete;
 };
@@ -64,9 +64,9 @@ struct Selection {
     template<unsigned N> DirectBatchView<N> directBatch(unsigned first)const{return DirectBatchView<N>(position,color,count,first);}
     template<unsigned N> Batch<N> batch(unsigned first)const{
         Batch<N> b;
-        for(unsigned i=0;i<N&&first+i<count;++i){
-            b.position[i]=position[first+i];b.color[i]=color[first+i];b.fog[i]=fog[first+i];++b.count;
-        }
+        if(first>=count||first>=Slots)return b;
+        b.count=std::min({N,count-first,Slots-first});
+        std::copy_n(position.data()+first,b.count,b.position.begin());std::copy_n(color.data()+first,b.count,b.color.begin());std::copy_n(fog.data()+first,b.count,b.fog.begin());
         return b; // All unused shader slots must be zero, including partial batches.
     }
 };
@@ -74,15 +74,16 @@ struct Selection {
 // Limit (32) selects exactly what 0.3.136..0.3.139 did.
 inline Selection select(const std::vector<NorthlightLocalLights::Light>& lights,const float* camera,unsigned limit=Limit){
     limit=std::min(limit,Capacity);
+    if(!limit)return {};
     struct Pick {float score;const NorthlightLocalLights::Light* light;};
     const auto before=[](const Pick& a,const Pick& b){return a.score!=b.score?a.score<b.score:a.light->sourceId<b.light->sourceId;};
-    std::array<Pick,Capacity> picks{};unsigned count=0;
+    std::array<Pick,Capacity> picks{};unsigned count=0,worst=0;
     for(const auto& l:lights){
         if(!NorthlightLocalLights::valid(l)||l.attenuationEnd<=.11f)continue;
         float d2=0;for(unsigned i=0;i<3;++i){const float d=l.position[i]-camera[i];d2+=d*d;}
         Pick p{std::sqrt(d2)-l.attenuationEnd,&l};if(p.score>=VisibilityEnd)continue;
-        if(count<limit)picks[count++]=p;
-        else if(limit){auto worst=std::max_element(picks.begin(),picks.begin()+limit,before);if(before(p,*worst))*worst=p;}
+        if(count<limit){picks[count]=p;if(count&&before(picks[worst],p))worst=count;++count;}
+        else if(before(p,picks[worst])){picks[worst]=p;worst=unsigned(std::max_element(picks.begin(),picks.begin()+limit,before)-picks.begin());}
     }
     // Deterministic closest-first batches, including equal-distance ties.
     std::sort(picks.begin(),picks.begin()+count,before);
@@ -139,6 +140,7 @@ struct Tracker {
     // Both lists are id-sorted; consume one entry per id, including duplicates.
     void forgetSorted(const std::uint64_t* ids,unsigned size){
         if(!ids||!size||!count)return;
+        if(ids[0]>entries[count-1].id||ids[size-1]<entries[0].id)return;
         unsigned next=0,write=0;
         for(unsigned read=0;read<count;++read){
             while(next<size&&ids[next]<entries[read].id)++next;

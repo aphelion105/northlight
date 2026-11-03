@@ -30,8 +30,38 @@ static void warm(E& e,const E::Prepared& p,const std::shared_ptr<const Mesh>& m,
     assert(false);
 }
 template<size_t N> static Program program(const uint32_t(&code)[N]){Program p;assert(NorthlightActorDeformation::compile(code,N,p));return p;}
+static void unusedIndices(const std::vector<Program>& programs){
+    unsigned checked=0;
+    for(const auto& original:programs){
+        if(!original.kernel.singleSkin())continue;
+        auto source=std::make_shared<Mesh>(*mesh(128));
+        for(unsigned i=0;i<source->vertexCount;++i){auto* indices=source->streams[0].bytes.data()+32*i+12;
+            indices[0]=i%4;indices[1]=i%256;indices[2]=i/256;indices[3]=(i*17)%251;}
+        const std::shared_ptr<const Mesh> owner=source;
+        for(bool overridePalette:{false,true}){
+            auto p=original;if(overridePalette)p.definitions.push_back({31,{1,0,0,7}});
+            auto prepared=E::prepareProgram(p,decl,4);assert(prepared);E cache;
+            float c[1024],inverse[16]={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};pose(c,0);
+            warm(cache,*prepared,owner,c,inverse);
+            for(unsigned frame=0;frame<32;++frame){
+                pose(c,frame);const float angle=float(frame)*.03f;inverse[0]=inverse[5]=std::cos(angle);inverse[1]=std::sin(angle);inverse[4]=-inverse[1];inverse[12]=frame*10.f;
+                cache.beginFrame(false);B::Budget budget;B::Bounds bounds;E::WorkInfo info;
+                const auto status=cache.calculatePrepared(*prepared,*owner,owner,c,inverse,budget,bounds,E::Stage::All,&info);
+                assert(status==B::Status::Valid&&bounds.valid&&info.groups==4);
+                assert(budget.operations==4*p.operations.size()&&!budget.vertices);
+                assert(overridePalette?cache.stats().effectiveCopiedBytes>0:cache.stats().effectiveCopiedBytes==0);
+                std::vector<NorthlightActorDeformation::Position> positions;
+                assert(NorthlightActorDeformation::worldPositions(p,*owner,decl,4,c,inverse,positions));
+                for(const auto& v:positions){const float xyz[]={v.x,v.y,v.z};for(unsigned k=0;k<3;++k)assert(xyz[k]>=bounds.low[k]&&xyz[k]<=bounds.high[k]);}
+                ++checked;
+            }
+        }
+    }
+    std::printf("MATERIAL_SINGLE_BONE_GROUPS_PASS poses=%u vertices=768 groups=4 unused_index_lanes palette_override no_control_bank_copy\n",checked);
+}
 int main(){
     auto programs=std::vector<Program>{program(ClientShaders::OneBoneVs3),program(ClientShaders::OneBoneVs3WLast),program(ClientShaders::OneBoneVs3WMid),program(ClientShaders::OneBoneVs2),program(ClientShaders::FourBoneVs3)};
+    unusedIndices(programs);
     float c[1024],inverse[16]={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};pose(c,0);unsigned checks=0,fast=0;
     for(const auto& p:programs)for(unsigned groups:{1u,4u,8u,9u,32u}){
         auto prepared=E::prepareProgram(p,decl,4);assert(prepared);auto m=mesh(groups);E current,reference;

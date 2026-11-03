@@ -29,11 +29,11 @@ public:
     }
     void write(uint64_t offset,const void* data,size_t bytes){
         std::lock_guard<std::mutex> lock(mutex_);if(offset>size_||bytes>size_-offset)throw TemporaryGeometryError("Temporary geometry write range invalid");
-        seek(offset);if(bytes&&std::fwrite(data,1,bytes,file_.get())!=bytes)throw TemporaryGeometryError("Temporary geometry write failed");
+        if(!bytes)return;seek(offset);if(std::fwrite(data,1,bytes,file_.get())!=bytes)throw TemporaryGeometryError("Temporary geometry write failed");
     }
     void read(uint64_t offset,void* data,size_t bytes)const{
         std::lock_guard<std::mutex> lock(mutex_);if(offset>size_||bytes>size_-offset)throw TemporaryGeometryError("Temporary geometry read range invalid");
-        seek(offset);if(bytes&&std::fread(data,1,bytes,file_.get())!=bytes)throw TemporaryGeometryError("Temporary geometry read failed");
+        if(!bytes)return;seek(offset);if(std::fread(data,1,bytes,file_.get())!=bytes)throw TemporaryGeometryError("Temporary geometry read failed");
     }
     void flush(){std::lock_guard<std::mutex> lock(mutex_);if(std::fflush(file_.get()))throw TemporaryGeometryError("Temporary geometry flush failed");}
     uint64_t size()const{return size_;}
@@ -45,24 +45,33 @@ template<class T> class TemporaryGeometryArray {
     static_assert(std::is_trivially_copyable_v<T>);
     static constexpr size_t Elements=65536/sizeof(T),Bytes=Elements*sizeof(T);
     struct Slot {std::unique_ptr<T[]> values;size_t block=SIZE_MAX;uint64_t age=0;bool dirty=false;};
-    mutable TemporaryGeometryFile file_;mutable std::array<Slot,4> slots_;mutable uint64_t age_=0;size_t size_=0,blocks_=0;
+    mutable TemporaryGeometryFile file_;mutable std::array<Slot,4> slots_;mutable Slot* recent_=nullptr;mutable uint64_t age_=0;size_t size_=0,blocks_=0;
     void flush(Slot& slot)const{if(slot.block!=SIZE_MAX&&slot.dirty){file_.write(slot.block*Bytes,slot.values.get(),Bytes);slot.dirty=false;}}
-    Slot& visit(size_t block,bool dirty)const{
-        for(auto& slot:slots_)if(slot.block==block){slot.age=++age_;slot.dirty|=dirty;return slot;}
+    Slot& visit(size_t block,bool dirty,bool zero=false)const{
+        if(recent_&&recent_->block==block){recent_->age=++age_;recent_->dirty|=dirty;return *recent_;}
+        for(auto& slot:slots_)if(slot.block==block){slot.age=++age_;slot.dirty|=dirty;recent_=&slot;return slot;}
         auto* victim=&slots_[0];for(auto& slot:slots_)if(slot.age<victim->age)victim=&slot;
-        if(!victim->values)victim->values=std::make_unique<T[]>(Elements);
-        flush(*victim);file_.read(block*Bytes,victim->values.get(),Bytes);victim->block=block;victim->age=++age_;victim->dirty=dirty;return *victim;
+        if(!victim->values)victim->values.reset(new T[Elements]);
+        flush(*victim);if(zero)std::fill_n(victim->values.get(),Elements,T{});else file_.read(block*Bytes,victim->values.get(),Bytes);victim->block=block;victim->age=++age_;victim->dirty=dirty;recent_=victim;return *victim;
     }
+    void appendBlock(){auto& slot=visit(blocks_,false,true);file_.append(slot.values.get(),Bytes);++blocks_;}
 public:
     size_t size()const{return size_;}size_t capacity()const{return blocks_*Elements;}
     const T& operator[](size_t i)const{return visit(i/Elements,false).values[i%Elements];}
     T& operator[](size_t i){return visit(i/Elements,true).values[i%Elements];}
     void push_back(const T& value){
         const T copy=value;
-        if(size_==blocks_*Elements){std::array<unsigned char,Bytes> zero{};file_.append(zero.data(),Bytes);++blocks_;}
+        if(size_==blocks_*Elements)appendBlock();
         (*this)[size_++]=copy;
     }
-    void resize(size_t size){while(size_<size)push_back(T{});size_=size;}
+    void resize(size_t size){
+        while(size_<size){
+            if(size_==blocks_*Elements){appendBlock();size_+=std::min(size-size_,Elements);continue;}
+            const size_t offset=size_%Elements,count=std::min(size-size_,Elements-offset);
+            std::fill_n(visit(size_/Elements,true).values.get()+offset,count,T{});size_+=count;
+        }
+        size_=size;
+    }
     void clear(){size_=0;}
     void flush(){for(auto& slot:slots_)flush(slot);file_.flush();}
     uint64_t bytes()const{uint64_t bytes=sizeof(*this);for(const auto& slot:slots_)if(slot.values)bytes+=Bytes;return bytes;}

@@ -61,7 +61,7 @@ private:
     static const NorthlightSourceIdentity::Handle& identity(const Mesh& mesh){return mesh.replayIdentity?mesh.replayIdentity:mesh.sourceIdentity;}
     static std::uint64_t key(const std::shared_ptr<const Mesh>& mesh){const auto& id=identity(*mesh);return id?id->hash:std::uint64_t(reinterpret_cast<std::uintptr_t>(mesh.get()));}
     auto find(const std::shared_ptr<const Mesh>& mesh){auto range=entries.equal_range(key(mesh));for(auto it=range.first;it!=range.second;){const auto& e=*it->second;
-        if(identity(*mesh)?NorthlightSourceIdentity::same(e.identity,identity(*mesh)):!e.identity&&e.owner.lock()==mesh)return it;
+        if(identity(*mesh)?NorthlightSourceIdentity::same(e.identity,identity(*mesh)):!e.identity&&(NorthlightSourceIdentity::sameOwner(e.owner,mesh)||e.owner.lock()==mesh))return it;
         if(!identity(*mesh)&&!e.identity&&e.owner.expired()){bytes_-=e.bytes+e.metadata;gpuBytes_-=e.bytes;if(!e.bytes)unlinkProbation(*it->second);unlink(*it->second);it=entries.erase(it);}else ++it;}return entries.end();}
     void erase(Entry* entry){auto range=entries.equal_range(entry->key);for(auto it=range.first;it!=range.second;++it)if(it->second.get()==entry){bytes_-=entry->bytes+entry->metadata;gpuBytes_-=entry->bytes;stats_.identityBytes-=entry->metadata-QueueMetadata;if(entry->bytes)++stats_.residentEvictions;else{++stats_.probationEvictions;unlinkProbation(*entry);}unlink(*entry);entries.erase(it);return;}}
     // Stable Entry allocations form a non-owning queue ordered by last frame

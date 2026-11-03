@@ -21,6 +21,8 @@ inline std::uint64_t mipBytes(D3DFORMAT format,unsigned width,unsigned height,un
     default:break; // Unknown static formats retain a conservative 128-bit estimate.
     }
     if(!width||!height)return 0;
+    // Exact geometric series for the common square power-of-two normal maps.
+    if(!block&&!levels&&width==height&&width<=16384&&(width&(width-1))==0)return ((uint64_t(width)*height*4-1)/3)*texel;
     std::uint64_t bytes=0;unsigned level=0;
     do{
         bytes+=block?((std::uint64_t(width)+3)/4)*((std::uint64_t(height)+3)/4)*block:std::uint64_t(width)*height*texel;

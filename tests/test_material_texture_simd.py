@@ -17,5 +17,5 @@ with tempfile.TemporaryDirectory(prefix="material-texture-simd-") as tmp:
         result = subprocess.run([str(exe)], capture_output=True, text=True, creationflags=subprocess.BELOW_NORMAL_PRIORITY_CLASS)
         if result.returncode:
             raise RuntimeError(result.stdout + result.stderr)
-        assert "MATERIAL_TEXTURE_SIMD_PASS cases=40" in result.stdout
+        assert "MATERIAL_TEXTURE_SIMD_PASS cases=60" in result.stdout
         print(label, result.stdout.strip())

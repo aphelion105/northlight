@@ -48,8 +48,9 @@ struct Tracker {
     void bind(const std::shared_ptr<const Records>& next){if(next!=records){reset();records=next;}}
     bool active()const{return records&&!records->empty();}
     void prune(const std::vector<NorthlightLocalLights::Light>& lights,const float* camera){
+        auto light=lights.begin(); // Both source IDs and position keys are sorted.
         for(auto at=positions.begin();at!=positions.end();){
-            auto light=std::lower_bound(lights.begin(),lights.end(),at->first,[](const auto& l,uint64_t id){return l.sourceId<id;});
+            while(light!=lights.end()&&light->sourceId<at->first)++light;
             bool keep=light!=lights.end()&&light->sourceId==at->first;
             if(keep){float d2=0;for(unsigned k=0;k<3;++k){const float d=at->second[k]-camera[k];d2+=d*d;}
                 const float reach=256+light->attenuationEnd;keep=d2<reach*reach;}
@@ -62,11 +63,14 @@ struct Tracker {
         if(!active()||!constants||!inverseView)return;
         for(float v:witness)if(!std::isfinite(v))return;
         auto at=std::lower_bound(records->begin(),records->end(),witness,[](const Attachment& a,const auto& key){return a.witness<key;});
+        unsigned previousReference=75,previousBone=75;float baseReference[12],source[12];bool referenceValid=false,sourceValid=false;
         for(;at!=records->end()&&at->witness==witness;++at){const auto& a=*at;
             if(paletteBase+3*std::max(a.bone,a.reference)+2>=256)continue;
-            float reference[12],source[12];
-            if(!NorthlightRigidGeometry::worldBone(constants+4*(paletteBase+3*a.reference),inverseView,reference)||
-               !NorthlightRigidGeometry::worldBone(constants+4*(paletteBase+3*a.bone),inverseView,source))continue;
+            if(previousReference!=a.reference){previousReference=a.reference;referenceValid=NorthlightRigidGeometry::worldBone(constants+4*(paletteBase+3*a.reference),inverseView,baseReference);}
+            if(!referenceValid)continue;
+            if(previousBone!=a.bone){previousBone=a.bone;sourceValid=NorthlightRigidGeometry::worldBone(constants+4*(paletteBase+3*a.bone),inverseView,source);}
+            if(!sourceValid)continue;
+            float reference[12];std::copy_n(baseReference,12,reference);
             for(unsigned k=0;k<3;++k)for(unsigned j=0;j<3;++j)reference[9+k]-=reference[3*j+k]*a.offset[j];
             if(!NorthlightRigidGeometry::staticPlacement(reference+9,reference,a.placement+9,a.placement))continue;
             std::array<float,3> point{};bool valid=true;
@@ -77,6 +81,9 @@ struct Tracker {
     }
     const std::vector<NorthlightLocalLights::Light>& apply(const std::vector<NorthlightLocalLights::Light>& fixed,std::vector<NorthlightLocalLights::Light>& output)const{
         if(positions.empty())return fixed;
+        if(positions.size()>8&&std::is_sorted(fixed.begin(),fixed.end(),[](const auto& a,const auto& b){return a.sourceId<b.sourceId;})){
+            output=fixed;auto at=positions.begin();for(auto& light:output){while(at!=positions.end()&&at->first<light.sourceId)++at;if(at!=positions.end()&&at->first==light.sourceId)std::copy(at->second.begin(),at->second.end(),light.position);}return output;
+        }
         output=fixed;for(auto& light:output){auto at=positions.find(light.sourceId);if(at!=positions.end())std::copy(at->second.begin(),at->second.end(),light.position);}
         return output;
     }

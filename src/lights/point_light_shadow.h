@@ -163,12 +163,13 @@ class FaceClip {
             if(!finite)return false;
             for(unsigned column=0;column<4;++column){
                 double bound=absolute[column][3];
-                for(unsigned row=0;row<3;++row)bound+=absolute[column][row]*extent[row];
+                for(unsigned row=0;row<3;++row)if(absolute[column][row]!=0)bound+=absolute[column][row]*extent[row];
                 if(bound>std::numeric_limits<float>::max()/32.)return false;
             }
             for(unsigned plane=0;plane<6;++plane){
                 double maximum=0,total=0;
                 for(unsigned row=0;row<4;++row){
+                    if(magnitude[plane][row]==0)continue;
                     const double c=coefficient[plane][row],coord=row==3?1.:c>=0?hi[row]:lo[row];
                     maximum+=c*coord;total+=magnitude[plane][row]*(row==3?1.:extent[row]);
                 }
@@ -207,6 +208,7 @@ inline bool recordOutsideSphere(const NorthlightGI::Vec3& lo,const NorthlightGI:
 inline void faceContent(const NorthlightLocalShadowSignature::Records& records,const NorthlightLocalLights::Light& l,
                         const float (&matrices)[6][16],NorthlightLocalShadowSignature::Digest (&out)[6]){
     for(auto& digest:out)digest={};
+    if(records.empty())return;
     const FaceClip clip(matrices);
     for(const auto& r:records){
         if(r.terrain||recordOutsideSphere(r.low,r.high,l,FaceContentSphereMargin))continue;
@@ -252,7 +254,9 @@ inline Picks selectMany(const NorthlightLocalLights::Light* lights,size_t count,
     Picks out;limit=std::min(limit,MaxLights);std::array<double,MaxLights> scores{};
     if(!limit||!lights||!camera||!std::isfinite(maxCameraDistance)||maxCameraDistance<=0)return out;
     for(int i=0;i<3;++i)if(!std::isfinite(camera[i]))return out;
-    auto historyEnd=previous.end();while(historyEnd!=previous.begin()&&historyEnd[-1]==0)--historyEnd;
+    auto historyEnd=previous.end();std::array<uint64_t,MaxLights> history;
+    if(!firstOnly){while(historyEnd!=previous.begin()&&historyEnd[-1]==0)--historyEnd;
+        if(historyEnd-previous.begin()>8){std::copy(previous.begin(),historyEnd,history.begin());std::sort(history.begin(),history.begin()+(historyEnd-previous.begin()));}}
     for(size_t i=0;i<count;++i){
         const auto& l=lights[i];if(!eligible(l))continue;
         if(!NorthlightLocalLights::valid(l)||l.attenuationEnd<=.11f)continue;
@@ -267,9 +271,12 @@ inline Picks selectMany(const NorthlightLocalLights::Light* lights,size_t count,
         // Apparent influence weighted by brightness, bounded at the source.
         const double color=std::min(16.f,std::max(l.diffuse[0],std::max(l.diffuse[1],l.diffuse[2])));
         if(color<.005f)continue;
+        if(firstOnly){out.index[0]=int(i);out.count=1;return out;}
         // Zero is a valid authored ID; trailing empty slots historically made it an incumbent.
-        const bool incumbent=(!l.sourceId&&historyEnd!=previous.end())||std::find(previous.begin(),historyEnd,l.sourceId)!=historyEnd;
+        const auto historyCount=historyEnd-previous.begin();
+        const bool incumbent=(!l.sourceId&&historyEnd!=previous.end())||(historyCount>8?std::binary_search(history.begin(),history.begin()+historyCount,l.sourceId):std::find(previous.begin(),historyEnd,l.sourceId)!=historyEnd);
         const double score=color*double(l.attenuationEnd)*l.attenuationEnd/(1+distance2)*(incumbent?1.25:1.);
+        if(out.count==limit&&(score<scores[limit-1]||(score==scores[limit-1]&&l.sourceId>lights[out.index[limit-1]].sourceId)))continue;
         unsigned at=0,end=out.count;
         while(at<end){const unsigned mid=at+(end-at)/2;
             if(scores[mid]>score||(scores[mid]==score&&lights[out.index[mid]].sourceId<l.sourceId))at=mid+1;else end=mid;}
@@ -296,16 +303,20 @@ struct SelectionTracker {
         limit=std::min(limit,MaxLights);
         const float step=initialized?std::min(uint32_t(now-updatedAt),100u)/FadeMs:1.f;
         updatedAt=now;initialized=true;
+        if(!limit){entries={};return {};}
         std::array<uint64_t,MaxLights> previous{};unsigned n=0;
         for(const auto& e:entries)if(e.occupied)previous[n++]=e.id;
         const auto picks=selectMany(lights,count,camera,limit,previous,maxCameraDistance,false,view);
+        std::array<uint64_t,MaxLights> desired;
+        if(picks.count>8){for(unsigned i=0;i<picks.count;++i)desired[i]=lights[picks.index[i]].sourceId;std::sort(desired.begin(),desired.begin()+picks.count);}
         std::array<Slot,MaxLights> out{};bool wanted[MaxLights]={};unsigned resident=0;
         for(unsigned slot=0;slot<MaxLights;++slot){auto& e=entries[slot];if(!e.occupied)continue;
             int index=-1;
             for(size_t i=0;lights&&i<count;++i)if(lights[i].sourceId==e.id){index=int(i);break;}
             // Never subtract stale light from a source absent from LocalDirect.
             if(index<0||!NorthlightLocalLights::valid(lights[index])||!eligible(lights[index])||!visible(lights[index],view)){e={};continue;}
-            for(unsigned i=0;i<picks.count;++i)wanted[slot]|=lights[picks.index[i]].sourceId==e.id;
+            if(picks.count>8)wanted[slot]=std::binary_search(desired.begin(),desired.begin()+picks.count,e.id);
+            else for(unsigned i=0;i<picks.count;++i)if(lights[picks.index[i]].sourceId==e.id){wanted[slot]=true;break;}
             e.gain=wanted[slot]?std::min(1.f,e.gain+step):std::max(0.f,e.gain-step);
             if(!wanted[slot]&&e.gain<=0){e={};continue;}
             out[slot]={index,e.gain};++resident;
@@ -314,7 +325,7 @@ struct SelectionTracker {
         for(unsigned slot=MaxLights;resident>limit&&slot;){--slot;if(entries[slot].occupied&&!wanted[slot]){
             entries[slot]={};out[slot]={};--resident;}}
         for(unsigned i=0;i<picks.count&&resident<limit;++i){const int index=picks.index[i];
-            bool retained=false;for(const auto& e:entries)retained|=e.occupied&&e.id==lights[index].sourceId;
+            bool retained=false;for(const auto& e:entries)if(e.occupied&&e.id==lights[index].sourceId){retained=true;break;}
             if(retained)continue;
             unsigned slot=0;while(entries[slot].occupied)++slot;
             entries[slot]={lights[index].sourceId,step,true};out[slot]={index,step};++resident;

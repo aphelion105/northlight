@@ -61,7 +61,7 @@ private:
     void(*beforeIO_)(void*)=nullptr;void* ioContext_=nullptr;
     Handle enqueue(Bytes& identity,Bytes& source,unsigned width,unsigned height,Key key,bool write){
         if(!available_.load(std::memory_order_acquire)||!width||!height||width>512||height>512||source.size()>MaxSourceBytes||identity.size()>1024)return {};
-        const size_t charge=source.size()+MaxMapBytes;
+        const size_t charge=source.size()+size_t(width)*height*4;
         std::unique_lock<std::mutex> lock(mutex_,std::try_to_lock);
         if(!lock||stop_||!available_.load()||budget_->jobs.load()>=MaxJobs||budget_->bytes.load()>MaxBytes-charge){++stats.refused;return {};}
         try{
@@ -116,7 +116,7 @@ private:
     }
     void complete(Ticket& t,State state){
         Bytes().swap(t.source);Bytes().swap(t.identity);
-        const size_t retained=state==State::Hit?MaxMapBytes:0;
+        const size_t retained=state==State::Hit?t.pixels.capacity():0;
         t.budget->bytes.fetch_sub(t.charge-retained);t.charge=retained;
         t.budget->jobs.fetch_sub(1);t.jobReserved=false;t.state.store(state,std::memory_order_release);
     }

@@ -7,6 +7,7 @@
 #include <limits>
 #include <list>
 #include <mutex>
+#include <type_traits>
 #include <unordered_map>
 #include <vector>
 
@@ -166,10 +167,16 @@ public:
     // slot and must prevent an older colliding valid probe from leaking through.
     std::vector<ProbeAtlasEntry> atlas()const {
         std::vector<ProbeAtlasEntry> result(probeLayout().atlasSize());
-        for(const auto& entry:entries_) {
-            auto& slot=result[probeAtlasIndex(entry.key)];
+        const auto fill=[&](auto size){constexpr int32_t n=decltype(size)::value;for(const auto& entry:entries_) {
+            const auto index=[&](){if constexpr(n)return fixedProbeAtlasIndex<n>(entry.key);else return probeAtlasIndex(entry.key);}();
+            auto& slot=result[index];
             if(slot.occupied)continue;
             slot.key=entry.key;slot.probe=entry.value;slot.occupied=true;
+        }};
+        switch(probeLayout().atlas){
+        case 16:fill(std::integral_constant<int32_t,16>{});break;case 18:fill(std::integral_constant<int32_t,18>{});break;
+        case 20:fill(std::integral_constant<int32_t,20>{});break;case 22:fill(std::integral_constant<int32_t,22>{});break;
+        case 24:fill(std::integral_constant<int32_t,24>{});break;default:fill(std::integral_constant<int32_t,0>{});break;
         }
         return result;
     }

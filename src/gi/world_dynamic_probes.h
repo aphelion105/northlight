@@ -95,7 +95,7 @@ class DynamicProbeLayer {
     struct Bounds { Vec3 low,high;Vec3 anchorLow,anchorHigh;bool valid=false;uint32_t hash=0; };
     struct Solved { Probe probe;uint32_t signature=0;uint32_t solvedGeneration=0,visitedGeneration=0; };
     struct Hash { size_t operator()(ProbeGridKey key)const noexcept{return probeSeed(key);} };
-    std::vector<Bounds> bounds_;
+    std::vector<Bounds> bounds_,previousBounds_;
     std::unordered_map<ProbeGridKey,Solved,Hash> solved_;
     struct Path { StaticPathRecord record;uint32_t usedGeneration=0; };
     std::unordered_map<ProbeGridKey,Path,Hash> paths_;
@@ -108,7 +108,7 @@ class DynamicProbeLayer {
                          std::fabs(a.anchorHigh.x-high.x),std::fabs(a.anchorHigh.y-high.y),std::fabs(a.anchorHigh.z-high.z)});
     }
     void rebuild(const WorldScene* actors) {
-        std::vector<Bounds> previous;previous.swap(bounds_);
+        bounds_.swap(previousBounds_);bounds_.clear();
         if(!actors)return;
         bounds_.resize(actors->materials.size());
         // ActorJob assigns one material per captured draw. Ignore unreferenced
@@ -131,10 +131,11 @@ class DynamicProbeLayer {
         // flap at integer boundaries. A real move re-anchors once.
         for(auto& b:bounds_)if(b.valid) {
             b.anchorLow=b.low;b.anchorHigh=b.high;float best=DynamicAnchorHysteresis;
-            for(const auto& old:previous)if(old.valid){float d=span(old,b.low,b.high);if(d<=best){best=d;b.anchorLow=old.anchorLow;b.anchorHigh=old.anchorHigh;}}
+            for(const auto& old:previousBounds_){float d=span(old,b.low,b.high);if(d<=best){best=d;b.anchorLow=old.anchorLow;b.anchorHigh=old.anchorHigh;}}
             b.hash=mix(cell(b.anchorLow.x)*73856093u^cell(b.anchorLow.y)*19349663u^cell(b.anchorLow.z)*83492791u^
                        cell(b.anchorHigh.x)*2654435761u^cell(b.anchorHigh.y)*2246822519u^cell(b.anchorHigh.z)*3266489917u);
         }
+        bounds_.erase(std::remove_if(bounds_.begin(),bounds_.end(),[](const Bounds& b){return !b.valid;}),bounds_.end());
     }
     static float boxDistanceSquared(const Bounds& b,Vec3 p) {
 #if defined(__SSE2__)
@@ -154,13 +155,14 @@ class DynamicProbeLayer {
 #endif
     }
     static float weightDistance(float distance) {
+        if(distance<=DynamicFullDistance*DynamicFullDistance)return 1.f;
         float t=std::max(0.f,std::min(1.f,(DynamicZeroDistance-std::sqrt(distance))/(DynamicZeroDistance-DynamicFullDistance)));
         return t*t*(3.f-2.f*t);
     }
 public:
     // Static world/light generation changed: every correction is stale.
     void reset(const WorldScene* actors) {
-        solved_.clear();paths_.clear();pathBytes_=0;generation_=0;bounds_.clear();rebuild(actors);
+        solved_.clear();paths_.clear();pathBytes_=0;generation_=0;bounds_.clear();previousBounds_.clear();rebuild(actors);
     }
     // Only the observed actor packet changed. Corrections whose nearby actor
     // bounds are unchanged stay valid; the others are refreshed by budget.
@@ -178,7 +180,7 @@ public:
     void accountMemory(NorthlightMemoryFootprint::Counter& memory)const{
         using namespace NorthlightMemoryFootprint;
         if(!memory.visit(this))return;
-        memory.add(Metadata,sizeof(*this));memory.vector(Metadata,bounds_);
+        memory.add(Metadata,sizeof(*this));memory.vector(Metadata,bounds_);memory.vector(Metadata,previousBounds_);
         for(const auto& entry:solved_)memory.allocation(Probes,&entry,sizeof(entry));
         for(const auto& entry:paths_){memory.allocation(Metadata,&entry,sizeof(entry));memory.vector(Probes,entry.second.record.rays);memory.vector(Probes,entry.second.record.queries);}
     }
@@ -189,14 +191,14 @@ public:
         // 12 units, smoothly returning to the static world solution by 24.
         // This support is tied to observed world geometry, never to camera/grid.
         float closest=DynamicZeroDistance*DynamicZeroDistance;
-        for(const auto& b:bounds_)if(b.valid)closest=std::min(closest,boxDistanceSquared(b,p));
+        for(const auto& b:bounds_){closest=std::min(closest,boxDistanceSquared(b,p));if(closest==0)break;}
         return closest;
     }
     float weight(Vec3 p)const {return weightDistance(distanceSquared(p));}
     // Order-independent identity of every actor box that can influence p.
     uint32_t signature(Vec3 p)const {
         uint32_t h=0x9e3779b9u;
-        for(const auto& b:bounds_)if(b.valid&&boxDistanceSquared(b,p)<DynamicSignatureDistance*DynamicSignatureDistance)h+=b.hash;
+        for(const auto& b:bounds_)if(boxDistanceSquared(b,p)<DynamicSignatureDistance*DynamicSignatureDistance)h+=b.hash;
         return mix(h);
     }
     // Modify a private export only; cancellation never changes a published
@@ -235,9 +237,10 @@ private:
     bool applyBudget(std::vector<ProbeAtlasEntry>& atlas,Solve solve,Cancel cancel,
                      unsigned& reused,unsigned& computed,unsigned budget) {
         // Without valid actor bounds, every probe has zero dynamic weight.
-        if(std::none_of(bounds_.begin(),bounds_.end(),[](const Bounds& b){return b.valid;}))return !cancel();
-        struct Candidate {ProbeAtlasEntry* entry;float distance,amount;uint32_t signature,solvedGeneration;bool fresh,chosen;};
+        if(bounds_.empty())return !cancel();
+        struct Candidate {ProbeAtlasEntry* entry;float distance,amount;uint32_t signature,solvedGeneration;bool fresh,chosen;Solved* solved=nullptr;};
         std::vector<Candidate> candidates;
+        candidates.reserve(std::min(atlas.size(),DynamicCandidateCeiling));
         for(auto& entry:atlas) {
             if(!entry.occupied||!entry.probe.valid)continue;
             float distance=distanceSquared(entry.probe.position);
@@ -249,40 +252,44 @@ private:
         // Hard ceiling of moving-object probes per publication. Selection is
         // actor-distance/world-key ordered, never camera ordered, so the
         // probes an actor stands on are refreshed first.
-        std::sort(candidates.begin(),candidates.end(),[](const Candidate& a,const Candidate& b){
+        const auto nearer=[](const Candidate& a,const Candidate& b){
             if(a.distance!=b.distance)return a.distance<b.distance;
             const auto x=a.entry->key,y=b.entry->key;
             if(x.x!=y.x)return x.x<y.x;if(x.y!=y.y)return x.y<y.y;return x.z<y.z;
-        });
+        };
+        if(candidates.size()>2*DynamicCandidateCeiling){std::nth_element(candidates.begin(),candidates.begin()+DynamicCandidateCeiling,candidates.end(),nearer);candidates.resize(DynamicCandidateCeiling);}
+        std::sort(candidates.begin(),candidates.end(),nearer);
         if(candidates.size()>DynamicCandidateCeiling)candidates.resize(DynamicCandidateCeiling);
         // Classify, then spend the budget: nearest tier first, then the oldest
         // corrections (never solved counts as oldest) so every mismatched
         // candidate is refreshed within a few captures instead of starving.
         std::vector<Candidate*> mismatched;
+        if constexpr(WithBudget)mismatched.reserve(candidates.size());
         for(auto& c:candidates) {
             c.signature=signature(c.entry->probe.position);
             auto found=solved_.find(c.entry->key);
-            if(found!=solved_.end()){c.solvedGeneration=found->second.solvedGeneration+1;c.fresh=found->second.signature==c.signature;}
-            if(!c.fresh)mismatched.push_back(&c);
+            if(found!=solved_.end()){c.solved=&found->second;c.solvedGeneration=found->second.solvedGeneration+1;c.fresh=found->second.signature==c.signature;}
+            if constexpr(WithBudget)if(!c.fresh)mismatched.push_back(&c);
         }
         for(size_t i=0;i<mismatched.size()&&i<DynamicNearestTier&&budget;++i){mismatched[i]->chosen=true;--budget;}
         // Cached-only publication cannot choose a solve, so ordering is unused.
-        if constexpr(WithBudget)std::stable_sort(mismatched.begin(),mismatched.end(),[](const Candidate* a,const Candidate* b){return a->solvedGeneration<b->solvedGeneration;});
+        if constexpr(WithBudget)if(budget)std::stable_sort(mismatched.begin(),mismatched.end(),[](const Candidate* a,const Candidate* b){return a->solvedGeneration<b->solvedGeneration;});
         for(auto* c:mismatched){if(!budget)break;if(!c->chosen){c->chosen=true;--budget;}}
         unsigned visited=0;
         for(const auto& candidate:candidates) {
             auto& entry=*candidate.entry;
             if((visited++%8)==0&&cancel())return false;
-            auto found=solved_.find(entry.key);
+            auto* found=candidate.solved;
             Probe moving;
-            if(candidate.fresh){found->second.visitedGeneration=generation_;moving=found->second.probe;++reused;}
+            if(candidate.fresh){found->visitedGeneration=generation_;moving=found->probe;++reused;}
             else if(candidate.chosen){
                 if constexpr(std::is_invocable_v<Solve,ProbeGridKey,Vec3,StaticPathRecord*>)moving=solvePath(solve,entry.key,entry.probe.position);
                 else moving=solve(entry.key,entry.probe.position);
                 ++computed;
-                solved_[entry.key]={moving,candidate.signature,generation_,generation_};
+                if(found)*found={moving,candidate.signature,generation_,generation_};
+                else solved_.emplace(entry.key,Solved{moving,candidate.signature,generation_,generation_});
             }
-            else if(found!=solved_.end()&&generation_-found->second.solvedGeneration<=DynamicStaleLimit){found->second.visitedGeneration=generation_;moving=found->second.probe;++reused;}
+            else if(found&&generation_-found->solvedGeneration<=DynamicStaleLimit){found->visitedGeneration=generation_;moving=found->probe;++reused;}
             else continue;
             // A moving actor enclosing a probe cannot turn that static world
             // probe into a coverage hole. Ignore that undefined correction.

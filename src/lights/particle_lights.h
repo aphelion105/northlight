@@ -61,7 +61,7 @@ inline void add(Cluster& cluster,const Sample& sample){
 }
 class Frame {
     std::array<Cluster,Clusters> current_{};unsigned count_=0;
-    std::array<Light,Capacity> previous_{};unsigned previousCount_=0;std::uint64_t serial_=0;
+    std::array<std::uint64_t,Capacity> previous_{};unsigned previousCount_=0;std::uint64_t serial_=0;
     struct Track {float position[3]{},rgb[3]{},target[3]{};std::uint64_t id=0;bool seen=false,castsShadows=false;};
     std::array<Track,Tracks> tracks_{};unsigned trackCount_=0;
 public:
@@ -88,14 +88,15 @@ public:
     void observe(const Sample& sample,const float* camera){
         for(unsigned k=0;k<3;++k)if(!std::isfinite(sample.position[k])||std::fabs(sample.position[k])>=100000||
             !std::isfinite(sample.rgb[k])||sample.rgb[k]<0||sample.rgb[k]>16||!std::isfinite(camera[k]))return;
-        if(peak(sample.rgb)<.003f||NorthlightEquipmentLights::distance2(sample.position,camera)>MaxDistance*MaxDistance)return;
+        const float cameraDistance=NorthlightEquipmentLights::distance2(sample.position,camera);
+        if(peak(sample.rgb)<.003f||cameraDistance>MaxDistance*MaxDistance)return;
         ++points;
         for(unsigned i=0;i<count_;++i)if(same(current_[i].sample,sample)){add(current_[i],sample);return;}
         unsigned at=count_;
         if(at==Clusters){
             float farthest=-1;for(unsigned i=0;i<count_;++i){const float distance=NorthlightEquipmentLights::distance2(current_[i].sample.position,camera);
                 if(distance>farthest){farthest=distance;at=i;}}
-            if(NorthlightEquipmentLights::distance2(sample.position,camera)>=farthest){++dropped;return;}
+            if(cameraDistance>=farthest){++dropped;return;}
         }else ++count_;
         current_[at]={sample,1};
     }
@@ -113,8 +114,8 @@ public:
             // The average colour at the strongest sample's level (at most 1): not the sum of a draw's particles.
             float target[3];for(unsigned k=0;k<3;++k)target[k]=s.rgb[k]/peak(s.rgb)*std::min(1.f,.7f*brightness(s));
             Track* track=nullptr;float best=2.f*2.f;
-            for(unsigned t=0;t<trackCount_;++t){auto& c=tracks_[t];const float d=NorthlightEquipmentLights::distance2(s.position,c.position);
-                if(!c.seen&&d<best){track=&c;best=d;}} // nearest only: a flash's hue varies from frame to frame
+            for(unsigned t=0;t<trackCount_;++t){auto& c=tracks_[t];if(c.seen)continue;const float d=NorthlightEquipmentLights::distance2(s.position,c.position);
+                if(d<best){track=&c;best=d;}} // nearest only: a flash's hue varies from frame to frame
             if(track){for(unsigned k=0;k<3;++k){track->position[k]+=(s.position[k]-track->position[k])*follow;track->target[k]=target[k];}}
             else{
                 if(trackCount_<Tracks)track=&tracks_[trackCount_++];
@@ -125,7 +126,7 @@ public:
             }
             track->seen=true;track->castsShadows=s.castsShadows;
         }
-        std::array<Light,Tracks+Capacity> candidates{};unsigned count=0;
+        std::array<Light,Tracks+Capacity> candidates;unsigned count=0;
         for(unsigned t=0;t<trackCount_;){auto& c=tracks_[t];
             for(unsigned k=0;k<3;++k){const float goal=c.seen?c.target[k]:0.f;c.rgb[k]=goal;}
             if(!c.seen&&peak(c.rgb)<MinEnergy){c=tracks_[--trackCount_];continue;}
@@ -146,16 +147,15 @@ public:
         std::array<unsigned char,Tracks+Capacity> order;order[0]=0;
         if(count>1){std::array<float,Tracks+Capacity> scores;
             for(unsigned i=0;i<count;++i){order[i]=static_cast<unsigned char>(i);scores[i]=score(candidates[i]);}
-            std::sort(order.begin(),order.begin()+count,[&](unsigned char a,unsigned char b){
+            std::partial_sort(order.begin(),order.begin()+std::min(count,Capacity),order.begin()+count,[&](unsigned char a,unsigned char b){
                 return scores[a]!=scores[b]?scores[a]<scores[b]:candidates[a].sourceId<candidates[b].sourceId;});}
         outputCount=std::min(count,Capacity);immediateCount=0;
         for(unsigned i=0;i<outputCount;++i){output[i]=candidates[order[i]];
             if((output[i].sourceId&0xfff0000000000000ull)==0xfed0000000000000ull)immediate[immediateCount++]=output[i].sourceId;}
         for(unsigned i=0;i<previousCount_;++i)
-            if(std::find(immediate.begin(),immediate.begin()+immediateCount,previous_[i].sourceId)==immediate.begin()+immediateCount)forgotten[forgottenCount++]=previous_[i].sourceId;
+            if(std::find(immediate.begin(),immediate.begin()+immediateCount,previous_[i])==immediate.begin()+immediateCount)forgotten[forgottenCount++]=previous_[i];
         if(forgottenCount){std::sort(forgotten.begin(),forgotten.begin()+forgottenCount);selection.forgetSorted(forgotten.data(),forgottenCount);}
-        previousCount_=0;for(unsigned i=0;i<outputCount;++i)if(
-            std::find(immediate.begin(),immediate.begin()+immediateCount,output[i].sourceId)!=immediate.begin()+immediateCount)previous_[previousCount_++]=output[i];
+        previousCount_=immediateCount;std::copy_n(immediate.begin(),immediateCount,previous_.begin());
     }
 };
 }

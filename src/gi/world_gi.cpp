@@ -520,7 +520,7 @@ uint32_t BVH::partition(uint32_t start,uint32_t count,Vec3& low,Vec3& high) {
         const auto&t=scene_.triangles[order_[i]];
         Vec3 a=scene_.vertices[t.v0].position,b=scene_.vertices[t.v1].position,c=scene_.vertices[t.v2].position;
         low=minimum(low,minimum(a,minimum(b,c)));high=maximum(high,maximum(a,maximum(b,c)));
-        Vec3 q=(a+b+c)/3.f;cl=minimum(cl,q);ch=maximum(ch,q);
+        if(count>6){Vec3 q=(a+b+c)/3.f;cl=minimum(cl,q);ch=maximum(ch,q);}
     }
     if(count<=6)return 0;
     Vec3 extent=ch-cl;unsigned axis=extent.y>extent.x?1:0;if(extent.z>component(extent,axis))axis=2;
@@ -555,6 +555,7 @@ uint32_t BVH::sahSplit(uint32_t start,uint32_t count,const BuildBox& box,BuildBo
     // Large nodes bin only their widest centroid axis (3x cheaper build, ~same tree quality).
     unsigned widest=extent.y>extent.x?1:0;if(extent.z>component(extent,widest))widest=2;
     const bool allAxes=count<=TraceSahAllAxesBelow;
+    unsigned activeAxes[3],axisCount=0;for(unsigned ax=0;ax<3;++ax)if(scale[ax]>0&&(allAxes||ax==widest))activeAxes[axisCount++]=ax;
     float bestCost=inf;unsigned bestAxis=0,bestSplit=0;
     struct Bin {Vec3 low,high;unsigned count;};Bin bins[3][B];
     if(depth_<48&&(scale[0]>0||scale[1]>0||scale[2]>0)){
@@ -564,7 +565,7 @@ uint32_t BVH::sahSplit(uint32_t start,uint32_t count,const BuildBox& box,BuildBo
             const uint32_t index=order_[i];const auto&t=scene_.triangles[index];
             Vec3 a=scene_.vertices[t.v0].position,b=scene_.vertices[t.v1].position,c=scene_.vertices[t.v2].position;
             const Vec3 lo=minimum(a,minimum(b,c)),hi=maximum(a,maximum(b,c));
-            for(unsigned ax=0;ax<3;++ax)if(scale[ax]>0&&(allAxes||ax==widest)){Bin& e=bins[ax][bin(index,ax)];e.low=minimum(e.low,lo);e.high=maximum(e.high,hi);++e.count;}
+            for(unsigned i=0;i<axisCount;++i){const unsigned ax=activeAxes[i];Bin& e=bins[ax][bin(index,ax)];e.low=minimum(e.low,lo);e.high=maximum(e.high,hi);++e.count;}
         }
         // Cost in triangle tests: one two-box pair test plus area-weighted children.
         const float parent=std::max(area(box.low,box.high),1e-20f);
@@ -697,7 +698,7 @@ float addressCoordinate(float value,uint32_t mode){
     return value-std::floor(value);
 }
 unsigned addressTexel(int index,uint32_t size,uint32_t mode){
-    if(mode==1)return unsigned((index+int(size))%int(size));
+    if(mode==1){const unsigned shifted=unsigned(index+int(size));return (size&(size-1))==0?shifted&(size-1):shifted%size;}
     return unsigned(std::max(0,std::min(int(size)-1,index)));
 }
 template<bool Color=true> Sample materialSample(const WorldMaterial& m,float u,float v){
@@ -707,10 +708,11 @@ template<bool Color=true> Sample materialSample(const WorldMaterial& m,float u,f
     float x=addressCoordinate(u,m.addressU)*m.width-.5f,y=addressCoordinate(v,m.addressV)*m.height-.5f;
     int ix=int(std::floor(x)),iy=int(std::floor(y));float fx=x-std::floor(x),fy=y-std::floor(y);
     Sample result{{0,0,0},0};
+    const std::array<float,256>* lut=nullptr;if constexpr(Color)lut=&srgbTable();
     for(int j=0;j<2;++j)for(int i=0;i<2;++i){
         unsigned tx=addressTexel(ix+i,m.width,m.addressU),ty=addressTexel(iy+j,m.height,m.addressV);
         const uint8_t* p=&m.texels()[(size_t(ty)*m.width+tx)*4];float w=(i?fx:1-fx)*(j?fy:1-fy);
-        if constexpr(Color){const auto& lut=srgbTable();result.color=result.color+Vec3(lut[p[0]],lut[p[1]],lut[p[2]])*w;}
+        if constexpr(Color)result.color=result.color+Vec3((*lut)[p[0]],(*lut)[p[1]],(*lut)[p[2]])*w;
         result.alpha+=float(p[3])/255.f*w;
     }
     result.color=result.color*m.albedo;return result;

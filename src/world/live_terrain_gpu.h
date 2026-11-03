@@ -30,6 +30,7 @@ public:
         if(it+1!=ranges_.end()&&it->first+it->count==(it+1)->first){it->count+=(it+1)->count;ranges_.erase(it+1);}
     }
     bool take(uint32_t count,Range& out){
+        if(count>available_)return false;
         for(auto it=ranges_.begin();it!=ranges_.end();++it)if(it->count>=count){out={it->first,count};it->first+=count;it->count-=count;available_-=count;if(!it->count)ranges_.erase(it);return true;}
         return false;
     }
@@ -54,7 +55,7 @@ template<class Snapshot,class Vertex> class Cache {
     std::unordered_multimap<uint64_t,Entry> entries_;
     static uint64_t key(const Owner& owner){const auto identity=NorthlightSourceIdentity::of(*owner);return identity?identity->hash:uint64_t(reinterpret_cast<std::uintptr_t>(owner.get()));}
     auto find(const Owner& owner){const auto identity=NorthlightSourceIdentity::of(*owner);auto range=entries_.equal_range(key(owner));for(auto it=range.first;it!=range.second;++it){const auto& e=it->second;
-        if(identity?NorthlightSourceIdentity::same(e.identity,identity):!e.identity&&e.owner.lock()==owner)return it;}return entries_.end();}
+        if(identity?NorthlightSourceIdentity::same(e.identity,identity):!e.identity&&(NorthlightSourceIdentity::sameOwner(e.owner,owner)||e.owner.lock()==owner))return it;}return entries_.end();}
     std::vector<std::unique_ptr<Retired>> retired_;
     size_t indexBytes_=0;
     bool discard_=false,fresh_=false; /* 0.3.192 (DXVK3): fresh_ = the buffer was just created: its first Lock is NOOVERWRITE (nothing in flight, no 16 MiB DISCARD charge); rollover and failure resets keep DISCARD */
@@ -70,17 +71,18 @@ template<class Snapshot,class Vertex> class Cache {
             // flags=0: never D3DGETDATA_FLUSH, never a blocking poll loop.
             if((*it)->query&&(*it)->query->GetData(nullptr,0,0)==S_OK){for(auto r:(*it)->ranges)free_.release(r);it=retired_.erase(it);}else ++it;
         }
-        auto retired=std::make_unique<Retired>();
+        std::unique_ptr<Retired> retired;
         // Start reclamation before exhaustion, leaving a quarter-arena runway
         // for new captures while the nonblocking completion query is pending.
         const bool pressure=free_.available()<capacity_/4;collectVisited+=entries_.size();
         for(auto it=entries_.begin();it!=entries_.end();){
             auto& e=it->second;
             if(e.touched!=frame_&&(pressure||(!e.identity&&(e.owner.expired()||frame_-e.touched>90))||indexBytes_>IndexLimit||entries_.size()>4096)){
+                if(!retired)retired=std::make_unique<Retired>();
                 retired->ranges.push_back(e.range);indexBytes_-=(e.indices.capacity()+e.directional.capacity())*sizeof(uint32_t)+e.metadata;it=entries_.erase(it);
             }else ++it;
         }
-        if(retired->ranges.empty())return;
+        if(!retired)return;
         if(SUCCEEDED(d->CreateQuery(D3DQUERYTYPE_EVENT,&retired->query))&&retired->query){
             if(FAILED(retired->query->Issue(D3DISSUE_END))){retired->query->Release();retired->query=nullptr;}
         }

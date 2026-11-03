@@ -93,6 +93,7 @@ public:
         if(count<2||count>=MAXD3DDECLLENGTH||!source.primitiveCount||source.primitiveCount>32768||(source.topology!=D3DPT_TRIANGLELIST&&source.topology!=D3DPT_TRIANGLESTRIP))return false;
         UINT offsets[4]={};stride=0;for(unsigned i=0;i<4;++i){offsets[i]=stride;if(source.streams[i].stride>240-stride)return false;stride+=source.streams[i].stride;}
         if(!stride||stride%4)return false;
+        for(const auto& stream:source.streams)if(uint64_t(source.vertexCount)*stream.stride>stream.bytes.size())return false;
         layout.assign(elements,elements+count-1);for(auto& e:layout){if(e.Stream>=4||(e.Usage==D3DDECLUSAGE_TEXCOORD&&e.UsageIndex==6))return false;e.Offset+=WORD(offsets[e.Stream]);e.Stream=0;}
         layout.push_back({0,WORD(stride),D3DDECLTYPE_FLOAT1,0,D3DDECLUSAGE_TEXCOORD,6});layout.push_back(D3DDECL_END());
         stride+=4;bytes.resize(size_t(source.primitiveCount)*3*stride);
@@ -101,7 +102,7 @@ public:
             size_t at=source.topology==D3DPT_TRIANGLELIST?size_t(p)*3+c:p+c;
             if(source.indexed&&at>=source.indices.size())return false;const size_t v=source.indexed?source.indices[at]:at;if(v>=source.vertexCount)return false;
             auto* dst=bytes.data()+(size_t(p)*3+corner)*stride;
-            for(unsigned s=0;s<4;++s){const auto& stream=source.streams[s];if(!stream.stride)continue;if((v+1)*stream.stride>stream.bytes.size())return false;std::memcpy(dst+offsets[s],stream.bytes.data()+v*stream.stride,stream.stride);}
+            for(unsigned s=0;s<4;++s){const auto& stream=source.streams[s];if(!stream.stride)continue;std::memcpy(dst+offsets[s],stream.bytes.data()+v*stream.stride,stream.stride);}
             const float id=float(p);std::memcpy(dst+stride-4,&id,4);
         }
         return true;

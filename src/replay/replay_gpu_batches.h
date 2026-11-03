@@ -197,7 +197,7 @@ public:
     Population population()const{Population p;p.entries=entries.size();for(const auto& item:entries)p.resident+=item.second->bytes!=0;p.probation=p.entries-p.resident;return p;}
     bool borrow(const std::shared_ptr<const NorthlightDrawSnapshot::Mesh>& mesh,IDirect3DVertexBuffer9* (&vb)[4],IDirect3DIndexBuffer9*& ib,Placement& at){
         at={};if(!mesh)return false;auto it=entries.find(mesh.get());
-        if(it==entries.end()||it->second->owner.lock()!=mesh||!it->second->bytes)return false;
+        if(it==entries.end()||(!NorthlightSourceIdentity::sameOwner(it->second->owner,mesh)&&it->second->owner.lock()!=mesh)||!it->second->bytes)return false;
         Entry& e=*it->second;touch(e);++hits_;reused_+=e.bytes;
         IDirect3DVertexBuffer9* streams[4]={e.batch?e.batch->vertices:e.vertices[0],e.vertices[1],e.vertices[2],e.vertices[3]};
         for(unsigned s=0;s<4;++s)if(vb[s]!=streams[s]){if(vb[s])vb[s]->Release();vb[s]=streams[s];if(vb[s])vb[s]->AddRef();}
@@ -213,7 +213,7 @@ public:
         if(!mesh||!mesh->byteSize()||mesh->byteSize()>limit_)return false;
         try{
             auto it=entries.find(mesh.get());
-            if(it!=entries.end()&&it->second->owner.lock()!=mesh){erase(*it->second);it=entries.end();}
+            if(it!=entries.end()&&!NorthlightSourceIdentity::sameOwner(it->second->owner,mesh)&&it->second->owner.lock()!=mesh){erase(*it->second);it=entries.end();}
             if(it==entries.end()){
                 if(!room(0))return false;
                 auto e=std::make_unique<Entry>();e->owner=mesh;e->key=mesh.get();e->first=e->touched=frame_;

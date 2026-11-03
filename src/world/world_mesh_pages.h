@@ -82,16 +82,17 @@ class IndexMap {
     static constexpr uint32_t Capacity=2*PageVertexLimit;
     struct Slot {uint32_t key=0,value=0,epoch=0;};
     std::vector<Slot> slots_=std::vector<Slot>(Capacity);
-    uint32_t epoch_=1,size_=0;
+    uint32_t epoch_=1,size_=0;mutable uint32_t recentKey_=0,recentSlot_=0,recentEpoch_=0;
     uint32_t slot(uint32_t key)const {
+        if(recentEpoch_==epoch_&&recentKey_==key)return recentSlot_;
         uint32_t i=(key*0x9e3779b9u)>>(32-15);
         while(slots_[i].epoch==epoch_&&slots_[i].key!=key)i=(i+1)&(Capacity-1);
-        return i;
+        recentKey_=key;recentSlot_=i;recentEpoch_=epoch_;return i;
     }
 public:
     static_assert(Capacity==32768,"Index hash uses the upper 15 bits");
     static constexpr uint32_t Missing=UINT32_MAX;
-    void clear(){if(!++epoch_){std::fill(slots_.begin(),slots_.end(),Slot{});epoch_=1;}size_=0;}
+    void clear(){recentEpoch_=0;if(!++epoch_){std::fill(slots_.begin(),slots_.end(),Slot{});epoch_=1;}size_=0;}
     uint32_t size()const{return size_;}
     uint32_t find(uint32_t key)const {const auto& s=slots_[slot(key)];return s.epoch==epoch_?s.value:Missing;}
     std::pair<uint32_t,bool> insert(uint32_t key,uint32_t value) {
@@ -208,7 +209,7 @@ template<bool Segmented> inline bool buildImpl(const NorthlightWorldMesh::WorldM
                     if(sourceIndex>=input.vertexCount)return fail("Paged mesh index outside source vertices");
                     if(batchUnique.insert(sourceIndex,0).second) {
                         if(batchUnique.size()>PageVertexLimit){fitsEmpty=false;break;}
-                        if(remap.find(sourceIndex)==IndexMap::Missing)++missing;
+                        if(!next.pages.empty()&&!closeAfter&&remap.find(sourceIndex)==IndexMap::Missing)++missing;
                     }
                 }
             }
@@ -265,7 +266,8 @@ template<bool Segmented> inline bool buildImpl(const NorthlightWorldMesh::WorldM
                 }
                 batch.vertexCount=maxVertex-batch.minVertex+1;++batch.count;
                 if(options.anchorModulus&&page.vertices.size()>=options.minFillVertices) {
-                    const uint64_t anchor=NorthlightMeshPageKey::triangleHash(&vertexAt(ids[0]).position.x,&vertexAt(ids[1]).position.x,&vertexAt(ids[2]).position.x);
+                    const size_t end=page.indices.size();
+                    const uint64_t anchor=NorthlightMeshPageKey::triangleHash(&page.vertices[page.indices[end-3]].position.x,&page.vertices[page.indices[end-2]].position.x,&page.vertices[page.indices[end-1]].position.x);
                     if(anchor%options.anchorModulus==0){if(fitsEmpty)anchored=true;else closeAfter=true;}
                 }
             }

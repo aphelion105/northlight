@@ -63,7 +63,7 @@ class SceneSourceCache {
     }
     uint64_t identity(const std::string& path,const Stamp& current){
         const auto begin=std::chrono::steady_clock::now();
-        observeRevision(path,current);
+        // get() has already reconciled this exact post-decode stamp.
         // Sources are immutable during play. Preserve the verified revision's
         // token across raw payload eviction; changed stamps always get new IDs.
         for(auto i=identities_.begin();i!=identities_.end();++i)if(i->path==path&&i->stamp==current){
@@ -129,9 +129,12 @@ public:
     }
     std::shared_ptr<const WorldScene> get(const std::string& path,std::string& error,const AllocationAdmission& admit={}){
         std::lock_guard<std::recursive_mutex> lock(mutex_);
-        if(auto ready=find(path,error))return ready;
         error.clear();const auto before=stamp(path);
         observeRevision(path,before);
+        for(auto i=entries_.begin();i!=entries_.end();++i)if(i->path==path){
+            if(i->stamp==before){++stats_.hits;auto result=i->scene;entries_.splice(entries_.end(),entries_,i);return result;}
+            entries_.erase(i);++stats_.changed;break;
+        }
         ++stats_.reads;const auto begin=std::chrono::steady_clock::now();
         std::shared_ptr<Held> held;
         try{held=std::make_shared<Held>();}catch(...){error="Cannot allocate immutable FGS2 source";return {};}

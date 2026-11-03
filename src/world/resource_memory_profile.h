@@ -25,7 +25,7 @@ struct Inventory {
     }
     template<class Texture> void texture(Texture* resource,Group group){
         if(!identities.visit(resource))return;
-        for(UINT level=0;level<resource->GetLevelCount();++level){
+        for(UINT level=0,levels=resource->GetLevelCount();level<levels;++level){
             D3DSURFACE_DESC desc={};if(FAILED(resource->GetLevelDesc(level,&desc))){++unknown;continue;}
             const auto size=texelBytes(desc.Format);if(!size){++unknown;continue;}
             add(desc.Pool,group,uint64_t(desc.Width)*desc.Height*size);
@@ -33,7 +33,7 @@ struct Inventory {
     }
     template<class Volume> void volume(Volume* resource,Group group){
         if(!identities.visit(resource))return;
-        for(UINT level=0;level<resource->GetLevelCount();++level){
+        for(UINT level=0,levels=resource->GetLevelCount();level<levels;++level){
             D3DVOLUME_DESC desc={};if(FAILED(resource->GetLevelDesc(level,&desc))){++unknown;continue;}
             const auto size=texelBytes(desc.Format);if(!size){++unknown;continue;}
             add(desc.Pool,group,uint64_t(desc.Width)*desc.Height*desc.Depth*size);
@@ -41,7 +41,7 @@ struct Inventory {
     }
     template<class Cube> void cube(Cube* resource,Group group){
         if(!identities.visit(resource))return;
-        for(UINT level=0;level<resource->GetLevelCount();++level){
+        for(UINT level=0,levels=resource->GetLevelCount();level<levels;++level){
             D3DSURFACE_DESC desc={};if(FAILED(resource->GetLevelDesc(level,&desc))){++unknown;continue;}
             const auto size=texelBytes(desc.Format);if(!size){++unknown;continue;}
             add(desc.Pool,group,6ull*desc.Width*desc.Height*size);

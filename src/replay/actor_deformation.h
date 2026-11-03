@@ -21,7 +21,7 @@ struct Definition {unsigned reg=0;Four value{};};
 // kind, index, relative channel, swizzle, modifier and, for a fixed constant, the
 // definition that overrides it; per operation its operand count and target.
 struct Kernel {
-    struct Src {std::uint8_t kind=0,relative=0,channel=0,modifier=0,swizzle[4]={};std::uint16_t index=0;std::int16_t definition=-1;};
+    struct Src {std::uint8_t kind=0,relative=0,channel=0,modifier=0,swizzle[4]={};bool identity=false,broadcast=false;std::uint16_t index=0;std::int16_t definition=-1;};
     struct Op {unsigned code=0;int operands=0;std::uint8_t target=0,mask=0;bool address=false,saturate=false;Src source[3];};
     // R0 variants accelerate evaluation only; existing envelope/attachment gates stay unchanged.
     enum Evaluator:std::uint8_t {Generic,SingleFirst,SingleIndexFirst,WeightedCommuted,Weighted,WeightedR0,WeightedR0Commuted,
@@ -42,7 +42,7 @@ struct Program {
     Kernel kernel; /* built by slice(); empty for hand-made programs (evaluate) */
 };
 inline void buildKernel(Program& p){
-    using namespace NorthlightShadowShader;Kernel k;k.inputMask=0;bool read[33]={};read[p.positionRegister<33?p.positionRegister:0]=true;
+    using namespace NorthlightShadowShader;Kernel k;k.inputMask=0;bool read[33]={};unsigned written[33]={};k.ops.reserve(p.operations.size());
     for(const auto& o:p.operations){Kernel::Op op;op.code=o.code;op.operands=arithmeticOperands(o.code,p.major)-1;
         if(op.operands<0||op.operands>3)k.inputMask|=0x10000u;
         const unsigned type=regType(o.destination),index=regIndex(o.destination);op.address=type==3;if(!op.address&&index>=33)return;
@@ -50,9 +50,11 @@ inline void buildKernel(Program& p){
         for(unsigned i=0;i<3;++i){const Word t=o.source[i].token;auto& s=op.source[i];s.kind=std::uint8_t(regType(t));s.index=std::uint16_t(regIndex(t));
             s.relative=(t&0x2000)!=0;s.channel=std::uint8_t(p.major>=2?((o.source[i].address>>16)&3):0);s.modifier=std::uint8_t((t>>24)&15);
             for(unsigned j=0;j<4;++j)s.swizzle[j]=std::uint8_t((t>>(16+2*j))&3);
-            if(int(i)<op.operands){if(s.kind>3)return;if(s.kind==1)k.inputMask|=s.index<16?1u<<s.index:0x10000u;if(s.kind==0){if(s.index>=33)return;read[s.index]=true;}
+            s.identity=(t&0x00ff0000u)==0x00e40000u;s.broadcast=s.swizzle[0]==s.swizzle[1]&&s.swizzle[0]==s.swizzle[2]&&s.swizzle[0]==s.swizzle[3];
+            if(int(i)<op.operands){if(s.kind>3)return;if(s.kind==1)k.inputMask|=s.index<16?1u<<s.index:0x10000u;if(s.kind==0){if(s.index>=33)return;if(written[s.index]!=15)read[s.index]=true;}
                 if(s.kind==2&&!s.relative)for(std::size_t d=0;d<p.definitions.size();++d)if(p.definitions[d].reg==s.index)s.definition=std::int16_t(d);}}
-        k.ops.push_back(op);}
+        if(!op.address)written[index]|=op.mask;k.ops.push_back(op);}
+    if(p.positionRegister<33&&written[p.positionRegister]!=15)read[p.positionRegister]=true;
     for(unsigned r=0;r<33;++r)if(read[r])k.cleared.push_back(std::uint8_t(r));
     // The audited four-bone skinning template (NorthlightReplayBounds::SkinEnvelope::supports):
     // c0 = (3,1,..) defined, a0 = round(c0.x*v2), three rows of mul/mad x3 from
@@ -193,7 +195,12 @@ inline bool compile(const Word* words,std::size_t count,Program& output,bool tex
         at+=n+1;
     }return false;
 }
-inline float half(std::uint16_t bits){unsigned sign=bits>>15,exponent=(bits>>10)&31,mantissa=bits&1023;float v=exponent==0?std::ldexp(float(mantissa),-24):exponent==31?(mantissa?std::numeric_limits<float>::quiet_NaN():std::numeric_limits<float>::infinity()):std::ldexp(float(mantissa+1024),int(exponent)-25);return sign?-v:v;}
+inline float half(std::uint16_t bits){
+    const unsigned exponent=(bits>>10)&31,mantissa=bits&1023;
+    if(!exponent){const float v=std::ldexp(float(mantissa),-24);return bits&32768?-v:v;}
+    if(exponent==31){const float v=mantissa?std::numeric_limits<float>::quiet_NaN():std::numeric_limits<float>::infinity();return bits&32768?-v:v;}
+    const std::uint32_t word=(std::uint32_t(bits&32768)<<16)|((exponent+112)<<23)|(mantissa<<13);float result;std::memcpy(&result,&word,4);return result;
+}
 inline bool decodeElement(const std::uint8_t* bytes,unsigned type,Four& v){
     v={0,0,0,1};if(type<=3){std::memcpy(v.data(),bytes,(type+1)*4);return true;}
     if(type==4){v={bytes[2]/255.f,bytes[1]/255.f,bytes[0]/255.f,bytes[3]/255.f};return true;}
@@ -255,7 +262,7 @@ template<bool Commuted=false,bool Deferred=Commuted> inline bool evaluateSkin(co
 NO_FUSED_MULTIPLY_ADD
     const bool onlyControl=p.definitions.size()==1&&p.definitions[0].reg==0;
     auto constant=[&](int index,Four& value){if(index<0||index>=256)return false;std::memcpy(value.data(),constants+4*index,16);if(!onlyControl||index==0)for(auto& d:p.definitions)if(d.reg==unsigned(index))value=d.value;return true;};
-    const Four& v0=inputs[0];const Four& v1=inputs[1];const Four& v2=inputs[2];Four c0,address;constant(0,c0);
+    const Four& v0=inputs[0];const Four& v1=inputs[1];const Four& v2=inputs[2];Four c0,address;if(onlyControl)c0=p.definitions[0].value;else constant(0,c0);
     for(unsigned j=0;j<4;++j){const float value=Commuted?v2[j]*c0[0]:c0[0]*v2[j];if(!std::isfinite(value)||std::fabs(value-std::floor(value)-.5f)<1e-6f)return false;address[j]=std::round(value);}
     auto row=[&](int base,unsigned channel,Four& m){const float a=address[channel];if(!std::isfinite(a)||a<-4096||a>4096)return false;return constant(base+int(a),m);};
     // Generic-derived paths publish after all reads, preserving aliased inputs and failed outputs.
@@ -275,7 +282,8 @@ inline Four singleSkinControl(const Program& p,const float* constants){
 template<bool Prepared=false,bool ByteIndex=false> inline bool evaluateSingleSkin(const Program& p,const Four inputs[16],const float* constants,Four& viewPosition,const Four* control=nullptr){
     NO_FUSED_MULTIPLY_ADD
     static_assert(!ByteIndex||Prepared,"Byte-index path requires a proven draw-local control");
-    auto constant=[&](unsigned index){Four value;std::memcpy(value.data(),constants+4*index,16);for(const auto& d:p.definitions)if(d.reg==index)value=d.value;return value;};
+    const bool onlyControl=p.definitions.size()==1&&p.definitions[0].reg==0;
+    auto constant=[&](unsigned index){if(onlyControl&&index==0)return p.definitions[0].value;Four value;std::memcpy(value.data(),constants+4*index,16);if(!onlyControl)for(const auto& d:p.definitions)if(d.reg==index)value=d.value;return value;};
     const Four c0=Prepared?*control:constant(0);int first;
     // ByteIndex is selected only for a decoded UBYTE4 lane and c0.x == 3:
     // the product is an exact nonnegative integer, so no rounding is needed.
@@ -318,7 +326,10 @@ template<bool Strict=false> inline bool evaluateFast(const Program& p,const Four
             if(s.definition>=0)value=p.definitions[std::size_t(s.definition)].value;
             else{std::memcpy(value.data(),constants+4*index,16);if(s.relative)for(auto& d:p.definitions)if(d.reg==unsigned(index))value=d.value;}}
         const bool absolute=s.modifier==11||s.modifier==12,negate=s.modifier==1||s.modifier==12;
-        for(unsigned j=0;j<4;++j){result[j]=value[s.swizzle[j]];if(absolute)result[j]=std::fabs(result[j]);if(negate)result[j]=-result[j];if constexpr(Strict)if(!std::isfinite(result[j]))return false;}return true;
+        if(s.identity&&!absolute&&!negate)result=value;
+        else if(s.broadcast){float lane=value[s.swizzle[0]];if(absolute)lane=std::fabs(lane);if(negate)lane=-lane;result.fill(lane);}
+        else for(unsigned j=0;j<4;++j){result[j]=value[s.swizzle[j]];if(absolute)result[j]=std::fabs(result[j]);if(negate)result[j]=-result[j];}
+        if constexpr(Strict)for(float lane:result)if(!std::isfinite(lane))return false;return true;
     };
     for(const auto& o:kernel.ops){Four a={},b={},c={},result={};if(!source(o.source[0],a))return false;
         const int n=o.operands;if(n>1&&!source(o.source[1],b))return false;if(n>2&&!source(o.source[2],c))return false;
@@ -354,14 +365,14 @@ template<class Bindings>inline bool clearVertexInputs(const Program& program,con
 }
 struct PreparedBindings {
     std::vector<Binding> bindings;
-    std::vector<Input> inputs;
     std::vector<D3DVERTEXELEMENT9> elements;
     std::array<UINT,4> strides{};
     bool validFor(const Program& p,const NorthlightDrawSnapshot::Mesh& mesh)const {
-        if(mesh.vertexCount>262144||p.inputs.size()!=inputs.size())return false;
-        for(size_t i=0;i<inputs.size();++i)if(p.inputs[i].reg!=inputs[i].reg||p.inputs[i].usage!=inputs[i].usage||p.inputs[i].index!=inputs[i].index)return false;
+        if(mesh.vertexCount>262144||p.inputs.size()!=bindings.size())return false;
+        for(size_t i=0;i<bindings.size();++i){const auto& input=bindings[i].input;if(p.inputs[i].reg!=input.reg||p.inputs[i].usage!=input.usage||p.inputs[i].index!=input.index)return false;}
         for(unsigned i=0;i<4;++i)if(mesh.streams[i].stride!=strides[i])return false;
-        for(const auto& b:bindings){const auto& stream=mesh.streams[b.element.Stream];if(std::uint64_t(mesh.vertexCount)*stream.stride>stream.bytes.size())return false;}
+        unsigned checked=0;
+        for(const auto& b:bindings){const unsigned bit=1u<<b.element.Stream;if(checked&bit)continue;checked|=bit;const auto& stream=mesh.streams[b.element.Stream];if(std::uint64_t(mesh.vertexCount)*stream.stride>stream.bytes.size())return false;}
         return true;
     }
     bool declarationMatches(const D3DVERTEXELEMENT9* declaration,size_t count)const {
@@ -371,7 +382,7 @@ struct PreparedBindings {
 };
 inline bool prepareBindings(const Program& program,const NorthlightDrawSnapshot::Mesh& mesh,const D3DVERTEXELEMENT9* elements,size_t count,PreparedBindings& out){
     if(!elements||!count||count>MAXD3DDECLLENGTH+1||mesh.vertexCount>262144)return false;
-    PreparedBindings prepared;prepared.inputs=program.inputs;prepared.elements.assign(elements,elements+count);for(unsigned i=0;i<4;++i)prepared.strides[i]=mesh.streams[i].stride;
+    PreparedBindings prepared;prepared.bindings.reserve(program.inputs.size());prepared.elements.assign(elements,elements+count);for(unsigned i=0;i<4;++i)prepared.strides[i]=mesh.streams[i].stride;
     for(auto input:program.inputs){if(input.reg>=16)return false;bool found=false;for(size_t j=0;j<count;++j){auto e=elements[j];if(e.Stream==0xff)break;if(e.Usage!=input.usage||e.UsageIndex!=input.index)continue;
         if(found||e.Stream>=4||e.Method!=D3DDECLMETHOD_DEFAULT)return false;const auto& stream=mesh.streams[e.Stream];const unsigned size=NorthlightDrawSnapshot::declarationBytes(e.Type);
         if(!size||UINT(e.Offset)+size>stream.stride||std::uint64_t(mesh.vertexCount)*stream.stride>stream.bytes.size())return false;

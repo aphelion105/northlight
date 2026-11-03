@@ -86,9 +86,11 @@ public:
             const double radius=double(maxDistance)+l.attenuationEnd;
             const double dx=l.position[0]-camera[0];
             if(std::fabs(dx)>radius)continue;
+            const double dy=l.position[1]-camera[1],dz=l.position[2]-camera[2];
+            if(std::fabs(dy)>radius||std::fabs(dz)>radius)continue;
             double d2=0;
             d2+=dx*dx;
-            for(int i=1;i<3;++i){double d=l.position[i]-camera[i];d2+=d*d;}
+            d2+=dy*dy;d2+=dz*dz;
             if(d2<=radius*radius)output.push_back(l);
         }
         // Source IDs retain deterministic order when camera moves; do not churn

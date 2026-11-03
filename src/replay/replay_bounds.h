@@ -110,8 +110,10 @@ inline bool evaluate(const NorthlightActorDeformation::Program& p,const Northlig
 }
 // Same interval arithmetic as the audited single-bone MUL/MOVA/DP4 program,
 // without decoding its six instructions for each warm bounds group.
-inline bool singleSkinIntervals(const NorthlightActorDeformation::Program& p,const Vector inputs[16],const float* constants,Vector& position){
-    if(!p.kernel.valid||p.kernel.ops.size()!=p.operations.size()||!p.kernel.singleSkin()||constants[0]!=3||constants[1]!=1)return false;
+inline bool singleSkinIntervals(const NorthlightActorDeformation::Program& p,const Vector inputs[16],const float* constants,Vector& position,bool definitionsApplied=true){
+    if(!p.kernel.valid||p.kernel.ops.size()!=p.operations.size()||!p.kernel.singleSkin())return false;
+    const auto control=definitionsApplied?NorthlightActorDeformation::Four{constants[0],constants[1],constants[2],constants[3]}:NorthlightActorDeformation::singleSkinControl(p,constants);
+    if(control[0]!=3||control[1]!=1)return false;
     const auto index=inputs[1][0];
     if(index.error!=0||!std::isfinite(index.value)||index.value<0||index.value>74||std::floor(index.value)!=index.value)return false;
     const auto ordinary=[](float x){return std::isfinite(x)&&(x==0||std::fabs(x)>=std::numeric_limits<float>::min());};

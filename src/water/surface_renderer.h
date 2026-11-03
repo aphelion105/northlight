@@ -35,7 +35,7 @@ class NorthlightSurfaceRenderer {
         UINT w=index==2?kNoiseWidth:index?kSnowWidth:kFrostWidth,h=index==2?kNoiseHeight:index?kSnowHeight:kFrostHeight;
         const unsigned char* bytes=index==2?kNoiseTexels:index?kSnowTexels:kFrostTexels;
         HRESULT hr=d->CreateTexture(w,h,0,0,D3DFMT_L8,D3DPOOL_MANAGED,&art[index],nullptr);
-        if(SUCCEEDED(hr))for(UINT level=0;level<art[index]->GetLevelCount();++level){
+        if(SUCCEEDED(hr))for(UINT level=0,levels=art[index]->GetLevelCount();level<levels;++level){
             D3DLOCKED_RECT lock{};hr=art[index]->LockRect(level,&lock,nullptr,0);if(FAILED(hr))break;
             for(UINT y=0;y<h;++y)std::memcpy(static_cast<char*>(lock.pBits)+y*lock.Pitch,bytes+y*w,w);
             hr=art[index]->UnlockRect(level);if(FAILED(hr))break;

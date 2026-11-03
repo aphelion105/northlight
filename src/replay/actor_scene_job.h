@@ -91,6 +91,8 @@ struct ActorJob {
             if(vertexCount>scene->vertices.capacity())scene->vertices.reserve(std::min<size_t>(16384,std::max(vertexCount,scene->vertices.capacity()*2)));
             scene->vertices.resize(vertexCount);
             for(unsigned j=0;j<positions.size();++j){auto& p=positions[j];auto& v=scene->vertices[offset+j];v.position=Vec3(p.x,p.y,p.z);if(exactUV){v.u=uvs[j][0];v.v=uvs[j][1];}}
+            const size_t triangleCount=scene->triangles.size()+triangles.size();
+            if(triangleCount>scene->triangles.capacity())scene->triangles.reserve(std::max(triangleCount,scene->triangles.capacity()*2));
             for(auto t:triangles){t.v0+=offset;t.v1+=offset;t.v2+=offset;t.material=material;
                 auto& a=scene->vertices[t.v0];auto& b=scene->vertices[t.v1];auto& c=scene->vertices[t.v2];Vec3 normal=cross(b.position-a.position,c.position-a.position);
                 a.normal=a.normal+normal;b.normal=b.normal+normal;c.normal=c.normal+normal;scene->triangles.push_back(t);}

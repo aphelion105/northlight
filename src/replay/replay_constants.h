@@ -26,15 +26,17 @@ template<std::size_t Bytes> inline bool equalRegister(const void* a,const void* 
 }
 // Both float4 spans are already captured and valid. Chunk the long equal
 // palette tails, while differing end registers avoid an unnecessary bulk scan.
-__attribute__((noinline)) inline DirtySpan knownFloatSpan(const float* a,const float* b,unsigned count)noexcept{
-    if(!count||!std::memcmp(a,b,size_t(count)*16))return {};
+__attribute__((always_inline)) inline DirtySpan knownFloatSpan(const float* a,const float* b,unsigned count)noexcept{
+    if(!count)return {};
+    const bool head=equalRegister<16>(a,b),tail=equalRegister<16>(a+(count-1)*4,b+(count-1)*4);
+    if(head&&tail&&!std::memcmp(a,b,size_t(count)*16))return {};
     unsigned first=0,last=count;constexpr unsigned Chunk=16;
-    if(equalRegister<16>(a,b)){
+    if(head){
         ++first;
         while(last-first>=Chunk&&!std::memcmp(a+first*4,b+first*4,Chunk*16))first+=Chunk;
         while(first<last&&equalRegister<16>(a+first*4,b+first*4))++first;
     }
-    if(equalRegister<16>(a+(last-1)*4,b+(last-1)*4)){
+    if(tail){
         --last;
         while(last-first>=Chunk&&!std::memcmp(a+(last-Chunk)*4,b+(last-Chunk)*4,Chunk*16))last-=Chunk;
         while(last>first&&equalRegister<16>(a+(last-1)*4,b+(last-1)*4))--last;
@@ -65,6 +67,11 @@ public:
         if(!valid_){
             std::memcpy(values_.data(),desired,BankBytes);valid_=true;
             return {0,static_cast<uint32_t>(Count)};
+        }
+        if constexpr(std::is_same_v<T,float>&&Width==4){
+            const auto dirty=Detail::knownFloatSpan(values_.data(),desired,unsigned(Count));
+            if(dirty.count)std::memcpy(values_.data()+dirty.first*Width,desired+dirty.first*Width,dirty.count*RegisterBytes);
+            return dirty;
         }
 #if defined(__SSE2__)
         if constexpr(RegisterBytes!=16)

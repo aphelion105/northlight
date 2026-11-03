@@ -1,4 +1,5 @@
 #pragma once
+#include <algorithm>
 #include <array>
 #include <cstdint>
 
@@ -28,7 +29,8 @@ class Cache {
         if(FAILED(object->GetDeclaration(decoded.data(),&n))||!n||n>decoded.size()||decoded[n-1].Stream!=0xff)return nullptr;
         if(used_<entries_.size())slot=&entries_[used_++];
         object->AddRef();if(slot->object)slot->object->Release();
-        *slot=Entry{};slot->object=object;slot->elements=decoded;slot->count=n;slot->touched=++clock_;recent_=slot;return slot;
+        slot->object=object;std::copy_n(decoded.begin(),n,slot->elements.begin());slot->count=n;slot->touched=++clock_;
+        slot->captureExtent={};slot->captureChecked=slot->captureValid=false;recent_=slot;return slot;
     }
 public:
     Cache()=default;

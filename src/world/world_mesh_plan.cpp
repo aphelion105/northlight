@@ -99,19 +99,23 @@ template<class Scene> static bool buildCore(const Scene& scene,WorldMeshUploadPl
     try{
         auto records=std::make_shared<NorthlightLocalShadowSignature::Records>();
         std::unordered_map<ContentCell,uint32_t,CellHash> cells;
-        cells.reserve(4096);
+        cells.reserve(std::min<size_t>(triangleCount,4096));
         ContentCell previousCell;uint32_t previousRecord=0;bool previousValid=false;
         std::vector<NorthlightLocalShadowSignature::Digest> materialIdentities;
-        if(!allowed(scene.materials.size()*sizeof(NorthlightLocalShadowSignature::Digest)))return false;
-        materialIdentities.reserve(scene.materials.size());
-        for(size_t i=0;i<scene.materials.size();++i)materialIdentities.push_back(preparedIdentities?(*preparedIdentities)[i]:materialIdentity(scene.materials[i],texel(i)));
+        const auto* identities=preparedIdentities;
+        if(!identities){
+            if(!allowed(scene.materials.size()*sizeof(NorthlightLocalShadowSignature::Digest)))return false;
+            materialIdentities.reserve(scene.materials.size());
+            for(size_t i=0;i<scene.materials.size();++i)materialIdentities.push_back(materialIdentity(scene.materials[i],texel(i)));
+            identities=&materialIdentities;
+        }
         // Group counts first, then prefix allocation and stable linear scatter.
         // This avoids one temporary vector/allocation chain for every batch and
         // moves all sorting/packing away from the game's render thread.
         auto keys=[&](){if constexpr(std::is_same_v<Scene,NorthlightGI::WorldScene>)return std::vector<uint32_t>{};else return ChunkedBuffer<uint32_t>{&admit,scene.vertices.spooled()};}();
         if constexpr(std::is_same_v<Scene,NorthlightGI::WorldScene>){if(!allowed(triangleCount*sizeof(uint32_t)))return false;keys.reserve(triangleCount);}
         std::unordered_map<uint64_t,Group> counts;
-        counts.reserve(std::min<size_t>(scene.materials.size()+512,16384));
+        counts.reserve(std::min({scene.materials.size()+512,size_t(16384),triangleCount}));
         uint64_t previousKey=0;Group* previousCount=nullptr;
         for(size_t triangle=first;triangle<first+triangleCount;++triangle){const auto& t=scene.triangles[triangle];
             if(t.v0>=scene.vertices.size()||t.v1>=scene.vertices.size()||t.v2>=scene.vertices.size()||t.material>=scene.materials.size()){
@@ -176,7 +180,7 @@ template<class Scene> static bool buildCore(const Scene& scene,WorldMeshUploadPl
                     }
                 }else {record=&(*records)[found->second];previousCell=cell;previousRecord=found->second;previousValid=true;}
             }
-            NorthlightLocalShadowSignature::Hasher content(materialIdentities[t.material]);
+            NorthlightLocalShadowSignature::Hasher content((*identities)[t.material]);
             for(uint32_t vertex:{t.v0,t.v1,t.v2}){
                 const auto& v=scene.vertices[vertex];const auto p=v.position;
                 batch.boundsLow.x=std::min(batch.boundsLow.x,p.x);batch.boundsHigh.x=std::max(batch.boundsHigh.x,p.x);

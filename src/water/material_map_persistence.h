@@ -50,10 +50,9 @@ public:
     }
     ~NorthlightMaterialMapPersistence(){reset();}
     void reset(){reads.clear();saves.clear();captured=false;}
-    Probe probe(IDirect3DTexture9* source,const D3DSURFACE_DESC& desc,bool model,unsigned polarity,unsigned details,unsigned balance){
+    Probe probe(IDirect3DTexture9* source,const D3DSURFACE_DESC& desc,bool model,unsigned polarity,unsigned details,unsigned balance,std::uint64_t revision){
         if(!store.available()||(desc.Usage&(D3DUSAGE_DYNAMIC|D3DUSAGE_RENDERTARGET|D3DUSAGE_DEPTHSTENCIL))||desc.Pool!=D3DPOOL_MANAGED)return {};
         if(model){polarity=polarity==2?2u:0u;details=0;balance=50;} // Only the model height sign affects its generator.
-        const auto revision=NorthlightMaterialHeight::version(source);
         reads.erase(std::remove_if(reads.begin(),reads.end(),[&](const auto& r){return r->source==source&&r->revision!=revision;}),reads.end());
         for(auto& r:reads)if(r->source==source&&r->model==model&&r->polarity==polarity&&r->details==details&&r->balance==balance){
             r->used=frame;const auto state=r->ticket->state.load(std::memory_order_acquire);
@@ -71,7 +70,7 @@ public:
         catch(...){surface->UnlockRect();drop(surface);return {};}
         const auto unlocked=surface->UnlockRect();drop(surface);if(!valid||FAILED(unlocked))return {};
         auto record=std::make_unique<Read>();record->source=source;source->AddRef();record->revision=revision;record->used=frame;record->model=model;record->polarity=polarity;record->details=details;record->balance=balance;
-        NorthlightMaterialHeight::Image image;if(!model)NorthlightMaterialHeight::read(source,image);record->profile=NorthlightMaterialHeight::profile(image,polarity,details,balance);
+        record->profile=model?NorthlightMaterialHeight::profile({},polarity,details,balance):NorthlightMaterialHeight::textureProfile(source,polarity,details,balance);
         Bytes identity=environment;append(identity,desc.Width);append(identity,desc.Height);append(identity,desc.Format);append(identity,model);append(identity,record->profile);
         record->ticket=store.request(std::move(identity),std::move(bytes),std::min(desc.Width,512u),std::min(desc.Height,512u));
         if(!record->ticket)return {Status::Pending,{},{}};

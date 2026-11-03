@@ -10,7 +10,7 @@
 // Source references prevent pointer reuse; they are not duplicate GPU copies.
 class NorthlightAutoNormalCache {
     friend struct MaterialDiskGpuTestAccess;
-    struct Entry {IDirect3DTexture9* source;IDirect3DTexture9* normal;std::uint64_t bytes,sourceBytes,used,version;unsigned frame,lastUsedFrame;bool mutableSource,model;};
+    struct Entry {IDirect3DTexture9* source;IDirect3DTexture9* normal;std::uint64_t bytes,sourceBytes,used,version;unsigned frame,lastUsedFrame;bool mutableSource,model;UINT width,height;};
     IDirect3DDevice9* d;
     NorthlightMaterialProfile* profile=nullptr;
     std::unique_ptr<NorthlightMaterialMapPersistence> disk;
@@ -29,10 +29,11 @@ class NorthlightAutoNormalCache {
         if(index+1<entries.size()){e=entries.back();lookup[e.model].find(e.source)->second=index;}
         entries.pop_back();recent=entries.size();
     }
-    bool reusable(IDirect3DTexture9* normal,UINT width,UINT height){
+    bool reusable(const Entry& entry,UINT width,UINT height){
+        if(entry.width!=width||entry.height!=height)return false;
+        auto* normal=entry.normal;
         // A fixed lease table avoids allocation on hits; overflow disables recycling.
         if(leaseOverflow)return false;for(auto* texture:leased)if(texture==normal)return false;
-        D3DSURFACE_DESC desc{};if(FAILED(normal->GetLevelDesc(0,&desc))||desc.Width!=width||desc.Height!=height)return false;
         // A caller may have bound a borrowed map without taking a lease.
         for(DWORD stage=0;stage<21;++stage){IDirect3DBaseTexture9* bound=nullptr;
             const HRESULT hr=d->GetTexture(stage<16?stage:stage==20?D3DDMAPSAMPLER:D3DVERTEXTEXTURESAMPLER0+stage-16,&bound);
@@ -101,10 +102,16 @@ public:
         D3DSURFACE_DESC desc{};if(FAILED(source->GetLevelDesc(0,&desc))||!desc.Width||!desc.Height||(desc.Usage&D3DUSAGE_DEPTHSTENCIL))return nullptr;
         const UINT width=std::min(desc.Width,512u),height=std::min(desc.Height,512u);
         timing.work(uint64_t(width)*height);
-        const std::uint64_t cost=NorthlightAutoNormalMemory::mipBytes(D3DFMT_A8R8G8B8,width,height,0),sourceCost=NorthlightAutoNormalMemory::mipBytes(desc.Format,desc.Width,desc.Height,source->GetLevelCount());
+        const UINT sourceLevels=source->GetLevelCount();
+        const std::uint64_t cost=NorthlightAutoNormalMemory::mipBytes(D3DFMT_A8R8G8B8,width,height,0),sourceCost=NorthlightAutoNormalMemory::mipBytes(desc.Format,desc.Width,desc.Height,sourceLevels);
         constexpr std::uint64_t sourceBudget=128ull<<20;if(cost>budget||sourceCost>sourceBudget)return nullptr;
+        // Do not snapshot/hash a disk source that the visible working set cannot admit.
+        if(!entries.empty()&&(bytes+cost>budget||sourceBytes+sourceCost>sourceBudget||entries.size()>=256)){
+            const auto oldest=std::min_element(entries.begin(),entries.end(),[](const Entry& a,const Entry& b){return a.used<b.used;});
+            if(frame-oldest->lastUsedFrame<=1)return nullptr;
+        }
         NorthlightMaterialMapPersistence::Probe persisted;
-        if(disk){try{persisted=disk->probe(source,desc,model,polarity,details,balance);}catch(...){}}
+        if(disk){try{persisted=disk->probe(source,desc,model,polarity,details,balance,revision);}catch(...){}}
         if(persisted.status==NorthlightMaterialMapPersistence::Status::Pending)return nullptr;
         struct Recycled {IDirect3DTexture9* texture=nullptr;~Recycled(){drop(texture);}} recycled;
         while(!entries.empty()&&(bytes+cost>budget||sourceBytes+sourceCost>sourceBudget||entries.size()>=256)){
@@ -113,16 +120,19 @@ public:
             // New maps wait until an LRU entry was unused for a complete frame.
             if(frame-oldest->lastUsedFrame<=1)return nullptr;
             // Reuse only an evicted, unbound map that no pending draw borrows.
-            if(!recycled.texture&&reusable(oldest->normal,width,height)){recycled.texture=oldest->normal;oldest->normal=nullptr;}
+            if(!recycled.texture&&reusable(*oldest,width,height)){recycled.texture=oldest->normal;oldest->normal=nullptr;}
             erase(size_t(oldest-entries.begin()));++evictions;
         }
         // Native D3D9's fixed-function draw can clear programmable VS constants
         // beyond those restored by an ALL state block. Preserve the bank on builds.
-        struct VertexConstants {IDirect3DDevice9* device;float values[256*4]={};UINT count=0;~VertexConstants(){if(count)device->SetVertexShaderConstantF(0,values,count);}} vertex{d};
-        if(!vertexConstantCapacity){D3DCAPS9 caps{};if(FAILED(d->GetDeviceCaps(&caps)))return nullptr;vertexConstantCapacity=std::min<UINT>(caps.MaxVertexShaderConst,256u);}
-        const UINT count=vertexConstantCapacity;if(!count||FAILED(d->GetVertexShaderConstantF(0,vertex.values,count)))return nullptr;vertex.count=count;
-        SavedState saved(d,&states);if(!saved.ok)return nullptr;
+        // UpdateSurface and mip generation do not change device bindings/constants.
         const bool restored=persisted.status==NorthlightMaterialMapPersistence::Status::Hit;
+        struct VertexConstants {IDirect3DDevice9* device;float values[256*4]={};UINT count=0;~VertexConstants(){if(count)device->SetVertexShaderConstantF(0,values,count);}} vertex{d};
+        if(!restored){
+            if(!vertexConstantCapacity){D3DCAPS9 caps{};if(FAILED(d->GetDeviceCaps(&caps)))return nullptr;vertexConstantCapacity=std::min<UINT>(caps.MaxVertexShaderConst,256u);}
+            const UINT count=vertexConstantCapacity;if(!count||FAILED(d->GetVertexShaderConstantF(0,vertex.values,count)))return nullptr;vertex.count=count;
+        }
+        SavedState saved(restored?nullptr:d,&states);if(!restored&&!saved.ok)return nullptr;
         auto*& selected=model?modelShader:shader;if(!restored&&!selected&&FAILED(d->CreatePixelShader(model?kAutoNormalModelShader:kAutoNormalShader,&selected)))return nullptr;
         IDirect3DTexture9* normal=recycled.texture;recycled.texture=nullptr;IDirect3DSurface9* target=nullptr;
         if(normal)++reuses;
@@ -149,7 +159,7 @@ public:
         }
         {P::Scope mips(profile,P::Mips,0,true);normal->SetAutoGenFilterType(D3DTEXF_LINEAR);normal->GenerateMipSubLevels();}
         if(disk&&!restored)try{disk->capture(persisted,normal,width,height);}catch(...){}
-        source->AddRef();try{entries.push_back({source,normal,cost,sourceCost,clock,revision,frame,frame,(desc.Usage&(D3DUSAGE_DYNAMIC|D3DUSAGE_RENDERTARGET))!=0||(desc.Pool==D3DPOOL_DEFAULT&&source->GetLevelCount()==1),model});
+        source->AddRef();try{entries.push_back({source,normal,cost,sourceCost,clock,revision,frame,frame,(desc.Usage&(D3DUSAGE_DYNAMIC|D3DUSAGE_RENDERTARGET))!=0||(desc.Pool==D3DPOOL_DEFAULT&&sourceLevels==1),model,width,height});
             try{lookup[model].emplace(source,entries.size()-1);}catch(...){entries.pop_back();throw;}
         }catch(...){source->Release();drop(normal);return nullptr;}recent=entries.size()-1;bytes+=cost;sourceBytes+=sourceCost;++generated;if(!restored)++builds;return normal;
     }

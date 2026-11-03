@@ -36,7 +36,7 @@ struct TexelView {
     const uint8_t* data()const{return pointer;}size_t size()const{return count;}bool empty()const{return !count;}
     const uint8_t* begin()const{return pointer;}const uint8_t* end()const{return count?pointer+count:pointer;}
     const uint8_t& operator[](size_t i)const{return pointer[i];}
-    bool operator==(TexelView other)const{return count==other.count&&(!count||!std::memcmp(pointer,other.pointer,count));}
+    bool operator==(TexelView other)const{return count==other.count&&(!count||pointer==other.pointer||!std::memcmp(pointer,other.pointer,count));}
     bool operator!=(TexelView other)const{return !(*this==other);}
 };
 struct WorldMaterial {

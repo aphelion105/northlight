@@ -20,6 +20,12 @@ int main(){
     assert(mipBytes(D3DFMT_A8R8G8B8,3,5,0)==72);
     assert(mipBytes(D3DFMT_A8R8G8B8,0,1,0)==0);
     assert(mipBytes(D3DFMT_A32B32G32R32F,2,2,1)==64);
+    for(unsigned width=1;width<=16384;width*=2)for(unsigned levels=0;levels<=16;++levels){
+        uint64_t expected=0;unsigned edge=width,level=0;
+        do{expected+=uint64_t(edge)*edge*4;if((levels&&++level>=levels)||edge==1)break;edge/=2;}while(true);
+        assert(mipBytes(D3DFMT_A8R8G8B8,width,width,levels)==expected);
+        assert(mipBytes(D3DFMT_A8,width,width,levels)==expected/4);
+    }
     const auto dxt1=mipBytes(D3DFMT_DXT1,512,512,0)+mipBytes(D3DFMT_A8R8G8B8,512,512,0);
     const auto dxt5=mipBytes(D3DFMT_DXT5,512,512,0)+mipBytes(D3DFMT_A8R8G8B8,512,512,0);
     assert((32u<<20)/dxt1==21&&(32u<<20)/dxt5==19);
