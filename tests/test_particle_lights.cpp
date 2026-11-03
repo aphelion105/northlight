@@ -74,6 +74,38 @@ int main(){
      assert(ordered.output[0].sourceId==80);for(unsigned i=1;i<lamps.size();++i)assert(ordered.output[i].sourceId==72+i);
     }
 
+    // Exercise the renderer's entire publication path. Native sources after
+    // index eight must reach Selection, without enlarging the particle budget.
+    {NorthlightEquipmentLights::Tracker nativePool;NorthlightLocalLightSelection::Tracker selected;Frame combined;
+     NorthlightEquipmentLights::Native source{};source.color[0]=.97254908f;source.color[1]=.92941183f;source.color[2]=.627451f;
+     source.attenuation[1]=.7f;source.attenuation[2]=.03f;
+     for(unsigned i=0;i<32;++i){source.position[0]=2.f*(i%8);source.position[1]=2.f*(i/8);source.position[2]=4;nativePool.observe(source,1000,{},camera);}
+     nativePool.publish(1000);nativePool.publish(1100);assert(nativePool.outputCount==32);
+     const auto lateId=nativePool.output[31].sourceId;
+     for(unsigned i=0;i<16;++i){Sample s{{-8.f,2.f*float(i),4},{.1f,.2f,.7f}};combined.observe(s,camera);}
+     combined.publish(nativePool.output.data(),nativePool.outputCount,{},camera,selected);
+     assert(combined.outputCount==40&&combined.immediateCount==ParticleCapacity);
+     auto all=selected.update({},camera,NorthlightLocalLightSelection::Capacity,.016f,false,nullptr,combined.output.data(),combined.outputCount,combined.immediate.data(),combined.immediateCount);
+     assert(all.count==40);bool lateLit=false;
+     for(unsigned i=0;i<all.count;++i)if(all.sources[i].sourceId==lateId){lateLit=true;assert(all.color[i][0]>0&&all.color[i][1]>0&&all.color[i][2]>0);}
+     assert(lateLit);
+     for(unsigned limit:{1u,8u,16u,32u}){NorthlightLocalLightSelection::Tracker capped;
+         assert(capped.update({},camera,limit,.016f,false,nullptr,combined.output.data(),combined.outputCount).count<=limit);}
+     // Native duplicate suppression also covers entries beyond the old cap.
+     combined.reset();Sample same{};std::copy_n(nativePool.output[31].position,3,same.position);std::copy_n(source.color,3,same.rgb);
+     combined.observe(same,camera);combined.publish(nativePool.output.data(),nativePool.outputCount,{},camera,selected);
+     assert(combined.outputCount==32&&combined.immediateCount==1);
+     for(unsigned i=0;i<combined.outputCount;++i)assert(combined.output[i].sourceId!=lateId);
+     for(unsigned i=0;i<selected.count;++i)assert(selected.entries[i].id!=lateId);
+     // A full native pool shares the global publication cap, while ordinary
+     // particles and flashes retain their independent eight/two limits.
+     combined.reset();std::array<Light,NativeCapacity> lamps{};
+     for(unsigned i=0;i<lamps.size();++i){lamps[i]=nativePool.output[i%32];lamps[i].sourceId=0xfec0000000010000ull+i;lamps[i].position[0]+=40;}
+     for(unsigned i=0;i<16;++i){Sample s{{-8.f,2.f*float(i),4},{.1f,.2f,.7f}};combined.observe(s,camera);}
+     combined.publish(lamps.data(),unsigned(lamps.size()),{},camera,selected);
+     assert(combined.outputCount==NorthlightLocalLightSelection::Capacity&&combined.immediateCount==ParticleCapacity);
+    }
+
     NorthlightParticleUploads::Cache uploads;int key=0;unsigned in[4]={1,2,3,4},out[4]={};
     uploads.write(&key,1,16,in,sizeof in,false);assert(uploads.read(&key,16,sizeof out,out)&&out[3]==4);
     uploads.invalidate(&key,20,4);assert(!uploads.read(&key,16,4,out));

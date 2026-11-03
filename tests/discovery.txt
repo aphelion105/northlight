@@ -188,6 +188,7 @@ test_local_fog_zero.py
 test_local_ini.py
 test_local_light_batches.py
 test_local_light_cache_query.py
+test_local_light_camera_gpu.py
 test_local_light_selection.py
 test_local_light_trace.py
 test_local_overlap_gpu.py

@@ -3313,12 +3313,19 @@ public:
         const auto it=equipmentShaders.find(shader);if(it==equipmentShaders.end()||!it->second)return;
         if(equipmentMap!=active->map){equipmentLights.reset();equipmentMap=active->map;}
         const bool actor=isSkinnedShader(shader);
-        if(!equipmentCapture.take(actor,equipmentLights.banks,equipmentLights.backgroundBanks))return;
-        NorthlightDrawSnapshot::Ref<IDirect3DSurface9> ds;if(!mainDepth||FAILED(d->GetDepthStencilSurface(ds.out()))||ds.p!=mainDepth){++equipmentCapture.domainRejected;return;}
+        const auto* mirror=constantEpochSource.mirror;
+        const bool cached=NorthlightEquipmentLights::cachedBank(mirror);
+        if(!equipmentCapture.take(actor,cached))return;
+        NorthlightDrawSnapshot::Ref<IDirect3DSurface9> ds;
+        if(!mainDepth||(cached?mirror->depth!=mainDepth:FAILED(d->GetDepthStencilSurface(ds.out()))||ds.p!=mainDepth)){++equipmentCapture.domainRejected;return;}
         // The proven constants are view-space: require the current main-world
         // projection before using this frame's inverse view (portraits excluded).
-        float q[16];if(FAILED(d->GetVertexShaderConstantF(2,q,4))){++equipmentCapture.domainRejected;return;}for(float v:q)if(!std::isfinite(v)){++equipmentCapture.domainRejected;return;}if(std::fabs(q[0]-projection[0])>.005f||std::fabs(q[5]-projection[1])>.005f||std::fabs(q[14]-projection[2])>.005f||std::fabs(q[15])>.001f){++equipmentCapture.domainRejected;return;}
-        float bank[44];if(FAILED(d->GetVertexShaderConstantF(17,bank,11))||!equipmentLights.admit(bank,it->second,actor))return;
+        float readProjection[16],readBank[44];const float* q=cached?mirror->vsFloat[2]:readProjection;
+        if(!cached&&FAILED(d->GetVertexShaderConstantF(2,readProjection,4))){++equipmentCapture.domainRejected;return;}
+        for(unsigned i=0;i<16;++i)if(!std::isfinite(q[i])){++equipmentCapture.domainRejected;return;}
+        if(std::fabs(q[0]-projection[0])>.005f||std::fabs(q[5]-projection[1])>.005f||std::fabs(q[14]-projection[2])>.005f||std::fabs(q[15])>.001f){++equipmentCapture.domainRejected;return;}
+        const float* bank=cached?mirror->vsFloat[17]:readBank;
+        if((!cached&&FAILED(d->GetVertexShaderConstantF(17,readBank,11)))||!equipmentLights.admit(bank,it->second,actor))return;
         const auto now=GetTickCount();
         for(unsigned i=0;i<it->second;++i){NorthlightEquipmentLights::Native n;if(NorthlightEquipmentLights::decode(bank,i,context.inverseView,context.camera,n)){++equipmentCapture.decoded;equipmentLights.observe(n,now,active->localLights,context.camera);}else ++equipmentCapture.rejected;}
     }
@@ -5246,7 +5253,7 @@ public:
             for(unsigned i=0;i<particleLights.outputCount;++i){const auto& light=particleLights.output[i];
                 if(std::find(particleLights.immediate.begin(),particleLights.immediate.begin()+particleLights.immediateCount,light.sourceId)==particleLights.immediate.begin()+particleLights.immediateCount)continue;
                 logf("PARTICLELIGHT source id=%llu position=(%.3f %.3f %.3f) rgb=(%.4f %.4f %.4f) range=%.2f cameraYards=%.2f",static_cast<unsigned long long>(light.sourceId),light.position[0],light.position[1],light.position[2],light.diffuse[0],light.diffuse[1],light.diffuse[2],light.attenuationEnd,std::sqrt(NorthlightEquipmentLights::distance2(light.position,context.camera)));}
-            logf("EQUIPMENT lights nativePoint=1 attempts=%u banks=%u observed=%u duplicateStatic=%u dropped=%u active=%u output=%u maxLights=8 maxBanks=16 ttlMs=250 falloff=bounded-linear-approx candidates=%u actorCandidates=%u actorReads=%u backgroundReads=%u backgroundBanks=%u duplicateBanks=%u readLimited=%u bankLimited=%u domainRejected=%u decoded=%u rejected=%u",equipmentCapture.reads,equipmentLights.banks,equipmentLights.observed,equipmentLights.duplicates,equipmentLights.dropped,equipmentLights.count,equipmentLights.outputCount,equipmentCapture.candidates,equipmentCapture.actorCandidates,equipmentCapture.actorReads,equipmentCapture.backgroundReads,equipmentLights.backgroundBanks,equipmentLights.bankDuplicates,equipmentCapture.readLimited,equipmentCapture.bankLimited,equipmentCapture.domainRejected,equipmentCapture.decoded,equipmentCapture.rejected);
+            logf("EQUIPMENT lights nativePoint=1 attempts=%u banks=%u observed=%u duplicateStatic=%u dropped=%u active=%u output=%u maxLights=%u memoBanks=%u ttlMs=250 falloff=bounded-linear-approx candidates=%u actorCandidates=%u actorReads=%u backgroundReads=%u backgroundBanks=%u duplicateBanks=%u readLimited=%u cachedBanks=%u domainRejected=%u decoded=%u rejected=%u",equipmentCapture.reads,equipmentLights.banks,equipmentLights.observed,equipmentLights.duplicates,equipmentLights.dropped,equipmentLights.count,equipmentLights.outputCount,NorthlightEquipmentLights::Capacity,NorthlightEquipmentLights::MemoBanks,equipmentCapture.candidates,equipmentCapture.actorCandidates,equipmentCapture.actorReads,equipmentCapture.backgroundReads,equipmentLights.backgroundBanks,equipmentLights.bankDuplicates,equipmentCapture.readLimited,equipmentCapture.cached,equipmentCapture.domainRejected,equipmentCapture.decoded,equipmentCapture.rejected);
             for(unsigned i=0;i<equipmentLights.count;++i){const auto& entry=equipmentLights.entries[i];if(entry.gain<=.0001f)continue;
                 const auto light=NorthlightEquipmentLights::light(entry.source,entry.id,entry.gain);
                 const float selfDistance=actorShadowHistory.selfHold()>0?std::sqrt(NorthlightEquipmentLights::distance2(light.position,actorShadowHistory.selfAt())):-1.f;

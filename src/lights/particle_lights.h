@@ -9,7 +9,9 @@
 // selection fade is allowed to keep a retired particle source alive.
 namespace NorthlightParticleLights {
 using Light=NorthlightLocalLights::Light;
-inline constexpr unsigned Capacity=8,Clusters=32,DrawLimit=32,TrianglesPerDraw=16,Tracks=16;
+inline constexpr unsigned ParticleCapacity=8,NativeCapacity=NorthlightEquipmentLights::Capacity,Capacity=NorthlightLocalLightSelection::Capacity;
+inline constexpr unsigned Clusters=32,DrawLimit=32,TrianglesPerDraw=16,Tracks=16;
+static_assert(Tracks+NativeCapacity<=256,"candidate indices fit in one byte");
 // Draws placed per frame (one triangle each). Only a placed draw within MaxDistance
 // takes one of the DrawLimit sampling slots: distant particle systems drawn first
 // (city torches, fountains) used to fill the slots and leave the player's weapon dark.
@@ -65,13 +67,13 @@ inline void add(Cluster& cluster,const Sample& sample){
 class Frame {
     std::array<Cluster,Clusters> current_{};unsigned count_=0;
     std::array<Sample,8> sky_{};unsigned skyCount_=0;
-    std::array<std::uint64_t,Capacity> previous_{};unsigned previousCount_=0;std::uint64_t serial_=0;
+    std::array<std::uint64_t,ParticleCapacity> previous_{};unsigned previousCount_=0;std::uint64_t serial_=0;
     struct Track {float position[3]{},rgb[3]{},target[3]{};std::uint64_t id=0;bool seen=false,castsShadows=false;float flashRadius=0;};
     std::array<Track,Tracks> tracks_{};unsigned trackCount_=0;
 public:
     bool hasFlash()const{if(skyCount_)return true;for(unsigned i=0;i<count_;++i)if(current_[i].sample.flashRadius>0)return true;return false;}
     std::array<Light,Capacity> output{};unsigned outputCount=0;
-    std::array<std::uint64_t,Capacity> immediate{};unsigned immediateCount=0;
+    std::array<std::uint64_t,ParticleCapacity> immediate{};unsigned immediateCount=0;
     unsigned draws=0,backgroundDraws=0,accepted=0,deferred=0,triangles=0,points=0,dropped=0,probes=0,distant=0,flashDraws=0,flashProbes=0;
     unsigned shaderMiss=0,textureMiss=0,bufferMiss=0,stateMiss=0,geometryMiss=0;
     // stateMiss by the check that refused the draw (PARTICLELIGHT state=...).
@@ -164,7 +166,7 @@ public:
             }
             track->seen=true;track->castsShadows=s.castsShadows;track->flashRadius=s.flashRadius;
         }
-        std::array<Light,Tracks+Capacity> candidates;unsigned count=0;
+        std::array<Light,Tracks+NativeCapacity> candidates;unsigned count=0;
         for(unsigned t=0;t<trackCount_;){auto& c=tracks_[t];
             for(unsigned k=0;k<3;++k){const float goal=c.seen?c.target[k]:0.f;c.rgb[k]=goal;}
             if(!c.seen&&peak(c.rgb)<MinEnergy){c=tracks_[--trackCount_];continue;}
@@ -175,16 +177,16 @@ public:
             candidates[count++]=l;++t;
         }
         const unsigned particleCount=count;
-        std::array<std::uint64_t,2*Capacity> forgotten;unsigned forgottenCount=0;
-        for(unsigned i=0;native&&i<nativeCount&&i<Capacity;++i){
+        std::array<std::uint64_t,NativeCapacity+ParticleCapacity> forgotten;unsigned forgottenCount=0;
+        for(unsigned i=0;native&&i<nativeCount&&i<NativeCapacity;++i){
             bool duplicate=false;for(unsigned j=0;j<particleCount;++j)if(
                 NorthlightEquipmentLights::distance2(native[i].position,candidates[j].position)<1.f&&
                 NorthlightEquipmentLights::hueClose(native[i].diffuse,candidates[j].diffuse)){duplicate=true;forgotten[forgottenCount++]=native[i].sourceId;break;}
             if(!duplicate)candidates[count++]=native[i];
         }
         const auto score=[&](const Light& l){return std::sqrt(NorthlightEquipmentLights::distance2(l.position,camera))-l.attenuationEnd;};
-        std::array<unsigned char,Tracks+Capacity> order;order[0]=0;
-        if(count>1){std::array<float,Tracks+Capacity> scores;
+        std::array<unsigned char,Tracks+NativeCapacity> order;order[0]=0;
+        if(count>1){std::array<float,Tracks+NativeCapacity> scores;
             for(unsigned i=0;i<count;++i){order[i]=static_cast<unsigned char>(i);scores[i]=score(candidates[i]);}
             std::sort(order.begin(),order.begin()+count,[&](unsigned char a,unsigned char b){
                 const bool af=candidates[a].flags&NorthlightLocalLights::Flash,bf=candidates[b].flags&NorthlightLocalLights::Flash;
@@ -192,9 +194,10 @@ public:
                 return scores[a]!=scores[b]?scores[a]<scores[b]:candidates[a].sourceId<candidates[b].sourceId;});}
         outputCount=immediateCount=0;unsigned flashes=0;
         for(unsigned i=0;i<count&&outputCount<Capacity;++i){const auto& l=candidates[order[i]];
+            const bool particle=order[i]<particleCount;if(particle&&immediateCount==ParticleCapacity)continue;
             if(l.flags&NorthlightLocalLights::Flash){if(flashes==2)continue;++flashes;}
             output[outputCount++]=l;
-            if((l.sourceId&0xfff0000000000000ull)==0xfed0000000000000ull)immediate[immediateCount++]=l.sourceId;}
+            if(particle)immediate[immediateCount++]=l.sourceId;}
         for(unsigned i=0;i<previousCount_;++i)
             if(std::find(immediate.begin(),immediate.begin()+immediateCount,previous_[i])==immediate.begin()+immediateCount)forgotten[forgottenCount++]=previous_[i];
         if(forgottenCount){std::sort(forgotten.begin(),forgotten.begin()+forgottenCount);selection.forgetSorted(forgotten.data(),forgottenCount);}

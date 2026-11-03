@@ -7,20 +7,27 @@
 #include <cstdint>
 
 namespace NorthlightEquipmentLights {
-inline constexpr unsigned Capacity=8,MaxBanksPerFrame=16,BackgroundBanks=8,MaxReadsPerFrame=64,BackgroundReads=32;
-inline constexpr float LifeSeconds=.25f,FadeSeconds=.10f,MaxDistance=48.f;
-// Rigid scenery cannot consume the whole read/bank budget before characters
-// are drawn. These are reservations within the original 64/16 caps.
+inline constexpr unsigned Capacity=NorthlightLocalLightSelection::Capacity,MemoBanks=64,MaxReadsPerFrame=64,BackgroundReads=32;
+inline constexpr float LifeSeconds=.25f,FadeSeconds=.10f,MaxRadius=12.f,MaxDistance=NorthlightLocalLightSelection::VisibilityEnd+MaxRadius;
+// Unknown state retains a bounded backend-read budget. Proven mirror state
+// costs no backend calls, so early draws cannot starve later sources.
 struct CaptureBudget {
-    unsigned candidates=0,actorCandidates=0,reads=0,actorReads=0,backgroundReads=0,readLimited=0,bankLimited=0,domainRejected=0,decoded=0,rejected=0;
+    unsigned candidates=0,actorCandidates=0,reads=0,actorReads=0,backgroundReads=0,cached=0,readLimited=0,domainRejected=0,decoded=0,rejected=0;
     void nextFrame(){*this={};}
-    bool take(bool actor,unsigned banks,unsigned backgroundBanks){
+    bool take(bool actor,bool known){
         ++candidates;if(actor)++actorCandidates;
-        if(banks>=MaxBanksPerFrame||(!actor&&backgroundBanks>=BackgroundBanks)){++bankLimited;return false;}
+        if(known){++cached;return true;}
         if(reads>=MaxReadsPerFrame||(!actor&&backgroundReads>=BackgroundReads)){++readLimited;return false;}
         ++reads;if(actor)++actorReads;else ++backgroundReads;return true;
     }
 };
+// Borrow only getter-proven constants under the draw's existing gate.
+template<class Mirror> inline bool cachedBank(const Mirror* mirror){
+    if(!mirror||!mirror->heldByThisThread()||!mirror->active()||!mirror->depthKnown)return false;
+    for(unsigned i=2;i<6;++i)if(!mirror->vsFloatKnown[i])return false;
+    for(unsigned i=17;i<28;++i)if(!mirror->vsFloatKnown[i])return false;
+    return true;
+}
 struct Native {float position[3]{},color[3]{},attenuation[3]{};};
 // c17..20 = diffuse, c21..24 = VIEW-space position, c25..27 = the
 // constant/linear/quadratic denominator. Layout is admitted only by the proof.
@@ -47,8 +54,8 @@ inline bool staticDuplicate(const Native& n,const std::vector<NorthlightLocalLig
 // this is an artistic local-light approximation, not an exact native falloff.
 inline NorthlightLocalLights::Light light(const Native& n,std::uint64_t id,float gain){
     NorthlightLocalLights::Light l{};const float a=n.attenuation[0],b=n.attenuation[1],c=n.attenuation[2],target=16.f;
-    const float q=std::max(0.f,target-a);float reach=12.f;if(q==0)reach=2.f;else if(c>.0001f)reach=2*q/(b+std::sqrt(b*b+4*c*q));else if(b>.0001f)reach=q/b;
-    reach=std::clamp(reach,2.f,12.f);const float peak=std::max({n.color[0],n.color[1],n.color[2]}),energy=std::min(1.f,peak/std::max(.5f,a+b+c));
+    const float q=std::max(0.f,target-a);float reach=MaxRadius;if(q==0)reach=2.f;else if(c>.0001f)reach=2*q/(b+std::sqrt(b*b+4*c*q));else if(b>.0001f)reach=q/b;
+    reach=std::clamp(reach,2.f,MaxRadius);const float peak=std::max({n.color[0],n.color[1],n.color[2]}),energy=std::min(1.f,peak/std::max(.5f,a+b+c));
     for(unsigned k=0;k<3;++k){l.position[k]=n.position[k];l.diffuse[k]=n.color[k]/peak*energy*gain;}
     l.attenuationStart=std::min(1.f,reach*.2f);l.attenuationEnd=reach;l.sourceId=0xfec0000000000000ull|id;l.kind=2;return l;
 }
@@ -56,7 +63,7 @@ struct Tracker {
     struct Entry {Native source;std::uint64_t id=0;std::uint32_t seen=0;float gain=0;};
     std::array<Entry,Capacity> entries{};unsigned count=0,banks=0,backgroundBanks=0,bankDuplicates=0,observed=0,duplicates=0,dropped=0;std::uint64_t serial=0;std::uint32_t updated=0;
     struct Bank {std::array<std::array<float,9>,4> sources{};unsigned count=0;};
-    std::array<Bank,MaxBanksPerFrame> frameBanks{};
+    std::array<Bank,MemoBanks> frameBanks{};
     std::array<NorthlightLocalLights::Light,Capacity> output{};unsigned outputCount=0;
     std::array<std::uint64_t,Capacity> suppressed{};unsigned suppressedCount=0;
     void reset(){count=outputCount=suppressedCount=0;updated=0;nextFrame();}
@@ -68,9 +75,8 @@ struct Tracker {
         for(unsigned i=0;i<points;++i)for(unsigned k=0;k<3;++k){auto& s=key.sources[i];s[k]=bank[4*i+k];s[3+k]=bank[4*(4+i)+k];s[6+k]=bank[4*(8+k)+i];}
         for(unsigned i=0;i<points;++i)for(float v:key.sources[i])if(!std::isfinite(v))return false;
         std::sort(key.sources.begin(),key.sources.begin()+points);
-        for(unsigned i=0;i<banks;++i)if(frameBanks[i].count==points&&frameBanks[i].sources==key.sources){++bankDuplicates;return false;}
-        if(banks==MaxBanksPerFrame||(!actor&&backgroundBanks==BackgroundBanks)){++dropped;return false;}
-        frameBanks[banks++]=key;if(!actor)++backgroundBanks;return true;
+        for(unsigned i=0;i<std::min(banks,MemoBanks);++i)if(frameBanks[i].count==points&&frameBanks[i].sources==key.sources){++bankDuplicates;return false;}
+        frameBanks[banks++%MemoBanks]=key;if(!actor)++backgroundBanks;return true;
     }
     void observe(const Native& n,std::uint32_t now,const std::vector<NorthlightLocalLights::Light>& fixed,const float* camera=nullptr){
         ++observed;if(staticDuplicate(n,fixed)){++duplicates;return;}
@@ -80,9 +86,15 @@ struct Tracker {
             if(count==Capacity){
                 unsigned worst=0;bool stale=false;float farthest=-1;
                 for(unsigned i=0;i<count;++i){if(std::uint32_t(now-entries[i].seen)>=unsigned(LifeSeconds*1000)){worst=i;stale=true;break;}
-                    if(camera){const float d=distance2(camera,entries[i].source.position);if(d>farthest){farthest=d;worst=i;}}}
-                const float reach=camera?std::sqrt(distance2(camera,n.position))+1.f:0.f; // 1-yard incumbent bias avoids churn.
-                if(!stale&&(!camera||!(reach*reach<farthest))){++dropped;return;}
+                    if(camera){const float d=distance2(camera,entries[i].source.position);
+                        if(d>farthest||(d==farthest&&std::lexicographical_compare(entries[worst].source.position,entries[worst].source.position+3,entries[i].source.position,entries[i].source.position+3))){farthest=d;worst=i;}}}
+                // New candidates rank by distance, regardless of draw order;
+                // only an already displayed incumbent receives the churn bias.
+                const float d2=camera?distance2(camera,n.position):0.f;
+                const float reach=std::sqrt(d2)+1.f;
+                const bool closer=entries[worst].gain>0?reach*reach<farthest:
+                    d2<farthest||(d2==farthest&&std::lexicographical_compare(n.position,n.position+3,entries[worst].source.position,entries[worst].source.position+3));
+                if(!stale&&(!camera||!closer)){++dropped;return;}
                 entries[worst]={n,++serial,now,0};
             }else entries[count++]={n,++serial,now,0};
         }
@@ -95,7 +107,7 @@ struct Tracker {
             // observed. Drop it now, including the local selection's old tail.
             if(fixed&&staticDuplicate(e.source,*fixed)){suppressed[suppressedCount++]=0xfec0000000000000ull|e.id;++duplicates;entries[i]=entries[--count];continue;}
             const float step=dt/FadeSeconds;e.gain+=std::clamp(target-e.gain,-step,step);
-            if(age>=unsigned(LifeSeconds*1000)&&e.gain<=.0001f){entries[i]=entries[--count];continue;}
+            if(age>=unsigned(LifeSeconds*1000)&&e.gain<=.0001f){suppressed[suppressedCount++]=0xfec0000000000000ull|e.id;entries[i]=entries[--count];continue;}
             if(e.gain>.0001f)output[outputCount++]=light(e.source,e.id,e.gain);++i;}
     }
 };
