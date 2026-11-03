@@ -177,6 +177,19 @@ def instance_lights(lights,record,path):
         result.append((*p,*color,start,end,source_id,source,flags))
     return result
 
+def m2_sources(path,blob,native,emitter_index):
+    """Shared source identity for light records and their opaque lamp shells."""
+    import world_emitter_index
+    authored=emitter_index.get(path,blob) if not unpack('<I',blob,264)[0] else None
+    sources=world_emitter_index.records(authored) if authored is not None else outdoor_light_profiles.fallback(emitter_index.catalog,path,blob,native)
+    from world_emitter_coverage import emission_kind
+    # Native M2 lights carry no emitter class. Retain their authored energy and
+    # animation; the shared candle classification only removes shadow intent.
+    if emission_kind(path,'')=='candle':
+        sources=[(*s[:-1],s[-1]&~2) for s in sources]
+    return sources
+
+
 def build(cache,output,maps,assets=None,manifest='manifest.json'):
     import world_emitter_index
     import point_transmission_builder
@@ -233,9 +246,8 @@ def build(cache,output,maps,assets=None,manifest='manifest.json'):
                                         errors.append({'asset':group_path,'error':str(exc)})
                                 extracted[path]=wmo_lamp_emission.merge_native(extracted[path],enclosed)
                                 stats['wmo_glass_lamps']+=sum(bool(s[6]&wmo_lamp_emission.GLASS_EMITTER) for s in extracted[path])
-                        authored=emitter_index.get(path,blob) if path.endswith('.m2') and not unpack('<I',blob,264)[0] else None
-                        if authored is not None:
-                            extracted[path]=world_emitter_index.records(authored)
+                        if path.endswith('.m2'):
+                            extracted[path]=m2_sources(path,blob,extracted[path],emitter_index)
                         else:
                             extracted[path]=outdoor_light_profiles.fallback(catalog,path,blob,extracted[path])
                         if path.endswith('.m2'):

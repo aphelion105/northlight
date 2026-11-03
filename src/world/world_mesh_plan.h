@@ -3,6 +3,7 @@
 #include "local_shadow_signature.h"
 #include "mesh_page_key.h"
 #include <atomic>
+#include <array>
 #include <cstdint>
 #include <limits>
 #include <memory>
@@ -63,6 +64,8 @@ struct Batch {
     NorthlightGI::Vec3 boundsHigh={-std::numeric_limits<float>::infinity(),-std::numeric_limits<float>::infinity(),-std::numeric_limits<float>::infinity()};
     bool pointOnly=false;
     uint64_t lampSourceId=0; // Exact owning FGL source, zero for ordinary geometry.
+    using LampTriangles=std::vector<std::array<NorthlightGI::Vec3,3>>;
+    std::shared_ptr<const LampTriangles> lampTriangles={}; // Bounded shell proof, shared by paged batches.
 };
 struct MaterialUpload {
     uint32_t width=1,height=1;
@@ -176,6 +179,7 @@ struct WorldMeshUploadPlan {
         if(pagingIndices)bytes+=sizeof(*pagingIndices)+pagingIndices->bytes()+64;
         for(const auto& owner:completePlacements)bytes+=owner.modelKey.capacity();
         for(const auto& material:materials)bytes+=material.bgra.capacity();
+        for(const auto& batch:batches)if(batch.lampTriangles)bytes+=sizeof(*batch.lampTriangles)+batch.lampTriangles->capacity()*sizeof(Batch::LampTriangles::value_type)+64;
         bytes+=fixedTerrainChunks.size()*(sizeof(std::pair<int,int>)+4*sizeof(void*));
         if(localShadowRecords)bytes+=sizeof(NorthlightLocalShadowSignature::Records)+localShadowRecords->capacity()*sizeof(NorthlightLocalShadowSignature::Record)+64;
         if(ownedSource)bytes+=ownedSource->retainedBytes()+64;

@@ -1,4 +1,5 @@
 #include "point_light_shadow.h"
+#include "local_light_selection.h"
 #include <cassert>
 #include <cstdio>
 #include <map>
@@ -6,16 +7,41 @@
 using namespace NorthlightPointShadow;
 using Light=NorthlightLocalLights::Light;
 static Light lamp(uint64_t id,float z=10,float color=1){
-    return {{0,0,z},{color,color*.5f,color*.2f},0,1,id,3,NorthlightLocalLights::CastShadow};
+    return {{0,0,z},{color,color*.5f,color*.2f},0,6,id,3,NorthlightLocalLights::CastShadow};
 }
 int main(){
     float camera[3]={},inverse[16]={},projection[3]={1,1,1};
+    {
+        std::vector<Light> lights;
+        for(unsigned kind:{1u,2u,3u}){
+            auto small=lamp(kind);small.kind=kind;small.attenuationEnd=5;
+            if(kind==1)small.flags|=NorthlightLocalLights::Baked;
+            lights.push_back(small);
+            assert(NorthlightLocalLights::valid(small)&&!eligible(small));
+            small.attenuationEnd=5.001f;assert(eligible(small));
+        }
+        auto candle=lamp(4);candle.attenuationEnd=32;
+        candle.flags|=NorthlightLocalLights::CandlePulse;lights.push_back(candle);
+        // Old caches may still request candle shadows; illumination survives.
+        assert(selectMany(lights.data(),lights.size(),camera,16).count==0);
+        const auto direct=NorthlightLocalLightSelection::select(lights,camera);
+        assert(direct.count==lights.size());
+        for(unsigned i=0;i<direct.count;++i)assert(direct.color[i][0]>0);
+        lights.push_back(lamp(5));
+        const auto shadows=selectMany(lights.data(),lights.size(),camera,16);
+        assert(shadows.count==1&&lights[shadows.index[0]].sourceId==5);
+        SelectionTracker tracker;auto slots=tracker.update(&lights.back(),1,camera,1,100);
+        assert(slots[0].index==0);
+        lights.back().attenuationEnd=5;
+        slots=tracker.update(&lights.back(),1,camera,1,116);
+        assert(slots[0].index<0); // No stale correction when a light becomes small.
+    }
     for(unsigned i=0;i<16;i+=5)inverse[i]=1;
     auto view=NorthlightLocalLightScissor::view(inverse,projection,.1f,.1f,512,512);assert(view.valid);
     // Brighter/closer bulbs behind the camera used to exhaust the budget even
     // though the production pass then refused to draw any of their cubes.
     for(unsigned limit:{4u,16u,30u,64u,128u}){
-        std::vector<Light> lights;for(unsigned i=0;i<limit;++i)lights.push_back(lamp(i,-3,16));
+        std::vector<Light> lights;for(unsigned i=0;i<limit;++i)lights.push_back(lamp(i,-10,16));
         for(unsigned i=0;i<limit;++i)lights.push_back(lamp(1000+i));
         const auto old=selectMany(lights.data(),lights.size(),camera,limit);
         for(unsigned i=0;i<old.count;++i)assert(lights[old.index[i]].position[2]<0);

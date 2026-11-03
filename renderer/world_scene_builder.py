@@ -347,8 +347,11 @@ class Builder:
         # even when the game's floating-point mode flushes subnormal values.
         cutoff=ALPHA_KEY_CUTOFF if blend==1 else 0.
         if point_glass:
-            code=point_glass-0x90000000+1
-            if not 0<code<=0x7fffff:raise ValueError('Lamp fixture tag range')
+            code=point_glass-0x90000000+1 if point_glass>=0x90000000 else point_glass
+            if not 0<code<0x801040:raise ValueError('Lamp fixture tag range')
+            if blend==1:
+                if code<0x800000:raise ValueError('Cutout lamp tag requires an M2 source')
+                code+=0x400000
             cutoff=-float(code)
         self.materials.append((color,w,h,cutoff,rgba))
         return result
@@ -380,6 +383,38 @@ class Builder:
         n,off=unpack('<II',b,128);tex_lookup=[x[0] for x in array(b,off,n,'<H')]
         triangles=[];materials=[];selected=set()
         invisible=hidden_batches(b,batches);faint=hidden_batches(b,batches,CASTER_MIN_ALPHA)
+        shells={};lights=[]
+        if any(blend in (0,1) for flag,blend in flags):
+            # Tag only a bounded, static, opaque luminous shell containing one
+            # source. The tag changes ownership, not caster geometry. Resolve
+            # native and renderer-owned sources exactly as the FGL builder does.
+            from world_lights_builder import extract_m2,m2_sources,static_bone_offset,Unsupported
+            import world_emitter_index
+            try:
+                if not hasattr(self,'lamp_emitters'):self.lamp_emitters=world_emitter_index.Index(self.assets,lazy=True)
+                lights=m2_sources(path,b,extract_m2(b,collections.Counter()),self.lamp_emitters)
+            except (ValueError,FileNotFoundError,IndexError,KeyError,struct.error):lights=[]
+            candidates=collections.defaultdict(list)
+            for bi,batch in enumerate(batches):
+                if bi in invisible or bi in faint or batch[0]&4 or batch[2]==0x8000 or batch[7]:continue
+                flag,blend=flags[batch[6]]
+                if blend!=0 or not flag&1 or flag&0x40:continue
+                sub=subsets[batch[3]];first=sub[4]+(sub[1]<<16);size=sub[5]
+                if not size or size%3 or size>4096*3 or first+size>len(indices):continue
+                ids=set(indices[first:first+size])
+                if not ids or max(ids)>=len(vertices):continue
+                try:
+                    bones={v[7+k] for i in ids for v in [data[i]] for k in range(4) if v[3+k]}
+                    if any(static_bone_offset(b,bone)!=(0.,0.,0.) for bone in bones):continue
+                except Unsupported:continue
+                low=tuple(min(vertices[i][k] for i in ids) for k in range(3))
+                high=tuple(max(vertices[i][k] for i in ids) for k in range(3))
+                inside=[l for l in lights if l[6]&2 and all(0<high[k]-low[k]<=l[3] and low[k]<l[0][k]<high[k] for k in range(3))]
+                if len(inside)==1:candidates[inside[0][4]].append(batch[3])
+            for light,subs in candidates.items():
+                if len(subs)==1:
+                    if 0<=light<4096:shells[subs[0]]=0x800000+light
+                    elif 0x80000000<=light<0x80000040:shells[subs[0]]=0x801000+light-0x80000000
         for batch_index,batch in enumerate(batches):
             if batch_index in invisible:
                 self.assets.stats['excluded_permanently_invisible_m2_batches']+=1
@@ -397,13 +432,45 @@ class Builder:
             if batch_index in faint:self.assets.stats['excluded_faint_m2_batches']+=1;continue
             selected.add(sub);texture=textures[tex_lookup[texcombo]]
             path_tex=string(b,texture[3]) if texture[0]==0 and texture[2] else ''
-            mat=len(materials);materials.append((path_tex,min(blend,1),False))   # the game's shadow pass alpha-tests every blended batch
+            mat=len(materials);materials.append((path_tex,min(blend,1),False,shells[sub]) if sub in shells else (path_tex,min(blend,1),False))   # the game's shadow pass alpha-tests every blended batch
             subset=subsets[sub];first=subset[4]+(subset[1]<<16);size=subset[5]
             if first+size>len(indices) or size%3:raise ValueError('Invalid skin triangle range')
             for i in range(first,first+size,3):
                 t=tuple(indices[i:i+3])
                 if max(t)>=len(vertices):raise ValueError('M2 vertex range')
                 triangles.append((*t,mat))
+        if lights:
+            from m2_light_geometry import source_components
+            static={}
+            def static_vertex(i):
+                for weight,bone in zip(data[i][3:7],data[i][7:11]):
+                    if not weight:continue
+                    if bone not in static:
+                        try:static[bone]=static_bone_offset(b,bone)==(0.,0.,0.)
+                        except Unsupported:static[bone]=False
+                    if not static[bone]:return False
+                return True
+            def alpha_at(index,u,v):
+                triangle=triangles[index];texture=materials[triangle[3]][0]
+                if texture not in self.textures:
+                    try:self.textures[texture]=decode_blp(self.assets.read(texture))
+                    except (ValueError,FileNotFoundError,IndexError):self.textures[texture]=(0,0,b'')
+                width,height,rgba=self.textures[texture]
+                if not width or not height:return False
+                uv=[sum(weight*vertices[vertex][6+k] for weight,vertex in zip((1-u-v,u,v),triangle[:3])) for k in range(2)]
+                x=uv[0]*width-.5;y=uv[1]*height-.5;ix=math.floor(x);iy=math.floor(y);fx=x-ix;fy=y-iy
+                alpha=sum(wx*wy*rgba[(((iy+dy)%height)*width+(ix+dx)%width)*4+3]
+                          for dx,wx in ((0,1-fx),(1,fx)) for dy,wy in ((0,1-fy),(1,fy)))
+                return alpha>=255*ALPHA_KEY_CUTOFF
+            owned=source_components(vertices,triangles,materials,lights,static_vertex,alpha_at)
+            tagged={}
+            for i,source in owned.items():
+                if 0<=source<4096:tag=0x800000+source
+                elif 0x80000000<=source<0x80000040:tag=0x801000+source-0x80000000
+                else:continue
+                a,c,d,material=triangles[i];key=(material,tag)
+                if key not in tagged:tagged[key]=len(materials);materials.append((*materials[material][:3],tag))
+                triangles[i]=(a,c,d,tagged[key])
         mesh=(vertices,triangles,materials);self.meshes[path]=mesh;self.mesh_names[id(vertices)]=path;return mesh
     def wmo(self,path):
         if path in self.meshes:return self.meshes[path]

@@ -144,10 +144,7 @@ static bool readScene(const char* path,WorldScene& output,std::string& error,con
            ((m.width==0)!=(m.height==0))){
             error="Invalid/truncated FGS2 material";return false;
         }
-        if(m.alphaCutoff<=-1.f&&m.alphaCutoff>=-8388607.f){
-            const uint32_t tag=uint32_t(-m.alphaCutoff);
-            if(float(tag)==-m.alphaCutoff){m.lampLocalId=tag;m.alphaCutoff=0.f;}
-        }
+        decodeLampMaterial(m);
         uint32_t cutoffBits;std::memcpy(&cutoffBits,&m.alphaCutoff,4);
         if(((cutoffBits&0x80000000u)&&(cutoffBits&0x7fffffffu))||m.alphaCutoff>1){error="Invalid/truncated FGS2 material";return false;}
         if(admit&&!admit(bytes)){error="Geometry allocation deferred";return false;}
@@ -194,10 +191,11 @@ bool cropScene(WorldScene& s,Vec3 low,Vec3 high,std::string& error){
 namespace {
 struct Instance {uint64_t uid=0;uint32_t category=0;Vec3 low,high;float matrix[9];Vec3 translation;bool terrain=false,wmo=false;};
 uint64_t lampIdentity(const std::string& key,const Instance& instance,uint32_t localId){
-    if(key.size()!=64||!localId||instance.category!=2)return 0;
+    const bool model=localId>=0x800000u&&localId<0x801040u;
+    if(key.size()!=64||!localId||(model?(instance.category!=1&&instance.category!=3):instance.category!=2))return 0;
     unsigned char bytes[48]={};auto digit=[](char c)->int{return c>='0'&&c<='9'?c-'0':c>='a'&&c<='f'?c-'a'+10:-1;};
     for(unsigned i=0;i<32;++i){const int a=digit(key[2*i]),b=digit(key[2*i+1]);if(a<0||b<0)return 0;bytes[i]=static_cast<unsigned char>((a<<4)|b);}
-    const uint32_t index=0x90000000u+(localId-1);
+    const uint32_t index=model?(localId<0x801000u?localId-0x800000u:0x80000000u+localId-0x801000u):0x90000000u+(localId-1);
     for(unsigned i=0;i<8;++i)bytes[32+i]=static_cast<unsigned char>(instance.uid>>(8*i));
     for(unsigned i=0;i<4;++i){bytes[40+i]=static_cast<unsigned char>(instance.category>>(8*i));bytes[44+i]=static_cast<unsigned char>(index>>(8*i));}
     NorthlightBackendLoader::Sha256 hash;hash.update(bytes,sizeof bytes);const std::string digest=hash.hex();uint64_t value=0;

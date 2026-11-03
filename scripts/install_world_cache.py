@@ -84,7 +84,9 @@ FORMAT = 'northlight-world-cache-install/1'
 # The sources each step's output depends on. lights and fog also depend on the scene digests
 # (they read the FGS3 tiles), which cover world_scene_builder.py, the module they import.
 STEP_SOURCES = {
-    'scene': ['world_scene_builder.py', 'wmo_lamp_emission.py', 'world_emitter_coverage.py',
+    'scene': ['world_scene_builder.py', 'm2_light_geometry.py', 'wmo_lamp_emission.py', 'world_emitter_coverage.py',
+              'world_lights_builder.py', 'world_emitter_index.py', 'outdoor_light_profiles.py',
+              'outdoor-light-profiles.json', 'wotlk-emitter-profiles.json',
               'point_transmission_builder.py', 'm2_visibility.py', 'mpq.py', 'client_archives.py'],
     'lights': ['world_lights_builder.py', 'light_attachments.py', 'wmo_lamp_emission.py', 'world_light_placements.py', 'outdoor_light_profiles.py',
                'world_emitter_coverage.py', 'world_emitter_index.py', 'build_equipment_emitters.py', 'emitter_pin_report.py',

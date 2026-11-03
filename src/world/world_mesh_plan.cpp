@@ -14,6 +14,17 @@ namespace NorthlightWorldMesh {
 namespace {
 using NorthlightGI::Vec3;
 bool finite(Vec3 p){return std::isfinite(p.x)&&std::isfinite(p.y)&&std::isfinite(p.z);}
+template<class Scene,class Allowed> bool prepareLampTriangles(const Scene& scene,WorldMeshUploadPlan& plan,Allowed allowed){
+    for(auto& batch:plan.batches){
+        if(!batch.lampSourceId||scene.materials[batch.material].lampLocalId<0x800000u||!batch.count||batch.count>4096)continue;
+        if(!allowed(sizeof(Batch::LampTriangles)+batch.count*sizeof(Batch::LampTriangles::value_type)))return false;
+        auto triangles=std::make_shared<Batch::LampTriangles>();triangles->reserve(batch.count);
+        for(size_t i=batch.start;i<size_t(batch.start)+batch.count*3;i+=3)
+            triangles->push_back({scene.vertices[plan.pagingIndex(i)].position,scene.vertices[plan.pagingIndex(i+1)].position,scene.vertices[plan.pagingIndex(i+2)].position});
+        batch.lampTriangles=std::move(triangles);
+    }
+    return true;
+}
 struct Group {uint64_t key=0;uint32_t count=0,cursor=0;};
 struct ContentCell {
     int x=0,y=0,z=0,chunkX=-1,chunkY=-1;bool terrain=false,pointOnly=false;
@@ -229,6 +240,7 @@ template<class Scene> static bool buildCore(const Scene& scene,WorldMeshUploadPl
         }}
         if(next.temporary)next.temporary->flush();
         if(chunkIndices){chunkIndices->detachAdmission();next.pagingIndices=std::move(chunkIndices);}
+        if(!prepareLampTriangles(scene,next,allowed))return false;
     }catch(const std::bad_alloc&){error="Geometry allocation deferred";return false;}
      catch(const NorthlightGI::TemporaryGeometryError& failure){error=failure.what();return false;}
      catch(...){error="Cannot allocate world mesh upload plan";return false;}
@@ -276,6 +288,7 @@ void WorldMeshUploadPlan::accountMemory(NorthlightMemoryFootprint::Counter& memo
     using namespace NorthlightMemoryFootprint;
     if(includeObject){if(!memory.visit(this))return;memory.add(Metadata,sizeof(*this));}
     memory.vector(Upload,indices);memory.vector(Metadata,batches);memory.vector(Metadata,materials);
+    for(const auto& batch:batches)if(batch.lampTriangles){memory.allocation(Metadata,batch.lampTriangles.get(),sizeof(*batch.lampTriangles));memory.vector(Metadata,*batch.lampTriangles);}
     for(const auto& material:materials)memory.vector(Texels,material.bgra);
     memory.vector(Metadata,completePlacements);for(const auto& p:completePlacements)memory.string(p.modelKey);
     for(const auto& chunk:fixedTerrainChunks)memory.allocation(Metadata,&chunk,sizeof(chunk));
@@ -420,6 +433,7 @@ bool buildUploadPlan(const NorthlightGI::WorldScene& scene,WorldMeshUploadPlan& 
                 batch.boundsLow.x=std::min(batch.boundsLow.x,b.boundsLow.x);batch.boundsLow.y=std::min(batch.boundsLow.y,b.boundsLow.y);batch.boundsLow.z=std::min(batch.boundsLow.z,b.boundsLow.z);
                 batch.boundsHigh.x=std::max(batch.boundsHigh.x,b.boundsHigh.x);batch.boundsHigh.y=std::max(batch.boundsHigh.y,b.boundsHigh.y);batch.boundsHigh.z=std::max(batch.boundsHigh.z,b.boundsHigh.z);}
             next.batches.push_back(batch);}
+        if(!prepareLampTriangles(scene,next,allowed))return false;
         auto records=std::make_shared<NorthlightLocalShadowSignature::Records>();std::unordered_map<ContentCell,size_t,CellHash> cells;
         for(const auto& p:parts){next.unmaskableTerrainTriangles+=p.data->plan.unmaskableTerrainTriangles;
             if(!records)continue;

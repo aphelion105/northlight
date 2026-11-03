@@ -198,6 +198,9 @@ test_local_source_shadows.py
 test_log_format_literals.py
 test_log_rotation.py
 test_logger_cost.py
+test_m2_lamp_self_shadow.py
+test_m2_lamp_self_shadow_gpu.py
+test_m2_light_geometry.py
 test_m2_shader_families.py
 test_m2_shader_families_client.py
 test_m2_visibility.py

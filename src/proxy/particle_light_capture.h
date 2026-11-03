@@ -270,7 +270,6 @@ public:
             std::copy(points,points+3,probe);placedSample=sample;placed=true;
         }
         if(!placed||!frame.takeDraw(particle,flash))return result;
-        float lo[3]={INFINITY,INFINITY,INFINITY},hi[3]={-INFINITY,-INFINITY,-INFINITY};unsigned loaded=0;
         for(unsigned sample=0;sample<samples;++sample){
             std::uint64_t references[3];if(!NorthlightParticleLights::triangleIndices(unsigned(args.prim),std::uint64_t(sample)*args.primCount/samples,references))continue;
             Point points[3];
@@ -281,9 +280,6 @@ public:
                 if(!std::isfinite(world))return Prepared{};
                 flashLo[j]=std::min(flashLo[j],world);flashHi[j]=std::max(flashHi[j],world);
             }
-            if(!particle){++loaded;for(const auto& point:points)for(unsigned k=0;k<3;++k){
-                if(!std::isfinite(point.position[k]))return Prepared{};
-                lo[k]=std::min(lo[k],point.position[k]);hi[k]=std::max(hi[k],point.position[k]);}}
             ++frame.triangles;Four center{};for(unsigned j=0;j<4;++j)center[j]=(points[0].position[j]+points[1].position[j]+points[2].position[j])/3;
             float clip[4]{};for(unsigned j=0;j<4;++j)for(unsigned k=0;k<4;++k)clip[j]+=q[j*4+k]*center[k];
             // Preserve samples for the final cluster/track: an offscreen or
@@ -315,8 +311,6 @@ public:
             const float radius=std::clamp(4.f*std::sqrt(extent2),128.f,1200.f);
             for(unsigned i=0;i<result.count;++i)result.clusters[i].sample.flashRadius=radius;
         }
-        if(!flash&&!particle&&NorthlightParticleLights::compactMesh(lo,hi,loaded,args.primCount))
-            for(unsigned i=0;i<result.count;++i)result.clusters[i].sample.castsShadows=true;
         if(flash&&!result.count)--frame.flashDraws; // invisible scheduled bolts cannot displace the visible flash
         return result;
     }

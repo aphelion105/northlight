@@ -13,7 +13,7 @@ int main(){
                                 {1,8,false,{9.5f,-.5f,-.5f},{10.5f,.5f,.5f},0},
                                 {0,8,false,{12.5f,-.5f,-.5f},{13.5f,.5f,.5f},2}};
     assert(unique(source,batches)==0); // ordinary glass, wall and other fixtures stay
-    auto other=source;other.flags=CastShadow;assert(unique(other,batches)==size_t(-1));
+    auto other=source;other.flags=CastShadow;other.kind=1;assert(unique(other,batches)==size_t(-1));
     other=source;other.sourceId=2;other.position[0]=13;assert(unique(other,batches)==2);
     auto native=source;native.kind=1;native.flags|=Baked;native.attenuationStart=0.f;
     assert(valid(native)&&unique(native,batches)==0);

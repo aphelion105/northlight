@@ -239,6 +239,9 @@ inline bool intersectsSphereAABB(const NorthlightLocalLights::Light& l,const flo
 inline constexpr unsigned MaxLights=128;
 struct Picks {std::array<int,MaxLights> index{};unsigned count=0;};
 inline bool eligible(const NorthlightLocalLights::Light& l){
+    // Candles (including old FGL records) and small lights illuminate without
+    // cube shadows. The radius is in world units, after instance scaling.
+    if((l.flags&NorthlightLocalLights::CandlePulse)||l.attenuationEnd<=5.f)return false;
     // Legacy baked WMO lamps remain supported. Unclassified model/particle/equipment
     // observations never become shadow sources just because they happen to be bright.
     return (l.flags&NorthlightLocalLights::CastShadow)||l.kind==1;

@@ -229,7 +229,10 @@ bool loadCompact(const std::string& path,const std::string& key,size_t cap,Model
     model.indices.reserve(size_t(nt)*3);model.batches.reserve(groups.size());
     for(auto& group:groups){Batch b;b.firstIndex=uint32_t(model.indices.size());b.indexCount=uint32_t(group.second.size());b.material=std::get<0>(group.first);b.low={1e30f,1e30f,1e30f};b.high=-b.low;for(uint32_t index:group.second){const auto& v=model.vertices[index];b.low=mn(b.low,{v.x,v.y,v.z});b.high=mx(b.high,{v.x,v.y,v.z});model.indices.push_back(index);}model.batches.push_back(b);std::vector<uint32_t>().swap(group.second);}
     groups.clear();model.materials.resize(nm);
-    for(auto& m:model.materials){uint32_t bytes;if(!r.vec(m.albedo)||!r.u32(m.width)||!r.u32(m.height)||!r.scalar(m.alphaCutoff)||!r.u32(bytes)||m.width>4096||m.height>4096||uint64_t(m.width)*m.height*4!=bytes||bytes>r.remaining||((m.width==0)!=(m.height==0))||m.alphaCutoff<0||m.alphaCutoff>1){error="Invalid FGS2 material";return false;}m.rgba.resize(bytes);if(!r.bytes(m.rgba.data(),bytes)){error="Truncated FGS2 texture";return false;}}
+    for(auto& m:model.materials){uint32_t bytes;if(!r.vec(m.albedo)||!r.u32(m.width)||!r.u32(m.height)||!r.scalar(m.alphaCutoff)||!r.u32(bytes)||m.width>4096||m.height>4096||uint64_t(m.width)*m.height*4!=bytes||bytes>r.remaining||((m.width==0)!=(m.height==0))){error="Invalid FGS2 material";return false;}
+        NorthlightGI::decodeLampMaterial(m);
+        if(m.alphaCutoff<0||m.alphaCutoff>1){error="Invalid FGS2 material";return false;}
+        m.rgba.resize(bytes);if(!r.bytes(m.rgba.data(),bytes)){error="Truncated FGS2 texture";return false;}}
     if(r.remaining){error="Trailing FGS2 data";return false;}
     for(auto& material:model.materials)discardOpaqueTexture(material);
     uint64_t revision=hashBytes(HashSeed,model.vertices.data(),model.vertices.size()*sizeof(Vertex));revision=hashBytes(revision,model.indices.data(),model.indices.size()*sizeof(uint32_t));

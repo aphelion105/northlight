@@ -354,6 +354,25 @@
         // Conservative: a new lamp or changing selection also needs current-frame casters.
         return NorthlightPointShadow::selectMany(active->localLights.data(),active->localLights.size(),context.camera,quality.pointShadowLimit,{},float(quality.pointShadowDistance),true).count!=0;
     }
+    using PointReplayRuns=std::vector<std::pair<UINT,UINT>>;
+    bool pointOwnShell(const Replay& p,const Batch& shell,PointReplayRuns& remaining){
+        if(!shell.lampTriangles||shell.count!=shell.lampTriangles->size()||(p.cutoff>=0&&p.cutoff!=.5f)||!p.count||p.count>4096||
+           p.mesh().vertexCount>12288||p.count!=p.mesh().primitiveCount||(p.type!=D3DPT_TRIANGLELIST&&p.type!=D3DPT_TRIANGLESTRIP))return false;
+        if(p.pointBounds.valid){const auto& b=p.pointBounds;const float lo[]={shell.boundsLow.x,shell.boundsLow.y,shell.boundsLow.z},hi[]={shell.boundsHigh.x,shell.boundsHigh.y,shell.boundsHigh.z};
+            for(unsigned k=0;k<3;++k)if(b.high[k]<lo[k]-.003f||b.low[k]>hi[k]+.003f)return false;}
+        const auto program=actorPrograms.find(p.originalShader);const D3DVERTEXELEMENT9* elements=nullptr;UINT count=0;
+        if(program==actorPrograms.end()||!program->second||!declarationCache.get(p.decl,elements,count))return false;
+        std::vector<NorthlightActorDeformation::Position> positions;Batch::LampTriangles triangles;
+        if(!NorthlightActorDeformation::worldPositions(*program->second,p.mesh(),elements,count,p.constants,context.inverseView,positions)||
+           !StaticShadowDedup::makeTriangles(positions,p.mesh().indices,p.mesh().indexed,p.count,p.type==D3DPT_TRIANGLESTRIP,triangles,4096))return false;
+        const auto excluded=NorthlightWmoLampShadow::matching(*shell.lampTriangles,triangles);
+        if(excluded.empty()||std::none_of(excluded.begin(),excluded.end(),[](bool hit){return hit;}))return false;
+        remaining.clear();
+        for(UINT first=0;first<excluded.size();){if(excluded[first]){++first;continue;}
+            UINT end=first+1;while(end<excluded.size()&&!excluded[end])++end;
+            remaining.push_back({first,end-first});first=end;}
+        return true;
+    }
     // fresh=false: model capture was skipped. Reuse a compatible complete cube
     // or defer; publishing a static-only cube would erase character shadows.
     // withReplays=false (0.3.158 ActorShadows=0): static cache, terrain and union only; the
@@ -401,9 +420,18 @@
         for(unsigned face=0;face<6;++face)
             if(!NorthlightPointShadow::faceMatrix(pointSlot().selected.position,.1f,pointSlot().selected.attenuationEnd,face,faceMatrices[face],PointResolution))return pointCheck(E_FAIL,"cube projection");
         const NorthlightPointShadow::FaceClip clip(faceMatrices);
-        // Only one complete, uniquely matched enclosure can be omitted, and
-        // only from this source's point-shadow cube. Shared geometry is intact.
+        std::vector<size_t> ownGlass;Batch ownShell{};
+        std::map<size_t,PointReplayRuns> replayRuns;
         try {
+            ownGlass=NorthlightWmoLampShadow::parts(light,batches);
+            if(!ownGlass.empty()){
+                ownShell=batches[ownGlass.front()];
+                if(ownGlass.size()>1){auto proof=std::make_shared<Batch::LampTriangles>();ownShell.count=0;
+                    for(size_t i:ownGlass){const auto& b=batches[i];proof->insert(proof->end(),b.lampTriangles->begin(),b.lampTriangles->end());ownShell.count+=b.count;
+                        ownShell.boundsLow={std::min(ownShell.boundsLow.x,b.boundsLow.x),std::min(ownShell.boundsLow.y,b.boundsLow.y),std::min(ownShell.boundsLow.z,b.boundsLow.z)};
+                        ownShell.boundsHigh={std::max(ownShell.boundsHigh.x,b.boundsHigh.x),std::max(ownShell.boundsHigh.y,b.boundsHigh.y),std::max(ownShell.boundsHigh.z,b.boundsHigh.z)};}
+                    ownShell.lampTriangles=std::move(proof);}
+            }
             for(auto* lists:{&pointStaticCandidates,&pointTerrainCandidates,&pointLiveCandidates,&pointReplayCandidates})for(auto& list:*lists)list.clear();
             // Reuse the mesh's terrain list shared with the directional passes.
             // Camera-visible native chunks may contain only part of a caster.
@@ -413,15 +441,16 @@
                 for(size_t i:terrainBatchList)terrainCandidate(i);
             }else for(size_t i=0;i<batches.size();++i)if(batches[i].terrain)terrainCandidate(i);
             if(rebuildMask&faces){
-                const size_t ownGlass=NorthlightWmoLampShadow::unique(light,batches);
                 for(size_t i=0;i<batches.size();++i){const auto& batch=batches[i];
-                    if(!batch.terrain&&i!=ownGlass)pointAppendCandidates(pointStaticCandidates,i,pointMask(batch.boundsLow,batch.boundsHigh,clip),rebuildMask&faces);
+                    if(!batch.terrain&&std::find(ownGlass.begin(),ownGlass.end(),i)==ownGlass.end())pointAppendCandidates(pointStaticCandidates,i,pointMask(batch.boundsLow,batch.boundsHigh,clip),rebuildMask&faces);
                 }
             }
             for(size_t i=0;i<pointLiveBatches.size();++i){const auto& batch=pointLiveBatches[i];
                 pointAppendCandidates(pointLiveCandidates,i,pointMask(batch.low,batch.high,clip),faces);}
             replayBoundsJoin();
             if(withReplays)for(size_t i=0;i<replays.size();++i){const auto& bounds=replays[i]->pointBounds;
+                if(!ownGlass.empty()){PointReplayRuns runs;if(pointOwnShell(*replays[i],ownShell,runs)){
+                    if(runs.empty())continue;replayRuns.emplace(i,std::move(runs));}}
                 const unsigned mask=NorthlightReplayBounds::outsideSphere(bounds,pointSlot().selected.position,pointSlot().selected.attenuationEnd)?0:
                     clip.mask(bounds.low,bounds.high,bounds.valid);
                 pointAppendCandidates(pointReplayCandidates,i,mask,faces);
@@ -527,8 +556,15 @@
                 if(b.count&&!pointCheck(d->SetVertexShaderConstantB(b.first,p->bools+b.first,b.count),"cube replay bool constants"))return false;
                 if(i.count&&!pointCheck(d->SetVertexShaderConstantI(i.first,p->ints+4*i.first,i.count),"cube replay integer constants"))return false;
                 if(!pointCheck(replayBindings.material(*p),"cube replay material state"))return false;
-                HRESULT hr=p->indexed?d->DrawIndexedPrimitive(p->type,p->base,p->min,p->vertices,p->start,p->count):d->DrawPrimitive(p->type,p->start,p->count);
-                if(!pointCheck(hr,"cube animated draw"))return false;++pointDraws;
+                const auto split=replayRuns.find(index);
+                if(split!=replayRuns.end()){
+                    for(const auto& run:split->second){const UINT start=p->start+run.first*(p->type==D3DPT_TRIANGLELIST?3:1);
+                        const HRESULT hr=p->indexed?d->DrawIndexedPrimitive(p->type,p->base,p->min,p->vertices,start,run.second):d->DrawPrimitive(p->type,start,run.second);
+                        if(!pointCheck(hr,"cube split emitter draw"))return false;++pointDraws;}
+                }else{
+                    const HRESULT hr=p->indexed?d->DrawIndexedPrimitive(p->type,p->base,p->min,p->vertices,p->start,p->count):d->DrawPrimitive(p->type,p->start,p->count);
+                    if(!pointCheck(hr,"cube animated draw"))return false;++pointDraws;
+                }
             }
             } /* withReplays */
             } /* dynamic candidates */

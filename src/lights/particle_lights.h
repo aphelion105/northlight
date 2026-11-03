@@ -20,17 +20,8 @@ inline constexpr unsigned ProbeLimit=128;inline constexpr float MaxDistance=48.f
 // follows them over ~FollowSeconds. Its light shows only this frame's samples:
 // no fade-in (it swallowed one-frame flashes) and no release tail.
 inline constexpr float FollowSeconds=.05f,MinEnergy=.003f;
-struct Sample {float position[3]{},rgb[3]{};float brightest=0;bool castsShadows=false;float flashRadius=0;}; // strongest merged sample
+struct Sample {float position[3]{},rgb[3]{};float brightest=0;float flashRadius=0;}; // strongest merged sample
 struct Cluster {Sample sample;unsigned count=0;};
-// Shadow intent requires every triangle of a compact mesh, never sparse
-// samples of a large glow or an unanchored particle cloud.
-inline bool compactMesh(const float* lo,const float* hi,unsigned read,unsigned total){
-    if(!total||total>TrianglesPerDraw||read!=total)return false;
-    float diameter2=0;
-    for(unsigned k=0;k<3;++k){if(!std::isfinite(lo[k])||!std::isfinite(hi[k])||hi[k]<lo[k])return false;
-        const float d=hi[k]-lo[k];diameter2+=d*d;}
-    return diameter2<=3.f*3.f;
-}
 inline float peak(const float* rgb){return std::max({rgb[0],rgb[1],rgb[2]});}
 inline float brightness(const Sample& s){return std::max(s.brightest,peak(s.rgb));}
 // One light per place, whatever the hue: a lightning texture's blue, pale blue and
@@ -57,7 +48,6 @@ struct Draw {
     }
 };
 inline void add(Cluster& cluster,const Sample& sample){
-    cluster.sample.castsShadows=cluster.sample.castsShadows&&sample.castsShadows;
     cluster.sample.flashRadius=std::max(cluster.sample.flashRadius,sample.flashRadius);
     const float scale=1.f/float(cluster.count+1);cluster.sample.brightest=std::max(brightness(cluster.sample),brightness(sample));
     for(unsigned k=0;k<3;++k){cluster.sample.position[k]+=(sample.position[k]-cluster.sample.position[k])*scale;
@@ -68,7 +58,7 @@ class Frame {
     std::array<Cluster,Clusters> current_{};unsigned count_=0;
     std::array<Sample,8> sky_{};unsigned skyCount_=0;
     std::array<std::uint64_t,ParticleCapacity> previous_{};unsigned previousCount_=0;std::uint64_t serial_=0;
-    struct Track {float position[3]{},rgb[3]{},target[3]{};std::uint64_t id=0;bool seen=false,castsShadows=false;float flashRadius=0;};
+    struct Track {float position[3]{},rgb[3]{},target[3]{};std::uint64_t id=0;bool seen=false;float flashRadius=0;};
     std::array<Track,Tracks> tracks_{};unsigned trackCount_=0;
 public:
     bool hasFlash()const{if(skyCount_)return true;for(unsigned i=0;i<count_;++i)if(current_[i].sample.flashRadius>0)return true;return false;}
@@ -110,7 +100,7 @@ public:
             // are farther (up to 1750 yards) and obey the same inverse-square law.
             const float distance=350.f/std::max(direction[2],.2f);
             for(unsigned k=0;k<3;++k)s.position[k]=camera[k]+direction[k]*distance;
-            s.flashRadius=2000.f;s.castsShadows=false;observe(s,camera);
+            s.flashRadius=2000.f;observe(s,camera);
         }
         skyCount_=0;
     }
@@ -164,7 +154,7 @@ public:
                 *track={};track->id=0xfed0000000000000ull|++serial_;
                 for(unsigned k=0;k<3;++k){track->position[k]=s.position[k];track->target[k]=target[k];}
             }
-            track->seen=true;track->castsShadows=s.castsShadows;track->flashRadius=s.flashRadius;
+            track->seen=true;track->flashRadius=s.flashRadius;
         }
         std::array<Light,Tracks+NativeCapacity> candidates;unsigned count=0;
         for(unsigned t=0;t<trackCount_;){auto& c=tracks_[t];
@@ -172,7 +162,7 @@ public:
             if(!c.seen&&peak(c.rgb)<MinEnergy){c=tracks_[--trackCount_];continue;}
             Light l{};for(unsigned k=0;k<3;++k){l.position[k]=c.position[k];l.diffuse[k]=c.rgb[k];}
             l.attenuationStart=.5f;l.attenuationEnd=2.f+4.f*std::sqrt(std::min(1.f,peak(c.rgb)));l.kind=2;l.sourceId=c.id;
-            if(c.castsShadows)l.flags|=NorthlightLocalLights::CastShadow;
+            // Live glows and particles provide light only, regardless of mesh size.
             if(c.flashRadius){l.attenuationEnd=c.flashRadius;l.flags=NorthlightLocalLights::Flash;}
             candidates[count++]=l;++t;
         }

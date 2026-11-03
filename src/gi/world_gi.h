@@ -62,6 +62,18 @@ struct WorldMaterial {
     uint32_t lampLocalId = 0; // FGS2 lamp fixture tag, zero for ordinary materials.
     uint64_t lampSourceId = 0; // Exact FGL source for this FGS3 instance, or zero when unknown.
 };
+inline void decodeLampMaterial(WorldMaterial& m){
+    // Positive exact tags encoded as negative cutoffs: WMO fixtures below
+    // 0x800000; then 4096 native M2 and 64 renderer-owned M2 source indices.
+    // Adding 0x400000 to an M2 tag preserves its original 0.5 alpha test.
+    if(m.alphaCutoff<=-1.f&&m.alphaCutoff>=-12587071.f){
+        const uint32_t raw=uint32_t(-m.alphaCutoff);
+        const bool cutout=raw>=0xc00000u&&raw<0xc01040u;
+        if(float(raw)==-m.alphaCutoff&&(raw<0x801040u||cutout)){
+            m.lampLocalId=cutout?raw-0x400000u:raw;m.alphaCutoff=cutout?.5f:0.f;
+        }
+    }
+}
 struct WorldTriangle { uint32_t v0 = 0, v1 = 0, v2 = 0, material = 0; };
 // Exact placements whose entire model triangle set survived the local crop.
 // Runtime-only ownership evidence; FGS cache files are immutable during play.

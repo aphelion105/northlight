@@ -18,13 +18,19 @@ static void checkTags(const char* path){
     const std::string changed=std::string(path)+".tag.fgs";const unsigned saved=_mm_getcsr();
     for(unsigned mode:{0u,0x8040u}){
         _mm_setcsr((saved&~0x8040u)|mode);
-        for(float tag:{-1.f,-8388607.f,-1.5f,-8388608.f,-.5f,-std::numeric_limits<float>::denorm_min(),-0.f}){
+        for(float tag:{-1.f,-8388607.f,-8388608.f,-8392767.f,-8392768.f,-12582911.f,-12582912.f,-12587071.f,-12587072.f,-1.5f,-.5f,-std::numeric_limits<float>::denorm_min(),-0.f}){
             std::memcpy(bytes.data()+offset,&tag,4);
             {std::ofstream output(changed,std::ios::binary);output.write(bytes.data(),bytes.size());assert(output);}
-            NorthlightGI::WorldScene scene;std::string error;const bool valid=tag==-1.f||tag==-8388607.f;
-            uint32_t bits;std::memcpy(&bits,&tag,4);const bool zero=(bits&0x7fffffffu)==0;
-            assert(NorthlightGI::loadScene(changed.c_str(),scene,error)==(valid||zero));
-            if(valid)assert(scene.materials[0].lampLocalId==uint32_t(-tag)&&scene.materials[0].alphaCutoff==0.f);
+            NorthlightGI::WorldScene scene;std::string error;const bool cutout=tag==-12582912.f||tag==-12587071.f;
+            const bool valid=tag==-1.f||tag==-8388607.f||tag==-8388608.f||tag==-8392767.f||cutout;
+            uint32_t bits;std::memcpy(&bits,&tag,4);
+            // Keep the oracle integer-based: LLVM folds a bitcast zero test to
+            // float == 0, which treats the negative denormal as zero under DAZ.
+            const volatile uint32_t rawBits=bits;const bool zero=(rawBits&0x7fffffffu)==0;
+            const bool loaded=NorthlightGI::loadScene(changed.c_str(),scene,error);
+            if(loaded!=(valid||zero)){std::printf("TAG_CHECK mode=%x bits=%08x valid=%d zero=%d loaded=%d error=%s\n",mode,bits,valid,zero,loaded,error.c_str());std::fflush(stdout);}
+            assert(loaded==(valid||zero));
+            if(valid)assert(scene.materials[0].lampLocalId==uint32_t(-tag)-(cutout?0x400000u:0u)&&scene.materials[0].alphaCutoff==(cutout?.5f:0.f));
             if(zero)assert(scene.materials[0].lampLocalId==0);
         }
     }

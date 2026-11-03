@@ -77,7 +77,7 @@ def profile(assets, path, blob, catalog, cache=None):
 
 def flags(source):
     kind = source.get('emission')
-    shadow = source.get('casts_shadows', kind in ('fire', 'candle'))
+    shadow = kind != 'candle' and source.get('casts_shadows', kind == 'fire')
     return (CAST_SHADOW if shadow else 0) | (FIRE if kind == 'fire' else CANDLE if kind == 'candle' else 0)
 
 
@@ -109,14 +109,17 @@ def build(assets, extra_paths=()):
 
 
 class Index:
-    def __init__(self, assets):
+    def __init__(self, assets, lazy=False):
         self.assets,self.catalog=assets,load()
         try:
             payload = assets.read(ARCHIVE_PATH)
             self.origin = 'mpq'
         except FileNotFoundError:
-            payload, _ = build(assets)
             self.origin = 'generated-for-mpq'
+            if lazy:
+                self.models={};self.digest=''
+                return
+            payload, _ = build(assets)
         if len(payload) > 32*1024*1024:
             raise ValueError('World emitter index exceeds bounded metadata size')
         self.digest = hashlib.sha256(payload).hexdigest()
@@ -125,7 +128,7 @@ class Index:
 
     def get(self, path, blob):
         value = self.models.get(path)
-        if value is None and path.startswith('spells\\'):
+        if value is None and (path.startswith('spells\\') or self.origin=='generated-for-mpq'):
             value=profile(self.assets,path,blob,self.catalog)
             if value is not None:self.models[path]=value
         if value is None:

@@ -64,8 +64,9 @@ assert digests(without='') != base                                             #
 os.rename(client / 'Data/patch-3.MPQ', client / 'Data/PATCH-3.mpq')
 assert digests() == base                                                       # case
 changed = {k for k, v in digests(sources={'outdoor-light-profiles.json': 'x'}).items() if base[k] != v}
-assert changed == {'lights'}, changed
-assert {k for k,v in digests(sources={'wotlk-emitter-profiles.json':'x'}).items() if base[k]!=v} == {'lights'}
+assert changed == set(base)-{'celestial'}, changed # emitter identities also own M2 shell geometry
+assert {k for k,v in digests(sources={'wotlk-emitter-profiles.json':'x'}).items() if base[k]!=v} == set(base)-{'celestial'}
+assert {k for k,v in digests(sources={'world_lights_builder.py':'x'}).items() if base[k]!=v} == set(base)-{'celestial'}
 assert {k for k, v in digests(sources={'forest_regions.inc': 'x'}).items() if base[k] != v} == {'fog'}
 assert {k for k, v in digests(sources={'build_celestial_disc_assets.py': 'x'}).items() if base[k] != v} == {'celestial'}
 assert {k for k, v in digests(sources={'world_scene_builder.py': 'x'}).items() if base[k] != v} == set(base)
@@ -96,7 +97,8 @@ cache = out / 'world-cache'
 recorded = fake_cache(cache, {'digests': base})
 assert iwc.plan(base, recorded, cache, False, 'z') == ('up_to_date', [])
 assert iwc.plan(base, recorded, cache, True, 'z') == ('full', iwc.POST)
-lights_only = digests(sources={'outdoor-light-profiles.json': 'x'})
+assert iwc.plan(digests(sources={'outdoor-light-profiles.json':'x'}),recorded,cache,False,'z') == ('full',iwc.POST)
+lights_only = digests(sources={'light_attachments.py': 'x'})
 assert iwc.plan(lights_only, recorded, cache, False, 'z') == ('partial', ['lights'])
 (cache / 'celestial/moon.fct').unlink()
 assert iwc.plan(base, recorded, cache, False, 'z') == ('partial', ['celestial'])
@@ -465,7 +467,7 @@ unchanged[unique] = (unique.read_bytes(), unique.stat().st_mtime_ns, unique.stat
 shared_path = icache / 'models' / (SHARED.hex() + '.fgs')
 unchanged[shared_path] = (shared_path.read_bytes(), shared_path.stat().st_mtime_ns, shared_path.stat().st_ino)
 try:
-    iwc.source_hashes = lambda: dict(original_sources, **{'world_lights_builder.py': 'new lights'})
+    iwc.source_hashes = lambda: dict(original_sources, **{'light_attachments.py': 'new lights'})
     assert inst_run('2 6')[1]['built'] == ['classic-raids', 'wotlk-raids']
     assert built_groups == [] and called_steps == ['instances lights', 'instances validate'], called_steps
     assert all((p.read_bytes(), p.stat().st_mtime_ns, p.stat().st_ino) == value for p, value in unchanged.items())
@@ -477,7 +479,7 @@ try:
     assert all(p.stat().st_mtime_ns == t for p, t in light_times.items())
     assert all((p.read_bytes(), p.stat().st_mtime_ns, p.stat().st_ino) == value for p, value in unchanged.items())
     # Adding a new group alongside a light update must preserve shared models of the reused groups.
-    iwc.source_hashes = lambda: dict(light_sources, **{'world_lights_builder.py': 'next lights'})
+    iwc.source_hashes = lambda: dict(light_sources, **{'light_attachments.py': 'next lights'})
     assert inst_run('2 4 6')[1]['built'] == ['classic-raids', 'tbc-raids', 'wotlk-raids']
     assert built_groups == ['tbc-raids']
     assert all((p.read_bytes(), p.stat().st_mtime_ns, p.stat().st_ino) == value for p, value in unchanged.items())

@@ -4,6 +4,7 @@
 import copy
 import hashlib
 import json
+import struct
 from pathlib import Path
 import sys
 import unittest
@@ -15,6 +16,7 @@ fp.use_source_modules()
 import world_emitter_index as index
 from m2_emitter_patch import append_lights, verify_lights
 from test_world_emitter_coverage import fixture
+from world_lights_builder import m2_sources
 
 
 PATH = 'world\\anonymous.m2'
@@ -56,7 +58,7 @@ class WorldEmitterIndex(unittest.TestCase):
         self.assertEqual(position, (0., 0., 2.))
         self.assertEqual(rgb, (.25*.175, .5*.175, .175))
         self.assertEqual((start, end, identity, kind, flags), (1., 8., 0x80000000, 3, 0))
-        for emission, expected in (('fire', index.CAST_SHADOW|index.FIRE), ('candle', index.CAST_SHADOW|index.CANDLE), ('energy', 0)):
+        for emission, expected in (('fire', index.CAST_SHADOW|index.FIRE), ('candle', index.CANDLE), ('energy', 0)):
             self.assertEqual(index.flags({'emission': emission}), expected)
 
     def test_explicit_shadow_intent_survives_compact_build_and_roundtrip(self):
@@ -67,7 +69,7 @@ class WorldEmitterIndex(unittest.TestCase):
                 with patch.object(index,'profile',return_value=measured):payload,_=index.build(self.assets)
                 value=self.read(payload=payload);entry=value.get(PATH,self.blob)
                 self.assertEqual(entry['emitters'][0]['casts_shadows'],shadow)
-                self.assertEqual(bool(index.records(entry)[0][-1]&index.CAST_SHADOW),shadow)
+                self.assertEqual(bool(index.records(entry)[0][-1]&index.CAST_SHADOW),shadow and emission!='candle')
                 self.assertEqual(value.payload(),payload)
         for bad in (0,1,None,'false'):
             value=copy.deepcopy(self.document);value['models'][PATH]['emitters'][0]['casts_shadows']=bad
@@ -88,6 +90,18 @@ class WorldEmitterIndex(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'hash changed'):
             value.get(PATH, self.blob + b'changed')
         self.assertEqual(value.get(PATH, self.blob), self.document['models'][PATH])
+
+    def test_native_candles_keep_energy_without_shadow_intent(self):
+        blob=bytearray(self.blob);struct.pack_into('<I',blob,264,1)
+        native=[((0.,0.,2.),(1.,.5,.2),1.,12.,0,2,index.CAST_SHADOW)]
+        value=self.read();value.catalog={}
+        for path,candle in (('world\\custom_candle.m2',True),('world\\custom_candelabra.m2',True),
+                            ('world\\custom_lantern.m2',False),('world\\anonymous.m2',False)):
+            with self.subTest(path=path):
+                actual=m2_sources(path,blob,native,value)
+                self.assertEqual(actual[0][:-1],native[0][:-1])
+                self.assertEqual(bool(actual[0][-1]&index.CAST_SHADOW),not candle)
+        self.assertEqual(native[0][-1],index.CAST_SHADOW)
 
     def test_malformed_schema_is_refused(self):
         malformed = [[], None, {}, {'version': 1, 'owner': 'northlight-local-direct'},
