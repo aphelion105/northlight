@@ -3,6 +3,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstdio>
+#include <functional>
 #include <cstring>
 #include <string>
 #include "celestial_disc.h"
@@ -41,6 +42,8 @@ struct Device {
 };
 struct Phase {
     Device device,*d=&device;struct Observer {int body=1;int claimIndex(IDirect3DBaseTexture9*){return body;}} observer;
+    IDirect3DSurface9* hdrSkyTarget=nullptr;
+    std::function<IDirect3DSurface9*()> beginHdrSky;
     bool earlyValid=true,failed=false;unsigned frames=1,ownFrame=0;
     NorthlightCelestial::Context earlySkyHeld;std::string earlySkyMap;DWORD earlySkyAt=0;bool earlySkyOk=false;
     float earlyProjection[3]={1,1,1},earlyWorldMaxDepth=.94f;UINT earlyWidth=1280,earlyHeight=720;

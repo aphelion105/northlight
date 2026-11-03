@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# northlight-test: requires=cxx
+# northlight-test: requires=zig
 """Per-frame draw gates preserve the reference hooks under the current visibility policies.
 
 The 0.3.184 hook members and four Draw* overrides are kept below verbatim. The derived reference
@@ -17,7 +17,7 @@ pass 0.3.184's capture and draw calls unchanged, and that each latched input is 
 the gates are latched again. Native clang++, plain -O2 and ASan/UBSan. No device or game."""
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
-import re,subprocess,tempfile
+import os,re,subprocess,tempfile
 
 # Verbatim 0.3.184 (src/proxy/renderer.cpp, 264c601): the hook members ...
 OLD_MEMBERS = r'''
@@ -67,6 +67,11 @@ OLD_DRAWS = r'''
 '''
 HERE=Path(__file__).resolve().parent
 renderer=fp.src('renderer.cpp').read_text()
+# Normal-map capture has its own GPU suite; remove its call surface from this
+# legacy draw-gate model, just as particle/material replay is stubbed below.
+renderer=renderer.replace('NorthlightAutoDisplacement::CaptureSource normalSource;','').replace(',&normalSource);',');')
+renderer=re.sub(r'captureModelNormals\(vs,\[&\]\{return ext->Draw\w+\([^;]+;\},(?:false|true),geometry\);','',renderer)
+
 world_h=fp.src('world_renderer.h').read_text()
 
 
@@ -80,6 +85,7 @@ def member(text,signature):
 
 assert renderer.count('    // 0.3.187 per-frame draw gates')==1
 gates_block=renderer[renderer.index('    // 0.3.187 per-frame draw gates'):renderer.index('    // 0.3.154: blob shadow claim')]
+gates_block=gates_block.replace(member(gates_block,'void refreshPipeline()'), '')
 # 0.3.202 (rain mask MRT): the rain mask members (rainMrtUnbind .. rainBlendDraw) are test_weather_detect's; here only their call surface exists (the hook equivalence runs with rain off)
 _a=gates_block.index('    void rainMrtUnbind(){');_b=gates_block.index('    template<class Draw> HRESULT rainBlendDraw(');_e=gates_block.index('\n    }\n',_b)+7
 checks_rain_stub=(gates_block[_a:_e].count('rainMrtBegin')>=1)
@@ -122,7 +128,7 @@ checks['faint swap: SetTexture(faint), the draw, SetTexture(original), then Rele
     'ext->SetTexture(0,faint);' in swap_src and 'shadowBlobs->faintTexture()' in swap_src and swap_src.index('ext->SetTexture(0,faint);')<swap_src.index('draw();')<swap_src.index('ext->SetTexture(0,original);')<swap_src.rindex('original->Release();')
     and 'extensionWork' not in swap_src and 'return terrainShadowDraw(claimed,draw)' in swap_src)
 checks['the plan keeps only the original (no second GetTexture, no faint pointer member)']=('GetTexture' not in member(renderer,'void planBlobFaint(') and 'blobFaint;' not in renderer and 'blobFaint=' not in renderer)
-checks['faint plan dropped at the start of every draw on both paths']=(renderer.count('dropBlobFaint();prepareDraw(capture,count);')==1 and renderer.count('dropTerrainShadowSwap();dropBlobFaint();')==1 and renderer.count('nameMaskDraw(rainBlend,claimed||mist,draw)')==2 and renderer.count('blobFaintDraw(claimed,draw)')==1)
+checks['faint plan dropped at the start of every draw on both paths']=(renderer.count('dropBlobFaint();prepareDraw(capture,count);')==1 and renderer.count('dropTerrainShadowSwap();dropBlobFaint();')==1 and renderer.count('nameMaskDraw(rainBlend,claimed||mist,nativeDraw)')==2 and renderer.count('blobFaintDraw(claimed,draw)')==1)
 # The other three overrides: 0.3.184's capture call and real draw, passed to drawHook unchanged.
 def old_parts(line):
     cap=re.search(r'prepareDraw\(\[&\]\(IDirect3DVertexShader9\* vs\)\{(.*?)captureWater\(vs,(\w+::\w+),\[&\]\{return (ext->\w+\([^)]*\));\}\);\},count\);',line)
@@ -138,7 +144,7 @@ def new_parts(sig):
         # Both branches still issue exactly one world capture with the same args.
         shared=re.search(r'auto captureWorld=\[&\]\(NorthlightCaptureMetadata::PositionBounds\* out=nullptr\)\{(world->capture\([^;]+);\};',capture)[1]
         assert 'positions.owner=&geometry;positions.shader=vs;' in capture
-        assert 'const bool sharedTerrain=autoBump&&enabled&&!applied&&!failed&&world->terrainShader(vs);' in capture
+        assert 'const bool sharedTerrain=autoBump&&autoBump->active()&&enabled&&!applied&&!failed&&world->terrainShader(vs);' in capture
         assert capture.index('if(sharedTerrain)captureWorld(&positions);') < capture.index('autoBump->capture(') < capture.index('if(!sharedTerrain)captureWorld();')
         assert 'false,&geometry,&positions);' in capture
         capture=shared.replace(',out)',')')+';'
@@ -162,10 +168,10 @@ reset=member(renderer,'HRESULT STDMETHODCALLTYPE Reset(D3DPRESENT_PARAMETERS* pp
 ctor=renderer[renderer.index('    Device(IDirect3DDevice9* d,IDirect3D9* p'):renderer.index('    ~Device() {')]
 code=re.sub(r'"(?:[^"\\]|\\.)*"','""',re.sub(r'/\*.*?\*/|//[^\n]*','',renderer))  # no comments, no string literals
 writes=lambda name,text=None:re.findall(r'(?<![.>:\w])'+name+r'\s*=(?!=)\s*([^;,]*)',code if text is None else text)
-checks['enabled: rises only by retained F10 in finishFrameImpl; else only lowered']=(
-    sorted(writes('enabled'))==['!enabled','false','true'] and 'enabled=!enabled;' in member(finish,'if(masterPressed)')
+checks['enabled: frame-boundary pipeline refresh combines F10 and enabled effects']=(
+    sorted(writes('enabled'))==['!extensionFault&&masterEnabled&&(!world||world->effectsEnabled())','false','true'] and 'masterEnabled=!masterEnabled;' in member(finish,'if(masterPressed)')
     and 'if(!overlay||!overlay->masterHotkey(focus,masterPressed))masterPressed=k10&&!key10;' in finish
-    and finish.index('if(masterPressed)')<finish.index('latchDrawGates();'))
+    and finish.index('if(masterPressed)')<finish.index('refreshPipeline();')<finish.index('latchDrawGates();'))
 checks['failed=false only in Reset (latched there) and the retry in finishFrameImpl']=(len(re.findall(r'\bfailed\s*=\s*false',code))==3  # + the member initialiser
     and 'failed=false;latchDrawGates();' in reset and 'failed=false;logf("Effects retry requested after frame cleanup");' in finish
     and finish.index('failed=false;logf("Effects retry')<finish.index('latchDrawGates();'))
@@ -174,7 +180,7 @@ checks['F9/F12/setEffects only in finishFrameImpl, before the latch']=(code.coun
     and finish.rstrip().endswith('latchDrawGates(); /* 0.3.187: the next frame\'s draw gates, after every input above */\n    }'))
 checks['renderers created in the constructor (latched there), released only at destroy']=(
     all(code.count(x+'=std::make_unique<')==1 and x+'=std::make_unique<' in ctor for x in ('world','celestialDiscs','shadowBlobs'))
-    and ctor.index('shadowBlobs=std::make_unique<')<ctor.index('frameDrawGates=world->frameDrawGates();latchDrawGates();')
+    and ctor.index('shadowBlobs=std::make_unique<')<ctor.index('latchDrawGates();')
     and code.count('shadowBlobs.reset();celestialDiscs.reset();')==1 and code.count('world.reset();')==1)
 wcode=re.sub(r'/\*.*?\*/|//[^\n]*','',world_h)
 checks['ActorShadows and effects.shadows: device creation and setEffects only']=(wcode.count('loadQuality();')==1 and wcode.count('effects=next;')==1
@@ -191,7 +197,7 @@ HARNESS=r'''
 #include "world_draw_domain.h"
 #include "native_shadow_observation.h"
 #include "native_local_light_probe.h"
-#include "sky_restore.h"
+#include "sky_composition.h"
 #include <cassert>
 #include <cstdarg>
 #include <cstdint>
@@ -301,7 +307,7 @@ struct GateCounts{unsigned blobCalls=0,blobTextures=0,blobClaimed=0;};
 namespace NorthlightParticleCapture{struct Prepared{};}
 namespace NorthlightAutoDisplacement{struct Args{struct{D3DPRIMITIVETYPE t;INT base;UINT min,vertices,start,count;bool indexed;}draw;};}
 struct ExtensionDevice{struct RawScope{explicit RawScope(MockExt&){}};};
-struct BumpMock{void beginDraw(){}template<class... A> void capture(A&&...){}template<class Draw> HRESULT geometryDraw(Draw draw,bool){return draw();}template<class Draw> HRESULT nativeDraw(Draw draw,IDirect3DVertexShader9*,IDirect3DPixelShader9*){return draw();}};
+struct BumpMock{void beginDraw(){}void beforeNativeDraw(){}template<class... A> void capture(A&&...){}template<class Draw> HRESULT geometryDraw(Draw draw,bool){return draw();}template<class Draw> HRESULT nativeDraw(Draw draw,IDirect3DVertexShader9*,IDirect3DPixelShader9*){return draw();}};
 struct Base{
     virtual ~Base()=default;
     virtual HRESULT DrawPrimitive(D3DPRIMITIVETYPE,UINT,UINT)=0;
@@ -310,10 +316,13 @@ struct Base{
     MirrorStateMock mirrorState;
     BumpMock* autoBump=nullptr;struct{bool capsHalved()const{return false;}}memoryGuard;
     template<class Draw> HRESULT hdrDraw(Draw draw){return draw();}
+    template<class Draw> HRESULT aoActorNativeDraw(Draw draw){return draw();}
+    struct{bool active=false;}hdr;bool diagnostics()const{return true;}HRESULT hdrResumeWorld(){return D3D_OK;}bool hdrSkyAdmission(){return false;}template<class Draw> void hdrReplaySky(bool,bool,Draw){}
     template<class Draw> HRESULT projectedDraw(UINT,unsigned,Draw draw){return draw();}
     struct GpuScene{struct{bool currentFrame(unsigned)const{return true;}}native;void setFrame(unsigned){}};GpuScene* gpuScene=nullptr;
-    SkyRestore::State skyRestoreState;
-    void skyRestoreBefore(D3DPRIMITIVETYPE,UINT,SkyRestore::Draw&){}
+    struct {void invalidate(){}} skyLayers;
+    void skyLayersBefore(D3DPRIMITIVETYPE,UINT,NorthlightSkyComposition::Role&){}
+    template<class Draw> void skyLayersReplay(NorthlightSkyComposition::Role,bool,Draw){}
     bool projectionValid=false,skySeen=false,captured=false;float scaleX=1,scaleY=1,fogForward=1;
     bool bindWorldDepth(const D3DSURFACE_DESC&){return false;}
     bool extensionFault=false,failed=false,enabled=true,applied=false,terrain=false,gateFrame=false,rainMaskCleared=false,rainMaskDrawn=false,rainMaskFrame=false,rainMaskOk=false,rainMrtBound=false,rainMaskFailed=false,rainMaskMismatchLogged=false;UINT width=0,height=0;IDirect3DTexture9* rainMask=nullptr;IDirect3DSurface9* rainMaskSurface=nullptr;IDirect3DSurface9* rainMaskMS=nullptr;D3DMULTISAMPLE_TYPE rainMaskMsType=D3DMULTISAMPLE_NONE,rainMaskWantType=D3DMULTISAMPLE_NONE;DWORD rainMaskMsQuality=0,rainMaskWantQuality=0;unsigned rainMaskDraws=0;
@@ -464,9 +473,11 @@ int main(){
 src=HARNESS.replace('@OLD@',OLD_MEMBERS+'\n'+old_draws[0]).replace('@NEW@',new_members)
 with tempfile.TemporaryDirectory(prefix='northlight-draw-gates-') as tmp:
     (Path(tmp)/'draw_gates_test.cpp').write_text(src)
-    for label,flags in [('O2',['-O2']),('asan',['-O1','-g','-fsanitize=address,undefined','-fno-sanitize-recover=all'])]:
-        exe=Path(tmp)/('test-'+label)
-        subprocess.run(['clang++','-std=c++17','-Wall','-Wextra','-Werror','-Wno-unused-parameter','-Wno-unused-private-field',*flags,*fp.test_include_flags(),str(Path(tmp)/'draw_gates_test.cpp'),'-o',str(exe)],check=True)
+    variants=[('O2',['-O2'])] if os.name=='nt' else [('O2',['-O2']),('asan',['-O1','-g','-fsanitize=address,undefined','-fno-sanitize-recover=all'])]
+    compiler=[str(fp.zig()),'c++','-target','x86-windows-gnu'] if os.name=='nt' else ['clang++']
+    for label,flags in variants:
+        exe=Path(tmp)/('test-'+label+('.exe' if os.name=='nt' else ''))
+        subprocess.run([*compiler,'-std=c++17','-UNDEBUG','-Wall','-Wextra','-Werror','-Wno-unused-parameter','-Wno-unused-private-field',*flags,*fp.test_include_flags(),str(Path(tmp)/'draw_gates_test.cpp'),'-o',str(exe)],env=fp.zig_env(),check=True)
         print(label,subprocess.check_output([str(exe)],text=True),end='',flush=True)
 for name,ok in checks.items():print(('PASS ' if ok else 'FAIL ')+name)
 assert all(checks.values())

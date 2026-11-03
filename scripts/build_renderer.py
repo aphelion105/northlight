@@ -68,6 +68,8 @@ def main(argv=None):
         raise SystemExit(f'build_renderer.py: {e}\nInstall zig {northlight_paths.ZIG_VERSION} (https://ziglang.org/download/) and point NORTHLIGHT_ZIG at it.')
     env = northlight_paths.zig_env()
     check_compiler(zig, env)
+    from build_sky_material_catalog import check_generated
+    check_generated()
     subprocess.run([sys.executable, str(ROOT/'generate_forwarders.py')], check=True)
     subprocess.run([sys.executable, str(ROOT/'generate_mirror_guarded_device.py')], check=True)
     subprocess.run([sys.executable, str(ROOT/'generate_mirror_resource_forwarders.py')], check=True)

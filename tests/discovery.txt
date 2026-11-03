@@ -376,6 +376,7 @@ test_shared_terrain_bounds.py
 test_shared_terrain_bounds_gpu.py
 test_single_skin_intervals.py
 test_sky_lightning_coverage.py
+test_sky_material_catalog.py
 test_sky_only_context.py
 test_sky_restore.py
 test_snapshot_allocation.py

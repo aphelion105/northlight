@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
-# northlight-test: requires=cxx
+# northlight-test: requires=zig
 """Zone skybox fallback: native decode/mode/signature test (test_celestial_skybox.cpp) plus static checks that a skybox frame
 restores the late disc and full glare (the planet phase never draws under a full skybox) while other frames keep the
 planet-phase path. No device or game."""
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
-import subprocess,tempfile
+import subprocess,tempfile,os
 HERE=Path(__file__).resolve().parent
 with tempfile.TemporaryDirectory(prefix='northlight-celestial-skybox-') as tmp:
-    binary=str(Path(tmp)/'test')
-    subprocess.run(['c++','-std=c++17','-O1','-g','-fsanitize=address,undefined','-fno-omit-frame-pointer',*fp.test_include_flags(),
-                    str(HERE/'test_celestial_skybox.cpp'),'-o',binary],check=True)
+    binary=str(Path(tmp)/('test.exe' if os.name=='nt' else 'test'))
+    compiler=([str(fp.zig()),'c++','-target','x86-windows-gnu','-O2'] if os.name=='nt' else ['c++','-O1','-g','-fsanitize=address,undefined','-fno-omit-frame-pointer'])
+    subprocess.run([*compiler,'-std=c++17','-UNDEBUG',*fp.test_include_flags(),
+                    str(HERE/'test_celestial_skybox.cpp'),'-o',binary],env=fp.zig_env(),check=True)
     native=subprocess.check_output([binary],text=True).strip()
 assert native.startswith('PASS'),native
 

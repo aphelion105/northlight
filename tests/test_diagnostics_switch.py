@@ -18,6 +18,10 @@ FILES=['renderer.cpp','world_renderer.h','world_shadow_experiment.inl','world_po
 GATES=('NorthlightDiagnostics::enabled()','diagnostics()','sampled()','captureSampled','if(diagnostics)','shadowFate.active()','sampledFrame','profiling()','profileSampled()','if(lightingClock)','materialProfile->recording()','if(profileThisBuild)','if(resetProfile)')
 # Ungated lines that stay with Diagnostics=0: format prefix -> label.
 KEEP={
+ 'SKYLAYERS capture failed':'capped: first sixteen sky-mask capture failures',
+ 'EMISSION catalog loaded=':'device initialization: one catalog load per wrapped device',
+ 'ART INPUTS status=':'start-up: art-input verification result',
+ 'GLUE lighting selection status=':'start-up: native lighting hook installation result',
  'WEATHER capture ':'explicit user-requested weather/effect capture; consumeRequest checks the Weather request, fallback caller checks its scopes',
  'POINT PCSS unavailable':'one-off per GPU resource lifetime: pointSoftTried is set before optional shader creation',
  'STENCIL depth upgrade unavailable':'one-off per process: unavailableLogged latch',

@@ -10,6 +10,9 @@ sampler2D DiscTexture : register(s1);
 sampler2D DiscWater : register(s2);
 sampler2D DiscHaloVisibility : register(s3); // current halo, previous 1x1 value in visibility pass
 sampler2D DiscTerrain : register(s4); // viewer-ray coverage of already loaded terrain
+sampler2D DiscSkyLayers : register(s6); // RGB: attenuated background; A: cloud transmission
+float4 DiscSkyComposition : register(c49); // enabled, surface emission, surface opacity, reserved
+float4 DiscSurfaceTint : register(c50);
 sampler2D DiscRingVisibility : register(s5); // 1x1 visibility of the 2-4R ring (sun), else the halo value
 float4 DiscTerrainPolicy : register(c46); // ready, mask extent in body radii, body texture LOD, glare mode (0 late tail, 1 sky-phase compact core, 2 late full glare in a skybox frame)
 float4 DiscImage : register(c0); // inv fullWidth/Height, world depthMin, inverse depthRange
@@ -187,11 +190,27 @@ float4 CelestialDiscPS(float2 uv:TEXCOORD0):COLOR0 {
     }
     alpha*=terrainVisible;
     // In the early sky pass an invisible quad pixel must not write sky depth.
-    clip(alpha-.001);
+    if(DiscSkyComposition.x<.5)clip(alpha-.001);
     // The authored shoulder produces encoded SDR colour. Decode its RESULT
     // once for additive HDR; decoding the tint before the nonlinear shoulder
     // lifts faint broad tails by up to 12.92x. Only the disc owns HDR headroom.
     if(DiscEmission.w>.5){encoded=glowShoulder(alpha,encoded);if(DiscPolicy.x>1.5)encoded=discDecode(encoded);}
+    if(DiscSkyComposition.x>.5&&DiscEmission.w>.5){
+        float4 layers=tex2Dlod(DiscSkyLayers,float4(depthUV,0,0));
+        float surfaceAlpha=texel.a*saturate(DiscSkyComposition.z)*saturate(30*ray.z/forward)*terrainVisible;
+        if(max(abs(local.x),abs(local.y))>1||surfaceAlpha<.001)surfaceAlpha=0;
+        float3 surface=saturate(texel.rgb*DiscSkyComposition.y)*DiscSurfaceTint.rgb;
+        if(DiscPolicy.x>1.5)surface=discDecode(texel.rgb)*DiscSkyComposition.y*discDecode(DiscSurfaceTint.rgb)*(DiscPolicy.x>2.5?2:8);
+        if(DiscPolicy.x>.5&&DiscPolicy.x<1.5)surface=discDecode(surface);
+        surface*=surfaceAlpha;
+        float3 halo=alpha<.001?0:outputColor(encoded);
+        // Equivalent to inserting the surface and screen-blended halo behind
+        // the native foreground layers. Their colour is already in the scene.
+        // HDR uses additive emission and needs only the transmission channel.
+        float3 contribution=DiscPolicy.x>1.5?layers.a*(surface+halo):
+            layers.a*surface*(1-halo)+halo*(layers.a-min(layers.rgb,layers.aaa));
+        return float4(contribution,1);
+    }
     return float4(outputColor(encoded),alpha);
 }
 // Diffuse bloom crosses silhouettes; the compact source core stays occluded.
