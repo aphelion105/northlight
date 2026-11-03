@@ -8,6 +8,7 @@ acceptance gates; a preparation manifest cannot prove full-scene FPS.
 import argparse
 import hashlib
 import json
+import math
 from pathlib import Path
 import shutil
 import struct
@@ -15,7 +16,7 @@ import zlib
 
 HEADER_BYTES = 40
 MAX_KEYS, MAX_COPIES, ARENA_BYTES = 64, 256, 64 * 1024
-MAX_ARCHIVE_BYTES = HEADER_BYTES + MAX_COPIES * 16 + ARENA_BYTES + 4
+MAX_ARCHIVE_BYTES = HEADER_BYTES + MAX_COPIES * 16 + ARENA_BYTES + 4 + 80 + 128 * 48
 
 
 def digest(path):
@@ -91,11 +92,13 @@ def inspect_snapshot(path):
         raise ValueError('Snapshot archive size is outside the fixed capacity')
     data = path.read_bytes()
     magic, version, size, trigger, keys, copies, payload, draw = struct.unpack_from('<8s6IQ', data)
-    if magic != b'NLSNAP1\0' or version != 1:
+    if magic != b'NLSNAP1\0' or version not in (1, 2):
         raise ValueError('Unsupported snapshot archive magic/version')
+    base_size = HEADER_BYTES + copies * 16 + payload + 4
     if (size != len(data) or trigger > 3 or not 0 < keys <= MAX_KEYS
             or not keys <= copies <= MAX_COPIES or payload > ARENA_BYTES
-            or HEADER_BYTES + copies * 16 + payload + 4 != size):
+            or base_size > size or (version == 1 and base_size != size)
+            or (version == 2 and size - base_size < 80)):
         raise ValueError('Invalid snapshot archive header bounds')
     if struct.unpack_from('<I', data, size - 4)[0] != zlib.crc32(data[:-4]):
         raise ValueError('Snapshot archive checksum mismatch')
@@ -115,8 +118,21 @@ def inspect_snapshot(path):
             copied += count
         else:
             failed += 1
-    if offset != size - 4 or copied != payload or len(seen) != keys:
+    if offset != base_size - 4 or copied != payload or len(seen) != keys:
         raise ValueError('Snapshot record/header counts differ')
+    if version == 2:
+        scene, _, count, valid = struct.unpack_from('<4I', data, offset)
+        if (not scene or valid != 1 or count > 128 or size - base_size != 80 + count * 48
+                or b'\0' not in data[offset + 16:offset + 80]):
+            raise ValueError('Invalid native light snapshot header')
+        offset += 80
+        for _ in range(count):
+            identity, *values, reserved = struct.unpack_from('<Q9fI', data, offset)
+            if (not identity or reserved or not all(math.isfinite(v) for v in values)
+                    or any(abs(v) >= 100000 for v in values[:3])
+                    or any(not 0 <= v <= 10000 for v in values[3:])):
+                raise ValueError('Invalid native light snapshot value')
+            offset += 48
     return {'sha256': hashlib.sha256(data).hexdigest(), 'bytes': size,
             'keys': keys, 'copies': copies, 'payload_bytes': payload,
             'recorded_failures': failed, 'trigger_kind': trigger, 'draw_ordinal': draw}

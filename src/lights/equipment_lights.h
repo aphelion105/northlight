@@ -1,6 +1,7 @@
 #pragma once
 #include "world_local_lights.h"
 #include "local_light_selection.h"
+#include "native_light_snapshot.h"
 #include <array>
 #include <algorithm>
 #include <cmath>
@@ -60,7 +61,7 @@ inline NorthlightLocalLights::Light light(const Native& n,std::uint64_t id,float
     l.attenuationStart=std::min(1.f,reach*.2f);l.attenuationEnd=reach;l.sourceId=0xfec0000000000000ull|id;l.kind=2;return l;
 }
 struct Tracker {
-    struct Entry {Native source;std::uint64_t id=0;std::uint32_t seen=0;float gain=0;};
+    struct Entry {Native source;std::uint64_t id=0;std::uint32_t seen=0;float gain=0;std::uint64_t nativeId=0;};
     std::array<Entry,Capacity> entries{};unsigned count=0,banks=0,backgroundBanks=0,bankDuplicates=0,observed=0,duplicates=0,dropped=0;std::uint64_t serial=0;std::uint32_t updated=0;
     struct Bank {std::array<std::array<float,9>,4> sources{};unsigned count=0;};
     std::array<Bank,MemoBanks> frameBanks{};
@@ -78,10 +79,13 @@ struct Tracker {
         for(unsigned i=0;i<std::min(banks,MemoBanks);++i)if(frameBanks[i].count==points&&frameBanks[i].sources==key.sources){++bankDuplicates;return false;}
         frameBanks[banks++%MemoBanks]=key;if(!actor)++backgroundBanks;return true;
     }
-    void observe(const Native& n,std::uint32_t now,const std::vector<NorthlightLocalLights::Light>& fixed,const float* camera=nullptr){
+    void observe(const Native& n,std::uint32_t now,const std::vector<NorthlightLocalLights::Light>& fixed,const float* camera=nullptr,std::uint64_t nativeId=0){
         ++observed;if(staticDuplicate(n,fixed)){++duplicates;return;}
         unsigned at=count;float best=1.f;
-        for(unsigned i=0;i<count;++i){const float d=distance2(n.position,entries[i].source.position);if(d<best&&hueClose(n.color,entries[i].source.color)){at=i;best=d;}}
+        for(unsigned i=0;i<count;++i){
+            if(nativeId&&entries[i].nativeId==nativeId){at=i;break;}
+            const float d=distance2(n.position,entries[i].source.position);
+            if((!nativeId||!entries[i].nativeId)&&d<best&&hueClose(n.color,entries[i].source.color)){at=i;best=d;}}
         if(at==count){
             if(count==Capacity){
                 unsigned worst=0;bool stale=false;float farthest=-1;
@@ -95,10 +99,32 @@ struct Tracker {
                 const bool closer=entries[worst].gain>0?reach*reach<farthest:
                     d2<farthest||(d2==farthest&&std::lexicographical_compare(n.position,n.position+3,entries[worst].source.position,entries[worst].source.position+3));
                 if(!stale&&(!camera||!closer)){++dropped;return;}
-                entries[worst]={n,++serial,now,0};
-            }else entries[count++]={n,++serial,now,0};
+                entries[worst]={n,++serial,now,0,nativeId};
+            }else entries[count++]={n,++serial,now,0,nativeId};
         }
-        else{entries[at].source=n;entries[at].seen=now;}
+        else{entries[at].source=n;entries[at].seen=now;if(nativeId)entries[at].nativeId=nativeId;}
+    }
+    void observeScene(const NorthlightNativeLights::Snapshot& scene,std::uint32_t now,const std::vector<NorthlightLocalLights::Light>& fixed,const float* camera){
+        if(!scene.valid||!NorthlightNativeLights::wellFormed(scene))return;
+        for(unsigned i=0;i<count;++i)if(entries[i].nativeId){
+            const auto end=scene.lights.begin()+scene.count;
+            const auto p=std::find_if(scene.lights.begin(),end,[&](const auto& light){return light.id==entries[i].nativeId;});
+            if(p==end||std::max({p->color[0],p->color[1],p->color[2]})<.01f){
+                entries[i].seen=now-unsigned(LifeSeconds*1000);entries[i].gain=0;
+            }
+        }
+        for(unsigned i=0;i<scene.count;++i){const auto& p=scene.lights[i];
+            if(std::max({p.color[0],p.color[1],p.color[2]})<.01f||p.attenuation[0]+p.attenuation[1]+p.attenuation[2]<.001f||distance2(p.position,camera)>MaxDistance*MaxDistance)continue;
+            Native n;std::copy_n(p.position,3,n.position);std::copy_n(p.color,3,n.color);std::copy_n(p.attenuation,3,n.attenuation);
+            observe(n,now,fixed,camera,p.id);
+        }
+        // A draw can have reported the new hue before the scene snapshot
+        // updates its existing identity. Retire that anonymous duplicate.
+        for(unsigned i=0;i<count;++i)if(!entries[i].nativeId)
+            for(unsigned j=0;j<count;++j)if(entries[j].nativeId&&entries[j].seen==now&&
+               distance2(entries[i].source.position,entries[j].source.position)<.25f*.25f&&hueClose(entries[i].source.color,entries[j].source.color)){
+                entries[i].seen=now-unsigned(LifeSeconds*1000);entries[i].gain=0;break;
+            }
     }
     void publish(std::uint32_t now,const std::vector<NorthlightLocalLights::Light>* fixed=nullptr){
         const float dt=updated?std::min(float(std::uint32_t(now-updated))*.001f,.1f):0;updated=now;outputCount=suppressedCount=0;

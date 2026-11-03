@@ -10,7 +10,8 @@
 
 namespace NorthlightStream::SnapshotArchive {
 constexpr std::size_t HeaderBytes=40,RecordBytes=16,ChecksumBytes=4;
-constexpr std::size_t MaxBytes=HeaderBytes+GameSnapshot::MaxCopies*RecordBytes+GameSnapshot::ArenaBytes+ChecksumBytes;
+constexpr std::size_t LightHeaderBytes=80,LightBytes=48;
+constexpr std::size_t MaxBytes=HeaderBytes+GameSnapshot::MaxCopies*RecordBytes+GameSnapshot::ArenaBytes+ChecksumBytes+LightHeaderBytes+NorthlightNativeLights::Capacity*LightBytes;
 constexpr unsigned Version=1;
 enum class Error {None,Unusable,Buffer,Magic,Version,Bounds,Checksum,Record,Counts,Address};
 inline const char* name(Error error){
@@ -29,11 +30,12 @@ inline std::uint32_t checksum(const unsigned char* p,std::size_t size){
 }
 inline bool encode(const GameSnapshot& snapshot,unsigned char* output,std::size_t capacity,std::size_t& written,Error& error){
     written=0;error=Error::None;
-    if(!snapshot.usable()||snapshot.triggerKind>3){error=Error::Unusable;return false;}
-    const auto size=HeaderBytes+snapshot.copies()*RecordBytes+snapshot.bytes()+ChecksumBytes;
+    if(!snapshot.usable()||snapshot.triggerKind>3||!NorthlightNativeLights::wellFormed(snapshot.nativeLights)){error=Error::Unusable;return false;}
+    const auto& lights=snapshot.nativeLights;
+    const auto size=HeaderBytes+snapshot.copies()*RecordBytes+snapshot.bytes()+ChecksumBytes+(lights.valid?LightHeaderBytes+lights.count*LightBytes:0);
     if(!output||size>capacity||size>MaxBytes){error=Error::Buffer;return false;}
     const unsigned char magic[8]={'N','L','S','N','A','P','1',0};std::memcpy(output,magic,sizeof magic);
-    put32(output+8,Version);put32(output+12,std::uint32_t(size));put32(output+16,snapshot.triggerKind);
+    put32(output+8,lights.valid?2:Version);put32(output+12,std::uint32_t(size));put32(output+16,snapshot.triggerKind);
     put32(output+20,std::uint32_t(snapshot.keys()));put32(output+24,std::uint32_t(snapshot.copies()));put32(output+28,std::uint32_t(snapshot.bytes()));put64(output+32,snapshot.triggerDraw);
     std::size_t offset=HeaderBytes;
     const bool ok=snapshot.visitRecorded([&](std::uintptr_t address,std::uint32_t count,bool success,const void* data){
@@ -41,6 +43,12 @@ inline bool encode(const GameSnapshot& snapshot,unsigned char* output,std::size_
         if(offset>size-ChecksumBytes||RecordBytes+payload>size-ChecksumBytes-offset)return false;
         put64(output+offset,std::uint64_t(address));put32(output+offset+8,count);put32(output+offset+12,success?1u:0u);offset+=RecordBytes;
         if(payload){std::memcpy(output+offset,data,payload);offset+=payload;}return true;});
+    if(lights.valid){
+        put32(output+offset,lights.scene);put32(output+offset+4,lights.time);put32(output+offset+8,lights.count);put32(output+offset+12,1);
+        std::memcpy(output+offset+16,lights.map,64);offset+=LightHeaderBytes;
+        for(unsigned i=0;i<lights.count;++i){const auto& p=lights.lights[i];put64(output+offset,p.id);
+            std::memcpy(output+offset+8,p.position,36);put32(output+offset+44,0);offset+=LightBytes;}
+    }
     if(!ok||offset!=size-ChecksumBytes){error=Error::Counts;return false;}
     put32(output+offset,checksum(output,offset));written=size;return true;
 }
@@ -49,9 +57,10 @@ inline bool decode(const unsigned char* input,std::size_t size,GameSnapshot& sna
     auto fail=[&](Error why){snapshot.clear();error=why;return false;};
     if(!input||size<HeaderBytes+ChecksumBytes||size>MaxBytes)return fail(Error::Bounds);
     const unsigned char magic[8]={'N','L','S','N','A','P','1',0};if(std::memcmp(input,magic,sizeof magic))return fail(Error::Magic);
-    if(u32(input+8)!=Version)return fail(Error::Version);
+    const auto version=u32(input+8);if(version!=Version&&version!=2)return fail(Error::Version);
     const auto trigger=u32(input+16),keys=u32(input+20),copies=u32(input+24),payload=u32(input+28);
-    if(u32(input+12)!=size||trigger>3||!keys||keys>GameSnapshot::MaxKeys||!copies||copies>GameSnapshot::MaxCopies||keys>copies||payload>GameSnapshot::ArenaBytes||HeaderBytes+std::size_t(copies)*RecordBytes+payload+ChecksumBytes!=size)return fail(Error::Bounds);
+    const auto baseSize=HeaderBytes+std::size_t(copies)*RecordBytes+payload+ChecksumBytes;
+    if(u32(input+12)!=size||trigger>3||!keys||keys>GameSnapshot::MaxKeys||!copies||copies>GameSnapshot::MaxCopies||keys>copies||payload>GameSnapshot::ArenaBytes||baseSize>size||(version==1&&baseSize!=size)||(version==2&&size-baseSize<LightHeaderBytes))return fail(Error::Bounds);
     if(u32(input+size-ChecksumBytes)!=checksum(input,size-ChecksumBytes))return fail(Error::Checksum);
     std::size_t offset=HeaderBytes;
     for(std::uint32_t i=0;i<copies;++i){
@@ -62,7 +71,15 @@ inline bool decode(const unsigned char* input,std::size_t size,GameSnapshot& sna
         if(!snapshot.record(std::uintptr_t(address),input+offset,count,flags!=0))return fail(Error::Counts);
         if(flags)offset+=count;
     }
-    if(offset!=size-ChecksumBytes||snapshot.keys()!=keys||snapshot.bytes()!=payload||snapshot.copies()!=copies||!snapshot.usable())return fail(Error::Counts);
+    if(offset!=baseSize-ChecksumBytes||snapshot.keys()!=keys||snapshot.bytes()!=payload||snapshot.copies()!=copies||!snapshot.usable())return fail(Error::Counts);
+    if(version==2){auto& lights=snapshot.nativeLights;
+        lights.scene=u32(input+offset);lights.time=u32(input+offset+4);lights.count=u32(input+offset+8);lights.valid=u32(input+offset+12);
+        if(lights.valid!=1||lights.count>NorthlightNativeLights::Capacity||size-baseSize!=LightHeaderBytes+lights.count*LightBytes)return fail(Error::Bounds);
+        std::memcpy(lights.map,input+offset+16,64);offset+=LightHeaderBytes;
+        for(unsigned i=0;i<lights.count;++i){auto& p=lights.lights[i];p.id=u64(input+offset);
+            std::memcpy(p.position,input+offset+8,36);p.reserved=u32(input+offset+44);offset+=LightBytes;}
+        if(!NorthlightNativeLights::wellFormed(lights))return fail(Error::Record);
+    }
     snapshot.triggerKind=trigger;snapshot.triggerDraw=u64(input+32);snapshot.mode=GameSnapshot::Mode::Playing;snapshot.rewind();return true;
 }
 

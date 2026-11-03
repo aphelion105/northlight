@@ -14,6 +14,10 @@ static void fill(GameSnapshot& s,std::uint64_t draw,float x){
     assert(s.record(0xb7436c,&frame,4,true));assert(s.record(frame+0x7e20,&camera,4,true));
     assert(s.record(camera+8,xyz,sizeof xyz,true));assert(s.record(0xce06d0,map,sizeof map,true));
     assert(s.record(0x18020000,nullptr,4,false));
+    s.nativeLights.scene=0x18030000;s.nativeLights.valid=1;s.nativeLights.count=1;
+    std::strcpy(s.nativeLights.map,"Azeroth");s.nativeLights.lights[0].id=draw;
+    s.nativeLights.lights[0].position[0]=x;s.nativeLights.lights[0].color[0]=.5f;
+    s.nativeLights.lights[0].attenuation[1]=.7f;
 }
 int main(int argc,char** argv){
     assert(argc==2);std::ifstream input(argv[1],std::ios::binary);assert(input);
@@ -47,6 +51,7 @@ int main(int argc,char** argv){
                 assert(!NorthlightWorldContext::readSelf(0x18020000,&host,4));queued.triggerKind=2;queued.triggerDraw=100;}
             assert(admission.commit(queued));}
         assert(queued.keys()==5&&queued.copies()==5&&queued.usable());
+        assert(queued.nativeLights.valid&&queued.nativeLights.lights[0].id==100);
         const auto pin=StandInputs::shareForPlayback();assert(pin);
         fill(snapshot,101,11);assert(session.bind(snapshot,101,2));
         std::thread worker([pin,&queued]{
@@ -54,6 +59,7 @@ int main(int argc,char** argv){
             StandInputs::PlaybackScope nested(pin);assert(!nested.entered());
             assert(NorthlightWorldContext::supportedClient());
             {ScopedPlayback playback(queued);
+                assert(activeSnapshot->nativeLights.lights[0].position[0]==10);
                 float camera[3]{};char map[64]{};unsigned value=77;
                 for(unsigned i=0;i<8;++i)assert(NorthlightWorldContext::readMapAndCamera(map,camera)&&camera[0]==10);
                 assert(!NorthlightWorldContext::readSelf(0x18020000,&value,4)&&value==77);

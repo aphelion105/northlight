@@ -4,6 +4,9 @@
 #include "composite_distance_gpu.cpp"
 #undef main
 #include "local_light_scissor.h"
+#include "native_scene_light_fixture.h"
+#include "equipment_lights.h"
+#include "particle_lights.h"
 
 static Image solid(float r,float g=0,float b=0,float a=0){
     Image im{1,1,D3DFMT_A32B32G32R32F,16,std::vector<unsigned char>(16)};
@@ -22,13 +25,20 @@ int main(int argc,char** argv){
     for(auto state:{D3DRS_ZENABLE,D3DRS_ZWRITEENABLE,D3DRS_ALPHATESTENABLE,D3DRS_ALPHABLENDENABLE,D3DRS_FOGENABLE,D3DRS_SRGBWRITEENABLE})ok(d->SetRenderState(state,FALSE));
     ok(d->SetRenderState(D3DRS_CULLMODE,D3DCULL_NONE));ok(d->SetRenderState(D3DRS_COLORWRITEENABLE,15));
     for(unsigned s=0;s<16;++s){for(auto key:{D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER})ok(d->SetSamplerState(s,key,D3DTEXF_POINT));ok(d->SetSamplerState(s,D3DSAMP_MIPFILTER,D3DTEXF_NONE));for(auto key:{D3DSAMP_ADDRESSU,D3DSAMP_ADDRESSV})ok(d->SetSamplerState(s,key,D3DTADDRESS_CLAMP));}
-    const float nearZ=.2f,farZ=1277.00488f,distance=32,world[]={5766,573,650},lamp[]={5765.8f,578.75f,652.7f,12},rgb[]={.38665f,.11611f,.00428f,1.f/11};
+    const float nearZ=.2f,farZ=1277.00488f,distance=5,world[]={5766,573,650};
+    Fixture fixture;const auto model=fixture.add(5765.8f);auto& placement=fixture.memory.object(model);
+    put(placement,0xe8,578.75f);put(placement,0xec,651.7f);std::copy_n(world,3,fixture.camera);fixture.update();assert(fixture.output.count==1);
+    NorthlightEquipmentLights::Tracker native;NorthlightParticleLights::Frame particles;NorthlightLocalLightSelection::Tracker selector;
+    native.observeScene(fixture.output,1000,{},fixture.camera);native.publish(1000);
+    native.observeScene(fixture.output,1100,{},fixture.camera);native.publish(1100);assert(native.outputCount==1);
+    const auto reference=native.output[0];const float lamp[]={reference.position[0],reference.position[1],reference.position[2],reference.attenuationEnd};
+    const float rgb[]={reference.diffuse[0],reference.diffuse[1],reference.diffuse[2],NorthlightLocalLightSelection::transport(reference)};
     const float depth=farZ/(farZ-nearZ)*(1-nearZ/distance)*.94f;
     auto z=texture(d,solid(depth)),normal=texture(d,solid(0,1,0,1)),baseline=texture(d,solid(0,0,0,1)),zero=texture(d,solid(0)),detail=texture(d,solid(.5f,.5f,-distance,1));
     ok(d->SetTexture(1,z));ok(d->SetTexture(9,detail));ok(d->SetTexture(11,zero));ok(d->SetTexture(12,baseline));ok(d->SetTexture(14,normal));
     const Vertex quad[]={{-.5f,-.5f,0,1,0,0},{.5f,-.5f,0,1,1,0},{-.5f,.5f,0,1,0,1},{.5f,.5f,0,1,1,1}};
     float delta[3],length=0;for(unsigned k=0;k<3;++k){delta[k]=lamp[k]-world[k];length+=delta[k]*delta[k];}length=std::sqrt(length);
-    const float reach=(lamp[3]-length)*rgb[3],lambert=delta[1]/length;unsigned cases=0,failures=0;float maxError=0;
+    const float reach=(lamp[3]-length)*rgb[3],lambert=delta[1]/length;unsigned cases=0,failures=0,bulbOffscreen=0;float maxError=0;
     for(const char* entry:{"LocalDirect1","LocalDirect","LocalDirect16"}){
         auto code=read(std::string(argv[1])+"/"+entry+".bin");IDirect3DPixelShader9* ps=nullptr;ok(d->CreatePixelShader((const DWORD*)code.data(),&ps));ok(d->SetPixelShader(ps));
         for(float pitch:{0.f,10.f,41.f,66.f,88.f})for(float yaw:{-150.f,-20.f,75.f})for(float sign:{-1.f,1.f})for(float sunCut:{0.f,.7f})for(float bump:{0.f,.75f}){
@@ -38,7 +48,15 @@ int main(int argc,char** argv){
             float c[116][4]{};c[0][0]=c[0][1]=.5f;c[0][2]=nearZ;c[0][3]=farZ;c[1][0]=1.10396826f;c[1][1]=1.96261036f;c[1][2]=sign;c[2][0]=1.f/.94f;
             for(unsigned k=0;k<3;++k){c[3][k]=right[k];c[4][k]=up[k];c[5][k]=forward[k]*sign;c[6][k]=world[k]-forward[k]*distance;}c[6][3]=1;
             c[20][2]=.85f;c[33][0]=c[33][1]=2;c[33][2]=c[33][3]=1;c[52][1]=.648f;c[52][2]=sunCut;c[73][0]=bump;c[73][1]=48;
-            std::memcpy(c[36],lamp,16);std::memcpy(c[44],rgb,16);std::memcpy(c[84],lamp,16);std::memcpy(c[100],rgb,16);
+            std::copy_n(c[6],3,fixture.camera);fixture.update();assert(fixture.output.count==1);
+            const unsigned now=1150+cases*50;native.observeScene(fixture.output,now,{},fixture.camera);native.publish(now);
+            particles.publish(native.output.data(),native.outputCount,{},fixture.camera,selector);
+            const auto selected=selector.update({},fixture.camera,32,.05f,false,nullptr,particles.output.data(),particles.outputCount);
+            assert(selected.count==1);
+            std::memcpy(c[36],selected.position[0].data(),16);std::memcpy(c[44],selected.color[0].data(),16);
+            std::memcpy(c[84],c[36],16);std::memcpy(c[100],c[44],16);
+            float center[3]{};for(unsigned k=0;k<3;++k){const float delta=lamp[k]-c[6][k];center[0]+=right[k]*delta;center[1]+=up[k]*delta;center[2]+=forward[k]*delta;}
+            bulbOffscreen+=center[2]<=0||std::fabs(center[0]*c[1][0])>center[2]||std::fabs(center[1]*c[1][1])>center[2];
             auto view=NorthlightLocalLightScissor::view(c[3],c[1],nearZ,3.5f,2,2);assert(view.valid);NorthlightLocalLightScissor::Bounds bounds;NorthlightLocalLightScissor::add(view,lamp,bounds);auto r=NorthlightLocalLightScissor::rect(view,bounds);
             assert(r.area()==1);RECT rect{r.left,r.top,r.right,r.bottom};ok(d->SetScissorRect(&rect));ok(d->SetRenderState(D3DRS_SCISSORTESTENABLE,TRUE));
             if(badView){c[5][0]=0;c[5][1]=0;c[5][2]=sign;}
@@ -50,6 +68,6 @@ int main(int argc,char** argv){
         }
         ok(d->SetPixelShader(nullptr));ps->Release();
     }
-    std::printf("LOCAL_LIGHT_CAMERA cases=%u failures=%u maxError=%g\n",cases,failures,maxError);
+    assert(bulbOffscreen>0);std::printf("LOCAL_LIGHT_CAMERA cases=%u failures=%u bulbOffscreen=%u nativeDraws=0 maxError=%g\n",cases,failures,bulbOffscreen,maxError);
     for(unsigned s=0;s<16;++s)d->SetTexture(s,nullptr);z->Release();normal->Release();baseline->Release();zero->Release();detail->Release();staging->Release();target->Release();d->Release();api->Release();FreeLibrary(module);DestroyWindow(window);UnregisterClassW(wc.lpszClassName,wc.hInstance);return failures?1:0;
 }

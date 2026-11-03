@@ -33,6 +33,7 @@
 #include "model_light_attachments.h"
 #include "local_light_selection.h"
 #include "equipment_lights.h"
+#include "native_light_bridge.h"
 #include "particle_lights.h"
 #include "particle_uploads.h"
 #include "equipment_light_proof.h"
@@ -4391,7 +4392,7 @@ public:
         NorthlightLocalLightScissor::Rect directRects[NorthlightLocalLightSelection::Slots/NorthlightLocalLightSelection::DirectBatchSize],
             fogRects[NorthlightLocalLightSelection::Slots/NorthlightLocalLightSelection::FogBatchSize];
     };
-    AtmosphereFrame atmosphere;NorthlightJobs::Counter atmosphereDone;
+    AtmosphereFrame atmosphere;NorthlightJobs::Counter atmosphereDone;NorthlightNativeLights::Snapshot nativeSceneFrame;
     void atmosphereWork(AtmosphereFrame& a,float nearZ,UINT w,UINT h,int debug){
         auto& c=a.c;auto& localLights=a.lights;const auto wx=weatherEffects();
         if(quality.localLights&&quality.localLightLimit){
@@ -4405,6 +4406,8 @@ public:
         if(active)lightAttachments.prune(active->localLights,context.camera);
         const auto* currentLights=active?&lightAttachments.apply(active->localLights,attachedLocalLights):nullptr;
         if(equipmentLightsOn()){
+            if(active&&equipmentMap!=active->map){equipmentLights.reset();equipmentMap=active->map;}
+            if(currentLights)equipmentLights.observeScene(nativeSceneFrame,GetTickCount(),*currentLights,context.camera);
             particleLights.projectSky(context.inverseView,context.camera);
             equipmentLights.publish(GetTickCount(),currentLights);
             if(equipmentLights.suppressedCount){
@@ -4696,6 +4699,8 @@ public:
         int firstSource=sourceActive[0]||!sourceActive[1]?0:1;
         unsigned culledBatches[2]={},drawnBatches[2]={};
         size_t replayConstantBytes=0,replayConstantCalls=0,replayPosePrepared=0,replayPoseReused=0;
+        nativeSceneFrame.clear();
+        if(equipmentLightsOn()&&active)NorthlightNativeLights::frame(active->map.c_str(),context.camera,nativeSceneFrame);
         bool jobs=false;
         JobJoin atmosphereJoin{replayJobs_,atmosphereDone};
         if(diagnosticCapture){gpuDiagnosticFrame=true;

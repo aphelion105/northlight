@@ -13,6 +13,7 @@
 #include "celestial_glare_native.h"
 #include "weather_memory.h"
 #include "shader_tags.h"
+#include "native_light_bridge.h"
 
 namespace NorthlightStream {
 enum class Trigger:std::uint8_t{None=0,FrameStart=1,World=2,Ui=3};
@@ -69,13 +70,14 @@ inline bool capture(GameSnapshot& s,Trigger trigger,std::uint64_t drawOrdinal){
 #ifdef NORTHLIGHT_REPLAY_STAND
     StandInputs::CaptureScope admission(unsigned(trigger),drawOrdinal);if(!admission.entered())return false;
 #endif
+    char map[64]{};float camera[3]{};bool mapped=false;
     {
         ScopedRecording recording(s);
-        char map[64];float camera[3];
-        NorthlightWorldContext::readMapAndCamera(map,camera); // the independent map/camera read the sky and WMO paths pair with readCurrent
+        mapped=NorthlightWorldContext::readMapAndCamera(map,camera); // the independent map/camera read the sky and WMO paths pair with readCurrent
         captureReaders(NorthlightWorldContext::readSelf);
         s.triggerKind=std::uint32_t(trigger);s.triggerDraw=drawOrdinal;
     }
+    NorthlightNativeLights::captureFrame(trigger==Trigger::World,mapped?map:nullptr,camera,s.nativeLights);
     SnapshotStats::triggers.fetch_add(1,std::memory_order_relaxed);
 #ifdef NORTHLIGHT_REPLAY_STAND
     if(!admission.commit(s))return false;

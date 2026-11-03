@@ -107,7 +107,7 @@ public:
     bool commitCapture(GameSnapshot& destination){
         if(!valid()||!capturing_||!aliases_.sealed||snapshot_==&destination||!destination.usable()||
            destination.mode!=GameSnapshot::Mode::Idle||destination.triggerKind!=snapshot_->triggerKind||destination.triggerDraw!=snapshot_->triggerDraw){reject();return false;}
-        destination.aliases_=aliases_;return true;
+        destination.aliases_=aliases_;destination.nativeLights=snapshot_->nativeLights;return true;
     }
     bool read(std::uintptr_t address,void* output,std::size_t bytes){
         return context_->read(snapshot_,address,output,bytes);

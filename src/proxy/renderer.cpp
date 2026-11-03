@@ -1965,6 +1965,7 @@ private:
         particleOn=enabled&&world&&world->equipmentLightsOn();
         NorthlightParticleUploads::enabled.store(particleOn,std::memory_order_relaxed);
         NorthlightParticleTextures::enabled.store(particleOn,std::memory_order_relaxed);
+        NorthlightNativeLights::requested.store(particleOn,std::memory_order_relaxed);
     }
     // Native sky claim: glare, then the native disc draw, for full-viewport sky draws of 1..4 primitives.
     void skyClaim(D3DPRIMITIVETYPE t,UINT count,bool& claimed){
