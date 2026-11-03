@@ -137,6 +137,36 @@ class Base(unittest.TestCase):
             return None, ['extra Data/patch-z.mpq']
         return self.variant, [] if self.variant else ['extra Data/patch-y.mpq']
 
+    def test_art_input_snapshot_is_installed_and_restored_with_its_mpqs(self):
+        inst = self.installer()
+        (self.client / fi.CACHE / 'fog').mkdir(parents=True)
+        guard = 'northlight-art-inputs.ini'
+        guard_bytes = '[NorthlightAssets]\nVersion=1\n'.encode('utf-16')
+        emission = 'northlight-emission.bin'
+        emission_bytes = b'NLE1 runtime emission catalog'
+        def generate(script, args, show=True):
+            result = self.fake_run(script, args, show)
+            work = Path(args[args.index('--output') + 1])
+            report = json.loads((work / 'art-layer-manifest.json').read_text())
+            report['dependency_guard'] = guard
+            report['runtime_emission_catalog'] = emission
+            (work / emission).write_bytes(emission_bytes)
+            (work / guard).write_bytes(guard_bytes)
+            (work / 'art-layer-manifest.json').write_text(json.dumps(report))
+            return result
+        inst.run = generate
+        layer, why, _ = inst.art_layer(self.client, 'enUS')
+        self.assertIsNone(why)
+        self.assertEqual(layer[guard], guard_bytes)
+        self.assertEqual(layer[emission], emission_bytes)
+        plan, staged, _ = INSTALL.payload_plan(self.client, self.pkg_root, backend='dxvk' if inst.proxy else None, extra=layer, proxy=inst.proxy)
+        backup = INSTALL.commit(self.client, plan, staged, self.pkg_root / 'payload', 'guard-test')
+        self.assertEqual((self.client / guard).read_bytes(), guard_bytes)
+        self.assertEqual((self.client / emission).read_bytes(), emission_bytes)
+        INSTALL.restore(self.client, backup)
+        self.assertFalse((self.client / guard).exists())
+        self.assertFalse((self.client / emission).exists())
+
     def fake_run(self, script, args, show=True):
         args = [str(a) for a in args]
         opt = lambda name: args[args.index(name) + 1]

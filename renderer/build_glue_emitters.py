@@ -1,7 +1,7 @@
 """Stage proven emitters for active login and character-screen model assets.
 
-Native backdrop lights always win. A proven constant-RGB/dynamic-intensity
-update bug can be repaired without adding a light or changing authored values.
+Native backdrop lights retain their colour and lifecycle. Frozen RGB updates
+and displaced HD lamp anchors can be repaired without adding duplicate lights.
 No Lua, skins or textures are staged.
 """
 import collections
@@ -20,6 +20,174 @@ from world_scene_builder import array, unpack
 EMPTY = 'No supported glue scene emitters'
 REFERENCE = re.compile(r'''(?:interface|world|creature|item|spells)[\\/][^"'\r\n<>]*?\.(?:m2|mdx|mdl)(?=["'])''', re.I)
 NATIVE_FIELDS = ((16, '<3f'), (36, '<f'), (56, '<3f'), (76, '<f'), (96, '<f'), (116, '<f'), (136, '<B'))
+LAMP_WINDOW = re.compile(r'(?:lamp|lantern).*(?:window|glass)|(?:window|glass).*(?:lamp|lantern)', re.I)
+
+
+def lamp_fixtures(assets, path, blob):
+    """Locate compact, closed, rigid luminous glass fixtures.
+
+    HD replacements can move the fixture while retaining the stock light bone.
+    Read the winning SKIN palette, never the original vertex bone indices. The
+    fixture's own bone keeps its scale/animation; its geometry is not rewritten.
+    """
+    from attached_emitter_sources import material_track
+    from world_scene_builder import decode_blp, srgb_to_linear, string
+    def rows(data, at, fmt):
+        return array(data, *reversed(unpack('<II', data, at)), fmt)
+    materials = rows(blob, 112, '<2H')
+    textures = rows(blob, 80, '<4I')
+    if not any(t[0] == 0 and t[2] and LAMP_WINDOW.search(string(blob, t[3])) for t in textures):
+        return []
+    skin = assets.read(path[:-3] + '00.skin')
+    if skin[:4] != b'SKIN':
+        raise ValueError('Unsupported lamp skin')
+    vertices, lookup = rows(blob, 60, '<3f4B4B3f4f'), rows(skin, 4, '<H')
+    indices, skin_bones = rows(skin, 12, '<H'), rows(skin, 20, '<4B')
+    subsets, combos = rows(skin, 28, '<10H7f'), rows(blob, 120, '<H')
+    texture_combos = rows(blob, 128, '<H')
+    fixtures = []
+    for batch_index, batch in enumerate(rows(skin, 36, '<2B11H')):
+        if batch[8] != 1:
+            continue
+        flags, blend = materials[batch[6]]
+        texture = textures[texture_combos[batch[9]][0]]
+        name = string(blob, texture[3]) if texture[0] == 0 and texture[2] else ''
+        if not flags & 1 or blend not in (0, 1) or not LAMP_WINDOW.search(name):
+            continue
+        # A display/opacity animation is not proof of a continuously lit bulb.
+        if batch[5] != 65535:
+            continue
+        if batch[11] != 65535:
+            weights = rows(blob, 144, '<h')
+            weight = weights[batch[11]][0]
+            if weight >= 0:
+                at = unpack('<I', blob, 92)[0] + weight * 20
+                if material_track(blob, at, '<h') != (32767,):
+                    continue
+        sub = subsets[batch[3]]
+        first, size = sub[4] + (sub[1] << 16), sub[5]
+        if not size or size % 3 or size > 96 or first + size > len(indices):
+            continue
+        triangles = {tuple(sorted(indices[i + k][0] for k in range(3))) for i in range(first, first + size, 3)}
+        ids = {i for tri in triangles for i in tri}
+        if not 8 <= len(ids) <= 64 or not 8 <= len(triangles) <= 64:
+            continue
+        points, bones = {}, set()
+        for i in ids:
+            vertex = vertices[lookup[i][0]]
+            if sum(vertex[3:7]) != 255:
+                raise ValueError('Invalid lamp vertex weights')
+            points[i] = vertex[:3]
+            for k, weight in enumerate(vertex[3:7]):
+                if weight:
+                    bones.add(combos[sub[7] + skin_bones[i][k]][0])
+        if len(bones) != 1 or not all(math.isfinite(v) for p in points.values() for v in p):
+            continue
+        # A compact convex enclosure has supporting planes on opposite sides
+        # of its center. This admits rectangular/octagonal glass, including
+        # shared vertices and repeated backfaces, but rejects a flat glow card.
+        center = tuple(sum(p[k] for p in points.values()) / len(points) for k in range(3))
+        radius = max(math.dist(p, center) for p in points.values())
+        if not .1 <= radius <= 1.5:
+            continue
+        normals = []
+        for tri in triangles:
+            p, q, r = (points[i] for i in tri)
+            u, v = [tuple(y-x for x,y in zip(p,t)) for t in (q,r)]
+            n = (u[1]*v[2]-u[2]*v[1], u[2]*v[0]-u[0]*v[2], u[0]*v[1]-u[1]*v[0])
+            length = math.sqrt(sum(x*x for x in n))
+            if length < 1e-8:
+                break
+            distance = sum(n[k]*(p[k]-center[k]) for k in range(3)) / length
+            if abs(distance) < .03:
+                break
+            normal = tuple(x / length * (1 if distance > 0 else -1) for x in n)
+            if any(sum(normal[k]*(t[k]-p[k]) for k in range(3)) > .001 for t in points.values()):
+                break
+            normals.append(normal)
+        if (len(normals) != len(triangles) or
+                any(min(sum(x*y for x,y in zip(n,m)) for m in normals) > -.75 for n in normals)):
+            continue
+        _, _, pixels = decode_blp(assets.read(name), 64)
+        rgb = tuple(sum(srgb_to_linear(pixels[i + k] / 255) for i in range(0, len(pixels), 4)) /
+                    (len(pixels) // 4) for k in range(3))
+        if max(rgb) < .05:
+            continue
+        fixtures.append(dict(bone=bones.pop(), position=center, texture=name,
+                             mesh_batch=batch_index, radius=radius, texture_rgb=rgb))
+    return fixtures
+
+
+def repair_native_lamp_anchors(assets, path, blob):
+    """Reattach a uniquely coloured native light to its original glass fixture."""
+    count, offset = unpack('<II', blob, 264)
+    fixtures = []
+    for fixture in lamp_fixtures(assets, path, blob):
+        rgb = fixture['texture_rgb']
+        matches = []
+        for i in range(count):
+            record = offset + i * 156
+            if unpack('<H', blob, record)[0] != 1:
+                continue
+            color = native_track(blob, record + 56, '<3f')
+            colors = [v for _, _, values in color[2] for v in values]
+            if not colors or any(v != colors[0] for v in colors) or min(colors[0]) < 0:
+                continue
+            norm = math.sqrt(sum(v*v for v in rgb) * sum(v*v for v in colors[0]))
+            if not norm or sum(x*y for x,y in zip(rgb, colors[0])) / norm < .98:
+                continue
+            # Moving a per-bone animated lifecycle onto another bone could
+            # change its schedule. Global/constant tracks retain their meaning.
+            tracks = [native_track(blob, record + relative, fmt) for relative, fmt in NATIVE_FIELDS]
+            if any(clock == -1 and len({v for _, _, values in curves for v in values}) > 1
+                   for _, clock, curves in tracks):
+                continue
+            matches.append(i)
+        if len(matches) == 1:
+            fixtures.append(dict(light=matches[0], **fixture))
+    selected = collections.Counter(f['light'] for f in fixtures)
+    fixtures = [f for f in fixtures if selected[f['light']] == 1]
+    records = bytearray(blob[offset:offset + count * 156])
+    repairs = []
+    for f in fixtures:
+        at = f['light'] * 156
+        before = unpack('<h3f', records, at + 2)
+        if before[0] == f['bone'] and math.dist(before[1:], f['position']) < .01:
+            continue
+        struct.pack_into('<h3f', records, at + 2, f['bone'], *f['position'])
+        repairs.append({**f, 'original_bone': before[0], 'original_position': before[1:]})
+    if not repairs:
+        return blob, []
+    out = bytearray(blob)
+    out.extend(b'\0' * (-len(out) % 4))
+    struct.pack_into('<II', out, 264, count, len(out))
+    out.extend(records)
+    patched = bytes(out)
+    verify_native_lamp_anchors(blob, patched, repairs)
+    return patched, repairs
+
+
+def verify_native_lamp_anchors(original, patched, repairs):
+    count, before = unpack('<II', original, 264)
+    new_count, after = unpack('<II', patched, 264)
+    if (count != new_count or after < len(original) or after + count * 156 > len(patched) or
+            original[:264] != patched[:264] or original[272:] != patched[272:len(original)]):
+        raise ValueError('Lamp anchor repair changed original model arrays')
+    selected = {r['light']: r for r in repairs}
+    if len(selected) != len(repairs) or any(not 0 <= i < count for i in selected):
+        raise ValueError('Invalid native lamp repair')
+    bones = unpack('<I', original, 44)[0]
+    for i in range(count):
+        a, b = original[before+i*156:before+(i+1)*156], patched[after+i*156:after+(i+1)*156]
+        if i not in selected:
+            if a != b:
+                raise ValueError('Unselected native light changed')
+            continue
+        repair = selected[i]
+        if a[:2] != b[:2] or a[16:] != b[16:] or not 0 <= repair['bone'] < bones:
+            raise ValueError('Lamp anchor repair changed light values or lifecycle')
+        if b[2:16] != struct.pack('<h3f', repair['bone'], *repair['position']):
+            raise ValueError('Lamp anchor does not match its emitting mesh')
 
 
 def native_track(blob, offset, fmt):
@@ -201,15 +369,20 @@ def build(assets, output, excluded=()):
                     native[path] = {'sha256': hashlib.sha256(blob).hexdigest(), 'native_lights': count,
                                     'source_archive': assets.origin(path)}
                     try:
-                        patched, repairs = repair_native_flicker(blob)
+                        anchored, anchors = repair_native_lamp_anchors(assets, path, blob)
+                    except (OSError, ValueError, IndexError, struct.error) as error:
+                        refused[path] = 'Lamp anchor: ' + str(error)
+                        anchored, anchors = blob, []
+                    try:
+                        patched, repairs = repair_native_flicker(anchored)
                     except ValueError as error:
                         refused[path] = str(error)
-                        repairs = []
-                    if repairs:
+                        patched, repairs = anchored, []
+                    if repairs or anchors:
                         payload[path] = patched
                         repaired[path] = {**models[path], 'before_sha256': hashlib.sha256(blob).hexdigest(),
                                           'after_sha256': hashlib.sha256(patched).hexdigest(),
-                                          'native_flicker_repairs': repairs, 'emitters': [],
+                                          'native_flicker_repairs': repairs, 'native_anchor_repairs': anchors, 'emitters': [],
                                           'preserved_native_light_count': count, 'source_archive': assets.origin(path)}
                     continue
         except (OSError, ValueError):
@@ -248,13 +421,15 @@ def build(assets, output, excluded=()):
     counts = collections.Counter(scanned=len(models), patched=len(payload), native=0, unsupported=0, not_emissive=0)
     counts.update(v['category'] for v in skipped.values())
     counts.update(native_repaired=len(repaired), rgb_tracks_repaired=sum(len(v['native_flicker_repairs']) for v in repaired.values()),
+                  lamp_anchors_repaired=sum(len(v['native_anchor_repairs']) for v in repaired.values()),
                   native_lights=added, native_lights_added=added, existing_native_lights=sum(v['native_lights'] for v in native.values()),
                   validated_native_models=len(payload), mpq_byte_roundtrips=len(payload), dbc_files=0, wdb_files=0)
     report = {**shared, 'format': 'native WotLK v264 glue scene lights', 'discovery': discovery,
               'models': {**shared.get('models', {}), **repaired}, 'skipped': skipped, 'counts': dict(counts),
               'existing_native_models_preserved': native, 'native_repair_refusals': refused,
               'excluded_existing_owners': sorted(excluded),
-              'limitations': ['No duplicate source is added beside existing native lights; original count, bones and all original bytes remain.',
+              'limitations': ['No duplicate source is added beside existing native lights; original count and original mesh/bone arrays remain.',
+                              'Only one-to-one colour-matched compact luminous lamp enclosures can reanchor an existing source.',
                               'Only proven constant RGB tracks gain an identical key; their original values, timestamps and clock remain.',
                               'This repairs intensity refresh, not native four-slot eviction or other scene consumption problems.',
                               'Only original inline lifecycle tracks, source bones and measured additive emission qualify for new sources.'],

@@ -212,7 +212,7 @@ def mesh_sources(assets, path, blob):
     return result,rejected,candidates
 
 
-def attached_sources(assets, path, blob):
+def attached_sources(assets, path, blob, particle_palette=None, emitter_power=False):
     from build_spell_emitters import spell_sources
     if len(blob) < 304 or blob[:4] != b'MD20' or unpack('<I',blob,4)[0] != 264:
         raise EmissionError('unsupported','Not WotLK v264')
@@ -225,7 +225,7 @@ def attached_sources(assets, path, blob):
     particle_candidates = sum(unpack('<B',blob,offset+i*stride+40)[0] in (3,4) for i in range(count))
     rejected = {}
     try:
-        particles,rejected['particles'] = spell_sources(assets,blob,max_sources=None)
+        particles,rejected['particles'] = spell_sources(assets,blob,max_sources=None,particle_palette=particle_palette,emitter_power=emitter_power)
     except ValueError as error:
         particles = []
         rejected['particles'] = str(error)
@@ -234,11 +234,37 @@ def attached_sources(assets, path, blob):
     except (ValueError,FileNotFoundError,struct.error,IndexError) as error:
         meshes,mesh_candidates = [],1
         rejected['mesh_batches'] = str(error)
-    result = consolidate(particles+meshes)
+    try:
+        lamps = lamp_sources(assets, path, blob)
+    except (ValueError,FileNotFoundError,struct.error,IndexError) as error:
+        lamps = []
+        rejected['lamps'] = str(error)
+    result = consolidate(particles+meshes+lamps)
     if not result:
         raise EmissionError('unsupported' if particle_candidates or mesh_candidates or unpack('<I',blob,288)[0] else 'not_emissive',
                             'No proven attached source: '+json.dumps(rejected,sort_keys=True))
     return result,rejected
+
+
+def lamp_sources(assets, path, blob):
+    """One source at each proven glass enclosure, on its actual original bone."""
+    from build_glue_emitters import lamp_fixtures
+    result = []
+    for f in lamp_fixtures(assets, path, blob):
+        skin = assets.read(path[:-3]+'00.skin')
+        rows = lambda data, at, fmt: array(data, *reversed(unpack('<II', data, at)), fmt)
+        batch = rows(skin,36,'<2B11H')[f['mesh_batch']]
+        if batch[2] != 0 or rows(skin,28,'<10H7f')[batch[3]][0] != 0:
+            continue
+        if rows(blob,136,'<h')[batch[10]][0] != 0 or rows(blob,152,'<h')[batch[12]][0] != -1:
+            continue
+        peak = max(f['texture_rgb'])
+        result.append({'bone': f['bone'], 'position': f['position'],
+            'rgb': tuple(v/peak for v in f['texture_rgb']), 'intensity': min(4., peak*2),
+            'start': .5, 'end': 8., 'particles': [], 'mesh_batches': [f['mesh_batch']],
+            'textures': [f['texture']], 'emission': 'energy',
+            'basis': 'Closed unlit luminous glass enclosure; original SKIN bone palette'})
+    return result
 
 
 def write_stage(assets, output, candidates, report, stem, empty):
@@ -257,7 +283,7 @@ def write_stage(assets, output, candidates, report, stem, empty):
     for path,info in sorted(candidates.items()):
         try:
             original = assets.read(path)
-            emitters,refused = attached_sources(assets,path,original)
+            emitters,refused = attached_sources(assets,path,original,particle_palette=info.get('particle_palette'),emitter_power=stem=='equipment')
             # Display replacement palettes are server-selected. Preserve only
             # sources whose actual authored particle RGB is not replaceable.
             if info.get('replacement_colors'):

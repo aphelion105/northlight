@@ -37,12 +37,13 @@ assert 'submitReplay(p,probeBindings,probePoses,rows,worldMatrix,mode,' in issue
 for forbidden in ('SetTexture(', 'SetSamplerState(', 'SetPixelShader(', 'SetPixelShaderConstantF(', 'SetRenderState('):
     assert forbidden not in issue, forbidden
     assert forbidden not in probe, forbidden
-assert world.index('d->SetPixelShader(replayPS);') < world.index('replayProbe(rows,matrices[cascade],realLoopMs);') < world.index('d->SetPixelShader(unionPS);')
+assert world.index('d->SetPixelShader(replayPS);') < world.index('replayProbe(rows,matrices[cascade],realLoopMs);') < world.index('unionShadow(shadowSurface[slot]')
+assert 'd->SetPixelShader(unionPS);' in read('world_near_environment.inl')
 loop = world[world.index('d->SetPixelShader(replayPS);')+len('d->SetPixelShader(replayPS);'):world.index('replayPosePrepared+=poseConstants.prepared;')]
 assert 'NorthlightReplayDrawState::Cache replayBindings(d);' in loop
 for forbidden in ('SetTexture(', 'SetSamplerState(', 'SetPixelShader(', 'SetPixelShaderConstantF(', 'SetRenderState('):
     assert forbidden not in loop, forbidden
-cube = point[point.index('NorthlightReplayDrawState::Cache replayBindings(d);'):point.index('pointSlot().faceWeights[face]=pointDraws-faceDraws;')]
+cube = point[point.index('NorthlightReplayDrawState::Cache replayBindings(d);'):point.index('pointSlot().faceWeights[face]=pointDraws-faceDraws')]
 for forbidden in ('SetTexture(', 'SetSamplerState(', 'SetPixelShader(', 'SetPixelShaderConstantF(', 'SetRenderState('):
     assert forbidden not in cube, forbidden
 assert 'pointCheck(d->SetPixelShader(pointShadowPS),"cube static PS")' in point

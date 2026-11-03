@@ -349,6 +349,15 @@ def inspect_model(assets, path, blob=None, cache=None, max_regions=16, position_
             return {**record, 'status': 'not_emissive', 'reason': 'Explicit disabled/broken variant'}
         refusals, cache = collections.Counter(), cache if cache is not None else {}
         sources = particle_sources(assets, path, blob, cache, refusals)
+        from attached_emitter_sources import lamp_sources
+        try:
+            for lamp in lamp_sources(assets, path, blob):
+                position = static_bone_point(blob, lamp['bone'], lamp['position'])
+                sources.append({'position': position, 'local_position': lamp['position'], 'bones': [lamp['bone']],
+                    'flux': tuple(v*lamp['intensity']/.35 for v in lamp['rgb']), 'area': 0,
+                    'emission': 'energy', 'position_basis': lamp['basis'], 'textures': lamp['textures']})
+        except (ValueError, IndexError, FileNotFoundError, struct.error) as exc:
+            refusals['lamp: ' + str(exc)] += 1
         try:
             surfaces = surface_sources(assets, path, blob, cache, refusals)
         except (ValueError, IndexError, FileNotFoundError, struct.error) as exc:

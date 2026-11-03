@@ -21,7 +21,7 @@ inline const std::array<float,256>& linearRGBTable(){static const std::array<flo
 struct View {
     const std::uint8_t* rgba=nullptr;
     unsigned width=0,height=0,mip=0,format=0;
-    std::uint64_t lifetime=0,revision=0,rgbaHash=0;
+    std::uint64_t lifetime=0,revision=0,rgbaHash=0,uploadHash=0;
     bool sample(float u,float v,bool srgb,unsigned addressU,unsigned addressV,float out[4],bool linear=true)const{
         if(!rgba||!width||!height||!out||!std::isfinite(u)||!std::isfinite(v)||addressU<1||addressU>3||addressV<1||addressV>3)return false;
         auto coord=[](float f,unsigned mode){
@@ -69,7 +69,7 @@ private:
     struct Entry {
         const void* raw=nullptr;
         const void* owner=nullptr;
-        std::uint64_t lifetime=0,revision=0,used=0,rgbaHash=0;
+        std::uint64_t lifetime=0,revision=0,used=0,rgbaHash=0,uploadHash=0;
         unsigned width=0,height=0,mip=0,format=0;
         std::vector<std::uint8_t> pixels;
         // The upload's own bytes until a particle draw first asks for them:
@@ -144,6 +144,14 @@ public:
             const auto seen=history_.find(raw);lastMiss_=seen!=history_.end()?seen->second:Never;++counts.missWhy[lastMiss_];
             return false;}
         if(e->pixels.empty()){
+            const bool bc=e->format==0x31545844||e->format==0x33545844||e->format==0x35545844;
+            const unsigned rows=bc?(e->height+3)/4:e->height;
+            const unsigned rowBytes=bc?((e->width+3)/4)*(e->format==0x31545844?8:16):e->width*4;
+            e->uploadHash=0;
+            if((bc||e->format==21)&&e->pitch>=rowBytes&&e->source.size()>=std::size_t(rows-1)*e->pitch+rowBytes){
+                e->uploadHash=14695981039346656037ull;
+                for(unsigned y=0;y<rows;++y)for(unsigned x=0;x<rowBytes;++x)e->uploadHash=(e->uploadHash^e->source[y*e->pitch+x])*1099511628211ull;
+            }
             NorthlightActorTexture::Format decodedFormat;std::vector<std::uint8_t> decoded;
             try{if(!format(e->format,decodedFormat)||!NorthlightActorTexture::decode(e->source.data(),e->source.size(),e->width,e->height,e->pitch,decodedFormat,decoded))decoded.clear();}
             catch(...){decoded.clear();}
@@ -153,7 +161,7 @@ public:
             e->rgbaHash=14695981039346656037ull;for(auto byte:decoded){e->rgbaHash^=byte;e->rgbaHash*=1099511628211ull;}
             e->pixels=std::move(decoded);bytes_+=e->pixels.size();++counts.decoded;
         }
-        e->used=++clock_;out={e->pixels.data(),e->width,e->height,e->mip,e->format,e->lifetime,e->revision,e->rgbaHash};++counts.hits;return true;
+        e->used=++clock_;out={e->pixels.data(),e->width,e->height,e->mip,e->format,e->lifetime,e->revision,e->rgbaHash,e->uploadHash};++counts.hits;return true;
     }
 };
 static_assert(Cache::PixelBudget+Cache::MaxDimension*Cache::MaxDimension*4<(9u<<20),"particle texture bytes plus decode scratch stay below 9 MiB");

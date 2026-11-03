@@ -82,8 +82,8 @@ struct Indices final:ForwardIDirect3DIndexBuffer9 {
 struct Vertex {float position[3];D3DCOLOR color;float uv[2];};
 static_assert(sizeof(Vertex)==24&&offsetof(Vertex,color)==12&&offsetof(Vertex,uv)==16,"native packed stream layout");
 struct Device final:ForwardIDirect3DDevice9 {
-    Texture texture;Declaration declaration;Buffer vertices;Indices indices;
-    float constants[1024]{};DWORD source=D3DBLEND_SRCALPHA,alphaTest=TRUE,alphaRef=1,alphaFunc=D3DCMP_GREATEREQUAL;unsigned streamOffset=0;
+    Texture texture,secondTexture;Declaration declaration;Buffer vertices;Indices indices;
+    float constants[1024]{};DWORD source=D3DBLEND_SRCALPHA,destination=D3DBLEND_ONE,alphaTest=TRUE,alphaRef=1,alphaFunc=D3DCMP_GREATEREQUAL;unsigned streamOffset=0;
     Device():ForwardIDirect3DDevice9(nullptr){
         constants[8]=constants[13]=constants[18]=constants[22]=1; // c2..5, clip.w = view.z
         constants[24]=constants[29]=1; // Native UV0 matrix.
@@ -91,13 +91,14 @@ struct Device final:ForwardIDirect3DDevice9 {
     }
     HRESULT STDMETHODCALLTYPE GetRenderState(D3DRENDERSTATETYPE type,DWORD* out)override{
         switch(type){case D3DRS_ALPHABLENDENABLE:*out=TRUE;break;case D3DRS_SRCBLEND:*out=source;break;
-        case D3DRS_DESTBLEND:*out=D3DBLEND_ONE;break;case D3DRS_BLENDOP:*out=D3DBLENDOP_ADD;break;
+        case D3DRS_DESTBLEND:*out=destination;break;case D3DRS_BLENDOP:*out=D3DBLENDOP_ADD;break;
         case D3DRS_ALPHATESTENABLE:*out=alphaTest;break;case D3DRS_ALPHAREF:*out=alphaRef;break;case D3DRS_ALPHAFUNC:*out=alphaFunc;break; // the game's own particle state (traced in play)
         case D3DRS_COLORWRITEENABLE:*out=15;break;case D3DRS_ZENABLE:*out=TRUE;break;
+        case D3DRS_LIGHTING:case D3DRS_SPECULARENABLE:case D3DRS_VERTEXBLEND:case D3DRS_INDEXEDVERTEXBLENDENABLE:*out=0;break;
         default:assert(false);return E_NOTIMPL;}return D3D_OK;
     }
     HRESULT STDMETHODCALLTYPE GetSamplerState(DWORD sampler,D3DSAMPLERSTATETYPE type,DWORD* out)override{
-        assert(sampler==0);switch(type){case D3DSAMP_SRGBTEXTURE:*out=0;break;
+        assert(sampler<2);switch(type){case D3DSAMP_SRGBTEXTURE:*out=0;break;
         case D3DSAMP_ADDRESSU:case D3DSAMP_ADDRESSV:*out=D3DTADDRESS_CLAMP;break;
         case D3DSAMP_MAGFILTER:case D3DSAMP_MINFILTER:*out=D3DTEXF_POINT;break;default:assert(false);return E_NOTIMPL;}return D3D_OK;
     }
@@ -105,7 +106,19 @@ struct Device final:ForwardIDirect3DDevice9 {
         assert(start==0&&count==256);std::memcpy(out,constants,sizeof(constants));return D3D_OK;
     }
     HRESULT STDMETHODCALLTYPE GetVertexDeclaration(IDirect3DVertexDeclaration9** out)override{*out=&declaration;declaration.AddRef();return D3D_OK;}
-    HRESULT STDMETHODCALLTYPE GetTexture(DWORD sampler,IDirect3DBaseTexture9** out)override{assert(sampler==0);*out=&texture;texture.AddRef();return D3D_OK;}
+    HRESULT STDMETHODCALLTYPE GetTexture(DWORD sampler,IDirect3DBaseTexture9** out)override{assert(sampler<2);auto& t=sampler?secondTexture:texture;*out=&t;t.AddRef();return D3D_OK;}
+    HRESULT STDMETHODCALLTYPE GetTextureStageState(DWORD stage,D3DTEXTURESTAGESTATETYPE type,DWORD* out)override{
+        if(stage==1&&type==D3DTSS_COLOROP){*out=D3DTOP_DISABLE;return D3D_OK;}assert(stage==0);
+        switch(type){case D3DTSS_COLOROP:case D3DTSS_ALPHAOP:*out=D3DTOP_MODULATE;break;
+        case D3DTSS_COLORARG1:case D3DTSS_ALPHAARG1:*out=D3DTA_TEXTURE;break;
+        case D3DTSS_COLORARG2:case D3DTSS_ALPHAARG2:*out=D3DTA_DIFFUSE;break;
+        case D3DTSS_TEXCOORDINDEX:case D3DTSS_TEXTURETRANSFORMFLAGS:*out=0;break;default:assert(false);return E_NOTIMPL;}return D3D_OK;
+    }
+    HRESULT STDMETHODCALLTYPE GetTransform(D3DTRANSFORMSTATETYPE type,D3DMATRIX* out)override{
+        *out={};if(type==D3DTS_PROJECTION){for(unsigned i=0;i<4;++i)for(unsigned j=0;j<4;++j)out->m[i][j]=constants[8+j*4+i];}
+        else{assert(type==D3DTS_WORLD||type==D3DTS_VIEW);for(unsigned i=0;i<4;++i)out->m[i][i]=1;}
+        return D3D_OK;
+    }
     HRESULT STDMETHODCALLTYPE GetStreamSource(UINT stream,IDirect3DVertexBuffer9** out,UINT* offset,UINT* stride)override{
         assert(!stream);*out=&vertices;vertices.AddRef();*offset=streamOffset;*stride=sizeof(Vertex);return D3D_OK;
     }

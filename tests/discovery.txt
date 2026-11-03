@@ -26,6 +26,7 @@ test_ao_quality.py
 test_ao_rotation_stripes.py
 test_ao_submit_profile.py
 test_ao_texel_snap.py
+test_art_inputs_guard.py
 test_art_layer.py
 test_art_layer_dedup.py
 test_art_layer_ownership.py
@@ -101,6 +102,7 @@ test_effect_switches.py
 test_effect_ui_target.py
 test_effects_buckets.py
 test_effects_cost_report.py
+test_emission_sources.py
 test_emitter_fixture_policy.py
 test_emitter_fixture_scene.py
 test_emitter_patch.py
@@ -118,6 +120,8 @@ test_extra_light_shadow_signatures.py
 test_fast_memcmp.py
 test_fgr_constant_bank.py
 test_five_path_perf.py
+test_flash_lighting_gpu.py
+test_flash_shadow_gpu.py
 test_fog_actor_tiles.py
 test_fog_ambient.py
 test_fog_casters_wiring.py
@@ -145,6 +149,7 @@ test_gi_quality.py
 test_gi_settings_dependencies.py
 test_gi_trig.py
 test_glue_emitters.py
+test_glue_lighting_selection.py
 test_gpu_budget.py
 test_gpu_budget_wiring.py
 test_grass_receiving_order.py
@@ -259,6 +264,7 @@ test_night_floor.py
 test_night_floor_wiring.py
 test_northlight_install.py
 test_outdoor_light_profiles.py
+test_outdoor_moon_inputs.py
 test_output_scan_safety.py
 test_particle_light_capture.py
 test_particle_light_diagnostics.py
@@ -368,6 +374,7 @@ test_shared_static_preparation.py
 test_shared_terrain_bounds.py
 test_shared_terrain_bounds_gpu.py
 test_single_skin_intervals.py
+test_sky_lightning_coverage.py
 test_sky_only_context.py
 test_sky_restore.py
 test_snapshot_allocation.py
@@ -465,6 +472,7 @@ test_weather_shelter.py
 test_weather_state.py
 test_weather_textures.py
 test_weather_wiring.py
+test_weighted_byte_pose.py
 test_windows_installer.py
 test_wmo_group_tolerance.py
 test_wmo_lamp_emission.py

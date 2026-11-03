@@ -67,13 +67,18 @@ inline void buildKernel(Program& p){
         const auto match=[&](unsigned code,std::uint32_t dst,std::uint32_t a,std::uint32_t b=0,std::uint32_t c=0,std::uint32_t aa=0,std::uint32_t ba=0){
             if(at>=p.operations.size())return false;const auto& o=p.operations[at++];
             return o.code==code&&o.destination==dst&&o.source[0].token==a&&o.source[0].address==aa&&o.source[1].token==b&&o.source[1].address==ba&&o.source[2].token==c&&o.source[2].address==0;};
-        commuted=p.operations[0].source[0].token==0x90e40002;
-        if(!match(5,0x800f0000,commuted?0x90e40002:0xa0000000,commuted?0xa0000000:0x90e40002)||!match(46,0xb00f0000,0x80e40000))return false;
-        for(unsigned row=0;row<3;++row){const unsigned r=row?(p.positionRegister?2:1):0;const std::uint32_t dst=0x800f0000|r,src=0x80e40000|r,matrix=0xa0e4201f+row;
+        // Native body variants write r0.w first and skin through r1/r2.
+        // Only scratch allocation/write order differs; bounds eligibility stays below.
+        const bool body=p.positionRegister==0&&p.operations[0].code==1;
+        if(body&&!match(1,0x80080000,0xa0550000))return false;
+        commuted=p.operations[at].source[0].token==0x90e40002;
+        const unsigned addressTemp=body?1:0;
+        if(!match(5,0x800f0000|addressTemp,commuted?0x90e40002:0xa0000000,commuted?0xa0000000:0x90e40002)||!match(46,0xb00f0000,0x80e40000|addressTemp))return false;
+        for(unsigned row=0;row<3;++row){const unsigned r=body?(row?2:1):row?(p.positionRegister?2:1):0;const std::uint32_t dst=0x800f0000|r,src=0x80e40000|r,matrix=0xa0e4201f+row;
             if(!match(5,dst,0x90550001,matrix,0,0,0xb0550000)||!match(4,dst,matrix,0x90000001,src,0xb0000000)||
                !match(4,dst,matrix,0x90aa0001,src,0xb0aa0000)||!match(4,dst,matrix,0x90ff0001,src,0xb0ff0000)||
                !match(9,(0x80000000|p.positionRegister)|(1u<<(16+row)),src,0x90e40000))return false;}
-        return match(1,0x80080000|p.positionRegister,0xa0550000)&&at==p.operations.size();}();
+        return (body||match(1,0x80080000|p.positionRegister,0xa0550000))&&at==p.operations.size();}();
     // r0 output uses r1 as scratch instead of r2. Its arithmetic is identical;
     // keep the separately audited envelope eligibility restricted to r1 output.
     k.skin=weightedSkin&&!commuted&&p.positionRegister==1;k.evaluator=weightedSkin?(p.positionRegister?(commuted?Kernel::WeightedCommuted:Kernel::Weighted):(commuted?Kernel::WeightedR0Commuted:Kernel::WeightedR0)):Kernel::Generic;
@@ -258,12 +263,16 @@ template<bool Strict=false,class Float=float> inline bool evaluate(const Program
 // same order), writes and failures, so results are bit-identical; without it
 // (a hand-made program) evaluate() itself.
 // The skinning template written out: evaluate()'s reads, expressions and order.
-template<bool Commuted=false,bool Deferred=Commuted> inline bool evaluateSkin(const Program& p,const Four inputs[16],const float* constants,Four& viewPosition){
+template<bool Commuted=false,bool Deferred=Commuted,bool ByteIndex=false> inline bool evaluateSkin(const Program& p,const Four inputs[16],const float* constants,Four& viewPosition){
 NO_FUSED_MULTIPLY_ADD
     const bool onlyControl=p.definitions.size()==1&&p.definitions[0].reg==0;
     auto constant=[&](int index,Four& value){if(index<0||index>=256)return false;std::memcpy(value.data(),constants+4*index,16);if(!onlyControl||index==0)for(auto& d:p.definitions)if(d.reg==unsigned(index))value=d.value;return true;};
     const Four& v0=inputs[0];const Four& v1=inputs[1];const Four& v2=inputs[2];Four c0,address;if(onlyControl)c0=p.definitions[0].value;else constant(0,c0);
-    for(unsigned j=0;j<4;++j){const float value=Commuted?v2[j]*c0[0]:c0[0]*v2[j];if(!std::isfinite(value)||std::fabs(value-std::floor(value)-.5f)<1e-6f)return false;address[j]=std::round(value);}
+    // A prepared UBYTE4 input and current c0.x == 3 prove exact integer
+    // addresses. Keep palette reads and blend/dot arithmetic unchanged.
+    for(unsigned j=0;j<4;++j){const float value=Commuted?v2[j]*c0[0]:c0[0]*v2[j];
+        if constexpr(ByteIndex)address[j]=value;
+        else{if(!std::isfinite(value)||std::fabs(value-std::floor(value)-.5f)<1e-6f)return false;address[j]=std::round(value);}}
     auto row=[&](int base,unsigned channel,Four& m){const float a=address[channel];if(!std::isfinite(a)||a<-4096||a>4096)return false;return constant(base+int(a),m);};
     // Generic-derived paths publish after all reads, preserving aliased inputs and failed outputs.
     Four local;Four& result=Deferred?local:viewPosition;
@@ -409,6 +418,15 @@ public:
         ++preparations;*oldest={prepared,key,stamp_};recent_=unsigned(oldest-entries_.data());return prepared;
     }
 };
+// Only the exact noncommuted four-weight kernels use this prepared path.
+// The declaration proves all four index lanes; c0 includes current DEF overrides.
+inline bool weightedByteIndices(const Program& program,const PreparedBindings& prepared,const float* constants){
+    if(!constants||!program.kernel.valid||program.kernel.ops.size()!=program.operations.size()||
+       !((program.kernel.evaluator==Kernel::Weighted&&program.kernel.skin)||program.kernel.evaluator==Kernel::WeightedR0))return false;
+    if(singleSkinControl(program,constants)[0]!=3.f)return false;
+    for(const auto& b:prepared.bindings)if(b.input.reg==2)return b.element.Type==D3DDECLTYPE_UBYTE4;
+    return false;
+}
 // The complete audited single-bone kernel reads only v0/v1. Both are fully
 // decoded each vertex; the draw-local c0 never outlives its current pose bank.
 template<bool Validated=false> inline bool singleSkinBoundsPrepared(const Program& program,const NorthlightDrawSnapshot::Mesh& mesh,const PreparedBindings& prepared,const float* constants,float* low,float* high){

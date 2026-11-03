@@ -56,6 +56,51 @@ def mesh_model():
 
 
 class AttachedEmission(unittest.TestCase):
+    def test_equipment_power_represents_live_emitter_population_and_retains_bone(self):
+        original, particle = model(rate=[([0], [2])])
+        original = bytearray(original)
+        key_array = struct.unpack_from('<I', original, particle+168)[0]
+        key = struct.unpack_from('<I', original, key_array+4)[0]
+        struct.pack_into('<f', original, key, 3.)
+        original = bytes(original)
+        assets = Assets(original)
+        baseline, _ = attached_sources(assets, 'item\\source.m2', original)
+        sources, _ = attached_sources(assets, 'item\\source.m2', original, emitter_power=True)
+        self.assertAlmostEqual(sources[0]['reference_population'], 6.)
+        self.assertAlmostEqual(sources[0]['intensity'], baseline[0]['intensity']*6)
+        self.assertEqual(sources[0]['bone'], baseline[0]['bone'])
+        patched = append_spell_lights(original, sources)
+        self.assertEqual(patched[44:52], original[44:52])
+
+    def test_item_color_index_uses_authored_rgb_only_when_all_displays_have_no_palette(self):
+        original, particle = model(rate=[([0], [2])])
+        original = bytearray(original)
+        struct.pack_into('<h', original, particle+42, 11)
+        original = bytes(original)
+        path = 'item\\objectcomponents\\shoulder\\glow.m2'
+        strings = b'\0glow.mdx\0'
+        def item_rows(palette):
+            rows = [[1, 1, *([0]*22), 0], [2, 1, *([0]*22), palette]]
+            return table(rows, 25, strings)
+        assets = Assets(original, {path: original,
+            'dbfilesclient\\itemvisualeffects.dbc': table([], 2, b'\0'),
+            'dbfilesclient\\itemdisplayinfo.dbc': item_rows(0)})
+        before = dict(assets.extra)
+        with tempfile.TemporaryDirectory(dir=northlight_paths.output_dir()) as folder:
+            report = build_equipment(assets, Path(folder))
+            source = report['models'][path]
+            self.assertEqual(source['particle_palette'], 0)
+            self.assertEqual(source['emitters'][0]['rgb'], (0, 0, 1))
+            self.assertEqual(source['emitters'][0]['bone'], 0)
+            with Archive(Path(folder)/'equipment-lights-staged.mpq') as archive:
+                patched = archive.read(path)
+            self.assertEqual(struct.unpack_from('<h', patched, particle+42)[0], 11)
+        self.assertEqual(assets.extra, before)
+        assets.extra['dbfilesclient\\itemdisplayinfo.dbc'] = item_rows(7)
+        with tempfile.TemporaryDirectory(dir=northlight_paths.output_dir()) as folder:
+            with self.assertRaisesRegex(ValueError, 'No supported equipment emitters'):
+                build_equipment(assets, Path(folder))
+
     def test_billboard_mesh_retains_original_bone_and_position(self):
         assets, original = mesh_model()
         billboard = bytearray(original)

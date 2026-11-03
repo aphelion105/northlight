@@ -17,8 +17,35 @@ from build_spell_emitters import append_spell_lights
 import build_glue_emitters as glue
 from mpq import Archive
 from test_spell_emitter_patch import Assets as SourceAssets, append, model, native_sample
+from test_attached_emitter_sources import mesh_model
+from equipment_emitter_patch import append_bone_lights
 
 SCENE = 'interface\\glues\\models\\ui_scourge\\ui_scourge.m2'
+
+
+def displaced_lamp(duplicate=False, flat=False):
+    _, original = mesh_model()
+    blob, skin = bytearray(original), bytearray(48)
+    skin[:4] = b'SKIN'
+    def header(data, at, fmt, rows):
+        offset = append(data, b''.join(struct.pack(fmt, *r) for r in rows))
+        struct.pack_into('<II', data, at, len(rows), offset)
+    points = []
+    for a, b in (((-.2,-.2),(.2,-.2)),((.2,-.2),(.2,.2)),((.2,.2),(-.2,.2)),((-.2,.2),(-.2,-.2))):
+        points.extend(((5+a[0],2+a[1],2.8),(5+b[0],2+b[1],2.8),
+                       (5+b[0],2+b[1],3.2),(5+a[0],2+a[1],3.2)))
+    header(blob,60,'<3f4B4B3f4f', [(*p[:2],3 if flat else p[2],255,0,0,0,0,0,0,0,0,0,1,0,0,0,0) for p in points])
+    name = b'textures\\lamp_glass.blp\0'; at = append(blob,name)
+    header(blob,80,'<4I',[(0,0,len(name),at)])
+    header(blob,112,'<2H',[(1,0)])
+    header(skin,4,'<H',[(i,) for i in range(16)])
+    header(skin,12,'<H',[(base+i,) for base in range(0,16,4) for i in (0,1,2,0,2,3)])
+    header(skin,20,'<4B',[(0,0,0,0)]*16)
+    header(skin,28,'<10H7f',[(0,0,0,16,0,24,1,0,1,0,*([0.]*7))])
+    header(skin,36,'<2B11H',[(0,0,0,0,0,65535,0,0,1,0,0,65535,0)])
+    source = dict(bone=0,position=(0,0,1),rgb=(0,0,1),intensity=2,start=0,end=9)
+    blob = append_bone_lights(bytes(blob),[source]*(2 if duplicate else 1))
+    return Assets({SCENE:blob,SCENE[:-3]+'00.skin':bytes(skin)}),blob
 
 
 def frozen_native():
@@ -66,6 +93,41 @@ class Assets(SourceAssets):
 
 
 class GlueEmitters(unittest.TestCase):
+    def test_closed_glass_without_native_light_gets_its_actual_fixture_source(self):
+        assets, original = displaced_lamp()
+        blob = bytearray(original)
+        struct.pack_into('<II',blob,264,0,0)
+        sources, _ = attached_sources(assets,SCENE,bytes(blob))
+        self.assertEqual(len(sources),1)
+        self.assertEqual((sources[0]['bone'],sources[0]['position']),(1,(5.,2.,3.)))
+        assets, original = displaced_lamp(flat=True)
+        blob = bytearray(original)
+        struct.pack_into('<II',blob,264,0,0)
+        with self.assertRaises(ValueError):
+            attached_sources(assets,SCENE,bytes(blob))
+
+    def test_displaced_lamp_reuses_native_light_on_actual_skin_bone_without_geometry_changes(self):
+        assets, original = displaced_lamp()
+        patched, repairs = glue.repair_native_lamp_anchors(assets,SCENE,original)
+        self.assertEqual(len(repairs),1)
+        self.assertEqual((repairs[0]['original_bone'],repairs[0]['bone']), (0,1))
+        self.assertEqual(repairs[0]['position'],(5.,2.,3.))
+        glue.verify_native_lamp_anchors(original,patched,repairs)
+        self.assertEqual(glue.repair_native_lamp_anchors(assets,SCENE,patched),(patched,[]))
+        for duplicate,flat in ((True,False),(False,True)):
+            rejected,blob = displaced_lamp(duplicate,flat)
+            self.assertEqual(glue.repair_native_lamp_anchors(rejected,SCENE,blob),(blob,[]))
+        changed = bytearray(patched)
+        record = struct.unpack_from('<I',changed,268)[0]
+        changed[record+76] ^= 1
+        with self.assertRaisesRegex(ValueError,'lifecycle'):
+            glue.verify_native_lamp_anchors(original,bytes(changed),repairs)
+        report = glue.build(assets,self.output)
+        self.assertEqual(report['counts']['lamp_anchors_repaired'],1)
+        with Archive(self.output/'glue-lights-staged.mpq') as archive:
+            self.assertEqual({n.lower() for n in archive.names() if not n.startswith('(')}, {SCENE})
+            self.assertEqual(archive.read(SCENE),patched)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(dir=fp.output_dir())
         self.addCleanup(self.temp.cleanup)

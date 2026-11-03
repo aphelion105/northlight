@@ -36,6 +36,12 @@ inline float nightGain(float night){return 1.f-.20f*std::clamp(night,0.f,1.f);}
 inline constexpr float SunlitGain=.3f;
 inline float sunlitCut(float sunWeight,bool sunVisibilityInBaseline){
     return sunVisibilityInBaseline&&std::isfinite(sunWeight)?(1-SunlitGain)*std::clamp(sunWeight,0.f,1.f):0.f;}
+// Positive w is the lamp's reciprocal fade width. Negative w identifies a
+// transient bolt and carries its finite source core squared (same register ABI).
+inline float transport(const NorthlightLocalLights::Light& l){
+    if(l.flags&NorthlightLocalLights::Flash){const float core=std::max(4.f,l.attenuationEnd*.04f);return -core*core;}
+    return 1.f/std::max(l.attenuationEnd-std::min(l.attenuationStart,l.attenuationEnd*.9f),.05f);
+}
 template<unsigned N> struct Batch {
     std::array<Constant,N> position{},color{},fog{};
     unsigned count=0;
@@ -93,7 +99,7 @@ inline Selection select(const std::vector<NorthlightLocalLights::Light>& lights,
         const float gain=visibilityGain(picks[i].score);
         // Complete the selected influence sphere even for scaled bonfires.
         out.fogDistance=std::max(out.fogDistance,picks[i].score+2*l.attenuationEnd);
-        out.color[i]={l.diffuse[0]*gain,l.diffuse[1]*gain,l.diffuse[2]*gain,1.f/std::max(l.attenuationEnd-std::min(l.attenuationStart,l.attenuationEnd*.9f),.05f)};
+        out.color[i]={l.diffuse[0]*gain,l.diffuse[1]*gain,l.diffuse[2]*gain,transport(l)};
         out.sources[i]=l;for(unsigned k=0;k<3;++k)out.sources[i].diffuse[k]=out.color[i][k];
     }
     return out;
@@ -236,7 +242,7 @@ struct Tracker {
             gain*=NorthlightLocalLights::pulseGain(l,sourceTime);
             out.position[slot]={l.position[0],l.position[1],l.position[2],l.attenuationEnd};
             out.fogDistance=std::max(out.fogDistance,score+2*l.attenuationEnd);
-            out.color[slot]={l.diffuse[0]*gain,l.diffuse[1]*gain,l.diffuse[2]*gain,1.f/std::max(l.attenuationEnd-std::min(l.attenuationStart,l.attenuationEnd*.9f),.05f)};
+            out.color[slot]={l.diffuse[0]*gain,l.diffuse[1]*gain,l.diffuse[2]*gain,transport(l)};
             out.sources[slot]=l;for(unsigned k=0;k<3;++k)out.sources[slot].diffuse[k]=out.color[slot][k];};
         for(unsigned i=0;i<selected;++i){const Sel& s=sel[order[i]];emit(i,*s.light,s.score,s.shown);}
         for(unsigned i=0;i<fades;++i){const Fade& f=fade[tail[i]];emit(selected+i,entries[f.index].light,f.score,f.shown);}

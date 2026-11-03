@@ -31,7 +31,7 @@ assert 'pointCheck(d->SetPixelShaderConstantF(1,sphere,1),"cube sphere")' in bod
 # other write of PS c1 happens between a bindFace and the union.
 bind=body[body.index('auto bindFace=[&]'):body.index('if(rebuildMask&(1u<<face)){if(!bindFace(')]
 assert bind.index('SetPixelShader(pointShadowPS)')<bind.index('SetPixelShaderConstantF(1,sphere,1)')
-loop=body[body.index('if(rebuildMask&(1u<<face)){if(!bindFace('):body.index('pointSlot().faceWeights[face]=pointDraws-faceDraws;')]
+loop=body[body.index('if(rebuildMask&(1u<<face)){if(!bindFace('):body.index('pointSlot().faceWeights[face]=pointDraws-faceDraws')]
 assert loop.count('bindFace(')==2 and 'SetPixelShaderConstantF(1' not in loop and 'SetPixelShaderConstantF(0,&unionConstants[0][0],2)' in body[body.index('float unionConstants'):]
 for draw in ('"cube static draw"','"cube terrain draw"','"cube live draw"','"cube animated draw"'):
     assert loop.index('bindFace(pointScratchSurface')<loop.index(draw) or draw=='"cube static draw"',draw

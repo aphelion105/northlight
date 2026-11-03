@@ -70,6 +70,7 @@ APP_FILES = [
     'renderer/equipment_emitter_patch.py',
     'renderer/point_transmission_builder.py',
     'renderer/attached_emitter_sources.py',
+    'renderer/emission_catalog.py',
     'tests/validate_world_cache.py', 'src/sky/forest_regions.inc',
 ]
 PAYLOAD_COMMON = {'celestial-profiles.ini': 'client-config/celestial-profiles.ini',

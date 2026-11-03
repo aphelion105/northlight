@@ -18,7 +18,7 @@ inline constexpr unsigned ProbeLimit=128;inline constexpr float MaxDistance=48.f
 // follows them over ~FollowSeconds. Its light shows only this frame's samples:
 // no fade-in (it swallowed one-frame flashes) and no release tail.
 inline constexpr float FollowSeconds=.05f,MinEnergy=.003f;
-struct Sample {float position[3]{},rgb[3]{};float brightest=0;bool castsShadows=false;}; // brightest: the strongest sample merged into this one
+struct Sample {float position[3]{},rgb[3]{};float brightest=0;bool castsShadows=false;float flashRadius=0;}; // strongest merged sample
 struct Cluster {Sample sample;unsigned count=0;};
 // Shadow intent requires every triangle of a compact mesh, never sparse
 // samples of a large glow or an unanchored particle cloud.
@@ -34,6 +34,8 @@ inline float brightness(const Sample& s){return std::max(s.brightest,peak(s.rgb)
 // One light per place, whatever the hue: a lightning texture's blue, pale blue and
 // white samples made seven stacked lights whose sum followed the particle count.
 inline bool same(const Sample& a,const Sample& b,float radius=1.25f){
+    if(bool(a.flashRadius)!=bool(b.flashRadius))return false;
+    if(a.flashRadius)radius=32.f;
     return NorthlightEquipmentLights::distance2(a.position,b.position)<radius*radius;
 }
 inline bool triangleIndices(unsigned primitive,std::uint64_t triangle,std::uint64_t (&out)[3]){
@@ -54,6 +56,7 @@ struct Draw {
 };
 inline void add(Cluster& cluster,const Sample& sample){
     cluster.sample.castsShadows=cluster.sample.castsShadows&&sample.castsShadows;
+    cluster.sample.flashRadius=std::max(cluster.sample.flashRadius,sample.flashRadius);
     const float scale=1.f/float(cluster.count+1);cluster.sample.brightest=std::max(brightness(cluster.sample),brightness(sample));
     for(unsigned k=0;k<3;++k){cluster.sample.position[k]+=(sample.position[k]-cluster.sample.position[k])*scale;
         cluster.sample.rgb[k]+=(sample.rgb[k]-cluster.sample.rgb[k])*scale;}
@@ -61,13 +64,15 @@ inline void add(Cluster& cluster,const Sample& sample){
 }
 class Frame {
     std::array<Cluster,Clusters> current_{};unsigned count_=0;
+    std::array<Sample,8> sky_{};unsigned skyCount_=0;
     std::array<std::uint64_t,Capacity> previous_{};unsigned previousCount_=0;std::uint64_t serial_=0;
-    struct Track {float position[3]{},rgb[3]{},target[3]{};std::uint64_t id=0;bool seen=false,castsShadows=false;};
+    struct Track {float position[3]{},rgb[3]{},target[3]{};std::uint64_t id=0;bool seen=false,castsShadows=false;float flashRadius=0;};
     std::array<Track,Tracks> tracks_{};unsigned trackCount_=0;
 public:
+    bool hasFlash()const{if(skyCount_)return true;for(unsigned i=0;i<count_;++i)if(current_[i].sample.flashRadius>0)return true;return false;}
     std::array<Light,Capacity> output{};unsigned outputCount=0;
     std::array<std::uint64_t,Capacity> immediate{};unsigned immediateCount=0;
-    unsigned draws=0,backgroundDraws=0,accepted=0,deferred=0,triangles=0,points=0,dropped=0,probes=0,distant=0;
+    unsigned draws=0,backgroundDraws=0,accepted=0,deferred=0,triangles=0,points=0,dropped=0,probes=0,distant=0,flashDraws=0,flashProbes=0;
     unsigned shaderMiss=0,textureMiss=0,bufferMiss=0,stateMiss=0,geometryMiss=0;
     // stateMiss by the check that refused the draw (PARTICLELIGHT state=...).
     enum State {BlendOp,AlphaTest,ColorWrite,Depth,Sampler,Projection,States};
@@ -82,23 +87,55 @@ public:
     }
     void missTexture(const TextureMiss& miss){if(wantsTextureMiss(miss.key))textureMisses[textureMissCount++]=miss;}
     void reset(){count_=previousCount_=trackCount_=outputCount=immediateCount=0;nextFrame();}
-    void nextFrame(){count_=0;draws=backgroundDraws=accepted=deferred=triangles=points=dropped=probes=distant=0;shaderMiss=textureMiss=bufferMiss=stateMiss=geometryMiss=0;stateWhy={};}
+    void nextFrame(){count_=skyCount_=0;draws=backgroundDraws=accepted=deferred=triangles=points=dropped=probes=distant=flashDraws=flashProbes=0;shaderMiss=textureMiss=bufferMiss=stateMiss=geometryMiss=0;stateWhy={};}
+    bool takeFlashProbe(){if(flashProbes==64){++dropped;return false;}++flashProbes;return true;}
+    void observeSky(const Sample& sample){
+        for(unsigned k=0;k<3;++k)if(!std::isfinite(sample.position[k])||!std::isfinite(sample.rgb[k])||sample.rgb[k]<0||sample.rgb[k]>16)return;
+        if(peak(sample.rgb)<.000012f)return;
+        unsigned at=skyCount_;
+        if(at==sky_.size()){at=0;for(unsigned i=1;i<skyCount_;++i)if(brightness(sky_[i])<brightness(sky_[at]))at=i;
+            if(brightness(sample)<=brightness(sky_[at]))return;}
+        else ++skyCount_;
+        sky_[at]=sample;
+    }
+    void projectSky(const float* inverseView,const float* camera){
+        for(unsigned i=0;i<skyCount_;++i){auto s=sky_[i];float direction[3]{},norm=0;
+            for(unsigned j=0;j<3;++j){for(unsigned k=0;k<3;++k)direction[j]+=s.position[k]*inverseView[k*4+j];norm+=direction[j]*direction[j];}
+            if(!std::isfinite(norm)||norm<1e-6f)continue;
+            for(auto& d:direction)d/=std::sqrt(norm);
+            // Skybox units are artistic, not yards. Place its measured direction
+            // on a modelled cloud layer 350 yards above the viewer. Horizon bolts
+            // are farther (up to 1750 yards) and obey the same inverse-square law.
+            const float distance=350.f/std::max(direction[2],.2f);
+            for(unsigned k=0;k<3;++k)s.position[k]=camera[k]+direction[k]*distance;
+            s.flashRadius=2000.f;s.castsShadows=false;observe(s,camera);
+        }
+        skyCount_=0;
+    }
     bool takeProbe(){if(probes>=ProbeLimit){++dropped;return false;}++probes;return true;}
-    bool takeDraw(bool particle=true){if(draws>=DrawLimit||(!particle&&backgroundDraws>=DrawLimit/2)){++dropped;return false;}++draws;if(!particle)++backgroundDraws;return true;}
+    bool takeDraw(bool particle=true,bool flash=false){if(flash){if(flashDraws>=4){++dropped;return false;}++flashDraws;return true;}if(draws>=DrawLimit||(!particle&&backgroundDraws>=DrawLimit/2)){++dropped;return false;}++draws;if(!particle)++backgroundDraws;return true;}
     void observe(const Sample& sample,const float* camera){
         for(unsigned k=0;k<3;++k)if(!std::isfinite(sample.position[k])||std::fabs(sample.position[k])>=100000||
             !std::isfinite(sample.rgb[k])||sample.rgb[k]<0||sample.rgb[k]>16||!std::isfinite(camera[k]))return;
         const float cameraDistance=NorthlightEquipmentLights::distance2(sample.position,camera);
-        if(peak(sample.rgb)<.003f||cameraDistance>MaxDistance*MaxDistance)return;
+        if(!std::isfinite(sample.flashRadius)||sample.flashRadius<0||sample.flashRadius>2000)return;
+        const float reach=sample.flashRadius?sample.flashRadius+MaxDistance:MaxDistance;
+        const float power=sample.flashRadius?std::min(256.f,sample.flashRadius*.2f):1.f;
+        if(peak(sample.rgb)*power<MinEnergy||cameraDistance>reach*reach)return;
         ++points;
         for(unsigned i=0;i<count_;++i)if(same(current_[i].sample,sample)){add(current_[i],sample);return;}
         unsigned at=count_;
         if(at==Clusters){
             float farthest=-1;for(unsigned i=0;i<count_;++i){const float distance=NorthlightEquipmentLights::distance2(current_[i].sample.position,camera);
-                if(distance>farthest){farthest=distance;at=i;}}
-            if(cameraDistance>=farthest){++dropped;return;}
+                if(!current_[i].sample.flashRadius&&distance>farthest){farthest=distance;at=i;}}
+            if(farthest<0||(!sample.flashRadius&&cameraDistance>=farthest)){++dropped;return;}
         }else ++count_;
         current_[at]={sample,1};
+        // Reserve tracks before ordinary sources can fill the tracking pool.
+        // Reordering only the final output was too late in a crowded scene.
+        if(sample.flashRadius)while(at&&!current_[at-1].sample.flashRadius){
+            std::swap(current_[at],current_[at-1]);--at;
+        }
     }
     // dtSeconds 0 (a gap, a new map, the tests' single frames): every source shows its current samples at once.
     void publish(const Light* native,unsigned nativeCount,const std::vector<Light>& fixed,
@@ -112,10 +149,11 @@ public:
                 NorthlightEquipmentLights::hueClose(s.rgb,l.diffuse)){duplicate=true;break;}
             if(duplicate)continue;
             // The average colour at the strongest sample's level (at most 1): not the sum of a draw's particles.
-            float target[3];for(unsigned k=0;k<3;++k)target[k]=s.rgb[k]/peak(s.rgb)*std::min(1.f,.7f*brightness(s));
+            float target[3];for(unsigned k=0;k<3;++k)target[k]=s.rgb[k]/peak(s.rgb)*(s.flashRadius?
+                std::min(256.f,s.flashRadius*.2f)*brightness(s):std::min(1.f,.7f*brightness(s)));
             Track* track=nullptr;float best=2.f*2.f;
             for(unsigned t=0;t<trackCount_;++t){auto& c=tracks_[t];if(c.seen)continue;const float d=NorthlightEquipmentLights::distance2(s.position,c.position);
-                if(d<best){track=&c;best=d;}} // nearest only: a flash's hue varies from frame to frame
+                if(bool(c.flashRadius)==bool(s.flashRadius)&&d<best){track=&c;best=d;}} // hue varies between frames
             if(track){for(unsigned k=0;k<3;++k){track->position[k]+=(s.position[k]-track->position[k])*follow;track->target[k]=target[k];}}
             else{
                 if(trackCount_<Tracks)track=&tracks_[trackCount_++];
@@ -124,7 +162,7 @@ public:
                 *track={};track->id=0xfed0000000000000ull|++serial_;
                 for(unsigned k=0;k<3;++k){track->position[k]=s.position[k];track->target[k]=target[k];}
             }
-            track->seen=true;track->castsShadows=s.castsShadows;
+            track->seen=true;track->castsShadows=s.castsShadows;track->flashRadius=s.flashRadius;
         }
         std::array<Light,Tracks+Capacity> candidates;unsigned count=0;
         for(unsigned t=0;t<trackCount_;){auto& c=tracks_[t];
@@ -133,6 +171,7 @@ public:
             Light l{};for(unsigned k=0;k<3;++k){l.position[k]=c.position[k];l.diffuse[k]=c.rgb[k];}
             l.attenuationStart=.5f;l.attenuationEnd=2.f+4.f*std::sqrt(std::min(1.f,peak(c.rgb)));l.kind=2;l.sourceId=c.id;
             if(c.castsShadows)l.flags|=NorthlightLocalLights::CastShadow;
+            if(c.flashRadius){l.attenuationEnd=c.flashRadius;l.flags=NorthlightLocalLights::Flash;}
             candidates[count++]=l;++t;
         }
         const unsigned particleCount=count;
@@ -147,11 +186,15 @@ public:
         std::array<unsigned char,Tracks+Capacity> order;order[0]=0;
         if(count>1){std::array<float,Tracks+Capacity> scores;
             for(unsigned i=0;i<count;++i){order[i]=static_cast<unsigned char>(i);scores[i]=score(candidates[i]);}
-            std::partial_sort(order.begin(),order.begin()+std::min(count,Capacity),order.begin()+count,[&](unsigned char a,unsigned char b){
+            std::sort(order.begin(),order.begin()+count,[&](unsigned char a,unsigned char b){
+                const bool af=candidates[a].flags&NorthlightLocalLights::Flash,bf=candidates[b].flags&NorthlightLocalLights::Flash;
+                if(af!=bf)return af;
                 return scores[a]!=scores[b]?scores[a]<scores[b]:candidates[a].sourceId<candidates[b].sourceId;});}
-        outputCount=std::min(count,Capacity);immediateCount=0;
-        for(unsigned i=0;i<outputCount;++i){output[i]=candidates[order[i]];
-            if((output[i].sourceId&0xfff0000000000000ull)==0xfed0000000000000ull)immediate[immediateCount++]=output[i].sourceId;}
+        outputCount=immediateCount=0;unsigned flashes=0;
+        for(unsigned i=0;i<count&&outputCount<Capacity;++i){const auto& l=candidates[order[i]];
+            if(l.flags&NorthlightLocalLights::Flash){if(flashes==2)continue;++flashes;}
+            output[outputCount++]=l;
+            if((l.sourceId&0xfff0000000000000ull)==0xfed0000000000000ull)immediate[immediateCount++]=l.sourceId;}
         for(unsigned i=0;i<previousCount_;++i)
             if(std::find(immediate.begin(),immediate.begin()+immediateCount,previous_[i])==immediate.begin()+immediateCount)forgotten[forgottenCount++]=previous_[i];
         if(forgottenCount){std::sort(forgotten.begin(),forgotten.begin()+forgottenCount);selection.forgetSorted(forgotten.data(),forgottenCount);}

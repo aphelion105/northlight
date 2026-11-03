@@ -880,6 +880,10 @@ class Installer:
             raise Failed(f'The art layer build failed (exit {code}); its last lines are shown above. '
                          f'Full output: {self.log.name if self.log else "not logged"}.')
         layer = {on_disk(client, t): (work / t).read_bytes() for t in report['targets']}
+        guard = report.get('dependency_guard')
+        guard_data = (work / guard).read_bytes() if guard == 'northlight-art-inputs.ini' else None
+        emission = report.get('runtime_emission_catalog')
+        emission_data = (work / emission).read_bytes() if emission == 'northlight-emission.bin' else None
         remove_tree(work)
         steps = report.get('steps', [])
         skipped = sum(1 for step in steps if 'skipped' in step)
@@ -896,6 +900,12 @@ class Installer:
             if current != new and not self.owns_art(client, name, current):
                 return {}, f'{name} belongs to another mod (sha256 {current[:12]}); it is left as it is', {}
             actions[name] = 'kept-identical' if current == new else 'replaced'
+        if guard_data is not None:
+            layer[guard] = guard_data
+            actions[guard] = 'kept-identical' if (client / guard).is_file() and sha(client / guard) == hashlib.sha256(guard_data).hexdigest() else 'replaced' if (client / guard).exists() else 'installed'
+        if emission_data is not None:
+            layer[emission] = emission_data
+            actions[emission] = 'kept-identical' if (client / emission).is_file() and sha(client / emission) == hashlib.sha256(emission_data).hexdigest() else 'replaced' if (client / emission).exists() else 'installed'
         return layer, None, actions
 
     # ---- transactions ----

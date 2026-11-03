@@ -93,7 +93,7 @@ def texture_rgb(assets, name, alpha_blend=True):
     return tuple(v / (len(rgba)//4) for v in rgb)
 
 
-def sources(assets, blob, max_sources=16):
+def sources(assets, blob, max_sources=16, particle_palette=None):
     if len(blob) < 304 or blob[:4] != b'MD20' or unpack('<I', blob, 4)[0] != 264:
         raise ValueError('Not WotLK v264')
     if unpack('<I', blob, 264)[0]:
@@ -117,7 +117,7 @@ def sources(assets, blob, max_sources=16):
             # 12340 maps M2 flag 0x10 to emitter 0x200: particles follow
             # the emitter transform at render time. This is suitable for a
             # bone light, not a reason to exclude weapon flame/glow models.
-            if blend not in (3, 4) or replacement not in (-1, 0) or flags & (0x8000 | 0x10000000):
+            if blend not in (3, 4) or (replacement not in (-1, 0) and particle_palette != 0) or flags & (0x8000 | 0x10000000):
                 raise ValueError('Unsupported blend, replacement colour, burst or multitexture')
             if emitter_type not in (1, 2) or unpack('<I', particle, 24)[0] > 1 or unpack('<I', particle, 32)[0] > 1:
                 raise ValueError('Noncompact, model or child particle emitter')
@@ -217,11 +217,36 @@ def validate_lights(original, patched, emitters):
                 raise ValueError('Native source track mismatch')
 
 
+def item_palettes(assets):
+    """A color index in M2 does not replace RGB when every item display uses palette zero."""
+    try:
+        blob = assets.read('dbfilesclient\\itemdisplayinfo.dbc')
+    except FileNotFoundError:
+        return {}
+    magic, count, fields, size, length = unpack('<4s4I', blob)
+    if magic != b'WDBC' or fields != 25 or size != 100 or len(blob) != 20 + count * size + length:
+        return {}
+    strings = blob[20 + count * size:]
+    palettes = collections.defaultdict(set)
+    for row in array(blob, 20, count, '<25I'):
+        for column in (1, 2):
+            name = string(strings, row[column]).rsplit('\\', 1)[-1]
+            if name.endswith('.mdx'):
+                name = name[:-4] + '.m2'
+            if name.endswith('.m2'):
+                palettes[name].add(row[24])
+    return dict(palettes)
+
+
 def build(assets, output):
     from attached_emitter_sources import write_stage
     visual_models = {p for p in item_visuals(assets) if p.startswith(('spells\\', 'item\\'))}
     candidates = {p:{'item_visual':p in visual_models} for p in
         set(n for n in assets.providers if n.startswith('item\\') and n.endswith('.m2')) | visual_models}
+    palettes = item_palettes(assets)
+    for path, info in candidates.items():
+        if path.startswith('item\\') and palettes.get(path.rsplit('\\', 1)[-1]) == {0}:
+            info.update(particle_palette=0, palette_basis='All ItemDisplayInfo references retain authored particle RGB')
     return write_stage(assets,output,candidates,{
         'format':'native WotLK v264 equipment lights with original bones and lifecycle',
         'scope':'Every listed Item/*.m2 plus ItemVisualEffects model paths',

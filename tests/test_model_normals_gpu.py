@@ -23,6 +23,7 @@ parser.add_argument('--fixture', type=Path, required=True)
 parser.add_argument('--backend', type=Path, required=True)
 parser.add_argument('--output', type=Path)
 parser.add_argument('--quick', action='store_true')
+parser.add_argument('--no-timing', action='store_true', help='Run pixel/state oracles without GPU timestamps (unsupported native drivers).')
 args = parser.parse_args()
 out = (args.output or fp.output_dir()/'model-normals').resolve()
 out.mkdir(parents=True, exist_ok=True)
@@ -61,11 +62,12 @@ subprocess.run([str(fp.zig()), 'c++', '-target', 'x86-windows-gnu', '-std=c++17'
                 '-luser32', '-o', str(exe)], env=env, check=True)
 records = []
 for tag, source in cases:
-    run = subprocess.run([str(exe), str(args.backend.resolve()), str(out)+os.sep, tag, source], cwd=out,
+    run = subprocess.run([str(exe), str(args.backend.resolve()), str(out)+os.sep, tag, source]+(['--no-timing'] if args.no_timing else []), cwd=out,
                          env=env, capture_output=True, text=True, timeout=120)
     (out/(tag+'.log')).write_text(run.stdout+run.stderr)
     assert run.returncode == 0, run.stdout+run.stderr
     assert 'MODEL_NORMALS_GPU_PASS' in run.stdout
+    assert 'MODEL_NORMALS_BATCH_PASS pixels=exact' in run.stdout
     assert 'MODEL_NORMALS_ALPHA_PASS' in run.stdout and 'MODEL_NORMALS_VALIDATION_PASS' in run.stdout
     groups = {}
     for row in csv.DictReader((out/(tag+'-samples.csv')).open()):

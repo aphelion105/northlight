@@ -42,6 +42,7 @@ import json
 import shutil
 import sys
 import tempfile
+import configparser
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))   # the repo root, also under python -I
@@ -50,6 +51,7 @@ fp.use_source_modules()
 import client_archives  # noqa: E402
 from mpq import Archive, ReadError  # noqa: E402
 import native_model_lights  # noqa: E402
+import emission_catalog  # noqa: E402
 import world_emitter_index  # noqa: E402
 from world_scene_builder import Assets, decode_blp  # noqa: E402
 import build_lighting  # noqa: E402
@@ -64,6 +66,23 @@ DBC_NAME = 'DBFilesClient\\{}.dbc'
 SKYBOX = DBC_NAME.format('LightSkybox')
 OWNER_FILE = 'northlight\\art-layer.json'
 OWNER_FORMAT = 'northlight-art-layer/1'
+INPUTS_FILE = 'northlight-art-inputs.ini'
+
+
+def write_inputs(output, client, locale, letter, archives, expected):
+    """Startup guard: source MPQ inventory and metadata, without reading gigabytes of payload."""
+    current = client_archives.fingerprint(client_archives.chain(client, archives, locale, without=letter), client)
+    if current != expected:
+        raise ValueError('MPQ inputs changed during art generation; run the installer again')
+    config = configparser.ConfigParser()
+    config.optionxform = str
+    config['NorthlightAssets'] = {'Version': '1', 'Locale': locale, 'Letter': letter,
+                                 'View': archives, 'Count': str(len(current['archives']))}
+    for i, entry in enumerate(current['archives']):
+        config[f'Archive{i}'] = {'Path': entry['archive'].replace('/', '\\'), 'Size': str(entry['bytes']),
+                                'Modified': str(entry['mtime_ns'] // 100 + 116444736000000000)}
+    with (output / INPUTS_FILE).open('w', encoding='utf-16') as target:
+        config.write(target)
 
 
 def owned_payload(payload):
@@ -130,6 +149,7 @@ def build(client, output, world_cache, locale=None, letter='z', archives='all'):
     fog = world_cache / 'fog'
     assets = Assets(client, archives, locale, without=letter)
     report = {'client_archives': assets.fingerprint(), 'letter': letter, 'steps': []}
+    input_archives = client_archives.fingerprint(client_archives.chain(client, archives, locale, without=letter), client)
     work = Path(tempfile.mkdtemp(prefix='art-layer-', dir=output.parent))
     try:
         tables = {n: DBC(assets.read(DBC_NAME.format(n))) for n in build_lighting.TABLES}
@@ -179,6 +199,9 @@ def build(client, output, world_cache, locale=None, letter='z', archives='all'):
         dynamic_models, dynamic_steps = native_model_lights.build(assets, work, read_archive,excluded=world_owned)
         payload.update(dynamic_models)
         report['steps'].extend(dynamic_steps)
+        emission = emission_catalog.build(assets, output)
+        report['runtime_emission_catalog'] = emission_catalog.FILE
+        report['steps'].append({'step': 'live_emission_catalog', **emission['counts']})
         payload[world_emitter_index.ARCHIVE_PATH] = emitter_metadata
         report['steps'].append({'step': 'world_emitter_index', 'owner': 'northlight-local-direct',
                                 'sha256': hashlib.sha256(emitter_metadata).hexdigest(), **emitter_counts})
@@ -213,6 +236,8 @@ def build(client, output, world_cache, locale=None, letter='z', archives='all'):
                   letter_already_in_client=[t for t in targets if (client / t).exists()],
                   archive_sha256=hashlib.sha256((output / targets[0]).read_bytes()).hexdigest(),
                   game_launched=False)
+    write_inputs(output, client, locale, letter, archives, input_archives)
+    report['dependency_guard'] = INPUTS_FILE
     (output / 'art-layer-manifest.json').write_text(json.dumps(report, indent=2) + '\n')
     return report
 

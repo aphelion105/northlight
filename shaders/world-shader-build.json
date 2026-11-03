@@ -1,6 +1,6 @@
 {
   "bump_include_sha256": "b5523a51dc6715f11ac2e7ba9ecb46a4973ba6aa23de159e308a8fd24d4e9ebc",
-  "source_sha256": "f559e3040b5bcd990c26e1a1ae94337be13c4326e7790dab5965bad581e93112",
+  "source_sha256": "c2efb7cb5db0817f397ca1a06add760835ab7269742fb3d7f473802e7a0136db",
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
   "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
   "game_launched": false,
@@ -591,7 +591,7 @@
         "dp2add": 2
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "f559e3040b5bcd990c26e1a1ae94337be13c4326e7790dab5965bad581e93112"
+      "source_sha256": "a191e8ca63500d60000f2d9ce64d63851c02a27ea9de7a7a27513b8431926685"
     },
     "LocalDirect1": {
       "target": "ps_3_0",
@@ -624,7 +624,7 @@
         "dp2add": 2
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "f559e3040b5bcd990c26e1a1ae94337be13c4326e7790dab5965bad581e93112"
+      "source_sha256": "a191e8ca63500d60000f2d9ce64d63851c02a27ea9de7a7a27513b8431926685"
     },
     "LocalDirect16": {
       "target": "ps_3_0",
@@ -657,7 +657,77 @@
         "dp2add": 2
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "f559e3040b5bcd990c26e1a1ae94337be13c4326e7790dab5965bad581e93112"
+      "source_sha256": "a191e8ca63500d60000f2d9ce64d63851c02a27ea9de7a7a27513b8431926685"
+    },
+    "LocalFlash": {
+      "target": "ps_3_0",
+      "bytes": 7112,
+      "sha256": "04f7c35dadf120705521425b3740efd6af017eea660fbc875bc2118844a4760b",
+      "static_instruction_slots": 447,
+      "temporary_registers": 8,
+      "samplers": [
+        1,
+        9,
+        11,
+        12,
+        14
+      ],
+      "instructions": {
+        "mul": 133,
+        "frc": 1,
+        "add": 100,
+        "max": 10,
+        "mov": 11,
+        "min": 2,
+        "texldl": 5,
+        "if": 14,
+        "else": 14,
+        "rcp": 33,
+        "cmp": 38,
+        "endif": 14,
+        "dp3": 23,
+        "rsq": 12,
+        "dp2add": 2
+      },
+      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "source_sha256": "a191e8ca63500d60000f2d9ce64d63851c02a27ea9de7a7a27513b8431926685"
+    },
+    "FlashShadow": {
+      "target": "ps_3_0",
+      "bytes": 6432,
+      "sha256": "624a28338757d5ac1da8fb651da764181cc4b0e59ccbee4ff36e56bab14de88f",
+      "static_instruction_slots": 386,
+      "temporary_registers": 14,
+      "samplers": [
+        1,
+        2,
+        3,
+        9,
+        11,
+        14
+      ],
+      "instructions": {
+        "mul": 85,
+        "frc": 2,
+        "add": 96,
+        "max": 9,
+        "mov": 28,
+        "min": 3,
+        "texldl": 6,
+        "if": 10,
+        "else": 9,
+        "rcp": 13,
+        "cmp": 41,
+        "endif": 10,
+        "dp3": 12,
+        "rsq": 5,
+        "dp2add": 5,
+        "rep": 3,
+        "break": 2,
+        "endrep": 3
+      },
+      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "source_sha256": "c2efb7cb5db0817f397ca1a06add760835ab7269742fb3d7f473802e7a0136db"
     },
     "RemovalSmooth": {
       "target": "ps_3_0",

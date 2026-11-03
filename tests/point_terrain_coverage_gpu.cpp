@@ -4,6 +4,28 @@
 #include <cassert>
 static void must(HRESULT hr){assert(SUCCEEDED(hr));}
 struct PointTerrainCoverageTest {
+ static void directionalProofDemand(IDirect3DDevice9* d){
+  WorldRenderer w(d);auto scene=std::make_shared<StaticShadow::Snapshot>();scene->map="proof-demand";scene->mapGeneration=1;
+  auto model=std::make_shared<StaticShadow::Model>();model->key="opaque";model->contentRevision=1;
+  model->vertices={{0,0,0,0,0},{1,0,0,1,0},{0,1,0,0,1}};model->indices={0,1,2};
+  model->materials.push_back({});model->materials[0].width=model->materials[0].height=1;model->materials[0].rgba={255,255,255,255};model->materialKeys={1};
+  model->batches.push_back({0,3,0,{0,0,0},{1,1,0}});scene->models[model->key]=model;
+  StaticShadow::Placement place;place.modelKey=model->key;place.uid=1;place.category=2;scene->placements.push_back(place);
+  w.staticScene=scene;w.lastRequest.map=scene->map;
+  for(unsigned frame=1;frame<=64&&!w.staticCasters.stats().readyModels;++frame)assert(w.staticCasters.update(d,scene,frame));
+  assert(w.staticCasters.stats().readyModels==1);
+  for(unsigned i=0;i<640;++i)w.replays.push_back(std::make_unique<WorldRenderer::Replay>());
+  w.prepareStaticProofs(true);const auto cursor=w.staticDedupCursor;
+  const auto uploaded=w.staticCasters.stats().uploadedBytes;const auto bytes=w.staticCasters.stats().residentBytes;
+  for(unsigned frame=0;frame<1000;++frame){
+   for(auto& p:w.replays){p->staticProofMask=p->staticM2Mask=15;p->staticM2Model=&model->key;}
+   w.prepareStaticProofs(false);assert(w.staticDedupCursor==cursor);
+   for(const auto& p:w.replays)assert(!p->staticProofMask&&!p->staticM2Mask&&!p->staticM2Model);
+  }
+  assert(w.staticCasters.stats().readyModels==1&&w.staticCasters.stats().uploadedBytes==uploaded&&w.staticCasters.stats().residentBytes==bytes);
+  w.prepareStaticProofs(true);assert(w.staticDedupCursor==cursor+1);
+  std::puts("DIRECTIONAL_PROOF_DEMAND_PASS dormantFrames=1000 replays=640 masksCleared=1 cacheRetained=1 reentry=1");
+ }
  static void movingLightCapture(IDirect3DDevice9* d){
   WorldRenderer w(d);w.valid=true;w.active=std::make_shared<WorldRenderer::Snapshot>();w.active->map="moving-lamp";
   std::vector<uint32_t> words={0xfffe0300};
@@ -53,6 +75,7 @@ struct PointTerrainCoverageTest {
   original->Release();declaration->Release();std::puts("POINT_MOVING_LIGHT_CAPTURE_PASS triangles=99 minimum=100 poses=2 sameSource=1");
  }
  static void run(IDirect3DDevice9* d){
+  directionalProofDemand(d);
   movingLightCapture(d);
   // One cached terrain blocker. The camera may see a different native portion
   // of the same chunk: that is not proof that this blocker was captured live.
@@ -63,17 +86,53 @@ struct PointTerrainCoverageTest {
   must(page.vb->Lock(0,sizeof vertices,&bytes,0));std::memcpy(bytes,vertices,sizeof vertices);must(page.vb->Unlock());must(page.ib->Lock(0,sizeof indices,&bytes,0));std::memcpy(bytes,indices,sizeof indices);must(page.ib->Unlock());w.vertices=page.vb;w.indices=page.ib;
   D3DVERTEXELEMENT9 elements[]={{0,0,D3DDECLTYPE_FLOAT3,D3DDECLMETHOD_DEFAULT,D3DDECLUSAGE_POSITION,0},{0,24,D3DDECLTYPE_FLOAT2,D3DDECLMETHOD_DEFAULT,D3DDECLUSAGE_TEXCOORD,0},D3DDECL_END()};must(d->CreateVertexDeclaration(elements,&w.shadowDecl));must(d->CreatePixelShader(kShadowUnionShader,&w.unionPS));
   w.materials.push_back(nullptr);w.uploadedAlphaCutoffs.push_back(-1);WorldRenderer::Batch batch{};batch.page=0;batch.start=0;batch.count=2;batch.minVertex=0;batch.vertexCount=4;batch.material=0;batch.terrain=true;batch.chunkX=7;batch.chunkY=9;batch.boundsLow={-1,-1,0};batch.boundsHigh={1,1,0};w.batches.push_back(batch);
+  IDirect3DTexture9* white=nullptr;must(d->CreateTexture(1,1,1,0,D3DFMT_A8R8G8B8,D3DPOOL_MANAGED,&white,nullptr));D3DLOCKED_RECT whiteLock{};
+  must(white->LockRect(0,&whiteLock,nullptr,0));*static_cast<DWORD*>(whiteLock.pBits)=0xffffffff;must(white->UnlockRect(0));
+  w.materials.push_back(white);w.uploadedAlphaCutoffs.push_back(.5f);
+  IDirect3DTexture9* transparent=nullptr;must(d->CreateTexture(2,2,1,0,D3DFMT_A8R8G8B8,D3DPOOL_MANAGED,&transparent,nullptr));D3DLOCKED_RECT transparentLock{};
+  must(transparent->LockRect(0,&transparentLock,nullptr,0));for(unsigned y=0;y<2;++y)std::memset(static_cast<char*>(transparentLock.pBits)+y*transparentLock.Pitch,0,8);must(transparent->UnlockRect(0));
+  w.materials.push_back(transparent);w.uploadedAlphaCutoffs.push_back(0);
+  auto first=batch;first.count=1;first.vertexCount=3;auto second=first;second.start=3;second.minVertex=1;
+  const std::vector<size_t> pair={0,1};
+  w.batches={first,second};size_t cursor=0;auto merged=w.pointBatchRun(pair,cursor);
+  assert(cursor==2&&merged.start==0&&merged.count==2&&merged.minVertex==0&&merged.vertexCount==4);
+  for(unsigned difference=0;difference<4;++difference){auto other=second;
+   if(difference==0)++other.page;if(difference==1)++other.material;if(difference==2)other.pointOnly=true;if(difference==3)other.start=6;
+   w.uploadedAlphaCutoffs[0]=difference==2?.5f:-1.f;
+   w.batches={first,other};cursor=0;merged=w.pointBatchRun(pair,cursor);assert(cursor==1&&merged.count==1);
+  }
+  w.uploadedAlphaCutoffs[0]=-1.f;
+  auto opaque=second;opaque.material=2;opaque.pointOnly=true;w.batches={first,opaque};cursor=0;merged=w.pointBatchRun(pair,cursor);assert(cursor==2&&merged.count==2);
+  auto overflow=second;overflow.minVertex=UINT_MAX;overflow.vertexCount=2;
+  w.batches={first,overflow};cursor=0;merged=w.pointBatchRun(pair,cursor);assert(cursor==1&&merged.count==1);
+  w.batches={batch};
   w.pointLiveBatches.push_back({0,1,{30,30,0},{31,31,1}});w.quality.pointShadowFacesPerFrame=6;w.quality.pointShadowRefreshMs=0;
   const NorthlightLocalLights::Light light{{0,0,4},{1,.4f,.1f},1,12,12345,3,NorthlightLocalLights::CastShadow};
-  IDirect3DSurface9* readback=nullptr;must(d->CreateOffscreenPlainSurface(256,256,D3DFMT_R32F,D3DPOOL_SYSTEMMEM,&readback,nullptr));std::vector<float> reference;
+  IDirect3DSurface9* readback=nullptr;must(d->CreateOffscreenPlainSurface(256,256,D3DFMT_R32F,D3DPOOL_SYSTEMMEM,&readback,nullptr));std::vector<float> reference,referenceCube;
   for(unsigned frame=0;frame<8;++frame){w.liveTerrainChunks.clear();if(frame&1)w.liveTerrainChunks.emplace(7,9);
+   // Single draw, coalesced splits, and forced separate draws of the exact
+   // same index/vertex stream must produce identical six-face cubes.
+   const bool split=frame%4!=0,merge=frame%4==1;
+   w.batches=split?std::vector<WorldRenderer::Batch>{first,second}:std::vector<WorldRenderer::Batch>{batch};
+   if(split){w.batches[1].material=merge?2:1;w.batches[1].pointOnly=merge;}
+   if(frame>=4)for(auto& b:w.batches)b.terrain=false;
+   w.terrainBatchListGeneration=UINT64_MAX;w.pointSlot().cacheValid=false;
+   const unsigned mergedBefore=w.pointBatchesMerged;
    // Full scan, shared terrain list, stale generation, then rebuilt list.
    if(frame==2||frame==6)w.rebuildTerrainLists();
    if(frame==4)++w.meshGeneration;
    must(d->BeginScene());const bool rendered=w.renderPointShadow(light,true,false);must(d->EndScene());assert(rendered&&w.pointSlot().ready);IDirect3DSurface9* face=nullptr;must(w.pointSlot().cube->GetCubeMapSurface(D3DCUBEMAP_FACE_NEGATIVE_Z,0,&face));must(d->GetRenderTargetData(face,readback));face->Release();D3DLOCKED_RECT lock{};must(readback->LockRect(&lock,nullptr,D3DLOCK_READONLY));std::vector<float> image(256*256);for(unsigned y=0;y<256;++y)std::memcpy(image.data()+256*y,static_cast<char*>(lock.pBits)+y*lock.Pitch,256*4);must(readback->UnlockRect());
    std::printf("POINT_TERRAIN_FRAME nativeChunkVisible=%u centerDepth=%.9f draws=%u\n",frame&1,image[128*256+128],w.pointDraws);std::fflush(stdout);
    assert(image[128*256+128]<1.f);if(reference.empty())reference=image;else assert(image==reference);
+   assert((w.pointBatchesMerged>mergedBefore)==merge);
+   assert(w.pointSlot().faceWeights[D3DCUBEMAP_FACE_NEGATIVE_Z]==(frame<4?(split?2u:1u):0u));
+   std::vector<float> cube(6*256*256);
+   for(unsigned faceIndex=0;faceIndex<6;++faceIndex){must(d->GetRenderTargetData(w.pointSlot().faces[faceIndex],readback));must(readback->LockRect(&lock,nullptr,D3DLOCK_READONLY));
+    for(unsigned y=0;y<256;++y)std::memcpy(cube.data()+faceIndex*256*256+256*y,static_cast<char*>(lock.pBits)+y*lock.Pitch,256*4);must(readback->UnlockRect());}
+   if(referenceCube.empty())referenceCube=std::move(cube);else assert(cube==referenceCube);
   }
+  std::puts("POINT_BATCH_COALESCING_GPU_PASS cases=8 faces=6 pixels=exact pageMaterialFilterGapOverflow=separate triangleOrder=preserved");
+  w.batches={batch};w.rebuildTerrainLists();
   // The actual pool must spend its full budget on visible sources, even when
   // closer/brighter offscreen bulbs would win the old camera-distance ranking.
   for(unsigned i=0;i<16;++i)w.context.inverseView[i]=i%5==0?1.f:0.f;

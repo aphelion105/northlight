@@ -790,6 +790,53 @@ float4 LocalDirect16(float2 uv:TEXCOORD0,uniform float4 LampPos[16]:register(c84
     }
     return float4(result*(LocalLightInfo.y*(1-LocalLightInfo.z*sunlit)),0);
 }
+// Only batches containing an actual discharge use the inverse-square variant.
+float4 LocalFlash(float2 uv:TEXCOORD0):COLOR0 {
+    float2 halfUV=uv;
+    uv=depthUV(uv);
+    float d=normalizedDepth(uv);
+    if(d>=.99999||waterDistance(uv,d)>0)return 0;
+    float3 smoothNormal=tex2Dlod(NormalBuffer,float4(halfUV,0,0)).xyz;
+    // r47 K4: lamps read weaker in direct sun (30%). The first lighting pass (the sun, by day) left
+    // its visibility in the baseline alpha (s12); LocalLightInfo.z is the share removed in full sun,
+    // faded with the sun's elevation (0 at night, with shadows off or without an active sun).
+    // Sun shadow and interiors keep 1.
+    float sunlit=saturate((tex2Dlod(BaselineLighting,float4(halfUV,0,0)).a-(1-GridInfo.z))/max(GridInfo.z,.001));
+    float3 p=worldPosition(uv,d);float3 n=autoBumpNormal(uv,p,smoothNormal,viewDistance(d),InverseView[0].xyz,InverseView[1].xyz,InverseView[2].xyz);
+    float3 result=0;
+    // Unused slots are zero constants (reach 0), so no per-light branch is needed.
+    // Positive color.w is 1/(end-start); negative is a transient source core squared.
+    [unroll]for(int i=0;i<8;++i){
+        float3 toLight=LocalLightPos[i].xyz-p;
+        float inv=rsqrt(max(dot(toLight,toLight),.0025));
+        float reach=saturate((LocalLightPos[i].w-1/inv)*LocalLightColor[i].w);
+        float energy=reach*reach*(1-LocalLightInfo.z*sunlit);
+        [branch]if(LocalLightColor[i].w<0){
+            float d2=dot(toLight,toLight),core2=-LocalLightColor[i].w;
+            float edge=saturate(1-d2/max(LocalLightPos[i].w*LocalLightPos[i].w,.001));
+            energy=edge*edge*core2/(d2+core2);
+        }
+        float lambert=saturate(dot(n,toLight)*inv);
+        result+=LocalLightColor[i].rgb*(energy*lambert);
+    }
+    return float4(result*LocalLightInfo.y,0);
+}
+// A single sky discharge owns the same two directional cascades as the sun.
+// Subtract only this source's occluded radiance; ambient/GI and other lamps stay.
+float4 FlashShadow(float2 uv:TEXCOORD0):COLOR0 {
+    float2 screen=uv;uv=depthUV(uv);float d=normalizedDepth(uv);
+    if(d>=.99999||waterDistance(uv,d)>0)return 0;
+    float4 normal=tex2Dlod(NormalBuffer,float4(screen,0,0));
+    float3 p=worldPosition(uv,d);
+    float3 n=autoBumpNormal(uv,p,normal.xyz,viewDistance(d),InverseView[0].xyz,InverseView[1].xyz,InverseView[2].xyz);
+    float3 toLight=LocalLightPos[0].xyz-p;float d2=dot(toLight,toLight);
+    float core2=-LocalLightColor[0].w;
+    float edge=saturate(1-d2/max(LocalLightPos[0].w*LocalLightPos[0].w,.001));
+    float energy=edge*edge*core2/(d2+core2);
+    float lambert=saturate(dot(n,toLight)*rsqrt(max(d2,.0025)));
+    float visibility=directionalShadow(p,normal.xyz,normal.w);
+    return float4(-LocalLightColor[0].rgb*(energy*lambert*LocalLightInfo.y*(1-visibility)),0);
+}
 // 0.3.159 shadow removal smoothing (always on). In sun shadow the correction removes the game's
 // painted sun light in proportion to N.L of the depth-derived FACET normal, but the
 // game painted it with smooth vertex normals: the removal steps at every facet crease

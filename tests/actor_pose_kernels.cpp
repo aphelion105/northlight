@@ -94,18 +94,22 @@ int main(int argc,char** argv){
     // VS1 retains its distinct floor addressing. Current-pose definitions may override any palette row.
     auto sm1=targets[0].second;sm1.major=1;for(auto& o:sm1.operations){if(o.code==46)o.code=1;for(auto& s:o.source)s.address=0;}buildKernel(sm1);assert(sm1.kernel.singleSkin());sample(sm1,4096);batchBounds(sm1);
     auto overridden=targets[0].second;overridden.definitions.push_back({31,{2,3,4,5}});overridden.definitions.push_back({0,{2,1,0,0}});buildKernel(overridden);sample(overridden,4096);batchBounds(overridden);
-    FILE* f=std::fopen(argv[1],"rb");assert(f);uint32_t bytes;unsigned programs=0,compiled=0,single=0,commuted=0,oldWeighted=0,newWeighted=0,world=0,majors[4]={};
+    FILE* f=std::fopen(argv[1],"rb");assert(f);uint32_t bytes;unsigned programs=0,compiled=0,single=0,commuted=0,oldWeighted=0,newWeighted=0,world=0,body=0,majors[4]={};
     while(std::fread(&bytes,4,1,f)==1){assert(bytes%4==0&&bytes<262145);std::vector<Word> words(bytes/4);assert(std::fread(words.data(),1,bytes,f)==bytes);++programs;
         Program p;Old::Program q;const bool current=compile(words.data(),words.size(),p),prior=Old::compile(words.data(),words.size(),q);assert(current==prior);if(!current)continue;++compiled;++majors[p.major];assert(p.kernel.skin==q.kernel.skin);
         single+=bool(p.kernel.singleSkin());commuted+=p.kernel.commutedSkin();oldWeighted+=p.kernel.skin;sample(p,64);if(p.kernel.evaluator==Kernel::WeightedR0||p.kernel.evaluator==Kernel::WeightedR0Commuted){++newWeighted;mutations(p);}
+        if(p.positionRegister==0&&p.operations.front().code==1&&(p.kernel.evaluator==Kernel::WeightedR0||p.kernel.evaluator==Kernel::WeightedR0Commuted)){
+            assert(q.kernel.evaluator==Old::Kernel::Generic&&!p.kernel.skin);
+            if(!body++){sample(p,4096);targets.push_back({"weighted-body-w-first",p});}}
         if(p.kernel.worldSkin()){++world;mutations(p);auto defined=p;defined.definitions.push_back({14,{2,3,4,5}});defined.definitions.push_back({16,{-2,1,0,3}});buildKernel(defined);assert(defined.kernel.worldSkin());sample(defined,64);
             if(world==1){defined.definitions.push_back({0,{3,0,0,0}});buildKernel(defined);sample(defined,4096);}}
         if(p.kernel.commutedSkin()&&std::none_of(targets.begin(),targets.end(),[](const auto& t){return t.second.kernel.commutedSkin();})){mutations(p);targets.push_back({"weighted-sm2-commuted",p});}
         if(p.kernel.skin&&std::none_of(targets.begin(),targets.end(),[](const auto& t){return t.second.kernel.skin;}))targets.push_back({"weighted-control",p});
         const bool boneInputs=std::any_of(p.inputs.begin(),p.inputs.end(),[](const auto& input){return input.usage==D3DDECLUSAGE_BLENDINDICES;});
         if(p.skinned&&boneInputs&&(p.kernel.evaluator==Kernel::Generic||p.kernel.worldSkin()||p.kernel.evaluator==Kernel::WeightedR0||p.kernel.evaluator==Kernel::WeightedR0Commuted)&&std::none_of(targets.begin(),targets.end(),[&](const auto& t){return t.second.skinned&&t.second.major==p.major&&t.second.operations.size()==p.operations.size()&&t.second.positionRegister==p.positionRegister;}))targets.push_back({p.kernel.worldSkin()?"world-bone-pose":"generic-bone-pose",p});}
-    std::fclose(f);assert(programs>1000&&compiled>1000&&single&&commuted&&oldWeighted&&newWeighted&&world);
+    std::fclose(f);assert(programs>1000&&compiled>1000&&single&&commuted&&oldWeighted&&newWeighted&&world&&body);
     std::printf("ACTOR_KERNEL_CORPUS_PASS programs=%u compiled=%u SM1=%u SM2=%u SM3=%u single=%u commuted=%u oldWeighted=%u newWeighted=%u world=%u unchangedBoundsEligibility=1 metadataSizeUnchanged=1\n",programs,compiled,majors[1],majors[2],majors[3],single,commuted,oldWeighted,newWeighted,world);
+    std::printf("ACTOR_BODY_KERNEL_PASS nativePrograms=%u bitExact=1 unchangedBoundsEligibility=1\n",body);
     std::printf("ACTOR_KERNEL_ORACLE_PASS comparisons=%llu successes=%llu failures=%llu strict=%llu alias=%llu newlyRecognizedOutputIncludingFailure=%llu\n",(unsigned long long)comparisons,(unsigned long long)successes,(unsigned long long)failures,(unsigned long long)strictChecks,(unsigned long long)aliasChecks,(unsigned long long)newOutputChecks);
     std::printf("ACTOR_SINGLE_PREPARED_PASS vertex_and_alias=%llu bounds_and_malformed=%llu declaration_type_pairs=289 current_constants=1 failed_bounds_exact=1\n",(unsigned long long)preparedChecks,(unsigned long long)boundsChecks);
     if(bench)for(const auto& target:targets){benchmark(target.second,target.first);if(target.second.kernel.singleSkin())for(unsigned vertices:{71u,256u,8192u})boundsBenchmark(target.second,target.first,vertices);}

@@ -640,7 +640,8 @@ public:
         pixels.erase(original);const unsigned k=kind(kAutoBumpPixel,hash);
         if(k&&pixels.size()<4096)pixels[original]=k;
     }
-    template<class Draw> void capture(IDirect3DVertexShader9* original,Draw draw,bool userMemory=false,const NorthlightAutoDisplacement::Args* geometry=nullptr,const NorthlightCaptureMetadata::PositionBounds* positions=nullptr){
+    template<class Draw> void capture(IDirect3DVertexShader9* original,Draw draw,bool userMemory=false,const NorthlightAutoDisplacement::Args* geometry=nullptr,const NorthlightCaptureMetadata::PositionBounds* positions=nullptr,NorthlightAutoDisplacement::CaptureSource* source=nullptr){
+        if(source)source->clear();
         pomInRange=true;
         if(!active())return;
         auto v=vertices.find(original);if(v==vertices.end()&&active())v=recoverVertex(original);if(v==vertices.end())return;
@@ -708,6 +709,7 @@ public:
         const NorthlightAutoDisplacement::Admission geometryAdmission{z,depthWrite,s[5].value,s[1].value,s[7].value,s[8].value,alphaFunc};
         NorthlightAutoDisplacement::CaptureSource geometrySource;
         if(domain<=4&&geometryMode&&geometry&&!skipGeometry){displacement.prepare(original,domain,material,*geometry,&geometryAdmission,&geometrySource);
+            if(source&&geometrySource.mesh&&geometrySource.declaration){source->mesh=geometrySource.mesh;source->declaration=geometrySource.declaration;source->declaration->AddRef();}
             nearestDepth=displacement.nearestPreparedDepth();farthestDepth=std::min(farthestDepth,displacement.farthestPreparedDepth());
             if(needsCapture&&displacement.nearestPreparedDepth()>captureRange(domain)){++rangeTests;++rangeRejected;if(profile)profile->count(P::RangeRejected);return;}}
         if(!needsCapture){++noCaptureRequired;if(profile)profile->count(P::NoContribution);return;}

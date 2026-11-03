@@ -11,7 +11,7 @@
 #include <vector>
 
 namespace NorthlightLocalLights {
-inline constexpr uint32_t Baked=1,CastShadow=2,FirePulse=4,CandlePulse=8,GlassEmitter=16;
+inline constexpr uint32_t Baked=1,CastShadow=2,FirePulse=4,CandlePulse=8,GlassEmitter=16,Flash=32;
 struct Light {
     float position[3],diffuse[3],attenuationStart,attenuationEnd;
     uint64_t sourceId;
@@ -24,7 +24,8 @@ inline bool valid(const Light& l) {
     for(float x:l.diffuse) {if(!std::isfinite(x)||x<0||x>10000)return false;peak=std::max(peak,x);}
     return peak>0&&std::isfinite(l.attenuationStart)&&std::isfinite(l.attenuationEnd)&&
         l.attenuationStart>=0&&l.attenuationStart<l.attenuationEnd&&l.attenuationEnd<=2000&&
-        (l.kind==1||l.kind==2||l.kind==3)&&(l.flags&~(CastShadow|FirePulse|CandlePulse|GlassEmitter))==(l.kind==1?Baked:0u)&&
+        (l.kind==1||l.kind==2||l.kind==3)&&(l.flags&~(CastShadow|FirePulse|CandlePulse|GlassEmitter|Flash))==(l.kind==1?Baked:0u)&&
+        (!(l.flags&Flash)||(l.kind==2&&l.flags==Flash&&(l.sourceId>>52)==0xfed))&&
         (!(l.flags&(FirePulse|CandlePulse))||l.kind==3)&&
         (!(l.flags&GlassEmitter)||((l.kind==1||l.kind==3)&&(l.flags&CastShadow)))&&
         ((l.flags&(FirePulse|CandlePulse))!=(FirePulse|CandlePulse));
@@ -40,6 +41,11 @@ inline float pulseGain(const Light& l,uint32_t now){
 // not a claim that a baked classic WMO originally used this precise falloff.
 inline float attenuation(const Light& l,float distance) {
     if(!std::isfinite(distance)||distance<0||!valid(l))return 0;
+    if(l.flags&Flash){
+        const float core=std::max(4.f,l.attenuationEnd*.04f),d2=distance*distance;
+        const float edge=std::max(0.f,1.f-d2/(l.attenuationEnd*l.attenuationEnd));
+        return edge*edge*core*core/(d2+core*core);
+    }
     if(distance<=l.attenuationStart)return 1;
     return std::max(0.f,(l.attenuationEnd-distance)/(l.attenuationEnd-l.attenuationStart));
 }

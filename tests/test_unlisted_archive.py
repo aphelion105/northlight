@@ -96,8 +96,8 @@ with Archive(client / 'Data/patch-R.MPQ') as a:
 # 1. Assets: the unlisted archive keeps its place in the priority order.
 assets = Assets(client, 'all', 'enUS')
 try:
-    assert [p.name for p in assets.paths] == ['common.MPQ', 'patch.MPQ', 'patch-3.MPQ', 'patch-R.MPQ', 'patch-S.MPQ', 'patch-U.MPQ',
-                                              'locale-enUS.MPQ']
+    assert [p.name for p in assets.paths] == ['common.MPQ', 'patch.MPQ', 'patch-3.MPQ', 'locale-enUS.MPQ',
+                                              'patch-R.MPQ', 'patch-S.MPQ', 'patch-U.MPQ']
     assert assets.unlisted == ['Data/patch-R.MPQ'] and assets.unreadable == ['Data/patch-T.MPQ'], (assets.unlisted, assets.unreadable)
     assert assets.read('DBFilesClient\\Light.dbc') == b'patch-S'                    # a later listed archive still wins
     assert assets.read('dbfilesclient/map.dbc') == b'patch-R'                       # patch-R replaces common's

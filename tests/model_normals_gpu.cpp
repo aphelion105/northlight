@@ -11,6 +11,8 @@
 #include <memory>
 #include "world_math.h"
 #include "forwarders.h"
+#include "northlight_mem.h"
+extern "C" __attribute__((no_builtin("memcmp"),no_builtin("bcmp"))) int memcmp(const void* a,const void* b,size_t n){return NorthlightMem::compare(a,b,n);}
 #include "model_normal_renderer.h"
 #include "saved_state.h"
 using NorthlightGI::Vec3;
@@ -24,6 +26,7 @@ struct Target {IDirect3DTexture9* t=nullptr;IDirect3DSurface9 *s=nullptr,*read=n
 static IDirect3DDevice9* d;
 struct CaptureCalls:ForwardIDirect3DDevice9 {
     unsigned renderSets=0,targetSets=0,failRender=0,failTarget=0;bool failAfter=false,faultSeen=false;
+    unsigned bulkReads=0,bulkMisses=0;bool bulkUnknown=false;
     using ForwardIDirect3DDevice9::ForwardIDirect3DDevice9;
     HRESULT STDMETHODCALLTYPE SetRenderState(D3DRENDERSTATETYPE key,DWORD value)override{
         if(++renderSets!=failRender)return real->SetRenderState(key,value);faultSeen=true;if(failAfter)ok(real->SetRenderState(key,value));return E_FAIL;
@@ -70,8 +73,9 @@ static IDirect3DPixelShader9* ps(const std::string& p){auto b=read(p);IDirect3DP
 static IDirect3DVertexShader9* vs(const std::string& p){auto b=read(p);IDirect3DVertexShader9* s=nullptr;ok(d->CreateVertexShader((DWORD*)b.data(),&s));return s;}
 static std::vector<unsigned char> capturedPixels(IDirect3DTexture9* texture,unsigned w,unsigned h){Target t;t.t=texture;t.w=w;t.h=h;t.bytes=8;t.format=D3DFMT_A16B16G16R16F;ok(texture->GetSurfaceLevel(0,&t.s));ok(d->CreateOffscreenPlainSurface(w,h,t.format,D3DPOOL_SYSTEMMEM,&t.read,nullptr));auto data=pixels(t);t.read->Release();t.s->Release();return data;}
 static void nearImage(const std::vector<unsigned char>& a,const std::vector<unsigned char>& b){assert(a.size()==b.size());for(size_t i=0;i<a.size();i+=2){unsigned short x,y;std::memcpy(&x,a.data()+i,2);std::memcpy(&y,b.data()+i,2);assert(std::fabs(half(x)-half(y))<.002f);}}
+#include "model_normal_batch.inc"
 int main(int argc,char**argv){
-    assert(argc==5);std::setvbuf(stdout,nullptr,_IONBF,0);std::string dir=argv[2],tag=argv[3];
+    assert(argc==5||(argc==6&&std::string(argv[5])=="--no-timing"));std::setvbuf(stdout,nullptr,_IONBF,0);std::string dir=argv[2],tag=argv[3];
     auto bytes=read(dir+"terrain.bin");unsigned count,samples;Vec3 center;std::memcpy(&count,bytes.data(),4);std::memcpy(&samples,bytes.data()+4,4);std::memcpy(&center,bytes.data()+8,12);assert(bytes.size()==20+count*sizeof(Vertex)+samples*12);auto vertices=(const Vertex*)(bytes.data()+20);auto points=(const Vec3*)(bytes.data()+20+count*sizeof(Vertex));
     WNDCLASSW wc{};wc.lpfnWndProc=DefWindowProcW;wc.lpszClassName=L"NorthlightOfflineShadowCamera";wc.hInstance=GetModuleHandleW(nullptr);assert(RegisterClassW(&wc));auto window=CreateWindowExW(0,wc.lpszClassName,L"",WS_OVERLAPPED,0,0,64,64,nullptr,nullptr,wc.hInstance,nullptr);assert(window);
     auto module=LoadLibraryA(argv[1]);assert(module);auto create=(IDirect3D9*(WINAPI*)(UINT))GetProcAddress(module,"Direct3DCreate9");assert(create);auto api=create(D3D_SDK_VERSION);assert(api);D3DPRESENT_PARAMETERS pp{};pp.Windowed=TRUE;pp.hDeviceWindow=window;pp.BackBufferWidth=pp.BackBufferHeight=64;pp.BackBufferFormat=D3DFMT_X8R8G8B8;pp.SwapEffect=D3DSWAPEFFECT_DISCARD;pp.PresentationInterval=D3DPRESENT_INTERVAL_IMMEDIATE;ok(api->CreateDevice(0,D3DDEVTYPE_HAL,window,D3DCREATE_HARDWARE_VERTEXPROCESSING|D3DCREATE_FPU_PRESERVE,&pp,&d));
@@ -83,6 +87,7 @@ int main(int argc,char**argv){
     D3DVERTEXELEMENT9 modelElements[]={{0,0,D3DDECLTYPE_FLOAT3,0,D3DDECLUSAGE_POSITION,0},{0,12,D3DDECLTYPE_UBYTE4N,0,D3DDECLUSAGE_BLENDWEIGHT,0},{0,16,D3DDECLTYPE_UBYTE4,0,D3DDECLUSAGE_BLENDINDICES,0},{0,20,D3DDECLTYPE_FLOAT3,0,D3DDECLUSAGE_NORMAL,0},{0,32,D3DDECLTYPE_FLOAT2,0,D3DDECLUSAGE_TEXCOORD,0},D3DDECL_END()};
     IDirect3DVertexDeclaration9* modelDecl=nullptr;ok(d->CreateVertexDeclaration(modelElements,&modelDecl));
     CaptureCalls captureCalls(d);auto modelNormals=std::make_unique<NorthlightModelNormals>(&captureCalls);
+    IDirect3DStateBlock9* batchFixtureState=nullptr;
     IDirect3DVertexBuffer9* sentinelVB=nullptr;IDirect3DIndexBuffer9* sentinelIB=nullptr;ok(d->CreateVertexBuffer(48,0,0,D3DPOOL_MANAGED,&sentinelVB,nullptr));ok(d->CreateIndexBuffer(6,0,D3DFMT_INDEX16,D3DPOOL_MANAGED,&sentinelIB,nullptr));
     constexpr unsigned W=768,H=576;auto depth=target(W,H,D3DFMT_R32F,4),geometric=target(W,H,D3DFMT_A16B16G16R16F,8),normals=target(W/2,H/2,D3DFMT_A16B16G16R16F,8),lighting=target(W/2,H/2,D3DFMT_A16B16G16R16F,8);auto tileMid=target(256,256,D3DFMT_R32F,4),tiles=target(64,64,D3DFMT_R32F,4);auto fixedNormals=target(W/2,H/2,D3DFMT_A16B16G16R16F,8);Target shadows[]={target(1024,1024,D3DFMT_R32F,4),target(1024,1024,D3DFMT_R32F,4)};
     IDirect3DSurface9 *sceneDepth=nullptr,*shadowDepth=nullptr;ok(d->CreateDepthStencilSurface(W,H,D3DFMT_D24S8,D3DMULTISAMPLE_NONE,0,TRUE,&sceneDepth,nullptr));ok(d->CreateDepthStencilSurface(1024,1024,D3DFMT_D24S8,D3DMULTISAMPLE_NONE,0,TRUE,&shadowDepth,nullptr));
@@ -122,6 +127,7 @@ int main(int argc,char**argv){
                 modelNormals->endFrame();captureModel();
             }
             if(frame==8&&elevation==0&&SUCCEEDED(api->CheckDeviceMultiSampleType(0,D3DDEVTYPE_HAL,D3DFMT_A8R8G8B8,TRUE,D3DMULTISAMPLE_2_SAMPLES,nullptr))){
+                ok(d->CreateStateBlock(D3DSBT_ALL,&batchFixtureState));
                 auto single=capturedPixels(modelNormals->texture(),W,H);IDirect3DSurface9 *msaa=nullptr,*msaaDepth=nullptr;ok(d->CreateRenderTarget(W,H,D3DFMT_A8R8G8B8,D3DMULTISAMPLE_2_SAMPLES,0,FALSE,&msaa,nullptr));ok(d->CreateDepthStencilSurface(W,H,D3DFMT_D24S8,D3DMULTISAMPLE_2_SAMPLES,0,FALSE,&msaaDepth,nullptr));
                 modelNormals->endFrame();ok(d->SetDepthStencilSurface(nullptr));ok(d->SetRenderTarget(0,msaa));ok(d->SetDepthStencilSurface(msaaDepth));captureModel();assert(single==capturedPixels(modelNormals->texture(),W,H));
                 ok(d->SetDepthStencilSurface(nullptr));ok(d->SetRenderTarget(0,depth.s));ok(d->SetDepthStencilSurface(sceneDepth));msaa->Release();msaaDepth->Release();std::puts("MODEL_NORMALS_MSAA_PASS samples=2 capture_exact");
@@ -129,7 +135,15 @@ int main(int argc,char**argv){
             if(frame==8&&elevation==0){
                 auto opaque=capturedPixels(modelNormals->texture(),W,H);IDirect3DTexture9* transparent=nullptr;ok(d->CreateTexture(1,1,1,0,D3DFMT_A8R8G8B8,D3DPOOL_MANAGED,&transparent,nullptr));D3DLOCKED_RECT lock{};ok(transparent->LockRect(0,&lock,nullptr,0));*static_cast<DWORD*>(lock.pBits)=0x00ffffff;ok(transparent->UnlockRect(0));
                 ok(d->SetPixelShader(alphaModelPS));ok(d->SetRenderState(D3DRS_ALPHATESTENABLE,TRUE));ok(d->SetRenderState(D3DRS_ALPHAFUNC,D3DCMP_GREATER));ok(d->SetRenderState(D3DRS_ALPHAREF,128));bind(0,transparent);modelNormals->endFrame();captureModel();auto empty=capturedPixels(modelNormals->texture(),W,H);for(size_t at=6;at<empty.size();at+=8){unsigned short z;std::memcpy(&z,empty.data()+at,2);assert(z==0);}
-                bind(0,white);modelNormals->endFrame();captureModel();assert(opaque==capturedPixels(modelNormals->texture(),W,H));ok(d->SetPixelShader(modelPS));ok(d->SetRenderState(D3DRS_ALPHATESTENABLE,FALSE));transparent->Release();std::puts("MODEL_NORMALS_ALPHA_PASS native_cutout transparent_rejected opaque_retained");
+                bind(0,white);modelNormals->endFrame();captureModel();assert(opaque==capturedPixels(modelNormals->texture(),W,H));
+                modelNormals->endFrame();modelNormals->setDeferredCapture(true);
+                const NorthlightDrawSnapshot::Draw args{D3DPT_TRIANGLELIST,0,0,meshVertices,0,meshIndices/3,true};
+                ok(d->BeginScene());modelNormals->capture(modelVS,[&]{return D3DERR_INVALIDCALL;},true,&args,sourceMesh.data()+12+48*meshVertices,D3DFMT_INDEX32,sourceMesh.data()+12,48);
+                assert(modelNormals->pendingTextures()&&modelNormals->samplesTexture(white));
+                modelNormals->beforeTextureWrite(transparent);assert(modelNormals->pendingTextures());
+                modelNormals->beforeTextureWrite(white);assert(!modelNormals->pendingTextures());ok(d->EndScene());
+                assert(opaque==capturedPixels(modelNormals->texture(),W,H));
+                modelNormals->setDeferredCapture(false);ok(d->SetPixelShader(modelPS));ok(d->SetRenderState(D3DRS_ALPHATESTENABLE,FALSE));transparent->Release();std::puts("MODEL_NORMALS_ALPHA_PASS native_cutout transparent_rejected opaque_retained guarded_deferred_write");
             }
             ok(d->SetDepthStencilSurface(nullptr));
             float c[105][4]={};c[0][0]=1.f/W;c[0][1]=1.f/H;c[0][2]=nearZ;c[0][3]=farZ;c[1][0]=sx;c[1][1]=sy;c[1][2]=1;c[2][0]=1;c[2][1]=48;c[2][2]=192;c[2][3]=1.f/1024;std::memcpy(c[3],inverse,64);std::memcpy(c[7],light[0],64);std::memcpy(c[11],light[1],64);std::memcpy(c[15],&eye,12);std::memcpy(c[16],&sun,12);c[16][3]=0;c[17][0]=c[17][1]=c[17][2]=.6f;c[18][0]=c[18][1]=c[18][2]=.2f;c[20][2]=1;c[24][0]=NorthlightWorldMath::ShadowBiasWorld/1280;c[27][1]=1;std::memcpy(c[28],&sun,12);c[29][0]=c[29][1]=c[29][2]=.6f;c[33][0]=W;c[33][1]=H;c[33][2]=W/2;c[33][3]=H/2;c[35][0]=1.f/1280;
@@ -152,6 +166,11 @@ int main(int argc,char**argv){
             std::printf("elevation=%u frame=%u samples=%u smoothedDarker=%u worst=%.4f\n",elevation,frame,valid,bad,worst);
         }
     }
+    // Run the independently presenting workload after the camera/readback
+    // oracles; Present may discard the native runtime's retained frame data.
+    assert(batchFixtureState);ok(batchFixtureState->Apply());
+    ok(d->SetDepthStencilSurface(nullptr));ok(d->SetRenderTarget(0,depth.s));ok(d->SetRenderTarget(1,nullptr));ok(d->SetDepthStencilSurface(sceneDepth));viewport(depth);
+    normalBatch(api,captureCalls,modelVS,meshVertices,meshIndices,sourceMesh,argc==5);batchFixtureState->Release();
     modelNormals->endFrame();assert(!modelNormals->texture());modelNormals->reset();assert(!modelNormals->texture());modelNormals.reset();sentinelVB->Release();sentinelIB->Release();std::printf("MODEL_NORMALS_GPU_PASS native_skin_capture_state_restore renderStateSets=%u renderTargetSets=%u\n",captureCalls.renderSets,captureCalls.targetSets);
     std::fclose(csv);d->Release();api->Release();FreeLibrary(module);DestroyWindow(window);return 0;
 }

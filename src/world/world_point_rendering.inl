@@ -26,7 +26,7 @@
     PointSlot& pointSlot(){return pointSlots[pointIndex];}
     const PointSlot& pointSlot()const{return pointSlots[pointIndex];}
     unsigned pointFacesRebuilt=0,pointFacesKept=0,pointFacesReused=0,pointFailures=0,pointDraws=0,pointCulled=0,pointBoundsValid=0;
-    unsigned pointUpdates=0,pointReuses=0,pointReportedLimit=0;
+    unsigned pointUpdates=0,pointReuses=0,pointReportedLimit=0,pointBatchesMerged=0;
     using PointCandidates=std::array<std::vector<size_t>,6>;
     PointCandidates pointStaticCandidates,pointTerrainCandidates,pointLiveCandidates,pointReplayCandidates;
     size_t pointBoundVertices=0,pointBoundOperations=0;
@@ -42,7 +42,7 @@
         drop(pointDepth);drop(pointScratchSurface);drop(pointScratch);
         drop(pointShadowVS);drop(pointShadowPS);drop(pointLightingPS);
         drop(pointSoftResolvePS);drop(pointSoftLightingPS);pointSoftTried=false;
-        pointReady=false;pointUpdates=pointReuses=pointReportedLimit=0;localLightTracker.reset();localLightQpc=0;
+        pointReady=false;pointUpdates=pointReuses=pointReportedLimit=pointBatchesMerged=0;localLightTracker.reset();localLightQpc=0;
         pointSelection.reset();pointSelectionMap.clear();
         for(auto* lists:{&pointStaticCandidates,&pointTerrainCandidates,&pointLiveCandidates,&pointReplayCandidates})
             for(auto& list:*lists)std::vector<size_t>().swap(list);
@@ -95,6 +95,24 @@
     void pointAppendCandidates(PointCandidates& lists,size_t index,unsigned mask,unsigned faces=63){
         for(unsigned face=0;face<6;++face){if(!(faces&(1u<<face)))continue;if(mask&(1u<<face))lists[face].push_back(index);else ++pointCulled;}
     }
+    Batch pointBatchRun(const std::vector<size_t>& candidates,size_t& at){
+        Batch run=batches[candidates[at++]];
+        const auto opaque=[&](unsigned material){return material<materials.size()&&material<uploadedAlphaCutoffs.size()&&uploadedAlphaCutoffs[material]<=0;};
+        // Preserve the exact candidate/triangle order and cutout coverage.
+        // A culled or excluded range leaves an index gap and cannot be merged.
+        while(at<candidates.size()){
+            const auto& next=batches[candidates[at]];
+            if(next.page!=run.page||uint64_t(run.start)+uint64_t(run.count)*3!=next.start)break;
+            // Cached world materials are UNORM: cutoff zero cannot reject any
+            // alpha. The draw below canonicalizes these to no alpha sampling.
+            if((next.material!=run.material||next.pointOnly!=run.pointOnly)&&!(opaque(run.material)&&opaque(next.material)))break;
+            const auto low=std::min(run.minVertex,next.minVertex);
+            const uint64_t high=std::max(uint64_t(run.minVertex)+run.vertexCount,uint64_t(next.minVertex)+next.vertexCount);
+            if(high>UINT_MAX||uint64_t(run.count)+next.count>UINT_MAX)break;
+            run.count+=next.count;run.minVertex=low;run.vertexCount=UINT(high-low);++at;++pointBatchesMerged;
+        }
+        return run;
+    }
     // Content digests of the six faces for `light`; null when the records are unknown.
     // Recomputed only when the records, the mesh generation or the light's cube change.
     const NorthlightLocalShadowSignature::Digest* pointFaceDigests(const NorthlightLocalLights::Light& light)const{
@@ -119,8 +137,8 @@
             logf("POINT schedule updates=%u reuses=%u reused=%u crowd=%u periodMs=%u replayPackets=%zu draws=%u culled=%u",
                 pointUpdates,pointReuses,unsigned(reused),unsigned(pointReplayCount>=256),NorthlightPointShadow::RefreshSchedule::period(pointReplayCount,quality.pointShadowRefreshMs),replays.size(),pointDraws,pointCulled);
             pointUpdates=pointReuses=0;
-            if(NorthlightQuality::renderProfile(quality))logf("POINT static faces rebuilt=%u keptByContent=%u",pointFacesRebuilt,pointFacesKept);
-            pointFacesRebuilt=pointFacesKept=0;
+            if(NorthlightQuality::renderProfile(quality))logf("POINT static faces rebuilt=%u keptByContent=%u mergedBatches=%u worldFrame=%llu",pointFacesRebuilt,pointFacesKept,pointBatchesMerged,(unsigned long long)frames);
+            pointFacesRebuilt=pointFacesKept=pointBatchesMerged=0;
         }
     }
     // 0.3.143 (NorthlightReplayBoundsJob::Async): render() starts this pass on the
@@ -362,12 +380,12 @@
         const unsigned rebuildMask=pointStaticRebuild(pointSlot().selected,lightChanged);const bool rebuild=rebuildMask!=0;
         const DWORD updateAt=GetTickCount();if(fresh)pointReplayCount=withReplays?replays.size():0;
         if(!pointSlot().schedule.due(updateAt,pointSlot().selected,meshGeneration,pointReplayCount,rebuild,quality.pointShadowRefreshMs)){
-            pointSlot().ready=true;++pointReuses;pointLogSchedule(true);return true;
+            pointSlot().ready=true;++pointReuses;return true;
         }
         if(!fresh){
             captureDemand=true;++captureDeferrals;
             if(!pointSlot().schedule.usable||lightChanged)return false;
-            pointSlot().ready=true;++pointReuses;pointLogSchedule(true);return true;
+            pointSlot().ready=true;++pointReuses;return true;
         }
         // PointShadowFacesPerFrame<6: a refresh of the same light whose six faces are all complete
         // draws only this frame's group; a new, moved or resized light draws all six at once.
@@ -434,6 +452,15 @@
             const float* matrix=faceMatrices[face];
             D3DVIEWPORT9 viewport={0,0,PointResolution,PointResolution,0,1};
             const float sphere[4]={pointSlot().selected.attenuationEnd*pointSlot().selected.attenuationEnd,1.f/PointResolution,0,0}; /* LocalShadowPS: casters within range only */
+            bool materialKnown=false;IDirect3DTexture9* materialTexture=nullptr;float materialCutoff=0;
+            const auto bindMaterial=[&](unsigned index){
+                const float cutoff=uploadedAlphaCutoffs[index]<=0?-1.f:uploadedAlphaCutoffs[index];
+                auto* texture=cutoff<0?nullptr:materials[index];
+                if(!materialKnown||materialTexture!=texture)if(!pointCheck(d->SetTexture(0,texture),"cube alpha texture"))return false;
+                if(!materialKnown||materialCutoff!=cutoff){const float value[]={0,0,0,cutoff};
+                    if(!pointCheck(d->SetPixelShaderConstantF(0,value,1),"cube material"))return false;}
+                materialKnown=true;materialTexture=texture;materialCutoff=cutoff;return true;
+            };
             auto bindFace=[&](IDirect3DSurface9* target,const char* what){
                 return pointCheck(d->SetDepthStencilSurface(nullptr),"unbind cube depth")&&pointCheck(d->SetRenderTarget(0,target),what)&&
                     pointCheck(d->SetDepthStencilSurface(pointDepth),"cube depth target")&&pointCheck(d->SetViewport(&viewport),"cube viewport")&&
@@ -445,14 +472,13 @@
             };
             if(rebuildMask&(1u<<face)){if(!bindFace(pointSlot().cacheSurface[face],"cube cache target"))return false;
             UINT boundPage=UINT_MAX;
-            for(size_t index:pointStaticCandidates[face]){const auto& batch=batches[index];
+            for(size_t at=0;at<pointStaticCandidates[face].size();){const auto batch=pointBatchRun(pointStaticCandidates[face],at);
                 if(batch.material>=materials.size()||batch.material>=uploadedAlphaCutoffs.size())return pointCheck(E_FAIL,"cube material range");
+                const bool opaque=uploadedAlphaCutoffs[batch.material]<=0;
                 NorthlightPointTransmissionFilter filter;
-                if(!pointCheck(filter.begin(d,batch.pointOnly),"cube transmission filter"))return false;
+                if(!pointCheck(filter.begin(d,batch.pointOnly&&!opaque),"cube transmission filter"))return false;
                 // The static VS has no COLOR output; coverage comes from the texture alone.
-                float material[]={0,0,0,uploadedAlphaCutoffs[batch.material]};
-                if(!pointCheck(d->SetTexture(0,materials[batch.material]),"cube static alpha")||
-                   !pointCheck(d->SetPixelShaderConstantF(0,material,1),"cube material")||
+                if(!bindMaterial(batch.material)||
                    !bindMeshPage(batch,boundPage)||!pointCheck(d->DrawIndexedPrimitive(D3DPT_TRIANGLELIST,0,batch.minVertex,batch.vertexCount,batch.start,batch.count),"cube static draw"))return false;
                 if(!pointCheck(filter.restore(),"restore cube alpha filter"))return false;
                 ++pointDraws;
@@ -461,17 +487,15 @@
             pointSlot().faceContent[face]=digests?digests[face]:NorthlightLocalShadowSignature::Digest{};pointSlot().faceKnown[face]=digests!=nullptr;pointSlot().faceSerial[face]=meshGeneration;}
             if(rebuildMask&(1u<<face))++pointFacesRebuilt;
             pointSlot().staticOnlyFaces&=~bit;
-            const unsigned faceDraws=pointDraws;
+            const unsigned faceDraws=pointDraws,faceMerged=pointBatchesMerged;
             // Dynamic casters of this frame into the scratch face, plus cached-mesh
             // terrain, including parts absent from the camera-culled native draws.
             if(!staticOnly){
             if(!bindFace(pointScratchSurface,"cube scratch target"))return false;
             UINT terrainBoundPage=UINT_MAX;
-            for(size_t index:pointTerrainCandidates[face]){const auto& batch=batches[index];
+            for(size_t at=0;at<pointTerrainCandidates[face].size();){const auto batch=pointBatchRun(pointTerrainCandidates[face],at);
                 if(batch.material>=materials.size()||batch.material>=uploadedAlphaCutoffs.size())return pointCheck(E_FAIL,"cube material range");
-                float material[]={0,0,0,uploadedAlphaCutoffs[batch.material]};
-                if(!pointCheck(d->SetTexture(0,materials[batch.material]),"cube terrain alpha")||
-                   !pointCheck(d->SetPixelShaderConstantF(0,material,1),"cube terrain material")||
+                if(!bindMaterial(batch.material)||
                    !bindMeshPage(batch,terrainBoundPage)||!pointCheck(d->DrawIndexedPrimitive(D3DPT_TRIANGLELIST,0,batch.minVertex,batch.vertexCount,batch.start,batch.count),"cube terrain draw"))return false;
                 ++pointDraws;
             }
@@ -508,7 +532,9 @@
             }
             } /* withReplays */
             } /* dynamic candidates */
-            pointSlot().faceWeights[face]=pointDraws-faceDraws; /* the next face cycle's balance */
+            // Preserve the original logical workload weights: coalescing must
+            // not change the configured partial-face refresh groups/order.
+            pointSlot().faceWeights[face]=pointDraws-faceDraws+pointBatchesMerged-faceMerged;
             // With no dynamic casters, min(cache, cache) copies the static face
             // without clearing or rendering a scratch face. Retain it until it changes.
             if(!pointCheck(d->SetDepthStencilSurface(nullptr),"unbind cube depth")||!pointCheck(d->SetRenderTarget(0,pointSlot().faces[face]),"cube target")||
@@ -527,10 +553,10 @@
             d->SetSamplerState(0,D3DSAMP_MINFILTER,D3DTEXF_LINEAR);d->SetSamplerState(0,D3DSAMP_MAGFILTER,D3DTEXF_LINEAR);
         }
         if(rebuild){pointSlot().cacheValid=true;pointSlot().cacheSource=pointSlot().selected.sourceId;} /* cycling: already valid, its remaining faces wait for their frame */
-        if(cycling&&!pointSlot().faceCycle.advance()){pointSlot().ready=true;++pointUpdates;pointLogSchedule(false);return true;} /* stale until the last group */
+        if(cycling&&!pointSlot().faceCycle.advance()){pointSlot().ready=true;++pointUpdates;return true;} /* stale until the last group */
         if(cycling)pointSlot().schedule.commit(pointSlot().faceCycle.startedAt,pointSlot().selected,pointSlot().faceCycle.generation);
         else pointSlot().schedule.commit(updateAt,pointSlot().selected,meshGeneration);
-        pointSlot().ready=true;++pointUpdates;pointLogSchedule(false);
+        pointSlot().ready=true;++pointUpdates;
         if(frames==0||(frames%600==0&&NorthlightDiagnostics::enabled()))logf("POINT source=%llu kind=%u range=%.2f faces=%u size=256 draws=%u reusedFaces=%u culled=%u replayBounds=%u boundVertices=%zu boundOperations=%zu",(unsigned long long)pointSlot().selected.sourceId,pointSlot().selected.kind,pointSlot().selected.attenuationEnd,unsigned(__builtin_popcount(faces)),pointDraws,pointFacesReused,pointCulled,pointBoundsValid,pointBoundVertices,pointBoundOperations);
         return true;
     }
@@ -539,7 +565,7 @@
         if(!active)return;
         if(pointSelectionMap!=active->map){pointSelection.reset();pointSelectionMap=active->map;}
         const auto picks=pointSelection.update(lights.sources.data(),lights.count,context.camera,quality.pointShadowLimit,GetTickCount(),&localScissorView,float(quality.pointShadowDistance));
-        unsigned selected=0;
+        unsigned selected=0,totalDraws=0,totalCulled=0;const unsigned updatesBefore=pointUpdates,reusesBefore=pointReuses;
         // Release outgoing resources before allocating replacements, even when
         // the free slot occurs earlier in the array than the retired slot.
         for(pointIndex=0;pointIndex<pointSlots.size();++pointIndex){pointSlot().ready=false;
@@ -547,9 +573,11 @@
         for(pointIndex=0;pointIndex<pointSlots.size();++pointIndex){const auto& pick=picks[pointIndex];if(pick.index<0)continue;
             ++selected;pointSlot().selectionGain=pick.gain;
             renderPointShadow(lights.sources[pick.index],fresh,withReplays);pointReady|=pointSlot().ready;
+            totalDraws+=pointDraws;totalCulled+=pointCulled;
             if(!pointSlot().ready)pointSelection.defer(pointIndex);
         }
         pointIndex=0;
+        pointDraws=totalDraws;pointCulled=totalCulled;pointLogSchedule(pointUpdates==updatesBefore&&pointReuses!=reusesBefore);
         if(pointReportedLimit!=quality.pointShadowLimit||(frames%600==0&&NorthlightDiagnostics::enabled())){
             unsigned ready=0,resident=0;for(const auto& p:pointSlots){ready+=p.ready;resident+=p.cube!=nullptr;}
             logf("POINT pool limit=%u selected=%u ready=%u cubeSlots=%u estimatedMiB=%.1f",quality.pointShadowLimit,selected,ready,resident,resident*3.0+(pointScratch?.25:0)+(pointDepth?.25:0));

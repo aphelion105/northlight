@@ -177,9 +177,9 @@ public:
  bool currentFrame(std::uint64_t frame)const{return explicitClock_&&frame_==frame;}
  void boundary(Consumer consumer){if(!explicitClock_)advance(frame_+1);auto lane=index(consumer);stats_[lane]={};counters_[lane]={};}
  std::uint64_t frame()const{return frame_;}
- template<class Admission>bool bind(Consumer consumer,IDirect3DDevice9* device,const Owner& mesh,IDirect3DVertexBuffer9* (&vb)[4],IDirect3DIndexBuffer9*& ib,Admission admit,Placement& at){
+ template<class Admission>bool bind(Consumer consumer,IDirect3DDevice9* device,const Owner& mesh,IDirect3DVertexBuffer9* (&vb)[4],IDirect3DIndexBuffer9*& ib,Admission admit,Placement& at,bool residentOnly=false){
   const auto lane=index(consumer);at={};timeDeferred_[lane]=false;if(!mesh||!mesh->byteSize())return false;if(device_&&device_!=device)return false;device_=device;retain_[lane]=limit_[lane];
-  try{auto it=find(mesh);
+  try{auto it=find(mesh);if(residentOnly&&(it==entries_.end()||!it->second->bytes))return false;
    if(it==entries_.end()){
     auto e=std::make_unique<Entry>();e->source=mesh;e->sourceAddress=mesh.get();e->identity=identity(*mesh);e->hash=hash(mesh);e->first=e->touched=frame_;e->owner=lane;e->users=1u<<lane;
     e->metadata=sizeof(Entry)+64+(e->identity?e->identity->bytes():0);
@@ -242,7 +242,7 @@ public:
  static constexpr size_t entryLimit(){return NativeStore::entryLimit();}bool timeDeferredLast()const{return store_.timeDeferred(consumer_);}void ignoreTimeBudget(bool on){store_.ignoreTime(consumer_,on);}
  const auto& counters()const{return store_.counters(consumer_);}
  auto batchStats()const{return store_.batchStats(consumer_);}bool commitPending(){return store_.commitPending(consumer_);}bool resident(const Owner& mesh){return store_.resident(mesh);}
- template<class Admission>bool bind(IDirect3DDevice9* device,const Owner& mesh,IDirect3DVertexBuffer9* (&vb)[4],IDirect3DIndexBuffer9*& ib,Admission admit,Placement& at){return store_.bind(consumer_,device,mesh,vb,ib,admit,at);}
+ template<class Admission>bool bind(IDirect3DDevice9* device,const Owner& mesh,IDirect3DVertexBuffer9* (&vb)[4],IDirect3DIndexBuffer9*& ib,Admission admit,Placement& at,bool residentOnly=false){return store_.bind(consumer_,device,mesh,vb,ib,admit,at,residentOnly);}
 };
 }
 
