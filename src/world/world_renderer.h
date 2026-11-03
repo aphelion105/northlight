@@ -189,6 +189,7 @@ class WorldRenderer {
     IDirect3DPixelShader9* hdrCombinedPS=nullptr;bool hdrCombineTried=false;
     D3DFORMAT colorStorageFormat=D3DFMT_UNKNOWN;
     friend struct WorldScreenEffectsTest;
+    friend struct PipelineOffTest;
 #if defined(NORTHLIGHT_WORLD_UPLOAD_TEST)
     friend struct WorldColdUploadTest;
 #endif
@@ -229,7 +230,7 @@ class WorldRenderer {
     };
     // probeCenter (0.3.153 GIProbeAhead): probe window origin, solve order and move trigger; geometryCenter (orbit pivot + bounded travel lead):
     // the region build centre and its refresh trigger; camera (eye) for everything else, including every coverage check.
-    struct Request { std::shared_ptr<const NorthlightActorGeometry::ActorJob> actorJob;uint64_t actorSerial=0; V camera,probeCenter,geometryCenter; NorthlightGI::Lighting light; std::string map; uint64_t id=0,baseId=0;DWORD queuedAt=0;unsigned reason=0;bool giEnabled=true,fogEnabled=true; };
+    struct Request { std::shared_ptr<const NorthlightActorGeometry::ActorJob> actorJob;uint64_t actorSerial=0; V camera,probeCenter,geometryCenter; NorthlightGI::Lighting light; std::string map; uint64_t id=0,baseId=0;DWORD queuedAt=0;unsigned reason=0;bool enabled=true,giEnabled=true,fogEnabled=true; };
     std::shared_ptr<NorthlightGpuScene::Scene> gpuScene;
     IDirect3DDevice9* d;
     NorthlightMaterialPixelAudit materialPixelAudit{d};
@@ -258,7 +259,7 @@ class WorldRenderer {
     std::atomic<bool> workerBusy{false};DWORD actorRequestTick=0;
     std::atomic<unsigned> workerFaultCode{0};
     std::atomic<unsigned> geometryBuildEstimateMs{1000}; /* 0.3.169: builder's smoothed build time, read by the render thread's lead */
-    bool settingsRequestDirty=false;
+    bool settingsRequestDirty=false,pipelineActive=true;
 public:
     void applyLiveSettings(const NorthlightSettings::Config& next){
         // Frame cleanup has joined D3D-free jobs. Worker solver keys stay immutable;
@@ -273,10 +274,10 @@ public:
         const bool softChanged=quality.softShadows!=effective.softShadows;
         const bool nearIntervalChanged=quality.nearShadowInterval!=effective.nearShadowInterval;
         const bool directions=quality.shadowDirectionSteps!=effective.shadowDirectionSteps;
-        const bool giToggle=quality.gi!=effective.gi;
+        const bool giToggle=quality.gi!=effective.gi||quality.worldShadows!=effective.worldShadows||quality.worldFog!=effective.worldFog;
         for(const auto& k:NorthlightQuality::Keys)if(NorthlightSettings::liveQuality(k.name))quality.*k.field=effective.*k.field;
         quality.preset=effective.preset;settingsRequestDirty=settingsRequestDirty||giRequest;
-        if(giToggle)setEffects(requestedEffects); /* the user's F8 state through giPass, with setEffects' temporal reset */
+        if(giToggle)setEffects(requestedEffects); /* component hotkeys remain independent of the saved menu state */
         minSkinnedShadowTriangles=quality.minSkinnedTriangles;captureBudgetMiB=quality.captureBudgetMiB;actorShadowBudgetMiB=quality.actorShadowBudgetMiB;setNearReserve();
         replaySnapshots.configureBudget(size_t(captureBudgetMiB)*1048576,size_t(captureBudgetMiB)*524288);
         shadowFateDiagnostics=NorthlightQuality::shadowFate(quality);
@@ -1477,6 +1478,7 @@ private:
             Request r;
             {std::unique_lock<std::mutex> lock(mutex);buildWake.wait(lock,[&]{return stopping||builderExit||retry||geometryWanted||request.id!=seen;});
              if(stopping||builderExit)return;r=request;seen=r.id;retry=false;wanted=wanted||geometryWanted;geometryWanted=false;}
+            if(!r.enabled)continue;
             profileBuildActive=false;
             if(workerMemoryTrim.exchange(false,std::memory_order_relaxed))resetPreparation(); /* the entry lift stays: it is a floor on measured free memory, so what a trim freed already counts */
             if(preparationMap!=r.map){resetPreparation();preparationMap=r.map;}
@@ -1577,7 +1579,7 @@ private:
             auto publishError=[&](){
                 stallEnd("error"); // the build ends here whatever the publication outcome
                 std::lock_guard<std::mutex> lock(mutex);
-                if(stopping||request.id!=r.id){++superseded;return false;}
+                if(stopping||!request.enabled||request.id!=r.id){++superseded;return false;}
                 // A failed replacement must not replace usable geometry with
                 // an empty error snapshot. Its existing spatial expiry remains.
                 if(published&&published->bvh&&NorthlightWorldStreaming::retained(published->map,published->center,request.map,request.camera)){
@@ -1587,7 +1589,7 @@ private:
             };
             // Geometry validity is spatial, independent of the latest GI
             // request ID. A camera retarget must not discard a usable build.
-            auto currentGeometry=[&](){std::lock_guard<std::mutex> lock(mutex);return !stopping&&NorthlightWorldStreaming::applicable(r.map,r.geometryCenter,request.map,request.camera);};
+            auto currentGeometry=[&](){std::lock_guard<std::mutex> lock(mutex);return !stopping&&request.enabled&&NorthlightWorldStreaming::applicable(r.map,r.geometryCenter,request.map,request.camera);};
             auto deferBuild=[&](const char* stage,NorthlightGeometryMemory::Sample sample,unsigned delay,const NorthlightGeometryMemory::Budget* budget=nullptr){
                 DWORD now=GetTickCount();if(!memoryReportAt||now-memoryReportAt>=1000){memoryReportAt=now;logGeometryMemory(stage,sample,generations.live(),workerMemoryExact,budget);}
                 profileMemory(stage);
@@ -1596,9 +1598,9 @@ private:
                 // state. Stop or a spatially invalid request still wakes now.
                 bool abandoned=false;
                 {std::unique_lock<std::mutex> lock(mutex);retry=true;
-                 buildWake.wait_for(lock,std::chrono::milliseconds(delay),[&]{return stopping||builderExit||!NorthlightWorldStreaming::applicable(r.map,r.geometryCenter,request.map,request.camera);});
+                 buildWake.wait_for(lock,std::chrono::milliseconds(delay),[&]{return stopping||builderExit||!request.enabled||!NorthlightWorldStreaming::applicable(r.map,r.geometryCenter,request.map,request.camera);});
                  // The request moved on and this region no longer applies: the stalled build is dropped.
-                 abandoned=stopping||builderExit||!NorthlightWorldStreaming::applicable(r.map,r.geometryCenter,request.map,request.camera);}
+                 abandoned=stopping||builderExit||!request.enabled||!NorthlightWorldStreaming::applicable(r.map,r.geometryCenter,request.map,request.camera);}
                 if(abandoned)abandonGeometry();
             };
             // Issue #40: a map without world-cache tiles (dungeons, raids, battlegrounds) is checked
@@ -1953,6 +1955,7 @@ private:
             // Replaces an unadopted older build; it satisfies every earlier worker request.
             // The replaced build (tens of MB) is freed after unlocking, never under the mutex.
             {std::lock_guard<std::mutex> lock(mutex);if(stopping||builderExit)return;
+             if(!request.enabled){++superseded;continue;}
              std::swap(builtGeometry,built);geometryWanted=false;}
 #if NORTHLIGHT_DEV_TUNING
             {std::lock_guard<std::mutex> lock(devMutex);devBuilt=tuning;} // what the last published build used
@@ -2003,10 +2006,11 @@ private:
         unsigned concurrentSolves=0;DWORD stallMs=0,stallStart=0;bool stalled=false;std::string stallMap;
         for(;;){
             Request r;std::unique_ptr<Built> adopted;
-            {std::unique_lock<std::mutex> lock(mutex);wake.wait(lock,[&]{return stopping||pending||builtGeometry;});if(stopping)return;r=request;pending=false;workerBusy=true;adopted=std::move(builtGeometry);if(geometryRebuild){geometryRebuild=false;geometryWanted=true;}} /* 0.3.214 (task 42): render thread lost the GPU mesh and the payload */
+            {std::unique_lock<std::mutex> lock(mutex);wake.wait(lock,[&]{return stopping||pending||(request.enabled&&builtGeometry);});if(stopping)return;r=request;pending=false;workerBusy=true;if(r.enabled)adopted=std::move(builtGeometry);if(r.enabled&&geometryRebuild){geometryRebuild=false;geometryWanted=true;}} /* 0.3.214 (task 42): render thread lost the GPU mesh and the payload */
             buildWake.notify_one(); /* the builder follows the same request stream */
-            profileGiMemory("request",r.id);
             struct WorkerIdle {std::atomic<bool>& busy;~WorkerIdle(){busy=false;}} idle{workerBusy};
+            if(!r.enabled)continue;
+            profileGiMemory("request",r.id);
             // No solve runs here: a memory trim or a new map frees the relight slots (1-4 MiB); configure() allocates them again.
             if(giMemoryTrim.exchange(false,std::memory_order_relaxed)||(!relightMap.empty()&&relightMap!=r.map))relightCache.release();
             relightMap=r.map;
@@ -2052,6 +2056,7 @@ private:
             // cancellation. Tests execute this production block with retargets.
             {std::lock_guard<std::mutex> lock(mutex);
              if(stopping)return;
+             if(!request.enabled)continue;
              if(!NorthlightWorldStreaming::applicable(sceneMap,sceneCenter,request.map,request.camera)){
                  ++superseded;pending=true;continue;
              }
@@ -2143,7 +2148,7 @@ private:
             // region or changed lighting must never accept this publication.
             uint64_t checkedRequestId=r.id;bool checkedCompatibility=true;
             auto compatiblePublication=[&](){
-                if(!request.giEnabled||probeCacheGeometry!=bvh)return false;
+                if(!request.enabled||!request.giEnabled||probeCacheGeometry!=bvh)return false;
                 if(checkedRequestId==request.id)return checkedCompatibility;
                 checkedRequestId=request.id;
                 auto latestLight=request.light;latestLight.points=sceneLights;latestLight.movingGeometry=nullptr;
@@ -2871,7 +2876,7 @@ public:
     explicit WorldRenderer(IDirect3DDevice9* device,std::shared_ptr<NorthlightGpuScene::Scene> scene={}):gpuScene(NorthlightGpuScene::forDevice(device,std::move(scene))),d(device),stateBlocks(device){
         if(!gpuScene->attach(replaySnapshots))throw std::runtime_error("Cannot join world capture sources");
         if(!gpuScene->decodedSources)gpuScene->decodedSources=std::make_shared<NorthlightGI::SceneSourceCache>(8u*1024u*1024u);sharedSceneSources=gpuScene->decodedSources;terrainBoundsCache.setIdentityProvider(&bufferIdentity);terrainBoundsCache.setVersionProvider(&NorthlightTrackedBuffers::version);terrainBoundsCache.setMetadataProvider(&NorthlightTrackedBuffers::captureMetadata);terrainBoundsCache.setDeclarationCache(&declarationCache);replaySnapshots.setDeclarationProvider(&declarationCache,[](void* c,IDirect3DVertexDeclaration9* decl,const D3DVERTEXELEMENT9*& e,UINT& n){return static_cast<NorthlightVertexDeclarations::Cache*>(c)->get(decl,e,n);});replaySnapshots.setLayoutProvider(&declarationCache,[](void* c,IDirect3DVertexDeclaration9* decl,UINT* extent){return static_cast<NorthlightVertexDeclarations::Cache*>(c)->captureLayout(decl,extent);});replaySnapshots.setIdentityProvider(&bufferIdentity);replaySnapshots.setVersionProvider(&NorthlightTrackedBuffers::version);replaySnapshots.setMetadataProvider(&NorthlightTrackedBuffers::captureMetadata);QueryPerformanceFrequency(&captureFrequency);char path[MAX_PATH*3];WideCharToMultiByte(CP_UTF8,0,rootPath,-1,path,sizeof path,nullptr,nullptr);root=path;std::string paletteError;
-        loadQuality();effects.gi=NorthlightQuality::giPass(quality,effects.gi);
+        loadQuality();pipelineActive=NorthlightQuality::pipelineWork(quality);request.enabled=pipelineActive;setEffects(requestedEffects);
         staticPrebuild.steps=float(quality.shadowDirectionSteps); /* prebuild targets the same direction lattice */
         minSkinnedShadowTriangles=quality.minSkinnedTriangles;captureBudgetMiB=quality.captureBudgetMiB;actorShadowBudgetMiB=quality.actorShadowBudgetMiB;shadowFateDiagnostics=NorthlightQuality::shadowFate(quality);
         replaySnapshots.configureBudget(size_t(captureBudgetMiB)*1048576,size_t(captureBudgetMiB)*524288);setNearReserve();
@@ -2907,7 +2912,8 @@ public:
     void recover(){meshRetry.clear();if(!failed)return;releaseGPU(true);failed=false;valid=false;streamingReports=0;logf("WORLD explicit recovery requested");}
     void releaseStateCache(){stateBlocks.clear();invalidateShadowCache();}
     void setEffects(const NorthlightEffectSwitches::Settings& requested){
-        requestedEffects=requested;auto next=requested;next.gi=NorthlightQuality::giPass(quality,next.gi); /* GI=0: F8 cannot enable a GI that is never solved */
+        requestedEffects=requested;auto next=requested;next.gi=pipelineActive&&NorthlightQuality::giPass(quality,next.gi);
+        next.shadows=pipelineActive&&quality.worldShadows&&next.shadows;next.fog=pipelineActive&&quality.worldFog&&next.fog;
         if(effects==next)return;
         // Called at the frame boundary; never reuse lighting from a different
         // effect combination. The shared geometry and GI cache stay warm.
@@ -2918,6 +2924,13 @@ public:
         }
         settingsRequestDirty=settingsRequestDirty||effects.fog!=next.fog||effects.gi!=next.gi;
         effects=next;
+    }
+    bool effectsEnabled()const{return NorthlightQuality::pipelineWork(quality);}
+    void setPipelineEnabled(bool value){
+        if(pipelineActive==value)return;pipelineActive=value;setEffects(requestedEffects);settingsRequestDirty=true;
+        {std::lock_guard<std::mutex> lock(mutex);request.enabled=value;
+         if(!value){request.giEnabled=false;++request.id;pending=true;}}
+        if(!value)wake.notify_one();
     }
     void releaseDefaultMesh(){
         // A second Reset may interrupt replay after targets were recreated but
@@ -3276,7 +3289,7 @@ public:
     unsigned aoQuality()const{return quality.aoQuality;}
     float aoStrength()const{return .6f*float(quality.aoStrength)/100.f;}
     float aoRadius()const{return float(quality.aoRadius)/100.f;}
-    bool equipmentLightsOn()const{return quality.equipmentLights!=0&&quality.localLightLimit!=0;}
+    bool equipmentLightsOn()const{return pipelineActive&&quality.localLights&&quality.equipmentLights!=0&&quality.localLightLimit!=0;}
     NorthlightParticleLights::Frame& particleFrame(){return particleLights;}
     bool particleContext(float* inverseView,float* camera,float* projectionOut){
         if(!equipmentLightsOn()||!hasContext()||!active)return false;
@@ -3306,7 +3319,7 @@ public:
         for(unsigned i=0;i<it->second;++i){NorthlightEquipmentLights::Native n;if(NorthlightEquipmentLights::decode(bank,i,context.inverseView,context.camera,n)){++equipmentCapture.decoded;equipmentLights.observe(n,now,active->localLights,context.camera);}else ++equipmentCapture.rejected;}
     }
     void observeLightAttachments(const Replay& replay,const CaptureShader& metadata){
-        if(!quality.localLightLimit||!active||!active->lightAttachments||active->lightAttachments->empty()||!metadata.program||!metadata.program->skinned||
+        if(!quality.localLights||!quality.localLightLimit||!active||!active->lightAttachments||active->lightAttachments->empty()||!metadata.program||!metadata.program->skinned||
            !(metadata.program->kernel.skin||metadata.program->kernel.commutedSkin()||NorthlightRigidGeometry::oneBoneTemplate(*metadata.program))||metadata.program->paletteBase<0)return;
         lightAttachments.bind(active->lightAttachments);
         const auto& mesh=replay.mesh();if(!mesh.primitiveCount||mesh.vertexCount<3)return;
@@ -3486,6 +3499,7 @@ public:
         if(++fogReports==1||(fogReports%600==0&&NorthlightDiagnostics::enabled()))logf("WORLD legacy fog known=%d ps=%u verified=%d colorRegister=%d enabled=%.0f params=(%.7g %.7g %.7g) color=(%.5f %.5f %.5f)",fogKnown,fogShader.major,fogShader.verified,fogShader.colorRegister,legacyFog.parameters[3],legacyFog.parameters[0],legacyFog.parameters[1],legacyFog.parameters[2],legacyFog.color[0],legacyFog.color[1],legacyFog.color[2]);
     }
     void updateWorldContext(const char* map,const float* camera,const NorthlightWmoContext::Lighting* global=nullptr){
+        if(!pipelineActive)return;
         if(unsigned fault=workerFault()){if(!failed)logf("WORLD worker stopped: %s; restart required",workerFaultMessage(fault));failed=true;valid=false;return;}
         if(!reportedContext){logf("WORLD context validated: map=\"%s\" camera=(%.2f %.2f %.2f) sun=(%.3f %.3f %.3f)",map,camera[0],camera[1],camera[2],context.lightDirection[0],context.lightDirection[1],context.lightDirection[2]);reportedContext=true;}
         {   // The camera's liquid type from the proven predictor reads (wmo_context.h); unproven frames hold the state for UnderwaterFade::HoldMs.
@@ -4070,11 +4084,12 @@ public:
     // The frame's first model draw decides whether this frame captures replays at all
     // (NorthlightQuality::skipModelCapture). Terrain capture and the game's draws are unaffected.
     bool modelCaptureSkipped(){
+        if(!pipelineActive)return true;
         if(captureMode==CaptureUndecided){bool skip=false;
             // Unavailable geometry cannot consume directional or point replays.
             // Keep the existing GI cadence, pending-demand and diagnostic exceptions.
             const bool shadows=ready()&&NorthlightQuality::actorShadowWork(quality,effects.shadows);
-            if(NorthlightQuality::captureSkipPossible(quality,shadows)&&(!quality.localLightLimit||lightAttachments.positions.empty())){NorthlightQuality::CaptureInputs in;
+            if(NorthlightQuality::captureSkipPossible(quality,shadows)&&(!quality.localLights||!quality.localLightLimit||lightAttachments.positions.empty())){NorthlightQuality::CaptureInputs in;
                 in.shadows=shadows;in.demand=captureDemand;in.diagnostic=lastRenderDebug==1;in.actorDue=actorCaptureEnabled();in.nextPass=shadowPasses+1;
                 for(int source=0;source<2;++source)in.sourceActive[source]=NorthlightGI::dot(sourceColors[source],sourceColors[source])>1e-10f;
                 in.pointDue=in.shadows&&!in.actorDue&&!in.demand&&pointRefreshPredicted();
@@ -4365,7 +4380,7 @@ public:
     AtmosphereFrame atmosphere;NorthlightJobs::Counter atmosphereDone;
     void atmosphereWork(AtmosphereFrame& a,float nearZ,UINT w,UINT h,int debug){
         auto& c=a.c;auto& localLights=a.lights;const auto wx=weatherEffects();
-        if(quality.localLightLimit){
+        if(quality.localLights&&quality.localLightLimit){
         // 0.3.197: tracked selection. A camera jump (teleport), a long gap (F10 off, loading) or F12 debug snap the
         // factors without fades; a different map (and a rebuilt device, releasePointGPU) forgets the tracker.
         if(!active||active->map!=localLightMap)localLightTracker.reset();
@@ -4569,6 +4584,7 @@ public:
     // copy, and its AOContactBloom target (bloom rgb, AO alpha) is applied by TemporalLight's
     // removal smoothing and WorldComposite. Null: the proxy composited already (neutral s10).
     bool render(IDirect3DSurface9* targetSurface,IDirect3DTexture9* depth,UINT w,UINT h,D3DFORMAT fmt,float nearZ,float farZ,float minZ,float maxZ,int debug,NorthlightGpuProfile* profile,IDirect3DTexture9* waterMask,IDirect3DTexture9* foldScene=nullptr,IDirect3DTexture9* foldAO=nullptr,unsigned rendererFrame=0,IDirect3DTexture9* hdrBase=nullptr,bool hdrBaseEncoded=false,bool hdrCombineAllowed=true,bool hdrSkyBase=false){
+        if(!pipelineActive)return debug?emptyDiagnosticView(targetSurface,w,h,debug):false;
         const bool hdrMode=hdrBase&&debug==0;
         shadowsComposited=false;composited=false;lastRenderDebug=debug;gpuDiagnosticFrame=false;fogGeometryReady=false;
         if((debug==1&&!effects.shadows)||(debug==2&&!effects.gi)||(debug==3&&!effects.fog))return emptyDiagnosticView(targetSurface,w,h,debug);

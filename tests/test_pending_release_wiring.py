@@ -62,7 +62,7 @@ checks={
  '0.3.169 builder error publication keeps a retained region (A3)':
   'if(published&&published->bvh&&NorthlightWorldStreaming::retained(published->map,published->center,request.map,request.camera)){' in error,
  '0.3.169 handoff and builder coverage checks stay at 96 (A6)':
-  'return !stopping&&NorthlightWorldStreaming::applicable(r.map,r.geometryCenter,request.map,request.camera);' in builder
+  'return !stopping&&request.enabled&&NorthlightWorldStreaming::applicable(r.map,r.geometryCenter,request.map,request.camera);' in builder
   and 'if(!NorthlightWorldStreaming::applicable(sceneMap,sceneCenter,request.map,request.camera)){' in builder and builder.count('retained(')==1,
  '0.3.169 D1/D2: hold begin/end once per episode, independent of pendingMesh; coverMax on the camera line':
   context.count('logf("WORLD coverage hold begin dist=')==1 and context.count('logf("WORLD coverage hold end ms=')==1

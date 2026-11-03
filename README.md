@@ -53,6 +53,7 @@ Every effect below is on by default and is drawn on top of the game's own frame.
   on the first install, the installer asks which of six groups (Classic, TBC and Wrath dungeons and raids; about 0.3-1.3 GB and 1-2
   build minutes each) to build. Updates keep the saved choice; `--instances` changes it.
   Current caches are reused, and light-only updates keep instance geometry. Changing the choice never rebuilds the continents.
+- **Effect switches.** F11 offers **All Northlight effects**, **World shadows**, **Atmospheric fog** and **Local light illumination**. The master switch pauses scene capture, geometry/GI workers and effect passes through the same bypass as F10, while retaining settings, caches, HDR presentation and the menu. Turning off all seven main scene groups also enters that bypass automatically. F7/F8/F9 and F10 remain independent temporary switches.
 - **Lamps.** Up to 48 nearby lamps (Quality; `LocalLightLimit`, 0..128; 0 disables local lighting), lanterns, braziers and fires light the ground and walls around
   them and glow in the fog. Lamps in view take the slots first, and nearby lamps on screen are batched together. In direct sun lamps dim. Local shadows are enabled by default:
   64 compact sources by default, adjustable from 16 to 128 with `PointShadowLimit` in the Shadows menu.

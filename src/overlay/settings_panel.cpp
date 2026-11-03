@@ -44,7 +44,7 @@ const std::map<std::string,const char*> Labels={
     {"AutoParallaxDepth","POM depth (%)"},{"AutoParallaxDistance","POM distance (yards)"},{"AutoParallaxSteps","POM trace steps"},
     {"AutoParallaxShadows","POM self-shadowing"},{"AutoParallaxShadowStrength","Self-shadow strength (%)"},{"AutoParallaxShadowSteps","Self-shadow trace steps"},
     {"AutoCavity","Cavity shading"},{"AutoCavityStrength","Cavity strength (%)"},
-    {"Preset","Quality preset"},{"GI","Global illumination"},{"GIStrength","Indirect light strength (%)"},
+    {"Preset","Quality preset"},{"Effects","All Northlight effects"},{"WorldShadows","World shadows"},{"WorldFog","Atmospheric fog"},{"LocalLights","Local light illumination"},{"GI","Global illumination"},{"GIStrength","Indirect light strength (%)"},
     {"SoftShadows","Contact-hardening shadows"},{"ActorShadows","Character shadows"},{"ActorShadowDetail","Detailed character shadows"},{"GrassShadows","Grass shadows"},{"ActorShadowRadius","Character shadow distance"},
     {"ContactAO","Ambient occlusion"},{"AOMethod","AO method"},{"AOQuality","AO quality"},{"AutoBumpModels","M2 models (all types)"},{"AutoMaterialOcclusionDistance","Cavity and self-shadow distance (yards)"},{"AutoModelDisplacementDistance","Model geometry distance (yards)"},{"AutoModelDisplacementDetail","Model subdivision"},{"AutoModelDisplacementStrength","Model height (%)"},{"AutoDisplacementDistance","Terrain and object geometry distance (yards)"},{"AutoDisplacementStrength","Terrain and object height (%)"},{"AutoDisplacementDetail","Terrain and object subdivision"},{"AutoHeightBalance","Height balance (%)"},{"AOStrength","AO strength (%)"},{"AORadius","AO radius (0.01 yd)"},
     {"Weather","Enhanced weather"},{"WeatherMemory","Read native weather state"},{"RainFog","Weather fog strength"},{"RainLens","Rain on camera"},{"RainLensStrength","Rain on camera strength (%)"},{"SnowLens","Snow on camera"},{"SnowLensStrength","Snow on camera strength (%)"},{"FogClouds","Drifting fog banks"},{"FogCloudDensity","Fog density (%)"},
@@ -79,6 +79,10 @@ const std::map<std::string,std::vector<const char*>> Help={
     {"SnowFlakeSize",{"Size of Northlight's supplemental snowflakes; 100% keeps the original look. Native game particles are unchanged."}},
     {"RainLensSize",{"Scales the camera droplets, including their collision and merging radius."}},
     {"SnowLensSize",{"Scales the camera snow masses, including their collision and merging radius."}},
+    {"Effects",{"Stops scene effects, capture and background world/GI work together. Keeps your individual settings for reactivation. Uses the same bypass as Ctrl+Shift+F10. HDR output and this menu remain available."}},
+    {"WorldShadows",{"Enables Northlight world and character shadows. Ctrl+Shift+F9 remains an independent temporary switch."}},
+    {"WorldFog",{"Enables Northlight regional fog, atmospheric scattering, fog banks and horizon haze. Native game fog is preserved. Ctrl+Shift+F7 remains independent."}},
+    {"LocalLights",{"Enables direct lighting and fog scattering from lamps, torches and equipment. Off skips their capture and selection without changing your saved light limit."}},
     {"AutoBump",{"Generates and caches normal maps from installed textures. Directional detail is applied at full screen resolution. MPQs remain unchanged. Supports MSAA."}},
     {"AutoBumpStrength",{"Higher values make details more pronounced and can exaggerate painted shadows. Start at 75%."}},
     {"AutoBumpTerrain",{"Includes grass, dirt and stone painted on the ground.","Off: original material. Normal maps: detailed light response. Normal maps + POM: shifts the original diffuse lookup to show depth at an angle. Displacement + normals: changes nearby geometry and keeps surface normal detail."}},
@@ -112,10 +116,11 @@ const std::map<std::string,std::vector<const char*>> Help={
 struct Group { const char* id; const char* title; const char* master; const char* fields; const char* advanced; };
 struct Section { const char* id; const char* title; const char* keys; std::vector<Group> groups; bool open; };
 const std::vector<Section> QualitySections={
-    {"lighting","Lighting & AO","GI GIStrength GIRays GIBounces GIProbeMoveStep GIDynamicProbes GIThreads GIFastBVH GIDistance GIProbeAhead NightBrightness ContactAO AOMethod AOQuality AOStrength AORadius EquipmentLights",{
+    {"lighting","Lighting & AO","GI GIStrength GIRays GIBounces GIProbeMoveStep GIDynamicProbes GIThreads GIFastBVH GIDistance GIProbeAhead NightBrightness ContactAO AOMethod AOQuality AOStrength AORadius LocalLights LocalLightLimit EquipmentLights",{
         {"gi","Global illumination","GI","GIStrength GIDistance GIBounces","GIRays GIProbeMoveStep GIDynamicProbes GIThreads GIFastBVH GIProbeAhead"},
         {"ao","Ambient occlusion","ContactAO","AOMethod AOQuality AOStrength AORadius",""},
-        {"ambient","Environment",nullptr,"NightBrightness EquipmentLights",""}},true},
+        {"ambient","Environment",nullptr,"NightBrightness",""},
+        {"local","Local illumination","LocalLights","LocalLightLimit EquipmentLights",""}},true},
     {"materials","Materials & parallax","AutoBump AutoBumpTerrain AutoBumpWalls AutoBumpGrass AutoBumpModels AutoBumpStrength AutoBumpDistance AutoParallaxDepth AutoParallaxDistance AutoParallaxSteps AutoParallaxShadows AutoParallaxShadowStrength AutoParallaxShadowSteps AutoCavity AutoCavityStrength AutoMaterialOcclusionDistance AutoDisplacementStrength AutoDisplacementDistance AutoDisplacementDetail AutoHeightBalance AutoModelDisplacementStrength AutoModelDisplacementDistance AutoModelDisplacementDetail",{
         {"bump","Material modes","AutoBump","AutoBumpTerrain AutoBumpWalls AutoBumpGrass AutoBumpModels AutoBumpStrength AutoBumpDistance",""},
         {"geometry","Terrain and object displacement",nullptr,"AutoDisplacementStrength AutoDisplacementDistance AutoDisplacementDetail AutoHeightBalance",""},
@@ -124,13 +129,14 @@ const std::vector<Section> QualitySections={
         {"parallax","POM",nullptr,"AutoParallaxDepth AutoParallaxDistance AutoParallaxSteps",""},
         {"pomshadow","POM self-shadowing","AutoParallaxShadows","AutoParallaxShadowStrength AutoParallaxShadowSteps",""},
         {"cavity","Cavity shading","AutoCavity","AutoCavityStrength",""}},false},
-    {"shadows","Shadows","SoftShadows ActorShadows ActorShadowDetail GrassShadows ActorShadowRadius BlobShadows BlobShadowStrength FarShadowInterval NearShadowInterval PointShadows PointShadowLimit PointShadowDistance PointShadowRefreshMs PointShadowFacesPerFrame ShadowDirectionSteps StaticCacheSlices ShadowPivotCorrection",{
-        {"filter","Shadow filtering",nullptr,"SoftShadows",""},
+    {"shadows","Shadows","WorldShadows SoftShadows ActorShadows ActorShadowDetail GrassShadows ActorShadowRadius BlobShadows BlobShadowStrength FarShadowInterval NearShadowInterval PointShadows PointShadowLimit PointShadowDistance PointShadowRefreshMs PointShadowFacesPerFrame ShadowDirectionSteps StaticCacheSlices ShadowPivotCorrection",{
+        {"filter","World shadows","WorldShadows","SoftShadows",""},
         {"actors","Character shadows","ActorShadows","ActorShadowRadius ActorShadowDetail GrassShadows","ActorShadowBudgetMiB ActorShadowCpuMs"},
         {"blobs","Round ground shadows","BlobShadows","BlobShadowStrength",""},
         {"point","Local light shadows","PointShadows","PointShadowDistance PointShadowLimit","PointShadowRefreshMs PointShadowFacesPerFrame"},
         {"cache","Shadow updates",nullptr,"","FarShadowInterval NearShadowInterval ShadowDirectionSteps StaticCacheSlices ShadowPivotCorrection"}},false},
-    {"atmosphere","Atmosphere & weather","Weather WeatherMemory RainFog RainLens RainLensStrength RainRivulets SnowLens SnowLensStrength SnowFrost SnowFrostStrength SandLens SandLensStrength SandLensSize WeatherWindDirection WeatherWindStrength WeatherCameraMotion FogClouds FogCloudDensity HorizonHaze HorizonHazeStart HorizonHazeBand HorizonHazeTerrain",{
+    {"atmosphere","Atmosphere & weather","WorldFog Weather WeatherMemory RainFog RainLens RainLensStrength RainRivulets SnowLens SnowLensStrength SnowFrost SnowFrostStrength SandLens SandLensStrength SandLensSize WeatherWindDirection WeatherWindStrength WeatherCameraMotion FogClouds FogCloudDensity HorizonHaze HorizonHazeStart HorizonHazeBand HorizonHazeTerrain",{
+        {"atmosphere","Atmospheric fog","WorldFog","",""},
         {"fog","Fog banks","FogClouds","FogCloudDensity",""},
         {"weather","Weather","Weather","RainFog RainDropSize SnowFlakeSize","WeatherMemory"},
         {"rainlens","Rain on camera","RainLens","RainLensStrength RainLensSize RainRivulets",""},
@@ -142,9 +148,9 @@ const std::vector<Section> QualitySections={
     {"spells","Spells & names","SpellLayer SpellLayerClasses SpellFog NameMask DepthFuncAware",{
         {"spells","Spell effects","SpellLayer","SpellFog","SpellLayerClasses DepthFuncAware"},
         {"names","Unit name protection","NameMask","",""}},false},
-    {"performance","Performance","CommandStream StreamFramesAhead StreamFrameSkip StreamOcclusionLocal ReplayJobs FrameDrawGates MinSkinnedTriangles CaptureBudgetMiB ActorShadowBudgetMiB LocalLightLimit GpuBudgetMs ActorShadowCpuMs",{
+    {"performance","Performance","CommandStream StreamFramesAhead StreamFrameSkip StreamOcclusionLocal ReplayJobs FrameDrawGates MinSkinnedTriangles CaptureBudgetMiB ActorShadowBudgetMiB GpuBudgetMs ActorShadowCpuMs",{
         {"stream","Render thread","CommandStream","StreamFramesAhead ReplayJobs FrameDrawGates","StreamFrameSkip StreamOcclusionLocal"},
-        {"budgets","Resource budgets",nullptr,"GpuBudgetMs ActorShadowCpuMs LocalLightLimit","MinSkinnedTriangles CaptureBudgetMiB ActorShadowBudgetMiB"}},false},
+        {"budgets","Resource budgets",nullptr,"GpuBudgetMs ActorShadowCpuMs","MinSkinnedTriangles CaptureBudgetMiB ActorShadowBudgetMiB"}},false},
     {"diagnostics","Diagnostics","Diagnostics RenderProfile DiagReplayProbe ShadowFateDiagnostics SpellTrace NameMaskDebug MemMap",{
         {"logging","Diagnostics","Diagnostics","RenderProfile","DiagReplayProbe ShadowFateDiagnostics"},
         {"debug","Additional diagnostics",nullptr,"SpellTrace NameMaskDebug MemMap",""}},false},
@@ -160,7 +166,7 @@ std::vector<std::string> words(const char* text);
 // The old menu's preset page.
 struct Preset { const char* key; const char* text; };
 const Preset Presets[3]={{"Quality","Maximum effect detail."},{"Balanced","Quality with a moderate effect budget."},{"Performance","Less work spent on effects."}};
-const char* const QuickKeys="GI ActorShadows ContactAO Weather FogClouds";   // the old menu's Quality page toggles
+const char* const QuickKeys="Effects GI WorldShadows WorldFog LocalLights ContactAO AutoBump Weather ActorShadows FogClouds";
 // Sidebar pages, in order. quality: the QualitySections id a Quality page draws.
 enum class Page { Overview, Lighting, Materials, Shadows, Atmosphere, Celestial, ShadowRange, Spells, Renderer, Performance, Diagnostics, Count };
 struct PageInfo { Page page; const char* title; const char* quality; };

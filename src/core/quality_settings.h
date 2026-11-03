@@ -14,6 +14,7 @@ namespace NorthlightQuality {
 enum class Preset { Quality, Balanced, Performance };
 struct Settings {
     Preset preset=Preset::Quality;
+    unsigned effects=1,worldShadows=1,worldFog=1,localLights=1;
     unsigned minSkinnedTriangles=100,captureBudgetMiB=32,actorShadowBudgetMiB=0;
     unsigned farShadowInterval=4,nearShadowInterval=1,localLightLimit=48,pointShadows=1,pointShadowLimit=64,pointShadowRefreshMs=0,shadowDirectionSteps=2048;
     // Camera distance to the light's influence sphere, in yards.
@@ -145,7 +146,7 @@ struct Settings {
     unsigned autoDisplacementStrength=100,autoDisplacementDistance=12,autoDisplacementDetail=4;
     unsigned autoBumpModels=3,autoModelDisplacementStrength=25,autoModelDisplacementDistance=8,autoModelDisplacementDetail=2;
     unsigned autoHeightPolarity=0,autoHeightDetails=75,autoHeightBalance=50;
-    char origin[109]={'d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d'};
+    char origin[113]={'d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d'};
 };
 struct Key { const char* name; unsigned Settings::*field; unsigned low,high; unsigned preset[3]; };
 // preset[] = Quality, Balanced, Performance. Quality must equal Settings{}.
@@ -259,7 +260,14 @@ inline const Key Keys[]={
     {"WeatherCameraMotion",&Settings::weatherCameraMotion,0,1,{1,1,1}},
     {"PointShadowDistance",&Settings::pointShadowDistance,8,192,{48,48,48}},
     {"SoftShadows",&Settings::softShadows,0,1,{1,1,0}},
+    {"Effects",&Settings::effects,0,1,{1,1,1}},
+    {"WorldShadows",&Settings::worldShadows,0,1,{1,1,1}},
+    {"WorldFog",&Settings::worldFog,0,1,{1,1,1}},
+    {"LocalLights",&Settings::localLights,0,1,{1,1,1}},
 };
+// The seven scene groups own their child controls, including sky/ambient work.
+// Presentation/HDR and the settings overlay remain available like F10.
+inline bool pipelineWork(const Settings& s){return s.effects&&(s.gi||s.worldShadows||s.worldFog||(s.localLights&&s.localLightLimit)||s.contactAO||s.autoBump||s.weather);}
 inline bool operator==(const Settings& a,const Settings& b){for(const auto& k:Keys)if(a.*k.field!=b.*k.field)return false;return true;}
 inline bool operator!=(const Settings& a,const Settings& b){return !(a==b);}
 // Probe work actually requested: GI=0 also removes actor capture and dynamic probes.

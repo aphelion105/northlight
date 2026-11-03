@@ -24,18 +24,19 @@ struct World {
     void setGpuBudgetLevel(unsigned v){gl=v;}void setCpuBudgetLevel(unsigned v){cl=v;}
     unsigned effectiveActorShadowRadius(){return NorthlightGpuBudget::actorShadowRadius(40,cl);}
 };
-struct Timer {bool poll(double& ms){ms=10;return true;}};
+struct Timer {unsigned polls=0;bool poll(double& ms){++polls;ms=10;return true;}};
 struct Device {
     World settings,*world=&settings;Timer timer,*gpuTimer=&timer;
     NorthlightStream::Counters counters;const NorthlightStream::Counters* streamStats=&counters;
     NorthlightGpuBudget::WaitSignal gpuBound,replayWait;
     NorthlightGpuBudget::Controller gpuBudget,cpuBudget;
-    bool limitGpuLatency=true,latencyFailed=false,boundKnown=false,gpuLimited=false,replayKnown=false,cpuLimited=false;
+    bool enabled=true,limitGpuLatency=true,latencyFailed=false,boundKnown=false,gpuLimited=false,replayKnown=false,cpuLimited=false;
+    unsigned clockReads=0;
     struct {std::int64_t QuadPart=1000000;}cpuFrequency;
     std::int64_t tick=1,boundQpc=0,gpuBudgetQpc=0,cpuBudgetQpc=0,cpuEffectsQpc=0;
     std::uint64_t eventGpuWaitPrevNs=0,replayWaitPrevNs=0,replaySkipPrev=0,latencyWaits=0;
     double latencyLastMs=0,latencyWaitMs=0,gpuBudgetLastMs=0,cpuBudgetLastMs=0;
-    std::int64_t qpcNow(){return tick;}bool sampled(){return false;}bool diagnostics(){return false;}
+    std::int64_t qpcNow(){++clockReads;return tick;}bool sampled(){return false;}bool diagnostics(){return false;}
 ''' + methods + r'''
     void frame(std::uint64_t gpu=0,std::uint64_t replay=0){
         NorthlightStream::own(counters.eventGpuWaitNs,gpu);
@@ -45,6 +46,8 @@ struct Device {
     void run(std::uint64_t gpu,std::uint64_t replay){frame();for(unsigned i=0;i<240;++i)frame(gpu,replay);}
 };
 int main(){
+    {Device d;d.enabled=false;d.run(1000000,1000000);assert(!d.timer.polls&&!d.clockReads&&!d.settings.gl&&!d.settings.cl);
+        d.enabled=true;d.run(1000000,0);assert(d.timer.polls&&d.clockReads&&d.settings.gl==3);}
     {Device d;d.run(1000000,0);assert(d.gpuBound.bound()&&d.settings.gl==3&&!d.settings.cl);
         for(unsigned i=0;i<800;++i)d.frame();assert(!d.settings.gl&&!d.settings.cl);}
     {Device d;d.run(0,1000000);assert(!d.gpuBound.bound()&&d.replayWait.bound()&&!d.settings.gl&&d.settings.cl==3);}

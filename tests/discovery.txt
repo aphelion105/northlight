@@ -269,6 +269,7 @@ test_particle_lights.py
 test_particle_texture_stats.py
 test_pcss_filters_gpu.py
 test_pending_release_wiring.py
+test_pipeline_all_off_gpu.py
 test_pipeline_bindings_cpu.py
 test_pipeline_wave_cpu.py
 test_point_clip_prepared.py

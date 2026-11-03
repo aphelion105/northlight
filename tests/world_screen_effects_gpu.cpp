@@ -159,7 +159,9 @@ struct WorldScreenEffectsTest {
         assert(VirtualFree(witness,0,MEM_RELEASE));
         auto oldBudget=uploadBudget(64ull*300000,64ull*100000,MiB,MiB);oldBudget.largest=18*MiB;
         auto newBudget=uploadBudget(vb,ib,MiB,MiB);newBudget.largest=18*MiB;
-        bool exact=false;auto sample=w.geometryAdmission(newBudget,&exact);assert(sample.valid&&!admits(sample,oldBudget)&&admits(sample,newBudget));
+        bool exact=false;auto sample=w.geometryAdmission(newBudget,&exact);
+        if(!(sample.valid&&!admits(sample,oldBudget)&&admits(sample,newBudget)))std::fprintf(stderr,"PRESSURE_FIXTURE available=%llu largest=%llu oldAvailable=%llu newAvailable=%llu exact=%u valid=%u\n",(unsigned long long)sample.available,(unsigned long long)sample.largest,(unsigned long long)oldBudget.available,(unsigned long long)newBudget.available,unsigned(exact),unsigned(sample.valid));
+        assert(sample.valid&&!admits(sample,oldBudget)&&admits(sample,newBudget));
         auto original=w.meshStore.table();uint64_t minimum=sample.available;
         for(size_t i=0;i<w.meshStore.staging().upload.size();++i){const auto id=w.meshStore.staging().uploadBuffer[i];const auto& k=w.meshStore.staging().keys[w.meshStore.staging().upload[i]];
             auto* v=w.meshBuffers[id].vb;auto* index=w.meshBuffers[id].ib;assert(v&&index&&w.meshStore.markWriting(id));

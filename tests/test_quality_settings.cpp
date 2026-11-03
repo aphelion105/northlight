@@ -59,6 +59,9 @@ template<class S> static void sameAsOld(const S& n,const OldSelection& o){
 }
 static bool oldDue(const NorthlightPointShadow::RefreshSchedule& s,uint32_t now,size_t replays){return replays<256||uint32_t(now-s.updatedAt)>=33;}
 int main(){
+    {Settings s;s.gi=s.worldShadows=s.worldFog=s.localLights=s.contactAO=s.autoBump=s.weather=0;assert(!pipelineWork(s));
+     for(auto field:{&Settings::gi,&Settings::worldShadows,&Settings::worldFog,&Settings::localLights,&Settings::contactAO,&Settings::autoBump,&Settings::weather}){s.*field=1;assert(pipelineWork(s));s.effects=0;assert(!pipelineWork(s));s.effects=1;s.*field=0;}
+     s.localLights=1;s.localLightLimit=0;assert(!pipelineWork(s));}
     {Settings s;assert(giWork(s,true));assert(!giWork(s,false));s.giStrength=0;assert(!giWork(s,true));s.giStrength=1;assert(giWork(s,true));s.gi=0;assert(!giWork(s,true));
      std::vector<std::string> problems;const auto off=parse("[Quality]\nLocalLightLimit=0\n",nullptr,problems);assert(problems.empty()&&off.localLightLimit==0);}
     /* Defaults: absent files, empty file and Preset=Quality are the 0.3.136 constants, except the 0.3.167 FarShadowInterval 4

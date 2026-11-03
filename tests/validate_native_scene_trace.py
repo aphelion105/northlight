@@ -52,7 +52,8 @@ def kernel():
     return api
 
 
-def processes():
+def processes(allow_game=None):
+    if allow_game is None:allow_game=os.environ.get('NORTHLIGHT_TEST_ALLOW_RUNNING_GAME')=='1'
     api = kernel(); handle = api.CreateToolhelp32Snapshot(2, 0)
     if handle == ctypes.c_void_p(-1).value:
         raise ctypes.WinError(ctypes.get_last_error())
@@ -67,7 +68,7 @@ def processes():
             more = api.Process32NextW(handle, ctypes.byref(entry))
     finally:
         api.CloseHandle(handle)
-    if any(p['name'].lower() in ('wow.exe', 'wow64.exe') for p in result):
+    if not allow_game and any(p['name'].lower() in ('wow.exe', 'wow64.exe') for p in result):
         raise RuntimeError('Game process exists; defer this stand without changing the game')
     return result
 

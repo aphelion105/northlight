@@ -143,6 +143,10 @@ Balanced and Performance are not opted into Quality effects. Missing ordinary
 settings are appended commented out, so the preset's values apply.
 northlight-renderer.log shows the values in use (QUALITY).
 Individual settings (Quality / Balanced / Performance):
+  Effects              1 / 1 / 1      all scene effects, capture and world/GI workers; 0 uses the F10 bypass while preserving individual settings, HDR output and the menu
+  WorldShadows         1 / 1 / 1      all Northlight world/character shadows; F9 remains independent
+  WorldFog             1 / 1 / 1      Northlight atmospheric/regional fog, banks and haze; preserves native fog and the independent F7 switch
+  LocalLights          1 / 1 / 1      direct/fog lamp lighting and capture; preserves the saved LocalLightLimit
   ActorShadowBudgetMiB  0 / 16 / 8     character shadows, nearest first (0 = no limit)
   ActorShadowRadius     40 / 35 / 20   characters more than N yards from your own character cast no shadow (0..200; 0 = no limit; 1..3 = your own character, mount, weapons and whatever is right next to you)
   ActorShadows          1 / 1 / 1      shadows of characters and moving objects (0 = static shadows only: terrain, buildings, and the trees and objects placed on the map; characters, creatures, mounts and pets lose their shadow, your own character too, and so do objects the server places, such as doors, elevators, ships, zeppelins, mailboxes and event decorations; swaying trees, windmills and flags keep a shadow frozen in their rest pose; with 0 the game's own round shadows under characters are drawn unchanged, with 1 they follow BlobShadowStrength; saves about 4–5 ms per frame in crowds and about 1 ms in quiet areas; with GIDynamicProbes=1 characters are still copied about every 200 ms for indirect light, GIDynamicProbes=0 removes that too; 0 also turns off the ShadowFateDiagnostics and DiagReplayProbe settings; no preset changes this); with 1, shop signs and other small still objects the server places keep their shadow when the camera turns away

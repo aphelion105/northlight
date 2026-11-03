@@ -29,7 +29,7 @@ eff='quality=NorthlightQuality::effective(quality);'
 checks['effective() applied once in loadQuality, after the QUALITY line, before configure()']=(w.count('NorthlightQuality::effective(')==1 and eff in lq
     and lq.index('logf("QUALITY %s file=%s')<lq.index('logf("QUALITY warning')<lq.index(eff)<lq.index('NorthlightDiagnostics::configure(')<lq.index('NorthlightRenderThreadProbe::configure(')
     and 'logf("QUALITY ActorShadows=%u: %s; forced off: %s",quality.actorShadows,' in lq and lq.index('NorthlightQuality::forcedOff(quality)')<lq.index(eff))
-ctor=w[w.index('        loadQuality();effects.gi='):w.index('        (void)NorthlightStreaming::cpuRetirement();')]
+ctor=w[w.index('        loadQuality();pipelineActive='):w.index('        (void)NorthlightStreaming::cpuRetirement();')]
 checks['constructor reads quality only after loadQuality']='shadowFate(quality)' in ctor
 # Capture decision: ActorShadows=0 is "shadows off" for capture (GI actor frames only).
 dec=w[w.index('    bool modelCaptureSkipped(){'):w.index('    void captureModel(')]

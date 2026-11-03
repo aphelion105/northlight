@@ -370,6 +370,7 @@ static void upgradeAutoDepth(IDirect3D9* d3d,UINT adapter,D3DDEVTYPE type,D3DPRE
     if(ok&&pp->EnableAutoDepthStencil&&pp->AutoDepthStencilFormat==D3DFMT_D24X8){pp->AutoDepthStencilFormat=D3DFMT_D24S8;if(!upgradedLogged){upgradedLogged=true;logf("STENCIL depth upgraded D24X8->D24S8 where=%s",where);}}
 }
 class Device final : public GuardedMirrorDevice {
+    friend struct PipelineOffTest;
     LONG refs = 1;
     LONG diagnosticId=0;
     NorthlightFrameIntervals::Window frameIntervals;bool intervalFocus=true; /* every frame since the last FRAME interval line had focus */
@@ -539,7 +540,7 @@ class Device final : public GuardedMirrorDevice {
     UINT width = 0, height = 0;
     D3DFORMAT sceneFormat = D3DFMT_UNKNOWN, depthSnapshotFormat = D3DFMT_UNKNOWN;
     bool df24Refused = false; // the device refused a DF24 depth snapshot: INTZ for the session
-    bool terrain = false, captured = false, applied = false, enabled = true;
+    bool terrain = false, captured = false, applied = false, enabled = true,masterEnabled=true;
     // 0.3.202 (rain): the rain streak alpha mask (RainMask, s13 of WorldComposite): created on the first mask draw at the effect resources' size; the
     // flags and the cached eligibility are per frame (clearFrame), the counters are read and zeroed by the WEATHER line.
     // 0.3.202 (rain mask MRT): the mask is written by the rain draws themselves through render target 1 (rainMrtPS); rainMrtBound: RT1 holds the mask target
@@ -1288,6 +1289,7 @@ private:
         }
     }
     void renderEffects() {
+        if(!enabled&&worldDebug==0&&!diagnostics())return;
         if(hdr.active&&(!hdrAtUiBoundary||!hdrBackTarget()))return;
         nameMaskRunEnd(); /* 0.3.212 (task 32): the effect passes and SavedState meet the game's stencil states */
         CpuScope cpu(sampled()?&cpuEffects:nullptr);
@@ -1933,6 +1935,16 @@ private:
         hookTimer=sampledDrawTimers()&&NorthlightRenderThreadProbe::profiling()?&cpuDrawHooks:nullptr;
     }
     LONGLONG* sampledHookTimer()const{return hookTimer;}
+    void refreshPipeline(){
+        const bool wasEnabled=enabled;
+        enabled=!extensionFault&&masterEnabled&&(!world||world->effectsEnabled());
+        if(wasEnabled&&!enabled)boundQpc=gpuBudgetQpc=cpuBudgetQpc=cpuEffectsQpc=0;
+        if(!wasEnabled&&enabled&&memoryDiagnostics){NorthlightMemoryDiagnostics::Sample stale;memoryDiagnostics->take(stale);memoryDiagnostics->request();}
+        if(world)world->setPipelineEnabled(enabled&&!failed);
+        particleOn=enabled&&world&&world->equipmentLightsOn();
+        NorthlightParticleUploads::enabled.store(particleOn,std::memory_order_relaxed);
+        NorthlightParticleTextures::enabled.store(particleOn,std::memory_order_relaxed);
+    }
     // Native sky claim: glare, then the native disc draw, for full-viewport sky draws of 1..4 primitives.
     void skyClaim(D3DPRIMITIVETYPE t,UINT count,bool& claimed){
         if(count<=4&&celestialDiscs&&enabled&&debugMode==0&&worldDebug==0&&!applied&&celestialDiscs->nativeClaimPossible(t,count)){D3DSURFACE_DESC desc;D3DVIEWPORT9 vp={};if(fullViewport(desc,&vp)&&NorthlightWorldDrawDomain::skyClaimPossible(worldMinDepth,worldMaxDepth,vp.MinZ,vp.MaxZ)){ /* viewport band pre-filter: no texture-identity read for a draw outside the sky band */
@@ -2255,6 +2267,7 @@ private:
         if(hdrColor.layers!=layersBefore)hdrLayerDiagnostic("sky");
     }
     template<class Capture,class Draw> HRESULT drawHook(D3DPRIMITIVETYPE t,UINT count,Capture capture,Draw draw){
+        if(!enabled&&!failed&&!hdr.active&&worldDebug==0&&!diagnostics()){++drawCalls;return draw();}
         if(gpuScene&&!gpuScene->native.currentFrame(frame)){ExtensionDevice::RawScope raw(*ext);gpuScene->setFrame(frame);}
         if(autoBump)autoBump->beginDraw();
         auto nativeDraw=[&]{if(autoBump)autoBump->beforeNativeDraw();return aoActorNativeDraw(draw);};
@@ -3097,7 +3110,7 @@ public:
         mirrorState.beforeDisable=&Device::materialMirrorEscape;mirrorState.disableContext=this;
         zFuncAware=world->depthFuncAware();
         nameMask.setting=world->nameMask();nameMask.debug=world->nameMaskDebug(); /* 0.3.212 (task 32) */
-        frameDrawGates=world->frameDrawGates();latchDrawGates(); /* 0.3.187: after the renderers exist */
+        frameDrawGates=world->frameDrawGates();refreshPipeline();latchDrawGates(); /* after the renderers exist */
         mirrorState.setVsFloatWriteObservation(diagnostics());
         {wchar_t markers[MAX_PATH];if(swprintf(markers,MAX_PATH,L"%lsnorthlight-frame-markers.txt",rootPath)>0&&GetFileAttributesW(markers)!=INVALID_FILE_ATTRIBUTES){frameMarkers=true;logf("FRAMEMARKERS on: E after the world effects, P before Present");}}
         weatherDetect.sink=&weatherLog; /* 0.3.198 (rain) */
@@ -3310,6 +3323,7 @@ public:
     // 0.3.198 (rain): frame end, on the finishing thread, under the gate: the frame's sample into the tracker, the state to the
     // world, the hot candidate rotated on every frame it counted no draws, and the WEATHER lines.
     void weatherFrame(unsigned sampleFrame){
+        if(!enabled){weatherSample={};weatherTick=0;return;}
         namespace W=NorthlightWeather;
         if(gateFrame){logWeatherProbe(sampleFrame);weatherProbe={};}
         LARGE_INTEGER now={};double dt=0;
@@ -3349,6 +3363,7 @@ public:
     // 0.3.200 (gpu budget): once per frame: a finished timer reading (if any) updates the controller and the world's level; a level change is
     // logged (the first 32 always, later with Diagnostics), the state on RenderProfile sample frames. GpuBudgetMs=0: level 0, nothing measured.
     void gpuBudgetFrame(){
+        if(!enabled)return;
         // Present latency plus pending EVENT/FLUSH time, smoothed per frame. Known only with the latency limit (command stream, framesAhead>=2);
         // unknown: the budgets lighten as before 45. Not GPU-bound = the CPU is the limit, so the GPU budget buys nothing and the CPU budget acts.
         const std::int64_t boundNow=qpcNow();
@@ -3385,6 +3400,7 @@ public:
     // job joins and the effect passes' D3D calls; NOT the capture of the frame's draws, which is spread over per-draw hooks and only timed on sample frames) feeds a
     // second controller (same hysteresis); its level sets the effective actor shadow radius. It lightens only while the frame is not GPU-bound (or the signal is unknown).
     void cpuBudgetFrame(){
+        if(!enabled)return;
         const unsigned budget=world?world->actorShadowCpuMs():0;
         if(!budget){cpuBudget.reset();cpuBudgetQpc=0;cpuEffectsQpc=0;if(world)world->setCpuBudgetLevel(0);return;}
         if(cpuEffectsQpc>0&&cpuFrequency.QuadPart>0){const std::int64_t now=qpcNow();
@@ -3438,8 +3454,8 @@ public:
         }
         bool masterPressed=false;
         if(!overlay||!overlay->masterHotkey(focus,masterPressed))masterPressed=k10&&!key10;
-        bool retry=masterPressed&&!enabled;
-        if(masterPressed){flushFrameIntervals("master-change",frameEnabled,frameEffects);enabled=!enabled;frameIntervals.reset();frameCost.reset();stallFrames.reset();mirrorResources.queryProfile={};logf("Effects %s tick=%lu device=%llu rendererFrame=%u monotonicNs=%llu",enabled?"ON":"OFF",(unsigned long)GetTickCount(),(unsigned long long)diagnosticId,frame,(unsigned long long)NorthlightStream::nowNs());}
+        bool retry=masterPressed&&!masterEnabled;
+        if(masterPressed){flushFrameIntervals("master-change",frameEnabled,frameEffects);masterEnabled=!masterEnabled;frameIntervals.reset();frameCost.reset();stallFrames.reset();mirrorResources.queryProfile={};logf("Effects %s tick=%lu device=%llu rendererFrame=%u monotonicNs=%llu",masterEnabled?"ON":"OFF",(unsigned long)GetTickCount(),(unsigned long long)diagnosticId,frame,(unsigned long long)NorthlightStream::nowNs());}
         bool k12=focus&&modifiers&&(GetAsyncKeyState(VK_F12)&0x8000);
         if(k12&&!key12){
             if(GetAsyncKeyState(VK_MENU)&0x8000){
@@ -3458,7 +3474,7 @@ public:
         // its result. Trims run below, after clearFrame(), at the frame boundary.
         bool memoryTrim=false;int memoryCaps=-1,memoryWorld=-1; /* -1 unchanged, 0 full, 1 half; memoryWorld follows any pressure episode, terrain follows only memoryCaps */
         NorthlightMemoryDiagnostics::Sample memorySample; /* exact full walk (never an admission witness bound) */
-        if(memoryDiagnostics){
+        if(memoryDiagnostics&&enabled){
             try{
                 const DWORD now=GetTickCount();
                 if(memoryGuard.requestDue(now))memoryDiagnostics->request();
@@ -3652,7 +3668,7 @@ public:
             logGateThreads("periodic");
             reportLogCost();
         }
-        weatherFrame(sampleFrame);
+        refreshPipeline();weatherFrame(sampleFrame);
         cpuPrep=cpuCapture=cpuWaterCapture=cpuEffects=0;cpuCaptureReads=0;cpuDrawHooks=0;
         cpuHdrAdmission=cpuHdrBoundary=cpuHdrTransfer=cpuHdrFinish=0;hdrAdmissionCalls=hdrTransferCalls=0;
         ++frame;mirrorState.gate.frame.store(frame,std::memory_order_relaxed); /* 0.3.180: the census' frame */
@@ -3790,13 +3806,13 @@ public:
     // 0.3.187: the four draw entry points share drawHook(); each passes its capture and its real draw.
     HRESULT STDMETHODCALLTYPE DrawPrimitive(D3DPRIMITIVETYPE t,UINT start,UINT count) override { Guard mirrorLock(mirrorState.gate);
         NorthlightAutoDisplacement::Args geometry{{t,0,0,0,start,count,false}};
-        auto draw=[&]{return hdrDraw([&]{auto raw=[&]{return ext->DrawPrimitive(t,start,count);};return projectedDraw(count,applied?1u:0u,[&]{return autoBump?autoBump->geometryDraw(raw,true):raw();});});};
-        if(spellOn||particleOn)spellArgs=NorthlightSpellLayer::DrawArgs::primitive(t,start,count);
+        auto draw=[&]{return hdrDraw([&]{auto raw=[&]{return ext->DrawPrimitive(t,start,count);};return projectedDraw(count,applied?1u:0u,[&]{return autoBump&&enabled?autoBump->geometryDraw(raw,true):raw();});});};
+        if(enabled&&(spellOn||particleOn))spellArgs=NorthlightSpellLayer::DrawArgs::primitive(t,start,count);
         return drawHook(t,count,[&](IDirect3DVertexShader9* vs){captureModelNormals(vs,[&]{return ext->DrawPrimitive(t,start,count);},false);if(autoBump&&enabled&&!applied&&!failed){autoBump->capture(vs,[&]{return ext->DrawPrimitive(t,start,count);},false,&geometry);}world->capture(t,0,0,0,start,count,false,vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame(frame));captureWater(vs,NorthlightWaterRenderer::NoUserPointer,draw);},draw);}
     HRESULT STDMETHODCALLTYPE DrawIndexedPrimitive(D3DPRIMITIVETYPE t,INT base,UINT min,UINT vertices,UINT start,UINT count) override { Guard mirrorLock(mirrorState.gate);
         NorthlightAutoDisplacement::Args geometry{{t,base,min,vertices,start,count,true}};
-        auto draw=[&]{return hdrDraw([&]{auto raw=[&]{return ext->DrawIndexedPrimitive(t,base,min,vertices,start,count);};return projectedDraw(count,applied?1u:0u,[&]{return autoBump?autoBump->geometryDraw(raw,true):raw();});});};
-        if(spellOn||particleOn)spellArgs=NorthlightSpellLayer::DrawArgs::indexed(t,base,min,vertices,start,count);
+        auto draw=[&]{return hdrDraw([&]{auto raw=[&]{return ext->DrawIndexedPrimitive(t,base,min,vertices,start,count);};return projectedDraw(count,applied?1u:0u,[&]{return autoBump&&enabled?autoBump->geometryDraw(raw,true):raw();});});};
+        if(enabled&&(spellOn||particleOn))spellArgs=NorthlightSpellLayer::DrawArgs::indexed(t,base,min,vertices,start,count);
         return drawHook(t,count,[&](IDirect3DVertexShader9* vs){
             NorthlightCaptureMetadata::PositionBounds positions;positions.owner=&geometry;positions.shader=vs;
             auto captureWorld=[&](NorthlightCaptureMetadata::PositionBounds* out=nullptr){world->capture(t,base,min,vertices,start,count,true,vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame(frame),out);};
@@ -3808,13 +3824,13 @@ public:
             captureWater(vs,NorthlightWaterRenderer::NoUserPointer,draw);},draw);}
     HRESULT STDMETHODCALLTYPE DrawPrimitiveUP(D3DPRIMITIVETYPE t,UINT count,const void* data,UINT stride) override { Guard mirrorLock(mirrorState.gate);
         NorthlightAutoDisplacement::Args geometry{{t,0,0,0,0,count,false},nullptr,D3DFMT_UNKNOWN,data,stride};
-        auto draw=[&]{return hdrDraw([&]{auto raw=[&]{return ext->DrawPrimitiveUP(t,count,data,stride);};return projectedDraw(count,applied?1u:0u,[&]{return autoBump?autoBump->geometryDraw(raw,true):raw();});});};
-        if(spellOn||particleOn)spellArgs=NorthlightSpellLayer::DrawArgs::primitiveUP(t,count,data,stride);
+        auto draw=[&]{return hdrDraw([&]{auto raw=[&]{return ext->DrawPrimitiveUP(t,count,data,stride);};return projectedDraw(count,applied?1u:0u,[&]{return autoBump&&enabled?autoBump->geometryDraw(raw,true):raw();});});};
+        if(enabled&&(spellOn||particleOn))spellArgs=NorthlightSpellLayer::DrawArgs::primitiveUP(t,count,data,stride);
         return drawHook(t,count,[&](IDirect3DVertexShader9* vs){captureModelNormals(vs,[&]{return ext->DrawPrimitiveUP(t,count,data,stride);},true);if(autoBump&&enabled&&!applied&&!failed){autoBump->capture(vs,[&]{return ext->DrawPrimitiveUP(t,count,data,stride);},true,&geometry);}world->captureUP(t,0,0,count,nullptr,D3DFMT_UNKNOWN,data,stride,false,vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame(frame));captureWater(vs,NorthlightWaterRenderer::UserVertices,draw);},draw);}
     HRESULT STDMETHODCALLTYPE DrawIndexedPrimitiveUP(D3DPRIMITIVETYPE t,UINT min,UINT vertices,UINT count,const void* indices,D3DFORMAT fmt,const void* data,UINT stride) override { Guard mirrorLock(mirrorState.gate);
         NorthlightAutoDisplacement::Args geometry{{t,0,min,vertices,0,count,true},indices,fmt,data,stride};
-        auto draw=[&]{return hdrDraw([&]{auto raw=[&]{return ext->DrawIndexedPrimitiveUP(t,min,vertices,count,indices,fmt,data,stride);};return projectedDraw(count,applied?1u:0u,[&]{return autoBump?autoBump->geometryDraw(raw,true):raw();});});};
-        if(spellOn||particleOn)spellArgs=NorthlightSpellLayer::DrawArgs::indexedUP(t,min,vertices,count,indices,fmt,data,stride);
+        auto draw=[&]{return hdrDraw([&]{auto raw=[&]{return ext->DrawIndexedPrimitiveUP(t,min,vertices,count,indices,fmt,data,stride);};return projectedDraw(count,applied?1u:0u,[&]{return autoBump&&enabled?autoBump->geometryDraw(raw,true):raw();});});};
+        if(enabled&&(spellOn||particleOn))spellArgs=NorthlightSpellLayer::DrawArgs::indexedUP(t,min,vertices,count,indices,fmt,data,stride);
         return drawHook(t,count,[&](IDirect3DVertexShader9* vs){captureModelNormals(vs,[&]{return ext->DrawIndexedPrimitiveUP(t,min,vertices,count,indices,fmt,data,stride);},true);if(autoBump&&enabled&&!applied&&!failed){autoBump->capture(vs,[&]{return ext->DrawIndexedPrimitiveUP(t,min,vertices,count,indices,fmt,data,stride);},true,&geometry);}world->captureUP(t,min,vertices,count,indices,fmt,data,stride,true,vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame(frame));captureWater(vs,NorthlightWaterRenderer::UserVerticesAndIndices,draw);},draw);}
 };
 
@@ -4129,7 +4145,7 @@ static HMODULE backend() {
     // Only DXVK keeps the legacy (unchecked, no RESZ dummy draw) rules; every
     // other runtime, including the system fallback, gets the native rules.
     if(module&&(result.fallback||(configured==NorthlightBackend::Kind::Legacy&&!last.info.dxvk)))selectedBackend=NorthlightBackend::Kind::Native;
-    logf("Northlight renderer 0.3.219; reference sun look (sun glow hue from native/sunHalo band, soft-shoulder glare, veil, sun-tinted haze), native sun/moon suppressed (F1b), lamps dimmed to 30 pct in direct sun, native moon02 skipped by texture identity, no game bytes in the DLL, MEMREAD self-read profile (RenderProfile), soft sun removal in shadow, jump-stable shadow anchor, geometry coverage hold with travel lead, steadier animated shadow edges (near 5x5 tent, still-camera shadow history), native blob shadows kept at BlobShadowStrength (faint texture under modulate blend), bilinear lighting history, near capture reserve for the player and companions, remembered rigid prop shadows (drawn-by-game states, windowed held), AO and bloom folded into the world composite, ground normals reject object tops, both wide samples, batched celestial terrain mask, DXVK async left to the runtime, render-thread terrain upload and rigid bookkeeping trims, moon without the horizon stall, art layer bands retimed to the sun and moon, actor prepare on a worker, trimmed prepare handoff, in-place capture constants, gate thread census, predicted snapshot lookups, word-wise memcmp, owner-thread gate elision; abandoned-frame prepare quarantine; removal smoothing on matching normals in its own pass (35/50 degree gate); per-frame draw gates; translucent depth census; early depth for translucent actors; DXVK 3.1.1 default, dxvk2 (2.7.1) by choice only, no automatic fallback; AO depth texel snap; shadow cascades follow camera zoom and collision; reduced terrain shadow reach under address-space pressure; command-stream replay thread; draw-hook lookup caches; lighter replay retire; fresh texture shadows evict only stale keeps; soft local-light cap with fades; blended GI re-publication; Forever-style rain (storm light bands, weather draw detection); moving fog clouds; GPU budget control; frames ahead and frame skipping in the command stream; replay jobs; AO denoise pass; rain mask (MRT, depth scrub), effect boundary at the UI in rain; UI boundary fallback for font mods; TestCooperativeLevel answered on the game thread; two large buffer shadows (36 MiB allowance); lamp fog glow capped once over all lamps; texture readback diagnostics, texture readbacks without a queue drain; sky light held across the weather rescale; colour-guided lighting upsample and colour-picked contact normals at wall and actor feet; actor shadow map with soft contact-hardening filter; uncached maps skip geometry builds; nearest-first actor capture (radius gate, distance cut), stride-aligned replay bulk; floating names keep the game's colour (stencil mask); instance map names with an apostrophe or a space reach the world context; lamps in view first, screen-coherent lamp batches (16-lamp passes); backend=%s path=%ls loaded=%d error=%lu",
+    logf("Northlight renderer 0.3.217; reference sun look (sun glow hue from native/sunHalo band, soft-shoulder glare, veil, sun-tinted haze), native sun/moon suppressed (F1b), lamps dimmed to 30 pct in direct sun, native moon02 skipped by texture identity, no game bytes in the DLL, MEMREAD self-read profile (RenderProfile), soft sun removal in shadow, jump-stable shadow anchor, geometry coverage hold with travel lead, steadier animated shadow edges (near 5x5 tent, still-camera shadow history), native blob shadows kept at BlobShadowStrength (faint texture under modulate blend), bilinear lighting history, near capture reserve for the player and companions, remembered rigid prop shadows (drawn-by-game states, windowed held), AO and bloom folded into the world composite, ground normals reject object tops, both wide samples, batched celestial terrain mask, DXVK async left to the runtime, render-thread terrain upload and rigid bookkeeping trims, moon without the horizon stall, art layer bands retimed to the sun and moon, actor prepare on a worker, trimmed prepare handoff, in-place capture constants, gate thread census, predicted snapshot lookups, word-wise memcmp, owner-thread gate elision; abandoned-frame prepare quarantine; removal smoothing on matching normals in its own pass (35/50 degree gate); per-frame draw gates; translucent depth census; early depth for translucent actors; DXVK 3.1.1 default, dxvk2 (2.7.1) by choice only, no automatic fallback; AO depth texel snap; shadow cascades follow camera zoom and collision; reduced terrain shadow reach under address-space pressure; command-stream replay thread; draw-hook lookup caches; lighter replay retire; fresh texture shadows evict only stale keeps; soft local-light cap with fades; blended GI re-publication; Forever-style rain (storm light bands, weather draw detection); moving fog clouds; GPU budget control; frames ahead and frame skipping in the command stream; replay jobs; AO denoise pass; rain mask (MRT, depth scrub), effect boundary at the UI in rain; UI boundary fallback for font mods; TestCooperativeLevel answered on the game thread; two large buffer shadows (36 MiB allowance); lamp fog glow capped once over all lamps; texture readback diagnostics, texture readbacks without a queue drain; sky light held across the weather rescale; colour-guided lighting upsample and colour-picked contact normals at wall and actor feet; actor shadow map with soft contact-hardening filter; uncached maps skip geometry builds; nearest-first actor capture (radius gate, distance cut), stride-aligned replay bulk; floating names keep the game's colour (stencil mask); instance map names with an apostrophe or a space reach the world context; lamps in view first, screen-coherent lamp batches (16-lamp passes); backend=%s path=%ls loaded=%d error=%lu",
          NorthlightBackend::name(configured),last.path.c_str(),module!=nullptr,module?0ul:(last.error?last.error:(unsigned long)ERROR_INVALID_PARAMETER));
     logAttempts(result.attempts);
     logHostExecutable(sys.selfPath);

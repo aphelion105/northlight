@@ -40,8 +40,8 @@ struct World {
     bool settingsRequestDirty=false,paletteFrameValid=true,temporalValid=true;
     unsigned minSkinnedShadowTriangles=0,captureBudgetMiB=0,actorShadowBudgetMiB=0;
     bool shadowFateDiagnostics=false;
-    struct Fx{bool gi=true;};Fx effects,requestedEffects;unsigned effectResets=0;
-    void setEffects(const Fx& requested){requestedEffects=requested;Fx next=requested;next.gi=NorthlightQuality::giPass(quality,next.gi);if(effects.gi==next.gi)return;++effectResets;effects=next;} // the production method masks the user's key state by GI=0 the same way
+    struct Fx{bool gi=true,shadows=true,fog=true;};Fx effects,requestedEffects;unsigned effectResets=0;
+    void setEffects(const Fx& requested){requestedEffects=requested;Fx next=requested;next.gi=NorthlightQuality::giPass(quality,next.gi);next.shadows=quality.worldShadows&&next.shadows;next.fog=quality.worldFog&&next.fog;if(effects.gi==next.gi&&effects.shadows==next.shadows&&effects.fog==next.fog)return;++effectResets;settingsRequestDirty|=effects.gi!=next.gi||effects.fog!=next.fog;effects=next;}
     struct {float steps=0;} staticPrebuild;
     unsigned resets=0,invalidates=0;
     struct {size_t full=0,half=0;void configureBudget(size_t a,size_t b){full=a;half=b;}} replaySnapshots;
@@ -60,7 +60,7 @@ int main(){
         const auto old=w.quality;const auto oldProfiles=w.celestialProfiles;w.applyLiveSettings(next);
         const auto effective=NorthlightQuality::effective(next.quality);
         for(const auto& k:NorthlightQuality::Keys)assert(w.quality.*k.field==(NorthlightSettings::liveQuality(k.name)?effective.*k.field:old.*k.field));
-        assert(w.settingsRequestDirty==NorthlightSettings::giRequestChanged(old,w.quality,oldProfiles,next.celestial));
+        assert(w.settingsRequestDirty==(NorthlightSettings::giRequestChanged(old,w.quality,oldProfiles,next.celestial)||old.worldFog!=w.quality.worldFog));
         assert(!w.paletteFrameValid&&w.quality.preset==next.quality.preset);
         assert(w.effects.gi==(next.quality.gi!=0));
         assert(w.replaySnapshots.full==size_t(w.quality.captureBudgetMiB)*1048576);

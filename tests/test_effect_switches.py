@@ -62,7 +62,7 @@ struct Device {
 struct Fixture {
     NorthlightEffectSwitches::Settings effects,requestedEffects;
     NorthlightQuality::Settings quality; // 0.3.138 northlight-quality.ini; defaults: giPass is a pass-through
-    bool temporalValid=true,shadowsComposited=true,settingsRequestDirty=false;
+    bool temporalValid=true,shadowsComposited=true,settingsRequestDirty=false,pipelineActive=true;
     bool shadowFrameReady=true,pointReady=true,neutralShadowMaps=false;
     bool cacheValid=true;
     Device device;Device* d=&device;
@@ -78,6 +78,14 @@ struct Fixture {
 };
 int main(){
     using namespace NorthlightEffectSwitches;
+    for(unsigned quality=0;quality<8;++quality)for(unsigned keys=0;keys<8;++keys)for(bool active:{false,true}){
+        Fixture f;f.pipelineActive=active;f.quality.gi=quality&1;f.quality.worldShadows=quality&2;f.quality.worldFog=quality&4;
+        Settings requested{bool(keys&1),bool(keys&2),bool(keys&4)};f.setEffects(requested);
+        assert(f.effects.gi==(active&&bool(quality&1)&&requested.gi));
+        assert(f.effects.shadows==(active&&bool(quality&2)&&requested.shadows));
+        assert(f.effects.fog==(active&&bool(quality&4)&&requested.fog));
+        f.pipelineActive=true;f.setEffects(f.requestedEffects);assert(f.requestedEffects==requested);
+    }
     // All combinations, key repeat, modifiers and focus transitions.
     for(unsigned mask=0;mask<=All;++mask){
         Hotkeys k;

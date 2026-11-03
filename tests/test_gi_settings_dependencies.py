@@ -18,7 +18,7 @@ tree=ast.parse((fp.TESTS/'test_live_settings.py').read_text())
 node=next(n.value for n in tree.body if isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='harness' for t in n.targets))
 fixture=ast.literal_eval(node.func.value).split('int main(){')[0].replace('__METHOD__',method)
 body=r'''
-static bool relevant(const std::string& key){return key=="GI"||key=="GIStrength"||key=="GIBounces"||key=="GIDynamicProbes"||key=="GIProbeMoveStep"||key=="GIProbeAhead"||key=="ShadowDirectionSteps";}
+static bool relevant(const std::string& key){return key=="GI"||key=="GIStrength"||key=="WorldFog"||key=="GIBounces"||key=="GIDynamicProbes"||key=="GIProbeMoveStep"||key=="GIProbeAhead"||key=="ShadowDirectionSteps";}
 static NorthlightSettings::Config current(const World& w){NorthlightSettings::Config c;c.quality=w.quality;c.celestial=w.celestialProfiles;return c;}
 int main(){unsigned qualityCases=0,profileCases=0;
  for(const auto& key:NorthlightQuality::Keys){World w;auto next=current(w);next.quality.*key.field=w.quality.*key.field==key.low?key.high:key.low;
