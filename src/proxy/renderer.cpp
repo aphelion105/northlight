@@ -904,6 +904,20 @@ private:
         const bool ui=known&&(!vs||safe(vs,true))&&(ps?safe(ps,false):fixedPixels());
         drop(vs);drop(ps);return ui;
     }
+    HRESULT hdrResumeWorld(){
+        if(!hdr.active||!hdrUiPhase||applied||!hdrBackTarget())return S_OK;
+        DWORD z=0,function=D3DCMP_ALWAYS;D3DVIEWPORT9 viewport{};
+        if(FAILED(ext->GetRenderState(D3DRS_ZENABLE,&z))||FAILED(ext->GetRenderState(D3DRS_ZFUNC,&function))||
+           !NorthlightWorldDrawDomain::depthTested(z,function)||FAILED(ext->GetViewport(&viewport))||
+           NorthlightWorldDrawDomain::classify(0,NorthlightWorldDrawDomain::kWorldMaxZ,viewport.MinZ,viewport.MaxZ)!=NorthlightWorldDrawDomain::Band::World)return S_OK;
+        // An early font/overlay draw can look like final UI before the first
+        // world draw. Resume the untouched native target BEFORE capture reads
+        // its format/depth; otherwise later scene copies sample the old frame.
+        const HRESULT hr=hdrBindBack(hdrLegacyBack);if(FAILED(hr))return hr;
+        hdrUiPhase=hdrAtUiBoundary=hdrLegacyPrepared=hdrSceneReady=hdrLegacySynced=false;
+        hdrSkyValid=false;if(celestialDiscs)celestialDiscs->setHdrSkyTarget(nullptr);
+        return S_OK;
+    }
     template<class Draw> HRESULT hdrDraw(Draw draw){
         if(!hdr.active||hdrSkyReplaying)return draw();
         bool linear=false;
@@ -2283,6 +2297,7 @@ private:
         if(hdrColor.layers!=layersBefore)hdrLayerDiagnostic("sky");
     }
     template<class Capture,class Draw> HRESULT drawHook(D3DPRIMITIVETYPE t,UINT count,Capture capture,Draw draw){
+        const HRESULT resumed=hdrResumeWorld();if(FAILED(resumed))return resumed;
         if(!enabled&&!failed&&!hdr.active&&worldDebug==0&&!diagnostics()){++drawCalls;return draw();}
         if(gpuScene&&!gpuScene->native.currentFrame(frame)){ExtensionDevice::RawScope raw(*ext);gpuScene->setFrame(frame);}
         if(autoBump)autoBump->beginDraw();

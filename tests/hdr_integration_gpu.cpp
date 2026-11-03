@@ -293,6 +293,42 @@ int main(int argc,char** argv){
             std::printf("HDR_GUARD_PERF frames=%u discarded=%u uiDraws=%u width=%u height=%u submitMedianUs=%.6f gpuMedianUs=%.6f completionMedianUs=%.6f\n",unsigned(gpuTimes.size()),discarded,uiDraws,backWidth,backHeight,median(submitTimes),median(gpuTimes),median(wallTimes));
             for(auto* query:{event,start,end,frequency,disjoint})query->Release();
         }
+        if(!performance){
+            // Combat text can precede world geometry. Reproduce the early HDR
+            // boundary, then move the scene and read it twice as native FFX does.
+            IDirect3DSurface9* depth=nullptr;
+            ok(d->CreateDepthStencilSurface(backWidth,backHeight,D3DFMT_D24S8,samples,0,TRUE,&depth,nullptr));
+            ok(d->SetRenderTarget(0,back));ok(d->Present(nullptr,nullptr,nullptr,nullptr));
+            for(unsigned frame=0;frame<4;++frame){
+                ok(d->SetRenderTarget(0,back));ok(d->SetDepthStencilSurface(depth));
+                D3DVIEWPORT9 vp={0,0,backWidth,backHeight,0,1};ok(d->SetViewport(&vp));
+                ok(d->SetVertexDeclaration(declaration));ok(d->SetVertexShader(vs[1]));ok(d->SetPixelShader(ps[1]));
+                ok(d->SetVertexShaderConstantF(0,matrix,4));ok(d->SetTexture(0,tex));
+                ok(d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE));ok(d->SetRenderState(D3DRS_COLORWRITEENABLE,15));
+                ok(d->SetRenderState(D3DRS_ZENABLE,FALSE));ok(d->SetRenderState(D3DRS_ZWRITEENABLE,FALSE));
+                ok(d->SetRenderState(D3DRS_ZFUNC,D3DCMP_ALWAYS));ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE));
+                ok(d->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0,1,0));
+                UiVertex q[4];const float text[]={.8f,.2f,.1f,1};vertices(q,text);
+                ok(d->BeginScene());ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,q,sizeof(UiVertex)));ok(d->EndScene());
+                vp.MaxZ=.94f;ok(d->SetViewport(&vp));ok(d->SetRenderState(D3DRS_ZENABLE,TRUE));
+                ok(d->SetRenderState(D3DRS_ZWRITEENABLE,TRUE));ok(d->SetRenderState(D3DRS_ZFUNC,D3DCMP_LESSEQUAL));
+                for(unsigned update=0;update<2;++update){
+                    const float moving[]={.2f+.1f*frame+.05f*update,.5f,.8f,1};vertices(q,moving);
+                    ok(d->BeginScene());ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,q,sizeof(UiVertex)));ok(d->EndScene());
+                    ok(d->StretchRect(back,nullptr,reference,nullptr,D3DTEXF_NONE));
+                    float current[4];pixel8(d,reference,referenceRead,current);
+                    for(unsigned c=0;c<3;++c){const float expected=moving[c]*texel[c];
+                        if(std::fabs(current[c]-expected)>.005f){std::fprintf(stderr,"EARLY_UI_STALE_SCENE frame=%u update=%u channel=%u got=%g want=%g\n",frame,update,c,current[c],expected);return 10;}}
+                    ++cases;
+                }
+                vp.MaxZ=1;ok(d->SetViewport(&vp));ok(d->SetRenderState(D3DRS_ZENABLE,FALSE));
+                ok(d->SetRenderState(D3DRS_ZWRITEENABLE,FALSE));ok(d->SetRenderState(D3DRS_ZFUNC,D3DCMP_ALWAYS));
+                ok(d->BeginScene());ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,q,sizeof(UiVertex)));ok(d->EndScene());
+                ok(d->Present(nullptr,nullptr,nullptr,nullptr));
+            }
+            ok(d->SetDepthStencilSurface(nullptr));depth->Release();
+            std::puts("HDR_EARLY_UI_WORLD_PASS frames=4 sceneCopies=8");
+        }
         referenceRead->Release();reference->Release();readback->Release();back->Release();
     }
     IDirect3DSurface9* resetBack=nullptr;ok(d->GetBackBuffer(0,0,D3DBACKBUFFER_TYPE_MONO,&resetBack));ok(d->SetRenderTarget(0,resetBack));resetBack->Release();

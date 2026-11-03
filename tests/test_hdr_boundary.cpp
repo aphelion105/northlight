@@ -69,9 +69,14 @@ struct Fixture{
     Backend backend;Backend* ext=&backend;
     struct{bool active=true;struct{float uiWhite=160;}settings;}hdr;
     struct{float uiWhite=160;}hdrFrameSettings;
-    struct{unsigned rejected=0,draws=0;std::uint64_t layers=0;template<class Draw>HRESULT draw(Backend*,float,Draw work){++draws;return work();}}hdrColor;
+    int stateBlocks=0;
+    struct{unsigned rejected=0,draws=0;std::uint64_t layers=0;template<class Draw>HRESULT draw(Backend*,float,Draw work,unsigned,int*){++draws;return work();}}hdrColor;
     std::unordered_map<void*,NorthlightShaderReads::ReadSet> shaderReads;
     bool hdrUiPhase=false,applied=false,world=false,failResolve=false,failBind=false,hdrAtUiBoundary=false,hdrSkyReplaying=false;
+    bool hdrLegacyPrepared=false,hdrSceneReady=false,hdrLegacySynced=false;
+    int hdrLegacyBack=0;
+    struct Discs{bool cleared=false;void setHdrSkyTarget(void*){cleared=true;}}discs;
+    Discs* celestialDiscs=&discs;
     unsigned begins=0,effects=0,hdrFailuresLogged=0,hdrDeferredLogs=0,hdrDeferredFrame=~0u;
     bool gateFrame=false,gateUntimed=false;
     bool hdrSkyValid=false,backbuffer=true,failSky=false;unsigned skyCaptures=0;
@@ -92,6 +97,7 @@ struct Fixture{
     bool fullViewportOk=true;
     bool fullViewport(D3DSURFACE_DESC&,void*,bool,bool){return fullViewportOk;}
     bool hdrBackTarget(){return backbuffer;}
+    HRESULT hdrBindBack(int){if(failBind)return E_FAIL;backend.hdrBound=false;return S_OK;}
     bool hdrSkyDraw(){++skyCaptures;if(failSky)return false;hdrSkyValid=true;return true;}
     void renderEffects(){++effects;applied=world;}
     void spellReplay(){}
@@ -124,6 +130,38 @@ int main(){
 #endif
     }
 #ifndef NORTHLIGHT_HDR_BOUNDARY_COUNTERFACTUAL
+    // Early combat text precedes the first world draw. It may migrate the
+    // backbuffer, but cannot make that migration permanent for the scene.
+    // Moving colours and repeated scene copies expose a frozen legacy image.
+    for(bool zWrite:{false,true}){
+        Fixture f;IDirect3DTexture9 atlas;f.backend.textures[0]=&atlas;
+        f.stockUi=false;f.backend.pixelProjection=true;
+        for(int generation=1;generation<=4;++generation){
+            f.hdrUiPhase=f.backend.hdrBound=false; // Present starts a new native frame.
+            f.world=f.applied=false;f.backend.z=f.backend.write=0;f.backend.viewport.MaxZ=1;
+            f.backend.function=D3DCMP_ALWAYS;
+            assert(f.draw(100+generation)==S_OK&&f.hdrUiPhase);
+            f.hdrLegacyPrepared=f.hdrSceneReady=f.hdrLegacySynced=true;
+            f.hdrSkyValid=true;f.discs.cleared=false;
+            f.backend.z=1;f.backend.function=4;f.backend.write=zWrite;f.backend.viewport.MaxZ=.94f;
+            assert(f.hdrResumeWorld()==S_OK&&!f.hdrUiPhase&&!f.backend.hdrBound);
+            assert(!f.hdrAtUiBoundary&&!f.hdrLegacyPrepared&&!f.hdrSceneReady&&!f.hdrLegacySynced);
+            assert(!f.hdrSkyValid&&f.discs.cleared);
+            f.world=true;f.backend.nativeWrite(200+generation);
+            assert(f.backend.logicalCopy()==200+generation);
+            f.backend.z=f.backend.write=0;f.backend.function=D3DCMP_ALWAYS;f.backend.viewport.MaxZ=1;
+            assert(f.draw(300+generation)==S_OK&&f.hdrUiPhase&&f.applied);
+            assert(f.backend.logicalCopy()==200+generation);
+        }
+    }
+    for(unsigned unchanged=0;unchanged<7;++unchanged){
+        Fixture f;f.hdrUiPhase=f.backend.hdrBound=true;f.backend.z=1;f.backend.function=4;f.backend.viewport.MaxZ=.94f;
+        switch(unchanged){case 0:f.applied=true;break;case 1:f.backbuffer=false;break;case 2:f.backend.viewport.MaxZ=1;break;
+            case 3:f.backend.function=D3DCMP_ALWAYS;break;case 4:f.backend.z=0;break;case 5:f.backend.failViewport=true;break;case 6:f.hdr.active=false;break;}
+        assert(f.hdrResumeWorld()==S_OK&&f.hdrUiPhase&&f.backend.hdrBound);
+    }
+    {Fixture f;f.hdrUiPhase=f.backend.hdrBound=true;f.backend.z=1;f.backend.function=4;f.backend.viewport.MaxZ=.94f;f.failBind=true;
+        assert(f.hdrResumeWorld()==E_FAIL&&f.hdrUiPhase&&f.backend.hdrBound);}
     // A font mod uses different VS identities for logical UI and physical-pixel
     // text. HDR completes before the old dominant-shader fallback can learn.
     {Fixture f;IDirect3DTexture9 atlas;IDirect3DVertexShader9 font;
