@@ -178,6 +178,7 @@ struct ProxyBase {
     // The proxy behind an interface pointer the game passed (a virtual QueryInterface with a private IID: no lock, no lookup);
     // nullptr for an object that is not a stream proxy. No reference is taken.
     static ProxyBase* of(IUnknown* u);        // lock-free shape check (below the proxy classes)
+    template<class T> static ProxyBase* of(T* u);
     static ProxyBase* ofSlow(IUnknown* u);    // a virtual QueryInterface with a private IID: any pointer, however unknown its shape
     template<class... T> static bool iidIs(REFIID id){return id==__uuidof(IUnknown)||((id==__uuidof(T))||...);}
     HRESULT devGet(IDirect3DDevice9** pp);
@@ -1641,6 +1642,28 @@ struct StreamSwapChain final:IDirect3DSwapChain9,ProxyBase {
 
 // A game-held interface pointer to its proxy without a call or an atomic: compare the object's vtable pointer with the known proxy classes
 // (mirror_resources.h does the same for its wrappers) and cast by kind. Anything else (a foreign object) takes the QueryInterface path.
+template<class T> inline ProxyBase* ProxyBase::of(T* u){
+    if(!u)return nullptr;
+    const void* vp=*reinterpret_cast<const void* const*>(u);
+    // Set/Get arguments already prove the interface type. Try its one shape
+    // before the general classifier; foreign objects retain the private-IID path.
+#define NORTHLIGHT_TYPED_PROXY(I,P,K) if constexpr(std::is_same<T,I>::value){if(vp==proxyShape[unsigned(Kind::K)].load(std::memory_order_relaxed))return static_cast<P*>(u);}
+    NORTHLIGHT_TYPED_PROXY(IDirect3DSurface9,StreamSurface,Surface)
+    NORTHLIGHT_TYPED_PROXY(IDirect3DTexture9,StreamTexture,Texture)
+    NORTHLIGHT_TYPED_PROXY(IDirect3DCubeTexture9,StreamCubeTexture,CubeTexture)
+    NORTHLIGHT_TYPED_PROXY(IDirect3DVolumeTexture9,StreamVolumeTexture,VolumeTexture)
+    NORTHLIGHT_TYPED_PROXY(IDirect3DVolume9,StreamVolume,Volume)
+    NORTHLIGHT_TYPED_PROXY(IDirect3DVertexBuffer9,StreamVertexBuffer,VertexBuffer)
+    NORTHLIGHT_TYPED_PROXY(IDirect3DIndexBuffer9,StreamIndexBuffer,IndexBuffer)
+    NORTHLIGHT_TYPED_PROXY(IDirect3DVertexShader9,StreamVertexShader,VertexShader)
+    NORTHLIGHT_TYPED_PROXY(IDirect3DPixelShader9,StreamPixelShader,PixelShader)
+    NORTHLIGHT_TYPED_PROXY(IDirect3DVertexDeclaration9,StreamVertexDeclaration,VertexDeclaration)
+    NORTHLIGHT_TYPED_PROXY(IDirect3DStateBlock9,StreamStateBlock,StateBlock)
+    NORTHLIGHT_TYPED_PROXY(IDirect3DQuery9,StreamQuery,Query)
+    NORTHLIGHT_TYPED_PROXY(IDirect3DSwapChain9,StreamSwapChain,SwapChain)
+#undef NORTHLIGHT_TYPED_PROXY
+    return of(static_cast<IUnknown*>(u));
+}
 inline ProxyBase* ProxyBase::of(IUnknown* u){
     if(!u)return nullptr;
     const void* vp=*reinterpret_cast<const void* const*>(u);

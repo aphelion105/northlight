@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# northlight-test: requires=cxx
+# northlight-test: requires=zig
 """Native tests of real switch/neutral-target code; no game, Wine or GPU."""
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
@@ -7,6 +7,7 @@ import json
 import re
 import subprocess
 import tempfile
+import os
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -26,7 +27,7 @@ def block(start):
 
 setter = block('    void setEffects(')
 shadow_clear = block('        if(!effects.shadows&&!neutralShadowMaps)')
-fog_clear = world.split('// Clear every disabled frame', 1)[1]
+fog_clear = world.split('// Clear every empty/disabled frame', 1)[1]
 fog_clear = fog_clear[fog_clear.index('d->SetTexture'):fog_clear.index('\n        }')]
 neutral_matrix = re.search(r'const float neutralMatrix\[16\]=\{[^;]+;', world)[0]
 
@@ -107,7 +108,7 @@ int main(){
         f.setEffects(next);
         assert(f.effects==next);
         assert(f.temporalValid==!mask);
-        assert(f.settingsRequestDirty==bool(mask&Fog));
+        assert(f.settingsRequestDirty==bool(mask&(Fog|GI)));
         assert(f.cacheValid==!(mask&Shadows));
         assert(f.shadowFrameReady==!(mask&Shadows));
         assert(f.pointReady==!(mask&Shadows));
@@ -178,8 +179,10 @@ assert world.index('d->SetPixelShaderConstantF(34,haze.haze,1);') < world.index(
 with tempfile.TemporaryDirectory(prefix='fr-effect-switches-') as temp:
     folder = Path(temp)
     (folder / 'test.cpp').write_text(body)
-    for flags in (['-O2'], ['-O1', '-g', '-fsanitize=address,undefined', '-fno-sanitize-recover=all']):
-        subprocess.run(['clang++', '-std=c++17', *flags, *fp.test_include_flags(),
+    compiler=[str(fp.zig()),'c++','-target','x86-windows-gnu'] if os.name=='nt' else ['clang++']
+    variants=(['-O2'],['-O0','-g']) if os.name=='nt' else (['-O2'], ['-O1', '-g', '-fsanitize=address,undefined', '-fno-sanitize-recover=all'])
+    for flags in variants:
+        subprocess.run([*compiler, '-std=c++17', '-UNDEBUG', *flags, *fp.test_include_flags(),
                         str(folder / 'test.cpp'), '-o', str(folder / 'test')], check=True)
         subprocess.run([str(folder / 'test')], check=True)
-print(json.dumps({'game_launched': False, 'native_and_sanitizers': 'PASS'}))
+print(json.dumps({'game_launched': False, 'native': 'PASS', 'sanitizers': 'not run on Windows' if os.name=='nt' else 'PASS'}))

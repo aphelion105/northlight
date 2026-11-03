@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# northlight-test: requires=cxx
+# northlight-test: requires=zig
 """Production settings invalidation: every quality key, palette field and retained pending request."""
 import ast
 import os
@@ -18,7 +18,7 @@ tree=ast.parse((fp.TESTS/'test_live_settings.py').read_text())
 node=next(n.value for n in tree.body if isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='harness' for t in n.targets))
 fixture=ast.literal_eval(node.func.value).split('int main(){')[0].replace('__METHOD__',method)
 body=r'''
-static bool relevant(const std::string& key){return key=="GI"||key=="GIBounces"||key=="GIDynamicProbes"||key=="GIProbeMoveStep"||key=="GIProbeAhead"||key=="ShadowDirectionSteps";}
+static bool relevant(const std::string& key){return key=="GI"||key=="GIStrength"||key=="GIBounces"||key=="GIDynamicProbes"||key=="GIProbeMoveStep"||key=="GIProbeAhead"||key=="ShadowDirectionSteps";}
 static NorthlightSettings::Config current(const World& w){NorthlightSettings::Config c;c.quality=w.quality;c.celestial=w.celestialProfiles;return c;}
 int main(){unsigned qualityCases=0,profileCases=0;
  for(const auto& key:NorthlightQuality::Keys){World w;auto next=current(w);next.quality.*key.field=w.quality.*key.field==key.low?key.high:key.low;
@@ -59,8 +59,9 @@ int main(){unsigned qualityCases=0,profileCases=0;
   w.applyLiveSettings(next);assert(!w.settingsRequestDirty);
  }
  // GI enable/disable and dynamic actor removal must force even at a stationary camera.
- for(unsigned which=0;which<3;++which){World w;auto next=current(w);
-  if(which==0)next.quality.gi=0;else if(which==1){w.quality.gi=0;next.quality.gi=1;}else next.quality.giDynamicProbes=0;
+ for(unsigned which=0;which<5;++which){World w;auto next=current(w);
+  if(which==0)next.quality.gi=0;else if(which==1){w.quality.gi=0;next.quality.gi=1;}else if(which==2)next.quality.giDynamicProbes=0;
+  else if(which==3)next.quality.giStrength=0;else {w.quality.giStrength=0;next.quality.giStrength=60;}
   w.applyLiveSettings(next);assert(w.settingsRequestDirty);if(which<2)assert(w.effects.gi==bool(next.quality.gi));
  }
  std::cout<<"PASS GI settings invalidation: qualityKeys="<<qualityCases<<" profileFields="<<profileCases<<" noOpHDR=1000 pendingPreserved=1 equalFallbackZones=2 GIReactivation=1 dynamicActorRemoval=1\n";

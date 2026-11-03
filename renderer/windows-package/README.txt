@@ -151,7 +151,7 @@ Individual settings (Quality / Balanced / Performance):
   MinSkinnedTriangles   100/150/180    small animated parts cast no shadow
   FarShadowInterval     4 / 5 / 6      distant shadows (beyond ~48 m) are drawn every Nth frame (1..16)
   NearShadowInterval    1 / 2 / 2      near environment shadows every Nth frame; moving casters stay current (1..16)
-  LocalLightLimit       48 / 32 / 24   lamps lighting at the same time (8..128; lamps in view first; the GPU budget never lowers it)
+  LocalLightLimit       48 / 32 / 24   lamps lighting at the same time (0..128; 0 disables local lights; lamps in view first; the GPU budget never lowers it)
   PointShadows          1 / 1 / 1      shadows from selected compact local sources, including supported street lamps, torches and braziers; enabled day and night with source visibility and sunlight fading
   PointShadowRefreshMs  0 / 33 / 33    lamp shadow update interval
   PointShadowFacesPerFrame 6 / 6 / 6   lamp shadow directions updated per frame (1..6; 6 = all at once; lower = smaller spikes, a brief seam at the edge)

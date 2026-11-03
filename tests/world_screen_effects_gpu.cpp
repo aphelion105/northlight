@@ -1,10 +1,61 @@
 // Production screen effects must survive an unavailable geometry publication.
 #undef NDEBUG
 #define NORTHLIGHT_REPLAY_STAND 1
-#include "../src/proxy/renderer.cpp"
+#include "renderer.cpp"
 #include <cassert>
 #include <fstream>
 struct WorldScreenEffectsTest {
+    static void inactiveGI(WorldRenderer& w){
+        const auto quality=w.quality;const auto effects=w.effects;
+        const bool expectPaused=!std::getenv("NORTHLIGHT_PIPELINE_BASELINE_RUN");
+        for(unsigned mode=0;mode<4;++mode){
+            w.quality=quality;w.quality.gi=mode!=3;w.quality.giDynamicProbes=1;w.quality.actorShadows=0;
+            w.quality.giStrength=mode==1?0:60;w.effects={mode!=0,false,false};
+            unsigned jobs=0,skipped=0;const auto start=std::chrono::steady_clock::now();
+            for(unsigned frame=0;frame<100000;++frame){
+                w.captureMode=WorldRenderer::CaptureUndecided;w.captureDemand=false;w.lastRenderDebug=0;
+                w.actorCaptureDecided=false;w.lastActorCapture=0;w.actorJob.reset();
+                skipped+=w.modelCaptureSkipped();jobs+=bool(w.actorJob);
+                assert(w.actorCaptureWouldRun()==bool(w.actorJob));
+            }
+            const double ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
+            const bool paused=mode==3||(expectPaused&&mode<2);
+            assert(jobs==(paused?0u:100000u)&&skipped==(paused?100000u:0u));
+            std::printf("WORLD_GI_CPU mode=%u ms=%.6f frames=100000 jobs=%u skipped=%u\n",mode,ms,jobs,skipped);
+        }
+        w.quality=quality;w.effects=effects;w.captureMode=WorldRenderer::CaptureUndecided;
+        w.actorCaptureDecided=false;w.actorJob.reset();
+        std::puts("WORLD_GI_PAUSE_PASS hidden=1 zeroStrength=1 positivePreserved=1 qualityOff=1");
+    }
+    static void gi(WorldRenderer& w,bool enabled){w.effects.gi=enabled;}
+    static void zeroGINight(WorldRenderer& w,unsigned brightness){
+        w.quality.giStrength=0;w.quality.nightBrightness=brightness;
+        w.celestialValid=true;w.celestial.dayFraction=0.;w.effects={true,false,false};w.temporalValid=w.fogHistoryValid=false;
+    }
+    static void restoreGINight(WorldRenderer& w){w.quality.giStrength=60;w.quality.nightBrightness=50;w.celestialValid=false;w.effects={true,false,true};w.temporalValid=w.fogHistoryValid=false;}
+    static void localLightCPU(WorldRenderer& w){
+        const auto quality=w.quality;const auto effects=w.effects;const auto active=w.active;
+        w.active=std::make_shared<WorldRenderer::Snapshot>();w.active->map="offline-lamps";
+        auto records=std::make_shared<NorthlightLightAttachments::Records>();records->resize(1);w.active->lightAttachments=records;
+        auto& lights=w.active->localLights;lights.resize(10000);
+        for(unsigned i=0;i<lights.size();++i){auto& l=lights[i];l.sourceId=i+1;l.position[0]=float(i%100)*.5f;l.position[1]=float(i/100)*.5f;l.position[2]=10;l.diffuse[0]=l.diffuse[1]=l.diffuse[2]=1;l.attenuationStart=2;l.attenuationEnd=15;l.kind=2;}
+        w.quality.pointShadows=0;w.quality.equipmentLights=0;w.quality.fogClouds=0;w.effects={false,false,false};
+        for(unsigned mode=0;mode<2;++mode)for(unsigned sample=0;sample<5;++sample){
+            w.quality.localLightLimit=mode?48:0;w.lightAttachments.bind(records);
+            for(unsigned i=0;i<200;++i)w.lightAttachments.positions[i+1]={float(i%20),float(i/20),10};
+            WorldRenderer::AtmosphereFrame a{};unsigned selected=0;uint64_t digest=1469598103934665603ull;
+            const auto start=std::chrono::steady_clock::now();
+            for(unsigned frame=0;frame<200;++frame){
+                w.localLightQpc=0;w.atmosphereWork(a,1,128,80,0);selected+=a.lights.count;
+                for(unsigned k=0;k<a.lights.count;++k)for(float f:a.lights.position[k]){uint32_t bits;std::memcpy(&bits,&f,4);digest=(digest^bits)*1099511628211ull;}
+            }
+            const double ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
+            assert(mode?selected>0:selected==0);
+            std::printf("WORLD_LOCAL_CPU mode=%u sample=%u ms=%.6f frames=200 lights=10000 selected=%u digest=%llu\n",mode,sample,ms,selected,(unsigned long long)digest);
+        }
+        w.quality=quality;w.effects=effects;w.active=active;w.lightAttachments.reset();w.attachedLocalLights.clear();w.localLightTracker.reset();w.localLightMap.clear();w.localLightQpc=0;
+        std::puts("WORLD_LOCAL_PAUSE_PASS zeroLights=1 resume=1");
+    }
     static void retryHdrCombined(WorldRenderer& w){drop(w.hdrCombinedPS);w.hdrCombineTried=false;}
     static bool hdrCombined(const WorldRenderer& w){return w.hdrCombinedPS!=nullptr;}
     static void fixtureContext(WorldRenderer& w){
@@ -328,6 +379,8 @@ int main(int argc,char** argv){
     {
         WorldScratchMeter meter(d,W,H);
         auto world=std::make_unique<WorldRenderer>(&meter);
+        WorldScreenEffectsTest::inactiveGI(*world);
+        WorldScreenEffectsTest::fixtureContext(*world);WorldScreenEffectsTest::localLightCPU(*world);
         meter.failShaderAt=3;assert(!WorldScreenEffectsTest::resources(*world,W,H));
         const auto shaderAttempts=meter.shaderCreates;assert(!WorldScreenEffectsTest::resources(*world,W,H)&&meter.shaderCreates==shaderAttempts);WorldScreenEffectsTest::screenRetry(*world);
         meter.failShaderAt=0;meter.failScreenAt=3;assert(!WorldScreenEffectsTest::resources(*world,W,H));
@@ -418,13 +471,30 @@ int main(int argc,char** argv){
         assert(renderChecked(*world,d,out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao));
         const auto sceneBytes=WorldScreenEffectsTest::sceneBytes(*world);assert(sceneBytes>0&&world->ready()&&WorldScreenEffectsTest::sceneDrawn(*world)&&meter.fogWeight==0&&WorldScreenEffectsTest::screenFog(*world)==screenFog);
         const auto creates=meter.sceneCreates;assert(renderChecked(*world,d,out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao));assert(meter.sceneCreates==creates);
+        // A dormant GI consumer keeps its CPU atlas; upload on reactivation.
+        WorldScreenEffectsTest::gi(*world,true);
+        assert(renderChecked(*world,d,out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao));
         const auto probeBefore=WorldScreenEffectsTest::probeImage(*world);
+        std::vector<unsigned short> nightImages[2];
+        for(unsigned night=0;night<2;++night){
+            WorldScreenEffectsTest::zeroGINight(*world,night?50:0);
+            assert(renderChecked(*world,d,out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao));
+            if(msaa)screenOk(d->StretchRect(out,nullptr,resolved,nullptr,D3DTEXF_NONE));screenOk(d->GetRenderTargetData(msaa?resolved:out,readback));
+            D3DLOCKED_RECT lock{};screenOk(readback->LockRect(&lock,nullptr,D3DLOCK_READONLY));nightImages[night].resize(W*H*4);
+            for(unsigned y=0;y<H;++y)std::memcpy(nightImages[night].data()+y*W*4,static_cast<char*>(lock.pBits)+y*lock.Pitch,W*8);
+            screenOk(readback->UnlockRect());
+        }
+        float nightDelta=0;uint64_t nightDigest=1469598103934665603ull;
+        for(unsigned i=0;i<nightImages[1].size();++i){const float value=screenHalf(nightImages[1][i]);assert(std::isfinite(value));nightDelta=std::max(nightDelta,std::abs(value-screenHalf(nightImages[0][i])));nightDigest=(nightDigest^nightImages[1][i])*1099511628211ull;}
+        assert(nightDelta>.001f);std::printf("WORLD_ZERO_GI_NIGHT_PASS delta=%g digest=%llu msaa=%u\n",nightDelta,(unsigned long long)nightDigest,msaa);
+        WorldScreenEffectsTest::restoreGINight(*world);
         WorldScreenEffectsTest::pressure(*world,true);world->endFrame();assert(WorldScreenEffectsTest::sceneBytes(*world)==sceneBytes); // Active BVH still owns these targets.
         WorldScreenEffectsTest::expireFakeScene(*world);world->endFrame();WorldScreenEffectsTest::noSceneTargets(*world);WorldScreenEffectsTest::probeRetired(*world);
         assert(WorldScreenEffectsTest::sceneBytes(*world)==0&&WorldScreenEffectsTest::screenFog(*world)==screenFog);
         WorldScreenEffectsTest::fixtureContext(*world);
         assert(renderChecked(*world,d,out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao));
         WorldScreenEffectsTest::pressure(*world,false);WorldScreenEffectsTest::fakeScene(*world,vb,ib);
+        WorldScreenEffectsTest::gi(*world,true);
         assert(renderChecked(*world,d,out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao));
         assert(WorldScreenEffectsTest::sceneBytes(*world)==sceneBytes&&WorldScreenEffectsTest::screenFog(*world)==screenFog&&WorldScreenEffectsTest::probeImage(*world)==probeBefore);
         WorldScreenEffectsTest::removeFakeScene(*world);vb->Release();ib->Release();

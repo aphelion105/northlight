@@ -1317,7 +1317,7 @@ private:
         staticReservedBytes+=managedBytes;return true;
     }
     void requestStaticCasters(const char* map){
-        if(!staticStream)return;
+        if(!staticStream||!effects.shadows)return;
         if(staticRecoveryPaused&&!(active&&active->bvh))return;
         staticFramePivot=shadowPivot();staticPivotReady=true;
         const DWORD now=GetTickCount();
@@ -2143,7 +2143,7 @@ private:
             // region or changed lighting must never accept this publication.
             uint64_t checkedRequestId=r.id;bool checkedCompatibility=true;
             auto compatiblePublication=[&](){
-                if(probeCacheGeometry!=bvh)return false;
+                if(!request.giEnabled||probeCacheGeometry!=bvh)return false;
                 if(checkedRequestId==request.id)return checkedCompatibility;
                 checkedRequestId=request.id;
                 auto latestLight=request.light;latestLight.points=sceneLights;latestLight.movingGeometry=nullptr;
@@ -2715,7 +2715,7 @@ private:
         // Geometry can be ready before a new map's first GI solve. Shadows
         // may render immediately; GridInfo.w prevents reading the old atlas.
         if(active->serial==0)uploadedSerial=0;
-        if(uploadedSerial!=active->serial){
+        if(giWorkEnabled()&&uploadedSerial!=active->serial){
             auto phase=streamingPhases.measure(NorthlightStreaming::PhaseProfile::Probes);frameProbeUpload=true; /* 0.3.176 (D3) */
             if(active->atlas.size()!=NorthlightGI::probeLayout().atlasSize())return false;
             traceUpload("probe-enter");probeActivation.begin(active->map);
@@ -2916,7 +2916,7 @@ public:
             shadowsComposited=false;shadowFrameReady=false;pointReady=false;
             neutralShadowMaps=false;invalidateShadowCache();
         }
-        settingsRequestDirty=settingsRequestDirty||effects.fog!=next.fog;
+        settingsRequestDirty=settingsRequestDirty||effects.fog!=next.fog||effects.gi!=next.gi;
         effects=next;
     }
     void releaseDefaultMesh(){
@@ -3276,7 +3276,7 @@ public:
     unsigned aoQuality()const{return quality.aoQuality;}
     float aoStrength()const{return .6f*float(quality.aoStrength)/100.f;}
     float aoRadius()const{return float(quality.aoRadius)/100.f;}
-    bool equipmentLightsOn()const{return quality.equipmentLights!=0;}
+    bool equipmentLightsOn()const{return quality.equipmentLights!=0&&quality.localLightLimit!=0;}
     NorthlightParticleLights::Frame& particleFrame(){return particleLights;}
     bool particleContext(float* inverseView,float* camera,float* projectionOut){
         if(!equipmentLightsOn()||!hasContext()||!active)return false;
@@ -3306,7 +3306,7 @@ public:
         for(unsigned i=0;i<it->second;++i){NorthlightEquipmentLights::Native n;if(NorthlightEquipmentLights::decode(bank,i,context.inverseView,context.camera,n)){++equipmentCapture.decoded;equipmentLights.observe(n,now,active->localLights,context.camera);}else ++equipmentCapture.rejected;}
     }
     void observeLightAttachments(const Replay& replay,const CaptureShader& metadata){
-        if(!active||!active->lightAttachments||active->lightAttachments->empty()||!metadata.program||!metadata.program->skinned||
+        if(!quality.localLightLimit||!active||!active->lightAttachments||active->lightAttachments->empty()||!metadata.program||!metadata.program->skinned||
            !(metadata.program->kernel.skin||metadata.program->kernel.commutedSkin()||NorthlightRigidGeometry::oneBoneTemplate(*metadata.program))||metadata.program->paletteBase<0)return;
         lightAttachments.bind(active->lightAttachments);
         const auto& mesh=replay.mesh();if(!mesh.primitiveCount||mesh.vertexCount<3)return;
@@ -3544,7 +3544,7 @@ public:
         for(unsigned source=0;source<2;++source){rawSourceDirections[source]=resolvedSources.sources[source].direction;sourceDirections[source]=continuousCelestialShadows?resolvedSources.sources[source].direction:NorthlightWorldMath::quantizeDirection(resolvedSources.sources[source].direction,float(quality.shadowDirectionSteps));sourceColors[source]=resolvedSources.sources[source].color;sourceGlowColors[source]=sourceColors[source];sourceWeights[source]=resolvedSources.sources[source].weight;}
         if(celestialValid){sourceGlowColors[0]=vec(celestialLight.sunGlowColor);sourceGlowColors[1]=vec(celestialLight.moonGlowColor);}
         requestStaticCasters(map);
-        Request r;r.map=map;r.camera=vec(camera);r.light.sunDirection=sourceDirections[0];r.light.sunIrradiance=sourceColors[0]*3.14159265f;r.light.skyRadiance=vec(context.ambient);r.light.maxBounces=quality.giBounces;r.giEnabled=quality.gi!=0;r.fogEnabled=effects.fog;
+        Request r;r.map=map;r.camera=vec(camera);r.light.sunDirection=sourceDirections[0];r.light.sunIrradiance=sourceColors[0]*3.14159265f;r.light.skyRadiance=vec(context.ambient);r.light.maxBounces=quality.giBounces;r.giEnabled=giWorkEnabled();r.fogEnabled=effects.fog;
         r.light.additionalDirections.push_back({sourceDirections[1],sourceColors[1]*3.14159265f});
         // 0.3.153 GIProbeAhead: centre the probe window ahead of the eye along the horizontal
         // view direction (the third-person camera sits behind the character). 0 = the eye.
@@ -3559,7 +3559,7 @@ public:
          r.geometryCenter=NorthlightWorldStreaming::anchoredCenter(r.camera,pivot,geometryMotion.velocity(),float(geometryBuildEstimateMs.load(std::memory_order_relaxed))*.001f);
          geometryAnchorOffset=std::sqrt(NorthlightGI::dot(pivot-r.camera,pivot-r.camera));
          geometryLead=std::sqrt(NorthlightGI::dot(r.geometryCenter-r.camera,r.geometryCenter-r.camera));}
-        if(NorthlightQuality::giActorCapture(quality)&&lastRequest.map==r.map&&completedActorSceneMap()==r.map){r.actorJob=completedActorJob();r.actorSerial=actorJobSerial();}
+        if(giActorWorkEnabled()&&lastRequest.map==r.map&&completedActorSceneMap()==r.map){r.actorJob=completedActorJob();r.actorSerial=actorJobSerial();}
         std::shared_ptr<Snapshot> retiredSnapshot,expiredPublication;
         {std::lock_guard<std::mutex> lock(mutex);
             // The publication is another owner of the old BVH/plan. Retiring only
@@ -3934,7 +3934,9 @@ public:
         if(!NorthlightActorTexture::readable(raw.data(),raw.size(),desc.Width,desc.Height,rowBytes,format))return false;
         snapshot.bytes=std::move(raw);snapshot.width=desc.Width;snapshot.height=desc.Height;snapshot.pitch=rowBytes;snapshot.format=format;return true;
     }
-    bool actorCaptureEnabled(){if(!NorthlightQuality::giActorCapture(quality))return false; /* GI=0 or GIDynamicProbes=0 */
+    bool giWorkEnabled()const{return NorthlightQuality::giWork(quality,effects.gi);}
+    bool giActorWorkEnabled()const{return giWorkEnabled()&&quality.giDynamicProbes;}
+    bool actorCaptureEnabled(){if(!giActorWorkEnabled())return false;
         if(!actorCaptureDecided){actorCaptureDecided=true;actorCaptureDue=!lastActorCapture||GetTickCount()-lastActorCapture>=200;}if(actorCaptureDue&&!actorJob)actorJob=std::make_shared<NorthlightActorGeometry::ActorJob>();return actorCaptureDue;}
     void appendActor(IDirect3DVertexShader9* original,const Replay& replay,bool sample=false){
         if(!actorCaptureEnabled())return;
@@ -4072,7 +4074,7 @@ public:
             // Unavailable geometry cannot consume directional or point replays.
             // Keep the existing GI cadence, pending-demand and diagnostic exceptions.
             const bool shadows=ready()&&NorthlightQuality::actorShadowWork(quality,effects.shadows);
-            if(NorthlightQuality::captureSkipPossible(quality,shadows)&&lightAttachments.positions.empty()){NorthlightQuality::CaptureInputs in;
+            if(NorthlightQuality::captureSkipPossible(quality,shadows)&&(!quality.localLightLimit||lightAttachments.positions.empty())){NorthlightQuality::CaptureInputs in;
                 in.shadows=shadows;in.demand=captureDemand;in.diagnostic=lastRenderDebug==1;in.actorDue=actorCaptureEnabled();in.nextPass=shadowPasses+1;
                 for(int source=0;source<2;++source)in.sourceActive[source]=NorthlightGI::dot(sourceColors[source],sourceColors[source])>1e-10f;
                 in.pointDue=in.shadows&&!in.actorDue&&!in.demand&&pointRefreshPredicted();
@@ -4113,7 +4115,7 @@ public:
         return ok;
     }
     NorthlightCaptureAdmission::Admission admission;bool admissionOn=false;std::vector<float> gatedBodies; /* roots of radius-gated bodies, for rigid memory */
-    bool actorCaptureWouldRun()const{return NorthlightQuality::giActorCapture(quality)&&(actorCaptureDecided?actorCaptureDue:(!lastActorCapture||GetTickCount()-lastActorCapture>=200));}
+    bool actorCaptureWouldRun()const{return giActorWorkEnabled()&&(actorCaptureDecided?actorCaptureDue:(!lastActorCapture||GetTickCount()-lastActorCapture>=200));}
     void nearAnchorTake(){
         if(!nearAnchorReady){nearAnchorReady=true;const float forward[3]={context.inverseView[8]*projection[2],context.inverseView[9]*projection[2],context.inverseView[10]*projection[2]};
             nearAnchor=NorthlightNearReserve::anchor(actorShadowHistory.selfHold()>0?actorShadowHistory.selfAt():nullptr,context.camera,forward,pivotDistance);
@@ -4362,7 +4364,8 @@ public:
     };
     AtmosphereFrame atmosphere;NorthlightJobs::Counter atmosphereDone;
     void atmosphereWork(AtmosphereFrame& a,float nearZ,UINT w,UINT h,int debug){
-        auto& c=a.c;const auto wx=weatherEffects();
+        auto& c=a.c;auto& localLights=a.lights;const auto wx=weatherEffects();
+        if(quality.localLightLimit){
         // 0.3.197: tracked selection. A camera jump (teleport), a long gap (F10 off, loading) or F12 debug snap the
         // factors without fades; a different map (and a rebuilt device, releasePointGPU) forgets the tracker.
         if(!active||active->map!=localLightMap)localLightTracker.reset();
@@ -4386,11 +4389,15 @@ public:
         // each batch's rect of the direct (8) and fog (4) passes.
         localScissorView=NorthlightLocalLightScissor::view(context.inverseView,projection,nearZ,LampFogNear,w,h);
         a.lights=active?localLightTracker.update(*currentLights,context.camera,NorthlightGpuBudget::lightLimit(quality.localLightLimit,gpuBudgetLevel,effects.shadows&&quality.pointShadows?quality.pointShadowLimit:0),float(selectDt),selectContinuous,debug==0?&localScissorView:nullptr,equipmentLightsOn()?particleLights.output.data():nullptr,equipmentLightsOn()?particleLights.outputCount:0,equipmentLightsOn()?particleLights.immediate.data():nullptr,equipmentLightsOn()?particleLights.immediateCount:0,GetTickCount()) /* one shared dynamic cap; particles carry current-frame alpha */:NorthlightLocalLightSelection::Selection{};
-        auto& localLights=a.lights;
         {const auto arranged=NorthlightLocalLightBatches::arrange(localLights,localScissorView); /* screen-coherent batches (the passes are sums) */
          if(NorthlightDiagnostics::enabled()){localOffscreenSum+=localLightTracker.offscreen;localArranged+=arranged.arranged;localArrangeBefore+=arranged.before;localArrangeAfter+=arranged.after;}} /* counted with selectUs */
         if(NorthlightDiagnostics::enabled()){const double us=double(QpcClock::now()-selectT0)*1e6/(captureFrequency.QuadPart>0?double(captureFrequency.QuadPart):1.);localSelectUsSum+=us;localSelectUsMax=std::max(localSelectUsMax,us);++localSelectFrames;} /* selectUs on LOCAL direct */
         localLightQpc=selectT0;localLightCamera=vec(context.camera);if(active&&localLightMap!=active->map)localLightMap=active->map;
+        }else{
+            // No lamp consumer: skip attachment transforms, copies, selection and scissor batches.
+            a.lights={};localLightTracker.reset();lightAttachments.reset();attachedLocalLights.clear();
+            equipmentLights.reset();particleLights.reset();localLightQpc=0;localLightMap.clear();
+        }
         // 0.3.199 (fog clouds): the frame clock of the clouds (a gap or the first frame counts as 0; advance() clamps) and the dense-zone damping: where the
         // regional fog is already thick (the field's profile tag at the camera, Duskwood 1) the rain's extra air and the clouds thin out, the profile
         // smoothed over ~3 s so a zone border never pops. A dry frame's air floor stays exactly .0017f (the extra is 0 whatever the damping).
@@ -4579,7 +4586,7 @@ public:
         // so nothing defers or demands a capture. Without drawable geometry, only
         // the GI cadence and diagnostic/demand exceptions consume model captures.
         const bool actorShadows=quality.actorShadows!=0;
-        const bool replayShadows=freshReplays&&actorShadows&&ready();
+        const bool replayShadows=effects.shadows&&freshReplays&&actorShadows&&ready();
         const bool replaysComplete=freshReplays||!actorShadows;
         replayProbeFrame(); /* DiagReplayProbe window of this frame (nothing unless RenderProfile) */
         finishActorScene();
@@ -4591,7 +4598,7 @@ public:
         // ready/resources/upload, live terrain) up to the replay upload; logged with WORLD profile frame.
         uploadWindowTicks=-1;const int64_t uploadWindowStart=profileSampled()?QpcClock::now():0;
         {std::lock_guard<std::mutex> lock(mutex);
-         if(valid&&NorthlightQuality::giActorCapture(quality)&&completedActorSceneMap()==lastRequest.map&&!pending&&!workerBusy&&actorJobSerial()!=lastRequest.actorSerial&&submissionStart-actorRequestTick>=250){
+         if(valid&&giActorWorkEnabled()&&completedActorSceneMap()==lastRequest.map&&!pending&&!workerBusy&&actorJobSerial()!=lastRequest.actorSerial&&submissionStart-actorRequestTick>=250){
              Request r=lastRequest;r.actorJob=completedActorJob();r.actorSerial=actorJobSerial();r.reason=64;
              r.id=request.id+1;r.queuedAt=submissionStart;request=r;lastRequest=r;pending=true;actorRequestTick=submissionStart;wake.notify_one();
          }}
@@ -5265,7 +5272,7 @@ public:
         c[18][3]+=wx.ambientLift(); /* 0.3.198 (rain): a little more sky ambient from the GI pass in rain (+0 when dry; the probes themselves are untouched) */
         NorthlightNightFloor::nightAmbient(quality.nightBrightness,NorthlightNightFloor::weight(naturalSky.valid,naturalSky.valid?naturalSky.sun.direction[2]:0.f),c[18],c[19]);
         c[19][3]=8; /* c19.rgb: NightBrightness light per unit of albedo, from c18's ambient (WorldComposite only; 0 = off); c19.w: probe spacing */
-        c[20][0]=float(NorthlightGI::probeLayout().atlas);c[20][1]=NorthlightQuality::giIntensity(quality);c[20][2]=.85f;c[20][3]=geometryReady&&active->serial?1.f:0.f;
+        c[20][0]=float(NorthlightGI::probeLayout().atlas);c[20][1]=NorthlightQuality::giIntensity(quality);c[20][2]=.85f;c[20][3]=geometryReady&&giWorkEnabled()&&uploadedSerial&&uploadedSerial==active->serial?1.f:0.f;
         DWORD now=GetTickCount();
         c[21][0]=uploadedFogField&&(uploadedFogField->fogCells||uploadedFogField->airCells)?1.f:0.f;c[21][1]=1.2f*wx.shaftGain();c[21][2]=hdrMode?64.f:.38f;c[21][3]=128; /* HDR retains radiance above diffuse white until output mapping. */
         // 0.3.200 (gpu budget): fewer march intervals at reduced levels (c60.x clouds, c64.z WorldFog; both stay 0, the bank unchanged, at level 0).

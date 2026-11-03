@@ -790,7 +790,8 @@ static void eventQueryBatch(){
     const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(3);
     const auto trips=get(s.eventWaitTrips);
     hr=q->GetData(&data,4,D3::kGetDataFlush);
-    CHECK(hr==D3D_OK&&data==0xABCD0000u&&get(s.eventPollCalls)==8&&get(s.eventWaitTrips)==trips+1&&get(s.eventRequests)==0);
+    // Completion needs seven real flushes; ordinary polls between cadence kicks are not flushes.
+    CHECK(hr==D3D_OK&&data==0xABCD0000u&&gKnobs.eventPendingFlush.load()==0&&get(s.eventPollCalls)>=8&&get(s.eventWaitTrips)==trips+1&&get(s.eventRequests)==0);
     gKnobs.eventFlushResult.store(D3DERR_DEVICELOST);const auto polls=get(s.eventPollCalls);data=456;
     // A new END must not return the previous generation's completed value.
     CHECK(q->Issue(D3::kIssueEnd)==D3D_OK);

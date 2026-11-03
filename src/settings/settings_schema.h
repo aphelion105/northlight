@@ -35,7 +35,7 @@ struct Config{NorthlightQuality::Settings quality;NorthlightCelestialProfiles::T
 // still apply immediately without cancelling an otherwise identical solve.
 inline bool giRequestChanged(const NorthlightQuality::Settings& before,const NorthlightQuality::Settings& after,
                              const NorthlightCelestialProfiles::Table& oldProfiles,const NorthlightCelestialProfiles::Table& newProfiles){
-    if(before.gi!=after.gi||before.giBounces!=after.giBounces||before.giDynamicProbes!=after.giDynamicProbes||
+    if(before.gi!=after.gi||(before.giStrength==0)!=(after.giStrength==0)||before.giBounces!=after.giBounces||before.giDynamicProbes!=after.giDynamicProbes||
        before.giProbeMoveStep!=after.giProbeMoveStep||before.giProbeAhead!=after.giProbeAhead||before.shadowDirectionSteps!=after.shadowDirectionSteps)return true;
     const auto sameLight=[](const NorthlightCelestialProfiles::Profile& a,const NorthlightCelestialProfiles::Profile& b){
         for(unsigned s=0;s<2;++s){if(a.mix[s]!=b.mix[s]||a.strength[s]!=b.strength[s])return false;

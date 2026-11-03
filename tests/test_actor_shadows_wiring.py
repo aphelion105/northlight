@@ -7,7 +7,7 @@ reads the replays of a GI frame (replayShadows), every map and cube is complete 
 (replaysComplete, so nothing defers or demands a capture), the replay-derived keys are forced
 off at load (effective()). Blob shadows: the filter was bypassed at 0 only until 0.3.192; since
 0.3.193 BlobShadowStrength (0..100) decides, at both values: 0 hides, 100 draws the game's blob, between a faint texture. ActorShadows=1:
-both predicates are exactly freshReplays, the replay blocks run as before. The decision and
+with the component enabled both predicates are freshReplays, the replay blocks run as before. The decision and
 schedule model is exercised in test_quality_settings.cpp."""
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
@@ -42,12 +42,13 @@ defs={}
 for name in ('freshReplays','actorShadows','replayShadows','replaysComplete'):
     m=re.findall(r'const bool '+name+r'=([^;]*);',body);assert len(m)==1,name;defs[name]=m[0]
 checks['predicate definitions']=defs=={'freshReplays':'captureMode!=CaptureSkipped','actorShadows':'quality.actorShadows!=0',
-    'replayShadows':'freshReplays&&actorShadows&&ready()','replaysComplete':'freshReplays||!actorShadows'}
-def value(expr,fresh,actor,geometry=True):return eval(expr.replace('ready()','geometryReady').replace('&&',' and ').replace('||',' or ').replace('!',' not '),{},{'freshReplays':fresh,'actorShadows':actor,'geometryReady':geometry})
+    'replayShadows':'effects.shadows&&freshReplays&&actorShadows&&ready()','replaysComplete':'freshReplays||!actorShadows'}
+def value(expr,fresh,actor,geometry=True,shadows=True):return eval(expr.replace('effects.shadows','componentShadows').replace('ready()','geometryReady').replace('&&',' and ').replace('||',' or ').replace('!',' not '),{},{'freshReplays':fresh,'actorShadows':actor,'geometryReady':geometry,'componentShadows':shadows})
 checks['ActorShadows=1 reduces both to freshReplays; 0: consumers off, schedules complete']=all(
     value(defs['replayShadows'],f,True)==f and value(defs['replaysComplete'],f,True)==f and value(defs['replayShadows'],f,False) is False and value(defs['replaysComplete'],f,False) is True
     for f in (False,True))
 checks['unavailable geometry never consumes shadow replays']=all(value(defs['replayShadows'],f,a,False) is False for f in (False,True) for a in (False,True))
+checks['disabled component never selects shadow replays']=all(value(defs['replayShadows'],f,a,g,False) is False for f in (False,True) for a in (False,True) for g in (False,True))
 # Consumers (replayShadows) and schedules/commits (replaysComplete, actorShadows).
 consumers=['if(replayShadows)selectShadowReplays();','if(effects.shadows&&replayShadows)replayBoundsKick();','(replayShadows&&!timedReplay())',
            'if(effects.shadows&&replayShadows){auto proofs','if(effects.shadows&&replayShadows)pointCalculateReplayBounds();']

@@ -53,7 +53,7 @@ Every effect below is on by default and is drawn on top of the game's own frame.
   on the first install, the installer asks which of six groups (Classic, TBC and Wrath dungeons and raids; about 0.3-1.3 GB and 1-2
   build minutes each) to build. Updates keep the saved choice; `--instances` changes it.
   Current caches are reused, and light-only updates keep instance geometry. Changing the choice never rebuilds the continents.
-- **Lamps.** Up to 48 nearby lamps (Quality; `LocalLightLimit`, 8..128), lanterns, braziers and fires light the ground and walls around
+- **Lamps.** Up to 48 nearby lamps (Quality; `LocalLightLimit`, 0..128; 0 disables local lighting), lanterns, braziers and fires light the ground and walls around
   them and glow in the fog. Lamps in view take the slots first, and nearby lamps on screen are batched together. In direct sun lamps dim. Local shadows are enabled by default:
   64 compact sources by default, adjustable from 16 to 128 with `PointShadowLimit` in the Shadows menu.
   Torches, candles, lamps and compact fires cast shadows; diffuse glows, runes and sparkles do not.

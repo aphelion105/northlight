@@ -155,7 +155,7 @@ inline const Key Keys[]={
     {"ActorShadowBudgetMiB",&Settings::actorShadowBudgetMiB,0,32,{0,16,8}},
     {"FarShadowInterval",&Settings::farShadowInterval,1,16,{4,5,6}},
     {"NearShadowInterval",&Settings::nearShadowInterval,1,16,{1,2,2}},
-    {"LocalLightLimit",&Settings::localLightLimit,8,128,{48,32,24}},
+    {"LocalLightLimit",&Settings::localLightLimit,0,128,{48,32,24}},
     {"PointShadows",&Settings::pointShadows,0,1,{1,1,1}},
     {"PointShadowRefreshMs",&Settings::pointShadowRefreshMs,0,100,{0,33,33}},
     {"ShadowDirectionSteps",&Settings::shadowDirectionSteps,256,2048,{2048,2048,2048}},
@@ -266,6 +266,8 @@ inline bool operator!=(const Settings& a,const Settings& b){return !(a==b);}
 inline bool giActorCapture(const Settings& s){return s.gi&&s.giDynamicProbes;}
 // F8 can only hide GI; GI=0 keeps the pass off whatever F8 requests.
 inline bool giPass(const Settings& s,bool requested){return requested&&s.gi;}
+// Hidden or zero-weight transport has no probe/actor consumer. Retain its cache.
+inline bool giWork(const Settings& s,bool requested){return giPass(s,requested)&&s.giStrength!=0;}
 // Solver threads actually used: GIThreads, never more than cores-1 (the game
 // thread keeps a core); 0 cores (unknown) means 1. 1 = the original serial loop.
 inline unsigned giSolverThreads(const Settings& s,unsigned cores){

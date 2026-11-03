@@ -10,6 +10,8 @@ out=fp.output_dir()/'world-screen-gpu';out.mkdir(parents=True,exist_ok=False);(o
 spec=importlib.util.spec_from_file_location('screen_guard',repo/'tests/validate_native_scene_trace.py');guard=importlib.util.module_from_spec(spec);spec.loader.exec_module(guard)
 backend=Path(os.environ['NORTHLIGHT_TEST_D3D9']) if os.environ.get('NORTHLIGHT_TEST_D3D9') else fp.client_root()/'renderer-backends/dxvk/dxvk_d3d9.dll'
 env={k:v for k,v in os.environ.items() if not k.startswith(('NORTHLIGHT_','DXVK_','TRACE_','RETRACE_','APITRACE_'))}
+baseline=os.environ.get('NORTHLIGHT_PIPELINE_BASELINE')
+if baseline:env['NORTHLIGHT_PIPELINE_BASELINE_RUN']='1'
 for key,name in [('TEMP','temp'),('TMP','temp'),('ZIG_LOCAL_CACHE_DIR','zig-local'),('ZIG_GLOBAL_CACHE_DIR','zig-global'),('DXVK_SHADER_CACHE_PATH','shader-cache'),('DXVK_STATE_CACHE_PATH','state-cache'),('__GL_SHADER_DISK_CACHE_PATH','driver-cache')]:
     (out/name).mkdir(exist_ok=True);env[key]=str(out/name)
 (out/'dxvk.conf').write_bytes(b'dxvk.allowFse = False\nd3d9.presentInterval = 0\n')
@@ -23,7 +25,9 @@ def run(label,command,extra=None):
     (out/(label+'.log')).write_text(p.stdout+p.stderr);report['commands'].append({'label':label,'exit_code':p.returncode});print(label,p.returncode,(p.stdout+p.stderr)[-6000:],flush=True);assert p.returncode==0,label
 try:
     exe=out/'world-screen-gpu.exe'
-    run('compile',[fp.zig(),'c++','-target','x86-windows-gnu','-O2','-UNDEBUG','-std=c++17','-Wno-microsoft-exception-spec','-DIMGUI_USER_CONFIG="northlight_imconfig.h"',*fp.test_include_flags(),'-I'+str(fp.TESTS),fp.TESTS/'world_screen_effects_gpu.cpp',*(fp.src(s) for s in sources),'-luser32','-luuid','-o',exe])
+    sourceRoot=Path(baseline) if baseline else fp.REPO
+    includes=[str(sourceRoot/Path(f).relative_to(fp.REPO)) if f!='-I' else f for f in fp.test_include_flags()]
+    run('compile',[fp.zig(),'c++','-target','x86-windows-gnu','-O2','-UNDEBUG','-std=c++17','-Wno-microsoft-exception-spec','-DIMGUI_USER_CONFIG="northlight_imconfig.h"',*includes,'-I'+str(fp.TESTS),fp.TESTS/'world_screen_effects_gpu.cpp',*(sourceRoot/fp.src(s).relative_to(fp.REPO) for s in sources),'-luser32','-luuid','-o',exe])
     for samples in [0,2]:
         settings=out/('settings-msaa'+str(samples));settings.mkdir()
         run('gpu-msaa'+str(samples),[exe,backend,settings],{'NORTHLIGHT_TEST_MSAA':str(samples)})
