@@ -1,4 +1,4 @@
-# Consolidation of the open renderer PRs — 2026-11-04
+# Consolidation of the open renderer PRs â€” 2026-11-04
 
 Retain [PR #98](https://github.com/lepola/northlight/pull/98) as the single review
 entry point for all 17 PRs below. All were authored by `aphelion105` and targeted
