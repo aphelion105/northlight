@@ -47,7 +47,7 @@ inline bool encode(const GameSnapshot& snapshot,unsigned char* output,std::size_
         put32(output+offset,lights.scene);put32(output+offset+4,lights.time);put32(output+offset+8,lights.count);put32(output+offset+12,1);
         std::memcpy(output+offset+16,lights.map,64);offset+=LightHeaderBytes;
         for(unsigned i=0;i<lights.count;++i){const auto& p=lights.lights[i];put64(output+offset,p.id);
-            std::memcpy(output+offset+8,p.position,36);put32(output+offset+44,0);
+            std::memcpy(output+offset+8,p.position,36);put32(output+offset+44,p.reserved);
             std::memcpy(output+offset+48,p.anchor,12);put32(output+offset+60,p.flags);offset+=LightBytes;}
     }
     if(!ok||offset!=size-ChecksumBytes){error=Error::Counts;return false;}

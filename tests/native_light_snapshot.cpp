@@ -157,6 +157,10 @@ int main(int argc,char** argv){
 #endif
     }
     std::ofstream file(argv[1],std::ios::binary);file.write(reinterpret_cast<const char*>(bytes.data()),bytes.size());file.close();assert(file.good());
+    {source->nativeLights=target->nativeLights;auto& point=source->nativeLights.lights[0];point.id=0xfea0000000000001ull;point.flags=RootAnchor|WorldFixture;point.reserved=2;
+        std::vector<unsigned char> tagged(A::MaxBytes);std::size_t size=0;assert(A::encode(*source,tagged.data(),tagged.size(),size,error)&&A::decode(tagged.data(),size,*target,error));
+        assert(target->nativeLights.lights[0].reserved==2&&target->nativeLights.lights[0].flags==(RootAnchor|WorldFixture));
+        std::ofstream fixture(std::string(argv[1])+".fixture",std::ios::binary);fixture.write(reinterpret_cast<const char*>(tagged.data()),size);assert(fixture);}
     // Corrupt count/map/value with a valid checksum: strict import rejects it.
     const auto extension=A::HeaderBytes+A::RecordBytes+4;
     for(auto change:std::array<std::pair<std::size_t,std::uint32_t>,5>{{{extension+8,129},{extension+12,2},{extension+80+8,0x7fc00000},{extension+80+48,0x7fc00000},{extension+80+60,2}}}){

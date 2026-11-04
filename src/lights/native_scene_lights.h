@@ -4,6 +4,7 @@
 #include "native_light_snapshot.h"
 #include "local_light_selection.h"
 #include "native_light_pose.h"
+#include "native_fixture_catalog.h"
 #include <algorithm>
 #include <array>
 #include <limits>
@@ -31,7 +32,7 @@ struct BoneTracks {PoseTrack translation,rotation,scale;};
 struct Attachment {PoseTrack enabled;};
 struct Asset {
     std::uint32_t shared=0,data=0,checked=0,used=0;std::size_t bytes=0,allowance=AssetBytes;bool poseReady=false;
-    std::array<unsigned char,304> header{};
+    std::array<unsigned char,304> header{};std::uint64_t fixtureSources=0;std::uint32_t fixtureTag=0;
     std::vector<std::array<unsigned char,88>> bones;
     std::vector<std::array<unsigned char,64>> sequences;
     std::vector<std::uint32_t> loops;std::vector<Authored> lights;std::vector<BoneTracks> poses;
@@ -100,7 +101,7 @@ class Reader {
     using Asset=SceneDetail::Asset;using Matrix=SceneDetail::Matrix;using ModelData=std::array<unsigned char,SceneDetail::ModelBytes>;
     struct Timing {SceneDetail::Clock first,second;float blend=0;bool valid=false;};
     struct Model {std::uint32_t shared=0,data=0,origin=0,visited=0;std::uint64_t firstId=0;float distance=0;};
-    std::map<std::uint32_t,Model> models_;std::list<Asset> assets_;
+    std::map<std::uint32_t,Model> models_;std::list<Asset> assets_;std::shared_ptr<const NorthlightNativeFixtures::Catalog> fixtures_;
     std::uint32_t scene_=0,cursor_=0,frame_=0,lastHead_=0,lastScan_=0;std::uint64_t serial_=0;bool checked_=false,proven_=false;
     unsigned loads_=0;std::size_t readBytes_=0;unsigned readCalls_=0;
     std::array<std::array<unsigned char,SceneDetail::BoneBytes>,SceneDetail::MaxBones> boneScratch_;
@@ -189,13 +190,13 @@ class Reader {
         if(found!=assets_.end())assets_.erase(found);
         if(loads_++>=4){++budgetLimited;return nullptr;}
         if(std::memcmp(header.data(),"MD20",4)||at<std::uint32_t>(header,4)!=264){++malformed;return nullptr;}
-        Asset a;a.header=header;a.shared=shared;a.data=data;a.checked=a.used=frame_;a.bytes=sizeof a;
+        Asset a;a.header=header;a.shared=shared;a.data=data;a.checked=a.used=frame_;a.bytes=sizeof a;std::vector<std::array<unsigned char,156>> records;
         const auto readFailures=failures,limited=budgetLimited;
         const unsigned lights=at<std::uint32_t>(header,264),bones=at<std::uint32_t>(header,44),sequences=at<std::uint32_t>(header,28),loops=at<std::uint32_t>(header,20);
         if(lights>MaxLights||bones>MaxBones||sequences>MaxSequences||loops>MaxSequences){++unsupported;return nullptr;}
         if(lights||needPose){a.poseReady=true;a.lights.reserve(lights);a.bytes+=lights*sizeof(Authored)+bones*sizeof(SceneDetail::BoneTracks);a.bones.resize(bones);a.poses.resize(bones);a.sequences.resize(sequences);a.loops.resize(loops);
             if((bones&&!read(at<std::uint32_t>(header,48),a.bones.data(),bones*88))||(sequences&&!read(at<std::uint32_t>(header,32),a.sequences.data(),sequences*64))||(loops&&!read(at<std::uint32_t>(header,24),a.loops.data(),loops*4)))return nullptr;
-            a.bytes+=bones*88+sequences*64+loops*4;std::vector<std::array<unsigned char,156>> records(lights);
+            a.bytes+=bones*88+sequences*64+loops*4;records.resize(lights);
             if(lights&&!read(at<std::uint32_t>(header,268),records.data(),lights*156))return nullptr;
             for(unsigned i=0;i<lights;++i){const auto& r=records[i];Authored l;l.index=i;l.bone=at<std::uint16_t>(r,2);
                 for(unsigned k=0;k<3;++k)l.point[k]=at<float>(r,4+4*k);
@@ -208,6 +209,9 @@ class Reader {
             if(count&&!read(at<std::uint32_t>(header,244),a.attachmentData.data(),count*40))return nullptr;}
         if(metadataLimit){++metadataLimited;a.lights.clear();} // Unsupported metadata size must not block later models.
         if(failures!=readFailures||budgetLimited!=limited)return nullptr; // A temporary read/budget failure is retried, never cached as unsupported.
+        // Optional fixture proof follows all required native metadata. A stale
+        // name/vertex pointer must not remove ordinary light or force retries.
+        if(lights&&!metadataLimit){a.fixtureTag=std::uint32_t(NorthlightNativeFixtures::match(read,fixtures_.get(),header,a.bones,records,AssetBytes-bytesRead));if(a.fixtureTag)a.fixtureSources=fixtures_->records[a.fixtureTag-1].sources;}
         std::size_t bytes=a.bytes;for(const auto& cached:assets_)bytes+=cached.bytes;
         while(!assets_.empty()&&(assets_.size()>=AssetLimit||bytes>CacheBytes)){auto oldest=std::min_element(assets_.begin(),assets_.end(),[](const auto& x,const auto& y){return x.used<y.used;});if(oldest->used==frame_){++budgetLimited;return nullptr;}bytes-=oldest->bytes;assets_.erase(oldest);}
         if(a.bytes>CacheBytes){++budgetLimited;return nullptr;}assets_.push_back(std::move(a));return &assets_.back();
@@ -243,6 +247,7 @@ public:
     unsigned assetCount()const{return unsigned(assets_.size());}
     unsigned readCalls()const{return readCalls_;}
     std::size_t readBytes()const{return readBytes_;}
+    void fixtures(std::shared_ptr<const NorthlightNativeFixtures::Catalog> catalog){if(catalog!=fixtures_){fixtures_=std::move(catalog);assets_.clear();}}
     void reset(){models_.clear();assets_.clear();scene_=cursor_=lastHead_=lastScan_=0;}
     template<class Read> static bool verify(Read read){
         // Local 12340 PE: world scene, intrusive list, loaded data and light layout.
@@ -279,7 +284,7 @@ public:
             if(!world(read,m,*a,header[3],matrix,alpha,visible)){++unsupported;++it;continue;}
             Runtime<decltype(read)> runtime(*this,read,*a,m,matrix,header[3]);it->second.distance=std::numeric_limits<float>::infinity();
             for(auto& l:a->lights){Point p;p.id=0xfea0000000000000ull|(model.firstId+l.index);
-                if(!at<std::uint32_t>(m,0x48)){const auto anchor=transform(l.point,matrix);bool finite=true;for(unsigned k=0;k<3;++k)finite=finite&&std::isfinite(anchor[k])&&std::fabs(anchor[k])<100000;if(finite){p.flags=1;std::copy(anchor.begin(),anchor.begin()+3,p.anchor);}}
+                if(!at<std::uint32_t>(m,0x48)){const auto anchor=transform(l.point,matrix);bool finite=true;for(unsigned k=0;k<3;++k)finite=finite&&std::isfinite(anchor[k])&&std::fabs(anchor[k])<100000;if(finite){p.flags=RootAnchor|((a->fixtureSources>>l.index)&1?WorldFixture:0);if(p.flags&WorldFixture)p.reserved=a->fixtureTag;std::copy(anchor.begin(),anchor.begin()+3,p.anchor);}}
                 if(!runtime.position(l,p.position)){++unsupported;continue;}const float d=distance(p.position,camera);it->second.distance=std::min(it->second.distance,d);
                 const float reach=NorthlightLocalLightSelection::VisibilityEnd+12.f;if(!std::isfinite(d)||d>reach*reach||!visible||alpha==0)continue;
                 const auto timing=runtime.timing(l.bone);if(!timing.valid){++malformed;continue;}

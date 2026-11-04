@@ -23,13 +23,15 @@ from unittest.mock import patch
 spec = importlib.util.spec_from_file_location('northlight_install', fp.src('northlight_install.py'))
 fi = importlib.util.module_from_spec(spec); spec.loader.exec_module(fi)
 import instance_maps   # on the path since northlight_install added renderer/
+import install_world_cache as iwc
+import client_identity
 INSTALL = fi.INSTALL
 mig = fi.migrate()
 sha = lambda b: hashlib.sha256(b).hexdigest()
 PROXY = b'MZ Northlight renderer 0.3.162; PROXY module=%ls root=%ls'
 DXVK = b'MZ DXVK: \0\0\0v1.10.3-20230507-async (macOS)\0'
 CACHE_FILES = {'Azeroth/32_48.fg3': b'tile' * 50, 'models/0123.fgs': b'model' * 99, 'fog/Azeroth/32_48.frf': b'fog',
-               'lights/Azeroth.fgl': b'lights', 'celestial/sun.fct': b'sun'}
+               'lights/Azeroth.fgl': b'lights', 'lights/native-fixtures.bin': b'NLF1 fake catalog', 'celestial/sun.fct': b'sun'}
 INSTANCE_KEY = b'\x07instance'.ljust(32, b'.')   # the model key of every fake instance tile
 ART = b'MPQ\x1a fake art layer'
 BASE = ['common', 'common-2', 'expansion', 'lichking', 'patch', 'patch-2', 'patch-3']
@@ -42,8 +44,11 @@ def tree(root):
 
 def variant_manifest(files):
     rows = ''.join(f'{n}\0{sha(d)}\0{len(d)}\n' for n, d in sorted(files.items()))   # build_cache_variant.cache_digest
+    chain=[{'role':'base','name':'common.mpq','bytes':10,'table_sha256':'test tables'}]
     return {'format': fi.VARIANT_FORMAT, 'variant': 'stock', 'cache_digest': sha(rows.encode()),
-            'identity': {'chain': []}, 'files': {n: {'sha256': sha(d), 'bytes': len(d)} for n, d in files.items()}}
+            'identity': {'format':client_identity.FORMAT,'locale':'enUS','chain':chain,'sha256':client_identity.digest(chain)},
+            'build': {'cache_versions': dict(iwc.CACHE_VERSIONS)},
+            'files': {n: {'sha256': sha(d), 'bytes': len(d)} for n, d in files.items()}}
 
 
 class Base(unittest.TestCase):
@@ -450,6 +455,45 @@ class LinuxOnlyChecks(Base):
 
 
 class Install(Base):
+    def test_versioned_variant_survives_a_package_without_prebuilt_variants(self):
+        self.installer().install(self.client)
+        cache=self.client/fi.CACHE;before=tree(cache)
+        inst=self.installer();inst.pkg.variants.clear();del inst.identify_chain
+        with patch.object(client_identity,'chain_identity',return_value=self.manifest['identity']) as identify:
+            plan=inst.plan_install(self.client,None,None,None,True,True)
+        self.assertEqual(plan['action'],'keep');self.assertEqual(plan['manifest'],self.manifest)
+        identify.assert_called_once_with(self.client,'all','enUS','z')
+        self.assertEqual(tree(cache),before)
+
+    def test_installed_variant_reuses_identity_read_when_package_variant_changed(self):
+        self.installer().install(self.client)
+        inst=self.installer();del inst.identify_chain
+        newer=json.loads(json.dumps(self.manifest));newer['identity']['chain'][0]['table_sha256']='another client'
+        inst.pkg.variants={'stock':newer}
+        with patch.object(client_identity,'chain_identity',return_value=self.manifest['identity']) as identify:
+            plan=inst.plan_install(self.client,None,None,None,True,True)
+        self.assertEqual(plan['action'],'keep');self.assertEqual(identify.call_count,1)
+
+    def test_incompatible_incomplete_or_changed_client_variant_is_rebuilt(self):
+        self.installer().install(self.client);cache=self.client/fi.CACHE;manifest_path=cache/fi.VARIANT_FILE
+        for versions in (None,{},dict(iwc.CACHE_VERSIONS,lights=True),dict(iwc.CACHE_VERSIONS,lights=2)):
+            current=json.loads(json.dumps(self.manifest));current['build']['cache_versions']=versions
+            manifest_path.write_text(json.dumps(current));inst=self.installer();inst.pkg.variants.clear();del inst.identify_chain
+            self.assertEqual(inst.plan_install(self.client,None,None,None,True,True)['action'],'build')
+        current=json.loads(json.dumps(self.manifest));current.pop('build')
+        manifest_path.write_text(json.dumps(current));inst=self.installer();inst.pkg.variants.clear();del inst.identify_chain
+        self.assertEqual(inst.plan_install(self.client,None,None,None,True,True)['action'],'build')
+        manifest_path.write_text(json.dumps(self.manifest))
+        changed=json.loads(json.dumps(self.manifest['identity']));changed['chain'][0]['table_sha256']='changed client archive'
+        inst=self.installer();inst.pkg.variants.clear();del inst.identify_chain
+        with patch.object(client_identity,'chain_identity',return_value=changed):
+            self.assertEqual(inst.plan_install(self.client,None,None,None,True,True)['action'],'build')
+        for member in ('lights/Azeroth.fgl','lights/native-fixtures.bin'):
+            path=cache/member;original=path.read_bytes();path.unlink();inst=self.installer();inst.pkg.variants.clear();del inst.identify_chain
+            with patch.object(client_identity,'chain_identity',return_value=self.manifest['identity']):
+                self.assertEqual(inst.plan_install(self.client,None,None,None,True,True)['action'],'build')
+            path.write_bytes(original)
+
     def test_stock_match_extracts_and_rerun_is_noop(self):
         report = self.installer().install(self.client)
         self.assertTrue(report['world_cache'].startswith('extracted'))

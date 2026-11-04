@@ -1,6 +1,6 @@
 {
   "bump_include_sha256": "b5523a51dc6715f11ac2e7ba9ecb46a4973ba6aa23de159e308a8fd24d4e9ebc",
-  "source_sha256": "d7e67260a697f76a034b5eefd6b1b10452a87cc3adc56ed5e7e02ac72b4780f4",
+  "source_sha256": "a79873b9d6bb7b3adead35b0c5f884ef15830e9afe60ae96ef1ff673df1f15b5",
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
   "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
   "game_launched": false,
@@ -46,9 +46,9 @@
     },
     "LocalLighting": {
       "target": "ps_3_0",
-      "bytes": 7572,
-      "sha256": "fe960efe36a7fdc2ae228f269201bb152ed15bc2cfeb7e259fda068fe24a5bf3",
-      "static_instruction_slots": 482,
+      "bytes": 7336,
+      "sha256": "917605958df655eaf5c4f4d73ccc4cd6e6c1a3c7753d54dee262d622b9ed9764",
+      "static_instruction_slots": 469,
       "temporary_registers": 13,
       "samplers": [
         0,
@@ -59,19 +59,19 @@
         5
       ],
       "instructions": {
-        "rcp": 21,
-        "add": 118,
+        "rcp": 20,
+        "add": 115,
         "frc": 6,
-        "mul": 102,
+        "mul": 95,
         "max": 16,
         "min": 6,
         "mov": 38,
         "texldl": 9,
         "if": 12,
         "else": 12,
-        "cmp": 56,
+        "cmp": 55,
         "endif": 12,
-        "dp3": 17,
+        "dp3": 16,
         "rsq": 5,
         "dp2add": 2,
         "nrm": 1
@@ -113,9 +113,9 @@
     },
     "LocalLightingSoft": {
       "target": "ps_3_0",
-      "bytes": 4436,
-      "sha256": "894da9c9f17e065f1dd8f2a21a0415ff4957d194fe689c9bf33b7e6496bbc38b",
-      "static_instruction_slots": 263,
+      "bytes": 4176,
+      "sha256": "421a538ea30ecf4cb42d1af34d648013f7163362a3a825353c18ef43644585c5",
+      "static_instruction_slots": 250,
       "temporary_registers": 9,
       "samplers": [
         0,
@@ -126,19 +126,19 @@
         5
       ],
       "instructions": {
-        "rcp": 14,
-        "add": 57,
+        "rcp": 13,
+        "add": 54,
         "frc": 2,
-        "mul": 65,
+        "mul": 58,
         "max": 4,
         "min": 2,
         "mov": 15,
         "texldl": 6,
         "if": 10,
         "else": 10,
-        "cmp": 23,
+        "cmp": 22,
         "endif": 10,
-        "dp3": 10,
+        "dp3": 9,
         "rsq": 5,
         "dp2add": 2
       },

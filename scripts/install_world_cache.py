@@ -12,18 +12,19 @@ build_celestial_disc_assets, then tests/validate_world_cache.py. Every builder r
 `python -I -X utf8` and reads the archive chain without our own art layer (--without, default z),
 so installing the art layer never makes the cache stale.
 
-Per-step digests decide what is rebuilt. scene:<map> covers the archive chain (lower-case names,
-sizes and mtimes, in the game's order), the locale, the tiles and the scene builder's sources;
-lights and fog cover the scene digests and their own sources; celestial covers the chain and its
-sources. A changed scene digest rebuilds everything in <output>.staging, and only a complete,
+Per-step digests cover explicit CACHE_VERSIONS, the archive chain (lower-case names,
+sizes and mtimes, in the game's order), locale and selected maps/tiles. DLL releases
+and source hashes do not invalidate a versioned cache. Bump the affected generator
+revision only when its generated data changes; hashes remain build provenance.
+Lights and fog also depend on the scene revision. A changed scene digest rebuilds everything in <output>.staging, and only a complete,
 validated build replaces <output>, by renames (the previous cache is deleted afterwards unless
 --keep-previous). Otherwise only the stale lights/, fog/ or celestial/ are rebuilt in the staging
 folder and swapped in folder by folder. <output>/install-manifest.json is written last. A manifest
 from before the per-step digests is migrated: its recorded chain and sources give the digests it
 was built with (our art letter in its chain is ignored). A rerun with the same digests does
-nothing (--force rebuilds). A cache built with a builder source listed in SOURCE_EQUIVALENTS counts
-as built with today's when the change made no difference there (for 0.3.183's, when its reports
-show no oversized MOGP: clamp_free).
+nothing (--force rebuilds). Unversioned caches rebuild once into the versioned scheme.
+Legacy source-equivalence rules only interpret historical manifests; they cannot
+upgrade an unversioned cache to the current revision.
 
 What the builders tolerated (a WMO group's oversized MOGP clamped, a WMO fog could not read) goes to
 the manifest's 'tolerated' and one 'tolerated' progress line; more than 5% unreadable WMOs fails.
@@ -47,7 +48,7 @@ that layer, on top of the existing continent cache in --output. Each selected gr
 into <output>.instmp (resumable), its lights go to lights/<map>.fgl (manifest lights/instances-manifest.json),
 the maps are validated, and then the map folders, lights and new models move into <output> and
 <output>/instances-manifest.json is written last. A group whose digest (archive chain, locale, group maps,
-scene, lights and validation sources) is unchanged is kept; a deselected one is removed together with the
+scene, lights and validation revisions) is unchanged is kept; a deselected one is removed together with the
 models only its tiles used. Changing the selection never touches the continents. A continent rebuild
 (swap(), swap_steps('lights')) carries the instance content over (carry_instances()).
 Groups also record separate scene/light digests: light-only changes reuse the map tiles and models;
@@ -81,15 +82,20 @@ import instance_maps  # noqa: E402
 MAPS = ['Azeroth', 'Kalimdor', 'Expansion01', 'Northrend']
 POST = ['lights', 'fog', 'celestial']
 FORMAT = 'northlight-world-cache-install/1'
-# The sources each step's output depends on. lights and fog also depend on the scene digests
-# (they read the FGS3 tiles), which cover world_scene_builder.py, the module they import.
+# Compatibility revisions, independent of DLL releases and source hashes. Bump
+# the affected revision when generated data changes; source hashes below are
+# build provenance and support reading pre-versioned manifests only.
+CACHE_VERSIONS = {'scene': 1, 'lights': 1, 'fog': 1, 'celestial': 1, 'instances': 1, 'validation': 1}
+# Source provenance and legacy digest dependencies. New cache compatibility is
+# controlled by CACHE_VERSIONS, never by a DLL or source-file hash.
 STEP_SOURCES = {
-    'scene': ['world_scene_builder.py', 'm2_light_geometry.py', 'wmo_lamp_emission.py', 'world_emitter_coverage.py',
+    'scene': ['world_scene_builder.py', 'm2_light_geometry.py', 'light_attachments.py', 'wmo_lamp_emission.py', 'world_emitter_coverage.py',
+              'world_fixture_emission.py', 'build_spell_emitters.py', 'emitter_tracks.py',
               'world_lights_builder.py', 'world_emitter_index.py', 'outdoor_light_profiles.py',
               'outdoor-light-profiles.json', 'wotlk-emitter-profiles.json',
               'point_transmission_builder.py', 'm2_visibility.py', 'mpq.py', 'client_archives.py'],
     'lights': ['world_lights_builder.py', 'light_attachments.py', 'wmo_lamp_emission.py', 'world_light_placements.py', 'outdoor_light_profiles.py',
-               'world_emitter_coverage.py', 'world_emitter_index.py', 'build_equipment_emitters.py', 'emitter_pin_report.py',
+               'world_emitter_coverage.py', 'world_fixture_emission.py', 'native_fixture_catalog.py', 'world_emitter_index.py', 'build_equipment_emitters.py', 'emitter_pin_report.py',
                  'attached_emitter_sources.py', 'emitter_tracks.py', 'equipment_emitter_patch.py', 'point_transmission_builder.py', 'build_glue_emitters.py',
                'outdoor-light-profiles.json', 'wotlk-emitter-profiles.json'],
     'fog': ['regional_fog_builder.py', 'world_light_placements.py', 'forest_regions.inc'],
@@ -286,7 +292,8 @@ def gather_inputs(client, view, locale, maps, tiles, without):
     chain = client_archives.chain(client, view, locale, without)
     rows = client_archives.fingerprint(chain, client)['archives']
     return {'format': FORMAT, 'locale': locale, 'view': view, 'without': without, 'maps': maps, 'tiles': tiles,
-            'archives': [dict(r, archive=r['archive'].lower()) for r in rows], 'sources': source_hashes()}
+            'archives': [dict(r, archive=r['archive'].lower()) for r in rows], 'sources': source_hashes(),
+            'cache_versions': dict(CACHE_VERSIONS)}
 
 
 def _hash(*parts):
@@ -299,8 +306,7 @@ def step_digests(inputs, without=None):
     without = inputs.get('without', '') if without is None else without
     chain = [[a['archive'].lower(), a['bytes'], a['mtime_ns']] for a in inputs['archives']
              if not is_art_layer(a['archive'], without)]
-    sources = inputs['sources']
-    own = {step: {n: sources.get(n) for n in names} for step, names in STEP_SOURCES.items()}
+    own = builder_revisions(inputs)
     tiles = list(inputs['tiles']) if inputs['tiles'] else None
     scene = {m: _hash('scene', chain, inputs['locale'], m, tiles, own['scene']) for m in MAPS if m in inputs['maps']}
     digests = {f'scene:{m}': d for m, d in scene.items()}
@@ -310,8 +316,25 @@ def step_digests(inputs, without=None):
     return digests
 
 
+def builder_revisions(inputs):
+    """Read recorded revisions exactly; absent versions identify legacy caches."""
+    if 'cache_versions' in inputs:
+        versions = inputs['cache_versions']
+        if not isinstance(versions, dict) or any(type(versions.get(k)) is not int or versions[k] < 1 for k in CACHE_VERSIONS):
+            raise ValueError('Invalid cache generator versions')
+        return {step: {'cache_version': versions[step]} for step in CACHE_VERSIONS}
+    sources = inputs['sources']
+    return {step: {n: sources.get(n) for n in names} for step, names in STEP_SOURCES.items()}
+
+
 def recorded_digests(manifest, without):
     """The digests an installed cache was built with; migrated from a manifest that predates them."""
+    inputs = manifest.get('inputs')
+    if isinstance(inputs, dict) and 'cache_versions' in inputs:
+        try:
+            builder_revisions(inputs)
+        except (ValueError, TypeError):
+            return {}
     if isinstance(manifest.get('digests'), dict):
         old = manifest['digests']
         inputs = manifest.get('inputs')
@@ -323,7 +346,7 @@ def recorded_digests(manifest, without):
         return old
     try:
         return step_digests(manifest['inputs'], without)
-    except (KeyError, TypeError, AttributeError):
+    except (KeyError, TypeError, AttributeError, ValueError):
         return {}
 
 
@@ -342,7 +365,7 @@ def read_json(path):
 
 def present(output, step, maps):
     if step == 'lights':
-        return all((output / 'lights' / f'{m}.fgl').is_file() for m in maps)
+        return (output / 'lights/native-fixtures.bin').is_file() and all((output / 'lights' / f'{m}.fgl').is_file() for m in maps)
     if step == 'fog':
         return (output / 'fog' / 'manifest.json').is_file()
     return all((output / 'celestial' / f'{b}.fct').is_file() for b in ('sun', 'moon'))
@@ -372,7 +395,7 @@ def equivalent_digests(recorded, digests, output, without, built):
     changes nothing, their scenes still differ, or a source that needs it is not provably clamp free."""
     inputs = recorded.get('inputs')
     try:
-        if not isinstance(inputs, dict) or step_digests(inputs, without) != recorded_digests(recorded, without):
+        if not isinstance(inputs, dict) or 'cache_versions' in inputs or step_digests(inputs, without) != recorded_digests(recorded, without):
             return None
         sources, clamp = dict(inputs['sources']), False
         for n, equal in SOURCE_EQUIVALENTS.items():
@@ -382,7 +405,7 @@ def equivalent_digests(recorded, digests, output, without, built):
         if sources == inputs['sources']:
             return None
         new = step_digests(dict(inputs, sources=sources), without)
-    except (KeyError, TypeError, AttributeError):
+    except (KeyError, TypeError, AttributeError, ValueError):
         return None
     if any(new.get(k) != v for k, v in digests.items() if k.startswith('scene:')) or (clamp and not clamp_free(output, built)):
         return None
@@ -575,6 +598,8 @@ def post_problems(staging, steps, built):
     problems = []
     if 'lights' in steps:
         problems += [f'missing lights/{m}.fgl' for m in built if not (staging / 'lights' / f'{m}.fgl').is_file()]
+        if not (staging / 'lights/native-fixtures.bin').is_file():
+            problems.append('missing lights/native-fixtures.bin')
     if 'celestial' in steps:
         problems += [f'missing celestial/{b}.fct' for b in ('sun', 'moon') if not (staging / 'celestial' / f'{b}.fct').is_file()]
     if 'fog' in steps:
@@ -714,12 +739,12 @@ def post_specs(steps, cache, staging, built, common):
 # ---- instance layer: dungeon and raid maps on top of the continent cache ----
 
 def instance_digests(inputs, keys=None):
-    """{group key: digest}: the archive chain (our art letters left out), the locale, the group and its maps, and the
-    sources of the scene and lights builders, the validator and instance_maps. Independent of the continent digests."""
+    """Group identity, client inputs and generator revisions, independent of continent digests."""
     chain = [[a['archive'].lower(), a['bytes'], a['mtime_ns']] for a in inputs['archives']
              if not is_art_layer(a['archive'], inputs.get('without', ''))]
     names = sorted({*STEP_SOURCES['scene'], *STEP_SOURCES['lights'], 'validate_world_cache.py', 'instance_maps.py'})
-    own = {n: inputs['sources'].get(n) for n in names}
+    revisions = builder_revisions(inputs)
+    own = {step: revisions[step] for step in ('scene', 'lights', 'instances', 'validation')} if 'cache_versions' in inputs else {n: inputs['sources'].get(n) for n in names}
     return {k: _hash('instances', chain, inputs['locale'], k, instance_maps.maps_for([k]), own)
             for k in (instance_maps.KEYS if keys is None else keys)}
 
@@ -729,11 +754,12 @@ def instance_step_digests(inputs):
     chain = [[a['archive'].lower(), a['bytes'], a['mtime_ns']] for a in inputs['archives']
              if not is_art_layer(a['archive'], inputs.get('without', ''))]
     result = {}
+    revisions = builder_revisions(inputs)
     for key in instance_maps.KEYS:
         scene = _hash('instance-scene', chain, inputs['locale'], instance_maps.maps_for([key]),
-                      {n: inputs['sources'].get(n) for n in STEP_SOURCES['scene']})
+                      revisions['scene'])
         result[key] = {'scene': scene, 'lights': _hash('instance-lights', scene,
-                       {n: inputs['sources'].get(n) for n in STEP_SOURCES['lights']})}
+                       revisions['lights'])}
     return result
 
 
@@ -809,7 +835,7 @@ def present_instance_maps(output, maps):
 
 def group_present(output, record):
     maps = record.get('maps_built') or []
-    return bool(maps) and all(any((output / m).glob('*.fg3')) and
+    return bool(maps) and (output / 'lights/native-fixtures.bin').is_file() and all(any((output / m).glob('*.fg3')) and
                              (output / 'lights' / f'{m}.fgl').is_file() for m in maps)
 
 
@@ -1012,6 +1038,9 @@ def apply_instances(staging, output):
             retry(os.replace, staging / 'lights' / f'{m}.fgl', lights / f'{m}.fgl')
         if (staging / 'lights' / f'{m}.fga').is_file():
             retry(os.replace, staging / 'lights' / f'{m}.fga', lights / f'{m}.fga')
+    catalog = staging / 'lights/native-fixtures.bin'
+    if catalog.is_file():
+        retry(os.replace, catalog, lights / catalog.name)
     affected_lights = [*ready['drop_maps'], *ready.get('lights_maps', ready['built_maps'])]
     merge_point_transmission(staging/'lights',lights,affected_lights,replace=True)
     point_root=lights/'point-transmission'
@@ -1153,6 +1182,8 @@ def run_instances(args, client, locale, output, inputs, started):
                               staging / 'logs' / 'instances-validate.log', None, POST_MEMORY_GB * (1 << 30))], 1)
         problems = [f'{s.name} exit {s.proc.returncode}' for s in ran if s.proc.returncode]
         problems += [f'missing lights/{m}.fgl' for m in built_maps if not (staging / 'lights' / f'{m}.fgl').is_file()]
+        if light_maps and not (staging / 'lights/native-fixtures.bin').is_file():
+            problems.append('missing lights/native-fixtures.bin')
         if problems:
             return final('failed', 1, **base, problems=problems, staging=str(staging), logs=instance_failed_logs(ran, []))
         for k in build:

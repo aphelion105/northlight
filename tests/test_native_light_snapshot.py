@@ -23,4 +23,5 @@ with tempfile.TemporaryDirectory(prefix='native-light-snapshot-') as tmp:
                         str(fp.TESTS / 'native_light_snapshot.cpp'), '-o', str(exe)], env=fp.zig_env(), check=True)
         subprocess.run([str(exe), str(archive)], check=True)
         assert prepare.inspect_snapshot(archive)['draw_ordinal'] == 123
+        assert prepare.inspect_snapshot(Path(str(archive)+'.fixture'))['draw_ordinal'] == 123
 print('PASS: scene light publication and snapshot import')

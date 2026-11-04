@@ -129,14 +129,18 @@ def inspect_snapshot(path):
         offset += 80
         for _ in range(count):
             identity, *values, reserved = struct.unpack_from('<Q9fI', data, offset)
-            if (not identity or reserved or not all(math.isfinite(v) for v in values)
+            if (not identity or not all(math.isfinite(v) for v in values)
                     or any(abs(v) >= 100000 for v in values[:3])
                     or any(not 0 <= v <= 10000 for v in values[3:])):
                 raise ValueError('Invalid native light snapshot value')
+            flags = 0
             if version == 3:
                 *anchor, flags = struct.unpack_from('<3fI', data, offset + 48)
-                if flags & ~1 or any(not math.isfinite(v) or abs(v) >= 100000 for v in anchor):
+                if flags & ~3 or any(not math.isfinite(v) or abs(v) >= 100000 for v in anchor):
                     raise ValueError('Invalid native light source anchor')
+            if ((flags & 2 and (not flags & 1 or identity >> 52 != 0xfea or not 1 <= reserved <= 4096))
+                    or (not flags & 2 and reserved)):
+                raise ValueError('Invalid native fixture proof tag')
             offset += light_bytes
     return {'sha256': hashlib.sha256(data).hexdigest(), 'bytes': size,
             'keys': keys, 'copies': copies, 'payload_bytes': payload,

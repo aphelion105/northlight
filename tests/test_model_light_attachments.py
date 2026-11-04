@@ -79,7 +79,7 @@ for view,options in (('stock',{'archives':'stock'}),('active',{}),('without-zy',
         assets.close()
 # Reject malformed files through the production reader, without accepting a prefix.
 for label,data in [('truncated',path.read_bytes()[:-1]),('magic',b'BAD!'+path.read_bytes()[4:]),
-                   ('version',path.read_bytes()[:4]+struct.pack('<I',2)+path.read_bytes()[8:])]:
+                   ('version',path.read_bytes()[:4]+struct.pack('<I',3)+path.read_bytes()[8:])]:
     bad=out/(label+'.fga');bad.write_bytes(data)
     result=subprocess.run([str(exe),str(bad),'invalid'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
                           env={**os.environ,'LLVM_DISABLE_CRASH_REPORT':'1'},timeout=30)

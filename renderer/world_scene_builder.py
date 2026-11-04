@@ -389,10 +389,14 @@ class Builder:
             # source. The tag changes ownership, not caster geometry. Resolve
             # native and renderer-owned sources exactly as the FGL builder does.
             from world_lights_builder import extract_m2,m2_sources,static_bone_offset,Unsupported
+            from light_attachments import native_sources
+            from world_fixture_emission import native_fixture_offsets
             import world_emitter_index
             try:
                 if not hasattr(self,'lamp_emitters'):self.lamp_emitters=world_emitter_index.Index(self.assets,lazy=True)
-                lights=m2_sources(path,b,extract_m2(b,collections.Counter()),self.lamp_emitters)
+                lights=m2_sources(path,b,extract_m2(b,collections.Counter())+native_sources(b),self.lamp_emitters)
+                offsets=native_fixture_offsets(self.assets,path,b,lights)
+                lights=[(offsets[s[4]]['position'],*s[1:]) if s[4] in offsets else s for s in lights]
             except (ValueError,FileNotFoundError,IndexError,KeyError,struct.error):lights=[]
             candidates=collections.defaultdict(list)
             for bi,batch in enumerate(batches):
@@ -440,7 +444,7 @@ class Builder:
                 if max(t)>=len(vertices):raise ValueError('M2 vertex range')
                 triangles.append((*t,mat))
         if lights:
-            from m2_light_geometry import source_components
+            from m2_light_geometry import source_components,paired_source_layers
             static={}
             def static_vertex(i):
                 for weight,bone in zip(data[i][3:7],data[i][7:11]):
@@ -463,6 +467,7 @@ class Builder:
                           for dx,wx in ((0,1-fx),(1,fx)) for dy,wy in ((0,1-fy),(1,fy)))
                 return alpha>=255*ALPHA_KEY_CUTOFF
             owned=source_components(vertices,triangles,materials,lights,static_vertex,alpha_at)
+            owned.update(paired_source_layers(vertices,triangles,materials,lights,static_vertex,owned))
             tagged={}
             for i,source in owned.items():
                 if 0<=source<4096:tag=0x800000+source

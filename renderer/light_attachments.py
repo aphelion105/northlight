@@ -9,7 +9,8 @@ import struct
 from world_scene_builder import array, unpack
 from world_lights_builder import constant_track, static_bone_offset, static_bone_point, Unsupported, valid_light
 
-RECORD = struct.Struct('<QII27f4x')
+RECORD = struct.Struct('<QII27fI')
+REQUIRES_NATIVE, NATIVE_SOURCE = 64, 1
 
 
 def physical_bone(blob, bone, point):
@@ -36,32 +37,72 @@ def physical_bone(blob, bone, point):
 
 
 def native_sources(blob):
-    """Constant native light properties whose position alone is animated."""
+    """World-placement sources whose current native clock must remain authoritative."""
+    from build_spell_emitters import lifecycle_track
     result = []
     count, offset = unpack('<II', blob, 264)
+    bones, bone_offset = unpack('<II', blob, 44)
+    if count > 64:
+        return result
     for index in range(count):
         off = offset + index*156
         kind, bone, *point = unpack('<Hh3f', blob, off)
-        if kind != 1 or bone < 0:
+        if kind != 1 or not 0 <= bone < bones:
+            continue
+        seen, parent = set(), bone
+        while parent >= 0 and parent < bones and parent not in seen:
+            seen.add(parent);parent = unpack('<h', blob, bone_offset+parent*88+8)[0]
+        if parent >= 0:
             continue
         try:
-            static_bone_offset(blob, bone)
-            continue
+            translation = static_bone_offset(blob, bone)
         except Unsupported:
-            pass
+            translation = None
         try:
             rgb = constant_track(blob, off+56, '<3f')
-            power = constant_track(blob, off+76, '<f')[0]
             start = constant_track(blob, off+96, '<f')[0]
             end = constant_track(blob, off+116, '<f')[0]
-            if constant_track(blob, off+136, '<B', (1,))[0] != 1:
-                continue
+            flags = 2
+            try:
+                power = constant_track(blob, off+76, '<f')[0]
+                enabled = constant_track(blob, off+136, '<B', (1,))[0]
+                if enabled != 1 or translation is not None:
+                    continue
+            except Unsupported:
+                intensity = lifecycle_track(blob, off+76, '<f', 1.)
+                enabled = lifecycle_track(blob, off+136, '<B', 1)
+                powers = [v for curve in intensity['curves'] for v in curve['values']]
+                states = [v for curve in enabled['curves'] for v in curve['values']]
+                if not powers or not 0 < max(powers) <= 10000 or min(powers) < 0 or not max(states) or any(v not in (0,1) for v in states):
+                    continue
+                # This is an ownership/hue witness, never an exported steady
+                # light. Only the native scene supplies its current intensity.
+                power, flags = 1., 2 | REQUIRES_NATIVE
+                if translation is not None:
+                    point = tuple(point[k]+translation[k] for k in range(3))
             color = tuple(c*power for c in rgb)
             if valid_light(point, color, start, end):
-                result.append((tuple(point), color, start, end, index, 2, 2))
-        except Unsupported:
+                result.append((tuple(point), color, start, end, index, 2, flags))
+        except (Unsupported, ValueError):
             continue
     return result
+
+
+def native_proofs(blob, sources, offsets=None):
+    """Native record index and RAW anchor, independent of bone translation."""
+    count, at = unpack('<II', blob, 264)
+    return [(source[4], tuple(unpack('<3f',blob,at+source[4]*156+4)),
+             tuple((offsets or {}).get(source[4],{}).get('offset',(0.,0.,0.))))
+            for source in sources if source[5] == 2 and (source[6] & REQUIRES_NATIVE or source[4] in (offsets or {})) and source[4] < count]
+
+
+def placed_native(proofs, placement, lights):
+    matrix = placement[9:18] + placement[18:21]
+    ids = {source: light[8] for source, light in lights}
+    def transform(point, translated):
+        return tuple(sum(point[j]*matrix[j*3+k] for j in range(3))+(matrix[9+k] if translated else 0) for k in range(3))
+    return [(ids[index], index, 0, *([0.]*9), *transform(delta,False), *transform(anchor,True), *matrix, NATIVE_SOURCE)
+            for index,anchor,delta in proofs if index in ids]
 
 
 def templates(assets, path, blob, lights):
@@ -163,8 +204,9 @@ def placed(templates, placement, lights):
 
 
 def write(path, records):
+    records = [tuple(record)+(0,) if len(record)==30 else tuple(record) for record in records]
     records = sorted(set(records), key=lambda r: (r[3:12], r[0], r[1:3]))
     with path.open('wb') as output:
-        output.write(struct.pack('<4sIII', b'FGA1', 1, RECORD.size, len(records)))
+        output.write(struct.pack('<4sIII', b'FGA1', 2 if any(r[-1] for r in records) else 1, RECORD.size, len(records)))
         for record in records:
             output.write(RECORD.pack(*record))

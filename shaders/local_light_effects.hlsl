@@ -175,10 +175,9 @@ float4 localLightingValue(float2 uv,bool soft) {
     float atten=saturate((LocalColor.w-1/inv)*LocalPosition.w);
     float3 contribution=LocalColor.rgb*(atten*atten*facing*LocalGain.x*(1-LocalGain.y*sunlit));
     float energy=max(contribution.r,max(contribution.g,contribution.b));
-    float sunlight=LocalGain.w*sunlit*saturate(dot(n,LocalSun.xyz));
-    // Evaluate at the receiver, so a daytime interior/sun shadow works even
-    // while the camera or the lamp is outdoors. No time-of-day cutoff.
-    float relevance=smoothstep(.15,.5,energy/max(sunlight,.02))*smoothstep(.002,.01,energy);
+    // LocalDirect already applies the same daytime dimming. Occlusion removes
+    // that contribution even when sunlight is stronger than this lamp.
+    float relevance=smoothstep(.002,.01,energy);
     if(relevance<=0)return 0;
     float visibility;
     if(soft)visibility=tex2Dlod(LocalResolved,float4(screen,0,0)).r;

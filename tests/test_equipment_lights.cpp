@@ -104,5 +104,9 @@ int main(){
     NorthlightQuality::apply({{"EquipmentLights","0",1}},settings,"test",'f',problems,true);assert(!settings.equipmentLights);
     NorthlightQuality::apply({{"EquipmentLights","1",1}},settings,"test",'f',problems,true);assert(settings.equipmentLights==1&&problems.empty());
     assert(!NorthlightEquipmentLightProof::analyze(nullptr,0));
+    {Tracker proof;proof.count=1;auto& entry=proof.entries[0];entry.id=42;entry.nativeId=0xfea0000000000001ull;entry.fixtureTag=2;entry.flags=NorthlightLocalLights::CastShadow;
+        assert(proof.fixture(0xfec000000000002aull)==&entry);
+        assert(!proof.fixture(42)&&!proof.fixture(0xfea000000000002aull)&&!proof.fixture(0xfec000000000002bull));
+        entry.fixtureTag=0;assert(!proof.fixture(0xfec000000000002aull));entry.fixtureTag=2;entry.flags=0;assert(!proof.fixture(0xfec000000000002aull));}
     std::puts("equipment lights: world transform, actual hue, invalid input, bank revisit/order/unused-slot dedup, cached late-bank admission, bounded native fallback, nearest admission, static appears/disappears, movement, fade/TTL, clock wrap, shared selection limit, Quality default and override PASS");
 }

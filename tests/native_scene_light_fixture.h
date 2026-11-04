@@ -18,7 +18,7 @@ static void authoredTrack(Bytes& b,unsigned at,unsigned width,const std::vector<
         times.push_back({unsigned(stamps.size()),append(b,stamps.data(),unsigned(stamps.size()*4))});values.push_back({unsigned(stamps.size()),append(b,raw.data(),unsigned(raw.size()))});}
     put(b,at+4,unsigned(keys.size()));put(b,at+8,append(b,times.data(),unsigned(times.size()*8)));put(b,at+12,unsigned(keys.size()));put(b,at+16,append(b,values.data(),unsigned(values.size()*8)));
 }
-static Bytes modelAsset(){
+static inline Bytes modelAsset(){
     Bytes b(304+88+4*64+156);std::memcpy(b.data(),"MD20",4);put(b,4,264u);put(b,28,4u);put(b,32,392u);put(b,44,1u);put(b,48,304u);put(b,264,1u);put(b,268,648u);
     put(b,304+4,0x200u);put<std::int16_t>(b,304+8,-1);put(b,304+84,1.f);
     for(unsigned i=0;i<4;++i){put(b,392+64*i+4,2000u);put(b,392+64*i+12,0u);}
@@ -28,7 +28,7 @@ static Bytes modelAsset(){
     authoredTrack(b,648+76,4,{{.5f,1.f},{.5f,1.f},{.5f,1.f},{.5f,1.f}});
     authoredTrack(b,648+136,1,{{0},{1},{0,1},{1}});return b;
 }
-static void quaternionTrack(Bytes& b,unsigned at,const std::vector<std::vector<float>>& keys){
+static inline void quaternionTrack(Bytes& b,unsigned at,const std::vector<std::vector<float>>& keys){
     put<std::uint16_t>(b,at,1);put<std::int16_t>(b,at+2,-1);std::vector<std::array<unsigned,2>> times,values;
     for(const auto& row:keys){std::vector<unsigned> stamps;std::vector<std::uint16_t> packed;for(unsigned i=0;i<row.size()/4;++i){stamps.push_back(i*1000);for(unsigned k=0;k<4;++k)packed.push_back(static_cast<std::uint16_t>(std::lround((std::clamp(row[i*4+k],-1.f,1.f)+1)*32767.5f)));}
         times.push_back({unsigned(stamps.size()),append(b,stamps.data(),unsigned(stamps.size()*4))});values.push_back({unsigned(stamps.size()),append(b,packed.data(),unsigned(packed.size()*2))});}
@@ -44,7 +44,7 @@ static void relocate(Bytes& b,unsigned base){
     for(unsigned i=0;i<bones;++i)for(unsigned at:{16u,36u,56u})relocateTrack(b,boneAt+i*88+at,base);
     for(unsigned i=0;i<lights;++i)for(unsigned at:{16u,36u,56u,76u,96u,116u,136u})relocateTrack(b,lightAt+i*156+at,base);
     const unsigned attachments=get<unsigned>(b,240),attachmentAt=get<unsigned>(b,244);for(unsigned i=0;i<attachments;++i)relocateTrack(b,attachmentAt+i*40+20,base);
-    for(unsigned at:{20u,28u,44u,240u,248u,264u})if(get<unsigned>(b,at))put(b,at+4,get<unsigned>(b,at+4)+base);
+    for(unsigned at:{8u,20u,28u,44u,60u,240u,248u,264u})if(get<unsigned>(b,at))put(b,at+4,get<unsigned>(b,at+4)+base);
 }
 struct Memory {
     std::map<unsigned,Bytes> blocks;unsigned next=0x10000000;bool system=false;unsigned fail=0,calls=0,watchBegin=0,watchEnd=0,watchedReads=0;std::size_t bytes=0;

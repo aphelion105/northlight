@@ -35,6 +35,7 @@
 #include "local_light_selection.h"
 #include "equipment_lights.h"
 #include "native_light_bridge.h"
+#include "native_fixture_shadow.h"
 #include "particle_lights.h"
 #include "particle_uploads.h"
 #include "equipment_light_proof.h"
@@ -738,6 +739,7 @@ private:
     IDirect3DPixelShader9* localFogCombinePS=nullptr;IDirect3DTexture9* localFogAccum=nullptr;IDirect3DSurface9* localFogAccumSurface=nullptr;
     // 0.3.197: soft cap, incumbent bias and fades for the local lights (task 13). The clock is the selection's own: its gap and reset policy mirror useHistory.
     NorthlightEquipmentLights::Tracker equipmentLights;std::unordered_map<IDirect3DVertexShader9*,unsigned> equipmentShaders;
+    std::shared_ptr<const NorthlightNativeFixtures::Catalog> nativeFixtures;
     NorthlightLightAttachments::Tracker lightAttachments;
     std::vector<NorthlightLocalLights::Light> attachedLocalLights;
     NorthlightParticleLights::Frame particleLights;std::string particleMap;
@@ -1930,7 +1932,7 @@ private:
                 built->plan=plan;built->prepared=std::move(prepared);built->bvh=replacement;built->map=r.map;built->center=center;
                 float eye[]={center.x,center.y,center.z};
                 built->lightAttachments=lightAttachmentCache.load(r.map);
-                if(lightCache.loadLights(r.map,eye,520,built->rawLights))for(auto& light:built->rawLights)
+                if(lightCache.loadLights(r.map,eye,520,built->rawLights))for(auto& light:built->rawLights)if(!(light.flags&NorthlightLocalLights::RequiresNative))
                     built->lights.push_back({vec(light.position),vec(light.diffuse)*3.14159265f,light.attenuationStart,light.attenuationEnd});
                 if(NorthlightDiagnostics::enabled())logf("GI local lights map=\"%s\" count=%zu (indirect only; authored direct light retained)",r.map.c_str(),built->lights.size());
                 built->fog=fogRegion&&fogRegion->map==r.map?fogRegion->field:nullptr;
@@ -2887,6 +2889,7 @@ public:
         if(!gpuScene->attach(replaySnapshots))throw std::runtime_error("Cannot join world capture sources");
         if(!gpuScene->decodedSources)gpuScene->decodedSources=std::make_shared<NorthlightGI::SceneSourceCache>(8u*1024u*1024u);sharedSceneSources=gpuScene->decodedSources;terrainBoundsCache.setIdentityProvider(&bufferIdentity);terrainBoundsCache.setVersionProvider(&NorthlightTrackedBuffers::version);terrainBoundsCache.setMetadataProvider(&NorthlightTrackedBuffers::captureMetadata);terrainBoundsCache.setDeclarationCache(&declarationCache);replaySnapshots.setDeclarationProvider(&declarationCache,[](void* c,IDirect3DVertexDeclaration9* decl,const D3DVERTEXELEMENT9*& e,UINT& n){return static_cast<NorthlightVertexDeclarations::Cache*>(c)->get(decl,e,n);});replaySnapshots.setLayoutProvider(&declarationCache,[](void* c,IDirect3DVertexDeclaration9* decl,UINT* extent){return static_cast<NorthlightVertexDeclarations::Cache*>(c)->captureLayout(decl,extent);});replaySnapshots.setIdentityProvider(&bufferIdentity);replaySnapshots.setVersionProvider(&NorthlightTrackedBuffers::version);replaySnapshots.setMetadataProvider(&NorthlightTrackedBuffers::captureMetadata);QueryPerformanceFrequency(&captureFrequency);char path[MAX_PATH*3];WideCharToMultiByte(CP_UTF8,0,rootPath,-1,path,sizeof path,nullptr,nullptr);root=path;std::string paletteError;
         loadQuality();pipelineActive=NorthlightQuality::pipelineWork(quality);request.enabled=pipelineActive;setEffects(requestedEffects);
+        nativeFixtures=NorthlightNativeLights::loadFixtures(root+"world-cache/lights/native-fixtures.bin");
         staticPrebuild.steps=float(quality.shadowDirectionSteps); /* prebuild targets the same direction lattice */
         minSkinnedShadowTriangles=quality.minSkinnedTriangles;captureBudgetMiB=quality.captureBudgetMiB;actorShadowBudgetMiB=quality.actorShadowBudgetMiB;shadowFateDiagnostics=NorthlightQuality::shadowFate(quality);
         replaySnapshots.configureBudget(size_t(captureBudgetMiB)*1048576,size_t(captureBudgetMiB)*524288);setNearReserve();
@@ -4415,9 +4418,10 @@ public:
         if(active&&equipmentLightsOn())lightAttachments.observeScene(nativeSceneFrame,active->localLights);
         else lightAttachments.releaseScene();
         const auto* currentLights=active?&lightAttachments.apply(active->localLights,attachedLocalLights):nullptr;
+        lightAttachments.forgetInactive(localLightTracker);
         if(equipmentLightsOn()){
             if(active&&equipmentMap!=active->map){equipmentLights.reset();equipmentMap=active->map;}
-            if(currentLights)equipmentLights.observeScene(nativeSceneFrame,GetTickCount(),*currentLights,context.camera);
+            if(currentLights)equipmentLights.observeScene(nativeSceneFrame,GetTickCount(),*currentLights,context.camera,lightAttachments.claimedNative.data(),lightAttachments.claimedNativeCount);
             particleLights.projectSky(context.inverseView,context.camera);
             equipmentLights.publish(GetTickCount(),currentLights);
             if(equipmentLights.suppressedCount){

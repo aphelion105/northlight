@@ -88,6 +88,7 @@ def verify_installer(path):
         files = {n.split('/', 1)[1]: z.read(n) for n in names}
         modes = {n.split('/', 1)[1]: z.getinfo(n).external_attr >> 16 for n in names}
     info = json.loads(files['BUILD-INFO.json'])
+    check(problems, info.get('cache_versions') == bp.install_world_cache.CACHE_VERSIONS, 'cache generator versions differ from BUILD-INFO')
     plat = info['platform']
     check(problems, top == f'Northlight-{info["version"]}-{bp.PLATFORMS[plat]}', f'top folder {top}')
     launchers = bp.launchers(plat, info['version'])

@@ -205,9 +205,10 @@ def build(cache,output,maps,assets=None,manifest='manifest.json'):
     import world_emitter_index
     import point_transmission_builder
     import light_attachments
+    from world_fixture_emission import native_fixture_offsets
     catalog=outdoor_light_profiles.load()
     started=time.time();assets=assets or Assets();stats=collections.Counter();extracted={};provenance={};errors=[];reports=[]
-    placement_cache={};placement_provenance={};unsupported_assets={};attachment_templates={}
+    placement_cache={};placement_provenance={};unsupported_assets={};attachment_templates={};native_templates={}
     emitter_index=world_emitter_index.Index(assets)
     def read_placement_wmo(path):
         if path not in placement_cache:
@@ -259,6 +260,9 @@ def build(cache,output,maps,assets=None,manifest='manifest.json'):
                                 stats['wmo_glass_lamps']+=sum(bool(s[6]&wmo_lamp_emission.GLASS_EMITTER) for s in extracted[path])
                         if path.endswith('.m2'):
                             extracted[path]=m2_sources(path,blob,extracted[path],emitter_index)
+                            offsets=native_fixture_offsets(assets,path,blob,extracted[path])
+                            extracted[path]=[(offsets[s[4]]['position'],*s[1:]) if s[5]==2 and s[4] in offsets else s for s in extracted[path]]
+                            native_templates[path]=light_attachments.native_proofs(blob,extracted[path],offsets)
                         else:
                             extracted[path]=outdoor_light_profiles.fallback(catalog,path,blob,extracted[path])
                         if path.endswith('.m2'):
@@ -268,7 +272,7 @@ def build(cache,output,maps,assets=None,manifest='manifest.json'):
                             # A moving native source without a proven palette
                             # attachment must not become a bind-pose light.
                             supported={t[0] for t in attachment_templates[path]}
-                            unsupported={s[4] for s in moving_native}-supported
+                            unsupported={s[4] for s in moving_native if not s[6]&light_attachments.REQUIRES_NATIVE}-supported
                             stats['unsupported_m2_attachment']+=len(unsupported)
                             extracted[path]=[s for s in extracted[path] if s[5]!=2 or s[4] not in unsupported]
                         rejected={k:v for k,v in (stats-before).items() if k.startswith('unsupported_')}
@@ -282,6 +286,8 @@ def build(cache,output,maps,assets=None,manifest='manifest.json'):
                 try:
                     placed=instance_lights(extracted[path],r,path);records.extend(placed)
                     attachments.extend(light_attachments.placed(attachment_templates.get(path,[]),r,
+                        [(source[4],light) for source,light in zip(extracted[path],placed)]))
+                    attachments.extend(light_attachments.placed_native(native_templates.get(path,[]),r,
                         [(source[4],light) for source,light in zip(extracted[path],placed)]))
                     for light in placed:
                         owners[light[8]]=(kind,uid)
@@ -357,6 +363,8 @@ def build(cache,output,maps,assets=None,manifest='manifest.json'):
                     'M2 ambient light tracks excluded; only supported diffuse point emitters exported.',
                     'WMO and curated emitters retain authored ranges; native M2 diffuse uses the same bounded world-distance denominator fit as live CM2Light sources.']}
         (output/'world-emitters-v1.json').write_bytes(emitter_index.payload())
+        import native_fixture_catalog
+        result['native_fixtures']=native_fixture_catalog.build(assets,output)
         result['world_emitter_index']={'sha256':emitter_index.digest,'source':emitter_index.origin,'owner':'northlight-local-direct'}
         with tempfile.TemporaryDirectory(prefix='.point-transmission-',dir=output) as work:
             staged=Path(work)

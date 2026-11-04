@@ -126,7 +126,7 @@ int main(int argc,char** argv){
                 for(unsigned k=0;k<3;++k)contribution[k]=colors[i][k]*(attenuation*attenuation*(5/distance)*gain*(1-cut*visibility));
                 const float hx=positions[i][0]+.5f*dx,hy=positions[i][1]+.5f*dy;bool blocked=std::fabs(hx)<.5f&&std::fabs(hy)<1.5f;
                 if(std::fabs(std::fabs(hx)-.5f)<.15f&&std::fabs(hy)<1.7f)edge=true;if(std::fabs(std::fabs(hy)-1.5f)<.15f&&std::fabs(hx)<.7f)edge=true;
-                float energy=std::max({contribution[0],contribution[1],contribution[2]}),relevance=smooth(.15f,.5f,energy/std::max(sun*visibility,.02f))*smooth(.002f,.01f,energy);
+                float energy=std::max({contribution[0],contribution[1],contribution[2]}),relevance=smooth(.002f,.01f,energy);
                 if(shadows&&blocked&&relevance>.9f)++shadowPixels[i];
                 for(unsigned k=0;k<3;++k)expected[k]+=contribution[k]*(shadows&&blocked?1-relevance*shadowGain:1);
             }

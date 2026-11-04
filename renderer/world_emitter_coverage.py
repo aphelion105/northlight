@@ -168,16 +168,10 @@ def surface_sources(assets, path, blob, cache, refusals):
     return result
 
 
-def flame_height_centroid(blob, p, flags, bone, kind, life, colors, alpha, scales):
-    """Offline proxy for a fixed vertical plane emitter's luminous volume.
-
-    The nozzle can be inside a brazier. Use the brightness-weighted flame,
-    without moving native particles or exempting its bowl from shadowing.
-    Unsupported motion keeps the proven anchor instead of guessing an axis.
-    """
+def flame_motion_centroid(blob, p, flags, kind, life, colors, alpha, scales):
+    """Local +Z luminous centroid; callers must separately prove its bone basis."""
     try:
         if kind != 1 or flags & (0x4000 | 0x40000 | 0x80000 | 0x800000):return None
-        static_bone_offset(blob, bone) # Identity rotation/scale throughout the parent chain.
         if unpack('<f',blob,p+172)[0] or any(unpack('<2f',blob,p+308)) or any(unpack('<4f',blob,p+416)):return None
         if constant_track(blob,p+240,'<f',(0.,))[0]:return None
         speed=constant_track(blob,p+52,'<f',(0.,))[0]
@@ -200,6 +194,14 @@ def flame_height_centroid(blob, p, flags, bone, kind, life, colors, alpha, scale
         value=height/energy if energy else 0.
         return value if math.isfinite(value) and 0<=value<=16 else None
     except (ValueError, IndexError, struct.error):return None
+
+
+def flame_height_centroid(blob, p, flags, bone, kind, life, colors, alpha, scales):
+    """Fixed vertical flame proxy; unsupported motion retains the proven nozzle."""
+    try:
+        static_bone_offset(blob, bone) # Identity rotation/scale throughout the parent chain.
+    except (ValueError, IndexError, struct.error):return None
+    return flame_motion_centroid(blob,p,flags,kind,life,colors,alpha,scales)
 
 
 def particle_sources(assets, path, blob, cache, refusals):

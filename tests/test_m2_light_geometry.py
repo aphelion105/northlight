@@ -4,7 +4,7 @@ import sys
 import unittest
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'renderer'))
-from m2_light_geometry import source_components
+from m2_light_geometry import source_components,paired_source_layers
 
 
 def cube(vertices,triangles,center,size):
@@ -59,5 +59,41 @@ class Enclosure(unittest.TestCase):
         self.triangles=self.triangles[:4]+self.triangles[12:]
         self.assertFalse(self.detect())
 
+
+class PairedLayers(unittest.TestCase):
+    def setUp(self):
+        self.vertices=[];self.triangles=[]
+        self.materials=[('glass',0,False,0x800007),('glass',0,False)]
+        cube(self.vertices,self.triangles,(0,0,2),.25)
+        first=len(self.triangles);cube(self.vertices,self.triangles,(0,0,2),.2495)
+        self.triangles[first:]=[(*t[:3],1) for t in self.triangles[first:]]
+        first=len(self.triangles);cube(self.vertices,self.triangles,(0,0,-2),.5)
+        self.triangles[first:]=[(*t[:3],1) for t in self.triangles[first:]]
+        self.light=((0,0,2),(1,.5,.2),1,8,7,2,2)
+
+    def detect(self,static=lambda _:True):
+        return paired_source_layers(self.vertices,self.triangles,self.materials,[self.light],static)
+
+    def test_complete_duplicate_shares_ownership_but_frame_stays(self):
+        self.assertEqual(self.detect(),dict.fromkeys(range(12,24),7))
+        for scale in (.2,3):
+            vertices=[(*(x*scale for x in p[:3]),*p[3:]) for p in self.vertices]
+            light=((0,0,2*scale),self.light[1],scale,8*scale,*self.light[4:])
+            self.assertEqual(paired_source_layers(vertices,self.triangles,self.materials,[light],lambda _:True),self.detect())
+
+    def test_uv_normal_displacement_and_partial_copies_fail_closed(self):
+        for change in ('uv','normal','offset','partial','winding','ambiguous','moving','texture','blend'):
+            with self.subTest(change=change):
+                self.setUp();vertex=self.triangles[12][0];p=list(self.vertices[vertex])
+                if change=='uv':p[6]+=.01
+                if change=='normal':p[3:6]=[-x for x in p[3:6]]
+                if change=='offset':p[0]+=.01
+                self.vertices[vertex]=tuple(p)
+                if change=='partial':self.triangles.pop(12)
+                if change=='winding':a,b,c,m=self.triangles[12];self.triangles[12]=(c,b,a,m)
+                if change=='ambiguous':self.triangles.append(self.triangles[12])
+                if change=='texture':self.materials[1]=('metal',0,False)
+                if change=='blend':self.materials[1]=('glass',1,False)
+                self.assertFalse(self.detect((lambda v:v!=vertex) if change=='moving' else lambda _:True))
 
 if __name__=='__main__':unittest.main()

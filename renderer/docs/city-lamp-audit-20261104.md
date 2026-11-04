@@ -1,5 +1,9 @@
 # Offline city-lamp audit — 2026-11-04
 
+Follow-up: [lamp-shadow fixes and reproducible regressions](lamp-shadow-fix-20261104.md)
+address the Dalaran/orc findings below and the subsequently reported Stormwind
+daylight defect. This document preserves the earlier audit and its failures.
+
 The tested street lamp from Stormwind illuminates a floor and casts independent
 shadows from a weighted character and a separate obstacle. The tested dwarf and
 draenei lamps also pass. This is not confirmation that every city lamp works:

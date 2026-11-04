@@ -8,10 +8,11 @@
 #include <memory>
 
 namespace NorthlightLightAttachments {
+inline constexpr uint32_t NativeSource=1;
 struct Attachment {
     uint64_t sourceId=0;uint32_t bone=0,reference=0;
     std::array<float,9> witness{};
-    float point[3]{},offset[3]{},placement[12]{};
+    float point[3]{},offset[3]{},placement[12]{};uint32_t flags=0;
 };
 static_assert(sizeof(Attachment)==128,"FGA1 record layout");
 using Records=std::vector<Attachment>;
@@ -19,11 +20,12 @@ inline bool readFile(const std::string& path,Records& output){
     std::ifstream file(std::filesystem::u8path(path),std::ios::binary|std::ios::ate);if(!file)return false;
     const auto length=file.tellg();if(length<16)return false;file.seekg(0);
     char magic[4];uint32_t header[3];file.read(magic,4);file.read(reinterpret_cast<char*>(header),12);
-    if(!file||std::memcmp(magic,"FGA1",4)||header[0]!=1||header[1]!=sizeof(Attachment)||header[2]>1000000||
+    if(!file||std::memcmp(magic,"FGA1",4)||(header[0]!=1&&header[0]!=2)||header[1]!=sizeof(Attachment)||header[2]>1000000||
        uint64_t(length)!=16+uint64_t(header[2])*sizeof(Attachment))return false;
     Records records(header[2]);if(!records.empty())file.read(reinterpret_cast<char*>(records.data()),records.size()*sizeof(Attachment));
     if(!file)return false;
-    for(size_t i=0;i<records.size();++i){const auto& a=records[i];if(a.bone>=75||a.reference>=75)return false;
+    for(size_t i=0;i<records.size();++i){const auto& a=records[i];if((a.flags&~NativeSource)||(header[0]==1&&a.flags)||
+            (a.flags&NativeSource?(a.bone>=64||a.reference):a.bone>=75||a.reference>=75))return false;
         for(float v:a.witness)if(!std::isfinite(v)||std::fabs(v)>=100000)return false;
         for(const auto* values:{a.point,a.offset,a.placement}){const unsigned count=values==a.placement?12:3;
             for(unsigned k=0;k<count;++k)if(!std::isfinite(values[k])||std::fabs(values[k])>=100000)return false;}
@@ -45,19 +47,26 @@ public:
 struct Tracker {
     std::shared_ptr<const Records> records;
     std::map<uint64_t,std::array<float,3>> positions;
-    struct NativeBinding {std::uint64_t id=0;bool present=false;};
+    struct NativeBinding {std::uint64_t id=0;bool present=false,required=false;NorthlightLocalLights::Light light{};};
     std::map<uint64_t,NativeBinding> nativeBindings;
+    std::map<uint64_t,const Attachment*> nativeProofs;
+    std::vector<uint64_t> retiredNative;
     std::vector<std::uint64_t> sourceIds;
     std::vector<std::size_t> candidates;
-    void reset(){records.reset();positions.clear();nativeBindings.clear();sourceIds.clear();candidates.clear();}
-    void bind(const std::shared_ptr<const Records>& next){if(next!=records){reset();records=next;
+    std::array<uint64_t,NorthlightNativeLights::Capacity> claimedNative{};unsigned claimedNativeCount=0;
+    const std::vector<NorthlightLocalLights::Light>* checkedSources=nullptr;bool requiresNative=false;
+    void reset(){records.reset();positions.clear();nativeBindings.clear();nativeProofs.clear();retiredNative.clear();sourceIds.clear();candidates.clear();claimedNativeCount=0;checkedSources=nullptr;requiresNative=false;}
+    void bind(const std::shared_ptr<const Records>& next){if(next!=records){std::vector<uint64_t> retired;for(const auto& binding:nativeBindings)if(binding.second.required)retired.push_back(binding.first);reset();retiredNative=std::move(retired);records=next;
         if(records){for(const auto& record:*records)sourceIds.push_back(record.sourceId);
+            for(const auto& record:*records)if(record.flags&NativeSource)nativeProofs.emplace(record.sourceId,&record);
             std::sort(sourceIds.begin(),sourceIds.end());sourceIds.erase(std::unique(sourceIds.begin(),sourceIds.end()),sourceIds.end());}}}
     // Match a root emitter's original world point against the unmodified FGL
     // source, then keep its existing range, shadow flags and identity in motion.
     void observeScene(const NorthlightNativeLights::Snapshot& scene,const std::vector<NorthlightLocalLights::Light>& fixed){
-        if(!active()||!scene.valid||!NorthlightNativeLights::wellFormed(scene))return;
+        claimedNativeCount=0;
+        if(!active())return;
         for(auto& entry:nativeBindings)entry.second.present=false;
+        if(!scene.valid||!NorthlightNativeLights::wellFormed(scene))return;
         bool candidatesReady=false;
         for(unsigned i=0;i<scene.count;++i){const auto& point=scene.lights[i];if(!(point.flags&NorthlightNativeLights::RootAnchor))continue;
             auto binding=std::find_if(nativeBindings.begin(),nativeBindings.end(),[&](const auto& entry){return entry.second.id==point.id;});
@@ -68,19 +77,48 @@ struct Tracker {
                             if(id!=sourceIds.end()&&*id==fixed[k].sourceId&&fixed[k].kind==2)candidates.push_back(k);}
                     }else for(std::size_t k=0;k<fixed.size();++k)if(fixed[k].kind==2&&std::binary_search(sourceIds.begin(),sourceIds.end(),fixed[k].sourceId))candidates.push_back(k);
                     candidatesReady=true;}
-                const auto light=std::find_if(candidates.begin(),candidates.end(),[&](const auto index){const auto& candidate=fixed[index];
-                    if(NorthlightEquipmentLights::distance2(point.anchor,candidate.position)>=.25f*.25f||
+                const auto matches=[&](const auto index){const auto& candidate=fixed[index];
+                    const auto proof=nativeProofs.find(candidate.sourceId);
+                    const bool required=candidate.flags&NorthlightLocalLights::RequiresNative;
+                    if(required&&proof==nativeProofs.end())return false;
+                    // Reader reserves 64 IDs per model; low six bits identify
+                    // the authored native record even for coincident bulbs.
+                    if(proof!=nativeProofs.end()&&((point.id>>52)!=0xfea||((point.id-1)&63)!=proof->second->bone))return false;
+                    const float* anchor=proof!=nativeProofs.end()?proof->second->offset:candidate.position;
+                    if(NorthlightEquipmentLights::distance2(point.anchor,anchor)>=.25f*.25f||
                        !NorthlightEquipmentLights::hueClose(point.color,candidate.diffuse))return false;
-                    const auto used=nativeBindings.find(candidate.sourceId);return used==nativeBindings.end()||!used->second.present;});
+                    const auto used=nativeBindings.find(candidate.sourceId);return used==nativeBindings.end()||!used->second.present;};
+                const auto light=std::find_if(candidates.begin(),candidates.end(),matches);
                 if(light==candidates.end())continue;
-                binding=nativeBindings.insert_or_assign(fixed[*light].sourceId,NativeBinding{point.id,false}).first;
+                if(nativeProofs.count(fixed[*light].sourceId)&&std::find_if(light+1,candidates.end(),matches)!=candidates.end())continue;
+                binding=nativeBindings.insert_or_assign(fixed[*light].sourceId,NativeBinding{point.id,false,bool(fixed[*light].flags&NorthlightLocalLights::RequiresNative),fixed[*light]}).first;
             }
             binding->second.present=true;std::copy_n(point.position,3,positions[binding->first].begin());
+            const auto proof=nativeProofs.find(binding->first);
+            if(proof!=nativeProofs.end()){
+                auto light=binding->second.light;
+                if(binding->second.required){std::copy_n(point.color,3,light.diffuse);light=NorthlightLocalLights::nativeTransport(light,point.attenuation);}
+                light.flags&=~NorthlightLocalLights::RequiresNative;
+                for(unsigned k=0;k<3;++k)light.position[k]=point.position[k]+proof->second->point[k];
+                if(!NorthlightLocalLights::valid(light)){binding->second.present=false;continue;}
+                binding->second.light=light;std::copy_n(light.position,3,positions[binding->first].begin());
+                if(claimedNativeCount<claimedNative.size())claimedNative[claimedNativeCount++]=point.id;
+            }
         }
+        std::sort(claimedNative.begin(),claimedNative.begin()+claimedNativeCount);
     }
-    void releaseScene(){nativeBindings.clear();}
+    void releaseScene(){nativeBindings.clear();claimedNativeCount=0;}
     bool active()const{return records&&!records->empty();}
     bool needsDrawPose()const{return positions.size()>nativeBindings.size();}
+    void forgetInactive(NorthlightLocalLightSelection::Tracker& selection){
+        for(unsigned i=0;i<selection.count;){const auto id=selection.entries[i].id;
+            const auto proof=nativeProofs.find(id);const auto binding=nativeBindings.find(id);
+            if((proof!=nativeProofs.end()&&binding!=nativeBindings.end()&&binding->second.required&&!binding->second.present)||
+               (proof==nativeProofs.end()&&std::binary_search(retiredNative.begin(),retiredNative.end(),id)))selection.forget(id);
+            else ++i;
+        }
+        retiredNative.clear();
+    }
     void prune(const std::vector<NorthlightLocalLights::Light>& lights,const float* camera){
         auto light=lights.begin(); // Both source IDs and position keys are sorted.
         for(auto at=positions.begin();at!=positions.end();){
@@ -99,6 +137,7 @@ struct Tracker {
         auto at=std::lower_bound(records->begin(),records->end(),witness,[](const Attachment& a,const auto& key){return a.witness<key;});
         unsigned previousReference=75,previousBone=75;float baseReference[12],source[12];bool referenceValid=false,sourceValid=false;
         for(;at!=records->end()&&at->witness==witness;++at){const auto& a=*at;
+            if(a.flags&NativeSource)continue;
             if(paletteBase+3*std::max(a.bone,a.reference)+2>=256)continue;
             if(previousReference!=a.reference){previousReference=a.reference;referenceValid=NorthlightRigidGeometry::worldBone(constants+4*(paletteBase+3*a.reference),inverseView,baseReference);}
             if(!referenceValid)continue;
@@ -113,11 +152,16 @@ struct Tracker {
             if(valid)positions[a.sourceId]=point;
         }
     }
-    const std::vector<NorthlightLocalLights::Light>& apply(const std::vector<NorthlightLocalLights::Light>& fixed,std::vector<NorthlightLocalLights::Light>& output)const{
-        if(!nativeBindings.empty()){
+    const std::vector<NorthlightLocalLights::Light>& apply(const std::vector<NorthlightLocalLights::Light>& fixed,std::vector<NorthlightLocalLights::Light>& output){
+        if(checkedSources!=&fixed){checkedSources=&fixed;requiresNative=std::any_of(fixed.begin(),fixed.end(),[](const auto& l){return l.flags&NorthlightLocalLights::RequiresNative;});}
+        if(!nativeBindings.empty()||!nativeProofs.empty()||requiresNative){
             output.clear();output.reserve(fixed.size());
             for(auto light:fixed){const auto binding=nativeBindings.find(light.sourceId);
-                if(binding!=nativeBindings.end()&&!binding->second.present)continue;
+                if(light.flags&NorthlightLocalLights::RequiresNative){
+                    if(binding!=nativeBindings.end()&&binding->second.present&&nativeProofs.count(light.sourceId))output.push_back(binding->second.light);
+                    continue;
+                }
+                if(binding!=nativeBindings.end()&&!binding->second.present&&nativeProofs.find(light.sourceId)==nativeProofs.end())continue;
                 const auto position=positions.find(light.sourceId);if(position!=positions.end())std::copy(position->second.begin(),position->second.end(),light.position);
                 output.push_back(light);}
             return output;

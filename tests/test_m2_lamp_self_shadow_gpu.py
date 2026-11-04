@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import statistics
 import struct
 import subprocess
 import sys
@@ -72,6 +73,26 @@ def character_fixture(out):
         return evidence
     finally:assets.close()
 
+def live_fixture(case):
+    """Actual local lamp triangles; the stand draws them only through replay."""
+    fp.use_source_modules()
+    from world_scene_builder import Assets,InstancedBuilder
+    names={'dalaran-post':'dalaran_lamppost01','dalaran-wall':'dalaran_lampwall01'}
+    name='world\\expansion02\\doodads\\dalaran\\'+names[case.name]+'.m2'
+    assets=Assets()
+    try:
+        builder=InstancedBuilder(assets,case);mesh=builder.m2(name)
+        assert all(material[1]<=0 for material in mesh[2]),'Live opaque fixture must retain every material without alpha approximation'
+        triangles=[tuple(value for index in triangle[:3] for value in mesh[0][index][:3]) for triangle in mesh[1]]
+        (case/'native-lamp.bin').write_bytes(struct.pack('<4sI',b'NLL1',len(triangles))+b''.join(struct.pack('<9f',*triangle) for triangle in triangles))
+        # Upload storage is required by WorldRenderer. Every resulting batch
+        # is removed before point rendering; none is a cached lamp caster.
+        builder.add_mesh(mesh,((1,0,0),(0,1,0),(0,0,1)),(0,0,0),'m2',1)
+        builder.write_tile(case/'tile.fg3',builder.instances)
+        (case/'native-lamp.json').write_text(json.dumps({'asset':name,'asset_sha256':hashlib.sha256(assets.read(name)).hexdigest(),'triangles':len(triangles),
+            'cached_lamp_casters':0,'draw':'actual opaque M2 triangles, controlled one-bone SM3 replay; production patch, deformation and ownership helper; lamp remains fixed in world space'},indent=2)+'\n')
+    finally:assets.close()
+
 
 def compile_gpu(out,source_root=None):
     source_root=Path(source_root or fp.REPO).resolve()
@@ -87,33 +108,125 @@ def compile_gpu(out,source_root=None):
         'executable_sha256':hashlib.sha256(exe.read_bytes()).hexdigest()},indent=2)+'\n')
     return exe
 
+def run_actor(exe,backend,settings,case,mode,out,character_source):
+    from validate_native_scene_trace import processes
+    processes(False);out.mkdir(exist_ok=True)
+    for name in ('character.bin','character-vs.bin','character.json'):
+        if (out/name).resolve()!=(character_source/name).resolve():shutil.copyfile(character_source/name,out/name)
+    command=[str(exe),str(backend),str(settings)+os.sep,str(case.resolve()),mode,str(out)]
+    result=subprocess.run(command,capture_output=True,text=True,cwd=out,timeout=180,
+        env={**os.environ,'DXVK_LOG_PATH':str(out),'DISABLE_VULKAN_OBS_CAPTURE':'1'})
+    (out/'gpu.log').write_text(result.stdout+result.stderr);print(result.stdout+result.stderr,flush=True);assert result.returncode==0
+    return {'backend':str(backend),'backend_sha256':hashlib.sha256(backend.read_bytes()).hexdigest(),'case':str(case),'mode':mode,'exit_code':result.returncode,
+        'soft_consumer_verified':'soft' in mode or 'floor' in mode,'sunlit':'day' in mode,'legacy_sun_gate':'legacy' in mode,
+        'physical_floor_negative_control':'floor' in mode,**readback_metrics(out,case)}
+
+def benchmark(out,exe,args,backends,baseline_exe=None):
+    """Balanced source A/B processes; timestamps exclude fixture/readback work."""
+    from validate_native_scene_trace import processes
+    baseline=out/'baseline';baseline.mkdir(exist_ok=True)
+    executables={'baseline':baseline_exe or compile_gpu(baseline,args.baseline_source_root),'candidate':exe}
+    records=[];native_cpu=[]
+    for i,backend in enumerate(backends):
+        settings=out/f'settings-{i}';settings.mkdir(exist_ok=True)
+        for case in args.actor_case:
+            for pair in range(4):
+                for variant in (('baseline','candidate') if pair%2==0 else ('candidate','baseline')):
+                    processes(False)
+                    mode='actor-benchmark'+('-day' if args.sunlit else '')+('-hard' if args.benchmark_hard else '')
+                    command=[str(executables[variant]),str(backend),str(settings)+os.sep,str(case.resolve()),mode,str(out)]
+                    result=subprocess.run(command,capture_output=True,text=True,cwd=out,timeout=180,
+                        env={**os.environ,'DXVK_LOG_PATH':str(out),'DISABLE_VULKAN_OBS_CAPTURE':'1'})
+                    log=out/f'benchmark-{i}-{case.name}-{pair}-{variant}.log';log.write_text(result.stdout+result.stderr)
+                    assert result.returncode==0,(log,result.stdout+result.stderr)
+                    samples=[json.loads(line.removeprefix('LAMP_BENCH ')) for line in result.stdout.splitlines() if line.startswith('LAMP_BENCH ')]
+                    native_cpu.extend(dict(json.loads(line.removeprefix('LAMP_NATIVE_CPU ')),backend=str(backend),variant=variant,pair=pair) for line in result.stdout.splitlines() if line.startswith('LAMP_NATIVE_CPU '))
+                    assert len(samples)==32 and all(row['selected_lights']==row['point_shadow_limit']==1 and (row['facing'] or row['shadow_pixels']==0) for row in samples)
+                    records.extend(dict(row,backend=str(backend),variant=variant,pair=pair) for row in samples)
+    summary=[]
+    for backend in backends:
+        for case in args.actor_case:
+            for facing in (True,False):
+                for cache in ('warm-static','forced-refresh'):
+                    selected=[row for row in records if row['backend']==str(backend) and row['case']==case.name and row['facing']==facing and row['cache']==cache]
+                    row={'backend':str(backend),'case':case.name,'facing':facing,'cache':cache,'soft':not args.benchmark_hard,'sunlit':args.sunlit}
+                    for metric in ('cpu_ms','gpu_ms'):
+                        values={variant:[r[metric] for r in selected if r['variant']==variant] for variant in executables}
+                        row.update({variant+'_'+metric:statistics.median(values[variant]) for variant in values})
+                        deltas=[]
+                        for pair in range(4):
+                            pair_values={variant:statistics.median(r[metric] for r in selected if r['variant']==variant and r['pair']==pair) for variant in executables}
+                            deltas.append(pair_values['candidate']-pair_values['baseline'])
+                        row['paired_delta_'+metric]=statistics.median(deltas)
+                        row['paired_delta_range_'+metric]=[min(deltas),max(deltas)]
+                    summary.append(row)
+                    print('LAMP_BENCH_SUMMARY',json.dumps(row),flush=True)
+    evidence={'game_launched':False,'scope':'one selected actual lamp, independent box and real weighted character; 512x512 production hard/PCSS receiver; warm static cache and forced six-face static rebuild; front/back-facing normals; no readbacks in timestamp/QPC interval; not city frames or game FPS',
+        'baseline_source_root':str(args.baseline_source_root.resolve()),'candidate_source_root':str((args.source_root or fp.REPO).resolve()),
+        'command':sys.argv,'executable_sha256':{name:hashlib.sha256(path.read_bytes()).hexdigest() for name,path in executables.items()},
+        'harness_source_sha256':{name:hashlib.sha256((path.parent/'lamp-gpu-stand.cpp').read_bytes()).hexdigest() for name,path in executables.items()},
+        'backend_sha256':{str(path):hashlib.sha256(path.read_bytes()).hexdigest() for path in backends},
+        'fixture_sha256':{str(path):hashlib.sha256(path.read_bytes()).hexdigest() for case in args.actor_case for path in (case/'tile.fg3',case/'sources.fgl',case/'stand-origin.f32',case/'stand-basis.f32',case/'stand-ground.f32',case/'stand-pose-bone.u32',*sorted((case/'models').glob('*.fgs'))) if path.exists()},
+        'summary':summary,'samples':records,'native_cpu':native_cpu}
+    (out/'benchmark.json').write_text(json.dumps(evidence,indent=2)+'\n')
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source-root',type=Path)
+    parser.add_argument('--city-regression',action='store_true',help='Generate all seven actual city fixtures and native bridge evidence, then run night/day/physical-controls integration coverage')
     parser.add_argument('--compile-only',action='store_true')
     parser.add_argument('--backend',type=Path,action='append')
     parser.add_argument('--actor-case',type=Path,action='append',default=[],help='Explicit FGS/FGL lamp fixture to audit with a real skinned character and independent box')
+    parser.add_argument('--live-native-case',type=Path,action='append',default=[],help='Dalaran fixture with evaluated native FGL/snapshot and live opaque enclosure; no cached lamp caster')
+    parser.add_argument('--blocked-floor-case',type=Path,action='append',default=[],help='Additional physical negative control: original floor/box/body remain entirely shadowed by the opaque lamp')
+    parser.add_argument('--partial-floor-case',type=Path,action='append',default=[],help='Additional original-floor control: metal occludes the moved body/box while part of the initial body silhouette remains visible')
     parser.add_argument('--actor-only',action='store_true',help='Run only explicitly selected actor cases; keep the ordinary lamp matrix separate')
     parser.add_argument('--actor-soft',action='store_true',help='Require the production soft-shadow resolve and consumer for actor cases')
+    parser.add_argument('--sunlit',action='store_true',help='Full sun baseline, unchanged 30% direct lamp gain, and sun-energy independence checks')
+    parser.add_argument('--legacy-sun-gate',action='store_true',help='Require the pre-fix daylight failure: positive direct lamp light and zero shadow correction')
+    parser.add_argument('--benchmark',action='store_true',help='Measure equal selected workloads in balanced baseline/candidate processes, separate from correctness cases')
+    parser.add_argument('--baseline-source-root',type=Path,help='Pristine source tree for --benchmark')
+    parser.add_argument('--benchmark-hard',action='store_true',help='Measure the hard-shadow consumer instead of PCSS')
     args=parser.parse_args()
-    if (args.actor_only or args.actor_soft) and not args.actor_case:parser.error('--actor-only/--actor-soft requires --actor-case')
-    out=fp.output_dir();cases=[] if args.actor_only else fixtures(out/'fixtures');character_fixture(out);exe=compile_gpu(out,args.source_root)
+    if args.city_regression:
+        from city_lamp_fixtures import build
+        city=build(fp.output_dir()/'city-fixtures')
+        args.actor_case.extend(city['actor_cases']);args.live_native_case.extend(city['live_native_cases'])
+        args.blocked_floor_case.extend(city['blocked_floor_cases']);args.partial_floor_case.extend(city['partial_floor_cases'])
+        args.actor_only=args.actor_soft=True
+    for case in args.live_native_case:
+        live_fixture(case)
+        if case not in args.actor_case:args.actor_case.append(case)
+    if (args.actor_only or args.actor_soft) and not (args.actor_case or args.blocked_floor_case or args.partial_floor_case):parser.error('--actor-only/--actor-soft requires an actor or floor-control case')
+    if args.benchmark and (not args.actor_case or not args.baseline_source_root):parser.error('--benchmark requires --actor-case and --baseline-source-root')
+    if args.baseline_source_root and not args.benchmark:parser.error('--baseline-source-root requires --benchmark')
+    if args.benchmark_hard and not args.benchmark:parser.error('--benchmark-hard requires --benchmark')
+    if args.legacy_sun_gate and (not args.sunlit or args.benchmark):parser.error('--legacy-sun-gate requires functional --sunlit cases')
+    out=fp.output_dir();cases=[] if args.actor_only or args.benchmark else fixtures(out/'fixtures');character_fixture(out);exe=compile_gpu(out,args.source_root)
     if args.compile_only:return
+    from validate_native_scene_trace import processes
+    processes(False)
+    backends=args.backend or [Path(os.environ['WINDIR'])/'SysWOW64/d3d9.dll',fp.client_root()/'renderer-backends/dxvk/dxvk_d3d9.dll']
+    if args.benchmark:return benchmark(out,exe,args,backends)
     results=[]
-    for i,backend in enumerate(args.backend or [Path(os.environ['WINDIR'])/'SysWOW64/d3d9.dll',fp.client_root()/'renderer-backends/dxvk/dxvk_d3d9.dll']):
+    for i,backend in enumerate(backends):
         settings=out/f'settings-{i}';settings.mkdir(exist_ok=True)
         for case in cases:
+            processes(False)
             result=subprocess.run([str(exe),str(backend),str(settings)+os.sep,str(case),'fixture',str(out)],capture_output=True,text=True,env={**os.environ,'DXVK_LOG_PATH':str(out),'DISABLE_VULKAN_OBS_CAPTURE':'1'},timeout=180,cwd=out)
             (out/f'gpu-{i}-{case.name}.log').write_text(result.stdout+result.stderr)
             print(result.stdout+result.stderr,flush=True);assert result.returncode==0
             results.append({'backend':str(backend),'case':str(case),'mode':'fixture','exit_code':result.returncode})
         for case in args.actor_case:
-            mode='actor-soft' if args.actor_soft else 'actor'
-            actor=subprocess.run([str(exe),str(backend),str(settings)+os.sep,str(case.resolve()),mode,str(out)],capture_output=True,text=True,env={**os.environ,'DXVK_LOG_PATH':str(out),'DISABLE_VULKAN_OBS_CAPTURE':'1'},timeout=180,cwd=out)
-            (out/f'actor-{i}-{case.name}.log').write_text(actor.stdout+actor.stderr)
-            print(actor.stdout+actor.stderr,flush=True);assert actor.returncode==0
-            results.append({'backend':str(backend),'backend_sha256':hashlib.sha256(backend.read_bytes()).hexdigest(),'case':str(case),'mode':mode,'exit_code':actor.returncode,
-                'soft_consumer_verified':args.actor_soft,**readback_metrics(out,case)})
+            mode=('actor-day-'+('soft' if args.actor_soft else 'hard')+('-legacy' if args.legacy_sun_gate else '')) if args.sunlit else ('actor-soft' if args.actor_soft else 'actor')
+            results.append(run_actor(exe,backend,settings,case,mode,out/f'actor-{i}-{case.name}',out))
+        for mode,controls_cases in (('actor-floor-blocked',args.blocked_floor_case),('actor-floor-partial',args.partial_floor_case)):
+            for case in controls_cases:
+                results.append(run_actor(exe,backend,settings,case,mode,out/f'{mode}-{i}-{case.name}',out))
+        if args.city_regression:
+            stormwind=next(case for case in args.actor_case if case.name=='stormwind-street')
+            for mode in ('actor-day-soft','actor-day-hard'):
+                results.append(run_actor(exe,backend,settings,stormwind,mode,out/f'{mode}-{i}',out))
     (out/'validation.json').write_text(json.dumps({'pass':True,'game_launched':False,'command':sys.argv,'source_root':str(args.source_root or fp.REPO),'results':results},indent=2)+'\n')
 
 if __name__=='__main__':main()

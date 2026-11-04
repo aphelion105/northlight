@@ -490,10 +490,12 @@ class Installer:
     def identify_chain(self, client, locale, without=LETTER):
         """(variant name or None, [differences]) of the client's archive chain against the packaged variants.
         without: '' when the client's z letter is someone else's, so its archives count."""
+        self.identified_chain = None
         if not self.pkg.variants:
             return None, ['this package has no prebuilt cache variants']
         import client_identity
         result = client_identity.identify(client, locale, self.pkg.variants, without=without)
+        self.identified_chain = result
         return result['variant'], list(result.get('differences') or [])
 
     # ---- preflight ----
@@ -1007,6 +1009,31 @@ class Installer:
                 return False
         return True
 
+    def compatible_variant(self, client, locale, without, manifest, matched=None):
+        """An installed versioned variant can outlive the package that shipped it."""
+        import client_identity
+        import install_world_cache as iwc
+        try:
+            versions = manifest.get('build', {}).get('cache_versions')
+            if not isinstance(versions, dict) or any(type(versions.get(k)) is not int or versions[k] != v
+                                                    for k, v in iwc.CACHE_VERSIONS.items()):
+                return False
+            identity = manifest['identity']
+            if not isinstance(manifest.get('variant'), str) or not manifest['variant'] or not isinstance(identity, dict) or \
+                    identity.get('format') != client_identity.FORMAT or not isinstance(identity.get('chain'), list) or not identity['chain'] or \
+                    any(not isinstance(e, dict) or 'unreadable' in e for e in identity['chain']) or 'lights/native-fixtures.bin' not in manifest['files']:
+                return False
+            known = matched and matched.get('identity') == identity and matched.get('cache_digest') == manifest['cache_digest']
+            if not known:
+                chain = getattr(self, 'identified_chain', None)
+                if chain is None:
+                    chain = client_identity.chain_identity(client, 'all', locale, without)
+                if not client_identity.match(chain, manifest)[0]:
+                    return False
+            return bool(manifest['files']) and self.complete_cache(client, manifest)
+        except (OSError, ValueError, KeyError, TypeError, AttributeError, Failed):
+            return False
+
     def drop_previous(self, client):
         """S2: a swap killed after its second rename leaves world-cache.previous (about 10 GB); once the live
         cache is ours and complete, a previous folder carrying our marker or manifest is deleted."""
@@ -1078,8 +1105,8 @@ class Installer:
                 action = 'keep-local'
             elif not cache and local_plan and local_plan[0] == 'partial':
                 action = 'build'
-            elif manifest and owner == 'variant' and current.get('cache_digest') == manifest['cache_digest'] and \
-                    self.complete_cache(client, manifest):
+            elif not cache and owner == 'variant' and not old and self.compatible_variant(client, locale, without, current, manifest):
+                variant, manifest = current['variant'], current
                 action = 'keep'
             elif manifest:
                 source = self.find_source(variant, manifest, cache)
