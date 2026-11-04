@@ -94,7 +94,7 @@ def prepare(args):
             if len(header) != 16:
                 raise ValueError(f'Truncated light cache: {source}')
             magic, version, stride, count = struct.unpack('<4sIII', header)
-            if (magic, version, stride) != (b'FGL1', 1, 48) or sizes[relative] != 16 + count * stride:
+            if magic != b'FGL1' or version not in (1, 2) or stride != 48 or sizes[relative] != 16 + count * stride:
                 raise ValueError(f'Unsupported light cache: {source}')
         copied[relative.as_posix()] = {'bytes': sizes[relative], 'sha256': before}
     settings = []

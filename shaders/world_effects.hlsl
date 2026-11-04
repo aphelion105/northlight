@@ -9,6 +9,8 @@ sampler2D ProbeR : register(s4);
 sampler2D ProbeG : register(s5);
 sampler2D ProbeB : register(s6);
 sampler2D ProbeVisibility : register(s7);
+sampler2D EffectCoverage : register(s7); // Final passes only: native alpha layers already in Scene.
+float4 EffectCoverageInfo : register(c79);
 sampler2D LightingBuffer : register(s8);
 sampler2D ProbePrevious : register(s8); // 0.3.197: WorldGI only: previous SH R|G|B in three horizontal thirds of a 3n*n x n texture
 sampler2D FogBuffer : register(s9);
@@ -1427,6 +1429,7 @@ float3 horizonHaze(float3 color,float2 uv,float viewZ,bool sky,bool hdrMode) {
 float4 worldComposite(float2 uv,float2 pixel,bool surfaceLighting,bool hdrMode,sampler2D fogInput) {
     // Fetches before any flow control use texld (1 slot; tex2Dlod costs 3-4): Scene and Depth have one level and no mip filter, so texld reads what tex2Dlod(.,0) does.
     float4 original=tex2D(Scene,uv);
+    float3 nativeColor=original.rgb;
     float2 centerUV=depthUV(uv);
     float d=normalizedDepthFlat(centerUV);
     float liquid=waterDistance(centerUV,d);float viewZ=liquid>0?liquid:viewDistance(d);
@@ -1510,6 +1513,7 @@ float4 worldComposite(float2 uv,float2 pixel,bool surfaceLighting,bool hdrMode,s
         [branch]if(MaterialOcclusionInfo.z<.5||tex2Dlod(Depth,float4(uv,0,0)).r>(1.0-1.0/16777216.0))
             baseLinear=tex2Dlod(HdrLinearBase,float4(uv,0,0)).rgb;
         fogPart=(nativeLinear-surfaceLinear)*baseLinear/max(nativeLinear,.000001);
+        nativeColor=baseLinear;
         original.rgb=mad(max(baseLinear-fogPart,0),ao,fogPart);
     }else{
         original.rgb=mad(original.rgb-fogPart,ao,fogPart);
@@ -1564,6 +1568,8 @@ float4 worldComposite(float2 uv,float2 pixel,bool surfaceLighting,bool hdrMode,s
         color=lerp(mad(horizonHaze(color,centerUV,viewZ,d>=.99999&&liquid<=0,hdrMode),fog.a,fog.rgb),unfogged,rain);
     }
     if(PassInfo.z==3)color=fog.rgb;
+    [branch]if(EffectCoverageInfo.x>.5&&PassInfo.z<.5)
+        color=lerp(color,nativeColor,saturate(tex2Dlod(EffectCoverage,float4(uv,0,0)).r));
     // Dither before the 8-bit target rounds: haze and night air vary only with view elevation and would band into
     // horizontal lines. VPOS is the integer pixel; +.5 texel hits the POINT texel centre.
     if(hdrMode)return float4(max(color,0),original.a);
@@ -1610,7 +1616,9 @@ float4 materialComposite(float2 uv,bool hdrMode,float4 color) {
     surface*=tex2D(AmbientOcclusion,uv).a;
     float3 albedoT=min(surface/max(tex2D(BaselineLighting,uv).rgb,.15),legacyT);
     float3 cavity=max(AmbientLight.rgb*AmbientLight.w+GridOrigin.rgb,0)*(occlusion.b-1);
-    color.rgb=max(color.rgb+albedoT*(delta*visibility+cavity)*tex2D(MaterialFog,uv).a,0);
+    float transmission=1;
+    [branch]if(EffectCoverageInfo.x>.5)transmission=1-saturate(tex2Dlod(EffectCoverage,float4(uv,0,0)).r);
+    color.rgb=max(color.rgb+albedoT*(delta*visibility+cavity)*tex2D(MaterialFog,uv).a*transmission,0);
     return color;
 }
 float4 MaterialComposite(float2 uv:TEXCOORD0):COLOR0 {return materialComposite(uv,false,tex2D(Scene,uv));}

@@ -18,7 +18,7 @@ with tempfile.TemporaryDirectory(prefix='northlight-light-query-') as tmp:
     (root/'Alpha.fgl').write_bytes(good)
     (root/'Beta.fgl').write_bytes(struct.pack('<4sIII', b'FGL1', 1, 48, 1) + record.pack(25,0,0,1,1,1,0,5,4,2,0))
     bad = [good[:15], good[:-1], good+b'\0', b'BAD!'+good[4:]]
-    for offset, fmt, value in [(4,'<I',2), (8,'<I',52), (12,'<I',1000001), (16,'<f',float('nan')), (44,'<f',1), (96,'<Q',1)]:
+    for offset, fmt, value in [(4,'<I',3), (8,'<I',52), (12,'<I',1000001), (16,'<f',float('nan')), (44,'<f',1), (96,'<Q',1)]:
         blob = bytearray(good)
         struct.pack_into(fmt, blob, offset, value)
         bad.append(bytes(blob))

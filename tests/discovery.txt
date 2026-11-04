@@ -4,6 +4,7 @@ test_actor_job_efficiency.py
 test_actor_pose_kernels.py
 test_actor_probe_vertex.py
 test_actor_scene_job.py
+test_actor_scene_transfer.py
 test_actor_shadow_map.py
 test_actor_shadow_radius_wiring.py
 test_actor_shadow_selection.py
@@ -97,6 +98,7 @@ test_draw_gates.py
 test_draw_snapshot.py
 test_dxvk3_lock_flags.py
 test_dxvk_engine_name.py
+test_effect_coverage_gpu.py
 test_effect_diagnostic_wiring.py
 test_effect_switches.py
 test_effect_ui_target.py
@@ -204,6 +206,7 @@ test_m2_light_geometry.py
 test_m2_shader_families.py
 test_m2_shader_families_client.py
 test_m2_visibility.py
+test_mask_state_delta.py
 test_material_actor_decode_wave2.py
 test_material_alias_wave2.py
 test_material_batch_bindings.py
@@ -258,6 +261,7 @@ test_moon_cascade_weight.py
 test_mount_emitter_patch.py
 test_name_mask.py
 test_native_light_snapshot.py
+test_native_light_transport.py
 test_native_local_light_probe.py
 test_native_model_install.py
 test_native_replay_plan.py
@@ -383,6 +387,7 @@ test_single_skin_intervals.py
 test_sky_lightning_coverage.py
 test_sky_only_context.py
 test_sky_restore.py
+test_smoke_sky_gpu.py
 test_snapshot_allocation.py
 test_snapshot_archive.py
 test_snapshot_capture_sink.py

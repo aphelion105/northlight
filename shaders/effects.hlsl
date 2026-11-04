@@ -8,6 +8,8 @@ sampler2D Scene : register(s0);
 sampler2D Depth : register(s1);
 sampler2D Ambient : register(s2);
 sampler2D WaterMask : register(s3);
+sampler2D EffectCoverage : register(s7);
+float4 EffectCoverageInfo : register(c79);
 // AOBlur only: the raw AO on s0 (LINEAR, CLAMP: Scene's sampler state; AOBlur never reads Scene) for its bilinear early-out.
 sampler2D AmbientLinear : register(s0);
 float4 WaterInfo : register(c4); // coherent actual-liquid mask available
@@ -692,6 +694,7 @@ float4 Composite(float2 uv : TEXCOORD0) : COLOR0
     float3 lit = mad(original.rgb-fogPart,ambient.a,fogPart);
     lit += ambient.rgb * Lighting.w * saturate(original.rgb + 0.1) * legacyT;
     lit += bloom * Options.x * (1.0 - saturate(lit));
+    [branch]if(EffectCoverageInfo.x>.5)lit=lerp(saturate(lit),original.rgb,saturate(tex2Dlod(EffectCoverage,float4(uv,0,0)).r));
     return float4(saturate(lit), original.a);
 }
 

@@ -9,7 +9,7 @@
 
 namespace NorthlightEquipmentLights {
 inline constexpr unsigned Capacity=NorthlightLocalLightSelection::Capacity,MemoBanks=64,MaxReadsPerFrame=64,BackgroundReads=32;
-inline constexpr float LifeSeconds=.25f,FadeSeconds=.10f,MaxRadius=12.f,MaxDistance=NorthlightLocalLightSelection::VisibilityEnd+MaxRadius;
+inline constexpr float LifeSeconds=.25f,FadeSeconds=.10f,MaxRadius=NorthlightLocalLights::NativeMaxRadius,MaxDistance=NorthlightLocalLightSelection::VisibilityEnd+MaxRadius;
 // Unknown state retains a bounded backend-read budget. Proven mirror state
 // costs no backend calls, so early draws cannot starve later sources.
 struct CaptureBudget {
@@ -46,6 +46,11 @@ inline bool decode(const float* bank,unsigned slot,const float* inverseView,cons
 inline float distance2(const float* a,const float* b){float d=0;for(unsigned k=0;k<3;++k){const float v=a[k]-b[k];d+=v*v;}return d;}
 inline bool hueClose(const float* a,const float* b){const float ap=std::max({a[0],a[1],a[2]}),bp=std::max({b[0],b[1],b[2]});
     if(!(ap>0&&bp>0))return false;for(unsigned k=0;k<3;++k)if(std::fabs(a[k]/ap-b[k]/bp)>.08f)return false;return true;}
+inline bool positionAndAttenuation(const Native& source,const float* position,const float* denominator){
+    if(distance2(source.position,position)>=.25f*.25f)return false;
+    for(unsigned k=0;k<3;++k)if(std::fabs(source.attenuation[k]-denominator[k])>1e-4f*std::max(1.f,denominator[k]))return false;
+    return true;
+}
 inline bool staticDuplicate(const Native& n,const std::vector<NorthlightLocalLights::Light>& lights){
     for(const auto& l:lights)if(distance2(n.position,l.position)<.25f*.25f&&NorthlightLocalLights::valid(l)&&hueClose(n.color,l.diffuse))return true;
     return false; // Conservative suppression: a lamp already represented by FGL is never added twice, even with a different falloff fit.
@@ -54,11 +59,8 @@ inline bool staticDuplicate(const Native& n,const std::vector<NorthlightLocalLig
 // A range of at most 12 yards and peak <= 1 bound this experimental addition;
 // this is an artistic local-light approximation, not an exact native falloff.
 inline NorthlightLocalLights::Light light(const Native& n,std::uint64_t id,float gain){
-    NorthlightLocalLights::Light l{};const float a=n.attenuation[0],b=n.attenuation[1],c=n.attenuation[2],target=16.f;
-    const float q=std::max(0.f,target-a);float reach=MaxRadius;if(q==0)reach=2.f;else if(c>.0001f)reach=2*q/(b+std::sqrt(b*b+4*c*q));else if(b>.0001f)reach=q/b;
-    reach=std::clamp(reach,2.f,MaxRadius);const float peak=std::max({n.color[0],n.color[1],n.color[2]}),energy=std::min(1.f,peak/std::max(.5f,a+b+c));
-    for(unsigned k=0;k<3;++k){l.position[k]=n.position[k];l.diffuse[k]=n.color[k]/peak*energy*gain;}
-    l.attenuationStart=std::min(1.f,reach*.2f);l.attenuationEnd=reach;l.sourceId=0xfec0000000000000ull|id;l.kind=2;return l;
+    NorthlightLocalLights::Light l{};std::copy_n(n.position,3,l.position);std::copy_n(n.color,3,l.diffuse);
+    l.sourceId=0xfec0000000000000ull|id;l.kind=2;return NorthlightLocalLights::nativeTransport(l,n.attenuation,gain);
 }
 struct Tracker {
     struct Entry {Native source;std::uint64_t id=0;std::uint32_t seen=0;float gain=0;std::uint64_t nativeId=0;};
@@ -81,6 +83,11 @@ struct Tracker {
     }
     void observe(const Native& n,std::uint32_t now,const std::vector<NorthlightLocalLights::Light>& fixed,const float* camera=nullptr,std::uint64_t nativeId=0){
         ++observed;if(staticDuplicate(n,fixed)){++duplicates;return;}
+        if(!nativeId){Entry* match=nullptr;bool ambiguous=false;
+            for(unsigned i=0;i<count;++i)if(entries[i].nativeId&&positionAndAttenuation(n,entries[i].source.position,entries[i].source.attenuation)){
+                if(match){ambiguous=true;break;}match=&entries[i];}
+            if(match&&!ambiguous){match->source=n;match->seen=now;return;}
+        }
         unsigned at=count;float best=1.f;
         for(unsigned i=0;i<count;++i){
             if(nativeId&&entries[i].nativeId==nativeId){at=i;break;}
@@ -106,6 +113,20 @@ struct Tracker {
     }
     void observeScene(const NorthlightNativeLights::Snapshot& scene,std::uint32_t now,const std::vector<NorthlightLocalLights::Light>& fixed,const float* camera){
         if(!scene.valid||!NorthlightNativeLights::wellFormed(scene))return;
+        // Draw banks have no identity and may contain the previous animated
+        // hue. Adopt only an unambiguous scene source with the same position
+        // and denominator; colour must not leave a second 250 ms light behind.
+        for(unsigned i=0;i<count;++i)if(!entries[i].nativeId){
+            const auto& source=entries[i].source;const NorthlightNativeLights::Point* match=nullptr;bool ambiguous=false;
+            for(unsigned j=0;j<scene.count;++j){const auto& point=scene.lights[j];
+                if(!positionAndAttenuation(source,point.position,point.attenuation))continue;
+                if(match){ambiguous=true;break;}match=&point;
+            }
+            if(!match||ambiguous)continue;
+            const auto end=entries.begin()+count;
+            if(std::find_if(entries.begin(),end,[&](const Entry& e){return e.nativeId==match->id;})==end)entries[i].nativeId=match->id;
+            else{entries[i].seen=now-unsigned(LifeSeconds*1000);entries[i].gain=0;}
+        }
         for(unsigned i=0;i<count;++i)if(entries[i].nativeId){
             const auto end=scene.lights.begin()+scene.count;
             const auto p=std::find_if(scene.lights.begin(),end,[&](const auto& light){return light.id==entries[i].nativeId;});

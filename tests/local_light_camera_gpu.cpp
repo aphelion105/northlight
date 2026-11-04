@@ -87,5 +87,28 @@ int main(int argc,char** argv){
     }
     }
     assert(bulbOffscreen>0);std::printf("LOCAL_LIGHT_CAMERA cases=%u failures=%u bulbOffscreen=%u nativeDraws=0 poseScenarios=3 maxError=%g\n",cases,failures,bulbOffscreen,maxError);
+    unsigned rangeCases=0;
+    // The actual scaled bonfire's old FGL values must supply the same compact
+    // constants as a live light, with no GPU energy beyond twelve yards.
+    for(const char* entry:{"LocalDirect1","LocalDirect","LocalDirect16"}){
+        auto code=read(std::string(argv[1])+"/"+entry+".bin");IDirect3DPixelShader9* ps=nullptr;ok(d->CreatePixelShader((const DWORD*)code.data(),&ps));ok(d->SetPixelShader(ps));
+        for(float separation:{.1f,.5f,1.f,4.f,6.f,11.99f,12.f,16.f,100.f,214.718948f}){
+            const NorthlightLocalLights::Light legacy{{0,separation,5},{4,1.882352948f,.627451003f},85.88758f,214.718948f,1,2,2};
+            const auto lamp=NorthlightLocalLights::nativeModelTransport(legacy);const float camera[3]{};
+            const auto selected=NorthlightLocalLightSelection::select({lamp},camera);assert(selected.count==1);
+            float c[116][4]{};c[0][0]=c[0][1]=.5f;c[0][2]=nearZ;c[0][3]=farZ;c[1][0]=c[1][1]=c[1][2]=1;c[2][0]=1.f/.94f;
+            c[3][0]=c[4][1]=c[5][2]=c[6][3]=1;c[33][0]=c[33][1]=2;c[33][2]=c[33][3]=1;c[52][1]=.648f;
+            std::memcpy(c[36],selected.position[0].data(),16);std::memcpy(c[44],selected.color[0].data(),16);std::memcpy(c[84],c[36],16);std::memcpy(c[100],c[44],16);
+            ok(d->SetPixelShaderConstantF(0,c[0],116));ok(d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE));ok(d->Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0));
+            ok(d->BeginScene());ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(Vertex)));ok(d->EndScene());ok(d->GetRenderTargetData(target,staging));
+            D3DLOCKED_RECT lock{};ok(staging->LockRect(&lock,nullptr,D3DLOCK_READONLY));float actual[4];std::memcpy(actual,lock.pBits,16);ok(staging->UnlockRect());
+            const float fade=std::clamp((12.f-separation)/11.f,0.f,1.f);
+            for(unsigned k=0;k<3;++k){const float expected=selected.color[0][k]*fade*fade*.648f;
+                if(!std::isfinite(actual[k])||std::fabs(actual[k]-expected)>.00008f){if(failures++<3)std::printf("FAIL native range %s distance=%g actual=%g expected=%g\n",entry,separation,actual[k],expected);}}
+            if(separation>=12)assert(actual[0]==0&&actual[1]==0&&actual[2]==0);++rangeCases;
+        }
+        ok(d->SetPixelShader(nullptr));ps->Release();
+    }
+    std::printf("NATIVE_STATIC_RANGE_GPU cases=%u failures=%u cutoff=12 oldRadius=214.718948 peak=1\n",rangeCases,failures);
     for(unsigned s=0;s<16;++s)d->SetTexture(s,nullptr);z->Release();normal->Release();baseline->Release();zero->Release();detail->Release();staging->Release();target->Release();d->Release();api->Release();FreeLibrary(module);DestroyWindow(window);UnregisterClassW(wc.lpszClassName,wc.hInstance);return failures?1:0;
 }

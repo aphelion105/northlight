@@ -167,15 +167,23 @@ mc=r[r.index('bool nameMaskClear(){'):r.index('// The run of name draws')]
 checks['clear: a stencil-only Clear before the first name without a game clear (not with a scissor test, a full viewport for the call)']=(
     mc.index('D3DRS_SCISSORTESTENABLE')<mc.index('GetViewport(&viewport)')<mc.index('ext->SetViewport(&full)')<mc.index('ext->Clear(0,nullptr,D3DCLEAR_STENCIL,0,1.f,0)')<mc.index('ext->SetViewport(&viewport)')<mc.index('nameMask.noteClear(true)'))
 ma=r[r.index('bool maskApply('):r.index('// The first name of a frame')] if False else r[r.index('bool maskApply('):r.index('template<size_t N> void maskRestore(')]
-checks['states are read first (in place from the mirror when known), then set, restore puts the originals back']=ma.index('readDrawRenderState(')<ma.index('SetRenderState')<ma.index('sets[i].value') and 'GetRenderState' not in ma
+mr=r[r.index('template<size_t N> void maskRestore('):r.index('    bool nameMaskFullViewport(')]
+checks['states are read first, equal writes skipped, restore remains unconditional']=(
+    'for(size_t i=0;i<N;++i)if(!readDrawRenderState(D3DRENDERSTATETYPE(sets[i].state),previous[i]))return false;' in ma
+    and ma.index('readDrawRenderState(')<ma.index('if(previous[i]!=sets[i].value)')<ma.index('SetRenderState') and 'GetRenderState' not in ma
+    and 'for(size_t i=0;i<N;++i)ext->SetRenderState(D3DRENDERSTATETYPE(sets[i].state),previous[i]);' in mr and 'if(' not in mr)
 run=r[r.index('bool nameMaskRunBegin(){'):r.index('// The draw hook\'s last step')]
 checks['run: begin clears if needed then applies kMark once (nameRun), end restores it; the break keeps it only for a UI-hash vertex shader (tag 2)']=(
     run.index('if(nameRun)return true;')<run.index('nameMask.needsClear()&&!nameMaskClear()')<run.index('readDrawRenderState(D3DRS_STENCILPASS,pass)')<run.index('for(const auto& set:NorthlightNameStencil::kMark)ext->SetRenderState(')<run.index('SetRenderState(D3DRS_STENCILENABLE,TRUE)')<run.index('nameRun=true;++nameMask.runs;')
     and 'nameRun=false;CpuScope c(sampledDrawTimers()?&cpuNameMark:nullptr);ext->SetRenderState(D3DRS_STENCILENABLE,FALSE);' in run and 'nameRunPrevious' not in r and 'kMarkProbe[0].value' in run and 'if(!ext->peekVertexShader(vs)||!vs||!uiTextVs(vs,classifyVs(vs).entry))nameMaskRunEnd();' in run)
+effectRun=r[r.index('void renderEffects() {'):r.index('/* The guards of every mask decision')]
 checks['run ends before anything that could draw or clear with stencil on: prepareDrawImpl (any non-UI-hash draw), nameMaskDraw (non-name), Clear, EndScene, Reset, renderEffects, finishFrameImpl']=(
     '++drawCalls;maskKind=0;if(nameRun)nameMaskRunBreak();' in impl and 'if(kind!=1)nameMaskRunEnd();' in r
     and 'nameMaskRunEnd(); /* 0.3.212 (task 32): a run of names never spans a Clear */' in r[r.index('HRESULT STDMETHODCALLTYPE Clear('):][:700]
-    and 'override { Guard mirrorLock(mirrorState.gate);nameMaskRunEnd();' in r and 'void renderEffects() {\n        if(hdr.active&&!hdrAtUiBoundary)return;\n        nameMaskRunEnd();' in r and 'void finishFrameImpl() {\n        nameMaskRunEnd();' in r
+    and 'override { Guard mirrorLock(mirrorState.gate);nameMaskRunEnd();' in r
+    and effectRun.index('nameMaskRunEnd();')<effectRun.index('SavedState saved(')
+    and 'if(hdr.active&&(!hdrAtUiBoundary||!hdrBackTarget()))return;' in effectRun
+    and 'void finishFrameImpl() {\n        nameMaskRunEnd();' in r
     and (lambda reset: reset.index('nameMaskRunEnd();')<reset.index('rainMrtUnbind();'))(r[r.index('Reset(D3DPRESENT_PARAMETERS* pp) override'):][:900]))
 checks['the stencil-in-use guard reads the game\'s STENCILENABLE once per frame (reset at the frame end and Reset), so a run knows the value to restore']='if(!nameMask.stencilChecked){' in r and 'nameMask.stencilChecked=true;' in r and 'FAILED(ext->GetRenderState(D3DRS_STENCILENABLE,&stencilOn))' in r
 md=r[r.index('HRESULT nameMaskDraw('):r.index('    // One shader query/reference per original draw')]
@@ -184,7 +192,7 @@ checks['draw: unmark states around the game draw; a name draws with the run set 
     and md.index('nameMaskRunBegin()')<md.index('readDrawRenderState(D3DRS_ALPHATESTENABLE,alphaTest)')<md.index('maskApply(NorthlightNameStencil::kAlphaGuard,alphaPrevious)')<md.index('const HRESULT hr=rainBlendDraw(rain,claimed,draw);',md.index('kAlphaGuard'))<md.index('maskRestore(NorthlightNameStencil::kAlphaGuard,alphaPrevious)')<md.index('if(SUCCEEDED(hr)&&nameRun)nameMask.noteMark();')
     and 'if(!kind)return rainBlendDraw(rain,claimed,draw);' in md and 'if(claimed||!nameMask.armed())return rainBlendDraw(rain,claimed,draw);' in md)
 hook=r[r.index('template<class Capture,class Draw> HRESULT drawHook('):];hook=hook[:hook.index('\n    }\n')+7]
-checks['drawHook: both gate paths end in nameMaskDraw (optional draw wrappers retain the game call)']=hook.count('nameMaskDraw(rainBlend,claimed||mist,nativeDraw)')==2 and 'auto nativeDraw=[&]{return aoActorNativeDraw(draw);};' in hook and 'rainBlendDraw' not in hook
+checks['drawHook: both gate paths end in nameMaskDraw (optional draw wrappers retain the game call)']=hook.count('nameMaskDraw(rainBlend,claimed||mist,nativeDraw)')==2 and 'auto nativeDraw=[&]{' in hook and hook.count('return aoActorNativeDraw(draw);')==1 and 'rainBlendDraw' not in hook
 checks['draw lambdas retain all four device entry points']=len(re.findall(r'return drawHook\(t,count,\[&\]\(IDirect3DVertexShader9\* vs\)\{.*?\},draw\);\}',r,re.S))==4 and all(x in r for x in ('ext->DrawPrimitive(','ext->DrawIndexedPrimitive('))
 clr=r[r.index('HRESULT STDMETHODCALLTYPE Clear('):][:2800]
 checks['Clear hook: the stencil flag joins the game\'s full Clear(Z) of the world depth (no rects, scissor off) while the frame has no marks; with marks it is dropped; the mask bit in the game\'s value disables']=(
@@ -238,6 +246,6 @@ checks['cost: sample frames only (sampledDrawTimers/sampled), plain CpuScopes; d
     and 'double(cpuNameDecide)*double(nameDecideCalls)/double(nameDecideTimed)*us' in r and 'decideUs=%.1f markUs=%.1f unmarkUs=%.1f cpuUs=%.1f' in fl and 'cpuNameDecide=cpuNameMark=cpuNameUnmark=0;' in r
     and all(x not in r for x in ('CountedScope','qpcPairTicks','NAMEMASK timer calibration','cpuNameComposite','takeNameMaskQpc')) and 'netTicks' not in h)
 checks['no duplicate draw, no GPU pair timer: names are marked by the game\'s own draw']=('nameMarkDraw' not in r and 'nameGpu' not in r and 'NorthlightGpuPairTimer' not in r and not (fp.REPO/'src'/'core'/'gpu_pair_timer.h').exists())
-checks['banner: 0.3.216 with the name mask']='logf("Northlight renderer 0.3.216;' in r and "floating names keep the game's colour (stencil mask); instance map names with an apostrophe or a space reach the world context; lamps in view first, screen-coherent lamp batches (16-lamp passes); backend=%s" in r
+checks['banner: 0.3.217 with the name mask']='logf("Northlight renderer 0.3.217;' in r and "floating names keep the game's colour (stencil mask); instance map names with an apostrophe or a space reach the world context; lamps in view first, screen-coherent lamp batches (16-lamp passes); backend=%s" in r
 for n,ok in checks.items():print(('PASS ' if ok else 'FAIL ')+n)
 assert all(checks.values())

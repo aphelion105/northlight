@@ -18,6 +18,47 @@ static Snapshot scene(){
     p.anchor[0]=3;p.anchor[2]=2;p.flags=RootAnchor;
     p.color[0]=.7f;p.color[1]=.4f;p.color[2]=.1f;p.attenuation[1]=.7f;p.attenuation[2]=.03f;return s;
 }
+static void animatedDrawIdentity(){
+    auto s=scene();float camera[3]{};NorthlightEquipmentLights::Tracker tracker;
+    NorthlightEquipmentLights::Native drawn;std::copy_n(s.lights[0].position,3,drawn.position);
+    std::copy_n(s.lights[0].attenuation,3,drawn.attenuation);
+    // A previous-colour draw bank and a current scene sample represent one
+    // emitter even when its hue crosses the old eight-percent match window.
+    for(unsigned frame=0;frame<40;++frame){const unsigned now=1000+frame*50;
+        drawn.color[0]=frame%2?.7f:.05f;drawn.color[1]=frame%2?.05f:.8f;drawn.color[2]=.1f;
+        tracker.observe(drawn,now,{},camera);
+        std::copy_n(drawn.color,3,s.lights[0].color);std::swap(s.lights[0].color[0],s.lights[0].color[1]);
+        tracker.observeScene(s,now,{},camera);tracker.publish(now);
+        assert(tracker.count==1&&tracker.entries[0].nativeId==s.lights[0].id);
+        if(frame){assert(tracker.outputCount==1);const auto expected=NorthlightEquipmentLights::light(tracker.entries[0].source,tracker.entries[0].id,tracker.entries[0].gain);
+            assert(tracker.output[0].diffuse[0]==expected.diffuse[0]&&tracker.output[0].diffuse[1]==expected.diffuse[1]);}
+    }
+    // Scene-first observation order and a reused scene identity retain one
+    // source while its position moves; old identities retire immediately.
+    const auto oldId=tracker.entries[0].id;
+    for(unsigned frame=0;frame<10;++frame){const unsigned now=3000+frame*50;
+        s.lights[0].position[0]+=.1f;std::copy_n(s.lights[0].position,3,drawn.position);
+        tracker.observeScene(s,now,{},camera);tracker.observe(drawn,now,{},camera);tracker.publish(now);
+        assert(tracker.count==1&&tracker.entries[0].id==oldId);
+    }
+    s.count=0;tracker.observeScene(s,3500,{},camera);tracker.publish(3500);assert(!tracker.count&&!tracker.outputCount);
+    s.count=1;tracker.observeScene(s,3550,{},camera);tracker.publish(3550);tracker.publish(3600);
+    assert(tracker.count==1&&tracker.outputCount==1&&tracker.entries[0].id!=oldId);
+    // Two real scene lights may occupy the same point. Neither can claim an
+    // anonymous observation solely because the other's hue changed.
+    tracker.reset();s=scene();s.count=2;s.lights[1]=s.lights[0];++s.lights[1].id;
+    s.lights[0].color[0]=1;s.lights[0].color[1]=s.lights[0].color[2]=0;
+    s.lights[1].color[1]=1;s.lights[1].color[0]=s.lights[1].color[2]=0;
+    drawn.color[0]=drawn.color[1]=0;drawn.color[2]=1;
+    tracker.observe(drawn,4000,{},camera);tracker.observeScene(s,4000,{},camera);tracker.publish(4000);tracker.publish(4050);
+    assert(tracker.count==3&&tracker.outputCount==3);
+    for(unsigned i=0;i<2;++i)assert(std::count_if(tracker.entries.begin(),tracker.entries.begin()+tracker.count,[&](const auto& e){return e.nativeId==s.lights[i].id;})==1);
+    // A distinct attenuation bank at the same point is also inconclusive.
+    tracker.reset();s=scene();drawn.attenuation[1]=.9f;
+    tracker.observe(drawn,5000,{},camera);tracker.observeScene(s,5000,{},camera);tracker.publish(5000);tracker.publish(5050);
+    assert(tracker.count==2&&tracker.outputCount==2);
+    std::puts("NATIVE_DRAW_IDENTITY_PASS changingHue=40 observationOrders=2 moving=10 reusedSceneIdentity=1 uniquePositionDenominator=1 colocatedSceneAmbiguity=1 differentDenominator=1");
+}
 static void publication(){
     auto s=scene();float camera[3]{};NorthlightEquipmentLights::Tracker native;
     NorthlightParticleLights::Frame particles;NorthlightLocalLightSelection::Tracker selected;
@@ -99,7 +140,7 @@ static void attachmentCost(){
     assert(tracker.nativeBindings.empty());std::printf("NATIVE_FGA_CPU static=4096 unmatched=32 ms=%.4f\n",elapsed);
 }
 int main(int argc,char** argv){
-    assert(argc==2);publication();cachedAttachment();attachmentCost();auto source=std::make_unique<GameSnapshot>(),target=std::make_unique<GameSnapshot>();
+    assert(argc==2);animatedDrawIdentity();publication();cachedAttachment();attachmentCost();auto source=std::make_unique<GameSnapshot>(),target=std::make_unique<GameSnapshot>();
     unsigned value=42;assert(source->record(0x123456,&value,4,true));source->triggerKind=2;source->triggerDraw=123;
     source->nativeLights=scene();std::vector<unsigned char> bytes(A::MaxBytes);std::size_t written=0;A::Error error;
     assert(A::encode(*source,bytes.data(),bytes.size(),written,error));bytes.resize(written);assert(A::u32(bytes.data()+8)==3);

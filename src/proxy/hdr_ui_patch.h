@@ -55,12 +55,13 @@ inline bool parse(const Word* words,std::size_t count,std::vector<Instruction>& 
 }
 struct Info {unsigned major=0,captureTemp=0,scaleConstant=0,originalSlots=0,addedSlots=0;};
 inline bool patch(const Word* original,std::size_t count,const Word* transfer,std::size_t transferCount,
-                  float whiteNits,bool premultiplied,std::vector<Word>& output,Info* info=nullptr,bool preserveRgb=false){
+                  float whiteNits,bool premultiplied,std::vector<Word>& output,Info* info=nullptr,bool preserveRgb=false,unsigned linearOutput=0){
     output.clear();
-    if(!(whiteNits>=1&&whiteNits<=10000)||!original||!transfer||count<3||transferCount<3||original[0]!=transfer[0]||(preserveRgb&&premultiplied))return false;
+    if(!(whiteNits>=1&&whiteNits<=10000)||!original||!transfer||count<3||transferCount<3||original[0]!=transfer[0]||(preserveRgb&&premultiplied)||linearOutput>3)return false;
     std::vector<Instruction> old,tail;unsigned originalSlots=0,addedSlots=0;
     if(!parse(original,count,old,originalSlots)||!parse(transfer,transferCount,tail,addedSlots))return false;
     if(preserveRgb)addedSlots+=2; // Explicit RGB lower bound and alpha clamp, including SM2.
+    if(linearOutput)++addedSlots; // The native oC0 is retained beside the linear MRT output.
     const unsigned major=(original[0]>>8)&255,temps=major==2?12:32,constants=major==2?32:224;
     std::array<bool,32> usedTemps{};std::array<bool,224> usedConstants{};unsigned mask=0;
     for(const auto& ins:old){
@@ -68,7 +69,7 @@ inline bool patch(const Word* original,std::size_t count,const Word* transfer,st
         for(unsigned j=first;j<=last;++j){Word w=original[ins.at+j];unsigned t=type(w),r=index(w);
             if(t==0){if(r>=temps)return false;usedTemps[r]=true;}
             if(t==2){if(r>=constants)return false;usedConstants[r]=true;}
-            if(t==8){if(r||j!=1)return false;mask|=(w>>16)&15;}
+            if(t==8){if(j!=1||r>3||(r&&(!linearOutput||r==linearOutput)))return false;if(!r)mask|=(w>>16)&15;}
             if(t==9)return false; // oDepth is not part of the UI transfer contract
         }
     }
@@ -85,7 +86,7 @@ inline bool patch(const Word* original,std::size_t count,const Word* transfer,st
         if(t==1){if(r)return false;result=reg(w,0,unsigned(capture));return true;}
         if(t==2){mapped=constant(r);if(mapped<0)return false;result=reg(w,2,unsigned(mapped));return true;}
         if(t==0){if(r>=32)return false;if(tempMap[r]<0){while(nextTemp<temps&&int(nextTemp)==capture)++nextTemp;if(nextTemp>=temps)return false;tempMap[r]=int(nextTemp++);}result=reg(w,0,unsigned(tempMap[r]));return true;}
-        if(t==8&&r==0){result=w;return true;}return false;
+        if(t==8&&r==0){result=reg(w,8,linearOutput);return true;}return false;
     };
     const int scale=constant(0);if(scale<0)return false;
     std::vector<Word> definitions,body;
@@ -106,7 +107,7 @@ inline bool patch(const Word* original,std::size_t count,const Word* transfer,st
         for(unsigned j=1;j<ins.count;++j){Word w=original[ins.at+j];
             // Preserve the native UNORM source range before FP16 blending.
             // Clamp here: the SM2 transfer compiler assumes COLOR0 is bounded.
-            if(j==1&&type(w)==8)w=reg(preserveRgb?w:w|0x00100000u,0,unsigned(capture));result.push_back(w);
+            if(j==1&&type(w)==8&&index(w)==0)w=reg(preserveRgb?w:w|0x00100000u,0,unsigned(capture));result.push_back(w);
         }
     }
     // Keep authored saturation and the RGB lower bound; only the upper RGB
@@ -115,6 +116,9 @@ inline bool patch(const Word* original,std::size_t count,const Word* transfer,st
     if(preserveRgb)result.insert(result.end(),{
         0x0300000bu,reg(0x80070000u,0,unsigned(capture)),reg(0x80e40000u,0,unsigned(capture)),reg(0xa0ff0000u,2,unsigned(scale)),
         0x02000001u,reg(0x80180000u,0,unsigned(capture)),reg(0x80ff0000u,0,unsigned(capture))});
+    // Capture before the transfer: its scratch registers may reuse native
+    // temporaries. Other native MRT outputs remain at their original positions.
+    if(linearOutput)result.insert(result.end(),{0x02000001u,0x800f0800u,reg(0x80e40000u,0,unsigned(capture))});
     result.insert(result.end(),body.begin(),body.end());result.push_back(65535);output.swap(result);
     if(info)*info={major,unsigned(capture),unsigned(scale),originalSlots,addedSlots};return true;
 }

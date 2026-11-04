@@ -9,7 +9,9 @@
 // before queueing. Texture decoding and resolve() run on the existing GI worker,
 // never the render thread. No D3D interfaces or game pointers survive in this job.
 namespace NorthlightActorGeometry {
-struct Result {std::shared_ptr<const NorthlightGI::WorldScene> scene;std::uint64_t hash=0;unsigned texturesDecoded=0;std::size_t textureEncodedBytes=0;double decodeMs=0,geometryMs=0,hashMs=0;};
+// The worker consumes this scene into its BVH. Exclusive ownership avoids a
+// second copy of every posed vertex and decoded texture at that handoff.
+struct Result {std::unique_ptr<NorthlightGI::WorldScene> scene;std::uint64_t hash=0;unsigned texturesDecoded=0;std::size_t textureEncodedBytes=0;double decodeMs=0,geometryMs=0,hashMs=0;};
 inline std::uint64_t sceneHash(const NorthlightGI::WorldScene& scene){
     std::uint64_t hash=0xcbf29ce484222325ull;
     auto mix=[&](std::uint32_t value){for(unsigned j=0;j<4;++j){hash^=(value>>(j*8))&255;hash*=0x100000001b3ull;}};
@@ -43,7 +45,7 @@ struct ActorJob {
     Result resolve()const{
         using namespace NorthlightGI;
         const auto resolveStart=std::chrono::steady_clock::now();double decodeMs=0;
-        auto scene=std::make_shared<WorldScene>();
+        auto scene=std::make_unique<WorldScene>();
         // One bounded, metadata-only cache per worker; it keeps no jobs or
         // mutable resources alive and does not memoize any evaluated pose.
         thread_local NorthlightActorDeformation::PreparedBindingCache bindingCache;

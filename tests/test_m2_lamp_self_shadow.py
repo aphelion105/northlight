@@ -61,7 +61,7 @@ def fixtures(out):
                 lights=m2_sources(path,source.read(path),extract_m2(source.read(path),collections.Counter()),Index(source,lazy=True))
                 rows=instance_lights(lights,builder.instances[0],path);assert len(rows)==1
                 with (folder/'sources.fgl').open('wb') as f:
-                    f.write(struct.pack('<4sIII',b'FGL1',1,RECORD.size,len(rows)))
+                    f.write(struct.pack('<4sIII',b'FGL1',2,RECORD.size,len(rows)))
                     for r in rows:f.write(RECORD.pack(*r))
                 cases.append(folder)
                 if view=='all' and variant=='original':
@@ -114,7 +114,7 @@ def component_fixtures(out):
                 builder.add_mesh(mesh,((1,0,0),(0,1,0),(0,0,1)),(-8989.83,780.14,101.79),'m2',1234567)
                 builder.write_tile(folder/'tile.fg3',builder.instances)
                 rows=instance_lights(lights,builder.instances[0],path)
-                (folder/'sources.fgl').write_bytes(struct.pack('<4sIII',b'FGL1',1,RECORD.size,len(rows))+b''.join(RECORD.pack(*r) for r in rows))
+                (folder/'sources.fgl').write_bytes(struct.pack('<4sIII',b'FGL1',2,RECORD.size,len(rows))+b''.join(RECORD.pack(*r) for r in rows))
                 print('COMPONENT_FIXTURE',label,variant,'triangles',len(mesh[1]),'emitter',shell,'parts',len(own),flush=True)
                 cases.append(folder)
     finally:assets.close()

@@ -1,6 +1,6 @@
 #pragma once
-// Portable FGL1 reader. Offline builder retains real asset source coordinates,
-// intensities and authored attenuation ranges. No D3D/client APIs are used here.
+// Portable FGL1 reader. Version 2 stores native M2 transport in world units;
+// version 1 is migrated on load. No D3D/client APIs are used here.
 #include <filesystem>
 #include <algorithm>
 #include <cmath>
@@ -29,6 +29,21 @@ inline bool valid(const Light& l) {
         (!(l.flags&(FirePulse|CandlePulse))||l.kind==3)&&
         (!(l.flags&GlassEmitter)||((l.kind==1||l.kind==3)&&(l.flags&CastShadow)))&&
         ((l.flags&(FirePulse|CandlePulse))!=(FirePulse|CandlePulse));
+}
+inline constexpr float NativeMaxRadius=12.f;
+// CM2Light's denominator is expressed in world/view distance. Model placement
+// transforms its position, not its coefficients or its unused M2 range tracks.
+// Keep the existing bounded native-light fit for both cache and live sources.
+inline Light nativeTransport(const Light& source,const float* denominator,float gain=1.f){
+    Light l=source;const float a=denominator[0],b=denominator[1],c=denominator[2],q=std::max(0.f,16.f-a);
+    float reach=NativeMaxRadius;if(q==0)reach=2.f;else if(c>.0001f)reach=2*q/(b+std::sqrt(b*b+4*c*q));else if(b>.0001f)reach=q/b;
+    reach=std::clamp(reach,2.f,NativeMaxRadius);const float peak=std::max({source.diffuse[0],source.diffuse[1],source.diffuse[2]});
+    const float energy=std::min(1.f,peak/std::max(.5f,a+b+c));
+    for(unsigned k=0;k<3;++k)l.diffuse[k]=peak>0?source.diffuse[k]/peak*energy*gain:0;
+    l.attenuationStart=std::min(1.f,reach*.2f);l.attenuationEnd=reach;return l;
+}
+inline Light nativeModelTransport(const Light& source){
+    constexpr float denominator[]={0,.7f,.03f};return nativeTransport(source,denominator);
 }
 inline float pulseGain(const Light& l,uint32_t now){
     if(!(l.flags&(FirePulse|CandlePulse)))return 1.f;
@@ -60,13 +75,14 @@ inline bool readFile(const std::string& path,std::vector<Light>& output) {
     std::ifstream f(std::filesystem::u8path(path),std::ios::binary|std::ios::ate);if(!f)return false;
     const auto length=f.tellg();if(length<16)return false;f.seekg(0);
     char magic[4];uint32_t header[3];f.read(magic,4);f.read(reinterpret_cast<char*>(header),12);
-    if(!f||std::memcmp(magic,"FGL1",4)||header[0]!=1||header[1]!=sizeof(Light)||header[2]>1000000||
+    if(!f||std::memcmp(magic,"FGL1",4)||(header[0]!=1&&header[0]!=2)||header[1]!=sizeof(Light)||header[2]>1000000||
        static_cast<uint64_t>(length)!=16+uint64_t(header[2])*sizeof(Light))return false;
     std::vector<Light> candidate(header[2]);
     if(!candidate.empty())f.read(reinterpret_cast<char*>(candidate.data()),candidate.size()*sizeof(Light));
     if(!f)return false;
     for(size_t i=0;i<candidate.size();++i)
         if(!valid(candidate[i])||(i&&candidate[i-1].sourceId>=candidate[i].sourceId))return false;
+    if(header[0]==1)for(auto& l:candidate)if(l.kind==2&&!(l.flags&Flash))l=nativeModelTransport(l);
     output.swap(candidate);return true;
 }
 class Cache {

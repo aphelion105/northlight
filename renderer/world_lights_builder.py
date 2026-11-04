@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Extract real static local-light records from FGS3 plus independent ADT/WMO placements.
 
-Native sources plus explicitly reviewed model-local emitters; no game launch. Cache FGL1 is little endian:
+Native sources plus explicitly reviewed model-local emitters; no game launch. Cache FGL1 version 2 is little endian:
 header <4sIII = magic,version,recordBytes,count; record <8fQII (48 bytes) =
 position XYZ, diffuse RGB*intensity, attenuation start/end, source ID, kind,flags.
 Kind 1=WMO MOLT (potential baked contribution), 2=M2 default constant light, 3=authored fallback.
@@ -20,6 +20,7 @@ import outdoor_light_profiles
 import wmo_lamp_emission
 
 RECORD=struct.Struct('<8fQII')
+VERSION=2
 INSTANCE=struct.Struct('<32sQI18f')
 MAPS=['Azeroth','Kalimdor','Expansion01','Northrend']
 class Unsupported(ValueError):pass
@@ -111,6 +112,15 @@ def valid_light(position,color,start,end):
             all(abs(x)<100000 for x in position) and all(0<=x<=10000 for x in color) and
             max(color)>0 and 0<=start<end<=2000)
 
+def native_transport(color):
+    """Same compact CM2Light(0,.7,.03) fit as world_local_lights.h.
+
+    The client's native light updater never consumes M2 attenuation start/end
+    or scales its world-distance denominator with the model placement.
+    """
+    peak=max(color);energy=min(1.,peak/.73)
+    return tuple(c/peak*energy for c in color),1.,12.
+
 def extract_wmo(b,stats):
     root=dict(chunks(b));data=root.get('MOLT',b'')
     if len(data)%48:raise ValueError('MOLT record size')
@@ -170,7 +180,8 @@ def instance_lights(lights,record,path):
     result=[]
     for position,color,start,end,index,source,flags in lights:
         p=matvec(matrix,position);p=tuple(p[i]+translation[i] for i in range(3))
-        start*=scale;end*=scale
+        if source==2:color,start,end=native_transport(color)
+        else:start*=scale;end*=scale
         if not valid_light(p,color,start,end):raise Unsupported('world_light_value_range')
         identity=hashlib.sha256(key+struct.pack('<QII',uid,kind,index)).digest()
         source_id=int.from_bytes(identity[:8],'little')
@@ -311,7 +322,7 @@ def build(cache,output,maps,assets=None,manifest='manifest.json'):
             output.mkdir(parents=True,exist_ok=True)
             destination=output/(mapname+'.fgl');temp=destination.with_suffix(f'.{os.getpid()}.tmp')
             with temp.open('wb') as f:
-                f.write(struct.pack('<4sIII',b'FGL1',1,RECORD.size,len(records)))
+                f.write(struct.pack('<4sIII',b'FGL1',VERSION,RECORD.size,len(records)))
                 for r in records:f.write(RECORD.pack(*r))
             retry(temp.replace,destination)
             retained={r[8] for r in records}
@@ -326,7 +337,7 @@ def build(cache,output,maps,assets=None,manifest='manifest.json'):
                     'scene_inputs_sha256':inputs.hexdigest(),'placement_adts':adt_count,
                     'additional_mesh_independent_instances':missing_mesh_instances,'additional_mesh_independent_lights':missing_mesh_lights}
             reports.append(report);print(json.dumps(report),flush=True)
-        result={'format':'FGL1','maps':reports,'statistics':dict(stats),'errors':errors,'provenance':provenance,
+        result={'format':'FGL1','version':VERSION,'maps':reports,'statistics':dict(stats),'errors':errors,'provenance':provenance,
                 'emitter_catalog_sha256':hashlib.sha256(Path(__file__).with_name('outdoor-light-profiles.json').read_bytes()).hexdigest(),
                 'emitter_policy_sha256':hashlib.sha256(Path(__file__).with_name('outdoor_light_profiles.py').read_bytes()).hexdigest(),
                 'emitter_extension_sha256':hashlib.sha256(Path(__file__).with_name('wotlk-emitter-profiles.json').read_bytes()).hexdigest() if Path(__file__).with_name('wotlk-emitter-profiles.json').exists() else None,
@@ -344,7 +355,7 @@ def build(cache,output,maps,assets=None,manifest='manifest.json'):
                     'WMO diffuse color is packed RGB/255 times source intensity; source units are uncalibrated.',
                     'Unsupported native M2 tracks remain excluded. Reviewed exact models may supply a separate steady artistic emitter; no frame-zero animation freeze.',
                     'M2 ambient light tracks excluded; only supported diffuse point emitters exported.',
-                    'No invented inverse-square attenuation: start/end are authored ranges; transport chooses documented attenuation policy.']}
+                    'WMO and curated emitters retain authored ranges; native M2 diffuse uses the same bounded world-distance denominator fit as live CM2Light sources.']}
         (output/'world-emitters-v1.json').write_bytes(emitter_index.payload())
         result['world_emitter_index']={'sha256':emitter_index.digest,'source':emitter_index.origin,'owner':'northlight-local-direct'}
         with tempfile.TemporaryDirectory(prefix='.point-transmission-',dir=output) as work:

@@ -37,7 +37,7 @@ def main():
         placed=sorted(instance_lights(sources,inst.instances[0],ROOT),key=lambda row:row[8])
         fgl=folder/'sources.fgl'
         with fgl.open('wb') as stream:
-            stream.write(struct.pack('<4sIII',b'FGL1',1,RECORD.size,len(placed)))
+            stream.write(struct.pack('<4sIII',b'FGL1',2,RECORD.size,len(placed)))
             for row in placed:stream.write(RECORD.pack(*row))
         cases.append([str(flat),str(fgl),str(tile),str(folder/'instanced'/'models'),str(overlap),str(len(placed))])
     for opt in ('-O0','-O2'):
