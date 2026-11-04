@@ -52,6 +52,9 @@ try:
     (out/'ModelAlphaPS.bin').write_bytes(programs[0])
 finally:
     assets.close()
+import client_fixtures
+envelope_source = out/'model-vs3-envelope.bin'
+shutil.copyfile(client_fixtures.four_bone_body_vs3(), envelope_source)
 
 env = fp.zig_env()
 for key, name in [('TEMP', 'tmp'), ('TMP', 'tmp'), ('ZIG_LOCAL_CACHE_DIR', 'zig-local'), ('ZIG_GLOBAL_CACHE_DIR', 'zig-global')]:
@@ -73,6 +76,9 @@ for tag, source in cases:
     assert 'MODEL_NORMALS_GPU_PASS' in run.stdout
     assert 'MODEL_NORMALS_BATCH_PASS pixels=exact' in run.stdout
     assert 'MODEL_NORMALS_ALPHA_PASS' in run.stdout and 'MODEL_NORMALS_VALIDATION_PASS' in run.stdout
+    if tag.endswith(('-rigid', '-skinned')):
+        expected = 'kind=1 cases=2' if tag.endswith('-rigid') else 'kind=2 cases=3'
+        assert f'MODEL_NORMALS_RANGE_PASS {expected} culled=1 pixels=exact' in run.stdout, run.stdout
     groups = {}
     for row in csv.DictReader((out/(tag+'-samples.csv')).open()):
         if float(row['z']) < 1.65:
@@ -93,6 +99,13 @@ for tag, source in cases:
     record = {'native_vertex_program': tag, 'head_transitions': len(jumps), 'large_jumps_baseline_control_fixed': counts,
               'fixed_control_error_p95': errors[p95], 'disabled_shadow_error_p95': disabled[p95]}
     records.append(record);print(json.dumps(record), flush=True)
+run = subprocess.run([str(exe), str(args.backend.resolve()), str(out)+os.sep, '3-envelope', envelope_source.name, '--range-only'],
+                     cwd=out, env=env, capture_output=True, text=True, timeout=120)
+(out/'3-envelope-range.log').write_text(run.stdout+run.stderr)
+assert run.returncode == 0, run.stdout+run.stderr
+assert 'MODEL_NORMALS_RANGE_PASS kind=3 cases=3 culled=1 pixels=exact' in run.stdout, run.stdout
+print(run.stdout.strip(), flush=True)
 (out/'validation.json').write_text(json.dumps({'status': 'PASS', 'backend': str(args.backend), 'inputs': inputs,
     'game_launched': False, 'cases': records,
+    'range_envelope': {'source_sha256': hashlib.sha256(envelope_source.read_bytes()).hexdigest(), 'result': run.stdout.strip()},
     'fixed_shader_sha256': hashlib.sha256((out/'WorldNormalsFixed.bin').read_bytes()).hexdigest()}, indent=2)+'\n')

@@ -1,5 +1,63 @@
 // Included by the native-model fixture: identical shaders, changing poses and
 // source bytes, interleaved MSAA scene draws, then exact normal/depth comparison.
+#include "device_mirror.h"
+static void normalRange(IDirect3DVertexShader9* shader){
+    UINT size=0;ok(shader->GetFunction(nullptr,&size));std::vector<uint32_t> code(size/4);ok(shader->GetFunction(code.data(),&size));
+    using namespace NorthlightModelNormalRange;const Kind kind=classify(code.data(),code.size(),true);
+    if(kind==None){std::puts("MODEL_NORMALS_RANGE_SKIP unsupported_native_program");return;}
+    SavedState saved(d);assert(saved.ok);
+    constexpr unsigned W=128,H=128;auto color=target(W,H,D3DFMT_A8R8G8B8,4);IDirect3DSurface9* depth=nullptr;
+    ok(d->CreateDepthStencilSurface(W,H,D3DFMT_D24S8,D3DMULTISAMPLE_NONE,0,FALSE,&depth,nullptr));
+    ok(d->SetDepthStencilSurface(nullptr));ok(d->SetRenderTarget(0,color.s));ok(d->SetDepthStencilSurface(depth));viewport(color);
+    for(auto key:{D3DRS_ALPHABLENDENABLE,D3DRS_ALPHATESTENABLE,D3DRS_STENCILENABLE,D3DRS_SCISSORTESTENABLE})ok(d->SetRenderState(key,FALSE));
+    ok(d->SetRenderState(D3DRS_ZENABLE,TRUE));ok(d->SetRenderState(D3DRS_ZWRITEENABLE,TRUE));ok(d->SetRenderState(D3DRS_ZFUNC,D3DCMP_LESSEQUAL));ok(d->SetRenderState(D3DRS_COLORWRITEENABLE,15));ok(d->SetRenderState(D3DRS_CULLMODE,D3DCULL_NONE));
+    NorthlightDrawSnapshot::Ref<IDirect3DVertexDeclaration9> declaration;ok(d->GetVertexDeclaration(declaration.out()));
+    D3DVERTEXELEMENT9 layout[MAXD3DDECLLENGTH+1];UINT count=MAXD3DDECLLENGTH+1;ok(declaration->GetDeclaration(layout,&count));
+    auto mesh=[](bool mixed){NorthlightDrawSnapshot::Mesh m;m.topology=D3DPT_TRIANGLELIST;m.primitiveCount=1;m.vertexCount=3;m.streams[0].stride=48;m.streams[0].bytes.resize(144);
+        const float positions[3][3]={{-.3f,-.3f,0},{.3f,-.3f,0},{0,.3f,0}},normal[3]={0,0,1};
+        for(unsigned i=0;i<3;++i){auto* v=m.streams[0].bytes.data()+i*48;std::memcpy(v,positions[i],12);v[12]=255;v[16]=mixed&&i==2;std::memcpy(v+20,normal,12);}
+        return std::make_shared<const NorthlightDrawSnapshot::Mesh>(std::move(m));};
+    const auto uniform=mesh(false),mixed=mesh(true);const NorthlightDrawSnapshot::Draw geometry{D3DPT_TRIANGLELIST,0,0,3,0,1,false};
+    NorthlightActorDeformation::Program program;assert(NorthlightActorDeformation::compile(code.data(),code.size(),program,false,2));
+    float inverse[16]={};for(unsigned i=0;i<4;++i)inverse[i*5]=1;
+    DeviceMirror mirror;ExtensionDevice extension(d,&mirror);MirrorGuard held(mirror.gate);
+    auto normals=std::make_unique<NorthlightModelNormals>(&extension);normals->setDeferredCapture(true);normals->setTrustedPoseSource(extension.trustedConstantSource());
+    unsigned cases=0,totalCulled=0;
+    for(unsigned scenario=0;scenario<(kind==Single||kind==Envelope?3u:2u);++scenario){
+        const bool nearDraw=scenario==1,mixedBones=kind==Single&&scenario==2,stale=kind==Envelope&&scenario==2;
+        const auto& source=mixedBones?mixed:uniform;std::vector<unsigned char> reference;
+        for(bool enabled:{false,true}){
+            normals->endFrame();normals->testRange(enabled);ok(extension.Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0,1,0));
+            float bank[256][4]={};bank[2][0]=bank[3][1]=bank[4][2]=bank[5][2]=1;bank[4][3]=-.5f;bank[28][3]=1;
+            auto capture=[&](float z,bool anchor){
+                // Disjoint screen halves and constant projected size: the near
+                // anchor cannot conceal an incorrectly retained far candidate.
+                for(unsigned bone=0;bone<75;++bone){const unsigned first=31+3*bone;bank[first][0]=bank[first+1][1]=z;bank[first+2][2]=1;bank[first][3]=z*(anchor?-.5f:.5f);bank[first+2][3]=z;}
+                ok(extension.SetVertexShaderConstantF(0,bank[0],256));
+                NorthlightPoseBounds::Handoff proof;
+                if(kind==Envelope){NorthlightReplayBounds::Budget budget;NorthlightReplayBounds::Bounds bounds;
+                    assert(NorthlightReplayBounds::calculate(program,*source,layout,count,bank[0],inverse,budget,bounds)==NorthlightReplayBounds::Status::Valid);
+                    NorthlightConstantEpoch::Stamp stamp;stamp.requestHeld=true;assert(extension.constantStamp(stamp));proof.publish(bounds,bank[0],stamp,source.get(),shader,declaration.p);assert(proof.bounds.valid);
+                    if(stale)ok(extension.SetVertexShaderConstantF(31,bank[31],1));
+                }
+                normals->capture(shader,[&]{return extension.DrawPrimitiveUP(D3DPT_TRIANGLELIST,1,source->streams[0].bytes.data(),48);},true,&geometry,nullptr,D3DFMT_UNKNOWN,nullptr,0,&source,declaration.p,kind==Envelope?&proof:nullptr);
+            };
+            ok(extension.BeginScene());capture(2,true);assert(normals->finishCaptures());ok(extension.EndScene());const auto anchorOnly=capturedPixels(normals->texture(),W,H);
+            normals->endFrame();ok(extension.Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0,1,0));
+            ok(extension.BeginScene());capture(2,true);assert(normals->testPendingPackets()==1&&!normals->testRangeCulled());capture(nearDraw?20:80,false);
+            const unsigned culled=enabled&&!nearDraw&&!mixedBones&&!stale?1u:0u;
+            assert(normals->testRangeCulled()==culled&&normals->testPendingPackets()==2-culled);totalCulled+=culled;
+            assert(normals->finishCaptures());ok(extension.EndScene());assert(normals->texture());
+            auto image=capturedPixels(normals->texture(),W,H);
+            auto coverage=[](const auto& pixels){unsigned count=0;for(size_t at=6;at<pixels.size();at+=8){unsigned short alpha;std::memcpy(&alpha,pixels.data()+at,2);count+=half(alpha)>0;}return count;};
+            const unsigned anchorPixels=coverage(anchorOnly);assert(anchorPixels);
+            if(nearDraw)assert(image!=anchorOnly&&coverage(image)>anchorPixels);else assert(image==anchorOnly);
+            if(enabled)assert(image==reference);else reference=std::move(image);
+        }++cases;
+    }
+    assert(totalCulled>0);std::printf("MODEL_NORMALS_RANGE_PASS kind=%u cases=%u culled=%u pixels=exact near=retained mixed_or_stale=retained disjoint=1 nearAddsPixels=1 farMatchesAnchor=1\n",unsigned(kind),cases,totalCulled);
+    normals.reset();depth->Release();color.read->Release();color.s->Release();color.t->Release();
+}
 static uint64_t normalSourceRevision=1;
 static void normalBatch(IDirect3D9* api,CaptureCalls& calls,IDirect3DVertexShader9* shader,
                         unsigned vertexCount,unsigned indexCount,const std::vector<unsigned char>& source,bool gpuTiming){
@@ -7,6 +65,7 @@ static void normalBatch(IDirect3D9* api,CaptureCalls& calls,IDirect3DVertexShade
     for(unsigned stage=1;stage<16;++stage)bind(stage,nullptr);
     for(unsigned stage=0;stage<4;++stage)ok(d->SetTexture(D3DVERTEXTEXTURESAMPLER0+stage,nullptr));
     for(unsigned stage=1;stage<4;++stage)ok(d->SetRenderTarget(stage,nullptr));
+    normalRange(shader);
     constexpr unsigned W=3840,H=2160,N=640;
     IDirect3DSurface9 *color=nullptr,*depth=nullptr;
     ok(api->CheckDeviceMultiSampleType(0,D3DDEVTYPE_HAL,D3DFMT_A8R8G8B8,TRUE,D3DMULTISAMPLE_2_SAMPLES,nullptr));
