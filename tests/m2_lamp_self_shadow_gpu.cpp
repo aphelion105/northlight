@@ -1,5 +1,6 @@
 // Real FGS lamps and production cubes/correction. The optional capture replay
-// uses recorded receivers; it does not recreate the game's animated casters.
+// uses recorded receivers. Actor mode uses actual stock HumanMale skin geometry
+// and its native four-bone shader under controlled poses, not a gameplay capture.
 #undef NDEBUG
 #include "../src/proxy/renderer.cpp"
 #include <cassert>
@@ -89,6 +90,92 @@ struct PointTerrainCoverageTest{
   w.replays.clear();
   std::printf("LAMP_GPU_PASS %s opened=%u frameBlocked=%u foreignExact=1 liveShellExact=1 mixedIndexedAndUP=1 triangleListsAndStrips=1 actorOffNoReplayReads=1\n",root.c_str(),opened,blocked);std::fflush(stdout);
  }
+ static void character(IDirect3DDevice9* d,const std::string& root,const std::string& output,bool soft=false){
+  WorldRenderer w(d);load(w,root,false);w.quality.softShadows=soft;const auto l=w.active->localLights[0];
+  for(unsigned k=0;k<3;++k){w.context.camera[k]=l.position[k];w.context.inverseView[12+k]=l.position[k];}
+  w.context.camera[0]+=2;w.context.inverseView[12]+=2;w.context.camera[2]+=5;w.context.inverseView[14]+=5;w.projection[0]=w.projection[1]=1.4f;w.projection[2]=-1;
+  const auto lampOnly=cube(w,l);
+  Fgr cubeImage;cubeImage.w=256;cubeImage.h=256*6;cubeImage.format=D3DFMT_R32F;cubeImage.stride=4;cubeImage.bytes.resize(lampOnly.size()*4);std::memcpy(cubeImage.bytes.data(),lampOnly.data(),cubeImage.bytes.size());save(cubeImage,output+"/"+std::filesystem::path(root).filename().string()+"-lamp-cube.fgr");
+  // A separate authored stand obstacle, not part of the lamp or character.
+  std::vector<NorthlightGI::WorldVertex> box;for(unsigned i=0;i<8;++i)box.push_back({{l.position[0]+2.9f+(i&1)*.6f,l.position[1]-1.2f+((i>>1)&1)*.7f,l.position[2]-4.f+((i>>2)&1)*1.5f},{0,0,1},0,0});
+  const WORD boxIndices[]={0,2,1,1,2,3,4,5,6,5,7,6,0,1,4,1,5,4,2,6,3,3,6,7,0,4,2,2,4,6,1,3,5,3,7,5};
+  std::vector<NorthlightMeshPageKey::Key> keys;for(auto id:w.meshStore.table())keys.push_back(w.meshStore.entries()[id].key);const unsigned boxPage=unsigned(keys.size());keys.push_back(NorthlightMeshPageKey::keyOf(box.data(),box.size()*sizeof(box[0]),boxIndices,sizeof boxIndices));
+  assert(w.meshStore.beginStaging(keys));w.syncMeshBuffers();const auto boxId=w.meshStore.staging().table.back();auto& gpu=w.meshBuffers[boxId];void* boxUpload=nullptr;
+  drop(gpu.vb);drop(gpu.ib);gpu.vbPool=gpu.ibPool=D3DPOOL_MANAGED;
+  must(d->CreateVertexBuffer(UINT(box.size()*sizeof(box[0])),0,0,D3DPOOL_MANAGED,&gpu.vb,nullptr));must(d->CreateIndexBuffer(sizeof boxIndices,0,D3DFMT_INDEX16,D3DPOOL_MANAGED,&gpu.ib,nullptr));
+  must(gpu.vb->Lock(0,0,&boxUpload,0));std::memcpy(boxUpload,box.data(),box.size()*sizeof(box[0]));must(gpu.vb->Unlock());must(gpu.ib->Lock(0,0,&boxUpload,0));std::memcpy(boxUpload,boxIndices,sizeof boxIndices);must(gpu.ib->Unlock());
+  assert(w.meshStore.setCapacity(boxId,true,UINT(box.size()*sizeof(box[0])))&&w.meshStore.setCapacity(boxId,false,sizeof boxIndices));w.meshStore.commit();
+  WorldRenderer::Batch obstacle{};obstacle.page=boxPage;obstacle.count=12;obstacle.vertexCount=8;obstacle.material=unsigned(w.materials.size());obstacle.boundsLow={l.position[0]+2.9f,l.position[1]-1.2f,l.position[2]-4.f};obstacle.boundsHigh={l.position[0]+3.5f,l.position[1]-.5f,l.position[2]-2.5f};w.materials.push_back(nullptr);w.uploadedAlphaCutoffs.push_back(-1);w.batches.push_back(obstacle);
+  const auto empty=cube(w,l);unsigned boxTexels=0;for(size_t i=0;i<empty.size();++i)boxTexels+=empty[i]+1e-5f<lampOnly[i];
+  unsigned boxFaces=0;for(const auto& candidates:w.pointStaticCandidates)boxFaces+=std::find(candidates.begin(),candidates.end(),w.batches.size()-1)!=candidates.end();
+  std::printf("BOX_CONTROL texels=%u faces=%u draws=%u lampMin=%g boxMin=%g source=%g,%g,%g range=%g owners=%zu\n",boxTexels,boxFaces,w.pointDraws,*std::min_element(lampOnly.begin(),lampOnly.end()),*std::min_element(empty.begin(),empty.end()),l.position[0],l.position[1],l.position[2],l.attenuationEnd,NorthlightWmoLampShadow::parts(l,w.batches).size());std::fflush(stdout);
+  const auto data=readBytes(output+"/character.bin");assert(data.size()>=20);unsigned h[5];std::memcpy(h,data.data(),20);
+  assert(h[0]==0x31414c4e&&h[1]>100&&h[2]>300&&h[2]%3==0&&h[3]>1&&h[3]<=75&&h[4]<h[3]&&data.size()==20+h[1]*48+h[2]*4);
+  const auto shader=readBytes(output+"/character-vs.bin");assert(shader.size()%4==0);std::vector<uint32_t> words(shader.size()/4);std::memcpy(words.data(),shader.data(),shader.size());
+  auto program=std::make_shared<NorthlightActorDeformation::Program>();assert(NorthlightActorDeformation::compile(words.data(),words.size(),*program)&&program->skinned);
+  auto p=std::make_unique<WorldRenderer::Replay>();must(d->CreateVertexShader((DWORD*)words.data(),&p->originalShader));w.actorPrograms[p->originalShader]=program;
+  std::vector<uint32_t> patched;assert(NorthlightShadowShader::patch(words.data(),words.size(),patched));must(d->CreateVertexShader((DWORD*)patched.data(),&p->shader));
+  D3DVERTEXELEMENT9 decl[]={{0,0,D3DDECLTYPE_FLOAT3,0,D3DDECLUSAGE_POSITION,0},{0,12,D3DDECLTYPE_UBYTE4N,0,D3DDECLUSAGE_BLENDWEIGHT,0},{0,16,D3DDECLTYPE_UBYTE4,0,D3DDECLUSAGE_BLENDINDICES,0},{0,20,D3DDECLTYPE_FLOAT3,0,D3DDECLUSAGE_NORMAL,0},{0,32,D3DDECLTYPE_FLOAT2,0,D3DDECLUSAGE_TEXCOORD,0},D3DDECL_END()};
+  must(d->CreateVertexDeclaration(decl,&p->decl));p->vertices=h[1];p->count=h[2]/3;p->type=D3DPT_TRIANGLELIST;p->indexed=true;p->base=p->min=p->start=0;p->shadowSkinned=true;p->projectionKind=2;
+  p->snapshot.vertexCount=h[1];p->snapshot.primitiveCount=p->count;p->snapshot.indexed=true;p->snapshot.indices.resize(h[2]);std::memcpy(p->snapshot.indices.data(),data.data()+20+h[1]*48,h[2]*4);
+  auto& stream=p->snapshot.streams[0];stream.stride=p->stride[0]=48;stream.bytes.assign(data.begin()+20,data.begin()+20+h[1]*48);void* upload=nullptr;
+  must(d->CreateVertexBuffer(h[1]*48,0,0,D3DPOOL_MANAGED,&p->stream[0],nullptr));must(p->stream[0]->Lock(0,0,&upload,0));std::memcpy(upload,stream.bytes.data(),stream.bytes.size());must(p->stream[0]->Unlock());
+  must(d->CreateIndexBuffer(h[2]*4,0,D3DFMT_INDEX32,D3DPOOL_MANAGED,&p->index,nullptr));must(p->index->Lock(0,0,&upload,0));std::memcpy(upload,p->snapshot.indices.data(),h[2]*4);must(p->index->Unlock());
+  p->constantUsage=NorthlightShaderConstants::analyze(words.data(),words.size(),2);p->constantStorage[8]=p->constantStorage[13]=p->constantStorage[18]=p->constantStorage[23]=1;
+  float low[3]={INFINITY,INFINITY,INFINITY},high[3]={-INFINITY,-INFINITY,-INFINITY};
+  for(unsigned i=0;i<h[1];++i){float point[3];std::memcpy(point,stream.bytes.data()+i*48,12);for(unsigned k=0;k<3;++k){low[k]=std::min(low[k],point[k]);high[k]=std::max(high[k],point[k]);}}
+  p->shared=std::make_shared<const NorthlightDrawSnapshot::Mesh>(std::move(p->snapshot));
+  w.replays.push_back(std::move(p));auto& actor=*w.replays[0];
+  const auto pose=[&](float move,float bend){for(unsigned bone=0;bone<h[3];++bone){auto* c=actor.constantStorage+4*(31+3*bone);std::fill(c,c+12,0.f);c[0]=c[5]=c[10]=.9f;
+      c[3]=1.5f-(low[0]+high[0])*.45f+move+(bone==h[4]?bend:0);c[7]=.5f-(low[1]+high[1])*.45f;c[11]=-9.f-low[2]*.9f;}
+    actor.pointBounds={};w.captureMode=WorldRenderer::CaptureFresh;w.shadowSelectionDone=true;
+    for(unsigned warm=0;warm<8&&!actor.pointBounds.valid;++warm){w.replayBoundsKick();w.replayBoundsJoin();}assert(actor.pointBounds.valid);};
+  constexpr unsigned Size=512,Full=Size*2;const auto prefix=output+"/"+std::filesystem::path(root).filename().string();
+  Fgr normal;normal.w=normal.h=Size;normal.format=D3DFMT_A32B32G32R32F;normal.stride=16;normal.bytes.resize(Size*Size*16);
+  for(unsigned i=0;i<Size*Size;++i){const float n[]={0,0,1,1};std::memcpy(normal.bytes.data()+i*16,n,16);}drop(w.normalBuffer);w.normalBuffer=texture(d,normal);
+  Fgr depth;depth.w=depth.h=Full;depth.format=D3DFMT_R32F;depth.stride=4;depth.bytes.resize(Full*Full*4);const float z=64.f/(64.f-.1f)*(1.f-.1f/9.f);
+  for(unsigned i=0;i<Full*Full;++i)std::memcpy(depth.bytes.data()+i*4,&z,4);auto* depths=texture(d,depth);
+  IDirect3DSurface9 *target=nullptr,*visualDepth=nullptr;must(d->CreateRenderTarget(Size,Size,D3DFMT_A32B32G32R32F,D3DMULTISAMPLE_NONE,0,FALSE,&target,nullptr));
+  must(d->CreateDepthStencilSurface(Size,Size,D3DFMT_D24S8,D3DMULTISAMPLE_NONE,0,TRUE,&visualDepth,nullptr));
+  must(d->SetRenderTarget(0,w.baselineSurface));must(d->Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0));
+  const auto softSelected=[&](){if(!soft)return;IDirect3DPixelShader9* current=nullptr;must(d->GetPixelShader(&current));assert(current==w.pointSoftLightingPS&&w.pointSoftResolvePS&&w.softVisibility);drop(current);};
+  const auto correction=[&](){w.pointSlot().selectionGain=1;must(d->SetRenderTarget(0,target));must(d->SetDepthStencilSurface(nullptr));states(d,false);must(d->Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0));
+    must(d->SetVertexShader(nullptr));must(d->SetFVF(D3DFVF_XYZRHW|D3DFVF_TEX1));must(d->BeginScene());assert(w.renderPointLighting(depths,nullptr,Full,Full,.1f,64,0,1,1,0,1,0));must(d->EndScene());softSelected();
+    const auto image=readSurface(d,target,16);std::vector<float> pixels(Size*Size);for(unsigned i=0;i<pixels.size();++i){float rgb[4];std::memcpy(rgb,image.bytes.data()+i*16,16);pixels[i]=-rgb[0]-rgb[1]-rgb[2];assert(std::isfinite(pixels[i])&&pixels[i]>=-1e-6f);}return pixels;};
+  const DWORD solidCode[]={0xffff0300,0x02000001,0x800f0800,0xa0e40000,0x0000ffff};IDirect3DPixelShader9* solid=nullptr;must(d->CreatePixelShader(solidCode,&solid));
+  float directPeak=0;
+  const auto stand=[&](unsigned phase){must(d->SetRenderTarget(0,target));must(d->SetDepthStencilSurface(nullptr));states(d,false);must(d->Clear(0,nullptr,D3DCLEAR_TARGET,D3DCOLOR_COLORVALUE(.025f,.025f,.025f,1),1,0));
+    float c[116][4]{};c[0][0]=c[0][1]=1.f/Full;c[0][2]=.1f;c[0][3]=64;c[1][0]=c[1][1]=w.projection[0];c[1][2]=-1;c[2][0]=1;std::memcpy(c[3],w.context.inverseView,64);c[20][2]=1;
+    c[33][0]=c[33][1]=Full;c[33][2]=c[33][3]=Size;
+    std::memcpy(c[36],l.position,12);c[36][3]=l.attenuationEnd;std::memcpy(c[44],l.diffuse,12);c[44][3]=1.f/(l.attenuationEnd-l.attenuationStart);c[52][0]=c[52][1]=1;
+    for(unsigned s=0;s<16;++s)d->SetTexture(s,nullptr);must(d->SetTexture(1,depths));must(d->SetTexture(12,w.baselineLight));must(d->SetTexture(14,w.normalBuffer));
+    for(unsigned s:{1u,12u,14u})for(auto f:{D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER})must(d->SetSamplerState(s,f,D3DTEXF_POINT));
+    must(d->SetVertexShader(nullptr));must(d->SetFVF(D3DFVF_XYZRHW|D3DFVF_TEX1));must(d->SetPixelShaderConstantF(0,c[0],116));must(d->SetPixelShader(w.localDirectPS));must(d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE));must(d->BeginScene());must(w.quad(Size,Size));must(d->EndScene());
+    if(phase==0){const auto image=readSurface(d,target,16);save(image,prefix+"-direct.fgr");float directLow=INFINITY;for(unsigned i=0;i<Size*Size;++i){float rgb[4];std::memcpy(rgb,image.bytes.data()+i*16,16);const float energy=rgb[0]+rgb[1]+rgb[2]-.075f;directPeak=std::max(directPeak,energy);directLow=std::min(directLow,energy);}assert(directPeak>.01f&&directPeak-directLow>.05f);}
+    must(d->BeginScene());assert(w.renderPointLighting(depths,nullptr,Full,Full,.1f,64,0,1,1,0,1,0));must(d->EndScene());softSelected();const auto receiver=readSurface(d,target,16);save(receiver,prefix+"-receiver-"+std::to_string(phase)+".fgr");
+    for(unsigned i=0;i<Size*Size;++i){float rgba[4];std::memcpy(rgba,receiver.bytes.data()+i*16,16);for(float channel:rgba)assert(std::isfinite(channel)&&channel>=-.001f);}
+    // Presentation only: true lamp and character meshes in neutral flat colors.
+    // The floor underneath is the production direct pass plus its correction.
+    must(d->SetDepthStencilSurface(visualDepth));must(d->Clear(0,nullptr,D3DCLEAR_ZBUFFER,0,z,0));states(d,true);must(d->SetPixelShader(solid));
+    const float a=64.f/(64.f-.1f),b=.1f*a,cameraZ=w.context.camera[2];
+    float matrix[16]={1.4f,0,0,0,0,1.4f,0,0,0,0,-a,-1,-1.4f*w.context.camera[0],-1.4f*w.context.camera[1],cameraZ*a-b,cameraZ};
+    must(d->SetVertexShader(w.pointShadowVS));must(d->SetVertexShaderConstantF(0,matrix,4));must(d->SetVertexDeclaration(w.shadowDecl));must(d->BeginScene());UINT page=UINT_MAX;
+    for(const auto& batch:w.batches){const bool block=batch.page==boxPage;const float color[]={block?.55f:batch.lampSourceId?.9f:.18f,block?.24f:batch.lampSourceId?.65f:.23f,block?.08f:batch.lampSourceId?.15f:.28f,1};must(d->SetPixelShaderConstantF(0,color,1));assert(w.bindMeshPage(batch,page));must(d->DrawIndexedPrimitive(D3DPT_TRIANGLELIST,0,batch.minVertex,batch.vertexCount,batch.start,batch.count));}
+    float actorConstants[1024];std::memcpy(actorConstants,actor.constants,sizeof actorConstants);const float projection[]={1.4f,0,0,0,0,1.4f,0,0,0,0,-a,-b,0,0,-1,0};std::memcpy(actorConstants+8,projection,sizeof projection);
+    const float actorColor[]={.16f,.46f,.7f,1};must(d->SetPixelShaderConstantF(0,actorColor,1));must(d->SetVertexShader(actor.originalShader));must(d->SetVertexShaderConstantF(0,actorConstants,256));must(d->SetVertexDeclaration(actor.decl));must(d->SetStreamSource(0,actor.stream[0],0,48));must(d->SetIndices(actor.index));must(d->DrawIndexedPrimitive(actor.type,0,0,actor.vertices,0,actor.count));must(d->EndScene());
+    save(readSurface(d,target,16),prefix+"-stand-"+std::to_string(phase)+".fgr");must(d->SetDepthStencilSurface(nullptr));};
+  const auto baseline=correction();std::vector<float> images[3];unsigned changed[3]={},added[3]={},kept=0;double centers[3]={};
+  for(unsigned phase=0;phase<3;++phase){pose(phase==1?1.1f:0,phase==2?.65f:0);const auto shadow=cube(w,l,true);assert(w.pointReplayCount==1);
+    for(size_t i=0;i<shadow.size();++i){assert(shadow[i]<=empty[i]+1e-6f);added[phase]+=shadow[i]+1e-5f<empty[i];if(phase==0)kept+=empty[i]<.9999f&&shadow[i]==empty[i];}
+    images[phase]=correction();save(readSurface(d,target,16),prefix+"-correction-"+std::to_string(phase)+".fgr");for(unsigned i=0;i<images[phase].size();++i)if(images[phase][i]>baseline[i]+1e-5f){++changed[phase];centers[phase]+=i%Size;}
+    if(changed[phase])centers[phase]/=changed[phase];stand(phase);}
+  unsigned poseChanged=0;for(unsigned i=0;i<images[0].size();++i)poseChanged+=std::fabs(images[0][i]-images[2][i])>1e-5f;
+  assert(cube(w,l,false)==empty&&correction()==baseline);w.replays.clear();assert(cube(w,l,true)==empty&&correction()==baseline);
+  w.batches.pop_back();assert(cube(w,l,true)==lampOnly);const auto noBox=correction();unsigned boxPixels=0;for(unsigned i=0;i<baseline.size();++i)boxPixels+=baseline[i]>noBox[i]+1e-5f;
+  const bool covered=boxTexels>100&&boxPixels>5&&changed[0]>5&&changed[1]>5&&changed[2]>5&&added[0]>20&&added[1]>20&&added[2]>20&&centers[1]>centers[0]+3&&poseChanged>3&&kept>100;
+  std::printf("LAMP_CHARACTER_%s %s realHumanMaleTriangles=%u weightedBones=%u controlledPoses=3 soft=%u directPeak=%g receiverShadowPixels=%u/%u/%u movedCentroid=%.2f/%.2f articulatedPixels=%u foreignStaticTexelsKept=%u separateBoxTexels=%u separateBoxShadowPixels=%u actorOffExact=1 removalExact=1\n",covered?"PASS":"FAIL",root.c_str(),h[2]/3,h[3],unsigned(soft),directPeak,changed[0],changed[1],changed[2],centers[0],centers[1],poseChanged,kept,boxTexels,boxPixels);std::fflush(stdout);assert(covered);
+  for(unsigned s=0;s<16;++s)d->SetTexture(s,nullptr);solid->Release();visualDepth->Release();depths->Release();target->Release();
+ }
  static void capture(IDirect3DDevice9* d,const std::string& root,const std::string& prefix,const std::string& output,bool untagged){
   auto bank=readBytes(output+"/direct-constants.f32");assert(bank.size()==116*16);float c[116][4];std::memcpy(c,bank.data(),sizeof c);
   WorldRenderer w(d);load(w,root,true,{c[6][0],c[6][1],c[6][2]});
@@ -121,6 +208,6 @@ int main(int argc,char** argv){assert(argc==6||(argc==7&&std::strcmp(argv[6],"un
  WNDCLASSW wc{};wc.lpfnWndProc=DefWindowProcW;wc.hInstance=GetModuleHandleW(nullptr);wc.lpszClassName=L"NorthlightLampTest";assert(RegisterClassW(&wc));auto hwnd=CreateWindowW(wc.lpszClassName,L"",WS_OVERLAPPED,0,0,64,64,nullptr,nullptr,wc.hInstance,nullptr);assert(hwnd);
  auto module=LoadLibraryA(argv[1]);assert(module);auto create=(IDirect3D9*(WINAPI*)(UINT))GetProcAddress(module,"Direct3DCreate9");assert(create);auto api=create(D3D_SDK_VERSION);D3DPRESENT_PARAMETERS pp{};pp.Windowed=TRUE;pp.hDeviceWindow=hwnd;pp.BackBufferWidth=pp.BackBufferHeight=64;pp.BackBufferFormat=D3DFMT_X8R8G8B8;pp.SwapEffect=D3DSWAPEFFECT_DISCARD;pp.PresentationInterval=D3DPRESENT_INTERVAL_IMMEDIATE;
  IDirect3DDevice9* d=nullptr;must(api->CreateDevice(0,D3DDEVTYPE_HAL,hwnd,D3DCREATE_HARDWARE_VERTEXPROCESSING|D3DCREATE_MULTITHREADED|D3DCREATE_FPU_PRESERVE,&pp,&d));
- if(std::string(argv[4])=="fixture")PointTerrainCoverageTest::fixture(d,argv[3]);else PointTerrainCoverageTest::capture(d,argv[3],argv[4],argv[5],argc==7);
+ if(std::string(argv[4])=="fixture")PointTerrainCoverageTest::fixture(d,argv[3]);else if(std::string(argv[4])=="actor"||std::string(argv[4])=="actor-soft")PointTerrainCoverageTest::character(d,argv[3],argv[5],std::string(argv[4])=="actor-soft");else PointTerrainCoverageTest::capture(d,argv[3],argv[4],argv[5],argc==7);
  d->Release();api->Release();FreeLibrary(module);DestroyWindow(hwnd);
 }
