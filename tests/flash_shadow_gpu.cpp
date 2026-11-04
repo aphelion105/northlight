@@ -24,11 +24,11 @@ struct FlashShadowTest {
   must(clear->LockRect(0,&lock,nullptr,0));*static_cast<DWORD*>(lock.pBits)=0;must(clear->UnlockRect(0));
   w.materials.push_back(clear);w.uploadedAlphaCutoffs.push_back(.5f);
   NorthlightLocalLightSelection::Selection lights;lights.count=1;lights.sources[0]={{0,0,-1000},{4,2,1},.5f,2000,0xfed0000000000001ull,2,NorthlightLocalLights::Flash};
-  auto maps=[&](bool fresh=true){must(d->BeginScene());w.renderFlashShadows(lights,fresh,true);must(d->EndScene());return w.flashSlots[0].ready;};
+  auto maps=[&](bool fresh=true,bool withReplays=true){must(d->BeginScene());w.renderFlashShadows(lights,fresh,withReplays);must(d->EndScene());return w.flashSlots[0].ready;};
   IDirect3DSurface9* mapRead=nullptr;must(d->CreateOffscreenPlainSurface(1024,1024,D3DFMT_R32F,D3DPOOL_SYSTEMMEM,&mapRead,nullptr));
   auto mapImage=[&](unsigned slot=0,unsigned cascade=0){must(d->GetRenderTargetData(w.flashSlots[slot].surface[cascade],mapRead));must(mapRead->LockRect(&lock,nullptr,D3DLOCK_READONLY));std::vector<float> result(1024*1024);
    for(unsigned y=0;y<1024;++y)std::memcpy(result.data()+1024*y,static_cast<char*>(lock.pBits)+y*lock.Pitch,4096);must(mapRead->UnlockRect());return result;};
-  assert(maps());const auto reference=mapImage();assert(*std::min_element(reference.begin(),reference.end())<.9f);
+  assert(maps());const auto reference=mapImage(),referenceFar=mapImage(0,1);assert(*std::min_element(reference.begin(),reference.end())<.9f);
   w.batches[0].material=1;assert(maps());auto transparent=mapImage();assert(*std::min_element(transparent.begin(),transparent.end())==1);w.batches.clear();
   // Actual native-style row projection, patched by the same production patcher.
   const uint32_t original[]={0xfffe0300,
@@ -44,6 +44,11 @@ struct FlashShadowTest {
   w.replays.push_back(std::move(replay));assert(maps());assert(mapImage()==reference);
   // Move the original model transform (inverse view). The shadow follows, without a stale map.
   w.context.inverseView[12]=25;assert(maps());assert(mapImage()!=reference);w.context.inverseView[12]=0;assert(maps());assert(mapImage()==reference);
+  // ActorShadows=0 must never dereference a stale replay, and must keep world shadows.
+  auto stale=std::move(w.replays[0]);w.captureDemand=false;assert(maps(true,false)&&!w.captureDemand);
+  for(unsigned cascade=0;cascade<2;++cascade){const auto image=mapImage(0,cascade);assert(*std::min_element(image.begin(),image.end())==1);}
+  w.batches.push_back(batch);assert(maps(true,false)&&!w.captureDemand);assert(mapImage()==reference&&mapImage(0,1)==referenceFar);
+  w.batches.clear();w.replays[0]=std::move(stale);assert(maps());assert(mapImage()==reference);
   // Match the exact production direct-light subtraction on a receiver behind the blocker.
   auto tex=[&](float x,float y=0,float z=0,float a=0){IDirect3DTexture9* t=nullptr;must(d->CreateTexture(1,1,1,0,D3DFMT_A32B32G32R32F,D3DPOOL_MANAGED,&t,nullptr));must(t->LockRect(0,&lock,nullptr,0));const float p[]={x,y,z,a};std::memcpy(lock.pBits,p,16);must(t->UnlockRect(0));return t;};
   const float nearZ=.2f,farZ=2000,viewZ=30;
@@ -66,7 +71,7 @@ struct FlashShadowTest {
   assert(!maps(false)&&w.captureDemand);lights.count=0;must(d->BeginScene());w.renderFlashShadows(lights,true,true);must(d->EndScene());assert(!w.flashSlots[0].ready&&!w.flashSlots[1].ready);
   lights.count=2;lights.sources[1]=lights.sources[0];++lights.sources[1].sourceId;lights.sources[1].position[0]=500;assert(maps());assert(w.flashSlots[1].ready);
   for(unsigned i=0;i<16;++i)d->SetTexture(i,nullptr);d->SetPixelShader(nullptr);direct->Release();for(auto t:{depth,normal,zero,base})t->Release();readback->Release();target->Release();mapRead->Release();
-  std::puts("PASS FLASH_SHADOW production cascades, alpha cutout, moving model replay, exact radiance subtraction, expiry, two flashes");
+  std::puts("PASS FLASH_SHADOW production cascades, alpha cutout, moving model replay, ActorShadows=0 preserves world shadows without replay reads, exact radiance subtraction, expiry, two flashes");
  }
 };
 int main(int argc,char** argv){

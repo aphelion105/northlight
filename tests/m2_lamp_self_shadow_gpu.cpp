@@ -81,7 +81,13 @@ struct PointTerrainCoverageTest{
   replayProof(w,shell);assert(cube(w,l,true)==after);
   for(bool strip:{false,true})for(bool indexed:{false,true}){w.replays.clear();replayProof(w,shell,true,indexed,strip);const auto mixed=cube(w,l,true);
     for(size_t i=0;i<after.size();++i)assert(std::fabs(mixed[i]-after[i])<1e-5f);}
-  std::printf("LAMP_GPU_PASS %s opened=%u frameBlocked=%u foreignExact=1 liveShellExact=1 mixedIndexedAndUP=1 triangleListsAndStrips=1\n",root.c_str(),opened,blocked);std::fflush(stdout);
+  // GI can leave replays while ActorShadows=0. A null entry makes any accidental
+  // bounds/enclosure/draw read fail, including the new pointOwnShell path.
+  w.replays.clear();w.replays.push_back(nullptr);w.captureDemand=false;
+  assert(cube(w,l,false)==after&&!w.pointReplayCount&&!w.captureDemand);
+  for(const auto& candidates:w.pointReplayCandidates)assert(candidates.empty());
+  w.replays.clear();
+  std::printf("LAMP_GPU_PASS %s opened=%u frameBlocked=%u foreignExact=1 liveShellExact=1 mixedIndexedAndUP=1 triangleListsAndStrips=1 actorOffNoReplayReads=1\n",root.c_str(),opened,blocked);std::fflush(stdout);
  }
  static void capture(IDirect3DDevice9* d,const std::string& root,const std::string& prefix,const std::string& output){
   WorldRenderer w(d);load(w,root,true);auto bank=readBytes(prefix+"lighting-pass-1-constants.f32");assert(bank.size()==116*16);float c[116][4];std::memcpy(c,bank.data(),sizeof c);

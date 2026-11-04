@@ -13,9 +13,27 @@ import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).reso
 import northlight_paths as fp
 import re
 w=fp.src('world_renderer.h').read_text();pt=fp.src('world_point_rendering.inl').read_text()
+flash=fp.src('world_flash_rendering.inl').read_text()
 q=fp.src('quality_settings.h').read_text();r=fp.src('renderer.cpp').read_text()
 def once(text,needle,what):assert text.count(needle)==1,f'{what}: expected exactly one {needle!r} (found {text.count(needle)})'
 def code(text):return re.sub(r'/\*.*?\*/','',re.sub(r'//[^\n]*','',text),flags=re.S)
+
+def guarded_block(text,head):
+    once(text,head,'guarded block')
+    start=text.index(head);first=text.index('{',start);depth=0
+    # Match actual braces, including nested loops/lambdas, not a closing comment.
+    for token in re.finditer(r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|/\*.*?\*/|//[^\n]*|[{}]',text[first:],re.S):
+        value=token.group()
+        if value=='{':depth+=1
+        elif value=='}':
+            depth-=1
+            if not depth:return text[start:first+token.end()]
+    raise AssertionError('Unclosed guarded block: '+head)
+
+def rejected(audit,text,label):
+    try:accepted=audit(text)
+    except AssertionError:return
+    assert not accepted,'Audit accepted broken guard: '+label
 checks={}
 # Settings: the ActorShadows key (0..1, presets 1/1/1, default 1); its position in Keys[] is test_quality_docs.py's business.
 checks['key ActorShadows 0..1, presets 1/1/1, default 1']=re.search(r'\{\s*"ActorShadows"\s*,\s*&Settings::actorShadows\s*,\s*0\s*,\s*1\s*,\s*\{\s*1\s*,\s*1\s*,\s*1\s*\}\s*\}',q) is not None and 'unsigned actorShadows=1;' in q
@@ -54,9 +72,15 @@ consumers=['if(replayShadows)selectShadowReplays();','if(effects.shadows&&replay
            'if(effects.shadows&&replayShadows){auto proofs','if(effects.shadows&&replayShadows)pointCalculateReplayBounds();']
 schedules=['!reason&&key.valid&&!pull&&!actorLost,shadowDiagnosticCapture!=0,replaysComplete);','if(cascade==0)nearRendered=!environmentReuse&&captureMode==CaptureFresh&&interval>1&&actorShadows;',
            'if(!environmentReuse){if(splitNear||captureMode==CaptureFresh||!actorShadows)reuse.commit(interval,shadowPasses,matrices[cascade]);else captureDemand=true;}',
-           'renderPointShadows(atmosphere.lights,replaysComplete,actorShadows);else pointReady=false;']
-for needle in consumers+schedules:once(body,needle,'render()')
-checks['consumers gated on replayShadows, schedules on replaysComplete']=body.count('replayShadows')==1+len(consumers) and body.count('replaysComplete')==3
+           'renderPointShadows(atmosphere.lights,replaysComplete,actorShadows);else pointReady=false;',
+           'renderFlashShadows(atmosphere.lights,replaysComplete,actorShadows);else for(auto& s:flashSlots)s.ready=false;']
+def schedules_guarded(text):
+    for needle in consumers+schedules:once(text,needle,'render()')
+    remainder=text
+    for needle in consumers+schedules:remainder=remainder.replace(needle,'')
+    # Only the definitions may remain: an unreviewed consumer still fails.
+    return remainder.count('replayShadows')==1 and remainder.count('replaysComplete')==1
+checks['consumers gated on replayShadows, schedules on replaysComplete']=schedules_guarded(body)
 checks['no bare freshReplays consumer left in render()']=body.count('freshReplays')==3 # its definition and the two predicates
 # The cascade replay block: skipped whole with ActorShadows=0; terrain before it and the union after it stay.
 start=render.index('            if(actorShadows){ /* 0.3.158');end=render.index('            } /* actorShadows */')
@@ -72,14 +96,51 @@ checks['cascade replay block gated, terrain before, union after']=(render.count(
 checks['probe never on a diagnostic capture frame']='probeRecord=replayProbeActive()&&slot==0&&captureMode==CaptureFresh&&!shadowDiagnosticCapture;' in block
 # Point cube: withReplays gates both replay loops and the schedule's replay count.
 pb=pt[pt.index('    bool renderPointShadow(const NorthlightLocalLights::Light& light,bool fresh=true,bool withReplays=true){'):pt.index('    bool renderPointLighting(')]
-gs,ge=pb.index('            if(withReplays){\n'),pb.index('            } /* withReplays */')
-cand='if(withReplays)for(size_t i=0;i<replays.size();++i){const auto& bounds=replays[i]->pointBounds;'
+candidate_head='if(withReplays)for(size_t i=0;i<replays.size();++i){'
 count='if(fresh)pointReplayCount=withReplays?replays.size():0;'
-outside=(pb[:gs]+pb[ge:]).replace(cand,'').replace(count,'')
-checks['point: both replay loops and the count gated on withReplays']=(pb.count(cand)==1 and pb.count(count)==1
-    and gs<pb.index('for(size_t index:pointReplayCandidates[face]){const auto& p=replays[index];')<pb.index('"cube animated draw"')<ge<pb.index('// With no dynamic casters, min(cache, cache) copies the static face')
-    and code(pb[gs:ge]).count('{')==code(pb[gs:ge]).count('}')+1
-    and re.search(r'\breplays(\[|\.size\(\))',code(outside)) is None)
+def point_replays_guarded(text):
+    candidates=guarded_block(text,candidate_head);draws=guarded_block(text,'if(withReplays){')
+    once(text,count,'point replay count')
+    for needle in ('const auto& bounds=replays[i]->pointBounds;', 'pointOwnShell(*replays[i],ownShell,runs)',
+                   'pointAppendCandidates(pointReplayCandidates,i,mask,faces);'):once(candidates,needle,'point candidate guard')
+    for needle in ('for(size_t index:pointReplayCandidates[face]){const auto& p=replays[index];',
+                   '"cube animated draw"','"cube split emitter draw"'):once(draws,needle,'point draw guard')
+    outside=text.replace(candidates,'').replace(draws,'').replace(count,'')
+    return (text.index(candidates)+len(candidates)<=text.index(draws)
+            and text.index(draws)+len(draws)<text.index('// With no dynamic casters, min(cache, cache) copies the static face')
+            and re.search(r'\breplays\b',code(outside)) is None)
+checks['point: both replay loops and the count gated on withReplays']=point_replays_guarded(pb)
+
+def flash_replays_guarded(text):
+    draw=guarded_block(text,'if(withReplays){')
+    for needle in ('replayBoundsJoin();','for(const auto& p:replays){','submitReplay(p.get(),'):
+        once(draw,needle,'flash replay guard')
+    maps='s.ready=renderFlashMap(s,0,withReplays)&&renderFlashMap(s,1,withReplays);'
+    once(text,maps,'both flash cascades');once(text,'if(!fresh){captureDemand=true;continue;}','fresh flash maps')
+    return (text.index('if(!fresh){captureDemand=true;continue;}')<text.index('if(!flashResources(s))continue;')<text.index(maps)
+            and re.search(r'\breplays\b',code(text.replace(draw,''))) is None)
+checks['flash: fresh maps and both actor cascades gated']=flash_replays_guarded(flash)
+
+# Negative controls use modified source strings; production files are never edited.
+assert point_replays_guarded(pb.replace(candidate_head,candidate_head+' /* } */ const char* brace="}";'))
+mutations=[
+    (schedules_guarded,body.replace(schedules[-1],''),'missing flash schedule'),
+    (schedules_guarded,body.replace('renderFlashShadows(atmosphere.lights,replaysComplete,actorShadows)',
+                                  'renderFlashShadows(atmosphere.lights,true,actorShadows)'),'stale flash capture'),
+    (schedules_guarded,body.replace('renderFlashShadows(atmosphere.lights,replaysComplete,actorShadows)',
+                                  'renderFlashShadows(atmosphere.lights,replaysComplete,true)'),'flash actor switch bypass'),
+    (schedules_guarded,body+' consume(replayShadows,replaysComplete);','unreviewed consumer'),
+    (point_replays_guarded,pb.replace(candidate_head,candidate_head.removeprefix('if(withReplays)')),'unguarded point candidates'),
+    (point_replays_guarded,pb.replace('if(withReplays){','if(true){'),'unguarded point draws'),
+    (point_replays_guarded,pb.replace(count,'if(fresh)pointReplayCount=replays.size();'),'unguarded replay count'),
+    (point_replays_guarded,pb.replace(candidate_head,'pointOwnShell(*replays[0],ownShell,runs);'+candidate_head),'unguarded emitter read'),
+    (point_replays_guarded,pb+' for(const auto& p:replays)consume(p);','unguarded replay range'),
+    (flash_replays_guarded,flash.replace('if(withReplays){','if(true){'),'unguarded flash actors'),
+    (flash_replays_guarded,flash.replace('renderFlashMap(s,1,withReplays)','renderFlashMap(s,1,true)'),'far flash switch bypass'),
+    (flash_replays_guarded,flash.replace('if(!fresh){captureDemand=true;continue;}',''),'stale flash map'),
+]
+for audit,text,label in mutations:rejected(audit,text,label)
+checks['audit rejects all broken shadow guards']=True
 # Blob filter: the default strength policy follows actor shadows; explicit hiding is independent.
 helper='bool blobFilterActive()const{return shadowBlobs&&shadowBlobs->active()&&enabled&&!applied&&terrain&&!failed&&world&&world->hasContext()&&(!world->blobShadowsEnabled()||(effectKeys.settings.shadows&&world->terrainShadowActive()&&world->actorShadowsEnabled()));}'
 checks['native blob stays when no replacement shadow was composited']=('bool terrainShadowActive()const{return effects.shadows&&ready()&&shadowsComposited;}' in w and 'shadowsComposited=geometryReady&&effects.shadows&&(sourceActive[0]||sourceActive[1])&&debug==0;' in w)
