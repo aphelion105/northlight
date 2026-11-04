@@ -44,6 +44,7 @@ const std::map<std::string,const char*> Labels={
     {"AutoParallaxDepth","POM depth (%)"},{"AutoParallaxDistance","POM distance (yards)"},{"AutoParallaxSteps","POM trace steps"},
     {"AutoParallaxShadows","POM self-shadowing"},{"AutoParallaxShadowStrength","Self-shadow strength (%)"},{"AutoParallaxShadowSteps","Self-shadow trace steps"},
     {"AutoCavity","Cavity shading"},{"AutoCavityStrength","Cavity strength (%)"},
+    {"AutoHeightPolarity","Height interpretation"},{"AutoHeightDetails","Colored height detail (%)"},
     {"Preset","Quality preset"},{"Effects","All Northlight effects"},{"WorldShadows","World shadows"},{"WorldFog","Atmospheric fog"},{"LocalLights","Local light illumination"},{"GI","Global illumination"},{"GIStrength","Indirect light strength (%)"},
     {"SoftShadows","Contact-hardening shadows"},{"ActorShadows","Character shadows"},{"ActorShadowDetail","Detailed character shadows"},{"GrassShadows","Grass shadows"},{"ActorShadowRadius","Character shadow distance"},
     {"ContactAO","Ambient occlusion"},{"AOMethod","AO method"},{"AOQuality","AO quality"},{"AutoBumpModels","M2 models (all types)"},{"AutoMaterialOcclusionDistance","Cavity and self-shadow distance (yards)"},{"AutoModelDisplacementDistance","Model geometry distance (yards)"},{"AutoModelDisplacementDetail","Model subdivision"},{"AutoModelDisplacementStrength","Model height (%)"},{"AutoDisplacementDistance","Terrain and object geometry distance (yards)"},{"AutoDisplacementStrength","Terrain and object height (%)"},{"AutoDisplacementDetail","Terrain and object subdivision"},{"AutoHeightBalance","Height balance (%)"},{"AOStrength","AO strength (%)"},{"AORadius","AO radius (0.01 yd)"},
@@ -97,10 +98,9 @@ const std::map<std::string,std::vector<const char*>> Help={
     {"BlobShadowStrength",{"Adjusts the native round shadow when detailed character shadows are composited. Turning Round ground shadows off hides it independently and preserves this strength for later."}},
     {"RainLens",{"Moving refractive droplets; Merge drops into rivulets lets them collect water along their wet paths. Heavier rain increases their speed. Requires Enhanced weather; the effect disappears under shelter."}},
     {"SnowLens",{"Crystalline snowflakes adhere and collect into clumps. Nearby classified flames melt them into moving droplets; walls block this heat. Requires Enhanced weather; the effect disappears under shelter."}},
-    {"PointShadowLimit",{"64 by default; adjustable from 16 to 128. Only nearby visible eligible sources allocate maps (about 3.5 MiB each, up to 448 MiB).",
-        "Compare 16 / 32 / 64 / 128 in the same scene; higher limits keep more local lights shadowed."}},
+    {"PointShadowLimit",{"Maximum number of eligible local lights with shadow maps. Higher limits keep more nearby lamps shadowed, at the cost of GPU time and memory (about 3.5 MiB per allocated map)."}},
     {"PointShadowDistance",{"How far from the camera local lights can cast shadows: 8 to 192 yards; 48 by default. Measured to the edge of each light's influence, so large lights can cast shadows from farther away.",
-        "Takes effect on Save. Higher distances can increase rendering cost; Shadow light sources still limits how many lights cast shadows."}},
+        "Higher distances can increase rendering cost; Shadow light sources still limits how many lights cast shadows."}},
     {"HDRContrast",{"1.00 is neutral. Adjusts world contrast around middle grey; UI brightness is unchanged."}},
     {"HDRExposure",{"0 EV is neutral. +1 EV doubles world light; -1 EV halves it. UI brightness is unchanged."}},
     {"HDRMaxNits",{"Limits world HDR output. UI brightness remains independent; this does not raise SDR highlights to the chosen peak."}},
@@ -111,6 +111,110 @@ const std::map<std::string,std::vector<const char*>> Help={
     {"HDRBloomStrength",{"Bloom reads unclipped HDR radiance. Setting 0 removes its halo while preserving the source's brightness."}},
     {"Backend",{"Which Direct3D 9 implementation the renderer runs on. Takes effect after a game restart."}},
     {"terrain_radius",{"How far terrain casts shadows in this region. Larger values cost more GPU time."}},
+    {"GI",{"Adds indirect sky light, bounced colors and occlusion from surrounding geometry. Turning it off stops the background lighting solver and leaves the game's ambient lighting."}},
+    {"GIStrength",{"Blends Northlight's indirect lighting into the scene. Higher values emphasize bounced color and occlusion; lower values stay closer to the game's ambient lighting. 0 removes the contribution."}},
+    {"GIRays",{"Samples the surroundings in more directions for each lighting probe. More rays improve indirect lighting stability and detail, but increase background CPU work."}},
+    {"GIBounces",{"How many times indirect light can reflect between surfaces. More bounces carry light farther into enclosed spaces and cost more background CPU time."}},
+    {"GIProbeMoveStep",{"Camera movement in yards before the lighting grid moves. Smaller steps follow movement sooner but trigger more frequent background updates."}},
+    {"GIDynamicProbes",{"Lets captured characters and other animated geometry affect indirect lighting. Turning it off reduces capture and lighting work; direct character shadows have a separate switch."}},
+    {"GIThreads",{"CPU threads available to the background lighting solver. More threads can update lighting sooner, but compete with the game for CPU time. The solver also limits itself to available cores."}},
+    {"GIFastBVH",{"Uses the faster geometry traversal path for indirect lighting rays. Leave enabled for normal play; disable to compare against the older tracing path when troubleshooting."}},
+    {"GIDistance",{"Size of the area covered by indirect lighting around the camera. A larger distance covers more scenery, but needs more memory and background CPU work and takes longer to populate."}},
+    {"GIProbeAhead",{"Shifts the indirect lighting grid toward the camera's horizontal viewing direction. Helps prepare lighting ahead of you without enlarging the grid. 0 keeps it centered on the camera."}},
+    {"NightBrightness",{"Restores some of the game's ambient light during outdoor nights. 0 keeps Northlight's darker night; 100 restores the native ambient level. Does not brighten daytime, interiors, the sky or water."}},
+    {"ContactAO",{"Adds contact shading around corners, creases and overlapping surfaces using the visible scene depth. Turn off if this shading is too heavy or to save its GPU work."}},
+    {"AOMethod",{"Chooses how contact shading is calculated. Methods differ in fine detail, halos and GPU cost. Compare them in the same scene; use Strength and Radius to adjust the chosen method's appearance."}},
+    {"AOQuality",{"Controls the detail and sampling cost of ambient occlusion. Lower settings reduce GPU work but can lose fine contacts or appear noisier. The difference depends on the AO method."}},
+    {"AOStrength",{"Darkness of ambient occlusion: 100 is the normal strength, 0 hides it. Lower this if creases look too dark. Disable Ambient occlusion to skip the effect's processing."}},
+    {"AORadius",{"Size of the neighborhood used for contact shading, in hundredths of a yard: 200 means 2 yards. Larger values produce broader shading and can create halos around objects."}},
+    {"LocalLightLimit",{"Maximum number of nearby local lights illuminating the scene. Higher values keep more lamps and effects lit, but increase GPU work. 0 disables their illumination. Shadowed lights have a separate limit."}},
+    {"EquipmentLights",{"Adds local lighting from supported equipped items, mounts and effects. Uses their light records and supported particle emitters; a glowing texture alone does not guarantee a light. Shares the local light limit."}},
+    {"AutoBumpDistance",{"How far generated surface normals remain visible. Larger distances add detail to more surfaces and increase the number of pixels that need material shading."}},
+    {"AutoBumpModels",{"Applies material detail to model objects, including characters, creatures and props. Normal maps change lighting; POM adds apparent texture depth; displacement changes nearby geometry. Higher modes can exaggerate painted texture details."}},
+    {"AutoParallaxDepth",{"Apparent depth of texture relief when using Normal maps + POM. 0 looks flat; high values can stretch or distort textures at shallow viewing angles. Does not change the object's silhouette."}},
+    {"AutoParallaxDistance",{"How far POM texture relief remains visible before fading out. Larger distances shade more pixels with POM and cost more GPU time. Normal map distance is controlled separately."}},
+    {"AutoDisplacementStrength",{"Height of generated relief on terrain and object geometry in displacement mode. Larger values make silhouettes more pronounced, but can distort surfaces whose textures contain painted shadows."}},
+    {"AutoDisplacementDistance",{"Distance within which terrain and object geometry receives displacement. Larger distances process more geometry and increase CPU, GPU and memory costs."}},
+    {"AutoDisplacementDetail",{"Subdivides terrain and object surfaces to resolve smaller displaced details. Higher levels add many more triangles and can substantially increase geometry work and memory use."}},
+    {"AutoModelDisplacementStrength",{"Height of generated relief on model objects in displacement mode. Lower values keep characters and props closer to their original shape; high values can distort thin or painted details."}},
+    {"AutoModelDisplacementDistance",{"Distance within which model geometry receives displacement. A larger distance includes more characters and props, increasing geometry work and memory use."}},
+    {"AutoModelDisplacementDetail",{"Subdivides model geometry for finer displacement. Higher levels add more triangles, increasing CPU, GPU and memory costs, especially around many characters."}},
+    {"AutoHeightPolarity",{"How texture brightness becomes height: 0 uses automatic interpretation, 1 raises bright areas, 2 raises dark areas. Try the opposite polarity if relief looks inverted; this also changes the polarity of model relief."}},
+    {"AutoHeightDetails",{"Contribution of colored texture accents to automatic height interpretation. 0 uses brightness alone; higher values include more accent detail. Only applies with Height interpretation set to 0; does not change model displacement."}},
+    {"AutoHeightBalance",{"Offsets the generated height profile: 50 is neutral, higher values raise it and lower values recess it. Does not change model displacement."}},
+    {"AutoParallaxShadowStrength",{"Darkness of shadows cast by POM relief onto itself. Lower values soften the effect if painted textures look too dark. Requires POM self-shadowing and a material using POM."}},
+    {"AutoParallaxShadowSteps",{"Samples used to trace sunlight or moonlight across texture relief. More steps improve self-shadow detail and reduce missed blockers, at a higher GPU cost."}},
+    {"AutoCavityStrength",{"Amount of ambient darkening inside texture cracks. Higher values emphasize small recesses, but can double-darken details already painted into the texture. 0 hides cavity shading."}},
+    {"AutoMaterialOcclusionDistance",{"Shared range for cavity shading and POM self-shadowing. Larger distances show these details farther away but increase GPU work. Normal maps and POM relief have their own distance settings."}},
+    {"ActorShadows",{"Captures characters and other animated objects for detailed shadows, including your own character. Turning it off reduces capture and shadow rendering work; static world shadows remain controlled separately."}},
+    {"ActorShadowDetail",{"Adds a dedicated nearby shadow map for finer character detail. Costs extra GPU time and memory. Turning it off keeps the ordinary character shadows."}},
+    {"GrassShadows",{"Lets nearby native grass tufts cast shadows. Adds geometry capture and shadow rendering work, most noticeable in dense grass. Requires character shadow capture."}},
+    {"ActorShadowRadius",{"Distance from the player focus within which animated objects are selected for shadows. Lower values reduce crowd-related work. 0 removes this distance cap; capture and memory budgets still apply."}},
+    {"ActorShadowBudgetMiB",{"Memory budget for selecting character shadow geometry, prioritizing nearby objects. Lower values can omit distant or less important casters. 0 removes this selection cap; the overall capture budget still applies."}},
+    {"CaptureBudgetMiB",{"Per-frame limit for captured animated geometry. Lower values reduce capture memory but can omit geometry used by effects. This is not a limit on the game's total RAM usage."}},
+    {"MinSkinnedTriangles",{"Ignores animated draws smaller than this triangle count when capturing geometry. Higher values reduce work but can omit small weapons or attachments from effects. 0 keeps small draws eligible."}},
+    {"FarShadowInterval",{"Frames between updates of distant world shadows. Higher values save GPU work but make changes in distant shadows take longer to appear."}},
+    {"NearShadowInterval",{"Frames between updates of nearby environment shadows. Character shadows still refresh each frame, and camera changes can force an environment refresh. Values above 1 reuse cached results and need extra scratch memory."}},
+    {"ShadowDirectionSteps",{"Precision of cached sun and moon directions. Higher values follow the moving light more smoothly but refresh cached shadows more often. Lower values can make shadow direction changes more noticeable."}},
+    {"StaticCacheSlices",{"Spreads static shadow cache updates across this many frames. More slices reduce work per update frame but take longer to finish a changed cache. 1 updates it together."}},
+    {"ShadowPivotCorrection",{"Keeps nearby shadows aligned when camera zoom or collision moves the view. Leave enabled for normal play; disable only to compare the older shadow positioning."}},
+    {"PointShadowRefreshMs",{"Minimum interval between ordinary local-light shadow updates. Higher values save rendering work but can make moving shadows lag. 0 allows updates every frame; moved or replaced lights can force a refresh."}},
+    {"PointShadowFacesPerFrame",{"Directions updated per local-light shadow cube, out of six. Fewer faces spread the work over more frames but can briefly show different shadow ages across directions. Moved or replaced lights require a full refresh."}},
+    {"Weather",{"Enhances the game's current rain, snow and sand weather with Northlight effects. Does not force a storm. Turning it off leaves native game weather and disables the related Northlight enhancements."}},
+    {"WeatherMemory",{"Reads the game's weather state directly for more reliable intensity and shelter transitions. Off uses texture-based detection as a fallback. Leave enabled unless troubleshooting weather detection."}},
+    {"RainFog",{"Strength of the weather-driven atmosphere and lighting response, including fog and storm dimming. 1 is the tuned amount; 0 removes this response and 2 intensifies it. Lens effects have separate controls."}},
+    {"FogClouds",{"Adds drifting, low fog banks where the region and weather support them. Uses an additional GPU effect; turn off to reduce its rendering cost."}},
+    {"FogCloudDensity",{"Density of drifting fog banks: 100 is normal, 0 makes them invisible. Higher values hide more scenery. Use the Drifting fog banks switch to disable the effect."}},
+    {"RainLensStrength",{"Visibility of rain droplets on the camera: 100 is normal, 0 hides them. Actual rain and shelter still determine when droplets appear."}},
+    {"SnowLensStrength",{"Visibility of snow clumps on the camera: 100 is normal, 0 hides them. Does not change native world snow particles or the separate edge frost strength."}},
+    {"SnowFrostStrength",{"Visibility of accumulated frost around the screen edges: 100 is normal, 0 hides it. Higher values make the edge frost more prominent during snow."}},
+    {"SandLensStrength",{"Visibility of sand deposits on the camera: 100 is normal, 0 hides them. Sand weather and shelter still control when the effect appears."}},
+    {"SandLensSize",{"Size of sand grains on the camera: 100 keeps the normal size. Larger values make individual grains coarser without changing the weather intensity."}},
+    {"WeatherWindDirection",{"Wind heading in world coordinates, measured in degrees. Changes the direction of supported weather motion; turning the camera does not rotate the wind itself."}},
+    {"WeatherWindStrength",{"Strength of wind applied to supported weather motion: 100 is normal, 0 removes this wind force. Does not turn off rain, snow or their gravity."}},
+    {"WeatherCameraMotion",{"Makes lens droplets, snow and sand react to camera turns. Off removes the camera-induced drift while keeping their ordinary weather motion."}},
+    {"HorizonHaze",{"Blends distant terrain and the low sky toward the region's fog color. Higher values make the horizon softer; 0 disables this haze. Requires Atmospheric fog."}},
+    {"HorizonHazeStart",{"Distance where terrain haze begins, as a percentage of the region's fog end distance. Higher values keep more of the landscape clear before the haze starts."}},
+    {"HorizonHazeBand",{"Height of the sky haze band above the horizon, in degrees. Higher values extend the haze farther up the sky."}},
+    {"HorizonHazeTerrain",{"Applies horizon haze to distant terrain as well as the sky. Turn off to keep the landscape clearer while retaining the sky's horizon band."}},
+    {"CommandStream",{"Records rendering commands on the game thread and executes them on a separate thread. Can help when CPU work limits performance, but needs spare CPU capacity. Required for HDR output."}},
+    {"StreamFramesAhead",{"Number of buffered frames allowed ahead of rendering. More buffering can smooth uneven CPU work, but adds input latency and queue memory. Does not set an FPS limit."}},
+    {"StreamFrameSkip",{"Drops outdated draws when the render thread falls behind, while retaining state changes and uploads. Can reduce accumulated delay, but skipped frames can make motion less smooth."}},
+    {"StreamOcclusionLocal",{"Uses the latest completed visibility result instead of waiting for a fresh GPU query. Reduces stalls, but some visibility-dependent effects can react later. Disable when troubleshooting those effects."}},
+    {"ReplayJobs",{"Prepares effect work on helper CPU threads. Can help with CPU-heavy scenes when spare cores are available; the intended image is unchanged."}},
+    {"FrameDrawGates",{"Skips per-draw checks for effects that are inactive in the current frame. Reduces CPU work without changing enabled effects. Leave on unless troubleshooting."}},
+    {"GpuBudgetMs",{"Target GPU time for adaptive effect quality, including fog. A lower budget reduces supported effect detail under load. 0 disables this adaptation. This is not an FPS limiter or a guaranteed cap on total frame time."}},
+    {"ActorShadowCpuMs",{"Target CPU time for character shadow work. When exceeded, the adaptive budget reduces the character shadow radius. 0 disables adaptation. Does not cap the game's total CPU time."}},
+    {"SpellLayer",{"Preserves supported particles, ribbons and projected spell effects when Northlight shades the world. Keeps casts from being darkened by world lighting. Requires extra draw tracking; disable only to compare or troubleshoot."}},
+    {"SpellLayerClasses",{"Which blend types receive spell protection: 1 additive, 2 alpha, 4 multiply, 8 other. Add values to combine them; 15 includes all. Keep 15 for normal play; narrower masks are for troubleshooting."}},
+    {"SpellFog",{"Applies Northlight distance fog to supported spell shaders so effects blend with the scene. Coverage depends on the spell shader. Off leaves their native fog behavior."}},
+    {"NameMask",{"Protects floating unit names from Northlight world lighting and fog. Does not control HUD brightness. Leave enabled to keep names readable while scene effects are active."}},
+    {"DepthFuncAware",{"Respects draw depth-test behavior when deciding which draws receive scene effects. Helps preserve overlays and effects that intentionally ignore depth. Leave enabled unless troubleshooting draw classification."}},
+    {"Diagnostics",{"Writes periodic renderer diagnostics to the log for troubleshooting. Adds logging overhead; normally leave off unless collecting a report."}},
+    {"RenderProfile",{"Collects per-pass CPU and GPU timings for the diagnostic log. Requires Diagnostic logging and adds measurement overhead. Enable while investigating performance, then turn off."}},
+    {"DiagReplayProbe",{"Repeats nearby character shadow draws on a hidden target to measure their cost. Does not change the scene, but adds GPU work. Use only for a requested diagnostic run."}},
+    {"ShadowFateDiagnostics",{"Logs why captured shadow geometry is kept or discarded during budget selection. Useful for missing character shadows; leave off for normal play to avoid extra diagnostic work."}},
+    {"SpellTrace",{"Number of frames of detailed spell-draw logging to collect. 0 disables the trace. Use a short trace while reproducing a spell issue; verbose logging adds CPU and disk work."}},
+    {"NameMaskDebug",{"Displays the protected unit-name area in magenta. Diagnostic visualization only; turn off for normal play."}},
+    {"MemMap",{"Logs snapshots of the game's 32-bit virtual address space to investigate allocation failures. This measures address space, not just physical RAM, and does not increase available memory. Adds diagnostic overhead."}},
+    {"HDRPaperWhite",{"Brightness of ordinary white world surfaces, in nits. Raise it for a brighter HDR baseline; peak highlights and UI brightness have separate controls. Saved for the current display."}},
+    {"HDRUIWhite",{"Brightness of HUD elements and text in HDR, in nits. Independent of world exposure and contrast. Saved for the current display."}},
+    {"HDRAutoMinEV",{"Lowest exposure the automatic meter may choose before compensation. A lower value lets bright scenes darken further. Only used in Auto exposure mode."}},
+    {"HDRAutoMaxEV",{"Highest exposure the automatic meter may choose before compensation. A higher value lets dark scenes brighten further. Only used in Auto exposure mode."}},
+    {"HDRLightAdaptation",{"Seconds to complete 90% of an exposure change when entering brighter scenery. Lower values react faster but can make brightness changes more noticeable. Only used in Auto exposure mode."}},
+    {"HDRDarkAdaptation",{"Seconds to complete 90% of an exposure change when entering darker scenery. Lower values reveal dark areas sooner; higher values give a slower eye-adaptation effect. Only used in Auto exposure mode."}},
+    // Sun and moon share these controls; their saved values remain independent.
+    {"disc",{"Color of the visible sun or moon disc. Changes its appearance in the sky; surface lighting has a separate tint."}},
+    {"disc_gain",{"Brightness multiplier for the visible disc: 1 is unscaled, 0 hides it. Does not change the strength of light falling on surfaces."}},
+    {"light",{"Tint for sunlight or moonlight on surfaces. Light tint mix controls how much of this color replaces the region's authored hue while preserving its brightness."}},
+    {"light_mix",{"Blends surface light color from the region's authored hue at 0 to the chosen Light tint at 1. Use Light strength to change brightness."}},
+    {"light_strength",{"Strength multiplier for sunlight or moonlight on surfaces: 1 is normal. Lower values weaken this lighting; higher values intensify it. Disc brightness and fog illumination are separate."}},
+    {"fog_gain",{"Amount of sunlight or moonlight scattered through atmospheric fog. Higher values make illuminated air more prominent without increasing surface light or disc brightness."}},
+    {"fog_height_scale",{"Vertical reach of this body's fog illumination. Higher values extend the illuminated atmosphere farther upward. Requires Atmospheric fog."}},
+    {"horizon_haze",{"Multiplier for horizon haze under this sun or moon profile: 1 uses the global haze strength, 0 removes this contribution. Requires Atmospheric fog and a nonzero global Horizon haze setting."}},
+    {"glow_strength",{"Strength of the atmospheric glow around the sun or moon direction. 0 removes this glow. Surface lighting and disc brightness remain separately controlled."}},
+    {"glow",{"Custom tint for the atmospheric glow. Glow tint mix controls how much of this color replaces the light's hue."}},
+    {"glow_mix",{"Blends glow color from the light's tint at 0 to the chosen Glow tint at 1, preserving brightness. Use Glow strength to change its intensity."}},
 };
 
 struct Group { const char* id; const char* title; const char* master; const char* fields; const char* advanced; };
@@ -330,8 +434,11 @@ struct SettingsPanel::State {
         if(!ImGui::BeginTooltip())return;
         ImGui::PushTextWrapPos(ImGui::GetFontSize()*30);
         ImGui::TextUnformatted(fieldLabel(f).c_str());
-        ImGui::TextColored(Color::Muted,"%s  [%s]  %s",fileName(f.file),f.section.c_str(),f.key.c_str());
+        auto help=Help.find(f.key);
+        if(help==Help.end()&&f.file==D::Celestial)help=Help.find(f.key.substr(f.key.find('_')+1));
+        if(help!=Help.end())for(const char* line:help->second){ImGui::Spacing();ImGui::TextWrapped("%s",line);}
         ImGui::Separator();
+        ImGui::TextColored(Color::Muted,"%s  [%s]  %s",fileName(f.file),f.section.c_str(),f.key.c_str());
         const auto shown=draft.effective(f);
         ImGui::Text("Value: %s%s",shown.c_str(),draft.edited(f)?"  (unsaved)":"");
         ImGui::Text("Saved: %s   Running: %s",draft.saved(f).c_str(),f.available?f.active.c_str():"unavailable");
@@ -339,8 +446,6 @@ struct SettingsPanel::State {
         const auto inherited=base?draft.effective(*base):f.inherited;
         ImGui::Text("Factory: %s   Inherits: %s",f.factory.c_str(),inherited.c_str());
         ImGui::TextColored(Color::Muted,"Source: %s%s",originText(f.origin),draft.overrides(f)?"":" - not written to the file");
-        auto help=Help.find(f.key);
-        if(help!=Help.end())for(const char* line:help->second){ImGui::Spacing();ImGui::TextWrapped("%s",line);}
         ImGui::Spacing();
         if(f.apply=="R")ImGui::TextColored(Color::Restart,draft.restartPending(f)?"Requires a game restart: the running renderer still uses %s.":"Requires a game restart.%s",draft.restartPending(f)?f.active.c_str():"");
         else ImGui::TextColored(Color::Good,"Applies live: previewed while you edit, kept when you save.");
@@ -518,6 +623,7 @@ struct SettingsPanel::State {
             ImGui::BeginDisabled(here||!preset||locked());
             if(ImGui::Button("Choose...")){presetChoice=p.key;confirm=Confirm::Preset;}
             ImGui::EndDisabled();
+            if(ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip|ImGuiHoveredFlags_AllowWhenDisabled))ImGui::SetTooltip("Replace quality overrides with this preset's values after confirmation.\nRenderer and HDR settings are kept. Press Save to keep the changes.");
             ImGui::PopID();
             ImGui::Separator();
         }
@@ -542,10 +648,13 @@ struct SettingsPanel::State {
             ImGui::Text("Effective white: %.0f nits   UI: %.0f nits",hdr.paperWhite,hdr.uiWhite);
             if(ImGui::TreeNode("Output details")){ImGui::TextUnformatted(hdr.active?"RGBA16F / linear scRGB, Rec.709 primaries":"SDR output");ImGui::TextWrapped("Display profile: %s",hdr.profile.empty()?"Stable identity unavailable":hdr.profile.c_str());ImGui::Text("Reported peak: %.0f nits",hdr.detectedPeak);ImGui::Text("HDR frame / output payload: %.2f MiB",double(hdr.payloadBytes)/1048576);ImGui::TextWrapped("Payload excludes other renderer resources and driver allocations; it is not residency.");ImGui::TextUnformatted("Values describe application signals, not measured panel brightness.");ImGui::TreePop();}
             ImGui::BeginDisabled(!hdr.active||!calibrationDraw);ImGui::Checkbox("Show HDR calibration",&calibrationOpen);ImGui::EndDisabled();
+            if(ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip|ImGuiHoveredFlags_AllowWhenDisabled))ImGui::SetTooltip("Show brightness patches to compare ordinary white and peak highlights.\nRequires active HDR output. Does not change your saved display settings.");
             if(calibrationOpen&&hdr.active&&calibrationDraw){
                 ImGui::TextWrapped("Adjust white and UI brightness for comfortable ordinary content. Then compare the peak gradient. These patches bypass world exposure, contrast, bloom and the scene peak limit.");
                 ImGui::SliderFloat("Test peak (nits)",&calibrationPeak,80,10000,"%.0f",ImGuiSliderFlags_Logarithmic);
+                if(ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))ImGui::SetTooltip("Brightness used only for these test patches and the peak gradient.\nDoes not change Manual peak or the world's output limit.");
                 ImGui::Checkbox("Wide field (panel ABL comparison)",&calibrationLarge);
+                if(ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))ImGui::SetTooltip("Enlarge the white patch to compare small and large bright areas.\nSome displays dim large areas through automatic brightness limiting (ABL).");
                 auto patch=[&](float nits,float r,float g,float b,float w,float h){
                     const auto p=ImGui::GetCursorScreenPos();auto* list=ImGui::GetWindowDrawList();const auto lo=list->GetClipRectMin(),hi=list->GetClipRectMax();
                     calibrationPatches.push_back({this,{std::max(p.x,lo.x),std::max(p.y,lo.y),std::min(p.x+w,hi.x),std::min(p.y+h,hi.y)},{r*nits/80,g*nits/80,b*nits/80,1}});
