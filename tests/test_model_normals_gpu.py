@@ -9,6 +9,7 @@ import math
 import os
 from pathlib import Path
 import shutil
+import struct
 import subprocess
 import sys
 
@@ -60,6 +61,9 @@ exe = out/'model-normals.exe'
 subprocess.run([str(fp.zig()), 'c++', '-target', 'x86-windows-gnu', '-std=c++17', '-O2', '-UNDEBUG', '-Wno-microsoft-exception-spec',
                 *fp.test_include_flags(), str(fp.TESTS/'model_normals_gpu.cpp'), str(fp.src('world_gi.cpp')),
                 '-luser32', '-o', str(exe)], env=env, check=True)
+# Match the game's address space for the native 4K/MSAA readbacks, as the HDR oracle does.
+data=bytearray(exe.read_bytes());flags=struct.unpack_from('<I',data,0x3c)[0]+22
+struct.pack_into('<H',data,flags,struct.unpack_from('<H',data,flags)[0]|0x20);exe.write_bytes(data)
 records = []
 for tag, source in cases:
     run = subprocess.run([str(exe), str(args.backend.resolve()), str(out)+os.sep, tag, source]+(['--no-timing'] if args.no_timing else []), cwd=out,

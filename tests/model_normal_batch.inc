@@ -53,7 +53,7 @@ static void normalBatch(IDirect3D9* api,CaptureCalls& calls,IDirect3DVertexShade
             // Reusing an UP array after capture must never change its replay.
             std::fill(bytes.begin()+12,bytes.end(),0);
         }
-        if(batch)assert(normals->pendingTextures());
+        if(batch)assert(normals->testPendingPackets()&&!normals->pendingTextures());
         assert(normals->finishCaptures());ok(d->EndScene());
         QueryPerformanceCounter(&t1);double gpuMs=0;
         if(gpuTiming){ok(end->Issue(D3DISSUE_END));ok(d->Present(nullptr,nullptr,nullptr,nullptr));const auto b=wait(begin),e=wait(end),f=wait(frequency);gpuMs=double(e-b)*1000/double(f);}
@@ -105,7 +105,7 @@ static void normalBatch(IDirect3D9* api,CaptureCalls& calls,IDirect3DVertexShade
                 else {assert(peer.readUP(handedDeclaration.p,args,indices,D3DFMT_INDEX32,data,48,local));handed=peer.retain(std::move(local));}}
             const bool handoff=mode<2;
             ok(d->BeginScene());normals->capture(shader,submit,!buffered,&args,indexed?indices:nullptr,D3DFMT_INDEX32,buffered?nullptr:data,48,handoff?&handed:nullptr,handoff?handedDeclaration.p:nullptr);
-            if(batch)assert(normals->pendingTextures());
+            if(batch)assert(normals->testPendingPackets()&&!normals->pendingTextures());
             if(batch&&buffered){assert(normals->reusedSources()==1);if(mode==1)peer.clearSnapshotCache();}
             ++normalSourceRevision;
             ok(vertexBuffer->Lock(0,count*48,&memory,0));std::memset(memory,0,count*48);ok(vertexBuffer->Unlock());

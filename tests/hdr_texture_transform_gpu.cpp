@@ -4,6 +4,7 @@
 #include "composite_distance_gpu.cpp"
 #undef main
 #include "hdr_color.h"
+#include "forwarders.h"
 static constexpr unsigned W=64,H=64;
 static void fill(IDirect3DDevice9* d,IDirect3DSurface9* target,IDirect3DPixelShader9* shader,const float (&color)[4]){
     ok(NorthlightHdr::quadState(d,target,W,H));ok(d->SetPixelShader(shader));ok(d->SetPixelShaderConstantF(0,color,1));
@@ -18,6 +19,36 @@ template<class Draw> static double timed(IDirect3DDevice9* d,Draw draw){
     start->Release();end->Release();frequency->Release();assert(hz&&b>a);return double(b-a)*1000/double(hz)/32;
 }
 
+static unsigned layerPoolOracle(IDirect3DDevice9* raw,IDirect3DSurface9* target,IDirect3DSurface9* readback){
+    struct Meter:ForwardIDirect3DDevice9{
+        unsigned creates=0;explicit Meter(IDirect3DDevice9* d):ForwardIDirect3DDevice9(d){}
+        HRESULT STDMETHODCALLTYPE CreateStateBlock(D3DSTATEBLOCKTYPE type,IDirect3DStateBlock9** out)override{++creates;return real->CreateStateBlock(type,out);}
+    } d(raw);
+    NorthlightStateBlockPool pool(&d);NorthlightHdr::Color color;unsigned cases=0;
+    std::vector<std::uint16_t> reference(W*H*4);
+    for(unsigned draw=0;draw<24;++draw){
+        for(bool pooled:{false,true}){
+            ok(NorthlightHdr::quadState(raw,target,W,H));ok(raw->Clear(0,nullptr,D3DCLEAR_TARGET,0xff5070a0,1,0));
+            ok(raw->SetPixelShader(nullptr));ok(raw->SetTexture(0,nullptr));ok(raw->SetTexture(1,nullptr));
+            // Unsupported ADD deliberately routes through the compatibility layer.
+            ok(raw->SetFVF(D3DFVF_XYZRHW|D3DFVF_DIFFUSE));ok(raw->SetTextureStageState(0,D3DTSS_COLOROP,D3DTOP_ADD));
+            ok(raw->SetTextureStageState(0,D3DTSS_COLORARG1,D3DTA_DIFFUSE));ok(raw->SetTextureStageState(0,D3DTSS_COLORARG2,D3DTA_DIFFUSE));
+            ok(raw->SetTextureStageState(0,D3DTSS_ALPHAOP,D3DTOP_SELECTARG1));ok(raw->SetTextureStageState(0,D3DTSS_ALPHAARG1,D3DTA_DIFFUSE));
+            ok(raw->SetTextureStageState(1,D3DTSS_COLOROP,D3DTOP_DISABLE));
+            ok(raw->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE));ok(raw->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_SRCALPHA));ok(raw->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_INVSRCALPHA));
+            const float bank[4]={float(draw),2,3,4};ok(raw->SetPixelShaderConstantF(0,bank,1));
+            struct V{float x,y,z,w;DWORD c;};const DWORD c=D3DCOLOR_ARGB(32+draw*8,20+draw,50,80);const V q[]={{0,0,0,1,c},{W,0,0,1,c},{0,H,0,1,c},{W,H,0,1,c}};
+            ok(raw->BeginScene());ok(color.draw(&d,160,[&]{return raw->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,q,sizeof(V));},0,pooled?&pool:nullptr));ok(raw->EndScene());
+            float restored[4];ok(raw->GetPixelShaderConstantF(0,restored,1));assert(!std::memcmp(bank,restored,sizeof bank));
+            DWORD op=0;ok(raw->GetTextureStageState(0,D3DTSS_COLOROP,&op));assert(op==D3DTOP_ADD);
+            ok(raw->GetRenderTargetData(target,readback));D3DLOCKED_RECT lock{};ok(readback->LockRect(&lock,nullptr,D3DLOCK_READONLY));
+            for(unsigned y=0;y<H;++y){const auto* pixels=reinterpret_cast<const std::uint16_t*>(static_cast<const char*>(lock.pBits)+y*lock.Pitch);if(!pooled)std::copy(pixels,pixels+W*4,reference.data()+y*W*4);else assert(!std::memcmp(pixels,reference.data()+y*W*4,W*8));}
+            ok(readback->UnlockRect());
+        }++cases;
+    }
+    assert(color.layers==48&&d.creates==25);pool.clear();
+    std::printf("HDR_LAYER_POOL_ORACLE cases=%u rgba=exact freshCreates=24 pooledCreates=1 changedConstantsRestored=true\n",cases);return cases;
+}
 int main(int argc,char** argv){
     assert(argc==2||argc==3);std::setvbuf(stdout,nullptr,_IONBF,0);
     HWND window=CreateWindowExW(0,L"STATIC",L"",WS_OVERLAPPED,0,0,W,H,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);assert(window);
@@ -30,6 +61,7 @@ int main(int argc,char** argv){
     IDirect3DSurface9 *resolved=nullptr,*staging=nullptr;
     ok(d->CreateRenderTarget(W,H,D3DFMT_A16B16G16R16F,D3DMULTISAMPLE_NONE,0,FALSE,&resolved,nullptr));
     ok(d->CreateOffscreenPlainSurface(W,H,D3DFMT_A16B16G16R16F,D3DPOOL_SYSTEMMEM,&staging,nullptr));
+    layerPoolOracle(d,resolved,staging);
     Image pattern{8,8,D3DFMT_A8R8G8B8,4,std::vector<unsigned char>(256)};
     for(unsigned i=0;i<64;++i){DWORD pixel=D3DCOLOR_ARGB(96+i*2,20+(i*37)%220,30+(i*53)%210,40+(i*17)%200);std::memcpy(pattern.pixels.data()+i*4,&pixel,4);}
     auto* first=texture(d,pattern);std::reverse(pattern.pixels.begin(),pattern.pixels.end());auto* second=texture(d,pattern);

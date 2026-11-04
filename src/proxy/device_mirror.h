@@ -69,7 +69,8 @@ struct DeviceMirror {
     DWORD samplers[Textures][SamplerTypes]={};bool samplerKnown[Textures][SamplerTypes]={};
     DWORD renderStates[RenderStates]={};bool renderStateKnown[RenderStates]={};
     D3DVIEWPORT9 viewport={};bool viewportKnown=false;
-    IDirect3DSurface9* targets[Targets]={};bool targetKnown[Targets]={};
+    IDirect3DSurface9* targets[Targets]={};bool targetKnown[Targets]={},targetAbsent[Targets]={};
+    unsigned targetWrites=0;
     IDirect3DSurface9* depth=nullptr;bool depthKnown=false;
     float vsFloat[VsFloat][4]={};bool vsFloatKnown[VsFloat]={};
     // Diagnostic setter evidence is independent of successful Get* support.
@@ -104,6 +105,11 @@ struct DeviceMirror {
     // nothing else mutated the mirror during its own backend call (re-entry).
     std::uint64_t mutations=0;
     bool active()const{return enabled&&!recording&&!rawDepth;}
+    struct TargetWrite {
+        DeviceMirror* mirror;
+        explicit TargetWrite(DeviceMirror* p):mirror(p){++mirror->targetWrites;std::memset(mirror->targetAbsent,0,sizeof mirror->targetAbsent);}
+        ~TargetWrite(){std::memset(mirror->targetAbsent,0,sizeof mirror->targetAbsent);--mirror->targetWrites;}
+    };
     bool heldByThisThread()const{return MirrorGuard::heldByThisThread(gate);} /* 0.3.180 (C1): the in-place epoch source's precondition */
     // Accepted, active setter whose value is already in the slot's field.
     // Scalar slots (render/sampler states, viewport) additionally need this
@@ -148,7 +154,7 @@ struct DeviceMirror {
         for(auto& s:streams)s.known=false;
         std::memset(frequencyKnown,0,sizeof frequencyKnown);std::memset(textureKnown,0,sizeof textureKnown);
         std::memset(samplerKnown,0,sizeof samplerKnown);std::memset(renderStateKnown,0,sizeof renderStateKnown);
-        std::memset(targetKnown,0,sizeof targetKnown);std::memset(vsFloatKnown,0,sizeof vsFloatKnown);std::memset(vsFloatWritten,0,sizeof vsFloatWritten);
+        std::memset(targetKnown,0,sizeof targetKnown);std::memset(targetAbsent,0,sizeof targetAbsent);std::memset(vsFloatKnown,0,sizeof vsFloatKnown);std::memset(vsFloatWritten,0,sizeof vsFloatWritten);
         std::memset(vsIntKnown,0,sizeof vsIntKnown);std::memset(vsBoolKnown,0,sizeof vsBoolKnown);std::memset(psFloatKnown,0,sizeof psFloatKnown);
         std::memset(pending,0,sizeof pending);++mutations;++invalidations;
     }
@@ -178,6 +184,7 @@ public:
     HRESULT STDMETHODCALLTYPE Capture() override{MirrorGuard lock(mirror->gate,MirrorSite::StateBlock);return real->Capture();}
     HRESULT STDMETHODCALLTYPE Apply() override{
         MirrorGuard lock(mirror->gate,MirrorSite::StateBlock);
+        DeviceMirror::TargetWrite write(mirror);
         // Also invalidate failures: a backend may have changed part of the state.
         HRESULT hr=real->Apply();mirror->invalidate();return hr;
     }
@@ -316,7 +323,9 @@ public:
     }
     // Target 0 implicitly resets viewport (and scissor): never computed here.
     HRESULT STDMETHODCALLTYPE SetRenderTarget(DWORD n,IDirect3DSurface9* value) override{
-        Guard lock(m->gate);if(n==0&&m->synced)m->synced->viewport(); /* target 0 resets the viewport */const std::uint64_t serial=m->mutations+1;HRESULT hr=real->SetRenderTarget(n,value);const bool slot=n<DeviceMirror::Targets;if(slot)m->targetKnown[n]=false;
+        Guard lock(m->gate);
+        DeviceMirror::TargetWrite write(m);
+        if(n==0&&m->synced)m->synced->viewport(); /* target 0 resets the viewport */const std::uint64_t serial=m->mutations+1;HRESULT hr=real->SetRenderTarget(n,value);const bool slot=n<DeviceMirror::Targets;if(slot)m->targetKnown[n]=false;
         if(n==0){m->viewportKnown=false;m->forget(DeviceMirror::ViewportSlot);}
         if(accepted(hr)&&slot&&value){m->targets[n]=value;m->targetKnown[n]=m->written(DeviceMirror::TargetSlot+n,serial);}else if(slot)m->forget(DeviceMirror::TargetSlot+n);return hr;
     }
@@ -453,7 +462,7 @@ public:
             for(unsigned j=0;j<DeviceMirror::SamplerTypes;++j)if(m->samplerKnown[i][j]){++m->checkedFields;DWORD value=0;if(FAILED(real->GetSamplerState(i,D3DSAMPLERSTATETYPE(j),&value))||value!=m->samplers[i][j])return mismatch("sampler");}
         }
         for(unsigned i=0;i<DeviceMirror::RenderStates;++i)if(m->renderStateKnown[i]){++m->checkedFields;DWORD value=0;if(FAILED(real->GetRenderState(D3DRENDERSTATETYPE(i),&value))||value!=m->renderStates[i])return mismatch("renderState");}
-        for(unsigned i=0;i<DeviceMirror::Targets;++i)if(m->targetKnown[i]){++m->checkedFields;IDirect3DSurface9* p=nullptr;HRESULT hr=real->GetRenderTarget(i,&p);bool same=SUCCEEDED(hr)&&p==m->targets[i];if(p)p->Release();if(!same)return mismatch("target");}
+        for(unsigned i=0;i<DeviceMirror::Targets;++i)if(m->targetKnown[i]||m->targetAbsent[i]){++m->checkedFields;IDirect3DSurface9* p=nullptr;HRESULT hr=real->GetRenderTarget(i,&p);bool same=m->targetAbsent[i]?!p&&(SUCCEEDED(hr)||hr==D3DERR_NOTFOUND):SUCCEEDED(hr)&&p==m->targets[i];if(p)p->Release();if(!same)return mismatch("target");}
         if(m->depthKnown){++m->checkedFields;IDirect3DSurface9* p=nullptr;HRESULT hr=real->GetDepthStencilSurface(&p);bool same=SUCCEEDED(hr)&&p==m->depth;if(p)p->Release();if(!same)return mismatch("depth");}
         for(unsigned begin=0;begin<DeviceMirror::VsFloat;){
             if(!m->vsFloatKnown[begin]){++begin;continue;}unsigned end=begin+1;while(end<DeviceMirror::VsFloat&&m->vsFloatKnown[end])++end;
@@ -500,7 +509,7 @@ public:
     HRESULT STDMETHODCALLTYPE DrawIndexedPrimitive(D3DPRIMITIVETYPE type,INT base,UINT minimum,UINT vertices,UINT start,UINT count) override{Guard lock(m->gate);const bool fixed=!m->programmableVS;const auto serial=m->mutations;HRESULT hr=real->DrawIndexedPrimitive(type,base,minimum,vertices,start,count);m->afterDraw(fixed||m->mutations!=serial);accepted(hr);return hr;}
     HRESULT STDMETHODCALLTYPE ProcessVertices(UINT source,UINT destination,UINT count,IDirect3DVertexBuffer9* buffer,IDirect3DVertexDeclaration9* decl,DWORD flags) override{Guard lock(m->gate);HRESULT hr=real->ProcessVertices(source,destination,count,buffer,decl,flags);m->afterDraw(true);accepted(hr);return hr;}
     HRESULT STDMETHODCALLTYPE Reset(D3DPRESENT_PARAMETERS* params) override{
-        Guard lock(m->gate);m->invalidate();HRESULT hr=real->Reset(params);m->invalidate();if(SUCCEEDED(hr))m->recording=false;return hr;
+        Guard lock(m->gate);DeviceMirror::TargetWrite write(m);m->invalidate();HRESULT hr=real->Reset(params);m->invalidate();if(SUCCEEDED(hr))m->recording=false;return hr;
     }
     HRESULT STDMETHODCALLTYPE SetSoftwareVertexProcessing(WINBOOL value) override{
         Guard lock(m->gate);HRESULT hr=real->SetSoftwareVertexProcessing(value);m->invalidate();return hr;
@@ -553,6 +562,20 @@ public:
         for(unsigned i=0;i<count;++i)if(unsigned(keys[i])>=DeviceMirror::RenderStates||!m->renderStateKnown[keys[i]])return false;
         for(unsigned i=0;i<count;++i)out[i]=m->renderStates[keys[i]];
         m->answered+=count;return true;
+    }
+    bool emptyAuxiliaryTargets(){
+        MirrorGuard lock(m->gate,MirrorSite::Device);
+        if(!m->active()||m->targetWrites)return false;
+        // Private absence proofs leave public Get* HRESULT/output semantics intact.
+        // Every unknown slot needs an authoritative read with initialized output.
+        for(unsigned i=1;i<DeviceMirror::Targets;++i){
+            if(m->targetAbsent[i]){++m->answered;continue;}
+            const auto serial=m->mutations;IDirect3DSurface9* surface=nullptr;++m->forwarded;
+            const HRESULT hr=real->GetRenderTarget(i,&surface);const bool absent=!surface&&(SUCCEEDED(hr)||hr==D3DERR_NOTFOUND);
+            if(surface)surface->Release();
+            if(!m->active()||m->targetWrites||m->mutations!=serial)return false;
+            m->targetAbsent[i]=absent;if(!absent)return false;
+        }return true;
     }
     // Mask/output slot i corresponds to D3DSAMPLERSTATETYPE(i+1). Unused
     // states need not be known; a failed snapshot leaves the output untouched.

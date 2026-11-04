@@ -16,7 +16,7 @@ from build_glue_emitters import native_track
 import bisect
 
 
-def sky_frames(blob, batch):
+def sky_frames(blob, batch, ticks=None):
     """Sample actual material keys, ramp interiors, flash edges and loop wrap."""
     constant=lambda value:(0,-1,(((0,),b'',(tuple(value),)),))
     color = unpack('<I', blob, 76)[0]+batch[5]*40
@@ -41,7 +41,7 @@ def sky_frames(blob, batch):
         amount = (tick-keys[index])/(keys[index+1]-keys[index]) if mode else 0
         return tuple(a+(b-a)*amount for a,b in zip(values[index],values[index+1]))
     frames=[]
-    for tick in sorted(times):
+    for tick in sorted(times if ticks is None else ticks):
         rgb = sample(tracks[0],tick)
         alpha = sample(tracks[1],tick)[0]/32767*sample(tracks[2],tick)[0]/32767
         frames.append((tick,*rgb,alpha))

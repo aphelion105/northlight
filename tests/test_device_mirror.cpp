@@ -61,6 +61,9 @@ struct Backend final:IDirect3DDevice9 {
  void(*onRenderState)(void*)=nullptr;void* callbackContext=nullptr;
  void(*onSetVS)(void*)=nullptr;void(*onGetVS)(void*)=nullptr;void(*onDraw)(void*)=nullptr;
  void(*onGetF)(void*)=nullptr;void(*onSetF)(void*)=nullptr;
+ void(*onBeforeSetTarget)(void*)=nullptr;void(*onSetTarget)(void*)=nullptr;void(*onGetTarget)(void*)=nullptr;
+ void(*onBeforeReset)(void*)=nullptr;void(*onReset)(void*)=nullptr;
+ bool retainNullTarget=false,preserveEmptyTargetOutput=false;HRESULT emptyTargetResult=D3DERR_NOTFOUND;
  void callback(void(*&f)(void*)){if(f){auto call=f;f=nullptr;call(callbackContext);}}
  unsigned refs=1;State state,pending;bool recording=false,failNext=false,failGet=false,failApply=false,constantGetSupported=true;
  std::array<bool,256> rsMask{},fMask{};std::atomic<unsigned> entered{0};unsigned calls=0,gets=0,sets=0,applies=0,captures=0;size_t floatReadRegisters=0;
@@ -94,8 +97,8 @@ struct Backend final:IDirect3DDevice9 {
  HRESULT GetSamplerState(DWORD n,D3DSAMPLERSTATETYPE s,DWORD* v)override{GG;if(n>=16||s>=16||!v)return D3DERR_INVALIDCALL;*v=state.sampler[n][s];return D3D_OK;}
  HRESULT SetViewport(const D3DVIEWPORT9* p)override{SG;if(!p)return D3DERR_INVALIDCALL;edit().viewport=*p;edit().viewport.Width&=0xffff;return result();}
  HRESULT GetViewport(D3DVIEWPORT9* p)override{GG;if(!p)return D3DERR_INVALIDCALL;*p=state.viewport;return D3D_OK;}
- HRESULT SetRenderTarget(DWORD n,IDirect3DSurface9* p)override{SG;if(n>=4)return D3DERR_INVALIDCALL;edit().targets[n]=p;if(!n)edit().viewport={0,0,800,600,0,1};return result();}
- HRESULT GetRenderTarget(DWORD n,IDirect3DSurface9** p)override{GG;if(n>=4||!p)return D3DERR_INVALIDCALL;HRESULT h=give(state.targets[n].p,p);return !state.targets[n].p?D3DERR_NOTFOUND:h;}
+ HRESULT SetRenderTarget(DWORD n,IDirect3DSurface9* p)override{callback(onBeforeSetTarget);HRESULT hr;{SG;if(n>=4)return D3DERR_INVALIDCALL;if(p||!retainNullTarget)edit().targets[n]=p;if(!n)edit().viewport={0,0,800,600,0,1};hr=result();}callback(onSetTarget);return hr;}
+ HRESULT GetRenderTarget(DWORD n,IDirect3DSurface9** p)override{HRESULT hr;{GG;if(n>=4||!p)return D3DERR_INVALIDCALL;if(state.targets[n].p)hr=give(state.targets[n].p,p);else{if(!preserveEmptyTargetOutput)*p=nullptr;hr=emptyTargetResult;}}callback(onGetTarget);return hr;}
  HRESULT SetDepthStencilSurface(IDirect3DSurface9* p)override{SG;edit().depth=p;return result();}
  HRESULT GetDepthStencilSurface(IDirect3DSurface9** p)override{GG;if(!p)return D3DERR_INVALIDCALL;HRESULT h=give(state.depth.p,p);return !state.depth.p?D3DERR_NOTFOUND:h;}
 #define CONSTANT(Name,Type,field,N,W) \
@@ -117,7 +120,7 @@ struct Backend final:IDirect3DDevice9 {
  HRESULT DrawIndexedPrimitive(D3DPRIMITIVETYPE type,INT base,UINT minimum,UINT vertices,UINT start,UINT count)override{SG;implicitConstants();up.type=type;up.minimum=minimum;up.vertices=vertices;up.count=count;drawStart=start;drawBase=base;return result();}
  HRESULT ProcessVertices(UINT source,UINT destination,UINT count,IDirect3DVertexBuffer9* buffer,IDirect3DVertexDeclaration9* declaration,DWORD flags)override{SG;implicitConstants(true);process={source,destination,count,buffer,declaration,flags};return result();}
  HRESULT SetSoftwareVertexProcessing(WINBOOL)override{SG;state.rs[D3DRS_ZENABLE]=0;return result();}
- HRESULT Reset(D3DPRESENT_PARAMETERS*)override{SG;state=State{};recording=false;return result();}
+ HRESULT Reset(D3DPRESENT_PARAMETERS*)override{callback(onBeforeReset);HRESULT hr;{SG;state=State{};recording=false;hr=result();}callback(onReset);return hr;}
 #undef SG
 #undef GG
 };
@@ -1116,10 +1119,43 @@ static void gateCensus(){
 // A foreign thread's calls wait for, and never overlap, the owner's: TSan target together with concurrency().
 // 0.3.182 (D1): "owner" runs the elision tests; "nesting", "waits" and "stress N" run one each (the
 // counterfactual builds must fail them); "threads" is the TSan target.
+static void auxiliaryTargetProofs(){
+ Backend b;DeviceMirror m;MirrorDevice game(&b,&m);ExtensionDevice ext(&b,&m);auto* target=new Object<IDirect3DSurface9>();
+ auto empty=[&]{assert(ext.emptyAuxiliaryTargets());};
+ empty();assert(b.gets==3);const auto reads=b.gets;
+ for(unsigned draw=0;draw<1500;++draw)empty();assert(b.gets==reads);
+ // Public HRESULT and output writes remain authoritative, even after proving absence.
+ for(bool preserve:{false,true}){b.preserveEmptyTargetOutput=preserve;IDirect3DSurface9* out=target;assert(ext.GetRenderTarget(3,&out)==D3DERR_NOTFOUND&&out==(preserve?target:nullptr));}
+ b.preserveEmptyTargetOutput=false;
+ assert(SUCCEEDED(game.SetRenderTarget(1,target))&&!ext.emptyAuxiliaryTargets()&&target->refs==2);
+ b.retainNullTarget=true;assert(SUCCEEDED(game.SetRenderTarget(1,nullptr))&&!ext.emptyAuxiliaryTargets());b.retainNullTarget=false;
+ assert(SUCCEEDED(game.SetRenderTarget(1,nullptr)));empty();
+ m.invalidate();b.failGet=true;assert(!ext.emptyAuxiliaryTargets());empty();
+ for(HRESULT result:{D3D_OK,D3DERR_NOTFOUND,D3DERR_INVALIDCALL}){m.invalidate();b.emptyTargetResult=result;assert(ext.emptyAuxiliaryTargets()==(result!=D3DERR_INVALIDCALL));}b.emptyTargetResult=D3DERR_NOTFOUND;
+ // A read that re-enters SetRenderTarget must not certify its stale result.
+ struct Reentry {MirrorDevice* game;ExtensionDevice* ext;DeviceMirror* mirror;IDirect3DSurface9* target;} r{&game,&ext,&m,target};b.callbackContext=&r;
+ b.onGetTarget=[](void* p){auto& r=*static_cast<Reentry*>(p);assert(SUCCEEDED(r.game->SetRenderTarget(1,r.target)));};
+ m.invalidate();assert(!ext.emptyAuxiliaryTargets()&&!m.targetAbsent[1]);assert(SUCCEEDED(game.SetRenderTarget(1,nullptr)));empty();
+ // Callbacks before and after a binding changes cannot relearn absence while it is in flight.
+ auto inFlight=[](void* p){auto& r=*static_cast<Reentry*>(p);assert(r.mirror->targetWrites&&!r.ext->emptyAuxiliaryTargets());};
+ b.onBeforeSetTarget=inFlight;b.onSetTarget=inFlight;assert(SUCCEEDED(game.SetRenderTarget(1,target))&&!m.targetWrites&&!ext.emptyAuxiliaryTargets());
+ assert(SUCCEEDED(game.SetRenderTarget(1,nullptr)));empty();
+ b.onBeforeSetTarget=[](void* p){auto& r=*static_cast<Reentry*>(p);assert(SUCCEEDED(r.game->SetRenderTarget(2,nullptr))&&r.mirror->targetWrites==1&&!r.ext->emptyAuxiliaryTargets());};
+ assert(SUCCEEDED(game.SetRenderTarget(1,target))&&!m.targetWrites&&!ext.emptyAuxiliaryTargets());
+ b.failNext=true;assert(FAILED(game.SetRenderTarget(1,nullptr)));empty();
+ {ExtensionDevice::RawScope raw(ext);assert(!ext.emptyAuxiliaryTargets());assert(SUCCEEDED(ext.SetRenderTarget(2,target)));}
+ assert(!ext.emptyAuxiliaryTargets());assert(SUCCEEDED(game.SetRenderTarget(2,nullptr)));empty();
+ assert(SUCCEEDED(game.BeginStateBlock())&&!ext.emptyAuxiliaryTargets());IDirect3DStateBlock9* block=nullptr;assert(SUCCEEDED(game.EndStateBlock(&block)));empty();assert(SUCCEEDED(block->Apply()));empty();block->Release();
+ D3DPRESENT_PARAMETERS pp{};b.onBeforeReset=inFlight;b.onReset=inFlight;assert(SUCCEEDED(game.Reset(&pp))&&!m.targetWrites);empty();
+ std::thread foreign([&]{assert(SUCCEEDED(game.SetRenderTarget(3,target)));});foreign.join();assert(!ext.emptyAuxiliaryTargets());assert(SUCCEEDED(game.SetRenderTarget(3,nullptr)));empty();
+ assert(SUCCEEDED(b.SetRenderTarget(2,target)));assert(ext.audit()&&!m.enabled&&!ext.emptyAuxiliaryTargets());target->Release();
+ std::printf("PASS auxiliary targets: 4500 repeated reads avoided; authoritative null/NOTFOUND; public outputs; binding/failed/null-retained setters; nested re-entry; raw/stateblock/reset/foreign/disabled invalidation\n");
+}
 int main(int argc,char** argv){
  const auto mode=[&](const char* name){return argc>1&&!std::strcmp(argv[1],name);};
  const unsigned rounds=argc>2?unsigned(std::atoi(argv[2])):10000;
  if(mode("census")){gateCensus();return 0;}
+ if(mode("auxiliary")){auxiliaryTargetProofs();assert(!liveObjects);return 0;}
  if(mode("local-lights")){diagnosticConstantWrites();assert(!liveObjects);return 0;}
  if(mode("nesting")){ownerNesting();return 0;}
  if(mode("waits")){foreignWaits();return 0;}
@@ -1127,4 +1163,5 @@ int main(int argc,char** argv){
  if(mode("exclusive")){ownerNesting(true);foreignWaits(true);ownerStress(rounds,true);std::puts("PASS exclusive owner mode");return 0;}
  if(mode("owner")){ownerIdentity();ownerNesting();foreignWaits();ownerStress(rounds);ownerNesting(true);foreignWaits(true);ownerStress(rounds,true);assert(!liveObjects);return 0;}
  if(mode("threads")){singleGate();gateCensus();rawScopeConcurrency();concurrency();ownerNesting();foreignWaits();ownerStress(rounds);ownerNesting(true);foreignWaits(true);ownerStress(rounds,true);std::puts("PASS threads");return 0;}
+ auxiliaryTargetProofs();assert(!liveObjects);
  ownerIdentity();assert(!liveObjects);ownerNesting();assert(!liveObjects);foreignWaits();assert(!liveObjects);ownerStress(rounds);assert(!liveObjects);ownerNesting(true);foreignWaits(true);ownerStress(rounds,true);assert(!liveObjects);gateCensus();assert(!liveObjects);knownScan();assert(!liveObjects);singleGate();writeThroughLearning();assert(!liveObjects);writeThroughImplicitState();assert(!liveObjects);writeThroughDifferential();assert(!liveObjects);rawScopeDispatchArguments();assert(!liveObjects);rawScopeBanksAndReentry();assert(!liveObjects);rawScopeRestoreAndControls();assert(!liveObjects);rawScopeConcurrency();assert(!liveObjects);rawScopeShadowWorkload();assert(!liveObjects);implicitConstantBanks();assert(!liveObjects);constantCertificates();assert(!liveObjects);auditCoverageAndSchedule();assert(!liveObjects);static_assert(!std::is_copy_constructible<DeviceMirror>::value,"mirror cannot copy mutex/state");bindingsAndScalars();assert(!liveObjects);constantBanks();assert(!liveObjects);diagnosticConstantWrites();assert(!liveObjects);constantCapabilities();assert(!liveObjects);recordingFailures();assert(!liveObjects);savedStateIntegration();assert(!liveObjects);crowdedWorkload();assert(!liveObjects);stateBlocks();assert(!liveObjects);implicitAndDisabled();assert(!liveObjects);auditChecks();assert(!liveObjects);auditEveryField();assert(!liveObjects);concurrency();assert(!liveObjects);std::puts("PASS actual device_mirror.h: authoritative cached queries; COM refs; normalized/failed setters; partial exact-bit banks; ALL/partial/recorded stateblocks including failed Apply; UP and Reset failures; target/FVF implicit changes; two proxies; disabled raw bypass; 30000 randomized banks; 8 threads x5000 iterations, serialized backend calls (80072 with learned write-through, 120008 read-through).");}

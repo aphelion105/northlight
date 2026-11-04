@@ -97,6 +97,7 @@ private:
         int bounds[4]={};IDirect3DTexture9 *depth=nullptr,*water=nullptr;UINT width=0,height=0;float fade=0;} sunGlare;
     // Screen-edge fade per body, and whether the halo value is a live measurement to hold.
     NorthlightCelestialGlow::Fade edge[2];bool haloWritten[2]={};unsigned haloFrame[2]={};
+    IDirect3DTexture9* skyLayers=nullptr; // borrowed, current frame only
     bool loaded=false,failed=false;unsigned frames=0,drawn=0;
     NorthlightCelestialDisc::Placement earlyPlacement[2];
     NorthlightCelestialDisc::SkyBand skyBand;
@@ -198,10 +199,11 @@ public:
     void setTerrainSource(std::function<uint64_t()> epoch,std::function<bool(unsigned,const float*)> draw,std::function<void(unsigned)> reuse=nullptr){terrainEpoch=std::move(epoch);terrainDraw=std::move(draw);terrainReuse=std::move(reuse);}
     explicit NorthlightCelestialDiscRenderer(IDirect3DDevice9* device,std::string sourceRoot="world-cache/celestial"):d(device),root(std::move(sourceRoot)){}
     void setHdrSkyTarget(IDirect3DSurface9* target){hdrSkyTarget=target;}
+    void setSkyLayers(IDirect3DTexture9* layers){skyLayers=layers;}
     void setHdrSkyCapture(std::function<IDirect3DSurface9*()> begin){beginHdrSky=std::move(begin);}
     ~NorthlightCelestialDiscRenderer(){reset();}
     NorthlightCelestialDiscRenderer(const NorthlightCelestialDiscRenderer&)=delete;
-    void reset(){earlySkyOk=false;earlySkyMap.clear();for(auto& s:ringSurface)drop(s);for(auto& t:ringVisibility)drop(t);drop(veilPS);ringIndex=0;ringHistory={};ringWritten=false;sunGlare=Glare{};glow=NorthlightCelestialGlow::Hue{};
+    void reset(){skyLayers=nullptr;earlySkyOk=false;earlySkyMap.clear();for(auto& s:ringSurface)drop(s);for(auto& t:ringVisibility)drop(t);drop(veilPS);ringIndex=0;ringHistory={};ringWritten=false;sunGlare=Glare{};glow=NorthlightCelestialGlow::Hue{};
         for(unsigned i=0;i<2;++i){edge[i]={};haloWritten[i]=false;haloFrame[i]=0;}
         for(auto& t:terrainMask)drop(t);for(auto& t:terrainSurface)drop(t);drop(terrainVS);drop(terrainPS);for(unsigned i=0;i<2;++i){terrainReady[i]=false;terrainGeneration[i]=0;std::fill(terrainCamera[i],terrainCamera[i]+3,0.f);terrainNear[i]=0;}maskFarClip=0;skyBand={};for(auto& h:haloHistory)h={};for(auto& body:haloSurface)for(auto& s:body)drop(s);for(auto& body:haloVisibility)for(auto& t:body)drop(t);drop(haloPS);haloIndex[0]=haloIndex[1]=0;for(auto& p:earlyPlacement)p.valid=false;for(auto& t:texture)drop(t);drop(ps);observer.reset();loaded=false;failed=false;drawn=0;earlyValid=false;drawnEarly=drawnSkyboxEarly=0;earlyWidth=earlyHeight=0;glareRead=false;drawnLate=offscreenOwned=0;suppressed=suppressedPrevious=lateOwnedPrevious=0;ownFrame=~0u;skyMode.reset();skyModePrevious=-1;renderFrame=~0u;}
     // Ownership: once the renderer has a validated sky context,
@@ -211,7 +213,7 @@ public:
     // restores native draws. Missing terrain must not alternate native/custom moon.
     unsigned claimedDraws=0;
     void setIdentityMap(std::function<std::uintptr_t(std::uintptr_t)> map){observer.setIdentityMap(std::move(map));glareRead=false;}
-    void endFrame(){lateOwnedPrevious=drawnLate;suppressedPrevious=suppressed;suppressed=0;terrainReady[0]=terrainReady[1]=false;sunGlare.valid=false;for(auto& p:earlyPlacement)p.valid=false;observer.beginFrame();drawn=0;++frames;drawnEarly=drawnSkyboxEarly=0;drawnLate=offscreenOwned=0;glareRead=false;skyMode.endFrame();}
+    void endFrame(){lateOwnedPrevious=drawnLate;suppressedPrevious=suppressed;suppressed=0;skyLayers=nullptr;terrainReady[0]=terrainReady[1]=false;sunGlare.valid=false;for(auto& p:earlyPlacement)p.valid=false;observer.beginFrame();drawn=0;++frames;drawnEarly=drawnSkyboxEarly=0;drawnLate=offscreenOwned=0;glareRead=false;skyMode.endFrame();}
     // Sky-phase draw: the native billboard is replaced IN PLACE by our disc,
     // drawn with sky-band depth before the zone skybox and the world, so
     // everything drawn later (skybox mountains, terrain, trees) covers it
@@ -252,7 +254,7 @@ public:
             earlySkyHeld=currentSky;earlySkyMap=map;earlySkyAt=now;earlySkyOk=true;
         }else if(earlySkyOk&&earlySkyMap==map&&DWORD(now-earlySkyAt)<=2000){currentSky=earlySkyHeld;++claimSkyHeld;}
         else{++claimCamera;return false;}
-        if(skyboxTrigger){if(std::strcmp(map,"Northrend")||!NorthlightCelestial::skyboxVerified()||!skyboxFrame(currentSky))return false;}
+        if(skyboxTrigger){if(!NorthlightCelestial::skyboxVerified()||!skyboxFrame(currentSky))return false;}
         else if(skyboxFrame(currentSky))return claimSuppress(body);
         NorthlightCelestial::resolveRendererSky(currentSky,neutralDirect);
         NorthlightCelestialProfiles::apply(palette(map,camera.camera),neutralDirect,currentSky);
@@ -358,7 +360,7 @@ public:
         for(auto& s:states)d->SetRenderState(s.s,s.v);
         if(hdr){d->SetRenderState(D3DRS_SRGBWRITEENABLE,FALSE);if(glare)d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_ONE);}
         d->SetTextureStageState(0,D3DTSS_TEXCOORDINDEX,0);d->SetTextureStageState(0,D3DTSS_TEXTURETRANSFORMFLAGS,D3DTTFF_DISABLE);
-        for(unsigned k=0;k<6;++k){d->SetSamplerState(k,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(k,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);
+        for(unsigned k=0;k<7;++k){d->SetSamplerState(k,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(k,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);
             d->SetSamplerState(k,D3DSAMP_MINFILTER,(k==1||k==4)?D3DTEXF_LINEAR:D3DTEXF_POINT);d->SetSamplerState(k,D3DSAMP_MAGFILTER,(k==1||k==4)?D3DTEXF_LINEAR:D3DTEXF_POINT);
             d->SetSamplerState(k,D3DSAMP_MIPFILTER,k==1?D3DTEXF_LINEAR:D3DTEXF_NONE);d->SetSamplerState(k,D3DSAMP_SRGBTEXTURE,FALSE);}
         d->SetTexture(0,depth);d->SetTexture(2,water);d->SetTexture(4,terrainReady[i]?terrainMask[i]:nullptr);
@@ -419,6 +421,14 @@ public:
             if(!i){auto& g=sunGlare;g.valid=true;g.disc=disc;std::memcpy(g.projection,projection,12);std::memcpy(g.inverseView,inverseView,64);
                 std::memcpy(g.constants,c,sizeof c);std::memcpy(g.bounds,bounds,sizeof g.bounds);g.depth=depth;g.water=water;g.width=width;g.height=height;g.fade=fade;}
         }
+        const bool compose=skyLayers&&occlude&&fullGlare;
+        const float skyControl[]={compose?1.f:0.f,emission,disc.opacity*weatherGain.load(std::memory_order_relaxed),0};
+        d->SetPixelShaderConstantF(49,skyControl,1);
+        if(compose){
+            float hue[4]{},core[4]{};NorthlightCelestialGlow::constants(glow,i,0.f,hue,core);
+            float tint[4]{};for(unsigned k=0;k<3;++k)tint[k]=std::clamp(disc.tint[k],0.f,1.f)*(1-.5f*hue[3])+core[k]*.5f*hue[3];
+            d->SetPixelShaderConstantF(50,tint,1);d->SetTexture(6,skyLayers);d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_ONE);
+        }
         if(!glare&&frames%600==0&&NorthlightDiagnostics::enabled())logf("CELESTIAL disc body=%u early=%d depth=%.7f band=%.3f..%.3f worldMax=%.7f screen=(%d,%d)-(%d,%d) direction=(%.3f,%.3f,%.3f)",i,occlude?0:1,spriteDepth,skyViewport.MinZ,skyViewport.MaxZ,maxZ,bounds[0],bounds[1],bounds[2],bounds[3],disc.direction[0],disc.direction[1],disc.direction[2]);
         if(!check(d->SetPixelShaderConstantF(0,c[0],18),"constants")||!check(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,vertices,sizeof(V)),"disc draw")){if(glare&&!i)sunGlare.valid=false;return false;}
         if(!occlude){auto& p=earlyPlacement[i];p.disc=disc;p.depth=spriteDepth;p.emission=emission;p.width=width;p.height=height;
@@ -461,7 +471,7 @@ public:
                 auto support=disc[i];support.tangentRadius*=i?MoonMaskRadius:SunMaskRadius;int supportBounds[4];
                 if(!NorthlightCelestialDisc::screenBounds(support,inverseView,projection[0],projection[1],projection[2],width,height,supportBounds))continue;
                 if(!prepareTerrain(i,disc[i],inverseView))continue;
-                if(visible&&!drawDisc(i,target,width,height,projection,inverseView,disc[i],bounds[i],depth,water,minZ,maxZ,nearZ,farZ,legacyFog,true,bodies[i]->emission,false,skyBand.depth(maxZ)))continue;
+                if(visible&&!skyLayers&&!drawDisc(i,target,width,height,projection,inverseView,disc[i],bounds[i],depth,water,minZ,maxZ,nearZ,farZ,legacyFog,true,bodies[i]->emission,false,skyBand.depth(maxZ)))continue;
                 if(visible)drawnLate|=1u<<i;
                 auto halo=disc[i];halo.tangentRadius*=i?MoonGlareSupport:SunGlareSupport;
                 if(NorthlightCelestialDisc::screenBounds(halo,inverseView,projection[0],projection[1],projection[2],width,height,bounds[i])&&

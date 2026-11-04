@@ -22,8 +22,15 @@ class NorthlightAutoNormalCache {
     IDirect3DPixelShader9* shader=nullptr,*modelShader=nullptr;
     std::uint64_t bytes=0,sourceBytes=0,clock=0,budget=32ull<<20;
     unsigned generated=0,builds=0,hits=0,evictions=0,allocations=0,reuses=0;
-    unsigned polarity=0,details=75,balance=50,frame=0;bool memoryPressure=false;
+    unsigned polarity=0,details=75,balance=50,frame=0;bool memoryPressure=false,visibleWorkingSet=false;
     UINT vertexConstantCapacity=0; // Immutable for this device, including Reset.
+    bool protectedOldest(const Entry& oldest){
+        if(frame-oldest.lastUsedFrame>1)return false;
+        // Touches, erasures and new current-frame entries preserve this proof.
+        // An unknown/mixed-age set keeps the original per-miss LRU check.
+        visibleWorkingSet=std::all_of(entries.begin(),entries.end(),[&](const Entry& e){return frame-e.lastUsedFrame<=1;});
+        return true;
+    }
     void erase(size_t index){
         auto& e=entries[index];lookup[e.model].erase(e.source);bytes-=e.bytes;sourceBytes-=e.sourceBytes;drop(e.source);drop(e.normal);
         if(index+1<entries.size()){e=entries.back();lookup[e.model].find(e.source)->second=index;}
@@ -68,7 +75,7 @@ public:
     void setProfiler(NorthlightMaterialProfile* p){profile=p;}
     void setPersistentCache(const std::filesystem::path& path,const char* backend,const char* identity=nullptr,bool asyncReadback=false){try{disk=std::make_unique<NorthlightMaterialMapPersistence>(d,path,backend,identity,asyncReadback);}catch(...){logf("MATERIAL_DISK unavailable; memory cache retained");}}
     ~NorthlightAutoNormalCache(){reset();drop(shader);drop(modelShader);}
-    void reset(){if(disk)disk->reset();states.clear();for(auto& e:entries){drop(e.source);drop(e.normal);}entries.clear();for(auto& index:lookup)index.clear();recent=0;bytes=sourceBytes=0;}
+    void reset(){if(disk)disk->reset();states.clear();for(auto& e:entries){drop(e.source);drop(e.normal);}entries.clear();for(auto& index:lookup)index.clear();recent=0;bytes=sourceBytes=0;visibleWorkingSet=false;}
     void configure(const NorthlightQuality::Settings& s){if(polarity!=s.autoHeightPolarity||details!=s.autoHeightDetails||balance!=s.autoHeightBalance){reset();polarity=s.autoHeightPolarity;details=s.autoHeightDetails;balance=s.autoHeightBalance;}}
     void refreshBudget(){
         MEMORYSTATUSEX memory{};memory.dwLength=sizeof memory;
@@ -77,7 +84,7 @@ public:
     }
     void setMemoryPressure(bool on){memoryPressure=on;refreshBudget();states.clear();}
     void trimMemory(){refreshBudget();states.clear();}
-    void endFrame(){if(disk)disk->endFrame();generated=0;if(memoryPressure)states.clear();if(++frame%60==0)refreshBudget();}
+    void endFrame(){if(disk)disk->endFrame();generated=0;visibleWorkingSet=false;if(memoryPressure)states.clear();if(++frame%60==0)refreshBudget();}
     void report(){if(disk)disk->report();logf("AUTONORMAL cached=%zu bytes=%llu generated=%u hits=%u evicted=%u sourceBytes=%llu budgetMiB=%llu allocations=%u reused=%u",entries.size(),(unsigned long long)bytes,builds,hits,evictions,(unsigned long long)sourceBytes,(unsigned long long)(budget>>20),allocations,reuses);}
     Lease acquire(IDirect3DBaseTexture9* source,bool model=false){return Lease(*this,resolve(source,model));}
     IDirect3DTexture9* resolve(IDirect3DBaseTexture9* base,bool model=false){
@@ -107,8 +114,9 @@ public:
         constexpr std::uint64_t sourceBudget=128ull<<20;if(cost>budget||sourceCost>sourceBudget)return nullptr;
         // Do not snapshot/hash a disk source that the visible working set cannot admit.
         if(!entries.empty()&&(bytes+cost>budget||sourceBytes+sourceCost>sourceBudget||entries.size()>=256)){
+            if(visibleWorkingSet)return nullptr;
             const auto oldest=std::min_element(entries.begin(),entries.end(),[](const Entry& a,const Entry& b){return a.used<b.used;});
-            if(frame-oldest->lastUsedFrame<=1)return nullptr;
+            if(protectedOldest(*oldest))return nullptr;
         }
         NorthlightMaterialMapPersistence::Probe persisted;
         if(disk){try{persisted=disk->probe(source,desc,model,polarity,details,balance,revision);}catch(...){}}
@@ -118,7 +126,7 @@ public:
             auto oldest=std::min_element(entries.begin(),entries.end(),[](const Entry& a,const Entry& b){return a.used<b.used;});
             // Keep the visible working set stable when it exceeds the budget.
             // New maps wait until an LRU entry was unused for a complete frame.
-            if(frame-oldest->lastUsedFrame<=1)return nullptr;
+            if(protectedOldest(*oldest))return nullptr;
             // Reuse only an evicted, unbound map that no pending draw borrows.
             if(!recycled.texture&&reusable(*oldest,width,height)){recycled.texture=oldest->normal;oldest->normal=nullptr;}
             erase(size_t(oldest-entries.begin()));++evictions;

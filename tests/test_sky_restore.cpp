@@ -1,27 +1,31 @@
-#include "sky_restore.h"
+#include "sky_composition.h"
+#include "sky_material_catalog.h"
+#include "sky_alpha_patch.h"
 #include <cassert>
+#include <cmath>
+#include <iterator>
 int main(){
-    using namespace SkyRestore;
-    const Draw b{320,0x35545844,512,512,5,6,baseVS,basePS,0xddb1ff594d51e1aaull,0x1234,true};
-    const Draw c{768,0x35545844,512,512,5,6,cloudVS,cloudPS,0x44e88f50406cbb61ull,0x1234,true};
-    State s;s.begin(1);assert(!s.before(c));
-    s.after(b,false);assert(!s.before(c));s.after(b,true);
-    for(unsigned field=0;field<11;++field){
-        auto other=c;
-        switch(field){
-        case 0:other.target++;break;case 1:other.ps++;break;case 2:other.vs++;break;
-        case 3:other.hash++;break;case 4:other.count++;break;case 5:other.fmt++;break;
-        case 6:other.w++;break;case 7:other.h++;break;case 8:other.src++;break;
-        case 9:other.dst++;break;case 10:other.valid=false;break;
+    using namespace NorthlightSkyComposition;
+    unsigned backgrounds=0,foregrounds=0;
+    for(const auto& m:Materials){assert(materialRole(m.hash,m.format,m.width,m.height,m.primitives)==m.role);
+        backgrounds+=m.role==Role::Background;foregrounds+=m.role==Role::Foreground;}
+    assert(backgrounds&&foregrounds);assert(materialRole(0,0,0,0,0)==Role::Unknown);
+    for(float cloud:{0.f,.25f,1.f})for(float transition:{0.f,.5f,1.f}){
+        Sample s{{.2f,.3f,.4f},1};const float fog[]={.7f,.6f,.5f},next[]={.4f,.3f,.2f};
+        over(s,Role::Foreground,fog,cloud);over(s,Role::Background,next,transition);
+        const float surface=.45f,halo=.12f;
+        for(unsigned k=0;k<3;++k){
+            const float initial=.2f+.1f*k;
+            const float bare=(initial*(1-cloud)+fog[k]*cloud)*(1-transition)+next[k]*transition;
+            const auto body=[&](float b){return (b+surface)*(1-halo)+halo;};
+            const float expected=(body(initial)*(1-cloud)+fog[k]*cloud)*(1-transition)+body(next[k])*transition;
+            assert(std::fabs(bare+contribution(surface,halo,s.background[k],s.transmission)-expected)<1e-6f);
         }
-        assert(!s.before(other));
     }
-    s.targetSet(b.target);assert(s.before(c));assert(!s.before(c));
-    s.invalidate();s.after(b,true);assert(!s.before(c)); // no second insertion in the same frame
-    s.begin(2);assert(!s.before(c));s.after(b,true);s.invalidate();assert(!s.before(c)); // Clear(TARGET)
-    s.after(b,true);s.targetSet(b.target+1);s.targetSet(b.target);assert(!s.before(c));
-    s.after(b,true);s.colorWrite(b.target+1);assert(s.before(c)); // unrelated copy is harmless
-    s.begin(3);s.after(b,true);s.colorWrite(b.target);assert(!s.before(c));
-    s.after(b,true);assert(s.before(c));
-    s=State{};assert(!s.before(c)); // device reset
+    const std::uint32_t code[]={0xffff0200,0x0200001f,0x80000000,0x900f0000,0x02000001,0x800f0800,0x90e40000,0xffff};
+    for(unsigned function=0;function<=8;++function){std::vector<std::uint32_t> patched;unsigned control=99;
+        assert(patchOutput(code,std::size(code),function,patched,control));
+        std::vector<NorthlightHdrUi::Instruction> ops;unsigned slots=0;
+        assert(NorthlightHdrUi::parse(patched.data(),patched.size(),ops,slots));assert(control<32);}
+    std::vector<std::uint32_t> patched;unsigned control=0;assert(!patchOutput(code,3,8,patched,control));
 }

@@ -13,6 +13,7 @@
 #include "forwarders.h"
 #include "northlight_mem.h"
 extern "C" __attribute__((no_builtin("memcmp"),no_builtin("bcmp"))) int memcmp(const void* a,const void* b,size_t n){return NorthlightMem::compare(a,b,n);}
+#define NORTHLIGHT_MODEL_NORMALS_TEST
 #include "model_normal_renderer.h"
 #include "saved_state.h"
 using NorthlightGI::Vec3;

@@ -43,4 +43,7 @@ def generated():
     return '\n'.join(lines) + '\n'
 
 if __name__ == '__main__':
-    (northlight_paths.GENERATED / 'extension_raw_methods.inl').write_text(generated(), encoding='utf-8', newline='\n')
+    path = northlight_paths.GENERATED / 'extension_raw_methods.inl'
+    data = generated().encode('utf-8')
+    if not path.exists() or path.read_bytes() != data:
+        path.write_bytes(data)

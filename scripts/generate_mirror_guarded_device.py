@@ -25,7 +25,10 @@ def generated():
 
 
 def generate():
-    (northlight_paths.GENERATED/'mirror_guarded_device.h').write_text(generated(), encoding='utf-8', newline='\n')
+    path = northlight_paths.GENERATED/'mirror_guarded_device.h'
+    data = generated().encode('utf-8')
+    if not path.exists() or path.read_bytes() != data:
+        path.write_bytes(data)
 
 if __name__ == '__main__':
     generate()

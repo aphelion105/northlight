@@ -11,6 +11,7 @@
 #include "replay_bounds_metadata.h"
 #include "upload_lock.h"
 #include "captured_constant_epoch.h"
+#include "pose_bounds_handoff.h"
 #include "vertex_declaration_cache.h"
 #include "intrusive_lru.h"
 #include "position_bounds.h"
@@ -226,6 +227,10 @@ class NorthlightAutoDisplacement {
         return prepared?poseEnvelopes.calculatePrepared(*prepared,*source,source,bank,identity,envelopeBudget,result,NorthlightReplayBounds::EnvelopeCache::Stage::All,info):
                         poseEnvelopes.calculate(program,*source,source,elements,count,bank,identity,envelopeBudget,result,NorthlightReplayBounds::EnvelopeCache::Stage::All,info);
     }
+    bool chargePoseVertices(unsigned vertices){
+        if(vertices>8192-poseVerticesThisFrame){++poseBudgetRejected;if(profile)profile->count(NorthlightMaterialProfile::PoseBudget);return false;}
+        poseVerticesThisFrame+=vertices;return true;
+    }
     bool distantPoseBounds(const Program& program,const std::shared_ptr<const Mesh>& source,const D3DVERTEXELEMENT9* elements,UINT count,float* low,float* high,
         IDirect3DVertexShader9* shader=nullptr,IDirect3DVertexDeclaration9* declaration=nullptr,NorthlightReplayBounds::Bounds* skinBounds=nullptr){
         NorthlightMaterialProfile::Scope timing(profile,NorthlightMaterialProfile::PoseEnvelope);
@@ -430,9 +435,10 @@ public:
     // next draw. Preserve the native snapshot before geometry-source dedup.
     struct CaptureSource {
         std::shared_ptr<const Mesh> mesh;IDirect3DVertexDeclaration9* declaration=nullptr;
+        NorthlightPoseBounds::Handoff pose;
         CaptureSource()=default;CaptureSource(const CaptureSource&)=delete;CaptureSource& operator=(const CaptureSource&)=delete;
         ~CaptureSource(){drop(declaration);}
-        void clear(){mesh.reset();drop(declaration);}
+        void clear(){mesh.reset();drop(declaration);pose={};}
     };
     struct Admission {
         DWORD z=0,write=0,blend=0,alpha=0,src=0,dst=0,func=0;
@@ -622,14 +628,29 @@ public:
         const auto position=std::find_if(elements,elements+count,[](const D3DVERTEXELEMENT9& e){return e.Stream==0&&e.Usage==0&&e.UsageIndex==0;});
         if(position==elements+count||position->Type!=D3DDECLTYPE_FLOAT3)return false;
         float low[3],high[3];NorthlightReplayBounds::Bounds poseBounds;
-        if(shader->second.skinned&&distantPoseBounds(shader->second.view,source,elements,count,low,high,original,decl.p,&poseBounds)){++distanceRejected;return false;}
+        const bool distant=shader->second.skinned&&distantPoseBounds(shader->second.view,source,elements,count,low,high,original,decl.p,&poseBounds);
+        // Reuse only the already computed outward envelope and the original raw
+        // source. No additional evaluation, scan, admission or cache entry.
+        using PoseKernel=NorthlightActorDeformation::Kernel;
+        if(captureSource&&source.get()==captureSource->mesh.get()&&poseBounds.valid&&trustedConstants&&constantFirst<=2&&constantFirst+constantCount>=6&&
+           shader->second.view.kernel.evaluator==PoseKernel::WeightedR0){
+            NorthlightConstantEpoch::Stamp currentStamp;currentStamp.requestHeld=true;
+            if(constantReader&&constantReader(constantContext,currentStamp)&&NorthlightConstantEpoch::exact(constantStamp,currentStamp))
+                captureSource->pose.publish(poseBounds,constants,currentStamp,source.get(),original,decl.p);
+        }
+        if(distant){++distanceRejected;return false;}
         // Generic skinning uses exact posed vertices below, never object-space
         // bounds. Building/scanning/retaining those before a budget refusal was
         // unbounded work with no consumer, especially when the source churned.
         const bool exactSkin=shader->second.skinned&&shader->second.view.kernel.skin;
         // The template skin uses the same SkinEnvelope evaluator in both caches.
         // Reuse this draw's current-palette result instead of building/evaluating it twice.
-        const bool reusePose=exactSkin&&poseBounds.valid;
+        // WeightedR0 deliberately uses conservative distance/fade bounds: this
+        // can strengthen displacement near the range edge. Keep its original
+        // vertex admission charge even though the exact pose scan is avoided.
+        const bool conservativePose=shader->second.skinned&&shader->second.view.kernel.evaluator==NorthlightActorDeformation::Kernel::WeightedR0&&poseBounds.valid;
+        const bool reusePose=(exactSkin||conservativePose)&&poseBounds.valid;
+        if(conservativePose&&!chargePoseVertices(source->vertexCount))return false;
         const bool needsBounds=!shader->second.skinned||(exactSkin&&!reusePose);
         const auto& stream=source->streams[0];auto foundBounds=needsBounds?cachedBounds(source):bounds.end();
         if(needsBounds&&foundBounds==bounds.end()){
@@ -647,7 +668,7 @@ public:
             // Reuse the audited, outward-rounded skin envelope for normal capture.
             lastDepthUpper=std::nextafter(std::max(std::fabs(low[2]),std::fabs(high[2])),INFINITY)+.001f;
             lastDepthLower=std::max(0.f,std::nextafter(low[2]>0?low[2]:high[2]<0?-high[2]:0,-INFINITY)-.001f);}
-        else if(shader->second.skinned){P::Scope pose(profile,P::PoseFallback);if(source->vertexCount>8192-poseVerticesThisFrame){++poseBudgetRejected;if(profile)profile->count(P::PoseBudget);return false;}poseVerticesThisFrame+=source->vertexCount;poseFallbackVertices+=source->vertexCount;if(profile)profile->count(P::PoseVertices,source->vertexCount);pose.work(source->vertexCount);for(unsigned k=0;k<3;++k){low[k]=FLT_MAX;high[k]=-FLT_MAX;}
+        else if(shader->second.skinned){P::Scope pose(profile,P::PoseFallback);if(!chargePoseVertices(source->vertexCount))return false;poseFallbackVertices+=source->vertexCount;if(profile)profile->count(P::PoseVertices,source->vertexCount);pose.work(source->vertexCount);for(unsigned k=0;k<3;++k){low[k]=FLT_MAX;high[k]=-FLT_MAX;}
             const auto prepared=poseBindings.acquire(shader->second.view,*source,elements,count);if(!prepared)return false;
             if(shader->second.view.kernel.singleSkin()){if(!NorthlightActorDeformation::singleSkinBoundsPrepared<true>(shader->second.view,*source,*prepared,constants,low,high))return false;}
             else {const bool clearInputs=shader->second.clearPoseInputs;

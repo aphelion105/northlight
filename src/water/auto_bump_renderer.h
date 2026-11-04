@@ -22,6 +22,7 @@ class NorthlightAutoBump {
     IDirect3DDevice9* d;
     NorthlightStateBlockPool captureStates;
     void* rasterContext=nullptr;bool(*rasterReader)(void*,const D3DRENDERSTATETYPE*,unsigned,DWORD*)=nullptr;
+    void* emptyTargetContext=nullptr;bool(*emptyTargetReader)(void*)=nullptr;
     void* samplerContext=nullptr;bool(*samplerReader)(void*,DWORD,unsigned,DWORD*)=nullptr;
     NorthlightMaterialProfile* profile=nullptr;unsigned profileTag=0,profilePrimitives=0;uint64_t profileConfigFrame=~uint64_t(0);
     NorthlightAutoNormalCache& normals;
@@ -534,6 +535,7 @@ public:
     void setConstantEpochSource(void* context,NorthlightConstantEpoch::Reader reader){displacement.setConstantEpochSource(context,reader);}
     void setTrustedConstantEpochSource(NorthlightConstantEpoch::TrustedSource source){displacement.setTrustedConstantEpochSource(source);}
     void setRasterStateSource(void* context,bool(*reader)(void*,const D3DRENDERSTATETYPE*,unsigned,DWORD*)){rasterContext=context;rasterReader=context==d?reader:nullptr;}
+    void setEmptyTargetSource(void* context,bool(*reader)(void*)){emptyTargetContext=context;emptyTargetReader=context==d?reader:nullptr;}
     void setSamplerStateSource(void* context,bool(*reader)(void*,DWORD,unsigned,DWORD*)){samplerContext=context;samplerReader=context==d?reader:nullptr;}
     void setVertexIdentity(void* context,VertexIdentity reader){vertexIdentityContext=context;vertexIdentity=reader;}
     template<class Draw> HRESULT geometryDraw(Draw draw,bool native=false){return parallax.shared()?sharedPOM.drawBound(true):displacement.draw(draw,native);}
@@ -683,7 +685,8 @@ public:
         const DWORD z=depthState[0],zfunc=depthState[1],ref=depthState[2],alphaFunc=depthState[3],stencil=depthState[4];
         if(!z||zfunc==D3DCMP_ALWAYS||zfunc==D3DCMP_NEVER||stencil)return;
         D3DVIEWPORT9 viewport{};if(FAILED(d->GetViewport(&viewport))||viewport.X||viewport.Y||viewport.Width<8||viewport.Height<8)return;
-        for(unsigned i=1;i<4;++i){IDirect3DSurface9* extra=nullptr;d->GetRenderTarget(i,&extra);if(extra){drop(extra);return;}}
+        if(!emptyTargetReader||!emptyTargetReader(emptyTargetContext))
+            for(unsigned i=1;i<4;++i){IDirect3DSurface9* extra=nullptr;d->GetRenderTarget(i,&extra);if(extra){drop(extra);return;}}
         if(FAILED(d->GetDepthStencilSurface(&saved.depth))||!saved.depth)return;
         saved.states[0].value=depthWrite;saved.states[4].value=colorWrite;
         if(!readAdmissionStates(saved))return;
@@ -709,7 +712,7 @@ public:
         const NorthlightAutoDisplacement::Admission geometryAdmission{z,depthWrite,s[5].value,s[1].value,s[7].value,s[8].value,alphaFunc};
         NorthlightAutoDisplacement::CaptureSource geometrySource;
         if(domain<=4&&geometryMode&&geometry&&!skipGeometry){displacement.prepare(original,domain,material,*geometry,&geometryAdmission,&geometrySource);
-            if(source&&geometrySource.mesh&&geometrySource.declaration){source->mesh=geometrySource.mesh;source->declaration=geometrySource.declaration;source->declaration->AddRef();}
+            if(source&&geometrySource.mesh&&geometrySource.declaration){source->mesh=geometrySource.mesh;source->pose=geometrySource.pose;source->declaration=geometrySource.declaration;source->declaration->AddRef();}
             nearestDepth=displacement.nearestPreparedDepth();farthestDepth=std::min(farthestDepth,displacement.farthestPreparedDepth());
             if(needsCapture&&displacement.nearestPreparedDepth()>captureRange(domain)){++rangeTests;++rangeRejected;if(profile)profile->count(P::RangeRejected);return;}}
         if(!needsCapture){++noCaptureRequired;if(profile)profile->count(P::NoContribution);return;}

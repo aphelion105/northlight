@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-# northlight-test: requires=cxx
-"""Native sky sequence matching and bounded managed-mip reads, without a GPU."""
+# northlight-test: requires=zig
+"""Material catalog lookup, sky composition algebra, alpha rewrite and bounded managed-mip reads."""
 import os
 from pathlib import Path
 import subprocess
@@ -17,4 +17,4 @@ with tempfile.TemporaryDirectory(prefix='northlight-sky-restore-') as tmp:
         subprocess.run([*compiler,'-std=c++17','-UNDEBUG',*fp.include_flags(),
                         str(fp.TESTS/(name+'.cpp')),'-o',str(binary)],env=fp.zig_env(),check=True)
         subprocess.run([str(binary)],check=True,timeout=20)
-print('PASS sky-layer sequence, target invalidation, managed mip bounds and lock failures')
+print('PASS sky material lookup, composition, alpha rewrite and managed mip bounds')

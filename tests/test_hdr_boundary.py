@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# northlight-test: requires=cxx
+# northlight-test: requires=zig
 """Execute the production HDR boundary methods with a CPU-only colour ownership mock."""
 import json
 import os
