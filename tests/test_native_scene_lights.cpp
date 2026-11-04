@@ -1,4 +1,45 @@
 #include "native_scene_light_fixture.h"
+#include "particle_lights.h"
+static void calibratedEquipmentTests(){
+    // Knife_1H_Utgarde_D_03's three calibrated sources. The reader must keep
+    // their authored energy without a model draw, even below bridge admission.
+    constexpr float energy[]={.016440100967884064f,.008057137951254845f,.00564913172274828f};
+    Bytes b=modelAsset(),records(3*156);for(unsigned i=0;i<3;++i)std::memcpy(records.data()+i*156,b.data()+648,156);
+    const auto offset=append(b,records.data(),unsigned(records.size()));put(b,264,3u);put(b,268,offset);
+    for(unsigned i=0;i<3;++i){const auto at=offset+i*156;put(b,at+4,.1f*float(i));
+        authoredTrack(b,at+56,12,{{1,.5f,.125f}},3);authoredTrack(b,at+76,4,{{energy[i]}});authoredTrack(b,at+136,1,{{1}});}
+    Fixture f(b);f.add();f.update();assert(f.output.count==3);const auto first=f.output;
+    NorthlightEquipmentLights::Tracker bridge;NorthlightParticleLights::Frame particles;NorthlightLocalLightSelection::Tracker selection;
+    for(unsigned frame=0;frame<10;++frame){const unsigned now=1000+frame*100;put(f.memory.object(f.scene),12,now);f.update();
+        assert(f.output.count==3);for(unsigned i=0;i<3;++i){assert(f.output.lights[i].id==first.lights[i].id);
+            for(unsigned k=0;k<3;++k)assert(std::fabs(f.output.lights[i].color[k]-energy[i]*(k==0?1.f:k==1?.5f:.125f))<1e-7f);}
+        bridge.observeScene(f.output,now,{},f.camera);bridge.publish(now);}
+    // Existing native admission is .01: only the strongest source is bridged.
+    assert(bridge.count==1&&bridge.outputCount==1);const auto native=bridge.output[0];
+    assert(std::fabs(native.diffuse[0]-energy[0]/.73f)<1e-7f&&native.attenuationEnd==12);
+    for(float distance:{2.f,6.f,8.f}){
+        const float expected=energy[0]/.73f*(12.f-distance)/11.f;
+        assert(std::fabs(native.diffuse[0]*NorthlightLocalLights::attenuation(native,distance)-expected)<1e-7f);}
+    // The former 50-sprite gain made the weakest authored emitter dominate
+    // the far field, over seventeen times the restored strongest contribution.
+    auto amplified=native;amplified.diffuse[0]=energy[2]*50.f/.73f;
+    assert(amplified.diffuse[0]*NorthlightLocalLights::attenuation(amplified,8)>
+        17.f*native.diffuse[0]*NorthlightLocalLights::attenuation(native,8));
+    particles.publish(bridge.output.data(),bridge.outputCount,{},f.camera,selection);
+    assert(particles.outputCount==1&&particles.immediateCount==0&&particles.output[0].sourceId==native.sourceId);
+    NorthlightParticleLights::Sample sample{};std::copy_n(native.position,3,sample.position);sample.rgb[0]=.04f;sample.rgb[1]=.02f;sample.rgb[2]=.005f;
+    particles.nextFrame();particles.observe(sample,f.camera);particles.publish(bridge.output.data(),bridge.outputCount,{},f.camera,selection);
+    assert(particles.outputCount==1&&particles.immediateCount==1&&std::fabs(particles.output[0].diffuse[0]-.028f)<1e-7f);
+    particles.nextFrame();particles.publish(bridge.output.data(),bridge.outputCount,{},f.camera,selection);
+    assert(particles.outputCount==1&&particles.immediateCount==0&&particles.output[0].sourceId==native.sourceId&&particles.output[0].diffuse[0]==native.diffuse[0]);
+    // A genuine model lamp keeps the established denominator fit and range.
+    Fixture lamp;lamp.add();lamp.update();NorthlightEquipmentLights::Tracker lamps;
+    lamps.observeScene(lamp.output,1000,{},lamp.camera);lamps.publish(1000);lamps.publish(1100);
+    assert(lamps.outputCount==1&&lamps.output[0].attenuationEnd==12);
+    for(unsigned k=0;k<3;++k)assert(std::fabs(lamps.output[0].diffuse[k]-lamp.output.lights[0].color[k]/.73f)<1e-6f);
+    assert(lamps.output[0].diffuse[0]*NorthlightLocalLights::attenuation(lamps.output[0],8)>.35f);
+    std::puts("CALIBRATED_EQUIPMENT_PASS no-draw energy, native/particle replacement, unchanged lamp reach");
+}
 static void movingPoseTests(){
     {Bytes b=modelAsset();authoredTrack(b,320,12,{{0,0,0,4,0,0}},3);Fixture f(b);f.add();f.update();assert(f.output.count==1&&std::fabs(f.output.lights[0].position[0]-2)<1e-6f&&f.output.lights[0].flags==1&&f.output.lights[0].anchor[0]==0);
      put(f.memory.object(f.scene),12,1100u);f.update();assert(f.output.lights[0].position[0]==4);}
@@ -53,7 +94,7 @@ static void movingPoseTests(){
      put<std::uint16_t>(f.memory.object(f.bones[0]),0x48,2);f.update();assert(!f.output.count);float translated[3]={8,0,0};Bytes loaded(sizeof translated);std::memcpy(loaded.data(),translated,sizeof translated);const auto pointer=f.memory.add(std::move(loaded));f.memory.set(table,2*8+4,pointer);f.update();assert(f.output.count==1&&f.output.lights[0].position[0]==21);}
 }
 int main(int argc,char** argv){
-    std::setvbuf(stdout,nullptr,_IONBF,0);movingPoseTests();
+    std::setvbuf(stdout,nullptr,_IONBF,0);calibratedEquipmentTests();movingPoseTests();
     {Fixture f;f.add();f.update();assert(f.output.valid&&f.output.count==1);const auto first=f.output.lights[0];
      assert(std::fabs(first.color[0]-.97254908f*.75f)<1e-6f&&first.position[2]==1); // never drawn, native RGB/visible/stamp all zero
      put(f.memory.object(f.models[0]),0xe4,7.f);put(f.memory.object(f.models[0]),0x178,.5f);f.update();assert(f.output.lights[0].id==first.id&&f.output.lights[0].position[0]==7&&std::fabs(f.output.lights[0].color[0]-first.color[0]*.5f)<1e-6f);

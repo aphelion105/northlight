@@ -56,21 +56,31 @@ def mesh_model():
 
 
 class AttachedEmission(unittest.TestCase):
-    def test_equipment_power_represents_live_emitter_population_and_retains_bone(self):
-        original, particle = model(rate=[([0], [2])])
-        original = bytearray(original)
-        key_array = struct.unpack_from('<I', original, particle+168)[0]
-        key = struct.unpack_from('<I', original, key_array+4)[0]
-        struct.pack_into('<f', original, key, 3.)
-        original = bytes(original)
-        assets = Assets(original)
-        baseline, _ = attached_sources(assets, 'item\\source.m2', original)
-        sources, _ = attached_sources(assets, 'item\\source.m2', original, emitter_power=True)
-        self.assertAlmostEqual(sources[0]['reference_population'], 6.)
-        self.assertAlmostEqual(sources[0]['intensity'], baseline[0]['intensity']*6)
-        self.assertEqual(sources[0]['bone'], baseline[0]['bone'])
-        patched = append_spell_lights(original, sources)
-        self.assertEqual(patched[44:52], original[44:52])
+    def test_equipment_energy_is_independent_of_particle_population(self):
+        path = 'item\\objectcomponents\\weapon\\source.m2'
+        # Like the live particle fit, the offline estimate represents measured
+        # radiance, not a sum of sprites. Rate still drives its native lifecycle.
+        for rate, lifetime in ((2., 1.4), (3., 3.), (25., 2.)):
+            with self.subTest(population=rate*lifetime):
+                original, particle = model(rate=[([0, 100, 200], [0, rate, 0])], enabled=[([0], [1])])
+                original = bytearray(original)
+                key_array = struct.unpack_from('<I', original, particle+168)[0]
+                key = struct.unpack_from('<I', original, key_array+4)[0]
+                struct.pack_into('<f', original, key, lifetime)
+                original = bytes(original)
+                assets = Assets(original, {path: original,
+                    'dbfilesclient\\itemvisualeffects.dbc': table([], 2, b'\0')})
+                with tempfile.TemporaryDirectory(dir=northlight_paths.output_dir()) as folder:
+                    report = build_equipment(assets, Path(folder))
+                    source, = report['models'][path]['emitters']
+                    self.assertAlmostEqual(source['intensity'], .35)
+                    self.assertEqual((source['bone'], source['rgb']), (0, (0, 0, 1)))
+                    with Archive(Path(folder)/'equipment-lights-staged.mpq') as archive:
+                        patched = archive.read(path)
+                light = struct.unpack_from('<I', patched, 268)[0]
+                for time, expected in ((0, 0), (50, .175), (100, .35), (150, .175), (200, 0)):
+                    self.assertAlmostEqual(native_sample(patched, light+76, '<f', time), expected)
+                self.assertEqual(patched[44:52], original[44:52])
 
     def test_item_color_index_uses_authored_rgb_only_when_all_displays_have_no_palette(self):
         original, particle = model(rate=[([0], [2])])

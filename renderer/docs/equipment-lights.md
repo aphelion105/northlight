@@ -44,6 +44,16 @@ emitter transform at draw time, so the light follows the same original bone.
 For world-space particle trails the light approximates the current emitter
 anchor rather than illuminating every old particle separately.
 
+Particle-derived equipment lights retain the calibrated texture/lifetime
+radiance. Particle count (emission rate times lifetime) is not another intensity
+multiplier: it made the Utgarde dagger's three sources 2.8, 9 and 50 times too
+strong. The original rate track still controls intensity relative to its peak,
+and the enabled track still turns the source off. This matches the live particle
+path's policy of measuring emission without summing every sprite. These values
+are generated offline; correcting them adds no per-frame work. Existing
+installations need regenerated equipment entries in both Northlight patch-Z
+archives; replacing the renderer DLL alone cannot fix their stored intensity.
+
 Every generated native record is read back with the existing track parser and
 every MPQ entry is reopened and byte-compared. Generated model binaries belong
 to the user's client and must not be committed or redistributed as source.

@@ -68,7 +68,7 @@ def write_track(out, track, fmt, scale=1):
     return struct.pack('<hh4I', track['interpolation'], track['sequence'], len(times), ot, len(keys), ok)
 
 
-def spell_sources(assets, blob, max_sources=16, particle_palette=None, emitter_power=False):
+def spell_sources(assets, blob, max_sources=16, particle_palette=None):
     if len(blob) < 304 or blob[:4] != b'MD20' or unpack('<I', blob, 4)[0] != 264:
         raise ValueError('Not WotLK v264')
     if unpack('<I', blob, 264)[0]:
@@ -101,14 +101,8 @@ def spell_sources(assets, blob, max_sources=16, particle_palette=None, emitter_p
                 'curves': [{'times': [0], 'values': [peak]}]}, '<f')
             probe[p + 456:p + 476] = struct.pack('<hh4I', 0, -1, 0, 0, 0, 0)
             source = particle_sources(assets, bytes(probe), particle_palette=particle_palette)[0]
-            # This light represents the whole continuous emitter, not one
-            # lifetime-averaged sprite. Rate * lifetime is its reference live
-            # population; the original rate track still drives its intensity.
-            if emitter_power:
-                population = peak * max(lifetimes)
-                per_particle = source['intensity']
-                source.update(intensity=min(4., per_particle * population), reference_population=population,
-                              intensity_per_particle=per_particle, lifetime_reference=max(lifetimes))
+            # Keep calibrated radiance independent of sprite population; peak
+            # rate normalizes the authored lifecycle, without an energy gain.
             source.update(particles=[index], rate_track=rate, enable_track=enabled,
                           lifecycle='original bone + sequence/global time; rate-scaled intensity and original enabled-state')
             # Only identical schedules can share a source; unlike unrelated
