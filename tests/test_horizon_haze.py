@@ -348,12 +348,12 @@ def main():
     composite_src = shader.split('float4 worldComposite(', 1)[1].split('// Separate geometry pass:', 1)[0]
     helper = block(shader, 'float3 horizonHaze(')
     # 0.3.202 (rain mask): haze, then the fog mad, in one lerp expression back toward the unfogged colour on rain-mask pixels.
-    assert composite_src.index('horizonHaze(color,centerUV,viewZ,d>=.99999&&liquid<=0,hdrMode)') < composite_src.index('fog.a,fog.rgb)')
+    assert composite_src.index('horizonHaze(color,centerUV,viewZ,d>=.99999&&liquid<=0,hdrMode,coverageTransmission)') < composite_src.index('fog.a,fog.rgb*coverageTransmission)')
     assert 'if(PassInfo.z<.5){\n        float3 unfogged=color;' in composite_src
     assert '[branch]if(range<=0||HorizonHaze.w<=0)return color;' in helper
     assert helper.index('[branch]') < helper.index('viewPositionDistance') and 'tex2D' not in helper and 'loop' not in helper
     assert 'float range=sky?1:saturate((viewZ-HorizonShape.y)*HorizonShape.z);' in helper
-    assert 'return lerp(color,haze,amount);' in helper
+    assert 'return lerp(color,haze*coverageTransmission,amount);' in helper
     # Literals mirrored by horizon_haze.h (LiftCap, LobePeak, Warm) for the haze colour <= 1 cap.
     assert 'float lift=0;' in helper and '[branch]if(lobe>0){' in helper
     assert 'lift=min(lobe*.64*pow(1.36-1.2*azimuth,-1.5),.25);' in helper

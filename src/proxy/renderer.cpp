@@ -896,7 +896,11 @@ private:
         ++hdrLayerStateLogs;DWORD rs[6]={},ts[7]={};
         DWORD fvf=0;ext->GetFVF(&fvf);IDirect3DVertexShader9* vs=nullptr;IDirect3DPixelShader9* ps=nullptr;
         ext->GetVertexShader(&vs);ext->GetPixelShader(&ps);
-        logf("HDR_LAYER_SOURCE frame=%u path=%s fvf=%08lx vs=%u ps=%u",frame,path,(unsigned long)fvf,unsigned(vs!=nullptr),unsigned(ps!=nullptr));drop(vs);drop(ps);
+        logf("HDR_LAYER_SOURCE frame=%u path=%s fvf=%08lx vs=%u ps=%u",frame,path,(unsigned long)fvf,unsigned(vs!=nullptr),unsigned(ps!=nullptr));
+        if(ps){std::vector<DWORD> words;const auto hash=shaderHash(ps,words);std::vector<NorthlightHdrUi::Instruction> ops;unsigned slots=0;D3DCAPS9 caps{};
+            const bool parsed=NorthlightHdrUi::parse(reinterpret_cast<const std::uint32_t*>(words.data()),words.size(),ops,slots);ext->GetDeviceCaps(&caps);
+            logf("HDR_LAYER_SHADER frame=%u version=%08lx hash=%016llx parsed=%u slots=%u sm2Slots=%d",frame,words.empty()?0ul:(unsigned long)words[0],(unsigned long long)hash,unsigned(parsed),slots,int(caps.PS20Caps.NumInstructionSlots));}
+        drop(vs);drop(ps);
         const D3DRENDERSTATETYPE states[]={D3DRS_ALPHABLENDENABLE,D3DRS_SRCBLEND,D3DRS_DESTBLEND,D3DRS_BLENDOP,D3DRS_FOGENABLE,D3DRS_COLORWRITEENABLE};
         const D3DTEXTURESTAGESTATETYPE stages[]={D3DTSS_COLOROP,D3DTSS_COLORARG1,D3DTSS_COLORARG2,D3DTSS_ALPHAOP,D3DTSS_ALPHAARG1,D3DTSS_ALPHAARG2,D3DTSS_TEXCOORDINDEX};
         for(unsigned i=0;i<6;++i)ext->GetRenderState(states[i],rs+i);

@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
-# northlight-test: requires=windows-gpu,zig,client
+# northlight-test: requires=windows-gpu,zig,client,stormlib
 """Replay native transparent draws through production HDR sky ownership, offline."""
 import argparse
+import hashlib
+import json
 import os
 import struct
 from pathlib import Path
@@ -25,6 +27,31 @@ methods = renderer[start:end]
 start = renderer.index('    template<class Draw> void hdrReplaySky(')
 end = renderer.index('    template<class Capture,class Draw> HRESULT drawHook(', start)
 (out/'smoke_sky_methods.inc').write_text(methods+renderer[start:end])
+fp.use_source_modules()
+from world_scene_builder import Assets
+from extract_signatures import variants
+from shader_compiler import Compiler
+compiler = Compiler(allow_compatible_binary=True)
+arrays, entries, provenance = [], [], []
+def array(name, code):
+    words = struct.unpack('<%dI' % (len(code)//4), code)
+    arrays.append('static const DWORD '+name+'[]={'+','.join(hex(w) for w in words)+'};\n')
+for major in (3,):
+    code, _ = compiler.compile(fp.TESTS/'hdr_foreground_fixture.hlsl', 'ForegroundVS', f'vs_{major}_0', out/f'foreground-vs{major}.bin')
+    array(f'kForegroundVs{major}', code)
+assets = Assets(archives='stock')
+try:
+    for major in (3,):
+        path = f'shaders\\pixel\\ps_{major}_0\\Combiners_Mod_Mod.bls'
+        for index, _, code in variants(assets.read(path)):
+            name = f'kForegroundPs{major}_{index}'
+            array(name, code)
+            entries.append('{'+f'{major},{index},{name},sizeof({name})/4'+'}')
+            provenance.append(dict(path=path, index=index, sha256=hashlib.sha256(code).hexdigest()))
+finally:
+    assets.close()
+(out/'smoke_sky_native.h').write_text(''.join(arrays)+'struct NativeForeground{unsigned major,index;const DWORD* code;size_t count;};\nstatic const NativeForeground kNativeForeground[]={'+','.join(entries)+'};\n')
+(out/'native-shaders.json').write_text(json.dumps(provenance, indent=2)+'\n')
 assert renderer.count('effectCoverageDraw([&]{return ext->Draw') == 4
 assert 'owner.effectCoverageDraw([&]{return args.submit(device);},true)' in renderer
 exe = out/'smoke-sky.exe'

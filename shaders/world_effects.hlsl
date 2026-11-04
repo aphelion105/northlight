@@ -1404,7 +1404,7 @@ float4 FogTemporal(float2 uv:TEXCOORD0):COLOR0 {
 // it. Full below the horizon, where only the distance weight protects ground.
 // No samples, passes or raymarch steps.
 float3 worldHdrDecode(float3 color){return lerp(max(color,0)/12.92,pow((max(color,0)+.055)/1.055,2.4),step(.04045,color));}
-float3 horizonHaze(float3 color,float2 uv,float viewZ,bool sky,bool hdrMode) {
+float3 horizonHaze(float3 color,float2 uv,float viewZ,bool sky,bool hdrMode,float coverageTransmission) {
     float range=sky?1:saturate((viewZ-HorizonShape.y)*HorizonShape.z);
     [branch]if(range<=0||HorizonHaze.w<=0)return color;
     float3 ray=viewPositionDistance(uv,1);
@@ -1424,16 +1424,17 @@ float3 horizonHaze(float3 color,float2 uv,float viewZ,bool sky,bool hdrMode) {
     lift=min(lobe*.64*pow(1.36-1.2*azimuth,-1.5),.25);
     }
     float3 haze=(hdrMode?worldHdrDecode(HorizonHaze.rgb):HorizonHaze.rgb)*mad(lift,ShadowRange.yzw,1);
-    return lerp(color,haze,amount);
+    return lerp(color,haze*coverageTransmission,amount);
 }
 // Coverage protects alpha overlays. Additive RGB is a separate native radiance
 // contribution, not opacity: leave the remaining receiver open to lighting.
-float3 effectWeight(float2 uv,float3 source,bool hdrMode) {
+float3 effectWeight(float2 uv,float3 source,bool hdrMode,out float coverageTransmission) {
     float4 effect=tex2Dlod(EffectCoverage,float4(uv,0,0));
-    if(EffectCoverageInfo.y<.5)return saturate(effect.r);
+    if(EffectCoverageInfo.y<.5){coverageTransmission=1-saturate(effect.r);return coverageTransmission;}
+    coverageTransmission=1-saturate(effect.a);
     float3 remaining=max(source-effect.rgb,0);
     if(hdrMode){source=worldHdrDecode(source);remaining=worldHdrDecode(remaining);}
-    return lerp(saturate((source-remaining)/max(source,.000001)),1,saturate(effect.a));
+    return saturate(mad(remaining-source,rcp(max(source,.000001)),1))*coverageTransmission;
 }
 // SDR and HDR are separate compiled variants; validate the actual slot counts.
 float4 worldComposite(float2 uv,float2 pixel,bool surfaceLighting,bool hdrMode,sampler2D fogInput,out float3 effect,bool prelit=false) {
@@ -1555,9 +1556,10 @@ float4 worldComposite(float2 uv,float2 pixel,bool surfaceLighting,bool hdrMode,s
         // Native indoor/prelit surfaces already contain lamp illumination.
         // Compress the final, shadowed lamp sum once, preserving its RGB ratio.
         // Add at most one stop to the surface and use half its SDR headroom;
+        // HDR radiance has no ceiling at the SDR white of 1.
         // bright fixtures retain texture instead of clipping to yellow/white.
         float3 localAdd=max(albedoT*(local*inverseWeight),0);
-        float3 localRoom=min(transported,.5*max(1-color,0));
+        float3 localRoom=hdrMode?transported:min(transported,.5*max(1-color,0));
         float3 localRatio=localAdd/max(localRoom,.00001);
         float localScale=1/(1+max(localRatio.r,max(localRatio.g,localRatio.b)));
         color+=min(localAdd*localScale,localRoom);
@@ -1574,15 +1576,20 @@ float4 worldComposite(float2 uv,float2 pixel,bool surfaceLighting,bool hdrMode,s
     // Retain fogPart only for safe surface relighting above; never de-fog/divide.
     // Horizon haze extinguishes the far scene (including the depth-occluded
     // sun/moon disc) BEFORE the local scattering is added in front of it.
+    float coverageTransmission=1;float3 receiverTransmission=1;
+    [branch]if(min(EffectCoverageInfo.x,1-PassInfo.z)>.5)receiverTransmission=effectWeight(uv,tex2D(Scene,uv).rgb,hdrMode,coverageTransmission);
+    effect=1-receiverTransmission;
+    color*=receiverTransmission;
     if(PassInfo.z<.5){
         float3 unfogged=color;
         // Rain streaks were drawn into the scene before the composite: on mask pixels go back toward the unfogged pixel so they are not hazed.
         float rain=tex2Dlod(RainMask,float4(uv,0,0)).r;
-        color=lerp(mad(horizonHaze(color,centerUV,viewZ,d>=.99999&&liquid<=0,hdrMode),fog.a,fog.rgb),unfogged,rain);
+        color=lerp(mad(horizonHaze(color,centerUV,viewZ,d>=.99999&&liquid<=0,hdrMode,coverageTransmission),fog.a,fog.rgb*coverageTransmission),unfogged,rain);
     }
     if(PassInfo.z==3)color=fog.rgb;
-    [branch]if(EffectCoverageInfo.x>.5&&PassInfo.z<.5)effect=effectWeight(uv,tex2D(Scene,uv).rgb,hdrMode);
-    color=lerp(color,nativeColor,effect);
+    // Native emission is preserved separately; atmospheric in-scattering
+    // depends only on alpha coverage, never on the emitted RGB fraction.
+    color=mad(nativeColor,effect,color);
     // Dither before the 8-bit target rounds: haze and night air vary only with view elevation and would band into
     // horizontal lines. VPOS is the integer pixel; +.5 texel hits the POINT texel centre.
     if(hdrMode)return float4(max(color,0),original.a);
@@ -1636,7 +1643,7 @@ float4 materialComposite(float2 uv,bool hdrMode,float4 color,float3 effect) {
     return color;
 }
 float3 materialEffectWeight(float2 uv,bool hdrMode){
-    float3 effect=0;[branch]if(EffectCoverageInfo.x>.5)effect=effectWeight(uv,tex2D(MaterialSource,uv).rgb,hdrMode);return effect;
+    float3 transmission=1;float coverageTransmission;[branch]if(EffectCoverageInfo.x>.5)transmission=effectWeight(uv,tex2D(MaterialSource,uv).rgb,hdrMode,coverageTransmission);return 1-transmission;
 }
 float4 MaterialComposite(float2 uv:TEXCOORD0):COLOR0 {return materialComposite(uv,false,tex2D(Scene,uv),materialEffectWeight(uv,false));}
 float4 MaterialCompositeHdr(float2 uv:TEXCOORD0):COLOR0 {return materialComposite(uv,true,tex2D(Scene,uv),materialEffectWeight(uv,true));}

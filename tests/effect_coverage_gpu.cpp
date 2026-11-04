@@ -45,10 +45,10 @@ int main(int argc,char** argv){
     IDirect3DTexture9* scene=nullptr;IDirect3DSurface9 *surface=nullptr,*stage=nullptr,*output=nullptr,*outputStage=nullptr;
     ok(d->CreateTexture(N,N,1,D3DUSAGE_RENDERTARGET,D3DFMT_A8R8G8B8,D3DPOOL_DEFAULT,&scene,nullptr));ok(scene->GetSurfaceLevel(0,&surface));
     ok(d->CreateOffscreenPlainSurface(N,N,D3DFMT_A8R8G8B8,D3DPOOL_SYSTEMMEM,&stage,nullptr));
-    ok(d->CreateRenderTarget(N,N,D3DFMT_A16B16G16R16F,D3DMULTISAMPLE_NONE,0,FALSE,&output,nullptr));
-    ok(d->CreateOffscreenPlainSurface(N,N,D3DFMT_A16B16G16R16F,D3DPOOL_SYSTEMMEM,&outputStage,nullptr));
+    ok(d->CreateRenderTarget(N*2,N*11,D3DFMT_A16B16G16R16F,D3DMULTISAMPLE_NONE,0,FALSE,&output,nullptr));
+    ok(d->CreateOffscreenPlainSurface(N*2,N*11,D3DFMT_A16B16G16R16F,D3DPOOL_SYSTEMMEM,&outputStage,nullptr));
     auto pixels=[&](IDirect3DSurface9* from){ok(d->GetRenderTargetData(from,stage));D3DLOCKED_RECT lock{};ok(stage->LockRect(&lock,nullptr,D3DLOCK_READONLY));std::vector<unsigned char> p(N*N*4);for(unsigned y=0;y<N;++y)std::memcpy(p.data()+y*N*4,static_cast<char*>(lock.pBits)+y*lock.Pitch,N*4);ok(stage->UnlockRect());return p;};
-    auto quad=[&](float z,bool left=false){const Vertex v[]={{-.5f,-.5f,z,1,0,0},{float(left?N/2:N)-.5f,-.5f,z,1,1,0},{-.5f,N-.5f,z,1,0,1},{float(left?N/2:N)-.5f,N-.5f,z,1,1,1}};return d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,v,sizeof(Vertex));};
+    auto quad=[&](float z,bool left=false,unsigned offsetX=0,unsigned offsetY=0){const float x=float(offsetX)-.5f,y=float(offsetY)-.5f,w=float(left?N/2:N);const Vertex v[]={{x,y,z,1,0,0},{x+w,y,z,1,1,0},{x,y+N,z,1,0,1},{x+w,y+N,z,1,1,1}};return d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,v,sizeof(Vertex));};
     auto baseState=[&]{ok(d->SetVertexShader(nullptr));ok(d->SetFVF(D3DFVF_XYZRHW|D3DFVF_TEX1));for(auto k:{D3DRS_ALPHATESTENABLE,D3DRS_ALPHABLENDENABLE,D3DRS_FOGENABLE,D3DRS_SRGBWRITEENABLE,D3DRS_SCISSORTESTENABLE,D3DRS_STENCILENABLE,D3DRS_SEPARATEALPHABLENDENABLE})ok(d->SetRenderState(k,FALSE));ok(d->SetRenderState(D3DRS_CULLMODE,D3DCULL_NONE));ok(d->SetRenderState(D3DRS_COLORWRITEENABLE,15));};
     Capture capture;capture.allowMultisample(allowMsaa);unsigned cases=0,compositeCases=0,negativeControls=0,bannerCounterfactuals=0,projectedCounterfactuals=0;float worst=0,bannerLift=0;
     std::array<std::vector<float>,11> blanketReceiver;
@@ -115,8 +115,8 @@ int main(int argc,char** argv){
                 }
             }
             ++cases;
-            // Every final shader must attenuate its correction, including fog,
-            // material detail, HDR and the legacy AO fallback. Unmasked output
+            // Alpha coverage attenuates every correction. Additive radiance protects
+            // emission but leaves atmospheric in-scattering intact. Unmasked output
             // is a negative control; fully covered portal pixels retain Scene.
             baseState();ok(d->SetRenderState(D3DRS_ZENABLE,FALSE));ok(d->SetRenderState(D3DRS_ZWRITEENABLE,FALSE));ok(d->SetDepthStencilSurface(nullptr));ok(d->SetRenderTarget(0,output));
             std::vector<IDirect3DTexture9*> owned;
@@ -137,20 +137,32 @@ int main(int argc,char** argv){
                 if(variant==7){c[1][2]=.5f;c[2][0]=0;c[2][1]=3;c[3][1]=1;c[3][2]=1;bind(2,solid(0,0,0,.5f));bind(3,solid(0));}
                 if(variant==8){bind(2,solid(0,0,0,.5f));ok(d->SetTexture(3,scene));}
                 ok(d->SetPixelShaderConstantF(0,c[0],80));ok(d->SetPixelShader(composites[variant]));
-                auto composite=[&](bool protected_){Capture::bind(d,protected_?mask:nullptr,capture.hasEmission());ok(d->BeginScene());ok(quad(0));ok(d->EndScene());ok(d->GetRenderTargetData(output,outputStage));D3DLOCKED_RECT lock{};ok(outputStage->LockRect(&lock,nullptr,D3DLOCK_READONLY));std::vector<float> p(N*N*4);for(unsigned y=0;y<N;++y)for(unsigned x=0;x<N*4;++x){std::uint16_t h;std::memcpy(&h,static_cast<char*>(lock.pBits)+y*lock.Pitch+x*2,2);p[y*N*4+x]=half(h);}ok(outputStage->UnlockRect());return p;};
-                const auto unmasked=composite(false),masked=composite(true);
+                auto composite=[&](bool protected_){Capture::bind(d,protected_?mask:nullptr,capture.hasEmission());ok(d->BeginScene());ok(quad(0,false,protected_?N:0,variant*N));ok(d->EndScene());};
+                composite(false);composite(true);
+            }
+            // Keep the native capture/state-order matrix intact. Only its
+            // independent compositor outputs share one readback per case.
+            ok(d->GetRenderTargetData(output,outputStage));D3DLOCKED_RECT lock{};ok(outputStage->LockRect(&lock,nullptr,D3DLOCK_READONLY));
+            auto compositePixels=[&](unsigned variant,bool protected_){std::vector<float> p(N*N*4);for(unsigned y=0;y<N;++y)for(unsigned x=0;x<N*4;++x){std::uint16_t h;std::memcpy(&h,static_cast<char*>(lock.pBits)+(variant*N+y)*lock.Pitch+((protected_?N*4:0)+x)*2,2);p[y*N*4+x]=half(h);}return p;};
+            for(unsigned variant=0;variant<11;++variant){
+                const bool hdr=variant==2||variant==3||variant==5||variant==6||variant==8||variant==10;
+                const auto unmasked=compositePixels(variant,false),masked=compositePixels(variant,true);
                 if(control==5)blanketReceiver[variant]=masked;
                 if(control>=6){assert(masked==unmasked);assert(blanketReceiver[variant].size()==masked.size());
                     if(!additive&&variant==0&&alpha==1){const float lift=masked[0]-blanketReceiver[variant][0];assert(lift>.05f);bannerLift=std::max(bannerLift,lift);if(control==6)++bannerCounterfactuals;else ++projectedCounterfactuals;}}
                 for(unsigned i=0;i<N*N;++i)for(unsigned k=0;k<3;++k){float original=actual[i*4+2-k]/255.f;
                     float cover=coverage[i*4+2]/255.f;
                     if(additive){float remaining=std::max(original-coverage[i*4+2-k]/255.f,0.f);cover=std::clamp(((hdr?linear(original):original)-(hdr?linear(remaining):remaining))/std::max(hdr?linear(original):original,.000001f),0.f,1.f);}
-                    if(hdr)original=linear(original);const float expected=unmasked[i*4+k]*(1-cover)+original*cover;
+                    if(hdr)original=linear(original);
+                    const bool world=variant<4||variant==6||variant>=9;
+                    const float fogRgb[3]={control>=5?.4f:.05f,control>=5?.35f:.02f,control>=5?.3f:0.f};
+                    const float expected=unmasked[i*4+k]*(1-cover)+original*cover+(additive&&world?fogRgb[k]*cover:0);
                     const float error=std::fabs(masked[i*4+k]-expected);worst=std::max(worst,error);if(!(error<.003f)){std::fprintf(stderr,"variant=%s sm=%u ms=%u a=%g cover=%g actual=%g expected=%g\n",entries[variant],sm+2,ms,alpha,cover,masked[i*4+k],expected);std::abort();}
                     if(cover==1&&std::fabs(unmasked[i*4+k]-original)>.05f)++negativeControls;
                 }
                 ++compositeCases;
             }
+            ok(outputStage->UnlockRect());
             for(unsigned s=0;s<16;++s)ok(d->SetTexture(s,nullptr));for(auto* t:owned)t->Release();
             capture.colorWrite(output);assert(control>=6?!capture.active():capture.active());capture.colorWrite(target);assert(!capture.active()&&!capture.texture(d,target));
         }

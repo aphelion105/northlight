@@ -31,7 +31,7 @@ m=re.search(r'if\(PassInfo\.z<\.5\)\{(.*?)\n    \}',comp,re.S)
 body=m.group(1) if m else ''
 checks['source: WorldComposite reads the mask once, only inside the PassInfo.z<.5 branch']=(bool(m) and comp.count('RainMask')==1 and body.count('tex2Dlod(RainMask,float4(uv,0,0)).r')==1)
 checks['source: unfogged colour kept before haze, lerped back to after the haze + fog mad']=(
-    'float3 unfogged=color;' in body and body.index('unfogged=color')<body.index('lerp(mad(horizonHaze(')<body.index('fog.a,fog.rgb)')<body.index(',unfogged,rain)')
+    'float3 unfogged=color;' in body and body.index('unfogged=color')<body.index('lerp(mad(horizonHaze(')<body.index('fog.a,fog.rgb*coverageTransmission)')<body.index(',unfogged,rain)')
     and ',unfogged,rain)' in body)
 checks['source: debug views (PassInfo.z != 0) do not touch the mask']=('RainMask' not in comp.split('if(PassInfo.z<.5)',1)[0] and 'RainMask' not in comp.split('PassInfo.z==3',1)[1])
 
@@ -46,8 +46,9 @@ checks['manifest: WorldComposite bytecode changed']=(wc['sha256']!=BEFORE['World
 # 3e8d8cb3 adds the separately validated lightning passes FlashShadow and LocalFlash.
 # 7c5c699 adds diagnostic-only MaterialAudit; 11f79a8 adds the bit-exact FogTemporal history-equality guard.
 REVIEWED_AFTER={'FogTemporal':'492128b1154ec3e10f526b12c5bdf56946b405f79fa9d3d3fdbbb82761891d8b',
-                # 8366460d: valid/unknown GI coverage outside the resident probe grid.
-                'WorldGI':'5cc90949e0a37615f42bf87cc92c868987f0fbb33da30f8ec689a8e3e49d730c',
+                # 84689f198f00: absent probes preserve native ambient (233 slots).
+                # Independently guarded by test_gi_fallback_gpu.py (1009 cases).
+                'WorldGI':'98e33a0ff1a8412e7dd0d1801596cc4dc8f5dc2d4fde4880e4760a6eee267992',
                 # 00be1da: shared receiver-depth helper and tighter material depth validity.
                 'FogBlur':'3566e684517a7bc8348ac407c6b56d7300a9551b1212f12c70671aa050c7f472',
                 'MaterialAudit':'75488d95d603821f1f9ef9403f1a7d1362371fd88bd646f4da7f6e20c8a10899'}

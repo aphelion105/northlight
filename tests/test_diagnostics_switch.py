@@ -29,6 +29,7 @@ KEEP={
  'AO actor shaders unavailable':'one-off per resource reset: aoActorShaderFailed latch',
  'HDR_LAYER_STATE ':'indirect: hdrLayerDiagnostic exits without Diagnostics and after 12 reports',
  'HDR_LAYER_SOURCE ':'indirect: same hdrLayerDiagnostic gate and 12-report limit',
+ 'HDR_LAYER_SHADER ':'indirect: same hdrLayerDiagnostic gate and 12-report limit',
  'HDR_LAYER_STAGE ':'indirect: same hdrLayerDiagnostic gate and bounded stages',
  'HDR legacy compatibility layer ':'capped warning: first eight newly rejected shader patches',
  'UI_TRIAGE ':'indirect: traceUiDraw requires diagnostics, a sampled frame, and fewer than 64 entries',

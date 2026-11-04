@@ -190,6 +190,6 @@ float4 HdrLayer(float2 uv:TEXCOORD0):COLOR0 {
         color=encoded;
         [branch]if(HdrParams.y<=.5)color=hdrDecode(saturate(encoded))*HdrColor.rgb;
         if(HdrParams.x>.5)color*=alpha;
-    }
+    }else clip(-1); // Premultiplied zero-alpha is exactly the blend identity.
     return float4(color,alpha);
 }

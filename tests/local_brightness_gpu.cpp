@@ -3,6 +3,7 @@
 #include "composite_distance_gpu.cpp"
 #undef main
 #include <array>
+#include <map>
 static Image solid(float r,float g=0,float b=0,float a=0){
     Image im{1,1,D3DFMT_A32B32G32R32F,16,std::vector<unsigned char>(16)};
     const float p[]={r,g,b,a};std::memcpy(im.pixels.data(),p,16);return im;
@@ -21,12 +22,19 @@ int main(int argc,char** argv){
     ok(d->SetDepthStencilSurface(nullptr));ok(d->SetVertexShader(nullptr));ok(d->SetFVF(D3DFVF_XYZRHW|D3DFVF_TEX1));
     for(auto k:{D3DRS_ZENABLE,D3DRS_ZWRITEENABLE,D3DRS_ALPHATESTENABLE,D3DRS_ALPHABLENDENABLE,D3DRS_FOGENABLE,D3DRS_SRGBWRITEENABLE,D3DRS_SCISSORTESTENABLE})ok(d->SetRenderState(k,FALSE));
     ok(d->SetRenderState(D3DRS_CULLMODE,D3DCULL_NONE));ok(d->SetRenderState(D3DRS_COLORWRITEENABLE,15));
-    IDirect3DSurface9 *target=nullptr,*staging=nullptr;ok(d->CreateRenderTarget(N,N,D3DFMT_A16B16G16R16F,D3DMULTISAMPLE_NONE,0,FALSE,&target,nullptr));ok(d->CreateOffscreenPlainSurface(N,N,D3DFMT_A16B16G16R16F,D3DPOOL_SYSTEMMEM,&staging,nullptr));ok(d->SetRenderTarget(0,target));
-    const Vertex quad[]={{-.5f,-.5f,0,1,0,0},{N-.5f,-.5f,0,1,1,0},{-.5f,N-.5f,0,1,0,1},{N-.5f,N-.5f,0,1,1,1}};
-    std::vector<IDirect3DTexture9*> owned;
-    auto bind=[&](unsigned slot,Image im){auto t=texture(d,im);owned.push_back(t);ok(d->SetTexture(slot,t));};
-    auto clearInputs=[&]{for(unsigned s=0;s<16;++s)ok(d->SetTexture(s,nullptr));for(auto t:owned)t->Release();owned.clear();};
-    auto draw=[&](unsigned shader){ok(d->SetPixelShader(shaders[shader]));ok(d->BeginScene());ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(Vertex)));ok(d->EndScene());ok(d->GetRenderTargetData(target,staging));D3DLOCKED_RECT lock{};ok(staging->LockRect(&lock,nullptr,D3DLOCK_READONLY));std::array<float,4> p{};for(unsigned k=0;k<4;++k){std::uint16_t h;std::memcpy(&h,static_cast<char*>(lock.pBits)+lock.Pitch+8+k*2,2);p[k]=half(h);}ok(staging->UnlockRect());return p;};
+    // Every original draw retains its 4x4 block and the same sampled pixel.
+    // Pack the blocks below the minimum SM3 texture-size limit; read once.
+    constexpr unsigned Rows=1512,RowsPerStrip=128,Columns=6;
+    constexpr unsigned Width=N*Columns*((Rows+RowsPerStrip-1)/RowsPerStrip),Height=N*RowsPerStrip;
+    IDirect3DSurface9 *target=nullptr,*staging=nullptr;ok(d->CreateRenderTarget(Width,Height,D3DFMT_A16B16G16R16F,D3DMULTISAMPLE_NONE,0,FALSE,&target,nullptr));ok(d->CreateOffscreenPlainSurface(Width,Height,D3DFMT_A16B16G16R16F,D3DPOOL_SYSTEMMEM,&staging,nullptr));ok(d->SetRenderTarget(0,target));
+    std::map<std::vector<unsigned char>,IDirect3DTexture9*> owned;
+    auto bind=[&](unsigned slot,Image im){auto& t=owned[im.pixels];if(!t)t=texture(d,im);ok(d->SetTexture(slot,t));};
+    auto clearInputs=[&]{for(unsigned s=0;s<16;++s)ok(d->SetTexture(s,nullptr));};
+    auto draw=[&](unsigned shader,unsigned row,unsigned column){const float x=float((row/RowsPerStrip*Columns+column)*N),y=float(row%RowsPerStrip*N);
+        const Vertex quad[]={{x-.5f,y-.5f,0,1,0,0},{x+N-.5f,y-.5f,0,1,1,0},{x-.5f,y+N-.5f,0,1,0,1},{x+N-.5f,y+N-.5f,0,1,1,1}};
+        ok(d->SetPixelShader(shaders[shader]));ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(Vertex)));};
+    struct Check {const float* surface;float power,correction;bool neutral,negative;float original[3],color[3],room[3],expected[3],prelitExpected[3];};
+    std::vector<Check> checks;checks.reserve(Rows);ok(d->BeginScene());
     unsigned cases=0,negativeControls=0,neutralControls=0,prelitControls=0,prelitDarkControls=0,prelitLocalControls=0;float maxError=0;
     // Explicit authored receiver colours, not reconstructed screenshot geometry.
     const float surfaces[][3]={{0,0,0},{.08f,.04f,.01f},{.72f,.30f,.035f},{.84f,.41f,.05f},{.95f,.9f,.75f},{1,1,1}};
@@ -37,29 +45,45 @@ int main(int argc,char** argv){
         bind(0,solid(surface[0],surface[1],surface[2],.375f));bind(1,solid(nd));bind(2,solid(0));bind(3,solid(power,power*.65f,power*.08f));bind(8,solid(correction,correction,correction));bind(9,solid(0,0,0,1));bind(10,solid(0,0,0,ao));bind(11,solid(0));bind(12,solid(baseline,baseline,baseline));bind(13,solid(0));bind(15,solid(10));
         float original[3],transported[3],color[3],room[3],addition[3],scale=1;
         for(unsigned k=0;k<3;++k){const float fog=std::min((1-transmittance)*.1f,surface[k]);original[k]=std::clamp((surface[k]-fog)*ao+fog,0.f,1.f);transported[k]=std::max(original[k]-fog,0.f);const float albedo=std::min(transported[k]/baseline,transmittance);color[k]=std::max(original[k]+albedo*correction,original[k]-.45f*transported[k]);room[k]=std::min(transported[k],.5f*std::max(1-color[k],0.f));addition[k]=albedo*power*(k==0?1.f:k==1?.65f:.08f);scale=std::max(scale,1+addition[k]/std::max(room[k],.00001f));}
-        const auto p=draw(0);
-        for(unsigned k=0;k<3;++k){const float expected=color[k]+std::min(addition[k]/scale,room[k]);maxError=std::max(maxError,std::fabs(p[k]-expected));assert(std::isfinite(p[k])&&std::fabs(p[k]-expected)<.0015f);assert(p[k]<=color[k]+room[k]+.001f&&p[k]>=color[k]-.001f);if(surface[k]==0)assert(p[k]==0);}
-        assert(p[3]==.375f);++cases;
+        const unsigned row=unsigned(checks.size());draw(0,row,0);
+        Check check{};check.surface=surface;check.power=power;check.correction=correction;
+        for(unsigned k=0;k<3;++k){check.original[k]=original[k];check.color[k]=color[k];check.room[k]=room[k];check.expected[k]=color[k]+std::min(addition[k]/scale,room[k]);}
         // A vertex-colour WMO has no outdoor term to remove. Preserve its AO
         // and native fog, then add the bounded, already-shadowed local sum.
-        const auto prelit=draw(3);float prelitScale=1,prelitRoom[3];
+        draw(3,row,1);float prelitScale=1,prelitRoom[3];
         for(unsigned k=0;k<3;++k){prelitRoom[k]=std::min(transported[k],.5f*std::max(1-original[k],0.f));prelitScale=std::max(prelitScale,1+addition[k]/std::max(prelitRoom[k],.00001f));}
-        for(unsigned k=0;k<3;++k){const float expected=original[k]+std::min(addition[k]/prelitScale,prelitRoom[k]);assert(std::fabs(prelit[k]-expected)<.0015f);
-            if(power==0&&correction<0&&prelit[k]>p[k]+.005f)++prelitDarkControls;
-            if(power>0&&prelit[k]>original[k]+.001f)++prelitLocalControls;}
-        assert(prelit[3]==.375f);++prelitControls;
-        if(argc==4&&power==0){assert(draw(2)==p);++neutralControls;}
-        if(argc==4&&power==32&&surface[0]==.72f&&transmittance==1&&ao==1&&correction==0){const auto old=draw(2);assert(old[0]>1&&p[0]<.86f);++negativeControls;}
+        for(unsigned k=0;k<3;++k)check.prelitExpected[k]=original[k]+std::min(addition[k]/prelitScale,prelitRoom[k]);
+        check.neutral=argc==4&&power==0;
+        check.negative=argc==4&&power==32&&surface[0]==.72f&&transmittance==1&&ao==1&&correction==0;
+        if(check.neutral||check.negative)draw(2,row,2);
         // The same extreme source must leave unlit, sky and water receivers alone.
         if(power==512&&correction==0){
-            const auto unlit=draw(1);for(unsigned k=0;k<3;++k)assert(std::fabs(unlit[k]-surface[k])<.001f);
-            bind(1,solid(1));const auto sky=draw(0);for(unsigned k=0;k<3;++k)assert(std::fabs(sky[k]-surface[k])<.001f);
-            bind(1,solid(nd));bind(11,solid(5,1));c[30][0]=1;ok(d->SetPixelShaderConstantF(30,c[30],1));const auto water=draw(0);for(unsigned k=0;k<3;++k)assert(std::fabs(water[k]-surface[k])<.001f);
+            draw(1,row,3);
+            bind(1,solid(1));draw(0,row,4);
+            bind(1,solid(nd));bind(11,solid(5,1));c[30][0]=1;ok(d->SetPixelShaderConstantF(30,c[30],1));draw(0,row,5);
         }
+        checks.push_back(check);
     }
+    assert(checks.size()==Rows);ok(d->EndScene());ok(d->GetRenderTargetData(target,staging));D3DLOCKED_RECT lock{};ok(staging->LockRect(&lock,nullptr,D3DLOCK_READONLY));
+    auto pixel=[&](unsigned row,unsigned column){const unsigned x=(row/RowsPerStrip*Columns+column)*N+1,y=row%RowsPerStrip*N+1;
+        const auto* data=static_cast<const char*>(lock.pBits)+y*lock.Pitch+x*8;std::array<float,4> p{};
+        for(unsigned k=0;k<4;++k){std::uint16_t h;std::memcpy(&h,data+k*2,2);p[k]=half(h);}return p;};
+    for(unsigned row=0;row<checks.size();++row){const auto& check=checks[row];const auto p=pixel(row,0),prelit=pixel(row,1);
+        for(unsigned k=0;k<3;++k){const float expected=check.expected[k];maxError=std::max(maxError,std::fabs(p[k]-expected));assert(std::isfinite(p[k])&&std::fabs(p[k]-expected)<.0015f);assert(p[k]<=check.color[k]+check.room[k]+.001f&&p[k]>=check.color[k]-.001f);if(check.surface[k]==0)assert(p[k]==0);}
+        assert(p[3]==.375f);++cases;
+        for(unsigned k=0;k<3;++k){assert(std::fabs(prelit[k]-check.prelitExpected[k])<.0015f);
+            if(check.power==0&&check.correction<0&&prelit[k]>p[k]+.005f)++prelitDarkControls;
+            if(check.power>0&&prelit[k]>check.original[k]+.001f)++prelitLocalControls;}
+        assert(prelit[3]==.375f);++prelitControls;
+        if(check.neutral){assert(pixel(row,2)==p);++neutralControls;}
+        if(check.negative){const auto old=pixel(row,2);assert(old[0]>1&&p[0]<.86f);++negativeControls;}
+        if(check.power==512&&check.correction==0){const auto unlit=pixel(row,3),sky=pixel(row,4),water=pixel(row,5);
+            for(unsigned k=0;k<3;++k){assert(std::fabs(unlit[k]-check.surface[k])<.001f);assert(std::fabs(sky[k]-check.surface[k])<.001f);assert(std::fabs(water[k]-check.surface[k])<.001f);}}
+    }ok(staging->UnlockRect());
     assert(argc!=4||(negativeControls==2&&neutralControls==216));
     assert(prelitDarkControls&&prelitLocalControls&&prelitControls==cases);
     std::printf("PRELIT_WMO_PASS cases=%u oldDarkeningControls=%u shadowedLocalLightControls=%u AO_retained native_fog_retained no_global_exposure_floor\n",prelitControls,prelitDarkControls,prelitLocalControls);
     std::printf("LOCAL_BRIGHTNESS_PASS cases=%u maxError=%g oldClippingControls=%u exactNoLampControls=%u gameLaunched=0 timingQueries=0\n",cases,maxError,negativeControls,neutralControls);
-    clearInputs();d->SetPixelShader(nullptr);for(auto shader:shaders)if(shader)shader->Release();staging->Release();target->Release();d->Release();api->Release();FreeLibrary(module);DestroyWindow(window);UnregisterClassW(wc.lpszClassName,wc.hInstance);
+    clearInputs();for(auto& entry:owned)entry.second->Release();d->SetPixelShader(nullptr);for(auto shader:shaders)if(shader)shader->Release();staging->Release();target->Release();d->Release();api->Release();FreeLibrary(module);DestroyWindow(window);UnregisterClassW(wc.lpszClassName,wc.hInstance);
+    return 0;
 }

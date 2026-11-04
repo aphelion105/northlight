@@ -5906,6 +5906,7 @@ public:
         }
         /* 0.3.212 (task 32): with this frame's name marks the quad draws with the world depth-stencil bound and a stencil test that rejects marked pixels (they keep the game's colour in the target); no marks: the quad as before. */
         NorthlightEffectCoverage::Capture::bind(d,effectCoverage,effectEmission);
+        if(lightingCapture)lightingCapture->inputs(3,(1u<<7)|(1u<<13),(1u<<7)|(1u<<13)); // Native alpha/emission and rain needed to reproduce final atmosphere.
         bool compositeOk=false;
         {IDirect3DSurface9* maskDepth=prelitMask?prelitMaskDepth:unlitMask?unlitMaskDepth:nameMaskDepth;
          const DWORD maskBits=(nameMaskDepth?NorthlightNameStencil::kBit:0)|(unlitMask?NorthlightUnlitReceiver::Bit:0)|(prelitMask?NorthlightUnlitReceiver::PrelitBit:0);
@@ -5935,8 +5936,8 @@ public:
                 d->SetSamplerState(sampler,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(sampler,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);
             }
             d->SetPixelShader(hdrMode?hdrMaterialPS:materialPS);
-            constexpr unsigned materialInputs=(1u<<0)|(1u<<1)|(1u<<4)|(1u<<5)|(1u<<6)|(1u<<8)|(1u<<9)|(1u<<10)|(1u<<11)|(1u<<12)|(1u<<14);
-            if(lightingCapture)lightingCapture->inputs(3,materialInputs,directInputs);
+            constexpr unsigned materialInputs=(1u<<0)|(1u<<1)|(1u<<4)|(1u<<5)|(1u<<6)|(1u<<7)|(1u<<8)|(1u<<9)|(1u<<10)|(1u<<11)|(1u<<12)|(1u<<13)|(1u<<14);
+            if(lightingCapture)lightingCapture->inputs(3,materialInputs,directInputs|(1u<<7)|(1u<<13));
             NameMaskCompositeBind mask(d,maskDepth,maskBits);
             const HRESULT materialResult=quad(w,h);compositeOk=check(materialResult,"full-resolution material light");
             if(lightingCapture)lightingCapture->pass("MaterialComposite",3,materialInputs,0,0,true,materialResult);

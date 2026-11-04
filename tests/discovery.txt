@@ -11,6 +11,7 @@ test_actor_shadow_selection.py
 test_actor_shadows_wiring.py
 test_actor_texture_worker.py
 test_actor_transient_bindings.py
+test_additive_atmosphere_gpu.py
 test_affected_tests.py
 test_ao_actor_build.py
 test_ao_actor_gpu.py
@@ -160,6 +161,8 @@ test_grass_shadow_gpu.py
 test_gtao_grazing.py
 test_hdr_boundary.py
 test_hdr_diffuse_gpu.py
+test_hdr_layer_sparse_gpu.py
+test_hdr_local_headroom_gpu.py
 test_hdr_log_summary.py
 test_hdr_reset.py
 test_horizon_haze.py
@@ -173,6 +176,7 @@ test_instance_maps.py
 test_instance_scene.py
 test_interval_temporaries.py
 test_job_system.py
+test_lamp_capture_inputs.py
 test_lamp_capture_replay.py
 test_lamp_daylight.py
 test_legacy_fog_hold.py
@@ -243,8 +247,8 @@ test_material_replay_content.py
 test_material_replay_state.py
 test_material_terrain_bounds.py
 test_material_texel_sharing.py
-test_material_upload_reuse_gpu.py
 test_material_texture_simd.py
+test_material_upload_reuse_gpu.py
 test_material_wall_bounds.py
 test_memmap_diagnostics.py
 test_memory_admission_probe.py

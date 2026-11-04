@@ -10,6 +10,8 @@
 #include "world_draw_domain.h"
 #include "world_compiled_shaders.h"
 #include "forwarders.h"
+#include "device_mirror.h"
+#include "smoke_sky_native.h"
 static void checked(HRESULT hr,const char* operation,unsigned line){if(FAILED(hr)){std::fprintf(stderr,"line=%u operation=%s HRESULT=%08lx\n",line,operation,(unsigned long)hr);std::abort();}}
 #define ok(operation) checked((operation),#operation,__LINE__)
 
@@ -21,14 +23,10 @@ struct FaultDevice:ForwardIDirect3DDevice9 {
     HRESULT STDMETHODCALLTYPE SetPixelShader(IDirect3DPixelShader9* p)override{if(fault==3){fault=0;return E_FAIL;}return real->SetPixelShader(p);}
 };
 
-struct ExtensionDevice:ForwardIDirect3DDevice9 {
-    explicit ExtensionDevice(IDirect3DDevice9* d):ForwardIDirect3DDevice9(d){}
-    struct RawScope {explicit RawScope(ExtensionDevice&) {}};
-    bool peekVertexShader(IDirect3DVertexShader9*&){return false;}
-};
 namespace NorthlightBackend {static bool isPackagedDxvk(int){return true;}}
 namespace NorthlightSpellLayer {enum class Family {None,Particle,ParticleUnlit,Model,Projected,Ripples};}
 struct Fixture {
+    DeviceMirror mirror;
     ExtensionDevice device;ExtensionDevice* ext;
     NorthlightHdr::Color hdrColor;
     NorthlightHdr::SkyForeground hdrSkyForeground;
@@ -47,7 +45,7 @@ struct Fixture {
     IDirect3DSurface9* hdrPresentBack;
     struct Discs {bool cleared=false;void setHdrSkyTarget(void*){cleared=true;}} discs;
     Discs* celestialDiscs=&discs;
-    Fixture(IDirect3DDevice9* d,IDirect3DSurface9* sky):device(d),ext(&device),stateBlocks(&device),hdrPresentBack(sky){D3DSURFACE_DESC desc{};ok(sky->GetDesc(&desc));width=desc.Width;height=desc.Height;vsTags[nullptr]=kUnlitTag;}
+    Fixture(IDirect3DDevice9* d,IDirect3DSurface9* sky):device(d,&mirror),ext(&device),stateBlocks(&device),hdrPresentBack(sky){D3DSURFACE_DESC desc{};ok(sky->GetDesc(&desc));width=desc.Width;height=desc.Height;vsTags[nullptr]=kUnlitTag;}
     template<class T> static void drop(T*& p){if(p)p->Release();p=nullptr;}
     DWORD drawRenderState(D3DRENDERSTATETYPE state){DWORD value=0;ok(ext->GetRenderState(state,&value));return value;}
     bool nameMaskFullViewport(const D3DVIEWPORT9& vp){return fullViewport&&vp.X==0&&vp.Y==0&&vp.Width==width&&vp.Height==height;}
@@ -87,6 +85,56 @@ int main(int argc,char** argv){
     auto reset=[&]{for(unsigned s=0;s<16;++s)ok(d->SetTexture(s,nullptr));ok(NorthlightHdr::quadState(d,native,W,H));ok(d->SetDepthStencilSurface(zbuffer));ok(d->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER|D3DCLEAR_STENCIL,0,1,0));ok(d->SetPixelShader(flat));};
     Image depthImage{W,H,D3DFMT_R32F,4,std::vector<unsigned char>(W*H*4)};for(unsigned y=0;y<H;++y)for(unsigned x=0;x<W;++x){float z=x<W/2?.47f:1;std::memcpy(depthImage.pixels.data()+(y*W+x)*4,&z,4);}auto depth=texture(d,depthImage);
     auto zero=solid(d,0,0,0,0),white=solid(d,1,1,1,1),fog=solid(d,0,0,0,1);
+    IDirect3DVertexShader9* foregroundVs=nullptr;ok(d->CreateVertexShader(kForegroundVs3,&foregroundVs));
+    const D3DVERTEXELEMENT9 foregroundElements[]={{0,0,D3DDECLTYPE_FLOAT4,D3DDECLMETHOD_DEFAULT,D3DDECLUSAGE_POSITION,0},{0,16,D3DDECLTYPE_FLOAT2,D3DDECLMETHOD_DEFAULT,D3DDECLUSAGE_TEXCOORD,0},D3DDECL_END()};
+    IDirect3DVertexDeclaration9* foregroundDecl=nullptr;ok(d->CreateVertexDeclaration(foregroundElements,&foregroundDecl));
+    auto* foregroundTexture=solid(d,.7f,.5f,.3f,.75f);
+    unsigned nativeCases=0;float nativeWorst=0;
+    for(const auto& program:kNativeForeground)for(bool fogEnabled:{false,true})for(unsigned control=0;control<4;++control){
+        IDirect3DPixelShader9* ps=nullptr;ok(d->CreatePixelShader(program.code,&ps));
+        auto setup=[&]{
+            ok(d->SetVertexDeclaration(foregroundDecl));
+            ok(d->SetVertexShader(foregroundVs));ok(d->SetPixelShader(ps));
+            const float viewport[]={2.f/W,-2.f/H,0,0},tint[]={.8f,.3f,.1f,.5f},amount[]={.35f,0,0,0};
+            ok(d->SetVertexShaderConstantF(0,viewport,1));ok(d->SetVertexShaderConstantF(1,tint,1));ok(d->SetVertexShaderConstantF(2,amount,1));
+            float constants[14][4];for(auto& row:constants)for(auto& value:row)value=.2f;
+            constants[2][0]=.03f;constants[2][1]=.07f;constants[2][2]=.11f;
+            ok(d->SetPixelShaderConstantF(0,constants[0],14));
+            for(unsigned slot:{0u,1u,4u}){ok(d->SetTexture(slot,foregroundTexture));for(auto key:{D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER})ok(d->SetSamplerState(slot,key,D3DTEXF_POINT));}
+            ok(d->SetRenderState(D3DRS_FOGENABLE,fogEnabled));ok(d->SetRenderState(D3DRS_FOGCOLOR,0xff102030));
+            ok(d->SetRenderState(D3DRS_FOGTABLEMODE,D3DFOG_NONE));ok(d->SetRenderState(D3DRS_FOGVERTEXMODE,D3DFOG_NONE));
+        };
+        flat=flatShaders[1];reset();ok(d->BeginScene());setup();ok(quad(.3f));ok(d->EndScene());const auto source=nativePixels();
+        std::vector<unsigned char> reference;
+        for(unsigned mode=0;mode<2;++mode){
+            Fixture f(d,linearSky);f.terrain=control!=0;reset();ok(d->BeginScene());
+            const float background[]={.2f,.3f,.4f,1},base[]={2.f,.6f,.3f,1};
+            ok(d->SetPixelShaderConstantF(0,background,1));ok(quad(1));
+            {SavedState save(d);ok(d->SetRenderTarget(0,linearSky));ok(d->SetPixelShaderConstantF(0,base,1));ok(quad(1));}
+            setup();const D3DVIEWPORT9 vp={0,0,W,H,0,.94f};ok(d->SetViewport(&vp));
+            ok(d->SetRenderState(D3DRS_ZENABLE,TRUE));ok(d->SetRenderState(D3DRS_ZWRITEENABLE,FALSE));ok(d->SetRenderState(D3DRS_ZFUNC,D3DCMP_LESSEQUAL));
+            ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE));ok(d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_SRCALPHA));ok(d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_INVSRCALPHA));
+            f.hdr.active=mode!=0;f.vsTags[foregroundVs]=Fixture::kUnlitTag;
+            if(control>=2){const float black[]={0,0,0,0};ok(d->SetVertexShader(nullptr));ok(d->SetFVF(D3DFVF_XYZRHW|D3DFVF_TEX1));ok(d->SetPixelShader(flat));ok(d->SetPixelShaderConstantF(0,black,1));
+                ok(d->SetRenderState(D3DRS_FOGENABLE,FALSE));ok(d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_ONE));ok(d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_ONE));f.mirror.invalidate();
+                ok(f.effectCoverageDraw([&]{return quad(.3f);},true));
+                ok(d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_SRCALPHA));ok(d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_INVSRCALPHA));f.mirror.invalidate();
+                ok(f.effectCoverageDraw([&]{return quad(.3f);},true));setup();}
+            f.mirror.invalidate();f.effectCoverageNative=control!=3;unsigned submits=0;const auto before=f.hdrSkyForeground.draws;
+            ok(f.effectCoverageDraw([&]{++submits;return quad(.3f);},control==3));f.effectCoverage.endBatch();ok(d->EndScene());
+            if(submits!=1){std::fprintf(stderr,"NATIVE_FOREGROUND_REPLAY sm=%u variant=%u fog=%u mode=%u control=%u submits=%u layers=%llu\n",program.major,program.index,unsigned(fogEnabled),mode,control,submits,(unsigned long long)f.hdrColor.layers);std::abort();}
+            if(mode){assert(f.hdrSkyForeground.draws==before+1&&f.hdrColor.layers==0);}
+            const auto pixels=nativePixels();if(!mode)reference=pixels;else{
+                assert(pixels==reference);const auto actual=rgba(linearSky);const unsigned at=(4*W+12)*4;const float alpha=source[at+3]/255.f;
+                for(unsigned c=0;c<3;++c){const float expected=base[c]*(1-alpha)+decode(source[at+2-c]/255.f)*alpha;
+                    const float error=std::fabs(actual[at+c]-expected);nativeWorst=std::max(nativeWorst,error);
+                    if(error>=.012f){std::fprintf(stderr,"NATIVE_FOREGROUND_ERROR sm=%u variant=%u fog=%u channel=%u expected=%g actual=%g source=%u alpha=%g\n",program.major,program.index,unsigned(fogEnabled),c,expected,actual[at+c],unsigned(source[at+2-c]),alpha);std::abort();}
+                }
+            }
+        }
+        ps->Release();++nativeCases;
+    }
+    std::printf("NATIVE_FOREGROUND_GPU_PASS cases=%u alpha_emission_early_drain_controls=4 native_rgba_unchanged=1 max_linear_error=%g\n",nativeCases,nativeWorst);
     unsigned cases=0,negative=0,mrt=0;float worst=0;
     for(unsigned sm=0;sm<2;++sm)for(unsigned blend=0;blend<4;++blend)for(float alpha:{0.f,.25f,.75f,1.f})for(unsigned control=0;control<5;++control){
         flat=flatShaders[sm];
@@ -202,7 +250,7 @@ int main(int argc,char** argv){
         auto frame=[&](bool candidate){
             f.hdr.active=candidate;f.effectCoverage.endFrame();for(unsigned s=0;s<16;++s)ok(d->SetTexture(s,nullptr));ok(NorthlightHdr::quadState(d,bigNative,BW,BH));ok(d->SetDepthStencilSurface(bigDepth));ok(d->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0,1,0));
             ok(d->BeginScene());ok(d->SetPixelShader(flatShaders[1]));const float smoke[]={.8f,.3f,.1f,.25f};ok(d->SetPixelShaderConstantF(0,smoke,1));D3DVIEWPORT9 vp={0,0,BW,BH,0,.94f};ok(d->SetViewport(&vp));ok(d->SetRenderState(D3DRS_ZENABLE,TRUE));ok(d->SetRenderState(D3DRS_ZFUNC,D3DCMP_LESSEQUAL));ok(d->SetRenderState(D3DRS_ZWRITEENABLE,FALSE));ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE));ok(d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_SRCALPHA));ok(d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_INVSRCALPHA));
-            for(unsigned n=0;n<draws;++n){const float x=float((n*113)%(BW-128)),y=float((n*73)%(BH-128));const Vertex q[]={{x-.5f,y-.5f,.3f,1,0,0},{x+127.5f,y-.5f,.3f,1,1,0},{x-.5f,y+127.5f,.3f,1,0,1},{x+127.5f,y+127.5f,.3f,1,1,1}};ok(f.effectCoverageDraw([&]{return d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,q,sizeof(Vertex));}));}
+            f.mirror.invalidate();for(unsigned n=0;n<draws;++n){const float x=float((n*113)%(BW-128)),y=float((n*73)%(BH-128));const Vertex q[]={{x-.5f,y-.5f,.3f,1,0,0},{x+127.5f,y-.5f,.3f,1,1,0},{x-.5f,y+127.5f,.3f,1,0,1},{x+127.5f,y+127.5f,.3f,1,1,1}};ok(f.effectCoverageDraw([&]{return d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,q,sizeof(Vertex));}));}
             f.effectCoverage.endBatch();ok(d->EndScene());
         };
         for(unsigned n=0;n<8;++n)frame(n%2!=0);
