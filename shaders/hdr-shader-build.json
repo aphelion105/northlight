@@ -1,5 +1,5 @@
 {
-  "source_sha256": "0b06e3b33857f09cd0b19629e02f24c5ac7ce7af06994fcba79ee27a1a0cb5cc",
+  "source_sha256": "2f5a8b0f6aeac2b8e3df93cef091205087c995e1458f15755f8e821abe908b35",
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
   "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
   "game_launched": false,
@@ -266,8 +266,8 @@
       "bytes": 180
     },
     "HdrLegacyComposite": {
-      "static_instruction_slots": 98,
-      "temporary_registers": 6,
+      "static_instruction_slots": 141,
+      "temporary_registers": 8,
       "samplers": [
         0,
         1,
@@ -276,24 +276,24 @@
         7
       ],
       "instructions": {
-        "texld": 5,
-        "mov": 4,
-        "if": 3,
-        "add": 18,
-        "mul": 24,
+        "texld": 6,
+        "mov": 6,
+        "if": 4,
+        "add": 26,
+        "max": 10,
+        "mul": 32,
+        "log": 12,
+        "exp": 12,
+        "cmp": 7,
+        "rcp": 7,
+        "endif": 4,
         "else": 3,
-        "endif": 3,
-        "max": 7,
-        "cmp": 5,
-        "rcp": 4,
         "pow": 1,
-        "min": 1,
-        "log": 6,
-        "exp": 6
+        "min": 1
       },
       "target": "ps_3_0",
-      "sha256": "47344199f9e4ac9619a667d08c03248f7bfa8c4071a0c4ee5c4c541239669fc0",
-      "bytes": 1928
+      "sha256": "385990d25732043b04d863f5537230c450b86385478be9daa32658691baecb11",
+      "bytes": 2508
     },
     "HdrAdapt": {
       "static_instruction_slots": 50,

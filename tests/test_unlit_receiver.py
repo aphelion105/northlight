@@ -42,11 +42,20 @@ int main(){
  using namespace NorthlightUnlitReceiver;
  assert(stencilFormat(75,123)&&stencilFormat(81,123)&&stencilFormat(123,123));
  assert(!stencilFormat(79,123)&&!stencilFormat(73,123)&&!stencilFormat(77,123));
- assert((Bit&NorthlightNameStencil::kBit)==0);
+ assert((Bit&NorthlightNameStencil::kBit)==0&&(PrelitBit&(Bit|NorthlightNameStencil::kBit))==0);
  unsigned long marks=0,names=NorthlightNameStencil::kBit;
  for(const auto& s:Mark)if(s.state==StencilWriteMask)marks=s.value;
- assert(marks==Bit&&((names&~marks)|(Bit&marks))==(names|Bit));
- for(const auto& s:Unmark)if(s.state==StencilWriteMask)assert(s.value==(Bit|names));
+ assert(marks==(Bit|PrelitBit|names)&&((names&~marks)|(Bit&marks))==Bit);
+ for(const auto& s:Unmark)if(s.state==StencilWriteMask)assert(s.value==(Bit|PrelitBit|names));
+ for(const auto& s:MarkPrelit){if(s.state==StencilRef)assert(s.value==PrelitBit);if(s.state==StencilWriteMask)assert(s.value==(Bit|PrelitBit|names));}
+ for(bool normal:{false,true})for(bool global:{false,true}){
+  std::vector<Word> w={0xfffe0300,0x0200001f,0x8000000a,0x900f0002,0x0200001f,0x80000003,0x900f0001,
+   0x0200001f,0x8000000a,0xe00f0001,0x03000005,0xe0070001,0x90e40002,global?0xa0e4000au:normal?0x90e40001u:0x90e40002u,
+   0x02000001,0xe0080001,0x90000001,0x0000ffff};
+  assert(prelitShader(w.data(),w.size(),true)==(!normal&&!global));
+  assert(!prelitShader(w.data(),w.size(),false)); // Identical M2 RGB does not qualify as a prelit WMO.
+ }
+ assert(!prelitShader(nullptr,0,true));
  std::puts("PASS unlit RGB proof: normal-dependent lighting rejected, alpha/fog independent, unknown/malformed rejected, stencil bits isolated");
 }
 '''

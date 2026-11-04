@@ -30,8 +30,8 @@ assert 'if(vc.world||drawWaterVS)return;' in renderer  # native grass is not a f
 composite = fp.tracked('world_effects.hlsl').read_text().split('float4 worldComposite(')[1].split('// Separate geometry pass')[0]
 assert 'bool relight=surfaceLighting&&d<.99999&&liquid<=0;' in composite and 'if(relight)' in composite
 shader=fp.tracked('world_effects.hlsl').read_text()
-assert 'return worldComposite(uv,pixel,true,false,FogBuffer);' in shader
-assert 'return worldComposite(uv,pixel,false,false,FogBuffer);' in shader
+assert 'return worldComposite(uv,pixel,true,false,FogBuffer,effect);' in shader
+assert 'return worldComposite(uv,pixel,false,false,FogBuffer,effect);' in shader
 assert 'GrassShadows' not in composite and 'DetailDoodad' not in composite  # receiving is independent of caster opt-in
 
 spell = fp.src('spell_layer.h').read_text()

@@ -526,11 +526,11 @@ int main(int argc,char** argv){
         WorldScreenEffectsTest::emptyDebugViews(*world,out,resolved,readback,depth,W,H);
         {
             auto world=std::make_unique<WorldRenderer>(&meter);WorldScreenEffectsTest::setup(*world,W,H);
-        // Three adjacent receiver classes share the existing native stencil:
-        // name (keep native target), self-lit M2 (atmosphere only), ordinary.
+        // Four adjacent classes share native stencil: names, self-lit M2,
+        // prelit WMO (AO/local lights/fog), and ordinary lit geometry.
         IDirect3DSurface9* receiverDepth=nullptr;
         screenOk(d->CreateDepthStencilSurface(W,H,D3DFMT_D24S8,D3DMULTISAMPLE_TYPE(msaa),0,FALSE,&receiverDepth,nullptr));
-        float unlitPixels[4][3]={};
+        float unlitPixels[4][3]={},prelitPixels[4][3]={};
         for(unsigned mode=0;mode<4;++mode){
             WorldScreenEffectsTest::fixtureContext(*world);WorldScreenEffectsTest::fog(*world,mode>=2);
             world->setMaterialDetail(mode&1?detail:nullptr,1,48,nullptr,8);
@@ -540,20 +540,22 @@ int main(int argc,char** argv){
             D3DVIEWPORT9 viewport{0,0,W,H,0,1};screenOk(d->SetViewport(&viewport));
             screenOk(d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE));
             screenOk(d->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_STENCIL,0xff00ff00,1,0));
-            D3DRECT name{0,0,LONG(W/3),H},unlit{LONG(W/3),0,LONG(W*2/3),H};
+            D3DRECT name{0,0,LONG(W/4),H},unlit{LONG(W/4),0,LONG(W/2),H},prelit{LONG(W/2),0,LONG(W*3/4),H};
             screenOk(d->Clear(1,&name,D3DCLEAR_STENCIL,0,1,NorthlightNameStencil::kBit));
             screenOk(d->Clear(1,&unlit,D3DCLEAR_STENCIL,0,1,NorthlightUnlitReceiver::Bit));
+            screenOk(d->Clear(1,&prelit,D3DCLEAR_STENCIL,0,1,NorthlightUnlitReceiver::PrelitBit));
             screenOk(d->SetDepthStencilSurface(nullptr));
-            world->setNameMask(receiverDepth);world->setUnlitMask(receiverDepth);
+            world->setNameMask(receiverDepth);world->setUnlitMask(receiverDepth);world->setPrelitMask(receiverDepth);
             const unsigned targets=meter.creates;
             assert(renderChecked(*world,d,out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao));
             assert(meter.creates==targets); // no additional full-size texture
             if(msaa)screenOk(d->StretchRect(out,nullptr,resolved,nullptr,D3DTEXF_NONE));
             screenOk(d->GetRenderTargetData(msaa?resolved:out,readback));D3DLOCKED_RECT lock{};screenOk(readback->LockRect(&lock,nullptr,D3DLOCK_READONLY));
             for(unsigned channel=0;channel<3;++channel){
-                unsigned short nameValue,unlitValue;
+                unsigned short nameValue,unlitValue,prelitValue;
                 const auto* row=static_cast<char*>(lock.pBits)+(H/2)*lock.Pitch;
-                std::memcpy(&nameValue,row+(W/6)*8+channel*2,2);std::memcpy(&unlitValue,row+(W/2)*8+channel*2,2);
+                std::memcpy(&nameValue,row+(W/8)*8+channel*2,2);std::memcpy(&unlitValue,row+(W*3/8)*8+channel*2,2);
+                std::memcpy(&prelitValue,row+(W*5/8)*8+channel*2,2);prelitPixels[mode][channel]=screenHalf(prelitValue);
                 assert(std::abs(screenHalf(nameValue)-(channel==1?1.f:0.f))<.002f);
                 unlitPixels[mode][channel]=screenHalf(unlitValue);
                 if(mode<2)assert(std::abs(unlitPixels[mode][channel]-.4f)<.003f);
@@ -563,6 +565,7 @@ int main(int argc,char** argv){
         float fogDelta=0;
         for(unsigned k=0;k<3;++k){assert(std::abs(unlitPixels[0][k]-unlitPixels[1][k])<.001f);assert(std::abs(unlitPixels[2][k]-unlitPixels[3][k])<.001f);fogDelta=std::max(fogDelta,std::abs(unlitPixels[2][k]-unlitPixels[0][k]));}
         assert(fogDelta>.002f);
+        for(unsigned k=0;k<3;++k){assert(std::abs(prelitPixels[0][k]-prelitPixels[1][k])<.001f);assert(std::abs(prelitPixels[2][k]-prelitPixels[3][k])<.001f);assert(prelitPixels[0][k]>0&&prelitPixels[0][k]<=unlitPixels[0][k]+.003f);}
         // Exercise the actual optional HDR selector, not only its bytecode:
         // low advertised caps, failed shader creation, combined draw and a
         // diagnostic capture retaining the original two-pass input ownership.
@@ -575,7 +578,7 @@ int main(int argc,char** argv){
             if(mode<3){WorldScreenEffectsTest::retryHdrCombined(*world);meter.combinedShader=nullptr;}
             meter.shaderSlotLimit=mode==0?512:0;meter.refuseCombined=mode==1;
             if(mode==3)assert(world->requestNormalGpuDiagnosticCapture());
-            screenOk(d->ColorFill(out,nullptr,0xff00ff00));world->setNameMask(receiverDepth);world->setUnlitMask(receiverDepth);
+            screenOk(d->ColorFill(out,nullptr,0xff00ff00));world->setNameMask(receiverDepth);world->setUnlitMask(receiverDepth);world->setPrelitMask(receiverDepth);
             const auto combinedBefore=meter.combinedDraws;
             WorldScreenEffectsTest::discardScratch(*world);
             assert(renderChecked(*world,d,out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao,100+mode,mode==5?skyBase:hdrBase,mode!=4,mode==5));
@@ -591,6 +594,7 @@ int main(int argc,char** argv){
         meter.shaderSlotLimit=0;meter.refuseCombined=false;skyBase->Release();hdrBase->Release();receiverDepth->Release();
         std::printf("HDR_COMBINED_WORLD_GPU_PASS capFallback=1 creationFallback=1 actualCombinedDraw=1 skyBaseGeometry=1 diagnosticFallback=1 expansionFallback=1 namesUnlitPreserved=1 msaa=%u\n",msaa);
         std::printf("UNLIT_RECEIVER_GPU_PASS nativeRadiance=1 atmosphereRetained=1 materialInvariant=1 namesRetained=1 extraFullSizeTextures=0 msaa=%u\n",msaa);
+        std::printf("PRELIT_WMO_PIPELINE_PASS SDR_HDR_materialInvariant=1 namesUnlitIsolated=1 extraFullSizeTextures=0 msaa=%u\n",msaa);
         }
 
     }

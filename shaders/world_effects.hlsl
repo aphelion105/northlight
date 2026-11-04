@@ -1429,10 +1429,20 @@ float3 horizonHaze(float3 color,float2 uv,float viewZ,bool sky,bool hdrMode) {
     float3 haze=(hdrMode?worldHdrDecode(HorizonHaze.rgb):HorizonHaze.rgb)*mad(lift,ShadowRange.yzw,1);
     return lerp(color,haze,amount);
 }
+// Coverage protects alpha overlays. Additive RGB is a separate native radiance
+// contribution, not opacity: leave the remaining receiver open to lighting.
+float3 effectWeight(float2 uv,float3 source,bool hdrMode) {
+    float4 effect=tex2Dlod(EffectCoverage,float4(uv,0,0));
+    if(EffectCoverageInfo.y<.5)return saturate(effect.r);
+    float3 remaining=max(source-effect.rgb,0);
+    if(hdrMode){source=worldHdrDecode(source);remaining=worldHdrDecode(remaining);}
+    return lerp(saturate((source-remaining)/max(source,.000001)),1,saturate(effect.a));
+}
 // SDR and HDR are separate compiled variants; validate the actual slot counts.
-float4 worldComposite(float2 uv,float2 pixel,bool surfaceLighting,bool hdrMode,sampler2D fogInput) {
+float4 worldComposite(float2 uv,float2 pixel,bool surfaceLighting,bool hdrMode,sampler2D fogInput,out float3 effect,bool prelit=false) {
     // Fetches before any flow control use texld (1 slot; tex2Dlod costs 3-4): Scene and Depth have one level and no mip filter, so texld reads what tex2Dlod(.,0) does.
     float4 original=tex2D(Scene,uv);
+    effect=0;
     float3 nativeColor=original.rgb;
     float2 centerUV=depthUV(uv);
     float d=normalizedDepthFlat(centerUV);
@@ -1537,7 +1547,9 @@ float4 worldComposite(float2 uv,float2 pixel,bool surfaceLighting,bool hdrMode,s
         float3 oldLight=max(baseline*inverseWeight,.15);
         float3 transported=max(original.rgb-fogPart,0);
         float3 albedoT=min((hdrMode?hdrSurface:transported)/oldLight,legacyT);
-        color=mad(albedoT,bounce,original.rgb);
+        // Prelit WMO RGB has no native global direct/ambient term to replace.
+        // Keep its authored illumination, while retaining contact AO and lamps.
+        color=prelit?original.rgb:mad(albedoT,bounce,original.rgb);
         // Bound combined GI/shadow darkening relative to the existing surface;
         // this preserves black and does not introduce an absolute exposure floor.
         color=max(color,mad(-.45,transported,original.rgb));
@@ -1555,7 +1567,7 @@ float4 worldComposite(float2 uv,float2 pixel,bool surfaceLighting,bool hdrMode,s
         // NightBrightness: gives back a share of the art layer's darker night ambient (x .82 x cool tint) as light: albedoT times
         // share x ambient x (1/factor-1), the per-frame product computed on the CPU (night_floor.h nightAmbient). Added like
         // light, so shadows, GI and lamps keep their contrast. 0 = off (bit-identical).
-        color=mad(albedoT,GridOrigin.rgb,color);
+        if(!prelit)color=mad(albedoT,GridOrigin.rgb,color);
         if(PassInfo.z==1)color=shadow.xxx;
         if(PassInfo.z==2)color=max(AmbientLight.rgb+bounce,0);
     }
@@ -1572,25 +1584,27 @@ float4 worldComposite(float2 uv,float2 pixel,bool surfaceLighting,bool hdrMode,s
         color=lerp(mad(horizonHaze(color,centerUV,viewZ,d>=.99999&&liquid<=0,hdrMode),fog.a,fog.rgb),unfogged,rain);
     }
     if(PassInfo.z==3)color=fog.rgb;
-    [branch]if(EffectCoverageInfo.x>.5&&PassInfo.z<.5)
-        color=lerp(color,nativeColor,saturate(tex2Dlod(EffectCoverage,float4(uv,0,0)).r));
+    [branch]if(EffectCoverageInfo.x>.5&&PassInfo.z<.5)effect=effectWeight(uv,tex2D(Scene,uv).rgb,hdrMode);
+    color=lerp(color,nativeColor,effect);
     // Dither before the 8-bit target rounds: haze and night air vary only with view elevation and would band into
     // horizontal lines. VPOS is the integer pixel; +.5 texel hits the POINT texel centre.
     if(hdrMode)return float4(max(color,0),original.a);
     return float4(max(color+tex2D(DitherNoise,mad(pixel,1.0/64,.5/64)).rgb,0),original.a);
 }
 
-float4 WorldComposite(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {return worldComposite(uv,pixel,true,false,FogBuffer);}
+float4 WorldComposite(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {float3 effect;return worldComposite(uv,pixel,true,false,FogBuffer,effect);}
 // Self-lit M2 receivers keep their native radiance under the same atmosphere.
 // Selected with the existing depth-stencil; no additional image or geometry replay.
-float4 WorldUnlitComposite(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {return worldComposite(uv,pixel,false,false,FogBuffer);}
-float4 WorldCompositeHdr(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {return worldComposite(uv,pixel,true,true,FogBuffer);}
-float4 WorldUnlitCompositeHdr(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {return worldComposite(uv,pixel,false,true,FogBuffer);}
+float4 WorldUnlitComposite(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {float3 effect;return worldComposite(uv,pixel,false,false,FogBuffer,effect);}
+float4 WorldCompositeHdr(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {float3 effect;return worldComposite(uv,pixel,true,true,FogBuffer,effect);}
+float4 WorldUnlitCompositeHdr(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {float3 effect;return worldComposite(uv,pixel,false,true,FogBuffer,effect);}
+float4 WorldPrelitComposite(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {float3 effect;return worldComposite(uv,pixel,true,false,FogBuffer,effect,true);}
+float4 WorldPrelitCompositeHdr(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {float3 effect;return worldComposite(uv,pixel,true,true,FogBuffer,effect,true);}
 
 // Full-resolution material relighting. The base composition has already handled
 // shadows, GI, AO and fog; only the normal-dependent directional difference is
 // added here. Both the inferred albedo and atmospheric transmission are bounded.
-float4 materialComposite(float2 uv,bool hdrMode,float4 color) {
+float4 materialComposite(float2 uv,bool hdrMode,float4 color,float3 effect) {
     float2 q=depthUV(uv);float d=normalizedDepth(q);float z=viewDistance(d);
     if(d>=.99999||waterDistance(q,d)>0||(BumpControl.x<=0&&MaterialOcclusionInfo.x<=0))return color;
     float occlusionRange=MaterialOcclusionInfo.y>0?MaterialOcclusionInfo.y:BumpControl.y;
@@ -1620,17 +1634,20 @@ float4 materialComposite(float2 uv,bool hdrMode,float4 color) {
     surface*=tex2D(AmbientOcclusion,uv).a;
     float3 albedoT=min(surface/max(tex2D(BaselineLighting,uv).rgb,.15),legacyT);
     float3 cavity=max(AmbientLight.rgb*AmbientLight.w+GridOrigin.rgb,0)*(occlusion.b-1);
-    float transmission=1;
-    [branch]if(EffectCoverageInfo.x>.5)transmission=1-saturate(tex2Dlod(EffectCoverage,float4(uv,0,0)).r);
+    float3 transmission=1-effect;
     color.rgb=max(color.rgb+albedoT*(delta*visibility+cavity)*tex2D(MaterialFog,uv).a*transmission,0);
     return color;
 }
-float4 MaterialComposite(float2 uv:TEXCOORD0):COLOR0 {return materialComposite(uv,false,tex2D(Scene,uv));}
-float4 MaterialCompositeHdr(float2 uv:TEXCOORD0):COLOR0 {return materialComposite(uv,true,tex2D(Scene,uv));}
+float3 materialEffectWeight(float2 uv,bool hdrMode){
+    float3 effect=0;[branch]if(EffectCoverageInfo.x>.5)effect=effectWeight(uv,tex2D(MaterialSource,uv).rgb,hdrMode);return effect;
+}
+float4 MaterialComposite(float2 uv:TEXCOORD0):COLOR0 {return materialComposite(uv,false,tex2D(Scene,uv),materialEffectWeight(uv,false));}
+float4 MaterialCompositeHdr(float2 uv:TEXCOORD0):COLOR0 {return materialComposite(uv,true,tex2D(Scene,uv),materialEffectWeight(uv,true));}
 // s4 carries fog while s9 carries material height. Keep the intermediate color
 // in registers instead of a full-resolution FP16 store/read between passes.
 float4 WorldMaterialCompositeHdr(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {
-    return materialComposite(uv,true,worldComposite(uv,pixel,true,true,MaterialFog));
+    float3 effect;float4 color=worldComposite(uv,pixel,true,true,MaterialFog,effect);
+    return materialComposite(uv,true,color,effect);
 }
 
 // Sampled diagnostic only: nine small occlusion queries count a regular grid,

@@ -16,8 +16,8 @@ assert renderer.count('effectCoverageDraw([&]{return ext->Draw') == 4
 assert 'owner.effectCoverageDraw([&]{return args.submit(device);},true)' in renderer
 assert 'void spellSync(){effectCoverage.endBatch();' in renderer
 assert 'effectCoverage.texture(ext,saved.targets[0])' in renderer
-assert 'world->setEffectCoverage(coverage);' in renderer
-assert 'NorthlightEffectCoverage::Capture::bind(ext,coverage);' in renderer
+assert 'world->setEffectCoverage(coverage,effectCoverage.hasEmission());' in renderer
+assert 'NorthlightEffectCoverage::Capture::bind(ext,coverage,effectCoverage.hasEmission());' in renderer
 assert 'effectCoverage.colorWrite(rawDestination)' in renderer and 'effectCoverage.colorWrite(rawSurface)' in renderer
 coverage = renderer[renderer.index('HRESULT effectCoverageDraw('):renderer.index('    template<class Draw> HRESULT projectedDraw(')]
 assert 'ext->peekVertexShader(vertex)' in coverage and 'ext->GetVertexShader(&vertex)' in coverage
@@ -27,7 +27,7 @@ assert 'NorthlightSpellLayer::Family::ParticleUnlit)' in coverage
 assert 'COLORWRITEENABLE),nativeOverlay)' in coverage
 assert 'lastVs' not in coverage and 'replay)' in coverage
 # c79 is reused by the normals pass: bind it afresh for the final stage.
-assert world.index('NorthlightEffectCoverage::Capture::bind(d,effectCoverage);') < world.index('bool compositeOk=false;')
+assert world.index('NorthlightEffectCoverage::Capture::bind(d,effectCoverage,effectEmission);') < world.index('bool compositeOk=false;')
 assert 'effectCoverage=nullptr;' in world
 
 out = fp.output_dir()

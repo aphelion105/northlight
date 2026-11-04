@@ -14,8 +14,9 @@ int main(int argc,char** argv){
     auto module=LoadLibraryA(argv[2]);assert(module);auto create=reinterpret_cast<IDirect3D9*(WINAPI*)(UINT)>(GetProcAddress(module,"Direct3DCreate9"));assert(create);auto api=create(D3D_SDK_VERSION);assert(api);
     D3DPRESENT_PARAMETERS pp{};pp.Windowed=TRUE;pp.hDeviceWindow=window;pp.BackBufferWidth=pp.BackBufferHeight=N;pp.BackBufferFormat=D3DFMT_X8R8G8B8;pp.SwapEffect=D3DSWAPEFFECT_DISCARD;
     IDirect3DDevice9* d=nullptr;ok(api->CreateDevice(0,D3DDEVTYPE_HAL,window,D3DCREATE_HARDWARE_VERTEXPROCESSING|D3DCREATE_FPU_PRESERVE,&pp,&d));
-    IDirect3DPixelShader9* shaders[3]{};
+    IDirect3DPixelShader9* shaders[4]{};
     for(unsigned i=0;i<(argc==4?3u:2u);++i){auto code=read(i==2?argv[3]:std::string(argv[1])+(i?"/WorldUnlitComposite.bin":"/WorldComposite.bin"));ok(d->CreatePixelShader(reinterpret_cast<const DWORD*>(code.data()),&shaders[i]));}
+    {auto code=read(std::string(argv[1])+"/WorldPrelitComposite.bin");ok(d->CreatePixelShader(reinterpret_cast<const DWORD*>(code.data()),&shaders[3]));}
     for(unsigned s=0;s<16;++s){for(auto k:{D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER})ok(d->SetSamplerState(s,k,D3DTEXF_POINT));ok(d->SetSamplerState(s,D3DSAMP_MIPFILTER,D3DTEXF_NONE));for(auto k:{D3DSAMP_ADDRESSU,D3DSAMP_ADDRESSV})ok(d->SetSamplerState(s,k,D3DTADDRESS_CLAMP));ok(d->SetSamplerState(s,D3DSAMP_SRGBTEXTURE,FALSE));}
     ok(d->SetDepthStencilSurface(nullptr));ok(d->SetVertexShader(nullptr));ok(d->SetFVF(D3DFVF_XYZRHW|D3DFVF_TEX1));
     for(auto k:{D3DRS_ZENABLE,D3DRS_ZWRITEENABLE,D3DRS_ALPHATESTENABLE,D3DRS_ALPHABLENDENABLE,D3DRS_FOGENABLE,D3DRS_SRGBWRITEENABLE,D3DRS_SCISSORTESTENABLE})ok(d->SetRenderState(k,FALSE));
@@ -26,7 +27,7 @@ int main(int argc,char** argv){
     auto bind=[&](unsigned slot,Image im){auto t=texture(d,im);owned.push_back(t);ok(d->SetTexture(slot,t));};
     auto clearInputs=[&]{for(unsigned s=0;s<16;++s)ok(d->SetTexture(s,nullptr));for(auto t:owned)t->Release();owned.clear();};
     auto draw=[&](unsigned shader){ok(d->SetPixelShader(shaders[shader]));ok(d->BeginScene());ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(Vertex)));ok(d->EndScene());ok(d->GetRenderTargetData(target,staging));D3DLOCKED_RECT lock{};ok(staging->LockRect(&lock,nullptr,D3DLOCK_READONLY));std::array<float,4> p{};for(unsigned k=0;k<4;++k){std::uint16_t h;std::memcpy(&h,static_cast<char*>(lock.pBits)+lock.Pitch+8+k*2,2);p[k]=half(h);}ok(staging->UnlockRect());return p;};
-    unsigned cases=0,negativeControls=0,neutralControls=0;float maxError=0;
+    unsigned cases=0,negativeControls=0,neutralControls=0,prelitControls=0,prelitDarkControls=0,prelitLocalControls=0;float maxError=0;
     // Explicit authored receiver colours, not reconstructed screenshot geometry.
     const float surfaces[][3]={{0,0,0},{.08f,.04f,.01f},{.72f,.30f,.035f},{.84f,.41f,.05f},{.95f,.9f,.75f},{1,1,1}};
     for(const auto& surface:surfaces)for(float baseline:{.15f,.6f})for(float transmittance:{0.f,.35f,1.f})for(float ao:{.4f,1.f})for(float correction:{-.1f,0.f,.2f})for(float power:{0.f,.001f,.1f,1.f,4.f,32.f,512.f}){
@@ -39,6 +40,14 @@ int main(int argc,char** argv){
         const auto p=draw(0);
         for(unsigned k=0;k<3;++k){const float expected=color[k]+std::min(addition[k]/scale,room[k]);maxError=std::max(maxError,std::fabs(p[k]-expected));assert(std::isfinite(p[k])&&std::fabs(p[k]-expected)<.0015f);assert(p[k]<=color[k]+room[k]+.001f&&p[k]>=color[k]-.001f);if(surface[k]==0)assert(p[k]==0);}
         assert(p[3]==.375f);++cases;
+        // A vertex-colour WMO has no outdoor term to remove. Preserve its AO
+        // and native fog, then add the bounded, already-shadowed local sum.
+        const auto prelit=draw(3);float prelitScale=1,prelitRoom[3];
+        for(unsigned k=0;k<3;++k){prelitRoom[k]=std::min(transported[k],.5f*std::max(1-original[k],0.f));prelitScale=std::max(prelitScale,1+addition[k]/std::max(prelitRoom[k],.00001f));}
+        for(unsigned k=0;k<3;++k){const float expected=original[k]+std::min(addition[k]/prelitScale,prelitRoom[k]);assert(std::fabs(prelit[k]-expected)<.0015f);
+            if(power==0&&correction<0&&prelit[k]>p[k]+.005f)++prelitDarkControls;
+            if(power>0&&prelit[k]>original[k]+.001f)++prelitLocalControls;}
+        assert(prelit[3]==.375f);++prelitControls;
         if(argc==4&&power==0){assert(draw(2)==p);++neutralControls;}
         if(argc==4&&power==32&&surface[0]==.72f&&transmittance==1&&ao==1&&correction==0){const auto old=draw(2);assert(old[0]>1&&p[0]<.86f);++negativeControls;}
         // The same extreme source must leave unlit, sky and water receivers alone.
@@ -49,6 +58,8 @@ int main(int argc,char** argv){
         }
     }
     assert(argc!=4||(negativeControls==2&&neutralControls==216));
+    assert(prelitDarkControls&&prelitLocalControls&&prelitControls==cases);
+    std::printf("PRELIT_WMO_PASS cases=%u oldDarkeningControls=%u shadowedLocalLightControls=%u AO_retained native_fog_retained no_global_exposure_floor\n",prelitControls,prelitDarkControls,prelitLocalControls);
     std::printf("LOCAL_BRIGHTNESS_PASS cases=%u maxError=%g oldClippingControls=%u exactNoLampControls=%u gameLaunched=0 timingQueries=0\n",cases,maxError,negativeControls,neutralControls);
     clearInputs();d->SetPixelShader(nullptr);for(auto shader:shaders)if(shader)shader->Release();staging->Release();target->Release();d->Release();api->Release();FreeLibrary(module);DestroyWindow(window);UnregisterClassW(wc.lpszClassName,wc.hInstance);
 }

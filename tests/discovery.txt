@@ -304,6 +304,7 @@ test_point_transmission_install.py
 test_point_transmission_runtime.py
 test_position_bounds.py
 test_position_bounds_scan.py
+test_prelit_wmo_client.py
 test_prepare_native_scene.py
 test_prepare_worker.py
 test_probe_blend.py

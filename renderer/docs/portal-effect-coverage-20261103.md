@@ -1,5 +1,9 @@
 # Portal coverage at the effects boundary
 
+The [2026-11-04 follow-up](spell-prelit-visibility-20261104.md) extends this
+alpha-only design with additive RGB, one conditional packing pass and prelit
+WMO composition. The measurements below describe the original alpha path.
+
 The Stormwind portal centre uses three unlit alpha-blended, non-depth-writing
 layers. The winning local `stormwindmageportal01.m2` has material flags/blend
 `21/2` for `twistednether2.blp`, `twistednether8.blp` and `twistednether4.blp`.

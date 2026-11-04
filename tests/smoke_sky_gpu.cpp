@@ -27,7 +27,7 @@ struct ExtensionDevice:ForwardIDirect3DDevice9 {
     bool peekVertexShader(IDirect3DVertexShader9*&){return false;}
 };
 namespace NorthlightBackend {static bool isPackagedDxvk(int){return true;}}
-namespace NorthlightSpellLayer {enum class Family {Particle=3,ParticleUnlit=4};}
+namespace NorthlightSpellLayer {enum class Family {None,Particle,ParticleUnlit,Model,Projected,Ripples};}
 struct Fixture {
     ExtensionDevice device;ExtensionDevice* ext;
     NorthlightHdr::Color hdrColor;
@@ -135,6 +135,26 @@ int main(int argc,char** argv){
         }
         ++cases;
     }
+    // Exercise the actual wrapper's family admission, including model/projected
+    // ground effects. Lit alpha models, ripples and unknown shaders stay receivers.
+    unsigned familyCases=0;
+    for(unsigned family=0;family<7;++family)for(unsigned blend=0;blend<4;++blend)for(bool replay:{false,true}){
+        Fixture f(d,linearSky);f.hdr.active=false;f.effectCoverageNative=!replay;
+        f.vsTags[nullptr]=family==6?Fixture::kUnlitTag:family<<Fixture::kFamilyShift;
+        flat=flatShaders[1];reset();
+        ok(d->SetRenderState(D3DRS_ZENABLE,TRUE));ok(d->SetRenderState(D3DRS_ZWRITEENABLE,FALSE));
+        ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE));ok(d->SetRenderState(D3DRS_BLENDOP,D3DBLENDOP_ADD));
+        ok(d->SetRenderState(D3DRS_SRCBLEND,blend==1||blend==3?D3DBLEND_ONE:D3DBLEND_SRCALPHA));
+        ok(d->SetRenderState(D3DRS_DESTBLEND,blend>=2?D3DBLEND_ONE:D3DBLEND_INVSRCALPHA));
+        const D3DVIEWPORT9 vp={0,0,W,H,0,.94f};ok(d->SetViewport(&vp));
+        const float color[]={.2f,.1f,.05f,.5f};ok(d->SetPixelShaderConstantF(0,color,1));
+        unsigned submits=0;ok(d->BeginScene());ok(f.effectCoverageDraw([&]{++submits;return quad(.3f);},replay));f.effectCoverage.endBatch();ok(d->EndScene());
+        const bool expected=family==1||family==2||family==6||(blend>=2&&(family==3||family==4));
+        assert(submits==1&&f.effectCoverage.active()==expected);
+        assert((f.effectCoverage.texture(d,native)!=nullptr)==expected);
+        assert(f.effectCoverage.hasEmission()==(expected&&blend>=2));++familyCases;
+    }
+    std::printf("SPELL_FAMILY_GPU_PASS cases=%u particle_model_projected_unlit=1 lit_alpha_ripple_unknown_controls=1\n",familyCases);
     // Admission guards keep native-only, UI, opaque and unrelated targets out of the saved sky.
     for(unsigned control=0;control<14;++control){
         Fixture f(d,linearSky);reset();ok(d->SetRenderState(D3DRS_ZENABLE,TRUE));ok(d->SetRenderState(D3DRS_ZWRITEENABLE,FALSE));ok(d->SetRenderState(D3DRS_ZFUNC,D3DCMP_LESSEQUAL));D3DVIEWPORT9 vp={0,0,W,H,0,.94f};ok(d->SetViewport(&vp));

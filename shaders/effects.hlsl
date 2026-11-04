@@ -694,7 +694,11 @@ float4 Composite(float2 uv : TEXCOORD0) : COLOR0
     float3 lit = mad(original.rgb-fogPart,ambient.a,fogPart);
     lit += ambient.rgb * Lighting.w * saturate(original.rgb + 0.1) * legacyT;
     lit += bloom * Options.x * (1.0 - saturate(lit));
-    [branch]if(EffectCoverageInfo.x>.5)lit=lerp(saturate(lit),original.rgb,saturate(tex2Dlod(EffectCoverage,float4(uv,0,0)).r));
+    [branch]if(EffectCoverageInfo.x>.5){
+        float4 effect=tex2Dlod(EffectCoverage,float4(uv,0,0));
+        float3 weight=EffectCoverageInfo.y>.5?lerp(saturate(effect.rgb/max(original.rgb,.000001)),1,saturate(effect.a)):saturate(effect.r);
+        lit=lerp(saturate(lit),original.rgb,weight);
+    }
     return float4(saturate(lit), original.a);
 }
 

@@ -142,14 +142,14 @@ checks['header: portable, no device calls']=all(x not in h for x in ('d3d9','win
 impl=r[r.index('template<class Capture> void prepareDrawImpl('):r.index('    // Terrain draws run with the game')]
 dom=impl.index('if(worldDomain){');dec=impl.index('nameMaskDecide(');cap=impl.index('capture(vs);')
 checks['prepareDrawImpl: kind reset first; decision in the world domain for terrain frames, armed, no debug view, before capture(vs)']=(
-    '++drawCalls;maskKind=0;' in impl and dom<dec<cap and 'if(terrain&&!nameMask.disabled&&worldDebug==0&&((nameMask.armed()&&drawUiHashVS)||nameMask.hasMarks()||unlitMarks||(classifyVs(vs).entry&kUnlitTag))){' in impl and 'nameMaskDecide(drawWaterVS,zw,ab,sb,db,cw,viewport);' in impl)
+    '++drawCalls;maskKind=0;' in impl and dom<dec<cap and 'if(terrain&&!nameMask.disabled&&worldDebug==0&&((nameMask.armed()&&drawUiHashVS)||nameMask.hasMarks()||unlitMarks||prelitMarks||(classifyVs(vs).entry&(kUnlitTag|kPrelitTag)))){' in impl and 'nameMaskDecide(drawWaterVS,zw,ab,sb,db,cw,viewport);' in impl)
 dc=r[r.index('bool nameMaskReady(){'):r.index('// The bound depth buffer is the frame')]
 checks['decision: the game must not use stencil (disable once), the depth format is checked once per surface and format (logged, a surface without stencil only skips the mask), unmark needs marks, a name needs the full viewport and the world depth']=(
     'nameMask.disable("no stencil' not in r and dc.index('D3DRS_STENCILENABLE')<dc.index('nameMask.disable("the game uses stencil")')<dc.index('worldDepth!=maskFormatFor||format!=maskFormatValue')<dc.index('NAMEMASK world depth surface=%p format=%lu')<dc.index('no stencil bits: no name mask while this surface is the world depth')
-    <dc.index('(nameMask.hasMarks()||unlitMarks)&&NorthlightTranslucentDepth::isUndo(')<dc.index('maskKind=2')<dc.index('maskKind=1'))
+    <dc.index('(nameMask.hasMarks()||unlitMarks||prelitMarks)&&NorthlightTranslucentDepth::isUndo(')<dc.index('maskKind=2')<dc.index('maskKind=1'))
 checks['names: the UI-hash vertex shader (tag 2) whose c3 is not the screen-space (0,0,0,1) of the boundary, never water, alpha-blended, full viewport, world depth bound']=(
     'if(water||!drawUiHashVS){' in dc and 'drawWaterVS=(entry&kWaterTag)!=0;' in r and 'drawUiHashVS=uiTextVs(vs,entry);' in r and 'if(!NorthlightNameStencil::nameBlend(ab,sb,db,cw))return;' in dc
-    and dc.index('!drawUiHashVS')<dc.index('hasMarks()||unlitMarks)&&NorthlightTranslucentDepth::isUndo(')<dc.index('nameBlend(ab,sb,db,cw)') # the cheapest test first: all but the names stop at the tag
+    and dc.index('!drawUiHashVS')<dc.index('hasMarks()||unlitMarks||prelitMarks)&&NorthlightTranslucentDepth::isUndo(')<dc.index('nameBlend(ab,sb,db,cw)') # the cheapest test first: all but the names stop at the tag
     and 'if(FAILED(ext->GetVertexShaderConstantF(3,c3,1))||NorthlightUiBoundary::clipWOne(c3))return;' in dc
     and dc.index('!drawUiHashVS')<dc.index('GetVertexShaderConstantF(3,c3,1)')<dc.index('viewport.Width==width&&viewport.Height==height&&worldDepthBound()'))
 checks['font mods (Lexara, TweakWoW2): a name may also be drawn with the VS the UI boundary fallback learned, only while it is armed; the boundary itself still tests tag 2 only']=(
@@ -198,6 +198,8 @@ clr=r[r.index('HRESULT STDMETHODCALLTYPE Clear('):][:2800]
 checks['Clear hook: the stencil flag joins the game\'s full Clear(Z) of the world depth (no rects, scissor off) while the frame has no marks; with marks it is dropped; the mask bit in the game\'s value disables']=(
     'boundDepthIs(maskDsId)' in clr and 'n==0&&SUCCEEDED(ext->GetRenderState(D3DRS_SCISSORTESTENABLE,&scissor))&&!scissor&&SUCCEEDED(ext->GetViewport(&viewport))&&nameMaskFullViewport(viewport)' in clr and 'flags|=D3DCLEAR_STENCIL;stencil=0;' in clr and 'flags&=~DWORD(D3DCLEAR_STENCIL)' in clr
     and 'nameMask.noteClear(false)' in clr and 'nameMask.disable("the game clears stencil with the mask bit")' in clr and clr.index('flags|=D3DCLEAR_STENCIL')<clr.index('ext->Clear(n,rects,flags,color,z,stencil)'))
+checks['Clear hook rejects game ownership of every receiver stencil bit']=(
+    'stencil&(NorthlightNameStencil::kBit|NorthlightUnlitReceiver::Bit|NorthlightUnlitReceiver::PrelitBit)' in clr)
 re_=r[r.index('void renderEffects() {'):r.index('/* The guards of every mask decision')]
 checks['viewport: a world-depth Clear(Z) is the full clear only with a viewport of the depth surface size (Clear is clipped to it); our own stencil Clear sets a full viewport for the call and restores it']=(
     'v.Width==worldDepthDesc.Width&&v.Height==worldDepthDesc.Height' in r)
@@ -209,9 +211,9 @@ checks['composite bind (one helper for both composites): the world depth-stencil
     'if(!maskDepth)return;' in bind and 'got==D3DERR_NOTFOUND' in bind and bind.index('GetDepthStencilSurface(&previousDepth)')<bind.index('SetDepthStencilSurface(maskDepth)')<bind.index('GetRenderState(kRestored[i],&previous[i])')<bind.index('NorthlightNameStencil::kComposite')
     <bind.index('~NameMaskCompositeBind(){')<bind.index('SetRenderState(kRestored[i],previous[i])')<bind.index('SetDepthStencilSurface(previousDepth)')<bind.index('previousDepth->Release()')
     and '{D3DRS_STENCILENABLE,D3DRS_ZENABLE,D3DRS_ZWRITEENABLE}' in bind)
-comp=w[w.index('IDirect3DSurface9* maskDepth=unlitMask?'):w.index('if(!compositeOk)return false;composited=true;')]
+comp=w[w.index('IDirect3DSurface9* maskDepth=prelitMask?'):w.index('if(!compositeOk)return false;composited=true;')]
 checks['WorldComposite: the pointer consumed, the quad inside the bind scope']=(
-    'nameMaskDepth=unlitMaskDepth=nullptr;' in comp and 'void setNameMask(IDirect3DSurface9* depthStencil){nameMaskDepth=depthStencil;}' in w and 'nameMaskQpc' not in w)
+    'nameMaskDepth=unlitMaskDepth=prelitMaskDepth=nullptr;' in comp and 'void setNameMask(IDirect3DSurface9* depthStencil){nameMaskDepth=depthStencil;}' in w and 'nameMaskQpc' not in w)
 checks['debug view: the last effect pass before applied=true when the frame has marks, stencil EQUAL on the bit, ZENABLE off, nothing written']=(
     'if(maskOn&&nameMask.debug)nameMaskDebugView(outputTarget);' in r and r.index('nameMaskDebugView(outputTarget);')<r.index('applied = true; ++appliedFrames;')
     and 'IDirect3DSurface9* outputTarget=linearHdr?hdrPresentBack:saved.targets[0];' in r

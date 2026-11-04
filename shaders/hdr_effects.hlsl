@@ -102,8 +102,13 @@ float4 HdrDecodeWorld(float2 uv:TEXCOORD0):COLOR0 {
 }
 float4 HdrCopy(float2 uv:TEXCOORD0):COLOR0 {return tex2D(HdrScene,uv);}
 float4 HdrLegacyComposite(float2 uv:TEXCOORD0):COLOR0 {
-    float4 base=tex2D(HdrScene,uv);float ao=tex2D(HdrExtra,uv).a;
-    [branch]if(EffectCoverageInfo.x>.5)ao=lerp(ao,1,saturate(tex2D(EffectCoverage,uv).r));
+    float4 base=tex2D(HdrScene,uv);float3 ao=tex2D(HdrExtra,uv).aaa;
+    [branch]if(EffectCoverageInfo.x>.5){
+        float4 effect=tex2D(EffectCoverage,uv);float3 weight=saturate(effect.r);
+        if(EffectCoverageInfo.y>.5){float3 source=tex2D(HdrLegacy,uv).rgb,remaining=hdrDecode(max(source-effect.rgb,0));source=hdrDecode(source);
+            weight=lerp(saturate((source-remaining)/max(source,.000001)),1,saturate(effect.a));}
+        ao=lerp(ao,1,weight);
+    }
     [branch]if(HdrLegacyFog.w<=0)return float4(max(base.rgb,0)*ao,base.a);
     float3 encoded=tex2D(HdrLegacy,uv).rgb;
     [branch]if(all(encoded<=0)&&all(HdrLegacyFogColor.rgb>=0))return float4(max(base.rgb,0)*ao,base.a);
