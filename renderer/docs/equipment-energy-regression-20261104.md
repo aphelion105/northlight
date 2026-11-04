@@ -47,6 +47,10 @@ Validation:
 - Existing offscreen D3D9 direct/fog tests pass 144 multi-light and 192
   single-light cases. These are synthetic receivers, not an in-game dagger
   screenshot or a new FPS measurement.
+- Full art-layer tests pass for stock and custom clients, including repeated
+  custom builds and matching payload/archive hashes. The test now classifies
+  declared city/outdoor sky clones separately from attached models; unknown
+  sky names remain rejected. All ownership and content assertions are retained.
 
 Local audit artifacts and original archive backups are in
 `out/equipment-energy-20261104/`; focused test logs are in

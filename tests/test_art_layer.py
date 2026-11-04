@@ -23,7 +23,7 @@ the test output):
   payloads and archives; an older patch-Z may contain world-model lights that must be removed."""
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp; fp.use_source_modules()
-import hashlib, json, shutil, struct
+import hashlib, json, re, shutil, struct
 from types import SimpleNamespace
 import build_art_layer, build_lighting, build_weather_textures, client_archives
 from build_lighting import DBC, u, f
@@ -47,14 +47,36 @@ model_steps = {'world_model_lights', 'equipment_model_lights', 'spell_model_ligh
 metadata = {world_emitter_index.ARCHIVE_PATH, build_art_layer.OWNER_FILE}
 
 
+def sky_payload_files(names):
+    # Exact city clone declarations in the three builders; outdoor solar IDs
+    # come from that generator's explicit source table. Lunar IDs are dynamic.
+    stems = ('environments\\stars\\fr_mulgore_warm',
+             build_art_layer.build_stormwind_single_sun.CUSTOM.lower(),
+             'environments\\stars\\fr_orgrimmar_single_sun',
+             *(f'environments\\stars\\fr_outdoor_single_sun_{sid}'
+               for sid in build_art_layer.build_outdoor_single_sun.OMIT))
+    model = re.compile('(?:'+'|'.join(map(re.escape, stems))+r'|environments\\stars\\fr_single_moon_105_\d+)\.m2')
+    present = {name.lower()[:-3] for name in names if model.fullmatch(name.lower())}
+    companions = {stem+suffix for stem in present for suffix in ('.m2', *(f'{i:02d}.skin' for i in range(4)))}
+    companions |= {'textures\\moon02.blp', 'dbfilesclient\\lightskybox.dbc'}
+    return {name for name in names if name.lower() in companions or
+            any(re.fullmatch(re.escape(stem)+r'\d{4}-\d{2}\.anim', name.lower()) for stem in present)}
+
+
+_sky_example = {'Environments\\Stars\\fr_mulgore_warm.m2', 'Environments\\Stars\\fr_mulgore_warm00.skin',
+                'Environments\\Stars\\fr_single_moon_105_23.m2', 'Environments\\Stars\\fr_single_moon_105_2300.skin'}
+_unknown_sky = {'Environments\\Stars\\unexpected.m2', 'Environments\\Stars\\fr_mulgore_warm_bad.skin',
+                'Environments\\Stars\\fr_outdoor_single_sun_999.m2', 'Environments\\Stars\\fr_single_moon_105_bad.m2'}
+assert sky_payload_files(_sky_example | _unknown_sky) == _sky_example, 'Unknown sky assets must still fail attached-model validation'
+
+
 def model_checks(view, folder, result):
     """MPQ metadata owns World/selected Spells; native patches own disjoint attached models."""
     assets = Assets(client, view, result['locale'], without='z')
     view_textures = build_weather_textures.weather_textures()
     view_textures.update(build_weather_textures.mist_textures(assets.read, decode_blp))
     view_files = tables | set(view_textures)
-    sky_files = {n for n in result['files'] if n.lower().startswith('environments\\stars\\fr_single_moon_105_')
-                 or n.lower() in ('textures\\moon02.blp', 'dbfilesclient\\lightskybox.dbc')}
+    sky_files = sky_payload_files(result['files'])
     assert all(n.lower().endswith(('.m2','.skin','.anim','.blp','.dbc')) for n in sky_files)
     view_files |= sky_files
     models = set(result['files']) - view_files - metadata
