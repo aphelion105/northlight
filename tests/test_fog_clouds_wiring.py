@@ -72,7 +72,8 @@ checks['cpp: c59.y and c60..c63 written only while active, by shaderConstants (0
 a=w.index('if(cf.active&&c[21][0]>=.5f){');b=w.index('d->SetPixelShaderConstantF(17,c[17],2);',a);c_=w.index('if(localFogActive){',b)
 pas=w[a:b]
 checks['cpp: the pass is guarded by cf.active and the field-ready flag, between the source loop and the c17/c18 restore (before lamp fog)']=(
-    w.index('"celestial volumetric raymarch"')<a<b<c_ and w.count('d->SetPixelShader(fogActorCurrent?(fogActorTiledCurrent?fogCloudsActorTiledPS:fogCloudsActorPS):fogCloudsPS)')==1 and w.count('"fog clouds raymarch"')==1)
+    w.index('"celestial volumetric raymarch"')<a<b<c_ and w.count('d->SetPixelShader(cloudFade?(fogActorCurrent?(fogActorTiledCurrent?cloudActorTiledFadePS:cloudActorFadePS):cloudFadePS):(fogActorCurrent?(fogActorTiledCurrent?fogCloudsActorTiledPS:fogCloudsActorPS):fogCloudsPS))')==1 and w.count('"fog clouds raymarch"')==1)
+checks['cpp: fade preserves actor/tiled and baseline selection, rebinding in the same guarded phase']=('cloudFade=geometryReady&&shadowVolumeTransitionActive(firstSource);if(cloudFade)bindShadowTransition(firstSource);' in pas and pas.index('if(cloudFade)bindShadowTransition(firstSource);')<pas.index('d->SetPixelShader(cloudFade?')<pas.index('\"fog clouds raymarch\"'))
 checks['cpp: the pass draws with ONE / SRCALPHA colour and ZERO / SRCALPHA alpha, volume on s14 WRAP + LINEAR, first source']=all(s in pas for s in (
     'setSource(firstSource,true,true);','SetTexture(14,cloudNoise)','D3DSAMP_ADDRESSW,D3DTADDRESS_WRAP','D3DRS_DESTBLEND,D3DBLEND_SRCALPHA','D3DRS_SEPARATEALPHABLENDENABLE,TRUE','D3DRS_SRCBLENDALPHA,D3DBLEND_ZERO','D3DRS_DESTBLENDALPHA,D3DBLEND_SRCALPHA'))
 checks['cpp: states restored after the pass: source state (setSource of the loop\'s last source unless it is the pass\'s own), ONE/ONE/ADD, separate alpha off (its operands then unused), blend enable, write mask, fogPS, s14']=all(s in pas for s in (

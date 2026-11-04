@@ -64,7 +64,8 @@ struct Fixture {
     NorthlightQuality::Settings quality; // 0.3.138 northlight-quality.ini; defaults: giPass is a pass-through
     bool temporalValid=true,shadowsComposited=true,settingsRequestDirty=false,pipelineActive=true;
     bool shadowFrameReady=true,pointReady=true,neutralShadowMaps=false;
-    bool cacheValid=true;
+    bool cacheValid=true;unsigned transitionReleases=0;
+    void releaseShadowTransitions(){++transitionReleases;}
     Device device;Device* d=&device;
     Surface maps[4],fog;
     Surface* shadowSurface[4]={&maps[0],&maps[1],&maps[2],&maps[3]};
@@ -120,8 +121,10 @@ int main(){
         assert(f.cacheValid==!(mask&Shadows));
         assert(f.shadowFrameReady==!(mask&Shadows));
         assert(f.pointReady==!(mask&Shadows));
+        assert(f.transitionReleases==unsigned(bool(mask&Shadows)));
         f.temporalValid=true;f.settingsRequestDirty=false;
         f.setEffects(next);assert(f.temporalValid&&!f.settingsRequestDirty);
+        assert(f.transitionReleases==unsigned(bool(mask&Shadows)));
     }
     // GI=0 (northlight-quality.ini): F8 can never enable the GI pass; shadows/fog still switch.
     for(unsigned mask=0;mask<=All;++mask){

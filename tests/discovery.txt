@@ -372,6 +372,11 @@ test_shadow_paging_memory.py
 test_shadow_pivot.py
 test_shadow_removal_smoothing.py
 test_shadow_shimmer.py
+test_shadow_transition.py
+test_shadow_transition_build.py
+test_shadow_transition_gpu.py
+test_shadow_transition_math.py
+test_shadow_transition_resources.py
 test_shared_gpu_residency.py
 test_shared_gpu_residency_gpu.py
 test_shared_gpu_wiring.py

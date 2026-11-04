@@ -288,6 +288,7 @@ float4 DirectionalShadow(float2 uv:TEXCOORD0):COLOR0 {
     float v=directionalShadowFiltered(p,normal.xyz,normal.w,true);
     return float4(v,v,v,1);
 }
+#ifndef NORTHLIGHT_SHADOW_TRANSITION
 float fogShadowProjected(float3 q) {
     // The 192-unit far map covers the 128-unit air volume. Use it throughout:
     // switching cascade resolution around the moving player changes thin
@@ -311,6 +312,9 @@ float fogShadowProjected(float3 q) {
     }
     return visibility;
 }
+#else
+float fogShadowProjected(float3 q);
+#endif
 // Reuse the already-rendered fine actor map; never replay geometry for fog.
 // The far map continues to provide terrain, WMO and static-prop silhouettes.
 sampler2D FogActorMap : register(s4);

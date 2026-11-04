@@ -1,6 +1,6 @@
 {
   "bump_include_sha256": "b5523a51dc6715f11ac2e7ba9ecb46a4973ba6aa23de159e308a8fd24d4e9ebc",
-  "source_sha256": "f81f387b8bc39265804b32fa9a0ab8d2fe9b26eb6d14a147cb933f62afe0c494",
+  "source_sha256": "5c9588a8456d234808124045193b1188c619f8b234b9c7288ad43f2f0dc49477",
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
   "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
   "game_launched": false,
@@ -38,7 +38,7 @@
         "endrep": 6
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "f81f387b8bc39265804b32fa9a0ab8d2fe9b26eb6d14a147cb933f62afe0c494"
+      "source_sha256": "5c9588a8456d234808124045193b1188c619f8b234b9c7288ad43f2f0dc49477"
     },
     "WorldLightingSoft": {
       "target": "ps_3_0",
