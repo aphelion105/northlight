@@ -15,7 +15,7 @@ fp.use_source_modules()
 from world_scene_builder import Assets,array,unpack,decode_blp,string
 from test_emission_sources import sky_frames
 
-parser=argparse.ArgumentParser(__doc__);parser.add_argument('--output',type=Path,required=True);args=parser.parse_args()
+parser=argparse.ArgumentParser(__doc__);parser.add_argument('--output',type=Path,required=True);parser.add_argument('--stand',action='store_true',help='Prepare a runnable interactive stand instead of still frames');args=parser.parse_args()
 out=args.output.resolve();out.mkdir(parents=True,exist_ok=True)
 coverage=fp.out()/'test-output/test_sky_lightning_coverage/all-sky-flashes'
 cases=json.loads((coverage/'cases.json').read_text());peaks=[]
@@ -81,6 +81,9 @@ try:
         peak=max(candidates,key=lambda p:max(float(p[k]) for k in ('r','g','b')));case=cases[int(peak['packet'])]
         folder=out/stem;folder.mkdir(exist_ok=True)
         fgr(folder/'depth.fgr',depth,114);fgr(folder/'normals.fgr',normal);(folder/'casters.bin').write_bytes(caster_bytes)
+        if args.stand:
+            fgr(folder/'base.fgr',np.concatenate([base,np.ones((H,W,1))],axis=2))
+            fgr(folder/'albedo.fgr',np.concatenate([albedo,np.ones((H,W,1))],axis=2))
         direction=np.array([.17,1,.35]);direction/=np.linalg.norm(direction);distance=350/direction[2]
         source=eye+direction*distance;rgb=[float(peak[k]) for k in ('r','g','b')]
         constants[16,:3]=direction
@@ -107,6 +110,15 @@ try:
         for j,(i,) in enumerate(indices):
             vertex=vertices[lookup[i][0]];data+=struct.pack('<4fI4f',projected_x+xy[j,0]*scale,projected_y-xy[j,1]*scale,0,1,colour,*vertex[14:18])
         (folder/'bolt-vertices.bin').write_bytes(data);(folder/'bolt-info.bin').write_bytes(struct.pack('<2I',int(peak['mode']),colour))
+        if args.stand:
+            period,frames=sky_frames(blob,batch);tick=int(peak['tick'])
+            before=max((t for t,*c in frames if t<tick and c[3]==0),default=0);after=min((t for t,*c in frames if t>tick and c[3]==0),default=period)
+            _,timeline=sky_frames(blob,batch,range(period))
+            payload=struct.pack('<5I4f',0x31464c4e,period,max(0,before-1000),min(period,after+1000),tick,*tint)
+            payload+=np.array([row[1:] for row in timeline],dtype='<f4').tobytes()
+            (folder/'timeline.bin').write_bytes(payload)
+            result.append({'name':stem,'title':title,'model':case['model'],'period_ms':period,'peak_ms':tick})
+            continue
         subprocess.run([str(exe),str(folder)+'/',str(fp.COMPILED/'LocalFlash.bin'),str(fp.client_root()/'renderer-backends/dxvk/dxvk_d3d9.dll')],check=True)
         period,frames=sky_frames(blob,batch);tick=int(peak['tick']);before=max((t for t,*c in frames if t<tick and c[3]==0),default=0);after=min((t for t,*c in frames if t>tick and c[3]==0),default=period)
         images=[];raw=[]
@@ -128,5 +140,26 @@ try:
         overview=Image.new('RGB',(W*3,H));[overview.paste(im,(i*W,0)) for i,im in enumerate(images)];overview.resize((1920,360),Image.Resampling.LANCZOS).save(out/f'{stem}-comparison.png')
         result.append({'name':stem,'model':case['model'],'textures':case['textures'],'source_colour':rgb,'native_peak_tick':tick,'before_after_identical':True,'max_added_linear':float(np.max(raw[1]-raw[0]))})
 finally:assets.close()
+if args.stand:
+    import shutil
+    sys.path.insert(0,str(fp.SCRIPTS/'shaders'))
+    from shader_compiler import Compiler,validate_assembly
+    compose=out/'compose.hlsl'
+    compose.write_text('''sampler2D Base:register(s0);sampler2D Albedo:register(s1);sampler2D Light:register(s2);sampler2D Bolt:register(s3);
+float4 Compose(float2 uv:TEXCOORD0):COLOR0 {
+ float3 c=tex2D(Base,uv).rgb+tex2D(Albedo,uv).rgb*tex2D(Light,uv).rgb+tex2D(Bolt,uv).rgb;
+ c=1-exp(-max(c,0));return float4(c<=.0031308?c*12.92:1.055*pow(c,1/2.4)-.055,1);
+}''',encoding='utf-8',newline='\n')
+    Compiler(allow_compatible_binary=True).compile(compose,'Compose','ps_3_0',out/'Compose.bin')
+    validate_assembly(out/'Compose.bin.asm','ps_3_0')
+    for name in ('LocalFlash','FlashShadow','ShadowVS','ShadowPS'):shutil.copy2(fp.COMPILED/(name+'.bin'),out/(name+'.bin'))
+    shutil.copy2(fp.client_root()/'renderer-backends/dxvk/dxvk_d3d9.dll',out/'stand-backend.dll')
+    for index,record in enumerate(result):
+        shutil.copy2(out/'Compose.bin',out/record['name']/'Compose.bin')
+        command='@echo off\r\ncd /d "%~dp0"\r\nstart "" "%~dp0lightning-preview.exe" "%~dp0'+record['name']+'/" "%~dp0LocalFlash.bin" "%~dp0stand-backend.dll" --interactive\r\n'
+        (out/(('START' if index==0 else record['name'])+'.cmd')).write_bytes(command.encode('ascii'))
+    (out/'README.txt').write_text('Northlight — молнии, офлайн GPU-стенд\n\nЗапуск: START.cmd (Ледяная Корона). Другие разряды: shadowmoon.cmd и stormpeaks.cmd.\nПробел — пауза. S — замедление в 4 раза. L — тени вкл/выкл. T — полный игровой цикл / повтор фрагмента. R — сначала. Esc — выход.\n\nПо умолчанию повторяется короткий фрагмент около разряда; длительность самой вспышки берётся из игровой анимации. T включает исходный полный цикл с длинными паузами.\nТестовая геометрия, настоящие игровые текстуры и покадровые значения цвета/прозрачности. Свет и тени рисуются production-шейдерами Northlight. WoW запускать не нужно.\n',encoding='utf-8')
+    (out/'stand-manifest.json').write_text(json.dumps({'controlled_geometry':True,'game_launched':False,'native_timeline_step_ms':1,'scenes':result},indent=2)+'\n',encoding='utf-8')
+    print(out/'START.cmd');raise SystemExit(0)
 (out/'preview-manifest.json').write_text(json.dumps({'controlled_geometry':True,'game_screenshot':False,'light_shader':'shaders/compiled/LocalFlash.bin','shadow_shader':'shaders/compiled/FlashShadow.bin','caster_shaders':['ShadowVS.bin','ShadowPS.bin'],'source':'native material timeline + native texture/mask + Capture/Frame publication','previews':result},indent=2)+'\n',encoding='utf-8')
 print(out/'preview-manifest.json')
