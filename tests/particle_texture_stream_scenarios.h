@@ -27,6 +27,8 @@ static void particleTextureStream(){
     upload(255,0);enqueue(&before);upload(0,255);enqueue(&after);gKnobs.hold.store(false);rig.sync();
     CHECK(first.found&&second.found&&first.rgba[2]==1&&first.rgba[0]==0&&second.rgba[0]==1&&second.rgba[2]==0);
     CHECK(first.life==second.life&&first.revision<second.revision);
+    Inspect resetResult{raw};CHECK(runTask(rig.core(),[&](StreamCore& c){cache().reset();inspect(&resetResult,c);}));
+    CHECK(resetResult.found&&resetResult.life==second.life&&resetResult.revision==second.revision&&resetResult.rgba[0]==1);
     RECT partial{0,0,4,4};D3DLOCKED_RECT locked{};CHECK(texture->LockRect(0,&locked,&partial,0)==D3D_OK);CHECK(texture->UnlockRect(0)==D3D_OK);rig.sync();
     Inspect partialResult{raw};CHECK(runTask(rig.core(),[&](StreamCore& c){inspect(&partialResult,c);}));CHECK(!partialResult.found);
     upload(255,0);rig.sync();
@@ -57,6 +59,8 @@ static void materialTextureStream(){
     auto upload=[&](unsigned char blue,unsigned char red){D3DLOCKED_RECT lock{};CHECK(texture->LockRect(0,&lock,nullptr,0)==D3D_OK);for(unsigned y=0;y<256;++y)for(unsigned x=0;x<256;++x){auto*p=static_cast<unsigned char*>(lock.pBits)+y*lock.Pitch+x*4;p[0]=blue;p[1]=0;p[2]=red;p[3]=255;}CHECK(texture->UnlockRect(0)==D3D_OK);};
 
     Inspect first{raw},second{raw};Task a{inspect,&first},b{inspect,&second};gKnobs.hold.store(true);rig.dev->BeginScene();upload(255,0);enqueue(&a);upload(0,255);enqueue(&b);gKnobs.hold.store(false);rig.sync();CHECK(first.found&&second.found&&first.blue==1&&second.red==1&&first.revision<second.revision);
+    Inspect resetResult{raw};CHECK(runTask(rig.core(),[&](StreamCore& c){NorthlightMaterialTextures::cache().reset();inspect(&resetResult,c);}));
+    CHECK(resetResult.found&&resetResult.revision==second.revision&&resetResult.red==1);
     RECT rect{64,64,192,192};D3DLOCKED_RECT lock{};CHECK(texture->LockRect(0,&lock,&rect,0)==D3D_OK);for(unsigned y=0;y<128;++y)for(unsigned x=0;x<128;++x){auto*p=static_cast<unsigned char*>(lock.pBits)+y*lock.Pitch+x*4;p[0]=255;p[1]=p[2]=0;p[3]=255;}CHECK(texture->UnlockRect(0)==D3D_OK);rig.sync();Inspect partial{raw};CHECK(runTask(rig.core(),[&](StreamCore& c){inspect(&partial,c);}));CHECK(partial.found&&partial.blue==1&&partial.revision>second.revision);
     texture->Release();rig.sync();Inspect released{raw};CHECK(runTask(rig.core(),[&](StreamCore& c){inspect(&released,c);}));CHECK(!released.found);rig.finish();checkClean();std::puts("material texture stream: ordered atlas uploads, partial equipment update, no future producer pixels, retirement PASS");
 }

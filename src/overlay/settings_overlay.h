@@ -28,8 +28,18 @@ public:
     // Before the device's Reset: releases every D3DPOOL_DEFAULT object (recreated lazily by the next draw).
     virtual void invalidate()=0;
 };
-// enabled=false ([Renderer] SettingsOverlay=0): logs that and returns nullptr; no window subclass. hotkey: the
+// enabled=false ([Renderer] SettingsOverlay=0): logs that and returns nullptr; this call installs no subclass or settings input.
+// The independent renderer-stability lifecycle below may already own the shared subclass. hotkey: the
 // SettingsOverlayKey text ("Ctrl+Shift+F11"; empty or null = that default; unusable = the default and one log line).
 // service may be null (the window then says the settings are unavailable). device is the real (extension) device; it is AddRef'ed.
 std::unique_ptr<Overlay> create(IDirect3DDevice9* device,bool enabled,const char* hotkey,std::shared_ptr<NorthlightSettings::Service> service,Log log);
 } // namespace NorthlightOverlay
+
+// Renderer stability uses the shared subclass independently of overlay input.
+// owner is a non-owning device identity; these functions never call D3D.
+namespace NorthlightWindowHook {
+bool attach(IDirect3DDevice9* owner,HWND window,NorthlightOverlay::Log log=nullptr);
+void invalidate(IDirect3DDevice9* owner);
+void presented(IDirect3DDevice9* owner,HWND window,unsigned width,unsigned height,bool windowed,HRESULT status);
+void detach(IDirect3DDevice9* owner);
+}

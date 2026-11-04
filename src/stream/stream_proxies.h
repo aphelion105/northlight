@@ -455,9 +455,9 @@ inline void captureParticleTexture(const UnlockImageArgs& a,const unsigned char*
     unsigned level=a.level;if(a.proxy!=root){level=0;for(;level<root->info.levels;++level)if(D3::mipDim(root->info.w,level)==a.proxy->info.w&&D3::mipDim(root->info.h,level)==a.proxy->info.h)break;if(level>=root->info.levels){invalidateParticleTexture(root);return;}}
     const unsigned w=D3::mipDim(root->info.w,level),h=D3::mipDim(root->info.h,level);
     const bool whole=a.slices==1&&(!a.hasRect||(a.l==0&&a.t==0&&a.r==LONG(w)&&a.b==LONG(h)));
-    if(!(root->info.usage&(D3::kUsageDS|D3::kUsageRT))&&((root->info.usage&D3::kUsageDynamic)||((root->info.usage&D3::kUsageAutoGen)&&root->info.fmt==21)||(root->info.levels==1&&root->info.fmt==21&&root->info.w>=256&&root->info.h>=256))){auto& cache=NorthlightMaterialTextures::cache();if(whole)cache.upload(root->raw,root,w,h,level,root->info.fmt,src,std::size_t(a.rows)*a.pitch,a.pitch,true,success);else if(a.hasRect&&a.slices==1)cache.updateRect(root->raw,root,w,h,level,root->info.fmt,src,std::size_t(a.rows)*a.pitch,a.pitch,unsigned(a.l),unsigned(a.t),unsigned(a.r),unsigned(a.b),success);else cache.invalidate(root->raw);}
+    if(!(root->info.usage&(D3::kUsageDS|D3::kUsageRT))&&((root->info.usage&D3::kUsageDynamic)||((root->info.usage&D3::kUsageAutoGen)&&root->info.fmt==21)||(root->info.levels==1&&root->info.fmt==21&&root->info.w>=256&&root->info.h>=256))){auto& cache=NorthlightMaterialTextures::cache();if(whole)cache.upload(root->raw,root,w,h,level,root->info.fmt,src,std::size_t(a.rows)*a.pitch,a.pitch,true,success,root->info.pool);else if(a.hasRect&&a.slices==1)cache.updateRect(root->raw,root,w,h,level,root->info.fmt,src,std::size_t(a.rows)*a.pitch,a.pitch,unsigned(a.l),unsigned(a.t),unsigned(a.r),unsigned(a.b),success);else cache.invalidate(root->raw);}
     if(root->info.usage&(D3::kUsageRT|D3::kUsageDS|D3::kUsageAutoGen)){NorthlightParticleTextures::cache().invalidate(root->raw);return;}
-    NorthlightParticleTextures::cache().upload(root->raw,root,w,h,level,root->info.fmt,src,std::size_t(a.rows)*a.pitch,a.pitch,whole,success);
+    NorthlightParticleTextures::cache().upload(root->raw,root,w,h,level,root->info.fmt,src,std::size_t(a.rows)*a.pitch,a.pitch,whole,success,root->info.pool);
 }
 
 inline void countPass(ProxyBase& p,PassReason r){own(p.core->q.stats.passThrough[unsigned(r)]);}   // game thread only

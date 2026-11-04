@@ -80,7 +80,7 @@ route = route[route.index('inline Decision route('):route.index('inline float ma
 check(re.search(r'case Msg::MouseMove:case Msg::KeyUp:case Msg::SysKeyUp:d\.queue=true;break;', route) is not None,
       'route(): WM_MOUSEMOVE and WM_KEYUP are queued and never swallowed')
 # Unhook only while ours is the current procedure (never cut another subclasser's chain).
-uninstall = overlay[overlay.index('void uninstall()'):overlay.index('HWND deviceWindow(')]
+uninstall = overlay[overlay.index('void uninstall('):overlay.index('HWND deviceWindow(')]
 check('if(current!=reinterpret_cast<LONG_PTR>(&windowProcedure))return;' in uninstall, 'uninstall(): restores only when ours is current')
 
 # renderer.cpp hook points: drawn from finishFrame (Device::Present and SwapChain::Present both finish there) under RawScope+SavedState;

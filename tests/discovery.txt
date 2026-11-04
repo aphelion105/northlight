@@ -465,6 +465,7 @@ test_terrain_snapshot.py
 test_terrain_source_accounting.py
 test_terrain_source_indices.py
 test_terrain_tracked_cache.py
+test_texture_reset_gpu.py
 test_tool_imports.py
 test_tracked_buffers.py
 test_tracked_snapshot.py
@@ -501,6 +502,8 @@ test_weather_state.py
 test_weather_textures.py
 test_weather_wiring.py
 test_weighted_byte_pose.py
+test_window_size_filter.py
+test_window_size_filter_win32.py
 test_windows_installer.py
 test_wmo_group_tolerance.py
 test_wmo_lamp_emission.py

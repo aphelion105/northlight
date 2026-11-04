@@ -70,7 +70,7 @@ private:
         const void* raw=nullptr;
         const void* owner=nullptr;
         std::uint64_t lifetime=0,revision=0,used=0,rgbaHash=0,uploadHash=0;
-        unsigned width=0,height=0,mip=0,format=0;
+        unsigned width=0,height=0,mip=0,format=0,pool=0;
         std::vector<std::uint8_t> pixels;
         // The upload's own bytes until a particle draw first asks for them:
         // most small mips are never sampled, so decoding waits for lookup().
@@ -117,12 +117,16 @@ public:
     std::size_t bytes()const{return bytes_;}
     unsigned size()const{unsigned n=0;for(const auto& [raw,e]:entries_)n+=e.held();return n;}
     void clear(){recent_=nullptr;entries_.clear();bytes_=0;history_.clear();}
+    // Reset loses DEFAULT content, but surviving MANAGED/SYSTEMMEM/SCRATCH
+    // textures may never be uploaded again. Entries own CPU bytes only.
+    void reset(){recent_=nullptr;for(auto it=entries_.begin();it!=entries_.end();){auto& e=it->second;
+        if(e.pool>=1&&e.pool<=3){++it;continue;}note(e.raw,Invalidated);drop(e);it=entries_.erase(it);++counts.invalidations;}}
     void erase(const void* raw,const void* owner=nullptr){if(auto* e=find(raw))if(!owner||e->owner==owner){recent_=nullptr;drop(*e);entries_.erase(raw);++counts.releases;note(raw,Released);}}
     void invalidate(const void* raw){note(raw,Invalidated);if(auto* e=find(raw)){drop(*e);++e->revision;++counts.invalidations;}}
     // Other full mips do not change this mip. Partial/failed writes invalidate
     // the texture conservatively. Only a later complete CPU upload can restore it.
     void upload(const void* raw,const void* owner,unsigned width,unsigned height,unsigned mip,unsigned d3dFormat,
-                const void* source,std::size_t sourceBytes,std::size_t pitch,bool whole,bool success)noexcept{
+                const void* source,std::size_t sourceBytes,std::size_t pitch,bool whole,bool success,unsigned pool=0)noexcept{
         if(!enabled.load(std::memory_order_relaxed)){invalidate(raw);return;}
         ++counts.uploads;
         try{
@@ -136,7 +140,7 @@ public:
         if(!source||!sourceBytes||sourceBytes>std::size_t(MaxDimension)*MaxDimension*16){++counts.failed;invalidate(raw);note(raw,Failed);return;}
         Entry& e=slot(raw,owner);drop(e);evict(sourceBytes,&e);
         e.source.assign(static_cast<const std::uint8_t*>(source),static_cast<const std::uint8_t*>(source)+sourceBytes);e.pitch=pitch;
-        e.width=width;e.height=height;e.mip=mip;e.format=d3dFormat;++e.revision;e.used=++clock_;bytes_+=e.source.size();++counts.retained;note(raw,Held);
+        e.width=width;e.height=height;e.mip=mip;e.format=d3dFormat;e.pool=pool;++e.revision;e.used=++clock_;bytes_+=e.source.size();++counts.retained;note(raw,Held);
         }catch(...){++counts.failed;invalidate(raw);}
     }
     bool lookup(const void* raw,View& out){
@@ -182,7 +186,7 @@ private:
         const void* raw=nullptr;
         const void* owner=nullptr;
         std::uint64_t lifetime=0,revision=0,used=0,rgbaHash=0;
-        unsigned width=0,height=0,mip=0,format=0;
+        unsigned width=0,height=0,mip=0,format=0,pool=0;
         std::vector<std::uint8_t> pixels;
     };
     std::array<Entry,MaxEntries> entries_{};
@@ -342,17 +346,18 @@ public:
     std::size_t bytes()const{return bytes_;}
     unsigned size()const{unsigned n=0;for(const auto& e:entries_)n+=!e.pixels.empty();return n;}
     void clear(){for(auto& e:entries_){drop(e);e={};}}
+    void reset(){recent_=nullptr;for(auto& e:entries_)if(e.raw&&!(e.pool>=1&&e.pool<=3)){drop(e);e={};++counts.invalidations;}}
     void erase(const void* raw,const void* owner=nullptr){if(auto* e=find(raw))if(!owner||e->owner==owner){drop(*e);*e={};++counts.releases;}}
     void invalidate(const void* raw){if(auto* e=find(raw)){drop(*e);++e->revision;++counts.invalidations;}}
     std::uint64_t version(const void* raw){if(!enabled.load(std::memory_order_relaxed))return 0;auto* e=find(raw);if(e)e->used=++clock_;return e?e->lifetime*UINT64_C(0x9e3779b97f4a7c15)^e->revision:0;}
-    bool copy(const void* source,const void* destination,const void* owner)noexcept{try{
+    bool copy(const void* source,const void* destination,const void* owner,unsigned pool=0)noexcept{try{
         if(source==destination)return false;auto* original=find(source);if(!original||original->pixels.empty()){invalidate(destination);return false;}
         // Copy before slot/eviction can invalidate the borrowed source.
         const auto w=original->width,h=original->height,mip=original->mip,fmt=original->format;const auto hash=original->rgbaHash;
-        if(auto* same=find(destination))if(same->width==w&&same->height==h&&same->mip==mip&&same->format==fmt&&same->rgbaHash==hash&&same->pixels==original->pixels){same->used=++clock_;return true;}
+        if(auto* same=find(destination))if(same->owner==owner&&same->width==w&&same->height==h&&same->mip==mip&&same->format==fmt&&same->rgbaHash==hash&&same->pixels==original->pixels){same->pool=pool;same->used=++clock_;return true;}
         auto pixels=original->pixels;
         Entry& e=slot(destination,owner);drop(e);while(bytes_+pixels.size()>PixelBudget){auto* victim=oldest(&e);if(!victim)break;drop(*victim);*victim={};++counts.evictions;}
-        e.pixels=std::move(pixels);e.width=w;e.height=h;e.mip=mip;e.format=fmt;e.rgbaHash=hash;++e.revision;e.used=++clock_;bytes_+=e.pixels.size();return true;
+        e.pixels=std::move(pixels);e.width=w;e.height=h;e.mip=mip;e.format=fmt;e.pool=pool;e.rgbaHash=hash;++e.revision;e.used=++clock_;bytes_+=e.pixels.size();return true;
     }catch(...){invalidate(destination);++counts.failed;return false;}}
     bool updateRect(const void* raw,const void* owner,unsigned width,unsigned height,unsigned mip,unsigned d3dFormat,
             const void* source,std::size_t sourceBytes,std::size_t pitch,unsigned left,unsigned top,unsigned right,unsigned bottom,bool success)noexcept{try{
@@ -380,7 +385,7 @@ public:
     // Other full mips do not change this mip. Partial/failed writes invalidate
     // the texture conservatively. Only a later complete CPU upload can restore it.
     void upload(const void* raw,const void* owner,unsigned width,unsigned height,unsigned mip,unsigned d3dFormat,
-                const void* source,std::size_t sourceBytes,std::size_t pitch,bool whole,bool success)noexcept{
+                const void* source,std::size_t sourceBytes,std::size_t pitch,bool whole,bool success,unsigned pool=0)noexcept{
         if(!enabled.load(std::memory_order_relaxed)){invalidate(raw);return;}
         ++counts.uploads;
         try{
@@ -400,17 +405,17 @@ public:
             bool same=true;
             for(unsigned y=0;y<height&&same;++y)for(unsigned x=0;x<width;++x){const auto* from=static_cast<const unsigned char*>(source)+size_t(y)*pitch+x*4;const auto* to=previous->pixels.data()+(size_t(y)*width+x)*4;
                 if(to[0]!=from[2]||to[1]!=from[1]||to[2]!=from[0]||to[3]!=(decodedFormat==F::BGRX8?255:from[3])){same=false;break;}}
-            if(same){previous->used=++clock_;return;}
+            if(same){previous->pool=pool;previous->used=++clock_;return;}
         }
         std::vector<std::uint8_t> decoded;
         if(!decodeImage(source,sourceBytes,width,height,pitch,decodedFormat,decoded,true)){++counts.failed;invalidate(raw);return;}
         width=std::min(width,MaxDimension);height=std::min(height,MaxDimension);
         std::uint64_t hash=14695981039346656037ull;for(auto byte:decoded)hash=(hash^byte)*1099511628211ull;
-        if constexpr(DecodeDimension>MaxDimension){if(previous&&previous->owner==owner&&previous->width==width&&previous->height==height&&previous->mip==mip&&previous->format==d3dFormat&&previous->rgbaHash==hash&&previous->pixels==decoded){previous->used=++clock_;return;}}
+        if constexpr(DecodeDimension>MaxDimension){if(previous&&previous->owner==owner&&previous->width==width&&previous->height==height&&previous->mip==mip&&previous->format==d3dFormat&&previous->rgbaHash==hash&&previous->pixels==decoded){previous->pool=pool;previous->used=++clock_;return;}}
         Entry& e=slot(raw,owner);drop(e);
         while(bytes_+decoded.size()>PixelBudget){auto* victim=oldest(&e);if(!victim)break;drop(*victim);*victim={};++counts.evictions;}
         e.rgbaHash=hash;
-        e.pixels=std::move(decoded);e.width=width;e.height=height;e.mip=mip;e.format=d3dFormat;++e.revision;e.used=++clock_;bytes_+=e.pixels.size();++counts.retained;
+        e.pixels=std::move(decoded);e.width=width;e.height=height;e.mip=mip;e.format=d3dFormat;e.pool=pool;++e.revision;e.used=++clock_;bytes_+=e.pixels.size();++counts.retained;
         }catch(...){++counts.failed;invalidate(raw);}
     }
     bool lookup(const void* raw,View& out){

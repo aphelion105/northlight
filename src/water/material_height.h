@@ -17,7 +17,7 @@ inline void copiedTexture(IDirect3DBaseTexture9* source,IDirect3DBaseTexture9* d
     if(!success||!source||source->GetType()!=D3DRTYPE_TEXTURE){cache.invalidate(destination);return;}
     D3DSURFACE_DESC a{},b{};auto* s=static_cast<IDirect3DTexture9*>(source);auto* t=static_cast<IDirect3DTexture9*>(destination);
     if(FAILED(s->GetLevelDesc(0,&a))||FAILED(t->GetLevelDesc(0,&b))||a.Width!=b.Width||a.Height!=b.Height||a.Format!=b.Format||(b.Usage&(D3DUSAGE_RENDERTARGET|D3DUSAGE_DEPTHSTENCIL))){cache.invalidate(destination);return;}
-    cache.copy(source,destination,nullptr);
+    cache.copy(source,destination,nullptr,unsigned(b.Pool));
 }
 inline void copiedSurface(IDirect3DSurface9* source,const RECT* rect,IDirect3DSurface9* destination,const POINT* point,bool success){
     if(success&&source==destination&&!rect&&(!point||(!point->x&&!point->y)))return;
@@ -25,7 +25,7 @@ inline void copiedSurface(IDirect3DSurface9* source,const RECT* rect,IDirect3DSu
     if(FAILED(destination->GetContainer(IID_IDirect3DTexture9,reinterpret_cast<void**>(&to)))||!to)return;
     auto& cache=NorthlightMaterialTextures::cache();
     D3DSURFACE_DESC a{},b{},level{};
-    if(success&&source&&(!point||(!point->x&&!point->y))&&SUCCEEDED(source->GetDesc(&a))&&SUCCEEDED(destination->GetDesc(&b))&&a.Width==b.Width&&a.Height==b.Height&&a.Format==b.Format&&!(b.Usage&(D3DUSAGE_RENDERTARGET|D3DUSAGE_DEPTHSTENCIL))&&(!rect||(!rect->left&&!rect->top&&rect->right==LONG(a.Width)&&rect->bottom==LONG(a.Height)))&&SUCCEEDED(source->GetContainer(IID_IDirect3DTexture9,reinterpret_cast<void**>(&from)))&&from&&SUCCEEDED(from->GetLevelDesc(0,&level))&&a.Width==level.Width&&a.Height==level.Height&&SUCCEEDED(to->GetLevelDesc(0,&level))&&b.Width==level.Width&&b.Height==level.Height)cache.copy(from,to,nullptr);else cache.invalidate(to);
+    if(success&&source&&(!point||(!point->x&&!point->y))&&SUCCEEDED(source->GetDesc(&a))&&SUCCEEDED(destination->GetDesc(&b))&&a.Width==b.Width&&a.Height==b.Height&&a.Format==b.Format&&!(b.Usage&(D3DUSAGE_RENDERTARGET|D3DUSAGE_DEPTHSTENCIL))&&(!rect||(!rect->left&&!rect->top&&rect->right==LONG(a.Width)&&rect->bottom==LONG(a.Height)))&&SUCCEEDED(source->GetContainer(IID_IDirect3DTexture9,reinterpret_cast<void**>(&from)))&&from&&SUCCEEDED(from->GetLevelDesc(0,&level))&&a.Width==level.Width&&a.Height==level.Height&&SUCCEEDED(to->GetLevelDesc(0,&level))&&b.Width==level.Width&&b.Height==level.Height)cache.copy(from,to,nullptr,unsigned(b.Pool));else cache.invalidate(to);
     if(from)from->Release();to->Release();
 }
 inline void means(Image& out,const unsigned char* rgba,size_t bytes,bool accents=true){out.mean=out.accentMean=0;for(size_t i=0;i<bytes;i+=4){float r=rgba[i]/255.f,g=rgba[i+1]/255.f,b=rgba[i+2]/255.f;out.mean+=r*.299f+g*.587f+b*.114f;if(accents)out.accentMean+=accent(r,g,b);}out.mean/=out.width*out.height;out.accentMean/=out.width*out.height;}
