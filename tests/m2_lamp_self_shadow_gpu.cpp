@@ -82,7 +82,28 @@ struct PointTerrainCoverageTest{
   if(strip){unsigned kept=0;for(auto r:runs)kept+=r.second;assert(p->count-kept==shell.count);}
   else if(mixed)assert(runs.size()==1&&runs[0].first==shell.count&&runs[0].second==1);else assert(runs.empty());
   p->constantStorage[31*4+3]=.02f;assert(!w.pointOwnShell(*p,shell,runs));p->constantStorage[31*4+3]=0;
-  p->cutoff=.5f;assert(w.pointOwnShell(*p,shell,runs));p->cutoff=.75f;assert(!w.pointOwnShell(*p,shell,runs));p->cutoff=-1;w.replays.push_back(std::move(p));
+  p->cutoff=.5f;assert(w.pointOwnShell(*p,shell,runs));p->cutoff=.75f;assert(!w.pointOwnShell(*p,shell,runs));p->cutoff=-1;
+  // Real city coordinates, model-local vertices and a moving view palette.
+  // The luminous triangles and the retained metal must not change with the camera.
+  assert(w.pointOwnShell(*p,shell,runs));const auto expected=runs;
+  const auto savedBytes=s.bytes;float savedInverse[16],savedBank[1024];
+  std::memcpy(savedInverse,w.context.inverseView,sizeof savedInverse);std::memcpy(savedBank,p->constantStorage,sizeof savedBank);
+  const float origin[]={shell.boundsLow.x,shell.boundsLow.y,shell.boundsLow.z};
+  for(auto& v:vertices){v.x-=origin[0];v.y-=origin[1];v.z-=origin[2];}
+  std::memcpy(s.bytes.data(),vertices.data(),s.bytes.size());
+  for(unsigned frame=0;frame<180;++frame){
+    const float yaw=frame*.037f,pitch=.15f+frame*.004f,c=std::cos(yaw),sn=std::sin(yaw),cp=std::cos(pitch),sp=std::sin(pitch);
+    const float axes[3][3]={{c,sn,0},{-sn*cp,c*cp,sp},{sn*sp,-c*sp,cp}};
+    const float eye[]={origin[0]+12*c,origin[1]+12*sn,origin[2]+5+2*sp};
+    for(unsigned k=0;k<3;++k){
+      auto* row=p->constantStorage+4*(31+k);row[3]=0;
+      for(unsigned j=0;j<3;++j){w.context.inverseView[k*4+j]=axes[k][j];row[j]=axes[k][j];row[3]+=axes[k][j]*(origin[j]-eye[j]);}
+      w.context.inverseView[12+k]=eye[k];
+    }
+    assert(w.pointOwnShell(*p,shell,runs)&&runs==expected);
+  }
+  s.bytes=savedBytes;std::memcpy(w.context.inverseView,savedInverse,sizeof savedInverse);std::memcpy(p->constantStorage,savedBank,sizeof savedBank);
+  w.replays.push_back(std::move(p));
  }
  static void fixture(IDirect3DDevice9* d,const std::string& root){
   WorldRenderer w(d);load(w,root,false);const auto l=w.active->localLights[0];const auto owners=NorthlightWmoLampShadow::parts(l,w.batches);assert(!owners.empty());
