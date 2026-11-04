@@ -1,5 +1,11 @@
 # Complete Windows installer 0.3.217-test.20261104.1
 
+Superseded by [20261104.2](complete-installer-20261104.2.md): this package's
+parent process did not initialize bundled StormLib before checking art-layer
+ownership. Valid Northlight patches without a matching install receipt could
+therefore be classified as foreign and skipped. The runtime/help acceptance
+below injected the library path and did not cover that clean-launch behaviour.
+
 Implementation commit: `59ccf16b81e07a35babf39280725e5656174ce4a`.
 This package contains the complete current integration, including the earlier
 CPU/GPU optimizations, HDR/AO/material/weather changes, camera-independent native
