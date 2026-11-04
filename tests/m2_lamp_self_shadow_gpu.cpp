@@ -17,11 +17,11 @@ struct PointTerrainCoverageTest{
   for(const auto& p:std::initializer_list<std::pair<D3DRENDERSTATETYPE,DWORD>>{{D3DRS_ZENABLE,shadow},{D3DRS_ZWRITEENABLE,shadow},{D3DRS_ZFUNC,D3DCMP_LESSEQUAL},{D3DRS_CULLMODE,D3DCULL_NONE},{D3DRS_ALPHATESTENABLE,FALSE},{D3DRS_ALPHABLENDENABLE,FALSE},{D3DRS_SEPARATEALPHABLENDENABLE,FALSE},{D3DRS_COLORWRITEENABLE,15},{D3DRS_FOGENABLE,FALSE},{D3DRS_STENCILENABLE,FALSE},{D3DRS_SCISSORTESTENABLE,FALSE},{D3DRS_CLIPPLANEENABLE,0},{D3DRS_SRGBWRITEENABLE,FALSE},{D3DRS_DEPTHBIAS,0},{D3DRS_SLOPESCALEDEPTHBIAS,0},{D3DRS_SRCBLEND,D3DBLEND_ONE},{D3DRS_DESTBLEND,D3DBLEND_ONE},{D3DRS_BLENDOP,D3DBLENDOP_ADD}})must(d->SetRenderState(p.first,p.second));
   for(auto f:{D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER})must(d->SetSamplerState(0,f,D3DTEXF_LINEAR));
  }
- static void load(WorldRenderer& w,const std::string& root,bool capture){
+ static void load(WorldRenderer& w,const std::string& root,bool capture,const NorthlightGI::Vec3& center={-8992.5927734375f,786.9718017578f,109.5155334473f}){
   using namespace NorthlightGI;std::vector<std::string> tiles;
   if(capture){for(const auto& file:std::filesystem::directory_iterator(root+"/Azeroth"))if(file.path().extension()==".fg3")tiles.push_back(file.path().string());}
   else tiles.push_back(root+"/tile.fg3");
-  const Vec3 center{-8992.5927734375f,786.9718017578f,109.5155334473f},radius{144,144,192};
+  const Vec3 radius{144,144,192};
   std::string error;WorldScene scene;assert(loadInstancedScenes(tiles,root+"/models",center-radius,center+radius,scene,error));
   auto snap=std::make_shared<WorldRenderer::Snapshot>();snap->bvh=std::make_shared<BVH>();snap->meshPlan=std::make_shared<NorthlightWorldMesh::WorldMeshUploadPlan>();
   assert(snap->bvh->build(std::move(scene),error,true));assert(NorthlightWorldMesh::buildUploadPlan(snap->bvh->scene(),*snap->meshPlan,error));
@@ -89,31 +89,38 @@ struct PointTerrainCoverageTest{
   w.replays.clear();
   std::printf("LAMP_GPU_PASS %s opened=%u frameBlocked=%u foreignExact=1 liveShellExact=1 mixedIndexedAndUP=1 triangleListsAndStrips=1 actorOffNoReplayReads=1\n",root.c_str(),opened,blocked);std::fflush(stdout);
  }
- static void capture(IDirect3DDevice9* d,const std::string& root,const std::string& prefix,const std::string& output){
-  WorldRenderer w(d);load(w,root,true);auto bank=readBytes(prefix+"lighting-pass-1-constants.f32");assert(bank.size()==116*16);float c[116][4];std::memcpy(c,bank.data(),sizeof c);
+ static void capture(IDirect3DDevice9* d,const std::string& root,const std::string& prefix,const std::string& output,bool untagged){
+  auto bank=readBytes(output+"/direct-constants.f32");assert(bank.size()==116*16);float c[116][4];std::memcpy(c,bank.data(),sizeof c);
+  WorldRenderer w(d);load(w,root,true,{c[6][0],c[6][1],c[6][2]});
   std::memcpy(w.context.inverseView,c[3],64);std::memcpy(w.projection,c[1],12);
   drop(w.normalBuffer);w.normalBuffer=texture(d,readFgr(prefix+"normals.fgr"));drop(w.baselineLight);w.baselineLight=texture(d,readFgr(prefix+"baseline.fgr"));
   drop(w.materialDetail);w.materialDetail=texture(d,readFgr(prefix+"lighting-input-g0-s9.fgr"));
   w.materialBumpGain=c[73][0];w.materialBumpDistance=c[73][1];
-  auto* depth=texture(d,readFgr(prefix+"depth.fgr"));IDirect3DSurface9* target=nullptr;must(d->CreateRenderTarget(1280,720,D3DFMT_A16B16G16R16F,D3DMULTISAMPLE_NONE,0,FALSE,&target,nullptr));
+  const auto depthImage=readFgr(prefix+"depth.fgr"),localImage=readFgr(prefix+"current-local-light.fgr");
+  auto* depth=texture(d,depthImage);IDirect3DSurface9* target=nullptr;must(d->CreateRenderTarget(localImage.w,localImage.h,D3DFMT_A16B16G16R16F,D3DMULTISAMPLE_NONE,0,FALSE,&target,nullptr));
+  std::vector<std::vector<float>> unownedCubes;
   std::vector<uint64_t> ids;for(auto& b:w.batches)ids.push_back(b.lampSourceId);
   for(unsigned mode=0;mode<2;++mode){
    for(size_t i=0;i<w.batches.size();++i)w.batches[i].lampSourceId=mode?ids[i]:0;
    must(d->SetRenderTarget(0,target));must(d->Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0));unsigned owners=0;
-   for(const auto& l:w.active->localLights){if(mode)owners+=NorthlightWmoLampShadow::unique(l,w.batches)!=size_t(-1);cube(w,l);w.pointSlot().selectionGain=1;
+   for(const auto& l:w.active->localLights){if(mode)owners+=!NorthlightWmoLampShadow::parts(l,w.batches).empty();const auto pixels=cube(w,l);
+    if(!mode)unownedCubes.push_back(pixels);else{const auto& before=unownedCubes[&l-w.active->localLights.data()];unsigned opened=0,blocked=0,improved=0;
+     for(size_t i=0;i<pixels.size();++i){opened+=before[i]<.9999f&&pixels[i]==1.f;blocked+=pixels[i]<.9999f;improved+=pixels[i]>before[i]+1e-5f;assert(pixels[i]+1e-6f>=before[i]);}
+     std::printf("CAPTURE_CUBE source=%llu opened=%u blocked=%u improved=%u texels=%zu\n",(unsigned long long)l.sourceId,opened,blocked,improved,pixels.size());std::fflush(stdout);}
+    w.pointSlot().selectionGain=1;
     must(d->SetRenderTarget(0,target));must(d->SetDepthStencilSurface(nullptr));states(d,false);must(d->BeginScene());
-    assert(w.renderPointLighting(depth,nullptr,2560,1440,c[0][2],c[0][3],c[1][3],c[1][3]+1/c[2][0],c[52][1],c[52][2],c[20][2],0));must(d->EndScene());
+    assert(w.renderPointLighting(depth,nullptr,depthImage.w,depthImage.h,c[0][2],c[0][3],c[1][3],c[1][3]+1/c[2][0],c[52][1],c[52][2],c[20][2],0));must(d->EndScene());
    }
    save(readSurface(d,target,8),output+(mode?"/correction-after.fgr":"/correction-before.fgr"));
-   std::printf("CAPTURE_CORRECTION mode=%u sources=%zu owners=%u\n",mode,w.active->localLights.size(),owners);std::fflush(stdout);if(mode)assert(owners==w.active->localLights.size());
+   std::printf("CAPTURE_CORRECTION mode=%u sources=%zu owners=%u\n",mode,w.active->localLights.size(),owners);std::fflush(stdout);if(mode)assert(owners==(untagged?0:w.active->localLights.size()));
   }
   depth->Release();target->Release();
  }
 };
-int main(int argc,char** argv){assert(argc==6);SetEnvironmentVariableA("NORTHLIGHT_QUALITY_FILE",argv[2]);std::wstring settings(argv[2],argv[2]+std::strlen(argv[2]));assert(GetFullPathNameW(settings.c_str(),MAX_PATH,rootPath,nullptr));
+int main(int argc,char** argv){assert(argc==6||(argc==7&&std::strcmp(argv[6],"untagged")==0));SetEnvironmentVariableA("NORTHLIGHT_QUALITY_FILE",argv[2]);std::wstring settings(argv[2],argv[2]+std::strlen(argv[2]));assert(GetFullPathNameW(settings.c_str(),MAX_PATH,rootPath,nullptr));
  WNDCLASSW wc{};wc.lpfnWndProc=DefWindowProcW;wc.hInstance=GetModuleHandleW(nullptr);wc.lpszClassName=L"NorthlightLampTest";assert(RegisterClassW(&wc));auto hwnd=CreateWindowW(wc.lpszClassName,L"",WS_OVERLAPPED,0,0,64,64,nullptr,nullptr,wc.hInstance,nullptr);assert(hwnd);
  auto module=LoadLibraryA(argv[1]);assert(module);auto create=(IDirect3D9*(WINAPI*)(UINT))GetProcAddress(module,"Direct3DCreate9");assert(create);auto api=create(D3D_SDK_VERSION);D3DPRESENT_PARAMETERS pp{};pp.Windowed=TRUE;pp.hDeviceWindow=hwnd;pp.BackBufferWidth=pp.BackBufferHeight=64;pp.BackBufferFormat=D3DFMT_X8R8G8B8;pp.SwapEffect=D3DSWAPEFFECT_DISCARD;pp.PresentationInterval=D3DPRESENT_INTERVAL_IMMEDIATE;
  IDirect3DDevice9* d=nullptr;must(api->CreateDevice(0,D3DDEVTYPE_HAL,hwnd,D3DCREATE_HARDWARE_VERTEXPROCESSING|D3DCREATE_MULTITHREADED|D3DCREATE_FPU_PRESERVE,&pp,&d));
- if(std::string(argv[4])=="fixture")PointTerrainCoverageTest::fixture(d,argv[3]);else PointTerrainCoverageTest::capture(d,argv[3],argv[4],argv[5]);
+ if(std::string(argv[4])=="fixture")PointTerrainCoverageTest::fixture(d,argv[3]);else PointTerrainCoverageTest::capture(d,argv[3],argv[4],argv[5],argc==7);
  d->Release();api->Release();FreeLibrary(module);DestroyWindow(hwnd);
 }

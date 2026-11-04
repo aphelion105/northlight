@@ -172,6 +172,7 @@ test_instance_maps.py
 test_instance_scene.py
 test_interval_temporaries.py
 test_job_system.py
+test_lamp_capture_replay.py
 test_lamp_daylight.py
 test_legacy_fog_hold.py
 test_legacy_fog_wmo.py

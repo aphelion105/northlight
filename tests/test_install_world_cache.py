@@ -67,6 +67,7 @@ changed = {k for k, v in digests(sources={'outdoor-light-profiles.json': 'x'}).i
 assert changed == set(base)-{'celestial'}, changed # emitter identities also own M2 shell geometry
 assert {k for k,v in digests(sources={'wotlk-emitter-profiles.json':'x'}).items() if base[k]!=v} == set(base)-{'celestial'}
 assert {k for k,v in digests(sources={'world_lights_builder.py':'x'}).items() if base[k]!=v} == set(base)-{'celestial'}
+assert {k for k,v in digests(sources={'m2_light_geometry.py':'x'}).items() if base[k]!=v} == set(base)-{'celestial'}
 assert {k for k, v in digests(sources={'forest_regions.inc': 'x'}).items() if base[k] != v} == {'fog'}
 assert {k for k, v in digests(sources={'build_celestial_disc_assets.py': 'x'}).items() if base[k] != v} == {'celestial'}
 assert {k for k, v in digests(sources={'world_scene_builder.py': 'x'}).items() if base[k] != v} == set(base)
@@ -97,6 +98,20 @@ cache = out / 'world-cache'
 recorded = fake_cache(cache, {'digests': base})
 assert iwc.plan(base, recorded, cache, False, 'z') == ('up_to_date', [])
 assert iwc.plan(base, recorded, cache, True, 'z') == ('full', iwc.POST)
+# Before M2 shell ownership, scene fingerprints did not include this dependency.
+pre_ownership_inputs = iwc.gather_inputs(client, 'all', 'enUS', iwc.MAPS, None, 'z')
+pre_ownership_inputs['sources'].pop('m2_light_geometry.py')
+scene_sources = iwc.STEP_SOURCES['scene']
+try:
+    iwc.STEP_SOURCES['scene'] = [n for n in scene_sources if n != 'm2_light_geometry.py']
+    pre_ownership = {'inputs': pre_ownership_inputs, 'maps_built': iwc.MAPS,
+                     'digests': iwc.step_digests(pre_ownership_inputs)}
+    pre_ownership_instances = iwc.instance_digests(pre_ownership_inputs)
+    pre_ownership_instance_steps = iwc.instance_step_digests(pre_ownership_inputs)
+finally:
+    iwc.STEP_SOURCES['scene'] = scene_sources
+assert iwc.plan(base, pre_ownership, cache, False, 'z') == ('full', iwc.POST)
+assert iwc.plan(base, {'inputs': pre_ownership_inputs}, cache, False, 'z') == ('full', iwc.POST)
 assert iwc.plan(digests(sources={'outdoor-light-profiles.json':'x'}),recorded,cache,False,'z') == ('full',iwc.POST)
 lights_only = digests(sources={'light_attachments.py': 'x'})
 assert iwc.plan(lights_only, recorded, cache, False, 'z') == ('partial', ['lights'])
@@ -444,6 +459,18 @@ assert (code, last['built'], last['kept']) == (0, ['wotlk-raids'], ['classic-rai
 assert list(json.loads((icache / iwc.INSTANCE_MANIFEST).read_text())['groups']) == ['classic-raids', 'wotlk-raids']
 assert [m['map'] for m in json.loads((icache / 'lights' / iwc.INSTANCE_MANIFEST).read_text())['maps']] == raids + wotlk
 assert iwc.plan(base, recorded, icache, False, 'z') == ('up_to_date', [])
+# Existing selected groups must rebuild their geometry, including legacy combined-only records.
+for with_steps in (False, True):
+    stale = iwc.read_json(icache / iwc.INSTANCE_MANIFEST)
+    for k, group in stale['groups'].items():
+        group['digest'] = pre_ownership_instances[k]
+        group.pop('digests', None)
+        if with_steps:
+            group['digests'] = pre_ownership_instance_steps[k]
+    (icache / iwc.INSTANCE_MANIFEST).write_text(json.dumps(stale))
+    code, last = inst_run('classic-raids,wotlk-raids')
+    assert (code, last['built'], last['kept']) == (0, ['classic-raids', 'wotlk-raids'], []), last
+    assert set(called_steps) == {'instances classic-raids', 'instances wotlk-raids', 'instances lights', 'instances validate'}, called_steps
 # --instances-plan is a dry run: it names what would be built and changes nothing
 before_plan = sorted(p.relative_to(icache).as_posix() for p in icache.rglob('*'))
 code, last = inst_run('classic-raids,tbc-raids', '--instances-plan')
