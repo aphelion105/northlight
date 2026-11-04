@@ -1579,6 +1579,7 @@ struct StreamQuery final:IDirect3DQuery9,ProxyBase {
             // bounds an unresponsive query; completion returns immediately.
             const bool event=type==8&&flags==D3::kGetDataFlush&&gen.load();
             const auto tripStart=measure||event?nowNs():0;std::uint64_t replayStart=0,replayEnd=0;
+            const auto epoch=eventEpoch;
             auto body=[&](bool cached){if(measure||event)replayStart=nowNs();if(inner){
                 if(cached&&eventDoneGen.load(std::memory_order_acquire)==issued){
                     hr=eventStatus.load(std::memory_order_relaxed);
@@ -1588,10 +1589,13 @@ struct StreamQuery final:IDirect3DQuery9,ProxyBase {
                     auto poll=[&]{return static_cast<IDirect3DQuery9*>(inner)->GetData(data,size,event?cadence.flags(nowNs()):flags);};
                     if(event){unsigned calls=0;std::uint64_t pendingNs=0;hr=waitEventQuery(poll,nowNs,[]{std::this_thread::yield();},calls,kEventFlushWaitNs,&pendingNs);own(q.stats.eventGpuWaitNs,pendingNs);own(q.stats.eventPollCalls,calls);own(q.stats.eventWaitTrips);}
                     else hr=poll();
+                    // A completed pumped wait is also terminal for the background poller.
+                    // Null successful payloads and malformed calls cannot publish an unknown EVENT value.
+                    if(event&&hr!=S_FALSE&&issueSeen==issued&&issueSeenEpoch==epoch&&core->queryEpoch.load()==epoch&&
+                       ((data&&size==sizeof(BOOL))||(!data&&!size&&hr<0)))completeEvent(hr,static_cast<const unsigned char*>(data));
                 }
             }if(measure)replayEnd=nowNs();};
             bool ran=false;
-            const auto epoch=eventEpoch;
             if(event&&!inPumpedWait&&epoch==core->queryEpoch.load()&&core->coopState.load()==D3D_OK&&
                ((!data&&!size)||(data&&size==dataSize))){
                 // EVENT END fences only earlier work. After that END replayed,

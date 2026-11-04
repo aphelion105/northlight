@@ -11,7 +11,7 @@ out=fp.output_dir()/'material-pressure-transition';out.mkdir(parents=True,exist_
 source=fp.TESTS/'test_material_pressure_transition.cpp';reference=fp.TESTS/'displacement_state_reuse.cpp'
 watched=[p for p in fp.SRC.rglob('*') if p.is_file()]+[source,reference,Path(__file__),fp.REPO/'northlight_paths.py']
 inputs={str(p.resolve()):sha(p) for p in watched}
-helper=reference.read_text().split('int main(){')[0]
+helper=reference.read_text().split('int main(')[0]
 assert helper.count('struct MaterialCaptureStateTestAccess {')==1
 helper=helper.replace('struct MaterialCaptureStateTestAccess {','struct MaterialCaptureStateTestAccess {\n    static void pressureTransition();')
 # This oracle accesses displacement only through its existing dedicated friend.

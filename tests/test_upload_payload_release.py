@@ -107,7 +107,7 @@ checks={
  'a superseded pending plan is released with its packet':'pendingMesh->plan!=active->meshPlan)pendingMesh->plan->payload.discard();' in orphan and orphan.index('payload.discard()')<orphan.index('retirePendingCpu();'),
  'rebuild is requested once per bvh (15 s re-ask), logged, and consumed by the worker under the existing lock':
   'DWORD(now-payloadRebuildTick)<15000u' in rebuild and 'deferLogf("WORLD mesh upload payload was released' in rebuild and 'geometryRebuild=true;pending=true;' in rebuild
-  and 'if(geometryRebuild){geometryRebuild=false;geometryWanted=true;}' in builder,
+  and 'if(r.enabled&&geometryRebuild){geometryRebuild=false;geometryWanted=true;}' in builder,
 }
 bad=[k for k,v in checks.items() if not v]
 for k,v in checks.items():print(('PASS ' if v else 'FAIL ')+k)

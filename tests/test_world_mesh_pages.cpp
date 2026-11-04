@@ -305,8 +305,12 @@ static void testCompactSource(){
     assert(!std::memcmp(pages->pages[0].vertices.data(),reference.pages[0].vertices.data(),96));
     // Compaction is optional: an admission that refuses its exact-size copies (only those requests here) keeps
     // the page uncompacted with the same key and bytes instead of failing the build.
-    {P::Plan kept;const auto refuseCompaction=[](uint64_t bytes){return bytes!=96&&bytes!=12;}; /* the exact 3-vertex / 3-index copies */
+    {P::Plan measured,kept;std::vector<uint64_t> requests;
+     assert(P::build(input,measured,error,[&](uint64_t bytes){requests.push_back(bytes);return true;}));
+     assert(!requests.empty()&&requests.back()==96); // final optional vertex copy; Page metadata may also be 96 bytes
+     size_t request=0;const auto refuseCompaction=[&](uint64_t){return ++request!=requests.size();};
      assert(P::build(input,kept,error,refuseCompaction)&&error.empty());
+     assert(request==requests.size());
      assert(kept.pages.size()==pages->pages.size()&&kept.pages[0].vertices.capacity()>3);
      assert(kept.pages[0].key==pages->pages[0].key&&kept.pages[0].indices==pages->pages[0].indices);
      assert(!std::memcmp(kept.pages[0].vertices.data(),pages->pages[0].vertices.data(),96));}

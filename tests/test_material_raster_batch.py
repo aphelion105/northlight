@@ -10,13 +10,13 @@ import northlight_paths as fp
 
 with tempfile.TemporaryDirectory(prefix="material-raster-batch-") as tmp:
     root = Path(tmp)
-    fixture = (fp.TESTS / "displacement_state_reuse.cpp").read_text().split("int main(){")[0]
+    fixture = (fp.TESTS / "displacement_state_reuse.cpp").read_text().split("int main(")[0]
     fixture = fixture.replace("struct MaterialCaptureStateTestAccess {", "struct MaterialCaptureStateTestAccess {\n static void cpuReuse();\n static void batchCapture();\n static void admissionBatch();\n static void replayBindings();\n static void replayConstantRanges();")
     fixture = fixture.replace("struct DisplacementStateTestAccess {", "struct DisplacementStateTestAccess {\n static void cpuReuse();")
     fixture = fixture.replace("static int failAllocationAfter=-1;", "static size_t allocationCount=0;static int failAllocationAfter=-1;")
     fixture = fixture.replace("void* operator new(std::size_t n){", "void* operator new(std::size_t n){++allocationCount;")
     (root / "material_bindings_reference.h").write_text(fixture)
-    binding = (fp.TESTS / "test_material_batch_bindings.cpp").read_text().rsplit("int main(){", 1)[0]
+    binding = (fp.TESTS / "test_material_batch_bindings.cpp").read_text().rsplit("int main(", 1)[0]
     (root / "material_packet_bindings.h").write_text(binding)
     packet = (fp.TESTS / "test_material_packet_auxiliary.cpp").read_text().split("void MaterialCaptureStateTestAccess::packetAuxiliary()")[0]
     (root / "packet_batch_fixture.h").write_text(packet)

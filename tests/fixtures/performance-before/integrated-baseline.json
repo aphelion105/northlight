@@ -1,7 +1,7 @@
 {
   "purpose": "Current integrated shader ABI, with interval skipping, regional support clipping, scalar scattering and flattened composite taps reverted.",
-  "optimized_source_sha256": "f559e3040b5bcd990c26e1a1ae94337be13c4326e7790dab5965bad581e93112",
-  "baseline_source_sha256": "d66e127d8d555a8a41ac3e87a608ba22df2879ebca999e67b8b71f5b1158d208",
+  "optimized_source_sha256": "5c9588a8456d234808124045193b1188c619f8b234b9c7288ad43f2f0dc49477",
+  "baseline_source_sha256": "35003544af36f5758f4b5c13a351784e5f661e6fcde60a7f15d09664eadb264b",
   "bump_include_sha256": "b5523a51dc6715f11ac2e7ba9ecb46a4973ba6aa23de159e308a8fd24d4e9ebc",
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
   "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3"

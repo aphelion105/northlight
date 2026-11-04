@@ -7,7 +7,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
 
 out=fp.output_dir()/'material-pipeline-micro';out.mkdir(parents=True,exist_ok=True)
-helper=(fp.TESTS/'displacement_state_reuse.cpp').read_text().split('int main(){')[0]
+helper=(fp.TESTS/'displacement_state_reuse.cpp').read_text().split('int main(')[0]
 helper=helper.replace('struct MaterialCaptureStateTestAccess {','struct MaterialCaptureStateTestAccess {\n static void replayBindings();static void replayConstantRanges();static void microPool();')
 (out/'material_bindings_reference.h').write_bytes(('#pragma once\n'+helper).encode())
 actor=fp.src('actor_deformation.h').read_text()

@@ -8,7 +8,7 @@ import northlight_paths as fp
 p=argparse.ArgumentParser(__doc__);p.add_argument('--headers',type=Path);p.add_argument('--output',type=Path);a=p.parse_args()
 out=a.output or fp.output_dir()/'capture-targets';out.mkdir(parents=True,exist_ok=True)
 headers=a.headers or fp.src('auto_bump_renderer.h').parent
-reference=(fp.TESTS/'displacement_state_reuse.cpp').read_text().split('int main(){')[0]
+reference=(fp.TESTS/'displacement_state_reuse.cpp').read_text().split('int main(')[0]
 reference=reference.replace('struct MaterialCaptureStateTestAccess {','struct MaterialCaptureStateTestAccess {\n static void replayBindings();static void replayConstantRanges();static void captureTargets();')
 (out/'material_bindings_reference.h').write_bytes(reference.encode())
 watch=[headers/'auto_bump_renderer.h',fp.TESTS/'displacement_state_reuse.cpp',fp.TESTS/'test_material_capture_targets.cpp',fp.TESTS/'test_material_batch_bindings.cpp',Path(__file__)]

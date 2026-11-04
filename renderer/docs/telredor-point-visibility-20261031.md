@@ -43,4 +43,3 @@ The committed production transition oracle tests camera chunk membership, dynami
     python tests/test_point_shadow_visibility_gpu.py --output <fresh-private-folder> --backend <backend-dll> --benchmark
 
 The raw accepted report is .local/telredor-performance/all-pr-accepted/validation.json, SHA256 ce77e7aeafa4cd576af0867a87d9cb407a86fb136e377182fd9033f585d6fab1. It includes source/cache/backend hashes and every per-heading median; timings.tsv retains all blocks. The tested all-PR DLL source identity is 60a0fdfc183a5f436213628c647c7740d5c6a26b3807ea1a18a775036c0f3828.
-

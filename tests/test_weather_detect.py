@@ -15,7 +15,7 @@ hook=[l for l in r.split('\n') if l.strip().startswith('if(weatherDetect.hot&&mi
 assert len(hook)==1,'the draw hook comparison must exist exactly once'
 mistline=[l for l in r.split('\n') if l.strip().startswith('else if(weatherDetect.mistArmed)')]
 assert len(mistline)==1,'0.3.199 (rain mist): the mist test follows the hot comparison exactly once'
-assert r.count('nameMaskDraw(rainBlend,claimed||mist,draw)')==2,'0.3.199 (rain mist): both gate paths skip a mist draw'
+assert r.count('nameMaskDraw(rainBlend,claimed||mist,nativeDraw)')==2,'0.3.199 (rain mist): both gate paths skip a mist draw'
 rl=r.split('\n');j0=next(i for i,l in enumerate(rl) if l.strip().startswith('bool mistDraw(UINT count){'));j1=next(i for i in range(j0,len(rl)) if rl[i]=='    }')
 mistfn='\n'.join(rl[j0:j1+1])
 rl=r.split('\n');i0=next(i for i,l in enumerate(rl) if 'template<class Draw> HRESULT rainBlendDraw(' in l);i1=next(i for i in range(i0,len(rl)) if rl[i]=='    }')

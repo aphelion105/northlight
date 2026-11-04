@@ -11,7 +11,7 @@ out=fp.output_dir()/'material-batch-bindings';out.mkdir(parents=True,exist_ok=Tr
 source=fp.TESTS/'test_material_batch_bindings.cpp';reference=fp.TESTS/'displacement_state_reuse.cpp'
 watched=[p for p in fp.SRC.rglob('*') if p.is_file()]+[source,reference,Path(__file__),fp.REPO/'northlight_paths.py']
 inputs={str(p.resolve()):sha(p) for p in watched}
-helper=reference.read_text().split('int main(){')[0]
+helper=reference.read_text().split('int main(')[0]
 assert helper.count('struct MaterialCaptureStateTestAccess {')==1
 helper=helper.replace('struct MaterialCaptureStateTestAccess {','struct MaterialCaptureStateTestAccess {\n    static void replayBindings();\n    static void replayConstantRanges();')
 (out/'material_bindings_reference.h').write_bytes(helper.encode())

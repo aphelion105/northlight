@@ -10,10 +10,10 @@ def sha(path):return hashlib.sha256(path.read_bytes()).hexdigest()
 watched=[p for p in fp.SRC.rglob('*') if p.is_file()]+[fp.TESTS/name for name in ['displacement_state_reuse.cpp','test_material_batch_bindings.cpp','test_material_packet_auxiliary.cpp']]+[Path(__file__)]
 inputs={str(p):sha(p) for p in watched}
 out=fp.output_dir()/'material-packet-auxiliary';out.mkdir(parents=True,exist_ok=True)
-reference=(fp.TESTS/'displacement_state_reuse.cpp').read_text().split('int main(){')[0]
+reference=(fp.TESTS/'displacement_state_reuse.cpp').read_text().split('int main(')[0]
 reference=reference.replace('struct MaterialCaptureStateTestAccess {','struct MaterialCaptureStateTestAccess {\n    static void replayBindings();\n    static void replayConstantRanges();\n    static void packetAuxiliary();')
 (out/'material_bindings_reference.h').write_text(reference)
-(out/'material_packet_bindings.h').write_text((fp.TESTS/'test_material_batch_bindings.cpp').read_text().rsplit('int main(){',1)[0])
+(out/'material_packet_bindings.h').write_text((fp.TESTS/'test_material_batch_bindings.cpp').read_text().rsplit('int main(',1)[0])
 header=fp.src('auto_bump_renderer.h').read_text()
 assignment='packet->vertexFloatOnly=vertex.floatOnly;'
 assert header.count(assignment)==1

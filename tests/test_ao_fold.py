@@ -183,7 +183,7 @@ checks['smoothRemoval: both Scene reads times the AO alpha; removalScale without
 wm = json.loads(fp.src('world-shader-build.json').read_text())['shaders']
 # 0.3.185: the removal smoothing (Scene, AO, baseline reads) moved to RemovalSmooth; TemporalLight keeps no s0/s10/s12 read and gains s9.
 checks[f"world manifest: WorldComposite {wm['WorldComposite']['static_instruction_slots']} <= 512 with s10; RemovalSmooth {wm['RemovalSmooth']['static_instruction_slots']} (s10 AO) <= 512; TemporalLight {wm['TemporalLight']['static_instruction_slots']} == 210"] = (
-    wm['WorldComposite']['static_instruction_slots'] <= 512 and wm['WorldComposite']['samplers'] == [0, 1, 2, 3, 8, 9, 10, 11, 12, 13, 15]  # 0.3.202: the SM3 limit (512) replaces the old 500 headroom guard; the rain mask adds s13, the dither s2; gh#80 CurrentDistance s15
+    wm['WorldComposite']['static_instruction_slots'] <= 512 and wm['WorldComposite']['samplers'] == [0, 1, 2, 3, 7, 8, 9, 10, 11, 12, 13, 15]  # Native translucent-effect coverage uses s7; retain the exact sampler set and SM3 limit.
     and wm['RemovalSmooth']['static_instruction_slots'] <= 512 and wm['RemovalSmooth']['samplers'] == [0, 1, 8, 10, 12, 14, 15]
     and wm['TemporalLight']['static_instruction_slots'] == 210 and  # Microsoft d3dcompiler_47 (Wine's builtin: 293)
     wm['TemporalLight']['samplers'] == [1, 8, 9, 14, 15])

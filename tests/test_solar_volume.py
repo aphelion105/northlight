@@ -208,7 +208,8 @@ def main():
     assert cpu.count(bank)==3
     assert 'c[30][0]=waterMask?1.f:0.f;'+bank in cpu
     assert cpu.index(bank,cpu.index('// Temporal shaders own material'))<cpu.index('d->SetPixelShaderConstantF(73,bumpControl,1)',cpu.index('// Temporal shaders own material'))
-    assert cpu.index(bank,cpu.index('if(debug==0&&pointReady){'))<cpu.index('bool fogResolved=false;')
+    assert 'const bool currentLocalLighting=debug==0&&(localDirectCount||pointReady);' in cpu
+    assert cpu.index(bank,cpu.index('if(currentLocalLighting){'))<cpu.index('bool fogResolved=false;')
 
     assert 'uploadedFogField->fogCells||uploadedFogField->airCells' in cpu
     assert 'if(cell.height>0&&edge>0)++out.airCells' in policy

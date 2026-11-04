@@ -11,7 +11,7 @@ parser.add_argument("--output", type=Path)
 args = parser.parse_args()
 out = args.output or fp.output_dir() / "material-private-depth"
 out.mkdir(parents=True, exist_ok=True)
-reference = (fp.TESTS / "displacement_state_reuse.cpp").read_text().split("int main(){")[0]
+reference = (fp.TESTS / "displacement_state_reuse.cpp").read_text().split("int main(")[0]
 reference = reference.replace("struct MaterialCaptureStateTestAccess {", "struct MaterialCaptureStateTestAccess {\n static void replayBindings();static void replayConstantRanges();static void privateDepth();")
 (out / "material_bindings_reference.h").write_bytes(reference.encode())
 for mode, flag in (("O2", "-O2"), ("O0", "-O0")):

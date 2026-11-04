@@ -117,10 +117,14 @@ checks['position without bounds: the palette root, or the origin of an injected 
     'float anchor[3]={};bool anchorValid=false;' in w and 'const float* position()const{return captureRootValid?captureRoot:anchorValid?anchor:nullptr;}' in w
     and 'p->captureRootValid=rooted;if(rooted)std::memcpy(p->captureRoot,root,sizeof p->captureRoot);p->anchorValid=false;' in w
     and 'p->captureRootValid=false;p->selfShadow=false;std::memcpy(p->anchor,e.world+9,sizeof p->anchor);p->anchorValid=true;' in rigidm)
-checks['near list: built from the actor maps as last drawn and the selection\'s self; rotating pass leaves listed packets to the walks once their share is spent, a packet over the share is delisted']=(
+checks['near list: current actor maps and self; hard half-budget caps, then every unfinished packet keeps its rotating turn']=(
     'nearList().begin(actorMatrices[0],actorValid[0],actorMatrices[1],actorValid[1])' in point
-    and 'item.outer=priority&&priority->consider(i,p.position(),p.selfShadow);' in job and 'skipOuter&&items[index].outer?false:visit(index,phase)' in job
-    and 'const bool skipOuter=priority&&priority->skipOuter();' in job and job.count('rotate(index,')==3 and 'inline constexpr float Limit=NorthlightActorShadowMap::Stay+(NorthlightActorShadowMap::Leash+CasterYards)/NorthlightActorShadowMap::Radius;' in near)
+    and 'if(priority)priority->consider(i,p.position(),p.selfShadow);' in job
+    and 'budget.maxOperations=operations;if(maxVertices)budget.maxVertices=vertices;' in job
+    and 'budget.maxOperations=maxOperations;budget.maxVertices=maxVertices;' in job
+    and job.index('budget.maxOperations=operations;')<job.index('NorthlightReplayBoundsNear::nearFirst(')<job.index('budget.maxOperations=maxOperations;')
+    and all('return visit(index,'+str(phase)+');}));' in job for phase in range(3))
+    and 'skipOuter' not in job and 'inline constexpr float Limit=NorthlightActorShadowMap::Stay+(NorthlightActorShadowMap::Leash+CasterYards)/NorthlightActorShadowMap::Radius;' in near)
 sel=fp.src('world_shadow_experiment.inl').read_text()
 checks['ring 0 is the self: the selection marks the self\'s draws every frame (not only with diagnostics), injected props never inherit the mark']=(
     'for(const auto& a:actorShadowScratch.actors)if(a.self)for(size_t i=a.first;i<a.first+a.count;++i)replays[actorShadowDraws[i].index]->selfShadow=true;' in sel

@@ -10,7 +10,7 @@ import northlight_paths as fp
 
 with tempfile.TemporaryDirectory(prefix="material-epoch-guard-") as tmp:
     root = Path(tmp)
-    fixture = (fp.TESTS / "displacement_state_reuse.cpp").read_text().split("int main(){")[0]
+    fixture = (fp.TESTS / "displacement_state_reuse.cpp").read_text().split("int main(")[0]
     fixture = fixture.replace("struct DisplacementStateTestAccess {", "struct DisplacementStateTestAccess {\n static void guardedChecks();")
     (root / "epoch_guard_fixture.h").write_text(fixture)
     exe = root / "guard.exe"

@@ -96,7 +96,7 @@ struct Sampler {
 };
 struct Controller {
     WorldRenderer state;MaterialConsumer materials{state};WorldRenderer* world=&state;MaterialConsumer* autoBump=&materials;
-    Surface surfaceState;Surface* surface=&surfaceState;Water waterState;Water* water=&waterState;EmptyState stateBlocks;
+    Surface surfaceState;Surface* surface=&surfaceState;Surface normalState;Surface* modelNormals=&normalState;Water waterState;Water* water=&waterState;EmptyState stateBlocks;
     Guard memoryGuard;Sampler sampler{world,autoBump,&memoryGuard};Sampler* memoryDiagnostics=&sampler;
     LARGE_INTEGER cpuFrequency{1000000000};unsigned frame=1;
     Controller(){NorthlightReplayCopies::enabled=true;NorthlightReplayCopies::setPressure(false);NorthlightStream::memoryPressure=false;}
@@ -142,10 +142,10 @@ static void one(const char* name,unsigned count,size_t payloadBytes,bool trim,in
             assert(cap==(42u<<20)&&c.state.replaySnapshots.snapshotCacheLimit()==(32u<<20));
             assert(c.state.terrainBoundsCache.limit==(16u<<20)&&c.state.replayGpuCache.limit==(32u<<20));
             assert(c.state.quiesces==1&&c.state.stateBlocks.clears==1&&c.state.terrainBoundsCache.clears==1&&c.state.replayGpuCache.clears==1&&c.state.meshTrims==1&&c.state.rigidClears==1);
-            assert(c.state.workerMemoryTrim&&c.state.giMemoryTrim&&c.sampler.requests==1&&c.materials.trims==1&&c.stateBlocks.clears==1);
+            assert(c.state.workerMemoryTrim&&c.state.giMemoryTrim&&c.sampler.requests==1&&c.materials.trims==1&&c.stateBlocks.clears==1&&c.normalState.resets==1);
             assert(NorthlightDrawSnapshot::SnapshotTestAccess::predictionInvalid(c.materials.sources));
         }else{
-            assert(c.state.quiesces==0&&!c.state.workerMemoryTrim&&!c.state.giMemoryTrim&&!c.sampler.requests&&!c.materials.trims&&!c.stateBlocks.clears);
+            assert(c.state.quiesces==0&&!c.state.workerMemoryTrim&&!c.state.giMemoryTrim&&!c.sampler.requests&&!c.materials.trims&&!c.stateBlocks.clears&&!c.normalState.resets);
             assert(c.state.replaySnapshots.snapshotCacheLimit()==(recovery?64u<<20:32u<<20));
             assert(c.state.terrainBoundsCache.limit==(recovery?32u<<20:16u<<20)&&c.state.replayGpuCache.limit==(recovery?64u<<20:32u<<20));
             if(recovery)assert(!evictions&&declaration.releases==0&&after&&cap==(112u<<20));

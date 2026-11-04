@@ -244,6 +244,15 @@ static void testShaderTags() {
         assert(fnv1a(buf,n)==h&&triggerTagsOfBytecode(buf,n)==triggerTags(h));}
 }
 static void testPoolAndHooks() {
+    for(unsigned frames:{0u,1u,2u,3u,9u}){
+        const auto cap=SnapshotPool::capFor(frames);const unsigned inFlight=std::min(3u,std::max(1u,frames))+1;
+        assert(cap>=inFlight*3&&cap*sizeof(GameSnapshot)<=(1u<<20));
+        SnapshotPool bounded(cap);std::vector<GameSnapshot*> held;
+        for(size_t i=0;i<cap;++i){auto* snapshot=bounded.acquire();assert(snapshot);held.push_back(snapshot);}
+        assert(!bounded.acquire()&&bounded.reservedBytes()<=(1u<<20));
+        for(auto* snapshot:held)bounded.release(snapshot);
+        auto* reused=bounded.acquire();assert(reused&&bounded.allocated()==cap);bounded.release(reused);
+    }
     SnapshotPool pool(3);auto* a=pool.acquire();auto* b=pool.acquire();auto* c=pool.acquire();
     assert(a&&b&&c&&a!=b&&pool.acquire()==nullptr&&pool.allocated()==3);
     std::uint32_t v=1;a->record(1,&v,4,true);pool.release(a);auto* again=pool.acquire();

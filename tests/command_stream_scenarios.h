@@ -1265,9 +1265,21 @@ static void effectHookReplay(){
         CHECK(get(rig.core().q.stats.syncCalls)==syncs); // recording the HDR-sensitive setter stays asynchronous
         rig.sync();CHECK(rig.target->renderTargetCalls==calls+1);
         CHECK(rig.target->renderTargetThread==replay&&replay!=std::this_thread::get_id());
+        IDirect3DSurface9* depth=nullptr;
+        CHECK(rig.dev->CreateDepthStencilSurface(32,32,(D3DFORMAT)75,(D3DMULTISAMPLE_TYPE)0,0,1,&depth,nullptr)==D3D_OK);
+        const auto directBefore=get(rig.core().q.stats.directCalls),syncBefore=get(rig.core().q.stats.syncCalls);
+        const unsigned depthCalls=rig.target->depthTargetCalls;auto* oldDepth=rig.target->ext.ds;
+        CHECK(rig.dev->SetDepthStencilSurface(depth)==D3D_OK);
+        CHECK(get(rig.core().q.stats.syncCalls)==syncBefore);
+        rig.sync();CHECK(rig.target->depthTargetCalls==depthCalls+1&&rig.target->depthBeforeChange==oldDepth);
+        CHECK(rig.target->depthTargetThread==replay&&rig.target->ext.ds!=oldDepth);
+        auto* boundDepth=rig.target->ext.ds;
+        CHECK(rig.dev->SetDepthStencilSurface(nullptr)==D3D_OK);
+        rig.sync();CHECK(rig.target->depthTargetCalls==depthCalls+2&&rig.target->depthBeforeChange==boundDepth&&!rig.target->ext.ds);
+        CHECK(get(rig.core().q.stats.directCalls)==directBefore);depth->Release();
         rig.finish();checkClean();
     }
-    std::puts("effect hooks: SetRenderTarget reaches Device on replay thread with direct dispatch on/off PASS");
+    std::puts("effect hooks: render/depth targets reach Device before binding, on replay thread with direct dispatch on/off; asynchronous setters PASS");
 }
 static void directReplayRaw(){
     if(!kDirectReplay)return;

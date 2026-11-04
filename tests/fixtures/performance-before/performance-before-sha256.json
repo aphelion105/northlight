@@ -1,5 +1,5 @@
 {
   "perf-before-WorldFog.bin": "868c16c3c58592fb092f30fc3138379a56fa5d44cd30f227fecd67f9eb15167b",
   "perf-before-FogClouds.bin": "757ca0402825ad0663a44cdaa5f6a42594011193ecae73b52b60007d09ae2b87",
-  "perf-before-WorldComposite.bin": "b3f8185fb782cf3c4016462ba4c365b5f3993c7e788f0e28cdb1c60eaa207d72"
+  "perf-before-WorldComposite.bin": "f8c2d5a60627413fd8ad66f6081992cfd2fe6e01c02963f57e90a48172ef5f85"
 }

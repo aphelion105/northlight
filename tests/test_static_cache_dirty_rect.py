@@ -44,7 +44,7 @@ assert 'staticFull=%u staticPartial=%u partialRects=%u partialBounding=%u costFu
 assert 'if(NorthlightStaticSlices::sliceable(quality.staticCacheSlices,partialStatic,shadowDiagnosticCapture!=0,StaticCacheDirtyRectVerify)){' in src
 assert src.count('slices.start(')==1 and 'staticSlices[4]' in src and 'for(auto& c:staticSlices)c.reset();' in src
 # Any placement/local-content reason drops a cycle before the change detection (full redraw).
-assert src.index('auto& slices=staticSlices[slot];if(reason)slices.reset();')>src.index('reason="local-content"')
+assert src.index('auto& slices=staticSlices[slot];const bool wasSlicing=slices.active;if(reason)slices.reset();')>src.index('reason="local-content"')
 # Intermediate bands clear `reason`, so cascadeAction may keep Reuse; they are drawn before the action.
 assert 'staticDirty=slices.band();if(!slices.last()){reason=nullptr;sliceBand=true;}' in src
 assert 'if(slices.last()){reason=slices.reason;partialStatic=true;}else sliceBand=true;' in src

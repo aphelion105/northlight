@@ -99,7 +99,8 @@ int main(int argc,char** argv){
         Program p;Old::Program q;const bool current=compile(words.data(),words.size(),p),prior=Old::compile(words.data(),words.size(),q);assert(current==prior);if(!current)continue;++compiled;++majors[p.major];assert(p.kernel.skin==q.kernel.skin);
         single+=bool(p.kernel.singleSkin());commuted+=p.kernel.commutedSkin();oldWeighted+=p.kernel.skin;sample(p,64);if(p.kernel.evaluator==Kernel::WeightedR0||p.kernel.evaluator==Kernel::WeightedR0Commuted){++newWeighted;mutations(p);}
         if(p.positionRegister==0&&p.operations.front().code==1&&(p.kernel.evaluator==Kernel::WeightedR0||p.kernel.evaluator==Kernel::WeightedR0Commuted)){
-            assert(q.kernel.evaluator==Old::Kernel::Generic&&!p.kernel.skin);
+            // The frozen pre-specialization baseline selects its generic kernel via skin=false.
+            assert(q.kernel.valid&&q.kernel.ops.size()==q.operations.size()&&!q.kernel.skin&&!p.kernel.skin);
             if(!body++){sample(p,4096);targets.push_back({"weighted-body-w-first",p});}}
         if(p.kernel.worldSkin()){++world;mutations(p);auto defined=p;defined.definitions.push_back({14,{2,3,4,5}});defined.definitions.push_back({16,{-2,1,0,3}});buildKernel(defined);assert(defined.kernel.worldSkin());sample(defined,64);
             if(world==1){defined.definitions.push_back({0,{3,0,0,0}});buildKernel(defined);sample(defined,4096);}}

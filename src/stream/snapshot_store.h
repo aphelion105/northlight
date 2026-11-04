@@ -4,6 +4,7 @@
 // NorthlightWorldContext::readSelf from the matching snapshot, so hooks that run later see what the game thread
 // saw, not memory the game has already moved on from. Portable: the live read is a parameter, there is no Win32
 // call except the image-header lookup. Included by world_context.h; game_snapshot.h adds capture and triggers.
+#include <algorithm>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -200,10 +201,12 @@ public:
 class SnapshotPool {
 public:
     // At most 3 triggers a frame (FrameStart, World, Ui) and the game runs at most one frame ahead of the replay: 2 frames x 3 = 6, plus slack.
-    // 8 x sizeof(GameSnapshot) (~68 KiB) stays under 1 MiB of the 32-bit address space.
+    // Bound the pool by bytes as snapshot payloads grow (native lights, attachments).
     static constexpr std::size_t DefaultCap=8;
-    // 0.3.200 (pipeline): StreamFramesAhead n puts n+1 frames in flight: (n+1) x 3 + 2 (8, 11, 14; 14 x ~68 KiB still under 1 MiB). capFor(1) == DefaultCap.
-    static constexpr std::size_t capFor(unsigned framesAhead){return std::size_t(framesAhead<1?1:framesAhead>3?3:framesAhead)*3+5;}
+    static constexpr std::size_t MaxBytes=1u<<20,MaxCap=MaxBytes/sizeof(GameSnapshot);
+    static_assert(MaxCap>=12,"Snapshot budget must hold all three triggers in four in-flight frames");
+    // StreamFramesAhead n needs (n+1) x 3 snapshots; use up to two spare slots within the byte budget.
+    static constexpr std::size_t capFor(unsigned framesAhead){return std::min(std::size_t(framesAhead<1?1:framesAhead>3?3:framesAhead)*3+5,MaxCap);}
     explicit SnapshotPool(std::size_t cap=DefaultCap):cap_(cap){}
     GameSnapshot* acquire(){
         std::lock_guard<std::mutex> lock(mutex_);

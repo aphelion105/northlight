@@ -13,7 +13,8 @@ struct BoundaryQuery:TQuery {
 struct QueryDrawTarget:TargetDevice {
     std::atomic<bool> firstEntered{false},releaseFirst{false},secondEntered{false},releaseSecond{false},secondRetired{false};
     std::atomic<bool> backgroundReady{false};
-    unsigned draws=0,driverFlushCalls=0,pendingPollCalls=0,waitPollCalls=0;bool waitStarted=false;bool driverAfterSecond=false,falseValue=false;
+    unsigned draws=0,pendingPollCalls=0;std::atomic<unsigned> driverFlushCalls{0},waitPollCalls{0};
+    bool waitStarted=false,falseValue=false;std::atomic<bool> driverAfterSecond{false};
     HRESULT status=D3D_OK,publishStatus=D3D_OK;bool publishOnExit=false;BoundaryFault fault=BoundaryFault::None;StreamCore* core=nullptr;
     StreamQuery* proxy=nullptr;BoundaryQuery* query=nullptr;
     HRESULT CreateQuery(D3DQUERYTYPE type,IDirect3DQuery9** out) override{
@@ -118,7 +119,7 @@ static void scenario(bool baseline,bool gated,const char* name,bool endSeen,bool
     CHECK(get(core.q.stats.expressNs)==get(core.q.stats.readbackExpressNs)+get(core.q.stats.queryExpressNs));
     const HRESULT expected=invalidPayload||fault==BoundaryFault::MissingInner||flags!=D3::kGetDataFlush?D3DERR_INVALIDCALL:status;
     CHECK(result==expected);
-    if(pendingPollCalls){CHECK(t->waitPollCalls==pendingPollCalls+1);CHECK(t->driverFlushCalls<t->waitPollCalls);}
+    if(pendingPollCalls){CHECK(t->waitPollCalls==pendingPollCalls+1);CHECK(t->driverFlushCalls<t->waitPollCalls);CHECK(proxy->eventDoneGen.load()==1);}
     const unsigned returnedGeneration=fault==BoundaryFault::MissingEnd||fault==BoundaryFault::Dead||noIssue?0u:!baseline&&!gated&&nested&&!endSeen?2u:1u;
     if(result==D3D_OK&&!nullPayload)CHECK(value==(falsePayload?0:0xABCD0000u+returnedGeneration));
     else CHECK(value==0x87654321u);
@@ -133,7 +134,7 @@ static void scenario(bool baseline,bool gated,const char* name,bool endSeen,bool
     }else CHECK(get(core.q.stats.eventReplayWaitNs)==0&&get(core.q.stats.eventGpuWaitNs)==0);
     if(nested)CHECK(nestedResult==D3DERR_INVALIDCALL&&nestedReset==D3DERR_INVALIDCALL);
     std::printf("EVENT_BOUNDARY case=%s baseline=%u bypassedLaterDraw=%u driverFlushCalls=%u result=%d beforeReplayMs=%.4f replayMs=%.4f afterReplayMs=%.4f\n",
-        name,unsigned(baseline),unsigned(bypass),t->driverFlushCalls,int(result),double(profile.beforeNs)/1e6,double(profile.replayNs)/1e6,double(profile.afterNs)/1e6);
+        name,unsigned(baseline),unsigned(bypass),t->driverFlushCalls.load(),int(result),double(profile.beforeNs)/1e6,double(profile.replayNs)/1e6,double(profile.afterNs)/1e6);
     if(fault==BoundaryFault::MissingInner)core.q.runExpress([](void* p){auto* target=static_cast<QueryDrawTarget*>(p);target->proxy->inner=target->query;},t);
     if(fault==BoundaryFault::Dead)proxy->dead.store(false);
     t->releaseSecond.store(true);rig.sync();
@@ -163,7 +164,7 @@ static void idleScenario(bool baseline,bool noPending){
     done.store(true);watchdog.join();
     CHECK(t->driverFlushCalls==1&&get(core.q.stats.expressQueries)==posts+unsigned(!baseline));
     CHECK(get(core.q.stats.expressQueryHits)==hits+unsigned(!baseline)&&get(core.q.stats.expressQueryFallbacks)==fallbacks);
-    std::printf("EVENT_IDLE noPending=%u baseline=%u driverFlushCalls=%u\n",unsigned(noPending),unsigned(baseline),t->driverFlushCalls);
+    std::printf("EVENT_IDLE noPending=%u baseline=%u driverFlushCalls=%u\n",unsigned(noPending),unsigned(baseline),t->driverFlushCalls.load());
     query->Release();rig.sync();rig.device->Release();checkClean();
 }
 int main(int argc,char** argv){

@@ -45,8 +45,8 @@ assert original.count(marker)==1
 control=original.replace(marker,adapter+marker,1)
 fixture_source=fp.TESTS/'displacement_state_reuse.cpp'
 reference=fixture_source.read_text(encoding='utf-8')
-assert reference.count('int main(){')==1 and reference.count('struct DisplacementStateTestAccess {')==1
-reference=reference.split('int main(){')[0]
+assert reference.count('int main(')==1 and reference.count('struct DisplacementStateTestAccess {')==1
+reference=reference.split('int main(')[0]
 reference=reference.replace('struct DisplacementStateTestAccess {','struct DisplacementStateTestAccess {\n    static void poseMetadataChecks(const char* path);\n    template<class G> static double poseMetadataTiming(const NorthlightActorDeformation::Program& p,unsigned draws,bool rotating);')
 source=fp.src('auto_displacement_renderer.h').read_text(encoding='utf-8')
 (out/'pose_metadata_control.h').write_bytes(control.encode())

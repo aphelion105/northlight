@@ -15,8 +15,8 @@ p=argparse.ArgumentParser();p.add_argument('--log',type=Path);args=p.parse_args(
 out=fp.output_dir()/'geometry-retry';out.mkdir(parents=True,exist_ok=False)
 header=fp.src('world_renderer.h');source=Path(__file__).with_suffix('.cpp')
 text=header.read_text();begin=text.index('            auto deferBuild=');end=text.index('            // Issue #40:',begin);body=text[begin:end]
-current='return stopping||builderExit||!NorthlightWorldStreaming::applicable(r.map,r.geometryCenter,request.map,request.camera);'
-old='return stopping||builderExit||request.id!=r.id;'
+current='return stopping||builderExit||!request.enabled||!NorthlightWorldStreaming::applicable(r.map,r.geometryCenter,request.map,request.camera);'
+old='return stopping||builderExit||!request.enabled||request.id!=r.id;'
 assert body.count(current)==1
 inputs=[header,source,Path(__file__),fp.src('world_streaming.h'),fp.src('geometry_memory.h')]
 sha=lambda path:hashlib.sha256(path.read_bytes()).hexdigest()

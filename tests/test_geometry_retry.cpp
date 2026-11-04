@@ -12,7 +12,7 @@ using V=NorthlightGI::Vec3;
 using DWORD=uint32_t;
 static uint64_t tick=1000;
 static DWORD GetTickCount(){return DWORD(tick);}
-struct Request {uint64_t id=1;std::string map="Northrend";V camera,geometryCenter;};
+struct Request {uint64_t id=1;std::string map="Northrend";V camera,geometryCenter;bool enabled=true;};
 struct Event {uint64_t at;Request request;bool stopping=false,exiting=false;};
 // Deterministic condition-variable notifications: execute the real worker's
 // wait predicate for every event and timeout without a game or wall-clock sleeps.
@@ -58,10 +58,11 @@ int main(int argc,char** argv){
     assert(storm.profiles==attempts); // diagnostics cannot bypass or multiply retry attempts
     std::printf("GEOMETRY_RETRY_STORM attempts=%u notifications=359 ms=32063\n",attempts);
     reset();Stand stationary;stationary.once();assert(tick==2000&&!stationary.abandoned);
-    for(unsigned reason=0;reason<5;++reason){reset();Stand interrupted;Request r;r.id=2;
+    for(unsigned reason=0;reason<6;++reason){reset();Stand interrupted;Request r;r.id=2;
         if(reason==0)r.map="Azeroth";
         if(reason==1)r.camera=V(96.01f,0,0);
         if(reason==4)r.camera=V(std::numeric_limits<float>::quiet_NaN(),0,0);
+        if(reason==5)r.enabled=false;
         interrupted.buildWake.events.push_back({1025,r,reason==2,reason==3});interrupted.once();
         assert(tick==1025&&interrupted.abandoned==1&&interrupted.request.id==2);
     }

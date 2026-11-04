@@ -82,6 +82,8 @@ inline unsigned faceMask(const float* lo,const float* hi,bool valid,const float 
 inline constexpr unsigned MaxLights=128;
 struct Picks {std::array<int,MaxLights> index{};unsigned count=0;};
 inline bool eligible(const NorthlightLocalLights::Light& l){
+    // Current source policy; the historical ranking/selection algorithm below stays frozen.
+    if((l.flags&(NorthlightLocalLights::CandlePulse|NorthlightLocalLights::RequiresNative))||l.attenuationEnd<=5.f)return false;
     // Legacy baked WMO lamps remain supported. Unclassified model/particle/equipment
     // observations never become shadow sources just because they happen to be bright.
     return (l.flags&NorthlightLocalLights::CastShadow)||l.kind==1;

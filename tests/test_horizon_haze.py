@@ -355,7 +355,8 @@ def main():
     assert 'float range=sky?1:saturate((viewZ-HorizonShape.y)*HorizonShape.z);' in helper
     assert 'return lerp(color,haze,amount);' in helper
     # Literals mirrored by horizon_haze.h (LiftCap, LobePeak, Warm) for the haze colour <= 1 cap.
-    assert 'float lift=min(lobe*.64*pow(1.36-1.2*azimuth,-1.5),.25);' in helper
+    assert 'float lift=0;' in helper and '[branch]if(lobe>0){' in helper
+    assert 'lift=min(lobe*.64*pow(1.36-1.2*azimuth,-1.5),.25);' in helper
     assert 'float3 haze=(hdrMode?worldHdrDecode(HorizonHaze.rgb):HorizonHaze.rgb)*mad(lift,ShadowRange.yzw,1);' in helper
     assert shader.count('ShadowRange.yzw') == 1 and 'float3(1,.8,.55)' not in shader
     policy = fp.src('horizon_haze.h').read_text()

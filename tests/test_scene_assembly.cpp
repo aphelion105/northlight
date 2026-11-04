@@ -62,7 +62,22 @@ static void files(const fs::path& root,const WorldScene& s){fs::create_directori
 }
 static void provenance(const WorldScene&s,bool full){uint32_t end=0;size_t bytes=sizeof(s)+s.vertices.capacity()*sizeof(WorldVertex)+s.vertices.overhead()+s.triangles.capacity()*sizeof(WorldTriangle)+s.triangles.overhead()+s.materials.capacity()*sizeof(WorldMaterial)+s.completePlacements.capacity()*sizeof(WorldPlacementCoverage)+s.sourcePieces.capacity()*sizeof(SourcePieceRange);for(auto&m:s.materials)bytes+=m.rgba.capacity();for(auto&p:s.completePlacements)bytes+=p.modelKey.capacity();for(auto&p:s.sourcePieces){assert(p.sourceIdentity&&p.triangleBase>=end&&p.triangleCount);if(full)assert(p.triangleBase==end);end=p.triangleBase+p.triangleCount;assert(end<=s.triangles.size()&&uint64_t(p.vertexBase)+p.vertexCount<=s.vertices.size());for(size_t i=p.triangleBase;i<end;++i){auto&t=s.triangles[i];assert(std::find(p.materialMap.begin(),p.materialMap.end(),t.material)!=p.materialMap.end());for(auto v:{t.v0,t.v1,t.v2})assert(v>=p.vertexBase&&v<p.vertexBase+p.vertexCount);}bytes+=p.placement.modelKey.capacity()+p.materialMap.capacity()*4;}assert(bytes==s.retainedBytes());if(full)assert(end==s.triangles.size());}
 static void planEqual(const NorthlightWorldMesh::WorldMeshUploadPlan&a,const NorthlightWorldMesh::WorldMeshUploadPlan&b){assert(a.indices==b.indices&&a.batches.size()==b.batches.size()&&a.triangleCount==b.triangleCount&&a.fixedTerrainChunks==b.fixedTerrainChunks);for(size_t i=0;i<a.batches.size();++i){auto&x=a.batches[i];auto&y=b.batches[i];assert(x.material==y.material&&x.start==y.start&&x.count==y.count&&x.terrain==y.terrain&&x.chunkX==y.chunkX&&x.chunkY==y.chunkY);bits(x.boundsLow,y.boundsLow);bits(x.boundsHigh,y.boundsHigh);}}
-int main(int argc,char**argv){appendCases();auto root=fs::temp_directory_path()/("scene-assembly-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));auto input=model<WorldScene>();files(root,input);std::vector<std::string> list={(root/"tile.fg3").string()};auto directory=(root/"models").string();std::string e;auto source=std::make_shared<WorldScene>();assert(loadScene((root/"models"/(std::string(64,'0')+".fgs")).string().c_str(),*source,e));source->sourceIdentity=17;SceneSourceProvider provider=[&](const std::string&,std::string&,const AllocationAdmission&)->std::shared_ptr<const WorldScene>{return source;};
+static void lampFormatCases(){
+ struct Case{float encoded;bool valid;uint32_t id;float cutoff;};
+ const Case cases[]={{0,true,0,0},{-0.f,true,0,-0.f},{.5f,true,0,.5f},{1,true,0,1},
+  {-1,true,1,0},{-8388607,true,0x7fffff,0},{-8388608,true,0x800000,0},
+  {-8392767,true,0x80103f,0},{-12582912,true,0x800000,.5f},{-12587071,true,0x80103f,.5f},
+  {1.1f,false,0,0},{-.5f,false,0,0},{-1.5f,false,0,0},{-8392768,false,0,0},
+  {-12582911,false,0,0},{-12587072,false,0,0}};
+ for(const auto& c:cases){FrozenGI::WorldMaterial frozen;frozen.alphaCutoff=c.encoded;
+  assert(FrozenGI::fixtureLampMaterial(frozen)==c.valid);
+  WorldMaterial current;current.alphaCutoff=c.encoded;decodeLampMaterial(current);
+  assert((current.alphaCutoff>=0&&current.alphaCutoff<=1)==c.valid);
+  if(c.valid){assert(frozen.lampLocalId==c.id&&current.lampLocalId==c.id);
+   assert(frozen.alphaCutoff==c.cutoff&&current.alphaCutoff==c.cutoff);}}
+ std::puts("PASS frozen material adapter: 16 independent format boundary cases");
+}
+int main(int argc,char**argv){lampFormatCases();appendCases();auto root=fs::temp_directory_path()/("scene-assembly-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));auto input=model<WorldScene>();files(root,input);std::vector<std::string> list={(root/"tile.fg3").string()};auto directory=(root/"models").string();std::string e;auto source=std::make_shared<WorldScene>();assert(loadScene((root/"models"/(std::string(64,'0')+".fgs")).string().c_str(),*source,e));source->sourceIdentity=17;SceneSourceProvider provider=[&](const std::string&,std::string&,const AllocationAdmission&)->std::shared_ptr<const WorldScene>{return source;};
  WorldScene expected;assert(loadInstancedScenes(list,directory,{-1,-1,-1},{220,80,10},expected,e,1,{}, {}, {},nullptr,provider));WorldScene chunks;assert(loadInstancedScenes(list,directory,{-1,-1,-1},{220,80,10},chunks,e,1,{}, {}, {},nullptr,provider,true));scene(expected,chunks,false);assert(chunks.sourcePieces.size()>expected.sourcePieces.size());provenance(chunks,true);
  // Exercise the pressure decoder itself: a supplied decoded source would
  // bypass the file reader that formerly left a large CRT arena behind.

@@ -55,9 +55,12 @@ struct World {
  PUBLISHER
 };
 struct Geometry {struct {D3DPRIMITIVETYPE topology;INT base;UINT minimum,vertices,start,primitives;bool indexed;} draw;};
+struct NormalSource {bool captured=false;};
 struct Bump {
- std::vector<std::string>* events;unsigned calls=0;bool hint=false;
- template<class Draw>void capture(IDirect3DVertexShader9* vs,Draw draw,bool up,const Geometry* geometry,const NorthlightCaptureMetadata::PositionBounds* bounds){
+ std::vector<std::string>* events;unsigned calls=0;bool hint=false,activeValue=true;
+ bool active()const{return activeValue;}
+ template<class Draw>void capture(IDirect3DVertexShader9* vs,Draw draw,bool up,const Geometry* geometry,const NorthlightCaptureMetadata::PositionBounds* bounds,NormalSource* source){
+  assert(source);source->captured=true;
   events->push_back("bump");++calls;assert(!up&&bounds&&bounds->owner==geometry&&bounds->shader==vs&&"SHARED_BOUND_OWNER_MISMATCH");hint=bounds->known;assert(draw()==42);
  }
 };
@@ -71,9 +74,12 @@ struct Route {
  World* world;Bump* autoBump;Native* ext;std::vector<std::string>* events;
  bool enabled=true,applied=false,failed=false;unsigned frame=127;
  template<class T>void captureWater(IDirect3DVertexShader9*,unsigned,T){events->push_back("water");}
+ template<class Draw>void captureModelNormals(IDirect3DVertexShader9*,Draw,bool up,const Geometry&,const NormalSource* source){
+  assert(!up&&source&&source->captured==bool(autoBump&&enabled&&!applied&&!failed));events->push_back("normals");
+ }
  void run(IDirect3DVertexShader9* vs){
   D3DPRIMITIVETYPE t=D3DPT_TRIANGLELIST;INT base=-3;UINT min=7,vertices=3,start=1,count=1;
-  Geometry geometry{{t,base,min,vertices,start,count,true}};auto draw=[]{};
+  Geometry geometry{{t,base,min,vertices,start,count,true}};auto draw=[]{};NormalSource normalSource;
   ROUTE
  }
 };
@@ -87,13 +93,14 @@ int main(){
   for(unsigned fail=0;fail<5;++fail){out.known=true;w.readyValue=fail!=0;d.projectionBad=fail==1;d.vb.failLock=fail==2;d.view[12]=fail==3?1.f:0.f;w.terrain=fail!=4;capture();assert(!out.known&&"FAILED_CAPTURE_PUBLISHED_BOUND");}
  }
  unsigned cases=0;
- for(unsigned bits=0;bits<64;++bits){CaptureDevice d;fill(d);World w(d);std::vector<std::string> events;w.events=&events;
+ for(unsigned bits=0;bits<128;++bits){CaptureDevice d;fill(d);World w(d);std::vector<std::string> events;w.events=&events;
   Bump bump{&events};Native native{&events};Route r{&w,(bits&1)?&bump:nullptr,&native,&events};
   r.enabled=bits&2;r.applied=bits&4;r.failed=bits&8;w.terrain=bits&16;w.readyValue=bits&32;
-  const bool active=r.autoBump&&r.enabled&&!r.applied&&!r.failed,shared=active&&w.terrain;
+  bump.activeValue=bits&64;
+  const bool active=r.autoBump&&r.enabled&&!r.applied&&!r.failed,shared=active&&bump.active()&&w.terrain;
   r.run(&vs);assert(w.calls==1&&bump.calls==unsigned(active)&&native.calls==unsigned(active)&&"SHARED_CAPTURE_COUNT_MISMATCH");
   assert(bump.hint==(shared&&w.readyValue));
-  std::vector<std::string> expected;if(shared)expected.push_back("world");if(active){expected.push_back("bump");expected.push_back("native");}if(!shared)expected.push_back("world");expected.push_back("water");
+  std::vector<std::string> expected;if(shared)expected.push_back("world");if(active){expected.push_back("bump");expected.push_back("native");}expected.push_back("normals");if(!shared)expected.push_back("world");expected.push_back("water");
   assert(events==expected&&"SHARED_CAPTURE_ORDER_MISMATCH");assert(d.vb.refs==1&&d.ib.refs==1&&d.declaration.refs==1&&d.vb.locks==d.vb.unlocks&&d.ib.locks==d.ib.unlocks);++cases;
  }
  std::printf("PASS shared terrain publisher: current XYZ/failure invalidation; %u production DIP routes, exact native arguments, one world capture, original model/disabled order and balanced references\n",cases);

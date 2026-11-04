@@ -139,7 +139,7 @@ checks['rain mask MRT: Reset, Present and EndScene unbind first; finishFrame (al
 checks['rain mask MRT: renderEffects unbinds before its first device work; drawHook unbinds for every draw that is not a rain draw, before any capture or effect work']=(
     'rainMrtUnbind(); /* 0.3.202 (rain mask MRT) */\n        ExtensionDevice::RawScope rawEffects(*ext);' in r and 'if(rainMrtBound&&!rainBlend)rainMrtUnbind();' in hook and hook.index('if(rainMrtBound&&!rainBlend)rainMrtUnbind();')<hook.index('if(!frameDrawGates){')<hook.index('prepareDraw(capture,count)'))
 checks['rain mask MRT: logical HDR target mapping stays on the Device; depth target remains a pure forward']=(
-    'if(hdr.active&&hdrUiPhase&&RenderTargetIndex==0&&target==hdrLegacyBack)target=hdrPresentBack;const HRESULT hr=ext->SetRenderTarget(RenderTargetIndex,target);if(SUCCEEDED(hr)&&RenderTargetIndex==0)skyRestoreState.targetSet(reinterpret_cast<std::uintptr_t>(target));return hr;' in r
+    'if(hdr.active&&hdrUiPhase&&RenderTargetIndex==0&&target==hdrLegacyBack)target=hdrPresentBack;const HRESULT hr=ext->SetRenderTarget(RenderTargetIndex,target);if(SUCCEEDED(hr)&&RenderTargetIndex==0)skyLayers.targetSet(reinterpret_cast<std::uintptr_t>(target));return hr;' in r
     and 'return ext->SetDepthStencilSurface(mirrorResources.unwrap(pNewZStencil));' in r)
 pdi_=r[r.index('template<class Capture> void prepareDrawImpl('):r.index('    // Terrain draws run with the game')]
 checks['rain mask: no scrub left in prepareDrawImpl or the hook']=('rainScrubDraw' not in pdi_ and 'rainScrubDraw' not in hook)

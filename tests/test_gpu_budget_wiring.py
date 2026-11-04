@@ -73,7 +73,9 @@ checks['world: the interval constants are written only at a reduced level (bank 
 checks['world: the lamp limit passes through lightLimit (the setting at level 0)']='NorthlightGpuBudget::lightLimit(quality.localLightLimit,gpuBudgetLevel,effects.shadows&&quality.pointShadows?quality.pointShadowLimit:0)' in wc and wc.count('quality.localLightLimit,float(selectDt)')==0
 cp=wc[wc.index('if(cf.active&&c[21][0]>=.5f){'):wc.index('d->SetPixelShaderConstantF(17,c[17],2);')]
 checks['world: the clouds are one draw into the fog at every level (0.3.200: no amortised reuse, it lagged a frame in motion)']=(
-    cp.count('const bool cloudsDrawn=check(quad(w/2,h/2),"fog clouds raymarch");')==1 and cp.count('SetPixelShader(fogActorCurrent?(fogActorTiledCurrent?fogCloudsActorTiledPS:fogCloudsActorPS):fogCloudsPS)')==1
+    cp.count('const bool cloudsDrawn=check(quad(w/2,h/2),"fog clouds raymarch");')==1
+    and cp.count('SetPixelShader(cloudFade?(fogActorCurrent?(fogActorTiledCurrent?cloudActorTiledFadePS:cloudActorFadePS):cloudFadePS):(fogActorCurrent?(fogActorTiledCurrent?fogCloudsActorTiledPS:fogCloudsActorPS):fogCloudsPS))')==1
+    and 'const bool cloudFade=geometryReady&&shadowVolumeTransitionActive(firstSource);if(cloudFade)bindShadowTransition(firstSource);' in cp
     and 'cloudBuffer' not in wc and 'cloudAlternate' not in wc and 'amortise' not in cp and 'if(!cloudsDrawn)return false;' in cp)
 
 # shaders: zero addend at level 0

@@ -1,6 +1,8 @@
 # Independent and combined testing
 
-The feature PRs each contain a complete buildable checkout. Shared prerequisites are included in dependent branches so testing does not require merging unrelated feature branches. Review and merge the focused PRs first; this branch is an assembled integration snapshot for combined testing, including the previously published foliage/emitter work and the catalog fix that keeps static world emitters out of patch-Z to prevent duplicate lighting. It is not the review unit for an individual feature.
+[PR #98](https://github.com/lepola/northlight/pull/98) is the current combined review and merge unit. The 17 previously open PRs were consolidated on November 4 with all original commits retained. See [the history and content audit](pr-consolidation-20261104.md) and [the post-consolidation validation](pr98-validation-20261104.md). Review the combined checkout; the closed feature PRs below are historical references.
+
+The following table records the earlier independent branch layout and prerequisites.
 
 | Scope | PR | Included prerequisites |
 | --- | --- | --- |
@@ -18,7 +20,7 @@ The feature PRs each contain a complete buildable checkout. Shared prerequisites
 | UI atlas diagnostic components | [96](https://github.com/lepola/northlight/pull/96) | 85 |
 | Signed height, displacement and animated models | [97](https://github.com/lepola/northlight/pull/97) | 85, 87, 95 |
 
-Existing related PRs cover [foliage shadows](https://github.com/lepola/northlight/pull/76), [world emitter catalogs](https://github.com/lepola/northlight/pull/82), [equipment/particle lights and installer migration](https://github.com/lepola/northlight/pull/83), and [native detailed-shadow installation policy](https://github.com/lepola/northlight/pull/84). This snapshot includes the local foliage/catalog/equipment implementations and the catalog's per-source shadow metadata. The native installation policy remains a separate review.
+Existing related PRs cover [foliage shadows](https://github.com/lepola/northlight/pull/76), [world emitter catalogs](https://github.com/lepola/northlight/pull/82), [equipment/particle lights and installer migration](https://github.com/lepola/northlight/pull/83), and [native detailed-shadow installation policy](https://github.com/lepola/northlight/pull/84). This snapshot includes the local foliage/catalog/equipment implementations and the catalog's per-source shadow metadata. The native installation policy was reviewed separately at that stage.
 
 The combined tree connects menu AO preview, material/height controls, HDR status and local-source lighting. Water beauty, refraction, glints and SSR from the closed PR #93 have been withdrawn; another contributor owns that feature. Native liquid masks remain for AO, fog and celestial receiver correctness. Independent sheltered precipitation remains, with identical shader bytecode. The current material source retains the installed command-stream routing behavior and the separately verified log-driven optimizations. No author checkout was edited. New atlas diagnostics remain opt-in components without a game hotkey. HDR remains off by default.
 

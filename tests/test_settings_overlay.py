@@ -67,7 +67,7 @@ check('pressed=hook.master.take(foreground&&active)' in overlay and 'return acti
       'master hotkey drains even when inactive or unfocused')
 check('if(!overlay||!overlay->masterHotkey(focus,masterPressed))masterPressed=k10&&!key10;' in renderer,
       'master hotkey event and polling paths must not double-toggle')
-check('bool retry=masterPressed&&!enabled;' in renderer, 'master retry uses the same retained edge')
+check('bool retry=masterPressed&&!masterEnabled;' in renderer, 'master retry uses the same retained edge and independent master switch')
 
 # Window procedure: forwards everything it does not swallow; the swallow decision is overlay_input.h route().
 proc = overlay[overlay.index('LRESULT CALLBACK windowProcedure'):overlay.index('bool install(')]
