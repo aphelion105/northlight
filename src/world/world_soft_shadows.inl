@@ -4,6 +4,7 @@
     IDirect3DPixelShader9 *directionalSoftPS=nullptr,*lightingSoftPS=nullptr;
     DWORD softShadowRetryAt=0;unsigned softShadowFailures=0;
     void releaseSoftShadows(){
+        resetShadowTransitions();
         drop(softVisibilitySurface);drop(softVisibility);drop(directionalSoftPS);drop(lightingSoftPS);softShadowRetryAt=0;
     }
     bool softShadowResources(UINT w,UINT h){

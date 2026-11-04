@@ -38,11 +38,12 @@ begin=loop.index('reuse.begin(interval);')
 invalid=loop.index('if(cascade==0)actorValid[source]=nearActorSkip[source]=false;')
 draw=loop.index('if(cascade==0&&actorFrameOn[source]){')
 valid=loop.index('memcpy(actorMatrices[source],am,64);actorValid[source]=true;')
-union=loop.index('if(!unionShadow(shadowSurface[slot],shadowScratch,nearEnvironment[source],0,0,0,1024))return false;')
+union=loop.index('if(!unionShadow(shadowSurface[slot],dynamicShadow,nearEnvironment[source],0,0,0,1024))return false;')
 checks['actor map is current: only unsplit reuse continues; actor draw precedes final union and environment commit']=(
     reuse<begin<invalid<draw<valid<union and loop.index('continue;',reuse)<begin and 'if(!splitNear){' in loop[reuse:begin] and 'if(!environmentReuse)reuse.begin(interval);' in loop
     and 'reuse.commit(interval,shadowPasses,matrices[cascade])' in loop and valid<loop.index('reuse.commit(interval,shadowPasses,matrices[cascade])'))
 actor=loop[draw:loop.index('} /* actorShadows */')]
+checks['transition dynamic target retains baseline scratch and current poses without extra actor replay']=('dynamicShadow=(historyReady||transition.state.fading())?transition.dynamic:shadowScratch' in loop and 'dynamicSurface=(historyReady||transition.state.fading())?transition.dynamicSurface:shadowScratchSurface' in loop and 'if(!historyReady&&!transition.state.fading())' in loop)
 checks['actor draw: own target, shared 1024 depth, cleared white/1, cascade replay machinery, actor matrix, exactly the near-skipped replays']=(
     'actorShadowSurface[source]' in actor and 'd->SetDepthStencilSurface(shadowDepth);' in actor and '0xffffffff,1,0' in actor
     and 'replayProjection(context.inverseView,am,actorRows)' in actor and 'submitReplay(p.get(),actorBindings,actorPoses,actorRows,' in actor
@@ -57,7 +58,7 @@ checks['near skip: cascade 0 only, never the far map, by the inset test on valid
 # A near map drawn with the skip lacks those casters: reusable only while its actor map is valid (the source went inactive, the detail went off).
 checks['near map with skipped casters is redrawn, not reused, once its actor map is gone']=(
     'const bool actorLost=cascade==0&&!splitNear&&nearActorSkip[source]&&!actorValid[source];' in loop
-    and 'NorthlightQuality::cascadeAction(reuse,interval,shadowPasses,!reason&&key.valid&&!pull&&!actorLost,' in loop
+    and 'NorthlightQuality::cascadeAction(reuse,interval,shadowPasses,!reason&&key.valid&&!pull&&!actorLost&&!transition.state.fading(),' in loop
     and loop.index('const bool actorLost=')<reuse
     and 'if(cascade==0)actorValid[source]=nearActorSkip[source]=false;' in loop and 'if(cascade==0)nearActorSkip[source]=nearSkip;' in loop
     and 'nearShadow[s].invalidate();actorValid[s]=false;nearActorSkip[s]=false;' in w)

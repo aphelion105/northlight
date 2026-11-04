@@ -70,7 +70,7 @@ checks['disabled component never selects shadow replays']=all(value(defs['replay
 # Consumers (replayShadows) and schedules/commits (replaysComplete, actorShadows).
 consumers=['if(replayShadows)selectShadowReplays();','if(effects.shadows&&replayShadows)replayBoundsKick();','(replayShadows&&!timedReplay())',
            'if(effects.shadows&&replayShadows){auto proofs','if(effects.shadows&&replayShadows)pointCalculateReplayBounds();']
-schedules=['!reason&&key.valid&&!pull&&!actorLost,shadowDiagnosticCapture!=0,replaysComplete);','if(cascade==0)nearRendered=!environmentReuse&&captureMode==CaptureFresh&&interval>1&&actorShadows;',
+schedules=['||!replaysComplete||shadowTransitionFailed||memoryPressure', '!reason&&key.valid&&!pull&&!actorLost&&!transition.state.fading(),shadowDiagnosticCapture!=0,replaysComplete);','if(cascade==0)nearRendered=!environmentReuse&&captureMode==CaptureFresh&&interval>1&&actorShadows;',
            'if(!environmentReuse){if(splitNear||captureMode==CaptureFresh||!actorShadows)reuse.commit(interval,shadowPasses,matrices[cascade]);else captureDemand=true;}',
            'renderPointShadows(atmosphere.lights,replaysComplete,actorShadows);else pointReady=false;',
            'renderFlashShadows(atmosphere.lights,replaysComplete,actorShadows);else for(auto& s:flashSlots)s.ready=false;']
@@ -81,6 +81,7 @@ def schedules_guarded(text):
     # Only the definitions may remain: an unreviewed consumer still fails.
     return remainder.count('replayShadows')==1 and remainder.count('replaysComplete')==1
 checks['consumers gated on replayShadows, schedules on replaysComplete']=schedules_guarded(body)
+checks['crossfade uses current-frame capture only and retains baseline scratch outside fades']=('dynamicShadow=(historyReady||transition.state.fading())?transition.dynamic:shadowScratch' in body and '||!replaysComplete||shadowTransitionFailed||memoryPressure' in body)
 checks['no bare freshReplays consumer left in render()']=body.count('freshReplays')==3 # its definition and the two predicates
 # The cascade replay block: skipped whole with ActorShadows=0; terrain before it and the union after it stay.
 start=render.index('            if(actorShadows){ /* 0.3.158');end=render.index('            } /* actorShadows */')
@@ -89,7 +90,7 @@ checks['cascade replay block gated, terrain before, union after']=(render.count(
     and code(block).count('{')==code(block).count('}')+1
     and all(x in block for x in ('replayBoundsJoin(); /* 0.3.143: first pointBounds reader */','d->SetPixelShader(replayPS);','auto replayLoop=[&](auto& split)->bool{',
         'keepReplaySplit(slot,split,','replayProbe(rows,matrices[cascade],realLoopMs);'))
-    and render.index('"live terrain shadow"')<start and end<render.index('if(!unionShadow(shadowSurface[slot],shadowScratch,nearEnvironment[source],0,0,0,1024))return false;')
+    and render.index('"live terrain shadow"')<start and end<render.index('if(!unionShadow(shadowSurface[slot],dynamicShadow,nearEnvironment[source],0,0,0,1024))return false;')
     and render.count('submitReplay(')==2 and all(start<m.start()<end for m in re.finditer(r'submitReplay\(',render)) and # 0.3.209 (task 29): the actor map's loop is the second
     render.count('replayLoop(')==2 and all(start<m.start()<end for m in re.finditer(r'replayLoop\(',render)))
 # The probe moved before the live dump: legal because it never runs on a diagnostic capture frame.
