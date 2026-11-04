@@ -160,11 +160,14 @@ test_grass_receiving_order.py
 test_grass_shadow_gpu.py
 test_gtao_grazing.py
 test_hdr_boundary.py
+test_hdr_color_lifetime.py
 test_hdr_diffuse_gpu.py
 test_hdr_layer_sparse_gpu.py
 test_hdr_local_headroom_gpu.py
 test_hdr_log_summary.py
 test_hdr_reset.py
+test_hdr_ui_patch.py
+test_hdr_water_transfer_gpu.py
 test_horizon_haze.py
 test_hotpath_equivalence.py
 test_independent_fog.py
@@ -442,6 +445,7 @@ test_temporal_history.py
 test_temporary_geometry.py
 test_terrain_cache_capacity.py
 test_terrain_capture_bounds.py
+test_terrain_capture_demand_gpu.py
 test_terrain_capture_optimization.py
 test_terrain_capture_phases.py
 test_terrain_capture_validation.py

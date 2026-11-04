@@ -196,6 +196,7 @@ class WorldRenderer {
     D3DFORMAT colorStorageFormat=D3DFMT_UNKNOWN;
     friend struct WorldScreenEffectsTest;
     friend struct PipelineOffTest;
+    friend struct TerrainCaptureDemandTest;
 #if defined(NORTHLIGHT_WORLD_UPLOAD_TEST)
     friend struct WorldColdUploadTest;
 #endif
@@ -3784,6 +3785,7 @@ public:
         constantSelfCheck=selfCheck;sample=sample&&NorthlightDiagnostics::enabled();
         if(!ready())return;
         if(!lookupShader(shader).terrain){captureSampled|=sample;captureModel(type,0,minimum,vertexTotal,0,count,indexed,shader,sample,indexData,format,vertexData,stride);return;}
+        if(!effects.shadows)return; // Live terrain is consumed only by shadow passes; UP has no material bounds handoff.
         captureSampled|=sample;if(sample){++terrainCaptureCalls;++terrainUPCalls;}CpuScope cpu(sample?&terrainCaptureTicks:nullptr);
         ++terrainAttempts;NorthlightTerrainCapture::MeshSnapshot snapshot;NorthlightTerrainCapture::Diagnostics why;
         bool ok=indexed?terrainBoundsCache.readMeshUP(d,type,minimum,vertexTotal,count,indexData,format,vertexData,stride,context.view,snapshot,&why):
@@ -3798,6 +3800,7 @@ public:
         if(!ready()||replays.size()>=4096||(type!=D3DPT_TRIANGLELIST&&type!=D3DPT_TRIANGLESTRIP))return;
         captureSampled|=sample;bool isTerrain=lookupShader(current).terrain;
         if(isTerrain){
+            if(!effects.shadows&&!positions)return; // AutoBump may still need this draw's position bounds.
             if(sample)++terrainCaptureCalls;CpuScope cpu(sample?&terrainCaptureTicks:nullptr);
             ++terrainAttempts;
             if(!indexed){if(terrainFailures++<12)logf("TERRAIN snapshot rejected: non-indexed buffer draw");return;}

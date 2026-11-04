@@ -69,7 +69,9 @@ inline bool patch(const Word* original,std::size_t count,const Word* transfer,st
         for(unsigned j=first;j<=last;++j){Word w=original[ins.at+j];unsigned t=type(w),r=index(w);
             if(t==0){if(r>=temps)return false;usedTemps[r]=true;}
             if(t==2){if(r>=constants)return false;usedConstants[r]=true;}
-            if(t==8){if(j!=1||r>3||(r&&(!linearOutput||r==linearOutput)))return false;if(!r)mask|=(w>>16)&15;}
+            // Keep native auxiliary outputs (for example the water mask). A
+            // replay may unbind them; only an added HDR output can collide.
+            if(t==8){if(j!=1||r>3||(r&&r==linearOutput))return false;if(!r)mask|=(w>>16)&15;}
             if(t==9)return false; // oDepth is not part of the UI transfer contract
         }
     }

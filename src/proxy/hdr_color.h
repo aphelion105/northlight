@@ -10,7 +10,7 @@
 
 namespace NorthlightHdr {
 class Color {
-    struct Entry {IDirect3DPixelShader9* shader[4]{};bool attempted[4]{};};
+    struct Entry {IDirect3DPixelShader9* original=nullptr;IDirect3DPixelShader9* shader[4]{};bool attempted[4]{};};
     std::unordered_map<IDirect3DPixelShader9*,Entry> shaderBanks[2];
     IDirect3DPixelShader9* world=nullptr;
     IDirect3DPixelShader9* fixedUi=nullptr;IDirect3DPixelShader9* multiFixedUi=nullptr;IDirect3DPixelShader9* diffuseUi=nullptr;
@@ -39,8 +39,8 @@ public:
     std::uint64_t layers=0,layerPixels=0,screenDirect=0,attenuationDirect=0,multiTextureDirect=0;
     ~Color(){reset();}
     std::uint64_t payloadBytes()const{return std::uint64_t(layerDesc.Width)*layerDesc.Height*4*((layerTexture?1:0)+(layerMsaa?unsigned(layerDesc.MultiSampleType):0));}
-    void forget(IDirect3DPixelShader9* original){for(auto& shaders:shaderBanks){auto it=shaders.find(original);if(it!=shaders.end()){for(auto*& p:it->second.shader)release(p);shaders.erase(it);}}}
-    void reset(){for(auto& shaders:shaderBanks){for(auto& e:shaders)for(auto*& p:e.second.shader)release(p);shaders.clear();}release(world);release(fixedUi);release(multiFixedUi);release(diffuseUi);release(layerShader);release(layerSurface);release(layerTexture);release(layerMsaa);layerDesc={};uiScale=0;}
+    void forget(IDirect3DPixelShader9* original){for(auto& shaders:shaderBanks){auto it=shaders.find(original);if(it!=shaders.end()){for(auto*& p:it->second.shader)release(p);release(it->second.original);shaders.erase(it);}}}
+    void reset(){for(auto& shaders:shaderBanks){for(auto& e:shaders){for(auto*& p:e.second.shader)release(p);release(e.second.original);}shaders.clear();}release(world);release(fixedUi);release(multiFixedUi);release(diffuseUi);release(layerShader);release(layerSurface);release(layerTexture);release(layerMsaa);layerDesc={};uiScale=0;}
     template<class Draw> HRESULT legacyLayer(IDirect3DDevice9* d,float uiWhite,Draw submit,NorthlightStateBlockPool* pool=nullptr){
         SavedState saved(d,pool);if(!saved.ok)return E_FAIL;
         D3DSURFACE_DESC desc{};HRESULT hr=saved.targets[0]->GetDesc(&desc);if(FAILED(hr))return hr;
@@ -74,8 +74,10 @@ public:
         // World/sky radiance and UI white alternate every frame. Retain both
         // scales; a live UI adjustment invalidates only its own bounded bank.
         auto& shaders=shaderBanks[uiWhite==80?0:1];
-        if(uiWhite!=80&&uiScale!=uiWhite){for(auto& e:shaders)for(auto*& p:e.second.shader)release(p);shaders.clear();uiScale=uiWhite;}
-        auto it=shaders.find(original);if(it==shaders.end()){if(shaders.size()>=128){++rejected;return nullptr;}it=shaders.emplace(original,Entry{}).first;}
+        if(uiWhite!=80&&uiScale!=uiWhite){for(auto& e:shaders){for(auto*& p:e.second.shader)release(p);release(e.second.original);}shaders.clear();uiScale=uiWhite;}
+        auto it=shaders.find(original);if(it==shaders.end()){if(shaders.size()>=128){++rejected;return nullptr;}it=shaders.emplace(original,Entry{}).first;
+            // Internal water variants bypass the proxy's shader-create forget hook.
+            original->AddRef();it->second.original=original;}
         auto& entry=it->second;if(entry.attempted[variant])return entry.shader[variant];entry.attempted[variant]=true;
         UINT bytes=0;HRESULT hr=original->GetFunction(nullptr,&bytes);
         if(FAILED(hr)||bytes<12||bytes%4||bytes>65536*4){++rejected;return nullptr;}
