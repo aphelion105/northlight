@@ -24,6 +24,7 @@ class NorthlightMaterialMapPersistence {
     };
     std::vector<std::unique_ptr<Read>> reads;
     std::vector<std::unique_ptr<Save>> saves;
+    IDirect3DSurface9* uploadStaging=nullptr;unsigned uploadWidth=0,uploadHeight=0;
     std::uint64_t frame=0;bool captured=false,queuedReadback=false;
     template<class T>static void append(Bytes& bytes,const T& value){const auto* p=reinterpret_cast<const std::uint8_t*>(&value);bytes.insert(bytes.end(),p,p+sizeof value);}
     static bool layout(D3DFORMAT format,unsigned width,unsigned height,size_t& row,size_t& rows){
@@ -37,7 +38,7 @@ class NorthlightMaterialMapPersistence {
 public:
     enum class Status {Skip,Pending,Miss,Hit};
     struct Probe {Status status=Status::Skip;std::array<float,4> profile{};Store::Handle ticket;};
-    std::uint64_t uploads=0,copies=0,busy=0,unsupported=0;
+    std::uint64_t uploads=0,copies=0,busy=0,unsupported=0,uploadCreates=0,uploadReuses=0;
     NorthlightMaterialMapPersistence(IDirect3DDevice9* device,const std::filesystem::path& path,const char* backend,const char* backendIdentity=nullptr,bool asyncReadback=false):d(device),store(path),queuedReadback(asyncReadback){
         const unsigned version=2;append(environment,version);
         const auto shaders=NorthlightMaterialDisk::hash(kAutoNormalShader,sizeof kAutoNormalShader,NorthlightMaterialDisk::hash(kAutoNormalModelShader,sizeof kAutoNormalModelShader));append(environment,shaders);
@@ -49,7 +50,8 @@ public:
         }
     }
     ~NorthlightMaterialMapPersistence(){reset();}
-    void reset(){reads.clear();saves.clear();captured=false;}
+    void reset(){reads.clear();saves.clear();captured=false;trimUploads();}
+    void trimUploads(){drop(uploadStaging);uploadWidth=uploadHeight=0;}
     Probe probe(IDirect3DTexture9* source,const D3DSURFACE_DESC& desc,bool model,unsigned polarity,unsigned details,unsigned balance,std::uint64_t revision){
         if(!store.available()||(desc.Usage&(D3DUSAGE_DYNAMIC|D3DUSAGE_RENDERTARGET|D3DUSAGE_DEPTHSTENCIL))||desc.Pool!=D3DPOOL_MANAGED)return {};
         if(model){polarity=polarity==2?2u:0u;details=0;balance=50;} // Only the model height sign affects its generator.
@@ -78,12 +80,21 @@ public:
     }
     bool upload(const Probe& probe,IDirect3DTexture9* normal,unsigned width,unsigned height){
         if(probe.status!=Status::Hit||!probe.ticket||probe.ticket->pixels.size()!=size_t(width)*height*4)return false;
-        IDirect3DSurface9 *staging=nullptr,*target=nullptr;D3DLOCKED_RECT lock{};
-        if(FAILED(d->CreateOffscreenPlainSurface(width,height,D3DFMT_A8R8G8B8,D3DPOOL_SYSTEMMEM,&staging,nullptr)))return false;
-        bool ok=SUCCEEDED(staging->LockRect(&lock,nullptr,D3DLOCK_DONOTWAIT));
-        if(ok){const bool valid=lock.pBits&&lock.Pitch>=INT(width*4)&&height-1<=(SIZE_MAX-width*4)/size_t(lock.Pitch);if(valid)for(unsigned y=0;y<height;++y)std::memcpy(static_cast<std::uint8_t*>(lock.pBits)+size_t(y)*lock.Pitch,probe.ticket->pixels.data()+size_t(y)*width*4,width*4);ok=SUCCEEDED(staging->UnlockRect())&&valid;}
-        if(ok)ok=SUCCEEDED(normal->GetSurfaceLevel(0,&target))&&SUCCEEDED(d->UpdateSurface(staging,nullptr,target,nullptr));
-        drop(staging);drop(target);if(ok){++uploads;forget(probe.ticket);}return ok;
+        // One bounded scratch image (at most the generator's 512x512 map),
+        // reused across disk hits. A queued copy must never make a hit block.
+        if(!width||!height||width>512||height>512)return false;
+        if(uploadWidth!=width||uploadHeight!=height)trimUploads();
+        auto create=[&]{if(FAILED(d->CreateOffscreenPlainSurface(width,height,D3DFMT_A8R8G8B8,D3DPOOL_SYSTEMMEM,&uploadStaging,nullptr)))return false;uploadWidth=width;uploadHeight=height;++uploadCreates;return true;};
+        const bool reused=uploadStaging!=nullptr;
+        if(!uploadStaging&&!create())return false;
+        IDirect3DSurface9* target=nullptr;D3DLOCKED_RECT lock{};
+        auto hr=uploadStaging->LockRect(&lock,nullptr,D3DLOCK_DONOTWAIT);
+        if(hr==D3DERR_WASSTILLDRAWING&&reused){++busy;trimUploads();if(!create())return false;hr=uploadStaging->LockRect(&lock,nullptr,D3DLOCK_DONOTWAIT);}
+        else if(SUCCEEDED(hr)&&reused)++uploadReuses;
+        bool ok=SUCCEEDED(hr);
+        if(ok){const bool valid=lock.pBits&&lock.Pitch>=INT(width*4)&&height-1<=(SIZE_MAX-width*4)/size_t(lock.Pitch);if(valid)for(unsigned y=0;y<height;++y)std::memcpy(static_cast<std::uint8_t*>(lock.pBits)+size_t(y)*lock.Pitch,probe.ticket->pixels.data()+size_t(y)*width*4,width*4);ok=SUCCEEDED(uploadStaging->UnlockRect())&&valid;}
+        if(ok)ok=SUCCEEDED(normal->GetSurfaceLevel(0,&target))&&SUCCEEDED(d->UpdateSurface(uploadStaging,nullptr,target,nullptr));
+        drop(target);if(ok){++uploads;forget(probe.ticket);}else trimUploads();return ok;
     }
     void capture(const Probe& probe,IDirect3DTexture9* normal,unsigned width,unsigned height){
         if(probe.status!=Status::Miss||!probe.ticket)return;
@@ -120,5 +131,5 @@ public:
         if(valid){save.pixels=std::move(pixels);drop(save.surface);drop(save.event);if(store.save(save.key,save.width,save.height,save.pixels))saves.erase(saves.begin());}
         else saves.erase(saves.begin());
     }
-    void report(){logf("MATERIAL_DISK hits=%llu misses=%llu writes=%llu invalid=%llu errors=%llu refused=%llu evicted=%llu uploads=%llu copies=%llu busy=%llu unsupported=%llu pendingReads=%zu pendingCopies=%zu cpuBytes=%zu",(unsigned long long)store.stats.hits.load(),(unsigned long long)store.stats.misses.load(),(unsigned long long)store.stats.writes.load(),(unsigned long long)store.stats.invalid.load(),(unsigned long long)store.stats.errors.load(),(unsigned long long)store.stats.refused.load(),(unsigned long long)store.stats.evicted.load(),(unsigned long long)uploads,(unsigned long long)copies,(unsigned long long)busy,(unsigned long long)unsupported,reads.size(),saves.size(),store.outstandingBytes());}
+    void report(){logf("MATERIAL_DISK hits=%llu misses=%llu writes=%llu invalid=%llu errors=%llu refused=%llu evicted=%llu uploads=%llu copies=%llu busy=%llu unsupported=%llu pendingReads=%zu pendingCopies=%zu cpuBytes=%zu uploadCreates=%llu uploadReuses=%llu",(unsigned long long)store.stats.hits.load(),(unsigned long long)store.stats.misses.load(),(unsigned long long)store.stats.writes.load(),(unsigned long long)store.stats.invalid.load(),(unsigned long long)store.stats.errors.load(),(unsigned long long)store.stats.refused.load(),(unsigned long long)store.stats.evicted.load(),(unsigned long long)uploads,(unsigned long long)copies,(unsigned long long)busy,(unsigned long long)unsupported,reads.size(),saves.size(),store.outstandingBytes(),(unsigned long long)uploadCreates,(unsigned long long)uploadReuses);}
 };

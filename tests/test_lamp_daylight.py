@@ -64,11 +64,11 @@ def main():
     point = fp.src('world_point_rendering.inl').read_text()
     lighting = shader[shader.index('LightingOutput worldLightingValue('):shader.index('float4 WorldGI(')]
     local = shader[shader.index('float4 localDirectValue('):shader.index('float3 removalScale(')]
-    # GI and lamps share visibility; -1 distinguishes unknown from fully shadowed.
+    # Lamps use proven directional visibility; -1 distinguishes unknown coverage.
     assert 'o.baseline=float4(max(old+AmbientLight.rgb,.15),known?lerp(visibility,shadow,SunDirection.w):-1);return o;' in lighting
     assert 'float3 cover=affinePoint(p,FarMatrix);' in lighting and 'float known=max(abs(cover.x),abs(cover.y))<=1&&cover.z>=0&&cover.z<=1?1:0;' in lighting
     for use in [l for l in shader.splitlines() if 'tex2Dlod(BaselineLighting' in l and 'sunlit=' not in l]:
-        assert '.rgb' in use or 'float fallback=saturate(1-abs(' in use, use
+        assert '.rgb' in use, use
     assert 'float sunlit=saturate((tex2Dlod(BaselineLighting,float4(halfUV,0,0)).a-(1-GridInfo.z))/max(GridInfo.z,.001));' in local
     assert 'return float4(result*(LocalLightInfo.y*(1-LocalLightInfo.z*sunlit)),0);' in local
     # CPU: no global daylight gain (lamp fog c58 and the point lamp as in 0.3.164); c52.z per batch; s12 bound.

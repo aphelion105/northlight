@@ -583,8 +583,8 @@ LightingOutput worldLightingValue(float2 uv,bool soft) {
     o.correction=float4(replacement-painted,lerp(visibility,shadow,SunDirection.w)*SourcePolicy.y);
     // Mode 2 isolates GI: the shared buffer must contain no direct correction.
     if(PassInfo.z==2)o.correction.rgb=0;
-    // Share visibility with GI's missing-probe fallback and LocalDirect. Unknown
-    // coverage is -1: no ambient removal and no daylight dimming of lamps.
+    // Share visibility with LocalDirect. Unknown coverage is -1 and must not
+    // dim lamps as if this receiver had proven direct daylight.
     float3 cover=affinePoint(p,FarMatrix);
     float known=max(abs(cover.x),abs(cover.y))<=1&&cover.z>=0&&cover.z<=1?1:0;
     o.baseline=float4(max(old+AmbientLight.rgb,.15),known?lerp(visibility,shadow,SunDirection.w):-1);return o;
@@ -704,18 +704,15 @@ float4 ActorShadow(float2 uv:TEXCOORD0,uniform row_major float4x4 ActorMatrix:re
 float4 ActorShadowUniform(float2 uv:TEXCOORD0,uniform row_major float4x4 ActorMatrix:register(c68),uniform float4 ActorInfo:register(c72)):COLOR0 {return actorShadowValue(uv,ActorMatrix,ActorInfo,false);}
 // Second pass to the same FP16 lighting buffer with COLORWRITEENABLE=RGB.
 // Probes contain sky + bounce, so replace ambient instead of adding it twice.
-// Missing probes use bounded directional occlusion as an ambient approximation;
-// resident probes replace it continuously, without another shadow lookup.
+// Missing probes do not establish hemispherical sky visibility. Preserve the
+// native ambient there; only resident probes can replace it with measured GI.
 float4 WorldGI(float2 uv:TEXCOORD0):COLOR0 {
     float4 smoothNormal=tex2Dlod(NormalBuffer,float4(uv,0,0));
-    float2 halfUV=uv;
     uv=depthUV(uv);
     float d=normalizedDepth(uv);if(d>=.99999||waterDistance(uv,d)>0)return 0;
     float3 p=worldPosition(uv,d);float3 n=smoothNormal.xyz;
     float4 probe=probeIrradiance(p+n*.25,n);
-    float fallback=saturate(1-abs(tex2Dlod(BaselineLighting,float4(halfUV,0,0)).a));
     float3 correction=(probe.rgb/3.14159265-AmbientLight.rgb)*GridInfo.y*probe.a;
-    correction-=AmbientLight.rgb*(GridInfo.y*fallback*(1-probe.a));
     // Confidence describes the depth-derived NORMAL, not probe coverage.
     // At a wall/ground seam a valid dark probe must still remove native ambient.
     // Only uncertain added bounce is suppressed; ambient removal also applies

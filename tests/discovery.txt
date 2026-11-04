@@ -243,6 +243,7 @@ test_material_replay_content.py
 test_material_replay_state.py
 test_material_terrain_bounds.py
 test_material_texel_sharing.py
+test_material_upload_reuse_gpu.py
 test_material_texture_simd.py
 test_material_wall_bounds.py
 test_memmap_diagnostics.py

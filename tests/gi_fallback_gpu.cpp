@@ -18,7 +18,7 @@ static Image metadata(float coverage,bool spatial=false){
     return im;
 }
 int main(int argc,char** argv){
-    assert(argc>=3);const unsigned W=argc>=4?1280:4,H=argc>=4?720:4;
+    assert(argc>=3);const bool benchmark=argc>=5&&std::string(argv[4])=="--benchmark";const unsigned W=benchmark?1280:4,H=benchmark?720:4;
     WNDCLASSW wc{};wc.lpfnWndProc=DefWindowProcW;wc.lpszClassName=L"NorthlightGiFallback";wc.hInstance=GetModuleHandleW(nullptr);assert(RegisterClassW(&wc));
     const auto window=CreateWindowExW(0,wc.lpszClassName,L"",WS_OVERLAPPED,0,0,4,4,nullptr,nullptr,wc.hInstance,nullptr);assert(window);
     const auto module=LoadLibraryA(argv[2]);assert(module);const auto create=reinterpret_cast<IDirect3D9*(WINAPI*)(UINT)>(GetProcAddress(module,"Direct3DCreate9"));assert(create);auto* api=create(D3D_SDK_VERSION);assert(api);
@@ -46,19 +46,27 @@ int main(int argc,char** argv){
     c[33][0]=float(W*2);c[33][1]=float(H*2);c[33][2]=float(W);c[33][3]=float(H);
     const float depth=1000.f/(1000-.2f)*(1-.2f/10);
     bind(1,solid(depth));bind(7,solid(100,10000,1,-1000));bind(11,solid(0));
-    unsigned cases=0;float worst=0;
-    for(float coverage:{0.f,.25f,.5f,1.f})for(float visibility:{-1.f,0.f,.15f,.5f,1.f})for(float gain:{0.f,.5f,1.f})for(float irradiance:{0.f,.1f,.7f})for(float confidence:{0.f,1.f}){
-        c[20][1]=gain;ok(d->SetPixelShaderConstantF(0,c[0],79));bind(10,metadata(coverage));bind(12,solid(0,0,0,visibility));bind(14,solid(0,0,1,confidence));
+    unsigned cases=0,unknownNeutral=0,residentDark=0,negativeControls=0;float worst=0;
+    for(float coverage:{0.f,.25f,.5f,1.f})for(float visibility:{-1.f,0.f,.15f,.5f,1.f})for(float gain:{0.f,.5f,1.f})for(float irradiance:{0.f,.1f,.7f})for(float confidence:{0.f,1.f})for(float ready:{0.f,1.f}){
+        const float residentCoverage=coverage*ready;
+        c[20][1]=gain;c[20][3]=ready;ok(d->SetPixelShaderConstantF(0,c[0],79));bind(10,metadata(coverage));bind(12,solid(0,0,0,visibility));bind(14,solid(0,0,1,confidence));
         for(unsigned s:{4u,5u,6u})bind(s,solid(irradiance/.28209479f));
         draw(gi);const auto actual=sample(target);
-        for(unsigned k=0;k<3;++k){const float raw=((irradiance-c[18][k])*coverage-c[18][k]*(1-std::fabs(visibility))*(1-coverage))*gain;
+        for(unsigned k=0;k<3;++k){const float raw=(irradiance-c[18][k])*residentCoverage*gain;
             const float expected=std::min(raw,0.f)+std::max(raw,0.f)*confidence;worst=std::max(worst,std::fabs(actual[k]-expected));assert(std::isfinite(actual[k])&&std::fabs(actual[k]-expected)<.001f);}
-        assert(actual[3]==0);if(oldGi&&(coverage==1||std::fabs(visibility)==1||gain==0)){draw(oldGi);assert(sample(target)==actual);}++cases;
+        assert(actual[3]==0);
+        if(residentCoverage==0){assert(actual==(std::array<float,4>{}));++unknownNeutral;}
+        if(residentCoverage==1&&irradiance==0&&gain>0){assert(actual[0]<0&&actual[1]<0&&actual[2]<0);++residentDark;}
+        if(oldGi){
+            draw(oldGi);const auto old=sample(target);
+            if(residentCoverage==1||std::fabs(visibility)==1||gain==0)assert(old==actual);
+            if(residentCoverage==0&&visibility==0&&gain>0){assert(old[0]<actual[0]-.09f);++negativeControls;}
+        }++cases;
     }
     // Spatial fade at a missing neighboring probe, independent of born-time fade.
     c[20][1]=.5f;bind(10,metadata(1,true));bind(12,solid(0,0,0,.15f));bind(14,solid(0,0,1,1));for(unsigned s:{4u,5u,6u})bind(s,solid(.1f/.28209479f));
     float previous=0;for(unsigned i=0;i<=32;++i){c[6][0]=float(i)*.25f;ok(d->SetPixelShaderConstantF(0,c[0],79));draw(gi);const float actual=sample(target)[0],coverage=1-float(i)/32;
-        const float expected=((.1f-.2f)*coverage-.2f*.85f*(1-coverage))*.5f;assert(std::fabs(actual-expected)<.0002f);if(i)assert(actual<=previous&&previous-actual<.002f);previous=actual;++cases;}
+        const float expected=(.1f-.2f)*coverage*.5f;assert(std::fabs(actual-expected)<.0002f);if(i)assert(actual>=previous&&actual-previous<.002f);previous=actual;++cases;}
     // Sky and water cannot acquire the missing-probe correction.
     bind(10,metadata(0));bind(1,solid(1));draw(gi);assert(sample(target)==(std::array<float,4>{}));bind(1,solid(depth));c[30][0]=1;ok(d->SetPixelShaderConstantF(0,c[0],79));bind(11,solid(5,1));draw(gi);assert(sample(target)==(std::array<float,4>{}));c[30][0]=0;bind(11,solid(0));
     // Producer contract: distinguish unknown coverage from fully occluded moon.
@@ -71,8 +79,63 @@ int main(int argc,char** argv){
         ok(d->SetPixelShaderConstantF(0,c[0],79));draw(ps);const auto value=sample(baseline);const float expected=outside?-1:active?(moon?0:.15f):1;assert(std::fabs(value[3]-expected)<.0003f);++cases;
     }
     ok(d->SetRenderTarget(1,nullptr));
+    // Run the production lighting -> GI -> SDR/HDR composition chain. The
+    // second ambient palette is from the supplied ArgentTournament QA capture.
+    // A missing hemisphere estimate preserves native brightness; actual direct
+    // shadows, resident-probe occlusion and contact AO must remain visible.
+    IDirect3DTexture9* chainLight=nullptr;IDirect3DSurface9* chainSurface=nullptr;
+    ok(d->CreateTexture(W,H,1,D3DUSAGE_RENDERTARGET,D3DFMT_A16B16G16R16F,D3DPOOL_DEFAULT,&chainLight,nullptr));
+    ok(chainLight->GetSurfaceLevel(0,&chainSurface));
+    IDirect3DPixelShader9* composites[2]{};
+    shader(std::string(argv[1])+"/WorldComposite.bin",&composites[0]);
+    shader(std::string(argv[1])+"/WorldCompositeHdr.bin",&composites[1]);
+    const float palettes[][3]={{.2f,.3f,.4f},{.31373f,.35686f,.4f}};
+    unsigned chainCases=0,chainNative=0,chainShadow=0,chainResident=0,chainAO=0;float chainError=0;
+    for(const auto& ambient:palettes)for(float coverage:{0.f,.25f,1.f})for(bool shadowed:{false,true})for(float ao:{.6f,1.f})for(float value:{0.f,.01f,.18f,.7f,1.f}){
+        ok(d->SetTexture(8,nullptr));ok(d->SetRenderTarget(0,chainSurface));ok(d->SetRenderTarget(1,baseline));
+        std::memset(c,0,sizeof c);c[0][0]=1.f/(W*2);c[0][1]=1.f/(H*2);c[0][2]=.2f;c[0][3]=1000;
+        c[1][0]=c[1][1]=c[1][2]=c[2][0]=1;c[2][1]=48;c[2][2]=192;c[2][3]=1.f/1024;
+        c[6][0]=c[6][1]=4;c[6][2]=3.75f;c[6][3]=1;c[10][2]=c[14][2]=.5f;c[16][2]=c[28][2]=1;
+        c[19][3]=8;c[20][0]=4;c[20][1]=.5f;c[20][2]=.85f;c[20][3]=1;c[24][3]=1;c[27][1]=1;c[35][0]=1.f/1280;c[73][2]=1;
+        c[33][0]=float(W*2);c[33][1]=float(H*2);c[33][2]=float(W);c[33][3]=float(H);
+        for(unsigned k=0;k<3;++k){c[17][k]=c[29][k]=.4f;c[18][k]=ambient[k];}
+        bind(1,solid(depth));bind(2,solid(shadowed?0.f:1.f));bind(3,solid(shadowed?0.f:1.f));
+        bind(9,solid(0));bind(11,solid(0));bind(12,solid(1,1,1,1));bind(14,solid(0,0,1,1));
+        ok(d->SetPixelShaderConstantF(0,c[0],79));draw(lighting[0]);
+        const float visibility=shadowed?.15f:1.f;
+        ok(d->SetRenderTarget(1,nullptr));bind(10,metadata(coverage));bind(7,solid(100,10000,1,-1000));
+        for(unsigned slot:{4u,5u,6u})bind(slot,solid(0));
+        ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE));ok(d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_ONE));ok(d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_ONE));
+        ok(d->SetRenderState(D3DRS_COLORWRITEENABLE,7));draw(gi);ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE));ok(d->SetRenderState(D3DRS_COLORWRITEENABLE,15));
+        const auto coefficient=sample(chainSurface);
+        for(unsigned k=0;k<3;++k)assert(std::fabs(coefficient[k]-(.4f*(visibility-1)-ambient[k]*.5f*coverage))<.001f);
+        ok(d->SetRenderTarget(0,target));ok(d->SetTexture(8,chainLight));
+        bind(0,solid(value,value*.7f,value*.2f,.375f));bind(2,solid(0));bind(3,solid(0));bind(7,solid(0));
+        bind(9,solid(0,0,0,1));bind(10,solid(0,0,0,ao));bind(12,solid(ambient[0]+.4f,ambient[1]+.4f,ambient[2]+.4f));bind(13,solid(0));bind(15,solid(10));
+        c[78][2]=1;ok(d->SetPixelShaderConstantF(78,c[78],1));
+        for(unsigned hdr=0;hdr<2;++hdr){
+            draw(composites[hdr]);const auto actual=sample(target);
+            for(unsigned k=0;k<3;++k){
+                const float encoded=value*(k==0?1.f:k==1?.7f:.2f);
+                const float native=hdr?(encoded<=.04045f?encoded/12.92f:std::pow((encoded+.055f)/1.055f,2.4f)):encoded;
+                const float transported=native*ao,delta=.4f*(visibility-1)-ambient[k]*.5f*coverage;
+                const float expected=std::max(transported+std::min(transported/(ambient[k]+.4f),1.f)*delta,transported*.55f);
+                const float error=std::fabs(actual[k]-expected);chainError=std::max(chainError,error);assert(std::isfinite(actual[k])&&error<.0015f);
+                if(coverage==0&&!shadowed&&ao==1){assert(std::fabs(actual[k]-native)<.0015f);++chainNative;}
+                if(value>0&&shadowed&&actual[k]<transported-.00001f)++chainShadow;
+                if(value>0&&coverage==1&&!shadowed&&actual[k]<transported-.00001f)++chainResident;
+                if(value>0&&ao<1&&coverage==0&&!shadowed&&actual[k]<native-.00001f)++chainAO;
+            }
+            assert(actual[3]==.375f);++chainCases;
+        }
+    }
+    assert(chainNative&&chainShadow&&chainResident&&chainAO);
+    std::printf("GI_COMPOSITE_BASELINE_PASS cases=%u maxError=%.9g nativeControls=%u directShadowControls=%u residentOcclusionControls=%u contactAOControls=%u SDR=1 HDR=1\n",chainCases,chainError,chainNative,chainShadow,chainResident,chainAO);
+    ok(d->SetTexture(8,nullptr));for(auto* ps:composites)ps->Release();chainSurface->Release();chainLight->Release();
+    assert(unknownNeutral&&residentDark&&(!oldGi||negativeControls));
+    std::printf("GI_BASELINE_PASS missingProbeNeutral=%u provenResidentDark=%u oldDarkeningControls=%u\n",unknownNeutral,residentDark,negativeControls);
     std::printf("GI_FALLBACK_PASS cases=%u maxError=%.9g fullCoverageExact=%u skyWaterNeutral=1 unknownCoverageNeutral=1\n",cases,worst,unsigned(oldGi!=nullptr));
-    if(oldGi){
+    if(benchmark&&oldGi){
         // Alternating GPU-only blocks at the capture's half resolution.
         c[6][0]=c[6][1]=4;c[20][1]=.5f;c[30][0]=0;ok(d->SetPixelShaderConstantF(0,c[0],79));bind(12,solid(0,0,0,.15f));bind(14,solid(0,0,1,1));
         IDirect3DQuery9 *event=nullptr,*begin=nullptr,*end=nullptr,*frequency=nullptr,*disjoint=nullptr;
@@ -83,8 +146,9 @@ int main(int argc,char** argv){
             double med[2];for(unsigned i=0;i<2;++i){std::sort(timings[i].begin(),timings[i].end());med[i]=(timings[i][3]+timings[i][4])*.5;}
             std::printf("GI_FALLBACK_TIMING resident=%.0f width=%u height=%u oldMs=%.6f newMs=%.6f deltaMs=%.6f\n",coverage,W,H,med[0],med[1],med[1]-med[0]);
         }
-        for(auto* q:{event,begin,end,frequency,disjoint})q->Release();oldGi->Release();
+        for(auto* q:{event,begin,end,frequency,disjoint})q->Release();
     }
+    if(oldGi)oldGi->Release();
     for(unsigned s=0;s<16;++s){d->SetTexture(s,nullptr);if(owned[s])owned[s]->Release();}
     for(auto* ps:lighting)ps->Release();gi->Release();staging->Release();baseline->Release();target->Release();d->Release();api->Release();FreeLibrary(module);DestroyWindow(window);UnregisterClassW(wc.lpszClassName,wc.hInstance);
 }

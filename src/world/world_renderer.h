@@ -1459,7 +1459,7 @@ private:
           std::shared_ptr<const NorthlightZoneTuning::Overrides> fogTuning;
 #endif
           NorthlightTerrainReach::State reachState;NorthlightGI::SceneSizeHint terrainSizeHint; /* terrain scene counts of the last build; keyed by reach, reset per map */NorthlightTerrainReach::Episode memoryStall;
-          NorthlightGeometryMemory::EntryLift entryLift,chunkLift;
+          NorthlightGeometryMemory::EntryLift entryLift,chunkLift,coldLift;
           std::string entryLiftMap;V entryLiftCenter;
           // Episode logs (begin on the first memory refusal, end when the build is delivered or dropped).
           // `required` is the refused check's aggregate floor: published (at most the plain entry floor)
@@ -1482,7 +1482,7 @@ private:
           auto abandonGeometry=[&](){
               // A measured peak belongs to the abandoned spatial region. It
               // must not refuse a different region before that build starts.
-              entryLift.clear();chunkLift.clear();terrainSizeHint={};stallEnd("superseded");
+              entryLift.clear();chunkLift.clear();coldLift.clear();terrainSizeHint={};stallEnd("superseded");
           };
           NorthlightLocalLights::Cache lightCache(root+"world-cache/lights");
           NorthlightLightAttachments::Cache lightAttachmentCache(root+"world-cache/lights");
@@ -1579,7 +1579,7 @@ private:
                 if(fogRegion&&fogRegion->field)memory.allocation(Fog,fogRegion->field.get(),sizeof(*fogRegion->field));
                 maximumObservedCapacity=std::max(maximumObservedCapacity,memory.total());
                 logCpuFootprint("builder-reachable",stage,r.id,memory);
-                const auto entryBudget=chunkedLocal?chunkLift.apply(coldRecovery?NorthlightGeometryMemory::coldChunkBuildBudget():NorthlightGeometryMemory::chunkBuildBudget(),GetTickCount()):entryLift.apply(NorthlightGeometryMemory::buildBudget(64*NorthlightGeometryMemory::MiB),GetTickCount());
+                const auto entryBudget=coldRecovery?coldLift.apply(NorthlightGeometryMemory::coldChunkBuildBudget(),GetTickCount()):chunkedLocal?chunkLift.apply(NorthlightGeometryMemory::chunkBuildBudget(),GetTickCount()):entryLift.apply(NorthlightGeometryMemory::buildBudget(64*NorthlightGeometryMemory::MiB),GetTickCount());
                 NorthlightMemoryProfile::Admission admission;
                 admission.available=lastWorkerMemory.available;admission.largest=lastWorkerMemory.largest;admission.valid=lastWorkerMemory.valid;admission.largestExact=workerMemoryExact;
                 admission.entryRequired=entryBudget.available;admission.largestRequired=entryBudget.largest;
@@ -1623,7 +1623,7 @@ private:
             // once per entry; its error is published once and no build runs until the map changes.
             if(r.map!=cacheCheckedMap){
                 if(!cacheMapHasTiles&&NorthlightDiagnostics::enabled())logf("WORLD cache absent end map=\"%s\" skippedBuilds=%u",cacheCheckedMap.c_str(),uncachedSkips);
-                cacheCheckedMap=r.map;cacheMapHasTiles=worldCacheHasTiles(r.map);uncachedPublished=false;uncachedSkips=0;entryLift.clear();chunkLift.clear();reachState={};terrainSizeHint={};
+                cacheCheckedMap=r.map;cacheMapHasTiles=worldCacheHasTiles(r.map);uncachedPublished=false;uncachedSkips=0;entryLift.clear();chunkLift.clear();coldLift.clear();reachState={};terrainSizeHint={};
                 if(!cacheMapHasTiles)logf("WORLD cache absent map=\"%s\"; geometry builds skipped until the map changes",r.map.c_str());
             }
             if(!cacheMapHasTiles){
@@ -1633,8 +1633,8 @@ private:
             }
             // Keep the refused attempt's anchor: a stream of small requests
             // must not carry its peak estimate across arbitrarily far travel.
-            if((entryLift.armed||chunkLift.armed)&&!NorthlightWorldStreaming::applicable(entryLiftMap,entryLiftCenter,r.map,r.camera)){
-                entryLift.clear();chunkLift.clear();terrainSizeHint={};
+            if((entryLift.armed||chunkLift.armed||coldLift.armed)&&!NorthlightWorldStreaming::applicable(entryLiftMap,entryLiftCenter,r.map,r.camera)){
+                entryLift.clear();chunkLift.clear();coldLift.clear();terrainSizeHint={};
             }
             auto built=std::make_unique<Built>();
 #if NORTHLIGHT_DEV_TUNING
@@ -1685,7 +1685,9 @@ private:
                     // A bounded candidate also replaces a retained generation.
                     // Waiting for that generation to expire made lighting blink
                     // at every 160-unit boundary below the normal 480 MiB floor.
-                    const auto cold=chunkLift.apply(NorthlightGeometryMemory::coldChunkBuildBudget(),GetTickCount());
+                    // A warm build peak does not describe this file-backed candidate.
+                    // Only an earlier cold refusal may raise its entry budget.
+                    const auto cold=coldLift.apply(NorthlightGeometryMemory::coldChunkBuildBudget(),GetTickCount());
                     memory=workerMemory(cold);entryBudget=cold;coldRecovery=true;
                 }
                 // END CHUNKED ENTRY SELECTION
@@ -1696,7 +1698,7 @@ private:
                 // A memory refusal after entry: the next entry waits for what this attempt lacked.
                 auto liftEntry=[&](const char* stage,uint64_t required,uint64_t observed,uint64_t requiredLargest){
                     entryLiftMap=r.map;entryLiftCenter=r.geometryCenter;
-                    auto& lift=chunkedLocal?chunkLift:entryLift;lift.refused(entryAvailable,required,observed,GetTickCount(),requiredLargest);
+                    auto& lift=coldRecovery?coldLift:chunkedLocal?chunkLift:entryLift;lift.refused(entryAvailable,required,observed,GetTickCount(),requiredLargest);
                     logf("WORLD geometry entry raised stage=%s requiredAvailableMiB=%llu requiredLargestMiB=%llu entryMiB=%llu refusedMiB=%llu stageRequiredMiB=%llu holdMs=%u",
                         stage,(unsigned long long)(lift.available>>20),(unsigned long long)(lift.largest>>20),(unsigned long long)(entryAvailable>>20),
                         (unsigned long long)(observed>>20),(unsigned long long)(required>>20),unsigned(NorthlightGeometryMemory::LiftMs));
@@ -1978,7 +1980,7 @@ private:
             devBuilds.fetch_add(1,std::memory_order_relaxed);
 #endif
             wake.notify_one();built.reset();
-            stallEnd(memoryStall.reduced?"reduced":"published");entryLift.clear();chunkLift.clear();
+            stallEnd(memoryStall.reduced?"reduced":"published");entryLift.clear();chunkLift.clear();coldLift.clear();
             builtMap=r.map;builtCenter=r.geometryCenter;builtValid=true;wanted=false;superseded=0;
           }
           }catch(const std::bad_alloc&){workerFaultCode.store(1);}
@@ -5586,7 +5588,7 @@ public:
         }
         d->SetRenderTarget(1,nullptr);
         d->SetRenderState(D3DRS_COLORWRITEENABLE,15);
-        d->SetTexture(12,baselineLight); // WorldGI reuses known shadow visibility outside resident probes.
+        d->SetTexture(12,baselineLight); // The following lighting consumers use this frame's baseline and visibility.
         d->SetTexture(15,nullptr);
         if(profile)profile->mark("WorldLighting");
         bucket(NorthlightEffectsBuckets::Lighting);

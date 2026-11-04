@@ -32,7 +32,7 @@ assert 'logGeometryMemory("after-bvh"' in plan and 'liftEntry("plan",planBudget.
 entry = body('auto memory=workerMemory(entryLift.apply(NorthlightGeometryMemory::buildBudget(64', 'stallBegin("build-deferred"')
 assert entry.count('NorthlightGeometryMemory::buildBudget(') >= 2 and 'inBuildBudget(' not in entry
 assert 'entryBudget=chunkBudget;chunkedLocal=true;' in entry and 'entryBudget=cold;coldRecovery=true;' in entry
-assert 'chunkLift.apply(NorthlightGeometryMemory::coldChunkBuildBudget(),GetTickCount())' in entry
+assert 'coldLift.apply(NorthlightGeometryMemory::coldChunkBuildBudget(),GetTickCount())' in entry
 assert 'auto entryBudget=entryLift.apply(plainEntry,GetTickCount());' in entry
 # Small shortfalls may reclaim raw payloads first. Every step resamples the same
 # admission floor, including any lift; complete reset remains the final fallback.
@@ -57,7 +57,7 @@ assert 'geometryMemoryDemand.store(0,' in body('auto stallEnd=', '};')
 # Extended reach is restored only when an entry sample covers what the refused attempt lacked.
 assert 'NorthlightTerrainReach::choose(reachState,profileReach,GetTickCount(),entryAvailable,entryLargest)' in w
 assert 'memoryRefused(reachState,reach,GetTickCount(),restore,terrainRequiredLargest)' in w
-assert 'entryLift.clear();chunkLift.clear();reachState={};' in w  # a map change forgets both
+assert 'entryLift.clear();chunkLift.clear();coldLift.clear();reachState={};' in w  # a map change forgets both
 # Entry admitted: the build's own allocations are not a demand on the guard.
 assert 'geometryMemoryDemand.store(0,' in body('const uint64_t entryAvailable=', 'auto liftEntry')
 assert 'localSample=sample' in w and 'plan-deferred' in w

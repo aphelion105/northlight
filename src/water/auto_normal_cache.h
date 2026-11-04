@@ -82,8 +82,8 @@ public:
         budget=memoryPressure?32ull<<20:GlobalMemoryStatusEx(&memory)?NorthlightAutoNormalMemory::budget(memory.ullAvailVirtual,budget):32ull<<20;
         while(bytes>budget&&!entries.empty()){auto old=std::min_element(entries.begin(),entries.end(),[](const Entry& a,const Entry& b){return a.used<b.used;});erase(size_t(old-entries.begin()));++evictions;}
     }
-    void setMemoryPressure(bool on){memoryPressure=on;refreshBudget();states.clear();}
-    void trimMemory(){refreshBudget();states.clear();}
+    void setMemoryPressure(bool on){memoryPressure=on;refreshBudget();states.clear();if(on&&disk)disk->trimUploads();}
+    void trimMemory(){refreshBudget();states.clear();if(disk)disk->trimUploads();}
     void endFrame(){if(disk)disk->endFrame();generated=0;visibleWorkingSet=false;if(memoryPressure)states.clear();if(++frame%60==0)refreshBudget();}
     void report(){if(disk)disk->report();logf("AUTONORMAL cached=%zu bytes=%llu generated=%u hits=%u evicted=%u sourceBytes=%llu budgetMiB=%llu allocations=%u reused=%u",entries.size(),(unsigned long long)bytes,builds,hits,evictions,(unsigned long long)sourceBytes,(unsigned long long)(budget>>20),allocations,reuses);}
     Lease acquire(IDirect3DBaseTexture9* source,bool model=false){return Lease(*this,resolve(source,model));}

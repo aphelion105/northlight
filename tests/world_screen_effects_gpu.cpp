@@ -150,16 +150,24 @@ struct WorldScreenEffectsTest {
         uint64_t vb=0,ib=0;auto has=[&](uint32_t id,bool vertex){return id<w.meshBuffers.size()&&(vertex?w.meshBuffers[id].vb!=nullptr:w.meshBuffers[id].ib!=nullptr);};
         assert(w.meshStore.stagingGrowth(has,vb,ib)&&vb==0&&ib==0);
         struct Ballast {std::vector<void*> blocks;~Ballast(){for(auto p:blocks)assert(VirtualFree(p,0,MEM_RELEASE));}} ballast;
-        // This fixture tests aggregate admission, not accidental driver VA
-        // fragmentation. Preserve the required contiguous witness while the
-        // ballast consumes the other free regions, then return it to the scan.
-        auto* witness=VirtualAlloc(nullptr,18*MiB,MEM_RESERVE,PAGE_NOACCESS);assert(witness);
-        MEMORYSTATUSEX status{};status.dwLength=sizeof status;assert(GlobalMemoryStatusEx(&status));
-        while(status.ullAvailVirtual>325*MiB+65536){uint64_t bytes=std::min<uint64_t>(16*MiB,(status.ullAvailVirtual-325*MiB)&~uint64_t(65535));assert(bytes);auto p=VirtualAlloc(nullptr,size_t(bytes),MEM_RESERVE,PAGE_NOACCESS);assert(p);ballast.blocks.push_back(p);status.dwLength=sizeof status;assert(GlobalMemoryStatusEx(&status));}
-        assert(VirtualFree(witness,0,MEM_RELEASE));
+        // Test aggregate admission independently of driver fragmentation and
+        // delayed VA releases. Re-establish pressure against the actual two
+        // budgets, keeping a contiguous witness until each admission sample.
         auto oldBudget=uploadBudget(64ull*300000,64ull*100000,MiB,MiB);oldBudget.largest=18*MiB;
         auto newBudget=uploadBudget(vb,ib,MiB,MiB);newBudget.largest=18*MiB;
-        bool exact=false;auto sample=w.geometryAdmission(newBudget,&exact);
+        const uint64_t target=(oldBudget.available+newBudget.available)/2;
+        bool exact=false;Sample sample;MEMORYSTATUSEX status{};
+        for(unsigned attempt=0;attempt<8;++attempt){
+            auto* witness=VirtualAlloc(nullptr,18*MiB,MEM_RESERVE,PAGE_NOACCESS);assert(witness);
+            status.dwLength=sizeof status;assert(GlobalMemoryStatusEx(&status));
+            const uint64_t heldTarget=target-18*MiB;
+            while(status.ullAvailVirtual>heldTarget+65536){uint64_t bytes=std::min<uint64_t>(16*MiB,(status.ullAvailVirtual-heldTarget)&~uint64_t(65535));assert(bytes);auto p=VirtualAlloc(nullptr,size_t(bytes),MEM_RESERVE,PAGE_NOACCESS);assert(p);ballast.blocks.push_back(p);status.dwLength=sizeof status;assert(GlobalMemoryStatusEx(&status));}
+            assert(VirtualFree(witness,0,MEM_RELEASE));sample=w.geometryAdmission(newBudget,&exact);
+            if(sample.valid&&!admits(sample,oldBudget)&&admits(sample,newBudget))break;
+            // A late driver allocation can cross the lower edge instead. Give
+            // back one ballast block before establishing the same target again.
+            if(sample.available<newBudget.available&&!ballast.blocks.empty()){assert(VirtualFree(ballast.blocks.back(),0,MEM_RELEASE));ballast.blocks.pop_back();}
+        }
         if(!(sample.valid&&!admits(sample,oldBudget)&&admits(sample,newBudget)))std::fprintf(stderr,"PRESSURE_FIXTURE available=%llu largest=%llu oldAvailable=%llu newAvailable=%llu exact=%u valid=%u\n",(unsigned long long)sample.available,(unsigned long long)sample.largest,(unsigned long long)oldBudget.available,(unsigned long long)newBudget.available,unsigned(exact),unsigned(sample.valid));
         assert(sample.valid&&!admits(sample,oldBudget)&&admits(sample,newBudget));
         auto original=w.meshStore.table();uint64_t minimum=sample.available;

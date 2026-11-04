@@ -6,8 +6,9 @@
 
 struct DiskMeter:Meter {
     unsigned generated=0,readbacks=0,failedUploads=0,generatorCreates=0;bool queuedReadback=false,denyCapture=false,failUpload=false;
-    unsigned stateReads=0,constantReads=0,constantWrites=0;
+    unsigned stateReads=0,constantReads=0,constantWrites=0,stagingCreates=0;
     explicit DiskMeter(IDirect3DDevice9* d):Meter(d){}
+    HRESULT STDMETHODCALLTYPE CreateOffscreenPlainSurface(UINT w,UINT h,D3DFORMAT f,D3DPOOL p,IDirect3DSurface9** out,HANDLE* shared)override{++stagingCreates;return real->CreateOffscreenPlainSurface(w,h,f,p,out,shared);}
     HRESULT STDMETHODCALLTYPE GetRenderTarget(DWORD i,IDirect3DSurface9** out)override{++stateReads;return real->GetRenderTarget(i,out);}
     HRESULT STDMETHODCALLTYPE GetVertexShaderConstantF(UINT first,float* out,UINT count)override{++constantReads;return real->GetVertexShaderConstantF(first,out,count);}
     HRESULT STDMETHODCALLTYPE SetVertexShaderConstantF(UINT first,const float* data,UINT count)override{++constantWrites;return real->SetVertexShaderConstantF(first,data,count);}
@@ -19,7 +20,7 @@ struct DiskMeter:Meter {
         if(denyCapture&&lockable){*out=nullptr;return E_OUTOFMEMORY;}return real->CreateRenderTarget(w,h,f,s,q,lockable,out,shared);
     }
 };
-struct BusyState {bool query=true,lock=true;unsigned polls=0,locks=0;};
+struct BusyState {bool query=true,lock=true;unsigned polls=0,locks=0;DWORD flags=D3DLOCK_READONLY|D3DLOCK_DONOTWAIT;};
 struct BusyQuery:IDirect3DQuery9 {
     IDirect3DQuery9* real;BusyState& state;ULONG refs=1;
     BusyQuery(IDirect3DQuery9* q,BusyState& s):real(q),state(s){}
@@ -46,11 +47,43 @@ struct BusySurface:IDirect3DSurface9 {
     void STDMETHODCALLTYPE PreLoad()override{}D3DRESOURCETYPE STDMETHODCALLTYPE GetType()override{return D3DRTYPE_SURFACE;}
     HRESULT STDMETHODCALLTYPE GetContainer(REFIID,void** out)override{*out=nullptr;return E_NOINTERFACE;}
     HRESULT STDMETHODCALLTYPE GetDesc(D3DSURFACE_DESC* desc)override{return real->GetDesc(desc);}
-    HRESULT STDMETHODCALLTYPE LockRect(D3DLOCKED_RECT* p,const RECT* r,DWORD flags)override{assert(flags==(D3DLOCK_READONLY|D3DLOCK_DONOTWAIT));++state.locks;return state.lock?D3DERR_WASSTILLDRAWING:real->LockRect(p,r,flags);}
+    HRESULT STDMETHODCALLTYPE LockRect(D3DLOCKED_RECT* p,const RECT* r,DWORD flags)override{assert(flags==state.flags);++state.locks;return state.lock?D3DERR_WASSTILLDRAWING:real->LockRect(p,r,flags);}
     HRESULT STDMETHODCALLTYPE UnlockRect()override{return real->UnlockRect();}
     HRESULT STDMETHODCALLTYPE GetDC(HDC*)override{return E_NOTIMPL;}HRESULT STDMETHODCALLTYPE ReleaseDC(HDC)override{return E_NOTIMPL;}
 };
 struct MaterialDiskGpuTestAccess {
+    static void uploads(DiskMeter& device,const std::filesystem::path& root){
+        NorthlightMaterialMapPersistence disk(&device,root/"uploads","test");
+        NorthlightMaterialMapPersistence::Probe probe;probe.status=NorthlightMaterialMapPersistence::Status::Hit;
+        probe.ticket=std::make_shared<NorthlightMaterialDisk::Store::Ticket>();
+        IDirect3DTexture9* target=nullptr;
+        unsigned compared=0;const auto creates=device.stagingCreates;
+        for(unsigned size:{32u,64u,512u}){
+            ok(device.real->CreateTexture(size,size,1,D3DUSAGE_RENDERTARGET,D3DFMT_A8R8G8B8,D3DPOOL_DEFAULT,&target,nullptr));
+            probe.ticket->pixels.resize(size_t(size)*size*4);
+            for(unsigned frame=0;frame<24;++frame){
+                for(size_t i=0;i<probe.ticket->pixels.size();++i)probe.ticket->pixels[i]=std::uint8_t(i*13+frame*37);
+                assert(disk.upload(probe,target,size,size));
+                assert(pixels(device.real,target)==probe.ticket->pixels);++compared;
+            }
+            drop(target);
+        }
+        const unsigned allocations=device.stagingCreates-creates;
+        assert(allocations==3&&disk.uploadReuses==69);
+        ok(device.real->CreateTexture(512,512,1,D3DUSAGE_RENDERTARGET,D3DFMT_A8R8G8B8,D3DPOOL_DEFAULT,&target,nullptr));
+        // A busy reused buffer gets one fresh nonblocking attempt, never a wait.
+        BusyState busy;busy.flags=D3DLOCK_DONOTWAIT;disk.uploadStaging=new BusySurface(disk.uploadStaging,busy);
+        assert(disk.upload(probe,target,512,512)&&busy.locks==1&&disk.busy==1);
+        assert(pixels(device.real,target)==probe.ticket->pixels);
+        const auto beforeFail=device.stagingCreates;device.failUpload=true;
+        assert(!disk.upload(probe,target,512,512)&&!disk.uploadStaging);
+        assert(disk.upload(probe,target,512,512)&&device.stagingCreates==beforeFail+1);
+        assert(pixels(device.real,target)==probe.ticket->pixels);
+        disk.trimUploads();assert(!disk.uploadStaging);
+        assert(disk.upload(probe,target,512,512));disk.reset();assert(!disk.uploadStaging);
+        drop(target);
+        std::printf("MATERIAL_UPLOAD_REUSE_PASS maps=%u allocations=%u previousAllocations=72 exactPixels=1 dimensions=32/64/512 busyNonblocking=1 failedCopyRetry=1 trimResetRelease=1 maxScratchMiB=1\n",compared,allocations);
+    }
     static void busy(NorthlightAutoNormalCache& c,BusyState& state){assert(c.disk&&!c.disk->saves.empty());auto& s=*c.disk->saves.front();s.event=new BusyQuery(s.event,state);s.surface=new BusySurface(s.surface,state);}
     static void admission(IDirect3DDevice9* device,const std::filesystem::path& root){
         NorthlightAutoNormalCache cache(device);
@@ -94,6 +127,10 @@ int main(int argc,char** argv){
     D3DPRESENT_PARAMETERS pp{};pp.Windowed=TRUE;pp.hDeviceWindow=window;pp.BackBufferWidth=pp.BackBufferHeight=64;pp.SwapEffect=D3DSWAPEFFECT_DISCARD;pp.BackBufferFormat=D3DFMT_X8R8G8B8;pp.PresentationInterval=D3DPRESENT_INTERVAL_IMMEDIATE;
     IDirect3DDevice9* raw=nullptr;ok(api->CreateDevice(0,D3DDEVTYPE_HAL,window,D3DCREATE_HARDWARE_VERTEXPROCESSING|D3DCREATE_FPU_PRESERVE,&pp,&raw));
     DiskMeter meter(raw);meter.queuedReadback=std::strstr(argv[1],"dxvk")!=nullptr;const char* backend=meter.queuedReadback?(std::strstr(argv[1],"dxvk2")?"dxvk2":"dxvk"):"native";unsigned checked=0,expectedGenerations=0,expectedFailures=0;
+    if(mode=="uploads"){
+        MaterialDiskGpuTestAccess::uploads(meter,root);
+        drop(raw);drop(api);FreeLibrary(module);DestroyWindow(window);return 0;
+    }
     {
         MaterialDiskGpuTestAccess::admission(&meter,root);
         NorthlightAutoNormalCache cache(&meter),reference(&meter);cache.setPersistentCache(root/"maps",backend,nullptr,meter.queuedReadback);

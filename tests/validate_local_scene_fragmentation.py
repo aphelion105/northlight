@@ -19,6 +19,11 @@ s=(fp.TESTS/'validate_shared_scene_pipeline.cpp').read_text().replace('Vec3(5248
 s=s.replace('int main(int argc,char** argv){', 'int main(int argc,char** argv){std::setvbuf(stdout,nullptr,_IONBF,0);')
 s=s.replace('const bool bake=argc==4;', 'const bool bake=true;const bool fragmented=argc==4;').replace('i<probeLayout().count();++i','i<64;++i')
 s=s.replace('h.bytes(s.vertices.data(),s.vertices.size()*sizeof(WorldVertex));h.bytes(s.triangles.data(),s.triangles.size()*sizeof(WorldTriangle));','for(const auto& v:s.vertices)h.bytes(&v,sizeof v);for(const auto& t:s.triangles)h.bytes(&t,sizeof t);')
+# Compare material bytes through their storage-independent accessors. The cold
+# path shares scene texels and spools upload texels instead of owning vectors.
+s=s.replace('h.word(m.rgba.size());h.bytes(m.rgba.data(),m.rgba.size());','h.word(m.texels().size());h.bytes(m.texels().data(),m.texels().size());')
+s=s.replace('planHash.word(plan.indices.size());planHash.bytes(plan.indices.data(),plan.indices.size()*4);','planHash.word(plan.pagingIndexCount());for(size_t i=0;i<plan.pagingIndexCount();++i){auto index=plan.pagingIndex(i);planHash.bytes(&index,4);}')
+s=s.replace('planHash.word(m.bgra.size());planHash.bytes(m.bgra.data(),m.bgra.size());','planHash.word(m.pixelBytes());std::array<unsigned char,65536> pixels;for(uint64_t offset=0;offset<m.pixelBytes();){const auto bytes=std::min<uint64_t>(pixels.size(),m.pixelBytes()-offset);assert(pages.copyMaterial(m,offset,bytes,pixels.data()));planHash.bytes(pixels.data(),bytes);offset+=bytes;}')
 prefix=r"""
 #include <windows.h>
 #undef near
@@ -48,17 +53,29 @@ s=s.replace('        double planMs=ms(t);t=Clock::now();NorthlightWorldMeshPages
 s=s.replace('        Hash localHash,planHash,pageHash,rayHash,bakeHash;',r'''        {auto current=physicalSample();minimum=std::min(minimum,current.available);std::printf("SAMPLED_MINIMUM freeMiB=%.3f\n",double(minimum)/MiB);assert(minimum>=ProcessReserve);}
         Hash indexDebug,batchDebug,materialDebug,chunkDebug,recordDebug;
         indexDebug.word(plan.pagingIndexCount());for(size_t n=0;n<plan.pagingIndexCount();++n)indexDebug.word(plan.pagingIndex(n));
-        for(const auto& b:plan.batches)batch(batchDebug,b);for(const auto& m:plan.materials){materialDebug.word(m.width);materialDebug.word(m.height);materialDebug.bytes(m.bgra.data(),m.bgra.size());materialDebug.bytes(&m.alphaCutoff,4);materialDebug.word(m.terrain);}
+        for(const auto& b:plan.batches)batch(batchDebug,b);for(const auto& m:plan.materials){materialDebug.word(m.width);materialDebug.word(m.height);std::array<unsigned char,65536> pixels;for(uint64_t offset=0;offset<m.pixelBytes();){const auto bytes=std::min<uint64_t>(pixels.size(),m.pixelBytes()-offset);assert(pages.copyMaterial(m,offset,bytes,pixels.data()));materialDebug.bytes(pixels.data(),bytes);offset+=bytes;}materialDebug.bytes(&m.alphaCutoff,4);materialDebug.word(m.terrain);}
         for(const auto& c:plan.fixedTerrainChunks){chunkDebug.word(uint32_t(c.first));chunkDebug.word(uint32_t(c.second));}
         if(plan.localShadowRecords)for(const auto& r:*plan.localShadowRecords){vec(recordDebug,r.low);vec(recordDebug,r.high);recordDebug.word(r.content.words[0]);recordDebug.word(r.content.words[1]);recordDebug.word(r.content.triangles);recordDebug.word(uint32_t(r.chunkX));recordDebug.word(uint32_t(r.chunkY));recordDebug.word(r.terrain);}
         std::printf("DETAIL records=%zu",plan.localShadowRecords?plan.localShadowRecords->size():0);printHash("indices",indexDebug);printHash("batches",batchDebug);printHash("materials",materialDebug);printHash("chunks",chunkDebug);printHash("records",recordDebug);std::puts("");
         Hash localHash,planHash,pageHash,rayHash,bakeHash;''')
 if args.cold_recovery:
  s=s.replace('admits(initial,chunkBuildBudget())','admits(initial,coldChunkBuildBudget())').replace('auto budget=inBuildBudget(n);','auto budget=coldInBuildBudget(n);').replace('assert(minimum>=ProcessReserve);','assert(minimum>=ProcessReserve+ColdInBuildHeadroom-MiB);')
+ # Match the production cold path, not just its admission thresholds: omit
+ # optional BLAS/source/preparation retention and spool disposable geometry.
+ # All scene/page/ray/bake parity assertions below remain unchanged.
+ s=s.replace('LocalSceneCache cache({16u*1024u*1024u});','LocalSceneCache cache({fragmented?0u:16u*1024u*1024u});')
+ s=s.replace('const SceneSourceProvider provider=sources.provider();','const SceneSourceProvider provider=fragmented?SceneSourceProvider{}:sources.provider();')
+ s=s.replace('const SceneSourceRevision revision=[&](const std::string& path){return sources.findIdentity(path);};','const SceneSourceRevision revision=fragmented?SceneSourceRevision{}:SceneSourceRevision{[&](const std::string& path){return sources.findIdentity(path);}};')
+ s=s.replace('double localMs=ms(t);t=Clock::now();','if(fragmented)local.shareMaterialTexels();double localMs=ms(t);t=Clock::now();')
+ s=s.replace(',true,fragmented\n#endif',',true,fragmented,fragmented\n#endif')
+ s=s.replace('radius,{},&local):','radius,{},&local,true):')
+ s=s.replace('options.resident=&resident;','options.resident=fragmented?nullptr:&resident;options.spooled=fragmented;')
+ s=s.replace('options.preparation=&preparation;','options.preparation=fragmented?nullptr:&preparation;')
 if args.expect_defer:
  old='assert(fragmented?NorthlightShadowTerrain::buildConsuming(local.scene(),terrain,c,plan,error,admission,radius,{},&local):NorthlightShadowTerrain::build(local.scene(),terrain,c,plan,error,admission,radius,{},true,&local,&preparation));'
+ if args.cold_recovery:old=old.replace('&local):','&local,true):')
  assert old in s
- s=s.replace(old,'if(!(fragmented?NorthlightShadowTerrain::buildConsuming(local.scene(),terrain,c,plan,error,admission,radius,{},&local):NorthlightShadowTerrain::build(local.scene(),terrain,c,plan,error,admission,radius,{},true,&local,&preparation))){auto now=physicalSample();std::printf("SAFE_DEFER freeMiB=%.3f refusals=%u\\n",double(now.available)/MiB,refusals);assert(refusals&&now.available>=ProcessReserve+ColdInBuildHeadroom-MiB);return 17;}')
+ s=s.replace(old,'if(!('+old[len('assert('):-2]+')){auto now=physicalSample();std::printf("SAFE_DEFER freeMiB=%.3f refusals=%u\\n",double(now.available)/MiB,refusals);assert(refusals&&now.available>=ProcessReserve+ColdInBuildHeadroom-MiB);return 17;}')
 (out/'probe.cpp').write_text(s);exe=out/'test.exe'
 subprocess.run([str(fp.zig()),'c++','-target','x86-windows-gnu','-std=c++17','-O2','-UNDEBUG','-Wall','-Wextra','-Werror','-DSHARED_SCENE_PIPELINE=1','-DCURRENT_TERRAIN_CHUNKS=1','-DPIPELINE_RADIUS=928',*fp.test_include_flags(),str(out/'probe.cpp'),str(fp.src('world_gi.cpp')),str(fp.src('world_mesh_plan.cpp')),'-o',str(exe)],env=fp.zig_env(),check=True)
 results={}
@@ -70,7 +87,7 @@ for mode in ['normal','fragmented']:
  results[mode]=text
 for prefix in ['DETAIL ']:
  a=[line for line in results['normal'].splitlines() if line.startswith(prefix)];b=[line for line in results['fragmented'].splitlines() if line.startswith(prefix)];assert len(a)==7 and a==b,(a,b)
-for field in ['scene','pagesHash','rays','bakeHash','localTriangles','planTriangles','pages','batches']:
+for field in ['scene','plan','pagesHash','rays','bakeHash','localTriangles','planTriangles','pages','batches']:
  rows=[[dict(part.split('=',1) for part in l.split()[1:]) for l in results[mode].splitlines() if l.startswith('PIPELINE ')] for mode in ['normal','fragmented']];assert len(rows[0])==len(rows[1])==7
  for a,b in zip(*rows):assert a[field]==b[field],(field,a,b)
 print('PASS bounded local, terrain, BVH, shadow pages and rays match')
