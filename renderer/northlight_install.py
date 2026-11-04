@@ -392,6 +392,9 @@ class Installer:
 
     def __init__(self, package, platform=None, yes=False, out=None):
         self.pkg = package
+        # Parent-process MPQ ownership checks need the same bundled runtime as children.
+        if package.stormlib.is_file():
+            os.environ['NORTHLIGHT_STORMLIB'] = str(package.stormlib)
         self.platform = platform or package.platform
         self.yes = yes
         self.out = out or sys.stdout
