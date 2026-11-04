@@ -174,7 +174,7 @@ class NorthlightAutoBump {
         const auto usage=NorthlightShaderConstants::analyze(patched.data(),patched.size(),vertex.kind==1||vertex.kind==3?1:2);
         vertex.floatOnly=usage.analyzed&&!usage.integers.count&&!usage.booleans.count;
         NorthlightWaterShaderPatch::Analysis analysis;if(!NorthlightWaterShaderPatch::analyse(reinterpret_cast<const uint32_t*>(code),count,analysis))vertex.deferredSafe=analysis.used[10]==0;
-        displacement.registerMaterial(original,code,count,vertex.kind);displacement.registerVariant(shader.p,reinterpret_cast<const DWORD*>(patched.data()),patched.size(),displacement.skinned(original));
+        displacement.registerMaterial(original,code,count,vertex.kind);displacement.registerVariant(shader.p,reinterpret_cast<const DWORD*>(patched.data()),patched.size(),displacement.skinned(original),vertex.kind==2);
         vertex.patched=shader.p;shader.p=nullptr;return true;
     }
     bool ensureVertex(IDirect3DVertexShader9* original,Vertex& vertex){

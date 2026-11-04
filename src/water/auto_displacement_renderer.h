@@ -26,6 +26,7 @@ struct NorthlightDisplacementStorage {
         std::shared_ptr<const Mesh> source;IDirect3DTexture9* texture=nullptr,*texture1=nullptr,*height=nullptr;
         IDirect3DVertexBuffer9* vb=nullptr;IDirect3DIndexBuffer9* ib=nullptr;IDirect3DVertexDeclaration9* decl=nullptr,*sourceDecl=nullptr;
         std::vector<float> uvConstants;unsigned vertices=0,primitives=0,stride=0,detail=0,address=0,domain=0,material=0;size_t bytes=0;uint64_t used=0,program=0,baseFrame=0,heightVersion=0,heightVersion1=0,order=0,fingerprint=0,materialFingerprint=0;
+        unsigned colorCount=0;std::array<unsigned,3> colorUsages{};std::array<unsigned,10> colorSemantics{};
         ~Entry(){drop(texture);drop(texture1);drop(height);drop(vb);drop(ib);drop(decl);drop(sourceDecl);}
     };
     std::vector<Texture> textures;
@@ -43,7 +44,7 @@ class NorthlightAutoDisplacement {
     using Program=NorthlightActorDeformation::Program;
     using Mesh=NorthlightDrawSnapshot::Mesh;
     using Height=NorthlightDisplacementGeometry::Height;
-    struct Shader {IDirect3DVertexShader9* patched=nullptr,*source=nullptr,*gpu=nullptr;NorthlightDisplacementPatch::Binding binding,gpuBinding;bool pending=false,skinned=false;std::vector<uint32_t> modelPosition;std::vector<unsigned> modelRows;unsigned modelInfluences=0;};
+    struct Shader {IDirect3DVertexShader9* patched=nullptr,*source=nullptr,*gpu=nullptr;NorthlightDisplacementPatch::Binding binding,gpuBinding;NorthlightWmoVertexColor::Layout color;bool pending=false,skinned=false;std::vector<uint32_t> modelPosition;std::vector<unsigned> modelRows;unsigned modelInfluences=0;};
     struct Material {Program uv,view,uv1,blend;std::vector<unsigned> uvRegisters[2];bool layered=false,skinned=false,clearPoseInputs=true;std::uint8_t terrainDepthEligible=0;unsigned rangeRegister=17;uint64_t id=0;unsigned first=0,count=0,influences=0;};
     struct Bounds {std::weak_ptr<const Mesh> source;float low[3],high[3];uint64_t used=0;size_t bytes=0;std::unique_ptr<NorthlightReplayBounds::SkinEnvelope> skin;
         const Mesh* key=nullptr;NorthlightIntrusiveLRU::Links<Bounds> lru;};
@@ -184,10 +185,12 @@ class NorthlightAutoDisplacement {
         UINT bytes=0;if(FAILED(shader.source->GetFunction(nullptr,&bytes))||bytes<8||bytes>65536*sizeof(DWORD)||bytes%sizeof(DWORD)){++variantReadFailed;return false;}
         std::vector<DWORD> words(bytes/sizeof(DWORD));if(FAILED(shader.source->GetFunction(words.data(),&bytes))||bytes!=words.size()*sizeof(DWORD)){++variantReadFailed;return false;}
         variantBytes+=bytes;std::vector<uint32_t> patched;
-        if(NorthlightDisplacementPatch::patch(reinterpret_cast<const uint32_t*>(words.data()),words.size(),patched,shader.binding,shader.skinned)){
+        const auto preserveColor=[&]{if(!shader.color.count)return true;std::vector<uint32_t> preserved;
+            if(!NorthlightWmoVertexColor::patch(patched,shader.color,preserved))return false;patched.swap(preserved);return true;};
+        if(NorthlightDisplacementPatch::patch(reinterpret_cast<const uint32_t*>(words.data()),words.size(),patched,shader.binding,shader.skinned)&&preserveColor()){
             const HRESULT result=d->CreateVertexShader(reinterpret_cast<const DWORD*>(patched.data()),&shader.patched);variantCPU+=SUCCEEDED(result)&&shader.patched;
             if(FAILED(result))logf("DISPLACEMENT vertex shader rejected: 0x%08lx model=%08lx",static_cast<unsigned long>(result),static_cast<unsigned long>(words[0]));}
-        if(gpuHeights()&&NorthlightDisplacementPatch::patch(reinterpret_cast<const uint32_t*>(words.data()),words.size(),patched,shader.gpuBinding,shader.skinned,true)){
+        if(gpuHeights()&&NorthlightDisplacementPatch::patch(reinterpret_cast<const uint32_t*>(words.data()),words.size(),patched,shader.gpuBinding,shader.skinned,true)&&preserveColor()){
             const HRESULT result=d->CreateVertexShader(reinterpret_cast<const DWORD*>(patched.data()),&shader.gpu);variantGPU+=SUCCEEDED(result)&&shader.gpu;
             if(FAILED(result))logf("DISPLACEMENT GPU height shader rejected: 0x%08lx",static_cast<unsigned long>(result));}
         return shader.patched!=nullptr;
@@ -566,12 +569,14 @@ public:
     void reset(NorthlightStreaming::CpuRetirementBatch* batch=nullptr){snapshots.clearIndexCache(nullptr,batch);rangeSnapshots.clearIndexCache(nullptr,batch);skinRangeSnapshots.clearIndexCache(nullptr,batch);positionBounds.clear();current=nullptr;clearModelOverlays();constantStamp={};rangeConstantStamp={};sourceLookup.clear();contentLookup.clear();materialLookup.clear();indexedEntries=true;entries.clear();boundsLRU.clear();bounds.clear();poseEnvelopes.clear();poseMetadata.clear();poseBindings={};envelopeBudget.reset();boundsBytes=resident=0;for(auto& t:textures){drop(t.gpu);drop(t.source);}textures.clear();declarations.clear();}
     void endFrame(){current=nullptr;clearModelOverlays();if(variantSources)logf("MATERIAL_VARIANT_COLD frame=%u sources=%u cpuBuilt=%u gpuBuilt=%u readFailed=%u sourceBytes=%zu cpuMs=%.6f",frames,variantSources,variantCPU,variantGPU,variantReadFailed,variantBytes,variantMs);variantSources=variantCPU=variantGPU=variantReadFailed=0;variantBytes=0;variantMs=0;if(frames%60==0){MEMORYSTATUSEX memory{};memory.dwLength=sizeof memory;if(GlobalMemoryStatusEx(&memory))refreshBudget(memory);}buildsThisFrame=readsThisFrame=poseVerticesThisFrame=0;for(auto& vertices:poseKernelVertices)vertices=0;poseByteIndexVertices=0;poseEnvelopes.beginFrame(false);poseMetadata.beginFrame();envelopeBudget.reset();snapshots.clearFrame();rangeSnapshots.clearFrame();skinRangeSnapshots.clearFrame();positionBounds.beginFrame();capturedBoundsHits=0;if((draws||snapshotRejected)&&frames%600==0){logf("DISPLACEMENT cached=%zu bytes=%zu builds=%llu hits=%llu draws=%llu triangles=%llu refused=%llu terrain=%u walls=%u grass=%u models=%u stateRejected=%u heightRejected=%u shaderRejected=%u snapshotRejected=%u meshRejected=%u budgetMiB=%zu",entries.size(),resident,(unsigned long long)builds,(unsigned long long)hits,(unsigned long long)draws,(unsigned long long)triangles,(unsigned long long)refused,domainDraws[0],domainDraws[1],domainDraws[2],domainDraws[3],stateRejected,heightRejected,shaderRejected,snapshotRejected,meshRejected,cacheBudget>>20);
         logf("DISPLACEMENT snapshots attempts=%llu up=%llu buffered=%llu unknown=%llu arguments=%llu declaration=%llu stream=%llu instancing=%llu indexBuffer=%llu indexRange=%llu vertexRange=%llu budget=%llu lock=%llu unlock=%llu",(unsigned long long)snapshotAttempts,(unsigned long long)snapshotUP,(unsigned long long)(snapshotAttempts-snapshotUP),(unsigned long long)snapshotReasons[0],(unsigned long long)snapshotReasons[1],(unsigned long long)snapshotReasons[2],(unsigned long long)snapshotReasons[3],(unsigned long long)snapshotReasons[4],(unsigned long long)snapshotReasons[5],(unsigned long long)snapshotReasons[6],(unsigned long long)snapshotReasons[7],(unsigned long long)snapshotReasons[8],(unsigned long long)snapshotReasons[9],(unsigned long long)snapshotReasons[10]);}++frames;}
-    void registerVariant(IDirect3DVertexShader9* original,const DWORD* code,size_t count,bool skinned=false){
+    void registerVariant(IDirect3DVertexShader9* original,const DWORD* code,size_t count,bool skinned=false,bool wmo=false){
         auto old=shaders.find(original);if(old!=shaders.end()){drop(old->second.patched);drop(old->second.gpu);drop(old->second.source);shaders.erase(old);}Shader shader;
         // Preserve unsupported-program admission before spending pose budgets.
         // The retained source already owns its bytecode; device variants are
         // needed only after a draw passes its existing geometry distance proof.
         std::vector<uint32_t> validated;shader.pending=NorthlightDisplacementPatch::patch(reinterpret_cast<const uint32_t*>(code),count,validated,shader.binding,skinned);
+        if(wmo){shader.pending=shader.pending&&NorthlightWmoVertexColor::analyse(reinterpret_cast<const uint32_t*>(code),count,shader.color);
+            if(shader.pending){std::vector<uint32_t> preserved;shader.pending=NorthlightWmoVertexColor::patch(validated,shader.color,preserved);}}
         shader.source=original;shader.skinned=skinned;original->AddRef();shaders.emplace(original,shader);
     }
     void registerMaterial(IDirect3DVertexShader9* original,const DWORD* code,size_t count,unsigned domain){
@@ -588,7 +593,7 @@ public:
         m.layered=NorthlightActorDeformation::compile(words,count,m.uv1,true,2,5,1)&&NorthlightActorDeformation::compile(words,count,m.blend,true,2,10,1,8);
         unsigned first=256,last=0;for(const auto* p:{&m.uv,&m.view,&m.uv1,&m.blend})for(const auto& op:p->operations)for(const auto& source:op.source){if(NorthlightShadowShader::regType(source.token)!=2)continue;unsigned i=NorthlightShadowShader::regIndex(source.token);bool defined=false;for(const auto& def:p->definitions)defined|=def.reg==i;if(!defined){first=std::min(first,i);last=std::max(last,i);}}
         if(first>last||last>=256)return;m.first=m.skinned?0:first;m.count=m.skinned?256:last-first+1;m.id=++materialClock;
-        m.uvRegisters[0]=usedUVRegisters(m,false);m.uvRegisters[1]=usedUVRegisters(m,true);const bool skinned=m.skinned;materials.emplace(original,std::move(m));if(domain!=4)registerVariant(original,code,count,skinned);
+        m.uvRegisters[0]=usedUVRegisters(m,false);m.uvRegisters[1]=usedUVRegisters(m,true);const bool skinned=m.skinned;materials.emplace(original,std::move(m));if(domain!=4)registerVariant(original,code,count,skinned,domain==2);
     }
     bool prepare(IDirect3DVertexShader9* original,unsigned domain,unsigned material,const Args& args,const Admission* captured=nullptr,CaptureSource* captureSource=nullptr){
         if(captureSource)captureSource->clear();
@@ -721,7 +726,8 @@ public:
         const bool layoutFree=std::none_of(elements,elements+count,[](const D3DVERTEXELEMENT9& e){return e.Usage==D3DDECLUSAGE_TEXCOORD&&e.UsageIndex==6;});
         if(!second&&patched->second.gpu&&stream.stride<=232&&count+2<=MAXD3DDECLLENGTH&&layoutFree)gpuHeight=heightTexture(static_cast<IDirect3DTexture9*>(tex.p),domain==4);
         timing.next(P::Subdivide);
-        ++buildsThisFrame;Mesh output;if(!NorthlightDisplacementGeometry::build(*source,elements,count,uv,first,factor,domain==1,u==D3DTADDRESS_CLAMP,v==D3DTADDRESS_CLAMP,output,second,second?&uv1:nullptr,second?&weights:nullptr,shader->second.influences,gpuHeight!=nullptr)){++meshRejected;return false;}
+        const auto* color=domain==2?&patched->second.color:nullptr;
+        ++buildsThisFrame;Mesh output;if(!NorthlightDisplacementGeometry::build(*source,elements,count,uv,first,factor,domain==1,u==D3DTADDRESS_CLAMP,v==D3DTADDRESS_CLAMP,output,second,second?&uv1:nullptr,second?&weights:nullptr,shader->second.influences,gpuHeight!=nullptr,color)){++meshRejected;return false;}
         timing.work(output.primitiveCount,output.byteSize());if(profile)profile->count(P::GeometryBuilt);timing.next(P::GeometryUpload);
         if(builds<8){float peak=0;for(unsigned i=0;i<output.vertexCount;++i){float delta[3];std::memcpy(delta,output.streams[0].bytes.data()+size_t(i)*output.streams[0].stride+stream.stride,12);peak=std::max(peak,std::sqrt(delta[0]*delta[0]+delta[1]*delta[1]+delta[2]*delta[2])*strength);}logf("DISPLACEMENT build domain=%u vertices=%u triangles=%u maxOffset=%.5f VScontrol=%u",domain,output.vertexCount,output.primitiveCount,peak,shaders.find(original)->second.binding.constant);}
         const auto indexBytes=NorthlightDisplacementGeometry::indexElementBytes(output);
@@ -735,7 +741,10 @@ public:
         D3DVERTEXELEMENT9 outputElements[MAXD3DDECLLENGTH+1];std::copy(elements,elements+count,outputElements);
         outputElements[count-1]={0,WORD(stream.stride),D3DDECLTYPE_FLOAT3,D3DDECLMETHOD_DEFAULT,D3DDECLUSAGE_TEXCOORD,7};unsigned end=count;
         if(gpuHeight)outputElements[end++]={0,WORD(stream.stride+12),D3DDECLTYPE_FLOAT2,D3DDECLMETHOD_DEFAULT,D3DDECLUSAGE_TEXCOORD,6};
+        if(color){const unsigned offset=stream.stride+(gpuHeight?20:12);
+            for(unsigned i=0;i<color->attributes();++i)outputElements[end++]={0,WORD(offset+color->offset(i)),BYTE(i+1==color->attributes()?D3DDECLTYPE_FLOAT3:color->type(i%color->count)),D3DDECLMETHOD_DEFAULT,D3DDECLUSAGE_TEXCOORD,BYTE(color->semantic[i])};}
         outputElements[end]=D3DDECL_END();if(FAILED(d->CreateVertexDeclaration(outputElements,&entry->decl)))return false;
+        if(color){entry->colorCount=color->count;entry->colorSemantics=color->semantic;for(unsigned i=0;i<color->count;++i)entry->colorUsages[i]=color->color.inputs[i].usage;}
         entry->height=gpuHeight;if(gpuHeight)gpuHeight->AddRef();
         entry->source=source;entry->sourceDecl=decl.p;entry->sourceDecl->AddRef();entry->texture=static_cast<IDirect3DTexture9*>(tex.p);entry->texture->AddRef();entry->texture1=static_cast<IDirect3DTexture9*>(tex1.p);if(entry->texture1)entry->texture1->AddRef();entry->detail=detail;entry->program=shader->second.id;entry->domain=domain;entry->material=material;entry->uvConstants=uvScratch;entry->address=address;entry->heightVersion=revision;entry->heightVersion1=revision1;entry->vertices=output.vertexCount;entry->primitives=output.primitiveCount;entry->stride=output.streams[0].stride;entry->used=++clock;entry->baseFrame=uint64_t(frames)+1;current=entry.get();userDraw=args.vertices!=nullptr;indexedUserDraw=userDraw&&args.draw.indexed;retain(std::move(entry));++builds;return true;
     }
@@ -761,8 +770,11 @@ public:
         NorthlightDrawSnapshot::Ref<IDirect3DVertexShader9> vs;if(FAILED(d->GetVertexShader(vs.out()))||!vs.p)return original();auto shader=shaders.find(vs.p);
         // World terrain-coverage variants keep the native input layout but are
         // created by a separate subsystem. Patch each live variant once.
-        if(shader==shaders.end()&&shaders.size()<4096){UINT bytes=0;if(SUCCEEDED(vs->GetFunction(nullptr,&bytes))&&bytes&&bytes<=65536*4){std::vector<DWORD> words(bytes/4);if(SUCCEEDED(vs->GetFunction(words.data(),&bytes))){bool relative=false;for(auto word:words)if((word&0x80002000u)==0x80002000u&&NorthlightShadowShader::regType(word)==2)relative=true;registerVariant(vs.p,words.data(),words.size(),relative);}}shader=shaders.find(vs.p);}
+        if(shader==shaders.end()&&shaders.size()<4096){UINT bytes=0;if(SUCCEEDED(vs->GetFunction(nullptr,&bytes))&&bytes&&bytes<=65536*4){std::vector<DWORD> words(bytes/4);if(SUCCEEDED(vs->GetFunction(words.data(),&bytes))){bool relative=false;for(auto word:words)if((word&0x80002000u)==0x80002000u&&NorthlightShadowShader::regType(word)==2)relative=true;registerVariant(vs.p,words.data(),words.size(),relative,current->domain==2);}}shader=shaders.find(vs.p);}
         if(shader==shaders.end()||!ensureVariant(shader->second))return original();
+        if(current->domain==2){const auto& color=shader->second.color;
+            if(!color.count||color.count!=current->colorCount||color.semantic!=current->colorSemantics)return original();
+            for(unsigned i=0;i<color.count;++i)if(color.color.inputs[i].usage!=current->colorUsages[i])return original();}
         const bool gpu=current->height&&shader->second.gpu;if(current->height&&!gpu)return original();
         const auto& binding=gpu?shader->second.gpuBinding:shader->second.binding;
         if(gpu){const unsigned midpoint=binding.count==2?1:4;std::fill(controls[midpoint],controls[midpoint]+4,0.f);controls[midpoint][0]=.5f;}

@@ -1,5 +1,6 @@
 #pragma once
 #include "actor_deformation.h"
+#include "wmo_vertex_color.h"
 #include <unordered_map>
 #include <memory_resource>
 
@@ -51,7 +52,8 @@ inline unsigned textureFactor(const std::vector<std::array<float,2>>& uv,const H
 inline bool build(const Mesh& in,const D3DVERTEXELEMENT9* elements,UINT elementCount,
     const std::vector<std::array<float,2>>& uv,const Height& first,unsigned factor,bool terrain,
     bool clampU,bool clampV,Mesh& out,const Height* second=nullptr,
-    const std::vector<std::array<float,2>>* uv1=nullptr,const std::vector<float>* blend=nullptr,unsigned influences=4,bool gpuHeight=false){
+    const std::vector<std::array<float,2>>* uv1=nullptr,const std::vector<float>* blend=nullptr,unsigned influences=4,bool gpuHeight=false,
+    const NorthlightWmoVertexColor::Layout* color=nullptr){
     out={};if(influences>4)return false;const auto stride=in.streams[0].stride;
     if(gpuHeight&&(second||stride>232||elementCount+2>MAXD3DDECLLENGTH))return false;
     if(!in.vertexCount||in.vertexCount>32768||stride>240||uv.size()!=in.vertexCount||factor<2||factor>128||!elements||elementCount>MAXD3DDECLLENGTH)return false;
@@ -94,7 +96,14 @@ inline bool build(const Mesh& in,const D3DVERTEXELEMENT9* elements,UINT elementC
         if(!rigid[i])for(unsigned k=0;k<3;++k)edges[edge(t[k],t[(k+1)%3])]=1;
     }
     std::vector<bool> boundary(in.vertexCount,false);for(auto e:edges)if(e.second!=2){boundary[unsigned(e.first>>32)]=true;boundary[unsigned(e.first)]=true;}
-    const unsigned outputStride=stride+(gpuHeight?20:12);
+    const unsigned colorOffset=stride+(gpuHeight?20:12),outputStride=colorOffset+(color?color->bytes():0);
+    if(color&&(!color->count||color->count>3||color->cornerBytes()>28||outputStride>240||elementCount+color->attributes()+2>MAXD3DDECLLENGTH))return false;
+    std::array<unsigned,3> colorElements{};
+    if(color)for(unsigned i=0;i<color->count;++i){unsigned e=0;while(e<elementCount&&elements[e].Stream!=0xff&&
+        (elements[e].Usage!=color->color.inputs[i].usage||elements[e].UsageIndex!=color->color.inputs[i].index))++e;
+        if(e==elementCount||elements[e].Stream!=0||elements[e].Type!=color->type(i))return false;colorElements[i]=e;}
+    if(color)for(unsigned i=0;i<color->attributes();++i)for(unsigned e=0;e<elementCount&&elements[e].Stream!=0xff;++e)
+        if(elements[e].Usage==D3DDECLUSAGE_TEXCOORD&&elements[e].UsageIndex==color->semantic[i])return false;
     out.streams[0].stride=outputStride;out.topology=D3DPT_TRIANGLELIST;out.indexed=true;
     const auto capacity=std::min(size_t(32768),triangles.size()*(factor+1)*(factor+2)/2);
     out.streams[0].bytes.reserve(capacity*outputStride);out.indices.reserve(triangles.size()*factor*factor*3);
@@ -115,6 +124,8 @@ inline bool build(const Mesh& in,const D3DVERTEXELEMENT9* elements,UINT elementC
         for(auto& scale:skinRelief)scale=peak>0?std::min(1.f,.05f*std::sqrt(scale)/(.12f*peak)):1.f;
     }
     std::pmr::unordered_map<Key,unsigned,Hash> vertices(&scratch);vertices.reserve(capacity);
+    std::array<unsigned char,84> cornerPayload{};
+    const unsigned cornerBytes=color?color->cornerBytes()*3:0;
     auto vertex=[&](const std::array<unsigned,3>& t,unsigned i,unsigned j)->unsigned{
         const unsigned w[3]={factor-i-j,i,j};std::array<std::pair<unsigned,unsigned>,3> sorted;
         for(unsigned k=0;k<3;++k)sorted[k]={w[k]?t[k]:UINT_MAX,w[k]};std::sort(sorted.begin(),sorted.end());
@@ -122,6 +133,11 @@ inline bool build(const Mesh& in,const D3DVERTEXELEMENT9* elements,UINT elementC
         if(out.vertexCount>=32768){auto found=vertices.find(key);return found!=vertices.end()?found->second:UINT_MAX;}
         const auto inserted=vertices.try_emplace(key,out.vertexCount);if(!inserted.second)return inserted.first->second;
         const unsigned n=out.vertexCount++;auto& bytes=out.streams[0].bytes;bytes.resize(size_t(out.vertexCount)*outputStride);auto* dst=bytes.data()+size_t(n)*outputStride;
+        if(color){
+            std::memcpy(dst+colorOffset,cornerPayload.data(),cornerBytes);
+            const float barycentric[]={float(w[0])/factor,float(w[1])/factor,float(w[2])/factor};
+            std::memcpy(dst+colorOffset+cornerBytes,barycentric,sizeof barycentric);
+        }
         Four direction={0,0,1,0};
         for(UINT e=0;e<elementCount&&elements[e].Stream!=0xff;++e){const auto& element=elements[e];if(&element==weights||&element==bones)continue;Four value={};
             for(unsigned k=0;k<3;++k){const auto& a=decoded[size_t(e)*in.vertexCount+t[k]];for(unsigned c=0;c<4;++c)value[c]+=a[c]*(float(w[k])/factor);}
@@ -160,6 +176,8 @@ inline bool build(const Mesh& in,const D3DVERTEXELEMENT9* elements,UINT elementC
     };
     std::array<std::array<unsigned,129>,129> rows;
     for(size_t ti=0;ti<triangles.size();++ti){auto t=triangles[ti];
+        if(color)for(unsigned corner=0;corner<3;++corner)for(unsigned input=0;input<color->count;++input)
+            std::memcpy(cornerPayload.data()+color->offset(corner*color->count+input),in.streams[0].bytes.data()+size_t(t[corner])*stride+elements[colorElements[input]].Offset,color->inputBytes(input));
         const bool seamTriangle=influences&&bones&&boundary[t[0]]&&boundary[t[1]]&&boundary[t[2]];
         if(centroid||!rigid[ti]||seamTriangle){unsigned a=vertex(t,0,0),b=vertex(t,factor,0),c=vertex(t,0,factor);if(a==UINT_MAX||b==UINT_MAX||c==UINT_MAX){out={};return false;}
             if(!rigid[ti]||seamTriangle)out.indices.insert(out.indices.end(),{a,b,c});
