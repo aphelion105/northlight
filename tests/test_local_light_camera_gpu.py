@@ -21,4 +21,6 @@ command = [str(exe), str(fp.COMPILED), backend]
 subprocess.run(command, cwd=out, check=True, timeout=90)
 negative = subprocess.run([*command, 'wrong-view'], cwd=out, capture_output=True, text=True, timeout=90)
 assert negative.returncode == 1 and 'FAIL LocalDirect' in negative.stdout, negative.stdout + negative.stderr
-print('PASS: all camera poses; broken inverse view rejected')
+stale = subprocess.run([*command, 'stale-pose'], cwd=out, capture_output=True, text=True, timeout=90)
+assert stale.returncode == 1 and 'FAIL moving pose' in stale.stdout, stale.stdout + stale.stderr
+print('PASS: all camera/animation/attachment poses; broken inverse view and stale pose rejected')

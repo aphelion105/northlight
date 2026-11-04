@@ -2,7 +2,9 @@
 #include "particle_lights.h"
 #include "snapshot_archive.h"
 #include "native_light_bridge.h"
+#include "model_light_attachments.h"
 #include <cassert>
+#include <chrono>
 #include <fstream>
 #include <limits>
 #include <memory>
@@ -13,6 +15,7 @@ namespace A=NorthlightStream::SnapshotArchive;
 static Snapshot scene(){
     Snapshot s;s.valid=1;s.scene=0x1234000;s.time=1000;s.count=1;std::strcpy(s.map,"Northrend");
     auto& p=s.lights[0];p.id=0xfea0000000000001ull;p.position[0]=4;p.position[2]=2;
+    p.anchor[0]=3;p.anchor[2]=2;p.flags=RootAnchor;
     p.color[0]=.7f;p.color[1]=.4f;p.color[2]=.1f;p.attenuation[1]=.7f;p.attenuation[2]=.03f;return s;
 }
 static void publication(){
@@ -51,14 +54,59 @@ static void publication(){
     auto broken=s;broken.count=129;assert(!wellFormed(broken));broken=s;broken.lights[0].color[0]=std::numeric_limits<float>::quiet_NaN();assert(!wellFormed(broken));
     std::puts("NATIVE_LIGHT_PUBLICATION_PASS neverDrawn=1 longOffscreen=1 movement=1 hue=1 disable=1 detach=1");
 }
+static void cachedAttachment(){
+    auto s=scene();NorthlightEquipmentLights::Native point;
+    std::copy_n(s.lights[0].position,3,point.position);std::copy_n(s.lights[0].color,3,point.color);std::copy_n(s.lights[0].attenuation,3,point.attenuation);
+    auto lamp=NorthlightEquipmentLights::light(point,77,1);lamp.sourceId=77;lamp.flags=NorthlightLocalLights::CastShadow;
+    std::copy_n(s.lights[0].anchor,3,lamp.position);auto unrelated=lamp;unrelated.sourceId=88;unrelated.position[0]=50;
+    const std::vector<NorthlightLocalLights::Light> fixed{lamp,unrelated};std::vector<NorthlightLocalLights::Light> moved;
+    auto records=std::make_shared<NorthlightLightAttachments::Records>();records->push_back({});records->back().sourceId=77;
+    NorthlightLightAttachments::Tracker attachments;attachments.bind(records);attachments.observeScene(s,fixed);
+    assert(!attachments.needsDrawPose()); // Current native poses must not force extra model replay capture.
+    auto output=attachments.apply(fixed,moved);assert(output.size()==2&&output[0].position[0]==4&&output[1].position[0]==50);
+    assert(output[0].sourceId==77&&output[0].flags==lamp.flags&&output[0].attenuationEnd==lamp.attenuationEnd);
+    NorthlightEquipmentLights::Tracker native;float camera[3]{};native.observeScene(s,1000,output,camera);native.publish(1100,&output);assert(!native.outputCount);
+    s.lights[0].position[0]=20;attachments.observeScene(s,fixed);assert(attachments.apply(fixed,moved)[0].position[0]==20&&fixed[0].position[0]==3);
+    s.count=0;attachments.observeScene(s,fixed);output=attachments.apply(fixed,moved);assert(output.size()==1&&output[0].sourceId==88);
+    s=scene();s.lights[0].id+=10;attachments.observeScene(s,fixed);output=attachments.apply(fixed,moved);assert(output.size()==2&&output[0].position[0]==4);
+    s.count=0;attachments.observeScene(s,fixed);attachments.releaseScene();assert(attachments.apply(fixed,moved).size()==2&&attachments.needsDrawPose());
+    attachments.reset();attachments.bind(records);s=scene();s.lights[0].flags=0;attachments.observeScene(s,fixed);
+    assert(attachments.apply(fixed,moved)[0].position[0]==3); // An attached child cannot claim a root world placement.
+    s=scene();const std::vector<NorthlightLocalLights::Light> reversed{unrelated,lamp};attachments.observeScene(s,reversed);
+    output=attachments.apply(reversed,moved);assert(output[0].sourceId==88&&output[1].sourceId==77&&output[1].position[0]==4);
+    attachments.prune({unrelated},camera);assert(attachments.nativeBindings.empty());
+    // Two bones can share the same authored anchor and hue before animation.
+    attachments.reset();auto pairRecords=std::make_shared<NorthlightLightAttachments::Records>(*records);
+    pairRecords->push_back({});pairRecords->back().sourceId=88;attachments.bind(pairRecords);
+    auto twin=lamp;twin.sourceId=88;const std::vector<NorthlightLocalLights::Light> pair{lamp,twin};
+    s=scene();s.count=2;s.lights[1]=s.lights[0];++s.lights[1].id;s.lights[1].position[0]=9;
+    for(unsigned i=0;i<2;++i){attachments.observeScene(s,pair);output=attachments.apply(pair,moved);
+        assert(output.size()==2&&output[0].position[0]==4&&output[1].position[0]==9);}
+    std::puts("NATIVE_FGA_PASS offscreenPose=1 noDuplicate=1 lifecycle=1 sourceIdentityRangeShadowPreserved=1");
+}
+static void attachmentCost(){
+    // A broad static cache and many unrelated native effects must not require
+    // per-source tree searches for every distant FGL entry.
+    auto s=scene();s.count=32;std::vector<NorthlightLocalLights::Light> fixed(4096),moved;
+    auto records=std::make_shared<NorthlightLightAttachments::Records>();
+    for(unsigned i=0;i<fixed.size();++i){auto& lamp=fixed[i];lamp.kind=2;lamp.sourceId=i+1;lamp.position[0]=float(i*10);lamp.diffuse[0]=1;
+        if(i<256){records->push_back({});records->back().sourceId=lamp.sourceId;}}
+    for(unsigned i=0;i<s.count;++i){s.lights[i]=scene().lights[0];s.lights[i].id+=i;s.lights[i].anchor[0]=-float(i+1);}
+    NorthlightLightAttachments::Tracker tracker;tracker.bind(records);tracker.observeScene(s,fixed);
+    const auto start=std::chrono::steady_clock::now();
+    for(unsigned i=0;i<100;++i){tracker.observeScene(s,fixed);assert(tracker.apply(fixed,moved).size()==fixed.size());}
+    const auto elapsed=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count()/100;
+    assert(tracker.nativeBindings.empty());std::printf("NATIVE_FGA_CPU static=4096 unmatched=32 ms=%.4f\n",elapsed);
+}
 int main(int argc,char** argv){
-    assert(argc==2);publication();auto source=std::make_unique<GameSnapshot>(),target=std::make_unique<GameSnapshot>();
+    assert(argc==2);publication();cachedAttachment();attachmentCost();auto source=std::make_unique<GameSnapshot>(),target=std::make_unique<GameSnapshot>();
     unsigned value=42;assert(source->record(0x123456,&value,4,true));source->triggerKind=2;source->triggerDraw=123;
     source->nativeLights=scene();std::vector<unsigned char> bytes(A::MaxBytes);std::size_t written=0;A::Error error;
-    assert(A::encode(*source,bytes.data(),bytes.size(),written,error));bytes.resize(written);assert(A::u32(bytes.data()+8)==2);
+    assert(A::encode(*source,bytes.data(),bytes.size(),written,error));bytes.resize(written);assert(A::u32(bytes.data()+8)==3);
     assert(A::decode(bytes.data(),bytes.size(),*target,error));
     assert(target->nativeLights.count==1&&target->nativeLights.lights[0].id==source->nativeLights.lights[0].id);
-    source->nativeLights.lights[0].position[0]=999;assert(target->nativeLights.lights[0].position[0]==4);
+    source->nativeLights.lights[0].position[0]=999;source->nativeLights.lights[0].anchor[0]=999;
+    assert(target->nativeLights.lights[0].position[0]==4&&target->nativeLights.lights[0].anchor[0]==3&&target->nativeLights.lights[0].flags==RootAnchor);
     {ScopedPlayback play(*target);assert(activeSnapshot->nativeLights.lights[0].color[0]==.7f);
 #ifdef _WIN32
         Snapshot output;float camera[3]{};const auto reads=NorthlightWorldContext::SelfReadStats::calls.load();
@@ -70,12 +118,15 @@ int main(int argc,char** argv){
     std::ofstream file(argv[1],std::ios::binary);file.write(reinterpret_cast<const char*>(bytes.data()),bytes.size());file.close();assert(file.good());
     // Corrupt count/map/value with a valid checksum: strict import rejects it.
     const auto extension=A::HeaderBytes+A::RecordBytes+4;
-    for(auto change:std::array<std::pair<std::size_t,std::uint32_t>,3>{{{extension+8,129},{extension+12,2},{extension+80+8,0x7fc00000}}}){
+    for(auto change:std::array<std::pair<std::size_t,std::uint32_t>,5>{{{extension+8,129},{extension+12,2},{extension+80+8,0x7fc00000},{extension+80+48,0x7fc00000},{extension+80+60,2}}}){
         auto bad=bytes;A::put32(bad.data()+change.first,change.second);A::put32(bad.data()+bad.size()-4,A::checksum(bad.data(),bad.size()-4));
         assert(!A::decode(bad.data(),bad.size(),*target,error)&&!target->nativeLights.valid);
     }
+    auto v2=bytes;v2.erase(v2.begin()+extension+80+48,v2.begin()+extension+80+64);
+    A::put32(v2.data()+8,2);A::put32(v2.data()+12,unsigned(v2.size()));A::put32(v2.data()+v2.size()-4,A::checksum(v2.data(),v2.size()-4));
+    assert(A::decode(v2.data(),v2.size(),*target,error)&&target->nativeLights.count==1&&!target->nativeLights.lights[0].flags);
     target->clear();assert(!target->nativeLights.valid&&!target->nativeLights.count);
     source->nativeLights.clear();bytes.resize(A::MaxBytes);assert(A::encode(*source,bytes.data(),bytes.size(),written,error));
     assert(A::u32(bytes.data()+8)==1&&A::decode(bytes.data(),written,*target,error)&&!target->nativeLights.valid);
-    std::puts("NATIVE_LIGHT_SNAPSHOT_PASS ownedValues=1 v1Compatible=1 v2RoundTrip=1 invalidRejected=1");
+    std::puts("NATIVE_LIGHT_SNAPSHOT_PASS ownedValues=1 v1Compatible=1 v2Compatible=1 v3RoundTrip=1 invalidRejected=1");
 }

@@ -21,6 +21,10 @@ with tempfile.TemporaryDirectory(prefix='native-scene-lights-') as folder:
         try:
             for name in ('dalaran_lampwall01','dalaran_lamppost01'):
                 path=tmp/(name+'.m2');path.write_bytes(assets.read('world\\expansion02\\doodads\\dalaran\\'+name+'.m2'));fixtures.append(str(path))
+            for name in ('spells\\enchantments\\shaman_fire.m2','spells\\enchantments\\skullballs.m2','spells\\torch_missile.m2'):
+                path=tmp/Path(name.replace('\\','/')).name;path.write_bytes(assets.read(name));fixtures.append(str(path))
+            for name in ('Creature\\HumanMaleWarriorLight\\HumanMaleWarriorLight.m2','item\\objectcomponents\\weapon\\club_1h_torch_a_01.m2'):
+                path=tmp/Path(name.replace('\\','/')).name;path.write_bytes(assets.read(name));fixtures += ['--parent',str(path)] if 'Creature' in name else [str(path)]
         finally:
             assets.close()
         fixtures+=['--exe',str(fp.client_root()/'Wow.exe')]

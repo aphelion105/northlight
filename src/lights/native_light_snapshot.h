@@ -6,12 +6,14 @@
 
 namespace NorthlightNativeLights {
 inline constexpr unsigned Capacity=128;
+inline constexpr std::uint32_t RootAnchor=1;
 struct Point {
     std::uint64_t id=0;
     float position[3]{},color[3]{},attenuation[3]{};
     std::uint32_t reserved=0;
+    float anchor[3]{};std::uint32_t flags=0;
 };
-static_assert(sizeof(Point)==48,"native light value layout");
+static_assert(sizeof(Point)==64,"native light value layout");
 // Owned values only: the replay thread never follows client model pointers.
 struct Snapshot {
     std::uint32_t scene=0,time=0,count=0,valid=0;
@@ -24,7 +26,8 @@ inline bool wellFormed(const Snapshot& s){
     if(!s.valid)return s.count==0;
     if(!s.scene)return false;
     for(unsigned i=0;i<s.count;++i){const auto& p=s.lights[i];
-        if(!p.id||p.reserved)return false;
+        if(!p.id||p.reserved||(p.flags&~RootAnchor))return false;
+        for(float value:p.anchor)if(!std::isfinite(value)||std::fabs(value)>=100000)return false;
         for(unsigned k=0;k<3;++k)
             if(!std::isfinite(p.position[k])||std::fabs(p.position[k])>=100000||
                !std::isfinite(p.color[k])||p.color[k]<0||p.color[k]>10000||

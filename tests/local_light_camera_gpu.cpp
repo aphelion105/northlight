@@ -1,4 +1,4 @@
-// A fixed receiver and lamp keep their irradiance while the camera orbits.
+// Static, animated-bone and attached lamps illuminate a fixed receiver offscreen.
 // Use Dalaran-scale coordinates and the production shader/scissor together.
 #define main northlight_unused_composite_replay
 #include "composite_distance_gpu.cpp"
@@ -13,7 +13,8 @@ static Image solid(float r,float g=0,float b=0,float a=0){
     const float values[]={r,g,b,a};std::memcpy(im.pixels.data(),values,16);return im;
 }
 int main(int argc,char** argv){
-    assert(argc==3||argc==4);const bool badView=argc==4;
+    assert(argc==3||argc==4);const bool badView=argc==4&&std::strcmp(argv[3],"wrong-view")==0;
+    const bool badPose=argc==4&&std::strcmp(argv[3],"stale-pose")==0;
     WNDCLASSW wc{};wc.lpfnWndProc=DefWindowProcW;wc.lpszClassName=L"NorthlightLampCamera";wc.hInstance=GetModuleHandleW(nullptr);assert(RegisterClassW(&wc));
     auto window=CreateWindowExW(0,wc.lpszClassName,L"",WS_OVERLAPPED,0,0,4,4,nullptr,nullptr,wc.hInstance,nullptr);assert(window);
     auto module=LoadLibraryA(argv[2]);assert(module);auto create=(IDirect3D9*(WINAPI*)(UINT))GetProcAddress(module,"Direct3DCreate9");assert(create);auto api=create(D3D_SDK_VERSION);assert(api);
@@ -26,19 +27,27 @@ int main(int argc,char** argv){
     ok(d->SetRenderState(D3DRS_CULLMODE,D3DCULL_NONE));ok(d->SetRenderState(D3DRS_COLORWRITEENABLE,15));
     for(unsigned s=0;s<16;++s){for(auto key:{D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER})ok(d->SetSamplerState(s,key,D3DTEXF_POINT));ok(d->SetSamplerState(s,D3DSAMP_MIPFILTER,D3DTEXF_NONE));for(auto key:{D3DSAMP_ADDRESSU,D3DSAMP_ADDRESSV})ok(d->SetSamplerState(s,key,D3DTADDRESS_CLAMP));}
     const float nearZ=.2f,farZ=1277.00488f,distance=5,world[]={5766,573,650};
-    Fixture fixture;const auto model=fixture.add(5765.8f);auto& placement=fixture.memory.object(model);
-    put(placement,0xe8,578.75f);put(placement,0xec,651.7f);std::copy_n(world,3,fixture.camera);fixture.update();assert(fixture.output.count==1);
-    NorthlightEquipmentLights::Tracker native;NorthlightParticleLights::Frame particles;NorthlightLocalLightSelection::Tracker selector;
-    native.observeScene(fixture.output,1000,{},fixture.camera);native.publish(1000);
-    native.observeScene(fixture.output,1100,{},fixture.camera);native.publish(1100);assert(native.outputCount==1);
-    const auto reference=native.output[0];const float lamp[]={reference.position[0],reference.position[1],reference.position[2],reference.attenuationEnd};
-    const float rgb[]={reference.diffuse[0],reference.diffuse[1],reference.diffuse[2],NorthlightLocalLightSelection::transport(reference)};
     const float depth=farZ/(farZ-nearZ)*(1-nearZ/distance)*.94f;
     auto z=texture(d,solid(depth)),normal=texture(d,solid(0,1,0,1)),baseline=texture(d,solid(0,0,0,1)),zero=texture(d,solid(0)),detail=texture(d,solid(.5f,.5f,-distance,1));
     ok(d->SetTexture(1,z));ok(d->SetTexture(9,detail));ok(d->SetTexture(11,zero));ok(d->SetTexture(12,baseline));ok(d->SetTexture(14,normal));
     const Vertex quad[]={{-.5f,-.5f,0,1,0,0},{.5f,-.5f,0,1,1,0},{-.5f,.5f,0,1,0,1},{.5f,.5f,0,1,1,1}};
-    float delta[3],length=0;for(unsigned k=0;k<3;++k){delta[k]=lamp[k]-world[k];length+=delta[k]*delta[k];}length=std::sqrt(length);
-    const float reach=(lamp[3]-length)*rgb[3],lambert=delta[1]/length;unsigned cases=0,failures=0,bulbOffscreen=0;float maxError=0;
+    unsigned cases=0,failures=0,bulbOffscreen=0;float maxError=0;
+    for(unsigned scenario=0;scenario<3;++scenario){
+        auto blob=modelAsset();authoredTrack(blob,648+76,4,{{.75f},{.75f},{.75f},{.75f}});
+        if(scenario)authoredTrack(blob,320,12,{{0,0,0,2,0,0},{0,0,0,2,0,0}},3);
+        Fixture fixture(blob);const auto root=fixture.add(5765.8f);auto& placement=fixture.memory.object(root);
+        put(placement,0xe8,578.75f);put(placement,0xec,651.7f);
+        if(scenario==2){
+            fixture.memory.set(fixture.lights[0],0x64,0u);
+            const auto child=fixture.add();auto& attached=fixture.memory.object(child);
+            put(attached,0x48,root);put(attached,0x54,0xffffu);put(attached,16,1u|0x40000u);
+        }
+        std::copy_n(world,3,fixture.camera);fixture.update();assert(fixture.output.count==1);
+        NorthlightEquipmentLights::Tracker native;NorthlightParticleLights::Frame particles;NorthlightLocalLightSelection::Tracker selector;
+        native.observeScene(fixture.output,1000,{},fixture.camera);native.publish(1000);
+        native.observeScene(fixture.output,1100,{},fixture.camera);native.publish(1100);assert(native.outputCount==1);
+        const auto reference=native.output[0];
+        const float rgb[]={reference.diffuse[0],reference.diffuse[1],reference.diffuse[2],NorthlightLocalLightSelection::transport(reference)};
     for(const char* entry:{"LocalDirect1","LocalDirect","LocalDirect16"}){
         auto code=read(std::string(argv[1])+"/"+entry+".bin");IDirect3DPixelShader9* ps=nullptr;ok(d->CreatePixelShader((const DWORD*)code.data(),&ps));ok(d->SetPixelShader(ps));
         for(float pitch:{0.f,10.f,41.f,66.f,88.f})for(float yaw:{-150.f,-20.f,75.f})for(float sign:{-1.f,1.f})for(float sunCut:{0.f,.7f})for(float bump:{0.f,.75f}){
@@ -48,7 +57,15 @@ int main(int argc,char** argv){
             float c[116][4]{};c[0][0]=c[0][1]=.5f;c[0][2]=nearZ;c[0][3]=farZ;c[1][0]=1.10396826f;c[1][1]=1.96261036f;c[1][2]=sign;c[2][0]=1.f/.94f;
             for(unsigned k=0;k<3;++k){c[3][k]=right[k];c[4][k]=up[k];c[5][k]=forward[k]*sign;c[6][k]=world[k]-forward[k]*distance;}c[6][3]=1;
             c[20][2]=.85f;c[33][0]=c[33][1]=2;c[33][2]=c[33][3]=1;c[52][1]=.648f;c[52][2]=sunCut;c[73][0]=bump;c[73][1]=48;
+            const unsigned phase=(cases%5)*250;put(fixture.memory.object(fixture.scene),12,100u+phase);
             std::copy_n(c[6],3,fixture.camera);fixture.update();assert(fixture.output.count==1);
+            if(badPose&&scenario)fixture.output.lights[0].position[0]=5765.8f;
+            const float lamp[]={5765.8f+float(scenario*2)*float(phase)*.001f,578.75f,652.7f,reference.attenuationEnd};
+            for(unsigned k=0;k<3;++k)if(std::fabs(fixture.output.lights[0].position[k]-lamp[k])>.003f){
+                std::printf("FAIL moving pose scenario=%u phase=%u axis=%u actual=%g expected=%g\n",scenario,phase,k,fixture.output.lights[0].position[k],lamp[k]);return 1;
+            }
+            float delta[3],length=0;for(unsigned k=0;k<3;++k){delta[k]=lamp[k]-world[k];length+=delta[k]*delta[k];}length=std::sqrt(length);
+            const float reach=(lamp[3]-length)*rgb[3],lambert=delta[1]/length;
             const unsigned now=1150+cases*50;native.observeScene(fixture.output,now,{},fixture.camera);native.publish(now);
             particles.publish(native.output.data(),native.outputCount,{},fixture.camera,selector);
             const auto selected=selector.update({},fixture.camera,32,.05f,false,nullptr,particles.output.data(),particles.outputCount);
@@ -68,6 +85,7 @@ int main(int argc,char** argv){
         }
         ok(d->SetPixelShader(nullptr));ps->Release();
     }
-    assert(bulbOffscreen>0);std::printf("LOCAL_LIGHT_CAMERA cases=%u failures=%u bulbOffscreen=%u nativeDraws=0 maxError=%g\n",cases,failures,bulbOffscreen,maxError);
+    }
+    assert(bulbOffscreen>0);std::printf("LOCAL_LIGHT_CAMERA cases=%u failures=%u bulbOffscreen=%u nativeDraws=0 poseScenarios=3 maxError=%g\n",cases,failures,bulbOffscreen,maxError);
     for(unsigned s=0;s<16;++s)d->SetTexture(s,nullptr);z->Release();normal->Release();baseline->Release();zero->Release();detail->Release();staging->Release();target->Release();d->Release();api->Release();FreeLibrary(module);DestroyWindow(window);UnregisterClassW(wc.lpszClassName,wc.hInstance);return failures?1:0;
 }

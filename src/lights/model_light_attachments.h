@@ -2,6 +2,7 @@
 #include <filesystem>
 #include "world_local_lights.h"
 #include "rigid_geometry.h"
+#include "equipment_lights.h"
 #include <array>
 #include <map>
 #include <memory>
@@ -44,9 +45,42 @@ public:
 struct Tracker {
     std::shared_ptr<const Records> records;
     std::map<uint64_t,std::array<float,3>> positions;
-    void reset(){records.reset();positions.clear();}
-    void bind(const std::shared_ptr<const Records>& next){if(next!=records){reset();records=next;}}
+    struct NativeBinding {std::uint64_t id=0;bool present=false;};
+    std::map<uint64_t,NativeBinding> nativeBindings;
+    std::vector<std::uint64_t> sourceIds;
+    std::vector<std::size_t> candidates;
+    void reset(){records.reset();positions.clear();nativeBindings.clear();sourceIds.clear();candidates.clear();}
+    void bind(const std::shared_ptr<const Records>& next){if(next!=records){reset();records=next;
+        if(records){for(const auto& record:*records)sourceIds.push_back(record.sourceId);
+            std::sort(sourceIds.begin(),sourceIds.end());sourceIds.erase(std::unique(sourceIds.begin(),sourceIds.end()),sourceIds.end());}}}
+    // Match a root emitter's original world point against the unmodified FGL
+    // source, then keep its existing range, shadow flags and identity in motion.
+    void observeScene(const NorthlightNativeLights::Snapshot& scene,const std::vector<NorthlightLocalLights::Light>& fixed){
+        if(!active()||!scene.valid||!NorthlightNativeLights::wellFormed(scene))return;
+        for(auto& entry:nativeBindings)entry.second.present=false;
+        bool candidatesReady=false;
+        for(unsigned i=0;i<scene.count;++i){const auto& point=scene.lights[i];if(!(point.flags&NorthlightNativeLights::RootAnchor))continue;
+            auto binding=std::find_if(nativeBindings.begin(),nativeBindings.end(),[&](const auto& entry){return entry.second.id==point.id;});
+            if(binding==nativeBindings.end()){
+                if(!candidatesReady){candidates.clear();
+                    if(std::is_sorted(fixed.begin(),fixed.end(),[](const auto& a,const auto& b){return a.sourceId<b.sourceId;})){
+                        auto id=sourceIds.begin();for(std::size_t k=0;k<fixed.size();++k){while(id!=sourceIds.end()&&*id<fixed[k].sourceId)++id;
+                            if(id!=sourceIds.end()&&*id==fixed[k].sourceId&&fixed[k].kind==2)candidates.push_back(k);}
+                    }else for(std::size_t k=0;k<fixed.size();++k)if(fixed[k].kind==2&&std::binary_search(sourceIds.begin(),sourceIds.end(),fixed[k].sourceId))candidates.push_back(k);
+                    candidatesReady=true;}
+                const auto light=std::find_if(candidates.begin(),candidates.end(),[&](const auto index){const auto& candidate=fixed[index];
+                    if(NorthlightEquipmentLights::distance2(point.anchor,candidate.position)>=.25f*.25f||
+                       !NorthlightEquipmentLights::hueClose(point.color,candidate.diffuse))return false;
+                    const auto used=nativeBindings.find(candidate.sourceId);return used==nativeBindings.end()||!used->second.present;});
+                if(light==candidates.end())continue;
+                binding=nativeBindings.insert_or_assign(fixed[*light].sourceId,NativeBinding{point.id,false}).first;
+            }
+            binding->second.present=true;std::copy_n(point.position,3,positions[binding->first].begin());
+        }
+    }
+    void releaseScene(){nativeBindings.clear();}
     bool active()const{return records&&!records->empty();}
+    bool needsDrawPose()const{return positions.size()>nativeBindings.size();}
     void prune(const std::vector<NorthlightLocalLights::Light>& lights,const float* camera){
         auto light=lights.begin(); // Both source IDs and position keys are sorted.
         for(auto at=positions.begin();at!=positions.end();){
@@ -54,7 +88,7 @@ struct Tracker {
             bool keep=light!=lights.end()&&light->sourceId==at->first;
             if(keep){float d2=0;for(unsigned k=0;k<3;++k){const float d=at->second[k]-camera[k];d2+=d*d;}
                 const float reach=256+light->attenuationEnd;keep=d2<reach*reach;}
-            if(keep)++at;else at=positions.erase(at);
+            if(keep)++at;else{nativeBindings.erase(at->first);at=positions.erase(at);}
         }
     }
     // A fixed reference bone plus the exact skin triangle identifies a placed
@@ -80,6 +114,14 @@ struct Tracker {
         }
     }
     const std::vector<NorthlightLocalLights::Light>& apply(const std::vector<NorthlightLocalLights::Light>& fixed,std::vector<NorthlightLocalLights::Light>& output)const{
+        if(!nativeBindings.empty()){
+            output.clear();output.reserve(fixed.size());
+            for(auto light:fixed){const auto binding=nativeBindings.find(light.sourceId);
+                if(binding!=nativeBindings.end()&&!binding->second.present)continue;
+                const auto position=positions.find(light.sourceId);if(position!=positions.end())std::copy(position->second.begin(),position->second.end(),light.position);
+                output.push_back(light);}
+            return output;
+        }
         if(positions.empty())return fixed;
         if(positions.size()>8&&std::is_sorted(fixed.begin(),fixed.end(),[](const auto& a,const auto& b){return a.sourceId<b.sourceId;})){
             output=fixed;auto at=positions.begin();for(auto& light:output){while(at!=positions.end()&&at->first<light.sourceId)++at;if(at!=positions.end()&&at->first==light.sourceId)std::copy(at->second.begin(),at->second.end(),light.position);}return output;

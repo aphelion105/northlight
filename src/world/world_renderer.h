@@ -4104,7 +4104,7 @@ public:
             // Unavailable geometry cannot consume directional or point replays.
             // Keep the existing GI cadence, pending-demand and diagnostic exceptions.
             const bool shadows=ready()&&NorthlightQuality::actorShadowWork(quality,effects.shadows);
-            if(!particleLights.hasFlash()&&NorthlightQuality::captureSkipPossible(quality,shadows)&&(!quality.localLights||!quality.localLightLimit||lightAttachments.positions.empty())){NorthlightQuality::CaptureInputs in;
+            if(!particleLights.hasFlash()&&NorthlightQuality::captureSkipPossible(quality,shadows)&&(!quality.localLights||!quality.localLightLimit||!lightAttachments.needsDrawPose())){NorthlightQuality::CaptureInputs in;
                 in.shadows=shadows;in.demand=captureDemand;in.diagnostic=lastRenderDebug==1;in.actorDue=actorCaptureEnabled();in.nextPass=shadowPasses+1;
                 for(int source=0;source<2;++source)in.sourceActive[source]=NorthlightGI::dot(sourceColors[source],sourceColors[source])>1e-10f;
                 in.pointDue=in.shadows&&!in.actorDue&&!in.demand&&pointRefreshPredicted();
@@ -4404,6 +4404,8 @@ public:
         const bool selectContinuous=active&&localLightQpc&&selectDt<=NorthlightLocalLightSelection::MaxGapSeconds&&active->map==localLightMap&&!different(vec(context.camera),localLightCamera,40)&&debug==0;
         lightAttachments.bind(active?active->lightAttachments:nullptr);
         if(active)lightAttachments.prune(active->localLights,context.camera);
+        if(active&&equipmentLightsOn())lightAttachments.observeScene(nativeSceneFrame,active->localLights);
+        else lightAttachments.releaseScene();
         const auto* currentLights=active?&lightAttachments.apply(active->localLights,attachedLocalLights):nullptr;
         if(equipmentLightsOn()){
             if(active&&equipmentMap!=active->map){equipmentLights.reset();equipmentMap=active->map;}

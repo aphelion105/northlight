@@ -10,7 +10,7 @@
 
 namespace NorthlightStream::SnapshotArchive {
 constexpr std::size_t HeaderBytes=40,RecordBytes=16,ChecksumBytes=4;
-constexpr std::size_t LightHeaderBytes=80,LightBytes=48;
+constexpr std::size_t LightHeaderBytes=80,LightBytes=64;
 constexpr std::size_t MaxBytes=HeaderBytes+GameSnapshot::MaxCopies*RecordBytes+GameSnapshot::ArenaBytes+ChecksumBytes+LightHeaderBytes+NorthlightNativeLights::Capacity*LightBytes;
 constexpr unsigned Version=1;
 enum class Error {None,Unusable,Buffer,Magic,Version,Bounds,Checksum,Record,Counts,Address};
@@ -35,7 +35,7 @@ inline bool encode(const GameSnapshot& snapshot,unsigned char* output,std::size_
     const auto size=HeaderBytes+snapshot.copies()*RecordBytes+snapshot.bytes()+ChecksumBytes+(lights.valid?LightHeaderBytes+lights.count*LightBytes:0);
     if(!output||size>capacity||size>MaxBytes){error=Error::Buffer;return false;}
     const unsigned char magic[8]={'N','L','S','N','A','P','1',0};std::memcpy(output,magic,sizeof magic);
-    put32(output+8,lights.valid?2:Version);put32(output+12,std::uint32_t(size));put32(output+16,snapshot.triggerKind);
+    put32(output+8,lights.valid?3:Version);put32(output+12,std::uint32_t(size));put32(output+16,snapshot.triggerKind);
     put32(output+20,std::uint32_t(snapshot.keys()));put32(output+24,std::uint32_t(snapshot.copies()));put32(output+28,std::uint32_t(snapshot.bytes()));put64(output+32,snapshot.triggerDraw);
     std::size_t offset=HeaderBytes;
     const bool ok=snapshot.visitRecorded([&](std::uintptr_t address,std::uint32_t count,bool success,const void* data){
@@ -47,7 +47,8 @@ inline bool encode(const GameSnapshot& snapshot,unsigned char* output,std::size_
         put32(output+offset,lights.scene);put32(output+offset+4,lights.time);put32(output+offset+8,lights.count);put32(output+offset+12,1);
         std::memcpy(output+offset+16,lights.map,64);offset+=LightHeaderBytes;
         for(unsigned i=0;i<lights.count;++i){const auto& p=lights.lights[i];put64(output+offset,p.id);
-            std::memcpy(output+offset+8,p.position,36);put32(output+offset+44,0);offset+=LightBytes;}
+            std::memcpy(output+offset+8,p.position,36);put32(output+offset+44,0);
+            std::memcpy(output+offset+48,p.anchor,12);put32(output+offset+60,p.flags);offset+=LightBytes;}
     }
     if(!ok||offset!=size-ChecksumBytes){error=Error::Counts;return false;}
     put32(output+offset,checksum(output,offset));written=size;return true;
@@ -57,10 +58,10 @@ inline bool decode(const unsigned char* input,std::size_t size,GameSnapshot& sna
     auto fail=[&](Error why){snapshot.clear();error=why;return false;};
     if(!input||size<HeaderBytes+ChecksumBytes||size>MaxBytes)return fail(Error::Bounds);
     const unsigned char magic[8]={'N','L','S','N','A','P','1',0};if(std::memcmp(input,magic,sizeof magic))return fail(Error::Magic);
-    const auto version=u32(input+8);if(version!=Version&&version!=2)return fail(Error::Version);
+    const auto version=u32(input+8);if(version!=Version&&version!=2&&version!=3)return fail(Error::Version);
     const auto trigger=u32(input+16),keys=u32(input+20),copies=u32(input+24),payload=u32(input+28);
     const auto baseSize=HeaderBytes+std::size_t(copies)*RecordBytes+payload+ChecksumBytes;
-    if(u32(input+12)!=size||trigger>3||!keys||keys>GameSnapshot::MaxKeys||!copies||copies>GameSnapshot::MaxCopies||keys>copies||payload>GameSnapshot::ArenaBytes||baseSize>size||(version==1&&baseSize!=size)||(version==2&&size-baseSize<LightHeaderBytes))return fail(Error::Bounds);
+    if(u32(input+12)!=size||trigger>3||!keys||keys>GameSnapshot::MaxKeys||!copies||copies>GameSnapshot::MaxCopies||keys>copies||payload>GameSnapshot::ArenaBytes||baseSize>size||(version==1&&baseSize!=size)||(version>=2&&size-baseSize<LightHeaderBytes))return fail(Error::Bounds);
     if(u32(input+size-ChecksumBytes)!=checksum(input,size-ChecksumBytes))return fail(Error::Checksum);
     std::size_t offset=HeaderBytes;
     for(std::uint32_t i=0;i<copies;++i){
@@ -72,12 +73,13 @@ inline bool decode(const unsigned char* input,std::size_t size,GameSnapshot& sna
         if(flags)offset+=count;
     }
     if(offset!=baseSize-ChecksumBytes||snapshot.keys()!=keys||snapshot.bytes()!=payload||snapshot.copies()!=copies||!snapshot.usable())return fail(Error::Counts);
-    if(version==2){auto& lights=snapshot.nativeLights;
+    if(version>=2){auto& lights=snapshot.nativeLights;const std::size_t lightBytes=version==2?48:LightBytes;
         lights.scene=u32(input+offset);lights.time=u32(input+offset+4);lights.count=u32(input+offset+8);lights.valid=u32(input+offset+12);
-        if(lights.valid!=1||lights.count>NorthlightNativeLights::Capacity||size-baseSize!=LightHeaderBytes+lights.count*LightBytes)return fail(Error::Bounds);
+        if(lights.valid!=1||lights.count>NorthlightNativeLights::Capacity||size-baseSize!=LightHeaderBytes+lights.count*lightBytes)return fail(Error::Bounds);
         std::memcpy(lights.map,input+offset+16,64);offset+=LightHeaderBytes;
-        for(unsigned i=0;i<lights.count;++i){auto& p=lights.lights[i];p.id=u64(input+offset);
-            std::memcpy(p.position,input+offset+8,36);p.reserved=u32(input+offset+44);offset+=LightBytes;}
+        for(unsigned i=0;i<lights.count;++i){auto& p=lights.lights[i];p={};p.id=u64(input+offset);
+            std::memcpy(p.position,input+offset+8,36);p.reserved=u32(input+offset+44);
+            if(version==3){std::memcpy(p.anchor,input+offset+48,12);p.flags=u32(input+offset+60);}offset+=lightBytes;}
         if(!NorthlightNativeLights::wellFormed(lights))return fail(Error::Record);
     }
     snapshot.triggerKind=trigger;snapshot.triggerDraw=u64(input+32);snapshot.mode=GameSnapshot::Mode::Playing;snapshot.rewind();return true;
