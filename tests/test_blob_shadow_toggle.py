@@ -91,8 +91,8 @@ int main(){
         d.enabled=bit(2);d.applied=bit(3);d.terrain=bit(4);d.failed=bit(5);d.effectKeys.settings.shadows=bit(9);
         // Bit 1 independently represents a disabled filter, such as the strength-100 default path.
         if(bit(1))f.strength=100;
-        const bool safe=bit(0)&&!bit(1)&&bit(2)&&!bit(3)&&bit(4)&&!bit(5)&&bit(6)&&bit(7);
-        const bool expected=safe&&(!bit(8)||(strength<100&&bit(9)&&bit(10)&&bit(11)&&bit(12)));
+        const bool safe=bit(0)&&!bit(1)&&bit(2)&&bit(4)&&!bit(5)&&bit(6)&&bit(7);
+        const bool expected=safe&&(!bit(8)||(!bit(3)&&strength<100&&bit(9)&&bit(10)&&bit(11)&&bit(12)));
         assert(d.blobFilterActive()==expected);
         NorthlightDrawGates::Inputs in;in.blobs=d.shadowBlobs&&f.active();in.world=d.world;in.enabled=d.enabled;in.failed=d.failed;
         in.hideBlobs=d.world&&!w.blobShadowsEnabled();in.shadowsKey=bit(9);in.actorShadows=bit(11);in.worldShadows=w.shadows;in.debugOff=true;

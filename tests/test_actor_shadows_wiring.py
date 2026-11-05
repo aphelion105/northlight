@@ -143,12 +143,12 @@ mutations=[
 for audit,text,label in mutations:rejected(audit,text,label)
 checks['audit rejects all broken shadow guards']=True
 # Blob filter: the default strength policy follows actor shadows; explicit hiding is independent.
-helper='bool blobFilterActive()const{return shadowBlobs&&shadowBlobs->active()&&enabled&&!applied&&terrain&&!failed&&world&&world->hasContext()&&(!world->blobShadowsEnabled()||(effectKeys.settings.shadows&&world->terrainShadowActive()&&world->actorShadowsEnabled()));}'
+helper='bool blobFilterActive()const{return shadowBlobs&&shadowBlobs->active()&&enabled&&terrain&&!failed&&world&&world->hasContext()&&(!world->blobShadowsEnabled()||(!applied&&effectKeys.settings.shadows&&world->terrainShadowActive()&&world->actorShadowsEnabled()));}'
 checks['native blob stays when no replacement shadow was composited']=('bool terrainShadowActive()const{return effects.shadows&&ready()&&shadowsComposited;}' in w and 'shadowsComposited=geometryReady&&effects.shadows&&(sourceActive[0]||sourceActive[1])&&debug==0;' in w)
 # 0.3.187: the four draw entry points share drawHook(); FrameDrawGates=0 and =1 both test the helper.
 checks['blob filter: one helper, every draw through drawHook']=(r.count(helper)==1 and r.count('if(!claimed&&blobFilterActive())extensionWork("blob shadow filter",[&]{blobFilter(count,claimed);});')==1
     and r.count('if(!claimed&&drawGates.blob){stage="blob shadow filter";if(blobFilterActive())blobFilter(count,claimed);}')==1 and r.count('return drawHook(t,count,')==4
-    and r.count('!world->blobShadowsEnabled()||(effectKeys.settings.shadows&&world->terrainShadowActive()&&world->actorShadowsEnabled())')==1 and r.count('blobClaim(count)')==1
+    and r.count('!world->blobShadowsEnabled()||(!applied&&effectKeys.settings.shadows&&world->terrainShadowActive()&&world->actorShadowsEnabled())')==1 and r.count('blobClaim(count)')==1
     and 'bool actorShadowsEnabled()const{return quality.actorShadows!=0;}' in w)
 # Documentation: the shipped ini keeps the key commented (the file must still parse as Quality).
 ini=fp.src('windows-package/northlight-quality.ini').read_text();readme=fp.src('windows-package/README.txt').read_text(encoding='utf-8')

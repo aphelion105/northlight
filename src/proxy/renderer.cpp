@@ -537,7 +537,7 @@ class Device final : public GuardedMirrorDevice {
         lastVs.wmo=world&&world->recognizesWmo(vs);lastVs.world=world&&world->isWorldShader(vs);lastVs.skinned=world&&world->isSkinnedShader(vs);lastVs.family=unsigned(lastVs.entry>>kFamilyShift)&7u;return lastVs;
     }
     std::unordered_map<IDirect3DPixelShader9*, uint64_t> psHashes;
-    std::unordered_map<void*, NorthlightShaderReads::ReadSet> shaderReads; // Exact API reads for spell replay and HDR boundary admission; creation overwrites reused shader addresses.
+    std::unordered_map<void*, NorthlightShaderReads::ReadSet> shaderReads; // Exact API reads for spell replay, UI text identity and HDR admission; creation overwrites reused shader addresses.
     std::unordered_map<IDirect3DVertexShader9*, uint8_t> vsFogProven; // vertex shaders whose fog output is provably the c30 ramp (spell_fog_proof.h, scanned at creation; SpellLayer=1 only)
     NorthlightSpellFog::Freshness spellFogFreshness; // has the world render published a new fog estimate since the last frame end?
     std::unordered_map<IDirect3DPixelShader9*, int> psFogReg; // ps_3_0 shaders: the proven fog colour constant of the combiner epilogue (legacy_fog.h ps3FogColorRegister), -1 unknown (SpellLayer=1 only)
@@ -677,7 +677,8 @@ private:
     bool hdrBackTarget(){
         IDirect3DSurface9* target=nullptr;const bool borrowed=ext->peekRenderTarget(0,target);
         if(!borrowed&&FAILED(ext->GetRenderTarget(0,&target)))return false;
-        const bool back=target&&(target==hdrLegacyBack||target==hdrPresentBack);if(!borrowed)drop(target);return back;
+        // fullViewport caches the native back buffer before SDR boundary checks.
+        const bool back=target&&(hdr.active?(target==hdrLegacyBack||target==hdrPresentBack):target==backSurface);if(!borrowed)drop(target);return back;
     }
     void releaseHdrTargets(){
         if(celestialDiscs)celestialDiscs->setHdrSkyTarget(nullptr);hdrSkyValid=false;
@@ -699,10 +700,10 @@ private:
         if(!borrowed&&FAILED(ext->GetVertexShader(&vs))){drop(vs);return;}
         const auto& vc=classifyVs(vs);D3DSURFACE_DESC desc{};
         // Font mods can use separate shaders for scalable UI and native text.
-        // HDR finishes before fallback learning; retain each proven UI identity
-        // for next frame's perspective names. Registration clears this bit.
+        // Stock UI or HDR can finish before fallback learning; retain each
+        // proven UI identity for next frame's names in SDR/HDR. Registration clears this bit.
         if(vs&&!(vc.entry&kUiTextTag)&&(vc.entry&kTagMask)!=2&&!vc.world&&!vc.wmo&&!vc.skinned&&!(vc.entry&kWaterTag)&&
-           orthographicUiGeometry()&&fullViewport(desc,nullptr,true,false)&&hdrUiInputs()){
+            orthographicUiGeometry()&&fullViewport(desc,nullptr,true,false)&&hdrBackTarget()&&hdrUiInputs()){
             ++vsGeneration;vsTags[vs]|=kUiTextTag;
         }
         if(!borrowed)drop(vs);
@@ -996,7 +997,11 @@ private:
         return S_OK;
     }
     template<class Draw> HRESULT hdrDraw(Draw draw){
-        if(!hdr.active||hdrSkyReplaying)return draw();
+        if(hdrSkyReplaying)return draw();
+        if(!hdr.active){
+            if(nameMask.armed())extensionWork("UI text identity",[&]{rememberUiTextVs();});
+            return draw();
+        }
         bool linear=false;
         extensionWork("HDR UI preparation",[&]{
             const bool sampledHdr=gateFrame&&!gateUntimed;CpuScope hdrTimer(sampledHdr?&cpuHdrAdmission:nullptr);if(sampledHdr)++hdrAdmissionCalls;
@@ -1802,7 +1807,7 @@ private:
         if(!borrowedVS&&FAILED(ext->GetVertexShader(&vs))){++missingVS;drop(vs);return;}
         if(!vs){
             ++missingVS;D3DSURFACE_DESC desc{};
-            if((terrain||skySeen)&&fixedUiGeometry()&&fullViewport(desc,nullptr,true)&&(!hdr.active||hdrBackTarget())&&hdrUiInputs()){
+            if((terrain||skySeen)&&fixedUiGeometry()&&fullViewport(desc,nullptr,true)&&hdrBackTarget()&&hdrUiInputs()){
                 hdrAtUiBoundary=true;
                 if(sampled())logf("EFFECT boundary frame=%u draw=%u kind=fixed-ui",frame,drawCalls);
                 renderEffects();spellReplay();
@@ -1987,7 +1992,7 @@ private:
     // game's blobs are drawn as they are; 0 = they are skipped (0.3.154..0.3.192); 1..99 = drawn with a lighter
     // texture (skipped when the game's blend cannot be lightened). Strength adjustment requires a
     // composited actor shadow. BlobShadows=0 independently hides the native decal while effects are on.
-    bool blobFilterActive()const{return shadowBlobs&&shadowBlobs->active()&&enabled&&!applied&&terrain&&!failed&&world&&world->hasContext()&&(!world->blobShadowsEnabled()||(effectKeys.settings.shadows&&world->terrainShadowActive()&&world->actorShadowsEnabled()));}
+    bool blobFilterActive()const{return shadowBlobs&&shadowBlobs->active()&&enabled&&terrain&&!failed&&world&&world->hasContext()&&(!world->blobShadowsEnabled()||(!applied&&effectKeys.settings.shadows&&world->terrainShadowActive()&&world->actorShadowsEnabled()));}
     // 0.3.198 (rain): weather detection. weatherDetect.hot is the one candidate texture the draw hook compares
     // stage 0 with (weather_detect.h); the sample is what that comparison counted this frame. Both are touched
     // under the gate only, on whichever thread makes the draw (stream: replay thread; fallback: game thread).
@@ -3007,7 +3012,7 @@ private:
                 (!zFuncAware||(SUCCEEDED(ext->GetRenderState(D3DRS_ZFUNC,&zf))&&SUCCEEDED(ext->GetRenderState(D3DRS_ZENABLE,&z)))) &&
                 SUCCEEDED(ext->GetVertexShaderConstantF(0,rows,4)) &&
                 NorthlightUiBoundary::accepts(zw!=0,rows,zf==D3DCMP_ALWAYS,z!=0) &&
-                fullViewport(desc,nullptr,true)&&(!hdr.active||(hdrBackTarget()&&hdrUiInputs()))){
+                fullViewport(desc,nullptr,true)&&hdrBackTarget()&&(!hdr.active||hdrUiInputs())){
                 hashBoundaryThisFrame=true;
                 if(sampled()){DWORD z=0,zw=0,blend=0;ext->GetRenderState(D3DRS_ZENABLE,&z);ext->GetRenderState(D3DRS_ZWRITEENABLE,&zw);ext->GetRenderState(D3DRS_ALPHABLENDENABLE,&blend);
                     logf("EFFECT boundary frame=%u draw=%u kind=ui z=%lu zwrite=%lu blend=%lu",frame,drawCalls,(unsigned long)z,(unsigned long)zw,(unsigned long)blend);}
@@ -3017,7 +3022,7 @@ private:
         if(tag!=1&&tag!=2&&!vc.world&&!vc.wmo&&!vc.skinned&&!(entry&kWaterTag)&&(terrain||skySeen)&&!applied&&orthographicUiGeometry()&&hdrUiInputs()){
             // A full-size offscreen pass can share the UI shaders. It must not
             // replace the HDR scene or close capture before the actual UI.
-            D3DSURFACE_DESC desc{};if(fullViewport(desc,nullptr,true)&&(!hdr.active||hdrBackTarget())){
+            D3DSURFACE_DESC desc{};if(fullViewport(desc,nullptr,true)&&hdrBackTarget()){
                 hdrAtUiBoundary=true;
                 if(sampled())logf("EFFECT boundary frame=%u draw=%u kind=orthographic-ui",frame,drawCalls);
                 renderEffects();spellReplay();
@@ -3048,7 +3053,7 @@ private:
         float c[16]={};if(FAILED(ext->GetVertexShaderConstantF(0,c,4)))return;
         if(!NorthlightUiBoundary::accepts(zw!=0,c,zf==D3DCMP_ALWAYS,z!=0)){if(!armed){triageVs=vs;triagePs=ps;triageZw=zw;for(int i=0;i<4;++i)triageC3[i]=c[12+i];++triageDraws;}return;}
         D3DSURFACE_DESC desc={};
-        if(!fullViewport(desc,nullptr,true)||(hdr.active&&(!hdrBackTarget()||!hdrUiInputs())))return; // minimap, portrait and HDR scene postprocessing are not UI boundaries
+        if(!fullViewport(desc,nullptr,true)||!hdrBackTarget()||(hdr.active&&!hdrUiInputs()))return; // Offscreen UI and HDR scene postprocessing are not UI boundaries.
         if(!armed&&!restore){uiFallback.noteCandidate(vsId,psId);return;}
         if(!armed){if(!uiFallback.restore(vsId,psId))return;uiFallbackPublish();logf("EFFECT boundary fallback restored from previously learned shader");}
         fallbackBoundaryThisFrame=true;++uiFallbackBoundaries;
@@ -3960,12 +3965,12 @@ public:
     }
     HRESULT STDMETHODCALLTYPE CreateVertexShader(const DWORD* code,IDirect3DVertexShader9** out) override { Guard mirrorLock(mirrorState.gate);
         HRESULT hr=ext->CreateVertexShader(code,out);
-        if(SUCCEEDED(hr)&&out&&*out)extensionWork("vertex shader registration",[&]{++vsGeneration;std::vector<DWORD> words;auto h=shaderHash(*out,words);int tag=NorthlightShaderTags::deviceTag(h);tag|=registerNativeShadow(*out,words);if(NorthlightUnlitReceiver::shader(reinterpret_cast<const uint32_t*>(words.data()),words.size(),m2ShaderFamily(h)==3))tag|=kUnlitTag;if(NorthlightUnlitReceiver::prelitShader(reinterpret_cast<const uint32_t*>(words.data()),words.size(),NorthlightWmoContext::signature(h)!=nullptr))tag|=kPrelitTag;vsHashes[*out]=h;if(spellOn||(hdr.stream&&hdr.dxvk))shaderReads[static_cast<void*>(*out)]=NorthlightShaderReads::scan(reinterpret_cast<const uint32_t*>(words.data()),words.size());if(spellOn){bool bare=false;const bool ok=NorthlightSpellFog::vsFogProven(reinterpret_cast<const uint32_t*>(words.data()),words.size(),&bare);vsFogProven[*out]=uint8_t(ok?(bare?2:1):0);}uiFallbackForget(*out);vsMajor[*out]=!words.empty()&&(words[0]>>16)==0xFFFEu?unsigned((words[0]>>8)&0xFFu):0u;if(world){world->registerShader(*out,h);world->registerEquipmentShader(*out,m2ShaderFamily(h)==3?words.data():nullptr,m2ShaderFamily(h)==3?words.size():0);particleCapture.registerVertex(*out,m2ShaderFamily(h));}if(autoBump)autoBump->registerVertex(*out,h,words.data(),words.size(),m2ShaderFamily(h));if(water)water->registerVertex(*out,h,words.data(),words.size());vsTags[*out]=tag|(water&&water->hasVertex(*out)?kWaterTag:0)|int(m2ShaderFamily(h)<<kFamilyShift);if(tag==1)++matchedTerrain;else if(tag==2)++matchedUI;});
+        if(SUCCEEDED(hr)&&out&&*out)extensionWork("vertex shader registration",[&]{++vsGeneration;std::vector<DWORD> words;auto h=shaderHash(*out,words);int tag=NorthlightShaderTags::deviceTag(h);tag|=registerNativeShadow(*out,words);if(NorthlightUnlitReceiver::shader(reinterpret_cast<const uint32_t*>(words.data()),words.size(),m2ShaderFamily(h)==3))tag|=kUnlitTag;if(NorthlightUnlitReceiver::prelitShader(reinterpret_cast<const uint32_t*>(words.data()),words.size(),NorthlightWmoContext::signature(h)!=nullptr))tag|=kPrelitTag;vsHashes[*out]=h;if(spellOn||nameMask.setting||(hdr.stream&&hdr.dxvk))shaderReads[static_cast<void*>(*out)]=NorthlightShaderReads::scan(reinterpret_cast<const uint32_t*>(words.data()),words.size());if(spellOn){bool bare=false;const bool ok=NorthlightSpellFog::vsFogProven(reinterpret_cast<const uint32_t*>(words.data()),words.size(),&bare);vsFogProven[*out]=uint8_t(ok?(bare?2:1):0);}uiFallbackForget(*out);vsMajor[*out]=!words.empty()&&(words[0]>>16)==0xFFFEu?unsigned((words[0]>>8)&0xFFu):0u;if(world){world->registerShader(*out,h);world->registerEquipmentShader(*out,m2ShaderFamily(h)==3?words.data():nullptr,m2ShaderFamily(h)==3?words.size():0);particleCapture.registerVertex(*out,m2ShaderFamily(h));}if(autoBump)autoBump->registerVertex(*out,h,words.data(),words.size(),m2ShaderFamily(h));if(water)water->registerVertex(*out,h,words.data(),words.size());vsTags[*out]=tag|(water&&water->hasVertex(*out)?kWaterTag:0)|int(m2ShaderFamily(h)<<kFamilyShift);if(tag==1)++matchedTerrain;else if(tag==2)++matchedUI;});
         if(SUCCEEDED(hr))mirrorResources.wrap(out);return hr;
     }
     HRESULT STDMETHODCALLTYPE CreatePixelShader(const DWORD* code,IDirect3DPixelShader9** out) override { Guard mirrorLock(mirrorState.gate);
         HRESULT hr=ext->CreatePixelShader(code,out);
-        if(SUCCEEDED(hr)&&out&&*out)extensionWork("pixel shader registration",[&]{std::vector<DWORD> words;auto h=shaderHash(*out,words);uiFallbackForget(*out);hdrColor.forget(*out);effectCoverage.forget(*out);psTags[*out]=contains(kUiPS,h)?2:0;psHashes[*out]=h;if(spellOn||(hdr.stream&&hdr.dxvk))shaderReads[static_cast<void*>(*out)]=NorthlightShaderReads::scan(reinterpret_cast<const uint32_t*>(words.data()),words.size());psMajor[*out]=!words.empty()&&(words[0]>>16)==0xFFFFu?unsigned((words[0]>>8)&0xFFu):0u;if(spellOn)psFogReg[*out]=psMajor[*out]==3?NorthlightLegacyFog::ps3FogColorRegister(reinterpret_cast<const uint32_t*>(words.data()),words.size()):-1;if(autoBump)autoBump->registerPixel(*out,h);if(water)water->registerPixel(*out,h,words.data(),words.size());if(world)world->registerPixelShader(*out);particleCapture.registerPixel(*out,words.data(),words.size());});
+        if(SUCCEEDED(hr)&&out&&*out)extensionWork("pixel shader registration",[&]{std::vector<DWORD> words;auto h=shaderHash(*out,words);uiFallbackForget(*out);hdrColor.forget(*out);effectCoverage.forget(*out);psTags[*out]=contains(kUiPS,h)?2:0;psHashes[*out]=h;if(spellOn||nameMask.setting||(hdr.stream&&hdr.dxvk))shaderReads[static_cast<void*>(*out)]=NorthlightShaderReads::scan(reinterpret_cast<const uint32_t*>(words.data()),words.size());psMajor[*out]=!words.empty()&&(words[0]>>16)==0xFFFFu?unsigned((words[0]>>8)&0xFFu):0u;if(spellOn)psFogReg[*out]=psMajor[*out]==3?NorthlightLegacyFog::ps3FogColorRegister(reinterpret_cast<const uint32_t*>(words.data()),words.size()):-1;if(autoBump)autoBump->registerPixel(*out,h);if(water)water->registerPixel(*out,h,words.data(),words.size());if(world)world->registerPixelShader(*out);particleCapture.registerPixel(*out,words.data(),words.size());});
         if(SUCCEEDED(hr))mirrorResources.wrap(out);return hr;
     }
     // 0.3.187: the four draw entry points share drawHook(); each passes its capture and its real draw.

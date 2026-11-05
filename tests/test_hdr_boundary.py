@@ -26,7 +26,7 @@ spell = fp.src('spell_layer.h').read_text()
 start = spell.index('inline bool isRenderTargetTexture(')
 end = spell.index('\nenum class DrawType:', start)
 texture_test = 'namespace NorthlightSpellLayer {\n' + spell[start:end] + '\n}\n'
-assert source.count('if(spellOn||(hdr.stream&&hdr.dxvk))shaderReads[static_cast<void*>(*out)]=') == 2
+assert source.count('if(spellOn||nameMask.setting||(hdr.stream&&hdr.dxvk))shaderReads[static_cast<void*>(*out)]=') == 2
 assert 'NorthlightShaderReads::scan(' in source
 draw_hook = source[source.index('    template<class Capture,class Draw> HRESULT drawHook('):]
 assert draw_hook.index('const HRESULT resumed=hdrResumeWorld();if(FAILED(resumed))return resumed;') < draw_hook.index('prepareDraw(')
@@ -40,6 +40,7 @@ with tempfile.TemporaryDirectory(prefix='northlight-hdr-boundary-') as tmp:
         ('before-fix', ['-O2', '-DNORTHLIGHT_HDR_BOUNDARY_COUNTERFACTUAL'], methods.replace('&&hdrUiInputs()', '')),
         ('before-sky-fix', ['-O2'], methods.replace('return hdrSkyValid||hdrSkyDraw();', 'return hdrSkyValid;')),
         ('before-name-fix', ['-O2'], methods.replace('if(linear)rememberUiTextVs();', '')),
+        ('before-sdr-name-fix', ['-O2'], methods.replace('if(nameMask.armed())extensionWork("UI text identity",[&]{rememberUiTextVs();});', '')),
         ('before-resume-fix', ['-O2'], methods.replace('if(!hdr.active||!hdrUiPhase||applied||!hdrBackTarget())return S_OK;', 'return S_OK;')),
     ]:
         (root / 'hdr_boundary_methods.h').write_text(production)
@@ -56,7 +57,7 @@ with tempfile.TemporaryDirectory(prefix='northlight-hdr-boundary-') as tmp:
             print(label, 'expected first-sky admission assertion failed')
             runs.append(dict(label=label, expected_failure=True))
             continue
-        if label == 'before-name-fix':
+        if label in ('before-name-fix', 'before-sdr-name-fix'):
             assert run.returncode != 0 and 'f.uiTextVs(' in run.stderr, run.stdout + run.stderr
             print(label, 'expected floating-name shader assertion failed')
             runs.append(dict(label=label, expected_failure=True))
