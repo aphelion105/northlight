@@ -123,6 +123,7 @@ test_expired_world_geometry.py
 test_extra_light_shadow_signatures.py
 test_fast_memcmp.py
 test_fgr_constant_bank.py
+test_finite_floats.py
 test_five_path_perf.py
 test_flash_lighting_gpu.py
 test_flash_shadow_gpu.py
@@ -271,10 +272,13 @@ test_model_world_context.py
 test_moon_cascade_weight.py
 test_mount_emitter_patch.py
 test_name_mask.py
+test_native_direct_ownership.py
 test_native_fixture_shadow.py
 test_native_light_snapshot.py
 test_native_light_transport.py
+test_native_local_light_gpu.py
 test_native_local_light_probe.py
+test_native_local_material_boundary.py
 test_native_model_install.py
 test_native_replay_plan.py
 test_native_scene_lights.py
@@ -305,6 +309,7 @@ test_point_clip_prepared.py
 test_point_light_shadow.py
 test_point_shadow_schedule.py
 test_point_shadow_selection.py
+test_point_shadow_stutter_gpu.py
 test_point_shadow_visibility_gpu.py
 test_point_terrain_coverage_gpu.py
 test_point_transmission_cache.py
@@ -356,6 +361,7 @@ test_replay_gpu_probation.py
 test_replay_priority_safety.py
 test_replay_rigid_bounds.py
 test_replay_skin_safety.py
+test_replay_source_identity.py
 test_replay_upload.py
 test_replay_validity_fastpath.py
 test_reset_stack_wiring.py
@@ -412,6 +418,7 @@ test_snapshot_allocation.py
 test_snapshot_archive.py
 test_snapshot_capture_sink.py
 test_snapshot_client_range.py
+test_snapshot_hash_prefix.py
 test_snapshot_lookup_identity.py
 test_snapshot_prediction.py
 test_snapshot_retirement.py

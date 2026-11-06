@@ -113,9 +113,11 @@ def model_checks(view, folder, result):
                     value.get(path, original)
                     assert not struct.unpack_from('<I', original, 264)[0], path
                 for path in models:
+                    original_count=struct.unpack_from('<I', assets.read(path), 264)[0]
                     blob = archive.read(path)
                     assert len(blob) >= 304 and blob[:4] == b'MD20', path
                     assert struct.unpack_from('<I', blob, 4)[0] == 264 and struct.unpack_from('<I', blob, 264)[0] > 0, path
+                    assert not original_count or struct.unpack_from('<I',blob,264)[0]==original_count, 'Existing native light count changed: '+path
                     assert hashlib.sha256(blob).hexdigest() == result['files'][path]
                 payloads.append(payload)
         assert payloads[0] == payloads[1]

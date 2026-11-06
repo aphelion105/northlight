@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# northlight-test: requires=windows-exe,zig
+# northlight-test: requires=windows-exe,zig,client,stormlib
 """Production mirror and deferred capture batch-state regression, CPU only."""
 import subprocess
 import sys
@@ -7,9 +7,11 @@ import tempfile
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
+import client_fixtures
 
 with tempfile.TemporaryDirectory(prefix="material-raster-batch-") as tmp:
     root = Path(tmp)
+    client_fixtures.actor_client_programs(root)
     fixture = (fp.TESTS / "displacement_state_reuse.cpp").read_text().split("int main(")[0]
     fixture = fixture.replace("struct MaterialCaptureStateTestAccess {", "struct MaterialCaptureStateTestAccess {\n static void cpuReuse();\n static void batchCapture();\n static void admissionBatch();\n static void replayBindings();\n static void replayConstantRanges();")
     fixture = fixture.replace("struct DisplacementStateTestAccess {", "struct DisplacementStateTestAccess {\n static void cpuReuse();")

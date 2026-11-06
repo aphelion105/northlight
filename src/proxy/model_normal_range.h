@@ -33,7 +33,8 @@ inline Kind classify(const uint32_t* code,size_t count,bool allowEnvelope=false)
 inline bool eligible(const uint32_t* code,size_t count){return classify(code,count)!=None;}
 class Cache {
     using Mesh=NorthlightDrawSnapshot::Mesh;
-    struct Entry {std::weak_ptr<const Mesh> owner;const Mesh* address=nullptr;UINT offset=0,indexOffset=~0u;unsigned bone=0;bool mixed=false;uint64_t used=0;float low[3]={},high[3]={};};
+    struct Entry {std::weak_ptr<const Mesh> owner;const Mesh* address=nullptr;UINT offset=0,indexOffset=~0u;unsigned bone=0;bool mixed=false;uint64_t used=0;
+        NorthlightReplayBounds::detail::Value position[3];double magnitude[3]={};};
     Entry entries[512];uint64_t clock=0;unsigned scanVertices=0;double workMilliseconds=0;
 public:
     unsigned tested=0,culled=0,singleTests=0,singleUniform=0,singleMixed=0,deferred=0;
@@ -42,11 +43,14 @@ public:
     void beginFrame(){scanVertices=tested=culled=singleTests=singleUniform=singleMixed=deferred=0;workMilliseconds=0;}
     void clear(){for(auto& e:entries)e={};clock=0;beginFrame();}
     bool outside(const std::shared_ptr<const Mesh>& mesh,const D3DVERTEXELEMENT9* layout,UINT count,const float* bank,Kind kind=Rigid){
-        ++tested;singleTests+=kind==Single;if(!mesh||!layout||!count||count>MAXD3DDECLLENGTH||!bank||(kind!=Rigid&&kind!=Single))return false;
+        return bank&&outsideRead(mesh,layout,count,[&](unsigned first,unsigned n,float* out){std::memcpy(out,bank+first*4,n*16);return true;},kind);
+    }
+    // Only projection c2..c5 and the selected bone's three affine rows enter
+    // this proof. A failed read declines it; accepted draws still capture all
+    // shader inputs separately for replay.
+    template<class Read> bool outsideRead(const std::shared_ptr<const Mesh>& mesh,const D3DVERTEXELEMENT9* layout,UINT count,Read read,Kind kind=Rigid){
+        ++tested;singleTests+=kind==Single;if(!mesh||!layout||!count||count>MAXD3DDECLLENGTH||(kind!=Rigid&&kind!=Single))return false;
         if(workMilliseconds>=.25){++deferred;return false;}
-        if(bank[20]!=0||bank[21]!=0||bank[23]!=0||(bank[22]!=1&&bank[22]!=-1))return false;
-        // Near origins decline this optional proof, even if local vertices are far.
-        if(kind==Rigid&&!(bank[22]*bank[4*33+3]>48.01f))return false;
         const D3DVERTEXELEMENT9* position=nullptr;for(UINT i=0;i<count;++i)if(layout[i].Stream!=0xff&&layout[i].Usage==D3DDECLUSAGE_POSITION&&!layout[i].UsageIndex){if(position)return false;position=layout+i;}
         if(!position||position->Stream||position->Type!=D3DDECLTYPE_FLOAT3||position->Method!=D3DDECLMETHOD_DEFAULT)return false;
         const auto& stream=mesh->streams[0];if(!mesh->vertexCount||!stream.stride||uint64_t(mesh->vertexCount-1)*stream.stride+position->Offset+12>stream.bytes.size())return false;
@@ -55,41 +59,50 @@ public:
             for(UINT i=0;i<count;++i)if(layout[i].Stream!=0xff&&layout[i].Usage==D3DDECLUSAGE_BLENDINDICES&&!layout[i].UsageIndex){if(indices)return false;indices=layout+i;}
             if(!indices||indices->Stream||indices->Type!=D3DDECLTYPE_UBYTE4||indices->Method!=D3DDECLMETHOD_DEFAULT||uint64_t(mesh->vertexCount-1)*stream.stride+indices->Offset+4>stream.bytes.size())return false;
             indexOffset=indices->Offset;bone=stream.bytes[indexOffset];if(bone>74)return false;
-            // A near first bone declines proof; only the full scan proves uniformity.
-            if(!(bank[22]*bank[4*(33+3*bone)+3]>48.01f))return false;
         }
-        const auto start=std::chrono::steady_clock::now();
-        struct Timer {double& total;std::chrono::steady_clock::time_point start;~Timer(){total+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();}} timer{workMilliseconds,start};
         const auto pointer=reinterpret_cast<uintptr_t>(mesh.get());const unsigned first=unsigned((pointer>>4)^(pointer>>13)^position->Offset)&127u;
         Entry* entry=nullptr;Entry* replacement=entries+first*4;
         for(unsigned i=0;i<4;++i){auto& e=entries[first*4+i];
             if(e.address==mesh.get()&&e.offset==position->Offset&&e.indexOffset==indexOffset&&NorthlightSourceIdentity::sameOwner(e.owner,mesh)){entry=&e;break;}
             if(e.used<replacement->used)replacement=&e;}
+        // A proven mixed source cannot use this uniform-bone rejection, whatever
+        // the current pose/projection. No device reads or timing are needed.
+        if(entry&&entry->mixed){entry->used=++clock;++singleMixed;return false;}
+        float projection[16],matrix[12];if(!read(2,4,projection))return false;
+        if(projection[12]!=0||projection[13]!=0||projection[15]!=0||(projection[14]!=1&&projection[14]!=-1))return false;
+        // Near origins decline this optional proof, even if local vertices are far.
+        if(!read(31+3*bone,3,matrix)||!(projection[14]*matrix[11]>48.01f))return false;
+        const auto start=std::chrono::steady_clock::now();
+        struct Timer {double& total;std::chrono::steady_clock::time_point start;~Timer(){total+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();}} timer{workMilliseconds,start};
         if(!entry){if(mesh->vertexCount>2048-scanVertices){++deferred;return false;}scanVertices+=mesh->vertexCount;
             bool mixed=false;if(kind==Single)for(unsigned i=1;i<mesh->vertexCount;++i)if(stream.bytes[size_t(i)*stream.stride+indexOffset]!=bone){mixed=true;break;}
             if(mixed){entry=replacement;*entry={};entry->owner=mesh;entry->address=mesh.get();entry->offset=position->Offset;entry->indexOffset=indexOffset;entry->mixed=true;}
             else {
             float low[3],high[3];if(!NorthlightPositionBounds::scanPositions(stream.bytes.data()+position->Offset,mesh->vertexCount,stream.stride,low,high))return false;
-            entry=replacement;entry->owner=mesh;entry->address=mesh.get();entry->offset=position->Offset;entry->indexOffset=indexOffset;entry->bone=bone;entry->mixed=false;std::copy(low,low+3,entry->low);std::copy(high,high+3,entry->high);}}
+            entry=replacement;entry->owner=mesh;entry->address=mesh.get();entry->offset=position->Offset;entry->indexOffset=indexOffset;entry->bone=bone;entry->mixed=false;
+            // Source bounds are immutable; prepare their exact interval inputs
+            // once. Pose rows, overflow checks and DP4 still run on every draw.
+            for(unsigned axis=0;axis<3;++axis){const double lo=low[axis],hi=high[axis];const float mid=float((lo+hi)*.5);
+                entry->position[axis]={mid,std::max(double(mid)-lo,hi-double(mid))};entry->magnitude[axis]=std::max(std::fabs(lo),std::fabs(hi));}}}
         entry->used=++clock;
         if(entry->mixed){++singleMixed;return false;}singleUniform+=kind==Single;
-        const unsigned base=31+3*entry->bone;
         // c5 multiplies all four view lanes, including its zero coefficients.
         // Do not infer clip.w from Z when another lane could be NaN/overflow.
+        if(!NorthlightFloatChecks::bounded<12>(matrix))return false;
         for(unsigned row=0;row<3;++row){double scale=0;
-            for(unsigned axis=0;axis<4;++axis){const float value=bank[4*(base+row)+axis];if(!std::isfinite(value))return false;
-                scale+=std::fabs(double(value))*(axis==3?1:std::max(std::fabs(double(entry->low[axis])),std::fabs(double(entry->high[axis]))));}
+            for(unsigned axis=0;axis<4;++axis){const float value=matrix[4*row+axis];
+                scale+=std::fabs(double(value))*(axis==3?1:entry->magnitude[axis]);}
             if(!std::isfinite(scale)||scale>1000000)return false;}
-        for(unsigned i=8;i<24;++i)if(!std::isfinite(bank[i])||std::fabs(bank[i])>1000000)return false;
+        if(!NorthlightFloatChecks::bounded<16,0x49742400u>(projection))return false; // 1,000,000.f
         // The same interval DP4 operations/error allowance as replay_bounds.h.
         using namespace NorthlightReplayBounds::detail;
         Value sum;double magnitude=0;
-        for(unsigned axis=0;axis<4;++axis){Value input{1,0};if(axis<3){const double lo=entry->low[axis],hi=entry->high[axis];input.value=float((lo+hi)*.5);input.error=std::max(double(input.value)-lo,hi-double(input.value));}
-            const float coefficient=bank[4*(base+2)+axis];if(!std::isfinite(coefficient))return false;
+        for(unsigned axis=0;axis<4;++axis){const Value input=axis<3?entry->position[axis]:Value{1,0};
+            const float coefficient=matrix[8+axis];if(!std::isfinite(coefficient))return false;
             const auto term=mul({coefficient,0},input);magnitude+=std::fabs(term.value)+term.error;sum=add(sum,term);}
         sum.error+=roundError(magnitude)*8;
         if(!std::isfinite(sum.value)||!std::isfinite(sum.error))return false;
-        const double lower=bank[22]>0?double(sum.value)-sum.error:-double(sum.value)-sum.error;
+        const double lower=projection[14]>0?double(sum.value)-sum.error:-double(sum.value)-sum.error;
         const bool reject=std::nextafter(lower,-INFINITY)>48.01;culled+=reject;return reject;
     }
 };

@@ -28,7 +28,14 @@ static IDirect3DDevice9* d;
 struct CaptureCalls:ForwardIDirect3DDevice9 {
     unsigned renderSets=0,targetSets=0,failRender=0,failTarget=0;bool failAfter=false,faultSeen=false;
     unsigned bulkReads=0,bulkMisses=0;bool bulkUnknown=false;
+    unsigned textureReads=0,samplerReads=0,viewportReads=0;
+    unsigned vertexRegistersWritten=0,vertexRegistersRead=0;
     using ForwardIDirect3DDevice9::ForwardIDirect3DDevice9;
+    HRESULT STDMETHODCALLTYPE GetViewport(D3DVIEWPORT9* out)override{++viewportReads;return real->GetViewport(out);}
+    HRESULT STDMETHODCALLTYPE GetTexture(DWORD stage,IDirect3DBaseTexture9** out)override{++textureReads;return real->GetTexture(stage,out);}
+    HRESULT STDMETHODCALLTYPE GetSamplerState(DWORD stage,D3DSAMPLERSTATETYPE key,DWORD* out)override{++samplerReads;return real->GetSamplerState(stage,key,out);}
+    HRESULT STDMETHODCALLTYPE SetVertexShaderConstantF(UINT first,const float* data,UINT count)override{vertexRegistersWritten+=count;return real->SetVertexShaderConstantF(first,data,count);}
+    HRESULT STDMETHODCALLTYPE GetVertexShaderConstantF(UINT first,float* data,UINT count)override{vertexRegistersRead+=count;return real->GetVertexShaderConstantF(first,data,count);}
     HRESULT STDMETHODCALLTYPE SetRenderState(D3DRENDERSTATETYPE key,DWORD value)override{
         if(++renderSets!=failRender)return real->SetRenderState(key,value);faultSeen=true;if(failAfter)ok(real->SetRenderState(key,value));return E_FAIL;
     }
@@ -145,12 +152,15 @@ int main(int argc,char**argv){
                 auto opaque=capturedPixels(modelNormals->texture(),W,H);IDirect3DTexture9* transparent=nullptr;ok(d->CreateTexture(1,1,1,0,D3DFMT_A8R8G8B8,D3DPOOL_MANAGED,&transparent,nullptr));D3DLOCKED_RECT lock{};ok(transparent->LockRect(0,&lock,nullptr,0));*static_cast<DWORD*>(lock.pBits)=0x00ffffff;ok(transparent->UnlockRect(0));
                 ok(d->SetPixelShader(alphaModelPS));ok(d->SetRenderState(D3DRS_ALPHATESTENABLE,TRUE));ok(d->SetRenderState(D3DRS_ALPHAFUNC,D3DCMP_GREATER));ok(d->SetRenderState(D3DRS_ALPHAREF,128));bind(0,transparent);modelNormals->endFrame();captureModel();auto empty=capturedPixels(modelNormals->texture(),W,H);for(size_t at=6;at<empty.size();at+=8){unsigned short z;std::memcpy(&z,empty.data()+at,2);assert(z==0);}
                 bind(0,white);modelNormals->endFrame();captureModel();assert(opaque==capturedPixels(modelNormals->texture(),W,H));
-                modelNormals->endFrame();modelNormals->setDeferredCapture(true);
+                modelNormals->endFrame();unsigned pendingNotices=0;
+                modelNormals->setDeferredCapture(true,+[](void* p){++*static_cast<unsigned*>(p);},&pendingNotices);
                 const NorthlightDrawSnapshot::Draw args{D3DPT_TRIANGLELIST,0,0,meshVertices,0,meshIndices/3,true};
                 ok(d->BeginScene());modelNormals->capture(modelVS,[&]{return D3DERR_INVALIDCALL;},true,&args,sourceMesh.data()+12+48*meshVertices,D3DFMT_INDEX32,sourceMesh.data()+12,48);
-                assert(modelNormals->pendingTextures()&&modelNormals->samplesTexture(white));
-                modelNormals->beforeTextureWrite(transparent);assert(modelNormals->pendingTextures());
-                modelNormals->beforeTextureWrite(white);assert(!modelNormals->pendingTextures());ok(d->EndScene());
+                assert(modelNormals->pendingTextures()&&modelNormals->samplesTexture(white)&&pendingNotices==1);
+                modelNormals->capture(modelVS,[&]{return D3DERR_INVALIDCALL;},true,&args,sourceMesh.data()+12+48*meshVertices,D3DFMT_INDEX32,sourceMesh.data()+12,48);
+                assert(modelNormals->testPendingPackets()==2&&pendingNotices==1);
+                modelNormals->beforeTextureWrite(transparent);assert(modelNormals->pendingTextures()&&pendingNotices==1);
+                modelNormals->beforeTextureWrite(white);assert(!modelNormals->pendingTextures()&&pendingNotices==2);ok(d->EndScene());
                 assert(opaque==capturedPixels(modelNormals->texture(),W,H));
                 modelNormals->setDeferredCapture(false);ok(d->SetPixelShader(modelPS));ok(d->SetRenderState(D3DRS_ALPHATESTENABLE,FALSE));transparent->Release();std::puts("MODEL_NORMALS_ALPHA_PASS native_cutout transparent_rejected opaque_retained guarded_deferred_write");
             }
@@ -179,7 +189,7 @@ int main(int argc,char**argv){
     // oracles; Present may discard the native runtime's retained frame data.
     assert(batchFixtureState);ok(batchFixtureState->Apply());
     ok(d->SetDepthStencilSurface(nullptr));ok(d->SetRenderTarget(0,depth.s));ok(d->SetRenderTarget(1,nullptr));ok(d->SetDepthStencilSurface(sceneDepth));viewport(depth);
-    normalBatch(api,captureCalls,modelVS,meshVertices,meshIndices,sourceMesh,argc==5);batchFixtureState->Release();
+    normalBatch(api,captureCalls,modelVS,meshVertices,meshIndices,sourceMesh,argc==5,dir);batchFixtureState->Release();
     modelNormals->endFrame();assert(!modelNormals->texture());modelNormals->reset();assert(!modelNormals->texture());modelNormals.reset();sentinelVB->Release();sentinelIB->Release();std::printf("MODEL_NORMALS_GPU_PASS native_skin_capture_state_restore renderStateSets=%u renderTargetSets=%u\n",captureCalls.renderSets,captureCalls.targetSets);
     std::fclose(csv);d->Release();api->Release();FreeLibrary(module);DestroyWindow(window);return 0;
 }

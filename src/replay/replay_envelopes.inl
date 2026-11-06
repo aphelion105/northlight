@@ -34,6 +34,7 @@ public:
         size_t memoColdMisses=0,memoReplacedMisses=0,memoCameraMisses=0,memoConstantMisses=0;
         size_t memoBypassed=0,memoStoreBypassed=0,memoProtected=0,memoCopiedBytes=0;
         size_t effectiveCopiedBytes=0,fastValid=0;
+        size_t sourceIdentityHits=0,sourceReconstructedHits=0;
     };
     struct MemoTotals {
         std::uint64_t tests=0,hits=0,cold=0,replaced=0,camera=0,constants=0;
@@ -49,6 +50,8 @@ private:
     struct Group {std::vector<float> limits;}; // low/high for USED input registers only
     struct Entry {
         std::weak_ptr<const NorthlightDrawSnapshot::Mesh> owner;
+        const NorthlightDrawSnapshot::Mesh* sourceAddress=nullptr;
+        NorthlightSourceIdentity::Handle identity;
         std::vector<std::uint32_t> key;
         std::vector<Binding> bindings;
         std::unordered_map<std::string,Group> groups;
@@ -70,7 +73,7 @@ private:
     static constexpr std::uint64_t HeavyNanoseconds=AdaptiveTimeBudget::Heavy,CheapSliceNanoseconds=40000;
     AdaptiveTimeBudget timeBudget_;bool diagnostics_=true;
     size_t bytes_=0;
-    std::unordered_multimap<std::uintptr_t,Entry> entries_;
+    std::unordered_multimap<std::uint64_t,Entry> entries_;
     std::uint64_t clock_=0,frame_=0,readyNanoseconds_=0,heavyNanoseconds_=0,buildNanoseconds_=0,classifyNanoseconds_=0;
     unsigned readyCalls_=0,heavyCalls_=0,buildCalls_=0;Stats stats_;Expensive expensive_;
     std::vector<std::uint32_t> scratch_;
@@ -89,6 +92,21 @@ private:
     /* Owner equivalence without lock(): same control block and a live argument
        proves the same unexpired snapshot; an ABA address has another block. */
     static bool sameOwner(const std::weak_ptr<const NorthlightDrawSnapshot::Mesh>& a,const std::shared_ptr<const NorthlightDrawSnapshot::Mesh>& b){return !a.owner_before(b)&&!b.owner_before(a);}
+    static const auto& identity(const NorthlightDrawSnapshot::Mesh& mesh){return mesh.replayIdentity?mesh.replayIdentity:mesh.sourceIdentity;}
+    static std::uint64_t sourceHash(const NorthlightDrawSnapshot::Mesh& mesh){const auto& id=identity(mesh);return id?id->hash:std::uint64_t(reinterpret_cast<std::uintptr_t>(&mesh));}
+    auto findSource(const std::shared_ptr<const NorthlightDrawSnapshot::Mesh>& owner,const std::vector<std::uint32_t>& key){
+        const auto& id=identity(*owner);auto range=entries_.equal_range(sourceHash(*owner));
+        for(auto it=range.first;it!=range.second;++it){auto& e=it->second;
+            if(e.key!=key)continue;
+            const bool same=e.sourceAddress==owner.get()&&sameOwner(e.owner,owner);
+            if(id?!NorthlightSourceIdentity::same(id,e.identity):e.identity||!same)continue;
+            if(id){++stats_.sourceIdentityHits;if(!same){++stats_.sourceReconstructedHits;
+                // Only immutable source envelopes survive reconstruction. Pose/
+                // camera results must be evaluated again for this live draw.
+                releaseMemo(e);e.owner=owner;e.sourceAddress=owner.get();}}
+            return it;
+        }return entries_.end();
+    }
     static constexpr std::uint64_t MaxIdleBuildFrames=8;
     static bool makeKey(const NorthlightActorDeformation::Program& p,const D3DVERTEXELEMENT9* elements,size_t count,std::vector<std::uint32_t>& key){
         if(!detail::linear(p)||!elements||!count||count>MAXD3DDECLLENGTH+1||p.inputs.size()>16||p.definitions.size()>256)return false;
@@ -241,7 +259,7 @@ private:
     bool evict(const Entry* protectedEntry=nullptr){
         auto oldest=entries_.end();int best=99;
         for(auto it=entries_.begin();it!=entries_.end();++it){auto& e=it->second;if(&e==protectedEntry||&e==pending_)continue;
-            const int priority=e.owner.expired()?0:e.unsupported?1:!e.ready?2:3;
+            const int priority=!e.identity&&e.owner.expired()?0:e.unsupported?1:!e.ready?2:3;
             if(oldest==entries_.end()||priority<best||(priority==best&&e.touched<oldest->second.touched)){oldest=it;best=priority;if(priority==0)break;}
         }
         if(oldest!=entries_.end()){++stats_.evictions;stats_.readyEvictions+=oldest->second.ready;stats_.expiredEvictions+=oldest->second.owner.expired();releaseMemo(oldest->second);bytes_-=oldest->second.bytes;entries_.erase(oldest);return true;}
@@ -431,8 +449,7 @@ private:
     bool fastReady(const Prepared& prepared,const std::shared_ptr<const NorthlightDrawSnapshot::Mesh>& owner,const float* constants,const float* inverse,
         Budget& budget,Bounds& output,WorkInfo* info,Status& status,Timer* individual=nullptr){
         const bool batched=!individual;
-        Entry* e=nullptr;auto range=entries_.equal_range(reinterpret_cast<std::uintptr_t>(owner.get()));
-        for(auto it=range.first;it!=range.second;++it)if(sameOwner(it->second.owner,owner)&&it->second.key==prepared.key_){e=&it->second;break;}
+        auto found=findSource(owner,prepared.key_);Entry* e=found==entries_.end()?nullptr:&found->second;
         if(!e||e->unsupported||!e->ready||(e->skin&&e->copyDefinitions)||e->lastEvaluationNs>=CheapSliceNanoseconds)return false;
         const auto& p=prepared.program_;
         const size_t groups=e->skin?e->skin->usedBones:e->groups.size();
@@ -476,21 +493,20 @@ private:
         try {
             if(!prepared&&!makeKey(p,elements,count,scratch_)){accountClassify();if(info)info->kind=Kind::Unsupported;++stats_.unsupported;return Status::Unsupported;}
             const auto& exactKey=prepared?prepared->key_:scratch_;
-            const auto identity=reinterpret_cast<std::uintptr_t>(owner.get());auto range=entries_.equal_range(identity);auto found=entries_.end();
-            for(auto it=range.first;it!=range.second;++it)if(sameOwner(it->second.owner,owner)&&it->second.key==exactKey){found=it;break;}
+            const auto hash=sourceHash(mesh);auto found=findSource(owner,exactKey);
             accountClassify();
             if(found==entries_.end()){
                 ++stats_.cold;if(info)info->kind=Kind::Cold;
                 if(stage==Stage::Ready||stage==Stage::Cheap||stage==Stage::Heavy)return Status::Budget;
                 timer.mode(true);if(!canBuild()||timer.expired())return timeBudget();
                 if(pending_){++stats_.pendingDeferred;return Status::Budget;}
-                Entry e;e.owner=owner;e.key=exactKey;e.programHash=prepared?prepared->hash_:programHash(p);if(!prepare(p,mesh,elements,count,e)){++stats_.invalid;return Status::Invalid;}
-                e.baseBytes=sizeof(Entry)+e.key.capacity()*4+e.bindings.capacity()*sizeof(Binding)+256;
+                Entry e;e.owner=owner;e.sourceAddress=owner.get();e.identity=identity(mesh);e.key=exactKey;e.programHash=prepared?prepared->hash_:programHash(p);if(!prepare(p,mesh,elements,count,e)){++stats_.invalid;return Status::Invalid;}
+                e.baseBytes=sizeof(Entry)+e.key.capacity()*4+e.bindings.capacity()*sizeof(Binding)+256+(e.identity?e.identity->bytes():0);
                 e.bytes=e.baseBytes+(e.skin?sizeof(SkinEnvelope)+32:0);if(e.bytes>Limit)return Status::Unsupported;
                 trimMemos(e.bytes);
                 while(!entries_.empty()&&(bytes_+e.bytes>Limit||entries_.size()>=MaxEntries)){if(!evict())return Status::Budget;}
                 if(entrySerial_!=std::numeric_limits<std::uint64_t>::max())e.serial=++entrySerial_;
-                const auto added=e.bytes;found=entries_.emplace(identity,std::move(e));bytes_+=added;
+                const auto added=e.bytes;found=entries_.emplace(hash,std::move(e));bytes_+=added;
             }
             Entry& e=found->second;
             // Negative entries remain small and do not displace useful ready

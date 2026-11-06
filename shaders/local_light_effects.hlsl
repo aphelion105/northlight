@@ -187,3 +187,41 @@ float4 localLightingValue(float2 uv,bool soft) {
 }
 float4 LocalLighting(float2 uv:TEXCOORD0):COLOR0{return localLightingValue(uv,false);}
 float4 LocalLightingSoft(float2 uv:TEXCOORD0):COLOR0{return localLightingValue(uv,true);}
+
+// Native material endpoints are evaluated by the original VS/PS programs.
+// Mixing their results preserves authored saturation, fog and every other
+// light. No FGL radiance or inferred albedo is subtracted from the base scene.
+float nativeLocalVisibility(float3 delta,float3 normal,float farZ) {
+    float distance=length(delta);
+    if(distance<=LocalShadow.x||distance>=farZ||dot(normal,delta)>=0)return 1;
+    float3 direction=delta/max(distance,.00001);
+    float grazing=1-abs(dot(normal,direction));
+    float3 biased=delta+normal*LocalDepthInfo.w*(1+grazing*2);
+    float plane=dot(normal,biased);if(plane>=-.0001)return 1;
+    float depthA=farZ/(farZ-LocalShadow.x);
+    float3 depthPlane=normal*(depthA*LocalShadow.x/plane);
+    float3 axis=abs(direction.z)<.9?float3(0,0,1):float3(0,1,0);
+    float3 tangent=normalize(cross(direction,axis)),bitangent=cross(direction,tangent);
+    float visibility=0;
+    [unroll]for(int i=0;i<4;++i){
+        float2 offset=float2((i==0||i==2)?-.5:.5,(i<2)?-.5:.5);
+        float3 ray=localCubeTexelRay(biased+distance*(2*LocalShadow.z)*(tangent*offset.x+bitangent*offset.y));
+        float deltaDepth=dot(depthPlane,ray);
+        float stored=texCUBElod(LocalCube,float4(ray,0)).r;
+        visibility+=(deltaDepth<=0||saturate(depthA-deltaDepth)<=stored+.000002)?1:0;
+    }
+    return visibility*.25;
+}
+void nativeLocalReceiver(float3 view,out float3 position,out float3 normal) {
+    position=localWorld(view);
+    float3 n=cross(ddx(view),ddy(view));n*=rsqrt(max(dot(n,n),1e-12));n=dot(n,-view)<0?-n:n;
+    normal=n.x*LocalInverseView[0].xyz+n.y*LocalInverseView[1].xyz+n.z*LocalInverseView[2].xyz;
+}
+float4 NativeLocalLighting1(float4 original:TEXCOORD0,float4 withoutA:TEXCOORD1,float3 view:TEXCOORD4):COLOR0 {
+    float3 p,n;nativeLocalReceiver(view,p,n);
+    float visibility=nativeLocalVisibility(p-LocalPosition.xyz,n,LocalShadow.y);
+    visibility=lerp(1,visibility,LocalShadow.w); // Same point-selection fade as renderer correction.
+    if(visibility==1)return original;
+    if(visibility==0)return float4(withoutA.rgb,original.a);
+    return float4(lerp(withoutA.rgb,original.rgb,visibility),original.a);
+}

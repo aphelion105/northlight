@@ -7,5 +7,6 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
 import client_fixtures
 out=fp.output_dir();out.mkdir(parents=True,exist_ok=True);exe=out/'displacement-state-reuse.exe'
-subprocess.run([str(fp.zig()),'c++','-target','x86-windows-gnu','-O2','-UNDEBUG','-std=c++17','-Wno-microsoft-exception-spec',*fp.test_include_flags(),str(fp.TESTS/'displacement_state_reuse.cpp'),'-luser32','-luuid','-o',str(exe)],env=fp.zig_env(),check=True)
+client_fixtures.actor_client_programs(out)
+subprocess.run([str(fp.zig()),'c++','-target','x86-windows-gnu','-O2','-UNDEBUG','-std=c++17','-Wno-microsoft-exception-spec',*fp.test_include_flags(),'-I'+str(out),str(fp.TESTS/'displacement_state_reuse.cpp'),'-luser32','-luuid','-o',str(exe)],env=fp.zig_env(),check=True)
 subprocess.run([str(exe),str(client_fixtures.four_bone_body_vs3())],check=True)

@@ -9,10 +9,12 @@
 #include <fstream>
 #include <string>
 #include <vector>
+#include "../src/sky/legacy_fog.h"
 #define NORTHLIGHT_FGR_CONSTANT_BANK_ONLY
 #include "removal_distance_gpu.cpp"
 #undef NORTHLIGHT_FGR_CONSTANT_BANK_ONLY
-static void ok(HRESULT hr){if(FAILED(hr)){std::fprintf(stderr,"HRESULT=%08lx\n",(unsigned long)hr);std::abort();}}
+static void checked(HRESULT hr,unsigned line){if(FAILED(hr)){std::fprintf(stderr,"HRESULT=%08lx line=%u\n",(unsigned long)hr,line);std::abort();}}
+#define ok(call) checked(call,__LINE__)
 struct Image {std::uint32_t width,height,format,bytes;std::vector<unsigned char> pixels;};
 static Image image(const std::string& path){auto b=read(path);std::uint32_t h[5];assert(b.size()>=sizeof h);std::memcpy(h,b.data(),sizeof h);assert(h[0]==0x31524746&&b.size()==20+std::size_t(h[1])*h[2]*h[4]);return {h[1],h[2],h[3],h[4],{b.begin()+20,b.end()}};}
 static IDirect3DTexture9* texture(IDirect3DDevice9* dev,const Image& im){IDirect3DTexture9* tex=nullptr;ok(dev->CreateTexture(im.width,im.height,1,0,(D3DFORMAT)im.format,D3DPOOL_MANAGED,&tex,nullptr));D3DLOCKED_RECT lock{};ok(tex->LockRect(0,&lock,nullptr,0));for(unsigned y=0;y<im.height;++y)std::memcpy((char*)lock.pBits+y*lock.Pitch,im.pixels.data()+std::size_t(y)*im.width*im.bytes,im.width*im.bytes);ok(tex->UnlockRect(0));return tex;}
@@ -50,8 +52,18 @@ int main(int argc,char** argv){
         if(enabled=="currentLocalLighting=1"){currentLocal=texture(dev,image(prefix+"current-local-light.fgr"));ok(dev->SetTexture(3,currentLocal));}
     }
     if(bounds){ok(dev->SetTexture(3,textures[1]));ok(dev->SetTexture(5,textures[2]));}
+    if(composite&&std::strstr(argv[4],"hdr"))ok(dev->SetTexture(2,textures[0]));
+    const unsigned neutralMask=std::getenv("NORTHLIGHT_COMPOSITE_NEUTRAL")?unsigned(std::atoi(std::getenv("NORTHLIGHT_COMPOSITE_NEUTRAL"))):0;
     IDirect3DTexture9* water=nullptr;
     if(std::ifstream(prefix+"water.fgr").good()){water=texture(dev,image(prefix+"water.fgr"));ok(dev->SetTexture(11,water));}
+    IDirect3DTexture9 *coverage=nullptr,*rain=nullptr;
+    if(std::ifstream(prefix+"coverage.fgr").good()){
+        coverage=texture(dev,image(prefix+"coverage.fgr"));ok(dev->SetTexture(7,coverage));
+        for(auto k:{D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER})ok(dev->SetSamplerState(7,k,D3DTEXF_LINEAR));
+        for(auto k:{D3DSAMP_ADDRESSU,D3DSAMP_ADDRESSV})ok(dev->SetSamplerState(7,k,D3DTADDRESS_CLAMP));
+        float info[4];std::ifstream f(prefix+"coverage-info.f32",std::ios::binary);assert(f.read(reinterpret_cast<char*>(info),sizeof info));ok(dev->SetPixelShaderConstantF(79,info,1));
+    }
+    if(std::ifstream(prefix+"rain.fgr").good()){rain=texture(dev,image(prefix+"rain.fgr"));ok(dev->SetTexture(13,rain));}
     IDirect3DPixelShader9* shaders[2]{};for(unsigned i=0;i<2;++i){auto b=read(argv[i+2]);ok(dev->CreatePixelShader((const DWORD*)b.data(),&shaders[i]));}
     IDirect3DSurface9 *target=nullptr,*staging=nullptr;ok(dev->CreateRenderTarget(W,H,bounds?D3DFMT_G32R32F:D3DFMT_A16B16G16R16F,D3DMULTISAMPLE_NONE,0,FALSE,&target,nullptr));ok(dev->CreateOffscreenPlainSurface(W,H,bounds?D3DFMT_G32R32F:D3DFMT_A16B16G16R16F,D3DPOOL_SYSTEMMEM,&staging,nullptr));
     ok(dev->SetRenderTarget(0,target));ok(dev->SetDepthStencilSurface(nullptr));ok(dev->SetFVF(D3DFVF_XYZRHW|D3DFVF_TEX1));ok(dev->SetRenderState(D3DRS_ZENABLE,FALSE));ok(dev->SetRenderState(D3DRS_CULLMODE,D3DCULL_NONE));ok(dev->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE));ok(dev->SetPixelShaderConstantF(0,c[0],bank.count));D3DVIEWPORT9 vp={0,0,W,H,0,1};ok(dev->SetViewport(&vp));
@@ -71,11 +83,17 @@ int main(int argc,char** argv){
     ok(dev->SetTexture(15,distance));for(auto state:{D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER})ok(dev->SetSamplerState(15,state,D3DTEXF_POINT));
     ok(dev->SetSamplerState(15,D3DSAMP_MIPFILTER,D3DTEXF_NONE));ok(dev->SetSamplerState(15,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP));ok(dev->SetSamplerState(15,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP));
     IDirect3DQuery9 *event=nullptr,*start=nullptr,*end=nullptr,*freq=nullptr,*disjoint=nullptr;ok(dev->CreateQuery(D3DQUERYTYPE_EVENT,&event));ok(dev->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&start));ok(dev->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&end));ok(dev->CreateQuery(D3DQUERYTYPE_TIMESTAMPFREQ,&freq));ok(dev->CreateQuery(D3DQUERYTYPE_TIMESTAMPDISJOINT,&disjoint));
+    NorthlightLegacyFog::Constants uploadedFog;std::memcpy(uploadedFog.parameters,c[25],16);std::memcpy(uploadedFog.color,c[26],16);
+    const bool nativeSurfaceShared=NorthlightLegacyFog::surfaceFogIsZero(uploadedFog,scene.format==D3DFMT_A8R8G8B8||scene.format==D3DFMT_X8R8G8B8);
+    std::printf("COMPOSITE_PROOFS rainAbsent=%u nativeSurfaceShared=%u\n",unsigned(!rain),unsigned(nativeSurfaceShared));
     std::vector<unsigned char> output[2];double means[2]={};std::vector<double> timing[2];
     auto draw=[&](unsigned n){ok(dev->BeginScene());for(unsigned j=0;j<n;++j)ok(dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,vertices,sizeof(Vertex)));ok(dev->EndScene());};
-    for(unsigned block=0;block<24;++block){const unsigned mode=(block/2)%2?1-block%2:block%2;ok(dev->SetPixelShader(shaders[mode]));draw(16);wait(event);ok(disjoint->Issue(D3DISSUE_BEGIN));ok(start->Issue(D3DISSUE_END));draw(64);ok(end->Issue(D3DISSUE_END));ok(freq->Issue(D3DISSUE_END));ok(disjoint->Issue(D3DISSUE_END));wait(event);UINT64 a=0,b=0,f=0;BOOL bad=FALSE;assert(start->GetData(&a,sizeof a,0)==S_OK&&end->GetData(&b,sizeof b,0)==S_OK&&freq->GetData(&f,sizeof f,0)==S_OK&&disjoint->GetData(&bad,sizeof bad,0)==S_OK&&!bad&&b>=a&&f);if(block>=8)timing[mode].push_back(double(b-a)/double(f)*1000/64);
+    for(unsigned block=0;block<24;++block){const unsigned mode=(block/2)%2?1-block%2:block%2;
+        const float work[]={mode&&bool(neutralMask&1)?1.f:0.f,mode&&bool(neutralMask&2)?1.f:0.f,mode&&!rain?1.f:0.f,mode&&nativeSurfaceShared?1.f:0.f};ok(dev->SetPixelShaderConstantF(80,work,1));
+        ok(dev->SetPixelShader(shaders[mode]));draw(16);wait(event);ok(disjoint->Issue(D3DISSUE_BEGIN));ok(start->Issue(D3DISSUE_END));draw(64);ok(end->Issue(D3DISSUE_END));ok(freq->Issue(D3DISSUE_END));ok(disjoint->Issue(D3DISSUE_END));wait(event);UINT64 a=0,b=0,f=0;BOOL bad=FALSE;assert(start->GetData(&a,sizeof a,0)==S_OK&&end->GetData(&b,sizeof b,0)==S_OK&&freq->GetData(&f,sizeof f,0)==S_OK&&disjoint->GetData(&bad,sizeof bad,0)==S_OK&&!bad&&b>=a&&f);if(block>=8)timing[mode].push_back(double(b-a)/double(f)*1000/64);
         if(block<2){ok(dev->GetRenderTargetData(target,staging));D3DLOCKED_RECT lock{};ok(staging->LockRect(&lock,nullptr,D3DLOCK_READONLY));output[mode].resize(std::size_t(W)*H*8);for(unsigned y=0;y<H;++y)std::memcpy(output[mode].data()+std::size_t(y)*W*8,(char*)lock.pBits+y*lock.Pitch,W*8);ok(staging->UnlockRect());}
     }
+    if(coverage){ok(dev->SetTexture(7,nullptr));coverage->Release();}if(rain){ok(dev->SetTexture(13,nullptr));rain->Release();}
     for(unsigned i=0;i<2;++i){assert(timing[i].size()==8);std::sort(timing[i].begin(),timing[i].end());means[i]=(timing[i][3]+timing[i][4])*.5;}
     std::size_t changed=0,big=0,alpha=0,nonfinite=0;double maxAbs=0,sumSq=0;for(std::size_t i=0;i<std::size_t(W)*H*(bounds?2:4);++i){double error;bool different;if(bounds){float a,b;std::memcpy(&a,output[0].data()+i*4,4);std::memcpy(&b,output[1].data()+i*4,4);error=std::fabs(double(a)-b);different=a!=b;}else{std::uint16_t a,b;std::memcpy(&a,output[0].data()+i*2,2);std::memcpy(&b,output[1].data()+i*2,2);error=std::fabs(double(half(a))-half(b));different=a!=b;alpha+=i%4==3&&different;}nonfinite+=!std::isfinite(error);changed+=different;big+=error>1.0/1024;maxAbs=std::max(maxAbs,error);sumSq+=error*error;}
     std::printf("{\"capture\":\"%s\",\"old_ms\":%.6f,\"native_ms\":%.6f,\"ratio\":%.4f,\"components\":%llu,\"changed\":%llu,\"over_1_1024\":%llu,\"alpha_changes\":%llu,\"nonfinite\":%llu,\"max_abs\":%.9g,\"rmse\":%.9g,\"depth_reconstructed\":%s,\"AO_neutral\":%s,\"constant_register_count\":%u,\"constant_bank_stage\":\"unversioned\",\"invented_fog_environment\":false,\"neutral_composite_auxiliary_textures\":%s,\"per_source_bank_missing\":true,\"material_inputs_complete\":false,\"authentic_source_replay\":false,\"whole_scene_replay\":false}\n",argv[4],means[0],means[1],means[1]/means[0],(unsigned long long)std::size_t(W)*H*(bounds?2:4),(unsigned long long)changed,(unsigned long long)big,(unsigned long long)alpha,(unsigned long long)nonfinite,maxAbs,std::sqrt(sumSq/(std::size_t(W)*H*(bounds?2:4))),std::ifstream(prefix+"depth.fgr").good()?"false":"true",ao?"false":"true",bank.count,composite?"true":"false");std::fflush(stdout);

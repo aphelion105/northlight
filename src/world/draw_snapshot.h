@@ -216,20 +216,44 @@ private:
         // plus per-stream read spans), so accept/reject decisions never differ.
         std::size_t charged=0;
     };
-    template<bool Logical=false> static std::uint64_t hashKey(const CacheKey& k){
-        constexpr auto seed=[](){std::uint64_t value=1469598103934665603ull;
-            if constexpr(Logical)for(size_t i=0;i<sizeof(k.version)/8;++i)value*=1099511628211ull;return value;}();
-        const auto* b=reinterpret_cast<const std::uint8_t*>(&k);std::uint64_t h=seed;
+    template<bool Logical> static std::uint64_t hashKeyTail(const CacheKey& k,std::uint64_t h,size_t i){
+        const auto* b=reinterpret_cast<const std::uint8_t*>(&k);
         // The key is fully zero-initialized, including padding. Hash whole words
         // without alignment/aliasing assumptions; the exact key comparison in
         // serve() remains mandatory. A hash collision can only cause a miss.
-        size_t i=Logical?sizeof(k.version):0;for(;i+sizeof(std::uint64_t)<=sizeof k;i+=sizeof(std::uint64_t)){
+        for(;i+sizeof(std::uint64_t)<=sizeof k;i+=sizeof(std::uint64_t)){
             std::uint64_t word;std::memcpy(&word,b+i,sizeof word);
             if constexpr(Logical){static_assert(offsetof(CacheKey,tracked)==sizeof(k.version)&&sizeof(k.tracked)==4,"logical key prefix");if(i==offsetof(CacheKey,tracked))word&=0xffffffff00000000ull;}
             h^=word;h*=1099511628211ull;}
         for(;i<sizeof k;++i){h^=b[i];h*=1099511628211ull;}
         h^=h>>33;h*=0xff51afd7ed558ccdULL;h^=h>>33;h*=0xc4ceb9fe1a85ec53ULL;h^=h>>33;
         return NORTHLIGHT_SNAPSHOT_HASH_BITS?h&((std::uint64_t(1)<<NORTHLIGHT_SNAPSHOT_HASH_BITS)-1):h;
+    }
+    template<bool Logical=false> static std::uint64_t hashKey(const CacheKey& k){
+        constexpr auto seed=[](){std::uint64_t value=1469598103934665603ull;
+            if constexpr(Logical)for(size_t i=0;i<sizeof(k.version)/8;++i)value*=1099511628211ull;return value;}();
+        return hashKeyTail<Logical>(k,seed,Logical?sizeof(k.version):0);
+    }
+    // Submeshes often change only draw arguments. Reuse the FNV intermediate
+    // value only after comparing every prefix byte, including write revisions.
+    // The suffix and final avalanche remain the original hash, bit for bit.
+    static constexpr size_t HashPrefixBytes=offsetof(CacheKey,base)&~size_t(7);
+    struct {CacheKey key;std::uint64_t hash;unsigned misses=0;bool valid=false;} hashPrefix_;
+    std::uint64_t lookupHash(const CacheKey& key){
+        const auto* bytes=reinterpret_cast<const unsigned char*>(&key);
+        if(hashPrefix_.valid&&hashPrefix_.key.version[0]==key.version[0]&&hashPrefix_.key.vb[0]==key.vb[0]&&hashPrefix_.key.offset[0]==key.offset[0]&&
+           !NorthlightMem::compare(&hashPrefix_.key,bytes,HashPrefixBytes)){
+            if(sampleMaintenance_)++maintenance_.hashPrefixHits;
+            return hashKeyTail<false>(key,hashPrefix_.hash,HashPrefixBytes);
+        }
+        if(sampleMaintenance_)++maintenance_.hashFull;
+        // Frequent buffer changes keep the original full hash; amortize the
+        // extra copy/build instead of replacing the cached prefix every draw.
+        if(hashPrefix_.valid&&++hashPrefix_.misses<16)return hashKey(key);
+        std::uint64_t h=1469598103934665603ull;
+        for(size_t i=0;i<HashPrefixBytes;i+=8){std::uint64_t word;std::memcpy(&word,bytes+i,8);h^=word;h*=1099511628211ull;}
+        std::memcpy(&hashPrefix_.key,bytes,HashPrefixBytes);hashPrefix_.hash=h;hashPrefix_.valid=true;hashPrefix_.misses=0;
+        return hashKeyTail<false>(key,hashPrefix_.hash,HashPrefixBytes);
     }
     IdentityFn identity_=nullptr;VersionFn version_=nullptr;
     NorthlightCaptureMetadata::Read metadata_=nullptr;
@@ -265,7 +289,7 @@ private:
     // are reported as unknown, never guessed to be a new resource or a write.
     std::array<History,2048> history_{};
 public:
-    struct Maintenance {unsigned snapshotEvictions=0,indexEvictions=0,missEvicted=0,missRevision=0,missUnknown=0,missCollision=0;
+    struct Maintenance {unsigned snapshotEvictions=0,indexEvictions=0,missEvicted=0,missRevision=0,missUnknown=0,missCollision=0,hashPrefixHits=0,hashFull=0;
         size_t snapshotEvictedBytes=0,indexEvictedBytes=0;double snapshotMs=0,indexMs=0;};
 private:
     Maintenance maintenance_;bool sampleMaintenance_=false;std::uint16_t historyEpoch_=1;
@@ -407,7 +431,7 @@ private:
         if(lookup_!=Lookup::Map&&(key.tracked||NORTHLIGHT_SNAPSHOT_COUNTERFACTUAL==6)&&predicted_){++predictTried_;
             if(predictedEqual(predicted_->key,key)){found=predicted_;++predictHits_;}else ++predictMisses_;}
         if(!found){
-            const auto hash=hashKey(key);auto it=sources_->entries.find(hash);if(it==sources_->entries.end()||!(it->second->key==key)){
+            const auto hash=lookupHash(key);auto it=sources_->entries.find(hash);if(it==sources_->entries.end()||!(it->second->key==key)){
                 noteMiss(key,hash,it!=sources_->entries.end());
                 if(key.tracked)found=sourceAlias(key);
                 if(!found){

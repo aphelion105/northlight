@@ -1120,10 +1120,18 @@ static void gateCensus(){
 // 0.3.182 (D1): "owner" runs the elision tests; "nesting", "waits" and "stress N" run one each (the
 // counterfactual builds must fail them); "threads" is the TSan target.
 static void auxiliaryTargetProofs(){
- Backend b;DeviceMirror m;MirrorDevice game(&b,&m);ExtensionDevice ext(&b,&m);auto* target=new Object<IDirect3DSurface9>();
+ Backend b;DeviceMirror m;MirrorDevice game(&b,&m);ExtensionDevice ext(&b,&m);auto* target=new Object<IDirect3DSurface9>();auto* primary=new Object<IDirect3DSurface9>();
  auto empty=[&]{assert(ext.emptyAuxiliaryTargets());};
  empty();assert(b.gets==3);const auto reads=b.gets;
  for(unsigned draw=0;draw<1500;++draw)empty();assert(b.gets==reads);
+ // RT0 changes cannot populate auxiliary slots. Repeated private captures
+ // must not force three new absence queries for every target switch.
+ for(unsigned draw=0;draw<1500;++draw){assert(SUCCEEDED(game.SetRenderTarget(0,primary)));empty();}
+ assert(b.gets==reads);
+ for(unsigned slot=1;slot<4;++slot)for(unsigned draw=0;draw<100;++draw){
+  assert(SUCCEEDED(game.SetRenderTarget(slot,target))&&!ext.emptyAuxiliaryTargets());
+  const auto before=b.gets;assert(SUCCEEDED(game.SetRenderTarget(slot,nullptr)));empty();assert(b.gets-before==1);
+ }
  // Public HRESULT and output writes remain authoritative, even after proving absence.
  for(bool preserve:{false,true}){b.preserveEmptyTargetOutput=preserve;IDirect3DSurface9* out=target;assert(ext.GetRenderTarget(3,&out)==D3DERR_NOTFOUND&&out==(preserve?target:nullptr));}
  b.preserveEmptyTargetOutput=false;
@@ -1136,6 +1144,10 @@ static void auxiliaryTargetProofs(){
  struct Reentry {MirrorDevice* game;ExtensionDevice* ext;DeviceMirror* mirror;IDirect3DSurface9* target;} r{&game,&ext,&m,target};b.callbackContext=&r;
  b.onGetTarget=[](void* p){auto& r=*static_cast<Reentry*>(p);assert(SUCCEEDED(r.game->SetRenderTarget(1,r.target)));};
  m.invalidate();assert(!ext.emptyAuxiliaryTargets()&&!m.targetAbsent[1]);assert(SUCCEEDED(game.SetRenderTarget(1,nullptr)));empty();
+ // The outer RT0 write must never revive an absence invalidated by re-entry.
+ b.onBeforeSetTarget=[](void* p){auto& r=*static_cast<Reentry*>(p);assert(SUCCEEDED(r.game->SetRenderTarget(2,r.target)));};
+ assert(SUCCEEDED(game.SetRenderTarget(0,primary))&&!ext.emptyAuxiliaryTargets()&&!m.targetAbsent[2]);
+ assert(SUCCEEDED(game.SetRenderTarget(2,nullptr)));empty();
  // Callbacks before and after a binding changes cannot relearn absence while it is in flight.
  auto inFlight=[](void* p){auto& r=*static_cast<Reentry*>(p);assert(r.mirror->targetWrites&&!r.ext->emptyAuxiliaryTargets());};
  b.onBeforeSetTarget=inFlight;b.onSetTarget=inFlight;assert(SUCCEEDED(game.SetRenderTarget(1,target))&&!m.targetWrites&&!ext.emptyAuxiliaryTargets());
@@ -1148,7 +1160,7 @@ static void auxiliaryTargetProofs(){
  assert(SUCCEEDED(game.BeginStateBlock())&&!ext.emptyAuxiliaryTargets());IDirect3DStateBlock9* block=nullptr;assert(SUCCEEDED(game.EndStateBlock(&block)));empty();assert(SUCCEEDED(block->Apply()));empty();block->Release();
  D3DPRESENT_PARAMETERS pp{};b.onBeforeReset=inFlight;b.onReset=inFlight;assert(SUCCEEDED(game.Reset(&pp))&&!m.targetWrites);empty();
  std::thread foreign([&]{assert(SUCCEEDED(game.SetRenderTarget(3,target)));});foreign.join();assert(!ext.emptyAuxiliaryTargets());assert(SUCCEEDED(game.SetRenderTarget(3,nullptr)));empty();
- assert(SUCCEEDED(b.SetRenderTarget(2,target)));assert(ext.audit()&&!m.enabled&&!ext.emptyAuxiliaryTargets());target->Release();
+ assert(SUCCEEDED(b.SetRenderTarget(2,target)));assert(ext.audit()&&!m.enabled&&!ext.emptyAuxiliaryTargets());target->Release();primary->Release();
  std::printf("PASS auxiliary targets: 4500 repeated reads avoided; authoritative null/NOTFOUND; public outputs; binding/failed/null-retained setters; nested re-entry; raw/stateblock/reset/foreign/disabled invalidation\n");
 }
 int main(int argc,char** argv){

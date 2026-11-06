@@ -191,6 +191,22 @@ struct PointTerrainCoverageTest {
     w.setMemoryPressure(false,false);w.pointIndex=0;
    }
   }
+  if(benchmark){
+   std::ofstream orbit(output+"/orbit.tsv"),faces(output+"/orbit-faces.tsv");
+   w.releasePointGPU();w.quality.pointShadowLimit=64;
+   for(unsigned step=0;step<32;++step){const unsigned pose=(step%16)<8?step%8:7-step%8;
+    const float angle=float(pose)*3.14159265359f/4,c=std::cos(angle),s=std::sin(angle),up=std::sqrt(.96f);
+    const float inverse[]={-s,c,0,0,.2f*c,.2f*s,up,0,up*c,up*s,-.2f,0,center.x,center.y,center.z,1};std::memcpy(w.context.inverseView,inverse,sizeof inverse);
+    // Fixed selection history makes cross-build comparisons independent of
+    // wall-clock fade steps. Source transforms and triangle inputs stay real.
+    w.pointSelection.reset();w.localLightTracker.reset();w.localLightQpc=0;w.atmosphereWork(w.atmosphere,.1f,3840,2160,0);
+    drain(fence);const auto rebuilt=w.pointFacesRebuilt;const auto start=Clock::now();
+    must(d->BeginScene());w.renderPointShadows(w.atmosphere.lights,true,false);must(d->EndScene());const double submit=milliseconds(start);drain(fence);const double complete=milliseconds(start);
+    unsigned count=0,staticFaces=0;for(const auto& slot:w.pointSlots)if(slot.ready){++count;for(auto* t:slot.cacheFace)staticFaces+=t!=nullptr;
+     for(unsigned face=0;face<6;++face){const auto pixels=image(slot.faces[face]);NorthlightBackendLoader::Sha256 hash;hash.update(pixels.data(),pixels.size());faces<<step<<'\t'<<slot.selected.sourceId<<'\t'<<face<<'\t'<<hash.hex()<<'\n';}}
+    orbit<<step<<'\t'<<pose<<'\t'<<count<<'\t'<<w.pointDraws<<'\t'<<(w.pointFacesRebuilt-rebuilt)<<'\t'<<staticFaces<<'\t'<<submit<<'\t'<<complete<<'\n';
+   }
+  }
   assert(comparisons>100&&omitted>0&&nonempty>0);readback->Release();fence->Release();
   std::printf("POINT_VISIBILITY_GPU_PASS exactFaces=%u recoveryFaces=%u offscreenSlots=%u nonemptyFaces=%u realCache=1 gameLaunched=0\n",comparisons,recoveryComparisons,omitted,nonempty);
  }

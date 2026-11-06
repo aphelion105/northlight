@@ -545,7 +545,10 @@ public:
         a.extraBytes=extraBytes;
         auto* p=static_cast<CreateArgs*>(q.reserve((std::uint16_t)id,std::uint32_t(sizeof(CreateArgs)+((extraBytes+7u)&~7u))));
         *p=a;if(extraBytes)std::memcpy(p+1,extra,extraBytes);q.commit();proxy->readySeq=q.recordedSeq();   // 0.3.206 (task 31)
-        proxy->pinDevice();*out=static_cast<typename std::remove_pointer<decltype(firstIface(proxy))>::type*>(proxy);return D3D_OK;
+        proxy->pinDevice();*out=static_cast<typename std::remove_pointer<decltype(firstIface(proxy))>::type*>(proxy);
+        // Prepare the resource while the caller fills/decodes its data; a lone
+        // create must not wait for the next 64-command batch.
+        q.publish();return D3D_OK;
     }
     static IDirect3DTexture9* firstIface(StreamTexture*);static IDirect3DCubeTexture9* firstIface(StreamCubeTexture*);static IDirect3DVolumeTexture9* firstIface(StreamVolumeTexture*);
     static IDirect3DVertexBuffer9* firstIface(StreamVertexBuffer*);static IDirect3DIndexBuffer9* firstIface(StreamIndexBuffer*);static IDirect3DSurface9* firstIface(StreamSurface*);

@@ -59,12 +59,39 @@ struct SkinEnvelope {
                max are exact). Per-axis low/high use the unchanged double sums,
                and min/max over bones is order-independent: identical bits. */
             float largestF[12]={};std::uint32_t bad=0;double lo[3]={low[0],low[1],low[2]},hi[3]={high[0],high[1],high[2]};
+#if defined(__SSE2__)
+            __m128 largestV[3]={_mm_setzero_ps(),_mm_setzero_ps(),_mm_setzero_ps()};
+            const auto sign=_mm_set1_epi32(0x7fffffff),finite=_mm_set1_epi32(0x7f7fffff),normal=_mm_set1_epi32(0x00800000),zero=_mm_setzero_si128();
+#endif
             for(unsigned n=0;n<usedBones;++n){const unsigned bone=order[n];const auto& b=bones[bone];
                 if(n&&(n&31u)==0&&shouldStop&&shouldStop(stopContext))return false;any=true;
-                const float* rows=constants+4*(31+3*bone);std::uint32_t bits[12];std::memcpy(bits,rows,48);
+                const float* rows=constants+4*(31+3*bone);
+#if defined(__SSE2__)
+                auto invalid=_mm_setzero_si128();
+                for(unsigned axis=0;axis<3;++axis){const auto u=_mm_and_si128(_mm_castps_si128(_mm_loadu_ps(rows+4*axis)),sign);
+                    invalid=_mm_or_si128(invalid,_mm_or_si128(_mm_cmpgt_epi32(u,finite),_mm_and_si128(_mm_cmpgt_epi32(u,zero),_mm_cmpgt_epi32(normal,u))));
+                    largestV[axis]=_mm_max_ps(largestV[axis],_mm_castsi128_ps(u));}
+                bad|=unsigned(_mm_movemask_epi8(invalid));
+#else
+                std::uint32_t bits[12];std::memcpy(bits,rows,48);
                 for(unsigned k=0;k<12;++k){const std::uint32_t u=bits[k]&0x7fffffffu;bad|=std::uint32_t(u>=0x7f800000u)|std::uint32_t(u-1u<0x007fffffu);largestF[k]=std::max(largestF[k],std::fabs(rows[k]));}
+#endif
                 const double l0=b.low[0],l1=b.low[1],l2=b.low[2],h0=b.high[0],h1=b.high[1],h2=b.high[2];
-                for(unsigned axis=0;axis<3;++axis){const float* row=rows+4*axis;const double r0=row[0],r1=row[1],r2=row[2];
+#if defined(__SSE2__)
+                // Pair X/Y with the same sum order. SSE min/max's second
+                // operand wins ties, as std::min/max's first operand does.
+                const auto row0=_mm_loadu_ps(rows),row1=_mm_loadu_ps(rows+4);
+                const auto xy=_mm_unpacklo_ps(row0,row1),zw=_mm_unpackhi_ps(row0,row1);
+                const __m128d coefficients[]={_mm_cvtps_pd(xy),_mm_cvtps_pd(_mm_movehl_ps(xy,xy)),_mm_cvtps_pd(zw)};
+                auto a01=_mm_cvtps_pd(_mm_movehl_ps(zw,zw)),c01=a01;
+                for(unsigned j=0;j<3;++j){const auto x=_mm_mul_pd(coefficients[j],_mm_set1_pd(b.low[j])),y=_mm_mul_pd(coefficients[j],_mm_set1_pd(b.high[j]));
+                    a01=_mm_add_pd(a01,_mm_min_pd(y,x));c01=_mm_add_pd(c01,_mm_max_pd(y,x));}
+                _mm_storeu_pd(lo,_mm_min_pd(a01,_mm_loadu_pd(lo)));_mm_storeu_pd(hi,_mm_max_pd(c01,_mm_loadu_pd(hi)));
+                constexpr unsigned scalarAxis=2;
+#else
+                constexpr unsigned scalarAxis=0;
+#endif
+                for(unsigned axis=scalarAxis;axis<3;++axis){const float* row=rows+4*axis;const double r0=row[0],r1=row[1],r2=row[2];
                     const double x0=r0*l0,y0=r0*h0,x1=r1*l1,y1=r1*h1,x2=r2*l2,y2=r2*h2;
                     const double a=((double(row[3])+std::min(x0,y0))+std::min(x1,y1))+std::min(x2,y2);
                     const double c=((double(row[3])+std::max(x0,y0))+std::max(x1,y1))+std::max(x2,y2);
@@ -73,6 +100,9 @@ struct SkinEnvelope {
             }
             for(unsigned axis=0;axis<3;++axis){low[axis]=lo[axis];high[axis]=hi[axis];}
             if(bad)return false;
+#if defined(__SSE2__)
+            for(unsigned axis=0;axis<3;++axis)_mm_storeu_ps(largestF+4*axis,largestV[axis]);
+#endif
             for(unsigned axis=0;axis<3;++axis)for(unsigned j=0;j<4;++j)largest[axis][j]=largestF[4*axis+j];
         }else
         for(unsigned bone=0;bone<75;++bone){const auto& b=bones[bone];if(!b.used)continue;

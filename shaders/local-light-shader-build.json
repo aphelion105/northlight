@@ -1,6 +1,6 @@
 {
   "bump_include_sha256": "b5523a51dc6715f11ac2e7ba9ecb46a4973ba6aa23de159e308a8fd24d4e9ebc",
-  "source_sha256": "a79873b9d6bb7b3adead35b0c5f884ef15830e9afe60ae96ef1ff673df1f15b5",
+  "source_sha256": "4f03617f73fcc943bebb0a50e0da0663ef41a842492b18a85f5fea4ae23cdf89",
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
   "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
   "game_launched": false,
@@ -143,6 +143,36 @@
         "dp2add": 2
       },
       "cube_instruction_extra_slots": 0
+    },
+    "NativeLocalLighting1": {
+      "target": "ps_3_0",
+      "bytes": 4140,
+      "sha256": "cd2e669def773cc61ee643f15977b25da52b83dcaaa251a91daa67696e39d8d0",
+      "static_instruction_slots": 259,
+      "temporary_registers": 12,
+      "samplers": [
+        1
+      ],
+      "instructions": {
+        "mul": 47,
+        "add": 74,
+        "dsx": 1,
+        "dsy": 1,
+        "dp3": 10,
+        "rsq": 2,
+        "cmp": 36,
+        "rcp": 8,
+        "if": 2,
+        "mov": 25,
+        "else": 2,
+        "nrm": 1,
+        "max": 12,
+        "frc": 4,
+        "min": 4,
+        "texldl": 4,
+        "endif": 2
+      },
+      "cube_instruction_extra_slots": 12
     }
   }
 }

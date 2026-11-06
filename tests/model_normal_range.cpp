@@ -19,6 +19,17 @@ static void singleBone(){
     Cache cache;float bank[1024]={};bank[8]=bank[13]=bank[18]=bank[22]=1;
     for(unsigned b=0;b<75;++b){bank[4*(31+b*3)]=bank[4*(32+b*3)+1]=bank[4*(33+b*3)+2]=1;bank[4*(33+b*3)+3]=80;}
     auto mesh=source(32,7),mixed=source(32,7,true);assert(cache.outside(mesh,layout,3,bank,Single));assert(!cache.outside(mixed,layout,3,bank,Single));assert(!cache.outside(mixed,layout,3,bank,Single));assert(cache.singleMixed==2);
+    // An immutable mixed source always keeps capture. Its warm rejection
+    // attempt must not fetch a projection/pose that cannot change that fact.
+    unsigned mixedReads=0;
+    for(unsigned draw=0;draw<1000;++draw){cache.beginFrame();assert(!cache.outsideRead(mixed,layout,3,[&](unsigned first,unsigned count,float* out){
+        ++mixedReads;std::memcpy(out,bank+first*4,count*16);return true;
+    },Single));}
+    assert(mixedReads==0);
+    // The same mesh can expose a different, uniform index lane via a new layout.
+    auto lanes=std::make_shared<Mesh>();lanes->vertexCount=32;lanes->streams[0].stride=20;lanes->streams[0].bytes.resize(32*20);
+    for(unsigned i=0;i<32;++i){auto* v=lanes->streams[0].bytes.data()+20*i;v[12]=7+(i==31);v[16]=7;}
+    assert(!cache.outside(lanes,layout,3,bank,Single));layout[1].Offset=16;assert(cache.outside(lanes,layout,3,bank,Single));layout[1].Offset=12;
     const auto evaluate=[&](const auto& code){NorthlightActorDeformation::Program p;assert(NorthlightActorDeformation::compile(code,sizeof(code)/4,p,false,2));
         for(unsigned frame=0;frame<100;++frame){cache.beginFrame();bank[4*(33+21)+3]=frame%2?80:20;bank[4*(33+21)]=float(int(frame%7)-3)*.11f;
             const bool reject=cache.outside(mesh,layout,3,bank,Single);assert(reject==bool(frame%2));
@@ -26,9 +37,24 @@ static void singleBone(){
     };
     evaluate(ClientShaders::OneBoneVs3);evaluate(ClientShaders::OneBoneVs3WLast);evaluate(ClientShaders::OneBoneVs3WMid);evaluate(ClientShaders::OneBoneVs2);
     bank[4*(33+21)]=0;
+    // The narrow reader must agree with the full bank for every legal bone,
+    // reading only c2..c5 and that bone's three rows. Missing spans fail open.
+    for(unsigned bone=0;bone<75;++bone){auto owner=source(32,bone);Cache full,narrow;
+        for(float z:{20.f,48.f,80.f}){bank[4*(33+3*bone)+3]=z;unsigned registers=0;
+            const bool expected=full.outside(owner,layout,3,bank,Single);
+            const bool actual=narrow.outsideRead(owner,layout,3,[&](unsigned first,unsigned count,float* out){
+                assert((first==2&&count==4)||(first==31+3*bone&&count==3));registers+=count;std::memcpy(out,bank+first*4,count*16);return true;
+            },Single);assert(actual==expected&&registers==7);
+        }
+        bank[4*(33+3*bone)+3]=80;
+        for(unsigned fail:{2u,31+3*bone})assert(!narrow.outsideRead(owner,layout,3,[&](unsigned first,unsigned count,float* out){
+            if(first==fail)return false;std::memcpy(out,bank+first*4,count*16);return true;
+        },Single));
+    }
     // A changed immutable source must not inherit a uniform result from its predecessor.
     alignas(Mesh) unsigned char storage[sizeof(Mesh)];auto owner=[&](bool changed){return std::shared_ptr<const Mesh>(new(storage) Mesh(*source(32,7,changed)),[](const Mesh* p){p->~Mesh();});};
     cache.beginFrame();auto old=owner(false);assert(cache.outside(old,layout,3,bank,Single));old.reset();auto next=owner(true);assert(!cache.outside(next,layout,3,bank,Single));next.reset();
+    auto uniformAgain=owner(false);assert(cache.outside(uniformAgain,layout,3,bank,Single));uniformAgain.reset();
     bank[4*(33+21)+3]=20;assert(!cache.outside(mesh,layout,3,bank,Single));bank[4*(33+21)+3]=80;assert(cache.outside(mesh,layout,3,bank,Single));
     bank[4*(31+21)]=NAN;assert(!cache.outside(mesh,layout,3,bank,Single));bank[4*(31+21)]=1;
     assert(!cache.outside(source(32,75),layout,3,bank,Single));
@@ -57,6 +83,14 @@ int main(int argc,char** argv){assert(argc==3);auto code=read(argv[1]),skin=read
      b.low[2]=-90;b.high[2]=-80;constants[22]=-1;proof.publish(b,constants,stamp,&source,&shader,&decl);assert(proof.outside(&source,&shader,&decl,stamp));
      b.low[0]=NAN;proof.publish(b,constants,stamp,&source,&shader,&decl);assert(!proof.bounds.valid);b.low[0]=-2;constants[20]=.01f;proof.publish(b,constants,stamp,&source,&shader,&decl);assert(!proof.bounds.valid);
      auto def=skin;def.insert(def.begin()+1,{0x05000051,0xa00f0005,0,0,0x3f800000,0});assert(NorthlightModelNormalRange::classify(def.data(),def.size(),true)==NorthlightModelNormalRange::None);
+     proof.publishFar(stamp,&source,&shader,&decl);assert(proof.outsideRange&&!proof.bounds.valid&&proof.outside(&source,&shader,&decl,stamp));
+     assert(!proof.outside(&other,&shader,&decl,stamp)&&!proof.outside(&source,&other,&decl,stamp)&&!proof.outside(&source,&shader,&other,stamp));
+     assert(!proof.outside(&source,&shader,&decl,unheld)&&!proof.outside(&source,&shader,&decl,invalid));
+     for(unsigned bank=0;bank<4;++bank){auto stale=stamp;
+         if(bank==0)++stale.reset;if(bank==1)++stale.floats;if(bank==2)++stale.booleans;if(bank==3)++stale.integers;
+         assert(!proof.outside(&source,&shader,&decl,stale));}
+     proof.publishFar(invalid,&source,&shader,&decl);assert(!proof.outsideRange);
+     proof.publishFar(stamp,nullptr,&shader,&decl);assert(!proof.outsideRange);
     }
     NorthlightActorDeformation::Program program;assert(NorthlightActorDeformation::compile(code.data(),code.size(),program));
     D3DVERTEXELEMENT9 layout[]={{0,0,D3DDECLTYPE_FLOAT3,0,D3DDECLUSAGE_POSITION,0},D3DDECL_END()};

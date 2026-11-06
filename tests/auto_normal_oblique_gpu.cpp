@@ -609,7 +609,13 @@ int NORTHLIGHT_OBLIQUE_ENTRY(int argc,char** argv){
             debug.insert(debug.end(),{0x03000003,dst(0,result,1),src(0,result,0xff),src(0,result,0xaa),0x03000003,dst(0,result,2),src(0,result,0xaa),src(0,result,0xaa),0x02000001,dst(8,0),src(0,result,0xd2),65535});
             ok(d->CreatePixelShader(reinterpret_cast<DWORD*>(debug.data()),&hitMask));
         }
-        ok(bump.nativeDraw([&]{if(hitMask){assert(MaterialCaptureStateTestAccess::usingShared(bump));ok(d->SetPixelShader(hitMask));}return bump.geometryDraw(native,true);}));
+        ok(bump.nativeDraw([&]{if(hitMask){assert(MaterialCaptureStateTestAccess::usingShared(bump));ok(d->SetPixelShader(hitMask));}
+            if(!std::getenv("NORTHLIGHT_TEST_NATIVE_SLOT_BOUNDARY"))return bump.geometryDraw(native,true);
+            const bool shared=MaterialCaptureStateTestAccess::usingShared(bump),prepared=bump.geometryPrepared();unsigned rawCalls=0,privateVS=0;
+            const HRESULT hr=bump.geometryDraw([&]{++rawCalls;IDirect3DVertexShader9* bound=nullptr;ok(d->GetVertexShader(&bound));privateVS+=bound!=vs;drop(bound);return native();},true);
+            assert(rawCalls==unsigned(!shared&&!prepared));
+            std::printf("NATIVE_RAW_BOUNDARY mode=%u rawCalls=%u sharedPOM=%u preparedGeometry=%u privateVS=%u preserved=1\n",mode,rawCalls,unsigned(shared),unsigned(prepared),privateVS);return hr;
+        }));
         if(std::getenv("NORTHLIGHT_TEST_VARIANT_AUDIT")){QueryPerformanceCounter(&variantEnd);std::printf("MATERIAL_VARIANT_AUDIT stage=mode mode=%u creates=%u total=%u submitMs=%.6f\n",mode,captureDevice.vertexCreates-modeCreates,captureDevice.vertexCreates,double(variantEnd.QuadPart-variantStart.QuadPart)*1000/double(variantHz.QuadPart));}
         assert(bump.finishCaptures());
         if(std::getenv("NORTHLIGHT_TEST_DEFERRED_CAPTURE")){std::printf("MATERIAL_DEFERRED_MODE mode=%u queued=%u flushed=%u\n",mode,MaterialCaptureStateTestAccess::queued(bump),MaterialCaptureStateTestAccess::flushed(bump));assert(MaterialCaptureStateTestAccess::captured(bump,model?4:grass?3:argc>5?2:1)==1);}

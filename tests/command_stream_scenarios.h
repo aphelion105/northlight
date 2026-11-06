@@ -49,6 +49,23 @@ static void lifetimeAndIdentity(){
     CHECK(get(core.q.stats.deadCreates)>=1);rig.dev->SetTexture(1,nullptr);cube->Release();rig.sync();
     rig.finish();checkClean();
 }
+// A producer may stop recording to decode an asset after one create/upload.
+// Each must become executable without another draw, flush or synchronous call.
+static void sparseResourcePublications(){
+    gTrace.clear();Rig rig(true);auto& q=rig.core().q;const auto syncs=get(q.stats.syncCalls);
+    IDirect3DTexture9* texture=nullptr;
+    CHECK(rig.dev->CreateTexture(8,8,1,0,(D3DFORMAT)22,(D3DPOOL)1,&texture,nullptr)==D3D_OK&&texture);
+    const auto created=q.recordedSeq();CHECK(waitFor([&]{return q.replayedSeq()>=created;}));
+    for(unsigned write=0;write<2;++write){D3DLOCKED_RECT lock{};CHECK(texture->LockRect(0,&lock,nullptr,0)==D3D_OK);
+        for(unsigned y=0;y<8;++y)std::memset(static_cast<unsigned char*>(lock.pBits)+y*lock.Pitch,0x31+write,32);
+        CHECK(texture->UnlockRect(0)==D3D_OK);const auto uploaded=q.recordedSeq();
+        CHECK(waitFor([&]{return q.replayedSeq()>=uploaded;}));
+    }
+    CHECK(get(q.stats.syncCalls)==syncs);
+    D3DLOCKED_RECT read{};CHECK(texture->LockRect(0,&read,nullptr,D3::kLockReadOnly)==D3D_OK);
+    for(unsigned y=0;y<8;++y)for(unsigned x=0;x<32;++x)CHECK(static_cast<unsigned char*>(read.pBits)[y*read.Pitch+x]==0x32);
+    CHECK(texture->UnlockRect(0)==D3D_OK);texture->Release();rig.finish();checkClean();
+}
 
 static void stateKnownUnknown(){
     gTrace.clear();Rig rig(true);auto& core=rig.core();auto& s=core.q.stats;

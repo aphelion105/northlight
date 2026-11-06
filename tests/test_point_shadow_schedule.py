@@ -18,7 +18,8 @@ assert 'NorthlightPointShadow::selectMany(active->localLights.data(),active->loc
 assert 'NorthlightPointShadow::selectMany(equipmentLights.output.data(),equipmentLights.outputCount,context.camera,quality.pointShadowLimit,{},float(quality.pointShadowDistance),true).count!=0;' in pred
 assert 'const unsigned rebuildMask=pointStaticRebuild(pointSlot().selected,lightChanged);' in body
 assert 'if(!pointSlot().cacheValid||lightChanged||pointSlot().cacheSource!=light.sourceId)return 63;' in pt
-assert 'if(rebuildMask&(1u<<face)){if(!bindFace(pointSlot().cacheSurface[face],"cube cache target"))return false;' in body
+assert 'if(pointStaticCandidates[face].empty()){drop(pointSlot().cacheSurface[face]);drop(pointSlot().cacheFace[face]);}' in body
+assert 'if(!pointCacheResources(face)||!bindFace(pointSlot().cacheSurface[face],"cube cache target"))return false;' in body
 assert body.index('pointSlot().faceContent[face]=digests?digests[face]')>body.index('"cube static draw"'),'a face key is recorded only after its static draws'
 # S1'': no fragment beyond the light's range is stored (every cube caster, one shader), so a
 # face depends only on in-range casters and the sphere + face digest is complete.
@@ -31,9 +32,9 @@ assert 'pointCheck(d->SetPixelShaderConstantF(1,sphere,1),"cube sphere")' in bod
 # c1 lifetime: the union (c0..c1) runs after each face's casters, so the sphere is rebound by
 # bindFace (cache and scratch targets) before any LocalShadowPS draw of the next face, and no
 # other write of PS c1 happens between a bindFace and the union.
-bind=body[body.index('auto bindFace=[&]'):body.index('if(rebuildMask&(1u<<face)){if(!bindFace(')]
+bind=body[body.index('auto bindFace=[&]'):body.index('if(rebuildMask&(1u<<face)){')]
 assert bind.index('SetPixelShader(pointShadowPS)')<bind.index('SetPixelShaderConstantF(1,sphere,1)')
-loop=body[body.index('if(rebuildMask&(1u<<face)){if(!bindFace('):body.index('pointSlot().faceWeights[face]=pointDraws-faceDraws')]
+loop=body[body.index('if(rebuildMask&(1u<<face)){'):body.index('pointSlot().faceWeights[face]=pointDraws-faceDraws')]
 assert loop.count('bindFace(')==2 and 'SetPixelShaderConstantF(1' not in loop and 'SetPixelShaderConstantF(0,&unionConstants[0][0],2)' in body[body.index('float unionConstants'):]
 for draw in ('"cube static draw"','"cube terrain draw"','"cube live draw"','"cube animated draw"'):
     assert loop.index('bindFace(pointScratchSurface')<loop.index(draw) or draw=='"cube static draw"',draw

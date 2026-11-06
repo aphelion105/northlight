@@ -12,6 +12,7 @@
 #include "upload_lock.h"
 #include "captured_constant_epoch.h"
 #include "pose_bounds_handoff.h"
+#include "model_normal_range.h"
 #include "vertex_declaration_cache.h"
 #include "intrusive_lru.h"
 #include "position_bounds.h"
@@ -45,7 +46,7 @@ class NorthlightAutoDisplacement {
     using Mesh=NorthlightDrawSnapshot::Mesh;
     using Height=NorthlightDisplacementGeometry::Height;
     struct Shader {IDirect3DVertexShader9* patched=nullptr,*source=nullptr,*gpu=nullptr;NorthlightDisplacementPatch::Binding binding,gpuBinding;NorthlightWmoVertexColor::Layout color;bool pending=false,skinned=false;std::vector<uint32_t> modelPosition;std::vector<unsigned> modelRows;unsigned modelInfluences=0;};
-    struct Material {Program uv,view,uv1,blend;std::vector<unsigned> uvRegisters[2];bool layered=false,skinned=false,clearPoseInputs=true;std::uint8_t terrainDepthEligible=0;unsigned rangeRegister=17;uint64_t id=0;unsigned first=0,count=0,influences=0;};
+    struct Material {Program uv,view,uv1,blend;std::vector<unsigned> uvRegisters[2];bool layered=false,skinned=false,clearPoseInputs=true;std::uint8_t terrainDepthEligible=0;unsigned rangeRegister=17;uint64_t id=0;unsigned first=0,count=0,influences=0;NorthlightModelNormalRange::Kind rangeKind=NorthlightModelNormalRange::None;};
     struct Bounds {std::weak_ptr<const Mesh> source;float low[3],high[3];uint64_t used=0;size_t bytes=0;std::unique_ptr<NorthlightReplayBounds::SkinEnvelope> skin;
         const Mesh* key=nullptr;NorthlightIntrusiveLRU::Links<Bounds> lru;};
     using Texture=NorthlightDisplacementStorage::Texture;using Entry=NorthlightDisplacementStorage::Entry;
@@ -87,6 +88,7 @@ class NorthlightAutoDisplacement {
     std::unordered_map<const Mesh*,Bounds> bounds;
     NorthlightIntrusiveLRU::List<Bounds> boundsLRU;
     NorthlightReplayBounds::EnvelopeCache poseEnvelopes;
+    NorthlightModelNormalRange::Cache modelRangeProof;
     NorthlightReplayMetadata::Cache<NorthlightReplayBounds::Prepared,IDirect3DVertexShader9,IDirect3DVertexDeclaration9> poseMetadata;
     NorthlightReplayBounds::Budget envelopeBudget;
     NorthlightActorDeformation::PreparedBindingCache poseBindings;
@@ -469,6 +471,7 @@ public:
     void setTrustedConstantEpochSource(NorthlightConstantEpoch::TrustedSource source){constantStamp={};rangeConstantStamp={};trustedConstants=bool(source)&&source.context()==d;constantContext=trustedConstants?source.context():nullptr;constantReader=trustedConstants?source.reader():nullptr;constantSpan=trustedConstants?source.span():nullptr;}
     void shareCaptureSources(NorthlightDrawSnapshot::Frame& capture){snapshots.shareSnapshotPool(capture);snapshots.setReplayContentReuse(true);snapshots.setResidentPeer(&capture);capture.setResidentPeer(&snapshots);skinRangeSnapshots.setResidentPeer(&capture);}
     void reportSources(uint64_t frame)const{
+        logf("MATERIAL_RANGE_PROOF frame=%llu tested=%u culled=%u mixed=%u deferred=%u cacheBytes=%zu",(unsigned long long)frame,modelRangeProof.tested,modelRangeProof.culled,modelRangeProof.singleMixed,modelRangeProof.deferred,sizeof(modelRangeProof));
         const auto& boundsWork=positionBounds.maintenance();
         logf("MATERIAL_POSITION_BOUNDS frame=%llu hits=%u scans=%u positionBytes=%zu entries=%zu unknown=%u coldScans=%u revisionScans=%u evictions=%u budgetRejected=%u capturedBoundsHits=%u",(unsigned long long)frame,positionBounds.cacheHits(),positionBounds.scans(),positionBounds.bytesRead(),positionBounds.count(),positionBounds.failures(),boundsWork.coldScans,boundsWork.revisionScans,boundsWork.evictions,boundsWork.budgetRejected,capturedBoundsHits);
         const auto& e=poseEnvelopes.stats();
@@ -566,8 +569,8 @@ public:
         logf("DISPLACEMENT_MEMORY pressure=%u profiled=%u sourcesMs=%.3f capsMs=%.3f geometryMs=%.3f boundsMs=%.3f deferredMiB=%.3f batched=%u",unsigned(on),unsigned(timed),sourcesMs,capsMs,geometryMs,boundsMs,double(deferred)/(1u<<20),unsigned(batch!=nullptr));
     }
     void trimMemory(NorthlightStreaming::CpuRetirement* retirement=nullptr,NorthlightStreaming::CpuRetirementBatch* batch=nullptr){setMemoryPressure(memoryPressure,retirement,batch);}
-    void reset(NorthlightStreaming::CpuRetirementBatch* batch=nullptr){snapshots.clearIndexCache(nullptr,batch);rangeSnapshots.clearIndexCache(nullptr,batch);skinRangeSnapshots.clearIndexCache(nullptr,batch);positionBounds.clear();current=nullptr;clearModelOverlays();constantStamp={};rangeConstantStamp={};sourceLookup.clear();contentLookup.clear();materialLookup.clear();indexedEntries=true;entries.clear();boundsLRU.clear();bounds.clear();poseEnvelopes.clear();poseMetadata.clear();poseBindings={};envelopeBudget.reset();boundsBytes=resident=0;for(auto& t:textures){drop(t.gpu);drop(t.source);}textures.clear();declarations.clear();}
-    void endFrame(){current=nullptr;clearModelOverlays();if(variantSources)logf("MATERIAL_VARIANT_COLD frame=%u sources=%u cpuBuilt=%u gpuBuilt=%u readFailed=%u sourceBytes=%zu cpuMs=%.6f",frames,variantSources,variantCPU,variantGPU,variantReadFailed,variantBytes,variantMs);variantSources=variantCPU=variantGPU=variantReadFailed=0;variantBytes=0;variantMs=0;if(frames%60==0){MEMORYSTATUSEX memory{};memory.dwLength=sizeof memory;if(GlobalMemoryStatusEx(&memory))refreshBudget(memory);}buildsThisFrame=readsThisFrame=poseVerticesThisFrame=0;for(auto& vertices:poseKernelVertices)vertices=0;poseByteIndexVertices=0;poseEnvelopes.beginFrame(false);poseMetadata.beginFrame();envelopeBudget.reset();snapshots.clearFrame();rangeSnapshots.clearFrame();skinRangeSnapshots.clearFrame();positionBounds.beginFrame();capturedBoundsHits=0;if((draws||snapshotRejected)&&frames%600==0){logf("DISPLACEMENT cached=%zu bytes=%zu builds=%llu hits=%llu draws=%llu triangles=%llu refused=%llu terrain=%u walls=%u grass=%u models=%u stateRejected=%u heightRejected=%u shaderRejected=%u snapshotRejected=%u meshRejected=%u budgetMiB=%zu",entries.size(),resident,(unsigned long long)builds,(unsigned long long)hits,(unsigned long long)draws,(unsigned long long)triangles,(unsigned long long)refused,domainDraws[0],domainDraws[1],domainDraws[2],domainDraws[3],stateRejected,heightRejected,shaderRejected,snapshotRejected,meshRejected,cacheBudget>>20);
+    void reset(NorthlightStreaming::CpuRetirementBatch* batch=nullptr){modelRangeProof.clear();snapshots.clearIndexCache(nullptr,batch);rangeSnapshots.clearIndexCache(nullptr,batch);skinRangeSnapshots.clearIndexCache(nullptr,batch);positionBounds.clear();current=nullptr;clearModelOverlays();constantStamp={};rangeConstantStamp={};sourceLookup.clear();contentLookup.clear();materialLookup.clear();indexedEntries=true;entries.clear();boundsLRU.clear();bounds.clear();poseEnvelopes.clear();poseMetadata.clear();poseBindings={};envelopeBudget.reset();boundsBytes=resident=0;for(auto& t:textures){drop(t.gpu);drop(t.source);}textures.clear();declarations.clear();}
+    void endFrame(){modelRangeProof.beginFrame();current=nullptr;clearModelOverlays();if(variantSources)logf("MATERIAL_VARIANT_COLD frame=%u sources=%u cpuBuilt=%u gpuBuilt=%u readFailed=%u sourceBytes=%zu cpuMs=%.6f",frames,variantSources,variantCPU,variantGPU,variantReadFailed,variantBytes,variantMs);variantSources=variantCPU=variantGPU=variantReadFailed=0;variantBytes=0;variantMs=0;if(frames%60==0){MEMORYSTATUSEX memory{};memory.dwLength=sizeof memory;if(GlobalMemoryStatusEx(&memory))refreshBudget(memory);}buildsThisFrame=readsThisFrame=poseVerticesThisFrame=0;for(auto& vertices:poseKernelVertices)vertices=0;poseByteIndexVertices=0;poseEnvelopes.beginFrame(false);poseMetadata.beginFrame();envelopeBudget.reset();snapshots.clearFrame();rangeSnapshots.clearFrame();skinRangeSnapshots.clearFrame();positionBounds.beginFrame();capturedBoundsHits=0;if((draws||snapshotRejected)&&frames%600==0){logf("DISPLACEMENT cached=%zu bytes=%zu builds=%llu hits=%llu draws=%llu triangles=%llu refused=%llu terrain=%u walls=%u grass=%u models=%u stateRejected=%u heightRejected=%u shaderRejected=%u snapshotRejected=%u meshRejected=%u budgetMiB=%zu",entries.size(),resident,(unsigned long long)builds,(unsigned long long)hits,(unsigned long long)draws,(unsigned long long)triangles,(unsigned long long)refused,domainDraws[0],domainDraws[1],domainDraws[2],domainDraws[3],stateRejected,heightRejected,shaderRejected,snapshotRejected,meshRejected,cacheBudget>>20);
         logf("DISPLACEMENT snapshots attempts=%llu up=%llu buffered=%llu unknown=%llu arguments=%llu declaration=%llu stream=%llu instancing=%llu indexBuffer=%llu indexRange=%llu vertexRange=%llu budget=%llu lock=%llu unlock=%llu",(unsigned long long)snapshotAttempts,(unsigned long long)snapshotUP,(unsigned long long)(snapshotAttempts-snapshotUP),(unsigned long long)snapshotReasons[0],(unsigned long long)snapshotReasons[1],(unsigned long long)snapshotReasons[2],(unsigned long long)snapshotReasons[3],(unsigned long long)snapshotReasons[4],(unsigned long long)snapshotReasons[5],(unsigned long long)snapshotReasons[6],(unsigned long long)snapshotReasons[7],(unsigned long long)snapshotReasons[8],(unsigned long long)snapshotReasons[9],(unsigned long long)snapshotReasons[10]);}++frames;}
     void registerVariant(IDirect3DVertexShader9* original,const DWORD* code,size_t count,bool skinned=false,bool wmo=false){
         auto old=shaders.find(original);if(old!=shaders.end()){drop(old->second.patched);drop(old->second.gpu);drop(old->second.source);shaders.erase(old);}Shader shader;
@@ -583,6 +586,7 @@ public:
         poseMetadata.invalidateShader(original);materials.erase(original);if(domain>4)return;Material m;const auto* words=reinterpret_cast<const uint32_t*>(code);
         if(!NorthlightActorDeformation::compile(words,count,m.view,false,(domain==1||domain==3)?1:2))return;
         m.terrainDepthEligible=terrainDepthProgram(m.view)?1:wallDepthProgram(m.view)?2:0;m.skinned=m.view.skinned;m.rangeRegister=m.skinned?16:rangeInput(m.view);m.influences=m.skinned?1:0;
+        if(domain==4)m.rangeKind=NorthlightModelNormalRange::classify(words,count);
         unsigned provided=0;bool inputsValid=true;for(const auto& input:m.view.inputs)if(input.reg<16)provided|=1u<<input.reg;else{inputsValid=false;break;}
         m.clearPoseInputs=!inputsValid||NorthlightActorDeformation::clearVertexInputsMask(m.view,provided);
         for(const auto& input:m.view.inputs)if(input.usage==D3DDECLUSAGE_BLENDWEIGHT){unsigned channels=0;for(const auto& op:m.view.operations)for(const auto& source:op.source)if(NorthlightShadowShader::regType(source.token)==1&&NorthlightShadowShader::regIndex(source.token)==input.reg){unsigned mask=op.code==9?15:op.code==8?7:(op.destination>>16)&15;for(unsigned c=0;c<4;++c)if(mask&(1u<<c))channels=std::max(channels,1u+((source.token>>(16+2*c))&3));}m.influences=std::clamp(channels,1u,4u);}
@@ -595,7 +599,7 @@ public:
         if(first>last||last>=256)return;m.first=m.skinned?0:first;m.count=m.skinned?256:last-first+1;m.id=++materialClock;
         m.uvRegisters[0]=usedUVRegisters(m,false);m.uvRegisters[1]=usedUVRegisters(m,true);const bool skinned=m.skinned;materials.emplace(original,std::move(m));if(domain!=4)registerVariant(original,code,count,skinned,domain==2);
     }
-    bool prepare(IDirect3DVertexShader9* original,unsigned domain,unsigned material,const Args& args,const Admission* captured=nullptr,CaptureSource* captureSource=nullptr){
+    bool prepare(IDirect3DVertexShader9* original,unsigned domain,unsigned material,const Args& args,const Admission* captured=nullptr,CaptureSource* captureSource=nullptr,float requiredRange=INFINITY){
         if(captureSource)captureSource->clear();
         preparedSourceIdentity.reset();
         using P=NorthlightMaterialProfile;P::Scope timing(profile,P::Admission);
@@ -615,6 +619,17 @@ public:
         if(!source)source=snapshots.retain(std::move(local));
         if(captureSource){captureSource->mesh=source;captureSource->declaration=decl.p;decl->AddRef();}
         timing.work(source->vertexCount,source->byteSize());timing.next(P::BoundsPose);
+        // The same audited clip.w proof as normal capture. Beyond every
+        // consumer's range, no pose envelope or material preparation is needed.
+        // Unknown/mixed programs and exhausted proof budgets keep the old path.
+        if(domain==4&&requiredRange>0&&requiredRange<=48.f&&modelRange<=48.f&&
+           shader->second.rangeKind!=NorthlightModelNormalRange::None&&d->GetNPatchMode()==0&&
+           modelRangeProof.outside(source,elements,count,constants,shader->second.rangeKind)){
+            if(captureSource&&trustedConstants){NorthlightConstantEpoch::Stamp current;current.requestHeld=true;
+                if(constantReader&&constantReader(constantContext,current)&&NorthlightConstantEpoch::exact(constantStamp,current))
+                    captureSource->pose.publishFar(current,source.get(),original,decl.p);}
+            lastDepthLower=48.01f;++distanceRejected;return false;
+        }
         // Cached geometry may retain an older, byte-identical buffer revision.
         // Overlays must match the source of this frame's successful base draw.
         if(domain==4)preparedSourceIdentity=source->sourceIdentity;

@@ -23,6 +23,11 @@ int main(int argc,char** argv){assert(argc==3);unsigned checks=0;
   for(unsigned def=0;def<3;++def)for(unsigned lane=0;lane<4;++lane)for(unsigned index=0;index<256;++index)for(unsigned special=0;special<8;++special){auto q=p;if(def)q.definitions.push_back({32,{.5f,-.2f,.3f,.4f}});if(def==2)q.definitions.push_back({0,{3,0,0,0}});
    Four in[16]={};in[0]={1,-2,3,1};in[1]={.1f,.2f,.3f,.4f};in[2]={0,1,2,3};in[2][lane]=float(index);memcpy(&in[0][special%3],exceptional+special,4);Four a={17,19,23,29},b=a;const bool x=evaluateFast(q,in,bank,a),y=fast(q,in,bank,b);assert(x==y&&!memcmp(a.data(),b.data(),16));++checks;
   }
+  for(unsigned alias=0;alias<3;++alias)for(unsigned bad:{0u,74u,75u,255u})for(bool extraDef:{false,true}){
+   auto q=p;if(extraDef)q.definitions.push_back({32,{.5f,-.2f,.3f,.4f}});
+   Four a[16]={},b[16];a[0]={1,-2,3,1};a[1]={.1f,.2f,.3f,.4f};a[2]={float(bad),1,2,3};std::copy(std::begin(a),std::end(a),b);
+   const bool x=evaluateFast(q,a,bank,a[alias]),y=fast(q,b,bank,b[alias]);assert(x==y&&!memcmp(a,b,sizeof a));++checks;
+  }
   auto altered=prepared;altered.bindings[2].element.Type=D3DDECLTYPE_UBYTE4N;assert(!weightedByteIndices(p,altered,bank));
   for(float control:{0.f,-3.f,1.5f,std::numeric_limits<float>::infinity()}){auto q=p;q.definitions.push_back({0,{control,1,0,0}});assert(!weightedByteIndices(q,prepared,bank));}
   for(unsigned phase=0;phase<4;++phase){auto q=p;if(phase==1)q.definitions.push_back({31,{.3f,-.7f,1,99}});if(phase==2)mesh.streams[0].bytes[32*3+30]=255;if(phase==3){mesh.streams[0].bytes[32*3+30]=74;bank[31*4]=std::numeric_limits<float>::quiet_NaN();}

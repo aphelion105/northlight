@@ -101,10 +101,12 @@ class NorthlightAutoBump {
         UINT offset=0,stride=0;
         D3DVIEWPORT9 viewport;
         RECT scissor{};DWORD scissorEnabled=FALSE;
-        float constant[36]={};unsigned constantBase=20,constantCount=5,normalStage=2,stateCount=14;
+        // save() fills every consumed lane before apply() can set changed.
+        // Range rejection does not need these restore banks initialized.
+        float constant[36];unsigned constantBase=20,constantCount=5,normalStage=2,stateCount=14,stateMask=~0u;
         IDirect3DBaseTexture9* texture2=nullptr,*texture3=nullptr;bool composite=false;
-        const D3DSAMPLERSTATETYPE samplerKeys[8]={D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER,D3DSAMP_MIPFILTER,D3DSAMP_ADDRESSU,D3DSAMP_ADDRESSV,D3DSAMP_SRGBTEXTURE,D3DSAMP_MAXMIPLEVEL,D3DSAMP_MIPMAPLODBIAS};
-        DWORD samplerValues[8]={},samplerValues3[8]={};unsigned samplerChanged=0,samplerChanged3=0;
+        inline static constexpr D3DSAMPLERSTATETYPE samplerKeys[8]={D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER,D3DSAMP_MIPFILTER,D3DSAMP_ADDRESSU,D3DSAMP_ADDRESSV,D3DSAMP_SRGBTEXTURE,D3DSAMP_MAXMIPLEVEL,D3DSAMP_MIPMAPLODBIAS};
+        DWORD samplerValues[8],samplerValues3[8];unsigned samplerChanged=0,samplerChanged3=0;
         struct State{D3DRENDERSTATETYPE key;DWORD value,replay;};
         State states[16]={
             {D3DRS_ZWRITEENABLE,0,FALSE},{D3DRS_ALPHATESTENABLE,0,FALSE},
@@ -137,14 +139,14 @@ class NorthlightAutoBump {
                 d->SetVertexShader(vertex);d->SetPixelShader(pixel);d->SetPixelShaderConstantF(constantBase,constant,constantCount);
                 d->SetTexture(normalStage,texture2);for(unsigned i=0;i<8;++i)if(samplerChanged&(1u<<i))d->SetSamplerState(normalStage,samplerKeys[i],samplerValues[i]);
                 if(composite){d->SetTexture(3,texture3);for(unsigned i=0;i<8;++i)if(samplerChanged3&(1u<<i))d->SetSamplerState(3,samplerKeys[i],samplerValues3[i]);}
-                for(unsigned i=0;i<stateCount;++i){auto& s=states[i];if(s.value!=s.replay)d->SetRenderState(s.key,s.value);}
+                for(unsigned i=0;i<stateCount;++i){auto& s=states[i];if((stateMask&(1u<<i))&&s.value!=s.replay)d->SetRenderState(s.key,s.value);}
                 if(privateEqual)d->SetRenderState(D3DRS_ZFUNC,D3DCMP_EQUAL);
                 // UP draws reset stream 0 and (for indexed UP) the index binding.
                 if(userMemory){d->SetStreamSource(0,stream,offset,stride);d->SetIndices(indices);}
             }
             drop(pixel);drop(target);drop(depth);drop(stream);drop(indices);drop(texture2);drop(texture3);
         }
-        HRESULT apply(){changed=true;for(unsigned i=0;i<stateCount;++i){auto& s=states[i];if(s.value!=s.replay)d->SetRenderState(s.key,s.replay);}return privateEqual?d->SetRenderState(D3DRS_ZFUNC,D3DCMP_LESSEQUAL):D3D_OK;}
+        HRESULT apply(){changed=true;for(unsigned i=0;i<stateCount;++i){auto& s=states[i];if((stateMask&(1u<<i))&&s.value!=s.replay)d->SetRenderState(s.key,s.replay);}return privateEqual?d->SetRenderState(D3DRS_ZFUNC,D3DCMP_LESSEQUAL):D3D_OK;}
     };
     struct Vertex {IDirect3DVertexShader9* patched=nullptr;unsigned kind=0;IDirect3DVertexShader9* shared=nullptr;bool sharedChecked=false,deferredSafe=false,failed=false,smoothTerrain=false,floatOnly=false;IDirect3DVertexShader9* pending=nullptr;uint64_t pendingHash=0;unsigned constantFirst=0,constantCount=256;};
     bool sharedVertex(Vertex& vertex){if(!vertex.sharedChecked){vertex.sharedChecked=true;vertex.shared=NorthlightSharedPOM::vertexShader(d,vertex.patched);}return vertex.shared!=nullptr;}
@@ -261,6 +263,11 @@ class NorthlightAutoBump {
                 unsigned at=0;for(unsigned i=0;i<saved.stateCount;++i)if(i!=0&&i!=4)saved.states[i].value=values[at++];return true;}}
         for(unsigned i=0;i<saved.stateCount;++i){if(i==0||i==4)continue;auto& state=saved.states[i];if(FAILED(d->GetRenderState(state.key,&state.value)))return false;}
         return true;
+    }
+    template<size_t N> bool readReplayStates(ReplayState& saved,const unsigned(&indices)[N]){
+        D3DRENDERSTATETYPE keys[N];DWORD values[N];for(unsigned i=0;i<N;++i)keys[i]=saved.states[indices[i]].key;
+        if(!readStates(keys,values))return false;
+        for(unsigned i=0;i<N;++i)saved.states[indices[i]].value=values[i];return true;
     }
     template<size_t N> bool readStates(const D3DRENDERSTATETYPE(&keys)[N],DWORD(&values)[N]){
         if(rasterReader&&rasterReader(rasterContext,keys,N,values))return true;
@@ -663,6 +670,16 @@ public:
         }
         if(!ensureVertex(original,v->second))return;
         const bool geometryMode=modes[domain-1]==3;bool skipGeometry=false;
+        // Unsupported material pairs cannot capture or apply native POM.
+        // Reject them before reading geometry or evaluating a skin envelope.
+        NorthlightDrawSnapshot::Ref<IDirect3DPixelShader9> nativeSource;
+        unsigned material=0;
+        if(captureNeeded(domain)||geometryMode){
+            if(FAILED(d->GetPixelShader(nativeSource.out()))||!nativeSource.p)return;
+            const auto p=pixels.find(nativeSource.p);if(p==pixels.end())return;
+            material=p->second;
+            if((domain==1&&material>2)||(domain==2&&material!=3&&material!=5&&material!=6)||(domain==3&&material!=4))return;
+        }
         if(geometry&&(!geometryMode||!displacement.skinned(original))){float nearest=0;
             if(displacement.nearestMaterialDepth(original,*geometry,nearest,geometryMode,positions,domain==4&&deferredAllowed?&farthestDepth:nullptr)){++rangeTests;
                 nearestDepth=nearest;
@@ -674,11 +691,7 @@ public:
         const bool needsCapture=captureNeeded(domain);
         if(!needsCapture&&modes[domain-1]!=3){++noCaptureRequired;if(profile)profile->count(P::NoContribution);return;}
         timing.next(P::CaptureSetup);
-        IDirect3DPixelShader9* native=nullptr;if(FAILED(d->GetPixelShader(&native))||!native)return;
-        auto p=pixels.find(native);if(p==pixels.end()){drop(native);return;}
-        const unsigned material=p->second;
-        if((domain==1&&material>2)||(domain==2&&material!=3&&material!=5&&material!=6)||(domain==3&&material!=4)){drop(native);return;}
-        ReplayState saved(d,original,D3DVIEWPORT9{},profile);saved.pixel=native;NorthlightSharedPOM::Binding sharedBinding(d);
+        ReplayState saved(d,original,D3DVIEWPORT9{},profile);saved.pixel=nativeSource.p;nativeSource.p=nullptr;auto* native=saved.pixel;NorthlightSharedPOM::Binding sharedBinding(d);
         NativeCapture* model=nullptr;
         const D3DRENDERSTATETYPE depthKeys[]={D3DRS_ZENABLE,D3DRS_ZFUNC,D3DRS_ALPHAREF,D3DRS_ALPHAFUNC,D3DRS_STENCILENABLE};DWORD depthState[5];
         if(!readStates(depthKeys,depthState))return;
@@ -689,13 +702,20 @@ public:
             for(unsigned i=1;i<4;++i){IDirect3DSurface9* extra=nullptr;d->GetRenderTarget(i,&extra);if(extra){drop(extra);return;}}
         if(FAILED(d->GetDepthStencilSurface(&saved.depth))||!saved.depth)return;
         saved.states[0].value=depthWrite;saved.states[4].value=colorWrite;
-        if(!readAdmissionStates(saved))return;
+        // Distant geometry needs admission, not a saved pixel replay state.
+        // Read blend factors only when native blending can reject the draw.
+        const unsigned admissionIndices[]={1,5};
+        if(!readReplayStates(saved,admissionIndices))return;
+        if(saved.states[5].value){const unsigned blendIndices[]={7,8};if(!readReplayStates(saved,blendIndices))return;}
         const auto& s=saved.states;
         const bool alpha=s[1].value!=0;
         const bool coverageAlpha=domain==4?alpha:alpha||s[5].value!=0;
         // These capture programs produce alpha exactly one. Their normal,
         // occlusion and UV outputs overwrite the destination without blending.
         if((domain==1&&material==1)||(domain==2&&!coverageAlpha)||(domain==4&&!alpha))saved.states[5].replay=FALSE;
+        // Blend factors/operations have no effect when capture blending is off.
+        // Leave their native values untouched instead of saving and restoring.
+        if(!saved.states[5].replay)saved.stateMask&=~(((1u<<13)-1)^((1u<<6)-1));
         if(!(s[4].value&7)||(!s[0].value&&domain!=1)||
            (s[5].value&&(s[7].value!=D3DBLEND_SRCALPHA||s[8].value!=D3DBLEND_INVSRCALPHA))||
            (alpha&&alphaFunc!=D3DCMP_GREATER&&alphaFunc!=D3DCMP_GREATEREQUAL))return;
@@ -711,7 +731,7 @@ public:
         // Resolve the target size first: reset() would discard prepared geometry.
         const NorthlightAutoDisplacement::Admission geometryAdmission{z,depthWrite,s[5].value,s[1].value,s[7].value,s[8].value,alphaFunc};
         NorthlightAutoDisplacement::CaptureSource geometrySource;
-        if(domain<=4&&geometryMode&&geometry&&!skipGeometry){displacement.prepare(original,domain,material,*geometry,&geometryAdmission,&geometrySource);
+        if(domain<=4&&geometryMode&&geometry&&!skipGeometry){displacement.prepare(original,domain,material,*geometry,&geometryAdmission,&geometrySource,std::max(captureRange(domain),displacement.geometryRange(domain)));
             if(source&&geometrySource.mesh&&geometrySource.declaration){source->mesh=geometrySource.mesh;source->pose=geometrySource.pose;source->declaration=geometrySource.declaration;source->declaration->AddRef();}
             nearestDepth=displacement.nearestPreparedDepth();farthestDepth=std::min(farthestDepth,displacement.farthestPreparedDepth());
             if(needsCapture&&displacement.nearestPreparedDepth()>captureRange(domain)){++rangeTests;++rangeRejected;if(profile)profile->count(P::RangeRejected);return;}}
@@ -750,7 +770,15 @@ public:
         const bool canDefer=deferredSafe&&(multisampled||singleSample);
         if(!deferred.empty()&&singleSampleBatch!=singleSample)if(!finishCaptures())return;
         if(deferredAllowed&&multisampled){if(displacement.prepared())++deferredGeometry;else if(sharing||!independent||!v->second.deferredSafe)++deferredUnsafe;}
-        saved.viewport=viewport;if(!canDefer&&!saved.save(userMemory&&!sharing,material==6&&domain!=4))return;
+        // Packets contain desired replay values; the flush saves native state
+        // once. Only an immediate replay needs this draw's restore values.
+        auto saveReplay=[&]{bool known;
+            if(!saved.states[5].replay){const unsigned indices[]={2,3,13};known=readReplayStates(saved,indices);}
+            else if(saved.states[5].value){const unsigned indices[]={2,3,6,9,10,11,12,13};known=readReplayStates(saved,indices);}
+            else{const unsigned indices[]={2,3,6,7,8,9,10,11,12,13};known=readReplayStates(saved,indices);}
+            if(!known){displacement.beginDraw();if(source)source->clear();return false;}
+            return saved.save(userMemory&&!sharing,material==6&&domain!=4);};
+        saved.viewport=viewport;if(!canDefer&&!saveReplay())return;
         // The private depth starts empty, so native EQUAL cannot match its prepass.
         // Final composition still validates captured depth against the scene.
         saved.privateEqual=multisampled&&zfunc==D3DCMP_EQUAL;
@@ -806,7 +834,7 @@ public:
         }
         if(!finishCaptures())return;
         if(singleSample)drop(saved.depth);
-        if(canDefer&&!saved.save(userMemory&&!sharing,material==6&&domain!=4))return;
+        if(canDefer&&!saveReplay())return;
         bool cacheBound=false;
         {P::Scope setup(profile,P::CaptureSetup,0,true);
         if(!check(saved.apply(),"material private depth compare"))return;d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE);d->SetTexture(saved.normalStage,normal.get());

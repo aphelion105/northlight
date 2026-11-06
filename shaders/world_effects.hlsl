@@ -11,6 +11,9 @@ sampler2D ProbeB : register(s6);
 sampler2D ProbeVisibility : register(s7);
 sampler2D EffectCoverage : register(s7); // Final passes only: native alpha layers already in Scene.
 float4 EffectCoverageInfo : register(c79);
+// Final passes: neutral volume fog (x), local light (y), absent rain mask (z),
+// zero native surface-fog term in an encoded nonnegative scene (w).
+float4 CompositeWork : register(c80); // zero retains the complete calculation
 sampler2D LightingBuffer : register(s8);
 sampler2D ProbePrevious : register(s8); // 0.3.197: WorldGI only: previous SH R|G|B in three horizontal thirds of a 3n*n x n texture
 sampler2D FogBuffer : register(s9);
@@ -1437,7 +1440,7 @@ float3 effectWeight(float2 uv,float3 source,bool hdrMode,out float coverageTrans
     return saturate(mad(remaining-source,rcp(max(source,.000001)),1))*coverageTransmission;
 }
 // SDR and HDR are separate compiled variants; validate the actual slot counts.
-float4 worldComposite(float2 uv,float2 pixel,bool surfaceLighting,bool hdrMode,sampler2D fogInput,out float3 effect,bool prelit=false) {
+float4 worldComposite(float2 uv,float2 pixel,bool surfaceLighting,bool hdrMode,sampler2D fogInput,out float3 effect,bool prelit=false,bool neutralAuxiliary=false) {
     // Fetches before any flow control use texld (1 slot; tex2Dlod costs 3-4): Scene and Depth have one level and no mip filter, so texld reads what tex2Dlod(.,0) does.
     float4 original=tex2D(Scene,uv);
     effect=0;
@@ -1481,8 +1484,10 @@ float4 worldComposite(float2 uv,float2 pixel,bool surfaceLighting,bool hdrMode,s
             float score=mad(bits,.25,guide);
             float4 light=tex2Dlod(LightingBuffer,float4(q,0,0));
             float3 lit=tex2Dlod(BaselineLighting,float4(q,0,0)).rgb;
-            float occlusion=tex2Dlod(AmbientOcclusion,float4(q,0,0)).a;
-            bounce=mad(light.rgb,weight,bounce);local=mad(tex2Dlod(CurrentLocalLighting,float4(q,0,0)).rgb,weight,local);shadow=mad(light.a,weight,shadow);baseline=mad(lit,weight,baseline);ao=mad(occlusion,weight,ao);total+=weight;
+            float occlusion=1;if(!neutralAuxiliary)occlusion=tex2Dlod(AmbientOcclusion,float4(q,0,0)).a;
+            bounce=mad(light.rgb,weight,bounce);
+            [branch]if(!neutralAuxiliary&&CompositeWork.y<.5)local=mad(tex2Dlod(CurrentLocalLighting,float4(q,0,0)).rgb,weight,local);
+            shadow=mad(light.a,weight,shadow);baseline=mad(lit,weight,baseline);ao=mad(occlusion,weight,ao);total+=weight;
             if(score<closest){closest=score;fallbackUV=q;}
             }
             float receiverZ=sampleZ;
@@ -1491,20 +1496,21 @@ float4 worldComposite(float2 uv,float2 pixel,bool surfaceLighting,bool hdrMode,s
                 if(water.x>ImageClip.z&&water.x<=sampleZ+max(.012,water.x*.0007)&&water.y>.003)receiverZ=water.x;
             }
             float fogDelta=abs(receiverZ-viewZ);
-            float4 fogSample=tex2Dlod(fogInput,float4(q,0,0));
+            float4 fogSample=float4(0,0,0,1);
+            [branch]if(!neutralAuxiliary&&CompositeWork.x<.5)fogSample=tex2Dlod(fogInput,float4(q,0,0));
             float fogWeight=blend.x*blend.y*exp(-fogDelta/max(.2,viewZ*.02));
             fogSum=mad(fogSample,fogWeight,fogSum);fogTotal+=fogWeight;
             if(fogDelta<fogClosest){fogClosest=fogDelta;fogFallbackUV=q;}
         }
     // Retain only fallback coordinates across the loop; fetch colours only on fallback.
     float4 fogFallback=float4(0,0,0,1);
-    [branch]if(!(fogTotal>.00001)&&fogClosest<1e20)fogFallback=tex2Dlod(fogInput,float4(fogFallbackUV,0,0));
+    [branch]if(!(fogTotal>.00001)&&fogClosest<1e20&&!neutralAuxiliary&&CompositeWork.x<.5)fogFallback=tex2Dlod(fogInput,float4(fogFallbackUV,0,0));
     float4 fog=fogTotal>.00001?fogSum*(1/fogTotal):fogFallback;
     float4 fallbackLight=0;float3 fallbackBase=0;float fallbackAO=1;
     [branch]if(relight&&total<.02&&closest<1e20){
         fallbackLight=tex2Dlod(LightingBuffer,float4(fallbackUV,0,0));
         fallbackBase=tex2Dlod(BaselineLighting,float4(fallbackUV,0,0)).rgb;
-        fallbackAO=tex2Dlod(AmbientOcclusion,float4(fallbackUV,0,0)).a;
+        if(!neutralAuxiliary)fallbackAO=tex2Dlod(AmbientOcclusion,float4(fallbackUV,0,0)).a;
     }
     // Native distance fog is already in Scene. AO belongs to its transported
     // surface term, never to atmospheric radiance in front of that surface.
@@ -1517,7 +1523,9 @@ float4 worldComposite(float2 uv,float2 pixel,bool surfaceLighting,bool hdrMode,s
         // effective albedo from linear transported RGB, preserving the native
         // fog contribution instead of treating fog as a reflective material.
         float3 nativeLinear=worldHdrDecode(original.rgb);
-        float3 surfaceLinear=worldHdrDecode(max(original.rgb-fogPart,0));
+        float3 surfaceLinear=nativeLinear;
+        [branch]if(!neutralAuxiliary||CompositeWork.w<.5)
+            surfaceLinear=worldHdrDecode(max(original.rgb-fogPart,0));
         hdrSurface=surfaceLinear*ao;
         float3 baseLinear=nativeLinear;
         // Match HdrDecodeWorld's raw clear-depth test. The horizon occupies
@@ -1536,7 +1544,7 @@ float4 worldComposite(float2 uv,float2 pixel,bool surfaceLighting,bool hdrMode,s
     if(relight){
         // Thin receivers whose depth matches none of the four texels keep the
         // nearest-depth texel instead of losing their shadow and GI entirely.
-        if(total<.02){bounce=fallbackLight.rgb;local=tex2Dlod(CurrentLocalLighting,float4(fallbackUV,0,0)).rgb;shadow=fallbackLight.a;baseline=fallbackBase;total=1;}
+        if(total<.02){bounce=fallbackLight.rgb;[branch]if(!neutralAuxiliary&&CompositeWork.y<.5)local=tex2Dlod(CurrentLocalLighting,float4(fallbackUV,0,0)).rgb;shadow=fallbackLight.a;baseline=fallbackBase;total=1;}
         float inverseWeight=1/max(total,.0001);
         bounce*=inverseWeight;shadow*=inverseWeight;
 
@@ -1558,11 +1566,13 @@ float4 worldComposite(float2 uv,float2 pixel,bool surfaceLighting,bool hdrMode,s
         // Add at most one stop to the surface and use half its SDR headroom;
         // HDR radiance has no ceiling at the SDR white of 1.
         // bright fixtures retain texture instead of clipping to yellow/white.
+        if(!neutralAuxiliary){
         float3 localAdd=max(albedoT*(local*inverseWeight),0);
         float3 localRoom=hdrMode?transported:min(transported,.5*max(1-color,0));
         float3 localRatio=localAdd/max(localRoom,.00001);
         float localScale=1/(1+max(localRatio.r,max(localRatio.g,localRatio.b)));
         color+=min(localAdd*localScale,localRoom);
+        }
         // NightBrightness: gives back a share of the art layer's darker night ambient (x .82 x cool tint) as light: albedoT times
         // share x ambient x (1/factor-1), the per-frame product computed on the CPU (night_floor.h nightAmbient). Added like
         // light, so shadows, GI and lamps keep their contrast. 0 = off (bit-identical).
@@ -1583,7 +1593,8 @@ float4 worldComposite(float2 uv,float2 pixel,bool surfaceLighting,bool hdrMode,s
     if(PassInfo.z<.5){
         float3 unfogged=color;
         // Rain streaks were drawn into the scene before the composite: on mask pixels go back toward the unfogged pixel so they are not hazed.
-        float rain=tex2Dlod(RainMask,float4(uv,0,0)).r;
+        float rain=0;
+        [branch]if(!neutralAuxiliary||CompositeWork.z<.5)rain=tex2Dlod(RainMask,float4(uv,0,0)).r;
         color=lerp(mad(horizonHaze(color,centerUV,viewZ,d>=.99999&&liquid<=0,hdrMode,coverageTransmission),fog.a,fog.rgb*coverageTransmission),unfogged,rain);
     }
     if(PassInfo.z==3)color=fog.rgb;
@@ -1601,6 +1612,9 @@ float4 WorldComposite(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {float3 effe
 // Selected with the existing depth-stencil; no additional image or geometry replay.
 float4 WorldUnlitComposite(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {float3 effect;return worldComposite(uv,pixel,false,false,FogBuffer,effect);}
 float4 WorldCompositeHdr(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {float3 effect;return worldComposite(uv,pixel,true,true,FogBuffer,effect);}
+// Selected only with neutral fog/current-local buffers and proven AO alpha 1.
+// Keep the weighted fog/depth arithmetic, Weather haze and native fog transport.
+float4 WorldBaseCompositeHdr(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {float3 effect;return worldComposite(uv,pixel,true,true,FogBuffer,effect,false,true);}
 float4 WorldUnlitCompositeHdr(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {float3 effect;return worldComposite(uv,pixel,false,true,FogBuffer,effect);}
 float4 WorldPrelitComposite(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {float3 effect;return worldComposite(uv,pixel,true,false,FogBuffer,effect,true);}
 float4 WorldPrelitCompositeHdr(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {float3 effect;return worldComposite(uv,pixel,true,true,FogBuffer,effect,true);}

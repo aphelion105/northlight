@@ -25,6 +25,7 @@ parser.add_argument('--backend', type=Path, required=True)
 parser.add_argument('--output', type=Path)
 parser.add_argument('--quick', action='store_true')
 parser.add_argument('--no-timing', action='store_true', help='Run pixel/state oracles without GPU timestamps (unsupported native drivers).')
+parser.add_argument('--reference-header', type=Path, help='Frozen model_normal_renderer.h for a negative control.')
 args = parser.parse_args()
 out = (args.output or fp.output_dir()/'model-normals').resolve()
 out.mkdir(parents=True, exist_ok=True)
@@ -43,6 +44,9 @@ cases = []
 try:
     for model in ('3',) if args.quick else ('2', '3'):
         programs = {i: code for i, _, code in variants(assets.read(f'shaders\\vertex\\vs_{model}_0\\diffuse_t1.bls'))}
+        if model == '3':
+            for skin, index in [('rigid', 1), ('skinned', 11)]:
+                (out/f'model-vs3-{skin}.bin').write_bytes(programs[index])
         for skin, index in ([('skinned', 11)] if args.quick else [('rigid', 1), ('skinned', 11), ('weighted', 21), ('weighted4', 51)]):
             name = f'model-vs{model}-{skin}.bin'
             (out/name).write_bytes(programs[index]);cases.append((f'{model}-{skin}', name))
@@ -61,8 +65,13 @@ for key, name in [('TEMP', 'tmp'), ('TMP', 'tmp'), ('ZIG_LOCAL_CACHE_DIR', 'zig-
     (out/name).mkdir(exist_ok=True);env[key] = str(out/name)
 env.update(DISABLE_VULKAN_OBS_CAPTURE='1', DXVK_LOG_PATH=str(out))
 exe = out/'model-normals.exe'
+includes = []
+if args.reference_header:
+    reference = out/'reference-header';reference.mkdir(exist_ok=True)
+    shutil.copyfile(args.reference_header, reference/'model_normal_renderer.h')
+    includes = ['-I'+str(reference)]
 subprocess.run([str(fp.zig()), 'c++', '-target', 'x86-windows-gnu', '-std=c++17', '-O2', '-UNDEBUG', '-Wno-microsoft-exception-spec',
-                *fp.test_include_flags(), str(fp.TESTS/'model_normals_gpu.cpp'), str(fp.src('world_gi.cpp')),
+                *includes, *fp.test_include_flags(), str(fp.TESTS/'model_normals_gpu.cpp'), str(fp.src('world_gi.cpp')),
                 '-luser32', '-o', str(exe)], env=env, check=True)
 # Match the game's address space for the native 4K/MSAA readbacks, as the HDR oracle does.
 data=bytearray(exe.read_bytes());flags=struct.unpack_from('<I',data,0x3c)[0]+22
@@ -75,6 +84,7 @@ for tag, source in cases:
     assert run.returncode == 0, run.stdout+run.stderr
     assert 'MODEL_NORMALS_GPU_PASS' in run.stdout
     assert 'MODEL_NORMALS_BATCH_PASS pixels=exact' in run.stdout
+    assert 'MODEL_NORMALS_CONSTANTS_PASS' in run.stdout and 'opaqueNotices=zero shaderSwitches=exact highBone=74' in run.stdout
     assert 'MODEL_NORMALS_ALPHA_PASS' in run.stdout and 'MODEL_NORMALS_VALIDATION_PASS' in run.stdout
     if tag.endswith(('-rigid', '-skinned')):
         expected = 'kind=1 cases=2' if tag.endswith('-rigid') else 'kind=2 cases=3'
@@ -107,5 +117,6 @@ assert 'MODEL_NORMALS_RANGE_PASS kind=3 cases=3 culled=1 pixels=exact' in run.st
 print(run.stdout.strip(), flush=True)
 (out/'validation.json').write_text(json.dumps({'status': 'PASS', 'backend': str(args.backend), 'inputs': inputs,
     'game_launched': False, 'cases': records,
+    'renderer_header_sha256': hashlib.sha256((args.reference_header or fp.src('model_normal_renderer.h')).read_bytes()).hexdigest(),
     'range_envelope': {'source_sha256': hashlib.sha256(envelope_source.read_bytes()).hexdigest(), 'result': run.stdout.strip()},
     'fixed_shader_sha256': hashlib.sha256((out/'WorldNormalsFixed.bin').read_bytes()).hexdigest()}, indent=2)+'\n')

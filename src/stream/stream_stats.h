@@ -118,6 +118,8 @@ struct Counters {
     std::atomic<std::int64_t> retiredBytes{0},ringBytes{0},ringSlices{0};   // 0.3.204 (task 21): live bytes of retired slices (dropped while the replay thread may still read them) and of ring slices (the buffers' non-current slices); NOT part of shadowBytes/largeShadowBytes (so they never block a shadow grant), but in memory() and under their own budget:
     std::atomic<std::int64_t> ringLargeBytes{0},ringRegularBytes{0},retiredLargeBytes{0},retiredRegularBytes{0};   // the ring budget per kind (live + retired): regular <= ShadowBudgetBytes, large <= LargeShadowBudgetBytes
     std::atomic<std::int64_t> zcPatchBytes{0};   // 0.3.205 (#34): live bytes of staged overlap locks waiting to be written into their slice (BufferState::patches; each buffer's at most its length)
+    std::atomic<std::int64_t> rangeShadowBytes{0};
+    Counter rangeShadowHits{0},rangeShadowStores{0},rangeShadowRefused{0};
 };
 static_assert(alignof(Counters)==kLine&&sizeof(Counters)%kLine==0,"Counters groups are line-aligned");
 static_assert(offsetof(Counters,commands)/kLine!=offsetof(Counters,consumerSleeps)/kLine&&offsetof(Counters,consumerSleeps)/kLine!=offsetof(Counters,chunksLive)/kLine,"counter groups on distinct lines");

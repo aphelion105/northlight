@@ -67,9 +67,9 @@ constexpr std::size_t LargeShadowBudgetBytes=std::size_t(36)<<20,kMaxLargeShadow
 constexpr std::uint64_t kLargeIdleFrames=60;
 constexpr std::size_t kPoolMaxChunks=4,kReserveChunks=2;   // idle chunks kept at most / after a quiet window
 constexpr std::uint32_t kAutoPublishCommands=64,kAutoPublishBytes=64u<<10;
-// 0.3.200 (pipeline): commit()'s automatic publish wakes a SLEEPING consumer only once this much has been published without a wake (a sleeping replay
-// thread has caught up: waking it per 64 commands cost a SetEvent each time). Explicit publishes (scene/target/clear/sync/Present/GetData), a chunk
-// switch and backpressure always wake; an explicit publish with nothing new still wakes when an automatic one held its wake back (never strands work).
+// Batch accounting while replay is busy; a sleeping consumer wakes on the first
+// automatic publication. Otherwise a sparse upload can sit ready until a later
+// explicit publish or the consumer's safety timeout. wake() signals once per sleep.
 constexpr std::uint32_t kLazyWakeCommands=256,kLazyWakeBytes=256u<<10;
 constexpr std::uint32_t kNoPayload=0xFFFFFFFFu;   // a nullable pointer's offset in a generated Args struct
 
@@ -202,7 +202,7 @@ class Queue {
 #endif
             consumerEv_.set();}
     }
-    // commit()'s automatic publish: the same publication, but a sleeping consumer is woken only past kLazyWakeCommands/kLazyWakeBytes (see there).
+    // Automatic publication keeps the existing batch sizes and command order.
     void publishLazy(){
         const std::uint32_t c=sinceCmds_,b=sinceBytes_;
         beginDiagnosticPublish();
@@ -211,7 +211,7 @@ class Queue {
         std::atomic_thread_fence(std::memory_order_seq_cst);   // as in publish()
         own(stats.publishes);raiseMax(stats.highWaterDepth,recorded_.load(std::memory_order_relaxed)-replayed_.load(std::memory_order_relaxed));
         lazyCmds_+=c;lazyBytes_+=b;
-        if(lazyCmds_<kLazyWakeCommands&&lazyBytes_<kLazyWakeBytes){
+        if(lazyCmds_<kLazyWakeCommands&&lazyBytes_<kLazyWakeBytes&&!sleeping_.load()){
             lazyWake_=true;
             if(idleTracking_&&sleeping_.load()){
                 own(diagnosticHeldBatches_);own(diagnosticHeldCommands_,c);own(diagnosticHeldBytes_,b);

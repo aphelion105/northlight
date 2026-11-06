@@ -2,7 +2,7 @@
 # northlight-test: requires=windows-gpu,zig,client
 """Production fog/material screen passes without a geometry publication, without the game."""
 from pathlib import Path
-import hashlib,importlib.util,json,os,subprocess,sys
+import hashlib,importlib.util,json,os,shutil,subprocess,sys
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
 repo=fp.REPO
@@ -19,6 +19,8 @@ env.update(DXVK_CONFIG='d3d9.customVendorId = 1002',DISABLE_VULKAN_OBS_CAPTURE='
 sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
 sources=['world_gi.cpp','world_mesh_plan.cpp','static_shadow_scene.cpp','settings_overlay.cpp','settings_panel.cpp','imgui.cpp','imgui_draw.cpp','imgui_tables.cpp','imgui_widgets.cpp','imgui_impl_dx9.cpp']
 inputs={str(p):sha(p) for p in [fp.TESTS/'world_screen_effects_gpu.cpp',*(fp.src(s) for s in sources),fp.src('hdr_compiled_shaders.h'),fp.src('world_renderer.h'),fp.src('renderer.cpp'),fp.src('settings_service.h'),backend]}
+reference_header=os.environ.get('NORTHLIGHT_WORLD_RENDERER_REFERENCE')
+if reference_header:inputs[reference_header]=sha(Path(reference_header))
 report={'pass':False,'inputs':inputs,'commands':[],'game_launched':False,'actual_world_renderer':True,'private_render_target':True,'geometry_available':False}
 def run(label,command,extra=None):
     guard.processes();p=subprocess.run(list(map(str,command)),cwd=out,env={**env,**(extra or {})},capture_output=True,text=True,timeout=240)
@@ -27,6 +29,8 @@ try:
     exe=out/'world-screen-gpu.exe'
     sourceRoot=Path(baseline) if baseline else fp.REPO
     includes=[str(sourceRoot/Path(f).relative_to(fp.REPO)) if f!='-I' else f for f in fp.test_include_flags()]
+    if reference_header:
+        overlay=out/'reference-header';overlay.mkdir();shutil.copyfile(reference_header,overlay/'world_renderer.h');includes=['-I',str(overlay),*includes]
     run('compile',[fp.zig(),'c++','-target','x86-windows-gnu','-O2','-UNDEBUG','-std=c++17','-Wno-microsoft-exception-spec','-DIMGUI_USER_CONFIG="northlight_imconfig.h"',*includes,'-I'+str(fp.TESTS),fp.TESTS/'world_screen_effects_gpu.cpp',*(sourceRoot/fp.src(s).relative_to(fp.REPO) for s in sources),'-luser32','-luuid','-o',exe])
     for samples in [0,2]:
         settings=out/('settings-msaa'+str(samples));settings.mkdir()
