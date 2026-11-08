@@ -390,6 +390,8 @@ public:
         if(!check(d->SetPixelShaderConstantF(47,c[47],2),"glow constants"))return false;
         if(glare&&occlude){
             if(!haloResources())return false;
+            const float cloudControl[]={0,0,0,!i&&skyLayers?1.f:0.f};
+            d->SetPixelShaderConstantF(49,cloudControl,1);d->SetTexture(6,!i?skyLayers:nullptr);
             auto history=haloHistory[i];history.advance(GetTickCount(),frames,width,height,inverseView+12,haloDay,c[45]);
             // Holding: no pass; the history stays continuous, so the next
             // measurement blends from the held value with the usual 60/140 ms.
@@ -422,7 +424,7 @@ public:
                 std::memcpy(g.constants,c,sizeof c);std::memcpy(g.bounds,bounds,sizeof g.bounds);g.depth=depth;g.water=water;g.width=width;g.height=height;g.fade=fade;}
         }
         const bool compose=skyLayers&&occlude&&fullGlare;
-        const float skyControl[]={compose?1.f:0.f,emission,disc.opacity*weatherGain.load(std::memory_order_relaxed),0};
+        const float skyControl[]={compose?1.f:0.f,emission,disc.opacity*weatherGain.load(std::memory_order_relaxed),!i&&skyLayers?1.f:0.f};
         d->SetPixelShaderConstantF(49,skyControl,1);
         if(compose){
             float hue[4]{},core[4]{};NorthlightCelestialGlow::constants(glow,i,0.f,hue,core);
@@ -520,10 +522,12 @@ public:
           {D3DRS_CLIPPLANEENABLE,0},{D3DRS_SRGBWRITEENABLE,FALSE},{D3DRS_FILLMODE,D3DFILL_SOLID}};
         for(auto& s:states)d->SetRenderState(s.s,s.v);
         d->SetVertexShader(nullptr);d->SetFVF(D3DFVF_XYZRHW|D3DFVF_TEX1);d->SetStreamSourceFreq(0,1);d->SetPixelShader(haloPS);
-        for(unsigned k:{0u,2u,3u,4u}){d->SetSamplerState(k,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(k,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);
+        for(unsigned k:{0u,2u,3u,4u,6u}){d->SetSamplerState(k,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(k,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);
             d->SetSamplerState(k,D3DSAMP_MINFILTER,k==4?D3DTEXF_LINEAR:D3DTEXF_POINT);d->SetSamplerState(k,D3DSAMP_MAGFILTER,k==4?D3DTEXF_LINEAR:D3DTEXF_POINT);
             d->SetSamplerState(k,D3DSAMP_MIPFILTER,D3DTEXF_NONE);d->SetSamplerState(k,D3DSAMP_SRGBTEXTURE,FALSE);}
         d->SetTexture(0,g.depth);d->SetTexture(2,g.water);d->SetTexture(3,ringVisibility[previous]);d->SetTexture(4,terrainReady[0]?terrainMask[0]:nullptr);
+        const float cloudControl[]={0,0,0,skyLayers?1.f:0.f};
+        d->SetPixelShaderConstantF(49,cloudControl,1);d->SetTexture(6,skyLayers);
         struct V{float x,y,z,w,u,v;};const V pixel[]={{-.5f,-.5f,0,1,0,0},{.5f,-.5f,0,1,1,0},{-.5f,.5f,0,1,0,1},{.5f,.5f,0,1,1,1}};
         if(!check(d->SetPixelShaderConstantF(0,c[0],47),"ring visibility constants")||
            !check(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,pixel,sizeof(V)),"ring visibility draw"))return false;

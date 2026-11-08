@@ -29,6 +29,8 @@ write = method(proxies, 'void writeResult(')
 issue_start = replay.index('if((a->dwIssueFlags&D3::kIssueEnd)&&!q->dead.load())')
 issue = method(replay[issue_start:], 'if((a->dwIssueFlags&D3::kIssueEnd)&&!q->dead.load())')
 report = method(proxies, 'void reportQueryFrame(')
+report_wait = method(proxies, 'void reportQueryWait(')
+clear_wait = method(proxies, 'void clearQueryWait(')
 reset = fp.src('stream_device.h').read_text()
 assert 'c.queryEpoch.fetch_add(1); // invalidate EVENT cache across Reset' in reset
 # Frozen original loop is a negative control, not a second implementation to ship.
@@ -70,8 +72,10 @@ struct IDirect3DQuery9 {
     }
 };
 void add(std::atomic<std::uint64_t>& count){count.fetch_add(1);}
+std::uint64_t get(const std::atomic<std::uint64_t>& count){return count.load();}
 struct StreamQuery {
     unsigned type=8,dataSize=4;std::uint32_t issueSeen=1,issueSeenEpoch=0;
+    bool eventWaitExpired=false;std::uint64_t issueSequence=0,issueReadbacks=0;
     std::atomic<bool> dead{false};IDirect3DQuery9 driver;IDirect3DQuery9* inner=&driver;
     std::atomic<std::uint32_t> eventDoneGen{0},readyGen{0},resultSeq{0};
     std::atomic<HRESULT> eventStatus{S_FALSE};std::atomic<BOOL> eventValue{FALSE};
@@ -80,7 +84,7 @@ struct StreamQuery {
 middle = r'''
 };
 struct Replayer {
-    struct {struct {struct {std::atomic<std::uint64_t> queryPolls{0};} stats;} q;std::atomic<std::uint32_t> queryEpoch{0};} core;
+    struct {struct {struct {std::atomic<std::uint64_t> queryPolls{0},expressReadbacks{0};} stats;std::uint64_t replayedSeq()const{return 17;}} q;std::atomic<std::uint32_t> queryEpoch{0};} core;
     std::vector<StreamQuery*> pending_;
 '''
 issue_wrapper = '''
@@ -93,8 +97,8 @@ reporter = '''
 };
 struct QueryReporter {
     std::uint64_t frameNo=0;std::atomic<std::uint64_t> framesReplayed{0};
-    NorthlightStream::QueryWaitProfile queryFrame[21]{};
-''' + report
+    NorthlightStream::QueryWaitProfile queryFrame[21]{},queryWait[21]{};unsigned queryWaitFrames=0;
+''' + report + report_wait + clear_wait
 checks = r'''
 };
 static void publish(StreamQuery& q,HRESULT status,BOOL value){
@@ -121,6 +125,22 @@ int main(){
      r.frameNo=127;r.queryFrame[8].calls=r.queryFrame[9].calls=1;
      r.reportQueryFrame(sink);assert(lines.size()==3&&r.queryFrame[8].calls==0&&r.queryFrame[9].calls==0);
      r.queryFrame[8].calls=1;r.queryFrame[8].maxTripNs=100000000;r.reportQueryFrame({});assert(r.queryFrame[8].calls==0);}
+    // Exercise both real snprintf formats at maximal counter values. The final
+    // backend field must survive; growing the payload must not silently cut it.
+    {QueryReporter r;r.frameNo=std::uint64_t(-1);r.framesReplayed=std::uint64_t(-1);r.queryWaitFrames=~0u;
+     auto& s=r.queryFrame[8];const auto top=std::uint64_t(-1);
+     s.calls=s.flush=s.unissued=s.pending=s.errors=s.waitNs=s.beforeNs=s.replayNs=s.afterNs=s.tripNs=s.maxTripNs=top;
+     s.eventFastTrips=s.eventLongTrips=s.eventFastNs=s.eventLongNs=top;
+     s.backendUntouched=s.backendFalse=s.backendReady=s.backendOther=top;
+     s.fenceCalls=s.fenceNs=s.fenceTimeouts=top;
+     s.eventPauses={top,top,top,top,top,top};r.queryWait[8]=s;
+     std::vector<std::string> lines;auto sink=[&](const char* text){lines.emplace_back(text);};
+     r.reportQueryFrame(sink);r.reportQueryWait(sink);assert(lines.size()==2);
+     for(unsigned i=0;i<2;++i){char ending[96];std::snprintf(ending,sizeof ending,"fenceTimeout=%llu",(unsigned long long)top);
+      assert(lines[i].size()<1023&&lines[i].size()>std::strlen(ending));
+      assert(lines[i].compare(lines[i].size()-std::strlen(ending),std::strlen(ending),ending)==0);
+      assert(lines[i].find("eventFastTrips=18446744073709551615")!=std::string::npos&&lines[i].find("observedPauseMaxRequestedUs=")!=std::string::npos);}
+     std::printf("QUERY_PAUSE_FORMAT_PASS frameBytes=%zu aggregateBytes=%zu buffer=1024\n",lines[0].size(),lines[1].size());}
     // Same-generation terminal successes retain both TRUE/FALSE payloads. The
     // fake driver is ready too: baseline remains semantically valid but wasteful.
     for(BOOL value:{BOOL(0),BOOL(1),BOOL(0x12345678)}){

@@ -27,8 +27,9 @@ check('wait helps (pops and runs) instead of sleeping','while(!counter.done()){J
 
 # --- renderer wiring ------------------------------------------------------------------------
 render=w[w.index('    bool render(IDirect3DSurface9* targetSurface,'):]
-check('lazy start on the renderer thread inside render() after the upload, never at construction',w.count('replayJobs_.start(')==1 and w.count('jobsStart()')==2
+check('lazy start on the renderer thread during bounded mesh staging; jobs still start after upload',w.count('replayJobs_.start(')==1 and w.count('jobsStart()')==3
       and 'const unsigned cores=NorthlightStream::cores();' in w and 'if(replayJobs_.start(cores))logf("JOBS workers=%u cores=%u"' in w and 'jobs=jobsStart();' in render
+      and 'if(geometryWanted&&screenResourcesReady&&pendingMesh&&!replayJobsTried_&&streamBudget.available())jobsStart();' in render
       and render.index('jobs=jobsStart();')>render.index('bucket(NorthlightEffectsBuckets::Upload);'))
 check('ReplayJobs=0 or no worker: nothing kicked','bool jobsOn()const{return quality.replayJobs!=0&&replayJobs_.started();}' in w
       and w.count('replayJobs_.kick(')==4 and all('if(jobs)replayJobs_.kick(' in l or 'job.kicked=true;replayJobs_.kick(' in l or 'if(spellAsync)replayJobs_.kick(' in l for l in w.splitlines() if 'replayJobs_.kick(' in l)

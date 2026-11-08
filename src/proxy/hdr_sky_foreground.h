@@ -9,6 +9,7 @@ namespace NorthlightHdr {
 // Add the linear foreground to the existing sky in the native draw itself.
 // No geometry replay, new image, depth/stencil write or occlusion-query samples.
 class SkyForeground {
+    friend struct HdrSkyForegroundTest;
     struct Entry {IDirect3DPixelShader9* original=nullptr;IDirect3DPixelShader9* shader[6]{};bool tried[6]{};};
     std::unordered_map<IDirect3DPixelShader9*,Entry> shaders;
     bool checked=false,capable=false;unsigned targets=0;
@@ -32,9 +33,9 @@ class SkyForeground {
         return entry.shader[index];
     }catch(const std::bad_alloc&){return nullptr;}
 public:
-    std::uint64_t draws=0;
+    std::uint64_t draws=0,cachedRejections=0;
     ~SkyForeground(){reset();}
-    void reset(){for(auto& item:shaders){drop(item.second.original);for(auto*& p:item.second.shader)drop(p);}shaders.clear();checked=capable=false;targets=0;draws=0;}
+    void reset(){for(auto& item:shaders){drop(item.second.original);for(auto*& p:item.second.shader)drop(p);}shaders.clear();checked=capable=false;targets=0;draws=cachedRejections=0;}
     template<class Draw> bool draw(IDirect3DDevice9* d,IDirect3DSurface9* sky,bool allowMultisample,Draw submit,HRESULT& result){
         if(!sky)return false;
         if(!checked){D3DCAPS9 caps{};checked=true;capable=SUCCEEDED(d->GetDeviceCaps(&caps))&&caps.NumSimultaneousRTs>=2&&
@@ -52,13 +53,20 @@ public:
             ~Restore(){if(changed){d->SetPixelShader(original);d->SetRenderTarget(slot,nullptr);d->SetRenderState(D3DRENDERSTATETYPE(D3DRS_COLORWRITEENABLE1+slot-1),writes);}drop(native);drop(aux);drop(depth);drop(original);}} restore{d,native,aux,depth,original,slot,oldWrites};
         auto colorState=[](unsigned n){return n==1?D3DRS_COLORWRITEENABLE1:n==2?D3DRS_COLORWRITEENABLE2:D3DRS_COLORWRITEENABLE3;};
         for(;slot<targets;++slot){const HRESULT hr=d->GetRenderTarget(slot,&aux);if(hr==D3DERR_NOTFOUND||SUCCEEDED(hr)&&!aux)break;if(FAILED(hr))return false;drop(aux);}
-        if(slot>=targets||FAILED(d->GetRenderTarget(0,&native))||!native||FAILED(d->GetPixelShader(&original))||!original)return false;
+        if(slot>=targets||FAILED(d->GetPixelShader(&original))||!original)return false;
+        const bool premultiplied=blend&&src==D3DBLEND_ONE&&dst==D3DBLEND_INVSRCALPHA;
+        const unsigned variant=(slot-1)*2+unsigned(premultiplied);
+        const auto known=shaders.find(original);
+        // A failed patch for this exact retained shader/output/alpha variant
+        // cannot become eligible because a target or its depth changed.
+        if(known!=shaders.end()&&known->second.tried[variant]&&!known->second.shader[variant]){++cachedRejections;return false;}
+        if(FAILED(d->GetRenderTarget(0,&native))||!native)return false;
         D3DSURFACE_DESC a{},b{},z{};
         if(FAILED(native->GetDesc(&a))||FAILED(sky->GetDesc(&b))||a.Width!=b.Width||a.Height!=b.Height||a.MultiSampleType!=b.MultiSampleType||
            a.MultiSampleQuality!=b.MultiSampleQuality||(a.MultiSampleType&&!allowMultisample)||
            FAILED(d->GetDepthStencilSurface(&depth))||!depth||FAILED(depth->GetDesc(&z))||z.Width<a.Width||z.Height<a.Height||
            z.MultiSampleType!=a.MultiSampleType||z.MultiSampleQuality!=a.MultiSampleQuality)return false;
-        auto* patched=replacement(d,original,slot,blend&&src==D3DBLEND_ONE&&dst==D3DBLEND_INVSRCALPHA);if(!patched)return false;
+        auto* patched=replacement(d,original,slot,premultiplied);if(!patched)return false;
         const auto state=colorState(slot);if(FAILED(d->GetRenderState(state,&oldWrites)))return false;
         // The three COLORWRITEENABLE enums are consecutive in D3D9.
         restore.changed=true;

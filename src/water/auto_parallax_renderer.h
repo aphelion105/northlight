@@ -1,6 +1,7 @@
 #pragma once
 #include "auto_parallax_patch.h"
 #include "shared_pom.h"
+#include "native_local_pom.h"
 
 class NorthlightAutoParallax {
     IDirect3DDevice9* d;NorthlightAutoNormalCache& normals;
@@ -10,6 +11,7 @@ class NorthlightAutoParallax {
     std::unordered_map<IDirect3DPixelShader9*,Pixel> pixels;
     std::unordered_map<IDirect3DVertexShader9*,Vertex> vertices;
     Pixel* recentPixel=nullptr;
+    const NorthlightNativePOM* activeNativePOM=nullptr;
     unsigned draws=0,skipped=0,frames=0;bool sharedActive=false;
     static constexpr D3DSAMPLERSTATETYPE keys[]={D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER,D3DSAMP_MIPFILTER,D3DSAMP_ADDRESSU,D3DSAMP_ADDRESSV,D3DSAMP_SRGBTEXTURE,D3DSAMP_MAXMIPLEVEL,D3DSAMP_MIPMAPLODBIAS};
     struct State {
@@ -35,6 +37,7 @@ public:
     void setProfiler(NorthlightMaterialProfile* p){profile=p;}
     ~NorthlightAutoParallax(){for(auto& p:pixels){drop(p.second.shader);drop(p.second.shared);drop(p.second.source);}for(auto& v:vertices){drop(v.second.shader);drop(v.second.shared);drop(v.second.source);}}
     bool shared()const{return sharedActive;}
+    const NorthlightNativePOM* nativePOM()const{return activeNativePOM;}
     bool supports(IDirect3DPixelShader9* pixel,unsigned material){
         if(recentPixel&&recentPixel->source==pixel)return recentPixel->shader!=nullptr;
         auto it=pixels.find(pixel);if(it!=pixels.end()){recentPixel=&it->second;return recentPixel->shader!=nullptr;}
@@ -92,6 +95,12 @@ public:
         saved.vertexChanged=desiredVertex!=saved.vertex;saved.pixelChanged=desiredPixel!=saved.pixel;saved.constantChanged=std::memcmp(bank,saved.constants,saved.constantCount*16)!=0;
         if((saved.vertexChanged&&FAILED(d->SetVertexShader(desiredVertex)))||(saved.pixelChanged&&FAILED(d->SetPixelShader(desiredPixel)))||(saved.constantChanged&&FAILED(d->SetPixelShaderConstantF(saved.constantBase,bank,saved.constantCount)))){if(reuse)return fallback();saved.restore();return nativeDraw();}
         struct Active {bool& flag;Active(bool& value,bool on):flag(value){flag=on;}~Active(){flag=false;}} active(sharedActive,reuse);
+        NorthlightNativePOM composition{saved.vertex==knownVertex?knownVertex:nullptr,saved.vertexChanged?desiredVertex:saved.vertex,saved.pixel,desiredPixel,saved.constantBase,saved.constantCount,dual,reuse,&NorthlightSharedPOM::vertex};
+        // Only the known original VS has the native light-layout proof. A
+        // private deformation variant needs its own composition contract.
+        struct CompositionScope {const NorthlightNativePOM*& target;const NorthlightNativePOM* previous;
+            ~CompositionScope(){target=previous;}} compositionScope{activeNativePOM,activeNativePOM};
+        activeNativePOM=&composition;
         ++draws;return nativeDraw();
     }
 };

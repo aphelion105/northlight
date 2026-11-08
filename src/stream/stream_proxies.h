@@ -27,6 +27,7 @@
 #include "command_queue.h"
 #include "buffer_range_shadow.h"
 #include "query_poll.h"
+#include "query_backend_threads.h"
 #include "command_stream.inl"
 #include "tex_readback_diag.h"
 #include "atlas_upload_proof.h"
@@ -311,21 +312,28 @@ struct StreamCore {
     // Game-thread counters; reuse runTask's wait clock, without timing each GetData again.
     using QueryWait=QueryWaitProfile;
     QueryWait queryWait[21]{},queryFrame[21]{};unsigned queryWaitFrames=0; // 20 includes unknown query types
-    void clearQueryWait(){for(auto& item:queryWait)item={};for(auto& item:queryFrame)item={};queryWaitFrames=0;}
+    QueryLongPause queryLongPause; // replay-thread only; at most one lazy timer per stream
+    QueryBackendThreads queryBackendThreads; // game-thread only; bounded RenderProfile diagnostics
+    std::function<void(const char*)> queryThreadLog; // Options::log, like QUERYFRAME; legacy logLine is unset
+    void clearQueryWait(){for(auto& item:queryWait)item={};for(auto& item:queryFrame)item={};queryWaitFrames=0;queryBackendThreads.clear();}
     void reportQueryFrame(const std::function<void(const char*)>& sink){
-        if(sink)for(unsigned type=0;type<21;++type){const auto& s=queryFrame[type];if(!s.calls||(frameNo%127!=0&&s.maxTripNs<20000000))continue;
-            char line[512];std::snprintf(line,sizeof line,"CSTREAM QUERYFRAME gameFrame=%llu replayed=%llu type=%u calls=%llu pending=%llu errors=%llu syncWaitMs=%.4f beforeReplayMs=%.4f replayMs=%.4f afterReplayMs=%.4f tripMs=%.4f maxTripMs=%.4f",
+        if(sink)for(unsigned type=0;type<21;++type){const auto& s=queryFrame[type];if(!s.frameReportDue(frameNo%127==0))continue;
+            char line[1024];std::snprintf(line,sizeof line,"CSTREAM QUERYFRAME gameFrame=%llu replayed=%llu type=%u calls=%llu pending=%llu errors=%llu syncWaitMs=%.4f beforeReplayMs=%.4f replayMs=%.4f afterReplayMs=%.4f tripMs=%.4f maxTripMs=%.4f eventFastTrips=%llu eventLongTrips=%llu eventFastMs=%.4f eventLongMs=%.4f observedPauseCalls=%llu observedPauseMs=%.4f observedPauseOverMs=%.4f observedPauseMaxMs=%.4f observedPauseMaxRequestedUs=%.3f observedPauseMaxOverMs=%.4f backendUntouched=%llu backendFalse=%llu backendReady=%llu backendOther=%llu fenceCalls=%llu fenceMs=%.4f fenceTimeout=%llu",
                 (unsigned long long)frameNo,(unsigned long long)framesReplayed.load(std::memory_order_relaxed),type,
                 (unsigned long long)s.calls,(unsigned long long)s.pending,(unsigned long long)s.errors,
-                double(s.waitNs)/1e6,double(s.beforeNs)/1e6,double(s.replayNs)/1e6,double(s.afterNs)/1e6,double(s.tripNs)/1e6,double(s.maxTripNs)/1e6);sink(line);}
+                double(s.waitNs)/1e6,double(s.beforeNs)/1e6,double(s.replayNs)/1e6,double(s.afterNs)/1e6,double(s.tripNs)/1e6,double(s.maxTripNs)/1e6,
+                (unsigned long long)s.eventFastTrips,(unsigned long long)s.eventLongTrips,double(s.eventFastNs)/1e6,double(s.eventLongNs)/1e6,
+                (unsigned long long)s.eventPauses.count,double(s.eventPauses.actualNs)/1e6,double(s.eventPauses.overshootNs)/1e6,double(s.eventPauses.maxNs)/1e6,double(s.eventPauses.maxRequestedNs)/1e3,double(s.eventPauses.maxOvershootNs)/1e6,(unsigned long long)s.backendUntouched,(unsigned long long)s.backendFalse,(unsigned long long)s.backendReady,(unsigned long long)s.backendOther,(unsigned long long)s.fenceCalls,double(s.fenceNs)/1e6,(unsigned long long)s.fenceTimeouts);sink(line);}
         for(auto& item:queryFrame)item={};
     }
     void reportQueryWait(const std::function<void(const char*)>& sink){
         if(sink)for(unsigned type=0;type<21;++type){const auto& s=queryWait[type];if(!s.calls)continue;
-            char line[512];std::snprintf(line,sizeof line,"CSTREAM QUERY frames=%u type=%u calls=%llu flush=%llu unissued=%llu pending=%llu errors=%llu syncWaitMs=%.3f beforeReplayMs=%.3f replayMs=%.3f afterReplayMs=%.3f tripMs=%.3f maxTripMs=%.3f",
+            char line[1024];std::snprintf(line,sizeof line,"CSTREAM QUERY frames=%u type=%u calls=%llu flush=%llu unissued=%llu pending=%llu errors=%llu syncWaitMs=%.3f beforeReplayMs=%.3f replayMs=%.3f afterReplayMs=%.3f tripMs=%.3f maxTripMs=%.3f eventFastTrips=%llu eventLongTrips=%llu eventFastMs=%.3f eventLongMs=%.3f observedPauseCalls=%llu observedPauseMs=%.3f observedPauseOverMs=%.3f observedPauseMaxMs=%.3f observedPauseMaxRequestedUs=%.3f observedPauseMaxOverMs=%.3f backendUntouched=%llu backendFalse=%llu backendReady=%llu backendOther=%llu fenceCalls=%llu fenceMs=%.4f fenceTimeout=%llu",
                 queryWaitFrames,type,(unsigned long long)s.calls,(unsigned long long)s.flush,(unsigned long long)s.unissued,
                 (unsigned long long)s.pending,(unsigned long long)s.errors,double(s.waitNs)/1e6,
-                double(s.beforeNs)/1e6,double(s.replayNs)/1e6,double(s.afterNs)/1e6,double(s.tripNs)/1e6,double(s.maxTripNs)/1e6);sink(line);}
+                double(s.beforeNs)/1e6,double(s.replayNs)/1e6,double(s.afterNs)/1e6,double(s.tripNs)/1e6,double(s.maxTripNs)/1e6,
+                (unsigned long long)s.eventFastTrips,(unsigned long long)s.eventLongTrips,double(s.eventFastNs)/1e6,double(s.eventLongNs)/1e6,
+                (unsigned long long)s.eventPauses.count,double(s.eventPauses.actualNs)/1e6,double(s.eventPauses.overshootNs)/1e6,double(s.eventPauses.maxNs)/1e6,double(s.eventPauses.maxRequestedNs)/1e3,double(s.eventPauses.maxOvershootNs)/1e6,(unsigned long long)s.backendUntouched,(unsigned long long)s.backendFalse,(unsigned long long)s.backendReady,(unsigned long long)s.backendOther,(unsigned long long)s.fenceCalls,double(s.fenceNs)/1e6,(unsigned long long)s.fenceTimeouts);sink(line);}
         clearQueryWait();
     }
     std::uint64_t clockNs=0;   // the cost of one nowNs() as the scopes see it (measured once at the first timed Present), subtracted from every timed span
@@ -1525,7 +1533,16 @@ struct StreamQuery final:IDirect3DQuery9,ProxyBase {
     std::atomic<std::uint32_t> eventDoneGen{0};
     std::atomic<HRESULT> eventStatus{S_FALSE};
     std::atomic<BOOL> eventValue{FALSE};
+    bool eventWaitExpired=false; // replay-thread only, reset at each replayed END
     std::uint32_t eventEpoch=0;std::uint64_t eventPendingSince=0;bool eventCallerLogged=false; // game thread only
+    std::uint32_t eventThreadProbeGen=0,eventThreadProbeEpoch=0; // one diagnostic attempt per exact generation
+    void observeBackendThreads(std::uint32_t issued,std::uint32_t epoch,HRESULT hr,EventPendingKind kind){
+        if(!core->timing||core->queryEpoch.load()!=epoch||gen.load()!=issued)return;
+        const bool first=eventThreadProbeGen!=issued||eventThreadProbeEpoch!=epoch;
+        if(core->queryBackendThreads.observe(reinterpret_cast<std::uintptr_t>(this),issued,epoch,first,hr,kind,core->frameNo,core->queryThreadLog)){
+            eventThreadProbeGen=issued;eventThreadProbeEpoch=epoch;
+        }
+    }
     void completeEvent(HRESULT hr,const unsigned char* buf){
         // Replay thread only. Publish a generation once: pollQueries polls a query PollEventQuery already completed, and a
         // later error must not replace the published status or value (two relaxed stores a reader could pair across publications).
@@ -1574,7 +1591,7 @@ struct StreamQuery final:IDirect3DQuery9,ProxyBase {
                 const HRESULT hr=eventStatus.load(std::memory_order_relaxed);
                 if(hr==S_OK&&data){const BOOL value=eventValue.load(std::memory_order_relaxed);std::memcpy(data,&value,sizeof value);}
                 if(eventPendingSince){own(q.stats.eventPendingNs,nowNs()-eventPendingSince);own(q.stats.eventCompleted);eventPendingSince=0;}
-                own(q.stats.eventLocal);return hr;
+                own(q.stats.eventLocal);observeBackendThreads(issued,eventEpoch,hr,EventPendingKind::Ready);return hr;
             }
             if(flags==D3::kGetDataFlush){
                 if(inPumpedWait)return D3DERR_INVALIDCALL;
@@ -1611,20 +1628,47 @@ struct StreamQuery final:IDirect3DQuery9,ProxyBase {
             // bounds an unresponsive query; completion returns immediately.
             const bool event=type==8&&flags==D3::kGetDataFlush&&gen.load();
             const auto tripStart=measure||event?nowNs():0;std::uint64_t replayStart=0,replayEnd=0;
+            EventPauseProfile eventPauses;bool eventLongPhase=false;EventPendingKind backendPending=EventPendingKind::None;
+            std::uint64_t fenceCalls=0,fenceNs=0,fenceTimeouts=0;
             const auto epoch=eventEpoch;
-            auto body=[&](bool cached){if(measure||event)replayStart=nowNs();if(inner){
+            auto body=[&](bool cached){if(measure||event)replayStart=nowNs();if(event)eventLongPhase=eventWaitExpired;if(inner){
                 if(cached&&eventDoneGen.load(std::memory_order_acquire)==issued){
                     hr=eventStatus.load(std::memory_order_relaxed);
                     if(hr==S_OK&&data){const BOOL value=eventValue.load(std::memory_order_relaxed);std::memcpy(data,&value,sizeof value);}
                 }else{
+                    BOOL eventPayload=0;bool eventPayloadKnown=false;
+                    const bool auditedPayload=event&&dxvk311EventPayload.load(std::memory_order_relaxed)&&
+                        ((!data&&!size)||(data&&size==sizeof(BOOL)));
                     EventFlushCadence cadence;
-                    auto poll=[&]{return static_cast<IDirect3DQuery9*>(inner)->GetData(data,size,event?cadence.flags(nowNs()):flags);};
-                    if(event){unsigned calls=0;std::uint64_t pendingNs=0;hr=waitEventQuery(poll,nowNs,[]{std::this_thread::yield();},calls,kEventFlushWaitNs,&pendingNs);own(q.stats.eventGpuWaitNs,pendingNs);own(q.stats.eventPollCalls,calls);own(q.stats.eventWaitTrips);}
+                    auto poll=[&]{
+                        const auto nativeFlags=event?cadence.flags(nowNs()):flags;
+                        if(!auditedPayload)return static_cast<IDirect3DQuery9*>(inner)->GetData(data,size,nativeFlags);
+                        // Reuse the real poll. Zero upper bytes also handle
+                        // DXVK's cached path, which writes a C++ bool, not BOOL.
+                        BOOL payload=EventPayloadMarker;
+                        const auto result=static_cast<IDirect3DQuery9*>(inner)->GetData(&payload,sizeof payload,nativeFlags);
+                        backendPending=eventPendingKind(result,payload);
+                        if(result==S_OK){eventPayload=payload;eventPayloadKnown=true;if(data)std::memcpy(data,&payload,sizeof payload);}
+                        return result;
+                    };
+                    if(event){unsigned calls=0;std::uint64_t pendingNs=0;
+                        // DXVK interop Flush/LockSubmissionQueue drain its CS and
+                        // submission queues without a deadline. Never introduce
+                        // that whole-queue barrier to wait for one D3D9 EVENT.
+                        core->queryLongPause.begin();QueryPollPause shortPause;
+                        const auto pause=[&](std::uint64_t left,std::uint64_t elapsed){
+                            pauseEventQuery(backendPending,eventWaitExpired,left,elapsed,shortPause,core->queryLongPause);
+                        };
+                        hr=waitEventQuery(poll,nowNs,pause,calls,kEventFlushWaitNs,&pendingNs,measure?&eventPauses:nullptr);
+                        if(hr==S_FALSE)eventWaitExpired=true;
+                        own(q.stats.eventGpuWaitNs,pendingNs);own(q.stats.eventPollCalls,calls);own(q.stats.eventWaitTrips);
+                    }
                     else hr=poll();
                     // A completed pumped wait is also terminal for the background poller.
-                    // Null successful payloads and malformed calls cannot publish an unknown EVENT value.
+                    // NULL callers publish only when the audited native poll supplied a known full BOOL.
                     if(event&&hr!=S_FALSE&&issueSeen==issued&&issueSeenEpoch==epoch&&core->queryEpoch.load()==epoch&&
-                       ((data&&size==sizeof(BOOL))||(!data&&!size&&hr<0)))completeEvent(hr,static_cast<const unsigned char*>(data));
+                       ((data&&size==sizeof(BOOL))||(!data&&!size&&(hr<0||eventPayloadKnown))))
+                        completeEvent(hr,eventPayloadKnown?reinterpret_cast<const unsigned char*>(&eventPayload):static_cast<const unsigned char*>(data));
                 }
             }if(measure)replayEnd=nowNs();};
             bool ran=false;
@@ -1652,9 +1696,10 @@ struct StreamQuery final:IDirect3DQuery9,ProxyBase {
             const auto tripEnd=measure?nowNs():0;
             if(event&&ran&&hr!=S_FALSE&&eventPendingSince){own(q.stats.eventPendingNs,nowNs()-eventPendingSince);own(q.stats.eventCompleted);eventPendingSince=0;}   // a wait that ended on this pumped path
             if(measure){const auto waitNs=get(q.stats.syncNs)-waitBefore;
-                const auto record=[&](StreamCore::QueryWait& s){s.record(flags,unissued,ran,hr,waitNs,tripStart,replayStart,replayEnd,tripEnd);};
+                const auto record=[&](StreamCore::QueryWait& s){s.record(flags,unissued,ran,hr,waitNs,tripStart,replayStart,replayEnd,tripEnd,event?&eventPauses:nullptr,eventLongPhase,backendPending);s.fenceCalls+=fenceCalls;s.fenceNs+=fenceNs;s.fenceTimeouts+=fenceTimeouts;};
                 const unsigned index=type<20?type:20;record(core->queryWait[index]);record(core->queryFrame[index]);}
             if(!ran)return D3DERR_INVALIDCALL;
+            if(measure&&event)observeBackendThreads(issued,epoch,hr,backendPending);
             return hr;
         }
         q.publish();   // the replay thread must see the Issue this GetData polls for, or a spin on S_FALSE would never end

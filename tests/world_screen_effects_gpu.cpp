@@ -5,6 +5,14 @@
 #include <cassert>
 #include <fstream>
 struct WorldScreenEffectsTest {
+    static std::pair<IDirect3DSurface9*,IDirect3DSurface9*> removalScratch(WorldRenderer& w){return {w.fogBlurredSurface,w.fogHistorySurface};}
+    static void aliasFixtureFrame(WorldRenderer& w,unsigned frame){
+        fixtureContext(w);w.quality.weather=0;w.effects.fog=frame%12<9;
+        w.sourceWeights[0]=frame%7==3?0.f:1.f;
+        w.sourceColors[0]=w.sourceGlowColors[0]={.2f+.03f*(frame%5),.4f,.6f};
+        w.context.camera[0]=w.context.inverseView[12]=float(frame%4)*.125f;
+    }
+    static void aliasReleased(WorldRenderer& w){w.releaseGPU(true);assert(!w.smoothLight&&!w.smoothSurface&&!w.fogBlurred&&!w.fogHistory);}
     static void weatherBase(WorldRenderer& w,const float* c){
         w.setHdrBaseCompositeEnabled(std::getenv("NORTHLIGHT_BASE_BACKEND_VERIFIED")!=nullptr);
         w.pipelineActive=true;w.valid=true;w.traceContext=2;

@@ -3,18 +3,32 @@
 #include <windows.h>
 #include <d3d9.h>
 #include "native_local_light_renderer.h"
+#include "native_direct_ownership.h"
 #include "forwarders.h"
+#include "native_local_sampler_read_checks.h"
 #include <cassert>
 #include <cstdio>
 #include <fstream>
 #include <chrono>
+#ifdef NORTHLIGHT_TEST_EVENT_COLD
+#include "native_event_cold_checks.h"
+#endif
 static int failAllocation=-1;
 void* operator new(std::size_t n){if(failAllocation==0){failAllocation=-1;throw std::bad_alloc();}if(failAllocation>0)--failAllocation;if(void* p=std::malloc(n?n:1))return p;throw std::bad_alloc();}
 void operator delete(void* p)noexcept{std::free(p);}
 void operator delete(void* p,std::size_t)noexcept{std::free(p);}
 static void must(HRESULT hr){if(FAILED(hr)){std::printf("HRESULT %08lx\n",(unsigned long)hr);std::abort();}}
 static std::vector<DWORD> words(const char* path){std::ifstream f(path,std::ios::binary|std::ios::ate);assert(f&&f.tellg()%4==0);std::vector<DWORD> out(size_t(f.tellg())/4);f.seekg(0);f.read(reinterpret_cast<char*>(out.data()),out.size()*4);assert(f);return out;}
-static std::vector<float> pixels(IDirect3DDevice9* d,IDirect3DSurface9* rt,unsigned size){IDirect3DSurface9* copy=nullptr;must(d->CreateOffscreenPlainSurface(size,size,D3DFMT_A16B16G16R16F,D3DPOOL_SYSTEMMEM,&copy,nullptr));must(d->GetRenderTargetData(rt,copy));D3DLOCKED_RECT lock;must(copy->LockRect(&lock,nullptr,D3DLOCK_READONLY));std::vector<float> out(size*size*4);for(unsigned y=0;y<size;++y)for(unsigned x=0;x<size*4;++x)out[y*size*4+x]=NorthlightActorDeformation::half(reinterpret_cast<const uint16_t*>(static_cast<const char*>(lock.pBits)+y*lock.Pitch)[x]);must(copy->UnlockRect());copy->Release();return out;}
+#include "native_local_sharing_checks.h"
+#include "native_local_vertex_reuse_checks.h"
+#include "native_local_pixel_reuse_checks.h"
+#ifdef NORTHLIGHT_TEST_WHITE_CUBES
+#include "native_white_cube_checks.h"
+#endif
+#ifdef NORTHLIGHT_TEST_COVERED_NATIVE
+#include "native_local_coverage_checks.h"
+#endif
+static std::vector<float> pixels(IDirect3DDevice9* d,IDirect3DSurface9* rt,unsigned size){IDirect3DSurface9* copy=nullptr;must(d->CreateOffscreenPlainSurface(size,size,D3DFMT_A16B16G16R16F,D3DPOOL_SYSTEMMEM,&copy,nullptr));must(d->GetRenderTargetData(rt,copy));D3DLOCKED_RECT lock;must(copy->LockRect(&lock,nullptr,D3DLOCK_READONLY));std::vector<float> out(size*size*4);for(unsigned y=0;y<size;++y)for(unsigned x=0;x<size*4;++x)out[y*size*4+x]=NorthlightActorDeformation::half(reinterpret_cast<const uint16_t*>(static_cast<const char*>(lock.pBits)+y*lock.Pitch)[x]);must(copy->UnlockRect());copy->Release();nativeLocalRecord(out);return out;}
 static void save(const std::string& path,const std::vector<float>& image,unsigned size){std::ofstream f(path,std::ios::binary);unsigned h[]={0x31524746,size,size,116,16};f.write(reinterpret_cast<char*>(h),20);f.write(reinterpret_cast<const char*>(image.data()),image.size()*4);assert(f);}
 #include "native_local_light_final.inc"
 struct FaultDevice:ForwardIDirect3DDevice9 {
@@ -29,20 +43,31 @@ struct FaultDevice:ForwardIDirect3DDevice9 {
 };
 int main(int argc,char** argv){
     std::setvbuf(stdout,nullptr,_IONBF,0);
-    assert(argc==7);constexpr unsigned Size=256;const bool wmo=std::strcmp(argv[5],"wmo")==0;
+    assert(argc==7||argc==8);constexpr unsigned Size=256;const bool wmo=std::strcmp(argv[5],"wmo")==0;
     WNDCLASSW wc{};wc.lpfnWndProc=DefWindowProcW;wc.hInstance=GetModuleHandleW(nullptr);wc.lpszClassName=L"NorthlightNativeLocalTest";assert(RegisterClassW(&wc));auto hwnd=CreateWindowW(wc.lpszClassName,L"",WS_OVERLAPPED,0,0,Size,Size,nullptr,nullptr,wc.hInstance,nullptr);assert(hwnd);
     auto library=LoadLibraryA(argv[1]);assert(library);auto create=reinterpret_cast<IDirect3D9*(WINAPI*)(UINT)>(reinterpret_cast<void*>(GetProcAddress(library,"Direct3DCreate9")));assert(create);auto api=create(D3D_SDK_VERSION);assert(api);
     D3DPRESENT_PARAMETERS pp{};pp.Windowed=TRUE;pp.hDeviceWindow=hwnd;pp.BackBufferWidth=pp.BackBufferHeight=Size;pp.BackBufferFormat=D3DFMT_X8R8G8B8;pp.SwapEffect=D3DSWAPEFFECT_DISCARD;pp.PresentationInterval=D3DPRESENT_INTERVAL_IMMEDIATE;
     IDirect3DDevice9* d=nullptr;must(api->CreateDevice(0,D3DDEVTYPE_HAL,hwnd,D3DCREATE_HARDWARE_VERTEXPROCESSING|D3DCREATE_FPU_PRESERVE,&pp,&d));
+#ifdef NORTHLIGHT_TEST_EVENT_COLD
+    NativeEventColdDevice samplerDevice(d);
+#else
+    NativeSamplerReadDevice samplerDevice(d);
+#endif
+    d=&samplerDevice;
     auto v=words(argv[2]),p=words(argv[3]);IDirect3DVertexShader9* vs=nullptr;IDirect3DPixelShader9* ps=nullptr;must(d->CreateVertexShader(v.data(),&vs));must(d->CreatePixelShader(p.data(),&ps));
-    unsigned slots[]={0,1};std::vector<uint32_t> negative;NorthlightNativeLocalPatch::VertexInfo vi;assert(!NorthlightNativeLocalPatch::vertex(reinterpret_cast<const uint32_t*>(v.data()),v.size(),slots,2,negative,vi));
+    unsigned slots[]={0,1};std::vector<uint32_t> negative;NorthlightNativeLocalPatch::VertexInfo vi;const bool two=NorthlightEquipmentLightProof::analyze(reinterpret_cast<const uint32_t*>(v.data()),v.size())>=2;assert(NorthlightNativeLocalPatch::vertex(reinterpret_cast<const uint32_t*>(v.data()),v.size(),slots,2,negative,vi)==two);
     D3DVERTEXELEMENT9 elements[]={{0,0,D3DDECLTYPE_FLOAT3,0,D3DDECLUSAGE_POSITION,0},{0,12,D3DDECLTYPE_UBYTE4,0,D3DDECLUSAGE_BLENDINDICES,0},{0,16,D3DDECLTYPE_FLOAT3,0,D3DDECLUSAGE_NORMAL,0},{0,28,D3DDECLTYPE_D3DCOLOR,0,D3DDECLUSAGE_COLOR,0},{0,32,D3DDECLTYPE_FLOAT2,0,D3DDECLUSAGE_TEXCOORD,0},D3DDECL_END()};IDirect3DVertexDeclaration9* declaration=nullptr;must(d->CreateVertexDeclaration(elements,&declaration));
     struct Vertex {float x,y,z;DWORD index;float nx,ny,nz;DWORD color;float u,v;};const Vertex plane[]={{-8,8,8,0,0,0,-1,0xb3ffffff,0,0},{8,8,8,0,0,0,-1,0xb3ffffff,1,0},{-8,-8,8,0,0,0,-1,0xb3ffffff,0,1},{8,-8,8,0,0,0,-1,0xb3ffffff,1,1}};
     IDirect3DTexture9* texture=nullptr;must(d->CreateTexture(8,8,1,0,D3DFMT_A8R8G8B8,D3DPOOL_MANAGED,&texture,nullptr));D3DLOCKED_RECT lock;must(texture->LockRect(0,&lock,nullptr,0));for(unsigned y=0;y<8;++y)for(unsigned x=0;x<8;++x)reinterpret_cast<DWORD*>(static_cast<char*>(lock.pBits)+y*lock.Pitch)[x]=((x+y)%2?0xff000000:0x00000000)|0x00b39980;must(texture->UnlockRect(0));
     IDirect3DCubeTexture9* cube=nullptr;must(d->CreateCubeTexture(256,1,0,D3DFMT_R32F,D3DPOOL_MANAGED,&cube,nullptr));
     auto fillCube=[&](unsigned mode){for(unsigned face=0;face<6;++face){D3DLOCKED_RECT l;must(cube->LockRect(D3DCUBEMAP_FACES(face),0,&l,nullptr,0));for(unsigned y=0;y<256;++y)for(unsigned x=0;x<256;++x)reinterpret_cast<float*>(static_cast<char*>(l.pBits)+y*l.Pitch)[x]=mode==0?1.f:mode==1?0.f:x<128?1.f:0.f;must(cube->UnlockRect(D3DCUBEMAP_FACES(face),0));}};
     NorthlightNativeLocalDraw light;light.cube=cube;light.position[2]=4;light.range=12;for(unsigned i=0;i<16;++i)light.inverseView[i]=i%5==0?1.f:0;
-    NorthlightNativeLocalLighting renderer(d);unsigned cases=0;float worst=0;double coldMs=0;std::vector<float> native,blocked,edge;std::vector<std::vector<float>> fixture;IDirect3DSurface9* resolved=nullptr;must(d->CreateRenderTarget(Size,Size,D3DFMT_A16B16G16R16F,D3DMULTISAMPLE_NONE,0,FALSE,&resolved,nullptr));
+
+#ifndef NORTHLIGHT_NATIVE_DUPLICATE_BASELINE
+    if(two&&std::getenv("NORTHLIGHT_TEST_PIXEL_REUSE"))nativeLocalPixelReuse(d,light,vs,ps,nullptr,nullptr,&failAllocation);
+    if(two&&std::getenv("NORTHLIGHT_TEST_VERTEX_REUSE"))nativeLocalVertexReuse(d,light,vs,ps);
+#endif
+    NorthlightNativeLocalLighting renderer(d);samplerDevice.attach(renderer);unsigned cases=0;float worst=0;double coldMs=0;std::vector<float> native,blocked,edge;std::vector<std::vector<float>> fixture;IDirect3DSurface9* resolved=nullptr;must(d->CreateRenderTarget(Size,Size,D3DFMT_A16B16G16R16F,D3DMULTISAMPLE_NONE,0,FALSE,&resolved,nullptr));
     for(unsigned ms:{0u,2u}){IDirect3DSurface9* target=nullptr;if(ms){if(FAILED(d->CreateRenderTarget(Size,Size,D3DFMT_A16B16G16R16F,D3DMULTISAMPLE_TYPE(ms),0,FALSE,&target,nullptr)))continue;}else{target=resolved;target->AddRef();}
     for(unsigned mode=0;mode<3;++mode)for(float fog:{1.f,.35f})for(unsigned context:{0u,1u}){
         must(d->SetRenderTarget(0,target));must(d->SetDepthStencilSurface(nullptr));D3DVIEWPORT9 viewport{0,0,Size,Size,0,1};must(d->SetViewport(&viewport));must(d->SetVertexDeclaration(declaration));must(d->SetVertexShader(vs));must(d->SetPixelShader(ps));
@@ -57,17 +82,53 @@ int main(int argc,char** argv){
         constants[17][0]=12;constants[17][1]=.4f;constants[17][2]=.1f;constants[18][0]=.15f;constants[18][1]=.8f;constants[18][2]=.2f;
         constants[21][2]=4;constants[22][0]=-2;constants[22][1]=2;constants[22][2]=5;
         constants[25][0]=constants[25][1]=1;constants[26][0]=constants[26][1]=.2f;constants[27][0]=constants[27][1]=.01f;constants[30][1]=fog;constants[30][2]=1;constants[31][0]=constants[32][1]=constants[33][2]=1;
+        NorthlightLocalLights::Light authored{};authored.kind=2;authored.flags=2;authored.sourceId=3183403080900234831ull;std::copy_n(light.position,3,authored.position);std::copy_n(constants[17],3,authored.diffuse);
+        const float denominator[]={constants[25][0],constants[26][0],constants[27][0]};authored=NorthlightLocalLights::nativeTransport(authored,denominator);
+        struct OwnBinding {const NorthlightNativeLights::Point* native;const NorthlightLocalLights::Light* authored;};
+        const OwnBinding ownBinding{nullptr,&authored};NorthlightNativeDirect::BankMemo ownershipMemo;unsigned ownershipHits=0;
+        NorthlightNativeLights::Snapshot incomplete;assert(!NorthlightNativeDirect::source(authored,incomplete));
         must(d->SetVertexShaderConstantF(0,constants[0],256));float pixelConstants[224][4]{};pixelConstants[2][0]=.05f;pixelConstants[2][1]=.1f;pixelConstants[2][2]=.2f;must(d->SetPixelShaderConstantF(0,pixelConstants[0],224));must(d->SetTexture(0,texture));
         for(auto key:{D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER})must(d->SetSamplerState(0,key,D3DTEXF_POINT));must(d->SetSamplerState(0,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP));must(d->SetSamplerState(0,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP));
-        auto render=[&](bool patched,bool zero){float color[4];std::memcpy(color,constants[17],16);if(zero)color[0]=color[1]=color[2]=0;must(d->SetVertexShaderConstantF(17,color,1));must(d->Clear(0,nullptr,D3DCLEAR_TARGET,0x80204060,1,0));must(d->BeginScene());auto submit=[&]{return d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,plane,sizeof(Vertex));};const bool cold=patched&&!renderer.coldPairs;const auto start=std::chrono::steady_clock::now();must(patched?renderer.draw(light,vs,ps,submit):submit());if(cold)coldMs=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();must(d->EndScene());if(ms)must(d->StretchRect(target,nullptr,resolved,nullptr,D3DTEXF_NONE));return pixels(d,resolved,Size);};
+#ifdef NORTHLIGHT_TEST_COVERED_NATIVE
+        assert(!ms&&!mode&&fog==1&&!context);nativeLocalCoverage(d,light,vs,ps,[&]{return d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,plane,sizeof(Vertex));},[&]{return pixels(d,target,Size);},[&](IDirect3DSurface9* s){return pixels(d,s,Size);},fillCube);return 0;
+#endif
+#ifdef NORTHLIGHT_TEST_WHITE_CUBES
+        assert(!ms&&!mode&&fog==1&&!context);nativeWhiteCubes(d,light,vs,ps,[&]{return d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,plane,sizeof(Vertex));},[&]{return pixels(d,target,Size);},fillCube,two);return 0;
+#endif
+#ifdef NORTHLIGHT_TEST_EVENT_COLD
+        assert(two);fillCube(0);nativeEventCold(samplerDevice,renderer,light,vs,ps,[&]{return d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,plane,sizeof(Vertex));},[&]{return pixels(d,target,Size);});
+        if(argc>7){const auto other=words(argv[7]);IDirect3DPixelShader9* otherPS=nullptr;must(d->CreatePixelShader(other.data(),&otherPS));must(d->SetPixelShader(otherPS));
+            nativeEventCold(samplerDevice,renderer,light,vs,otherPS,[&]{return d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,plane,sizeof(Vertex));},[&]{return pixels(d,target,Size);},3,true);otherPS->Release();}
+        return 0;
+#endif
+        auto render=[&](bool patched,bool zero){float color[4];std::memcpy(color,constants[17],16);if(zero)color[0]=color[1]=color[2]=0;must(d->SetVertexShaderConstantF(17,color,1));must(d->Clear(0,nullptr,D3DCLEAR_TARGET,0x80204060,1,0));must(d->BeginScene());auto submit=[&]{return d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,plane,sizeof(Vertex));};const bool cold=patched&&!renderer.coldPairs;const auto start=std::chrono::steady_clock::now();
+            float bank[44];must(d->GetVertexShaderConstantF(17,bank,11));const unsigned count=two?2:1;bool ownershipHit=false;
+            const auto& ownership=ownershipMemo.resolve(bank,count,light.inverseView,light.inverseView+12,&ownBinding,1,ownershipHit);ownershipHits+=ownershipHit;
+            const bool owns=ownership.bindings[0]==0;
+            must(patched&&owns?renderer.draw(light,vs,ps,submit):submit());if(cold)coldMs=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();must(d->EndScene());if(ms)must(d->StretchRect(target,nullptr,resolved,nullptr,D3DTEXF_NONE));return pixels(d,resolved,Size);};
         fillCube(0);native=render(false,false);const auto clear=render(true,false);assert(renderer.draws>0&&renderer.coldPairs==1);
-        assert(native==clear); // Includes nonidentity projection clipping and all MSAA edge pixels.
+        assert(native==clear);assert(ownershipHits>0); // Includes nonidentity projection clipping and all MSAA edge pixels.
         fillCube(1);const auto without=render(false,true);blocked=render(true,false);
+        const auto owned=authored;authored.diffuse[1]+=.02f;ownershipMemo.reset();assert(render(true,false)==native);authored=owned;ownershipMemo.reset();authored.attenuationEnd+=1;ownershipMemo.reset();assert(render(true,false)==native);authored=owned;ownershipMemo.reset();authored.position[0]+=.02f;ownershipMemo.reset();assert(render(true,false)==native);authored=owned;ownershipMemo.reset();
         light.gain=0;const auto gain0=render(true,false);assert(gain0==native);light.gain=.5f;const auto fade=render(true,false);light.gain=1;
         float removed=0;for(unsigned i=0;i<native.size();i+=4)removed=std::max(removed,native[i]-without[i]);assert(removed>.03f); // Never accept an empty/cutout/transparent fixture.
         for(unsigned y=80;y<176;++y)for(unsigned x=80;x<176;++x)for(unsigned channel=0;channel<4;++channel){unsigned i=(y*Size+x)*4+channel;assert(fade[i]>=std::min(native[i],blocked[i])-.001f&&fade[i]<=std::max(native[i],blocked[i])+.001f);const float error=std::max(std::fabs(native[i]-clear[i]),std::fabs(without[i]-blocked[i]));worst=std::max(worst,error);if(error>.001f){std::printf("ENDPOINT_FAIL ms=%u mode=%u fog=%g x=%u y=%u c=%u native=%g clear=%g without=%g blocked=%g\n",ms,mode,fog,x,y,channel,native[i],clear[i],without[i],blocked[i]);std::abort();}}
         fillCube(2);edge=render(true,false);for(unsigned y=80;y<176;++y)for(unsigned x=80;x<176;++x)for(unsigned k=0;k<4;++k){unsigned i=(y*Size+x)*4+k;assert(edge[i]>=std::min(native[i],without[i])-.001f&&edge[i]<=std::max(native[i],without[i])+.001f);}
         if(!ms&&!mode&&fog==1&&!context){fillCube(1);const auto zero=render(true,true);assert(zero==without);fixture={native,clear,blocked,edge,without,zero,gain0,fade};save(std::string(argv[4])+"/opaque-native.fgr",native,Size);save(std::string(argv[4])+"/opaque-blocked.fgr",blocked,Size);save(std::string(argv[4])+"/opaque-edge.fgr",edge,Size);}
+        if(two){
+            NorthlightNativeLocalLighting pair(d);NorthlightNativeLocalDraw other=light;other.slot=1;
+            for(unsigned k=0;k<3;++k)other.position[k]=light.inverseView[12+k]-2*light.inverseView[k]+2*light.inverseView[4+k]+5*light.inverseView[8+k];
+            fillCube(1);
+            must(pair.draw(light,vs,ps,[]{return S_OK;},&other));assert(pair.draws==1&&!pair.multiDraws&&pair.coldPairs==1);++light.rendererFrame;
+            for(unsigned mask=0;mask<4;++mask){std::vector<float> images[2];for(unsigned patched=0;patched<2;++patched){
+                float colors[2][4];std::memcpy(colors,constants[17],sizeof colors);if(!patched)for(unsigned s=0;s<2;++s)if(mask&(1u<<s))colors[s][0]=colors[s][1]=colors[s][2]=0;
+                must(d->SetVertexShaderConstantF(17,colors[0],2));light.gain=(mask&1)?1.f:0.f;other.gain=(mask&2)?1.f:0.f;
+                must(d->Clear(0,nullptr,D3DCLEAR_TARGET,0x80204060,1,0));must(d->BeginScene());auto submitPair=[&]{return d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,plane,sizeof(Vertex));};
+                must(patched?pair.draw(light,vs,ps,submitPair,&other):submitPair());must(d->EndScene());if(ms)must(d->StretchRect(target,nullptr,resolved,nullptr,D3DTEXF_NONE));images[patched]=pixels(d,resolved,Size);
+            }
+            if(mask)assert(pair.multiDraws);if(!mask)assert(images[0]==images[1]);for(unsigned y=80;y<176;++y)for(unsigned x=80;x<176;++x)for(unsigned k=0;k<4;++k){unsigned i=(y*Size+x)*4+k;assert(std::fabs(images[0][i]-images[1][i])<=.001f);}}
+            light.gain=1;must(d->SetVertexShaderConstantF(17,constants[17],2));
+        }
         ++cases;
     }
     target->Release();}
@@ -85,12 +146,51 @@ int main(int argc,char** argv){
     for(unsigned fail=1;fail<=setters;++fail){fault.sets=0;fault.failAt=fail;unsigned submits=0;must(d->BeginScene());must(checked.draw(light,vs,ps,[&]{++submits;return submit();}));must(d->EndScene());assert(submits==1);fault.failAt=0;checkState();}
     fault.sets=0;fault.failAt=0;fault.failPrivatePS=true;fault.failOriginalVS=true;unsigned forbidden=0;must(d->BeginScene());assert(FAILED(checked.draw(light,vs,ps,[&]{++forbidden;return submit();})));must(d->EndScene());assert(!forbidden);fault.failOriginalVS=false;must(d->SetVertexShader(vs));checkState();
     NorthlightNativeLocalLighting allocation(d);failAllocation=0;unsigned allocationFallback=0;must(allocation.draw(light,vs,ps,[&]{++allocationFallback;return S_OK;}));assert(failAllocation==-1&&allocationFallback==1&&allocation.fallbacks==1&&!allocation.draws);checkState();
+    if(two){
+        NorthlightNativeLocalDraw other=light;other.slot=1;NorthlightNativeLocalLighting pair(&fault);
+        IDirect3DBaseTexture9* savedTexture=nullptr;DWORD savedSampler[7];must(d->GetTexture(2,&savedTexture));for(unsigned i=0;i<7;++i)must(d->GetSamplerState(2,keys[i],savedSampler+i));
+        auto bothState=[&]{checkState();IDirect3DBaseTexture9* t=nullptr;must(d->GetTexture(2,&t));assert(t==savedTexture);if(t)t->Release();for(unsigned i=0;i<7;++i){DWORD value=0;must(d->GetSamplerState(2,keys[i],&value));assert(value==savedSampler[i]);}};
+        must(pair.draw(light,vs,ps,[]{return S_OK;},&other));assert(pair.draws==1&&!pair.multiDraws&&pair.coldPairs==1);++light.rendererFrame;bothState();
+        fault.sets=0;must(d->BeginScene());must(pair.draw(light,vs,ps,submit,&other));must(d->EndScene());assert(pair.multiDraws);bothState();const unsigned pairSetters=fault.sets;
+        for(unsigned fail=1;fail<=pairSetters;++fail){fault.sets=0;fault.failAt=fail;unsigned submits=0;must(d->BeginScene());must(pair.draw(light,vs,ps,[&]{++submits;return submit();},&other));must(d->EndScene());assert(submits==1);fault.failAt=0;bothState();}
+        if(savedTexture)savedTexture->Release();std::printf("NATIVE_TWO_PASS endpointCombinations=4 cases=%u injectedSetFailures=%u stateBothSamplers=exact\n",cases,pairSetters);
+    }
+    {
+        // Extra harmless native instructions fit the single endpoint program,
+        // but four material variants exceed the dual SM3 slot limit.
+        auto padded=p;unsigned padding=60;
+        if(two){
+            NorthlightNativeLocalPatch::VertexInfo interfaces[2];std::vector<uint32_t> code;
+            for(unsigned n=1;n<=2;++n)assert(NorthlightNativeLocalPatch::vertex(reinterpret_cast<const uint32_t*>(v.data()),v.size(),slots,n,code,interfaces[n-1]));
+            auto supported=[&](unsigned n){
+                const DWORD* helpers[]={n==1?kNativeLocalLighting1Shader:kNativeLocalLighting2Shader,n==1?kNativeLocalLightingLegacy1Shader:kNativeLocalLightingLegacy2Shader};
+                const size_t sizes[]={n==1?sizeof(kNativeLocalLighting1Shader)/4:sizeof(kNativeLocalLighting2Shader)/4,n==1?sizeof(kNativeLocalLightingLegacy1Shader)/4:sizeof(kNativeLocalLightingLegacy2Shader)/4};
+                for(unsigned h=0;h<2;++h)for(bool share:{true,false}){NorthlightNativeLocalPatch::PixelInfo info;if(NorthlightNativeLocalPatch::pixel(reinterpret_cast<const uint32_t*>(padded.data()),padded.size(),interfaces[n-1],reinterpret_cast<const uint32_t*>(helpers[h]),sizes[h],code,info,share))return true;}return false;
+            };
+            bool found=false;for(padding=60;padding<480;padding+=4){padded=p;for(unsigned i=0;i<padding;++i)padded.insert(padded.end()-1,{0x02000001u,0x800f001eu,0x90e40000u});if(supported(1)&&!supported(2)){found=true;break;}}assert(found);
+        }else for(unsigned i=0;i<padding;++i)padded.insert(padded.end()-1,{0x02000001u,0x800f001eu,0x90e40000u});
+        std::printf("NATIVE_CAP_FIXTURE padding=%u singleSupported=1 dualUnsupported=1\n",padding);
+        IDirect3DPixelShader9* oversized=nullptr;must(d->CreatePixelShader(padded.data(),&oversized));must(d->SetPixelShader(oversized));
+        NorthlightNativeLocalLighting budgetPair(d);auto other=light;other.slot=1;light.rendererFrame=100;
+        unsigned submits=0;auto once=[&]{++submits;return S_OK;};
+        must(budgetPair.draw(light,vs,oversized,once,&other));assert(submits==1&&budgetPair.draws==1&&!budgetPair.multiDraws&&budgetPair.coldPairs==1);
+        must(budgetPair.draw(light,vs,oversized,once,&other));assert(submits==2&&budgetPair.draws==2&&budgetPair.coldPairs==1);
+        ++light.rendererFrame;must(budgetPair.draw(light,vs,oversized,once,&other));assert(submits==3&&budgetPair.draws==3&&!budgetPair.multiDraws&&budgetPair.coldPairs==2);
+        must(budgetPair.draw(light,vs,oversized,once,&other));assert(submits==4&&budgetPair.draws==4&&budgetPair.coldPairs==2);
+        budgetPair.reset();must(budgetPair.draw(light,vs,oversized,once,&other));assert(submits==5&&budgetPair.draws==4&&budgetPair.coldPairs==2);
+        ++light.rendererFrame;must(budgetPair.draw(light,vs,oversized,once,&other));assert(submits==6&&budgetPair.draws==5&&budgetPair.coldPairs==3);
+        must(d->SetPixelShader(ps));oversized->Release();std::printf("NATIVE_TWO_COLD_PASS firstSourceImmediate=1 unsupportedDualKeepsSingle=1 coldAttemptsPerFrame=1 negativeCache=1 sameFrameResetBudget=preserved\n");
+    }
     // Unsupported pairs consume the same one-attempt frame budget as supported
     // pairs, and their negative cache does not keep consuming later frames.
     const DWORD unsupported[]={0xffff0200u,0x02000001u,0x800f0800u,0xa0e40000u,0xffffu};IDirect3DPixelShader9 *bad=nullptr,*second=nullptr;must(d->CreatePixelShader(unsupported,&bad));must(d->CreatePixelShader(p.data(),&second));
     NorthlightNativeLocalLighting budget(d);light.rendererFrame=10;must(d->SetPixelShader(bad));must(budget.draw(light,vs,bad,[]{return S_OK;}));assert(budget.coldPairs==1);must(d->SetPixelShader(ps));must(budget.draw(light,vs,ps,[]{return S_OK;}));assert(budget.coldPairs==1&&budget.deferredPairs==1);
     light.rendererFrame=11;must(d->SetPixelShader(bad));must(budget.draw(light,vs,bad,[]{return S_OK;}));must(d->SetPixelShader(ps));must(budget.draw(light,vs,ps,[]{return S_OK;}));assert(budget.coldPairs==2);must(d->SetPixelShader(second));must(budget.draw(light,vs,second,[]{return S_OK;}));assert(budget.coldPairs==2);
     light.rendererFrame=12;must(d->SetPixelShader(second));must(budget.draw(light,vs,second,[]{return S_OK;}));assert(budget.coldPairs==3);must(d->SetPixelShader(ps));budget.reset();must(budget.draw(light,vs,ps,[]{return S_OK;}));assert(budget.coldPairs==3);light.rendererFrame=13;must(budget.draw(light,vs,ps,[]{return S_OK;}));assert(budget.coldPairs==4);budget.reset();bad->Release();second->Release();checked.reset();
+#ifndef NORTHLIGHT_NATIVE_DUPLICATE_BASELINE
+    if(std::getenv("NORTHLIGHT_TEST_SHARING_FAULTS"))nativeLocalCreationFallback(d,light,vs,ps,two);
+#endif
+    if(!std::getenv("NORTHLIGHT_TEST_CORRECTNESS_ONLY")){
     // Paired warm native draw versus the exact handoff, at the same 256-square
     // receiver and resources. GPU timestamp intervals exclude query readback.
     for(auto state:{D3DRS_ALPHABLENDENABLE,D3DRS_ALPHATESTENABLE})must(d->SetRenderState(state,FALSE));fillCube(2);
@@ -101,7 +201,9 @@ int main(int argc,char** argv){
     for(unsigned block=0;block<20;++block){const unsigned mode=(block/2)%2?1-block%2:block%2;batch(mode);drain();must(disjoint->Issue(D3DISSUE_BEGIN));must(start->Issue(D3DISSUE_END));const auto at=std::chrono::steady_clock::now();batch(mode);const double submitMs=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-at).count()/64;must(end->Issue(D3DISSUE_END));must(frequency->Issue(D3DISSUE_END));must(disjoint->Issue(D3DISSUE_END));drain();UINT64 a=0,b=0,f=0;BOOL bad=FALSE;assert(start->GetData(&a,sizeof a,0)==S_OK&&end->GetData(&b,sizeof b,0)==S_OK&&frequency->GetData(&f,sizeof f,0)==S_OK&&disjoint->GetData(&bad,sizeof bad,0)==S_OK&&!bad&&b>=a&&f);const double ms=double(b-a)/double(f)*1000/64;if(block>=4){gpu[mode].push_back(ms);cpu[mode].push_back(submitMs);timing<<mode<<'\t'<<ms<<'\t'<<submitMs<<'\n';}}
     auto median=[](std::vector<double> values){std::sort(values.begin(),values.end());assert(values.size()==8);return (values[3]+values[4])*.5;};
     std::printf("NATIVE_LOCAL_COST family=%s receiver=256x256 samplesPerBranch=8 drawsPerSample=64 nativeGpuMs=%.6f shadowGpuMs=%.6f nativeCpuMs=%.6f shadowCpuMs=%.6f firstColdCpuMs=%.6f warmShaderCreation=0 gameFPS=unmeasured\n",wmo?"wmo":"m2",median(gpu[0]),median(gpu[1]),median(cpu[0]),median(cpu[1]),coldMs);
-    for(auto* query:{event,start,end,frequency,disjoint})query->Release();finalContract(d,argv[6],fixture,Size);
+    for(auto* query:{event,start,end,frequency,disjoint})query->Release();}
+    finalContract(d,argv[6],fixture,Size);
     std::printf("NATIVE_LOCAL_GPU_PASS cases=%u endpointMaxError=%g nativeDraws=%llu coldPairs=%u addedPixelSlots=%u warmShaderCreation=0 injectedSetFailures=%u persistentRestoreBlocksFallback=1 coldAttemptsPerFrame=1 sameFrameResetBudget=preserved negativeCache=1 allocationFailure=fail-open selectionGain0=exact-baseline selectionGainHalf=bounded selectionGain1=exact-endpoints nonidentityProjectionViewCamera=1 sourceRemoval=exact-native otherLightAmbientFogAlpha=preserved msaa=same-native-draw\n",cases,worst,(unsigned long long)renderer.draws,renderer.coldPairs,renderer.shaderSlots,setters);
+    if(std::getenv("NORTHLIGHT_TEST_SAMPLER_BULK_MODE"))samplerDevice.verify(light,vs,ps,two?2:1);
     renderer.reset();for(unsigned i=0;i<16;++i)d->SetTexture(i,nullptr);cube->Release();texture->Release();declaration->Release();vs->Release();ps->Release();resolved->Release();d->Release();api->Release();FreeLibrary(library);DestroyWindow(hwnd);
 }

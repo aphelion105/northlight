@@ -509,7 +509,7 @@ public:
                 pp.BackBufferWidth,pp.BackBufferHeight,unsigned(pp.BackBufferFormat),unsigned(pp.Windowed),unsigned(pp.MultiSampleType),(unsigned long)pp.MultiSampleQuality,pp.BackBufferCount,pp.PresentationInterval,
                 p->BackBufferWidth,p->BackBufferHeight,unsigned(p->BackBufferFormat),unsigned(p->Windowed),unsigned(p->MultiSampleType),(unsigned long)p->MultiSampleQuality,p->BackBufferCount,p->PresentationInterval,p->FullScreen_RefreshRateInHz,(unsigned long)p->Flags);callerLog(line);
         }
-        st.clear();recording=false;
+        st.clear();recording=false;core.queryBackendThreads.clear();
         HRESULT hr=D3DERR_INVALIDCALL;
         std::uint64_t replayStart=0,replayEnd=0;
         const bool ran=runTask(core,[&](StreamCore& c){   // everything recorded so far has run; the game waits, pumped
@@ -700,6 +700,7 @@ private:
         :coreOwner(new StreamCore(opt.budget)),core(*coreOwner),replayer(core,SnapshotPool::capFor(clampFramesAhead(opt.framesAhead))),parent(par),framesAhead_(clampFramesAhead(opt.framesAhead)),capture(opt.capture),snapshotCompleted(opt.snapshotCompleted),snapshotSink(opt.snapshotSink),snapshotObserved(opt.snapshotObserved){
         core.target=target;core.game=this;core.framesAhead=framesAhead_;core.logLine=nullptr;core.callerModule=opt.callerModule;core.queryCaller=opt.queryCaller;core.occlusionLocal=opt.occlusionLocal;callerLog=opt.log;callerDiag=opt.diagnostics;core.readBackLock=opt.readBackLock;st.core=&core;
         if(opt.cursorApi)cursor=*opt.cursorApi;
+        core.queryThreadLog=opt.log;
         restoreOwner=opt.threadStart;replayer.frameSkip=opt.frameSkip!=0;replayer.threadStart=std::move(opt.threadStart);replayer.log=opt.log;replayer.diagnostics=opt.diagnostics;replayer.idleProfiling=opt.idleProfiling;filter=opt.filterRedundant;
         if(kDirectReplay&&opt.directReplay&&opt.extension&&opt.rawOf){core.ext=opt.extension;auto f=opt.rawOf;core.reg.rawOf=[f](IUnknown* e,Kind k){return f(e,unsigned(k));};}
         if(p)pp=*p;

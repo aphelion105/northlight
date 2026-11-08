@@ -16,6 +16,7 @@ assert manifest['bump_include_sha256']==hashlib.sha256((fp.SHADERS/'auto_bump_no
 assert set(manifest['shaders'])=={entry for entry,_ in ENTRIES}
 extended={'WorldFogActor','FogCloudsActor'}
 tiled={'WorldFogActorTiled','FogCloudsActorTiled','WorldMaterialCompositeHdr'}
+tiled.update(entry for entry,_ in ENTRIES if entry.startswith('MoonFloorFog'))
 
 def verify(entry,target,info,data,words):
     assert info['target']==target and info['bytes']==len(data)
@@ -42,5 +43,10 @@ for entry,target in ENTRIES:
         else:raise AssertionError('corrupt bytecode/metadata was accepted: '+entry)
 world=fp.src('world_renderer.h').read_text()
 assert 'fogCaps.MaxPixelShader30InstructionSlots>=std::max(kWorldFogActorShaderSlots,kFogCloudsActorShaderSlots)' in world
-assert 'fogCaps.MaxPixelShader30InstructionSlots>=std::max(kWorldFogActorTiledShaderSlots,kFogCloudsActorTiledShaderSlots)' in world
+actor=world[world.index('    void actorShaderResources('):world.index('    bool createResources(')]
+assert 'caps.MaxPixelShader30InstructionSlots>=std::max(kWorldFogActorTiledShaderSlots,kFogCloudsActorTiledShaderSlots)' in actor
+assert 'actorShaderResources(fogCaps);' in world and 'd->GetDeviceCaps(&caps);actorShaderResources(caps);' in world
+moon=world[world.index('    IDirect3DPixelShader9* moonFloorShader('):world.index('    bool ensureMoonFloor(')]
+assert 'caps.MaxPixelShader30InstructionSlots<slots[index]||caps.PS20Caps.NumTemps<temps[index]' in moon
+assert all(f'k{entry}ShaderSlots' in moon for entry,_ in ENTRIES if entry.startswith('MoonFloorFog'))
 print(f'PASS {len(ENTRIES)} shader binaries/header arrays, assembly metrics, capabilities; corrupt data/slot controls rejected')

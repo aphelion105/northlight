@@ -4,6 +4,10 @@
 #include <cassert>
 #include <iostream>
 #include <chrono>
+#ifdef _WIN32
+static int chmod(const wchar_t* path,int mode){return _wchmod(path,mode);}
+static int access(const wchar_t* path,int mode){return _waccess(path,mode);}
+#endif
 using namespace NorthlightSettings;
 template<class F> void fails(F f){bool failed=false;try{f();}catch(...){failed=true;}assert(failed);}
 int main(int argc,char** argv){
@@ -48,6 +52,17 @@ int main(int argc,char** argv){
     {unsigned hdrFields=0;for(const auto& f:fields)if(f.file==1&&f.section=="Renderer"&&f.key!="Backend"){++hdrFields;assert(f.available&&f.apply=="F");auto edited=applyChanges(docs,fields,f.id()+"\t"+f.factory+"\n");assert(configOf(edited,"").hdr.size()==NorthlightHdrSettingsContract::Count);}assert(hdrFields==NorthlightHdrSettingsContract::Count);
      auto unavailable=fields;for(auto& f:unavailable)if(f.key=="HDRMaxNits")f.available=false;fails([&]{applyChanges(docs,unavailable,"R\tRenderer\tHDRMaxNits\t600\n");});
      Document hdrDoc("[Renderer]\nHDRContrast=1.35\nHDRExposure=-1.25\nHDRPaperWhite=240\n");auto g=configOf({Document(""),hdrDoc,Document(""),Document("")},"");assert(g.hdr[4]==1.35f&&g.hdr[5]==-1.25f&&g.hdr[1]==240);}
+    // Wide bloom is opt-in, persisted globally while HDR is off, and live.
+    {using namespace NorthlightHdrSettingsContract;
+     assert(configOf(std::array<Document,4>{},"").hdr[WideBloom]==0);
+     auto path=root/"wide-bloom";std::filesystem::create_directories(path);Store wide(path);auto before=wide.read();auto documentsBefore=documents(before);
+     auto config=configOf(documentsBefore,"");auto available=schema(documentsBefore,documentsBefore,config,"");
+     bool checkbox=false;for(const auto& f:available)if(f.key=="HDRWideBloom"){checkbox=true;assert(f.kind=="check"&&f.factory=="0"&&f.apply=="F");}assert(checkbox);
+     auto changed=applyChanges(documentsBefore,available,"R\tRenderer\tHDRWideBloom\t1\nR\tRenderer\tExperimentalHDR\t0\n");
+     auto after=before;after[1]={true,changed[1].bytes()};wide.commit(before,after);auto reloaded=configOf(documents(wide.read()),"");
+     assert(reloaded.hdr[WideBloom]==1&&reloaded.hdr[Enabled]==0);
+     assert(configOf(documents(wide.read()),"",false,"another-display").hdr[WideBloom]==1);
+    }
     // Lock waits: a holder that lets go within the wait is tolerated, one that does not is not.
     {std::thread holder([&]{TransactionLock lease(root);std::this_thread::sleep_for(std::chrono::milliseconds(150));});std::this_thread::sleep_for(std::chrono::milliseconds(30));
      TransactionLock waited(root,2000);holder.join();}
@@ -115,8 +130,8 @@ int main(int argc,char** argv){
      service.acknowledge(*saved);assert(service.revision()==saved->revision);
      // HDR preview changes the running grading while preserving every saved byte.
      {bool listed=false;for(const auto& f:service.snapshot()->fields)if(f.key=="HDRMaxNits"){listed=true;assert(f.available);}assert(listed);
-      const auto before=store.read();const auto serial=service.status().serial;assert(service.preview({{"R\tRenderer\tHDRMaxNits","600"},{"R\tRenderer\tExperimentalHDR","1"}}));
-      assert(waitFor([&]{return idle()&&service.status().serial>serial;}));auto p=service.after(saved->revision);assert(p&&p->preview&&p->runtime->hdr[3]==600&&p->runtime->hdr[0]==1&&store.read()==before);
+      const auto before=store.read();const auto serial=service.status().serial;assert(service.preview({{"R\tRenderer\tHDRMaxNits","600"},{"R\tRenderer\tExperimentalHDR","1"},{"R\tRenderer\tHDRWideBloom","1"}}));
+      assert(waitFor([&]{return idle()&&service.status().serial>serial;}));auto p=service.after(saved->revision);assert(p&&p->preview&&p->runtime->hdr[3]==600&&p->runtime->hdr[0]==1&&p->runtime->hdr[NorthlightHdrSettingsContract::WideBloom]==1&&store.read()==before);
       service.acknowledge(*p);assert(service.clearPreview());assert(waitFor([&]{auto v=service.after(p->revision);return idle()&&v&&!v->preview;}));auto restored=service.after(p->revision);assert(restored->runtime->hdr==saved->runtime->hdr&&store.read()==before);service.acknowledge(*restored);
       const auto bad=service.status().serial;assert(service.commit(saved->revision,{{"R\tRenderer\tHDRMaxNits","99999999"}}));assert(waitFor([&]{return idle()&&service.status().serial>bad;}));assert(service.status().state==Status::State::Error&&store.read()==before);
       service.setHdrStatus(true,0,"active scRGB");const auto status=service.hdrStatus();assert(status.active&&status.code==0&&status.reason=="active scRGB");}
@@ -167,7 +182,10 @@ int main(int argc,char** argv){
     // One-time reset is one transaction. A failed migration cannot set its marker or modify other renderer settings.
     {auto path=root/"hdr-migration";std::filesystem::create_directories(path);Store migrating(path);auto before=migrating.read(),after=before;
      after[1]={true,"[Renderer]\nBackend=dxvk2\nExperimentalHDR=0\nHDRExposure=3\nHDRLegacyExpansion=2\n[HDR.old]\nHDRMaxNits=500\n"};migrating.commit(before,after);
-     {TransactionLock lock(path);assert(!migrateHdr(path).empty());assert(migrating.readUnlocked()==after);}
+     { // Windows named mutexes are recursive on the owning thread.
+      std::atomic<bool> held{false},done{false};std::thread holder([&]{TransactionLock lock(path);held=true;while(!done)std::this_thread::sleep_for(std::chrono::milliseconds(2));});
+      while(!held)std::this_thread::sleep_for(std::chrono::milliseconds(2));
+      assert(!migrateHdr(path).empty());assert(migrating.readUnlocked()==after);done=true;holder.join();}
      assert(migrateHdr(path).empty());auto migrated=migrating.read();auto docs=documents(migrated);const auto config=configOf(docs,"");
      assert(config.hdr[0]==1&&config.hdr[5]==0&&config.hdr[6]==1&&config.hdr[7]==1&&config.hdr[9]==0);
      assert(explicitValue(docs[1],"Renderer","Backend")=="dxvk2"&&explicitValue(docs[1],"Renderer","HDRPipelineVersion")=="2"&&explicitValue(docs[1],"HDR.old","HDRMaxNits")=="~");

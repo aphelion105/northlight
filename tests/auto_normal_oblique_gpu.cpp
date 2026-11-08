@@ -8,6 +8,7 @@ template<class T>static void drop(T*& p){if(p)p->Release();p=nullptr;}
 static void logf(const char* f,...){va_list a;va_start(a,f);std::vprintf(f,a);std::puts("");va_end(a);}
 #include "saved_state.h"
 #include "auto_bump_renderer.h"
+#include "native_local_light_renderer.h"
 #include "terrain_capture_bounds.h"
 #include "world_compiled_shaders.h"
 #include "material_pixel_audit.h"
@@ -52,7 +53,10 @@ struct MaterialCaptureStateTestAccess {
     static unsigned queued(const NorthlightAutoBump& b){return b.queued;}
     static unsigned flushed(const NorthlightAutoBump& b){return b.flushed;}
 #ifndef NORTHLIGHT_TEST_CAPTURE_BASELINE
-    static void singleSample(const NorthlightAutoBump& b){std::printf("MATERIAL_SINGLE_SAMPLE queued=%u seeds=%u barriers=%u\n",b.singleSampleQueued,b.depthSeeds,b.depthBarriers);}
+    static void singleSample(const NorthlightAutoBump& b){std::printf("MATERIAL_SINGLE_SAMPLE queued=%u seeds=%u barriers=%u readOnlySkips=%u\n",b.singleSampleQueued,b.depthSeeds,b.depthBarriers,b.depthReadOnlySkips);}
+#ifdef NORTHLIGHT_MATERIAL_DEPTH_TEST
+    static void forceDepthBarriers(NorthlightAutoBump& b){b.forceNativeDepthBarriers=std::getenv("NORTHLIGHT_TEST_DEPTH_FORCE_BARRIER")!=nullptr;}
+#endif
 #endif
     static void pressureBounds(const NorthlightAutoBump& b){if(b.memoryPressure){
 #ifdef NORTHLIGHT_TEST_MATERIAL_PRESSURE_POLICY
@@ -139,6 +143,15 @@ struct MaterialCaptureStateTestAccess {
     }
 };
 struct DisplacementStateTestAccess {
+    static float gain(const NorthlightAutoDisplacement& g){return g.controls[0][0];}
+    static void gain(NorthlightAutoDisplacement& g,float v){g.controls[0][0]=v;}
+    static void exhaustScan(NorthlightAutoDisplacement& g){g.poseVerticesThisFrame=8192;}
+    static void denyEnvelope(NorthlightAutoDisplacement& g){g.envelopeBudget.maxOperations=0;}
+    static void allowEnvelope(NorthlightAutoDisplacement& g){g.envelopeBudget.maxOperations=262144;}
+    static uint64_t fallbackVertices(const NorthlightAutoDisplacement& g){return g.poseFallbackVertices;}
+    static void fixedHeight(NorthlightAutoDisplacement& g,IDirect3DTexture9* texture){assert(g.current&&g.current->height);drop(g.current->height);g.current->height=texture;texture->AddRef();}
+    static unsigned long long gpuDraws(const NorthlightAutoDisplacement& g){return g.gpuDraws;}
+
     static void overlayDiagnostic(const NorthlightAutoDisplacement& g,IDirect3DVertexShader9* base,IDirect3DVertexShader9* effect){
         const auto& a=g.shaders.at(base);const auto& b=g.shaders.at(effect);
         std::printf("M2_OVERLAY_DIAGNOSTIC recorded=%zu baseKey=%zu effectKey=%zu influences=%u/%u\n",g.modelOverlays.size(),a.modelPosition.size(),b.modelPosition.size(),a.modelInfluences,b.modelInfluences);
@@ -492,6 +505,36 @@ int NORTHLIGHT_OBLIQUE_ENTRY(int argc,char** argv){
         const bool bufferedStrip=std::getenv("NORTHLIGHT_TEST_DEFERRED_STRIP")!=nullptr;
         if(bufferedStrip){geometry={{D3DPT_TRIANGLESTRIP,0,0,0,0,2,false}};ok(d->SetStreamSource(0,sourceVB,0,sizeof(V)));}
         auto native=[&]{return bufferedStrip?d->DrawPrimitive(D3DPT_TRIANGLESTRIP,0,2):indexed?d->DrawIndexedPrimitive(D3DPT_TRIANGLELIST,0,0,sourceVertices,0,sourcePrimitives):d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,floor,sizeof(V));};
+        if(model&&mode==5&&std::getenv("NORTHLIGHT_TEST_CAMERA_DISPLACEMENT")){
+            NorthlightAutoDisplacement probe(d);auto config=settings;config.autoModelDisplacementDistance=8;config.autoModelDisplacementStrength=300;probe.configure(config);probe.registerMaterial(vs,reinterpret_cast<const DWORD*>(vsBytes.data()),vsBytes.size()/4,4);
+            V fixed[8];for(unsigned i=0;i<8;++i){fixed[i]=floor[i%4];fixed[i].x=(i&1)?2.f:-2.f;fixed[i].y=(i&2)?.5f:-.5f;fixed[i].z=(i&4)?.2f:-.2f;fixed[i].nx=(i&1)?.57735027f:-.57735027f;fixed[i].ny=(i&2)?.57735027f:-.57735027f;fixed[i].nz=(i&4)?.57735027f:-.57735027f;fixed[i].u=.173f;fixed[i].v=.291f;}
+            const WORD faces[]={0,2,1,1,2,3,4,5,6,5,7,6,0,1,4,1,5,4,2,6,3,3,6,7,0,4,2,2,4,6,1,3,5,3,7,5};
+            NorthlightAutoDisplacement::Args fixedGeometry{{D3DPT_TRIANGLELIST,0,0,8,0,12,true},faces,D3DFMT_INDEX16,fixed,sizeof(V)};
+            auto fixedNative=[&]{return d->DrawIndexedPrimitiveUP(D3DPT_TRIANGLELIST,0,8,12,faces,D3DFMT_INDEX16,fixed,sizeof(V));};float reference=0;
+            const bool stress=std::getenv("NORTHLIGHT_TEST_CAMERA_STRESS")!=nullptr;const unsigned cameraFrames=stress?96:9;
+            for(unsigned frame=0;frame<cameraFrames;++frame){probe.endFrame();DisplacementStateTestAccess::allowEnvelope(probe);const float yaw=stress?float(frame)*1.731f:float(int(frame%3)-1)*.2617993878f,cy=std::cos(yaw),sy=std::sin(yaw);float inverse[]={cy,0,-sy,0,0,1,0,0,sy,0,cy,0};probe.setDistanceView(inverse);
+                const bool bodyBudget=std::getenv("NORTHLIGHT_TEST_BODY_BUDGET")!=nullptr;
+                float palette[12][4];for(unsigned bone=0;bone<4;++bone){const float shift=bodyBudget?(float(bone)-1.5f)*.7f:0;const float rows[]={cy,0,-sy,6.3f*sy+shift*cy,0,1,0,0,sy,0,cy,-6.3f*cy+shift*sy};std::memcpy(palette+3*bone,rows,sizeof rows);}ok(d->SetVertexShaderConstantF(31,palette[0],12));
+                bool ready=false;for(unsigned attempt=0;attempt<30&&!ready;++attempt){ready=probe.prepare(vs,4,7,fixedGeometry);if(!ready){probe.endFrame();probe.setDistanceView(inverse);}}assert(ready);
+                const float frameGain=DisplacementStateTestAccess::gain(probe);if(frame==0)reference=frameGain;std::printf("CAMERA_GAIN frame=%u gain=%.9f reference=%.9f\n",frame,DisplacementStateTestAccess::gain(probe),reference);assert(std::fabs(DisplacementStateTestAccess::gain(probe)-reference)<.00001f);
+                if(bodyBudget){
+                    const auto vertices=DisplacementStateTestAccess::fallbackVertices(probe);const float fullGain=DisplacementStateTestAccess::gain(probe);
+                    DisplacementStateTestAccess::denyEnvelope(probe);assert(probe.prepare(vs,4,7,fixedGeometry));
+                    const float deniedGain=DisplacementStateTestAccess::gain(probe);
+                    const auto scanned=DisplacementStateTestAccess::fallbackVertices(probe)-vertices;
+                    DisplacementStateTestAccess::exhaustScan(probe);const bool exhaustedReady=probe.prepare(vs,4,7,fixedGeometry);
+                    std::printf("BODY_BUDGET_FRAME frame=%u normalGain=%.9f fallbackGain=%.9f scanVertices=%llu exhaustedReady=%u\n",frame,fullGain,deniedGain,(unsigned long long)scanned,unsigned(exhaustedReady));
+                    if(!std::getenv("NORTHLIGHT_TEST_BODY_CONTROL"))assert(deniedGain==fullGain&&!scanned&&exhaustedReady);
+                    if(!exhaustedReady){probe.endFrame();DisplacementStateTestAccess::allowEnvelope(probe);probe.setDistanceView(inverse);assert(probe.prepare(vs,4,7,fixedGeometry));DisplacementStateTestAccess::gain(probe,0);}
+                    else DisplacementStateTestAccess::gain(probe,deniedGain);
+                }else{DisplacementStateTestAccess::exhaustScan(probe);assert(probe.prepare(vs,4,7,fixedGeometry));}
+                const float actual=DisplacementStateTestAccess::gain(probe);assert(std::getenv("NORTHLIGHT_TEST_BODY_CONTROL")||(actual>.15f&&actual<.36f));DisplacementStateTestAccess::fixedHeight(probe,white);
+                for(unsigned oracle=0;oracle<3;++oracle){DisplacementStateTestAccess::gain(probe,oracle==2?0:oracle?(bodyBudget?frameGain:reference):actual);ok(d->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0xff18212d,1,0));ok(probe.draw(fixedNative));ok(d->EndScene());save(d,baseSurface,folder+"camera-"+std::to_string(frame)+"-"+std::to_string(oracle)+".fgr");ok(d->BeginScene());}
+            }
+            assert(DisplacementStateTestAccess::gpuDraws(probe)==cameraFrames*3);probe.reset();ok(d->SetVertexShaderConstantF(0,bank[0],43));ok(d->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0xff18212d,1,0));
+            std::puts("DISPLACEMENT_CAMERA_FACTORY_PASS current_camera fixed_world scan_budget_exhausted reset");
+            if(std::getenv("NORTHLIGHT_TEST_BODY_BUDGET")){ok(d->EndScene());return 0;}
+        }
         const float preserved[16]={.13f,.24f,.35f,.46f,.57f,.68f,.79f,.81f,.92f,.12f,.23f,.34f,.45f,.56f,.67f,.78f};ok(d->SetVertexShaderConstantF(252,preserved,4));
         float allConstants[256*4];ok(d->GetVertexShaderConstantF(0,allConstants,256));
 #ifdef NORTHLIGHT_MATERIAL_MIRROR
@@ -517,7 +560,11 @@ int NORTHLIGHT_OBLIQUE_ENTRY(int argc,char** argv){
                 probe.registerMaterial(glow,(DWORD*)glowBytes.data(),glowBytes.size()/4,4);probe.beginDraw();assert(probe.prepare(vs,4,7,geometry));
                 ok(d->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0xff18212d,1,0));ok(probe.draw(native,true));
                 ok(d->SetRenderState(D3DRS_ZWRITEENABLE,FALSE));ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE));ok(d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_SRCALPHA));ok(d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_ONE));
-                ok(d->SetVertexShader(glow));probe.beginDraw();const bool overlayPrepared=probe.prepareModelOverlay(glow,geometry);if(!overlayPrepared)DisplacementStateTestAccess::overlayDiagnostic(probe,vs,glow);assert(overlayPrepared);
+                ok(d->SetVertexShader(glow));probe.beginDraw();
+                auto unrelatedDraw=geometry;unrelatedDraw.draw.start+=3;reads.calls=reads.registers=0;
+                assert(!probe.prepareModelOverlay(glow,unrelatedDraw)&&!reads.calls&&!reads.registers);
+                std::puts("M2_OVERLAY_PREFLIGHT_PASS unrelated_draw_zero_constant_reads");
+                const bool overlayPrepared=probe.prepareModelOverlay(glow,geometry);if(!overlayPrepared)DisplacementStateTestAccess::overlayDiagnostic(probe,vs,glow);assert(overlayPrepared);
                 IDirect3DQuery9* query=nullptr;ok(d->CreateQuery(D3DQUERYTYPE_OCCLUSION,&query));ok(d->SetRenderState(D3DRS_ZFUNC,D3DCMP_EQUAL));
                 auto visible=[&](bool synchronized){ok(query->Issue(D3DISSUE_BEGIN));ok(synchronized?probe.draw(native,true):native());ok(query->Issue(D3DISSUE_END));DWORD count=0;HRESULT hr=S_FALSE;for(unsigned i=0;i<5000&&hr==S_FALSE;++i){hr=query->GetData(&count,sizeof count,D3DGETDATA_FLUSH);if(hr==S_FALSE)Sleep(1);}ok(hr);return count;};
                 const auto originalPixels=visible(false),synchronizedPixels=visible(true);assert(synchronizedPixels>originalPixels&&synchronizedPixels>0);drop(query);ok(d->SetRenderState(D3DRS_ZFUNC,D3DCMP_LESSEQUAL));
@@ -610,6 +657,13 @@ int NORTHLIGHT_OBLIQUE_ENTRY(int argc,char** argv){
             ok(d->CreatePixelShader(reinterpret_cast<DWORD*>(debug.data()),&hitMask));
         }
         ok(bump.nativeDraw([&]{if(hitMask){assert(MaterialCaptureStateTestAccess::usingShared(bump));ok(d->SetPixelShader(hitMask));}
+            if(std::getenv("NORTHLIGHT_TEST_NATIVE_MATERIAL_SHADERS")){
+                auto inspect=[&](auto submit,IDirect3DVertexShader9* source=nullptr){IDirect3DVertexShader9* v=nullptr;IDirect3DPixelShader9* p=nullptr;ok(d->GetVertexShader(&v));ok(d->GetPixelShader(&p));UINT vb=0,pb=0;ok(v->GetFunction(nullptr,&vb));ok(p->GetFunction(nullptr,&pb));std::vector<uint32_t> vw(vb/4),pw(pb/4),out;ok(v->GetFunction(vw.data(),&vb));ok(p->GetFunction(pw.data(),&pb));
+                    NorthlightNativeLocalPatch::VertexInfo vi;NorthlightNativeLocalPatch::PixelInfo pi;unsigned slot=0;const auto count=NorthlightEquipmentLightProof::analyze(vw.data(),vw.size());const bool vp=NorthlightNativeLocalPatch::vertex(vw.data(),vw.size(),&slot,1,out,vi),pp=vp&&NorthlightNativeLocalPatch::pixel(pw.data(),pw.size(),vi,reinterpret_cast<const uint32_t*>(kNativeLocalLighting1Shader),sizeof(kNativeLocalLighting1Shader)/4,out,pi);
+                    std::printf("NATIVE_MATERIAL_SHADER mode=%u privateVS=%u count=%u vertex=%u pixel=%u\n",mode,unsigned(v!=vs),count,unsigned(vp),unsigned(pp));
+                    for(unsigned i=0;i<2;++i){std::ofstream f(folder+"native-bound-"+std::to_string(mode)+(i?"-ps.bin":"-vs.bin"),std::ios::binary);const auto& words=i?pw:vw;f.write(reinterpret_cast<const char*>(words.data()),words.size()*4);}drop(v);drop(p);return submit();};
+                return bump.geometryDraw([&]{return inspect(native);},true,inspect);
+            }
             if(!std::getenv("NORTHLIGHT_TEST_NATIVE_SLOT_BOUNDARY"))return bump.geometryDraw(native,true);
             const bool shared=MaterialCaptureStateTestAccess::usingShared(bump),prepared=bump.geometryPrepared();unsigned rawCalls=0,privateVS=0;
             const HRESULT hr=bump.geometryDraw([&]{++rawCalls;IDirect3DVertexShader9* bound=nullptr;ok(d->GetVertexShader(&bound));privateVS+=bound!=vs;drop(bound);return native();},true);
@@ -661,6 +715,9 @@ int NORTHLIGHT_OBLIQUE_ENTRY(int argc,char** argv){
                     ok(sourceVB->Lock(0,UINT(bytes.size()),&upload,0));std::memcpy(upload,bytes.data(),bytes.size());ok(sourceVB->Unlock());
                     ok(sourceIB->Lock(0,UINT(rewriteIndices.size()),&upload,0));std::memcpy(upload,rewriteIndices.data(),rewriteIndices.size());ok(sourceIB->Unlock());++mutationRevision;};
             const unsigned depthCase=std::getenv("NORTHLIGHT_TEST_SINGLE_DEPTH_CASE")?unsigned(std::atoi(std::getenv("NORTHLIGHT_TEST_SINGLE_DEPTH_CASE"))):0;
+#ifdef NORTHLIGHT_MATERIAL_DEPTH_TEST
+            MaterialCaptureStateTestAccess::forceDepthBarriers(bump);
+#endif
             const auto render=[&]{bump.endFrame();ok(d->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0xff18212d,1,0));
                 if(depthCase){
                     assert(!samples&&model&&indexed);
@@ -671,6 +728,12 @@ int NORTHLIGHT_OBLIQUE_ENTRY(int argc,char** argv){
                 if(identicalRewrite&&!drawRewrite)rewriteBuffers();
                 if(batched){for(unsigned i=0;i<draws;++i){bump.beginDraw();ok(bump.nativeDraw(native));}for(unsigned i=0;i<draws;++i){bump.beginDraw();bump.capture(vs,native,!indexed,&geometry);}}
                 else for(unsigned i=0;i<draws;++i){
+                    if(i&&(depthCase==8||depthCase==9)){
+                        bump.beginDraw();
+                        ok(d->SetRenderState(depthCase==8?D3DRS_ZWRITEENABLE:D3DRS_ZENABLE,FALSE));
+                        ok(bump.nativeDraw(native));
+                        ok(d->SetRenderState(D3DRS_ZENABLE,D3DZB_TRUE));ok(d->SetRenderState(D3DRS_ZWRITEENABLE,TRUE));
+                    }
                     if(depthCase&&i==draws/2){
                         if(depthCase==5){bump.beforeDepthChange();ok(d->Clear(0,nullptr,D3DCLEAR_ZBUFFER,0,.5f,0));}
                         if(depthCase==6){bump.beginDraw();ok(bump.nativeDraw(native));}

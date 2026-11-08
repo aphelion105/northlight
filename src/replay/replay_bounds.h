@@ -2,12 +2,15 @@
 #include "actor_deformation.h"
 #include "replay_bounds_budget.h"
 #include "replay_memo_policy.h"
+#include "position_bounds_scan.h"
 #include <limits>
 #include <memory>
 #include <chrono>
 #include <unordered_map>
 #include <optional>
 #include <string>
+#include <type_traits>
+#include <utility>
 
 // All submitted snapshot vertices, after the audited original deformation.
 // This helper never samples one vertex to infer a model/actor bounding box.
@@ -110,7 +113,7 @@ inline bool evaluate(const NorthlightActorDeformation::Program& p,const Northlig
 }
 // Same interval arithmetic as the audited single-bone MUL/MOVA/DP4 program,
 // without decoding its six instructions for each warm bounds group.
-inline bool singleSkinIntervals(const NorthlightActorDeformation::Program& p,const Vector inputs[16],const float* constants,Vector& position,bool definitionsApplied=true){
+inline bool singleSkinIntervals(const NorthlightActorDeformation::Program& p,const Vector inputs[2],const float* constants,Vector& position,bool definitionsApplied=true){
     if(!p.kernel.valid||p.kernel.ops.size()!=p.operations.size()||!p.kernel.singleSkin())return false;
     const auto control=definitionsApplied?NorthlightActorDeformation::Four{constants[0],constants[1],constants[2],constants[3]}:NorthlightActorDeformation::singleSkinControl(p,constants);
     if(control[0]!=3||control[1]!=1)return false;
@@ -241,6 +244,10 @@ public:
     std::uint64_t phaseNanoseconds(unsigned phase)const{return envelopes_.phaseNanoseconds(phase);}
     std::uint64_t phaseLimit(unsigned phase)const{return envelopes_.phaseLimit(phase);}
     void continuePendingBuild(Budget& budget){envelopes_.continuePendingBuild(budget);}
+    void continuePendingAfterReady(Budget& budget){envelopes_.continuePendingAfterReady(budget);}
+    void terminalCheap(){envelopes_.terminalCheap();}
+    template<class Work> bool terminalBuild(Budget& budget,Work work){return envelopes_.terminalBuild(budget,work);}
+    void closeTerminalWork(){envelopes_.closeTerminalWork();}
     bool hasPendingBuild()const{return envelopes_.hasPendingBuild();}
     size_t pendingBuildVertices()const{return envelopes_.pendingBuildVertices();}
     size_t pendingBuildIndices()const{return envelopes_.pendingBuildIndices();}

@@ -38,7 +38,17 @@ inline bool texelFinite(const Texel& t){
     return std::isfinite(t.ground)&&std::isfinite(t.day)&&std::isfinite(t.nightExtra)&&std::isfinite(t.height);
 #endif
 }
-struct Field {float originX=0,originY=0;std::array<Texel,N*N> texels{};std::array<uint8_t,N*N> lush{}; /* 0.3.199 (fog clouds): 1 = outdoor forest/grass zone (lushZone), CPU only */unsigned groundCells=0,fogCells=0,airCells=0,indoorCells=0,citySurfaceCells=0;};
+struct Field {float originX=0,originY=0;std::array<Texel,N*N> texels{};std::array<uint8_t,N*N> lush{}; /* 0.3.199 (fog clouds): 1 = outdoor forest/grass zone (lushZone), CPU only */unsigned groundCells=0,fogCells=0,airCells=0,indoorCells=0,citySurfaceCells=0;std::array<float,N*N> directFloor{};Field(){directFloor.fill(1e20f);}};
+inline std::array<float,4> directFloorCorners(const Field& field,unsigned x,unsigned y){
+    std::array<float,4> corners{};float floor=-1e20f,ceiling=1e20f;
+    for(unsigned dy=0;dy<2;++dy)for(unsigned dx=0;dx<2;++dx){
+        unsigned i=std::min(y+dy,N-1)*N+std::min(x+dx,N-1);float f=field.directFloor[i];const auto& t=field.texels[i];
+        uint32_t bits;std::memcpy(&bits,&f,4);
+        if((bits&0x7f800000u)==0x7f800000u||!texelFinite(t)||f>=1e19f||t.height<=0)return {1e20f,1e20f,1e20f,1e20f};
+        corners[dy*2+dx]=f;floor=std::max(floor,f);ceiling=std::min(ceiling,t.ground);
+    }
+    return floor<ceiling-.25f?corners:std::array<float,4>{1e20f,1e20f,1e20f,1e20f};
+}
 // Bounds of regionalFogAt's clamped bilinear footprint. w: empty 0, bounded 1,
 // unknown -1. The reciprocal floor can pull sparse ground heights toward zero.
 inline std::array<float,4> heightBounds(const Field& field,unsigned x,unsigned y){
@@ -291,7 +301,7 @@ inline Field buildField(const NorthlightGI::WorldScene& scene,const Region& regi
                 const auto& va=scene.vertices[tri.v0];const auto& vb=scene.vertices[tri.v1];const auto& vc=scene.vertices[tri.v2];
                 if(!cityOpaqueAt(material,float(u*va.u+v*vb.u+w*vc.u),float(u*va.v+v*vb.v+w*vc.v)))continue;
             }
-            if(std::isfinite(z))ground[y*N+x]=std::max(ground[y*N+x],z);
+            if(std::isfinite(z)){ground[y*N+x]=std::max(ground[y*N+x],z);if(city[y*N+x])out.directFloor[y*N+x]=std::min(out.directFloor[y*N+x],z);}
         }
     }
     for(unsigned y=0;y<N;++y)for(unsigned x=0;x<N;++x){
@@ -311,6 +321,7 @@ inline Field buildField(const NorthlightGI::WorldScene& scene,const Region& regi
         float surface=ground[i],wet=hasWater?wetness(region,px,py,ground[i],surface):0;
         auto cell=policy(zone,surface,wet,basin,indoors);if(zoneScale&&*zoneScale&&!indoors&&cell.height>0)(*zoneScale)(zone,cell.day,cell.nightExtra); /* outdoor cells of a known zone only (finite ground is guaranteed above) */out.lush[i]=!indoors&&lushZone(zone);
         float edge=smooth(float(std::min({x,y,N-1-x,N-1-y}))/2.f);cell.day*=edge;cell.nightExtra*=edge;
+        if(!citySurface||cell.height<=0||out.directFloor[i]>=cell.ground-.25f)out.directFloor[i]=1e20f;
         out.texels[i]=cell;if(cell.day>0||cell.nightExtra>0)++out.fogCells;
         if(cell.height>0&&edge>0)++out.airCells;
     }

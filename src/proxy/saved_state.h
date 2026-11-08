@@ -74,9 +74,10 @@ struct SavedState {
     ~SavedState(){
         if(ok){
             d->SetDepthStencilSurface(nullptr);
-            for(int i=1;i<4;++i)d->SetRenderTarget(i,nullptr);
+            bool scrubbed[4]={};
+            for(int i=1;i<4;++i)scrubbed[i]=SUCCEEDED(d->SetRenderTarget(i,nullptr));
             d->SetRenderTarget(0,targets[0]);
-            for(int i=1;i<4;++i)d->SetRenderTarget(i,targets[i]);
+            for(int i=1;i<4;++i)if(targets[i]||!scrubbed[i])d->SetRenderTarget(i,targets[i]);
             d->SetDepthStencilSurface(depth);
             block->Apply();d->SetViewport(&viewport);
         }

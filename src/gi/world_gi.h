@@ -228,7 +228,7 @@ private:
     bool region_=false;size_t regionTriangles_=0;
     bool buildImpl(WorldScene&&,std::string&,bool,std::shared_ptr<const MaterialBank>,std::vector<uint32_t>,const AllocationAdmission& admit={});
     bool buildRegion(WorldScene&&,std::vector<PieceReference>&&,std::string&,const AllocationAdmission&,const std::shared_ptr<SceneMemoryBudget>&);
-    void buildSahTree();
+    void buildSahTree(const AllocationAdmission&);
     void shadeHit(RayHit&,Vec3 origin,Vec3 direction,uint32_t triangle,float u,float v,float distance)const;
     uint32_t makeRegionNode(uint32_t start,uint32_t count,uint32_t depth=0);
     struct Node { Vec3 low, high; uint32_t start = 0, count = 0, left = 0, right = 0; };
@@ -252,9 +252,11 @@ private:
     AdaptiveGeometryArray<Vec3> centers_; // build-time only
     uint32_t partition(uint32_t start, uint32_t count, Vec3& low, Vec3& high);
     struct BuildBox { Vec3 low, high, cl, ch; };
-    BuildBox bounds(uint32_t start, uint32_t count) const;
-    uint32_t sahSplit(uint32_t start, uint32_t count, const BuildBox& box, BuildBox (&child)[2]);
-    uint32_t makeSah(uint32_t start, uint32_t count, const BuildBox& box);
+    struct TriangleBox { Vec3 low, high; };
+    TriangleBox triangleBox(uint32_t index,const TriangleBox* cached)const;
+    BuildBox bounds(uint32_t start, uint32_t count,const TriangleBox* cached) const;
+    uint32_t sahSplit(uint32_t start, uint32_t count, const BuildBox& box, BuildBox (&child)[2],const TriangleBox* cached);
+    uint32_t makeSah(uint32_t start, uint32_t count, const BuildBox& box,const TriangleBox* cached);
     uint32_t makeNode(uint32_t start, uint32_t count);
     uint32_t makePair(uint32_t start, uint32_t count, Vec3& low, Vec3& high);
 };

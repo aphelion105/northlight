@@ -143,19 +143,29 @@ struct IdlePoint {
 struct IdleGap {
     IdlePoint first,last;
     std::uint64_t startNs=0,endNs=0,waitNs=0;unsigned segments=0,waitsSeen=0;
-    std::uint16_t before=0xffff,after=0xffff;bool interrupted=false;
+    std::uint16_t before=0xffff,after=0xffff;bool interrupted=false,imageSampled=false;
     IdleCpuSample cpuFirst,cpuLast;IdleImageSelection image;
     std::uint64_t wallNs()const{return endNs>=startNs?endNs-startNs:0;}
 };
-struct IdleReport {unsigned frames=0,gaps=0,count=0;std::array<IdleGap,4> worst{};};
+struct IdleFrame {
+    IdleGap largest;std::uint64_t waitNs=0,firstNs=0,lastNs=0,streamFrame=0;unsigned gaps=0,segments=0;
+};
+struct IdleReport {unsigned frames=0,gaps=0,count=0,slowFrames=0,frameCount=0;std::array<IdleGap,4> worst{};std::array<IdleFrame,4> worstFrames{};};
 class IdleGapProfile {
-    bool enabled_=false,open_=false;IdleGap current_;IdleReport window_;
+    bool enabled_=false,open_=false;IdleGap current_;IdleReport window_;IdleFrame frame_;unsigned shortSamples_=0;
 public:
     static constexpr std::uint64_t ThresholdNs=20000000;
     static constexpr unsigned WindowFrames=120;
-    void enable(bool on){if(enabled_==on)return;enabled_=on;open_=false;current_={};window_={};}
+    void enable(bool on){if(enabled_==on)return;enabled_=on;open_=false;current_={};window_={};frame_={};shortSamples_=0;}
     bool open()const{return enabled_&&open_;}
     std::uint64_t startNs()const{return current_.startNs;}
+    // Enrich at most four new subthreshold maxima per frame. A later unsampled
+    // maximum replaces the complete record, retaining unknown optional fields.
+    bool sampleShortMaximum(std::uint64_t end){
+        if(!open()||end<current_.endNs||end<current_.startNs||end-current_.startNs>=ThresholdNs||
+           end-current_.startNs<=frame_.largest.wallNs()||shortSamples_>=4)return false;
+        ++shortSamples_;return true;
+    }
     void wait(std::uint64_t start,std::uint64_t end,const IdlePoint& first,const IdlePoint& last,std::uint16_t before,const IdleCpuSample& cpu={}){
         if(!enabled_)return;
         if(end<start||(open_&&start<current_.endNs)){open_=false;current_={};return;}
@@ -163,13 +173,17 @@ public:
         current_.last=last;current_.endNs=end;current_.waitNs+=end-start;++current_.segments;
         current_.waitsSeen|=first.waits()|last.waits();
     }
-    void finish(std::uint64_t end,const IdlePoint& last,std::uint16_t after,bool interrupted=false,const IdleCpuSample& cpu={},const IdleImageSelection& image={}){
+    void finish(std::uint64_t end,const IdlePoint& last,std::uint16_t after,bool interrupted=false,const IdleCpuSample& cpu={},const IdleImageSelection& image={},bool imageSampled=false){
         if(!open())return;
         open_=false;
         if(end<current_.endNs)return;
         current_.last=last;current_.endNs=end;current_.after=after;current_.interrupted=interrupted;current_.waitsSeen|=last.waits();
+        current_.cpuLast=cpu;current_.image=image;current_.imageSampled=imageSampled;
+        if(frame_.gaps&&current_.startNs<frame_.lastNs)frame_={};
+        if(!frame_.gaps)frame_.firstNs=current_.startNs;
+        frame_.lastNs=end;frame_.waitNs+=current_.waitNs;frame_.segments+=current_.segments;++frame_.gaps;
+        if(current_.wallNs()>frame_.largest.wallNs())frame_.largest=current_;
         if(current_.wallNs()<ThresholdNs)return;
-        current_.cpuLast=cpu;current_.image=image;
         ++window_.gaps;
         if(window_.count<window_.worst.size())window_.worst[window_.count++]=current_;
         else{
@@ -177,7 +191,16 @@ public:
             if(current_.wallNs()>least->wallNs())*least=current_;
         }
     }
-    bool presented(){return enabled_&&++window_.frames>=WindowFrames;}
+    bool presented(std::uint64_t streamFrame=0){
+        if(!enabled_)return false;
+        if(frame_.waitNs>=ThresholdNs){
+            frame_.streamFrame=streamFrame;++window_.slowFrames;
+            if(window_.frameCount<window_.worstFrames.size())window_.worstFrames[window_.frameCount++]=frame_;
+            else {auto least=std::min_element(window_.worstFrames.begin(),window_.worstFrames.end(),[](const IdleFrame& a,const IdleFrame& b){return a.waitNs<b.waitNs;});
+                if(frame_.waitNs>least->waitNs)*least=frame_;}
+        }
+        frame_={};shortSamples_=0;return ++window_.frames>=WindowFrames;
+    }
     IdleReport take(){auto result=window_;window_={};return result;}
     static long long delta(std::uint64_t first,std::uint64_t last){
         return last>=first&&last-first<=std::uint64_t(std::numeric_limits<long long>::max())?static_cast<long long>(last-first):-1;

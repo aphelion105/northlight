@@ -67,6 +67,9 @@ OLD_DRAWS = r'''
 '''
 HERE=Path(__file__).resolve().parent
 renderer=fp.src('renderer.cpp').read_text()
+# HDR sky storage has separate exact native/GPU tests; these legacy hook
+# comparisons retain their non-HDR call shape.
+renderer=renderer.replace('},false,nativeSky,&skyCaptured);','});').replace('},draw,&nativeSky,&skyCaptured);}','},draw);}')
 # Normal-map capture has its own GPU suite; remove its call surface from this
 # legacy draw-gate model, just as particle/material replay is stubbed below.
 renderer=renderer.replace('NorthlightAutoDisplacement::CaptureSource normalSource;','').replace(',&normalSource);',');')
@@ -100,6 +103,7 @@ new_members='\n'.join([member(renderer,'template<class Work> bool extensionWork(
     renderer[renderer.index('    // 0.3.196 (task 12): one-entry per-draw vertex shader classification'):renderer.index('    std::unordered_map<IDirect3DPixelShader9*, uint64_t> psHashes;')],
     member(renderer,'void planTerrainShadowSwap('),member(renderer,'void dropTerrainShadowSwap('),member(renderer,'template<class Draw> HRESULT terrainShadowDraw('),
     (member(renderer,'template<class Draw> HRESULT materialNativeDraw(') if 'template<class Draw> HRESULT materialNativeDraw(' in renderer else ''),
+    member(renderer,'template<class Draw> HRESULT submitGameDraw('),
     gates_block,member(renderer,'bool blobFilterActive()const'),member(renderer,'NorthlightShadowBlobFilter::Result blobClaim(UINT count)'),
     member(renderer,'HRESULT STDMETHODCALLTYPE DrawPrimitive(D3DPRIMITIVETYPE t,UINT start,UINT count) override')])
 old_draws=[l for l in OLD_DRAWS.strip('\n').split('\n')]
@@ -307,7 +311,7 @@ struct GateCounts{unsigned blobCalls=0,blobTextures=0,blobClaimed=0;};
 namespace NorthlightParticleCapture{struct Prepared{};}
 namespace NorthlightAutoDisplacement{struct Args{struct{D3DPRIMITIVETYPE t;INT base;UINT min,vertices,start,count;bool indexed;}draw;};}
 struct ExtensionDevice{struct RawScope{explicit RawScope(MockExt&){}};};
-struct BumpMock{void beginDraw(){}void beforeNativeDraw(){}template<class... A> void capture(A&&...){}template<class Draw> HRESULT geometryDraw(Draw draw,bool){return draw();}template<class Draw> HRESULT nativeDraw(Draw draw,IDirect3DVertexShader9*,IDirect3DPixelShader9*){return draw();}};
+struct BumpMock{void beginDraw(){}void beforeNativeDraw(){}template<class... A> void capture(A&&...){}template<class Draw> HRESULT geometryDraw(Draw draw,bool){return draw();}template<class Draw,class Submit> HRESULT geometryDraw(Draw draw,bool,Submit){return draw();}template<class Draw> HRESULT nativeDraw(Draw draw,IDirect3DVertexShader9*,IDirect3DPixelShader9*){return draw();}};
 struct Base{
     virtual ~Base()=default;
     virtual HRESULT DrawPrimitive(D3DPRIMITIVETYPE,UINT,UINT)=0;
@@ -316,7 +320,8 @@ struct Base{
     MirrorStateMock mirrorState;
     BumpMock* autoBump=nullptr;struct{bool capsHalved()const{return false;}}memoryGuard;
     template<class Draw> HRESULT hdrDraw(Draw draw){return draw();}
-    bool effectCoverageNative=false;template<class Draw> HRESULT effectCoverageDraw(Draw draw){return draw();}template<class Draw> HRESULT aoActorNativeDraw(Draw draw){return draw();}
+    template<class Draw> HRESULT nativeLocalSubmit(Draw draw,bool=false,IDirect3DVertexShader9* =nullptr){return draw();}
+    bool effectCoverageNative=false;template<class Draw> HRESULT effectCoverageDraw(Draw draw,bool=false,bool=false,bool* =nullptr){return draw();}template<class Draw> HRESULT aoActorNativeDraw(Draw draw){return draw();}
     struct{bool active=false;}hdr;bool diagnostics()const{return true;}HRESULT hdrResumeWorld(){return D3D_OK;}bool hdrSkyAdmission(){return false;}template<class Draw> void hdrReplaySky(bool,bool,Draw){}
     template<class Draw> HRESULT projectedDraw(UINT,unsigned,Draw draw){return draw();}
     struct GpuScene{struct{bool currentFrame(unsigned)const{return true;}}native;void setFrame(unsigned){}};GpuScene* gpuScene=nullptr;

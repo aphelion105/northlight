@@ -130,6 +130,7 @@ inline Block blocked(const Draft& d,const Field& f,std::string& missing){
     if(f.file==Renderer&&f.key!="Backend"&&f.key!="ExperimentalHDR")
         if(const Field* hdr=d.field(Renderer,"Renderer","ExperimentalHDR"))if(d.effective(*hdr)=="0")return Block::NeedsHdr;
     if(f.file==Renderer&&f.key=="HDRMaxNits")if(const Field* mode=d.field(Renderer,f.section,"HDRPeakMode"))if(d.effective(*mode)=="Auto")return Block::NeedsManual;
+    if(f.file==Renderer&&f.key=="HDRWideBloom")if(const Field* bloom=d.field(Renderer,"Renderer","HDRBloomStrength"))if(std::strtof(d.effective(*bloom).c_str(),nullptr)<=0){missing=bloom->key;return Block::NeedsKey;}
     for(const auto& key:dependencies(f))if(const Field* parent=d.quality(key))if(d.effective(*parent)=="0"){missing=key;return Block::NeedsKey;}
     return Block::None;
 }

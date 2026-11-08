@@ -33,7 +33,7 @@ BASELINE_FILES=['src/water/auto_bump_renderer.h','src/water/auto_displacement_re
 
 def compile_fixture(width,height,name,override=None):
     exe=out/(name+'.exe')
-    subprocess.run([str(fp.zig()),'c++','-target','x86-windows-gnu','-O2','-UNDEBUG','-std=c++17','-Wno-microsoft-exception-spec','-DNORTHLIGHT_MATERIAL_MIRROR',f'-DNORTHLIGHT_OBLIQUE_WIDTH={width}',f'-DNORTHLIGHT_OBLIQUE_HEIGHT={height}',*(['-DNORTHLIGHT_TEST_CAPTURE_BASELINE','-I'+str(override)] if override else []),*fp.test_include_flags(),str(fp.TESTS/'auto_normal_oblique_gpu.cpp'),'-luser32','-luuid','-o',str(exe)],env=fp.zig_env(),check=True)
+    subprocess.run([str(fp.zig()),'c++','-target','x86-windows-gnu','-O2','-UNDEBUG','-std=c++17','-Wno-microsoft-exception-spec','-DNORTHLIGHT_MATERIAL_MIRROR',*(['-DNORTHLIGHT_MATERIAL_DEPTH_TEST'] if not override else []),f'-DNORTHLIGHT_OBLIQUE_WIDTH={width}',f'-DNORTHLIGHT_OBLIQUE_HEIGHT={height}',*(['-DNORTHLIGHT_TEST_CAPTURE_BASELINE','-I'+str(override)] if override else []),*fp.test_include_flags(),str(fp.TESTS/'auto_normal_oblique_gpu.cpp'),'-luser32','-luuid','-o',str(exe)],env=fp.zig_env(),check=True)
     data=bytearray(exe.read_bytes());at=struct.unpack_from('<I',data,0x3c)[0]+22
     struct.pack_into('<H',data,at,struct.unpack_from('<H',data,at)[0]|0x20);exe.write_bytes(data)
     return exe
@@ -89,6 +89,16 @@ if not a.reuse_exe:
             runs=[run(exe,source,'single-depth-'+str(case),on,0,MATERIAL_BATCH_TIMING=1,MATERIAL_BATCH_VALIDATE=1,DEFERRED_RESIDENT=1,SINGLE_DEPTH_CASE=case) for on in [0,1]]
             assert 'MATERIAL_SINGLE_SAMPLE queued='+str(16 if case==7 else 32) in runs[1][1]
             records.append(dict(single_depth_case=case,outputs=compare([r[0] for r in runs],'batch-*.fgr'),bit_exact=True))
+        for case in [8,9]:
+            flags=dict(MATERIAL_BATCH_TIMING=1,MATERIAL_BATCH_VALIDATE=1,DEFERRED_RESIDENT=1,SINGLE_DEPTH_CASE=case)
+            immediate=run(exe,source,'single-readonly-immediate-'+str(case),0,0,**flags)
+            legacy=run(exe,source,'single-readonly-legacy-'+str(case),1,0,DEPTH_FORCE_BARRIER=1,**flags)
+            optimized=run(exe,source,'single-readonly-optimized-'+str(case),1,0,**flags)
+            assert 'MATERIAL_SINGLE_SAMPLE queued=32 seeds=32 barriers=31 readOnlySkips=0' in legacy[1],legacy[1]
+            assert 'MATERIAL_SINGLE_SAMPLE queued=32 seeds=1 barriers=0 readOnlySkips=31' in optimized[1],optimized[1]
+            count=compare([immediate[0],optimized[0]],'batch-*.fgr')
+            assert compare([legacy[0],optimized[0]],'batch-*.fgr')==count
+            records.append(dict(single_readonly_depth_case=case,outputs=count,legacy_seeds=32,optimized_seeds=1,barriers_removed=31,bit_exact=True))
         runs=[run(exe,source,'single-geometry-mode',on,0,MATERIAL_BATCH_TIMING=1,MATERIAL_BATCH_VALIDATE=1,DEFERRED_RESIDENT=1,SINGLE_GEOMETRY_MODE=1,MATERIAL_DEPTH=12) for on in [0,1]]
         assert 'MATERIAL_SINGLE_SAMPLE queued=32' in runs[1][1]
         records.append(dict(single_geometry_mode=True,outputs=compare([r[0] for r in runs],'batch-*.fgr'),bit_exact=True))

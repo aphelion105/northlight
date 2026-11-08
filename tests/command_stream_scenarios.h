@@ -791,13 +791,13 @@ static void eventQueryBatch(){
     CHECK(hr==S_FALSE&&calls==5);    // time bound precedes the iteration bound
     // waitEventQuery: the held pumped trip polls at 20, 40, then 50 us and stops at completion or the budget.
     unsigned yields=0;std::vector<std::uint64_t> at;std::uint64_t clock=0;
-    hr=waitEventQuery([&]()->HRESULT{at.push_back(clock);return at.size()==5?D3D_OK:S_FALSE;},[&]{clock+=5000;return clock;},[&]{++yields;},calls);
+    hr=waitEventQuery([&]()->HRESULT{at.push_back(clock);return at.size()==5?D3D_OK:S_FALSE;},[&]{clock+=5000;return clock;},[&](std::uint64_t left,std::uint64_t elapsed){CHECK(left&&left<=50000&&elapsed<2000000);++yields;},calls);
     CHECK(hr==D3D_OK&&calls==5&&yields>0&&at[1]-at[0]>=20000&&at[2]-at[1]>=40000&&at[3]-at[2]>=50000&&at[4]-at[3]>=50000);
-    clock=0;hr=waitEventQuery([]{return S_FALSE;},[&]{clock+=5000;return clock;},[]{},calls);
+    clock=0;hr=waitEventQuery([]{return S_FALSE;},[&]{clock+=5000;return clock;},[](std::uint64_t,std::uint64_t){},calls);
     CHECK(hr==S_FALSE&&calls>=35&&calls<=45&&clock>=2000000&&clock<2020000);   // the same 2 ms budget, bounded driver polls
-    hr=waitEventQuery([]{return D3DERR_DEVICELOST;},[]()->std::uint64_t{return 0;},[]{},calls);
+    hr=waitEventQuery([]{return D3DERR_DEVICELOST;},[]()->std::uint64_t{return 0;},[](std::uint64_t,std::uint64_t){},calls);
     CHECK(hr==D3DERR_DEVICELOST&&calls==1);
-    hr=waitEventQuery([]{return S_FALSE;},[]()->std::uint64_t{return 0;},[]{},calls);
+    hr=waitEventQuery([]{return S_FALSE;},[]()->std::uint64_t{return 0;},[](std::uint64_t,std::uint64_t){},calls);
     CHECK(hr==S_FALSE&&calls==1);   // a stalled clock ends on the check limit, without a driver-poll storm
 
     gTrace.clear();gKnobs.holdQueries.store(true);gKnobs.eventPendingFlush.store(7);Rig rig(true);auto& s=rig.core().q.stats;
@@ -877,7 +877,12 @@ static void occlusionFlushLocal(bool on){
     CHECK(!rig.core().queryFrame[9].calls&&rig.core().queryWait[9].calls==profile.calls);
     rig.core().queryFrame[9]=profile;rig.core().frameNo=128;
     rig.core().reportQueryFrame([&](const char* text){lines.emplace_back(text);});
-    CHECK(lines.size()==(profile.maxTripNs>=20000000?2u:1u)&&!rig.core().queryFrame[9].calls);rig.core().frameNo=frameNo;
+    CHECK(lines.size()==(profile.tripNs>=20000000?2u:1u)&&!rig.core().queryFrame[9].calls);
+    auto& repeated=rig.core().queryFrame[8];repeated.calls=8;repeated.tripNs=128000000;repeated.maxTripNs=16000000;
+    const auto reported=lines.size();rig.core().reportQueryFrame([&](const char* text){lines.emplace_back(text);});
+    CHECK(lines.size()==reported+1&&lines.back().find("type=8 calls=8")!=std::string::npos&&
+          lines.back().find("tripMs=128.0000")!=std::string::npos&&!rig.core().queryFrame[8].calls);
+    rig.core().frameNo=frameNo;
     rig.core().reportQueryWait(nullptr);CHECK(rig.core().queryWait[8].calls==0&&rig.core().queryWait[9].calls==0);
     rig.core().timing=false;CHECK(eq->GetData(&d,4,D3::kGetDataFlush)==D3D_OK&&rig.core().queryWait[8].calls==0);
     eq->Release();oq->Release();rig.finish();checkClean();

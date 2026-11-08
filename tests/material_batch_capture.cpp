@@ -8,6 +8,16 @@ struct BatchDevice:PacketDevice {
  int fail=-1;bool failConstant=false,failSampler=false;unsigned reads=0;HRESULT STDMETHODCALLTYPE GetSamplerState(DWORD stage,D3DSAMPLERSTATETYPE key,DWORD* out)override{if(failSampler&&key==D3DSAMP_MINFILTER)return E_FAIL;*out=state.samplers[stage*14+unsigned(key)];return D3D_OK;}HRESULT STDMETHODCALLTYPE GetVertexShaderConstantF(UINT first,float* out,UINT count)override{if(failConstant)return E_FAIL;return PacketDevice::GetVertexShaderConstantF(first,out,count);} HRESULT STDMETHODCALLTYPE GetRenderState(D3DRENDERSTATETYPE key,DWORD* out)override{++reads;if(int(key)==fail)return E_FAIL;return PacketDevice::GetRenderState(key,out);}};
 static int runMode=-1,runScenario=0;
 void MaterialCaptureStateTestAccess::batchCapture(){
+ if(runMode<0)for(unsigned mode=0;mode<2;++mode){
+  BatchDevice d;DeviceMirror mirror;ExtensionDevice ext(&d,&mirror);NorthlightAutoBump b(&ext);
+  if(mode)b.setRasterStateSource(static_cast<IDirect3DDevice9*>(&ext),[](void* c,const D3DRENDERSTATETYPE* keys,unsigned n,DWORD* out){return static_cast<ExtensionDevice*>(static_cast<IDirect3DDevice9*>(c))->knownRenderStates(keys,n,out);});
+  for(DWORD depth=0;depth<=2;++depth)for(DWORD write=0;write<=1;++write){
+   assert(SUCCEEDED(ext.SetRenderState(D3DRS_ZENABLE,depth))&&SUCCEEDED(ext.SetRenderState(D3DRS_ZWRITEENABLE,write)));
+   assert(b.nativeMayWriteDepth()==bool(depth&&write));
+  }
+  for(auto key:{D3DRS_ZENABLE,D3DRS_ZWRITEENABLE}){mirror.renderStateKnown[key]=false;d.fail=int(key);assert(b.nativeMayWriteDepth());d.fail=-1;}
+  printf("MATERIAL_DEPTH_WRITER_PASS mirror=%u read_failure_conservative=1\n",mode);
+ }
  for(unsigned mode=0;mode<2;++mode)for(unsigned scenario=0;scenario<11;++scenario){if(runMode>=0&&(int(mode)!=runMode||int(scenario)!=runScenario))continue;BatchDevice d;DeviceMirror mirror;ExtensionDevice ext(&d,&mirror);BatchDevice otherDevice;DeviceMirror otherMirror;ExtensionDevice other(&otherDevice,&otherMirror);NorthlightAutoBump b(&ext);b.profileTag=19;if(scenario==6)mirror.gate.exclusive.store(true);b.setTextureWriteGuard(true);if(mode)b.setRasterStateSource(static_cast<IDirect3DDevice9*>(scenario==10?&other:&ext),[](void* c,const D3DRENDERSTATETYPE* keys,unsigned n,DWORD* out){return static_cast<ExtensionDevice*>(static_cast<IDirect3DDevice9*>(c))->knownRenderStates(keys,n,out);});
   if(mode)b.setSamplerStateSource(static_cast<IDirect3DDevice9*>(scenario==10?&other:&ext),[](void* c,DWORD stage,unsigned mask,DWORD* out){return static_cast<ExtensionDevice*>(static_cast<IDirect3DDevice9*>(c))->knownSamplerStates(stage,mask,out);});
   if(scenario==10)assert(!b.rasterReader&&!b.samplerReader);

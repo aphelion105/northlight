@@ -24,6 +24,11 @@ args = parser.parse_args()
 args.checks_only = args.checks_only or len(sys.argv) == 1
 args.output.mkdir(parents=True, exist_ok=True)
 source = fp.src('command_queue.h').read_text()
+# This historical comparison isolates the 64-command wake policy.
+# test_sparse_publish exercises the current partial-publication path.
+partial_branch = '        else if(sleeping_.load()){\n            if(idleTracking_){own(diagnosticPartialBatches_);own(diagnosticPartialCommands_,sinceCmds_);}\n            publishLazy(); // A sleeping replay needs the ready prefix, not a full batch.\n        }\n'
+assert source.count(partial_branch)==1
+source = source.replace(partial_branch, '')
 old = 'if(lazyCmds_<kLazyWakeCommands&&lazyBytes_<kLazyWakeBytes)'
 new = 'if(lazyCmds_<kLazyWakeCommands&&lazyBytes_<kLazyWakeBytes&&!sleeping_.load())'
 assert source.count(old) + source.count(new) == 1

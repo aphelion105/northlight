@@ -90,8 +90,11 @@ struct Graph {
         for(const auto& state:NorthlightNameStencil::kComposite)ok(d->SetRenderState(D3DRENDERSTATETYPE(state.state),state.value));
     }
     // mode 0: SDR composition; 1: previous full FP16 decode; 2: optimized HDR.
-    void frame(unsigned mode,bool oracle=false){
+    void frame(unsigned mode,bool oracle=false,bool storedSky=false){
         const bool useHdr=mode!=0,inlineBase=mode==2&&eligible;
+        const bool skyInFrame=useHdr&&c.sky&&storedSky&&c.samples==0;
+        if(skyInFrame)ok(hdr.ensure(d,c.w,c.h));
+        auto* skyTarget=skyInFrame?hdr.surface():sky.surface;
         ok(d->BeginScene());quad(native.surface,copy,source);ok(NorthlightHdr::drawQuad(d,c.w,c.h));
         if(c.mask){
             ok(d->SetDepthStencilSurface(stencil));ok(d->Clear(0,nullptr,D3DCLEAR_ZBUFFER|D3DCLEAR_STENCIL,0,1,0));
@@ -101,12 +104,12 @@ struct Graph {
         }
         ok(d->SetTexture(0,nullptr));ok(d->StretchRect(native.surface,nullptr,legacy.surface,nullptr,D3DTEXF_NONE));
         if(useHdr&&c.sky){
-            ok(color.convertWorld(d,native.surface,sky.surface,legacy.texture,legacy.surface,c.w,c.h,80,80,&pool));
-            quad(sky.surface,constant,nullptr);const float sun[]={6,4,2,1};ok(d->SetPixelShaderConstantF(0,sun,1));rectangle(12,40,48,48);
+            ok(color.convertWorld(d,native.surface,skyTarget,legacy.texture,legacy.surface,c.w,c.h,80,80,&pool));
+            quad(skyTarget,constant,nullptr);const float sun[]={6,4,2,1};ok(d->SetPixelShaderConstantF(0,sun,1));rectangle(12,40,48,48);
         }
         if(useHdr){
             const unsigned before=d->calls.draws;
-            ok(hdr.prepareLegacy(d,legacy.texture,depth,c.sky?sky.surface:nullptr,c.w,c.h,0,.94f,settings,&pool,!inlineBase));
+            ok(hdr.prepareLegacy(d,legacy.texture,depth,c.sky?skyTarget:nullptr,c.w,c.h,0,.94f,settings,&pool,!inlineBase));
             decodeDraws=d->calls.draws-before;
             if(c.mask)ok(hdr.copyBase(d,output.surface,&pool));
         }
@@ -167,6 +170,7 @@ static Timing timeGraph(IDirect3DDevice9* d,const std::function<void()>& submit,
     ok(first->GetData(&start,sizeof start,0));ok(frequency->GetData(&freq,sizeof freq,0));ok(disjoint->GetData(&bad,sizeof bad,0));assert(!bad&&freq&&end>start);
     first->Release();last->Release();frequency->Release();disjoint->Release();return {double(end-start)*1000/freq/count,double(b.QuadPart-a.QuadPart)*1000/hz.QuadPart/count};
 }
+#ifndef NORTHLIGHT_HDR_PIPELINE_LIBRARY
 int main(int argc,char** argv){
     assert(argc==2||argc==3);const std::string capture=argc==3?argv[2]:"";
     HWND window=CreateWindowExW(0,L"STATIC",L"",WS_OVERLAPPED,0,0,64,64,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);assert(window);
@@ -213,3 +217,4 @@ int main(int argc,char** argv){
     }
     raw->Release();api->Release();FreeLibrary(library);DestroyWindow(window);std::puts("HDR_PIPELINE_GPU_PASS");
 }
+#endif

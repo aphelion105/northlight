@@ -10,9 +10,41 @@
 #include <limits>
 #include <sstream>
 #include <cstdio>
+#include <cstring>
 using namespace NorthlightEquipmentLights;
 static std::array<float,16> identity(){std::array<float,16> m{};m[0]=m[5]=m[10]=m[15]=1;return m;}
+static void bankDecodeParity(){
+    auto matrix=identity();float camera[]={-8565,1011,95},bank[44]{};
+    for(unsigned i=0;i<3;++i)matrix[12+i]=camera[i];
+    for(unsigned slot=0;slot<4;++slot){bank[slot*4]=.2f+slot;bank[slot*4+1]=.4f;bank[slot*4+2]=.8f;
+        bank[4*(4+slot)]=float(slot);bank[4*(4+slot)+1]=-3;bank[4*(4+slot)+2]=4;
+        bank[32+slot]=1;bank[36+slot]=.2f;bank[40+slot]=.01f;}
+    const auto check=[&](unsigned count){
+        Native values[4],expected[4];std::memset(values,0xa5,sizeof values);std::memcpy(expected,values,sizeof values);
+        bool valid[4]={true,true,true,true};decodeBank(bank,count,matrix.data(),camera,values,valid);
+        for(unsigned slot=0;slot<4;++slot){const bool accepted=count<=4&&slot<count&&decode(bank,slot,matrix.data(),camera,expected[slot]);
+            assert(valid[slot]==accepted);assert(!std::memcmp(values+slot,expected+slot,sizeof(Native)));}
+    };
+    for(unsigned count=0;count<=5;++count)check(count);
+    // Mutate every input, including ignored W components and all finite/range
+    // boundaries. Rejected outputs retain their caller's bytes.
+    for(unsigned group=0;group<3;++group){float* input=group==0?bank:group==1?matrix.data():camera;
+        const unsigned size=group==0?44:group==1?16:3;
+        for(unsigned i=0;i<size;++i){const float saved=input[i];
+            for(float bad:{NAN,INFINITY,-INFINITY,-0.f,0.f,-1.f,16.f,10000.f,100000.f}){
+                input[i]=bad;for(unsigned count=1;count<=4;++count)check(count);}
+            input[i]=saved;
+        }
+    }
+    for(unsigned trial=0;trial<128;++trial){const float a=float(trial)*.017f,s=std::sin(a),c=std::cos(a);
+        matrix[0]=matrix[5]=c;matrix[1]=s;matrix[4]=-s;for(unsigned count=1;count<=4;++count)check(count);}
+    Native values[4];bool valid[4]={true,true,true,true};decodeBank(nullptr,4,matrix.data(),camera,values,valid);
+    for(bool v:valid)assert(!v);
+    decodeBank(bank,4,nullptr,camera,values,valid);for(bool v:valid)assert(!v);
+    decodeBank(bank,4,matrix.data(),nullptr,values,valid);for(bool v:valid)assert(!v);
+}
 int main(){
+    bankDecodeParity();
     float camera[3]={100,200,300},bank[44]={};auto inv=identity();inv[12]=100;inv[13]=200;inv[14]=300;
     bank[0]=.2f;bank[1]=.4f;bank[2]=.8f;bank[16]=2;bank[17]=-3;bank[18]=4;bank[32]=1;bank[36]=.2f;bank[40]=.01f;
     Native n;assert(decode(bank,0,inv.data(),camera,n));assert(n.position[0]==102&&n.position[1]==197&&n.position[2]==304);

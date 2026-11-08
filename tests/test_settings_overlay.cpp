@@ -195,6 +195,8 @@ static void draft(){
         field(D::ShadowRange,"Azeroth:12","terrain_radius","slider","","1000","1500"),
         field(D::Quality,"Quality","PointShadows","check","1,1,1","1"),
         field(D::Quality,"Quality","PointShadowDistance","slider","48,48,48","48"),
+        field(D::Renderer,"Renderer","HDRWideBloom","check","","0"),
+        field(D::Renderer,"Renderer","HDRBloomStrength","slider","","1"),
     };
     fields[4].high="2";fields[1].high="1";
     D::Draft d;d.bind(&fields);
@@ -224,6 +226,10 @@ static void draft(){
     std::string missing;
     CHECK(D::blocked(d,exposure,missing)==D::Block::NeedsHdr);
     d.set(hdr,"1");CHECK(D::blocked(d,exposure,missing)==D::Block::None);
+    const auto& wide=fields[14];const auto& bloom=fields[15];CHECK(D::blocked(d,wide,missing)==D::Block::None);
+    d.set(wide,"1");d.set(bloom,"0");CHECK(D::blocked(d,wide,missing)==D::Block::NeedsKey&&missing=="HDRBloomStrength");
+    d.set(hdr,"0");CHECK(D::blocked(d,wide,missing)==D::Block::NeedsHdr&&d.effective(wide)=="1");
+    d.set(hdr,"1");d.set(bloom,"1");CHECK(D::blocked(d,wide,missing)==D::Block::None);d.inherit(wide);
     CHECK(D::blocked(d,strength,missing)==D::Block::None);
     d.set(gi,"0");CHECK(D::blocked(d,strength,missing)==D::Block::NeedsKey&&missing=="GI");
     Field gone=strength;gone.available=false;CHECK(D::blocked(d,gone,missing)==D::Block::Unavailable);

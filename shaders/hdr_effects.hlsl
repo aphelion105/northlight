@@ -40,14 +40,17 @@ float4 fixedUiSource(float4 color,float2 uv){
     return float4(rgb,alpha);
 }
 float4 HdrFixedUi(float4 color:COLOR0,float2 uv:TEXCOORD0):COLOR0 {return HdrUi(fixedUiSource(color,uv));}
-float4 HdrFixedUi2(float4 color:COLOR0,float2 uv:TEXCOORD0,float2 uv1:TEXCOORD1):COLOR0 {
+float4 fixedUiSource2(float4 color,float2 uv,float2 uv1) {
     float4 source=fixedUiSource(color,uv);
     float4 other=1;
     if(HdrParams.x+HdrAdaptation.x>0)other=tex2D(HdrAux,lerp(uv,uv1,HdrParams.w));
     float3 rgb=lerp(1,other.rgb,HdrParams.x)*lerp(1,source.rgb,HdrParams.y)*lerp(1,color.rgb,HdrParams.z);
     float alpha=lerp(1,other.a,HdrAdaptation.x)*lerp(1,source.a,HdrAdaptation.y)*lerp(1,color.a,HdrAdaptation.z);
-    return HdrUi(float4(rgb,alpha));
+    return float4(rgb,alpha);
 }
+float4 HdrFixedUi2(float4 color:COLOR0,float2 uv:TEXCOORD0,float2 uv1:TEXCOORD1):COLOR0 {return HdrUi(fixedUiSource2(color,uv,uv1));}
+// The shared MRT patch retains this native UNORM source beside its HDR transfer.
+float4 HdrFixedSky2(float4 color:COLOR0,float2 uv:TEXCOORD0,float2 uv1:TEXCOORD1):COLOR0 {return saturate(fixedUiSource2(color,uv,uv1));}
 float4 HdrWorld(float2 uv:TEXCOORD0):COLOR0 {
     float4 original=tex2D(HdrScene,uv);
     float3 radiance=hdrDecode(original.rgb);
@@ -158,6 +161,42 @@ float4 HdrBloomVertical(float2 uv:TEXCOORD0):COLOR0 {
     return float4((tex2D(HdrScene,uv-outer).rgb*2+tex2D(HdrScene,uv-inner).rgb*6+
                    tex2D(HdrScene,uv+inner).rgb*6+tex2D(HdrScene,uv+outer).rgb*2)/16,1);
 }
+// Optional wide bloom: horizontal reduction keeps every source row and
+// extracts each source texel before filtering, so subpixel bright emitters
+// cannot fall below the threshold through pre-averaging. Both tents sum to 1.
+float4 HdrBloomWideHorizontal(float2 uv:TEXCOORD0):COLOR0 {
+    float3 sum=0;float norm=0;
+    float center=uv.x/HdrParams.x,origin=floor(center)+.5;
+    // Radius equals the actual reduction ratio, including odd dimensions.
+    // Neighbouring tents then partition the source instead of modulating a
+    // moving one-pixel emitter with the fixed sixteen-pixel grid.
+    [loop]for(int i=-16;i<=16;++i){
+        float weight=max(HdrParams.z-abs(origin+i-center),0);
+        sum+=hdrBright(max(tex2Dlod(HdrScene,float4((origin+i)*HdrParams.x,uv.y,0,0)).rgb,0))*weight;
+        norm+=weight;
+    }
+    return float4(sum/max(norm,.0001),1);
+}
+float4 HdrBloomWideVertical(float2 uv:TEXCOORD0):COLOR0 {
+    float3 sum=0;float norm=0;
+    float center=uv.y/HdrParams.y,origin=floor(center)+.5;
+    [loop]for(int i=-16;i<=16;++i){
+        float weight=max(HdrParams.w-abs(origin+i-center),0);
+        sum+=tex2Dlod(HdrScene,float4(uv.x,(origin+i)*HdrParams.y,0,0)).rgb*weight;
+        norm+=weight;
+    }
+    return float4(sum/max(norm,.0001),1);
+}
+float4 HdrBloomWideResolve(float2 uv:TEXCOORD0):COLOR0 {
+    // A rotated ring counteracts the reduction grid's fourfold footprint.
+    // Normalized linear samples retain energy/hue; scene emitters stay sharp.
+    float3 sum=tex2D(HdrScene,uv).rgb*.2;
+    [unroll]for(int y=-1;y<=1;y+=2)[unroll]for(int x=-1;x<=1;x+=2){
+        sum+=tex2D(HdrScene,uv+float2(x*1.25,y*.5)*HdrParams.xy).rgb*.1;
+        sum+=tex2D(HdrScene,uv+float2(x*.5,y*1.25)*HdrParams.xy).rgb*.1;
+    }
+    return float4(sum,1);
+}
 struct HdrPresentationOutput {float4 hdr:COLOR0;float4 legacy:COLOR1;};
 HdrPresentationOutput HdrWorldLinear(float2 uv:TEXCOORD0) {
     float4 source=tex2D(HdrScene,uv);float3 radiance=max(source.rgb,0);
@@ -192,4 +231,41 @@ float4 HdrLayer(float2 uv:TEXCOORD0):COLOR0 {
         if(HdrParams.x>.5)color*=alpha;
     }else clip(-1); // Premultiplied zero-alpha is exactly the blend identity.
     return float4(color,alpha);
+}
+
+// Adjacent tents share source texels. Extract each highlight once while
+// retaining both original sums and their order, without interpolating colors.
+struct HdrBloomPairOutput {float4 first:COLOR0;float4 second:COLOR1;};
+HdrBloomPairOutput HdrBloomWidePairHorizontal(float2 uv:TEXCOORD0,float2 pixel:VPOS) {
+    float2 center=(floor(pixel.x)*2+float2(.5,1.5))*HdrParams.z;
+    float origin=floor(center.x)+.5;
+    int shift=(int)(floor(center.y)-floor(center.x));
+    float3 first=0,second=0;float firstNorm=0,secondNorm=0;
+    [loop]for(int i=-16;i<=shift+16;++i){
+        float position=origin+i;
+        float2 weight=max(HdrParams.z-abs(position-center),0);
+        float3 bright=hdrBright(max(tex2Dlod(HdrScene,float4(position*HdrParams.x,uv.y,0,0)).rgb,0));
+        first+=bright*weight.x;second+=bright*weight.y;
+        firstNorm+=weight.x;secondNorm+=weight.y;
+    }
+    HdrBloomPairOutput result;
+    result.first=float4(first/max(firstNorm,.0001),1);
+    result.second=float4(second/max(secondNorm,.0001),1);
+    return result;
+}
+float4 hdrBloomPairVertical(sampler2D source,float2 uv) {
+    float3 sum=0;float norm=0;
+    float center=uv.y/HdrParams.y,origin=floor(center)+.5;
+    [loop]for(int i=-16;i<=16;++i){
+        float weight=max(HdrParams.w-abs(origin+i-center),0);
+        sum+=tex2Dlod(source,float4(uv.x,(origin+i)*HdrParams.y,0,0)).rgb*weight;
+        norm+=weight;
+    }
+    return float4(sum/max(norm,.0001),1);
+}
+float4 HdrBloomWidePairVertical(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {
+    float x=floor(pixel.x),column=floor(x*.5);
+    float2 sampleUV=float2((column+.5)/HdrParams.z,uv.y);
+    [branch]if(x-2*column>.5)return hdrBloomPairVertical(HdrAux,sampleUV);
+    return hdrBloomPairVertical(HdrScene,sampleUV);
 }

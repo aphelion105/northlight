@@ -42,10 +42,10 @@ inline Totals schedule(NorthlightReplayBounds::Cache& cache,std::vector<Item>& i
         auto& p=items[index];if(p.bounds.valid)return false;
         if(phase==1&&p.work.kind!=WorkKind::Heavy)return false;
         if(phase==2&&p.work.kind!=WorkKind::Cold)return false;
-        if(phase==0&&(p.work.kind==WorkKind::Heavy||p.work.kind==WorkKind::Cold||p.work.kind==WorkKind::Unsupported))return false;
+        if((phase==0||phase==3)&&(p.work.kind==WorkKind::Heavy||p.work.kind==WorkKind::Unsupported||(phase==0&&p.work.kind==WorkKind::Cold)))return false;
         if(!p.owner||!p.prepared){p.work.kind=WorkKind::Unsupported;return false;}
         const auto& prepared=*p.prepared;const auto& mesh=*p.owner;Status status;
-        if(phase==0){++t.cheapVisited;status=cache.calculateCheap(prepared,mesh,p.owner,p.constants,inverseView,cheapBudget,p.bounds,p.work);}
+        if(phase==0||phase==3){++t.cheapVisited;status=cache.calculateCheap(prepared,mesh,p.owner,p.constants,inverseView,cheapBudget,p.bounds,p.work);}
         else if(phase==1){++t.heavyVisited;status=cache.evaluateHeavy(prepared,mesh,p.owner,p.constants,inverseView,heavyBudget,p.bounds,p.work);}
         else{++t.buildVisited;status=cache.buildEnclosed(prepared,mesh,p.owner,p.constants,inverseView,buildBudget,p.bounds);}
         if(status==Status::Valid)++t.valid;
@@ -80,10 +80,18 @@ inline Totals schedule(NorthlightReplayBounds::Cache& cache,std::vector<Item>& i
     t.reservedCheapVisited=t.cheapVisited;
     cache.finishReservedTurnsAndLend();
     cheapBudget.maxOperations=262144-heavyBudget.operations-buildBudget.operations;
-    // Bonus turn keeps the first turn's cursor, as in the synchronous pass.
+    // Retry cold sources after construction: a completed cheap envelope can
+    // bound this frame's pose now, instead of replaying into every cube face.
+    // calculateCheap never builds a source or evaluates a heavy envelope;
+    // unfinished sources still draw, within the unchanged remaining budget.
+    // Keep the first turn's cursor, as in the synchronous pass.
     NorthlightReplaySchedule::pass(count,cache.readyStart(count),
-        [&](){return live()&&cache.canCheap()&&cheapBudget.operations<cheapBudget.maxOperations;},[&](size_t index){return visit(index,0);});
+        [&](){return live()&&cache.canCheap()&&cheapBudget.operations<cheapBudget.maxOperations;},[&](size_t index){return visit(index,3);});
     cache.settleClock();
+    const size_t evaluationOperations=cheapBudget.operations+heavyBudget.operations;
+    buildBudget.maxOperations=std::min(buildBudget.maxOperations,evaluationOperations>=262144?size_t(0):262144-evaluationOperations);
+    const auto cold=[&](size_t index){return !items[index].bounds.valid&&items[index].work.kind==WorkKind::Cold;};
+    if(t.buildVisited||cache.hasPendingBuild())NorthlightReplaySchedule::finishCold(count,cache.buildStart(count),cache,cheapBudget,heavyBudget,buildBudget,live,visit,cold);
     t.boundVertices=buildBudget.vertices;t.boundOperations=cheapBudget.operations+heavyBudget.operations+buildBudget.operations;
     return t;
 }

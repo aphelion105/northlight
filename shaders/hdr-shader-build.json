@@ -1,5 +1,5 @@
 {
-  "source_sha256": "b13c6d36dd519a328465c5582f002dc2912b881bc6c77f092e599f4965c9b4a5",
+  "source_sha256": "f9e62aa6ccb526a6f87ef4a2f8ec00ad776501594e1d45071fcb7ac2fbe8732c",
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
   "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
   "game_launched": false,
@@ -164,6 +164,28 @@
       "target": "ps_3_0",
       "sha256": "a72b512067bb599e57211a3f707c6942d90beb50374762bb6c3ce3a70a974322",
       "bytes": 1408
+    },
+    "HdrFixedSky2": {
+      "static_instruction_slots": 43,
+      "temporary_registers": 4,
+      "samplers": [
+        0,
+        1
+      ],
+      "instructions": {
+        "add": 16,
+        "if": 1,
+        "mul": 15,
+        "texldl": 1,
+        "else": 1,
+        "mov": 3,
+        "endif": 1,
+        "texld": 1,
+        "cmp": 1
+      },
+      "target": "ps_3_0",
+      "sha256": "9d1edba68ad34ca90e6caebdf9832b5b07d8bbd094bac782c31bfc208717a724",
+      "bytes": 980
     },
     "HdrMeter": {
       "static_instruction_slots": 30,
@@ -375,6 +397,115 @@
       "target": "ps_3_0",
       "sha256": "63684eca83cbebb762391e3b84b83c61d29615796c5d04c911c3f52172dd0926",
       "bytes": 572
+    },
+    "HdrBloomWideHorizontal": {
+      "static_instruction_slots": 38,
+      "temporary_registers": 5,
+      "samplers": [
+        0
+      ],
+      "instructions": {
+        "rcp": 3,
+        "mul": 6,
+        "frc": 1,
+        "add": 11,
+        "mov": 4,
+        "rep": 1,
+        "texldl": 1,
+        "max": 4,
+        "cmp": 2,
+        "endrep": 1
+      },
+      "target": "ps_3_0",
+      "sha256": "4aff28a6e96e3749d99f961a3de006d2116ae2e240b95a3d0acba3f0259aa234",
+      "bytes": 784
+    },
+    "HdrBloomWideVertical": {
+      "static_instruction_slots": 30,
+      "temporary_registers": 4,
+      "samplers": [
+        0
+      ],
+      "instructions": {
+        "rcp": 2,
+        "mul": 5,
+        "frc": 1,
+        "add": 9,
+        "mov": 4,
+        "rep": 1,
+        "texldl": 1,
+        "max": 1,
+        "endrep": 1,
+        "cmp": 1
+      },
+      "target": "ps_3_0",
+      "sha256": "a5615b68b4a915dd96e03ea549e656172b0112d44b773ea78cf96bf54db89b73",
+      "bytes": 656
+    },
+    "HdrBloomWidePairHorizontal": {
+      "static_instruction_slots": 54,
+      "temporary_registers": 7,
+      "samplers": [
+        0
+      ],
+      "instructions": {
+        "frc": 2,
+        "add": 17,
+        "mul": 9,
+        "mov": 6,
+        "rep": 1,
+        "break": 1,
+        "texldl": 1,
+        "max": 4,
+        "rcp": 3,
+        "cmp": 3,
+        "endrep": 1
+      },
+      "target": "ps_3_0",
+      "sha256": "aab2aa14be28953901e6883e29ac20152b4e6119b1e2981a12648ed31a01272e",
+      "bytes": 1032
+    },
+    "HdrBloomWidePairVertical": {
+      "static_instruction_slots": 75,
+      "temporary_registers": 5,
+      "samplers": [
+        0,
+        1
+      ],
+      "instructions": {
+        "frc": 4,
+        "add": 22,
+        "mul": 12,
+        "rcp": 5,
+        "if": 1,
+        "mov": 9,
+        "rep": 2,
+        "max": 2,
+        "texldl": 2,
+        "endrep": 2,
+        "cmp": 2,
+        "else": 1,
+        "endif": 1
+      },
+      "target": "ps_3_0",
+      "sha256": "4d4ec783c365cd297f24350e1a51eaa36806bd004fe2964531138505762ddae0",
+      "bytes": 1284
+    },
+    "HdrBloomWideResolve": {
+      "static_instruction_slots": 37,
+      "temporary_registers": 5,
+      "samplers": [
+        0
+      ],
+      "instructions": {
+        "texld": 9,
+        "mul": 13,
+        "mov": 3,
+        "add": 12
+      },
+      "target": "ps_3_0",
+      "sha256": "2d70d1d26c215d92b6c79d450c6c76224ce34b387519332ea154164974a748a0",
+      "bytes": 864
     },
     "HdrWorldLinear": {
       "static_instruction_slots": 76,

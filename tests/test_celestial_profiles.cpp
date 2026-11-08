@@ -46,10 +46,15 @@ int main(int argc,char** argv){
         apply(p,direct,a);apply(Profile{},direct,b);
         for(unsigned c=0;c<3;++c)assert(a.sunColor[c]==b.sunColor[c]);
     }
-    // Horizon haze multipliers: identity in [default] and every shipped zone but Crystalsong, day/night
+    // Horizon haze multipliers: identity except the explicit regional tuning, day/night
     // blend like fog_height_scale, 0..4, atomic reject, never surface light.
     assert(t.fallback.horizonHaze[0]==1&&t.fallback.horizonHaze[1]==1&&near(horizonHaze(t.fallback,.3f),1));
-    for(const auto& entry:t.zones)if(entry.first!=std::make_pair(std::string("Northrend"),2817u))assert(entry.second.horizonHaze[0]==1&&entry.second.horizonHaze[1]==1);
+    for(const auto& entry:t.zones)if(entry.first!=std::make_pair(std::string("Northrend"),2817u)&&entry.first!=std::make_pair(std::string("Kalimdor"),14u))assert(entry.second.horizonHaze[0]==1&&entry.second.horizonHaze[1]==1);
+    const auto& durotar=t.at("Kalimdor",14);
+    assert(near(durotar.horizonHaze[0],1.15f)&&durotar.horizonHaze[1]==1);
+    assert(near(durotar.glow[0][1],.72f)&&near(durotar.glow[0][2],.42f)&&near(durotar.glowMix[0],.35f)&&near(durotar.glowStrength[0],1.10f));
+    assert(durotar.strength[0]==1&&near(durotar.fogGain[0],4.3f)&&durotar.fogHeightScale[0]==2);
+    assert(durotar.glowMix[1]==0&&durotar.glowStrength[1]==1);
     assert(near(t.at("Northrend",2817).horizonHaze[0],2.46f)&&t.at("Northrend",2817).horizonHaze[1]==1); /* Crystalsong (2026-10-17 tuning) */
     for(const char* bad:{"sun_horizon_haze=-1","sun_horizon_haze=4.1","moon_horizon_haze=nan","sun_horizon_haze=1,1","sun_horizon_haze=1\nsun_horizon_haze=2"}){
         Table check;std::istringstream input(std::string("[Kalimdor:215]\n")+bad);

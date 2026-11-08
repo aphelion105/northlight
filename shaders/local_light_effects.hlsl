@@ -191,37 +191,84 @@ float4 LocalLightingSoft(float2 uv:TEXCOORD0):COLOR0{return localLightingValue(u
 // Native material endpoints are evaluated by the original VS/PS programs.
 // Mixing their results preserves authored saturation, fog and every other
 // light. No FGL radiance or inferred albedo is subtracted from the base scene.
-float nativeLocalVisibility(float3 delta,float3 normal,float farZ) {
+samplerCUBE NativeCubeB : register(s2);
+float4 NativePositionB : register(c10);
+float4 NativeShadowB : register(c11);
+samplerCUBE NativeCubeC : register(s3);
+float4 NativePositionC : register(c12);
+float4 NativeShadowC : register(c13);
+float nativeLocalVisibility(float3 delta,float3 normal,float farZ,int source,int count) {
     float distance=length(delta);
-    if(distance<=LocalShadow.x||distance>=farZ||dot(normal,delta)>=0)return 1;
+    if(distance<=LocalShadow.x||distance>=farZ)return 1;
+    normal=dot(normal,delta)>0?-normal:normal;
     float3 direction=delta/max(distance,.00001);
     float grazing=1-abs(dot(normal,direction));
     float3 biased=delta+normal*LocalDepthInfo.w*(1+grazing*2);
-    float plane=dot(normal,biased);if(plane>=-.0001)return 1;
+    float plane=dot(normal,biased);
+    if(plane>=-.0001){biased=delta;plane=dot(normal,delta);}
     float depthA=farZ/(farZ-LocalShadow.x);
-    float3 depthPlane=normal*(depthA*LocalShadow.x/plane);
-    float3 axis=abs(direction.z)<.9?float3(0,0,1):float3(0,1,0);
-    float3 tangent=normalize(cross(direction,axis)),bitangent=cross(direction,tangent);
-    float visibility=0;
-    [unroll]for(int i=0;i<4;++i){
-        float2 offset=float2((i==0||i==2)?-.5:.5,(i<2)?-.5:.5);
-        float3 ray=localCubeTexelRay(biased+distance*(2*LocalShadow.z)*(tangent*offset.x+bitangent*offset.y));
+    float3 depthPlane=plane<0?normal*(depthA*LocalShadow.x/plane):0;
+    float3 radial=abs(delta)*(max(distance-LocalDepthInfo.w,LocalShadow.x)/distance);
+    float3 major=abs(biased);bool faceX=major.x>=major.y&&major.x>=major.z;bool faceY=!faceX&&major.y>=major.z;
+    float3 face=biased/max(major.x,max(major.y,major.z));
+    float2 uv=faceX?face.yz:faceY?face.xz:face.xy;
+    float2 texel=(uv+1)*(.5/LocalShadow.z)-.5;
+    float2 blend=frac(texel),base=(floor(texel)+.5)*(2*LocalShadow.z)-1;
+    float2 outsideWeight=max(0,(abs(uv)-(1-LocalShadow.z))*(.5/LocalShadow.z));
+    float cornerShare=outsideWeight.x*outsideWeight.y/3;
+    float visibility=0,lit=0;
+    [loop]for(int i=0;i<4;++i){
+        float2 offset=float2((i==1||i==3)?1:0,i>=2?1:0);
+        float2 center=base+offset*(2*LocalShadow.z);
+        float3 ray=faceX?float3(face.x,center):faceY?float3(center.x,face.y,center.y):float3(center,face.z);
+        float3 magnitude=abs(ray),clamped=clamp(ray,-1+LocalShadow.z,1-LocalShadow.z);
+        ray=(magnitude.x>=magnitude.y&&magnitude.x>=magnitude.z)?float3(ray.x<0?-1:1,clamped.yz):
+            (magnitude.y>=magnitude.z?float3(clamped.x,ray.y<0?-1:1,clamped.z):float3(clamped.xy,ray.z<0?-1:1));
         float deltaDepth=dot(depthPlane,ray);
-        float stored=texCUBElod(LocalCube,float4(ray,0)).r;
-        visibility+=(deltaDepth<=0||saturate(depthA-deltaDepth)<=stored+.000002)?1:0;
+        float stored;[branch]if(count==1||source==0)stored=texCUBElod(LocalCube,float4(ray,0)).r;
+        else { [branch]if(count>2&&source==2)stored=texCUBElod(NativeCubeC,float4(ray,0)).r;else stored=texCUBElod(NativeCubeB,float4(ray,0)).r; }
+        float radialMajor=(magnitude.x>=magnitude.y&&magnitude.x>=magnitude.z)?radial.x:(magnitude.y>=magnitude.z?radial.y:radial.z);
+        float expected=(deltaDepth>0&&deltaDepth<depthA)?depthA-deltaDepth:depthA-depthA*LocalShadow.x/max(radialMajor,LocalShadow.x);
+        float compare=saturate(expected)<=stored+.000002?1:0;
+        float2 weight=lerp(1-blend,blend,offset);
+        float sampleWeight=min(abs(center.x),abs(center.y))>1?0:weight.x*weight.y+cornerShare;
+        visibility+=compare*sampleWeight;lit+=compare;
     }
-    return visibility*.25;
+    return lit==4?1:visibility;
+
 }
 void nativeLocalReceiver(float3 view,out float3 position,out float3 normal) {
     position=localWorld(view);
-    float3 n=cross(ddx(view),ddy(view));n*=rsqrt(max(dot(n,n),1e-12));n=dot(n,-view)<0?-n:n;
+    float3 n=cross(ddx(view),ddy(view));n*=rsqrt(max(dot(n,n),1e-30));n=dot(n,-view)<0?-n:n;
     normal=n.x*LocalInverseView[0].xyz+n.y*LocalInverseView[1].xyz+n.z*LocalInverseView[2].xyz;
 }
+float3 nativeLocalVisibilities(float3 view,int count){
+    float3 p,n;nativeLocalReceiver(view,p,n);float3 values=1;
+    [loop]for(int source=0;source<count;++source){
+        float4 position=LocalPosition,shadow=LocalShadow;
+        [branch]if(count>1&&source==1){position=NativePositionB;shadow=NativeShadowB;}
+        [branch]if(count>2&&source==2){position=NativePositionC;shadow=NativeShadowC;}
+        float value=lerp(1,nativeLocalVisibility(p-position.xyz,n,shadow.y,source,count),shadow.w);
+        if(source==0)values.x=value;else if(source==1)values.y=value;else values.z=value;
+    }
+    return values;
+}
 float4 NativeLocalLighting1(float4 original:TEXCOORD0,float4 withoutA:TEXCOORD1,float3 view:TEXCOORD4):COLOR0 {
-    float3 p,n;nativeLocalReceiver(view,p,n);
-    float visibility=nativeLocalVisibility(p-LocalPosition.xyz,n,LocalShadow.y);
-    visibility=lerp(1,visibility,LocalShadow.w); // Same point-selection fade as renderer correction.
+    float3 p,n;nativeLocalReceiver(view,p,n);float visibility=lerp(1,nativeLocalVisibility(p-LocalPosition.xyz,n,LocalShadow.y,0,1),LocalShadow.w);
     if(visibility==1)return original;
     if(visibility==0)return float4(withoutA.rgb,original.a);
     return float4(lerp(withoutA.rgb,original.rgb,visibility),original.a);
+}
+float4 NativeLocalLighting2(float4 original:TEXCOORD0,float4 withoutA:TEXCOORD1,float4 withoutB:TEXCOORD2,float4 withoutAB:TEXCOORD3,float3 view:TEXCOORD4):COLOR0 {
+    float3 visibility=nativeLocalVisibilities(view,2);float a=visibility.x,b=visibility.y;
+    if(min(a,b)==1)return original;
+    return float4(lerp(lerp(withoutAB.rgb,withoutB.rgb,a),lerp(withoutA.rgb,original.rgb,a),b),original.a);
+}
+
+float4 NativeLocalLighting3(float4 original:COLOR0,float4 a0:TEXCOORD0,float4 b0:TEXCOORD1,float4 ab0:TEXCOORD2,float4 c0:TEXCOORD3,float4 ac0:TEXCOORD4,float4 bc0:TEXCOORD5,float4 abc0:TEXCOORD6,float3 view:TEXCOORD7):COLOR0 {
+ float3 visibility=nativeLocalVisibilities(view,3);float a=visibility.x,b=visibility.y,c=visibility.z;
+ if(min(min(a,b),c)==1)return original;
+ float3 withC=lerp(lerp(ab0.rgb,b0.rgb,a),lerp(a0.rgb,original.rgb,a),b);
+ float3 withoutC=lerp(lerp(abc0.rgb,bc0.rgb,a),lerp(ac0.rgb,c0.rgb,a),b);
+ return float4(lerp(withoutC,withC,c),original.a);
 }

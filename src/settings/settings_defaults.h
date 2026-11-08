@@ -150,6 +150,10 @@ moon_disc = 0.96, 0.97, 0.82
 moon_light = 0.95, 0.98, 0.84
 moon_light_mix = 0.40
 [Kalimdor:14]
+sun_glow = 1.00, 0.72, 0.42
+sun_glow_mix = 0.35
+sun_glow_strength = 1.10
+sun_horizon_haze = 1.15
 sun_disc = 1.00, 0.86, 0.69
 sun_light = 1.00, 0.91, 0.82
 sun_light_mix = 0.35

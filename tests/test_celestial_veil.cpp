@@ -59,9 +59,8 @@ int main(){
     assert(std::fabs(hazeAtSun(tau,band,0)-(1-std::exp(-.7f)))<1e-5f);
     assert(hazeAtSun(tau,band,-.2f)==hazeAtSun(tau,band,0)); // below the horizon: full band
     assert(hazeAtSun(tau,band,.05f)<hazeAtSun(tau,band,0)&&hazeAtSun(tau,band,.7f)<.002f);
-    // Occlusion = max(disc, wrap x ring): trunk (disc hidden, ring visible)
-    // keeps a wrapped glow; roof or hill (both hidden) none.
-    assert(std::fabs(occlusion(0,1,Wrap)-Wrap)<1e-7f&&occlusion(0,0,Wrap)==0&&occlusion(1,1,Wrap)==1&&occlusion(.3f,1,0)==.3f);
+    // Current full occlusion overrides a stale clear wrap ring.
+    assert(occlusion(0,1,Wrap)==0&&occlusion(0,0,Wrap)==0&&occlusion(1,1,Wrap)==1&&occlusion(.3f,1,0)==.3f);
     // Ring taps: equal-area 2-4R annulus, inside the 20R sun mask.
     float mx=0,my=0;
     for(unsigned i=0;i<NorthlightCelestialHalo::Samples;++i){float x,y;ringOffset(i,x,y);const float r=std::sqrt(x*x+y*y);
@@ -129,13 +128,9 @@ int main(){
         for(int i=1;i<49;++i)assert(lum[i]<=lum[i-1]+1e-6f);
         for(int i=7;i<48;++i)assert(std::fabs(lum[i+1]-2*lum[i]+lum[i-1])<.012f);
     }
-    {   // disc hidden (a near mountain), ring visible -> the core is NEVER
-        // drawn; only the tail shifted out by 3R wraps (a soft plateau at the
-        // tail's 3R level). Disc visible -> unchanged.
+    {   // Hidden source: neither core nor tail survives a visible/stale ring.
         for(int i=0;i<=48;++i){const float r=i*.25f,hidden=sunGlare(r,0,1,Wrap),visible=sunGlare(r,1,0,Wrap);
-            const float tailOnly=SunTailWeight*sunTail(std::sqrt(r*r+9))*Wrap*(1-smoothstep(7,20,r));
-            assert(std::fabs(hidden-tailOnly)<1e-6f);                       // no core term at any radius
-            assert(hidden<=SunTailWeight*Wrap*sunTail(3)+1e-6f);            // never above the wrapped tail's 3R level
+            assert(hidden==0);
             assert(std::fabs(visible-sunProfile(r))<1e-5f*std::max(1.f,visible));} // unobstructed: unchanged profile
         assert(sunGlare(0,0,1,Wrap)<.25f*sunGlare(0,1,0,Wrap));             // no core blob over the occluder
         assert(sunGlare(1,0,0,Wrap)==0&&sunGlare(8,0,0,Wrap)==0);           // fully hidden: nothing
@@ -202,11 +197,10 @@ int main(){
         assert(std::fabs(ringWrap(0,r)-Wrap*.5f)<1e-6f);
         assert(ringWrap(-.5f*r,r)>0&&ringWrap(.5f*r,r)<Wrap);
         assert(ringWrap(.5f,r)==Wrap&&ringWrap(NAN,r)==0&&ringWrap(.5f,0)==0);
-        // A low, fully risen sun behind a wing keeps a broad halo. Previously
-        // the unrelated 1R..3R gate removed 84% before any occlusion was measured.
+        // A partially visible low sun keeps the broad halo; fully hidden is zero.
         const float old=Wrap*smoothstep(r,3*r,1.5f*r);
-        const float halo=sunGlare(3.f,0.f,1.f,ringWrap(1.5f*r,r));
-        assert(halo>sunGlare(3.f,0.f,1.f,old)*6.f);
+        const float halo=sunGlare(3.f,.01f,1.f,ringWrap(1.5f*r,r));
+        assert(halo>sunGlare(3.f,.01f,1.f,old)*6.f);
         assert(halo>sunGlare(3.f,1.f,1.f,Wrap)*.5f);
         assert(sunGlare(3.f,0.f,0.f,Wrap)==0); // a fully covered halo still goes dark
     }

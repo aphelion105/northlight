@@ -192,6 +192,12 @@ float fogShadowFade(float3 currentQ,float3 previousQ) {
 }
 
 row_major float4x4 CurrentFarToPrevious : register(c101);
+bool fogDirectContained(float3 q){
+    float3 previous=affinePoint(q,CurrentFarToPrevious);
+    float edge=1-1.5/DepthParams.z-DepthParams.w;
+    return all(abs(q.xy)<edge)&&q.z>PassInfo.x*4&&q.z<1&&
+        all(abs(previous.xy)<edge)&&previous.z>PreviousShadowInfo.y*4&&previous.z<1;
+}
 float fogShadowProjected(float3 q){return fogShadowFade(q,affinePoint(q,CurrentFarToPrevious));}
 
 // Keep the current projections as direct constant-bank expressions, like the
@@ -241,3 +247,7 @@ float4 WorldFogActorTiledTransition(float2 uv:TEXCOORD0):COLOR0 {return WorldFog
 float4 FogCloudsTransition(float2 uv:TEXCOORD0):COLOR0 {return FogClouds(uv);}
 float4 FogCloudsActorTransition(float2 uv:TEXCOORD0):COLOR0 {return FogCloudsActor(uv);}
 float4 FogCloudsActorTiledTransition(float2 uv:TEXCOORD0):COLOR0 {return FogCloudsActorTiled(uv);}
+
+float4 MoonFloorFogTransition(float2 uv:TEXCOORD0):COLOR0{return MoonFloorFog(uv);}
+float4 MoonFloorFogActorTransition(float2 uv:TEXCOORD0):COLOR0{return MoonFloorFogActor(uv);}
+float4 MoonFloorFogActorTiledTransition(float2 uv:TEXCOORD0):COLOR0{return MoonFloorFogActorTiled(uv);}

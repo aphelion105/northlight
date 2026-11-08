@@ -32,7 +32,7 @@ struct Fixture {
     NorthlightHdr::SkyForeground hdrSkyForeground;
     NorthlightStateBlockPool stateBlocks;
     NorthlightEffectCoverage::Capture effectCoverage;
-    struct {bool active=true;} hdr;
+    struct {bool active=true;struct{D3DMULTISAMPLE_TYPE MultiSampleType=D3DMULTISAMPLE_NONE;} logical;} hdr;
     bool hdrSkyValid=true,hdrUiPhase=false,hdrAtUiBoundary=false,enabled=true,failed=false,applied=false;
     bool effectCoverageNative=true,terrain=true,projectionValid=true,hdrSkyReplaying=false;
     bool spellQueryUnknown=false,depthBound=true,backTarget=true,fullViewport=true;
@@ -43,6 +43,7 @@ struct Fixture {
     std::unordered_map<IDirect3DVertexShader9*,unsigned> vsTags;
     float worldMinDepth=0,worldMaxDepth=.94f;
     IDirect3DSurface9* hdrPresentBack;
+    IDirect3DSurface9* hdrSkyTarget()const{return hdrPresentBack;}
     struct Discs {bool cleared=false;void setHdrSkyTarget(void*){cleared=true;}} discs;
     Discs* celestialDiscs=&discs;
     Fixture(IDirect3DDevice9* d,IDirect3DSurface9* sky):device(d,&mirror),ext(&device),stateBlocks(&device),hdrPresentBack(sky){D3DSURFACE_DESC desc{};ok(sky->GetDesc(&desc));width=desc.Width;height=desc.Height;vsTags[nullptr]=kUnlitTag;}
@@ -242,6 +243,29 @@ int main(int argc,char** argv){
             for(unsigned c=0;c<3;++c)assert(std::fabs(actual[(4*W+12)*4+c]-decode(n[(4*W+12)*4+2-c]/255.f))<.001f);
         }else{const auto actual=rgba(linearSky);for(unsigned c=0;c<3;++c)assert(std::fabs(actual[(4*W+12)*4+c]-(base[c]*.75f+decode(smoke[c])*.25f))<.002f);}
     }
+    // Exercise the production sky-MRT call site as well as the transfer helper.
+    // Every rejected state and failed activation must still submit native once
+    // and use the unchanged replay path for its complete HDR coverage.
+    unsigned fixedSkyCases=0;
+    {Image im{2,2,D3DFMT_A8R8G8B8,4,{10,31,83,178,155,72,29,64,67,133,211,209,241,193,57,96}};auto* tex=texture(d,im);
+     struct V{float x,y,z,w;DWORD color;float u,v,u1,v1;};const V q[]={{-.5f,-.5f,.3f,1,0x99bb7755,0,0,0,0},{W*.75f-.5f,-.5f,.3f,1,0xaaddeeaa,1,0,1,0},{-.5f,H-.5f,.3f,1,0xbbbbdd88,0,1,0,1},{W*.75f-.5f,H-.5f,.3f,1,0xccccaaee,1,1,1,1}};
+     auto draw=[&]{return d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,q,sizeof(V));};
+     for(unsigned control=0;control<10;++control){std::vector<unsigned char> nativeBefore;std::vector<float> hdrBefore;
+      for(unsigned mode=0;mode<2;++mode){reset();FaultDevice meter(d);meter.sky=linearSky;Fixture f(&meter,linearSky);f.terrain=false;f.hdr.logical.MultiSampleType=ms;
+       ok(d->BeginScene());const float base[]={2.f,.6f,.3f,1};{SavedState save(d);ok(d->SetRenderTarget(0,linearSky));ok(d->SetPixelShaderConstantF(0,base,1));ok(quad(1));}
+       ok(d->SetPixelShader(nullptr));ok(d->SetFVF(D3DFVF_XYZRHW|D3DFVF_DIFFUSE|D3DFVF_TEX2));ok(d->SetRenderState(D3DRS_FOGENABLE,control==3));ok(d->SetRenderState(D3DRS_SPECULARENABLE,control==4));ok(d->SetRenderState(D3DRS_SRGBWRITEENABLE,control==5));
+       ok(d->SetRenderState(D3DRS_ALPHATESTENABLE,control==1));ok(d->SetRenderState(D3DRS_ALPHAFUNC,D3DCMP_GREATER));ok(d->SetRenderState(D3DRS_ALPHAREF,64));ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE));ok(d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_SRCALPHA));ok(d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_INVSRCALPHA));ok(d->SetRenderState(D3DRS_ZWRITEENABLE,FALSE));
+       const D3DVIEWPORT9 vp{0,0,W,H,.94f,1};ok(d->SetViewport(&vp));
+       for(unsigned slot=0;slot<2;++slot){ok(d->SetTexture(slot,tex));ok(d->SetSamplerState(slot,D3DSAMP_MINFILTER,D3DTEXF_LINEAR));ok(d->SetSamplerState(slot,D3DSAMP_MAGFILTER,D3DTEXF_LINEAR));ok(d->SetSamplerState(slot,D3DSAMP_MIPFILTER,control==2?D3DTEXF_LINEAR:D3DTEXF_NONE));ok(d->SetTextureStageState(slot,D3DTSS_COLOROP,D3DTOP_MODULATE));ok(d->SetTextureStageState(slot,D3DTSS_COLORARG1,D3DTA_TEXTURE));ok(d->SetTextureStageState(slot,D3DTSS_COLORARG2,slot?D3DTA_CURRENT:D3DTA_DIFFUSE));ok(d->SetTextureStageState(slot,D3DTSS_ALPHAOP,control==6?D3DTOP_SELECTARG2:D3DTOP_MODULATE));ok(d->SetTextureStageState(slot,D3DTSS_ALPHAARG1,D3DTA_TEXTURE));ok(d->SetTextureStageState(slot,D3DTSS_ALPHAARG2,slot?D3DTA_CURRENT:D3DTA_DIFFUSE));ok(d->SetTextureStageState(slot,D3DTSS_RESULTARG,D3DTA_CURRENT));ok(d->SetTextureStageState(slot,D3DTSS_TEXCOORDINDEX,slot));ok(d->SetTextureStageState(slot,D3DTSS_TEXTURETRANSFORMFLAGS,D3DTTFF_DISABLE));}ok(d->SetTextureStageState(2,D3DTSS_COLOROP,D3DTOP_DISABLE));
+       f.mirror.invalidate();if(mode&&!samples&&control>=7)meter.fault=control-6;
+       bool captured=false;unsigned submits=0;ok(f.effectCoverageDraw([&]{++submits;return draw();},false,mode!=0,&captured));assert(submits==1);assert(captured==(mode&&control==0&&!samples));f.hdrReplaySky(true,captured,draw);ok(d->EndScene());
+       const auto n=nativePixels();const auto h=rgba(linearSky);if(!mode){nativeBefore=n;hdrBefore=h;}else{assert(n==nativeBefore&&h==hdrBefore);}
+      }++fixedSkyCases;
+     }
+     {SavedState saved(d);ok(d->SetVertexShader(foregroundVs));ok(d->SetPixelShader(nullptr));NorthlightHdr::Color color;NorthlightHdr::SkyForeground capture;bool captured=false;unsigned submits=0;ok(color.fixedDraw(d,80,[&]{++submits;return S_OK;},nullptr,&capture,linearSky,&captured));assert(!captured&&!submits);}
+     {SavedState saved(d);ok(d->SetVertexShader(nullptr));ok(d->SetPixelShader(nullptr));ok(d->SetTexture(0,foregroundTexture));NorthlightHdr::Color color;NorthlightHdr::SkyForeground capture;bool captured=false;unsigned submits=0;ok(color.fixedDraw(d,80,[&]{++submits;return S_OK;},nullptr,&capture,linearSky,&captured));assert(!captured&&!submits);}
+     tex->Release();}
+    std::printf("HDR_FIXED_SKY_WRAPPER_PASS cases=%u msaa=%u exactNative=1 exactHdr=1 unsupportedAndFaultFallback=9\n",fixedSkyCases,samples);
     if(argc==4){
         constexpr unsigned BW=3840,BH=2160;const unsigned draws=std::atoi(argv[3])>0?unsigned(std::atoi(argv[3])):220;
         IDirect3DSurface9 *bigNative=nullptr,*bigSky=nullptr,*bigDepth=nullptr;

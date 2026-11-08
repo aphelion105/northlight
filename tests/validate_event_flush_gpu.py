@@ -12,7 +12,7 @@ args=parser.parse_args();out=args.output.resolve();out.mkdir(parents=True,exist_
 assert 'wow.exe' not in subprocess.check_output(['tasklist','/fi','IMAGENAME eq wow.exe','/fo','csv','/nh'],text=True).lower()
 source=Path(__file__).with_name('event_flush_gpu.cpp');exe=out/'event-flush.exe'
 subprocess.run([str(fp.zig()),'c++','-target','x86-windows-gnu','-std=c++17','-O2','-UNDEBUG',*fp.test_include_flags(),str(source),'-luser32','-o',str(exe)],env=fp.zig_env(),check=True)
-report={'source_sha256':hashlib.sha256(source.read_bytes()).hexdigest(),'query_poll_sha256':hashlib.sha256(fp.src('query_poll.h').read_bytes()).hexdigest(),'game_launched':False,'runs':[]}
+report={'source_sha256':hashlib.sha256(source.read_bytes()).hexdigest(),'query_poll_sha256':hashlib.sha256(fp.src('query_poll.h').read_bytes()).hexdigest(),'stream_wait_sha256':hashlib.sha256(fp.src('stream_wait.h').read_bytes()).hexdigest(),'game_launched':False,'runs':[]}
 for i,backend in enumerate(args.backend):
     run=subprocess.run([str(exe),backend],cwd=out,capture_output=True,text=True,timeout=120)
     (out/f'{i}.log').write_text(run.stdout+run.stderr)

@@ -24,6 +24,22 @@ template<std::size_t Bytes> inline bool equalRegister(const void* a,const void* 
 #endif
     return std::memcmp(a,b,Bytes)==0;
 }
+// The search consumes complete 16-register chunks and only needs equality,
+// not memcmp's first differing byte or ordering result.
+inline bool equalFloatChunk(const float* a,const float* b)noexcept{
+#if defined(__SSE2__)
+    for(unsigned i=0;i<16;i+=4){
+        const auto e0=_mm_cmpeq_epi8(_mm_loadu_si128(reinterpret_cast<const __m128i*>(a+i*4)),_mm_loadu_si128(reinterpret_cast<const __m128i*>(b+i*4)));
+        const auto e1=_mm_cmpeq_epi8(_mm_loadu_si128(reinterpret_cast<const __m128i*>(a+(i+1)*4)),_mm_loadu_si128(reinterpret_cast<const __m128i*>(b+(i+1)*4)));
+        const auto e2=_mm_cmpeq_epi8(_mm_loadu_si128(reinterpret_cast<const __m128i*>(a+(i+2)*4)),_mm_loadu_si128(reinterpret_cast<const __m128i*>(b+(i+2)*4)));
+        const auto e3=_mm_cmpeq_epi8(_mm_loadu_si128(reinterpret_cast<const __m128i*>(a+(i+3)*4)),_mm_loadu_si128(reinterpret_cast<const __m128i*>(b+(i+3)*4)));
+        if(_mm_movemask_epi8(_mm_and_si128(_mm_and_si128(e0,e1),_mm_and_si128(e2,e3)))!=0xffff)return false;
+    }
+    return true;
+#else
+    return std::memcmp(a,b,16*16)==0;
+#endif
+}
 // Both float4 spans are already captured and valid. Chunk the long equal
 // palette tails, while differing end registers avoid an unnecessary bulk scan.
 __attribute__((always_inline)) inline DirtySpan knownFloatSpan(const float* a,const float* b,unsigned count)noexcept{
@@ -33,12 +49,12 @@ __attribute__((always_inline)) inline DirtySpan knownFloatSpan(const float* a,co
     unsigned first=0,last=count;constexpr unsigned Chunk=16;
     if(head){
         ++first;
-        while(last-first>=Chunk&&!std::memcmp(a+first*4,b+first*4,Chunk*16))first+=Chunk;
+        while(last-first>=Chunk&&equalFloatChunk(a+first*4,b+first*4))first+=Chunk;
         while(first<last&&equalRegister<16>(a+first*4,b+first*4))++first;
     }
     if(tail){
         --last;
-        while(last-first>=Chunk&&!std::memcmp(a+(last-Chunk)*4,b+(last-Chunk)*4,Chunk*16))last-=Chunk;
+        while(last-first>=Chunk&&equalFloatChunk(a+(last-Chunk)*4,b+(last-Chunk)*4))last-=Chunk;
         while(last>first&&equalRegister<16>(a+(last-1)*4,b+(last-1)*4))--last;
     }
     return {first,last-first};

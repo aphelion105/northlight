@@ -34,14 +34,17 @@ struct AdaptiveTimeBudget {
         const auto extra=std::min<size_t>(packets>256?packets-256:0,(MaxTotal-Total)/2000)*2000;
         totalLimit=Total+extra;cheapLimit=Cheap+extra;buildLimit=Build;reservedClosed=false;
     }
-    // After the first cheap/heavy turns, use half their unspent crowd allowance
+    // After the first cheap/heavy turns, use half their unspent frame allowance
     // to warm cold sources. The final cheap turn receives only what remains.
     void lendToBuild(std::uint64_t readyUsed,std::uint64_t heavyUsed){
-        if(reservedClosed||totalLimit==Total)return;
+        if(reservedClosed)return;
         const auto left=readyUsed>=totalLimit||heavyUsed>=totalLimit-readyUsed?0:totalLimit-readyUsed-heavyUsed;
         buildLimit=std::max(Build,left/2);
     }
-    size_t buildVertices()const{return size_t(std::min<std::uint64_t>(32768,2048*buildLimit/Build));}
+    // The rigid source scanner handles 32 vertices per clock check. Do not
+    // strand its finished work behind the old scalar decoder's vertex quota;
+    // the same wall-time and operation limits still stop every cold build.
+    size_t buildVertices()const{return size_t(std::min<std::uint64_t>(131072,16384*buildLimit/Build));}
     void finishReservedTurns(std::uint64_t heavyUsed,std::uint64_t buildUsed){
         if(reservedClosed)return;
         reservedClosed=true;

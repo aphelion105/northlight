@@ -14,7 +14,7 @@ struct QueryDrawTarget:TargetDevice {
     std::atomic<bool> firstEntered{false},releaseFirst{false},secondEntered{false},releaseSecond{false},secondRetired{false};
     std::atomic<bool> backgroundReady{false};
     unsigned draws=0,pendingPollCalls=0;std::atomic<unsigned> driverFlushCalls{0},waitPollCalls{0};
-    bool waitStarted=false,falseValue=false;std::atomic<bool> driverAfterSecond{false};
+    bool waitStarted=false,falseValue=false,readyOnProbe=false,nativeCached=false;std::atomic<bool> driverAfterSecond{false};
     HRESULT status=D3D_OK,publishStatus=D3D_OK;bool publishOnExit=false;BoundaryFault fault=BoundaryFault::None;StreamCore* core=nullptr;
     StreamQuery* proxy=nullptr;BoundaryQuery* query=nullptr;
     HRESULT CreateQuery(D3DQUERYTYPE type,IDirect3DQuery9** out) override{
@@ -39,6 +39,11 @@ struct QueryDrawTarget:TargetDevice {
     }
 };
 HRESULT BoundaryQuery::GetData(void* data,DWORD size,DWORD flags){
+    // DXVK 3.1.1's first successful EVENT read writes BOOL, but its cached
+    // path writes only a C++ bool. Reproduce the probe-ready race exactly.
+    if(owner->nativeCached){if(data)*static_cast<unsigned char*>(data)=1;return D3D_OK;}
+    if(owner->readyOnProbe&&!flags&&data&&size==4){DWORD payload=0;std::memcpy(&payload,data,4);
+        if(payload==EventPayloadMarker){const DWORD ready=1;std::memcpy(data,&ready,4);owner->nativeCached=true;return D3D_OK;}}
     if(!flags&&!owner->waitStarted){
         if(!owner->backgroundReady.load())return S_FALSE;
         if(data){const DWORD value=0xABCD0000u+issued;std::memcpy(data,&value,4);}
@@ -167,6 +172,46 @@ static void idleScenario(bool baseline,bool noPending){
     std::printf("EVENT_IDLE noPending=%u baseline=%u driverFlushCalls=%u\n",unsigned(noPending),unsigned(baseline),t->driverFlushCalls.load());
     query->Release();rig.sync();rig.device->Release();checkClean();
 }
+static void longWaitGeneration(bool profiling){
+    dxvk311EventPayload.store(true);
+    gTrace.clear();QueryRig rig;auto* t=rig.target;auto& core=rig.device->streamCore();core.timing=profiling;
+    IDirect3DQuery9 *query=nullptr,*other=nullptr;CHECK(rig.device->CreateQuery(8,&query)==D3D_OK);rig.sync();
+    auto* proxy=static_cast<StreamQuery*>(query);t->proxy=proxy;t->core=&core;
+    CHECK(query->Issue(D3::kIssueEnd)==D3D_OK);rig.sync();CHECK(!proxy->eventWaitExpired);
+    core.q.runExpress([](void* p){static_cast<QueryDrawTarget*>(p)->status=S_FALSE;},t);
+    DWORD value=0x87654321u;
+    for(unsigned retry=0;retry<2;++retry){CHECK(query->GetData(&value,4,D3::kGetDataFlush)==S_FALSE&&value==0x87654321u);CHECK(proxy->eventWaitExpired);}
+    CHECK(rig.device->CreateQuery(8,&other)==D3D_OK);CHECK(other->Issue(D3::kIssueEnd)==D3D_OK);rig.sync();
+    CHECK(!static_cast<StreamQuery*>(other)->eventWaitExpired&&proxy->eventWaitExpired);
+    // A recorded future END must not reset the old generation until replay
+    // reaches it. The held draw supplies an exact command boundary.
+    rig.draw();core.q.publish();CHECK(waitFor([&]{return t->firstEntered.load();}));
+    CHECK(query->Issue(D3::kIssueEnd)==D3D_OK&&proxy->eventWaitExpired);
+    t->releaseFirst.store(true);rig.sync();CHECK(!proxy->eventWaitExpired);
+    CHECK(query->GetData(&value,4,D3::kGetDataFlush)==S_FALSE&&proxy->eventWaitExpired);
+    CHECK(core.queryFrame[8].backendUntouched==unsigned(profiling?3:0));
+    CHECK(!core.queryFrame[8].backendFalse&&!core.queryFrame[8].backendReady&&!core.queryFrame[8].backendOther);
+    D3DPRESENT_PARAMETERS pp{};CHECK(rig.device->Reset(&pp)==D3D_OK);
+    CHECK(query->Issue(D3::kIssueEnd)==D3D_OK);rig.sync();CHECK(!proxy->eventWaitExpired);
+    core.q.runExpress([](void* p){static_cast<QueryDrawTarget*>(p)->status=D3D_OK;},t);
+    CHECK(query->GetData(&value,4,D3::kGetDataFlush)==D3D_OK&&value==0xABCD0003u);
+    query->Release();other->Release();rig.sync();rig.device->Release();checkClean();
+    dxvk311EventPayload.store(false);
+    std::printf("EVENT_LONG_GENERATION_PASS profiling=%u repeated_pending=1 independent_query=1 future_end_order=1 reset_reissue=1 exact_payload=1\n",unsigned(profiling));
+}
+static void probeReadyRace(bool nullPayload,bool profiling){
+    gTrace.clear();QueryRig rig;auto* t=rig.target;auto& core=rig.device->streamCore();core.timing=profiling;
+    IDirect3DQuery9* query=nullptr;CHECK(rig.device->CreateQuery(8,&query)==D3D_OK);rig.sync();
+    auto* proxy=static_cast<StreamQuery*>(query);t->proxy=proxy;t->core=&core;t->status=S_FALSE;t->readyOnProbe=true;
+    CHECK(query->Issue(D3::kIssueEnd)==D3D_OK);rig.sync();dxvk311EventPayload.store(true);
+    DWORD value=0x87654321u;CHECK(query->GetData(nullPayload?nullptr:&value,nullPayload?0:4,D3::kGetDataFlush)==D3D_OK);
+    CHECK(t->nativeCached&&core.queryFrame[8].backendReady==unsigned(profiling)&&core.queryFrame[8].pending==0);
+    CHECK(proxy->eventDoneGen.load()==1&&proxy->eventValue.load()==1);
+    if(!nullPayload)CHECK(value==1);value=0x87654321u;
+    CHECK(query->GetData(&value,4,D3::kGetDataFlush)==D3D_OK&&value==1);
+    query->Release();rig.sync();rig.device->Release();checkClean();dxvk311EventPayload.store(false);
+    std::printf("EVENT_PAYLOAD_PASS nullPayload=%u profiling=%u real_terminal=1 native_one_byte_cache=1 full_BOOL=1\n",unsigned(nullPayload),unsigned(profiling));
+}
 int main(int argc,char** argv){
     std::setvbuf(stdout,nullptr,_IONBF,0);
     const bool baseline=argc>1&&std::string(argv[1])=="baseline";
@@ -194,6 +239,8 @@ int main(int argc,char** argv){
     scenario(baseline,gated,"unprofiled-gpu-wait",true,false,false,D3D_OK,false,false,false,false,false,BoundaryFault::None,false,D3::kGetDataFlush,80,false);
     scenario(baseline,gated,"unprofiled-replay-wait",true,false,false,D3D_OK,false,false,false,false,false,BoundaryFault::None,false,D3::kGetDataFlush,0,false);
     idleScenario(baseline,false);idleScenario(baseline,true);
+    longWaitGeneration(false);longWaitGeneration(true);
+    for(bool profiling:{false,true}){probeReadyRace(false,profiling);probeReadyRace(true,profiling);}
     textureExpressReadback();checkClean();
     std::puts("PASS exact EVENT boundary wait: deterministic later-draw dependency, ordered fallback, payload/error/pending, reset, nested reissue and extra-reference release; no game/GPU");
 }

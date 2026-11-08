@@ -83,6 +83,7 @@ inline float sunProfile(float radius,float tail=SunTailWeight,float core=SunCore
 // sunTail(sqrt(r^2+9)). Both parts are non-increasing in r, so the profile is
 // monotonic for every (disc, ring) pair: no dark ring around a barely hidden sun.
 inline float sunGlare(float radius,float disc,float ring,float wrap,float tail=SunTailWeight,float core=SunCoreWeight,float support=SunGlareSupport){
+    if(!(disc>0))return 0; // Current full occlusion overrides a previously visible ring.
     const float d=clamp01(disc),w=clamp01(wrap)*clamp01(ring);
     const float tailed=std::max(d*sunTail(radius),w*sunTail(std::sqrt(radius*radius+9)));
     return (core*std::exp2(-SunCoreRate*radius*radius)*d+tail*tailed)*(1-smoothstep(.35f*support,support,radius));
@@ -103,7 +104,7 @@ inline void glowColour(const float* tint,const float* hue,const float* core,floa
 }
 inline float sunDiscAlpha(float radius){const float a=std::clamp((1-radius)/.56f,0.f,1.f);return a*a*(3-2*a);}
 // The TAIL's visibility beyond ~3R (the core uses the disc only; see sunGlare).
-inline float occlusion(float disc,float ring,float wrap){return std::max(clamp01(disc),clamp01(wrap)*clamp01(ring));}
+inline float occlusion(float disc,float ring,float wrap){return disc>0?std::max(clamp01(disc),clamp01(wrap)*clamp01(ring)):0;}
 
 // Keep the diffuse halo when a small foreground silhouette hides the disc.
 // Fade as the disc crosses the true horizon, from its top to its bottom limb.

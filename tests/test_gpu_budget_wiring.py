@@ -28,7 +28,9 @@ checks['timer: every GetData with flags 0, no D3DGETDATA_FLUSH, no wait loop, sl
     and 'D3DGETDATA_FLUSH' not in tc and 'while' not in tc and 'for(;;)' not in tc and 'Sleep' not in tc and 'SwitchToThread' not in tc)
 checks['timer: S_FALSE leaves the slot pending (continue), never retried in the same poll']=tc.count('if(hr==S_FALSE)continue;')==4
 checks['timer: a full ring skips the frame (begin returns false), disjoint / zero frequency / nonmonotonic dropped']=(
-    'if(s.pending)continue;' in tc and 'if(disjoint){s.pending=false;continue;}' in tc and 'if(!s.frequencyValue||t1<s.startValue)continue;' in tc)
+    'if(s.pending)continue;' in tc and 'remember(frame,SampleState::Dropped);' in tc
+    and 'if(disjoint){remember(s.frame,SampleState::Disjoint);s.pending=false;continue;}' in tc
+    and 'if(!s.frequencyValue||t1<s.startValue){remember(s.frame,SampleState::Invalid);continue;}' in tc)
 checks['timer: completed components are read once per issue, progress resets at end']=(
     all(f'if(s.readStage=={stage})' in tc for stage in range(3)) and 's.readStage=0;s.pending=true;' in tc)
 
@@ -37,7 +39,7 @@ rc=code(r)
 re_=rc[rc.index('void renderEffects() {'):rc.index('applied = true; ++appliedFrames;')]
 # Surface effects finish after deferred spells; clearFrame also closes the timer on early exits.
 checks['renderer: timer spans surface work through deferred spells and is closed on frame cleanup']=(
-    'surfaceTimerOpen=world&&world->gpuBudgetMs()&&gpuTimer->begin();' in re_
+    'surfaceTimerOpen=world&&world->gpuBudgetMs()&&gpuTimer->begin(frame);' in re_
     and re_.index('if (!saved.ok) return;')<re_.index('surfaceTimerOpen=')<re_.index('gpuProfile->beginFrame(')
     and 'if(surfaceTimerOpen){if(gpuTimer)gpuTimer->end();surfaceTimerOpen=false;}' in rc
     and rc.count('if(surfaceTimerOpen){gpuTimer->end();surfaceTimerOpen=false;}')==2)
@@ -60,6 +62,9 @@ checks['renderer: GpuBudgetMs=0 resets the controller and sets level 0 before an
     'if(!budget){gpuBudget.reset();gpuBudgetQpc=0;if(world)world->setGpuBudgetLevel(0);return;}' in gb and gb.index('return;}')<gb.index('poll(ms)'))
 checks['renderer: only a finished reading updates the controller (dt from the previous reading), the level goes to the world']=(
     'if(gpuTimer&&gpuTimer->poll(ms)){' in gb and 'world->setGpuBudgetLevel(gpuBudget.update(float(budget),float(ms),dt,gpuLimited));' in gb)
+checks['renderer: slow frames join the existing effects GPU sample by exact renderer frame, with unavailable status']=(
+    'gpuTimer->sample(f.id)' in rc and 'gpuEffectsMs=%.3f gpuEffectsStatus=%s' in r
+    and 'gpu.ms,NorthlightGpuFrameTimer::stateName(gpu.state)' in rc)
 checks['renderer: GPUBUDGET line on RenderProfile sample frames, level changes logged (first 32, then with Diagnostics)']=(
     'if(sampled()&&NorthlightRenderThreadProbe::profiling())logf("GPUBUDGET ms=%.3f smoothed=%.3f budget=%.1f level=%u gpuWait=%.2f gpuBound=%d eventWait=%.2f"' in gb
     and 'if(gpuBudget.level!=before&&(gpuBudget.changes<=32||diagnostics()))' in gb and 'logf("GPUBUDGET level %u -> %u' in gb)

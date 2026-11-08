@@ -51,7 +51,7 @@ const std::map<std::string,const char*> Labels={
     {"Weather","Enhanced weather"},{"WeatherMemory","Read native weather state"},{"RainFog","Weather fog strength"},{"RainLens","Rain on camera"},{"RainLensStrength","Rain on camera strength (%)"},{"SnowLens","Snow on camera"},{"SnowLensStrength","Snow on camera strength (%)"},{"FogClouds","Drifting fog banks"},{"FogCloudDensity","Fog density (%)"},
     {"HorizonHaze","Horizon haze (%)"},{"HorizonHazeStart","Haze start (%)"},{"HorizonHazeBand","Haze height (degrees)"},{"HorizonHazeTerrain","Haze over terrain"},
     {"Backend","Graphics backend"},{"ExperimentalHDR","Enable HDR"},{"HDRPaperWhite","White point (nits)"},{"HDRUIWhite","UI brightness (nits)"},{"HDRMaxNits","Manual peak (nits)"},{"HDRContrast","Contrast"},{"HDRExposure","Exposure / compensation (EV)"},
-    {"HDRExposureMode","Exposure mode"},{"HDRPeakMode","Peak mode"},{"HDRBloomStrength","Bloom strength"},{"HDRLegacyExpansion","Legacy highlight expansion (EV)"},
+    {"HDRExposureMode","Exposure mode"},{"HDRPeakMode","Peak mode"},{"HDRWideBloom","Wide soft bloom"},{"HDRBloomStrength","Bloom strength"},{"HDRLegacyExpansion","Legacy highlight expansion (EV)"},
     {"HDRAutoMinEV","Auto exposure minimum (EV)"},{"HDRAutoMaxEV","Auto exposure maximum (EV)"},{"HDRLightAdaptation","Bright adaptation T90 (s)"},{"HDRDarkAdaptation","Dark adaptation T90 (s)"},
     {"NightBrightness","Night brightness (%)"},{"EquipmentLights","Equipment and effect lights"},
     {"CaptureBudgetMiB","Capture memory (MiB)"},{"ActorShadowBudgetMiB","Character shadow memory (MiB)"},{"MinSkinnedTriangles","Minimum character triangles"},{"LocalLightLimit","Maximum local lights (0 = off)"},{"GpuBudgetMs","GPU effect budget (ms)"},{"ActorShadowCpuMs","Shadow CPU budget (ms)"},
@@ -108,6 +108,7 @@ const std::map<std::string,std::vector<const char*>> Help={
     {"HDRLegacyExpansion",{"0 disables expansion. Up to +2 EV selectively lifts bright legacy SDR details. It cannot restore clipped detail or identify every emitter; UI and Northlight HDR sources are excluded."}},
     {"HDRExposureMode",{"Auto meters the world before bloom and UI. Exposure becomes compensation. Manual uses only the selected EV."}},
     {"HDRPeakMode",{"Auto follows Windows calibration / display metadata, with a 1000 nit fallback. Manual uses your saved per-display peak."}},
+    {"HDRWideBloom",{"Adds a wider, softer glow around bright world light. Uses more GPU arithmetic and extra memory. Falls back to compact bloom if resources are unavailable. UI brightness is unchanged."}},
     {"HDRBloomStrength",{"Bloom reads unclipped HDR radiance. Setting 0 removes its halo while preserving the source's brightness."}},
     {"Backend",{"Which Direct3D 9 implementation the renderer runs on. Takes effect after a game restart."}},
     {"terrain_radius",{"How far terrain casts shadows in this region. Larger values cost more GPU time."}},
@@ -261,7 +262,7 @@ const std::vector<Section> QualitySections={
 };
 const std::vector<Group> HdrGroups={
     {"hdr","HDR output","ExperimentalHDR","HDRPaperWhite HDRUIWhite HDRPeakMode HDRMaxNits",""},
-    {"hdr-look","World appearance","","HDRExposureMode HDRExposure HDRContrast HDRBloomStrength HDRLegacyExpansion","HDRAutoMinEV HDRAutoMaxEV HDRLightAdaptation HDRDarkAdaptation"}};
+    {"hdr-look","World appearance","","HDRExposureMode HDRExposure HDRContrast HDRBloomStrength HDRWideBloom HDRLegacyExpansion","HDRAutoMinEV HDRAutoMaxEV HDRLightAdaptation HDRDarkAdaptation"}};
 const std::vector<Group> CelestialGroups={
     {"sun","Sun",nullptr,"sun_disc sun_disc_gain sun_light sun_light_strength","sun_light_mix sun_fog_gain sun_fog_height_scale sun_horizon_haze sun_glow_strength sun_glow sun_glow_mix"},
     {"moon","Moon",nullptr,"moon_disc moon_disc_gain moon_light moon_light_strength","moon_light_mix moon_fog_gain moon_fog_height_scale moon_horizon_haze moon_glow_strength moon_glow moon_glow_mix"},

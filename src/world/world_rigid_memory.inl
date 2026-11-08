@@ -50,9 +50,11 @@
     // Static-cache placements of this map's scene, indexed RigidIndexStep per frame while a settled
     // track waits for the screen (rigidMemory.screening()).
     void rigidIndexStep(){
-        if(!staticScene||staticScene->map!=lastRequest.map)return;auto& x=rigidIndex;const auto& all=staticScene->placements;
+        auto& x=rigidIndex;
+        if(!staticScene||staticScene->map!=lastRequest.map){if(x.scene){rigidMemory.invalidateStaticCoverage();x.reset(nullptr,0);}return;}
+        const auto& all=staticScene->placements;
         const bool timed=profileSampled();const auto started=timed?std::chrono::steady_clock::now():std::chrono::steady_clock::time_point{};
-        if(x.scene!=staticScene.get()||x.revision!=rigidSceneRevision(*staticScene))x.reset(staticScene.get(),rigidSceneRevision(*staticScene),all.size());
+        if(x.scene!=staticScene.get()||x.revision!=rigidSceneRevision(*staticScene)){rigidMemory.invalidateStaticCoverage();x.reset(staticScene.get(),rigidSceneRevision(*staticScene),all.size());}
         const size_t first=x.next;
         for(const size_t end=std::min(all.size(),x.next+RigidIndexStep);x.next<end;++x.next){const auto& place=all[x.next];
             if(place.category==1||place.category==3)x.add(place.translation.x,place.translation.y,place.translation.z,std::uint32_t(x.next));}
@@ -62,13 +64,18 @@
     // The index is complete for this map's current static scene.
     bool rigidIndexCurrent()const{
         return staticScene&&staticScene->map==lastRequest.map&&rigidIndex.scene==staticScene.get()&&rigidIndex.revision==rigidSceneRevision(*staticScene)&&rigidIndex.complete;}
-    // 1: the static cache draws it (a placement at W's origin with W's axes), 0: not (or no scene
+    // 1: a decoded static model has a placement at W's origin with W's axes, 0: not (or no scene
     // for this map after 15 s), -1: not known yet.
     int rigidStaticCovered(const NorthlightRigidMemory::Observation& o,DWORD now){
         if(!staticScene||staticScene->map!=lastRequest.map)return now-rigidMapMs<15000?-1:0;const auto& x=rigidIndex;
         if(x.scene!=staticScene.get()||x.revision!=rigidSceneRevision(*staticScene)||!x.complete)return -1;
-        return x.find(o.world+9,.05f,[&](std::uint32_t i){const auto& place=staticScene->placements[i];const float t[3]={place.translation.x,place.translation.y,place.translation.z};
-            return NorthlightRigidGeometry::staticPlacement(o.world+9,o.world,t,place.matrix);})?1:0;
+        bool pending=false;
+        const bool placed=x.find(o.world+9,.05f,[&](std::uint32_t i){const auto& place=staticScene->placements[i];const float t[3]={place.translation.x,place.translation.y,place.translation.z};
+            if(!NorthlightRigidGeometry::staticPlacement(o.world+9,o.world,t,place.matrix))return false;
+            const auto model=staticScene->models.find(place.modelKey);
+            if(model==staticScene->models.end()||!model->second){pending=true;return false;} // Metadata can publish before its model.
+            return true;});
+        return placed?1:pending?-1:0;
     }
     // One constant group [first,end) of the captured replays: a non-rigid group gives a body
     // root, a rigid one (every skinned draw shared, audited, one bone) an observation of its

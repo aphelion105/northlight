@@ -52,7 +52,7 @@ finally:
     assets.close()
 (out/'smoke_sky_native.h').write_text(''.join(arrays)+'struct NativeForeground{unsigned major,index;const DWORD* code;size_t count;};\nstatic const NativeForeground kNativeForeground[]={'+','.join(entries)+'};\n')
 (out/'native-shaders.json').write_text(json.dumps(provenance, indent=2)+'\n')
-assert renderer.count('effectCoverageDraw([&]{return ext->Draw') == 4
+assert renderer.count('effectCoverageDraw([&]{return nativeLocalSubmit([&]{return ext->Draw') == 4
 assert 'owner.effectCoverageDraw([&]{return args.submit(device);},true)' in renderer
 exe = out/'smoke-sky.exe'
 subprocess.run([str(fp.zig()), 'c++', '-target', 'x86-windows-gnu', '-std=c++17', '-O2', '-UNDEBUG',

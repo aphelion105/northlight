@@ -30,7 +30,8 @@ adapter = int(os.environ.get('NORTHLIGHT_TEST_D3D9_ADAPTER', '0'))
 assert 0 <= adapter < 16
 def game_boundary():
     process = subprocess.run(['tasklist', '/FI', 'IMAGENAME eq Wow.exe', '/FO', 'CSV', '/NH'], capture_output=True, text=True, check=True)
-    assert not any(line.startswith('"') and line.split(',')[0].strip('"').lower() == 'wow.exe' for line in process.stdout.splitlines()), 'Game must remain stopped for the standalone fixture'
+    running = any(line.startswith('"') and line.split(',')[0].strip('"').lower() == 'wow.exe' for line in process.stdout.splitlines())
+    assert not running or os.environ.get('NORTHLIGHT_TEST_ALLOW_RUNNING_GAME') == '1', 'Set NORTHLIGHT_TEST_ALLOW_RUNNING_GAME=1 for explicitly authorized correctness-only testing'
     return process.stdout
 
 before_game = game_boundary()
@@ -58,6 +59,31 @@ run = subprocess.run([str(binary), str(private_backend), str(folder), str(adapte
                      capture_output=True, text=True, timeout=180)
 (folder / 'gpu.log').write_text(run.stdout + run.stderr, encoding='utf-8')
 assert run.returncode == 0, run.stdout + run.stderr
+assert 'NATIVE_CAPTURE_PASS draws=128 imagePairs=8 exactShaders=1 exactConstants=1 stateUnchanged=1' in run.stdout
+native_journals=list(folder.glob('capture-*-native-inputs.jsonl'));assert len(native_journals)==1
+native_events=[json.loads(line) for line in native_journals[0].read_text().splitlines()]
+assert sum(e['event']=='native-draw' for e in native_events)==128
+assert sum(e['event']=='native-image-roi' for e in native_events)==16
+assert native_events[-1]['export_complete']
+slots=[e for e in native_events if e['event']=='native-slot']
+assert len(slots)==512
+assert all(e['status']=='no-binding' and e['candidate_source_id']=='0' for e in slots if e['draw']==1)
+for draw in range(1,129):
+    group=[e for e in slots if e['draw']==draw]
+    assert [e['native_slot'] for e in group]==[0,1,2,3]
+    assert all(e['native_slot_count']==4 for e in group)
+    assert group[2]['status']=='no-binding' and group[2]['candidate_source_id']=='0'
+    assert group[2]['position']==[1,2,3] and group[2]['point_slot']==-1
+assert not any(e.get('status')=='disabled' for e in native_events)
+results=[e for e in native_events if e['event']=='native-result']
+assert len(results)==128
+for i,e in enumerate(results):
+    assert e['draw']==i+1 and e['corrected_sources']==i%2
+    assert e['renderer_counters_observed']==bool(i) and not e['fallback_cause_proven']
+    assert (e['cold_pairs_delta'],e['deferred_pairs_delta'],e['fallbacks_delta'])==(i%3,i%5,i%7)
+
+
+assert next(e for e in native_events if e['event']=='native-summary')['skipped_draws']==2
 depth_formats = run.stdout.count('LIGHT_CAPTURE_DEPTH ')
 assert depth_formats in (1, 2), run.stdout
 assert f'LIGHT_CAPTURE_PASS depthFormats={depth_formats} exactDepthPixels={851*depth_formats} apiFailureCases=22 constantRegisters=116 stateVS=256 statePS=224 timing=none' in run.stdout, run.stdout
@@ -72,6 +98,17 @@ for path in complete + incomplete:
     assert not events[0]['material_replay_complete'] and not events[0]['per_sample_color_exported']
     assert not events[0]['stencil_image_exported'] and not events[0]['scene_boundary_changed']
     assert events[-1]['export_complete'] == (path in complete)
+    directional=[e for e in events if e['event']=='directional-map']
+    if directional:
+        assert len(directional)==4 and [e['action'] for e in directional]==['-','-','R','U']
+        assert directional[3]['product']=='shadow-far' and directional[3]['source']==1
+        assert directional[3]['receiver_matrix']==[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]
+    publications=[e for e in events if e['event']=='point-publication']
+    for e in publications:
+        assert e['slot']==0 and e['schedule_source_id']=='42' and e['cache_source_id']=='42'
+        assert e['map']=='Azeroth' and e['schedule_generation']=='17' and len(e['faces'])==6
+        assert e['faces'][0]['static_content']==['11','22'] and e['faces'][0]['static_serial']=='17'
+
     assert events[0]['renderer_frame_known'] and events[0]['renderer_frame'] and events[0]['world_frame']
 assert guard == {relative: hashlib.sha256((fp.REPO / relative).read_bytes()).hexdigest() for relative in guard}, 'Source changed during focused acceptance'
 assert backend_hash == hashlib.sha256(backend.read_bytes()).hexdigest(), 'Backend changed during acceptance'

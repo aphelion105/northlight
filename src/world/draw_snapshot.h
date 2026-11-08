@@ -803,10 +803,15 @@ public:
     void clearFrame(){maintenance_={};sampleMaintenance_=false;used_=regularUsed_=0;draws_=regularDraws_=0;sourceSpanVertices_=uniqueVertices_=savedVertexBytes_=0;compactedDraws_=0;indexHits_=indexMisses_=0;cacheHits_=cacheMisses_=revalidated_=revalidationMismatches_=trackedHits_=peerHits_=sharedSourceHits_=0;replayContentTests_=replayContentHits_=0;replayContentComparedBytes_=0;avoidedReadBytes_=0;metadataBatches_=metadataHits_=metadataFallbacks_=fastCacheHits_=0;predictTried_=predictHits_=predictMisses_=0;++frame_;}
     // Cache lifetime never establishes validity: reads still lock/compare current
     // IB contents and copy current VB data. Reset/destruction may drop plans.
-    size_t clearIndexCache(NorthlightStreaming::CpuRetirement* retirement=nullptr,NorthlightStreaming::CpuRetirementBatch* batch=nullptr){
+    size_t clearIndexCache(NorthlightStreaming::CpuRetirement* retirement=nullptr,NorthlightStreaming::CpuRetirementBatch* batch=nullptr,bool preserveSnapshots=false){
         activeRuns_=&copyRuns_;recent_=nullptr;decodedLRU_.clear();
         // Preserve the existing source retirement's priority under the byte cap.
-        size_t deferred=clearSnapshotCache(retirement,batch);
+        size_t deferred=0;
+        if(preserveSnapshots){
+            // Device Reset drops read plans, not immutable CPU geometry. Every
+            // subsequent lookup still checks current resource identity/revision.
+            ++sources_->generation;dropPrediction(Erase::Clear);
+        }else deferred=clearSnapshotCache(retirement,batch);
         // These immutable plans own no COM objects. Detach their allocations
         // before reset so a noncritical trim need not destroy them in-frame.
         if((retirement||batch)&&indexCacheEntries())try{

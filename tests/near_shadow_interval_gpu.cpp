@@ -6,9 +6,10 @@
 static void must(HRESULT hr){assert(SUCCEEDED(hr));}
 struct WorldScreenEffectsTest {
  static std::vector<float> image(IDirect3DDevice9* d,IDirect3DSurface9* surface){
-  IDirect3DSurface9* read=nullptr;must(d->CreateOffscreenPlainSurface(1024,1024,D3DFMT_R32F,D3DPOOL_SYSTEMMEM,&read,nullptr));
+  D3DSURFACE_DESC desc{};must(surface->GetDesc(&desc));assert(desc.Format==D3DFMT_R32F);
+  IDirect3DSurface9* read=nullptr;must(d->CreateOffscreenPlainSurface(desc.Width,desc.Height,D3DFMT_R32F,D3DPOOL_SYSTEMMEM,&read,nullptr));
   must(d->GetRenderTargetData(surface,read));D3DLOCKED_RECT lock{};must(read->LockRect(&lock,nullptr,D3DLOCK_READONLY));
-  std::vector<float> pixels(1024*1024);for(unsigned y=0;y<1024;++y)std::memcpy(pixels.data()+y*1024,static_cast<char*>(lock.pBits)+y*lock.Pitch,4096);
+  std::vector<float> pixels(desc.Width*desc.Height);for(unsigned y=0;y<desc.Height;++y)std::memcpy(pixels.data()+y*desc.Width,static_cast<char*>(lock.pBits)+y*lock.Pitch,desc.Width*4);
   must(read->UnlockRect());read->Release();return pixels;
  }
  static void setup(WorldRenderer& w,unsigned interval,unsigned detail){
@@ -54,6 +55,50 @@ struct WorldScreenEffectsTest {
   w.replays.push_back(std::move(p));w.captureMode=WorldRenderer::CaptureFresh;w.shadowSelectionDone=true;
   for(unsigned warm=0;warm<8&&!w.replays[0]->pointBounds.valid;++warm){w.replayBoundsKick();w.replayBoundsJoin();}
  }
+ static void actorSettings(IDirect3DDevice9* d,IDirect3DTexture9* depth,IDirect3DSurface9* target){
+  WorldRenderer reference(d),retained(d);setup(reference,1,1);setup(retained,1,1);
+  auto draw=[&](WorldRenderer& w){pose(w,0);must(d->BeginScene());assert(w.render(target,depth,64,64,D3DFMT_A8R8G8B8,1,1000,0,1,1,nullptr,nullptr));must(d->EndScene());};
+  draw(reference);draw(retained);
+  retained.pointIndex=0;assert(retained.pointResources()&&retained.pointCacheResources(0));
+  auto& point=retained.pointSlot();point.cacheValid=true;
+  must(d->SetRenderTarget(0,point.cacheSurface[0]));must(d->Clear(0,nullptr,D3DCLEAR_TARGET,D3DCOLOR_COLORVALUE(.25f,.25f,.25f,1),1,0));
+  const auto staticPixels=image(d,point.cacheSurface[0]);assert(staticPixels[0]>0&&staticPixels[0]<1);
+  retained.staticStream.reset();retained.staticScene=std::make_shared<StaticShadow::Snapshot>();
+  auto shared=[&](){std::vector<const void*> objects={retained.vertices,retained.indices,retained.shadowDecl,retained.liveTerrainDecl,retained.lightingPS,retained.finalPS,retained.giPS,retained.fogPS,retained.fogActorPS,retained.cloudNoise,retained.baselineLight,retained.light,retained.smoothLight,retained.normalBuffer,retained.fog,retained.fogBlurred,retained.fogHistory,retained.shadowDepth,retained.shadowCacheDepth,retained.shadowScratch,retained.staticScene.get(),point.cube,point.cacheFace[0]};
+   for(auto* texture:retained.shadow)objects.push_back(texture);for(auto* texture:retained.shadowCache)objects.push_back(texture);for(auto* texture:retained.probe)objects.push_back(texture);objects.push_back(retained.probePrev);return objects;};
+  const auto original=shared();unsigned cases=0;
+  for(const auto& state:std::array<std::pair<unsigned,unsigned>,4>{{{0,1},{1,1},{1,0},{1,1}}}){
+   retained.temporalValid=retained.fogHistoryValid=true;point.ready=point.schedule.usable=true;point.faceCycle.start(1,point.faceWeights,GetTickCount(),retained.meshGeneration);
+   for(auto* w:{&reference,&retained}){
+    NorthlightSettings::Config config;config.quality=w->quality;config.celestial=w->celestialProfiles;
+    config.quality.actorShadows=state.first;config.quality.actorShadowDetail=state.second;w->applyLiveSettings(config);
+   }
+   assert(shared()==original&&retained.geometryTargetsReady&&retained.actorTargetsPending);
+   assert(!retained.temporalValid&&!retained.fogHistoryValid&&!point.ready&&!point.schedule.usable&&!point.faceCycle.active()&&point.cacheValid);
+   for(unsigned source=0;source<2;++source)assert(!retained.nearShadow[source].valid&&!retained.farShadow[source].valid&&!retained.actorValid[source]&&!retained.nearActorSkip[source]);
+   assert(!retained.actorShadow[0]&&!retained.actorShadow[1]&&!retained.actorShadowPS);
+   assert(retained.resources(64,64,D3DFMT_A8R8G8B8)&&retained.geometryResources(64,64)&&!retained.actorTargetsPending);
+   assert(shared()==original&&image(d,point.cacheSurface[0])==staticPixels);
+   if(state.first&&state.second)assert(retained.actorShadowPS&&retained.actorShadow[0]&&retained.actorShadow[1]&&retained.actorTiles[0]&&retained.actorVisibility);
+   else assert(!retained.actorShadowPS&&!retained.actorShadow[0]&&!retained.actorVisibility);
+   // The control retains the old full rebuild. Warm the same captured pose so
+   // the oracle compares shadow coverage, independent of cold bounds scheduling.
+   reference.releaseGPU(true);assert(reference.resources(64,64,D3DFMT_A8R8G8B8)&&reference.geometryResources(64,64));
+   for(unsigned warm=0;warm<8;++warm){reference.replayBoundsKick();reference.replayBoundsJoin();}
+   draw(reference);draw(retained);
+   for(unsigned source=0;source<2;++source){
+    assert(image(d,reference.shadowSurface[source*2])==image(d,retained.shadowSurface[source*2]));
+    assert(image(d,reference.shadowSurface[source*2+1])==image(d,retained.shadowSurface[source*2+1]));
+    if(state.first&&state.second){assert(retained.actorValid[source]&&retained.actorCasterCount[source]>0);assert(image(d,reference.actorShadowSurface[source])==image(d,retained.actorShadowSurface[source]));}
+   }
+   assert(image(d,point.cacheSurface[0])==staticPixels);++cases;
+  }
+  for(unsigned sampler=0;sampler<16;++sampler)must(d->SetTexture(sampler,nullptr));must(d->SetDepthStencilSurface(nullptr));must(d->SetRenderTarget(0,target));
+  retained.releaseGPU(true);assert(!retained.geometryTargetsReady&&!retained.actorTargetsPending&&!retained.light&&!retained.lightingPS&&!retained.probe[0]&&!point.cube&&!retained.staticScene);
+  assert(retained.resources(64,64,D3DFMT_A8R8G8B8)&&retained.geometryResources(64,64));
+  retained.reset();assert(!retained.geometryTargetsReady&&!retained.actorTargetsPending&&!retained.light&&!retained.lightingPS&&!retained.probe[0]);
+  std::printf("ACTOR_SETTINGS_PASS cases=%u sharedObjects=%zu pointStaticPixels=exact nearFarActorMaps=exact fullRelease=1 reset=1\n",cases,original.size());std::fflush(stdout);
+ }
  static void run(IDirect3DDevice9* d){
   IDirect3DTexture9* depth=nullptr;IDirect3DSurface9* target=nullptr;must(d->CreateTexture(64,64,1,0,D3DFMT_R32F,D3DPOOL_MANAGED,&depth,nullptr));D3DLOCKED_RECT lock{};must(depth->LockRect(0,&lock,nullptr,0));for(unsigned y=0;y<64;++y)for(unsigned x=0;x<64;++x)reinterpret_cast<float*>(static_cast<char*>(lock.pBits)+y*lock.Pitch)[x]=.5f;must(depth->UnlockRect(0));
   must(d->CreateRenderTarget(64,64,D3DFMT_A8R8G8B8,D3DMULTISAMPLE_NONE,0,FALSE,&target,nullptr));unsigned cases=0,reuses=0,changes=0;
@@ -74,6 +119,7 @@ struct WorldScreenEffectsTest {
    assert(retained->nearReuses>0);reuses+=retained->nearReuses;
    std::printf("NEAR_INTERVAL_CASE detail=%u interval=%u nearReuses=%u farReuses=%u\n",detail,interval,retained->nearReuses,retained->farReuses);std::fflush(stdout);
   }
+  actorSettings(d,depth,target);
   for(unsigned s=0;s<16;++s)d->SetTexture(s,nullptr);depth->Release();target->Release();
   std::printf("NEAR_INTERVAL_PASS cases=%u movingChanges=%u environmentReuses=%u sources=2 detailOnOff=1 fallback=1 liveIntervalChange=1\n",cases,changes,reuses);
  }

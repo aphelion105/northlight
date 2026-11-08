@@ -11,7 +11,7 @@ sampler2D DiscWater : register(s2);
 sampler2D DiscHaloVisibility : register(s3); // current halo, previous 1x1 value in visibility pass
 sampler2D DiscTerrain : register(s4); // viewer-ray coverage of already loaded terrain
 sampler2D DiscSkyLayers : register(s6); // RGB: attenuated background; A: cloud transmission
-float4 DiscSkyComposition : register(c49); // enabled, surface emission, surface opacity, reserved
+float4 DiscSkyComposition : register(c49); // enabled, surface emission, surface opacity, solar cloud visibility ready
 float4 DiscSurfaceTint : register(c50);
 sampler2D DiscRingVisibility : register(s5); // 1x1 visibility of the 2-4R ring (sun), else the halo value
 float4 DiscTerrainPolicy : register(c46); // ready, mask extent in body radii, body texture LOD, glare mode (0 late tail, 1 sky-phase compact core, 2 late full glare in a skybox frame)
@@ -82,7 +82,9 @@ float glareProfile(float radius){
     // geometry covers it; no previous-frame visibility texture is needed.
     bool skyCore=abs(DiscTerrainPolicy.w-1)<.5; // mode 2 (skybox frame) is the pre-sky-phase late glare: halo-visibility taps and ring
     float disc=skyCore?1:saturate(tex2Dlod(DiscHaloVisibility,float4(.5,.5,0,0)).r);
-    float ring=skyCore?0:DiscGlowCore.w*saturate(tex2Dlod(DiscRingVisibility,float4(.5,.5,0,0)).r);
+    // The ring may be from last frame. It must not resurrect a source whose
+    // current visibility is zero (opaque cloud, terrain or native geometry).
+    float ring=skyCore||disc<=0?0:DiscGlowCore.w*saturate(tex2Dlod(DiscRingVisibility,float4(.5,.5,0,0)).r);
     float3 tail=float3(exp2(-.12*r2),exp2(-.025*r2),exp2(-.008*r2));
     // tail(sqrt(r^2+9)) = sum w_i*2^(-k_i*9)*2^(-k_i*r^2): the same three terms.
     float tailed=max(disc*dot(tail,float3(.25,.35,.40)),ring*dot(tail,float3(.118257,.299458,.380527)));
@@ -108,7 +110,7 @@ float3 outputColor(float3 encoded){
     return DiscPolicy.x>1.5?encoded:DiscPolicy.x>.5?linearColor:encoded;
 }
 float4 CelestialHaloVisibilityPS(float2 uv:TEXCOORD0):COLOR0 {
-    float current=0;
+    float current=0,transmitted=0;
     [loop]for(int i=0;i<32;++i){
         float4 source=DiscSourceUV[i];
         float terrain=DiscTerrainPolicy.x>.5?1-saturate(tex2Dlod(DiscTerrain,float4(source.zw,0,0)).r):1;
@@ -116,13 +118,17 @@ float4 CelestialHaloVisibilityPS(float2 uv:TEXCOORD0):COLOR0 {
         float3 ray=discRay(source.xy);
         // Both the disc and wrap ring must see the source through native
         // geometry. Per-output depth alone cannot stop the diffuse veil indoors.
-        current+=filteredSkyVisibility(source)*terrain*saturate(30*ray.z/max(dot(ray,DiscDirection.xyz),1e-6));
+        float visible=filteredSkyVisibility(source)*terrain*saturate(30*ray.z/max(dot(ray,DiscDirection.xyz),1e-6));
+        float cloud=DiscSkyComposition.w>.5?saturate(tex2Dlod(DiscSkyLayers,float4(source.xy,0,0)).a):1;
+        current+=visible;transmitted+=visible*cloud;
     }
     current*=1.0/32;
     // Retain more halo around a partially covered source: half-visible yields
     // 75% instead of 50%. Endpoints stay exact; a full blocker still hides it.
     // Apply before temporal filtering so the existing full-occlusion fade holds.
-    current=current*(2-current);
+    // Keep the geometric edge response, but do not brighten cloud transmission:
+    // a uniform half-transparent layer passes half the unobscured glare.
+    current=(transmitted*(1.0/32))*(2-current);
     // A fully covered source must not retain the previous frame's glare on a wall.
     if(current<=0)return 0;
     // Do not read uninitialized ping-pong storage on first use or a reset.

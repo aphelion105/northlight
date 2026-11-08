@@ -74,5 +74,14 @@ int main(){
     assert(std::fabs(row.frameIdleMs-242.411)<1e-9&&std::fabs(row.sceneMs-row.sceneIdleMs-3.858)<1e-9);
     assert(std::fabs(row.sceneMs+row.effectsMs+row.tailMs+row.finishMs+row.presentMs-row.totalMs)<1e-9);
     assert(row.queries.pendingNs==2685000&&row.queries.wallNs==10000);
-    std::puts("PASS frame-stall profile: exact phase partition, top four of 120, query waits, queue-idle deltas, direct path and counter/clock resets; no GPU/game.");
+    tracker.reset();f={};f.observationEndNs=100000000;
+    tracker.presented(f,1000000,1000000,1000000,1000000,0,0);
+    f.observationEndNs=130000000;tracker.presented(f,1030000,1030000,1030000,1000000,0,0);
+    row=tracker.take().worst[0];assert(row.observationStartNs==100000000&&row.observationEndNs==130000000);
+    f.observationEndNs=120000000;tracker.presented(f,1060000,1060000,1060000,1000000,0,0);
+    assert(!tracker.take().worst[0].observationStartNs);
+    tracker.reset();f.observationEndNs=200000000;tracker.presented(f,1000000,1000000,1000000,1000000,0,0);
+    f.observationEndNs=230000000;tracker.presented(f,1030000,1030000,1030000,1000000,0,0);
+    assert(tracker.take().worst[0].observationStartNs==200000000);
+    std::puts("PASS frame-stall profile: exact phase partition, top four of 120, query waits, queue-idle deltas, present-boundary observations and counter/clock resets; no GPU/game.");
 }

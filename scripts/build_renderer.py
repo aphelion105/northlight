@@ -98,6 +98,8 @@ def main(argv=None):
     local_manifest = json.loads((SHADERS/'local-light-shader-build.json').read_text())
     if hashlib.sha256((SHADERS/'local_light_effects.hlsl').read_bytes()).hexdigest() != local_manifest['source_sha256']:
         raise SystemExit('Local light shader source differs from offline build.')
+    if hashlib.sha256((ROOT/'shaders/compile_local_light_shaders.py').read_bytes()).hexdigest() != local_manifest.get('derivative_hoist_sha256'):
+        raise SystemExit('Local light shader transform differs from offline build; run scripts/shaders/compile_local_light_shaders.py.')
     celestial_manifest = json.loads((SHADERS/'celestial-disc-shader-build.json').read_text())
     if hashlib.sha256((SHADERS/'celestial_disc_effects.hlsl').read_bytes()).hexdigest() != celestial_manifest['source_sha256']:
         raise SystemExit('Celestial disc shader source differs from offline build.')

@@ -104,7 +104,8 @@ def point_replays_guarded(text):
     once(text,count,'point replay count')
     for needle in ('const auto& bounds=replays[i]->pointBounds;', 'pointOwnShell(*replays[i],ownShell,runs)',
                    'pointAppendCandidates(pointReplayCandidates,i,mask,faces);'):once(candidates,needle,'point candidate guard')
-    for needle in ('for(size_t index:pointReplayCandidates[face]){const auto& p=replays[index];',
+    for needle in ('for(size_t at=0;at<pointReplayCandidates[face].size();){const size_t index=pointReplayCandidates[face][at];const auto& p=replays[index];',
+                   'pointReplayRun(pointReplayCandidates[face],at,replayRuns,replayBindings.skipping())',
                    '"cube animated draw"','"cube split emitter draw"'):once(draws,needle,'point draw guard')
     outside=text.replace(candidates,'').replace(draws,'').replace(count,'')
     return (text.index(candidates)+len(candidates)<=text.index(draws)

@@ -33,11 +33,11 @@ inline HRESULT colorSpace(IDirect3DDevice9* d,unsigned space){
 }
 struct Settings {
     bool requested=false;float paperWhite=203,uiWhite=160,maxNits=1000,contrast=1,exposure=0;
-    bool autoExposure=true,autoPeak=true;float bloom=1,legacyExpansion=0,minEV=-2,maxEV=1,lightT90=.5f,darkT90=2;
+    bool autoExposure=true,autoPeak=true,wideBloom=false;float bloom=1,legacyExpansion=0,minEV=-2,maxEV=1,lightT90=.5f,darkT90=2;
     void apply(const std::array<float,NorthlightHdrSettingsContract::Count>& values){
         using namespace NorthlightHdrSettingsContract;
         requested=values[Enabled]>.5f;paperWhite=values[PaperWhite];uiWhite=values[UIWhite];maxNits=values[MaxNits];contrast=values[Contrast];exposure=values[Exposure];
-        autoExposure=values[ExposureMode]>.5f;autoPeak=values[PeakMode]>.5f;bloom=values[BloomStrength];legacyExpansion=values[LegacyExpansion];
+        autoExposure=values[ExposureMode]>.5f;autoPeak=values[PeakMode]>.5f;bloom=values[BloomStrength];wideBloom=values[WideBloom]>.5f;legacyExpansion=values[LegacyExpansion];
         minEV=values[AutoMinEV];maxEV=values[AutoMaxEV];lightT90=values[LightAdaptation];darkT90=values[DarkAdaptation];
     }
     static Settings load(const wchar_t* root){

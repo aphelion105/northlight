@@ -15,6 +15,13 @@
 extern "C" __attribute__((no_builtin("memcmp"),no_builtin("bcmp"))) int memcmp(const void* a,const void* b,size_t n){return NorthlightMem::compare(a,b,n);}
 #define NORTHLIGHT_MODEL_NORMALS_TEST
 #include "model_normal_renderer.h"
+#ifdef NORTHLIGHT_MODEL_NORMALS_SLICE_TEST
+struct ModelNormalPacketTestAccess {static unsigned compactReady(const NorthlightModelNormals& n){return n.compactBuilt;}
+#ifdef NORTHLIGHT_MODEL_NORMALS_CONSTANT_TEST
+    static void exactBank(const NorthlightModelNormals& n,const float* bank){assert(!n.pending.empty());const auto& p=*n.pending.back();const auto range=p.constantUsage.floats;assert(!std::memcmp(p.constants+range.first*4,bank+range.first*4,range.count*16));}
+#endif
+};
+#endif
 #include "saved_state.h"
 using NorthlightGI::Vec3;
 static void checked(HRESULT h,int line){if(FAILED(h)){std::printf("line=%d HRESULT=%08lx\n",line,(unsigned long)h);std::abort();}}
@@ -30,7 +37,10 @@ struct CaptureCalls:ForwardIDirect3DDevice9 {
     unsigned bulkReads=0,bulkMisses=0;bool bulkUnknown=false;
     unsigned textureReads=0,samplerReads=0,viewportReads=0;
     unsigned vertexRegistersWritten=0,vertexRegistersRead=0;
+    unsigned vertexCreates=0,pixelCreates=0,failVertexCreates=0,failPixelCreates=0;
     using ForwardIDirect3DDevice9::ForwardIDirect3DDevice9;
+    HRESULT STDMETHODCALLTYPE CreateVertexShader(const DWORD* code,IDirect3DVertexShader9** out)override{++vertexCreates;if(failVertexCreates){--failVertexCreates;*out=nullptr;return D3DERR_INVALIDCALL;}return real->CreateVertexShader(code,out);}
+    HRESULT STDMETHODCALLTYPE CreatePixelShader(const DWORD* code,IDirect3DPixelShader9** out)override{++pixelCreates;if(failPixelCreates){--failPixelCreates;*out=nullptr;return D3DERR_INVALIDCALL;}return real->CreatePixelShader(code,out);}
     HRESULT STDMETHODCALLTYPE GetViewport(D3DVIEWPORT9* out)override{++viewportReads;return real->GetViewport(out);}
     HRESULT STDMETHODCALLTYPE GetTexture(DWORD stage,IDirect3DBaseTexture9** out)override{++textureReads;return real->GetTexture(stage,out);}
     HRESULT STDMETHODCALLTYPE GetSamplerState(DWORD stage,D3DSAMPLERSTATETYPE key,DWORD* out)override{++samplerReads;return real->GetSamplerState(stage,key,out);}
@@ -82,6 +92,12 @@ static IDirect3DVertexShader9* vs(const std::string& p){auto b=read(p);IDirect3D
 static std::vector<unsigned char> capturedPixels(IDirect3DTexture9* texture,unsigned w,unsigned h){Target t;t.t=texture;t.w=w;t.h=h;t.bytes=8;t.format=D3DFMT_A16B16G16R16F;ok(texture->GetSurfaceLevel(0,&t.s));ok(d->CreateOffscreenPlainSurface(w,h,t.format,D3DPOOL_SYSTEMMEM,&t.read,nullptr));auto data=pixels(t);t.read->Release();t.s->Release();return data;}
 static void nearImage(const std::vector<unsigned char>& a,const std::vector<unsigned char>& b){assert(a.size()==b.size());for(size_t i=0;i<a.size();i+=2){unsigned short x,y;std::memcpy(&x,a.data()+i,2);std::memcpy(&y,b.data()+i,2);assert(std::fabs(half(x)-half(y))<.002f);}}
 #include "model_normal_batch.inc"
+#ifdef NORTHLIGHT_SHADOW_SLICE_TEST
+#include "shadow_slice_images.inc"
+#endif
+#ifdef NORTHLIGHT_MODEL_NORMALS_CONSTANT_TEST
+#include "model_normal_constants.inc"
+#endif
 int main(int argc,char**argv){
     assert(argc==5||(argc==6&&(std::string(argv[5])=="--no-timing"||std::string(argv[5])=="--range-only")));std::setvbuf(stdout,nullptr,_IONBF,0);std::string dir=argv[2],tag=argv[3];
     auto bytes=read(dir+"terrain.bin");unsigned count,samples;Vec3 center;std::memcpy(&count,bytes.data(),4);std::memcpy(&samples,bytes.data()+4,4);std::memcpy(&center,bytes.data()+8,12);assert(bytes.size()==20+count*sizeof(Vertex)+samples*12);auto vertices=(const Vertex*)(bytes.data()+20);auto points=(const Vec3*)(bytes.data()+20+count*sizeof(Vertex));
@@ -130,6 +146,14 @@ int main(int argc,char**argv){
                 native[r+1][0]=up.x;native[r+1][1]=up.y;native[r+1][2]=up.z;native[r+1][3]=NorthlightGI::dot(relative,up);
                 native[r+2][0]=forward.x;native[r+2][1]=forward.y;native[r+2][2]=forward.z;native[r+2][3]=NorthlightGI::dot(relative,forward);}
             ok(d->SetVertexShaderConstantF(0,native[0],256));
+#ifdef NORTHLIGHT_MODEL_NORMALS_CONSTANT_TEST
+            if(frame<8)continue;
+            normalConstants(dir,modelDecl,modelVS,sourceMesh,meshVertices,meshIndices);return 0;
+#endif
+#ifdef NORTHLIGHT_SHADOW_SLICE_ONLY
+            if(frame<8)continue;
+            shadowSliceImages(dir,modelDecl,sourceMesh,meshVertices,meshIndices);return 0;
+#endif
             ok(d->SetStreamSource(0,sentinelVB,0,48));ok(d->SetIndices(sentinelIB));
             ok(d->SetRenderState(D3DRS_WRAP5,7));ok(d->SetRenderState(D3DRS_WRAP7,15));
             auto captureModel=[&]{ok(d->BeginScene());modelNormals->capture(modelVS,[&]{return d->DrawIndexedPrimitiveUP(D3DPT_TRIANGLELIST,0,meshVertices,meshIndices/3,sourceMesh.data()+12+48*meshVertices,D3DFMT_INDEX32,sourceMesh.data()+12,48);},true);ok(d->EndScene());assert(modelNormals->texture());};
@@ -149,7 +173,22 @@ int main(int argc,char**argv){
                 ok(d->SetDepthStencilSurface(nullptr));ok(d->SetRenderTarget(0,depth.s));ok(d->SetDepthStencilSurface(sceneDepth));msaa->Release();msaaDepth->Release();std::puts("MODEL_NORMALS_MSAA_PASS samples=2 capture_exact");
             }
             if(frame==8&&elevation==0){
+#ifdef NORTHLIGHT_SHADOW_SLICE_TEST
+                shadowSliceImages(dir,modelDecl,sourceMesh,meshVertices,meshIndices);
+#endif
                 auto opaque=capturedPixels(modelNormals->texture(),W,H);IDirect3DTexture9* transparent=nullptr;ok(d->CreateTexture(1,1,1,0,D3DFMT_A8R8G8B8,D3DPOOL_MANAGED,&transparent,nullptr));D3DLOCKED_RECT lock{};ok(transparent->LockRect(0,&lock,nullptr,0));*static_cast<DWORD*>(lock.pBits)=0x00ffffff;ok(transparent->UnlockRect(0));
+#ifdef NORTHLIGHT_MODEL_NORMALS_SLICE_TEST
+                if(tag=="3-skinned"){
+                    for(bool failPixel:{false,true}){CaptureCalls calls(d);calls.failPixelCreates=failPixel;calls.failVertexCreates=!failPixel;NorthlightModelNormals fallback(&calls);
+                        for(unsigned repeat=0;repeat<2;++repeat){fallback.endFrame();const auto created=calls.vertexCreates+calls.pixelCreates;
+                            ok(d->BeginScene());fallback.capture(modelVS,[&]{return d->DrawIndexedPrimitiveUP(D3DPT_TRIANGLELIST,0,meshVertices,meshIndices/3,sourceMesh.data()+12+48*meshVertices,D3DFMT_INDEX32,sourceMesh.data()+12,48);},true);ok(d->EndScene());
+                            assert(fallback.texture()&&opaque==capturedPixels(fallback.texture(),W,H));assert(!ModelNormalPacketTestAccess::compactReady(fallback));
+                            if(repeat)assert(created==calls.vertexCreates+calls.pixelCreates);
+                        }
+                    }
+                    std::puts("MODEL_NORMALS_SLICE_FALLBACK_PASS scenarios=2 cached=1 pixels=exact");
+                }
+#endif
                 ok(d->SetPixelShader(alphaModelPS));ok(d->SetRenderState(D3DRS_ALPHATESTENABLE,TRUE));ok(d->SetRenderState(D3DRS_ALPHAFUNC,D3DCMP_GREATER));ok(d->SetRenderState(D3DRS_ALPHAREF,128));bind(0,transparent);modelNormals->endFrame();captureModel();auto empty=capturedPixels(modelNormals->texture(),W,H);for(size_t at=6;at<empty.size();at+=8){unsigned short z;std::memcpy(&z,empty.data()+at,2);assert(z==0);}
                 bind(0,white);modelNormals->endFrame();captureModel();assert(opaque==capturedPixels(modelNormals->texture(),W,H));
                 modelNormals->endFrame();unsigned pendingNotices=0;
@@ -190,6 +229,10 @@ int main(int argc,char**argv){
     assert(batchFixtureState);ok(batchFixtureState->Apply());
     ok(d->SetDepthStencilSurface(nullptr));ok(d->SetRenderTarget(0,depth.s));ok(d->SetRenderTarget(1,nullptr));ok(d->SetDepthStencilSurface(sceneDepth));viewport(depth);
     normalBatch(api,captureCalls,modelVS,meshVertices,meshIndices,sourceMesh,argc==5,dir);batchFixtureState->Release();
+#ifdef NORTHLIGHT_MODEL_NORMALS_SLICE_TEST
+    const auto compact=ModelNormalPacketTestAccess::compactReady(*modelNormals);if(tag=="3-skinned")assert(compact>0);
+    std::printf("MODEL_NORMALS_SLICE_PASS compactShaders=%u\n",compact);
+#endif
     modelNormals->endFrame();assert(!modelNormals->texture());modelNormals->reset();assert(!modelNormals->texture());modelNormals.reset();sentinelVB->Release();sentinelIB->Release();std::printf("MODEL_NORMALS_GPU_PASS native_skin_capture_state_restore renderStateSets=%u renderTargetSets=%u\n",captureCalls.renderSets,captureCalls.targetSets);
     std::fclose(csv);d->Release();api->Release();FreeLibrary(module);DestroyWindow(window);return 0;
 }

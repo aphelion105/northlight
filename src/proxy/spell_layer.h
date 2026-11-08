@@ -27,6 +27,9 @@
 #include <new>
 #include <optional>
 #include <vector>
+#if defined(__SSE2__)
+#include <emmintrin.h>
+#endif
 #include "saved_state.h"
 #include "synced_slots.h"
 #include "spell_fog.h"
@@ -493,6 +496,25 @@ constexpr std::array<uint64_t,32> rsKnownMaskTable(){
     return t;
 }
 constexpr std::array<uint64_t,32> kRsKnownMask=rsKnownMaskTable();
+// Only recorded states must be known. Grouped SIMD checks read exactly the
+// same 256 flag bytes; holes in the D3DRS table remain ignored.
+inline __attribute__((always_inline)) bool renderStatesKnown(const bool* known){
+    static_assert(sizeof(bool)==1);
+#if defined(__SSE2__)
+    for(unsigned i=0;i<32;i+=8){
+        auto missing=_mm_setzero_si128();
+        for(unsigned j=0;j<8;j+=2){
+            const auto flags=_mm_loadu_si128(reinterpret_cast<const __m128i*>(known+(i+j)*8));
+            const auto mask=_mm_loadu_si128(reinterpret_cast<const __m128i*>(kRsKnownMask.data()+i+j));
+            missing=_mm_or_si128(missing,_mm_andnot_si128(flags,mask));
+        }
+        if(_mm_movemask_epi8(_mm_cmpeq_epi8(missing,_mm_setzero_si128()))!=0xffff)return false;
+    }
+#else
+    for(unsigned i=0;i<32;++i){uint64_t flags;std::memcpy(&flags,known+i*8,8);if((flags&kRsKnownMask[i])!=kRsKnownMask[i])return false;}
+#endif
+    return true;
+}
 constexpr std::array<uint64_t,4> rsIdMaskTable(){std::array<uint64_t,4> t{};for(unsigned i=0;i<kRenderStates;++i)t[kRenderStateIds[i]/64]|=1ull<<(kRenderStateIds[i]%64);return t;}
 constexpr std::array<uint64_t,4> kRsIdMask=rsIdMaskTable();                // bit per valid D3DRS id
 constexpr std::array<uint8_t,256> rsIndexTable(){std::array<uint8_t,256> t{};for(auto& x:t)x=255;for(unsigned i=0;i<kRenderStates;++i)t[kRenderStateIds[i]]=uint8_t(i);return t;}
@@ -1191,14 +1213,10 @@ private:
             }
         }
     }
-    // The render states of the draw by id: the cache's array when every state is known (one pass over its known flags, 8 at a time), else a staging copy: the model's values (they
+    // The render states of the draw by id: the cache's array when every required state is known, else a staging copy: the model's values (they
     // equal the device for the synced slots) with the dirty ids read by the cache or by Get (a state the device refuses is dropped for the session: neither recorded nor replayed).
-    const DWORD* renderStates(const uint64_t* dirty){
-        if(mv_&&!anySkip_){
-            bool all=true;
-            for(unsigned i=0;i<32&&all;++i){uint64_t f;std::memcpy(&f,mv_->rsKnown+i*8,8);all=(f&kRsKnownMask[i])==kRsKnownMask[i];}
-            if(all)return mv_->rs;
-        }
+    __attribute__((always_inline)) const DWORD* renderStates(const uint64_t* dirty){
+        if(mv_&&!anySkip_&&renderStatesKnown(mv_->rsKnown))return mv_->rs;
         if(model_.rsValid)std::memcpy(rsStage_,model_.rs,sizeof rsStage_);else std::memset(rsStage_,0,sizeof rsStage_);
         for(unsigned w=0;w<4;++w){
             uint64_t bits=dirty[w];

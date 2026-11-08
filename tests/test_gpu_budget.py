@@ -168,6 +168,38 @@ int main(){
         t.reset();assert(t.begin());t.end();d.failRead=true;assert(!t.poll(ms)&&t.disabled()&&d.live==0);d.failRead=false;
         t.reset();assert(t.begin());t.end();
     }
+    assert(d.live==0);
+    {   // The same existing queries also retain exact renderer-frame attribution.
+        using T=NorthlightGpuFrameTimer;using S=T::SampleState;
+        static_assert(T::HistorySize>=120+4&&sizeof(T::Sample)*T::HistorySize<=4096);
+        T t(&d);double ms=-1;d.ready=true;
+        assert(t.begin(0));t.end();assert(t.poll(ms)&&t.sample(0).state==S::Ready&&t.sample(0).ms==1);
+        assert(t.sample(1).state==S::Unavailable);t.reset();d.ready=false;
+        for(unsigned i=0;i<4;++i){assert(t.begin(633+i));d.time+=i*1000;t.end();}
+        const unsigned issues=d.issues,creates=d.creates,reads=d.reads;
+        assert(!t.begin(637)&&t.sample(637).state==S::Dropped);
+        assert(t.sample(633).state==S::Pending&&d.issues==issues&&d.creates==creates&&d.reads==reads);
+        blockedStamp=d.time;d.ready=true;assert(t.poll(ms)&&ms==3);
+        for(unsigned i=0;i<3;++i)assert(t.sample(633+i).state==S::Ready&&t.sample(633+i).ms==i+1);
+        assert(t.sample(636).state==S::Pending);blockedStamp=0;assert(t.poll(ms)&&ms==4&&t.sample(636).ms==4);
+        // A 120-frame slow window reports frame 628 at 720, not at completion.
+        t.reset();assert(t.begin(628));t.end();assert(t.poll(ms));
+        for(unsigned f=629;f<=752;++f){assert(t.begin(f));t.end();assert(t.poll(ms));}
+        assert(t.sample(628).state==S::Ready&&t.sample(628).ms==1);
+        for(unsigned f=753;f<=756;++f){assert(t.begin(f));t.end();assert(t.poll(ms));}
+        assert(t.sample(628).state==S::Unavailable&&t.sample(756).state==S::Ready);
+        // An older completion cannot overwrite a frame 128 places newer.
+        t.reset();assert(t.begin(10));t.end();blockedStamp=d.time;assert(!t.poll(ms));
+        for(unsigned f=11;f<=138;++f){assert(t.begin(f));d.time+=1000;t.end();assert(t.poll(ms)&&ms==2);}
+        blockedStamp=0;assert(t.poll(ms)&&ms==1);assert(t.sample(10).state==S::Unavailable&&t.sample(138).state==S::Ready&&t.sample(138).ms==2);
+        t.reset();assert(t.sample(138).state==S::Unavailable);
+        assert(t.begin(19));t.end();d.disjoint=true;assert(!t.poll(ms)&&t.sample(19).state==S::Disjoint);d.disjoint=false;
+        assert(t.begin(20));t.end();d.frequency=0;assert(!t.poll(ms)&&t.sample(20).state==S::Invalid);d.frequency=1000000;
+        d.time=10000;assert(t.begin(21));d.time=0;t.end();assert(!t.poll(ms)&&t.sample(21).state==S::Invalid);
+        assert(t.begin(22));d.failIssue=true;t.end();assert(t.disabled()&&t.sample(22).state==S::Disabled);d.failIssue=false;
+        assert(!t.begin(23)&&t.sample(23).state==S::Disabled);t.reset();
+        assert(t.sample(22).state==S::Unavailable&&t.begin(22));t.end();assert(t.poll(ms)&&t.sample(22).state==S::Ready);
+    }
     assert(d.live==0);NorthlightGpuFrameTimer null(nullptr);assert(!null.begin()&&null.disabled());double ms=0;assert(!null.poll(ms));null.end();null.reset();
     std::puts("PASS gpu frame timer: flags-0 reads, ring skip, newest result, dropped intervals, failure isolation, query release");
 }

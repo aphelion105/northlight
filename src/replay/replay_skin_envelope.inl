@@ -33,12 +33,24 @@ struct SkinEnvelope {
         }
         return at==count;
     }
-    bool add(const NorthlightActorDeformation::Four inputs[16]){
+    template<bool TypedSource=false,bool NormalizedWeights=false> bool add(const NorthlightActorDeformation::Four inputs[3]){
+        static_assert(!NormalizedWeights||TypedSource);
         const auto& position=inputs[0];const auto& weights=inputs[1];const auto& indices=inputs[2];
-        if(position[3]!=1)return false;for(float f:position)if(!std::isfinite(f)||(f!=0&&std::fabs(f)<std::numeric_limits<float>::min()))return false;
+        // The typed decoder already checks finite values, supplies FLOAT3 w=1
+        // and generates exact byte indices (and optional normalized weights).
+        if(!TypedSource&&position[3]!=1)return false;for(float f:position)if((!TypedSource&&!std::isfinite(f))||(f!=0&&std::fabs(f)<std::numeric_limits<float>::min()))return false;
         double sumLo=0,sumHi=0;
-        for(unsigned slot=0;slot<4;++slot){if(!std::isfinite(weights[slot])||weights[slot]<0||(weights[slot]!=0&&weights[slot]<std::numeric_limits<float>::min())||!std::isfinite(indices[slot])||indices[slot]<0||indices[slot]>74||std::floor(indices[slot])!=indices[slot])return false;
-            if(sumHi+weights[slot]>0){sumLo=std::nextafter(sumLo+double(weights[slot]),-INFINITY);sumHi=std::nextafter(sumHi+double(weights[slot]),INFINITY);}}
+        for(unsigned slot=0;slot<4;++slot){if((!NormalizedWeights&&((!TypedSource&&!std::isfinite(weights[slot]))||weights[slot]<0||(weights[slot]!=0&&weights[slot]<std::numeric_limits<float>::min())))||(!TypedSource&&!std::isfinite(indices[slot]))||(!TypedSource&&indices[slot]<0)||indices[slot]>74||(!TypedSource&&std::floor(indices[slot])!=indices[slot]))return false;
+            if(sumHi+weights[slot]>0){
+                if constexpr(sizeof(double)==8&&std::numeric_limits<double>::is_iec559&&std::numeric_limits<double>::radix==2&&
+                             std::numeric_limits<double>::digits==53&&std::numeric_limits<double>::max_exponent==1024){
+                    // Four nonnegative normal float weights keep both double
+                    // sums positive and normal, far from either double limit.
+                    // Their exact outward neighbors need no general nextafter.
+                    double low=sumLo+double(weights[slot]),high=sumHi+double(weights[slot]);std::uint64_t lo,hi;
+                    std::memcpy(&lo,&low,8);std::memcpy(&hi,&high,8);--lo;++hi;
+                    std::memcpy(&sumLo,&lo,8);std::memcpy(&sumHi,&hi,8);
+                }else{sumLo=std::nextafter(sumLo+double(weights[slot]),-INFINITY);sumHi=std::nextafter(sumHi+double(weights[slot]),INFINITY);}}}
         if(!std::isfinite(sumHi)||sumHi>16)return false; // Pathological inputs stay on the general evaluator.
         sumLow=std::min(sumLow,std::max(0.,sumLo));sumHigh=std::max(sumHigh,sumHi);
         for(unsigned axis=0;axis<3;++axis)maxPosition[axis]=std::max(maxPosition[axis],std::fabs(double(position[axis])));
@@ -46,7 +58,7 @@ struct SkinEnvelope {
             for(unsigned axis=0;axis<3;++axis){if(!b.used)b.low[axis]=b.high[axis]=position[axis];else{b.low[axis]=std::min(b.low[axis],position[axis]);b.high[axis]=std::max(b.high[axis],position[axis]);}}if(!b.used)order[usedBones++]=(unsigned char)(unsigned(indices[slot]));b.used=true;
         }return true;
     }
-    bool evaluate(const float* constants,const float* inverse,Bounds& output,bool(*shouldStop)(void*)=nullptr,void* stopContext=nullptr)const{
+    bool evaluate(const float* constants,const float* inverse,Bounds& output,bool(*shouldStop)(void*)=nullptr,void* stopContext=nullptr,bool aligned=false)const{
         output={};if(!constants||!inverse)return false;
         for(unsigned i=0;i<16;++i)if(!std::isfinite(inverse[i])||(inverse[i]!=0&&std::fabs(inverse[i])<std::numeric_limits<float>::min()))return false;
         if(inverse[3]!=0||inverse[7]!=0||inverse[11]!=0||inverse[15]!=1)return false;
@@ -131,6 +143,23 @@ struct SkinEnvelope {
             if(!std::isfinite(magnitude[axis])||magnitude[axis]>double(std::numeric_limits<float>::max())/32)return false;
             lo-=error;hi+=error;const float mid=float((lo+hi)*.5);
             view[axis]={mid,std::max(double(mid)-lo,hi-double(mid))};
+        }
+        if(aligned){
+            // Compose before taking extrema. Transforming a view-axis AABB loses
+            // axis correlation and changes the displacement fade as the camera turns.
+            for(unsigned axis=0;axis<3;++axis){double lo=INFINITY,hi=-INFINITY,scale=0,error=0;
+                for(unsigned j=0;j<3;++j)error+=std::fabs(double(inverse[4*j+axis]))*(64*std::numeric_limits<float>::epsilon()*magnitude[j]+1024*std::numeric_limits<float>::min()*(1+maxPosition[0]+maxPosition[1]+maxPosition[2]+maxPosition[3]));
+                for(unsigned n=0;n<usedBones;++n){if(n&&(n&7u)==0&&shouldStop&&shouldStop(stopContext))return false;
+                    const auto& bone=bones[order[n]];const float* rows=constants+4*(31+3*order[n]);double coefficient[4]={},rounding=0;
+                    for(unsigned k=0;k<4;++k){double products=0;for(unsigned j=0;j<3;++j){const double term=double(inverse[4*j+axis])*rows[4*j+k];coefficient[k]+=term;products+=std::fabs(term);}rounding+=products*maxPosition[k]*16*std::numeric_limits<double>::epsilon();}
+                    double a=coefficient[3],b=a;for(unsigned k=0;k<3;++k){const double x=coefficient[k]*bone.low[k],y=coefficient[k]*bone.high[k];a+=std::min(x,y);b+=std::max(x,y);}
+                    lo=std::min(lo,a-rounding);hi=std::max(hi,b+rounding);scale=std::max(scale,std::max(std::fabs(a),std::fabs(b))+rounding);
+                }
+                const double values[]={lo*sumLow,lo*sumHigh,hi*sumLow,hi*sumHigh};lo=*std::min_element(values,values+4)+inverse[12+axis];hi=*std::max_element(values,values+4)+inverse[12+axis];
+                error+=detail::roundError(scale*sumHigh+std::fabs(double(inverse[12+axis])))*8+.001;
+                if(!std::isfinite(lo)||!std::isfinite(hi)||!std::isfinite(error)||std::max(std::fabs(lo),std::fabs(hi))+error>1000000)return false;
+                output.low[axis]=std::nextafter(float(lo-error),-INFINITY);output.high[axis]=std::nextafter(float(hi+error),INFINITY);
+            }output.valid=true;return true;
         }
         for(unsigned axis=0;axis<3;++axis){detail::Value world={inverse[12+axis],0};double scale=std::fabs(world.value);
             for(unsigned j=0;j<3;++j){auto term=detail::mul(view[j],{inverse[4*j+axis],0});scale+=std::fabs(term.value)+term.error;world=detail::add(world,term);}

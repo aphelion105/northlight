@@ -57,28 +57,30 @@ const='        const float drawnWeight=std::max(sourceWeights[0],0.f)+std::max(s
 upload='        c[30][0]=waterMask?1.f:0.f;d->SetPixelShaderConstantF(0,&c[0][0],68);'
 checks['c30.yzw only from the drawn source weight (sum of positive weights), set once']=(w.count(const)==1 and w.count(upload)==1 and w.index(const)<w.index(upload)
     and re.search(r'c\[30\]\[[123]\]=',w.replace(const,'')) is None and 'if(sourceWeights[source]<=0&&source!=firstSource)continue;' in w)
-tb=w[w.index('{   // Temporal stabilization: light + history'):w.index('temporalIndex=prev;temporalValid=true;')]
+tb=w[w.index('{   // Temporal stabilization: retain this frame'):w.index('temporalIndex=prev;temporalValid=true;')]
 # Current local radiance follows directional history; both consumers need the
 # same current baseline, and the optional point pass restores the world bank.
 between=w[w.index('temporalIndex=prev;temporalValid=true;'):w.index('bool compositeOk=')]
 local=w[w.index('d->SetPixelShader(localDirectPS);'):w.index('if(profile)profile->mark("LocalLights");')]
-checks['BaselineLighting (s12): temporal/current-local/composite bindings retained']=(w.count('SetTexture(12,')==10
-    and w.count('d->SetTexture(12,actorShadow[source]);')==2 and w.count('d->SetTexture(12,anyActorPass?actorVisibility:neutralWhite);')==1 and w.count('d->SetTexture(12,baselineLight);')==5
-    and 'd->SetTexture(12,baselineLight);' in tb and between.count('d->SetTexture(12,baselineLight);')==3 and local.count('d->SetTexture(12,baselineLight);')==1)
+checks['BaselineLighting (s12): retained through removal/temporal, restored after fog']=(
+    w.count('d->SetTexture(12,baselineLight);')==2 and 'SetTexture(12,' not in tb
+    and w.index('d->SetTexture(12,baselineLight);')<w.index('{   // Temporal stabilization: retain this frame')
+    and between.index('SetTexture(12,fogHeightReady?fogHeightTexture:nullptr)')<between.index('SetTexture(12,baselineLight)'))
 # 0.3.185 host: the pass is created, drawn right before the temporal pass with the samplers smoothRemoval reads, released and dumped.
 smoothdraw='if(removalDrawn){if(!check(d->SetRenderTarget(0,smoothSurface),"removal smoothing target"))return false;d->SetPixelShader(removalPS);if(!check(quad(w/2,h/2,false),"removal smoothing pass"))return false;}'
 checks['RemovalSmooth host: shader, half-res fp16 target, release, F12 dump, drawn before the temporal pass; s9 (idle, rebound later) carries it']=(
-    'kRemovalSmoothShader,&removalPS' in w and '&smoothLight,&smoothSurface' in w and 'drop(smoothSurface)' in w and 'drop(smoothLight)' in w and 'drop(removalPS)' in w
-    and w.count('dump(d,c[30][1]>0?smoothSurface:lightSurface,directory,"smoothed-light",capture);')==1 and tb.count('const bool removalDrawn=c[30][1]>0;')==1
+    'kRemovalSmoothShader,&removalPS' in w and '&smoothLight,&smoothSurface' not in w and 'drop(smoothSurface)' not in w and 'drop(smoothLight)' not in w and 'drop(removalPS)' in w
+    and 'smoothSurface=nullptr;' in w and 'smoothLight=nullptr;' in w and 'smoothLight=fogBlurred;smoothSurface=fogBlurredSurface;' in tb
+    and w.count('dump(d,c[30][1]>0?smoothSurface:lightSurface,directory,"smoothed-light",capture);')==1 and tb.count('const bool removalDrawn=normalsProduceDistance;')==1 and 'const bool normalsProduceDistance=c[30][1]>0;' in w
     and tb.index('const bool removalDrawn')<tb.index(smoothdraw) and tb.count('d->SetTexture(9,removalDrawn?smoothLight:light);')==1 and tb.count(smoothdraw)==1 and tb.index(smoothdraw)<tb.index('SetRenderTarget(0,temporalLightSurface[cur])')
-    and w.index('d->SetTexture(14,normalBuffer);')<w.index('{   // Temporal stabilization: light + history') and tb.index('SetTexture(10,')<tb.index(smoothdraw)
+    and w.index('d->SetTexture(14,normalBuffer);')<w.index('{   // Temporal stabilization: retain this frame') and tb.index('SetTexture(10,')<tb.index(smoothdraw)
     and 'd->SetTexture(8,light);' in tb[:tb.index(smoothdraw)])
 # task 43: GPU profile marks split the old GI and PointLighting intervals: GI (the GI pass), LocalLights (the lamp batches),
 # PointLight (the shadowed point lamp), RemovalSmooth (its pass, or nothing without a drawn source) and TemporalLight.
 order=[w.index(n) for n in ('quad(w/2,h/2),"world GI pass"','if(profile)profile->mark("GI");',smoothdraw,'if(profile)profile->mark("RemovalSmooth");',
     'quad(w/2,h/2,false),"temporal light pass"','if(profile)profile->mark("TemporalLight");','bucket(NorthlightEffectsBuckets::PointLighting);',
     'd->SetPixelShader(localDirectPS);','if(profile)profile->mark("LocalLights");',
-    'renderPointLighting(depth,waterMask,w,h,nearZ,farZ,minZ,maxZ,c[52][1],lampSunlitCut,c[20][2],sunEnergy);','if(profile)profile->mark("PointLight");')]
+    'renderPointLighting(depth,waterMask,w,h,nearZ,farZ,minZ,maxZ,c[52][1],lampSunlitCut,c[20][2],sunEnergy,lightingCapture?&*lightingCapture:nullptr);','if(profile)profile->mark("PointLight");')]
 checks['GPU marks: directional/GI filters precede current local and point passes, each once']=(order==sorted(order)
     and all(w.count('profile->mark("%s")'%m)==1 for m in ('GI','LocalLights','PointLight','RemovalSmooth','TemporalLight')) and 'mark("PointLighting")' not in w)
 recycle=w[w.index('if(profile)profile->mark("TemporalLight");'):w.index('constexpr unsigned directInputs=')]

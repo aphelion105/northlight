@@ -12,7 +12,9 @@ from shader_compiler import Compiler
 
 renderer = fp.src('renderer.cpp').read_text()
 world = fp.src('world_renderer.h').read_text()
-assert renderer.count('effectCoverageDraw([&]{return ext->Draw') == 4
+assert renderer.count('auto draw=[&]{return submitGameDraw(') == 4
+assert 'return effectCoverageDraw([&]{return nativeLocalSubmit(submit);},false,nativeSky,skyCaptured);' in renderer
+assert 'autoBump->nativeDisplacement():nullptr,effectCoverage.nativePixel())' in renderer
 assert 'owner.effectCoverageDraw([&]{return args.submit(device);},true)' in renderer
 assert 'void spellSync(){effectCoverage.endBatch();' in renderer
 assert 'effectCoverage.texture(ext,saved.targets[0])' in renderer

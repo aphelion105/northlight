@@ -10,7 +10,7 @@ import northlight_paths as fp
 
 with tempfile.TemporaryDirectory(prefix='northlight-equipment-') as tmp:
     world = fp.src('world_renderer.h').read_text()
-    capture = world[world.index('    void captureEquipmentLights('):world.index('    void observeLightAttachments(')]
+    capture = world[world.index('    void captureEquipmentLights('):world.index('    const NorthlightNativeLights::Point* nativeDirectSource(')]
     (Path(tmp)/'equipment_capture_body.inc').write_text(capture, encoding='utf-8')
     for flags in (['-O0'], ['-O2']):
         exe = Path(tmp)/('test.exe' if sys.platform == 'win32' else 'test')
@@ -25,7 +25,7 @@ with tempfile.TemporaryDirectory(prefix='northlight-equipment-') as tmp:
 
 renderer = fp.src('renderer.cpp').read_text()
 world = fp.src('world_renderer.h').read_text()
-assert 'world->registerEquipmentShader(*out,m2ShaderFamily(h)==3?words.data():nullptr,m2ShaderFamily(h)==3?words.size():0)' in renderer
+assert 'world->registerNativePointShader(*out,(m2ShaderFamily(h)==3||NorthlightWmoContext::signature(h))?words.data():nullptr,(m2ShaderFamily(h)==3||NorthlightWmoContext::signature(h))?words.size():0,m2ShaderFamily(h)==3)' in renderer
 assert 'if(world->equipmentLightsOn())world->captureEquipmentLights(vs,worldDepth);' in renderer
 capture = world[world.index('    void captureEquipmentLights('):world.index('    unsigned spellLayerSetting()')]
 assert capture.index('equipmentCapture.take(actor,') < capture.index('GetVertexShaderConstantF(17,readBank,11)')

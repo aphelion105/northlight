@@ -13,6 +13,8 @@ code=client_fixtures.four_bone_vs3().read_bytes();words=struct.unpack('<%dI'%(le
 with (out/'actor_client_programs.h').open('a') as f:f.write('\nnamespace ClientShaders {static const std::uint32_t FourBoneVs3[]={'+','.join(hex(w) for w in words)+'};}\n')
 results={}
 inputs={str(fp.src(name)):hashlib.sha256(fp.src(name).read_bytes()).hexdigest() for name in ['replay_envelopes.inl','replay_bounds.h','replay_bounds_job.h','replay_skin_envelope.inl','source_identity.h','draw_snapshot.h','point_light_shadow.h']}
+for path in (Path(__file__),fp.TESTS/'replay_source_identity.cpp',fp.TESTS/'replay_source_identity_gpu.cpp'):
+ inputs[str(path)]=hashlib.sha256(path.read_bytes()).hexdigest()
 commands=[]
 branches=([('before',0),('current',1)] if a.before else [('current',1)])+([('current-ubsan',1)] if a.ubsan else [])
 for name,reuse in branches:

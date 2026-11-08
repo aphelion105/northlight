@@ -18,6 +18,7 @@ struct IDirect3DStateBlock9;
 struct IDirect3DDevice9 {
     int refs=1,creates=0,captures=0,applies=0,alive=0,state=17;
     bool failCreate=false,failCapture=false,failViewport=false,failApply=false;
+    int failNullTargetOnce=-1;
     std::array<IDirect3DSurface9*,4> targets{};
     IDirect3DSurface9* depth=nullptr;
     IDirect3DSurface9* boundResource=nullptr;
@@ -27,7 +28,7 @@ struct IDirect3DDevice9 {
     HRESULT GetRenderTarget(int i,IDirect3DSurface9** out){*out=targets[i];if(*out)(*out)->AddRef();return *out?0:-1;}
     HRESULT GetDepthStencilSurface(IDirect3DSurface9** out){*out=depth;if(*out)(*out)->AddRef();return *out?0:-1;}
     HRESULT GetViewport(D3DVIEWPORT9* out){if(failViewport)return -1;*out=viewport;return 0;}
-    HRESULT SetRenderTarget(int i,IDirect3DSurface9* value){targets[i]=value;changes.push_back(10+i);return 0;}
+    HRESULT SetRenderTarget(int i,IDirect3DSurface9* value){changes.push_back(10+i);if(!value&&failNullTargetOnce==i){failNullTargetOnce=-1;return -1;}targets[i]=value;return 0;}
     HRESULT SetDepthStencilSurface(IDirect3DSurface9* value){depth=value;changes.push_back(value?21:20);return 0;}
     HRESULT SetViewport(const D3DVIEWPORT9* v){viewport=*v;changes.push_back(30);return 0;}
 };
@@ -47,6 +48,22 @@ struct Fixture {
 };
 static void mutate(Fixture& f,int state){f.d.state=state;f.d.targets={f.surface+5,nullptr,nullptr,nullptr};f.d.depth=nullptr;f.d.viewport={0,0,7,9,0,1};}
 int main(){
+    for(unsigned mask=0;mask<8;++mask){Fixture f;
+        for(unsigned i=1;i<4;++i)if(!(mask&(1u<<(i-1))))f.d.targets[i]=nullptr;
+        const auto original=f.d.targets;
+        {SavedState s(&f.d);assert(s.ok);mutate(f,99);
+            // Every auxiliary target is dirty, even those saved as null.
+            for(unsigned i=1;i<4;++i)f.d.targets[i]=f.surface+5;}
+        assert(f.d.targets==original&&f.d.depth==f.surface+4&&f.d.state==17);
+        std::vector<int> expected={20,11,12,13,10};
+        for(unsigned i=1;i<4;++i)if(original[i])expected.push_back(10+i);
+        expected.insert(expected.end(),{21,40,30});assert(f.d.changes==expected);
+    }
+    {Fixture f;f.d.targets[2]=nullptr;
+        {SavedState s(&f.d);assert(s.ok);mutate(f,99);f.d.targets[2]=f.surface+5;f.d.failNullTargetOnce=2;}
+        assert(!f.d.targets[2]);
+        const std::vector<int> expected={20,11,12,13,10,11,12,13,21,40,30};assert(f.d.changes==expected);
+    }
     {Fixture f;{SavedState s(&f.d);assert(s.ok);mutate(f,99);}assert(f.d.state==17&&f.d.targets[3]==f.surface+3&&f.d.depth==f.surface+4);assert(f.d.viewport.X==3&&f.d.viewport.Width==800);assert(f.d.creates==1&&f.d.captures==0&&f.d.alive==0);
         const std::vector<int> expected={20,11,12,13,10,11,12,13,21,40,30};assert(f.d.changes==expected);}
     {Fixture f;NorthlightStateBlockPool pool(&f.d);

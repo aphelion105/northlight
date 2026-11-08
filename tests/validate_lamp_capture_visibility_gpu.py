@@ -21,22 +21,24 @@ from PIL import Image
 def main():
     p = argparse.ArgumentParser(__doc__)
     p.add_argument('--capture', type=Path, required=True)
+    p.add_argument('--capture-index', type=int, default=1)
     p.add_argument('--output', type=Path, required=True)
     p.add_argument('--receiver', type=int, nargs=4, required=True, metavar=('X0', 'Y0', 'X1', 'Y1'),
                    help='An identified ground receiver, excluding overlays and stencil-protected names')
     p.add_argument('--reuse-composite', type=Path)
     a = p.parse_args()
     out = a.output.resolve(); out.mkdir(parents=True, exist_ok=True)
-    prefix = str(a.capture.resolve() / 'capture-1-')
+    assert a.capture_index > 0
+    prefix = str(a.capture.resolve() / f'capture-{a.capture_index}-')
     records = [json.loads(line) for line in Path(prefix+'lighting-inputs.jsonl').read_text().splitlines()]
     plan = capture_plan(records)
     assert plan['hdr'], 'This regression follows the HDR final pipeline'
     contract = replay_contract(records, prefix, plan)
     from validate_native_scene_trace import processes
-    processes(False)
+    processes()
     backend = fp.client_root() / 'renderer-backends/dxvk/dxvk_d3d9.dll'
     env = {**fp.zig_env(), 'DXVK_LOG_PATH': str(out), 'DISABLE_VULKAN_OBS_CAPTURE': '1'}
-    inputs = sorted(a.capture.glob('capture-1-*'))
+    inputs = sorted(a.capture.glob(f'capture-{a.capture_index}-*'))
     fingerprints = {str(path.resolve()): hashlib.sha256(path.read_bytes()).hexdigest() for path in inputs if path.is_file()}
 
     def compile(source, name):
@@ -93,7 +95,7 @@ def main():
         presentation.append({'exposure_ev': exposure, 'pixels_over_quarter_nit': changed,
                              'maximum_delta_nits': (difference.max(axis=(0, 1))*80).tolist()})
     assert fingerprints == {path: hashlib.sha256(Path(path).read_bytes()).hexdigest() for path in fingerprints}
-    processes(False)
+    processes()
     report = {'pass': True, 'capture': str(a.capture.resolve()), 'renderer_frame': records[0]['renderer_frame'],
               'receiver': a.receiver, 'capture_sha256': fingerprints,
               'artifact_sha256': {name: hashlib.sha256((out/name).read_bytes()).hexdigest()

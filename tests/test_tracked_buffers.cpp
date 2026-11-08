@@ -539,6 +539,14 @@ static void spellHookTests(){
  raw->AddRef();vb->Release();assert(raw->refs==1);raw->Release();
  puts("PASS spell layer write hook: marked buffers only, non-READONLY only, before the real lock, raw key, usage and outstanding locks, unmark and removal");
 }
+template<class T> static void managedResetTests(){
+ using namespace NorthlightTrackedBuffers;Device owner;constexpr bool index=std::is_same<T,IDirect3DIndexBuffer9>::value;
+ for(unsigned kind=0;kind<3;++kind){auto* raw=new Raw<T>;raw->desc.Pool=kind==0?D3DPOOL_DEFAULT:D3DPOOL_MANAGED;raw->desc.Usage=0;raw->failDesc=kind==2;T* buffer=raw;wrap<T,Forward<T>>(&buffer,&owner,index);
+  const auto before=version(raw,index);assert(before);invalidateAll(true);assert((version(raw,index)==before)==(kind==1));
+  const auto resetVersion=version(raw,index);invalidateAll();assert(version(raw,index)!=resetVersion);
+  void* data=nullptr;assert(buffer->Lock(0,4,&data,0)==S_OK);*static_cast<int*>(data)+=1;invalidateAll(true);assert(!version(raw,index));assert(buffer->Unlock()==S_OK&&version(raw,index));buffer->Release();}
+ std::puts("PASS Reset buffer generations: only proven unlocked managed bytes persist; default/unknown/locked and ordinary invalidation remain conservative");
+}
 int main(){using namespace NorthlightTrackedBuffers;Device owner;
  auto* raw=new Raw<IDirect3DVertexBuffer9>;IDirect3DVertexBuffer9* vb=raw;wrap<IDirect3DVertexBuffer9,ForwardIDirect3DVertexBuffer9>(&vb,&owner,false);
  assert(vb!=raw&&unwrap(vb)==raw&&unwrap(raw)==raw&&owner.refs==2);uint64_t start=version(raw,false);assert(start&&version(raw,true)==0);
@@ -555,4 +563,5 @@ int main(){using namespace NorthlightTrackedBuffers;Device owner;
  auto* ri=new Raw<IDirect3DIndexBuffer9>;IDirect3DIndexBuffer9* ib=ri;wrap<IDirect3DIndexBuffer9,ForwardIDirect3DIndexBuffer9>(&ib,&owner,true);assert(version(ri,true)&&!version(ri,false));ib->Release();assert(owner.refs==1&&records.empty());
  puts("PASS buffer COM ownership, VB/IB identity, normal/DISCARD/NOOVERWRITE writes, READONLY, nested failed lock, failed unlock, ProcessVertices invalidation and reset");
  metadataTests();mirrorExposure();discardMeterTests();copiesTests();unchangedWriteTests<IDirect3DVertexBuffer9>();unchangedWriteTests<IDirect3DIndexBuffer9>();skippedUploadTests<IDirect3DVertexBuffer9>();skippedUploadTests<IDirect3DIndexBuffer9>();spellHookTests();
+ managedResetTests<IDirect3DVertexBuffer9>();managedResetTests<IDirect3DIndexBuffer9>();
 }

@@ -43,10 +43,11 @@ struct World {
     struct Fx{bool gi=true,shadows=true,fog=true;};Fx effects,requestedEffects;unsigned effectResets=0;
     void setEffects(const Fx& requested){requestedEffects=requested;Fx next=requested;next.gi=NorthlightQuality::giPass(quality,next.gi);next.shadows=quality.worldShadows&&next.shadows;next.fog=quality.worldFog&&next.fog;if(effects.gi==next.gi&&effects.shadows==next.shadows&&effects.fog==next.fog)return;++effectResets;settingsRequestDirty|=effects.gi!=next.gi||effects.fog!=next.fog;effects=next;}
     struct {float steps=0;} staticPrebuild;
-    unsigned resets=0,invalidates=0;
+    unsigned resets=0,invalidates=0,actorChanges=0;
     struct {size_t full=0,half=0;void configureBudget(size_t a,size_t b){full=a;half=b;}} replaySnapshots;
     void setNearReserve(){}
     void releaseGPU(bool keep){assert(keep);++resets;}
+    void actorSettingsChanged(){++actorChanges;}
     void invalidateShadowCache(){++invalidates;}
     void releaseSoftShadows(){}
     void releaseNearEnvironment(){}
@@ -64,15 +65,15 @@ int main(){
         assert(!w.paletteFrameValid&&w.quality.preset==next.quality.preset);
         assert(w.effects.gi==(next.quality.gi!=0));
         assert(w.replaySnapshots.full==size_t(w.quality.captureBudgetMiB)*1048576);
-        assert(w.resets==unsigned(old.actorShadows!=w.quality.actorShadows||old.actorShadowDetail!=w.quality.actorShadowDetail));
-        w.applyLiveSettings(next);assert(w.resets<=1);
+        assert(w.resets==0&&w.actorChanges==unsigned(old.actorShadows!=w.quality.actorShadows||old.actorShadowDetail!=w.quality.actorShadowDetail));
+        w.applyLiveSettings(next);assert(w.resets==0&&w.actorChanges<=1);
     }
     {   // The menu's GI toggle honours Ctrl+Shift+F8: with the key OFF, GI=1 must not switch it on; the key then follows GI=0/1 again.
         World w;w.setEffects({false});NorthlightSettings::Config c;c.quality=w.quality;c.quality.gi=0;w.applyLiveSettings(c);assert(!w.effects.gi);
         c.quality.gi=1;w.applyLiveSettings(c);assert(!w.effects.gi&&!w.requestedEffects.gi);w.setEffects({true});assert(w.effects.gi);
         World v;NorthlightSettings::Config d;d.quality=v.quality;d.quality.gi=0;v.applyLiveSettings(d);assert(!v.effects.gi&&v.effectResets==1);d.quality.gi=1;v.applyLiveSettings(d);assert(v.effects.gi&&v.effectResets==2);
     }
-    std::cout<<"Live settings: 1000 production apply cases; F/R, GI request snapshot, CPU budget and optional GPU rebuild passed\n";
+    std::cout<<"Live settings: 1000 production apply cases; F/R, GI request snapshot, CPU budget and selective actor refresh passed\n";
 }
 '''.replace('__METHOD__',method)
 with tempfile.TemporaryDirectory(prefix='northlight-live-settings-') as tmp:

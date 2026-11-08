@@ -26,6 +26,24 @@ static void logf(const char* format,...){if(!std::strstr(format,"MATERIAL_CONFIG
 struct DisplacementStateTestAccess {
     using Mesh=NorthlightDrawSnapshot::Mesh;
     static void poseHandoff(const char* path);
+    static void distanceViewReuse(){
+        NorthlightAutoDisplacement cached(nullptr),fresh(nullptr);
+        for(unsigned step=0;step<180;++step){
+            const float angle=float(step/3)*.037f,c=std::cos(angle),s=std::sin(angle);
+            float rows[]={c,0,s,0,0,1,0,0,-s,0,c,0};
+            // W is not part of the rotation, including non-finite W values.
+            rows[3]=float(step);rows[7]=-float(step);rows[11]=NAN;
+            if(step%17==0)rows[0]=NAN;
+            if(step%29==0)rows[5]=1.01f;
+            fresh.setDistanceView(nullptr);fresh.setDistanceView(rows);cached.setDistanceView(rows);
+            assert(cached.distanceViewKnown==fresh.distanceViewKnown);
+            assert(!std::memcmp(cached.distanceInverseView,fresh.distanceInverseView,sizeof cached.distanceInverseView));
+            if(fresh.distanceViewKnown)assert(!std::memcmp(cached.distanceView,fresh.distanceView,sizeof cached.distanceView));
+            if(step%11==0){cached.endFrame();assert(!cached.distanceViewKnown);}
+        }
+        cached.setDistanceView(nullptr);assert(!cached.distanceViewKnown);
+        std::printf("DISPLACEMENT_VIEW_REUSE_PASS repeated_basis rotation_change invalid_basis ignored_w frame_reset exact_fresh_inverse\n");
+    }
     static void conservativeBody(const char* path){
         using namespace NorthlightActorDeformation;
         FILE* f=std::fopen(path,"rb");assert(f);std::fseek(f,0,SEEK_END);const long bytes=std::ftell(f);std::rewind(f);
@@ -38,17 +56,18 @@ struct DisplacementStateTestAccess {
         NorthlightAutoDisplacement r(nullptr);r.range=1000;
         unsigned checks=0;
         for(unsigned frame=0;frame<40;++frame){
+            const float c=std::cos(frame*.37f),sn=std::sin(frame*.37f),inverse[]={c,0,sn,0,0,1,0,0,-sn,0,c,0};r.setDistanceView(inverse);
             for(unsigned bone=0;bone<4;++bone){auto* row=r.constants+4*(31+3*bone);std::fill(row,row+12,0.f);row[0]=row[5]=row[10]=1;row[3]=float(bone)+frame*.1f;row[7]=float(bone)*.2f;row[11]=6;}
             if(frame==10){mesh=std::make_shared<Mesh>(*mesh);float moved=25;std::memcpy(mesh->streams[0].bytes.data(),&moved,4);}
             if(frame==20)p.definitions.push_back({31,{1,0,0,17}});
-            std::shared_ptr<const Mesh> owner=mesh;NorthlightReplayBounds::Bounds bound;float low[3],high[3];
+            std::shared_ptr<const Mesh> owner=mesh;NorthlightReplayBounds::Bounds bound,viewBound;float low[3],high[3];
             for(unsigned retry=0;retry<100&&!bound.valid;++retry){r.poseEnvelopes.beginFrame(false);r.envelopeBudget.reset();
-                assert(!r.distantPoseBounds(p,owner,layout,4,low,high,nullptr,nullptr,&bound));}
+                assert(!r.distantPoseBounds(p,owner,layout,4,low,high,nullptr,nullptr,&bound,true,&viewBound));}
             assert(bound.valid);
+            const auto recomputedView=r.distanceBoundsInView(bound);assert(viewBound.valid&&!std::memcmp(viewBound.low,recomputedView.low,12)&&!std::memcmp(viewBound.high,recomputedView.high,12));
             for(unsigned i=0;i<mesh->vertexCount;++i){Four inputs[16]={},position;assert(sampledVertexInputsAt(p,*mesh,layout,4,i,inputs)&&evaluateFast(p,inputs,r.constants,position));
-                for(unsigned k=0;k<3;++k)assert(position[k]>=bound.low[k]&&position[k]<=bound.high[k]);++checks;}
-            // Conservatively reusing the pose must still consume the old 8192
-            // admission allowance, including a later exact-fallback draw.
+                for(unsigned k=0;k<3;++k){const float value=position[0]*inverse[k]+position[1]*inverse[4+k]+position[2]*inverse[8+k];assert(value>=bound.low[k]&&value<=bound.high[k]);}const auto view=r.distanceBoundsInView(bound);for(unsigned k=0;k<3;++k)assert(position[k]>=view.low[k]&&position[k]<=view.high[k]);++checks;}
+            // Actual fallback scans retain the 8192-vertex allowance.
             r.poseVerticesThisFrame=0;assert(r.chargePoseVertices(96));assert(r.chargePoseVertices(8096));assert(!r.chargePoseVertices(1));
             assert(r.poseVerticesThisFrame==8192&&r.poseFallbackVertices==0);
         }
@@ -57,6 +76,31 @@ struct DisplacementStateTestAccess {
         NorthlightReplayBounds::Bounds denied;float low[3],high[3];std::shared_ptr<const Mesh> owner=mesh;
         assert(!r.distantPoseBounds(p,owner,layout,4,low,high,nullptr,nullptr,&denied)&&!denied.valid);
         std::printf("PASS WeightedR0 conservative reuse: %u vertex enclosures, current pose/source/DEF, refused envelope, retained 8192 admission\n",checks);
+    }
+    static void cameraBounds(const char* path){
+        using namespace NorthlightActorDeformation;
+        FILE* f=std::fopen(path,"rb");assert(f);std::fseek(f,0,SEEK_END);long bytes=std::ftell(f);std::rewind(f);std::vector<uint32_t> code(bytes/4);assert(std::fread(code.data(),1,bytes,f)==size_t(bytes));std::fclose(f);
+        Program p;assert(compile(code.data(),code.size(),p));
+        D3DVERTEXELEMENT9 layout[]={{0,0,D3DDECLTYPE_FLOAT3,0,D3DDECLUSAGE_POSITION,0},{0,12,D3DDECLTYPE_FLOAT4,0,D3DDECLUSAGE_BLENDWEIGHT,0},{0,28,D3DDECLTYPE_UBYTE4,0,D3DDECLUSAGE_BLENDINDICES,0},D3DDECL_END()};
+        auto mesh=std::make_shared<Mesh>();mesh->vertexCount=24;mesh->primitiveCount=8;mesh->streams[0].stride=32;mesh->streams[0].bytes.resize(24*32);
+        for(unsigned i=0;i<24;++i){float data[]={(i&1)?2.f:-2.f,(i&2)?.5f:-.5f,(i&4)?6.7f:6.3f,.25f,.25f,.25f,.25f};std::memcpy(mesh->streams[0].bytes.data()+i*32,data,28);for(unsigned k=0;k<4;++k)mesh->streams[0].bytes[i*32+28+k]=k;}
+        std::shared_ptr<const Mesh> source=mesh;NorthlightAutoDisplacement r(nullptr);r.range=8;float minimum=1,maximum=0,oldMinimum=1,oldMaximum=0;
+        auto gain=[](const NorthlightReplayBounds::Bounds& b){float d=0;for(unsigned k=0;k<3;++k){float v=b.low[k]>0?b.low[k]:b.high[k]<0?-b.high[k]:0;d+=v*v;}return std::clamp((64-d)/28,0.f,1.f);};
+        for(unsigned frame=0;frame<360;++frame){
+            r.endFrame();assert(!r.distanceViewKnown);const float angle=frame*.01745329252f,c=std::cos(angle),s=std::sin(angle);const float inverse[]={c,0,s,0,0,1,0,0,-s,0,c,0};r.setDistanceView(inverse);assert(r.distanceViewKnown);
+            for(unsigned bone=0;bone<4;++bone){float rows[]={c,0,s,0,0,1,0,0,-s,0,c,0};std::copy_n(rows,12,r.constants+4*(31+bone*3));}
+            NorthlightReplayBounds::Bounds b;float low[3],high[3];
+            for(unsigned retry=0;retry<100&&!b.valid;++retry){r.poseEnvelopes.beginFrame(false);r.envelopeBudget.reset();r.distantPoseBounds(p,source,layout,4,low,high,nullptr,nullptr,&b,true);}assert(b.valid);
+            const float value=gain(b);minimum=std::min(minimum,value);maximum=std::max(maximum,value);
+            auto view=r.distanceBoundsInView(b);NorthlightReplayBounds::Bounds old;old.valid=true;for(unsigned k=0;k<3;++k){old.low[k]=FLT_MAX;old.high[k]=-FLT_MAX;}
+            for(unsigned i=0;i<mesh->vertexCount;++i){Four inputs[16]={},position;assert(sampledVertexInputsAt(p,*mesh,layout,4,i,inputs)&&evaluateFast(p,inputs,r.constants,position));for(unsigned k=0;k<3;++k){assert(position[k]>=view.low[k]&&position[k]<=view.high[k]);old.low[k]=std::min(old.low[k],position[k]);old.high[k]=std::max(old.high[k],position[k]);}}
+            oldMinimum=std::min(oldMinimum,gain(old));oldMaximum=std::max(oldMaximum,gain(old));
+            r.poseVerticesThisFrame=8192;NorthlightReplayBounds::Bounds warm;r.distantPoseBounds(p,source,layout,4,low,high,nullptr,nullptr,&warm,true);assert(warm.valid&&r.poseVerticesThisFrame==8192);
+        }
+        std::fprintf(stderr,"camera gain min=%g max=%g oldMin=%g oldMax=%g\n",minimum,maximum,oldMinimum,oldMaximum);assert(maximum-minimum<.0001f&&oldMaximum-oldMinimum>.1f);
+        r.setDistanceView(nullptr);assert(!r.distanceViewKnown);for(unsigned i=0;i<16;++i)assert(r.distanceInverseView[i]==float(i%5==0));
+        float invalid[12]={};r.setDistanceView(invalid);assert(!r.distanceViewKnown);r.reset();assert(!r.distanceViewKnown);
+        std::printf("DISPLACEMENT_CAMERA_BOUNDS_PASS rotations=360 oldGainSpan=%g worldGainSpan=%g enclosedVertices=8640 warmEnvelopeAfterScanBudget=1 unknownViewCleared=1\n",oldMaximum-oldMinimum,maximum-minimum);
     }
     static void cache();
     static void rotation(){
@@ -545,7 +589,8 @@ struct MaterialCaptureStateTestAccess {
             HRESULT STDMETHODCALLTYPE GetFunction(void* out,UINT* bytes)override{++reads;if(fail)return E_FAIL;const UINT n=UINT(code.size()*4);if(out){if(*bytes<n)return E_FAIL;std::memcpy(out,code.data(),n);}*bytes=n-(out&&shortRead?4:0);return D3D_OK;}
         };
         struct Device:CaptureBackend {
-            bool fail=false;std::vector<std::vector<DWORD>> created;
+            bool fail=false,pixelFail=false;std::vector<std::vector<DWORD>> created;
+            HRESULT STDMETHODCALLTYPE GetPixelShader(IDirect3DPixelShader9** out)override{if(pixelFail){++pixelQueries;*out=nullptr;return E_FAIL;}return CaptureBackend::GetPixelShader(out);}
             HRESULT STDMETHODCALLTYPE GetDeviceCaps(D3DCAPS9*)override{return E_FAIL;}
             HRESULT STDMETHODCALLTYPE CreateVertexShader(const DWORD* code,IDirect3DVertexShader9** out)override{
                 size_t n=1;while((code[n]&65535)!=65535)n+=1+((code[n]&65535)==65534?(code[n]>>16)&32767:(code[n]>>24)&15);
@@ -560,6 +605,13 @@ struct MaterialCaptureStateTestAccess {
         {NorthlightAutoBump b(&lazy);b.modes[3]=1;b.registerVertex(&source,source.hash(),source.code.data(),source.code.size(),3);
             assert(!source.reads&&source.refs==2&&lazy.created.empty()&&b.pendingVertices==1&&b.cold.vertexQueued==1&&!b.cold.vertexSources);
             b.reset();assert(source.refs==2&&b.pendingVertices==1);enable(b);
+            for(unsigned i=0;i<100;++i)b.capture(&source,[]{return D3D_OK;});
+            assert(!source.reads&&lazy.created.empty()&&b.pendingVertices==1&&b.cold.pendingMaterialRejected==100);
+            lazy.pixelFail=true;b.capture(&source,[]{return D3D_OK;});lazy.pixelFail=false;
+            assert(!source.reads&&lazy.created.empty()&&b.pendingVertices==1&&b.cold.pendingMaterialRejected==101);
+            b.vertices.at(&source).kind=1;b.pixels[&lazy.ps]=3;b.capture(&source,[]{return D3D_OK;});b.vertices.at(&source).kind=4;
+            assert(!source.reads&&lazy.created.empty()&&b.pendingVertices==1&&b.cold.pendingMaterialRejected==102);
+            b.pixels[&lazy.ps]=6;
             b.capture(&source,[]{return D3D_OK;});assert(b.vertices.at(&source).patched&&!b.pendingVertices&&source.reads==2&&lazy.created==eager.created);
             const unsigned reads=source.reads;const size_t created=lazy.created.size();b.capture(&source,[]{return D3D_OK;});assert(source.reads==reads&&lazy.created.size()==created);
         }assert(source.refs==1&&lazy.vs.refs==1);
@@ -584,11 +636,12 @@ struct MaterialCaptureStateTestAccess {
                 // Off remains inert, including the overflow callback.
                 b.capture(&good,[]{return D3D_OK;});assert(!identity.calls&&!good.reads);enable(b);
                 b.capture(&unknown,[]{return D3D_OK;});assert(identity.calls==1&&!unknown.reads&&d.created.empty());
-                b.capture(&good,[]{return D3D_OK;});assert(good.reads==2&&b.vertices.at(&good).patched&&b.vertices.size()==4096&&b.pendingVertices==4095&&d.created==eager.created);
+                b.capture(&good,[]{return D3D_OK;});assert(!good.reads&&!b.vertices.at(&good).patched&&b.pendingVertices==4096&&d.created.empty());
+                b.pixels[&d.ps]=6;b.capture(&good,[]{return D3D_OK;});assert(good.reads==2&&b.vertices.at(&good).patched&&b.vertices.size()==4096&&b.pendingVertices==4095&&d.created==eager.created);
                 size_t retained=0;for(auto& s:rejected)retained+=s->refs==2;assert(retained==4095);
             }for(auto& s:rejected)assert(s->refs==1);assert(good.refs==1&&d.vs.refs==1);
         }
-        {Device d;Source good;Identity identity{&good,good.hash()+1};NorthlightAutoBump b(&d);b.vertexOverflow=true;b.setVertexIdentity(&identity,lookup);enable(b);b.capture(&good,[]{return D3D_OK;});assert(good.reads==2&&d.created.empty()&&b.vertices.at(&good).failed);}
+        {Device d;Source good;Identity identity{&good,good.hash()+1};NorthlightAutoBump b(&d);b.vertexOverflow=true;b.setVertexIdentity(&identity,lookup);enable(b);b.capture(&good,[]{return D3D_OK;});assert(!good.reads&&d.created.empty()&&!b.vertices.at(&good).failed);b.pixels[&d.ps]=6;b.capture(&good,[]{return D3D_OK;});assert(good.reads==2&&d.created.empty()&&b.vertices.at(&good).failed);}
         {Device d;Source good;std::vector<std::unique_ptr<Source>> compiled;compiled.reserve(4096);Identity identity{&good,good.hash()};
             {NorthlightAutoBump b(&d);enable(b);b.vertexOverflow=true;b.setVertexIdentity(&identity,lookup);for(unsigned i=0;i<4096;++i){compiled.push_back(std::make_unique<Source>());d.vs.AddRef();b.vertices[compiled.back().get()]={&d.vs,4};}
                 b.capture(&good,[]{return D3D_OK;});assert(b.vertices.size()==4096&&!good.reads&&d.created.empty()&&!b.pendingVertices);}
@@ -596,7 +649,7 @@ struct MaterialCaptureStateTestAccess {
         }
         // Replacement removes retained identity before allocator address reuse.
         {Device d;NorthlightAutoBump b(&d);alignas(Source) unsigned char storage[sizeof(Source)];auto* s=new(storage) Source;b.registerVertex(s,s->hash(),s->code.data(),s->code.size(),3);assert(s->refs==2);b.registerVertex(s,0,s->code.data(),s->code.size());assert(s->refs==1);s->~Source();s=new(storage) Source;s->code[9]=src(1,0,0);b.registerVertex(s,s->hash(),s->code.data(),s->code.size(),3);enable(b);assert(b.ensureVertex(s,b.vertices.at(s)));b.registerVertex(s,0,s->code.data(),s->code.size());assert(s->refs==1);s->~Source();}
-        std::puts("MATERIAL_LAZY_VERTEX_PASS off_zero_getfunction_create exact_eager_bytecode off_on_first_capture domain_toggle reset cached_failures allocation refs replacement_aba cap4096 overflow_hash_proof compiled_cap_retained");
+        std::puts("MATERIAL_LAZY_VERTEX_PASS rejected_material_draws=102 zero_cold_work first_admitted_exact_eager_bytecode off_zero_getfunction_create exact_eager_bytecode off_on_first_capture domain_toggle reset cached_failures allocation refs replacement_aba cap4096 overflow_hash_proof compiled_cap_retained");
     }
     static NorthlightAutoDisplacement& setup(NorthlightAutoBump& b,CaptureBackend& d,unsigned domain){
         b.enabled=true;b.width=b.heightPixels=d.surface.size;
@@ -746,7 +799,7 @@ static void sharedGeometry(){
     std::puts("SHARED_POM_GEOMETRY_PASS exact_attributes multistream strip_winding triangle_ids invalid_indices occupied_semantic");
 }
 int main(int argc,char** argv){
-    assert(argc==2);DisplacementStateTestAccess::conservativeBody(argv[1]);
+    assert(argc==2);DisplacementStateTestAccess::distanceViewReuse();DisplacementStateTestAccess::conservativeBody(argv[1]);DisplacementStateTestAccess::cameraBounds(argv[1]);
     DisplacementStateTestAccess::poseHandoff(argv[1]);
     DisplacementStateTestAccess::rotation();
     DisplacementStateTestAccess::boundsCache();

@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <thread>
 #include "query_poll.h"
+#include "stream_wait.h"
 static void ok(HRESULT hr){assert(SUCCEEDED(hr));}
 static std::uint64_t now(){LARGE_INTEGER t,f;QueryPerformanceCounter(&t);QueryPerformanceFrequency(&f);return std::uint64_t(double(t.QuadPart)*1e9/double(f.QuadPart));}
 struct Vertex{float x,y,z,w;DWORD color;};
@@ -20,24 +21,29 @@ int main(int argc,char** argv){
     ok(device->SetRenderState(D3DRS_ZENABLE,FALSE));ok(device->SetRenderState(D3DRS_LIGHTING,FALSE));
     ok(device->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE));ok(device->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_SRCALPHA));ok(device->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_INVSRCALPHA));
     Vertex quad[]={{0,0,0,1,0x7f4080ff},{2560,0,0,1,0x7f4080ff},{0,1440,0,1,0x7f4080ff},{2560,1440,0,1,0x7f4080ff}};
-    unsigned polls[2]{},flushes[2]{},pending[2]{},trips[2]{};
+    unsigned polls[2]{},flushes[2]{},pending[2]{},trips[2]{},longTrips[2]{};
+    NorthlightStream::QueryLongPause longPause;
     IDirect3DQuery9* query=nullptr;ok(device->CreateQuery(D3DQUERYTYPE_EVENT,&query));
     for(unsigned frame=0;frame<64;++frame){
         const unsigned mode=frame%2;ok(device->BeginScene());
-        for(unsigned draw=0;draw<32+frame;++draw)ok(device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(Vertex)));
+        const unsigned count=frame%16<4?4096:32+frame;
+        for(unsigned draw=0;draw<count;++draw)ok(device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(Vertex)));
         ok(query->Issue(D3DISSUE_END));ok(device->EndScene());
-        const auto start=now();HRESULT hr=S_FALSE;BOOL value=FALSE;
+        const auto start=now();HRESULT hr=S_FALSE;BOOL value=FALSE;bool expired=false;
         while(hr==S_FALSE){
+            NorthlightStream::QueryPollPause pause;
             NorthlightStream::EventFlushCadence cadence;unsigned calls=0;++trips[mode];
             auto poll=[&]{const DWORD flags=mode?cadence.flags(now()):D3DGETDATA_FLUSH;++polls[mode];flushes[mode]+=flags!=0;
                 const auto result=query->GetData(frame%4<2?&value:nullptr,frame%4<2?sizeof value:0,flags);pending[mode]+=result==S_FALSE;return result;};
-            hr=NorthlightStream::waitEventQuery(poll,now,[]{std::this_thread::yield();},calls,NorthlightStream::kEventFlushWaitNs);
+            if(expired){++longTrips[mode];longPause.begin();hr=NorthlightStream::waitEventQuery(poll,now,longPause,calls,NorthlightStream::kEventFlushWaitNs);}
+            else hr=NorthlightStream::waitEventQuery(poll,now,pause,calls,NorthlightStream::kEventFlushWaitNs);
+            expired=hr==S_FALSE;
             assert(now()-start<10000000000ull);
         }
         assert(hr==S_OK);ok(query->GetData(&value,sizeof value,0));assert(value==TRUE);
     }
     assert(flushes[0]==polls[0]&&flushes[1]<=polls[1]);
     if(pending[1]>64)assert(flushes[1]<polls[1]);
-    std::printf("EVENT_FLUSH_GPU_PASS generations=64 real_payload=TRUE legacy_polls=%u legacy_flushes=%u cadence_polls=%u cadence_flushes=%u cadence_pending=%u cadence_trips=%u\n",polls[0],flushes[0],polls[1],flushes[1],pending[1],trips[1]);
+    std::printf("EVENT_FLUSH_GPU_PASS generations=64 real_payload=TRUE legacy_polls=%u legacy_flushes=%u cadence_polls=%u cadence_flushes=%u cadence_pending=%u cadence_trips=%u longTrips=%u/%u\n",polls[0],flushes[0],polls[1],flushes[1],pending[1],trips[1],longTrips[0],longTrips[1]);
     query->Release();device->Release();api->Release();FreeLibrary(module);DestroyWindow(window);
 }

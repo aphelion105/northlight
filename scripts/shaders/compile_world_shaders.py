@@ -19,7 +19,7 @@ ENTRIES = (("DirectionalShadow", "ps_3_0"), ("WorldLightingSoft", "ps_3_0"), ("A
            ("WorldMaterialCompositeHdr", "ps_3_0"), ("WorldPrelitComposite", "ps_3_0"), ("WorldPrelitCompositeHdr", "ps_3_0"),
            ("MaterialAudit", "ps_3_0"), ("ShadowVS", "vs_3_0"), ("ShadowCacheVS", "vs_3_0"),
            ("ShadowPS", "ps_3_0"), ("ShadowReplayPS", "ps_3_0"), ("ShadowUnion", "ps_3_0"),
-           ("ActorTilesWide", "ps_3_0"), ("WorldFogActorTiled", "ps_3_0"), ("FogCloudsActorTiled", "ps_3_0"))
+           ("ActorTilesWide", "ps_3_0"), ("WorldFogActorTiled", "ps_3_0"), ("FogCloudsActorTiled", "ps_3_0"), ("MoonFloorFog", "ps_3_0"), ("MoonFloorFogActor", "ps_3_0"), ("MoonFloorFogActorTiled", "ps_3_0"))
 
 
 def main():
@@ -45,7 +45,7 @@ def main():
             if hashlib.sha256(data).hexdigest()!=previous["shaders"][entry]["sha256"]:
                 raise ValueError(f"{entry}: retained bytecode differs from its previous manifest")
         extended=entry in {"WorldFogActor","FogCloudsActor"}
-        tiled=entry in {"WorldFogActorTiled","FogCloudsActorTiled","WorldMaterialCompositeHdr"}
+        tiled=entry.startswith("MoonFloorFog") or entry in {"WorldFogActorTiled","FogCloudsActorTiled","WorldMaterialCompositeHdr"}
         stats=validate_assembly(asm,target,slot_limit=768 if tiled else 600 if extended else 512)
         if extended or tiled:header.append(f"static constexpr unsigned k{entry}ShaderSlots = {stats['static_instruction_slots']};")
         header.append(f"static const DWORD k{entry}Shader[] = {{\n"+"\n".join(rows(words))+"\n};")

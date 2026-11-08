@@ -7,7 +7,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
 compiler=shutil.which('clang++') or 'c++'
 host=fp.src('world_renderer.h').read_text()
-start=host.index('        if(actorShadowPS&&actorTilesPS&&fogActorPS&&fogCloudsActorPS&&fogCaps.')
+start=host.index('    void actorShaderResources(')
 end=host.index('{',start)+1;depth=1
 while depth:
     depth+=(host[end]=='{')-(host[end]=='}');end+=1
@@ -22,7 +22,10 @@ fixture=r'''
 #include <cstdio>
 #define FAILED(x) ((x)<0)
 static const unsigned kActorTilesWideShader[]={5},kWorldFogActorTiledShader[]={6},kFogCloudsActorTiledShader[]={7};
+static const unsigned kActorShadowShader[]={1},kActorTilesShader[]={2},kActorShadowUniformShader[]={3};
 static constexpr unsigned kWorldFogActorTiledShaderSlots=@FOG@,kFogCloudsActorTiledShaderSlots=@CLOUD@;
+struct D3DCAPS9 {unsigned MaxPixelShader30InstructionSlots=0;};
+static void logf(const char*,...){}
 static int live=0;
 struct Device {
  unsigned attempts=0,fail=0;int* texture=nullptr;
@@ -30,24 +33,36 @@ struct Device {
  void SetTexture(unsigned slot,int* t){assert(slot==5);texture=t;}
 };
 struct Renderer {
- Device device;Device* d=&device;struct{unsigned MaxPixelShader30InstructionSlots=0;}fogCaps;
- int old=9;int *actorShadowPS=&old,*actorTilesPS=&old,*fogActorPS=&old,*fogCloudsActorPS=&old;
+ Device device;Device* d=&device;D3DCAPS9 fogCaps;
+ struct {unsigned actorShadows=1,actorShadowDetail=1;}quality;
+ int old=9;int *actorShadowPS=nullptr,*actorTilesPS=nullptr,*actorUniformPS=nullptr,*fogActorPS=&old,*fogCloudsActorPS=&old;
  int *actorTilesWidePS=nullptr,*fogActorTiledPS=nullptr,*fogCloudsActorTiledPS=nullptr;
  bool fogActorCurrent=false,fogActorTiledCurrent=false,actorTilesWideCurrent[2]={};float actorMatrices[2][16]={},c[79][4]={};
  int tex[3]={10,20,30};int* actorTiles[2]={&tex[0],&tex[1]};int* textures[6]={nullptr,nullptr,nullptr,nullptr,nullptr,&tex[2]};
  Renderer(){for(auto& m:actorMatrices){m[0]=m[5]=1.f/12;m[10]=1.f/1280;m[15]=1;}c[24][0]=.0001f;}
  static void drop(int*& value){if(value){delete value;value=nullptr;--live;}}
- void create(){@CREATE@}
+ @CREATE@
+ void create(){actorShaderResources(fogCaps);}
  void bind(int source){@BIND@}
- void clear(){drop(actorTilesWidePS);drop(fogActorTiledPS);drop(fogCloudsActorTiledPS);}
+ void clear(){drop(actorShadowPS);drop(actorTilesPS);drop(actorUniformPS);drop(actorTilesWidePS);drop(fogActorTiledPS);drop(fogCloudsActorTiledPS);}
 };
 int main(){unsigned cases=0;
- for(unsigned mask=0;mask<16;++mask)for(unsigned caps:{512u,600u,662u,663u,32768u})for(unsigned fail=0;fail<4;++fail){
+ // The production helper guarantees actorShadowPS/actorTilesPS/actorUniformPS
+ // together before the tiled branch. Exercise that boundary, including every
+ // required shader failure, rather than inject impossible partial states there.
+ for(unsigned settings=0;settings<4;++settings)for(unsigned mask=0;mask<4;++mask)for(unsigned caps:{512u,600u,662u,663u,32768u})for(unsigned fail=0;fail<7;++fail){
   Renderer r;r.device.fail=fail;r.fogCaps.MaxPixelShader30InstructionSlots=caps;
-  if(!(mask&1))r.actorShadowPS=nullptr;if(!(mask&2))r.actorTilesPS=nullptr;if(!(mask&4))r.fogActorPS=nullptr;if(!(mask&8))r.fogCloudsActorPS=nullptr;
-  const bool eligible=mask==15&&caps>=std::max(kWorldFogActorTiledShaderSlots,kFogCloudsActorTiledShaderSlots);
-  r.create();assert(bool(r.fogActorTiledPS)==(eligible&&!fail));assert(bool(r.fogCloudsActorTiledPS)==bool(r.actorTilesWidePS)&&bool(r.actorTilesWidePS)==bool(r.fogActorTiledPS));
-  assert(r.device.attempts==(eligible?(fail?fail:3):0));assert(live==(eligible&&!fail?3:0));
+  r.quality.actorShadows=bool(settings&1);r.quality.actorShadowDetail=bool(settings&2);
+  if(!(mask&1))r.fogActorPS=nullptr;
+  if(!(mask&2))r.fogCloudsActorPS=nullptr;
+  const bool base=settings==3&&!(fail&&fail<=3);
+  const bool eligible=base&&mask==3&&caps>=std::max(kWorldFogActorTiledShaderSlots,kFogCloudsActorTiledShaderSlots);
+  const bool tiled=eligible&&!(fail>=4);
+  r.create();assert(bool(r.actorShadowPS)==base&&bool(r.actorTilesPS)==base&&bool(r.actorUniformPS)==base);
+  assert(bool(r.fogActorTiledPS)==tiled);assert(bool(r.fogCloudsActorTiledPS)==tiled&&bool(r.actorTilesWidePS)==tiled);
+  const unsigned attempts=settings!=3?0:(fail&&fail<=3)?fail:eligible?(fail?fail:6):3;
+  assert(r.device.attempts==attempts);assert(live==(base?3:0)+(tiled?3:0));
+  if(base){r.create();assert(r.device.attempts==attempts&&live==3+(tiled?3:0));}
   r.clear();assert(!live);++cases;
  }
  for(unsigned flags=0;flags<64;++flags)for(int source=0;source<2;++source){
@@ -58,7 +73,7 @@ int main(){unsigned cases=0;
   assert(r.device.texture==(expected?r.actorTiles[source]:r.textures[5])&&"WRONG_FOG_TILE_SOURCE");
   r.actorTilesWideCurrent[source]=false;r.bind(source);assert(!r.fogActorTiledCurrent&&r.device.texture==r.textures[5]);r.clear();assert(!live);++cases;
  }
- std::printf("PASS production tiled fog creation/binding: %u cases, shader failures and caps retain fallback; fresh current-source maps and bounded coordinates required\n",cases);
+ std::printf("PASS production tiled fog helper/binding: %u cases, actor switches/three-shader success boundary, six shader failures, caps and repeated initialization; fresh current-source maps and bounded coordinates required\n",cases);
 }
 '''.replace('@FOG@',str(manifest['WorldFogActorTiled']['static_instruction_slots'])).replace('@CLOUD@',str(manifest['FogCloudsActorTiled']['static_instruction_slots'])).replace('@CREATE@',creation).replace('@BIND@',binding)
 with tempfile.TemporaryDirectory(prefix='fog-actor-tiles-') as temp:

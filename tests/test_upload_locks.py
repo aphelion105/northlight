@@ -148,7 +148,10 @@ print('PASS read-back lock: readBackLock() defined once, 8 read-back sites, no b
 tracked=sources['tracked_buffers.h'];copies=sources['replay_copies.h']
 assert tracked.count('NorthlightReplayCopies::writeLocked(')==1 and tracked.count('NorthlightReplayCopies::beforeUnlock(')==1 # the only two write hooks: Lock records the range, Unlock copies it out of the mapped pointer
 assert tracked.index('NorthlightReplayCopies::beforeUnlock(')<tracked.index('this->real->Unlock()') # before the pointer is released
-assert tracked.count('NorthlightReplayCopies::invalidate(it->second->copy,true)')==1 and 'invalidate(entry.second->copy)' in tracked # ProcessVertices (written) and Reset (invalidateAll)
+assert tracked.count('NorthlightReplayCopies::invalidate(it->second->copy,true)')==1 # ProcessVertices wrote the buffer.
+reset=tracked[tracked.index('inline void invalidateAll('):tracked.index('template<class T,class Forward> class Buffer')]
+assert 'NorthlightReplayCopies::invalidate(r.copy)' in reset
+assert '!preserveManaged||!r.poolKnown||r.pool!=D3DPOOL_MANAGED||r.locks.load(std::memory_order_relaxed)' in reset
 assert tracked.count('NorthlightReplayCopies::enabled.load(')>=3 # attach, Lock and Unlock are all behind the stream gate
 assert renderer.count('NorthlightReplayCopies::enabled.store(true')==1 and renderer.index('NorthlightReplayCopies::enabled.store(true')<renderer.index('real->CreateDevice(adapter,type,window,flags,pp,out)')
 assert 'if(stream)NorthlightReplayCopies::enabled.store(true' in renderer and 'NorthlightReplayCopies::setPressure(memoryCaps==1)' in renderer

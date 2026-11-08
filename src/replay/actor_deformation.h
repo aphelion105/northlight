@@ -439,7 +439,7 @@ inline bool weightedByteIndices(const Program& program,const PreparedBindings& p
 }
 // The complete audited single-bone kernel reads only v0/v1. Both are fully
 // decoded each vertex; the draw-local c0 never outlives its current pose bank.
-template<bool Validated=false> inline bool singleSkinBoundsPrepared(const Program& program,const NorthlightDrawSnapshot::Mesh& mesh,const PreparedBindings& prepared,const float* constants,float* low,float* high){
+template<bool Validated=false> inline bool singleSkinBoundsPrepared(const Program& program,const NorthlightDrawSnapshot::Mesh& mesh,const PreparedBindings& prepared,const float* constants,float* low,float* high,const float* basis=nullptr){
     if(!program.kernel.singleSkin()||!constants||(!Validated&&!prepared.validFor(program,mesh))||prepared.bindings.size()!=2||prepared.bindings[0].input.reg>=2||prepared.bindings[1].input.reg>=2||prepared.bindings[0].input.reg==prepared.bindings[1].input.reg)return false;
     const Four control=singleSkinControl(program,constants);Four inputs[2];
     if(!mesh.vertexCount)return true;
@@ -453,14 +453,14 @@ template<bool Validated=false> inline bool singleSkinBoundsPrepared(const Progra
             std::memcpy(inputs[0].data(),positions.bytes.data()+size_t(vertex)*positions.stride+position.element.Offset,12);
             inputs[1][0]=float(indices.bytes[size_t(vertex)*indices.stride+index.element.Offset]);
             Four view;if(control[0]==3.f?!evaluateSingleSkin<true,true>(program,inputs,constants,view,&control):!evaluateSingleSkin<true>(program,inputs,constants,view,&control))return false;
-            for(unsigned k=0;k<3;++k){if(!std::isfinite(view[k]))return false;low[k]=std::min(low[k],view[k]);high[k]=std::max(high[k],view[k]);}}
+            for(unsigned k=0;k<3;++k){const float value=basis?view[0]*basis[k]+view[1]*basis[4+k]+view[2]*basis[8+k]:view[k];if(!std::isfinite(value))return false;low[k]=std::min(low[k],value);high[k]=std::max(high[k],value);}}
         return true;
     }
     for(UINT vertex=0;vertex<mesh.vertexCount;++vertex){
         if(!decodeElement(firstStream.bytes.data()+size_t(vertex)*firstStream.stride+first.element.Offset,first.element.Type,inputs[first.input.reg])||
            !decodeElement(secondStream.bytes.data()+size_t(vertex)*secondStream.stride+second.element.Offset,second.element.Type,inputs[second.input.reg]))return false;
         Four view;if(!evaluateSingleSkin<true>(program,inputs,constants,view,&control))return false;
-        for(unsigned k=0;k<3;++k){if(!std::isfinite(view[k]))return false;low[k]=std::min(low[k],view[k]);high[k]=std::max(high[k],view[k]);}}
+        for(unsigned k=0;k<3;++k){const float value=basis?view[0]*basis[k]+view[1]*basis[4+k]+view[2]*basis[8+k]:view[k];if(!std::isfinite(value))return false;low[k]=std::min(low[k],value);high[k]=std::max(high[k],value);}}
     return true;
 }
 inline bool worldPositionsPrepared(const Program& program,const NorthlightDrawSnapshot::Mesh& mesh,const PreparedBindings& prepared,const float* constants,const float* inverseView,std::vector<Position>& output){
