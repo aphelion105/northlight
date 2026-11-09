@@ -21,9 +21,15 @@ args = parser.parse_args()
 out = args.output.resolve()
 out.mkdir(parents=True, exist_ok=True)
 renderer = args.renderer.read_text()
+scope_source = fp.src('renderer.cpp').read_text()
+start = scope_source.index('    template<class Draw> HRESULT nativeEffectDraw(')
+scope = scope_source[start:scope_source.index('    bool hdrWorldAlphaDraw(', start)]
 start = renderer.index('    bool hdrWorldAlphaDraw(')
 end = renderer.index('    template<class Draw> HRESULT projectedDraw(', start)
-methods = renderer[start:end]
+methods = scope+renderer[start:end]
+start = renderer.index('    template<class Draw> HRESULT rainMrtDraw(')
+end = renderer.index('    // renderEffects: the mask', start)
+methods += renderer[start:end]
 start = renderer.index('    template<class Draw> void hdrReplaySky(')
 end = renderer.index('    template<class Capture,class Draw> HRESULT drawHook(', start)
 (out/'smoke_sky_methods.inc').write_text(methods+renderer[start:end])
@@ -36,8 +42,9 @@ arrays, entries, provenance = [], [], []
 def array(name, code):
     words = struct.unpack('<%dI' % (len(code)//4), code)
     arrays.append('static const DWORD '+name+'[]={'+','.join(hex(w) for w in words)+'};\n')
-for major in (3,):
-    code, _ = compiler.compile(fp.TESTS/'hdr_foreground_fixture.hlsl', 'ForegroundVS', f'vs_{major}_0', out/f'foreground-vs{major}.bin')
+for major in (1, 2, 3):
+    profile = 'vs_1_1' if major == 1 else f'vs_{major}_0'
+    code, _ = compiler.compile(fp.TESTS/'hdr_foreground_fixture.hlsl', 'ForegroundVS', profile, out/f'foreground-vs{major}.bin')
     array(f'kForegroundVs{major}', code)
 assets = Assets(archives='stock')
 try:
@@ -78,3 +85,4 @@ for index, backend in enumerate(backends):
             print(backend, run.stdout+run.stderr, end='', flush=True)
             run.check_returncode()
             assert 'SMOKE_SKY_GPU_PASS' in run.stdout
+            assert 'HDR_RAIN_SKY_PASS' in run.stdout

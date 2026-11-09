@@ -797,16 +797,24 @@ private:
         result.paperWhite=std::min(result.paperWhite,result.maxNits);result.uiWhite=std::min(result.uiWhite,result.maxNits);return result;
     }
     NorthlightProjectedDrawAudit projectedAudit;
-    NorthlightEffectCoverage::Capture effectCoverage;bool effectCoverageNative=false;
+    NorthlightEffectCoverage::Capture effectCoverage;bool effectCoverageNative=false,hdrRainDraw=false;
     NorthlightHdr::SkyForeground hdrSkyForeground;
+    template<class Draw> HRESULT nativeEffectDraw(bool rain,Draw draw){
+        const bool nativeBefore=effectCoverageNative,rainBefore=hdrRainDraw;
+        effectCoverageNative=true;hdrRainDraw=rain;
+        struct Restore {bool& native;bool& rain;bool nativeBefore,rainBefore;
+            ~Restore(){native=nativeBefore;rain=rainBefore;}} restore{effectCoverageNative,hdrRainDraw,nativeBefore,rainBefore};
+        return draw();
+    }
     bool hdrWorldAlphaDraw(bool replay){
         if((!effectCoverageNative&&!replay)||!hdr.active||!hdrSkyValid||hdrUiPhase||hdrAtUiBoundary||
            !enabled||failed||applied||debugMode||worldDebug)return false;
         if(drawRenderState(D3DRS_ZWRITEENABLE)||!(drawRenderState(D3DRS_COLORWRITEENABLE)&7))return false;
         D3DVIEWPORT9 vp{};
+        // Known rain is foreground even outside the model depth band.
         return SUCCEEDED(ext->GetViewport(&vp))&&nameMaskFullViewport(vp)&&
-           NorthlightWorldDrawDomain::classify(worldMinDepth,worldMaxDepth,vp.MinZ,vp.MaxZ)==NorthlightWorldDrawDomain::Band::World&&
-           NorthlightWorldDrawDomain::depthTested(drawRenderState(D3DRS_ZENABLE),drawRenderState(D3DRS_ZFUNC))&&
+           (hdrRainDraw||(NorthlightWorldDrawDomain::classify(worldMinDepth,worldMaxDepth,vp.MinZ,vp.MaxZ)==NorthlightWorldDrawDomain::Band::World&&
+           NorthlightWorldDrawDomain::depthTested(drawRenderState(D3DRS_ZENABLE),drawRenderState(D3DRS_ZFUNC))))&&
            worldDepthBound()&&hdrBackTarget();
     }
     template<class Draw> void hdrReplayWorldAlpha(Draw submit,bool replay){
@@ -2504,13 +2512,13 @@ private:
         if(!enabled&&!failed&&!hdr.active&&worldDebug==0&&!diagnostics()){++drawCalls;return draw();}
         if(gpuScene&&!gpuScene->native.currentFrame(frame)){ExtensionDevice::RawScope raw(*ext);gpuScene->setFrame(frame);}
         if(autoBump)autoBump->beginDraw();
-        auto nativeDraw=[&]{if(autoBump)autoBump->beforeNativeDraw();effectCoverageNative=true;struct End{bool& value;~End(){value=false;}} end{effectCoverageNative};return aoActorNativeDraw(draw);};
-        bool claimed=false,rainBlend=false,mist=false;
+        bool claimed=false,rainBlend=false,mist=false,nativeRain=false;
+        auto nativeDraw=[&]{if(autoBump)autoBump->beforeNativeDraw();return nativeEffectDraw(nativeRain,[&]{return aoActorNativeDraw(draw);});};
         bool linearSky=false;
         if(hdr.active)extensionWork("HDR sky preparation",[&]{linearSky=hdrSkyAdmission();});
         if(nativeSky)*nativeSky=linearSky;
         // 0.3.198 (rain): the whole per-draw cost of weather detection, before any other work and in both gate paths: one pointer comparison.
-        if(weatherDetect.hot&&mirrorState.textureKnown[0]&&mirrorState.textures[0]==weatherDetect.hot){weatherSample.primitives+=count;++weatherSample.draws;rainBlend=weatherDetect.hotKind==NorthlightWeather::Kind::Rain&&world&&world->rainBlendSetting();} /* 0.3.199 (rain): counted after applied too (the rest of the rain); 0.3.202: no boundary here, the effects run at the UI again */
+        if(weatherDetect.hot&&mirrorState.textureKnown[0]&&mirrorState.textures[0]==weatherDetect.hot){weatherSample.primitives+=count;++weatherSample.draws;nativeRain=weatherDetect.hotKind==NorthlightWeather::Kind::Rain;rainBlend=nativeRain&&world&&world->rainBlendSetting();} /* 0.3.199 (rain): counted after applied too (the rest of the rain); 0.3.202: no boundary here, the effects run at the UI again */
         else if(weatherDetect.mistArmed)mist=mistDraw(count); /* 0.3.199 (rain mist): a mist puff in rain is skipped; unarmed, one bool test */
         if(!skyBandSeen&&mirrorState.viewportKnown&&NorthlightWorldDrawDomain::classify(worldMinDepth,worldMaxDepth,mirrorState.viewport.MinZ,mirrorState.viewport.MaxZ)==NorthlightWorldDrawDomain::Band::Sky)skyBandSeen=true; /* Weather diagnostics: sky-band evidence, never an exposure or weather-state gate. */
         if(rainMrtBound&&!rainBlend)rainMrtUnbind(); /* 0.3.202 (rain mask MRT): every other draw (and all its capture/effect work) meets the game's targets only; dry frames one bool test */

@@ -9,6 +9,7 @@
 #include "effect_coverage.h"
 #include "world_draw_domain.h"
 #include "world_compiled_shaders.h"
+#include "compiled_shaders.h"
 #include "forwarders.h"
 #include "device_mirror.h"
 #include "smoke_sky_native.h"
@@ -35,7 +36,8 @@ struct Fixture {
     NorthlightEffectCoverage::Capture effectCoverage;
     struct {bool active=true;struct{D3DMULTISAMPLE_TYPE MultiSampleType=D3DMULTISAMPLE_NONE;} logical;} hdr;
     bool hdrSkyValid=true,hdrUiPhase=false,hdrAtUiBoundary=false,enabled=true,failed=false,applied=false;
-    bool effectCoverageNative=true,terrain=true,projectionValid=true,hdrSkyReplaying=false;
+    bool effectCoverageNative=true,terrain=true,projectionValid=true,hdrSkyReplaying=false,hdrRainDraw=false;
+    bool testRainMask=false,rainMaskDrawn=false;unsigned rainMaskDraws=0;
     bool spellQueryUnknown=false,depthBound=true,backTarget=true,fullViewport=true;
     unsigned debugMode=0,worldDebug=0,spellQueryN=0;
     int selectedBackend=0;
@@ -54,6 +56,9 @@ struct Fixture {
     bool worldDepthBound(){return depthBound;}
     bool hdrBackTarget(){return backTarget;}
     bool diagnostics(){return false;}
+    bool rainMrtBegin(){return testRainMask;}
+    void rainMrtUnbind(){ok(ext->SetRenderTarget(1,nullptr));}
+    void rainMrtEnd(){ok(ext->SetPixelShader(nullptr));}
     void hdrLayerDiagnostic(const char*){}
     template<class F> void extensionWork(const char*,F work){work();}
     HRESULT hdrBindBack(IDirect3DSurface9* target){D3DVIEWPORT9 vp{};ok(ext->GetViewport(&vp));ok(ext->SetRenderTarget(0,target));return ext->SetViewport(&vp);}
@@ -206,10 +211,11 @@ int main(int argc,char** argv){
     }
     std::printf("SPELL_FAMILY_GPU_PASS cases=%u particle_model_projected_unlit=1 lit_alpha_ripple_unknown_controls=1\n",familyCases);
     // Admission guards keep native-only, UI, opaque and unrelated targets out of the saved sky.
-    for(unsigned control=0;control<14;++control){
+    for(unsigned control=0;control<16;++control){
         Fixture f(d,linearSky);reset();ok(d->SetRenderState(D3DRS_ZENABLE,TRUE));ok(d->SetRenderState(D3DRS_ZWRITEENABLE,FALSE));ok(d->SetRenderState(D3DRS_ZFUNC,D3DCMP_LESSEQUAL));D3DVIEWPORT9 vp={0,0,W,H,0,.94f};ok(d->SetViewport(&vp));
         if(control==0)f.hdr.active=false;if(control==1)f.hdrSkyValid=false;if(control==2)f.hdrUiPhase=true;if(control==3)f.applied=true;if(control==4)f.backTarget=false;if(control==5)f.depthBound=false;if(control==6)f.fullViewport=false;if(control==7)ok(d->SetRenderState(D3DRS_ZWRITEENABLE,TRUE));if(control==8)ok(d->SetRenderState(D3DRS_ZFUNC,D3DCMP_ALWAYS));if(control==9)f.spellQueryN=1;if(control==10)f.spellQueryUnknown=true;if(control==11)f.enabled=false;if(control==12)f.effectCoverageNative=false;if(control==13)f.failed=true;
-        unsigned submits=0;ok(d->BeginScene());ok(f.effectCoverageDraw([&]{++submits;return S_OK;}));ok(d->EndScene());assert(submits==1);
+        if(control>=14){vp.MaxZ=1;ok(d->SetViewport(&vp));if(control==15)ok(d->SetRenderState(D3DRS_ZENABLE,FALSE));}
+        unsigned submits=0;ok(d->BeginScene());ok(f.effectCoverageDraw([&]{++submits;return S_OK;}));ok(d->EndScene());assert(submits==1);if(control>=14)assert(!f.hdrSkyForeground.draws);
     }
     // Failed caps, binding, shader activation and dimension/depth checks restore
     // every native MRT and write mask. Samplers are never changed by this path.
@@ -267,6 +273,88 @@ int main(int argc,char** argv){
      {SavedState saved(d);ok(d->SetVertexShader(nullptr));ok(d->SetPixelShader(nullptr));ok(d->SetTexture(0,foregroundTexture));NorthlightHdr::Color color;NorthlightHdr::SkyForeground capture;bool captured=false;unsigned submits=0;ok(color.fixedDraw(d,80,[&]{++submits;return S_OK;},nullptr,&capture,linearSky,&captured));assert(!captured&&!submits);}
      tex->Release();}
     std::printf("HDR_FIXED_SKY_WRAPPER_PASS cases=%u msaa=%u exactNative=1 exactHdr=1 unsupportedAndFaultFallback=9\n",fixedSkyCases,samples);
+    // Rain combines a VS 1.x/2.x with fixed pixel stages. The mask is optional;
+    // neither its absence nor the legacy vertex ABI may drop rain from HDR sky.
+    for(bool mask:{false,true})for(bool previous:{false,true}){
+        Fixture f(d,linearSky);f.testRainMask=mask;f.hdrRainDraw=previous;f.effectCoverageNative=!previous;
+        assert(f.nativeEffectDraw(true,[&]{return f.rainMrtDraw([&]{assert(f.hdrRainDraw&&f.effectCoverageNative);return E_FAIL;});})==E_FAIL&&f.hdrRainDraw==previous&&f.effectCoverageNative==!previous);
+        try{f.nativeEffectDraw(true,[&]{return f.rainMrtDraw([&]()->HRESULT{assert(f.hdrRainDraw&&f.effectCoverageNative);throw 7;});});assert(false);}catch(int value){assert(value==7&&f.hdrRainDraw==previous&&f.effectCoverageNative==!previous);}
+    }
+    unsigned rainCases=0,rainRejected=0;
+    IDirect3DPixelShader9* rainPS=nullptr;ok(d->CreatePixelShader(kRainMaskMrtShader,&rainPS));
+    for(const DWORD* code:{kForegroundVs1,kForegroundVs2}){
+        IDirect3DVertexShader9* rainVS=nullptr;ok(d->CreateVertexShader(code,&rainVS));
+        for(bool mask:{false,true})for(bool worldBand:{false,true})for(bool depthTest:{true,false})for(unsigned control=0;control<5;++control)for(float alpha:{.75f,0.f,.25f,1.f}){
+            if(mask&&control==4)continue; // Fogged fixed-pixel replay, without the optional mask shader.
+            std::vector<unsigned char> reference;DWORD referenceSamples=0;
+            const float base[]={2.f,.6f,.3f,1},tint[]={.8f,.6f,.4f,alpha},viewport[]={2.f/W,-2.f/H,0,0};
+            const float source[]={.7f*.8f,.5f*.6f,.3f*.4f,.75f*alpha};
+            IDirect3DSurface9* maskSurface=nullptr;
+            if(mask)ok(d->CreateRenderTarget(W,H,D3DFMT_A8R8G8B8,ms,0,FALSE,&maskSurface,nullptr));
+            for(unsigned mode=0;mode<2;++mode){
+                FaultDevice noMrt(d);noMrt.fault=control==3?1:0;
+                Fixture f(&noMrt,linearSky);f.hdr.active=mode!=0;f.testRainMask=mask;flat=flatShaders[0];reset();
+                ok(d->SetVertexShader(nullptr));ok(d->SetFVF(D3DFVF_XYZRHW|D3DFVF_TEX1));
+                ok(d->BeginScene());
+                {SavedState saved(d);ok(d->SetRenderTarget(0,linearSky));ok(d->SetPixelShaderConstantF(0,base,1));ok(quad(1));}
+                ok(d->SetRenderState(D3DRS_ZENABLE,TRUE));ok(d->SetRenderState(D3DRS_ZWRITEENABLE,TRUE));
+                D3DRECT left={0,0,W/2,H};ok(d->Clear(1,&left,D3DCLEAR_ZBUFFER,0,.47f,0));
+                D3DVIEWPORT9 vp={0,0,W,H,0,worldBand?.94f:1.f};ok(d->SetViewport(&vp));
+                ok(d->SetVertexDeclaration(foregroundDecl));ok(d->SetVertexShader(rainVS));ok(d->SetPixelShader(mask?rainPS:nullptr));
+                ok(d->SetVertexShaderConstantF(0,viewport,1));ok(d->SetVertexShaderConstantF(1,tint,1));const float fogAmount[]={.35f,0,0,0};ok(d->SetVertexShaderConstantF(2,fogAmount,1));
+                ok(d->SetTexture(0,foregroundTexture));ok(d->SetTextureStageState(0,D3DTSS_COLOROP,D3DTOP_MODULATE));
+                ok(d->SetTextureStageState(0,D3DTSS_COLORARG1,D3DTA_TEXTURE));ok(d->SetTextureStageState(0,D3DTSS_COLORARG2,D3DTA_DIFFUSE));
+                ok(d->SetTextureStageState(0,D3DTSS_ALPHAOP,D3DTOP_MODULATE));ok(d->SetTextureStageState(0,D3DTSS_ALPHAARG1,D3DTA_TEXTURE));ok(d->SetTextureStageState(0,D3DTSS_ALPHAARG2,D3DTA_DIFFUSE));
+                ok(d->SetTextureStageState(0,D3DTSS_TEXCOORDINDEX,0));ok(d->SetTextureStageState(0,D3DTSS_TEXTURETRANSFORMFLAGS,D3DTTFF_DISABLE));ok(d->SetTextureStageState(1,D3DTSS_COLOROP,D3DTOP_DISABLE));
+                ok(d->SetRenderState(D3DRS_SPECULARENABLE,FALSE));ok(d->SetRenderState(D3DRS_FOGENABLE,control==4));ok(d->SetRenderState(D3DRS_FOGCOLOR,0xff203040));ok(d->SetRenderState(D3DRS_FOGTABLEMODE,D3DFOG_NONE));ok(d->SetRenderState(D3DRS_FOGVERTEXMODE,D3DFOG_NONE));
+                ok(d->SetRenderState(D3DRS_ZENABLE,depthTest));ok(d->SetRenderState(D3DRS_ZWRITEENABLE,FALSE));ok(d->SetRenderState(D3DRS_ZFUNC,D3DCMP_LESSEQUAL));
+                ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE));ok(d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_SRCALPHA));ok(d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_INVSRCALPHA));ok(d->SetRenderState(D3DRS_BLENDOP,D3DBLENDOP_ADD));
+                ok(d->SetRenderState(D3DRS_ALPHATESTENABLE,control==2));ok(d->SetRenderState(D3DRS_ALPHAFUNC,D3DCMP_GREATER));ok(d->SetRenderState(D3DRS_ALPHAREF,128));
+                if(mask){ok(d->SetRenderTarget(1,maskSurface));ok(d->SetRenderState(D3DRS_COLORWRITEENABLE1,1));}
+                IDirect3DQuery9* query=nullptr;ok(d->CreateQuery(D3DQUERYTYPE_OCCLUSION,&query));if(control<3)ok(query->Issue(D3DISSUE_BEGIN));
+                unsigned submits=0;f.mirror.invalidate();
+                auto submitRain=[&]{++submits;if(control>=3&&submits==1)ok(query->Issue(D3DISSUE_BEGIN));const auto hr=quad(control==1?.75f:.3f);if(control>=3&&submits==1)ok(query->Issue(D3DISSUE_END));return hr;};
+                auto captureRain=[&]{return f.effectCoverageDraw(submitRain);};
+                ok(f.nativeEffectDraw(true,[&]{return mask||control%2?f.rainMrtDraw(captureRain):captureRain();}));f.effectCoverage.endBatch();assert(!f.hdrRainDraw);
+                if(control<3)ok(query->Issue(D3DISSUE_END));ok(d->SetRenderTarget(1,nullptr));ok(d->EndScene());
+                IDirect3DPixelShader9* restoredPS=nullptr;ok(d->GetPixelShader(&restoredPS));assert(!restoredPS);
+                IDirect3DVertexShader9* restoredVS=nullptr;ok(d->GetVertexShader(&restoredVS));assert(restoredVS==rainVS);restoredVS->Release();
+                DWORD hits=0;HRESULT status;while((status=query->GetData(&hits,sizeof hits,D3DGETDATA_FLUSH))==S_FALSE)SwitchToThread();ok(status);query->Release();
+                const auto native=nativePixels();if(!mode){reference=native;referenceSamples=hits;}else{
+                    assert(native==reference&&hits==referenceSamples);
+                    const auto actual=rgba(linearSky);const float a=control==2&&source[3]<=128.f/255?0:source[3];
+                    // The fog compatibility layer stores premultiplied RGBA8
+                    // before the HDR transfer; include that quantization.
+                    const float transferAlpha=control==4?std::round(a*255)/255:a;
+                    for(unsigned c=0;c<3;++c){float encoded=control==4?source[c]*.35f+float(0x20+c*0x10)/255.f*.65f:source[c];
+                        if(control==4)encoded=transferAlpha>0?std::round(encoded*a*255)/(255*transferAlpha):0;
+                        const float expected=base[c]*(1-transferAlpha)+decode(encoded)*transferAlpha;
+                        if(std::fabs(actual[(4*W+12)*4+c]-expected)>=.003f){std::fprintf(stderr,"HDR_RAIN_MISSING mask=%u worldBand=%u depthTest=%u channel=%u actual=%g expected=%g\n",unsigned(mask),unsigned(worldBand),unsigned(depthTest),c,actual[(4*W+12)*4+c],expected);std::abort();}}
+                    assert(submits==(control>=3?2u:1u)&&f.hdrSkyForeground.draws==(control>=3?0u:1u));
+                    NorthlightHdr::Frame frame;NorthlightHdr::Settings settings;ok(d->BeginScene());ok(frame.prepareLegacy(d,scene,depth,linearSky,W,H,0,.94f,settings));ok(d->EndScene());const auto final=rgba(frame.surface());
+                    for(unsigned c=0;c<3;++c){assert(std::fabs(final[(4*W+12)*4+c]-actual[(4*W+12)*4+c])<.001f);assert(std::fabs(final[(4*W+4)*4+c]-decode(native[(4*W+4)*4+2-c]/255.f))<.001f);}
+                    if(!mask&&worldBand&&depthTest&&control==0&&alpha==.75f)for(unsigned guard=0;guard<10;++guard){
+                        SavedState saved(d);NorthlightHdr::SkyForeground reject;unsigned submits=0;HRESULT result=S_OK;
+                        if(guard==0)ok(d->SetRenderState(D3DRS_FOGENABLE,TRUE));
+                        if(guard==1)ok(d->SetRenderState(D3DRS_SPECULARENABLE,TRUE));
+                        if(guard==2)ok(d->SetVertexShader(foregroundVs));
+                        if(guard==3)ok(d->SetTextureStageState(0,D3DTSS_COLOROP,D3DTOP_SELECTARG1));
+                        if(guard==4)ok(d->SetTextureStageState(0,D3DTSS_ALPHAARG2,D3DTA_DIFFUSE|D3DTA_ALPHAREPLICATE));
+                        if(guard==5)ok(d->SetTextureStageState(1,D3DTSS_COLOROP,D3DTOP_MODULATE));
+                        if(guard==6)ok(d->SetTextureStageState(0,D3DTSS_TEXCOORDINDEX,1));
+                        if(guard==7)ok(d->SetTextureStageState(0,D3DTSS_TEXTURETRANSFORMFLAGS,D3DTTFF_COUNT2));
+                        if(guard==8)ok(d->SetTexture(0,nullptr));
+                        if(guard==9)ok(d->SetVertexShader(nullptr));
+                        assert(!reject.draw(d,linearSky,true,[&]{++submits;return S_OK;},result)&&submits==0);++rainRejected;
+                    }
+                }
+            }
+            if(maskSurface)maskSurface->Release();++rainCases;
+        }
+        rainVS->Release();
+    }
+    rainPS->Release();
+    std::printf("HDR_RAIN_SKY_PASS cases=%u rejected_states=%u vs1_vs2=1 optional_mask=1 no_mrt_fallback=1 full_depth_viewport=1 depth_test_off=1 depth_alpha_query_controls=1 native_rgba_unchanged=1\n",rainCases,rainRejected);
     if(argc==4){
         constexpr unsigned BW=3840,BH=2160;const unsigned draws=std::atoi(argv[3])>0?unsigned(std::atoi(argv[3])):220;
         IDirect3DSurface9 *bigNative=nullptr,*bigSky=nullptr,*bigDepth=nullptr;
@@ -288,6 +376,6 @@ int main(int argc,char** argv){
         std::printf("SMOKE_SKY_PERF width=%u height=%u msaa=%u transparent_draws=%u native_gpu_ms=%.5f mrt_gpu_ms=%.5f paired_gpu_delta_ms=%.5f native_submit_ms=%.5f mrt_submit_ms=%.5f paired_submit_delta_ms=%.5f extra_draws=0 extra_images=0\n",BW,BH,samples,draws,gpu[0][3],gpu[1][3],pairedGpu[3],cpu[0][3],cpu[1][3],pairedCpu[3]);
         f.effectCoverage.reset();f.hdrSkyForeground.reset();bigNative->Release();bigSky->Release();bigDepth->Release();
     }
-    std::printf("SMOKE_SKY_GPU_PASS msaa=%u cases=%u admission_guards=14 negative_controls=%u max_linear_error=%.8g native_rgba_unchanged=1 early_spell_drains=1 same_draw_mrt=%u restoration=%u fallback=5\n",samples,cases,negative,worst,mrt,restoration);
+    std::printf("SMOKE_SKY_GPU_PASS msaa=%u cases=%u admission_guards=16 negative_controls=%u max_linear_error=%.8g native_rgba_unchanged=1 early_spell_drains=1 same_draw_mrt=%u restoration=%u fallback=5\n",samples,cases,negative,worst,mrt,restoration);
     return 0;
 }

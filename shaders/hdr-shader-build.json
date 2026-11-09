@@ -1,5 +1,5 @@
 {
-  "source_sha256": "01c00da5b05c9caeb69664c2c603b5239c103b467f4affb38286e26c5b1fd42a",
+  "source_sha256": "c129d36958bc936b568321b8fa9edd73eb60860c79d0431da5b3625423715ec8",
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
   "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
   "game_launched": false,
@@ -159,6 +159,21 @@
       "target": "ps_2_0",
       "sha256": "6132ec7b58f1316332e89034b70327901c16bb7d56c638dbb1698b354872dcd4",
       "bytes": 652
+    },
+    "HdrFixedModulate": {
+      "static_instruction_slots": 3,
+      "temporary_registers": 1,
+      "samplers": [
+        0
+      ],
+      "instructions": {
+        "texld": 1,
+        "mul": 1,
+        "mov": 1
+      },
+      "target": "ps_2_0",
+      "sha256": "ab9f0e69f12746092ba08a00cc03b66cf173f3bb358f086616cb9cc4a9505226",
+      "bytes": 220
     },
     "HdrFixedUi2": {
       "static_instruction_slots": 66,

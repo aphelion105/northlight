@@ -42,6 +42,8 @@ float4 fixedUiSource(float4 color,float2 uv){
 float4 HdrFixedUi(float4 color:COLOR0,float2 uv:TEXCOORD0):COLOR0 {return HdrUi(fixedUiSource(color,uv));}
 // PS 2.0 retains native fixed-function vertex UVs, including COUNT2 transforms.
 float4 HdrFixedAdditive(float4 color:COLOR0,float2 uv:TEXCOORD0):COLOR0 {return HdrUi(color*tex2D(HdrScene,uv));}
+// Native fixed-pixel rain source, retaining the VS 1.x/2.x interface for MRT.
+float4 HdrFixedModulate(float4 color:COLOR0,float2 uv:TEXCOORD0):COLOR0 {return saturate(color*tex2D(HdrScene,uv));}
 float4 fixedUiSource2(float4 color,float2 uv,float2 uv1) {
     float4 source=fixedUiSource(color,uv);
     float4 other=1;

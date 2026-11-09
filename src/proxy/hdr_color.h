@@ -216,9 +216,13 @@ public:
             release(texture);if(FAILED(hr))return hr;if(!present||!unorm)return fallback();
         }
         if(blend&&(src==D3DBLEND_DESTCOLOR||src==D3DBLEND_ZERO))return fallback();
-        auto*& shader=mrt?multiFixedSky:nativeAdditive?fixedAdditive:diffuseOnly?diffuseUi:multi?multiFixedUi:fixedUi;
-        if(!shader){const HRESULT hr=d->CreatePixelShader(reinterpret_cast<const DWORD*>(mrt?kHdrFixedSky2:nativeAdditive?kHdrFixedAdditive:diffuseOnly?kHdrUiPs3:multi?kHdrFixedUi2:kHdrFixedUi),&shader);if(FAILED(hr))return fallback();}
-        const unsigned registers=nativeAdditive?1:multi?4:2;
+        // Fixed-pixel rain can retain a VS 1.x/2.x even when MRT is unavailable.
+        // Use the matching PS 2.0 transfer for its native UV interface.
+        const bool legacyModulate=!mrt&&!multi&&!diffuseOnly&&flags[0]==1&&flags[1]==1&&flags[2]==1&&flags[3]==1&&legacyVertexShader(d);
+        const bool ps2=nativeAdditive||legacyModulate;
+        auto*& shader=mrt?multiFixedSky:ps2?fixedAdditive:diffuseOnly?diffuseUi:multi?multiFixedUi:fixedUi;
+        if(!shader){const HRESULT hr=d->CreatePixelShader(reinterpret_cast<const DWORD*>(mrt?kHdrFixedSky2:ps2?kHdrFixedAdditive:diffuseOnly?kHdrUiPs3:multi?kHdrFixedUi2:kHdrFixedUi),&shader);if(FAILED(hr))return fallback();}
+        const unsigned registers=ps2?1:multi?4:2;
         float constants[16];DWORD srgb=0;HRESULT hr=d->GetPixelShaderConstantF(0,constants,registers);if(FAILED(hr))return hr;
         hr=d->GetRenderState(D3DRS_SRGBWRITEENABLE,&srgb);if(FAILED(hr))return hr;
         const D3DRENDERSTATETYPE alphaStates[]={D3DRS_SEPARATEALPHABLENDENABLE,D3DRS_SRCBLENDALPHA,D3DRS_DESTBLENDALPHA,D3DRS_BLENDOPALPHA};
@@ -226,7 +230,7 @@ public:
         struct Restore{IDirect3DDevice9* d;float* constants;unsigned registers;DWORD srgb,src;bool screen,diffuse;const D3DRENDERSTATETYPE* alphaStates;DWORD* alpha;~Restore(){d->SetPixelShader(nullptr);d->SetPixelShaderConstantF(0,constants,registers);d->SetRenderState(D3DRS_SRGBWRITEENABLE,srgb);if(screen)d->SetRenderState(D3DRS_SRCBLEND,src);if(diffuse)for(unsigned i=0;i<4;++i)d->SetRenderState(alphaStates[i],alpha[i]);}}restore{d,constants,registers,srgb,src,blend&&src==D3DBLEND_INVDESTCOLOR&&dst==D3DBLEND_ONE,preserveAlpha,alphaStates,alpha};
         const float scale[]={uiWhite/80,uiWhite/80,uiWhite/80,blend&&src==D3DBLEND_ONE&&dst==D3DBLEND_INVSRCALPHA?1.f:0.f};
         hr=d->SetPixelShader(shader);if(SUCCEEDED(hr))hr=d->SetPixelShaderConstantF(0,scale,1);
-        if(SUCCEEDED(hr)&&!nativeAdditive)hr=d->SetPixelShaderConstantF(1,flags,1);
+        if(SUCCEEDED(hr)&&!ps2)hr=d->SetPixelShaderConstantF(1,flags,1);
         if(SUCCEEDED(hr)&&multi)hr=d->SetPixelShaderConstantF(2,second,2);
         if(SUCCEEDED(hr))hr=d->SetRenderState(D3DRS_SRGBWRITEENABLE,FALSE);
         if(SUCCEEDED(hr)&&restore.screen){++screenDirect;hr=d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_ONE);}
