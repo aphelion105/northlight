@@ -35,7 +35,7 @@ end = renderer.index('    template<class Capture,class Draw> HRESULT drawHook(',
 (out/'smoke_sky_methods.inc').write_text(methods+renderer[start:end])
 fp.use_source_modules()
 from world_scene_builder import Assets
-from extract_signatures import variants
+from extract_signatures import variants, fnv1a64
 from shader_compiler import Compiler
 compiler = Compiler(allow_compatible_binary=True)
 arrays, entries, provenance = [], [], []
@@ -48,6 +48,18 @@ for major in (1, 2, 3):
     array(f'kForegroundVs{major}', code)
 assets = Assets(archives='stock')
 try:
+    ui_vertices = []
+    for index, _, code in variants(assets.read('shaders\\vertex\\vs_3_0\\UI.bls')):
+        name = f'kNativeUiVs{index}'
+        array(name, code)
+        assert f'UINT64_C(0x{fnv1a64(code):016x})' in fp.src('signatures.h').read_text().split('kUiVS[] = {', 1)[1].split('};', 1)[0]
+        ui_vertices.append(name)
+        provenance.append(dict(path='shaders/vertex/vs_3_0/UI.bls', index=index, sha256=hashlib.sha256(code).hexdigest()))
+    ui_pixels = list(variants(assets.read('shaders\\pixel\\ps_3_0\\UI.bls')))
+    assert len(ui_pixels) == 1
+    array('kNativeUiPs', ui_pixels[0][2])
+    provenance.append(dict(path='shaders/pixel/ps_3_0/UI.bls', index=ui_pixels[0][0], sha256=hashlib.sha256(ui_pixels[0][2]).hexdigest()))
+    arrays.append('static const DWORD* kNativeUiVs[]={'+','.join(ui_vertices)+'};\n')
     for major in (3,):
         path = f'shaders\\pixel\\ps_{major}_0\\Combiners_Mod_Mod.bls'
         for index, _, code in variants(assets.read(path)):
@@ -86,3 +98,4 @@ for index, backend in enumerate(backends):
             run.check_returncode()
             assert 'SMOKE_SKY_GPU_PASS' in run.stdout
             assert 'HDR_RAIN_SKY_PASS' in run.stdout
+            assert 'HDR_NAME_SKY_PASS' in run.stdout

@@ -92,6 +92,7 @@ prepare_begin=' '.join(re.sub(r'//[^\n]*','',prepare_begin).split())
 assert renderer.count('    // 0.3.187 per-frame draw gates')==1
 gates_block=renderer[renderer.index('    // 0.3.187 per-frame draw gates'):renderer.index('    // 0.3.154: blob shadow claim')]
 gates_block=gates_block.replace(member(gates_block,'void refreshPipeline()'), '')
+gates_block=member(renderer,'template<class Draw> HRESULT nativeEffectDraw(')+gates_block
 # 0.3.202 (rain mask MRT): the rain mask members (rainMrtUnbind .. rainBlendDraw) are test_weather_detect's; here only their call surface exists (the hook equivalence runs with rain off)
 _a=gates_block.index('    void rainMrtUnbind(){');_b=gates_block.index('    template<class Draw> HRESULT rainBlendDraw(');_e=gates_block.index('\n    }\n',_b)+7
 checks_rain_stub=(gates_block[_a:_e].count('rainMrtBegin')>=1)
@@ -326,7 +327,7 @@ struct Base{
     BumpMock* autoBump=nullptr;struct{bool capsHalved()const{return false;}}memoryGuard;
     template<class Draw> HRESULT hdrDraw(Draw draw){return draw();}
     template<class Draw> HRESULT nativeLocalSubmit(Draw draw,bool=false,IDirect3DVertexShader9* =nullptr){return draw();}
-    bool effectCoverageNative=false;template<class Draw> HRESULT effectCoverageDraw(Draw draw,bool=false,bool=false,bool* =nullptr){return draw();}template<class Draw> HRESULT aoActorNativeDraw(Draw draw){return draw();}
+    bool effectCoverageNative=false,hdrRainDraw=false;template<class Draw> HRESULT effectCoverageDraw(Draw draw,bool=false,bool=false,bool* =nullptr){return draw();}template<class Draw> HRESULT aoActorNativeDraw(Draw draw){return draw();}
     struct{bool active=false;}hdr;bool diagnostics()const{return true;}HRESULT hdrResumeWorld(){return D3D_OK;}bool hdrSkyAdmission(){return false;}template<class Draw> void hdrReplaySky(bool,bool,Draw){}
     template<class Draw> HRESULT projectedDraw(UINT,unsigned,Draw draw){return draw();}
     struct GpuScene{struct{bool currentFrame(unsigned)const{return true;}}native;void setFrame(unsigned){}};GpuScene* gpuScene=nullptr;

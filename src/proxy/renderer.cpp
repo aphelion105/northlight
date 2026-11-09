@@ -809,19 +809,20 @@ private:
     bool hdrWorldAlphaDraw(bool replay){
         if((!effectCoverageNative&&!replay)||!hdr.active||!hdrSkyValid||hdrUiPhase||hdrAtUiBoundary||
            !enabled||failed||applied||debugMode||worldDebug)return false;
-        if(drawRenderState(D3DRS_ZWRITEENABLE)||!(drawRenderState(D3DRS_COLORWRITEENABLE)&7))return false;
+        const bool text=!replay&&drawUiHashVS;
+        if((drawRenderState(D3DRS_ZWRITEENABLE)&&!text)||!(drawRenderState(D3DRS_COLORWRITEENABLE)&7))return false;
         D3DVIEWPORT9 vp{};
-        // Known rain is foreground even outside the model depth band.
+        // Rain and world text are foreground outside the model depth band too.
         return SUCCEEDED(ext->GetViewport(&vp))&&nameMaskFullViewport(vp)&&
-           (hdrRainDraw||(NorthlightWorldDrawDomain::classify(worldMinDepth,worldMaxDepth,vp.MinZ,vp.MaxZ)==NorthlightWorldDrawDomain::Band::World&&
+           (hdrRainDraw||text||(NorthlightWorldDrawDomain::classify(worldMinDepth,worldMaxDepth,vp.MinZ,vp.MaxZ)==NorthlightWorldDrawDomain::Band::World&&
            NorthlightWorldDrawDomain::depthTested(drawRenderState(D3DRS_ZENABLE),drawRenderState(D3DRS_ZFUNC))))&&
            worldDepthBound()&&hdrBackTarget();
     }
     template<class Draw> void hdrReplayWorldAlpha(Draw submit,bool replay){
         if(!hdrWorldAlphaDraw(replay))return;
-        if(spellQueryN||spellQueryUnknown){
-            // An unsupported transfer inside a native query cannot replay.
-            // Decode the complete native scene instead of overwriting its smoke.
+        if(spellQueryN||spellQueryUnknown||drawRenderState(D3DRS_ZWRITEENABLE)){
+            // A depth-writing name may fail its own depth test on replay.
+            // Preserve the complete native scene for unsupported MRT or queries.
             hdrSkyValid=false;if(celestialDiscs)celestialDiscs->setHdrSkyTarget(nullptr);return;
         }
         // Clear depth still belongs to the sky after smoke and other native
@@ -1858,8 +1859,8 @@ private:
         // 0.3.196 (task 12): borrowed (no reference). The shader stays bound through this hook (the game's draw is issued after it); capture AddRefs whatever it keeps,
         // after renderEffects applied=true stops further use of vs, and resolveDepth's SavedState restores the binding. Released only when not borrowed.
         const bool borrowedVS=ext->peekVertexShader(vs);
-        if(!borrowedVS&&FAILED(ext->GetVertexShader(&vs))){++missingVS;drop(vs);return;}
-        if(!vs){
+        if(!borrowedVS&&FAILED(ext->GetVertexShader(&vs))){drawUiHashVS=false;++missingVS;drop(vs);return;}
+        if(!vs){drawUiHashVS=false;
             ++missingVS;D3DSURFACE_DESC desc{};
             if((terrain||skySeen)&&fixedUiGeometry()&&fullViewport(desc,nullptr,true)&&hdrBackTarget()&&hdrUiInputs()){
                 hdrAtUiBoundary=true;

@@ -36,7 +36,7 @@ struct Fixture {
     NorthlightEffectCoverage::Capture effectCoverage;
     struct {bool active=true;struct{D3DMULTISAMPLE_TYPE MultiSampleType=D3DMULTISAMPLE_NONE;} logical;} hdr;
     bool hdrSkyValid=true,hdrUiPhase=false,hdrAtUiBoundary=false,enabled=true,failed=false,applied=false;
-    bool effectCoverageNative=true,terrain=true,projectionValid=true,hdrSkyReplaying=false,hdrRainDraw=false;
+    bool effectCoverageNative=true,terrain=true,projectionValid=true,hdrSkyReplaying=false,hdrRainDraw=false,drawUiHashVS=false;
     bool testRainMask=false,rainMaskDrawn=false;unsigned rainMaskDraws=0;
     bool spellQueryUnknown=false,depthBound=true,backTarget=true,fullViewport=true;
     unsigned debugMode=0,worldDebug=0,spellQueryN=0;
@@ -355,6 +355,57 @@ int main(int argc,char** argv){
     }
     rainPS->Release();
     std::printf("HDR_RAIN_SKY_PASS cases=%u rejected_states=%u vs1_vs2=1 optional_mask=1 no_mrt_fallback=1 full_depth_viewport=1 depth_test_off=1 depth_alpha_query_controls=1 native_rgba_unchanged=1\n",rainCases,rainRejected);
+    // Stock UI shaders draw floating names before the scene composite. Keep
+    // their coloured glyph pass over its black shadow on clear-depth sky too,
+    // even if the depth snapshot precedes the name's own depth writes.
+    unsigned nameCases=0;float nameWorst=0;
+    Image glyphImage{W,H,D3DFMT_A8R8G8B8,4,std::vector<unsigned char>(W*H*4)};
+    for(unsigned y=0;y<H;++y)for(unsigned x=0;x<W;++x){const DWORD pixel=((y>=2&&y<6&&x%4<2)?0xff000000:0)|0xffffff;std::memcpy(glyphImage.pixels.data()+(y*W+x)*4,&pixel,4);}
+    auto* glyph=texture(d,glyphImage);IDirect3DPixelShader9* namePS=nullptr;ok(d->CreatePixelShader(kNativeUiPs,&namePS));
+    const D3DVERTEXELEMENT9 nameElements[]={{0,0,D3DDECLTYPE_FLOAT3,D3DDECLMETHOD_DEFAULT,D3DDECLUSAGE_POSITION,0},{0,12,D3DDECLTYPE_D3DCOLOR,D3DDECLMETHOD_DEFAULT,D3DDECLUSAGE_COLOR,0},{0,16,D3DDECLTYPE_FLOAT2,D3DDECLMETHOD_DEFAULT,D3DDECLUSAGE_TEXCOORD,0},D3DDECL_END()};
+    IDirect3DVertexDeclaration9* nameDecl=nullptr;ok(d->CreateVertexDeclaration(nameElements,&nameDecl));
+    for(const DWORD* code:kNativeUiVs){
+        IDirect3DVertexShader9* nameVS=nullptr;ok(d->CreateVertexShader(code,&nameVS));
+        for(bool zWrite:{true,false})for(bool worldBand:{true,false})for(unsigned depthMode=0;depthMode<4;++depthMode)for(unsigned alpha:{255u,128u,64u})for(bool occluded:{false,true})for(bool mrt:{true,false}){
+            std::vector<unsigned char> reference;DWORD referenceSamples=0,referenceDepth=0;
+            for(unsigned mode=0;mode<2;++mode){
+                FaultDevice noMrt(d);noMrt.fault=mrt?0:1;Fixture f(&noMrt,linearSky);f.hdr.active=mode!=0;f.drawUiHashVS=true;flat=flatShaders[0];reset();
+                ok(d->SetVertexShader(nullptr));ok(d->SetFVF(D3DFVF_XYZRHW|D3DFVF_TEX1));ok(d->BeginScene());
+                const float background[]={.4f,.6f,.8f,1};
+                {SavedState saved(d);ok(d->SetRenderTarget(0,linearSky));ok(d->SetPixelShaderConstantF(0,background,1));ok(quad(1));}
+                D3DRECT left={0,0,W/2,H};ok(d->Clear(1,&left,D3DCLEAR_ZBUFFER,0,occluded?.1f:.47f,0));
+                ok(d->SetVertexDeclaration(nameDecl));ok(d->SetVertexShader(nameVS));ok(d->SetPixelShader(namePS));ok(d->SetTexture(0,glyph));
+                for(auto key:{D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER})ok(d->SetSamplerState(0,key,D3DTEXF_POINT));ok(d->SetSamplerState(0,D3DSAMP_MIPFILTER,D3DTEXF_NONE));
+                const float matrix[4][4]={{2.f/W,0,0,1.f/W-1},{0,-2.f/H,0,1-1.f/H},{0,0,.3f,0},{0,0,1,0}};ok(d->SetVertexShaderConstantF(0,matrix[0],4));
+                ok(d->SetRenderState(D3DRS_FOGENABLE,FALSE));ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE));ok(d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_SRCALPHA));ok(d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_INVSRCALPHA));ok(d->SetRenderState(D3DRS_BLENDOP,D3DBLENDOP_ADD));
+                ok(d->SetRenderState(D3DRS_ALPHATESTENABLE,TRUE));ok(d->SetRenderState(D3DRS_ALPHAFUNC,D3DCMP_GREATER));ok(d->SetRenderState(D3DRS_ALPHAREF,0));
+                struct NameVertex {float x,y,z;DWORD color;float u,v;};
+                auto drawName=[&](bool shadow){const DWORD color=(alpha<<24)|(shadow?0:0xffff00);const NameVertex q[]={{-.5f,-.5f,1,color,0,0},{W-.5f,-.5f,1,color,1,0},{-.5f,H-.5f,1,color,0,1},{W-.5f,H-.5f,1,color,1,1}};return d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,q,sizeof(NameVertex));};
+                D3DVIEWPORT9 vp={0,0,W,H,0,.94f};ok(d->SetViewport(&vp));ok(d->SetRenderState(D3DRS_ZENABLE,TRUE));ok(d->SetRenderState(D3DRS_ZFUNC,D3DCMP_LESSEQUAL));ok(d->SetRenderState(D3DRS_ZWRITEENABLE,FALSE));
+                f.mirror.invalidate();ok(f.effectCoverageDraw([&]{return drawName(true);}));f.effectCoverage.endBatch();
+                vp.MaxZ=worldBand?.94f:1;ok(d->SetViewport(&vp));ok(d->SetRenderState(D3DRS_ZWRITEENABLE,zWrite));ok(d->SetRenderState(D3DRS_ZENABLE,depthMode!=3));ok(d->SetRenderState(D3DRS_ZFUNC,depthMode==0?D3DCMP_LESS:depthMode==1?D3DCMP_LESSEQUAL:D3DCMP_ALWAYS));
+                IDirect3DQuery9* query=nullptr;if(mrt){ok(d->CreateQuery(D3DQUERYTYPE_OCCLUSION,&query));ok(query->Issue(D3DISSUE_BEGIN));}
+                unsigned submits=0;f.mirror.invalidate();ok(f.effectCoverageDraw([&]{++submits;return drawName(false);}));f.effectCoverage.endBatch();
+                if(query)ok(query->Issue(D3DISSUE_END));ok(d->EndScene());DWORD hits=0;
+                if(query){HRESULT status;while((status=query->GetData(&hits,sizeof hits,D3DGETDATA_FLUSH))==S_FALSE)SwitchToThread();ok(status);query->Release();}
+                const auto native=nativePixels();if(!mode){reference=native;referenceSamples=hits;}else{
+                    assert(native==reference&&hits==referenceSamples);
+                    NorthlightHdr::Frame frame;NorthlightHdr::Settings settings;ok(d->BeginScene());ok(frame.prepareLegacy(d,scene,depth,f.hdrSkyValid?linearSky:nullptr,W,H,0,.94f,settings));ok(d->EndScene());const auto actual=rgba(frame.surface());
+                    const float a=float(alpha)/255;
+                    for(unsigned c=0;c<3;++c){const unsigned at=(4*W+12)*4+c;const float expected=mrt||!zWrite?background[c]*(1-a)*(1-a)+(c<2?a:0):decode(native[(4*W+12)*4+2-c]/255.f);nameWorst=std::max(nameWorst,std::fabs(actual[at]-expected));
+                        if(std::fabs(actual[at]-expected)>.003f){std::fprintf(stderr,"HDR_NAME_BLACK zWrite=%u worldBand=%u depthMode=%u mrt=%u actual=%g expected=%g\n",unsigned(zWrite),unsigned(worldBand),depthMode,unsigned(mrt),actual[at],expected);std::abort();}
+                        assert(std::fabs(actual[(4*W+4)*4+c]-decode(native[(4*W+4)*4+2-c]/255.f))<.001f);}
+                    assert(submits==(mrt||zWrite?1u:2u));if(mrt)assert(!f.hdrColor.layers&&f.hdrSkyValid);else assert(f.hdrSkyValid!=zWrite);
+                }
+                // A later depth-only probe must see exactly the native name's
+                // depth writes, including strict LESS and disabled depth tests.
+                {SavedState saved(d);ok(d->SetVertexShader(nullptr));ok(d->SetFVF(D3DFVF_XYZRHW|D3DFVF_TEX1));ok(d->SetPixelShader(flatShaders[0]));
+                    ok(d->SetRenderState(D3DRS_COLORWRITEENABLE,0));ok(d->SetRenderState(D3DRS_ZENABLE,TRUE));ok(d->SetRenderState(D3DRS_ZWRITEENABLE,FALSE));ok(d->SetRenderState(D3DRS_ZFUNC,D3DCMP_LESS));ok(d->SetRenderState(D3DRS_ALPHATESTENABLE,FALSE));vp.MaxZ=1;ok(d->SetViewport(&vp));
+                    IDirect3DQuery9* probe=nullptr;ok(d->CreateQuery(D3DQUERYTYPE_OCCLUSION,&probe));ok(d->BeginScene());ok(probe->Issue(D3DISSUE_BEGIN));ok(quad(.5f));ok(probe->Issue(D3DISSUE_END));ok(d->EndScene());DWORD samples=0;HRESULT status;while((status=probe->GetData(&samples,sizeof samples,D3DGETDATA_FLUSH))==S_FALSE)SwitchToThread();ok(status);probe->Release();if(!mode)referenceDepth=samples;else assert(samples==referenceDepth);}
+            }++nameCases;
+        }nameVS->Release();
+    }glyph->Release();namePS->Release();nameDecl->Release();
+    std::printf("HDR_NAME_SKY_PASS cases=%u stock_ui_shaders=1 mask=none native_rgba=exact queries=exact same_draw_mrt=1 depth_writes=preserved max_linear_error=%g\n",nameCases,nameWorst);
     if(argc==4){
         constexpr unsigned BW=3840,BH=2160;const unsigned draws=std::atoi(argv[3])>0?unsigned(std::atoi(argv[3])):220;
         IDirect3DSurface9 *bigNative=nullptr,*bigSky=nullptr,*bigDepth=nullptr;
