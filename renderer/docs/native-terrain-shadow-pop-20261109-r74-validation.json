@@ -1,0 +1,79 @@
+{
+  "base_commit": "79c88ca5448658aa73154fa94486d429f09a2562",
+  "source_identity": "2638d9ce29655ec008628c5843e8887af99662033c108cde9462c09ea22c5ba2",
+  "built_utc": "2026-11-09 21:32:45 UTC",
+  "compiler": "Zig 0.15.2, scripts/build_renderer.py, x86 Windows",
+  "fix": "Explicit native terrain-shadow suppression also applies after the composite; automatic coverage replacement remains pre-composite.",
+  "video": {
+    "filename": "2026-11-09_21-08-46.mp4",
+    "bytes": 13470661,
+    "sha256": "e3c29ec4abd71e3bb3f61b9751e7b17045add669abb76d050589070a5ff76c1f",
+    "seconds": 7.5,
+    "dimensions": [
+      1920,
+      1080
+    ],
+    "fps": 24,
+    "scope": "Visual report only; no matching source identity/settings/draw capture."
+  },
+  "cpu_regressions": {
+    "late_cases": 12288,
+    "visibility_gate_cases": 8192,
+    "actual_wrapper_cases": 260,
+    "generated_bytecode_camera_cases": 121108,
+    "optimized": true,
+    "asan_ubsan": true,
+    "native_x86": true,
+    "old_source_negative_control": "fails the late-draw assertion"
+  },
+  "gpu_regressions": {
+    "backends": [
+      "C:\\Windows\\SysWOW64\\d3d9.dll",
+      "D:\\Games\\335_engb_mod\\renderer-backends\\dxvk2\\dxvk2_d3d9.dll",
+      "D:\\Games\\335_engb_mod\\renderer-backends\\dxvk\\dxvk_d3d9.dll"
+    ],
+    "created_consumers_per_backend": 392,
+    "generators_unchanged": 2,
+    "rendered_cases_per_backend": 4,
+    "formats": [
+      "SDR",
+      "HDR"
+    ],
+    "color_fog_specular_alpha": "exact"
+  },
+  "proof_sha256": {
+    "out/shadow-pop-20261109/coverage-linux.log": "751fd07a633a6c05200fc9423fa367a2fde7d5cbbca0d6979a7d6d8e93d7d07f",
+    "out/shadow-pop-20261109/coverage-native.log": "b3102b41a60dba1032779f23c52aa119fca6abec76967d7b548cad7387bf708b",
+    "out/shadow-pop-20261109/coverage-baseline-negative.log": "271eadd16c23982bbe0bba65f1084078992f30efaf7022de42eb3766e6461526",
+    "out/shadow-pop-20261109/gpu/validation.json": "873b8750972de6581745dcc020f95c107a0b4a541226005c8ee8f26aab9a10d6",
+    "out/shadow-pop-20261109/artifacts.json": "77a0e11175138da174de5741d772f53f8f17a982dcba6f6c5c42c668658a8875",
+    "out/shadow-pop-20261109/package-verification/verification.json": "968e7e2ee0365dae169a93fcefdd370b8c69eac80c4667d536bc6509a81a5bc5"
+  },
+  "source_sha256": {
+    "src/proxy/renderer.cpp": "7edb649e51cd3f46c079f9369ef44aecd21d61bb60d1b662ce1dee2726c099ec",
+    "tests/test_terrain_shadow_coverage.py": "3fe5afd1a0f052088eb995b9908f802eaaed9e67718249efd2e28c7c26d41cdd",
+    "tests/test_terrain_shadow_state.cpp": "1623a984a3c95516bba839933b6f29d3404947e8ba13f2446ca67c61518ab8f7"
+  },
+  "artifacts": {
+    "renderer/frd9.dll": {
+      "bytes": 10830336,
+      "sha256": "7d1248174b009425e527a953978ccaa93fe0e3e74baaeb7d99b307a10b0b6af2"
+    },
+    "releases/Northlight-0.3.217-test.20261109.8/d3d9.dll": {
+      "bytes": 10830336,
+      "sha256": "7d1248174b009425e527a953978ccaa93fe0e3e74baaeb7d99b307a10b0b6af2"
+    },
+    "releases/Northlight-0.3.217-test.20261109.8-Windows.zip": {
+      "bytes": 20810596,
+      "sha256": "5087f8d3cb5a22c206f24961a4d30c61317965e3e57fa2f6b56e80370216402b"
+    }
+  },
+  "package_verified": true,
+  "source_unchanged": true,
+  "includes_optimizations": "r73 one-pass point PCSS, committed separately",
+  "full_repository_suite": false,
+  "exact_video_reproduced_in_client": false,
+  "scope": "Proven late-admission defect closed; exact tester episode still requires a client check. User-authorized concurrent WoW, no isolated timing or game FPS claim.",
+  "castle_issue": "Deferred by the user.",
+  "installation": "No client DLL installed and no game started."
+}

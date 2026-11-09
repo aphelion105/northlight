@@ -1826,15 +1826,22 @@ private:
         if(spellOn){spellDomain=false;spellVs=nullptr;} /* task 34: this draw's reads for spellDrawImpl, valid only if this function gets that far */
         if(failed||!enabled)return;
         if(applied){
-            if(sampled()){
+            const bool sample=sampled();
+            if(sample){
                 DWORD z=0,write=0;if(readDrawRenderState(D3DRS_ZENABLE,z)&&readDrawRenderState(D3DRS_ZWRITEENABLE,write)){if(z&&write)++postEffectDepthWrites;}else ++postEffectDepthStateFailures;
+            }
+            const bool hideNative=drawGates.terrainShadow&&world&&terrain&&!debugMode&&!worldDebug&&!world->nativeTerrainShadowsEnabled();
+            if(sample||hideNative){
                 IDirect3DVertexShader9* late=nullptr;const bool borrowed=ext->peekVertexShader(late); // 0.3.196 (task 12): identity lookup only
                 if((borrowed||(SUCCEEDED(ext->GetVertexShader(&late))&&late))&&world){
+                    if(hideNative)planTerrainShadowSwap(late);
+                    if(sample){
                     const VsClass& vc=classifyVs(late);
                     if(vc.world)++postEffectWorldDraws;
                     if(vc.skinned)++postEffectSkinnedDraws;
                     if(vc.entry&kWaterTag)++waterAfterEffects;
                     observeGrassReceiver(late,true);
+                    }
                 }if(!borrowed)drop(late);
             }return;
         }
@@ -1909,9 +1916,11 @@ private:
     unsigned shadowSwapConstantBase=0,shadowSwapConstantCount=0;float shadowSwapConstants[24]={};
     void planTerrainShadowSwap(IDirect3DVertexShader9* vs){
         if(!drawGates.terrainShadow)return; /* 0.3.187: implied by the line below at every draw of this frame */
-        if(!world||applied||!enabled||failed||!terrain||debugMode!=0||worldDebug!=0)return;
+        if(!world||!enabled||failed||!terrain||debugMode!=0||worldDebug!=0)return;
         const bool hideNative=!world->nativeTerrainShadowsEnabled();
-        if(!hideNative&&!world->terrainShadowActive())return;
+        // Explicit suppression also covers late terrain after the composite.
+        // Coverage-aware replacement still belongs to the pre-composite draw.
+        if(!hideNative&&(applied||!world->terrainShadowActive()))return;
         if((classifyVs(vs).entry&kTagMask)!=1)return;
         IDirect3DPixelShader9* ps=nullptr;if(FAILED(ext->GetPixelShader(&ps))||!ps)return;
         IDirect3DPixelShader9* replacement=nullptr;IDirect3DVertexShader9* patchedVertex=nullptr;
