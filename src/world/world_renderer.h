@@ -4418,6 +4418,14 @@ public:
 #include "world_shadow_experiment.inl"
 #include "world_memory_guard.inl"
 #include "world_replay_probe.inl"
+    bool shadowCaptureDemand()const{
+        if(!NorthlightQuality::actorShadowWork(quality,effects.shadows)||!active||!active->bvh||failed||workerFault())return false;
+        // Context is accepted once per frame; endFrame clears valid. Unknown
+        // celestial reads/maps cannot prove the absence of a directional draw.
+        if(!valid||!celestialValid||active->map!=lastRequest.map)return true;
+        if(!(NorthlightGI::dot(sourceColors[0],sourceColors[0])<=1e-10f&&NorthlightGI::dot(sourceColors[1],sourceColors[1])<=1e-10f))return true;
+        return pointRefreshPredicted();
+    }
     // The frame's first model draw decides whether this frame captures replays at all
     // (NorthlightQuality::skipModelCapture). Terrain capture and the game's draws are unaffected.
     bool modelCaptureSkipped(){
@@ -4425,7 +4433,7 @@ public:
         if(captureMode==CaptureUndecided){bool skip=false;
             // Unavailable geometry cannot consume directional or point replays.
             // Keep the existing GI cadence, pending-demand and diagnostic exceptions.
-            const bool shadows=ready()&&NorthlightQuality::actorShadowWork(quality,effects.shadows);
+            const bool shadows=shadowCaptureDemand();
             if(!particleLights.hasFlash()&&NorthlightQuality::captureSkipPossible(quality,shadows)&&(!quality.localLights||!quality.localLightLimit||!lightAttachments.needsDrawPose())){NorthlightQuality::CaptureInputs in;
                 in.shadows=shadows;in.demand=captureDemand;in.diagnostic=lastRenderDebug==1;in.actorDue=actorCaptureEnabled();in.nextPass=shadowPasses+1;
                 for(int source=0;source<2;++source)in.sourceActive[source]=NorthlightGI::dot(sourceColors[source],sourceColors[source])>1e-10f;
@@ -5634,6 +5642,7 @@ public:
         skipReason="draw";
         // Point shadows use this frame's selected/faded direct-light sources, in daylight too.
         if(jobs)replayJobs_.wait(atmosphereDone);else atmosphereWork(atmosphere,nearZ,w,h,debug);
+        bucket(NorthlightEffectsBuckets::Selection); // Atmosphere work/join precedes the point-shadow pass.
         // With no geometry, no upload/cascade mark closes the world setup.
         // Its elapsed interval can include CPU queue idle; do not bill it to empty point shadows.
         if(profile&&!geometryReady)profile->mark("WorldSetup");

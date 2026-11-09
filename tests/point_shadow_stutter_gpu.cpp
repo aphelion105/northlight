@@ -7,6 +7,27 @@
 #include "actor_client_programs.h"
 static void must(HRESULT hr){assert(SUCCEEDED(hr));}
 struct PointTerrainCoverageTest {
+ static void captureDemand(IDirect3DDevice9* d){
+  WorldRenderer w(d);w.active=std::make_shared<WorldRenderer::Snapshot>();w.active->bvh=std::make_shared<NorthlightGI::BVH>();w.active->map=w.lastRequest.map="capture-demand";
+  w.valid=w.celestialValid=true;w.sourceColors[0]=w.sourceColors[1]={};w.quality.actorShadows=w.quality.localLights=w.quality.pointShadows=w.quality.equipmentLights=1;
+  w.quality.localLightLimit=w.quality.pointShadowLimit=64;w.quality.gi=0;w.effects.shadows=true;w.effects.gi=false;w.captureDemand=false;w.lastRenderDebug=0;
+  unsigned cases=0;auto expect=[&](bool skip){w.captureMode=WorldRenderer::CaptureUndecided;w.actorCaptureDecided=false;w.actorJob.reset();assert(w.modelCaptureSkipped()==skip);++cases;};
+  expect(true); // Both current-frame directional sources are zero, no local light.
+  w.sourceColors[0]={.1f,0,0};expect(false);w.sourceColors[0]={};w.sourceColors[1]={0,.1f,0};expect(false);w.sourceColors[1]={};expect(true);
+  w.celestialValid=false;expect(false);w.celestialValid=true;w.valid=false;expect(false);w.valid=true;
+  w.active->map="different-map";expect(false);w.active->map=w.lastRequest.map;
+  auto bvh=w.active->bvh;w.active->bvh.reset();expect(true);w.active->bvh=bvh;
+  w.captureDemand=true;expect(false);expect(true);w.lastRenderDebug=1;expect(false);w.lastRenderDebug=0;
+  w.quality.gi=1;w.effects.gi=true;w.lastActorCapture=GetTickCount();expect(true);w.lastActorCapture=0;expect(false);w.quality.gi=0;w.effects.gi=false;
+  NorthlightLocalLights::Light light{{0,0,4},{1,.4f,.1f},1,12,17,3,NorthlightLocalLights::CastShadow};
+  w.active->localLights.push_back(light);expect(false);w.quality.pointShadows=0;expect(true);w.quality.pointShadows=1;
+  w.quality.localLights=0;expect(true);w.quality.localLights=1;w.active->localLights.clear();
+  w.equipmentLights.output[0]=light;w.equipmentLights.outputCount=1;expect(false);w.equipmentLights.outputCount=0;
+  NorthlightParticleLights::Sample particle{{0,0,4},{1,.4f,.1f},1,0};w.particleLights.observe(particle,w.context.camera);expect(false);w.particleLights.reset();
+  particle.flashRadius=100;w.particleLights.observe(particle,w.context.camera);expect(false);w.particleLights.reset();
+  w.lightAttachments.positions[1]={0,0,4};expect(false);w.lightAttachments.positions.clear();expect(true);
+  std::printf("SHADOW_CAPTURE_DEMAND_PASS cases=%u zeroToSunMoon=1 unknownContext=1 mapChange=1 geometryAbsent=1 localEquipmentParticleFlash=1 giCadence=1 poseDemand=1\n",cases);
+ }
  struct WarmDevice:ForwardIDirect3DDevice9 {
   using ForwardIDirect3DDevice9::ForwardIDirect3DDevice9;unsigned creates=0;bool failCube=false;
   HRESULT STDMETHODCALLTYPE CreateCubeTexture(UINT e,UINT l,DWORD u,D3DFORMAT f,D3DPOOL p,IDirect3DCubeTexture9** t,HANDLE* h)override{++creates;if(failCube){failCube=false;*t=nullptr;return E_OUTOFMEMORY;}return real->CreateCubeTexture(e,l,u,f,p,t,h);}
@@ -69,7 +90,7 @@ struct PointTerrainCoverageTest {
   std::printf("GEOMETRY_PREWARM_GPU_PASS frames=%u allocationsPerFrame=1 exhausted_no_allocation=1 partial_reset=1 complete_resources=1 point_shaders=1\n",frames);
  }
  static void run(IDirect3DDevice9* d,const char* skinPath){
-  prewarm(d);prewarmPoints(d);
+  captureDemand(d);prewarm(d);prewarmPoints(d);
   WorldRenderer w(d);w.valid=true;w.frames=1;w.quality.pointShadowLimit=64;w.quality.pointShadowFacesPerFrame=6;
   w.active=std::make_shared<WorldRenderer::Snapshot>();w.active->map="point-stutter-proof";w.active->bvh=std::make_shared<NorthlightGI::BVH>();w.uploadedMap=w.active->map;w.meshGeneration=1;
   NorthlightGI::WorldVertex vertices[]={{{-1,-1,0},{0,0,1},0,0},{{1,-1,0},{0,0,1},1,0},{{-1,1,0},{0,0,1},0,1},{{1,1,8},{0,0,-1},1,1},{{-1,1,8},{0,0,-1},0,1},{{1,-1,8},{0,0,-1},1,0}};

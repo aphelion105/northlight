@@ -85,6 +85,7 @@ public:
     ~NorthlightNativeModelNormals(){reset();}
     void configure(bool on){enabled=on;if(!on){lastComplete=false;cancel("disabled");}}
     bool usesDepth(IDirect3DSurface9* value)const{return sceneDepth&&sceneDepth==value;}
+    bool accepting()const{return enabled&&capable&&!refused&&complete;}
     void cancel(const char* cause){if(complete)reason=cause;complete=false;lastComplete=false;}
     void beginFrame(){drop(sceneDepth);describedColor=nullptr;allowed=enabled&&lastComplete;complete=true;started=false;reason="none";probes=modelDraws=zeroDraws=builds=committed=fallbacks=coldPairs=0;}
     void reset(){beginFrame();lastComplete=allowed=false;refused=false;

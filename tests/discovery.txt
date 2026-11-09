@@ -413,6 +413,8 @@ test_replay_upload.py
 test_replay_validity_fastpath.py
 test_reset_stack_wiring.py
 test_rigid_memory.py
+test_rigid_peer_bounds.py
+test_rigid_peer_point_gpu.py
 test_rigid_static_coverage.py
 test_rotation_wake.py
 test_scene_assembly.py

@@ -1,0 +1,75 @@
+{
+  "base_commit": "34891add9c17f57630eea70846d5a607e78449a3",
+  "source_identity": "32ceb6065731e074cc304ab3254e1e268000d12532967e98fc9ece81af297d59",
+  "built_utc": "2026-11-09 19:40:51 UTC",
+  "compiler": "Zig 0.15.2, scripts/build_renderer.py, x86 Windows",
+  "scope": "Focused regressions for r70; no full-suite final-head rerun. The user explicitly requested tests alongside a running WoW. Deterministic images/work counts are used; no isolated GPU timing or game FPS claim.",
+  "selected_changes": [
+    "Current-frame shadow capture demand",
+    "No state reads after native-normal MRT cancellation",
+    "Bounded immutable rigid-input envelope reuse across position programs",
+    "Correct atmosphere-join CPU attribution"
+  ],
+  "gpu_proof": {
+    "backends": [
+      "native D3D9",
+      "DXVK 3"
+    ],
+    "opaque_triangles": 34004,
+    "authored_lights": 9,
+    "cube_faces": 54,
+    "draws_before": 54,
+    "draws_after": 12,
+    "triangle_exposure_before": 1836216,
+    "triangle_exposure_after": 408048,
+    "occupied_pixels": 7250,
+    "face_images": "bit-exact",
+    "timing_valid": false
+  },
+  "cpu_proof": {
+    "stock_wmo_programs": 117,
+    "position_keys": 2,
+    "source_scans_before": 2,
+    "source_scans_after": 1,
+    "build_vertices_before": 192,
+    "build_vertices_after": 96,
+    "evaluated_bounds_hash": "299d2b92846b8b3b",
+    "current_pose_camera": "retained",
+    "original_readiness_negative_control": "exit 13; current passes",
+    "no_peer_starvation": "32 incompatible peers; 96 vertices complete in 96 one-vertex frames"
+  },
+  "native_normals_regression": {
+    "backends": 4,
+    "frames_per_backend": 4698,
+    "committed_frames_per_backend": 1126,
+    "rgb_and_normals": "exact",
+    "fallback": "whole frame"
+  },
+  "proof_sha256": {
+    "out/perf-20261109-r70/native-cancel/validation.json": "0815e1e9a07f79a7fb2d0bcba65f57fba3ddab718e33814b99c49e33aedeb5dd",
+    "out/castle-entry-20261109-followup/point-gpu-final/validation.json": "45461791356e2bb87305be920241ed3a66168a15ade0e243d81489ed1d378d57",
+    "out/cage-shadow-perf-20261109/demand-gpu/validation.json": "bc5e97b98b79ade4a73f1bb4a8ef11b9448b1b5f2dc3c30ee18f418382ba1dcc",
+    "out/perf-20261109-r70/final-regressions.log": "d9ae3917ad1a9fae31dcffc7205ec1975d39aca486a90c880259a04b825e47c5",
+    "out/perf-20261109-r70/material-envelope-final.log": "cfd42458daa65b1acb36df712666fbf25d03ae5f520f0788a9417cf9a9954ff1",
+    "out/perf-20261109-r70/linux-final.log": "af67ab7bffd78df264fb58fafabe76419512db5617f7cdb7ea5fae0243487ac2",
+    "out/perf-20261109-r70/normal-consumers.log": "a9b0fe50cd6aaabe76c8e2882fbd0e1f449ee0f8f25e025b737de40f3e0458f2",
+    "out/perf-20261109-r70/linux-normal-consumers.log": "a9b0fe50cd6aaabe76c8e2882fbd0e1f449ee0f8f25e025b737de40f3e0458f2",
+    "out/perf-20261109-r70/rigid-peer-sanitizers-windows.log": "a0a761d6d796f8878a90df414398e36c330f3e453ce88326d776b2533c024e9f",
+    "out/perf-20261109-r70/normal-cancel-negative.log": "edd594b30f32719cd630f53ac19e211e03aa16775da823e0d2cc05e2e4fb4343",
+    "out/castle-entry-20261109-followup/rigid-peer-original.log": "9a19600dc7d099328338cdaaca0aea01c38104a432f4dc55ca46b641e62f6b0e",
+    "out/castle-entry-20261109-followup/wmo-peer-current.log": "424b29a24b57b87874368171393dc5dba0f36b460215e191fda694b034571e44"
+  },
+  "artifacts": {
+    "renderer/frd9.dll": {
+      "bytes": 10833408,
+      "sha256": "779803cc1baa371ab3571f9ded6c4b256ebaf11e873db9346cb7451278cd7a82"
+    },
+    "releases/Northlight-0.3.217-test.20261109.4-Windows.zip": {
+      "bytes": 20810421,
+      "sha256": "e3e1396267fd8ec2efe683b907f567c762c77f4ecabc0be9c1e05e232affa3ab"
+    }
+  },
+  "rejected_experiment": "GTAO zero-weight arithmetic branch: exact tested images but no consistent elapsed gain; production source/bytecode/hashes unchanged.",
+  "castle_issue": "Deferred by the user. The independent Westguard capture segment and authored GPU fixture do not establish a fix for the exact YouTube clip.",
+  "installation": "No client DLL installed and no game started by this task."
+}

@@ -499,7 +499,7 @@ public:
         if(affected)nativeMrt.cancel("scene-depth-write");
     }
     template<class Draw,class Prove> HRESULT nativeDraw(Draw submit,bool domain,Prove prove){
-        if(bad||pending.empty()||!surface||!frameTarget)return submit();
+        if(bad||pending.empty()||!surface||!frameTarget||!nativeMrt.accepting())return submit();
         if(!domain){
             // A scene-depth writer outside the receiver domain owns its visible
             // pixels too. Preserve its native shaders/coverage and write zero

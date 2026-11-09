@@ -38,7 +38,7 @@ for i,backend in enumerate(backends):
  processes();run=out/str(i);run.mkdir();settings=run/'northlight-quality.ini';settings.write_text('[Quality]\nDiagnostics=0\n')
  result=subprocess.run([str(exe),str(backend.resolve()),str(run)+os.sep,str(skin_program)],env=env,cwd=run,capture_output=True,text=True,timeout=180)
  text=result.stdout+result.stderr;(run/'gpu.log').write_text(text);print(text[-3500:],flush=True)
- assert result.returncode==0 and all(marker in text for marker in ('GEOMETRY_PREWARM_GPU_PASS','POINT_PREWARM_GPU_PASS','POINT_PREWARM_IMAGE_PASS','POINT_GAP_GPU_PASS','POINT_STATIC_KEEP_GPU_PASS','POINT_LAZY_STATIC_GPU_PASS','POINT_REPLAY_COALESCE_GPU_PASS','POINT_COLD_COMPLETION_GPU_PASS','POINT_TOGGLE_GPU_PASS','POINT_RESET_BOUNDS_GPU_PASS','POINT_SKIN_SOURCE_GPU_PASS')),result.returncode
+ assert result.returncode==0 and all(marker in text for marker in ('SHADOW_CAPTURE_DEMAND_PASS','GEOMETRY_PREWARM_GPU_PASS','POINT_PREWARM_GPU_PASS','POINT_PREWARM_IMAGE_PASS','POINT_GAP_GPU_PASS','POINT_STATIC_KEEP_GPU_PASS','POINT_LAZY_STATIC_GPU_PASS','POINT_REPLAY_COALESCE_GPU_PASS','POINT_COLD_COMPLETION_GPU_PASS','POINT_TOGGLE_GPU_PASS','POINT_RESET_BOUNDS_GPU_PASS','POINT_SKIN_SOURCE_GPU_PASS')),result.returncode
  assert text.count('POINT_SKIN_SOURCE_GPU_PASS ')==2
  assert 'POINT_SINGLE_BONE_CHEAP_GPU_PASS ' in text
  assert 'POINT_WHITE_CUBE_GPU_PASS ' in text

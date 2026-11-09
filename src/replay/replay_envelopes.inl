@@ -42,6 +42,7 @@ public:
         size_t memoBypassed=0,memoStoreBypassed=0,memoProtected=0,memoCopiedBytes=0;
         size_t effectiveCopiedBytes=0,fastValid=0;
         size_t sourceIdentityHits=0,sourceReconstructedHits=0,sharedKeyHits=0,keyComparedBytes=0;
+        size_t rigidPeerHits=0;
     };
     struct MemoTotals {
         std::uint64_t tests=0,hits=0,cold=0,replaced=0,camera=0,constants=0;
@@ -66,6 +67,7 @@ private:
         std::uint64_t touched=0,programHash=0,lastEvaluationNs=0,serial=0;size_t bytes=0,baseBytes=0;
         unsigned constantFirst=0,constantCount=256,memoSlot=64;
         bool copyDefinitions=true,singleBone=false,rigidPositions=false; /* singleBone resolves its control DEF directly */
+        unsigned rigidStride=0;bool rigidPeerTried=false;
     };
     // Rotation filled 2048 entries at only 3.3 MiB. Keep more small immutable
     // sources instead of rebuilding them on return; the byte cap still wins.
@@ -189,6 +191,7 @@ private:
             // or relative address can split it into multiple groups.
             e.rigidPositions=!p.skinned&&!relative&&e.bindings->size()==1&&(*e.bindings)[0].element.Usage==D3DDECLUSAGE_POSITION&&
                 (*e.bindings)[0].element.Type==D3DDECLTYPE_FLOAT3;
+            if(e.rigidPositions)e.rigidStride=mesh.streams[(*e.bindings)[0].element.Stream].stride;
         }
         return true;
     }
@@ -312,7 +315,35 @@ private:
             charge(now);
         }
     };
+    bool reuseRigidPeer(Entry& e,const NorthlightDrawSnapshot::Mesh& mesh,Budget& budget,Timer& timer){
+        if(!e.rigidPositions||e.vertex||!e.groups.empty()||e.rigidPeerTried)return false;
+        e.rigidPeerTried=true;
+        // A missed optimization must leave source construction able to progress.
+        // Try once, visit at most eight peers, and reserve the copy separately.
+        if(budget.maxOperations-budget.operations<16)return false;
+        const auto range=entries_.equal_range(sourceHash(mesh));const auto& a=(*e.bindings)[0].element;
+        unsigned visited=0;
+        for(auto it=range.first;it!=range.second&&visited<8;++it,++visited){
+            if(timer.expired()||budget.operations>=budget.maxOperations)return false;
+            ++budget.operations;const auto& peer=it->second;
+            if(&peer==&e||!peer.ready||!peer.rigidPositions||peer.groups.size()!=1||peer.rigidStride!=e.rigidStride||peer.vertex!=mesh.vertexCount||peer.indexCount!=e.indexCount)continue;
+            const auto& b=(*peer.bindings)[0].element;
+            if(a.Stream!=b.Stream||a.Offset!=b.Offset||a.Type!=b.Type||a.Method!=b.Method||a.Usage!=b.Usage||a.UsageIndex!=b.UsageIndex)continue;
+            const bool same=e.sourceAddress==peer.sourceAddress&&!e.owner.owner_before(peer.owner)&&!peer.owner.owner_before(e.owner);
+            if(e.identity?!NorthlightSourceIdentity::same(e.identity,peer.identity):peer.identity||!same)continue;
+            if(budget.maxOperations-budget.operations<8)return false;
+            // Only immutable input XYZ limits are shared. Each draw still runs
+            // its own position program with its current constants and camera.
+            Group group;group.limits=peer.groups.begin()->second.limits;const std::string key;
+            const size_t added=sizeof(Group)+group.limits.capacity()*4+key.capacity()+1+192;
+            trimMemos(added);while(entries_.size()>1&&bytes_+added>Limit){if(!evict(&e))break;}if(bytes_+added>Limit)return false;
+            e.groups.emplace(key,std::move(group));e.bytes+=added;bytes_+=added;budget.operations+=8;
+            e.vertex=mesh.vertexCount;e.index=e.indexCount;e.ready=true;pending_=nullptr;++stats_.completed;++stats_.rigidPeerHits;return true;
+        }
+        return false;
+    }
     Status buildEntry(Entry& e,const NorthlightDrawSnapshot::Mesh& mesh,Budget& budget,Timer& timer){
+        if(reuseRigidPeer(e,mesh,budget,timer))return Status::Valid;
         // Budget interruptions retain only partial SOURCE envelopes. They can
         // never set a draw's valid flag; evaluation still uses its current pose.
         struct Progress {

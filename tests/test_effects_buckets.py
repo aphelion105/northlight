@@ -19,8 +19,9 @@ checks={
     and 'counted?draws:-1,unsigned(counted)' in r and 'counted?int(effectsBuckets.drawCalls(b)):-1' in r),
  'off: begin and mark read no clock':'on_=on&&clock;if(!on_)return;' in h and 'void mark(Bucket ended){if(!on_)return;' in h,
  # 0.3.209 (task 29): +2 = the two per-source actor sites run once per source. Worst case: begin, the world's single-use sites, 4 cascades (two exclusive sites each pass), every renderEffects site, end
- 'at most 30 clock reads a frame (begin, the marks, end)':render.count('bucket(NorthlightEffectsBuckets::Bucket(NorthlightEffectsBuckets::SunNear+source*2+cascade))')==2
-    and 1+(world_marks-2)+4+2+outer_marks+1<=30 and 'constexpr unsigned MaxReads=30;' in h,
+ 'at most 31 clock reads a frame (begin, the marks, end)':render.count('bucket(NorthlightEffectsBuckets::Bucket(NorthlightEffectsBuckets::SunNear+source*2+cascade))')==2
+    and 1+(world_marks-2)+4+2+outer_marks+1<=31 and 'constexpr unsigned MaxReads=31;' in h,
+ 'atmosphere work and join are attributed before the point-shadow pass':render.index('replayJobs_.wait(atmosphereDone);else atmosphereWork(')<render.index('bucket(NorthlightEffectsBuckets::Selection); // Atmosphere')<render.index('renderPointShadows(atmosphere.lights,'),
  'the world marks through bucket() only (the renderer\'s frame pointer)':'void bucket(NorthlightEffectsBuckets::Bucket b){if(effectsBuckets)effectsBuckets->mark(b);}' in w and 'world->setEffectsBuckets(&effectsBuckets);' in r,
  'sampled or >=8ms, device/frame provenance, emitted before reset and outside sampled-only report':('if(NorthlightEffectsBuckets::report(sampledFrame,effectsMs))' in r
     and 'frame=%u device=%ld sampled=%u slow=%u applied=%d' in r and 'drawCountsKnown=%u' in r

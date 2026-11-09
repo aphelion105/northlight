@@ -62,6 +62,7 @@ class Frame {
     std::array<Track,Tracks> tracks_{};unsigned trackCount_=0;
 public:
     bool hasFlash()const{if(skyCount_)return true;for(unsigned i=0;i<count_;++i)if(current_[i].sample.flashRadius>0)return true;return false;}
+    bool hasLights()const{return count_||outputCount;}
     std::array<Light,Capacity> output{};unsigned outputCount=0;
     std::array<std::uint64_t,ParticleCapacity> immediate{};unsigned immediateCount=0;
     unsigned draws=0,backgroundDraws=0,accepted=0,deferred=0,triangles=0,points=0,dropped=0,probes=0,distant=0,flashDraws=0,flashProbes=0;
