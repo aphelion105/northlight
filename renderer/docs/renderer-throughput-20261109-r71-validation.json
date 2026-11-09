@@ -1,0 +1,134 @@
+{
+  "base_commit": "24ecb9c44e5a78fda26adf850be28bb613158e73",
+  "source_identity": "9b6f1d0e9b062d1bc645a7b5bdc82cabf96948dc93588a2ffd0d61f5f6a79676",
+  "built_utc": "2026-11-09 20:13:21 UTC",
+  "compiler": "Zig 0.15.2, scripts/build_renderer.py, x86 Windows",
+  "scope": "Focused regressions; concurrent WoW authorized by user; no isolated GPU timing or game FPS claim.",
+  "selected_changes": [
+    "Requested-face culling",
+    "Direct final point-face target when static content is absent",
+    "Remove runtime white-union texture creation",
+    "Remove both legacy cache implementations from production include graph"
+  ],
+  "point_gpu_comparison": {
+    "pass": true,
+    "scope": "Point-pass component; five alpha recipes/formats, merged/unmerged geometry. Matching FNV64 hashes of nonempty full R32 cubes; no game FPS or isolated timing claim.",
+    "results": [
+      {
+        "backend_index": 0,
+        "images": 10,
+        "cube_faces": 60,
+        "union_draws_before": 60,
+        "union_draws_after": 0,
+        "bit_exact": true
+      },
+      {
+        "backend_index": 1,
+        "images": 10,
+        "cube_faces": 60,
+        "union_draws_before": 60,
+        "union_draws_after": 0,
+        "bit_exact": true
+      },
+      {
+        "backend_index": 2,
+        "images": 10,
+        "cube_faces": 60,
+        "union_draws_before": 60,
+        "union_draws_after": 0,
+        "bit_exact": true
+      },
+      {
+        "backend_index": 3,
+        "images": 10,
+        "cube_faces": 60,
+        "union_draws_before": 60,
+        "union_draws_after": 0,
+        "bit_exact": true
+      }
+    ],
+    "cube_images": 40,
+    "face_images": 240,
+    "union_draws_before": 240,
+    "union_draws_after": 0,
+    "timing_valid": false
+  },
+  "prewarm_creates": {
+    "before": 8,
+    "after": 7,
+    "fixture": "two selected light cubes"
+  },
+  "cpu_component": {
+    "candidates_per_sample": 163840,
+    "samples_per_variant": 6,
+    "warmups": 4,
+    "results": [
+      {
+        "requested_mask": 1,
+        "full_mask_ms": 12.622122,
+        "requested_mask_ms": 3.321276
+      },
+      {
+        "requested_mask": 3,
+        "full_mask_ms": 11.629593,
+        "requested_mask_ms": 5.024809
+      },
+      {
+        "requested_mask": 7,
+        "full_mask_ms": 11.597969,
+        "requested_mask_ms": 6.945305
+      }
+    ],
+    "game_fps_inference": false
+  },
+  "production_dependencies": {
+    "shared_policy": true,
+    "legacy_cache_implementations": false
+  },
+  "checks": {
+    "point_backends": 4,
+    "point_images": "matching nonempty whole-R32-cube 64-bit hashes",
+    "canonical_gpu_msaa": [
+      0,
+      2,
+      4,
+      8
+    ],
+    "optimized_and_sanitized_cpu": true,
+    "schedule_final": "PASS after updating pre-existing HLSL return-type lookup",
+    "full_repository_suite": false,
+    "shader_changes": false
+  },
+  "proof_sha256": {
+    "out/perf-20261109-r71/point-verified/validation.json": "cd0e2891e7fbe09d30b3da58fc85aac0656bbaa8192a43a5b76482cc0d305ef8",
+    "out/perf-20261109-r71/point-reference-verified/validation.json": "6a3c633558890a50ecca71ed8b36ec5b727be3ac977c49eef06b898a087b4ff9",
+    "out/perf-20261109-r71/point-comparison.json": "e43fa2b95d619ad34afb0314f8d2fe6b6d92f5ae792badafdb5c30db58d98dc8",
+    "out/perf-20261109-r71/canonical-gpu/validation.json": "ae77f99941eb20535c3390df14e8429f8c445e2df47f6581660dc74dddcd99f1",
+    "out/perf-20261109-r71/contracts.log": "c9fd2c85c308daedfd5fd4628d3b3777da9c0858403306f7f379aa723edad992",
+    "out/perf-20261109-r71/initial-linux.log": "be4ab3f5d7b3466a5d22573eb3e6ed6e3c3f439b9cb7fe3f0a6eea9c66f58eef",
+    "out/perf-20261109-r71/final-linux.log": "4c5cfa5d8a95349e81c1d98ce7b5c09c2df4e0d7b5be360d0796d3c52ce32867",
+    "out/perf-20261109-r71/schedule-final.log": "8e4b9730df5b24b3b1466907c88df7ef9f87d22a9ac4db9973f74dcafdf4cd95",
+    "out/perf-20261109-r71/clip-component.log": "8c90a34778fa7922db20bf1ba1e4a989288528f58b4fc801020bb661a5d24bbd",
+    "out/perf-20261109-r71/production-includes.log": "b67a8539b28416e4886b93df22f9683a31e3f5217832e91ead052c0dadd3c5f5",
+    "out/perf-20261109-r71/artifacts.json": "35cc725dfc68e469659f71c4de5e11318ca665438310fd6f810c9cd5f893e8e8",
+    "out/perf-20261109-r71/package-verification/verification.json": "c09131e0c078610e872f26b0d596eb28ef3018d15419651d6f988961063ed6ec"
+  },
+  "artifacts": {
+    "renderer/frd9.dll": {
+      "bytes": 10834432,
+      "sha256": "772198a4514cc83ecfd61aae5bd07bc79f5b649784a42fbc54cedaaabc46710a"
+    },
+    "releases/Northlight-0.3.217-test.20261109.5/d3d9.dll": {
+      "bytes": 10834432,
+      "sha256": "772198a4514cc83ecfd61aae5bd07bc79f5b649784a42fbc54cedaaabc46710a"
+    },
+    "releases/Northlight-0.3.217-test.20261109.5-Windows.zip": {
+      "bytes": 20810932,
+      "sha256": "f71467b876690fd26c8aceb46f48b3921d7a48e5de6906bcce658327a7dc5fe5"
+    }
+  },
+  "package_verified": true,
+  "source_unchanged": true,
+  "castle_issue": "Deferred by the user; this fixture does not establish a fix for the exact video.",
+  "installation": "No client DLL installed and no game started."
+}

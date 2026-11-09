@@ -120,8 +120,6 @@
 #include "shadow_alpha_target.h"
 #include "terrain_capture_bounds.h"
 #include "draw_snapshot.h"
-#include "replay_gpu_cache.h"
-#include "replay_gpu_batches.h"
 #include "gpu_scene.h"
 #include "replay_bulk_layout.h"
 #include "dynamic_ring.h"

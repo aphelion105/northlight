@@ -1,5 +1,7 @@
 #pragma once
-#include "replay_gpu_batches.h"
+#include "replay_gpu_binding.h"
+#include "replay_gpu_policy.h"
+#include "lock_meter.h"
 #include <array>
 #include <cassert>
 #include <tuple>
@@ -11,10 +13,10 @@ using Placement=NorthlightReplayGPU::Placement;
 enum class Consumer:unsigned {Material=0,Shadow=1};
 class NativeStore {
 public:
- using Stats=NorthlightReplayGPU::Cache::Stats;
- using Population=NorthlightReplayGPU::Cache::Population;
- using ClearStats=NorthlightReplayGPU::Cache::ClearStats;
- using BatchStats=NorthlightReplayGPU::BatchedCache::BatchStats;
+ using Stats=NorthlightReplayGPU::Stats;
+ using Population=NorthlightReplayGPU::Population;
+ using ClearStats=NorthlightReplayGPU::ClearStats;
+ using BatchStats=NorthlightReplayGPU::BatchStats;
  struct Counters {size_t uploaded=0,reused=0,loanedBytes=0;unsigned hits=0,crossOwner=0,reconstructed=0,loans=0;};
 private:
  struct Entry;

@@ -23,7 +23,7 @@ inline constexpr bool BatchedReplayCache=true;
 class BatchedCache {
 public:
     using Stats=Cache::Stats;using Population=Cache::Population;using ClearStats=Cache::ClearStats;
-    struct BatchStats {size_t batches=0,batchBytes=0,separateBytes=0,liveBytes=0,compactedBytes=0;unsigned batchedUploads=0,separateUploads=0,compactions=0,batchFailures=0;};
+    using BatchStats=NorthlightReplayGPU::BatchStats;
 private:
     struct Batch {
         IDirect3DVertexBuffer9* vertices=nullptr;IDirect3DIndexBuffer9* indices=nullptr;

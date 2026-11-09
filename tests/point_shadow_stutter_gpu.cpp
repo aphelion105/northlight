@@ -48,14 +48,26 @@ struct PointTerrainCoverageTest {
     assert(w.pointSelection.entries[i].id==selection.entries[i].id&&w.pointSelection.entries[i].gain==selection.entries[i].gain&&w.pointSelection.entries[i].occupied==selection.entries[i].occupied);}
   };
   NorthlightStreaming::Budget exhausted(0,1000);w.prewarmPointResources(lights,"prewarm",exhausted);assert(!meter.creates);
-  for(unsigned i=0;resident()<2;++i){assert(i<16);step();}assert(meter.creates==8&&w.pointCold.cubes==2); // Three shaders, three shared resources, two desired cubes.
-  assert(w.pointSlots[0].selected.sourceId==100&&w.pointSlots[1].selected.sourceId==101);for(unsigned i=0;i<8;++i)step();assert(meter.creates==8);
+  for(unsigned i=0;resident()<2;++i){assert(i<16);step();}
+#ifdef NORTHLIGHT_POINT_UNION_REFERENCE
+  constexpr unsigned creates=8;
+#else
+  constexpr unsigned creates=7;assert(!w.pointEmpty);
+#endif
+  assert(meter.creates==creates&&w.pointCold.cubes==2); // Three shaders, shared targets, two desired cubes.
+  assert(w.pointSlots[0].selected.sourceId==100&&w.pointSlots[1].selected.sourceId==101);for(unsigned i=0;i<8;++i)step();assert(meter.creates==creates);
   w.quality.pointShadowLimit=1;step();assert(resident()==1);
   lights.sources[0].position[0]=1000;step();assert(resident()==1&&w.pointSlots[0].selected.sourceId==101);
   w.memoryPressure=true;step();assert(!resident());w.memoryPressure=false;
   step();assert(resident()==1);w.active->map="other";step();assert(!resident());step("other");assert(resident()==1);
   w.releasePointGPU();assert(!resident()&&!w.pointScratch&&!w.pointDepth&&!w.pointEmpty);
-  for(unsigned i=0;!w.pointEmpty;++i){assert(i<8);step("other");}
+  for(unsigned i=0;
+#ifdef NORTHLIGHT_POINT_UNION_REFERENCE
+      !w.pointEmpty;
+#else
+      !w.pointDepth;
+#endif
+      ++i){assert(i<8);step("other");}
   meter.failCube=true;step("other");assert(!resident()&&!meter.failCube&&!w.pointFailures); // Failure cannot delay the next live allocation.
   assert(w.pointResources());assert(w.pointSlot().cube&&!w.pointSlot().retryAt);w.releasePointGPU();
   w.active->map="prewarm";w.pointSelection.initialized=true;w.pointSelection.updatedAt=17;w.pointSelection.entries[0]={101,.35f,true};const unsigned before=meter.creates;step();assert(meter.creates==before&&!resident());
@@ -89,9 +101,15 @@ struct PointTerrainCoverageTest {
   for(unsigned i=0;i<3;++i)staged.prewarmPointShaders();assert(staged.pointShadowVS&&staged.pointShadowPS&&staged.pointLightingPS);
   std::printf("GEOMETRY_PREWARM_GPU_PASS frames=%u allocationsPerFrame=1 exhausted_no_allocation=1 partial_reset=1 complete_resources=1 point_shaders=1\n",frames);
  }
+ struct UnionMeter:ForwardIDirect3DDevice9 {
+  using ForwardIDirect3DDevice9::ForwardIDirect3DDevice9;unsigned quads=0;
+  HRESULT STDMETHODCALLTYPE DrawPrimitiveUP(D3DPRIMITIVETYPE type,UINT count,const void* vertices,UINT stride)override{
+   quads+=type==D3DPT_TRIANGLESTRIP&&count==2;return real->DrawPrimitiveUP(type,count,vertices,stride);
+  }
+ };
  static void run(IDirect3DDevice9* d,const char* skinPath){
   captureDemand(d);prewarm(d);prewarmPoints(d);
-  WorldRenderer w(d);w.valid=true;w.frames=1;w.quality.pointShadowLimit=64;w.quality.pointShadowFacesPerFrame=6;
+  UnionMeter meter(d);WorldRenderer w(&meter);w.valid=true;w.frames=1;w.quality.pointShadowLimit=64;w.quality.pointShadowFacesPerFrame=6;
   w.active=std::make_shared<WorldRenderer::Snapshot>();w.active->map="point-stutter-proof";w.active->bvh=std::make_shared<NorthlightGI::BVH>();w.uploadedMap=w.active->map;w.meshGeneration=1;
   NorthlightGI::WorldVertex vertices[]={{{-1,-1,0},{0,0,1},0,0},{{1,-1,0},{0,0,1},1,0},{{-1,1,0},{0,0,1},0,1},{{1,1,8},{0,0,-1},1,1},{{-1,1,8},{0,0,-1},0,1},{{1,-1,8},{0,0,-1},1,0}};
   constexpr unsigned triangles=2048;std::vector<WORD> indices;
@@ -191,9 +209,20 @@ struct PointTerrainCoverageTest {
   IDirect3DTexture9* cutout=nullptr;must(d->CreateTexture(2,2,1,0,D3DFMT_A8R8G8B8,D3DPOOL_MANAGED,&cutout,nullptr));D3DLOCKED_RECT lock{};must(cutout->LockRect(0,&lock,nullptr,0));
   for(unsigned y=0;y<2;++y)for(unsigned x=0;x<2;++x)reinterpret_cast<DWORD*>(static_cast<char*>(lock.pBits)+y*lock.Pitch)[x]=(x==y)?0xffffffffu:0x00ffffffu;must(cutout->UnlockRect(0));
   unsigned replayBefore=0,replayAfter=0;
-  for(unsigned alpha=0;alpha<2;++alpha){for(auto& p:w.replays){p->cutoff=alpha?.5f:-1.f;if(p->texture)p->texture->Release();p->texture=alpha?cutout:nullptr;if(p->texture)p->texture->AddRef();}
+  for(unsigned alpha=0;alpha<5;++alpha){for(auto& p:w.replays){p->cutoff=alpha?.5f:-1.f;p->alphaMode=0;
+   if(alpha>=2){const unsigned formats[]={D3DFMT_A8R8G8B8,D3DFMT_A16B16G16R16F,D3DFMT_A32B32G32R32F};p->alphaMode=NorthlightShadowAlpha::FixedTest|(128u<<8)|(formats[alpha-2]<<18);}
+   if(p->texture)p->texture->Release();p->texture=alpha?cutout:nullptr;if(p->texture)p->texture->AddRef();}
    std::vector<float> reference;std::array<unsigned,6> weights{};
-   for(unsigned mode=0;mode<2;++mode){w.pointPrimitiveLimit=mode?caps.MaxPrimitiveCount:1;w.pointSlot().cacheValid=false;w.pointSlot().schedule.invalidate();w.pointWork={};must(d->BeginScene());assert(w.renderPointShadow(light,true,true));must(d->EndScene());drain();
+   for(unsigned mode=0;mode<2;++mode){w.pointPrimitiveLimit=mode?caps.MaxPrimitiveCount:1;w.pointSlot().cacheValid=false;w.pointSlot().schedule.invalidate();w.pointWork={};const auto quads=meter.quads;must(d->BeginScene());assert(w.renderPointShadow(light,true,true));must(d->EndScene());drain();
+#ifdef NORTHLIGHT_POINT_UNION_REFERENCE
+    constexpr unsigned expectedUnions=6;
+#else
+    constexpr unsigned expectedUnions=0;
+#endif
+    assert(w.pointWork.unions==expectedUnions&&meter.quads-quads==expectedUnions);
+    const auto pixels=image();assert(std::any_of(pixels.begin(),pixels.end(),[](float depth){return depth<1.f;}));
+    uint64_t hash=1469598103934665603ull;for(const auto byte:std::string(reinterpret_cast<const char*>(pixels.data()),pixels.size()*sizeof(float)))hash=(hash^static_cast<unsigned char>(byte))*1099511628211ull;
+    std::printf("POINT_DIRECT_GPU_PASS alpha=%u merged=%u unions=%u imageHash=%llu nonempty=1\n",alpha,mode,expectedUnions,(unsigned long long)hash);
     if(!mode){reference=image();replayBefore=w.pointWork.replay;std::copy_n(w.pointSlot().faceWeights,6,weights.begin());}
     else{assert(image()==reference);replayAfter=w.pointWork.replay;assert(replayAfter<replayBefore/16&&w.pointWork.replayMerged>0);assert(std::equal(weights.begin(),weights.end(),w.pointSlot().faceWeights));}
    }

@@ -30,7 +30,7 @@
     bool pointCubeIsWhite(const PointSlot& slot)const{
         if(!active||!slot.ready||!slot.cube||!slot.cacheValid||slot.map!=active->map||
            slot.cacheSource!=slot.selected.sourceId||slot.staticOnlyFaces!=63)return false;
-        // A successful static-only union used pointEmpty for both inputs on
+        // A successful static-only refresh cleared empty faces to white on
         // every face. Existing bits describe stored content, including cycles.
         for(unsigned face=0;face<6;++face)if(!slot.faces[face]||slot.cacheFace[face]||slot.cacheSurface[face])return false;
         return true;
@@ -241,7 +241,6 @@
         if(!pointScratchSurface){pointScratch->GetSurfaceLevel(0,&pointScratchSurface);return;}
         if(!pointDepth){if(budget.chunk(faceBytes)!=faceBytes)return;budget.consume(faceBytes);
             pointAllocate(pointCold.shared,[&]{return d->CreateDepthStencilSurface(PointResolution,PointResolution,D3DFMT_D24S8,D3DMULTISAMPLE_NONE,0,TRUE,&pointDepth,nullptr);});return;}
-        if(!pointEmpty){if(budget.chunk(4)!=4)return;budget.consume(4);pointEmptyResource();return;}
         for(unsigned i=0;i<pointSlots.size();++i)if(picks[i].index>=0){auto& p=pointSlots[i];if(p.cube||p.ready||p.cacheValid)continue;
             if(budget.chunk(6*faceBytes)!=6*faceBytes)return;budget.consume(6*faceBytes);
             try{p.map=active->map;}catch(const std::bad_alloc&){return;}
@@ -261,7 +260,6 @@
         if(!pointShadowPS&&!pointCheck(pointAllocate(pointCold.shaders,[&]{return d->CreatePixelShader(kLocalShadowPSShader,&pointShadowPS);}),"cube pixel shader"))return false;
         if(!pointLightingPS&&!pointCheck(pointAllocate(pointCold.shaders,[&]{return d->CreatePixelShader(kLocalLightingShader,&pointLightingPS);}),"local lighting shader"))return false;
         if(!pointDepth||!pointScratchSurface||!pointShadowVS||!pointShadowPS||!pointLightingPS)return pointCheck(E_FAIL,"empty optional resource");
-        if(!pointEmpty&&!pointCheck(pointEmptyResource(),"empty static face texture"))return false;
         if(pointSlot().cube){
             bool faces=true;for(auto* face:pointSlot().faces)faces=faces&&face;if(faces){pointSlot().retryAt=0;return true;}
         }
@@ -285,13 +283,13 @@
         // do not rescan hundreds of thousands of terrain vertices each frame.
         if(count)pointLiveBatches.push_back({start,count,vec(bounds.low),vec(bounds.high)});
     }
-    unsigned pointMask(V low,V high,const NorthlightPointShadow::FaceClip& clip)const{
+    unsigned pointMask(V low,V high,const NorthlightPointShadow::FaceClip& clip,unsigned faces)const{
         float lo[]={low.x,low.y,low.z},hi[]={high.x,high.y,high.z};
         // Invalid bounds must draw. The generic sphere helper rejects invalid
         // inputs, so use the replay helper's explicit fail-open semantics.
         NorthlightReplayBounds::Bounds bounds;std::memcpy(bounds.low,lo,12);std::memcpy(bounds.high,hi,12);bounds.valid=true;
         if(NorthlightReplayBounds::outsideSphere(bounds,pointSlot().selected.position,pointSlot().selected.attenuationEnd))return 0;
-        return clip.mask(lo,hi,true);
+        return clip.mask(lo,hi,true,faces);
     }
     void pointAppendCandidates(PointCandidates& lists,size_t index,unsigned mask,unsigned faces=63){
         for(unsigned face=0;face<6;++face){if(!(faces&(1u<<face)))continue;if(mask&(1u<<face))lists[face].push_back(index);else ++pointCulled;}
@@ -742,7 +740,7 @@
             // Reuse the mesh's terrain list shared with the directional passes.
             // Camera-visible native chunks may contain only part of a caster.
             const auto terrainCandidate=[&](size_t i){const auto& batch=batches[i];
-                const unsigned mask=pointMask(batch.boundsLow,batch.boundsHigh,clip);pointBatchMasks[i]=static_cast<unsigned char>(mask);
+                const unsigned mask=pointMask(batch.boundsLow,batch.boundsHigh,clip,faces);pointBatchMasks[i]=static_cast<unsigned char>(mask);
                 pointAppendCandidates(pointTerrainCandidates,i,mask,faces);};
             if(terrainBatchListGeneration==meshGeneration&&terrainBatchListSize==batches.size()){
                 for(size_t i:terrainBatchList)terrainCandidate(i);
@@ -750,17 +748,17 @@
             if(rebuildMask&faces){
                 for(size_t i=0;i<batches.size();++i){const auto& batch=batches[i];
                     if(!batch.terrain&&std::find(ownGlass.begin(),ownGlass.end(),i)==ownGlass.end()){
-                        const unsigned mask=pointMask(batch.boundsLow,batch.boundsHigh,clip);pointBatchMasks[i]=static_cast<unsigned char>(mask);
+                        const unsigned mask=pointMask(batch.boundsLow,batch.boundsHigh,clip,rebuildMask&faces);pointBatchMasks[i]=static_cast<unsigned char>(mask);
                         pointAppendCandidates(pointStaticCandidates,i,mask,rebuildMask&faces);}
                 }
             }
             for(size_t i=0;i<pointLiveBatches.size();++i){const auto& batch=pointLiveBatches[i];
-                pointAppendCandidates(pointLiveCandidates,i,pointMask(batch.low,batch.high,clip),faces);}
+                pointAppendCandidates(pointLiveCandidates,i,pointMask(batch.low,batch.high,clip,faces),faces);}
             const auto* nativeFixture=ownGlass.empty()?equipmentLights.fixture(light.sourceId):nullptr;
             replayBoundsJoin();
             if(withReplays)for(size_t i=0;i<replays.size();++i){const auto& bounds=replays[i]->pointBounds;
                 const unsigned mask=NorthlightReplayBounds::outsideSphere(bounds,pointSlot().selected.position,pointSlot().selected.attenuationEnd)?0:
-                    clip.mask(bounds.low,bounds.high,bounds.valid);
+                    clip.mask(bounds.low,bounds.high,bounds.valid,faces);
                 // Ownership can decode the complete emitter mesh. Culled packets
                 // cannot contribute to this refresh, including partial-face cycles.
                 if(!(mask&faces)){pointCulled+=unsigned(__builtin_popcount(faces));continue;}
@@ -835,10 +833,11 @@
             if(rebuildMask&(1u<<face)){++pointFacesRebuilt;++pointWork.rebuilt;}
             pointSlot().staticOnlyFaces&=~bit;
             const unsigned faceDraws=pointDraws,faceMerged=pointBatchesMerged;
+            const bool direct=!pointSlot().cacheFace[face];
             // Dynamic casters of this frame into the scratch face, plus cached-mesh
             // terrain, including parts absent from the camera-culled native draws.
             if(!staticOnly){
-            if(!bindFace(pointScratchSurface,"cube scratch target"))return false;
+            if(!bindFace(direct?pointSlot().faces[face]:pointScratchSurface,"cube dynamic target"))return false;
             UINT terrainBoundPage=UINT_MAX;
             for(size_t at=0;at<pointTerrainCandidates[face].size();){const auto batch=pointBatchRun(pointTerrainCandidates[face],at,face);
                 if(batch.material>=materials.size()||batch.material>=uploadedAlphaCutoffs.size())return pointCheck(E_FAIL,"cube material range");
@@ -891,6 +890,14 @@
             // Preserve the original logical workload weights: coalescing must
             // not change the configured partial-face refresh groups/order.
             pointSlot().faceWeights[face]=pointDraws-faceDraws+pointBatchesMerged-faceMerged;
+            if(direct){
+                // LocalShadowPS already saturates depth. With no static input,
+                // min(dynamic, 1) is the dynamic face itself.
+                if(staticOnly&&(!pointCheck(d->SetDepthStencilSurface(nullptr),"unbind empty cube depth")||
+                   !pointCheck(d->SetRenderTarget(0,pointSlot().faces[face]),"empty cube target")||
+                   !pointCheck(d->SetViewport(&viewport),"empty cube viewport")||
+                   !pointCheck(d->Clear(0,nullptr,D3DCLEAR_TARGET,0xffffffff,1,0),"clear empty cube")))return false;
+            }else{
             // With no dynamic casters, min(cache, cache) copies the static face
             // without clearing or rendering a scratch face. Retain it until it changes.
             if(!pointCheck(d->SetDepthStencilSurface(nullptr),"unbind cube depth")||!pointCheck(d->SetRenderTarget(0,pointSlot().faces[face]),"cube target")||
@@ -898,13 +905,14 @@
             d->SetRenderState(D3DRS_ZENABLE,FALSE);d->SetRenderState(D3DRS_ZWRITEENABLE,FALSE);
             d->SetVertexShader(nullptr);d->SetFVF(D3DFVF_XYZRHW|D3DFVF_TEX1);d->SetStreamSourceFreq(0,1);
             d->SetTextureStageState(0,D3DTSS_TEXCOORDINDEX,0);d->SetTextureStageState(0,D3DTSS_TEXTURETRANSFORMFLAGS,D3DTTFF_DISABLE);
-            auto* staticFace=pointSlot().cacheFace[face]?pointSlot().cacheFace[face]:pointEmpty;
+            auto* staticFace=pointSlot().cacheFace[face];
             if(!pointCheck(d->SetTexture(0,staticOnly?staticFace:pointScratch),"cube union scratch")||!pointCheck(d->SetTexture(1,staticFace),"cube union cache"))return false;
             for(unsigned sampler=0;sampler<2;++sampler){d->SetSamplerState(sampler,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(sampler,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);d->SetSamplerState(sampler,D3DSAMP_MINFILTER,D3DTEXF_POINT);d->SetSamplerState(sampler,D3DSAMP_MAGFILTER,D3DTEXF_POINT);d->SetSamplerState(sampler,D3DSAMP_MIPFILTER,D3DTEXF_NONE);d->SetSamplerState(sampler,D3DSAMP_SRGBTEXTURE,FALSE);}
             float unionConstants[2][4]={{0,0,0,float(PointResolution)},{1.f/PointResolution,1.f/PointResolution,0,0}};
             if(!pointCheck(d->SetPixelShaderConstantF(0,&unionConstants[0][0],2),"cube union constants")||!pointCheck(d->SetPixelShader(unionPS),"cube union shader")||
                !pointCheck(quad(PointResolution,PointResolution),"cube union"))return false;
             ++pointWork.unions;
+            }
             if(staticOnly)pointSlot().staticOnlyFaces|=bit;
             d->SetTexture(0,nullptr);d->SetTexture(1,nullptr);
             d->SetRenderState(D3DRS_ZENABLE,TRUE);d->SetRenderState(D3DRS_ZWRITEENABLE,TRUE);

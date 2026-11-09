@@ -182,9 +182,10 @@ class FaceClip {
     Face faces[6];
 public:
     explicit FaceClip(const float (&matrices)[6][16]){for(unsigned face=0;face<6;++face)faces[face].prepare(matrices[face]);}
-    unsigned mask(const float* lo,const float* hi,bool valid)const{
-        double extent[3];if(!valid||!detail::bounds(lo,hi,extent))return 63;
-        unsigned mask=0;for(unsigned face=0;face<6;++face)if(!faces[face].reject(lo,hi,extent))mask|=1u<<face;
+    unsigned mask(const float* lo,const float* hi,bool valid,unsigned requested=63)const{
+        requested&=63;if(!requested)return 0;
+        double extent[3];if(!valid||!detail::bounds(lo,hi,extent))return requested;
+        unsigned mask=0;for(unsigned face=0;face<6;++face)if((requested&(1u<<face))&&!faces[face].reject(lo,hi,extent))mask|=1u<<face;
         return mask;
     }
 };
