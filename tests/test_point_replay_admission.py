@@ -37,7 +37,7 @@ bool outsideSphere(const Bounds& b,const float*,float){return b.valid&&b.outside
 }
 struct Fixture{
     struct Replay{Bounds pointBounds;bool shadowSkinned=false;unsigned owned=0;};
-    struct Clip{unsigned mask(const float* low,const float*,bool valid)const{return valid?unsigned(low[0]):63;}} clip;
+    struct Clip{unsigned mask(const float* low,const float* high,bool valid,unsigned requested=63)const{return (valid?(high[0]?0:unsigned(low[0])):63)&requested;}} clip;
     struct Light{float position[3]={};float attenuationEnd=1;} light;
     struct Slot{Light selected;} slot;
     struct Work{unsigned unboundedSkinned=0,unboundedRigid=0;} pointWork;
@@ -56,7 +56,7 @@ struct Fixture{
         for(unsigned face=0;face<6;++face)if(faces&(1u<<face)){if(mask&(1u<<face))lists[face].push_back(index);else ++pointCulled;}}
     void add(unsigned mask,bool valid,bool outside,unsigned owned,bool skin=false){
         auto p=std::make_unique<Replay>();p->pointBounds.low[0]=float(mask);p->pointBounds.valid=valid;
-        p->pointBounds.outside=outside;p->owned=owned;p->shadowSkinned=skin;replays.push_back(std::move(p));}
+        p->pointBounds.outside=outside;p->pointBounds.high[0]=float(outside);p->owned=owned;p->shadowSkinned=skin;replays.push_back(std::move(p));}
     void oldLoop(unsigned faces,bool withReplays){@OLD@}
     void newLoop(unsigned faces,bool withReplays){@NEW@}
 };

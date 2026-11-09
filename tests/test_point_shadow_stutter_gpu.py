@@ -35,7 +35,10 @@ if a.reference_point_from:
  overlay=out/'reference';overlay.mkdir()
  for name,path in [('world_renderer.h','src/world/world_renderer.h'),('world_point_rendering.inl','src/world/world_point_rendering.inl')]:
   target=overlay/name;target.write_bytes(subprocess.check_output(['git','show',a.reference_point_from+':'+path],cwd=fp.REPO));inputs[str(target)]=sha(target)
- reference=['-I',overlay,'-DNORTHLIGHT_POINT_UNION_REFERENCE=1']
+ point=(overlay/'world_point_rendering.inl').read_text()
+ reference=['-I',overlay]
+ if 'if(direct){' not in point:reference+=['-DNORTHLIGHT_POINT_UNION_REFERENCE=1']
+ if 'PointSlot recycled;' not in point:reference+=['-DNORTHLIGHT_POINT_RECYCLE_REFERENCE=1']
 cmd=[fp.zig(),'c++','-target','x86-windows-gnu','-O2','-UNDEBUG','-std=c++17','-Wno-microsoft-exception-spec','-DIMGUI_USER_CONFIG="northlight_imconfig.h"',*reference,'-I',out,*fp.test_include_flags(),fp.TESTS/'point_shadow_stutter_gpu.cpp',*(fp.src(s) for s in sources),'-luser32','-luuid','-o',exe]
 with (out/'compile.log').open('w') as log:subprocess.run(list(map(str,cmd)),env=env,stdout=log,stderr=subprocess.STDOUT,check=True,timeout=300)
 backends=a.backend or [Path(os.environ['WINDIR'])/'SysWOW64/d3d9.dll',fp.client_root()/'renderer-backends/dxvk2/dxvk2_d3d9.dll',fp.client_root()/'renderer-backends/dxvk/dxvk_d3d9.dll']
@@ -50,6 +53,7 @@ for i,backend in enumerate(backends):
  assert 'POINT_SINGLE_BONE_CHEAP_GPU_PASS ' in text
  assert 'POINT_WHITE_CUBE_GPU_PASS ' in text
  assert text.count('POINT_DIRECT_GPU_PASS ')==10
+ assert 'POINT_RECYCLE_GPU_PASS ' in text
  samples=[dict(re.findall(r'(\w+)=([^ ]+)',line)) for line in text.splitlines() if line.startswith('POINT_GAP_TIMING ')]
  timing={str(mode):{key:statistics.median(float(s[key]) for s in samples if s['optimized']==str(mode)) for key in ('submitMs','completeMs','draws')} for mode in (0,1)}
  report['cases'].append({'backend':str(backend.resolve()),'sha256':sha(backend),'log':str(run/'gpu.log'),'timing':timing if timing_valid else None})

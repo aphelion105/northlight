@@ -180,11 +180,24 @@ class FaceClip {
         }
     };
     Face faces[6];
+    double sphere[4]={};bool sphereValid=false;
 public:
-    explicit FaceClip(const float (&matrices)[6][16]){for(unsigned face=0;face<6;++face)faces[face].prepare(matrices[face]);}
+    explicit FaceClip(const float (&matrices)[6][16],unsigned requested=63){for(unsigned face=0;face<6;++face)if(requested&(1u<<face))faces[face].prepare(matrices[face]);}
+    FaceClip(const float (&matrices)[6][16],const NorthlightLocalLights::Light& light,unsigned requested=63):FaceClip(matrices,requested){
+        sphereValid=std::isfinite(light.attenuationEnd)&&light.attenuationEnd>=0;
+        sphere[3]=double(light.attenuationEnd)*light.attenuationEnd;
+        for(unsigned axis=0;axis<3;++axis){sphere[axis]=light.position[axis];sphereValid=sphereValid&&std::isfinite(sphere[axis]);}
+    }
     unsigned mask(const float* lo,const float* hi,bool valid,unsigned requested=63)const{
         requested&=63;if(!requested)return 0;
-        double extent[3];if(!valid||!detail::bounds(lo,hi,extent))return requested;
+        double extent[3];if(!valid)return requested;
+        if(sphereValid){if(!lo||!hi)return requested;double distance=0;
+            for(unsigned axis=0;axis<3;++axis){
+                if(!std::isfinite(lo[axis])||!std::isfinite(hi[axis])||lo[axis]>hi[axis])return requested;
+                const double delta=std::max({double(lo[axis])-sphere[axis],sphere[axis]-hi[axis],0.});distance+=delta*delta;}
+            if(distance>sphere[3])return 0;
+            for(unsigned axis=0;axis<3;++axis)extent[axis]=std::max(std::fabs(double(lo[axis])),std::fabs(double(hi[axis])));
+        }else if(!detail::bounds(lo,hi,extent))return requested;
         unsigned mask=0;for(unsigned face=0;face<6;++face)if((requested&(1u<<face))&&!faces[face].reject(lo,hi,extent))mask|=1u<<face;
         return mask;
     }

@@ -9,6 +9,13 @@
 #include <cstring>
 using namespace NorthlightPointShadow;
 struct Box{float lo[3],hi[3];bool valid=true;};
+// Frozen replay_bounds.h broad phase, kept independent of the fused culler.
+static bool outsideSphere(const Box& b,const float* center,float radius){
+    if(!b.valid||!center||!std::isfinite(radius)||radius<0)return false;double distance=0;
+    for(unsigned k=0;k<3;++k){if(!std::isfinite(center[k])||!std::isfinite(b.lo[k])||!std::isfinite(b.hi[k])||b.lo[k]>b.hi[k])return false;
+        double delta=std::max({double(b.lo[k])-center[k],double(center[k])-b.hi[k],0.});distance+=delta*delta;}
+    return distance>double(radius)*radius;
+}
 int main(int argc,char** argv){
     std::mt19937 rng(0x30739543);std::uniform_real_distribution<float> unit(-1,1);unsigned checks=0;
     for(unsigned cube=0;cube<320;++cube){float matrices[6][16],p[3];for(float& x:p)x=unit(rng)*20000;
@@ -19,6 +26,8 @@ int main(int argc,char** argv){
         if(cube%13==0)matrices[cube%6][cube%16]=INFINITY;
         if(cube%17==0)for(auto& face:matrices)for(auto& x:face)x*=1e34f;
         const FaceClip prepared(matrices);
+        NorthlightLocalLights::Light light{};std::copy_n(p,3,light.position);light.attenuationEnd=range;
+        const FaceClip sphere(matrices,light);
         for(unsigned i=0;i<512;++i){Box b;
             for(unsigned k=0;k<3;++k){const float a=p[k]+unit(rng)*range*2;const float size=std::fabs(unit(rng))*range*.3f;b.lo[k]=a-size;b.hi[k]=a+size;}
             if(i%37==0)b.lo[i%3]=NAN;if(i%41==0)b.hi[i%3]=INFINITY;if(i%43==0)b.lo[i%3]=b.hi[i%3]+1;if(i%47==0)b.valid=false;
@@ -26,16 +35,30 @@ int main(int argc,char** argv){
             assert(prepared.mask(b.lo,b.hi,b.valid)==full);
             const unsigned requested=rng()&127;
             assert(prepared.mask(b.lo,b.hi,b.valid,requested)==(full&requested));++checks;
+            const auto sphereMask=outsideSphere(b,p,range)?0:full;
+            assert(sphere.mask(b.lo,b.hi,b.valid,requested)==(sphereMask&requested));
             if(i<4)for(unsigned subset=0;subset<128;++subset)assert(prepared.mask(b.lo,b.hi,b.valid,subset)==(full&subset));
+            if(i<4)for(unsigned subset:{0u,1u,3u,7u,63u,127u}){
+                const FaceClip partial(matrices,subset);
+                assert(partial.mask(b.lo,b.hi,b.valid,subset)==(full&subset));
+                assert(partial.mask(b.lo,b.hi,b.valid)==((full&subset)|(63&~subset)));
+                assert(FaceClip(matrices,light,subset).mask(b.lo,b.hi,b.valid,subset)==(sphereMask&subset));
+            }
+            if(i<4)for(unsigned invalid=0;invalid<4;++invalid){auto unknown=light;
+                if(invalid==0)unknown.attenuationEnd=-1;if(invalid==1)unknown.attenuationEnd=NAN;
+                if(invalid==2)unknown.position[0]=INFINITY;if(invalid==3)unknown.position[1]=NAN;
+                assert(FaceClip(matrices,unknown).mask(b.lo,b.hi,b.valid,requested)==(full&requested));}
         }
     }
     {float matrices[6][16],p[]={10000.f,-5000.f,750.f};for(unsigned f=0;f<6;++f)assert(faceMatrix(p,.1f,48,f,matrices[f]));const FaceClip prepared(matrices);
+        NorthlightLocalLights::Light light{};std::copy_n(p,3,light.position);light.attenuationEnd=48;const FaceClip sphere(matrices,light);
         assert(prepared.mask(nullptr,nullptr,true)==63);
         for(unsigned subset=0;subset<128;++subset)assert(prepared.mask(nullptr,nullptr,true,subset)==(subset&63));
         for(unsigned axis=0;axis<3;++axis)for(float delta:{-.1f,0.f,.1f,48.f,-48.f})for(int step=-16;step<=16;++step){Box b;
             for(unsigned k=0;k<3;++k)b.lo[k]=b.hi[k]=p[k];
             float x=p[axis]+delta;for(int n=0;n<std::abs(step);++n)x=std::nextafter(x,step<0?-INFINITY:INFINITY);
             b.lo[axis]=b.hi[axis]=x;assert(prepared.mask(b.lo,b.hi,true)==faceMask(b.lo,b.hi,true,matrices));++checks;
+            assert(sphere.mask(b.lo,b.hi,true)==(outsideSphere(b,p,48)?0:prepared.mask(b.lo,b.hi,true)));
         }
     }
     // Arbitrary finite clip transforms include cancellation and overflow-adjacent inputs.
@@ -48,14 +71,20 @@ int main(int argc,char** argv){
     if(argc==1)return 0;
     const unsigned requested=argc>2?unsigned(std::strtoul(argv[2],nullptr,0))&63:63;
     float matrices[6][16],p[]={1345.f,-2499.f,317.f};for(unsigned f=0;f<6;++f)assert(faceMatrix(p,.1f,48,f,matrices[f]));const FaceClip prepared(matrices);
-    std::vector<Box> boxes(8192);for(auto& b:boxes)for(unsigned k=0;k<3;++k){float a=p[k]+unit(rng)*64,s=std::fabs(unit(rng))*8;b.lo[k]=a-s;b.hi[k]=a+s;}
+    const bool sphereBench=argc>3;const float spread=sphereBench?std::strtof(argv[3],nullptr):64;
+    NorthlightLocalLights::Light light{};std::copy_n(p,3,light.position);light.attenuationEnd=48;const FaceClip sphere(matrices,light);
+    std::vector<Box> boxes(8192);for(auto& b:boxes)for(unsigned k=0;k<3;++k){float a=p[k]+unit(rng)*spread,s=std::fabs(unit(rng))*8;b.lo[k]=a-s;b.hi[k]=a+s;}
     std::vector<double> times[2];volatile unsigned checksum=0;
     for(unsigned run=0;run<16;++run){const unsigned mode=(run/2)%2?1-run%2:run%2;unsigned sum=0;auto start=std::chrono::steady_clock::now();
-        for(unsigned repeat=0;repeat<20;++repeat)for(const auto& b:boxes)sum+=argc>2?
-            (mode?prepared.mask(b.lo,b.hi,true,requested):(prepared.mask(b.lo,b.hi,true)&requested)):
-            (mode?prepared.mask(b.lo,b.hi,true):faceMask(b.lo,b.hi,true,matrices));
+        for(unsigned repeat=0;repeat<20;++repeat){
+            if(sphereBench)for(const auto& b:boxes)sum+=mode?sphere.mask(b.lo,b.hi,b.valid,requested):
+                outsideSphere(b,p,48)?0:prepared.mask(b.lo,b.hi,b.valid,requested);
+            else for(const auto& b:boxes)sum+=argc>2?
+                (mode?prepared.mask(b.lo,b.hi,true,requested):(prepared.mask(b.lo,b.hi,true)&requested)):
+                (mode?prepared.mask(b.lo,b.hi,true):faceMask(b.lo,b.hi,true,matrices));
+        }
         const double ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();checksum+=sum;if(run>=4)times[mode].push_back(ms);
     }
     for(unsigned mode=0;mode<2;++mode){std::sort(times[mode].begin(),times[mode].end());std::printf("mode=%u medianMs=%.6f candidates=163840 repeats=6 requested=%u\n",mode,(times[mode][2]+times[mode][3])*.5,requested);}
-    std::printf("checksum=%u\n",unsigned(checksum));
+    std::printf("checksum=%u sphere=%u spread=%.1f\n",unsigned(checksum),sphereBench,spread);
 }

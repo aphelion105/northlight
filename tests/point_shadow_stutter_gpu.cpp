@@ -102,7 +102,13 @@ struct PointTerrainCoverageTest {
   std::printf("GEOMETRY_PREWARM_GPU_PASS frames=%u allocationsPerFrame=1 exhausted_no_allocation=1 partial_reset=1 complete_resources=1 point_shaders=1\n",frames);
  }
  struct UnionMeter:ForwardIDirect3DDevice9 {
-  using ForwardIDirect3DDevice9::ForwardIDirect3DDevice9;unsigned quads=0;
+  using ForwardIDirect3DDevice9::ForwardIDirect3DDevice9;unsigned quads=0,cubes=0;bool failClear=false;
+  HRESULT STDMETHODCALLTYPE Clear(DWORD count,const D3DRECT* rects,DWORD flags,D3DCOLOR color,float depth,DWORD stencil)override{
+   if(failClear){failClear=false;return E_FAIL;}return real->Clear(count,rects,flags,color,depth,stencil);
+  }
+  HRESULT STDMETHODCALLTYPE CreateCubeTexture(UINT e,UINT l,DWORD u,D3DFORMAT f,D3DPOOL p,IDirect3DCubeTexture9** t,HANDLE* h)override{
+   ++cubes;return real->CreateCubeTexture(e,l,u,f,p,t,h);
+  }
   HRESULT STDMETHODCALLTYPE DrawPrimitiveUP(D3DPRIMITIVETYPE type,UINT count,const void* vertices,UINT stride)override{
    quads+=type==D3DPT_TRIANGLESTRIP&&count==2;return real->DrawPrimitiveUP(type,count,vertices,stride);
   }
@@ -192,6 +198,44 @@ struct PointTerrainCoverageTest {
   w.quality.pointShadowLimit=0;pool();assert(!keeps());for(const auto& slot:w.pointSlots)assert(!slot.cube);
   w.releasePointGPU();assert(!keeps());
   std::puts("POINT_STATIC_KEEP_GPU_PASS unchangedReentry=exact freshDynamic=required geometryLightMapMutation=exact pressureLimitInvalidation=cleared lruMax=8");
+  // A replacement source can overwrite the same storage, but no previous face,
+  // refresh period, partial cycle or retained static key may be published for it.
+  w.quality.pointShadowLimit=3;w.quality.pointShadowFacesPerFrame=1;w.quality.pointShadowRefreshMs=10000;
+  selection.count=1;selection.sources[0]=light;selection.sources[0].sourceId=200;selection.sources[0].position[0]=-2;
+  pool();auto* recycledCube=w.pointSlot().cube;const unsigned cubeStart=meter.cubes;
+  w.pointSlot().schedule.updatedAt=GetTickCount()-10001;pool();assert(w.pointSlot().faceCycle.active()&&!w.pointSlot().schedule.complete);
+  std::vector<std::vector<float>> switched;
+  for(unsigned i=0;i<8;++i){selection.sources[0].sourceId=201-i%2;selection.sources[0].position[0]=i%2?-2.f:2.f;w.pointSelection.reset();pool();
+#ifndef NORTHLIGHT_POINT_RECYCLE_REFERENCE
+   assert(w.pointSlot().cube==recycledCube&&meter.cubes==cubeStart);
+#endif
+   assert(w.pointSlot().ready&&w.pointSlot().schedule.complete&&!w.pointSlot().faceCycle.active());
+   if(i)assert(w.pointWork.restored==1&&w.pointWork.statics==0);
+   assert(keeps()==1);switched.push_back(image());
+  }
+  assert(switched[0]!=switched[1]);const unsigned switchCreates=meter.cubes-cubeStart;
+#ifdef NORTHLIGHT_POINT_RECYCLE_REFERENCE
+  assert(switchCreates==8);
+#else
+  assert(switchCreates==0);
+#endif
+  for(unsigned i=0;i<8;++i){w.releasePointGPU();selection.sources[0].sourceId=201-i%2;selection.sources[0].position[0]=i%2?-2.f:2.f;pool();assert(image()==switched[i]);}
+  recycledCube=w.pointSlot().cube;const unsigned staleStart=meter.cubes;
+  selection.sources[0].sourceId=202;w.pointSelection.reset();pool(false);
+  assert(!w.pointSlot().ready&&!w.pointSlot().schedule.usable&&!w.pointSlot().cacheValid&&!w.pointSlot().staticOnlyFaces&&w.captureDemand);
+#ifndef NORTHLIGHT_POINT_RECYCLE_REFERENCE
+  assert(w.pointSlot().cube==recycledCube&&meter.cubes==staleStart);
+#endif
+  pool();assert(w.pointSlot().ready&&w.pointSlot().schedule.complete);
+  ++selection.sources[0].sourceId;w.pointSelection.reset();meter.failClear=true;pool();
+  assert(!meter.failClear&&!w.pointReady&&!w.pointSlot().ready&&!w.pointSlot().cacheValid&&!w.pointSlot().schedule.usable);
+  w.pointSlot().retryAt=0;pool(false);assert(!w.pointSlot().ready);pool();const auto recovered=image();
+  w.releasePointGPU();pool();assert(image()==recovered);
+  for(unsigned reset=0;reset<2;++reset){if(reset)w.active->map=w.uploadedMap="recycle-map";else w.memoryPressure=true;
+   ++selection.sources[0].sourceId;w.pointSelection.reset();const unsigned before=meter.cubes;pool();assert(meter.cubes==before+1);w.memoryPressure=false;}
+  w.quality.pointShadowLimit=0;pool();for(const auto& slot:w.pointSlots)assert(!slot.cube);assert(!keeps());w.releasePointGPU();
+  w.quality.pointShadowFacesPerFrame=6;
+  std::printf("POINT_RECYCLE_GPU_PASS switches=8 cubeCreates=%u sixFaces=coldExact changedLight=1 staticKeeps=1 staleCapture=unpublished partialCycle=reset failedFace=unpublished coldRecovery=exact pressureMapLimit=reset\n",switchCreates);
   // Consecutive native model packets can share one exact draw after upload.
   // A strip, emitter exclusion, pose/material/state boundary remains separate.
   w.batches.clear();w.quality.pointShadowLimit=64;w.quality.pointShadowRefreshMs=0;

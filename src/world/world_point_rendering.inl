@@ -79,6 +79,9 @@
     void restorePointSlot(const NorthlightLocalLights::Light& light){
         auto& p=pointSlot();if(p.cacheValid&&p.cacheSource==light.sourceId&&p.map==active->map)return;
         for(auto& keep:pointKeeps)if(keep.slot.cacheValid&&keep.slot.cacheSource==light.sourceId&&keep.slot.map==active->map){
+            // Keeps own only static faces. Transfer this slot's allocation,
+            // never its old contents or refresh state, to the restored source.
+            std::swap(p.cube,keep.slot.cube);std::swap(p.faces,keep.slot.faces);
             releasePointSlot(p);std::swap(p,keep.slot);keep.age=0;keep.wanted=false;++pointWork.restored;return;
         }
     }
@@ -285,10 +288,6 @@
     }
     unsigned pointMask(V low,V high,const NorthlightPointShadow::FaceClip& clip,unsigned faces)const{
         float lo[]={low.x,low.y,low.z},hi[]={high.x,high.y,high.z};
-        // Invalid bounds must draw. The generic sphere helper rejects invalid
-        // inputs, so use the replay helper's explicit fail-open semantics.
-        NorthlightReplayBounds::Bounds bounds;std::memcpy(bounds.low,lo,12);std::memcpy(bounds.high,hi,12);bounds.valid=true;
-        if(NorthlightReplayBounds::outsideSphere(bounds,pointSlot().selected.position,pointSlot().selected.attenuationEnd))return 0;
         return clip.mask(lo,hi,true,faces);
     }
     void pointAppendCandidates(PointCandidates& lists,size_t index,unsigned mask,unsigned faces=63){
@@ -721,8 +720,8 @@
             pointSlot().faceCycle.reset();pointSlot().schedule.invalidate();}
         float faceMatrices[6][16];
         for(unsigned face=0;face<6;++face)
-            if(!NorthlightPointShadow::faceMatrix(pointSlot().selected.position,.1f,pointSlot().selected.attenuationEnd,face,faceMatrices[face],PointResolution))return pointCheck(E_FAIL,"cube projection");
-        const NorthlightPointShadow::FaceClip clip(faceMatrices);
+            if((faces&(1u<<face))&&!NorthlightPointShadow::faceMatrix(pointSlot().selected.position,.1f,pointSlot().selected.attenuationEnd,face,faceMatrices[face],PointResolution))return pointCheck(E_FAIL,"cube projection");
+        const NorthlightPointShadow::FaceClip clip(faceMatrices,pointSlot().selected,faces);
         std::vector<size_t> ownGlass;Batch ownShell{};
         std::map<size_t,PointReplayRuns> replayRuns;
         try {
@@ -757,8 +756,7 @@
             const auto* nativeFixture=ownGlass.empty()?equipmentLights.fixture(light.sourceId):nullptr;
             replayBoundsJoin();
             if(withReplays)for(size_t i=0;i<replays.size();++i){const auto& bounds=replays[i]->pointBounds;
-                const unsigned mask=NorthlightReplayBounds::outsideSphere(bounds,pointSlot().selected.position,pointSlot().selected.attenuationEnd)?0:
-                    clip.mask(bounds.low,bounds.high,bounds.valid,faces);
+                const unsigned mask=clip.mask(bounds.low,bounds.high,bounds.valid,faces);
                 // Ownership can decode the complete emitter mesh. Culled packets
                 // cannot contribute to this refresh, including partial-face cycles.
                 if(!(mask&faces)){pointCulled+=unsigned(__builtin_popcount(faces));continue;}
@@ -834,7 +832,7 @@
             pointSlot().staticOnlyFaces&=~bit;
             const unsigned faceDraws=pointDraws,faceMerged=pointBatchesMerged;
             const bool direct=!pointSlot().cacheFace[face];
-            // Dynamic casters of this frame into the scratch face, plus cached-mesh
+            // Dynamic casters of this frame into the selected face, plus cached-mesh
             // terrain, including parts absent from the camera-culled native draws.
             if(!staticOnly){
             if(!bindFace(direct?pointSlot().faces[face]:pointScratchSurface,"cube dynamic target"))return false;
@@ -946,7 +944,15 @@
         // Release outgoing resources before allocating replacements, even when
         // the free slot occurs earlier in the array than the retired slot.
         for(pointIndex=0;pointIndex<pointSlots.size();++pointIndex){pointSlot().ready=false;const auto& pick=picks[pointIndex];
-            if(pick.index<0||pointSlot().map!=active->map||pointSlot().selected.sourceId!=lights.sources[pick.index].sourceId)keepPointSlot(pointSlot(),keepLimit);}
+            if(pick.index<0||pointSlot().map!=active->map||pointSlot().selected.sourceId!=lights.sources[pick.index].sourceId){
+                PointSlot recycled;
+                if(pick.index>=0&&!memoryPressure&&pointSlot().map==active->map){
+                    std::swap(recycled.cube,pointSlot().cube);std::swap(recycled.faces,pointSlot().faces);}
+                keepPointSlot(pointSlot(),keepLimit);
+                // Reuse storage only when a replacement will immediately draw.
+                // Retirement still resets every content key and schedule.
+                std::swap(recycled.cube,pointSlot().cube);std::swap(recycled.faces,pointSlot().faces);
+            }}
         for(pointIndex=0;pointIndex<pointSlots.size();++pointIndex){const auto& pick=picks[pointIndex];if(pick.index<0)continue;
             ++selected;
             restorePointSlot(lights.sources[pick.index]);pointSlot().selectionGain=pick.gain;

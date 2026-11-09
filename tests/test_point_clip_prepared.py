@@ -12,7 +12,8 @@ with tempfile.TemporaryDirectory(prefix='northlight-point-clip-') as tmp:
   subprocess.run(['clang++','-std=c++17','-UNDEBUG',*flags,*fp.test_include_flags(),str(source),'-o',str(exe)],check=True)
   subprocess.run([str(exe)],check=True)
 renderer=fp.src('world_point_rendering.inl').read_text()
-assert 'const NorthlightPointShadow::FaceClip clip(faceMatrices);' in renderer
+assert 'const NorthlightPointShadow::FaceClip clip(faceMatrices,pointSlot().selected,faces);' in renderer
+assert 'if((faces&(1u<<face))&&!NorthlightPointShadow::faceMatrix(' in renderer
 assert 'pointMask(batch.boundsLow,batch.boundsHigh,clip,faces)' in renderer
 assert 'pointMask(batch.boundsLow,batch.boundsHigh,clip,rebuildMask&faces)' in renderer
 assert 'pointMask(batch.low,batch.high,clip,faces)' in renderer
