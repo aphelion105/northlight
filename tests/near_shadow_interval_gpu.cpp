@@ -55,6 +55,35 @@ struct WorldScreenEffectsTest {
   w.replays.push_back(std::move(p));w.captureMode=WorldRenderer::CaptureFresh;w.shadowSelectionDone=true;
   for(unsigned warm=0;warm<8&&!w.replays[0]->pointBounds.valid;++warm){w.replayBoundsKick();w.replayBoundsJoin();}
  }
+ static void alphaResourceRetry(IDirect3DDevice9* d,IDirect3DTexture9* depth,IDirect3DSurface9* target){
+  WorldRenderer reference(d),retained(d);setup(reference,1,1);setup(retained,1,1);
+  auto capture=[&](WorldRenderer& w,float x){pose(w,x);auto& p=*w.replays[0];
+   if(!p.texture){IDirect3DTexture9* white=nullptr;must(d->CreateTexture(1,1,1,0,D3DFMT_A8R8G8B8,D3DPOOL_MANAGED,&white,nullptr));D3DLOCKED_RECT lock{};must(white->LockRect(0,&lock,nullptr,0));*static_cast<DWORD*>(lock.pBits)=0xffffffff;must(white->UnlockRect(0));p.texture=white;}
+   p.cutoff=128.f/255;p.alphaMode=NorthlightShadowAlpha::FixedTest|NorthlightShadowAlpha::GreaterEqual|(128u<<8)|(unsigned(D3DFMT_X8R8G8B8)<<18);
+  };
+  auto draw=[&](WorldRenderer& w){must(d->BeginScene());const bool result=w.render(target,depth,64,64,D3DFMT_A8R8G8B8,1,1000,0,1,1,nullptr,nullptr);must(d->EndScene());return result;};
+  capture(reference,0);capture(retained,0);assert(draw(reference)&&draw(retained));
+  assert(retained.shadowAlphaTargets.bytes()>0&&!retained.failed);
+  // A cold scratch allocation is denied. Cancel the entire map job, leaving
+  // no published map or composite; repeated calls during the pause do no work.
+  retained.shadowAlphaTargets.reset();retained.memoryPressureUntil=GetTickCount()+1000;
+  capture(retained,4);assert(!draw(retained)&&!retained.failed&&!retained.composited);
+  assert(retained.shadowAlphaRetryAt&&retained.shadowAlphaTargets.bytes()==0);
+  for(unsigned source=0;source<2;++source)assert(!retained.nearShadow[source].valid&&!retained.farShadow[source].valid&&!retained.actorValid[source]);
+  for(const auto& slot:retained.pointSlots)assert(!slot.ready);
+  for(const auto& slot:retained.flashSlots)assert(!slot.ready);
+  retained.memoryPressureUntil=0;capture(retained,14);assert(!draw(retained)&&!retained.failed&&!retained.composited);
+  // Resume with the newly captured pose, not the packet from the refused job.
+  retained.shadowAlphaRetryAt=0;reference.invalidateShadowCache();capture(reference,14);
+  assert(draw(reference)&&draw(retained)&&!retained.failed);
+  for(unsigned source=0;source<2;++source){
+   assert(image(d,reference.shadowSurface[source*2])==image(d,retained.shadowSurface[source*2]));
+   assert(image(d,reference.shadowSurface[source*2+1])==image(d,retained.shadowSurface[source*2+1]));
+   assert(retained.actorValid[source]&&image(d,reference.actorShadowSurface[source])==image(d,retained.actorShadowSurface[source]));
+  }
+  assert(!retained.shadowAlphaTargets.supported(D3DFMT_A8));
+  std::puts("ALPHA_RESOURCE_RETRY_PASS deniedJob=1 cooldown=1 currentPoseRecovery=1 noPartialMaps=1 worldRetained=1 unsupportedFormat=1");
+ }
  static void actorSettings(IDirect3DDevice9* d,IDirect3DTexture9* depth,IDirect3DSurface9* target){
   WorldRenderer reference(d),retained(d);setup(reference,1,1);setup(retained,1,1);
   auto draw=[&](WorldRenderer& w){pose(w,0);must(d->BeginScene());assert(w.render(target,depth,64,64,D3DFMT_A8R8G8B8,1,1000,0,1,1,nullptr,nullptr));must(d->EndScene());};
@@ -120,6 +149,7 @@ struct WorldScreenEffectsTest {
    std::printf("NEAR_INTERVAL_CASE detail=%u interval=%u nearReuses=%u farReuses=%u\n",detail,interval,retained->nearReuses,retained->farReuses);std::fflush(stdout);
   }
   actorSettings(d,depth,target);
+  alphaResourceRetry(d,depth,target);
   for(unsigned s=0;s<16;++s)d->SetTexture(s,nullptr);depth->Release();target->Release();
   std::printf("NEAR_INTERVAL_PASS cases=%u movingChanges=%u environmentReuses=%u sources=2 detailOnOff=1 fallback=1 liveIntervalChange=1\n",cases,changes,reuses);
  }

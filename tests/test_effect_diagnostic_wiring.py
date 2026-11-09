@@ -7,7 +7,7 @@ import northlight_paths as fp
 r=fp.src('renderer.cpp').read_text();w=fp.src('world_renderer.h').read_text()
 clear=r[r.index('    void clearFrame()'):r.index('    void captureEffectDiagnostics()')]
 assert 'diagnosticAoRaw=diagnosticAo=diagnosticWorld=false;' in clear
-capture=r[r.index('    void captureEffectDiagnostics()'):r.index('    void releaseResources()')]
+capture=r[r.index('    void captureEffectDiagnostics()'):r.index('    void releaseResources(')]
 assert capture.index('if(!scopes&&!fallback)return;')<capture.index('ExtensionDevice::RawScope')
 assert 'renderEffects(' not in capture and 'finishCaptures(' not in capture
 assert 'diagnosticAoRaw' in capture and 'diagnosticAo' in capture and 'capturedThisFrame()' in capture

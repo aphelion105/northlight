@@ -63,6 +63,7 @@ watched = [p for p in fp.SRC.rglob('*') if p.is_file()] + [source, stub_source, 
 inputs = {str(p.resolve()): sha(p) for p in watched}
 renderer = fp.src('renderer.cpp').read_text(encoding='utf-8')
 world = fp.src('world_memory_guard.inl').read_text(encoding='utf-8')
+scene_policy = method(fp.src('gpu_scene.h').read_text(encoding='utf-8'), 'void setMemoryPressure(bool episode,bool critical)')
 stub = next(ast.literal_eval(node.value) for node in ast.parse(stub_source.read_text()).body
             if isinstance(node, ast.Assign) and any(getattr(target, 'id', '') == 'stub' for target in node.targets))
 methods = '\n'.join([method(world, 'struct MemoryTrim') + ';', method(world, 'MemoryTrim trimMemory('),
@@ -118,6 +119,7 @@ try:
         folder.mkdir(exist_ok=True)
         (folder / 'd3d9.h').write_text(stub, encoding='utf-8')
         (folder / 'world_pressure_methods.h').write_text(methods, encoding='utf-8')
+        (folder / 'scene_pressure_policy.h').write_text(scene_policy, encoding='utf-8')
         (folder / 'world_pressure_renderer.h').write_text(body, encoding='utf-8')
         modes = [('O2', ['-O2'])]
         if name == 'current':

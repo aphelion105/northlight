@@ -109,7 +109,7 @@ checks['rain mask MRT: the swap clear (fallback) keeps the old rules: RT, viewpo
 rd=r[r.index('bool resolveDepth() {'):r.index('HRESULT quad(UINT w')]
 checks['resolveDepth: the same RESZ code serves depthTex (fatal) and rainDepth (non-fatal); RT1 unbound first; captured set only for depthTex']=(
     'resolveDepthInto(depthTex, true)' in rd and 'bool resolveDepthInto(IDirect3DTexture9* target, bool fatal) {\n        rainMrtUnbind();' in rd and rd.count('captured = true; return true;')==1 and rd.index('resolveDepthInto(depthTex, true)')<rd.index('captured = true;')<rd.index('bool resolveDepthInto('))
-rr=r[r.index('    void releaseResources() {'):r.index('    bool error(HRESULT hr')]
+rr=r[r.index('    void releaseResources(bool preserveCaptureSources=false) {'):r.index('    bool error(HRESULT hr')]
 rs=r[r.index('    bool resources(UINT w'):r.index('    // Swap chain 0')]
 checks['rain mask: dropped in releaseResources (RT1 unbound first, failed flag reset, shaders and rain depth too) and on a size change']=('rainMrtUnbind();stateBlocks.clear();' in rr and 'drop(rainMaskMS);drop(rainMaskSurface);drop(rainMask);drop(rainDepth);rainMaskFailed=false;' in rr and 'drop(rainMrtPS);drop(rainScrubPS);' in rr and 'drop(rainMaskMS);drop(rainMaskSurface);drop(rainMask);drop(rainDepth);' in rs.split('captured=false;')[1].split('}')[0])
 checks['rain mask: per-frame flags reset where terrain/applied reset (clearFrame), RT1 unbound there']='rainMrtUnbind();terrain = captured = applied = projectionValid = skySeen = false;rainMaskCleared=rainMaskDrawn=rainMaskFrame=rainMaskOk=rainDepthOk=false;' in r
@@ -133,7 +133,7 @@ def dmethod(name):  # the whole Device method, up to the next one (a fixed span 
     i=r.index('HRESULT STDMETHODCALLTYPE '+name+'(',r.index('class Device final'));return r[i:r.index('\n    HRESULT STDMETHODCALLTYPE ',i+1)]
 rst=dmethod('Reset');pre=dmethod('Present');es=dmethod('EndScene')
 checks['rain mask MRT: Reset, Present and EndScene unbind first; finishFrame (also SwapChain::Present) unbinds before the extension work']=(
-    'rainMrtUnbind();' in rst and rst.index('rainMrtUnbind();')<rst.index('releaseResources();')<rst.index('ext->Reset(')  # RT1 unbound before the resources and the real Reset go
+    'rainMrtUnbind();' in rst and rst.index('rainMrtUnbind();')<rst.index('releaseResources(true);')<rst.index('ext->Reset(')  # RT1 unbound before the resources and the real Reset go
     and 'rainMrtUnbind();' in pre and pre.index('rainMrtUnbind();')<pre.index('finishFrame()') and 'rainMrtUnbind();' in es and es.index('rainMrtUnbind();')<es.index('GuardedMirrorDevice::EndScene()')
     and 'void finishFrame(bool implicitChain=true) {\n        Guard mirrorLock(mirrorState.gate);\n        rainMrtUnbind();' in r and 'finishDeviceFrame(owner,primary);' in r)
 checks['rain mask MRT: renderEffects unbinds before its first device work; drawHook unbinds for every draw that is not a rain draw, before any capture or effect work']=(

@@ -3,18 +3,22 @@
 // evaluates a pose and cannot spend either evaluation budget.
 class EnvelopeCache {
     const bool alignedSkin_;
+    using Key=std::shared_ptr<const std::vector<std::uint32_t>>;
+    struct Binding {unsigned reg;D3DVERTEXELEMENT9 element;};
+    using Bindings=std::shared_ptr<const std::vector<Binding>>;
 public:
     class Prepared {
         friend class EnvelopeCache;
         NorthlightActorDeformation::Program program_;
         std::vector<D3DVERTEXELEMENT9> declaration_;
-        std::vector<std::uint32_t> key_;
+        // Source-independent layout; entries keep it alive after metadata eviction.
+        Key key_;Bindings bindings_;
         std::uint64_t hash_=0;
         Prepared()=default;
     public:
         Prepared(const Prepared&)=delete;Prepared& operator=(const Prepared&)=delete;
-        size_t bytes()const{return sizeof(Prepared)+declaration_.capacity()*sizeof(D3DVERTEXELEMENT9)+key_.capacity()*4+
-            program_.operations.capacity()*sizeof(NorthlightActorDeformation::Operation)+program_.inputs.capacity()*sizeof(NorthlightActorDeformation::Input)+program_.definitions.capacity()*sizeof(NorthlightActorDeformation::Definition);}
+        size_t bytes()const{return sizeof(Prepared)+declaration_.capacity()*sizeof(D3DVERTEXELEMENT9)+(key_?sizeof(*key_)+key_->capacity()*4+32:0)+
+            (bindings_?sizeof(*bindings_)+bindings_->capacity()*sizeof(Binding)+32:0)+program_.operations.capacity()*sizeof(NorthlightActorDeformation::Operation)+program_.inputs.capacity()*sizeof(NorthlightActorDeformation::Input)+program_.definitions.capacity()*sizeof(NorthlightActorDeformation::Definition);}
     };
     enum class Stage {All,Ready,Build,Cheap,Heavy};
     enum class Kind {Unknown,Cold,Cheap,Heavy,Unsupported};
@@ -37,7 +41,7 @@ public:
         size_t memoColdMisses=0,memoReplacedMisses=0,memoCameraMisses=0,memoConstantMisses=0;
         size_t memoBypassed=0,memoStoreBypassed=0,memoProtected=0,memoCopiedBytes=0;
         size_t effectiveCopiedBytes=0,fastValid=0;
-        size_t sourceIdentityHits=0,sourceReconstructedHits=0;
+        size_t sourceIdentityHits=0,sourceReconstructedHits=0,sharedKeyHits=0,keyComparedBytes=0;
     };
     struct MemoTotals {
         std::uint64_t tests=0,hits=0,cold=0,replaced=0,camera=0,constants=0;
@@ -49,14 +53,13 @@ public:
         }
     };
 private:
-    struct Binding {unsigned reg;D3DVERTEXELEMENT9 element;};
     struct Group {std::vector<float> limits;}; // low/high for USED input registers only
     struct Entry {
         std::weak_ptr<const NorthlightDrawSnapshot::Mesh> owner;
         const NorthlightDrawSnapshot::Mesh* sourceAddress=nullptr;
         NorthlightSourceIdentity::Handle identity;
-        std::vector<std::uint32_t> key;
-        std::vector<Binding> bindings;
+        Key key;
+        Bindings bindings;
         std::unordered_map<std::string,Group> groups;
         std::unique_ptr<SkinEnvelope> skin;
         size_t vertex=0,index=0,indexCount=0;bool unsupported=false,ready=false;
@@ -99,10 +102,13 @@ private:
     static bool sameOwner(const std::weak_ptr<const NorthlightDrawSnapshot::Mesh>& a,const std::shared_ptr<const NorthlightDrawSnapshot::Mesh>& b){return !a.owner_before(b)&&!b.owner_before(a);}
     static const auto& identity(const NorthlightDrawSnapshot::Mesh& mesh){return mesh.replayIdentity?mesh.replayIdentity:mesh.sourceIdentity;}
     static std::uint64_t sourceHash(const NorthlightDrawSnapshot::Mesh& mesh){const auto& id=identity(mesh);return id?id->hash:std::uint64_t(reinterpret_cast<std::uintptr_t>(&mesh));}
-    auto findSource(const std::shared_ptr<const NorthlightDrawSnapshot::Mesh>& owner,const std::vector<std::uint32_t>& key){
+    auto findSource(const std::shared_ptr<const NorthlightDrawSnapshot::Mesh>& owner,const std::vector<std::uint32_t>& key,const std::vector<std::uint32_t>* sharedKey=nullptr){
         const auto& id=identity(*owner);auto range=entries_.equal_range(sourceHash(*owner));
         for(auto it=range.first;it!=range.second;++it){auto& e=it->second;
-            if(e.key!=key)continue;
+            // Prepared metadata and every entry retain the same immutable key.
+            // Independently prepared/generic calls still compare every word.
+            if(e.key.get()==sharedKey)++stats_.sharedKeyHits;
+            else {stats_.keyComparedBytes+=key.size()*4;if(*e.key!=key)continue;}
             const bool same=e.sourceAddress==owner.get()&&sameOwner(e.owner,owner);
             if(id?!NorthlightSourceIdentity::same(id,e.identity):e.identity||!same)continue;
             if(id){++stats_.sourceIdentityHits;if(!same){++stats_.sourceReconstructedHits;
@@ -133,21 +139,25 @@ private:
         word(unsigned(p.definitions.size()));for(const auto& d:p.definitions){word(d.reg);for(float f:d.value){std::uint32_t bits;std::memcpy(&bits,&f,4);word(bits);}}
         return hash;
     }
-    static bool prepare(const NorthlightActorDeformation::Program& p,const NorthlightDrawSnapshot::Mesh& mesh,const D3DVERTEXELEMENT9* elements,size_t count,Entry& e){
+    static Bindings prepareBindings(const NorthlightActorDeformation::Program& p,const D3DVERTEXELEMENT9* elements,size_t count){
+        auto bindings=std::make_shared<std::vector<Binding>>();bindings->reserve(p.inputs.size());unsigned used=0;
+        for(const auto& input:p.inputs){if(input.reg>=16||(used&(1u<<input.reg)))return {};used|=1u<<input.reg;bool found=false;
+            for(size_t j=0;j<count;++j){const auto& element=elements[j];if(element.Stream==0xff)break;
+                if(element.Usage!=input.usage||element.UsageIndex!=input.index)continue;
+                if(found||element.Stream>=4||element.Method!=D3DDECLMETHOD_DEFAULT||!NorthlightDrawSnapshot::declarationBytes(element.Type))return {};
+                bindings->push_back({input.reg,element});found=true;
+            }if(!found)return {};
+        }return bindings;
+    }
+    static bool prepare(const NorthlightActorDeformation::Program& p,const NorthlightDrawSnapshot::Mesh& mesh,const D3DVERTEXELEMENT9* elements,size_t count,Entry& e,const Prepared* prepared){
         if(!mesh.vertexCount||mesh.vertexCount>262144||!mesh.primitiveCount||mesh.primitiveCount>87380||
            (mesh.topology!=D3DPT_TRIANGLELIST&&mesh.topology!=D3DPT_TRIANGLESTRIP))return false;
         e.indexCount=mesh.topology==D3DPT_TRIANGLELIST?size_t(mesh.primitiveCount)*3:size_t(mesh.primitiveCount)+2;
         if(mesh.indexed){if(mesh.indices.size()<e.indexCount)return false;}else{if(e.indexCount>mesh.vertexCount)return false;e.index=e.indexCount;}
-        unsigned used=0;
-        for(const auto& input:p.inputs){if(input.reg>=16||(used&(1u<<input.reg)))return false;used|=1u<<input.reg;bool found=false;
-            for(size_t j=0;j<count;++j){const auto& element=elements[j];if(element.Stream==0xff)break;
-                if(element.Usage!=input.usage||element.UsageIndex!=input.index)continue;
-                if(found||element.Stream>=4||element.Method!=D3DDECLMETHOD_DEFAULT)return false;
-                const auto& s=mesh.streams[element.Stream];const auto n=NorthlightDrawSnapshot::declarationBytes(element.Type);
-                if(!n||UINT(element.Offset)+n>s.stride||uint64_t(mesh.vertexCount)*s.stride>s.bytes.size())return false;
-                e.bindings.push_back({input.reg,element});found=true;
-            }if(!found)return false;
-        }
+        e.bindings=prepared?prepared->bindings_:prepareBindings(p,elements,count);
+        if(!e.bindings)return false;
+        for(const auto& b:*e.bindings){const auto& s=mesh.streams[b.element.Stream];
+            if(UINT(b.element.Offset)+NorthlightDrawSnapshot::declarationBytes(b.element.Type)>s.stride||uint64_t(mesh.vertexCount)*s.stride>s.bytes.size())return false;}
         if(SkinEnvelope::supports(p))e.skin=std::make_unique<SkinEnvelope>();
         /* The skin template's own DEF is c0; its evaluator reads only palette
            rows c31..c255. Copying the 3.6 KiB bank then changes no value read. */
@@ -177,8 +187,8 @@ private:
             // This is exactly the generic builder's one unpartitioned group:
             // FLOAT3 POSITION supplies XYZ and implicit W=1, no palette input
             // or relative address can split it into multiple groups.
-            e.rigidPositions=!p.skinned&&!relative&&e.bindings.size()==1&&e.bindings[0].element.Usage==D3DDECLUSAGE_POSITION&&
-                e.bindings[0].element.Type==D3DDECLTYPE_FLOAT3;
+            e.rigidPositions=!p.skinned&&!relative&&e.bindings->size()==1&&(*e.bindings)[0].element.Usage==D3DDECLUSAGE_POSITION&&
+                (*e.bindings)[0].element.Type==D3DDECLTYPE_FLOAT3;
         }
         return true;
     }
@@ -336,7 +346,7 @@ private:
             // Scan the same immutable positions in bounded chunks. The shared
             // scanner preserves scalar min/max ties and rejects non-finite
             // values; only the generic per-vertex decode/hash work is removed.
-            const auto& binding=e.bindings[0];const auto& source=mesh.streams[binding.element.Stream];
+            const auto& binding=(*e.bindings)[0];const auto& source=mesh.streams[binding.element.Stream];
             while(e.vertex<mesh.vertexCount){
                 if(budget.vertices>=budget.maxVertices){++stats_.vertexDeferred;return Status::Budget;}
                 if(timer.expired())return timeBudget();
@@ -359,7 +369,7 @@ private:
             // The proven skin template reads only v0/v1/v2. Resolve its layout
             // once per source chunk; other declarations retain the decoder.
             const Binding* binding[3]={};
-            for(const auto& b:e.bindings)binding[b.reg]=&b;
+            for(const auto& b:*e.bindings)binding[b.reg]=&b;
             if(binding[0]->element.Type==D3DDECLTYPE_FLOAT3&&binding[2]->element.Type==D3DDECLTYPE_UBYTE4&&
                (binding[1]->element.Type==D3DDECLTYPE_FLOAT4||binding[1]->element.Type==D3DDECLTYPE_UBYTE4N)){
                 const std::uint8_t* first[3];size_t stride[3];
@@ -389,7 +399,7 @@ private:
             }
         }
         const Binding* singleBindings[2]={};
-        if(e.singleBone&&e.bindings.size()==2)for(const auto& b:e.bindings)if(b.reg<2)singleBindings[b.reg]=&b;
+        if(e.singleBone&&e.bindings->size()==2)for(const auto& b:*e.bindings)if(b.reg<2)singleBindings[b.reg]=&b;
         const bool typedSingle=singleBindings[0]&&singleBindings[1]&&singleBindings[0]->element.Type==D3DDECLTYPE_FLOAT3&&
             singleBindings[0]->element.Usage==0&&singleBindings[1]->element.Type==D3DDECLTYPE_UBYTE4&&singleBindings[1]->element.Usage==2;
         const std::uint8_t* singleSource[2]={};size_t singleStride[2]={};
@@ -403,7 +413,7 @@ private:
                 for(float f:inputs[0])if(!std::isfinite(f)){discardGroups(e);++stats_.invalid;return Status::Invalid;}
                 const auto* indices=singleSource[1]+e.vertex*singleStride[1];for(unsigned j=0;j<4;++j)inputs[1][j]=float(indices[j]);
                 singleIndex=indices[0];
-            }else for(const auto& binding:e.bindings){const auto& s=mesh.streams[binding.element.Stream];auto& input=inputs[binding.reg];
+            }else for(const auto& binding:*e.bindings){const auto& s=mesh.streams[binding.element.Stream];auto& input=inputs[binding.reg];
                 if(!NorthlightActorDeformation::decodeElement(s.bytes.data()+e.vertex*s.stride+binding.element.Offset,binding.element.Type,input)){discardGroups(e);++stats_.invalid;return Status::Invalid;}
                 for(float f:input)if(!std::isfinite(f)){discardGroups(e);++stats_.invalid;return Status::Invalid;}
                 // Audited single-bone programs address only v1.x. Unused YZW
@@ -422,14 +432,14 @@ private:
                     auto found=e.groups.find(groupKey);
                     if(found==e.groups.end()){
                         if(e.groups.size()>=MaxGroups){discardGroups(e);++stats_.tupleLimit;++stats_.unsupported;return Status::Unsupported;}
-                        Group g;g.limits.resize(e.bindings.size()*8);const size_t added=sizeof(Group)+g.limits.capacity()*4+groupKey.capacity()+1+192;
+                        Group g;g.limits.resize(e.bindings->size()*8);const size_t added=sizeof(Group)+g.limits.capacity()*4+groupKey.capacity()+1+192;
                         trimMemos(added);while(entries_.size()>1&&bytes_+added>Limit){if(!evict(&e))break;}if(bytes_+added>Limit)return Status::Budget;
-                        for(size_t i=0;i<e.bindings.size();++i)for(unsigned j=0;j<4;++j)g.limits[i*8+j]=g.limits[i*8+4+j]=inputs[e.bindings[i].reg][j];
+                        for(size_t i=0;i<e.bindings->size();++i)for(unsigned j=0;j<4;++j)g.limits[i*8+j]=g.limits[i*8+4+j]=inputs[(*e.bindings)[i].reg][j];
                         found=e.groups.emplace(std::move(groupKey),std::move(g)).first;e.bytes+=added;bytes_+=added;addedGroup=true;
                     }
                     group=&found->second;
                 }
-                if(!addedGroup)for(size_t i=0;i<e.bindings.size();++i)for(unsigned j=0;j<4;++j){auto& g=*group;const float f=inputs[e.bindings[i].reg][j];g.limits[i*8+j]=std::min(g.limits[i*8+j],f);g.limits[i*8+4+j]=std::max(g.limits[i*8+4+j],f);}
+                if(!addedGroup)for(size_t i=0;i<e.bindings->size();++i)for(unsigned j=0;j<4;++j){auto& g=*group;const float f=inputs[(*e.bindings)[i].reg][j];g.limits[i*8+j]=std::min(g.limits[i*8+j],f);g.limits[i*8+4+j]=std::max(g.limits[i*8+4+j],f);}
                 // Node references survive rehash; this local proof ends with
                 // the source chunk, before any source can change or expire.
                 if(typedSingle)singleGroups[singleIndex]=group;
@@ -539,7 +549,10 @@ public:
     MemoTotals memoTotals()const{auto total=memoTotals_;total.add(stats_);return total;}
     static std::shared_ptr<const Prepared> prepareProgram(const NorthlightActorDeformation::Program& program,const D3DVERTEXELEMENT9* elements,size_t count){
         try {std::shared_ptr<Prepared> prepared(new Prepared);
-            if(!makeKey(program,elements,count,prepared->key_))return {};
+            std::vector<std::uint32_t> key;if(!makeKey(program,elements,count,key))return {};
+            // Copy once here so entries need not retain the builder's spare capacity.
+            prepared->key_=std::make_shared<const std::vector<std::uint32_t>>(key);
+            prepared->bindings_=prepareBindings(program,elements,count);if(!prepared->bindings_)return {};
             prepared->program_=program;prepared->declaration_.assign(elements,elements+count);prepared->hash_=programHash(program);
             return prepared;
         }catch(...){return {};}
@@ -570,7 +583,7 @@ private:
             if(stop())return Status::Budget;
             budget.operations+=p.operations.size();detail::Vector inputs[CompactSingle?2:16]={};
             const auto& limits=pair.second.limits;
-            for(size_t i=0;i<e.bindings.size();++i)for(unsigned j=0;j<4;++j){const float lo=limits[i*8+j],hi=limits[i*8+4+j],mid=float((double(lo)+hi)*.5);inputs[e.bindings[i].reg][j]={mid,std::max(double(mid)-lo,double(hi)-mid)};}
+            for(size_t i=0;i<e.bindings->size();++i)for(unsigned j=0;j<4;++j){const float lo=limits[i*8+j],hi=limits[i*8+4+j],mid=float((double(lo)+hi)*.5);inputs[(*e.bindings)[i].reg][j]={mid,std::max(double(mid)-lo,double(hi)-mid)};}
             detail::Vector position;
             if(!detail::singleSkinIntervals(p,inputs,constants,position,e.copyDefinitions)){
                 if constexpr(CompactSingle){
@@ -592,7 +605,7 @@ private:
         const float* constants,const float* inverse,Budget& budget,Bounds& output,Stop&& stop){
         // The audited single-bone kernel uses only v0/v1. All other programs
         // keep the complete register bank; a declined fast kernel does too.
-        const bool compact=e.singleBone&&e.bindings.size()==2&&((e.bindings[0].reg==0&&e.bindings[1].reg==1)||(e.bindings[0].reg==1&&e.bindings[1].reg==0));
+        const bool compact=e.singleBone&&e.bindings->size()==2&&(((*e.bindings)[0].reg==0&&(*e.bindings)[1].reg==1)||((*e.bindings)[0].reg==1&&(*e.bindings)[1].reg==0));
         if(compact)return evaluateGroupsImpl<true>(p,e,constants,inverse,budget,output,std::forward<Stop>(stop));
         return evaluateGroupsImpl<false>(p,e,constants,inverse,budget,output,std::forward<Stop>(stop));
     }
@@ -601,7 +614,7 @@ private:
     bool fastReady(const Prepared& prepared,const std::shared_ptr<const NorthlightDrawSnapshot::Mesh>& owner,const float* constants,const float* inverse,
         Budget& budget,Bounds& output,WorkInfo* info,Status& status,Entry*& source,Timer* individual=nullptr){
         const bool batched=!individual;
-        auto found=findSource(owner,prepared.key_);Entry* e=found==entries_.end()?nullptr:&found->second;
+        auto found=findSource(owner,*prepared.key_,prepared.key_.get());Entry* e=found==entries_.end()?nullptr:&found->second;
         source=e;
         if(!e||e->unsupported||!e->ready||(e->skin&&e->copyDefinitions)||e->lastEvaluationNs>=CheapSliceNanoseconds)return false;
         const auto& p=prepared.program_;
@@ -647,10 +660,10 @@ private:
         const auto accountClassify=[&](){if(diagnostics_&&!classified){classifyNanoseconds_+=std::uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(BoundsClock::now()-lookupStart).count());classified=true;}};
         try {
             if(!prepared&&!makeKey(p,elements,count,scratch_)){accountClassify();if(info)info->kind=Kind::Unsupported;++stats_.unsupported;return Status::Unsupported;}
-            const auto& exactKey=prepared?prepared->key_:scratch_;
+            const auto& exactKey=prepared?*prepared->key_:scratch_;
             // The failed fast path already proved this source hit or miss.
             // No cache mutation occurs before here; reuse it for cold/heavy work.
-            if(!sourceLookedUp){auto found=findSource(owner,exactKey);source=found==entries_.end()?nullptr:&found->second;}
+            if(!sourceLookedUp){auto found=findSource(owner,exactKey,prepared?prepared->key_.get():nullptr);source=found==entries_.end()?nullptr:&found->second;}
             accountClassify();
             if(!source){
                 ++stats_.cold;if(info)info->kind=Kind::Cold;
@@ -662,8 +675,8 @@ private:
                 if(budget.operations>=budget.maxOperations){++stats_.operationDeferred;return Status::Budget;}
                 timer.mode(true);if(!canBuild()||timer.expired())return timeBudget();
                 if(pending_){++stats_.pendingDeferred;return Status::Budget;}
-                Entry e;e.owner=owner;e.sourceAddress=owner.get();e.identity=identity(mesh);e.key=exactKey;e.programHash=prepared?prepared->hash_:programHash(p);if(!prepare(p,mesh,elements,count,e)){++stats_.invalid;return Status::Invalid;}
-                e.baseBytes=sizeof(Entry)+e.key.capacity()*4+e.bindings.capacity()*sizeof(Binding)+256+(e.identity?e.identity->bytes():0);
+                Entry e;e.owner=owner;e.sourceAddress=owner.get();e.identity=identity(mesh);e.key=prepared?prepared->key_:std::make_shared<const std::vector<std::uint32_t>>(exactKey);e.programHash=prepared?prepared->hash_:programHash(p);if(!prepare(p,mesh,elements,count,e,prepared)){++stats_.invalid;return Status::Invalid;}
+                e.baseBytes=sizeof(Entry)+sizeof(*e.key)+e.key->capacity()*4+32+sizeof(*e.bindings)+e.bindings->capacity()*sizeof(Binding)+32+256+(e.identity?e.identity->bytes():0);
                 e.bytes=e.baseBytes+(e.skin?sizeof(SkinEnvelope)+32:0);if(e.bytes>Limit)return Status::Unsupported;
                 trimMemos(e.bytes);
                 while(!entries_.empty()&&(bytes_+e.bytes>Limit||entries_.size()>=MaxEntries)){if(!evict())return Status::Budget;}

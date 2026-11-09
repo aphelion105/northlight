@@ -32,7 +32,7 @@ for needle,what in [('if(replayShadows)selectShadowReplays();','selection histor
                     ('(replayShadows&&!timedReplay())','GPU cache LRU/probation clock'),
                     ('if(effects.shadows&&replayShadows){auto proofs','static dedup proofs/cursor'),
                     ('if(effects.shadows&&replayShadows)pointCalculateReplayBounds();','bounds cache resume cursors'),
-                    ('renderPointShadows(atmosphere.lights,replaysComplete,actorShadows)','point cube schedule'),
+                    ('renderPointShadows(atmosphere.lights,replaysComplete,actorShadows,rendererFrame)','point cube schedule'),
                     ('if(!environmentReuse){if(splitNear||captureMode==CaptureFresh||!actorShadows)reuse.commit(interval,shadowPasses,matrices[cascade]);else captureDemand=true;}','cascade commit')]:
     once(render,needle,what)
 assert render.count('selectShadowReplays(')==1 and w.count('selectShadowReplays()')==1,'selection runs only from render'

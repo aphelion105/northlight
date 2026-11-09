@@ -1,6 +1,6 @@
 {
   "sources": {
-    "world_effects.hlsl": "69a9fd00e12531a52a377690198fc54eafc00e5834d6638bfbf388c72078d6b4",
+    "world_effects.hlsl": "e56bf98ed03f88f86eee1dbcf8d7947b0db5a470c9587486ab7ebce79c810f56",
     "shadow_transition.hlsl": "c10b3724863d069b78bec8df854f4b9182dfd27d2a2a66c512981022ea7c2e3b"
   },
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",

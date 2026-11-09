@@ -18,8 +18,8 @@ assert 'world=std::make_unique<WorldRenderer>(ext,gpuScene);' in device and 'aut
 assert 'world.reset();gpuScene.reset();releaseResources();' in device and 'gpuScene->setFrame(frame);' in device
 assert 'sharedReplayGeometry' not in world and 'sharedGeometry.borrow' not in bump
 assert 'NativeClient& deferredGPU=gpuScene->materials;' in bump and 'NativeClient& replayGpuCache=gpuScene->shadows;' in world
-assert 'deferredGPU.commitPending();' in bump and bump.index('deferredGPU.commitPending();')<bump.index('bool success=true;const Deferred* previous=nullptr;')
-assert 'DrawIndexedPrimitive(mesh.topology,INT(placement.vertexBase),0,mesh.vertexCount,placement.indexStart,mesh.primitiveCount)' in bump
+assert 'if(deferredGPU.commitPending())' in bump and bump.index('if(deferredGPU.commitPending())')<bump.index('bool success=true;const Deferred* previous=nullptr;')
+assert 'DrawIndexedPrimitive(mesh.topology,placement.baseVertex(),placement.minimumVertex(),mesh.vertexCount,placement.indexStart,mesh.primitiveCount)' in bump
 assert 'DrawPrimitive(mesh.topology,placement.vertexBase,mesh.primitiveCount)' in bump
 scene=fp.src('gpu_scene.h').read_text()
 for field in ['staticCasters','meshStore','meshBuffers','meshPoolTrim','terrain','terrainSources','decodedSources','workerPreparation','normalMaps','displacement','materialTargets','captureSources']:assert field in scene,field
@@ -29,7 +29,7 @@ source='''#include "replay_fixture.h"
 #include "scene_native_store.h"
 #include "geometry_memory.h"
 using Mesh=NorthlightDrawSnapshot::Mesh;
-struct Replay {std::shared_ptr<const Mesh> shared;bool gpuCached=false,indexed=true;IDirect3DVertexBuffer9* stream[4]={};IDirect3DIndexBuffer9* index=nullptr;UINT offset[4]={},stride[4]={},start=0;INT base=0;
+struct Replay {std::shared_ptr<const Mesh> shared;bool gpuCached=false,indexed=true;IDirect3DVertexBuffer9* stream[4]={};IDirect3DIndexBuffer9* index=nullptr;UINT offset[4]={},stride[4]={},start=0,min=0;INT base=0;
  const Mesh& mesh()const{return *shared;}~Replay(){for(auto p:stream)if(p)p->Release();if(index)index->Release();}};
 int main(){
  Device driver;auto* d=&driver;NorthlightGpuScene::NativeStore scene;NorthlightGpuScene::NativeClient replayGpuCache(scene,NorthlightGpuScene::Consumer::Shadow),materials(scene,NorthlightGpuScene::Consumer::Material);

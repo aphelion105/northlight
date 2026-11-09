@@ -86,6 +86,9 @@ def member(text,signature):
     return text[text.rfind('\n',0,a)+1:end]
 
 
+# Execute the production prologue on both gate paths, including early exits.
+prepare_begin=member(renderer,'template<class Capture> void prepareDrawImpl(').split('{',1)[1].split('if(!gpuFrameStarted)',1)[0]
+prepare_begin=' '.join(re.sub(r'//[^\n]*','',prepare_begin).split())
 assert renderer.count('    // 0.3.187 per-frame draw gates')==1
 gates_block=renderer[renderer.index('    // 0.3.187 per-frame draw gates'):renderer.index('    // 0.3.154: blob shadow claim')]
 gates_block=gates_block.replace(member(gates_block,'void refreshPipeline()'), '')
@@ -265,6 +268,7 @@ struct MockWorld{
     bool rainBlendSetting()const{return false;}
     bool actorShadowsEnabled()const{return actorShadows;}
     bool blobShadowsEnabled()const{return true;} // Historical trace oracle keeps the default visibility policy.
+    bool nativeTerrainShadowsEnabled()const{return true;}
     bool shadowsRequested()const{return shadows;}
     bool terrainShadowActive()const{return shadows&&composited;}
     bool frameDrawGates()const{return true;}
@@ -313,6 +317,7 @@ namespace NorthlightAutoDisplacement{struct Args{struct{D3DPRIMITIVETYPE t;INT b
 struct ExtensionDevice{struct RawScope{explicit RawScope(MockExt&){}};};
 struct BumpMock{void beginDraw(){}void beforeNativeDraw(){}template<class... A> void capture(A&&...){}template<class Draw> HRESULT geometryDraw(Draw draw,bool){return draw();}template<class Draw,class Submit> HRESULT geometryDraw(Draw draw,bool,Submit){return draw();}template<class Draw> HRESULT nativeDraw(Draw draw,IDirect3DVertexShader9*,IDirect3DPixelShader9*){return draw();}};
 struct Base{
+    struct NormalStub{unsigned begins=0;void beginNativeDraw(){++begins;}};NormalStub* modelNormals=nullptr;
     virtual ~Base()=default;
     virtual HRESULT DrawPrimitive(D3DPRIMITIVETYPE,UINT,UINT)=0;
     Trace trace;Env env;MockExt extObj;MockWorld worldObj;MockSky skyObj;MockBlobs blobsObj;
@@ -351,6 +356,7 @@ struct Base{
 // prepareDrawImpl stand-in: beforeDraw may find terrain, fail or apply the effects (UI), then the swap plan and the capture.
 #define PREPARE_IMPL \
     template<class Capture> void prepareDrawImpl(Capture capture,UINT count){ \
+        @PREPARE_BEGIN@ \
         ++drawCalls;env.call("prepare","fault prepare"); \
         if(failed||!enabled)return; \
         if(applied)return; \
@@ -454,6 +460,11 @@ static void runFaint(std::uint64_t seed,bool gates,unsigned faultOneIn,FaintCove
     }
 }
 int main(){
+    for(bool gates:{false,true})for(unsigned mode=0;mode<4;++mode){
+        NewDevice d;Base::NormalStub normals;d.modelNormals=&normals;d.frameDrawGates=gates;
+        d.enabled=mode!=1;d.applied=mode==2;d.failed=mode==3;d.latchDrawGates();
+        for(unsigned i=1;i<=3;++i){d.DrawPrimitive(D3DPT_TRIANGLELIST,0,1);assert(normals.begins==i);}
+    }
     {NewDevice d;d.shadowBlobs=&d.blobsObj;d.terrain=true;
      assert(d.blobFilterActive());d.worldObj.composited=false;assert(!d.blobFilterActive());
      d.worldObj.composited=true;d.effectKeys.settings.shadows=false;assert(!d.blobFilterActive());}
@@ -475,7 +486,7 @@ int main(){
 }
 '''
 
-src=HARNESS.replace('@OLD@',OLD_MEMBERS+'\n'+old_draws[0]).replace('@NEW@',new_members)
+src=HARNESS.replace('@OLD@',OLD_MEMBERS+'\n'+old_draws[0]).replace('@NEW@',new_members).replace('@PREPARE_BEGIN@',prepare_begin)
 with tempfile.TemporaryDirectory(prefix='northlight-draw-gates-') as tmp:
     (Path(tmp)/'draw_gates_test.cpp').write_text(src)
     variants=[('O2',['-O2'])] if os.name=='nt' else [('O2',['-O2']),('asan',['-O1','-g','-fsanitize=address,undefined','-fno-sanitize-recover=all'])]

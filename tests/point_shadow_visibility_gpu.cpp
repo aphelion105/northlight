@@ -11,7 +11,7 @@ static double milliseconds(Clock::time_point t){return std::chrono::duration<dou
 namespace NorthlightDrawSnapshot {
 struct SnapshotTestAccess {
  static void metadata(const Frame& frame,bool tracked){
-  assert(frame.sources_->entries.size()==1);const auto& e=*frame.sources_->entries.begin()->second;
+  assert(frame.sources_->entries.size()==1);const auto& e=frame.sources_->entries.begin()->second;
   assert(e.compacted&&e.key.tracked==tracked);
   assert(e.rawIndices.empty()==tracked&&e.runs.empty()==tracked);
  }

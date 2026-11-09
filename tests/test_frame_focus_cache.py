@@ -2,6 +2,7 @@
 # northlight-test: requires=cxx
 """Run the production immutable-device focus-window lookup with failure/retry mocks."""
 import subprocess
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -33,7 +34,9 @@ int main(){int a,b;Native n;n.window=&a;Device d{&n};foreground=&a;
 '''.replace('BODY', body)
 with tempfile.TemporaryDirectory(prefix='northlight-focus-') as tmp:
     path = Path(tmp)
+    exe = path/('test.exe' if os.name=='nt' else 'test')
     (path/'test.cpp').write_text(harness)
-    subprocess.run(['clang++', '-std=c++17', '-O2', '-Wall', '-Wextra', '-Werror', str(path/'test.cpp'), '-o', str(path/'test')], check=True)
-    subprocess.run([str(path/'test')], check=True)
+    compiler=[str(fp.zig()),'c++','-target','x86-windows-gnu'] if os.name=='nt' else ['clang++']
+    subprocess.run([*compiler, '-std=c++17', '-O2', '-UNDEBUG', '-Wall', '-Wextra', '-Werror', str(path/'test.cpp'), '-o', str(exe)], env=fp.zig_env(), check=True)
+    subprocess.run([str(exe)], check=True)
 print('PASS production focus lookup: cached immutable HWND, failed-call retry, null HWND and device isolation; 10000 frames / one successful native lookup')

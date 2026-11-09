@@ -5,10 +5,12 @@
 #include <cstring>
 #include <cstdint>
 #include <vector>
+#include "draw_gates.h"
 using HRESULT=long;
 constexpr HRESULT D3D_OK=0;
 #define SUCCEEDED(x) ((x)>=0)
-struct Shader {int releases=0;void Release(){++releases;}};
+#define FAILED(x) ((x)<0)
+struct Shader {int releases=0,refs=0;void Release(){++releases;}void AddRef(){++refs;}};
 using IDirect3DVertexShader9=Shader;
 using IDirect3DPixelShader9=Shader;
 struct CpuScope {explicit CpuScope(int){}};
@@ -33,6 +35,49 @@ struct Hook{
     // Exact current production method, extracted by the Python driver.
 #include "terrain_shadow_draw.inc"
 };
+struct PlanWorld {
+    bool native=true,active=false,coverage=true,patch=true;unsigned coverageCalls=0,patchCalls=0;
+    Shader pixel,vertex;
+    bool nativeTerrainShadowsEnabled()const{return native;}
+    bool terrainShadowActive()const{return active;}
+    bool terrainShadowCoverage(Shader*,Shader*,Shader*& v,Shader*& p,unsigned& base,unsigned& count,float*){
+        ++coverageCalls;if(!coverage)return false;v=&vertex;p=&pixel;base=221;count=3;return true;
+    }
+    Shader* terrainShadowReplacement(Shader*){++patchCalls;return patch?&pixel:nullptr;}
+};
+struct PlanDevice {
+    Shader pixel;unsigned reads=0;bool fail=false;
+    HRESULT GetPixelShader(Shader** p){++reads;if(fail)return -1;*p=&pixel;pixel.AddRef();return 0;}
+};
+struct PlanHook {
+    PlanWorld* world=nullptr;PlanDevice* ext=nullptr;NorthlightDrawGates::Frame drawGates;
+    bool applied=false,enabled=true,failed=false,terrain=true;unsigned debugMode=0,worldDebug=0;
+    unsigned tag=1;static constexpr unsigned kTagMask=255;
+    struct Class {unsigned entry;};Class classifyVs(Shader*)const{return {tag};}
+    Shader *shadowSwapOriginal=nullptr,*shadowSwapReplacement=nullptr,*shadowSwapVertexOriginal=nullptr,*shadowSwapVertexReplacement=nullptr;
+    unsigned shadowSwapConstantBase=0,shadowSwapConstantCount=0;float shadowSwapConstants[24]={};
+#include "terrain_shadow_plan.inc"
+};
+static void visibilityPlanning(){
+    unsigned cases=0;
+    for(unsigned flags=0;flags<128;++flags)for(bool native:{false,true})for(bool requested:{false,true})
+    for(bool active:{false,true})for(bool coverage:{false,true})for(bool patch:{false,true})for(bool gates:{false,true}){
+        PlanWorld w;w.native=native;w.active=requested&&active;w.coverage=coverage;w.patch=patch;
+        PlanDevice device;PlanHook h;Shader vertex;h.world=flags&1?nullptr:&w;h.ext=&device;
+        h.enabled=!(flags&2);h.failed=flags&4;h.applied=flags&8;h.terrain=!(flags&16);h.debugMode=flags&32?1:0;h.tag=flags&64?2:1;
+        NorthlightDrawGates::Inputs inputs;inputs.world=h.world;inputs.enabled=h.enabled;inputs.failed=h.failed;inputs.debugOff=!h.debugMode;inputs.worldShadows=requested;inputs.hideTerrainShadows=!native;
+        h.drawGates=NorthlightDrawGates::latch(gates,inputs);h.planTerrainShadowSwap(&vertex);
+        const bool admitted=h.world&&h.enabled&&!h.failed&&!h.applied&&h.terrain&&!h.debugMode&&h.tag==1&&(!native||w.active);
+        const bool expected=admitted&&((native&&coverage)||patch);
+        assert(device.reads==unsigned(admitted));assert(bool(h.shadowSwapReplacement)==expected);
+        assert(w.coverageCalls==unsigned(admitted&&native));assert(w.patchCalls==unsigned(admitted&&(!native||!coverage)));
+        assert(bool(h.shadowSwapVertexReplacement)==(expected&&native&&coverage));
+        assert(device.pixel.releases==unsigned(admitted&&!expected));
+        if(h.shadowSwapOriginal)h.shadowSwapOriginal->Release();if(h.shadowSwapVertexOriginal)h.shadowSwapVertexOriginal->Release();
+        assert(device.pixel.releases==unsigned(admitted)&&vertex.refs==vertex.releases);++cases;
+    }
+    std::printf("TERRAIN_SHADOW_VISIBILITY_PASS cases=%u off_without_replacement=1 default_coverage=1 frame_gates=0/1\n",cases);
+}
 void checkCalls(const Hook& hook,const DeviceState& state,unsigned count,const std::vector<unsigned>& expected){
     assert(state.trace==expected&&state.calls==expected.size());
     const auto& c=hook.terrainSwapCalls;
@@ -43,6 +88,7 @@ void checkCalls(const Hook& hook,const DeviceState& state,unsigned count,const s
     assert(c.failures==unsigned(hook.gateFrame&&state.failAt&&state.failAt<=state.calls));
 }
 int main(){
+    visibilityPlanning();
     unsigned cases=0;
     for(unsigned count:{3u,6u})for(unsigned fail=0;fail<=7;++fail)for(bool claimed:{false,true})for(HRESULT drawResult:{0l,-7l})for(bool profile:{false,true})for(bool cached:{false,true}){
         if(cached&&fail==1)continue; // A cached success cannot simulate a native getter failure.

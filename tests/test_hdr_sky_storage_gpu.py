@@ -29,7 +29,7 @@ end = renderer.index('\n    }', start)+6
 assert 'hdrSkyForeground.draw(ext,hdrSkyTarget(),' in renderer
 assert 'hdrSkyValid?hdrSkyTarget():nullptr' in renderer
 assert 'hdrColor.convertWorld(ext,hdrLegacyBack,hdrSkyTarget(),' in renderer
-assert 'hdrBindBack(hdrSkyTarget())' in renderer
+assert 'ext->SetRenderTarget(0,hdrSkyTarget())' in renderer
 assert 'return hdrSkyDraw()?hdrSkyTarget():nullptr;' in renderer
 env = fp.zig_env()
 env.update(DISABLE_VULKAN_OBS_CAPTURE='1')

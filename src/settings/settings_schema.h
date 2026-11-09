@@ -14,7 +14,7 @@ namespace NorthlightSettings {
 using Images=std::array<FileImage,4>;
 using Documents=std::array<Document,4>;
 inline Documents documents(const Images& a){Documents d;for(unsigned i=0;i<4;++i)d[i]=Document(a[i].raw);return d;}
-inline Documents factoryDocuments(){return {Document("[Quality]\nPreset=Quality\n"),Document("[Renderer]\nBackend=dxvk\n"),Document(kSettingsFactoryCelestial),Document(kSettingsFactoryShadowRange)};}
+inline Documents factoryDocuments(){return {Document("[Quality]\nLocalLightLimitsVersion=2\nPreset=Quality\n"),Document("[Renderer]\nBackend=dxvk\n"),Document(kSettingsFactoryCelestial),Document(kSettingsFactoryShadowRange)};}
 inline std::string number(float f){std::ostringstream s;s<<std::setprecision(6)<<f;return s.str();}
 inline std::string migrateHdr(const std::filesystem::path& root){
     try{Store store(root,3000);const auto before=store.read();auto docs=documents(before);auto values=docs[1].values();
@@ -47,6 +47,18 @@ inline bool giRequestChanged(const NorthlightQuality::Settings& before,const Nor
     return false;
 }
 inline NorthlightQuality::Settings qualityOf(const Document& d,const std::string& legacy){std::istringstream q(d.text()),l(legacy);std::vector<std::string> warnings;return NorthlightQuality::load(&q,&l,warnings);}
+inline bool upgradeLightLimits(Document& d){
+    std::istringstream input(d.text());std::vector<std::string> warnings;
+    if(NorthlightQuality::currentLightLimits(NorthlightQuality::section(input,"Quality",warnings)))return false;
+    const auto total=std::to_string(qualityOf(d,"").localLightLimit);const std::string version="2";
+    d.set("Quality","LocalLightLimit",&total);d.set("Quality","LocalLightLimitsVersion",&version);return true;
+}
+inline std::string migrateLightLimits(const std::filesystem::path& root){
+    try{Store store(root,3000);const auto before=store.read();if(!before[0].exists)return "";
+        auto docs=documents(before);if(!upgradeLightLimits(docs[0]))return "";
+        auto after=before;after[0]={true,docs[0].bytes()};store.commit(before,after);return "";
+    }catch(const std::exception& error){return std::string("Local light limit migration failed: ")+error.what();}
+}
 inline Config configOf(const Documents& d,const std::string& legacy,bool validate=false,const std::string& hdrProfile=""){
     Config c;c.quality=qualityOf(d[0],legacy);std::string error;std::istringstream celestial(d[2].text()),shadow(d[3].text());NorthlightRegionalShadow::Table ranges;
     if(!NorthlightCelestialProfiles::parse(celestial,c.celestial,error)&&validate)throw std::runtime_error("Celestial: "+error);
@@ -125,6 +137,7 @@ inline void validateValue(const Field& f,const std::string& value){
 }
 inline Documents applyChanges(Documents docs,const std::vector<Field>& fields,const std::string& changes){
     if(changes.size()>131072)throw std::runtime_error("Settings request exceeds 128 KiB");std::map<std::string,const Field*> known;for(const auto& f:fields)known[f.id()]=&f;
+    upgradeLightLimits(docs[0]);
     std::set<std::string> changed;std::istringstream in(changes);std::string line;unsigned count=0;
     while(std::getline(in,line)){if(line.empty())continue;if(++count>1024)throw std::runtime_error("Too many settings changes");auto at=line.rfind('\t');if(at==line.npos)throw std::runtime_error("Malformed settings change");
         auto id=line.substr(0,at),value=line.substr(at+1);if(!known.count(id)||!changed.insert(id).second)throw std::runtime_error("Unknown or duplicate setting");const auto& f=*known.at(id);

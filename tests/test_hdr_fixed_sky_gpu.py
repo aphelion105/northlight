@@ -21,7 +21,8 @@ args = parser.parse_args()
 processes()
 renderer = fp.src('renderer.cpp').read_text(encoding='utf-8')
 assert renderer.count('bool nativeSky=false,skyCaptured=false;') == 4
-assert renderer.count('},false,nativeSky,&skyCaptured);') == 4
+assert renderer.count('return submitGameDraw(count,nativeSky,&skyCaptured,') == 4
+assert renderer.count('},false,nativeSky,skyCaptured);') == 1
 assert renderer.count('},draw,&nativeSky,&skyCaptured);}') == 4
 assert renderer.count('claimed||mist||(skyCaptured&&*skyCaptured)') == 2
 assert 'if(nativeSky)*nativeSky=linearSky;' in renderer

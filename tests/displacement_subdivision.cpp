@@ -4,7 +4,11 @@
 #include <chrono>
 #include <cstdio>
 #define NorthlightDisplacementGeometry NorthlightDisplacementReference
+#ifdef NORTHLIGHT_DISPLACEMENT_REFERENCE
+#include NORTHLIGHT_DISPLACEMENT_REFERENCE
+#else
 #include "fixtures/reference/displacement_geometry-93fd5436.h"
+#endif
 #undef NorthlightDisplacementGeometry
 #include "displacement_geometry.h"
 
@@ -96,6 +100,17 @@ int main(int argc,char**){
     f.uv[0][0]=NAN;compare(f,8,false,false,false,0);
     f.uv[0][0]=0;f.mesh.indices[0]=UINT_MAX;compare(f,8,false,false,false,0);
     Fixture strip(1,false);strip.mesh.indexed=false;strip.mesh.topology=D3DPT_TRIANGLESTRIP;strip.mesh.indices.clear();compare(strip,8,true,true,false,0);
+    // Float bone IDs exercise the accepted rounding tolerance; unused bad
+    // skin data must not invalidate a draw that never references that vertex.
+    for(float id:{.0004f,.0011f,-.0004f,255.0004f,NAN,INFINITY}){
+        Fixture f(1,false);auto elements=std::array<D3DVERTEXELEMENT9,7>{};std::copy_n(declaration,7,elements.begin());
+        elements[4].Type=D3DDECLTYPE_FLOAT4;elements[5].Offset=64;
+        auto& stream=f.mesh.streams[0];std::vector<unsigned char> bytes(f.mesh.vertexCount*68);
+        for(unsigned i=0;i<f.mesh.vertexCount;++i){std::memcpy(bytes.data()+i*68,stream.bytes.data()+i*stream.stride,48);const float ids[]={id,3,7,0};std::memcpy(bytes.data()+i*68+48,ids,16);std::memcpy(bytes.data()+i*68+64,stream.bytes.data()+i*stream.stride+52,4);}
+        stream.stride=68;stream.bytes=std::move(bytes);compare(f,8,false,false,false,4,elements.data(),7);
+    }
+    {Fixture f(1,false);const auto stride=f.mesh.streams[0].stride;auto& bytes=f.mesh.streams[0].bytes;const auto start=bytes.size();bytes.resize(start+stride);std::memcpy(bytes.data()+start,bytes.data(),stride);
+     const float invalid=NAN;std::memcpy(bytes.data()+start+32,&invalid,4);++f.mesh.vertexCount;f.uv.push_back({0,0});f.blend.push_back(0);compare(f,8,false,false,false,4);}
     {Fixture dense(32,true);ScratchMemory memory;G::Mesh output;assert(dense.build(false,output,4,false,true,false,0));
      assert(memory.live==0);std::printf("SUBDIVISION_SCRATCH allocations=%zu peakBytes=%zu retainedBytes=%zu vertices=%u\n",memory.allocations,memory.peak,memory.live,output.vertexCount);}
     std::printf("SUBDIVISION_EXACT_PASS cases=%u comparedBytes=%llu\n",cases,(unsigned long long)compared);

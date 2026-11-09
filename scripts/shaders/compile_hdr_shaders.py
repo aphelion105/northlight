@@ -29,6 +29,7 @@ def main():
                ('HdrWorld', 'ps_3_0', 'HdrWorld', 'kHdrWorld'),
                ('HdrOverlay', 'ps_3_0', 'HdrOverlay', 'kHdrOverlay'),
                ('HdrFixedUi', 'ps_3_0', 'HdrFixedUi', 'kHdrFixedUi'),
+               ('HdrFixedAdditive', 'ps_2_0', 'HdrFixedAdditive', 'kHdrFixedAdditive'),
                ('HdrFixedUi2', 'ps_3_0', 'HdrFixedUi2', 'kHdrFixedUi2'),
                ('HdrFixedSky2', 'ps_3_0', 'HdrFixedSky2', 'kHdrFixedSky2'),
                *[(name, 'ps_3_0', name, 'k'+name) for name in

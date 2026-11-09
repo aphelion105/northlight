@@ -10,7 +10,25 @@ static int access(const wchar_t* path,int mode){return _waccess(path,mode);}
 #endif
 using namespace NorthlightSettings;
 template<class F> void fails(F f){bool failed=false;try{f();}catch(...){failed=true;}assert(failed);}
+static void lightLimits(){
+    for(const char* preset:{"Quality","Balanced","Performance"}){
+        Document d(std::string("[Quality]\nPreset=")+preset+"\n");assert(qualityOf(d,"").localLightLimit==64);
+        assert(upgradeLightLimits(d));const auto saved=d.bytes();assert(!upgradeLightLimits(d)&&d.bytes()==saved);
+        assert(qualityOf(d,"").localLightLimit==64);
+    }
+    for(auto pair:{std::pair<unsigned,unsigned>{48,64},{128,16},{0,128},{8,16}}){
+        const auto raw=std::string("; keep\r\n[Quality]\r\nLocalLightLimit=")+std::to_string(pair.first)+"\r\nPointShadowLimit="+std::to_string(pair.second)+"\r\nUnknown=preserve\r\n";
+        Document old(raw);const auto expected=pair.first?std::max(pair.first,pair.second):0;assert(qualityOf(old,"").localLightLimit==expected);
+        assert(upgradeLightLimits(old));assert(old.bytes().find("Unknown=preserve\r\n")!=std::string::npos);assert(qualityOf(old,"").localLightLimit==expected);
+        auto docs=factoryDocuments();docs[0]=old;const auto runtime=configOf(docs,"");const auto fields=schema(docs,docs,runtime,"");
+        const auto edited=applyChanges(docs,fields,"Q\tQuality\tLocalLightLimit\t8\n");
+        const auto next=configOf(edited,"");assert(next.quality.localLightLimit==8&&NorthlightQuality::localShadowLimit(next.quality)==std::min(8u,pair.second));
+    }
+    Document off("[Quality]\nWorldShadows=0\nLocalLightLimit=48\nPointShadowLimit=64\n");assert(upgradeLightLimits(off)&&qualityOf(off,"").localLightLimit==48);
+    Document modern("[Quality]\nLocalLightLimitsVersion=2\nLocalLightLimit=8\nPointShadowLimit=128\n");const auto q=qualityOf(modern,"");assert(q.localLightLimit==8&&NorthlightQuality::localShadowLimit(q)==8&&!upgradeLightLimits(modern));
+}
 int main(int argc,char** argv){
+    lightLimits();
     assert(argc==2);auto root=std::filesystem::path(argv[1]);std::filesystem::create_directories(root);
     std::string raw="\xef\xbb\xbf; note\r\n[Quality]\r\n  Weather = 1  ; keep\r\nUnknown=future\r\n";Document d(raw);assert(d.bytes()==raw);
     std::string zero="0";d.set("Quality","Weather",&zero);assert(d.bytes().find("  Weather = 0  ; keep")!=std::string::npos);d.set("Quality","Weather",nullptr);assert(d.bytes().find("; keep")!=std::string::npos&&d.bytes().find("Unknown=future")!=std::string::npos);

@@ -40,6 +40,7 @@
         t.poolMs=elapsed();
         t.gpu=replayGpuCache.bytes();replayGpuCache.clear();t.replayGpuMs=elapsed();
         t.gpu+=clearPointKeeps();
+        t.gpu+=shadowAlphaTargets.bytes();shadowAlphaTargets.reset();
         t.gpu+=trimMeshPools();t.meshPoolsMs=elapsed(); /* 0.3.216: idle page buffers (never the active table), unless a staged upload is in progress */
         rigidMemoryClear(); /* 0.3.172: remembered rigid replays (their shared meshes and COM references) */
         t.rigidMs=elapsed();
@@ -51,8 +52,8 @@
     // Demand keeps the existing world savings and one-shot trim, but terrain
     // retention is halved only after an actual low-address-space sample.
     void setMemoryPressure(bool on,bool halveTerrain){
-        memoryPressure=on;if(on)clearPointKeeps();setNearReserve();
+        memoryPressure=on;if(on){clearPointKeeps();shadowAlphaTargets.reset();}setNearReserve();
         replaySnapshots.setSnapshotCacheLimit(on?NorthlightDrawSnapshot::Frame::SnapshotCacheLimit/2:NorthlightDrawSnapshot::Frame::SnapshotCacheLimit);
         terrainBoundsCache.setPersistentByteLimit(halveTerrain?16u*1024u*1024u:32u*1024u*1024u);
-        replayGpuCache.setLimit(on?32u*1024u*1024u:64u*1024u*1024u);
+        gpuScene->setMemoryPressure(on,halveTerrain);
     }

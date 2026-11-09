@@ -1,6 +1,7 @@
 #pragma once
 #include <atomic>
 #include <cstring>
+#include "shadow_alpha.h"
 
 // Valid only during one uninterrupted model-replay loop on the real device.
 // Never shadows game state or survives a StateBlock/other rendering pass.
@@ -53,7 +54,7 @@ public:
             if(!material_||u_!=p.addressU){hr=d_->SetSamplerState(0,D3DSAMP_ADDRESSU,p.addressU);if(FAILED(hr)){material_=false;return hr;}u_=p.addressU;++counts.samplers;}
             if(!material_||v_!=p.addressV){hr=d_->SetSamplerState(0,D3DSAMP_ADDRESSV,p.addressV);if(FAILED(hr)){material_=false;return hr;}v_=p.addressV;++counts.samplers;}
         }
-        if(!material_||std::memcmp(&cutoff_,&p.cutoff,sizeof(float))||alphaMode_!=p.alphaMode){float c[]={float(p.alphaMode),0,0,p.cutoff};hr=d_->SetPixelShaderConstantF(0,c,1);if(FAILED(hr)){material_=false;return hr;}cutoff_=p.cutoff;alphaMode_=p.alphaMode;++counts.cutoffs;}
+        if(!material_||std::memcmp(&cutoff_,&p.cutoff,sizeof(float))||alphaMode_!=p.alphaMode){float c[]={float(NorthlightShadowAlpha::recipe(p.alphaMode)),NorthlightShadowAlpha::fixed(p.alphaMode)?1.f:0.f,0,p.cutoff};hr=d_->SetPixelShaderConstantF(0,c,1);if(FAILED(hr)){material_=false;return hr;}cutoff_=p.cutoff;alphaMode_=p.alphaMode;++counts.cutoffs;}
         material_=true;return D3D_OK;
     }
 };

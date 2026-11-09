@@ -15,7 +15,9 @@ assert 'scopeTotalsNotAdditive=1' in source and 'residentVramMeasured=0' in sour
 assert 'now-resourceMemoryProfileAt<10000' in source and 'started-memoryFootprintReportAt>=10000' in source
 assert 'memoryProfileMs-previousProfileMs' in source # diagnostic work is excluded from algorithm phase times
 panel=fp.src('settings_panel.cpp').read_text()
-assert 'case Page::Diagnostics:memoryDiagnostics();' in panel
+assert 'case Page::Performance:performanceMonitor();' in panel
+monitor=panel.split('void performanceMonitor(){',1)[1].split('\n    void ',1)[0]
+assert 'M::store().tryRead(memorySnapshot)' in monitor
 assert 'M::store().tryRead(memorySnapshot)' in panel and 'now-memoryReadAt>=1000' in panel
 for forbidden in ['GetLevelDesc','GetRenderTargetData','VirtualQuery','GlobalMemoryStatusEx','accountMemory(']:assert forbidden not in panel,forbidden
 # Admission policy is not modified by diagnostic counters.

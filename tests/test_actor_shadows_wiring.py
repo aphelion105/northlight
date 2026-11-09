@@ -72,7 +72,7 @@ consumers=['if(replayShadows)selectShadowReplays();','if(effects.shadows&&replay
            'if(effects.shadows&&replayShadows){auto proofs','if(effects.shadows&&replayShadows)pointCalculateReplayBounds();']
 schedules=['||!replaysComplete||shadowTransitionFailed||memoryPressure', '!reason&&key.valid&&!pull&&!actorLost&&!transition.state.fading(),shadowDiagnosticCapture!=0,replaysComplete);','if(cascade==0)nearRendered=!environmentReuse&&captureMode==CaptureFresh&&interval>1&&actorShadows;',
            'if(!environmentReuse){if(splitNear||captureMode==CaptureFresh||!actorShadows)reuse.commit(interval,shadowPasses,matrices[cascade]);else captureDemand=true;}',
-           'renderPointShadows(atmosphere.lights,replaysComplete,actorShadows);else pointReady=false;',
+           'renderPointShadows(atmosphere.lights,replaysComplete,actorShadows,rendererFrame);else pointReady=false;',
            'renderFlashShadows(atmosphere.lights,replaysComplete,actorShadows);else for(auto& s:flashSlots)s.ready=false;']
 def schedules_guarded(text):
     for needle in consumers+schedules:once(text,needle,'render()')
@@ -96,7 +96,7 @@ checks['cascade replay block gated, terrain before, union after']=(render.count(
 # The probe moved before the live dump: legal because it never runs on a diagnostic capture frame.
 checks['probe never on a diagnostic capture frame']='probeRecord=replayProbeActive()&&slot==0&&captureMode==CaptureFresh&&!shadowDiagnosticCapture;' in block
 # Point cube: withReplays gates both replay loops and the schedule's replay count.
-pb=pt[pt.index('    bool renderPointShadow(const NorthlightLocalLights::Light& light,bool fresh=true,bool withReplays=true){'):pt.index('    bool renderPointLighting(')]
+pb=pt[pt.index('    bool renderPointShadow(const NorthlightLocalLights::Light& light,bool fresh=true,bool withReplays=true){'):pt.index('    void renderPointShadows(')]
 candidate_head='if(withReplays)for(size_t i=0;i<replays.size();++i){'
 count='if(fresh)pointReplayCount=withReplays?replays.size():0;'
 def point_replays_guarded(text):

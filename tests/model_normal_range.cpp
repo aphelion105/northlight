@@ -65,6 +65,8 @@ static void singleBone(){
     altered.insert(altered.begin()+1,{0x05000051,0xa00f0034,0,0,0,0});assert(classify(altered.data(),altered.size())==None);
 }
 int main(int argc,char** argv){assert(argc==3);auto code=read(argv[1]),skin=read(argv[2]);assert(NorthlightModelNormalRange::eligible(code.data(),code.size()));assert(!NorthlightModelNormalRange::eligible(skin.data(),skin.size()));
+    for(const auto* words:{&code,&skin}){NorthlightActorDeformation::Program prepared;assert(NorthlightActorDeformation::compile(words->data(),words->size(),prepared,false,2));
+        for(bool envelope:{false,true})assert(NorthlightModelNormalRange::classify(words->data(),words->size(),envelope)==NorthlightModelNormalRange::classify(words->data(),words->size(),envelope,&prepared));}
     singleBone();
     assert(NorthlightModelNormalRange::classify(skin.data(),skin.size(),true)==NorthlightModelNormalRange::Envelope);
     {NorthlightPoseBounds::Handoff proof;NorthlightConstantEpoch::Clock clock;auto stamp=clock.stamp(true);stamp.held=true;

@@ -300,7 +300,20 @@ static void pointShadowDistance(){
     }
 }
 
+static void disableOriginalTerrainShadows(){
+    using namespace NorthlightSettings;
+    const auto docs=factoryDocuments();const auto active=configOf(docs,"");const auto fields=schema(docs,docs,active,"");D::Draft draft;draft.bind(&fields);
+    const auto* checkbox=draft.field(D::Quality,"Quality","DisableOriginalTerrainShadows");
+    CHECK(checkbox&&checkbox->kind=="check"&&checkbox->factory=="1"&&checkbox->apply=="F");
+    draft.set(*draft.field(D::Quality,"Quality","WorldShadows"),"0");std::string missing;
+    CHECK(D::blocked(draft,*checkbox,missing)==D::Block::None);
+    for(const auto* value:{"1","0"}){
+        auto edited=applyChanges(docs,fields,checkbox->id()+"\t"+value+"\n");edited[0]=Document(edited[0].bytes());
+        const auto config=configOf(edited,"");CHECK(liveQualityUpdate(active.quality,config.quality).disableOriginalTerrainShadows==std::stoul(value));
+    }
+}
 int main(){
+    disableOriginalTerrainShadows();
     masterHotkey();routing();draft();shadowRange();pointShadowDistance();
     if(failures){std::fprintf(stderr,"%d failure(s)\n",failures);return 1;}
     std::puts("settings overlay: routing and draft OK");

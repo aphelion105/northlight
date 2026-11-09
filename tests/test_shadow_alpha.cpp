@@ -7,6 +7,39 @@
 #include <random>
 using namespace NorthlightShadowAlpha;
 using V=std::array<float,4>;
+static void outputTests(){
+    for(unsigned major:{2u,3u}){
+        std::vector<uint32_t> w={0xffff0000u|(major<<8)};
+        if(major==3)w.insert(w.end(),{0x0200001f,0x8000000a,0x900f0000,0x0200001f,0x80000005,0x900f0001});
+        const auto sampler=w.size();w.insert(w.end(),{0x0200001f,0x90000000,0xa00f0800});
+        const auto sample=w.size();w.insert(w.end(),{0x03000042,0x800f0000,major==3?0x90e40001u:0xb0e40000u,0xa0e40800});
+        const auto output=w.size();w.insert(w.end(),{0x03000005,0x80080800,0x80ff0000,0x90ff0000,0x0000ffff});
+        auto info=analyze(w.data(),w.size());assert(info.outputKnown&&info.outputMode==TextureColor&&!info.discard);
+        for(unsigned format:{21u,22u,113u,116u})for(unsigned ref:{0u,1u,127u,255u})for(bool equal:{false,true}){
+            const auto mode=fixedTestMode(info,true,ref,equal,format);
+            assert(fixed(mode)&&recipe(mode)==TextureColor&&reference(mode)==ref&&sourceFormat(mode)==format&&bool(mode&GreaterEqual)==equal);
+            assert(!fixed(fixedTestMode(info,false,ref,equal,format)));
+        }
+        assert(!fixed(fixedTestMode(info,true,128,false,0))&&!fixed(fixedTestMode(info,true,128,false,256)));
+        for(unsigned changed:{0u,1u,2u,3u,4u,5u,6u}){
+            auto bad=w;
+            if(changed==0)bad[sample+2]^=0x00060000; // UV .xy is required.
+            if(changed==1)bad[sample+3]^=1;          // Only the captured sampler.
+            if(changed==2)bad[sample+3]^=0x00ff0000; // No sampler result swizzle.
+            if(changed==3)bad[output+1]|=0x00100000; // Saturated output is another recipe.
+            if(changed==4)bad.insert(bad.end()-1,{0x01000041,0x800f0000});
+            if(changed==5)bad[sampler+1]=0x98000000; // Cube sampling is not sampler2D.
+            if(changed==6)bad[sampler+1]=0xa0000000; // Nor is volume sampling.
+            assert(!analyze(bad.data(),bad.size()).outputKnown);
+        }
+        for(auto recipe_:{Texture,Color}){
+            auto single=w;single.erase(single.begin()+output,single.end());
+            single.insert(single.end(),{0x02000001,0x80080800,recipe_==Texture?0x80ff0000u:0x90ff0000u,0x0000ffff});
+            info=analyze(single.data(),single.size());assert(info.outputKnown&&info.outputMode==recipe_);
+        }
+    }
+    std::puts("PASS fixed output proof: PS2/PS3, native recipe/ref/function/source-format descriptor; unknown UV/sampler/swizzle/saturation/discard rejected");
+}
 static bool nativeKill(const std::vector<uint32_t>& w,float color,float tex,float ref){
     V temp[32]={},constants[224]={},inputs[16]={};for(auto& c:constants)c.fill(ref);
     for(auto& v:inputs)v={.3f,.5f,.7f,color};
@@ -26,6 +59,7 @@ static bool nativeKill(const std::vector<uint32_t>& w,float color,float tex,floa
     }assert(false);return false;
 }
 int main(int argc,char** argv){
+    outputTests();
     assert(argc==2);FILE* f=std::fopen(argv[1],"rb");assert(f);unsigned total=0,discard=0,known=0,product=0,color=0;uint32_t bytes;std::mt19937 rng(71);
     while(std::fread(&bytes,4,1,f)==1){std::vector<uint32_t>w(bytes/4);assert(std::fread(w.data(),1,bytes,f)==bytes);auto info=analyze(w.data(),w.size());++total;discard+=info.discard;
         if(!info.known)continue;++known;product+=info.mode==TextureColor;color+=info.mode==Color;

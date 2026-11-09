@@ -93,6 +93,47 @@ inline bool pixel(const Word* code,size_t count,std::vector<Word>& out)try{
     }
     result.push_back(65535);out.swap(result);return true;
 }catch(const std::bad_alloc&){return false;}
+// Compact receivers often differ only in register allocation and unused
+// native literals. Rename registers bijectively; preserve every live operation,
+// source modifier, literal bit and interpolator mask (including depth W).
+inline bool canonicalPixel(const Word* code,size_t count,unsigned control,std::vector<Word>& out)try{
+    std::vector<Op> ops;if(control>=224||!parse(code,count,false,ops))return false;
+    unsigned defined[256]={},constants[256],literal[256]={},temps[32],inputs[16];
+    std::fill_n(constants,256,256u);std::fill_n(temps,32,32u);std::fill_n(inputs,16,16u);
+    size_t declaration[2]={};unsigned constantCount=1,tempCount=0;constants[control]=0;
+    for(const auto& op:ops){
+        if(op.code==81){const unsigned reg=regIndex(code[op.at+1]);if(defined[reg])return false;defined[reg]=unsigned(op.at);}
+        else if(op.code==47||op.code==48||(op.code>=20&&op.code<=24))return false;
+        else if(op.code==31&&regType(code[op.at+2])==1){const auto semantic=code[op.at+1]&0xfffff;
+            const unsigned slot=semantic==0x50005?0:semantic==0x70005?1:2,reg=regIndex(code[op.at+2]);
+            if(slot==2||reg>=16||declaration[slot]||inputs[reg]!=16)return false;
+            declaration[slot]=op.at;inputs[reg]=slot;
+        }else if(op.code==31&&(regType(code[op.at+2])!=10||regIndex(code[op.at+2])>=16))return false;
+    }
+    if(!declaration[0]||!declaration[1]||defined[control])return false;
+    for(const auto& op:ops)if(arithmetic(op.code)||op.code==65){
+        for(unsigned i=1;i<=op.count;++i){const Word token=code[op.at+i];const unsigned type=regType(token),reg=regIndex(token);
+            if(token&0x2000u)return false;
+            if(type==0){if(temps[reg]==32)temps[reg]=tempCount++;}
+            else if(type==1){if(inputs[reg]==16)return false;}
+            else if(type==2){
+                if(!defined[reg]&&reg!=control)return false;
+                if(constants[reg]==256){if(constantCount>=224)return false;literal[constantCount]=reg;constants[reg]=constantCount++;}
+            }else if(type!=8)return false;
+        }
+    }
+    std::vector<Word> result{code[0]};
+    for(unsigned i=1;i<constantCount;++i){const auto at=defined[literal[i]];if(!at)return false;
+        result.insert(result.end(),code+at,code+at+6);result[result.size()-5]=(result[result.size()-5]&~2047u)|i;}
+    for(const auto at:declaration){result.insert(result.end(),code+at,code+at+3);result.back()=(result.back()&~2047u)|inputs[regIndex(result.back())];}
+    for(const auto& op:ops){
+        if(op.code==31||op.code==81)continue;
+        const auto at=result.size();result.insert(result.end(),code+op.at,code+op.at+op.count+1);
+        for(unsigned i=1;i<=op.count;++i){Word& token=result[at+i];const unsigned type=regType(token),reg=regIndex(token);
+            const unsigned mapped=type==0?temps[reg]:type==1?inputs[reg]:type==2?constants[reg]:reg;token=(token&~2047u)|mapped;}
+    }
+    result.push_back(65535);out.swap(result);return true;
+}catch(const std::bad_alloc&){return false;}
 inline bool vertex(const Word* code,size_t count,std::vector<Word>& out,bool shadow=false)try{
     std::vector<Op> ops;if(!parse(code,count,true,ops))return false;
     unsigned outputs[12]={},needed[12]={},temps[32]={},address=0,inputs[16]={},declaredInputs[16]={};
@@ -101,7 +142,7 @@ inline bool vertex(const Word* code,size_t count,std::vector<Word>& out,bool sha
         if(type==1){if(reg>=16||declaredInputs[reg])return false;declaredInputs[reg]=mask;}
         else if(type==6){if(reg>=12||outputs[reg])return false;const unsigned semantic=code[op.at+1]&0xfffff;
             unsigned live=mask;
-            if((semantic&15)==5||(semantic&15)==10)live=0;
+            if((semantic&15)==5||(semantic&15)==10||(!shadow&&semantic==11))live=0;
             if(!shadow&&semantic==0x50005){live=7;normal=true;}
             if(shadow&&semantic==5){live=mask;uv=(mask&3)==3;}
             if(shadow&&semantic==10){live=8;alpha=true;}
@@ -131,6 +172,34 @@ inline bool vertex(const Word* code,size_t count,std::vector<Word>& out,bool sha
         }else if(arithmetic(op.code)){if(!masks[index])continue;const auto at=result.size();result.insert(result.end(),code+op.at,code+op.at+op.count+1);result[at+1]=(result[at+1]&~0xf0000u)|(masks[index]<<16);
         }else result.insert(result.end(),code+op.at,code+op.at+op.count+1);
     }
+    result.push_back(65535);out.swap(result);return true;
+}catch(const std::bad_alloc&){return false;}
+// Register names do not affect a VS3 input/output's declaration semantics.
+// Keep every constant binding (including relative palette addresses) and every
+// arithmetic token except these bijective input/output/temporary names.
+inline bool canonicalVertex(const Word* code,size_t count,std::vector<Word>& out)try{
+    std::vector<Op> ops;if(!parse(code,count,true,ops))return false;
+    std::vector<Op> declarations;unsigned inputs[16],outputs[12],temps[32];
+    std::fill_n(inputs,16,16u);std::fill_n(outputs,12,12u);std::fill_n(temps,32,32u);
+    for(const auto& op:ops)if(op.code==31){const auto type=regType(code[op.at+2]);if(type!=1&&type!=6)return false;declarations.push_back(op);}
+    std::sort(declarations.begin(),declarations.end(),[&](const Op& a,const Op& b){
+        const auto ta=regType(code[a.at+2]),tb=regType(code[b.at+2]);return ta!=tb?ta<tb:(code[a.at+1]&0xfffff)<(code[b.at+1]&0xfffff);});
+    unsigned inputCount=0,outputCount=0,tempCount=0;
+    for(size_t i=0;i<declarations.size();++i){const auto& op=declarations[i];const auto type=regType(code[op.at+2]),reg=regIndex(code[op.at+2]);
+        if(i&&type==regType(code[declarations[i-1].at+2])&&(code[op.at+1]&0xfffff)==(code[declarations[i-1].at+1]&0xfffff))return false;
+        if(type==1){if(reg>=16||inputs[reg]!=16)return false;inputs[reg]=inputCount++;}
+        else {if(reg>=12||outputs[reg]!=12)return false;outputs[reg]=outputCount++;}}
+    std::vector<Word> result{code[0]};
+    for(const auto& op:ops)if(op.code==81||op.code==48||op.code==47)result.insert(result.end(),code+op.at,code+op.at+op.count+1);
+    for(const auto& op:declarations){result.insert(result.end(),code+op.at,code+op.at+3);auto& token=result.back();
+        token=(token&~2047u)|(regType(token)==1?inputs[regIndex(token)]:outputs[regIndex(token)]);}
+    for(const auto& op:ops){if(op.code==31||op.code==81||op.code==48||op.code==47)continue;
+        const auto at=result.size();result.insert(result.end(),code+op.at,code+op.at+op.count+1);
+        for(unsigned i=1;i<=op.count;++i){auto& token=result[at+i];const unsigned type=regType(token),reg=regIndex(token);unsigned mapped=reg;
+            if(type==0){if(temps[reg]==32)temps[reg]=tempCount++;mapped=temps[reg];}
+            else if(type==1){if(inputs[reg]==16)return false;mapped=inputs[reg];}
+            else if(type==6){if(outputs[reg]==12)return false;mapped=outputs[reg];}
+            token=(token&~2047u)|mapped;}}
     result.push_back(65535);out.swap(result);return true;
 }catch(const std::bad_alloc&){return false;}
 // All shadow replay consumers read UV0, clip7 and diffuse alpha only. Keep the

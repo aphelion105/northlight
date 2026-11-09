@@ -22,6 +22,7 @@
 #include "overlay_input.h"
 #include "window_size_filter.h"
 #include "settings_panel.h"
+#include "performance_monitor.h"
 #ifdef NORTHLIGHT_WINDOW_SIZE_TEST_FOREGROUND
 extern "C" HWND NorthlightWindowSizeTestForeground();
 #endif
@@ -314,7 +315,7 @@ class Impl final : public Overlay {
     std::mutex mutex;   // draw/invalidate/destroy (the device gate already serialises them; this keeps the overlay self-contained)
     ImGuiContext* context=nullptr;
     std::unique_ptr<SettingsPanel> panel;
-    bool failed=false,backend=false,focusLost=false;
+    bool failed=false,backend=false,focusLost=false,monitorDeviceDirty=false;
     std::atomic<bool> background{false};   // closed, but the panel still has service work pending or an unsaved draft to point at
     unsigned opens=0;
     float scale=0;
@@ -351,6 +352,7 @@ class Impl final : public Overlay {
             RECT clip={LONG(rectangle[0]),LONG(rectangle[1]),LONG(rectangle[2]),LONG(rectangle[3])};device->SetScissorRect(&clip);device->SetRenderState(D3DRS_SCISSORTESTENABLE,TRUE);
             device->SetPixelShader(calibrationShader);device->SetPixelShaderConstantF(0,color,1);NorthlightHdr::drawQuad(device,desc.Width,desc.Height);
         });
+        panel->performanceDevice(device);
         QueryPerformanceFrequency(&frequency);QueryPerformanceCounter(&last);
     }
     // Font atlas and style for a new scale only (first frame, resolution changes).
@@ -448,20 +450,22 @@ class Impl final : public Overlay {
     void frame(){
         if(device->TestCooperativeLevel()!=D3D_OK)return;   // lost: nothing to draw onto (Reset follows)
         const bool open=hook.open.load(std::memory_order_acquire);
+        bool notice=false;
         if(!open){
             // Closed: keep the service work moving; draw only the one-line reminder of an unsaved draft.
             if(!panel){background.store(false);return;}
             hook.queue.clear();
             panel->poll();
-            const bool notice=panel->unsaved();
-            background.store(notice||panel->pending());
-            if(!notice)return;
+            notice=panel->unsaved();
+            background.store(notice||panel->pending()||panel->hudEnabled());
+            if(!notice&&!panel->hudEnabled())return;
         }
         struct Surface{IDirect3DSurface9* p=nullptr;~Surface(){if(p)p->Release();}} back;
         D3DSURFACE_DESC desc={};
         if(outputTarget){back.p=outputTarget;back.p->AddRef();}else if(FAILED(device->GetBackBuffer(0,0,D3DBACKBUFFER_TYPE_MONO,&back.p)))return;
         if(!back.p||FAILED(back.p->GetDesc(&desc))||!desc.Width||!desc.Height)return;
         ensureContext();ImGui::SetCurrentContext(context);
+        if(monitorDeviceDirty){panel->performanceDevice(device);monitorDeviceDirty=false;}
         const float wanted=uiScale(desc.Height);
         if(wanted!=scale)rescale(wanted);
         checkpoint();
@@ -477,7 +481,7 @@ class Impl final : public Overlay {
         ImGui::NewFrame();
         checkpoint();
         bool keep=true;
-        if(open)keep=panel->draw(scale);else panel->notice(scale);
+        if(open)keep=panel->draw(scale);else{if(notice)panel->notice(scale);if(panel->hudEnabled())panel->drawHud(scale);}
         checkpoint();
         ImGui::Render();
         checkpoint();
@@ -486,7 +490,7 @@ class Impl final : public Overlay {
         hook.captureMouse.store(io.WantCaptureMouse&&keep,std::memory_order_relaxed);
         hook.captureText.store(io.WantTextInput&&keep,std::memory_order_relaxed);
         if(!keep){hook.open.store(false);hook.forgetButtons.store(true);}
-        background.store(panel->unsaved()||panel->pending());
+        background.store(panel->unsaved()||panel->pending()||panel->hudEnabled());
     }
 public:
     Impl(IDirect3DDevice9* d,std::shared_ptr<NorthlightSettings::Service> s,Log l,std::string key):device(d),service(std::move(s)),log(l),hotkeyName(std::move(key)){device->AddRef();}
@@ -519,6 +523,8 @@ public:
     }
     void invalidate() override{
         std::lock_guard<std::mutex> lock(mutex);
+        monitorDeviceDirty=true;
+        NorthlightPerformance::store().reset(reinterpret_cast<uintptr_t>(device));
         if(!context||!backend||failed)return;
         try{ImGui::SetCurrentContext(context);ImGui_ImplDX9_InvalidateDeviceObjects();checkpoint();}
         catch(const std::exception& e){fail(e.what());}

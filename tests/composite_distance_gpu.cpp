@@ -13,8 +13,8 @@
 #define NORTHLIGHT_FGR_CONSTANT_BANK_ONLY
 #include "removal_distance_gpu.cpp"
 #undef NORTHLIGHT_FGR_CONSTANT_BANK_ONLY
-static void checked(HRESULT hr,unsigned line){if(FAILED(hr)){std::fprintf(stderr,"HRESULT=%08lx line=%u\n",(unsigned long)hr,line);std::abort();}}
-#define ok(call) checked(call,__LINE__)
+static void compositeChecked(HRESULT hr,unsigned line){if(FAILED(hr)){std::fprintf(stderr,"HRESULT=%08lx line=%u\n",(unsigned long)hr,line);std::abort();}}
+#define ok(call) compositeChecked(call,__LINE__)
 struct Image {std::uint32_t width,height,format,bytes;std::vector<unsigned char> pixels;};
 static Image image(const std::string& path){auto b=read(path);std::uint32_t h[5];assert(b.size()>=sizeof h);std::memcpy(h,b.data(),sizeof h);assert(h[0]==0x31524746&&b.size()==20+std::size_t(h[1])*h[2]*h[4]);return {h[1],h[2],h[3],h[4],{b.begin()+20,b.end()}};}
 static IDirect3DTexture9* texture(IDirect3DDevice9* dev,const Image& im){IDirect3DTexture9* tex=nullptr;ok(dev->CreateTexture(im.width,im.height,1,0,(D3DFORMAT)im.format,D3DPOOL_MANAGED,&tex,nullptr));D3DLOCKED_RECT lock{};ok(tex->LockRect(0,&lock,nullptr,0));for(unsigned y=0;y<im.height;++y)std::memcpy((char*)lock.pBits+y*lock.Pitch,im.pixels.data()+std::size_t(y)*im.width*im.bytes,im.width*im.bytes);ok(tex->UnlockRect(0));return tex;}

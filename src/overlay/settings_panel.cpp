@@ -15,6 +15,7 @@
 #include "diagnostic_capture_request.h"
 #include "settings_draft.h"
 #include "memory_profile_snapshot.h"
+#include "performance_hardware.h"
 
 #ifndef NORTHLIGHT_SOURCE_ID
 #define NORTHLIGHT_SOURCE_ID "unrecorded"
@@ -54,9 +55,9 @@ const std::map<std::string,const char*> Labels={
     {"HDRExposureMode","Exposure mode"},{"HDRPeakMode","Peak mode"},{"HDRWideBloom","Wide soft bloom"},{"HDRBloomStrength","Bloom strength"},{"HDRLegacyExpansion","Legacy highlight expansion (EV)"},
     {"HDRAutoMinEV","Auto exposure minimum (EV)"},{"HDRAutoMaxEV","Auto exposure maximum (EV)"},{"HDRLightAdaptation","Bright adaptation T90 (s)"},{"HDRDarkAdaptation","Dark adaptation T90 (s)"},
     {"NightBrightness","Night brightness (%)"},{"EquipmentLights","Equipment and effect lights"},
-    {"CaptureBudgetMiB","Capture memory (MiB)"},{"ActorShadowBudgetMiB","Character shadow memory (MiB)"},{"MinSkinnedTriangles","Minimum character triangles"},{"LocalLightLimit","Maximum local lights (0 = off)"},{"GpuBudgetMs","GPU effect budget (ms)"},{"ActorShadowCpuMs","Shadow CPU budget (ms)"},
+    {"CaptureBudgetMiB","Capture memory (MiB)"},{"ActorShadowBudgetMiB","Character shadow memory (MiB)"},{"MinSkinnedTriangles","Minimum character triangles"},{"LocalLightLimit","Total local lights (0 = off)"},{"GpuBudgetMs","GPU effect budget (ms)"},{"ActorShadowCpuMs","Shadow CPU budget (ms)"},
     {"CommandStream","Separate render thread"},{"StreamFramesAhead","Buffered frames"},{"StreamFrameSkip","Skip delayed frames"},{"StreamOcclusionLocal","Local occlusion results"},{"ReplayJobs","Parallel effect preparation"},{"FrameDrawGates","Skip inactive draw work"},
-    {"PointShadowLimit","Shadow light sources"},{"PointShadowDistance","Shadow distance (yd)"},{"PointShadows","Local light shadows"},{"PointShadowRefreshMs","Light shadow refresh (ms)"},{"PointShadowFacesPerFrame","Cube faces per frame"},{"BlobShadows","Round ground shadows"},{"BlobShadowStrength","Ground shadow strength (%)"},
+    {"PointShadowLimit","Of these, shadowed lights"},{"PointShadowDistance","Shadow distance (yd)"},{"PointShadows","Local light shadows"},{"PointShadowRefreshMs","Shadow update interval (ms)"},{"PointShadowFacesPerFrame","Faces updated per light"},{"BlobShadows","Round ground shadows"},{"DisableOriginalTerrainShadows","Disable original terrain shadows"},{"BlobShadowStrength","Ground shadow strength (%)"},
     {"FarShadowInterval","Distant shadow interval (frames)"},{"NearShadowInterval","Near environment shadow interval (frames)"},{"StaticCacheSlices","Static cache update slices"},{"ShadowDirectionSteps","Shadow direction precision"},{"ShadowPivotCorrection","Correct shadow pivot"},
     {"GIDistance","GI distance (yards)"},{"GIProbeAhead","GI look-ahead (yards)"},{"GIRays","GI rays per probe"},{"GIBounces","GI light bounces"},{"GIThreads","GI solver threads"},{"GIFastBVH","Fast geometry tracing"},{"GIProbeMoveStep","GI update movement step"},{"GIDynamicProbes","Dynamic GI probes"},
     {"SpellLayer","Separate spell effects"},{"SpellLayerClasses","Spell blend types (mask)"},{"SpellFog","Fog on spell effects"},{"NameMask","Protect unit names"},{"DepthFuncAware","Respect draw depth tests"},{"terrain_radius","Terrain shadow reach (yards)"},
@@ -96,11 +97,12 @@ const std::map<std::string,std::vector<const char*>> Help={
     {"SoftShadows",{"Softens sun, moon and local-light shadow edges with distance from the caster. Covers captured characters, grass and world geometry. Off keeps ordinary filtered shadows and their existing range."}},
     {"BlobShadows",{"Shows the game's round shadow directly below characters, creatures and mounts. Off removes only this decal; detailed sun, moon and local light shadows remain enabled. Takes effect immediately while Northlight effects are on."}},
     {"BlobShadowStrength",{"Adjusts the native round shadow when detailed character shadows are composited. Turning Round ground shadows off hides it independently and preserves this strength for later."}},
+    {"DisableOriginalTerrainShadows",{"Removes the original terrain shadow layer, including shadows baked into the map that remain at the game's lowest Shadow Quality. Works while Northlight scene effects are active, independently of World shadows. Applies immediately without restarting the game. Northlight sun, moon, character and local-light shadows keep their own controls. Baked lighting or darkness painted into textures and vertex colors remains. Turning all Northlight effects off restores the original game shading."}},
     {"RainLens",{"Moving refractive droplets; Merge drops into rivulets lets them collect water along their wet paths. Heavier rain increases their speed. Requires Enhanced weather; the effect disappears under shelter."}},
     {"SnowLens",{"Crystalline snowflakes adhere and collect into clumps. Nearby classified flames melt them into moving droplets; walls block this heat. Requires Enhanced weather; the effect disappears under shelter."}},
-    {"PointShadowLimit",{"Maximum number of eligible local lights with shadow maps. Higher limits keep more nearby lamps shadowed, at the cost of GPU time and memory (about 3.5 MiB per allocated map)."}},
+    {"PointShadowLimit",{"Of the total local lights, how many eligible lamps may cast shadows. The smaller of this value and Total local lights is used; this never adds more lights. Higher limits increase shadow rendering and map memory. Extra static maps can be retained in unused slots of this same budget."}},
     {"PointShadowDistance",{"How far from the camera local lights can cast shadows: 8 to 192 yards; 48 by default. Measured to the edge of each light's influence, so large lights can cast shadows from farther away.",
-        "Higher distances can increase rendering cost; Shadow light sources still limits how many lights cast shadows."}},
+        "Higher distances can increase rendering cost; Of these, shadowed lights still limits how many lights cast shadows."}},
     {"HDRContrast",{"1.00 is neutral. Adjusts world contrast around middle grey; UI brightness is unchanged."}},
     {"HDRExposure",{"0 EV is neutral. +1 EV doubles world light; -1 EV halves it. UI brightness is unchanged."}},
     {"HDRMaxNits",{"Limits world HDR output. UI brightness remains independent; this does not raise SDR highlights to the chosen peak."}},
@@ -128,7 +130,7 @@ const std::map<std::string,std::vector<const char*>> Help={
     {"AOQuality",{"Controls the detail and sampling cost of ambient occlusion. Lower settings reduce GPU work but can lose fine contacts or appear noisier. The difference depends on the AO method."}},
     {"AOStrength",{"Darkness of ambient occlusion: 100 is the normal strength, 0 hides it. Lower this if creases look too dark. Disable Ambient occlusion to skip the effect's processing."}},
     {"AORadius",{"Size of the neighborhood used for contact shading, in hundredths of a yard: 200 means 2 yards. Larger values produce broader shading and can create halos around objects."}},
-    {"LocalLightLimit",{"Maximum number of nearby local lights illuminating the scene. Higher values keep more lamps and effects lit, but increase GPU work. 0 disables their illumination. Shadowed lights have a separate limit."}},
+    {"LocalLightLimit",{"Total budget for nearby lights illuminating the scene and fog, including shadowed lights and equipment. Shadow settings cannot increase this value. Higher values increase rendering work. Outgoing lights can briefly remain while fading out. 0 disables local illumination and its capture."}},
     {"EquipmentLights",{"Adds local lighting from supported equipped items, mounts and effects. Uses their light records and supported particle emitters; a glowing texture alone does not guarantee a light. Shares the local light limit."}},
     {"AutoBumpDistance",{"How far generated surface normals remain visible. Larger distances add detail to more surfaces and increase the number of pixels that need material shading."}},
     {"AutoBumpModels",{"Applies material detail to model objects, including characters, creatures and props. Normal maps change lighting; POM adds apparent texture depth; displacement changes nearby geometry. Higher modes can exaggerate painted texture details."}},
@@ -221,11 +223,11 @@ const std::map<std::string,std::vector<const char*>> Help={
 struct Group { const char* id; const char* title; const char* master; const char* fields; const char* advanced; };
 struct Section { const char* id; const char* title; const char* keys; std::vector<Group> groups; bool open; };
 const std::vector<Section> QualitySections={
-    {"lighting","Lighting & AO","GI GIStrength GIRays GIBounces GIProbeMoveStep GIDynamicProbes GIThreads GIFastBVH GIDistance GIProbeAhead NightBrightness ContactAO AOMethod AOQuality AOStrength AORadius LocalLights LocalLightLimit EquipmentLights",{
+    {"lighting","Lighting & AO","GI GIStrength GIRays GIBounces GIProbeMoveStep GIDynamicProbes GIThreads GIFastBVH GIDistance GIProbeAhead NightBrightness ContactAO AOMethod AOQuality AOStrength AORadius LocalLights LocalLightLimit EquipmentLights PointShadows PointShadowLimit PointShadowDistance PointShadowRefreshMs PointShadowFacesPerFrame",{
         {"gi","Global illumination","GI","GIStrength GIDistance GIBounces","GIRays GIProbeMoveStep GIDynamicProbes GIThreads GIFastBVH GIProbeAhead"},
         {"ao","Ambient occlusion","ContactAO","AOMethod AOQuality AOStrength AORadius",""},
         {"ambient","Environment",nullptr,"NightBrightness",""},
-        {"local","Local illumination","LocalLights","LocalLightLimit EquipmentLights",""}},true},
+        {"local","Local illumination","LocalLights","LocalLightLimit PointShadows PointShadowLimit EquipmentLights","PointShadowDistance PointShadowRefreshMs PointShadowFacesPerFrame"}},true},
     {"materials","Materials & parallax","AutoBump AutoBumpTerrain AutoBumpWalls AutoBumpGrass AutoBumpModels AutoBumpStrength AutoBumpDistance AutoParallaxDepth AutoParallaxDistance AutoParallaxSteps AutoParallaxShadows AutoParallaxShadowStrength AutoParallaxShadowSteps AutoCavity AutoCavityStrength AutoMaterialOcclusionDistance AutoDisplacementStrength AutoDisplacementDistance AutoDisplacementDetail AutoHeightBalance AutoModelDisplacementStrength AutoModelDisplacementDistance AutoModelDisplacementDetail",{
         {"bump","Material modes","AutoBump","AutoBumpTerrain AutoBumpWalls AutoBumpGrass AutoBumpModels AutoBumpStrength AutoBumpDistance",""},
         {"geometry","Terrain and object displacement",nullptr,"AutoDisplacementStrength AutoDisplacementDistance AutoDisplacementDetail AutoHeightBalance",""},
@@ -234,11 +236,11 @@ const std::vector<Section> QualitySections={
         {"parallax","POM",nullptr,"AutoParallaxDepth AutoParallaxDistance AutoParallaxSteps",""},
         {"pomshadow","POM self-shadowing","AutoParallaxShadows","AutoParallaxShadowStrength AutoParallaxShadowSteps",""},
         {"cavity","Cavity shading","AutoCavity","AutoCavityStrength",""}},false},
-    {"shadows","Shadows","WorldShadows SoftShadows ActorShadows ActorShadowDetail GrassShadows ActorShadowRadius BlobShadows BlobShadowStrength FarShadowInterval NearShadowInterval PointShadows PointShadowLimit PointShadowDistance PointShadowRefreshMs PointShadowFacesPerFrame ShadowDirectionSteps StaticCacheSlices ShadowPivotCorrection",{
+    {"shadows","Shadows","WorldShadows SoftShadows ActorShadows ActorShadowDetail GrassShadows ActorShadowRadius BlobShadows BlobShadowStrength DisableOriginalTerrainShadows FarShadowInterval NearShadowInterval ShadowDirectionSteps StaticCacheSlices ShadowPivotCorrection",{
         {"filter","World shadows","WorldShadows","SoftShadows",""},
-        {"actors","Character shadows","ActorShadows","ActorShadowRadius ActorShadowDetail GrassShadows","ActorShadowBudgetMiB ActorShadowCpuMs"},
+        {"actors","Character shadows","ActorShadows","ActorShadowRadius ActorShadowDetail GrassShadows","ActorShadowBudgetMiB ActorShadowCpuMs MinSkinnedTriangles CaptureBudgetMiB"},
         {"blobs","Round ground shadows","BlobShadows","BlobShadowStrength",""},
-        {"point","Local light shadows","PointShadows","PointShadowDistance PointShadowLimit","PointShadowRefreshMs PointShadowFacesPerFrame"},
+        {"nativeTerrain","Disable original terrain shadows","DisableOriginalTerrainShadows","",""},
         {"cache","Shadow updates",nullptr,"","FarShadowInterval NearShadowInterval ShadowDirectionSteps StaticCacheSlices ShadowPivotCorrection"}},false},
     {"atmosphere","Atmosphere & weather","WorldFog Weather WeatherMemory RainFog RainLens RainLensStrength RainRivulets SnowLens SnowLensStrength SnowFrost SnowFrostStrength SandLens SandLensStrength SandLensSize WeatherWindDirection WeatherWindStrength WeatherCameraMotion FogClouds FogCloudDensity HorizonHaze HorizonHazeStart HorizonHazeBand HorizonHazeTerrain",{
         {"atmosphere","Atmospheric fog","WorldFog","",""},
@@ -253,9 +255,8 @@ const std::vector<Section> QualitySections={
     {"spells","Spells & names","SpellLayer SpellLayerClasses SpellFog NameMask DepthFuncAware",{
         {"spells","Spell effects","SpellLayer","SpellFog","SpellLayerClasses DepthFuncAware"},
         {"names","Unit name protection","NameMask","",""}},false},
-    {"performance","Performance","CommandStream StreamFramesAhead StreamFrameSkip StreamOcclusionLocal ReplayJobs FrameDrawGates MinSkinnedTriangles CaptureBudgetMiB ActorShadowBudgetMiB GpuBudgetMs ActorShadowCpuMs",{
-        {"stream","Render thread","CommandStream","StreamFramesAhead ReplayJobs FrameDrawGates","StreamFrameSkip StreamOcclusionLocal"},
-        {"budgets","Resource budgets",nullptr,"GpuBudgetMs ActorShadowCpuMs","MinSkinnedTriangles CaptureBudgetMiB ActorShadowBudgetMiB"}},false},
+    {"rendering","Rendering","CommandStream StreamFramesAhead StreamFrameSkip StreamOcclusionLocal ReplayJobs FrameDrawGates GpuBudgetMs",{
+        {"execution","Rendering",nullptr,"","CommandStream StreamFramesAhead ReplayJobs FrameDrawGates StreamFrameSkip StreamOcclusionLocal GpuBudgetMs"}},false},
     {"diagnostics","Diagnostics","Diagnostics RenderProfile DiagReplayProbe ShadowFateDiagnostics SpellTrace NameMaskDebug MemMap",{
         {"logging","Diagnostics","Diagnostics","RenderProfile","DiagReplayProbe ShadowFateDiagnostics"},
         {"debug","Additional diagnostics",nullptr,"SpellTrace NameMaskDebug MemMap",""}},false},
@@ -278,8 +279,8 @@ struct PageInfo { Page page; const char* title; const char* quality; };
 const PageInfo Pages[]={
     {Page::Overview,"Overview",nullptr},{Page::Lighting,"Lighting & AO","lighting"},{Page::Materials,"Materials & parallax","materials"},
     {Page::Shadows,"Shadows","shadows"},{Page::Atmosphere,"Atmosphere & weather","atmosphere"},{Page::Celestial,"Sun & moon",nullptr},
-    {Page::ShadowRange,"Shadow range",nullptr},{Page::Spells,"Spells & names","spells"},{Page::Renderer,"Renderer & HDR",nullptr},
-    {Page::Performance,"Performance","performance"},{Page::Diagnostics,"Diagnostics","diagnostics"},
+    {Page::ShadowRange,"Shadow range",nullptr},{Page::Spells,"Spells & names","spells"},{Page::Renderer,"Renderer & HDR","rendering"},
+    {Page::Performance,"Performance",nullptr},{Page::Diagnostics,"Diagnostics","diagnostics"},
 };
 static_assert(sizeof(Pages)/sizeof(Pages[0])==std::size_t(Page::Count),"one entry per page");
 const Section* qualitySection(const char* id){if(id)for(const auto& s:QualitySections)if(std::string(s.id)==id)return &s;return nullptr;}
@@ -377,6 +378,12 @@ struct SettingsPanel::State {
     std::string presetChoice;bool presetCelestial=true,presetRange=true;   // the preset dialog
     Confirm confirm=Confirm::None;
     float scale=1;
+    NorthlightPerformance::Adapter monitorAdapter;
+    std::unique_ptr<NorthlightPerformance::HardwareSampler> hardwareSampler;
+    NorthlightPerformance::Hardware hardware;
+    NorthlightPerformance::Timing timing;
+    std::array<std::string,6> monitorSummary;bool monitorBoardMemory=false;
+    uint64_t monitorReadAt=0;bool monitoringHud=false;
 
     bool locked()const{return saving||awaitingSnapshot||!snapshot;}
     // ---- Service ----
@@ -560,6 +567,13 @@ struct SettingsPanel::State {
         if(ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip|ImGuiHoveredFlags_AllowWhenDisabled))ImGui::SetTooltip("Restore the inherited values of this group.");
         ImGui::Separator();
         if(!main.empty()&&beginRows("rows")){for(const Field* f:main)row(*f);ImGui::EndTable();}
+        if(std::string(g.id)=="local"){
+            const auto* total=draft.quality("LocalLightLimit");const auto* shadow=draft.quality("PointShadowLimit");
+            const auto* lamps=draft.quality("LocalLights");const auto* maps=draft.quality("PointShadows");const auto* world=draft.quality("WorldShadows");
+            if(total&&shadow&&lamps&&maps&&world){const unsigned count=draft.effective(*lamps)=="1"?unsigned(number(draft.effective(*total))):0;
+                const unsigned shaded=draft.effective(*maps)=="1"&&draft.effective(*world)=="1"?std::min(count,unsigned(number(draft.effective(*shadow)))):0;
+                ImGui::TextColored(Color::Muted,"Up to %u local lights; up to %u with shadows.",count,shaded);}
+        }
         if(!advanced.empty()){
             char title[64];std::snprintf(title,sizeof title,"Fine tuning (%u)",unsigned(advanced.size()));
             if(ImGui::TreeNodeEx("fine",ImGuiTreeNodeFlags_SpanAvailWidth|ImGuiTreeNodeFlags_NoTreePushOnOpen,"%s",title)&&beginRows("advanced")){
@@ -575,7 +589,7 @@ struct SettingsPanel::State {
     }
 
     // ---- Pages ----
-    // Quality keys no section names (a newer schema): shown on the Performance page.
+    // Quality keys without an assigned group stay accessible in Renderer fine tuning.
     std::vector<const Field*> unsortedQuality()const{
         std::vector<std::string> known{"Preset"};for(const auto& s:QualitySections)for(auto& k:sectionKeys(s))known.push_back(k);
         std::vector<const Field*> out;for(const Field* f:fields(D::Quality))if(std::find(known.begin(),known.end(),f->key)==known.end())out.push_back(f);
@@ -587,9 +601,9 @@ struct SettingsPanel::State {
         if(p==Page::Overview){if(const Field* f=draft.quality("Preset"))out.push_back(f);for(auto& k:words(QuickKeys))if(const Field* f=draft.quality(k))out.push_back(f);return out;}
         if(p==Page::Celestial)return fields(D::Celestial);
         if(p==Page::ShadowRange)return fields(D::ShadowRange);
-        if(p==Page::Renderer)return fields(D::Renderer);
+        if(p==Page::Renderer)out=fields(D::Renderer);
         if(const Section* s=qualitySection(Pages[unsigned(p)].quality))for(auto& k:sectionKeys(*s))if(const Field* f=draft.quality(k))out.push_back(f);
-        if(p==Page::Performance){auto extra=unsortedQuality();out.insert(out.end(),extra.begin(),extra.end());}
+        if(p==Page::Renderer){auto extra=unsortedQuality();out.insert(out.end(),extra.begin(),extra.end());}
         return out;
     }
     void titled(const char* title,const std::vector<const Field*>& rows){
@@ -603,7 +617,7 @@ struct SettingsPanel::State {
         for(const auto& g:sec.groups)group(g,mine,used);
         std::vector<const Field*> rest;for(const auto& k:words(sec.keys))if(mine.count(k)&&!used[k]){rest.push_back(mine[k]);used[k]=true;}
         titled(sec.title,rest);
-        if(withUnsorted)titled("Other",unsortedQuality());
+        if(withUnsorted){const auto extra=unsortedQuality();if(!extra.empty()&&ImGui::TreeNode("Other fine tuning")){titled("Other",extra);ImGui::TreePop();}}
     }
     void overviewPage(){
         ImGui::PushTextWrapPos(0);
@@ -642,6 +656,7 @@ struct SettingsPanel::State {
         std::map<std::string,const Field*> byKey;for(const Field* f:fields(D::Renderer))byKey[f->key]=f;
         std::map<std::string,bool> used;
         if(auto b=byKey.find("Backend");b!=byKey.end()){used["Backend"]=true;titled("Renderer",{b->second});}
+        if(const Section* s=qualitySection("rendering"))qualityPage(*s,true);
         for(const auto& g:HdrGroups)group(g,byKey,used);
         if(service){const auto hdr=service->hdrStatus();ImGui::Text("HDR output: %s",hdr.active?"active":"inactive");if(!hdr.reason.empty())ImGui::TextWrapped("%s",hdr.reason.c_str());
             ImGui::TextWrapped("Display: %s",hdr.display.empty()?"Detecting...":hdr.display.c_str());
@@ -678,7 +693,7 @@ struct SettingsPanel::State {
         std::vector<const Field*> rest;for(auto& k:byKey)if(!used[k.first])rest.push_back(k.second);
         titled("Other",rest);
     }
-    void memoryDiagnostics(){
+    void captureDiagnostics(){
         ImGui::TextColored(Color::Heading,"Build");
         ImGui::Text("ID: %.12s",NORTHLIGHT_SOURCE_ID);
         ImGui::Text("Built: %s",NORTHLIGHT_BUILD_UTC);
@@ -690,6 +705,95 @@ struct SettingsPanel::State {
         ImGui::SameLine();if(ImGui::Button("Capture fog"))request(Fog);
         if(ImGui::Button("Capture weather"))request(Weather);
         ImGui::TextWrapped("Saves the current frame in northlight-diagnostics. Skipped passes produce empty images. Capture frames are excluded from FPS statistics.");
+    }
+    void frameGraph(bool compact){
+        const auto& t=timing;const float font=ImGui::GetFontSize(),height=(compact?76.f:112.f)*scale;
+        const auto start=ImGui::GetCursorScreenPos();const float width=ImGui::GetContentRegionAvail().x;
+        ImGui::Dummy(ImVec2(width,height));auto* draw=ImGui::GetWindowDrawList();
+        const ImVec2 lo(start.x+font*3.6f,start.y+font*.7f),hi(start.x+width-5*scale,start.y+height-font*1.4f);
+        if(hi.x<=lo.x||hi.y<=lo.y)return;
+        float peak=0;double span=0;
+        for(unsigned i=0;i<t.graphCount;++i){peak=std::max(peak,t.graph[i]);span+=t.graph[i];}
+        float ceiling=1000.f/60;
+        while(ceiling<peak*1.08f)ceiling*=2;
+        const auto rgba=[](ImVec4 c,float alpha){c.w*=alpha;return ImGui::GetColorU32(c);};
+        draw->AddRectFilled(lo,hi,rgba(ImGui::GetStyleColorVec4(ImGuiCol_FrameBg),.3f),2*scale);
+        for(unsigned i=0;i<=2;++i){const float y=hi.y-(hi.y-lo.y)*float(i)/2;char text[24];std::snprintf(text,sizeof text,"%.1f",ceiling*float(i)/2);
+            draw->AddLine(ImVec2(lo.x,y),ImVec2(hi.x,y),rgba(Color::Muted,.18f));
+            draw->AddText(ImVec2(start.x,y-font*.5f),rgba(Color::Muted,.9f),text);
+        }
+        std::array<ImVec2,NorthlightPerformance::Timing::GraphSize> points;
+        const auto xy=[&](unsigned i){return ImVec2(hi.x-(hi.x-lo.x)*float(t.graphCount-1-i)/float(t.GraphSize-1),hi.y-(hi.y-lo.y)*t.graph[i]/ceiling);};
+        for(unsigned i=0;i<t.graphCount;++i)points[i]=xy(i);
+        if(t.graphCount>1)draw->AddPolyline(points.data(),int(t.graphCount),rgba(Color::Accent,1),ImDrawFlags_None,1.25f*scale);
+        if(t.graphCount){draw->AddCircleFilled(points[t.graphCount-1],2*scale,rgba(Color::Accent,1));
+            if(ImGui::IsItemHovered()){
+                const float x=std::clamp(ImGui::GetIO().MousePos.x,lo.x,hi.x);
+                const unsigned back=std::min(t.graphCount-1,unsigned(std::lround((hi.x-x)/(hi.x-lo.x)*float(t.GraphSize-1))));
+                const auto p=points[t.graphCount-1-back];draw->AddLine(ImVec2(p.x,lo.y),ImVec2(p.x,hi.y),rgba(Color::Muted,.6f));
+                ImGui::SetTooltip("%.3f ms | %u frame%s ago",t.graph[t.graphCount-1-back],back,back==1?"":"s");
+            }
+        }
+        char label[80];std::snprintf(label,sizeof label,"ms  |  %u frames / %.2f s",t.graphCount,span*.001);
+        draw->AddText(ImVec2(lo.x,hi.y+3*scale),rgba(Color::Muted,1),label);
+        if(!t.graphCount)draw->AddText(ImVec2(lo.x+6*scale,lo.y+font),rgba(Color::Muted,1),"Waiting for frames...");
+    }
+    void monitorContents(bool compact){
+        namespace P=NorthlightPerformance;P::store().touch(monitorAdapter.owner);
+        if(!hardwareSampler)hardwareSampler=std::make_unique<P::HardwareSampler>(monitorAdapter);
+        const auto now=P::nowMs();const bool refresh=!monitorReadAt||now-monitorReadAt>=250;
+        if(refresh){P::store().read(monitorAdapter.owner,timing);hardwareSampler->read(hardware);monitorReadAt=now;}
+        P::store().graph(monitorAdapter.owner,timing);
+        const bool fresh=hardware.at&&now>=hardware.at&&now-hardware.at<=3000;
+        const bool frameFresh=timing.frame.at&&now>=timing.frame.at&&now-timing.frame.at<=2000;
+        auto metric=[](double v,const char* suffix="",unsigned precision=0){char text[64];if(v<0||!std::isfinite(v))return std::string("--")+suffix;std::snprintf(text,sizeof text,"%.*f%s",int(precision),v,suffix);return std::string(text);};
+        const auto gib=[&](uint64_t bytes){return metric(double(bytes)/1073741824.," GiB",1);};
+        const auto row=[](const char* name,const ImVec4& color,const std::string& text){ImGui::TableNextRow();ImGui::TableSetColumnIndex(0);ImGui::TextColored(color,"%s",name);ImGui::TableSetColumnIndex(1);ImGui::TextUnformatted(text.c_str());};
+        if(refresh){
+            monitorBoardMemory=fresh&&hardware.boardMemory;
+            monitorSummary[0]=metric(fresh?hardware.gpu:-1,"%")+"   "+metric(fresh?hardware.temperature:-1," C")+"   "+metric(fresh?hardware.powerW:-1," W");
+            const auto vram=monitorBoardMemory?gib(hardware.vramUsed)+" / "+gib(hardware.vramTotal):fresh&&hardware.gameMemory?gib(hardware.gameVram)+" / "+gib(hardware.gameVramBudget):"--";
+            monitorSummary[1]=vram+"   "+metric(fresh?hardware.clockMHz:-1," MHz");
+            monitorSummary[2]=metric(fresh?hardware.cpu:-1,"%")+"    game "+metric(fresh?hardware.gameCpu:-1,"%");
+            monitorSummary[3]=fresh?gib(hardware.ramUsed)+" / "+gib(hardware.ramTotal)+"   game "+(hardware.gameRamKnown?gib(hardware.gameRam):"--"):"--";
+            monitorSummary[4]=metric(frameFresh&&timing.samples?timing.fps:-1)+"    1% "+metric(frameFresh?timing.low1:-1)+"    0.1% "+metric(frameFresh?timing.low01:-1);
+            monitorSummary[5]=metric(frameFresh&&timing.samples?timing.meanMs:-1," ms",2)+"    max "+metric(frameFresh&&timing.samples?timing.maxMs:-1," ms",2);
+        }
+        if(ImGui::BeginTable("monitor-main",2,ImGuiTableFlags_SizingStretchProp)){
+            ImGui::TableSetupColumn("label",ImGuiTableColumnFlags_WidthFixed,ImGui::CalcTextSize("VRAM game").x+4);ImGui::TableSetupColumn("value",ImGuiTableColumnFlags_WidthStretch);
+            row("GPU",Color::Good,monitorSummary[0]);
+            if(ImGui::IsItemHovered())ImGui::SetTooltip("Graphics load, temperature (C), power (W). -- means the driver does not expose this sensor.");
+            row(monitorBoardMemory?"VRAM":"VRAM game",Color::Good,monitorSummary[1]);
+            row("CPU",Color::Accent,monitorSummary[2]);row("RAM",Color::Muted,monitorSummary[3]);
+            row("FPS",Color::Heading,monitorSummary[4]);row("Frame",Color::Muted,monitorSummary[5]);ImGui::EndTable();
+        }
+        frameGraph(compact);
+        if(ImGui::BeginTable("monitor-work",2,ImGuiTableFlags_SizingStretchProp)){
+            ImGui::TableSetupColumn("label",ImGuiTableColumnFlags_WidthStretch,1.45f);ImGui::TableSetupColumn("value",ImGuiTableColumnFlags_WidthStretch);
+            row("Effects CPU",Color::Heading,metric(frameFresh?timing.frame.effectsCpuMs:-1," ms",2));
+            row("Effects GPU interval",Color::Heading,metric(frameFresh?timing.frame.effectsGpuMs:-1," ms",2));
+            row("EVENT GPU wait",Color::Heading,metric(frameFresh?timing.frame.eventWaitMs:-1," ms",2));
+            row("Render queue idle",Color::Heading,metric(frameFresh?timing.frame.queueIdleMs:-1," ms",2));
+            row("Window",Color::Muted,fresh?std::to_string(hardware.windowWidth)+"x"+std::to_string(hardware.windowHeight):"--");
+            row("Scene target",Color::Muted,timing.frame.sceneWidth?std::to_string(timing.frame.sceneWidth)+"x"+std::to_string(timing.frame.sceneHeight):"--");
+            const auto size=ImGui::GetIO().DisplaySize;row("Output",Color::Muted,std::to_string(unsigned(size.x))+"x"+std::to_string(unsigned(size.y)));
+            row("D3D presentation",Color::Muted,monitorAdapter.interval==D3DPRESENT_INTERVAL_IMMEDIATE?"Immediate":monitorAdapter.interval?"Interval "+std::to_string(monitorAdapter.interval):"Driver default");ImGui::EndTable();
+        }
+        if(hardware.gpuName[0])ImGui::TextWrapped("%s",hardware.gpuName);if(hardware.cpuName[0])ImGui::TextWrapped("%s",hardware.cpuName);
+        if(!compact){
+            ImGui::TextDisabled("%u frame intervals | hardware 1 Hz",timing.samples);
+            if(ImGui::CollapsingHeader("How these metrics are measured")){
+            ImGui::TextWrapped("Last %u eligible intervals (up to 4096). Lows use the mean of the slowest 1%% / 0.1%%; at least 100 / 1000 samples are needed. Unfocused frames, capture frames and gaps over 2 seconds are excluded.",timing.samples);
+            ImGui::TextWrapped("Hardware is sampled once per second. -- means unavailable. GPU interval covers Northlight effects and can include idle gaps; CPU is elapsed effects time. Neither measures the whole game's GPU busy time.");
+            ImGui::TextWrapped("VRAM is driver-reported dedicated-memory use when available; VRAM game is this process's local-memory use / OS budget. It is not the card's total resident memory.");
+            if(fresh&&hardware.gpuSource[0])ImGui::Text("GPU load source: %s",hardware.gpuSource);
+            }
+        }
+    }
+    void performanceMonitor(){
+        ImGui::Checkbox("Show compact HUD while settings are closed (this session)",&monitoringHud);
+        ImGui::SameLine();if(ImGui::Button("Reset samples")){NorthlightPerformance::store().reset(monitorAdapter.owner);timing={};monitorReadAt=0;}
+        monitorContents(false);
         namespace M=NorthlightMemoryProfile;
         const uint64_t now=M::nowMs();
         if(!memoryReadAt||now-memoryReadAt>=1000){if(M::store().tryRead(memorySnapshot))memoryReadAt=now;}
@@ -765,8 +869,9 @@ struct SettingsPanel::State {
         case Page::Celestial:celestialTab();break;
         case Page::ShadowRange:shadowRangeTab();break;
         case Page::Renderer:rendererPage();break;
-        case Page::Diagnostics:memoryDiagnostics();if(const Section* s=qualitySection("diagnostics"))qualityPage(*s,false);break;
-        default:if(const Section* s=qualitySection(Pages[unsigned(page)].quality))qualityPage(*s,page==Page::Performance);break;
+        case Page::Performance:performanceMonitor();break;
+        case Page::Diagnostics:captureDiagnostics();if(const Section* s=qualitySection("diagnostics"))qualityPage(*s,false);break;
+        default:if(const Section* s=qualitySection(Pages[unsigned(page)].quality))qualityPage(*s,false);break;
         }
     }
     // Left column: the pages; amber dot = unsaved edits there, R = a restart-only change pending there.
@@ -898,7 +1003,7 @@ struct SettingsPanel::State {
         ImGui::EndDisabled();
         if(ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip|ImGuiHoveredFlags_AllowWhenDisabled))ImGui::SetTooltip("Discard the unsaved changes and return to the saved settings.");
         ImGui::SameLine();
-        ImGui::BeginDisabled(locked());
+        ImGui::BeginDisabled(locked()||page==Page::Performance);
         if(ImGui::Button("Defaults..."))confirm=Confirm::Factory;
         ImGui::EndDisabled();
         if(ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip|ImGuiHoveredFlags_AllowWhenDisabled))ImGui::SetTooltip("%s",factoryScope().c_str());
@@ -962,6 +1067,23 @@ void SettingsPanel::opened(){s->wantSnapshot=true;}
 void SettingsPanel::poll(){s->poll();}
 bool SettingsPanel::pending()const{return s->service&&(s->wantSnapshot||s->wantPreview||s->wantClear||s->saving||s->awaitingSnapshot);}
 bool SettingsPanel::unsaved()const{return !s->draft.empty();}
+void SettingsPanel::performanceDevice(IDirect3DDevice9* device){
+    NorthlightPerformance::Adapter info;info.owner=reinterpret_cast<uintptr_t>(device);D3DDEVICE_CREATION_PARAMETERS cp{};
+    if(device&&SUCCEEDED(device->GetCreationParameters(&cp))){info.window=cp.hFocusWindow;IDirect3D9* api=nullptr;
+        if(SUCCEEDED(device->GetDirect3D(&api))&&api){D3DADAPTER_IDENTIFIER9 id{};if(SUCCEEDED(api->GetAdapterIdentifier(cp.AdapterOrdinal,0,&id))){info.vendor=id.VendorId;info.device=id.DeviceId;std::snprintf(info.name,sizeof info.name,"%s",id.Description);}
+            IDirect3D9Ex* ex=nullptr;if(SUCCEEDED(api->QueryInterface(__uuidof(IDirect3D9Ex),reinterpret_cast<void**>(&ex)))&&ex){LUID luid{};if(SUCCEEDED(ex->GetAdapterLUID(cp.AdapterOrdinal,&luid)))info.luid=uint64_t(uint32_t(luid.HighPart))<<32|luid.LowPart;ex->Release();}api->Release();}
+        IDirect3DSwapChain9* chain=nullptr;if(SUCCEEDED(device->GetSwapChain(0,&chain))&&chain){D3DPRESENT_PARAMETERS pp{};if(SUCCEEDED(chain->GetPresentParameters(&pp))){info.interval=pp.PresentationInterval;if(pp.hDeviceWindow)info.window=pp.hDeviceWindow;}chain->Release();}}
+    if(s->monitorAdapter.owner==info.owner&&s->monitorAdapter.luid==info.luid&&s->monitorAdapter.vendor==info.vendor&&s->monitorAdapter.device==info.device&&s->monitorAdapter.window==info.window){s->monitorAdapter=info;return;}
+    s->hardwareSampler.reset();s->monitorAdapter=info;s->monitorReadAt=0;s->hardware={};s->timing={};
+}
+bool SettingsPanel::hudEnabled()const{return s->monitoringHud;}
+void SettingsPanel::drawHud(float scale){
+    const auto* view=ImGui::GetMainViewport();s->scale=scale;
+    ImGui::SetNextWindowPos(ImVec2(view->WorkPos.x+12*scale,view->WorkPos.y+12*scale),ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(350*scale,0),ImGuiCond_Always);ImGui::SetNextWindowBgAlpha(.78f);
+    const auto flags=ImGuiWindowFlags_NoDecoration|ImGuiWindowFlags_NoInputs|ImGuiWindowFlags_NoSavedSettings|ImGuiWindowFlags_NoFocusOnAppearing|ImGuiWindowFlags_NoNav|ImGuiWindowFlags_AlwaysAutoResize;
+    if(ImGui::Begin("##NorthlightPerformanceHUD",nullptr,flags)){ImGui::SetWindowFontScale(.82f);s->monitorContents(true);}ImGui::End();
+}
 void SettingsPanel::notice(float scale){
     const ImGuiViewport* view=ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(ImVec2(view->WorkPos.x+12*scale,view->WorkPos.y+view->WorkSize.y-12*scale),ImGuiCond_Always,ImVec2(0,1));

@@ -10,7 +10,7 @@
 #include <random>
 using namespace NorthlightQuality;
 static Settings parse(const char* own,const char* legacy,std::vector<std::string>& problems){
-    std::istringstream a(own?own:""),b(legacy?legacy:"");return load(own?&a:nullptr,legacy?&b:nullptr,problems);
+    std::istringstream a(std::string(own?own:"")+"\n[Quality]\nLocalLightLimitsVersion=2\n"),b(legacy?legacy:"");return load(own?&a:nullptr,legacy?&b:nullptr,problems);
 }
 static Settings parse(const char* own,const char* legacy=nullptr){std::vector<std::string> p;return parse(own,legacy,p);}
 /* Verbatim 0.3.136 code paths, for defaults-equal-today comparisons. */
@@ -67,6 +67,10 @@ int main(){
     /* Defaults: absent files, empty file and Preset=Quality are the 0.3.136 constants, except the 0.3.167 FarShadowInterval 4
        and the 0.3.176 PointShadows 0 (off in every preset). */
     const Settings d{};
+    {for(auto p:{Preset::Quality,Preset::Balanced,Preset::Performance})assert(preset(p).disableOriginalTerrainShadows==1);
+     auto off=parse("[Quality]\nDisableOriginalTerrainShadows=0\n");assert(!off.disableOriginalTerrainShadows&&off!=d&&effective(off).disableOriginalTerrainShadows==0);
+     assert(parse("[Quality]\nDisableOriginalTerrainShadows=1\n")==d);
+     std::vector<std::string> problems;assert(parse("[Quality]\nDisableOriginalTerrainShadows=2\n",nullptr,problems)==d&&problems.size()==1);}
     assert(d.aoQuality==0);
     for(auto p:{Preset::Quality,Preset::Balanced,Preset::Performance})assert(preset(p).aoQuality==0);
     for(const auto& pair:std::vector<std::pair<const char*,unsigned>>{{"High",0},{"Medium",1},{"Low",2},{"hIgH",0},{"MEDIUM",1},{"low",2},{"0",0},{"1",1},{"2",2}}){
@@ -92,7 +96,7 @@ int main(){
     {std::vector<std::string> notes;assert(parse("[Quality]\nWater=1\nWaterSSR=1\nWaterSSRResolution=100\n",nullptr,notes)==d);assert(notes.size()==3);
      for(const auto& note:notes)assert(note.find("retired")!=std::string::npos);for(const auto& key:Keys)assert(std::string(key.name).rfind("Water",0)!=0);}
     assert(d.minSkinnedTriangles==100&&d.captureBudgetMiB==32&&d.actorShadowBudgetMiB==0&&d.farShadowInterval==4);
-    assert(d.localLightLimit==48&&d.pointShadows==1&&d.pointShadowLimit==64&&d.pointShadowRefreshMs==0&&d.shadowDirectionSteps==2048);
+    assert(d.localLightLimit==64&&d.pointShadows==1&&d.pointShadowLimit==64&&d.pointShadowRefreshMs==0&&d.shadowDirectionSteps==2048);
     for(auto p:{Preset::Quality,Preset::Balanced,Preset::Performance})assert(preset(p).pointShadowDistance==48);
     assert(parse("[Quality]\nPointShadowDistance=96\n").pointShadowDistance==96);
     assert(parse(nullptr)==d&&parse("")==d&&parse("[Quality]\nPreset=Quality\n")==d&&preset(Preset::Quality)==d);

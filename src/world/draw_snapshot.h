@@ -13,6 +13,7 @@
 #include <cstring>
 #include <limits>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 #if defined(__SSE2__)
 #include <emmintrin.h>
@@ -204,8 +205,11 @@ private:
         }
     };
     struct CacheEntry {
+        struct Declaration:Ref<IDirect3DVertexDeclaration9> {
+            Declaration()=default;Declaration(Declaration&& other)noexcept{p=std::exchange(other.p,nullptr);}
+        };
         CacheKey key;std::shared_ptr<const Mesh> mesh;
-        Ref<IDirect3DVertexDeclaration9> declaration;
+        Declaration declaration;
         const Frame* producer=nullptr;
         std::vector<std::uint8_t> rawIndices;std::vector<CopyRun> runs;bool compacted=false;UINT low=0;
         std::uint64_t begins[4]={},lockBytes[4]={},readBytes[4]={},ibBegin=0,ibBytes=0;
@@ -264,7 +268,9 @@ private:
     struct SourcePool {
         using ReplayCandidates=std::array<std::weak_ptr<const Mesh>,2048>;
         std::unique_ptr<ReplayCandidates> replayCandidates;
-        std::unordered_map<std::uint64_t,std::unique_ptr<CacheEntry>> entries;
+        // Stable node addresses preserve the intrusive LRU and prediction.
+        // Store the entry in that node, avoiding a second heap allocation.
+        std::unordered_map<std::uint64_t,CacheEntry> entries;
         std::unordered_multimap<std::uint64_t,CacheEntry*> identities;
         NorthlightIntrusiveLRU::List<CacheEntry> lru;
         std::vector<Frame*> members;size_t bytes=0,limit=0;unsigned serial=0;std::uint64_t generation=0;
@@ -431,7 +437,7 @@ private:
         if(lookup_!=Lookup::Map&&(key.tracked||NORTHLIGHT_SNAPSHOT_COUNTERFACTUAL==6)&&predicted_){++predictTried_;
             if(predictedEqual(predicted_->key,key)){found=predicted_;++predictHits_;}else ++predictMisses_;}
         if(!found){
-            const auto hash=lookupHash(key);auto it=sources_->entries.find(hash);if(it==sources_->entries.end()||!(it->second->key==key)){
+            const auto hash=lookupHash(key);auto it=sources_->entries.find(hash);if(it==sources_->entries.end()||!(it->second.key==key)){
                 noteMiss(key,hash,it!=sources_->entries.end());
                 if(key.tracked)found=sourceAlias(key);
                 if(!found){
@@ -442,7 +448,7 @@ private:
                    identity_==residentPeer_->identity_&&version_==residentPeer_->version_&&metadata_==residentPeer_->metadata_){
                     const bool ok=residentPeer_->serve(key,vertices,ib,extent,shared,why,served,false);peerHits_+=served;if(ok&&served&&shared&&*shared)(*shared)->sharedCapture=true;return ok;}
                 return true;}}
-            if(!found){CacheEntry& e=*it->second;
+            if(!found){CacheEntry& e=it->second;
             if(!key.tracked&&(version_||(e.serial&15u)==(frame_&15u))&&!revalidate(e,vertices,ib,extent)){++revalidationMismatches_;eraseIdentity(e);sources_->bytes-=e.bytes;sources_->metadataBytes-=e.metadataBytes;sources_->lru.remove(e);sources_->entries.erase(it);++sources_->generation;
                 dropPrediction(Erase::Revalidation); /* the erased entry may be the predicted one */return true;}
             found=&e;}
@@ -498,27 +504,27 @@ private:
     bool store(const CacheKey& key,Mesh&& mesh,std::uint64_t ibBegin,std::uint64_t ibBytes,UINT low,const std::uint64_t* begins,const std::uint64_t* lockBytes,const std::uint64_t* readBytes,std::shared_ptr<const Mesh>* shared){
         try{
             replayContent(key,mesh);
-            auto entry=std::make_unique<CacheEntry>();entry->key=key;entry->producer=this;entry->compacted=compacted_;entry->low=low;
-            entry->declaration.p=static_cast<IDirect3DVertexDeclaration9*>(const_cast<void*>(key.declaration));entry->declaration.p->AddRef();
-            entry->ibBegin=ibBegin;entry->ibBytes=ibBytes;
+            CacheEntry entry;entry.key=key;entry.producer=this;entry.compacted=compacted_;entry.low=low;
+            entry.declaration.p=static_cast<IDirect3DVertexDeclaration9*>(const_cast<void*>(key.declaration));entry.declaration.p->AddRef();
+            entry.ibBegin=ibBegin;entry.ibBytes=ibBytes;
             // Only untracked entries revalidate by reading raw indices and copy runs.
-            if(!key.tracked&&key.indexed)entry->rawIndices.assign(rawIndexScratch_.begin(),rawIndexScratch_.begin()+std::ptrdiff_t(ibBytes));
-            if(!key.tracked&&compacted_)entry->runs=*activeRuns_;
-            for(UINT s=0;s<4;++s){entry->begins[s]=begins[s];entry->lockBytes[s]=lockBytes[s];entry->readBytes[s]=readBytes[s];}
-            entry->charged=std::size_t(ibBytes);for(UINT s=0;s<4;++s)entry->charged+=std::size_t(readBytes[s]);
+            if(!key.tracked&&key.indexed)entry.rawIndices.assign(rawIndexScratch_.begin(),rawIndexScratch_.begin()+std::ptrdiff_t(ibBytes));
+            if(!key.tracked&&compacted_)entry.runs=*activeRuns_;
+            for(UINT s=0;s<4;++s){entry.begins[s]=begins[s];entry.lockBytes[s]=lockBytes[s];entry.readBytes[s]=readBytes[s];}
+            entry.charged=std::size_t(ibBytes);for(UINT s=0;s<4;++s)entry.charged+=std::size_t(readBytes[s]);
             const size_t payload=NorthlightSourceIdentity::allocationBytes<Mesh>(mesh.capacityBytes());
-            entry->metadataBytes=sizeof(CacheEntry)+entry->rawIndices.capacity()+entry->runs.capacity()*sizeof(CopyRun)+96;
-            entry->bytes=entry->metadataBytes+payload+(mesh.sourceIdentity?mesh.sourceIdentity->bytes():0)+(mesh.replayIdentity&&mesh.replayIdentity!=mesh.sourceIdentity?mesh.replayIdentity->bytes():0);
-            if(entry->bytes>sources_->limit)return false;
-            {MaintenanceTimer timer(sampleMaintenance_&&sources_->bytes+entry->bytes>sources_->limit?&maintenance_.snapshotMs:nullptr);
-                while(sources_->bytes+entry->bytes>sources_->limit&&!sources_->entries.empty())evictOldest();}
-            if(entry->bytes>sources_->limit-sources_->bytes)return false;
-            auto owned=NorthlightSourceIdentity::allocate<Mesh>(sources_->live,payload);entry->mesh=owned;
-            entry->serial=sources_->serial++;
-            const auto hash=hashKey(key);auto existing=sources_->entries.find(hash);if(existing!=sources_->entries.end()){eraseIdentity(*existing->second);sources_->bytes-=existing->second->bytes;sources_->metadataBytes-=existing->second->metadataBytes;sources_->lru.remove(*existing->second);sources_->entries.erase(existing);++sources_->generation;
+            entry.metadataBytes=sizeof(CacheEntry)+entry.rawIndices.capacity()+entry.runs.capacity()*sizeof(CopyRun)+96;
+            entry.bytes=entry.metadataBytes+payload+(mesh.sourceIdentity?mesh.sourceIdentity->bytes():0)+(mesh.replayIdentity&&mesh.replayIdentity!=mesh.sourceIdentity?mesh.replayIdentity->bytes():0);
+            if(entry.bytes>sources_->limit)return false;
+            {MaintenanceTimer timer(sampleMaintenance_&&sources_->bytes+entry.bytes>sources_->limit?&maintenance_.snapshotMs:nullptr);
+                while(sources_->bytes+entry.bytes>sources_->limit&&!sources_->entries.empty())evictOldest();}
+            if(entry.bytes>sources_->limit-sources_->bytes)return false;
+            auto owned=NorthlightSourceIdentity::allocate<Mesh>(sources_->live,payload);entry.mesh=owned;
+            entry.serial=sources_->serial++;
+            const auto hash=hashKey(key);auto existing=sources_->entries.find(hash);if(existing!=sources_->entries.end()){eraseIdentity(existing->second);sources_->bytes-=existing->second.bytes;sources_->metadataBytes-=existing->second.metadataBytes;sources_->lru.remove(existing->second);sources_->entries.erase(existing);++sources_->generation;
                 dropPrediction(Erase::Replacement);} /* the replaced entry may be the predicted one */
-            const auto bytes=entry->bytes,metadataBytes=entry->metadataBytes;auto inserted=sources_->entries.emplace(hash,std::move(entry));sources_->lru.append(*inserted.first->second);sources_->bytes+=bytes;sources_->metadataBytes+=metadataBytes;noteStored(key,hash);
-            *owned=std::move(mesh);*shared=owned;if(owned->sourceIdentity)try{sources_->identities.emplace(owned->sourceIdentity->hash,inserted.first->second.get());}catch(...){}
+            const auto bytes=entry.bytes,metadataBytes=entry.metadataBytes;auto inserted=sources_->entries.emplace(hash,std::move(entry));sources_->lru.append(inserted.first->second);sources_->bytes+=bytes;sources_->metadataBytes+=metadataBytes;noteStored(key,hash);
+            *owned=std::move(mesh);*shared=owned;if(owned->sourceIdentity)try{sources_->identities.emplace(owned->sourceIdentity->hash,&inserted.first->second);}catch(...){}
             if(replayContentReuse_&&sources_->replayCandidates&&key.tracked&&owned->sourceIdentity)(*sources_->replayCandidates)[logicalHash(key)%sources_->replayCandidates->size()]=owned;
             return true;
         }catch(...){return false;}
@@ -556,7 +562,7 @@ public:
             auto retired=std::make_shared<RetiredSources>();
             // D3D ownership ends on this device thread before the worker can
             // receive immutable CPU meshes, index plans and map allocations.
-            for(auto& item:sources_->entries){auto*& declaration=item.second->declaration.p;if(declaration){declaration->Release();declaration=nullptr;}}
+            for(auto& item:sources_->entries){auto*& declaration=item.second.declaration.p;if(declaration){declaration->Release();declaration=nullptr;}}
             retired->entries.swap(sources_->entries);retired->identities.swap(sources_->identities);
             retired->replayCandidates.swap(sources_->replayCandidates);sources_->lru.clear();
             if(batch?batch->retire(retired,sources_->bytes):retirement->retire(retired,sources_->bytes))deferred=sources_->bytes;

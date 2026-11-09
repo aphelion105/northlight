@@ -24,7 +24,7 @@ void MaterialCaptureStateTestAccess::admissionBatch(){
   if(test==4)mirror.recording=true;if(test==5)mirror.rawDepth=1;
   if(mode&&test==0){NorthlightAutoBump::ReplayState warm(&ext,&d.vs,D3DVIEWPORT9{});for(unsigned i=0;i<14;++i)if(i!=0&&i!=4){DWORD value;assert(SUCCEEDED(ext.GetRenderState(warm.states[i].key,&value)));}}
   const auto before=mirror.answered;unsigned draws=0;b.capture(&d.vs,[&]{++draws;return D3D_OK;});assert(!draws);assert(d.pixelQueries==1);assert(d.targetQueries==(test==0||test==3||test==4||test==5?1u:0u));assert(b.invisibleRejected==0&&b.rangeRejected==0);
-  // Opaque immediate capture needs alpha/blend admission plus fog/sRGB/MRT1.
-  if(mode&&test==0)assert(mirror.answered-before==5);}
+  // The known visibility pair is batched; unknown depth state uses backend reads.
+  if(mode&&test==0)assert(mirror.answered-before==2);}
 }
 int main(int argc,char**argv){if(argc>1){run=1;scenario=std::atoi(argv[1]);auto start=std::chrono::steady_clock::now();for(unsigned i=0;i<80;++i)MaterialCaptureStateTestAccess::admissionBatch();std::printf("%.3f\n",std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-start).count());}else{MaterialCaptureStateTestAccess::admissionBatch();puts("MATERIAL_ADMISSION_BATCH_PASS exact state values, all-or-nothing fallback, invalidation, recording, raw, injected failure, changed state, gate modes");}}

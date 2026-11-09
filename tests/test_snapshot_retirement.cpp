@@ -33,16 +33,16 @@ struct SnapshotTestAccess {
         for(unsigned i=0;i<20;++i){
             Mesh mesh;mesh.streams[0].stride=16;mesh.streams[0].bytes.assign(4u<<20,static_cast<unsigned char>(i+1));
             mesh.vertexCount=3;mesh.primitiveCount=1;
-            auto entry=std::make_unique<Frame::CacheEntry>();entry->key.vb[0]=i+1;entry->producer=&frame;
-            entry->declaration.p=declaration;declaration->AddRef();entry->rawIndices.assign(512u<<10,1);
-            entry->metadataBytes=sizeof(Frame::CacheEntry)+entry->rawIndices.capacity()+96;
-            entry->bytes=entry->metadataBytes+NorthlightSourceIdentity::allocationBytes<Mesh>(mesh.capacityBytes());
-            entry->mesh=frame.retain(std::move(mesh));entry->serial=frame.sources_->serial++;
-            if(!held)held=entry->mesh;
-            const auto bytes=entry->bytes,metadata=entry->metadataBytes;
-            auto inserted=frame.sources_->entries.emplace(Frame::hashKey(entry->key),std::move(entry));assert(inserted.second);
-            frame.sources_->lru.append(*inserted.first->second);frame.sources_->bytes+=bytes;frame.sources_->metadataBytes+=metadata;
-            frame.predicted_=inserted.first->second.get();frame.predictionGeneration_=frame.sources_->generation;
+            Frame::CacheEntry entry;entry.key.vb[0]=i+1;entry.producer=&frame;
+            entry.declaration.p=declaration;declaration->AddRef();entry.rawIndices.assign(512u<<10,1);
+            entry.metadataBytes=sizeof(Frame::CacheEntry)+entry.rawIndices.capacity()+96;
+            entry.bytes=entry.metadataBytes+NorthlightSourceIdentity::allocationBytes<Mesh>(mesh.capacityBytes());
+            entry.mesh=frame.retain(std::move(mesh));entry.serial=frame.sources_->serial++;
+            if(!held)held=entry.mesh;
+            const auto bytes=entry.bytes,metadata=entry.metadataBytes;
+            auto inserted=frame.sources_->entries.emplace(Frame::hashKey(entry.key),std::move(entry));assert(inserted.second);
+            frame.sources_->lru.append(inserted.first->second);frame.sources_->bytes+=bytes;frame.sources_->metadataBytes+=metadata;
+            frame.predicted_=&inserted.first->second;frame.predictionGeneration_=frame.sources_->generation;
         }
         assert(frame.sharedSourceBytes()<=frame.sharedSourceLimit());return held;
     }

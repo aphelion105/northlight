@@ -110,6 +110,18 @@ inline bool build(const Mesh& in,const D3DVERTEXELEMENT9* elements,UINT elementC
     std::vector<Four> decoded(size_t(elementCount)*in.vertexCount);
     for(UINT e=0;e<elementCount&&elements[e].Stream!=0xff;++e){if(&elements[e]==weights||&elements[e]==bones)continue;
         for(unsigned i=0;i<in.vertexCount;++i)if(!NorthlightActorDeformation::decodeElement(in.streams[0].bytes.data()+size_t(i)*stride+elements[e].Offset,elements[e].Type,decoded[size_t(e)*in.vertexCount+i]))return false;}
+    // Skin inputs are immutable for this build. Decode and validate on first
+    // use, preserving rejection of only the vertices the original path reads.
+    std::vector<uint8_t> skinDecoded(influences&&weights&&bones?in.vertexCount:0);
+    auto skin=[&](unsigned i){
+        if(skinDecoded[i])return true;
+        auto& ws=decoded[size_t(weights-elements)*in.vertexCount+i];auto& bs=decoded[size_t(bones-elements)*in.vertexCount+i];
+        if(!NorthlightActorDeformation::decodeElement(in.streams[0].bytes.data()+size_t(i)*stride+weights->Offset,weights->Type,ws)||
+           !NorthlightActorDeformation::decodeElement(in.streams[0].bytes.data()+size_t(i)*stride+bones->Offset,bones->Type,bs))return false;
+        for(unsigned c=0;c<influences;++c){if(!std::isfinite(ws[c])||!std::isfinite(bs[c])||bs[c]<0||bs[c]>255||std::fabs(bs[c]-std::round(bs[c]))>.001f||ws[c]<0)return false;
+            bs[c]=float(std::lround(bs[c]));}
+        skinDecoded[i]=1;return true;
+    };
     std::vector<float> skinRelief;
     if(influences&&bones){
         // Inferred colour detail cannot establish anatomical thickness. Bound
@@ -125,6 +137,7 @@ inline bool build(const Mesh& in,const D3DVERTEXELEMENT9* elements,UINT elementC
     }
     std::pmr::unordered_map<Key,unsigned,Hash> vertices(&scratch);vertices.reserve(capacity);
     std::array<unsigned char,84> cornerPayload{};
+    std::array<bool,3> triangleBoundary{};
     const unsigned cornerBytes=color?color->cornerBytes()*3:0;
     auto vertex=[&](const std::array<unsigned,3>& t,unsigned i,unsigned j)->unsigned{
         const unsigned w[3]={factor-i-j,i,j};std::array<std::pair<unsigned,unsigned>,3> sorted;
@@ -149,15 +162,16 @@ inline bool build(const Mesh& in,const D3DVERTEXELEMENT9* elements,UINT elementC
         if(bones&&!weights){unsigned k=w[1]>w[0]?1:0;if(w[2]>w[k])k=2;Four ids;if(!NorthlightActorDeformation::decodeElement(in.streams[0].bytes.data()+size_t(t[k])*stride+bones->Offset,bones->Type,ids)||!encode(dst+bones->Offset,bones->Type,ids))return UINT_MAX;}
         if(!influences){unsigned k=w[1]>w[0]?1:0;if(w[2]>w[k])k=2;for(auto* e:{weights,bones})if(e)std::memcpy(dst+e->Offset,in.streams[0].bytes.data()+size_t(t[k])*stride+e->Offset,NorthlightDrawSnapshot::declarationBytes(e->Type));}
         if(influences&&weights&&bones){unsigned ids[12]={},used=0;float merged[12]={};
-            for(unsigned k=0;k<3;++k){Four ws,bs;if(!NorthlightActorDeformation::decodeElement(in.streams[0].bytes.data()+size_t(t[k])*stride+weights->Offset,weights->Type,ws)||!NorthlightActorDeformation::decodeElement(in.streams[0].bytes.data()+size_t(t[k])*stride+bones->Offset,bones->Type,bs))return UINT_MAX;
-                for(unsigned c=0;c<influences;++c){if(!std::isfinite(ws[c])||!std::isfinite(bs[c])||bs[c]<0||bs[c]>255||std::fabs(bs[c]-std::round(bs[c]))>.001f||ws[c]<0)return UINT_MAX;const unsigned id=unsigned(std::lround(bs[c]));unsigned j=0;while(j<used&&ids[j]!=id)++j;if(j==used)ids[used++]=id;merged[j]+=ws[c]*(float(w[k])/factor);}}
+            for(unsigned k=0;k<3;++k){if(!skin(t[k]))return UINT_MAX;
+                const auto& ws=decoded[size_t(weights-elements)*in.vertexCount+t[k]];const auto& bs=decoded[size_t(bones-elements)*in.vertexCount+t[k]];
+                for(unsigned c=0;c<influences;++c){const unsigned id=unsigned(bs[c]);unsigned j=0;while(j<used&&ids[j]!=id)++j;if(j==used)ids[used++]=id;merged[j]+=ws[c]*(float(w[k])/factor);}}
             for(unsigned a=0;a<std::min(used,influences);++a)for(unsigned b=a+1;b<used;++b)if(merged[b]>merged[a]){std::swap(merged[a],merged[b]);std::swap(ids[a],ids[b]);}
             Four ws={},bs={};float total=0;for(unsigned a=0;a<std::min(used,influences);++a)total+=merged[a];if(total<=1e-8f)return UINT_MAX;
             for(unsigned a=0;a<std::min(used,influences);++a){ws[a]=merged[a]/total;bs[a]=float(ids[a]);}if(!encode(dst+weights->Offset,weights->Type,ws)||!encode(dst+bones->Offset,bones->Type,bs))return UINT_MAX;
             if(weights->Type==D3DDECLTYPE_UBYTE4N){unsigned sum=0;float fraction[4];for(unsigned a=0;a<4;++a){unsigned n=unsigned(std::floor(ws[a]*255));dst[weights->Offset+a]=uint8_t(n);sum+=n;fraction[a]=ws[a]*255-n;}
                 while(sum<255){unsigned a=unsigned(std::max_element(fraction,fraction+4)-fraction);++dst[weights->Offset+a];fraction[a]=-1;++sum;}}
         }
-        bool pinned=false;for(unsigned k=0;k<3;++k){if(w[k]==factor&&(boundary[t[k]]||influences))pinned=true;if(!w[k]&&edges[edge(t[(k+1)%3],t[(k+2)%3])]!=2)pinned=true;
+        bool pinned=false;for(unsigned k=0;k<3;++k){if(w[k]==factor&&(boundary[t[k]]||influences))pinned=true;if(!w[k]&&triangleBoundary[k])pinned=true;
             if(w[k]==factor)std::memcpy(dst,in.streams[0].bytes.data()+size_t(t[k])*stride,stride);}
         float u=0,v=0,u1=0,v1=0,b=0;for(unsigned k=0;k<3;++k){float weight=float(w[k])/factor;u+=uv[t[k]][0]*weight;v+=uv[t[k]][1]*weight;if(uv1){u1+=(*uv1)[t[k]][0]*weight;v1+=(*uv1)[t[k]][1]*weight;}if(blend)b+=(*blend)[t[k]]*weight;}
         float h=.5f;if(!gpuHeight&&!pinned){h=first.sample(u,v,clampU,clampV);if(second&&uv1&&blend)h=second->sample(u1,v1,clampU,clampV)*(1-std::clamp(b,0.f,1.f))+h*std::clamp(b,0.f,1.f);}
@@ -176,6 +190,7 @@ inline bool build(const Mesh& in,const D3DVERTEXELEMENT9* elements,UINT elementC
     };
     std::array<std::array<unsigned,129>,129> rows;
     for(size_t ti=0;ti<triangles.size();++ti){auto t=triangles[ti];
+        for(unsigned k=0;k<3;++k)triangleBoundary[k]=edges[edge(t[(k+1)%3],t[(k+2)%3])]!=2;
         if(color)for(unsigned corner=0;corner<3;++corner)for(unsigned input=0;input<color->count;++input)
             std::memcpy(cornerPayload.data()+color->offset(corner*color->count+input),in.streams[0].bytes.data()+size_t(t[corner])*stride+elements[colorElements[input]].Offset,color->inputBytes(input));
         const bool seamTriangle=influences&&bones&&boundary[t[0]]&&boundary[t[1]]&&boundary[t[2]];

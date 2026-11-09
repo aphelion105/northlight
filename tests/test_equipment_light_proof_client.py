@@ -25,8 +25,9 @@ namespace NorthlightDiagnostics {inline bool enabled(){return false;}}
 static void logf(const char*,...){}
 struct Registration {
     bool on=false;
-    std::unordered_map<IDirect3DVertexShader9*,unsigned> equipmentShaders;
+    std::unordered_map<IDirect3DVertexShader9*,unsigned> equipmentShaders,nativePointShaders;
     bool equipmentLightsOn()const{return on;}
+    void registerEquipmentShader(IDirect3DVertexShader9* shader,const DWORD* code,size_t count){registerNativePointShader(shader,code,count,true);}
     // PRODUCTION_REGISTRATION
 };
 static void registration(unsigned lights,const std::vector<std::uint32_t>& code){
@@ -58,7 +59,7 @@ def check(exe, path, codes):
 def main():
     shaders = list(collect(fp.client_root())[0].values())
     world=fp.src('world_renderer.h').read_text()
-    begin=world.index('    void registerEquipmentShader(');end=world.index('    void captureEquipmentLights(',begin)
+    begin=world.index('    void registerNativePointShader(');end=world.index('    void captureEquipmentLights(',begin)
     method=world[begin:end];assert 'equipmentShaders.erase(shader)' in method
     harness=HARNESS.replace('    // PRODUCTION_REGISTRATION',method)
     with tempfile.TemporaryDirectory(prefix='northlight-native-lights-') as tmp:
@@ -90,7 +91,7 @@ def main():
             negatives.append(code[:-4] + struct.pack('<II', 0x00000028, 0x0000ffff)) # IF/flow
         assert not any(check(exe, tmp/'negative.bin', negatives))
         # A production-method counterfactual reproduces the original live-enable bug.
-        unsafe=method.replace('    void registerEquipmentShader(IDirect3DVertexShader9* shader,const DWORD* words,size_t count){','    void registerEquipmentShader(IDirect3DVertexShader9* shader,const DWORD* words,size_t count){\n        if(!equipmentLightsOn())return;')
+        unsafe=method.replace('        const unsigned lights=','        if(!equipmentLightsOn())return;\n        const unsigned lights=',1)
         assert unsafe!=method;source.write_text(HARNESS.replace('    // PRODUCTION_REGISTRATION',unsafe))
         bad=tmp/('registration-unsafe.exe' if sys.platform=='win32' else 'registration-unsafe')
         subprocess.run([str(fp.zig()),'c++','-std=c++17','-O1','-Wall','-Wextra','-Werror',*fp.test_include_flags(),str(source),'-o',str(bad)],env=fp.zig_env(),check=True)

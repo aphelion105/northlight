@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parent
 shader = fp.src('world_effects.hlsl').read_text()
 assert 'float3 sun=DirectLight.rgb*saturate(dot(detailNormal,LegacyDirection.xyz))*sunVisibility;' in shader and 'float visibility=lerp(1,shadow,GridInfo.z);' in shader # 0.3.198 (rain): sunVisibility = visibility unless c59.z softens it
 assert 'lerp(sun,moon,SunDirection.w)' in shader
-assert 'if(dot(DirectLight.rgb,1)>0){' in shader and 'else shadow=directionalShadow' in shader and 'shadow=min(shadow,SunDirection.w>.5?actor.g:actor.r);}' in shader # Soft and ordinary directional shadows both retain actor visibility.
+assert 'if(shadows&&dot(DirectLight.rgb,1)>0){' in shader and 'else shadow=directionalShadow' in shader and 'shadow=min(shadow,SunDirection.w>.5?actor.g:actor.r);}' in shader # Soft and ordinary directional shadows both retain actor visibility.
 # 0.3.170: near cascade 5x5 tent (radius 2.5), far cascade unchanged 4x4 (radius 2).
 shadow_filter = shader[shader.index('float shadowMapFiltered('):shader.index('float shadowMap(')]
 assert '[loop]for(int y=0;y<5&&y<size;++y)' in shadow_filter and '[loop]for(int x=0;x<5&&x<size;++x)' in shadow_filter and 'break;' not in shadow_filter

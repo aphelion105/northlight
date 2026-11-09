@@ -99,7 +99,7 @@ struct ZeroHash {size_t operator()(IDirect3DBaseTexture9*)const{return 0;}};
 struct NorthlightMaterialMapPersistence {
     enum class Status {Skip,Pending,Miss,Hit};struct Probe {Status status=Status::Skip;std::array<float,4> profile{};};
     NorthlightMaterialMapPersistence(IDirect3DDevice9*,const std::filesystem::path&,const char*,const char* =nullptr,bool=false){}
-    void reset(){}void endFrame(){}void report(){}
+    void reset(){}void endFrame(){}void report(){}void trimUploads(){}
     Probe probe(IDirect3DTexture9*,const D3DSURFACE_DESC&,bool,unsigned,unsigned,unsigned,std::uint64_t=0){return {};}
     bool upload(const Probe&,IDirect3DTexture9*,unsigned,unsigned){return false;}
     void capture(const Probe&,IDirect3DTexture9*,unsigned,unsigned){}

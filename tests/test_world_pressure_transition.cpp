@@ -15,9 +15,12 @@ static bool refuseAllocations=false,frameCleared=false;
 void* operator new(std::size_t n){assert(!refuseAllocations);if(void* p=std::malloc(n?n:1))return p;throw std::bad_alloc();}
 void operator delete(void* p)noexcept{std::free(p);}
 void operator delete(void* p,std::size_t)noexcept{std::free(p);}
-struct LARGE_INTEGER {long long QuadPart=0;};
-static void QueryPerformanceCounter(LARGE_INTEGER* out){out->QuadPart=std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();}
-static DWORD GetTickCount(){return 1000;}
+struct PressureInteger {long long QuadPart=0;};
+static void pressureCounter(PressureInteger* out){out->QuadPart=std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();}
+static DWORD pressureTicks(){return 1000;}
+#define LARGE_INTEGER PressureInteger
+#define QueryPerformanceCounter pressureCounter
+#define GetTickCount pressureTicks
 static char trimLine[4096],workLine[4096];
 static void logf(const char* format,...){va_list args;va_start(args,format);std::vsnprintf(std::strstr(format,"MEMORY guard work ")?workLine:trimLine,4096,format,args);va_end(args);}
 namespace NorthlightMemoryDiagnostics {struct Sample{unsigned long long availableVirtual=0,largestFree=0,regions=0;};}
@@ -29,15 +32,15 @@ struct SnapshotTestAccess {
         std::shared_ptr<const Mesh> held;
         for(unsigned i=0;i<count;++i){
             Mesh mesh;mesh.streams[0].stride=16;mesh.streams[0].bytes.assign(payloadBytes,static_cast<unsigned char>(i+1));mesh.vertexCount=3;mesh.primitiveCount=1;
-            auto entry=std::make_unique<Frame::CacheEntry>();entry->key.vb[0]=i+1;entry->key.declaration=declaration;entry->producer=&frame;
-            entry->declaration.p=declaration;declaration->AddRef();entry->metadataBytes=sizeof(Frame::CacheEntry)+96;
-            entry->bytes=entry->metadataBytes+NorthlightSourceIdentity::allocationBytes<Mesh>(mesh.capacityBytes());
-            entry->mesh=frame.retain(std::move(mesh));entry->serial=frame.sources_->serial++;
-            if(!held)held=entry->mesh;
-            const auto bytes=entry->bytes,metadata=entry->metadataBytes;
-            auto added=frame.sources_->entries.emplace(Frame::hashKey(entry->key),std::move(entry));assert(added.second);
-            frame.sources_->lru.append(*added.first->second);frame.sources_->bytes+=bytes;frame.sources_->metadataBytes+=metadata;
-            frame.predicted_=added.first->second.get();frame.predictionGeneration_=frame.sources_->generation;
+            Frame::CacheEntry entry;entry.key.vb[0]=i+1;entry.key.declaration=declaration;entry.producer=&frame;
+            entry.declaration.p=declaration;declaration->AddRef();entry.metadataBytes=sizeof(Frame::CacheEntry)+96;
+            entry.bytes=entry.metadataBytes+NorthlightSourceIdentity::allocationBytes<Mesh>(mesh.capacityBytes());
+            entry.mesh=frame.retain(std::move(mesh));entry.serial=frame.sources_->serial++;
+            if(!held)held=entry.mesh;
+            const auto bytes=entry.bytes,metadata=entry.metadataBytes;
+            auto added=frame.sources_->entries.emplace(Frame::hashKey(entry.key),std::move(entry));assert(added.second);
+            frame.sources_->lru.append(added.first->second);frame.sources_->bytes+=bytes;frame.sources_->metadataBytes+=metadata;
+            frame.predicted_=&added.first->second;frame.predictionGeneration_=frame.sources_->generation;
         }
         assert(frame.sharedSourceBytes()<=frame.sharedSourceLimit());return held;
     }
@@ -62,8 +65,13 @@ struct EmptyGPU {
     size_t bytes()const{return 0;}void clear(){assert(frameCleared);++clears;}
     void setLimit(size_t bytes){assert(frameCleared);limit=bytes;}
 };
+struct EmptyScene {
+    struct Native {size_t limit=SIZE_MAX;void setTotalLimit(size_t bytes){assert(frameCleared);limit=bytes;}} native;
+    EmptyGPU materials,shadows;
+#include "scene_pressure_policy.h"
+};
 struct WorldRenderer {
-    NorthlightDrawSnapshot::Frame replaySnapshots;EmptyTerrain terrainBoundsCache;EmptyGPU replayGpuCache;EmptyState stateBlocks;
+    NorthlightDrawSnapshot::Frame replaySnapshots;EmptyTerrain terrainBoundsCache;EmptyScene sceneStorage;EmptyScene* gpuScene=&sceneStorage;EmptyGPU& replayGpuCache=sceneStorage.shadows;EmptyState stateBlocks;
     struct Replay{};std::vector<Replay> freeReplays;size_t pooledSnapshotBytes=0;
     bool memoryPressure=false;unsigned quiesces=0,meshTrims=0,rigidClears=0,capUpdates=0,pointKeepClears=0;
     std::atomic<bool> workerMemoryTrim{false},giMemoryTrim{false};
@@ -136,6 +144,7 @@ static void one(const char* name,unsigned count,size_t payloadBytes,bool trim,in
         after=c.state.replaySnapshots.sharedSourceBytes();cap=c.state.replaySnapshots.sharedSourceLimit();live=c.state.replaySnapshots.sourceLiveBytes();
         assert(NorthlightReplayCopies::store().pressure==!recovery&&NorthlightStream::memoryPressure.load()==!recovery);
         assert(NorthlightReplayCopies::store().cap==(recovery?NorthlightReplayCopies::kCapBytes:NorthlightReplayCopies::kCapBytes/2));
+        assert(c.state.sceneStorage.native.limit==(recovery?SIZE_MAX:32u<<20)&&c.state.sceneStorage.materials.limit==(32u<<20));
         assert(c.state.pointKeepClears==(trim?2u:recovery?0u:1u));
         if(trim){
             if(!oldAllowed)assert(evictions==0&&"WORLD_PRECLEAR_REDUNDANT_LRU");

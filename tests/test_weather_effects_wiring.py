@@ -54,7 +54,7 @@ checks['hlsl: no WorldWet shader; WeatherInfo.y only the fog clouds\' folded ban
 # Exact integrated baseline: combined light passes removed a quad site; the
 # actor-aware fog and cached caster variants added shader creation sites.
 # Static-shadow transitions add the independently gated soft-resolve pass and shader.
-checks['render: exact draw budget, including HDR and shadow transitions (24 quad sites, 41 pixel shaders)']=(w.count('quad(')==24 and w.count('CreatePixelShader')==41 and 'if(compositeOk&&unlitMask)' in w) and 'wetPS' not in w
+checks['render: exact integrated draw inventory (25 quad sites, 45 pixel shader factories)']=(w.count('quad(')==25 and w.count('CreatePixelShader')==45 and 'if(compositeOk&&unlitMask)' in w) and 'wetPS' not in w
 # disc and veil
 checks['discs: gain atomic, default 1, opacity and glare weights only, veil inherits']=(
     'std::atomic<float> weatherGain{1.f};' in dr and 'c[9][3]=glare?disc.opacity:disc.opacity*weatherGain.load(std::memory_order_relaxed);' in dr

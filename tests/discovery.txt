@@ -42,6 +42,7 @@ test_auto_normal_memory.py
 test_auto_normal_profile_gpu.py
 test_auto_normal_reuse_gpu.py
 test_backend_proxy.py
+test_backend_work_policy.py
 test_band_retime.py
 test_blob_shadow_toggle.py
 test_blp_mip_guard.py
@@ -165,18 +166,22 @@ test_glue_emitters.py
 test_glue_lighting_selection.py
 test_gpu_budget.py
 test_gpu_budget_wiring.py
+test_gpu_cache_spare.py
 test_grass_receiving_order.py
 test_grass_shadow_gpu.py
 test_gtao_grazing.py
+test_hdr_additive_transform_gpu.py
 test_hdr_bloom_wide_gpu.py
 test_hdr_boundary.py
 test_hdr_color_lifetime.py
 test_hdr_diffuse_gpu.py
+test_hdr_fixed_sky_admission.py
 test_hdr_fixed_sky_gpu.py
 test_hdr_layer_sparse_gpu.py
 test_hdr_local_headroom_gpu.py
 test_hdr_log_summary.py
 test_hdr_reset.py
+test_hdr_sky_replay_gpu.py
 test_hdr_sky_storage_gpu.py
 test_hdr_ui_patch.py
 test_hdr_water_transfer_gpu.py
@@ -240,6 +245,7 @@ test_material_disk_cache.py
 test_material_disk_gpu.py
 test_material_early_alpha_gpu.py
 test_material_envelope_fast.py
+test_material_envelope_kernel.py
 test_material_epoch_guard.py
 test_material_followup_cpu.py
 test_material_frame_rotation_gpu.py
@@ -263,6 +269,7 @@ test_material_replay_content.py
 test_material_replay_state.py
 test_material_terrain_bounds.py
 test_material_texel_sharing.py
+test_material_texture_lookup.py
 test_material_texture_simd.py
 test_material_upload_reuse_gpu.py
 test_material_wall_bounds.py
@@ -276,6 +283,8 @@ test_migrate_mac_proxy.py
 test_mirror_resources.py
 test_model_index_cache.py
 test_model_light_attachments.py
+test_model_normal_consumers.py
+test_model_normal_native_gpu.py
 test_model_normal_range.py
 test_model_normal_slice.py
 test_model_normals_gpu.py
@@ -291,6 +300,7 @@ test_native_direct_ownership.py
 test_native_event_cold_gpu.py
 test_native_event_thread_log.py
 test_native_fixture_shadow.py
+test_native_light_asset_cache.py
 test_native_light_snapshot.py
 test_native_light_transport.py
 test_native_local_coverage_gpu.py
@@ -328,6 +338,8 @@ test_particle_lights.py
 test_particle_texture_stats.py
 test_pcss_filters_gpu.py
 test_pending_release_wiring.py
+test_performance_hardware.py
+test_performance_monitor.py
 test_pipeline_all_off_gpu.py
 test_pipeline_bindings_cpu.py
 test_pipeline_wave_cpu.py
@@ -343,6 +355,7 @@ test_point_terrain_coverage_gpu.py
 test_point_transmission_cache.py
 test_point_transmission_install.py
 test_point_transmission_runtime.py
+test_pose_viewport_culling.py
 test_position_bounds.py
 test_position_bounds_scan.py
 test_prelit_wmo_client.py
@@ -420,6 +433,7 @@ test_shadow_blob_model.py
 test_shadow_crowd.py
 test_shadow_culling_batch.py
 test_shadow_experiment.py
+test_shadow_fixed_alpha_gpu.py
 test_shadow_layer_analysis.py
 test_shadow_paging_memory.py
 test_shadow_pivot.py
@@ -474,6 +488,7 @@ test_stand_replay.py
 test_static_cache_dirty_rect.py
 test_static_m2_dedup.py
 test_static_plan_job.py
+test_static_shadow_coverage.py
 test_static_shadow_grouping.py
 test_static_shadow_selection.py
 test_static_shadow_transform_bounds.py
@@ -507,6 +522,7 @@ test_terrain_retirement.py
 test_terrain_rotation_cache.py
 test_terrain_shadow_candidates.py
 test_terrain_shadow_coverage.py
+test_terrain_shadow_disable_gpu.py
 test_terrain_shared_snapshot.py
 test_terrain_snapshot.py
 test_terrain_source_accounting.py
@@ -571,6 +587,7 @@ test_world_pressure_transition.py
 test_world_probe_coverage.py
 test_world_screen_effects_gpu.py
 test_world_shader_manifest.py
+test_world_unshadowed_lighting_gpu.py
 test_zone_tuner.py
 test_zone_tuning.py
 test_zone_tuning_wiring.py

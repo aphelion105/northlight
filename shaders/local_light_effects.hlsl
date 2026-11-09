@@ -34,13 +34,16 @@ LocalCaster LocalShadowVS(float3 position:POSITION0,float2 uv:TEXCOORD0) {
     o.position=position.x*LocalFaceMatrix[0]+position.y*LocalFaceMatrix[1]+position.z*LocalFaceMatrix[2]+LocalFaceMatrix[3];
     o.clip=o.position;o.uv=uv;return o;
 }
-float4 LocalShadowPS(float2 uv:TEXCOORD0,float4 clipPosition:TEXCOORD7,float4 diffuse:COLOR0):COLOR0 {
+struct LocalShadowOutput {float4 native:COLOR0;float4 depth:COLOR1;};
+LocalShadowOutput LocalShadowPS(float2 uv:TEXCOORD0,float4 clipPosition:TEXCOORD7,float4 diffuse:COLOR0) {
+    LocalShadowOutput output;output.depth=saturate(clipPosition.z/clipPosition.w);output.native=output.depth.xxxx;
     // Light-space offset from the face clip position (faceMatrix: right=x+h*w, up=y-h*w, forward=w).
     float3 offset=float3(clipPosition.x+LocalSphere.y*clipPosition.w,clipPosition.y-LocalSphere.y*clipPosition.w,clipPosition.w);
     clip(LocalSphere.x-dot(offset,offset));
     [branch]if(LocalMaterial.w>=0){
         float alpha=LocalMaterial.x==2?diffuse.a:tex2D(LocalAlpha,uv).a;
         if(LocalMaterial.x==1||LocalMaterial.x==3)alpha*=diffuse.a;
+        if(LocalMaterial.y>.5){output.native.a=alpha;return output;}
         if(LocalMaterial.x==3){
             // UV-anchored 4x4 Bayer coverage: native distance fade survives
             // shadow-map/camera movement; zero alpha never casts a rectangle.
@@ -49,7 +52,7 @@ float4 LocalShadowPS(float2 uv:TEXCOORD0,float4 clipPosition:TEXCOORD7,float4 di
             clip(alpha-(rank+.5)/16);
         }else clip(alpha-LocalMaterial.w);
     }
-    return saturate(clipPosition.z/clipPosition.w);
+    return output;
 }
 float2 localDepthUV(float2 uv) {
     float2 dims=floor(1/LocalImage.xy+.5);

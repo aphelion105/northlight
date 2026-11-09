@@ -104,7 +104,7 @@ backends = a.backend or [Path(os.environ['WINDIR'])/'SysWOW64/d3d9.dll',
                         fp.client_root()/'renderer-backends/dxvk/dxvk_d3d9.dll']
 try:
     for i, backend in enumerate(backends):
-        processes(False)
+        processes()
         result = subprocess.run([str(exe), str(backend), str(out/'catalog.txt'), str(out/'seams.fwm')], cwd=out,
                                 env={**fp.zig_env(), 'DXVK_LOG_PATH': str(out), 'DISABLE_VULKAN_OBS_CAPTURE': '1'},
                                 capture_output=True, text=True, timeout=180)

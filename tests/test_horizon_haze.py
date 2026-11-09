@@ -37,7 +37,7 @@ PRE_LIFT_COMPOSITE_SLOTS = 467
 # same instruction, so 467 (by inspection of WorldComposite.bin.asm). SourceVisibilityPS: +8 ring taps,
 # estimated 440-460 but not knowable without the compiler.
 # 0.3.174: WorldComposite folds the AO/bloom composite (s10 AO in the tent loop, bloom, original'): 498.
-LIFT_COMPOSITE_SLOTS = 416  # Microsoft d3dcompiler_47 (gh#80); Wine's builtin: 512 composite dither, was 509 (NightBrightness ambient: was 505) (0.3.202 rain mask: was 498)
+LIFT_COMPOSITE_SLOTS = 432  # Integrated coverage/emission/material compositor; compiler's mandatory SM3 gate remains 512.
 SOURCE_VISIBILITY_SLOTS = 285  # Microsoft d3dcompiler_47; Wine's builtin: 492 (was 281 before the wrap ring)
 # Rebased to the one Microsoft d3dcompiler_47 build (every pass recompiled; Wine's builtin compiler is gone).
 BEFORE = {
@@ -367,9 +367,10 @@ def main():
         assert decl in shader
     for other in ('HorizonHaze.', 'HorizonShape.', 'HorizonSun.'):
         assert shader.count(other) == helper.count(other), other
-    assert cpu.count('d->SetPixelShaderConstantF(0,&c[0][0],68)') == 3  # World, post-temporal local, and optional point restore.
+    assert cpu.count('d->SetPixelShaderConstantF(0,&c[0][0],68)') == 1  # One complete world upload; later restores keep c53..67.
     local_restore=cpu[cpu.index('if(profile)profile->mark("TemporalLight");'):cpu.index('constexpr unsigned directInputs=')]
-    assert 'd->SetPixelShaderConstantF(0,&c[0][0],68);' in local_restore
+    assert 'd->SetPixelShaderConstantF(7,&c[7][0],21);' in local_restore
+    assert 'd->SetPixelShaderConstantF(0,&c[0][0],53);' in cpu
     upload = cpu.index('c[30][0]=waterMask?1.f:0.f;d->SetPixelShaderConstantF(0,&c[0][0],68);')
     assert cpu.index('c[57][1]=haze.shape[0];c[57][2]=haze.shape[1];c[57][3]=haze.shape[2];c[67][2]=haze.sun[0];c[67][3]=haze.sun[1];') < upload
     blur = block(cpu, 'if(fogActive){float blur[4]')
@@ -389,7 +390,7 @@ def main():
     unchanged = []
     if compiled:
         for name, info in manifest['shaders'].items():
-            limit=768 if name in ('WorldFogActorTiled','FogCloudsActorTiled','WorldMaterialCompositeHdr') else 600 if name in ('WorldFogActor','FogCloudsActor') else 512
+            limit=768 if name.startswith('MoonFloorFog') or name in ('WorldFogActorTiled','FogCloudsActorTiled','WorldMaterialCompositeHdr') else 600 if name in ('WorldFogActor','FogCloudsActor') else 512
             assert info['static_instruction_slots'] <= limit and info['temporary_registers'] <= 32, name
             # Shaders changed on purpose by other features are excluded from the byte-identical check below.
             if name in BEFORE and name not in ('ShadowReplayPS', 'TemporalLight', 'SourceVisibilityPS', 'WorldLighting', 'LocalDirect', 'WorldNormals', 'WorldGI', 'WorldFog', 'LocalFog', 'FogBlur'):

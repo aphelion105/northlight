@@ -21,7 +21,7 @@ start = world.index('    void capture(D3DPRIMITIVETYPE type,INT base,UINT min,UI
 publisher = world[start:world.index('    void releaseReplayGPU()', start)]
 device = fp.src('renderer.cpp').read_text()
 start = device.index('            NorthlightCaptureMetadata::PositionBounds positions;')
-route = device[start:device.index('},draw);}', start)]
+route = device[start:device.index('},draw,&nativeSky,&skyCaptured);}', start)]
 fixture = ast.parse((fp.TESTS / 'test_terrain_snapshot.py').read_text())
 values = {n.targets[0].id: ast.literal_eval(n.value) for n in fixture.body
           if isinstance(n, ast.Assign) and isinstance(n.targets[0], ast.Name)
@@ -40,6 +40,7 @@ struct CaptureDevice:Device {
  }
 };
 struct World {
+ struct {bool shadows=true;} effects;
  using TerrainSnapshot=std::shared_ptr<const MeshSnapshot>;
  CaptureDevice* d;FrameCache terrainBoundsCache;std::vector<int> replays;
  bool readyValue=true,terrain=true,constantSelfCheck=false,captureSampled=false;

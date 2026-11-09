@@ -15,9 +15,16 @@ HERE=Path(__file__).resolve().parent
 FILES=['renderer.cpp','world_renderer.h','world_shadow_experiment.inl','world_point_rendering.inl','celestial_disc_renderer.h',
        'shadow_blob_filter.h','water_renderer.h','gpu_profile.h','gpu_frame_timer.h','world_diagnostics.h','world_replay_probe.inl','world_rigid_memory.inl']
 # 0.3.149: profiling()/profileSampled() = RenderProfile, which requires Diagnostics=1 (NorthlightQuality::renderProfile).
-GATES=('NorthlightDiagnostics::enabled()','diagnostics()','sampled()','captureSampled','if(diagnostics)','shadowFate.active()','sampledFrame','profiling()','profileSampled()','if(lightingClock)','materialProfile->recording()','if(profileThisBuild)','if(resetProfile)')
+GATES=('NorthlightDiagnostics::enabled()','diagnostics()','sampled()','captureSampled','if(diagnostics)','shadowFate.active()','sampledFrame','profiling()','profileSampled()','if(lightingClock)','profile->recording()','materialProfile->recording()','if(profileThisBuild)','if(resetProfile)')
 # Ungated lines that stay with Diagnostics=0: format prefix -> label.
 KEEP={
+ 'CAPTURE_BATCH_POLICY ':'device initialization: reports the selected capture ownership contract',
+ 'BACKEND_WORK ':'start-up: selected loaded-runtime work policy',
+ 'CSTREAM EVENT wait=':'start-up: bounded wait policy configuration',
+ 'POINT pipeline prewarm state/scene restoration failed':'error: startup prewarm failed to restore state',
+ 'NATIVE_DIRECT cold ':'capped: native local-light factory emits at most 128 cold pair traces',
+ 'WORLD base HDR compositor unavailable':'one-off per resource lifetime: optional shader failure is latched',
+ 'HDR_LAYER_TEXTURE ':'indirect: hdrLayerDiagnostic exits without Diagnostics and after 12 reports',
  'SKYLAYERS capture failed':'capped: first sixteen sky-mask capture failures',
  'EMISSION catalog loaded=':'device initialization: one catalog load per wrapped device',
  'ART INPUTS status=':'start-up: art-input verification result',
@@ -183,7 +190,7 @@ checks={
    and 'if(gateFrame&&!gateUntimed&&hdr.active)logf("CPU HDR frame=' in r,
  'HDR layer-state diagnostics require Diagnostics and stop after twelve reports':
    'void hdrLayerDiagnostic(const char* path="ui"){\n        if(hdrLayerStateLogs>=12||!diagnostics())return;\n        ++hdrLayerStateLogs;' in r,
- 'effect captures require an explicit request and exclude the captured frame':'if(!scopes&&!fallback)return;' in r[r.index('void captureEffectDiagnostics()'):r.index('void releaseResources()')]
+    'effect captures require an explicit request and exclude the captured frame':'if(!scopes&&!fallback)return;' in r[r.index('void captureEffectDiagnostics()'):r.index('void releaseResources(bool preserveCaptureSources=false)')]
    and 'captureEffectDiagnostics();' in r[r.index('void finishFrameImpl()'):r.index('const bool diagnosticFrame=')],
  'reset clock and stage lines require Diagnostics':'const bool resetProfile=diagnostics()&&cpuFrequency.QuadPart>0;' in r,
  'projected visibility queries require Diagnostics and sampled RenderProfile':'if(count>256||!diagnostics()||!world||!NorthlightQuality::renderProfile(world->surfaceSettings())||' in r
@@ -257,7 +264,7 @@ print('PASS Diagnostics=0 audit: every periodic line gated, only start-up/settin
 # are deferLogf, written by flushDeferredLogs() from endFrame(). Counterfactual: with deferLogf
 # turned back into logf the audit must find those lines.
 SPAN_FILES=['world_renderer.h','world_shadow_experiment.inl','world_point_rendering.inl','world_replay_probe.inl','world_rigid_memory.inl','world_diagnostics.h']
-SPAN_ALLOWED={'WORLD elided page missed':'capped error: first 12 staging misses per session, rebuild without page elision','PREPARE worker':'0.3.177: watchdog (at most 5 a session) / record exception (first 4)','WORLD DISABLED':'error (check())','GEOMETRY MEMORY':'warning: allocation deferral','WORLD pending mesh released':'event (0.3.156)',
+SPAN_ALLOWED={'JOBS workers':'start-up: the replay worker pool starts once','JOBS unavailable':'start-up: the failed worker startup is latched','WORLD elided page missed':'capped error: first 12 staging misses per session, rebuild without page elision','PREPARE worker':'0.3.177: watchdog (at most 5 a session) / record exception (first 4)','WORLD DISABLED':'error (check())','GEOMETRY MEMORY':'warning: allocation deferral','WORLD pending mesh released':'event (0.3.156)',
  'WORLD HDR material combinedAvailable=':'one-off capability event: hdrCombineTried is set before shader creation',
  'WORLD scene targets deferred:':'warning: partial scene allocation rolled back, logged at most once per minute',
  'WORLD screen resources deferred:':'warning: partial screen allocation rolled back, logged at most once per minute',

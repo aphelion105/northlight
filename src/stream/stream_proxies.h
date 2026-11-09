@@ -1555,12 +1555,12 @@ struct StreamQuery final:IDirect3DQuery9,ProxyBase {
     unsigned char result[64]{};DWORD resultSize=0;std::uint32_t issueSeen=0,issueSeenEpoch=0;   // replay thread: END generation and device-reset epoch
     std::atomic<std::uint32_t> resultSeq{0};   // seqlock around result/resultSize: odd while the replay thread writes, so a stale read (FLUSH, below) never sees a torn result
     void writeResult(const unsigned char* buf,DWORD n){const std::uint32_t s=resultSeq.load(std::memory_order_relaxed);resultSeq.store(s+1,std::memory_order_relaxed);std::atomic_thread_fence(std::memory_order_release);
-        std::memcpy(result,buf,sizeof result);resultSize=n;resultSeq.store(s+2,std::memory_order_release);}
+        n=std::min<DWORD>(n,sizeof result);std::memcpy(result,buf,n);resultSize=n;resultSeq.store(s+2,std::memory_order_release);}
     DWORD readResult(void* data,DWORD size){   // the latest polled result into the game's buffer, consistent
         for(;;){const std::uint32_t s1=resultSeq.load(std::memory_order_acquire);if(s1&1)continue;
-            const DWORD n=resultSize;unsigned char tmp[sizeof result];std::memcpy(tmp,result,sizeof tmp);std::atomic_thread_fence(std::memory_order_acquire);
+            const DWORD n=resultSize,copy=std::min(size,n);unsigned char tmp[sizeof result];if(data&&copy)std::memcpy(tmp,result,copy);std::atomic_thread_fence(std::memory_order_acquire);
             if(resultSeq.load(std::memory_order_relaxed)!=s1)continue;
-            if(data&&size)std::memcpy(data,tmp,size<n?size:n);return n;}}
+            if(data&&copy)std::memcpy(data,tmp,copy);return n;}}
     StreamQuery(StreamCore* c,unsigned t):ProxyBase(c,Kind::Query),type(t),dataSize(queryDataSize(t)){info.type=t;ProxyInit<ProxyBase>::apply(this,static_cast<IDirect3DQuery9*>(this));}
     ~StreamQuery(){liveProxyObjects.fetch_sub(1);}
     NORTHLIGHT_STREAM_QUERY_METHODS
@@ -1610,13 +1610,20 @@ struct StreamQuery final:IDirect3DQuery9,ProxyBase {
 #endif
             return S_FALSE;
         }
-        // StreamOcclusionLocal: WoW's QueryGetData (glare occlusion, D3DQUERYTYPE_OCCLUSION) loops GetData(FLUSH) while S_FALSE, normally after a non-FLUSH availability probe that
-        // succeeded; the pixel count only fades the sun/moon glare, so the latest completed result (this frame's when the probe saw it, else older) is answered without draining the
-        // queue. Never completed (readyGen 0): the real GetData below once, so the game's loop cannot spin. EVENT completion above never substitutes an older result.
-        if(flags&D3::kGetDataFlush&&type==9&&core->occlusionLocal&&gen.load()&&readyGen.load(std::memory_order_acquire)){
-            readResult(data,size);own(core->q.stats.queryFlushLocal);return D3D_OK;}
+        // A completed current generation needs no backend round trip. An older
+        // occlusion result can describe a different object or alpha threshold.
+        {
+            const bool localFlush=flags==D3::kGetDataFlush&&type==9&&core->occlusionLocal;
+            if((flags==0||localFlush)&&issued&&readyGen.load(std::memory_order_acquire)==issued&&
+               eventEpoch==core->queryEpoch.load()&&core->coopState.load()==D3D_OK&&
+               ((!data&&!size)||(data&&size==dataSize))){
+                if(flags==0)q.publish();else own(q.stats.queryFlushLocal);
+                readResult(data,size);return D3D_OK;
+            }
+        }
         pumped:
-        if((flags&D3::kGetDataFlush)||!gen.load()){   // FLUSH, or a query never issued: the real GetData with the game's buffer, after everything recorded so far
+        if(flags||!issued||eventEpoch!=core->queryEpoch.load()||core->coopState.load()!=D3D_OK||
+           (data?size!=dataSize:size!=0)){   // Invalidated/uncached requests use the real query after all recorded work.
             // Sent-message handlers may release the last external reference
             // while this call pumps. Keep both the query and its device alive.
             struct Hold {StreamQuery* query;explicit Hold(StreamQuery* p):query(p){query->comAddRef();}~Hold(){query->comRelease();}} hold(this);
@@ -1669,6 +1676,10 @@ struct StreamQuery final:IDirect3DQuery9,ProxyBase {
                     if(event&&hr!=S_FALSE&&issueSeen==issued&&issueSeenEpoch==epoch&&core->queryEpoch.load()==epoch&&
                        ((data&&size==sizeof(BOOL))||(!data&&!size&&(hr<0||eventPayloadKnown))))
                         completeEvent(hr,eventPayloadKnown?reinterpret_cast<const unsigned char*>(&eventPayload):static_cast<const unsigned char*>(data));
+                    if(!event&&hr==S_OK&&issued&&data&&size==dataSize&&size<=sizeof result&&issueSeen==issued&&
+                       issueSeenEpoch==epoch&&core->queryEpoch.load()==epoch&&gen.load()==issued&&core->coopState.load()==D3D_OK){
+                        writeResult(static_cast<const unsigned char*>(data),size);readyGen.store(issued,std::memory_order_release);
+                    }
                 }
             }if(measure)replayEnd=nowNs();};
             bool ran=false;
@@ -1703,10 +1714,6 @@ struct StreamQuery final:IDirect3DQuery9,ProxyBase {
             return hr;
         }
         q.publish();   // the replay thread must see the Issue this GetData polls for, or a spin on S_FALSE would never end
-        const std::uint32_t g=gen.load();
-        if(g&&readyGen.load(std::memory_order_acquire)==g){
-            readResult(data,size);
-            return D3D_OK;}
         return S_FALSE;}
 };
 struct StreamSwapChain final:IDirect3DSwapChain9,ProxyBase {

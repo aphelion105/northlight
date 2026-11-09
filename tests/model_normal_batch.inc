@@ -31,20 +31,24 @@ static void normalRange(IDirect3DVertexShader9* shader){
     CaptureCalls calls(d);DeviceMirror mirror;ExtensionDevice extension(&calls,&mirror);MirrorGuard held(mirror.gate);
     auto normals=std::make_unique<NorthlightModelNormals>(&extension);normals->setDeferredCapture(true);normals->setTrustedPoseSource(extension.trustedConstantSource());
     NorthlightModelNormalRange::Cache producerRange;
-    unsigned cases=0,totalCulled=0;
-    for(unsigned scenario=0;scenario<(kind==Single||kind==Envelope?3u:2u);++scenario){
-        const bool nearDraw=scenario==1,mixedBones=kind==Single&&scenario==2,stale=kind==Envelope&&scenario==2;
+    unsigned cases=0,totalCulled=0,viewportCases=0,viewportCulled=0;
+    for(unsigned scenario=0;scenario<(kind==Envelope?13u:kind==Single?3u:2u);++scenario){
+        const bool viewport=kind==Envelope&&scenario>=5,noClip=kind==Envelope&&scenario==10,wireframe=kind==Envelope&&scenario==12;
+        const unsigned side=viewport&&scenario<10?scenario-5:0;
+        const bool nearDraw=scenario==1,mixedBones=kind==Single&&scenario==2,stale=kind==Envelope&&(scenario==2||scenario==4||scenario==11),promoted=kind==Envelope&&(scenario==3||scenario==4);
         const auto& source=mixedBones?mixed:uniform;std::vector<unsigned char> reference;
         for(bool enabled:{false,true}){
             const auto samplerBatches=normalSamplerBatches;
             normals->setSamplerStateSource(enabled?static_cast<IDirect3DDevice9*>(&extension):static_cast<IDirect3DDevice9*>(&calls),[](void* context,DWORD stage,unsigned mask,DWORD* out){
                 const bool known=static_cast<ExtensionDevice*>(static_cast<IDirect3DDevice9*>(context))->knownSamplerStates(stage,mask,out);normalSamplerBatches+=known;return known;});
-            normals->endFrame();producerRange.beginFrame();normals->testRange(enabled);ok(extension.Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0,1,0));
+            normals->endFrame();producerRange.beginFrame();normals->testRange(enabled);ok(extension.SetRenderState(D3DRS_CLIPPING,!noClip));ok(extension.SetRenderState(D3DRS_FILLMODE,wireframe?D3DFILL_WIREFRAME:D3DFILL_SOLID));ok(extension.Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0,1,0));
             float bank[256][4]={};bank[2][0]=bank[3][1]=bank[4][2]=bank[5][2]=1;bank[4][3]=-.5f;bank[28][3]=1;
             auto capture=[&](float z,bool anchor,unsigned unknown=256){
                 // Disjoint screen halves and constant projected size: the near
                 // anchor cannot conceal an incorrectly retained far candidate.
-                for(unsigned bone=0;bone<75;++bone){const unsigned first=31+3*bone;bank[first][0]=bank[first+1][1]=z;bank[first+2][2]=1;bank[first][3]=z*(anchor?-.5f:.5f);bank[first+2][3]=z;}
+                for(unsigned bone=0;bone<75;++bone){const unsigned first=31+3*bone;bank[first][0]=bank[first+1][1]=z;bank[first+2][2]=1;bank[first][3]=z*(anchor?-.5f:.5f);bank[first+1][3]=0;bank[first+2][3]=z;}
+                if(viewport&&!anchor)for(unsigned bone=0;bone<75;++bone){const unsigned first=31+3*bone;
+                    if(side<2)bank[first][3]=z*(side?4.f:-4.f);else if(side<4)bank[first+1][3]=z*(side==2?4.f:-4.f);}
                 ok(extension.SetVertexShaderConstantF(0,bank[0],256));
                 if(unknown<256)mirror.vsFloatKnown[unknown]=false;
                 NorthlightPoseBounds::Handoff proof;
@@ -56,10 +60,16 @@ static void normalRange(IDirect3DVertexShader9* shader){
                 if(kind==Envelope){NorthlightReplayBounds::Budget budget;NorthlightReplayBounds::Bounds bounds;
                     assert(NorthlightReplayBounds::calculate(program,*source,layout,count,bank[0],inverse,budget,bounds)==NorthlightReplayBounds::Status::Valid);
                     NorthlightConstantEpoch::Stamp stamp;stamp.requestHeld=true;assert(extension.constantStamp(stamp));proof.publish(bounds,bank[0],stamp,source.get(),shader,declaration.p);assert(proof.bounds.valid);
+                    if(promoted)proof.outsideRange=proof.outside(source.get(),shader,declaration.p,stamp);
                     if(stale)ok(extension.SetVertexShaderConstantF(31,bank[31],1));
                 }
                 normals->capture(shader,[&]{return extension.DrawPrimitiveUP(D3DPT_TRIANGLELIST,1,source->streams[0].bytes.data(),48);},true,&geometry,nullptr,D3DFMT_UNKNOWN,nullptr,0,&source,declaration.p,(kind==Envelope||proof.outsideRange)?&proof:nullptr);
             };
+            if(viewport&&enabled&&!stale&&!noClip&&!wireframe){
+                ok(extension.BeginScene());capture(side==4?-20.f:20.f,false);
+                assert(!normals->testPendingPackets()&&normals->testRangeCulled()==1&&!normals->texture()&&normals->finishCaptures());ok(extension.EndScene());
+                normals->endFrame();
+            }
             ok(extension.BeginScene());capture(2,true);capture(2,true);assert(normals->finishCaptures());ok(extension.EndScene());const auto anchorOnly=capturedPixels(normals->texture(),W,H);
             assert(enabled?normalSamplerBatches>samplerBatches:normalSamplerBatches==samplerBatches);
             normals->endFrame();ok(extension.Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0,1,0));
@@ -75,15 +85,19 @@ static void normalRange(IDirect3DVertexShader9* shader){
             }
             assert(calls.textureReads&&calls.samplerReads);
             std::memset(mirror.textureKnown,0,sizeof mirror.textureKnown);std::memset(mirror.samplerKnown,0,sizeof mirror.samplerKnown);
-            const auto textureReads=calls.textureReads,samplerReads=calls.samplerReads;
+            mirror.pixelShaderKnown=false;
+            const auto textureReads=calls.textureReads,samplerReads=calls.samplerReads,pixelReads=calls.pixelReads;
             const auto rangeRegisters=normals->testRangeRegisters(),viewportReads=calls.viewportReads;
-            capture(nearDraw?20:80,false);
-            const unsigned culled=enabled&&!nearDraw&&!mixedBones&&!stale?1u:0u;
+            capture(viewport?(side==4?-20.f:20.f):nearDraw?20.f:80.f,false);
+            const unsigned culled=enabled&&!nearDraw&&!mixedBones&&!stale&&!noClip&&!wireframe?1u:0u;
             if(culled)assert(calls.textureReads==textureReads&&calls.samplerReads==samplerReads);
             if(culled)assert(calls.viewportReads==viewportReads);
+            if(culled&&(promoted||viewport))assert(calls.pixelReads==pixelReads);
+            if(viewport&&!culled)assert(calls.pixelReads>pixelReads);
+            if(promoted&&stale)assert(calls.pixelReads>pixelReads);
             if(culled&&kind==Single)assert(normals->testRangeRegisters()==rangeRegisters&&calls.viewportReads==viewportReads);
             if(culled&&kind==Rigid)assert(normals->testRangeRegisters()-rangeRegisters==7);
-            assert(normals->testRangeCulled()==culled&&normals->testPendingPackets()==2-culled);totalCulled+=culled;
+            assert(normals->testRangeCulled()==culled&&normals->testPendingPackets()==2-culled);totalCulled+=culled;viewportCulled+=viewport?culled:0;
             assert(normals->finishCaptures());ok(extension.EndScene());assert(normals->texture());
             auto image=capturedPixels(normals->texture(),W,H);
             auto coverage=[](const auto& pixels){unsigned count=0;for(size_t at=6;at<pixels.size();at+=8){unsigned short alpha;std::memcpy(&alpha,pixels.data()+at,2);count+=half(alpha)>0;}return count;};
@@ -99,9 +113,10 @@ static void normalRange(IDirect3DVertexShader9* shader){
                 normals->endFrame();ok(extension.BeginScene());capture(80,false,257);
                 assert(normals->testRangeCulled()==1&&normals->testRangeRegisters()==7&&normals->finishCaptures());ok(extension.EndScene());
             }
-        }++cases;
+        }++cases;viewportCases+=viewport;
     }
-    assert(totalCulled>0);std::printf("MODEL_NORMALS_RANGE_PASS kind=%u cases=%u culled=%u pixels=exact near=retained mixed_or_stale=retained disjoint=1 nearAddsPixels=1 farMatchesAnchor=1\n",unsigned(kind),cases,totalCulled);
+    assert(totalCulled>0);std::printf("MODEL_NORMALS_RANGE_PASS kind=%u cases=%u culled=%u pixels=exact near=retained mixed_or_stale=retained disjoint=1 nearAddsPixels=1 farMatchesAnchor=1 promoted_far_skips_pixel_admission=1\n",unsigned(kind),cases,totalCulled);
+    if(kind==Envelope){assert(viewportCases==8&&viewportCulled==5);std::puts("MODEL_NORMALS_VIEWPORT_PASS cases=8 culled=5 stale=retained clipping_off=retained wireframe=retained pixel_admission=skipped pixels=bitexact");}
     normals.reset();depth->Release();color.read->Release();color.s->Release();color.t->Release();
 }
 static uint64_t normalSourceRevision=1;

@@ -96,6 +96,7 @@ issue_wrapper = '''
 reporter = '''
 };
 struct QueryReporter {
+    struct {void clear(){}} queryBackendThreads;
     std::uint64_t frameNo=0;std::atomic<std::uint64_t> framesReplayed{0};
     NorthlightStream::QueryWaitProfile queryFrame[21]{},queryWait[21]{};unsigned queryWaitFrames=0;
 ''' + report + report_wait + clear_wait

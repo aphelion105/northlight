@@ -164,7 +164,8 @@ def main():
     # 0.3.202 (rain mask): the lerp back to the unfogged colour on rain-mask pixels wraps haze + fog mad.
     assert ('if(PassInfo.z<.5){\n        float3 unfogged=color;\n'
             '        // Rain streaks were drawn into the scene before the composite: on mask pixels go back toward the unfogged pixel so they are not hazed.\n'
-            '        float rain=tex2Dlod(RainMask,float4(uv,0,0)).r;\n'
+            '        float rain=0;\n'
+            '        [branch]if(!baseLighting||CompositeWork.z<.5)rain=tex2Dlod(RainMask,float4(uv,0,0)).r;\n'
             '        color=lerp(mad(horizonHaze(color,centerUV,viewZ,d>=.99999&&liquid<=0,hdrMode,coverageTransmission),fog.a,fog.rgb*coverageTransmission),unfogged,rain);\n'
             '    }') in shader
     assert 'mad(legacyT,fog.rgb,fogPart)' not in shader
@@ -206,11 +207,13 @@ def main():
         else:assert before[3]==after[3]==(0.,0.,0.)
     assert 'c[33][0]=float(w);c[33][1]=float(h);c[33][2]=float(w/2);c[33][3]=float(h/2)' in cpu
     bank='d->SetPixelShaderConstantF(0,&c[0][0],68)'
-    assert cpu.count(bank)==3
+    assert cpu.count(bank)==1
     assert 'c[30][0]=waterMask?1.f:0.f;'+bank in cpu
-    assert cpu.index(bank,cpu.index('// Temporal shaders own material'))<cpu.index('d->SetPixelShaderConstantF(73,bumpControl,1)',cpu.index('// Temporal shaders own material'))
+    temporal=cpu.index('if(profile)profile->mark("TemporalLight");')
+    assert cpu.index(bank)<cpu.index('d->SetPixelShaderConstantF(73,bumpControl,1)')<temporal
+    assert cpu.index('d->SetPixelShaderConstantF(7,&c[7][0],21);',temporal)<cpu.index('constexpr unsigned directInputs=',temporal)
     assert 'const bool currentLocalLighting=debug==0&&(localDirectCount||pointReady);' in cpu
-    assert cpu.index(bank,cpu.index('if(currentLocalLighting){'))<cpu.index('bool fogResolved=false;')
+    assert cpu.index('d->SetPixelShaderConstantF(0,&c[0][0],53);',cpu.index('if(currentLocalLighting){'))<cpu.index('bool fogResolved=false;')
 
     assert 'uploadedFogField->fogCells||uploadedFogField->airCells' in cpu
     assert 'if(cell.height>0&&edge>0)++out.airCells' in policy

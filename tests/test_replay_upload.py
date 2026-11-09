@@ -5,9 +5,13 @@ import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).reso
 import northlight_paths as fp
 from pathlib import Path
 import ast,subprocess,tempfile
+import argparse
+parser=argparse.ArgumentParser(__doc__);parser.add_argument('--zig',action='store_true',help='Run Windows CPU fixtures with the pinned cross-compiler.');args=parser.parse_args()
 HERE=Path(__file__).resolve().parent
 def literal(file,key):return next(ast.literal_eval(n.value) for n in ast.parse(file.read_text()).body if isinstance(n,ast.Assign) and any(getattr(t,'id','')==key for t in n.targets))
 stub=literal(HERE/'test_terrain_snapshot.py','stub')
+if args.zig:stub=stub.replace('using DWORD=unsigned;using HRESULT=std::int32_t;','using DWORD=unsigned long;using HRESULT=long;')
+stub=stub.replace('struct IDirect3DDevice9{','struct D3DCAPS9{UINT MaxVertexIndex=0;};\nstruct IDirect3DDevice9{\nvirtual HRESULT GetDeviceCaps(D3DCAPS9* caps){caps->MaxVertexIndex=0xffffffffu;return D3D_OK;}')
 stub=stub.replace('struct IDirect3DDevice9{','constexpr HRESULT S_OK=0,S_FALSE=1;constexpr unsigned D3DISSUE_END=1;enum D3DQUERYTYPE{D3DQUERYTYPE_EVENT=8};\nstruct IDirect3DQuery9:IRef{virtual HRESULT Issue(DWORD)=0;virtual HRESULT GetData(void*,DWORD,DWORD)=0;};\nstruct IDirect3DDevice9{\nvirtual HRESULT CreateQuery(D3DQUERYTYPE,IDirect3DQuery9**)=0;\nvirtual HRESULT CreateVertexBuffer(UINT,DWORD,UINT,unsigned,IDirect3DVertexBuffer9**,void*)=0;\nvirtual HRESULT CreateIndexBuffer(UINT,DWORD,D3DFORMAT,unsigned,IDirect3DIndexBuffer9**,void*)=0;')
 body=r'''
 #include "replay_gpu_cache.h"
@@ -49,7 +53,7 @@ struct Device:IDirect3DDevice9{
  unsigned calls=0,failAt=0;bool lockFail=false;
  HRESULT CreateQuery(D3DQUERYTYPE,IDirect3DQuery9** out)override{*out=new FakeQuery;++creates;return D3D_OK;}
  HRESULT CreateVertexBuffer(UINT n,DWORD usage,UINT,unsigned,IDirect3DVertexBuffer9** out,void*)override{if(++calls==failAt)return E_POINTER;auto p=new Buffer<IDirect3DVertexBuffer9,D3DVERTEXBUFFER_DESC>(n);p->fail=lockFail;p->dynamic=usage&D3DUSAGE_DYNAMIC;*out=p;return D3D_OK;}
- HRESULT CreateIndexBuffer(UINT n,DWORD usage,D3DFORMAT,unsigned,IDirect3DIndexBuffer9** out,void*)override{if(++calls==failAt)return E_POINTER;auto p=new Buffer<IDirect3DIndexBuffer9,D3DINDEXBUFFER_DESC>(n);p->fail=lockFail;p->dynamic=usage&D3DUSAGE_DYNAMIC;*out=p;return D3D_OK;}
+ HRESULT CreateIndexBuffer(UINT n,DWORD usage,D3DFORMAT format,unsigned,IDirect3DIndexBuffer9** out,void*)override{if(++calls==failAt)return E_POINTER;auto p=new Buffer<IDirect3DIndexBuffer9,D3DINDEXBUFFER_DESC>(n);p->desc.Format=format;p->fail=lockFail;p->dynamic=usage&D3DUSAGE_DYNAMIC;*out=p;return D3D_OK;}
  HRESULT GetVertexShaderConstantF(UINT,float*,UINT)override{return E_POINTER;}HRESULT GetVertexDeclaration(IDirect3DVertexDeclaration9**)override{return E_POINTER;}HRESULT GetStreamSourceFreq(UINT,UINT*)override{return E_POINTER;}HRESULT GetStreamSource(UINT,IDirect3DVertexBuffer9**,UINT*,UINT*)override{return E_POINTER;}HRESULT GetIndices(IDirect3DIndexBuffer9**)override{return E_POINTER;}
 };
 std::shared_ptr<const NorthlightDrawSnapshot::Mesh> meshS(unsigned bytes,unsigned stride,bool multi){auto m=std::make_shared<NorthlightDrawSnapshot::Mesh>();m->streams[0].stride=stride;m->streams[0].bytes.resize(bytes);if(multi){m->streams[1].stride=8;m->streams[1].bytes.resize(80);}m->indices={0,1,2};for(unsigned i=0;i<bytes;++i)m->streams[0].bytes[i]=(i*7+stride)%251;return m;} /* 0.3.211 (task 31): any stride, single- or multi-stream regardless of SINGLE_STREAM */
@@ -88,8 +92,10 @@ method=re.sub(r'^\s*deferLogf\("GPU_SCENE[^\n]*\n','',method,flags=re.M)
 shell=r"""
 #include <cstdarg>
 #include <chrono>
+#ifndef _WIN32
 struct LARGE_INTEGER {std::int64_t QuadPart=0;};
 bool QueryPerformanceCounter(LARGE_INTEGER* out){out->QuadPart=std::chrono::steady_clock::now().time_since_epoch().count();return true;}
+#endif
 #include "capture_phase_profile.h"
 #include "streaming_phase_profile.h"
 #include "dynamic_ring.h"
@@ -106,7 +112,7 @@ class WorldRenderer {public:
   NorthlightDrawSnapshot::Mesh snapshot;
   bool gpuCached=false,indexed=true,bulkSingle=false;
   IDirect3DVertexBuffer9* stream[4]={};IDirect3DIndexBuffer9* index=nullptr;
-  UINT offset[4]={},stride[4]={},start=0;INT base=0;
+  UINT offset[4]={},stride[4]={},start=0,min=0;INT base=0;
   const NorthlightDrawSnapshot::Mesh& mesh()const{return shared?*shared:snapshot;}
   bool* boundsPending=nullptr;
   ~Replay(){assert(!boundsPending||!*boundsPending);for(auto& p:stream)drop(p);drop(index);}
@@ -119,6 +125,7 @@ class WorldRenderer {public:
  NorthlightStreaming::PhaseProfile streamingPhases;unsigned replayCreatedPeak=0;uint64_t replayTimeDeferred=0;uint64_t replayGrowths=0,replayFallbacks=0,replayBudgetOverrides=0;std::vector<size_t> replayTimeDeferredIndices; /* 0.3.138 split timers */
  NorthlightCapturePhases::Stats<2> replayUploadPhases;
  unsigned replayUploadCalls=0,replayUploadFallbacks=0;
+ unsigned shadowSliceCandidates=0,shadowSliceCreated=0,shadowSliceFallback=0,shadowSliceWordsBefore=0,shadowSliceWordsAfter=0;
  NorthlightDynamicRing::FrameFence frameFence; /* the production member of WorldRenderer */
  NorthlightDynamicRing::FrameFence& fence(){frameFence.device=d;return frameFence;}
  /* One frame: the production call, then the frame fence's Issue (WorldRenderer::endFrame). autoFrame: frames advance by themselves (tests that do not set frameNow). */
@@ -146,17 +153,29 @@ class WorldRenderer {public:
   for(auto& p:replays){for(auto* s:p->stream)if(s)++held[s];if(p->index)++held[p->index];}
   for(auto& b:registry){auto h=held.find(b.first);assert(*b.second==1+(h==held.end()?0:h->second));}
   for(auto& h:held)assert(registry.count(h.first));}
- static UINT addr(const Replay& p){return p.offset[0]+UINT(p.indexed?p.base:INT(p.start))*p.stride[0];} /* 0.3.211 (task 31): effective byte position of vertex 0 of stream 0 */
+ static UINT addr(const Replay& p){return p.offset[0]+UINT(p.indexed?p.base+INT(p.min):INT(p.start))*p.stride[0];} /* Effective byte position of vertex 0 of stream 0. */
  void verify(){for(auto& p:replays){const auto& m=p->mesh();for(unsigned s=0;s<4;++s){if(m.streams[s].bytes.empty()){assert(!p->stream[s]);continue;}
   auto* actual=static_cast<Buffer<IDirect3DVertexBuffer9,D3DVERTEXBUFFER_DESC>*>(p->stream[s]);
   /* BaseVertexIndex (indexed) or StartVertex (non-indexed) of batched residency */
-  assert(!memcmp(actual->data.data()+p->offset[s]+size_t(p->indexed?p->base:INT(p->start))*p->stride[s],m.streams[s].bytes.data(),m.streams[s].bytes.size()));assert(p->stride[s]==m.streams[s].stride);}
+  assert(!memcmp(actual->data.data()+p->offset[s]+size_t(p->indexed?p->base+INT(p->min):INT(p->start))*p->stride[s],m.streams[s].bytes.data(),m.streams[s].bytes.size()));assert(p->stride[s]==m.streams[s].stride);}
   if(p->indexed){auto* indices=static_cast<Buffer<IDirect3DIndexBuffer9,D3DINDEXBUFFER_DESC>*>(p->index);
-  assert(!memcmp(indices->data.data()+4*p->start,m.indices.data(),m.indices.size()*4));}else assert(!p->index);}}
+  const size_t width=indices->desc.Format==D3DFMT_INDEX16?2:4;
+  for(size_t i=0;i<m.indices.size();++i){uint32_t index=0;std::memcpy(&index,indices->data.data()+width*(p->start+i),width);assert(index==m.indices[i]+p->min);}}else assert(!p->index);}}
 """
 main=r"""
 };
 int main(){Device d;auto a=mesh(),b=mesh(480),c=mesh(96);
+ if constexpr(std::is_same<REPLAY_CACHE,NativeCache>::value){
+  WorldRenderer world(&d);
+  for(unsigned i=0;i<3;++i){auto m=std::const_pointer_cast<NorthlightDrawSnapshot::Mesh>(meshS(240,24,false));
+   m->indexed=true;m->vertexCount=10;m->primitiveCount=1;m->sourceIdentity=NorthlightSourceIdentity::make({0xbeefu,i});world.add(m,true);}
+  for(unsigned frame=0;frame<3;++frame){assert(world.upload());world.verify();}
+  assert(world.replays[0]->gpuCached&&world.replays[1]->gpuCached&&world.replays[2]->gpuCached);
+  assert(!world.replays[1]->base&&world.replays[1]->min==10&&world.replays[2]->min==20);
+  assert(world.upload(false));world.verify();for(auto& p:world.replays)assert(!p->gpuCached&&!p->min);
+  for(unsigned frame=0;frame<3;++frame){assert(world.upload());world.verify();}assert(world.replays[1]->gpuCached&&world.replays[1]->min==10);
+  puts("PASS absolute native indices -> bulk fallback -> resident recovery, identical effective addresses");
+ }
  // The QA's 79 MiB contiguous block must admit small resident meshes. The
  // complete frame reservation includes every new mesh and batch stride pad.
  {const double saved=NorthlightReplayGPU::createBudgetMs();NorthlightReplayGPU::createBudgetMs()=1e30;
@@ -403,5 +422,7 @@ with tempfile.TemporaryDirectory(prefix='northlight-replay-upload-') as tmp:
  # Per-mesh cache (switch off), batched cache with multi-stream meshes (per-mesh layout) and single-stream meshes (batches).
  for variant in [['-DREPLAY_CACHE=NorthlightReplayGPU::Cache','-DSINGLE_STREAM=0'],['-DREPLAY_CACHE=NorthlightReplayGPU::BatchedCache','-DSINGLE_STREAM=0'],['-DREPLAY_CACHE=NorthlightReplayGPU::BatchedCache','-DSINGLE_STREAM=1'],['-DREPLAY_CACHE=NativeCache','-DSINGLE_STREAM=1']]:
   for flags in [[],['-fsanitize=address,undefined','-fno-omit-frame-pointer']]:
-   subprocess.run(['clang++','-std=c++17','-O2',*variant,*flags,'-I'+str(p),*fp.test_include_flags(),str(p/'test.cpp'),'-o',str(p/'test')],check=True)
-   print(' '.join(variant[:2]),' '.join(flags[:1]),flush=True);subprocess.run([str(p/'test')],check=True)
+   compiler=[str(fp.zig()),'c++','-target','x86-windows-gnu'] if args.zig else ['clang++']
+   exe=p/('test.exe' if args.zig else 'test')
+   subprocess.run([*compiler,'-std=c++17','-O2','-UNDEBUG',*variant,*flags,'-I'+str(p),*fp.test_include_flags(),str(p/'test.cpp'),'-o',str(exe)],env=fp.zig_env() if args.zig else None,check=True)
+   print(' '.join(variant[:2]),' '.join(flags[:1]),flush=True);subprocess.run([str(exe)],check=True)

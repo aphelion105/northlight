@@ -228,7 +228,7 @@
         std::array<NorthlightPointShadow::SelectionTracker::Slot,NorthlightPointShadow::MaxLights> picks{};
         const bool enabled=active&&sourceMap==active->map&&!pointSelection.initialized&&!memoryPressure&&effects.shadows&&quality.pointShadows&&quality.localLights&&quality.localLightLimit;
         if(enabled){auto preview=pointSelection;if(pointSelectionMap!=active->map)preview.reset();
-            picks=preview.update(lights.sources.data(),lights.count,context.camera,quality.pointShadowLimit,GetTickCount(),&localScissorView,float(quality.pointShadowDistance));}
+            picks=preview.update(lights.sources.data(),lights.count,context.camera,NorthlightQuality::localShadowLimit(quality),GetTickCount(),&localScissorView,float(quality.pointShadowDistance));}
         unsigned wanted=0;
         for(unsigned i=0;i<pointSlots.size();++i){auto& p=pointSlots[i];const auto& pick=picks[i];wanted+=pick.index>=0;
             if(p.prewarmed&&(pick.index<0||p.map!=active->map||p.selected.sourceId!=lights.sources[pick.index].sourceId))releasePointSlot(p);}
@@ -572,8 +572,8 @@
     bool pointRefreshPredicted()const{
         if(!effects.shadows||lastRenderDebug!=0||!quality.pointShadows||!active)return false;
         // Conservative: a new lamp or changing selection also needs current-frame casters.
-        return NorthlightPointShadow::selectMany(active->localLights.data(),active->localLights.size(),context.camera,quality.pointShadowLimit,{},float(quality.pointShadowDistance),true).count!=0||
-            NorthlightPointShadow::selectMany(equipmentLights.output.data(),equipmentLights.outputCount,context.camera,quality.pointShadowLimit,{},float(quality.pointShadowDistance),true).count!=0;
+        return NorthlightPointShadow::selectMany(active->localLights.data(),active->localLights.size(),context.camera,NorthlightQuality::localShadowLimit(quality),{},float(quality.pointShadowDistance),true).count!=0||
+            NorthlightPointShadow::selectMany(equipmentLights.output.data(),equipmentLights.outputCount,context.camera,NorthlightQuality::localShadowLimit(quality),{},float(quality.pointShadowDistance),true).count!=0;
     }
     using PointReplayRuns=std::vector<std::pair<UINT,UINT>>;
     struct NativeShellMemo {
@@ -877,11 +877,11 @@
                 if(split!=replayRuns.end()){
                     ++at;
                     for(const auto& run:split->second){const UINT start=p->start+run.first*(p->type==D3DPT_TRIANGLELIST?3:1);
-                        const HRESULT hr=p->indexed?d->DrawIndexedPrimitive(p->type,p->base,p->min,p->vertices,start,run.second):d->DrawPrimitive(p->type,start,run.second);
+                        const HRESULT hr=shadowReplayDraw(*p,[&]{return p->indexed?d->DrawIndexedPrimitive(p->type,p->base,p->min,p->vertices,start,run.second):d->DrawPrimitive(p->type,start,run.second);});
                         if(!pointCheck(hr,"cube split emitter draw"))return false;++pointDraws;++pointWork.split;pointWork.triangles+=run.second;}
                 }else{
                     const auto run=pointReplayRun(pointReplayCandidates[face],at,replayRuns,replayBindings.skipping());
-                    const HRESULT hr=p->indexed?d->DrawIndexedPrimitive(p->type,p->base,run.min,run.vertices,run.start,run.count):d->DrawPrimitive(p->type,run.start,run.count);
+                    const HRESULT hr=shadowReplayDraw(*p,[&]{return p->indexed?d->DrawIndexedPrimitive(p->type,p->base,run.min,run.vertices,run.start,run.count):d->DrawPrimitive(p->type,run.start,run.count);});
                     if(!pointCheck(hr,"cube animated draw"))return false;++pointDraws;++pointWork.replay;pointWork.triangles+=run.count;
                 }
             }
@@ -923,10 +923,10 @@
         if(!active)return;
         const bool coldTimed=NorthlightQuality::renderProfile(quality);const int64_t coldStarted=coldTimed?QpcClock::now():0;
         if(pointSelectionMap!=active->map){pointSelection.reset();clearPointKeeps();pointSelectionMap=active->map;}
-        const auto picks=pointSelection.update(lights.sources.data(),lights.count,context.camera,quality.pointShadowLimit,GetTickCount(),&localScissorView,float(quality.pointShadowDistance));
+        const auto picks=pointSelection.update(lights.sources.data(),lights.count,context.camera,NorthlightQuality::localShadowLimit(quality),GetTickCount(),&localScissorView,float(quality.pointShadowDistance));
         unsigned selected=0,totalDraws=0,totalCulled=0;const unsigned updatesBefore=pointUpdates,reusesBefore=pointReuses;
         unsigned wanted=0;for(const auto& pick:picks)wanted+=pick.index>=0;
-        const unsigned limit=std::min(quality.pointShadowLimit,NorthlightPointShadow::MaxLights);
+        const unsigned limit=std::min(NorthlightQuality::localShadowLimit(quality),NorthlightPointShadow::MaxLights);
         // Every keep uses a spare configured slot, never an extra light budget;
         // eight static-only keeps cap idle targets at 12 MiB, zero under pressure.
         const unsigned keepLimit=memoryPressure?0:std::min(unsigned(pointKeeps.size()),limit-std::min(limit,wanted));
@@ -948,10 +948,10 @@
         pointIndex=0;
         pointDraws=totalDraws;pointCulled=totalCulled;pointLogSchedule(pointUpdates==updatesBefore&&pointReuses!=reusesBefore);
         pointWork.selected=selected;
-        if(pointReportedLimit!=quality.pointShadowLimit||(frames%600==0&&NorthlightDiagnostics::enabled())){
+        if(pointReportedLimit!=NorthlightQuality::localShadowLimit(quality)||(frames%600==0&&NorthlightDiagnostics::enabled())){
             unsigned ready=0,resident=0,kept=0,staticFaces=0;for(const auto& p:pointSlots){ready+=p.ready;resident+=p.cube!=nullptr;for(auto* t:p.cacheFace)staticFaces+=t!=nullptr;}for(const auto& k:pointKeeps){kept+=k.slot.cacheValid;for(auto* t:k.slot.cacheFace)staticFaces+=t!=nullptr;}
-            logf("POINT pool limit=%u selected=%u ready=%u cubeSlots=%u estimatedMiB=%.1f staticKeeps=%u staticFaces=%u",quality.pointShadowLimit,selected,ready,resident,resident*1.5+staticFaces*.25+(pointScratch?.25:0)+(pointDepth?.25:0),kept,staticFaces);
-            pointReportedLimit=quality.pointShadowLimit;
+            logf("POINT pool limit=%u selected=%u ready=%u cubeSlots=%u estimatedMiB=%.1f staticKeeps=%u staticFaces=%u",NorthlightQuality::localShadowLimit(quality),selected,ready,resident,resident*1.5+staticFaces*.25+(pointScratch?.25:0)+(pointDepth?.25:0),kept,staticFaces);
+            pointReportedLimit=NorthlightQuality::localShadowLimit(quality);
         }
         if(coldTimed&&captureFrequency.QuadPart>0){const double scale=1000.0/double(captureFrequency.QuadPart),cpuMs=double(QpcClock::now()-coldStarted)*scale;
             if(cpuMs>=8||profileSampled()){

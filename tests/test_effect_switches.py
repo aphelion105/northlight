@@ -27,8 +27,7 @@ def block(start):
 
 setter = block('    void setEffects(')
 shadow_clear = block('        if(!effects.shadows&&!neutralShadowMaps)')
-fog_clear = world.split('// Clear every empty/disabled frame', 1)[1]
-fog_clear = fog_clear[fog_clear.index('d->SetTexture'):fog_clear.index('\n        }')]
+fog_clear = block('else if(!fogNeutral){').removeprefix('else ')
 neutral_matrix = re.search(r'const float neutralMatrix\[16\]=\{[^;]+;', world)[0]
 
 body = r'''
@@ -63,7 +62,7 @@ struct Fixture {
     NorthlightEffectSwitches::Settings effects,requestedEffects;
     NorthlightQuality::Settings quality; // 0.3.138 northlight-quality.ini; defaults: giPass is a pass-through
     bool temporalValid=true,shadowsComposited=true,settingsRequestDirty=false,pipelineActive=true;
-    bool shadowFrameReady=true,pointReady=true,neutralShadowMaps=false;
+    bool shadowFrameReady=true,pointReady=true,neutralShadowMaps=false,fogNeutral=false;
     bool cacheValid=true;unsigned transitionReleases=0;
     void releaseShadowTransitions(){++transitionReleases;}
     Device device;Device* d=&device;
@@ -71,7 +70,7 @@ struct Fixture {
     Surface* shadowSurface[4]={&maps[0],&maps[1],&maps[2],&maps[3]};
     Surface* fogSurface=&fog;
     UINT w=1920,h=1080;
-    void invalidateShadowCache(){cacheValid=false;}
+    void invalidateShadowCache(bool=false){cacheValid=false;}
     bool check(HRESULT hr,const char*){return hr==0;}
     SETTER
     bool neutralShadows(){SHADOW_CLEAR return true;}
@@ -160,6 +159,12 @@ int main(){
     }
     // The real neutral clear retains scene RGB exactly: alpha must be 1, not 0.
     assert(f.neutralFog()&&f.fog.color==0xff000000);
+    const auto clears=f.device.clearCalls;assert(f.neutralFog()&&f.device.clearCalls==clears);
+    for(bool targetFault:{false,true}){
+        Fixture e;if(targetFault)e.device.failTarget=1;else e.device.failClear=1;
+        assert(!e.neutralFog()&&!e.fogNeutral);e.device.failTarget=e.device.failClear=0;
+        assert(e.neutralFog()&&e.fogNeutral&&e.fog.color==0xff000000);
+    }
     for(unsigned color:{0u,0x123456u,0xffffffu}){
         const float alpha=float(f.fog.color>>24)/255;
         assert(float(color)*alpha+float(f.fog.color&0xffffff)==float(color));

@@ -10,6 +10,7 @@
 #include <limits>
 #include <map>
 #include <list>
+#include <unordered_map>
 #include <vector>
 
 namespace NorthlightNativeLights {
@@ -98,12 +99,24 @@ inline Clock clock(const unsigned char* runtime,unsigned offset,const Asset& ass
 } // namespace SceneDetail
 
 class Reader {
+    friend struct NativeSceneLightCacheTest;
     using Asset=SceneDetail::Asset;using Matrix=SceneDetail::Matrix;using ModelData=std::array<unsigned char,SceneDetail::ModelBytes>;
     struct Timing {SceneDetail::Clock first,second;float blend=0;bool valid=false;};
     struct Model {std::uint32_t shared=0,data=0,origin=0,visited=0;std::uint64_t firstId=0;float distance=0;};
     std::map<std::uint32_t,Model> models_;std::list<Asset> assets_;std::shared_ptr<const NorthlightNativeFixtures::Catalog> fixtures_;
+    std::unordered_multimap<std::uint32_t,std::list<Asset>::iterator> assetLookup_;
+    auto findAsset(std::uint32_t shared,std::uint32_t data){
+        const auto range=assetLookup_.equal_range(shared);
+        for(auto i=range.first;i!=range.second;++i)if(i->second->data==data)return i->second;
+        return assets_.end();
+    }
+    void eraseAsset(std::list<Asset>::iterator entry){
+        assetBytes_-=entry->bytes;const auto range=assetLookup_.equal_range(entry->shared);
+        for(auto i=range.first;i!=range.second;++i)if(i->second==entry){assetLookup_.erase(i);break;}
+        assets_.erase(entry);
+    }
     std::uint32_t scene_=0,cursor_=0,frame_=0,lastHead_=0,lastScan_=0;std::uint64_t serial_=0;bool checked_=false,proven_=false;
-    unsigned loads_=0;std::size_t readBytes_=0;unsigned readCalls_=0;
+    unsigned loads_=0;std::size_t readBytes_=0,assetBytes_=0;unsigned readCalls_=0;
     std::array<std::array<unsigned char,SceneDetail::BoneBytes>,SceneDetail::MaxBones> boneScratch_;
     std::array<unsigned char,8192> runtimeScratch_;
     std::array<std::uint32_t,SceneDetail::MaxBones> boneKnown_{};std::uint32_t boneGeneration_=0;
@@ -115,17 +128,20 @@ class Reader {
     Matrix view_,inverse_;bool viewsRead_=false,viewsValid_=false;
     template<class Read> bool views(Read& read){if(!viewsRead_){viewsRead_=true;std::array<float,32> values{};viewsValid_=read(scene_+0x84,values.data(),128);
         if(viewsValid_){std::copy(values.begin(),values.begin()+16,view_.begin());std::copy(values.begin()+16,values.end(),inverse_.begin());viewsValid_=SceneDetail::affine(view_)&&SceneDetail::affine(inverse_);}}return viewsValid_;}
-    std::size_t poseAllowance(const Asset& target)const{std::size_t used=0;for(const auto& a:assets_)if(&a!=&target)used+=a.bytes;return std::min(std::size_t(SceneDetail::AssetBytes),used>=SceneDetail::CacheBytes?0:SceneDetail::CacheBytes-used);}
+    std::size_t poseAllowance(const Asset& target)const{const auto used=assetBytes_-target.bytes;return std::min(std::size_t(SceneDetail::AssetBytes),used>=SceneDetail::CacheBytes?0:SceneDetail::CacheBytes-used);}
     template<class Read> struct Runtime {
         Reader& owner;Read& read;Asset& asset;const ModelData& model;Matrix world;
-        std::uint32_t now,origin,bones,lights,generation;std::uint64_t end=0;bool span=false,valid=false;
+        std::uint32_t now,origin,bones,lights,generation;std::uint64_t end=0;bool span=false,valid=false;std::size_t initialBytes;
         Runtime(Reader& r,Read& input,Asset& a,const ModelData& m,const Matrix& w,std::uint32_t time):owner(r),read(input),asset(a),model(m),world(w),now(time){
+            initialBytes=a.bytes;
             using namespace SceneDetail;a.allowance=r.poseAllowance(a);origin=at<std::uint32_t>(m,0x74);bones=at<std::uint32_t>(m,0x94);lights=at<std::uint32_t>(m,0x1d0);
             valid=pointer(bones);if(!valid)return;const unsigned count=at<std::uint32_t>(a.header,264);
             end=count&&pointer(lights)&&lights>=bones?std::uint64_t(lights)+count*LightBytes:std::uint64_t(bones)+a.bones.size()*BoneBytes;
             span=end>=bones&&end-bones<=r.runtimeScratch_.size()&&read(bones,r.runtimeScratch_.data(),std::size_t(end-bones));
             if(!++r.boneGeneration_){r.boneKnown_.fill(0);r.poseKnown_.fill(0);r.poseBusy_.fill(0);r.timingKnown_.fill(0);r.timingBusy_.fill(0);++r.boneGeneration_;}generation=r.boneGeneration_;
         }
+        ~Runtime(){owner.assetBytes_=owner.assetBytes_-initialBytes+asset.bytes;}
+        Runtime(const Runtime&)=delete;Runtime& operator=(const Runtime&)=delete;
         const unsigned char* bone(unsigned index){using namespace SceneDetail;if(!valid||index>=asset.bones.size())return nullptr;
             if(span&&std::size_t(index+1)*BoneBytes<=end-bones)return owner.runtimeScratch_.data()+index*BoneBytes;
             if(owner.boneKnown_[index]!=generation){if(!read(bones+index*BoneBytes+0x40,owner.boneScratch_[index].data()+0x40,BoneBytes-0x40))return nullptr;owner.boneKnown_[index]=generation;}return owner.boneScratch_[index].data();}
@@ -173,7 +189,12 @@ class Reader {
             result=storage.data();return read(lights+index*LightBytes,storage.data(),storage.size());}
     };
     template<class Read> bool sharedData(Read& read,std::uint32_t shared,std::uint32_t& data){
-        for(const auto& a:assets_)if(a.shared==shared&&a.checked==frame_){data=a.data;return true;}
+        const auto range=assetLookup_.equal_range(shared);
+        if(range.first!=range.second){const auto first=range.first;auto next=first;++next;
+            if(next==range.second){const auto& a=*first->second;if(a.checked==frame_){data=a.data;return true;}}
+            // Rare reused shared pointers keep the original list-order choice.
+            else for(const auto& a:assets_)if(a.shared==shared&&a.checked==frame_){data=a.data;return true;}
+        }
         return read(shared+0x150,&data,4);
     }
     template<class Read> Asset* asset(Read& input,std::uint32_t shared,std::uint32_t data,bool needPose=false){
@@ -183,11 +204,11 @@ class Reader {
             if(calls>=512||bytes>AssetBytes-bytesRead){metadataLimit=true;return false;}
             ++calls;bytesRead+=bytes;return input(address,dst,bytes);
         };
-        auto found=std::find_if(assets_.begin(),assets_.end(),[&](const Asset& a){return a.shared==shared&&a.data==data;});
+        auto found=findAsset(shared,data);
         if(found!=assets_.end()&&found->checked==frame_&&(!needPose||found->poseReady)){found->used=frame_;return &*found;}
         std::array<unsigned char,304> header{};if(!read(data,header.data(),header.size()))return nullptr;
         if(found!=assets_.end()&&found->header==header&&(!needPose||found->poseReady)){found->checked=found->used=frame_;return &*found;}
-        if(found!=assets_.end())assets_.erase(found);
+        if(found!=assets_.end())eraseAsset(found);
         if(loads_++>=4){++budgetLimited;return nullptr;}
         if(std::memcmp(header.data(),"MD20",4)||at<std::uint32_t>(header,4)!=264){++malformed;return nullptr;}
         Asset a;a.header=header;a.shared=shared;a.data=data;a.checked=a.used=frame_;a.bytes=sizeof a;std::vector<std::array<unsigned char,156>> records;
@@ -212,9 +233,9 @@ class Reader {
         // Optional fixture proof follows all required native metadata. A stale
         // name/vertex pointer must not remove ordinary light or force retries.
         if(lights&&!metadataLimit){a.fixtureTag=std::uint32_t(NorthlightNativeFixtures::match(read,fixtures_.get(),header,a.bones,records,AssetBytes-bytesRead));if(a.fixtureTag)a.fixtureSources=fixtures_->records[a.fixtureTag-1].sources;}
-        std::size_t bytes=a.bytes;for(const auto& cached:assets_)bytes+=cached.bytes;
-        while(!assets_.empty()&&(assets_.size()>=AssetLimit||bytes>CacheBytes)){auto oldest=std::min_element(assets_.begin(),assets_.end(),[](const auto& x,const auto& y){return x.used<y.used;});if(oldest->used==frame_){++budgetLimited;return nullptr;}bytes-=oldest->bytes;assets_.erase(oldest);}
-        if(a.bytes>CacheBytes){++budgetLimited;return nullptr;}assets_.push_back(std::move(a));return &assets_.back();
+        std::size_t bytes=a.bytes+assetBytes_;
+        while(!assets_.empty()&&(assets_.size()>=AssetLimit||bytes>CacheBytes)){auto oldest=std::min_element(assets_.begin(),assets_.end(),[](const auto& x,const auto& y){return x.used<y.used;});if(oldest->used==frame_){++budgetLimited;return nullptr;}bytes-=oldest->bytes;eraseAsset(oldest);}
+        if(a.bytes>CacheBytes){++budgetLimited;return nullptr;}assets_.push_back(std::move(a));assetBytes_+=assets_.back().bytes;assetLookup_.emplace(shared,std::prev(assets_.end()));return &assets_.back();
     }
     template<class Read> WorldEntry* parentWorld(Read& read,std::uint32_t address,std::uint32_t now,unsigned depth){
         using namespace SceneDetail;if(depth>=16||!pointer(address)){++malformed;return nullptr;}
@@ -247,8 +268,8 @@ public:
     unsigned assetCount()const{return unsigned(assets_.size());}
     unsigned readCalls()const{return readCalls_;}
     std::size_t readBytes()const{return readBytes_;}
-    void fixtures(std::shared_ptr<const NorthlightNativeFixtures::Catalog> catalog){if(catalog!=fixtures_){fixtures_=std::move(catalog);assets_.clear();}}
-    void reset(){models_.clear();assets_.clear();scene_=cursor_=lastHead_=lastScan_=0;}
+    void fixtures(std::shared_ptr<const NorthlightNativeFixtures::Catalog> catalog){if(catalog!=fixtures_){fixtures_=std::move(catalog);assetLookup_.clear();assets_.clear();assetBytes_=0;}}
+    void reset(){models_.clear();assetLookup_.clear();assets_.clear();assetBytes_=0;scene_=cursor_=lastHead_=lastScan_=0;}
     template<class Read> static bool verify(Read read){
         // Local 12340 PE: world scene, intrusive list, loaded data and light layout.
         static const unsigned char world[]={0x8b,0x35,0x4c,0x75,0xcd,0x00};

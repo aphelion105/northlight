@@ -33,6 +33,9 @@ public:
     void setColdTraceSink(ColdTraceSink sink,void* context=nullptr){coldTraceSink=sink;coldTraceContext=context;}
 private:
     struct Key {IDirect3DVertexShader9* vs;IDirect3DPixelShader9* ps;unsigned slot;bool operator==(const Key& b)const{return vs==b.vs&&ps==b.ps&&slot==b.slot;}};
+    static Key pairKey(IDirect3DVertexShader9* vs,IDirect3DPixelShader9* ps,unsigned slot,const NorthlightNativeLocalDraw* second,const NorthlightNativeLocalDraw* third,const NorthlightNativePOM* pom,const NorthlightNativeDisplacement* displacement){
+        return {vs,ps,slot|(second?(second->slot+1)<<8:0)|(pom?0x10000u:0)|(displacement?0x20000u:0)|(third?(third->slot+1)<<20:0)};
+    }
     struct Hash {size_t operator()(const Key& k)const{return (reinterpret_cast<size_t>(k.vs)*16777619u^reinterpret_cast<size_t>(k.ps))*16777619u^k.slot;}};
     template<class T> static void release(T*& p){if(p){p->Release();p=nullptr;}}
     struct Entry {
@@ -49,11 +52,12 @@ private:
         ~Entry(){release(vs);release(ps);release(originalVS);release(originalPS);release(sourceVS);release(sourcePS);}
     };
     std::unordered_map<Key,std::unique_ptr<Entry>,Hash> shaders;
+    const Entry* submittedPair=nullptr;
     IDirect3DDevice9* d;
     void* samplerContext=nullptr;bool(*samplerReader)(void*,DWORD,unsigned,DWORD*)=nullptr;
     unsigned warmFrame=~0u,coldAttempts=0,coldTraceCount=0;ColdTraceSink coldTraceSink=nullptr;void* coldTraceContext=nullptr;
     Entry* acquire(IDirect3DVertexShader9* vs,IDirect3DPixelShader9* ps,unsigned slot,unsigned frame,const NorthlightNativeLocalDraw* second,const NorthlightNativeLocalDraw* third,const NorthlightNativePOM* pom,const NorthlightNativeDisplacement* displacement,const NorthlightEffectCoverage::NativePixel* coverage){
-        const Key key{vs,ps,slot|(second?(second->slot+1)<<8:0)|(pom?0x10000u:0)|(displacement?0x20000u:0)|(third?(third->slot+1)<<20:0)};auto old=shaders.find(key);if(old!=shaders.end())return old->second->ps?old->second.get():nullptr;
+        const Key key=pairKey(vs,ps,slot,second,third,pom,displacement);auto old=shaders.find(key);if(old!=shaders.end())return old->second->ps?old->second.get():nullptr;
         if(!vs||!ps||shaders.size()>=128)return nullptr;
         if(warmFrame!=frame){warmFrame=frame;coldAttempts=0;}
         const unsigned requestedCount=third?3:second?2:1;
@@ -164,6 +168,9 @@ public:
 #ifdef NORTHLIGHT_TEST_NEUTRAL_GAINS
     bool testZeroGainFastPath=true;
 #endif
+    bool provesReceiverPair(IDirect3DVertexShader9* source,IDirect3DVertexShader9* vertex,IDirect3DPixelShader9* pixel)const{
+        return submittedPair&&submittedPair->sourceVS==source&&submittedPair->vs==vertex&&submittedPair->ps==pixel;
+    }
     explicit NorthlightNativeLocalLighting(IDirect3DDevice9* device):d(device){}
     void reset(){shaders.clear();} // A same-frame resource reset keeps the cold-attempt budget.
     template<class Draw> HRESULT draw(const NorthlightNativeLocalDraw& light,IDirect3DVertexShader9* vs,IDirect3DPixelShader9* ps,Draw submit,const NorthlightNativeLocalDraw* second=nullptr,const NorthlightNativePOM* pom=nullptr,const NorthlightNativeDisplacement* displacement=nullptr,const NorthlightNativeLocalDraw* third=nullptr,const NorthlightEffectCoverage::NativePixel* coverage=nullptr){
@@ -181,9 +188,14 @@ public:
         };
         if(white(light)&&(!second||white(*second))&&(!third||white(*third))){++whiteCubeSkips;return submit();}
         if((white(light)||zero(light))&&(!second||white(*second)||zero(*second))&&(!third||white(*third)||zero(*third))){++zeroGainSkips;return submit();}
-        Entry* shader=nullptr;try{shader=acquire(vs,ps,light.slot,light.rendererFrame,nullptr,nullptr,pom,displacement,coverage);
+        Entry* shader=nullptr;try{
+            // A ready multi-light pair already contains the lower endpoints.
+            // Keep the single-first cold policy only while that pair is absent.
+            if(second){const auto ready=shaders.find(pairKey(vs,ps,light.slot,second,third,pom,displacement));if(ready!=shaders.end()&&ready->second->ps)shader=ready->second.get();}
+            if(!shader){shader=acquire(vs,ps,light.slot,light.rendererFrame,nullptr,nullptr,pom,displacement,coverage);
             if(second){auto* dual=acquire(vs,ps,light.slot,light.rendererFrame,second,nullptr,pom,displacement,coverage);if(dual)shader=dual;}
             if(second&&third){auto* triple=acquire(vs,ps,light.slot,light.rendererFrame,second,third,pom,displacement,coverage);if(triple)shader=triple;}
+            }
         }catch(const std::bad_alloc&){if(!shader){++fallbacks;return submit();}}
         if(shader&&shader->vertexInfo.count<3)third=nullptr;if(shader&&shader->vertexInfo.count<2)second=nullptr;
         if(!shader||!light.cube){++fallbacks;return submit();}
@@ -235,6 +247,8 @@ public:
         for(unsigned s=0;s<count&&bound;++s){bound=SUCCEEDED(d->SetTexture(shader->info.samplers[s],s==2?third->cube:s?second->cube:light.cube));for(unsigned i=0;i<7&&bound;++i)if(values[s][i]!=wanted[i])bound=SUCCEEDED(d->SetSamplerState(shader->info.samplers[s],keys[i],wanted[i]));}
         bound=bound&&SUCCEEDED(d->SetVertexShader(shader->vs))&&SUCCEEDED(d->SetPixelShader(shader->ps));
         if(!bound){++fallbacks;if(!restore.restore())return E_FAIL;return submit();}
+        struct PairScope {const Entry*& slot;const Entry* previous;~PairScope(){slot=previous;}} pairScope{submittedPair,submittedPair};
+        submittedPair=shader;
         ++draws;if(second)++multiDraws;if(third)++tripleDraws;const HRESULT result=submit();if(SUCCEEDED(result)){whiteCubeBypasses+=unsigned(whiteSources[0])+unsigned(whiteSources[1])+unsigned(whiteSources[2]);zeroGainBypasses+=unsigned(zeroSources[0])+unsigned(zeroSources[1])+unsigned(zeroSources[2]);}return restore.restore()?result:E_FAIL;
     }
 };

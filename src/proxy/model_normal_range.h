@@ -7,15 +7,15 @@
 // Mixed bones, modified projection and unknown source/layout keep capture.
 namespace NorthlightModelNormalRange {
 enum Kind {None,Rigid,Single,Envelope};
-inline Kind classify(const uint32_t* code,size_t count,bool allowEnvelope=false){
+// A producer may supply its compile(code,count,p,false,2) for the same shader.
+inline Kind classify(const uint32_t* code,size_t count,bool allowEnvelope=false,const NorthlightActorDeformation::Program* prepared=nullptr){
   try{
     using namespace NorthlightWaterShaderPatch;
-    Analysis a;NorthlightActorDeformation::Program p;
-    if(analyse(code,count,a)||!a.vertex||a.writes!=4||!NorthlightActorDeformation::compile(code,count,p,false,2)||
-       p.positionRegister>1)return None;
+    Analysis a;NorthlightActorDeformation::Program local;
+    if(analyse(code,count,a)||!a.vertex||a.writes!=4||(!prepared&&!NorthlightActorDeformation::compile(code,count,local,false,2)))return None;
+    const auto& p=prepared?*prepared:local;if(p.positionRegister>1)return None;
     const bool single=p.kernel.singleSkin();
-    using K=NorthlightActorDeformation::Kernel;
-    const bool envelope=allowEnvelope&&p.kernel.evaluator==K::WeightedR0;
+    const bool envelope=allowEnvelope&&NorthlightReplayBounds::SkinEnvelope::supports(p);
     if(!envelope&&p.positionRegister!=0)return None;
     if(!single&&!envelope&&(p.skinned||p.operations.size()!=4||p.inputs.size()!=1||p.inputs[0].reg||p.inputs[0].usage||p.inputs[0].index))return None;
     bool one=false;for(size_t at=1;at<count;){const unsigned op=code[at]&65535,n=op==65534?(code[at]>>16)&32767:(code[at]>>24)&15;

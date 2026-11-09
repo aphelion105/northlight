@@ -22,6 +22,7 @@ struct MaterialCaptureStateTestAccess {
         {SavedState restore(&d);assert(restore.ok);ok(d.SetDepthStencilSurface(nullptr));ok(d.SetRenderTarget(0,b.occlusionTarget));ok(d.Clear(0,nullptr,D3DCLEAR_TARGET,0xa0b0c0d0,1,0));}
         using Mesh=NorthlightDrawSnapshot::Mesh;std::vector<std::shared_ptr<const Mesh>> meshes;
         for(unsigned i=0;i<192;++i){auto mesh=std::make_shared<Mesh>();mesh->vertexCount=6;mesh->primitiveCount=2;mesh->streams[0].stride=16;
+            mesh->indexed=true;mesh->topology=D3DPT_TRIANGLELIST;mesh->indices={0,1,2,3,4,5};
             const float x=-1.f+float(i%16)/8.f,y=-1.f+float(i/16)/6.f,r=x+.125f,t=y+1.f/6.f,z=.25f+float(i%4)*.1f;
             const float v[][4]={{x,y,z,1},{r,y,z,1},{x,t,z,1},{x,t,z,1},{r,y,z,1},{r,t,z,1}};mesh->streams[0].bytes.resize(sizeof v);std::memcpy(mesh->streams[0].bytes.data(),v,sizeof v);meshes.push_back(std::move(mesh));}
         Result result;std::vector<double> gpu,cpu;

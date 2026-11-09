@@ -21,8 +21,17 @@ inline std::uint64_t mipBytes(D3DFORMAT format,unsigned width,unsigned height,un
     default:break; // Unknown static formats retain a conservative 128-bit estimate.
     }
     if(!width||!height)return 0;
-    // Exact geometric series for the common square power-of-two normal maps.
-    if(!block&&!levels&&width==height&&width<=16384&&(width&(width-1))==0)return ((uint64_t(width)*height*4-1)/3)*texel;
+    // Exact geometric series, including explicit partial chains and DXT's
+    // minimum one-block tail at 2x2 and 1x1.
+    if(width==height&&width<=16384&&(width&(width-1))==0){
+        const unsigned full=unsigned(__builtin_ctz(width))+1;
+        const unsigned count=levels&&levels<full?levels:full;
+        if(!block){const std::uint64_t last=width>>(count-1);return (std::uint64_t(width)*width*4-last*last)/3*texel;}
+        if(width<4)return std::uint64_t(block)*count;
+        const unsigned geometric=count<full-2?count:full-2;
+        const std::uint64_t edge=width>>2,last=edge>>(geometric-1);
+        return ((edge*edge*4-last*last)/3+count-geometric)*block;
+    }
     std::uint64_t bytes=0;unsigned level=0;
     do{
         bytes+=block?((std::uint64_t(width)+3)/4)*((std::uint64_t(height)+3)/4)*block:std::uint64_t(width)*height*texel;

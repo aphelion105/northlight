@@ -66,7 +66,7 @@ class Geometry(unittest.TestCase):
         self.assertGreater(cases,25)
         shader=(fp.SHADERS/'world_effects.hlsl').read_text()
         self.assertIn('float water=waterDistance(uv,d);return water>0?water:viewDistance(min(d,.99999));',shader)
-        self.assertEqual(shader.count('fogReceiverDistance(uv,depth)'),3)
+        self.assertEqual(shader.count('fogReceiverDistance(uv,depth)'),4)  # The optional moon-floor fog pass shares this helper.
         self.assertNotIn('receiverDistance(uv,min(depth,.99999))',shader)
     def test_geometry_mask_excludes_land_and_foreground(self):
         # Camera sees an actual rectangular liquid mesh. An infinite sloped

@@ -42,6 +42,7 @@ struct MaterialBindingDevice:CaptureBackend {
     MaterialBindingDevice(){state.targets[0]=&surface;state.depth=&surface;state.viewport={0,0,64,64,.1f,.9f};state.vertex=&vs;state.pixel=&ps;state.declaration=&decl;state.scissor={1,2,40,50};for(unsigned i=0;i<state.vf.size();++i)state.vf[i]=float(i)*.01f;for(unsigned i=0;i<state.pf.size();++i)state.pf[i]=-float(i)*.02f;capture.samples=auxiliary.samples=privateDepth.samples=D3DMULTISAMPLE_NONE;}
     bool refuse(unsigned kind){if(fault==kind&&!faultUsed&&draws.empty()){faultUsed=true;return true;}return false;}
     HRESULT STDMETHODCALLTYPE CreateStateBlock(D3DSTATEBLOCKTYPE,IDirect3DStateBlock9** out)override{*out=new Block(*this);return D3D_OK;}
+    HRESULT STDMETHODCALLTYPE GetDeviceCaps(D3DCAPS9* out)override{*out={};out->MaxVertexIndex=UINT_MAX;return D3D_OK;}
     HRESULT STDMETHODCALLTYPE GetRenderTarget(DWORD n,IDirect3DSurface9** out)override{*out=state.targets[n];if(*out)(*out)->AddRef();return *out?D3D_OK:D3DERR_NOTFOUND;}
     HRESULT STDMETHODCALLTYPE SetRenderTarget(DWORD n,IDirect3DSurface9* value)override{
         if(n==1){++auxiliaryCalls;if(fault==3&&!faultUsed&&draws.size()>=2&&draws.size()<6&&state.targets[1]!=value){faultUsed=true;return E_FAIL;}}

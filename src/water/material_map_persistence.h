@@ -55,11 +55,17 @@ public:
     Probe probe(IDirect3DTexture9* source,const D3DSURFACE_DESC& desc,bool model,unsigned polarity,unsigned details,unsigned balance,std::uint64_t revision){
         if(!store.available()||(desc.Usage&(D3DUSAGE_DYNAMIC|D3DUSAGE_RENDERTARGET|D3DUSAGE_DEPTHSTENCIL))||desc.Pool!=D3DPOOL_MANAGED)return {};
         if(model){polarity=polarity==2?2u:0u;details=0;balance=50;} // Only the model height sign affects its generator.
-        reads.erase(std::remove_if(reads.begin(),reads.end(),[&](const auto& r){return r->source==source&&r->revision!=revision;}),reads.end());
-        for(auto& r:reads)if(r->source==source&&r->model==model&&r->polarity==polarity&&r->details==details&&r->balance==balance){
-            r->used=frame;const auto state=r->ticket->state.load(std::memory_order_acquire);
+        Read* found=nullptr;
+        reads.erase(std::remove_if(reads.begin(),reads.end(),[&](const auto& r){
+            if(r->source!=source)return false;
+            if(r->revision!=revision)return true;
+            if(!found&&r->model==model&&r->polarity==polarity&&r->details==details&&r->balance==balance)found=r.get();
+            return false;
+        }),reads.end());
+        if(found){
+            found->used=frame;const auto state=found->ticket->state.load(std::memory_order_acquire);
             const auto status=state==Store::State::Hit?Status::Hit:state==Store::State::Miss?Status::Miss:state==Store::State::Pending?Status::Pending:Status::Skip;
-            return {status,r->profile,r->ticket};
+            return {status,found->profile,found->ticket};
         }
         size_t row=0,rows=0;if(!desc.Width||!desc.Height||desc.Width>16384||desc.Height>16384||!layout(desc.Format,desc.Width,desc.Height,row,rows)||!row||!rows||row>Store::MaxSourceBytes||rows>Store::MaxSourceBytes/row){++unsupported;return {};}
         if(captured||reads.size()>=Store::MaxJobs)return {Status::Pending,{},{}};
@@ -101,7 +107,7 @@ public:
         if(saves.size()<4){
             auto save=std::make_unique<Save>();save->key=probe.ticket->key;save->width=width;save->height=height;save->frame=frame;
             IDirect3DSurface9* source=nullptr;
-            // Packaged DXVK 2/3 enqueue GetRenderTargetData without waiting.
+            // Verified DXVK 1/2/3 enqueue GetRenderTargetData without waiting.
             // Native D3D9 uses a lockable RT instead; its GetRTData may block.
             bool ok=SUCCEEDED(queuedReadback?d->CreateOffscreenPlainSurface(width,height,D3DFMT_A8R8G8B8,D3DPOOL_SYSTEMMEM,&save->surface,nullptr):d->CreateRenderTarget(width,height,D3DFMT_A8R8G8B8,D3DMULTISAMPLE_NONE,0,TRUE,&save->surface,nullptr))&&
                 SUCCEEDED(d->CreateQuery(D3DQUERYTYPE_EVENT,&save->event))&&SUCCEEDED(normal->GetSurfaceLevel(0,&source));

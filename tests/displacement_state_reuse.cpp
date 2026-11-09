@@ -21,11 +21,10 @@ static void logf(const char* format,...){if(!std::strstr(format,"MATERIAL_CONFIG
 #include "auto_bump_renderer.h"
 #include "device_mirror.h"
 #include "mirror_resource_forwarders.h"
-#include "actor_client_programs.h"
 
 struct DisplacementStateTestAccess {
     using Mesh=NorthlightDrawSnapshot::Mesh;
-    static void poseHandoff(const char* path);
+    static void poseHandoff(const char* path,const std::vector<uint32_t>& singleCode);
     static void distanceViewReuse(){
         NorthlightAutoDisplacement cached(nullptr),fresh(nullptr);
         for(unsigned step=0;step<180;++step){
@@ -379,6 +378,7 @@ struct CaptureBackend:Backend {
         }
     } decl;
     unsigned pixelQueries=0,pixelConstants=0,textures=0,samplers=0,depthAllocations=0;std::array<unsigned,256> stateReads{};DWORD colorWrite=15,depthWrite=TRUE;
+    HRESULT STDMETHODCALLTYPE CreatePixelShader(const DWORD*,IDirect3DPixelShader9** out)override{*out=&ps;ps.AddRef();return D3D_OK;}
     HRESULT STDMETHODCALLTYPE GetPixelShader(IDirect3DPixelShader9** out)override{++pixelQueries;*out=&ps;ps.AddRef();return D3D_OK;}
     HRESULT STDMETHODCALLTYPE GetVertexDeclaration(IDirect3DVertexDeclaration9** out)override{*out=&decl;decl.AddRef();return D3D_OK;}
     HRESULT STDMETHODCALLTYPE GetViewport(D3DVIEWPORT9* out)override{*out={0,0,surface.size,surface.size,0,1};return D3D_OK;}
@@ -407,7 +407,7 @@ struct LimitBackend:CaptureBackend {
     HRESULT STDMETHODCALLTYPE GetTexture(DWORD stage,IDirect3DBaseTexture9** out)override{++textures;*out=stage?nullptr:&texture;if(*out)(*out)->AddRef();return D3D_OK;}
     HRESULT STDMETHODCALLTYPE GetSamplerState(DWORD,D3DSAMPLERSTATETYPE,DWORD* out)override{++samplers;*out=D3DTADDRESS_WRAP;return D3D_OK;}
 };
-void DisplacementStateTestAccess::poseHandoff(const char* path){
+void DisplacementStateTestAccess::poseHandoff(const char* path,const std::vector<uint32_t>& singleCode){
     struct Buffer:IDirect3DVertexBuffer9 {
         unsigned refs=1;std::vector<unsigned char> bytes=std::vector<unsigned char>(96*32);
         HRESULT STDMETHODCALLTYPE QueryInterface(REFIID,void**)override{return E_NOINTERFACE;}
@@ -431,28 +431,39 @@ void DisplacementStateTestAccess::poseHandoff(const char* path){
     } device;device.vb=&buffer;device.declaration=&layout;
     FILE* file=std::fopen(path,"rb");assert(file);std::fseek(file,0,SEEK_END);const long size=std::ftell(file);std::rewind(file);std::vector<uint32_t> code(size/4);assert(std::fread(code.data(),1,size,file)==size_t(size));std::fclose(file);
     DeviceMirror mirror;ExtensionDevice extension(&device,&mirror);MirrorGuard held(mirror.gate);NorthlightAutoDisplacement g(&extension);g.setTrustedConstantEpochSource(extension.trustedConstantSource());
-    NorthlightAutoDisplacement::Material material;material.skinned=true;material.first=0;material.count=256;material.id=1;assert(NorthlightActorDeformation::compile(code.data(),code.size(),material.view));g.materials[&device.vs]=std::move(material);g.shaders[&device.vs].patched=&device.vs;device.vs.AddRef();
+    NorthlightAutoDisplacement::Material material;material.skinned=true;material.first=0;material.count=256;material.id=1;assert(NorthlightActorDeformation::compile(code.data(),code.size(),material.view));
+    material.rangeKind=NorthlightModelNormalRange::classify(code.data(),code.size(),true);assert(material.rangeKind==NorthlightModelNormalRange::Envelope);
+    g.materials[&device.vs]=std::move(material);g.shaders[&device.vs].patched=&device.vs;device.vs.AddRef();
     g.snapshots.setIdentityProvider(+[](void* p,bool)->uint64_t{return reinterpret_cast<uintptr_t>(p);});g.snapshots.setVersionProvider(+[](void*,bool)->uint64_t{return 1;});g.snapshots.setSnapshotCacheLimit(8u<<20);
     for(unsigned i=0;i<96;++i){float v[]={float(i%7)-3,float(i%5)-2,float(i%3),.1f,.2f,.3f,.4f};std::memcpy(buffer.bytes.data()+i*32,v,sizeof v);for(unsigned k=0;k<4;++k)buffer.bytes[i*32+28+k]=k;}
     device.bank[8]=device.bank[13]=device.bank[18]=device.bank[22]=1;
     for(unsigned b=0;b<4;++b){auto* row=device.bank+4*(31+3*b);row[0]=row[5]=row[10]=1;row[11]=80;}
     NorthlightAutoDisplacement::Args args{{D3DPT_TRIANGLELIST,0,0,96,0,32,false}};NorthlightAutoDisplacement::CaptureSource source;
     for(unsigned frame=0;frame<30&&!source.pose.bounds.valid;++frame){g.endFrame();assert(!g.prepare(&device.vs,4,1,args,nullptr,&source));}
-    assert(source.mesh&&source.pose.bounds.valid&&source.pose.source==source.mesh.get()&&!g.buildsThisFrame&&!g.poseVerticesThisFrame);
+    assert(source.mesh&&source.pose.bounds.valid&&source.pose.outsideRange&&source.pose.source==source.mesh.get()&&!g.buildsThisFrame&&!g.poseVerticesThisFrame);
     NorthlightConstantEpoch::Stamp current;current.requestHeld=true;assert(extension.constantStamp(current)&&source.pose.outside(source.mesh.get(),&device.vs,&layout,current));
     g.endFrame();const auto before=g.poseEnvelopes.stats().ready;assert(!g.prepare(&device.vs,4,1,args));assert(!g.poseVerticesThisFrame&&!g.buildsThisFrame&&g.poseEnvelopes.stats().ready==before+1);
     assert(!g.prepare(&device.vs,4,1,args,nullptr,&source)&&source.pose.bounds.valid&&!g.poseVerticesThisFrame&&!g.buildsThisFrame);
     {NorthlightAutoDisplacement::CaptureSource denied;const auto ready=g.poseEnvelopes.stats().ready;g.buildsThisFrame=2;
      assert(!g.prepare(&device.vs,4,1,args,nullptr,&denied)&&!denied.pose.bounds.valid&&!g.poseVerticesThisFrame&&g.buildsThisFrame==2&&g.poseEnvelopes.stats().ready==ready);g.buildsThisFrame=0;}
+    for(float z:{20.f,48.f,80.f}){
+        float bank[1024];std::memcpy(bank,device.bank,sizeof bank);for(unsigned bone=0;bone<4;++bone)bank[4*(33+3*bone)+3]=z;
+        assert(SUCCEEDED(extension.SetVertexShaderConstantF(0,bank,256)));g.endFrame();assert(!g.prepare(&device.vs,4,1,args,nullptr,&source));
+        current.requestHeld=true;assert(extension.constantStamp(current));
+        assert(source.pose.bounds.valid&&source.pose.outsideRange==(z==80)&&source.pose.outside(source.mesh.get(),&device.vs,&layout,current)==(z==80));
+        assert(!g.poseVerticesThisFrame&&!g.buildsThisFrame);
+    }
+    {auto& m=g.materials.at(&device.vs);m.rangeKind=NorthlightModelNormalRange::None;
+     g.endFrame();assert(!g.prepare(&device.vs,4,1,args,nullptr,&source)&&!source.pose.bounds.valid&&!source.pose.outsideRange);
+     m.rangeKind=NorthlightModelNormalRange::Envelope;g.endFrame();assert(!g.prepare(&device.vs,4,1,args,nullptr,&source)&&source.pose.outsideRange);}
     const auto owner=source.mesh;g.reset();assert(source.mesh==owner&&source.pose.outside(source.mesh.get(),&device.vs,&layout,current));
     mirror.invalidate();current.requestHeld=true;assert(extension.constantStamp(current)&&!source.pose.outside(source.mesh.get(),&device.vs,&layout,current));source.clear();assert(!source.mesh&&!source.pose.bounds.valid);
-    std::printf("POSE_HANDOFF_PRODUCER_PASS actual_prepare warmed_buffered_skin distant_before_charge retained_source epoch_invalidation sizeofHandoff=%zu sizeofCaptureSource=%zu\n",sizeof(NorthlightPoseBounds::Handoff),sizeof(NorthlightAutoDisplacement::CaptureSource));
+    std::printf("POSE_HANDOFF_PRODUCER_PASS actual_prepare warmed_buffered_skin distant_before_charge retained_source epoch_invalidation near_boundary_retained unsupported_projection_retained far_promoted=1 sizeofHandoff=%zu sizeofCaptureSource=%zu\n",sizeof(NorthlightPoseBounds::Handoff),sizeof(NorthlightAutoDisplacement::CaptureSource));
     // The same real buffered prepare path: normal-range rejection must precede
     // the material envelope, while both paths retain the current source owner.
     auto& single=g.materials.at(&device.vs);
-    const auto& singleCode=ClientShaders::OneBoneVs3;
-    assert(NorthlightActorDeformation::compile(singleCode,sizeof singleCode/4,single.view,false,2));
-    single.rangeKind=NorthlightModelNormalRange::classify(singleCode,sizeof singleCode/4);
+    assert(NorthlightActorDeformation::compile(singleCode.data(),singleCode.size(),single.view,false,2));
+    single.rangeKind=NorthlightModelNormalRange::classify(singleCode.data(),singleCode.size());
     assert(single.rangeKind==NorthlightModelNormalRange::Single);
     constexpr unsigned N=400;
     std::vector<double> costs[2];unsigned envelopes[2]={};
@@ -766,7 +777,7 @@ void DisplacementStateTestAccess::capture(){
                 }
                 unsigned native=0;assert(SUCCEEDED(b.nativeDraw([&]{++native;return D3D_OK;}))&&native==1);
                 b.endFrame();for(unsigned i=0;i<3;++i)d.bank[4*i+2]=0;capture();assert(!MaterialCaptureStateTestAccess::rejected(b));
-                if(domain==1)assert(d.pixelConstants==constants+1); // Near/unknown proof reaches capture, even when its state save fails.
+                if(domain==1)assert(d.textures>textures&&d.pixelConstants==constants); // Near/unknown reaches map admission before replay state; null diffuse declines it.
                 b.endFrame();for(unsigned i=0;i<3;++i)d.bank[4*i+2]=NAN;capture();assert(!MaterialCaptureStateTestAccess::rejected(b));
                 b.endFrame();for(unsigned i=0;i<3;++i)d.bank[4*i+2]=100;
                 // This test edits the compiled program in place. Real shader
@@ -799,8 +810,10 @@ static void sharedGeometry(){
     std::puts("SHARED_POM_GEOMETRY_PASS exact_attributes multistream strip_winding triangle_ids invalid_indices occupied_semantic");
 }
 int main(int argc,char** argv){
-    assert(argc==2);DisplacementStateTestAccess::distanceViewReuse();DisplacementStateTestAccess::conservativeBody(argv[1]);DisplacementStateTestAccess::cameraBounds(argv[1]);
-    DisplacementStateTestAccess::poseHandoff(argv[1]);
+    std::setvbuf(stdout,nullptr,_IONBF,0);
+    assert(argc==4);DisplacementStateTestAccess::distanceViewReuse();DisplacementStateTestAccess::conservativeBody(argv[1]);DisplacementStateTestAccess::cameraBounds(argv[1]);
+    FILE* file=std::fopen(argv[3],"rb");assert(file);std::fseek(file,0,SEEK_END);const long size=std::ftell(file);std::rewind(file);std::vector<uint32_t> singleCode(size/4);assert(std::fread(singleCode.data(),1,size,file)==size_t(size));std::fclose(file);
+    DisplacementStateTestAccess::poseHandoff(argv[1],singleCode);DisplacementStateTestAccess::poseHandoff(argv[2],singleCode);
     DisplacementStateTestAccess::rotation();
     DisplacementStateTestAccess::boundsCache();
     MaterialCaptureStateTestAccess::invisible();

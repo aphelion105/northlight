@@ -59,6 +59,10 @@ struct SkinEnvelope {
         }return true;
     }
     bool evaluate(const float* constants,const float* inverse,Bounds& output,bool(*shouldStop)(void*)=nullptr,void* stopContext=nullptr,bool aligned=false)const{
+        return aligned?evaluateImpl<true>(constants,inverse,output,shouldStop,stopContext):evaluateImpl<false>(constants,inverse,output,shouldStop,stopContext);
+    }
+private:
+    template<bool Aligned> bool evaluateImpl(const float* constants,const float* inverse,Bounds& output,bool(*shouldStop)(void*),void* stopContext)const{
         output={};if(!constants||!inverse)return false;
         for(unsigned i=0;i<16;++i)if(!std::isfinite(inverse[i])||(inverse[i]!=0&&std::fabs(inverse[i])<std::numeric_limits<float>::min()))return false;
         if(inverse[3]!=0||inverse[7]!=0||inverse[11]!=0||inverse[15]!=1)return false;
@@ -88,29 +92,33 @@ struct SkinEnvelope {
                 std::uint32_t bits[12];std::memcpy(bits,rows,48);
                 for(unsigned k=0;k<12;++k){const std::uint32_t u=bits[k]&0x7fffffffu;bad|=std::uint32_t(u>=0x7f800000u)|std::uint32_t(u-1u<0x007fffffu);largestF[k]=std::max(largestF[k],std::fabs(rows[k]));}
 #endif
-                const double l0=b.low[0],l1=b.low[1],l2=b.low[2],h0=b.high[0],h1=b.high[1],h2=b.high[2];
+                // Aligned bounds below compose the camera basis before extrema.
+                // Their view-axis box was discarded; keep only validation/maxima.
+                if constexpr(!Aligned){
+                    const double l0=b.low[0],l1=b.low[1],l2=b.low[2],h0=b.high[0],h1=b.high[1],h2=b.high[2];
 #if defined(__SSE2__)
-                // Pair X/Y with the same sum order. SSE min/max's second
-                // operand wins ties, as std::min/max's first operand does.
-                const auto row0=_mm_loadu_ps(rows),row1=_mm_loadu_ps(rows+4);
-                const auto xy=_mm_unpacklo_ps(row0,row1),zw=_mm_unpackhi_ps(row0,row1);
-                const __m128d coefficients[]={_mm_cvtps_pd(xy),_mm_cvtps_pd(_mm_movehl_ps(xy,xy)),_mm_cvtps_pd(zw)};
-                auto a01=_mm_cvtps_pd(_mm_movehl_ps(zw,zw)),c01=a01;
-                for(unsigned j=0;j<3;++j){const auto x=_mm_mul_pd(coefficients[j],_mm_set1_pd(b.low[j])),y=_mm_mul_pd(coefficients[j],_mm_set1_pd(b.high[j]));
-                    a01=_mm_add_pd(a01,_mm_min_pd(y,x));c01=_mm_add_pd(c01,_mm_max_pd(y,x));}
-                _mm_storeu_pd(lo,_mm_min_pd(a01,_mm_loadu_pd(lo)));_mm_storeu_pd(hi,_mm_max_pd(c01,_mm_loadu_pd(hi)));
-                constexpr unsigned scalarAxis=2;
+                    // Pair X/Y with the same sum order. SSE min/max's second
+                    // operand wins ties, as std::min/max's first operand does.
+                    const auto row0=_mm_loadu_ps(rows),row1=_mm_loadu_ps(rows+4);
+                    const auto xy=_mm_unpacklo_ps(row0,row1),zw=_mm_unpackhi_ps(row0,row1);
+                    const __m128d coefficients[]={_mm_cvtps_pd(xy),_mm_cvtps_pd(_mm_movehl_ps(xy,xy)),_mm_cvtps_pd(zw)};
+                    auto a01=_mm_cvtps_pd(_mm_movehl_ps(zw,zw)),c01=a01;
+                    for(unsigned j=0;j<3;++j){const auto x=_mm_mul_pd(coefficients[j],_mm_set1_pd(b.low[j])),y=_mm_mul_pd(coefficients[j],_mm_set1_pd(b.high[j]));
+                        a01=_mm_add_pd(a01,_mm_min_pd(y,x));c01=_mm_add_pd(c01,_mm_max_pd(y,x));}
+                    _mm_storeu_pd(lo,_mm_min_pd(a01,_mm_loadu_pd(lo)));_mm_storeu_pd(hi,_mm_max_pd(c01,_mm_loadu_pd(hi)));
+                    constexpr unsigned scalarAxis=2;
 #else
-                constexpr unsigned scalarAxis=0;
+                    constexpr unsigned scalarAxis=0;
 #endif
-                for(unsigned axis=scalarAxis;axis<3;++axis){const float* row=rows+4*axis;const double r0=row[0],r1=row[1],r2=row[2];
-                    const double x0=r0*l0,y0=r0*h0,x1=r1*l1,y1=r1*h1,x2=r2*l2,y2=r2*h2;
-                    const double a=((double(row[3])+std::min(x0,y0))+std::min(x1,y1))+std::min(x2,y2);
-                    const double c=((double(row[3])+std::max(x0,y0))+std::max(x1,y1))+std::max(x2,y2);
-                    lo[axis]=std::min(lo[axis],a);hi[axis]=std::max(hi[axis],c);
+                    for(unsigned axis=scalarAxis;axis<3;++axis){const float* row=rows+4*axis;const double r0=row[0],r1=row[1],r2=row[2];
+                        const double x0=r0*l0,y0=r0*h0,x1=r1*l1,y1=r1*h1,x2=r2*l2,y2=r2*h2;
+                        const double a=((double(row[3])+std::min(x0,y0))+std::min(x1,y1))+std::min(x2,y2);
+                        const double c=((double(row[3])+std::max(x0,y0))+std::max(x1,y1))+std::max(x2,y2);
+                        lo[axis]=std::min(lo[axis],a);hi[axis]=std::max(hi[axis],c);
+                    }
                 }
             }
-            for(unsigned axis=0;axis<3;++axis){low[axis]=lo[axis];high[axis]=hi[axis];}
+            if constexpr(!Aligned)for(unsigned axis=0;axis<3;++axis){low[axis]=lo[axis];high[axis]=hi[axis];}
             if(bad)return false;
 #if defined(__SSE2__)
             for(unsigned axis=0;axis<3;++axis)_mm_storeu_ps(largestF+4*axis,largestV[axis]);
@@ -121,16 +129,14 @@ struct SkinEnvelope {
             if((checkedBones++&7u)==0&&shouldStop&&shouldStop(stopContext))return false;any=true;
             for(unsigned axis=0;axis<3;++axis){const float* row=constants+4*(31+3*bone+axis);double lo=row[3],hi=row[3];
                 for(unsigned j=0;j<4;++j){if(!std::isfinite(row[j])||(row[j]!=0&&std::fabs(row[j])<std::numeric_limits<float>::min()))return false;largest[axis][j]=std::max(largest[axis][j],std::fabs(double(row[j])));}
-                for(unsigned j=0;j<3;++j){double x=double(row[j])*b.low[j],y=double(row[j])*b.high[j];lo+=std::min(x,y);hi+=std::max(x,y);}
-                low[axis]=std::min(low[axis],lo);high[axis]=std::max(high[axis],hi);
+                if constexpr(!Aligned){for(unsigned j=0;j<3;++j){double x=double(row[j])*b.low[j],y=double(row[j])*b.high[j];lo+=std::min(x,y);hi+=std::max(x,y);}
+                    low[axis]=std::min(low[axis],lo);high[axis]=std::max(high[axis],hi);}
             }
         }
         if(!any)return false;detail::Vector view={};view[3]={1,0};
         for(unsigned axis=0;axis<3;++axis){
             // w_s >= 0 proves convex-hull enclosure after division by S=sum(w).
             // S is retained as an interval, not assumed to equal one. S=0 is safe.
-            const double values[]={low[axis]*sumLow,low[axis]*sumHigh,high[axis]*sumLow,high[axis]*sumHigh};
-            double lo=*std::min_element(values,values+4),hi=*std::max_element(values,values+4);
             double positionScale=1;for(unsigned j=0;j<4;++j){
                 if(largest[axis][j]*sumHigh>double(std::numeric_limits<float>::max())/32)return false;
                 magnitude[axis]+=largest[axis][j]*maxPosition[j];positionScale+=maxPosition[j];
@@ -141,18 +147,46 @@ struct SkinEnvelope {
             // The absolute-product sum bounds cancellation independently of pose.
             const double error=64*std::numeric_limits<float>::epsilon()*magnitude[axis]+1024*std::numeric_limits<float>::min()*positionScale;
             if(!std::isfinite(magnitude[axis])||magnitude[axis]>double(std::numeric_limits<float>::max())/32)return false;
-            lo-=error;hi+=error;const float mid=float((lo+hi)*.5);
-            view[axis]={mid,std::max(double(mid)-lo,hi-double(mid))};
+            if constexpr(!Aligned){
+                const double values[]={low[axis]*sumLow,low[axis]*sumHigh,high[axis]*sumLow,high[axis]*sumHigh};
+                double lo=*std::min_element(values,values+4),hi=*std::max_element(values,values+4);
+                lo-=error;hi+=error;const float mid=float((lo+hi)*.5);
+                view[axis]={mid,std::max(double(mid)-lo,hi-double(mid))};
+            }
         }
-        if(aligned){
+        if constexpr(Aligned){
             // Compose before taking extrema. Transforming a view-axis AABB loses
             // axis correlation and changes the displacement fade as the camera turns.
             for(unsigned axis=0;axis<3;++axis){double lo=INFINITY,hi=-INFINITY,scale=0,error=0;
                 for(unsigned j=0;j<3;++j)error+=std::fabs(double(inverse[4*j+axis]))*(64*std::numeric_limits<float>::epsilon()*magnitude[j]+1024*std::numeric_limits<float>::min()*(1+maxPosition[0]+maxPosition[1]+maxPosition[2]+maxPosition[3]));
                 for(unsigned n=0;n<usedBones;++n){if(n&&(n&7u)==0&&shouldStop&&shouldStop(stopContext))return false;
                     const auto& bone=bones[order[n]];const float* rows=constants+4*(31+3*order[n]);double coefficient[4]={},rounding=0;
+#if defined(__SSE2__)
+                    // Pair coefficients, retaining the scalar J/K sum order and
+                    // error enclosure. Eight-byte loads also cover bone 74 at
+                    // the end of the palette without reading past c255.
+                    const __m128d basis[]={_mm_set1_pd(inverse[axis]),_mm_set1_pd(inverse[4+axis]),_mm_set1_pd(inverse[8+axis])};
+                    const auto sign=_mm_set1_pd(-0.0);
+                    for(unsigned k=0;k<4;k+=2){auto sum=_mm_setzero_pd(),products=_mm_setzero_pd();
+                        for(unsigned j=0;j<3;++j){const auto pair=_mm_castsi128_ps(_mm_loadl_epi64(reinterpret_cast<const __m128i*>(rows+4*j+k)));
+                            const auto term=_mm_mul_pd(basis[j],_mm_cvtps_pd(pair));sum=_mm_add_pd(sum,term);products=_mm_add_pd(products,_mm_andnot_pd(sign,term));}
+                        _mm_storeu_pd(coefficient+k,sum);double absolute[2];_mm_storeu_pd(absolute,products);
+                        for(unsigned lane=0;lane<2;++lane)rounding+=absolute[lane]*maxPosition[k+lane]*16*std::numeric_limits<double>::epsilon();}
+#else
                     for(unsigned k=0;k<4;++k){double products=0;for(unsigned j=0;j<3;++j){const double term=double(inverse[4*j+axis])*rows[4*j+k];coefficient[k]+=term;products+=std::fabs(term);}rounding+=products*maxPosition[k]*16*std::numeric_limits<double>::epsilon();}
-                    double a=coefficient[3],b=a;for(unsigned k=0;k<3;++k){const double x=coefficient[k]*bone.low[k],y=coefficient[k]*bone.high[k];a+=std::min(x,y);b+=std::max(x,y);}
+#endif
+                    double a,b;
+#if defined(__SSE2__)
+                    // Pair low/high with the same K sum order and first-operand
+                    // tie rule as the scalar interval (including signed zero).
+                    auto interval=_mm_set1_pd(coefficient[3]);
+                    for(unsigned k=0;k<3;++k){const auto ends=_mm_mul_pd(_mm_set1_pd(coefficient[k]),_mm_set_pd(bone.high[k],bone.low[k]));
+                        const auto reversed=_mm_shuffle_pd(ends,ends,1);
+                        interval=_mm_add_pd(interval,_mm_unpacklo_pd(_mm_min_pd(reversed,ends),_mm_max_pd(reversed,ends)));}
+                    double limits[2];_mm_storeu_pd(limits,interval);a=limits[0];b=limits[1];
+#else
+                    a=b=coefficient[3];for(unsigned k=0;k<3;++k){const double x=coefficient[k]*bone.low[k],y=coefficient[k]*bone.high[k];a+=std::min(x,y);b+=std::max(x,y);}
+#endif
                     lo=std::min(lo,a-rounding);hi=std::max(hi,b+rounding);scale=std::max(scale,std::max(std::fabs(a),std::fabs(b))+rounding);
                 }
                 const double values[]={lo*sumLow,lo*sumHigh,hi*sumLow,hi*sumHigh};lo=*std::min_element(values,values+4)+inverse[12+axis];hi=*std::max_element(values,values+4)+inverse[12+axis];

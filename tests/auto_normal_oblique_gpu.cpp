@@ -28,6 +28,9 @@ struct MaterialDepthMeter:ForwardIDirect3DDevice9 {
     HRESULT STDMETHODCALLTYPE GetVertexShaderConstantB(UINT first,BOOL* values,UINT count)override{++vertexBooleanReads;return real->GetVertexShaderConstantB(first,values,count);}
     HRESULT STDMETHODCALLTYPE SetVertexShaderConstantI(UINT first,const int* values,UINT count)override{++vertexIntegerWrites;return real->SetVertexShaderConstantI(first,values,count);}
     HRESULT STDMETHODCALLTYPE SetVertexShaderConstantB(UINT first,const BOOL* values,UINT count)override{++vertexBooleanWrites;return real->SetVertexShaderConstantB(first,values,count);}
+    unsigned pixelConstantReads=0,samplerReads=0;
+    HRESULT STDMETHODCALLTYPE GetPixelShaderConstantF(UINT first,float* values,UINT count)override{++pixelConstantReads;return real->GetPixelShaderConstantF(first,values,count);}
+    HRESULT STDMETHODCALLTYPE GetSamplerState(DWORD stage,D3DSAMPLERSTATETYPE state,DWORD* value)override{++samplerReads;return real->GetSamplerState(stage,state,value);}
     unsigned reads=0,allocations=0,gpuDraws=0,clears=0,pixelQueries=0,vertexCreates=0;bool failDeferred=false,failResident=false;explicit MaterialDepthMeter(IDirect3DDevice9* d):ForwardIDirect3DDevice9(d){}
     HRESULT STDMETHODCALLTYPE CreateVertexShader(const DWORD* code,IDirect3DVertexShader9** shader)override{++vertexCreates;return real->CreateVertexShader(code,shader);}
     HRESULT STDMETHODCALLTYPE CreateVertexBuffer(UINT bytes,DWORD usage,DWORD fvf,D3DPOOL pool,IDirect3DVertexBuffer9** out,HANDLE* shared)override{if(failResident){*out=nullptr;return E_OUTOFMEMORY;}return real->CreateVertexBuffer(bytes,usage,fvf,pool,out,shared);}
@@ -46,7 +49,9 @@ struct MaterialDepthMeter:ForwardIDirect3DDevice9 {
     HRESULT STDMETHODCALLTYPE DrawIndexedPrimitive(D3DPRIMITIVETYPE type,INT base,UINT low,UINT vertices,UINT first,UINT n)override{++gpuDraws;return real->DrawIndexedPrimitive(type,base,low,vertices,first,n);}
     HRESULT STDMETHODCALLTYPE DrawPrimitive(D3DPRIMITIVETYPE type,UINT first,UINT n)override{++gpuDraws;return real->DrawPrimitive(type,first,n);}
 };
+struct MaterialDiskGpuTestAccess {static void blockBuilds(NorthlightAutoNormalCache& c,bool budget){c.generated=budget?0:2;if(budget)c.budget=0;}};
 struct MaterialCaptureStateTestAccess {
+    static void blockMaps(NorthlightAutoBump& b,bool budget){MaterialDiskGpuTestAccess::blockBuilds(b.normals,budget);}
     static NorthlightAutoDisplacement& geometry(NorthlightAutoBump& b){return b.displacement;}
     static void readBudget(NorthlightAutoBump& b,size_t bytes){assert(b.deferredSnapshots.configureBudget(bytes,0));}
     static bool smoothTerrain(const NorthlightAutoBump& b,IDirect3DVertexShader9* source){const auto i=b.vertices.find(source);return i!=b.vertices.end()&&i->second.smoothTerrain;}
@@ -208,7 +213,7 @@ int NORTHLIGHT_OBLIQUE_ENTRY(int argc,char** argv){
     const auto samples=static_cast<D3DMULTISAMPLE_TYPE>(std::getenv("NORTHLIGHT_TEST_MSAA")?std::atoi(std::getenv("NORTHLIGHT_TEST_MSAA")):0);
     const bool pressure=std::getenv("NORTHLIGHT_TEST_PRESSURE")!=nullptr;
     const bool pomOnly=std::getenv("NORTHLIGHT_TEST_POM_ONLY")!=nullptr;
-    const bool resolveMSDepth=samples&&std::strstr(argv[1],"SysWOW64")==nullptr;
+    const bool resolveMSDepth=samples&&!std::getenv("NORTHLIGHT_TEST_RASTER_DEPTH")&&std::strstr(argv[1],"SysWOW64")==nullptr;
     WNDCLASSW wc{};wc.lpfnWndProc=DefWindowProcW;wc.lpszClassName=L"NormalOblique";wc.hInstance=GetModuleHandleW(nullptr);assert(RegisterClassW(&wc));
     HWND window=CreateWindowExW(0,wc.lpszClassName,L"",WS_OVERLAPPED,0,0,64,64,nullptr,nullptr,wc.hInstance,nullptr);assert(window);
     auto module=LoadLibraryA(argv[1]);assert(module);auto create=(IDirect3D9*(WINAPI*)(UINT))GetProcAddress(module,"Direct3DCreate9");auto api=create(D3D_SDK_VERSION);
@@ -437,6 +442,23 @@ int NORTHLIGHT_OBLIQUE_ENTRY(int argc,char** argv){
             IDirect3DQuery9* fence=nullptr;ok(d->CreateQuery(D3DQUERYTYPE_EVENT,&fence));ok(fence->Issue(D3DISSUE_END));while(fence->GetData(nullptr,0,D3DGETDATA_FLUSH)==S_FALSE)Sleep(1);drop(fence);
         }
         for(auto*& t:distant)drop(t);std::puts("MATERIAL_RANGE_WORKLOAD_PASS");return 0;
+    }
+    if(std::getenv("NORTHLIGHT_TEST_MAP_ADMISSION")){
+        settings.autoBumpTerrain=settings.autoBumpWalls=settings.autoBumpGrass=settings.autoBumpModels=1;
+        bump.configure(settings);bump.beginDraw();d->SetVertexShader(vs);d->SetPixelShader(ps);
+        for(bool budgetMiss:{false,true}){MaterialCaptureStateTestAccess::blockMaps(bump,budgetMiss);unsigned callbacks=0;std::vector<double> times;
+        save(d,baseSurface,folder+"map-admission-before.fgr");const auto before=read(folder+"map-admission-before.fgr");float beforeBank[224*4],afterBank[224*4];ok(d->GetPixelShaderConstantF(0,beforeBank,224));
+        ok(d->BeginScene());unsigned pixelReads=0,samplerReads=0;
+        for(unsigned round=0;round<11;++round){captureDevice.pixelConstantReads=captureDevice.samplerReads=0;const auto start=std::chrono::steady_clock::now();
+            for(unsigned draw=0;draw<1000;++draw){bump.beginDraw();bump.capture(vs,[&]{++callbacks;return D3DERR_INVALIDCALL;},true);}
+            const double elapsed=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
+            if(round>=2)times.push_back(elapsed);pixelReads=captureDevice.pixelConstantReads;samplerReads=captureDevice.samplerReads;
+        }
+        ok(d->EndScene());assert(!callbacks&&!bump.texture());ok(d->GetPixelShaderConstantF(0,afterBank,224));assert(!std::memcmp(beforeBank,afterBank,sizeof beforeBank));
+        save(d,baseSurface,folder+"map-admission-after.fgr");assert(read(folder+"map-admission-after.fgr")==before);IDirect3DVertexShader9* restoredVS=nullptr;IDirect3DPixelShader9* restoredPS=nullptr;
+        ok(d->GetVertexShader(&restoredVS));ok(d->GetPixelShader(&restoredPS));assert(restoredVS==vs&&restoredPS==ps);drop(restoredVS);drop(restoredPS);
+        std::sort(times.begin(),times.end());std::printf("MATERIAL_MAP_ADMISSION_PASS reason=%s draws=1000 medianMs=%.6f pixelConstantReads=%u samplerReads=%u nativePixels=exact nativeShaders=restored nativeConstants=exact callbacks=0\n",budgetMiss?"budget":"quota",times[4],pixelReads,samplerReads);}
+        return 0;
     }
     const auto normalsCreates=captureDevice.vertexCreates;
     d->SetVertexShader(vs);d->SetPixelShader(ps);ok(d->BeginScene());bump.capture(vs,[&]{return d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,floor,sizeof(V));},true);ok(d->EndScene());

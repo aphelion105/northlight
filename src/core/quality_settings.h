@@ -16,7 +16,7 @@ struct Settings {
     Preset preset=Preset::Quality;
     unsigned effects=1,worldShadows=1,worldFog=1,localLights=1;
     unsigned minSkinnedTriangles=100,captureBudgetMiB=32,actorShadowBudgetMiB=0;
-    unsigned farShadowInterval=4,nearShadowInterval=1,localLightLimit=48,pointShadows=1,pointShadowLimit=64,pointShadowRefreshMs=0,shadowDirectionSteps=2048;
+    unsigned farShadowInterval=4,nearShadowInterval=1,localLightLimit=64,pointShadows=1,pointShadowLimit=64,pointShadowRefreshMs=0,shadowDirectionSteps=2048;
     // Camera distance to the light's influence sphere, in yards.
     unsigned pointShadowDistance=48;
     // Where each value in Keys order came from: 'd' code default (Quality), 'p' Balanced/Performance
@@ -75,6 +75,8 @@ struct Settings {
     unsigned blobShadowStrength=50;
     // Independent visibility of the native round ground decal; detailed shadows are unchanged.
     unsigned blobShadows=1;
+    // Suppress the original baked/client terrain shadow term; Northlight shadows are independent.
+    unsigned disableOriginalTerrainShadows=1;
     // Weather 1 = Northlight's effects follow detected rain, snow and sand; 0 = nothing reacts.
     // RainFog 0..2 scales the haze/fog/shafts/sun/shadow/GI/lamp couplings (1 = the tuned look).
     unsigned weather=1,rainFog=1;
@@ -146,7 +148,7 @@ struct Settings {
     unsigned autoDisplacementStrength=100,autoDisplacementDistance=12,autoDisplacementDetail=4;
     unsigned autoBumpModels=3,autoModelDisplacementStrength=25,autoModelDisplacementDistance=8,autoModelDisplacementDetail=2;
     unsigned autoHeightPolarity=0,autoHeightDetails=75,autoHeightBalance=50;
-    char origin[113]={'d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d'};
+    char origin[114]={'d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d'};
 };
 struct Key { const char* name; unsigned Settings::*field; unsigned low,high; unsigned preset[3]; };
 // preset[] = Quality, Balanced, Performance. Quality must equal Settings{}.
@@ -156,7 +158,7 @@ inline const Key Keys[]={
     {"ActorShadowBudgetMiB",&Settings::actorShadowBudgetMiB,0,32,{0,16,8}},
     {"FarShadowInterval",&Settings::farShadowInterval,1,16,{4,5,6}},
     {"NearShadowInterval",&Settings::nearShadowInterval,1,16,{1,2,2}},
-    {"LocalLightLimit",&Settings::localLightLimit,0,128,{48,32,24}},
+    {"LocalLightLimit",&Settings::localLightLimit,0,128,{64,64,64}},
     {"PointShadows",&Settings::pointShadows,0,1,{1,1,1}},
     {"PointShadowRefreshMs",&Settings::pointShadowRefreshMs,0,100,{0,33,33}},
     {"ShadowDirectionSteps",&Settings::shadowDirectionSteps,256,2048,{2048,2048,2048}},
@@ -264,10 +266,12 @@ inline const Key Keys[]={
     {"WorldShadows",&Settings::worldShadows,0,1,{1,1,1}},
     {"WorldFog",&Settings::worldFog,0,1,{1,1,1}},
     {"LocalLights",&Settings::localLights,0,1,{1,1,1}},
+    {"DisableOriginalTerrainShadows",&Settings::disableOriginalTerrainShadows,0,1,{1,1,1}},
 };
 // The seven scene groups own their child controls, including sky/ambient work.
 // Presentation/HDR and the settings overlay remain available like F10.
 inline bool pipelineWork(const Settings& s){return s.effects&&(s.gi||s.worldShadows||s.worldFog||(s.localLights&&s.localLightLimit)||s.contactAO||s.autoBump||s.weather);}
+inline unsigned localShadowLimit(const Settings& s){return std::min(s.localLightLimit,s.pointShadowLimit);}
 inline bool operator==(const Settings& a,const Settings& b){for(const auto& k:Keys)if(a.*k.field!=b.*k.field)return false;return true;}
 inline bool operator!=(const Settings& a,const Settings& b){return !(a==b);}
 // Probe work actually requested: GI=0 also removes actor capture and dynamic probes.
@@ -367,6 +371,7 @@ inline void apply(const std::vector<Entry>& entries,Settings& s,const char* sour
     for(const auto& e:entries){
         const std::string key=lower(e.key);const std::string where=std::string(source)+" line "+std::to_string(e.line)+": ";
         if(key=="preset"){if(!allowPreset)problems.push_back(where+"Preset ignored here");continue;}
+        if(key=="locallightlimitsversion"){unsigned version=0;if(!number(e.value,version))problems.push_back(where+"Invalid LocalLightLimitsVersion ignored");continue;}
         const Key* match=nullptr;unsigned index=0;for(unsigned i=0;i<sizeof(Keys)/sizeof(Keys[0]);++i)if(lower(Keys[i].name)==key){match=&Keys[i];index=i;}
         const RetiredKey* retired=nullptr;for(const auto& r:Retired)if(lower(r.name)==key)retired=&r;
         if(retired){problems.push_back(where+retired->name+" retired in "+retired->version+" (ignored)");continue;}
@@ -396,9 +401,12 @@ inline std::string narrow(const std::string& raw){
 //   Balanced/Performance: the preset's values win over the legacy file (it is not applied).
 //   Explicit northlight-quality.ini keys win over everything.
 // Either stream may be null (file absent). Both absent gives Settings{}.
+inline bool currentLightLimits(const std::vector<Entry>& entries){unsigned version=0;for(const auto& e:entries)if(lower(e.key)=="locallightlimitsversion"){unsigned value=0;if(number(e.value,value))version=value;}return version>=2;}
 inline Settings load(std::istream* quality,std::istream* legacy,std::vector<std::string>& problems){
     std::vector<Entry> own;if(quality)own=section(*quality,"Quality",problems);
     Settings s=preset(presetOf(own,problems));
+    const bool oldLimits=!currentLightLimits(own);
+    if(oldLimits){const unsigned defaults[]={48,32,24};s.localLightLimit=defaults[unsigned(s.preset)];}
     if(legacy&&s.preset!=Preset::Quality)problems.push_back(std::string("shadow-experiment.ini not applied: Preset=")+name(s.preset)+" sets these values");
     else if(legacy){auto old=section(*legacy,"ShadowExperiment",problems);
         // The legacy file only ever held these three keys.
@@ -407,6 +415,8 @@ inline Settings load(std::istream* quality,std::istream* legacy,std::vector<std:
             else problems.push_back("shadow-experiment.ini line "+std::to_string(e.line)+": unknown key "+e.key+" ignored");}
         apply(kept,s,"shadow-experiment.ini",'l',problems,false);}
     apply(own,s,"northlight-quality.ini",'f',problems,true);
+    // Preserve the old effective pool once; shadow maps no longer expand it.
+    if(oldLimits&&s.localLightLimit&&s.worldShadows&&s.pointShadows)s.localLightLimit=std::max(s.localLightLimit,s.pointShadowLimit);
     return s;
 }
 // Far cascade or near environment: retain a complete depth map with the

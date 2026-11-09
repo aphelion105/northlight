@@ -20,9 +20,12 @@ static bool exact(const Mesh& mesh,const Binding& b){
   if(offset+bytes.size()>data.size()||std::memcmp(data.data()+offset,bytes.data(),bytes.size()))return false;
  }
  if(mesh.indices.empty())return !b.ib;
- if(!b.ib)return false;const auto& data=static_cast<Buffer<IDirect3DIndexBuffer9,D3DINDEXBUFFER_DESC>*>(b.ib)->data;
- const size_t offset=size_t(b.at.indexStart)*4;
- return offset+mesh.indices.size()*4<=data.size()&&!std::memcmp(data.data()+offset,mesh.indices.data(),mesh.indices.size()*4);
+ if(!b.ib)return false;const auto* buffer=static_cast<Buffer<IDirect3DIndexBuffer9,D3DINDEXBUFFER_DESC>*>(b.ib);const auto& data=buffer->data;
+ const size_t width=buffer->desc.Format==D3DFMT_INDEX16?2:4,offset=size_t(b.at.indexStart)*width;
+ if(offset+mesh.indices.size()*width>data.size())return false;
+ for(size_t i=0;i<mesh.indices.size();++i){uint32_t index=0;std::memcpy(&index,data.data()+offset+i*width,width);
+  if(uint64_t(index)+b.at.baseVertex()!=uint64_t(mesh.indices[i])+b.at.vertexBase)return false;
+ }return true;
 }
 static Owner authored(unsigned id,bool multi=false,bool indexed=true){
  auto m=std::make_shared<Mesh>();m->topology=D3DPT_TRIANGLELIST;m->indexed=indexed;m->sharedCapture=true;m->vertexCount=192;m->primitiveCount=64;

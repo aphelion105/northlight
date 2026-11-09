@@ -52,7 +52,7 @@ checks['A1 lines unchanged except the F2 gate (full to .25 px, none from .5)'] =
     all(temporal.count(l + '\n') == 1 for l in A1) and 'saturate(2-length(' not in temporal)
 
 # ---- 2. sampler states: s14 LINEAR only in the temporal pass, s15 stays POINT ----
-block = w[w.index('{   // Temporal stabilization: light + history'):w.index('temporalIndex=prev;temporalValid=true;')]
+block = w[w.index('{   // Temporal stabilization: retain this frame\'s already produced distance'):w.index('temporalIndex=prev;temporalValid=true;')]
 loop = ('for(unsigned sampler=14;sampler<16;++sampler){if(sampler==15&&removalDrawn)continue;d->SetSamplerState(sampler,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);'
         'd->SetSamplerState(sampler,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);'
         'd->SetSamplerState(sampler,D3DSAMP_MINFILTER,sampler==14?D3DTEXF_LINEAR:D3DTEXF_POINT);'

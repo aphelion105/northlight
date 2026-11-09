@@ -73,7 +73,7 @@ builder=w[w.index('    void work() {'):w.index('\n    bool check(HRESULT h,const
 plan=fp.src('world_mesh_plan.h').read_text();pagesH=fp.src('world_mesh_pages.h').read_text()
 commit=upload[upload.index('auto phase=streamingPhases.measure(NorthlightStreaming::PhaseProfile::Commit);'):]
 release=w[w.index('    void releaseGPU(bool keepMesh=false){'):w.index('\n',w.index('    void releaseGPU(bool keepMesh=false){'))]
-resetFn=method('    void reset(){');recoverFn=method('    void recover(){');resources=method('    bool createResources(UINT w,UINT h,D3DFORMAT fmt){')
+resetFn=method('    void reset(bool preserveCaptureSources=false){');recoverFn=method('    void recover(){');resources=method('    bool createResources(UINT w,UINT h,D3DFORMAT fmt){')
 checks={
  'Reset (failed or not) and resolution change keep the uploaded MANAGED mesh':
   resetFn.index('failed=false;') < resetFn.index('releaseGPU(true);') and 'releaseGPU(true);width=w;height=h;' in resources,

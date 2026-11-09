@@ -397,6 +397,7 @@ def build(platform, version, dll, variants, out, stormlib_dir):
     tree.add('LICENSES/AO-methods.txt', fp.REPO / 'licenses/ao-methods.txt')
     tree.add('LICENSES/Dear-ImGui.txt', fp.REPO / 'licenses/imgui.txt')   # src/imgui/ (settings overlay)
     tree.add('LICENSES/Roboto.txt', fp.REPO / 'licenses/roboto.txt')   # the settings overlay's embedded font
+    tree.add('LICENSES/NVAPI.txt', fp.REPO / 'licenses/nvapi.txt')
     path = out / f'{top}.zip'
     tree.write_zip(path, stamp)
     return {'platform': platform, 'file': path.name, 'sha256': sha(path), 'bytes': path.stat().st_size,

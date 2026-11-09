@@ -42,6 +42,11 @@ struct Scene {
  ~Scene(){for(auto& page:meshBuffers){if(page.vb)page.vb->Release();if(page.ib)page.ib->Release();}}
  Scene(const Scene&)=delete;Scene& operator=(const Scene&)=delete;
  bool attach(NorthlightDrawSnapshot::Frame& frame){if(!captureSources){captureSources=frame.sharedSources();return true;}return frame.joinSnapshotPool(captureSources);}
+ // One policy for every consumer, including standalone render/test scenes.
+ void setMemoryPressure(bool episode,bool critical){
+  native.setTotalLimit(episode&&critical?32u<<20:SIZE_MAX);
+  materials.setLimit(32u<<20);shadows.setLimit(episode?32u<<20:64u<<20);
+ }
  void setFrame(uint64_t frame){native.setFrame(frame);}
 };
 inline std::shared_ptr<Scene> forDevice(IDirect3DDevice9* d,std::shared_ptr<Scene> scene){

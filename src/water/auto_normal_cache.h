@@ -22,6 +22,7 @@ class NorthlightAutoNormalCache {
     IDirect3DPixelShader9* shader=nullptr,*modelShader=nullptr;
     std::uint64_t bytes=0,sourceBytes=0,clock=0,budget=32ull<<20;
     unsigned generated=0,builds=0,hits=0,evictions=0,allocations=0,reuses=0;
+    unsigned generationDeferred=0,budgetRejected=0,visibleDeferred=0,diskPending=0,descriptionRejected=0;
     unsigned polarity=0,details=75,balance=50,frame=0;bool memoryPressure=false,visibleWorkingSet=false;
     UINT vertexConstantCapacity=0; // Immutable for this device, including Reset.
     bool protectedOldest(const Entry& oldest){
@@ -79,13 +80,15 @@ public:
     void configure(const NorthlightQuality::Settings& s){if(polarity!=s.autoHeightPolarity||details!=s.autoHeightDetails||balance!=s.autoHeightBalance){reset();polarity=s.autoHeightPolarity;details=s.autoHeightDetails;balance=s.autoHeightBalance;}}
     void refreshBudget(){
         MEMORYSTATUSEX memory{};memory.dwLength=sizeof memory;
-        budget=memoryPressure?32ull<<20:GlobalMemoryStatusEx(&memory)?NorthlightAutoNormalMemory::budget(memory.ullAvailVirtual,budget):32ull<<20;
+        const auto previous=budget;const bool sampled=!memoryPressure&&GlobalMemoryStatusEx(&memory);
+        budget=memoryPressure?32ull<<20:sampled?NorthlightAutoNormalMemory::budget(memory.ullAvailVirtual,budget):32ull<<20;
         while(bytes>budget&&!entries.empty()){auto old=std::min_element(entries.begin(),entries.end(),[](const Entry& a,const Entry& b){return a.used<b.used;});erase(size_t(old-entries.begin()));++evictions;}
+        if(previous!=budget)logf("AUTONORMAL_BUDGET frame=%u oldMiB=%llu newMiB=%llu availableVirtualMiB=%llu sampled=%u pressure=%u cached=%zu bytes=%llu",frame,(unsigned long long)(previous>>20),(unsigned long long)(budget>>20),(unsigned long long)(memory.ullAvailVirtual>>20),unsigned(sampled),unsigned(memoryPressure),entries.size(),(unsigned long long)bytes);
     }
     void setMemoryPressure(bool on){memoryPressure=on;refreshBudget();states.clear();if(on&&disk)disk->trimUploads();}
     void trimMemory(){refreshBudget();states.clear();if(disk)disk->trimUploads();}
     void endFrame(){if(disk)disk->endFrame();generated=0;visibleWorkingSet=false;if(memoryPressure)states.clear();if(++frame%60==0)refreshBudget();}
-    void report(){if(disk)disk->report();logf("AUTONORMAL cached=%zu bytes=%llu generated=%u hits=%u evicted=%u sourceBytes=%llu budgetMiB=%llu allocations=%u reused=%u",entries.size(),(unsigned long long)bytes,builds,hits,evictions,(unsigned long long)sourceBytes,(unsigned long long)(budget>>20),allocations,reuses);}
+    void report(){if(disk)disk->report();logf("AUTONORMAL cached=%zu bytes=%llu generated=%u hits=%u evicted=%u sourceBytes=%llu budgetMiB=%llu allocations=%u reused=%u generationDeferred=%u budgetRejected=%u visibleDeferred=%u diskPending=%u descriptionRejected=%u",entries.size(),(unsigned long long)bytes,builds,hits,evictions,(unsigned long long)sourceBytes,(unsigned long long)(budget>>20),allocations,reuses,generationDeferred,budgetRejected,visibleDeferred,diskPending,descriptionRejected);}
     Lease acquire(IDirect3DBaseTexture9* source,bool model=false){return Lease(*this,resolve(source,model));}
     IDirect3DTexture9* resolve(IDirect3DBaseTexture9* base,bool model=false){
         using P=NorthlightMaterialProfile;P::Scope timing(profile,P::NormalCache);
@@ -104,29 +107,29 @@ public:
             else{recent=size_t(it-entries.begin());it->used=clock;it->lastUsedFrame=frame;++hits;if(profile)profile->count(P::NormalHit);return it->normal;}
         }
         if(profile)profile->count(P::NormalMiss);
-        if(generated>=2)return nullptr;
+        if(generated>=2){++generationDeferred;return nullptr;}
         timing.next(P::NormalBuild);
-        D3DSURFACE_DESC desc{};if(FAILED(source->GetLevelDesc(0,&desc))||!desc.Width||!desc.Height||(desc.Usage&D3DUSAGE_DEPTHSTENCIL))return nullptr;
+        D3DSURFACE_DESC desc{};if(FAILED(source->GetLevelDesc(0,&desc))||!desc.Width||!desc.Height||(desc.Usage&D3DUSAGE_DEPTHSTENCIL)){++descriptionRejected;return nullptr;}
         const UINT width=std::min(desc.Width,512u),height=std::min(desc.Height,512u);
         timing.work(uint64_t(width)*height);
         const UINT sourceLevels=source->GetLevelCount();
         const std::uint64_t cost=NorthlightAutoNormalMemory::mipBytes(D3DFMT_A8R8G8B8,width,height,0),sourceCost=NorthlightAutoNormalMemory::mipBytes(desc.Format,desc.Width,desc.Height,sourceLevels);
-        constexpr std::uint64_t sourceBudget=128ull<<20;if(cost>budget||sourceCost>sourceBudget)return nullptr;
+        constexpr std::uint64_t sourceBudget=128ull<<20;if(cost>budget||sourceCost>sourceBudget){++budgetRejected;return nullptr;}
         // Do not snapshot/hash a disk source that the visible working set cannot admit.
         if(!entries.empty()&&(bytes+cost>budget||sourceBytes+sourceCost>sourceBudget||entries.size()>=256)){
-            if(visibleWorkingSet)return nullptr;
+            if(visibleWorkingSet){++visibleDeferred;return nullptr;}
             const auto oldest=std::min_element(entries.begin(),entries.end(),[](const Entry& a,const Entry& b){return a.used<b.used;});
-            if(protectedOldest(*oldest))return nullptr;
+            if(protectedOldest(*oldest)){++visibleDeferred;return nullptr;}
         }
         NorthlightMaterialMapPersistence::Probe persisted;
         if(disk){try{persisted=disk->probe(source,desc,model,polarity,details,balance,revision);}catch(...){}}
-        if(persisted.status==NorthlightMaterialMapPersistence::Status::Pending)return nullptr;
+        if(persisted.status==NorthlightMaterialMapPersistence::Status::Pending){++diskPending;return nullptr;}
         struct Recycled {IDirect3DTexture9* texture=nullptr;~Recycled(){drop(texture);}} recycled;
         while(!entries.empty()&&(bytes+cost>budget||sourceBytes+sourceCost>sourceBudget||entries.size()>=256)){
             auto oldest=std::min_element(entries.begin(),entries.end(),[](const Entry& a,const Entry& b){return a.used<b.used;});
             // Keep the visible working set stable when it exceeds the budget.
             // New maps wait until an LRU entry was unused for a complete frame.
-            if(protectedOldest(*oldest))return nullptr;
+            if(protectedOldest(*oldest)){++visibleDeferred;return nullptr;}
             // Reuse only an evicted, unbound map that no pending draw borrows.
             if(!recycled.texture&&reusable(*oldest,width,height)){recycled.texture=oldest->normal;oldest->normal=nullptr;}
             erase(size_t(oldest-entries.begin()));++evictions;

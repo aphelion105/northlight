@@ -15,6 +15,13 @@
 extern "C" __attribute__((no_builtin("memcmp"),no_builtin("bcmp"))) int memcmp(const void* a,const void* b,size_t n){return NorthlightMem::compare(a,b,n);}
 #define NORTHLIGHT_MODEL_NORMALS_TEST
 #include "model_normal_renderer.h"
+#ifdef NORTHLIGHT_NATIVE_ADMISSION_REFERENCE
+#define NorthlightGpuScene NorthlightGpuSceneReference
+#define NorthlightModelNormals NorthlightModelNormalsReference
+#include NORTHLIGHT_NATIVE_ADMISSION_REFERENCE
+#undef NorthlightModelNormals
+#undef NorthlightGpuScene
+#endif
 #ifdef NORTHLIGHT_MODEL_NORMALS_SLICE_TEST
 struct ModelNormalPacketTestAccess {static unsigned compactReady(const NorthlightModelNormals& n){return n.compactBuilt;}
 #ifdef NORTHLIGHT_MODEL_NORMALS_CONSTANT_TEST
@@ -35,10 +42,11 @@ static IDirect3DDevice9* d;
 struct CaptureCalls:ForwardIDirect3DDevice9 {
     unsigned renderSets=0,targetSets=0,failRender=0,failTarget=0;bool failAfter=false,faultSeen=false;
     unsigned bulkReads=0,bulkMisses=0;bool bulkUnknown=false;
-    unsigned textureReads=0,samplerReads=0,viewportReads=0;
+    unsigned textureReads=0,samplerReads=0,viewportReads=0,pixelReads=0;
     unsigned vertexRegistersWritten=0,vertexRegistersRead=0;
     unsigned vertexCreates=0,pixelCreates=0,failVertexCreates=0,failPixelCreates=0;
     using ForwardIDirect3DDevice9::ForwardIDirect3DDevice9;
+    HRESULT STDMETHODCALLTYPE GetPixelShader(IDirect3DPixelShader9** out)override{++pixelReads;return real->GetPixelShader(out);}
     HRESULT STDMETHODCALLTYPE CreateVertexShader(const DWORD* code,IDirect3DVertexShader9** out)override{++vertexCreates;if(failVertexCreates){--failVertexCreates;*out=nullptr;return D3DERR_INVALIDCALL;}return real->CreateVertexShader(code,out);}
     HRESULT STDMETHODCALLTYPE CreatePixelShader(const DWORD* code,IDirect3DPixelShader9** out)override{++pixelCreates;if(failPixelCreates){--failPixelCreates;*out=nullptr;return D3DERR_INVALIDCALL;}return real->CreatePixelShader(code,out);}
     HRESULT STDMETHODCALLTYPE GetViewport(D3DVIEWPORT9* out)override{++viewportReads;return real->GetViewport(out);}
@@ -92,6 +100,11 @@ static IDirect3DVertexShader9* vs(const std::string& p){auto b=read(p);IDirect3D
 static std::vector<unsigned char> capturedPixels(IDirect3DTexture9* texture,unsigned w,unsigned h){Target t;t.t=texture;t.w=w;t.h=h;t.bytes=8;t.format=D3DFMT_A16B16G16R16F;ok(texture->GetSurfaceLevel(0,&t.s));ok(d->CreateOffscreenPlainSurface(w,h,t.format,D3DPOOL_SYSTEMMEM,&t.read,nullptr));auto data=pixels(t);t.read->Release();t.s->Release();return data;}
 static void nearImage(const std::vector<unsigned char>& a,const std::vector<unsigned char>& b){assert(a.size()==b.size());for(size_t i=0;i<a.size();i+=2){unsigned short x,y;std::memcpy(&x,a.data()+i,2);std::memcpy(&y,b.data()+i,2);assert(std::fabs(half(x)-half(y))<.002f);}}
 #include "model_normal_batch.inc"
+#include "model_normal_merge.inc"
+#include "model_normal_stream.inc"
+#ifdef NORTHLIGHT_NATIVE_ADMISSION_REFERENCE
+#include "model_normal_cold_admission.inc"
+#endif
 #ifdef NORTHLIGHT_SHADOW_SLICE_TEST
 #include "shadow_slice_images.inc"
 #endif
@@ -99,7 +112,7 @@ static void nearImage(const std::vector<unsigned char>& a,const std::vector<unsi
 #include "model_normal_constants.inc"
 #endif
 int main(int argc,char**argv){
-    assert(argc==5||(argc==6&&(std::string(argv[5])=="--no-timing"||std::string(argv[5])=="--range-only")));std::setvbuf(stdout,nullptr,_IONBF,0);std::string dir=argv[2],tag=argv[3];
+    assert(argc==5||(argc==6&&(std::string(argv[5])=="--no-timing"||std::string(argv[5])=="--range-only"||std::string(argv[5])=="--cold-only"||std::string(argv[5])=="--stream-only")));std::setvbuf(stdout,nullptr,_IONBF,0);std::string dir=argv[2],tag=argv[3];
     auto bytes=read(dir+"terrain.bin");unsigned count,samples;Vec3 center;std::memcpy(&count,bytes.data(),4);std::memcpy(&samples,bytes.data()+4,4);std::memcpy(&center,bytes.data()+8,12);assert(bytes.size()==20+count*sizeof(Vertex)+samples*12);auto vertices=(const Vertex*)(bytes.data()+20);auto points=(const Vec3*)(bytes.data()+20+count*sizeof(Vertex));
     WNDCLASSW wc{};wc.lpfnWndProc=DefWindowProcW;wc.lpszClassName=L"NorthlightOfflineShadowCamera";wc.hInstance=GetModuleHandleW(nullptr);assert(RegisterClassW(&wc));auto window=CreateWindowExW(0,wc.lpszClassName,L"",WS_OVERLAPPED,0,0,64,64,nullptr,nullptr,wc.hInstance,nullptr);assert(window);
     auto module=LoadLibraryA(argv[1]);assert(module);auto create=(IDirect3D9*(WINAPI*)(UINT))GetProcAddress(module,"Direct3DCreate9");assert(create);auto api=create(D3D_SDK_VERSION);assert(api);D3DPRESENT_PARAMETERS pp{};pp.Windowed=TRUE;pp.hDeviceWindow=window;pp.BackBufferWidth=pp.BackBufferHeight=64;pp.BackBufferFormat=D3DFMT_X8R8G8B8;pp.SwapEffect=D3DSWAPEFFECT_DISCARD;pp.PresentationInterval=D3DPRESENT_INTERVAL_IMMEDIATE;ok(api->CreateDevice(0,D3DDEVTYPE_HAL,window,D3DCREATE_HARDWARE_VERTEXPROCESSING|D3DCREATE_FPU_PRESERVE,&pp,&d));
@@ -146,6 +159,12 @@ int main(int argc,char**argv){
                 native[r+1][0]=up.x;native[r+1][1]=up.y;native[r+1][2]=up.z;native[r+1][3]=NorthlightGI::dot(relative,up);
                 native[r+2][0]=forward.x;native[r+2][1]=forward.y;native[r+2][2]=forward.z;native[r+2][3]=NorthlightGI::dot(relative,forward);}
             ok(d->SetVertexShaderConstantF(0,native[0],256));
+            if(argc==6&&std::string(argv[5])=="--stream-only"){if(frame<8)continue;normalStream(modelVS,modelDecl,meshVertices,meshIndices,sourceMesh,dir);return 0;}
+#ifdef NORTHLIGHT_NATIVE_ADMISSION_REFERENCE
+            if(argc==6&&std::string(argv[5])=="--cold-only"){
+                if(frame<8)continue;normalColdAdmission(modelVS,modelDecl,meshVertices,meshIndices,sourceMesh);return 0;
+            }
+#endif
 #ifdef NORTHLIGHT_MODEL_NORMALS_CONSTANT_TEST
             if(frame<8)continue;
             normalConstants(dir,modelDecl,modelVS,sourceMesh,meshVertices,meshIndices);return 0;
@@ -228,7 +247,8 @@ int main(int argc,char**argv){
     // oracles; Present may discard the native runtime's retained frame data.
     assert(batchFixtureState);ok(batchFixtureState->Apply());
     ok(d->SetDepthStencilSurface(nullptr));ok(d->SetRenderTarget(0,depth.s));ok(d->SetRenderTarget(1,nullptr));ok(d->SetDepthStencilSurface(sceneDepth));viewport(depth);
-    normalBatch(api,captureCalls,modelVS,meshVertices,meshIndices,sourceMesh,argc==5,dir);batchFixtureState->Release();
+    normalBatch(api,captureCalls,modelVS,meshVertices,meshIndices,sourceMesh,argc==5,dir);
+    normalMerge(modelVS,modelDecl,meshVertices,meshIndices,sourceMesh,dir);batchFixtureState->Release();
 #ifdef NORTHLIGHT_MODEL_NORMALS_SLICE_TEST
     const auto compact=ModelNormalPacketTestAccess::compactReady(*modelNormals);if(tag=="3-skinned")assert(compact>0);
     std::printf("MODEL_NORMALS_SLICE_PASS compactShaders=%u\n",compact);

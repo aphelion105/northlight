@@ -76,6 +76,7 @@ env = fp.zig_env()
 for key, name in [('TEMP', 'tmp'), ('TMP', 'tmp'), ('ZIG_LOCAL_CACHE_DIR', 'zig-local'), ('ZIG_GLOBAL_CACHE_DIR', 'zig-global')]:
     (out/name).mkdir(exist_ok=True);env[key] = str(out/name)
 env.update(DISABLE_VULKAN_OBS_CAPTURE='1', DXVK_LOG_PATH=str(out))
+if not args.reference_header:env['NORTHLIGHT_TEST_VERTEX_SHARING']='1'
 exe = out/'model-normals.exe'
 includes = []
 slice_flags = [] if args.reference_header else ['-DNORTHLIGHT_MODEL_NORMALS_SLICE_TEST']
@@ -144,7 +145,7 @@ run = subprocess.run([str(exe), str(args.backend.resolve()), str(out)+os.sep, '3
                      cwd=out, env=env, capture_output=True, text=True, timeout=120)
 (out/'3-envelope-range.log').write_text(run.stdout+run.stderr)
 assert run.returncode == 0, run.stdout+run.stderr
-assert 'MODEL_NORMALS_RANGE_PASS kind=3 cases=3 culled=1 pixels=exact' in run.stdout, run.stdout
+assert 'MODEL_NORMALS_RANGE_PASS kind=3 cases=13 culled=7 pixels=exact' in run.stdout, run.stdout
 print(run.stdout.strip(), flush=True)
 (out/'validation.json').write_text(json.dumps({'status': 'PASS', 'backend': str(args.backend), 'inputs': inputs,
     'game_launched': False, 'game_running': game_running, 'cases': records,

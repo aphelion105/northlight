@@ -26,6 +26,7 @@ struct FaultDevice:ForwardIDirect3DDevice9 {
 namespace NorthlightBackend {static bool isPackagedDxvk(int){return true;}}
 namespace NorthlightSpellLayer {enum class Family {None,Particle,ParticleUnlit,Model,Projected,Ripples};}
 struct Fixture {
+    DeviceMirror& mirrorState=mirror;
     DeviceMirror mirror;
     ExtensionDevice device;ExtensionDevice* ext;
     NorthlightHdr::Color hdrColor;

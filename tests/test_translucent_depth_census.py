@@ -26,7 +26,7 @@ start=r.index('HRESULT STDMETHODCALLTYPE Clear(')
 clr=r[start:r.index('\n    HRESULT STDMETHODCALLTYPE ',start+1)]
 assert 'resolveDepth()' in clr and 'earlyDepth.freeze()' in clr and 'clearResolveAt=censusDraws+1' in clr,'Clear(Z) resolve or freeze position'
 assert 'if(sampled())logf("TRANSLUCENT' in fin
-cf=r[r.index('void clearFrame() {'):r.index('void releaseResources()')]
+cf=r[r.index('void clearFrame() {'):r.index('void releaseResources(bool preserveCaptureSources=false)')]
 assert 'resetTranslucentCensus()' in cf,'clearFrame resets the census'
 assert fin.index('TRANSLUCENT frame=')<fin.index('clearFrame();'),'the log runs before clearFrame resets'
 assert 'resetTranslucentCensus();' not in fin,'only clearFrame resets (also on the extensionFault path)'

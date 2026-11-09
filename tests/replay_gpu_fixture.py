@@ -11,6 +11,8 @@ def literal(path,name):
     return next(ast.literal_eval(n.value) for n in ast.parse(path.read_text()).body if isinstance(n,ast.Assign) and any(getattr(t,'id','')==name for t in n.targets))
 stub=literal(HERE/'test_terrain_snapshot.py','stub').replace('struct IDirect3DDevice9{','struct IDirect3DDevice9{\nvirtual HRESULT CreateVertexBuffer(UINT,DWORD,UINT,unsigned,IDirect3DVertexBuffer9**,void*)=0;\nvirtual HRESULT CreateIndexBuffer(UINT,DWORD,D3DFORMAT,unsigned,IDirect3DIndexBuffer9**,void*)=0;')
 fixture=literal(HERE/'test_replay_gpu_cache.py','body').split('int main(){')[0]
+fixture=fixture.replace('UINT n,DWORD usage,D3DFORMAT,unsigned,IDirect3DIndexBuffer9** out', 'UINT n,DWORD usage,D3DFORMAT format,unsigned,IDirect3DIndexBuffer9** out').replace('auto p=new Buffer<IDirect3DIndexBuffer9,D3DINDEXBUFFER_DESC>(n);', 'auto p=new Buffer<IDirect3DIndexBuffer9,D3DINDEXBUFFER_DESC>(n);p->desc.Format=format;')
+stub=stub.replace('struct IDirect3DDevice9{','struct D3DCAPS9{UINT MaxVertexIndex=0;};\nstruct IDirect3DDevice9{\nvirtual HRESULT GetDeviceCaps(D3DCAPS9* caps){caps->MaxVertexIndex=0xffffffffu;return D3D_OK;}')
 fixture=fixture.replace('struct Buffer:T{','struct Buffer final:T{').replace('bool fail=false;','bool fail=false,unlockFail=false;').replace('HRESULT Unlock()override{return D3D_OK;}','HRESULT Unlock()override{return unlockFail?E_POINTER:D3D_OK;}').replace('unsigned calls=0,failAt=0;bool lockFail=false;','unsigned calls=0,failAt=0,failLockAt=0,failUnlockAt=0;bool lockFail=false;').replace('p->fail=lockFail;','p->fail=lockFail||calls==failLockAt;p->unlockFail=calls==failUnlockAt;')
 # Mesh/Owner aliases, MiB, Bindings, sized(), verify() and gpuBind(); prepend fixture.
 helpers=r'''

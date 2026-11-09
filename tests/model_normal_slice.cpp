@@ -47,6 +47,61 @@ int main(int argc,char** argv){
     auto relative=v;const size_t mov=1+3*8;relative.insert(relative.begin()+mov,{0x0200002eu,dst(3,0,1),src(1,0,0)});
     relative[mov+3]=0x03000001;relative[mov+5]=src(2,31)|0x2000u;relative.insert(relative.begin()+mov+6,src(3,0,0));
     assert(S::vertex(relative.data(),relative.size(),again));reads=NorthlightShaderReads::scan(again.data(),again.size());assert(reads.exact&&(reads.f[0]&(1ull<<31))&&reads.f[3]);
+    // Normal receivers disable native fog. Shadow slicing keeps its previous
+    // outputs; removing the unused fog must not alter the shared shadow path.
+    auto fog=v;fog.insert(fog.begin()+1,{0x0200001fu,0x8000000bu,dst(6,5,1)});
+    fog.insert(fog.end()-1,{0x03000008u,dst(6,5,1),src(1,0),src(2,18)});
+    assert(S::vertex(fog.data(),fog.size(),again));auto fogReads=NorthlightShaderReads::scan(again.data(),again.size());assert(!(fogReads.f[0]&(1ull<<18)));
+    assert(S::shadowVertex(fog.data(),fog.size(),again));fogReads=NorthlightShaderReads::scan(again.data(),again.size());assert(fogReads.f[0]&(1ull<<18));
+    std::vector<Word> canonicalVS;assert(S::canonicalVertex(lean.data(),lean.size(),canonicalVS));
+    assert(S::canonicalVertex(canonicalVS.data(),canonicalVS.size(),again)&&again==canonicalVS&&depthMask(canonicalVS)==15);
+    auto renamedVS=lean;
+    for(size_t at=1;at<renamedVS.size()-1;){const unsigned instruction=renamedVS[at]&65535,n=(renamedVS[at]>>24)&15;
+        if(instruction!=81&&instruction!=48&&instruction!=47)for(unsigned i=instruction==31?2:1;i<=n;++i){auto& token=renamedVS[at+i];const unsigned type=regType(token),reg=regIndex(token);
+            const unsigned mapped=type==0?(reg+7)%32:type==1?(reg+4)%16:type==6?(reg+3)%12:reg;token=(token&~2047u)|mapped;}
+        at+=n+1;}
+    assert(S::canonicalVertex(renamedVS.data(),renamedVS.size(),again)&&again==canonicalVS);
+    const auto vsRejected=[](const std::vector<Word>& code){std::vector<Word> out{0xdeadbeef};assert(!S::canonicalVertex(code.data(),code.size(),out)&&out==std::vector<Word>{0xdeadbeef});};
+    auto unknownInput=lean;unknownInput[3]=(unknownInput[3]&~2047u)|15u;vsRejected(unknownInput);
+    auto duplicateSemantic=lean;duplicateSemantic[5]=duplicateSemantic[2];vsRejected(duplicateSemantic);
+    auto branchedVS=lean;branchedVS.insert(branchedVS.end()-1,0x0000002a);vsRejected(branchedVS);
+    for(unsigned fail=0;fail<64;++fail){std::vector<Word> out{0xdeadbeef};failAllocation=int(fail);const bool ok=S::canonicalVertex(lean.data(),lean.size(),out);failAllocation=-1;if(!ok)assert(out==std::vector<Word>{0xdeadbeef});}
+    uint32_t vertexRandom=199;
+    for(unsigned trial=0;trial<20000;++trial){auto code=lean;vertexRandom=vertexRandom*1664525u+1013904223u;const auto at=vertexRandom%code.size();vertexRandom=vertexRandom*1664525u+1013904223u;code[at]^=1u<<(vertexRandom%32);
+        std::vector<Word> out{0xdeadbeef};if(!S::canonicalVertex(code.data(),code.size(),out))assert(out==std::vector<Word>{0xdeadbeef});}
+    std::puts("MODEL_VERTEX_CANONICAL_PASS registers=bijective depthRGBA=preserved nativeFog=removed shadowFog=retained constantBindings=unchanged allocationFailures=64 fuzz=20000 idempotent=1");
+    // Canonical receivers preserve literal bits and input linkage, while
+    // register names, unused literals and sampler declarations can differ.
+    auto receiver=p;receiver.insert(receiver.begin()+1,{0x05000051u,dst(2,87),0x7fc01234u,0x80000000u,0x3f800000u,0});
+    receiver.insert(receiver.begin()+1,{0x05000051u,dst(2,88),0x3f000000u,0,0,0});
+    receiver.insert(receiver.end()-1,{0x02000001u,dst(0,17),src(2,87),0x03000005u,dst(0,18),src(0,17),src(2,9)});
+    std::vector<Word> compact;assert(S::pixel(receiver.data(),receiver.size(),compact));
+    std::vector<Word> canonical;assert(S::canonicalPixel(compact.data(),compact.size(),9,canonical));
+    assert(canonical.size()<compact.size()&&depthMask(canonical)==15);
+    assert(S::canonicalPixel(canonical.data(),canonical.size(),0,again)&&again==canonical);
+    auto renamed=compact;
+    for(size_t at=1;at<renamed.size()-1;){const unsigned instruction=renamed[at]&65535,n=(renamed[at]>>24)&15;
+        if(instruction==81){const auto r=regIndex(renamed[at+1]);renamed[at+1]=(renamed[at+1]&~2047u)|(r==87?53:r==88?54:r);}
+        else for(unsigned i=instruction==31?2:1;i<=n;++i){auto& token=renamed[at+i];const unsigned type=regType(token),reg=regIndex(token);
+            const unsigned mapped=type==0?(reg+7)%32:type==1?(reg+4)%16:type==2?(reg==87?53:reg==9?21:reg):reg;token=(token&~2047u)|mapped;}
+        at+=n+1;}
+    assert(S::canonicalPixel(renamed.data(),renamed.size(),21,again)&&again==canonical);
+    const auto canonicalRejected=[](const std::vector<Word>& code,unsigned control){std::vector<Word> out{0xdeadbeef};
+        assert(!S::canonicalPixel(code.data(),code.size(),control,out)&&out==std::vector<Word>{0xdeadbeef});};
+    canonicalRejected(compact,224);canonicalRejected(compact,87); // A bound control cannot also be a DEF.
+    auto external=compact;external.insert(external.end()-1,{0x02000001u,dst(0,19),src(2,10)});canonicalRejected(external,9);
+    auto duplicate=compact;duplicate.insert(duplicate.begin()+1,{0x05000051u,dst(2,87),0,0,0,0});canonicalRejected(duplicate,9);
+    auto matrix=compact;matrix.insert(matrix.end()-1,{0x03000014u,dst(0,19),src(0,17),src(2,87)});canonicalRejected(matrix,9);
+    for(unsigned fail=0;fail<64;++fail){std::vector<Word> out{0xdeadbeef};failAllocation=int(fail);
+        const bool ok=S::canonicalPixel(compact.data(),compact.size(),9,out);failAllocation=-1;if(!ok)assert(out==std::vector<Word>{0xdeadbeef});}
+    uint32_t canonicalRandom=79;
+    for(unsigned trial=0;trial<20000;++trial){auto code=compact;canonicalRandom=canonicalRandom*1664525u+1013904223u;const auto index=canonicalRandom%code.size();
+        canonicalRandom=canonicalRandom*1664525u+1013904223u;code[index]^=1u<<(canonicalRandom%32);std::vector<Word> out{0xdeadbeef};
+        if(!S::canonicalPixel(code.data(),code.size(),9,out))assert(out==std::vector<Word>{0xdeadbeef});}
+    std::puts("MODEL_PIXEL_CANONICAL_PASS bijectiveRegisters=exact literalNaNAndSignedZero=preserved depthRGBA=preserved externalConstants=rejected matrix=retained allocationFailures=64 fuzz=20000 idempotent=1");
+    assert(S::vertex(relative.data(),relative.size(),again));const auto relativeReads=NorthlightShaderReads::scan(again.data(),again.size());
+    assert(S::canonicalVertex(again.data(),again.size(),canonicalVS));const auto renamedReads=NorthlightShaderReads::scan(canonicalVS.data(),canonicalVS.size());
+    assert(relativeReads.exact&&renamedReads.exact&&!std::memcmp(relativeReads.f,renamedReads.f,sizeof relativeReads.f)&&relativeReads.i==renamedReads.i&&relativeReads.b==renamedReads.b);
     const auto rejected=[&](const std::vector<Word>& code,bool isVertex){std::vector<Word> out{0xdeadbeef};assert(!(isVertex?S::vertex(code.data(),code.size(),out):S::pixel(code.data(),code.size(),out)));assert(out==std::vector<Word>{0xdeadbeef});};
     auto coverage=p;coverage.insert(coverage.end()-1,{0x01000041,src(1,0,0)});rejected(coverage,false);
     auto branch=v;branch.insert(branch.end()-1,0x0000002a);rejected(branch,true);

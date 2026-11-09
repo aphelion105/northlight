@@ -31,6 +31,7 @@
 #include "stream_hooks.h"
 #include "settings_service.h"
 #include "settings_overlay.h"
+#include "performance_monitor.h"
 #include "stream_device.h"
 #include "compiled_shaders.h"
 #include "projection.h"
@@ -99,6 +100,7 @@ static void ensureRootPath(){
         if(root.size()<MAX_PATH)wcscpy(rootPath,root.c_str());
         // Before backend selection, MemorySwitches or any loader reads an INI: finish a settings commit a crash interrupted (one stat when none).
         if(rootPath[0])settingsRecovery=NorthlightSettings::Store::recoverAtStartup(std::filesystem::path(rootPath));
+        if(rootPath[0]&&settingsRecovery.empty())settingsRecovery=NorthlightSettings::migrateLightLimits(std::filesystem::path(rootPath));
         if(rootPath[0]&&settingsRecovery.empty())settingsRecovery=NorthlightSettings::migrateHdr(std::filesystem::path(rootPath));
         return true;
     }();
@@ -109,6 +111,7 @@ static LONG deviceSerial=0,liveDevices=0;
 static NorthlightBackend::Kind selectedBackend=NorthlightBackend::Kind::Legacy;
 static std::string materialCacheBackendIdentity;
 static bool materialCacheAsyncReadback=false;
+static bool backendHdrBaseComposite=false,backendPointPipelinePrewarm=false;
 // Called once, under logLock, before the first open truncates the log.
 struct WindowsLogFiles {
     DWORD error=0;
@@ -437,7 +440,7 @@ class Device final : public GuardedMirrorDevice {
     }
     // 0.3.200 (gpu budget): GpuBudgetMs > 0 only: Northlight's GPU time on every effects frame (two timestamps, read back late, never waited on)
     // feeds the controller; its level goes to the world for the next frames. GpuBudgetMs=0: no query is created, the world stays at level 0.
-    std::unique_ptr<NorthlightGpuFrameTimer> gpuTimer;NorthlightGpuBudget::Controller gpuBudget;std::int64_t gpuBudgetQpc=0;double gpuBudgetLastMs=0;
+    std::unique_ptr<NorthlightGpuFrameTimer> gpuTimer;NorthlightGpuBudget::Controller gpuBudget;std::int64_t gpuBudgetQpc=0;double gpuBudgetLastMs=0;bool monitorPrimary=true;
     // task 45: the GPU-bound signal (smoothed per-frame latency wait) and the CPU budget (ActorShadowCpuMs). cpuEffectsQpc: this frame's effects span in QPC ticks
     // (0 = the effects did not run), always measured: two QueryPerformanceCounter reads per applying frame; unlike cpuEffects it is not reset by the sample logging.
     NorthlightGpuBudget::WaitSignal gpuBound,replayWait;std::uint64_t replayWaitPrevNs=0,replaySkipPrev=0,eventGpuWaitPrevNs=0;std::int64_t boundQpc=0,cpuBudgetQpc=0,cpuEffectsQpc=0;NorthlightGpuBudget::Controller cpuBudget;double cpuBudgetLastMs=0;bool boundKnown=false,gpuLimited=true,cpuLimited=true,replayKnown=false;
@@ -817,10 +820,17 @@ private:
         // layers without depth writes. Replay only unsupported MRT transfers.
         extensionWork("HDR sky foreground",[&]{hdrReplaySky(true,false,submit);});
     }
+    bool hdrFixedSkyPossible()const{
+        // The draw holds the mirror gate. Known programmable bindings cannot
+        // use fixedDraw; unknown bindings retain its authoritative checks.
+        return !mirrorState.active()||
+            (!(mirrorState.pixelShaderKnown&&mirrorState.pixelShader)&&
+             !(mirrorState.vertexShaderKnown&&mirrorState.vertexShader));
+    }
     template<class Draw> HRESULT effectCoverageDraw(Draw submit,bool replay=false,bool sky=false,bool* skyCaptured=nullptr){
         bool foregroundCaptured=false;
         auto native=[&]()->HRESULT{
-            if(sky&&skyCaptured&&hdr.logical.MultiSampleType==D3DMULTISAMPLE_NONE){
+            if(sky&&skyCaptured&&hdr.logical.MultiSampleType==D3DMULTISAMPLE_NONE&&hdrFixedSkyPossible()){
                 ExtensionDevice::RawScope raw(*ext);bool captured=false;
                 const HRESULT hr=hdrColor.fixedDraw(ext,80,submit,&stateBlocks,&hdrSkyForeground,hdrSkyTarget(),&captured);
                 if(captured){*skyCaptured=true;return hr;}
@@ -907,7 +917,7 @@ private:
     }
     void hdrLayerDiagnostic(const char* path="ui"){
         if(hdrLayerStateLogs>=12||!diagnostics())return;
-        ++hdrLayerStateLogs;DWORD rs[6]={},ts[7]={};
+        ++hdrLayerStateLogs;DWORD rs[11]={},ts[7]={};
         DWORD fvf=0;ext->GetFVF(&fvf);IDirect3DVertexShader9* vs=nullptr;IDirect3DPixelShader9* ps=nullptr;
         ext->GetVertexShader(&vs);ext->GetPixelShader(&ps);
         logf("HDR_LAYER_SOURCE frame=%u path=%s fvf=%08lx vs=%u ps=%u",frame,path,(unsigned long)fvf,unsigned(vs!=nullptr),unsigned(ps!=nullptr));
@@ -915,12 +925,16 @@ private:
             const bool parsed=NorthlightHdrUi::parse(reinterpret_cast<const std::uint32_t*>(words.data()),words.size(),ops,slots);ext->GetDeviceCaps(&caps);
             logf("HDR_LAYER_SHADER frame=%u version=%08lx hash=%016llx parsed=%u slots=%u sm2Slots=%d",frame,words.empty()?0ul:(unsigned long)words[0],(unsigned long long)hash,unsigned(parsed),slots,int(caps.PS20Caps.NumInstructionSlots));}
         drop(vs);drop(ps);
-        const D3DRENDERSTATETYPE states[]={D3DRS_ALPHABLENDENABLE,D3DRS_SRCBLEND,D3DRS_DESTBLEND,D3DRS_BLENDOP,D3DRS_FOGENABLE,D3DRS_COLORWRITEENABLE};
+        const D3DRENDERSTATETYPE states[]={D3DRS_ALPHABLENDENABLE,D3DRS_SRCBLEND,D3DRS_DESTBLEND,D3DRS_BLENDOP,D3DRS_FOGENABLE,D3DRS_COLORWRITEENABLE,D3DRS_LIGHTING,D3DRS_SPECULARENABLE,D3DRS_ALPHATESTENABLE,D3DRS_ALPHAREF,D3DRS_ALPHAFUNC};
         const D3DTEXTURESTAGESTATETYPE stages[]={D3DTSS_COLOROP,D3DTSS_COLORARG1,D3DTSS_COLORARG2,D3DTSS_ALPHAOP,D3DTSS_ALPHAARG1,D3DTSS_ALPHAARG2,D3DTSS_TEXCOORDINDEX};
-        for(unsigned i=0;i<6;++i)ext->GetRenderState(states[i],rs+i);
+        for(unsigned i=0;i<11;++i)ext->GetRenderState(states[i],rs+i);
         for(unsigned i=0;i<7;++i)ext->GetTextureStageState(0,stages[i],ts+i);
         DWORD next=0,transform=0;ext->GetTextureStageState(1,D3DTSS_COLOROP,&next);ext->GetTextureStageState(0,D3DTSS_TEXTURETRANSFORMFLAGS,&transform);
-        logf("HDR_LAYER_STATE frame=%u blend=%lu src=%lu dst=%lu op=%lu fog=%lu writes=%lu color=%lu,%lu,%lu alpha=%lu,%lu,%lu coordinates=%lu next=%lu transform=%lu",frame,(unsigned long)rs[0],(unsigned long)rs[1],(unsigned long)rs[2],(unsigned long)rs[3],(unsigned long)rs[4],(unsigned long)rs[5],(unsigned long)ts[0],(unsigned long)ts[1],(unsigned long)ts[2],(unsigned long)ts[3],(unsigned long)ts[4],(unsigned long)ts[5],(unsigned long)ts[6],(unsigned long)next,(unsigned long)transform);
+        logf("HDR_LAYER_STATE frame=%u blend=%lu src=%lu dst=%lu op=%lu fog=%lu writes=%lu color=%lu,%lu,%lu alpha=%lu,%lu,%lu coordinates=%lu next=%lu transform=%lu lighting=%lu specular=%lu alphaTest=%lu alphaRef=%lu alphaFunc=%lu",frame,(unsigned long)rs[0],(unsigned long)rs[1],(unsigned long)rs[2],(unsigned long)rs[3],(unsigned long)rs[4],(unsigned long)rs[5],(unsigned long)ts[0],(unsigned long)ts[1],(unsigned long)ts[2],(unsigned long)ts[3],(unsigned long)ts[4],(unsigned long)ts[5],(unsigned long)ts[6],(unsigned long)next,(unsigned long)transform,(unsigned long)rs[6],(unsigned long)rs[7],(unsigned long)rs[8],(unsigned long)rs[9],(unsigned long)rs[10]);
+        IDirect3DBaseTexture9* first=nullptr;D3DSURFACE_DESC firstDesc{};DWORD result=0;
+        ext->GetTexture(0,&first);ext->GetTextureStageState(0,D3DTSS_RESULTARG,&result);
+        if(first&&first->GetType()==D3DRTYPE_TEXTURE)static_cast<IDirect3DTexture9*>(first)->GetLevelDesc(0,&firstDesc);
+        logf("HDR_LAYER_TEXTURE frame=%u type=%u format=%u size=%ux%u result=%lu",frame,first?unsigned(first->GetType()):0,unsigned(firstDesc.Format),firstDesc.Width,firstDesc.Height,(unsigned long)result);drop(first);
         for(unsigned stage=1;stage<3;++stage){
             DWORD values[9]{};for(unsigned i=0;i<7;++i)ext->GetTextureStageState(stage,stages[i],values+i);
             ext->GetTextureStageState(stage,D3DTSS_TEXTURETRANSFORMFLAGS,values+7);ext->GetTextureStageState(stage,D3DTSS_RESULTARG,values+8);
@@ -1449,7 +1463,7 @@ private:
         IDirect3DTexture9* coverage=effectCoverage.texture(ext,saved.targets[0]);
         if(autoBump)autoBump->finishCaptures();
         if(sceneSplit)gpuSceneProfile->mark("MaterialCapture");
-        if(modelNormals)modelNormals->finishCaptures();
+        if(modelNormals)modelNormals->finishCaptures(true);
         if(sceneSplit){gpuSceneProfile->mark("ModelNormals");gpuSceneSplit=true;}
         // 0.3.200 (gpu budget): the frame timer brackets every effect pass (closed on every return path by the guard, after the profile's end).
         surfaceTimerOpen=world&&world->gpuBudgetMs()&&gpuTimer->begin(frame);
@@ -1684,7 +1698,16 @@ private:
         for(size_t i=0;i<N;++i)if(previous[i]!=sets[i].value)ext->SetRenderState(D3DRENDERSTATETYPE(sets[i].state),sets[i].value);
         return true;
     }
-    template<size_t N> void maskRestore(const NorthlightNameStencil::Set (&sets)[N],const DWORD (&previous)[N]){for(size_t i=0;i<N;++i)ext->SetRenderState(D3DRENDERSTATETYPE(sets[i].state),previous[i]);}
+    template<size_t N> void maskRestore(const NorthlightNameStencil::Set (&sets)[N],const DWORD (&previous)[N]){
+        for(size_t i=0;i<N;++i){
+            const auto state=D3DRENDERSTATETYPE(sets[i].state);
+            // A native wrapper may have changed state: skip only a currently
+            // certified match, never an assumed unchanged state from maskApply.
+            if(unsigned(state)>=DeviceMirror::RenderStates||!mirrorState.active()||
+               !mirrorState.renderStateKnown[state]||mirrorState.renderStates[state]!=previous[i])
+                ext->SetRenderState(state,previous[i]);
+        }
+    }
     bool nameMaskFullViewport(const D3DVIEWPORT9& v)const{return worldDepthDescKnown&&v.X==0&&v.Y==0&&v.Width==worldDepthDesc.Width&&v.Height==worldDepthDesc.Height;} /* the world depth surface's size */
     // The first name of a frame without a Clear(Z) of the world depth seen yet is preceded by one stencil-only Clear (not with a scissor test on: the Clear would be cut; not with a partial viewport: Clear is clipped to it).
     bool nameMaskClear(){
@@ -1791,6 +1814,8 @@ private:
         logf("UI_TRIAGE frame=%u draw=%u vs=%016llx ps=%016llx tag=%u fvf=%08lx z=%lu zw=%lu zf=%lu applied=%u hdrUi=%u uiInputs=%u viewport=%lu,%lu,%lu,%lu,%g,%g rows=[%g,%g,%g,%g;%g,%g,%g,%g;%g,%g,%g,%g;%g,%g,%g,%g]",frame,drawCalls,(unsigned long long)vh,(unsigned long long)ph,unsigned(vc.entry&kTagMask),(unsigned long)fvf,(unsigned long)z,(unsigned long)zw,(unsigned long)zf,unsigned(applied),unsigned(hdrUiPhase),unsigned(hdrUiInputs()),(unsigned long)vp.X,(unsigned long)vp.Y,(unsigned long)vp.Width,(unsigned long)vp.Height,vp.MinZ,vp.MaxZ,rows[0],rows[1],rows[2],rows[3],rows[4],rows[5],rows[6],rows[7],rows[8],rows[9],rows[10],rows[11],rows[12],rows[13],rows[14],rows[15]);
     }
     template<class Capture> void prepareDrawImpl(Capture capture,UINT count) {
+        // Both FrameDrawGates paths enter here, including non-model/early exits.
+        if(modelNormals)modelNormals->beginNativeDraw();
         if(!gpuFrameStarted){
             gpuFrameStarted=true;
             if(gpuSceneProfile&&diagnostics())gpuSceneProfile->beginFrame(frame,NorthlightRenderThreadProbe::sampleFrame(frame));
@@ -1878,16 +1903,19 @@ private:
     // shadow (MCSH) and the game's own dynamic shadow map no longer double
     // the extension's shadow. Planned inside the guarded capture, applied
     // around the real draw (outside extensionWork, like the draw itself).
+    // Explicit native-shadow suppression uses the same neutral PS everywhere.
     IDirect3DPixelShader9 *shadowSwapOriginal=nullptr,*shadowSwapReplacement=nullptr;
     IDirect3DVertexShader9 *shadowSwapVertexOriginal=nullptr,*shadowSwapVertexReplacement=nullptr;
     unsigned shadowSwapConstantBase=0,shadowSwapConstantCount=0;float shadowSwapConstants[24]={};
     void planTerrainShadowSwap(IDirect3DVertexShader9* vs){
         if(!drawGates.terrainShadow)return; /* 0.3.187: implied by the line below at every draw of this frame */
-        if(!world||applied||!enabled||failed||!terrain||debugMode!=0||worldDebug!=0||!world->terrainShadowActive())return;
+        if(!world||applied||!enabled||failed||!terrain||debugMode!=0||worldDebug!=0)return;
+        const bool hideNative=!world->nativeTerrainShadowsEnabled();
+        if(!hideNative&&!world->terrainShadowActive())return;
         if((classifyVs(vs).entry&kTagMask)!=1)return;
         IDirect3DPixelShader9* ps=nullptr;if(FAILED(ext->GetPixelShader(&ps))||!ps)return;
         IDirect3DPixelShader9* replacement=nullptr;IDirect3DVertexShader9* patchedVertex=nullptr;
-        if(world->terrainShadowCoverage(vs,ps,patchedVertex,replacement,shadowSwapConstantBase,shadowSwapConstantCount,shadowSwapConstants)){
+        if(!hideNative&&world->terrainShadowCoverage(vs,ps,patchedVertex,replacement,shadowSwapConstantBase,shadowSwapConstantCount,shadowSwapConstants)){
             shadowSwapVertexOriginal=vs;vs->AddRef();shadowSwapVertexReplacement=patchedVertex;
         }else replacement=world->terrainShadowReplacement(ps);
         if(!replacement){ps->Release();return;}
@@ -1903,7 +1931,20 @@ private:
     template<class Draw> HRESULT nativeLocalSubmit(Draw draw,bool prepared=false,IDirect3DVertexShader9* source=nullptr){
         // Factory provenance names the original material and bound private pair
         // for POM and supported skinned displacement.
-        return world&&nativeLocalDomain&&enabled&&!applied&&!failed&&projectionValid&&!debugMode&&!worldDebug?world->nativeLocalDraw(frame,worldDepth,draw,prepared,autoBump?autoBump->nativePOM():nullptr,source,autoBump?autoBump->nativeDisplacement():nullptr,effectCoverage.nativePixel()):draw();
+        auto native=[&](){
+            return modelNormals?modelNormals->nativeDraw(draw,nativeLocalDomain&&enabled&&!applied&&!failed&&projectionValid&&!debugMode&&!worldDebug,
+                [&](IDirect3DVertexShader9* original,IDirect3DVertexShader9* bound,IDirect3DPixelShader9* pixel)->unsigned{
+                    using M=NorthlightNativeModelNormals;
+                    if(world&&world->nativeReceiverPair(original,bound,pixel))return M::PairValid|M::OuterRestoresVertex|M::OuterRestoresPixel;
+                    if(original==bound)return M::PairValid;
+                    const auto* pom=autoBump?autoBump->nativePOM():nullptr;
+                    if(pom&&pom->originalVS==original&&pom->vs==bound)return M::PairValid;
+                    const auto* displacement=autoBump?autoBump->nativeDisplacement():nullptr;
+                    if(displacement&&displacement->originalVS==original&&displacement->matches(bound))return M::PairValid;
+                    return 0;
+                }):draw();
+        };
+        return world&&nativeLocalDomain&&enabled&&!applied&&!failed&&projectionValid&&!debugMode&&!worldDebug?world->nativeLocalDraw(frame,worldDepth,native,prepared,autoBump?autoBump->nativePOM():nullptr,source,autoBump?autoBump->nativeDisplacement():nullptr,effectCoverage.nativePixel()):native();
     }
     template<class Draw> void captureModelNormals(IDirect3DVertexShader9* vs,Draw draw,bool userMemory,const NorthlightAutoDisplacement::Args& geometry,const NorthlightAutoDisplacement::CaptureSource* source=nullptr){
         const auto found=vsHashes.find(vs);
@@ -2060,6 +2101,7 @@ private:
         in.sky=celestialDiscs!=nullptr;in.blobs=shadowBlobs!=nullptr&&shadowBlobs->active();in.world=world!=nullptr;in.enabled=enabled;in.failed=failed;
         in.shadowsKey=effectKeys.settings.shadows;in.actorShadows=world&&world->actorShadowsEnabled();
         in.hideBlobs=world&&!world->blobShadowsEnabled();
+        in.hideTerrainShadows=world&&!world->nativeTerrainShadowsEnabled();
         in.worldShadows=world&&world->shadowsRequested();in.debugOff=debugMode==0&&worldDebug==0;
         drawGates=NorthlightDrawGates::latch(frameDrawGates,in);
         hookTimer=sampledDrawTimers()&&NorthlightRenderThreadProbe::profiling()?&cpuDrawHooks:nullptr;
@@ -2416,10 +2458,34 @@ private:
     }
     template<class Draw> void hdrReplaySky(bool sky,bool claimed,Draw draw){
         if(!sky||claimed)return;
-        ExtensionDevice::RawScope raw(*ext);SavedState saved(ext,&stateBlocks);if(!saved.ok)return;
+        ExtensionDevice::RawScope raw(*ext);
+        // Color::draw restores its shaders/constants/raster state. Only the
+        // sky target and write masks belong to this outer scope.
+        struct Restore {
+            ExtensionDevice* d;bool& replaying;IDirect3DSurface9* targets[4]={};IDirect3DSurface9* depth=nullptr;
+            D3DVIEWPORT9 viewport{};RECT scissor{};DWORD z=0,stencil=0;bool changed=false;
+            ~Restore(){
+                replaying=false;
+                if(changed){
+                    d->SetDepthStencilSurface(nullptr);
+                    for(unsigned i=1;i<4;++i)d->SetRenderTarget(i,nullptr);
+                    d->SetRenderTarget(0,targets[0]);
+                    for(unsigned i=1;i<4;++i)if(targets[i])d->SetRenderTarget(i,targets[i]);
+                    d->SetDepthStencilSurface(depth);d->SetViewport(&viewport);d->SetScissorRect(&scissor);
+                    d->SetRenderState(D3DRS_ZWRITEENABLE,z);d->SetRenderState(D3DRS_STENCILWRITEMASK,stencil);
+                }
+                drop(depth);for(auto*& target:targets)drop(target);
+            }
+        }saved{ext,hdrSkyReplaying};
+        for(unsigned i=0;i<4;++i){const HRESULT hr=ext->GetRenderTarget(i,&saved.targets[i]);if(FAILED(hr)&&hr!=D3DERR_NOTFOUND)return;}
+        ext->GetDepthStencilSurface(&saved.depth);
+        if(!saved.targets[0]||FAILED(ext->GetViewport(&saved.viewport))||FAILED(ext->GetScissorRect(&saved.scissor))||
+           FAILED(ext->GetRenderState(D3DRS_ZWRITEENABLE,&saved.z))||FAILED(ext->GetRenderState(D3DRS_STENCILWRITEMASK,&saved.stencil)))return;
+        saved.changed=true;
         for(unsigned i=1;i<4;++i)ext->SetRenderTarget(i,nullptr);
-        if(FAILED(hdrBindBack(hdrSkyTarget())))return;
-        ext->SetRenderState(D3DRS_ZWRITEENABLE,FALSE);ext->SetRenderState(D3DRS_STENCILWRITEMASK,0);hdrSkyReplaying=true;
+        if(FAILED(ext->SetRenderTarget(0,hdrSkyTarget()))||FAILED(ext->SetViewport(&saved.viewport))||FAILED(ext->SetScissorRect(&saved.scissor))||
+           FAILED(ext->SetRenderState(D3DRS_ZWRITEENABLE,FALSE))||FAILED(ext->SetRenderState(D3DRS_STENCILWRITEMASK,0)))return;
+        hdrSkyReplaying=true;
         const auto layersBefore=hdrColor.layers;
         hdrColor.draw(ext,80,draw,0,&stateBlocks);hdrSkyReplaying=false;
         if(hdrColor.layers!=layersBefore)hdrLayerDiagnostic("sky");
@@ -3142,7 +3208,7 @@ public:
     HRESULT STDMETHODCALLTYPE CreateCubeTexture(UINT EdgeLength, UINT Levels, DWORD Usage, D3DFORMAT Format, D3DPOOL Pool, IDirect3DCubeTexture9** ppCubeTexture, HANDLE* pSharedHandle) override{Guard mirrorLock(mirrorState.gate);HRESULT hr=ext->CreateCubeTexture(EdgeLength, Levels, Usage, Format, Pool, ppCubeTexture, pSharedHandle);if(SUCCEEDED(hr)){NorthlightReplayDrawState::noteTextureFormat(Format);weatherDetect.forget(static_cast<IDirect3DBaseTexture9*>(*ppCubeTexture)); /* 0.3.198 (rain): address reuse */mirrorResources.wrap(ppCubeTexture);}return hr;}
     HRESULT STDMETHODCALLTYPE CreateRenderTarget(UINT Width, UINT Height, D3DFORMAT Format, D3DMULTISAMPLE_TYPE MultiSample, DWORD MultisampleQuality, WINBOOL Lockable, IDirect3DSurface9** ppSurface, HANDLE* pSharedHandle) override{Guard mirrorLock(mirrorState.gate);HRESULT hr=ext->CreateRenderTarget(Width, Height, Format, MultiSample, MultisampleQuality, Lockable, ppSurface, pSharedHandle);if(SUCCEEDED(hr)){mirrorResources.wrap(ppSurface);}return hr;}
     HRESULT STDMETHODCALLTYPE CreateDepthStencilSurface(UINT Width, UINT Height, D3DFORMAT Format, D3DMULTISAMPLE_TYPE MultiSample, DWORD MultisampleQuality, WINBOOL Discard, IDirect3DSurface9** ppSurface, HANDLE* pSharedHandle) override{Guard mirrorLock(mirrorState.gate);{const D3DFORMAT upgraded=D3DFORMAT(NorthlightStream::upgradedDepthFormat(unsigned(Format)));if(upgraded!=Format){Format=upgraded;static bool logged=false;if(!logged){logged=true;logf("NAMEMASK depth upgraded D24X8->D24S8 where=CreateDepthStencilSurface");}}} /* 0.3.212 (task 32): depthUpgrade is set only with NameMask on, as on the StreamDevice path */HRESULT hr=ext->CreateDepthStencilSurface(Width, Height, Format, MultiSample, MultisampleQuality, Discard, ppSurface, pSharedHandle);if(SUCCEEDED(hr)){mirrorResources.wrap(ppSurface);}return hr;}
-    HRESULT STDMETHODCALLTYPE UpdateSurface(IDirect3DSurface9 *src_surface, const RECT *src_rect, IDirect3DSurface9 *dst_surface, const POINT *dst_point) override{Guard mirrorLock(mirrorState.gate);if(autoBump)autoBump->beforeDepthChange();rainMrtUnbind(); /* 0.3.202 (rain mask MRT) */IDirect3DSurface9* rawSource=mirrorResources.unwrap(src_surface);IDirect3DSurface9* rawDestination=mirrorResources.unwrap(dst_surface);const HRESULT sync=hdrLogicalCopy("UpdateSurface",rawSource,rawDestination);if(FAILED(sync)){return sync;}if(spellOn)spellCopy(rawSource,rawDestination);const HRESULT result=ext->UpdateSurface(rawSource,src_rect,rawDestination,dst_point);NorthlightMaterialHeight::copiedSurface(rawSource,src_rect,rawDestination,dst_point,SUCCEEDED(result));if(SUCCEEDED(result)){effectCoverage.colorWrite(rawDestination);skyLayers.colorWrite(reinterpret_cast<std::uintptr_t>(rawDestination));}return result;}
+    HRESULT STDMETHODCALLTYPE UpdateSurface(IDirect3DSurface9 *src_surface, const RECT *src_rect, IDirect3DSurface9 *dst_surface, const POINT *dst_point) override{Guard mirrorLock(mirrorState.gate);if(autoBump)autoBump->beforeDepthChange();rainMrtUnbind(); /* 0.3.202 (rain mask MRT) */IDirect3DSurface9* rawSource=mirrorResources.unwrap(src_surface);IDirect3DSurface9* rawDestination=mirrorResources.unwrap(dst_surface);if(modelNormals)modelNormals->nativeSurfaceWrite(rawDestination);const HRESULT sync=hdrLogicalCopy("UpdateSurface",rawSource,rawDestination);if(FAILED(sync)){return sync;}if(spellOn)spellCopy(rawSource,rawDestination);const HRESULT result=ext->UpdateSurface(rawSource,src_rect,rawDestination,dst_point);NorthlightMaterialHeight::copiedSurface(rawSource,src_rect,rawDestination,dst_point,SUCCEEDED(result));if(SUCCEEDED(result)){effectCoverage.colorWrite(rawDestination);skyLayers.colorWrite(reinterpret_cast<std::uintptr_t>(rawDestination));}return result;}
     HRESULT STDMETHODCALLTYPE UpdateTexture(IDirect3DBaseTexture9* pSourceTexture, IDirect3DBaseTexture9* pDestinationTexture) override{Guard mirrorLock(mirrorState.gate);if(autoBump)autoBump->beforeDepthChange();rainMrtUnbind(); /* 0.3.202 (rain mask MRT) */IDirect3DBaseTexture9* rawDestination=mirrorResources.unwrap(pDestinationTexture);if(spellOn)spellTextureWrite(static_cast<void*>(rawDestination));auto* rawSource=mirrorResources.unwrap(pSourceTexture);const HRESULT result=ext->UpdateTexture(rawSource,rawDestination);NorthlightMaterialHeight::copiedTexture(rawSource,rawDestination,SUCCEEDED(result));return result;}
     HRESULT STDMETHODCALLTYPE GetRenderTargetData(IDirect3DSurface9* pRenderTarget, IDirect3DSurface9* pDestSurface) override{Guard mirrorLock(mirrorState.gate);rainMrtUnbind(); /* 0.3.202 (rain mask MRT) */IDirect3DSurface9* rawSource=mirrorResources.unwrap(pRenderTarget);IDirect3DSurface9* rawDestination=mirrorResources.unwrap(pDestSurface);
         // Explicit FP16 captures see the HDR image; ordinary SDR readbacks keep the legacy format.
@@ -3158,8 +3224,8 @@ public:
         }}
         const HRESULT sync=hdrLogicalCopy("GetRenderTargetData",rawSource,rawDestination);if(FAILED(sync)){drop(resolved);return sync;}if(spellOn)spellCopy(rawSource,rawDestination);const HRESULT hr=ext->GetRenderTargetData(rawSource,rawDestination);drop(resolved);return hr;}
     HRESULT STDMETHODCALLTYPE GetFrontBufferData(UINT iSwapChain, IDirect3DSurface9* pDestSurface) override{Guard mirrorLock(mirrorState.gate);return ext->GetFrontBufferData(iSwapChain, mirrorResources.unwrap(pDestSurface));}
-    HRESULT STDMETHODCALLTYPE StretchRect(IDirect3DSurface9 *src_surface, const RECT *src_rect, IDirect3DSurface9 *dst_surface, const RECT *dst_rect, D3DTEXTUREFILTERTYPE filter) override{Guard mirrorLock(mirrorState.gate);if(autoBump)autoBump->beforeDepthChange();rainMrtUnbind(); /* 0.3.202 (rain mask MRT) */IDirect3DSurface9* rawSource=mirrorResources.unwrap(src_surface);IDirect3DSurface9* rawDestination=mirrorResources.unwrap(dst_surface);const HRESULT sync=hdrLogicalCopy("StretchRect",rawSource,rawDestination);if(FAILED(sync)){return sync;}if(spellOn)spellCopy(rawSource,rawDestination);const HRESULT hr=ext->StretchRect(rawSource, src_rect, rawDestination, dst_rect, filter);if(SUCCEEDED(hr)){effectCoverage.colorWrite(rawDestination);skyLayers.colorWrite(reinterpret_cast<std::uintptr_t>(rawDestination));}return hr;}
-    HRESULT STDMETHODCALLTYPE ColorFill(IDirect3DSurface9 *surface, const RECT *rect, D3DCOLOR color) override{Guard mirrorLock(mirrorState.gate);rainMrtUnbind(); /* 0.3.202 (rain mask MRT) */IDirect3DSurface9* rawSurface=mirrorResources.unwrap(surface);const HRESULT sync=hdrLogicalCopy("ColorFill",nullptr,rawSurface);if(FAILED(sync))return sync;if(spellOn)spellCopy(nullptr,rawSurface);const HRESULT hr=ext->ColorFill(rawSurface, rect, color);if(SUCCEEDED(hr)){effectCoverage.colorWrite(rawSurface);skyLayers.colorWrite(reinterpret_cast<std::uintptr_t>(rawSurface));}return hr;}
+    HRESULT STDMETHODCALLTYPE StretchRect(IDirect3DSurface9 *src_surface, const RECT *src_rect, IDirect3DSurface9 *dst_surface, const RECT *dst_rect, D3DTEXTUREFILTERTYPE filter) override{Guard mirrorLock(mirrorState.gate);if(autoBump)autoBump->beforeDepthChange();rainMrtUnbind(); /* 0.3.202 (rain mask MRT) */IDirect3DSurface9* rawSource=mirrorResources.unwrap(src_surface);IDirect3DSurface9* rawDestination=mirrorResources.unwrap(dst_surface);if(modelNormals)modelNormals->nativeSurfaceWrite(rawDestination);const HRESULT sync=hdrLogicalCopy("StretchRect",rawSource,rawDestination);if(FAILED(sync)){return sync;}if(spellOn)spellCopy(rawSource,rawDestination);const HRESULT hr=ext->StretchRect(rawSource, src_rect, rawDestination, dst_rect, filter);if(SUCCEEDED(hr)){effectCoverage.colorWrite(rawDestination);skyLayers.colorWrite(reinterpret_cast<std::uintptr_t>(rawDestination));}return hr;}
+    HRESULT STDMETHODCALLTYPE ColorFill(IDirect3DSurface9 *surface, const RECT *rect, D3DCOLOR color) override{Guard mirrorLock(mirrorState.gate);rainMrtUnbind(); /* 0.3.202 (rain mask MRT) */IDirect3DSurface9* rawSurface=mirrorResources.unwrap(surface);if(modelNormals)modelNormals->nativeSurfaceWrite(rawSurface);const HRESULT sync=hdrLogicalCopy("ColorFill",nullptr,rawSurface);if(FAILED(sync))return sync;if(spellOn)spellCopy(nullptr,rawSurface);const HRESULT hr=ext->ColorFill(rawSurface, rect, color);if(SUCCEEDED(hr)){effectCoverage.colorWrite(rawSurface);skyLayers.colorWrite(reinterpret_cast<std::uintptr_t>(rawSurface));}return hr;}
     HRESULT STDMETHODCALLTYPE CreateOffscreenPlainSurface(UINT Width, UINT Height, D3DFORMAT Format, D3DPOOL Pool, IDirect3DSurface9** ppSurface, HANDLE* pSharedHandle) override{Guard mirrorLock(mirrorState.gate);HRESULT hr=ext->CreateOffscreenPlainSurface(Width, Height, Format, Pool, ppSurface, pSharedHandle);if(SUCCEEDED(hr)){mirrorResources.wrap(ppSurface);}return hr;}
     HRESULT STDMETHODCALLTYPE SetRenderTarget(DWORD RenderTargetIndex, IDirect3DSurface9* pRenderTarget) override{Guard mirrorLock(mirrorState.gate);if(autoBump)autoBump->beforeDepthChange();auto* target=mirrorResources.unwrap(pRenderTarget);if(hdr.active&&hdrUiPhase&&RenderTargetIndex==0&&target==hdrLegacyBack)target=hdrPresentBack;const HRESULT hr=ext->SetRenderTarget(RenderTargetIndex,target);if(SUCCEEDED(hr)&&RenderTargetIndex==0)skyLayers.targetSet(reinterpret_cast<std::uintptr_t>(target));return hr;}
     HRESULT STDMETHODCALLTYPE GetRenderTarget(DWORD RenderTargetIndex, IDirect3DSurface9** ppRenderTarget) override{Guard mirrorLock(mirrorState.gate);HRESULT hr=ext->GetRenderTarget(RenderTargetIndex, ppRenderTarget);if(SUCCEEDED(hr)&&ppRenderTarget&&*ppRenderTarget){if(hdr.active&&RenderTargetIndex==0&&*ppRenderTarget==hdrPresentBack){(*ppRenderTarget)->Release();*ppRenderTarget=hdrLegacyBack;hdrLegacyBack->AddRef();}mirrorResources.wrap(ppRenderTarget);}return hr;}
@@ -3255,10 +3321,10 @@ public:
         try{settingsService=NorthlightSettings::acquire(std::filesystem::path(rootPath));settingsRevision=settingsService->revision();if(!settingsRecovery.empty())logf("SETTINGS startup recovery incomplete: %s",settingsRecovery.c_str());}
         catch(const std::exception& e){logf("SETTINGS unavailable: %s",e.what());}
         gpuProfile=std::make_unique<NorthlightGpuProfile>(ext);gpuSceneProfile=std::make_unique<NorthlightGpuProfile>(ext,"GPU frame",5);materialProfile=std::make_unique<NorthlightMaterialProfile>(ext);gpuTimer=std::make_unique<NorthlightGpuFrameTimer>(ext); gpuScene=std::make_shared<NorthlightGpuScene::Scene>(ext);world=std::make_unique<WorldRenderer>(ext,gpuScene);world->setEffectsBuckets(&effectsBuckets);world->setMaterialProfiler(materialProfile.get());
-        // Native D3D9 changes FP16 rounding for the specialized compositor.
-        world->setHdrBaseCompositeEnabled(selectedBackend==NorthlightBackend::Kind::Dxvk&&NorthlightUpload::ReadBackNoOverwrite.load(std::memory_order_relaxed));
+        // Shader parity and buffer lock flags are independent backend contracts.
+        world->setHdrBaseCompositeEnabled(backendHdrBaseComposite);
         surface=std::make_unique<NorthlightSurfaceRenderer>(ext);
-        modelNormals=std::make_unique<NorthlightModelNormals>(ext);
+        modelNormals=std::make_unique<NorthlightModelNormals>(ext);modelNormals->enableNativeMrt(true);
         autoBump=std::make_unique<NorthlightAutoBump>(ext,gpuScene);if(rootPath[0])autoBump->setPersistentCache(std::filesystem::path(rootPath)/L"Cache"/L"Northlight"/L"Materials-v1",NorthlightBackend::name(selectedBackend),materialCacheBackendIdentity.c_str(),materialCacheAsyncReadback);autoBump->setGeometryTracking(&NorthlightTrackedBuffers::identity,&NorthlightTrackedBuffers::version,&NorthlightTrackedBuffers::captureMetadata);autoBump->configure(world->surfaceSettings());
         modelNormals->setTrustedPoseSource(ext->trustedConstantSource());
         modelNormals->shareCaptureSources(autoBump->captureSources(),&NorthlightTrackedBuffers::identity,&NorthlightTrackedBuffers::version,&NorthlightTrackedBuffers::captureMetadata);
@@ -3344,7 +3410,7 @@ public:
         if(writeLog)logf("HDR experimental requested=%u active=%u stream=%u windowed=%u status=0x%08lx reason=%s mode=scRGB source=linear-northlight+legacy lifecycle=additional",unsigned(hdr.settings.requested),unsigned(hdr.active),unsigned(hdr.stream),unsigned(hdr.logical.Windowed),(unsigned long)hdr.lastStatus,hdr.reason);
     }
     HRESULT warmPointPipelinesAtDeviceInit(){
-        return selectedBackend==NorthlightBackend::Kind::Dxvk&&NorthlightUpload::ReadBackNoOverwrite.load(std::memory_order_relaxed)?world->warmPointPipelinesAtDeviceInit():S_OK;
+        return backendPointPipelinePrewarm?world->warmPointPipelinesAtDeviceInit():S_OK;
     }
     HRESULT initHdrTargets(){
         hdr.active=false;hdrRequestChanged=false;
@@ -3514,7 +3580,7 @@ public:
         struct InvalidateOnReturn {DeviceMirror& state;~InvalidateOnReturn(){state.invalidate();}} invalidate{mirrorState};
         if(extensionFault){clearFrame();drawOverlay(implicitChain);return;}
         const unsigned finishedFrame=frame;const bool effectsApplied=applied,worldSeen=terrain;
-        extensionWork("frame finish",[&]{finishFrameImpl();});
+        monitorPrimary=implicitChain;extensionWork("frame finish",[&]{finishFrameImpl();});
         if(hdr.active&&!hdrUiPhase)extensionWork("HDR frame finish",[&]{if(SUCCEEDED(hdrBegin(true)))hdrBoundaryLog("present",finishedFrame,effectsApplied,worldSeen);});
         drawOverlay(implicitChain);
     }
@@ -3634,7 +3700,16 @@ public:
         if(diagnostics()){gpuProfile->poll();if(gpuSceneProfile)gpuSceneProfile->poll();}
         if(materialProfile)materialProfile->poll();if(world)world->pollMaterialProfile();pollProjectedAudit();
         if(diagnostics()&&frame%600==0)logClientLatency(frame,"periodic");
+        const auto monitorCpuTicks=cpuEffectsQpc;
         gpuBudgetFrame();cpuBudgetFrame(); /* task 45 */
+        if(monitorPrimary&&NorthlightPerformance::store().wanted(reinterpret_cast<uintptr_t>(ext))){
+            LARGE_INTEGER monitorTick{};QueryPerformanceCounter(&monitorTick);
+            NorthlightPerformance::Frame sample;sample.at=NorthlightPerformance::nowMs();sample.sceneWidth=width;sample.sceneHeight=height;
+            if(gpuBudgetQpc&&cpuFrequency.QuadPart>0&&monitorTick.QuadPart-gpuBudgetQpc<cpuFrequency.QuadPart)sample.effectsGpuMs=gpuBudgetLastMs;
+            if(monitorCpuTicks>0&&cpuFrequency.QuadPart>0)sample.effectsCpuMs=double(monitorCpuTicks)*1000/double(cpuFrequency.QuadPart);
+            if(streamStats){sample.streamed=true;sample.eventWaitNs=NorthlightStream::get(streamStats->eventGpuWaitNs);sample.queueIdleNs=NorthlightStream::get(streamStats->replayIdleNs);}
+            NorthlightPerformance::store().publish(reinterpret_cast<uintptr_t>(ext),monitorTick.QuadPart,cpuFrequency.QuadPart,focus&&!diagnosticFrame,sample);
+        }
         // Poll only while this game owns foreground focus.
         bool modifiers=(GetAsyncKeyState(VK_CONTROL)&0x8000)&&(GetAsyncKeyState(VK_SHIFT)&0x8000);
         bool k10=focus&&modifiers&&(GetAsyncKeyState(VK_F10)&0x8000);
@@ -3667,7 +3742,7 @@ public:
         uiFallbackEndFrame();
         if(frame==1||(frame%600==0&&diagnostics()))logf("frame=%u applied=%u terrainShaders=%u uiShaders=%u projectionRejects=%u terrainThisFrame=%d depth=%d draws=%u missingVS=%u terrainDraws=%u terrainShadowDraws=%u viewportRejects=%u depthRejects=%u uiDraws=%u uiAfterTerrain=%u uiFallback=%u uiFallbackState=%c",frame,appliedFrames,matchedTerrain,matchedUI,projectionRejects,terrain,captured,drawCalls,missingVS,terrainDraws,terrainShadowDraws,viewportRejects,depthRejects,uiDraws,uiAfterTerrain,uiFallbackBoundaries,uiFallback.disarmed()?'d':uiFallback.armed()?'a':'l');
         if(hdr.active&&diagnostics()&&frame%600==0)logf("HDR state frame=%u uiPhase=%u effectsEnabled=%u patched=%u rejected=%u logicalCopiesAfterUI=%u",frame,unsigned(hdrUiPhase),unsigned(enabled),hdrColor.patched,hdrColor.rejected,hdrLogicalCopies);
-        if(hdr.active&&diagnostics()&&frame%600==0)logf("HDR_WORK frame=%u compatibilityLayers=%llu layerPixels=%llu screenDirect=%llu attenuationDirect=%llu multiTextureDirect=%llu skyMrtAttempts=%llu skyMrtDraws=%llu foregroundDraws=%llu foregroundCachedRejects=%llu",frame,(unsigned long long)hdrColor.layers,(unsigned long long)hdrColor.layerPixels,(unsigned long long)hdrColor.screenDirect,(unsigned long long)hdrColor.attenuationDirect,(unsigned long long)hdrColor.multiTextureDirect,(unsigned long long)hdrColor.skyMrtAttempts,(unsigned long long)hdrColor.skyMrtDraws,(unsigned long long)hdrSkyForeground.draws,(unsigned long long)hdrSkyForeground.cachedRejections);
+        if(hdr.active&&diagnostics()&&frame%600==0)logf("HDR_WORK frame=%u compatibilityLayers=%llu layerPixels=%llu screenDirect=%llu attenuationDirect=%llu multiTextureDirect=%llu fixedAdditiveDirect=%llu skyMrtAttempts=%llu skyMrtDraws=%llu foregroundDraws=%llu foregroundCachedRejects=%llu",frame,(unsigned long long)hdrColor.layers,(unsigned long long)hdrColor.layerPixels,(unsigned long long)hdrColor.screenDirect,(unsigned long long)hdrColor.attenuationDirect,(unsigned long long)hdrColor.multiTextureDirect,(unsigned long long)hdrColor.fixedAdditiveDirect,(unsigned long long)hdrColor.skyMrtAttempts,(unsigned long long)hdrColor.skyMrtDraws,(unsigned long long)hdrSkyForeground.draws,(unsigned long long)hdrSkyForeground.cachedRejections);
         // The address-space sweep is asynchronous; the render thread only compares
         // its result. Trims run below, after clearFrame(), at the frame boundary.
         bool memoryTrim=false;int memoryCaps=-1,memoryWorld=-1; /* -1 unchanged, 0 full, 1 half; memoryWorld follows any pressure episode, terrain follows only memoryCaps */
@@ -3939,6 +4014,7 @@ public:
     }
     HRESULT STDMETHODCALLTYPE Clear(DWORD n,const D3DRECT* rects,DWORD flags,D3DCOLOR color,float z,DWORD stencil) override { Guard mirrorLock(mirrorState.gate);
         if(autoBump&&(flags&D3DCLEAR_ZBUFFER))autoBump->beforeDepthChange();
+        if(modelNormals&&(flags&(D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER)))modelNormals->nativeDepthChanged(flags);
         nameMaskRunEnd(); /* 0.3.212 (task 32): a run of names never spans a Clear */
         rainMrtUnbind(); /* 0.3.202 (rain mask MRT): a Clear would clear the mask target too */
         /* 0.3.212 (task 32): the game's Clear(Z) of the world depth clears the name marks with it (the stencil flag is added to the same call) while the frame has none; with marks, a stencil clear in a later Clear(Z) is dropped (the game
@@ -4014,6 +4090,7 @@ public:
     }
     // Keep native and prepared material submissions in one ordering for all Draw* forms.
     template<class Draw> HRESULT submitGameDraw(UINT count,bool& nativeSky,bool* skyCaptured,Draw submit){
+        if(!enabled&&!failed&&!hdr.active&&worldDebug==0&&!diagnostics())return submit();
         return hdrDraw([&]{
             auto raw=[&]{return effectCoverageDraw([&]{return nativeLocalSubmit(submit);},false,nativeSky,skyCaptured);};
             return projectedDraw(count,applied?1u:0u,[&]{
@@ -4386,7 +4463,15 @@ static HMODULE backend() {
          last.info.dxvk?(last.info.dxvkVersion.empty()?"DXVK (unknown version)":last.info.dxvkVersion.c_str()):"non-DXVK",NorthlightBackend::name(selectedBackend),overridden.empty()?L"(default)":overridden.c_str(),unsigned(result.fallback));
     // 0.3.192 (DXVK3): the NOOVERWRITE read-back flag only for the backend that actually loaded and is DXVK >= 3 (see upload_lock.h).
     materialCacheBackendIdentity=last.info.sha256;
-    materialCacheAsyncReadback=module&&!result.fallback&&last.info.dxvk&&(last.info.dxvkVersion=="v3.1.1"||last.info.dxvkVersion=="v2.7.1");
+    const bool loadedDxvk=module&&!result.fallback&&last.info.dxvk;
+    const bool verifiedDxvk1=loadedDxvk&&last.info.dxvkVersion=="v1.10.3";
+    const bool verifiedDxvk2=loadedDxvk&&last.info.dxvkVersion=="v2.7.1";
+    const bool dxvk3=loadedDxvk&&NorthlightBackend::dxvkMajor(last.info.dxvkVersion)>=3;
+    // DXVK 1.10.3 has a one-FP16-step compositor difference; retain its ordinary shader.
+    backendHdrBaseComposite=verifiedDxvk2||dxvk3;
+    backendPointPipelinePrewarm=verifiedDxvk1||verifiedDxvk2||dxvk3;
+    materialCacheAsyncReadback=verifiedDxvk1||verifiedDxvk2||(loadedDxvk&&last.info.dxvkVersion=="v3.1.1");
+    logf("BACKEND_WORK hdrBaseComposite=%u pointPipelinePrewarm=%u asyncMaterialReadback=%u",unsigned(backendHdrBaseComposite),unsigned(backendPointPipelinePrewarm),unsigned(materialCacheAsyncReadback));
     NorthlightStream::dxvk311EventPayload.store(module&&!result.fallback&&last.info.dxvk&&last.info.dxvkVersion=="v3.1.1",std::memory_order_relaxed);
     logf("CSTREAM EVENT wait=bounded-timer shortSpinUs=2000 queueFence=0 completion=real-GetData csPendingSpinUs=200 backendObservation=trip-final");
     NorthlightUpload::ReadBackNoOverwrite.store(module&&!result.fallback&&last.info.dxvk&&NorthlightBackend::dxvkMajor(last.info.dxvkVersion)>=3,std::memory_order_relaxed);

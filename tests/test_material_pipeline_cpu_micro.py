@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-# northlight-test: requires=windows-exe,zig
+# northlight-test: requires=windows-exe,zig,client,stormlib
 """Exact CPU regressions for material height, ownership, constants and deformation."""
 import hashlib,json,re,subprocess,sys
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
+import client_fixtures
 
 out=fp.output_dir()/'material-pipeline-micro';out.mkdir(parents=True,exist_ok=True)
+client_fixtures.actor_client_programs(out)
 helper=(fp.TESTS/'displacement_state_reuse.cpp').read_text().split('int main(')[0]
 helper=helper.replace('struct MaterialCaptureStateTestAccess {','struct MaterialCaptureStateTestAccess {\n static void replayBindings();static void replayConstantRanges();static void microPool();')
 (out/'material_bindings_reference.h').write_bytes(('#pragma once\n'+helper).encode())

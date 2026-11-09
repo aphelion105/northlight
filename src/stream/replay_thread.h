@@ -283,6 +283,8 @@ private:
         for(std::size_t i=0;i<pending_.size();){
             StreamQuery* q=pending_[i];bool done=false;
             if(q->dead.load()||!q->inner)done=true;
+            else if(q->type!=8&&q->issueSeen&&q->issueSeenEpoch==core.queryEpoch.load(std::memory_order_relaxed)&&
+                    q->readyGen.load(std::memory_order_acquire)==q->issueSeen)done=true;
             else{
                 unsigned char buf[64]={};HRESULT hr;
                 // A FLUSH batch may already have completed this EVENT generation.

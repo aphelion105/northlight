@@ -11,12 +11,17 @@ from build_renderer import source_identity
 def main():
  p=argparse.ArgumentParser(__doc__);p.add_argument('--backend',type=Path,required=True);p.add_argument('--output',type=Path,required=True)
  p.add_argument('--capture',type=Path,default=Path('D:/Games/335_engb_mod/northlight-diagnostics/session-30804-228518734-0'))
- p.add_argument('--base-composite',action='store_true',help='Enable the specialized compositor on the verified DXVK 3 backend.')
+ p.add_argument('--base-composite',action='store_true',help='Enable the specialized compositor for backend parity/profiling checks.')
+ p.add_argument('--ao-input',type=Path,help='Frozen AO/bloom texture with no neutral-alpha proof.')
+ p.add_argument('--expect-base-ao',action='store_true',help='Assert that the base compositor accepts the non-neutral AO input.')
+ p.add_argument('--base-shader',type=Path,help='Isolated base-compositor bytecode control.')
  p.add_argument('--world-header',type=Path,help='Frozen world_renderer.h for a CPU preparation/state-binding control; all other inputs stay current.')
  p.add_argument('--compare-current',action='store_true',help='Compare the frozen --world-header with current code using identical shaders and exact SDR/HDR readbacks.')
  p.add_argument('--no-directional-source',action='store_true',help='Zero fixture source weights to check the TemporalLight distance fallback.')
  p.add_argument('--keep-world-state-save',action='store_true',help='Retain the nested WorldRenderer state save as a control for caller-owned restoration.')
- a=p.parse_args();processes();out=a.output.resolve();out.mkdir(parents=True,exist_ok=False)
+ a=p.parse_args()
+ if a.compare_current and (a.ao_input or a.base_shader or a.expect_base_ao):p.error('AO/shader controls use standalone runs; --compare-current does not select per-variant expectations.')
+ processes();out=a.output.resolve();out.mkdir(parents=True,exist_ok=False)
  if a.base_composite:
   manifest=json.loads((ROOT/'shaders/world-shader-build.json').read_text())
   assert manifest['shaders']['WorldBaseCompositeHdr']['source_sha256']==hashlib.sha256((ROOT/'shaders/world_effects.hlsl').read_bytes()).hexdigest(),'Recompile WorldBaseCompositeHdr before profiling the changed source'
@@ -74,11 +79,16 @@ def main():
  exe=out/'base-weather.exe';env={k:v for k,v in fp.zig_env().items() if not k.startswith(('NORTHLIGHT_','DXVK_'))}
  env.update(DISABLE_VULKAN_OBS_CAPTURE='1',DXVK_CONFIG='d3d9.customVendorId = 1002',DXVK_LOG_PATH=str(out))
  if a.base_composite:env['NORTHLIGHT_BASE_BACKEND_VERIFIED']='1'
+ if a.ao_input:env['NORTHLIGHT_BASE_AO_IMAGE']=str(a.ao_input.resolve())
+ if a.expect_base_ao:env['NORTHLIGHT_BASE_EXPECT_AO']='1'
+ if a.base_shader:env['NORTHLIGHT_BASE_SHADER']=str(a.base_shader.resolve())
  if a.no_directional_source:env['NORTHLIGHT_BASE_NO_DIRECTIONAL']='1'
  if a.keep_world_state_save:env['NORTHLIGHT_BASE_KEEP_WORLD_STATE_SAVE']='1'
  for key,name in [('TEMP','temp'),('TMP','temp'),('ZIG_LOCAL_CACHE_DIR','zig-local'),('ZIG_GLOBAL_CACHE_DIR','zig-global')]:
   (out/name).mkdir(exist_ok=True);env[key]=str(out/name)
  inputs=[Path(__file__).resolve(),ROOT/'tests/base_weather_pipeline_gpu.cpp',ROOT/'tests/world_screen_effects_gpu.cpp',world_input,a.backend.resolve(),*(a.capture/name for name in ['capture-1-scene.fgr','capture-1-depth.fgr','capture-1-constants.f32'])]
+ if a.ao_input:inputs.append(a.ao_input.resolve())
+ if a.base_shader:inputs.append(a.base_shader.resolve())
  sha=lambda path:hashlib.sha256(path.read_bytes()).hexdigest()
  report=dict(pass_=False,source_identity=source_identity(ROOT),world_header_override=str(world_input) if a.world_header else None,no_directional_source=a.no_directional_source,world_state_shared=caller_state_api and not a.keep_world_state_save,inputs={str(path):sha(path) for path in inputs},game_launched=False,whole_scene_replay=False,game_fps_measured=False,
   scope='Production WorldRenderer, captured scene/depth textures and camera bank, Weather only, SDR/HDR. SceneCopy1x is an offscreen 1x copy; live RESZ, native game draw hooks and model capture are outside this first measurement. CPU includes probe/query overhead; per-stage logs are buffered until after the measured interval. GPU elapsed includes command-supply gaps.')

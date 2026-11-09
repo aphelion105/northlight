@@ -44,6 +44,15 @@ struct BaseBlock:IDirect3DStateBlock9 {
 struct BaseMeter:ForwardIDirect3DDevice9 {
     using ForwardIDirect3DDevice9::ForwardIDirect3DDevice9;
     bool failNextDraw=false;
+    HRESULT STDMETHODCALLTYPE CreatePixelShader(const DWORD* code,IDirect3DPixelShader9** out)override{
+        const char* path=std::getenv("NORTHLIGHT_BASE_SHADER");
+        if(path&&code==kWorldBaseCompositeHdrShader){
+            std::ifstream f(path,std::ios::binary|std::ios::ate);assert(f);const auto bytes=f.tellg();assert(bytes>=8&&bytes<=65536&&bytes%4==0);
+            std::vector<DWORD> words(size_t(bytes)/4);f.seekg(0);f.read(reinterpret_cast<char*>(words.data()),bytes);assert(f);
+            return real->CreatePixelShader(words.data(),out);
+        }
+        return real->CreatePixelShader(code,out);
+    }
     HRESULT STDMETHODCALLTYPE SetPixelShader(IDirect3DPixelShader9* p)override{baseShaderBound|=p&&p==baseWatchedShader;return real->SetPixelShader(p);}
     HRESULT STDMETHODCALLTYPE CreateStateBlock(D3DSTATEBLOCKTYPE t,IDirect3DStateBlock9** out)override{IDirect3DStateBlock9* p=nullptr;const auto hr=real->CreateStateBlock(t,&p);if(SUCCEEDED(hr)&&p){++baseCounts.captures;*out=new BaseBlock(p);}else *out=p;return hr;}
     HRESULT STDMETHODCALLTYPE DrawPrimitiveUP(D3DPRIMITIVETYPE t,UINT n,const void* p,UINT s)override{++baseCounts.draws;if(failNextDraw){failNextDraw=false;return E_FAIL;}return real->DrawPrimitiveUP(t,n,p,s);}
@@ -105,7 +114,8 @@ int main(int argc,char** argv){
     D3DPRESENT_PARAMETERS pp{};pp.Windowed=TRUE;pp.hDeviceWindow=window;pp.BackBufferWidth=pp.BackBufferHeight=64;pp.BackBufferFormat=D3DFMT_X8R8G8B8;pp.SwapEffect=D3DSWAPEFFECT_DISCARD;pp.PresentationInterval=D3DPRESENT_INTERVAL_IMMEDIATE;
     IDirect3DDevice9* raw=nullptr;screenOk(api->CreateDevice(0,D3DDEVTYPE_HAL,window,D3DCREATE_HARDWARE_VERTEXPROCESSING|D3DCREATE_FPU_PRESERVE,&pp,&raw));BaseMeter meter(raw);auto* d=&meter;
     auto* scene=baseUpload(d,sceneImage);auto* depth=baseUpload(d,depthImage);IDirect3DSurface9* input=nullptr;screenOk(scene->GetSurfaceLevel(0,&input));
-    auto* ao=screenTexture(d,std::max(1u,W/2),std::max(1u,H/2),(const float[4]){0,0,0,1});
+    const char* aoImage=std::getenv("NORTHLIGHT_BASE_AO_IMAGE");
+    auto* ao=aoImage?baseUpload(d,baseRead(aoImage)):screenTexture(d,std::max(1u,W/2),std::max(1u,H/2),(const float[4]){0,0,0,1});
     IDirect3DQuery9* event=nullptr;screenOk(d->CreateQuery(D3DQUERYTYPE_EVENT,&event));
     auto wait=[&]{screenOk(event->Issue(D3DISSUE_END));const auto at=GetTickCount();HRESULT hr;while((hr=event->GetData(nullptr,0,D3DGETDATA_FLUSH))==S_FALSE){assert(GetTickCount()-at<10000);SwitchToThread();}screenOk(hr);};
     for(bool hdr:{false,true}){
@@ -122,13 +132,13 @@ int main(int argc,char** argv){
                 SavedState outer(d,&outerPool);assert(outer.ok);profile.mark("CallerStateCapture");
                 if(frame&&std::getenv("NORTHLIGHT_BASE_REFERENCE"))WorldScreenEffectsTest::refuseBaseCompositor(*world);
                 baseShaderBound=false;baseWatchedShader=WorldScreenEffectsTest::baseCompositor(*world);
-                const bool proof=!std::getenv("NORTHLIGHT_BASE_AO_UNKNOWN");
+                const bool proof=!aoImage&&!std::getenv("NORTHLIGHT_BASE_AO_UNKNOWN");
                 const bool ok=world->render(target,depth,W,H,D3DFORMAT(sceneImage.header[3]),bank[0][2],bank[0][3],bank[1][3],bank[1][3]+1/bank[2][0],0,&profile,nullptr,copy,ao,frame,hdr?copy:nullptr,hdr,true,false,proof
 #ifdef NORTHLIGHT_TEST_WORLD_ENCLOSING_STATE
                     ,std::getenv("NORTHLIGHT_BASE_KEEP_WORLD_STATE_SAVE")?nullptr:&outer
 #endif
                 );assert(ok&&world->composited);
-                if(frame)assert(baseShaderBound==(hdr&&proof&&std::getenv("NORTHLIGHT_BASE_BACKEND_VERIFIED")&&!std::getenv("NORTHLIGHT_BASE_REFERENCE")));
+                if(frame)assert(baseShaderBound==(hdr&&(proof||std::getenv("NORTHLIGHT_BASE_EXPECT_AO"))&&std::getenv("NORTHLIGHT_BASE_BACKEND_VERIFIED")&&!std::getenv("NORTHLIGHT_BASE_REFERENCE")));
                 profile.mark("WorldReturn");
             }profile.mark("CallerStateRestore");screenOk(d->EndScene());profile.endFrame();
             const double ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count();wait();profile.poll();basePrintRows();

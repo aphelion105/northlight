@@ -105,7 +105,7 @@ struct WorldScreenEffectsTest {
         struct Views {IDirect3DVertexBuffer9* vb[4]={};IDirect3DIndexBuffer9* ib=nullptr;NorthlightReplayGPU::Placement at;~Views(){for(auto& p:vb)drop(p);drop(ib);}} material,shadow;
         auto mesh=std::make_shared<NorthlightDrawSnapshot::Mesh>();mesh->streams[0].stride=12;mesh->streams[0].bytes.resize(36);mesh->indices={0,1,2};mesh->vertexCount=3;mesh->primitiveCount=1;
         mesh->sourceIdentity=NorthlightSourceIdentity::make({0x7363656e65,1});const auto bytes=mesh->byteSize();
-        auto admit=[](size_t){return true;};
+        auto admit=[](size_t){return true;};size_t residentBytes=0;
         {
             NorthlightAutoBump materials(d,scene);
             assert(scene->normalMaps&&scene->displacement&&materials.captureSources().sharedSources()==scene->captureSources);
@@ -113,13 +113,15 @@ struct WorldScreenEffectsTest {
             scene->setFrame(20);assert(!scene->materials.bind(d,mesh,material.vb,material.ib,admit,material.at));
             scene->setFrame(21);assert(!scene->materials.bind(d,mesh,material.vb,material.ib,admit,material.at));assert(scene->materials.commitPending());
             assert(scene->materials.bind(d,mesh,material.vb,material.ib,admit,material.at)&&scene->shadows.bind(d,mesh,shadow.vb,shadow.ib,admit,shadow.at));
-            assert(scene->native.bytes()==bytes&&material.vb[0]==shadow.vb[0]&&material.ib==shadow.ib);
-            materials.reset();assert(!scene->materials.bytes()&&scene->shadows.bytes()==bytes&&scene->native.bytes()==bytes);
+            D3DVERTEXBUFFER_DESC vd{};D3DINDEXBUFFER_DESC id{};assert(SUCCEEDED(material.vb[0]->GetDesc(&vd))&&SUCCEEDED(material.ib->GetDesc(&id)));
+            assert(vd.Size==mesh->streams[0].bytes.size()&&id.Format==D3DFMT_INDEX16&&id.Size==mesh->indices.size()*2);
+            residentBytes=size_t(vd.Size)+id.Size;assert(residentBytes==bytes-mesh->indices.size()*2&&scene->native.bytes()==residentBytes&&material.vb[0]==shadow.vb[0]&&material.ib==shadow.ib);
+            materials.reset();assert(!scene->materials.bytes()&&scene->shadows.bytes()==residentBytes&&scene->native.bytes()==residentBytes);
             auto reconstructed=std::make_shared<NorthlightDrawSnapshot::Mesh>(*mesh);mesh.reset();
             assert(scene->shadows.bind(d,reconstructed,shadow.vb,shadow.ib,admit,shadow.at)&&shadow.vb[0]==material.vb[0]);
         }
         assert(w.captureSources().sharedSourceLimit()==originalLimit&&w.captureSources().sharedSourceParticipants()==1);
-        assert(scene->native.bytes()==bytes);scene->shadows.clear();assert(!scene->native.bytes()&&!scene->native.chargedBytes());
+        assert(scene->native.bytes()==residentBytes);scene->shadows.clear();assert(!scene->native.bytes()&&!scene->native.chargedBytes());
         bool rejected=false;try{NorthlightGpuScene::forDevice(reinterpret_cast<IDirect3DDevice9*>(uintptr_t(1)),scene);}catch(const std::invalid_argument&){rejected=true;}assert(rejected);
         std::puts("GPU_SCENE_OWNERSHIP_PASS actual_world_materials_displacement one_source_bank unchanged_caps one_upload consumer_reset reconstructed_source typed_views foreign_device_rejected");
     }

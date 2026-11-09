@@ -60,7 +60,7 @@ checks={
     and 'if(reuse){terrainUploadReused=true;if(liveTerrainIndexCount||liveDirectionalIndexCount)NorthlightDynamicRing::touch(liveIndexRing,fence());return true;}' in up
     and w.count('NorthlightDynamicRing::touch(')==2 and pr.count('NorthlightDynamicRing::touch(liveIndexRing,fence());')==1
     and 'd->SetIndices(liveIndicesGPU);NorthlightDynamicRing::touch(liveIndexRing,fence());' in w
-    and 'void reset(){' in w and 'cascadeAnchor.reset();endFrame();' in w,
+    and 'void reset(bool preserveCaptureSources=false){' in w and 'cascadeAnchor.reset();endFrame();' in w,
  'bitmap filled from the committed set at the swap, dropped with the set':'std::swap(fixedTerrain,committedFixed);std::swap(uploadedStaticOwners,committedOwners);fixedTerrainBits.assign(fixedTerrain.get());' in w
     and 'fixedTerrain.reset();fixedTerrainBits.reset();' in release and w.count('fixedTerrainBits.assign(')==1,
  'bitmap only for the set it describes, the set otherwise':'const auto& fixed=fixedTerrainChunks();const bool bits=fixedTerrainBits.source()==&fixed;' in up

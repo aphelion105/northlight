@@ -28,7 +28,7 @@ try:
     for index,backend in enumerate(a.backend):
         processes();run=subprocess.run([str(exe),str(Path(backend).resolve())],cwd=out,env=env,capture_output=True,text=True,timeout=120,creationflags=subprocess.CREATE_NO_WINDOW)
         text=run.stdout+run.stderr;(out/f'gpu-{index}.log').write_text(text);print(text,flush=True)
-        assert run.returncode==0 and 'NEAR_INTERVAL_PASS' in text and 'ACTOR_SETTINGS_PASS' in text
+        assert run.returncode==0 and 'NEAR_INTERVAL_PASS' in text and 'ACTOR_SETTINGS_PASS' in text and 'ALPHA_RESOURCE_RETRY_PASS' in text
         results.append({'backend':backend,'output':text})
     (out/'validation.json').write_text(json.dumps({'pass':True,'game_launched':False,'results':results},indent=2)+'\n')
 finally:
