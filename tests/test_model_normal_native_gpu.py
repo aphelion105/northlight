@@ -26,6 +26,7 @@ parser.add_argument('--output',type=Path,required=True)
 parser.add_argument('--timing-draws',type=int,action='append',default=[],help='Additionally measure complete 4K capture/submission paths (resident geometry)')
 parser.add_argument('--timing-copies',type=int,default=1,help='Repeat stock geometry within each timing draw (1..32)')
 parser.add_argument('--timing-local',action='store_true',help='Measure the actual three-local-light factory with MRT')
+parser.add_argument('--timing-blend',action='store_true',help='Include a source-alpha blended depth writer before the commit')
 args=parser.parse_args()
 out=args.output.resolve();out.mkdir(parents=True,exist_ok=False)
 fixture=out/'fixture';fixture.mkdir()
@@ -60,11 +61,13 @@ for i,path in enumerate(args.backend):
     for draws in args.timing_draws:
         assert 0<draws<=512
         assert 1<=args.timing_copies<=32
-        text=run('timing-'+str(i)+'-'+str(draws),[exe,path,str(fixture)+'/',draws,args.timing_copies,'local' if args.timing_local else 'plain'])
+        mode='blend-local' if args.timing_local and args.timing_blend else 'local' if args.timing_local else 'blend' if args.timing_blend else 'plain'
+        text=run('timing-'+str(i)+'-'+str(draws),[exe,path,str(fixture)+'/',draws,args.timing_copies,mode])
         print('\n'.join(line for line in text.splitlines() if line.startswith('MODEL_NORMAL_NATIVE_TIMING')),flush=True)
 inputs={str(p.relative_to(ROOT)):hashlib.sha256(p.read_bytes()).hexdigest() for p in fp.SRC.rglob('*') if p.is_file()}
 report={'pass':True,'sources':inputs,'fixtures':{p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in fixture.iterdir()},'backends':backends,'scope':'Exact native color/model normals, native-depth occluder ownership, whole-queue rollback, shader/RT state restoration. No game FPS claim.'}
 report['tests']={str(p.relative_to(ROOT)):hashlib.sha256(p.read_bytes()).hexdigest() for p in [Path(__file__),ROOT/'tests/model_normal_native_gpu.cpp',ROOT/'tests/model_normals_gpu.cpp']}
 report['timing']={'draws':args.timing_draws,'copies':args.timing_copies,'resolution':[3840,2160],'includes':'native submission, immutable queue capture, resident replay or MRT commit; timestamp interval may include command starvation','excludes':'remaining game/extension pipeline'}
 report['timing']['local']=args.timing_local
+report['timing']['blended_depth']=args.timing_blend
 (out/'validation.json').write_text(json.dumps(report,indent=2)+'\n')

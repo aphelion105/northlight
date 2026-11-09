@@ -61,6 +61,8 @@ class NorthlightNativeModelNormals {
     }
     template<class Call> static bool retry(Call call){return SUCCEEDED(call())||SUCCEEDED(call());}
     bool clear(IDirect3DSurface9* target){
+        // Avoid changing the native render targets when FP16 fills are supported.
+        if(SUCCEEDED(d->ColorFill(target,nullptr,0)))return true;
         Ref<IDirect3DSurface9> old[4],depth;D3DVIEWPORT9 vp{};
         for(unsigned i=0;i<4;++i){auto hr=d->GetRenderTarget(i,&old[i].p);if(FAILED(hr)&&hr!=D3DERR_NOTFOUND)return false;}
         auto hr=d->GetDepthStencilSurface(&depth.p);if((FAILED(hr)&&hr!=D3DERR_NOTFOUND)||FAILED(d->GetViewport(&vp)))return false;
@@ -105,14 +107,23 @@ public:
                                               IDirect3DVertexShader9* original,bool receiver,Prove prove){
         auto fallback=[&](const char* cause){cancel(cause);return Result{submit(),false,false};};
         if(!enabled||!capable||refused||!complete)return {submit(),false,false};
-        // Non-writers preserve ownership. Blended depth writers cannot clear an
-        // auxiliary target independently in D3D9; roll back the whole frame.
+        // Receivers are opaque. Blended depth writers clear auxiliary RGB with
+        // alpha=1 independently of their original native colour/alpha output.
         const D3DRENDERSTATETYPE keys[]={D3DRS_ZENABLE,D3DRS_ZWRITEENABLE,D3DRS_ALPHABLENDENABLE,D3DRS_SRGBWRITEENABLE,D3DRS_ALPHATESTENABLE};DWORD values[5]={};
         if(!(rasterReader&&rasterReader(rasterContext,keys,5,values)))
             for(unsigned i=0;i<5;++i)if(FAILED(d->GetRenderState(keys[i],values+i)))return fallback("raster-state");
         const auto z=values[0],write=values[1],blend=values[2],srgb=values[3],alpha=values[4];
         if(!z||!write)return {submit(),false,false};
-        if(blend||srgb||(alpha&&!(caps.PrimitiveMiscCaps&D3DPMISCCAPS_MRTPOSTPIXELSHADERBLENDING)))return fallback("blend-srgb");
+        if(srgb)return fallback("srgb");
+        if((blend||alpha)&&!(caps.PrimitiveMiscCaps&D3DPMISCCAPS_MRTPOSTPIXELSHADERBLENDING))return fallback("post-blend");
+        if(blend){
+            if(receiver)return fallback("blended-receiver");
+            const D3DRENDERSTATETYPE states[]={D3DRS_SRCBLEND,D3DRS_DESTBLEND,D3DRS_BLENDOP};DWORD values[3]={};
+            if(!(rasterReader&&rasterReader(rasterContext,states,3,values)))
+                for(unsigned i=0;i<3;++i)if(FAILED(d->GetRenderState(states[i],values+i)))return fallback("blend-state");
+            if((values[0]!=D3DBLEND_ONE&&values[0]!=D3DBLEND_SRCALPHA)||
+               (values[1]!=D3DBLEND_ZERO&&values[1]!=D3DBLEND_INVSRCALPHA)||values[2]!=D3DBLENDOP_ADD)return fallback("blend-function");
+        }
         Ref<IDirect3DSurface9> rt,depth;D3DVIEWPORT9 vp{};
         if(FAILED(d->GetRenderTarget(0,&rt.p))||!rt.p||FAILED(d->GetDepthStencilSurface(&depth.p))||!depth.p||
            FAILED(d->GetViewport(&vp)))return fallback("target-state");

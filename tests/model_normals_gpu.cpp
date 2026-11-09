@@ -232,7 +232,7 @@ int main(int argc,char**argv){
                 ok(d->SetPixelShader(noDistancePS));bind(13,modelNormals->texture());quad(guardNormals);nearImage(fixed,pixels(guardNormals));ok(d->SetPixelShader(fixedNormalPS));
                 modelInfo[0]=0;ok(d->SetPixelShaderConstantF(79,modelInfo,1));quad(guardNormals);nearImage(baseline,pixels(guardNormals));modelInfo[0]=1;ok(d->SetPixelShaderConstantF(79,modelInfo,1));bind(13,nullptr);
                 auto captured=capturedPixels(modelNormals->texture(),W,H);
-                for(unsigned invalid=0;invalid<2;++invalid){auto data=captured;for(size_t at=0;at<data.size();at+=8){unsigned short lanes[4];std::memcpy(lanes,data.data()+at,8);if(lanes[3]){if(invalid==0)lanes[3]+=16;else lanes[0]=lanes[1]=lanes[2]=0;std::memcpy(data.data()+at,lanes,8);}}
+                for(unsigned invalid=0;invalid<3;++invalid){auto data=captured;for(size_t at=0;at<data.size();at+=8){unsigned short lanes[4];std::memcpy(lanes,data.data()+at,8);if(lanes[3]){if(invalid==0)lanes[3]+=16;else{lanes[0]=lanes[1]=lanes[2]=0;if(invalid==2)lanes[3]=0x3c00;}std::memcpy(data.data()+at,lanes,8);}}
                     IDirect3DTexture9* stale=nullptr;ok(d->CreateTexture(W,H,1,0,D3DFMT_A16B16G16R16F,D3DPOOL_MANAGED,&stale,nullptr));D3DLOCKED_RECT lock{};ok(stale->LockRect(0,&lock,nullptr,0));for(unsigned y=0;y<H;++y)std::memcpy(static_cast<char*>(lock.pBits)+size_t(y)*lock.Pitch,data.data()+size_t(y)*W*8,W*8);ok(stale->UnlockRect(0));bind(13,stale);quad(guardNormals);nearImage(baseline,pixels(guardNormals));bind(13,nullptr);stale->Release();
                 }
                 std::puts("MODEL_NORMALS_VALIDATION_PASS stale_depth zero_normal disabled no_distance");

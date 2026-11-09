@@ -674,11 +674,10 @@ public:
         if(source)source->clear();
         pomInRange=true;
         if(!active())return;
-        auto v=vertices.find(original);if(v==vertices.end()&&active())v=recoverVertex(original);if(v==vertices.end())return;
+        auto v=vertices.find(original);if(v==vertices.end())v=recoverVertex(original);if(v==vertices.end())return;
         const unsigned domain=v->second.kind;
         using P=NorthlightMaterialProfile;profileTag=domain*4+modes[domain-1];profilePrimitives=geometry?geometry->draw.primitives:0;
         P::Scope timing(profile,P::Admission,profileTag);if(profile)profile->count(P::Candidates);
-        if(!active())return;
         float nearestDepth=0,farthestDepth=INFINITY;
         if((domain==1&&!terrain)||(domain==2&&!walls)||(domain==3&&!grass)||(domain==4&&!modes[3]))return;
         const D3DRENDERSTATETYPE visibilityKeys[]={D3DRS_COLORWRITEENABLE,D3DRS_ZWRITEENABLE};DWORD visibility[2];

@@ -26,7 +26,8 @@ inline bool pixel(const Word* code,size_t count,unsigned slot,bool receiver,unsi
     unsigned constant=0;while(constant<224&&p.constants[constant])++constant;if(constant==224)return false;
     out.assign(code,code+count-1);
     if(receiver)out.insert(out.begin()+p.declEnd,{0x0200001fu,0x80000005u|(semantic<<16),dst(1,input)});
-    out.insert(out.begin()+1,{0x05000051u,dst(2,constant),receiver?0x42400000u:0u,0,0,0});
+    // Zero RGB is invalid regardless of W; alpha one overwrites it under blending.
+    out.insert(out.begin()+1,{0x05000051u,dst(2,constant),receiver?0x42400000u:0u,0,0,receiver?0u:0x3f800000u});
     // All native outputs are complete here. Reuse dead native temporaries,
     // rather than increasing register pressure in the final material shader.
     if(receiver)out.insert(out.end(),{0x02000024u,dst(0,0,7),src(1,input),
