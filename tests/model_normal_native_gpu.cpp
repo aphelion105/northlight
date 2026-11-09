@@ -12,11 +12,12 @@ struct ModelNormalPacketTestAccess {
     static std::string stats(const NorthlightModelNormals& n){std::string text;n.nativeMrt.report(0,[&](const char* format,auto... args){char line[1024];std::snprintf(line,sizeof line,format,args...);text+=line;});return text;}
 };
 struct NativeCalls:CaptureCalls {
-    unsigned vsSets=0,psSets=0,failVS=0,failPS=0,fillSuccess=0,fillFailure=0;bool after=false,denyFill=false;
+    unsigned vsSets=0,psSets=0,failVS=0,failPS=0,fillSuccess=0,fillFailure=0;bool after=false,denyFill=false,denyFormat=false;
     using CaptureCalls::CaptureCalls;
     HRESULT STDMETHODCALLTYPE SetVertexShader(IDirect3DVertexShader9* shader)override{if(++vsSets==failVS){if(after)ok(real->SetVertexShader(shader));return E_FAIL;}return real->SetVertexShader(shader);}
     HRESULT STDMETHODCALLTYPE SetPixelShader(IDirect3DPixelShader9* shader)override{if(++psSets==failPS){if(after)ok(real->SetPixelShader(shader));return E_FAIL;}return real->SetPixelShader(shader);}
     HRESULT STDMETHODCALLTYPE ColorFill(IDirect3DSurface9* target,const RECT* rect,D3DCOLOR color)override{const auto hr=denyFill?D3DERR_INVALIDCALL:real->ColorFill(target,rect,color);++(SUCCEEDED(hr)?fillSuccess:fillFailure);return hr;}
+    HRESULT STDMETHODCALLTYPE GetDirect3D(IDirect3D9** api)override{if(denyFormat){*api=nullptr;return E_FAIL;}return real->GetDirect3D(api);}
 };
 static void dispose(Target& t){t.read->Release();t.s->Release();t.t->Release();}
 static std::vector<unsigned char> canonicalNormals(std::vector<unsigned char> data){
@@ -28,8 +29,9 @@ int main(int argc,char** argv){
     const unsigned timing=argc>=4?unsigned(std::atoi(argv[3])):0,N=timing?timing:3,copies=argc>=5?unsigned(std::atoi(argv[4])):1;assert(copies>=1&&copies<=32);
     const std::string timingMode=argc==6?argv[5]:"plain";
     const bool timingLocal=timingMode.find("local")!=std::string::npos;
-    const bool timingBlendBaseline=timingMode.find("baseline")!=std::string::npos;
+    const bool timingBaseline=timingMode.find("baseline")!=std::string::npos;
     const bool timingBlend=timingMode.find("blend")!=std::string::npos;
+    const bool timingSrgb=timingMode.find("srgb")!=std::string::npos;
     WNDCLASSW wc{};wc.lpfnWndProc=DefWindowProcW;wc.lpszClassName=L"NorthlightNativeNormalTransaction";wc.hInstance=GetModuleHandleW(nullptr);assert(RegisterClassW(&wc));auto window=CreateWindowExW(0,wc.lpszClassName,L"",WS_OVERLAPPED,0,0,64,64,nullptr,nullptr,wc.hInstance,nullptr);assert(window);
     auto module=LoadLibraryA(argv[1]);assert(module);auto create=(IDirect3D9*(WINAPI*)(UINT))GetProcAddress(module,"Direct3DCreate9");assert(create);auto api=create(D3D_SDK_VERSION);assert(api);
     D3DPRESENT_PARAMETERS pp{};pp.Windowed=TRUE;pp.hDeviceWindow=window;pp.BackBufferWidth=pp.BackBufferHeight=64;pp.BackBufferFormat=D3DFMT_X8R8G8B8;pp.SwapEffect=D3DSWAPEFFECT_DISCARD;pp.PresentationInterval=D3DPRESENT_INTERVAL_IMMEDIATE;
@@ -123,6 +125,7 @@ int main(int argc,char** argv){
                 ok(d->SetVertexDeclaration(decl));
             };
             if(scenario==2)occluder();
+            if(scenario==23)ok(d->SetRenderState(D3DRS_SRGBWRITEENABLE,TRUE));
             for(unsigned i=0;i<N;++i){
                 auto* receiver=scenario==11&&i==1?alternateSource:source;
                 n->beginNativeDraw();ok(d->SetVertexShader(receiver));ok(d->SetPixelShader(nativePS));ok(d->SetRenderState(D3DRS_ALPHATESTENABLE,alpha));ok(d->SetRenderState(D3DRS_ALPHAFUNC,D3DCMP_GREATER));ok(d->SetRenderState(D3DRS_ALPHAREF,128));pose(i==2?49.f:i?20.f:2.f,i==2?.5f:0);
@@ -148,14 +151,14 @@ int main(int argc,char** argv){
                 if(scenario==4&&i==0){n->nativeDepthChanged();ok(d->Clear(0,nullptr,D3DCLEAR_ZBUFFER,0,1,0));}
                 if(scenario==5&&i==0)n->beforeTextureWrite(checker);
             }
-            if(scenario==3||scenario==6||scenario>=12)occluder();
+            if(scenario==3||scenario==6||(scenario>=12&&scenario<=22))occluder();
             assert(nativeDraws==N);assert(n->finishCaptures(true));ok(d->EndScene());assert(n->texture());
             if(timing)return ModelNormalPacketTestAccess::committed(*n);
             if(scenario==7)ok(d->StretchRect(msColor,nullptr,color.s,nullptr,D3DTEXF_NONE));
             auto rgb=pixels(color),normals=canonicalNormals(capturedPixels(n->texture(),W,H));
             const unsigned committed=ModelNormalPacketTestAccess::committed(*n);commits+=committed!=0;++cases;
             if(!mrt){referenceColor=rgb;referenceNormals=normals;}else{if(rgb!=referenceColor)std::printf("RGB_DIFFERENCE fixture=%s material=%u hdr=%u alpha=%u scenario=%u fault=%u localDraws=%llu localFallbacks=%llu %s\n",file,material,hdr,alpha,scenario,fault,(unsigned long long)lighting.draws,(unsigned long long)lighting.fallbacks,ModelNormalPacketTestAccess::stats(*n).c_str());assert(rgb==referenceColor);auto expected=referenceNormals;
-                if(committed&&(scenario==2||scenario==3||scenario==6||scenario==12||scenario==22||(scenario>=14&&scenario<=16))){for(unsigned y=0;y<H;++y)std::memset(expected.data()+size_t(y)*W*8,0,W/2*8);}
+                if(committed&&(scenario==2||scenario==3||scenario==6||scenario==12||scenario==19||scenario==22||(scenario>=14&&scenario<=16))){for(unsigned y=0;y<H;++y)std::memset(expected.data()+size_t(y)*W*8,0,W/2*8);}
                 assert(normals==expected);}
             if(scenario==22){const auto actual=pixels(sky);if(!mrt)referenceSky=actual;else assert(actual==referenceSky);}
             assert(!extension.audit());return committed;
@@ -166,11 +169,11 @@ int main(int argc,char** argv){
             LARGE_INTEGER frequency;QueryPerformanceFrequency(&frequency);std::vector<double> gpu[2],cpu[2];
             for(unsigned block=0;block<4;++block)for(bool mrt:{false,true})for(unsigned round=0;round<8;++round){
                 store.setFrame(++frameNumber);ok(hz->Issue(D3DISSUE_END));ok(q0->Issue(D3DISSUE_END));LARGE_INTEGER a,b;QueryPerformanceCounter(&a);
-                const auto committed=frame(mrt,timingBlend?12:0);QueryPerformanceCounter(&b);ok(q1->Issue(D3DISSUE_END));const auto ticks=get(q1)-get(q0),rate=get(hz);
-                if(round>=4){assert(!mrt||committed==(timingBlendBaseline?0u:N));gpu[mrt].push_back(double(ticks)*1000/rate);cpu[mrt].push_back(double(b.QuadPart-a.QuadPart)*1000/frequency.QuadPart);}
+                const auto committed=frame(mrt,timingSrgb?23:timingBlend?12:0);QueryPerformanceCounter(&b);ok(q1->Issue(D3DISSUE_END));const auto ticks=get(q1)-get(q0),rate=get(hz);
+                if(round>=4){assert(!mrt||committed==(timingBaseline?0u:N));gpu[mrt].push_back(double(ticks)*1000/rate);cpu[mrt].push_back(double(b.QuadPart-a.QuadPart)*1000/frequency.QuadPart);}
             }
             auto median=[](std::vector<double> a){std::sort(a.begin(),a.end());return a[a.size()/2];};
-            std::printf("MODEL_NORMAL_NATIVE_TIMING size=%ux%u draws=%u vertices=%u copies=%u local=%u hdr=%u blendedDepth=%u baseline=%u gpu_replay=%.6f gpu_mrt=%.6f cpu_replay=%.6f cpu_mrt=%.6f scope=capture-queue-native-draw-replay-or-commit\n",W,H,N,nv,copies,timingLocal,hdr,timingBlend,timingBlendBaseline,median(gpu[0]),median(gpu[1]),median(cpu[0]),median(cpu[1]));
+            std::printf("MODEL_NORMAL_NATIVE_TIMING size=%ux%u draws=%u vertices=%u copies=%u local=%u hdr=%u blendedDepth=%u srgb=%u baseline=%u gpu_replay=%.6f gpu_mrt=%.6f cpu_replay=%.6f cpu_mrt=%.6f scope=capture-queue-native-draw-replay-or-commit\n",W,H,N,nv,copies,timingLocal,hdr,timingBlend,timingSrgb,timingBaseline,median(gpu[0]),median(gpu[1]),median(cpu[0]),median(cpu[1]));
             q0->Release();q1->Release();hz->Release();
         }else{
         auto ready=[&](unsigned scenario=0){unsigned committed=0;for(unsigned i=0;i<8&&!committed;++i)committed=frame(true,scenario);assert(committed>0);};
@@ -187,8 +190,8 @@ int main(int argc,char** argv){
         frame(false,6);assert(!frame(true,6));ready(6);
         frame(false,13);assert(!frame(true,13));ready(13);
         frame(false,12);assert(!frame(true,12));ready(12);assert(frame(true,12)>0);
-        for(unsigned blended:{14u,15u,16u,20u,22u}){frame(false,blended);assert(!frame(true,blended));ready(blended);assert(frame(true,blended)>0);}
-        for(unsigned rejected:{17u,18u,19u}){frame(false,rejected);assert(!frame(true,rejected));assert(!frame(true,rejected));}
+        for(unsigned blended:{14u,15u,16u,19u,20u,22u,23u}){frame(false,blended);assert(!frame(true,blended));ready(blended);assert(frame(true,blended)>0);}
+        for(unsigned rejected:{17u,18u}){frame(false,rejected);assert(!frame(true,rejected));assert(!frame(true,rejected));}
         if(msColor){frame(false,7);assert(!frame(true,7));assert(!frame(true,7));assert(ModelNormalPacketTestAccess::stats(*n).find("modelDraws=0 ")!=std::string::npos);}
         for(unsigned changed:{8u,9u,10u}){frame(false,changed);const auto changedColor=referenceColor,changedNormals=referenceNormals;frame(false);ready();referenceColor=changedColor;referenceNormals=changedNormals;assert(!frame(true,changed));assert(!frame(true,changed));assert(ModelNormalPacketTestAccess::stats(*n).find("modelDraws=0 ")!=std::string::npos);}
         for(unsigned hazard:{4u,5u}){
@@ -198,6 +201,9 @@ int main(int argc,char** argv){
             assert(!frame(true,hazard));
         }
         if(!material&&!local){frame(false,11);assert(!frame(true,11));ready(11);}
+        n.reset();calls.denyFormat=true;n=std::make_unique<NorthlightModelNormals>(d);calls.denyFormat=false;n->setDeferredCapture(true);
+        frame(false,23);assert(!frame(true,23));assert(!frame(true,23));
+        assert(ModelNormalPacketTestAccess::stats(*n).find("reason=srgb-format ")!=std::string::npos);
         std::printf("MODEL_NORMAL_NATIVE_CASE_PASS fixture=%s material=%u hdr=%u alpha=%u %s\n",file,material,hdr,alpha,ModelNormalPacketTestAccess::stats(*n).c_str());
         if(local)assert(lighting.draws>0);
         }

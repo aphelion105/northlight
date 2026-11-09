@@ -17,7 +17,7 @@ class NorthlightNativeModelNormals {
     Vertex* recentVertex=nullptr;Pixel* recentPixel=nullptr;
     IDirect3DSurface9* describedColor=nullptr;D3DSURFACE_DESC colorDescription{};
     IDirect3DSurface9* sceneDepth=nullptr;
-    D3DCAPS9 caps{};bool capable=false,enabled=false,lastComplete=false,allowed=false,complete=true,started=false,refused=false;
+    D3DCAPS9 caps{};bool capable=false,linearTarget=false,blendTarget=false,enabled=false,lastComplete=false,allowed=false,complete=true,started=false,refused=false;
     const char* reason="none";
     unsigned probes=0,modelDraws=0,zeroDraws=0,builds=0,committed=0,fallbacks=0,coldPairs=0;
     template<class Shader> static bool code(Shader* shader,std::vector<std::uint32_t>& words){UINT bytes=0;
@@ -83,6 +83,13 @@ public:
     void setRasterStateSource(void* context,bool(*reader)(void*,const D3DRENDERSTATETYPE*,unsigned,DWORD*)){rasterContext=context;rasterReader=context==d?reader:nullptr;}
     explicit NorthlightNativeModelNormals(IDirect3DDevice9* device):d(device){
         capable=d&&SUCCEEDED(d->GetDeviceCaps(&caps))&&caps.NumSimultaneousRTs>=2&&caps.PixelShaderVersion>=D3DPS_VERSION(3,0);
+        Ref<IDirect3D9> api;D3DDEVICE_CREATION_PARAMETERS creation{};D3DDISPLAYMODE mode{};
+        if(capable&&SUCCEEDED(d->GetDirect3D(&api.p))&&api.p&&SUCCEEDED(d->GetCreationParameters(&creation))&&SUCCEEDED(d->GetDisplayMode(0,&mode))){
+            // sRGB writes are ignored for formats without sRGB-write support.
+            // Prove that the existing FP16 normal target stays linear once.
+            linearTarget=api.p->CheckDeviceFormat(creation.AdapterOrdinal,creation.DeviceType,mode.Format,D3DUSAGE_RENDERTARGET|D3DUSAGE_QUERY_SRGBWRITE,D3DRTYPE_TEXTURE,D3DFMT_A16B16G16R16F)==D3DERR_NOTAVAILABLE;
+            blendTarget=SUCCEEDED(api.p->CheckDeviceFormat(creation.AdapterOrdinal,creation.DeviceType,mode.Format,D3DUSAGE_RENDERTARGET|D3DUSAGE_QUERY_POSTPIXELSHADER_BLENDING,D3DRTYPE_TEXTURE,D3DFMT_A16B16G16R16F));
+        }
     }
     ~NorthlightNativeModelNormals(){reset();}
     void configure(bool on){enabled=on;if(!on){lastComplete=false;cancel("disabled");}}
@@ -114,8 +121,8 @@ public:
             for(unsigned i=0;i<5;++i)if(FAILED(d->GetRenderState(keys[i],values+i)))return fallback("raster-state");
         const auto z=values[0],write=values[1],blend=values[2],srgb=values[3],alpha=values[4];
         if(!z||!write)return {submit(),false,false};
-        if(srgb)return fallback("srgb");
-        if((blend||alpha)&&!(caps.PrimitiveMiscCaps&D3DPMISCCAPS_MRTPOSTPIXELSHADERBLENDING))return fallback("post-blend");
+        if(srgb&&!linearTarget)return fallback("srgb-format");
+        if((blend||alpha)&&(!blendTarget||!(caps.PrimitiveMiscCaps&D3DPMISCCAPS_MRTPOSTPIXELSHADERBLENDING)))return fallback("post-blend");
         if(blend){
             if(receiver)return fallback("blended-receiver");
             const D3DRENDERSTATETYPE states[]={D3DRS_SRCBLEND,D3DRS_DESTBLEND,D3DRS_BLENDOP};DWORD values[3]={};
