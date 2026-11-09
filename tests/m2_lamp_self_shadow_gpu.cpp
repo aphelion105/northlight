@@ -210,7 +210,7 @@ struct PointTerrainCoverageTest{
   IDirect3DSurface9 *target=nullptr,*visualDepth=nullptr;must(d->CreateRenderTarget(Size,Size,D3DFMT_A32B32G32R32F,D3DMULTISAMPLE_NONE,0,FALSE,&target,nullptr));
   must(d->CreateDepthStencilSurface(Size,Size,D3DFMT_D24S8,D3DMULTISAMPLE_NONE,0,TRUE,&visualDepth,nullptr));
   const float sunlitCut=daylight?.7f:0.f,sunEnergy=daylight?4.f:0.f;w.sourceDirections[0]={basis[6],basis[7],basis[8]};must(d->SetRenderTarget(0,w.baselineSurface));must(d->Clear(0,nullptr,D3DCLEAR_TARGET,daylight?0xff000000:0,1,0));
-  const auto softSelected=[&](){IDirect3DPixelShader9* current=nullptr;must(d->GetPixelShader(&current));assert(current==(soft?w.pointSoftLightingPS:w.pointLightingPS));if(soft)assert(w.pointSoftResolvePS&&w.softVisibility);drop(current);};
+  const auto softSelected=[&](){IDirect3DPixelShader9* current=nullptr;must(d->GetPixelShader(&current));assert(current==(soft?w.pointSoftLightingPS:w.pointLightingPS));if(soft)assert(w.pointSoftLightingPS);drop(current);};
   const auto correction=[&](float energy=-1.f){w.pointSlot().selectionGain=1;must(d->SetRenderTarget(0,target));must(d->SetDepthStencilSurface(nullptr));states(d,false);must(d->Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0));
     must(d->SetVertexShader(nullptr));must(d->SetFVF(D3DFVF_XYZRHW|D3DFVF_TEX1));must(d->BeginScene());assert(w.renderPointLighting(depths,nullptr,Full,Full,.1f,64,0,1,1,sunlitCut,1,energy<0?sunEnergy:energy));must(d->EndScene());softSelected();
     const auto image=readSurface(d,target,16);std::vector<float> pixels(Size*Size);for(unsigned i=0;i<pixels.size();++i){float rgb[4];std::memcpy(rgb,image.bytes.data()+i*16,16);pixels[i]=-rgb[0]-rgb[1]-rgb[2];assert(std::isfinite(pixels[i])&&pixels[i]>=-1e-6f);}return pixels;};

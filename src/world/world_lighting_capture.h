@@ -247,10 +247,19 @@ public:
     void pointPass(unsigned slot,bool soft,IDirect3DSurface9* resolved,HRESULT result)noexcept{
         if(!active())return;
         if(slot>=128){unavailable("point-pass","source-limit");return;}
-        constexpr unsigned mask=(1u<<0)|(1u<<2)|(1u<<3)|(1u<<4)|(1u<<5);
-        inputs(4,mask,mask);
-        if(soft){char name[64];std::snprintf(name,sizeof name,"point-%u-resolved",slot);surface(name,resolved);}
-        pass(soft?"LocalLightingSoft":"LocalLighting",4,mask,slot,1,SUCCEEDED(result),result);
+        constexpr unsigned inputsMask=(1u<<0)|(1u<<2)|(1u<<3)|(1u<<4)|(1u<<5);
+        inputs(4,inputsMask,inputsMask);
+        const bool cubeInput=!resolved;const unsigned mask=inputsMask|(cubeInput?(1u<<1):0);
+        if(cubeInput){
+            Ref<IDirect3DBaseTexture9> bound;
+            if(call("GetTexture-point-cube",device_->GetTexture(1,&bound.p))&&bound.p&&bound.p->GetType()==D3DRTYPE_CUBETEXTURE){
+                auto& input=groups_[4][1];input.identity=bound.p;input.known=true;input.snapshot=4;
+                // pointSources already exported the six exact faces of this slot.
+                std::fprintf(journal_,"{\"event\":\"input-binding\",\"group\":4,\"slot\":1,\"null\":false,\"snapshot_group\":4,\"texture_type\":\"cube\",\"file_base\":\"point-%u\",\"faces\":6}\n",slot);
+            }else unavailable("point-cube","missing-cube-binding");
+        }
+        if(soft&&resolved){char name[64];std::snprintf(name,sizeof name,"point-%u-resolved",slot);surface(name,resolved);}
+        pass(soft?(cubeInput?"LocalLightingPcss":"LocalLightingSoft"):"LocalLighting",4,mask,slot,1,SUCCEEDED(result),result);
     }
     bool sampledDepthSaved(const char* name,IDirect3DTexture9* value)noexcept{
         D3DSURFACE_DESC desc{};return active()&&value&&call("GetLevelDesc-sampled-depth",value->GetLevelDesc(0,&desc))&&depth(name,value,desc);

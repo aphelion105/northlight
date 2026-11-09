@@ -1,0 +1,131 @@
+{
+  "base_commit": "814a816d0a01510778285d97609b7245c6c0bdee",
+  "source_identity": "0a26077130a6a384c86a6767e0add00c5699c4fb8812b7cfac9136a5ee7b423e",
+  "built_utc": "2026-11-09 21:09:28 UTC",
+  "compiler": "Zig 0.15.2, scripts/build_renderer.py, x86 Windows",
+  "shader_compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
+  "shader_compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+  "selected_change": "One-pass point PCSS without an intermediate target or RT0 switching; capture cube transport and Reset/fallback retained.",
+  "fusion": [
+    {
+      "backend": "C:/Windows/SysWOW64/d3d9.dll",
+      "cases": 96,
+      "changed_components": 0,
+      "max_abs_error": 0.0,
+      "draws_before": 192,
+      "draws_after": 96
+    },
+    {
+      "backend": "out/perf-20261108-r42/dxvk1/dxvk_d3d9.dll",
+      "cases": 96,
+      "changed_components": 0,
+      "max_abs_error": 0.0,
+      "draws_before": 192,
+      "draws_after": 96
+    },
+    {
+      "backend": "D:/Games/335_engb_mod/renderer-backends/dxvk2/dxvk2_d3d9.dll",
+      "cases": 96,
+      "changed_components": 0,
+      "max_abs_error": 0.0,
+      "draws_before": 192,
+      "draws_after": 96
+    },
+    {
+      "backend": "D:/Games/335_engb_mod/renderer-backends/dxvk/dxvk_d3d9.dll",
+      "cases": 96,
+      "changed_components": 0,
+      "max_abs_error": 0.0,
+      "draws_before": 192,
+      "draws_after": 96
+    }
+  ],
+  "total_cases": 384,
+  "changed_components": 0,
+  "draws_before": 768,
+  "draws_after": 384,
+  "fused_call": {
+    "rt0_switches": 0,
+    "rt0_queries": 0,
+    "auxiliary_texture_creates": 0,
+    "alpha": "exact",
+    "optional_shader_bind_failure": "ordinary-PCF exact; cube remains ready"
+  },
+  "shader_slots": {
+    "limit": 512,
+    "fused": 511,
+    "ordinary_pcf_before": 469,
+    "ordinary_pcf_after": 353,
+    "legacy_resolved_consumer": 250
+  },
+  "legacy_resolved_shader": "byte-identical",
+  "compatibility_shader_oracles": [
+    {
+      "backend": "native",
+      "cases": 48,
+      "changed_components": 0
+    },
+    {
+      "backend": "dxvk3",
+      "cases": 48,
+      "changed_components": 0
+    }
+  ],
+  "actual_lamp_actor_cases": 4,
+  "reset_backends": 2,
+  "capture": [
+    {
+      "backend": "D:\\Games\\335_engb_mod\\renderer-backends\\dxvk\\dxvk_d3d9.dll",
+      "api_failure_controls": 22,
+      "sha256": "642a7d33d26955a01a1314e25ff56bc32cb72805bd912d6553fb8e1a9360ad1f"
+    },
+    {
+      "backend": "C:\\Windows\\SysWOW64\\d3d9.dll",
+      "api_failure_controls": 22,
+      "sha256": "abd87558ecd7adba59ffd876cacf60e23b5b23dabd2733964cc6633f3eef1886"
+    }
+  ],
+  "full_pcss_backends": [
+    "native D3D9",
+    "DXVK 2",
+    "DXVK 3"
+  ],
+  "legacy_dxvk1_probe": "Unchanged directional PcssProbe fails its finite-[0,1] check. Independent point-fusion comparison passes with all assertions.",
+  "proof_sha256": {
+    "out/perf-20261109-r73/fusion-final/validation.json": "b6da808cf5b47ac5c2b8ba41e677e5163b9e842abce70bcf21d1d7c0bd1196c3",
+    "out/perf-20261109-r73/reset-final/validation.json": "3994311ff67a4a4a7687d643a0c9e9bae8d41d91125022e7378056fa101975bd",
+    "out/perf-20261109-r73/actor-verified/validation.json": "49968836e597fd9b8537f059965e2820dfba249b330d93304033503dbc7901d4",
+    "out/perf-20261109-r73/actor-verified/compile-command.json": "b0ccd3a78107cd7bce37343cf3e6bfc938f1637a6c141ffd2bf790484f7e0411",
+    "out/perf-20261109-r73/full-pcss-validation.json": "8caa6e4221926ea092b9307c4cc76c0f2133f4d4de7378808df76ea71e73624d",
+    "out/perf-20261109-r73/artifacts.json": "e1c8a27dda785cdab9e1f5a5eb64bc7d0a3b28619dbd674b901da94ad0e7488c",
+    "out/perf-20261109-r73/package-verification/verification.json": "09d1a982ed82a67b5f969b52ea8633cefefe25e67e284c674fe82d4b4a3a767b",
+    "out/perf-20261109-r73/production-shaders-final.log": "b81b21a6afd643a480cdec7452e81ff9a3a7b03378336a2e0c7855697f2b21ec",
+    "out/perf-20261109-r73/baseline/inputs.json": "3d3577261114d6626f8e39794883dfb7c91983cbe80376ee963f2bcf743f9237",
+    "out/perf-20261109-r73/capture-native/test-output/test_world_lighting_capture/world-lighting-capture-qe2dyyix/validation.json": "642a7d33d26955a01a1314e25ff56bc32cb72805bd912d6553fb8e1a9360ad1f",
+    "out/perf-20261109-r73/capture-native-verified/test-output/test_world_lighting_capture/world-lighting-capture-1ojqrjes/validation.json": "abd87558ecd7adba59ffd876cacf60e23b5b23dabd2733964cc6633f3eef1886",
+    "out/perf-20261109-r73/shader-oracle-native/results.jsonl": "6a2952164d5c19757f0c529517fe9a8cb96f90827bad7e809fcc8a61fd594046",
+    "out/perf-20261109-r73/shader-oracle-dxvk3/results.jsonl": "1d207491869d0d10b8db9230d2c044215e2f853f529fb0974cac7e1210b5a0ac"
+  },
+  "artifacts": {
+    "renderer/frd9.dll": {
+      "bytes": 10829824,
+      "sha256": "42d0d2b2f2fe5f005a9825ef4c41ffdd205843e40ae621c724a31a4f7f47783b"
+    },
+    "releases/Northlight-0.3.217-test.20261109.7/d3d9.dll": {
+      "bytes": 10829824,
+      "sha256": "42d0d2b2f2fe5f005a9825ef4c41ffdd205843e40ae621c724a31a4f7f47783b"
+    },
+    "releases/Northlight-0.3.217-test.20261109.7-Windows.zip": {
+      "bytes": 20810329,
+      "sha256": "eb1e9a457dcde8ac78e4cabb35ec6a62c7e01785877d4503ec779f20a1a35df5"
+    }
+  },
+  "package_verified": true,
+  "source_unchanged": true,
+  "full_repository_suite": false,
+  "timing_valid": false,
+  "performance_scope": "User-authorized concurrent WoW. Deterministic images, resource and draw counts; no isolated GPU-time or game-FPS claim.",
+  "castle_issue": "Deferred by the user.",
+  "base_game_shadow_pop": "New report/video is a separate follow-up.",
+  "installation": "No client DLL installed and no game started."
+}

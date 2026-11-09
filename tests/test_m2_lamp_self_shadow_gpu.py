@@ -182,7 +182,7 @@ def main():
     parser.add_argument('--blocked-floor-case',type=Path,action='append',default=[],help='Additional physical negative control: original floor/box/body remain entirely shadowed by the opaque lamp')
     parser.add_argument('--partial-floor-case',type=Path,action='append',default=[],help='Additional original-floor control: metal occludes the moved body/box while part of the initial body silhouette remains visible')
     parser.add_argument('--actor-only',action='store_true',help='Run only explicitly selected actor cases; keep the ordinary lamp matrix separate')
-    parser.add_argument('--actor-soft',action='store_true',help='Require the production soft-shadow resolve and consumer for actor cases')
+    parser.add_argument('--actor-soft',action='store_true',help='Require the production fused soft-shadow consumer for actor cases')
     parser.add_argument('--sunlit',action='store_true',help='Full sun baseline, unchanged 30% direct lamp gain, and sun-energy independence checks')
     parser.add_argument('--legacy-sun-gate',action='store_true',help='Require the pre-fix daylight failure: positive direct lamp light and zero shadow correction')
     parser.add_argument('--benchmark',action='store_true',help='Measure equal selected workloads in balanced baseline/candidate processes, separate from correctness cases')

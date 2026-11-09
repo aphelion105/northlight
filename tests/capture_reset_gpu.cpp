@@ -37,21 +37,21 @@ struct PipelineOffTest {
   auto source=capture();const auto identity=source->sourceIdentity;std::weak_ptr<const NorthlightDrawSnapshot::Mesh> weak=source;
   auto bounds=[&](const auto& mesh,bool readyOnly,unsigned& built){w.replayBoundsCache.beginFrame(false,1);NorthlightReplayBounds::Budget budget;budget.maxVertices=100000;budget.maxOperations=1000000;NorthlightReplayBounds::Bounds box;
    const auto status=readyOnly?w.replayBoundsCache.calculateReady(program,*mesh,mesh,layout,6,bank,inverse,budget,box):w.replayBoundsCache.calculatePhase(program,*mesh,mesh,layout,6,bank,inverse,budget,box,NorthlightReplayBounds::EnvelopeCache::Stage::All);built=unsigned(w.replayBoundsCache.envelopeStats().buildVertices);return std::make_pair(status,box);};
-  unsigned built=0;const auto first=bounds(source,false,built);assert(first.first==NorthlightReplayBounds::Status::Valid&&built);source.reset();assert(w.pointSoftShaders());auto* oldSoftResolve=w.pointSoftResolvePS;auto* oldSoftLight=w.pointSoftLightingPS;const auto beforeImage=image(proxy);auto* oldVS=w.pointShadowVS;auto* oldPS=w.pointShadowPS;
+  unsigned built=0;const auto first=bounds(source,false,built);assert(first.first==NorthlightReplayBounds::Status::Valid&&built);source.reset();assert(w.pointSoftShaders());auto* oldSoftLight=w.pointSoftLightingPS;const auto beforeImage=image(proxy);auto* oldVS=w.pointShadowVS;auto* oldPS=w.pointShadowPS;
   const auto revision=NorthlightTrackedBuffers::version(vb,false);assert(revision);const auto entries=frame.snapshotCacheEntries(),sourceBytes=frame.sharedSourceBytes();assert(entries&&sourceBytes);
   if(!preserve){proxy.releaseResources();w.reset();w.releasePointGPU();NorthlightTrackedBuffers::invalidateAll();assert(weak.expired());}
   auto bad=base;bad.SwapEffect=static_cast<D3DSWAPEFFECT>(0x7fffffff);assert(FAILED(proxy.Reset(&bad)));assert(frame.snapshotCacheEntries()==(preserve?entries:0));
   for(unsigned retry=0;retry<2;++retry){auto pp=base;must(proxy.Reset(&pp));bind();
    ModelNormalPacketTestAccess::targets(*proxy.modelNormals); // First post-Reset target creation must keep shared sources.
    assert((NorthlightTrackedBuffers::version(vb,false)==revision)==preserve);if(preserve){assert(!weak.expired()&&frame.sharedSourceBytes()==sourceBytes&&w.pointShadowVS==oldVS&&w.pointShadowPS==oldPS);}else assert(!w.pointShadowVS&&!w.pointShadowPS||retry);
-   if(preserve&&!retry)assert(w.pointSoftTried&&w.pointSoftResolvePS==oldSoftResolve&&w.pointSoftLightingPS==oldSoftLight);
-   if(preserve&&retry){assert(!w.pointSoftTried&&!w.pointSoftResolvePS&&!w.pointSoftLightingPS);assert(w.pointSoftShaders());}
+   if(preserve&&!retry)assert(w.pointSoftTried&&w.pointSoftLightingPS==oldSoftLight);
+   if(preserve&&retry){assert(!w.pointSoftTried&&!w.pointSoftLightingPS);assert(w.pointSoftShaders());}
    source=capture();const bool same=NorthlightSourceIdentity::same(identity,source->sourceIdentity);assert(same==preserve);
    auto current=bounds(source,true,built);assert((current.first==NorthlightReplayBounds::Status::Valid)==(preserve||retry));
    if(!preserve&&!retry){current=bounds(source,false,built);assert(current.first==NorthlightReplayBounds::Status::Valid&&built);}else assert(!built);
    for(unsigned axis=0;axis<3;++axis)assert(current.second.low[axis]==first.second.low[axis]&&current.second.high[axis]==first.second.high[axis]);
    const auto creates=meter.vertexCreates+meter.pixelCreates;assert(image(proxy)==beforeImage);if(preserve)assert(meter.vertexCreates+meter.pixelCreates==creates);source.reset();
-   if(preserve&&!retry){drop(w.pointSoftResolvePS);drop(w.pointSoftLightingPS);w.pointSoftTried=true;} // A failed optional attempt may retry after Reset.
+   if(preserve&&!retry){drop(w.pointSoftLightingPS);w.pointSoftTried=true;} // A failed optional attempt may retry after Reset.
   }
   // New bytes and a new pose cannot borrow pre-Reset geometry/world bounds.
   vertices[0].xyz[0]-=.2f;must(vb->Lock(0,0,&bytes,0));std::memcpy(bytes,vertices,sizeof vertices);must(vb->Unlock());source=capture();assert(!NorthlightSourceIdentity::same(identity,source->sourceIdentity));

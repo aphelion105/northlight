@@ -22,7 +22,7 @@
     IDirect3DTexture9 *pointScratch=nullptr,*pointEmpty=nullptr;
     IDirect3DVertexShader9* pointShadowVS=nullptr;
     IDirect3DPixelShader9 *pointShadowPS=nullptr,*pointLightingPS=nullptr;
-    IDirect3DPixelShader9 *pointSoftResolvePS=nullptr,*pointSoftLightingPS=nullptr;bool pointSoftTried=false;
+    IDirect3DPixelShader9* pointSoftLightingPS=nullptr;bool pointSoftTried=false;
     NorthlightPointShadow::SelectionTracker pointSelection;std::string pointSelectionMap;
     unsigned pointIndex=0;bool pointReady=false;
     PointSlot& pointSlot(){return pointSlots[pointIndex];}
@@ -92,8 +92,8 @@
         clearPointKeeps();pointKeepAge=0;
         drop(pointDepth);drop(pointScratchSurface);drop(pointScratch);drop(pointEmpty);
         if(!preserveShaders){drop(pointShadowVS);drop(pointShadowPS);drop(pointLightingPS);
-            drop(pointSoftResolvePS);drop(pointSoftLightingPS);}
-        pointSoftTried=pointSoftResolvePS&&pointSoftLightingPS;
+            drop(pointSoftLightingPS);}
+        pointSoftTried=pointSoftLightingPS!=nullptr;
         pointReady=false;pointUpdates=pointReuses=pointReportedLimit=pointBatchesMerged=0;localLightTracker.reset();localLightQpc=0;
         pointSelection.reset();pointSelectionMap.clear();
         for(auto* lists:{&pointStaticCandidates,&pointTerrainCandidates,&pointLiveCandidates,&pointReplayCandidates})
@@ -991,15 +991,17 @@
     bool pointSoftShaders(){
         if(!pointSoftTried){
             pointSoftTried=true;
-            if(FAILED(d->CreatePixelShader(kLocalShadowResolveShader,&pointSoftResolvePS))||FAILED(d->CreatePixelShader(kLocalLightingSoftShader,&pointSoftLightingPS))){
-                drop(pointSoftResolvePS);drop(pointSoftLightingPS);logf("POINT PCSS unavailable; ordinary filtering retained");
+            if(FAILED(d->CreatePixelShader(kLocalLightingPcssShader,&pointSoftLightingPS))){
+                drop(pointSoftLightingPS);logf("POINT PCSS unavailable; ordinary filtering retained");
             }
         }
-        return pointSoftResolvePS&&pointSoftLightingPS;
+        return pointSoftLightingPS!=nullptr;
     }
     bool renderPointLighting(IDirect3DTexture9* depth,IDirect3DTexture9* waterMask,UINT w,UINT h,float nearZ,float farZ,float minZ,float maxZ,float strength,float sunlitCut,float shadowStrength,float sunEnergy,NorthlightLightingCapture::Capture* capture=nullptr){
         if(!pointSlot().ready)return false;
         if(pointCubeIsWhite(pointSlot())){++pointWork.whiteLightingSkipped;return true;}
+        const bool soft=quality.softShadows&&pointSoftShaders()&&SUCCEEDED(d->SetPixelShader(pointSoftLightingPS));
+        if(!soft&&!pointCheck(d->SetPixelShader(pointLightingPS),"local lighting PS"))return false;
         float constants[12][4]={};constants[0][0]=1.f/w;constants[0][1]=1.f/h;constants[0][2]=nearZ;constants[0][3]=farZ;
         constants[1][0]=projection[0];constants[1][1]=projection[1];constants[1][2]=projection[2];constants[1][3]=minZ;
         constants[2][0]=1.f/(maxZ-minZ);constants[2][1]=waterMask?1.f:0.f;constants[2][2]=pointSlot().selectionGain;constants[2][3]=.025f;
@@ -1014,7 +1016,6 @@
         d->SetSamplerState(5,D3DSAMP_MIPFILTER,D3DTEXF_NONE);d->SetSamplerState(5,D3DSAMP_SRGBTEXTURE,FALSE);
         d->SetSamplerState(5,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(5,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);
         if(!pointCheck(d->SetPixelShaderConstantF(0,&constants[0][0],12),"local constants")||
-           !pointCheck(d->SetPixelShader(pointLightingPS),"local lighting PS")||
            !pointCheck(d->SetTexture(0,depth),"local depth")||!pointCheck(d->SetTexture(1,pointSlot().cube),"local cube")||
            !pointCheck(d->SetTexture(2,waterMask),"local water")||
            !pointCheck(d->SetTexture(3,normalBuffer),"local normals")||!pointCheck(d->SetTexture(4,baselineLight),"local sun visibility")||
@@ -1030,26 +1031,7 @@
         // Enable first, as in the batch loops: localScissor may fail open by disabling it.
         d->SetRenderState(D3DRS_SCISSORTESTENABLE,NorthlightLocalLightScissor::Enabled);
         if(!localScissor(sphere,1)){d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE);return true;}
-        bool soft=false;
-        if(quality.softShadows&&pointSoftShaders()&&softShadowResources(w,h)){
-            IDirect3DSurface9* destination=nullptr;
-            if(SUCCEEDED(d->GetRenderTarget(0,&destination))&&destination){
-                // s1 holds the cube here, not the shared resolve target. Every
-                // pixel consumed below is written, including water/sky rejects.
-                bool resolved=SUCCEEDED(d->SetRenderTarget(0,softVisibilitySurface))&&
-                    SUCCEEDED(d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE))&&
-                    SUCCEEDED(d->SetRenderState(D3DRS_COLORWRITEENABLE,15))&&
-                    SUCCEEDED(d->SetPixelShader(pointSoftResolvePS))&&SUCCEEDED(quad(w/2,h/2));
-                if(FAILED(d->SetRenderTarget(0,destination))){drop(destination);d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE);return false;}
-                d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE);d->SetRenderState(D3DRS_COLORWRITEENABLE,7);
-                if(resolved)resolved=SUCCEEDED(d->SetTexture(1,softVisibility))&&SUCCEEDED(d->SetPixelShader(pointSoftLightingPS));
-                if(!resolved){d->SetTexture(1,pointSlot().cube);d->SetPixelShader(pointLightingPS);}
-                soft=resolved;
-                // Optional failures never invalidate the completed cube/cache.
-            }
-            drop(destination);
-        }
         const HRESULT result=quad(w/2,h/2);const bool drawn=pointCheck(result,"local lighting pass");
-        if(capture)capture->pointPass(pointIndex,soft,softVisibilitySurface,result);
+        if(capture)capture->pointPass(pointIndex,soft,nullptr,result);
         d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE);return drawn;
     }

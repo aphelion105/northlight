@@ -86,11 +86,10 @@ float3 localCubeTexelRay(float3 ray) {
     return (a.x>=a.y&&a.x>=a.z)?float3(direction.x,center.yz):
         (a.y>=a.z?float3(center.x,direction.y,center.z):float3(center.xy,direction.z));
 }
-float localVisibilityFiltered(float3 delta,float3 normal,bool soft) {
-    float distance=length(delta);
+float localVisibilityInRange(float3 delta,float3 normal,float distance,bool soft) {
     // Task 43: dot(normal,delta)>=0 is a face turned from the lamp (facing 0, estimate 0): the correction is 0 whatever
     // the visibility, so the 4-tap cube PCF is skipped.
-    if(distance<=LocalShadow.x||distance>=LocalShadow.y||dot(normal,delta)>=0)return 1;
+    if(dot(normal,delta)>=0)return 1;
     float3 direction=delta/max(distance,.00001);
     // World-unit normal bias remains independent of cube near/far precision.
     float grazing=1-abs(dot(normal,direction));
@@ -103,7 +102,7 @@ float localVisibilityFiltered(float3 delta,float3 normal,bool soft) {
     float3 depthPlane=normal*(depthA*LocalShadow.x/plane);
     float angular=2*LocalShadow.z*LocalShadow.w;
     float visibility=0;
-    [unroll]for(int i=0;i<4;++i) {
+    [loop]for(int i=0;i<4;++i) {
         float2 offset=float2((i==0||i==2)?-.5:.5,(i<2)?-.5:.5);
         float3 ray=localCubeTexelRay(biased+distance*angular*(tangent*offset.x+bitangent*offset.y));
         // Projected depth is affine in this face ray. No per-tap division or
@@ -148,7 +147,10 @@ float localVisibilityFiltered(float3 delta,float3 normal,bool soft) {
     }
     return visibility/16;
 }
-float localVisibility(float3 delta,float3 normal){return localVisibilityFiltered(delta,normal,false);}
+float localVisibilityFiltered(float3 delta,float3 normal,bool soft){
+    float distance=length(delta);if(distance<=LocalShadow.x||distance>=LocalShadow.y)return 1;
+    return localVisibilityInRange(delta,normal,distance,soft);
+}
 float4 LocalShadowResolve(float2 uv:TEXCOORD0):COLOR0 {
     float2 screen=uv;uv=localDepthUV(uv);float depth=localDepth(uv);
     if(depth>=.99999)return 1;
@@ -159,7 +161,8 @@ float4 LocalShadowResolve(float2 uv:TEXCOORD0):COLOR0 {
     float v=localVisibilityFiltered(p-LocalPosition.xyz,normal,true);
     return float4(v,v,v,1);
 }
-float4 localLightingValue(float2 uv,bool soft) {
+// 0: PCF; 1: legacy resolved capture; 2: fused PCSS.
+float4 localLightingValue(float2 uv,int filter) {
     float2 screen=uv;
     uv=localDepthUV(uv);float depth=localDepth(uv);
     if(depth>=.99999)return 0;
@@ -167,7 +170,7 @@ float4 localLightingValue(float2 uv,bool soft) {
         if(w.x>LocalImage.z&&w.x<=localDistance(depth)+max(.012,w.x*.0007)&&w.y>.003)return 0;}
     float3 v=localView(uv,depth),p=localWorld(v);
     float3 delta=p-LocalPosition.xyz;
-    float distance=length(delta);if(distance>=LocalColor.w||distance<=.0001)return 0;
+    float distance=length(delta);if(distance>=LocalColor.w||distance<=(filter==1?.0001:LocalShadow.x))return 0;
     // Rejected receivers need neither material decoding nor lamp shading inputs.
     float3 n=tex2Dlod(LocalNormals,float4(screen,0,0)).xyz;
     float3 geometricNormal=n;n=autoBumpNormal(uv,p,n,localDistance(depth),LocalInverseView[0].xyz,LocalInverseView[1].xyz,LocalInverseView[2].xyz);
@@ -183,13 +186,15 @@ float4 localLightingValue(float2 uv,bool soft) {
     float relevance=smoothstep(.002,.01,energy);
     if(relevance<=0)return 0;
     float visibility;
-    if(soft)visibility=tex2Dlod(LocalResolved,float4(screen,0,0)).r;
-    else visibility=localVisibility(delta,geometricNormal);
+    if(filter==1)visibility=tex2Dlod(LocalResolved,float4(screen,0,0)).r;
+    else visibility=localVisibilityInRange(delta,geometricNormal,distance,filter==2);
     float occlusion=1-visibility;
     return float4(-contribution*(occlusion*relevance*LocalDepthInfo.z),0);
 }
-float4 LocalLighting(float2 uv:TEXCOORD0):COLOR0{return localLightingValue(uv,false);}
-float4 LocalLightingSoft(float2 uv:TEXCOORD0):COLOR0{return localLightingValue(uv,true);}
+float4 LocalLighting(float2 uv:TEXCOORD0):COLOR0{return localLightingValue(uv,0);}
+// Retained for replaying captures from the former two-pass point pipeline.
+float4 LocalLightingSoft(float2 uv:TEXCOORD0):COLOR0{return localLightingValue(uv,1);}
+float4 LocalLightingPcss(float2 uv:TEXCOORD0):COLOR0{return localLightingValue(uv,2);}
 
 // Native material endpoints are evaluated by the original VS/PS programs.
 // Mixing their results preserves authored saturation, fog and every other
