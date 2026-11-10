@@ -5765,7 +5765,9 @@ public:
         d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_ONE);d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_ONE);d->SetRenderState(D3DRS_BLENDOP,D3DBLENDOP_ADD);
         // Smoothed normals for the lighting, GI and local light passes (s14).
         const bool lightingNeeded=requirements.lighting;
-        const bool normalsProduceDistance=lightingNeeded&&c[30][1]>0;
+        // Without shadow visibility changes, removal smoothing is a copy.
+        // TemporalLight can consume raw light and produce distance itself.
+        const bool normalsProduceDistance=lightingNeeded&&effects.shadows&&c[30][1]>0;
         const bool anyShadowTransition=geometryReady&&(shadowTransitionActive(0)||shadowTransitionActive(1));
         auto* const smoothSurface=fogBlurredSurface;
         bool first=true;
@@ -5969,7 +5971,7 @@ public:
             const unsigned capture=diagnosticCapture;const std::string& directory=gpuDiagnosticDirectory;
             using NorthlightWorldDiagnostics::dump;
             dump(d,lightSurface,directory,"light",capture);
-            dump(d,c[30][1]>0?smoothSurface:lightSurface,directory,"smoothed-light",capture);
+            dump(d,normalsProduceDistance?smoothSurface:lightSurface,directory,"smoothed-light",capture);
         }
         bucket(NorthlightEffectsBuckets::PointLighting);
         // The raw directional target is no longer read after temporal resolve.

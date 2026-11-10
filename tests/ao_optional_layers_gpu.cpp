@@ -89,13 +89,19 @@ struct PipelineOffTest {
         assert(w.localFogPS&&w.localFogCombinePS);
         std::puts("OPTIONAL_RESOURCES_PASS coldAoTargets=0 warmReuse=1 shadowsThenFog=1");
 #endif
+        // Start the paired image sequence from the same resource state.
+        w.releaseGPU(true);
+        unsigned step=0;
         for(bool hdr:{false,true})for(unsigned mode:{0u,1u,0u,2u,0u,3u,0u,4u,0u,5u,0u,6u,0u}){
             configure(w,mode);std::fill(std::begin(meter.passes),std::end(meter.passes),0);
             render(w,meter.real,out,depth,scene,ao,nullptr,W,H,hdr);
 #ifndef NORTHLIGHT_OPTIONAL_LAYER_REFERENCE
             if(mode==0||mode==5||mode==6){assert(!meter.passes[0]&&!meter.passes[1]&&!meter.passes[2]&&!meter.passes[3]&&meter.passes[4]==1&&!w.temporalValid);}
             else assert(meter.passes[0]&&meter.passes[1]&&meter.passes[3]);
+            if(mode!=2)assert(!meter.passes[2]);
 #endif
+            if(const char* directory=std::getenv("NORTHLIGHT_OPTIONAL_PIXEL_DIRECTORY"))
+                assert(NorthlightWorldDiagnostics::dump(meter.real,out,directory,"layer",++step));
         }
 #ifndef NORTHLIGHT_OPTIONAL_LAYER_REFERENCE
         for(bool hdr:{false,true})for(bool liquid:{false,true}){
@@ -130,7 +136,8 @@ int main(int argc,char** argv){
         PipelineOffTest::checks(world,meter,out,read,depth,scene,ao,water,W,H);
         if(bench){IDirect3DQuery9 *start=nullptr,*end=nullptr,*frequency=nullptr,*disjoint=nullptr;
             screenOk(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&start));screenOk(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&end));screenOk(d->CreateQuery(D3DQUERYTYPE_TIMESTAMPFREQ,&frequency));screenOk(d->CreateQuery(D3DQUERYTYPE_TIMESTAMPDISJOINT,&disjoint));
-            for(unsigned block=0;block<12;++block){PipelineOffTest::configure(world,0);meter.observed=nullptr;
+            const unsigned mode=std::getenv("NORTHLIGHT_OPTIONAL_TIMING_MODE")?unsigned(std::atoi(std::getenv("NORTHLIGHT_OPTIONAL_TIMING_MODE"))):0;assert(mode<7);
+            for(unsigned block=0;block<12;++block){PipelineOffTest::configure(world,mode);meter.observed=nullptr;
                 screenOk(disjoint->Issue(D3DISSUE_BEGIN));screenOk(frequency->Issue(D3DISSUE_END));screenOk(start->Issue(D3DISSUE_END));const auto begin=std::chrono::steady_clock::now();
                 for(unsigned i=0;i<32;++i)PipelineOffTest::render(world,d,out,depth,scene,ao,nullptr,W,H,false);
                 const double cpu=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count()/32;
