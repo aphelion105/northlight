@@ -27,9 +27,11 @@ parser.add_argument('--timing-draws',type=int,action='append',default=[],help='A
 parser.add_argument('--timing-copies',type=int,default=1,help='Repeat stock geometry within each timing draw (1..32)')
 parser.add_argument('--timing-local',action='store_true',help='Measure the actual three-local-light factory with MRT')
 parser.add_argument('--reference-packet-layout',help='Replace only Pending with its layout at this git revision; retain current capture/render methods')
+parser.add_argument('--reference-native',help='Use native MRT admission from this git revision for a paired comparison')
 timing_state=parser.add_mutually_exclusive_group()
 timing_state.add_argument('--timing-blend',action='store_true',help='Include a source-alpha blended depth writer before the commit')
 timing_state.add_argument('--timing-srgb',action='store_true',help='Keep native sRGB writes enabled throughout the receiver draws')
+timing_state.add_argument('--timing-fixed-pixel',action='store_true',help='Finish each frame with an unsupported fixed-function scene-depth writer')
 args=parser.parse_args()
 out=args.output.resolve();out.mkdir(parents=True,exist_ok=False)
 fixture=out/'fixture';fixture.mkdir()
@@ -54,7 +56,12 @@ def run(tag,command):
 
 exe=out/'native-models.exe'
 includes=[]
+if args.reference_native:
+    overlay=out/'native-reference';overlay.mkdir();(overlay/'model_normal_renderer.h').write_bytes(fp.src('model_normal_renderer.h').read_bytes())
+    (overlay/'model_normal_native.h').write_bytes(subprocess.check_output(['git','show',args.reference_native+':src/proxy/model_normal_native.h']))
+    includes=['-I'+str(overlay)]
 if args.reference_packet_layout:
+    assert not args.reference_native,'Select one reference kind'
     current=fp.src('model_normal_renderer.h').read_text()
     previous=subprocess.check_output(['git','show',args.reference_packet_layout+':src/proxy/model_normal_renderer.h'],text=True)
     start='    struct Pending {';end='    Pending* nativeCandidate='
@@ -73,7 +80,7 @@ for i,path in enumerate(args.backend):
     for draws in args.timing_draws:
         assert 0<draws<=512
         assert 1<=args.timing_copies<=32
-        mode=('srgb' if args.timing_srgb else 'blend' if args.timing_blend else 'plain')+('-local' if args.timing_local else '')
+        mode=('fixed-pixel' if args.timing_fixed_pixel else 'srgb' if args.timing_srgb else 'blend' if args.timing_blend else 'plain')+('-local' if args.timing_local else '')
         text=run('timing-'+str(i)+'-'+str(draws),[exe,path,str(fixture)+'/',draws,args.timing_copies,mode])
         print('\n'.join(line for line in text.splitlines() if line.startswith('MODEL_NORMAL_NATIVE_TIMING')),flush=True)
 inputs={str(p.relative_to(ROOT)):hashlib.sha256(p.read_bytes()).hexdigest() for p in fp.SRC.rglob('*') if p.is_file()}
@@ -84,4 +91,6 @@ report['timing']['local']=args.timing_local
 report['timing']['blended_depth']=args.timing_blend
 report['timing']['srgb']=args.timing_srgb
 report['reference_packet_layout']=args.reference_packet_layout
+report['reference_native']=args.reference_native
+report['timing']['fixed_pixel']=args.timing_fixed_pixel
 (out/'validation.json').write_text(json.dumps(report,indent=2)+'\n')

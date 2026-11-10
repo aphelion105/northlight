@@ -102,7 +102,7 @@ public:
             // Structural refusal keeps exact replay. Probe again shortly so a
             // changed scene can resume MRT, without redoing failed admission
             // on every frame of the same depth/MRT configuration.
-            if(!std::strcmp(cause,"depth-only-before-rgb")||!std::strcmp(cause,"occupied-mrt"))retryFrames=3;
+            if(!std::strcmp(cause,"depth-only-before-rgb")||!std::strcmp(cause,"occupied-mrt")||!std::strcmp(cause,"fixed-pixel"))retryFrames=3;
         }complete=false;lastComplete=false;}
     void beginFrame(){drop(sceneDepth);describedColor=nullptr;allowed=enabled&&lastComplete;complete=retryFrames==0;if(retryFrames)--retryFrames;started=depthOnlySeen=false;reason=complete?"none":"structural-retry";probes=modelDraws=zeroDraws=builds=committed=fallbacks=coldPairs=0;}
     void reset(){retryFrames=0;beginFrame();lastComplete=allowed=false;refused=false;

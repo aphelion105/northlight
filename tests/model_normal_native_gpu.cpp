@@ -32,6 +32,7 @@ int main(int argc,char** argv){
     const bool timingBaseline=timingMode.find("baseline")!=std::string::npos;
     const bool timingBlend=timingMode.find("blend")!=std::string::npos;
     const bool timingSrgb=timingMode.find("srgb")!=std::string::npos;
+    const bool timingFixed=timingMode.find("fixed-pixel")!=std::string::npos;
     WNDCLASSW wc{};wc.lpfnWndProc=DefWindowProcW;wc.lpszClassName=L"NorthlightNativeNormalTransaction";wc.hInstance=GetModuleHandleW(nullptr);assert(RegisterClassW(&wc));auto window=CreateWindowExW(0,wc.lpszClassName,L"",WS_OVERLAPPED,0,0,64,64,nullptr,nullptr,wc.hInstance,nullptr);assert(window);
     auto module=LoadLibraryA(argv[1]);assert(module);auto create=(IDirect3D9*(WINAPI*)(UINT))GetProcAddress(module,"Direct3DCreate9");assert(create);auto api=create(D3D_SDK_VERSION);assert(api);
     D3DPRESENT_PARAMETERS pp{};pp.Windowed=TRUE;pp.hDeviceWindow=window;pp.BackBufferWidth=pp.BackBufferHeight=64;pp.BackBufferFormat=D3DFMT_X8R8G8B8;pp.SwapEffect=D3DSWAPEFFECT_DISCARD;pp.PresentationInterval=D3DPRESENT_INTERVAL_IMMEDIATE;
@@ -113,8 +114,8 @@ int main(int argc,char** argv){
             unsigned nativeDraws=0;ok(d->BeginScene());
             auto occluder=[&]{
                 n->beginNativeDraw();ok(d->SetVertexShader(nullptr));ok(d->SetFVF(D3DFVF_XYZRHW|D3DFVF_TEX1));ok(d->SetPixelShader(scenario>=24?nullptr:occluderPS));ok(d->SetRenderState(D3DRS_ALPHATESTENABLE,FALSE));
-                if(scenario>=24)ok(d->SetRenderState(D3DRS_COLORWRITEENABLE,scenario%2?8:0));
-                if(scenario>=28)ok(d->SetRenderState(D3DRS_ZFUNC,scenario<30?D3DCMP_EQUAL:D3DCMP_NEVER));
+                if(scenario>=24&&scenario<32)ok(d->SetRenderState(D3DRS_COLORWRITEENABLE,scenario%2?8:0));
+                if(scenario>=28&&scenario<32)ok(d->SetRenderState(D3DRS_ZFUNC,scenario<30?D3DCMP_EQUAL:D3DCMP_NEVER));
                 if(scenario==12||(scenario>=14&&scenario<=22)){ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE));
                     ok(d->SetRenderState(D3DRS_SRCBLEND,scenario==14||scenario==16?D3DBLEND_ONE:D3DBLEND_SRCALPHA));
                     ok(d->SetRenderState(D3DRS_DESTBLEND,scenario==15||scenario==16?D3DBLEND_ZERO:scenario==17?D3DBLEND_ONE:D3DBLEND_INVSRCALPHA));
@@ -156,9 +157,9 @@ int main(int argc,char** argv){
                 DWORD mask=0;ok(raw->GetRenderState(D3DRS_COLORWRITEENABLE1,&mask));assert(mask==(timing?15u:7u));
                 if(scenario==4&&i==0){n->nativeDepthChanged();ok(d->Clear(0,nullptr,D3DCLEAR_ZBUFFER,0,1,0));}
                 if(scenario==5&&i==0)n->beforeTextureWrite(checker);
-                if(scenario>=26&&i==0)occluder();
+                if(scenario>=26&&scenario<32&&i==0)occluder();
             }
-            if(scenario==3||scenario==6||(scenario>=12&&scenario<=22)||scenario==24||scenario==25)occluder();
+            if(scenario==3||scenario==6||(scenario>=12&&scenario<=22)||scenario==24||scenario==25||scenario==32)occluder();
             assert(nativeDraws==N);assert(n->finishCaptures(true));ok(d->EndScene());assert(n->texture());
             if(timing)return ModelNormalPacketTestAccess::committed(*n);
             if(scenario==7)ok(d->StretchRect(msColor,nullptr,color.s,nullptr,D3DTEXF_NONE));
@@ -176,8 +177,8 @@ int main(int argc,char** argv){
             LARGE_INTEGER frequency;QueryPerformanceFrequency(&frequency);std::vector<double> gpu[2],cpu[2];
             for(unsigned block=0;block<4;++block)for(bool mrt:{false,true})for(unsigned round=0;round<8;++round){
                 store.setFrame(++frameNumber);ok(hz->Issue(D3DISSUE_END));ok(q0->Issue(D3DISSUE_END));LARGE_INTEGER a,b;QueryPerformanceCounter(&a);
-                const auto committed=frame(mrt,timingSrgb?23:timingBlend?12:0);QueryPerformanceCounter(&b);ok(q1->Issue(D3DISSUE_END));const auto ticks=get(q1)-get(q0),rate=get(hz);
-                if(round>=4){assert(!mrt||committed==(timingBaseline?0u:N));gpu[mrt].push_back(double(ticks)*1000/rate);cpu[mrt].push_back(double(b.QuadPart-a.QuadPart)*1000/frequency.QuadPart);}
+                const auto committed=frame(mrt,timingFixed?32:timingSrgb?23:timingBlend?12:0);QueryPerformanceCounter(&b);ok(q1->Issue(D3DISSUE_END));const auto ticks=get(q1)-get(q0),rate=get(hz);
+                if(round>=4){assert(!mrt||committed==((timingBaseline||timingFixed)?0u:N));gpu[mrt].push_back(double(ticks)*1000/rate);cpu[mrt].push_back(double(b.QuadPart-a.QuadPart)*1000/frequency.QuadPart);}
             }
             auto median=[](std::vector<double> a){std::sort(a.begin(),a.end());return a[a.size()/2];};
             std::printf("MODEL_NORMAL_NATIVE_TIMING size=%ux%u draws=%u vertices=%u copies=%u local=%u hdr=%u blendedDepth=%u srgb=%u baseline=%u gpu_replay=%.6f gpu_mrt=%.6f cpu_replay=%.6f cpu_mrt=%.6f scope=capture-queue-native-draw-replay-or-commit\n",W,H,N,nv,copies,timingLocal,hdr,timingBlend,timingSrgb,timingBaseline,median(gpu[0]),median(gpu[1]),median(cpu[0]),median(cpu[1]));
@@ -200,6 +201,7 @@ int main(int argc,char** argv){
         for(unsigned blended:{14u,15u,16u,19u,20u,22u,23u}){frame(false,blended);assert(!frame(true,blended));ready(blended);assert(frame(true,blended)>0);}
         for(unsigned depthOnly:{24u,25u}){frame(false,depthOnly);assert(!frame(true,depthOnly));ready(depthOnly);assert(frame(true,depthOnly)>0);}
         for(unsigned interleaved:{26u,27u}){frame(false,interleaved);assert(!frame(true,interleaved));assert(!frame(true,interleaved));}
+        frame(false,32);for(unsigned retry=0;retry<8;++retry)assert(!frame(true,32));frame(false);ready();
         for(unsigned unchangedDepth:{28u,29u,30u,31u}){frame(false,unchangedDepth);assert(!frame(true,unchangedDepth));ready(unchangedDepth);assert(frame(true,unchangedDepth)>0);}
         for(unsigned rejected:{17u,18u}){frame(false,rejected);assert(!frame(true,rejected));assert(!frame(true,rejected));}
         if(msColor){frame(false,7);assert(!frame(true,7));assert(!frame(true,7));assert(ModelNormalPacketTestAccess::stats(*n).find("modelDraws=0 ")!=std::string::npos);}
