@@ -50,7 +50,6 @@ public:
     // shader inputs separately for replay.
     template<class Read> bool outsideRead(const std::shared_ptr<const Mesh>& mesh,const D3DVERTEXELEMENT9* layout,UINT count,Read read,Kind kind=Rigid){
         ++tested;singleTests+=kind==Single;if(!mesh||!layout||!count||count>MAXD3DDECLLENGTH||(kind!=Rigid&&kind!=Single))return false;
-        if(workMilliseconds>=.25){++deferred;return false;}
         const D3DVERTEXELEMENT9* position=nullptr;for(UINT i=0;i<count;++i)if(layout[i].Stream!=0xff&&layout[i].Usage==D3DDECLUSAGE_POSITION&&!layout[i].UsageIndex){if(position)return false;position=layout+i;}
         if(!position||position->Stream||position->Type!=D3DDECLTYPE_FLOAT3||position->Method!=D3DDECLMETHOD_DEFAULT)return false;
         const auto& stream=mesh->streams[0];if(!mesh->vertexCount||!stream.stride||uint64_t(mesh->vertexCount-1)*stream.stride+position->Offset+12>stream.bytes.size())return false;
@@ -68,13 +67,17 @@ public:
         // A proven mixed source cannot use this uniform-bone rejection, whatever
         // the current pose/projection. No device reads or timing are needed.
         if(entry&&entry->mixed){entry->used=++clock;++singleMixed;return false;}
+        // Budget cold vertex scans; warm bounds still validate the current pose.
+        if(!entry&&(workMilliseconds>=.25||mesh->vertexCount>2048-scanVertices)){++deferred;return false;}
         float projection[16],matrix[12];if(!read(2,4,projection))return false;
         if(projection[12]!=0||projection[13]!=0||projection[15]!=0||(projection[14]!=1&&projection[14]!=-1))return false;
         // Near origins decline this optional proof, even if local vertices are far.
         if(!read(31+3*bone,3,matrix)||!(projection[14]*matrix[11]>48.01f))return false;
-        const auto start=std::chrono::steady_clock::now();
-        struct Timer {double& total;std::chrono::steady_clock::time_point start;~Timer(){total+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();}} timer{workMilliseconds,start};
-        if(!entry){if(mesh->vertexCount>2048-scanVertices){++deferred;return false;}scanVertices+=mesh->vertexCount;
+        // A bounded warm proof needs no timing calls or cold-scan allowance.
+        if(!entry){
+            const auto start=std::chrono::steady_clock::now();
+            struct Timer {double& total;std::chrono::steady_clock::time_point start;~Timer(){total+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();}} timer{workMilliseconds,start};
+            scanVertices+=mesh->vertexCount;
             bool mixed=false;if(kind==Single)for(unsigned i=1;i<mesh->vertexCount;++i)if(stream.bytes[size_t(i)*stream.stride+indexOffset]!=bone){mixed=true;break;}
             if(mixed){entry=replacement;*entry={};entry->owner=mesh;entry->address=mesh.get();entry->offset=position->Offset;entry->indexOffset=indexOffset;entry->mixed=true;}
             else {

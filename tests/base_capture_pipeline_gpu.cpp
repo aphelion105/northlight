@@ -3,6 +3,9 @@
 #include "model_normals_gpu.cpp"
 #undef main
 #include "base_capture_probe.h"
+#ifdef NORTHLIGHT_MODEL_NORMALS_RANGE_REFERENCE
+#include "range_reference_model.h"
+#endif
 #include <chrono>
 NorthlightCapturePhases::Stats<8> baseCapture,baseRecord,baseFlush;
 bool baseProbe=false;
@@ -28,12 +31,20 @@ int main(int argc,char** argv){
     NorthlightGpuScene::NativeStore store;NorthlightGpuScene::NativeClient cache(store,NorthlightGpuScene::Consumer::Material);auto normals=std::make_unique<NorthlightModelNormals>(d);
     assert(normals->shareCaptureSources(peer,identity,version,nullptr));normals->setGeometryCache(&cache);normals->setDeferredCapture(true);normals->setTrustedPoseSource(extension.trustedConstantSource());
     normals->setRasterStateSource(d,[](void* c,const D3DRENDERSTATETYPE* k,unsigned n,DWORD* v){return static_cast<ExtensionDevice*>(static_cast<IDirect3DDevice9*>(c))->knownRenderStates(k,n,v);});
+#ifdef NORTHLIGHT_MODEL_NORMALS_RANGE_REFERENCE
+    auto before=std::make_unique<NorthlightModelNormalsReference>(d);
+    assert(before->shareCaptureSources(peer,identity,version,nullptr));before->setGeometryCache(&cache);before->setDeferredCapture(true);before->setTrustedPoseSource(extension.trustedConstantSource());
+    before->setRasterStateSource(d,[](void* c,const D3DRENDERSTATETYPE* k,unsigned n,DWORD* v){return static_cast<ExtensionDevice*>(static_cast<IDirect3DDevice9*>(c))->knownRenderStates(k,n,v);});
+#endif
     IDirect3DQuery9 *start=nullptr,*end=nullptr,*frequency=nullptr;ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&start));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&end));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMPFREQ,&frequency));
     auto wait=[](IDirect3DQuery9* q){UINT64 v=0;const auto at=GetTickCount();HRESULT hr;while((hr=q->GetData(&v,sizeof v,D3DGETDATA_FLUSH))==S_FALSE){assert(GetTickCount()-at<10000);SwitchToThread();}ok(hr);return v;};
     const NorthlightDrawSnapshot::Draw geometry{D3DPT_TRIANGLELIST,0,0,nv,0,ni/3,true};auto draw=[&]{return d->DrawIndexedPrimitive(D3DPT_TRIANGLELIST,0,0,nv,0,ni/3);};
     std::vector<unsigned char> reference;using Clock=std::chrono::steady_clock;
-    for(unsigned frame=0;frame<40;++frame){
+    const auto runFrame=[&](auto& normals,unsigned frame,unsigned mode,unsigned block){
         normals->endFrame();peer.clearFrame();store.advance(frame+1);baseCapture.clear();baseRecord.clear();baseFlush.clear();baseProbe=frame%2==0;
+#ifdef NORTHLIGHT_MODEL_NORMALS_RANGE_REFERENCE
+        baseProbe=false;
+#endif
         ok(d->SetDepthStencilSurface(nullptr));ok(d->SetRenderTarget(0,color));ok(d->SetDepthStencilSurface(depth));D3DVIEWPORT9 vp{0,0,W,H,0,1};ok(d->SetViewport(&vp));
         ok(d->SetVertexDeclaration(declaration));ok(d->SetStreamSource(0,vb,0,48));ok(d->SetIndices(ib));ok(d->SetVertexShader(shader));ok(d->SetPixelShader(pixel));bind(0,white);
         for(auto k:{D3DRS_ALPHABLENDENABLE,D3DRS_ALPHATESTENABLE,D3DRS_STENCILENABLE,D3DRS_SCISSORTESTENABLE,D3DRS_FOGENABLE,D3DRS_SRGBWRITEENABLE})ok(d->SetRenderState(k,FALSE));
@@ -55,10 +66,21 @@ int main(int argc,char** argv){
         const auto finish=Clock::now();ok(end->Issue(D3DISSUE_END));ok(d->EndScene());const auto a=wait(start),b=wait(end),hz=wait(frequency);
         const double gpu=double(b-a)*1000/hz,flushMs=std::chrono::duration<double,std::milli>(finish-flushBegin).count(),totalMs=std::chrono::duration<double,std::milli>(finish-begin).count();
         baseProbe=false;
-        if(frame==0||frame==16||frame==17){auto image=capturedPixels(normals->texture(),W,H);assert(std::any_of(image.begin(),image.end(),[](unsigned char v){return v!=0;}));if(reference.empty())reference=std::move(image);else assert(image==reference);}
-        if(frame>=16)assert(normals->readSourceBytes()==0&&normals->cachedDraws()==Near);
+        if(frame==0||frame==16||frame==17||frame%32==31){auto image=capturedPixels(normals->texture(),W,H);assert(std::any_of(image.begin(),image.end(),[](unsigned char v){return v!=0;}));if(reference.empty())reference=std::move(image);else assert(image==reference);}
+        if(frame>=16)assert(normals->readSourceBytes()==0&&normals->cachedDraws()==queued);
+#ifdef NORTHLIGHT_MODEL_NORMALS_RANGE_REFERENCE
+        std::printf("CAPTURE_COMPARE_FRAME mode=%u block=%u warm=%u captureMs=%.9f flushCpuMs=%.9f replayGpuMs=%.9f nativeSubmitMs=%.9f totalCpuMs=%.9f queued=%zu culled=%u sourceBytes=%zu cached=%u\n",mode,block,unsigned(block<4),captureMs,flushMs,gpu,nativeMs,totalMs,queued,culled,normals->readSourceBytes(),normals->cachedDraws());
+#else
         std::printf("CAPTURE_FRAME frame=%u warm=%u profiled=%u captureMs=%.9f flushCpuMs=%.9f replayGpuMs=%.9f nativeSubmitMs=%.9f totalCpuMs=%.9f queued=%zu culled=%u sourceBytes=%zu cached=%u\n",frame,unsigned(frame<16),unsigned(frame%2==0),captureMs,flushMs,gpu,nativeMs,totalMs,queued,culled,normals->readSourceBytes(),normals->cachedDraws());
         if(frame%2==0){capturePrint("capture_inclusive",baseCapture);capturePrint("record",baseRecord);capturePrint("flush",baseFlush);}
-    }
+#endif
+    };
+#ifdef NORTHLIGHT_MODEL_NORMALS_RANGE_REFERENCE
+    for(unsigned block=0;block<16;++block){const unsigned mode=(block/2)%2?1-block%2:block%2;
+        for(unsigned i=0;i<32;++i){if(mode)runFrame(normals,block*32+i,mode,block);else runFrame(before,block*32+i,mode,block);}}
+    before.reset();
+#else
+    for(unsigned frame=0;frame<40;++frame)runFrame(normals,frame,0,0);
+#endif
     normals.reset();cache.clear();white->Release();shader->Release();pixel->Release();declaration->Release();vb->Release();ib->Release();start->Release();end->Release();frequency->Release();color->Release();depth->Release();d=nullptr;raw->Release();api->Release();FreeLibrary(module);DestroyWindow(window);std::puts("BASE_CAPTURE_PROFILE_PASS identicalProfiledPixels=1");
 }
