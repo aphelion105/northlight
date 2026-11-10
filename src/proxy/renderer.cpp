@@ -1323,11 +1323,8 @@ private:
         return true;
     }
     HRESULT quad(UINT w, UINT h, bool setViewport=true) {
-        struct Vertex { float x,y,z,rhw,u,v; };
-        Vertex v[]={{-.5f,-.5f,0,1,0,0},{float(w)-.5f,-.5f,0,1,1,0},
-                    {-.5f,float(h)-.5f,0,1,0,1},{float(w)-.5f,float(h)-.5f,0,1,1,1}};
         if(setViewport){D3DVIEWPORT9 vp={0,0,w,h,0,1};HRESULT hr=ext->SetViewport(&vp);if(FAILED(hr))return hr;}
-        return ext->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(Vertex));
+        return NorthlightScreen::drawQuad(ext,w,h);
     }
     // the zone/time glow hue the world renderer publishes (sun_hue.h), in the disc renderer's terms.
     NorthlightCelestialGlow::Hue celestialGlowHue()const{

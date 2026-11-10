@@ -1,4 +1,5 @@
 #include "effect_coverage.h"
+#include "screen_quad.h"
 #pragma once
 #include "utf8_path.h"
 #include "material_profile.h"
@@ -3002,7 +3003,7 @@ private:
         const auto& layout=NorthlightGI::probeLayout();
         logf("QUALITY GI distance=%u effective=%u grid=%ux%ux%u atlas=%u^3 cacheProbes=%zu configured=%u probeAhead=%u",quality.giDistance,layout.n*4-4,layout.n,layout.n,layout.nz,layout.atlas,layout.atlasSize(),unsigned(layoutConfigured),quality.giProbeAhead);
     }
-    HRESULT quad(UINT w,UINT h,bool setViewport=true){struct Q{float x,y,z,rhw,u,v;};Q q[]={{-.5f,-.5f,0,1,0,0},{float(w)-.5f,-.5f,0,1,1,0},{-.5f,float(h)-.5f,0,1,0,1},{float(w)-.5f,float(h)-.5f,0,1,1,1}};if(setViewport){D3DVIEWPORT9 vp={0,0,w,h,0,1};d->SetViewport(&vp);}return d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,q,sizeof(Q));}
+    HRESULT quad(UINT w,UINT h,bool setViewport=true){if(setViewport){D3DVIEWPORT9 vp={0,0,w,h,0,1};d->SetViewport(&vp);}return NorthlightScreen::drawQuad(d,w,h);}
 public:
     // Buffer identity for the snapshot cache: a private-data token created on
     // first sight and owned by the COM object, so pointer reuse cannot alias.

@@ -1,5 +1,6 @@
 #pragma once
 #include "surface_compiled_shaders.h"
+#include "screen_quad.h"
 #include "quality_settings.h"
 #include "surface_frame.h"
 #include "weather_lens.h"
@@ -25,7 +26,7 @@ class NorthlightSurfaceRenderer {
         if(enclosing&&enclosing->ok&&enclosing->d==d)return std::nullopt;
         return std::optional<SavedState>(std::in_place,d,&stateBlocks);
     }
-    HRESULT quad(UINT w,UINT h){struct V{float x,y,z,w,u,v;} v[]={{-.5f,-.5f,0,1,0,0},{float(w)-.5f,-.5f,0,1,1,0},{-.5f,float(h)-.5f,0,1,0,1},{float(w)-.5f,float(h)-.5f,0,1,1,1}};D3DVIEWPORT9 vp={0,0,w,h,0,1};d->SetViewport(&vp);return d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,v,sizeof(V));}
+    HRESULT quad(UINT w,UINT h){D3DVIEWPORT9 vp={0,0,w,h,0,1};d->SetViewport(&vp);return NorthlightScreen::drawQuad(d,w,h);}
     void state(){
         d->SetDepthStencilSurface(nullptr);for(unsigned i=1;i<4;++i)d->SetRenderTarget(i,nullptr);d->SetVertexShader(nullptr);d->SetFVF(D3DFVF_XYZRHW|D3DFVF_TEX1);d->SetStreamSourceFreq(0,1);
         for(auto s:{D3DRS_ZENABLE,D3DRS_ZWRITEENABLE,D3DRS_ALPHATESTENABLE,D3DRS_ALPHABLENDENABLE,D3DRS_SEPARATEALPHABLENDENABLE,D3DRS_STENCILENABLE,D3DRS_SCISSORTESTENABLE,D3DRS_FOGENABLE,D3DRS_LIGHTING,D3DRS_SRGBWRITEENABLE,D3DRS_CLIPPLANEENABLE,D3DRS_WRAP0})d->SetRenderState(s,0);
