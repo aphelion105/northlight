@@ -1482,7 +1482,8 @@ private:
         surfaceTimerOpen=world&&world->gpuBudgetMs()&&gpuTimer->begin(frame);
         if(autoBump)autoBump->finishCaptures();
         if(sceneSplit)gpuSceneProfile->mark("MaterialCapture");
-        if(modelNormals)modelNormals->finishCaptures(true);
+        if(modelNormals){const NorthlightModelNormals::DepthSeed seed{depthTex,nearZ,farZ,worldMinDepth,worldMaxDepth};
+            modelNormals->finishCaptures(true,&seed);}
         if(sceneSplit){gpuSceneProfile->mark("ModelNormals");gpuSceneSplit=true;}
         // 0.3.200 (gpu budget): the frame timer brackets every effect pass (closed on every return path by the guard, after the profile's end).
         if(diagnostics())gpuProfile->beginFrame(frame,NorthlightRenderThreadProbe::sampleFrame(frame)); // otherwise no queries; mark/endFrame are no-ops

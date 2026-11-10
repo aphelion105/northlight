@@ -34,12 +34,12 @@ struct Materials {bool enabled=false;bool active()const{return enabled;}};
 struct Hook {
     Normals normals;Normals* modelNormals=&normals;
     Materials materials;Materials* autoBump=nullptr;
-    bool enabled=true,applied=false,failed=false;
+    bool modelNormalsNeeded=true,enabled=true,applied=false,failed=false;
     std::map<IDirect3DVertexShader9*,unsigned> vsHashes;
     unsigned m2ShaderFamily(unsigned hash){return hash;}
     @METHOD@
 };
-using HRESULT=int;using DWORD=unsigned;using IDirect3DSurface9=int;
+using HRESULT=int;using DWORD=unsigned;using IDirect3DSurface9=int;using D3DRENDERSTATETYPE=unsigned;
 #define FAILED(hr) ((hr)<0)
 constexpr unsigned D3DRS_ZENABLE=1,D3DRS_ZWRITEENABLE=2;
 struct Backend {
@@ -59,6 +59,7 @@ struct NativeHook {
     struct Vertex {void* source=nullptr;} vertex;
     struct Packet {Vertex* vertex;bool nativeProbed=false,nativeWritten=false;} packet{&vertex};
     Backend backend;Backend* d=&backend;Native nativeMrt;
+    void* rasterContext=nullptr;bool(*rasterReader)(void*,const D3DRENDERSTATETYPE*,unsigned,DWORD*)=nullptr;
     bool bad=false;std::vector<Packet*> pending{&packet};
     int storage=0;IDirect3DSurface9 *surface=&storage,*frameTarget=&storage;
     unsigned width=1,height=1;Packet* nativeCandidate=&packet;
@@ -72,6 +73,7 @@ int main(){
         if(mode)h.autoBump=&h.materials;h.materials.enabled=mode==2;
         h.captureModelNormals(&shader,[]{return 0;},false,geometry);
         assert(h.normals.captures==1);
+        h.modelNormalsNeeded=false;h.captureModelNormals(&shader,[]{return 0;},false,geometry);h.modelNormalsNeeded=true;
         h.enabled=false;h.captureModelNormals(&shader,[]{return 0;},false,geometry);
         h.enabled=true;h.applied=true;h.captureModelNormals(&shader,[]{return 0;},false,geometry);
         h.applied=false;h.failed=true;h.captureModelNormals(&shader,[]{return 0;},false,geometry);
