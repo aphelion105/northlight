@@ -37,9 +37,9 @@ def main():
  insert('packet->ps.resize(ps->count*4);','phase.next(4);',True)
  insert('packet->viewport=viewport;','phase.next(5);',True)
  insert('bool ok=!bad;','NorthlightCapturePhases::Scope<8> phase(baseProbe?&baseFlush:nullptr);')
- insert('State saved(d,0,true);','phase.next(1);',True)
+ insert('SavedState saved(d,&batchStates);' if 'SavedState saved(d,&batchStates);' in header else 'State saved(d,0,true);','phase.next(1);',True)
  insert('const Pending* previous=nullptr;','phase.next(2);',True)
- insert('ok=saved.restore()&&ok;\n                ok=(SUCCEEDED(batchState->Apply())','phase.next(3);',True)
+ insert('                ok=saved.restore()&&ok;','phase.next(3);',True)
  insert('clearPending();bad|=!ok;return ok;','phase.next(4);',True)
  if compare:header=normal_input.read_text() # Both timed implementations omit phase probes entirely.
  (overlay/'model_normal_renderer.h').write_bytes(header.encode())
@@ -78,10 +78,10 @@ def main():
   if compare:
    rows=[{k:float(v) for k,v in re.findall(r'(\w+)=([0-9.]+)',line)} for line in text.splitlines() if line.startswith('CAPTURE_COMPARE_FRAME ')]
    assert len(rows)==512 and all(r['sourceBytes']==0 for r in rows if not r['warm'])
-   metrics=('captureMs','flushCpuMs','replayGpuMs','nativeSubmitMs','totalCpuMs','queued','culled','cached','submitted')
+   metrics=('captureMs','flushCpuMs','replayGpuMs','nativeSubmitMs','totalCpuMs','queued','culled','cached','submitted','stateReads')
    block_rows=[dict(mode=next(r['mode'] for r in rows if r['block']==block),block=block,**{key:statistics.median(r[key] for r in rows if r['block']==block) for key in metrics}) for block in range(4,16)]
    comparison={name:{key:statistics.median(r[key] for r in block_rows if r['mode']==mode) for key in metrics} for mode,name in ((0,'before'),(1,'current'))}
-   report.update(pass_=True,range_reference=str(a.range_reference.resolve()) if a.range_reference else None,renderer_reference=str(a.renderer_reference.resolve()) if a.renderer_reference else None,comparison=comparison,blocks=block_rows,identical_pixels=True,same_executable=True,order='ABBA',warm_blocks=4,frames_per_block=32,raw_frames=rows)
+   report.update(pass_=True,range_reference=str(a.range_reference.resolve()) if a.range_reference else None,renderer_reference=str(a.renderer_reference.resolve()) if a.renderer_reference else None,comparison=comparison,blocks=block_rows,identical_pixels=True,identical_native_float_state=True,same_executable=True,order='ABBA',warm_blocks=4,frames_per_block=32,raw_frames=rows)
    print(json.dumps(comparison,indent=2));return
   frames=[];phases=[];frame=None
   for line in text.splitlines():

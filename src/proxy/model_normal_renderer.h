@@ -18,6 +18,7 @@
 #include "replay_capture_constants.h"
 #include "dynamic_ring.h"
 #include "replay_bulk_layout.h"
+#include "saved_state.h"
 
 // Independent of AutoBump and actor-shadow capture budgets. Replay only opaque
 // native depth writers; the consumer rejects captures hidden by final depth.
@@ -58,7 +59,7 @@ class NorthlightModelNormals {
     std::unordered_map<IDirect3DPixelShader9*,Pixel> pixels[2];
     IDirect3DTexture9* normal=nullptr;
     IDirect3DSurface9 *surface=nullptr,*depth=nullptr,*frameTarget=nullptr;
-    IDirect3DStateBlock9* batchState=nullptr;
+    NorthlightStateBlockPool batchStates;
     UINT width=0,height=0;unsigned draws=0,compactDraws=0,compactBuilt=0,vertexBuilt=0,vertexReused=0,pixelBuilt=0,pixelReused=0,mergedDraws=0,duplicateDraws=0,primitiveLimit=0,maxVertexIndex=0;bool cleared=false,bad=false;
     // Private immutable geometry permits one normal/depth pass instead of
     // interrupting the full-resolution MSAA scene for every opaque model.
@@ -465,14 +466,14 @@ class NorthlightModelNormals {
         return true;
     }
 public:
-    explicit NorthlightModelNormals(IDirect3DDevice9* device):d(device),nativeMrt(device){snapshots.setSnapshotCacheLimit(0);pending.reserve(128);spare.reserve(128);
+    explicit NorthlightModelNormals(IDirect3DDevice9* device):d(device),nativeMrt(device),batchStates(device){snapshots.setSnapshotCacheLimit(0);pending.reserve(128);spare.reserve(128);
         D3DCAPS9 caps{};if(d&&SUCCEEDED(d->GetDeviceCaps(&caps))){primitiveLimit=caps.MaxPrimitiveCount;maxVertexIndex=caps.MaxVertexIndex;}
         snapshots.setDeclarationProvider(&declarations,[](void* c,IDirect3DVertexDeclaration9* decl,const D3DVERTEXELEMENT9*& elements,UINT& count){return static_cast<NorthlightVertexDeclarations::Cache*>(c)->get(decl,elements,count);});
         snapshots.setLayoutProvider(&declarations,[](void* c,IDirect3DVertexDeclaration9* decl,UINT* extent){return static_cast<NorthlightVertexDeclarations::Cache*>(c)->captureLayout(decl,extent);});
     }
     ~NorthlightModelNormals(){pendingChanged=nullptr;reset();for(auto* map:{&vertices,&compactVertices})for(auto& v:*map){release(v.second.source);release(v.second.shader);}for(auto& map:pixels)for(auto& v:map){release(v.second.source);release(v.second.shader);}}
     void endFrame(){clearPending();nativeMrt.beginFrame();nativeCommittedPackets=0;streamFence.endFrame();streamedDraws=streamedBatches=streamedDiscards=streamFailures=0;streamedBytes=streamSavedBytes=0;streamBlocked=false;rangeCache.beginFrame();constantStats={};constantReadRegisters=0;poseBoundsTests=poseBoundsCulled=poseViewportTests=poseViewportCulled=0;compactDraws=draws=queued=flushes=immediate=sourceReused=residentDraws=handoffs=rangeNarrow=rangeFull=rangeRegisters=packetPixelReadsSkipped=mergedDraws=duplicateDraws=0;sourceReadBytes=upBytes=0;cleared=bad=false;release(frameTarget);}
-    void reset(bool preserveCaptureSources=false){endFrame();nativeMrt.reset();releaseStream();rangeCache.clear();if(!preserveCaptureSources)snapshots.clearSnapshotCache();declarations.clear();spare.clear();spareBytes=0;release(batchState);release(surface);release(normal);release(depth);width=height=0;}
+    void reset(bool preserveCaptureSources=false){endFrame();nativeMrt.reset();releaseStream();rangeCache.clear();if(!preserveCaptureSources)snapshots.clearSnapshotCache();declarations.clear();spare.clear();spareBytes=0;batchStates.clear();release(surface);release(normal);release(depth);width=height=0;}
     IDirect3DTexture9* texture()const{return draws&&!bad?normal:nullptr;}
     bool shareCaptureSources(NorthlightDrawSnapshot::Frame& source,NorthlightDrawSnapshot::Frame::IdentityFn identity,
                             NorthlightDrawSnapshot::Frame::VersionFn version,NorthlightCaptureMetadata::Read metadata){
@@ -555,10 +556,9 @@ public:
         }
         if(ok)findRedundant();
         {
-            State saved(d,0,true);
-            ok=saved.save()&&SUCCEEDED(batchState?batchState->Capture():d->CreateStateBlock(D3DSBT_ALL,&batchState))&&ok;
+            SavedState saved(d,&batchStates);
+            ok=saved.ok&&ok;
             if(ok){
-                saved.changed=true;saved.targetChanged=14;saved.renderChanged=(1u<<State::Count)-1;
                 ok=SUCCEEDED(d->SetDepthStencilSurface(nullptr));
                 for(unsigned i=1;i<4;++i)ok=SUCCEEDED(d->SetRenderTarget(i,nullptr))&&ok;
                 ok=SUCCEEDED(d->SetRenderTarget(0,surface))&&ok;
@@ -618,8 +618,6 @@ public:
                     if(ok){draws+=run.packets;compactDraws+=unsigned(p->vertex->compact)*run.packets;mergedDraws+=run.packets-1;previous=pending[at-1].get();}
                 }
                 ok=saved.restore()&&ok;
-                ok=(SUCCEEDED(batchState->Apply())||SUCCEEDED(batchState->Apply()))&&ok;
-                ok=(SUCCEEDED(d->SetViewport(&saved.viewport))||SUCCEEDED(d->SetViewport(&saved.viewport)))&&ok;
             }
         }
         clearPending();bad|=!ok;return ok;
