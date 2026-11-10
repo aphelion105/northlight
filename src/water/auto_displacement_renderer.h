@@ -719,7 +719,7 @@ public:
             foundBounds=retainBounds(source,std::move(b));
         }
         NorthlightReplayBounds::Bounds skinBounds;
-        const auto exactEnvelope=[&]{if(reusePose){skinBounds=poseBounds;return true;}if(!exactSkin||!foundBounds->second.skin)return false;P::Scope envelope(profile,P::PoseEnvelope);return evaluateLocalSkin(*foundBounds->second.skin,shader->second.view,constants,distanceInverseView,skinBounds,true);};
+        const auto exactEnvelope=[&]{if(reusePose){skinBounds=poseBounds;return true;}if(!exactSkin||!foundBounds->second.skin)return false;P::Scope envelope(profile,P::PoseLocal);return evaluateLocalSkin(*foundBounds->second.skin,shader->second.view,constants,distanceInverseView,skinBounds,true);};
         if(exactEnvelope()){if(!reusePose)touchBounds(foundBounds->second);std::copy(skinBounds.low,skinBounds.low+3,low);std::copy(skinBounds.high,skinBounds.high+3,high);
             // Reuse the audited, outward-rounded skin envelope for normal capture.
             const auto view=reusePose?poseViewBounds:distanceBoundsInView(skinBounds);

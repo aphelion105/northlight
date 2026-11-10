@@ -10,10 +10,12 @@ static uint64_t nanos=0,clockReads=0;
 static uint64_t clockNow(){++clockReads;return nanos;}
 int main(){
     using P=NorthlightMaterialProfile;IDirect3DDevice9 d;
-    {P p(&d,clockNow);p.beginFrame(1,false);{P::Scope off(&p,P::CaptureDraw,17,true);off.work(4,64);off.next(P::CaptureSetup);}p.endFrame();assert(!d.creates&&!clockReads);
+    {P p(&d,clockNow);p.beginFrame(1,false);{P::Scope off(&p,P::CaptureDraw,17,true);off.work(4,64);off.next(P::CaptureSetup);}{P::Scope off(&p,P::PoseLocal);}p.endFrame();assert(!d.creates&&!clockReads);
      p.beginFrame(127,true);nanos=100;{P::Scope parent(&p,P::Admission,17);nanos=150;{P::Scope child(&p,P::Snapshot);nanos=200;}nanos=300;}p.endFrame();
      findLog("stage=admission domain=4 mode=1 calls=1 exclusiveMs=0.000150");findLog("stage=snapshot domain=4 mode=1 calls=1 exclusiveMs=0.000050");
-     unsigned before=d.reads;p.poll();assert(d.reads-before==1);d.ready=true;p.poll();
+     logs.clear();p.beginFrame(128,true);nanos=400;{P::Scope cached(&p,P::PoseEnvelope,19);nanos=450;}{P::Scope local(&p,P::PoseLocal,19);nanos=525;}p.endFrame();
+     findLog("stage=poseEnvelope domain=4 mode=3 calls=1 exclusiveMs=0.000050");findLog("stage=poseLocal domain=4 mode=3 calls=1 exclusiveMs=0.000075");
+     unsigned before=d.reads;p.poll();assert(d.reads-before==2);d.ready=true;p.poll();
      logs.clear();p.beginFrame(2032,true);{P::Scope a(&p,P::CaptureDraw,17,true);a.work(100);}{P::Scope b(&p,P::NativeDraw,17,true);b.work(100);}p.endFrame();p.poll();
      findLog("stage=captureDraw domain=4 mode=1 spans=1 ms=1.000000 items=100");findLog("attempted=2 measured=2 complete=1 sumIntervalsMs=2.000000");
      p.reset();assert(!d.live);d.ready=false;
