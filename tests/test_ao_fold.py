@@ -135,12 +135,12 @@ checks[f'equal depth: the dark side reaches at most 1 half-res px across (from x
 effects_cpp = renderer[renderer.index('    void renderEffects() {'):renderer.index('template<class Capture> void prepareDraw(')]
 fold_line = 'const bool fold=world&&debugMode==0&&world->screenReady();'
 legacy_before = 'if(!fold&&!legacyComposite())return;'
-render_call = 'world->render(outputTarget,depthTex,width,height,sceneFormat,nearZ,farZ,worldMinDepth,worldMaxDepth,worldDebug,gpuProfile.get(),waterMask,fold?scene:nullptr,fold?ao:nullptr,frame,'
+render_call = 'world->render(outputTarget,depthTex,width,height,sceneFormat,nearZ,farZ,worldMinDepth,worldMaxDepth,worldDebug,gpuProfile.get(),waterMask,fold?scene:nullptr,fold&&!neutralAOPending?ao:nullptr,frame,'
 legacy_after = 'if(fold&&!world->composited){'
 checks['proxy: FOLD condition, legacy composite before render only when not folding, after it only if not composited'] = (
     all(effects_cpp.count(s) == 1 for s in (fold_line, legacy_before, render_call, legacy_after))
-    and 'effectState();bindEffects(ao);if(!legacyComposite())return;' in effects_cpp.split(legacy_after,1)[1]
-    and effects_cpp.index('gpuProfile->mark("AO");') < effects_cpp.index(fold_line) < effects_cpp.index(legacy_before)
+    and 'if(neutralAOPending&&!clearNeutralAO())return;\n                bindEffects(ao);if(!legacyComposite())return;' in effects_cpp.split(legacy_after,1)[1]
+    and effects_cpp.index(fold_line) < effects_cpp.index('gpuProfile->mark("AO");') < effects_cpp.index(legacy_before)
     < effects_cpp.index(render_call) < effects_cpp.index(legacy_after) < effects_cpp.index('celestialDiscs->renderVeil(')
     and 'contactShader=aoActorUsed?(alphaOnly?aoActorAlphaPS:aoActorPS):(alphaOnly?aoOnlyPS:aoContactBloomPS);' in effects_cpp
     and 'ext->SetPixelShader(linearHdr||constants[7]==0.f?contactShader:aoPS);' in effects_cpp)

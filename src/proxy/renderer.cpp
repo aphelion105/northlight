@@ -1509,6 +1509,13 @@ private:
         if (error(ext->StretchRect(saved.targets[0], nullptr, sceneSurface, nullptr, D3DTEXF_NONE), "copy scene")) return;
         effectState();
         const bool linearHdr=hdr.active&&debugMode==0&&worldDebug==0;
+        const bool fold=world&&debugMode==0&&world->screenReady();
+        bool neutralAOPending=false;
+        auto clearNeutralAO=[&]{
+            if(error(ext->SetRenderTarget(0,aoSurface),"neutral AO render target"))return false;
+            if(error(ext->Clear(0,nullptr,D3DCLEAR_TARGET,D3DCOLOR_ARGB(255,0,0,0),1.f,0),"neutral AO clear"))return false;
+            gpuProfile->mark("AOClear");neutralAOPending=false;return true;
+        };
         float constants[]={1.f/width,1.f/height,nearZ,farZ,scaleX,scaleY,aoStrength,(world&&world->screenReady()?0.f:.12f),.08f,aoRadius,float(debugMode),0,worldMinDepth,1.f/(worldMaxDepth-worldMinDepth),worldMaxDepth,0};
 
         float waterFlags[]={waterMask?1.f:0.f,0,0,0};
@@ -1532,11 +1539,8 @@ private:
                 ext->SetPixelShader(contactBloomPS);
                 if (error(quad(width/2,height/2,false),"contact bloom pass")) return;
                 gpuProfile->mark("ContactBloom");
-            } else {
-                if (error(ext->SetRenderTarget(0,aoSurface),"neutral AO render target")) return;
-                if (error(ext->Clear(0,nullptr,D3DCLEAR_TARGET,D3DCOLOR_ARGB(255,0,0,0),1.f,0),"neutral AO clear")) return;
-                gpuProfile->mark("AOClear");
-            }
+            } else if(linearHdr&&fold)neutralAOPending=true; // The world already owns a 1x1 neutral AO input.
+            else if(!clearNeutralAO())return;
             effectsBuckets.mark(Bucket::AO);
         } else {
             IDirect3DTexture9* actorTexture=aoActorOn?aoActorMask->textureForDepth(worldDepth):nullptr;
@@ -1597,7 +1601,6 @@ private:
         // AO and bloom (AOContactBloom: bloom rgb, AO alpha) to the scene copy itself, so the
         // full-resolution composite and the world's colour copy are skipped. LEGACY (any other
         // frame) keeps the composite before the world, exactly as before.
-        const bool fold=world&&debugMode==0&&world->screenReady();
         /* 0.3.212 (task 32): this frame's name marks: the composite quads draw with the world depth-stencil bound and reject marked pixels; no marks, or the feature off: exactly the old calls */
         const bool maskOn=nameMask.armed()&&nameMask.hasMarks()&&maskStencil&&worldDepth&&worldDebug==0;nameMask.composited=maskOn;
         IDirect3DSurface9* outputTarget=linearHdr?hdrPresentBack:saved.targets[0];
@@ -1632,7 +1635,7 @@ private:
             // regresses reproducibly on DXVK 2 with that transfer path.
             // This is the terminal world pass inside saved. Fallback and later
             // celestial/mask passes bind their own state; saved restores the game.
-            const bool rendered=world->render(outputTarget,depthTex,width,height,sceneFormat,nearZ,farZ,worldMinDepth,worldMaxDepth,worldDebug,gpuProfile.get(),waterMask,fold?scene:nullptr,fold?ao:nullptr,frame,linearHdr?(inlineHdrBase&&!hdrSkyValid?scene:hdrFrame.texture()):nullptr,inlineHdrBase&&!hdrSkyValid,hdrFrameSettings.legacyExpansion==0,inlineHdrBase&&hdrSkyValid,!contactAO,&saved);
+            const bool rendered=world->render(outputTarget,depthTex,width,height,sceneFormat,nearZ,farZ,worldMinDepth,worldMaxDepth,worldDebug,gpuProfile.get(),waterMask,fold?scene:nullptr,fold&&!neutralAOPending?ao:nullptr,frame,linearHdr?(inlineHdrBase&&!hdrSkyValid?scene:hdrFrame.texture()):nullptr,inlineHdrBase&&!hdrSkyValid,hdrFrameSettings.legacyExpansion==0,inlineHdrBase&&hdrSkyValid,!contactAO,&saved);
             diagnosticWorld=rendered;
             if(world->diagnosticCaptureInLastRender()){
                 gpuDiagnosticFrame=true;
@@ -1651,7 +1654,9 @@ private:
             // untouched): re-establish the effect state it changed, then the legacy composite.
             if(fold&&!world->composited){
                 if(inlineHdrBase&&error(hdrFrame.prepareLegacy(ext,scene,depthTex,hdrSkyValid?hdrFrame.surface():nullptr,width,height,worldMinDepth,worldMaxDepth,hdrFrameSettings,&stateBlocks),"HDR fallback decode"))return;
-                effectState();bindEffects(ao);if(!legacyComposite())return;
+                effectState();
+                if(neutralAOPending&&!clearNeutralAO())return;
+                bindEffects(ao);if(!legacyComposite())return;
             }
         }
         if(celestial){
