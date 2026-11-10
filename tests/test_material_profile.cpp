@@ -24,9 +24,12 @@ int main(){
      p.reset();
      for(unsigned frame=0;frame<16;++frame){
          logs.clear();p.beginFrame(frame*127,true);
+         const auto nativeClockStart=clockReads;
          for(unsigned i=0;i<1600;++i){P::Scope a(&p,P::NativeDraw,7,true);a.work(1);}
          for(unsigned i=0;i<16;++i){P::Scope a(&p,P::NativeDraw,19,true);a.work(1);}
+         assert(clockReads-nativeClockStart==606); // 101 measured scopes, six reads each.
          p.endFrame();p.poll();findLog("attempted=1616 measured=101 complete=0");
+         findLog("stage=nativeDraw calls=101");
          findLog("stage=nativeDraw domain=1 mode=3 spans=100");
          findLog("stage=nativeDraw domain=4 mode=3 spans=1");
      }

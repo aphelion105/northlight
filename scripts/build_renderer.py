@@ -16,6 +16,7 @@ SHADERS = northlight_paths.SHADERS                         # *.hlsl and their *-
 DLL = northlight_paths.RENDERER / 'frd9.dll'
 DEV_DLL = northlight_paths.RENDERER / 'frd9-dev-tuning.dll'  # the dev variant never overwrites frd9.dll
 STAND_DLL = northlight_paths.RENDERER / 'frd9-stand-replay.dll'
+PROFILE_DLL = northlight_paths.RENDERER / 'frd9-profile.dll'
 
 def source_identity(repo=northlight_paths.REPO):
     digest = hashlib.sha256()
@@ -56,6 +57,9 @@ def main(argv=None):
     arguments = sys.argv[1:] if argv is None else argv
     dev_tuning = '--dev-tuning' in arguments
     stand_replay = '--stand-replay' in arguments
+    profile_symbols = '--profile-symbols' in arguments
+    if profile_symbols and (dev_tuning or stand_replay):
+        raise SystemExit('--profile-symbols builds a separate optimized profiling DLL')
     if dev_tuning and stand_replay:
         raise SystemExit('Choose either dev tuning or the imported-input stand variant.')
     # A source recreated at its old renderer/ path would silently fork.
@@ -140,7 +144,9 @@ def main(argv=None):
                # Settings overlay (src/overlay/) and the vendored Dear ImGui it draws with (src/imgui/, configured by northlight_imconfig.h).
                '-DIMGUI_USER_CONFIG="northlight_imconfig.h"',
                *[str(northlight_paths.src(n)) for n in OVERLAY_SOURCES],
-               '-luser32', '-luuid', '-o', str(STAND_DLL if stand_replay else DEV_DLL if dev_tuning else DLL)]
+               '-luser32', '-luuid', '-o', str(PROFILE_DLL if profile_symbols else STAND_DLL if stand_replay else DEV_DLL if dev_tuning else DLL)]
+    if profile_symbols:
+        command[command.index('-shared'):command.index('-shared')] = ['-g', '-DNORTHLIGHT_PROFILE_BUILD=1']
     if dev_tuning:
         # Developer-only zone tuning (scripts/dev_tuning/). The DLL carries a marker that renderer/build_packages.py refuses.
         command.insert(command.index('-luser32'), '-DNORTHLIGHT_DEV_TUNING=1')
@@ -149,7 +155,7 @@ def main(argv=None):
         command.insert(command.index('-luser32'), '-DNORTHLIGHT_REPLAY_STAND=1')
         print('Building the STAND REPLAY variant: imported context only, not for game installation.')
     subprocess.run(command, env=env, check=True)
-    print('Built', STAND_DLL if stand_replay else DEV_DLL if dev_tuning else DLL)
+    print('Built', PROFILE_DLL if profile_symbols else STAND_DLL if stand_replay else DEV_DLL if dev_tuning else DLL)
 
 if __name__ == '__main__':
     main()

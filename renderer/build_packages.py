@@ -160,6 +160,8 @@ def check_dll(data):
         raise SystemExit('the renderer DLL is a NORTHLIGHT DEV TUNING BUILD (built with build_renderer.py --dev-tuning); rebuild it without --dev-tuning')
     if STAND_MARKER in data:
         raise SystemExit('the renderer DLL is an imported-input stand build; rebuild without --stand-replay for game installation')
+    if b'NORTHLIGHT PROFILING BUILD' in data:
+        raise SystemExit('the renderer DLL is a profiling build; rebuild without --profile-symbols for release packages')
     return MARKER.search(data).group(1).decode()
 
 
