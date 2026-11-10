@@ -23,7 +23,7 @@ def main():
   nonlocal header
   assert header.count(marker)==1,(marker,header.count(marker));header=header.replace(marker,code+marker if before else marker+code,1)
  insert('if(bad||!source)return;','NorthlightCapturePhases::Scope<8> phase(baseProbe?&baseCapture:nullptr);')
- insert('auto* vs=vertex(source);','phase.next(1);',True)
+ insert('auto* vs=vertex(source,ps->compactVertex);','phase.next(1);',True)
  insert('State saved(d,ps->control,userMemory);','phase.next(2);',True)
  insert('const float control[]={0,48.f,','phase.next(3);',True)
  insert('if(!deferred||!vs->reads.exact||','NorthlightCapturePhases::Scope<8> phase(baseProbe?&baseRecord:nullptr);',True)

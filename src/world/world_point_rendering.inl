@@ -1027,7 +1027,9 @@
         }
         return pointSoftLightingPS!=nullptr;
     }
-    bool renderPointLighting(IDirect3DTexture9* depth,IDirect3DTexture9* waterMask,UINT w,UINT h,float nearZ,float farZ,float minZ,float maxZ,float strength,float sunlitCut,float shadowStrength,float sunEnergy,NorthlightLightingCapture::Capture* capture=nullptr){
+    // sharedState belongs only to an uninterrupted batch with identical inputs
+    // and settings. Standalone and diagnostic calls retain complete setup.
+    bool renderPointLighting(IDirect3DTexture9* depth,IDirect3DTexture9* waterMask,UINT w,UINT h,float nearZ,float farZ,float minZ,float maxZ,float strength,float sunlitCut,float shadowStrength,float sunEnergy,NorthlightLightingCapture::Capture* capture=nullptr,bool* sharedState=nullptr){
         if(!pointSlot().ready)return false;
         if(pointCubeIsWhite(pointSlot())){++pointWork.whiteLightingSkipped;return true;}
         const bool soft=quality.softShadows&&pointSoftShaders()&&SUCCEEDED(d->SetPixelShader(pointSoftLightingPS));
@@ -1040,21 +1042,25 @@
         constants[9][0]=.1f;constants[9][1]=pointSlot().selected.attenuationEnd;constants[9][2]=1.f/PointResolution;constants[9][3]=1;
         constants[10][0]=strength;constants[10][1]=sunlitCut;constants[10][2]=shadowStrength;constants[10][3]=sunEnergy;
         constants[11][0]=sourceDirections[0].x;constants[11][1]=sourceDirections[0].y;constants[11][2]=sourceDirections[0].z;
-        const float bumpControl[]={materialDetail?materialBumpGain:0.f,materialBumpDistance,0,0};
-        d->SetPixelShaderConstantF(12,bumpControl,1);d->SetTexture(5,materialDetail);
-        for(auto state:{D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER})d->SetSamplerState(5,state,D3DTEXF_POINT);
-        d->SetSamplerState(5,D3DSAMP_MIPFILTER,D3DTEXF_NONE);d->SetSamplerState(5,D3DSAMP_SRGBTEXTURE,FALSE);
-        d->SetSamplerState(5,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(5,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);
         if(!pointCheck(d->SetPixelShaderConstantF(0,&constants[0][0],12),"local constants")||
-           !pointCheck(d->SetTexture(0,depth),"local depth")||!pointCheck(d->SetTexture(1,pointSlot().cube),"local cube")||
-           !pointCheck(d->SetTexture(2,waterMask),"local water")||
-           !pointCheck(d->SetTexture(3,normalBuffer),"local normals")||!pointCheck(d->SetTexture(4,baselineLight),"local sun visibility")||
-           !pointCheck(d->SetRenderTarget(1,nullptr),"local baseline unbind")||
-           !pointCheck(d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE),"local additive blend")||
-           !pointCheck(d->SetRenderState(D3DRS_COLORWRITEENABLE,7),"local RGB mask"))return false;
-        for(unsigned sampler=0;sampler<5;++sampler){
-            const struct{D3DSAMPLERSTATETYPE state;DWORD value;} states[]={{D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP},{D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP},{D3DSAMP_ADDRESSW,D3DTADDRESS_CLAMP},{D3DSAMP_MINFILTER,D3DTEXF_POINT},{D3DSAMP_MAGFILTER,D3DTEXF_POINT},{D3DSAMP_MIPFILTER,D3DTEXF_NONE},{D3DSAMP_SRGBTEXTURE,FALSE}};
-            for(const auto& state:states)if(!pointCheck(d->SetSamplerState(sampler,state.state,state.value),"local sampler"))return false;
+           !pointCheck(d->SetTexture(1,pointSlot().cube),"local cube"))return false;
+        if(!sharedState||!*sharedState){
+            const float bumpControl[]={materialDetail?materialBumpGain:0.f,materialBumpDistance,0,0};
+            if(!pointCheck(d->SetPixelShaderConstantF(12,bumpControl,1),"local material constants")||
+               !pointCheck(d->SetTexture(5,materialDetail),"local material texture"))return false;
+            const struct{D3DSAMPLERSTATETYPE state;DWORD value;} materialStates[]={{D3DSAMP_MINFILTER,D3DTEXF_POINT},{D3DSAMP_MAGFILTER,D3DTEXF_POINT},{D3DSAMP_MIPFILTER,D3DTEXF_NONE},{D3DSAMP_SRGBTEXTURE,FALSE},{D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP},{D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP}};
+            for(const auto& state:materialStates)if(!pointCheck(d->SetSamplerState(5,state.state,state.value),"local material sampler"))return false;
+            if(!pointCheck(d->SetTexture(0,depth),"local depth")||
+               !pointCheck(d->SetTexture(2,waterMask),"local water")||
+               !pointCheck(d->SetTexture(3,normalBuffer),"local normals")||!pointCheck(d->SetTexture(4,baselineLight),"local sun visibility")||
+               !pointCheck(d->SetRenderTarget(1,nullptr),"local baseline unbind")||
+               !pointCheck(d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE),"local additive blend")||
+               !pointCheck(d->SetRenderState(D3DRS_COLORWRITEENABLE,7),"local RGB mask"))return false;
+            for(unsigned sampler=0;sampler<5;++sampler){
+                const struct{D3DSAMPLERSTATETYPE state;DWORD value;} states[]={{D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP},{D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP},{D3DSAMP_ADDRESSW,D3DTADDRESS_CLAMP},{D3DSAMP_MINFILTER,D3DTEXF_POINT},{D3DSAMP_MAGFILTER,D3DTEXF_POINT},{D3DSAMP_MIPFILTER,D3DTEXF_NONE},{D3DSAMP_SRGBTEXTURE,FALSE}};
+                for(const auto& state:states)if(!pointCheck(d->SetSamplerState(sampler,state.state,state.value),"local sampler"))return false;
+            }
+            if(sharedState)*sharedState=true;
         }
         // The correction is exactly zero beyond attenuationEnd (LocalColor.w).
         const std::array<NorthlightLocalLightSelection::Constant,1> sphere={{{pointSlot().selected.position[0],pointSlot().selected.position[1],pointSlot().selected.position[2],pointSlot().selected.attenuationEnd}}};

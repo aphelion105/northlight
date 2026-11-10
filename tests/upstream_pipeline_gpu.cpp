@@ -1,9 +1,15 @@
 #define NOMINMAX
+#ifdef NORTHLIGHT_COMPARE_STAGES
+#include "upstream_stage_probe.h"
+#endif
 #include "renderer.cpp"
 #include <cassert>
 #include <fstream>
 #include <chrono>
 static void benchOk(HRESULT h){if(FAILED(h)){std::printf("BENCH_HRESULT %08lx\n",(unsigned long)h);std::abort();}}
+#if NORTHLIGHT_COMPARE_PR
+#include "branch_feature_graph.h"
+#endif
 struct BenchMeter:ForwardIDirect3DDevice9 {
  using ForwardIDirect3DDevice9::ForwardIDirect3DDevice9;unsigned draws=0,copies=0,targets=0;
  HRESULT STDMETHODCALLTYPE DrawPrimitiveUP(D3DPRIMITIVETYPE t,UINT n,const void* p,UINT s)override{++draws;return real->DrawPrimitiveUP(t,n,p,s);}
@@ -18,7 +24,10 @@ struct PipelineCompareTest {
   w.pipelineActive=true;w.quality.localLights=mode>=2;w.quality.pointShadowLimit=mode==2?1:0;w.quality.softShadows=0;
 #endif
   w.quality.renderProfile=0;w.quality.replayJobs=0;w.quality.actorShadows=0;w.quality.giDynamicProbes=0;
-  w.quality.equipmentLights=w.quality.weather=w.quality.fogClouds=0;
+  w.quality.weather=w.quality.fogClouds=0;
+#if NORTHLIGHT_COMPARE_PR || NORTHLIGHT_COMPARE_HAS_EQUIPMENT
+  w.quality.equipmentLights=0;
+#endif
   w.quality.localLightLimit=mode>=2?8:0;
   w.quality.pointShadows=mode==2;
   w.quality.pointShadowRefreshMs=0;w.quality.pointShadowFacesPerFrame=6;
@@ -76,36 +85,59 @@ static IDirect3DTexture9* benchUpload(IDirect3DDevice9* d,const BenchImage& im){
 }
 static IDirect3DPixelShader9* benchShader(IDirect3DDevice9* d,const std::string& path){std::ifstream f(path,std::ios::binary|std::ios::ate);assert(f);const auto n=size_t(f.tellg());std::vector<DWORD> v(n/4);f.seekg(0);assert(f.read((char*)v.data(),n));IDirect3DPixelShader9* p=nullptr;benchOk(d->CreatePixelShader(v.data(),&p));return p;}
 int main(int argc,char** argv){
- assert(argc==6);std::setvbuf(stdout,nullptr,_IONBF,0);logFile=nullptr;
+ assert(argc>=6&&argc<=8);std::setvbuf(stdout,nullptr,_IONBF,0);logFile=nullptr;
+ const bool stages=argc>=7&&!std::strcmp(argv[argc-1],"stages");
+ const unsigned features=argc>=7?unsigned(std::strtoul(argv[6],nullptr,10)):0;
+ assert(NORTHLIGHT_COMPARE_PR||!features);
  const std::string out=argv[2],capture=argv[3],compiled=argv[4];const unsigned mode=unsigned(std::atoi(argv[5]));assert(mode<4);
  assert(MultiByteToWideChar(CP_UTF8,0,(out+"/").c_str(),-1,rootPath,MAX_PATH));
  auto sceneImage=benchRead(capture+"/capture-1-scene.fgr"),depthImage=benchRead(capture+"/capture-1-depth.fgr");const unsigned W=sceneImage.h[1],H=sceneImage.h[2];float c[79][4];std::ifstream f(capture+"/capture-1-constants.f32",std::ios::binary);assert(f.read((char*)c,sizeof c));
  auto window=CreateWindowExW(0,L"STATIC",L"",WS_OVERLAPPED,0,0,64,64,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);assert(window);auto module=LoadLibraryA(argv[1]);assert(module);auto create=(IDirect3D9*(WINAPI*)(UINT))GetProcAddress(module,"Direct3DCreate9");assert(create);auto* api=create(D3D_SDK_VERSION);assert(api);
  D3DPRESENT_PARAMETERS pp{};pp.Windowed=TRUE;pp.hDeviceWindow=window;pp.BackBufferWidth=pp.BackBufferHeight=64;pp.BackBufferFormat=D3DFMT_X8R8G8B8;pp.SwapEffect=D3DSWAPEFFECT_DISCARD;pp.PresentationInterval=D3DPRESENT_INTERVAL_IMMEDIATE;IDirect3DDevice9* d=nullptr;benchOk(api->CreateDevice(0,D3DDEVTYPE_HAL,window,D3DCREATE_HARDWARE_VERTEXPROCESSING|D3DCREATE_FPU_PRESERVE,&pp,&d));
- BenchMeter meter(d);d=&meter;auto scene=benchUpload(d,sceneImage),depth=benchUpload(d,depthImage);IDirect3DSurface9* target=nullptr;benchOk(d->CreateRenderTarget(W,H,D3DFMT_A8R8G8B8,D3DMULTISAMPLE_NONE,0,FALSE,&target,nullptr));
+ BenchMeter meter(d);d=&meter;auto scene=benchUpload(d,sceneImage),depth=benchUpload(d,depthImage);const auto targetFormat=features&1?D3DFMT_A16B16G16R16F:D3DFMT_A8R8G8B8;IDirect3DSurface9* target=nullptr;benchOk(d->CreateRenderTarget(W,H,targetFormat,D3DMULTISAMPLE_NONE,0,FALSE,&target,nullptr));
  IDirect3DTexture9 *rawAO=nullptr,*ao=nullptr;IDirect3DSurface9 *rawSurface=nullptr,*aoSurface=nullptr;benchOk(d->CreateTexture(W/2,H/2,1,D3DUSAGE_RENDERTARGET,D3DFMT_A16B16G16R16F,D3DPOOL_DEFAULT,&rawAO,nullptr));benchOk(rawAO->GetSurfaceLevel(0,&rawSurface));benchOk(d->CreateTexture(W/2,H/2,1,D3DUSAGE_RENDERTARGET,D3DFMT_A16B16G16R16F,D3DPOOL_DEFAULT,&ao,nullptr));benchOk(ao->GetSurfaceLevel(0,&aoSurface));
  const bool noWaterBlur=std::ifstream(compiled+"/AOBlurNoWater.bin").good();
  auto aoPS=benchShader(d,compiled+"/AOContactBloom.bin"),blurPS=benchShader(d,compiled+(noWaterBlur?"/AOBlurNoWater.bin":"/AOBlur.bin"));
  const auto quad=[&](unsigned w,unsigned h){struct V{float x,y,z,rhw,u,v;};const float rw=1.f;V v[]={{-.5f,-.5f,0,rw,0,0},{float(w)-.5f,-.5f,0,rw,1,0},{-.5f,float(h)-.5f,0,rw,0,1},{float(w)-.5f,float(h)-.5f,0,rw,1,1}};D3DVIEWPORT9 vp{0,0,w,h,0,1};benchOk(d->SetViewport(&vp));benchOk(d->SetVertexShader(nullptr));benchOk(d->SetFVF(D3DFVF_XYZRHW|D3DFVF_TEX1));benchOk(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,v,sizeof(V)));};
  IDirect3DQuery9 *a=nullptr,*b=nullptr,*hz=nullptr;benchOk(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&a));benchOk(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&b));benchOk(d->CreateQuery(D3DQUERYTYPE_TIMESTAMPFREQ,&hz));const auto get=[](IDirect3DQuery9* q){UINT64 value=0;HRESULT hr;while((hr=q->GetData(&value,sizeof value,D3DGETDATA_FLUSH))==S_FALSE)SwitchToThread();benchOk(hr);return value;};
  auto world=std::make_unique<WorldRenderer>(d);PipelineCompareTest::setup(*world,d,c[0],mode);NorthlightStateBlockPool caller(d);
+ auto profile=stages?std::make_unique<NorthlightGpuProfile>(d):nullptr;
+ if(stages){logFile=std::fopen((out+"/stages.log").c_str(),"wb");assert(logFile);}
+#if NORTHLIGHT_COMPARE_PR
+ BranchFeatureGraph extra(d,W,H,features,scene,depth,c[0]);
+#endif
  for(unsigned frame=0;frame<48;++frame){
   PipelineCompareTest::frame(*world,frame);benchOk(d->SetDepthStencilSurface(nullptr));benchOk(d->SetRenderTarget(0,target));for(unsigned i=1;i<4;++i)benchOk(d->SetRenderTarget(i,nullptr));benchOk(d->BeginScene());benchOk(hz->Issue(D3DISSUE_END));benchOk(a->Issue(D3DISSUE_END));meter.draws=meter.copies=meter.targets=0;const auto start=std::chrono::steady_clock::now();
+  if(profile){profile->poll();assert(profile->beginFrame(frame*120,true));}
   {SavedState outer(d,&caller);assert(outer.ok);for(auto s:{D3DRS_ZENABLE,D3DRS_ZWRITEENABLE,D3DRS_ALPHATESTENABLE,D3DRS_ALPHABLENDENABLE,D3DRS_FOGENABLE,D3DRS_STENCILENABLE,D3DRS_SCISSORTESTENABLE,D3DRS_SRGBWRITEENABLE})benchOk(d->SetRenderState(s,FALSE));benchOk(d->SetRenderState(D3DRS_COLORWRITEENABLE,15));
    for(unsigned i=0;i<16;++i){benchOk(d->SetTexture(i,nullptr));benchOk(d->SetSamplerState(i,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP));benchOk(d->SetSamplerState(i,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP));benchOk(d->SetSamplerState(i,D3DSAMP_MINFILTER,D3DTEXF_POINT));benchOk(d->SetSamplerState(i,D3DSAMP_MAGFILTER,D3DTEXF_POINT));benchOk(d->SetSamplerState(i,D3DSAMP_MIPFILTER,D3DTEXF_NONE));benchOk(d->SetSamplerState(i,D3DSAMP_SRGBTEXTURE,FALSE));}
    float ac[7][4]={{1.f/W,1.f/H,c[0][2],c[0][3]},{c[1][0],c[1][1],1,0},{.08f,2,0,0},{c[1][3],c[2][0],c[1][3]+1/c[2][0],0},{0,0,0,0},{0,0,0,0},{0,0,0,0}};
    std::copy_n(c[25],4,ac[5]);std::copy_n(c[26],4,ac[6]);
    benchOk(d->SetPixelShaderConstantF(0,ac[0],7));benchOk(d->SetTexture(0,scene));benchOk(d->SetTexture(1,depth));benchOk(d->SetSamplerState(0,D3DSAMP_MINFILTER,D3DTEXF_LINEAR));benchOk(d->SetSamplerState(0,D3DSAMP_MAGFILTER,D3DTEXF_LINEAR));benchOk(d->SetRenderTarget(0,rawSurface));benchOk(d->SetPixelShader(aoPS));quad(W/2,H/2);
+   if(profile)profile->mark("AO");
    benchOk(d->SetTexture(0,rawAO));benchOk(d->SetTexture(2,rawAO));benchOk(d->SetRenderTarget(0,aoSurface));benchOk(d->SetPixelShader(blurPS));quad(W/2,H/2);benchOk(d->SetTexture(2,nullptr));benchOk(d->SetTexture(0,nullptr));
-   const bool ok=world->render(target,depth,W,H,D3DFMT_A8R8G8B8,c[0][2],c[0][3],c[1][3],c[1][3]+1/c[2][0],0,nullptr,nullptr,scene,ao
+   if(profile)profile->mark("AOBlur");
 #if NORTHLIGHT_COMPARE_PR
-    ,frame,nullptr,false,true,false,false,&outer
+   if(features)extra.prepare(c[1][3],c[1][3]+1/c[2][0],caller,profile.get());
 #endif
-   );if(!ok||!world->composited){std::printf("BENCH_WORLD_FAIL stage=%s\n",world->lastSkipReason());std::abort();}}
+   const bool ok=world->render(target,depth,W,H,targetFormat,c[0][2],c[0][3],c[1][3],c[1][3]+1/c[2][0],0,profile.get(),nullptr,scene,ao
+#if NORTHLIGHT_COMPARE_PR
+    ,frame,features&1?scene:nullptr,features&1,true,false,false,&outer
+#endif
+   );if(!ok||!world->composited){std::printf("BENCH_WORLD_FAIL stage=%s\n",world->lastSkipReason());std::abort();}
+#if NORTHLIGHT_COMPARE_PR
+   if(features)extra.finish(target,frame,outer,caller,profile.get());
+#endif
+  }
+  if(profile)profile->endFrame();
   const auto finish=std::chrono::steady_clock::now();benchOk(b->Issue(D3DISSUE_END));benchOk(d->EndScene());const auto ticks=get(b)-get(a),rate=get(hz);
+#ifdef NORTHLIGHT_COMPARE_STAGES
+  if(profile)UpstreamStageProbe::print(frame);
+#endif
   PipelineCompareTest::check(*world,mode,frame);
   std::printf("COMMON_FRAME frame=%u mode=%u width=%u height=%u warm=%u cpuMs=%.9f gpuMs=%.9f draws=%u copies=%u targets=%u\n",frame,mode,W,H,unsigned(frame<16),std::chrono::duration<double,std::milli>(finish-start).count(),double(ticks)*1000/rate,meter.draws,meter.copies,meter.targets);
  }
- IDirect3DSurface9* readback=nullptr;benchOk(d->CreateOffscreenPlainSurface(W,H,D3DFMT_A8R8G8B8,D3DPOOL_SYSTEMMEM,&readback,nullptr));benchOk(d->GetRenderTargetData(target,readback));D3DLOCKED_RECT l{};benchOk(readback->LockRect(&l,nullptr,D3DLOCK_READONLY));std::ofstream image(out+"/output.bgra",std::ios::binary);for(unsigned y=0;y<H;++y)image.write((char*)l.pBits+y*l.Pitch,W*4);benchOk(readback->UnlockRect());readback->Release();
+ IDirect3DSurface9* readback=nullptr;benchOk(d->CreateOffscreenPlainSurface(W,H,targetFormat,D3DPOOL_SYSTEMMEM,&readback,nullptr));benchOk(d->GetRenderTargetData(target,readback));D3DLOCKED_RECT l{};benchOk(readback->LockRect(&l,nullptr,D3DLOCK_READONLY));std::ofstream image(out+"/output.bgra",std::ios::binary);for(unsigned y=0;y<H;++y)image.write((char*)l.pBits+y*l.Pitch,W*(features&1?8:4));benchOk(readback->UnlockRect());readback->Release();
+ if(profile){profile->poll();profile.reset();std::fclose(logFile);logFile=nullptr;}
  world.reset();aoPS->Release();blurPS->Release();a->Release();b->Release();hz->Release();aoSurface->Release();rawSurface->Release();ao->Release();rawAO->Release();target->Release();scene->Release();depth->Release();std::puts("COMMON_PIPELINE_PASS");return 0;
 }

@@ -81,7 +81,7 @@ checks['RemovalSmooth host: shader, half-res fp16 target, release, F12 dump, dra
 order=[w.index(n) for n in ('quad(w/2,h/2),"world GI pass"','if(profile)profile->mark("GI");',smoothdraw,'if(profile)profile->mark("RemovalSmooth");',
     'quad(w/2,h/2,false),"temporal light pass"','if(profile)profile->mark("TemporalLight");','bucket(NorthlightEffectsBuckets::PointLighting);',
     'd->SetPixelShader(localDirectPS);','if(profile)profile->mark("LocalLights");',
-    'renderPointLighting(depth,waterMask,w,h,nearZ,farZ,minZ,maxZ,c[52][1],lampSunlitCut,c[20][2],sunEnergy,lightingCapture?&*lightingCapture:nullptr);','if(profile)profile->mark("PointLight");')]
+    'renderPointLighting(depth,waterMask,w,h,nearZ,farZ,minZ,maxZ,c[52][1],lampSunlitCut,c[20][2],sunEnergy,lightingCapture?&*lightingCapture:nullptr,lightingCapture?nullptr:&pointStatePrepared);','if(profile)profile->mark("PointLight");')]
 checks['GPU marks: directional/GI filters precede current local and point passes, each once']=(order==sorted(order)
     and all(w.count('profile->mark("%s")'%m)==1 for m in ('GI','LocalLights','PointLight','RemovalSmooth','TemporalLight')) and 'mark("PointLighting")' not in w)
 recycle=w[w.index('if(profile)profile->mark("TemporalLight");'):w.index('constexpr unsigned directInputs=')]

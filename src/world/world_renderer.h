@@ -6137,8 +6137,9 @@ public:
         if(positionalLighting){
             renderFlashLighting();
             const float sunEnergy=sourceActive[0]?std::max({sourceColors[0].x,sourceColors[0].y,sourceColors[0].z}):0.f;
+            bool pointStatePrepared=false;
             for(pointIndex=0;pointReady&&pointIndex<pointSlots.size();++pointIndex)if(pointSlot().ready)
-                renderPointLighting(depth,waterMask,w,h,nearZ,farZ,minZ,maxZ,c[52][1],lampSunlitCut,c[20][2],sunEnergy,lightingCapture?&*lightingCapture:nullptr);
+                renderPointLighting(depth,waterMask,w,h,nearZ,farZ,minZ,maxZ,c[52][1],lampSunlitCut,c[20][2],sunEnergy,lightingCapture?&*lightingCapture:nullptr,lightingCapture?nullptr:&pointStatePrepared);
             pointIndex=0;
             // Point lights overwrite c0..12; flash/local batches also use
             // c7..16/c36..52. The high world bank c53..67 was never changed.

@@ -32,6 +32,9 @@ def main():
     parser.add_argument('--rounds', type=int, default=3)
     parser.add_argument('--before-ref', help='Optional frozen point-rendering control from this repository.')
     parser.add_argument('--baseline', type=Path, help='Optional clean PR checkout for a complete before/after comparison.')
+    parser.add_argument('--profile-stages', action='store_true', help='After uninstrumented ABBA timings, collect separate CPU/GPU stage profiles.')
+    parser.add_argument('--branch-features', action='store_true', help='Also run the current world graph with HDR, rain/snow/sand optics and wide bloom; excludes native material/draw capture.')
+    parser.add_argument('--reuse-builds',type=Path,help='Reuse verified executables whose source identities and harness/backend hashes still match an earlier report.')
     args = parser.parse_args()
     assert 1 <= args.rounds <= 10
     assert not (args.before_ref and args.baseline), 'Choose a complete baseline or a point-only control'
@@ -43,9 +46,11 @@ def main():
     if baseline:assert not git(baseline, 'diff', 'HEAD', '--', 'src', 'shaders'), 'Baseline sources must be unchanged'
     identities = {str(repo): source_identity(repo) for repo in (ROOT, upstream, *([baseline] if baseline else []))}
     digest = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
-    inputs = [Path(__file__).resolve(), ROOT / 'tests/upstream_pipeline_gpu.cpp', backend,
+    inputs = [Path(__file__).resolve(), ROOT / 'tests/upstream_pipeline_gpu.cpp', ROOT / 'tests/upstream_stage_probe.h', ROOT / 'tests/branch_feature_graph.h', backend,
               *(capture / name for name in ('capture-1-scene.fgr', 'capture-1-depth.fgr', 'capture-1-constants.f32'))]
     hashes = {str(p): digest(p) for p in inputs}
+    reuse=json.loads((args.reuse_builds.resolve()/'validation.json').read_text()) if args.reuse_builds else None
+    if reuse:assert reuse['pass'] and (not args.profile_stages or reuse['stage_records'])
     control = None
     if args.before_ref:
         control = out / 'control';control.mkdir()
@@ -56,19 +61,40 @@ def main():
     for label, repo in [('upstream', upstream), ('pr', ROOT)] + ([('before', baseline or ROOT)] if control or baseline else []):
         spec = importlib.util.spec_from_file_location('_pipeline_paths', repo / 'northlight_paths.py')
         fp = importlib.util.module_from_spec(spec);spec.loader.exec_module(fp)
+        if reuse and label in reuse['builds'] and reuse['source_identities'].get(str(repo))==identities[str(repo)]:
+            shared_inputs=[ROOT/'tests/upstream_pipeline_gpu.cpp',ROOT/'tests/upstream_stage_probe.h',ROOT/'tests/branch_feature_graph.h',backend]
+            assert all(reuse['inputs'].get(str(p))==digest(p) for p in shared_inputs),'Reused harness/backend changed'
+            cached=reuse['builds'][label];assert digest(Path(cached['exe']))==cached['sha256'] and cached['compiled']==str(fp.COMPILED)
+            builds[label]={**cached,'reused_from':str(args.reuse_builds.resolve())};print('PIPELINE_BUILD_REUSED',label,flush=True);continue
         folder = out / ('build-' + label);folder.mkdir();headers = folder / 'headers';headers.mkdir()
         text = fp.src('world_renderer.h').read_text()
         assert text.count('class WorldRenderer {') == 1
         (headers / 'world_renderer.h').write_text(text.replace('class WorldRenderer {', 'class WorldRenderer {\nfriend struct PipelineCompareTest;', 1))
+        if args.profile_stages:
+            profile = fp.src('gpu_profile.h').read_text()
+            replacements = {
+                'return issue(s.stamps[0],D3DISSUE_END,"start timestamp");': 'const bool started=issue(s.stamps[0],D3DISSUE_END,"start timestamp");if(started)northlightCompareStage(nullptr);return started;',
+                'label(s.labels[s.marks],name);': 'northlightCompareStage(name);label(s.labels[s.marks],name);',
+                'Slot& s=slots_[active_];label(s.labels[s.marks],"tail");': 'Slot& s=slots_[active_];northlightCompareStage("tail");label(s.labels[s.marks],"tail");',
+            }
+            for marker, replacement in replacements.items():
+                assert profile.count(marker) == 1, (label, marker)
+                profile = profile.replace(marker, replacement)
+            (headers / 'gpu_profile.h').write_text(profile.replace('%.3fms','%.6fms'), encoding='utf-8', newline='\n')
         build_env = env.copy()
         for key, name in [('TEMP', 'tmp'), ('TMP', 'tmp'), ('ZIG_LOCAL_CACHE_DIR', 'zig-local'), ('ZIG_GLOBAL_CACHE_DIR', 'zig-global')]:
             (folder / name).mkdir(exist_ok=True);build_env[key] = str(folder / name)
         units = ['world_gi.cpp', 'world_mesh_plan.cpp', 'static_shadow_scene.cpp', 'settings_overlay.cpp', 'settings_panel.cpp',
                  'imgui.cpp', 'imgui_draw.cpp', 'imgui_tables.cpp', 'imgui_widgets.cpp', 'imgui_impl_dx9.cpp']
+        available = {p.name for p in (repo / 'src').rglob('*') if p.is_file()}
+        assert all(name in available for name in units[:3])
+        units = [name for name in units if name in available]
         exe = folder / 'pipeline.exe'
         command = [current.zig(), 'c++', '-target', 'x86-windows-gnu', '-std=c++17', '-O2', '-UNDEBUG',
                    '-Wno-return-type', '-Wno-microsoft-exception-spec', '-DIMGUI_USER_CONFIG="northlight_imconfig.h"',
-                   f'-DNORTHLIGHT_COMPARE_PR={int(label != "upstream")}', '-I' + str(headers),
+                   f'-DNORTHLIGHT_COMPARE_PR={int(label != "upstream")}',
+                   f'-DNORTHLIGHT_COMPARE_HAS_EQUIPMENT={int("equipmentLights" in fp.src("quality_settings.h").read_text())}', '-I' + str(headers),
+                   *(['-DNORTHLIGHT_COMPARE_STAGES=1'] if args.profile_stages else []),
                    *(['-I' + str(control)] if label == 'before' and control else []), *fp.test_include_flags(),
                    ROOT / 'tests/upstream_pipeline_gpu.cpp', *(fp.src(n) for n in units),
                    '-luser32', '-luuid', '-o', exe]
@@ -83,6 +109,11 @@ def main():
         (smoke / 'run.log').write_text(result.stdout + result.stderr);result.check_returncode()
         assert 'COMMON_PIPELINE_PASS' in result.stdout
         print('PIPELINE_BUILD_PASS', label, flush=True)
+        if args.branch_features and label != 'upstream':
+            for features in (3,19):
+                folder=folder.parent/f'feature-smoke-{label}-{features}';folder.mkdir()
+                run=subprocess.run([str(exe),str(backend),str(folder),str(capture),str(fp.COMPILED),'2',str(features)],env={**env,'DXVK_LOG_PATH':str(folder)},cwd=folder,capture_output=True,text=True,timeout=120)
+                (folder/'run.log').write_text(run.stdout+run.stderr);run.check_returncode();assert 'COMMON_PIPELINE_PASS' in run.stdout
     records = []
     phases = [('upstream', mode, ('upstream', 'pr', 'pr', 'upstream')) for mode in range(4)]
     if control:phases.append(('point', 2, ('before', 'pr', 'pr', 'before')))
@@ -114,13 +145,69 @@ def main():
             after = {r['image_sha256'] for r in records if r['phase'] == phase and r['label'] == 'pr'}
             assert before == after and len(before) == 1, 'Point optimization changed the deterministic SDR output'
         summary.append(row)
+    feature_records=[];feature_summary=[]
+    if args.branch_features:
+        order=('before','pr','pr','before') if baseline else ('pr',)
+        for features in (1,2,3,19,5,9):
+            for repeat in range(args.rounds):
+                for position,label in enumerate(order):
+                    folder=out/f'features-{features}-{repeat}-{position}-{label}';folder.mkdir()
+                    run=subprocess.run([builds[label]['exe'],str(backend),str(folder),str(capture),builds[label]['compiled'],'2',str(features)],env={**env,'DXVK_LOG_PATH':str(folder)},cwd=folder,capture_output=True,text=True,timeout=120)
+                    (folder/'run.log').write_text(run.stdout+run.stderr);run.check_returncode();assert 'COMMON_PIPELINE_PASS' in run.stdout
+                    frames=[dict(re.findall(r'(\w+)=([^ ]+)',line)) for line in run.stdout.splitlines() if line.startswith('COMMON_FRAME ') and 'warm=0 ' in line];assert len(frames)==32
+                    record=dict(features=features,round=repeat,order=position,label=label,image_sha256=digest(folder/'output.bgra'),**{key:statistics.median(float(f[key]) for f in frames) for key in ('cpuMs','gpuMs','draws','copies','targets')})
+                    feature_records.append(record);print('FEATURE_RECORD '+json.dumps(record),flush=True)
+            feature_summary.append(dict(features=features,**{label:{key:statistics.median(r[key] for r in feature_records if r['features']==features and r['label']==label) for key in ('cpuMs','gpuMs','draws','copies','targets')} for label in dict.fromkeys(order)}))
+    stage_records = []
+    if args.profile_stages:
+        for mode in range(4):
+            for repeat in range(2):
+                for position, label in enumerate(('upstream','pr','pr','upstream')):
+                    folder = out / f'stages-{mode}-{repeat}-{position}-{label}';folder.mkdir()
+                    run = subprocess.run([builds[label]['exe'], str(backend), str(folder), str(capture), builds[label]['compiled'], str(mode), 'stages'],
+                                         env={**env, 'DXVK_LOG_PATH': str(folder)}, cwd=folder, capture_output=True, text=True, timeout=120)
+                    (folder / 'run.log').write_text(run.stdout + run.stderr);run.check_returncode();assert 'COMMON_PIPELINE_PASS' in run.stdout
+                    cpu = [dict(re.findall(r'(\w+)=([^ ]+)', line)) for line in run.stdout.splitlines() if line.startswith('COMMON_STAGE_CPU ')]
+                    gpu = []
+                    for line in (folder / 'stages.log').read_text().splitlines():
+                        if not re.search(r'GPU profile frame=\d+ total=', line):continue
+                        frame = int(re.search(r'frame=(\d+)', line)[1]) // 120
+                        gpu += [dict(frame=frame, stage=stage, ms=float(ms)) for stage, ms in re.findall(r'(\w+)=([0-9.]+)ms', line) if stage != 'total']
+                    for domain, rows in [('cpu',cpu),('gpu',gpu)]:
+                        rows = [r for r in rows if int(r['frame']) >= 16];assert rows,(label,mode,domain)
+                        for stage in dict.fromkeys(r['stage'] for r in rows):
+                            values = [float(r['ms']) for r in rows if r['stage'] == stage]
+                            stage_records.append(dict(mode=mode, repeat=repeat, order=position, label=label, domain=domain, stage=stage, median_ms=statistics.median(values), maximum_ms=max(values), samples=len(values)))
+                    print('PIPELINE_STAGE_PASS', mode, repeat, position, label, flush=True)
+        if args.branch_features:
+            for features in (1,3,19):
+                for repeat in range(2):
+                    folder=out/f'feature-stages-{features}-{repeat}';folder.mkdir()
+                    run=subprocess.run([builds['pr']['exe'],str(backend),str(folder),str(capture),builds['pr']['compiled'],'2',str(features),'stages'],env={**env,'DXVK_LOG_PATH':str(folder)},cwd=folder,capture_output=True,text=True,timeout=120)
+                    (folder/'run.log').write_text(run.stdout+run.stderr);run.check_returncode();assert 'COMMON_PIPELINE_PASS' in run.stdout
+                    for domain in ('cpu','gpu'):
+                        if domain=='cpu':rows=[dict(re.findall(r'(\w+)=([^ ]+)',line)) for line in run.stdout.splitlines() if line.startswith('COMMON_STAGE_CPU ')]
+                        else:
+                            rows=[]
+                            for line in (folder/'stages.log').read_text().splitlines():
+                                if not re.search(r'GPU profile frame=\d+ total=',line):continue
+                                frame=int(re.search(r'frame=(\d+)',line)[1])//120
+                                rows += [dict(frame=frame,stage=stage,ms=float(ms)) for stage,ms in re.findall(r'(\w+)=([0-9.]+)ms',line) if stage!='total']
+                        rows=[r for r in rows if int(r['frame'])>=16];assert rows
+                        for stage in dict.fromkeys(r['stage'] for r in rows):
+                            values=[float(r['ms']) for r in rows if r['stage']==stage]
+                            stage_records.append(dict(mode=2,features=features,repeat=repeat,label='pr',domain=domain,stage=stage,median_ms=statistics.median(values),maximum_ms=max(values),samples=len(values)))
+                    print('FEATURE_STAGE_PASS',features,repeat,flush=True)
     unchanged = all(source_identity(Path(repo)) == identity for repo, identity in identities.items()) and all(digest(Path(p)) == sha for p, sha in hashes.items())
     assert unchanged, 'Inputs changed during comparison'
     report = {'pass': True, 'source_identities': identities, 'inputs': hashes, 'builds': builds, 'inputs_unchanged': unchanged,
               'upstream': git(upstream, 'rev-parse', 'HEAD'), 'head': git(ROOT, 'rev-parse', 'HEAD'), 'before_ref': args.before_ref,
               'baseline': git(baseline, 'rev-parse', 'HEAD') if baseline else None,
               'scope': __doc__, 'game_fps_measured': False, 'total_northlight_cost_measured': False,
-              'order': 'ABBA', 'rounds': args.rounds, 'records': records, 'summary': summary}
+              'order': 'ABBA', 'rounds': args.rounds, 'records': records, 'summary': summary, 'stage_records': stage_records,
+              'feature_records': feature_records, 'feature_summary': feature_summary,
+              'feature_scope': 'World/AO plus actual HDR and weather post passes on captured inputs. Native game draw recording, material/normal capture, scene streaming, water capture, UI, monitor presentation and game FPS are not measured.',
+              'stage_scope': 'Separate intrusive QPC/timestamp profile; excluded from primary ABBA totals. Stage GPU intervals include command supply gaps.'}
     (out / 'validation.json').write_text(json.dumps(report, indent=2) + '\n')
     print(json.dumps(summary, indent=2), flush=True)
 
