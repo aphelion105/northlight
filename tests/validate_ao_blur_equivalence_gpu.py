@@ -22,6 +22,7 @@ def main():
     baseline = parser.add_mutually_exclusive_group(required=True)
     baseline.add_argument('--baseline-ref', help='Git revision containing shaders/effects.hlsl')
     baseline.add_argument('--baseline-dir', type=Path, help='Frozen shader source directory containing effects.hlsl')
+    parser.add_argument('--baseline-entry', choices=['AOBlur', 'AOBlurNoWater'], default='AOBlur', help='Match the deployed dry specialization when isolating a new optimization.')
     parser.add_argument('--backend', type=Path, required=True)
     parser.add_argument('--source', type=Path, default=ROOT / 'shaders/effects.hlsl')
     parser.add_argument('--output', type=Path, default=fp.out() / 'nonm2-ao/validation')
@@ -56,8 +57,9 @@ def main():
         path = folder / f'{name}.hlsl'
         path.write_bytes(source)
         binary = folder / f'{name}.bin'
-        subprocess.run([str(compiler), str(path), 'AOBlurNoWater' if name == 'new' and args.no_water else 'AOBlur', 'ps_3_0', str(binary)], check=True)
-        metadata[name] = {'source_sha256': hashlib.sha256(source).hexdigest(),
+        entry=args.baseline_entry if name=='old' else ('AOBlurNoWater' if args.no_water else 'AOBlur')
+        subprocess.run([str(compiler), str(path), entry, 'ps_3_0', str(binary)], check=True)
+        metadata[name] = {'entry': entry, 'source_sha256': hashlib.sha256(source).hexdigest(),
                           'shader_sha256': hashlib.sha256(binary.read_bytes()).hexdigest(),
                           **validate_assembly(folder / f'{name}.bin.asm', 'ps_3_0')}
     cases = []
