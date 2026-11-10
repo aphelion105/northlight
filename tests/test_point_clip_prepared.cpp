@@ -61,6 +61,14 @@ int main(int argc,char** argv){
             assert(sphere.mask(b.lo,b.hi,true)==(outsideSphere(b,p,48)?0:prepared.mask(b.lo,b.hi,true)));
         }
     }
+    // Adjacent floats around the shared overflow proof must keep the old masks.
+    {float matrices[6][16],p[3]={};double maximum=0;
+        for(unsigned f=0;f<6;++f){assert(faceMatrix(p,.1f,48,f,matrices[f]));for(float x:matrices[f])maximum=std::max(maximum,std::fabs(double(x)));}
+        const float boundary=float(double(std::numeric_limits<float>::max())/(64.*8.*maximum));const FaceClip prepared(matrices);
+        for(int step=-8;step<=8;++step)for(unsigned axis=0;axis<3;++axis)for(float sign:{-1.f,1.f}){Box b{};float x=boundary;
+            for(int n=0;n<std::abs(step);++n)x=std::nextafter(x,step<0?-INFINITY:INFINITY);
+            b.lo[axis]=b.hi[axis]=sign*x;assert(prepared.mask(b.lo,b.hi,true)==faceMask(b.lo,b.hi,true,matrices));++checks;}
+    }
     // Arbitrary finite clip transforms include cancellation and overflow-adjacent inputs.
     for(unsigned n=0;n<10000;++n){float matrices[6][16];Box b;
         for(auto& face:matrices)for(float& x:face)x=std::ldexp(unit(rng),int(rng()%220)-110);

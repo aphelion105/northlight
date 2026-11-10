@@ -55,9 +55,10 @@ class PointReferenceTests(unittest.TestCase):
         # Task 43: localVisibility returns 1 (no cube taps) where dot(normal,delta)>=0. There facing=saturate(dot(n,-delta/d)) is 0,
         # so estimate and the correction are 0 whatever the visibility; every face toward the lamp still runs the PCF.
         src=fp.src('local_light_effects.hlsl').read_text()
-        self.assertEqual(src.count('if(distance<=LocalShadow.x||distance>=LocalShadow.y||dot(normal,delta)>=0)return 1;'),1)
-        self.assertIn('else visibility=localVisibility(delta,geometricNormal);',src)
-        self.assertIn('if(soft)visibility=tex2Dlod(LocalResolved,float4(screen,0,0)).r;',src)
+        self.assertEqual(src.count('if(dot(normal,delta)>=0)return 1;'),1)
+        self.assertIn('if(distance<=LocalShadow.x||distance>=LocalShadow.y)return 1;',src)
+        self.assertIn('else visibility=localVisibilityInRange(delta,geometricNormal,distance,filter==2);',src)
+        self.assertIn('if(filter==1)visibility=tex2Dlod(LocalResolved,float4(screen,0,0)).r;',src)
         self.assertIn('float occlusion=1-visibility;',src)
         self.assertIn('float3 contribution=LocalColor.rgb*(atten*atten*facing*LocalGain.x*(1-LocalGain.y*sunlit));',src)
         self.assertIn('return float4(-contribution*(occlusion*relevance*LocalDepthInfo.z),0);',src)
@@ -81,7 +82,7 @@ class PointReferenceTests(unittest.TestCase):
             data=fp.src(entry+'.bin').read_bytes()
             self.assertEqual(info['sha256'],hashlib.sha256(data).hexdigest());self.assertLessEqual(info['static_instruction_slots'],512)
             self.assertLessEqual(info['temporary_registers'],32)
-        self.assertEqual(manifest['shaders']['LocalLighting']['cube_instruction_extra_slots'],12)
+        self.assertEqual(manifest['shaders']['LocalLighting']['cube_instruction_extra_slots'],3)
 
 if __name__=='__main__':
     result=unittest.TextTestRunner().run(unittest.defaultTestLoader.loadTestsFromTestCase(PointReferenceTests))

@@ -21,7 +21,7 @@ try:
     source=out/'receiver.hlsl';source.write_text((fp.SHADERS/'local_light_effects.hlsl').read_text().replace('#include "auto_bump_normal.hlsl"',(fp.SHADERS/'auto_bump_normal.hlsl').read_text())+'''
 float4 Origin:register(c80);float4 AxisU:register(c81);float4 AxisV:register(c82);float4 SurfaceNormal:register(c83);
 float4 Receiver(float2 uv:TEXCOORD0):COLOR0{float3 p=Origin.xyz+(uv.x-.5)*AxisU.xyz+(uv.y-.5)*AxisV.xyz;return localVisibility(p-LocalPosition.xyz,SurfaceNormal.xyz).xxxx;}
-'''.replace('localVisibility(p-LocalPosition.xyz,SurfaceNormal.xyz)', 'nativeLocalVisibility(p-LocalPosition.xyz,SurfaceNormal.xyz,LocalShadow.y,0,1)' if args.native else 'localVisibilityFiltered(p-LocalPosition.xyz,SurfaceNormal.xyz,true)' if args.soft else 'localVisibility(p-LocalPosition.xyz,SurfaceNormal.xyz)'))
+'''.replace('localVisibility(p-LocalPosition.xyz,SurfaceNormal.xyz)', 'nativeLocalVisibility(p-LocalPosition.xyz,SurfaceNormal.xyz,LocalShadow.y,0,1)' if args.native else 'localVisibilityFiltered(p-LocalPosition.xyz,SurfaceNormal.xyz,true)' if args.soft else 'localVisibilityFiltered(p-LocalPosition.xyz,SurfaceNormal.xyz,false)'))
     fp.out=lambda:out/'toolchain'
     compiler=Compiler(allow_compatible_binary=args.compatible_compiler)
     for entry,target in [('Receiver','ps_3_0'),('LocalShadowVS','vs_3_0'),('LocalShadowPS','ps_3_0')]:compiler.compile(source,entry,target,out/(entry+'.bin'))

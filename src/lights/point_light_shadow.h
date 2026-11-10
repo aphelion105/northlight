@@ -145,10 +145,15 @@ class FaceClip {
     struct Face {
         bool finite=false;
         double absolute[4][4]={},coefficient[6][4]={},magnitude[6][4]={};
-        void prepare(const float* matrix){
+        void prepare(const float* matrix,double& maximum){
             for(unsigned i=0;i<16;++i)if(!std::isfinite(matrix[i]))return;
             for(unsigned column=0;column<4;++column)for(unsigned row=0;row<4;++row)
                 absolute[column][row]=std::fabs(double(matrix[row*4+column]));
+            // Independent reductions keep matrix preparation vectorizable.
+            float peaks[4]={};
+            for(unsigned row=0;row<4;++row)for(unsigned column=0;column<4;++column)
+                peaks[column]=std::max(peaks[column],std::fabs(matrix[row*4+column]));
+            maximum=std::max(maximum,double(std::max({peaks[0],peaks[1],peaks[2],peaks[3]})));
             for(unsigned plane=0;plane<6;++plane){
                 const unsigned column=plane<4?plane/2:2;
                 const double sign=(plane==1||plane==3||plane==5)?-1.:1.;
@@ -159,9 +164,9 @@ class FaceClip {
             }
             finite=true;
         }
-        bool reject(const float* lo,const float* hi,const double* extent)const{
+        bool reject(const float* lo,const float* hi,const double* extent,bool bounded)const{
             if(!finite)return false;
-            for(unsigned column=0;column<4;++column){
+            if(!bounded)for(unsigned column=0;column<4;++column){
                 double bound=absolute[column][3];
                 for(unsigned row=0;row<3;++row)if(absolute[column][row]!=0)bound+=absolute[column][row]*extent[row];
                 if(bound>std::numeric_limits<float>::max()/32.)return false;
@@ -173,16 +178,20 @@ class FaceClip {
                     const double c=coefficient[plane][row],coord=row==3?1.:c>=0?hi[row]:lo[row];
                     maximum+=c*coord;total+=magnitude[plane][row]*(row==3?1.:extent[row]);
                 }
-                if(total>std::numeric_limits<float>::max()/16.)return false;
+                if(!bounded&&total>std::numeric_limits<float>::max()/16.)return false;
                 if(maximum < -32.*std::numeric_limits<float>::epsilon()*(total+1.))return true;
             }
             return false;
         }
     };
     Face faces[6];
+    double safetyScale=0;
     double sphere[4]={};bool sphereValid=false;
 public:
-    explicit FaceClip(const float (&matrices)[6][16],unsigned requested=63){for(unsigned face=0;face<6;++face)if(requested&(1u<<face))faces[face].prepare(matrices[face]);}
+    explicit FaceClip(const float (&matrices)[6][16],unsigned requested=63){
+        for(unsigned face=0;face<6;++face)if(requested&(1u<<face))faces[face].prepare(matrices[face],safetyScale);
+        safetyScale*=8; // Four coordinates; each clip-plane term combines at most two matrix coefficients.
+    }
     FaceClip(const float (&matrices)[6][16],const NorthlightLocalLights::Light& light,unsigned requested=63):FaceClip(matrices,requested){
         sphereValid=std::isfinite(light.attenuationEnd)&&light.attenuationEnd>=0;
         sphere[3]=double(light.attenuationEnd)*light.attenuationEnd;
@@ -198,7 +207,11 @@ public:
             if(distance>sphere[3])return 0;
             for(unsigned axis=0;axis<3;++axis)extent[axis]=std::max(std::fabs(double(lo[axis])),std::fabs(double(hi[axis])));
         }else if(!detail::bounds(lo,hi,extent))return requested;
-        unsigned mask=0;for(unsigned face=0;face<6;++face)if((requested&(1u<<face))&&!faces[face].reject(lo,hi,extent))mask|=1u<<face;
+        // One upper bound proves every component/plane is below its overflow
+        // guard. The factor-two slack covers rounding; extreme inputs keep the
+        // original individual guards and their fail-open masks.
+        const bool bounded=safetyScale*std::max({1.,extent[0],extent[1],extent[2]})<=std::numeric_limits<float>::max()/64.;
+        unsigned mask=0;for(unsigned face=0;face<6;++face)if((requested&(1u<<face))&&!faces[face].reject(lo,hi,extent,bounded))mask|=1u<<face;
         return mask;
     }
 };
