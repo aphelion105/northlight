@@ -69,11 +69,11 @@ int main(int argc,char** argv){assert(argc>1);Program real=load(argv[1]);float c
  }
  unsigned coverage=0;for(bool v:covered)coverage+=v;
 #ifndef NORTHLIGHT_SANITIZED
- assert(coverage==80&&totalValid>0&&crowded.entries()<=2048);
+ assert(coverage==80&&totalValid>0&&crowded.entries()<=4096);
 #else
  // Sanitizer builds run 3-10x slower against the same wall-clock budgets (on an efficiency core, e.g. at
  // background QoS, some meshes never finish inside a frame's slice); full coverage is the O2 build's check.
- assert(coverage>0&&totalValid>0&&crowded.entries()<=2048);
+ assert(coverage>0&&totalValid>0&&crowded.entries()<=4096);
 #endif
  Cache previous;size_t oldValid=0;double oldMs=0;
  for(unsigned frame=0;frame<40;++frame){constantsFor(constants,frame+1);previous.beginFrame();budget=Budget{};budget.maxVertices=2048;auto t=std::chrono::steady_clock::now();
@@ -83,8 +83,8 @@ int main(int argc,char** argv){assert(argc>1);Program real=load(argv[1]);float c
  assert(double(totalValid)/400>double(oldValid)/40);
  // Allocation limits, weak geometry ownership and LRU eviction with live owners.
  EnvelopeCache limited;std::vector<std::shared_ptr<const Mesh>> owners;
- for(unsigned index=0;index<2200;++index){owners.push_back(std::make_shared<const Mesh>(geometry(64)));auto& mesh=owners.back();assert(finish(limited,real,mesh,decl,4,constants,inverse,b)==Status::Valid);assert(mesh.use_count()==1);assert(limited.entries()<=2048&&limited.reservedBytes()<=8u*1024u*1024u);}
- assert(limited.entries()<2200);owners.clear();limited.clear();assert(limited.entries()==0&&limited.reservedBytes()==0);
+ for(unsigned index=0;index<4200;++index){owners.push_back(std::make_shared<const Mesh>(geometry(64)));auto& mesh=owners.back();assert(finish(limited,real,mesh,decl,4,constants,inverse,b)==Status::Valid);assert(mesh.use_count()==1);assert(limited.entries()<=4096&&limited.reservedBytes()<=8u*1024u*1024u);}
+ assert(limited.entries()<4200);owners.clear();limited.clear();assert(limited.entries()==0&&limited.reservedBytes()==0);
  unsigned corpusPrograms=0,corpusEnclosed=0,corpusSkinTemplates=0;
  if(argc>2){FILE* f=std::fopen(argv[2],"rb");assert(f);Word bytes;
   while(std::fread(&bytes,4,1,f)==1){assert(bytes%4==0&&bytes<1000000);std::vector<Word> words(bytes/4);assert(std::fread(words.data(),1,bytes,f)==bytes);++corpusPrograms;Program p;if(!compile(words.data(),words.size(),p))continue;

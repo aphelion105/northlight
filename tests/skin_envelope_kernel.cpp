@@ -5,6 +5,7 @@
 #include <random>
 #include <chrono>
 #include <type_traits>
+#include <cfenv>
 #include "replay_bounds.h"
 #ifdef NORTHLIGHT_SKIN_REFERENCE
 namespace NorthlightSkinReference {using namespace NorthlightReplayBounds;}
@@ -45,6 +46,14 @@ int main(){
  for(unsigned bones:{1u,4u,16u,75u})for(unsigned pose=0;pose<512;++pose){auto c=authored(911+pose,bones);
 #ifdef NORTHLIGHT_SKIN_REFERENCE
   compare(c);++cases;
+  for(int mode:{FE_TONEAREST,FE_DOWNWARD,FE_UPWARD,FE_TOWARDZERO}){
+   const int before=std::fegetround();assert(std::fesetround(mode)==0);
+   for(bool negativeZero:{false,true}){auto identity=c;
+    for(unsigned i=0;i<16;++i)identity.inverse[i]=i%5==0?1.f:negativeZero?-0.f:0.f;
+    compare(identity);++cases;
+   }
+   assert(std::fesetround(before)==0);
+  }
   for(unsigned invalid=0;invalid<7;++invalid){auto bad=c;const unsigned first=4*(31+3*c.skin.order[0]);
    if(invalid<3)bad.constants[first]=invalid==0?INFINITY:invalid==1?std::numeric_limits<float>::quiet_NaN():std::numeric_limits<float>::denorm_min();
    else if(invalid==3)bad.inverse[15]=2;else if(invalid==4)bad.inverse[0]=INFINITY;else if(invalid==5)bad.skin.sumHigh=17;else bad.skin.usedBones=0;
@@ -64,7 +73,8 @@ int main(){
  std::printf("SKIN_KERNEL_EXACT_PASS cases=%u modes=2 invalid_inputs stop_callbacks bitexact=1\n",cases);
  std::vector<Case> inputs;std::vector<NorthlightSkinReference::SkinEnvelope> old;
  for(unsigned bones:{1u,4u,16u,75u})for(unsigned i=0;i<64;++i){inputs.push_back(authored(71+i,bones));old.push_back(frozen(inputs.back().skin));}
- for(bool aligned:{false,true}){double times[2][9]={};
+ for(bool identity:{false,true})for(bool aligned:{false,true}){double times[2][9]={};
+  if(identity)for(auto& c:inputs)for(unsigned i=0;i<16;++i)c.inverse[i]=i%5==0?1.f:0.f;
   for(unsigned round=0;round<9;++round)for(unsigned turn=0;turn<2;++turn){const unsigned variant=(round+turn)%2;const auto start=std::chrono::steady_clock::now();
    for(unsigned frame=0;frame<64;++frame)for(unsigned i=0;i<inputs.size();++i){const auto& c=inputs[i];
     if(variant){B::Bounds b;assert(c.skin.evaluate(c.constants,c.inverse,b,nullptr,nullptr,aligned));sink=b.low[0];}
@@ -72,7 +82,7 @@ int main(){
    times[variant][round]=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count()/64;
   }
   for(auto& t:times)std::sort(t,t+9);
-  std::printf("SKIN_KERNEL_TIMING aligned=%u boundsPerFrame=256 referenceMs=%.6f currentMs=%.6f sink=%g\n",unsigned(aligned),times[0][4],times[1][4],float(sink));
+  std::printf("SKIN_KERNEL_TIMING aligned=%u identity=%u boundsPerFrame=256 referenceMs=%.6f currentMs=%.6f sink=%g\n",unsigned(aligned),unsigned(identity),times[0][4],times[1][4],float(sink));
  }
 #else
  std::printf("SKIN_KERNEL_EXACT_PASS cases=%u modes=2 bitexact=0 reference=absent\n",cases);

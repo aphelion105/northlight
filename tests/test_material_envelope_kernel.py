@@ -6,7 +6,7 @@ from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
 import client_fixtures
-p=argparse.ArgumentParser(__doc__);p.add_argument('--output',type=Path);p.add_argument('--reference',type=Path);a=p.parse_args()
+p=argparse.ArgumentParser(__doc__);p.add_argument('--output',type=Path);p.add_argument('--reference',type=Path);p.add_argument('--kernel-only',action='store_true',help='Compare the skin evaluator without the older prepared-key allocation counterfactual');a=p.parse_args()
 out=(a.output or fp.output_dir()/'material-envelope-kernel').resolve();out.mkdir(parents=True,exist_ok=True)
 sha=lambda p:hashlib.sha256(Path(p).read_bytes()).hexdigest()
 inputs={str(q):sha(q) for q in [Path(__file__),fp.TESTS/'skin_envelope_kernel.cpp',fp.TESTS/'envelope_key_sharing.cpp',fp.src('replay_skin_envelope.inl'),fp.src('replay_envelopes.inl')]}
@@ -16,7 +16,7 @@ if a.reference:
  for name in ['replay_bounds.h','replay_skin_envelope.inl','replay_envelopes.inl']:inputs[str(folder/name)]=sha(folder/name)
 fixture=client_fixtures.four_bone_vs3();runs=[]
 for tag,flags in [('O2',['-O2']),('ASan-UBSan',['-O2','-g','-fsanitize=address,undefined','-fno-sanitize-recover=all'])]:
- for name in ['skin_envelope_kernel','envelope_key_sharing']:
+ for name in (['skin_envelope_kernel'] if a.kernel_only else ['skin_envelope_kernel','envelope_key_sharing']):
   exe=out/(name+'-'+tag+'.exe');command=[str(fp.zig()),'c++','-target','x86-windows-gnu','-std=c++17','-UNDEBUG',*flags,*reference,*fp.test_include_flags(),str(fp.TESTS/(name+'.cpp')),'-o',str(exe)]
   print('COMPILE',name,tag,flush=True);subprocess.run(command,env=fp.zig_env(),check=True)
   args=[str(exe)]+([str(fixture)] if name=='envelope_key_sharing' else [])

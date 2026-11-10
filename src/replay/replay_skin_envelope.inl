@@ -158,9 +158,14 @@ private:
             // Compose before taking extrema. Transforming a view-axis AABB loses
             // axis correlation and changes the displacement fade as the camera turns.
             for(unsigned axis=0;axis<3;++axis){double lo=INFINITY,hi=-INFINITY,scale=0,error=0;
+                const bool identityAxis=inverse[axis]==float(axis==0)&&inverse[4+axis]==float(axis==1)&&inverse[8+axis]==float(axis==2);
                 for(unsigned j=0;j<3;++j)error+=std::fabs(double(inverse[4*j+axis]))*(64*std::numeric_limits<float>::epsilon()*magnitude[j]+1024*std::numeric_limits<float>::min()*(1+maxPosition[0]+maxPosition[1]+maxPosition[2]+maxPosition[3]));
                 for(unsigned n=0;n<usedBones;++n){if(n&&(n&7u)==0&&shouldStop&&shouldStop(stopContext))return false;
                     const auto& bone=bones[order[n]];const float* rows=constants+4*(31+3*order[n]);double coefficient[4]={},rounding=0;
+                    // View-depth requests use the identity basis. Read its one
+                    // contributing row instead of composing all three rows.
+                    if(identityAxis){for(unsigned k=0;k<4;++k){coefficient[k]=rows[4*axis+k];rounding+=std::fabs(coefficient[k])*maxPosition[k]*16*std::numeric_limits<double>::epsilon();}}
+                    else {
 #if defined(__SSE2__)
                     // Pair coefficients, retaining the scalar J/K sum order and
                     // error enclosure. Eight-byte loads also cover bone 74 at
@@ -175,6 +180,7 @@ private:
 #else
                     for(unsigned k=0;k<4;++k){double products=0;for(unsigned j=0;j<3;++j){const double term=double(inverse[4*j+axis])*rows[4*j+k];coefficient[k]+=term;products+=std::fabs(term);}rounding+=products*maxPosition[k]*16*std::numeric_limits<double>::epsilon();}
 #endif
+                    }
                     double a,b;
 #if defined(__SSE2__)
                     // Pair low/high with the same K sum order and first-operand
