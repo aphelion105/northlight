@@ -4285,7 +4285,6 @@ public:
     bool actorCaptureEnabled(){if(!giActorWorkEnabled())return false;
         if(!actorCaptureDecided){actorCaptureDecided=true;actorCaptureDue=!lastActorCapture||GetTickCount()-lastActorCapture>=200;}if(actorCaptureDue&&!actorJob)actorJob=std::make_shared<NorthlightActorGeometry::ActorJob>();return actorCaptureDue;}
     void appendActor(IDirect3DVertexShader9* original,const Replay& replay,bool sample=false){
-        if(!actorCaptureEnabled())return;
         auto it=actorPrograms.find(original);if(it==actorPrograms.end())return;const auto& program=*it->second;
         if(!program.skinned&&!replay.mesh().dynamic)return;
         if(actorJob->packets.size()>=128)return;
@@ -4683,9 +4682,16 @@ public:
         if(sample){capturedSM1Draws+=metadata.sm1;capturedRelativeDraws+=usage.relativeFloat;}
         phase.next(CaptureMaterial);fate.reason=NorthlightShadowFate::Material;
         observeLightAttachments(*p,metadata);
-        if(FAILED(d->GetTexture(0,&p->texture))||((alpha||alphaMode==1||alphaMode==3)&&!p->texture))return;
-        if(FAILED(d->GetSamplerState(0,D3DSAMP_ADDRESSU,&p->addressU))||FAILED(d->GetSamplerState(0,D3DSAMP_ADDRESSV,&p->addressV)))return;
-        if(p->addressU<D3DTADDRESS_WRAP||p->addressU>D3DTADDRESS_CLAMP||p->addressV<D3DTADDRESS_WRAP||p->addressV>D3DTADDRESS_CLAMP)return;
+        // Opaque shadows do not sample stage 0. GI still needs its actual albedo
+        // and addressing on actor-update frames; float alpha retains the guard.
+        const bool captureActor=!metadata.detailDoodad&&actorCaptureEnabled();
+        const bool materialNeeded=alpha||alphaMode==1||alphaMode==3||shaderCutoff>=0||
+            !NorthlightReplayDrawState::skipOpaque()||captureActor;
+        if(materialNeeded){
+            if(FAILED(d->GetTexture(0,&p->texture))||((alpha||alphaMode==1||alphaMode==3)&&!p->texture))return;
+            if(FAILED(d->GetSamplerState(0,D3DSAMP_ADDRESSU,&p->addressU))||FAILED(d->GetSamplerState(0,D3DSAMP_ADDRESSV,&p->addressV)))return;
+            if(p->addressU<D3DTADDRESS_WRAP||p->addressU>D3DTADDRESS_CLAMP||p->addressV<D3DTADDRESS_WRAP||p->addressV>D3DTADDRESS_CLAMP)return;
+        }else p->addressU=p->addressV=D3DTADDRESS_WRAP;
         phase.next(CaptureFinalize);
         p->cutoff=alpha?(float(ref)+(alphaFunc==D3DCMP_GREATER?.5f:0.f))/255.f:shaderCutoff;p->alphaMode=alphaMode;
         if(metadata.detailDoodad){
@@ -4701,7 +4707,7 @@ public:
         p->constantGroup=replays.empty()?0:replays.back()->constantGroup+
             (NorthlightReplayCaptureConstants::samePose(*replays.back(),*p,sample?&constantEpochStats:nullptr)?0:1);
         phase.next(CaptureActor);
-        if(!metadata.detailDoodad)appendActor(current,*p,sample); // Grass shadows do not spend the actor GI/texture readback budget.
+        if(captureActor)appendActor(current,*p,sample); // Grass shadows do not spend the actor GI/texture readback budget.
         phase.next(CaptureFinalize);
         if(sample){++acceptedTriangleBins[triangleBin];if(priority)++acceptedSkinnedTriangleBins[triangleBin];smallShadowGI+=smallShadow;}
         p->fateSlot=fate.slot;fate.slot=-1; /* the selection records this draw's outcome */

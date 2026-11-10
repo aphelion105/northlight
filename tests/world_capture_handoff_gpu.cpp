@@ -21,12 +21,27 @@ struct CaptureRasterSource {
 };
 static IDirect3DVertexBuffer9* sourceVB=nullptr;static IDirect3DIndexBuffer9* sourceIB=nullptr;
 static D3DVERTEXBUFFER_DESC vertexDesc{};static D3DINDEXBUFFER_DESC indexDesc{};static uint64_t revision=1;
+#ifdef NORTHLIGHT_CAPTURE_MATERIAL
+bool northlightForceMaterialCapture=false;
+#endif
 static uint64_t sourceIdentity(void* p,bool){return uint64_t(reinterpret_cast<uintptr_t>(p));}
 static uint64_t sourceVersion(void*,bool){return revision;}
 static void metadata(const NorthlightCaptureMetadata::Request* requests,NorthlightCaptureMetadata::Info* info,unsigned count){
  for(unsigned i=0;i<count;++i){info[i]={};if(requests[i].buffer!=sourceVB&&requests[i].buffer!=sourceIB)continue;auto& v=info[i];v.known=true;v.identity=sourceIdentity(requests[i].buffer,requests[i].index);v.revision=revision;v.size=requests[i].index?indexDesc.Size:vertexDesc.Size;v.usage=requests[i].index?indexDesc.Usage:vertexDesc.Usage;v.format=requests[i].index?indexDesc.Format:D3DFMT_UNKNOWN;}
 }
 struct PointTerrainCoverageTest {
+#ifdef NORTHLIGHT_CAPTURE_MATERIAL
+ static void materialMode(WorldRenderer& w,unsigned scenario){
+  w.effects.gi=scenario==2||scenario==4;w.quality.gi=w.effects.gi?2:0;w.quality.giDynamicProbes=1;
+  w.lastActorCapture=scenario==4?GetTickCount():0;w.actorCaptureDecided=false;
+  NorthlightReplayDrawState::floatAlphaTextures.store(scenario==3,std::memory_order_relaxed);
+ }
+ static void materialCheck(const WorldRenderer& w,IDirect3DBaseTexture9* texture,unsigned scenario){
+  const bool needed=northlightForceMaterialCapture||(scenario>=1&&scenario<=3);
+  for(const auto& p:w.replays){assert(p->texture==(needed?texture:nullptr));assert(p->addressU==(needed?DWORD(D3DTADDRESS_CLAMP):DWORD(D3DTADDRESS_WRAP)));}
+  if(scenario==2)assert(w.actorCaptureDue&&w.actorJob);
+ }
+#endif
  static void setup(WorldRenderer& w,IDirect3DDevice9* d,IDirect3DVertexShader9* original,IDirect3DVertexShader9* patched,const DWORD* code,size_t words){
   w.valid=true;w.captureMode=WorldRenderer::CaptureFresh;w.effects={false,true,false};w.quality.gi=0;w.quality.replayJobs=0;w.quality.actorShadows=1;
   w.active=std::make_shared<WorldRenderer::Snapshot>();w.active->map=w.lastRequest.map="capture-handoff";w.active->bvh=std::make_shared<NorthlightGI::BVH>();w.uploaded=w.active->bvh;w.uploadedMap=w.active->map;w.meshGeneration=1;
@@ -133,7 +148,7 @@ struct PointTerrainCoverageTest {
   assert(visible);read->Release();
  }
 };
-int main(int argc,char** argv){assert(argc==4||argc==5);std::setvbuf(stdout,nullptr,_IONBF,0);logFile=nullptr;const std::string out=argv[2];const bool handoff=std::atoi(argv[3])!=0,raster=argc==5&&std::atoi(argv[4]);assert(MultiByteToWideChar(CP_UTF8,0,(out+"/").c_str(),-1,rootPath,MAX_PATH));
+int main(int argc,char** argv){assert(argc>=4&&argc<=7);std::setvbuf(stdout,nullptr,_IONBF,0);logFile=nullptr;const std::string out=argv[2];const bool handoff=std::atoi(argv[3])!=0,raster=argc>=5&&std::atoi(argv[4]);assert(MultiByteToWideChar(CP_UTF8,0,(out+"/").c_str(),-1,rootPath,MAX_PATH));
  auto hwnd=CreateWindowExW(0,L"STATIC",L"",WS_OVERLAPPED,0,0,64,64,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);assert(hwnd);auto module=LoadLibraryA(argv[1]);assert(module);auto create=(IDirect3D9*(WINAPI*)(UINT))GetProcAddress(module,"Direct3DCreate9");auto* api=create(D3D_SDK_VERSION);assert(api);D3DPRESENT_PARAMETERS pp{};pp.Windowed=TRUE;pp.hDeviceWindow=hwnd;pp.BackBufferWidth=pp.BackBufferHeight=64;pp.BackBufferFormat=D3DFMT_X8R8G8B8;pp.SwapEffect=D3DSWAPEFFECT_DISCARD;IDirect3DDevice9* raw=nullptr;checked(api->CreateDevice(0,D3DDEVTYPE_HAL,hwnd,D3DCREATE_HARDWARE_VERTEXPROCESSING|D3DCREATE_FPU_PRESERVE,&pp,&raw));CaptureMeter meter(raw);DeviceMirror mirror;ExtensionDevice device(&meter,&mirror);auto* d=&device;CaptureRasterSource rasterSource{d};
  const DWORD code[]={0xfffe0300,0x0200001f,0x80000000,0x900f0000,0x0200001f,0x80000005,0x900f0001,0x0200001f,0x80000000,0xe00f0000,0x0200001f,0x80000005,0xe0030001,0x03000009,0xe0010000,0xa0e40002,0x90e40000,0x03000009,0xe0020000,0xa0e40003,0x90e40000,0x03000009,0xe0040000,0xa0e40004,0x90e40000,0x03000009,0xe0080000,0xa0e40005,0x90e40000,0x02000001,0xe0030001,0x90e40001,0xffff};
  IDirect3DVertexShader9 *original=nullptr,*patched=nullptr;checked(d->CreateVertexShader(code,&original));std::vector<uint32_t> patch;assert(NorthlightShadowShader::patch((const uint32_t*)code,sizeof code/4,patch));checked(d->CreateVertexShader((const DWORD*)patch.data(),&patched));auto world=std::make_unique<WorldRenderer>(d);PointTerrainCoverageTest::setup(*world,d,original,patched,code,sizeof code/4);
@@ -142,11 +157,23 @@ int main(int argc,char** argv){assert(argc==4||argc==5);std::setvbuf(stdout,null
 #endif
  const D3DVERTEXELEMENT9 elements[]={{0,0,D3DDECLTYPE_FLOAT3,0,D3DDECLUSAGE_POSITION,0},{0,24,D3DDECLTYPE_FLOAT2,0,D3DDECLUSAGE_TEXCOORD,0},D3DDECL_END()};IDirect3DVertexDeclaration9* declaration=nullptr;checked(d->CreateVertexDeclaration(elements,&declaration));checked(d->SetVertexDeclaration(declaration));checked(d->SetVertexShader(original));checked(d->SetStreamSource(0,sourceVB,0,sizeof(NorthlightGI::WorldVertex)));checked(d->SetIndices(sourceIB));float constants[1024]{};constants[8]=constants[13]=constants[18]=constants[22]=1;checked(d->SetVertexShaderConstantF(0,constants,256));checked(d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE));checked(d->SetRenderState(D3DRS_ALPHATESTENABLE,FALSE));checked(d->SetRenderState(D3DRS_COLORWRITEENABLE,15));
  NorthlightDrawSnapshot::Frame producer;PointTerrainCoverageTest::configureProducer(*world,producer);const NorthlightDrawSnapshot::Draw draw{D3DPT_TRIANGLELIST,0,0,6,0,256,true};NorthlightDrawSnapshot::Mesh scratch;
+#ifdef NORTHLIGHT_CAPTURE_MATERIAL
+ assert(argc==7);northlightForceMaterialCapture=std::atoi(argv[5])!=0;const unsigned scenario=unsigned(std::atoi(argv[6]));assert(scenario<=4);
+ MirrorGuard held(mirror.gate);PointTerrainCoverageTest::materialMode(*world,scenario);
+ IDirect3DTexture9* material=nullptr;checked(d->CreateTexture(2,2,1,0,scenario==3?D3DFMT_A32B32G32R32F:D3DFMT_A8R8G8B8,D3DPOOL_MANAGED,&material,nullptr));D3DLOCKED_RECT pixels{};checked(material->LockRect(0,&pixels,nullptr,0));
+ for(unsigned y=0;y<2;++y)for(unsigned x=0;x<2;++x){auto* row=(char*)pixels.pBits+y*pixels.Pitch;if(scenario==3){const float rgba[]={.4f,.5f,.6f,x?-2.f:1.f};std::memcpy(row+x*16,rgba,16);}else reinterpret_cast<DWORD*>(row)[x]=x?0x00ffffff:0xffffffff;}
+ checked(material->UnlockRect(0));checked(d->SetTexture(0,material));checked(d->SetSamplerState(0,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP));checked(d->SetSamplerState(0,D3DSAMP_ADDRESSV,D3DTADDRESS_WRAP));
+ checked(d->SetRenderState(D3DRS_ALPHATESTENABLE,scenario==1));checked(d->SetRenderState(D3DRS_ALPHAFUNC,D3DCMP_GREATER));checked(d->SetRenderState(D3DRS_ALPHAREF,128));
+#endif
  for(unsigned frame=0;frame<48;++frame){const auto calls=meter.geometry,batches=rasterSource.batches;const auto start=std::chrono::steady_clock::now();PointTerrainCoverageTest::begin(*world);producer.clearFrame();
   for(unsigned i=0;i<512;++i){std::shared_ptr<const NorthlightDrawSnapshot::Mesh> mesh;assert(producer.read(d,declaration,draw,scratch,nullptr,false,&mesh)&&mesh);PointTerrainCoverageTest::capture(*world,original,declaration,mesh,handoff);}
   const auto end=std::chrono::steady_clock::now();assert(PointTerrainCoverageTest::packets(*world)==512);printf("CAPTURE_FRAME frame=%u warm=%u handoff=%u cpuMs=%.9f packets=%u chargedBytes=%zu handoffs=%u geometryCalls=%u rasterState=%u stateBatches=%u\n",frame,unsigned(frame<16),unsigned(handoff),std::chrono::duration<double,std::milli>(end-start).count(),PointTerrainCoverageTest::packets(*world),PointTerrainCoverageTest::charged(*world),PointTerrainCoverageTest::handoffs(*world),meter.geometry-calls,unsigned(raster),rasterSource.batches-batches);
  }
  PointTerrainCoverageTest::packetImage(*world,out+"/packets.bin");PointTerrainCoverageTest::raster(*world,d,out+"/faces.bin");
+#ifdef NORTHLIGHT_CAPTURE_MATERIAL
+ PointTerrainCoverageTest::materialCheck(*world,material,scenario);puts("CAPTURE_MATERIAL_PASS exact_texture addressing alpha GI_due float_alpha_guard");
+ checked(d->SetTexture(0,nullptr));material->Release();world.reset();return 0;
+#endif
 #if NORTHLIGHT_CAPTURE_HANDOFF
  checked(d->SetVertexDeclaration(declaration));checked(d->SetVertexShader(original));checked(d->SetPixelShader(nullptr));checked(d->SetStreamSource(0,sourceVB,0,sizeof(NorthlightGI::WorldVertex)));checked(d->SetIndices(sourceIB));checked(d->SetVertexShaderConstantF(0,constants,256));PointTerrainCoverageTest::controls(*world,meter,mirror,original,declaration,producer);
 #endif
