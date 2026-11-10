@@ -68,7 +68,7 @@ struct ModelNormalMergeTest {
     static unsigned duplicates(const Normals& n){return n.duplicateDraws;}
     static void duplicateControls(Normals& n,unsigned expected){
         auto count=[&]{for(auto& q:n.pending)q->redundant=false;n.findRedundant();unsigned total=0;for(auto& q:n.pending)total+=q->redundant;return total;};
-        assert(count()==expected);auto& p=*n.pending[0];assert(p.resident&&!p.redundant&&!n.pending.back()->redundant);
+        assert(count()==expected);auto& p=*n.pending[0];assert(p.resident&&p.redundant&&!n.pending.back()->redundant);
         unsigned checks=0;auto change=[&](auto& value,auto replacement){const auto old=value;value=replacement;assert(count()==expected-1&&!p.redundant);value=old;assert(count()==expected);++checks;};
         change(p.placement.vertexBase,p.placement.vertexBase+1);change(p.placement.indexStart,p.placement.indexStart+1);
         change(p.placement.absoluteIndices,!p.placement.absoluteIndices);change(p.mesh.vertexCount,p.mesh.vertexCount-1);
@@ -194,18 +194,39 @@ static void normalMerge(IDirect3DVertexShader9* shader,IDirect3DVertexDeclaratio
         for(unsigned i=0;i<packets;++i){const auto& mesh=owners[frame<4?frame%2:i%2];const NorthlightDrawSnapshot::Draw geometry{D3DPT_TRIANGLELIST,0,0,vertexCount,0,mesh->primitiveCount,true};
             normals->capture(shader,[]{return D3D_OK;},true,&geometry,nullptr,D3DFMT_UNKNOWN,nullptr,0,&mesh,declaration);}
         assert(normals->testPendingPackets()==packets);
-        if(frame==7)ModelNormalMergeTest::duplicateControls(*normals,N-1);
+        if(frame==7)ModelNormalMergeTest::duplicateControls(*normals,N);
         const auto start=std::chrono::steady_clock::now();assert(normals->finishCaptures());
         if(frame>=4)duplicateTimes[dedup].push_back(std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count());
         ok(d->EndScene());const auto image=capturedPixels(normals->texture(),W,H);
         if(frame==2||frame==3)just[frame%2]=image;
         if(frame>=4){assert(just[0]!=just[1]&&image==just[0]);
             if(frame==4)duplicateReference=image;else assert(image==duplicateReference);
-            assert(ModelNormalMergeTest::duplicates(*normals)==(dedup?N-1:0));
-            assert(calls.submitted==(dedup?N+2:2*N+1));assert(ModelNormalMergeTest::submitted(*normals)==calls.submitted);duplicateCalls[dedup]=calls.submitted;}
+            assert(ModelNormalMergeTest::duplicates(*normals)==(dedup?N:0));
+            assert(calls.submitted==(dedup?N+1:2*N+1));assert(ModelNormalMergeTest::submitted(*normals)==calls.submitted);duplicateCalls[dedup]=calls.submitted;}
     }
-    std::printf("MODEL_NORMALS_DUPLICATE_GPU_PASS pixels=bitexact coplanar_last_wins=1 interleaved_draws=%u/%u first_depth_preserved=1\n",duplicateCalls[0],duplicateCalls[1]);
+    std::printf("MODEL_NORMALS_DUPLICATE_GPU_PASS pixels=bitexact coplanar_last_wins=1 interleaved_draws=%u/%u minimum_depth_preserved=1\n",duplicateCalls[0],duplicateCalls[1]);
     for(auto& t:duplicateTimes)std::sort(t.begin(),t.end());
     std::printf("MODEL_NORMALS_DUPLICATE_CPU replayMedianMs=%.6f/%.6f alternatingPairs=9 scope=component_submission\n",duplicateTimes[0][4],duplicateTimes[1][4]);
+    auto* alphaPixel=ps(directory+"ModelAlphaPS.bin");IDirect3DTexture9* coverage=nullptr;
+    ok(d->CreateTexture(4,4,1,0,D3DFMT_A8R8G8B8,D3DPOOL_MANAGED,&coverage,nullptr));D3DLOCKED_RECT alphaLock{};ok(coverage->LockRect(0,&alphaLock,nullptr,0));
+    for(unsigned y=0;y<4;++y)for(unsigned x=0;x<4;++x)reinterpret_cast<DWORD*>(static_cast<char*>(alphaLock.pBits)+y*alphaLock.Pitch)[x]=(x+y)%2?0xffffffffu:0x00ffffffu;
+    ok(coverage->UnlockRect(0));
+    unsigned depthCases=0;
+    for(unsigned scenario=0;scenario<16;++scenario){auto middle=std::make_shared<NorthlightDrawSnapshot::Mesh>(*b);
+        const float dz[]={-1.f,0.f,1.f,.00001f};
+        for(unsigned v=0;v<vertexCount;++v){float z;auto* p=middle->streams[0].bytes.data()+v*48+8;std::memcpy(&z,p,4);z+=dz[scenario%4];std::memcpy(p,&z,4);}
+        std::vector<unsigned char> expected;
+        for(bool dedup:{false,true}){normals->endFrame();ModelNormalMergeTest::enable(*normals,true);ModelNormalMergeTest::dedup(*normals,dedup);
+            ok(d->SetPixelShader(scenario&4?alphaPixel:pixel));ok(d->SetRenderState(D3DRS_ALPHATESTENABLE,(scenario&4)!=0));ok(d->SetRenderState(D3DRS_ALPHAREF,128));ok(d->SetRenderState(D3DRS_ALPHAFUNC,D3DCMP_GREATER));bind(0,coverage);
+            ok(d->BeginScene());
+            const std::shared_ptr<const NorthlightDrawSnapshot::Mesh> packets[]={a,middle,a};
+            for(unsigned i=0;i<3;++i){ok(d->SetRenderState(D3DRS_DEPTHBIAS,scenario&8&&i==1?0x36000000u:0u));const auto& mesh=packets[i];const NorthlightDrawSnapshot::Draw geometry{D3DPT_TRIANGLELIST,0,0,vertexCount,0,mesh->primitiveCount,true};normals->capture(shader,[]{return D3D_OK;},true,&geometry,nullptr,D3DFMT_UNKNOWN,nullptr,0,&mesh,declaration);}
+            assert(normals->testPendingPackets()==3);assert(normals->finishCaptures());ok(d->EndScene());
+            const auto result=capturedPixels(normals->texture(),W,H);if(!dedup)expected=result;else assert(result==expected);
+            if(dedup)assert(ModelNormalMergeTest::duplicates(*normals)==1);++depthCases;
+        }
+    }
+    ok(d->SetRenderState(D3DRS_DEPTHBIAS,0));ok(d->SetRenderState(D3DRS_ALPHATESTENABLE,FALSE));ok(d->SetPixelShader(pixel));bind(0,nullptr);
+    alphaPixel->Release();coverage->Release();std::printf("MODEL_NORMALS_LAST_COPY_PASS cases=%u depth=near/equal/far/subtexel alpha=checked bias=checked pixels=bitexact\n",depthCases);
     normals.reset();store.clearAll();pixel->Release();depth->Release();color.read->Release();color.s->Release();color.t->Release();
 }

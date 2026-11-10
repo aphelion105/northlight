@@ -26,7 +26,7 @@ class NorthlightAutoNormalCache {
     unsigned polarity=0,details=75,balance=50,frame=0;bool memoryPressure=false,visibleWorkingSet=false;
     UINT vertexConstantCapacity=0; // Immutable for this device, including Reset.
     bool protectedOldest(const Entry& oldest){
-        if(frame-oldest.lastUsedFrame>1)return false;
+        if(!oldest.normal||frame-oldest.lastUsedFrame>1)return false;
         // Touches, erasures and new current-frame entries preserve this proof.
         // An unknown/mixed-age set keeps the original per-miss LRU check.
         visibleWorkingSet=std::all_of(entries.begin(),entries.end(),[&](const Entry& e){return frame-e.lastUsedFrame<=1;});
@@ -40,6 +40,7 @@ class NorthlightAutoNormalCache {
     bool reusable(const Entry& entry,UINT width,UINT height){
         if(entry.width!=width||entry.height!=height)return false;
         auto* normal=entry.normal;
+        if(!normal)return false;
         // A fixed lease table avoids allocation on hits; overflow disables recycling.
         if(leaseOverflow)return false;for(auto* texture:leased)if(texture==normal)return false;
         // A caller may have bound a borrowed map without taking a lease.
@@ -87,8 +88,8 @@ public:
     }
     void setMemoryPressure(bool on){memoryPressure=on;refreshBudget();states.clear();if(on&&disk)disk->trimUploads();}
     void trimMemory(){refreshBudget();states.clear();if(disk)disk->trimUploads();}
-    void endFrame(){if(disk)disk->endFrame();generated=0;visibleWorkingSet=false;if(memoryPressure)states.clear();if(++frame%60==0)refreshBudget();}
-    void report(){if(disk)disk->report();logf("AUTONORMAL cached=%zu bytes=%llu generated=%u hits=%u evicted=%u sourceBytes=%llu budgetMiB=%llu allocations=%u reused=%u generationDeferred=%u budgetRejected=%u visibleDeferred=%u diskPending=%u descriptionRejected=%u",entries.size(),(unsigned long long)bytes,builds,hits,evictions,(unsigned long long)sourceBytes,(unsigned long long)(budget>>20),allocations,reuses,generationDeferred,budgetRejected,visibleDeferred,diskPending,descriptionRejected);}
+    void endFrame(){for(size_t i=entries.size();i--;)if(!entries[i].normal)erase(i);if(disk)disk->endFrame();generated=0;visibleWorkingSet=false;if(memoryPressure)states.clear();if(++frame%60==0)refreshBudget();}
+    void report(){if(disk)disk->report();const size_t pending=std::count_if(entries.begin(),entries.end(),[](const Entry& e){return !e.normal;});logf("AUTONORMAL cached=%zu bytes=%llu generated=%u hits=%u evicted=%u sourceBytes=%llu budgetMiB=%llu allocations=%u reused=%u generationDeferred=%u budgetRejected=%u visibleDeferred=%u diskPending=%u descriptionRejected=%u pendingCache=%zu",entries.size()-pending,(unsigned long long)bytes,builds,hits,evictions,(unsigned long long)sourceBytes,(unsigned long long)(budget>>20),allocations,reuses,generationDeferred,budgetRejected,visibleDeferred,diskPending,descriptionRejected,pending);}
     Lease acquire(IDirect3DBaseTexture9* source,bool model=false){return Lease(*this,resolve(source,model));}
     IDirect3DTexture9* resolve(IDirect3DBaseTexture9* base,bool model=false){
         using P=NorthlightMaterialProfile;P::Scope timing(profile,P::NormalCache);
@@ -104,7 +105,7 @@ public:
         ++clock;const auto revision=NorthlightMaterialHeight::version(source);
         if(it!=entries.end()){
             if(revision!=it->version||(it->mutableSource&&!it->version&&frame-it->frame>=30))erase(size_t(it-entries.begin()));
-            else{recent=size_t(it-entries.begin());it->used=clock;it->lastUsedFrame=frame;++hits;if(profile)profile->count(P::NormalHit);return it->normal;}
+            else{recent=size_t(it-entries.begin());it->lastUsedFrame=frame;if(!it->normal){++diskPending;if(profile)profile->count(P::NormalMiss);return nullptr;}it->used=clock;++hits;if(profile)profile->count(P::NormalHit);return it->normal;}
         }
         if(profile)profile->count(P::NormalMiss);
         if(generated>=2){++generationDeferred;return nullptr;}
@@ -115,6 +116,12 @@ public:
         const UINT sourceLevels=source->GetLevelCount();
         const std::uint64_t cost=NorthlightAutoNormalMemory::mipBytes(D3DFMT_A8R8G8B8,width,height,0),sourceCost=NorthlightAutoNormalMemory::mipBytes(desc.Format,desc.Width,desc.Height,sourceLevels);
         constexpr std::uint64_t sourceBudget=128ull<<20;if(cost>budget||sourceCost>sourceBudget){++budgetRejected;return nullptr;}
+        // Zero-use pending entries are evicted before any usable map.
+        auto remember=[&](IDirect3DTexture9* normal,std::uint64_t storedBytes){
+            source->AddRef();try{entries.push_back({source,normal,storedBytes,sourceCost,normal?clock:0,revision,frame,frame,(desc.Usage&(D3DUSAGE_DYNAMIC|D3DUSAGE_RENDERTARGET))!=0||(desc.Pool==D3DPOOL_DEFAULT&&sourceLevels==1),model,width,height});
+                try{lookup[model].emplace(source,entries.size()-1);}catch(...){entries.pop_back();throw;}
+            }catch(...){source->Release();drop(normal);return static_cast<IDirect3DTexture9*>(nullptr);}recent=entries.size()-1;bytes+=storedBytes;sourceBytes+=sourceCost;if(!normal)visibleWorkingSet=false;return normal;
+        };
         // Do not snapshot/hash a disk source that the visible working set cannot admit.
         if(!entries.empty()&&(bytes+cost>budget||sourceBytes+sourceCost>sourceBudget||entries.size()>=256)){
             if(visibleWorkingSet){++visibleDeferred;return nullptr;}
@@ -123,7 +130,13 @@ public:
         }
         NorthlightMaterialMapPersistence::Probe persisted;
         if(disk){try{persisted=disk->probe(source,desc,model,polarity,details,balance,revision);}catch(...){}}
-        if(persisted.status==NorthlightMaterialMapPersistence::Status::Pending){++diskPending;return nullptr;}
+        if(persisted.status==NorthlightMaterialMapPersistence::Status::Pending){
+            // Reuse this frame's deferral through the same bounded source index.
+            // A null map expires at endFrame; ready jobs are retried next frame.
+            // Never evict a usable map merely to remember a pending request.
+            if(entries.size()<256&&sourceBytes+sourceCost<=sourceBudget)remember(nullptr,0);
+            ++diskPending;return nullptr;
+        }
         struct Recycled {IDirect3DTexture9* texture=nullptr;~Recycled(){drop(texture);}} recycled;
         while(!entries.empty()&&(bytes+cost>budget||sourceBytes+sourceCost>sourceBudget||entries.size()>=256)){
             auto oldest=std::min_element(entries.begin(),entries.end(),[](const Entry& a,const Entry& b){return a.used<b.used;});
@@ -170,8 +183,6 @@ public:
         }
         {P::Scope mips(profile,P::Mips,0,true);normal->SetAutoGenFilterType(D3DTEXF_LINEAR);normal->GenerateMipSubLevels();}
         if(disk&&!restored)try{disk->capture(persisted,normal,width,height);}catch(...){}
-        source->AddRef();try{entries.push_back({source,normal,cost,sourceCost,clock,revision,frame,frame,(desc.Usage&(D3DUSAGE_DYNAMIC|D3DUSAGE_RENDERTARGET))!=0||(desc.Pool==D3DPOOL_DEFAULT&&sourceLevels==1),model,width,height});
-            try{lookup[model].emplace(source,entries.size()-1);}catch(...){entries.pop_back();throw;}
-        }catch(...){source->Release();drop(normal);return nullptr;}recent=entries.size()-1;bytes+=cost;sourceBytes+=sourceCost;++generated;if(!restored)++builds;return normal;
+        normal=remember(normal,cost);if(normal){++generated;if(!restored)++builds;}return normal;
     }
 };

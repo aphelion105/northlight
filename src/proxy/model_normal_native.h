@@ -17,7 +17,7 @@ class NorthlightNativeModelNormals {
     Vertex* recentVertex=nullptr;Pixel* recentPixel=nullptr;
     IDirect3DSurface9* describedColor=nullptr;D3DSURFACE_DESC colorDescription{};
     IDirect3DSurface9* sceneDepth=nullptr;
-    D3DCAPS9 caps{};bool capable=false,linearTarget=false,blendTarget=false,enabled=false,lastComplete=false,allowed=false,complete=true,started=false,refused=false;
+    D3DCAPS9 caps{};bool capable=false,linearTarget=false,blendTarget=false,enabled=false,lastComplete=false,allowed=false,complete=true,started=false,refused=false,depthOnlySeen=false;
     const char* reason="none";
     unsigned probes=0,modelDraws=0,zeroDraws=0,builds=0,committed=0,fallbacks=0,coldPairs=0;
     template<class Shader> static bool code(Shader* shader,std::vector<std::uint32_t>& words){UINT bytes=0;
@@ -96,7 +96,7 @@ public:
     bool usesDepth(IDirect3DSurface9* value)const{return sceneDepth&&sceneDepth==value;}
     bool accepting()const{return enabled&&capable&&!refused&&complete;}
     void cancel(const char* cause){if(complete)reason=cause;complete=false;lastComplete=false;}
-    void beginFrame(){drop(sceneDepth);describedColor=nullptr;allowed=enabled&&lastComplete;complete=true;started=false;reason="none";probes=modelDraws=zeroDraws=builds=committed=fallbacks=coldPairs=0;}
+    void beginFrame(){drop(sceneDepth);describedColor=nullptr;allowed=enabled&&lastComplete;complete=true;started=depthOnlySeen=false;reason="none";probes=modelDraws=zeroDraws=builds=committed=fallbacks=coldPairs=0;}
     void reset(){beginFrame();lastComplete=allowed=false;refused=false;
         recentVertex=nullptr;recentPixel=nullptr;
         for(auto& item:vertices){for(auto*& shader:item.second.shader)drop(shader);drop(item.second.source);}vertices.clear();
@@ -116,11 +116,17 @@ public:
         if(!enabled||!capable||refused||!complete)return {submit(),false,false};
         // Receivers are opaque. Blended depth writers clear auxiliary RGB with
         // alpha=1 independently of their original native colour/alpha output.
-        const D3DRENDERSTATETYPE keys[]={D3DRS_ZENABLE,D3DRS_ZWRITEENABLE,D3DRS_ALPHABLENDENABLE,D3DRS_SRGBWRITEENABLE,D3DRS_ALPHATESTENABLE};DWORD values[5]={};
-        if(!(rasterReader&&rasterReader(rasterContext,keys,5,values)))
-            for(unsigned i=0;i<5;++i)if(FAILED(d->GetRenderState(keys[i],values+i)))return fallback("raster-state");
+        const D3DRENDERSTATETYPE keys[]={D3DRS_ZENABLE,D3DRS_ZWRITEENABLE,D3DRS_ALPHABLENDENABLE,D3DRS_SRGBWRITEENABLE,D3DRS_ALPHATESTENABLE,D3DRS_COLORWRITEENABLE};DWORD values[6]={};
+        if(!(rasterReader&&rasterReader(rasterContext,keys,6,values)))
+            for(unsigned i=0;i<6;++i)if(FAILED(d->GetRenderState(keys[i],values+i)))return fallback("raster-state");
         const auto z=values[0],write=values[1],blend=values[2],srgb=values[3],alpha=values[4];
         if(!z||!write)return {submit(),false,false};
+        // The replay queue ignores draws without scene RGB writes too. Keep
+        // previous normals; their stored distance is checked against final depth.
+        if(!receiver&&!(values[5]&7)){depthOnlySeen=true;const auto hr=submit();if(FAILED(hr))cancel("native-submit");return {hr,false,false};}
+        // A later RGB depth writer could fail native Z against that invisible
+        // occluder but pass the replay's private depth. Retain exact rollback.
+        if(depthOnlySeen)return fallback("depth-only-before-rgb");
         if(srgb&&!linearTarget)return fallback("srgb-format");
         if((blend||alpha)&&(!blendTarget||!(caps.PrimitiveMiscCaps&D3DPMISCCAPS_MRTPOSTPIXELSHADERBLENDING)))return fallback("post-blend");
         if(blend){

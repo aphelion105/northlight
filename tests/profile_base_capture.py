@@ -12,8 +12,10 @@ def main():
  p=argparse.ArgumentParser(__doc__);p.add_argument('--backend',type=Path,required=True);p.add_argument('--output',type=Path,required=True)
  p.add_argument('--normal-header',type=Path,help='Frozen model_normal_renderer.h for a preparation control using the same shaders and fixture.')
  p.add_argument('--range-reference',type=Path,help='Compare a frozen model_normal_range.h and current range cache in one executable with ABBA blocks.')
+ p.add_argument('--renderer-reference',type=Path,help='Compare a frozen model_normal_renderer.h and current capture in one executable with ABBA blocks.')
  a=p.parse_args()
- if a.range_reference and a.normal_header:p.error('Range comparison uses the current capture implementation on both sides.')
+ compare=a.range_reference or a.renderer_reference
+ if sum(bool(x) for x in (a.range_reference,a.renderer_reference,a.normal_header))>1:p.error('Choose one reference mode.')
  processes();fp.use_source_modules();out=a.output.resolve();out.mkdir(parents=True,exist_ok=False);overlay=out/'probe';overlay.mkdir();shutil.copytree(ROOT/'src',out/'baseline/src')
  for name in ['base_capture_pipeline_gpu.cpp','model_normals_gpu.cpp','model_normal_batch.inc']:
   (out/'baseline/tests').mkdir(exist_ok=True);shutil.copyfile(ROOT/'tests'/name,out/'baseline/tests'/name)
@@ -39,11 +41,14 @@ def main():
  insert('const Pending* previous=nullptr;','phase.next(2);',True)
  insert('ok=saved.restore()&&ok;\n                ok=(SUCCEEDED(batchState->Apply())','phase.next(3);',True)
  insert('clearPending();bad|=!ok;return ok;','phase.next(4);',True)
+ if compare:header=normal_input.read_text() # Both timed implementations omit phase probes entirely.
  (overlay/'model_normal_renderer.h').write_bytes(header.encode())
  if a.range_reference:
   ref=a.range_reference.resolve();text=ref.read_text(encoding='utf-8').replace('NorthlightModelNormalRange','ReferenceModelNormalRange')
   (overlay/'range_reference.h').write_text(text,encoding='utf-8',newline='\n')
   (overlay/'range_reference_model.h').write_text(header.replace('NorthlightModelNormals','NorthlightModelNormalsReference').replace('"model_normal_range.h"','"range_reference.h"').replace('NorthlightModelNormalRange','ReferenceModelNormalRange'),encoding='utf-8',newline='\n')
+ if a.renderer_reference:
+  (overlay/'range_reference_model.h').write_text(a.renderer_reference.read_text(encoding='utf-8').replace('NorthlightModelNormals','NorthlightModelNormalsReference'),encoding='utf-8',newline='\n')
  from world_scene_builder import Assets
  from extract_signatures import variants
  assets=Assets(archives='stock');model='world/generic/human/passive doodads/lamps/stormwindstreetlamp01.m2'
@@ -59,6 +64,7 @@ def main():
  sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
  inputs=[ROOT/'tests/base_capture_pipeline_gpu.cpp',ROOT/'tests/profile_base_capture.py',ROOT/'tests/model_normals_gpu.cpp',ROOT/'tests/model_normal_batch.inc',normal_input,a.backend.resolve(),out/'lamp.mesh',out/'model-vs3-rigid.bin',out/'ModelPS.bin']
  if a.range_reference:inputs.append(a.range_reference.resolve())
+ if a.renderer_reference:inputs.append(a.renderer_reference.resolve())
  report=dict(pass_=False,source_identity=source_identity(ROOT),normal_header_override=str(normal_input) if a.normal_header else None,inputs={str(p):sha(p) for p in inputs},model=model,model_sha256=hashlib.sha256(data).hexdigest(),skin_sha256=hashlib.sha256(skin).hexdigest(),vertices=hi-lo+1,triangles=len(used)//3,
   game_fps_measured=False,whole_scene_replay=False,scope='Controlled repeated stock streetlamp subset: 133 near + 310 far draws; 4K MSAA2. Actual ExtensionDevice mirror, shared source pool, resident GPU store, no AutoBump or pose/source handoff. Native submission is separate. Capture CPU includes per-draw clocks; instrumented phases include QPC overhead. Replay GPU excludes preceding game draws; isolated from game/other benchmarks.')
  env={k:v for k,v in fp.zig_env().items() if not k.startswith(('NORTHLIGHT_','DXVK_'))};env.update(DISABLE_VULKAN_OBS_CAPTURE='1',DXVK_CONFIG='d3d9.customVendorId = 1002',DXVK_LOG_PATH=str(out))
@@ -67,15 +73,15 @@ def main():
  def run(label,cmd):
   processes();r=subprocess.run(list(map(str,cmd)),env=env,cwd=out,capture_output=True,text=True,timeout=300);(out/(label+'.log')).write_bytes((r.stdout+r.stderr).encode());print(label,r.returncode,flush=True);r.check_returncode();return r.stdout
  try:
-  exe=out/'base-capture.exe';run('compile',[fp.zig(),'c++','-target','x86-windows-gnu','-O2','-UNDEBUG','-std=c++17','-Wno-microsoft-exception-spec',*(['-DNORTHLIGHT_MODEL_NORMALS_RANGE_REFERENCE=1'] if a.range_reference else []),'-I'+str(overlay),*fp.test_include_flags(),ROOT/'tests/base_capture_pipeline_gpu.cpp',fp.src('world_gi.cpp'),'-luser32','-o',exe])
+  exe=out/'base-capture.exe';run('compile',[fp.zig(),'c++','-target','x86-windows-gnu','-O2','-UNDEBUG','-std=c++17','-Wno-microsoft-exception-spec',*(['-DNORTHLIGHT_MODEL_NORMALS_RANGE_REFERENCE=1'] if compare else []),'-I'+str(overlay),*fp.test_include_flags(),ROOT/'tests/base_capture_pipeline_gpu.cpp',fp.src('world_gi.cpp'),'-luser32','-o',exe])
   text=run('baseline',[exe,a.backend.resolve(),out]);assert 'BASE_CAPTURE_PROFILE_PASS' in text
-  if a.range_reference:
+  if compare:
    rows=[{k:float(v) for k,v in re.findall(r'(\w+)=([0-9.]+)',line)} for line in text.splitlines() if line.startswith('CAPTURE_COMPARE_FRAME ')]
    assert len(rows)==512 and all(r['sourceBytes']==0 for r in rows if not r['warm'])
-   metrics=('captureMs','flushCpuMs','replayGpuMs','nativeSubmitMs','totalCpuMs','queued','culled','cached')
+   metrics=('captureMs','flushCpuMs','replayGpuMs','nativeSubmitMs','totalCpuMs','queued','culled','cached','submitted')
    block_rows=[dict(mode=next(r['mode'] for r in rows if r['block']==block),block=block,**{key:statistics.median(r[key] for r in rows if r['block']==block) for key in metrics}) for block in range(4,16)]
    comparison={name:{key:statistics.median(r[key] for r in block_rows if r['mode']==mode) for key in metrics} for mode,name in ((0,'before'),(1,'current'))}
-   report.update(pass_=True,range_reference=str(a.range_reference.resolve()),comparison=comparison,blocks=block_rows,identical_pixels=True,same_executable=True,order='ABBA',warm_blocks=4,frames_per_block=32,raw_frames=rows)
+   report.update(pass_=True,range_reference=str(a.range_reference.resolve()) if a.range_reference else None,renderer_reference=str(a.renderer_reference.resolve()) if a.renderer_reference else None,comparison=comparison,blocks=block_rows,identical_pixels=True,same_executable=True,order='ABBA',warm_blocks=4,frames_per_block=32,raw_frames=rows)
    print(json.dumps(comparison,indent=2));return
   frames=[];phases=[];frame=None
   for line in text.splitlines():

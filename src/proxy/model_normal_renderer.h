@@ -79,10 +79,10 @@ class NorthlightModelNormals {
         NorthlightDrawSnapshot::Mesh mesh;
         std::shared_ptr<const NorthlightDrawSnapshot::Mesh> sharedMesh;
         IDirect3DVertexBuffer9* gpuVertex[4]={};IDirect3DIndexBuffer9* gpuIndex=nullptr;
-        NorthlightReplayGPU::Placement placement;bool resident=false,streamed=false,redundant=false,laterDuplicate=false,nativeProbed=false,nativeWritten=false;
+        NorthlightReplayGPU::Placement placement;bool resident=false,streamed=false,redundant=false,nativeProbed=false,nativeWritten=false;
         const NorthlightDrawSnapshot::Mesh& geometry()const{return sharedMesh?*sharedMesh:mesh;}
         IDirect3DBaseTexture9* textures[16]={};DWORD samplers[16][13]={};
-        void recycle(){resident=streamed=redundant=laterDuplicate=nativeProbed=nativeWritten=false;for(auto*& b:gpuVertex)release(b);release(gpuIndex);sharedMesh.reset();release(declaration);for(auto*& t:textures)release(t);}
+        void recycle(){resident=streamed=redundant=nativeProbed=nativeWritten=false;for(auto*& b:gpuVertex)release(b);release(gpuIndex);sharedMesh.reset();release(declaration);for(auto*& t:textures)release(t);}
         ~Pending(){recycle();}
     };
     Pending* nativeCandidate=nullptr;unsigned nativeCommittedPackets=0;
@@ -104,16 +104,24 @@ class NorthlightModelNormals {
 #ifdef NORTHLIGHT_MODEL_NORMALS_TEST
         if(!mergeEnabled||!deduplicateEnabled)return;
 #endif
-        // Keep the first depth occluder and last coplanar colour writer. A
-        // middle identical opaque draw changes neither final result nor depth.
+        // This private pass uses opaque overwrite, depth writes and LESS_EQUAL.
+        // Only the last identical draw can win a depth tie; earlier copies
+        // cannot change the final minimum depth or colour at any pixel.
         // Keep packets alive: their constant banks may be shared by later draws.
         std::array<std::uint16_t,4096> recent{};
-        for(size_t at=pending.size();at--;){auto& p=*pending[at];const auto& m=p.geometry();p.redundant=p.laterDuplicate=false;
+        for(size_t at=pending.size();at--;){auto& p=*pending[at];const auto& m=p.geometry();p.redundant=false;
             if(!p.resident||p.streamed||!p.gpuIndex||!p.gpuVertex[0]||!m.indexed||m.topology!=D3DPT_TRIANGLELIST)continue;
             size_t hash=reinterpret_cast<std::uintptr_t>(p.gpuIndex)>>4;
             const auto word=[&](size_t value){hash^=value+size_t(0x9e3779b9u)+(hash<<6)+(hash>>2);};
             word(reinterpret_cast<std::uintptr_t>(p.gpuVertex[0])>>4);word(p.placement.vertexBase);word(p.placement.indexStart);
             word(reinterpret_cast<std::uintptr_t>(p.vertex->shader)>>4);word(reinterpret_cast<std::uintptr_t>(p.pixel)>>4);word(p.raster[0]);
+            // Instances share geometry. Sample the root palette (or the last
+            // captured rows) so different poses do not evict every duplicate.
+            // sameCapture still compares the entire captured state on a hit.
+            const unsigned end=p.vertex->first+p.vertex->count;
+            const unsigned row=p.vertex->first<=31&&end>=34?31:std::max(p.vertex->first,end>3?end-3:0u);
+            for(unsigned i=row*4;i<std::min(end,row+3)*4;++i){std::uint32_t value;std::memcpy(&value,p.constants+i,4);word(value);}
+            hash^=hash>>16;hash*=size_t(0x7feb352du);hash^=hash>>15;hash*=size_t(0x846ca68bu);hash^=hash>>16;
             auto& slot=recent[hash&(recent.size()-1)];const auto candidate=slot;slot=std::uint16_t(at+1);
             if(!candidate)continue;auto& q=*pending[candidate-1];const auto& n=q.geometry();
             // A collision only misses an optimization. One candidate bounds
@@ -122,7 +130,7 @@ class NorthlightModelNormals {
                p.placement.vertexBase==q.placement.vertexBase&&p.placement.indexStart==q.placement.indexStart&&
                p.placement.absoluteIndices==q.placement.absoluteIndices&&m.vertexCount==n.vertexCount&&
                m.primitiveCount==n.primitiveCount&&m.streams[0].stride==n.streams[0].stride&&sameCapture(p,q)){
-                q.redundant=q.laterDuplicate;p.laterDuplicate=true;
+                p.redundant=true;
             }
         }
     }

@@ -11,13 +11,18 @@ NorthlightCapturePhases::Stats<8> baseCapture,baseRecord,baseFlush;
 bool baseProbe=false;
 static double captureTicks(const NorthlightCapturePhases::Stats<8>& s){LARGE_INTEGER hz;QueryPerformanceFrequency(&hz);long long total=0;for(auto t:s.ticks)total+=t;return double(total)*1000/hz.QuadPart;}
 static void capturePrint(const char* group,const NorthlightCapturePhases::Stats<8>& s){LARGE_INTEGER hz;QueryPerformanceFrequency(&hz);for(unsigned i=0;i<8;++i)if(s.ticks[i])std::printf("CAPTURE_PHASE group=%s phase=%u ms=%.9f\n",group,i,double(s.ticks[i])*1000/hz.QuadPart);}
+struct BaseCaptureCalls:CaptureCalls {
+    using CaptureCalls::CaptureCalls;unsigned submissions=0;
+    HRESULT STDMETHODCALLTYPE DrawIndexedPrimitive(D3DPRIMITIVETYPE t,INT b,UINT m,UINT n,UINT s,UINT c)override{++submissions;return real->DrawIndexedPrimitive(t,b,m,n,s,c);}
+    HRESULT STDMETHODCALLTYPE DrawIndexedPrimitiveUP(D3DPRIMITIVETYPE t,UINT m,UINT n,UINT c,const void* i,D3DFORMAT f,const void* v,UINT s)override{++submissions;return real->DrawIndexedPrimitiveUP(t,m,n,c,i,f,v,s);}
+};
 int main(int argc,char** argv){
     assert(argc==3);std::setvbuf(stdout,nullptr,_IONBF,0);const std::string dir=std::string(argv[2])+"/";
     HWND window=CreateWindowExW(0,L"STATIC",L"",WS_OVERLAPPED,0,0,64,64,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);assert(window);
     HMODULE module=LoadLibraryA(argv[1]);assert(module);auto create=reinterpret_cast<IDirect3D9*(WINAPI*)(UINT)>(reinterpret_cast<void*>(GetProcAddress(module,"Direct3DCreate9")));assert(create);auto* api=create(D3D_SDK_VERSION);assert(api);
     D3DPRESENT_PARAMETERS pp{};pp.Windowed=TRUE;pp.hDeviceWindow=window;pp.BackBufferWidth=pp.BackBufferHeight=64;pp.BackBufferFormat=D3DFMT_X8R8G8B8;pp.SwapEffect=D3DSWAPEFFECT_DISCARD;pp.PresentationInterval=D3DPRESENT_INTERVAL_IMMEDIATE;
     IDirect3DDevice9* raw=nullptr;ok(api->CreateDevice(0,D3DDEVTYPE_HAL,window,D3DCREATE_HARDWARE_VERTEXPROCESSING|D3DCREATE_FPU_PRESERVE,&pp,&raw));
-    CaptureCalls calls(raw);DeviceMirror mirror;ExtensionDevice extension(&calls,&mirror);MirrorGuard held(mirror.gate);d=&extension;
+    BaseCaptureCalls calls(raw);DeviceMirror mirror;ExtensionDevice extension(&calls,&mirror);MirrorGuard held(mirror.gate);d=&extension;
     const auto mesh=read(dir+"lamp.mesh");unsigned nv,ni;std::memcpy(&nv,mesh.data()+4,4);std::memcpy(&ni,mesh.data()+8,4);assert(mesh.size()==12+nv*48+ni*4);
     IDirect3DVertexBuffer9* vb=nullptr;IDirect3DIndexBuffer9* ib=nullptr;void* memory=nullptr;
     ok(d->CreateVertexBuffer(nv*48,0,0,D3DPOOL_MANAGED,&vb,nullptr));ok(vb->Lock(0,0,&memory,0));std::memcpy(memory,mesh.data()+12,nv*48);ok(vb->Unlock());
@@ -60,7 +65,7 @@ int main(int argc,char** argv){
         // The bounded range proof may decline during cold shader compilation.
         // Such draws retain their ordinary capture, rather than losing geometry.
         assert(queued>=Near&&queued+culled==Near+Far);
-        ok(frequency->Issue(D3DISSUE_END));ok(start->Issue(D3DISSUE_END));const auto flushBegin=Clock::now();
+        calls.submissions=0;ok(frequency->Issue(D3DISSUE_END));ok(start->Issue(D3DISSUE_END));const auto flushBegin=Clock::now();
         // Match private extension replay: invalidate the mirror around save/replay/restore.
         {ExtensionDevice::RawScope privateWork(extension);assert(normals->finishCaptures());}
         const auto finish=Clock::now();ok(end->Issue(D3DISSUE_END));ok(d->EndScene());const auto a=wait(start),b=wait(end),hz=wait(frequency);
@@ -69,7 +74,7 @@ int main(int argc,char** argv){
         if(frame==0||frame==16||frame==17||frame%32==31){auto image=capturedPixels(normals->texture(),W,H);assert(std::any_of(image.begin(),image.end(),[](unsigned char v){return v!=0;}));if(reference.empty())reference=std::move(image);else assert(image==reference);}
         if(frame>=16)assert(normals->readSourceBytes()==0&&normals->cachedDraws()==queued);
 #ifdef NORTHLIGHT_MODEL_NORMALS_RANGE_REFERENCE
-        std::printf("CAPTURE_COMPARE_FRAME mode=%u block=%u warm=%u captureMs=%.9f flushCpuMs=%.9f replayGpuMs=%.9f nativeSubmitMs=%.9f totalCpuMs=%.9f queued=%zu culled=%u sourceBytes=%zu cached=%u\n",mode,block,unsigned(block<4),captureMs,flushMs,gpu,nativeMs,totalMs,queued,culled,normals->readSourceBytes(),normals->cachedDraws());
+        std::printf("CAPTURE_COMPARE_FRAME mode=%u block=%u warm=%u captureMs=%.9f flushCpuMs=%.9f replayGpuMs=%.9f nativeSubmitMs=%.9f totalCpuMs=%.9f queued=%zu culled=%u sourceBytes=%zu cached=%u submitted=%u\n",mode,block,unsigned(block<4),captureMs,flushMs,gpu,nativeMs,totalMs,queued,culled,normals->readSourceBytes(),normals->cachedDraws(),calls.submissions);
 #else
         std::printf("CAPTURE_FRAME frame=%u warm=%u profiled=%u captureMs=%.9f flushCpuMs=%.9f replayGpuMs=%.9f nativeSubmitMs=%.9f totalCpuMs=%.9f queued=%zu culled=%u sourceBytes=%zu cached=%u\n",frame,unsigned(frame<16),unsigned(frame%2==0),captureMs,flushMs,gpu,nativeMs,totalMs,queued,culled,normals->readSourceBytes(),normals->cachedDraws());
         if(frame%2==0){capturePrint("capture_inclusive",baseCapture);capturePrint("record",baseRecord);capturePrint("flush",baseFlush);}

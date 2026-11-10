@@ -111,8 +111,9 @@ int main(int argc,char** argv){
             if(scenario==22){IDirect3DSurface9* previous=nullptr;ok(d->GetRenderTarget(0,&previous));ok(d->SetRenderTarget(0,sky.s));ok(d->Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0));ok(d->SetRenderTarget(0,previous));previous->Release();}
             unsigned nativeDraws=0;ok(d->BeginScene());
             auto occluder=[&]{
-                n->beginNativeDraw();ok(d->SetVertexShader(nullptr));ok(d->SetFVF(D3DFVF_XYZRHW|D3DFVF_TEX1));ok(d->SetPixelShader(occluderPS));ok(d->SetRenderState(D3DRS_ALPHATESTENABLE,FALSE));
-                if(scenario==12||scenario>=14){ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE));
+                n->beginNativeDraw();ok(d->SetVertexShader(nullptr));ok(d->SetFVF(D3DFVF_XYZRHW|D3DFVF_TEX1));ok(d->SetPixelShader(scenario>=24?nullptr:occluderPS));ok(d->SetRenderState(D3DRS_ALPHATESTENABLE,FALSE));
+                if(scenario>=24)ok(d->SetRenderState(D3DRS_COLORWRITEENABLE,scenario%2?8:0));
+                if(scenario==12||(scenario>=14&&scenario<=22)){ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE));
                     ok(d->SetRenderState(D3DRS_SRCBLEND,scenario==14||scenario==16?D3DBLEND_ONE:D3DBLEND_SRCALPHA));
                     ok(d->SetRenderState(D3DRS_DESTBLEND,scenario==15||scenario==16?D3DBLEND_ZERO:scenario==17?D3DBLEND_ONE:D3DBLEND_INVSRCALPHA));
                     ok(d->SetRenderState(D3DRS_BLENDOP,scenario==18?D3DBLENDOP_SUBTRACT:D3DBLENDOP_ADD));}
@@ -122,6 +123,7 @@ int main(int argc,char** argv){
                 auto submit=[&]{return n->nativeDraw([&]{return d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,q,sizeof(Quad));},scenario!=6&&scenario<12,proof);};
                 if(scenario==22){HRESULT hr=E_FAIL;assert(skyCapture.draw(d,sky.s,false,submit,hr));ok(hr);}else ok(submit());
                 ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE));ok(d->SetRenderState(D3DRS_ZWRITEENABLE,TRUE));ok(d->SetRenderState(D3DRS_SRGBWRITEENABLE,FALSE));ok(d->SetRenderState(D3DRS_BLENDOP,D3DBLENDOP_ADD));
+                if(scenario>=24)ok(d->SetRenderState(D3DRS_COLORWRITEENABLE,15));
                 ok(d->SetVertexDeclaration(decl));
             };
             if(scenario==2)occluder();
@@ -150,8 +152,9 @@ int main(int argc,char** argv){
                 DWORD mask=0;ok(raw->GetRenderState(D3DRS_COLORWRITEENABLE1,&mask));assert(mask==(timing?15u:7u));
                 if(scenario==4&&i==0){n->nativeDepthChanged();ok(d->Clear(0,nullptr,D3DCLEAR_ZBUFFER,0,1,0));}
                 if(scenario==5&&i==0)n->beforeTextureWrite(checker);
+                if(scenario>=26&&i==0)occluder();
             }
-            if(scenario==3||scenario==6||(scenario>=12&&scenario<=22))occluder();
+            if(scenario==3||scenario==6||(scenario>=12&&scenario<=22)||scenario==24||scenario==25)occluder();
             assert(nativeDraws==N);assert(n->finishCaptures(true));ok(d->EndScene());assert(n->texture());
             if(timing)return ModelNormalPacketTestAccess::committed(*n);
             if(scenario==7)ok(d->StretchRect(msColor,nullptr,color.s,nullptr,D3DTEXF_NONE));
@@ -191,6 +194,8 @@ int main(int argc,char** argv){
         frame(false,13);assert(!frame(true,13));ready(13);
         frame(false,12);assert(!frame(true,12));ready(12);assert(frame(true,12)>0);
         for(unsigned blended:{14u,15u,16u,19u,20u,22u,23u}){frame(false,blended);assert(!frame(true,blended));ready(blended);assert(frame(true,blended)>0);}
+        for(unsigned depthOnly:{24u,25u}){frame(false,depthOnly);assert(!frame(true,depthOnly));ready(depthOnly);assert(frame(true,depthOnly)>0);}
+        for(unsigned interleaved:{26u,27u}){frame(false,interleaved);assert(!frame(true,interleaved));assert(!frame(true,interleaved));}
         for(unsigned rejected:{17u,18u}){frame(false,rejected);assert(!frame(true,rejected));assert(!frame(true,rejected));}
         if(msColor){frame(false,7);assert(!frame(true,7));assert(!frame(true,7));assert(ModelNormalPacketTestAccess::stats(*n).find("modelDraws=0 ")!=std::string::npos);}
         for(unsigned changed:{8u,9u,10u}){frame(false,changed);const auto changedColor=referenceColor,changedNormals=referenceNormals;frame(false);ready();referenceColor=changedColor;referenceNormals=changedNormals;assert(!frame(true,changed));assert(!frame(true,changed));assert(ModelNormalPacketTestAccess::stats(*n).find("modelDraws=0 ")!=std::string::npos);}
