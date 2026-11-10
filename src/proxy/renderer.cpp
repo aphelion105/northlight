@@ -449,7 +449,8 @@ class Device final : public GuardedMirrorDevice {
     IDirect3DTexture9 *scene = nullptr, *depthTex = nullptr, *ao = nullptr, *aoRaw = nullptr;
     IDirect3DSurface9 *sceneSurface = nullptr, *aoSurface = nullptr, *aoRawSurface = nullptr, *worldDepth = nullptr;
     D3DSURFACE_DESC worldDepthDesc={};bool worldDepthDescKnown=false; // 0.3.196 (task 12): worldDepth's desc (a held reference, so the object and its desc are fixed); cleared when worldDepth is dropped
-    IDirect3DPixelShader9 *aoPS = nullptr, *aoBlurPS = nullptr, *aoContactBloomPS = nullptr, *aoOnlyPS = nullptr, *contactBloomPS = nullptr, *compositePS = nullptr;
+    IDirect3DPixelShader9 *aoPS = nullptr, *aoBlurPS = nullptr, *aoBlurNoWaterPS = nullptr, *aoContactBloomPS = nullptr, *aoOnlyPS = nullptr, *contactBloomPS = nullptr, *compositePS = nullptr;
+    bool aoBlurNoWaterRefused=false;
     std::unique_ptr<NorthlightAOActorStencil> aoActorMask;
     IDirect3DPixelShader9 *aoActorPreparePS=nullptr, *aoActorPS=nullptr, *aoActorAlphaPS=nullptr;
     unsigned aoActorFrame=~0u;bool aoActorOn=false,aoActorDrawKnown=false,aoActorDrawSkin=false,aoActorDepthWrite=false,aoActorUsed=false;
@@ -1157,7 +1158,7 @@ private:
         drop(aoActorPreparePS);drop(aoActorPS);drop(aoActorAlphaPS);aoActorShaderFailed=false;
         rainMrtUnbind();stateBlocks.clear();clearFrame();maskFormatFor=nullptr;maskFormatValue=0;maskStencil=false;maskDsId=nullptr; /* 0.3.212 (task 32): the depth may change with the device */
         drop(sceneSurface); drop(aoSurface); drop(aoRawSurface); drop(scene); drop(depthTex); drop(ao); drop(aoRaw);drop(rainMaskMS);drop(rainMaskSurface);drop(rainMask);drop(rainDepth);rainMaskFailed=false; /* 0.3.202 (rain) */
-        drop(aoPS); drop(aoBlurPS); drop(aoContactBloomPS); drop(aoOnlyPS); drop(contactBloomPS); drop(compositePS);drop(rainMrtPS);drop(rainScrubPS); width = height = 0;
+        drop(aoPS); drop(aoBlurPS); drop(aoBlurNoWaterPS);aoBlurNoWaterRefused=false;drop(aoContactBloomPS); drop(aoOnlyPS); drop(contactBloomPS); drop(compositePS);drop(rainMrtPS);drop(rainScrubPS); width = height = 0;
     }
     bool error(HRESULT hr, const char* stage) {
         if (SUCCEEDED(hr)) return false;
@@ -1198,6 +1199,7 @@ private:
                 if(error(ext->CreatePixelShader(shaders[aoQuality][aoMethod],&aoOnlyPS),"AO alpha shader"))return false;
             }
             if (!aoBlurPS && error(ext->CreatePixelShader(kAoBlurShader, &aoBlurPS), "AO blur shader")) return false;
+            if(!aoBlurNoWaterPS&&!aoBlurNoWaterRefused&&FAILED(ext->CreatePixelShader(kAoBlurNoWaterShader,&aoBlurNoWaterPS))){drop(aoBlurNoWaterPS);aoBlurNoWaterRefused=true;}
             if (!contactBloomPS && error(ext->CreatePixelShader(kContactBloomShader, &contactBloomPS), "contact bloom shader")) return false;
             if (!compositePS && error(ext->CreatePixelShader(kCompositeShader, &compositePS), "composite shader")) return false;
         }
@@ -1571,7 +1573,7 @@ private:
             LONGLONG aoBlurSetup=0,aoBlurSubmit=0;
             {CpuScope timing(timeAOBlur?&aoBlurSetup:nullptr);
              if (error(ext->SetRenderTarget(0,aoSurface),"AO blur render target")) return;
-             bindLegacyFog();ext->SetTexture(2,aoRaw);ext->SetTexture(0,aoRaw);ext->SetPixelShader(aoBlurPS);}
+             bindLegacyFog();ext->SetTexture(2,aoRaw);ext->SetTexture(0,aoRaw);ext->SetPixelShader(!waterMask&&aoBlurNoWaterPS?aoBlurNoWaterPS:aoBlurPS);}
             // Separate state/resource preparation from the draw interval. Both
             // timestamps still include command-stream gaps and dependencies.
             gpuProfile->mark("AOBlurSetup");
@@ -3354,9 +3356,11 @@ public:
         // barriers do not depend on the backend's read-back Lock flags.
         autoBump->setDeferredCapture(true);
         autoBump->setTrustedConstantEpochSource(ext->trustedConstantSource());
-        autoBump->setRasterStateSource(static_cast<IDirect3DDevice9*>(ext),[](void* context,const D3DRENDERSTATETYPE* keys,unsigned count,DWORD* out){return static_cast<ExtensionDevice*>(static_cast<IDirect3DDevice9*>(context))->knownRenderStates(keys,count,out);});
+        const auto rasterSource=[](void* context,const D3DRENDERSTATETYPE* keys,unsigned count,DWORD* out){return static_cast<ExtensionDevice*>(static_cast<IDirect3DDevice9*>(context))->knownRenderStates(keys,count,out);};
+        autoBump->setRasterStateSource(static_cast<IDirect3DDevice9*>(ext),rasterSource);
+        world->setCaptureRasterStateSource(static_cast<IDirect3DDevice9*>(ext),rasterSource);
         autoBump->setEmptyTargetSource(static_cast<IDirect3DDevice9*>(ext),[](void* context){return static_cast<ExtensionDevice*>(static_cast<IDirect3DDevice9*>(context))->emptyAuxiliaryTargets();});
-        modelNormals->setRasterStateSource(static_cast<IDirect3DDevice9*>(ext),[](void* context,const D3DRENDERSTATETYPE* keys,unsigned count,DWORD* out){return static_cast<ExtensionDevice*>(static_cast<IDirect3DDevice9*>(context))->knownRenderStates(keys,count,out);});
+        modelNormals->setRasterStateSource(static_cast<IDirect3DDevice9*>(ext),rasterSource);
         autoBump->setSamplerStateSource(static_cast<IDirect3DDevice9*>(ext),[](void* context,DWORD stage,unsigned mask,DWORD* out){return static_cast<ExtensionDevice*>(static_cast<IDirect3DDevice9*>(context))->knownSamplerStates(stage,mask,out);});
         modelNormals->setSamplerStateSource(static_cast<IDirect3DDevice9*>(ext),[](void* context,DWORD stage,unsigned mask,DWORD* out){return static_cast<ExtensionDevice*>(static_cast<IDirect3DDevice9*>(context))->knownSamplerStates(stage,mask,out);});
         world->setNativeSamplerStateSource(static_cast<IDirect3DDevice9*>(ext),[](void* context,DWORD stage,unsigned mask,DWORD* out){return static_cast<ExtensionDevice*>(static_cast<IDirect3DDevice9*>(context))->knownSamplerStates(stage,mask,out);});

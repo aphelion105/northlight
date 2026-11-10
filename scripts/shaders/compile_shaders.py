@@ -17,7 +17,7 @@ def main():
     compatible = '--compatible-compiler' in sys.argv
     selected = next((a.split("=", 1)[1].split(",") for a in sys.argv[1:] if a.startswith("--entries=")), None)
     actor_names = {"AOActorPrepare", "HBAOActorContactBloom", "GTAOActorContactBloom", "HBAOActorOnly", "GTAOActorOnly"}
-    names = actor_names | {"AO", "AOContactBloom", "HDAOContactBloom", "HBAOPlusContactBloom", "GTAOContactBloom", "ContactBloom", "AOBlur", "Composite", "RainMaskMRT", "RainScrub"}
+    names = actor_names | {"AO", "AOContactBloom", "HDAOContactBloom", "HBAOPlusContactBloom", "GTAOContactBloom", "ContactBloom", "AOBlur", "AOBlurNoWater", "Composite", "RainMaskMRT", "RainScrub"}
     names |= {method + "ContactBloom" + quality for method in ("HDAO", "HBAOPlus", "GTAO") for quality in ("Medium", "Low")}
     only_entries = [("AOOnly", "kAoOnlyShader", "ps_3_0")]
     only_entries += [(method + "Only" + quality, "k" + symbol + "Only" + quality + "Shader", "ps_3_0")
@@ -44,7 +44,7 @@ def main():
                                   ("HDAOContactBloom", "kHdaoContactBloomShader", "ps_3_0"), ("HBAOPlusContactBloom", "kHbaoPlusContactBloomShader", "ps_3_0"), ("GTAOContactBloom", "kGtaoContactBloomShader", "ps_3_0"),
                                   ("HDAOContactBloomMedium", "kHdaoContactBloomMediumShader", "ps_3_0"), ("HBAOPlusContactBloomMedium", "kHbaoPlusContactBloomMediumShader", "ps_3_0"), ("GTAOContactBloomMedium", "kGtaoContactBloomMediumShader", "ps_3_0"),
                                   ("HDAOContactBloomLow", "kHdaoContactBloomLowShader", "ps_3_0"), ("HBAOPlusContactBloomLow", "kHbaoPlusContactBloomLowShader", "ps_3_0"), ("GTAOContactBloomLow", "kGtaoContactBloomLowShader", "ps_3_0"),
-                                  ("AOBlur", "kAoBlurShader", "ps_3_0"), ("Composite", "kCompositeShader", "ps_3_0"),
+                                  ("AOBlur", "kAoBlurShader", "ps_3_0"), ("AOBlurNoWater", "kAoBlurNoWaterShader", "ps_3_0"), ("Composite", "kCompositeShader", "ps_3_0"),
                                   ("AOActorPrepare", "kAoActorPrepareShader", "ps_3_0"), ("HBAOActorContactBloom", "kHbaoActorContactBloomShader", "ps_3_0"), ("GTAOActorContactBloom", "kGtaoActorContactBloomShader", "ps_3_0"),
                                   ("HBAOActorOnly", "kHbaoActorOnlyShader", "ps_3_0"), ("GTAOActorOnly", "kGtaoActorOnlyShader", "ps_3_0"),
                                   ("RainMaskMRT", "kRainMaskMrtShader", "ps_2_0"), ("RainScrub", "kRainScrubShader", "ps_2_0"), *only_entries, *assao_entries):

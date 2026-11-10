@@ -1,7 +1,7 @@
 {
-  "source_sha256": "f6665501929c2d9ce0b77a3ac4f08bbdd0c77590b116ed0551c43b7325441c92",
+  "source_sha256": "2402d469fcd8bc0a2a0b5fb9a7da1bc88aeae4d3015f5defd9be806061341db0",
   "rain_source_sha256": "10948a355dc52e824d9ae61b5251a5146a20955295070dbe9ce749dec0eac172",
-  "actor_source_sha256": "9a3d86f15b0ced6bb85a13977d8c668b1ca69f739f04fcfb83b3e14f2bc6c281",
+  "actor_source_sha256": "f1e6df7c40d6e90632d651e1237338559a2f4442cfe49b5c1dbd9c8842280ecd",
   "target": "ps_3_0",
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
   "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
@@ -440,7 +440,40 @@
         "exp": 1,
         "endrep": 2
       },
-      "source_sha256": "f6665501929c2d9ce0b77a3ac4f08bbdd0c77590b116ed0551c43b7325441c92"
+      "source_sha256": "2402d469fcd8bc0a2a0b5fb9a7da1bc88aeae4d3015f5defd9be806061341db0"
+    },
+    "AOBlurNoWater": {
+      "bytes": 4996,
+      "sha256": "bbd798c1b36fe8c376825579987c4eab621ede9f45eced623419872782f8b419",
+      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "static_instruction_slots": 315,
+      "temporary_registers": 15,
+      "samplers": [
+        0,
+        1,
+        2
+      ],
+      "instructions": {
+        "mov": 19,
+        "mul": 95,
+        "texldl": 18,
+        "if": 3,
+        "add": 76,
+        "min": 13,
+        "else": 3,
+        "endif": 3,
+        "rcp": 14,
+        "mad": 6,
+        "frc": 3,
+        "max": 3,
+        "cmp": 19,
+        "dp3": 4,
+        "rsq": 1,
+        "rep": 2,
+        "exp": 1,
+        "endrep": 2
+      },
+      "source_sha256": "2402d469fcd8bc0a2a0b5fb9a7da1bc88aeae4d3015f5defd9be806061341db0"
     },
     "Composite": {
       "bytes": 5804,
@@ -509,7 +542,7 @@
         "endif": 6,
         "endrep": 1
       },
-      "source_sha256": "9a3d86f15b0ced6bb85a13977d8c668b1ca69f739f04fcfb83b3e14f2bc6c281"
+      "source_sha256": "f1e6df7c40d6e90632d651e1237338559a2f4442cfe49b5c1dbd9c8842280ecd"
     },
     "HBAOActorContactBloom": {
       "bytes": 6200,
@@ -547,7 +580,7 @@
         "break": 2,
         "endrep": 3
       },
-      "source_sha256": "9a3d86f15b0ced6bb85a13977d8c668b1ca69f739f04fcfb83b3e14f2bc6c281"
+      "source_sha256": "f1e6df7c40d6e90632d651e1237338559a2f4442cfe49b5c1dbd9c8842280ecd"
     },
     "GTAOActorContactBloom": {
       "bytes": 7532,
@@ -585,7 +618,7 @@
         "endrep": 4,
         "break": 2
       },
-      "source_sha256": "9a3d86f15b0ced6bb85a13977d8c668b1ca69f739f04fcfb83b3e14f2bc6c281"
+      "source_sha256": "f1e6df7c40d6e90632d651e1237338559a2f4442cfe49b5c1dbd9c8842280ecd"
     },
     "HBAOActorOnly": {
       "bytes": 5668,
@@ -621,7 +654,7 @@
         "break": 2,
         "endrep": 3
       },
-      "source_sha256": "9a3d86f15b0ced6bb85a13977d8c668b1ca69f739f04fcfb83b3e14f2bc6c281"
+      "source_sha256": "f1e6df7c40d6e90632d651e1237338559a2f4442cfe49b5c1dbd9c8842280ecd"
     },
     "GTAOActorOnly": {
       "bytes": 6988,
@@ -657,7 +690,7 @@
         "endrep": 4,
         "break": 2
       },
-      "source_sha256": "9a3d86f15b0ced6bb85a13977d8c668b1ca69f739f04fcfb83b3e14f2bc6c281"
+      "source_sha256": "f1e6df7c40d6e90632d651e1237338559a2f4442cfe49b5c1dbd9c8842280ecd"
     },
     "RainMaskMRT": {
       "bytes": 264,

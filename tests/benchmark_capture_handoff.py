@@ -29,6 +29,7 @@ def main():
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--verify-backend', type=Path, action='append', default=[])
     parser.add_argument('--rounds', type=int, default=3)
+    parser.add_argument('--raster-states', action='store_true', help='Compare batched known raster states using the real ExtensionDevice mirror.')
     args = parser.parse_args()
     assert 1 <= args.rounds <= 10
     out = args.output.resolve();out.mkdir(parents=True, exist_ok=False)
@@ -43,7 +44,26 @@ def main():
     hashes = {str(p): digest(p) for p in inputs}
     env = {**current.zig_env(), 'NORTHLIGHT_ZIG': str(current.zig()), 'DISABLE_VULKAN_OBS_CAPTURE': '1'}
     builds = {}
-    for label, repo in repos.items():
+    def run(folder, label, mode, raster, backend):
+        folder.mkdir()
+        result = subprocess.run([builds[label]['exe'], str(backend), str(folder), str(mode), str(int(raster))], cwd=folder,
+                                env={**env, 'DXVK_LOG_PATH': str(folder)}, capture_output=True, text=True, timeout=120)
+        (folder / 'run.log').write_text(result.stdout + result.stderr)
+        result.check_returncode()
+        assert 'WORLD_CAPTURE_HANDOFF_GPU_PASS' in result.stdout
+        if builds[label]['handoff']:assert 'CAPTURE_HANDOFF_CONTROLS_PASS' in result.stdout
+        if builds[label]['raster']:assert 'CAPTURE_RASTER_CONTROLS_PASS' in result.stdout
+        frames = [dict(re.findall(r'(\w+)=([^ ]+)', line)) for line in result.stdout.splitlines()
+                  if line.startswith('CAPTURE_FRAME ') and 'warm=0 ' in line]
+        assert len(frames) == 32 and all(int(f['packets']) == 512 for f in frames)
+        assert all(int(f['stateBatches']) == (512 if raster else 0) for f in frames)
+        return {'label': label, 'mode': mode, 'raster': raster, 'output': str(folder),
+                **{key: statistics.median(float(f[key]) for f in frames)
+                   for key in ('cpuMs', 'packets', 'chargedBytes', 'handoffs', 'geometryCalls')},
+                **{name + '_sha256': digest(folder / (name + '.bin')) for name in ('packets', 'faces')}}
+
+    for label in ("pr", "before", "upstream"):
+        repo = repos[label]
         spec = importlib.util.spec_from_file_location('_capture_paths', repo / 'northlight_paths.py')
         fp = importlib.util.module_from_spec(spec);spec.loader.exec_module(fp)
         folder = out / ('build-' + label);folder.mkdir()
@@ -55,53 +75,40 @@ def main():
         (headers / 'world_renderer.h').write_text(header, encoding='utf-8')
         snapshot = fp.src('draw_snapshot.h').read_text(encoding='utf-8')
         shared, handoff = 'shareSnapshotPool(' in snapshot, 'bool readShared(' in snapshot
-        assert handoff == (label == 'pr')
+        raster = 'setCaptureRasterStateSource(' in header
         exe = folder / 'capture.exe'
         units = ['world_gi.cpp', 'world_mesh_plan.cpp', 'static_shadow_scene.cpp', 'settings_overlay.cpp', 'settings_panel.cpp',
                  'imgui.cpp', 'imgui_draw.cpp', 'imgui_tables.cpp', 'imgui_widgets.cpp', 'imgui_impl_dx9.cpp']
         command = [current.zig(), 'c++', '-target', 'x86-windows-gnu', '-O2', '-UNDEBUG', '-std=c++17',
                    '-Wno-microsoft-exception-spec', '-DIMGUI_USER_CONFIG="northlight_imconfig.h"',
-                   f'-DNORTHLIGHT_SHARED_SOURCE={int(shared)}', f'-DNORTHLIGHT_CAPTURE_HANDOFF={int(handoff)}',
+                   f'-DNORTHLIGHT_SHARED_SOURCE={int(shared)}', f'-DNORTHLIGHT_CAPTURE_HANDOFF={int(handoff)}', f'-DNORTHLIGHT_CAPTURE_RASTER={int(raster)}',
                    '-I' + str(headers), *fp.test_include_flags(), ROOT / 'tests/world_capture_handoff_gpu.cpp',
                    *(fp.src(n) for n in units), '-luser32', '-luuid', '-o', exe]
         with (folder / 'compile.log').open('w') as log:
             subprocess.run(list(map(str, command)), cwd=repo, env=env, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=360)
-        builds[label] = {'exe': str(exe), 'sha256': digest(exe), 'shared_source': shared, 'handoff': handoff}
+        builds[label] = {'exe': str(exe), 'sha256': digest(exe), 'shared_source': shared, 'handoff': handoff, 'raster': raster}
+        run(out / ('smoke-' + label), label, int(handoff), args.raster_states and raster, backends[0])
         print('CAPTURE_BUILD_PASS', label, flush=True)
 
-    def run(folder, label, mode, backend):
-        folder.mkdir()
-        result = subprocess.run([builds[label]['exe'], str(backend), str(folder), str(mode)], cwd=folder,
-                                env={**env, 'DXVK_LOG_PATH': str(folder)}, capture_output=True, text=True, timeout=120)
-        (folder / 'run.log').write_text(result.stdout + result.stderr)
-        result.check_returncode()
-        assert 'WORLD_CAPTURE_HANDOFF_GPU_PASS' in result.stdout
-        if label == 'pr':assert 'CAPTURE_HANDOFF_CONTROLS_PASS' in result.stdout
-        frames = [dict(re.findall(r'(\w+)=([^ ]+)', line)) for line in result.stdout.splitlines()
-                  if line.startswith('CAPTURE_FRAME ') and 'warm=0 ' in line]
-        assert len(frames) == 32 and all(int(f['packets']) == 512 for f in frames)
-        return {'label': label, 'mode': mode, 'output': str(folder),
-                **{key: statistics.median(float(f[key]) for f in frames)
-                   for key in ('cpuMs', 'packets', 'chargedBytes', 'handoffs', 'geometryCalls')},
-                **{name + '_sha256': digest(folder / (name + '.bin')) for name in ('packets', 'faces')}}
-
     records = []
-    phases = [('upstream', (('upstream', 0), ('pr', 1), ('pr', 1), ('upstream', 0))),
-              ('baseline', (('before', 0), ('pr', 1), ('pr', 1), ('before', 0))),
-              ('control', (('pr', 0), ('pr', 1), ('pr', 1), ('pr', 0)))]
+    before = ('before', int(builds['before']['handoff']), False)
+    pr = ('pr', 1, args.raster_states)
+    control = ('pr', 1, False) if args.raster_states else ('pr', 0, False)
+    phases = [('upstream', (('upstream', 0, False), pr, pr, ('upstream', 0, False))),
+              ('baseline', (before, pr, pr, before)), ('control', (control, pr, pr, control))]
     for phase, order in phases:
         for repeat in range(args.rounds):
-            for position, (label, mode) in enumerate(order):
+            for position, (label, mode, raster) in enumerate(order):
                 record = {'phase': phase, 'round': repeat, 'order': position,
-                          **run(out / f'{phase}-{repeat}-{position}', label, mode, backends[0])}
+                          **run(out / f'{phase}-{repeat}-{position}', label, mode, raster, backends[0])}
                 records.append(record);print(json.dumps(record), flush=True)
     summary = []
     for phase, order in phases:
         row = {'phase': phase}
-        for label, mode in dict.fromkeys(order):
-            values = [r for r in records if r['phase'] == phase and r['label'] == label and r['mode'] == mode]
+        for label, mode, raster in dict.fromkeys(order):
+            values = [r for r in records if r['phase'] == phase and r['label'] == label and r['mode'] == mode and r['raster'] == raster]
             assert len(values) == 2 * args.rounds
-            row[f'{label}-{mode}'] = {key: statistics.median(r[key] for r in values)
+            row[f'{label}-{mode}-r{int(raster)}'] = {key: statistics.median(r[key] for r in values)
                                      for key in ('cpuMs', 'geometryCalls', 'chargedBytes', 'handoffs')}
         # Existing upstream shadow behavior may differ. The new optimization must be exact.
         if phase != 'upstream':
@@ -110,7 +117,7 @@ def main():
         summary.append(row)
     verification = []
     for index, backend in enumerate(backends[1:]):
-        pair = [run(out / f'verify-{index}-{mode}', 'pr', mode, backend) for mode in (0, 1)]
+        pair = [run(out / f'verify-{index}-{mode}', 'pr', 1 if args.raster_states else mode, bool(mode) if args.raster_states else False, backend) for mode in (0, 1)]
         for name in ('packets', 'faces'):assert pair[0][name + '_sha256'] == pair[1][name + '_sha256']
         verification.append({'backend': str(backend), 'exact': True, 'records': pair})
     assert all(source_identity(repos[label]) == identity for label, identity in identities.items())
@@ -118,7 +125,7 @@ def main():
     report = {'pass': True, 'scope': __doc__, 'total_northlight_cost_measured': False, 'gpu_timing_measured': False,
               'source_identities': identities, 'commits': {label: git(repo, 'rev-parse', 'HEAD') for label, repo in repos.items()},
               'inputs': hashes, 'builds': builds, 'inputs_unchanged': True, 'order': 'ABBA', 'rounds': args.rounds,
-              'records': records, 'summary': summary, 'verification': verification}
+              'raster_states': args.raster_states, 'device_mirror': True, 'records': records, 'summary': summary, 'verification': verification}
     (out / 'validation.json').write_text(json.dumps(report, indent=2) + '\n')
     print(json.dumps(summary, indent=2), flush=True)
 

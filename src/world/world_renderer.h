@@ -1166,6 +1166,7 @@ private:
     unsigned skinnedCandidates=0,skinnedBlendRejected=0,skinnedFadeRejected=0,skinnedProjectionRejected=0,skinnedBudgetRejected=0,skinnedSnapshotRejected=0,skinnedAccepted=0;
     size_t captureRejectedBytes=0,acceptedSkinnedBytes=0,acceptedOtherBytes=0;
     bool captureSampled=false;
+    void* captureRasterContext=nullptr;bool(*captureRasterReader)(void*,const D3DRENDERSTATETYPE*,unsigned,DWORD*)=nullptr;
     bool captureShortfall=false; /* this capture frame lost a draw to the capture limits (bytes or count) */
     // 0.3.140 cadence of the constant-epoch self-check (replay_capture_constants.h
     // verify(): repairs a pose on mismatch): the renderer's frame%120==0, independent
@@ -3362,6 +3363,7 @@ public:
     IDirect3DTexture9* materialDetail=nullptr,*materialOcclusion=nullptr,*modelNormals=nullptr;float materialBumpGain=0,materialBumpDistance=48,materialOcclusionDistance=8;bool materialCaptureResident=false;
     NorthlightMaterialProfile* materialProfile=nullptr;
     void setMaterialProfiler(NorthlightMaterialProfile* p){materialProfile=p;}
+    void setCaptureRasterStateSource(void* context,bool(*reader)(void*,const D3DRENDERSTATETYPE*,unsigned,DWORD*)){captureRasterContext=context;captureRasterReader=reader;}
     // Explicit diagnostics only; normal-view capture never changes a quality
     // setting, debug mode, shadow refresh or temporal-history decision.
     bool requestNormalGpuDiagnosticCapture(){if(gpuDiagnosticCaptures>=4||gpuNormalDiagnosticRequested)return false;gpuNormalDiagnosticRequested=true;return true;}
@@ -4529,8 +4531,11 @@ public:
         if(!smallNeedsProof){if(smallShadow&&!actorCaptureEnabled()){if(sample)++smallShadowEarly;++rejSmall;return;}}
         // 0.3.215 (task 47): a faded actor (stealth, ghosts) draws a depth-only pre-pass (no RGB) before its blended colour pass.
         // It looks opaque, so reject it here, before the admission, the budget and the near reserve (its weapons and parts too).
+        const D3DRENDERSTATETYPE captureRasterKeys[]={D3DRS_COLORWRITEENABLE,D3DRS_ALPHABLENDENABLE,D3DRS_ALPHATESTENABLE};DWORD captureRaster[3];
+        const bool rasterKnown=captureRasterReader&&captureRasterReader(captureRasterContext,captureRasterKeys,3,captureRaster);
+        auto readRaster=[&](unsigned slot,DWORD& value){if(rasterKnown){value=captureRaster[slot];return true;}return SUCCEEDED(d->GetRenderState(captureRasterKeys[slot],&value));};
         fate.reason=NorthlightShadowFate::Fade;
-        {DWORD colorWrite=15;if(SUCCEEDED(d->GetRenderState(D3DRS_COLORWRITEENABLE,&colorWrite))&&(colorWrite&7)==0){if(sample&&priority)++skinnedFadeRejected;if(sample&&!priority)++otherFadeRejected;return;}}
+        {DWORD colorWrite=15;if(readRaster(0,colorWrite)&&(colorWrite&7)==0){if(sample&&priority)++skinnedFadeRejected;if(sample&&!priority)++otherFadeRejected;return;}}
         // Stock grass is straight-alpha blended even when it writes a cutout
         // depth pass. Prove its PS before allowing this exception; actors and
         // unknown/additive vegetation retain the normal conservative rejection.
@@ -4542,7 +4547,7 @@ public:
             if(!detailPixel){++detailMaskRejected;return;}
         }
         fate.reason=NorthlightShadowFate::Blend;
-        bool blendAllowed=SUCCEEDED(d->GetRenderState(D3DRS_ALPHABLENDENABLE,&blend));
+        bool blendAllowed=readRaster(1,blend);
         if(blendAllowed&&blend){
             DWORD source=0,destination=0,operation=0;
             blendAllowed=metadata.detailDoodad&&SUCCEEDED(d->GetRenderState(D3DRS_SRCBLEND,&source))&&
@@ -4574,7 +4579,7 @@ public:
         }
         DWORD alpha=0,ref=0,alphaFunc=D3DCMP_ALWAYS;
         fate.reason=NorthlightShadowFate::AlphaFunc;
-        if(FAILED(d->GetRenderState(D3DRS_ALPHATESTENABLE,&alpha)))return;
+        if(!readRaster(2,alpha))return;
         if(alpha){if(FAILED(d->GetRenderState(D3DRS_ALPHAREF,&ref))||FAILED(d->GetRenderState(D3DRS_ALPHAFUNC,&alphaFunc)))return;}
         else if(sample)alphaStateQueriesSkipped+=2;
         if(alpha&&alphaFunc!=D3DCMP_GREATER&&alphaFunc!=D3DCMP_GREATEREQUAL)return;

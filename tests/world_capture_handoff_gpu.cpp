@@ -6,11 +6,18 @@
 #include <fstream>
 static void checked(HRESULT hr){assert(SUCCEEDED(hr));}
 struct CaptureMeter:ForwardIDirect3DDevice9 {
- using ForwardIDirect3DDevice9::ForwardIDirect3DDevice9;unsigned geometry=0;bool failDeclaration=false;
+ using ForwardIDirect3DDevice9::ForwardIDirect3DDevice9;unsigned geometry=0;bool failDeclaration=false;D3DRENDERSTATETYPE failState=D3DRENDERSTATETYPE(0);
+ HRESULT STDMETHODCALLTYPE GetRenderState(D3DRENDERSTATETYPE key,DWORD* p)override{if(key==failState)return E_FAIL;return real->GetRenderState(key,p);}
  HRESULT STDMETHODCALLTYPE GetVertexDeclaration(IDirect3DVertexDeclaration9** p)override{if(failDeclaration){*p=nullptr;return E_FAIL;}return real->GetVertexDeclaration(p);}
  HRESULT STDMETHODCALLTYPE GetStreamSource(UINT s,IDirect3DVertexBuffer9** p,UINT* o,UINT* stride)override{++geometry;return real->GetStreamSource(s,p,o,stride);}
  HRESULT STDMETHODCALLTYPE GetStreamSourceFreq(UINT s,UINT* frequency)override{++geometry;return real->GetStreamSourceFreq(s,frequency);}
  HRESULT STDMETHODCALLTYPE GetIndices(IDirect3DIndexBuffer9** p)override{++geometry;return real->GetIndices(p);}
+};
+struct CaptureRasterSource {
+ ExtensionDevice* device;unsigned batches=0;
+#if NORTHLIGHT_CAPTURE_RASTER
+ static bool read(void* context,const D3DRENDERSTATETYPE* keys,unsigned count,DWORD* out){auto& self=*static_cast<CaptureRasterSource*>(context);++self.batches;return self.device->knownRenderStates(keys,count,out);}
+#endif
 };
 static IDirect3DVertexBuffer9* sourceVB=nullptr;static IDirect3DIndexBuffer9* sourceIB=nullptr;
 static D3DVERTEXBUFFER_DESC vertexDesc{};static D3DINDEXBUFFER_DESC indexDesc{};static uint64_t revision=1;
@@ -63,15 +70,41 @@ struct PointTerrainCoverageTest {
  }
  static size_t charged(const WorldRenderer& w){return w.replaySnapshots.bytesRead();}
 #if NORTHLIGHT_CAPTURE_HANDOFF
- static void controls(WorldRenderer& w,CaptureMeter& d,IDirect3DVertexShader9* shader,IDirect3DVertexDeclaration9* declaration,NorthlightDrawSnapshot::Frame& producer){
+ static void controls(WorldRenderer& w,CaptureMeter& d,DeviceMirror& mirror,IDirect3DVertexShader9* shader,IDirect3DVertexDeclaration9* declaration,NorthlightDrawSnapshot::Frame& producer){
   const NorthlightDrawSnapshot::Draw draw{D3DPT_TRIANGLELIST,0,0,6,0,256,true};NorthlightDrawSnapshot::Mesh scratch;
   D3DVERTEXELEMENT9 elements[MAXD3DDECLLENGTH+1];UINT count=MAXD3DDECLLENGTH+1;checked(declaration->GetDeclaration(elements,&count));IDirect3DVertexDeclaration9* duplicate=nullptr;checked(d.CreateVertexDeclaration(elements,&duplicate));
   for(unsigned reason=0;reason<5;++reason){begin(w);producer.clearFrame();std::shared_ptr<const NorthlightDrawSnapshot::Mesh> source;assert(producer.read(&d,declaration,draw,scratch,nullptr,false,&source)&&source);
    if(reason==1)producer.clearSnapshotCache();
    if(reason==2)source=std::make_shared<const NorthlightDrawSnapshot::Mesh>(*source); // Same identity/data, not a resident object.
-   d.failDeclaration=reason==4;capture(w,shader,reason==3?duplicate:declaration,source,true);d.failDeclaration=false;
+   mirror.invalidate();d.failDeclaration=reason==4;capture(w,shader,reason==3?duplicate:declaration,source,true);d.failDeclaration=false;
    assert(packets(w)==(reason==4?0u:1u)&&handoffs(w)==(reason==0?1u:0u));
   }duplicate->Release();puts("CAPTURE_HANDOFF_CONTROLS_PASS resident=1 evicted_fallback=1 reconstructed_fallback=1 declaration_fallback=1 declaration_failure=1");
+ }
+#endif
+#if NORTHLIGHT_CAPTURE_RASTER
+ static void stateControls(WorldRenderer& w,CaptureRasterSource& source,CaptureMeter& raw,DeviceMirror& mirror,IDirect3DVertexShader9* shader,IDirect3DVertexDeclaration9* declaration,NorthlightDrawSnapshot::Frame& producer){
+  const D3DRENDERSTATETYPE keys[]={D3DRS_COLORWRITEENABLE,D3DRS_ALPHABLENDENABLE,D3DRS_ALPHATESTENABLE};
+  const NorthlightDrawSnapshot::Draw draw{D3DPT_TRIANGLELIST,0,0,6,0,256,true};NorthlightDrawSnapshot::Mesh scratch;unsigned cases=0;
+  for(unsigned scenario=0;scenario<11;++scenario){unsigned expected=0;
+   for(bool batch:{false,true}){
+    mirror.enabled=true;mirror.recording=false;mirror.rawDepth=0;mirror.invalidate();
+    checked(raw.SetRenderState(D3DRS_COLORWRITEENABLE,scenario==1?0:15));checked(raw.SetRenderState(D3DRS_ALPHABLENDENABLE,scenario==2));checked(raw.SetRenderState(D3DRS_ALPHATESTENABLE,scenario==3));checked(raw.SetRenderState(D3DRS_ALPHAFUNC,D3DCMP_NEVER));checked(raw.SetRenderState(D3DRS_ALPHAREF,128));
+    for(auto key:keys){DWORD value=0;checked(source.device->GetRenderState(key,&value));}
+    if(scenario==4)mirror.renderStateKnown[D3DRS_ALPHATESTENABLE]=false;
+    if(scenario==5)mirror.recording=true;
+    if(scenario==6)mirror.rawDepth=1;
+    if(scenario==7)mirror.enabled=false;
+    if(scenario>=8){mirror.invalidate();raw.failState=keys[scenario-8];}
+    begin(w);producer.clearFrame();std::shared_ptr<const NorthlightDrawSnapshot::Mesh> mesh;assert(producer.read(source.device,declaration,draw,scratch,nullptr,false,&mesh)&&mesh);
+    w.setCaptureRasterStateSource(batch?&source:nullptr,batch?&CaptureRasterSource::read:nullptr);
+    capture(w,shader,declaration,mesh,true);const unsigned actual=packets(w);
+    if(!batch)expected=actual;else assert(actual==expected);++cases;
+    raw.failState=D3DRENDERSTATETYPE(0);mirror.enabled=true;mirror.recording=false;mirror.rawDepth=0;mirror.invalidate();
+   }
+   if(scenario==0||scenario==4||scenario==5||scenario==6||scenario==7||scenario==8)assert(expected==1);else assert(expected==0);
+  }
+  checked(raw.SetRenderState(D3DRS_COLORWRITEENABLE,15));checked(raw.SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE));checked(raw.SetRenderState(D3DRS_ALPHATESTENABLE,FALSE));mirror.invalidate();
+  printf("CAPTURE_RASTER_CONTROLS_PASS cases=%u partial_unknown recording raw disabled native_failure fade blend alpha\n",cases);
  }
 #endif
  static void packetImage(const WorldRenderer& w,const std::string& path){std::ofstream out(path,std::ios::binary);for(const auto& p:w.replays){const auto& mesh=p->mesh();out.write((const char*)&p->count,sizeof p->count);for(const auto& stream:mesh.streams)out.write((const char*)stream.bytes.data(),stream.bytes.size());out.write((const char*)mesh.indices.data(),mesh.indices.size()*4);out.write((const char*)(p->constants+8),64);}}
@@ -100,19 +133,25 @@ struct PointTerrainCoverageTest {
   assert(visible);read->Release();
  }
 };
-int main(int argc,char** argv){assert(argc==4);std::setvbuf(stdout,nullptr,_IONBF,0);logFile=nullptr;const std::string out=argv[2];const bool handoff=std::atoi(argv[3])!=0;assert(MultiByteToWideChar(CP_UTF8,0,(out+"/").c_str(),-1,rootPath,MAX_PATH));
- auto hwnd=CreateWindowExW(0,L"STATIC",L"",WS_OVERLAPPED,0,0,64,64,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);assert(hwnd);auto module=LoadLibraryA(argv[1]);assert(module);auto create=(IDirect3D9*(WINAPI*)(UINT))GetProcAddress(module,"Direct3DCreate9");auto* api=create(D3D_SDK_VERSION);assert(api);D3DPRESENT_PARAMETERS pp{};pp.Windowed=TRUE;pp.hDeviceWindow=hwnd;pp.BackBufferWidth=pp.BackBufferHeight=64;pp.BackBufferFormat=D3DFMT_X8R8G8B8;pp.SwapEffect=D3DSWAPEFFECT_DISCARD;IDirect3DDevice9* raw=nullptr;checked(api->CreateDevice(0,D3DDEVTYPE_HAL,hwnd,D3DCREATE_HARDWARE_VERTEXPROCESSING|D3DCREATE_FPU_PRESERVE,&pp,&raw));CaptureMeter meter(raw);auto* d=&meter;
+int main(int argc,char** argv){assert(argc==4||argc==5);std::setvbuf(stdout,nullptr,_IONBF,0);logFile=nullptr;const std::string out=argv[2];const bool handoff=std::atoi(argv[3])!=0,raster=argc==5&&std::atoi(argv[4]);assert(MultiByteToWideChar(CP_UTF8,0,(out+"/").c_str(),-1,rootPath,MAX_PATH));
+ auto hwnd=CreateWindowExW(0,L"STATIC",L"",WS_OVERLAPPED,0,0,64,64,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);assert(hwnd);auto module=LoadLibraryA(argv[1]);assert(module);auto create=(IDirect3D9*(WINAPI*)(UINT))GetProcAddress(module,"Direct3DCreate9");auto* api=create(D3D_SDK_VERSION);assert(api);D3DPRESENT_PARAMETERS pp{};pp.Windowed=TRUE;pp.hDeviceWindow=hwnd;pp.BackBufferWidth=pp.BackBufferHeight=64;pp.BackBufferFormat=D3DFMT_X8R8G8B8;pp.SwapEffect=D3DSWAPEFFECT_DISCARD;IDirect3DDevice9* raw=nullptr;checked(api->CreateDevice(0,D3DDEVTYPE_HAL,hwnd,D3DCREATE_HARDWARE_VERTEXPROCESSING|D3DCREATE_FPU_PRESERVE,&pp,&raw));CaptureMeter meter(raw);DeviceMirror mirror;ExtensionDevice device(&meter,&mirror);auto* d=&device;CaptureRasterSource rasterSource{d};
  const DWORD code[]={0xfffe0300,0x0200001f,0x80000000,0x900f0000,0x0200001f,0x80000005,0x900f0001,0x0200001f,0x80000000,0xe00f0000,0x0200001f,0x80000005,0xe0030001,0x03000009,0xe0010000,0xa0e40002,0x90e40000,0x03000009,0xe0020000,0xa0e40003,0x90e40000,0x03000009,0xe0040000,0xa0e40004,0x90e40000,0x03000009,0xe0080000,0xa0e40005,0x90e40000,0x02000001,0xe0030001,0x90e40001,0xffff};
  IDirect3DVertexShader9 *original=nullptr,*patched=nullptr;checked(d->CreateVertexShader(code,&original));std::vector<uint32_t> patch;assert(NorthlightShadowShader::patch((const uint32_t*)code,sizeof code/4,patch));checked(d->CreateVertexShader((const DWORD*)patch.data(),&patched));auto world=std::make_unique<WorldRenderer>(d);PointTerrainCoverageTest::setup(*world,d,original,patched,code,sizeof code/4);
+#if NORTHLIGHT_CAPTURE_RASTER
+ if(raster)world->setCaptureRasterStateSource(&rasterSource,&CaptureRasterSource::read);
+#endif
  const D3DVERTEXELEMENT9 elements[]={{0,0,D3DDECLTYPE_FLOAT3,0,D3DDECLUSAGE_POSITION,0},{0,24,D3DDECLTYPE_FLOAT2,0,D3DDECLUSAGE_TEXCOORD,0},D3DDECL_END()};IDirect3DVertexDeclaration9* declaration=nullptr;checked(d->CreateVertexDeclaration(elements,&declaration));checked(d->SetVertexDeclaration(declaration));checked(d->SetVertexShader(original));checked(d->SetStreamSource(0,sourceVB,0,sizeof(NorthlightGI::WorldVertex)));checked(d->SetIndices(sourceIB));float constants[1024]{};constants[8]=constants[13]=constants[18]=constants[22]=1;checked(d->SetVertexShaderConstantF(0,constants,256));checked(d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE));checked(d->SetRenderState(D3DRS_ALPHATESTENABLE,FALSE));checked(d->SetRenderState(D3DRS_COLORWRITEENABLE,15));
  NorthlightDrawSnapshot::Frame producer;PointTerrainCoverageTest::configureProducer(*world,producer);const NorthlightDrawSnapshot::Draw draw{D3DPT_TRIANGLELIST,0,0,6,0,256,true};NorthlightDrawSnapshot::Mesh scratch;
- for(unsigned frame=0;frame<48;++frame){const auto calls=meter.geometry;const auto start=std::chrono::steady_clock::now();PointTerrainCoverageTest::begin(*world);producer.clearFrame();
+ for(unsigned frame=0;frame<48;++frame){const auto calls=meter.geometry,batches=rasterSource.batches;const auto start=std::chrono::steady_clock::now();PointTerrainCoverageTest::begin(*world);producer.clearFrame();
   for(unsigned i=0;i<512;++i){std::shared_ptr<const NorthlightDrawSnapshot::Mesh> mesh;assert(producer.read(d,declaration,draw,scratch,nullptr,false,&mesh)&&mesh);PointTerrainCoverageTest::capture(*world,original,declaration,mesh,handoff);}
-  const auto end=std::chrono::steady_clock::now();assert(PointTerrainCoverageTest::packets(*world)==512);printf("CAPTURE_FRAME frame=%u warm=%u handoff=%u cpuMs=%.9f packets=%u chargedBytes=%zu handoffs=%u geometryCalls=%u\n",frame,unsigned(frame<16),unsigned(handoff),std::chrono::duration<double,std::milli>(end-start).count(),PointTerrainCoverageTest::packets(*world),PointTerrainCoverageTest::charged(*world),PointTerrainCoverageTest::handoffs(*world),meter.geometry-calls);
+  const auto end=std::chrono::steady_clock::now();assert(PointTerrainCoverageTest::packets(*world)==512);printf("CAPTURE_FRAME frame=%u warm=%u handoff=%u cpuMs=%.9f packets=%u chargedBytes=%zu handoffs=%u geometryCalls=%u rasterState=%u stateBatches=%u\n",frame,unsigned(frame<16),unsigned(handoff),std::chrono::duration<double,std::milli>(end-start).count(),PointTerrainCoverageTest::packets(*world),PointTerrainCoverageTest::charged(*world),PointTerrainCoverageTest::handoffs(*world),meter.geometry-calls,unsigned(raster),rasterSource.batches-batches);
  }
  PointTerrainCoverageTest::packetImage(*world,out+"/packets.bin");PointTerrainCoverageTest::raster(*world,d,out+"/faces.bin");
 #if NORTHLIGHT_CAPTURE_HANDOFF
- checked(d->SetVertexDeclaration(declaration));checked(d->SetVertexShader(original));checked(d->SetPixelShader(nullptr));checked(d->SetStreamSource(0,sourceVB,0,sizeof(NorthlightGI::WorldVertex)));checked(d->SetIndices(sourceIB));checked(d->SetVertexShaderConstantF(0,constants,256));PointTerrainCoverageTest::controls(*world,*d,original,declaration,producer);
+ checked(d->SetVertexDeclaration(declaration));checked(d->SetVertexShader(original));checked(d->SetPixelShader(nullptr));checked(d->SetStreamSource(0,sourceVB,0,sizeof(NorthlightGI::WorldVertex)));checked(d->SetIndices(sourceIB));checked(d->SetVertexShaderConstantF(0,constants,256));PointTerrainCoverageTest::controls(*world,meter,mirror,original,declaration,producer);
+#endif
+#if NORTHLIGHT_CAPTURE_RASTER
+ PointTerrainCoverageTest::stateControls(*world,rasterSource,meter,mirror,original,declaration,producer);
 #endif
  world.reset();puts("WORLD_CAPTURE_HANDOFF_GPU_PASS packets=512 faces=6 authored_rigid_native_shader no_game=1");return 0;
 }

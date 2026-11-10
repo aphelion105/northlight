@@ -51,7 +51,7 @@ int main(int argc,char** argv) {
     if(benchmark){ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&start));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&end));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMPFREQ,&frequency));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMPDISJOINT,&disjoint));}
     auto draw=[&](unsigned count){ok(d->BeginScene());for(unsigned i=0;i<count;++i)ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(Vertex)));ok(d->EndScene());};
     unsigned cases=0;
-    for(unsigned shape=0;shape<9;++shape){
+    for(unsigned shape=0;shape<10;++shape){
         Image depth{fullW,fullH,D3DFMT_R32F,4,std::vector<unsigned char>(std::size_t(fullW)*fullH*4)},ambient=rgba(W,H),water=rgba(fullW,fullH);
         if(fp16)ambient={W,H,D3DFMT_A16B16G16R16F,8,std::vector<unsigned char>(std::size_t(W)*H*8)};
         const float clipNear=.2f,clipFar=1277.f,partition=.94f;
@@ -76,15 +76,19 @@ int main(int argc,char** argv) {
                 if(shape==5)a=0x3c00-(x*7+y*11)%5; // Straddle the existing .9995 early-out.
                 if(shape==7)a=x<W/2?0x3c00:0x38cd;
                 if(shape==8)a=x%5==0&&y%7==0?0x3bf4+(x/5+y/7)%7:0x3c00;
-                const unsigned base=shape==4?0x4000:0x2800;
+                const unsigned base=shape==4||shape==9?0x4000:0x2800;
                 const std::uint16_t value[]={std::uint16_t(base+(x%11)*8),std::uint16_t(base+0x800+(y%7)*16),std::uint16_t(base+0x400+((x+y)%13)*8),std::uint16_t(a)};
                 std::memcpy(ambient.pixels.data()+(std::size_t(y)*W+x)*8,value,8);
             }else{
-                const float base=shape==4?2.f:0.f;
+                const float base=shape==4||shape==9?2.f:0.f;
                 const float value[]={base+.02f*float(x%11),base+.03f*float(y%7),base+.01f*float((x+y)%13),ao};pixel(ambient,x,y,value);
             }
         }
         auto dt=texture(d,depth),at=texture(d,ambient),wt=texture(d,water);
+        IDirect3DPixelShader9* activeShaders[]={shaders[0],shaders[1]};
+#ifdef NORTHLIGHT_AO_NO_WATER
+        if(shape==4)activeShaders[1]=activeShaders[0]; // A present water mask retains the original path.
+#endif
         ok(d->SetTexture(0,at));ok(d->SetTexture(1,dt));ok(d->SetTexture(2,at));ok(d->SetTexture(3,wt));
         float c[5][4]={{1.f/fullW,1.f/fullH,clipNear,clipFar},{1.2686f,1.9626f,.6f,0},{.08f,2,0,0},{0,1/partition,partition,0},{float(shape==4),0,0,0}};ok(d->SetPixelShaderConstantF(0,c[0],5));
         for(unsigned samples:{0u,2u,4u,8u}){
@@ -95,9 +99,9 @@ int main(int argc,char** argv) {
             const unsigned blocks=benchmark?16:2,draws=benchmark?16:1;
             for(unsigned block=0;block<blocks;++block){
                 const unsigned mode=(block/2)%2?1-block%2:block%2;
-                ok(d->SetPixelShader(shaders[mode]));if(benchmark){draw(2);wait(event);}
+                ok(d->SetPixelShader(activeShaders[mode]));if(benchmark){draw(2);wait(event);}
 #ifdef NORTHLIGHT_AO_SPLIT_PROFILE
-                if(block==1){assert(splitProfile->beginFrame(++splitSamples,true));ok(d->SetTexture(0,at));ok(d->SetTexture(1,dt));ok(d->SetPixelShader(shaders[mode]));splitProfile->mark("AOBlurSetup");}
+                if(block==1){assert(splitProfile->beginFrame(++splitSamples,true));ok(d->SetTexture(0,at));ok(d->SetTexture(1,dt));ok(d->SetPixelShader(activeShaders[mode]));splitProfile->mark("AOBlurSetup");}
 #endif
                 if(benchmark){
                     ok(disjoint->Issue(D3DISSUE_BEGIN));ok(start->Issue(D3DISSUE_END));draw(draws);ok(end->Issue(D3DISSUE_END));ok(frequency->Issue(D3DISSUE_END));ok(disjoint->Issue(D3DISSUE_END));wait(event);
@@ -110,13 +114,25 @@ int main(int argc,char** argv) {
 #endif
             }
             std::size_t changed=0;for(std::size_t i=0;i<output[0].size();++i)changed+=output[0][i]!=output[1][i];
+            std::size_t rgbChanged=0;unsigned maxAlphaUlps=0;float maxAlphaError=0;
+            for(std::size_t i=0;i<output[0].size()/8;++i){
+                for(unsigned channel=0;channel<6;++channel)rgbChanged+=output[0][i*8+channel]!=output[1][i*8+channel];
+                std::uint16_t a,b;std::memcpy(&a,output[0].data()+i*8+6,2);std::memcpy(&b,output[1].data()+i*8+6,2);
+                maxAlphaUlps=std::max(maxAlphaUlps,unsigned(std::abs(int(a)-int(b))));maxAlphaError=std::max(maxAlphaError,std::abs(half(a)-half(b)));
+            }
             std::size_t nonfinite=0;float minAO=1,maxAO=0;
             for(std::size_t i=0;i<output[1].size()/2;++i){std::uint16_t bits;std::memcpy(&bits,output[1].data()+i*2,2);float value=half(bits);nonfinite+=!std::isfinite(value);if(i%4==3){minAO=std::min(minAO,value);maxAO=std::max(maxAO,value);}}
             assert(!nonfinite&&minAO>=0&&maxAO<=1);
             assert((shape==0||shape==3)?minAO==1:minAO<1);
             if(fp16)for(std::size_t i=0;i<std::size_t(W)*H;++i)assert(!std::memcmp(output[1].data()+i*8,ambient.pixels.data()+i*8,6)); // Bloom RGB passes through, including HDR.
             double median[2]{};for(unsigned mode=0;mode<2;++mode)if(!timing[mode].empty()){std::sort(timing[mode].begin(),timing[mode].end());auto n=timing[mode].size();median[mode]=(timing[mode][n/2]+timing[mode][(n-1)/2])*.5;}
-            std::printf("{\"width\":%u,\"height\":%u,\"input_bits\":%u,\"shape\":%u,\"msaa\":%u,\"changed_bytes\":%llu,\"nonfinite\":%llu,\"min_ao\":%.6f,\"max_ao\":%.6f,\"timings\":%s,\"old_ms\":%.6f,\"new_ms\":%.6f}\n",fullW,fullH,fp16?16:32,shape,samples,static_cast<unsigned long long>(changed),static_cast<unsigned long long>(nonfinite),minAO,maxAO,benchmark?"true":"false",median[0],median[1]);std::fflush(stdout);assert(!changed);++cases;target->Release();
+            std::printf("{\"width\":%u,\"height\":%u,\"input_bits\":%u,\"shape\":%u,\"msaa\":%u,\"changed_bytes\":%llu,\"rgb_changed_bytes\":%llu,\"max_alpha_ulps\":%u,\"max_alpha_error\":%.9f,\"nonfinite\":%llu,\"min_ao\":%.6f,\"max_ao\":%.6f,\"timings\":%s,\"old_ms\":%.6f,\"new_ms\":%.6f}\n",fullW,fullH,fp16?16:32,shape,samples,static_cast<unsigned long long>(changed),static_cast<unsigned long long>(rgbChanged),maxAlphaUlps,maxAlphaError,static_cast<unsigned long long>(nonfinite),minAO,maxAO,benchmark?"true":"false",median[0],median[1]);std::fflush(stdout);
+#ifdef NORTHLIGHT_AO_NO_WATER
+            assert(!rgbChanged&&(shape==4?!changed:maxAlphaUlps<=1));
+#else
+            assert(!changed);
+#endif
+            ++cases;target->Release();
         }
         for(unsigned slot=0;slot<4;++slot)ok(d->SetTexture(slot,nullptr));dt->Release();at->Release();wt->Release();
     }
