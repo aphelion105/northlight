@@ -581,6 +581,7 @@ test_world_emitter_index.py
 test_world_fixture_emission.py
 test_world_light_placements.py
 test_world_lighting_capture.py
+test_world_lighting_gi_gpu.py
 test_world_local_lights.py
 test_world_mesh_pages.py
 test_world_mesh_pages_real.py

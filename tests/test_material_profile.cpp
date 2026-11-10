@@ -10,7 +10,7 @@ static uint64_t nanos=0,clockReads=0;
 static uint64_t clockNow(){++clockReads;return nanos;}
 int main(){
     using P=NorthlightMaterialProfile;IDirect3DDevice9 d;
-    {P p(&d,clockNow);p.beginFrame(1,false);{P::Scope off(&p,P::CaptureDraw,17,true);}p.endFrame();assert(!d.creates&&!clockReads);
+    {P p(&d,clockNow);p.beginFrame(1,false);{P::Scope off(&p,P::CaptureDraw,17,true);off.work(4,64);off.next(P::CaptureSetup);}p.endFrame();assert(!d.creates&&!clockReads);
      p.beginFrame(127,true);nanos=100;{P::Scope parent(&p,P::Admission,17);nanos=150;{P::Scope child(&p,P::Snapshot);nanos=200;}nanos=300;}p.endFrame();
      findLog("stage=admission domain=4 mode=1 calls=1 exclusiveMs=0.000150");findLog("stage=snapshot domain=4 mode=1 calls=1 exclusiveMs=0.000050");
      unsigned before=d.reads;p.poll();assert(d.reads-before==1);d.ready=true;p.poll();
@@ -37,6 +37,9 @@ int main(){
      {P::Scope bounds(&p,P::BoundsPose,19);nanos=100;{P::Scope envelope(&p,P::PoseEnvelope);nanos=150;}nanos=200;{P::Scope fallback(&p,P::PoseFallback);nanos=300;}nanos=500;}
      p.endFrame();findLog("stage=boundsPose domain=4 mode=3 calls=1 exclusiveMs=0.000350");
      findLog("stage=poseEnvelope domain=4 mode=3 calls=1 exclusiveMs=0.000050");findLog("stage=poseFallback domain=4 mode=3 calls=1 exclusiveMs=0.000100");
+     logs.clear();p.reset();p.beginFrame(6127,true);nanos=0;
+     {P::Scope scope(&p,P::Admission,17);nanos=100;const auto before=clockReads;scope.next(P::CaptureSetup);assert(clockReads==before+1);nanos=300;scope.work(7,28);}
+     p.endFrame();findLog("stage=admission domain=4 mode=1 calls=1 exclusiveMs=0.000100");findLog("stage=captureSetup domain=4 mode=1 calls=1 exclusiveMs=0.000200 inclusiveMs=0.000200 items=7 bytes=28");
     }assert(!d.live);
     std::puts("MATERIAL_PROFILE_PASS disabled_zero_work exclusive_nested_cpu domains_modes nonblocking_gpu saturation coverage failure_reset");
 }

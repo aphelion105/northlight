@@ -48,13 +48,13 @@ checks['hlsl WorldLighting: correction.a and baseline.a keep the true visibility
 checks['hlsl: GridInfo.z still the divisor of the removal']=('/GridInfo.z' in h and 'max(GridInfo.z,.001)' in h)
 checks['hlsl: c24.y (softness) still unread']='PassInfo.y' not in h.replace('softness,debug','')
 # WorldGI carries no weather code (0.3.198 rebase onto task 13: it is at 31 temps)
-gi=h[h.index('float4 WorldGI('):h.index('// Four POINT reads work')]
+gi=h[h.index('float3 worldGIValue('):h.index('LightingOutput worldLightingValue(')]+h[h.index('float4 WorldGI('):h.index('// Four POINT reads work')]
 checks['hlsl WorldGI: no weather code (it is at 31 temps)']='WeatherInfo' not in gi
 checks['hlsl: no WorldWet shader; WeatherInfo.y only the fog clouds\' folded bank top (0.3.199 optimisation)']='WorldWet' not in h and h.count('WeatherInfo.y')==1 and 'mad(nL,CloudInfo[2].z,WeatherInfo.y)' in h
 # Exact integrated baseline: combined light passes removed a quad site; the
 # actor-aware fog and cached caster variants added shader creation sites.
 # Static-shadow transitions add the independently gated soft-resolve pass and shader.
-checks['render: exact integrated draw inventory (25 quad sites, 45 pixel shader factories)']=(w.count('quad(')==25 and w.count('CreatePixelShader')==45 and 'if(compositeOk&&unlitMask)' in w) and 'wetPS' not in w
+checks['render: exact integrated draw inventory (25 quad sites, 46 pixel shader factories)']=(w.count('quad(')==25 and w.count('CreatePixelShader')==46 and 'if(compositeOk&&unlitMask)' in w) and 'wetPS' not in w
 # disc and veil
 checks['discs: gain atomic, default 1, opacity and glare weights only, veil inherits']=(
     'std::atomic<float> weatherGain{1.f};' in dr and 'c[9][3]=glare?disc.opacity:disc.opacity*weatherGain.load(std::memory_order_relaxed);' in dr

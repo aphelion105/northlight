@@ -31,13 +31,17 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--rounds', type=int, default=3)
     parser.add_argument('--before-ref', help='Optional frozen point-rendering control from this repository.')
+    parser.add_argument('--baseline', type=Path, help='Optional clean PR checkout for a complete before/after comparison.')
     args = parser.parse_args()
     assert 1 <= args.rounds <= 10
+    assert not (args.before_ref and args.baseline), 'Choose a complete baseline or a point-only control'
     upstream, capture, backend, out = (p.resolve() for p in (args.upstream, args.capture, args.backend, args.output))
     out.mkdir(parents=True, exist_ok=False)
     git = lambda repo, *a: subprocess.check_output(['git', '-C', str(repo), *a], text=True).strip()
     assert not git(upstream, 'diff', 'HEAD', '--', 'src', 'shaders'), 'Upstream production sources must be unchanged'
-    identities = {str(repo): source_identity(repo) for repo in (ROOT, upstream)}
+    baseline = args.baseline.resolve() if args.baseline else None
+    if baseline:assert not git(baseline, 'diff', 'HEAD', '--', 'src', 'shaders'), 'Baseline sources must be unchanged'
+    identities = {str(repo): source_identity(repo) for repo in (ROOT, upstream, *([baseline] if baseline else []))}
     digest = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
     inputs = [Path(__file__).resolve(), ROOT / 'tests/upstream_pipeline_gpu.cpp', backend,
               *(capture / name for name in ('capture-1-scene.fgr', 'capture-1-depth.fgr', 'capture-1-constants.f32'))]
@@ -49,7 +53,7 @@ def main():
             ['git', 'show', args.before_ref + ':src/world/world_point_rendering.inl'], cwd=ROOT))
     env = {**current.zig_env(), 'NORTHLIGHT_ZIG': str(current.zig()), 'DISABLE_VULKAN_OBS_CAPTURE': '1'}
     builds = {}
-    for label, repo in [('upstream', upstream), ('pr', ROOT)] + ([('before', ROOT)] if control else []):
+    for label, repo in [('upstream', upstream), ('pr', ROOT)] + ([('before', baseline or ROOT)] if control or baseline else []):
         spec = importlib.util.spec_from_file_location('_pipeline_paths', repo / 'northlight_paths.py')
         fp = importlib.util.module_from_spec(spec);spec.loader.exec_module(fp)
         folder = out / ('build-' + label);folder.mkdir();headers = folder / 'headers';headers.mkdir()
@@ -65,7 +69,7 @@ def main():
         command = [current.zig(), 'c++', '-target', 'x86-windows-gnu', '-std=c++17', '-O2', '-UNDEBUG',
                    '-Wno-return-type', '-Wno-microsoft-exception-spec', '-DIMGUI_USER_CONFIG="northlight_imconfig.h"',
                    f'-DNORTHLIGHT_COMPARE_PR={int(label != "upstream")}', '-I' + str(headers),
-                   *(['-I' + str(control)] if label == 'before' else []), *fp.test_include_flags(),
+                   *(['-I' + str(control)] if label == 'before' and control else []), *fp.test_include_flags(),
                    ROOT / 'tests/upstream_pipeline_gpu.cpp', *(fp.src(n) for n in units),
                    '-luser32', '-luuid', '-o', exe]
         with (folder / 'compile.log').open('w') as log:
@@ -75,8 +79,9 @@ def main():
         builds[label] = {'exe': str(exe), 'sha256': digest(exe), 'compiled': str(fp.COMPILED)}
         print('PIPELINE_BUILD_PASS', label, flush=True)
     records = []
-    phases = [('upstream', mode, ('upstream', 'pr', 'pr', 'upstream')) for mode in range(3)]
+    phases = [('upstream', mode, ('upstream', 'pr', 'pr', 'upstream')) for mode in range(4)]
     if control:phases.append(('point', 2, ('before', 'pr', 'pr', 'before')))
+    if baseline:phases += [('baseline', mode, ('before', 'pr', 'pr', 'before')) for mode in range(4)]
     for phase, mode, order in phases:
         for repeat in range(args.rounds):
             for position, label in enumerate(order):
@@ -108,6 +113,7 @@ def main():
     assert unchanged, 'Inputs changed during comparison'
     report = {'pass': True, 'source_identities': identities, 'inputs': hashes, 'builds': builds, 'inputs_unchanged': unchanged,
               'upstream': git(upstream, 'rev-parse', 'HEAD'), 'head': git(ROOT, 'rev-parse', 'HEAD'), 'before_ref': args.before_ref,
+              'baseline': git(baseline, 'rev-parse', 'HEAD') if baseline else None,
               'scope': __doc__, 'game_fps_measured': False, 'total_northlight_cost_measured': False,
               'order': 'ABBA', 'rounds': args.rounds, 'records': records, 'summary': summary}
     (out / 'validation.json').write_text(json.dumps(report, indent=2) + '\n')

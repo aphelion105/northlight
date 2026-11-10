@@ -550,13 +550,29 @@ NormalDistanceOutput WorldNormals(float2 uv:TEXCOORD0) {
 float4 WorldNormalsNoDistance(float2 uv:TEXCOORD0):COLOR0 { return worldNormalValue(uv); }
 
 struct LightingOutput {float4 correction:COLOR0;float4 baseline:COLOR1;};
-LightingOutput worldLightingValue(float2 uv,bool soft,bool shadows) {
+float3 worldGIValue(float3 p,float4 smoothNormal) {
+    float3 n=smoothNormal.xyz;
+    float4 probe=probeIrradiance(p+n*.25,n);
+    float3 correction=(probe.rgb/3.14159265-AmbientLight.rgb)*GridInfo.y*probe.a;
+    // Confidence describes the depth-derived NORMAL, not probe coverage.
+    // At a wall/ground seam a valid dark probe must still remove native ambient.
+    // Only uncertain added bounce is suppressed; ambient removal also applies
+    // to wall silhouettes whose depth-derived normal is uncertain.
+    correction=min(correction,0)+max(correction,0)*smoothNormal.w;
+    // Boost only the resulting ambient + probe/bounce estimate once, preserving
+    // its hue and existing occlusion. No absolute brightness floor, direct-light
+    // multiplier or brightened sky/fog.
+    correction+=max(AmbientLight.rgb+correction,0)*AmbientLight.w;
+    return correction;
+}
+LightingOutput worldLightingValue(float2 uv,bool soft,bool shadows,bool gi=false) {
     float2 halfUV=uv;
     uv=depthUV(uv);float d=normalizedDepth(uv);
     LightingOutput o;o.correction=float4(0,0,0,SourcePolicy.y);o.baseline=float4(max(AmbientLight.rgb,.15),1);
     if(d>=.99999||waterDistance(uv,d)>0)return o;
     float4 smoothNormal=tex2Dlod(NormalBuffer,float4(halfUV,0,0));
     float3 p=worldPosition(uv,d);float3 n=smoothNormal.xyz;
+    float3 indirect=gi?worldGIValue(p,smoothNormal):0;
     // Fine material light is applied after the half-res spatial/temporal filters.
     // The legacy route remains available when there is no independent scene copy.
     float3 detailNormal=n;
@@ -586,6 +602,7 @@ LightingOutput worldLightingValue(float2 uv,bool soft,bool shadows) {
     o.correction=float4(replacement-painted,lerp(visibility,shadow,SunDirection.w)*SourcePolicy.y);
     // Mode 2 isolates GI: the shared buffer must contain no direct correction.
     if(PassInfo.z==2)o.correction.rgb=0;
+    o.correction.rgb+=indirect;
     // Share visibility with LocalDirect. Unknown coverage is -1 and must not
     // dim lamps as if this receiver had proven direct daylight.
     float3 cover=affinePoint(p,FarMatrix);
@@ -597,6 +614,7 @@ LightingOutput WorldLightingSoft(float2 uv:TEXCOORD0){return worldLightingValue(
 // Disabled shadows bind neutral maps: keep the same relighting and baseline,
 // without filtering an all-lit map or reading the neutral actor visibility.
 LightingOutput WorldLightingUnshadowed(float2 uv:TEXCOORD0){return worldLightingValue(uv,false,false);}
+LightingOutput WorldLightingUnshadowedGI(float2 uv:TEXCOORD0){return worldLightingValue(uv,false,false,true);}
 // 0.3.209 (task 29): contact-hardening visibility of the moving casters (replays) in this source's actor map: 1024 texels over
 // 2*ActorInfo.z units (.0234 u, four times finer than the near cascade), centred on the player. Drawn per source at
 // WorldLighting's half-res grid into actorVisibility (the CPU masks the channel: r sun, g moon). Penumbra half width in world
@@ -716,19 +734,7 @@ float4 WorldGI(float2 uv:TEXCOORD0):COLOR0 {
     float4 smoothNormal=tex2Dlod(NormalBuffer,float4(uv,0,0));
     uv=depthUV(uv);
     float d=normalizedDepth(uv);if(d>=.99999||waterDistance(uv,d)>0)return 0;
-    float3 p=worldPosition(uv,d);float3 n=smoothNormal.xyz;
-    float4 probe=probeIrradiance(p+n*.25,n);
-    float3 correction=(probe.rgb/3.14159265-AmbientLight.rgb)*GridInfo.y*probe.a;
-    // Confidence describes the depth-derived NORMAL, not probe coverage.
-    // At a wall/ground seam a valid dark probe must still remove native ambient.
-    // Only uncertain added bounce is suppressed; ambient removal also applies
-    // to wall silhouettes whose depth-derived normal is uncertain.
-    correction=min(correction,0)+max(correction,0)*smoothNormal.w;
-    // Boost only the resulting ambient + probe/bounce estimate once, preserving
-    // its hue and existing occlusion. No absolute brightness floor, direct-light
-    // multiplier or brightened sky/fog.
-    correction+=max(AmbientLight.rgb+correction,0)*AmbientLight.w;
-    return float4(correction,0);
+    return float4(worldGIValue(worldPosition(uv,d),smoothNormal),0);
 }
 // Four POINT reads work on float32 textures without optional linear filtering.
 // Empty metadata nodes must never interpolate their dummy ground=0 into real

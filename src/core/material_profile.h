@@ -47,18 +47,19 @@ private:
     void endGPU(int i,uint64_t items){if(i<0||gpu<0||gpuDisabled)return;auto& p=slots[gpu].pairs[unsigned(i)];p.items=items;gpuOpen=false;issue(p.last,D3DISSUE_END);}
 public:
     struct Scope {
-        NorthlightMaterialProfile* owner=nullptr;Scope* previous=nullptr;Stage stage;unsigned tag=0;
-        uint64_t start=0,child=0,items=0,bytes=0,epoch=0;int span=-1;
+        NorthlightMaterialProfile* owner=nullptr;Scope* previous;Stage stage;unsigned tag;
+        uint64_t start,child,items,bytes,epoch;int span;
         Scope(NorthlightMaterialProfile* profile,Stage s,unsigned context=0,bool onGPU=false):stage(s){
             if(!profile||!profile->active)return;owner=profile;previous=owner->parent;tag=context?context:previous?previous->tag:0;
+            child=items=bytes=0;span=-1;
             if(tag>=Tags)tag=0;epoch=owner->epoch;start=owner->tick();owner->parent=this;
             if(onGPU&&owner->gpu>=0&&!owner->gpuDisabled){uint64_t began=owner->tick();span=owner->beginGPU(s,tag);owner->queryNs+=owner->tick()-began;}
         }
         Scope(const Scope&)=delete;Scope& operator=(const Scope&)=delete;
-        void work(uint64_t count,uint64_t size=0){items+=count;bytes+=size;}
+        void work(uint64_t count,uint64_t size=0){if(owner){items+=count;bytes+=size;}}
         void segment(uint64_t end){uint64_t elapsed=end-start;auto& c=owner->cpu[unsigned(stage)*Tags+tag];
             ++c.calls;c.inclusive+=elapsed;c.exclusive+=elapsed>=child?elapsed-child:0;c.items+=items;c.bytes+=bytes;if(previous)previous->child+=elapsed;}
-        void next(Stage s){if(owner&&owner->active&&owner->epoch==epoch){segment(owner->tick());child=items=bytes=0;start=owner->tick();}stage=s;}
+        void next(Stage s){if(owner&&owner->active&&owner->epoch==epoch){const auto at=owner->tick();segment(at);child=items=bytes=0;start=at;}stage=s;}
         ~Scope(){
             if(!owner||!owner->active||owner->epoch!=epoch)return;
             if(span>=0){uint64_t began=owner->tick();owner->endGPU(span,items);owner->queryNs+=owner->tick()-began;}

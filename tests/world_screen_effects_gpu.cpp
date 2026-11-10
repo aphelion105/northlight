@@ -58,6 +58,10 @@ struct WorldScreenEffectsTest {
         std::puts("WORLD_GI_PAUSE_PASS hidden=1 zeroStrength=1 positivePreserved=1 qualityOff=1");
     }
     static void gi(WorldRenderer& w,bool enabled){w.effects.gi=enabled;}
+#ifdef NORTHLIGHT_GI_MERGE_TEST
+    static void giMergeControl(WorldRenderer& w,unsigned mode){drop(w.lightingUnshadowedGIPS);w.lightingUnshadowedGIRefused=mode==0;w.effects.gi=mode!=3;w.temporalValid=false;}
+    static bool giMerged(const WorldRenderer& w){return w.lightingUnshadowedGIPS!=nullptr;}
+#endif
     static void zeroGINight(WorldRenderer& w,unsigned brightness){
         w.quality.giStrength=0;w.quality.nightBrightness=brightness;
         w.celestialValid=true;w.celestial.dayFraction=0.;w.effects={true,false,false};w.temporalValid=w.fogHistoryValid=false;
@@ -398,6 +402,9 @@ struct WorldScreenEffectsTest {
     }
 };
 struct WorldScratchMeter:ForwardIDirect3DDevice9 {
+#ifdef NORTHLIGHT_GI_MERGE_TEST
+    IDirect3DPixelShader9* giShader=nullptr;bool refuseGI=false,giBound=false;unsigned giCreates=0,giDraws=0;
+#endif
     unsigned shaderSlotLimit=0,combinedDraws=0;bool refuseCombined=false,combinedBound=false;
     IDirect3DPixelShader9* combinedShader=nullptr;
     IDirect3DPixelShader9 *fogMarch=nullptr,*fogAmbient=nullptr,*fogTemporal=nullptr,*fogBlur=nullptr;
@@ -406,8 +413,16 @@ struct WorldScratchMeter:ForwardIDirect3DDevice9 {
     unsigned indexCreates=0,failIndexAt=0;
     WorldScratchMeter(IDirect3DDevice9* d,unsigned w,unsigned h):ForwardIDirect3DDevice9(d),width(w),height(h){}
     HRESULT STDMETHODCALLTYPE GetDeviceCaps(D3DCAPS9* caps)override{const auto hr=real->GetDeviceCaps(caps);if(SUCCEEDED(hr)&&shaderSlotLimit)caps->MaxPixelShader30InstructionSlots=shaderSlotLimit;return hr;}
-    HRESULT STDMETHODCALLTYPE SetPixelShader(IDirect3DPixelShader9* shader)override{combinedBound=shader&&shader==combinedShader;fogBound=shader&&(shader==fogMarch||shader==fogAmbient||shader==fogTemporal||shader==fogBlur);return real->SetPixelShader(shader);}
-    HRESULT STDMETHODCALLTYPE DrawPrimitiveUP(D3DPRIMITIVETYPE type,UINT n,const void* vertices,UINT stride)override{combinedDraws+=combinedBound;fogDraws+=fogBound;return real->DrawPrimitiveUP(type,n,vertices,stride);}
+    HRESULT STDMETHODCALLTYPE SetPixelShader(IDirect3DPixelShader9* shader)override{
+#ifdef NORTHLIGHT_GI_MERGE_TEST
+        giBound=shader&&shader==giShader;
+#endif
+        combinedBound=shader&&shader==combinedShader;fogBound=shader&&(shader==fogMarch||shader==fogAmbient||shader==fogTemporal||shader==fogBlur);return real->SetPixelShader(shader);}
+    HRESULT STDMETHODCALLTYPE DrawPrimitiveUP(D3DPRIMITIVETYPE type,UINT n,const void* vertices,UINT stride)override{
+#ifdef NORTHLIGHT_GI_MERGE_TEST
+        giDraws+=giBound;
+#endif
+        combinedDraws+=combinedBound;fogDraws+=fogBound;return real->DrawPrimitiveUP(type,n,vertices,stride);}
     HRESULT STDMETHODCALLTYPE Clear(DWORD n,const D3DRECT* rectangles,DWORD flags,D3DCOLOR color,float z,DWORD stencil)override{++clears;return real->Clear(n,rectangles,flags,color,z,stencil);}
     HRESULT STDMETHODCALLTYPE CreateIndexBuffer(UINT length,DWORD usage,D3DFORMAT format,D3DPOOL pool,IDirect3DIndexBuffer9** out,HANDLE* shared)override{
         if(++indexCreates==failIndexAt){if(out)*out=nullptr;return E_OUTOFMEMORY;}return real->CreateIndexBuffer(length,usage,format,pool,out,shared);
@@ -420,9 +435,15 @@ struct WorldScratchMeter:ForwardIDirect3DDevice9 {
         return real->CreateTexture(w,h,levels,usage,format,pool,t,shared);
     }
     HRESULT STDMETHODCALLTYPE CreatePixelShader(const DWORD* code,IDirect3DPixelShader9** shader)override{
+#ifdef NORTHLIGHT_GI_MERGE_TEST
+        if(code==kWorldLightingUnshadowedGIShader){++giCreates;if(refuseGI){*shader=nullptr;return D3DERR_NOTAVAILABLE;}}
+#endif
         if(++shaderCreates==failShaderAt)return E_OUTOFMEMORY;
         if(code==kWorldMaterialCompositeHdrShader&&refuseCombined){*shader=nullptr;return D3DERR_NOTAVAILABLE;}
         const auto hr=real->CreatePixelShader(code,shader);if(SUCCEEDED(hr)){
+#ifdef NORTHLIGHT_GI_MERGE_TEST
+            if(code==kWorldLightingUnshadowedGIShader)giShader=*shader;
+#endif
             if(code==kWorldMaterialCompositeHdrShader)combinedShader=*shader;
             if(code==kWorldFogShader)fogMarch=*shader;if(code==kWorldFogAmbientShader)fogAmbient=*shader;
             if(code==kFogTemporalShader)fogTemporal=*shader;if(code==kFogBlurShader)fogBlur=*shader;
@@ -587,6 +608,18 @@ int main(int argc,char** argv){
         WorldScreenEffectsTest::gi(*world,true);
         assert(renderChecked(*world,d,out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao));
         assert(WorldScreenEffectsTest::sceneBytes(*world)==sceneBytes&&WorldScreenEffectsTest::screenFog(*world)==screenFog&&WorldScreenEffectsTest::probeImage(*world)==probeBefore);
+#ifdef NORTHLIGHT_GI_MERGE_TEST
+        for(unsigned mode=0;mode<5;++mode){
+            WorldScreenEffectsTest::giMergeControl(*world,mode);meter.refuseGI=mode==1;meter.giShader=nullptr;meter.giBound=false;
+            const auto creates=meter.giCreates,draws=meter.giDraws;
+            assert(renderChecked(*world,d,out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao));
+            const bool merged=mode==2||mode==4;
+            assert(WorldScreenEffectsTest::giMerged(*world)==merged&&meter.giDraws-draws==unsigned(merged));
+            assert(meter.giCreates-creates==unsigned(mode==1||merged));
+        }
+        meter.refuseGI=false;meter.giShader=nullptr;meter.giBound=false;
+        std::printf("WORLD_GI_MERGE_SELECTOR_PASS blocked=1 creationFailure=1 merged=1 giOff=1 resume=1 msaa=%u\n",msaa);
+#endif
         WorldScreenEffectsTest::removeFakeScene(*world);vb->Release();ib->Release();
         std::printf("WORLD_SCENE_LAZY_PASS noBvhBytes=0 partialFailureKeptScreen=1 retryWithoutReset=1 pressuredExpiryReclaimed=1 probesRestored=1 sceneBytes=%llu\n",(unsigned long long)sceneBytes);
         // The unfurled legacy path still gets scratch; the next folded frame retires it.

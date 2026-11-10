@@ -66,7 +66,7 @@ checks['near map with skipped casters is redrawn, not reused, once its actor map
 checks['profile marks: the near replays before the actor map have their own name (SunNear/MoonNear stay unique)']=(
     'profile->mark(source==0?"SunNearReplays":"MoonNearReplays")' in loop and loop.count('"SunNear"')==2)
 # ActorShadowDetail=0 / ActorShadows=0: the pass is never drawn; the visibility is still cleared white every frame.
-light=render[render.index('actor visibility (half res, r sun, g moon)'):render.index('if(profile)profile->mark("WorldLighting");')]
+light=render[render.index('actor visibility (half res, r sun, g moon)'):render.index('if(profile)profile->mark(mergedGI?"WorldLightingGI":"WorldLighting");')]
 checks['visibility target and clear only on a frame with an ActorShadow pass (a valid actor map of a drawn, active source); otherwise neutralWhite']=(
     light.index('actorPass[source]=!(')<light.index('if(anyActorPass){')<light.index('if(!check(d->SetRenderTarget(0,actorVisibilitySurface),"actor visibility target")||!check(d->Clear(0,nullptr,D3DCLEAR_TARGET,0xffffffff,1,0),"clear actor visibility"))return false;\n        }')
     and '||!effects.shadows||!sourceActive[source]||!actorValid[source]||!actorShadow[source]||!actorShadowPS||!actorTilesPS||!actorTiles[source]||!actorTilesMid||!actorVisibility);' in light
@@ -88,7 +88,7 @@ checks['s12: actor visibility for WorldLighting, then baseline visibility for la
     and 'textures[]={foldScene?foldScene:color,depth,shadow[0],shadow[1],probe[0],probe[1],probe[2],probe[3],nullptr,nullptr,probe[4],waterMask,nullptr,' in render
     # GI, removal, temporal and local-direct passes inherit the one baseline
     # binding; counting the removed redundant binds does not test ownership.
-    and 'SetTexture(12,' not in render[render.index('if(profile)profile->mark("WorldLighting");'):render.index('        if(positionalLighting){')]
+    and 'SetTexture(12,' not in render[render.index('if(profile)profile->mark(mergedGI?"WorldLightingGI":"WorldLighting");'):render.index('        if(positionalLighting){')]
     and render.index('d->SetTexture(12,baselineLight);',render.index('"fog clouds raymarch"'))<render.index('        if(localFogActive){'))
 checks['resources: maps, tiles and visibility only with the shaders (ActorShadowDetail=1) and optional (a failure turns the map off, not the renderer); neutral white mandatory 1x1; released with the rest']=(
     "releaseActorTargets();logf(\"WORLD actor shadow map disabled: render targets unavailable\");" in w and 'actorVisibility,&actorVisibilitySurface))return false;' not in w
