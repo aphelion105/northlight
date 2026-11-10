@@ -37,7 +37,7 @@ if a.reference_point_from:
   target=overlay/name;target.write_bytes(subprocess.check_output(['git','show',a.reference_point_from+':'+path],cwd=fp.REPO));inputs[str(target)]=sha(target)
  point=(overlay/'world_point_rendering.inl').read_text()
  reference=['-I',overlay]
- if 'if(direct){' not in point:reference+=['-DNORTHLIGHT_POINT_UNION_REFERENCE=1']
+ if 'const bool direct=!pointSlot().cacheFace[face];' not in point:reference+=['-DNORTHLIGHT_POINT_UNION_REFERENCE=1']
  if 'PointSlot recycled;' not in point:reference+=['-DNORTHLIGHT_POINT_RECYCLE_REFERENCE=1']
 cmd=[fp.zig(),'c++','-target','x86-windows-gnu','-O2','-UNDEBUG','-std=c++17','-Wno-microsoft-exception-spec','-DIMGUI_USER_CONFIG="northlight_imconfig.h"',*reference,'-I',out,*fp.test_include_flags(),fp.TESTS/'point_shadow_stutter_gpu.cpp',*(fp.src(s) for s in sources),'-luser32','-luuid','-o',exe]
 with (out/'compile.log').open('w') as log:subprocess.run(list(map(str,cmd)),env=env,stdout=log,stderr=subprocess.STDOUT,check=True,timeout=300)

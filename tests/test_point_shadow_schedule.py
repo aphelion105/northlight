@@ -37,7 +37,7 @@ assert bind.index('SetPixelShader(pointShadowPS)')<bind.index('SetPixelShaderCon
 loop=body[body.index('if(rebuildMask&(1u<<face)){'):body.index('pointSlot().faceWeights[face]=pointDraws-faceDraws')]
 assert loop.count('bindFace(')==2 and 'SetPixelShaderConstantF(1' not in loop and 'SetPixelShaderConstantF(0,&unionConstants[0][0],2)' in body[body.index('float unionConstants'):]
 for draw in ('"cube static draw"','"cube terrain draw"','"cube live draw"','"cube animated draw"'):
-    assert loop.index('bindFace(direct?pointSlot().faces[face]:pointScratchSurface')<loop.index(draw) or draw=='"cube static draw"',draw
+    assert loop.index('bindFace(direct||copied?pointSlot().faces[face]:pointScratchSurface')<loop.index(draw) or draw=='"cube static draw"',draw
 assert 'recordOutsideSphere(r.low,r.high,l,FaceContentSphereMargin)' in fp.src('point_light_shadow.h').read_text()
 assert 'POINT static faces rebuilt=%u keptByContent=%u' in pt and 'if(NorthlightQuality::renderProfile(quality))' in pt
 # 3b: default 6 draws all six; any light change or unusable cube draws all six and invalidates first.

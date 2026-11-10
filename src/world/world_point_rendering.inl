@@ -40,7 +40,7 @@
     using PointCandidates=std::array<std::vector<size_t>,6>;
     PointCandidates pointStaticCandidates,pointTerrainCandidates,pointLiveCandidates,pointReplayCandidates;
     std::vector<unsigned char> pointBatchMasks;
-    UINT pointPrimitiveLimit=0;
+    UINT pointPrimitiveLimit=0;bool pointMinBlend=false;
     struct PointWork {unsigned selected=0,statics=0,terrain=0,live=0,replay=0,replayMerged=0,split=0,unions=0,rebuilt=0,restored=0,unboundedRigid=0,unboundedSkinned=0,whiteLightingSkipped=0;uint64_t triangles=0,bridged=0;} pointWork;
     struct PointCold {unsigned cubes=0,statics=0,shared=0,shaders=0;int64_t ticks=0;} pointCold;
     template<class Call> HRESULT pointAllocate(unsigned& attempts,Call call){
@@ -115,12 +115,22 @@
         else if(!pointShadowPS)d->CreatePixelShader(kLocalShadowPSShader,&pointShadowPS);
         else if(!pointLightingPS)d->CreatePixelShader(kLocalLightingShader,&pointLightingPS);
     }
+    void pointDeviceCaps(){
+        if(pointPrimitiveLimit)return;
+        D3DCAPS9 caps{};pointPrimitiveLimit=SUCCEEDED(d->GetDeviceCaps(&caps))&&caps.MaxPrimitiveCount?caps.MaxPrimitiveCount:1;
+        IDirect3D9* api=nullptr;D3DDEVICE_CREATION_PARAMETERS creation{};D3DDISPLAYMODE display{};
+        if((caps.PrimitiveMiscCaps&D3DPMISCCAPS_BLENDOP)&&SUCCEEDED(d->GetDirect3D(&api))&&api&&
+           SUCCEEDED(d->GetCreationParameters(&creation))&&SUCCEEDED(api->GetAdapterDisplayMode(creation.AdapterOrdinal,&display)))
+            pointMinBlend=SUCCEEDED(api->CheckDeviceFormat(creation.AdapterOrdinal,creation.DeviceType,display.Format,D3DUSAGE_RENDERTARGET|D3DUSAGE_QUERY_POSTPIXELSHADER_BLENDING,D3DRTYPE_CUBETEXTURE,D3DFMT_R32F));
+        if(api)api->Release();
+    }
     // Device creation only, before the client can begin a scene. Shader creation
     // alone does not exercise DXVK's static/union pipelines. These three private
     // draws start that first-use work without publishing a cube or waiting for it.
     HRESULT prewarmPointPipelines(bool& kicked,HRESULT& restoreStatus){
         kicked=false;restoreStatus=S_OK;auto& slot=pointSlots[0];
         if(slot.ready||slot.cacheValid)return D3DERR_INVALIDCALL;
+        pointDeviceCaps();
         HRESULT hr=S_OK;const auto ok=[&](HRESULT value){hr=value;return SUCCEEDED(value);};
         if(!pointShadowVS&&!ok(d->CreateVertexShader(kLocalShadowVSShader,&pointShadowVS)))return hr;
         if(!pointShadowPS&&!ok(d->CreatePixelShader(kLocalShadowPSShader,&pointShadowPS)))return hr;
@@ -167,8 +177,13 @@
                    !ok(d->SetSamplerState(0,D3DSAMP_MIPFILTER,D3DTEXF_NONE))||!ok(d->SetSamplerState(0,D3DSAMP_SRGBTEXTURE,FALSE)))return hr;
                 const NorthlightGI::WorldVertex triangle[]={{{-.5f,-.5f,.5f},{0,0,1},0,0},{{.5f,-.5f,.5f},{0,0,1},1,0},{{0,.5f,.5f},{0,0,1},.5f,1}};
                 for(unsigned textured=0;textured<2;++textured){const float material[]={0,0,0,textured?.5f:-1.f};
+                    // Reuse the opaque warmup draw for the MIN pipeline. The
+                    // textured draw warms the ordinary pipeline without another draw.
+                    if(!textured&&pointMinBlend&&(!ok(d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_ONE))||!ok(d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_ONE))||
+                       !ok(d->SetRenderState(D3DRS_BLENDOP,D3DBLENDOP_MIN))||!ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE))))return hr;
                     if(!ok(d->SetPixelShaderConstantF(0,material,1))||!ok(d->SetTexture(0,textured?pointEmpty:nullptr))||
                        !ok(d->DrawPrimitiveUP(D3DPT_TRIANGLELIST,1,triangle,sizeof triangle[0])))return hr;
+                    if(!textured&&pointMinBlend&&(!ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE))||!ok(d->SetRenderState(D3DRS_BLENDOP,D3DBLENDOP_ADD))))return hr;
                 }
                 if(!ok(d->SetTexture(0,nullptr))||!ok(d->SetDepthStencilSurface(nullptr))||!ok(d->SetRenderTarget(0,slot.faces[0]))||
                    !ok(d->SetRenderState(D3DRS_ZENABLE,FALSE))||!ok(d->SetRenderState(D3DRS_ZWRITEENABLE,FALSE))||
@@ -254,7 +269,7 @@
     }
     bool pointResources(){
         if(pointSlot().retryAt&&LONG(GetTickCount()-pointSlot().retryAt)<0)return false;
-        if(!pointPrimitiveLimit){D3DCAPS9 caps{};pointPrimitiveLimit=SUCCEEDED(d->GetDeviceCaps(&caps))&&caps.MaxPrimitiveCount?caps.MaxPrimitiveCount:1;}
+        pointDeviceCaps();
         if(!pointScratch&&!pointCheck(pointAllocate(pointCold.shared,[&]{return d->CreateTexture(PointResolution,PointResolution,1,D3DUSAGE_RENDERTARGET,D3DFMT_R32F,D3DPOOL_DEFAULT,&pointScratch,nullptr);}),"cube scratch"))return false;
         if(!pointScratch)return pointCheck(E_FAIL,"empty cube scratch");
         if(!pointScratchSurface&&!pointCheck(pointScratch->GetSurfaceLevel(0,&pointScratchSurface),"cube scratch surface"))return false;
@@ -800,10 +815,10 @@
                     if(!pointCheck(d->SetPixelShaderConstantF(0,value,1),"cube material"))return false;}
                 materialKnown=true;materialTexture=texture;materialCutoff=cutoff;return true;
             };
-            auto bindFace=[&](IDirect3DSurface9* target,const char* what){
+            auto bindFace=[&](IDirect3DSurface9* target,const char* what,bool preserve=false){
                 return pointCheck(d->SetDepthStencilSurface(nullptr),"unbind cube depth")&&pointCheck(d->SetRenderTarget(0,target),what)&&
                     pointCheck(d->SetDepthStencilSurface(pointDepth),"cube depth target")&&pointCheck(d->SetViewport(&viewport),"cube viewport")&&
-                    pointCheck(d->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0xffffffff,1,0),"clear cube")&&
+                    pointCheck(d->Clear(0,nullptr,D3DCLEAR_ZBUFFER|(preserve?0:D3DCLEAR_TARGET),0xffffffff,1,0),"clear cube")&&
                     pointCheck(d->SetVertexDeclaration(shadowDecl),"cube declaration")&&pointCheck(d->SetVertexShader(pointShadowVS),"cube static VS")&&
                     pointCheck(d->SetVertexShaderConstantF(0,matrix,4),"cube face matrix")&&pointCheck(d->SetPixelShader(pointShadowPS),"cube static PS")&&pointCheck(d->SetPixelShaderConstantF(1,sphere,1),"cube sphere")&&
                     pointCheck(d->SetStreamSource(0,vertices,0,sizeof(NorthlightGI::WorldVertex)),"cube static vertices")&&pointCheck(d->SetIndices(indices),"cube static indices")&&
@@ -832,10 +847,22 @@
             pointSlot().staticOnlyFaces&=~bit;
             const unsigned faceDraws=pointDraws,faceMerged=pointBatchesMerged;
             const bool direct=!pointSlot().cacheFace[face];
+            // Seed the existing face from its static cache, then merge current
+            // casters with MIN in the same draw. A failed copy retains the union path.
+            bool copied=false;
+            if(!direct&&(staticOnly||pointMinBlend)){
+                copied=SUCCEEDED(d->StretchRect(pointSlot().cacheSurface[face],nullptr,pointSlot().faces[face],nullptr,D3DTEXF_NONE));
+                if(!copied)pointMinBlend=false;
+            }
             // Dynamic casters of this frame into the selected face, plus cached-mesh
             // terrain, including parts absent from the camera-culled native draws.
             if(!staticOnly){
-            if(!bindFace(direct?pointSlot().faces[face]:pointScratchSurface,"cube dynamic target"))return false;
+            if(!bindFace(direct||copied?pointSlot().faces[face]:pointScratchSurface,"cube dynamic target",copied))return false;
+            if(copied){
+                const bool ok=SUCCEEDED(d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_ONE))&&SUCCEEDED(d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_ONE))&&
+                    SUCCEEDED(d->SetRenderState(D3DRS_BLENDOP,D3DBLENDOP_MIN))&&SUCCEEDED(d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE));
+                if(!ok){pointMinBlend=false;return pointCheck(E_FAIL,"cube min blend");}
+            }
             UINT terrainBoundPage=UINT_MAX;
             for(size_t at=0;at<pointTerrainCandidates[face].size();){const auto batch=pointBatchRun(pointTerrainCandidates[face],at,face);
                 if(batch.material>=materials.size()||batch.material>=uploadedAlphaCutoffs.size())return pointCheck(E_FAIL,"cube material range");
@@ -888,10 +915,13 @@
             // Preserve the original logical workload weights: coalescing must
             // not change the configured partial-face refresh groups/order.
             pointSlot().faceWeights[face]=pointDraws-faceDraws+pointBatchesMerged-faceMerged;
-            if(direct){
-                // LocalShadowPS already saturates depth. With no static input,
-                // min(dynamic, 1) is the dynamic face itself.
-                if(staticOnly&&(!pointCheck(d->SetDepthStencilSurface(nullptr),"unbind empty cube depth")||
+            if(copied&&!staticOnly){
+                if(!pointCheck(d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE),"cube min blend restore")||
+                   !pointCheck(d->SetRenderState(D3DRS_BLENDOP,D3DBLENDOP_ADD),"cube min operation restore"))return false;
+            }
+            if(direct||copied){
+                // The face was rendered directly or merged into its cache copy.
+                if(staticOnly&&direct&&(!pointCheck(d->SetDepthStencilSurface(nullptr),"unbind empty cube depth")||
                    !pointCheck(d->SetRenderTarget(0,pointSlot().faces[face]),"empty cube target")||
                    !pointCheck(d->SetViewport(&viewport),"empty cube viewport")||
                    !pointCheck(d->Clear(0,nullptr,D3DCLEAR_TARGET,0xffffffff,1,0),"clear empty cube")))return false;

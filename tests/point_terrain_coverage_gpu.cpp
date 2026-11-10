@@ -3,6 +3,12 @@
 #include "../src/proxy/renderer.cpp"
 #include <cassert>
 static void must(HRESULT hr){assert(SUCCEEDED(hr));}
+struct PointCopyFaults:ForwardIDirect3DDevice9 {
+ using ForwardIDirect3DDevice9::ForwardIDirect3DDevice9;bool fail=false,after=false;unsigned failures=0;
+ HRESULT STDMETHODCALLTYPE StretchRect(IDirect3DSurface9* a,const RECT* ar,IDirect3DSurface9* b,const RECT* br,D3DTEXTUREFILTERTYPE f)override{
+  if(!fail)return real->StretchRect(a,ar,b,br,f);fail=false;++failures;if(after)must(real->StretchRect(a,ar,b,br,f));return E_FAIL;
+ }
+};
 struct PointTerrainCoverageTest {
  static void directionalProofDemand(IDirect3DDevice9* d){
   WorldRenderer w(d);auto scene=std::make_shared<StaticShadow::Snapshot>();scene->map="proof-demand";scene->mapGeneration=1;
@@ -79,7 +85,7 @@ struct PointTerrainCoverageTest {
   movingLightCapture(d);
   // One cached terrain blocker. The camera may see a different native portion
   // of the same chunk: that is not proof that this blocker was captured live.
-  WorldRenderer w(d);w.valid=true;w.active=std::make_shared<WorldRenderer::Snapshot>();w.active->bvh=std::make_shared<NorthlightGI::BVH>();w.active->map="authored-point-coverage";w.uploadedMap=w.active->map;w.uploaded=w.active->bvh;w.meshGeneration=1;
+  PointCopyFaults calls(d);WorldRenderer w(&calls);w.valid=true;w.active=std::make_shared<WorldRenderer::Snapshot>();w.active->bvh=std::make_shared<NorthlightGI::BVH>();w.active->map="authored-point-coverage";w.uploadedMap=w.active->map;w.uploaded=w.active->bvh;w.meshGeneration=1;
   const NorthlightGI::WorldVertex vertices[]={{{-1,-1,0},{0,0,1},0,0},{{1,-1,0},{0,0,1},1,0},{{-1,1,0},{0,0,1},0,1},{{1,1,0},{0,0,1},1,1}};const WORD indices[]={0,1,2,2,1,3};
   assert(w.meshStore.beginStaging({NorthlightMeshPageKey::keyOf(vertices,sizeof vertices,indices,sizeof indices)}));w.meshStore.commit();w.meshBuffers.resize(w.meshStore.entries().size());auto& page=w.meshBuffers[w.meshStore.bufferOf(0)];
   must(d->CreateVertexBuffer(sizeof vertices,0,0,D3DPOOL_MANAGED,&page.vb,nullptr));must(d->CreateIndexBuffer(sizeof indices,0,D3DFMT_INDEX16,D3DPOOL_MANAGED,&page.ib,nullptr));void* bytes=nullptr;
@@ -132,6 +138,18 @@ struct PointTerrainCoverageTest {
    if(referenceCube.empty())referenceCube=std::move(cube);else assert(cube==referenceCube);
   }
   std::puts("POINT_BATCH_COALESCING_GPU_PASS cases=8 faces=6 pixels=exact pageMaterialFilterGapOverflow=separate triangleOrder=preserved");
+  const bool minSupported=w.pointMinBlend;
+  if(minSupported)for(unsigned path=0;path<4;++path){
+   auto cached=batch;cached.terrain=false;w.batches={batch,cached};w.terrainBatchListGeneration=UINT64_MAX;w.pointSlot().cacheValid=false;
+   w.pointMinBlend=path!=0;calls.fail=path>=2;calls.after=path==3;const auto failures=calls.failures,unions=w.pointWork.unions;
+   must(d->BeginScene());assert(w.renderPointShadow(light,true,false));must(d->EndScene());assert(w.pointSlot().ready);
+   if(path>=2)assert(calls.failures==failures+1&&!w.pointMinBlend);else assert(calls.failures==failures);
+   assert((w.pointWork.unions>unions)==(path!=1));
+   for(unsigned face=0;face<6;++face){must(d->GetRenderTargetData(w.pointSlot().faces[face],readback));D3DLOCKED_RECT lock{};must(readback->LockRect(&lock,nullptr,D3DLOCK_READONLY));
+    for(unsigned y=0;y<256;++y)assert(!std::memcmp(referenceCube.data()+face*256*256+y*256,static_cast<char*>(lock.pBits)+y*lock.Pitch,256*4));must(readback->UnlockRect());}
+  }
+  w.pointMinBlend=minSupported;
+  std::puts(minSupported?"POINT_MIN_BLEND_GPU_PASS cases=4 faces=6 pixels=exact legacy=1 min=1 copyFaultBeforeAfter=1 unionEliminated=1":"POINT_MIN_BLEND_GPU_SKIP unsupported-format legacy-retained");
   w.batches={batch};w.rebuildTerrainLists();
   // The actual pool must spend its full budget on visible sources, even when
   // closer/brighter offscreen bulbs would win the old camera-distance ranking.

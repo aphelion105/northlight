@@ -10,7 +10,7 @@ struct PointTerrainCoverageTest {
   std::vector<DWORD> values;std::vector<IUnknown*> objects;
   explicit Capture(IDirect3DDevice9* d){
    must(d->GetVertexShaderConstantF(0,vf.data(),256));must(d->GetPixelShaderConstantF(0,pf.data(),224));must(d->GetVertexShaderConstantI(0,vi.data(),16));must(d->GetPixelShaderConstantI(0,pi.data(),16));must(d->GetVertexShaderConstantB(0,vb.data(),16));must(d->GetPixelShaderConstantB(0,pb.data(),16));
-   for(auto key:{D3DRS_ZENABLE,D3DRS_ZWRITEENABLE,D3DRS_ZFUNC,D3DRS_ALPHATESTENABLE,D3DRS_ALPHABLENDENABLE,D3DRS_SEPARATEALPHABLENDENABLE,D3DRS_CULLMODE,D3DRS_COLORWRITEENABLE,D3DRS_FOGENABLE,D3DRS_STENCILENABLE,D3DRS_SCISSORTESTENABLE,D3DRS_CLIPPLANEENABLE,D3DRS_SRGBWRITEENABLE,D3DRS_DEPTHBIAS,D3DRS_SLOPESCALEDEPTHBIAS,D3DRS_FILLMODE,D3DRS_MULTISAMPLEMASK}){DWORD v=0;must(d->GetRenderState(key,&v));values.push_back(v);}
+   for(auto key:{D3DRS_ZENABLE,D3DRS_ZWRITEENABLE,D3DRS_ZFUNC,D3DRS_ALPHATESTENABLE,D3DRS_ALPHABLENDENABLE,D3DRS_SRCBLEND,D3DRS_DESTBLEND,D3DRS_BLENDOP,D3DRS_SEPARATEALPHABLENDENABLE,D3DRS_CULLMODE,D3DRS_COLORWRITEENABLE,D3DRS_FOGENABLE,D3DRS_STENCILENABLE,D3DRS_SCISSORTESTENABLE,D3DRS_CLIPPLANEENABLE,D3DRS_SRGBWRITEENABLE,D3DRS_DEPTHBIAS,D3DRS_SLOPESCALEDEPTHBIAS,D3DRS_FILLMODE,D3DRS_MULTISAMPLEMASK}){DWORD v=0;must(d->GetRenderState(key,&v));values.push_back(v);}
    for(unsigned sampler=0;sampler<2;++sampler)for(auto key:{D3DSAMP_ADDRESSU,D3DSAMP_ADDRESSV,D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER,D3DSAMP_MIPFILTER,D3DSAMP_SRGBTEXTURE}){DWORD v=0;must(d->GetSamplerState(sampler,key,&v));values.push_back(v);}
    for(auto key:{D3DTSS_TEXCOORDINDEX,D3DTSS_TEXTURETRANSFORMFLAGS}){DWORD v=0;must(d->GetTextureStageState(0,key,&v));values.push_back(v);}
    D3DVIEWPORT9 viewport{};must(d->GetViewport(&viewport));const auto n=values.size();values.resize(n+6);std::memcpy(values.data()+n,&viewport,sizeof viewport);
@@ -108,7 +108,7 @@ struct PointTerrainCoverageTest {
   NorthlightLocalLights::Light light{{0,0,4},{1,.4f,.1f},1,12,17,3,NorthlightLocalLights::CastShadow};
 
   for(unsigned slot=0;slot<7;++slot){w.pointIndex=slot;assert(w.pointResources());}w.pointIndex=0;
-  w.materials.push_back(w.pointEmpty);w.pointEmpty->AddRef();w.uploadedAlphaCutoffs.push_back(.5f);for(unsigned i=0;i<w.batches.size();++i)w.batches[i].material=i%2;
+  must(w.pointEmptyResource());w.materials.push_back(w.pointEmpty);w.pointEmpty->AddRef();w.uploadedAlphaCutoffs.push_back(.5f);for(unsigned i=0;i<w.batches.size();++i)w.batches[i].material=i%2;
   const double submit=0,presentMs=0;
   std::vector<float> reference;
   for(unsigned pass=0;pass<2;++pass){
