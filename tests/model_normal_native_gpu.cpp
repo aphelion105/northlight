@@ -113,6 +113,7 @@ int main(int argc,char** argv){
             auto occluder=[&]{
                 n->beginNativeDraw();ok(d->SetVertexShader(nullptr));ok(d->SetFVF(D3DFVF_XYZRHW|D3DFVF_TEX1));ok(d->SetPixelShader(scenario>=24?nullptr:occluderPS));ok(d->SetRenderState(D3DRS_ALPHATESTENABLE,FALSE));
                 if(scenario>=24)ok(d->SetRenderState(D3DRS_COLORWRITEENABLE,scenario%2?8:0));
+                if(scenario>=28)ok(d->SetRenderState(D3DRS_ZFUNC,scenario<30?D3DCMP_EQUAL:D3DCMP_NEVER));
                 if(scenario==12||(scenario>=14&&scenario<=22)){ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE));
                     ok(d->SetRenderState(D3DRS_SRCBLEND,scenario==14||scenario==16?D3DBLEND_ONE:D3DBLEND_SRCALPHA));
                     ok(d->SetRenderState(D3DRS_DESTBLEND,scenario==15||scenario==16?D3DBLEND_ZERO:scenario==17?D3DBLEND_ONE:D3DBLEND_INVSRCALPHA));
@@ -120,10 +121,12 @@ int main(int argc,char** argv){
                 if(scenario==19)ok(d->SetRenderState(D3DRS_SRGBWRITEENABLE,TRUE));
                 if(scenario==13||scenario==20)ok(d->SetRenderState(D3DRS_ZWRITEENABLE,FALSE));
                 Quad q[]={{-.5f,-.5f,.3f,1,0,0},{W*.5f-.5f,-.5f,.3f,1,1,0},{-.5f,H-.5f,.3f,1,0,1},{W*.5f-.5f,H-.5f,.3f,1,1,1}};
+                if(scenario==28||scenario==29)for(auto& vertex:q)vertex.z=1; // EQUAL also passes over untouched background.
                 auto submit=[&]{return n->nativeDraw([&]{return d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,q,sizeof(Quad));},scenario!=6&&scenario<12,proof);};
                 if(scenario==22){HRESULT hr=E_FAIL;assert(skyCapture.draw(d,sky.s,false,submit,hr));ok(hr);}else ok(submit());
                 ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE));ok(d->SetRenderState(D3DRS_ZWRITEENABLE,TRUE));ok(d->SetRenderState(D3DRS_SRGBWRITEENABLE,FALSE));ok(d->SetRenderState(D3DRS_BLENDOP,D3DBLENDOP_ADD));
                 if(scenario>=24)ok(d->SetRenderState(D3DRS_COLORWRITEENABLE,15));
+                if(scenario>=28)ok(d->SetRenderState(D3DRS_ZFUNC,D3DCMP_LESSEQUAL));
                 ok(d->SetVertexDeclaration(decl));
             };
             if(scenario==2)occluder();
@@ -196,6 +199,7 @@ int main(int argc,char** argv){
         for(unsigned blended:{14u,15u,16u,19u,20u,22u,23u}){frame(false,blended);assert(!frame(true,blended));ready(blended);assert(frame(true,blended)>0);}
         for(unsigned depthOnly:{24u,25u}){frame(false,depthOnly);assert(!frame(true,depthOnly));ready(depthOnly);assert(frame(true,depthOnly)>0);}
         for(unsigned interleaved:{26u,27u}){frame(false,interleaved);assert(!frame(true,interleaved));assert(!frame(true,interleaved));}
+        for(unsigned unchangedDepth:{28u,29u,30u,31u}){frame(false,unchangedDepth);assert(!frame(true,unchangedDepth));ready(unchangedDepth);assert(frame(true,unchangedDepth)>0);}
         for(unsigned rejected:{17u,18u}){frame(false,rejected);assert(!frame(true,rejected));assert(!frame(true,rejected));}
         if(msColor){frame(false,7);assert(!frame(true,7));assert(!frame(true,7));assert(ModelNormalPacketTestAccess::stats(*n).find("modelDraws=0 ")!=std::string::npos);}
         for(unsigned changed:{8u,9u,10u}){frame(false,changed);const auto changedColor=referenceColor,changedNormals=referenceNormals;frame(false);ready();referenceColor=changedColor;referenceNormals=changedNormals;assert(!frame(true,changed));assert(!frame(true,changed));assert(ModelNormalPacketTestAccess::stats(*n).find("modelDraws=0 ")!=std::string::npos);}

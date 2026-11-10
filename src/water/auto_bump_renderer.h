@@ -281,8 +281,9 @@ class NorthlightAutoBump {
 #ifdef NORTHLIGHT_MATERIAL_DEPTH_TEST
         if(forceNativeDepthBarriers)return true;
 #endif
-        const D3DRENDERSTATETYPE keys[]={D3DRS_ZENABLE,D3DRS_ZWRITEENABLE};DWORD values[2];
-        return !readStates(keys,values)||(values[0]!=FALSE&&values[1]!=FALSE);
+        const D3DRENDERSTATETYPE keys[]={D3DRS_ZENABLE,D3DRS_ZWRITEENABLE,D3DRS_ZFUNC};DWORD values[3];
+        // EQUAL can only rewrite the stored depth; NEVER cannot pass the test.
+        return !readStates(keys,values)||(values[0]!=FALSE&&values[1]!=FALSE&&values[2]!=D3DCMP_EQUAL&&values[2]!=D3DCMP_NEVER);
     }
     bool seedSingleDepth(){
         if(singleDepthRetry)return false;

@@ -116,14 +116,14 @@ public:
         if(!enabled||!capable||refused||!complete)return {submit(),false,false};
         // Receivers are opaque. Blended depth writers clear auxiliary RGB with
         // alpha=1 independently of their original native colour/alpha output.
-        const D3DRENDERSTATETYPE keys[]={D3DRS_ZENABLE,D3DRS_ZWRITEENABLE,D3DRS_ALPHABLENDENABLE,D3DRS_SRGBWRITEENABLE,D3DRS_ALPHATESTENABLE,D3DRS_COLORWRITEENABLE};DWORD values[6]={};
-        if(!(rasterReader&&rasterReader(rasterContext,keys,6,values)))
-            for(unsigned i=0;i<6;++i)if(FAILED(d->GetRenderState(keys[i],values+i)))return fallback("raster-state");
+        const D3DRENDERSTATETYPE keys[]={D3DRS_ZENABLE,D3DRS_ZWRITEENABLE,D3DRS_ALPHABLENDENABLE,D3DRS_SRGBWRITEENABLE,D3DRS_ALPHATESTENABLE,D3DRS_COLORWRITEENABLE,D3DRS_ZFUNC};DWORD values[7]={};
+        if(!(rasterReader&&rasterReader(rasterContext,keys,7,values)))
+            for(unsigned i=0;i<7;++i)if(FAILED(d->GetRenderState(keys[i],values+i)))return fallback("raster-state");
         const auto z=values[0],write=values[1],blend=values[2],srgb=values[3],alpha=values[4];
         if(!z||!write)return {submit(),false,false};
         // The replay queue ignores draws without scene RGB writes too. Keep
         // previous normals; their stored distance is checked against final depth.
-        if(!receiver&&!(values[5]&7)){depthOnlySeen=true;const auto hr=submit();if(FAILED(hr))cancel("native-submit");return {hr,false,false};}
+        if(!receiver&&!(values[5]&7)){depthOnlySeen|=values[6]!=D3DCMP_EQUAL&&values[6]!=D3DCMP_NEVER;const auto hr=submit();if(FAILED(hr))cancel("native-submit");return {hr,false,false};}
         // A later RGB depth writer could fail native Z against that invisible
         // occluder but pass the replay's private depth. Retain exact rollback.
         if(depthOnlySeen)return fallback("depth-only-before-rgb");

@@ -217,6 +217,8 @@ int NORTHLIGHT_OBLIQUE_ENTRY(int argc,char** argv){
     WNDCLASSW wc{};wc.lpfnWndProc=DefWindowProcW;wc.lpszClassName=L"NormalOblique";wc.hInstance=GetModuleHandleW(nullptr);assert(RegisterClassW(&wc));
     HWND window=CreateWindowExW(0,wc.lpszClassName,L"",WS_OVERLAPPED,0,0,64,64,nullptr,nullptr,wc.hInstance,nullptr);assert(window);
     auto module=LoadLibraryA(argv[1]);assert(module);auto create=(IDirect3D9*(WINAPI*)(UINT))GetProcAddress(module,"Direct3DCreate9");auto api=create(D3D_SDK_VERSION);
+    const bool singleDepthCapable=SUCCEEDED(api->CheckDeviceFormat(0,D3DDEVTYPE_HAL,D3DFMT_X8R8G8B8,D3DUSAGE_DEPTHSTENCIL,D3DRTYPE_TEXTURE,D3DFORMAT(MAKEFOURCC('D','F','2','4'))));
+    std::printf("MATERIAL_SINGLE_DEPTH_CAPABLE value=%u\n",unsigned(singleDepthCapable));
     D3DPRESENT_PARAMETERS pp{};pp.Windowed=TRUE;pp.hDeviceWindow=window;pp.BackBufferWidth=64;pp.BackBufferHeight=64;pp.BackBufferFormat=D3DFMT_X8R8G8B8;pp.SwapEffect=D3DSWAPEFFECT_DISCARD;pp.PresentationInterval=D3DPRESENT_INTERVAL_IMMEDIATE;
     pp.MultiSampleType=samples;pp.EnableAutoDepthStencil=TRUE;pp.AutoDepthStencilFormat=D3DFMT_D24S8;
     if(resolveMSDepth)ok(api->CheckDeviceFormat(0,D3DDEVTYPE_HAL,D3DFMT_X8R8G8B8,D3DUSAGE_RENDERTARGET,D3DRTYPE_SURFACE,static_cast<D3DFORMAT>(MAKEFOURCC('R','E','S','Z'))));
@@ -750,11 +752,13 @@ int NORTHLIGHT_OBLIQUE_ENTRY(int argc,char** argv){
                 if(identicalRewrite&&!drawRewrite)rewriteBuffers();
                 if(batched){for(unsigned i=0;i<draws;++i){bump.beginDraw();ok(bump.nativeDraw(native));}for(unsigned i=0;i<draws;++i){bump.beginDraw();bump.capture(vs,native,!indexed,&geometry);}}
                 else for(unsigned i=0;i<draws;++i){
-                    if(i&&(depthCase==8||depthCase==9)){
+                    if(i&&depthCase>=8&&depthCase<=13&&(depthCase<12||i%4==0)){
                         bump.beginDraw();
-                        ok(d->SetRenderState(depthCase==8?D3DRS_ZWRITEENABLE:D3DRS_ZENABLE,FALSE));
+                        if(depthCase<=9)ok(d->SetRenderState(depthCase==8?D3DRS_ZWRITEENABLE:D3DRS_ZENABLE,FALSE));
+                        else ok(d->SetRenderState(D3DRS_ZFUNC,depthCase==10||depthCase==12?D3DCMP_EQUAL:D3DCMP_NEVER));
                         ok(bump.nativeDraw(native));
                         ok(d->SetRenderState(D3DRS_ZENABLE,D3DZB_TRUE));ok(d->SetRenderState(D3DRS_ZWRITEENABLE,TRUE));
+                        ok(d->SetRenderState(D3DRS_ZFUNC,D3DCMP_LESSEQUAL));
                     }
                     if(depthCase&&i==draws/2){
                         if(depthCase==5){bump.beforeDepthChange();ok(d->Clear(0,nullptr,D3DCLEAR_ZBUFFER,0,.5f,0));}
@@ -807,7 +811,7 @@ int NORTHLIGHT_OBLIQUE_ENTRY(int argc,char** argv){
             UINT64 hz=0,a=0,b=0;BOOL invalid=TRUE;wait(finish,&b,sizeof b);wait(start,&a,sizeof a);wait(frequency,&hz,sizeof hz);wait(disjoint,&invalid,sizeof invalid);assert(!invalid&&hz&&b>=a);
             std::printf("%s width=%u height=%u msaa=%u gpuMs=%.6f submitMs=%.6f repeats=%u draws=%u batched=%u\n",batchTiming?"MATERIAL_BATCH_TIMING":"SHARED_POM_TIMING",W,H,unsigned(samples),double(b-a)*1000/double(hz)/repeats,double(cpuEnd.QuadPart-cpuStart.QuadPart)*1000/double(cpuHz.QuadPart)/repeats,repeats,draws,unsigned(batched));
             if(identicalRewrite)std::printf("MATERIAL_IDENTICAL_REWRITE frames=%u draws=%u resident=%llu up=%llu readBytes=%llu verifiedHits=%llu changed=%u\n",4+repeats,draws,rewriteResident,rewriteUP,rewriteReads,rewriteHits,unsigned(std::getenv("NORTHLIGHT_TEST_REWRITE_CHANGED")!=nullptr));
-            if(batchTiming&&deferredEnabled){std::printf("MATERIAL_DEFERRED_BENCH queued=%u flushed=%u mutation=%u barrier=%u\n",MaterialCaptureStateTestAccess::queued(bump),MaterialCaptureStateTestAccess::flushed(bump),unsigned(deferredMutation),unsigned(barrier));assert(((drawRewrite||depthCase==7)?MaterialCaptureStateTestAccess::queued(bump)<=draws:MaterialCaptureStateTestAccess::queued(bump)==(multiStream||(!samples&&(!model||!indexed||std::getenv("NORTHLIGHT_TEST_MATERIAL_ALPHA_TEST")||std::getenv("NORTHLIGHT_TEST_SINGLE_SEED_FAILURE")))?0:draws-(barrier?draws/8:0)))&&MaterialCaptureStateTestAccess::flushed(bump)==MaterialCaptureStateTestAccess::queued(bump));
+            if(batchTiming&&deferredEnabled){std::printf("MATERIAL_DEFERRED_BENCH queued=%u flushed=%u mutation=%u barrier=%u\n",MaterialCaptureStateTestAccess::queued(bump),MaterialCaptureStateTestAccess::flushed(bump),unsigned(deferredMutation),unsigned(barrier));assert(((drawRewrite||depthCase==7)?MaterialCaptureStateTestAccess::queued(bump)<=draws:MaterialCaptureStateTestAccess::queued(bump)==(multiStream||(!samples&&(!singleDepthCapable||!model||!indexed||std::getenv("NORTHLIGHT_TEST_MATERIAL_ALPHA_TEST")||std::getenv("NORTHLIGHT_TEST_SINGLE_SEED_FAILURE")))?0:draws-(barrier?draws/8:0)))&&MaterialCaptureStateTestAccess::flushed(bump)==MaterialCaptureStateTestAccess::queued(bump));
 #ifndef NORTHLIGHT_TEST_CAPTURE_BASELINE
                 if(!samples&&model&&indexed)MaterialCaptureStateTestAccess::singleSample(bump);
 #endif
