@@ -32,6 +32,7 @@ timing_state=parser.add_mutually_exclusive_group()
 timing_state.add_argument('--timing-blend',action='store_true',help='Include a source-alpha blended depth writer before the commit')
 timing_state.add_argument('--timing-srgb',action='store_true',help='Keep native sRGB writes enabled throughout the receiver draws')
 timing_state.add_argument('--timing-fixed-pixel',action='store_true',help='Finish each frame with an unsupported fixed-function scene-depth writer')
+timing_state.add_argument('--timing-capture-hazard',action='store_true',help='Finish the immutable queue early after the native MRT audit')
 args=parser.parse_args()
 out=args.output.resolve();out.mkdir(parents=True,exist_ok=False)
 fixture=out/'fixture';fixture.mkdir()
@@ -75,12 +76,15 @@ backends=[]
 for i,path in enumerate(args.backend):
     windows_gpu_guard.processes();path=path.resolve();text=run('gpu-'+str(i),[exe,path,str(fixture)+'/'])
     assert 'MODEL_NORMAL_NATIVE_GPU_PASS' in text
+    retry=[line for line in text.splitlines() if line.startswith('MODEL_NORMAL_HAZARD_RETRY_PASS ')]
+    assert retry
+    if not args.reference_native:assert all(' pause=3 ' in line for line in retry)
     backends.append({'path':str(path),'sha256':hashlib.sha256(path.read_bytes()).hexdigest(),'log':'gpu-'+str(i)+'.log'})
     print(path.name,next(line for line in text.splitlines() if line.startswith('MODEL_NORMAL_NATIVE_GPU_PASS')),flush=True)
     for draws in args.timing_draws:
         assert 0<draws<=512
         assert 1<=args.timing_copies<=32
-        mode=('fixed-pixel' if args.timing_fixed_pixel else 'srgb' if args.timing_srgb else 'blend' if args.timing_blend else 'plain')+('-local' if args.timing_local else '')
+        mode=('capture-hazard' if args.timing_capture_hazard else 'fixed-pixel' if args.timing_fixed_pixel else 'srgb' if args.timing_srgb else 'blend' if args.timing_blend else 'plain')+('-local' if args.timing_local else '')
         text=run('timing-'+str(i)+'-'+str(draws),[exe,path,str(fixture)+'/',draws,args.timing_copies,mode])
         print('\n'.join(line for line in text.splitlines() if line.startswith('MODEL_NORMAL_NATIVE_TIMING')),flush=True)
 inputs={str(p.relative_to(ROOT)):hashlib.sha256(p.read_bytes()).hexdigest() for p in fp.SRC.rglob('*') if p.is_file()}
@@ -93,4 +97,5 @@ report['timing']['srgb']=args.timing_srgb
 report['reference_packet_layout']=args.reference_packet_layout
 report['reference_native']=args.reference_native
 report['timing']['fixed_pixel']=args.timing_fixed_pixel
+report['timing']['capture_hazard']=args.timing_capture_hazard
 (out/'validation.json').write_text(json.dumps(report,indent=2)+'\n')

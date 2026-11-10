@@ -10,6 +10,7 @@
 struct ModelNormalPacketTestAccess {
     static unsigned committed(const NorthlightModelNormals& n){return n.nativeCommittedPackets;}
     static std::string stats(const NorthlightModelNormals& n){std::string text;n.nativeMrt.report(0,[&](const char* format,auto... args){char line[1024];std::snprintf(line,sizeof line,format,args...);text+=line;});return text;}
+    static unsigned stat(const NorthlightModelNormals& n,const char* name){const auto text=stats(n);const std::string key=std::string(name)+"=";const auto at=text.find(key);assert(at!=std::string::npos);return unsigned(std::strtoul(text.c_str()+at+key.size(),nullptr,10));}
 };
 struct NativeCalls:CaptureCalls {
     unsigned vsSets=0,psSets=0,failVS=0,failPS=0,fillSuccess=0,fillFailure=0;bool after=false,denyFill=false,denyFormat=false;
@@ -33,6 +34,7 @@ int main(int argc,char** argv){
     const bool timingBlend=timingMode.find("blend")!=std::string::npos;
     const bool timingSrgb=timingMode.find("srgb")!=std::string::npos;
     const bool timingFixed=timingMode.find("fixed-pixel")!=std::string::npos;
+    const bool timingHazard=timingMode.find("capture-hazard")!=std::string::npos;
     WNDCLASSW wc{};wc.lpfnWndProc=DefWindowProcW;wc.lpszClassName=L"NorthlightNativeNormalTransaction";wc.hInstance=GetModuleHandleW(nullptr);assert(RegisterClassW(&wc));auto window=CreateWindowExW(0,wc.lpszClassName,L"",WS_OVERLAPPED,0,0,64,64,nullptr,nullptr,wc.hInstance,nullptr);assert(window);
     auto module=LoadLibraryA(argv[1]);assert(module);auto create=(IDirect3D9*(WINAPI*)(UINT))GetProcAddress(module,"Direct3DCreate9");assert(create);auto api=create(D3D_SDK_VERSION);assert(api);
     D3DPRESENT_PARAMETERS pp{};pp.Windowed=TRUE;pp.hDeviceWindow=window;pp.BackBufferWidth=pp.BackBufferHeight=64;pp.BackBufferFormat=D3DFMT_X8R8G8B8;pp.SwapEffect=D3DSWAPEFFECT_DISCARD;pp.PresentationInterval=D3DPRESENT_INTERVAL_IMMEDIATE;
@@ -107,6 +109,7 @@ int main(int argc,char** argv){
         std::vector<unsigned char> referenceColor,referenceNormals,referenceSky;
         auto frame=[&](bool mrt,unsigned scenario=0,unsigned fault=0){
             n->endFrame();n->enableNativeMrt(mrt);state(color);
+            if(scenario==34)assert(n->finishCaptures()); // No audited draw: no new cooldown.
             if(scenario==10){ok(d->SetDepthStencilSurface(alternateDepth));ok(d->Clear(0,nullptr,D3DCLEAR_ZBUFFER,0,1,0));ok(d->SetDepthStencilSurface(depth));}
             if(scenario==7){ok(d->SetDepthStencilSurface(nullptr));ok(d->SetRenderTarget(0,msColor));ok(d->SetDepthStencilSurface(msDepth));}
             ok(d->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0xff112233,1,0));
@@ -157,6 +160,8 @@ int main(int argc,char** argv){
                 DWORD mask=0;ok(raw->GetRenderState(D3DRS_COLORWRITEENABLE1,&mask));assert(mask==(timing?15u:7u));
                 if(scenario==4&&i==0){n->nativeDepthChanged();ok(d->Clear(0,nullptr,D3DCLEAR_ZBUFFER,0,1,0));}
                 if(scenario==5&&i==0)n->beforeTextureWrite(checker);
+                if(scenario==33&&i+1==N)assert(n->finishCaptures()); // Late queue split, after the audit work.
+                if(scenario==35&&i+1==N){assert(n->pendingTextures()&&n->samplesTexture(checker));n->beforeTextureWrite(checker);assert(!n->pendingTextures());}
                 if(scenario>=26&&scenario<32&&i==0)occluder();
             }
             if(scenario==3||scenario==6||(scenario>=12&&scenario<=22)||scenario==24||scenario==25||scenario==32)occluder();
@@ -174,14 +179,16 @@ int main(int argc,char** argv){
         if(timing){
             IDirect3DQuery9 *q0=nullptr,*q1=nullptr,*hz=nullptr;ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&q0));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&q1));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMPFREQ,&hz));
             auto get=[](IDirect3DQuery9* q){UINT64 v=0;HRESULT hr;while((hr=q->GetData(&v,sizeof v,D3DGETDATA_FLUSH))==S_FALSE)Sleep(0);ok(hr);return v;};
-            LARGE_INTEGER frequency;QueryPerformanceFrequency(&frequency);std::vector<double> gpu[2],cpu[2];
+            LARGE_INTEGER frequency;QueryPerformanceFrequency(&frequency);std::vector<double> gpu[2],cpu[2];unsigned probes[2]={};
             for(unsigned block=0;block<4;++block)for(bool mrt:{false,true})for(unsigned round=0;round<8;++round){
                 store.setFrame(++frameNumber);ok(hz->Issue(D3DISSUE_END));ok(q0->Issue(D3DISSUE_END));LARGE_INTEGER a,b;QueryPerformanceCounter(&a);
-                const auto committed=frame(mrt,timingFixed?32:timingSrgb?23:timingBlend?12:0);QueryPerformanceCounter(&b);ok(q1->Issue(D3DISSUE_END));const auto ticks=get(q1)-get(q0),rate=get(hz);
-                if(round>=4){assert(!mrt||committed==((timingBaseline||timingFixed)?0u:N));gpu[mrt].push_back(double(ticks)*1000/rate);cpu[mrt].push_back(double(b.QuadPart-a.QuadPart)*1000/frequency.QuadPart);}
+                const auto committed=frame(mrt,timingHazard?33:timingFixed?32:timingSrgb?23:timingBlend?12:0);QueryPerformanceCounter(&b);ok(q1->Issue(D3DISSUE_END));const auto ticks=get(q1)-get(q0),rate=get(hz);
+                if(round>=4){assert(!mrt||committed==((timingBaseline||timingFixed||timingHazard)?0u:N));gpu[mrt].push_back(double(ticks)*1000/rate);cpu[mrt].push_back(double(b.QuadPart-a.QuadPart)*1000/frequency.QuadPart);probes[mrt]+=ModelNormalPacketTestAccess::stat(*n,"probes");}
             }
             auto median=[](std::vector<double> a){std::sort(a.begin(),a.end());return a[a.size()/2];};
-            std::printf("MODEL_NORMAL_NATIVE_TIMING size=%ux%u draws=%u vertices=%u copies=%u local=%u hdr=%u blendedDepth=%u srgb=%u baseline=%u gpu_replay=%.6f gpu_mrt=%.6f cpu_replay=%.6f cpu_mrt=%.6f scope=capture-queue-native-draw-replay-or-commit\n",W,H,N,nv,copies,timingLocal,hdr,timingBlend,timingSrgb,timingBaseline,median(gpu[0]),median(gpu[1]),median(cpu[0]),median(cpu[1]));
+            auto mean=[](const std::vector<double>& a){double sum=0;for(double value:a)sum+=value;return sum/a.size();};
+            std::printf("MODEL_NORMAL_NATIVE_TIMING size=%ux%u draws=%u vertices=%u copies=%u local=%u hdr=%u blendedDepth=%u srgb=%u baseline=%u gpu_replay=%.6f gpu_mrt=%.6f cpu_replay=%.6f cpu_mrt=%.6f lateHazard=%u probesReplay=%u probesMrt=%u scope=capture-queue-native-draw-replay-or-commit\n",W,H,N,nv,copies,timingLocal,hdr,timingBlend,timingSrgb,timingBaseline,median(gpu[0]),median(gpu[1]),median(cpu[0]),median(cpu[1]),timingHazard,probes[0],probes[1]);
+            std::printf("MODEL_NORMAL_NATIVE_CYCLE draws=%u hdr=%u lateHazard=%u frames=16 probesMrt=%u cpuReplayMean=%.6f cpuMrtMean=%.6f\n",N,hdr,timingHazard,probes[1],mean(cpu[0]),mean(cpu[1]));
             q0->Release();q1->Release();hz->Release();
         }else{
         auto ready=[&](unsigned scenario=0){unsigned committed=0;for(unsigned i=0;i<8&&!committed;++i)committed=frame(true,scenario);assert(committed>0);};
@@ -189,6 +196,24 @@ int main(int argc,char** argv){
         // single, then dual, then triple. Compare identical warmed recipes.
         assert(!frame(false));assert(!frame(false));const auto warmColor=referenceColor;assert(!frame(false));assert(warmColor==referenceColor);
         assert(!frame(true));ready();
+        frame(false,33);const auto hazardColor=referenceColor,hazardNormals=referenceNormals;
+        frame(false);ready();referenceColor=hazardColor;referenceNormals=hazardNormals;
+        assert(!frame(true,33));assert(!ModelNormalPacketTestAccess::stat(*n,"retryFrames"));
+        assert(!frame(true));assert(frame(true)>0); // One hazard after working MRT keeps its usual recovery.
+        auto sustainedHazard=[&](unsigned scenario){frame(false,scenario);unsigned pause=0,totalProbes=0;
+            for(unsigned repeat=0;repeat<12;++repeat){assert(!frame(true,scenario));const auto probes=ModelNormalPacketTestAccess::stat(*n,"probes");
+                if(!repeat){pause=ModelNormalPacketTestAccess::stat(*n,"retryFrames");assert(pause==0||pause==3);}
+                assert(bool(probes)==(repeat%(pause+1)==0));totalProbes+=probes;
+            }
+            assert(!frame(true));assert(frame(true)>0);
+            std::printf("MODEL_NORMAL_HAZARD_RETRY_PASS scenario=%u pause=%u probes=%u frames=12 exactPixels=1 singleHazardRecovery=1\n",scenario,pause,totalProbes);return pause;
+        };
+        const auto pause=sustainedHazard(33);if(alpha)sustainedHazard(35);
+        frame(false,34);assert(!frame(true,34));assert(!ModelNormalPacketTestAccess::stat(*n,"retryFrames"));
+        frame(false);ready();frame(false,33);assert(!frame(true,33));assert(ModelNormalPacketTestAccess::stat(*n,"retryFrames")==pause);
+        n->reset();assert(!ModelNormalPacketTestAccess::stat(*n,"retryFrames"));
+        frame(false);ready();
+        std::puts("MODEL_NORMAL_HAZARD_LIFECYCLE_PASS noProbeDelay=0 resetCleared=1");
         assert(!frame(true,1));assert(!frame(true,1));assert(ModelNormalPacketTestAccess::stats(*n).find("modelDraws=0 ")!=std::string::npos);
         assert(!frame(true));ready();
         calls.denyFill=true;assert(frame(true)>0);calls.denyFill=false;
