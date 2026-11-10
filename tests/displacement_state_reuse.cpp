@@ -456,6 +456,31 @@ void DisplacementStateTestAccess::poseHandoff(const char* path,const std::vector
     {auto& m=g.materials.at(&device.vs);m.rangeKind=NorthlightModelNormalRange::None;
      g.endFrame();assert(!g.prepare(&device.vs,4,1,args,nullptr,&source)&&!source.pose.bounds.valid&&!source.pose.outsideRange);
      m.rangeKind=NorthlightModelNormalRange::Envelope;g.endFrame();assert(!g.prepare(&device.vs,4,1,args,nullptr,&source)&&source.pose.outsideRange);}
+    { // The existing local skin evaluator still runs after the shared envelope budget refuses.
+        auto& configured=g.materials.at(&device.vs);configured.envelopeSkin=NorthlightReplayBounds::SkinEnvelope::supports(configured.view);assert(configured.envelopeSkin);
+        g.boundsLRU.clear();g.bounds.clear();g.boundsBytes=0;
+        const auto limit=g.envelopeBudget.maxOperations;auto refuse=[&]{g.endFrame();g.envelopeBudget.maxOperations=0;g.poseEnvelopes.chargeCheapPreparation(UINT64_MAX);};refuse();
+        assert(!g.prepare(&device.vs,4,1,args,nullptr,&source));assert(source.pose.bounds.valid&&source.pose.outsideRange&&g.poseVerticesThisFrame==(configured.view.kernel.skin?0u:96u));
+        const auto entries=g.bounds.size();const auto built=g.poseEnvelopes.stats().completed;unsigned checks=0;
+        for(float z:{20.f,48.f,48.005f,80.f,-20.f,-80.f,20.f,80.f}){
+            float bank[1024];std::memcpy(bank,device.bank,sizeof bank);bank[22]=z<0?-1.f:1.f;for(unsigned bone=0;bone<4;++bone)bank[4*(33+3*bone)+3]=z;
+            assert(SUCCEEDED(extension.SetVertexShaderConstantF(0,bank,256)));refuse();g.poseVerticesThisFrame=8192;
+            assert(!g.prepare(&device.vs,4,1,args,nullptr,&source));current.requestHeld=true;assert(extension.constantStamp(current));
+            const bool outside=std::fabs(z)==80,published=outside||z==48.005f;
+            assert(source.pose.bounds.valid==published&&source.pose.outsideRange==outside&&source.pose.outside(source.mesh.get(),&device.vs,&layout,current)==outside);
+            assert(g.poseVerticesThisFrame==8192&&!g.buildsThisFrame&&g.bounds.size()==entries&&g.poseEnvelopes.stats().completed==built);++checks;
+        }
+        const auto proof=source.pose;assert(SUCCEEDED(extension.SetVertexShaderConstantF(31,device.bank+124,1)));current.requestHeld=true;assert(extension.constantStamp(current));assert(!proof.outside(source.mesh.get(),&device.vs,&layout,current));
+        auto& m=g.materials.at(&device.vs);m.rangeKind=NorthlightModelNormalRange::None;refuse();assert(!g.prepare(&device.vs,4,1,args,nullptr,&source)&&!source.pose.bounds.valid);m.rangeKind=NorthlightModelNormalRange::Envelope;
+        float projection[4];std::memcpy(projection,device.bank+20,sizeof projection);float invalid[4]={};assert(SUCCEEDED(extension.SetVertexShaderConstantF(5,invalid,1)));refuse();assert(!g.prepare(&device.vs,4,1,args,nullptr,&source)&&!source.pose.bounds.valid);assert(SUCCEEDED(extension.SetVertexShaderConstantF(5,projection,1)));
+        refuse();assert(!g.prepare(&device.vs,4,1,args,nullptr,&source)&&source.pose.outsideRange);
+        auto canonical=std::make_unique<NorthlightAutoDisplacement::Entry>();canonical->source=source.mesh;canonical->sourceDecl=&layout;layout.AddRef();canonical->program=m.id;canonical->domain=4;g.retain(std::move(canonical));
+        auto up=args;up.vertices=buffer.bytes.data();up.stride=32;refuse();g.poseVerticesThisFrame=8192;
+        assert(!g.prepare(&device.vs,4,1,up,nullptr,&source)&&!source.pose.bounds.valid&&source.mesh!=g.entries.back()->source&&g.poseVerticesThisFrame==8192);
+        g.envelopeBudget.maxOperations=limit;g.endFrame();assert(!g.prepare(&device.vs,4,1,args,nullptr,&source)&&source.pose.outsideRange);
+        current.requestHeld=true;assert(extension.constantStamp(current));
+        std::printf("POSE_LOCAL_HANDOFF_PASS poses=%u forcedBudgetRefusal=1 warmScanVertices=0 currentPalette=1 nearBoundaryRetained=1 staleEpochRejected=1 invalidProjectionRetained=1 canonicalOwnerRetained=1\n",checks);
+    }
     const auto owner=source.mesh;g.reset();assert(source.mesh==owner&&source.pose.outside(source.mesh.get(),&device.vs,&layout,current));
     mirror.invalidate();current.requestHeld=true;assert(extension.constantStamp(current)&&!source.pose.outside(source.mesh.get(),&device.vs,&layout,current));source.clear();assert(!source.mesh&&!source.pose.bounds.valid);
     std::printf("POSE_HANDOFF_PRODUCER_PASS actual_prepare warmed_buffered_skin distant_before_charge retained_source epoch_invalidation near_boundary_retained unsupported_projection_retained far_promoted=1 sizeofHandoff=%zu sizeofCaptureSource=%zu\n",sizeof(NorthlightPoseBounds::Handoff),sizeof(NorthlightAutoDisplacement::CaptureSource));
@@ -585,7 +610,7 @@ struct MaterialCaptureStateTestAccess {
             std::vector<unsigned> submitted;for(unsigned phase=0;phase<3;++phase){b.enabled=phase==1;b.profileConfigFrame=~uint64_t(0);b.beginDraw();assert(nativeGpuConfig==(phase==1?1:0));const unsigned before=d.timestamps;const auto reads=ProfileDevice::clockReads();
                 for(unsigned i=0;i<32;++i){if(!b.enabled)b.capture(&d.vs,[]{return D3D_OK;});else b.profileTag=19;
                     const HRESULT expected=i&1?E_FAIL:D3D_OK;assert(b.nativeDraw([&]{submitted.push_back(phase*32+i);return expected;})==expected);}
-                assert(d.timestamps-before==(phase==1?4u:0u));assert(ProfileDevice::clockReads()-reads==(phase==1?132u:0u));}
+                assert(d.timestamps-before==(phase==1?4u:0u));assert(ProfileDevice::clockReads()-reads==(phase==1?12u:0u));}
             for(unsigned i=0;i<96;++i)assert(submitted[i]==i);assert(d.creates==6&&!d.pixelQueries&&!d.pixelConstants&&!d.textures&&!d.samplers&&!d.depthAllocations);
             profile.endFrame();profile.reset();assert(!d.live);
         }assert(d.vs.refs==1);

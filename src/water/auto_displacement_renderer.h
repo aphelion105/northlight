@@ -685,14 +685,17 @@ public:
         const bool distant=shader->second.skinned&&distantPoseBounds(shader->second.view,source,elements,count,low,high,original,decl.p,&poseBounds,true,&poseViewBounds);
         // Reuse only the already computed outward envelope and the original raw
         // source. No additional evaluation, scan, admission or cache entry.
-        if(captureSource&&source.get()==captureSource->mesh.get()&&poseBounds.valid&&trustedConstants&&constantFirst<=2&&constantFirst+constantCount>=6&&
-           shader->second.rangeKind==NorthlightModelNormalRange::Envelope){
-            NorthlightConstantEpoch::Stamp currentStamp;currentStamp.requestHeld=true;
-            if(constantReader&&constantReader(constantContext,currentStamp)&&NorthlightConstantEpoch::exact(constantStamp,currentStamp)){
-                captureSource->pose.publish(poseViewBounds,constants,currentStamp,source.get(),original,decl.p);
-                captureSource->pose.outsideRange=captureSource->pose.outside(source.get(),original,decl.p,currentStamp);
+        const auto publishPose=[&](const NorthlightReplayBounds::Bounds& view){
+            if(captureSource&&source.get()==captureSource->mesh.get()&&view.valid&&trustedConstants&&constantFirst<=2&&constantFirst+constantCount>=6&&
+               shader->second.rangeKind==NorthlightModelNormalRange::Envelope){
+                NorthlightConstantEpoch::Stamp currentStamp;currentStamp.requestHeld=true;
+                if(constantReader&&constantReader(constantContext,currentStamp)&&NorthlightConstantEpoch::exact(constantStamp,currentStamp)){
+                    captureSource->pose.publish(view,constants,currentStamp,source.get(),original,decl.p);
+                    captureSource->pose.outsideRange=captureSource->pose.outside(source.get(),original,decl.p,currentStamp);
+                }
             }
-        }
+        };
+        if(poseBounds.valid)publishPose(poseViewBounds);
         if(distant){++distanceRejected;return false;}
         // Skinning without an audited envelope uses posed vertices below, never object-space
         // bounds. Building/scanning/retaining those before a budget refusal was
@@ -723,6 +726,8 @@ public:
         if(exactEnvelope()){if(!reusePose)touchBounds(foundBounds->second);std::copy(skinBounds.low,skinBounds.low+3,low);std::copy(skinBounds.high,skinBounds.high+3,high);
             // Reuse the audited, outward-rounded skin envelope for normal capture.
             const auto view=reusePose?poseViewBounds:distanceBoundsInView(skinBounds);
+            // A near legacy result cannot reject normal range; leave its existing capture path alone.
+            if(!reusePose&&(view.low[2]>48.f||view.high[2]<-48.f))publishPose(view);
             lastDepthUpper=std::nextafter(std::max(std::fabs(view.low[2]),std::fabs(view.high[2])),INFINITY)+.001f;
             lastDepthLower=std::max(0.f,std::nextafter(view.low[2]>0?view.low[2]:view.high[2]<0?-view.high[2]:0,-INFINITY)-.001f);}
         else if(shader->second.skinned){P::Scope pose(profile,P::PoseFallback);if(!chargePoseVertices(source->vertexCount))return false;poseFallbackVertices+=source->vertexCount;if(profile)profile->count(P::PoseVertices,source->vertexCount);pose.work(source->vertexCount);for(unsigned k=0;k<3;++k){low[k]=FLT_MAX;high[k]=-FLT_MAX;}
