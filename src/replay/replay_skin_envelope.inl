@@ -1,3 +1,16 @@
+namespace detail {
+// Only normal-to-normal IEEE neighbors avoid the CRT's exceptional cases.
+template<bool Upper> inline float outwardNormal(float value){
+    if constexpr(sizeof(float)==4&&std::numeric_limits<float>::is_iec559&&std::numeric_limits<float>::radix==2&&std::numeric_limits<float>::digits==24&&std::numeric_limits<float>::max_exponent==128){
+        std::uint32_t bits;std::memcpy(&bits,&value,4);const auto magnitude=bits&0x7fffffffu;
+        if(magnitude>0x00800000u&&magnitude<0x7f7fffffu){
+            if(bool(bits>>31)==Upper)--bits;else ++bits;
+            std::memcpy(&value,&bits,4);return value;
+        }
+    }
+    return std::nextafter(value,Upper?std::numeric_limits<float>::infinity():-std::numeric_limits<float>::infinity());
+}
+}
 // Exact template specialization for the client's explicit four-weight palette
 // blend. This is a bound on the ORIGINAL geometry; no shadow mesh is simplified.
 // All other programs retain the general interval evaluator.
@@ -198,15 +211,15 @@ private:
                 const double values[]={lo*sumLow,lo*sumHigh,hi*sumLow,hi*sumHigh};lo=*std::min_element(values,values+4)+inverse[12+axis];hi=*std::max_element(values,values+4)+inverse[12+axis];
                 error+=detail::roundError(scale*sumHigh+std::fabs(double(inverse[12+axis])))*8+.001;
                 if(!std::isfinite(lo)||!std::isfinite(hi)||!std::isfinite(error)||std::max(std::fabs(lo),std::fabs(hi))+error>1000000)return false;
-                output.low[axis]=std::nextafter(float(lo-error),-INFINITY);output.high[axis]=std::nextafter(float(hi+error),INFINITY);
+                output.low[axis]=detail::outwardNormal<false>(float(lo-error));output.high[axis]=detail::outwardNormal<true>(float(hi+error));
             }output.valid=true;return true;
         }
         for(unsigned axis=0;axis<3;++axis){detail::Value world={inverse[12+axis],0};double scale=std::fabs(world.value);
             for(unsigned j=0;j<3;++j){auto term=detail::mul(view[j],{inverse[4*j+axis],0});scale+=std::fabs(term.value)+term.error;world=detail::add(world,term);}
             world.error+=detail::roundError(scale)*8+.001;
             if(!std::isfinite(world.value)||!std::isfinite(world.error)||std::fabs(world.value)+world.error>1000000)return false;
-            output.low[axis]=std::nextafter(float(double(world.value)-world.error),-std::numeric_limits<float>::infinity());
-            output.high[axis]=std::nextafter(float(double(world.value)+world.error),std::numeric_limits<float>::infinity());
+            output.low[axis]=detail::outwardNormal<false>(float(double(world.value)-world.error));
+            output.high[axis]=detail::outwardNormal<true>(float(double(world.value)+world.error));
         }output.valid=true;return true;
     }
 };

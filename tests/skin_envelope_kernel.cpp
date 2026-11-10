@@ -21,10 +21,13 @@ static Case authored(unsigned seed,unsigned bones){
  Case c;std::mt19937 rng(seed);auto f=[&](float range){return float(int(rng()%20001)-10000)*(range/10000);};
  for(unsigned i=0;i<160;++i){Four inputs[3]={};for(unsigned k=0;k<3;++k)inputs[0][k]=f(8);inputs[0][3]=1;
   for(unsigned k=0;k<4;++k){inputs[1][k]=float(rng()%1001)/1000;inputs[2][k]=float(rng()%bones);}
+  if(!i)inputs[2][0]=float(bones-1); // Exercise the last palette row, including bone 74/c255.
   assert(c.skin.add(inputs));}
  for(unsigned i=0;i<75;++i){float* r=c.constants+4*(31+3*i);for(unsigned k=0;k<12;++k)r[k]=f(k%4==3?40.f:1.2f);}
- const float angle=f(3.1f),a=std::cos(angle),b=std::sin(angle);
- c.inverse[0]=c.inverse[5]=a;c.inverse[1]=b;c.inverse[4]=-b;c.inverse[10]=c.inverse[15]=1;
+ const float x=f(3.1f),y=f(3.1f),z=f(3.1f),cx=std::cos(x),sx=std::sin(x),cy=std::cos(y),sy=std::sin(y),cz=std::cos(z),sz=std::sin(z);
+ c.inverse[0]=cz*cy;c.inverse[4]=cz*sy*sx-sz*cx;c.inverse[8]=cz*sy*cx+sz*sx;
+ c.inverse[1]=sz*cy;c.inverse[5]=sz*sy*sx+cz*cx;c.inverse[9]=sz*sy*cx-cz*sx;
+ c.inverse[2]=-sy;c.inverse[6]=cy*sx;c.inverse[10]=cy*cx;c.inverse[15]=1;
  c.inverse[12]=f(1000);c.inverse[13]=f(1000);c.inverse[14]=f(1000);return c;
 }
 #ifdef NORTHLIGHT_SKIN_REFERENCE
@@ -46,8 +49,14 @@ int main(){
  for(unsigned bones:{1u,4u,16u,75u})for(unsigned pose=0;pose<512;++pose){auto c=authored(911+pose,bones);
 #ifdef NORTHLIGHT_SKIN_REFERENCE
   compare(c);++cases;
+  for(unsigned basis=0;basis<2;++basis){auto affine=c;
+   if(basis==0){for(unsigned axis=0;axis<3;++axis){affine.inverse[axis]*=-.75f;affine.inverse[4+axis]*=1.5f;affine.inverse[8+axis]*=.5f;}}
+   else {for(unsigned i=0;i<12;++i)affine.inverse[i]=0;affine.inverse[0]=affine.inverse[5]=.6f;affine.inverse[1]=.8f;affine.inverse[4]=-.8f;affine.inverse[10]=1;}
+   compare(affine);++cases;
+  }
   for(int mode:{FE_TONEAREST,FE_DOWNWARD,FE_UPWARD,FE_TOWARDZERO}){
    const int before=std::fegetround();assert(std::fesetround(mode)==0);
+   compare(c);++cases;
    for(bool negativeZero:{false,true}){auto identity=c;
     for(unsigned i=0;i<16;++i)identity.inverse[i]=i%5==0?1.f:negativeZero?-0.f:0.f;
     compare(identity);++cases;
