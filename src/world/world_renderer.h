@@ -3129,8 +3129,11 @@ public:
     // vfprintf and fflush under the log lock) is inside a bucketed span. The text is the same.
     std::vector<std::string> deferredLines;
     __attribute__((format(printf,2,3))) void deferLogf(const char* format,...){
-        va_list a;va_start(a,format);va_list b;va_copy(b,a);const int n=std::vsnprintf(nullptr,0,format,a);va_end(a);
-        if(n>=0)try{std::string line(size_t(n),'\0');std::vsnprintf(&line[0],size_t(n)+1,format,b);deferredLines.push_back(std::move(line));}catch(...){}
+        char buffer[2048];va_list a;va_start(a,format);va_list b;va_copy(b,a);const int n=std::vsnprintf(buffer,sizeof buffer,format,a);va_end(a);
+        if(n>=0)try{
+            if(size_t(n)<sizeof buffer)deferredLines.emplace_back(buffer,size_t(n));
+            else{std::string line(size_t(n),'\0');std::vsnprintf(&line[0],size_t(n)+1,format,b);deferredLines.push_back(std::move(line));}
+        }catch(...){}
         va_end(b);}
     void flushDeferredLogs(){for(const auto& line:deferredLines)logf("%s",line.c_str());deferredLines.clear();}
     // 0.3.192 (DXVK3): the per-interval lock volume (lock_meter.h); runs on the Diagnostics 2000 ms tick of endFrame.

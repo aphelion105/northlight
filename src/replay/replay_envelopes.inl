@@ -681,12 +681,12 @@ private:
         // Material draws interleave unrelated game work. Time each bounded
         // warm evaluation separately; the shadow pass's batched clock would
         // charge those gaps and exhaust the material budget prematurely.
-        if(FastReady&&!ResultMemo&&stage==Stage::All&&prepared){
-            {Status fast;Timer timer{*this,false};if(fastReady(*prepared,owner,constants,inverse,budget,output,info,fast,source,&timer))return fast;}
-            if(!canReady())return timeBudget();
-        }
         Status evaluationStatus=Status::Budget;
         Timer timer{*this,stage==Stage::Build,stage==Stage::Heavy};
+        if(FastReady&&!ResultMemo&&stage==Stage::All&&prepared){
+            if(fastReady(*prepared,owner,constants,inverse,budget,output,info,evaluationStatus,source,&timer))return evaluationStatus;
+            if((!source||!source->ready)&&timer.expired())return timeBudget();
+        }
         const auto lookupStart=timer.start;bool classified=false;
         const auto accountClassify=[&](){if(diagnostics_&&!classified){classifyNanoseconds_+=std::uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(BoundsClock::now()-lookupStart).count());classified=true;}};
         try {

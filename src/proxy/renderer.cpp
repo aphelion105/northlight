@@ -187,7 +187,13 @@ static void logf(const char* fmt, ...) {
             const size_t length=line?std::strlen(line):size_t(-1);
             if(length<=0x7fffffffU)bytes=std::fputs(line,logFile)==EOF?-1:int(length);
             else bytes=vfprintf(logFile,fmt,args);
-        }else bytes=vfprintf(logFile,fmt,args);
+        }else{
+            char buffer[2048];va_list copy;va_copy(copy,args);
+            const int length=vsnprintf(buffer,sizeof buffer,fmt,copy);va_end(copy);
+            if(length<0)bytes=-1;
+            else if(size_t(length)<sizeof buffer)bytes=fwrite(buffer,1,size_t(length),logFile)==size_t(length)?length:-1;
+            else bytes=vfprintf(logFile,fmt,args);
+        }
         va_end(args);
         if(bytes>=0)logCost.formattedBytes+=unsigned(bytes);else ++logCost.ioErrors;
         if(fputc('\n',logFile)!=EOF)++logCost.formattedBytes;else ++logCost.ioErrors;
