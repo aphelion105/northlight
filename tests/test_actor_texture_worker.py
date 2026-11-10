@@ -110,7 +110,7 @@ void sameMaterial(const NorthlightGI::WorldMaterial& a,const NorthlightGI::World
  assert(std::memcmp(&a.albedo,&b.albedo,sizeof(a.albedo))==0);
 }
 void sameScene(const Current::Result& a,const Before::Result& b){
- assert(a.hash==b.hash&&a.scene&&b.scene);assert(a.scene->vertices.size()==b.scene->vertices.size()&&a.scene->triangles.size()==b.scene->triangles.size()&&a.scene->materials.size()==b.scene->materials.size());
+ assert(a.scene&&b.scene);assert(Before::sceneHash(*a.scene)==b.hash&&Current::sceneHash(*b.scene)==a.hash);assert(a.scene->vertices.size()==b.scene->vertices.size()&&a.scene->triangles.size()==b.scene->triangles.size()&&a.scene->materials.size()==b.scene->materials.size());
  if(!a.scene->vertices.empty())assert(std::memcmp(a.scene->vertices.data(),b.scene->vertices.data(),a.scene->vertices.size()*sizeof(NorthlightGI::WorldVertex))==0);
  if(!a.scene->triangles.empty())assert(std::memcmp(a.scene->triangles.data(),b.scene->triangles.data(),a.scene->triangles.size()*sizeof(NorthlightGI::WorldTriangle))==0);
  for(std::size_t i=0;i<a.scene->materials.size();++i)sameMaterial(a.scene->materials[i],b.scene->materials[i]);
@@ -178,7 +178,7 @@ int main(){
  // Shared immutable mesh ownership and repeat resolutions remain deterministic.
  job.packets={p};auto mesh=std::make_shared<const NorthlightDrawSnapshot::Mesh>(std::move(job.packets[0].mesh));job.packets[0].sharedMesh=mesh;mesh.reset();assert(compare(job).hash==original.hash);
  auto first=std::async(std::launch::async,[job]{return job.resolve();});auto second=std::async(std::launch::async,[job]{return job.resolve();});assert(first.get().hash==second.get().hash);
- std::puts("Bit-exact vertices, normals, UVs, materials, scene hash, alpha BVH, geometry/UV gates, 16,384-vertex budgets and concurrent immutable resolution passed");
+ std::puts("Bit-exact vertices, normals, UVs, materials, alpha BVH; independent old/new hash consistency, geometry/UV gates, 16,384-vertex budgets and concurrent immutable resolution passed");
 }
 '''
 harness = harness.replace('BEFORE_MATERIAL_METHOD', material_method((BASE / 'world_renderer.h').read_text()).replace('NorthlightActorTexture::', 'NorthlightActorTextureBefore::'))
@@ -205,7 +205,8 @@ report = {
     'paired_texture_scenes': 432,
     'all_six_formats_partial_blocks_padded_mips': True,
     'failed_read_alpha_skip_opaque_neutral_parity': True,
-    'geometry_uv_hash_normal_alpha_bvh_parity': True,
+    'geometry_uv_normal_alpha_bvh_parity': True,
+    'independent_old_new_hash_consistency': True,
     'vertex_budget_parity': True,
     'immutable_ownership_and_concurrent_resolution': True,
     'worker_no_d3d_interface': True,

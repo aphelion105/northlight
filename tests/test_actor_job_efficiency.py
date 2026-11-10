@@ -8,6 +8,8 @@ import northlight_paths as fp
 out=fp.output_dir();out.mkdir(parents=True,exist_ok=True)
 old=subprocess.check_output(['git','show','4bc83d6:src/replay/actor_scene_job.h'],cwd=fp.REPO,text=True)
 (out/'actor_job_reference.h').write_text(old.replace('NorthlightActorGeometry','ActorJobReference'))
+previous=subprocess.check_output(['git','show','a7879559:src/replay/actor_scene_job.h'],cwd=fp.REPO,text=True)
+(out/'actor_hash_reference.h').write_text(previous.replace('NorthlightActorGeometry','ActorHashReference'))
 tree=ast.parse((fp.TESTS/'test_actor_deformation.py').read_text())
 harness=next(ast.literal_eval(n.value) for n in tree.body if isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='harness' for t in n.targets))
 (out/'actor_probe_program.h').write_text(harness[harness.index('std::vector<Word> code('):harness.index('int main(')])
