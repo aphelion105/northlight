@@ -19,6 +19,7 @@ p=argparse.ArgumentParser(__doc__)
 p.add_argument('--backend', type=Path, action='append')
 p.add_argument('--output', type=Path, default=fp.output_dir()/'point-shadow-stutter')
 p.add_argument('--reference-point-from', help='Compile the prior WorldRenderer/point implementation from this Git ref as an image/work-count control')
+p.add_argument('--benchmark-preparation-from', help='Include this Git ref\'s pool preparation beside the current method for same-executable CPU ABBA')
 a=p.parse_args();initial_processes=processes();out=a.output.resolve();out.mkdir(parents=True,exist_ok=False)
 timing_valid=os.environ.get('NORTHLIGHT_TEST_CORRECTNESS_ONLY')!='1' and not any(p['name'].lower() in ('wow.exe','wow64.exe') for p in initial_processes)
 env=fp.zig_env();env.update(DXVK_LOG_PATH=str(out),DISABLE_VULKAN_OBS_CAPTURE='1')
@@ -31,6 +32,17 @@ inputs={str(path):sha(path) for folder in (fp.SRC,fp.SHADERS) for path in folder
 inputs.update({str(path):sha(path) for path in (Path(__file__),fp.TESTS/'point_shadow_stutter_gpu.cpp')})
 client_fixtures.actor_client_programs(out);inputs[str(out/'actor_client_programs.h')]=sha(out/'actor_client_programs.h')
 reference=[]
+assert not (a.reference_point_from and a.benchmark_preparation_from)
+if a.benchmark_preparation_from:
+ overlay=out/'preparation-reference';overlay.mkdir()
+ before=subprocess.check_output(['git','show',a.benchmark_preparation_from+':src/world/world_point_rendering.inl'],cwd=fp.REPO).decode()
+ first=before.index('    void renderPointShadows(');last=before.index('    bool pointSoftShaders()',first)
+ method=before[first:last].replace('void renderPointShadows(', 'void renderPointShadowsReference(',1)
+ point=fp.src('world_point_rendering.inl').read_text();marker='    bool pointSoftShaders()'
+ assert point.count(marker)==1
+ for name,data in [('world_renderer.h',fp.src('world_renderer.h').read_text()),('world_point_rendering.inl',point.replace(marker,method+marker))]:
+  target=overlay/name;target.write_text(data,encoding='utf-8',newline='\n');inputs[str(target)]=sha(target)
+ reference=['-I',overlay,'-DNORTHLIGHT_POINT_PREPARATION_REFERENCE=1']
 if a.reference_point_from:
  overlay=out/'reference';overlay.mkdir()
  for name,path in [('world_renderer.h','src/world/world_renderer.h'),('world_point_rendering.inl','src/world/world_point_rendering.inl')]:
@@ -54,9 +66,19 @@ for i,backend in enumerate(backends):
  assert 'POINT_WHITE_CUBE_GPU_PASS ' in text
  assert text.count('POINT_DIRECT_GPU_PASS ')==10
  assert 'POINT_RECYCLE_GPU_PASS ' in text
+ preparation=[]
+ if a.benchmark_preparation_from:
+  assert 'POINT_PREPARATION_PASS ' in text
+  rows=[dict(re.findall(r'(\w+)=([^ ]+)',line)) for line in text.splitlines() if line.startswith('POINT_PREPARATION_TIMING ') and 'warm=0 ' in line]
+  for count in (0,1,4,16,64):
+   entry={'lights':count}
+   for current in (0,1):
+    values=[float(r['cpuMs']) for r in rows if int(r['lights'])==count and int(r['current'])==current];assert len(values)==6
+    entry['current_ms' if current else 'before_ms']=statistics.median(values)
+   preparation.append(entry)
  samples=[dict(re.findall(r'(\w+)=([^ ]+)',line)) for line in text.splitlines() if line.startswith('POINT_GAP_TIMING ')]
  timing={str(mode):{key:statistics.median(float(s[key]) for s in samples if s['optimized']==str(mode)) for key in ('submitMs','completeMs','draws')} for mode in (0,1)}
- report['cases'].append({'backend':str(backend.resolve()),'sha256':sha(backend),'log':str(run/'gpu.log'),'timing':timing if timing_valid else None})
+ report['cases'].append({'backend':str(backend.resolve()),'sha256':sha(backend),'log':str(run/'gpu.log'),'timing':timing if timing_valid else None,'preparation':preparation if timing_valid else None})
 assert all(sha(Path(path))==digest for path,digest in inputs.items()),'Source changed during the oracle'
 report['pass']=True;report['timing_valid']=timing_valid;report['scope']='Authored static workload; no gameplay FPS claim. Concurrent game invalidates timing; pixel/state assertions remain valid.'
 (out/'validation.json').write_text(json.dumps(report,indent=2)+'\n');print('PASS',out)

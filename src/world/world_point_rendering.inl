@@ -968,12 +968,14 @@
         // eight static-only keeps cap idle targets at 12 MiB, zero under pressure.
         const unsigned keepLimit=memoryPressure?0:std::min(unsigned(pointKeeps.size()),limit-std::min(limit,wanted));
         for(unsigned i=0;i<pointKeeps.size();++i){auto& keep=pointKeeps[i];keep.wanted=false;
-            if(i>=keepLimit){releasePointSlot(keep.slot);keep.age=0;continue;}
+            if(i>=keepLimit){if(keep.slot.cacheValid)releasePointSlot(keep.slot);keep.age=0;continue;}
             if(keep.slot.cacheValid)for(const auto& pick:picks)if(pick.index>=0&&lights.sources[pick.index].sourceId==keep.slot.cacheSource){keep.wanted=true;break;}
         }
         // Release outgoing resources before allocating replacements, even when
         // the free slot occurs earlier in the array than the retired slot.
         for(pointIndex=0;pointIndex<pointSlots.size();++pointIndex){pointSlot().ready=false;const auto& pick=picks[pointIndex];
+            // Allocation and retained static faces always acquire a map first.
+            if(pick.index<0&&!pointSlot().cube&&pointSlot().map.empty())continue;
             if(pick.index<0||pointSlot().map!=active->map||pointSlot().selected.sourceId!=lights.sources[pick.index].sourceId){
                 PointSlot recycled;
                 if(pick.index>=0&&!memoryPressure&&pointSlot().map==active->map){

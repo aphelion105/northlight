@@ -236,6 +236,37 @@ struct PointTerrainCoverageTest {
   w.quality.pointShadowLimit=0;pool();for(const auto& slot:w.pointSlots)assert(!slot.cube);assert(!keeps());w.releasePointGPU();
   w.quality.pointShadowFacesPerFrame=6;
   std::printf("POINT_RECYCLE_GPU_PASS switches=8 cubeCreates=%u sixFaces=coldExact changedLight=1 staticKeeps=1 staleCapture=unpublished partialCycle=reset failedFace=unpublished coldRecovery=exact pressureMapLimit=reset\n",switchCreates);
+#ifdef NORTHLIGHT_POINT_PREPARATION_REFERENCE
+  // Both pool methods share every resource, selection rule and draw method.
+  // Warm preparation must submit no GPU work, even after its refresh is due.
+  w.batches.resize(1);w.quality.renderProfile=0;w.quality.pointShadowFacesPerFrame=6;
+  for(unsigned count:{0u,1u,4u,16u,64u}){
+   w.releasePointGPU();w.quality.pointShadowLimit=std::max(count,1u);selection.count=count;
+   for(unsigned i=0;i<count;++i){selection.sources[i]=light;selection.sources[i].sourceId=600+i;}
+   pool();assert(w.pointWork.selected==count);
+   const auto pixels=count?image():std::vector<float>{};const unsigned cubes=meter.cubes,quads=meter.quads;
+   for(unsigned block=0;block<16;++block){const bool current=block%4==1||block%4==2;
+    const auto start=std::chrono::steady_clock::now();
+    for(unsigned frame=0;frame<256;++frame){
+     if(current)w.renderPointShadows(selection,false,false);else w.renderPointShadowsReference(selection,false,false);
+    }
+    const double cpu=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count()/256;
+    assert(w.pointWork.selected==count&&w.pointIndex==0&&meter.cubes==cubes&&meter.quads==quads);
+    assert(w.pointCold.cubes==0&&w.pointWork.statics==0&&w.pointWork.terrain==0&&w.pointWork.replay==0);
+    if(count)assert(w.pointSlot().ready&&image()==pixels);
+    for(const auto& p:w.pointSlots)if(!p.cube&&p.map.empty()){
+     assert(!p.cacheValid&&!p.prewarmed&&!p.retryAt&&!p.schedule.usable);
+     for(unsigned f=0;f<6;++f)assert(!p.faces[f]&&!p.cacheFace[f]&&!p.cacheSurface[f]);
+    }
+    std::printf("POINT_PREPARATION_TIMING lights=%u block=%u current=%u warm=%u frames=256 cpuMs=%.9f\n",count,block,unsigned(current),unsigned(block<4),cpu);
+   }
+  }
+  w.releasePointGPU();w.quality.pointShadowLimit=64;w.quality.pointShadowRefreshMs=0;
+  // A cube without a map and a failed mapped slot still require retirement.
+  selection.count=0;must(w.pointCubeResource(w.pointSlots[63]));w.pointSlots[62].map=w.active->map;w.pointSlots[62].retryAt=GetTickCount()+1000;
+  pool();assert(!w.pointSlots[63].cube&&w.pointSlots[62].map.empty()&&!w.pointSlots[62].retryAt);
+  std::puts("POINT_PREPARATION_PASS counts=0,1,4,16,64 warmGpuWork=0 pixels=exact partialCubeAndRetry=retired emptyResources=checked");
+#endif
   // Consecutive native model packets can share one exact draw after upload.
   // A strip, emitter exclusion, pose/material/state boundary remains separate.
   w.batches.clear();w.quality.pointShadowLimit=64;w.quality.pointShadowRefreshMs=0;

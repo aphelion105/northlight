@@ -1446,6 +1446,8 @@ private:
         struct EffectsSpan { std::int64_t& out; std::int64_t start; ~EffectsSpan(){out=qpcNow()-start;} } effectsSpan{cpuEffectsQpc,qpcNow()};
         // RenderProfile: every applying frame (two clock reads), the FRAME cost effects series.
         CpuScope frameCostScope(!sampled()&&NorthlightRenderThreadProbe::profiling()?&cpuEffects:nullptr);
+        // Flush sampled light/caster diagnostics together, inside both CPU spans.
+        LogFlushBatch logBatch;
         // The scope outlives every SavedState, including nested depth passes.
         // Game captures remain outside; the device gate stays held throughout.
         rainMrtUnbind(); /* 0.3.202 (rain mask MRT) */
