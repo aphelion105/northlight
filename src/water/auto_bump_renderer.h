@@ -404,16 +404,19 @@ public:
     bool finishCaptures(){
         if(deferred.empty())return true;using P=NorthlightMaterialProfile;P::Scope timing(profile,P::DeferredFlush,deferred.front()->tag,true);timing.work(deferred.size(),deferredBytes);
         struct Result {NorthlightAutoBump& owner;bool ok=false;~Result(){if(!ok){owner.deferredDiscarded+=unsigned(owner.deferred.size());owner.clearDeferred();owner.drawn=owner.occlusionDrawn=false;owner.check(E_FAIL,"deferred material replay");}}} result{*this};
+        // Native ALL blocks need an explicit backup above c127. Lower rows
+        // already belong to the state block; do not copy/upload them twice.
         UINT vertexFirst=256,vertexEnd=0,pixelFirst=224,pixelEnd=0;
         for(const auto& packet:deferred){
             if(packet->vertexCount){vertexFirst=std::min(vertexFirst,packet->vertexFirst);vertexEnd=std::max(vertexEnd,packet->vertexFirst+packet->vertexCount);}
             if(!packet->pixelConstants.empty()){pixelFirst=std::min(pixelFirst,packet->first);pixelEnd=std::max(pixelEnd,packet->first+UINT(packet->pixelConstants.size()/4));}}
-        struct Constants {IDirect3DDevice9* d;UINT vf,vc,pf,pc;float bank[256*4],pixel[224*4];bool valid=false;
-            Constants(IDirect3DDevice9* device,UINT first,UINT count,UINT pixelFirst,UINT pixelCount):d(device),vf(first),vc(count),pf(pixelFirst),pc(pixelCount){}
-            ~Constants(){if(valid){if(vc)d->SetVertexShaderConstantF(vf,bank,vc);if(pc)d->SetPixelShaderConstantF(pf,pixel,pc);}}}
-            constants{d,vertexFirst,vertexEnd?vertexEnd-vertexFirst:0,pixelFirst,pixelEnd?pixelEnd-pixelFirst:0};
-        constants.valid=(!constants.vc||SUCCEEDED(d->GetVertexShaderConstantF(constants.vf,constants.bank,constants.vc)))&&(!constants.pc||SUCCEEDED(d->GetPixelShaderConstantF(constants.pf,constants.pixel,constants.pc)));
-        SavedState saved(d,&captureStates);if(!saved.ok||!constants.valid)return false;
+        vertexFirst=std::max(vertexFirst,128u);pixelFirst=std::max(pixelFirst,128u);
+        struct Constants {IDirect3DDevice9* d;UINT vf,vc,pf,pc;float vertex[128*4],pixel[96*4];bool valid=false;
+            ~Constants(){if(valid){if(vc)d->SetVertexShaderConstantF(vf,vertex,vc);if(pc)d->SetPixelShaderConstantF(pf,pixel,pc);}}}
+            constants{d,vertexFirst,vertexEnd>vertexFirst?vertexEnd-vertexFirst:0,pixelFirst,pixelEnd>pixelFirst?pixelEnd-pixelFirst:0};
+        constants.valid=(!constants.vc||SUCCEEDED(d->GetVertexShaderConstantF(constants.vf,constants.vertex,constants.vc)))&&(!constants.pc||SUCCEEDED(d->GetPixelShaderConstantF(constants.pf,constants.pixel,constants.pc)));
+        if(!constants.valid)return false;
+        SavedState saved(d,&captureStates);if(!saved.ok)return false;
         for(unsigned i=1;i<4;++i)if(FAILED(d->SetRenderTarget(i,nullptr)))return false;
         if(FAILED(d->SetDepthStencilSurface(nullptr))||FAILED(d->SetRenderTarget(0,target))||FAILED(d->SetDepthStencilSurface(singleSampleBatch?singleDepthSurface:captureDepth)))return false;
         if(FAILED(d->SetRenderState(D3DRS_STENCILENABLE,FALSE))||FAILED(d->SetRenderState(D3DRS_CLIPPLANEENABLE,0))||FAILED(d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE)))return false;
@@ -515,6 +518,7 @@ public:
                     frequencyKnown=viewportKnown=auxiliaryKnown=false;vertexKnown=indexKnown=false;auxiliaryWritesKnown=false;}}
             if(FAILED(hr)){success=false;break;}previous=packet.get();++flushed;++draws[packet->tag/4-1];if(packet->occlusion){occlusionDrawn=true;if(profile)profile->count(P::OcclusionDraw);}
         }
+        success=saved.restore()&&success;
         if(success){clearDeferred();result.ok=true;}return success;
     }
     void setPersistentCache(const std::filesystem::path& path,const char* backend,const char* identity=nullptr,bool asyncReadback=false){normals.setPersistentCache(path,backend,identity,asyncReadback);}

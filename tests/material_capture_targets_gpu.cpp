@@ -3,12 +3,14 @@
 #include <chrono>
 #include <numeric>
 struct TargetGpuMeter:ForwardIDirect3DDevice9 {
-    unsigned binds=0,writes=0;explicit TargetGpuMeter(IDirect3DDevice9* d):ForwardIDirect3DDevice9(d){}
+    unsigned binds=0,writes=0,constantReads=0,constantRegisters=0;explicit TargetGpuMeter(IDirect3DDevice9* d):ForwardIDirect3DDevice9(d){}
+    HRESULT STDMETHODCALLTYPE GetVertexShaderConstantF(UINT first,float* out,UINT count)override{++constantReads;constantRegisters+=count;return real->GetVertexShaderConstantF(first,out,count);}
+    HRESULT STDMETHODCALLTYPE GetPixelShaderConstantF(UINT first,float* out,UINT count)override{++constantReads;constantRegisters+=count;return real->GetPixelShaderConstantF(first,out,count);}
     HRESULT STDMETHODCALLTYPE SetRenderTarget(DWORD n,IDirect3DSurface9* value)override{binds+=n==1;return real->SetRenderTarget(n,value);}
     HRESULT STDMETHODCALLTYPE SetRenderState(D3DRENDERSTATETYPE key,DWORD value)override{writes+=key==D3DRS_COLORWRITEENABLE1;return real->SetRenderState(key,value);}
 };
 struct MaterialCaptureStateTestAccess {
-    struct Result {std::vector<unsigned char> color,occlusion;double gpu=0,cpu=0;unsigned binds=0;};
+    struct Result {std::vector<unsigned char> color,occlusion,state;double gpu=0,cpu=0;unsigned binds=0,constantReads=0,constantRegisters=0;};
     static std::vector<unsigned char> pixels(IDirect3DDevice9* d,IDirect3DSurface9* target,unsigned width,unsigned height,D3DFORMAT format,unsigned bpp){
         IDirect3DSurface9* staging=nullptr;ok(d->CreateOffscreenPlainSurface(width,height,format,D3DPOOL_SYSTEMMEM,&staging,nullptr));ok(d->GetRenderTargetData(target,staging));D3DLOCKED_RECT lock{};ok(staging->LockRect(&lock,nullptr,D3DLOCK_READONLY));
         std::vector<unsigned char> data(size_t(width)*height*bpp);for(unsigned y=0;y<height;++y)std::memcpy(data.data()+size_t(y)*width*bpp,static_cast<char*>(lock.pBits)+size_t(y)*lock.Pitch,width*bpp);ok(staging->UnlockRect());drop(staging);return data;
@@ -25,6 +27,10 @@ struct MaterialCaptureStateTestAccess {
             mesh->indexed=true;mesh->topology=D3DPT_TRIANGLELIST;mesh->indices={0,1,2,3,4,5};
             const float x=-1.f+float(i%16)/8.f,y=-1.f+float(i/16)/6.f,r=x+.125f,t=y+1.f/6.f,z=.25f+float(i%4)*.1f;
             const float v[][4]={{x,y,z,1},{r,y,z,1},{x,t,z,1},{x,t,z,1},{r,y,z,1},{r,t,z,1}};mesh->streams[0].bytes.resize(sizeof v);std::memcpy(mesh->streams[0].bytes.data(),v,sizeof v);meshes.push_back(std::move(mesh));}
+        ok(d.real->SetVertexShader(vs));ok(d.real->SetPixelShader(ps));
+        float nativeV[1024],nativeP[896];for(unsigned i=0;i<1024;++i)nativeV[i]=float(i)*.001f;for(unsigned i=0;i<896;++i)nativeP[i]=-float(i)*.002f;
+        ok(d.real->SetVertexShaderConstantF(0,nativeV,256));ok(d.real->SetPixelShaderConstantF(0,nativeP,224));
+        ok(d.real->GetVertexShaderConstantF(0,nativeV,256));ok(d.real->GetPixelShaderConstantF(0,nativeP,224));
         Result result;std::vector<double> gpu,cpu;
         IDirect3DQuery9 *frequency=nullptr,*start=nullptr,*finish=nullptr,*disjoint=nullptr;
         if(timing){ok(d.CreateQuery(D3DQUERYTYPE_TIMESTAMPFREQ,&frequency));ok(d.CreateQuery(D3DQUERYTYPE_TIMESTAMP,&start));ok(d.CreateQuery(D3DQUERYTYPE_TIMESTAMP,&finish));ok(d.CreateQuery(D3DQUERYTYPE_TIMESTAMPDISJOINT,&disjoint));}
@@ -32,15 +38,27 @@ struct MaterialCaptureStateTestAccess {
         for(unsigned frame=0;frame<count;++frame){
             b.cleared=b.occlusionCleared=false;
             for(unsigned i=0;i<meshes.size();++i){auto packet=std::make_unique<NorthlightAutoBump::Deferred>();packet->mesh=meshes[i];packet->tag=19;packet->vertex=vs;vs->AddRef();packet->pixel=ps;ps->AddRef();packet->declaration=declaration;declaration->AddRef();packet->vertexCount=0;packet->vertexFloatOnly=true;
-                packet->first=20;packet->pixelConstants={float(i%7)/8.f,.5f,.25f,1,.65f,.72f,.8f,1};packet->occlusion=pattern==1||(pattern==2&&(i&1));
+                packet->vertexCount=256;std::memcpy(packet->vertexConstants,nativeV,sizeof nativeV);packet->vertexConstants[124]=float(i)*.01f;
+                packet->first=128;packet->pixelFloatOnly=true;packet->pixelConstants={float(i%7)/8.f,.5f,.25f,1,.65f,.72f,.8f,1};packet->occlusion=pattern==1||(pattern==2&&(i&1));
                 packet->viewport=partial?D3DVIEWPORT9{width/8,height/8,width*3/4,height*3/4,.15f,.85f}:D3DVIEWPORT9{0,0,width,height,0,1};
                 NorthlightAutoBump::ReplayState states(&d,nullptr,{});for(unsigned n=0;n<14;++n)packet->states[n]=states.states[n].replay;packet->states[0]=TRUE;packet->states[5]=FALSE;
                 std::fill(packet->raster,packet->raster+NorthlightAutoBump::DeferredRasterCount,0);packet->raster[0]=D3DCULL_NONE;packet->raster[1]=TRUE;packet->raster[2]=D3DCMP_LESSEQUAL;packet->raster[6]=TRUE;packet->raster[7]=~DWORD(0);packet->raster[8]=TRUE;packet->raster[9]=TRUE;packet->raster[12]=D3DSHADE_GOURAUD;packet->raster[13]=D3DFILL_SOLID;packet->raster[14]=TRUE;
                 std::fill(packet->pixelInt,packet->pixelInt+64,0);std::fill(packet->pixelBool,packet->pixelBool+16,FALSE);b.deferred.push_back(std::move(packet));}
-            const auto binds=d.binds;ok(d.BeginScene());const bool measure=timing&&frame>=16;
+            const auto binds=d.binds,reads=d.constantReads,registers=d.constantRegisters;ok(d.BeginScene());const bool measure=timing&&frame>=16;
             if(measure){ok(disjoint->Issue(D3DISSUE_BEGIN));ok(frequency->Issue(D3DISSUE_END));ok(start->Issue(D3DISSUE_END));}
             const auto begin=std::chrono::steady_clock::now();assert(b.finishCaptures());const auto submit=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count();
             if(measure){ok(finish->Issue(D3DISSUE_END));ok(disjoint->Issue(D3DISSUE_END));}ok(d.EndScene());
+            result.constantReads=d.constantReads-reads;result.constantRegisters=d.constantRegisters-registers;
+#ifdef NORTHLIGHT_EXPECT_STATE_REUSE
+            assert(result.constantReads==2&&result.constantRegisters==130);
+#endif
+            float restoredV[1024],restoredP[896];ok(d.real->GetVertexShaderConstantF(0,restoredV,256));ok(d.real->GetPixelShaderConstantF(0,restoredP,224));
+            for(unsigned i=0;i<1024;++i)if(std::memcmp(nativeV+i,restoredV+i,4)){std::printf("STATE_FLOAT_MISMATCH vertex=%u before=%.9g after=%.9g\n",i,nativeV[i],restoredV[i]);break;}
+            for(unsigned i=128*4;i<130*4;++i)if(std::memcmp(nativeP+i,restoredP+i,4)){std::printf("STATE_FLOAT_MISMATCH pixel=%u before=%.9g after=%.9g\n",i,nativeP[i],restoredP[i]);break;}
+            assert(!std::memcmp(nativeV,restoredV,sizeof nativeV)&&!std::memcmp(nativeP+128*4,restoredP+128*4,8*sizeof(float)));
+            // Compare every native float register with the frozen renderer,
+            // including backend-specific changes outside the declared PS span.
+            if(!timing){const auto* v=reinterpret_cast<const unsigned char*>(restoredV);const auto* p=reinterpret_cast<const unsigned char*>(restoredP);result.state.insert(result.state.end(),v,v+sizeof restoredV);result.state.insert(result.state.end(),p,p+sizeof restoredP);}
             if(measure){auto get=[](IDirect3DQuery9* query,void* value,DWORD bytes){const auto deadline=GetTickCount()+10000;HRESULT hr;while((hr=query->GetData(value,bytes,D3DGETDATA_FLUSH))==S_FALSE){assert(GetTickCount()<deadline);Sleep(0);}ok(hr);};
                 UINT64 hz=0,a=0,z=0;BOOL invalid=TRUE;get(finish,&z,8);get(start,&a,8);get(frequency,&hz,8);get(disjoint,&invalid,sizeof invalid);assert(!invalid&&hz&&z>=a);gpu.push_back(double(z-a)*1000/double(hz));cpu.push_back(submit);result.binds=d.binds-binds;}
             b.endFrame();
@@ -63,8 +81,8 @@ int main(int argc,char** argv){
             for(unsigned fallback=0;fallback<2;++fallback)for(unsigned partial=0;partial<2;++partial)for(unsigned pattern=0;pattern<3;++pattern){if(timing&&(fallback||partial))continue;
                 const auto result=MaterialCaptureStateTestAccess::run(d,vs,ps,decl,timing?1920:256,timing?1080:128,pattern,partial,fallback,timing);
                 const auto stem=std::to_string(samples)+"-"+std::to_string(fallback)+"-"+std::to_string(partial)+"-"+std::to_string(pattern);
-                if(timing)std::printf("CAPTURE_TARGET_TIMING pattern=%u gpuMs=%.6f cpuMs=%.6f targetBinds=%u\n",pattern,result.gpu,result.cpu,result.binds);
-                else{for(const auto& item:{std::make_pair("normal",&result.color),std::make_pair("occlusion",&result.occlusion)}){std::ofstream f(folder+stem+"-"+item.first+".pixels",std::ios::binary);f.write(reinterpret_cast<const char*>(item.second->data()),item.second->size());}}
+                if(timing)std::printf("CAPTURE_TARGET_TIMING pattern=%u gpuMs=%.6f cpuMs=%.6f targetBinds=%u constantReads=%u constantRegisters=%u\n",pattern,result.gpu,result.cpu,result.binds,result.constantReads,result.constantRegisters);
+                else{for(const auto& item:{std::make_pair("normal",&result.color),std::make_pair("occlusion",&result.occlusion),std::make_pair("state",&result.state)}){std::ofstream f(folder+stem+"-"+item.first+".pixels",std::ios::binary);f.write(reinterpret_cast<const char*>(item.second->data()),item.second->size());}}
             }drop(vs);drop(ps);drop(decl);
         }raw->Release();
     }api->Release();DestroyWindow(window);std::puts("CAPTURE_TARGET_GPU_PASS");return 0;
