@@ -77,6 +77,11 @@ def main():
         data = bytearray(exe.read_bytes());at = struct.unpack_from('<I', data, 0x3c)[0] + 22
         struct.pack_into('<H', data, at, struct.unpack_from('<H', data, at)[0] | 0x20);exe.write_bytes(data)
         builds[label] = {'exe': str(exe), 'sha256': digest(exe), 'compiled': str(fp.COMPILED)}
+        smoke = folder / 'smoke';smoke.mkdir()
+        result = subprocess.run([str(exe), str(backend), str(smoke), str(capture), str(fp.COMPILED), '2'],
+                                env={**env, 'DXVK_LOG_PATH': str(smoke)}, cwd=smoke, capture_output=True, text=True, timeout=120)
+        (smoke / 'run.log').write_text(result.stdout + result.stderr);result.check_returncode()
+        assert 'COMMON_PIPELINE_PASS' in result.stdout
         print('PIPELINE_BUILD_PASS', label, flush=True)
     records = []
     phases = [('upstream', mode, ('upstream', 'pr', 'pr', 'upstream')) for mode in range(4)]

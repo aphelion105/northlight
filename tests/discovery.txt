@@ -55,6 +55,7 @@ test_canonical_gpu_scene.py
 test_canonical_gpu_scene_gpu.py
 test_capture_admission.py
 test_capture_batch_policy.py
+test_capture_handoff.py
 test_capture_reset_cpu.py
 test_capture_reset_gpu.py
 test_capture_skip_revalidation.py

@@ -29,6 +29,7 @@ values = {n.targets[0].id: ast.literal_eval(n.value) for n in fixture.body
 source = values['harness'].split('int main(){')[0] + r'''
 #include <string>
 struct IDirect3DVertexShader9 {};
+namespace NorthlightDrawSnapshot {struct Mesh;}
 static void logf(const char*,...){}
 struct CpuScope {explicit CpuScope(long long*){}};
 namespace NorthlightRenderThreadProbe {static bool sampleFrame(unsigned){return true;}}
@@ -56,7 +57,7 @@ struct World {
  PUBLISHER
 };
 struct Geometry {struct {D3DPRIMITIVETYPE topology;INT base;UINT minimum,vertices,start,primitives;bool indexed;} draw;};
-struct NormalSource {bool captured=false;};
+struct NormalSource {bool captured=false;std::shared_ptr<const NorthlightDrawSnapshot::Mesh> mesh;IDirect3DVertexDeclaration9* declaration=nullptr;};
 struct Bump {
  std::vector<std::string>* events;unsigned calls=0;bool hint=false,activeValue=true;
  bool active()const{return activeValue;}

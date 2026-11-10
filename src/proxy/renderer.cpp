@@ -4124,7 +4124,7 @@ public:
         bool nativeSky=false,skyCaptured=false;
         auto draw=[&]{return submitGameDraw(count,nativeSky,&skyCaptured,[&]{return ext->DrawPrimitive(t,start,count);});};
         if(enabled&&(spellOn||particleOn))spellArgs=NorthlightSpellLayer::DrawArgs::primitive(t,start,count);
-        return drawHook(t,count,[&](IDirect3DVertexShader9* vs){NorthlightAutoDisplacement::CaptureSource normalSource;if(autoBump&&enabled&&!applied&&!failed){autoBump->capture(vs,[&]{return ext->DrawPrimitive(t,start,count);},false,&geometry,nullptr,&normalSource);}captureModelNormals(vs,[&]{return ext->DrawPrimitive(t,start,count);},false,geometry,&normalSource);world->capture(t,0,0,0,start,count,false,vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame(frame));captureWater(vs,NorthlightWaterRenderer::NoUserPointer,draw);},draw,&nativeSky,&skyCaptured);}
+        return drawHook(t,count,[&](IDirect3DVertexShader9* vs){NorthlightAutoDisplacement::CaptureSource normalSource;if(autoBump&&enabled&&!applied&&!failed){autoBump->capture(vs,[&]{return ext->DrawPrimitive(t,start,count);},false,&geometry,nullptr,&normalSource);}captureModelNormals(vs,[&]{return ext->DrawPrimitive(t,start,count);},false,geometry,&normalSource);world->capture(t,0,0,0,start,count,false,vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame(frame),nullptr,&normalSource.mesh,normalSource.declaration);captureWater(vs,NorthlightWaterRenderer::NoUserPointer,draw);},draw,&nativeSky,&skyCaptured);}
     HRESULT STDMETHODCALLTYPE DrawIndexedPrimitive(D3DPRIMITIVETYPE t,INT base,UINT min,UINT vertices,UINT start,UINT count) override { Guard mirrorLock(mirrorState.gate);
         NorthlightAutoDisplacement::Args geometry{{t,base,min,vertices,start,count,true}};
         bool nativeSky=false,skyCaptured=false;
@@ -4132,7 +4132,7 @@ public:
         if(enabled&&(spellOn||particleOn))spellArgs=NorthlightSpellLayer::DrawArgs::indexed(t,base,min,vertices,start,count);
         return drawHook(t,count,[&](IDirect3DVertexShader9* vs){NorthlightAutoDisplacement::CaptureSource normalSource;
             NorthlightCaptureMetadata::PositionBounds positions;positions.owner=&geometry;positions.shader=vs;
-            auto captureWorld=[&](NorthlightCaptureMetadata::PositionBounds* out=nullptr){world->capture(t,base,min,vertices,start,count,true,vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame(frame),out);};
+            auto captureWorld=[&](NorthlightCaptureMetadata::PositionBounds* out=nullptr){world->capture(t,base,min,vertices,start,count,true,vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame(frame),out,&normalSource.mesh,normalSource.declaration);};
             const bool sharedTerrain=autoBump&&autoBump->active()&&enabled&&!applied&&!failed&&world->terrainShader(vs);
             if(sharedTerrain)captureWorld(&positions);
             if(autoBump&&enabled&&!applied&&!failed)autoBump->capture(vs,[&]{return ext->DrawIndexedPrimitive(t,base,min,vertices,start,count);},false,&geometry,&positions,&normalSource);captureModelNormals(vs,[&]{return ext->DrawIndexedPrimitive(t,base,min,vertices,start,count);},false,geometry,&normalSource);

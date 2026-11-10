@@ -20,6 +20,7 @@ struct PipelineCompareTest {
   w.quality.renderProfile=0;w.quality.replayJobs=0;w.quality.actorShadows=0;w.quality.giDynamicProbes=0;
   w.quality.equipmentLights=w.quality.weather=w.quality.fogClouds=0;
   w.quality.localLightLimit=mode>=2?8:0;
+  w.quality.pointShadows=mode==2;
   w.quality.pointShadowRefreshMs=0;w.quality.pointShadowFacesPerFrame=6;
   w.effects={mode>=2,mode==2,mode!=0};
   std::memcpy(w.context.inverseView,c+12,64);std::memcpy(w.context.camera,c+60,12);
@@ -29,7 +30,7 @@ struct PipelineCompareTest {
    w.context.view[12+r]=-(w.context.camera[0]*w.context.view[r]+w.context.camera[1]*w.context.view[4+r]+w.context.camera[2]*w.context.view[8+r]);}
   std::copy(c+4,c+7,w.projection);
   w.sourceDirections[0]={c[112],c[113],c[114]};w.sourceDirections[1]={-c[112],-c[113],-c[114]};
-  w.sourceColors[0]=w.sourceGlowColors[0]={c[116],c[117],c[118]};w.sourceColors[1]=w.sourceGlowColors[1]={0,0,0};w.sourceWeights[0]=1;w.sourceWeights[1]=0;
+  w.sourceColors[0]=w.sourceGlowColors[0]={c[116],c[117],c[118]};w.sourceColors[1]=w.sourceGlowColors[1]={0,0,0};w.sourceWeights[0]=mode==2?.25f:1.f;w.sourceWeights[1]=0;
   w.active=std::make_shared<WorldRenderer::Snapshot>();w.active->map=w.lastRequest.map;w.active->bvh=std::make_shared<NorthlightGI::BVH>();
   w.active->serial=1;const auto layout=NorthlightGI::probeLayout();w.active->atlas.resize(layout.atlasSize());
   for(unsigned z=0;z<layout.nz;++z)for(unsigned y=0;y<layout.n;++y)for(unsigned x=0;x<layout.n;++x){
@@ -49,7 +50,7 @@ struct PipelineCompareTest {
   WorldRenderer::Batch batch;batch.page=0;batch.count=2;batch.minVertex=0;batch.vertexCount=4;batch.material=0;batch.terrain=true;batch.chunkX=7;batch.chunkY=9;batch.boundsLow={p[0]-8,p[1]-8,p[2]-4};batch.boundsHigh={p[0]+8,p[1]+8,p[2]-4};w.batches.push_back(batch);
   if(mode==2){batch.terrain=false;w.batches.push_back(batch);}
   IDirect3DTexture9* white=nullptr;benchOk(d->CreateTexture(1,1,1,0,D3DFMT_A8R8G8B8,D3DPOOL_MANAGED,&white,nullptr));D3DLOCKED_RECT lock{};benchOk(white->LockRect(0,&lock,nullptr,0));*static_cast<DWORD*>(lock.pBits)=0xffffffff;benchOk(white->UnlockRect(0));w.materials.push_back(white);w.uploadedAlphaCutoffs.push_back(-1);
-  if(mode>=2)for(unsigned i=0;i<8;++i){NorthlightLocalLights::Light light{{p[0]+float(i%4)*4-6,p[1]+float(i/4)*5,p[2]+1},{.1f,.08f,.06f},1,18,100+i,3,
+  if(mode>=2)for(unsigned i=0;i<8;++i){NorthlightLocalLights::Light light{{p[0]+float(i%4)*4-6,p[1]+float(i/4)*5,p[2]+1},{.1f,.08f,.06f},1,18,100+i,2,
 #if NORTHLIGHT_COMPARE_PR
    NorthlightLocalLights::CastShadow
 #else
@@ -60,11 +61,13 @@ struct PipelineCompareTest {
  static void frame(WorldRenderer& w,unsigned frame){w.valid=true;w.captureMode=WorldRenderer::CaptureFresh;w.animationEpoch=GetTickCount()-10000-frame*32;
   LARGE_INTEGER tick{};QueryPerformanceCounter(&tick);w.localLightQpc=tick.QuadPart-w.captureFrequency.QuadPart/60;
 #if NORTHLIGHT_COMPARE_PR
+  w.pointSelection.updatedAt=GetTickCount()-100; // Deterministic steady-state selection fade.
   for(auto& p:w.pointSlots)p.schedule.updatedAt=GetTickCount()-1000;
 #else
   w.pointSchedule.updatedAt=GetTickCount()-1000;
 #endif
  }
+ static void check(const WorldRenderer& w,unsigned mode,unsigned frame){if(mode==2&&frame>=16)assert(w.pointReady&&w.pointUpdates>0);}
 };
 struct BenchImage {unsigned h[5];std::vector<unsigned char> data;};
 static BenchImage benchRead(const std::string& path){std::ifstream f(path,std::ios::binary);assert(f);BenchImage im{};f.read((char*)im.h,20);assert(im.h[0]==0x31524746);im.data.resize(size_t(im.h[1])*im.h[2]*im.h[4]);assert(f.read((char*)im.data.data(),im.data.size()));return im;}
@@ -99,6 +102,7 @@ int main(int argc,char** argv){
 #endif
    );if(!ok||!world->composited){std::printf("BENCH_WORLD_FAIL stage=%s\n",world->lastSkipReason());std::abort();}}
   const auto finish=std::chrono::steady_clock::now();benchOk(b->Issue(D3DISSUE_END));benchOk(d->EndScene());const auto ticks=get(b)-get(a),rate=get(hz);
+  PipelineCompareTest::check(*world,mode,frame);
   std::printf("COMMON_FRAME frame=%u mode=%u width=%u height=%u warm=%u cpuMs=%.9f gpuMs=%.9f draws=%u copies=%u targets=%u\n",frame,mode,W,H,unsigned(frame<16),std::chrono::duration<double,std::milli>(finish-start).count(),double(ticks)*1000/rate,meter.draws,meter.copies,meter.targets);
  }
  IDirect3DSurface9* readback=nullptr;benchOk(d->CreateOffscreenPlainSurface(W,H,D3DFMT_A8R8G8B8,D3DPOOL_SYSTEMMEM,&readback,nullptr));benchOk(d->GetRenderTargetData(target,readback));D3DLOCKED_RECT l{};benchOk(readback->LockRect(&l,nullptr,D3DLOCK_READONLY));std::ofstream image(out+"/output.bgra",std::ios::binary);for(unsigned y=0;y<H;++y)image.write((char*)l.pBits+y*l.Pitch,W*4);benchOk(readback->UnlockRect());readback->Release();

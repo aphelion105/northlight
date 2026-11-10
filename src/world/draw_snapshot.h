@@ -453,8 +453,11 @@ private:
                 dropPrediction(Erase::Revalidation); /* the erased entry may be the predicted one */return true;}
             found=&e;}
         }
-        CacheEntry& e=*found;if(e.producer!=this)++sharedSourceHits_;
-        const bool charge=chargeResidentHits_||!key.tracked;
+        return serveEntry(*found,key.tracked,shared,why,served);
+    }
+    bool serveEntry(CacheEntry& e,bool tracked,std::shared_ptr<const Mesh>* shared,Diagnostics* why,bool& served){
+        if(e.producer!=this)++sharedSourceHits_;
+        const bool charge=chargeResidentHits_||!tracked;
         if(charge&&(!admit(why)||!reserve(e.charged,why)))return false;
         // The next prediction: e's successor in LRU order, read before touch(e) moves e to the end.
         CacheEntry* s1=e.lru.newer;predicted_=s1;
@@ -466,7 +469,7 @@ private:
             for(std::size_t offset=0;offset<sizeof(CacheKey);offset+=64)prefetch(reinterpret_cast<const char*>(&s1->key)+offset);
             if(s2){prefetch(&s2->mesh);prefetch(&s2->lru);}
         }
-        sources_->lru.touch(e);++cacheHits_;if(key.tracked){++trackedHits_;avoidedReadBytes_+=e.charged;}if(charge)accepted();if(e.producer!=this)e.mesh->sharedCapture=true;*shared=e.mesh;served=true;
+        sources_->lru.touch(e);++cacheHits_;if(tracked){++trackedHits_;avoidedReadBytes_+=e.charged;}if(charge)accepted();if(e.producer!=this)e.mesh->sharedCapture=true;*shared=e.mesh;served=true;
         if(why){why->error=Error::None;why->hr=D3D_OK;}return true;
     }
     static bool replayContract(const NorthlightSourceIdentity::Handle& a,const NorthlightSourceIdentity::Handle& b){
@@ -803,6 +806,21 @@ public:
     }
     // Draw-count exhaustion alone: the near reserve never bypasses it.
     bool countExhausted(bool priority)const noexcept{return draws_>=4096||(!priority&&regularDraws_>=3072);}
+    // The caller proves the same serialized draw/declaration. Only a tracked
+    // snapshot still in this pool may bypass native binding/key queries.
+    // A miss leaves the ordinary read path and its admission policy intact.
+    bool readShared(IDirect3DVertexDeclaration9* declaration,const Draw& draw,const std::shared_ptr<const Mesh>& source,std::shared_ptr<const Mesh>& output,bool& served,Diagnostics* why=nullptr,bool priority=false,bool nearby=false){
+        served=false;if(!source||!source->sourceIdentity){output.reset();return true;}
+        const auto hash=source->sourceIdentity->hash;const auto* mesh=source.get();output.reset();
+        const auto range=sources_->identities.equal_range(hash);
+        for(auto it=range.first;it!=range.second;++it){auto& entry=*it->second;if(entry.mesh.get()!=mesh)continue;
+            const auto& key=entry.key;
+            if(key.declaration!=declaration||key.base!=draw.base||key.minimum!=draw.minimum||key.vertices!=draw.vertices||key.start!=draw.start||key.primitives!=draw.primitives||key.topology!=unsigned(draw.topology)||key.indexed!=unsigned(draw.indexed)||
+               key.tracking[0]!=reinterpret_cast<std::uintptr_t>(identity_)||key.tracking[1]!=reinterpret_cast<std::uintptr_t>(version_)||key.tracking[2]!=reinterpret_cast<std::uintptr_t>(metadata_))return true;
+            priority_=priority;near_=nearby;compacted_=false;predictionGeneration_=sources_->generation;
+            return serveEntry(entry,key.tracked,&output,why,served);
+        }return true;
+    }
     // Extra bytes for near priority draws once the main budget is spent (0: off, the 0.3.171 budget).
     void setNearReserve(std::size_t bytes){nearReserve_=bytes;}
     std::size_t nearReserve()const{return nearReserve_;}

@@ -73,6 +73,7 @@ renderer=renderer.replace('},false,nativeSky,&skyCaptured);','});').replace('},d
 # Normal-map capture has its own GPU suite; remove its call surface from this
 # legacy draw-gate model, just as particle/material replay is stubbed below.
 renderer=renderer.replace('NorthlightAutoDisplacement::CaptureSource normalSource;','').replace(',&normalSource);',');')
+renderer=renderer.replace(',nullptr,&normalSource.mesh,normalSource.declaration)',')').replace(',&normalSource.mesh,normalSource.declaration)',')')
 renderer=re.sub(r'captureModelNormals\(vs,\[&\]\{return ext->Draw\w+\([^;]+;\},(?:false|true),geometry\);','',renderer)
 
 world_h=fp.src('world_renderer.h').read_text()

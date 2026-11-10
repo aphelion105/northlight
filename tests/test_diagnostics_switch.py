@@ -225,8 +225,8 @@ checks={
    and 'bool recording()const {return active_>=0&&!disabled_;}' in fp.src('gpu_profile.h').read_text(),
  'world capture: raw sample frame in, diagnostics gated inside':
    len(re.findall(r'world->capture(?:UP)?\([^;]+;',r))==4
-   and all(re.search(r',vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame\(frame\)(?:,out)?\);$',call) for call in re.findall(r'world->capture(?:UP)?\([^;]+;',r))
-   and r.count(',vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame(frame),out);')==1
+   and all(re.search(r',vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame\(frame\)(?:,(?:nullptr|out),&normalSource\.mesh,normalSource\.declaration)?\);$',call) for call in re.findall(r'world->capture(?:UP)?\([^;]+;',r))
+   and r.count(',vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame(frame),out,&normalSource.mesh,normalSource.declaration);')==1
    and w.count('constantSelfCheck=selfCheck;sample=sample&&NorthlightDiagnostics::enabled();')==2,
  'constant self-check keeps its 0.3.140 cadence (0.3.180 C0: its own flag and serial; the profile Stats only on diagnostic samples)':'},sample?&constantEpochProfile:nullptr,constantSelfCheck,constantSelfCheckState))return;' in w,
  'GPU timestamp queries only when on':'if(diagnostics())gpuProfile->beginFrame(frame,NorthlightRenderThreadProbe::sampleFrame(frame))' in r and 'if(diagnostics()){gpuProfile->poll();if(gpuSceneProfile)gpuSceneProfile->poll();}' in r and 'if(gpuSceneProfile&&diagnostics())gpuSceneProfile->beginFrame(frame,' in r,

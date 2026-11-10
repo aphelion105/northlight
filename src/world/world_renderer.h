@@ -1150,7 +1150,7 @@ private:
 
     LONGLONG terrainCaptureTicks=0,replayCaptureTicks=0;
     LARGE_INTEGER captureFrequency={};
-    unsigned terrainCaptureCalls=0,terrainUPCalls=0,replayCaptureCalls=0,unknownCaptureCalls=0;
+    unsigned terrainCaptureCalls=0,terrainUPCalls=0,replayCaptureCalls=0,unknownCaptureCalls=0,captureSourceHandoffs=0;
     NorthlightDetailShadow::Budget detailBudget;
     unsigned detailCandidates=0,detailMaskRejected=0,detailRangeRejected=0,detailBudgetRejected=0,detailBlendRejected=0;
     unsigned rejSmall=0,rejGate=0,rejCut=0,rejBudget=0,rejOther=0; /* task 43: per frame; WORLD CPU capture line */
@@ -3210,7 +3210,7 @@ public:
             logf("MODEL snapshot maintenance snapshotEvictions=%u snapshotEvictedBytes=%zu snapshotMs=%.3f indexEvictions=%u indexEvictedBytes=%zu indexMs=%.3f missEvicted=%u missRevision=%u missUnknown=%u missCollision=%u missRevalidated=%u historySlots=2048",
                 m.snapshotEvictions,m.snapshotEvictedBytes,m.snapshotMs,m.indexEvictions,m.indexEvictedBytes,m.indexMs,
                 m.missEvicted,m.missRevision,m.missUnknown,m.missCollision,replaySnapshots.snapshotRevalidationMismatches());}
-        if(captureSampled)logf("MODEL capture metadata batches=%u knownBuffers=%u fallbackBuffers=%u fastSnapshotHits=%u",replaySnapshots.metadataBatches(),replaySnapshots.metadataHits(),replaySnapshots.metadataFallbacks(),replaySnapshots.fastCacheHits());
+        if(captureSampled)logf("MODEL capture metadata batches=%u knownBuffers=%u fallbackBuffers=%u fastSnapshotHits=%u drawHandoffs=%u",replaySnapshots.metadataBatches(),replaySnapshots.metadataHits(),replaySnapshots.metadataFallbacks(),replaySnapshots.fastCacheHits(),captureSourceHandoffs);
         if(captureSampled)logf("MODEL_SOURCE_LIFETIME frame=%u participants=%zu sharedHits=%u limitMiB=%zu retainedBytes=%zu liveBytes=%zu liveObjects=%zu metadataBytes=%zu gpuIdentityHits=%u gpuReconstructedHits=%u globalIdentityBytes=%zu globalCpuBytes=%zu",rendererFrame,
             replaySnapshots.sharedSourceParticipants(),replaySnapshots.sharedSourceHits(),replaySnapshots.sharedSourceLimit()>>20,replaySnapshots.sharedSourceBytes(),replaySnapshots.sourceLiveBytes(),replaySnapshots.sourceLiveObjects(),replaySnapshots.sharedSourceMetadataBytes(),
             replayGpuCache.stats().identityHits,replayGpuCache.stats().reconstructedHits,NorthlightSourceIdentity::identityLiveBytes.load(std::memory_order_relaxed),NorthlightSourceIdentity::cpuLiveBytes.load(std::memory_order_relaxed));
@@ -3253,7 +3253,7 @@ public:
         captureRejectedBytes=acceptedSkinnedBytes=acceptedOtherBytes=0;nearAdmitted=nearRefused=0;nearBytes=0;nearAnchorReady=false;
         admission.endFrame(size_t(captureBudgetMiB)*1048576,replaySnapshots.bytesRead());admissionOn=false;rootMemo.clear();rootReads=rootMemoHits=0;gatedBodies.clear(); /* 0.3.211 (task 31): the next frame's cut, after the log read this frame's counters; no-op when no skinned draw armed it */
         previousCacheHits=terrainBoundsCache.persistentHits();capturedConstantBytes=capturedConstantCalls=0;capturedSM1Draws=capturedRelativeDraws=0;
-        terrainCaptureTicks=replayCaptureTicks=0;terrainCaptureCalls=terrainUPCalls=replayCaptureCalls=unknownCaptureCalls=0;captureSampled=false;
+        terrainCaptureTicks=replayCaptureTicks=0;terrainCaptureCalls=terrainUPCalls=replayCaptureCalls=unknownCaptureCalls=captureSourceHandoffs=0;captureSampled=false;
         rejSmall=rejGate=rejCut=rejBudget=rejOther=0;
         valid=false;traceContext=0;traceFog=0;legacyFogKnown=false;shadowFrameReady=false;legacyFog=NorthlightLegacyFog::Constants{};
         // Bound retained vector capacities across changing scenes. Reuse storage,
@@ -4093,7 +4093,7 @@ public:
         appendTerrain(std::make_shared<const NorthlightTerrainCapture::MeshSnapshot>(std::move(snapshot)));
     }
     bool terrainShader(IDirect3DVertexShader9* shader){return lookupShader(shader).terrain;}
-    void capture(D3DPRIMITIVETYPE type,INT base,UINT min,UINT vertexTotal,UINT start,UINT count,bool indexed,IDirect3DVertexShader9* current,bool selfCheck,bool sample,NorthlightCaptureMetadata::PositionBounds* positions=nullptr){
+    void capture(D3DPRIMITIVETYPE type,INT base,UINT min,UINT vertexTotal,UINT start,UINT count,bool indexed,IDirect3DVertexShader9* current,bool selfCheck,bool sample,NorthlightCaptureMetadata::PositionBounds* positions=nullptr,const std::shared_ptr<const NorthlightDrawSnapshot::Mesh>* captured=nullptr,IDirect3DVertexDeclaration9* capturedDeclaration=nullptr){
         if(positions)positions->known=false;
         constantSelfCheck=selfCheck;sample=sample&&NorthlightDiagnostics::enabled();
         if(!ready()||replays.size()>=4096||(type!=D3DPT_TRIANGLELIST&&type!=D3DPT_TRIANGLESTRIP))return;
@@ -4112,7 +4112,7 @@ public:
             if(positions){std::copy(why.low,why.low+3,positions->low);std::copy(why.high,why.high+3,positions->high);positions->known=true;}
             appendTerrain(snapshot);return;
         }
-        captureModel(type,base,min,vertexTotal,start,count,indexed,current,sample,nullptr,D3DFMT_INDEX16,nullptr,0);
+        captureModel(type,base,min,vertexTotal,start,count,indexed,current,sample,nullptr,D3DFMT_INDEX16,nullptr,0,captured,capturedDeclaration);
     }
     void releaseReplayGPU(){replayGpuCache.clear();auto& queries=fence();for(auto& ring:replayVertexRing)NorthlightDynamicRing::reset(ring,0,queries);NorthlightDynamicRing::reset(replayIndexRing,0,queries);queries.drop();for(auto& buffer:replayVerticesGPU)drop(buffer);drop(replayIndicesGPU);for(auto& bytes:replayVertexBytes)bytes=0;replayIndexBytes=0;}
     bool uploadReplay(bool allowCache=true){
@@ -4486,7 +4486,7 @@ public:
     bool nearDraw(const float* root){return root&&NorthlightNearReserve::test(nearAnchor,root)!=NorthlightNearReserve::None;}
     bool nearCandidate(bool priority,const float* root){
         return priority&&replaySnapshots.nearReserve()&&!replaySnapshots.countExhausted(priority)&&nearDraw(root);}
-    void captureModel(D3DPRIMITIVETYPE type,INT base,UINT minimum,UINT vertexTotal,UINT start,UINT count,bool indexed,IDirect3DVertexShader9* current,bool sample,const void* userIndices,D3DFORMAT userFormat,const void* userVertices,UINT userStride){
+    void captureModel(D3DPRIMITIVETYPE type,INT base,UINT minimum,UINT vertexTotal,UINT start,UINT count,bool indexed,IDirect3DVertexShader9* current,bool sample,const void* userIndices,D3DFORMAT userFormat,const void* userVertices,UINT userStride,const std::shared_ptr<const NorthlightDrawSnapshot::Mesh>* capturedSource=nullptr,IDirect3DVertexDeclaration9* capturedDeclaration=nullptr){
         if(modelCaptureSkipped())return; /* previous replays/actor packets are not needed this frame */
         const CaptureShader* found=lookupShader(current).capture;if(!found){if(sample)++unknownCaptureCalls;return;}
         const auto& metadata=*found;
@@ -4639,7 +4639,11 @@ public:
         NorthlightDrawSnapshot::Draw draw{type,base,minimum,vertexTotal,start,count,indexed};NorthlightDrawSnapshot::Diagnostics why;
         const size_t readBefore=replaySnapshots.bytesRead();
         replaySnapshots.sampleMaintenance(sample);
-        auto read=[&]{return userVertices?replaySnapshots.readUP(p->decl,draw,userIndices,userFormat,userVertices,userStride,p->snapshot,&why,priority,nearby):replaySnapshots.read(d,p->decl,draw,p->snapshot,&why,priority,&p->shared,nearby);};
+        const bool borrowSource=!userVertices&&capturedSource&&capturedDeclaration==p->decl;
+        auto read=[&]{
+            if(borrowSource){bool served=false;if(!replaySnapshots.readShared(p->decl,draw,*capturedSource,p->shared,served,&why,priority,nearby))return false;if(served){p->snapshot.prepare();++captureSourceHandoffs;return true;}}
+            return userVertices?replaySnapshots.readUP(p->decl,draw,userIndices,userFormat,userVertices,userStride,p->snapshot,&why,priority,nearby):replaySnapshots.read(d,p->decl,draw,p->snapshot,&why,priority,&p->shared,nearby);
+        };
         bool captured=read();size_t nearFrom=readBefore;
         // Turned away for bytes: a near draw is read once more, from the near reserve.
         if(!captured&&why.error==NorthlightDrawSnapshot::Error::Budget&&!nearby&&nearCandidate(priority,rooted?root:nullptr)){
