@@ -6,13 +6,26 @@
 #include <fstream>
 struct WorldScreenEffectsTest {
     static std::pair<IDirect3DSurface9*,IDirect3DSurface9*> removalScratch(WorldRenderer& w){return {w.fogBlurredSurface,w.fogHistorySurface};}
+    static std::pair<IDirect3DSurface9*,IDirect3DSurface9*> lightScratch(WorldRenderer& w){return {w.temporalLightSurface[w.temporalIndex],w.temporalLightSurface[1-w.temporalIndex]};}
+    static void fogAliasFixtureFrame(WorldRenderer& w,unsigned frame){
+        aliasFixtureFrame(w,frame);w.quality.localLights=1;w.quality.localLightLimit=frame%12<10&&frame%12!=2?12:0;w.quality.pointShadows=0;
+        w.quality.actorShadows=0;w.effects.gi=frame%8<6;w.localLightQpc=0;
+        if(!w.active){w.active=std::make_shared<WorldRenderer::Snapshot>();w.active->map=w.lastRequest.map;}
+        auto& lights=w.active->localLights;lights.resize(12);
+        for(unsigned i=0;i<lights.size();++i){auto& light=lights[i];light.sourceId=i+1;light.kind=2;
+            light.position[0]=float(int(i%4)-2)*5+(frame%12==5?100.f:float(frame%3));light.position[1]=float(int(i/4)-1)*4;light.position[2]=18+float(i%3)*5;
+            light.diffuse[0]=1;light.diffuse[1]=.5f;light.diffuse[2]=.3f;light.attenuationStart=2;light.attenuationEnd=6;}
+        if(frame==12)w.temporalValid=w.fogHistoryValid=false;
+        if(frame==18)w.context.camera[0]=w.context.inverseView[12]=42;
+        if(frame==24)drop(w.fogTemporalPS);
+    }
     static void aliasFixtureFrame(WorldRenderer& w,unsigned frame){
         fixtureContext(w);w.quality.weather=0;w.effects.fog=frame%12<9;
         w.sourceWeights[0]=frame%7==3?0.f:1.f;
         w.sourceColors[0]=w.sourceGlowColors[0]={.2f+.03f*(frame%5),.4f,.6f};
         w.context.camera[0]=w.context.inverseView[12]=float(frame%4)*.125f;
     }
-    static void aliasReleased(WorldRenderer& w){w.releaseGPU(true);assert(!w.smoothLight&&!w.smoothSurface&&!w.fogBlurred&&!w.fogHistory);}
+    static void aliasReleased(WorldRenderer& w){w.active.reset();w.releaseGPU(true);assert(!w.fogBlurred&&!w.fogHistory&&!w.temporalLight[0]&&!w.temporalLight[1]);}
     static void weatherBase(WorldRenderer& w,const float* c){
         w.setHdrBaseCompositeEnabled(std::getenv("NORTHLIGHT_BASE_BACKEND_VERIFIED")!=nullptr);
         w.pipelineActive=true;w.valid=true;w.traceContext=2;

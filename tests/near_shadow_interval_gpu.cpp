@@ -93,7 +93,7 @@ struct WorldScreenEffectsTest {
   must(d->SetRenderTarget(0,point.cacheSurface[0]));must(d->Clear(0,nullptr,D3DCLEAR_TARGET,D3DCOLOR_COLORVALUE(.25f,.25f,.25f,1),1,0));
   const auto staticPixels=image(d,point.cacheSurface[0]);assert(staticPixels[0]>0&&staticPixels[0]<1);
   retained.staticStream.reset();retained.staticScene=std::make_shared<StaticShadow::Snapshot>();
-  auto shared=[&](){std::vector<const void*> objects={retained.vertices,retained.indices,retained.shadowDecl,retained.liveTerrainDecl,retained.lightingPS,retained.finalPS,retained.giPS,retained.fogPS,retained.fogActorPS,retained.cloudNoise,retained.baselineLight,retained.light,retained.smoothLight,retained.normalBuffer,retained.fog,retained.fogBlurred,retained.fogHistory,retained.shadowDepth,retained.shadowCacheDepth,retained.shadowScratch,retained.staticScene.get(),point.cube,point.cacheFace[0]};
+  auto shared=[&](){std::vector<const void*> objects={retained.vertices,retained.indices,retained.shadowDecl,retained.liveTerrainDecl,retained.lightingPS,retained.finalPS,retained.giPS,retained.fogPS,retained.fogActorPS,retained.cloudNoise,retained.baselineLight,retained.light,retained.normalBuffer,retained.fog,retained.fogBlurred,retained.fogHistory,retained.shadowDepth,retained.shadowCacheDepth,retained.shadowScratch,retained.staticScene.get(),point.cube,point.cacheFace[0]};
    for(auto* texture:retained.shadow)objects.push_back(texture);for(auto* texture:retained.shadowCache)objects.push_back(texture);for(auto* texture:retained.probe)objects.push_back(texture);objects.push_back(retained.probePrev);return objects;};
   const auto original=shared();unsigned cases=0;
   for(const auto& state:std::array<std::pair<unsigned,unsigned>,4>{{{0,1},{1,1},{1,0},{1,1}}}){

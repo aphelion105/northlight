@@ -70,7 +70,8 @@ checks['BaselineLighting (s12): retained through removal/temporal, restored afte
 smoothdraw='if(removalDrawn){if(!check(d->SetRenderTarget(0,smoothSurface),"removal smoothing target"))return false;d->SetPixelShader(removalPS);if(!check(quad(w/2,h/2,false),"removal smoothing pass"))return false;}'
 checks['RemovalSmooth host: shader, half-res fp16 target, release, F12 dump, drawn before the temporal pass; s9 (idle, rebound later) carries it']=(
     'kRemovalSmoothShader,&removalPS' in w and '&smoothLight,&smoothSurface' not in w and 'drop(smoothSurface)' not in w and 'drop(smoothLight)' not in w and 'drop(removalPS)' in w
-    and 'smoothSurface=nullptr;' in w and 'smoothLight=nullptr;' in w and 'smoothLight=fogBlurred;smoothSurface=fogBlurredSurface;' in tb
+    and '*smoothSurface=nullptr' not in w and '*smoothLight=nullptr' not in w and 'auto* const smoothLight=fogBlurred;' in tb
+    and w.index('auto* const smoothSurface=fogBlurredSurface;')<w.index('{   // Temporal stabilization: retain this frame')
     and w.count('dump(d,c[30][1]>0?smoothSurface:lightSurface,directory,"smoothed-light",capture);')==1 and tb.count('const bool removalDrawn=normalsProduceDistance;')==1 and 'const bool normalsProduceDistance=c[30][1]>0;' in w
     and tb.index('const bool removalDrawn')<tb.index(smoothdraw) and tb.count('d->SetTexture(9,removalDrawn?smoothLight:light);')==1 and tb.count(smoothdraw)==1 and tb.index(smoothdraw)<tb.index('SetRenderTarget(0,temporalLightSurface[cur])')
     and w.index('d->SetTexture(14,normalBuffer);')<w.index('{   // Temporal stabilization: retain this frame') and tb.index('SetTexture(10,')<tb.index(smoothdraw)

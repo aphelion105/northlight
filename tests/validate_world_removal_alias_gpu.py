@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import struct
 import subprocess
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -13,6 +14,7 @@ from windows_gpu_guard import processes
 
 parser = argparse.ArgumentParser(__doc__)
 parser.add_argument('--reference', type=Path, required=True)
+parser.add_argument('--fog-scratch', action='store_true', help='Compare local-fog scratch reuse against its dedicated r83 target.')
 parser.add_argument('--output', type=Path, required=True)
 parser.add_argument('--allow-game-process', action='store_true')
 parser.add_argument('--compare-only', action='store_true', help='Recheck existing outputs and their original input hashes without rerunning GPU work.')
@@ -23,14 +25,18 @@ out = args.output.resolve()
 assert not fp.is_client(out)
 out.mkdir(parents=True, exist_ok=True)
 sha = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
+fixture=fp.TESTS/('world_fog_alias_gpu.cpp' if args.fog_scratch else 'world_removal_alias_gpu.cpp')
+backends=([('native',Path(os.environ['WINDIR'])/'SysWOW64/d3d9.dll')] if args.fog_scratch else [])+[
+    ('dxvk',fp.client_root()/'renderer-backends/dxvk/dxvk_d3d9.dll'),
+    ('dxvk2',fp.client_root()/'renderer-backends/dxvk2/dxvk2_d3d9.dll')]
 sources = ['world_gi.cpp','world_mesh_plan.cpp','static_shadow_scene.cpp','settings_overlay.cpp','settings_panel.cpp',
            'imgui.cpp','imgui_draw.cpp','imgui_tables.cpp','imgui_widgets.cpp','imgui_impl_dx9.cpp']
-inputs = [fp.src('world_renderer.h'), fp.TESTS/'world_removal_alias_gpu.cpp', fp.TESTS/'world_screen_effects_gpu.cpp',
+inputs = [fp.src('world_renderer.h'), fixture, fp.TESTS/'world_removal_alias_gpu.cpp', fp.TESTS/'world_screen_effects_gpu.cpp',
           args.reference.resolve(), fp.src('world_compiled_shaders.h'), *(fp.src(s) for s in sources)]
 report = {'pass': False, 'inputs': {str(p): sha(p) for p in inputs}, 'runs': [], 'game_control': False, 'timings_measured': False}
 if args.compare_only:
     report = json.loads((out/'validation.json').read_text())
-    assert len(report['runs']) == 4 and all(run['exit_code'] == 0 for run in report['runs'])
+    assert len(report['runs']) == 2*len(backends) and all(run['exit_code'] == 0 for run in report['runs'])
 env = dict(os.environ, DXVK_LOG_PATH=str(out))
 try:
     for variant, header in ([] if args.compare_only else [('dedicated', args.reference.resolve()), ('alias', fp.src('world_renderer.h'))]):
@@ -42,16 +48,15 @@ try:
         exe = folder/'world_removal_alias_gpu.exe'
         command = [str(fp.zig()), 'c++', '-target', 'x86-windows-gnu', '-O2', '-UNDEBUG', '-std=c++17',
                    '-Wno-microsoft-exception-spec', '-DIMGUI_USER_CONFIG="northlight_imconfig.h"', '-I', str(include),
-                   *fp.test_include_flags(), '-I'+str(fp.TESTS), str(fp.TESTS/'world_removal_alias_gpu.cpp'),
+                   *fp.test_include_flags(), '-I'+str(fp.TESTS), str(fixture),
                    *(str(fp.src(s)) for s in sources), '-luser32', '-luuid', '-o', str(exe)]
         result = subprocess.run(command, env=fp.zig_env(), capture_output=True, text=True, timeout=240)
         (folder/'compile.log').write_text(result.stdout+result.stderr, encoding='utf-8')
         assert result.returncode == 0, result.stderr[-5000:]
         print('compiled', variant, flush=True)
-        for backend, name in [('dxvk', 'dxvk_d3d9.dll'), ('dxvk2', 'dxvk2_d3d9.dll')]:
+        for backend, dll in backends:
             run = folder/backend
             run.mkdir(exist_ok=True)
-            dll = fp.client_root()/'renderer-backends'/backend/name
             result = subprocess.run([str(exe), str(dll), str(run), variant], cwd=run, env=env, capture_output=True, text=True, timeout=180)
             (run/'run.log').write_text(result.stdout+result.stderr, encoding='utf-8')
             report['runs'].append({'variant': variant, 'backend': backend, 'exit_code': result.returncode,
@@ -59,7 +64,8 @@ try:
             print(variant, backend, result.returncode, result.stdout[-500:]+result.stderr[-500:], flush=True)
             assert result.returncode == 0
     report['comparisons'] = []
-    for backend in ('dxvk', 'dxvk2'):
+    report['comparison_script_sha256']=sha(Path(__file__))
+    for backend,_ in backends:
         reference = out/'dedicated'/backend
         candidate = out/'alias'/backend
         # Diagnostic session directory names contain process/time identities.
@@ -71,12 +77,26 @@ try:
             return result
         a, b = images(reference), images(candidate)
         assert len(a) >= 200, len(a)
-        differences = [p for p in a.keys()|b.keys() if a.get(p) != b.get(p)]
-        report['comparisons'].append({'backend': backend, 'images': len(a), 'differences': differences})
+        differences = sorted(p for p in a.keys()|b.keys() if a.get(p) != b.get(p))
+        numeric=[]
+        for name in differences[:]:
+            if not args.fog_scratch or not name.endswith('-final.fgr'):continue
+            x=(reference/name).read_bytes();y=(candidate/name).read_bytes()
+            assert x[:20]==y[:20] and len(x)==len(y) and struct.unpack('<5I',x[:20])[3:]==(113,8)
+            old=struct.unpack('<'+'H'*((len(x)-20)//2),x[20:]);new=struct.unpack('<'+'H'*((len(y)-20)//2),y[20:])
+            changed=[i for i in range(len(old)) if old[i]!=new[i]]
+            half=lambda bits:struct.unpack('<e',struct.pack('<H',bits))[0]
+            assert all(i%4!=3 and (old[i]&0x7c00)!=0x7c00 and (new[i]&0x7c00)!=0x7c00 for i in changed)
+            ulp=max(abs(old[i]-new[i]) for i in changed)
+            error=max(abs(half(old[i])-half(new[i])) for i in changed)
+            assert ulp<=1 and error<=1/4096,(name,ulp,error)
+            numeric.append({'image':name,'rgb_components':len(changed),'max_fp16_ulp':ulp,'max_absolute_error':error})
+            differences.remove(name)
+        report['comparisons'].append({'backend': backend, 'images': len(a), 'differences': differences,'numeric_differences':numeric})
         assert not differences, differences[:20]
     report['inputs_unchanged'] = all(sha(Path(p)) == value for p, value in report['inputs'].items())
     assert report['inputs_unchanged']
     report['pass'] = True
 finally:
     (out/'validation.json').write_text(json.dumps(report, indent=2)+'\n', encoding='utf-8')
-print('WORLD_REMOVAL_ALIAS_BYTE_EXACT_PASS', report['comparisons'])
+print('WORLD_FOG_ALIAS_PASS' if args.fog_scratch else 'WORLD_REMOVAL_ALIAS_BYTE_EXACT_PASS', report['comparisons'])

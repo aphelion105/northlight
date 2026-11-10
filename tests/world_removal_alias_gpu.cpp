@@ -31,6 +31,7 @@ struct AliasMeter:WorldScratchMeter {
         return hr;
     }
 };
+#ifndef NORTHLIGHT_REMOVAL_ALIAS_METER_ONLY
 int main(int argc,char** argv){
     assert(argc==4);std::setvbuf(stdout,nullptr,_IONBF,0);logFile=stdout;
     std::string root=std::string(argv[2])+"/";assert(MultiByteToWideChar(CP_UTF8,0,root.c_str(),-1,rootPath,MAX_PATH));
@@ -51,7 +52,7 @@ int main(int argc,char** argv){
         assert(!WorldScreenEffectsTest::resources(*world,width,height));WorldScreenEffectsTest::screenRetry(*world);
         meter.failScreenAt=0;const unsigned before=meter.screenCreates;
         WorldScreenEffectsTest::setup(*world,width,height);allocated=meter.screenCreates-before;
-        assert(allocated==(dedicated?10u:9u));
+        assert(allocated==(dedicated?10u:8u));
         IDirect3DSurface9* out=nullptr;screenOk(d->CreateRenderTarget(width,height,D3DFMT_A16B16G16R16F,D3DMULTISAMPLE_NONE,0,FALSE,&out,nullptr));
         const float rgb[]={.4f,.3f,.2f,1},ambient[]={0,0,0,1},z[]={1000.f/999.f-1000.f/(999.f*20)};
         auto* scene=screenTexture(d,width,height,rgb);auto* ao=screenTexture(d,width/2,height/2,ambient);auto* depth=screenTexture(d,width,height,z,1);
@@ -73,3 +74,4 @@ int main(int argc,char** argv){
     std::printf("WORLD_REMOVAL_ALIAS_PASS dedicated=%u frames=72 removal=%u temporal=%u fogTemporal=%u halfFp16Targets=%u partialOOM=3 resets=3 resize=1 diagnostic=3 historyNeverScratch=1 timings=not_measured\n",unsigned(dedicated),meter.removals,meter.temporalDraws,meter.historyDraws,allocated);
     world.reset();d->Release();api->Release();FreeLibrary(library);DestroyWindow(window);
 }
+#endif
