@@ -10,7 +10,7 @@ start=source.index('    void applyLiveSettings(');end=source.index('{',start)+1;
 while depth:
     depth+=(source[end]=='{')-(source[end]=='}');end+=1
 method=source[start:end]
-work=source[source.index('    void work()'):source.index('    bool resources(')]
+work=source[source.index('    void work()'):source.index('    bool buildingScreenResources=')]
 assert 'quality.gi)' not in work and 'if(!r.giEnabled)' in work
 assert 'r.giEnabled=giWorkEnabled()' in source
 assert 'setEffects(requestedEffects)' in method and 'effects.gi=' not in method and 'requestedEffects=requested' in source[source.index('    void setEffects('):][:200]  # GI toggles go through setEffects with the hotkey state and 'settingsRequestDirty?256u' in source
@@ -27,13 +27,14 @@ harness=r'''
 #include <atomic>
 #include <cassert>
 #include <iostream>
-namespace NorthlightDiagnostics {bool value;void configure(bool v){value=v;}}
+namespace NorthlightDiagnostics {bool value;void configure(bool v){value=v;}bool enabled(){return value;}}
 #ifndef _WIN32
 namespace NorthlightWorldContext {struct SelfReadStats{inline static std::atomic<bool> timed{false};};}
 #endif
 namespace NorthlightWeatherMemory {void configure(bool){}}
 namespace NorthlightMemorySwitches {void configure(bool){}}
-namespace NorthlightRenderThreadProbe {void configure(bool,bool){}}
+namespace NorthlightRenderThreadProbe {void configure(bool,bool){}bool profiling(){return false;}bool probing(){return false;}constexpr unsigned ProfilePeriod=60,SamplePeriod=600;}
+void logf(const char*,...){}
 struct World {
     NorthlightQuality::Settings quality;
     NorthlightCelestialProfiles::Table celestialProfiles;
@@ -56,11 +57,11 @@ __METHOD__
 int main(){
     for(unsigned pass=0;pass<1000;++pass){
         World w;NorthlightSettings::Config next;
-        for(const auto& k:NorthlightQuality::Keys)next.quality.*k.field=pass&1?k.low:k.high;
+        for(const auto& k:NorthlightQuality::Keys)k.set(next.quality,pass&1?k.low:k.high);
         next.quality.preset=NorthlightQuality::Preset::Performance;
         const auto old=w.quality;const auto oldProfiles=w.celestialProfiles;w.applyLiveSettings(next);
         const auto effective=NorthlightQuality::effective(next.quality);
-        for(const auto& k:NorthlightQuality::Keys)assert(w.quality.*k.field==(NorthlightSettings::liveQuality(k.name)?effective.*k.field:old.*k.field));
+        for(const auto& k:NorthlightQuality::Keys)assert(k.get(w.quality)==(NorthlightSettings::liveQuality(k.name)?k.get(effective):k.get(old)));
         assert(w.settingsRequestDirty==(NorthlightSettings::giRequestChanged(old,w.quality,oldProfiles,next.celestial)||old.worldFog!=w.quality.worldFog));
         assert(!w.paletteFrameValid&&w.quality.preset==next.quality.preset);
         assert(w.effects.gi==(next.quality.gi!=0));

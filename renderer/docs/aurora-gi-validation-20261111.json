@@ -1,0 +1,119 @@
+{
+  "base_commit": "6b87cafa88991d65ccf9c95a6f68f0a248295e03",
+  "branch": "codex/aurora-gi-20261111",
+  "source_sha256": "c4bd8bbdd4db293e14dde4706b64440c82352f7e017d01372933bc61e20fdddd",
+  "game_launched": false,
+  "scope": "CPU transport and settings; synthetic native D3D9/DXVK GPU tests; production DLL and Windows package. No in-game artistic or FPS validation.",
+  "checks": {
+    "test_quality_settings.py": {
+      "log": "out/test_quality_settings.py.log",
+      "evidence": [
+        "O2 capture-skip model: ActorShadows=0 performance captured=1660/20000 (GI only) renders=10710 reuses=19606",
+        "quality: defaults==0.3.136, presets, overrides, legacy precedence and fallbacks, BOM/CRLF, range edges, shipped ini, identical default code paths passed",
+        "debug capture-skip model: ActorShadows=0 performance captured=1660/20000 (GI only) renders=10710 reuses=19606",
+        "quality: defaults==0.3.136, presets, overrides, legacy precedence and fallbacks, BOM/CRLF, range edges, shipped ini, identical default code paths passed"
+      ]
+    },
+    "test_aurora_illumination.py": {
+      "log": "out/test_aurora_illumination.py.log",
+      "evidence": [
+        "PASS aurora fullDay activeSeconds=6430 maxStep=0.000202090 gates=1 palettes=2 roofOcclusion=1 cachedRelight=1"
+      ]
+    },
+    "test_settings_service.py": {
+      "log": "out/test_settings_service.py.log",
+      "evidence": [
+        "Settings: encoding (incl. astral and invalid input), comments, inheritance, bounded schema, rollback, read-only, journal recovery, snapshot, preview coalescing, commit and conflict checks passed"
+      ]
+    },
+    "test_live_settings.py": {
+      "log": "out/test_live_settings.py.log",
+      "evidence": [
+        "Live settings: 1000 production apply cases; F/R, GI request snapshot, CPU budget and selective actor refresh passed"
+      ]
+    },
+    "test_gi_settings_dependencies.py": {
+      "log": "out/test_gi_settings_dependencies.py.log",
+      "evidence": [
+        "PASS GI settings invalidation: qualityKeys=116 profileFields=76 noOpHDR=1000 pendingPreserved=1 equalFallbackZones=2 GIReactivation=1 dynamicActorRemoval=1",
+        "PASS GI settings invalidation: qualityKeys=116 profileFields=76 noOpHDR=1000 pendingPreserved=1 equalFallbackZones=2 GIReactivation=1 dynamicActorRemoval=1"
+      ]
+    },
+    "test_settings_overlay.py": {
+      "log": "out/test_settings_overlay.py.log",
+      "evidence": [
+        "settings overlay: routing and draft OK",
+        "embedded Roboto: atlas 512x256 OK",
+        "settings overlay: static checks OK"
+      ]
+    },
+    "test_gi_fallback_gpu.py": {
+      "log": "out/test_gi_fallback_gpu.py.log",
+      "evidence": [
+        "GI_TUNING_PASS cases=360 maxError=0.00156235695 signedRange=1 ambientBound=1 missingProbeNeutral=1",
+        "GI_COMPOSITE_BASELINE_PASS cases=2160 maxError=0.000781297684 nativeControls=540 directShadowControls=2592 residentOcclusionControls=788 contactAOControls=432 SDR=1 HDR=1",
+        "GI_BASELINE_PASS missingProbeNeutral=450 provenResidentDark=20 oldDarkeningControls=0",
+        "GI_FALLBACK_PASS cases=769 maxError=0.000244140625 fullCoverageExact=0 skyWaterNeutral=1 unknownCoverageNeutral=1"
+      ]
+    },
+    "fused_gi": {
+      "report": "out/aurora-fused-gi/validation.json",
+      "pass": true
+    },
+    "world_screen": {
+      "report": "out/test-output/test_world_screen_effects_gpu/world-screen-gpu/validation.json",
+      "pass": true
+    },
+    "packages": {
+      "report": "out/test-output/verify_packages/verification.json",
+      "pass": true
+    },
+    "aurora-renderer-build": {
+      "log": "out/aurora-renderer-build.log",
+      "last_line": "Built D:\\dev\\Projects\\Northlight\\.local\\aurora-gi-20261111\\renderer\\frd9.dll"
+    },
+    "aurora-shader-build": {
+      "log": "out/aurora-shader-build.log",
+      "last_line": "Published world_compiled_shaders.h and world-shader-build.json"
+    },
+    "aurora-transition-build": {
+      "log": "out/aurora-transition-build.log",
+      "last_line": "Validated MoonFloorFogActorTiledTransition: 768 slots, 28 temps"
+    },
+    "aurora-package-build": {
+      "log": "out/aurora-package-build.log",
+      "last_line": "Built Northlight-0.3.217-aurora-gi-20261111-Windows.zip 20839629 bytes"
+    },
+    "aurora-package-verify": {
+      "log": "out/aurora-package-verify.log",
+      "last_line": "OK   Northlight-0.3.217-aurora-gi-20261111-Windows.zip"
+    }
+  },
+  "artifacts": {
+    "renderer/frd9.dll": {
+      "bytes": 10877952,
+      "sha256": "089b8b55f22c0966fbf0b92a3e1b3aa890d538f1417ed1aacbd8c7d7d0eb91dd"
+    },
+    "out/packages/Northlight-0.3.217-aurora-gi-20261111-Windows.zip": {
+      "bytes": 20839629,
+      "sha256": "a4349ea9eaf5604ec56c0d9e96bd4ed95973f6ced33dded02e3e4fc512cec924"
+    }
+  },
+  "shader_cost": {
+    "WorldGI": {
+      "slots_before": 233,
+      "slots_after": 238,
+      "temps_before": 19,
+      "temps_after": 20
+    },
+    "WorldLightingUnshadowedGI": {
+      "slots_before": 387,
+      "slots_after": 393,
+      "temps_before": 23,
+      "temps_after": 23
+    },
+    "extra_passes": 0,
+    "extra_render_targets": 0,
+    "extra_probe_samples": 0
+  }
+}

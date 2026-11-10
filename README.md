@@ -1,6 +1,6 @@
 # Northlight renderer
 
-<img width="50%" height="1058" alt="Näyttökuva 2026-10-10 kello 22 38 31" src="https://github.com/user-attachments/assets/c1996381-8dc2-481c-97c9-e3f1316a08bf" /><img width="50%" height="768" alt="image" src="https://github.com/user-attachments/assets/20cc99fb-216c-4430-901b-35b5b5df30d9" />
+<img width="50%" height="1058" alt="NaМ€yttoМ€kuva 2026-10-10 kello 22 38 31" src="https://github.com/user-attachments/assets/c1996381-8dc2-481c-97c9-e3f1316a08bf" /><img width="50%" height="768" alt="image" src="https://github.com/user-attachments/assets/20cc99fb-216c-4430-901b-35b5b5df30d9" />
 <img width="50%" height="768" alt="image" src="https://github.com/user-attachments/assets/e1181ddd-953d-4fd0-a703-eb97e5969ed2" /><img width="50%" height="1696" alt="image" src="https://github.com/user-attachments/assets/7b2c2595-f32b-42b0-bf67-95f7ee9ad570" />
 
 
@@ -81,6 +81,11 @@ Every effect below is on by default and is drawn on top of the game's own frame.
 - **Settings.** `northlight-quality.ini` has three presets (Quality, the default, Balanced and
   Performance) and about 30 keys for shadows, GI, lamps and haze; `celestial-profiles.ini` sets the
   sun and moon look per zone.
+- **Indirect lighting.** In Lighting & AO, GI influence defaults to 120 (full
+  ambient replacement); 60 restores the old half blend. GI brightness accepts
+  negative and positive percentages (-100..200). Northrend aurora adds a subtle
+  green/purple sky fill between sunset and moonrise, transported through the
+  existing GI probes and blocked by geometry. Its strength is adjustable (0 disables it).
 - **Hotkeys** (with Ctrl+Shift): F7 fog and haze, F8 GI, F9 shadows, F10 all effects, F11 the settings window, F12 debug views
   (shadows, GI, fog volume). On a Mac, first remove macOS's own Control+F7 shortcut. The settings window (Ctrl+Shift+F11) is
   drawn by the renderer over the game; it takes the mouse only over the window and the keyboard only while one of its text

@@ -29,13 +29,13 @@ inline bool liveQuality(const std::string& key){
     static const std::set<std::string> restart={"CommandStream","StreamFramesAhead","StreamFrameSkip","StreamOcclusionLocal","GIThreads","GIFastBVH","GIRays","GIDistance","NameMask","SpellLayer"};
     return restart.count(key)==0;
 }
-inline NorthlightQuality::Settings liveQualityUpdate(NorthlightQuality::Settings current,const NorthlightQuality::Settings& next){for(const auto& k:NorthlightQuality::Keys)if(liveQuality(k.name))current.*k.field=next.*k.field;current.preset=next.preset;return NorthlightQuality::effective(current);}
+inline NorthlightQuality::Settings liveQualityUpdate(NorthlightQuality::Settings current,const NorthlightQuality::Settings& next){for(const auto& k:NorthlightQuality::Keys)if(liveQuality(k.name))k.set(current,k.get(next));current.preset=next.preset;return NorthlightQuality::effective(current);}
 struct Config{NorthlightQuality::Settings quality;NorthlightCelestialProfiles::Table celestial;std::array<float,NorthlightHdrSettingsContract::Count> hdr=NorthlightHdrSettingsContract::defaults();};
 // Only these live inputs can change the worker's GI Request. Display settings
 // still apply immediately without cancelling an otherwise identical solve.
 inline bool giRequestChanged(const NorthlightQuality::Settings& before,const NorthlightQuality::Settings& after,
                              const NorthlightCelestialProfiles::Table& oldProfiles,const NorthlightCelestialProfiles::Table& newProfiles){
-    if(before.gi!=after.gi||(before.giStrength==0)!=(after.giStrength==0)||before.giBounces!=after.giBounces||before.giDynamicProbes!=after.giDynamicProbes||
+    if(before.gi!=after.gi||before.auroraStrength!=after.auroraStrength||(before.giStrength==0)!=(after.giStrength==0)||before.giBounces!=after.giBounces||before.giDynamicProbes!=after.giDynamicProbes||
        before.giProbeMoveStep!=after.giProbeMoveStep||before.giProbeAhead!=after.giProbeAhead||before.shadowDirectionSteps!=after.shadowDirectionSteps)return true;
     const auto sameLight=[](const NorthlightCelestialProfiles::Profile& a,const NorthlightCelestialProfiles::Profile& b){
         for(unsigned s=0;s<2;++s){if(a.mix[s]!=b.mix[s]||a.strength[s]!=b.strength[s])return false;
@@ -100,8 +100,8 @@ inline std::vector<Field> schema(const Documents& docs,const Documents& initial,
     Field p;p.section="Quality";p.key="Preset";p.kind="enum";p.saved=NorthlightQuality::name(saved.quality.preset);p.active=NorthlightQuality::name(active.quality.preset);p.factory=p.inherited="Quality";p.options="Quality,Balanced,Performance";p.apply="F";add(p);
     unsigned index=0;
     for(const auto& k:NorthlightQuality::Keys){Field f;f.section="Quality";f.key=k.name;f.kind=k.low==0&&k.high==1?"check":"slider";f.low=std::to_string(k.low);f.high=std::to_string(k.high);
-        f.saved=std::to_string(saved.quality.*k.field);f.active=std::to_string(active.quality.*k.field);f.factory=std::to_string(defaults.quality.*k.field);f.apply=liveQuality(k.name)?"F":"R";
-        f.options=std::to_string(legacyQuality.*k.field)+","+std::to_string(k.preset[1])+","+std::to_string(k.preset[2]);f.inherited=std::to_string(saved.quality.preset==NorthlightQuality::Preset::Quality?legacyQuality.*k.field:k.preset[unsigned(saved.quality.preset)]);
+        f.saved=std::to_string(k.get(saved.quality));f.active=std::to_string(k.get(active.quality));f.factory=std::to_string(k.get(defaults.quality));f.apply=liveQuality(k.name)?"F":"R";
+        f.options=std::to_string(k.get(legacyQuality))+","+std::to_string(k.preset[1])+","+std::to_string(k.preset[2]);f.inherited=std::to_string(saved.quality.preset==NorthlightQuality::Preset::Quality?k.get(legacyQuality):k.preset[unsigned(saved.quality.preset)]);
         if(f.key=="AOMethod"){const char* names[]={"SSAO","HDAO","HBAOPlus","GTAO","ASSAO"};f.kind="enum";f.saved=names[saved.quality.aoMethod];f.active=names[active.quality.aoMethod];f.factory=f.inherited="SSAO";f.options="SSAO,HDAO,HBAOPlus,GTAO,ASSAO";}
         if(f.key=="AOQuality"){f.kind="enum";f.saved=NorthlightQuality::aoQualityName(saved.quality.aoQuality);f.active=NorthlightQuality::aoQualityName(active.quality.aoQuality);f.factory=f.inherited="High";f.options="High,Medium,Low";}
         add(f);out.back().origin=std::string(1,saved.quality.origin[index++]);}
@@ -132,6 +132,7 @@ inline void validateValue(const Field& f,const std::string& value){
     if(f.kind=="enum"){std::istringstream s(f.options);std::string v;while(std::getline(s,v,','))if(v==value)return;throw std::runtime_error("Unknown option for "+f.key);}
     if(f.file==2){NorthlightCelestialProfiles::Profile p;if(auto e=NorthlightCelestialProfiles::assignKey(p,f.key,value))throw std::runtime_error(f.key+": "+e);return;}
     if(f.file==1&&std::stof(f.step)<1){float n=0;if(!NorthlightHdrSettingsContract::parse(value,n)||n<std::stof(f.low)||n>std::stof(f.high))throw std::runtime_error("Value outside allowed range for "+f.key);return;}
+    if(f.file==0&&std::stoi(f.low)<0){int n=0;if(!NorthlightQuality::signedNumber(value,n)||n<std::stoi(f.low)||n>std::stoi(f.high))throw std::runtime_error("Value outside allowed range for "+f.key);return;}
     if(value.empty()||value.find_first_not_of("0123456789")!=value.npos)throw std::runtime_error("Expected an integer for "+f.key);
     auto n=std::stoull(value);if(n<std::stoull(f.low)||n>std::stoull(f.high))throw std::runtime_error("Value outside allowed range for "+f.key);
 }

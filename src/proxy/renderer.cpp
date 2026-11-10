@@ -3883,9 +3883,9 @@ public:
                 const auto boundaryNs=NorthlightStream::nowNs();const auto tick=GetTickCount();
                 const auto& currentQuality=world->surfaceSettings();
                 // Report the effective delta; restart-only requests remain unapplied.
-                for(const auto& key:NorthlightQuality::Keys)if(previousQuality.*key.field!=currentQuality.*key.field)
-                    logf("SETTINGS applied device=%llu rendererFrame=%u monotonicNs=%llu tick=%lu revision=%s key=%s previous=%u value=%u boundary=after-frame-cleanup",
-                         (unsigned long long)diagnosticId,frame,(unsigned long long)boundaryNs,(unsigned long)tick,settingsRevision.c_str(),key.name,previousQuality.*key.field,currentQuality.*key.field);
+                for(const auto& key:NorthlightQuality::Keys)if(key.get(previousQuality)!=key.get(currentQuality))
+                    logf("SETTINGS applied device=%llu rendererFrame=%u monotonicNs=%llu tick=%lu revision=%s key=%s previous=%d value=%d boundary=after-frame-cleanup",
+                         (unsigned long long)diagnosticId,frame,(unsigned long long)boundaryNs,(unsigned long)tick,settingsRevision.c_str(),key.name,key.get(previousQuality),key.get(currentQuality));
             }}
         if(spellOptionsPending&&world&&spell.liveOptions(world->spellLayerClassesSetting(),world->spellFogSetting()!=0)){spellClasses=world->spellLayerClassesSetting();spellOptionsPending=false;}
         if(memoryWorld>=0||memoryCaps>=0||memoryTrim){
@@ -4470,7 +4470,7 @@ static HMODULE backend() {
     if(artInputs.blocked){
         const bool russian=PRIMARYLANGID(GetUserDefaultUILanguage())==LANG_RUSSIAN;
         const auto text=NorthlightArtInputs::message(artInputs,russian);
-        MessageBoxW(nullptr,text.c_str(),russian?L"Northlight РІР‚вЂќ Р Р…РЎС“Р В¶Р Р…Р В° Р С—Р ВµРЎР‚Р ВµРЎРѓР В±Р С•РЎР‚Р С”Р В°":L"Northlight РІР‚вЂќ rebuild required",MB_OK|MB_ICONWARNING|MB_SETFOREGROUND);
+        MessageBoxW(nullptr,text.c_str(),russian?L"Northlight Р Р†Р вЂљРІР‚Сњ Р В Р вЂ¦Р РЋРЎвЂњР В Р’В¶Р В Р вЂ¦Р В Р’В° Р В РЎвЂ”Р В Р’ВµР РЋР вЂљР В Р’ВµР РЋР С“Р В Р’В±Р В РЎвЂўР РЋР вЂљР В РЎвЂќР В Р’В°":L"Northlight Р Р†Р вЂљРІР‚Сњ rebuild required",MB_OK|MB_ICONWARNING|MB_SETFOREGROUND);
         ExitProcess(ERROR_BAD_ENVIRONMENT);
     }
     // Install before loading the backend (and its worker threads), outside

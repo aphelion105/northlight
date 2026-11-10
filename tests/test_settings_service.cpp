@@ -48,6 +48,15 @@ int main(int argc,char** argv){
     auto docs=documents(after);Config active=configOf(docs,"");auto fields=schema(docs,docs,active,"");unsigned q=0,c=0;for(auto& f:fields){q+=f.file==0;c+=f.file==2;}
     assert(q==std::size(NorthlightQuality::Keys)+1&&c>=22*28);fails([&]{applyChanges(docs,fields,"Q\tQuality\tWeather\t2\n");});fails([&]{applyChanges(docs,fields,"Q\tQuality\t../path\t1\n");});
     auto changed=applyChanges(docs,fields,"Q\tQuality\tWeather\t~\n");assert(explicitValue(changed[0],"Quality","Weather")=="~");assert(qualityOf(changed[0],"").weather==1);
+    for(const auto* value:{"-100","-50","0","+100","200"}){
+        auto adjusted=applyChanges(docs,fields,std::string("Q\tQuality\tGIBrightness\t")+value+"\n");
+        const auto config=configOf(adjusted,"");const auto live=liveQualityUpdate(active.quality,config.quality);
+        assert(live.giBrightness==std::stoi(value));
+        assert(!giRequestChanged(active.quality,live,active.celestial,active.celestial));
+        adjusted=applyChanges(adjusted,fields,"Q\tQuality\tGIBrightness\t@factory\n");assert(configOf(adjusted,"").quality.giBrightness==0);
+    }
+    for(const auto* value:{"-101","201","-1.5","--1","+","99999999999999999"})
+        fails([&]{applyChanges(docs,fields,std::string("Q\tQuality\tGIBrightness\t")+value+"\n");});
     auto next=active.quality;next.weather=1;next.commandStream=0;auto applied=liveQualityUpdate(active.quality,next);assert(applied.weather==1&&applied.commandStream==active.quality.commandStream);
     // Preserve the local material and AO schema through the new in-process service.
     for(const auto* key:{"AutoBumpModels","AutoDisplacementStrength","AutoDisplacementDistance","AutoDisplacementDetail","AutoModelDisplacementStrength","AutoModelDisplacementDistance","AutoModelDisplacementDetail","AutoHeightBalance","AutoMaterialOcclusionDistance","AOQuality"}){

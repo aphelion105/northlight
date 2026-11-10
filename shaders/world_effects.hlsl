@@ -47,6 +47,7 @@ float4 SunDirection : register(c16); // toward source
 float4 DirectLight : register(c17);
 float4 AmbientLight : register(c18); // native ambient RGB, evening surface ambient gain in w
 float4 GridOrigin : register(c19); // rgb: NightBrightness light per unit of albedo (WorldComposite only, 0 = off); w: world probe spacing
+float4 GIResponse : register(c66); // y: signed brightness delta; GI only, before FogActorBounds/LocalLightFog own c66
 float4 GridInfo : register(c20); // atlas N,GI intensity,shadow strength,probe ready
 float4 FogInfo : register(c21); // regional field ready,direct volume gain,direct RGB bound,max distance
 float4 FogColor : register(c22); // scattering albedo.rgb, generic-forest daytime air extinction
@@ -553,7 +554,11 @@ struct LightingOutput {float4 correction:COLOR0;float4 baseline:COLOR1;};
 float3 worldGIValue(float3 p,float4 smoothNormal) {
     float3 n=smoothNormal.xyz;
     float4 probe=probeIrradiance(p+n*.25,n);
-    float3 correction=(probe.rgb/3.14159265-AmbientLight.rgb)*GridInfo.y*probe.a;
+    float3 ambient=max(AmbientLight.rgb,0);
+    float3 radiance=probe.rgb/3.14159265*max(1+GIResponse.y,0);
+    // Clamp before residency fade: strong GI cannot remove more than ambient,
+    // and a missing/arriving probe never changes the native fallback.
+    float3 correction=max((radiance-ambient)*GridInfo.y,-ambient)*probe.a;
     // Confidence describes the depth-derived NORMAL, not probe coverage.
     // At a wall/ground seam a valid dark probe must still remove native ambient.
     // Only uncertain added bounce is suppressed; ambient removal also applies

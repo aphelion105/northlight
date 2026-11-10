@@ -1,6 +1,6 @@
 {
   "bump_include_sha256": "b5523a51dc6715f11ac2e7ba9ecb46a4973ba6aa23de159e308a8fd24d4e9ebc",
-  "source_sha256": "a5f2795f39d96cc267903be5ffcd2d7ae1f4ceaa2f010ea80ac2c591dc11afdd",
+  "source_sha256": "14beeb6a00cf912d4261ddca7f9475f490412e4c3e757716297c318db9945812",
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
   "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
   "game_launched": false,
@@ -245,9 +245,9 @@
     },
     "WorldLightingUnshadowedGI": {
       "target": "ps_3_0",
-      "bytes": 6884,
-      "sha256": "d21519a92b8241b7be64ca450c7e3966195883bdfeaf5ec7e019658b1f1d8f8e",
-      "static_instruction_slots": 387,
+      "bytes": 7008,
+      "sha256": "8bb9e57679e1a172f7434a1f81d52340b0c0bf2590b58bb2a62e7bf4e5bcf62d",
+      "static_instruction_slots": 393,
       "temporary_registers": 23,
       "samplers": [
         1,
@@ -262,11 +262,11 @@
         14
       ],
       "instructions": {
-        "mul": 98,
+        "mul": 99,
         "frc": 4,
-        "add": 96,
-        "max": 9,
-        "mov": 23,
+        "add": 97,
+        "max": 12,
+        "mov": 24,
         "min": 3,
         "texldl": 12,
         "if": 10,
@@ -282,7 +282,7 @@
         "endrep": 1
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "31a259cf9799b0e0d9aea71abf953868b1eda0d338cfc9d4ba8b8fdd1a1d9cbe"
+      "source_sha256": "14beeb6a00cf912d4261ddca7f9475f490412e4c3e757716297c318db9945812"
     },
     "ActorShadow": {
       "target": "ps_3_0",
@@ -342,10 +342,10 @@
     },
     "WorldGI": {
       "target": "ps_3_0",
-      "bytes": 4392,
-      "sha256": "98e33a0ff1a8412e7dd0d1801596cc4dc8f5dc2d4fde4880e4760a6eee267992",
-      "static_instruction_slots": 233,
-      "temporary_registers": 19,
+      "bytes": 4504,
+      "sha256": "0a9d6f99e6d5d24f187949357b94928ffb52d6d0da8b55c2044f911a6aade8fc",
+      "static_instruction_slots": 238,
+      "temporary_registers": 20,
       "samplers": [
         1,
         4,
@@ -358,10 +358,10 @@
         14
       ],
       "instructions": {
-        "mul": 58,
+        "mul": 59,
         "frc": 4,
-        "add": 59,
-        "max": 6,
+        "add": 60,
+        "max": 9,
         "mov": 18,
         "min": 2,
         "texldl": 11,
@@ -377,7 +377,7 @@
         "endrep": 1
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "31a259cf9799b0e0d9aea71abf953868b1eda0d338cfc9d4ba8b8fdd1a1d9cbe"
+      "source_sha256": "14beeb6a00cf912d4261ddca7f9475f490412e4c3e757716297c318db9945812"
     },
     "WorldFog": {
       "target": "ps_3_0",

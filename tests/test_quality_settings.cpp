@@ -67,6 +67,18 @@ int main(){
     /* Defaults: absent files, empty file and Preset=Quality are the 0.3.136 constants, except the 0.3.167 FarShadowInterval 4
        and the 0.3.176 PointShadows 0 (off in every preset). */
     const Settings d{};
+    assert(d.giStrength==120&&d.giBrightness==0&&d.auroraStrength==100&&giIntensity(d)==1);
+    {auto legacy=d;legacy.giStrength=60;assert(giIntensity(legacy)==.5f);legacy.giStrength=240;assert(giIntensity(legacy)==2);}
+    for(int brightness:{-100,-50,0,100,200}){
+        const auto ini=std::string("[Quality]\nGIBrightness=")+std::to_string(brightness)+"\n";
+        const auto parsed=parse(ini.c_str());assert(parsed.giBrightness==brightness);
+        assert(describe(parsed).find("GIBrightness="+std::to_string(brightness)+"(file)")!=std::string::npos);
+    }
+    assert(parse("[Quality]\nGIBrightness=+100\n").giBrightness==100);
+    for(const char* bad:{"-101","201","-","+","--1","-1.5","-1x","2147483648","-999999999999"}){
+        std::vector<std::string> warnings;const auto ini=std::string("[Quality]\nGIBrightness=")+bad+"\n";
+        assert(parse(ini.c_str(),nullptr,warnings)==d&&warnings.size()==1);
+    }
     {for(auto p:{Preset::Quality,Preset::Balanced,Preset::Performance})assert(preset(p).disableOriginalTerrainShadows==1);
      auto off=parse("[Quality]\nDisableOriginalTerrainShadows=0\n");assert(!off.disableOriginalTerrainShadows&&off!=d&&effective(off).disableOriginalTerrainShadows==0);
      assert(parse("[Quality]\nDisableOriginalTerrainShadows=1\n")==d);
@@ -100,7 +112,7 @@ int main(){
     for(auto p:{Preset::Quality,Preset::Balanced,Preset::Performance})assert(preset(p).pointShadowDistance==48);
     assert(parse("[Quality]\nPointShadowDistance=96\n").pointShadowDistance==96);
     assert(parse(nullptr)==d&&parse("")==d&&parse("[Quality]\nPreset=Quality\n")==d&&preset(Preset::Quality)==d);
-    for(const auto& k:Keys){assert(k.preset[0]==d.*k.field);for(unsigned p=0;p<3;++p)assert(k.preset[p]>=k.low&&k.preset[p]<=k.high);}
+    for(const auto& k:Keys){assert(k.preset[0]==k.get(d));for(unsigned p=0;p<3;++p)assert(k.preset[p]>=k.low&&k.preset[p]<=k.high);}
     { /* The shipped default file must be exactly Quality, with no warnings. */
         std::ifstream f("windows-package/northlight-quality.ini");assert(f);std::vector<std::string> problems;
         auto s=load(&f,nullptr,problems);assert(s==d&&s.preset==Preset::Quality&&problems.empty());}
@@ -120,7 +132,7 @@ int main(){
     problems.clear();s=parse("[Quality]\nPreset=Ultra\n",nullptr,problems);assert(s==d&&problems.size()==1);
     for(const auto& k:Keys){ /* range edges */
         std::string lo="[Quality]\n"+std::string(k.name)+"="+std::to_string(k.low)+"\n",hi="[Quality]\n"+std::string(k.name)+"="+std::to_string(k.high)+"\n";
-        assert(parse(lo.c_str()).*k.field==k.low&&parse(hi.c_str()).*k.field==k.high);
+        assert(k.get(parse(lo.c_str()))==k.low&&k.get(parse(hi.c_str()))==k.high);
         std::string over="[Quality]\n"+std::string(k.name)+"="+std::to_string(k.high+1)+"\n";assert(parse(over.c_str())==d);
         if(k.low){std::string under="[Quality]\n"+std::string(k.name)+"="+std::to_string(k.low-1)+"\n";assert(parse(under.c_str())==d);}}
     /* Legacy shadow-experiment.ini: same values and fallbacks as 0.3.136's GetPrivateProfileInt path. */
@@ -610,12 +622,12 @@ int main(){
     { /* effective(): the identity with ActorShadows=1 (any value of every key), with 0 only the two replay keys drop. */
       std::mt19937 er(158);
       for(int round=0;round<4000;++round){Settings s;s.preset=Preset(er()%3);unsigned i=0;
-          for(const auto& k:Keys){s.*k.field=k.low+unsigned(er()%(k.high-k.low+1));s.origin[i++]="dplf"[er()%4];}
+          for(const auto& k:Keys){k.set(s,k.low+int(er()%unsigned(k.high-k.low+1)));s.origin[i++]="dplf"[er()%4];}
           const Settings e=effective(s);
           if(s.actorShadows){assert(e==s&&!std::memcmp(e.origin,s.origin,sizeof s.origin)&&e.preset==s.preset&&forcedOff(s)=="none");continue;}
           assert(e.shadowFateDiagnostics==0&&e.diagReplayProbe==0&&!shadowFate(e)&&!replayProbe(e));
           for(const auto& k:Keys){const std::string n=k.name;
-              if(n!="ShadowFateDiagnostics"&&n!="DiagReplayProbe")assert(e.*k.field==s.*k.field);}
+              if(n!="ShadowFateDiagnostics"&&n!="DiagReplayProbe")assert(k.get(e)==k.get(s));}
           assert(!std::memcmp(e.origin,s.origin,sizeof s.origin)&&e.preset==s.preset&&effective(e)==e);}
       assert(effective(d)==d&&forcedOff(d)=="none");
       auto off=parse("[Quality]\nActorShadows=0\nPersistentRigidProps=1\nDiagReplayProbe=1\n");

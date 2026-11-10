@@ -313,6 +313,19 @@ static void disableOriginalTerrainShadows(){
     }
 }
 int main(){
+    {
+        using namespace NorthlightSettings;
+        const auto docs=factoryDocuments();const auto active=configOf(docs,"");const auto fields=schema(docs,docs,active,"");
+        D::Draft draft;draft.bind(&fields);const auto* brightness=draft.quality("GIBrightness");const auto* aurora=draft.quality("AuroraStrength");
+        CHECK(brightness&&aurora&&brightness->low=="-100"&&brightness->high=="200");
+        for(const char* value:{"-100","-50","0","100","200"}){draft.set(*brightness,value);CHECK(draft.effective(*brightness)==value);}
+        draft.clear();std::string missing;
+        for(const char* parent:{"GI","GIStrength"}){
+            draft.set(*draft.quality(parent),"0");
+            CHECK(D::blocked(draft,*brightness,missing)==D::Block::NeedsKey&&missing==parent);
+            CHECK(D::blocked(draft,*aurora,missing)==D::Block::NeedsKey&&missing==parent);draft.clear();
+        }
+    }
     disableOriginalTerrainShadows();
     masterHotkey();routing();draft();shadowRange();pointShadowDistance();
     if(failures){std::fprintf(stderr,"%d failure(s)\n",failures);return 1;}
