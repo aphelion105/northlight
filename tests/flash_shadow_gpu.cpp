@@ -24,7 +24,7 @@ struct FlashShadowTest {
   must(clear->LockRect(0,&lock,nullptr,0));*static_cast<DWORD*>(lock.pBits)=0;must(clear->UnlockRect(0));
   w.materials.push_back(clear);w.uploadedAlphaCutoffs.push_back(.5f);
   NorthlightLocalLightSelection::Selection lights;lights.count=1;lights.sources[0]={{0,0,-1000},{4,2,1},.5f,2000,0xfed0000000000001ull,2,NorthlightLocalLights::Flash};
-  auto maps=[&](bool fresh=true,bool withReplays=true){must(d->BeginScene());w.renderFlashShadows(lights,fresh,withReplays);must(d->EndScene());return w.flashSlots[0].ready;};
+  auto maps=[&](bool fresh=true,bool withReplays=true){w.replayBoundsBegin();must(d->BeginScene());w.renderFlashShadows(lights,fresh,withReplays);must(d->EndScene());return w.flashSlots[0].ready;};
   IDirect3DSurface9* mapRead=nullptr;must(d->CreateOffscreenPlainSurface(1024,1024,D3DFMT_R32F,D3DPOOL_SYSTEMMEM,&mapRead,nullptr));
   auto mapImage=[&](unsigned slot=0,unsigned cascade=0){must(d->GetRenderTargetData(w.flashSlots[slot].surface[cascade],mapRead));must(mapRead->LockRect(&lock,nullptr,D3DLOCK_READONLY));std::vector<float> result(1024*1024);
    for(unsigned y=0;y<1024;++y)std::memcpy(result.data()+1024*y,static_cast<char*>(lock.pBits)+y*lock.Pitch,4096);must(mapRead->UnlockRect());return result;};

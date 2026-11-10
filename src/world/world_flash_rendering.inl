@@ -81,6 +81,7 @@
             const V pivot=staticPivotReady?staticFramePivot:shadowPivot();V delta=vec(light.position)-pivot;if(NorthlightGI::dot(delta,delta)<1)continue;
             auto& s=flashSlots[slot++];s.source=light;s.direction=NorthlightGI::normalized(delta);
             if(!flashResources(s))continue;
+            if(withReplays)replayBoundsRequest();
             // Sky models have no physical distance. As with sun/moon, the
             // distant discharge direction drives orthographic caster cascades;
             // receiver brightness still uses the finite source's distance.

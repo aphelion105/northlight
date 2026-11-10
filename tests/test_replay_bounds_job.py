@@ -32,6 +32,7 @@ glue = point[point.index('    NorthlightReplayBoundsJob::Worker replayBoundsWork
 # Exclude the diagnostic logging tail; World::legacyPass stores its totals below.
 _sync = point.index('    void pointCalculateReplayBounds(){')
 LEGACY = point[point.index('        const auto start=', _sync):point.index('        const double wallMs=', _sync)]
+calculation = point[_sync:point.index('    void pointLogReplayBounds(', _sync)]
 
 clock = r"""
 #include <atomic>
@@ -90,7 +91,7 @@ struct World {
 """ + LEGACY + r"""
         visits={cheapVisited,heavyVisited,buildVisited,reservedCheapVisited,pointBoundVertices,pointBoundOperations,pointBoundsValid};(void)start;
     }
-""" + glue + r"""
+""" + glue + calculation + r"""
 };
 static bool same(const NorthlightReplayBounds::Bounds& a,const NorthlightReplayBounds::Bounds& b){return a.valid==b.valid&&(!a.valid||(!std::memcmp(a.low,b.low,12)&&!std::memcmp(a.high,b.high,12)));}
 [[maybe_unused]] static bool sameVisits(const Totals& a,const Totals& b){return a.cheapVisited==b.cheapVisited&&a.heavyVisited==b.heavyVisited&&a.buildVisited==b.buildVisited&&a.reservedCheapVisited==b.reservedCheapVisited&&a.boundVertices==b.boundVertices&&a.boundOperations==b.boundOperations&&a.valid==b.valid;}
@@ -136,6 +137,7 @@ struct Scene {
         pool[i]=std::make_shared<const Mesh>(randomMesh(rng,kinds[i]==2?12+rng()%60:30+rng()%700,bones));}}
     // Identical packet lists for both worlds: same meshes, same frozen banks.
     void frame(unsigned f,size_t count,bool unknown,std::vector<World*> worlds){
+        for(auto* w:worlds)w->replayBoundsBegin();
         const size_t actors=count/4+1;banks.resize(actors);for(size_t a=0;a<actors;++a)pose(rng,banks[a].data(),unsigned(a),f);
         for(auto* w:worlds){w->replays.clear();view(w->context.inverseView,f);w->frames=f*120+(f%7?1:0);} /* monotonic rendered frames; every seventh sample is diagnostic */
         std::mt19937 local(f*2654435761u+17);
@@ -163,6 +165,24 @@ static void spin(double us){const auto end=std::chrono::steady_clock::now()+std:
 int main(int argc,char** argv){
     assert(argc>=3);const std::string mode=argv[2];auto skin=load(argv[1]);assert(SkinEnvelope::supports(skin));
 #ifdef NORTHLIGHT_TEST_CLOCK
+    if(mode=="demand"){
+        Scene scene(skin,12);World w(scene.programs);warm(w,scene);
+        scene.frame(1,64,false,{&w});const auto initial=w.replayBoundsCache.envelopeBytes();
+        // A render attempt with no shadow consumer must not advance the cache.
+        w.pointBoundsValid=91;w.pointBoundVertices=87;w.replayBoundsBegin();
+        assert(!w.replayBoundsResolved&&!w.replayBoundsWorker.pending()&&!w.replayBoundsRuns&&!w.pointBoundsValid&&!w.pointBoundVertices&&w.replayBoundsCache.envelopeBytes()==initial);
+        // Directional kick and the first point refresh share one job/result.
+        w.replayBoundsKick();assert(w.replayBoundsWorker.pending());w.replayBoundsKick();w.replayBoundsRequest();w.replayBoundsJoin();
+        assert(w.replayBoundsResolved&&!w.replayBoundsWorker.pending());const auto stats=w.replayBoundsCache.envelopeStats();const auto logs=w.logs;
+        w.replayBoundsRequest();w.pointCalculateReplayBounds();w.replayBoundsJoin();
+        assert(!w.replayBoundsWorker.pending()&&w.replayBoundsResolved&&w.replayBoundsRuns==1&&w.logs==logs&&!std::memcmp(&stats,&w.replayBoundsCache.envelopeStats(),sizeof stats));
+        // A new render attempt is independent of the successful-frame counter.
+        const auto frame=w.frames;w.replayBoundsBegin();assert(w.frames==frame&&!w.replayBoundsResolved);
+        w.pointCalculateReplayBounds();assert(w.replayBoundsResolved);
+        w.replayBoundsBegin();w.replayBoundsKick();assert(w.replayBoundsWorker.pending());w.replayBoundsAbandon();
+        assert(!w.replayBoundsResolved&&!w.replayBoundsWorker.pending());
+        std::puts("DEMAND_PASS zeroConsumerNoWork oncePerAttempt syncFallback cancelledReset sameFrameRetry");return 0;
+    }
     if(mode=="priority"){
         // A dense crowd through the real Worker (schedule with a priority list): 1500 packets, 360 of them where a caster can be in the actor map
         // (the self's 12 parts, 100 around the pivot of which 60 are stacked on the self, 150 in the middle, 98 in the edge band), 1140 far away, all
@@ -349,7 +369,7 @@ with tempfile.TemporaryDirectory(prefix='northlight-bounds-job-') as tmp:
             ('tsan', ['-O1', '-g', '-fsanitize=thread'], [('equivalence', '150'), ('stress', '200'), ('priority', '0')])]
     for name, flags, modes in runs:
         binary = build(root, name, source, flags)
-        for mode, frames, *extra in modes:
+        for mode, frames, *extra in [('demand','0'),*modes]:
             out = subprocess.run([str(binary), shader, mode, frames, *extra], capture_output=True, text=True)
             if out.returncode or 'WARNING' in out.stderr or 'ERROR' in out.stderr:
                 sys.exit(f'{name} {mode} failed ({out.returncode}):\n{out.stdout}{out.stderr[-6000:]}')

@@ -3048,7 +3048,7 @@ public:
         gpuDiagnosticFrame=false;
         if(equipmentLightsOn()){equipmentLights.nextFrame();equipmentCapture.nextFrame();particleLights.nextFrame();NorthlightParticleUploads::cache().nextFrame();}
         flushDeferredLogs(); /* 0.3.176 (U0/S0): after every bucketed span of the frame */
-        if(profileSampled())logf("POINT workload rendererFrame=%u selected=%u staticDraws=%u terrainDraws=%u liveDraws=%u replayDraws=%u replayMerged=%u emitterDraws=%u unionDraws=%u casterTriangles=%llu clippedGapTriangles=%llu staticRebuiltFaces=%u staticRestores=%u boundsTotal=%zu boundsValid=%u boundsUnbounded=%zu unboundedRigidFacePackets=%u unboundedSkinnedFacePackets=%u whiteLightingSkipped=%u",rendererFrame,pointWork.selected,pointWork.statics,pointWork.terrain,pointWork.live,pointWork.replay,pointWork.replayMerged,pointWork.split,pointWork.unions,(unsigned long long)pointWork.triangles,(unsigned long long)pointWork.bridged,pointWork.rebuilt,pointWork.restored,replays.size(),pointBoundsValid,replays.size()-std::min(replays.size(),size_t(pointBoundsValid)),pointWork.unboundedRigid,pointWork.unboundedSkinned,pointWork.whiteLightingSkipped);
+        if(profileSampled())logf("POINT workload rendererFrame=%u selected=%u staticDraws=%u terrainDraws=%u liveDraws=%u replayDraws=%u replayMerged=%u emitterDraws=%u unionDraws=%u casterTriangles=%llu clippedGapTriangles=%llu staticRebuiltFaces=%u staticRestores=%u boundsTotal=%zu boundsValid=%u boundsUnbounded=%zu unboundedRigidFacePackets=%u unboundedSkinnedFacePackets=%u whiteLightingSkipped=%u boundsRuns=%u",rendererFrame,pointWork.selected,pointWork.statics,pointWork.terrain,pointWork.live,pointWork.replay,pointWork.replayMerged,pointWork.split,pointWork.unions,(unsigned long long)pointWork.triangles,(unsigned long long)pointWork.bridged,pointWork.rebuilt,pointWork.restored,replays.size(),pointBoundsValid,replays.size()-std::min(replays.size(),size_t(pointBoundsValid)),pointWork.unboundedRigid,pointWork.unboundedSkinned,pointWork.whiteLightingSkipped,replayBoundsRuns);
         if(profileSampled())logf("NATIVE_DIRECT workload rendererFrame=%u nativeSlots=%u attempts=%u otherMatchedKept=%u unavailableCube=%u submittedTotal=%llu dualSubmittedTotal=%llu tripleSubmittedTotal=%llu fallbackTotal=%llu coldPairs=%u deferredPairs=%u rendererDirect=unchanged",rendererFrame,nativeDirectSlots,nativeDirectMatched,nativeDirectMultiple,nativeDirectMissingCube,(unsigned long long)(nativeDirectRenderer?nativeDirectRenderer->draws:0),(unsigned long long)(nativeDirectRenderer?nativeDirectRenderer->multiDraws:0),(unsigned long long)(nativeDirectRenderer?nativeDirectRenderer->tripleDraws:0),(unsigned long long)(nativeDirectRenderer?nativeDirectRenderer->fallbacks:0),nativeDirectRenderer?nativeDirectRenderer->coldPairs:0,nativeDirectRenderer?nativeDirectRenderer->deferredPairs:0);
         if(profileSampled())logf("NATIVE_DIRECT coverage rendererFrame=%u nativeCounts=%u,%u,%u,%u,%u matchedCounts=%u,%u,%u,%u,%u unclassifiedPreparedBypass=%u unclassifiedPrivateBypass=%u bankMemoHits=%u bankMemoMisses=%u scope=decoded-native-pairs counts=draws-by-slot-count",
             rendererFrame,nativeDirectSlotCounts[0],nativeDirectSlotCounts[1],nativeDirectSlotCounts[2],nativeDirectSlotCounts[3],nativeDirectSlotCounts[4],nativeDirectMatchCounts[0],nativeDirectMatchCounts[1],nativeDirectMatchCounts[2],nativeDirectMatchCounts[3],nativeDirectMatchCounts[4],nativeDirectPreparedBypass,nativeDirectPrivateBypass,nativeDirectBankHits,nativeDirectBankMisses);
@@ -4876,6 +4876,7 @@ public:
     // enclosingState transfers restoration to the caller until its enclosing
     // effects scope ends. Later passes must bind their own inputs/state.
     bool render(IDirect3DSurface9* targetSurface,IDirect3DTexture9* depth,UINT w,UINT h,D3DFORMAT fmt,float nearZ,float farZ,float minZ,float maxZ,int debug,NorthlightGpuProfile* profile,IDirect3DTexture9* waterMask,IDirect3DTexture9* foldScene=nullptr,IDirect3DTexture9* foldAO=nullptr,unsigned rendererFrame=0,IDirect3DTexture9* hdrBase=nullptr,bool hdrBaseEncoded=false,bool hdrCombineAllowed=true,bool hdrSkyBase=false,bool foldAOAlphaNeutral=false,const SavedState* enclosingState=nullptr){
+        replayBoundsBegin();
         if(!pipelineActive)return debug?emptyDiagnosticView(targetSurface,w,h,debug):false;
         const bool hdrMode=hdrBase&&debug==0;
         shadowsComposited=false;composited=false;lastRenderDebug=debug;gpuDiagnosticFrame=false;fogGeometryReady=false;
@@ -4903,7 +4904,9 @@ public:
         finishActorScene();
         if(replayShadows)selectShadowReplays();
         bucket(NorthlightEffectsBuckets::Selection);
-        if(effects.shadows&&replayShadows)replayBoundsKick(); /* 0.3.143: bounds worker; joined by the first pointBounds reader */
+        bool sourceActive[2]={NorthlightGI::dot(sourceColors[0],sourceColors[0])>1e-10f,NorthlightGI::dot(sourceColors[1],sourceColors[1])>1e-10f};
+        const bool directionalReplayBounds=replayShadows&&(sourceActive[0]||sourceActive[1]);
+        if(directionalReplayBounds)replayBoundsKick(); /* joined by the first pointBounds reader */
         struct BoundsJoin {WorldRenderer& r;~BoundsJoin(){r.replayBoundsJoin();}} boundsJoin{*this};
         // 0.3.152 RenderProfile: the upload window after selection and the bounds kick (locks,
         // ready/resources/upload, live terrain) up to the replay upload; logged with WORLD profile frame.
@@ -4989,7 +4992,6 @@ public:
             active&&active->map==frameMap?active->fogField:std::shared_ptr<const NorthlightRegionalFog::Field>{};
         if(!field&&uploadedFogMap==frameMap)field=uploadedFogField;
         if(!uploadRegionalFog(field,frameMap))return false;
-        bool sourceActive[2]={NorthlightGI::dot(sourceColors[0],sourceColors[0])>1e-10f,NorthlightGI::dot(sourceColors[1],sourceColors[1])>1e-10f};
         int firstSource=sourceActive[0]||!sourceActive[1]?0:1;
         unsigned culledBatches[2]={},drawnBatches[2]={};
         size_t replayConstantBytes=0,replayConstantCalls=0,replayPosePrepared=0,replayPoseReused=0;
@@ -5126,7 +5128,7 @@ public:
         }
         struct StaticPlanJoin {WorldRenderer& r;~StaticPlanJoin(){try{r.staticCasters.settle();}catch(...){}}} staticPlanJoin{*this}; /* before any return below */
         if(effects.shadows){const auto kickStart=std::chrono::steady_clock::now();staticPlanKick(slotPlacement,sourceActive);staticKickMs+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-kickStart).count();}
-        if(effects.shadows&&replayShadows)pointCalculateReplayBounds(); // both cascades and the point cube
+        if(directionalReplayBounds)pointCalculateReplayBounds(); // point-only refreshes prepare on demand
         d->SetSamplerState(0,D3DSAMP_ADDRESSU,D3DTADDRESS_WRAP);d->SetSamplerState(0,D3DSAMP_ADDRESSV,D3DTADDRESS_WRAP);d->SetSamplerState(0,D3DSAMP_MINFILTER,D3DTEXF_LINEAR);d->SetSamplerState(0,D3DSAMP_MAGFILTER,D3DTEXF_LINEAR);d->SetSamplerState(0,D3DSAMP_MIPFILTER,D3DTEXF_NONE);d->SetSamplerState(0,D3DSAMP_SRGBTEXTURE,FALSE);
         bucket(NorthlightEffectsBuckets::ShadowSetup);
         if(!terrainAsync)terrainJob();

@@ -53,7 +53,30 @@ struct WorldScreenEffectsTest {
   p->stride[0]=sizeof(Vertex);p->vertices=72;p->count=24;p->type=D3DPT_TRIANGLELIST;p->indexed=false;p->projectionKind=2;p->constantUsage.floats={2,32};
   p->shadowSkinned=true;p->constantStorage[4*31+3]=x;
   w.replays.push_back(std::move(p));w.captureMode=WorldRenderer::CaptureFresh;w.shadowSelectionDone=true;
-  for(unsigned warm=0;warm<8&&!w.replays[0]->pointBounds.valid;++warm){w.replayBoundsKick();w.replayBoundsJoin();}
+  for(unsigned warm=0;warm<8&&!w.replays[0]->pointBounds.valid;++warm){w.replayBoundsBegin();w.replayBoundsKick();w.replayBoundsJoin();}
+ }
+ static void boundsDemand(IDirect3DDevice9* d,IDirect3DTexture9* depth,IDirect3DSurface9* target){
+  WorldRenderer w(d);setup(w,1,1);pose(w,0);
+  w.sourceColors[0]=w.sourceColors[1]={};w.sourceGlowColors[0]=w.sourceGlowColors[1]={};
+  w.quality.localLights=w.quality.pointShadows=1;w.quality.localLightLimit=w.quality.pointShadowLimit=2;w.quality.pointShadowRefreshMs=60000;
+  auto draw=[&]{w.captureMode=WorldRenderer::CaptureFresh;w.shadowSelectionDone=true;must(d->BeginScene());const bool ok=w.render(target,depth,64,64,D3DFMT_A8R8G8B8,1,1000,0,1,0,nullptr,nullptr);must(d->EndScene());assert(ok&&!w.replayBoundsWorker.pending());};
+  draw();assert(!w.replayBoundsResolved&&!w.replayBoundsRuns&&!w.pointBoundsValid&&!w.pointBoundOperations);
+  const NorthlightLocalLights::Light light{{0,0,6},{1,.4f,.1f},1,12,171,3,NorthlightLocalLights::CastShadow};
+  w.replays[0]->constantStorage[4*31+3]=.5f;
+  w.active->localLights.push_back(light);auto second=light;second.sourceId=172;second.position[0]=2;w.active->localLights.push_back(second);
+  w.localLightQpc=0; // Publish both authored lights immediately, independent of driver speed/fade time.
+  draw();std::printf("BOUNDS_DEMAND_STATE resolved=%u runs=%u updates=%u valid=%u packets=%zu\n",unsigned(w.replayBoundsResolved),w.replayBoundsRuns,w.pointUpdates,w.pointBoundsValid,w.replays.size());std::fflush(stdout);
+  assert(w.replayBoundsResolved&&w.replayBoundsRuns==1&&w.pointUpdates>=2&&w.pointBoundsValid==w.replays.size());
+  assert(std::fabs((w.replays[0]->pointBounds.low[0]+w.replays[0]->pointBounds.high[0])*.5f-.5f)<.02f);
+  const auto updates=w.pointUpdates;draw();assert(!w.replayBoundsResolved&&!w.replayBoundsRuns&&w.pointUpdates==updates);
+  // Flash is another shadow consumer; it shares the same frame result with cubes.
+  NorthlightLocalLightSelection::Selection flashes;flashes.count=2;for(unsigned i=0;i<2;++i)flashes.sources[i]={{float(i),0,-1000},{4,2,1},.5f,2000,700+i,2,NorthlightLocalLights::Flash};
+  w.replayBoundsBegin();must(d->BeginScene());w.renderFlashShadows(flashes,true,true);must(d->EndScene());w.replayBoundsJoin();assert(w.replayBoundsResolved&&w.replayBoundsRuns==1&&w.flashSlots[0].ready&&w.flashSlots[1].ready);
+  w.pointSlot().schedule.invalidate();must(d->BeginScene());assert(w.renderPointShadow(light,true,true));must(d->EndScene());assert(w.replayBoundsRuns==1);
+  w.replayBoundsBegin();must(d->BeginScene());w.renderFlashShadows(flashes,false,true);must(d->EndScene());assert(!w.replayBoundsResolved&&!w.replayBoundsRuns);
+  const auto frame=w.frames;w.replayBoundsBegin();assert(w.frames==frame&&!w.replayBoundsResolved&&!w.replayBoundsRuns);
+  w.shadowAlphaRetryAt=GetTickCount();must(d->BeginScene());assert(!w.render(target,depth,64,64,D3DFMT_A8R8G8B8,1,1000,0,1,0,nullptr,nullptr));must(d->EndScene());assert(w.frames==frame&&!w.replayBoundsResolved&&!w.replayBoundsRuns);w.shadowAlphaRetryAt=0;
+  std::puts("BOUNDS_DEMAND_GPU_PASS noConsumer=zero twoPoints=once cachedCube=zero twoFlashes=once pointAndFlash=once skippedCapture=zero");
  }
  static void alphaResourceRetry(IDirect3DDevice9* d,IDirect3DTexture9* depth,IDirect3DSurface9* target){
   WorldRenderer reference(d),retained(d);setup(reference,1,1);setup(retained,1,1);
@@ -113,7 +136,7 @@ struct WorldScreenEffectsTest {
    // The control retains the old full rebuild. Warm the same captured pose so
    // the oracle compares shadow coverage, independent of cold bounds scheduling.
    reference.releaseGPU(true);assert(reference.resources(64,64,D3DFMT_A8R8G8B8)&&reference.geometryResources(64,64));
-   for(unsigned warm=0;warm<8;++warm){reference.replayBoundsKick();reference.replayBoundsJoin();}
+   for(unsigned warm=0;warm<8;++warm){reference.replayBoundsBegin();reference.replayBoundsKick();reference.replayBoundsJoin();}
    draw(reference);draw(retained);
    for(unsigned source=0;source<2;++source){
     assert(image(d,reference.shadowSurface[source*2])==image(d,retained.shadowSurface[source*2]));
@@ -131,6 +154,7 @@ struct WorldScreenEffectsTest {
  static void run(IDirect3DDevice9* d){
   IDirect3DTexture9* depth=nullptr;IDirect3DSurface9* target=nullptr;must(d->CreateTexture(64,64,1,0,D3DFMT_R32F,D3DPOOL_MANAGED,&depth,nullptr));D3DLOCKED_RECT lock{};must(depth->LockRect(0,&lock,nullptr,0));for(unsigned y=0;y<64;++y)for(unsigned x=0;x<64;++x)reinterpret_cast<float*>(static_cast<char*>(lock.pBits)+y*lock.Pitch)[x]=.5f;must(depth->UnlockRect(0));
   must(d->CreateRenderTarget(64,64,D3DFMT_A8R8G8B8,D3DMULTISAMPLE_NONE,0,FALSE,&target,nullptr));unsigned cases=0,reuses=0,changes=0;
+  boundsDemand(d,depth,target);
   for(unsigned detail:{0u,1u})for(unsigned interval:{2u,4u,16u}){
    auto reference=std::make_unique<WorldRenderer>(d),retained=std::make_unique<WorldRenderer>(d);setup(*reference,1,detail);setup(*retained,interval,detail);std::vector<float> previous;
    for(unsigned frame=0;frame<21;++frame){const float x=frame%3==0?0.f:frame%3==1?14.f:-4.f;

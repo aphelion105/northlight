@@ -38,7 +38,7 @@ struct PointTerrainCoverageTest{
   std::memcpy(w.context.camera,&center.x,12);
  }
  static std::vector<float> cube(WorldRenderer& w,const NorthlightLocalLights::Light& l,bool replays=false){
-  ++w.meshGeneration;w.pointSlot().cacheValid=false;states(w.d,true);must(w.d->BeginScene());assert(w.renderPointShadow(l,true,replays));must(w.d->EndScene());assert(w.pointSlot().ready);
+  w.replayBoundsBegin();++w.meshGeneration;w.pointSlot().cacheValid=false;states(w.d,true);must(w.d->BeginScene());assert(w.renderPointShadow(l,true,replays));must(w.d->EndScene());assert(w.pointSlot().ready);
   std::vector<float> result;for(auto* face:w.pointSlot().faces){auto im=readSurface(w.d,face,4);const auto n=result.size();result.resize(n+im.w*im.h);std::memcpy(result.data()+n,im.bytes.data(),im.bytes.size());}return result;
  }
  static void replayProof(WorldRenderer& w,const WorldRenderer::Batch& shell,bool mixed=false,bool indexed=false,bool strip=false,const NorthlightLocalLights::Light* native=nullptr){
@@ -201,7 +201,7 @@ struct PointTerrainCoverageTest{
   const auto pose=[&](float move,float bend){for(unsigned bone=0;bone<h[3];++bone){auto* c=actor.constantStorage+4*(31+3*bone);std::fill(c,c+12,0.f);c[0]=c[5]=c[10]=.9f;
       c[3]=1.5f-(low[0]+high[0])*.45f+move+(bone==h[4]?bend:0);c[7]=.5f-(low[1]+high[1])*.45f;c[11]=-9.f-low[2]*.9f;}
     actor.pointBounds={};w.captureMode=WorldRenderer::CaptureFresh;w.shadowSelectionDone=true;
-    for(unsigned warm=0;warm<8&&!actor.pointBounds.valid;++warm){w.replayBoundsKick();w.replayBoundsJoin();}assert(actor.pointBounds.valid);};
+    for(unsigned warm=0;warm<8&&!actor.pointBounds.valid;++warm){w.replayBoundsBegin();w.replayBoundsKick();w.replayBoundsJoin();}assert(actor.pointBounds.valid);};
   constexpr unsigned Size=512,Full=Size*2;const auto prefix=output+"/"+std::filesystem::path(root).filename().string();
   Fgr normal;normal.w=normal.h=Size;normal.format=D3DFMT_A32B32G32R32F;normal.stride=16;normal.bytes.resize(Size*Size*16);
   for(unsigned i=0;i<Size*Size;++i){const float n[]={basis[6],basis[7],basis[8],1};std::memcpy(normal.bytes.data()+i*16,n,16);}drop(w.normalBuffer);w.normalBuffer=texture(d,normal);

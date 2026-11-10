@@ -31,7 +31,7 @@ assert dip.index('if(sharedTerrain)captureWorld(&positions);')<dip.index('autoBu
 for needle,what in [('if(replayShadows)selectShadowReplays();','selection history + fate frame'),
                     ('(replayShadows&&!timedReplay())','GPU cache LRU/probation clock'),
                     ('if(effects.shadows&&replayShadows){auto proofs','static dedup proofs/cursor'),
-                    ('if(effects.shadows&&replayShadows)pointCalculateReplayBounds();','bounds cache resume cursors'),
+                    ('if(directionalReplayBounds)pointCalculateReplayBounds();','directional bounds cache resume cursors'),
                     ('renderPointShadows(atmosphere.lights,replaysComplete,actorShadows,rendererFrame)','point cube schedule'),
                     ('if(!environmentReuse){if(splitNear||captureMode==CaptureFresh||!actorShadows)reuse.commit(interval,shadowPasses,matrices[cascade]);else captureDemand=true;}','cascade commit')]:
     once(render,needle,what)
@@ -41,6 +41,12 @@ assert render.count('uploadReplay(')==1 and render.count('timedReplay()')==1,'re
 # Point: a frame without replays never commits the schedule.
 body=pt[pt.index('    bool renderPointShadow(const NorthlightLocalLights::Light& light,bool fresh=true,bool withReplays=true){'):pt.index('    bool renderPointLighting(')]
 assert body.index('if(!fresh){')<body.index('pointSlot().schedule.commit('),'no point commit from a skipped frame'
+assert body.index('if(!fresh){')<body.index('if(withReplays)replayBoundsRequest();')<body.index('replayBoundsJoin();'),'point bounds belong to actual fresh cube refreshes'
+assert 'const bool directionalReplayBounds=replayShadows&&(sourceActive[0]||sourceActive[1]);' in render
+assert 'if(directionalReplayBounds)replayBoundsKick();' in render
+flash=fp.src('world_flash_rendering.inl').read_text()
+flash=flash[flash.index('    void renderFlashShadows('):]
+assert flash.index('if(!fresh)')<flash.index('if(!flashResources(s))continue;')<flash.index('if(withReplays)replayBoundsRequest();')<flash.index('renderFlashMap('),'flash bounds follow fresh/resource guards'
 assert body.index('pointSlot().schedule.due(')<body.index('if(!fresh){')<body.index('for(unsigned face=0;face<6;++face)'), 'retain the refresh interval and return before cube writes'
 assert 'if(!pointSlot().schedule.usable||lightChanged)return false;' in body, 'only a compatible usable cube may be published without capture'
 assert 'pointSlot().schedule.due(updateAt,pointSlot().selected,meshGeneration,pointReplayCount' in body and 'if(fresh)pointReplayCount=withReplays?replays.size():0;' in body

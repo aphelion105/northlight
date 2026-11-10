@@ -51,8 +51,10 @@ ctor=w[w.index('        loadQuality();pipelineActive='):w.index('        (void)N
 checks['constructor reads quality only after loadQuality']='shadowFate(quality)' in ctor
 # Capture decision: ActorShadows=0 is "shadows off" for capture (GI actor frames only).
 dec=w[w.index('    bool modelCaptureSkipped(){'):w.index('    void captureModel(')]
-checks['capture decision uses actorShadowWork']=('const bool shadows=ready()&&NorthlightQuality::actorShadowWork(quality,effects.shadows);' in dec and 'captureSkipPossible(quality,shadows)' in dec
-    and 'in.shadows=shadows;' in dec and 'effects.shadows' not in dec.replace('NorthlightQuality::actorShadowWork(quality,effects.shadows)',''))
+demand=w[w.index('    bool shadowCaptureDemand()const{'):w.index('    bool modelCaptureSkipped(){')]
+checks['capture decision uses actorShadowWork']=('const bool shadows=shadowCaptureDemand();' in dec and 'captureSkipPossible(quality,shadows)' in dec
+    and '!NorthlightQuality::actorShadowWork(quality,effects.shadows)' in demand
+    and 'in.shadows=shadows;' in dec and 'effects.shadows' not in dec)
 # render(): the three predicates, defined once, and their ActorShadows=1 reductions.
 render=w[w.index('    bool render(IDirect3DSurface9* targetSurface'):] # the last member of WorldRenderer
 body=code(render)
@@ -68,8 +70,8 @@ checks['ActorShadows=1 reduces both to freshReplays; 0: consumers off, schedules
 checks['unavailable geometry never consumes shadow replays']=all(value(defs['replayShadows'],f,a,False) is False for f in (False,True) for a in (False,True))
 checks['disabled component never selects shadow replays']=all(value(defs['replayShadows'],f,a,g,False) is False for f in (False,True) for a in (False,True) for g in (False,True))
 # Consumers (replayShadows) and schedules/commits (replaysComplete, actorShadows).
-consumers=['if(replayShadows)selectShadowReplays();','if(effects.shadows&&replayShadows)replayBoundsKick();','(replayShadows&&!timedReplay())',
-           'if(effects.shadows&&replayShadows){auto proofs','if(effects.shadows&&replayShadows)pointCalculateReplayBounds();']
+consumers=['if(replayShadows)selectShadowReplays();','const bool directionalReplayBounds=replayShadows&&(sourceActive[0]||sourceActive[1]);','if(directionalReplayBounds)replayBoundsKick();','(replayShadows&&!timedReplay())',
+           'if(effects.shadows&&replayShadows){auto proofs','if(directionalReplayBounds)pointCalculateReplayBounds();']
 schedules=['||!replaysComplete||shadowTransitionFailed||memoryPressure', '!reason&&key.valid&&!pull&&!actorLost&&!transition.state.fading(),shadowDiagnosticCapture!=0,replaysComplete);','if(cascade==0)nearRendered=!environmentReuse&&captureMode==CaptureFresh&&interval>1&&actorShadows;',
            'if(!environmentReuse){if(splitNear||captureMode==CaptureFresh||!actorShadows)reuse.commit(interval,shadowPasses,matrices[cascade]);else captureDemand=true;}',
            'renderPointShadows(atmosphere.lights,replaysComplete,actorShadows,rendererFrame);else pointReady=false;',

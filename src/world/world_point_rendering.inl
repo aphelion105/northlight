@@ -368,10 +368,11 @@
             pointFacesRebuilt=pointFacesKept=pointBatchesMerged=0;
         }
     }
-    // 0.3.143 (NorthlightReplayBoundsJob::Async): render() starts this pass on the
-    // bounds worker right after shadow selection and the first pointBounds reader
-    // joins it. Until then packets hold cleared bounds: draw, never cull.
+    // Directional shadows start after selection; point/flash-only refreshes
+    // request the same job on demand. The first bounds reader joins it.
+    // Pending or unavailable bounds draw, never cull.
     NorthlightReplayBoundsJob::Worker replayBoundsWorker;
+    bool replayBoundsResolved=false;unsigned replayBoundsRuns=0;
     bool replayBoundsDiagnostics=false;double replayBoundsKickMs=0;
     unsigned replayBoundsLogFrame=0;bool replayBoundsLogSeen=false;
     bool replayBoundsDiagnosticSample(){
@@ -379,6 +380,9 @@
         // a multiple of 120) while geometry is absent. Sample that value once.
         if(!NorthlightDiagnostics::enabled()||(frames&&frames%120)||(replayBoundsLogSeen&&replayBoundsLogFrame==frames))return false;
         replayBoundsLogSeen=true;replayBoundsLogFrame=frames;return true;
+    }
+    void replayBoundsBegin(){
+        replayBoundsAbandon();replayBoundsRuns=0;pointBoundsValid=0;pointBoundVertices=pointBoundOperations=0;
     }
     // A metadata fallback (per-frame preparation cap) keeps the synchronous
     // pass' full-key evaluation as an unshared snapshot of the same program,
@@ -405,7 +409,7 @@
         return prepared;
     }
     void replayBoundsKick(){
-        if(!NorthlightReplayBoundsJob::Async||replayBoundsWorker.pending())return;
+        if(replayBoundsResolved||!NorthlightReplayBoundsJob::Async||replayBoundsWorker.pending())return;
         const auto start=std::chrono::steady_clock::now();
         // Allocation or thread failure leaves the frame to the synchronous pass,
         // before any per-frame cache state has advanced.
@@ -419,7 +423,7 @@
         replayBoundsWorker.nearList().begin(actorMatrices[0],actorValid[0],actorMatrices[1],actorValid[1]); /* the actor maps as last drawn: casters that can be wholly inside one are visited first, the self's own packets before all */
         NorthlightReplayBoundsJob::gather(items,replays,[&](IDirect3DVertexShader9* shader,IDirect3DVertexDeclaration9* decl){return replayBoundsPrepared(shader,decl);},&replayBoundsWorker.nearList());
         replayBoundsFallbacks.clear(); /* pins now live in the items only */
-        replayBoundsWorker.start(replayBoundsCache,context.inverseView);
+        if(replayBoundsWorker.start(replayBoundsCache,context.inverseView))++replayBoundsRuns;
         replayBoundsDiagnostics=diagnostics;
         replayBoundsKickMs=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
     }
@@ -430,6 +434,7 @@
         const auto result=replayBoundsWorker.finish();
         const double waitMs=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
         NorthlightReplayBoundsJob::apply(replayBoundsWorker.items(),replays,!result.failed);
+        replayBoundsResolved=true;
         pointBoundsValid=result.failed?0:result.totals.valid;pointBoundVertices=result.totals.boundVertices;pointBoundOperations=result.totals.boundOperations;
         if(NorthlightDiagnostics::enabled()){replayNearSize=unsigned(replayBoundsWorker.nearList().size());replayNearStops+=result.totals.nearStops;}
         if(replayBoundsDiagnostics){
@@ -440,12 +445,15 @@
     // Before the bounds cache or the packets change outside render(): the job's
     // results are discarded (the packets still hold cleared bounds).
     void replayBoundsAbandon(){
+        replayBoundsResolved=false;
         if(!replayBoundsWorker.pending())return;
         replayBoundsWorker.finish(true);
         for(auto& item:replayBoundsWorker.items())item=NorthlightReplayBoundsJob::Item{};
     }
     void pointCalculateReplayBounds(){
+        if(replayBoundsResolved)return;
         if(replayBoundsWorker.pending())return; /* 0.3.143: in flight since selection, joined by the first reader */
+        ++replayBoundsRuns;
         const auto start=std::chrono::steady_clock::now();
         using WorkKind=NorthlightReplayBounds::WorkKind;
         NorthlightReplayBounds::Budget cheapBudget,heavyBudget,buildBudget;
@@ -527,8 +535,13 @@
         const auto live=[] {return true;};const auto cold=[&](size_t index){return !replays[index]->pointBounds.valid&&replays[index]->boundsWork.kind==WorkKind::Cold;};
         if(buildVisited||replayBoundsCache.hasPendingBuild())NorthlightReplaySchedule::finishCold(replays.size(),replayBoundsCache.buildStart(replays.size()),replayBoundsCache,cheapBudget,heavyBudget,buildBudget,live,visit,cold);
         pointBoundVertices=buildBudget.vertices;pointBoundOperations=cheapBudget.operations+heavyBudget.operations+buildBudget.operations;
+        replayBoundsResolved=true;
         const double wallMs=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
         if(diagnostics)pointLogReplayBounds({cheapVisited,heavyVisited,buildVisited,reservedCheapVisited,pointBoundVertices,pointBoundOperations,pointBoundsValid},wallMs,wallMs,0,0,0,false);
+    }
+    void replayBoundsRequest(){
+        if(replayBoundsResolved||replayBoundsWorker.pending())return;
+        replayBoundsKick();pointCalculateReplayBounds();
     }
     void pointLogReplayBounds(const NorthlightReplayBoundsJob::Totals& visits,double wallMs,double mainMs,double workerMs,double waitMs,double startLagMs,bool async){
         using WorkKind=NorthlightReplayBounds::WorkKind;
@@ -723,6 +736,9 @@
             if(!pointSlot().schedule.usable||lightChanged)return false;
             pointSlot().ready=true;++pointReuses;return true;
         }
+        // Only an actual dynamic cube refresh consumes replay bounds. Start
+        // before candidate preparation; the first reader below joins the job.
+        if(withReplays)replayBoundsRequest();
         // PointShadowFacesPerFrame<6: a refresh of the same light whose six faces are all complete
         // draws only this frame's group; a new, moved or resized light draws all six at once.
         const bool cycling=quality.pointShadowFacesPerFrame<6&&pointSlot().schedule.usable&&!lightChanged&&pointSlot().cacheValid&&pointSlot().cacheSource==pointSlot().selected.sourceId;
