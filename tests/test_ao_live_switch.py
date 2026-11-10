@@ -41,6 +41,7 @@ const DWORD kAoOnlyShader[]={15},kHdaoOnlyShader[]={16},kHbaoPlusOnlyShader[]={1
 const DWORD kHdaoOnlyMediumShader[]={19},kHbaoPlusOnlyMediumShader[]={20},kGtaoOnlyMediumShader[]={21},kHdaoOnlyLowShader[]={22},kHbaoPlusOnlyLowShader[]={23},kGtaoOnlyLowShader[]={24};
 const DWORD kAssaoContactBloomShader[]={25},kAssaoContactBloomMediumShader[]={26},kAssaoContactBloomLowShader[]={27};
 const DWORD kAssaoOnlyShader[]={28},kAssaoOnlyMediumShader[]={29},kAssaoOnlyLowShader[]={30};
+const DWORD kAoBlurNoWaterShader[]={31};
 unsigned alive=0;std::size_t textureBytes=0;
 struct Surface {Surface(){++alive;}void Release(){--alive;delete this;}};
 struct Texture {
@@ -71,17 +72,17 @@ struct Renderer {
     bool worldDepthDescKnown=false,df24Refused=false,rainDepthOk=false,rainMaskCleared=false,rainMaskDrawn=false,rainMaskFailed=false,captured=false,contactAO=true,failed=false;
     struct {unsigned MultiSampleType=0;}worldDepthDesc;
     struct {bool active=false;}hdr;
-    bool aoActorShaderFailed=false;
+    bool aoActorShaderFailed=false,aoBlurNoWaterRefused=false;
     Surface *sceneSurface=nullptr,*aoSurface=nullptr,*aoRawSurface=nullptr,*rainMaskMS=nullptr,*rainMaskSurface=nullptr;
     Texture *scene=nullptr,*ao=nullptr,*aoRaw=nullptr,*depthTex=nullptr,*rainDepth=nullptr,*rainMask=nullptr;
-    Shader *aoPS=nullptr,*aoContactBloomPS=nullptr,*aoOnlyPS=nullptr,*aoActorPS=nullptr,*aoActorAlphaPS=nullptr,*aoBlurPS=nullptr,*contactBloomPS=nullptr,*compositePS=nullptr;
+    Shader *aoPS=nullptr,*aoContactBloomPS=nullptr,*aoOnlyPS=nullptr,*aoActorPS=nullptr,*aoActorAlphaPS=nullptr,*aoBlurPS=nullptr,*aoBlurNoWaterPS=nullptr,*contactBloomPS=nullptr,*compositePS=nullptr;
     bool error(int hr,const char*){if(hr<0)failed=true;return hr<0;}
     void rainMrtUnbind(){}
     template<class...T>void logf(const char*,T...){}
     __SELECT__
     __RESOURCES__
     void nextFrame(){__FRAME__}
-    ~Renderer(){drop(sceneSurface);drop(aoSurface);drop(aoRawSurface);drop(scene);drop(ao);drop(aoRaw);drop(depthTex);drop(rainMaskMS);drop(rainMaskSurface);drop(rainMask);drop(rainDepth);drop(aoPS);drop(aoContactBloomPS);drop(aoOnlyPS);drop(aoActorPS);drop(aoActorAlphaPS);drop(aoBlurPS);drop(contactBloomPS);drop(compositePS);}
+    ~Renderer(){drop(sceneSurface);drop(aoSurface);drop(aoRawSurface);drop(scene);drop(ao);drop(aoRaw);drop(depthTex);drop(rainMaskMS);drop(rainMaskSurface);drop(rainMask);drop(rainDepth);drop(aoPS);drop(aoContactBloomPS);drop(aoOnlyPS);drop(aoActorPS);drop(aoActorAlphaPS);drop(aoBlurPS);drop(aoBlurNoWaterPS);drop(contactBloomPS);drop(compositePS);}
 };
 int main(){
     {
@@ -94,7 +95,7 @@ int main(){
         for(unsigned i=0;i<32;++i)assert(r.resources(3840,2160,10,true));
         assert(d.textures==1&&d.shaders==0);
         assert(r.resources(3840,2160,10));
-        assert(r.scene==color&&r.sceneSurface==colorSurface&&d.textures==4&&d.shaders==5&&textureBytes==99532800);
+        assert(r.scene==color&&r.sceneSurface==colorSurface&&d.textures==4&&d.shaders==6&&textureBytes==99532800);
         assert(r.depthSnapshotFormat==MAKEFOURCC('D','F','2','4'));
         assert(d.allocations[1].usage==D3DUSAGE_DEPTHSTENCIL&&d.allocations[1].w==3840&&d.allocations[1].h==2160);
         for(unsigned i=2;i<4;++i)assert(d.allocations[i].w==1920&&d.allocations[i].h==1080&&d.allocations[i].format==D3DFMT_A16B16G16R16F);
@@ -111,7 +112,7 @@ int main(){
         r.worldDepthDescKnown=false;
         assert(r.resources(3840,2160,20)&&d.textures==8&&r.depthTex==retainedDepth);
         assert(r.resources(800,600,20,true)&&d.textures==9&&!r.depthTex&&!r.ao&&!r.aoRaw&&textureBytes==1920000);
-        assert(r.resources(800,600,20)&&d.textures==12&&d.shaders==5&&textureBytes==5760000);
+        assert(r.resources(800,600,20)&&d.textures==12&&d.shaders==6&&textureBytes==5760000);
     }
     assert(alive==0&&textureBytes==0);
     {
@@ -130,17 +131,17 @@ int main(){
         assert(r.resources(800,600,10,true)&&r.scene==color&&d.textures==2);
         d.failShader=true;assert(!r.resources(800,600,10)&&r.scene==color&&d.textures==2);
         d.failShader=false;d.failTextureAt=3;r.failed=false;
-        assert(!r.resources(800,600,10)&&r.scene==color&&!r.depthTex&&d.textures==3&&d.shaders==5);
+        assert(!r.resources(800,600,10)&&r.scene==color&&!r.depthTex&&d.textures==3&&d.shaders==6);
         d.failTextureAt=5;r.failed=false;
         assert(!r.resources(800,600,10)&&r.scene==color&&r.depthTex&&!r.ao&&d.textures==5);
         d.failTextureAt=0;r.failed=false;
-        assert(r.resources(800,600,10)&&r.scene==color&&d.textures==7&&d.shaders==5);
+        assert(r.resources(800,600,10)&&r.scene==color&&d.textures==7&&d.shaders==6);
     }
     assert(alive==0&&textureBytes==0);
     Device device;Service service;World world;
     {
         Renderer r;r.ext=&device;r.settingsService=&service;r.world=&world;
-        assert(r.resources(800,600,10));assert(device.textures==4&&device.shaders==5);
+        assert(r.resources(800,600,10));assert(device.textures==4&&device.shaders==6);
         const auto scene=r.scene;const auto depth=r.depthTex;const auto ao=r.ao;const auto raw=r.aoRaw;
         const DWORD* expected[]={kAoContactBloomShader,kHdaoContactBloomShader,kHbaoPlusContactBloomShader,kGtaoContactBloomShader,kAssaoContactBloomShader};
         for(unsigned pass=0;pass<200;++pass){

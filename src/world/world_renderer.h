@@ -3096,6 +3096,7 @@ public:
         effects=next;
     }
     bool effectsEnabled()const{return NorthlightQuality::pipelineWork(quality);}
+    bool surfaceLightingEnabled(bool materials=true)const{return (effects.gi&&quality.giStrength)||effects.shadows||effects.fog||(quality.localLights&&quality.localLightLimit)||(materials&&quality.autoBump);}
     void setPipelineEnabled(bool value){
         if(pipelineActive==value)return;pipelineActive=value;setEffects(requestedEffects);settingsRequestDirty=true;
         {std::lock_guard<std::mutex> lock(mutex);request.enabled=value;
@@ -5875,10 +5876,16 @@ public:
         bucket(NorthlightEffectsBuckets::LightingSetup);
         d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_ONE);d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_ONE);d->SetRenderState(D3DRS_BLENDOP,D3DBLENDOP_ADD);
         // Smoothed normals for the lighting, GI and local light passes (s14).
+        const bool lightingNeeded=surfaceLightingEnabled(false)||fullMaterial||debug!=0||diagnosticCapture||lightingCapture;
+        const bool normalsProduceDistance=lightingNeeded&&c[30][1]>0;
+        const bool anyShadowTransition=geometryReady&&(shadowTransitionActive(0)||shadowTransitionActive(1));
+        auto* const smoothSurface=fogBlurredSurface;
+        bool first=true;
+        const float occlusionInfo[]={materialOcclusion?1.f:0.f,materialOcclusionDistance,hdrMode&&hdrSkyBase?1.f:0.f,0};d->SetPixelShaderConstantF(78,occlusionInfo,1);
+        if(lightingNeeded){
         d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE);d->SetRenderState(D3DRS_COLORWRITEENABLE,15);
         d->SetTexture(14,nullptr);d->SetTexture(15,nullptr);
         d->SetRenderState(D3DRS_COLORWRITEENABLE1,15);
-        const bool normalsProduceDistance=c[30][1]>0;
         if(!check(d->SetRenderTarget(0,normalSurface),"world normals target")||
            !check(d->SetRenderTarget(1,normalsProduceDistance?temporalDepthSurface[temporalIndex]:nullptr),"current distance target"))return false;
         if(!normalsProduceDistance&&!normalsNoDistancePS&&!normalsNoDistanceRefused){
@@ -5937,7 +5944,6 @@ public:
         d->SetRenderState(D3DRS_COLORWRITEENABLE,15);
         if(anyActorPass)d->SetTexture(10,textures[10]); /* the frame-start binding (probe metadata) again */
         if(profile)profile->mark("ActorShadow");bucket(NorthlightEffectsBuckets::ActorShadow);
-        const bool anyShadowTransition=geometryReady&&(shadowTransitionActive(0)||shadowTransitionActive(1));
         bool softResolved=false;
         if((quality.softShadows||anyShadowTransition)&&geometryReady&&effects.shadows&&(sourceActive[0]||sourceActive[1])&&softShadowResources(w,h)){
             // Never sample a texture while it is a render target. A failed
@@ -5994,11 +6000,9 @@ public:
         float materialLight[4][4]={{c[28][0],c[28][1],c[28][2],0},{sourceDirections[1].x,sourceDirections[1].y,sourceDirections[1].z,0},{},{}};
         for(unsigned source=0;source<2;++source)if(sourceActive[source]){materialLight[2+source][0]=sourceColors[source].x;materialLight[2+source][1]=sourceColors[source].y;materialLight[2+source][2]=sourceColors[source].z;}
         d->SetPixelShaderConstantF(74,materialLight[0],4);
-        const float occlusionInfo[]={materialOcclusion?1.f:0.f,materialOcclusionDistance,hdrMode&&hdrSkyBase?1.f:0.f,0};d->SetPixelShaderConstantF(78,occlusionInfo,1);
         d->SetPixelShaderConstantF(73,bumpControl,1);d->SetTexture(9,materialDetail);
         for(auto state:{D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER})d->SetSamplerState(9,state,D3DTEXF_POINT);
         // Address, mip and sRGB states still match the frame-start s9 setup.
-        bool first=true;
         const int lastSource=sourceWeights[1]<=0&&firstSource!=1?0:1;
         // A strength-zero source still subtracts its authored surface share.
         for(int source=0;source<2;++source){if(sourceWeights[source]<=0&&source!=firstSource)continue;
@@ -6022,7 +6026,6 @@ public:
             d->SetTexture(8,textures[8]);
         }
         if(profile)profile->mark("GI"); /* task 43: the GI pass alone; the lamp batches are LocalLights */
-        auto* const smoothSurface=fogBlurredSurface; // Borrow only until temporal resolve and its diagnostic copy.
         {   // Temporal stabilization: retain this frame's already produced distance when available.
             // FogTemporal swaps these owners later in the frame. Refresh the
             // dead scratch here; never overwrite the persistent fogHistory.
@@ -6065,6 +6068,14 @@ public:
             temporalIndex=prev;temporalValid=true;memcpy(previousView,context.view,64);previousCamera=vec(context.camera);temporalMap=frameMap;
         }
         if(profile)profile->mark("TemporalLight");
+        }else{
+            temporalValid=false;
+            d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE);d->SetRenderState(D3DRS_COLORWRITEENABLE,15);
+            d->SetRenderTarget(1,nullptr);d->SetTexture(14,nullptr);d->SetTexture(15,nullptr);
+            d->SetTexture(12,neutralZero);
+            const float noNightLight[]={0,0,0,c[19][3]};d->SetPixelShaderConstantF(19,noNightLight,1);
+            d->SetTexture(10,foldAO?foldAO:neutralAO);d->SetSamplerState(10,D3DSAMP_MINFILTER,D3DTEXF_LINEAR);d->SetSamplerState(10,D3DSAMP_MAGFILTER,D3DTEXF_LINEAR);
+        }
         // Preserve diagnostic inputs before recycling the raw directional target.
         if(diagnosticFiles){
             const unsigned capture=diagnosticCapture;const std::string& directory=gpuDiagnosticDirectory;
@@ -6326,7 +6337,7 @@ public:
         }else fogHistoryValid=false;
         // TemporalLight already rotated the index: 1-index is this frame's
         // distance, including frames without a directional light source.
-        d->SetTexture(15,temporalDepth[1-temporalIndex]);
+        d->SetTexture(15,lightingNeeded?temporalDepth[1-temporalIndex]:nullptr);
         d->SetSamplerState(15,D3DSAMP_MINFILTER,D3DTEXF_POINT);d->SetSamplerState(15,D3DSAMP_MAGFILTER,D3DTEXF_POINT);
         d->SetSamplerState(15,D3DSAMP_MIPFILTER,D3DTEXF_NONE);d->SetSamplerState(15,D3DSAMP_SRGBTEXTURE,FALSE);
         d->SetSamplerState(15,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(15,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);
@@ -6355,7 +6366,7 @@ public:
         // or captured HDR sky requires a separate linear base image.
         d->SetSamplerState(2,D3DSAMP_SRGBTEXTURE,hdrMode&&hdrBaseEncoded?TRUE:FALSE);
         d->SetTexture(3,currentLocalLighting?light:neutralZero); // CurrentLocalLighting in WorldComposite only.
-        d->SetRenderTarget(0,fullMaterial&&!combinedMaterial?colorSurface:targetSurface);d->SetTexture(8,temporalLight[1-temporalIndex]);d->SetTexture(9,fogResolved?fogBlurred:fog);d->SetPixelShader(baseComposite?hdrBasePS:hdrMode?hdrFinalPS:finalPS);
+        d->SetRenderTarget(0,fullMaterial&&!combinedMaterial?colorSurface:targetSurface);d->SetTexture(8,lightingNeeded?temporalLight[1-temporalIndex]:neutralZero);d->SetTexture(9,fogResolved?fogBlurred:fog);d->SetPixelShader(baseComposite?hdrBasePS:hdrMode?hdrFinalPS:finalPS);
         if(combinedMaterial){
             d->SetTexture(4,fogResolved?fogBlurred:fog);d->SetTexture(5,foldScene);d->SetTexture(6,materialOcclusion);d->SetTexture(9,materialDetail);d->SetTexture(14,normalBuffer);
             for(unsigned sampler:{4u,5u,6u,9u,12u,14u}){

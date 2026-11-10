@@ -1,6 +1,6 @@
 {
   "bump_include_sha256": "b5523a51dc6715f11ac2e7ba9ecb46a4973ba6aa23de159e308a8fd24d4e9ebc",
-  "source_sha256": "31a259cf9799b0e0d9aea71abf953868b1eda0d338cfc9d4ba8b8fdd1a1d9cbe",
+  "source_sha256": "a5f2795f39d96cc267903be5ffcd2d7ae1f4ceaa2f010ea80ac2c591dc11afdd",
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
   "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
   "game_launched": false,
@@ -951,10 +951,10 @@
     },
     "WorldComposite": {
       "target": "ps_3_0",
-      "bytes": 7420,
-      "sha256": "2ca75fd264d410a63394f0d45a71086cec5bddecc8d04b09959295cded254a44",
-      "static_instruction_slots": 432,
-      "temporary_registers": 20,
+      "bytes": 7484,
+      "sha256": "5255356a7c33c684ead5a68499edccabe1699eb1fd22b5780fd6f1dc6aace3df",
+      "static_instruction_slots": 440,
+      "temporary_registers": 22,
       "samplers": [
         0,
         1,
@@ -966,22 +966,21 @@
         10,
         11,
         12,
-        13,
-        15
+        13
       ],
       "instructions": {
-        "mul": 70,
-        "frc": 4,
-        "add": 81,
-        "max": 17,
-        "mov": 41,
-        "min": 9,
         "texld": 4,
+        "mul": 74,
+        "frc": 4,
+        "add": 84,
+        "mov": 40,
+        "max": 17,
+        "min": 9,
         "if": 14,
         "else": 7,
-        "rcp": 23,
-        "cmp": 38,
         "texldl": 16,
+        "rcp": 24,
+        "cmp": 39,
         "endif": 14,
         "mad": 20,
         "pow": 2,
@@ -994,13 +993,13 @@
         "dp2add": 4
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "31a259cf9799b0e0d9aea71abf953868b1eda0d338cfc9d4ba8b8fdd1a1d9cbe"
+      "source_sha256": "a5f2795f39d96cc267903be5ffcd2d7ae1f4ceaa2f010ea80ac2c591dc11afdd"
     },
     "WorldUnlitComposite": {
       "target": "ps_3_0",
-      "bytes": 5328,
-      "sha256": "87467cfccfcaa84b895dcde8b0c9cde6f726f10fead432b8f36f5c49b20818d2",
-      "static_instruction_slots": 291,
+      "bytes": 5408,
+      "sha256": "effc94776b43f8cad3b97e51c6057a12fbd50b472dd7a916702cc3262121af4b",
+      "static_instruction_slots": 300,
       "temporary_registers": 13,
       "samplers": [
         0,
@@ -1010,21 +1009,20 @@
         9,
         10,
         11,
-        13,
-        15
+        13
       ],
       "instructions": {
-        "mul": 52,
+        "mul": 55,
         "frc": 4,
-        "add": 64,
+        "add": 68,
         "max": 9,
         "mov": 23,
         "min": 6,
         "texld": 4,
         "if": 8,
         "else": 6,
-        "rcp": 12,
-        "cmp": 27,
+        "rcp": 13,
+        "cmp": 28,
         "texldl": 7,
         "endif": 8,
         "rep": 1,
@@ -1038,7 +1036,7 @@
         "dp2add": 4
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "31a259cf9799b0e0d9aea71abf953868b1eda0d338cfc9d4ba8b8fdd1a1d9cbe"
+      "source_sha256": "a5f2795f39d96cc267903be5ffcd2d7ae1f4ceaa2f010ea80ac2c591dc11afdd"
     },
     "MaterialComposite": {
       "target": "ps_3_0",
@@ -1085,9 +1083,9 @@
     },
     "WorldCompositeHdr": {
       "target": "ps_3_0",
-      "bytes": 8272,
-      "sha256": "aa1c32fc12ecce2b804143bbcb758413e80eb32db539260cdfa9deddc0f042d6",
-      "static_instruction_slots": 493,
+      "bytes": 8336,
+      "sha256": "6edc549e1e92feee428195ba13592c1ce031b1ad578af85ba9a2c8862f1746be",
+      "static_instruction_slots": 501,
       "temporary_registers": 22,
       "samplers": [
         0,
@@ -1100,22 +1098,21 @@
         10,
         11,
         12,
-        13,
-        15
+        13
       ],
       "instructions": {
         "texld": 2,
-        "mul": 83,
+        "mul": 87,
         "frc": 4,
-        "add": 91,
-        "mov": 42,
+        "add": 94,
+        "mov": 41,
         "max": 21,
         "min": 8,
         "if": 15,
         "else": 8,
         "texldl": 18,
-        "rcp": 23,
-        "cmp": 43,
+        "rcp": 24,
+        "cmp": 44,
         "endif": 15,
         "mad": 18,
         "pow": 2,
@@ -1129,13 +1126,13 @@
         "dp2add": 4
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "31a259cf9799b0e0d9aea71abf953868b1eda0d338cfc9d4ba8b8fdd1a1d9cbe"
+      "source_sha256": "a5f2795f39d96cc267903be5ffcd2d7ae1f4ceaa2f010ea80ac2c591dc11afdd"
     },
     "WorldBaseCompositeHdr": {
       "target": "ps_3_0",
-      "bytes": 7184,
-      "sha256": "7886fa6f273d3e062c902a08037a78a5806269c82dc2e8c9fdef96bab690a12d",
-      "static_instruction_slots": 418,
+      "bytes": 7232,
+      "sha256": "5b5fa6273b4915f8fc0014ec326dc6f3e2ad7cddfb965867480c817949b884c0",
+      "static_instruction_slots": 425,
       "temporary_registers": 16,
       "samplers": [
         0,
@@ -1146,21 +1143,20 @@
         10,
         11,
         12,
-        13,
-        15
+        13
       ],
       "instructions": {
-        "mul": 71,
+        "mul": 74,
         "frc": 4,
-        "add": 78,
+        "add": 81,
         "max": 16,
-        "mov": 39,
+        "mov": 38,
         "min": 7,
         "texld": 2,
         "if": 11,
         "else": 9,
-        "rcp": 17,
-        "cmp": 37,
+        "rcp": 18,
+        "cmp": 38,
         "texldl": 13,
         "endif": 11,
         "mad": 16,
@@ -1174,13 +1170,13 @@
         "dp2add": 4
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "31a259cf9799b0e0d9aea71abf953868b1eda0d338cfc9d4ba8b8fdd1a1d9cbe"
+      "source_sha256": "a5f2795f39d96cc267903be5ffcd2d7ae1f4ceaa2f010ea80ac2c591dc11afdd"
     },
     "WorldUnlitCompositeHdr": {
       "target": "ps_3_0",
-      "bytes": 6108,
-      "sha256": "24aacfaba3572fb0ed3d309b33a44597cd0d0c68a5045f0457679092e50a93e7",
-      "static_instruction_slots": 353,
+      "bytes": 6188,
+      "sha256": "aa09936d26006afc544914435af60cda1fb6e2fea9e5c0c4b1ea80d2074afdc8",
+      "static_instruction_slots": 362,
       "temporary_registers": 14,
       "samplers": [
         0,
@@ -1189,21 +1185,20 @@
         7,
         9,
         11,
-        13,
-        15
+        13
       ],
       "instructions": {
-        "mul": 65,
+        "mul": 68,
         "frc": 4,
-        "add": 75,
+        "add": 79,
         "max": 13,
         "mov": 23,
         "min": 6,
         "texld": 2,
         "if": 9,
         "else": 7,
-        "rcp": 12,
-        "cmp": 32,
+        "rcp": 13,
+        "cmp": 33,
         "texldl": 9,
         "endif": 9,
         "rep": 1,
@@ -1218,7 +1213,7 @@
         "dp2add": 4
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "31a259cf9799b0e0d9aea71abf953868b1eda0d338cfc9d4ba8b8fdd1a1d9cbe"
+      "source_sha256": "a5f2795f39d96cc267903be5ffcd2d7ae1f4ceaa2f010ea80ac2c591dc11afdd"
     },
     "MaterialCompositeHdr": {
       "target": "ps_3_0",
@@ -1268,7 +1263,7 @@
     "WorldMaterialCompositeHdr": {
       "target": "ps_3_0",
       "bytes": 12436,
-      "sha256": "8514ec0595eab935dfdffe09e878fc54a7628245a91d474a62fa4889dcc93a38",
+      "sha256": "095d17b8d31bb016ba56c4eb7269f2908c911c8d8cdd66ad4c8c99bf9a3af1ba",
       "static_instruction_slots": 761,
       "temporary_registers": 22,
       "samplers": [
@@ -1315,60 +1310,13 @@
         "dp2add": 6
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "31a259cf9799b0e0d9aea71abf953868b1eda0d338cfc9d4ba8b8fdd1a1d9cbe"
+      "source_sha256": "a5f2795f39d96cc267903be5ffcd2d7ae1f4ceaa2f010ea80ac2c591dc11afdd"
     },
     "WorldPrelitComposite": {
       "target": "ps_3_0",
-      "bytes": 7328,
-      "sha256": "e8317df0e5eaf45c705f28b7c1afad78388a527e3fe59d4b6eda3ff730c047bb",
-      "static_instruction_slots": 429,
-      "temporary_registers": 20,
-      "samplers": [
-        0,
-        1,
-        2,
-        3,
-        7,
-        8,
-        9,
-        10,
-        11,
-        12,
-        13,
-        15
-      ],
-      "instructions": {
-        "mul": 70,
-        "frc": 4,
-        "add": 81,
-        "max": 17,
-        "mov": 41,
-        "min": 9,
-        "texld": 4,
-        "if": 14,
-        "else": 7,
-        "rcp": 23,
-        "cmp": 37,
-        "texldl": 16,
-        "endif": 14,
-        "mad": 18,
-        "pow": 2,
-        "dp3": 3,
-        "rep": 1,
-        "exp": 4,
-        "abs": 1,
-        "endrep": 1,
-        "rsq": 3,
-        "dp2add": 4
-      },
-      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "31a259cf9799b0e0d9aea71abf953868b1eda0d338cfc9d4ba8b8fdd1a1d9cbe"
-    },
-    "WorldPrelitCompositeHdr": {
-      "target": "ps_3_0",
-      "bytes": 8200,
-      "sha256": "a56e659d43fcbae50743fd8b113aaed42a0f392133350ff37e0f368f539b1e99",
-      "static_instruction_slots": 491,
+      "bytes": 7392,
+      "sha256": "383ee0bfbfe7f6ee27255d11d3312ac7d9e4f30d1e0ede660500c5fc7c74d2e8",
+      "static_instruction_slots": 437,
       "temporary_registers": 22,
       "samplers": [
         0,
@@ -1381,22 +1329,67 @@
         10,
         11,
         12,
-        13,
-        15
+        13
+      ],
+      "instructions": {
+        "texld": 4,
+        "mul": 74,
+        "frc": 4,
+        "add": 84,
+        "mov": 40,
+        "max": 17,
+        "min": 9,
+        "if": 14,
+        "else": 7,
+        "texldl": 16,
+        "rcp": 24,
+        "cmp": 38,
+        "endif": 14,
+        "mad": 18,
+        "pow": 2,
+        "dp3": 3,
+        "rep": 1,
+        "exp": 4,
+        "abs": 1,
+        "endrep": 1,
+        "rsq": 3,
+        "dp2add": 4
+      },
+      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "source_sha256": "a5f2795f39d96cc267903be5ffcd2d7ae1f4ceaa2f010ea80ac2c591dc11afdd"
+    },
+    "WorldPrelitCompositeHdr": {
+      "target": "ps_3_0",
+      "bytes": 8264,
+      "sha256": "bd28d1e7829c9eedb60d6e28bbe5be8a1ee699769090cdc6787beca522e815a4",
+      "static_instruction_slots": 499,
+      "temporary_registers": 22,
+      "samplers": [
+        0,
+        1,
+        2,
+        3,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13
       ],
       "instructions": {
         "texld": 2,
-        "mul": 83,
+        "mul": 87,
         "frc": 4,
-        "add": 91,
-        "mov": 42,
+        "add": 94,
+        "mov": 41,
         "max": 21,
         "min": 8,
         "if": 15,
         "else": 8,
         "texldl": 18,
-        "rcp": 23,
-        "cmp": 43,
+        "rcp": 24,
+        "cmp": 44,
         "endif": 15,
         "mad": 16,
         "pow": 2,
@@ -1410,7 +1403,7 @@
         "dp2add": 4
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "31a259cf9799b0e0d9aea71abf953868b1eda0d338cfc9d4ba8b8fdd1a1d9cbe"
+      "source_sha256": "a5f2795f39d96cc267903be5ffcd2d7ae1f4ceaa2f010ea80ac2c591dc11afdd"
     },
     "MaterialAudit": {
       "target": "ps_3_0",

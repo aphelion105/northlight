@@ -1972,8 +1972,9 @@ private:
         return world&&nativeLocalDomain&&enabled&&!applied&&!failed&&projectionValid&&!debugMode&&!worldDebug?world->nativeLocalDraw(frame,worldDepth,native,prepared,autoBump?autoBump->nativePOM():nullptr,source,autoBump?autoBump->nativeDisplacement():nullptr,effectCoverage.nativePixel()):native();
     }
     template<class Draw> void captureModelNormals(IDirect3DVertexShader9* vs,Draw draw,bool userMemory,const NorthlightAutoDisplacement::Args& geometry,const NorthlightAutoDisplacement::CaptureSource* source=nullptr){
+        if(!modelNormals||!modelNormalsNeeded||!enabled||applied||failed)return;
         const auto found=vsHashes.find(vs);
-        if(modelNormals&&enabled&&!applied&&!failed&&found!=vsHashes.end()&&m2ShaderFamily(found->second)==3)
+        if(found!=vsHashes.end()&&m2ShaderFamily(found->second)==3)
             modelNormals->capture(vs,draw,userMemory,&geometry.draw,geometry.indices,geometry.format,geometry.vertices,geometry.stride,source?&source->mesh:nullptr,source?source->declaration:nullptr,source?&source->pose:nullptr);
     }
     template<class Draw> HRESULT terrainShadowDraw(bool claimed,Draw draw){
@@ -2117,11 +2118,12 @@ private:
     // rise, never inside a frame: at the end of finishFrameImpl (after F9/F10/F12, setEffects and the
     // retry's failed=false; clearFrame runs before that retry, so it is not the place), in Reset
     // (failed=false) and at device creation. Off: every gate open, the 0.3.184 per-draw work.
-    NorthlightDrawGates::Frame drawGates;bool frameDrawGates=true;bool contactAO=true;
+    NorthlightDrawGates::Frame drawGates;bool frameDrawGates=true;bool contactAO=true,modelNormalsNeeded=true;
     unsigned aoMethod=0,aoQuality=0;float aoStrength=.6f,aoRadius=2.f;
     LONGLONG cpuDrawHooks=0; /* RenderProfile sample frames: per-draw work outside prepareDraw (CPU profile drawHooks=) */
     LONGLONG* hookTimer=nullptr; /* &cpuDrawHooks on a timed RenderProfile sample frame (frame, gateUntimed: set before the latch) */
     void latchDrawGates(){
+        modelNormalsNeeded=world&&(worldDebug!=0||world->surfaceLightingEnabled()||world->needsDiagnosticFallback());
         NorthlightDrawGates::Inputs in;
         in.sky=celestialDiscs!=nullptr;in.blobs=shadowBlobs!=nullptr&&shadowBlobs->active();in.world=world!=nullptr;in.enabled=enabled;in.failed=failed;
         in.shadowsKey=effectKeys.settings.shadows;in.actorShadows=world&&world->actorShadowsEnabled();

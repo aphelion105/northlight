@@ -279,7 +279,7 @@ struct WorldScreenEffectsTest {
             if(resolved)assert(SUCCEEDED(d->StretchRect(out,nullptr,resolved,nullptr,D3DTEXF_NONE)));
             assert(SUCCEEDED(d->GetRenderTargetData(resolved?resolved:out,read)));D3DLOCKED_RECT lock{};assert(SUCCEEDED(read->LockRect(&lock,nullptr,D3DLOCK_READONLY)));
             std::vector<unsigned char> pixels(width*height*8);for(unsigned y=0;y<height;++y)std::memcpy(pixels.data()+y*width*8,static_cast<const char*>(lock.pBits)+y*lock.Pitch,width*8);assert(SUCCEEDED(read->UnlockRect()));
-            if(!mode)reference=std::move(pixels);else assert(pixels==reference);
+            if(!mode)reference=std::move(pixels);else{if(pixels!=reference)std::fprintf(stderr,"Screen-only equality failed in mode %u\n",mode);assert(pixels==reference);}
         }
         w.active.reset();w.clearMesh();w.releaseMeshPool();w.releaseGeometryTargets();w.quality=quality;w.effects=effects;w.temporalValid=w.fogHistoryValid=false;
         std::puts("WORLD_SCREEN_GPU_DEMAND_PASS weatherAOmaterials=0Uploads cpuSceneRetained=1 reactivation=1 exactPixels=1");

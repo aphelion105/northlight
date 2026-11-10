@@ -156,7 +156,7 @@ checks['world: copy skipped only with foldScene, Scene s0 = foldScene, s10 = AO 
     and 'IDirect3DTexture9* textures[]={foldScene?foldScene:color,' in render_fn
     and temporal.count('d->SetTexture(10,foldAO?foldAO:neutralAO);d->SetSamplerState(10,D3DSAMP_MINFILTER,D3DTEXF_LINEAR);d->SetSamplerState(10,D3DSAMP_MAGFILTER,D3DTEXF_LINEAR);') == 1
     and temporal.index('SetTexture(10,') < temporal.index('quad(w/2,h/2,false),"temporal light pass"')
-    and 'SetTexture(10' not in render_fn[render_fn.index('temporalIndex=prev;temporalValid=true;'):render_fn.index('"world composite"')])
+    and 'd->SetTexture(10,foldAO?foldAO:neutralAO);' in render_fn[render_fn.index('}else{\n            temporalValid=false;'):render_fn.index('"world composite"')])
 checks['world: composited cleared at entry, set right after the WorldComposite quad; neutral 1x1 (0,0,0,1) created and released'] = (
     'shadowsComposited=false;composited=false;lastRenderDebug=debug;' in render_fn
     and 'compositeOk=check(quad(w,h),"world composite");' in render_fn and render_fn.index('compositeOk=check(quad(w,h),"world composite");')<render_fn.index('if(!compositeOk)return false;') < render_fn.index('composited=true;') # 0.3.212: the quad inside the name mask's composite bind
@@ -183,7 +183,7 @@ checks['smoothRemoval: both Scene reads times the AO alpha; removalScale without
 wm = json.loads(fp.src('world-shader-build.json').read_text())['shaders']
 # 0.3.185: the removal smoothing (Scene, AO, baseline reads) moved to RemovalSmooth; TemporalLight keeps no s0/s10/s12 read and gains s9.
 checks[f"world manifest: WorldComposite {wm['WorldComposite']['static_instruction_slots']} <= 512 with s10; RemovalSmooth {wm['RemovalSmooth']['static_instruction_slots']} (s10 AO) <= 512; TemporalLight {wm['TemporalLight']['static_instruction_slots']} == 210"] = (
-    wm['WorldComposite']['static_instruction_slots'] <= 512 and wm['WorldComposite']['samplers'] == [0, 1, 2, 3, 7, 8, 9, 10, 11, 12, 13, 15]  # Native translucent-effect coverage uses s7; retain the exact sampler set and SM3 limit.
+    wm['WorldComposite']['static_instruction_slots'] <= 512 and wm['WorldComposite']['samplers'] == [0, 1, 2, 3, 7, 8, 9, 10, 11, 12, 13]  # Current scene depth replaces the lighting-distance dependency on s15.
     and wm['RemovalSmooth']['static_instruction_slots'] <= 512 and wm['RemovalSmooth']['samplers'] == [0, 1, 8, 10, 12, 14, 15]
     and wm['TemporalLight']['static_instruction_slots'] == 210 and  # Microsoft d3dcompiler_47 (Wine's builtin: 293)
     wm['TemporalLight']['samplers'] == [1, 8, 9, 14, 15])

@@ -1449,7 +1449,7 @@ float3 effectWeight(float2 uv,float3 source,bool hdrMode,out float coverageTrans
     return saturate(mad(remaining-source,rcp(max(source,.000001)),1))*coverageTransmission;
 }
 // SDR and HDR are separate compiled variants; validate the actual slot counts.
-float4 worldComposite(float2 uv,float2 pixel,bool surfaceLighting,bool hdrMode,sampler2D fogInput,out float3 effect,bool prelit=false,bool baseLighting=false) {
+float4 worldComposite(float2 uv,float2 pixel,bool surfaceLighting,bool hdrMode,sampler2D fogInput,out float3 effect,bool prelit=false,bool baseLighting=false,bool depthFromScene=true) {
     // Fetches before any flow control use texld (1 slot; tex2Dlod costs 3-4): Scene and Depth have one level and no mip filter, so texld reads what tex2Dlod(.,0) does.
     float4 original=tex2D(Scene,uv);
     effect=0;
@@ -1482,7 +1482,8 @@ float4 worldComposite(float2 uv,float2 pixel,bool surfaceLighting,bool hdrMode,s
             float row=floor(tap*.5);
             float2 bit=float2(tap-row*2,row);
             float2 q=(clamp(base+bit,0,dimensions-1)+.5)/dimensions,tapUV=depthUV(q);
-            float sampleZ=tex2Dlod(CurrentDistance,float4(q,0,0)).r;
+            // Same canonical depth expression as WorldNormals/TemporalLight; AO needs no lighting history.
+            float sampleZ=depthFromScene?viewDistance(normalizedDepth(tapUV)):tex2Dlod(CurrentDistance,float4(q,0,0)).r;
             float2 blend=lerp(1-fraction,fraction,bit);
             if(relight){
             float delta=abs(sampleZ-center);
@@ -1677,7 +1678,9 @@ float4 MaterialCompositeHdr(float2 uv:TEXCOORD0):COLOR0 {return materialComposit
 // s4 carries fog while s9 carries material height. Keep the intermediate color
 // in registers instead of a full-resolution FP16 store/read between passes.
 float4 WorldMaterialCompositeHdr(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {
-    float3 effect;float4 color=worldComposite(uv,pixel,true,true,MaterialFog,effect);
+    // Material detail already requires the lighting distance target. Retain its
+    // read here to keep this combined SM3 entry below its device slot limit.
+    float3 effect;float4 color=worldComposite(uv,pixel,true,true,MaterialFog,effect,false,false,false);
     return materialComposite(uv,true,color,effect);
 }
 
