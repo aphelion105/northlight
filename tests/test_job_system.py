@@ -32,14 +32,14 @@ check('lazy start on the renderer thread during bounded mesh staging; jobs still
       and 'if(geometryWanted&&screenResourcesReady&&pendingMesh&&!replayJobsTried_&&streamBudget.available())jobsStart();' in render
       and render.index('jobs=jobsStart();')>render.index('bucket(NorthlightEffectsBuckets::Upload);'))
 check('ReplayJobs=0 or no worker: nothing kicked','bool jobsOn()const{return quality.replayJobs!=0&&replayJobs_.started();}' in w
-      and w.count('replayJobs_.kick(')==4 and all('if(jobs)replayJobs_.kick(' in l or 'job.kicked=true;replayJobs_.kick(' in l or 'if(spellAsync)replayJobs_.kick(' in l for l in w.splitlines() if 'replayJobs_.kick(' in l)
-      and 'const bool spellAsync=jobs&&spellUpdate.environmentKnown&&' in render
+      and w.count('replayJobs_.kick(')==4 and all('if(jobs)replayJobs_.kick(' in l or 'job.kicked=true;replayJobs_.kick(' in l or 'if(spellAsync)replayJobs_.kick(' in l or 'if(terrainAsync)replayJobs_.kick(' in l for l in w.splitlines() if 'replayJobs_.kick(' in l)
+      and 'const bool spellAsync=spellUpdate.has_value();' in render and 'if(jobs&&(spellWanted||spellFogHold.out.active))' in render and 'if(!spellUpdate->environmentKnown)spellUpdate.reset();' in render
       and 'if(jobs&&actorShadows&&!replayCullsKicked)' in render)
 kicked=sorted(m.group(1) for m in re.finditer(r'replayJobs_\.kick\([\w.]+,(\w+)\)',w))
 check('four jobs: atmosphere, terrain candidates, replay cull, spell fog',kicked==['atmosphereJob','job','spellJob','terrainJob'],' '.join(kicked))
 check('each body inline at its old place with ReplayJobs=0, joined there (or at the first reader) with 1',
       'if(jobs)replayJobs_.wait(atmosphereDone);else atmosphereWork(atmosphere,nearZ,w,h,debug);' in render
-      and 'if(!jobs)terrainJob();' in render and render.index('if(!jobs)terrainJob();')<render.index('bucket(NorthlightEffectsBuckets::TerrainSelection);')
+      and 'if(!terrainAsync)terrainJob();' in render and render.index('if(!terrainAsync)terrainJob();')<render.index('bucket(NorthlightEffectsBuckets::TerrainSelection);')
       and render.index('if(jobs)replayJobs_.wait(terrainDone);')<render.index('if(!terrainCandidates.forEach(')
       and 'if(jobs&&actorShadows&&!replayCullsKicked)replayCullKickOwn(slot);' in render
       and 'if(!replayBoundsWorker.finished()){++replayCullEarlySkipped;return;}' in w # 0.3.217: the early kick only when the bounds job is finished (no blocking join)
@@ -62,7 +62,7 @@ for name in ('void atmosphereWork(AtmosphereFrame& a,float nearZ,UINT w,UINT h,i
     start=w.index(name);body=re.sub(r'/\*.*?\*/','',re.sub(r'//[^\n]*','',w[start:w.index('\n    }\n',start)]),flags=re.S)
     check(f'no device call or log in {name.split("(")[0].split()[-1]}','d->' not in body and 'check(' not in body and 'ensureCloud' not in body and 'logf(' not in body and 'Lock' not in body)
 check('every kicked job is joined before render() returns (guards)',w.count('struct JobJoin')==1 and render.count('JobJoin ')==2
-      and '~SpellJoin(){finish();}' in render and 'jobs.wait(counter);update.publish(hold);published=true;' in render
+      and '~SpellJoin(){finish();}' in render and 'if(update){jobs.wait(counter);update->publish(hold);}published=true;' in render
       and render.index('spellJoin.finish();')<render.index('spellFogHold.out.revision')
       and 'struct CullSettle {WorldRenderer& r;~CullSettle(){r.replayCullSettle();}} cullSettle{*this};' in render)
 jl=r.index('logf("JOBS frame=%u jobs=%u jobMs=%.3f joinWaitMs=%.3f replayMs=%.3f earlyCullKicks')

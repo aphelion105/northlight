@@ -42,10 +42,12 @@ for entry,target in ENTRIES:
         except AssertionError:pass
         else:raise AssertionError('corrupt bytecode/metadata was accepted: '+entry)
 world=fp.src('world_renderer.h').read_text()
-assert 'fogCaps.MaxPixelShader30InstructionSlots>=std::max(kWorldFogActorShaderSlots,kFogCloudsActorShaderSlots)' in world
-actor=world[world.index('    void actorShaderResources('):world.index('    bool createResources(')]
+for name in ['world_screen_resources.inl','world_geometry_resources.inl']:
+    world=world.replace('#include "'+name+'"',fp.src(name).read_text())
+assert 'caps.MaxPixelShader30InstructionSlots>=std::max(kWorldFogActorShaderSlots,kFogCloudsActorShaderSlots)' in world
+actor=world[world.index('    void actorShaderResources('):world.index('bool createResources(')]
 assert 'caps.MaxPixelShader30InstructionSlots>=std::max(kWorldFogActorTiledShaderSlots,kFogCloudsActorTiledShaderSlots)' in actor
-assert 'actorShaderResources(fogCaps);' in world and 'd->GetDeviceCaps(&caps);actorShaderResources(caps);' in world
+assert world.count('d->GetDeviceCaps(&caps);actorShaderResources(caps);')==2
 moon=world[world.index('    IDirect3DPixelShader9* moonFloorShader('):world.index('    bool ensureMoonFloor(')]
 assert 'caps.MaxPixelShader30InstructionSlots<slots[index]||caps.PS20Caps.NumTemps<temps[index]' in moon
 assert all(f'k{entry}ShaderSlots' in moon for entry,_ in ENTRIES if entry.startswith('MoonFloorFog'))

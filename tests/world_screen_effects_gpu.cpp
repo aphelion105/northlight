@@ -343,10 +343,11 @@ struct WorldScreenEffectsTest {
         i.surface(w.shadowDepth,ShadowMaps);i.surface(w.shadowCacheDepth,ShadowMaps);for(auto* t:w.probe)i.texture(t,ProbeTextures);i.texture(w.probePrev,ProbeTextures);
         assert(i.complete());return i.groups[ShadowMaps]+i.groups[ProbeTextures];
     }
-    static void fakeScene(WorldRenderer& w,IDirect3DVertexBuffer9* vb,IDirect3DIndexBuffer9* ib){
+    static uint64_t probeBytes(const WorldRenderer& w){NorthlightResourceMemory::Inventory i;for(auto* t:w.probe)i.texture(t,NorthlightResourceMemory::ProbeTextures);i.texture(w.probePrev,NorthlightResourceMemory::ProbeTextures);assert(i.complete());return i.groups[NorthlightResourceMemory::ProbeTextures];}
+    static void fakeScene(WorldRenderer& w,IDirect3DVertexBuffer9* vb,IDirect3DIndexBuffer9* ib,bool shadows=true){
         w.active=std::make_shared<WorldRenderer::Snapshot>();w.active->map=w.lastRequest.map;w.active->bvh=std::make_shared<NorthlightGI::BVH>();
         w.active->serial=1;w.active->atlas.resize(NorthlightGI::probeLayout().atlasSize());auto& entry=w.active->atlas[0];entry.occupied=true;entry.probe.valid=true;entry.probe.sh[0]={.3f,.4f,.5f};
-        w.uploaded=w.active->bvh;w.uploadedMap=w.active->map;w.vertices=vb;w.indices=ib;w.effects.shadows=w.effects.gi=false;
+        w.uploaded=w.active->bvh;w.uploadedMap=w.active->map;w.vertices=vb;w.indices=ib;w.effects.shadows=shadows;w.effects.gi=false;
     }
     static void retryScene(WorldRenderer& w){w.geometryTargetsRetryAt-=1000;}
     static bool sceneDrawn(const WorldRenderer& w){return w.fogGeometryReady;}
@@ -593,11 +594,12 @@ int main(int argc,char** argv){
         WorldScreenEffectsTest::retryScene(*world);meter.failSceneAt=0;
         meter.fogWeight=-1;
         assert(renderChecked(*world,d,out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao));
-        const auto sceneBytes=WorldScreenEffectsTest::sceneBytes(*world);assert(sceneBytes>0&&world->ready()&&WorldScreenEffectsTest::sceneDrawn(*world)&&meter.fogWeight==0&&WorldScreenEffectsTest::screenFog(*world)==screenFog);
+        auto sceneBytes=WorldScreenEffectsTest::sceneBytes(*world);assert(sceneBytes>0&&world->ready()&&WorldScreenEffectsTest::sceneDrawn(*world)&&meter.fogWeight==0&&WorldScreenEffectsTest::screenFog(*world)==screenFog);
         const auto creates=meter.sceneCreates;assert(renderChecked(*world,d,out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao));assert(meter.sceneCreates==creates);
         // A dormant GI consumer keeps its CPU atlas; upload on reactivation.
         WorldScreenEffectsTest::gi(*world,true);
         assert(renderChecked(*world,d,out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao));
+        sceneBytes=WorldScreenEffectsTest::sceneBytes(*world);
         const auto probeBefore=WorldScreenEffectsTest::probeImage(*world);
         std::vector<unsigned short> nightImages[2];
         for(unsigned night=0;night<2;++night){
@@ -612,15 +614,16 @@ int main(int argc,char** argv){
         for(unsigned i=0;i<nightImages[1].size();++i){const float value=screenHalf(nightImages[1][i]);assert(std::isfinite(value));nightDelta=std::max(nightDelta,std::abs(value-screenHalf(nightImages[0][i])));nightDigest=(nightDigest^nightImages[1][i])*1099511628211ull;}
         assert(nightDelta>.001f);std::printf("WORLD_ZERO_GI_NIGHT_PASS delta=%g digest=%llu msaa=%u\n",nightDelta,(unsigned long long)nightDigest,msaa);
         WorldScreenEffectsTest::restoreGINight(*world);
+        const auto probeBytes=WorldScreenEffectsTest::probeBytes(*world);assert(probeBytes>0&&probeBytes<sceneBytes);
         WorldScreenEffectsTest::pressure(*world,true);world->endFrame();assert(WorldScreenEffectsTest::sceneBytes(*world)==sceneBytes); // Active BVH still owns these targets.
         WorldScreenEffectsTest::expireFakeScene(*world);world->endFrame();WorldScreenEffectsTest::noSceneTargets(*world);WorldScreenEffectsTest::probeRetired(*world);
         assert(WorldScreenEffectsTest::sceneBytes(*world)==0&&WorldScreenEffectsTest::screenFog(*world)==screenFog);
         WorldScreenEffectsTest::fixtureContext(*world);
         assert(renderChecked(*world,d,out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao));
-        WorldScreenEffectsTest::pressure(*world,false);WorldScreenEffectsTest::fakeScene(*world,vb,ib);
+        WorldScreenEffectsTest::pressure(*world,false);WorldScreenEffectsTest::fakeScene(*world,vb,ib,false);
         WorldScreenEffectsTest::gi(*world,true);
         assert(renderChecked(*world,d,out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao));
-        assert(WorldScreenEffectsTest::sceneBytes(*world)==sceneBytes&&WorldScreenEffectsTest::screenFog(*world)==screenFog&&WorldScreenEffectsTest::probeImage(*world)==probeBefore);
+        assert(WorldScreenEffectsTest::sceneBytes(*world)==probeBytes&&WorldScreenEffectsTest::screenFog(*world)==screenFog&&WorldScreenEffectsTest::probeImage(*world)==probeBefore);
 #ifdef NORTHLIGHT_GI_MERGE_TEST
         for(unsigned mode=0;mode<5;++mode){
             WorldScreenEffectsTest::giMergeControl(*world,mode);meter.refuseGI=mode==1;meter.giShader=nullptr;meter.giBound=false;

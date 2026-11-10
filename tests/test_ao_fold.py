@@ -160,8 +160,8 @@ checks['world: copy skipped only with foldScene, Scene s0 = foldScene, s10 = AO 
 checks['world: composited cleared at entry, set right after the WorldComposite quad; neutral 1x1 (0,0,0,1) created and released'] = (
     'shadowsComposited=false;composited=false;lastRenderDebug=debug;' in render_fn
     and 'compositeOk=check(quad(w,h),"world composite");' in render_fn and render_fn.index('compositeOk=check(quad(w,h),"world composite");')<render_fn.index('if(!compositeOk)return false;') < render_fn.index('composited=true;') # 0.3.212: the quad inside the name mask's composite bind
-    and 'CreateTexture(1,1,1,0,D3DFMT_A8R8G8B8,D3DPOOL_MANAGED,&neutralAO,nullptr)' in wr
-    and '*static_cast<DWORD*>(lock.pBits)=0xff000000u;' in wr and 'drop(neutralAO);' in wr)
+    and 'CreateTexture(1,1,1,0,D3DFMT_A8R8G8B8,D3DPOOL_MANAGED,&neutralAO,nullptr)' in fp.src('world_screen_resources.inl').read_text()
+    and '*static_cast<DWORD*>(lock.pBits)=0xff000000u;' in fp.src('world_screen_resources.inl').read_text() and 'drop(neutralAO);' in wr)
 checks['diagnostic capture: the folded scene dump is labelled pre-AO'] = 'foldScene?"pre-AO (folded AO/bloom)":"post-AO composite"' in wr
 
 # 5. shaders: WorldComposite folds, smoothRemoval reads the AO, removalScale has no floor

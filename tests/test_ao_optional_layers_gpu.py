@@ -23,13 +23,14 @@ def run(label,command,cwd=ROOT):
  r.check_returncode();print('PASS',label,flush=True);return r.stdout
 try:
  overlay=out/'reference';overlay.mkdir(exist_ok=True)
- for name in ['world_renderer.h','world_compiled_shaders.h']:
+ for name in ['world_renderer.h','world_shadow_experiment.inl','world_compiled_shaders.h']:
   relative=fp.src(name).relative_to(ROOT).as_posix();raw=subprocess.check_output(['git','show',a.reference+':'+relative])
   if name=='world_renderer.h':
    # Compatibility accessor only: the frozen render/capture bodies are untouched.
    text=raw.decode('utf-8');marker='    bool effectsEnabled()const'
    assert text.count(marker)==1
-   text=text.replace(marker,'    bool surfaceLightingEnabled()const{return effects.gi||effects.shadows||effects.fog||(quality.localLights&&quality.localLightLimit)||quality.autoBump;}\n'+marker)
+   if 'bool surfaceLightingEnabled(' not in text:
+    text=text.replace(marker,'    bool surfaceLightingEnabled()const{return effects.gi||effects.shadows||effects.fog||(quality.localLights&&quality.localLightLimit)||quality.autoBump;}\n'+marker)
    raw=text.encode('utf-8')
   (overlay/name).write_bytes(raw)
  for mode in ['current','reference']:

@@ -19,6 +19,18 @@ struct PipelineOffTest {
         return 4;
     }
     static void policy(Device& d){
+        std::printf("REPLAY_LAYOUT bytes=%zu ownedDeclarationBytes=%zu\n",sizeof(WorldRenderer::Replay),sizeof(d.world->replays[0]->elements));
+#ifndef NORTHLIGHT_OPTIONAL_LAYER_REFERENCE
+        for(unsigned bits=0;bits<512;++bits){
+            NorthlightQuality::Settings q;q.localLights=bool(bits&8);q.localLightLimit=8;q.giStrength=bool(bits&256);q.contactAO=bool(bits&32);q.weather=bool(bits&64);
+            NorthlightEffectSwitches::Settings e{bool(bits&1),bool(bits&2),bool(bits&4)};
+            const bool materials=bits&16,diagnostic=bits&128;auto p=NorthlightFrameRequirements::make(q,e,materials,diagnostic);
+            assert(p.modelNormals==bool((bits&2)||(bits&4)||(bits&8)||materials||diagnostic||((bits&1)&&(bits&256))));
+            assert(p.lighting==p.modelNormals&&p.geometry==bool(bits&15));
+            assert(bool(p.screenGroups()&128u)==bool((bits&4)&&(bits&8)));
+            assert(bool(p.screenGroups()&256u)==bool((bits&4)&&(bits&2)));
+        }
+#endif
         auto& w=*d.world;w.quality.effects=w.quality.contactAO=1;
         w.quality.gi=w.quality.worldShadows=w.quality.worldFog=w.quality.localLights=w.quality.autoBump=w.quality.weather=0;
         for(unsigned bit=0;bit<7;++bit){
@@ -48,6 +60,35 @@ struct PipelineOffTest {
         assert(SUCCEEDED(d->EndScene())&&w.composited&&!w.failed);
     }
     static void checks(WorldRenderer& w,LayerMeter& meter,IDirect3DSurface9* out,IDirect3DSurface9* read,IDirect3DTexture9* depth,IDirect3DTexture9* scene,IDirect3DTexture9* ao,IDirect3DTexture9* water,unsigned W,unsigned H){
+#ifndef NORTHLIGHT_OPTIONAL_LAYER_REFERENCE
+        w.releaseGPU(true);configure(w,0);render(w,meter.real,out,depth,scene,ao,nullptr,W,H,false);
+        assert(w.screenGroups==1&&w.finalPS&&!w.normalBuffer&&!w.light&&!w.baselineLight&&!w.fog&&!w.fogBlurred&&!w.fogHistory);
+        for(unsigned i=0;i<2;++i)assert(!w.temporalLight[i]&&!w.temporalDepth[i]);
+        auto* composite=w.finalPS;
+        {
+            WorldRenderer::Replay packet;WorldRenderer::CaptureShader metadata;
+            metadata.program=std::make_shared<NorthlightActorDeformation::Program>();
+            packet.decl=w.shadowDecl;packet.decl->AddRef();w.prepareFill(packet,metadata);
+            assert(packet.declared&&packet.declCopy&&packet.elements.capacity()==0);
+            auto arena=std::move(w.prepareDecls);w.prepareFill(packet,metadata);
+            assert(packet.declared&&!packet.declCopy&&packet.declarationCount()>0);
+            const auto count=packet.declarationCount();const D3DVERTEXELEMENT9* elements=nullptr;UINT n=0;
+            assert(w.declarationCache.get(packet.decl,elements,n)&&n==count&&!std::memcmp(packet.elements.data(),elements,size_t(n)*sizeof(*elements)));
+            w.prepareDecls=std::move(arena);w.prepareFill(packet,metadata);
+            assert(packet.declared&&packet.declCopy&&packet.elements.empty()&&packet.declarationCount()==count);
+        }
+        configure(w,2);render(w,meter.real,out,depth,scene,ao,nullptr,W,H,false);
+        auto* lighting=w.light;assert(lighting&&!w.fog);
+        configure(w,3);render(w,meter.real,out,depth,scene,ao,nullptr,W,H,false);
+        assert(w.fog&&w.light==lighting&&w.finalPS==composite);
+        configure(w,0);render(w,meter.real,out,depth,scene,ao,nullptr,W,H,false);
+        assert(w.light==lighting&&w.finalPS==composite);
+        configure(w,4);render(w,meter.real,out,depth,scene,ao,nullptr,W,H,false);
+        assert(!w.localFogPS);
+        configure(w,3);w.quality.localLights=1;render(w,meter.real,out,depth,scene,ao,nullptr,W,H,false);
+        assert(w.localFogPS&&w.localFogCombinePS);
+        std::puts("OPTIONAL_RESOURCES_PASS coldAoTargets=0 warmReuse=1 shadowsThenFog=1");
+#endif
         for(bool hdr:{false,true})for(unsigned mode:{0u,1u,0u,2u,0u,3u,0u,4u,0u,5u,0u,6u,0u}){
             configure(w,mode);std::fill(std::begin(meter.passes),std::end(meter.passes),0);
             render(w,meter.real,out,depth,scene,ao,nullptr,W,H,hdr);

@@ -73,6 +73,11 @@ int main(){WorldRenderer owner;ModelRef shader,texture;Device device;WorldRender
  owner.freeReplays.clear();owner.poolLimit=sizeof(WorldRenderer::Replay)+4096;
  {auto p=owner.acquireReplay();p->snapshot.streams[0].bytes.reserve(8192);owner.recycleReplay(p.release());}
  assert(owner.freeReplays.size()==1&&owner.pooledSnapshotBytes==0);
+ owner.freeReplays.clear();owner.poolLimit=sizeof(WorldRenderer::Replay)+4096;
+ {auto p=owner.acquireReplay();p->elements.reserve(65);const auto bytes=p->retainedBytes();assert(bytes==65*sizeof(D3DVERTEXELEMENT9));owner.recycleReplay(p.release());assert(owner.pooledSnapshotBytes==bytes);}
+ {auto p=owner.acquireReplay();assert(owner.pooledSnapshotBytes==0&&p->elements.capacity()>=65);owner.recycleReplay(p.release());}
+ owner.freeReplays.clear();owner.pooledSnapshotBytes=0;owner.poolLimit=sizeof(WorldRenderer::Replay)+1;
+ {auto p=owner.acquireReplay();p->elements.reserve(65);owner.recycleReplay(p.release());}assert(owner.freeReplays.empty()&&owner.pooledSnapshotBytes==0);
  std::puts("Production replay pool: 10000 rejected draws, COM refs balanced, ownership transfer, record+snapshot cap, lowered cap and empty-record bound passed");
 }
 '''
