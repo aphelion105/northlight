@@ -1413,13 +1413,13 @@ private:
         IDirect3DSurface9* nameDepth=nameMask.armed()&&nameMask.hasMarks()&&maskStencil?worldDepth:nullptr;
         auto* weatherTarget=hdrSceneReady?hdrPresentBack:saved.targets[0];
         if(diagnostic)captureWeatherDiagnostics(&context,weatherTarget,nameDepth,nullptr);
-        if(!sand){surface->precipitation(weatherTarget,depthTex,width,height,context,world->qualityPreset(),nameDepth);gpuProfile->mark("Precipitation");}
+        if(!sand){surface->precipitation(weatherTarget,depthTex,width,height,context,world->qualityPreset(),nameDepth,&saved);gpuProfile->mark("Precipitation");}
         const unsigned lensOn=snow?q.snowLens:q.rainLens,strength=snow?q.snowLensStrength:q.rainLensStrength;
         const float frost=snow&&q.snowFrost?context.c[3][0]*float(q.snowFrostStrength)*.01f:0;
         const bool cameraWanted=sand?(q.sandLens&&q.sandLensStrength):((lensOn&&strength)||frost>0);
         if(cameraWanted&&world->supplementalWeatherOutdoors()){
-            if(sand)surface->sandLens(weatherTarget,width,height,surfaceTime,context.c[3][0]*float(q.sandLensStrength)*.01f,nameDepth,weather.intensity,float(q.sandLensSize)*.01f);
-            else if(scene&&sceneSurface)surface->lens(weatherTarget,hdrSceneReady?hdrFrame.texture():scene,hdrSceneReady?hdrFrame.surface():sceneSurface,width,height,snow,surfaceTime,lensOn?context.c[3][0]*float(strength)*.01f:0,nameDepth,weather.intensity,snow?world->weatherLensHeat():0.f,float(snow?q.snowLensSize:q.rainLensSize)*.01f,snow||q.rainRivulets!=0,frost);
+            if(sand)surface->sandLens(weatherTarget,width,height,surfaceTime,context.c[3][0]*float(q.sandLensStrength)*.01f,nameDepth,weather.intensity,float(q.sandLensSize)*.01f,&saved);
+            else if(scene&&sceneSurface)surface->lens(weatherTarget,hdrSceneReady?hdrFrame.texture():scene,hdrSceneReady?hdrFrame.surface():sceneSurface,width,height,snow,surfaceTime,lensOn?context.c[3][0]*float(strength)*.01f:0,nameDepth,weather.intensity,snow?world->weatherLensHeat():0.f,float(snow?q.snowLensSize:q.rainLensSize)*.01f,snow||q.rainRivulets!=0,frost,&saved);
             gpuProfile->mark("WeatherLens");
         }
     }

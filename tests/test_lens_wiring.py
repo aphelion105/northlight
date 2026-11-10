@@ -15,7 +15,7 @@ hotkey=r[r.index('        if(k12&&!key12){'):r.index('        key12=k12;')]
 assert 'if(accepted)NorthlightDiagnosticCapture::request(NorthlightDiagnosticCapture::Weather);' in hotkey
 assert 'snow?q.snowLens:q.rainLens' in surface and 'snow?q.snowLensStrength:q.rainLensStrength' in surface
 assert 'if(cameraWanted&&world->supplementalWeatherOutdoors())' in surface and 'nameDepth' in surface
-assert 'nameDepth,weather.intensity,snow?world->weatherLensHeat():0.f,float(snow?q.snowLensSize:q.rainLensSize)*.01f,snow||q.rainRivulets!=0,frost)' in surface
+assert 'nameDepth,weather.intensity,snow?world->weatherLensHeat():0.f,float(snow?q.snowLensSize:q.rainLensSize)*.01f,snow||q.rainRivulets!=0,frost,&saved)' in surface
 assert 'surface->sandLens(' in surface and 'if(!sand){surface->precipitation(' in surface
 assert 'surface->setMotion(context,unsigned(weather.kind),q,surfaceTime)' in surface
 assert 'snow&&q.snowFrost' in surface and 'q.snowFrostStrength' in surface

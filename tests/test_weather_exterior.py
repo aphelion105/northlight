@@ -39,10 +39,10 @@ struct World {
 struct Surface {
     unsigned particles=0,lenses=0,sand=0;bool snow=false,rivulets=false;float particleAmount=0,particleSize=0,lensSize=0,frost=0,lensVisibility=0;
     void setMotion(const NorthlightSurfaceFrame&,unsigned,const NorthlightQuality::Settings&,double){}
-    void precipitation(IDirect3DSurface9*,Texture*,unsigned,unsigned,const NorthlightSurfaceFrame& c,NorthlightQuality::Preset,IDirect3DSurface9*){
-        ++particles;particleAmount=c.c[3][0];snow=c.c[3][1]>.5f;particleSize=c.c[3][2];}
-    void lens(IDirect3DSurface9*,Texture*,IDirect3DSurface9*,unsigned,unsigned,bool,double,float visibility,IDirect3DSurface9*,float,float,float size,bool streams,float edge){++lenses;lensSize=size;rivulets=streams;frost=edge;lensVisibility=visibility;}
-    void sandLens(IDirect3DSurface9*,unsigned,unsigned,double,float visibility,IDirect3DSurface9*,float,float){assert(visibility>0);++sand;}
+    void precipitation(IDirect3DSurface9*,Texture*,unsigned,unsigned,const NorthlightSurfaceFrame& c,NorthlightQuality::Preset,IDirect3DSurface9*,const SavedState* saved){
+        assert(saved&&saved->ok);++particles;particleAmount=c.c[3][0];snow=c.c[3][1]>.5f;particleSize=c.c[3][2];}
+    void lens(IDirect3DSurface9*,Texture*,IDirect3DSurface9*,unsigned,unsigned,bool,double,float visibility,IDirect3DSurface9*,float,float,float size,bool streams,float edge,const SavedState* saved){assert(saved&&saved->ok);++lenses;lensSize=size;rivulets=streams;frost=edge;lensVisibility=visibility;}
+    void sandLens(IDirect3DSurface9*,unsigned,unsigned,double,float visibility,IDirect3DSurface9*,float,float,const SavedState* saved){assert(saved&&saved->ok&&visibility>0);++sand;}
 };
 struct Host {
     World instance;World* world=&instance;Surface draw;Surface* surface=&draw;

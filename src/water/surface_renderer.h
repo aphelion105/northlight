@@ -6,6 +6,7 @@
 #include "weather_sand_lens.h"
 #include "weather_texture_data.h"
 #include <cstring>
+#include <optional>
 
 // Included after SavedState, drop, logf and NameMaskCompositeBind.
 class NorthlightSurfaceRenderer {
@@ -19,6 +20,11 @@ class NorthlightSurfaceRenderer {
     NorthlightWeatherLens::State lensState;
     std::array<NorthlightWeatherLens::Vertex,NorthlightWeatherLens::MaxVertices> lensVertices{};
     bool check(HRESULT hr,const char* stage){if(SUCCEEDED(hr))return true;if(!failed)logf("SURFACE disabled: %s hr=0x%08lx (native weather retained)",stage,(unsigned long)hr);failed=true;return false;}
+    // The caller restores a whole batch; standalone passes own their snapshot.
+    std::optional<SavedState> saveState(const SavedState* enclosing){
+        if(enclosing&&enclosing->ok&&enclosing->d==d)return std::nullopt;
+        return std::optional<SavedState>(std::in_place,d,&stateBlocks);
+    }
     HRESULT quad(UINT w,UINT h){struct V{float x,y,z,w,u,v;} v[]={{-.5f,-.5f,0,1,0,0},{float(w)-.5f,-.5f,0,1,1,0},{-.5f,float(h)-.5f,0,1,0,1},{float(w)-.5f,float(h)-.5f,0,1,1,1}};D3DVIEWPORT9 vp={0,0,w,h,0,1};d->SetViewport(&vp);return d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,v,sizeof(V));}
     void state(){
         d->SetDepthStencilSurface(nullptr);for(unsigned i=1;i<4;++i)d->SetRenderTarget(i,nullptr);d->SetVertexShader(nullptr);d->SetFVF(D3DFVF_XYZRHW|D3DFVF_TEX1);d->SetStreamSourceFreq(0,1);
@@ -56,9 +62,9 @@ public:
     unsigned lensParticleCount()const{return lensState.count;}
     unsigned lensMergeCount()const{return lensState.merges;}
     float frostCoverage()const{return lensState.frost;}
-    void precipitation(IDirect3DSurface9* targetSurface,IDirect3DTexture9* finalDepth,UINT w,UINT h,const NorthlightSurfaceFrame& context,NorthlightQuality::Preset preset,IDirect3DSurface9* nameDepth){
+    void precipitation(IDirect3DSurface9* targetSurface,IDirect3DTexture9* finalDepth,UINT w,UINT h,const NorthlightSurfaceFrame& context,NorthlightQuality::Preset preset,IDirect3DSurface9* nameDepth,const SavedState* enclosingState=nullptr){
         if(failed||!finalDepth||context.c[3][0]<=0)return;const bool snow=context.c[3][1]>.5f;if(snow&&!ensureArt(1))return;
-        SavedState saved(d,&stateBlocks);if(!saved.ok)return;state();unsigned i=(preset==NorthlightQuality::Preset::Performance?2:0)+(snow?1:0);
+        auto saved=saveState(enclosingState);if(saved&&!saved->ok)return;state();unsigned i=(preset==NorthlightQuality::Preset::Performance?2:0)+(snow?1:0);
         weatherUsed=true;
         const DWORD* shaders[]={kRainQualityShader,kSnowQualityShader,kRainPerformanceShader,kSnowPerformanceShader};
         if(!weatherPS[i]&&!check(d->CreatePixelShader(shaders[i],&weatherPS[i]),"precipitation shader"))return;
@@ -66,7 +72,7 @@ public:
         if(snow)bindArt(1,2);
         NameMaskCompositeBind protect(d,nameDepth);check(quad(w,h),"supplemental precipitation");
     }
-    void lens(IDirect3DSurface9* target,IDirect3DTexture9* scene,IDirect3DSurface9* sceneSurface,UINT w,UINT h,bool snow,double time,float visibility,IDirect3DSurface9* nameDepth,float intensity=1.f,float heat=0.f,float size=1.f,bool rivulets=true,float frostVisibility=0.f){
+    void lens(IDirect3DSurface9* target,IDirect3DTexture9* scene,IDirect3DSurface9* sceneSurface,UINT w,UINT h,bool snow,double time,float visibility,IDirect3DSurface9* nameDepth,float intensity=1.f,float heat=0.f,float size=1.f,bool rivulets=true,float frostVisibility=0.f,const SavedState* enclosingState=nullptr){
         if(lensFailed||!target||!scene||!sceneSurface||target==sceneSurface||!w||!h||(!(visibility>0)&&!(frostVisibility>0)))return;
         lensState.advance(time,intensity,snow,heat,float(w)/float(h),size,rivulets,motion.flow);
         unsigned vertices=visibility>0?lensState.vertices(lensVertices.data(),h,rivulets):0;
@@ -74,7 +80,7 @@ public:
         bool snowParticles=snow||lensState.fadeCount>0;if(vertices&&!snowParticles)for(unsigned i=0;i<lensState.count;++i)snowParticles=snowParticles||lensState.drops[i].visualSnow>0;
         if(snowParticles&&vertices&&!ensureArt(1))vertices=0;if(frost>0&&!ensureArt(0))frost=0;
         if(!vertices&&!(frost>0))return;
-        SavedState saved(d,&stateBlocks);if(!saved.ok)return;state();
+        auto saved=saveState(enclosingState);if(saved&&!saved->ok)return;state();
         // The earlier world copy is no longer current after world and spell composition.
         // Reuse its texture, copying only on frames that actually draw lens optics.
         if(vertices&&!lensPS&&FAILED(d->CreatePixelShader(kWeatherLensParticleShader,&lensPS))){lensFailed=true;logf("SURFACE lens shader unavailable");return;}
@@ -96,12 +102,12 @@ public:
             if(FAILED(quad(w,h))){coatingFailed[0]=true;logf("SURFACE frost draw unavailable");}
         }
     }
-    void sandLens(IDirect3DSurface9* target,UINT w,UINT h,double time,float visibility,IDirect3DSurface9* nameDepth,float intensity=1.f,float size=1.f){
+    void sandLens(IDirect3DSurface9* target,UINT w,UINT h,double time,float visibility,IDirect3DSurface9* nameDepth,float intensity=1.f,float size=1.f,const SavedState* enclosingState=nullptr){
         if(coatingFailed[1]||!target||!w||!h||!(visibility>0))return;
         sandState.advance(time,intensity,float(w)/h,std::clamp(size,.25f,3.f),motion.flow);
         const unsigned vertices=sandState.vertices(lensVertices.data(),h);
         if(!ensureArt(2))return;
-        SavedState saved(d,&stateBlocks);if(!saved.ok)return;state();
+        auto saved=saveState(enclosingState);if(saved&&!saved->ok)return;state();
         if(!coatingPS[1]&&FAILED(d->CreatePixelShader(kSandLensShader,&coatingPS[1]))){coatingFailed[1]=true;logf("SURFACE sand shader unavailable");return;}
         if(FAILED(d->SetRenderTarget(0,target)))return;weatherUsed=true;
         const float lens[4]={2,visibility,float(w)/h,std::clamp(intensity,0.f,1.f)};
