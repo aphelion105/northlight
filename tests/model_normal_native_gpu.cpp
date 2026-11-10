@@ -82,6 +82,7 @@ int main(int argc,char** argv){
            SUCCEEDED(api->CheckDeviceMultiSampleType(0,D3DDEVTYPE_HAL,D3DFMT_D24S8,TRUE,D3DMULTISAMPLE_2_SAMPLES,nullptr))){
             ok(d->CreateRenderTarget(W,H,color.format,D3DMULTISAMPLE_2_SAMPLES,0,FALSE,&msColor,nullptr));ok(d->CreateDepthStencilSurface(W,H,D3DFMT_D24S8,D3DMULTISAMPLE_2_SAMPLES,0,FALSE,&msDepth,nullptr));}
         auto n=std::make_unique<NorthlightModelNormals>(d);n->setDeferredCapture(true);n->setRasterStateSource(&extension,[](void* e,const D3DRENDERSTATETYPE* keys,unsigned count,DWORD* values){return static_cast<ExtensionDevice*>(e)->knownRenderStates(keys,count,values);});
+        n->setEmptyTargetSource(&extension,[](void* e){return static_cast<ExtensionDevice*>(e)->emptyAuxiliaryTargets();});
         NorthlightGpuScene::NativeStore store;NorthlightGpuScene::NativeClient cache(store,NorthlightGpuScene::Consumer::Material);if(timing)n->setGeometryCache(&cache);
         IDirect3DVertexShader9* privateVS=nullptr;IDirect3DPixelShader9* privatePS=nullptr;unsigned pomControl=0;NorthlightDisplacementPatch::Binding displacementBinding;
         UINT vsBytes=0,psBytes=0;ok(source->GetFunction(nullptr,&vsBytes));ok(nativePS->GetFunction(nullptr,&psBytes));std::vector<std::uint32_t> vcode(vsBytes/4),pcode(psBytes/4),patched;

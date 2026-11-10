@@ -66,7 +66,7 @@ checks['renderer: slow frames join the existing effects GPU sample by exact rend
     'gpuTimer->sample(f.id)' in rc and 'gpuEffectsMs=%.3f gpuEffectsStatus=%s' in r
     and 'gpu.ms,NorthlightGpuFrameTimer::stateName(gpu.state)' in rc)
 checks['renderer: GPUBUDGET line on RenderProfile sample frames, level changes logged (first 32, then with Diagnostics)']=(
-    'if(sampled()&&NorthlightRenderThreadProbe::profiling())logf("GPUBUDGET ms=%.3f smoothed=%.3f budget=%.1f level=%u gpuWait=%.2f gpuBound=%d eventWait=%.2f"' in gb
+    'if(sampled()&&NorthlightRenderThreadProbe::profiling())logf("GPUBUDGET ms=%.3f smoothed=%.3f budget=%.1f level=%u gpuWait=%.2f gpuBound=%d eventWait=%.2f scope=deferred-captures-and-effects inSceneCaptureIncluded=0 cpuGpuAdditive=0"' in gb
     and 'if(gpuBudget.level!=before&&(gpuBudget.changes<=32||diagnostics()))' in gb and 'logf("GPUBUDGET level %u -> %u' in gb)
 
 # world: level gated, full level unchanged
@@ -116,7 +116,7 @@ checks['task 45 cpu: the effects span is always measured (two QPC reads, after t
     and 'gpuBudgetFrame();cpuBudgetFrame();' in fin and rc.count('cpuBudgetFrame();')==1)
 checks['task 45 cpu: level changes and the sample line are logged']=(
     'if(cpuBudget.level!=before&&(cpuBudget.changes<=32||diagnostics()))' in cb and 'logf("CPUBUDGET level %u -> %u smoothed=%.3f budget=%u radius=%u changes=%u"' in cb
-    and 'logf("CPUBUDGET ms=%.3f smoothed=%.3f budget=%.1f level=%u radius=%u gpuBound=%d replayWait=%.2f replayBound=%d"' in cb)
+    and 'logf("CPUBUDGET ms=%.3f smoothed=%.3f budget=%.1f level=%u radius=%u gpuBound=%d replayWait=%.2f replayBound=%d scope=deferred-submit inSceneCaptureIncluded=0"' in cb)
 checks['task 45 radius: one accessor (the setting at level 0); admission and selection read it, not quality.actorShadowRadius']=(
     'unsigned effectiveActorShadowRadius()const{return NorthlightGpuBudget::actorShadowRadius(quality.actorShadowRadius,cpuBudgetLevel);}' in wc
     and 'void setCpuBudgetLevel(unsigned level){cpuBudgetLevel=quality.actorShadowCpuMs?std::min(level,NorthlightGpuBudget::MaxLevel):0u;}' in wc

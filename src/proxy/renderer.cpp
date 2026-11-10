@@ -1477,12 +1477,14 @@ private:
         SavedState saved(ext,&stateBlocks);
         if (!saved.ok) return;
         IDirect3DTexture9* coverage=effectCoverage.texture(ext,saved.targets[0]);
+        // Include deferred material/model captures; in-scene MRT work is part
+        // of GameScene and cannot be attributed by this interval alone.
+        surfaceTimerOpen=world&&world->gpuBudgetMs()&&gpuTimer->begin(frame);
         if(autoBump)autoBump->finishCaptures();
         if(sceneSplit)gpuSceneProfile->mark("MaterialCapture");
         if(modelNormals)modelNormals->finishCaptures(true);
         if(sceneSplit){gpuSceneProfile->mark("ModelNormals");gpuSceneSplit=true;}
         // 0.3.200 (gpu budget): the frame timer brackets every effect pass (closed on every return path by the guard, after the profile's end).
-        surfaceTimerOpen=world&&world->gpuBudgetMs()&&gpuTimer->begin(frame);
         if(diagnostics())gpuProfile->beginFrame(frame,NorthlightRenderThreadProbe::sampleFrame(frame)); // otherwise no queries; mark/endFrame are no-ops
         effectsBuckets.mark(Bucket::Setup);
         // spellReplay closes profiling after both deferred spells and precipitation.
@@ -3368,6 +3370,7 @@ public:
         world->setCaptureRasterStateSource(static_cast<IDirect3DDevice9*>(ext),rasterSource);
         autoBump->setEmptyTargetSource(static_cast<IDirect3DDevice9*>(ext),[](void* context){return static_cast<ExtensionDevice*>(static_cast<IDirect3DDevice9*>(context))->emptyAuxiliaryTargets();});
         modelNormals->setRasterStateSource(static_cast<IDirect3DDevice9*>(ext),rasterSource);
+        modelNormals->setEmptyTargetSource(static_cast<IDirect3DDevice9*>(ext),[](void* context){return static_cast<ExtensionDevice*>(static_cast<IDirect3DDevice9*>(context))->emptyAuxiliaryTargets();});
         autoBump->setSamplerStateSource(static_cast<IDirect3DDevice9*>(ext),[](void* context,DWORD stage,unsigned mask,DWORD* out){return static_cast<ExtensionDevice*>(static_cast<IDirect3DDevice9*>(context))->knownSamplerStates(stage,mask,out);});
         modelNormals->setSamplerStateSource(static_cast<IDirect3DDevice9*>(ext),[](void* context,DWORD stage,unsigned mask,DWORD* out){return static_cast<ExtensionDevice*>(static_cast<IDirect3DDevice9*>(context))->knownSamplerStates(stage,mask,out);});
         world->setNativeSamplerStateSource(static_cast<IDirect3DDevice9*>(ext),[](void* context,DWORD stage,unsigned mask,DWORD* out){return static_cast<ExtensionDevice*>(static_cast<IDirect3DDevice9*>(context))->knownSamplerStates(stage,mask,out);});
@@ -3687,7 +3690,7 @@ public:
             if(gpuBudget.level!=before&&(gpuBudget.changes<=32||diagnostics()))
                 logf("GPUBUDGET level %u -> %u smoothed=%.3f budget=%u changes=%u",before,gpuBudget.level,double(gpuBudget.smoothed),budget,gpuBudget.changes);}
         if(limitGpuLatency&&sampled()&&NorthlightRenderThreadProbe::profiling()){logf("CSTREAM GPU latency waits=%llu waitMs=%.1f",(unsigned long long)latencyWaits,latencyWaitMs);latencyWaits=0;latencyWaitMs=0;}
-        if(sampled()&&NorthlightRenderThreadProbe::profiling())logf("GPUBUDGET ms=%.3f smoothed=%.3f budget=%.1f level=%u gpuWait=%.2f gpuBound=%d eventWait=%.2f",gpuBudgetLastMs,double(gpuBudget.smoothed),double(budget),gpuBudget.level,double(gpuBound.smoothed),boundKnown?int(gpuBound.bound()):-1,double(eventGpuMs));
+        if(sampled()&&NorthlightRenderThreadProbe::profiling())logf("GPUBUDGET ms=%.3f smoothed=%.3f budget=%.1f level=%u gpuWait=%.2f gpuBound=%d eventWait=%.2f scope=deferred-captures-and-effects inSceneCaptureIncluded=0 cpuGpuAdditive=0",gpuBudgetLastMs,double(gpuBudget.smoothed),double(budget),gpuBudget.level,double(gpuBound.smoothed),boundKnown?int(gpuBound.bound()):-1,double(eventGpuMs));
     }
     // task 45: ActorShadowCpuMs. The effects span of this frame (renderEffects from the applied check to its return: the world render incl. the actor shadow replay,
     // job joins and the effect passes' D3D calls; NOT the capture of the frame's draws, which is spread over per-draw hooks and only timed on sample frames) feeds a
@@ -3702,7 +3705,7 @@ public:
             const unsigned before=cpuBudget.level;world->setCpuBudgetLevel(cpuBudget.update(float(budget),float(ms),dt,cpuLimited));
             if(cpuBudget.level!=before&&(cpuBudget.changes<=32||diagnostics()))
                 logf("CPUBUDGET level %u -> %u smoothed=%.3f budget=%u radius=%u changes=%u",before,cpuBudget.level,double(cpuBudget.smoothed),budget,world->effectiveActorShadowRadius(),cpuBudget.changes);}
-        if(sampled()&&NorthlightRenderThreadProbe::profiling())logf("CPUBUDGET ms=%.3f smoothed=%.3f budget=%.1f level=%u radius=%u gpuBound=%d replayWait=%.2f replayBound=%d",cpuBudgetLastMs,double(cpuBudget.smoothed),double(budget),cpuBudget.level,world->effectiveActorShadowRadius(),boundKnown?int(gpuBound.bound()):-1,double(replayWait.smoothed),replayKnown?int(replayWait.bound()):-1);
+        if(sampled()&&NorthlightRenderThreadProbe::profiling())logf("CPUBUDGET ms=%.3f smoothed=%.3f budget=%.1f level=%u radius=%u gpuBound=%d replayWait=%.2f replayBound=%d scope=deferred-submit inSceneCaptureIncluded=0",cpuBudgetLastMs,double(cpuBudget.smoothed),double(budget),cpuBudget.level,world->effectiveActorShadowRadius(),boundKnown?int(gpuBound.bound()):-1,double(replayWait.smoothed),replayKnown?int(replayWait.bound()):-1);
     }
     void flushFrameIntervals(const char* reason,bool mode,const NorthlightEffectSwitches::Settings& effects){
         NorthlightFrameIntervals::Report r;const bool focused=intervalFocus;
@@ -3929,7 +3932,7 @@ public:
             if(gateFrame&&!gateUntimed&&hdr.active)logf("CPU HDR frame=%u admission=%.6fms boundary=%.6fms finish=%.6fms transferWithNativeDraw=%.6fms admissionCalls=%u transferCalls=%u finishIncludedInBoundary=1 transferIncludesNativeSubmission=1",
                 sampleFrame,std::max(0.0,double(cpuHdrAdmission-cpuHdrBoundary)*ms),cpuHdrBoundary*ms,cpuHdrFinish*ms,cpuHdrTransfer*ms,hdrAdmissionCalls,hdrTransferCalls);
             // 0.3.154: U frames have no per-draw timers; their numbers are on the DRAWGATE ab line.
-            if(!gateUntimed)logf("CPU profile frame=%u drawGate=%.3fms capture=%.3fms effects=%.3fms cleanup=%.3fms total=%.3fms enabled=%d gi=%u shadows=%u fog=%u captureSkipped=%u drawHooks=%.3fms frameDrawGates=%u",sampleFrame,drawTimed?std::max(0.0,double(cpuPrep-cpuCapture-cpuEffects)*ms):-1.0,drawTimed?cpuCapture*ms:-1.0,cpuEffects*ms,cleanup*ms,drawTimed?(cpuPrep+cleanup)*ms:-1.0,frameEnabled,unsigned(frameEffects.gi),unsigned(frameEffects.shadows),unsigned(frameEffects.fog),unsigned(world&&world->captureSkippedLastFrame()),
+            if(!gateUntimed)logf("CPU profile frame=%u drawGate=%.3fms capture=%.3fms effects=%.3fms cleanup=%.3fms total=%.3fms enabled=%d gi=%u shadows=%u fog=%u captureSkipped=%u drawHooks=%.3fms frameDrawGates=%u totalIncludesHooks=1 cpuGpuAdditive=0",sampleFrame,drawTimed?std::max(0.0,double(cpuPrep-cpuCapture-cpuEffects)*ms):-1.0,drawTimed?cpuCapture*ms:-1.0,cpuEffects*ms,cleanup*ms,drawTimed?(cpuPrep+cpuDrawHooks+cleanup)*ms:-1.0,frameEnabled,unsigned(frameEffects.gi),unsigned(frameEffects.shadows),unsigned(frameEffects.fog),unsigned(world&&world->captureSkippedLastFrame()),
                 NorthlightRenderThreadProbe::profiling()?cpuDrawHooks*ms:-1.0,unsigned(frameDrawGates)); /* 0.3.187: drawHooks -1 = not measured (RenderProfile=0) */
             // captureWorld+captureWater=capture. qpcNs: one QueryPerformanceCounter call,
             // so a profile can subtract timer overhead (2 calls per CpuScope).
@@ -4462,7 +4465,7 @@ static HMODULE backend() {
     if(artInputs.blocked){
         const bool russian=PRIMARYLANGID(GetUserDefaultUILanguage())==LANG_RUSSIAN;
         const auto text=NorthlightArtInputs::message(artInputs,russian);
-        MessageBoxW(nullptr,text.c_str(),russian?L"Northlight — нужна пересборка":L"Northlight — rebuild required",MB_OK|MB_ICONWARNING|MB_SETFOREGROUND);
+        MessageBoxW(nullptr,text.c_str(),russian?L"Northlight РІР‚вЂќ Р Р…РЎС“Р В¶Р Р…Р В° Р С—Р ВµРЎР‚Р ВµРЎРѓР В±Р С•РЎР‚Р С”Р В°":L"Northlight РІР‚вЂќ rebuild required",MB_OK|MB_ICONWARNING|MB_SETFOREGROUND);
         ExitProcess(ERROR_BAD_ENVIRONMENT);
     }
     // Install before loading the backend (and its worker threads), outside
@@ -4512,6 +4515,9 @@ static HMODULE backend() {
 #define NORTHLIGHT_BUILD_UTC "unrecorded"
 #endif
     logf("BUILD identity source=%s built=%s",NORTHLIGHT_SOURCE_ID,NORTHLIGHT_BUILD_UTC);
+#ifdef NORTHLIGHT_PROFILE_BUILD
+    logf("NORTHLIGHT PROFILING BUILD optimized=O2 symbols=1");
+#endif
     logf("MEMORY policy terrain=demand-full/address-space-half normalMiB=32 lowMiB=16");
     if(result.fallback&&module)logf("BACKEND SELF-LOAD REFUSED: the configured backend resolves to this proxy (or another Northlight build); fell back to the system d3d9 runtime. Fix northlight-renderer.ini Backend/BackendPath.");
     else if(result.fallback)logf("BACKEND SELF-LOAD REFUSED: the configured backend resolves to this proxy (or another Northlight build) and the system d3d9 fallback FAILED too (expected under Wine with d3d9=n: the system d3d9 is builtin; the fallback is Windows-only). Fix northlight-renderer.ini Backend/BackendPath.");

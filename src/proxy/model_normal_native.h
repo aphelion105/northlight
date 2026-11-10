@@ -11,6 +11,7 @@ class NorthlightNativeModelNormals {
     struct Pixel {IDirect3DPixelShader9* source=nullptr;IDirect3DPixelShader9* normal[8][3]={},*zero[3]={};unsigned tried[8]={},zeroTried=0,semantics=0,outputs=0;bool valid=false;};
     IDirect3DDevice9* d;
     void* rasterContext=nullptr;bool(*rasterReader)(void*,const D3DRENDERSTATETYPE*,unsigned,DWORD*)=nullptr;
+    void* targetContext=nullptr;bool(*emptyTargets)(void*)=nullptr;
     std::unordered_map<IDirect3DVertexShader9*,Vertex> vertices;
     std::unordered_map<IDirect3DPixelShader9*,Pixel> pixels;
     // Sources are retained; unordered_map rehash preserves entry addresses.
@@ -20,6 +21,7 @@ class NorthlightNativeModelNormals {
     D3DCAPS9 caps{};bool capable=false,linearTarget=false,blendTarget=false,enabled=false,lastComplete=false,allowed=false,complete=true,started=false,refused=false,depthOnlySeen=false;
     const char* reason="none";
     unsigned probes=0,modelDraws=0,zeroDraws=0,builds=0,committed=0,fallbacks=0,coldPairs=0;
+    unsigned retryFrames=0;
     template<class Shader> static bool code(Shader* shader,std::vector<std::uint32_t>& words){UINT bytes=0;
         if(!shader||FAILED(shader->GetFunction(nullptr,&bytes))||bytes<8||bytes>65536||bytes%4)return false;
         words.resize(bytes/4);return SUCCEEDED(shader->GetFunction(reinterpret_cast<DWORD*>(words.data()),&bytes));
@@ -81,6 +83,7 @@ public:
     enum PairProof:unsigned {PairValid=1,OuterRestoresVertex=2,OuterRestoresPixel=4};
     struct Result {HRESULT hr=D3D_OK;bool probed=false,written=false;};
     void setRasterStateSource(void* context,bool(*reader)(void*,const D3DRENDERSTATETYPE*,unsigned,DWORD*)){rasterContext=context;rasterReader=context==d?reader:nullptr;}
+    void setEmptyTargetSource(void* context,bool(*reader)(void*)){targetContext=context;emptyTargets=context==d?reader:nullptr;}
     explicit NorthlightNativeModelNormals(IDirect3DDevice9* device):d(device){
         capable=d&&SUCCEEDED(d->GetDeviceCaps(&caps))&&caps.NumSimultaneousRTs>=2&&caps.PixelShaderVersion>=D3DPS_VERSION(3,0);
         Ref<IDirect3D9> api;D3DDEVICE_CREATION_PARAMETERS creation{};D3DDISPLAYMODE mode{};
@@ -95,9 +98,14 @@ public:
     void configure(bool on){enabled=on;if(!on){lastComplete=false;cancel("disabled");}}
     bool usesDepth(IDirect3DSurface9* value)const{return sceneDepth&&sceneDepth==value;}
     bool accepting()const{return enabled&&capable&&!refused&&complete;}
-    void cancel(const char* cause){if(complete)reason=cause;complete=false;lastComplete=false;}
-    void beginFrame(){drop(sceneDepth);describedColor=nullptr;allowed=enabled&&lastComplete;complete=true;started=depthOnlySeen=false;reason="none";probes=modelDraws=zeroDraws=builds=committed=fallbacks=coldPairs=0;}
-    void reset(){beginFrame();lastComplete=allowed=false;refused=false;
+    void cancel(const char* cause){if(complete){reason=cause;
+            // Structural refusal keeps exact replay. Probe again shortly so a
+            // changed scene can resume MRT, without redoing failed admission
+            // on every frame of the same depth/MRT configuration.
+            if(!std::strcmp(cause,"depth-only-before-rgb")||!std::strcmp(cause,"occupied-mrt"))retryFrames=3;
+        }complete=false;lastComplete=false;}
+    void beginFrame(){drop(sceneDepth);describedColor=nullptr;allowed=enabled&&lastComplete;complete=retryFrames==0;if(retryFrames)--retryFrames;started=depthOnlySeen=false;reason=complete?"none":"structural-retry";probes=modelDraws=zeroDraws=builds=committed=fallbacks=coldPairs=0;}
+    void reset(){retryFrames=0;beginFrame();lastComplete=allowed=false;refused=false;
         recentVertex=nullptr;recentPixel=nullptr;
         for(auto& item:vertices){for(auto*& shader:item.second.shader)drop(shader);drop(item.second.source);}vertices.clear();
         for(auto& item:pixels){for(auto& row:item.second.normal)for(auto*& shader:row)drop(shader);for(auto*& shader:item.second.zero)drop(shader);drop(item.second.source);}pixels.clear();
@@ -108,7 +116,7 @@ public:
         if(packets)++fallbacks;return false;
     }
     template<class Log> void report(unsigned frame,Log log)const{
-        log("MODEL_NORMALS MRT frame=%u enabled=%u allowed=%u complete=%u committed=%u probes=%u modelDraws=%u occluderDraws=%u shaderBuilds=%u fallbacks=%u reason=%s vertices=%zu pixels=%zu",frame,unsigned(enabled),unsigned(allowed),unsigned(lastComplete),committed,probes,modelDraws,zeroDraws,builds,fallbacks,reason,vertices.size(),pixels.size());
+        log("MODEL_NORMALS MRT frame=%u enabled=%u allowed=%u complete=%u committed=%u probes=%u modelDraws=%u occluderDraws=%u shaderBuilds=%u fallbacks=%u reason=%s vertices=%zu pixels=%zu retryFrames=%u",frame,unsigned(enabled),unsigned(allowed),unsigned(lastComplete),committed,probes,modelDraws,zeroDraws,builds,fallbacks,reason,vertices.size(),pixels.size(),retryFrames);
     }
     template<class Draw,class Prove> Result draw(Draw submit,IDirect3DSurface9* target,IDirect3DSurface9* color,UINT width,UINT height,
                                               IDirect3DVertexShader9* original,bool receiver,Prove prove){
@@ -150,7 +158,8 @@ public:
            (desc.Format!=D3DFMT_A16B16G16R16F&&!(caps.PrimitiveMiscCaps&D3DPMISCCAPS_MRTINDEPENDENTBITDEPTHS)))return fallback("target-msaa");
         Ref<IDirect3DPixelShader9> oldPS;if(FAILED(d->GetPixelShader(&oldPS.p))||!oldPS.p)return fallback("fixed-pixel");
         Pixel* p=nullptr;try{p=pixel(oldPS.p);}catch(const std::bad_alloc&){return fallback("allocation");}if(!p||!p->valid)return fallback("pixel-program");
-        unsigned slot=0;for(unsigned i=1;i<4&&i<caps.NumSimultaneousRTs;++i){if(p->outputs&(1u<<i))continue;Ref<IDirect3DSurface9> used;const auto hr=d->GetRenderTarget(i,&used.p);
+        const bool vacant=emptyTargets&&emptyTargets(targetContext);
+        unsigned slot=0;for(unsigned i=1;i<4&&i<caps.NumSimultaneousRTs;++i){if(p->outputs&(1u<<i))continue;if(vacant){slot=i;break;}Ref<IDirect3DSurface9> used;const auto hr=d->GetRenderTarget(i,&used.p);
             if(FAILED(hr)&&hr!=D3DERR_NOTFOUND)return fallback("target-query");if(!used.p){slot=i;break;}}
         if(!slot)return fallback("occupied-mrt");
         Ref<IDirect3DVertexShader9> oldVS;Vertex* v=nullptr;unsigned semantic=0,proof=0;

@@ -26,6 +26,7 @@ parser.add_argument('--output',type=Path,required=True)
 parser.add_argument('--timing-draws',type=int,action='append',default=[],help='Additionally measure complete 4K capture/submission paths (resident geometry)')
 parser.add_argument('--timing-copies',type=int,default=1,help='Repeat stock geometry within each timing draw (1..32)')
 parser.add_argument('--timing-local',action='store_true',help='Measure the actual three-local-light factory with MRT')
+parser.add_argument('--reference-packet-layout',help='Replace only Pending with its layout at this git revision; retain current capture/render methods')
 timing_state=parser.add_mutually_exclusive_group()
 timing_state.add_argument('--timing-blend',action='store_true',help='Include a source-alpha blended depth writer before the commit')
 timing_state.add_argument('--timing-srgb',action='store_true',help='Keep native sRGB writes enabled throughout the receiver draws')
@@ -52,7 +53,16 @@ def run(tag,command):
     r.check_returncode();return text
 
 exe=out/'native-models.exe'
-run('compile',[fp.zig(),'c++','-target','x86-windows-gnu','-std=c++17','-O2','-UNDEBUG','-Wno-microsoft-exception-spec','-Wno-return-type',*fp.test_include_flags(),ROOT/'tests/model_normal_native_gpu.cpp',fp.src('world_gi.cpp'),'-luser32','-o',exe])
+includes=[]
+if args.reference_packet_layout:
+    current=fp.src('model_normal_renderer.h').read_text()
+    previous=subprocess.check_output(['git','show',args.reference_packet_layout+':src/proxy/model_normal_renderer.h'],text=True)
+    start='    struct Pending {';end='    Pending* nativeCandidate='
+    frozen=previous[previous.index(start):previous.index(end)]
+    current=current[:current.index(start)]+frozen+current[current.index(end):]
+    overlay=out/'layout-reference';overlay.mkdir();(overlay/'model_normal_renderer.h').write_text(current,encoding='utf-8')
+    includes=['-I'+str(overlay)]
+run('compile',[fp.zig(),'c++','-target','x86-windows-gnu','-std=c++17','-O2','-UNDEBUG','-Wno-microsoft-exception-spec','-Wno-return-type',*includes,*fp.test_include_flags(),ROOT/'tests/model_normal_native_gpu.cpp',fp.src('world_gi.cpp'),'-luser32','-o',exe])
 data=bytearray(exe.read_bytes());at=struct.unpack_from('<I',data,0x3c)[0]+22;struct.pack_into('<H',data,at,struct.unpack_from('<H',data,at)[0]|0x20);exe.write_bytes(data)
 backends=[]
 for i,path in enumerate(args.backend):
@@ -73,4 +83,5 @@ report['timing']={'draws':args.timing_draws,'copies':args.timing_copies,'resolut
 report['timing']['local']=args.timing_local
 report['timing']['blended_depth']=args.timing_blend
 report['timing']['srgb']=args.timing_srgb
+report['reference_packet_layout']=args.reference_packet_layout
 (out/'validation.json').write_text(json.dumps(report,indent=2)+'\n')

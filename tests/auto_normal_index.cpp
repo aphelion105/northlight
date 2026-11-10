@@ -35,8 +35,8 @@ struct Ref {unsigned refs=1;Ref(){++liveObjects;}virtual ~Ref(){--liveObjects;}v
 struct IDirect3DBaseTexture9:Ref {unsigned GetType(){return D3DRTYPE_TEXTURE;}};
 struct IDirect3DSurface9;
 struct IDirect3DTexture9:IDirect3DBaseTexture9 {
-    D3DSURFACE_DESC desc;std::uint64_t identity=0,version=1,payload=0;unsigned levels=1;
-    HRESULT GetLevelDesc(unsigned,D3DSURFACE_DESC* out){*out=desc;return 0;}unsigned GetLevelCount(){return levels;}
+    D3DSURFACE_DESC desc;std::uint64_t identity=0,version=1,payload=0;unsigned levels=1,descReads=0;
+    HRESULT GetLevelDesc(unsigned,D3DSURFACE_DESC* out){++descReads;*out=desc;return 0;}unsigned GetLevelCount(){return levels;}
     HRESULT GetSurfaceLevel(unsigned,IDirect3DSurface9** out);void SetAutoGenFilterType(unsigned){}void GenerateMipSubLevels(){}
 };
 struct IDirect3DSurface9:Ref {
@@ -154,6 +154,20 @@ template<class Cache>static unsigned overBudgetStability(bool stable,unsigned co
     assert(liveObjects==before);return transitions;
 }
 int main(int argc,char**){
+    {
+        Owner<CacheCurrent> current;auto* rejected=new IDirect3DTexture9;rejected->desc.Width=0;
+        for(unsigned i=0;i<1000;++i)assert(!current.cache.resolve(rejected,true));
+        assert(rejected->descReads==1&&current.cache.refusalHits==999);
+        rejected->desc.Width=32;++rejected->version;assert(current.cache.resolve(rejected,true));
+        current.cache.endFrame();assert(current.cache.resolve(rejected,true));
+        current.cache.reset();assert(rejected->refs==1);drop(rejected);
+        std::vector<IDirect3DTexture9*> bad;
+        for(unsigned i=0;i<32;++i){auto* t=new IDirect3DTexture9;t->desc.Width=0;bad.push_back(t);assert(!current.cache.resolve(t));}
+        unsigned descriptions=0;for(auto* t:bad)descriptions+=t->descReads;assert(descriptions==8);
+        current.cache.endFrame();assert(!current.cache.resolve(bad.back()));assert(bad.back()->descReads==1);
+        current.cache.reset();for(auto*& t:bad){assert(t->refs==1);drop(t);}
+        std::puts("NORMAL_ATTEMPT_BUDGET_PASS repeated=1000 descriptions=1 attemptCap=8 revisionRetry=1 nextFrameRetry=1 refs=balanced");
+    }
     std::vector<IDirect3DTexture9*> source;for(unsigned i=0;i<320;++i){auto* t=new IDirect3DTexture9;t->identity=i+1;t->payload=i*17+3;source.push_back(t);}
     unsigned compared=0,sites=0;
     {

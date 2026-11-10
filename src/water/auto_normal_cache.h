@@ -22,6 +22,9 @@ class NorthlightAutoNormalCache {
     IDirect3DPixelShader9* shader=nullptr,*modelShader=nullptr;
     std::uint64_t bytes=0,sourceBytes=0,clock=0,budget=32ull<<20;
     unsigned generated=0,builds=0,hits=0,evictions=0,allocations=0,reuses=0;
+    struct Refusal {IDirect3DTexture9* source=nullptr;std::uint64_t version=0;bool model=false;};
+    Refusal refusals[16];unsigned attempts=0,attemptDeferred=0,refusalHits=0;
+    void clearRefusals(){for(auto& refusal:refusals)drop(refusal.source);attempts=0;}
     unsigned generationDeferred=0,budgetRejected=0,visibleDeferred=0,diskPending=0,descriptionRejected=0;
     unsigned polarity=0,details=75,balance=50,frame=0;bool memoryPressure=false,visibleWorkingSet=false;
     UINT vertexConstantCapacity=0; // Immutable for this device, including Reset.
@@ -77,7 +80,7 @@ public:
     void setProfiler(NorthlightMaterialProfile* p){profile=p;}
     void setPersistentCache(const std::filesystem::path& path,const char* backend,const char* identity=nullptr,bool asyncReadback=false){try{disk=std::make_unique<NorthlightMaterialMapPersistence>(d,path,backend,identity,asyncReadback);}catch(...){logf("MATERIAL_DISK unavailable; memory cache retained");}}
     ~NorthlightAutoNormalCache(){reset();drop(shader);drop(modelShader);}
-    void reset(){if(disk)disk->reset();states.clear();for(auto& e:entries){drop(e.source);drop(e.normal);}entries.clear();for(auto& index:lookup)index.clear();recent=0;bytes=sourceBytes=0;visibleWorkingSet=false;}
+    void reset(){clearRefusals();if(disk)disk->reset();states.clear();for(auto& e:entries){drop(e.source);drop(e.normal);}entries.clear();for(auto& index:lookup)index.clear();recent=0;bytes=sourceBytes=0;visibleWorkingSet=false;}
     void configure(const NorthlightQuality::Settings& s){if(polarity!=s.autoHeightPolarity||details!=s.autoHeightDetails||balance!=s.autoHeightBalance){reset();polarity=s.autoHeightPolarity;details=s.autoHeightDetails;balance=s.autoHeightBalance;}}
     void refreshBudget(){
         MEMORYSTATUSEX memory{};memory.dwLength=sizeof memory;
@@ -88,8 +91,8 @@ public:
     }
     void setMemoryPressure(bool on){memoryPressure=on;refreshBudget();states.clear();if(on&&disk)disk->trimUploads();}
     void trimMemory(){refreshBudget();states.clear();if(disk)disk->trimUploads();}
-    void endFrame(){for(size_t i=entries.size();i--;)if(!entries[i].normal)erase(i);if(disk)disk->endFrame();generated=0;visibleWorkingSet=false;if(memoryPressure)states.clear();if(++frame%60==0)refreshBudget();}
-    void report(){if(disk)disk->report();const size_t pending=std::count_if(entries.begin(),entries.end(),[](const Entry& e){return !e.normal;});logf("AUTONORMAL cached=%zu bytes=%llu generated=%u hits=%u evicted=%u sourceBytes=%llu budgetMiB=%llu allocations=%u reused=%u generationDeferred=%u budgetRejected=%u visibleDeferred=%u diskPending=%u descriptionRejected=%u pendingCache=%zu",entries.size()-pending,(unsigned long long)bytes,builds,hits,evictions,(unsigned long long)sourceBytes,(unsigned long long)(budget>>20),allocations,reuses,generationDeferred,budgetRejected,visibleDeferred,diskPending,descriptionRejected,pending);}
+    void endFrame(){clearRefusals();for(size_t i=entries.size();i--;)if(!entries[i].normal)erase(i);if(disk)disk->endFrame();generated=0;visibleWorkingSet=false;if(memoryPressure)states.clear();if(++frame%60==0)refreshBudget();}
+    void report(){if(disk)disk->report();const size_t pending=std::count_if(entries.begin(),entries.end(),[](const Entry& e){return !e.normal;});logf("AUTONORMAL cached=%zu bytes=%llu generated=%u hits=%u evicted=%u sourceBytes=%llu budgetMiB=%llu allocations=%u reused=%u generationDeferred=%u budgetRejected=%u visibleDeferred=%u diskPending=%u descriptionRejected=%u pendingCache=%zu attemptDeferred=%u refusalHits=%u",entries.size()-pending,(unsigned long long)bytes,builds,hits,evictions,(unsigned long long)sourceBytes,(unsigned long long)(budget>>20),allocations,reuses,generationDeferred,budgetRejected,visibleDeferred,diskPending,descriptionRejected,pending,attemptDeferred,refusalHits);}
     Lease acquire(IDirect3DBaseTexture9* source,bool model=false){return Lease(*this,resolve(source,model));}
     IDirect3DTexture9* resolve(IDirect3DBaseTexture9* base,bool model=false){
         using P=NorthlightMaterialProfile;P::Scope timing(profile,P::NormalCache);
@@ -109,6 +112,12 @@ public:
         }
         if(profile)profile->count(P::NormalMiss);
         if(generated>=2){++generationDeferred;return nullptr;}
+        // Bound failed work too. Retaining this small frame-local source set
+        // prevents pointer reuse; a write revision still retries immediately.
+        auto& refusal=refusals[((reinterpret_cast<std::uintptr_t>(source)>>4)^unsigned(model))%16];
+        if(refusal.source==source&&refusal.version==revision&&refusal.model==model){++refusalHits;return nullptr;}
+        if(attempts>=8){++attemptDeferred;return nullptr;}++attempts;
+        drop(refusal.source);source->AddRef();refusal={source,revision,model};
         timing.next(P::NormalBuild);
         D3DSURFACE_DESC desc{};if(FAILED(source->GetLevelDesc(0,&desc))||!desc.Width||!desc.Height||(desc.Usage&D3DUSAGE_DEPTHSTENCIL)){++descriptionRejected;return nullptr;}
         const UINT width=std::min(desc.Width,512u),height=std::min(desc.Height,512u);

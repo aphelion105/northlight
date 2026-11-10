@@ -4,7 +4,8 @@
 #include <array>
 #include <limits>
 
-// 0.3.200 (gpu budget): Northlight's own GPU time on every frame (GpuBudgetMs > 0), for gpu_budget.h. Two timestamps around the effects in a
+// Deferred capture/effects GPU interval (GpuBudgetMs > 0), for gpu_budget.h. In-scene MRT work remains in GameScene; this is not total
+// Northlight cost. CPU submission and GPU intervals overlap and must not be added. Two timestamps around the deferred effects in a
 // small ring; read back several frames later. Include after the renderer's logf(const char*, ...). Render thread only. Like
 // NorthlightGpuProfile it never flushes or waits: every GetData uses flags=0 and is tried once per poll; a full ring skips the frame's
 // measurement, a disjoint, zero-frequency or nonmonotonic result is dropped. Any device failure disables the timer (the level then stays where

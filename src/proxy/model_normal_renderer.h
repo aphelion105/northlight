@@ -480,6 +480,7 @@ public:
         snapshots.setChargeResidentHits(false);sourceSharing=snapshots.shareSnapshotPool(source);return sourceSharing;
     }
     void setRasterStateSource(void* context,bool(*reader)(void*,const D3DRENDERSTATETYPE*,unsigned,DWORD*)){rasterContext=context;rasterReader=context==d?reader:nullptr;nativeMrt.setRasterStateSource(context,reader);}
+    void setEmptyTargetSource(void* context,bool(*reader)(void*)){nativeMrt.setEmptyTargetSource(context,reader);}
     void setSamplerStateSource(void* context,bool(*reader)(void*,DWORD,unsigned,DWORD*)){samplerContext=context;samplerReader=context==d?reader:nullptr;}
     void setTrustedPoseSource(NorthlightConstantEpoch::TrustedSource source){for(auto& p:pending)p->constantStamp={};poseContext=source.context();poseReader=source&&source.context()==d?source.reader():nullptr;poseSpan=poseReader?source.span():nullptr;}
     void setGeometryCache(NorthlightGpuScene::NativeClient* cache){geometryCache=cache;}
@@ -513,7 +514,9 @@ public:
             // pixels too. Preserve its native shaders/coverage and write zero
             // normals; no receiver projection or vertex provenance is needed.
             DWORD z=0,write=0;IDirect3DSurface9* ds=nullptr;
-            if(FAILED(d->GetRenderState(D3DRS_ZENABLE,&z))||FAILED(d->GetRenderState(D3DRS_ZWRITEENABLE,&write))){nativeMrt.cancel("domain-state");return submit();}
+            const D3DRENDERSTATETYPE keys[]={D3DRS_ZENABLE,D3DRS_ZWRITEENABLE};DWORD values[2]={};
+            if(rasterReader&&rasterReader(rasterContext,keys,2,values)){z=values[0];write=values[1];}
+            else if(FAILED(d->GetRenderState(D3DRS_ZENABLE,&z))||FAILED(d->GetRenderState(D3DRS_ZWRITEENABLE,&write))){nativeMrt.cancel("domain-state");return submit();}
             if(!z||!write)return submit();
             const auto hr=d->GetDepthStencilSurface(&ds);const bool scene=nativeMrt.usesDepth(ds);release(ds);
             if(FAILED(hr)){nativeMrt.cancel("domain-depth-state");return submit();}
