@@ -10,6 +10,7 @@ static void logf(const char* format,...){va_list args;va_start(args,format);std:
 #include <chrono>
 bool northlightLocalPoseHandoff=true; // Only the test overlay adds a policy control.
 struct DisplacementStateTestAccess {
+    static void frame(NorthlightAutoDisplacement& p,uint64_t frame){p.gpuScene->setFrame(frame);}
     static void refuseShared(NorthlightAutoDisplacement& p){p.envelopeBudget.maxOperations=0;p.poseEnvelopes.chargeCheapPreparation(UINT64_MAX);}
     static bool registered(const NorthlightAutoDisplacement& p,IDirect3DVertexShader9* s){return p.materials.count(s)&&p.materials.at(s).envelopeSkin&&p.materials.at(s).rangeKind==NorthlightModelNormalRange::Envelope;}
     static unsigned scan(const NorthlightAutoDisplacement& p){return p.poseVerticesThisFrame;}
@@ -42,9 +43,9 @@ int main(int argc,char** argv){assert(argc==4||argc==5);const bool timing=argc==
         NorthlightAutoDisplacement::Args args{{D3DPT_TRIANGLELIST,0,0,Vertices,0,Vertices/3,false}};
         IDirect3DQuery9 *event=nullptr,*begin=nullptr,*end=nullptr,*frequency=nullptr,*disjoint=nullptr;ok(d->CreateQuery(D3DQUERYTYPE_EVENT,&event));
         if(timing){ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&begin));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&end));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMPFREQ,&frequency));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMPDISJOINT,&disjoint));}
-        unsigned cases=0;for(unsigned shape=0;shape<8;++shape){std::vector<unsigned char> reference;
+        unsigned cases=0;uint64_t frame=0;for(unsigned shape=0;shape<8;++shape){std::vector<unsigned char> reference;
             const unsigned rounds=timing?24:2,Count=timing?128:16;
-            for(unsigned round=0;round<rounds;++round)for(unsigned turn=0;turn<2;++turn){const bool current=((round+turn)&1)!=0;northlightLocalPoseHandoff=current;producer.endFrame();DisplacementStateTestAccess::refuseShared(producer);normals.endFrame();calls.submitted=0;
+            for(unsigned round=0;round<rounds;++round)for(unsigned turn=0;turn<2;++turn){const bool current=((round+turn)&1)!=0;northlightLocalPoseHandoff=current;producer.endFrame();DisplacementStateTestAccess::frame(producer,++frame);DisplacementStateTestAccess::refuseShared(producer);normals.endFrame();calls.submitted=0;
                 ok(d->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0,1,0));float bank[256][4]={};bank[2][0]=bank[3][1]=1;bank[4][2]=bank[5][2]=shape>=6?-1.f:1.f;bank[4][3]=-.5f;bank[28][3]=1;
                 unsigned expected=0,proofs=0;ok(d->BeginScene());UINT64 hz=0,a=0,b=0;BOOL invalid=FALSE;
                 if(timing){ok(disjoint->Issue(D3DISSUE_BEGIN));ok(frequency->Issue(D3DISSUE_END));ok(begin->Issue(D3DISSUE_END));}

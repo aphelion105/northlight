@@ -316,7 +316,10 @@ class NorthlightModelNormals {
                 packet->mesh=std::move(resident);packet->sharedMesh.reset();packet->resident=true;
             }
             packet->ps.resize(ps->count*4);
-            const size_t bytes=packetBytes(*packet);
+            // Earlier packets retain their leases until the entire batch clears.
+            // Charge consecutive uses of the same immutable source only once.
+            const bool sharedSource=packet->sharedMesh&&!pending.empty()&&pending.back()->sharedMesh==packet->sharedMesh;
+            const size_t bytes=packetBytes(*packet)-(sharedSource?packet->sharedMesh->capacityBytes():0);
             while(!spare.empty()&&bytes+pendingBytes+spareBytes>(8u<<20)){spareBytes-=packetBytes(*spare.back());spare.pop_back();}
             if(bytes>(8u<<20)-pendingBytes)return false;
             DWORD planes[1]={};const D3DRENDERSTATETYPE planeKeys[]={D3DRS_CLIPPLANEENABLE};
