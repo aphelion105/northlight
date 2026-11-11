@@ -30,7 +30,9 @@ parser.add_argument('--reference-header', type=Path, help='Frozen model_normal_r
 parser.add_argument('--shadow-slice', action='store_true', help='Compare full/sliced shadow VS with real directional/point alpha coverage.')
 parser.add_argument('--shadow-only', action='store_true', help='Run just the shadow comparison, independently of native 4K ModelNormals readback support.')
 parser.add_argument('--constants-only', action='store_true', help='Compare deferred constant reuse with a disabled control, including invalidation and exact GPU output.')
+parser.add_argument('--palette-validate', action='store_true', help='Validate every certified constant bank; requires --constants-only.')
 args = parser.parse_args()
+assert not args.palette_validate or args.constants_only
 if args.shadow_only:args.shadow_slice=True;args.no_timing=True;args.quick=True
 if args.constants_only:args.no_timing=True;args.quick=True
 out = (args.output or fp.output_dir()/'model-normals').resolve()
@@ -79,10 +81,11 @@ env.update(DISABLE_VULKAN_OBS_CAPTURE='1', DXVK_LOG_PATH=str(out))
 if not args.reference_header:env['NORTHLIGHT_TEST_VERTEX_SHARING']='1'
 exe = out/'model-normals.exe'
 includes = []
-slice_flags = [] if args.reference_header else ['-DNORTHLIGHT_MODEL_NORMALS_SLICE_TEST']
+slice_flags = [] if args.reference_header and not args.constants_only else ['-DNORTHLIGHT_MODEL_NORMALS_SLICE_TEST']
 if args.shadow_slice:slice_flags.append('-DNORTHLIGHT_SHADOW_SLICE_TEST')
 if args.shadow_only:slice_flags.append('-DNORTHLIGHT_SHADOW_SLICE_ONLY')
 if args.constants_only:slice_flags.append('-DNORTHLIGHT_MODEL_NORMALS_CONSTANT_TEST')
+if args.palette_validate:slice_flags.append('-DNORTHLIGHT_PALETTE_VALIDATE=1')
 if args.reference_header:
     reference = out/'reference-header';reference.mkdir(exist_ok=True)
     shutil.copyfile(args.reference_header, reference/'model_normal_renderer.h')
@@ -96,9 +99,9 @@ struct.pack_into('<H',data,flags,struct.unpack_from('<H',data,flags)[0]|0x20);ex
 if args.constants_only:
     run=subprocess.run([str(exe),str(args.backend.resolve()),str(out)+os.sep,'3-skinned','model-vs3-skinned.bin','--no-timing'],cwd=out,env=env,capture_output=True,text=True,timeout=120)
     (out/'constants-only.log').write_text(run.stdout+run.stderr)
-    assert run.returncode==0 and 'MODEL_NORMALS_CONSTANT_REUSE_PASS cases=24 packets=288' in run.stdout,run.stdout+run.stderr
-    files=[fp.src('model_normal_renderer.h'),fp.src('replay_capture_constants.h'),fp.TESTS/'model_normal_constants.inc',fp.TESTS/'model_normals_gpu.cpp',Path(__file__)]
-    (out/'validation.json').write_text(json.dumps({'status':'PASS','backend':str(args.backend),'scope':'ModelNormals constant bank and GPU output correctness; no timing claim','game_running':game_running,'inputs':{str(p):hashlib.sha256(p.read_bytes()).hexdigest() for p in files},'stdout':run.stdout},indent=2)+'\n')
+    assert run.returncode==0 and 'MODEL_NORMALS_CONSTANT_REUSE_PASS cases=30 packets=1536' in run.stdout,run.stdout+run.stderr
+    files=[args.reference_header or fp.src('model_normal_renderer.h'),fp.src('replay_capture_constants.h'),fp.src('device_mirror.h'),fp.src('captured_constant_epoch.h'),fp.src('mirror_guard.h'),fp.TESTS/'model_normal_constants.inc',fp.TESTS/'model_normals_gpu.cpp',Path(__file__)]
+    (out/'validation.json').write_text(json.dumps({'status':'PASS','backend':str(args.backend),'scope':'ModelNormals constant bank and GPU output correctness; no timing claim','palette_validate':args.palette_validate,'game_running':game_running,'inputs':{str(p):hashlib.sha256(p.read_bytes()).hexdigest() for p in files},'stdout':run.stdout},indent=2)+'\n')
     print(run.stdout,flush=True);sys.exit(0)
 if args.shadow_only:
     run=subprocess.run([str(exe),str(args.backend.resolve()),str(out)+os.sep,'3-skinned','model-vs3-skinned.bin','--no-timing'],cwd=out,env=env,capture_output=True,text=True,timeout=120)

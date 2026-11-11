@@ -36,7 +36,11 @@ int main(int argc,char** argv){
     D3DVERTEXELEMENT9 elements[]={{0,0,D3DDECLTYPE_FLOAT3,0,D3DDECLUSAGE_POSITION,0},{0,12,D3DDECLTYPE_UBYTE4N,0,D3DDECLUSAGE_BLENDWEIGHT,0},{0,16,D3DDECLTYPE_UBYTE4,0,D3DDECLUSAGE_BLENDINDICES,0},{0,20,D3DDECLTYPE_FLOAT3,0,D3DDECLUSAGE_NORMAL,0},{0,32,D3DDECLTYPE_FLOAT2,0,D3DDECLUSAGE_TEXCOORD,0},D3DDECL_END()};
     IDirect3DVertexDeclaration9* declaration=nullptr;ok(d->CreateVertexDeclaration(elements,&declaration));auto* shader=vs(dir+"model-vs3-rigid.bin");auto* pixel=ps(dir+"ModelPS.bin");
     IDirect3DTexture9* white=nullptr;ok(d->CreateTexture(1,1,1,0,D3DFMT_A8R8G8B8,D3DPOOL_MANAGED,&white,nullptr));D3DLOCKED_RECT lock;ok(white->LockRect(0,&lock,nullptr,0));*static_cast<DWORD*>(lock.pBits)=0xffffffff;ok(white->UnlockRect(0));
-    constexpr unsigned W=3840,H=2160,Near=133,Far=310;
+#ifndef NORTHLIGHT_BASE_NEAR
+#define NORTHLIGHT_BASE_NEAR 133
+#define NORTHLIGHT_BASE_FAR 310
+#endif
+    constexpr unsigned W=3840,H=2160,Near=NORTHLIGHT_BASE_NEAR,Far=NORTHLIGHT_BASE_FAR;
     IDirect3DSurface9 *color=nullptr,*depth=nullptr;ok(d->CreateRenderTarget(W,H,D3DFMT_A8R8G8B8,D3DMULTISAMPLE_2_SAMPLES,0,FALSE,&color,nullptr));ok(d->CreateDepthStencilSurface(W,H,D3DFMT_D24S8,D3DMULTISAMPLE_2_SAMPLES,0,FALSE,&depth,nullptr));
     NorthlightDrawSnapshot::Frame peer{8u<<20,0};const auto identity=+[](void* p,bool)->uint64_t{return reinterpret_cast<uintptr_t>(p);};const auto version=+[](void*,bool)->uint64_t{return 1;};peer.setIdentityProvider(identity);peer.setVersionProvider(version);peer.setSnapshotCacheLimit(8u<<20);
     NorthlightGpuScene::NativeStore store;NorthlightGpuScene::NativeClient cache(store,NorthlightGpuScene::Consumer::Material);auto normals=std::make_unique<NorthlightModelNormals>(d);

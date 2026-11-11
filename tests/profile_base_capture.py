@@ -10,10 +10,11 @@ from build_renderer import source_identity
 
 def main():
  p=argparse.ArgumentParser(__doc__);p.add_argument('--backend',type=Path,required=True);p.add_argument('--output',type=Path,required=True)
+ p.add_argument('--near',type=int,default=133);p.add_argument('--far',type=int,default=310)
  p.add_argument('--normal-header',type=Path,help='Frozen model_normal_renderer.h for a preparation control using the same shaders and fixture.')
  p.add_argument('--range-reference',type=Path,help='Compare a frozen model_normal_range.h and current range cache in one executable with ABBA blocks.')
  p.add_argument('--renderer-reference',type=Path,help='Compare a frozen model_normal_renderer.h and current capture in one executable with ABBA blocks.')
- a=p.parse_args()
+ a=p.parse_args();assert 1<=a.near<=1024 and 0<=a.far<=1024
  compare=a.range_reference or a.renderer_reference
  if sum(bool(x) for x in (a.range_reference,a.renderer_reference,a.normal_header))>1:p.error('Choose one reference mode.')
  processes();fp.use_source_modules();out=a.output.resolve();out.mkdir(parents=True,exist_ok=False);overlay=out/'probe';overlay.mkdir();shutil.copytree(ROOT/'src',out/'baseline/src')
@@ -66,14 +67,14 @@ def main():
  if a.range_reference:inputs.append(a.range_reference.resolve())
  if a.renderer_reference:inputs.append(a.renderer_reference.resolve())
  report=dict(pass_=False,source_identity=source_identity(ROOT),normal_header_override=str(normal_input) if a.normal_header else None,inputs={str(p):sha(p) for p in inputs},model=model,model_sha256=hashlib.sha256(data).hexdigest(),skin_sha256=hashlib.sha256(skin).hexdigest(),vertices=hi-lo+1,triangles=len(used)//3,
-  game_fps_measured=False,whole_scene_replay=False,scope='Controlled repeated stock streetlamp subset: 133 near + 310 far draws; 4K MSAA2. Actual ExtensionDevice mirror, shared source pool, resident GPU store, no AutoBump or pose/source handoff. Native submission is separate. Capture CPU includes per-draw clocks; instrumented phases include QPC overhead. Replay GPU excludes preceding game draws; isolated from game/other benchmarks.')
+  game_fps_measured=False,whole_scene_replay=False,near=a.near,far=a.far,scope=f'Controlled repeated stock streetlamp subset: {a.near} near + {a.far} far draws; 4K MSAA2. Actual ExtensionDevice mirror, shared source pool, resident GPU store, no AutoBump or pose/source handoff. Native submission is separate. Capture CPU includes per-draw clocks; instrumented phases include QPC overhead. Replay GPU excludes preceding game draws; isolated from game/other benchmarks.')
  env={k:v for k,v in fp.zig_env().items() if not k.startswith(('NORTHLIGHT_','DXVK_'))};env.update(DISABLE_VULKAN_OBS_CAPTURE='1',DXVK_CONFIG='d3d9.customVendorId = 1002',DXVK_LOG_PATH=str(out))
  for key,name in [('TEMP','temp'),('TMP','temp'),('ZIG_LOCAL_CACHE_DIR','zig-local'),('ZIG_GLOBAL_CACHE_DIR','zig-global')]:
   (out/name).mkdir(exist_ok=True);env[key]=str(out/name)
  def run(label,cmd):
   processes();r=subprocess.run(list(map(str,cmd)),env=env,cwd=out,capture_output=True,text=True,timeout=300);(out/(label+'.log')).write_bytes((r.stdout+r.stderr).encode());print(label,r.returncode,flush=True);r.check_returncode();return r.stdout
  try:
-  exe=out/'base-capture.exe';run('compile',[fp.zig(),'c++','-target','x86-windows-gnu','-O2','-UNDEBUG','-std=c++17','-Wno-microsoft-exception-spec',*(['-DNORTHLIGHT_MODEL_NORMALS_RANGE_REFERENCE=1'] if compare else []),'-I'+str(overlay),*fp.test_include_flags(),ROOT/'tests/base_capture_pipeline_gpu.cpp',fp.src('world_gi.cpp'),'-luser32','-o',exe])
+  exe=out/'base-capture.exe';run('compile',[fp.zig(),'c++','-target','x86-windows-gnu','-O2','-UNDEBUG','-std=c++17','-DNORTHLIGHT_BASE_NEAR='+str(a.near),'-DNORTHLIGHT_BASE_FAR='+str(a.far),'-Wno-microsoft-exception-spec',*(['-DNORTHLIGHT_MODEL_NORMALS_RANGE_REFERENCE=1'] if compare else []),'-I'+str(overlay),*fp.test_include_flags(),ROOT/'tests/base_capture_pipeline_gpu.cpp',fp.src('world_gi.cpp'),'-luser32','-o',exe])
   text=run('baseline',[exe,a.backend.resolve(),out]);assert 'BASE_CAPTURE_PROFILE_PASS' in text
   if compare:
    rows=[{k:float(v) for k,v in re.findall(r'(\w+)=([0-9.]+)',line)} for line in text.splitlines() if line.startswith('CAPTURE_COMPARE_FRAME ')]

@@ -11,7 +11,7 @@ import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).reso
 import northlight_paths as fp
 import hashlib,json,re,subprocess,tempfile
 HERE=Path(__file__).resolve().parent
-FILES=['replay_capture_constants.h','captured_constant_epoch.h','world_renderer.h','renderer.cpp','device_mirror.h',
+FILES=['replay_capture_constants.h','captured_constant_epoch.h','world_renderer.h','renderer.cpp','device_mirror.h','model_normal_renderer.h',
        'test_replay_capture_constants.cpp','test_replay_palette_blocks.cpp','test_replay_capture_constants.py']
 report={'scope':'Native replay_capture_constants.h tests plus a renderer wiring audit; no game, Wine or DLL run.',
         'source_sha256':{n:hashlib.sha256(fp.tracked(n).read_bytes()).hexdigest() for n in FILES},'runs':[]}
@@ -34,8 +34,17 @@ with tempfile.TemporaryDirectory(prefix='northlight-capture-constants-') as tmp:
 
 read=lambda n:fp.tracked(n).read_text()
 w,r,c=read('world_renderer.h'),read('renderer.cpp'),read('replay_capture_constants.h')
+n=read('model_normal_renderer.h')
 templated=c[c.index('template<class Replay,class Source,class Fetch,class FetchFloats> bool captureBlocks('):c.index('template<class Replay> bool samePose(')]
 checks={
+ 'ModelNormals: own typed source, held gate and original self-check cadence':
+   'source&&source.context()==d?source.reader():nullptr' in n
+   and 'constantSource={};if(poseReader)' in n
+   and 'static_cast<ExtensionDevice*>(d)->constantMirror()' in n
+   and 'reader&&constantSource.attached()&&constantSource.mirror->heldByThisThread()' in n
+   and 'SelfCheck check{constantStats.blockTests,&constantStats};' in n
+   and 'captureBlocks(*packet,previous,constantSource,fetch,fetchFloats,&constantStats,true,check)' in n
+   and 'captureBlocks(*packet,previous,poseContext,reader,fetch,fetchFloats,&constantStats)' in n,
  'C1: the renderer reads the mirror clock in place (no Reader callback)':'world->setConstantEpochSource({&mirrorState.constantEpoch,&mirrorState});' in r
    and 'constantEpochReader' not in w and 'NorthlightReplayCaptureConstants::ClockSource<DeviceMirror> constantEpochSource;' in w
    and 'captureBlocks(*p,previous,constantEpochSource,[&]{' in w,

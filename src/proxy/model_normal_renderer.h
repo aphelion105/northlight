@@ -16,6 +16,7 @@
 #include "replay_constants.h"
 #include "shader_constant_usage.h"
 #include "replay_capture_constants.h"
+#include "device_mirror.h"
 #include "dynamic_ring.h"
 #include "replay_bulk_layout.h"
 #include "saved_state.h"
@@ -232,6 +233,7 @@ class NorthlightModelNormals {
     void(*pendingChanged)(void*)=nullptr;void* pendingContext=nullptr;
     unsigned queued=0,flushes=0,immediate=0,sourceReused=0,residentDraws=0,handoffs=0,rangeNarrow=0,rangeFull=0,rangeRegisters=0,packetPixelReadsSkipped=0;size_t sourceReadBytes=0,upBytes=0;
     NorthlightReplayCaptureConstants::Stats constantStats;
+    NorthlightReplayCaptureConstants::ClockSource<DeviceMirror> constantSource;
     unsigned constantReadRegisters=0;
     void clearPending(){nativeCandidate=nullptr;const bool hadPending=!pending.empty();
         for(auto& p:pending){p->recycle();spareBytes+=packetBytes(*p);spare.push_back(std::move(p));}
@@ -329,7 +331,13 @@ class NorthlightModelNormals {
                 (!vs->reads.i||SUCCEEDED(d->GetVertexShaderConstantI(0,packet->intStorage,16)))&&(!vs->reads.b||SUCCEEDED(d->GetVertexShaderConstantB(0,packet->boolStorage,16)));};
             // The existing epoch helper flattens shared banks to an earlier
             // accepted packet. Every owner stays alive until this batch flushes.
-            if(!NorthlightReplayCaptureConstants::captureBlocks(*packet,pending.empty()?nullptr:pending.back().get(),poseContext,reader,fetch,fetchFloats,&constantStats))return false;
+            // Only the owning device's typed source authorizes in-place reads.
+            // Unheld calls retain the stamped reader's race-checked fallback.
+            const auto* previous=pending.empty()?nullptr:pending.back().get();
+            if(reader&&constantSource.attached()&&constantSource.mirror->heldByThisThread()){
+                NorthlightReplayCaptureConstants::SelfCheck check{constantStats.blockTests,&constantStats};
+                if(!NorthlightReplayCaptureConstants::captureBlocks(*packet,previous,constantSource,fetch,fetchFloats,&constantStats,true,check))return false;
+            }else if(!NorthlightReplayCaptureConstants::captureBlocks(*packet,previous,poseContext,reader,fetch,fetchFloats,&constantStats))return false;
             // This packet overwrites its complete float bank with control below.
             if(ps->first==ps->control&&ps->count==1)++packetPixelReadsSkipped;
             else if(FAILED(d->GetPixelShaderConstantF(ps->first,packet->ps.data(),ps->count)))return false;
@@ -485,7 +493,8 @@ public:
     void setRasterStateSource(void* context,bool(*reader)(void*,const D3DRENDERSTATETYPE*,unsigned,DWORD*)){rasterContext=context;rasterReader=context==d?reader:nullptr;nativeMrt.setRasterStateSource(context,reader);}
     void setEmptyTargetSource(void* context,bool(*reader)(void*)){nativeMrt.setEmptyTargetSource(context,reader);}
     void setSamplerStateSource(void* context,bool(*reader)(void*,DWORD,unsigned,DWORD*)){samplerContext=context;samplerReader=context==d?reader:nullptr;}
-    void setTrustedPoseSource(NorthlightConstantEpoch::TrustedSource source){for(auto& p:pending)p->constantStamp={};poseContext=source.context();poseReader=source&&source.context()==d?source.reader():nullptr;poseSpan=poseReader?source.span():nullptr;}
+    void setTrustedPoseSource(NorthlightConstantEpoch::TrustedSource source){for(auto& p:pending)p->constantStamp={};poseContext=source.context();poseReader=source&&source.context()==d?source.reader():nullptr;poseSpan=poseReader?source.span():nullptr;
+        constantSource={};if(poseReader){const auto* mirror=static_cast<ExtensionDevice*>(d)->constantMirror();constantSource={&mirror->constantEpoch,mirror};}}
     void setGeometryCache(NorthlightGpuScene::NativeClient* cache){geometryCache=cache;}
     unsigned cachedDraws()const{return residentDraws;}
     unsigned reusedSources()const{return sourceReused;}
