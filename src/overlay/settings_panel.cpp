@@ -107,7 +107,7 @@ const std::map<std::string,std::vector<const char*>> Help={
     {"HDRExposure",{"0 EV is neutral. +1 EV doubles world light; -1 EV halves it. UI brightness is unchanged."}},
     {"HDRMaxNits",{"Limits world HDR output. UI brightness remains independent; this does not raise SDR highlights to the chosen peak."}},
     {"ExperimentalHDR",{"Requires DXVK 2 or 3, the separate render thread, windowed mode and HDR enabled for the current Windows display. MSAA is supported."}},
-    {"HDRLegacyExpansion",{"0 disables expansion. Up to +2 EV selectively lifts bright legacy SDR details. It cannot restore clipped detail or identify every emitter; UI and Northlight HDR sources are excluded."}},
+    {"HDRLegacyExpansion",{"Up to +2 EV lifts legacy highlights and native aurora emission. At 0, auroras keep their base HDR emission and other legacy details stay unexpanded. UI and Northlight's added twilight emission are excluded. Clipped SDR detail cannot be restored."}},
     {"HDRExposureMode",{"Auto meters the world before bloom and UI. Exposure becomes compensation. Manual uses only the selected EV."}},
     {"HDRPeakMode",{"Auto follows Windows calibration / display metadata, with a 1000 nit fallback. Manual uses your saved per-display peak."}},
     {"HDRWideBloom",{"Adds a wider, softer glow around bright world light. Uses more GPU arithmetic and extra memory. Falls back to compact bloom if resources are unavailable. UI brightness is unchanged."}},
@@ -117,7 +117,7 @@ const std::map<std::string,std::vector<const char*>> Help={
     {"GI",{"Adds indirect sky light, bounced colors and occlusion from surrounding geometry. Turning it off stops the background lighting solver and leaves the game's ambient lighting."}},
     {"GIStrength",{"Influence of measured sky light, bounced color and occlusion on terrain and objects. 120 fully replaces native ambient; 60 restores the old half blend; up to 240 strengthens the contrast. 0 suspends GI work."}},
     {"GIBrightness",{"Adjusts measured indirect light: negative values darken, positive values brighten. -100 removes it, 0 keeps it unchanged, +100 doubles it. Missing probes keep native lighting; direct sun and lamps are unchanged."}},
-    {"AuroraStrength",{"Shared strength of visible aurora emission and its light in Northrend between sunset and moonrise. 0 preserves the original game ribbons. Surface illumination requires GI and resident probes; roofs and walls occlude it. Fog can be off."}},
+    {"AuroraStrength",{"Scales all native Northrend aurora emission and its light: 0 turns it off, 100 is normal, 200 doubles it. Extra green/purple emission strengthens it between sunset and moonrise. Surface illumination requires GI and resident probes; roofs and walls occlude it. Independent of enhanced rain/snow and fog."}},
     {"GIRays",{"Samples the surroundings in more directions for each lighting probe. More rays improve indirect lighting stability and detail, but increase background CPU work."}},
     {"GIBounces",{"How many times indirect light can reflect between surfaces. More bounces carry light farther into enclosed spaces and cost more background CPU time."}},
     {"GIProbeMoveStep",{"Camera movement in yards before the lighting grid moves. Smaller steps follow movement sooner but trigger more frequent background updates."}},
@@ -225,10 +225,10 @@ const std::map<std::string,std::vector<const char*>> Help={
 struct Group { const char* id; const char* title; const char* master; const char* fields; const char* advanced; };
 struct Section { const char* id; const char* title; const char* keys; std::vector<Group> groups; bool open; };
 const std::vector<Section> QualitySections={
-    {"lighting","Lighting & AO","GI GIStrength GIBrightness AuroraStrength GIRays GIBounces GIProbeMoveStep GIDynamicProbes GIThreads GIFastBVH GIDistance GIProbeAhead NightBrightness ContactAO AOMethod AOQuality AOStrength AORadius LocalLights LocalLightLimit EquipmentLights PointShadows PointShadowLimit PointShadowDistance PointShadowRefreshMs PointShadowFacesPerFrame",{
+    {"lighting","Lighting & AO","GI GIStrength GIBrightness GIRays GIBounces GIProbeMoveStep GIDynamicProbes GIThreads GIFastBVH GIDistance GIProbeAhead NightBrightness ContactAO AOMethod AOQuality AOStrength AORadius LocalLights LocalLightLimit EquipmentLights PointShadows PointShadowLimit PointShadowDistance PointShadowRefreshMs PointShadowFacesPerFrame",{
         {"gi","Global illumination","GI","GIStrength GIBrightness GIDistance GIBounces","GIRays GIProbeMoveStep GIDynamicProbes GIThreads GIFastBVH GIProbeAhead"},
         {"ao","Ambient occlusion","ContactAO","AOMethod AOQuality AOStrength AORadius",""},
-        {"ambient","Environment",nullptr,"NightBrightness AuroraStrength",""},
+        {"ambient","Environment",nullptr,"NightBrightness",""},
         {"local","Local illumination","LocalLights","LocalLightLimit PointShadows PointShadowLimit EquipmentLights","PointShadowDistance PointShadowRefreshMs PointShadowFacesPerFrame"}},true},
     {"materials","Materials & parallax","AutoBump AutoBumpTerrain AutoBumpWalls AutoBumpGrass AutoBumpModels AutoBumpStrength AutoBumpDistance AutoParallaxDepth AutoParallaxDistance AutoParallaxSteps AutoParallaxShadows AutoParallaxShadowStrength AutoParallaxShadowSteps AutoCavity AutoCavityStrength AutoMaterialOcclusionDistance AutoDisplacementStrength AutoDisplacementDistance AutoDisplacementDetail AutoHeightBalance AutoModelDisplacementStrength AutoModelDisplacementDistance AutoModelDisplacementDetail",{
         {"bump","Material modes","AutoBump","AutoBumpTerrain AutoBumpWalls AutoBumpGrass AutoBumpModels AutoBumpStrength AutoBumpDistance",""},
@@ -244,10 +244,10 @@ const std::vector<Section> QualitySections={
         {"blobs","Round ground shadows","BlobShadows","BlobShadowStrength",""},
         {"nativeTerrain","Disable original terrain shadows","DisableOriginalTerrainShadows","",""},
         {"cache","Shadow updates",nullptr,"","FarShadowInterval NearShadowInterval ShadowDirectionSteps StaticCacheSlices ShadowPivotCorrection"}},false},
-    {"atmosphere","Atmosphere & weather","WorldFog Weather WeatherMemory RainFog RainLens RainLensStrength RainRivulets SnowLens SnowLensStrength SnowFrost SnowFrostStrength SandLens SandLensStrength SandLensSize WeatherWindDirection WeatherWindStrength WeatherCameraMotion FogClouds FogCloudDensity HorizonHaze HorizonHazeStart HorizonHazeBand HorizonHazeTerrain",{
+    {"atmosphere","Atmosphere & weather","WorldFog Weather AuroraStrength WeatherMemory RainFog RainLens RainLensStrength RainRivulets SnowLens SnowLensStrength SnowFrost SnowFrostStrength SandLens SandLensStrength SandLensSize WeatherWindDirection WeatherWindStrength WeatherCameraMotion FogClouds FogCloudDensity HorizonHaze HorizonHazeStart HorizonHazeBand HorizonHazeTerrain",{
         {"atmosphere","Atmospheric fog","WorldFog","",""},
         {"fog","Fog banks","FogClouds","FogCloudDensity",""},
-        {"weather","Weather","Weather","RainFog RainDropSize SnowFlakeSize","WeatherMemory"},
+        {"weather","Weather","Weather","AuroraStrength RainFog RainDropSize SnowFlakeSize","WeatherMemory"},
         {"rainlens","Rain on camera","RainLens","RainLensStrength RainLensSize RainRivulets",""},
         {"snowlens","Snow on camera","SnowLens","SnowLensStrength SnowLensSize",""},
         {"snowfrost","Frost at screen edges","SnowFrost","SnowFrostStrength",""},

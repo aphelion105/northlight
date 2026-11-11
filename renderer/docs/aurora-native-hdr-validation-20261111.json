@@ -1,0 +1,88 @@
+{
+  "source_identity": "e95e2b9ae3a55d9bd567460c3c9baffc571ed028f9db7b2436631a888846b6c4",
+  "dll_sha256": "5908988d42d510b65d5521198a04e915244baa7945498c4ac392212a725a3d65",
+  "prior_build": "5602770c92821723feebb874eb30a30b38629d885b20a4731c9bd50826464093",
+  "captures": [
+    {
+      "session": "session-51868-57644875-0",
+      "frame": 37385,
+      "ao_method": 4,
+      "legacy_expansion": 0.5,
+      "twilight_gain": 0,
+      "green_hdr_peaks": [
+        1.330078,
+        1.505859,
+        3.082031
+      ]
+    },
+    {
+      "session": "session-51868-57648843-0",
+      "frame": 37740,
+      "ao_method": 3,
+      "legacy_expansion": 0.5,
+      "twilight_gain": 0,
+      "green_hdr_peaks": [
+        1.370117,
+        1.549805,
+        2.902344
+      ]
+    }
+  ],
+  "findings": [
+    "Prior build admitted all seven aurora draws but native below-one emission remained SDR-bounded.",
+    "HDRLegacyExpansion was absent from the aurora control constants.",
+    "Captures both have Effects enabled; they are not an Effects on/off pair."
+  ],
+  "fix": [
+    "Native additive RGB is calibrated as emissive intensity with particle-style authored overshoot preservation.",
+    "Existing legacy EV scales only native aurora radiance; controlled twilight E retains its visible/GI scale.",
+    "Complete native sky baseline is retained and subtracted from the extra emission exactly once.",
+    "User-approved AuroraStrength scales native emission and native RGB GI all day, as well as twilight E.",
+    "0 removes the native SDR baseline and HDR/GI emission; 100 is normal, 200 doubles the source.",
+    "AuroraStrength moved into Atmosphere & weather / Weather, without requiring enhanced precipitation."
+  ],
+  "checks": {
+    "backends": [
+      "native",
+      "dxvk2",
+      "dxvk3"
+    ],
+    "pixel_cases_per_capture_backend": 1152,
+    "ev": [
+      0,
+      0.5,
+      2
+    ],
+    "pixel_absolute_floor": 0.012,
+    "pixel_relative_tolerance": 0.0025,
+    "max_pixel_error": 0.042057,
+    "complete_scene_replay": true,
+    "captured_mip_size": [
+      32,
+      16
+    ],
+    "twilight_emission_disabled": true,
+    "sky_replay_cases_per_backend": 432,
+    "settings_overlay": "pass",
+    "build_log": "out/aurora-b-validation/build-whole-aurora.log",
+    "capture_reports": [
+      "out/aurora-b-validation/whole-aurora-capture-1.json",
+      "out/aurora-b-validation/whole-aurora-capture-2.json"
+    ],
+    "native_intensity": [
+      0,
+      0.5,
+      1,
+      2
+    ],
+    "daytime_native_gi": "positive RGB source at 100%, exactly half/double at 50/200%, removed at 0%",
+    "combined_projection": "six channels, one ray traversal",
+    "transport": "42 cached/fresh comparisons, normals, sealed roof, <=4 MiB, activation/removal/moving replay",
+    "settings": "Weather grouping, GI/fog/precipitation independence, no-op HDR invalidation checks passed"
+  },
+  "live_acceptance": false,
+  "scope": "GPU replay validates material transfer and parameter response; final full-resolution client appearance remains unverified.",
+  "native_hdr_only_build": "d47db1f25e52a86ddbdb6dcfff1201b31306322119e3b69ce3f48688dd64cc48",
+  "final_package": "out/aurora-b-validation/packages/Northlight-0.3.217-whole-aurora-20261111-Windows.zip",
+  "package_verification": "passed"
+}

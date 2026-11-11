@@ -2427,6 +2427,7 @@ private:
     NorthlightAuroraNative::Renderer auroraRenderer;
     NorthlightAurora::Style auroraStyle;
     NorthlightAuroraSource::RGB auroraDrawScale{};
+    float auroraDrawIntensity=1;
     bool auroraDrawProven=false,auroraCameraValid=false;
     unsigned auroraFrame=~0u,auroraNativeDraws=0,auroraHdrDraws=0;DWORD auroraCaptureAt=0;
     float auroraInverse[16]{};std::string auroraMap;
@@ -2461,12 +2462,14 @@ private:
         if(!NorthlightAuroraNative::Reader::read(ext,spellArgs,geometry?auroraInverse:identity,packet,geometry)||
            packet.assetBatch==~0u||!auroraRenderer.prepare(ext))return;
         auroraDrawProven=true;
+        auroraDrawIntensity=auroraStyle.intensity;
         if(auroraSources.owns(packet.assetBatch,packet.drawGroup))auroraDrawScale=NorthlightAuroraSource::emissionScale(auroraStyle);
         if(geometry){const auto group=packet.drawGroup;auroraSources.observe(group,std::move(packet));}
     }
     template<class Draw> HRESULT auroraNativeDraw(Draw submit){
-        if(auroraDrawProven&&!hdrSkyReplaying&&!hdr.active){HRESULT hr=E_FAIL;
-            if(auroraRenderer.draw(ext,false,auroraDrawScale,submit,hr)){++auroraNativeDraws;return hr;}}
+        if(auroraDrawProven&&!hdrSkyReplaying){HRESULT hr=E_FAIL;
+            const auto extra=hdr.active?NorthlightAuroraSource::RGB{}:auroraDrawScale;
+            if(auroraRenderer.draw(ext,false,extra,submit,hr,0,auroraDrawIntensity)){++auroraNativeDraws;return hr;}}
         return submit();
     }
     struct SkyTexture {std::uint64_t hash=0;unsigned format=0,width=0,height=0;};
@@ -2585,13 +2588,13 @@ private:
            FAILED(ext->SetRenderState(D3DRS_ZWRITEENABLE,FALSE))||FAILED(ext->SetRenderState(D3DRS_STENCILWRITEMASK,0)))return;
         hdrSkyReplaying=true;
         HRESULT auroraResult=E_FAIL;
-        if(auroraDrawProven&&auroraRenderer.draw(ext,true,auroraDrawScale,draw,auroraResult))++auroraHdrDraws;
+        if(auroraDrawProven&&auroraRenderer.draw(ext,true,auroraDrawScale,draw,auroraResult,hdrFrameSettings.legacyExpansion,auroraDrawIntensity))++auroraHdrDraws;
         else auroraResult=NorthlightHdr::attenuateSky(ext,draw);
         hdrSkyReplaying=false;
         if(FAILED(auroraResult)){hdrSkyValid=false;hdrSkyRejected=true;if(celestialDiscs)celestialDiscs->setHdrSkyTarget(nullptr);}
     }
     template<class Capture,class Draw> HRESULT drawHook(D3DPRIMITIVETYPE t,UINT count,Capture capture,Draw draw,bool* nativeSky=nullptr,bool* skyCaptured=nullptr){
-        auroraDrawProven=false;auroraDrawScale={};
+        auroraDrawProven=false;auroraDrawScale={};auroraDrawIntensity=1;
         const HRESULT resumed=hdrResumeWorld();if(FAILED(resumed))return resumed;
         if(!enabled&&!failed&&!hdr.active&&worldDebug==0&&!diagnostics()){++drawCalls;return draw();}
         if(gpuScene&&!gpuScene->native.currentFrame(frame)){ExtensionDevice::RawScope raw(*ext);gpuScene->setFrame(frame);}
@@ -4058,7 +4061,7 @@ public:
         ++frame;mirrorState.gate.frame.store(frame,std::memory_order_relaxed); /* 0.3.180: the census' frame */
         auroraSources.end();auroraDiagnostic.beginFrame(frame);
         if(diagnostics()&&frame%120==0&&(auroraHdrDraws||auroraNativeDraws))
-            logf("AURORA frame=%u hdrDraws=%u addedNativeDraws=%u gain=%.5f phase=%.5f cameraValid=%u",frame,auroraHdrDraws,auroraNativeDraws,auroraStyle.gain,auroraStyle.phase,unsigned(auroraCameraValid));
+            logf("AURORA frame=%u hdrDraws=%u addedNativeDraws=%u gain=%.5f phase=%.5f cameraValid=%u nativeHdr=1 legacyEV=%.3f intensity=%.3f",frame,auroraHdrDraws,auroraNativeDraws,auroraStyle.gain,auroraStyle.phase,unsigned(auroraCameraValid),hdrFrameSettings.legacyExpansion,auroraStyle.intensity);
         if(frame%120==0)auroraHdrDraws=auroraNativeDraws=0;
         mirrorState.setVsFloatWriteObservation(diagnostics()&&world&&!world->hasContext()&&!nativeLocalLightProbe.full());
         if(frame==300)memmap(diagnosticId==1?"baseline-frame300":"frame300"); /* 0.3.192 (MEMMAP): allocations settled; device 1 is the baseline */

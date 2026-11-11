@@ -13,9 +13,10 @@ namespace NorthlightAuroraNative {
 class Registry {
     struct Group {std::uint64_t drawGroup=0;std::vector<Packet> packets;};
     struct Job {std::uint64_t selection=0,revision=0,epoch=0,drawGroup=0;unsigned family=0;std::vector<Packet> packets;};
-    struct Result {unsigned family=0;std::uint64_t epoch=0,drawGroup=0;NorthlightAuroraSource::Snapshot source;};
+    struct Field {NorthlightAuroraSource::Snapshot native,twilight;};
+    struct Result {unsigned family=0;std::uint64_t epoch=0,drawGroup=0;Field source;};
     std::vector<Group> frameGroups_;
-    struct Source {std::uint64_t drawGroup=0;NorthlightAuroraSource::Snapshot value;};
+    struct Source {std::uint64_t drawGroup=0;Field value;};
     std::map<unsigned,Source> sources_;
     std::array<std::uint64_t,sizeof(AssetFamilies)/sizeof(AssetFamilies[0])> rejectedThrough_{};
     std::shared_ptr<const NorthlightAuroraSource::Snapshot> published_;
@@ -33,10 +34,12 @@ class Registry {
                 bool complete=true;
                 for(auto& packet:job.packets){if(!Reader::expand(packet)){complete=false;break;}const unsigned material=unsigned(materials.size());materials.push_back(std::move(packet.material));
                     for(auto& triangle:packet.triangles){triangle.material=material;triangles.push_back(std::move(triangle));}}
-                NorthlightAuroraSource::Snapshot source;
-                const bool ok=complete&&NorthlightAuroraSource::project(triangles,job.selection,job.revision,
-                    [&](unsigned material,const NorthlightAuroraSource::NativeVertex& vertex,NorthlightAuroraSource::RGB& out){return material<materials.size()&&materials[material].luminance(vertex,out);},source);
-                if(ok)done.push_back({job.family,job.epoch,job.drawGroup,source});
+                std::array<std::array<float,6>,NorthlightAuroraSource::SectorCount> field{};
+                const bool ok=complete&&NorthlightAuroraSource::projectChannels<6>(triangles,job.selection,job.revision,
+                    [&](unsigned material,const NorthlightAuroraSource::NativeVertex& vertex,std::array<float,6>& out){return material<materials.size()&&materials[material].emission(vertex,out);},field);
+                if(ok){Field source;for(auto* snapshot:{&source.native,&source.twilight}){snapshot->selection=job.selection;snapshot->revision=job.revision;snapshot->complete=true;}
+                    for(unsigned sector=0;sector<NorthlightAuroraSource::SectorCount;++sector)for(unsigned c=0;c<3;++c){source.native.radiance[sector][c]=field[sector][c];source.twilight.radiance[sector][c]=field[sector][c+3];}
+                    done.push_back({job.family,job.epoch,job.drawGroup,source});}
             }catch(const std::bad_alloc&){}
             try{std::lock_guard<std::mutex> lock(mutex_);if(stopped_)return;results_.insert(results_.end(),done.begin(),done.end());if(results_.size()>32)results_.erase(results_.begin(),results_.end()-32);}
             catch(const std::bad_alloc&){} // Retain the last valid field under memory pressure.
@@ -60,8 +63,8 @@ public:
         if(selection_!=selection){reset();selection_=selection;}
         frame_=frame;triangles_=0;collecting_=collect&&selection;frameGroups_.clear();
         std::vector<Result> done;{std::lock_guard<std::mutex> lock(mutex_);done.swap(results_);}
-        for(auto& result:done)if(result.epoch==epoch_&&result.source.selection==selection_&&result.source.revision>rejectedThrough_[result.family]){auto old=sources_.find(result.family);
-            if(old==sources_.end()||old->second.value.revision<result.source.revision){sources_[result.family]={result.drawGroup,result.source};published_.reset();}}
+        for(auto& result:done)if(result.epoch==epoch_&&result.source.native.selection==selection_&&result.source.native.revision>rejectedThrough_[result.family]){auto old=sources_.find(result.family);
+            if(old==sources_.end()||old->second.value.native.revision<result.source.native.revision){sources_[result.family]={result.drawGroup,result.source};published_.reset();}}
     }
     bool collecting()const{return collecting_;}
     void observe(std::uint64_t drawGroup,Packet packet){
@@ -96,7 +99,7 @@ public:
         auto next=std::make_shared<NorthlightAuroraSource::Snapshot>();next->selection=selection_;next->revision=++revision_;next->complete=true;
         const auto scale=NorthlightAuroraSource::emissionScale(style);
         for(const auto& entry:sources_)for(unsigned sector=0;sector<NorthlightAuroraSource::SectorCount;++sector)
-            for(unsigned c=0;c<3;++c)next->radiance[sector][c]+=entry.second.value.radiance[sector][c]*scale[c];
+            for(unsigned c=0;c<3;++c)next->radiance[sector][c]+=entry.second.value.native.radiance[sector][c]*style.intensity+entry.second.value.twilight.radiance[sector][c]*scale[c];
         if(!NorthlightAuroraSource::valid(*next))return {};publishedStyle_=style.revision;published_=std::move(next);return published_;
     }
 };

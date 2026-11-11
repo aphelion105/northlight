@@ -10,7 +10,9 @@ fp.use_source_modules()
 from world_scene_builder import Assets,blp_mips
 parser=argparse.ArgumentParser(__doc__)
 parser.add_argument('--capture',type=Path,default=Path(__file__).resolve().parents[1]/'out/aurora-b-captures/session-18884-52095218-0')
+parser.add_argument('--scene',type=Path);parser.add_argument('--depth',type=Path)
 args=parser.parse_args();capture=args.capture.resolve()
+assert bool(args.scene)==bool(args.depth)
 rows=[d for line in (capture/'aurora-native.jsonl').read_text().splitlines() if (d:=json.loads(line)).get('event')=='draw']
 assert len(rows)==7
 (capture/'draw-args.bin').write_bytes(b''.join(struct.pack('<4I',*[r[k] for k in ['primitive_count','first','min_index','num_vertices']]) for r in rows))
@@ -28,6 +30,7 @@ run=subprocess.run([str(fp.zig()),'c++','-target','x86-windows-gnu','-O2','-UNDE
 results=[]
 for name,backend in [('native',Path(os.environ['WINDIR'])/'SysWOW64/d3d9.dll'),('dxvk2',fp.client_root()/'renderer-backends/dxvk2/dxvk2_d3d9.dll'),('dxvk3',fp.client_root()/'renderer-backends/dxvk/dxvk_d3d9.dll')]:
     folder=out/name;folder.mkdir(exist_ok=True)
-    run=subprocess.run([str(exe),str(backend),str(capture)],cwd=folder,capture_output=True,text=True,timeout=90,env=dict(os.environ,DXVK_LOG_PATH=str(folder),DISABLE_VULKAN_OBS_CAPTURE='1'))
+    scene=[str(args.scene.resolve()),str(args.depth.resolve())] if args.scene else []
+    run=subprocess.run([str(exe),str(backend),str(capture),*scene],cwd=folder,capture_output=True,text=True,timeout=90,env=dict(os.environ,DXVK_LOG_PATH=str(folder),DISABLE_VULKAN_OBS_CAPTURE='1'))
     (folder/'run.log').write_text(run.stdout+run.stderr);print(name,run.returncode,run.stdout+run.stderr,flush=True);run.check_returncode();results.append(dict(backend=name,result=run.stdout))
 (out/'validation.json').write_text(json.dumps(results,indent=2))

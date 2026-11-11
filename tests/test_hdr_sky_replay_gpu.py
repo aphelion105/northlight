@@ -29,6 +29,8 @@ struct ExtensionDevice:DeviceMeter {
 struct SkyReplay {
     ExtensionDevice* ext;IDirect3DSurface9* sky;NorthlightStateBlockPool stateBlocks;NorthlightHdr::Color hdrColor;bool hdrSkyReplaying=false;
     NorthlightAuroraNative::Renderer auroraRenderer;bool auroraDrawProven=false;unsigned auroraHdrDraws=0;NorthlightAuroraSource::RGB auroraDrawScale{};
+    NorthlightHdr::Settings hdrFrameSettings;
+    float auroraDrawIntensity=1;
     bool hdrSkyValid=true,hdrSkyRejected=false;struct Celestial{void setHdrSkyTarget(IDirect3DSurface9*){}};Celestial* celestialDiscs=nullptr;
     SkyReplay(ExtensionDevice* d,IDirect3DSurface9* s):ext(d),sky(s),stateBlocks(d){}
     template<class T>static void drop(T*& p){dropGraph(p);}

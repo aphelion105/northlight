@@ -325,6 +325,9 @@ int main(){
             CHECK(D::blocked(draft,*brightness,missing)==D::Block::NeedsKey&&missing==parent);
             CHECK(D::blocked(draft,*aurora,missing)==D::Block::None);draft.clear();
         }
+        for(const char* parent:{"Weather","WorldFog"}){
+            draft.set(*draft.quality(parent),"0");CHECK(D::blocked(draft,*aurora,missing)==D::Block::None);draft.clear();
+        }
     }
     disableOriginalTerrainShadows();
     masterHotkey();routing();draft();shadowRange();pointShadowDistance();

@@ -5,6 +5,40 @@
 #include "aurora_renderer.h"
 #include <chrono>
 
+// Replay curated native triangles with the captured material/animation state.
+// The 32x16 captured mip is deliberately retained: this validates transfer and
+// spatial placement, rather than claiming a full-resolution in-client image.
+static void materialScene(DeviceMeter& d,const std::vector<NorthlightAuroraNative::Packet>& packets,
+                          IDirect3DVertexShader9* vs,IDirect3DPixelShader9* ps,IDirect3DVertexDeclaration9* declaration,
+                          IDirect3DTexture9* const textures[2],const char* scenePath,const char* depthPath){
+    using namespace NorthlightAuroraNative;
+    auto scene=image(scenePath),z=image(depthPath);assert(scene.width==z.width&&scene.height==z.height);
+    auto* native=texture(&d,scene);auto* depth=texture(&d,z);NorthlightHdr::Frame frame;NorthlightHdr::Settings settings;settings.legacyExpansion=0;
+    Renderer renderer;ok(d.SetPixelShader(ps));assert(renderer.prepare(&d));
+    const auto w=scene.width,h=scene.height;float previous=0;
+    for(float ev:{0.f,.5f,2.f}){
+        ok(d.BeginScene());ok(frame.ensure(&d,w,h));frame.beginSkyResidual();
+        ok(NorthlightHdr::quadState(&d,frame.surface(),w,h));ok(d.Clear(0,nullptr,D3DCLEAR_TARGET,0xff000000,1,0));
+        ok(d.SetVertexShader(vs));ok(d.SetPixelShader(ps));ok(d.SetVertexDeclaration(declaration));
+        ok(d.SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE));ok(d.SetRenderState(D3DRS_SRCBLEND,D3DBLEND_SRCALPHA));ok(d.SetRenderState(D3DRS_DESTBLEND,D3DBLEND_ONE));ok(d.SetRenderState(D3DRS_BLENDOP,D3DBLENDOP_ADD));
+        ok(d.SetRenderState(D3DRS_CULLMODE,D3DCULL_CW));ok(d.SetRenderState(D3DRS_ALPHATESTENABLE,TRUE));ok(d.SetRenderState(D3DRS_ALPHAFUNC,D3DCMP_GREATEREQUAL));ok(d.SetRenderState(D3DRS_ALPHAREF,1));ok(d.SetRenderState(D3DRS_COLORWRITEENABLE,7));
+        for(unsigned t=0;t<2;++t){ok(d.SetTexture(t,textures[t]));ok(d.SetSamplerState(t,D3DSAMP_ADDRESSU,t?D3DTADDRESS_MIRROR:D3DTADDRESS_WRAP));ok(d.SetSamplerState(t,D3DSAMP_ADDRESSV,t?D3DTADDRESS_MIRROR:D3DTADDRESS_WRAP));ok(d.SetSamplerState(t,D3DSAMP_MINFILTER,D3DTEXF_LINEAR));ok(d.SetSamplerState(t,D3DSAMP_MAGFILTER,D3DTEXF_LINEAR));}
+        for(const auto& packet:packets){const auto& batch=AssetBatches[packet.assetBatch];std::vector<std::array<float,12>> vertices(batch.primitives*3);
+            for(unsigned i=0;i<vertices.size();++i){const auto& v=AssetVertices[AssetIndices[batch.offset+i]];auto& out=vertices[i];std::copy(v.position,v.position+3,out.begin());std::copy(v.uv[0],v.uv[0]+2,out.begin()+8);std::copy(v.uv[1],v.uv[1]+2,out.begin()+10);}
+            ok(d.SetVertexShaderConstantF(0,packet.constants.data(),256));HRESULT result=E_FAIL;
+            assert(renderer.draw(&d,true,{},[&]{return d.DrawPrimitiveUP(D3DPT_TRIANGLELIST,batch.primitives,vertices.data(),48);},result,ev));ok(result);
+        }
+        ok(frame.prepareLegacy(&d,native,depth,frame.surface(),w,h,0,.94f,settings));ok(d.EndScene());
+        IDirect3DSurface9* staging=nullptr;ok(d.CreateOffscreenPlainSurface(w,h,D3DFMT_A16B16G16R16F,D3DPOOL_SYSTEMMEM,&staging,nullptr));ok(d.GetRenderTargetData(frame.surface(),staging));D3DLOCKED_RECT lock{};ok(staging->LockRect(&lock,nullptr,D3DLOCK_READONLY));
+        const auto output="native-aurora-ev-"+std::to_string(int(ev*10))+".fgr";std::ofstream file(output,std::ios::binary);const std::uint32_t header[]={0x31524746,w,h,D3DFMT_A16B16G16R16F,8};file.write(reinterpret_cast<const char*>(header),sizeof header);
+        float peak=0;double sum=0;for(unsigned y=0;y<h;++y){const auto* row=reinterpret_cast<const std::uint16_t*>(static_cast<const char*>(lock.pBits)+y*lock.Pitch);file.write(reinterpret_cast<const char*>(row),w*8);
+            for(unsigned x=0;x<w;++x){const float green=half(row[x*4+1]);peak=std::max(peak,green);sum+=green;}}
+        ok(staging->UnlockRect());staging->Release();assert(peak>1);const float mean=float(sum/(w*h));assert(mean>previous);previous=mean;
+        std::printf("AURORA_MATERIAL_SCENE_PASS ev=%.1f peakGreen=%.6f meanGreen=%.6f twilight=0 coarseCapturedMip=1\n",ev,peak,mean);
+    }
+    native->Release();depth->Release();
+}
+
 static void pixelTransfer(DeviceMeter& d){
     using namespace NorthlightAuroraNative;
     constexpr unsigned W=16,H=16;
@@ -18,26 +52,27 @@ static void pixelTransfer(DeviceMeter& d){
     const unsigned colors[][3]={{8,26,3},{38,51,13},{255,255,255}};
     const NorthlightAuroraSource::RGB scales[]={{0,0,0},{.28f,4,1.28f},{3.6f,.36f,4},{7.2f,.72f,8}};
     Renderer renderer;assert(renderer.prepare(&d));unsigned cases=0;float maxError=0;
-    for(const auto& color:colors)for(float opacity:{0.f,.1f,.7120884f,1.f})for(const auto& scale:scales){
+    for(const auto& color:colors)for(float opacity:{0.f,.1f,.7120884f,1.f})for(const auto& scale:scales)for(float ev:{0.f,.5f,2.f})for(float intensity:{0.f,.5f,1.f,2.f}){
         IDirect3DTexture9* textures[]={texture(&d,{1,1,D3DFMT_A8R8G8B8,4,{static_cast<unsigned char>(color[2]),static_cast<unsigned char>(color[1]),static_cast<unsigned char>(color[0]),255}}),texture(&d,{1,1,D3DFMT_A8R8G8B8,4,{255,255,255,77}})};
         for(unsigned i=0;i<2;++i){ok(d.SetTexture(i,textures[i]));ok(d.SetSamplerState(i,D3DSAMP_MINFILTER,D3DTEXF_POINT));ok(d.SetSamplerState(i,D3DSAMP_MAGFILTER,D3DTEXF_POINT));}
         float c[256][4]{};for(unsigned i=0;i<4;++i)c[2+i][i]=1;for(unsigned i=0;i<3;++i)c[31+i][i]=1;c[6][0]=c[7][1]=c[8][0]=c[9][1]=1;c[28][0]=c[28][1]=c[28][2]=1;c[28][3]=opacity;c[30][1]=c[30][2]=1;ok(d.SetVertexShaderConstantF(0,c[0],256));
         const std::array<float,4> native={2*color[0]/255.f,2*color[1]/255.f,2*color[2]/255.f,2*opacity*77/255};
-        const auto addition=NorthlightAuroraSource::additional(native,scale,true);const float alpha=std::clamp(native[3],0.f,1.f);
-        for(bool hdr:{false,true}){auto* target=hdr?linear.surface:legacy.surface;ok(d.SetRenderTarget(0,target));ok(d.Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0));ok(d.BeginScene());HRESULT result=E_FAIL;auto draw=[&]{return d.DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,vertices,sizeof(VertexUV));};if(renderer.draw(&d,hdr,scale,draw,result))ok(result);else ok(draw());ok(d.EndScene());const auto actual=sample(target,hdr);
+        auto scaled=scale;for(auto& c:scaled)c*=intensity;
+        const auto addition=NorthlightAuroraSource::additional(native,scaled,true);const float alpha=std::clamp(native[3],0.f,1.f);
+        for(bool hdr:{false,true}){auto* target=hdr?linear.surface:legacy.surface;ok(d.SetRenderTarget(0,target));ok(d.Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0));ok(d.BeginScene());HRESULT result=E_FAIL;auto draw=[&]{return d.DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,vertices,sizeof(VertexUV));};if(renderer.draw(&d,hdr,scaled,draw,result,ev,intensity))ok(result);else ok(draw());ok(d.EndScene());const auto actual=sample(target,hdr);
             for(unsigned channel=0;channel<3;++channel){const float baseline=std::clamp(native[channel],0.f,1.f);
                 const float full=native[channel]<=.04045f?native[channel]/12.92f:std::pow((native[channel]+.055f)/1.055f,2.4f);
-                float expected=(full-NorthlightAuroraSource::decode(baseline))*alpha+addition[channel];
-                if(!hdr){const float value=NorthlightAuroraSource::decode(baseline)+(alpha>0?addition[channel]/alpha:0);const float encoded=value<=.0031308f?value*12.92f:1.055f*std::pow(value,1/2.4f)-.055f;expected=std::clamp(encoded,0.f,1.f)*alpha;}
-                const float error=std::fabs(actual[channel]-expected);maxError=std::max(error,maxError);assert(error<(hdr?.012f:2.1f/255));}
+                float expected=std::max(std::max(native[channel],full)*std::exp2(ev)*intensity-std::min(NorthlightAuroraSource::decode(baseline)*intensity,1.f),0.f)*alpha+addition[channel];
+                if(!hdr){const float value=NorthlightAuroraSource::decode(baseline)*intensity+(alpha>0?addition[channel]/alpha:0);const float encoded=value<=.0031308f?value*12.92f:1.055f*std::pow(value,1/2.4f)-.055f;expected=std::clamp(encoded,0.f,1.f)*alpha;}
+                const float error=std::fabs(actual[channel]-expected);maxError=std::max(error,maxError);assert(error<(hdr?std::max(.012f,std::fabs(expected)*.0025f):2.1f/255));}
             ++cases;
         }for(auto* t:textures)t->Release();
     }
-    declaration->Release();std::printf("AURORA_PIXEL_PASS cases=%u maxError=%.7f hdrHeadroom=1 zeroAlpha=1 sharedCPU=1\n",cases,maxError);
+    declaration->Release();std::printf("AURORA_PIXEL_PASS cases=%u maxError=%.7f hdrHeadroom=1 zeroAlpha=1 sharedCPU=1 legacyEV=0/.5/2 nativeIntensity=0/.5/1/2 twilightIndependent=1\n",cases,maxError);
 }
 
 int main(int argc,char** argv){
-    assert(argc==3);const std::string folder=argv[2];
+    assert(argc==3||argc==5);const std::string folder=argv[2];
     HWND window=CreateWindowExW(0,L"STATIC",L"",WS_OVERLAPPED,0,0,64,64,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);assert(window);
     HMODULE library=LoadLibraryA(argv[1]);assert(library);auto create=reinterpret_cast<IDirect3D9*(WINAPI*)(UINT)>(reinterpret_cast<void*>(GetProcAddress(library,"Direct3DCreate9")));assert(create);auto* api=create(D3D_SDK_VERSION);
     D3DPRESENT_PARAMETERS pp{};pp.Windowed=TRUE;pp.hDeviceWindow=window;pp.BackBufferWidth=pp.BackBufferHeight=64;pp.BackBufferFormat=D3DFMT_X8R8G8B8;pp.SwapEffect=D3DSWAPEFFECT_DISCARD;
@@ -80,6 +115,14 @@ int main(int argc,char** argv){
     std::shared_ptr<const NorthlightAuroraSource::Snapshot> source;
     for(unsigned tick=0;tick<5000;++tick){registry.begin(2+tick,17,false);source=registry.source(green);if(source){bool owns=true;for(const auto& packet:packets)owns&=registry.owns(packet.assetBatch,packet.drawGroup);if(owns)break;}Sleep(1);}
     assert(source);for(const auto& packet:packets)assert(registry.owns(packet.assetBatch,packet.drawGroup));
+    const auto day=NorthlightAurora::style("Northrend",100,true,.52);
+    assert(day.enabled&&day.gain==0);const auto nativeSource=registry.source(day);assert(nativeSource);
+    float nativeEnergy=0;for(const auto& cell:nativeSource->radiance)nativeEnergy+=cell[1];assert(nativeEnergy>0);
+    const auto halfSource=registry.source(NorthlightAurora::style("Northrend",50,true,.52)),twiceSource=registry.source(NorthlightAurora::style("Northrend",200,true,.52));
+    assert(halfSource&&twiceSource);
+    for(unsigned sector=0;sector<32;++sector)for(unsigned c=0;c<3;++c){assert(std::fabs(halfSource->radiance[sector][c]-.5f*nativeSource->radiance[sector][c])<1e-6f);assert(std::fabs(twiceSource->radiance[sector][c]-2*nativeSource->radiance[sector][c])<1e-6f);}
+    assert(!registry.source(NorthlightAurora::style("Northrend",0,true,.52)));
+    source=registry.source(green);assert(source);
     float energy=0;for(const auto& cell:source->radiance)energy+=cell[1];assert(energy>0);
     assert(registry.source(green)==source);auto recolored=registry.source(purple);assert(recolored&&recolored->radiance[0][2]>=0);assert(!registry.source({}));
     registry.begin(9000,18,false);assert(!registry.source(green));for(const auto& packet:packets)assert(!registry.owns(packet.assetBatch,packet.drawGroup));registry.reset();
@@ -92,7 +135,7 @@ int main(int argc,char** argv){
     registry.begin(9300,21,true);for(const auto& packet:packets)if(packet.drawGroup==1)registry.observe(1,packet);registry.end();
     registry.begin(9301,21,true);for(const auto& packet:packets)if(packet.drawGroup==1){registry.observe(1,packet);auto duplicate=packet;duplicate.drawGroup=3;registry.observe(3,std::move(duplicate));}registry.end();
     for(unsigned tick=0;tick<200;++tick){registry.begin(9310+tick,21,false);assert(!registry.source(green));Sleep(1);}
-    renderer.reset();pixelTransfer(d);NorthlightParticleTextures::cache().clear();for(auto* t:textures)t->Release();vb->Release();declaration->Release();vs->Release();ps->Release();
+    renderer.reset();pixelTransfer(d);if(argc==5)materialScene(d,packets,vs,ps,declaration,textures,argv[3],argv[4]);NorthlightParticleTextures::cache().clear();for(auto* t:textures)t->Release();vb->Release();declaration->Release();vs->Release();ps->Release();
     std::printf("AURORA_NATIVE_CAPTURE_PASS draws=%u families=2 greenHemisphereMean=%.9f readerMs=%.4f unknownDrawRejected=1 sourceRemoval=1 stateRestored=1 cameraRotation=1 nativeUVAnimation=1 partialAndReset=1\n",admitted,energy/32,readMs);
     }raw->Release();api->Release();FreeLibrary(library);DestroyWindow(window);
 }

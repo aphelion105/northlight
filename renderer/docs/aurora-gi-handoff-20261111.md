@@ -15,9 +15,9 @@ still pending; do not describe the older offline previews as game screenshots.
 - GIStrength 0..240, default 120; GIBrightness -100..200, default 0. Signed
   brightness scales measured GI, with the existing residency and darkening
   safeguards. Explicit old settings retain their numeric response.
-- AuroraStrength 0..200, default 100, controls added visible emission and the
-  same emission transported through surface normals, visibility and bounces.
-  Native ribbons remain at zero. Surface illumination still requires GI.
+- AuroraStrength 0..200, default 100, controls the whole native and twilight
+  emission together with its GI. 0 disables the aurora, 100 is normal, 200 doubles
+  source radiance. Located in Weather. Surface illumination requires GI.
 - Actual capture: seven draws, two embedded skybox emitter families. Curated
   signatures plus exact native shader/declaration semantics bind the assets.
   Missing/ambiguous evidence retains native material without invented light.
@@ -46,9 +46,9 @@ restore the old uniform `skyRadiance` addition. `world_gi.cpp` records angular
 escape responses, and the cache/dynamic fallback keys account for the source.
 The GI shader formula and c66.y ownership from the initial commit are unchanged.
 
-`renderer.cpp` performs strict sky-material admission. SDR adds E through the
-native material; HDR keeps its SDR baseline unchanged and adds only native RGB
-headroom plus E through the dedicated replay. `hdr_sky_residual.h` transports
+`renderer.cpp` performs strict sky-material admission. SDR scales the native material and adds E. HDR scales its SDR baseline without
+E, then adds the native calibrated emissive excess and E through the dedicated
+replay. `hdr_sky_residual.h` transports
 foreground transmission. The production `SkyForeground` instance uses residual
 MRT mode; its default mode remains available for existing callers/tests.
 `Frame::beginSkyResidual` resets ownership at sky initialization, and
@@ -90,11 +90,12 @@ The temporary native-capture DLL was backed up and restored after capture.
 Every later installation must retain its own prior DLL/hash; another chat owns
 current production rollout, version, push and PR integration.
 
-## Current build and runtime window
+## Previous complete-sky build and runtime window
 
 Production source identity: `5602770c92821723feebb874eb30a30b38629d885b20a4731c9bd50826464093`.
 DLL SHA-256: `27632f5f52da7d897742ca80c66c50ae2b05a03c7087544308f83f6602206324`.
-`aurora-b-validation-20261111.json` records the current B/HDR evidence.
+`aurora-b-validation-20261111.json` records that earlier B/HDR stage.
+`aurora-native-hdr-validation-20261111.json` records the final whole-source stage.
 The isolated Windows package passed normal package verification.
 
 The previous narrow-calibration build (`ca5e6069...`) was tested live, then
@@ -104,3 +105,38 @@ At 09:55 UTC the current DLL was temporarily installed for the next capture;
 backup and exact hashes are in `out/aurora-b-hdr-sky/install.json`.
 Restore only if the installed DLL still matches this build and the client is
 closed. Keep the main chat informed when this temporary window ends.
+
+## Native emitter HDR / legacy expansion follow-up
+
+The user's next two captures (`session-51868-57644875-0` and
+`session-51868-57648843-0`) confirmed native sky composition but exposed a
+remaining omission: native aurora below-one pixels supplied no HDR excess,
+and the existing `HDRLegacyExpansion=0.50` did not reach their shader.
+The follow-up calibrates native additive masks as HDR emission and passes the
+live EV through AuroraEmission.w, independently of AuroraStrength and the
+sunset gate. The complete-sky baseline and shared twilight E remain separate;
+legacy expansion changes the native display emission, not transported E.
+
+The previous DLL was restored after these captures; hashes/restore record are
+in `out/aurora-b-hdr-sky/restore.json`. The new build/commit and installation
+record are reported in the native HDR validation supplement. Preserve this
+follow-up when integrating b02d24fc. Do not claim live visual acceptance from
+its coarse-mip scene replay.
+
+## User-approved whole-source intensity and Weather
+
+AuroraStrength now scales the entire native source, its visible SDR/HDR
+emission and native RGB GI, plus the existing twilight E. 0 hides the aurora
+and removes its GI; 100 is normal; 200 doubles source radiance. Native light
+is present outside the twilight interval. The worker projects native RGB and
+the twilight basis together in one six-channel traversal, then publishes the
+same 32-sector RGB snapshot used by existing GI transport/cache code.
+
+The native SDR draw also receives the common intensity, including HDR mode;
+the HDR residual subtracts that scaled baseline. Runtime control uses two
+contiguous PS constants, both saved/restored. Keep shader header/manifest and
+the patcher/renderer update together. The slider is now in Weather and remains
+independent of the enhanced precipitation and fog toggles.
+
+Final whole-source production identity: `e95e2b9ae3a55d9bd567460c3c9baffc571ed028f9db7b2436631a888846b6c4`.
+DLL SHA-256: `5908988d42d510b65d5521198a04e915244baa7945498c4ac392212a725a3d65`.

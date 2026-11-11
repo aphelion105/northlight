@@ -7,8 +7,9 @@ Evidence: `aurora-gi-validation-20261111.json`; integration notes:
 
 ## Intended result
 
-Existing Northrend aurora ribbons gain controlled green/purple emission during
-the evening gap after sunset and before moonrise. The visible additional
+All selected native Northrend aurora ribbons emit visible light and directional
+GI whenever the game displays them. They gain extra green/purple emission
+during the evening gap after sunset and before moonrise. The visible additional
 emission is the source of the corresponding illumination on geometry. Objects and terrain receive stronger,
 geometry-aware GI by default. Players can independently tune GI influence and
 make the measured indirect light darker or brighter.
@@ -19,18 +20,19 @@ make the measured indirect light darker or brighter.
 | --- | --- | --- | --- |
 | `GIStrength` | 0..240 | 120 | Influence of measured GI versus native ambient. 60 retains the old 0.5 blend, 120 gives full replacement, 240 doubles the correction. 0 suspends probe work. |
 | `GIBrightness` | -100..200 | 0 | Signed percentage adjustment to measured indirect radiance: -100 = zero, -50 = half, 0 = unchanged, +100 = double, +200 = triple. |
-| `AuroraStrength` | 0..200 | 100 | Common scale of added visible aurora emission and its transport. 0 preserves native ribbons and disables the addition. |
+| `AuroraStrength` | 0..200 | 100 | Common scale of all native aurora emission, twilight addition and their GI. 0 disables the aurora, 100 is normal, 200 doubles source radiance. |
 
 All controls are live and support preview, save, reset and INI parsing.
 GI controls appear under Global illumination; AuroraStrength appears under
-Environment because visible emission also works with GI disabled. Existing explicit `GIStrength`
+Atmosphere & weather / Weather. Visible emission also works with GI disabled;
+the control is independent of enhanced rain/snow and atmospheric fog. Existing explicit `GIStrength`
 values keep their numeric response. Only defaults become stronger. Brightness
 changes neither rays, bounce count, probe range, capture nor solver work.
 
 Signed integer support belongs in the quality key registry; existing unsigned
 keys must continue rejecting negative values, overflow and trailing junk.
 
-## Aurora source вЂ” selected option B
+## Aurora source Р В Р вЂ Р В РІР‚С™Р Р†Р вЂљРЎСљ selected option B
 
 ### Ownership and source identity
 
@@ -83,16 +85,23 @@ blend operations reject the extra-sky path for the frame and retain native sky.
 
 At the effects boundary, decode the complete native sky once and add it to the
 FP16 extra emission, only at untouched clear depth. Native horizon geometry is
-decoded through the ordinary world path. This preserves authored sky hue and
-brightness at zero extra emission, including daylight and AuroraStrength=0.
+decoded through the ordinary world path. This preserves the authored non-emissive sky hue and brightness. AuroraStrength=0
+keeps native aurora HDR emission; the added twilight source is disabled.
 The conversion uses the existing FP16 target; no additional full-size image is
 allocated. It replaces the earlier initial copy/decode and per-layer transfers.
 MSAA resolves into the same frame target; inline/fallback retries never add the
 native baseline twice. A new sky phase resets this ownership every frame.
 
-Proven aurora materials retain authored RGB above 1 using the same linear
-transfer principle as proven additive particles. Only that excess above the
-native UNORM output and the controlled E are added to the sky target. Native
+Proven aurora materials use native additive RGB as emitter intensity and retain
+authored RGB above 1 using the particle transfer decode. Their native radiance
+is `max(rawRGB, decode(rawRGB)) * intensity * exp2(HDRLegacyExpansion)`. This is an explicit
+emissive calibration of the authored masks; ordinary diffuse sky layers keep
+their existing SDR decode. Only the excess above the scaled SDR source baseline
+and the controlled E are added to the sky target. Native HDR emission remains
+active in daylight while AuroraStrength is nonzero. The existing legacy highlight
+control applies 0..2 EV (1..4x) to this native radiance. It does not multiply E,
+which retains its own visible/GI scale. This display expansion does not change
+GI energy, consistent with the existing legacy highlight control. Native
 alpha, UV animation, alpha test and texture sampling are retained.
 Early owned sun/moon discs similarly write their linear excess above the native
 SDR surface. Their early screen glow is already in the native sky; it adds no
@@ -111,18 +120,23 @@ The controlled addition is E = gain * luminance(N) * palette(phase), with the ma
 and blend factors applied consistently to visible output and captured source.
 Original material shading stays authoritative for filament detail and motion.
 
-Visible emission adds E to the native appearance. GI receives E only, alongside the
-existing authored ambient; it must not add the whole native appearance again
-or subtract an assumed native aurora light. No separate surface tint exists.
+Native source radiance is `max(max(rawRGB,0), decode(rawRGB)) * intensity`.
+GI receives this native RGB source plus E through the same directional transport.
+The native field and twilight luminance field are projected together in one
+ray traversal (six channels), then combined into the ordinary 32-sector RGB
+snapshot. No separate surface tint or assumed subtraction from native ambient
+is introduced. The HDR legacy EV control remains a display expansion; the
+AuroraStrength multiplier itself scales the visible source and GI together.
 
-The legacy shader encodes decode(N) + E for the SDR target. During HDR the
-native SDR draw stays unchanged, and the dedicated replay writes
-`decode(max(rawRGB,0)) - decode(saturate(rawRGB)) + E` into the extra-emission
+The legacy shader encodes decode(N) * intensity + E for the SDR target. During HDR the
+native SDR draw applies the common intensity without E, and the dedicated replay writes
+`max(max(rawRGB,0), decode(rawRGB)) * intensity * exp2(legacyEV) - min(decode(saturate(rawRGB)) * intensity, 1) + E` into the extra-emission
 target. Native alpha/blend applies once. The complete native sky is decoded
 once at composition; E is never counted in both the SDR baseline and HDR replay.
 The SM2 transfer uses a TEXCOORD linker input so the compiler cannot optimize
 away RGB headroom by assuming COLOR is already bounded to [0,1]. There is no
-new global particle-brightness slider: this reuses its HDR emission principle.
+new brightness slider: the existing `HDRLegacyExpansion` controls native emission
+independently of the orbital gate; AuroraStrength scales the whole source.
 
 - Exact map `Northrend`, valid celestial context, evening half of the game day,
   both native celestial elevations below the geometric horizon.
@@ -133,13 +147,14 @@ new global particle-brightness slider: this reuses its HDR emission principle.
   with a real native frame; it multiplies native emission rather than ambient.
 - Green-to-purple phase follows the game-day interval 0.85..0.925 with
   smoothstep. Native animation clock remains unchanged.
-- At zero gain, daylight, dawn, moonlit night, another map or invalid context,
-  preserve the native SDR material and contribute no additional source. The
-  independently validated HDR baseline correction remains active.
+- Daylight, dawn and moonlit night have no extra twilight E; native emission
+  and GI remain active while native ribbons exist. At AuroraStrength=0 the
+  visible aurora and both GI source fields are off. Another map or invalid
+  native context retains the game material without a guessed GI source.
 
 ### Directional transport and caches
 
-Project additional emission into 32 world-oriented, equal-solid-angle sectors:
+Project the native and twilight emission into 32 world-oriented, equal-solid-angle sectors:
 8 azimuths using atan2(worldX, worldY), 4 heights uniform in normalized world Z.
 This is a diffuse approximation of the detailed visible field. Surface
 normals, geometry visibility and material bounces act through the ordinary GI
@@ -158,7 +173,7 @@ count instead of raising the x86 memory budget. No change to rays, bounces,
 probe texture layout, shader sample count or the final GI composition.
 
 GI/F8/Effects controls still determine surface transport. AuroraStrength
-controls visible source emission; GI brightness/strength remain artistic
+controls all visible source emission and its GI; GI brightness/strength remain artistic
 controls for the response on geometry. Missing probes retain native ambient
 rather than inventing a substitute screen-space light. Fog is independent.
 
@@ -206,3 +221,37 @@ Required checks:
 The earlier preview images are offline architecture illustrations. They do
 not validate native animation, material fidelity or runtime performance.
 Measured results and outstanding limitations belong in the handoff report.
+
+## Native HDR follow-up from the third client capture
+
+The two captures at renderer frames 37385/37740 use source `5602770c...`,
+Effects enabled, and native HDR sky admission. Native aurora E is zero because
+the scene is outside the sunset/moonrise interval. `HDRLegacyExpansion=0.50`
+is present in the renderer INI but was never passed to the aurora transfer.
+Below-one native pixels produced zero HDR excess in that build. Complete-sky
+preservation alone therefore did not satisfy native emitter HDR brightness.
+
+The follow-up adds the native emissive calibration above and passes the live
+legacy EV through AuroraEmission.w. The legacy SDR material and controlled E
+formula are unchanged. Debug AURORA lines now record `nativeHdr=1 legacyEV=...`.
+GPU checks cover 0/0.5/2 EV, zero twilight E, source alpha, colour, authored
+overshoot and state restoration; scene replays use curated native triangles
+and the captured coarse mip. They verify HDR values and parameter response,
+not full-resolution client appearance or the live VB contents.
+
+## Whole-aurora control and Weather grouping
+
+The user explicitly chose whole-source control after reviewing the third
+capture: AuroraStrength now scales native emission as well as twilight E.
+Native GI no longer depends on the twilight gate. A 0/50/100/200% change
+publishes no source / half / normal / double native radiance, and visible
+SDR/HDR emission follows the same multiplier. The native SDR baseline is
+scaled before complete-sky decode, so setting 0 also removes its old baseline
+rather than leaving an untunable ribbon under an empty HDR residual.
+
+The two runtime shader control registers are reserved contiguously and restored
+together. Both native source RGB and the twilight basis are integrated in one
+worker traversal; GI transport storage remains the same 32-sector RGB sidecar
+inside the existing 4 MiB cache budget. Native observations stay bounded to 8 Hz.
+The slider moved to Weather without coupling aurora to the enhanced rain/snow
+master switch. Resident GI probes are still required to show its surface light.

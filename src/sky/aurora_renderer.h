@@ -3,6 +3,7 @@
 #include "aurora_source.h"
 #include <d3d9.h>
 #include <unordered_map>
+#include <algorithm>
 
 namespace NorthlightAuroraNative {
 // Only the independently proven aurora draw may use this transfer. Native VS,
@@ -28,15 +29,16 @@ public:
             entry.constants[linear]=info.constant;
         }return true;
     }catch(const std::bad_alloc&){return false;}
-    template<class Draw> bool draw(IDirect3DDevice9* d,bool linear,const NorthlightAuroraSource::RGB& scale,Draw submit,HRESULT& result){
-        if(!linear&&scale==NorthlightAuroraSource::RGB{})return false;
+    template<class Draw> bool draw(IDirect3DDevice9* d,bool linear,const NorthlightAuroraSource::RGB& scale,Draw submit,HRESULT& result,float legacyExpansion=0,float intensity=1){
+        if(!linear&&scale==NorthlightAuroraSource::RGB{}&&intensity==1)return false;
         IDirect3DPixelShader9* original=nullptr;if(FAILED(d->GetPixelShader(&original))||!original)return false;
-        struct Restore {IDirect3DDevice9* d;IDirect3DPixelShader9* original;unsigned constant=0;float old[4]{};bool changed=false;
-            ~Restore(){if(changed){d->SetPixelShader(original);d->SetPixelShaderConstantF(constant,old,1);}original->Release();}} restore{d,original};
+        struct Restore {IDirect3DDevice9* d;IDirect3DPixelShader9* original;unsigned constant=0;float old[8]{};bool changed=false;
+            ~Restore(){if(changed){d->SetPixelShader(original);d->SetPixelShaderConstantF(constant,old,2);}original->Release();}} restore{d,original};
         const auto found=entries_.find(original);if(found==entries_.end()||!found->second.shaders[linear])return false;
-        restore.constant=found->second.constants[linear];if(FAILED(d->GetPixelShaderConstantF(restore.constant,restore.old,1)))return false;
-        const float value[]={scale[0],scale[1],scale[2],0};restore.changed=true;
-        if(FAILED(d->SetPixelShaderConstantF(restore.constant,value,1))||FAILED(d->SetPixelShader(found->second.shaders[linear])))return false;
+        restore.constant=found->second.constants[linear];if(FAILED(d->GetPixelShaderConstantF(restore.constant,restore.old,2)))return false;
+        const float gain=std::exp2(std::isfinite(legacyExpansion)?std::clamp(legacyExpansion,0.f,2.f):0.f);
+        const float value[]={scale[0],scale[1],scale[2],std::isfinite(intensity)?std::clamp(intensity,0.f,2.f):1.f,linear?gain:1.f,0,0,0};restore.changed=true;
+        if(FAILED(d->SetPixelShaderConstantF(restore.constant,value,2))||FAILED(d->SetPixelShader(found->second.shaders[linear])))return false;
         result=submit();return true;
     }
 };

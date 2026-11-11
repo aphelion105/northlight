@@ -32,11 +32,14 @@ inline bool patchEmission(const std::uint32_t* original,std::size_t count,bool l
     if(mask!=15||oldCost+newCost>(sm2?64u:512u))return false;
     int capture=-1;for(unsigned i=temps;i-->0;)if(!usedTemps[i]){capture=int(i);break;}if(capture<0)return false;
     std::array<int,224> constantMap;constantMap.fill(-1);std::array<int,32> tempMap;tempMap.fill(-1);
+    int control=-1;for(unsigned i=constants-1;i>0;--i)if(!usedConstants[i]&&!usedConstants[i-1]){control=int(i-1);break;}
+    if(control<0)return false;
+    constantMap[0]=control;constantMap[1]=control+1;usedConstants[control]=usedConstants[control+1]=true;
     const auto constant=[&](unsigned r)->int{
         if(r>=constants)return -1;if(constantMap[r]>=0)return constantMap[r];
         for(unsigned i=constants;i-->0;)if(!usedConstants[i]){usedConstants[i]=true;return constantMap[r]=int(i);}return -1;
     };
-    const int control=constant(0);if(control<0)return false;unsigned nextTemp=0;
+    unsigned nextTemp=0;
     const auto remap=[&](Word token,Word& result)->bool{
         const unsigned t=type(token),r=index(token);int mapped=-1;
         if(t==1||(linear&&t==3)){if(r)return false;result=reg(token,0,unsigned(capture));return true;}
@@ -47,7 +50,7 @@ inline bool patchEmission(const std::uint32_t* original,std::size_t count,bool l
     std::vector<Word> definitions,body;
     for(const auto& instruction:tail){
         if(instruction.op==31)continue;if(instruction.op==47||instruction.op==48)return false;
-        if(instruction.op==81&&index(transfer[instruction.at+1])==0)return false; // c0 is runtime style, never DEF.
+        if(instruction.op==81&&index(transfer[instruction.at+1])<2)return false; // c0/c1 are runtime controls.
         auto& destination=instruction.op==81?definitions:body;destination.push_back(transfer[instruction.at]);
         for(unsigned j=1;j<instruction.count;++j){const Word token=transfer[instruction.at+j];Word mapped=0;
             if(instruction.op==81&&j>1){destination.push_back(token);continue;}

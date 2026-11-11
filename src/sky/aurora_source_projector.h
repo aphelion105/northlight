@@ -47,8 +47,8 @@ inline NativeVertex interpolate(const NativeTriangle& triangle,float u,float v){
 // shade returns linear emitted radiance including native alpha/blend factors.
 // This routine belongs on the worker: no D3D resources or borrowed views escape.
 // A caller must verify the full native model batch multiset before invoking it.
-template<class Shade> bool project(const std::vector<NativeTriangle>& triangles,std::uint64_t selection,std::uint64_t revision,
-                                  Shade shade,Snapshot& output,unsigned samplesPerAxis=8){
+template<unsigned Channels,class Shade> bool projectChannels(const std::vector<NativeTriangle>& triangles,std::uint64_t selection,std::uint64_t revision,
+                                  Shade shade,std::array<std::array<float,Channels>,SectorCount>& output,unsigned samplesPerAxis=8){
     output={};
     if(!selection||!revision||triangles.empty()||triangles.size()>8192||!samplesPerAxis||samplesPerAxis>16)return false;
     for(const auto& triangle:triangles)for(const auto& vertex:triangle.vertices){
@@ -56,22 +56,29 @@ template<class Shade> bool project(const std::vector<NativeTriangle>& triangles,
         for(float value:vertex.color)if(!std::isfinite(value))return false;
         for(const auto& uv:vertex.uv)for(float value:uv)if(!std::isfinite(value))return false;
     }
-    Snapshot next;next.selection=selection;next.revision=revision;
+    std::array<std::array<float,Channels>,SectorCount> next{};
     for(unsigned cell=0;cell<SectorCount;++cell){
         const unsigned azimuth=cell%AzimuthCount,height=cell/AzimuthCount;
-        double total[3]{};
+        double total[Channels]{};
         for(unsigned y=0;y<samplesPerAxis;++y)for(unsigned x=0;x<samplesPerAxis;++x){
             const double z=(height+(y+.5)/samplesPerAxis)/HeightCount;
             const double angle=((azimuth+(x+.5)/samplesPerAxis)/AzimuthCount-.5)*2*double(Pi);
             const double radius=std::sqrt(1-z*z);
             const Direction ray{float(radius*std::sin(angle)),float(radius*std::cos(angle)),float(z)};
             for(const auto& triangle:triangles){float u=0,v=0;if(!intersect(ray,triangle,u,v))continue;
-                RGB radiance{};if(!shade(triangle.material,interpolate(triangle,u,v),radiance))return false;
-                for(unsigned c=0;c<3;++c){if(!std::isfinite(radiance[c])||radiance[c]<0)return false;total[c]+=radiance[c];}
+                std::array<float,Channels> radiance{};if(!shade(triangle.material,interpolate(triangle,u,v),radiance))return false;
+                for(unsigned c=0;c<Channels;++c){if(!std::isfinite(radiance[c])||radiance[c]<0)return false;total[c]+=radiance[c];}
             }
         }
-        for(unsigned c=0;c<3;++c)next.radiance[cell][c]=float(total[c]/(samplesPerAxis*samplesPerAxis));
+        for(unsigned c=0;c<Channels;++c)next[cell][c]=float(total[c]/(samplesPerAxis*samplesPerAxis));
     }
+    for(const auto& cell:next)for(float value:cell)if(!std::isfinite(value)||value<0)return false;
+    output=next;return true;
+}
+template<class Shade> bool project(const std::vector<NativeTriangle>& triangles,std::uint64_t selection,std::uint64_t revision,
+                                  Shade shade,Snapshot& output,unsigned samplesPerAxis=8){
+    output={};Snapshot next;next.selection=selection;next.revision=revision;
+    if(!projectChannels<3>(triangles,selection,revision,shade,next.radiance,samplesPerAxis))return false;
     next.complete=true;if(!valid(next))return false;output=next;return true;
 }
 }

@@ -13,18 +13,20 @@ inline float weight(const char* map,bool valid,double day,float sunZ,float moonZ
     constexpr float fade=.0697564737f; // sin(4 degrees), entirely below the horizon.
     return smooth(-sunZ/fade)*smooth(-moonZ/fade);
 }
-struct Style { bool enabled=false; float gain=0,phase=0; std::uint64_t revision=0; };
-// Shared additional emission for the visible native ribbons and their angular
-// transport. At zero gain the original material remains unchanged.
+struct Style { bool enabled=false; float gain=0,phase=0; std::uint64_t revision=0; float intensity=1; };
+// Native emission is present whenever the selected Northrend ribbons exist.
+// The orbital gate controls only their extra green/purple twilight emission.
 inline Style style(const char* map,unsigned strength,bool valid,double day){
     Style out;
     const auto orbit=NorthlightCelestialOrbit::evaluateNative(valid?day:-1.);
-    out.gain=4.f*float(std::min(strength,200u))*.01f*
+    if(!map||std::strcmp(map,"Northrend")||!orbit.valid)return {};
+    out.intensity=float(std::min(strength,200u))*.01f;
+    out.gain=4.f*out.intensity*
         weight(map,orbit.valid,day,orbit.sun.direction[2],orbit.moon.direction[2]);
-    if(out.gain<=0)return {};
+    if(out.intensity<=0){out.intensity=0;return out;}
     out.enabled=true;out.phase=smooth(float((day-.85)/.075));
-    std::uint32_t gain=0,phase=0;std::memcpy(&gain,&out.gain,4);std::memcpy(&phase,&out.phase,4);
-    out.revision=(std::uint64_t(gain)<<32)|phase;
+    out.revision=14695981039346656037ull;
+    for(float value:{out.gain,out.phase,out.intensity}){std::uint32_t bits=0;std::memcpy(&bits,&value,4);out.revision=(out.revision^bits)*1099511628211ull;}
     return out;
 }
 }

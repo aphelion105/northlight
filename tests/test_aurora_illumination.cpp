@@ -17,8 +17,8 @@ int main(){
         const double day=double(second)/86400;const auto orbit=NorthlightCelestialOrbit::evaluateNative(day);
         const auto out=style("Northrend",100,true,day);
         const float w=weight("Northrend",orbit.valid,day,orbit.sun.direction[2],orbit.moon.direction[2]);
-        assert(out.enabled==(w>0));active+=out.enabled;
-        if(out.enabled){assert(day>.5&&orbit.sun.direction[2]<0&&orbit.moon.direction[2]<0&&out.revision);
+        assert(out.enabled&&out.intensity==1&&out.revision);assert((out.gain>0)==(w>0));active+=out.gain>0;
+        if(out.gain>0){assert(day>.5&&orbit.sun.direction[2]<0&&orbit.moon.direction[2]<0&&out.revision);
             green|=out.phase<.2f;purple|=out.phase>.6f;assert(out.phase>=0&&out.phase<=1);}
         if(w>peak){peak=w;peakDay=day;}
         assert(out.gain>=0&&out.gain<=4);if(second)maxStep=std::max(maxStep,std::fabs(out.gain-previous));previous=out.gain;
@@ -29,5 +29,7 @@ int main(){
     auto normal=style("Northrend",100,true,peakDay),twice=style("Northrend",200,true,peakDay),clamped=style("Northrend",999,true,peakDay);
     assert(normal.enabled&&twice.enabled&&normal.gain*2==twice.gain&&twice.gain==clamped.gain);
     assert(normal.phase==twice.phase&&normal.revision!=twice.revision&&twice.revision==clamped.revision);
-    std::printf("PASS aurora shared style fullDay activeSeconds=%u maxGainStep=%.9f palettes=2 nativeFallbackAtZero=1\n",active,maxStep);
+    assert(style("Northrend",0,true,peakDay).intensity==0);
+    assert(normal.intensity==1&&twice.intensity==2);
+    std::printf("PASS aurora shared style fullDay twilightSeconds=%u maxGainStep=%.9f palettes=2 nativeAllDay=1 nativeOffAtZero=1\n",active,maxStep);
 }

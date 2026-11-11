@@ -12,7 +12,7 @@ struct Material {
     NorthlightParticleLightProof::Pixel program;
     struct Texture {std::vector<std::uint8_t> rgba;unsigned width=0,height=0,addressU=0,addressV=0;bool srgb=false,linear=false;};
     Texture textures[2];bool sourceAlpha=false;unsigned alphaFunction=8,alphaReference=0;
-    bool luminance(const NorthlightAuroraSource::NativeVertex& vertex,NorthlightAuroraSource::RGB& out)const{
+    bool emission(const NorthlightAuroraSource::NativeVertex& vertex,std::array<float,6>& out)const{
         using namespace NorthlightParticleLightProof;
         Four values[2]{};
         for(unsigned i=0;i<program.samples;++i){const auto& image=textures[i];const auto& uv=vertex.uv[i?program.secondUv:program.uv];
@@ -25,7 +25,16 @@ struct Material {
         Four native;if(!shade(program,color,values[0],nullptr,native,program.samples==2?&values[1]:nullptr))return false;
         const float alpha=std::clamp(native[3],0.f,1.f),reference=alphaReference/255.f;
         if((alphaFunction==5&&alpha<=reference)||(alphaFunction==7&&alpha<reference)){out={};return true;}
-        out=NorthlightAuroraSource::additional(native,{1,1,1},sourceAlpha);return true;
+        const auto additional=NorthlightAuroraSource::additional(native,{1,1,1},sourceAlpha);
+        const float factor=sourceAlpha?alpha:1;
+        for(unsigned c=0;c<3;++c){const float value=std::max(native[c],0.f);
+            const float decoded=value<=.04045f?value/12.92f:std::pow((value+.055f)/1.055f,2.4f);
+            out[c]=std::max(value,decoded)*factor;out[c+3]=additional[c];}
+        return true;
+    }
+    bool luminance(const NorthlightAuroraSource::NativeVertex& vertex,NorthlightAuroraSource::RGB& out)const{
+        std::array<float,6> values{};if(!emission(vertex,values))return false;
+        std::copy(values.begin()+3,values.end(),out.begin());return true;
     }
 };
 struct Packet {

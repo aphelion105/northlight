@@ -10,9 +10,8 @@ inline RGB emissionScale(const NorthlightAurora::Style& style){
     RGB scale{};for(unsigned c=0;c<3;++c)scale[c]=style.gain*(green[c]+phase*(purple[c]-green[c]));return scale;
 }
 inline float decode(float encoded){encoded=std::clamp(encoded,0.f,1.f);return encoded<=.04045f?encoded/12.92f:std::pow((encoded+.055f)/1.055f,2.4f);}
-// Only additional emission enters GI; the native baseline stays in its existing
-// light budget. Authored additive masks specify emissive intensity; the visible
-// HDR addition and GI share that basis. Alpha follows the native PS/blend.
+// Twilight emission is added to the separately projected native RGB source.
+// Visible emission and GI share this intensity basis and native alpha/blend.
 inline RGB additional(const std::array<float,4>& native,const RGB& scale,bool sourceAlpha){
     for(float value:native)if(!std::isfinite(value))return {};
     const float luminance=std::clamp(native[0],0.f,1.f)*.2126f+std::clamp(native[1],0.f,1.f)*.7152f+std::clamp(native[2],0.f,1.f)*.0722f;
