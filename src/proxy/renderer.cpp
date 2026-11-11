@@ -3369,7 +3369,7 @@ public:
         autoBump->setProfiler(materialProfile.get());
         // Replay owns immutable geometry and constants. Its admission and depth
         // barriers do not depend on the backend's read-back Lock flags.
-        autoBump->setDeferredCapture(true);
+        autoBump->setDeferredCapture(true,NorthlightBackend::isPackagedDxvk(selectedBackend));
         autoBump->setTrustedConstantEpochSource(ext->trustedConstantSource());
         const auto rasterSource=[](void* context,const D3DRENDERSTATETYPE* keys,unsigned count,DWORD* out){return static_cast<ExtensionDevice*>(static_cast<IDirect3DDevice9*>(context))->knownRenderStates(keys,count,out);};
         autoBump->setRasterStateSource(static_cast<IDirect3DDevice9*>(ext),rasterSource);

@@ -67,14 +67,14 @@ class NorthlightAutoBump {
     unsigned residentDraws=0,uploadDraws=0;uint64_t uploadDrawBytes=0;
     unsigned replaySetters=0,replaySkipped=0;
     unsigned captureTargetBinds=0,captureMaskSets=0,stableCaptureFlushes=0,switchedCaptureFlushes=0,nearCapturePackets=0,farCapturePackets=0;
-    std::vector<std::unique_ptr<Deferred>> deferred,sparePackets;size_t deferredBytes=0;bool deferredAllowed=false;
+    std::vector<std::unique_ptr<Deferred>> deferred,sparePackets;size_t deferredBytes=0;bool deferredAllowed=false,equalDepthBatchAllowed=false;
     unsigned deferredPacketLimit=512;size_t deferredByteLimit=8u<<20;
     std::unordered_map<void*,uint64_t> deferredTextures;uint64_t deferredTextureBytes=0;
     // A 1x batch starts with native depth, then reproduces its ordered writes.
-    // Only fully in-range opaque models can write exactly the native coverage.
+    // Depth-changing captures need full opaque coverage; EQUAL is read-only.
     IDirect3DTexture9* singleDepth=nullptr;IDirect3DSurface9* singleDepthSurface=nullptr;
     bool singleSampleBatch=false,drawDeferred=false,nativeSubmitted=false;
-    unsigned singleSampleQueued=0,depthSeeds=0,depthBarriers=0,depthReadOnlySkips=0,singleDepthRetry=0;
+    unsigned singleSampleQueued=0,equalDepthQueued=0,depthSeeds=0,depthBarriers=0,depthReadOnlySkips=0,singleDepthRetry=0;
 #ifdef NORTHLIGHT_MATERIAL_DEPTH_TEST
     bool forceNativeDepthBarriers=false;
 #endif
@@ -372,7 +372,7 @@ class NorthlightAutoBump {
                 for(const auto& t:packet->textures)if(t.texture&&deferredTextures.emplace(t.texture,t.bytes).second){inserted[insertedCount++]=t.texture;deferredTextureBytes+=t.bytes;}
                 deferred.push_back(std::move(packet));
             }catch(...){for(unsigned i=0;i<insertedCount;++i){auto entry=deferredTextures.find(inserted[i]);deferredTextureBytes-=entry->second;deferredTextures.erase(entry);}throw;}
-            singleSampleBatch=singleSample;drawDeferred=true;singleSampleQueued+=singleSample;deferred.back()->normal=std::move(normal);deferredBytes+=cost;++queued;++queuedDomain[profileTag/4-1];deferredTextureDraws+=model.samplers!=0;if(pendingChanged)pendingChanged(pendingContext);timing.work(mesh->vertexCount,mesh->byteSize());return true;
+            singleSampleBatch=singleSample;drawDeferred=true;singleSampleQueued+=singleSample;equalDepthQueued+=singleSample&&deferred.back()->raster[2]==D3DCMP_EQUAL;deferred.back()->normal=std::move(normal);deferredBytes+=cost;++queued;++queuedDomain[profileTag/4-1];deferredTextureDraws+=model.samplers!=0;if(pendingChanged)pendingChanged(pendingContext);timing.work(mesh->vertexCount,mesh->byteSize());return true;
         }catch(...){return false;}
     }
 public:
@@ -384,7 +384,7 @@ public:
         displacement.shareCaptureSources(deferredSnapshots);
         deferredSnapshots.setDeclarationProvider(&deferredDeclarations,[](void* c,IDirect3DVertexDeclaration9* v,const D3DVERTEXELEMENT9*& e,UINT& n){return static_cast<NorthlightVertexDeclarations::Cache*>(c)->get(v,e,n);});
         deferredSnapshots.setLayoutProvider(&deferredDeclarations,[](void* c,IDirect3DVertexDeclaration9* v,UINT* e){return static_cast<NorthlightVertexDeclarations::Cache*>(c)->captureLayout(v,e);});}
-    void setDeferredCapture(bool on){deferredAllowed=on;if(!on)sparePackets.clear();}
+    void setDeferredCapture(bool on,bool readOnlyDepthSafe=false){deferredAllowed=on;equalDepthBatchAllowed=readOnlyDepthSafe;if(!on)sparePackets.clear();}
     // Enabled only by the serialized game-resource writer, never from a backend
     // guess. Source writes drain matching packets before changing bytes.
     void setTextureWriteGuard(bool on,void(*changed)(void*)=nullptr,void* context=nullptr){
@@ -606,7 +606,7 @@ public:
         captureStates.clear();
         if(deferredReport||cold.vertexSources||cold.vertexQueued||cold.modelMisses||cold.staticCreates)logf("MATERIAL_COLD frame=%llu sampled=%u enabled=%u vertexSources=%u vertexQueued=%u pendingVertices=%u pendingMaterialRejected=%u vertexCpuMs=%.6f modelMisses=%u modelBuilt=%u modelCpuMs=%.6f staticCreates=%u staticBuilt=%u staticCpuMs=%.6f sourceBytes=%llu",(unsigned long long)(deferredReport?deferredReportFrame:frames),unsigned(deferredReport),unsigned(enabled),cold.vertexSources,cold.vertexQueued,pendingVertices,cold.pendingMaterialRejected,cold.vertexMs,cold.modelMisses,cold.modelBuilt,cold.modelMs,cold.staticCreates,cold.staticBuilt,cold.staticMs,(unsigned long long)cold.sourceBytes);
         cold={};
-        if(deferredReport||((queued||flushed||deferredFallback||deferredDiscarded)&&frames%600==0))logf("MATERIAL_DEFERRED frame=%llu sampled=%u enabled=%u queued=%u flushed=%u snapshotFallback=%u liveState=%u preparedGeometry=%u discardedUnused=%u terrain=%u walls=%u grass=%u models=%u earlyRangeRejected=%u opaqueCoverage=%u packetLimit=%u packetMiB=%u sourceMiB=%zu singleSample=%u depthSeeds=%u depthBarriers=%u readOnlyDepthSkips=%u",(unsigned long long)(deferredReport?deferredReportFrame:frames),unsigned(deferredReport),unsigned(deferredAllowed),queued,flushed,deferredFallback,deferredUnsafe,deferredGeometry,deferredDiscarded,queuedDomain[0],queuedDomain[1],queuedDomain[2],queuedDomain[3],earlyRangeRejected,opaqueCoverage,deferredPacketLimit,unsigned(deferredByteLimit>>20),deferredSnapshots.snapshotCacheLimit()>>20,singleSampleQueued,depthSeeds,depthBarriers,depthReadOnlySkips);
+        if(deferredReport||((queued||flushed||deferredFallback||deferredDiscarded)&&frames%600==0))logf("MATERIAL_DEFERRED frame=%llu sampled=%u enabled=%u queued=%u flushed=%u snapshotFallback=%u liveState=%u preparedGeometry=%u discardedUnused=%u terrain=%u walls=%u grass=%u models=%u earlyRangeRejected=%u opaqueCoverage=%u packetLimit=%u packetMiB=%u sourceMiB=%zu singleSample=%u equalDepthQueued=%u depthSeeds=%u depthBarriers=%u readOnlyDepthSkips=%u",(unsigned long long)(deferredReport?deferredReportFrame:frames),unsigned(deferredReport),unsigned(deferredAllowed),queued,flushed,deferredFallback,deferredUnsafe,deferredGeometry,deferredDiscarded,queuedDomain[0],queuedDomain[1],queuedDomain[2],queuedDomain[3],earlyRangeRejected,opaqueCoverage,deferredPacketLimit,unsigned(deferredByteLimit>>20),deferredSnapshots.snapshotCacheLimit()>>20,singleSampleQueued,equalDepthQueued,depthSeeds,depthBarriers,depthReadOnlySkips);
         if(deferredReport||((queued||flushed||deferredFallback)&&frames%600==0)){
             logf("MATERIAL_REPLAY_CONTENT frame=%llu captureTests=%u captureHits=%u captureComparedBytes=%zu",(unsigned long long)(deferredReport?deferredReportFrame:frames),deferredSnapshots.replayContentTests(),deferredSnapshots.replayContentHits(),deferredSnapshots.replayContentComparedBytes());
             logf("MATERIAL_BATCH_SOURCE frame=%llu textureGuard=%u textureDraws=%u writeBarriers=%u refusedTexture=%u snapshotBudget=%u snapshotStreams=%u batchLimit=%u sourceHits=%u sourcePeerHits=%u sourceMisses=%u sourceReadBytes=%zu sourceEntries=%zu sourceBytes=%zu sourceLimitMiB=%zu",(unsigned long long)(deferredReport?deferredReportFrame:frames),unsigned(textureWriteGuarded),deferredTextureDraws,textureBarriers,textureRefused,snapshotBudget,snapshotStreams,batchLimit,deferredSnapshots.snapshotCacheHits(),deferredSnapshots.residentPeerHits(),deferredSnapshots.snapshotCacheMisses(),deferredSnapshots.bytesRead(),deferredSnapshots.snapshotCacheEntries(),deferredSnapshots.snapshotCacheBytes(),deferredSnapshots.snapshotCacheLimit()>>20);
@@ -623,7 +623,7 @@ public:
         captureTargetBinds=captureMaskSets=stableCaptureFlushes=switchedCaptureFlushes=nearCapturePackets=farCapturePackets=0;
         residentDraws=uploadDraws=replaySetters=replaySkipped=packetPixelReadsSkipped=0;uploadDrawBytes=0;deferredGPU.beginFrame();deferredReport=false;
 
-        singleSampleQueued=depthSeeds=depthBarriers=depthReadOnlySkips=0;queued=flushed=deferredFallback=deferredDiscarded=deferredUnsafe=deferredGeometry=0;
+        singleSampleQueued=equalDepthQueued=depthSeeds=depthBarriers=depthReadOnlySkips=0;queued=flushed=deferredFallback=deferredDiscarded=deferredUnsafe=deferredGeometry=0;
         std::fill(std::begin(queuedDomain),std::end(queuedDomain),0);earlyRangeRejected=opaqueCoverage=0;
         deferredTextureDraws=textureBarriers=snapshotBudget=snapshotStreams=textureRefused=batchLimit=0;deferredSnapshots.clearFrame();
         if(occlusionRetry)--occlusionRetry;
@@ -799,11 +799,16 @@ public:
         const bool independent=(domain==4&&model&&model->deferredSafe&&(!model->samplers||textureWriteGuarded))||(domain==1&&material==1)||(domain==2&&material==5)||opaqueWall;
         bool singleSample=false;
         const bool deferredSafe=deferredAllowed&&!sharing&&!displacement.prepared()&&geometry&&independent&&v->second.deferredSafe;
-        if(deferredSafe&&!multisampled&&domain==4&&modes[3]!=2&&!alpha&&!s[5].value){
+        // Packaged DXVK preserves native depth across DS switches, including
+        // Discard surfaces. Keep the old admission on other D3D9 backends.
+        const bool equalDepth=equalDepthBatchAllowed&&zfunc==D3DCMP_EQUAL;
+        if(deferredSafe&&!multisampled&&domain==4&&modes[3]!=2&&(!alpha||equalDepth)&&!s[5].value){
+            // EQUAL leaves depth unchanged, even within an overlapping alpha
+            // draw. Range clipping changes only colour, as in immediate replay.
             float nearest=0;
-            if(!std::isfinite(farthestDepth))displacement.nearestMaterialDepth(original,*geometry,nearest,false,positions,&farthestDepth);
+            if(!equalDepth&&!std::isfinite(farthestDepth))displacement.nearestMaterialDepth(original,*geometry,nearest,false,positions,&farthestDepth);
             D3DSURFACE_DESC depthDesc{};
-            singleSample=farthestDepth<captureRange(domain)&&SUCCEEDED(saved.depth->GetDesc(&depthDesc))&&depthDesc.Format==D3DFMT_D24S8;
+            singleSample=(equalDepth||farthestDepth<captureRange(domain))&&SUCCEEDED(saved.depth->GetDesc(&depthDesc))&&depthDesc.Format==D3DFMT_D24S8;
         }
         const bool canDefer=deferredSafe&&(multisampled||singleSample);
         if(!deferred.empty()&&singleSampleBatch!=singleSample)if(!finishCaptures())return;
