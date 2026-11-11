@@ -43,6 +43,10 @@ struct Hue {
     float strength=0,moonStrength=0; // sun and moon hue mix
 };
 inline float clamp01(float x){return std::isfinite(x)?std::clamp(x,0.f,1.f):0.f;}
+inline void surfaceTint(const Hue& hue,unsigned body,const float* tint,bool hdr,float* out){
+    const float mix=clamp01(body?hue.moonStrength:hue.strength)*(hdr&&!body?1.f:.5f);
+    for(unsigned k=0;k<3;++k){const float base=clamp01(tint[k]);out[k]=base+(clamp01(body?hue.moon[k]:hue.sunCore[k])-base)*mix;}
+}
 // c47 (hue, mix) and c48 (hot core, wrap) for one body.
 inline void constants(const Hue& hue,unsigned body,float wrap,float* c47,float* c48){
     for(unsigned k=0;k<3;++k){

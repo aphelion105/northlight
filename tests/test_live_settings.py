@@ -38,7 +38,7 @@ void logf(const char*,...){}
 struct World {
     NorthlightQuality::Settings quality;
     NorthlightCelestialProfiles::Table celestialProfiles;
-    bool settingsRequestDirty=false,paletteFrameValid=true,temporalValid=true;
+    bool settingsRequestDirty=false,paletteFrameValid=true,temporalValid=true,fogHistoryValid=true,shadowsComposited=true,shadowFrameReady=true;
     unsigned minSkinnedShadowTriangles=0,captureBudgetMiB=0,actorShadowBudgetMiB=0;
     bool shadowFateDiagnostics=false;
     struct Fx{bool gi=true,shadows=true,fog=true;};Fx effects,requestedEffects;unsigned effectResets=0;
@@ -49,7 +49,7 @@ struct World {
     void setNearReserve(){}
     void releaseGPU(bool keep){assert(keep);++resets;}
     void actorSettingsChanged(){++actorChanges;}
-    void invalidateShadowCache(){++invalidates;}
+    void invalidateShadowCache(bool keepPointStatic=false){++invalidates;assert(keepPointStatic);}
     void releaseSoftShadows(){}
     void releaseNearEnvironment(){}
 __METHOD__

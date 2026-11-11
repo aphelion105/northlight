@@ -292,7 +292,7 @@ public:
         const bool actorResources=quality.actorShadows!=effective.actorShadows||quality.actorShadowDetail!=effective.actorShadowDetail;
         const bool softChanged=quality.softShadows!=effective.softShadows;
         const bool nearIntervalChanged=quality.nearShadowInterval!=effective.nearShadowInterval;
-        const bool directions=quality.shadowDirectionSteps!=effective.shadowDirectionSteps;
+        const bool directions=quality.shadowDirectionSteps!=effective.shadowDirectionSteps||quality.shadowProvider!=effective.shadowProvider;
         const bool giToggle=quality.gi!=effective.gi||quality.worldShadows!=effective.worldShadows||quality.worldFog!=effective.worldFog;
         if(quality.disableOriginalTerrainShadows!=effective.disableOriginalTerrainShadows)temporalValid=false;
         for(const auto& k:NorthlightQuality::Keys)if(NorthlightSettings::liveQuality(k.name))k.set(quality,k.get(effective));
@@ -306,7 +306,7 @@ public:
         logf("PROFILE effective diagnostics=%u renderProfile=%u replayProbe=%u period=%u cpuGpuAdditive=0",unsigned(NorthlightDiagnostics::enabled()),unsigned(NorthlightRenderThreadProbe::profiling()),unsigned(NorthlightRenderThreadProbe::probing()),NorthlightRenderThreadProbe::profiling()?NorthlightRenderThreadProbe::ProfilePeriod:NorthlightRenderThreadProbe::SamplePeriod);
         NorthlightWorldContext::SelfReadStats::timed.store(NorthlightQuality::renderProfile(quality),std::memory_order_relaxed);
         if(actorResources)actorSettingsChanged();
-        if(directions)invalidateShadowCache();
+        if(directions){invalidateShadowCache(true);temporalValid=fogHistoryValid=false;shadowsComposited=shadowFrameReady=false;}
         if(softChanged){temporalValid=false;if(!quality.softShadows)releaseSoftShadows();}
         if(nearIntervalChanged){temporalValid=false;releaseNearEnvironment();}
         staticPrebuild.steps=float(quality.shadowDirectionSteps);
@@ -486,6 +486,7 @@ private:
     // 0.3.200: the last good celestial read (see updateWorldContext), held across single rejected reads.
     static constexpr DWORD CelestialHoldMs=500;NorthlightCelestial::Context celestialHeld;std::string celestialHeldMap;DWORD celestialHeldAt=0;bool celestialHeldOk=false;unsigned long celestialHolds=0;
     NorthlightEffectSwitches::Settings effects,requestedEffects; /* requestedEffects: the hotkey state before the GI setting masks it */
+    bool nativeShadowOwned=true,nativeShadowAvailable=true; // Raw backend stands have no competing native producer.
     V sourceDirections[2],sourceColors[2],sourceGlowColors[2]; // sourceGlowColors: the same sources for the fog volume pass (glow_strength / glow hue instead of light_strength)
     float sourceWeights[2]={1,0};
     NorthlightUnderwater::Fade underwaterFade; // the camera in liquid: the sun and moon fade out (updateWorldContext)
@@ -1385,7 +1386,7 @@ private:
         staticReservedBytes+=managedBytes;return true;
     }
     void requestStaticCasters(const char* map){
-        if(!staticStream||!effects.shadows)return;
+        if(!staticStream||!directionalShadowWork())return;
         if(staticRecoveryPaused&&!(active&&active->bvh))return;
         staticFramePivot=shadowPivot();staticPivotReady=true;
         const DWORD now=GetTickCount();
@@ -2450,7 +2451,7 @@ private:
         if(slot==3)moonFloorShadowCurrent=action!=NorthlightQuality::CascadeAction::Render&&!reason&&!staticChanged&&!sliceBand&&!staticSlices[slot].active&&shadowCacheKey[slot].valid;
     }
     bool moonFloorSourceCurrent(int source,bool geometryReady,bool direct,const std::string& map)const{
-        return source==1&&direct&&geometryReady&&effects.shadows&&NorthlightGI::dot(sourceColors[1],sourceColors[1])>1e-10f&&shadow[3]&&
+        return source==1&&direct&&geometryReady&&directionalShadowWork()&&nativeShadowOwned&&NorthlightGI::dot(sourceColors[1],sourceColors[1])>1e-10f&&shadow[3]&&
             shadowCacheKey[3].valid&&shadowTransition[3].workingValid&&moonFloorShadowCurrent&&uploadedFogField&&uploadedFogMap==map&&uploadedMap==map&&
             active&&uploaded.lock()==active->bvh&&NorthlightWorldStreaming::applicable(active->map,active->center,map,vec(context.camera));
     }
@@ -2992,7 +2993,22 @@ public:
         effects=next;
     }
     bool effectsEnabled()const{return NorthlightQuality::pipelineWork(quality);}
-    NorthlightFrameRequirements::Plan frameRequirements(bool materials=false,bool diagnostic=false)const{return NorthlightFrameRequirements::make(quality,effects,materials,diagnostic);}
+    NorthlightFrameRequirements::Plan frameRequirements(bool materials=false,bool diagnostic=false)const{return NorthlightFrameRequirements::make(quality,effects,materials,diagnostic,nativeShadowAvailable);}
+    bool northlightShadowsRequested()const{return effects.shadows&&quality.shadowProvider;}
+    bool directionalShadowWork()const{return northlightShadowsRequested()&&nativeShadowAvailable;}
+    bool nativeShadowReplacementReady()const{
+        if(!directionalShadowWork()||!ready()||!fogGeometryReady||!shadowFrameReady||!composited)return false;
+        for(unsigned source=0;source<2;++source)if(NorthlightGI::dot(sourceColors[source],sourceColors[source])>1e-10f)
+            for(unsigned cascade=0;cascade<2;++cascade){const unsigned slot=source*2+cascade;const char action=cascadeActions[slot];
+                if(!shadow[slot]||(action!='R'&&action!='U'&&!(action=='D'&&shadowTransition[slot].workingValid)))return false;}
+        return true;
+    }
+    void setNativeShadowOwnership(bool owned,bool available=true){
+        if(nativeShadowOwned==owned&&nativeShadowAvailable==available)return;
+        const bool changed=nativeShadowAvailable!=available;nativeShadowOwned=owned;nativeShadowAvailable=available;
+        temporalValid=fogHistoryValid=shadowsComposited=false;
+        if(changed){shadowFrameReady=false;invalidateShadowCache(true);}
+    }
     bool surfaceLightingEnabled(bool materials=true)const{return frameRequirements(materials&&quality.autoBump).lighting;}
     void setPipelineEnabled(bool value){
         if(pipelineActive==value)return;pipelineActive=value;setEffects(requestedEffects);settingsRequestDirty=true;
@@ -3284,7 +3300,7 @@ public:
         auto image=[&](const char* name,IDirect3DSurface9* surface,bool valid,UINT x,UINT y,D3DFORMAT format){NorthlightWorldDiagnostics::product(d,surface,directory,name,capture,valid,std::max(1u,x),std::max(1u,y),format,rendererFrame);};
         if(!fogOnly){
             const unsigned source=NorthlightGI::dot(sourceColors[0],sourceColors[0])>1e-10f?0:1;
-            const bool shadowCurrent=ready&&fogGeometryReady&&effects.shadows&&NorthlightGI::dot(sourceColors[source],sourceColors[source])>1e-10f;
+            const bool shadowCurrent=ready&&fogGeometryReady&&directionalShadowWork()&&nativeShadowOwned&&NorthlightGI::dot(sourceColors[source],sourceColors[source])>1e-10f;
             image("shadow-near",shadowSurface[source*2],shadowCurrent,1024,1024,D3DFMT_R32F);
             image("shadow-far",shadowSurface[source*2+1],shadowCurrent,1024,1024,D3DFMT_R32F);
             image("normals",normalSurface,ready,w/2,h/2,D3DFMT_A16B16G16R16F);
@@ -3924,8 +3940,8 @@ public:
         patchedVertex=v->second;patchedPixel=result.shader;constants=result.constants;constantCount=terrainCoverageSources*3;
         std::memcpy(rows,terrainCoverageRows,constantCount*16);return true;
     }
-    bool terrainShadowActive()const{return effects.shadows&&ready()&&shadowsComposited;}
-    bool nativeTerrainShadowsEnabled()const{return quality.disableOriginalTerrainShadows==0;}
+    bool terrainShadowActive()const{return directionalShadowWork()&&ready()&&shadowsComposited;}
+    bool nativeTerrainShadowsEnabled()const{return !quality.shadowProvider||(effects.shadows&&!nativeShadowOwned)||quality.disableOriginalTerrainShadows==0;}
     bool shadowsRequested()const{return effects.shadows;} /* 0.3.187: changes only in setEffects (frame boundary) */
     void registerPixelShader(IDirect3DPixelShader9* shader){
         fogShaders.erase(shader);UINT size=0;
@@ -4895,12 +4911,14 @@ public:
     // enclosingState transfers restoration to the caller until its enclosing
     // effects scope ends. Later passes must bind their own inputs/state.
     bool render(IDirect3DSurface9* targetSurface,IDirect3DTexture9* depth,UINT w,UINT h,D3DFORMAT fmt,float nearZ,float farZ,float minZ,float maxZ,int debug,NorthlightGpuProfile* profile,IDirect3DTexture9* waterMask,IDirect3DTexture9* foldScene=nullptr,IDirect3DTexture9* foldAO=nullptr,unsigned rendererFrame=0,IDirect3DTexture9* hdrBase=nullptr,bool hdrBaseEncoded=false,bool hdrCombineAllowed=true,bool hdrSkyBase=false,bool foldAOAlphaNeutral=false,const SavedState* enclosingState=nullptr){
+        const bool directionalShadows=directionalShadowWork();
+        const bool applyDirectionalShadows=directionalShadows&&nativeShadowOwned;
         replayBoundsBegin();
         if(!pipelineActive)return debug?emptyDiagnosticView(targetSurface,w,h,debug):false;
         const bool hdrMode=hdrBase&&debug==0;
         shadowsComposited=false;composited=false;lastRenderDebug=debug;gpuDiagnosticFrame=false;fogGeometryReady=false;
         if(shadowAlphaRetryAt){if(DWORD(GetTickCount()-shadowAlphaRetryAt)<1000){skipReason="alpha-target";return false;}shadowAlphaRetryAt=0;}
-        if((debug==1&&!effects.shadows)||(debug==2&&!effects.gi)||(debug==3&&!effects.fog))return emptyDiagnosticView(targetSurface,w,h,debug);
+        if((debug==1&&!directionalShadows)||(debug==2&&!effects.gi)||(debug==3&&!effects.fog))return emptyDiagnosticView(targetSurface,w,h,debug);
         if(debug!=1)gpuDiagnosticArmed=true;
         const bool materialWanted=materialDetail&&(materialBumpGain>0||materialOcclusion)&&foldScene&&debug==0;
         const auto requirements=frameRequirements(materialWanted,debug!=0||(gpuNormalDiagnosticRequested&&gpuDiagnosticCaptures<4));
@@ -4924,7 +4942,7 @@ public:
         if(replayShadows)selectShadowReplays();
         bucket(NorthlightEffectsBuckets::Selection);
         bool sourceActive[2]={NorthlightGI::dot(sourceColors[0],sourceColors[0])>1e-10f,NorthlightGI::dot(sourceColors[1],sourceColors[1])>1e-10f};
-        const bool directionalReplayBounds=replayShadows&&(sourceActive[0]||sourceActive[1]);
+        const bool directionalReplayBounds=directionalShadows&&replayShadows&&(sourceActive[0]||sourceActive[1]);
         if(directionalReplayBounds)replayBoundsKick(); /* joined by the first pointBounds reader */
         struct BoundsJoin {WorldRenderer& r;~BoundsJoin(){r.replayBoundsJoin();}} boundsJoin{*this};
         // 0.3.152 RenderProfile: the upload window after selection and the bounds kick (locks,
@@ -5042,7 +5060,7 @@ public:
         auto timedTerrain=[&]{auto phase=streamingPhases.measure(NorthlightStreaming::PhaseProfile::Terrain);return uploadLiveTerrain();};
         auto timedReplay=[&]{if(uploadWindowStart)uploadWindowTicks=QpcClock::now()-uploadWindowStart;auto phase=streamingPhases.measure(NorthlightStreaming::PhaseProfile::Replay);return uploadReplay();};
         skipReason="terrain";bool terrainUploaded=false;
-        if(effects.shadows&&(!(terrainUploaded=timedTerrain())||(replayShadows&&!timedReplay()))){if(terrainUploaded)skipReason="replay";streamBudget.resume();updateStaticCasters(false,&streamBudget);return false;}
+        if((directionalShadows&&!(terrainUploaded=timedTerrain()))||(replayShadows&&!timedReplay())){if(terrainUploaded)skipReason="replay";streamBudget.resume();updateStaticCasters(false,&streamBudget);return false;}
         streamBudget.resume();
         skipReason="draw";
         if(profile)profile->mark("WorldUpload");
@@ -5062,7 +5080,7 @@ public:
         auto terrainJob=[&]{
             std::chrono::steady_clock::time_point terrainPrepareStart;
             if(captureSampled)terrainPrepareStart=std::chrono::steady_clock::now();
-            if(effects.shadows&&(sourceActive[0]||sourceActive[1])){
+            if(directionalShadows&&(sourceActive[0]||sourceActive[1])){
                 // 0.3.175 (S2): this generation's terrain-outside-fixed list, when it belongs to these batches and fixed set.
                 if(terrainBatchListGeneration==meshGeneration&&terrainBatchListSize==batches.size()&&terrainListFixed==&fixedTerrainChunks())
                     terrainCandidates.prepareListed(batches,shadowTerrainList,fixedTerrainChunks(),liveTerrainChunks,captureSampled);
@@ -5070,11 +5088,11 @@ public:
             if(captureSampled)terrainPrepareMs=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-terrainPrepareStart).count();
         };
         NorthlightJobs::Counter terrainDone;JobJoin terrainJoin{replayJobs_,terrainDone};
-        const bool terrainAsync=jobs&&effects.shadows&&(sourceActive[0]||sourceActive[1]);
+        const bool terrainAsync=jobs&&directionalShadows&&(sourceActive[0]||sourceActive[1]);
         if(terrainAsync)replayJobs_.kick(terrainDone,terrainJob);
         {auto phase=streamingPhases.measure(NorthlightStreaming::PhaseProfile::Static);
-         updateStaticCasters(effects.shadows,&streamBudget);
-         if(effects.shadows&&replayShadows){auto proofs=streamingPhases.measure(NorthlightStreaming::PhaseProfile::Proofs);prepareStaticProofs(sourceActive[0]||sourceActive[1]);}}
+         updateStaticCasters(directionalShadows,&streamBudget);
+         if(directionalShadows&&replayShadows){auto proofs=streamingPhases.measure(NorthlightStreaming::PhaseProfile::Proofs);prepareStaticProofs(sourceActive[0]||sourceActive[1]);}}
         if(profile)profile->mark("StaticCasterUpload");
         bucket(NorthlightEffectsBuckets::Static);
         streamingCpuPeakMs=std::max(streamingCpuPeakMs,streamBudget.elapsedMs());
@@ -5101,7 +5119,7 @@ public:
         const bool anchorNewMap=cascadeAnchorMap!=lastRequest.map;if(anchorNewMap)cascadeAnchorMap=lastRequest.map; /* the requested map: the snapshot can lag */
         // 0.3.209 (task 29): the actor shadow map is centred on a leashed anchor of the raw pivot (not texel-snapped, not the snapped cascade pivot): the pivot is
         // camera-derived and drifts while the camera orbits an idle player, so the centre holds still within Leash and is dragged along beyond it. Per source; reset on a new map.
-        const bool actorMapOn=NorthlightQuality::actorShadowMap(quality,effects.shadows)&&actorShadowPS&&actorTilesPS&&actorShadow[0]&&actorShadow[1]&&actorTiles[0]&&actorTiles[1]&&actorTilesMid&&actorVisibility;
+        const bool actorMapOn=NorthlightQuality::actorShadowMap(quality,directionalShadows)&&actorShadowPS&&actorTilesPS&&actorShadow[0]&&actorShadow[1]&&actorTiles[0]&&actorTiles[1]&&actorTilesMid&&actorVisibility;
         float actorFrameMatrix[2][16];bool actorFrameOn[2]={}; /* actorMapOn with a finite matrix: checked here once, not per replay in the near loop */
         for(int source=0;source<2;++source){
             if(anchorNewMap)actorCenterValid[source]=false;
@@ -5125,7 +5143,7 @@ public:
             const bool travel=key.valid&&(!NorthlightWorldMath::cacheOffset(sameBasis,key.frame,ox,oy,dz)||std::labs(ox)>long(ShadowCacheMargin)||std::labs(oy)>long(ShadowCacheMargin));
             const bool jump=key.valid&&different(key.direction,sourceDirections[source],.002f);
             f.state.request({sourceDirections[source].x,sourceDirections[source].y,sourceDirections[source].z},transitionNow,
-                anchorNewMap||handover||teleported||travel||jump||!effects.shadows||!sourceActive[source]||!key.valid||!replaysComplete||shadowTransitionFailed||memoryPressure);
+                anchorNewMap||handover||teleported||travel||jump||!directionalShadows||!sourceActive[source]||!key.valid||!replaysComplete||shadowTransitionFailed||memoryPressure);
             const auto direction=f.state.renderDirection();slotDirections[slot]=V(direction.x,direction.y,direction.z);
         }
         NorthlightWorldMath::ShadowFrame cascadeFrames[2][2];
@@ -5139,14 +5157,14 @@ public:
         // 0.3.152: each drawn slot's cache placement and matrix, once per frame (the
         // cascade loop reuses both; a key changes only in its own slot's iteration).
         NorthlightWorldMath::ShadowCachePlacement slotPlacement[4];
-        for(int source=0;source<2;++source)if(effects.shadows&&sourceActive[source])for(int cascade=0;cascade<2;++cascade){
+        for(int source=0;source<2;++source)if(directionalShadows&&sourceActive[source])for(int cascade=0;cascade<2;++cascade){
             const int slot=source*2+cascade;const float radius=cascade==0?48.f:192.f;const ShadowCacheKey& key=shadowCacheKey[slot];
             slotPlacement[slot]=NorthlightWorldMath::shadowCachePlacement(cascadeFrames[source][cascade],key.frame,key.valid,
                 !different(key.direction,slotDirections[slot],1e-6f),long(ShadowCacheMargin));
             NorthlightWorldMath::shadowMatrixFrom(slotPlacement[slot].frame,radius*float(ShadowCacheSize)/1024.f,staticSlotMatrix[slot]);
         }
         struct StaticPlanJoin {WorldRenderer& r;~StaticPlanJoin(){try{r.staticCasters.settle();}catch(...){}}} staticPlanJoin{*this}; /* before any return below */
-        if(effects.shadows){const auto kickStart=std::chrono::steady_clock::now();staticPlanKick(slotPlacement,sourceActive);staticKickMs+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-kickStart).count();}
+        if(directionalShadows){const auto kickStart=std::chrono::steady_clock::now();staticPlanKick(slotPlacement,sourceActive);staticKickMs+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-kickStart).count();}
         if(directionalReplayBounds)pointCalculateReplayBounds(); // point-only refreshes prepare on demand
         d->SetSamplerState(0,D3DSAMP_ADDRESSU,D3DTADDRESS_WRAP);d->SetSamplerState(0,D3DSAMP_ADDRESSV,D3DTADDRESS_WRAP);d->SetSamplerState(0,D3DSAMP_MINFILTER,D3DTEXF_LINEAR);d->SetSamplerState(0,D3DSAMP_MAGFILTER,D3DTEXF_LINEAR);d->SetSamplerState(0,D3DSAMP_MIPFILTER,D3DTEXF_NONE);d->SetSamplerState(0,D3DSAMP_SRGBTEXTURE,FALSE);
         bucket(NorthlightEffectsBuckets::ShadowSetup);
@@ -5157,10 +5175,10 @@ public:
         bool anyShadowCacheRender=false;
         moonFloorShadowCurrent=false;
         ++shadowPasses;
-        if(NorthlightStaticPrebuild::Scheduler::Enabled)for(int source=0;source<2;++source)staticPrebuild.observe(source,effects.shadows&&sourceActive[source],rawSourceDirections[source],GetTickCount());
+        if(NorthlightStaticPrebuild::Scheduler::Enabled)for(int source=0;source<2;++source)staticPrebuild.observe(source,directionalShadows&&sourceActive[source],rawSourceDirections[source],GetTickCount());
         for(int source=0;source<2;++source)if(!actorMapOn||!sourceActive[source]){actorValid[source]=false;actorHold[source].invalidate();} /* 0.3.209 (task 29): a source that draws no near map keeps no actor map */
         for(int source=0;source<2;++source){
-          if(!effects.shadows||!sourceActive[source])continue;
+          if(!directionalShadows||!sourceActive[source])continue;
           auto& matrices=sourceMatrices[source];bool nearRendered=false; /* this source's near map redrawn with fresh replays */
           for(int cascade=0;cascade<2;++cascade){
             const auto phaseStart=std::chrono::steady_clock::now();
@@ -5540,7 +5558,7 @@ public:
         }
         }
         transitionFrame.complete=true;
-        if(NorthlightStaticPrebuild::Scheduler::Enabled&&effects.shadows)staticPrebuild.frame(cascadePivot,sourceDirections,sourceActive,!anyShadowCacheRender&&!continuousCelestialShadows&&staticScene&&staticCasters.stats().readyModels,GetTickCount(),
+        if(NorthlightStaticPrebuild::Scheduler::Enabled&&directionalShadows)staticPrebuild.frame(cascadePivot,sourceDirections,sourceActive,!anyShadowCacheRender&&!continuousCelestialShadows&&staticScene&&staticCasters.stats().readyModels,GetTickCount(),
             [&](int,int cascade,V direction,float* m){const float radius=cascade==0?48.f:192.f;NorthlightWorldMath::shadowMatrixFrom(NorthlightWorldMath::shadowFrame(cascadePivot,direction,radius),radius*float(ShadowCacheSize)/1024.f,m);},
             [&](const float* m){return staticCasters.planReady(m);},
             [&](const float* m){try {staticCasters.signature(m);return true;}catch(...){return false;}}, /* a failed early build never resets the cache */
@@ -5550,7 +5568,7 @@ public:
             logf("WORLD terrain selection scanned=%llu candidates=%zu membershipChecks=%llu passes=%u reusedMembershipChecks=%llu fallbackPasses=%u scratchBytes=%zu prepareMs=%.3f",
                 (unsigned long long)selection.scanned,terrainCandidates.candidates(),(unsigned long long)selection.membershipChecks,selection.passes,
                 (unsigned long long)selection.reusedMembershipChecks,selection.fallbackPasses,terrainCandidates.bytes(),terrainPrepareMs);}
-        shadowFrameReady=effects.shadows;
+        shadowFrameReady=directionalShadows;
         }else{
             shadowFrameReady=pointReady=false;
             actorValid[0]=actorValid[1]=false;
@@ -5558,7 +5576,7 @@ public:
         }
         if(lightingCapture){const unsigned productSource=NorthlightGI::dot(sourceColors[0],sourceColors[0])>1e-10f?0:1;
             for(unsigned slot=0;slot<4;++slot){const auto& reuse=slot%2?farShadow[slot/2]:nearShadow[slot/2];const auto& key=shadowCacheKey[slot];
-                lightingCapture->directional(slot,geometryReady&&effects.shadows&&sourceActive[slot/2],cascadeActions[slot],sourceMatrices[slot/2][slot%2],shadow[slot],productSource,reuse.valid,reuse.pass,key.serial,key.staticSignature);}}
+                lightingCapture->directional(slot,geometryReady&&directionalShadows&&sourceActive[slot/2],cascadeActions[slot],sourceMatrices[slot/2][slot%2],shadow[slot],productSource,reuse.valid,reuse.pass,key.serial,key.staticSignature);}}
         skipReason="draw";
         // Point shadows use this frame's selected/faded direct-light sources, in daylight too.
         if(jobs)replayJobs_.wait(atmosphereDone);else atmosphereWork(atmosphere,nearZ,w,h,debug);
@@ -5602,7 +5620,7 @@ public:
         const float lampGain=.9f*NorthlightLocalLightSelection::nightGain(lampNight);
         // the first lighting pass is the sun's (with real shadows) only then: its visibility is in the
         // baseline alpha. The renderer's own orbit gives the sun weight; without it (game light only) no dimming.
-        const float lampSunlitCut=NorthlightLocalLightSelection::sunlitCut(celestialValid?sourceWeights[0]:0.f,sourceActive[0]&&geometryReady&&effects.shadows);
+        const float lampSunlitCut=NorthlightLocalLightSelection::sunlitCut(celestialValid?sourceWeights[0]:0.f,sourceActive[0]&&geometryReady&&applyDirectionalShadows);
         // 0.3.200 (jobs): the selection, the clouds' state and frame, the lamps' fog extinction, the veil and the scissor rects come from
         // atmosphereWork(): on a job kicked after upload() (ReplayJobs=1), joined here, or inline here (ReplayJobs=0, the old place).
         lightingMark(0);
@@ -5745,14 +5763,14 @@ public:
         if(lightingCapture)lightingCapture->inputs(0,1u<<1,1u<<1); // Actual full-resolution sampled depth, before any post-process reuses its slot.
         bool fogActorCurrent=false,fogActorTiledCurrent=false,fogAmbientOnlyCurrent=false,actorTilesWideCurrent[2]={};
         auto setSource=[&](int source,bool first,bool volume=false){
-            d->SetTexture(2,geometryReady&&effects.shadows?shadow[source*2]:neutralWhite);d->SetTexture(3,geometryReady&&effects.shadows?shadow[source*2+1]:neutralWhite);
+            d->SetTexture(2,geometryReady&&applyDirectionalShadows?shadow[source*2]:neutralWhite);d->SetTexture(3,geometryReady&&applyDirectionalShadows?shadow[source*2+1]:neutralWhite);
             // Collapse only shadow queries to the centre at depth .5. With a
             // cleared depth of 1, even slope-corrected PCF is exactly unoccluded.
             const float neutralMatrix[16]={0,0,0,0,0,0,0,0,0,0,0,0,0,0,.5f,1};
-            d->SetPixelShaderConstantF(7,geometryReady&&effects.shadows?sourceMatrices[source][0]:neutralMatrix,4);
-            d->SetPixelShaderConstantF(11,geometryReady&&effects.shadows?sourceMatrices[source][1]:neutralMatrix,4);
+            d->SetPixelShaderConstantF(7,geometryReady&&applyDirectionalShadows?sourceMatrices[source][0]:neutralMatrix,4);
+            d->SetPixelShaderConstantF(11,geometryReady&&applyDirectionalShadows?sourceMatrices[source][1]:neutralMatrix,4);
             const auto& sourceTransition=shadowTransition[source*2+(volume?1:0)];const auto selectedDirection=sourceTransition.state.current();
-            const V committed=geometryReady&&effects.shadows&&sourceTransition.workingValid?V(selectedDirection.x,selectedDirection.y,selectedDirection.z):sourceDirections[source];
+            const V committed=geometryReady&&applyDirectionalShadows&&sourceTransition.workingValid?V(selectedDirection.x,selectedDirection.y,selectedDirection.z):sourceDirections[source];
             float dir[4]={committed.x,committed.y,committed.z,source==1?1.f:0.f}; // w selects moon surface relighting
             // Match the shadow-render activity threshold exactly. The mandatory
             // ambient-only volume pass must never read an unrendered map for
@@ -5766,14 +5784,14 @@ public:
             if(volume&&source==0)NorthlightSunHue::fogDirect(rgb,glowHueFrame,rgb);
             d->SetPixelShaderConstantF(16,dir,1);d->SetPixelShaderConstantF(17,rgb,1);
             if(volume){
-                const bool fogActor=fogActorPS&&fogCloudsActorPS&&geometryReady&&effects.shadows&&quality.actorShadows&&quality.actorShadowDetail&&sourceActive[source]&&actorValid[source]&&actorShadow[source]&&actorCasterCount[source]>0;
+                const bool fogActor=fogActorPS&&fogCloudsActorPS&&geometryReady&&applyDirectionalShadows&&quality.actorShadows&&quality.actorShadowDetail&&sourceActive[source]&&actorValid[source]&&actorShadow[source]&&actorCasterCount[source]>0;
                 fogActorCurrent=fogActor;
                 const float fogActorInfo[4]={fogActor?1.f:0.f,0,0,0};
                 d->SetTexture(4,fogActor?actorShadow[source]:neutralWhite);
                 d->SetPixelShaderConstantF(68,fogActor?actorMatrices[source]:neutralMatrix,4);
                 d->SetPixelShaderConstantF(72,fogActorInfo,1);
                 const float wholeActorMap[4]={-1,-1,1,1};d->SetPixelShaderConstantF(66,fogActor?actorFogBounds[source]:wholeActorMap,1);
-                if(profileSampled())logf("FOG_CASTERS frame=%u source=%d static=%u actor=%u actorDraws=%u extraGeometryDraws=0 mapCoverage=%.4f",unsigned(frames),source,unsigned(geometryReady&&effects.shadows),unsigned(fogActor),fogActor?actorCasterCount[source]:0u,fogActor?(actorFogBounds[source][2]-actorFogBounds[source][0])*(actorFogBounds[source][3]-actorFogBounds[source][1])*.25f:0.f);
+                if(profileSampled())logf("FOG_CASTERS frame=%u source=%d static=%u actor=%u actorDraws=%u extraGeometryDraws=0 mapCoverage=%.4f",unsigned(frames),source,unsigned(geometryReady&&applyDirectionalShadows),unsigned(fogActor),fogActor?actorCasterCount[source]:0u,fogActor?(actorFogBounds[source][2]-actorFogBounds[source][0])*(actorFogBounds[source][3]-actorFogBounds[source][1])*.25f:0.f);
             }
             if(volume){
                 fogActorTiledCurrent=fogActorCurrent&&actorTilesWideCurrent[source]&&fogActorTiledPS&&fogCloudsActorTiledPS&&NorthlightActorShadowMap::tiledFogRange(actorMatrices[source],c[15],c[24][0]);
@@ -5789,7 +5807,7 @@ public:
         const bool lightingNeeded=requirements.lighting;
         // Without shadow visibility changes, removal smoothing is a copy.
         // TemporalLight can consume raw light and produce distance itself.
-        const bool normalsProduceDistance=lightingNeeded&&effects.shadows&&c[30][1]>0;
+        const bool normalsProduceDistance=lightingNeeded&&applyDirectionalShadows&&c[30][1]>0;
         const bool anyShadowTransition=geometryReady&&(shadowTransitionActive(0)||shadowTransitionActive(1));
         auto* const smoothSurface=fogBlurredSurface;
         bool first=true;
@@ -5820,7 +5838,7 @@ public:
         if(profile)profile->mark("WorldNormals");bucket(NorthlightEffectsBuckets::Lighting); /* 0.3.209 (task 29): the normals pass, so ActorShadow below is billed alone */
         bool actorPass[2]={},anyActorPass=false;
         for(int source=0;source<2;++source){
-            actorPass[source]=!((sourceWeights[source]<=0&&source!=firstSource)||!geometryReady||!effects.shadows||!sourceActive[source]||!actorValid[source]||!actorShadow[source]||!actorShadowPS||!actorTilesPS||!actorTiles[source]||!actorTilesMid||!actorVisibility);
+            actorPass[source]=!((sourceWeights[source]<=0&&source!=firstSource)||!geometryReady||!applyDirectionalShadows||!sourceActive[source]||!actorValid[source]||!actorShadow[source]||!actorShadowPS||!actorTilesPS||!actorTiles[source]||!actorTilesMid||!actorVisibility);
             anyActorPass=anyActorPass||actorPass[source];
         }
         const float actorInfo[4]={1.f,1.f/float(NorthlightActorShadowMap::Size),NorthlightActorShadowMap::Radius,0.f};
@@ -5857,7 +5875,7 @@ public:
         if(anyActorPass)d->SetTexture(10,textures[10]); /* the frame-start binding (probe metadata) again */
         if(profile)profile->mark("ActorShadow");bucket(NorthlightEffectsBuckets::ActorShadow);
         bool softResolved=false;
-        if((quality.softShadows||anyShadowTransition)&&geometryReady&&effects.shadows&&(sourceActive[0]||sourceActive[1])&&softShadowResources(w,h)){
+        if((quality.softShadows||anyShadowTransition)&&geometryReady&&applyDirectionalShadows&&(sourceActive[0]||sourceActive[1])&&softShadowResources(w,h)){
             // Never sample a texture while it is a render target. A failed
             // optional resolve retains the original PCF consumer this frame.
             softResolved=SUCCEEDED(d->SetTexture(15,nullptr))&&SUCCEEDED(d->SetRenderTarget(0,softVisibilitySurface))&&
@@ -5886,12 +5904,12 @@ public:
         d->SetTexture(12,anyActorPass?actorVisibility:neutralWhite);
         // Neutral shadow maps still made the general shader run its PCF loop.
         // Keep source colors, normals, baseline and temporal stabilization.
-        if(!effects.shadows&&!lightingUnshadowedPS&&!lightingUnshadowedRefused){
+        if(!applyDirectionalShadows&&!lightingUnshadowedPS&&!lightingUnshadowedRefused){
             IDirect3DPixelShader9* optional=nullptr;
             if(SUCCEEDED(d->CreatePixelShader(kWorldLightingUnshadowedShader,&optional))&&optional)lightingUnshadowedPS=optional;
             else {if(optional)optional->Release();lightingUnshadowedRefused=true;}
         }
-        const bool unshadowedLighting=!effects.shadows&&lightingUnshadowedPS;
+        const bool unshadowedLighting=!applyDirectionalShadows&&lightingUnshadowedPS;
         const bool giRequested=geometryReady&&requirements.probes;
         if(unshadowedLighting&&giRequested&&!lightingUnshadowedGIPS&&!lightingUnshadowedGIRefused){
             IDirect3DPixelShader9* optional=nullptr;
@@ -5900,7 +5918,7 @@ public:
         }
         const bool mergedGI=unshadowedLighting&&giRequested&&lightingUnshadowedGIPS;
         d->SetRenderTarget(0,lightSurface);d->SetPixelShader(unshadowedLighting?lightingUnshadowedPS:softResolved?lightingSoftPS:lightingPS);
-        if(profileSampled())logf("WORLD_LIGHTING rendererFrame=%u variant=%s shadows=%u geometry=%u",rendererFrame,unshadowedLighting?"unshadowed":softResolved?"soft":"standard",unsigned(effects.shadows),unsigned(geometryReady));
+        if(profileSampled())logf("WORLD_LIGHTING rendererFrame=%u variant=%s shadows=%u geometry=%u",rendererFrame,unshadowedLighting?"unshadowed":softResolved?"soft":"standard",unsigned(applyDirectionalShadows),unsigned(geometryReady));
         d->SetTexture(15,softResolved?softVisibility:nullptr);
         if(softResolved){
             for(auto state:{D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER})d->SetSamplerState(15,state,D3DTEXF_POINT);
@@ -6410,7 +6428,7 @@ public:
             shadowCacheStaticFullRenders,shadowCachePartialRenders,shadowCachePartialRects,shadowCachePartialBounding,shadowCacheCostFull,shadowCachePartialRenders?100.0*double(shadowCachePartialTexels)/(double(shadowCachePartialRenders)*ShadowCacheSize*ShadowCacheSize):0.0,shadowCachePartialSkippedDraws,shadowCachePartialCalls,shadowCachePartialFullCalls,staticDedupUncommitted,shadowCacheVerified,shadowCacheVerifyMismatches,shadowCacheScissorLeaks,staticSliceBands,staticSliceRestarts);
             shadowCacheRenders=shadowCacheReuses=culledReplayDraws=0;shadowCacheStaticFullRenders=shadowCachePartialRenders=shadowCachePartialSkippedDraws=shadowCachePartialRects=shadowCachePartialBounding=shadowCacheCostFull=0;shadowCachePartialTexels=shadowCachePartialCalls=shadowCachePartialFullCalls=0;staticDedupUncommitted=0;staticSliceBands=staticSliceRestarts=0;}
         if(frames==1||frames%600==0){if(frames==1||NorthlightDiagnostics::enabled())logf("SHADOW reuse nearInterval=%u farInterval=%u nearReuses=%u farReuses=%u captureSkippedFrames=%u captureDeferrals=%u captureSkip=%u",
-            quality.nearShadowInterval,quality.farShadowInterval,nearReuses,farReuses,captureSkippedFrames,captureDeferrals,unsigned(NorthlightQuality::captureSkipPossible(quality,NorthlightQuality::actorShadowWork(quality,effects.shadows))));
+            quality.nearShadowInterval,quality.farShadowInterval,nearReuses,farReuses,captureSkippedFrames,captureDeferrals,unsigned(NorthlightQuality::captureSkipPossible(quality,NorthlightQuality::actorShadowWork(quality,applyDirectionalShadows))));
             nearReuses=farReuses=captureSkippedFrames=captureDeferrals=0;}
         if(profile&&profile->recording())deferLogf("WORLD composite rendererFrame=%u variant=%s width=%u height=%u fog=%u local=%u aoAlphaNeutral=%u combined=%u rainAbsent=%u nativeSurfaceShared=%u distanceFromNormals=%u fogClearSkipped=%u fogHistoryClearSkipped=%u callerStateShared=%u",rendererFrame,baseComposite?"base-hdr":hdrMode?"standard-hdr":"standard-sdr",w,h,unsigned(fogActive),unsigned(currentLocalLighting),unsigned(!foldAO||foldAOAlphaNeutral),unsigned(combinedMaterial),unsigned(compositeWork[2]>.5f),unsigned(nativeSurfaceShared),unsigned(normalsProduceDistance),unsigned(fogClearSkipped),unsigned(fogHistoryClearSkipped),unsigned(callerRestores));
         if(lightingClock)logf("WORLD lighting setup prefixMs=%.3f atmosphereMs=%.3f constantsMs=%.3f bindingsMs=%.3f spellFitMs=%.3f spellFitRevision=%u spellAsync=%u spellWorker=%u spellJoinMs=%.3f",lightingSetupMs[0],lightingSetupMs[1],lightingSetupMs[2],lightingSetupMs[3],spellFitMs,spellFogHold.out.revision,unsigned(spellAsync),unsigned(spellWorker),spellJoinMs);
@@ -6425,7 +6443,7 @@ public:
         if(frames==1||(frames%600==0&&NorthlightDiagnostics::enabled()))logf("WORLD replay poses draws=%zu groups=%u prepared=%zu reused=%zu scope=directional exact=1",replays.size(),replays.empty()?0:replays.back()->constantGroup+1,replayPosePrepared,replayPoseReused);
         DWORD elapsed=GetTickCount()-submissionStart;
         if(elapsed>40&&slowReports++<12)logf("WORLD slow submission: %lu ms; replay=%zu liveTerrainChunks=%zu",(unsigned long)elapsed,replays.size(),liveTerrainChunks.size());
-        shadowsComposited=geometryReady&&effects.shadows&&(sourceActive[0]||sourceActive[1])&&debug==0;
+        shadowsComposited=geometryReady&&applyDirectionalShadows&&(sourceActive[0]||sourceActive[1])&&debug==0;
         if(shadowsComposited){
             terrainCoverageSources=0;
             for(unsigned source=0;source<2;++source)if(sourceActive[source])std::memcpy(terrainCoverageMatrices[terrainCoverageSources++],sourceMatrices[source][1],64);

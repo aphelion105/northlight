@@ -32,6 +32,8 @@ try:
    assert text.count(marker)==1
    if 'bool surfaceLightingEnabled(' not in text:
     text=text.replace(marker,'    bool surfaceLightingEnabled()const{return effects.gi||effects.shadows||effects.fog||(quality.localLights&&quality.localLightLimit)||quality.autoBump;}\n'+marker)
+   if 'void setNativeShadowOwnership(' not in text:
+    text=text.replace(marker,'    void setNativeShadowOwnership(bool,bool=true){}\n    bool northlightShadowsRequested()const{return effects.shadows;}\n    bool nativeShadowReplacementReady()const{return false;}\n'+marker)
    raw=text.encode('utf-8')
   (overlay/name).write_bytes(raw)
  for mode in ['current','reference']:

@@ -333,6 +333,7 @@ test_native_local_vertex_reuse_gpu.py
 test_native_model_install.py
 test_native_replay_plan.py
 test_native_scene_lights.py
+test_native_shadow_control.py
 test_native_shadow_observation.py
 test_native_snapshot_capture.py
 test_native_white_cube_gpu.py

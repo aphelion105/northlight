@@ -61,6 +61,26 @@ struct PipelineOffTest {
     }
     static void checks(WorldRenderer& w,LayerMeter& meter,IDirect3DSurface9* out,IDirect3DSurface9* read,IDirect3DTexture9* depth,IDirect3DTexture9* scene,IDirect3DTexture9* ao,IDirect3DTexture9* water,unsigned W,unsigned H){
 #ifndef NORTHLIGHT_OPTIONAL_LAYER_REFERENCE
+        for(bool nativeMode:{false,true}){
+            w.releaseGPU(true);configure(w,2);w.quality.shadowProvider=nativeMode?0:1;w.nativeShadowOwned=w.nativeShadowAvailable=nativeMode;
+            render(w,meter.real,out,depth,scene,ao,nullptr,W,H,false);
+            assert(w.screenGroups==1&&!w.normalsPS&&!w.shadowPS&&!w.shadow[0]&&!w.shadow[1]&&!w.actorShadow[0]&&!w.shadowsComposited);
+            assert(w.nativeTerrainShadowsEnabled());
+        }
+        w.quality.shadowProvider=1;w.nativeShadowOwned=w.nativeShadowAvailable=true;
+        assert(!w.nativeShadowReplacementReady()); // Neither a warm target nor an empty publication authorizes handoff.
+        {
+            auto active=w.active;auto* a=w.shadow[0];auto* b=w.shadow[1];
+            w.active=std::make_shared<WorldRenderer::Snapshot>();w.active->bvh=std::make_shared<NorthlightGI::BVH>();
+            w.fogGeometryReady=w.shadowFrameReady=w.composited=true;w.nativeShadowOwned=false;
+            w.shadow[0]=w.shadow[1]=scene;w.cascadeActions[0]='R';w.cascadeActions[1]='U';assert(w.nativeShadowReplacementReady());
+            w.cascadeActions[0]='D';w.shadowTransition[0].workingValid=false;assert(!w.nativeShadowReplacementReady());
+            w.shadowTransition[0].workingValid=true;assert(w.nativeShadowReplacementReady());
+            w.shadow[1]=nullptr;assert(!w.nativeShadowReplacementReady());w.shadow[1]=scene;
+            w.quality.shadowProvider=0;assert(!w.nativeShadowReplacementReady());w.quality.shadowProvider=1;
+            w.composited=false;assert(!w.nativeShadowReplacementReady());
+            w.shadow[0]=a;w.shadow[1]=b;w.active=active;w.nativeShadowOwned=true;w.fogGeometryReady=w.shadowFrameReady=false;w.shadowTransition[0].workingValid=false;
+        }
         w.releaseGPU(true);configure(w,0);render(w,meter.real,out,depth,scene,ao,nullptr,W,H,false);
         assert(w.screenGroups==1&&w.finalPS&&!w.normalBuffer&&!w.light&&!w.baselineLight&&!w.fog&&!w.fogBlurred&&!w.fogHistory);
         for(unsigned i=0;i<2;++i)assert(!w.temporalLight[i]&&!w.temporalDepth[i]);

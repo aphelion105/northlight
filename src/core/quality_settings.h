@@ -79,6 +79,7 @@ struct Settings {
     unsigned blobShadows=1;
     // Suppress the original baked/client terrain shadow term; Northlight shadows are independent.
     unsigned disableOriginalTerrainShadows=1;
+    unsigned shadowProvider=1; // 0: native directional shadows; 1: Northlight cascades.
     // Weather 1 = Northlight's effects follow detected rain, snow and sand; 0 = nothing reacts.
     // RainFog 0..2 scales the haze/fog/shafts/sun/shadow/GI/lamp couplings (1 = the tuned look).
     unsigned weather=1,rainFog=1;
@@ -150,7 +151,7 @@ struct Settings {
     unsigned autoDisplacementStrength=100,autoDisplacementDistance=12,autoDisplacementDetail=4;
     unsigned autoBumpModels=3,autoModelDisplacementStrength=25,autoModelDisplacementDistance=8,autoModelDisplacementDetail=2;
     unsigned autoHeightPolarity=0,autoHeightDetails=75,autoHeightBalance=50;
-    char origin[116]={'d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d'};
+    char origin[117]={'d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d'};
 };
 struct Key {
     const char* name;unsigned Settings::*field=nullptr;int Settings::*signedField=nullptr;
@@ -276,6 +277,7 @@ inline const Key Keys[]={
     {"WorldFog",&Settings::worldFog,0,1,{1,1,1}},
     {"LocalLights",&Settings::localLights,0,1,{1,1,1}},
     {"DisableOriginalTerrainShadows",&Settings::disableOriginalTerrainShadows,0,1,{1,1,1}},
+    {"ShadowProvider",&Settings::shadowProvider,0,1,{1,1,1}},
     {"GIBrightness",&Settings::giBrightness,-100,200,{0,0,0}},
     {"AuroraStrength",&Settings::auroraStrength,0,200,{100,100,100}},
 };
@@ -326,10 +328,10 @@ inline std::string forcedOff(const Settings& requested){
     for(const auto& k:ActorShadowForced)if(requested.*k.field&&!(e.*k.field)){if(!out.empty())out+=' ';out+=k.name;}
     return out.empty()?"none":out;}
 // Replay shadow work actually requested: shadows on (F9) and ActorShadows=1.
-inline bool actorShadowWork(const Settings& s,bool shadows){return shadows&&s.actorShadows;}
+inline bool actorShadowWork(const Settings& s,bool shadows){return shadows&&s.actorShadows&&(s.shadowProvider||(s.localLights&&s.localLightLimit&&s.pointShadows&&s.pointShadowLimit));}
 inline bool grassShadowWork(const Settings& s,bool shadows){return s.grassShadows&&actorShadowWork(s,shadows);}
 // 0.3.209 (task 29): the dedicated actor shadow map is drawn and read.
-inline bool actorShadowMap(const Settings& s,bool shadows){return actorShadowWork(s,shadows)&&s.actorShadowDetail;}
+inline bool actorShadowMap(const Settings& s,bool shadows){return s.shadowProvider&&actorShadowWork(s,shadows)&&s.actorShadowDetail;}
 inline const char* name(Preset p){return p==Preset::Balanced?"Balanced":p==Preset::Performance?"Performance":"Quality";}
 static_assert(sizeof(Keys)/sizeof(Keys[0])==sizeof(Settings::origin),"one origin per key");
 inline Settings preset(Preset p){Settings s;s.preset=p;unsigned i=0;

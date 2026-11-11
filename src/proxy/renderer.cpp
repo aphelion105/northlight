@@ -45,6 +45,7 @@
 #include "dxvk_engine_name.h"
 #include "backend_loader.h"
 #include "blp_mip_guard.h"
+#include "native_shadow_control_windows.h"
 #include "glue_lighting_selection.h"
 #include "art_inputs_guard.h"
 #include "frame_intervals.h"
@@ -1083,6 +1084,7 @@ private:
         });
     }
     void clearFrame() {
+        NorthlightNativeShadowControl::publish(this,nativeShadowStateKnown&&enabled&&!failed&&!extensionFault&&terrain&&projectionValid&&world&&world->hasContext()&&world->nativeShadowReplacementReady());
         LogFlushBatch logBatch;
         diagnosticAoRaw=diagnosticAo=diagnosticWorld=false;
         waterAfterEffects=0;
@@ -1939,6 +1941,17 @@ private:
     IDirect3DPixelShader9 *shadowSwapOriginal=nullptr,*shadowSwapReplacement=nullptr;
     IDirect3DVertexShader9 *shadowSwapVertexOriginal=nullptr,*shadowSwapVertexReplacement=nullptr;
     unsigned shadowSwapConstantBase=0,shadowSwapConstantCount=0;float shadowSwapConstants[24]={};
+    unsigned nativeShadowSampleFrame=~0u;
+    bool nativeShadowStateKnown=false;
+    void syncNativeShadowMode(){
+        if(!world||nativeShadowSampleFrame==frame)return;nativeShadowSampleFrame=frame;
+        if(!world->northlightShadowsRequested())return;
+        const auto state=NorthlightNativeShadowControl::sampleFrame(NorthlightStream::activeSnapshot,NorthlightStream::streamActive.load(std::memory_order_relaxed),NorthlightWorldContext::readSelf);
+        nativeShadowStateKnown=NorthlightNativeShadowControl::verified()&&state.readable;
+        const bool owned=nativeShadowStateKnown&&state.runtime==0;
+        world->setNativeShadowOwnership(owned,nativeShadowStateKnown);
+        if(sampled()&&diagnostics())logf("NATIVE_SHADOW_PROVIDER frame=%u northlightRequested=%u verified=%u runtime=%u configured=%u pending=%u owned=%u source=frame-memory",frame,unsigned(world->northlightShadowsRequested()),unsigned(NorthlightNativeShadowControl::verified()&&state.readable),state.runtime,state.configured,state.pending,unsigned(owned));
+    }
     void planTerrainShadowSwap(IDirect3DVertexShader9* vs){
         if(!drawGates.terrainShadow)return; /* 0.3.187: implied by the line below at every draw of this frame */
         if(!world||!enabled||failed||!terrain||debugMode!=0||worldDebug!=0)return;
@@ -3162,6 +3175,7 @@ private:
             frame,drawCalls-frameStartDrawCalls,unsigned(terrain),(unsigned long long)(hash==vsHashes.end()?0:hash->second),unsigned(exact),unsigned(used),unsigned(sample.known),unsigned(sample.fromGet),unsigned(sample.fromWrite),unsigned(sample.finite),bank);
     }
     void beforeDraw(IDirect3DVertexShader9* vs) {
+        syncNativeShadowMode();
         const VsClass& vc=classifyVs(vs); const int entry=vc.entry; int tag=entry&kTagMask;
         observeNativeShadow(vs,vc);
         observeNativeLocalLights(vs,vc);
@@ -3491,6 +3505,7 @@ public:
         memmap("create");
     }
     ~Device() {
+        NorthlightNativeShadowControl::release(this);if(!NorthlightStream::streamActive.load(std::memory_order_relaxed))NorthlightNativeShadowControl::producerPresent();
         NorthlightWindowHook::detach(ext);
         logf("DEVICE lifetime event=destroy-begin id=%ld tick=%lu",diagnosticId,(unsigned long)GetTickCount());
         memmap("destroy-begin");
@@ -3566,6 +3581,7 @@ public:
         const HRESULT status=ext->TestCooperativeLevel();if(status!=D3D_OK)NorthlightWindowHook::invalidate(ext);return status;
     }
     HRESULT STDMETHODCALLTYPE Reset(D3DPRESENT_PARAMETERS* pp) override { NorthlightWindowHook::invalidate(ext);Guard mirrorLock(mirrorState.gate);
+        nativeShadowSampleFrame=~0u;NorthlightNativeShadowControl::release(this);if(!NorthlightStream::streamActive.load(std::memory_order_relaxed))NorthlightNativeShadowControl::producerPresent();
         skyLayers.reset();skyTextures.clear();skyTextureFrame=~0u;auroraDiagnostic.reset();auroraSources.reset();auroraRenderer.reset();auroraFrame=~0u;auroraDrawProven=false;auroraStyle={};
         const bool resetProfile=diagnostics()&&cpuFrequency.QuadPart>0;LARGE_INTEGER resetTicks[10]={};
         auto resetMark=[&](unsigned index){if(resetProfile)QueryPerformanceCounter(&resetTicks[index]);};resetMark(0);
@@ -3943,6 +3959,7 @@ public:
             flushFrameIntervals("settings-change",frameEnabled,frameEffects);
             const auto previousQuality=world->surfaceSettings();const bool reportSettings=diagnostics();
             world->applyLiveSettings(update->config);dropBlobFaint();shadowBlobs->setStrength(world->blobShadowStrength());
+            if(!world->northlightShadowsRequested())NorthlightNativeShadowControl::publish(this,false);
             if(autoBump)autoBump->configure(world->surfaceSettings());
             selectAO(world->aoMethod(),world->aoQuality());
             contactAO=world->contactAO();aoStrength=world->aoStrength();aoRadius=world->aoRadius();
@@ -4090,6 +4107,7 @@ public:
     HRESULT STDMETHODCALLTYPE EndScene() override { Guard mirrorLock(mirrorState.gate);nameMaskRunEnd();rainMrtUnbind(); /* 0.3.202 (rain mask MRT) */if(spellOn)spellFlush(NorthlightSpellLayer::Reason::Frame,false,NorthlightSpellLayer::InPlaceKind::None,"endscene");return GuardedMirrorDevice::EndScene(); }
     HRESULT STDMETHODCALLTYPE Present(const RECT* src,const RECT* dst,HWND wnd,const RGNDATA* dirty) override { Guard mirrorLock(mirrorState.gate);mirrorState.gate.noteFirst(mirrorState.gate.presentTid);rainMrtUnbind(); /* 0.3.202 (rain mask MRT) */
         PresentTicks ticks;const unsigned markerFrame=frame;finishFrame();ticks.finish();
+        if(!NorthlightStream::streamActive.load(std::memory_order_relaxed))NorthlightNativeShadowControl::producerPresent();
         if(frameMarkers)frameMarker(1,markerFrame);
         if(limitGpuLatency)waitPreviousFrameGpu();
         HRESULT hr;if(!presentHdr(src,dst,wnd,dirty,0,&hr))hr=ext->Present(src,dst,wnd,dirty);
@@ -4252,7 +4270,7 @@ public:
 
 static bool hdrGamePresentation(IDirect3DDevice9* owner,D3DPRESENT_PARAMETERS* out){return static_cast<Device*>(owner)->gamePresentation(out);}
 static bool hdrGameBackBuffer(IDirect3DDevice9* owner,unsigned index,IDirect3DSurface9** out){return static_cast<Device*>(owner)->gameBackBuffer(index,out);}
-static void finishDeviceFrame(IDirect3DDevice9* owner,bool implicitChain) {static_cast<Device*>(owner)->finishFrame(implicitChain);}
+static void finishDeviceFrame(IDirect3DDevice9* owner,bool implicitChain) {static_cast<Device*>(owner)->finishFrame(implicitChain);if(!NorthlightStream::streamActive.load(std::memory_order_relaxed))NorthlightNativeShadowControl::producerPresent();}
 static void presentedDeviceFrame(IDirect3DDevice9* owner,const PresentTicks& ticks) {static_cast<Device*>(owner)->presented(ticks);}
 static void windowPresentedDeviceFrame(IDirect3DDevice9* owner,HWND window,HRESULT status,bool primary){static_cast<Device*>(owner)->windowPresented(window,status,primary);}
 static bool hdrPresentDeviceFrame(IDirect3DDevice9* owner,const RECT* src,const RECT* dst,HWND window,const RGNDATA* dirty,DWORD flags,HRESULT* result){return static_cast<Device*>(owner)->presentHdr(src,dst,window,dirty,flags,result);}

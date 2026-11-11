@@ -57,7 +57,7 @@ const std::map<std::string,const char*> Labels={
     {"NightBrightness","Night brightness (%)"},{"EquipmentLights","Equipment and effect lights"},
     {"CaptureBudgetMiB","Capture memory (MiB)"},{"ActorShadowBudgetMiB","Character shadow memory (MiB)"},{"MinSkinnedTriangles","Minimum character triangles"},{"LocalLightLimit","Total local lights (0 = off)"},{"GpuBudgetMs","GPU effect budget (ms)"},{"ActorShadowCpuMs","Shadow CPU budget (ms)"},
     {"CommandStream","Separate render thread"},{"StreamFramesAhead","Buffered frames"},{"StreamFrameSkip","Skip delayed frames"},{"StreamOcclusionLocal","Local occlusion results"},{"ReplayJobs","Parallel effect preparation"},{"FrameDrawGates","Skip inactive draw work"},
-    {"PointShadowLimit","Of these, shadowed lights"},{"PointShadowDistance","Shadow distance (yd)"},{"PointShadows","Local light shadows"},{"PointShadowRefreshMs","Shadow update interval (ms)"},{"PointShadowFacesPerFrame","Faces updated per light"},{"BlobShadows","Round ground shadows"},{"DisableOriginalTerrainShadows","Disable original terrain shadows"},{"BlobShadowStrength","Ground shadow strength (%)"},
+    {"PointShadowLimit","Of these, shadowed lights"},{"PointShadowDistance","Shadow distance (yd)"},{"PointShadows","Local light shadows"},{"PointShadowRefreshMs","Shadow update interval (ms)"},{"PointShadowFacesPerFrame","Faces updated per light"},{"BlobShadows","Round ground shadows"},{"ShadowProvider","Directional shadow renderer"},{"DisableOriginalTerrainShadows","Disable original terrain shadows"},{"BlobShadowStrength","Ground shadow strength (%)"},
     {"FarShadowInterval","Distant shadow interval (frames)"},{"NearShadowInterval","Near environment shadow interval (frames)"},{"StaticCacheSlices","Static cache update slices"},{"ShadowDirectionSteps","Shadow direction precision"},{"ShadowPivotCorrection","Correct shadow pivot"},
     {"GIDistance","GI distance (yards)"},{"GIProbeAhead","GI look-ahead (yards)"},{"GIRays","GI rays per probe"},{"GIBounces","GI light bounces"},{"GIThreads","GI solver threads"},{"GIFastBVH","Fast geometry tracing"},{"GIProbeMoveStep","GI update movement step"},{"GIDynamicProbes","Dynamic GI probes"},
     {"SpellLayer","Separate spell effects"},{"SpellLayerClasses","Spell blend types (mask)"},{"SpellFog","Fog on spell effects"},{"NameMask","Protect unit names"},{"DepthFuncAware","Respect draw depth tests"},{"terrain_radius","Terrain shadow reach (yards)"},
@@ -97,7 +97,7 @@ const std::map<std::string,std::vector<const char*>> Help={
     {"SoftShadows",{"Softens sun, moon and local-light shadow edges with distance from the caster. Covers captured characters, grass and world geometry. Off keeps ordinary filtered shadows and their existing range."}},
     {"BlobShadows",{"Shows the game's round shadow directly below characters, creatures and mounts. Off removes only this decal; detailed sun, moon and local light shadows remain enabled. Takes effect immediately while Northlight effects are on."}},
     {"BlobShadowStrength",{"Adjusts the native round shadow when detailed character shadows are composited. Turning Round ground shadows off hides it independently and preserves this strength for later."}},
-    {"DisableOriginalTerrainShadows",{"Removes the original terrain shadow layer, including shadows baked into the map that remain at the game's lowest Shadow Quality. Works while Northlight scene effects are active, independently of World shadows. Applies immediately without restarting the game. Northlight sun, moon, character and local-light shadows keep their own controls. Baked lighting or darkness painted into textures and vertex colors remains. Turning all Northlight effects off restores the original game shading."}},
+    {"DisableOriginalTerrainShadows",{"In Northlight shadow mode, removes the original terrain shadow layer, including shadows baked into the map that remain at the game's lowest Shadow Quality. Works while Northlight scene effects are active, independently of World shadows. Applies immediately without restarting the game. Northlight sun, moon, character and local-light shadows keep their own controls. Baked lighting or darkness painted into textures and vertex colors remains. Turning all Northlight effects off restores the original game shading."}},
     {"RainLens",{"Moving refractive droplets; Merge drops into rivulets lets them collect water along their wet paths. Heavier rain increases their speed. Requires Enhanced weather; the effect disappears under shelter."}},
     {"SnowLens",{"Crystalline snowflakes adhere and collect into clumps. Nearby classified flames melt them into moving droplets; walls block this heat. Requires Enhanced weather; the effect disappears under shelter."}},
     {"PointShadowLimit",{"Of the total local lights, how many eligible lamps may cast shadows. The smaller of this value and Total local lights is used; this never adds more lights. Higher limits increase shadow rendering and map memory. Extra static maps can be retained in unused slots of this same budget."}},
@@ -163,6 +163,7 @@ const std::map<std::string,std::vector<const char*>> Help={
     {"ShadowDirectionSteps",{"Precision of cached sun and moon directions. Higher values follow the moving light more smoothly but refresh cached shadows more often. Lower values can make shadow direction changes more noticeable."}},
     {"StaticCacheSlices",{"Spreads static shadow cache updates across this many frames. More slices reduce work per update frame but take longer to finish a changed cache. 1 updates it together."}},
     {"ShadowPivotCorrection",{"Keeps nearby shadows aligned when camera zoom or collision moves the view. Leave enabled for normal play; disable only to compare the older shadow positioning."}},
+    {"ShadowProvider",{"Northlight uses its own directional cascades and suspends the game's shadow-map preparation and rendering while they are available. Game uses the client's directional shadows and skips Northlight directional passes. AO, GI and local-light shadows keep their own controls. The game's saved Shadow Quality is restored on switching, reset, or leaving the world."}},
     {"PointShadowRefreshMs",{"Minimum interval between ordinary local-light shadow updates. Higher values save rendering work but can make moving shadows lag. 0 allows updates every frame; moved or replaced lights can force a refresh."}},
     {"PointShadowFacesPerFrame",{"Directions updated per local-light shadow cube, out of six. Fewer faces spread the work over more frames but can briefly show different shadow ages across directions. Moved or replaced lights require a full refresh."}},
     {"Weather",{"Enhances the game's current rain, snow and sand weather with Northlight effects. Does not force a storm. Turning it off leaves native game weather and disables the related Northlight enhancements."}},
@@ -238,8 +239,9 @@ const std::vector<Section> QualitySections={
         {"parallax","POM",nullptr,"AutoParallaxDepth AutoParallaxDistance AutoParallaxSteps",""},
         {"pomshadow","POM self-shadowing","AutoParallaxShadows","AutoParallaxShadowStrength AutoParallaxShadowSteps",""},
         {"cavity","Cavity shading","AutoCavity","AutoCavityStrength",""}},false},
-    {"shadows","Shadows","WorldShadows SoftShadows ActorShadows ActorShadowDetail GrassShadows ActorShadowRadius BlobShadows BlobShadowStrength DisableOriginalTerrainShadows FarShadowInterval NearShadowInterval ShadowDirectionSteps StaticCacheSlices ShadowPivotCorrection",{
+    {"shadows","Shadows","WorldShadows ShadowProvider SoftShadows ActorShadows ActorShadowDetail GrassShadows ActorShadowRadius BlobShadows BlobShadowStrength DisableOriginalTerrainShadows FarShadowInterval NearShadowInterval ShadowDirectionSteps StaticCacheSlices ShadowPivotCorrection",{
         {"filter","World shadows","WorldShadows","SoftShadows",""},
+        {"provider","Directional shadows",nullptr,"ShadowProvider",""},
         {"actors","Character shadows","ActorShadows","ActorShadowRadius ActorShadowDetail GrassShadows","ActorShadowBudgetMiB ActorShadowCpuMs MinSkinnedTriangles CaptureBudgetMiB"},
         {"blobs","Round ground shadows","BlobShadows","BlobShadowStrength",""},
         {"nativeTerrain","Disable original terrain shadows","DisableOriginalTerrainShadows","",""},
@@ -315,6 +317,7 @@ std::string regionLabel(const std::string& section){
     return section;
 }
 std::string optionLabel(const Field& f,const std::string& value){
+    if(f.file==D::Quality&&f.key=="ShadowProvider")return value=="0"?"Game":"Northlight";
     if(D::modeField(f))return value=="0"?"Off":value=="1"?"Normal maps":value=="2"?"Normal maps + POM":"Displacement + normals";
     if(value=="HBAOPlus")return "HBAO+ (D3D9)";
     if(f.file==D::Renderer&&f.key=="Backend"){

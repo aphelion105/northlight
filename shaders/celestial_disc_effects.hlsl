@@ -190,7 +190,9 @@ float4 CelestialDiscPS(float2 uv:TEXCOORD0):COLOR0 {
     encoded=saturate(texel.rgb*DiscEmission.x)*lerp(saturate(DiscColor.rgb),DiscGlowCore.rgb,.5*DiscGlowHue.w);
     float3 nativeSurface=encoded;
     bool moon=abs(DiscPolicy.x-3)<.5||DiscPolicy.x>4.5;
-    if(DiscPolicy.x>1.5)encoded=discDecode(texel.rgb)*DiscEmission.x*discDecode(lerp(saturate(DiscColor.rgb),DiscGlowCore.rgb,.5*DiscGlowHue.w))*(moon?2:8);
+    // The linear solar core owns HDR emission. The half-strength tint mix is
+    // the SDR surface look; decoding it here squared the loss of headroom.
+    if(DiscPolicy.x>1.5)encoded=discDecode(texel.rgb)*DiscEmission.x*discDecode(lerp(saturate(DiscColor.rgb),DiscGlowCore.rgb,(moon?.5:1)*DiscGlowHue.w))*(moon?2:8);
     if(DiscPolicy.x>3.5)encoded=max(encoded-discDecode(nativeSurface),0);
     alpha=texel.a*saturate(DiscColor.w);
     // The native billboard's horizon fade (DNPlanet::ClipGeometry): on its plane 12 away, opaque from 0.4 over the

@@ -12,6 +12,7 @@
 #include "replay_thread.h"
 #include "game_snapshot.h"
 #include "shader_tags.h"
+#include "native_shadow_control_windows.h"
 
 // Redundant-state filtering (a repeated Set of the value the game last set is not recorded) can be compiled out for the tests that need
 // the exact backend trace: -DNORTHLIGHT_STREAM_FILTER=0.
@@ -444,6 +445,7 @@ public:
         PresentMark& slot=presentHist[core.frameNo%framesAhead_];const PresentMark prev=slot;slot=PresentMark{q.recordedSeq(),core.frameNo};
         HRESULT result=D3D_OK;
         if(prev.seq){q.waitReplayed(prev.seq,WaitKind::Present);result=presentResult(prev);}   // framesAhead_ frames ahead: that frame's real HRESULT
+        NorthlightNativeShadowControl::producerPresent();
         const bool pressureAsked=core.memoryPressure.load(std::memory_order_relaxed)||NorthlightStream::memoryPressure.load(std::memory_order_relaxed);
         q.setPressure(pressureAsked);stormWatch(q,pressureAsked,nowAtPresent);
         frameEnd=nowNs();
@@ -523,6 +525,7 @@ public:
         if(profile){const auto end=nowNs();char line[384];std::snprintf(line,sizeof line,"CSTREAM RESET end frame=%llu ran=%u result=0x%08lx coop=0x%08lx totalMs=%.3f beforeReplayMs=%.3f replayMs=%.3f afterReplayMs=%.3f",
             (unsigned long long)core.frameNo,unsigned(ran),(unsigned long)std::uint32_t(hr),(unsigned long)std::uint32_t(core.coopState.load()),double(end-start)/1e6,
             replayStart?double(replayStart-start)/1e6:0.0,replayEnd?double(replayEnd-replayStart)/1e6:0.0,replayEnd?double(end-replayEnd)/1e6:0.0);callerLog(line);}
+        NorthlightNativeShadowControl::producerPresent();
         if(!ran)return D3DERR_INVALIDCALL;
         if(SUCCEEDED(hr))pp=sc0->pp;
         return hr;
@@ -739,6 +742,7 @@ private:
         st.clear();sc0->comRelease();   // binds and the swap chain's own reference go; the Destroys run before the Target's release
         runTask(core,[&](StreamCore& c){c.target->Release();c.target=nullptr;},Cmd::SyncRelease);   // the Device's final release happens on the replay thread
         replayer.stop();
+        NorthlightNativeShadowControl::producerPresent();
         innerOf=nullptr;activeCore.store(nullptr,std::memory_order_release);
 #ifdef NORTHLIGHT_REPLAY_STAND
         StandInputs::textureAliasGeneration=nullptr;

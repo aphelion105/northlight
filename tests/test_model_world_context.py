@@ -118,6 +118,7 @@ struct Device {
     unsigned nativeShadowObservations=0;
     void observeNativeShadow(IDirect3DVertexShader9*,const VsClass&){++nativeShadowObservations;}
     void observeNativeLocalLights(IDirect3DVertexShader9*,const VsClass&){}
+    void syncNativeShadowMode(){} // Provider transactions have a separate native-code stand.
     bool uiTextVs(IDirect3DVertexShader9*,int){return false;}
     bool fullViewport(D3DSURFACE_DESC& d,D3DVIEWPORT9* p=nullptr,bool=false){d.Width=1920;d.Height=1080;d.Format=D3DFMT_A8R8G8B8;if(p)*p=state.vp;return viewportOK;}
     bool bindWorldDepth(const D3DSURFACE_DESC&){++binds;return depthOK;}

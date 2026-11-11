@@ -14,6 +14,7 @@
 #include "weather_memory.h"
 #include "shader_tags.h"
 #include "native_light_bridge.h"
+#include "native_shadow_control.h"
 
 namespace NorthlightStream {
 enum class Trigger:std::uint8_t{None=0,FrameStart=1,World=2,Ui=3};
@@ -49,6 +50,7 @@ struct TriggerPolicy {
 // results are discarded: only the reads matter, and the readers stop at their first failure exactly as they do
 // at replay, so a snapshot holds the same prefix the replay's own call will ask for.
 template<class Read> inline void captureReaders(Read read){
+    NorthlightNativeShadowControl::sample(read);
     NorthlightWorldCamera::Camera camera;
     NorthlightWorldCamera::readCurrent(read,1.f,camera);       // main view: view stack
     NorthlightWorldCamera::readCurrentBasis(read,1.f,camera);  // sky phase: the camera's own basis

@@ -675,6 +675,9 @@ int main(){
      const auto off=parse("[Quality]\nSoftShadows=0\n");assert(!off.softShadows&&off.actorShadowDetail==d.actorShadowDetail&&off.actorShadows==d.actorShadows&&off.pointShadows==d.pointShadows);
      assert(effective(parse("[Quality]\nActorShadows=0\nSoftShadows=1\n")).softShadows==1);
      std::vector<std::string> issues;assert(parse("[Quality]\nSoftShadows=2\n",nullptr,issues)==d&&issues.size()==1);}
+    {const auto native=parse("[Quality]\nShadowProvider=0\n");assert(native.shadowProvider==0&&native.worldShadows==d.worldShadows&&native.pointShadows==d.pointShadows);
+     assert(parse("[Quality]\nShadowProvider=1\n").shadowProvider==1);
+     std::vector<std::string> issues;assert(parse("[Quality]\nShadowProvider=2\n",nullptr,issues)==d&&issues.size()==1);}
     std::printf("quality: %s\n",describe(d).c_str());
     std::printf("quality: defaults==0.3.136, presets, overrides, legacy precedence and fallbacks, BOM/CRLF, range edges, shipped ini, identical default code paths passed\n");
 }

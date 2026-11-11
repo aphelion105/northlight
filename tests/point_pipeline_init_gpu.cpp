@@ -64,7 +64,14 @@ struct PointTerrainCoverageTest {
   for(unsigned fault=0;fault<=18;++fault){FaultDevice d(&extension);WorldRenderer w(&d);d.fault=fault;
    w.pipelineActive=true;w.effects.shadows=true;w.quality.localLights=w.quality.pointShadows=1;w.quality.localLightLimit=64;w.quality.pointShadowLimit=7;
    IDirect3DStateBlock9* rescue=nullptr;must(raw->CreateStateBlock(D3DSBT_ALL,&rescue));Capture before(raw);const auto hr=w.warmPointPipelinesAtDeviceInit();
-   if(fault==14||fault==6||fault==18){assert(FAILED(hr)&&!d.polls);if(fault==18)must(raw->EndScene());must(rescue->Apply());mirror.invalidate();}else assert(SUCCEEDED(hr));
+   if(fault==14||fault==6||fault==18){
+    assert(FAILED(hr)&&!d.polls);
+    if(fault==6){Capture restored(raw);assert(before.same(restored));} // EndScene succeeded before the injected error.
+    if(fault==18)must(raw->EndScene());must(rescue->Apply());
+    // Native D3D9's FVF state block can alter float constants. The test's
+    // emergency rescue must restore them too, just like the production guard.
+    must(raw->SetVertexShaderConstantF(0,before.vf.data(),256));must(raw->SetPixelShaderConstantF(0,before.pf.data(),224));mirror.invalidate();
+   }else assert(SUCCEEDED(hr));
    rescue->Release();Capture after(raw);assert(before.same(after));assert((d.begin==d.closed||fault==18)&&d.polls<=1);
    must(raw->BeginScene());must(raw->EndScene()); // No published-success case may leave a scene open.
    if(fault)assert(d.fired);else assert(d.draws==3&&d.queries==1&&d.polls==1);
@@ -88,6 +95,7 @@ struct PointTerrainCoverageTest {
    initializing.releaseGPU(true); // Exact first createResources lifecycle.
   }
   WorldRenderer w(d);w.valid=true;w.frames=1;w.quality.pointShadowLimit=64;w.quality.pointShadowFacesPerFrame=6;
+  w.quality.shadowProvider=0;w.nativeShadowOwned=w.nativeShadowAvailable=false; // Point pipelines do not depend on the directional provider.
   w.active=std::make_shared<WorldRenderer::Snapshot>();w.active->map="point-stutter-proof";w.active->bvh=std::make_shared<NorthlightGI::BVH>();w.uploadedMap=w.active->map;w.meshGeneration=1;
   NorthlightGI::WorldVertex vertices[]={{{-1,-1,0},{0,0,1},0,0},{{1,-1,0},{0,0,1},1,0},{{-1,1,0},{0,0,1},0,1},{{1,1,8},{0,0,-1},1,1},{{-1,1,8},{0,0,-1},0,1},{{1,-1,8},{0,0,-1},1,0}};
   constexpr unsigned triangles=64;std::vector<WORD> indices;

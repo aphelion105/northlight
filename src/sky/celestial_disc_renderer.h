@@ -429,8 +429,7 @@ public:
         const float skyControl[]={compose?1.f:0.f,emission,disc.opacity*weatherGain.load(std::memory_order_relaxed),!i&&skyLayers?1.f:0.f};
         d->SetPixelShaderConstantF(49,skyControl,1);
         if(compose){
-            float hue[4]{},core[4]{};NorthlightCelestialGlow::constants(glow,i,0.f,hue,core);
-            float tint[4]{};for(unsigned k=0;k<3;++k)tint[k]=std::clamp(disc.tint[k],0.f,1.f)*(1-.5f*hue[3])+core[k]*.5f*hue[3];
+            float tint[4]{};NorthlightCelestialGlow::surfaceTint(glow,i,disc.tint,hdr,tint);
             d->SetPixelShaderConstantF(50,tint,1);d->SetTexture(6,skyLayers);d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_ONE);
         }
         if(!glare&&frames%600==0&&NorthlightDiagnostics::enabled())logf("CELESTIAL disc body=%u early=%d depth=%.7f band=%.3f..%.3f worldMax=%.7f screen=(%d,%d)-(%d,%d) direction=(%.3f,%.3f,%.3f)",i,occlude?0:1,spriteDepth,skyViewport.MinZ,skyViewport.MaxZ,maxZ,bounds[0],bounds[1],bounds[2],bounds[3],disc.direction[0],disc.direction[1],disc.direction[2]);

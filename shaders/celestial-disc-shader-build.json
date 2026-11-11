@@ -1,14 +1,14 @@
 {
-  "source_sha256": "81b1528bcf3168ef8734d92ddf8200f7ddebf29439ed06fa02f32245e5cd1be6",
+  "source_sha256": "7f13c2a2980d9533bb5cd1f21aca38d7460a2fb4f92e467d8edd9fd8a28d7f6d",
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
   "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
   "game_launched": false,
   "device_created": false,
   "shader": {
     "target": "ps_3_0",
-    "bytes": 7168,
-    "sha256": "b796156a8a1c7194546ede05fee4ac4c355d92985d98bd7922854bd56373c3d9",
-    "static_instruction_slots": 428,
+    "bytes": 7216,
+    "sha256": "577c38d9dcd7887d999007224062ab3ea56ac281a0a4c9204e2f269dc1715d1b",
+    "static_instruction_slots": 431,
     "temporary_registers": 12,
     "samplers": [
       0,
@@ -21,9 +21,9 @@
     ],
     "instructions": {
       "rcp": 11,
-      "add": 82,
+      "add": 83,
       "frc": 2,
-      "mul": 106,
+      "mul": 108,
       "max": 6,
       "min": 2,
       "mov": 26,
@@ -44,9 +44,9 @@
   "shaders": {
     "CelestialDiscPS": {
       "target": "ps_3_0",
-      "bytes": 7168,
-      "sha256": "b796156a8a1c7194546ede05fee4ac4c355d92985d98bd7922854bd56373c3d9",
-      "static_instruction_slots": 428,
+      "bytes": 7216,
+      "sha256": "577c38d9dcd7887d999007224062ab3ea56ac281a0a4c9204e2f269dc1715d1b",
+      "static_instruction_slots": 431,
       "temporary_registers": 12,
       "samplers": [
         0,
@@ -59,9 +59,9 @@
       ],
       "instructions": {
         "rcp": 11,
-        "add": 82,
+        "add": 83,
         "frc": 2,
-        "mul": 106,
+        "mul": 108,
         "max": 6,
         "min": 2,
         "mov": 26,

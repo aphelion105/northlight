@@ -25,6 +25,10 @@ def main():
     files=[]
     for name in ('CelestialDiscPS','CelestialHaloVisibilityPS','CelestialVeilPS'):
         binary=out/('wrong-'+name+'.bin');compiler.compile(counter,name,'ps_3_0',binary);files.append(binary)
+    dim=source.read_text(encoding='utf-8').replace('(moon?.5:1)*DiscGlowHue.w','.5*DiscGlowHue.w')
+    assert dim!=source.read_text(encoding='utf-8')
+    dim_source=out/'dim-solar-core.hlsl';dim_source.write_text(dim,encoding='utf-8',newline='\n')
+    dim_binary=out/'dim-solar-core.bin';compiler.compile(dim_source,'CelestialDiscPS','ps_3_0',dim_binary);files.append(dim_binary)
     binary=out/'hdr_sun_glare_gpu.exe'
     subprocess.run([str(fp.zig()),'c++','-target','x86-windows-gnu','-std=c++17','-O2','-fno-rtti',*fp.include_flags(),str(fp.TESTS/'hdr_sun_glare_gpu.cpp'),'-luser32','-o',str(binary)],env=fp.zig_env(),check=True)
     digest=lambda path:hashlib.sha256(path.read_bytes()).hexdigest()
@@ -32,7 +36,7 @@ def main():
                 executable_sha256=digest(binary),production_header_sha256=digest(fp.GENERATED/'celestial_disc_compiled_shaders.h'),
                 counterfactual_source_sha256=digest(counter),counterfactual_shaders_sha256={p.name:digest(p) for p in files},
                 compiler=compiler.provenance,runs=[],game_launched=False,client_modified=False)
-    for name,backend in [('dxvk2',a.dxvk2),('dxvk3',a.dxvk3)]:
+    for name,backend in [('native',Path(os.environ.get('WINDIR','C:/Windows'))/'SysWOW64/d3d9.dll'),('dxvk2',a.dxvk2),('dxvk3',a.dxvk3)]:
         folder=out/name;folder.mkdir(exist_ok=True)
         r=subprocess.run([str(binary),str(backend.resolve()),*map(str,files)],cwd=folder,env=dict(os.environ,DXVK_LOG_PATH=str(folder)),capture_output=True,text=True,timeout=60)
         (out/(name+'.log')).write_text(r.stdout+r.stderr,encoding='utf-8');report['runs'].append(dict(backend=name,backend_sha256=digest(backend),exit_code=r.returncode,stdout=r.stdout))
