@@ -17,6 +17,7 @@ def members(text):
  return '\n'.join(member(text,s) for s in signatures)
 source=fp.src('renderer.cpp');fixture=fp.TESTS/'draw_orchestration.cpp';inputs={str(f):hashlib.sha256(f.read_bytes()).hexdigest() for f in [source,fixture,Path(__file__)]}
 old=subprocess.check_output(['git','show',a.reference+':src/proxy/renderer.cpp'],cwd=ROOT).decode('utf-8');current=source.read_text(encoding='utf-8')
+assert current.count('if(enabled)spellArgs=NorthlightSpellLayer::DrawArgs::')==4,'native aurora admission needs all four draw tuples even with particle/spell features off'
 before=members(old);after=members(current)
 header=out/'draw_orchestration_routes.h'
 def write_routes(body):header.write_text('struct Reference:Base {\n'+before+'\n};\nstruct Current:Base {\n'+body+'\n};\n',encoding='utf-8',newline='\n')

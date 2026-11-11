@@ -1233,11 +1233,12 @@ Vec3 cosineDirection(Vec3 n,RNG& rng){
     float sine,cosine;sincosAngle(phi,sine,cosine);
     return normalized(tangent*(r*cosine)+bitangent*(r*sine)+n*std::sqrt(std::max(0.f,1-u)));
 }
+struct SkyEscape { int sector=-1; Vec3 weight; };
 // Record: static-only transport (movingGeometry null) that logs every moving
 // query a moving solve would issue along this unchanged path, in order.
 template<bool Record=false,bool Response=false>
 Vec3 transport(const BVH& bvh,Vec3 origin,Vec3 direction,const Lighting& l,const BVH* movingGeometry,RNG& rng,float& firstDistance,bool& firstBackFace,
-               std::vector<StaticPathRecord::Query>* record=nullptr,Vec3* response=nullptr){
+               std::vector<StaticPathRecord::Query>* record=nullptr,Vec3* response=nullptr,SkyEscape* escape=nullptr){
     Vec3 throughput(1,1,1),radiance;const Vec3 sun=l.sunDirection,up=l.worldUp;
     firstDistance=l.maxDistance;firstBackFace=false;
     for(unsigned bounce=0;bounce<=l.maxBounces;++bounce){
@@ -1247,6 +1248,17 @@ Vec3 transport(const BVH& bvh,Vec3 origin,Vec3 direction,const Lighting& l,const
         if(bounce==0){firstDistance=h.hit?h.distance:l.maxDistance;firstBackFace=h.hit&&h.backFace;}
         if(!h.hit){
             if(dot(direction,up)>0){radiance=radiance+throughput*l.skyRadiance;if constexpr(Response)response[1]=response[1]+throughput;}
+            if(l.aurora||escape){
+                const int sector=NorthlightAuroraSource::sector(direction.x,direction.y,direction.z);
+                if(sector>=0){
+                    Vec3 emitted;
+                    if(l.aurora){const auto& rgb=l.aurora->radiance[unsigned(sector)];emitted=throughput*Vec3(rgb[0],rgb[1],rgb[2]);radiance=radiance+emitted;}
+                    if constexpr(Response){
+                        if(escape){escape->sector=sector;escape->weight=throughput;}
+                        else response[3]=response[3]+emitted;
+                    }
+                }
+            }
             break;
         }
         if(bounce==l.maxBounces)break;
@@ -1287,6 +1299,7 @@ Vec3 transport(const BVH& bvh,Vec3 origin,Vec3 direction,const Lighting& l,const
 
 PreparedLighting prepareLighting(const Lighting& input){
     PreparedLighting prepared;
+    if(input.aurora&&!NorthlightAuroraSource::valid(*input.aurora))return prepared;
     if(!finite(input.sunDirection)||!finite(input.sunIrradiance)||!finite(input.skyRadiance)||
        !finite(input.worldUp)||!std::isfinite(input.maxDistance)||!std::isfinite(input.rayBias)||input.maxDistance<=0||
        input.rayBias<=0||input.maxDistance>1000000.f||dot(input.worldUp,input.worldUp)<.1f)return prepared;
@@ -1364,32 +1377,39 @@ Probe solveProbePrepared(const BVH& bvh,Vec3 position,const PreparedLighting& pr
     return accumulateProbe(position,l,rays,seed,[&](unsigned,Vec3 direction,RNG& rng,float& distance,bool& backFace){
         return transport(bvh,position,direction,l,movingGeometry,rng,distance,backFace);});
 }
-Probe solveProbeResponse(const BVH& bvh,Vec3 position,const PreparedLighting& prepared,unsigned rays,uint32_t seed,ProbeResponse& response){
+Probe solveProbeResponse(const BVH& bvh,Vec3 position,const PreparedLighting& prepared,unsigned rays,uint32_t seed,ProbeResponse& response,AngularSkyResponse* angular){
     response={};
+    if(angular)*angular={};
     if(!prepared.valid()||prepared.values().additionalDirections.size()>1||!finite(position)||rays<6||rays>1048576)
         return solveProbePrepared(bvh,position,prepared,rays,seed);
     Vec3 fixed[4];const auto& l=prepared.values();
     Probe out=accumulateProbe(position,l,rays,seed,[&](unsigned,Vec3 direction,RNG& rng,float& distance,bool& backFace){
-        Vec3 terms[4];
-        const Vec3 color=transport<false,true>(bvh,position,direction,l,nullptr,rng,distance,backFace,nullptr,terms);
+        Vec3 terms[4];SkyEscape escape;
+        const Vec3 color=transport<false,true>(bvh,position,direction,l,nullptr,rng,distance,backFace,nullptr,terms,angular?&escape:nullptr);
         const float sh[4]={.2820947918f,.4886025119f*direction.x,.4886025119f*direction.y,.4886025119f*direction.z};
         for(unsigned j=0;j<4;++j){
             const float weight=sh[j]*(4*PI/float(rays));
             for(unsigned source=0;source<3;++source)response.sources[source][j]=response.sources[source][j]+terms[source]*weight;
             fixed[j]=fixed[j]+terms[3]*weight;
+            if(angular&&escape.sector>=0){auto& coefficient=angular->sectors[unsigned(escape.sector)][j];coefficient=coefficient+escape.weight*weight;}
         }
         return color;
     });
     response.fixed=out;
     for(unsigned j=0;j<4;++j)response.fixed.sh[j]=out.valid?fixed[j]:Vec3{};
     if(!out.valid)for(auto& source:response.sources)for(auto& sh:source)sh={};
+    if(!out.valid&&angular)*angular={};
     return out;
 }
-Probe relightProbe(const ProbeResponse& response,const PreparedLighting& prepared){
+Probe relightProbe(const ProbeResponse& response,const PreparedLighting& prepared,const AngularSkyResponse* angular){
     Probe out=response.fixed;const auto& l=prepared.values();
     const Vec3 secondary=l.additionalDirections.empty()?Vec3{}:l.additionalDirections[0].irradiance;
     for(unsigned j=0;j<4;++j)out.sh[j]=out.sh[j]+response.sources[0][j]*l.sunIrradiance+
         response.sources[1][j]*l.skyRadiance+response.sources[2][j]*secondary;
+    if(angular&&l.aurora)for(unsigned sector=0;sector<NorthlightAuroraSource::SectorCount;++sector){
+        const auto& rgb=l.aurora->radiance[sector];const Vec3 color(rgb[0],rgb[1],rgb[2]);
+        for(unsigned j=0;j<4;++j)out.sh[j]=out.sh[j]+angular->sectors[sector][j]*color;
+    }
     return out;
 }
 Probe solveProbeMoving(const BVH& bvh,Vec3 position,const PreparedLighting& prepared,unsigned rays,uint32_t seed,

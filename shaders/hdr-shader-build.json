@@ -1,5 +1,5 @@
 {
-  "source_sha256": "c129d36958bc936b568321b8fa9edd73eb60860c79d0431da5b3625423715ec8",
+  "source_sha256": "9b8dd46762d90029e248412e08af68673b310cbb4fb77823630a57dbf8dcef86",
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
   "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
   "game_launched": false,
@@ -70,6 +70,32 @@
       "target": "ps_3_0",
       "sha256": "1fceb8a50c31acbe802c2ce0543e23b2071a228d9586dadf77aa55726a87177c",
       "bytes": 416
+    },
+    "HdrSkyResidual-ps_2_0": {
+      "static_instruction_slots": 5,
+      "temporary_registers": 1,
+      "samplers": [],
+      "instructions": {
+        "mov": 3,
+        "add": 1,
+        "mul": 1
+      },
+      "target": "ps_2_0",
+      "sha256": "105dde2e0fea09296d88ece1348610d3c1129ea7c8a03a1cc405f156aa0b6e31",
+      "bytes": 244
+    },
+    "HdrSkyResidual-ps_3_0": {
+      "static_instruction_slots": 4,
+      "temporary_registers": 1,
+      "samplers": [],
+      "instructions": {
+        "mov": 2,
+        "add": 1,
+        "mul": 1
+      },
+      "target": "ps_3_0",
+      "sha256": "d367f97e074138c16a8f6ca160a5885c7e7df478e69865ca858a9c328a17c846",
+      "bytes": 232
     },
     "HdrWorld": {
       "static_instruction_slots": 41,
@@ -283,7 +309,7 @@
       "bytes": 1456
     },
     "HdrDecodeWorld": {
-      "static_instruction_slots": 75,
+      "static_instruction_slots": 84,
       "temporary_registers": 5,
       "samplers": [
         0,
@@ -291,12 +317,12 @@
         2
       ],
       "instructions": {
-        "mov": 5,
-        "if": 3,
-        "texld": 3,
-        "add": 13,
-        "texkill": 1,
-        "endif": 3,
+        "mov": 6,
+        "if": 4,
+        "texld": 4,
+        "add": 14,
+        "texkill": 2,
+        "endif": 4,
         "max": 3,
         "mul": 19,
         "log": 4,
@@ -306,8 +332,8 @@
         "else": 2
       },
       "target": "ps_3_0",
-      "sha256": "162aed0665ee8f3d1b91a297043b70ce477552e64eb4a5be576748076320b3a4",
-      "bytes": 1456
+      "sha256": "7f5fb1f7e16558d4b329e891aa5efd0ed238369c4e62725419cbb65fa453be25",
+      "bytes": 1548
     },
     "HdrCopy": {
       "static_instruction_slots": 1,

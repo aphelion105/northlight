@@ -28,7 +28,7 @@ end = renderer.index('\n    }', start)+6
 (out/'hdr_sky_storage_methods.inc').write_text(renderer[start:end]+'\n')
 assert 'hdrSkyForeground.draw(ext,hdrSkyTarget(),' in renderer
 assert 'hdrSkyValid?hdrSkyTarget():nullptr' in renderer
-assert 'hdrColor.convertWorld(ext,hdrLegacyBack,hdrSkyTarget(),' in renderer
+assert 'hdrFrame.beginSkyResidual()' in renderer
 assert 'ext->SetRenderTarget(0,hdrSkyTarget())' in renderer
 assert 'return hdrSkyDraw()?hdrSkyTarget():nullptr;' in renderer
 env = fp.zig_env()

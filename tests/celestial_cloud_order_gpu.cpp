@@ -74,6 +74,14 @@ int main(int argc,char** argv){
         ok(d->BeginScene());flat(D3DCOLOR_ARGB(128,51,77,102),.99996f,true);ok(d->EndScene());const auto covered=capture();
         for(unsigned p=0;p<N*N;++p)for(unsigned k=0;k<3;++k){const float tint[]={51.f/255,77.f/255,102.f/255};const float expected=bright[p*4+k]*(127.f/255)+tint[k]*(128.f/255);if(std::fabs(covered[p*4+k]-expected)>5e-5f)++failures;}++cases;
         std::printf("HDR celestial body=%u relativePeak=%g cloudOrder=linear\n",body,peak);
+        // Residual mode preserves native SDR in the complete sky and adds only
+        // the disc's linear excess, with native source alpha applied once.
+        hdrPolicy=0;ok(d->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0,1,0));ok(d->BeginScene());planet(body,true,true,false);ok(d->EndScene());const auto native=capture();
+        hdrPolicy=body?5:4;ok(d->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0,1,0));ok(d->BeginScene());planet(body,true,true,false);ok(d->EndScene());const auto residual=capture();
+        unsigned checked=0;for(unsigned p=0;p<N*N;++p)if(native[p*4+3]>.0001f)for(unsigned k=0;k<3;++k){
+            const float alpha=std::sqrt(native[p*4+3]),n=native[p*4+k]/alpha,linear=n<=.04045f?n/12.92f:std::pow((n+.055f)/1.055f,2.4f);
+            const float expected=std::max(bright[p*4+k]-linear*alpha,0.f);assert(std::fabs(residual[p*4+k]-expected)<.00005f);++checked;
+        }assert(checked);++cases;
     }
     std::printf("cloud order GPU cases=%u checkedPixels=%u baselineWrongChannels=%u geometryPixels=%u maxError=%.9g failures=%u\n",cases,cases*N*N,baselineWrong,geometryPixels,maxError,failures);
     d->SetPixelShader(nullptr);for(unsigned s=0;s<6;++s)d->SetTexture(s,nullptr);moon->Release();white->Release();before->Release();after->Release();staging->Release();target->Release();zbuffer->Release();d->Release();api->Release();FreeLibrary(module);DestroyWindow(window);UnregisterClassW(wc.lpszClassName,wc.hInstance);return failures?1:0;

@@ -100,7 +100,7 @@ inline bool canInherit(const Field& f){return f.available&&!(f.file==Renderer&&f
 // Keys a Quality field needs switched on (the old menu's dependencies; every GI* key needs GI).
 inline std::vector<std::string> dependencies(const Field& f){
     static const std::map<std::string,std::vector<std::string>> table={
-        {"GIBrightness",{"GI","GIStrength"}},{"AuroraStrength",{"GI","GIStrength"}},
+        {"GIBrightness",{"GI","GIStrength"}},
         {"AutoBumpStrength",{"AutoBump"}},{"AutoBumpDistance",{"AutoBump"}},{"AutoBumpTerrain",{"AutoBump"}},{"AutoBumpWalls",{"AutoBump"}},{"AutoBumpGrass",{"AutoBump"}},{"AutoBumpModels",{"AutoBump"}},{"AutoMaterialOcclusionDistance",{"AutoBump"}},
         {"AutoParallaxDepth",{"AutoBump"}},{"AutoParallaxDistance",{"AutoBump"}},{"AutoParallaxSteps",{"AutoBump"}},
         {"AutoParallaxShadows",{"AutoBump"}},{"AutoParallaxShadowStrength",{"AutoBump","AutoParallaxShadows"}},{"AutoParallaxShadowSteps",{"AutoBump","AutoParallaxShadows"}},

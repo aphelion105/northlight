@@ -75,6 +75,7 @@ struct Normals {
  }
 };
 struct Base {
+ bool auroraDrawProven=true;std::array<float,3> auroraDrawScale{1,2,3};float auroraDrawIntensity=2;
  Env env;Ext extStorage{&env};Ext* ext=&extStorage;World worldStorage{&env};World* world=&worldStorage;Bump bumpStorage{&env};Bump* autoBump=&bumpStorage;Normals normalStorage{&env};Normals* modelNormals=&normalStorage;
  bool enabled=true,applied=false,failed=false,modelNormalsNeeded=true,frameDrawGates=true,particleOn=false,spellOn=false,skyBandSeen=false,rainMrtBound=false,blobOriginal=false,shadowSwapOriginal=false,extensionFault=false;
  unsigned worldDebug=0,drawCalls=0,frame=120;LONGLONG ticks=0;float worldMinDepth=0,worldMaxDepth=.9f;struct{bool active=false;}hdr;struct{bool valid=false;}waterPending;

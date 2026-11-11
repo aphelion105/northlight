@@ -38,6 +38,9 @@ test_atlas_low_memory.py
 test_atlas_upload_proof.py
 test_attached_emitter_sources.py
 test_aurora_illumination.py
+test_aurora_native_capture_gpu.py
+test_aurora_source.py
+test_aurora_transport.py
 test_auto_normal_index.py
 test_auto_normal_index_windows.py
 test_auto_normal_memory.py
@@ -187,6 +190,7 @@ test_hdr_local_headroom_gpu.py
 test_hdr_log_summary.py
 test_hdr_reset.py
 test_hdr_sky_replay_gpu.py
+test_hdr_sky_residual_gpu.py
 test_hdr_sky_storage_gpu.py
 test_hdr_ui_patch.py
 test_hdr_water_transfer_gpu.py

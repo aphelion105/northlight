@@ -1,0 +1,153 @@
+{
+  "branch": "codex/aurora-gi-20261111",
+  "base_commit": "6b87cafa88991d65ccf9c95a6f68f0a248295e03",
+  "initial_gi_commit": "54baeabf",
+  "source_identity": "5602770c92821723feebb874eb30a30b38629d885b20a4731c9bd50826464093",
+  "dll_sha256": "27632f5f52da7d897742ca80c66c50ae2b05a03c7087544308f83f6602206324",
+  "checks": {
+    "native_material_and_emission": {
+      "report": "out/test-output/test_aurora_native_capture_gpu/aurora-native-capture/validation.json",
+      "backends": [
+        "native",
+        "dxvk2",
+        "dxvk3"
+      ],
+      "draws": 7,
+      "families": 2,
+      "pixel_cases_per_backend": 96,
+      "max_absolute_error": 0.0094862,
+      "linear_absolute_error_tolerance": 0.012,
+      "render_thread_read_ms": [
+        0.102,
+        0.1945,
+        0.1528
+      ],
+      "includes": [
+        "unknown draw",
+        "native UV animation",
+        "camera rotation",
+        "source removal",
+        "in-flight reset",
+        "duplicate family invalidation",
+        "state restoration"
+      ]
+    },
+    "complete_sky": {
+      "report": "out/test-output/test_hdr_sky_residual_gpu/hdr-sky-residual/validation.json",
+      "backends": [
+        "native",
+        "dxvk2",
+        "dxvk3"
+      ],
+      "cases_per_backend": 18,
+      "msaa": [
+        0,
+        2,
+        4
+      ],
+      "max_absolute_error": 0.001174,
+      "includes": [
+        "native colour/brightness",
+        "HDR excess",
+        "alpha/multiply/screen/opaque transmission",
+        "partial coverage",
+        "inline fallback no double add",
+        "new frame/reset"
+      ]
+    },
+    "captured_sky_decode": {
+      "capture": "D:/Games/335_engb_mod/northlight-diagnostics/session-49072-54623625-0/capture-1-native-scene.fgr",
+      "backend": "dxvk3",
+      "pixels": 8294400,
+      "max_absolute_error": 0.0004879,
+      "extra_emission": 0,
+      "live_game": false,
+      "preview": "out/aurora-b-validation/hdr-sky-comparison.png"
+    },
+    "replay_and_mrt": {
+      "report": "out/aurora-b-validation/sky-residual-replay-2/validation.json",
+      "backends": [
+        "native",
+        "dxvk2",
+        "dxvk3"
+      ],
+      "cases_per_backend": 432,
+      "native_bytes": "exact",
+      "hdr_half": "exact",
+      "includes": [
+        "alpha/depth/stencil/queries",
+        "scissor",
+        "failure/exception restoration"
+      ]
+    },
+    "hdr_regressions": {
+      "report": "out/aurora-b-validation/hdr-frame/validation.json",
+      "backends": [
+        "dxvk2",
+        "dxvk3"
+      ],
+      "cases_per_backend": 2893
+    },
+    "celestial_composition": {
+      "command": "python tests/test_celestial_composition_gpu.py",
+      "backend": "dxvk2",
+      "families": 6,
+      "cloud_order_cases": 134,
+      "sun_relative_peak": 8,
+      "moon_relative_peak": 1.02984,
+      "includes": [
+        "residual surface equation",
+        "cloud order",
+        "silhouettes",
+        "weather",
+        "late glare/fog"
+      ]
+    },
+    "gi_regressions": {
+      "report": "out/aurora-b-validation/gi-regressions.json",
+      "tests": [
+        "test_world_gi",
+        "test_probe_relight_cache",
+        "test_world_dynamic_probes",
+        "test_world_moving_replay"
+      ]
+    },
+    "source_transport_settings": {
+      "passed": [
+        "test_aurora_source.py",
+        "test_aurora_transport.py",
+        "test_aurora_illumination.py",
+        "test_settings_overlay.py",
+        "test_gi_settings_dependencies.py"
+      ],
+      "transport_fresh_cached_cases": 42,
+      "active_seconds_per_day": 6430,
+      "cache_budget_bytes": 4194304,
+      "no_op_hdr_updates": 1000
+    },
+    "production_build": {
+      "command": "python scripts/build_renderer.py",
+      "log": "out/aurora-b-validation/build-hdr-sky.log",
+      "compiler": "Zig 0.15.2"
+    },
+    "windows_package": {
+      "path": "out/aurora-b-validation/packages/Northlight-0.3.217-aurora-b-20261111-Windows.zip",
+      "build_log": "out/aurora-b-validation/package-build.log",
+      "verification_log": "out/aurora-b-validation/package-verify.log",
+      "passed": true
+    }
+  },
+  "live_acceptance": {
+    "status": "awaiting new capture",
+    "installed_record": "out/aurora-b-hdr-sky/install.json",
+    "prior_captures_proved_admission": true,
+    "prior_per_material_hdr_calibration_rejected": true,
+    "night_source_gi_visual_acceptance": false
+  },
+  "limits": [
+    "Offscreen UV/opacity holds the last complete native observation.",
+    "Coarse CPU mip and 32-direction basis approximate diffuse emission.",
+    "No in-client FPS or night ground-light artistic acceptance is claimed.",
+    "Final exposure/contrast/paper-white controls still affect sky brightness."
+  ]
+}

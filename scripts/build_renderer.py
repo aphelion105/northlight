@@ -121,6 +121,9 @@ def main(argv=None):
     hdr_manifest = json.loads((SHADERS/'hdr-shader-build.json').read_text())
     if hashlib.sha256((SHADERS/'hdr_effects.hlsl').read_bytes()).hexdigest() != hdr_manifest['source_sha256']:
         raise SystemExit('HDR shader source differs from offline build; run scripts/shaders/compile_hdr_shaders.py.')
+    aurora_manifest = json.loads((SHADERS/'aurora-shader-build.json').read_text())
+    if hashlib.sha256((SHADERS/'aurora_emission.hlsl').read_bytes()).hexdigest() != aurora_manifest['source_sha256']:
+        raise SystemExit('Aurora emission shader source differs from offline build; run scripts/shaders/compile_aurora_shaders.py.')
     bump_digest=hashlib.sha256((SHADERS/"auto_bump_normal.hlsl").read_bytes()).hexdigest()
     if any(m.get("bump_include_sha256")!=bump_digest for m in (world_manifest,local_manifest)):
         raise SystemExit("Auto bump include differs from the offline build.")

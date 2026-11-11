@@ -286,7 +286,8 @@ public:
             // The lunar surface and its full halo share cloud/weather blending.
             // Solar keeps only its compact core here; its broad tail stays late.
             if(glareVisible){if(!drawDisc(i,target,desc.Width,desc.Height,earlyProjection,camera.inverseView,disc,glareBounds,nullptr,nullptr,0,earlyWorldMaxDepth,1,2,nullptr,false,bodies[i]->emission,true))return (drawnEarly&(1u<<body))!=0;
-                if(hdrSkyTarget)drawDisc(i,hdrSkyTarget,desc.Width,desc.Height,earlyProjection,camera.inverseView,disc,glareBounds,nullptr,nullptr,0,earlyWorldMaxDepth,1,2,nullptr,false,bodies[i]->emission,true);
+                // The complete native sky already contains this SDR glow. It
+                // adds no headroom and must not attenuate the disc's HDR core.
                 if(!surfaceVisible){drawnEarly|=1u<<i;if(skyboxTrigger)drawnSkyboxEarly|=1u<<i;++claimDrawn;}}
         }
         return true;
@@ -346,6 +347,7 @@ public:
         }
         DWORD srgb=0;if(!check(d->GetRenderState(D3DRS_SRGBWRITEENABLE,&srgb),"read color encoding"))return false;
         D3DSURFACE_DESC targetDesc{};target->GetDesc(&targetDesc);const bool hdr=targetDesc.Format==D3DFMT_A16B16G16R16F;
+        const bool residual=hdr&&!occlude&&target==hdrSkyTarget;
         if(occlude)d->SetDepthStencilSurface(nullptr);for(unsigned k=1;k<4;++k)d->SetRenderTarget(k,nullptr);
         for(unsigned k=0;k<16;++k)d->SetTexture(k,nullptr);
         if(!check(d->SetRenderTarget(0,target),"target"))return false;
@@ -381,7 +383,7 @@ public:
         c[12][2]*=fade;c[47][3]*=fade;
         if(glare){const float gain=weatherGain.load(std::memory_order_relaxed);c[12][2]*=gain;c[47][3]*=gain;} /* 0.3.198 (rain): x1 when dry */
         (void)legacyFog;c[11][0]=repairDepth;c[11][1]=repairDepth>=0?1.f:0.f;c[11][2]=NorthlightCelestialDisc::RepairDepthTolerance;c[11][3]=i==0?1.f:0.f;
-        std::memcpy(c[1],projection,12);c[1][3]=water?1.f:0.f;std::memcpy(c[2],inverseView,64);c[10][0]=hdr?(i?3.f:2.f):srgb?1.f:0.f;c[10][1]=nearZ;c[10][2]=farZ;c[10][3]=occlude?1.f:0.f;
+        std::memcpy(c[1],projection,12);c[1][3]=water?1.f:0.f;std::memcpy(c[2],inverseView,64);c[10][0]=hdr?(i?3.f:2.f)+(residual?2.f:0.f):srgb?1.f:0.f;c[10][1]=nearZ;c[10][2]=farZ;c[10][3]=occlude?1.f:0.f;
         struct V{float x,y,z,w,u,v;} vertices[]={{-.5f,-.5f,spriteDepth,1,0,0},{float(width)-.5f,-.5f,spriteDepth,1,1,0},{-.5f,float(height)-.5f,spriteDepth,1,0,1},{float(width)-.5f,float(height)-.5f,spriteDepth,1,1,1}};
         D3DVIEWPORT9 viewport={0,0,width,height,0,1};d->SetViewport(&viewport);
         std::memcpy(c[6],disc.direction,12);c[6][3]=disc.tangentRadius;std::memcpy(c[7],disc.right,12);std::memcpy(c[8],disc.up,12);
