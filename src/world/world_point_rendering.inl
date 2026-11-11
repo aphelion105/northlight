@@ -21,6 +21,9 @@
     IDirect3DSurface9 *pointDepth=nullptr,*pointScratchSurface=nullptr;
     IDirect3DTexture9 *pointScratch=nullptr,*pointEmpty=nullptr;
     IDirect3DVertexShader9* pointShadowVS=nullptr;
+    IDirect3DVertexShader9* pointPaletteVS=nullptr;IDirect3DVertexDeclaration9* pointPaletteDecl=nullptr;
+    IDirect3DVertexBuffer9* pointPaletteIds=nullptr;bool pointPaletteUnavailable=false;
+    uint64_t pointPaletteRetryFrame=0;
     IDirect3DPixelShader9 *pointShadowPS=nullptr,*pointLightingPS=nullptr;
     IDirect3DPixelShader9* pointSoftLightingPS=nullptr;bool pointSoftTried=false;
     NorthlightPointShadow::SelectionTracker pointSelection;std::string pointSelectionMap;
@@ -41,7 +44,7 @@
     PointCandidates pointStaticCandidates,pointTerrainCandidates,pointLiveCandidates,pointReplayCandidates;
     std::vector<unsigned char> pointBatchMasks;
     UINT pointPrimitiveLimit=0;bool pointMinBlend=false;
-    struct PointWork {unsigned selected=0,statics=0,terrain=0,live=0,replay=0,replayMerged=0,split=0,unions=0,rebuilt=0,restored=0,unboundedRigid=0,unboundedSkinned=0,whiteLightingSkipped=0;uint64_t triangles=0,bridged=0;} pointWork;
+    struct PointWork {unsigned selected=0,statics=0,terrain=0,live=0,replay=0,replayMerged=0,split=0,unions=0,rebuilt=0,restored=0,unboundedRigid=0,unboundedSkinned=0,whiteLightingSkipped=0,paletteDraws=0,palettePackets=0,paletteRegisters=0;uint64_t triangles=0,bridged=0;} pointWork;
     struct PointCold {unsigned cubes=0,statics=0,shared=0,shaders=0;int64_t ticks=0;} pointCold;
     template<class Call> HRESULT pointAllocate(unsigned& attempts,Call call){
         ++attempts;const bool timed=NorthlightQuality::renderProfile(quality);const int64_t start=timed?QpcClock::now():0;
@@ -91,7 +94,9 @@
         for(pointIndex=0;pointIndex<pointSlots.size();++pointIndex)releasePointSlot();pointIndex=0;
         clearPointKeeps();pointKeepAge=0;
         drop(pointDepth);drop(pointScratchSurface);drop(pointScratch);drop(pointEmpty);
+        drop(pointPaletteIds);pointPaletteUnavailable=false;pointPaletteRetryFrame=0;
         if(!preserveShaders){drop(pointShadowVS);drop(pointShadowPS);drop(pointLightingPS);
+            drop(pointPaletteVS);drop(pointPaletteDecl);
             drop(pointSoftLightingPS);}
         pointSoftTried=pointSoftLightingPS!=nullptr;
         pointReady=false;pointUpdates=pointReuses=pointReportedLimit=pointBatchesMerged=0;localLightTracker.reset();localLightQpc=0;
@@ -681,6 +686,74 @@
         return true;
     }
     struct PointReplayRun {UINT start,count,min,vertices;};
+    unsigned pointPaletteSpan(const Replay& p)const{
+        const auto span=p.boundsWork.paletteSpan;
+        if(!span||span>41||!p.pointBounds.valid||!p.indexed||p.type!=D3DPT_TRIANGLELIST||!p.count||!p.index||!p.stream[0]||
+           p.projectionKind!=2||!(p.cutoff<0)||p.alphaMode||!p.program||!p.program->kernel.singleSkin())return 0;
+        const auto& usage=p.constantUsage;
+        if(usage.floats.first||usage.floats.count<31+3*span||usage.floats.count>256||usage.booleans.count||usage.integers.count)return 0;
+        const auto& definitions=p.program->definitions;
+        if(definitions.size()>1||(!definitions.empty()&&definitions[0].reg))return 0;
+        const auto control=NorthlightActorDeformation::singleSkinControl(*p.program,p.constants);
+        return control[0]==3&&control[1]==1?span:0;
+    }
+    static bool pointPaletteSame(const Replay& a,const Replay& b){
+        return a.count==b.count&&a.index==b.index&&a.start==b.start&&a.base==b.base&&a.min==b.min&&a.vertices==b.vertices&&
+            a.stream[0]==b.stream[0]&&a.offset[0]==b.offset[0]&&a.stride[0]==b.stride[0]&&a.decl==b.decl&&
+            a.originalShader==b.originalShader&&a.boundsWork.paletteSpan==b.boundsWork.paletteSpan;
+    }
+    bool pointPaletteResources(){
+        if(pointPaletteIds)return true;if(pointPaletteUnavailable||frames<pointPaletteRetryFrame)return false;
+        pointPaletteRetryFrame=frames+120;D3DCAPS9 caps{};
+        if(FAILED(d->GetDeviceCaps(&caps)))return false;
+        if(caps.MaxStreams<2||caps.VertexShaderVersion<D3DVS_VERSION(3,0)){pointPaletteUnavailable=true;return false;}
+        if(!admitsGrowth("point-palette",84*sizeof(float)))return false;
+        if(!pointPaletteVS&&(FAILED(pointAllocate(pointCold.shaders,[&]{return d->CreateVertexShader(kLocalPaletteShadowVSShader,&pointPaletteVS);}))||!pointPaletteVS)){drop(pointPaletteVS);return false;}
+        const D3DVERTEXELEMENT9 elements[]={{0,0,D3DDECLTYPE_FLOAT3,0,D3DDECLUSAGE_POSITION,0},
+            {0,16,D3DDECLTYPE_UBYTE4,0,D3DDECLUSAGE_BLENDINDICES,0},{1,0,D3DDECLTYPE_FLOAT1,0,D3DDECLUSAGE_TEXCOORD,1},D3DDECL_END()};
+        if(!pointPaletteDecl&&(FAILED(d->CreateVertexDeclaration(elements,&pointPaletteDecl))||!pointPaletteDecl)){drop(pointPaletteDecl);return false;}
+        NorthlightDrawSnapshot::Ref<IDirect3DVertexBuffer9> ids;
+        if(FAILED(pointAllocate(pointCold.shared,[&]{return d->CreateVertexBuffer(84*sizeof(float),D3DUSAGE_WRITEONLY,0,D3DPOOL_DEFAULT,ids.out(),nullptr);})))return false;
+        void* data=nullptr;if(!ids.p)return false;
+        if(FAILED(ids->Lock(0,84*sizeof(float),&data,0))){if(data)ids->Unlock();return false;}
+        if(!data){ids->Unlock();return false;}for(unsigned i=0;i<84;++i)static_cast<float*>(data)[i]=float(3*i);
+        if(FAILED(ids->Unlock())){ids->Unlock();return false;}pointPaletteIds=ids.p;ids.p=nullptr;pointPaletteRetryFrame=0;return true;
+    }
+    // Batch only adjacent compatible casters. Unsupported/alpha/emitter packets
+    // stay barriers; unique geometry needs no sorting or frame-local allocations.
+    bool pointPaletteDraw(const std::vector<size_t>& candidates,size_t& at,const std::map<size_t,PointReplayRuns>& splits,const float* rows,bool& drawn){
+        drawn=false;if(pointPaletteUnavailable||frames<pointPaletteRetryFrame||at+1>=candidates.size())return true;
+        const auto index=candidates[at];const auto& p=*replays[index];
+        if(!pointPaletteSame(p,*replays[candidates[at+1]]))return true;
+        const UINT span=pointPaletteSpan(p);
+        if(!span||(!splits.empty()&&splits.count(index)))return true;
+        size_t end=at+1;
+        while(end<candidates.size()){const auto next=candidates[end];
+            if(!pointPaletteSame(p,*replays[next])||!pointPaletteSpan(*replays[next])||(!splits.empty()&&splits.count(next)))break;++end;}
+        if(end-at<2||!pointPaletteResources())return true;
+        const float opaque[]={0,0,0,-1};HRESULT result=d->SetVertexDeclaration(pointPaletteDecl);
+        if(SUCCEEDED(result))result=d->SetVertexShader(pointPaletteVS);
+        if(SUCCEEDED(result))result=d->SetVertexShaderConstantF(0,rows,4);
+        if(SUCCEEDED(result))result=d->SetTexture(0,nullptr);
+        if(SUCCEEDED(result))result=d->SetPixelShaderConstantF(0,opaque,1);
+        if(SUCCEEDED(result))result=d->SetStreamSource(0,p.stream[0],p.offset[0],p.stride[0]);
+        if(SUCCEEDED(result))result=d->SetIndices(p.index);
+        if(SUCCEEDED(result))result=d->SetStreamSource(1,pointPaletteIds,0,span*sizeof(float));
+        if(SUCCEEDED(result))result=d->SetStreamSourceFreq(1,D3DSTREAMSOURCE_INSTANCEDATA|1);
+        const UINT capacity=82/span;
+        while(at<end&&SUCCEEDED(result)){
+            const UINT count=UINT(std::min<size_t>(capacity,end-at));float palette[248*4];
+            for(unsigned i=0;i<count;++i)std::memcpy(palette+i*span*12,replays[candidates[at+i]]->constants+31*4,span*48);
+            result=d->SetVertexShaderConstantF(4,palette,count*span*3);
+            if(SUCCEEDED(result))result=d->SetStreamSourceFreq(0,D3DSTREAMSOURCE_INDEXEDDATA|count);
+            if(SUCCEEDED(result))result=d->DrawIndexedPrimitive(p.type,p.base,p.min,p.vertices,p.start,p.count);
+            if(SUCCEEDED(result)){++pointDraws;++pointWork.replay;++pointWork.paletteDraws;pointWork.palettePackets+=count;pointWork.paletteRegisters+=count*span*3;
+                pointWork.triangles+=uint64_t(p.count)*count;pointBatchesMerged+=count-1;pointWork.replayMerged+=count-1;}
+            at+=count;
+        }
+        for(unsigned stream=0;stream<2;++stream){auto hr=d->SetStreamSourceFreq(stream,1);if(FAILED(hr))hr=d->SetStreamSourceFreq(stream,1);if(FAILED(hr))result=hr;}
+        drawn=true;return pointCheck(result,"cube palette replay");
+    }
     PointReplayRun pointReplayRun(const std::vector<size_t>& candidates,size_t& at,const std::map<size_t,PointReplayRuns>& splits,bool opaque){
         const auto& first=*replays[candidates[at++]];PointReplayRun run{first.start,first.count,first.min,first.vertices};
         if(!first.indexed||first.type!=D3DPT_TRIANGLELIST)return run;
@@ -906,6 +979,8 @@
             // LocalShadowPS reads patched TEXCOORD7 and writes perspective z/w;
             // the directional replay PS assumes orthographic w=1 and is invalid here.
             for(size_t at=0;at<pointReplayCandidates[face].size();){const size_t index=pointReplayCandidates[face][at];const auto& p=replays[index];
+                bool instanced=false;if(!pointPaletteDraw(pointReplayCandidates[face],at,replayRuns,rows,instanced))return false;
+                if(instanced){replayBindings.invalidate();poseConstants.reset();continue;}
                 if(!pointCheck(replayBindings.geometry(*p),"cube replay geometry state"))return false;
                 if(!poseConstants.prepare(*p,rows,matrix))return false;
                 const float* desired=poseConstants.desired();

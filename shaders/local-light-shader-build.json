@@ -1,7 +1,7 @@
 {
-  "derivative_hoist_sha256": "1aba62986bd5bb4285c845cc5ed441f42c185617c69c99378a9b4245835439c8",
+  "derivative_hoist_sha256": "0ed5463a6819a7cd483954a4be2437a350b03d4027c2424b31b0aec6797e8740",
   "bump_include_sha256": "b5523a51dc6715f11ac2e7ba9ecb46a4973ba6aa23de159e308a8fd24d4e9ebc",
-  "source_sha256": "daf6b85691a15e764a7eb71a49e6a7c5238fcb1b9fc71d4f10005d77d8ff1615",
+  "source_sha256": "fffefe2a130f7576e09fee011f758cd793ce82d4de70dab90a942a7d60ae104e",
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
   "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
   "game_launched": false,
@@ -18,6 +18,24 @@
         "mul": 3,
         "add": 3,
         "mov": 3
+      },
+      "cube_instruction_extra_slots": 0
+    },
+    "LocalPaletteShadowVS": {
+      "target": "vs_3_0",
+      "bytes": 636,
+      "sha256": "663953ef99d0aad9bd64f98ce86bdaecfad588f78a90fc13a67fc50a0287be6a",
+      "static_instruction_slots": 22,
+      "temporary_registers": 2,
+      "samplers": [],
+      "instructions": {
+        "mul": 3,
+        "add": 4,
+        "slt": 2,
+        "frc": 1,
+        "mova": 1,
+        "dp4": 7,
+        "mov": 4
       },
       "cube_instruction_extra_slots": 0
     },

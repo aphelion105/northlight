@@ -32,6 +32,7 @@ public:
     struct Counts {unsigned declarations=0,streams=0,indices=0,shaders=0,textures=0,samplers=0,cutoffs=0,legacyTextures=0,legacySamplers=0,opaqueKept=0;} counts;
     explicit BasicCache(IDirect3DDevice9* device):d_(device),skip_(Skip&&skipOpaque()){}
     bool skipping()const{return skip_;}
+    void invalidate(){geometry_=material_=legacy_=false;}
     template<class Replay> HRESULT geometry(const Replay& p){
         HRESULT hr;
         if(!geometry_||declaration_!=p.decl){hr=d_->SetVertexDeclaration(p.decl);if(FAILED(hr)){geometry_=false;return hr;}declaration_=p.decl;++counts.declarations;}

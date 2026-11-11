@@ -34,6 +34,16 @@ LocalCaster LocalShadowVS(float3 position:POSITION0,float2 uv:TEXCOORD0) {
     o.position=position.x*LocalFaceMatrix[0]+position.y*LocalFaceMatrix[1]+position.z*LocalFaceMatrix[2]+LocalFaceMatrix[3];
     o.clip=o.position;o.uv=uv;return o;
 }
+// Opaque six-op single-influence replays share a bounded palette across instances.
+// Original per-vertex bone indices and DP4 order are preserved; no CPU deformation.
+float4 PaletteProjection[4] : register(c0);
+float4 CasterPalette[248] : register(c4);
+LocalCaster LocalPaletteShadowVS(float3 position:POSITION0,float4 bone:BLENDINDICES0,float first:TEXCOORD1) {
+    int at=(int)(3*bone.x+first);float4 source=float4(position,1);
+    float4 view=float4(dot(CasterPalette[at],source),dot(CasterPalette[at+1],source),dot(CasterPalette[at+2],source),1);
+    LocalCaster o;o.position=float4(dot(PaletteProjection[0],view),dot(PaletteProjection[1],view),dot(PaletteProjection[2],view),dot(PaletteProjection[3],view));
+    o.clip=o.position;o.uv=0;return o;
+}
 struct LocalShadowOutput {float4 native:COLOR0;float4 depth:COLOR1;};
 LocalShadowOutput LocalShadowPS(float2 uv:TEXCOORD0,float4 clipPosition:TEXCOORD7,float4 diffuse:COLOR0) {
     LocalShadowOutput output;output.depth=saturate(clipPosition.z/clipPosition.w);output.native=output.depth.xxxx;

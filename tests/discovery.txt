@@ -358,6 +358,7 @@ test_pipeline_bindings_cpu.py
 test_pipeline_wave_cpu.py
 test_point_clip_prepared.py
 test_point_light_shadow.py
+test_point_palette_gpu.py
 test_point_pipeline_init_gpu.py
 test_point_replay_admission.py
 test_point_shadow_schedule.py
