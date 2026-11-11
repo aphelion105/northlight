@@ -22,7 +22,8 @@ checks={
     'NorthlightLiveTerrainGPU::Cache<NorthlightTerrainCapture::MeshSnapshot,StaticShadow::Vertex>& liveTerrainGPU=gpuScene->terrain;' in w
     and 'NorthlightLiveTerrainGPU::Cache<NorthlightTerrainCapture::MeshSnapshot,StaticShadow::Vertex> terrain;' in fp.src('gpu_scene.h').read_text()
     and 'return StaticShadow::Vertex{p.x,p.y,p.z,0,0};' in up
-    and 'CreateVertexDeclaration(liveElements,&liveTerrainDecl)' in w
+    and '#include "world_screen_resources.inl"' in w
+    and 'CreateVertexDeclaration(liveElements,&liveTerrainDecl)' in fp.src('world_screen_resources.inl').read_text()
     and 'drop(liveTerrainDecl);' in release
     and w.count('SetVertexDeclaration(liveTerrainDecl)')==1 and pr.count('SetVertexDeclaration(liveTerrainDecl)')==1
     and w.count('liveTerrainGPU.vertices(),0,sizeof(StaticShadow::Vertex)')==1 and pr.count('liveTerrainGPU.vertices(),0,sizeof(StaticShadow::Vertex)')==1

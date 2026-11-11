@@ -2779,12 +2779,6 @@ private:
     // 0.3.176 (D1): this frame's terrain change (sample frames), per-triangle tests, and (RenderProfile
     // sample frames) the arena / index build / lock+copy times; -1: not measured.
     const char* terrainChange="none";size_t terrainTriangleTests=0;double terrainPartMs[3]={-1,-1,-1};
-    static const char* classifyTerrain(const std::vector<TerrainSnapshot>& now,const std::vector<TerrainSnapshot>& before,bool reused){
-        if(reused)return "none";if(now==before)return "identity"; /* the same owners in order: a generation or buffer change */
-        if(now.size()!=before.size())return "membership";
-        try{std::vector<const void*> a,b;for(const auto& s:now)a.push_back(s.get());for(const auto& s:before)b.push_back(s.get());
-            std::sort(a.begin(),a.end());std::sort(b.begin(),b.end());return a==b?"order":"membership";}catch(...){return "unknown";}
-    }
     // 0.3.192 (DXVK3): (re)creates the live IB at the given ring capacity; on failure no buffer and no ring.
     bool recreateLiveIndices(UINT capacity){
         auto& queries=fence();
@@ -2795,10 +2789,15 @@ private:
     bool uploadLiveTerrain(){
         terrainUploadBytes=0;terrainUploadReused=false;terrainTriangleTests=0;for(auto& ms:terrainPartMs)ms=-1;
         liveTerrainGPU.beginFrame();
+        // Only private opaque depth passes consume this list. Keep their index
+        // order stable when native draw order changes, including point bounds.
+        if(frameTerrain!=uploadedTerrain)std::sort(frameTerrain.begin(),frameTerrain.end());
+        pointLiveBatches.clear();UINT pointStart=0;
+        for(const auto& snapshot:frameTerrain){pointRecordTerrain(pointStart,UINT(snapshot->indices.size()/3),snapshot->bounds);pointStart+=UINT(snapshot->indices.size());}
         const bool timedParts=profileSampled();auto partStart=timedParts?std::chrono::steady_clock::now():std::chrono::steady_clock::time_point{};
         auto part=[&](int k){if(!timedParts)return;const auto now=std::chrono::steady_clock::now();terrainPartMs[k]=std::chrono::duration<double,std::milli>(now-partStart).count();partStart=now;};
         const bool reuse=liveTerrainGeneration==meshGeneration&&frameTerrain==uploadedTerrain && (frameTerrain.empty()||(liveTerrainGPU.vertices()&&liveIndicesGPU));
-        if(captureSampled)terrainChange=classifyTerrain(frameTerrain,uploadedTerrain,reuse);
+        if(captureSampled)terrainChange=reuse?"none":frameTerrain==uploadedTerrain?"identity":"membership";
         // 0.3.192 (DXVK3): a reuse frame draws the live IB slice again without a place(): re-tag its span with this frame's
         // fence so it stays pending (no NOOVERWRITE overwrite of a slice still drawn) until this frame's draws are submitted.
         // The newest span is the current lists (place() appends, the older spans are earlier lists); liveIndexBase is untouched.
@@ -3977,7 +3976,6 @@ public:
         bool fresh=false;for(auto& chunk:snapshot->bounds.chunks)if(!liveTerrainChunks.count({chunk.x,chunk.y}))fresh=true;
         if(!fresh)return;
         if(frameTerrainVertices+snapshot->positions.size()>262144||frameTerrainIndices+snapshot->indices.size()>1572864)return;
-        pointRecordTerrain(UINT(frameTerrainIndices),UINT(snapshot->indices.size()/3),snapshot->bounds);
         for(auto& chunk:snapshot->bounds.chunks)liveTerrainChunks.emplace(chunk.x,chunk.y);
         frameTerrainVertices+=snapshot->positions.size();frameTerrainIndices+=snapshot->indices.size();
         frameTerrain.push_back(std::move(snapshot));++terrainSnapshots;
