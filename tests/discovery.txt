@@ -368,6 +368,7 @@ test_point_transmission_cache.py
 test_point_transmission_install.py
 test_point_transmission_runtime.py
 test_pose_viewport_culling.py
+test_pose_viewport_math.py
 test_position_bounds.py
 test_position_bounds_scan.py
 test_prelit_wmo_client.py

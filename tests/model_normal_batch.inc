@@ -303,7 +303,7 @@ static void normalBatch(IDirect3D9* api,CaptureCalls& calls,IDirect3DVertexShade
                             if(round>=2||!gpuTiming){gpu[strategy].push_back(gpuMs);cpuCost[strategy].push_back(double(finish.QuadPart-start.QuadPart)*1000/hz.QuadPart);}
                             crowdSets[strategy]=calls.targetSets-sets;
                             assert(normals->cachedDraws()==(strategy?crowd:0)&&cache.uploaded()==0&&normals->readSourceBytes()==0);
-                            if(strategy)assert(crowdSets[strategy]==11); // One pass under the unchanged 8 MiB CPU budget.
+                            if(strategy)assert(crowdSets[strategy]==8); // Four target setup calls and four null-MRT-safe restore calls.
                             if(round==0){auto image=capturedPixels(normals->texture(),W,H);if(referenceCrowd.empty())referenceCrowd=std::move(image);else assert(image==referenceCrowd);}
                         }
                         ok(d->SetVertexShaderConstantF(31,palette,1));normals->setGeometryCache(&cache);

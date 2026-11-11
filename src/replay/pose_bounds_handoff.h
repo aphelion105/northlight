@@ -28,6 +28,8 @@ struct Handoff {
         for(unsigned i=0;i<3;++i)if(!std::isfinite(value.low[i])||!std::isfinite(value.high[i])||value.low[i]>value.high[i]||
             std::max(std::fabs(value.low[i]),std::fabs(value.high[i]))>1000000)return;
         bounds=value;bind(current,mesh,vs,decl);clipSign=bank[22];
+        // A current range proof already rejects this receiver for every viewport.
+        outsideRange=outside(mesh,vs,decl,current);if(outsideRange)return;
         // Native projection is DP4(c2..c5, view.xyz1). Enclose every clip
         // component before testing a plane, including float cancellation.
         double lower[4],upper[4];
@@ -47,7 +49,9 @@ struct Handoff {
         if(clip&&outsideViewport)return true;
         if(!bounds.valid)return false;
         const double lower=clipSign==1?double(bounds.low[2]):clipSign==-1?-double(bounds.high[2]):-INFINITY;
-        return std::nextafter(lower,-INFINITY)>48.01;
+        // Float bounds adjacent to 48.01 are many double ULPs away. Stepping
+        // their exact double conversion once cannot change this comparison.
+        return lower>48.01;
     }
 };
 }

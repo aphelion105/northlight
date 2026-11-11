@@ -691,7 +691,6 @@ public:
                 NorthlightConstantEpoch::Stamp currentStamp;currentStamp.requestHeld=true;
                 if(constantReader&&constantReader(constantContext,currentStamp)&&NorthlightConstantEpoch::exact(constantStamp,currentStamp)){
                     captureSource->pose.publish(view,constants,currentStamp,source.get(),original,decl.p);
-                    captureSource->pose.outsideRange=captureSource->pose.outside(source.get(),original,decl.p,currentStamp);
                 }
             }
         };
