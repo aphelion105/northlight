@@ -1,5 +1,6 @@
 #pragma once
 #include "adaptive_geometry_array.h"
+#include "../sky/aurora_source.h"
 
 #include <cstdint>
 #include <functional>
@@ -309,6 +310,9 @@ struct Lighting {
     Vec3 sunIrradiance = Vec3(1.f, .95f, .85f);
     // Constant upper-hemisphere environmental radiance. Lower hemisphere is 0.
     Vec3 skyRadiance = Vec3(.10f, .14f, .20f);
+    // Immutable world-oriented emission, independently visible in the sky.
+    // The producer publishes only complete native-source observations.
+    std::shared_ptr<const NorthlightAuroraSource::Snapshot> aurora;
     Vec3 worldUp = Vec3(0, 0, 1);
     float maxDistance = 256.f;
     float rayBias = .006f;
@@ -359,9 +363,12 @@ Probe solveProbePrepared(const BVH& bvh, Vec3 position, const PreparedLighting& 
 // direction. Point-light irradiance is fixed by the cache's geometry signature.
 // Relighting changes only floating-point grouping, not paths or sample counts.
 struct ProbeResponse { Probe fixed; Vec3 sources[3][4]; };
+// Optional sidecar: ordinary environments retain the original cache layout.
+struct AngularSkyResponse { Vec3 sectors[NorthlightAuroraSource::SectorCount][4]; };
 Probe solveProbeResponse(const BVH& bvh,Vec3 position,const PreparedLighting& lighting,
-                         unsigned rays,uint32_t seed,ProbeResponse& response);
-Probe relightProbe(const ProbeResponse& response,const PreparedLighting& lighting);
+                         unsigned rays,uint32_t seed,ProbeResponse& response,AngularSkyResponse* angular=nullptr);
+// Without an angular sidecar, that source is fixed at solve time.
+Probe relightProbe(const ProbeResponse& response,const PreparedLighting& lighting,const AngularSkyResponse* angular=nullptr);
 // Static-only paths of one probe's rays, stored as the exact moving-geometry
 // queries a moving solve issues while its path equals the static path. Owned
 // per probe by the caller; valid for one static BVH/lighting generation.

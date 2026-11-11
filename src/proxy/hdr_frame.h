@@ -30,6 +30,7 @@ class Frame {
     IDirect3DPixelShader9 *decode=nullptr,*meter=nullptr,*reduce=nullptr,*adapt=nullptr,*bloom=nullptr,*bloomVertical=nullptr,*output=nullptr,*constant=nullptr,*copy=nullptr,*legacyComposite=nullptr,*outputOnly=nullptr,*legacyEncode=nullptr;
     unsigned width=0,height=0,historyIndex=0;bool historyReady=false,worldWasValid=false;
     float restoredExposure=0;bool restoredReady=false;
+    bool skyResidual=false,skyResolved=false;
 
     void resetWide(){
         for(auto& target:wideTargets)target.reset();wideCompanion.reset();release(wideHorizontal);release(wideVertical);release(wideResolve);
@@ -89,11 +90,12 @@ public:
         resetWide();
         linear.reset();meter64.reset();meter8.reset();legacyStatistics.reset();worldStatistics.reset();for(auto& target:history)target.reset();for(auto& target:bloomTargets)target.reset();
         release(decode);release(meter);release(reduce);release(adapt);release(bloom);release(bloomVertical);release(output);release(constant);release(copy);release(legacyComposite);release(outputOnly);release(legacyEncode);
-        width=height=historyIndex=0;historyReady=worldWasValid=false;
+        width=height=historyIndex=0;historyReady=worldWasValid=false;skyResidual=skyResolved=false;
     }
     void invalidateExposure(){historyReady=false;worldWasValid=false;restoredReady=false;}
     IDirect3DTexture9* texture()const{return linear.texture;}
     IDirect3DSurface9* surface()const{return linear.surface;}
+    void beginSkyResidual(){skyResidual=true;skyResolved=false;}
     IDirect3DSurface9* exposureSurface()const{return history[historyIndex].surface;}
     std::uint64_t payloadBytes()const{
         std::uint64_t bytes=linear.texture?std::uint64_t(width)*height*8:0;
@@ -148,7 +150,19 @@ public:
         const bool preserveSky=capturedSky&&depth&&maxDepth>minDepth;
         // A failed inline world pass decodes over the already resolved sky;
         // its output target may have been partially overwritten by then.
-        if(preserveSky&&capturedSky!=linear.surface){for(unsigned i=0;i<3;++i)device->SetTexture(i,nullptr);hr=device->StretchRect(capturedSky,nullptr,linear.surface,nullptr,D3DTEXF_NONE);if(FAILED(hr))return hr;}
+        if(preserveSky&&capturedSky!=linear.surface&&!(skyResidual&&skyResolved)){for(unsigned i=0;i<3;++i)device->SetTexture(i,nullptr);hr=device->StretchRect(capturedSky,nullptr,linear.surface,nullptr,D3DTEXF_NONE);if(FAILED(hr))return hr;}
+        if(preserveSky&&skyResidual&&!skyResolved){
+            // Decode the complete authored sky once, after all native layers.
+            // This preserves its additive colour/brightness and adds only the
+            // separately accumulated linear headroom. No extra image is needed.
+            hr=quadState(device,linear.surface,w,h,3);if(FAILED(hr))return hr;
+            const float parameters[]={minDepth,1/(maxDepth-minDepth),-1,0};
+            device->SetPixelShader(decode);device->SetPixelShaderConstantF(2,parameters,1);
+            device->SetTexture(0,source);device->SetTexture(1,depth);device->SetTexture(2,nullptr);
+            device->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE);device->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_ONE);
+            device->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_ONE);device->SetRenderState(D3DRS_BLENDOP,D3DBLENDOP_ADD);device->SetRenderState(D3DRS_COLORWRITEENABLE,7);
+            hr=drawQuad(device,w,h);if(FAILED(hr))return hr;skyResolved=true;
+        }
         // Inline composition still needs the resolved owned sky, but decodes
         // covered native pixels in the compositor without a full-screen pass.
         if(!materialize)return hr;

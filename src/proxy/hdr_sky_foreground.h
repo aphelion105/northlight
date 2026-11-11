@@ -21,6 +21,7 @@ class SkyForeground {
     std::unordered_map<IDirect3DPixelShader9*,Entry> shaders;
     IDirect3DPixelShader9* fixedModulate=nullptr;
     bool checked=false,capable=false;unsigned targets=0;
+    const bool residual;
     template<class T> static void drop(T*& p){if(p)p->Release();p=nullptr;}
     IDirect3DPixelShader9* fixedSource(IDirect3DDevice9* d){
         // The native rain has a legacy programmable VS and no PS. Reproduce
@@ -51,13 +52,14 @@ class SkyForeground {
         std::vector<std::uint32_t> words(bytes/4),patched;
         if(FAILED(original->GetFunction(words.data(),&bytes)))return nullptr;
         const bool sm2=words[0]==0xffff0200;
-        const auto* transfer=sm2?kHdrUiPs2:kHdrUiPs3;
-        const auto count=sm2?sizeof(kHdrUiPs2)/4:sizeof(kHdrUiPs3)/4;
+        const auto* transfer=residual?(sm2?kHdrSkyResidualPs2:kHdrSkyResidualPs3):(sm2?kHdrUiPs2:kHdrUiPs3);
+        const auto count=residual?(sm2?sizeof(kHdrSkyResidualPs2)/4:sizeof(kHdrSkyResidualPs3)/4):(sm2?sizeof(kHdrUiPs2)/4:sizeof(kHdrUiPs3)/4);
         if(!NorthlightHdrUi::patch(words.data(),words.size(),transfer,count,80,premultiplied,patched,nullptr,false,slot)||
            FAILED(d->CreatePixelShader(reinterpret_cast<const DWORD*>(patched.data()),&entry.shader[index])))return nullptr;
         return entry.shader[index];
     }catch(const std::bad_alloc&){return nullptr;}
 public:
+    explicit SkyForeground(bool emissionOnly=false):residual(emissionOnly){}
     std::uint64_t draws=0,cachedRejections=0;
     ~SkyForeground(){reset();}
     void reset(){for(auto& item:shaders){drop(item.second.original);for(auto*& p:item.second.shader)drop(p);}shaders.clear();drop(fixedModulate);checked=capable=false;targets=0;draws=cachedRejections=0;}
@@ -96,7 +98,7 @@ public:
         const auto state=colorState(slot);if(FAILED(d->GetRenderState(state,&oldWrites)))return false;
         // The three COLORWRITEENABLE enums are consecutive in D3D9.
         restore.changed=true;
-        if(FAILED(d->SetRenderTarget(slot,sky))||FAILED(d->SetRenderState(state,writes))||FAILED(d->SetPixelShader(patched)))return false;
+        if(FAILED(d->SetRenderTarget(slot,sky))||FAILED(d->SetRenderState(state,residual?writes&7:writes))||FAILED(d->SetPixelShader(patched)))return false;
         ++draws;result=submit();return true;
     }
 };

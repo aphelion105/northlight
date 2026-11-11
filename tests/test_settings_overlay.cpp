@@ -323,7 +323,10 @@ int main(){
         for(const char* parent:{"GI","GIStrength"}){
             draft.set(*draft.quality(parent),"0");
             CHECK(D::blocked(draft,*brightness,missing)==D::Block::NeedsKey&&missing==parent);
-            CHECK(D::blocked(draft,*aurora,missing)==D::Block::NeedsKey&&missing==parent);draft.clear();
+            CHECK(D::blocked(draft,*aurora,missing)==D::Block::None);draft.clear();
+        }
+        for(const char* parent:{"Weather","WorldFog"}){
+            draft.set(*draft.quality(parent),"0");CHECK(D::blocked(draft,*aurora,missing)==D::Block::None);draft.clear();
         }
     }
     disableOriginalTerrainShadows();

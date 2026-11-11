@@ -17,6 +17,8 @@ def main():
     method=source[start:source.index('    template<class Capture,class Draw> HRESULT drawHook(',start)]
     adapter=r'''
 #include <stdexcept>
+#include "aurora_renderer.h"
+#include "hdr_sky_residual.h"
 struct ExtensionDevice:DeviceMeter {
     using DeviceMeter::DeviceMeter;
     struct RawScope {explicit RawScope(ExtensionDevice&){};};
@@ -26,6 +28,10 @@ struct ExtensionDevice:DeviceMeter {
 };
 struct SkyReplay {
     ExtensionDevice* ext;IDirect3DSurface9* sky;NorthlightStateBlockPool stateBlocks;NorthlightHdr::Color hdrColor;bool hdrSkyReplaying=false;
+    NorthlightAuroraNative::Renderer auroraRenderer;bool auroraDrawProven=false;unsigned auroraHdrDraws=0;NorthlightAuroraSource::RGB auroraDrawScale{};
+    NorthlightHdr::Settings hdrFrameSettings;
+    float auroraDrawIntensity=1;
+    bool hdrSkyValid=true,hdrSkyRejected=false;struct Celestial{void setHdrSkyTarget(IDirect3DSurface9*){}};Celestial* celestialDiscs=nullptr;
     SkyReplay(ExtensionDevice* d,IDirect3DSurface9* s):ext(d),sky(s),stateBlocks(d){}
     template<class T>static void drop(T*& p){dropGraph(p);}
     IDirect3DSurface9* hdrSkyTarget(){return sky;}
@@ -34,7 +40,8 @@ struct SkyReplay {
     fixture=(fp.TESTS/'hdr_fixed_sky_gpu.cpp').read_text()
     fixture=fixture.replace('struct SkyVertex {',adapter+'\nstruct SkyVertex {',1)
     fixture=fixture.replace('DeviceMeter d(raw);','ExtensionDevice d(raw);',1)
-    fixture=fixture.replace('NorthlightHdr::Color color;NorthlightHdr::SkyForeground capture;', 'SkyReplay replay(&d,sky.surface);NorthlightHdr::Color color;NorthlightHdr::SkyForeground capture;',1)
+    fixture=fixture.replace('NorthlightHdr::Color color;NorthlightHdr::SkyForeground capture;', 'SkyReplay replay(&d,sky.surface);NorthlightHdr::Color color;NorthlightHdr::SkyForeground capture{true};',1)
+    fixture=fixture.replace('color.draw(&d,80,draw,0,&pool)', 'NorthlightHdr::attenuateSky(&d,draw)')
     fixture=fixture.replace('mode<2;++mode','mode<3;++mode',1)
     original='            else{bool captured=false;'
     candidate=r'''            else if(mode==1){ok(submit());ok(query->Issue(D3DISSUE_END));
@@ -71,6 +78,7 @@ struct SkyReplay {
         DWORD z=0,stencil=0;ok(d.GetRenderState(D3DRS_ZWRITEENABLE,&z));ok(d.GetRenderState(D3DRS_STENCILWRITEMASK,&stencil));assert(z==TRUE&&stencil==0x5a);
         RECT rect{};ok(d.GetScissorRect(&rect));assert(!std::memcmp(&rect,&scissor,sizeof rect));
         for(unsigned slot=1;slot<3;++slot){IDirect3DSurface9* surface=nullptr;ok(d.GetRenderTarget(slot,&surface));assert(surface==aux[slot-1]);surface->Release();}
+        ok(d.SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE));
         replay.hdrReplaySky(true,false,[]()->HRESULT{return E_FAIL;});assert(!replay.hdrSkyReplaying);
         bool caught=false;try{replay.hdrReplaySky(true,false,[]()->HRESULT{throw std::runtime_error("injected");});}catch(const std::runtime_error&){caught=true;}
         assert(caught&&!replay.hdrSkyReplaying);

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <cstdint>
 
 namespace NorthlightAurora {
 inline float smooth(float x){x=std::clamp(x,0.f,1.f);return x*x*(3-2*x);}
@@ -12,20 +13,20 @@ inline float weight(const char* map,bool valid,double day,float sunZ,float moonZ
     constexpr float fade=.0697564737f; // sin(4 degrees), entirely below the horizon.
     return smooth(-sunZ/fade)*smooth(-moonZ/fade);
 }
-// Recolour the existing GI sky source. Upper-hemisphere paths, roof occlusion,
-// material bounces and the cached colour response remain the solver's work.
-inline bool skyRadiance(const char* map,unsigned strength,bool valid,double day,const float ambient[3],float out[3]){
-    std::copy(ambient,ambient+3,out);
+struct Style { bool enabled=false; float gain=0,phase=0; std::uint64_t revision=0; float intensity=1; };
+// Native emission is present whenever the selected Northrend ribbons exist.
+// The orbital gate controls only their extra green/purple twilight emission.
+inline Style style(const char* map,unsigned strength,bool valid,double day){
+    Style out;
     const auto orbit=NorthlightCelestialOrbit::evaluateNative(valid?day:-1.);
-    const float gain=.2f*float(std::min(strength,200u))*.01f*
+    if(!map||std::strcmp(map,"Northrend")||!orbit.valid)return {};
+    out.intensity=float(std::min(strength,200u))*.01f;
+    out.gain=4.f*out.intensity*
         weight(map,orbit.valid,day,orbit.sun.direction[2],orbit.moon.direction[2]);
-    if(gain<=0)return false;
-    for(unsigned k=0;k<3;++k)if(!std::isfinite(ambient[k])||ambient[k]<0)return false;
-    const float luminance=ambient[0]*.2126f+ambient[1]*.7152f+ambient[2]*.0722f;
-    if(luminance<=0)return false;
-    const float purple=smooth(float((day-.85)/.075));
-    constexpr float green[3]={.2f,1.f,.45f},violet[3]={.85f,.25f,1.f};
-    for(unsigned k=0;k<3;++k)out[k]+=luminance*gain*(green[k]+purple*(violet[k]-green[k]));
-    return true;
+    if(out.intensity<=0){out.intensity=0;return out;}
+    out.enabled=true;out.phase=smooth(float((day-.85)/.075));
+    out.revision=14695981039346656037ull;
+    for(float value:{out.gain,out.phase,out.intensity}){std::uint32_t bits=0;std::memcpy(&bits,&value,4);out.revision=(out.revision^bits)*1099511628211ull;}
+    return out;
 }
 }

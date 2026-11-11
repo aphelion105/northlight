@@ -1,0 +1,672 @@
+{
+  "inputs": {
+    "dbfilesclient\\lightskybox.dbc": {
+      "sha256": "9d2aae2794ff6e01f2a620a59504a1fa5812929502e1d4218acc81c1b00cd35b",
+      "archive": "Data/enGB/patch-engb-z.mpq"
+    },
+    "environments\\stars\\8swa_sky01.m2": {
+      "sha256": "5c7a7237e088723b66b0a2b28baa2490baed7522f46a9c8769d94c5b65580cca",
+      "archive": "Data/patch-E.mpq"
+    },
+    "environments\\stars\\8xp_darkshorescenario_sky01.m2": {
+      "sha256": "75432d39eb12ba5a9295e0f5fdc7b6ab3e895f9347394e546a58dd2973686916",
+      "archive": "Data/patch-E.mpq"
+    },
+    "environments\\stars\\8xp_spiritsky01.m2": {
+      "sha256": "518e3ea32c567e7c638b9c83de5574e5f99016469cd9a4115aa88fb96cd0b683",
+      "archive": "Data/patch-E.mpq"
+    },
+    "environments\\stars\\9cas_feralsky01.m2": {
+      "sha256": "c4c15ae52a0aa5546075dcb5cc61bbda762ceb034f29283e48fc83c14bbeaa05",
+      "archive": "Data/patch-E.mpq"
+    },
+    "environments\\stars\\9cas_feralsky02.m2": {
+      "sha256": "bc7ffc3d74f5fcc0444fd44569ff94701cdce8d8391d05739dce7d6113c1eca9",
+      "archive": "Data/patch-E.mpq"
+    },
+    "environments\\stars\\9cas_feralsky03.m2": {
+      "sha256": "eb12b34cee6f9ec7ae0272e93e410a9f70f467f26052edd59f8629044cb1c2bd",
+      "archive": "Data/patch-E.mpq"
+    },
+    "environments\\stars\\9cas_feralsky04.m2": {
+      "sha256": "c745c613b4c680219d6a6d0af1371a136dd87b1035c69dbdc1b8ba1e436ee8db",
+      "archive": "Data/patch-E.mpq"
+    },
+    "environments\\stars\\9cas_feralsky05.m2": {
+      "sha256": "c85f27f3d448aafb3f1c6a22c243f7fc70cf2679f343290b535558555cdaaf9b",
+      "archive": "Data/patch-E.mpq"
+    },
+    "environments\\stars\\aurora.m2": {
+      "sha256": "95b043df1b2b645b03918af68db750dfac9daa893eb7c810f87c829a9c7ed6d9",
+      "archive": "Data/lichking.MPQ"
+    },
+    "environments\\stars\\aurora00.skin": {
+      "sha256": "602d799d5fb12051b410148b757d83c5fe0244cd8e28d483eb69777bbc8f4f27",
+      "archive": "Data/lichking.MPQ"
+    },
+    "environments\\stars\\auroralight_yg_b.blp": {
+      "sha256": "18613e976731db55288d9f5f0cd0630298601813e418665563562aee1e39fe46",
+      "archive": "Data/patch-E.mpq"
+    },
+    "environments\\stars\\auroramask_b_orange.blp": {
+      "sha256": "ffa7b35c9f2dc4d6f9d6786b7a8f7a45ac9b0d34216433f77ed9f2ec60a63a34",
+      "archive": "Data/patch-E.mpq"
+    },
+    "environments\\stars\\auroraorange.m2": {
+      "sha256": "f2026e0ef1bb1bd812ab87960d5be97253032d0d3f74f0690dd86022fba35b68",
+      "archive": "Data/lichking.MPQ"
+    },
+    "environments\\stars\\auroraorange00.skin": {
+      "sha256": "43c57d7ae09e9ce3d668f24ae03baf269926002bfa2143ed03797a5f7b72435c",
+      "archive": "Data/lichking.MPQ"
+    },
+    "environments\\stars\\auroralight_or_b.blp": {
+      "sha256": "81ba412e5990ea0077b3be0e85ffd24842ffc7c4c9a0903562ce8059a9f8eddd",
+      "archive": "Data/patch-E.mpq"
+    },
+    "environments\\stars\\aurorayellowgreen.m2": {
+      "sha256": "f81b40c18429bf75691d276db44d19cda74417dc20f00b1ba83e6e3774fc3fb5",
+      "archive": "Data/lichking.MPQ"
+    },
+    "environments\\stars\\aurorayellowgreen00.skin": {
+      "sha256": "43c57d7ae09e9ce3d668f24ae03baf269926002bfa2143ed03797a5f7b72435c",
+      "archive": "Data/lichking.MPQ"
+    },
+    "environments\\stars\\azjolnerub_skya.m2": {
+      "sha256": "44420ea8c9d39c299581ac479703a1b4db4b7e56592bbd92f8a7d22e10104f57",
+      "archive": "Data/lichking.MPQ"
+    },
+    "environments\\stars\\battlefield_dirty_skybox.m2": {
+      "sha256": "056882ab1bd41947c9e785a10961a0f60fdc919cff0086dfcf936e38e97a17d7",
+      "archive": "Data/patch.MPQ"
+    },
+    "environments\\stars\\bladesedgeforestskybox.m2": {
+      "sha256": "23a550469c12abdf8025e65ed3d2c5f66c99cb2bd8042fd7db7fe985851b32f3",
+      "archive": "Data/patch.MPQ"
+    },
+    "environments\\stars\\bladesedgenightelfskybox.m2": {
+      "sha256": "ee2d2d4622baf5f370e45a8555751d641fda290fe7e8851e254beba976f9bd9d",
+      "archive": "Data/patch.MPQ"
+    },
+    "environments\\stars\\bladesedgeskybox.m2": {
+      "sha256": "d456e42755bf622cc8aa8f1200a2013088e083d3b5b571ffb518bf8f0e4ff40b",
+      "archive": "Data/patch.MPQ"
+    },
+    "environments\\stars\\bonewastesskybox.m2": {
+      "sha256": "5e73dea232703992f04044b91647a1212d4395e4725568f28965c8bb2544d4fc",
+      "archive": "Data/expansion.MPQ"
+    },
+    "environments\\stars\\brokenshore_sky_introclear.m2": {
+      "sha256": "504423abeb8cc5ddb616fac2ba1c9b26632d134f2a8d0e241bfbfa13cfa5bba1",
+      "archive": "Data/patch-E.mpq"
+    },
+    "environments\\stars\\cavernsoftimesky.m2": {
+      "sha256": "cee59685134698c72811ec0205dd5cf78b2e755b84ce6dd22fd5e2ea31295c65",
+      "archive": "Data/common-2.MPQ"
+    },
+    "environments\\stars\\chamberaspectsblacksky.m2": {
+      "sha256": "b752ad232bcf14f96caec021394889918bc6853051027845940e6ced4639d24e",
+      "archive": "Data/lichking.MPQ"
+    },
+    "environments\\stars\\dalaranskybox.m2": {
+      "sha256": "f3635caa6924bd21e8fa6be729962d8d4e2255a16947e72183cd2475827ba8d0",
+      "archive": "Data/lichking.MPQ"
+    },
+    "environments\\stars\\dalaranskybox00.skin": {
+      "sha256": "3f1383d3761d904413087ac3ed05928236f34878915c5e18197bd919323f36cc",
+      "archive": "Data/lichking.MPQ"
+    },
+    "environments\\stars\\dalaranskybox01.skin": {
+      "sha256": "20afb725cf6b7523946a210c894aa2bbc4e88ec1fec88a09f1f61ecc8737c4dc",
+      "archive": "Data/lichking.MPQ"
+    },
+    "environments\\stars\\deathclouds.m2": {
+      "sha256": "f14da5bd62a44c580a64530e356f6cc8d06c7b6a93b927452e7a909a75a41262",
+      "archive": "Data/common-2.MPQ"
+    },
+    "environments\\stars\\deathknightfireskybox.m2": {
+      "sha256": "290a56fc5c5b089482e5da1ee9ced21717775afb77bf0597aa2af5ca28776e52",
+      "archive": "Data/patch.MPQ"
+    },
+    "environments\\stars\\deathskybox.m2": {
+      "sha256": "1b909157cdced687fef2a9ae0fe8026c5b6caf7032f25f97b564129e4c84811a",
+      "archive": "Data/common-2.MPQ"
+    },
+    "environments\\stars\\diremaulskybox.m2": {
+      "sha256": "07f87419d3ca6df7aeb8199fa1482908b887b3a2ae33ed3dde6b458826e7c8fe",
+      "archive": "Data/patch.MPQ"
+    },
+    "environments\\stars\\dragonblightscarletskybox.m2": {
+      "sha256": "211a17680b6e2f6b3f304ae04f8cc78b7bafac184df345317d063c3f8c0ceede",
+      "archive": "Data/patch.MPQ"
+    },
+    "environments\\stars\\fiord(green).m2": {
+      "sha256": "d963d70c9047fa2068dc715a02e3ae5b8da1fa348cb0948aa22f481eeeae3936",
+      "archive": "Data/patch-E.mpq"
+    },
+    "environments\\stars\\fiord(green)00.skin": {
+      "sha256": "f8da66d85e7810568440b02f2a0003a5c975659b22a13f430461ea888502b33e",
+      "archive": "Data/patch-E.mpq"
+    },
+    "environments\\stars\\fiord(purple).m2": {
+      "sha256": "e7194736d16c1e1843099322870ca1b47c859b163bd95bcc039bdee6a3ba9013",
+      "archive": "Data/patch-E.mpq"
+    },
+    "environments\\stars\\fiord(purple)00.skin": {
+      "sha256": "f8da66d85e7810568440b02f2a0003a5c975659b22a13f430461ea888502b33e",
+      "archive": "Data/patch-E.mpq"
+    },
+    "environments\\stars\\fiord(red).m2": {
+      "sha256": "34907136ad178dc3adb7f9b1d2bb0d4d7670e02b8ad6a415f14ad1066f364b14",
+      "archive": "Data/patch-E.mpq"
+    },
+    "environments\\stars\\fiord(red)00.skin": {
+      "sha256": "e452e75ef8b6c62044a778acc7497ead53634fd0f20d8b2578ef9993f8f20cfd",
+      "archive": "Data/patch-E.mpq"
+    },
+    "environments\\stars\\fiord.m2": {
+      "sha256": "f433ad749e07b1b3213c18dde4a5a9c0654333faaacbcaebc78708512d3b59f2",
+      "archive": "Data/patch-E.mpq"
+    },
+    "environments\\stars\\fiord00.skin": {
+      "sha256": "3550064edd560a51a5b34c69445962be8285d0ecd0eb38148b95810caca36b1c",
+      "archive": "Data/patch-E.mpq"
+    },
+    "environments\\stars\\firelandssky01.m2": {
+      "sha256": "e73f8329edb8598ff0a9ab7facef2420bdc812056c288701017c2f585cb2ebbb",
+      "archive": "Data/patch-E.mpq"
+    },
+    "environments\\stars\\fr_mulgore_warm.m2": {
+      "sha256": "de27e8845ae163ef1f1795ea6f692df6e26dd90e1ec4f62b05220e7460c5d032",
+      "archive": "Data/enGB/patch-engb-z.mpq"
+    },
+    "environments\\stars\\fr_single_moon_105_23.m2": {
+      "sha256": "cb1a36d842be258ab4b7d492bbdd33503f6ecc10932fce6595e18e34ee12888c",
+      "archive": "Data/enGB/patch-engb-z.mpq"
+    },
+    "environments\\stars\\fr_single_moon_105_2300.skin": {
+      "sha256": "146cec7ba8acfcd1a13253da84d42c55a1a3cd10459428974db36f26158730e5",
+      "archive": "Data/enGB/patch-engb-z.mpq"
+    },
+    "environments\\stars\\auroralight_10drg_sky.blp": {
+      "sha256": "c7a754643dcf1281d34d0f075b2c35a4f746fae37848c51bab0f20ab9869a1ce",
+      "archive": "Data/patch-E.mpq"
+    },
+    "environments\\stars\\fr_single_moon_105_500.m2": {
+      "sha256": "f82712ef0cffd69dda187abb4bbcfb9e0c7ee422e9d94b3ebb4482592883535e",
+      "archive": "Data/enGB/patch-engb-z.mpq"
+    },
+    "environments\\stars\\fr_single_moon_105_501.m2": {
+      "sha256": "42bffacbced46d1a9cf026a76dacbdd86a0eb0682e01c4090ba2e3f2df7e9fab",
+      "archive": "Data/enGB/patch-engb-z.mpq"
+    },
+    "environments\\stars\\fr_single_moon_105_506.m2": {
+      "sha256": "d826ddf26d132a9dc98fc33361414d52b74f171dc2f39ea11a1030e2e37cd495",
+      "archive": "Data/enGB/patch-engb-z.mpq"
+    },
+    "environments\\stars\\fr_single_moon_105_507.m2": {
+      "sha256": "c28cb212ccb424b3c9894faaf3f5c0395c21c1008318c0dd2382a4a867eb0b7f",
+      "archive": "Data/enGB/patch-engb-z.mpq"
+    },
+    "environments\\stars\\fr_single_moon_105_509.m2": {
+      "sha256": "b09f18e40f5a8cee2fb8df61d528f6d9f5651135d35d1b68afa1befdf4a681dc",
+      "archive": "Data/enGB/patch-engb-z.mpq"
+    },
+    "environments\\stars\\fr_single_moon_105_510.m2": {
+      "sha256": "e427a9c3f46e1a4b9698a59f85e76ac13077b2ef67d5c879dede6f902ab7b809",
+      "archive": "Data/enGB/patch-engb-z.mpq"
+    },
+    "environments\\stars\\fr_single_moon_105_515.m2": {
+      "sha256": "56aaa3e8693b01ce28c3d509de02eb1c916a3cf2e43b4eb1b0e997800f74c998",
+      "archive": "Data/enGB/patch-engb-z.mpq"
+    },
+    "environments\\stars\\fr_single_moon_105_52.m2": {
+      "sha256": "996a40e5f1796c5f75d3dc71b3f8ac016f6c53b0a282bd9c875fcfcde4a23e3e",
+      "archive": "Data/enGB/patch-engb-z.mpq"
+    },
+    "environments\\stars\\fr_single_moon_105_5200.skin": {
+      "sha256": "ccf753bff22ebfac29ac42aa00d204264896434c35f2f077924130a764e35ff6",
+      "archive": "Data/enGB/patch-engb-z.mpq"
+    },
+    "environments\\stars\\fr_single_moon_105_523.m2": {
+      "sha256": "d88792ca44ee192857a2d367446bfec5ee4fd8c3d3e6621d11e7d2e2c945f402",
+      "archive": "Data/enGB/patch-engb-z.mpq"
+    },
+    "environments\\stars\\fr_single_moon_105_524.m2": {
+      "sha256": "999550b6a6626198afa17be7eb611e964b5927b3d81b2c6ea1e6a37e1aca091a",
+      "archive": "Data/enGB/patch-engb-z.mpq"
+    },
+    "environments\\stars\\fr_single_moon_105_525.m2": {
+      "sha256": "b5e34f1d9eac89c8c69f9e47d3d03b5b93c3cb0690409f4e4b7547cefc0c1659",
+      "archive": "Data/enGB/patch-engb-z.mpq"
+    },
+    "environments\\stars\\fr_single_moon_105_526.m2": {
+      "sha256": "156b4fbdfe44d15e9cb5add72863904c6d69e5d56d29271f8f4a3b8c1bf0f6d3",
+      "archive": "Data/enGB/patch-engb-z.mpq"
+    },
+    "environments\\stars\\fr_single_moon_105_529.m2": {
+      "sha256": "113748e010c778ebf3a139f013b37b3908271e6faf9590fc9e41bde8b0b0e0e5",
+      "archive": "Data/enGB/patch-engb-z.mpq"
+    },
+    "environments\\stars\\fr_single_moon_105_52900.skin": {
+      "sha256": "39127de65b2704082f95442339a628b4b6b37e35d8a94654c7be963953d22f54",
+      "archive": "Data/enGB/patch-engb-z.mpq"
+    },
+    "environments\\stars\\fr_single_moon_105_530.m2": {
+      "sha256": "506ad571fd775faae736da775f637ef086b26b916cc2ef96f584e968a2182bf8",
+      "archive": "Data/enGB/patch-engb-z.mpq"
+    },
+    "environments\\stars\\fr_single_moon_105_53000.skin": {
+      "sha256": "39127de65b2704082f95442339a628b4b6b37e35d8a94654c7be963953d22f54",
+      "archive": "Data/enGB/patch-engb-z.mpq"
+    },
+    "environments\\stars\\fr_single_moon_105_531.m2": {
+      "sha256": "097fded2d024951c276aff3b4874e64db45961ad36b232baa44ed574d3180b96",
+      "archive": "Data/enGB/patch-engb-z.mpq"
+    },
+    "environments\\stars\\fr_single_moon_105_53100.skin": {
+      "sha256": "39127de65b2704082f95442339a628b4b6b37e35d8a94654c7be963953d22f54",
+      "archive": "Data/enGB/patch-engb-z.mpq"
+    },
+    "environments\\stars\\fr_single_moon_105_532.m2": {
+      "sha256": "f933209228e6961cedf798d0cb7c7b5f1ee4656c71df2ba8c5a5c8998210e713",
+      "archive": "Data/enGB/patch-engb-z.mpq"
+    },
+    "environments\\stars\\fr_single_moon_105_533.m2": {
+      "sha256": "95845a53f2c255d24746534fb82c7bce1c9d61a3103638b82ab0439f27e725f7",
+      "archive": "Data/enGB/patch-engb-z.mpq"
+    },
+    "environments\\stars\\fr_single_moon_105_53300.skin": {
+      "sha256": "5976f2961e4a7343dde6ba46cc519142663a9445918e9c90f353d9ad2a940c0e",
+      "archive": "Data/enGB/patch-engb-z.mpq"
+    },
+    "environments\\stars\\fr_single_moon_105_534.m2": {
+      "sha256": "ba657d714c302680b0db4842a1e75b6e4501a3a53b8f0d0dbd7e236bcb237801",
+      "archive": "Data/enGB/patch-engb-z.mpq"
+    },
+    "environments\\stars\\fr_single_moon_105_53400.skin": {
+      "sha256": "13e03a5ff6d14a10a0ff3e81d19df221200f66de2bac610292ae8e4cef40593d",
+      "archive": "Data/enGB/patch-engb-z.mpq"
+    },
+    "environments\\stars\\fr_single_moon_105_535.m2": {
+      "sha256": "db9ae2da3db021cc4fd4100a45cba9a887620a12ca08f8d6fd05e60fc47d3e7f",
+      "archive": "Data/enGB/patch-engb-z.mpq"
+    },
+    "environments\\stars\\fr_single_moon_105_53500.skin": {
+      "sha256": "f8b57ca2273045d44c15d11a48a1790998fdd6ee9888b06a16b1178433e56154",
+      "archive": "Data/enGB/patch-engb-z.mpq"
+    },
+    "environments\\stars\\fr_single_moon_105_536.m2": {
+      "sha256": "121150503cfec436510bbba21f3af26af8b373fe680265b79ba6c66feba8c0cb",
+      "archive": "Data/enGB/patch-engb-z.mpq"
+    },
+    "environments\\stars\\fr_single_moon_105_53600.skin": {
+      "sha256": "486fdb9f709225234de877ba4f4d27a36a527eb8a3c420a344720289ba686e86",
+      "archive": "Data/enGB/patch-engb-z.mpq"
+    },
+    "environments\\stars\\fr_single_moon_105_542.m2": {
+      "sha256": "2ab7ef9d89233383c90a72c5b3c5508dfa576e6470dc829ed8f56582f0c833a0",
+      "archive": "Data/enGB/patch-engb-z.mpq"
+    },
+    "environments\\stars\\fr_single_moon_105_95.m2": {
+      "sha256": "075ee75050dd317cdea793093497e58bac2c90977f643ac06f94945e54015185",
+      "archive": "Data/enGB/patch-engb-z.mpq"
+    },
+    "environments\\stars\\hellfireskybox.m2": {
+      "sha256": "190dd31d3dbf8deed558842d36c07acc9da0abbee06508abc035039b5c6efbb7",
+      "archive": "Data/patch.MPQ"
+    },
+    "environments\\stars\\icecrowncitadelsky.m2": {
+      "sha256": "c34b24a3ad0aacfafb5f37b8d2926ac154c028296ce4862a5b2d8a1ca0b19047",
+      "archive": "Data/lichking.MPQ"
+    },
+    "environments\\stars\\icecrowncitadelsky00.skin": {
+      "sha256": "165f62fa447dccbe37930bb42d0a141581a7e9c35a27df2a5238dff5f1989520",
+      "archive": "Data/lichking.MPQ"
+    },
+    "environments\\stars\\icecrowncitadelsky01.skin": {
+      "sha256": "29e3cc0e36f8d87b759ea115ca17b99a6e1ef68009f4f41ebe3d57b32823df4c",
+      "archive": "Data/lichking.MPQ"
+    },
+    "environments\\stars\\icecrowndarksky.m2": {
+      "sha256": "b37fa0731ed82678442e0cfb6bb83784686d29462d6d8b3b26d15477fe477e50",
+      "archive": "Data/lichking.MPQ"
+    },
+    "environments\\stars\\icecrowndarksky00.skin": {
+      "sha256": "1cb6584db36189a7e4a0141b36983443c69a7b62dba6cc016f2dc4adf43471eb",
+      "archive": "Data/lichking.MPQ"
+    },
+    "environments\\stars\\icecrowndarksky01.skin": {
+      "sha256": "d3152516ea4c29772cb07147be5321be0b8108b9496bd604467d1ed56d55910a",
+      "archive": "Data/lichking.MPQ"
+    },
+    "environments\\stars\\icecrownraidsky01.m2": {
+      "sha256": "0174367431f0d1799ae0dc8d9bd302ef7d6db92578c358e77f8b635cd43cc955",
+      "archive": "Data/patch-2.MPQ"
+    },
+    "environments\\stars\\icecrownraidsky02.m2": {
+      "sha256": "e29246e1a8cb2358692b52bc0d3b7e180a423ce963cf8fe4fbe5bd39ed3139e4",
+      "archive": "Data/patch-2.MPQ"
+    },
+    "environments\\stars\\icecrownscourgesky.m2": {
+      "sha256": "216823a821497edcf3b7ef0428a317da68b5706137aa5e5a1a3b1e519f3d5729",
+      "archive": "Data/lichking.MPQ"
+    },
+    "environments\\stars\\icecrownsky.m2": {
+      "sha256": "c4882254ebef16196a5a119d4038f1dc272dc08f01e4c65def2c13ec5ae5e2a9",
+      "archive": "Data/patch-2.MPQ"
+    },
+    "environments\\stars\\icecrownstarrysky.m2": {
+      "sha256": "df63dc8a762af4980ff39903d65a3fffa827d233968280777a523cc315c7f32c",
+      "archive": "Data/patch-2.MPQ"
+    },
+    "environments\\stars\\icecrownstarrysky00.skin": {
+      "sha256": "2a0f52e744453cae67ac6d412127da090f5ea5d67ef5e8a76b4a03d8f2957c34",
+      "archive": "Data/patch-2.MPQ"
+    },
+    "environments\\stars\\auroramask_b.blp": {
+      "sha256": "1b554dc77ff41a9f43ed3c332325736465b4f640907d6c80fd0b0b8d7214042b",
+      "archive": "Data/patch-2.MPQ"
+    },
+    "environments\\stars\\icecrownstarrysky01.skin": {
+      "sha256": "d00de6f51e506f9873e80b1780664f8af2a668b05c9e9b4acaaac84f48872f67",
+      "archive": "Data/patch-2.MPQ"
+    },
+    "environments\\stars\\icecrownstormysky.m2": {
+      "sha256": "d74c99bf860db8b7c64c1494de9b097144e1833fcc76eb7039cc00bc84013316",
+      "archive": "Data/patch-2.MPQ"
+    },
+    "environments\\stars\\icecrownsunsetsky.m2": {
+      "sha256": "1917e11aa80955ab280fdfd69dd602f94bf34b2bf7ea51b1e59b985a16661fb9",
+      "archive": "Data/lichking.MPQ"
+    },
+    "environments\\stars\\icecrownsunsetsky00.skin": {
+      "sha256": "a353576aa91404828304bcf349fb9599d2cc766a5ca00c7db76109580976c50c",
+      "archive": "Data/lichking.MPQ"
+    },
+    "environments\\stars\\icecrownsunsetsky01.skin": {
+      "sha256": "b87d02a6332e00b94f9204386fef0a1dd18bb0d544cb18de88d3f05d0f074aa4",
+      "archive": "Data/lichking.MPQ"
+    },
+    "environments\\stars\\ironforge.m2": {
+      "sha256": "aa878447aeb36b2df214424cb595698300d6c770d92db4a9eeb2b7350a8bc13e",
+      "archive": "Data/patch-E.mpq"
+    },
+    "environments\\stars\\legionnexus_volcanoskybox01.m2": {
+      "sha256": "e8f026fd8c8539b2ac68a333e9c879e5309a1813fdcbc085cb3e01d9a18b6fd2",
+      "archive": "Data/patch-E.mpq"
+    },
+    "environments\\stars\\nagrandskybox.m2": {
+      "sha256": "876c2bbf5014504f00784c8b581a9e3494cce24c5dde8d0918ea702e586d141e",
+      "archive": "Data/patch.MPQ"
+    },
+    "environments\\stars\\netherstormskybox.m2": {
+      "sha256": "3c2ee422eb666dca7a25c7df70a72c942f9e2f8f5b25c5d1bc824aa8cccd681e",
+      "archive": "Data/patch.MPQ"
+    },
+    "environments\\stars\\nexusraid_nebulasky.m2": {
+      "sha256": "3acedc5930b82e7e5a5c562d258cf4024295f119222b6776f4ced7dc26fb0f9a",
+      "archive": "Data/patch.MPQ"
+    },
+    "environments\\stars\\nexusraid_runeeffects_nebula.m2": {
+      "sha256": "9c3bfa3c1813a93694c70825026aecdc0d9890efca33dc18dd37d694b88939ca",
+      "archive": "Data/patch.MPQ"
+    },
+    "environments\\stars\\nexusraid_runeeffects_starry.m2": {
+      "sha256": "bbee50681ea964b57f31ddf107b68e2cfa64174c01640dc03e4b2060a30777db",
+      "archive": "Data/patch.MPQ"
+    },
+    "environments\\stars\\nexusraid_starrysky.m2": {
+      "sha256": "598b367436a4a84837757831d5addd1a2e9d0f33264935831753e5630d995ba6",
+      "archive": "Data/patch.MPQ"
+    },
+    "environments\\stars\\nexusraid_wormhole.m2": {
+      "sha256": "0431f3efb75c757f3b542bbc968b3cb1591f557fd57c08d9ea889f35c6cc3b2d",
+      "archive": "Data/patch.MPQ"
+    },
+    "environments\\stars\\portalworldlegionsky.m2": {
+      "sha256": "fc508361797659f72aa3337c65a3976cb1f5da72b133d7a446aac5b2b8144551",
+      "archive": "Data/common-2.MPQ"
+    },
+    "environments\\stars\\rubysanctumsky.m2": {
+      "sha256": "7bd2fc00a4a17ed133ea39cf63ac6617a13ffe10af59203736800d5fe47d439e",
+      "archive": "Data/patch-3.MPQ"
+    },
+    "environments\\stars\\shadowmoonillidan.m2": {
+      "sha256": "95cb3af846b8469e60c67f90b769f3935a1b1c6ed417d642186cb8016d3c740d",
+      "archive": "Data/patch.MPQ"
+    },
+    "environments\\stars\\shadowmoonskybox.m2": {
+      "sha256": "113836ddf67519e77bf63834e7b41d62706925b0c6e8b048c7c5c533d334b2f4",
+      "archive": "Data/expansion.MPQ"
+    },
+    "environments\\stars\\stars.m2": {
+      "sha256": "34a025833cf596013accab2c30f00c7b20016036a2d17f08fb3ad4ca56e83161",
+      "archive": "Data/common-2.MPQ"
+    },
+    "environments\\stars\\stormpeaks_skya.m2": {
+      "sha256": "e5a333f022011246491b6ce87d53e2dcaa16d8428003b98739b27aa82a494865",
+      "archive": "Data/lichking.MPQ"
+    },
+    "environments\\stars\\stormpeaks_skyb_storm.m2": {
+      "sha256": "4d9c539c43ebaf0e195f8bc6c2db58aea9294418fb2712ec617dd1450f68363f",
+      "archive": "Data/lichking.MPQ"
+    },
+    "environments\\stars\\stormpeaks_skyc_ulduar.m2": {
+      "sha256": "6b65f05a575f8b58d7e6ec1ac7f20e49d4730077718177c396afdb9056c008f0",
+      "archive": "Data/patch.MPQ"
+    },
+    "environments\\stars\\stormpeaks_skyc_ulduar00.skin": {
+      "sha256": "9e7d0ea98b42e80b497d3decb275dfc0ccbbef07e301cff6b545aa498a0e98c6",
+      "archive": "Data/patch.MPQ"
+    },
+    "environments\\stars\\auroralight_palegold.blp": {
+      "sha256": "698cd8ffe3f0d8e7c27a76e0c42c4010497dd687a3c5d72ed64933295e522e16",
+      "archive": "Data/patch-E.mpq"
+    },
+    "environments\\stars\\stormpeaks_skyc_ulduar01.skin": {
+      "sha256": "3d9d14d630f431419a08d5e11d077fe1042aba52020fb95ae0e1beb82e2732ff",
+      "archive": "Data/patch.MPQ"
+    },
+    "environments\\stars\\stratholmeskybox.m2": {
+      "sha256": "5dace34c5eff02ad47c8dabe611157d330a4874d98dbcfe296a9b0a501f85a2c",
+      "archive": "Data/common-2.MPQ"
+    },
+    "environments\\stars\\uldurancloudysky.m2": {
+      "sha256": "ec9b323f1fb1d35cbef3db935802d5cda2e7e6c514885baa0f2148c9c33d7d0f",
+      "archive": "Data/lichking.MPQ"
+    },
+    "environments\\stars\\uldurancloudysky00.skin": {
+      "sha256": "5fa0982b67a4ff52f4d67bb43863cb1be5b2e88fdf86a481f3953d22a6578a4a",
+      "archive": "Data/lichking.MPQ"
+    },
+    "environments\\stars\\valleyeternalsky01.m2": {
+      "sha256": "3178479194ede1d06cf0480ba819f481fa300cc111469a62b48a5acf7a4b1085",
+      "archive": "Data/patch-E.mpq"
+    },
+    "environments\\stars\\valsharah_sky01_enchanted.m2": {
+      "sha256": "0293d6734528191160edff3e413df33a7c176a59da7439ac80f59d95a6396c39",
+      "archive": "Data/patch-E.mpq"
+    },
+    "environments\\stars\\wellofeternity01.m2": {
+      "sha256": "e13c560c58172d3449654f938d365746f548d4e78912ef5e39609f0e53d4342f",
+      "archive": "Data/patch-E.mpq"
+    },
+    "environments\\stars\\wintergraspsmokysky.m2": {
+      "sha256": "996a40e5f1796c5f75d3dc71b3f8ac016f6c53b0a282bd9c875fcfcde4a23e3e",
+      "archive": "Data/patch-E.mpq"
+    },
+    "environments\\stars\\wintergraspsmokysky00.skin": {
+      "sha256": "dad80176c49ab62d9ef8bc35c55300e237c1fb8860e2eb50842d70e95a5f5b24",
+      "archive": "Data/patch-E.mpq"
+    },
+    "environments\\stars\\wsg.m2": {
+      "sha256": "d55d6c7c83b4c2febdd8ecb6807e4221faff3b9a355558de534a5b6b84700767",
+      "archive": "Data/patch-E.mpq"
+    },
+    "environments\\stars\\zuldrakskya.m2": {
+      "sha256": "7b588b957eb32d812202a4f8ed35f5392563fe6d63b09b1e82ee78541bc9a439",
+      "archive": "Data/lichking.MPQ"
+    },
+    "environments\\stars\\zuldrakskyb.m2": {
+      "sha256": "8e3f4aee31a5eacf0e383625d1ac25094b26d757460053dbea277483551827a4",
+      "archive": "Data/lichking.MPQ"
+    }
+  },
+  "unique_batch_signatures": 264,
+  "families": 15,
+  "ambiguous_signatures": 2,
+  "header_sha256": "c59e8211ca9c01be6e0f3875af75d2aba4ab35f72e43f27cd0c5594df151261a",
+  "models": [
+    {
+      "path": "environments\\stars\\aurora.m2",
+      "skin": 0,
+      "emitter_batches": 40
+    },
+    {
+      "path": "environments\\stars\\auroraorange.m2",
+      "skin": 0,
+      "emitter_batches": 21
+    },
+    {
+      "path": "environments\\stars\\aurorayellowgreen.m2",
+      "skin": 0,
+      "emitter_batches": 21
+    },
+    {
+      "path": "environments\\stars\\dalaranskybox.m2",
+      "skin": 0,
+      "emitter_batches": 21
+    },
+    {
+      "path": "environments\\stars\\dalaranskybox.m2",
+      "skin": 1,
+      "emitter_batches": 21
+    },
+    {
+      "path": "environments\\stars\\fiord(green).m2",
+      "skin": 0,
+      "emitter_batches": 3
+    },
+    {
+      "path": "environments\\stars\\fiord(purple).m2",
+      "skin": 0,
+      "emitter_batches": 3
+    },
+    {
+      "path": "environments\\stars\\fiord(red).m2",
+      "skin": 0,
+      "emitter_batches": 3
+    },
+    {
+      "path": "environments\\stars\\fiord.m2",
+      "skin": 0,
+      "emitter_batches": 3
+    },
+    {
+      "path": "environments\\stars\\fr_single_moon_105_23.m2",
+      "skin": 0,
+      "emitter_batches": 3
+    },
+    {
+      "path": "environments\\stars\\fr_single_moon_105_52.m2",
+      "skin": 0,
+      "emitter_batches": 2
+    },
+    {
+      "path": "environments\\stars\\fr_single_moon_105_529.m2",
+      "skin": 0,
+      "emitter_batches": 4
+    },
+    {
+      "path": "environments\\stars\\fr_single_moon_105_530.m2",
+      "skin": 0,
+      "emitter_batches": 4
+    },
+    {
+      "path": "environments\\stars\\fr_single_moon_105_531.m2",
+      "skin": 0,
+      "emitter_batches": 4
+    },
+    {
+      "path": "environments\\stars\\fr_single_moon_105_533.m2",
+      "skin": 0,
+      "emitter_batches": 4
+    },
+    {
+      "path": "environments\\stars\\fr_single_moon_105_534.m2",
+      "skin": 0,
+      "emitter_batches": 3
+    },
+    {
+      "path": "environments\\stars\\fr_single_moon_105_535.m2",
+      "skin": 0,
+      "emitter_batches": 3
+    },
+    {
+      "path": "environments\\stars\\fr_single_moon_105_536.m2",
+      "skin": 0,
+      "emitter_batches": 5
+    },
+    {
+      "path": "environments\\stars\\icecrowncitadelsky.m2",
+      "skin": 0,
+      "emitter_batches": 18
+    },
+    {
+      "path": "environments\\stars\\icecrowncitadelsky.m2",
+      "skin": 1,
+      "emitter_batches": 18
+    },
+    {
+      "path": "environments\\stars\\icecrowndarksky.m2",
+      "skin": 0,
+      "emitter_batches": 18
+    },
+    {
+      "path": "environments\\stars\\icecrowndarksky.m2",
+      "skin": 1,
+      "emitter_batches": 18
+    },
+    {
+      "path": "environments\\stars\\icecrownstarrysky.m2",
+      "skin": 0,
+      "emitter_batches": 3
+    },
+    {
+      "path": "environments\\stars\\icecrownstarrysky.m2",
+      "skin": 1,
+      "emitter_batches": 3
+    },
+    {
+      "path": "environments\\stars\\icecrownsunsetsky.m2",
+      "skin": 0,
+      "emitter_batches": 18
+    },
+    {
+      "path": "environments\\stars\\icecrownsunsetsky.m2",
+      "skin": 1,
+      "emitter_batches": 18
+    },
+    {
+      "path": "environments\\stars\\stormpeaks_skyc_ulduar.m2",
+      "skin": 0,
+      "emitter_batches": 21
+    },
+    {
+      "path": "environments\\stars\\stormpeaks_skyc_ulduar.m2",
+      "skin": 1,
+      "emitter_batches": 21
+    },
+    {
+      "path": "environments\\stars\\uldurancloudysky.m2",
+      "skin": 0,
+      "emitter_batches": 66
+    },
+    {
+      "path": "environments\\stars\\wintergraspsmokysky.m2",
+      "skin": 0,
+      "emitter_batches": 2
+    }
+  ]
+}

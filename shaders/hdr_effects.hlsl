@@ -29,6 +29,11 @@ float4 HdrParticle(float4 original:COLOR0):COLOR0 {
     // patch clamps source alpha before this transfer, even on ps_2_0.
     return float4(hdrDecode(original.rgb)*HdrColor.rgb,original.a);
 }
+// MRT companion of an ordinary native sky/foreground draw. Its complete colour
+// remains in COLOR0; only transmission acts on the extra HDR emission target.
+// The shared linker defines HdrColor.rgb=1 (80 nits). Referencing it keeps
+// compiled DEF constants out of its reserved c0 register on both SM2 and SM3.
+float4 HdrSkyResidual(float4 original:COLOR0):COLOR0 {return float4((HdrColor.rgb-1)*original.a,original.a);}
 float4 HdrOverlay(float4 color:COLOR0,float2 uv:TEXCOORD0):COLOR0 {
     return HdrUi(color*tex2D(HdrScene,uv));
 }
@@ -96,6 +101,7 @@ float4 HdrDecodeWorld(float2 uv:TEXCOORD0):COLOR0 {
     // The native horizon uses depth .94..1, beyond the main world band.
     // Only an untouched hardware clear value is sky, never that entire band.
     if(HdrParams.z>.5)clip((1.0-1.0/16777216.0)-tex2D(HdrAux,uv).r);
+    if(HdrParams.z<-.5)clip(tex2D(HdrAux,uv).r-1.0);
     float4 source=tex2D(HdrScene,uv);float3 color=hdrDecode(source.rgb);
     if(HdrParams.w>0&&max(color.r,max(color.g,color.b))>.65){
         float2 statistics=tex2D(HdrExtra,float2(.5,.5)).rg;

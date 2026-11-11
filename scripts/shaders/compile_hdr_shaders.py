@@ -26,6 +26,8 @@ def main():
                ('HdrUi', 'ps_3_0', 'HdrUi-ps_3_0', 'kHdrUiPs3'),
                ('HdrParticle', 'ps_2_0', 'HdrParticle-ps_2_0', 'kHdrParticlePs2'),
                ('HdrParticle', 'ps_3_0', 'HdrParticle-ps_3_0', 'kHdrParticlePs3'),
+               ('HdrSkyResidual', 'ps_2_0', 'HdrSkyResidual-ps_2_0', 'kHdrSkyResidualPs2'),
+               ('HdrSkyResidual', 'ps_3_0', 'HdrSkyResidual-ps_3_0', 'kHdrSkyResidualPs3'),
                ('HdrWorld', 'ps_3_0', 'HdrWorld', 'kHdrWorld'),
                ('HdrOverlay', 'ps_3_0', 'HdrOverlay', 'kHdrOverlay'),
                ('HdrFixedUi', 'ps_3_0', 'HdrFixedUi', 'kHdrFixedUi'),

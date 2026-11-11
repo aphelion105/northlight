@@ -22,7 +22,7 @@ float4 DiscDirection : register(c6); // directionXYZ, tangent angular radius
 float4 DiscRight : register(c7);
 float4 DiscUp : register(c8);
 float4 DiscColor : register(c9); // original encoded texture tint RGB, opacity*horizonfade
-float4 DiscPolicy : register(c10); // outputLinear (SRGBWRITE enabled), near,far, occlusion enabled (0 for the sky-phase draw)
+float4 DiscPolicy : register(c10); // output: 0 SDR, 1 sRGB-write, 2/3 HDR sun/moon, 4/5 HDR residual; near,far, occlusion
 float4 DiscRepair : register(c11); // early raw depth, repair enabled, D24 tolerance, analytic sun alpha
 float4 DiscEmission : register(c12); // disc: core gain; glare: hot-core rate; glare radius in disc radii, glare core weight, glare pass
 float4 DiscSourceUV[32] : register(c13); // fixed equal-area taps: xy scene UV (-1 invalid), zw terrain mask UV
@@ -188,7 +188,10 @@ float4 CelestialDiscPS(float2 uv:TEXCOORD0):COLOR0 {
     // picks it from the disc's size on screen (assets are decoded at <=512 pixels).
     // Limit brightness before tinting so bright cores retain the regional hue.
     encoded=saturate(texel.rgb*DiscEmission.x)*lerp(saturate(DiscColor.rgb),DiscGlowCore.rgb,.5*DiscGlowHue.w);
-    if(DiscPolicy.x>1.5)encoded=discDecode(texel.rgb)*DiscEmission.x*discDecode(lerp(saturate(DiscColor.rgb),DiscGlowCore.rgb,.5*DiscGlowHue.w))*(DiscPolicy.x>2.5?2:8);
+    float3 nativeSurface=encoded;
+    bool moon=abs(DiscPolicy.x-3)<.5||DiscPolicy.x>4.5;
+    if(DiscPolicy.x>1.5)encoded=discDecode(texel.rgb)*DiscEmission.x*discDecode(lerp(saturate(DiscColor.rgb),DiscGlowCore.rgb,.5*DiscGlowHue.w))*(moon?2:8);
+    if(DiscPolicy.x>3.5)encoded=max(encoded-discDecode(nativeSurface),0);
     alpha=texel.a*saturate(DiscColor.w);
     // The native billboard's horizon fade (DNPlanet::ClipGeometry): on its plane 12 away, opaque from 0.4 over the
     // camera's height down to 0 there (1.9 deg), nothing below.
