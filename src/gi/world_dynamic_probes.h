@@ -28,8 +28,17 @@ inline bool staticGlobalVectorWithin(Vec3 a,Vec3 b,float tolerance) {
 }
 // This is also the cache invalidation policy. Check every source, including a
 // removed secondary light; a request's reason bits do not identify generation.
+inline bool sameAngularSky(const Lighting& a,const Lighting& b,float tolerance=.004f){
+    if(a.aurora==b.aurora)return true;
+    if(!a.aurora||!b.aurora||a.aurora->selection!=b.aurora->selection)return false;
+    for(unsigned i=0;i<NorthlightAuroraSource::SectorCount;++i){
+        const auto& x=a.aurora->radiance[i];const auto& y=b.aurora->radiance[i];
+        if(!staticVectorWithin({x[0],x[1],x[2]},{y[0],y[1],y[2]},tolerance))return false;
+    }
+    return true;
+}
 inline bool sameStaticLighting(const Lighting& a,const Lighting& b) {
-    if(!staticGlobalVectorWithin(a.sunDirection,b.sunDirection,.02f)||
+    if(!sameAngularSky(a,b)||!staticGlobalVectorWithin(a.sunDirection,b.sunDirection,.02f)||
        !staticGlobalVectorWithin(a.sunIrradiance,b.sunIrradiance,.03f)||
        !staticGlobalVectorWithin(a.skyRadiance,b.skyRadiance,.01f)||
        !staticGlobalVectorWithin(a.worldUp,b.worldUp,0)||

@@ -1,93 +1,106 @@
 # Aurora / GI integration handoff
 
-User request: Northrend green/purple ground illumination between sunset and
-moonrise; stronger GI on objects; live intensity adjustment in both directions.
-
-Branch: `codex/aurora-gi-20261111`, based on `6b87cafa`.
 Worktree: `D:/dev/Projects/Northlight/.local/aurora-gi-20261111`.
-Destination chat: `01a1c14a-bb92-79d3-adfd-adeb63952299` (local).
+Branch: `codex/aurora-gi-20261111`; base `6b87cafa`; initial GI commit `54baeabf`.
+Destination chat: local `01a1c14a-bb92-79d3-adfd-adeb63952299`.
 
-The specification is implemented. Changes remain isolated from the destination
-chat's active stutter optimizations. No game files were installed and nothing
-was pushed or published.
+The user selected option B: native ribbons with shared additional visible
+emission and directional GI. The previous uniform ambient tint is superseded.
+See `aurora-gi-spec-20261111.md` for the current contract. Work is isolated from
+the main checkout's ongoing stutter optimizations. Final live acceptance is
+still pending; do not describe the older offline previews as game screenshots.
 
-## Behaviour
+## Final behavior
 
-- `GIStrength`: 0..240, default 120 in every preset. 60 preserves the previous
-  half-strength response; 120 fully replaces native ambient with probe light.
-- `GIBrightness`: -100..200, default 0. Signed adjustment to measured indirect
-  radiance, applied in the shader without rescheduling the GI solver. -50 halves
-  it, +100 doubles it. Strong removal is bounded before residency fading.
-- `AuroraStrength`: 0..200, default 100. A subtle native-clock green-to-purple
-  source enters existing sky transport only in Northrend's evening celestial
-  gap. Roofs occlude it through real GI paths. No extra GPU pass, target or probe
-  texture sample. It follows GI/F8/Effects, requires resident probes, and works
-  independently of atmospheric fog. Missing probes preserve native lighting.
-- All controls have F11 labels/help, preview/save/reset, dependencies and INI
-  documentation. Explicit old `GIStrength` overrides are preserved; users with
-  an override must select 120 themselves to get the stronger default.
+- GIStrength 0..240, default 120; GIBrightness -100..200, default 0. Signed
+  brightness scales measured GI, with the existing residency and darkening
+  safeguards. Explicit old settings retain their numeric response.
+- AuroraStrength 0..200, default 100, controls added visible emission and the
+  same emission transported through surface normals, visibility and bounces.
+  Native ribbons remain at zero. Surface illumination still requires GI.
+- Actual capture: seven draws, two embedded skybox emitter families. Curated
+  signatures plus exact native shader/declaration semantics bind the assets.
+  Missing/ambiguous evidence retains native material without invented light.
+- Added emission is twilight-gated by the same renderer celestial clock. It is
+  projected to 32 world sectors. The optional transport sidecar stays inside
+  the existing 4 MiB relight-cache budget; ordinary cache layout is unchanged.
+- Complete native sky is decoded once into the existing FP16 buffer; separate
+  linear emission retains aurora and celestial headroom. Ordinary sky/cloud
+  layers attenuate that extra emission, including screen/multiplicative blends.
+  This supersedes the first narrow material calibration, which the second live
+  capture showed was insufficient for hue and horizon brightness. No additional
+  full-size render target is allocated; additive native sky replay is skipped.
+- Visible geometry/UV/alpha stays native. Source integration observes at most
+  8 Hz, uses a coarse CPU mip and runs geometry/projection on one worker.
+  Offscreen sources retain the last complete observation until selection/reset;
+  offscreen native animation is not extrapolated. This is diffuse transport,
+  not a pixel-exact integration of full-resolution anisotropic textures.
 
-## Integration points
+## Integration
 
-1. Cherry-pick the handoff commit onto the integration branch. Preserve the
-   destination's newer optimization code when resolving overlapping files.
-2. `world_renderer.h`: apply the new sky source to `Request.light.skyRadiance`,
-   carry `auroraActive` for exact activation/deactivation request boundaries,
-   and upload signed brightness to c66.y in the initial 68-register bank.
-   c66.y belongs to GI until the later volume passes replace c66 with
-   `FogActorBounds` / `LocalLightFog`. Diagnostic captures retain 68 registers.
-3. `world_effects.hlsl`: retain the new `worldGIValue` math in both standalone
-   and merged paths. Keep the destination's newer lighting/filter/composition
-   optimizations. Prelit WMO, sky/water/name exclusions and the relative 45%
-   surface-darkening limit remain unchanged.
-4. Quality keys now use `Key::get/set` so the shared registry can carry the
-   signed brightness field without changing existing unsigned setting types.
-   This includes live copies, INI/schema, equality/presets and diagnostics.
-   `AuroraStrength` changes invalidate the lighting request; brightness and
-   nonzero influence changes do not. Zero-strength transitions still do.
-5. Regenerate affected shaders from the **combined** source. Do not replace
-   newer destination bytecode or manifests wholesale with this branch's copies.
-   Rebuild `WorldGI`, `WorldLightingUnshadowedGI`, any other destination-modified
-   entries and transition shaders; retain all normal freshness/SM3 gates.
-6. Build with `python scripts/build_renderer.py`, then run the tests below and
-   the destination's own performance checks. Version/PR/deployment are owned by
-   the destination chat. This package is a local verification artifact.
+Cherry-pick both the initial GI change and the B follow-up. Preserve newer
+main-branch renderer and GI optimizations during conflict resolution.
 
-## Validation
+`world_renderer.h` now accepts immutable `Lighting::aurora` snapshots; do not
+restore the old uniform `skyRadiance` addition. `world_gi.cpp` records angular
+escape responses, and the cache/dynamic fallback keys account for the source.
+The GI shader formula and c66.y ownership from the initial commit are unchanged.
 
-Detailed logs, source fingerprint and artifact SHA-256 are recorded in
-`aurora-gi-validation-20261111.json`.
+`renderer.cpp` performs strict sky-material admission. SDR adds E through the
+native material; HDR keeps its SDR baseline unchanged and adds only native RGB
+headroom plus E through the dedicated replay. `hdr_sky_residual.h` transports
+foreground transmission. The production `SkyForeground` instance uses residual
+MRT mode; its default mode remains available for existing callers/tests.
+`Frame::beginSkyResidual` resets ownership at sky initialization, and
+`prepareLegacy` adds the complete native sky exactly once, including inline and
+MSAA paths. Early celestial policy 4/5 means sun/moon residual; late policy 2/3
+still means full HDR. Preserve all of these changes together during integration.
+The CPU texture mip cache remains enabled independently of EquipmentLights.
 
-| Check | Result |
-| --- | --- |
-| Quality parser/presets, O2 and debug | Pass; signed boundaries, malformed/overflow inputs, legacy scale |
-| Aurora orbit and production transport | Pass; 86,400 seconds, 6,430 active evening seconds, both palettes, sealed roof, cached/fresh relight equivalence |
-| Settings service | Pass; signed persistence/reset, validation and live updates |
-| Live settings | Pass; 1,000 cases |
-| GI dependencies, O2/debug | Pass; 116 keys, 76 profile cases, 1,000 no-op/HDR cases |
-| Settings overlay | Pass; signed draft and GI/strength dependencies |
-| Native GPU GI response | Pass; 360 tuning cases, max FP16 error 0.001563; 769 fallback/baseline cases; strong settings leave sky/water unchanged |
-| Native GPU SDR/HDR chain | Pass; 2,160 cases, max error 0.000782; black, AO and direct shadow controls |
-| Separate/merged GI | Pass; 16 cases each on native D3D9, DXVK 2.7.1 and DXVK 3.1.1; max difference 0.0004883; baseline/alpha exact |
-| Actual WorldRenderer GPU pipeline | Pass; MSAA 0/2, HDR/SDR, prelit/unlit/name safeguards and restored D3D state |
-| Production DLL | Pass with Zig 0.15.2, normal compiler/source freshness checks |
-| Windows installer package | Built and passed `tests/verify_packages.py` |
+Recompile destination-modified world shaders from the combined source; do not
+replace newer optimized bytecode wholesale. Aurora shaders have their own
+manifest/compiler gates. Build via `python scripts/build_renderer.py` and retain
+normal shader freshness, Zig 0.15.2 and package checks.
 
-Shader cost: WorldGI 233 → 238 static slots, 19 → 20 temporaries;
-merged unshadowed GI 387 → 393 slots, 23 temporaries unchanged. Both are within
-SM3 gates. These figures are static costs, not measured game FPS.
+## Evidence and reproduction
 
-Reproduce with the existing test scripts:
-`test_quality_settings.py`, `test_aurora_illumination.py`,
-`test_settings_service.py`, `test_live_settings.py`,
-`test_gi_settings_dependencies.py`, `test_settings_overlay.py`,
-`test_gi_fallback_gpu.py`, `test_world_lighting_gi_gpu.py` and
-`test_world_screen_effects_gpu.py`. The merged-pass runner needs a fresh
-`--output` directory. Windows builds/native/GPU/package checks must run outside
-the restricted execution sandbox as required by AGENTS.md.
+Original capture: `D:/Games/335_engb_mod/northlight-diagnostics/session-18884-52095218-0`.
+Copied material evidence: worktree `out/aurora-b-captures/`.
+`out/aurora-hdr-repro/validation.json` proves the generic-transfer contrast loss
+on native D3D9, DXVK 2 and DXVK 3 using the captured shader bytecode.
 
-Local artifacts: `renderer/frd9.dll` and
-`out/packages/Northlight-0.3.217-aurora-gi-20261111-Windows.zip`.
+`tests/test_aurora_native_capture_gpu.py --capture <copied-session-folder>`
+requires the captured native frame and the same local game assets. It validates
+all seven draws/two families, unknown-draw rejection, camera rotation, native UV
+animation, incomplete subsets, in-flight reset, shader/constants restoration,
+and 96 CPU/GPU color/alpha/headroom cases per backend.
 
-The game was not launched or modified. Final artistic review in an actual
-Northrend evening and gameplay performance measurement remain unclaimed.
+New HDR checks: `test_hdr_sky_residual_gpu.py` (18 cases/backend),
+`test_hdr_sky_replay_gpu.py` (432 cases/backend), `verify_hdr_frame_gpu.py`
+(2,893 cases/backend) and the six celestial composition families.
+
+Other checks: `test_aurora_source.py`, `test_aurora_transport.py`,
+`test_aurora_illumination.py`, `test_settings_overlay.py`,
+`test_gi_settings_dependencies.py`, plus existing GI/cache/dynamic/moving tests.
+Initial shader/settings/composition results remain in
+`aurora-gi-validation-20261111.json`; they describe the initial commit only.
+Current B results and remaining runtime limits are recorded separately.
+
+The temporary native-capture DLL was backed up and restored after capture.
+Every later installation must retain its own prior DLL/hash; another chat owns
+current production rollout, version, push and PR integration.
+
+## Current build and runtime window
+
+Production source identity: `5602770c92821723feebb874eb30a30b38629d885b20a4731c9bd50826464093`.
+DLL SHA-256: `27632f5f52da7d897742ca80c66c50ae2b05a03c7087544308f83f6602206324`.
+`aurora-b-validation-20261111.json` records the current B/HDR evidence.
+The isolated Windows package passed normal package verification.
+
+The previous narrow-calibration build (`ca5e6069...`) was tested live, then
+restored. Its daylight capture proves seven native HDR draws per frame but
+shows pale ribbons and a dim horizon; it does not validate the current fix.
+At 09:55 UTC the current DLL was temporarily installed for the next capture;
+backup and exact hashes are in `out/aurora-b-hdr-sky/install.json`.
+Restore only if the installed DLL still matches this build and the client is
+closed. Keep the main chat informed when this temporary window ends.

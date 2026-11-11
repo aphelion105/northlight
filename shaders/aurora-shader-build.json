@@ -1,0 +1,71 @@
+{
+  "source_sha256": "a959d390059ef1ddbc810f67f126aa7efbe56cd0abf35255c0f9669a7b64eb1e",
+  "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
+  "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+  "shaders": {
+    "AuroraLinear-ps_2_0": {
+      "static_instruction_slots": 32,
+      "temporary_registers": 5,
+      "samplers": [],
+      "instructions": {
+        "max": 1,
+        "add": 6,
+        "mul": 7,
+        "log": 6,
+        "exp": 6,
+        "cmp": 2,
+        "mov": 3,
+        "dp3": 1
+      },
+      "sha256": "98322adf3c634efa86948bdd7f2f8fa8248be5ef8704f46aaa4594dbd95bd43c"
+    },
+    "AuroraLegacy-ps_2_0": {
+      "static_instruction_slots": 30,
+      "temporary_registers": 3,
+      "samplers": [],
+      "instructions": {
+        "add": 5,
+        "mul": 7,
+        "log": 6,
+        "exp": 6,
+        "cmp": 2,
+        "dp3": 1,
+        "max": 1,
+        "mov": 2
+      },
+      "sha256": "9003b97ef7bf185979b170acac19d8a79f1f22cd517d2d796677dbf7a09fdcfc"
+    },
+    "AuroraLinear-ps_3_0": {
+      "static_instruction_slots": 31,
+      "temporary_registers": 5,
+      "samplers": [],
+      "instructions": {
+        "max": 1,
+        "add": 6,
+        "mul": 7,
+        "log": 6,
+        "exp": 6,
+        "cmp": 2,
+        "mov": 2,
+        "dp3": 1
+      },
+      "sha256": "851e17ee854a6a29df92b5fc25c159730540121e17127e200559bff6a24324ff"
+    },
+    "AuroraLegacy-ps_3_0": {
+      "static_instruction_slots": 31,
+      "temporary_registers": 3,
+      "samplers": [],
+      "instructions": {
+        "max": 2,
+        "add": 5,
+        "mul": 7,
+        "log": 6,
+        "exp": 6,
+        "cmp": 2,
+        "mov": 2,
+        "dp3": 1
+      },
+      "sha256": "4bfe966d367ac411a40f9c9bcdece88a6f69dec0992913b0256059fdd74c6c8f"
+    }
+  }
+}

@@ -117,7 +117,7 @@ const std::map<std::string,std::vector<const char*>> Help={
     {"GI",{"Adds indirect sky light, bounced colors and occlusion from surrounding geometry. Turning it off stops the background lighting solver and leaves the game's ambient lighting."}},
     {"GIStrength",{"Influence of measured sky light, bounced color and occlusion on terrain and objects. 120 fully replaces native ambient; 60 restores the old half blend; up to 240 strengthens the contrast. 0 suspends GI work."}},
     {"GIBrightness",{"Adjusts measured indirect light: negative values darken, positive values brighten. -100 removes it, 0 keeps it unchanged, +100 doubles it. Missing probes keep native lighting; direct sun and lamps are unchanged."}},
-    {"AuroraStrength",{"Green/purple indirect illumination in Northrend after sunset and before moonrise. 100 is the tuned subtle fill; 0 disables it. Requires GI and resident probes. Roofs and surrounding geometry occlude the light; fog can be off."}},
+    {"AuroraStrength",{"Shared strength of visible aurora emission and its light in Northrend between sunset and moonrise. 0 preserves the original game ribbons. Surface illumination requires GI and resident probes; roofs and walls occlude it. Fog can be off."}},
     {"GIRays",{"Samples the surroundings in more directions for each lighting probe. More rays improve indirect lighting stability and detail, but increase background CPU work."}},
     {"GIBounces",{"How many times indirect light can reflect between surfaces. More bounces carry light farther into enclosed spaces and cost more background CPU time."}},
     {"GIProbeMoveStep",{"Camera movement in yards before the lighting grid moves. Smaller steps follow movement sooner but trigger more frequent background updates."}},
@@ -226,9 +226,9 @@ struct Group { const char* id; const char* title; const char* master; const char
 struct Section { const char* id; const char* title; const char* keys; std::vector<Group> groups; bool open; };
 const std::vector<Section> QualitySections={
     {"lighting","Lighting & AO","GI GIStrength GIBrightness AuroraStrength GIRays GIBounces GIProbeMoveStep GIDynamicProbes GIThreads GIFastBVH GIDistance GIProbeAhead NightBrightness ContactAO AOMethod AOQuality AOStrength AORadius LocalLights LocalLightLimit EquipmentLights PointShadows PointShadowLimit PointShadowDistance PointShadowRefreshMs PointShadowFacesPerFrame",{
-        {"gi","Global illumination","GI","GIStrength GIBrightness AuroraStrength GIDistance GIBounces","GIRays GIProbeMoveStep GIDynamicProbes GIThreads GIFastBVH GIProbeAhead"},
+        {"gi","Global illumination","GI","GIStrength GIBrightness GIDistance GIBounces","GIRays GIProbeMoveStep GIDynamicProbes GIThreads GIFastBVH GIProbeAhead"},
         {"ao","Ambient occlusion","ContactAO","AOMethod AOQuality AOStrength AORadius",""},
-        {"ambient","Environment",nullptr,"NightBrightness",""},
+        {"ambient","Environment",nullptr,"NightBrightness AuroraStrength",""},
         {"local","Local illumination","LocalLights","LocalLightLimit PointShadows PointShadowLimit EquipmentLights","PointShadowDistance PointShadowRefreshMs PointShadowFacesPerFrame"}},true},
     {"materials","Materials & parallax","AutoBump AutoBumpTerrain AutoBumpWalls AutoBumpGrass AutoBumpModels AutoBumpStrength AutoBumpDistance AutoParallaxDepth AutoParallaxDistance AutoParallaxSteps AutoParallaxShadows AutoParallaxShadowStrength AutoParallaxShadowSteps AutoCavity AutoCavityStrength AutoMaterialOcclusionDistance AutoDisplacementStrength AutoDisplacementDistance AutoDisplacementDetail AutoHeightBalance AutoModelDisplacementStrength AutoModelDisplacementDistance AutoModelDisplacementDetail",{
         {"bump","Material modes","AutoBump","AutoBumpTerrain AutoBumpWalls AutoBumpGrass AutoBumpModels AutoBumpStrength AutoBumpDistance",""},
