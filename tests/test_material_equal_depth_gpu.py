@@ -1,6 +1,7 @@
 # northlight-test: requires=windows-gpu,zig,client manual timing
 """Actual stock M2 captures: fixed warm workload across pressure/recovery, paired GPU oracle."""
 from pathlib import Path
+from itertools import product
 import argparse,hashlib,json,os,re,shutil,subprocess,sys
 ROOT=Path(__file__).resolve().parents[1];sys.path[:0]=[str(ROOT),str(ROOT/'tests')]
 import northlight_paths as fp
@@ -13,9 +14,34 @@ sys.path.insert(0,str(ROOT/'scripts/shaders'))
 from shader_compiler import Compiler,validate_assembly
 p=argparse.ArgumentParser(__doc__)
 p.add_argument('--output',type=Path,required=True);p.add_argument('--backend',type=Path,action='append',required=True);p.add_argument('--benchmark',action='store_true');p.add_argument('--negative-control',action='store_true')
+p.add_argument('--headers',type=Path)
+p.add_argument('--texture-intern',action='store_true',help='Compare duplicate texture insertion, keeping EQUAL batching enabled in both policies')
+p.add_argument('--draws',type=int,action='append',help='Packet benchmark draw counts; repeat for a matrix')
+p.add_argument('--rounds',type=int,default=20,help='Paired rounds for the texture-intern benchmark')
 a=p.parse_args();out=a.output.resolve();out.mkdir(parents=True,exist_ok=True);overlay=out/'overlay';overlay.mkdir(exist_ok=True)
-source=fp.src('auto_bump_renderer.h').read_text(encoding='utf-8');needle='const bool equalDepth=equalDepthBatchAllowed&&zfunc==D3DCMP_EQUAL;';assert source.count(needle)==1
-source=source.replace('class NorthlightAutoBump {','extern unsigned northlightReadOnlyPolicy;\nclass NorthlightAutoBump {',1).replace(needle,'const bool equalDepth=equalDepthBatchAllowed&&(northlightReadOnlyPolicy==1||(northlightReadOnlyPolicy==2&&zfunc==D3DCMP_EQUAL));',1)
+allocation_test=a.texture_intern
+assert not allocation_test or not a.negative_control
+assert not a.draws or allocation_test
+assert all(2<=n<=512 for n in a.draws or [])
+assert 1<=a.rounds<=100 and (allocation_test or a.rounds==20)
+header=(a.headers or fp.src('auto_bump_renderer.h').parent)/'auto_bump_renderer.h'
+source=header.read_text(encoding='utf-8');needle='const bool equalDepth=equalDepthBatchAllowed&&zfunc==D3DCMP_EQUAL;';assert source.count(needle)==1
+source=source.replace('class NorthlightAutoBump {','extern unsigned northlightReadOnlyPolicy;\nclass NorthlightAutoBump {',1)
+test_cpp=ROOT/'tests/material_equal_depth_gpu.cpp'
+if allocation_test:
+ old='deferredTextures.try_emplace(t.texture,t.bytes).second'
+ if old not in source:old='deferredTextures.emplace(t.texture,t.bytes).second'
+ assert source.count(old)==1
+ source=source.replace(old,'(northlightReadOnlyPolicy==2?deferredTextures.try_emplace(t.texture,t.bytes):deferredTextures.emplace(t.texture,t.bytes)).second',1)
+ cpp=test_cpp.read_text(encoding='utf-8');assert cpp.count('benchmark?128u:8u')==1
+ cpp=cpp.replace('benchmark?128u:8u','testDraws',1)
+ assert cpp.count('benchmark?20u:1u')==1;cpp=cpp.replace('benchmark?20u:1u','benchmark?testRounds:1u',1)
+ cpp=cpp.replace('std::setvbuf(stdout,nullptr,_IONBF,0);','const auto* countText=std::getenv("NORTHLIGHT_MATERIAL_TEST_DRAWS");const unsigned testDraws=countText?unsigned(std::strtoul(countText,nullptr,10)):8u;const unsigned testRounds=unsigned(std::strtoul(std::getenv("NORTHLIGHT_MATERIAL_TEST_ROUNDS"),nullptr,10));assert(testDraws>=2&&testDraws<=512&&testRounds>=1&&testRounds<=100);std::setvbuf(stdout,nullptr,_IONBF,0);',1)
+ cleanup='    }\n    for(auto* q:{begin,end,frequency,event,disjoint})'
+ assert cpp.count(cleanup)==1
+ cpp=cpp.replace(cleanup,'        if(frame==2){const auto clean=std::chrono::steady_clock::now();bump.endFrame();r.cpu+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-clean).count();}\n'+cleanup,1)
+ test_cpp=out/'material-allocations-gpu.cpp';test_cpp.write_text('#include <cstdlib>\n'+cpp,encoding='utf-8',newline='\n')
+else:source=source.replace(needle,'const bool equalDepth=equalDepthBatchAllowed&&(northlightReadOnlyPolicy==1||(northlightReadOnlyPolicy==2&&zfunc==D3DCMP_EQUAL));',1)
 (overlay/'auto_bump_renderer.h').write_bytes(source.encode())
 assets=Assets()
 try:
@@ -34,19 +60,19 @@ float4 Main(float2 uv:TEXCOORD0):COLOR0 {
 compiler=Compiler(allow_compatible_binary=True);compiler.compile(out/'consumer.hlsl','Main','ps_3_0',out/'consumer.bin')
 consumer_stats=validate_assembly(out/'consumer.bin.asm','ps_3_0')
 sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
-inputs={str(f):sha(f) for f in [*fp.SRC.rglob('*.h'),*fp.SRC.rglob('*.inl'),Path(__file__),ROOT/'tests/material_equal_depth_gpu.cpp',ROOT/'tests/model_normals_gpu.cpp',overlay/'auto_bump_renderer.h',fp.SHADERS/'auto_bump_normal.hlsl',out/'consumer.hlsl',out/'consumer.bin',out/'rigid.bin',out/'skin.bin',out/'alpha.bin']}
-exe=out/'material-equal.exe';cmd=[fp.zig(),'c++','-target','x86-windows-gnu','-O2','-UNDEBUG','-std=c++17','-Wno-microsoft-exception-spec','-I'+str(overlay),*fp.test_include_flags(),'-I'+str(ROOT/'tests'),ROOT/'tests/material_equal_depth_gpu.cpp',fp.src('world_gi.cpp'),'-luser32','-luuid','-o',exe]
+inputs={str(f):sha(f) for f in [*fp.SRC.rglob('*.h'),*fp.SRC.rglob('*.inl'),Path(__file__),header,test_cpp,ROOT/'tests/material_equal_depth_gpu.cpp',ROOT/'tests/model_normals_gpu.cpp',overlay/'auto_bump_renderer.h',fp.SHADERS/'auto_bump_normal.hlsl',out/'consumer.hlsl',out/'consumer.bin',out/'rigid.bin',out/'skin.bin',out/'alpha.bin']}
+exe=out/'material-equal.exe';cmd=[fp.zig(),'c++','-target','x86-windows-gnu','-O2','-UNDEBUG','-std=c++17','-Wno-microsoft-exception-spec','-I'+str(overlay),*fp.test_include_flags(),'-I'+str(ROOT/'tests'),test_cpp,fp.src('world_gi.cpp'),'-luser32','-luuid','-o',exe]
 with (out/'compile.log').open('w') as log:subprocess.run(list(map(str,cmd)),env=fp.zig_env(),stdout=log,stderr=subprocess.STDOUT,check=True,timeout=300)
 games=processes();results=[]
 for index,backend in enumerate(a.backend):
- for negative in ([False,True] if a.negative_control else [False]):
+ for count,negative in product(a.draws or [128 if a.benchmark else 8],[False,True] if a.negative_control else [False]):
   processes();args=[exe,backend.resolve(),out/'rigid.bin',out/'skin.bin',out/'alpha.bin',out/'consumer.bin'];args+=['negative'] if negative else ['benchmark'] if a.benchmark else []
-  env={**os.environ,'DISABLE_VULKAN_OBS_CAPTURE':'1','DXVK_LOG_PATH':str(out),'DXVK_CONFIG':'d3d9.customVendorId = 1002; d3d9.supportDFFormats = True'}
-  r=subprocess.run(list(map(str,args)),env=env,capture_output=True,timeout=300);name=f'gpu-{index}'+('-negative' if negative else '')+'.log';(out/name).write_bytes(r.stdout+r.stderr);text=(r.stdout+r.stderr).decode(errors='replace');print(name,r.returncode,text[-1000:],flush=True)
+  env={**os.environ,'DISABLE_VULKAN_OBS_CAPTURE':'1','DXVK_LOG_PATH':str(out),'DXVK_CONFIG':'d3d9.customVendorId = 1002; d3d9.supportDFFormats = True','NORTHLIGHT_MATERIAL_TEST_DRAWS':str(count),'NORTHLIGHT_MATERIAL_TEST_ROUNDS':str(a.rounds)}
+  r=subprocess.run(list(map(str,args)),env=env,capture_output=True,timeout=300);name=f'gpu-{index}'+('-n'+str(count) if a.draws else '')+('-negative' if negative else '')+'.log';(out/name).write_bytes(r.stdout+r.stderr);text=(r.stdout+r.stderr).decode(errors='replace');print(name,r.returncode,text[-1000:],flush=True)
   unsupported=r.returncode==77 and 'MATERIAL_EQUAL_DEPTH_UNSUPPORTED_DF24:' in text
   if unsupported:assert 'dxvk' not in str(backend).lower(),'Packaged DXVK must exercise the optimized path'
   elif negative:assert r.returncode and 'MATERIAL_EQUAL_MISMATCH' in text,'Unsafe non-EQUAL control must be rejected'
   else:r.check_returncode();assert 'MATERIAL_EQUAL_DEPTH_PASS' in text
-  results.append(dict(backend=str(backend.resolve()),backend_sha256=sha(backend),log=name,sha256=sha(out/name),negative=negative,exit_code=r.returncode,unsupported_df24=unsupported))
+  results.append(dict(backend=str(backend.resolve()),backend_sha256=sha(backend),log=name,sha256=sha(out/name),negative=negative,exit_code=r.returncode,unsupported_df24=unsupported,test_draws=count))
 assert all(sha(Path(f))==h for f,h in inputs.items()),'Source changed during validation'
-(out/'validation.json').write_text(json.dumps(dict(pass_=True,benchmark=a.benchmark,consumer_shader=consumer_stats,compiler=compiler.provenance,inputs=inputs,results=results,concurrent_games=games,scope='Actual capture/native/flush, fixed stock M2 workload with identical normal maps, pressure/recovery. Whole timeline includes CPU supply and shared GPU. Not gameplay FPS.',command=list(map(str,cmd))),indent=2)+'\n',encoding='utf-8',newline='\n')
+(out/'validation.json').write_text(json.dumps(dict(pass_=True,benchmark=a.benchmark,texture_intern=a.texture_intern,rounds=a.rounds,consumer_shader=consumer_stats,compiler=compiler.provenance,inputs=inputs,results=results,concurrent_games=games,scope='Actual capture/native/flush, fixed stock M2 workload with identical normal maps, pressure/recovery. Allocation-test CPU timing also includes endFrame cleanup. Whole timeline includes CPU supply and shared GPU. Not gameplay FPS.',command=list(map(str,cmd))),indent=2)+'\n',encoding='utf-8',newline='\n')

@@ -243,6 +243,7 @@ test_material_actor_decode_wave2.py
 test_material_alias_wave2.py
 test_material_batch_bindings.py
 test_material_byte_ops.py
+test_material_capture_allocations.py
 test_material_capture_targets.py
 test_material_capture_targets_gpu.py
 test_material_constant_spans.py

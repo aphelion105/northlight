@@ -369,7 +369,7 @@ class NorthlightAutoBump {
             }
             void* inserted[16]={};unsigned insertedCount=0;
             try{
-                for(const auto& t:packet->textures)if(t.texture&&deferredTextures.emplace(t.texture,t.bytes).second){inserted[insertedCount++]=t.texture;deferredTextureBytes+=t.bytes;}
+                for(const auto& t:packet->textures)if(t.texture&&deferredTextures.try_emplace(t.texture,t.bytes).second){inserted[insertedCount++]=t.texture;deferredTextureBytes+=t.bytes;}
                 deferred.push_back(std::move(packet));
             }catch(...){for(unsigned i=0;i<insertedCount;++i){auto entry=deferredTextures.find(inserted[i]);deferredTextureBytes-=entry->second;deferredTextures.erase(entry);}throw;}
             singleSampleBatch=singleSample;drawDeferred=true;singleSampleQueued+=singleSample;equalDepthQueued+=singleSample&&deferred.back()->raster[2]==D3DCMP_EQUAL;deferred.back()->normal=std::move(normal);deferredBytes+=cost;++queued;++queuedDomain[profileTag/4-1];deferredTextureDraws+=model.samplers!=0;if(pendingChanged)pendingChanged(pendingContext);timing.work(mesh->vertexCount,mesh->byteSize());return true;
