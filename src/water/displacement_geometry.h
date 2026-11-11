@@ -136,15 +136,24 @@ inline bool build(const Mesh& in,const D3DVERTEXELEMENT9* elements,UINT elementC
         for(auto& scale:skinRelief)scale=peak>0?std::min(1.f,.05f*std::sqrt(scale)/(.12f*peak)):1.f;
     }
     std::pmr::unordered_map<Key,unsigned,Hash> vertices(&scratch);vertices.reserve(capacity);
+    // An original corner has one barycentric key per source vertex.
+    std::vector<unsigned> originalVertices(in.vertexCount,UINT_MAX);
     std::array<unsigned char,84> cornerPayload{};
     std::array<bool,3> triangleBoundary{};
     const unsigned cornerBytes=color?color->cornerBytes()*3:0;
     auto vertex=[&](const std::array<unsigned,3>& t,unsigned i,unsigned j)->unsigned{
-        const unsigned w[3]={factor-i-j,i,j};std::array<std::pair<unsigned,unsigned>,3> sorted;
-        for(unsigned k=0;k<3;++k)sorted[k]={w[k]?t[k]:UINT_MAX,w[k]};std::sort(sorted.begin(),sorted.end());
-        Key key;for(unsigned k=0;k<3;++k){key.v[k*2]=sorted[k].first;key.v[k*2+1]=sorted[k].second;}
-        if(out.vertexCount>=32768){auto found=vertices.find(key);return found!=vertices.end()?found->second:UINT_MAX;}
-        const auto inserted=vertices.try_emplace(key,out.vertexCount);if(!inserted.second)return inserted.first->second;
+        const unsigned w[3]={factor-i-j,i,j};
+        const unsigned original=w[0]==factor?t[0]:w[1]==factor?t[1]:w[2]==factor?t[2]:UINT_MAX;
+        if(original!=UINT_MAX){
+            auto& known=originalVertices[original];if(known!=UINT_MAX)return known;
+            if(out.vertexCount>=32768)return UINT_MAX;known=out.vertexCount;
+        }else{
+            std::array<std::pair<unsigned,unsigned>,3> sorted;
+            for(unsigned k=0;k<3;++k)sorted[k]={w[k]?t[k]:UINT_MAX,w[k]};std::sort(sorted.begin(),sorted.end());
+            Key key;for(unsigned k=0;k<3;++k){key.v[k*2]=sorted[k].first;key.v[k*2+1]=sorted[k].second;}
+            if(out.vertexCount>=32768){auto found=vertices.find(key);return found!=vertices.end()?found->second:UINT_MAX;}
+            const auto inserted=vertices.try_emplace(key,out.vertexCount);if(!inserted.second)return inserted.first->second;
+        }
         const unsigned n=out.vertexCount++;auto& bytes=out.streams[0].bytes;bytes.resize(size_t(out.vertexCount)*outputStride);auto* dst=bytes.data()+size_t(n)*outputStride;
         if(color){
             std::memcpy(dst+colorOffset,cornerPayload.data(),cornerBytes);

@@ -3,6 +3,7 @@
 #include <cassert>
 #include <chrono>
 #include <cstdio>
+#include <fstream>
 #define NorthlightDisplacementGeometry NorthlightDisplacementReference
 #ifdef NORTHLIGHT_DISPLACEMENT_REFERENCE
 #include NORTHLIGHT_DISPLACEMENT_REFERENCE
@@ -54,6 +55,10 @@ struct Fixture {
     }
 };
 static unsigned cases=0;static std::uint64_t compared=0;
+static void equal(const G::Mesh& a,const G::Mesh& b){
+    assert(a.vertexCount==b.vertexCount&&a.primitiveCount==b.primitiveCount&&a.indices==b.indices);
+    for(unsigned s=0;s<4;++s){assert(a.streams[s].stride==b.streams[s].stride&&a.streams[s].bytes==b.streams[s].bytes);compared+=a.streams[s].bytes.size();}
+}
 struct ScratchMemory:std::pmr::memory_resource {
     std::pmr::memory_resource* upstream=std::pmr::get_default_resource();
     size_t allocations=0,live=0,peak=0;
@@ -70,23 +75,24 @@ static void compare(const Fixture& f,unsigned factor,bool terrain,bool gpu,bool 
     ScratchMemory memory;
     const bool after=f.build(false,b,factor,terrain,gpu,layered,influences,decl,count);
     assert(memory.live==0&&memory.peak<4u*1024*1024);
-    assert(before==after&&a.vertexCount==b.vertexCount&&a.primitiveCount==b.primitiveCount&&a.indices==b.indices);
-    for(unsigned s=0;s<4;++s){assert(a.streams[s].stride==b.streams[s].stride&&a.streams[s].bytes==b.streams[s].bytes);compared+=a.streams[s].bytes.size();}
+    assert(before==after);equal(a,b);
     ++cases;
 }
 static volatile unsigned sink;
-static void benchmark(const char* name,const Fixture& f,unsigned factor,unsigned influences,bool gpu){
+static void benchmark(const char* name,const Fixture& f,unsigned factor,unsigned influences,bool gpu,const D3DVERTEXELEMENT9* decl=declaration,unsigned count=7){
     std::vector<double> times[2];
     for(unsigned round=0;round<13;++round)for(unsigned turn=0;turn<2;++turn){
         const unsigned mode=(round+turn)&1;const auto start=std::chrono::steady_clock::now();
-        for(unsigned repeat=0;repeat<8;++repeat){G::Mesh output;assert(f.build(mode==0,output,factor,false,gpu,false,influences));sink=output.vertexCount;}
+        for(unsigned repeat=0;repeat<8;++repeat){G::Mesh output;assert(f.build(mode==0,output,factor,false,gpu,false,influences,decl,count));sink=output.vertexCount;}
         if(round>=3)times[mode].push_back(std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count()/8);
     }
     for(auto& t:times)std::sort(t.begin(),t.end());
     const double a=times[0][times[0].size()/2],b=times[1][times[1].size()/2];
     std::printf("SUBDIVISION_BENCH name=%s baselineMs=%.6f currentMs=%.6f ratio=%.4f\n",name,a,b,b/a);
 }
-int main(int argc,char**){
+int main(int argc,char** argv){
+    bool timing=false;std::vector<const char*> fixtures;
+    for(int i=1;i<argc;++i){if(!std::strcmp(argv[i],"--benchmark"))timing=true;else fixtures.push_back(argv[i]);}
     for(unsigned side:{1u,8u,32u})for(bool seams:{false,true})for(bool duplicate:{false,true}){
         Fixture f(side,seams,duplicate);
         for(unsigned factor:{2u,4u,8u,128u})for(bool terrain:{false,true})for(unsigned mode=0;mode<3;++mode)
@@ -113,6 +119,44 @@ int main(int argc,char**){
      const float invalid=NAN;std::memcpy(bytes.data()+start+32,&invalid,4);++f.mesh.vertexCount;f.uv.push_back({0,0});f.blend.push_back(0);compare(f,8,false,false,false,4);}
     {Fixture dense(32,true);ScratchMemory memory;G::Mesh output;assert(dense.build(false,output,4,false,true,false,0));
      assert(memory.live==0);std::printf("SUBDIVISION_SCRATCH allocations=%zu peakBytes=%zu retainedBytes=%zu vertices=%u\n",memory.allocations,memory.peak,memory.live,output.vertexCount);}
+    // Corner reuse must survive changed first appearances and duplicate faces.
+    for(unsigned rotation=0;rotation<3;++rotation)for(bool reverse:{false,true}){
+        Fixture f(8,false,true);for(size_t i=0;i<f.mesh.indices.size();i+=3)std::rotate(f.mesh.indices.begin()+i,f.mesh.indices.begin()+i+rotation,f.mesh.indices.begin()+i+3);
+        if(reverse)std::reverse(f.mesh.indices.begin(),f.mesh.indices.end());
+        for(unsigned factor:{2u,4u,8u})for(bool gpu:{false,true})compare(f,factor,false,gpu,false,4);
+    }
+#ifdef NORTHLIGHT_DISPLACEMENT_REFERENCE
+    // The optional frozen production reference also supports WMO colour payloads.
+    for(unsigned count=1;count<=3;++count)for(bool duplicate:{false,true}){
+        Fixture f(4,false,duplicate);for(unsigned i=0;i<f.mesh.vertexCount;++i){const DWORD color=0x70123456u+i*12345;std::memcpy(f.mesh.streams[0].bytes.data()+i*sizeof(Vertex)+52,&color,4);}
+        NorthlightWmoVertexColor::Layout color;color.count=count;
+        for(unsigned i=0;i<count;++i)color.color.inputs.push_back({i,i==0?10u:i==1?0u:3u,0});
+        const unsigned semantic[]={1,2,3,4,5,8,9,10,11,12};std::copy_n(semantic,color.attributes(),color.semantic.begin());
+        for(unsigned factor:{2u,4u,8u})for(bool gpu:{false,true}){
+            G::Mesh a,b;const bool before=R::build(f.mesh,declaration,7,f.uv,f.reference,factor,false,true,false,a,nullptr,nullptr,nullptr,0,gpu,&color);
+            const bool after=G::build(f.mesh,declaration,7,f.uv,f.height,factor,false,true,false,b,nullptr,nullptr,nullptr,0,gpu,&color);
+            assert(before&&after);equal(a,b);++cases;
+        }
+    }
+#endif
+    const D3DVERTEXELEMENT9 native[]={
+        {0,0,D3DDECLTYPE_FLOAT3,0,D3DDECLUSAGE_POSITION,0},{0,12,D3DDECLTYPE_UBYTE4N,0,D3DDECLUSAGE_BLENDWEIGHT,0},
+        {0,16,D3DDECLTYPE_UBYTE4,0,D3DDECLUSAGE_BLENDINDICES,0},{0,20,D3DDECLTYPE_FLOAT3,0,D3DDECLUSAGE_NORMAL,0},
+        {0,32,D3DDECLTYPE_FLOAT2,0,D3DDECLUSAGE_TEXCOORD,0},D3DDECL_END()};
+    for(const auto* path:fixtures){
+        std::ifstream file(path,std::ios::binary|std::ios::ate);assert(file);const auto bytes=file.tellg();file.seekg(0);
+        uint32_t header[3];file.read(reinterpret_cast<char*>(header),sizeof header);
+        assert(file&&header[0]==0x314d3246&&header[1]&&header[1]<=32768&&header[2]&&header[2]%3==0&&uint64_t(bytes)==12+uint64_t(header[1])*48+uint64_t(header[2])*4);
+        Fixture f(1,false);f.mesh={};f.mesh.vertexCount=header[1];f.mesh.primitiveCount=header[2]/3;f.mesh.indexed=true;f.mesh.topology=D3DPT_TRIANGLELIST;f.mesh.streams[0].stride=48;
+        auto& source=f.mesh.streams[0].bytes;source.resize(size_t(header[1])*48);f.mesh.indices.resize(header[2]);
+        file.read(reinterpret_cast<char*>(source.data()),source.size());file.read(reinterpret_cast<char*>(f.mesh.indices.data()),f.mesh.indices.size()*4);assert(file);
+        f.uv.resize(header[1]);f.blend.assign(header[1],.5f);for(unsigned i=0;i<header[1];++i)std::memcpy(f.uv[i].data(),source.data()+i*48+32,8);
+        for(unsigned factor:{2u,4u,8u,128u})for(unsigned influences:{0u,1u,4u})for(bool gpu:{false,true})compare(f,factor,false,gpu,false,influences,native,6);
+        if(timing)benchmark(path,f,4,4,false,native,6);
+        std::printf("SUBDIVISION_NATIVE_PASS vertices=%u triangles=%u\n",header[1],header[2]/3);
+    }
     std::printf("SUBDIVISION_EXACT_PASS cases=%u comparedBytes=%llu\n",cases,(unsigned long long)compared);
-    if(argc>1){benchmark("wmo-grid",Fixture(32,false),4,0,true);benchmark("wmo-seams",Fixture(32,true),4,0,true);benchmark("model",Fixture(16,false),8,4,false);}
+    if(timing){benchmark("wmo-grid",Fixture(32,false),4,0,true);benchmark("wmo-seams",Fixture(32,true),4,0,true);benchmark("model",Fixture(16,false),8,4,false);
+        Fixture animated(32,false);for(unsigned i=0;i<animated.mesh.vertexCount;++i)animated.mesh.streams[0].bytes[i*sizeof(Vertex)+48]=static_cast<unsigned char>(i%31);
+        benchmark("model-variable",animated,4,4,false);benchmark("centroid",Fixture(32,false),2,4,false);}
 }
