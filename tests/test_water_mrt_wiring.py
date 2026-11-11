@@ -25,11 +25,11 @@ checks['removed: build_renderer.py and the shader compilers do not know the wate
 
 # ---- the draw hook ----
 hook=between(r,'template<class Capture,class Draw> HRESULT drawHook(','    // 0.3.154: blob shadow claim')
-checks['drawHook: both gate paths wrap the name-mask chain in waterMrtDraw, with the bare draw as the fallback']=hook.count('waterMrtDraw(nativeDraw,[&]{return nameMaskDraw(rainBlend,claimed||mist,nativeDraw);})')==2 and 'const HRESULT hr=nameMaskDraw(' not in hook
+checks['drawHook: both preparation paths reach the common water/name-mask chain']=hook.count('waterMrtDraw(nativeDraw,[&]{return nameMaskDraw(rainBlend,claimed||mist,nativeDraw);})')==1 and 'const HRESULT hr=nameMaskDraw(' not in hook and hook.count('prepareDrawImpl(capture,count);')==2 and hook.rindex('prepareDrawImpl(capture,count);')<hook.index('waterMrtDraw(nativeDraw,')
 unbind_rain='if(rainMrtBound&&!rainBlend)rainMrtUnbind();'
 unbind_water='if(water&&water->isMrtBound()&&(rainBlend||applied||!enabled||failed||!nextDrawIsWater()))rainMrtUnbind();'
 checks['drawHook: render target 1 is unbound before any other draw (rain first, then water unless the draw is a water draw), before both gate paths']=(
-    hook.count(unbind_rain)==1 and hook.count(unbind_water)==1 and hook.index(unbind_rain)<hook.index(unbind_water)<hook.index('if(!frameDrawGates){')<hook.index('prepareDraw(capture,count)')<hook.index('prepareDrawImpl(capture,count)'))
+    hook.count(unbind_rain)==1 and hook.count(unbind_water)==1 and hook.index(unbind_rain)<hook.index(unbind_water)<hook.index('if(!frameDrawGates){')<hook.index('prepareDrawImpl(capture,count);')<hook.rindex('prepareDrawImpl(capture,count);'))
 checks['drawHook: the pending plan is dropped at the top of every draw']=hook.count('waterPending.valid=false;')==1 and hook.index('waterPending.valid=false;')<hook.index('if(!frameDrawGates){')
 checks['nextDrawIsWater: an identity lookup of the bound vertex shader, false when unknown']='bool nextDrawIsWater(){IDirect3DVertexShader9* v=nullptr;return ext->peekVertexShader(v)&&v&&water->hasVertex(v);}' in r
 unbind=between(r,'    void rainMrtUnbind(){','    bool rainMaskEligible(){')
@@ -51,7 +51,7 @@ checks['waterMrtDraw: begin, the one chain draw, end - all in extensionWork; a r
     and mrtDraw.index('beginMrt(')<mrtDraw.index('water->capture(')<mrtDraw.index('if(!masked)return chain();')<mrtDraw.index('const HRESULT hr=chain();')<mrtDraw.index('endMrt(')
     and 'if(water->isMrtBound())rainMrtUnbind();' in mrtDraw and mrtDraw.index('rainMrtUnbind()')<mrtDraw.index('water->capture('))
 checks['waterMrtDraw: no pending plan = the plain chain (after the unbind, see below)']='if(!waterPending.valid){if(water&&water->isMrtBound())rainMrtUnbind();return chain();}' in mrtDraw
-checks['the only water->capture( calls are the two fallbacks (no draw override and no capture lambda calls it)']=r.count('water->capture(')==2 and 'captureWater(vs,NorthlightWaterRenderer::NoUserPointer,draw)' in r
+checks['the only water->capture( calls are the two fallbacks; all adapters use shared captureWater']=r.count('water->capture(')==2 and r.count('captureWater(vs,UserPointer,draw);')==1 and r.count('captureGameDraw<NorthlightWaterRenderer::')==4
 caps=between(r,'    void waterMrtCaps(){','    // The next draw uses a water vertex shader')
 checks['caps: two targets, independent write masks and bit depths, MRT blending, a blendable G32R32F target, ps_2_0 - else the second-draw pass with a log line']=all(s in caps for s in ('NumSimultaneousRTs>=2','D3DPMISCCAPS_INDEPENDENTWRITEMASKS','D3DPMISCCAPS_MRTINDEPENDENTBITDEPTHS','D3DPMISCCAPS_MRTPOSTPIXELSHADERBLENDING','D3DPS_VERSION(2,0)','D3DUSAGE_RENDERTARGET|kUsageQueryPostPixelShaderBlending','0x00080000','D3DFMT_G32R32F','WATER mask MRT disabled: caps','water->setMrtCaps(ok)'))
 

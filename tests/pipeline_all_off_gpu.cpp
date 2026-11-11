@@ -64,6 +64,35 @@ struct PipelineOffTest {
         w.setPipelineEnabled(false);std::puts("ALL_OFF_WORKER_PASS pause=1 queuedRequestIgnored=1 resume=1 cacheRetained=1");
 #endif
     }
+#ifndef NORTHLIGHT_PIPELINE_BASELINE
+    static void active(Device& d,PipelineMeter& meter){
+        // Actual Device orchestration with native submissions stubbed. Fixed
+        // function draws exercise the active gates; the route oracle supplies
+        // recording material/normal/world consumers for capture handoff.
+        struct Vertex {float x,y,z,rhw;DWORD color;};Vertex v[3]={};WORD indices[3]={0,1,2};
+        constexpr unsigned iterations=2000;
+        for(unsigned round=0;round<3;++round)for(unsigned mode=0;mode<5;++mode)for(unsigned gates=0;gates<2;++gates){
+            d.failed=false;PipelineOffTest::mode(d,0);auto q=d.world->quality;
+            q.effects=q.contactAO=1;q.worldShadows=q.worldFog=0;q.autoBump=mode==1;q.localLights=mode==2;q.localLightLimit=mode==2?8:0;
+            NorthlightSettings::Config next;next.quality=q;next.celestial=d.world->celestialProfiles;d.world->applyLiveSettings(next);
+            d.masterEnabled=true;d.refreshPipeline();d.autoBump->configure(q);d.contactAO=true;d.frameDrawGates=gates;d.latchDrawGates();
+            if(!d.enabled||d.modelNormalsNeeded!=(mode==1||mode==2))std::printf("ACTIVE_CONFIG_MISMATCH mode=%u gates=%u enabled=%u normalDemand=%u effects=%u ao=%u materials=%u local=%u\n",mode,gates,unsigned(d.enabled),unsigned(d.modelNormalsNeeded),q.effects,q.contactAO,q.autoBump,q.localLights);
+            assert(d.enabled&&d.modelNormalsNeeded==(mode==1||mode==2));d.applied=mode==3;d.failed=mode==4;
+            d.SetVertexShader(nullptr);d.SetPixelShader(nullptr);meter.submit=false;meter.draws=meter.reads=0;const auto before=d.drawCalls;
+            const auto start=std::chrono::steady_clock::now();
+            for(unsigned i=0;i<iterations;++i){
+                assert(d.DrawPrimitive(D3DPT_TRIANGLELIST,0,1)==D3D_OK);
+                assert(d.DrawIndexedPrimitive(D3DPT_TRIANGLELIST,0,0,3,0,1)==D3D_OK);
+                assert(d.DrawPrimitiveUP(D3DPT_TRIANGLELIST,1,v,sizeof(Vertex))==D3D_OK);
+                assert(d.DrawIndexedPrimitiveUP(D3DPT_TRIANGLELIST,0,3,1,indices,D3DFMT_INDEX16,v,sizeof(Vertex))==D3D_OK);
+            }
+            const double ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
+            assert(meter.draws==4*iterations&&d.drawCalls-before==4*iterations);
+            std::printf("ACTIVE_ROUTE_CPU mode=%u gates=%u round=%u ms=%.6f draws=%llu reads=%llu normalDemand=%u\n",mode,gates,round,ms,(unsigned long long)meter.draws,(unsigned long long)meter.reads,unsigned(d.modelNormalsNeeded));
+        }
+        d.failed=false;PipelineOffTest::mode(d,0);std::puts("ACTIVE_ROUTE_DEVICE_PASS fourForms=1 aoOnly=1 materials=1 lighting=1 applied=1 failed=1 gates=both nativeSubmit=once");
+    }
+#endif
     static void frames(Device& d,PipelineMeter& meter){
         for(unsigned round=0;round<3;++round)for(unsigned offset=0;offset<3;++offset){const unsigned mode=(round+offset)%3;PipelineOffTest::mode(d,mode);
             for(unsigned i=0;i<20;++i)d.finishFrame(false);meter.draws=meter.reads=0;
@@ -79,6 +108,7 @@ struct PipelineOffTest {
     }
 };
 int main(int argc,char** argv){
+    std::setvbuf(stdout,nullptr,_IONBF,0);
     assert(argc==3);std::string root=std::string(argv[2])+"/";assert(MultiByteToWideChar(CP_UTF8,0,root.c_str(),-1,rootPath,MAX_PATH));
     WNDCLASSW wc{};wc.lpfnWndProc=DefWindowProcW;wc.lpszClassName=L"NorthlightAllOffStand";wc.hInstance=GetModuleHandleW(nullptr);assert(RegisterClassW(&wc));
     HWND window=CreateWindowExW(0,wc.lpszClassName,L"",WS_OVERLAPPED,0,0,128,80,nullptr,nullptr,wc.hInstance,nullptr);assert(window);
@@ -87,6 +117,9 @@ int main(int argc,char** argv){
     IDirect3DDevice9* raw=nullptr;assert(SUCCEEDED(api->CreateDevice(0,D3DDEVTYPE_HAL,window,D3DCREATE_HARDWARE_VERTEXPROCESSING|D3DCREATE_FPU_PRESERVE,&pp,&raw)));
     PipelineMeter meter(raw);NorthlightHdr::Presentation presentation;presentation.logical=pp;presentation.settings.requested=false;raw->AddRef();auto* d=new Device(&meter,api,presentation);
     PipelineOffTest::cpu(*d,meter);PipelineOffTest::frames(*d,meter);PipelineOffTest::workerPause(*d);PipelineOffTest::diagnostics(*d,meter);
+#ifndef NORTHLIGHT_PIPELINE_BASELINE
+    PipelineOffTest::active(*d,meter);
+#endif
     IDirect3DSurface9 *target=nullptr,*read=nullptr;assert(SUCCEEDED(raw->CreateRenderTarget(128,80,D3DFMT_A8R8G8B8,D3DMULTISAMPLE_NONE,0,FALSE,&target,nullptr)));assert(SUCCEEDED(raw->CreateOffscreenPlainSurface(128,80,D3DFMT_A8R8G8B8,D3DPOOL_SYSTEMMEM,&read,nullptr)));
     struct V {float x,y,z,rhw;DWORD color;};const V triangle[]={{0,0,.5f,1,0xff2080c0},{100,0,.5f,1,0xff2080c0},{0,70,.5f,1,0xff2080c0}};
     std::vector<unsigned char> reference;for(unsigned mode=0;mode<3;++mode){PipelineOffTest::mode(*d,mode);meter.submit=true;

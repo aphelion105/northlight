@@ -1,4 +1,4 @@
-# northlight-test: requires=cxx
+# northlight-test: requires=zig
 """Execute the production model-normal admission body, including a strict no-lookup check."""
 from pathlib import Path
 import json,os,runpy,subprocess,sys
@@ -35,9 +35,11 @@ int main(){unsigned cases=0;uint64_t model=0,particle=0;
 }
 '''.replace('__BODY__',body)
 out=fp.output_dir()/'model-normal-demand';out.mkdir(parents=True,exist_ok=True);source=out/'test.cpp';source.write_text(cpp,encoding='utf-8');runs=[]
-for mode,flags in [('O2',['-O2']),('san',['-O1','-g','-fsanitize=address,undefined','-fno-sanitize-recover=all'])]:
- exe=out/mode
- subprocess.run([os.environ.get('CXX','clang++'),'-std=c++17','-UNDEBUG',*flags,*fp.test_include_flags(),str(source),'-o',str(exe)],check=True)
+compiler=[str(fp.zig()),'c++','-target','x86-windows-gnu'] if os.name=='nt' else [os.environ.get('CXX','clang++')]
+modes=[('O2',['-O2']),('O0',['-O0'])] if os.name=='nt' else [('O2',['-O2']),('san',['-O1','-g','-fsanitize=address,undefined','-fno-sanitize-recover=all'])]
+for mode,flags in modes:
+ exe=out/(mode+('.exe' if os.name=='nt' else ''))
+ subprocess.run([*compiler,'-std=c++17','-UNDEBUG',*flags,*fp.test_include_flags(),str(source),'-o',str(exe)],env=fp.zig_env(),check=True)
  r=subprocess.run([str(exe)],capture_output=True,text=True);(out/(mode+'.log')).write_text(r.stdout+r.stderr,encoding='utf-8');r.check_returncode();assert 'MODEL_NORMAL_DEMAND_PASS cases=192' in r.stdout
  runs.append(dict(mode=mode,pass_=True,stdout=r.stdout));print(r.stdout,end='')
 (out/'validation.json').write_text(json.dumps(dict(pass_=True,runs=runs),indent=2)+'\n',encoding='utf-8')

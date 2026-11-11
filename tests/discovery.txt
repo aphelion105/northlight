@@ -107,6 +107,8 @@ test_displacement_state_reuse.py
 test_displacement_subdivision.py
 test_dll_memcmp.py
 test_draw_gates.py
+test_draw_orchestration.py
+test_draw_orchestration_gpu.py
 test_draw_snapshot.py
 test_draw_submission_route.py
 test_dxvk3_lock_flags.py

@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 # northlight-test: requires=zig
-"""Per-frame draw gates preserve the reference hooks under the current visibility policies.
+"""Per-frame draw gates preserve the historical hook contract.
 
-The 0.3.184 hook members and four Draw* overrides are kept below verbatim. The derived reference
-adds the later debug-mode sky-claim guard and keeps native decals until replacement shadows are composited.
-The test compiles this reference and the current renderer.cpp members (drawHook and its helpers, the gates,
-prepareDraw, terrainShadowDraw, planTerrainShadowSwap, DrawPrimitive), against the same mocks of
-the device, the world, the sky renderer and the blob filter. It then runs both through randomized
+The 0.3.184 reference gains the reviewed debug sky guard and decal visibility policy.
+Compare it with current drawHook, gates and claim helpers using frozen r104 adapters;
+the material/normal/HDR boundaries absent from these legacy mocks are covered by
+test_draw_orchestration, which executes all four current adapters against r104.
+Run both through randomized
 frames with FrameDrawGates=0 and =1: the per-frame inputs change only at the frame boundary, the
 per-draw state changes between draws (applied and failed rise, terrain, the world context and
 composited shadows flip), and the mocks fault at random. Every side-effecting call (capture,
 water capture, sky claim gate and claims, viewport reads, blob claims, pixel shader swaps, the
 game's draw, Release, log lines including the fault's stage) must be the same and in the same
-order, with the same results and end state. A static part checks that the other three overrides
-pass 0.3.184's capture and draw calls unchanged, and that each latched input is written only where
-the gates are latched again. Native clang++, plain -O2 and ASan/UBSan. No device or game."""
+order, with the same results and end state. Static checks retain the historical
+adapter arguments and enforce the current shared route and latch boundaries.
+Windows x86 O2; native ASan/UBSan elsewhere. No device or game."""
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
 import os,re,subprocess,tempfile
@@ -66,7 +66,8 @@ OLD_DRAWS = r'''
     HRESULT STDMETHODCALLTYPE DrawIndexedPrimitiveUP(D3DPRIMITIVETYPE t,UINT min,UINT vertices,UINT count,const void* indices,D3DFORMAT fmt,const void* data,UINT stride) override { Guard mirrorLock(mirrorState.gate);prepareDraw([&](IDirect3DVertexShader9* vs){world->captureUP(t,min,vertices,count,indices,fmt,data,stride,true,vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame(frame));captureWater(vs,NorthlightWaterRenderer::UserVerticesAndIndices,[&]{return ext->DrawIndexedPrimitiveUP(t,min,vertices,count,indices,fmt,data,stride);});},count);bool claimed=false;extensionWork("native sky claim",[&]{if(celestialDiscs&&enabled&&!applied&&count<=4&&celestialDiscs->nativeClaimPossible(t,count)){D3DSURFACE_DESC desc;if(fullViewport(desc)){claimed=celestialDiscs->claimNativeGlare(t,count);if(!claimed)claimed=celestialDiscs->claimNativeDraw(t,count,true,[&](const char* map,const float* camera){return world->celestialPalette(map,camera);});}}});if(!claimed&&blobFilterActive())extensionWork("blob shadow filter",[&]{claimed=blobClaim(count);if(claimed&&blobSignatureReports<4){++blobSignatureReports;IDirect3DVertexShader9* bvs=nullptr;IDirect3DPixelShader9* bps=nullptr;ext->GetVertexShader(&bvs);ext->GetPixelShader(&bps);auto vi=vsHashes.find(bvs);auto pi=psHashes.find(bps);logf("SHADOWBLOB draw signature vs=%016llx ps=%016llx primitives=%u",(unsigned long long)(vi==vsHashes.end()?0:vi->second),(unsigned long long)(pi==psHashes.end()?0:pi->second),count);drop(bvs);drop(bps);}});HRESULT hr=terrainShadowDraw(claimed,[&]{return ext->DrawIndexedPrimitiveUP(t,min,vertices,count,indices,fmt,data,stride);});if(!claimed)extensionWork("native sky observation",[&]{if(celestialDiscs&&enabled&&!applied&&count<=4&&celestialDiscs->nativeObservePossible(hr,t,count)){D3DSURFACE_DESC desc;if(fullViewport(desc))celestialDiscs->observeNativeDraw(hr,t,count,true);}});return hr;}
 '''
 HERE=Path(__file__).resolve().parent
-renderer=fp.src('renderer.cpp').read_text()
+live_renderer=fp.src('renderer.cpp').read_text()
+renderer=live_renderer
 # HDR sky storage has separate exact native/GPU tests; these legacy hook
 # comparisons retain their non-HDR call shape.
 renderer=renderer.replace('},false,nativeSky,&skyCaptured);','});').replace('},draw,&nativeSky,&skyCaptured);}','},draw);}')
@@ -87,6 +88,19 @@ def member(text,signature):
     return text[text.rfind('\n',0,a)+1:end]
 
 
+# This historical oracle models the gate/claim machinery with material and
+# normal capture disabled. Keep its r104 adapters; test_draw_orchestration
+# compares the actual four adapters and their full handoff against r104.
+legacy=subprocess.check_output(['git','show','3fc6b718:src/proxy/renderer.cpp'],cwd=fp.REPO,text=True)
+legacy=legacy.replace('},false,nativeSky,&skyCaptured);','});').replace('},draw,&nativeSky,&skyCaptured);}','},draw);}')
+legacy=legacy.replace('NorthlightAutoDisplacement::CaptureSource normalSource;','').replace(',&normalSource);',');')
+legacy=legacy.replace(',nullptr,&normalSource.mesh,normalSource.declaration)',')').replace(',&normalSource.mesh,normalSource.declaration)',')')
+legacy=re.sub(r'captureModelNormals\(vs,\[&\]\{return ext->Draw\w+\([^;]+;\},(?:false|true),geometry\);','',legacy)
+for name in ['DrawPrimitive','DrawIndexedPrimitive','DrawPrimitiveUP','DrawIndexedPrimitiveUP']:
+    sig='HRESULT STDMETHODCALLTYPE '+name+'('
+    renderer=renderer.replace(member(renderer,sig),member(legacy,sig),1)
+
+
 # Execute the production prologue on both gate paths, including early exits.
 prepare_begin=member(renderer,'template<class Capture> void prepareDrawImpl(').split('{',1)[1].split('if(!gpuFrameStarted)',1)[0]
 prepare_begin=' '.join(re.sub(r'//[^\n]*','',prepare_begin).split())
@@ -104,7 +118,7 @@ particle_start=gates_block.find('    NorthlightParticleCapture::Capture particle
 if particle_start>=0:
     particle_end=gates_block.index('    template<class Capture,class Draw> HRESULT drawHook(',particle_start)
     gates_block=gates_block[:particle_start]+"    bool particleOn=false;NorthlightParticleCapture::Prepared prepareParticleDraw(bool){return {};}void submitParticleDraw(const NorthlightParticleCapture::Prepared&,bool,bool){}\n"+gates_block[particle_end:]
-new_members='\n'.join([member(renderer,'template<class Work> bool extensionWork('),member(renderer,'template<class Capture> void prepareDraw(Capture capture,UINT count)'),
+new_members='\n'.join([member(renderer,'template<class Work> bool extensionWork('),
     renderer[renderer.index('    // 0.3.196 (task 12): one-entry per-draw vertex shader classification'):renderer.index('    std::unordered_map<IDirect3DPixelShader9*, uint64_t> psHashes;')],
     member(renderer,'void planTerrainShadowSwap('),member(renderer,'void dropTerrainShadowSwap('),member(renderer,'template<class Draw> HRESULT terrainShadowDraw('),
     (member(renderer,'template<class Draw> HRESULT materialNativeDraw(') if 'template<class Draw> HRESULT materialNativeDraw(' in renderer else ''),
@@ -137,7 +151,7 @@ checks['faint swap: SetTexture(faint), the draw, SetTexture(original), then Rele
     'ext->SetTexture(0,faint);' in swap_src and 'shadowBlobs->faintTexture()' in swap_src and swap_src.index('ext->SetTexture(0,faint);')<swap_src.index('draw();')<swap_src.index('ext->SetTexture(0,original);')<swap_src.rindex('original->Release();')
     and 'extensionWork' not in swap_src and 'return terrainShadowDraw(claimed,draw)' in swap_src)
 checks['the plan keeps only the original (no second GetTexture, no faint pointer member)']=('GetTexture' not in member(renderer,'void planBlobFaint(') and 'blobFaint;' not in renderer and 'blobFaint=' not in renderer)
-checks['faint plan dropped at the start of every draw on both paths']=(renderer.count('dropBlobFaint();prepareDraw(capture,count);')==1 and renderer.count('dropTerrainShadowSwap();dropBlobFaint();')==1 and renderer.count('nameMaskDraw(rainBlend,claimed||mist,nativeDraw)')==2 and renderer.count('blobFaintDraw(claimed,draw)')==1)
+checks['one preparation/reset entry and common native tail for both gate paths']=(renderer.count('dropTerrainShadowSwap();dropBlobFaint();')==1 and renderer.count('nameMaskDraw(rainBlend,claimed||mist,nativeDraw)')==1 and renderer.count('blobFaintDraw(claimed,draw)')==1 and 'template<class Capture> void prepareDraw(' not in renderer)
 # The other three overrides: 0.3.184's capture call and real draw, passed to drawHook unchanged.
 def old_parts(line):
     cap=re.search(r'prepareDraw\(\[&\]\(IDirect3DVertexShader9\* vs\)\{(.*?)captureWater\(vs,(\w+::\w+),\[&\]\{return (ext->\w+\([^)]*\));\}\);\},count\);',line)
@@ -169,7 +183,7 @@ for line in old_draws:
     assert water_draw==draw,(sig,water_draw,draw)
     ncap,nwater,ndraw,body=new_parts(sig)
     ok&=ncap==cap and nwater==water and ndraw==draw and 'Guard mirrorLock(mirrorState.gate);' in body
-checks['four overrides: 0.3.184 capture, water capture and draw, unchanged, through drawHook']=ok and renderer.count('return drawHook(t,count,')==4
+checks['historical adapter arguments retained; live four adapters use the shared capture route']=ok and renderer.count('return drawHook(t,count,')==4 and live_renderer.count('captureGameDraw<NorthlightWaterRenderer::')==4
 # The latched inputs rise only where the gates are latched again (draw_gates.h): device creation,
 # Reset, and finishFrameImpl before its final latchDrawGates().
 finish=member(renderer,'void finishFrameImpl() {')
@@ -268,6 +282,8 @@ struct MockWorld{
     bool skyContext(const float*)const{return false;}
     bool ready()const{return context;} /* the old code has no ready(); following the context keeps the runs equivalent */
     bool rainBlendSetting()const{return false;}
+    bool surfaceLightingEnabled()const{return false;}
+    bool needsDiagnosticFallback()const{return false;}
     bool actorShadowsEnabled()const{return actorShadows;}
     bool blobShadowsEnabled()const{return true;} // Historical trace oracle keeps the default visibility policy.
     bool nativeTerrainShadowsEnabled()const{return true;}

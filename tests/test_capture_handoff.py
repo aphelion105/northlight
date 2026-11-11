@@ -1,7 +1,8 @@
-# northlight-test: requires=cxx
+# northlight-test: requires=zig
 """Same-draw source admission preserves snapshot bytes, budgets and count limits."""
 from pathlib import Path
 import ast
+import os
 import subprocess
 import sys
 import tempfile
@@ -15,6 +16,7 @@ def literal(path, name):
         if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == name for t in n.targets))
 
 stub = literal(fp.TESTS / 'test_terrain_snapshot.py', 'stub')
+if os.name=='nt':stub=stub.replace('#include <climits>','#include <climits>\n#include <windows.h>\n#undef E_POINTER\n#undef FAILED\n#undef SUCCEEDED').replace('using DWORD=unsigned;using HRESULT=std::int32_t;','')
 prefix = literal(fp.TESTS / 'test_draw_snapshot.py', 'harness').split('int main(){', 1)[0]
 prefix = prefix.replace('struct Device:IDirect3DDevice9{', 'struct Device:IDirect3DDevice9{ unsigned geometryCalls=0;')
 prefix = prefix.replace('override{*out=freq[s]', 'override{++geometryCalls;*out=freq[s]')
@@ -66,8 +68,10 @@ int main(){
 '''
 with tempfile.TemporaryDirectory(prefix='northlight-handoff-') as tmp:
     directory = Path(tmp);(directory / 'd3d9.h').write_text(stub);(directory / 'test.cpp').write_text(source)
-    for label, flags in [('O2', ['-O2']), ('asan', ['-O1', '-g', '-fsanitize=address,undefined'])]:
-        exe = directory / label
-        subprocess.run(['clang++', '-std=c++17', '-Wall', '-Wextra', '-Werror', *flags, '-I', str(directory),
-                        *fp.test_include_flags(), str(directory / 'test.cpp'), '-o', str(exe)], check=True)
+    compiler=[str(fp.zig()),'c++','-target','x86-windows-gnu'] if os.name=='nt' else ['clang++']
+    modes=[('O2',['-O2']),('O0',['-O0'])] if os.name=='nt' else [('O2',['-O2']),('asan',['-O1','-g','-fsanitize=address,undefined'])]
+    for label, flags in modes:
+        exe = directory / (label+('.exe' if os.name=='nt' else ''))
+        subprocess.run([*compiler, '-std=c++17', '-UNDEBUG', '-Wall', '-Wextra', '-Werror', *flags, '-I', str(directory),
+                        *fp.test_include_flags(), str(directory / 'test.cpp'), '-o', str(exe)],env=fp.zig_env(),check=True)
         subprocess.run([str(exe)], check=True)

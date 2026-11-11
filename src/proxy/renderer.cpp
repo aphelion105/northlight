@@ -1799,12 +1799,6 @@ private:
         if(SUCCEEDED(hr)&&nameRun)nameMask.noteMark();
         return hr;
     }
-    // One shader query/reference per original draw, shared with shadow capture.
-    template<class Capture> void prepareDraw(Capture capture,UINT count) {
-        mirrorState.gate.noteFirst(mirrorState.gate.drawTid); /* 0.3.180 (D0): the census' first draw */
-        dropTerrainShadowSwap();
-        extensionWork("draw capture/effects",[&]{prepareDrawImpl(capture,count);});
-    }
     // task 34: a draw with no vertex shader bound (fixed function: ribbons, beams) returns from prepareDrawImpl early; the spell layer still needs its world domain, the
     // same test as the programmable path (viewport depth range and Z enable) and nothing else of what that path does.
     // DepthFuncAware: the spell layer's "depth tested" is ZENABLE on and ZFUNC not ALWAYS (the client's depth-off is ZFUNC ALWAYS); the world domain itself stays ZENABLE only (name and UI-hash draws are decided inside it).
@@ -1984,6 +1978,25 @@ private:
         const auto found=vsHashes.find(vs);
         if(found!=vsHashes.end()&&m2ShaderFamily(found->second)==3)
             modelNormals->capture(vs,draw,userMemory,&geometry.draw,geometry.indices,geometry.format,geometry.vertices,geometry.stride,source?&source->mesh:nullptr,source?source->declaration:nullptr,source?&source->pose:nullptr);
+    }
+    template<NorthlightWaterRenderer::UserPointer UserPointer,class Raw,class Draw> void captureGameDraw(IDirect3DVertexShader9* vs,const NorthlightAutoDisplacement::Args& geometry,Raw raw,Draw draw){
+        constexpr bool userMemory=UserPointer!=NorthlightWaterRenderer::NoUserPointer;
+        const auto& args=geometry.draw;
+        NorthlightAutoDisplacement::CaptureSource source;
+        NorthlightCaptureMetadata::PositionBounds positions;positions.owner=&geometry;positions.shader=vs;
+        auto captureWorld=[&](NorthlightCaptureMetadata::PositionBounds* bounds=nullptr){
+            if constexpr(userMemory)world->captureUP(args.topology,args.minimum,args.vertices,args.primitives,geometry.indices,geometry.format,geometry.vertices,geometry.stride,args.indexed,vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame(frame));
+            else world->capture(args.topology,args.base,args.minimum,args.vertices,args.start,args.primitives,args.indexed,vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame(frame),bounds,&source.mesh,source.declaration);
+        };
+        // Only buffered indexed terrain publishes bounds before material work.
+        const bool sharedTerrain=!userMemory&&args.indexed&&autoBump&&autoBump->active()&&enabled&&!applied&&!failed&&world->terrainShader(vs);
+        if(sharedTerrain)captureWorld(&positions);
+        const bool materialCapture=autoBump&&enabled&&!applied&&!failed;
+        if(materialCapture)autoBump->capture(vs,raw,userMemory,&geometry,!userMemory&&args.indexed?&positions:nullptr,&source);
+        // UP normals retain their material guard; buffered receivers do not.
+        if(!userMemory||materialCapture)captureModelNormals(vs,raw,userMemory,geometry,&source);
+        if(!sharedTerrain)captureWorld();
+        captureWater(vs,UserPointer,draw);
     }
     template<class Draw> HRESULT terrainShadowDraw(bool claimed,Draw draw){
         if(!shadowSwapOriginal)return claimed?D3D_OK:materialNativeDraw(draw); /* no shadow swap planned */
@@ -2543,35 +2556,24 @@ private:
         waterPending.valid=false; /* 0.3.214 (water MRT): set by this draw's captureWater only */
         if(water&&water->isMrtBound()&&(rainBlend||applied||!enabled||failed||!nextDrawIsWater()))rainMrtUnbind(); /* the water mask's target 1 stays bound across consecutive water draws only */
         NorthlightSkyComposition::Role skyRole=NorthlightSkyComposition::Role::Unknown;
+        mirrorState.gate.noteFirst(mirrorState.gate.drawTid);
+        dropTerrainShadowSwap();dropBlobFaint();
+        const bool sky=count<=4&&drawGates.sky;
         if(!frameDrawGates){
-            dropBlobFaint();prepareDraw(capture,count);
+            extensionWork("draw capture/effects",[&]{prepareDrawImpl(capture,count);});
             {CpuScope hooks(sampledHookTimer());
                 extensionWork("native sky claim",[&]{skyLayersBefore(t,count,skyRole);skyClaim(t,count,claimed);});
                 if(!claimed&&blobFilterActive())extensionWork("blob shadow filter",[&]{blobFilter(count,claimed);});}
-            NorthlightParticleCapture::Prepared particle;
-            if(particleOn)extensionWork("particle light capture",[&]{particle=prepareParticleDraw(claimed||mist||rainBlend||blobOriginal||shadowSwapOriginal);});
-            if(spellOn&&spellGate()&&spellDraw(claimed||mist||blobOriginal||shadowSwapOriginal,rainBlend||mist)){
-                submitParticleDraw(particle,true,true);return D3D_OK; /* accepted current-frame record, replayed after effects */
-            }
-            skyLayersReplay(skyRole,!claimed&&!mist,draw);
-            const HRESULT hr=waterMrtDraw(nativeDraw,[&]{return nameMaskDraw(rainBlend,claimed||mist,nativeDraw);});
-            if(SUCCEEDED(hr))hdrReplaySky(linearSky,claimed||mist||(skyCaptured&&*skyCaptured),draw);
-            if(FAILED(hr)&&skyRole!=NorthlightSkyComposition::Role::Unknown)skyLayers.invalidate();
-            submitParticleDraw(particle,SUCCEEDED(hr)&&!claimed&&!mist&&!blobOriginal&&!shadowSwapOriginal,false); /* 0.3.199 (rain mist): a mist draw is skipped; 0.3.212 (task 32): the name mask wraps the draw; 0.3.214 (water MRT): a water draw writes the mask itself */
-            if(!claimed){CpuScope hooks(sampledHookTimer());extensionWork("native sky observation",[&]{skyObserve(hr,t,count);});}
-            return hr;
+        }else{
+            const char* stage="draw capture/effects";
+            extensionWork(stage,[&]{
+                prepareDrawImpl(capture,count);
+                CpuScope hooks(sampledHookTimer());
+                stage="skybox cloud order";skyLayersBefore(t,count,skyRole);
+                if(sky){stage="native sky claim";skyClaim(t,count,claimed);}
+                if(!claimed&&drawGates.blob){stage="blob shadow filter";if(blobFilterActive())blobFilter(count,claimed);}
+            });
         }
-        mirrorState.gate.noteFirst(mirrorState.gate.drawTid); /* prepareDraw's prologue */
-        dropTerrainShadowSwap();dropBlobFaint();
-        const bool sky=count<=4&&drawGates.sky;
-        const char* stage="draw capture/effects";
-        extensionWork(stage,[&]{
-            prepareDrawImpl(capture,count);
-            CpuScope hooks(sampledHookTimer());
-            stage="skybox cloud order";skyLayersBefore(t,count,skyRole);
-            if(sky){stage="native sky claim";skyClaim(t,count,claimed);}
-            if(!claimed&&drawGates.blob){stage="blob shadow filter";if(blobFilterActive())blobFilter(count,claimed);}
-        });
         NorthlightParticleCapture::Prepared particle;
         if(particleOn)extensionWork("particle light capture",[&]{particle=prepareParticleDraw(claimed||mist||rainBlend||blobOriginal||shadowSwapOriginal);});
         if(spellOn&&spellGate()&&spellDraw(claimed||mist||blobOriginal||shadowSwapOriginal,rainBlend||mist)){
@@ -2580,9 +2582,9 @@ private:
         skyLayersReplay(skyRole,!claimed&&!mist,draw);
         const HRESULT hr=waterMrtDraw(nativeDraw,[&]{return nameMaskDraw(rainBlend,claimed||mist,nativeDraw);});
         if(SUCCEEDED(hr))hdrReplaySky(linearSky,claimed||mist||(skyCaptured&&*skyCaptured),draw);
-            if(FAILED(hr)&&skyRole!=NorthlightSkyComposition::Role::Unknown)skyLayers.invalidate();
-            submitParticleDraw(particle,SUCCEEDED(hr)&&!claimed&&!mist&&!blobOriginal&&!shadowSwapOriginal,false); /* 0.3.199 (rain mist): a mist draw is skipped; 0.3.212 (task 32): the name mask wraps the draw; 0.3.214 (water MRT): a water draw writes the mask itself */
-        if(sky&&!claimed){CpuScope hooks(sampledHookTimer());extensionWork("native sky observation",[&]{skyObserve(hr,t,count);});}
+        if(FAILED(hr)&&skyRole!=NorthlightSkyComposition::Role::Unknown)skyLayers.invalidate();
+        submitParticleDraw(particle,SUCCEEDED(hr)&&!claimed&&!mist&&!blobOriginal&&!shadowSwapOriginal,false);
+        if((!frameDrawGates||sky)&&!claimed){CpuScope hooks(sampledHookTimer());extensionWork("native sky observation",[&]{skyObserve(hr,t,count);});}
         return hr;
     }
     // 0.3.154: blob shadow claim with the profile frame's counts (claim() reads texture 0 for 1..256 primitives).
@@ -4142,34 +4144,31 @@ public:
     HRESULT STDMETHODCALLTYPE DrawPrimitive(D3DPRIMITIVETYPE t,UINT start,UINT count) override { Guard mirrorLock(mirrorState.gate);
         NorthlightAutoDisplacement::Args geometry{{t,0,0,0,start,count,false}};
         bool nativeSky=false,skyCaptured=false;
-        auto draw=[&]{return submitGameDraw(count,nativeSky,&skyCaptured,[&]{return ext->DrawPrimitive(t,start,count);});};
+        auto raw=[&]{return ext->DrawPrimitive(t,start,count);};
+        auto draw=[&]{return submitGameDraw(count,nativeSky,&skyCaptured,raw);};
         if(enabled&&(spellOn||particleOn))spellArgs=NorthlightSpellLayer::DrawArgs::primitive(t,start,count);
-        return drawHook(t,count,[&](IDirect3DVertexShader9* vs){NorthlightAutoDisplacement::CaptureSource normalSource;if(autoBump&&enabled&&!applied&&!failed){autoBump->capture(vs,[&]{return ext->DrawPrimitive(t,start,count);},false,&geometry,nullptr,&normalSource);}captureModelNormals(vs,[&]{return ext->DrawPrimitive(t,start,count);},false,geometry,&normalSource);world->capture(t,0,0,0,start,count,false,vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame(frame),nullptr,&normalSource.mesh,normalSource.declaration);captureWater(vs,NorthlightWaterRenderer::NoUserPointer,draw);},draw,&nativeSky,&skyCaptured);}
+        return drawHook(t,count,[&](IDirect3DVertexShader9* vs){captureGameDraw<NorthlightWaterRenderer::NoUserPointer>(vs,geometry,raw,draw);},draw,&nativeSky,&skyCaptured);}
     HRESULT STDMETHODCALLTYPE DrawIndexedPrimitive(D3DPRIMITIVETYPE t,INT base,UINT min,UINT vertices,UINT start,UINT count) override { Guard mirrorLock(mirrorState.gate);
         NorthlightAutoDisplacement::Args geometry{{t,base,min,vertices,start,count,true}};
         bool nativeSky=false,skyCaptured=false;
-        auto draw=[&]{return submitGameDraw(count,nativeSky,&skyCaptured,[&]{return ext->DrawIndexedPrimitive(t,base,min,vertices,start,count);});};
+        auto raw=[&]{return ext->DrawIndexedPrimitive(t,base,min,vertices,start,count);};
+        auto draw=[&]{return submitGameDraw(count,nativeSky,&skyCaptured,raw);};
         if(enabled&&(spellOn||particleOn))spellArgs=NorthlightSpellLayer::DrawArgs::indexed(t,base,min,vertices,start,count);
-        return drawHook(t,count,[&](IDirect3DVertexShader9* vs){NorthlightAutoDisplacement::CaptureSource normalSource;
-            NorthlightCaptureMetadata::PositionBounds positions;positions.owner=&geometry;positions.shader=vs;
-            auto captureWorld=[&](NorthlightCaptureMetadata::PositionBounds* out=nullptr){world->capture(t,base,min,vertices,start,count,true,vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame(frame),out,&normalSource.mesh,normalSource.declaration);};
-            const bool sharedTerrain=autoBump&&autoBump->active()&&enabled&&!applied&&!failed&&world->terrainShader(vs);
-            if(sharedTerrain)captureWorld(&positions);
-            if(autoBump&&enabled&&!applied&&!failed)autoBump->capture(vs,[&]{return ext->DrawIndexedPrimitive(t,base,min,vertices,start,count);},false,&geometry,&positions,&normalSource);captureModelNormals(vs,[&]{return ext->DrawIndexedPrimitive(t,base,min,vertices,start,count);},false,geometry,&normalSource);
-            if(!sharedTerrain)captureWorld();
-            captureWater(vs,NorthlightWaterRenderer::NoUserPointer,draw);},draw,&nativeSky,&skyCaptured);}
+        return drawHook(t,count,[&](IDirect3DVertexShader9* vs){captureGameDraw<NorthlightWaterRenderer::NoUserPointer>(vs,geometry,raw,draw);},draw,&nativeSky,&skyCaptured);}
     HRESULT STDMETHODCALLTYPE DrawPrimitiveUP(D3DPRIMITIVETYPE t,UINT count,const void* data,UINT stride) override { Guard mirrorLock(mirrorState.gate);
         NorthlightAutoDisplacement::Args geometry{{t,0,0,0,0,count,false},nullptr,D3DFMT_UNKNOWN,data,stride};
         bool nativeSky=false,skyCaptured=false;
-        auto draw=[&]{return submitGameDraw(count,nativeSky,&skyCaptured,[&]{return ext->DrawPrimitiveUP(t,count,data,stride);});};
+        auto raw=[&]{return ext->DrawPrimitiveUP(t,count,data,stride);};
+        auto draw=[&]{return submitGameDraw(count,nativeSky,&skyCaptured,raw);};
         if(enabled&&(spellOn||particleOn))spellArgs=NorthlightSpellLayer::DrawArgs::primitiveUP(t,count,data,stride);
-        return drawHook(t,count,[&](IDirect3DVertexShader9* vs){NorthlightAutoDisplacement::CaptureSource normalSource;if(autoBump&&enabled&&!applied&&!failed){autoBump->capture(vs,[&]{return ext->DrawPrimitiveUP(t,count,data,stride);},true,&geometry,nullptr,&normalSource);captureModelNormals(vs,[&]{return ext->DrawPrimitiveUP(t,count,data,stride);},true,geometry,&normalSource);}world->captureUP(t,0,0,count,nullptr,D3DFMT_UNKNOWN,data,stride,false,vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame(frame));captureWater(vs,NorthlightWaterRenderer::UserVertices,draw);},draw,&nativeSky,&skyCaptured);}
+        return drawHook(t,count,[&](IDirect3DVertexShader9* vs){captureGameDraw<NorthlightWaterRenderer::UserVertices>(vs,geometry,raw,draw);},draw,&nativeSky,&skyCaptured);}
     HRESULT STDMETHODCALLTYPE DrawIndexedPrimitiveUP(D3DPRIMITIVETYPE t,UINT min,UINT vertices,UINT count,const void* indices,D3DFORMAT fmt,const void* data,UINT stride) override { Guard mirrorLock(mirrorState.gate);
         NorthlightAutoDisplacement::Args geometry{{t,0,min,vertices,0,count,true},indices,fmt,data,stride};
         bool nativeSky=false,skyCaptured=false;
-        auto draw=[&]{return submitGameDraw(count,nativeSky,&skyCaptured,[&]{return ext->DrawIndexedPrimitiveUP(t,min,vertices,count,indices,fmt,data,stride);});};
+        auto raw=[&]{return ext->DrawIndexedPrimitiveUP(t,min,vertices,count,indices,fmt,data,stride);};
+        auto draw=[&]{return submitGameDraw(count,nativeSky,&skyCaptured,raw);};
         if(enabled&&(spellOn||particleOn))spellArgs=NorthlightSpellLayer::DrawArgs::indexedUP(t,min,vertices,count,indices,fmt,data,stride);
-        return drawHook(t,count,[&](IDirect3DVertexShader9* vs){NorthlightAutoDisplacement::CaptureSource normalSource;if(autoBump&&enabled&&!applied&&!failed){autoBump->capture(vs,[&]{return ext->DrawIndexedPrimitiveUP(t,min,vertices,count,indices,fmt,data,stride);},true,&geometry,nullptr,&normalSource);captureModelNormals(vs,[&]{return ext->DrawIndexedPrimitiveUP(t,min,vertices,count,indices,fmt,data,stride);},true,geometry,&normalSource);}world->captureUP(t,min,vertices,count,indices,fmt,data,stride,true,vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame(frame));captureWater(vs,NorthlightWaterRenderer::UserVerticesAndIndices,draw);},draw,&nativeSky,&skyCaptured);}
+        return drawHook(t,count,[&](IDirect3DVertexShader9* vs){captureGameDraw<NorthlightWaterRenderer::UserVerticesAndIndices>(vs,geometry,raw,draw);},draw,&nativeSky,&skyCaptured);}
 };
 
 static bool hdrGamePresentation(IDirect3DDevice9* owner,D3DPRESENT_PARAMETERS* out){return static_cast<Device*>(owner)->gamePresentation(out);}
