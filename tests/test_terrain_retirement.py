@@ -73,7 +73,9 @@ int main(int argc,char**){
   // A detached cache cannot republish an old snapshot, even with identical bytes.
   auto fresh=read(c,d,6999);assert(fresh!=held&&digest(*fresh)==saved);
   ++rev;auto moved=held->positions[0];moved.z+=13;d.put(6999*290,moved);auto changed=read(c,d,6999);assert(changed->positions[0].z==moved.z&&digest(*held)==saved);d.put(6999*290,held->positions[0]);++rev;
+  if(mode==1||mode==4||mode==6)assert(!c.persistentEntries()&&"TERRAIN_REFILL_BEFORE_FREE");
   if(mode==1||mode==2||mode==4||mode==6)release(blocked);assert(queue.waitIdle(10000));
+  read(c,d,6999);assert(c.persistentEntries());
   assert(d.vb.refs==1&&d.ib.refs==1&&d.declaration.refs==1);
   std::printf("TERRAIN_RETIREMENT mode=%u deferredBytes=%zu boundaryMs=%.6f\n",mode,deferred,ms);
  }

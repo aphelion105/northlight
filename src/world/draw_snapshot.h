@@ -168,9 +168,12 @@ class Frame {
     std::array<std::unique_ptr<DecodedEntry>,1024> decoded_;
     std::unordered_multimap<std::uint64_t,DecodedEntry*> decodedLookup_;
     struct RetiredIndices {
+        // Destroyed last, after the potentially expensive container frees.
+        const std::shared_ptr<const bool> complete=std::make_shared<const bool>(true);
         decltype(decoded_) entries;
         decltype(decodedLookup_) lookup;
     };
+    std::weak_ptr<const bool> retiringIndices_;
     size_t decodedBytes_=sizeof(decoded_);
     NorthlightIntrusiveLRU::List<DecodedEntry> decodedLRU_;
     std::array<size_t,1024> decodedFree_{};size_t decodedFreeCount_=1024;
@@ -275,8 +278,10 @@ private:
         NorthlightIntrusiveLRU::List<CacheEntry> lru;
         std::vector<Frame*> members;size_t bytes=0,limit=0;unsigned serial=0;std::uint64_t generation=0;
         std::shared_ptr<NorthlightSourceIdentity::Ledger> live=std::make_shared<NorthlightSourceIdentity::Ledger>();size_t metadataBytes=0;
+        std::weak_ptr<const bool> retiring;
     };
     struct RetiredSources {
+        const std::shared_ptr<const bool> complete=std::make_shared<const bool>(true);
         decltype(SourcePool::entries) entries;
         decltype(SourcePool::identities) identities;
         decltype(SourcePool::replayCandidates) replayCandidates;
@@ -505,6 +510,8 @@ private:
         mesh.replayIdentity=previous->replayIdentity?previous->replayIdentity:previous->sourceIdentity;++replayContentHits_;
     }
     bool store(const CacheKey& key,Mesh&& mesh,std::uint64_t ibBegin,std::uint64_t ibBytes,UINT low,const std::uint64_t* begins,const std::uint64_t* lockBytes,const std::uint64_t* readBytes,std::shared_ptr<const Mesh>* shared){
+        // Detached bytes still occupy VA. Capture remains transient until freed.
+        if(!sources_->retiring.expired())return false;
         try{
             replayContent(key,mesh);
             CacheEntry entry;entry.key=key;entry.producer=this;entry.compacted=compacted_;entry.low=low;
@@ -568,6 +575,7 @@ public:
             for(auto& item:sources_->entries){auto*& declaration=item.second.declaration.p;if(declaration){declaration->Release();declaration=nullptr;}}
             retired->entries.swap(sources_->entries);retired->identities.swap(sources_->identities);
             retired->replayCandidates.swap(sources_->replayCandidates);sources_->lru.clear();
+            sources_->retiring=retired->complete;
             if(batch?batch->retire(retired,sources_->bytes):retirement->retire(retired,sources_->bytes))deferred=sources_->bytes;
             // Queue contention/cap/allocation failure keeps synchronous release.
         }catch(...){}
@@ -632,6 +640,7 @@ private:
     }
     void rememberPlan(const void* data,size_t rawBytes,std::uint64_t hash,D3DFORMAT format,
                       const Draw& draw,const Mesh& mesh,UINT low,UINT high){
+        if(!sources_->retiring.expired()||!retiringIndices_.expired())return;
         try {
             const size_t estimate=sizeof(DecodedEntry)+128+rawBytes+mesh.indices.size()*sizeof(UINT)+copyRuns_.size()*sizeof(CopyRun);
             if(estimate>IndexCacheLimit-sizeof(decoded_))return;
@@ -841,6 +850,7 @@ public:
         if((retirement||batch)&&indexCacheEntries())try{
             auto retired=std::make_shared<RetiredIndices>();
             retired->entries.swap(decoded_);retired->lookup.swap(decodedLookup_);
+            retiringIndices_=retired->complete;
             if(batch?batch->retire(retired,decodedBytes_):retirement->retire(retired,decodedBytes_))deferred+=decodedBytes_;
         }catch(...){} // Full queue or allocation failure frees synchronously.
         decodedLookup_.clear();for(auto& entry:decoded_)entry.reset();decodedBytes_=sizeof(decoded_);decodedFreeCount_=decodedFree_.size();

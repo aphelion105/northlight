@@ -14,7 +14,7 @@ namespace NorthlightMemoryDiagnostics {
 struct Sample {
     std::uint64_t availableVirtual=0,totalVirtual=0,availablePhysical=0;
     std::uint64_t largestFree=0,totalFree=0,regions=0;
-    std::uint64_t tick=0,wallNanoseconds=0;
+    std::uint64_t tick=0,wallNanoseconds=0,startedTick=0;
     bool valid=false;
 };
 class Sampler {

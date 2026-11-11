@@ -321,7 +321,11 @@ private:
     static constexpr std::uint64_t ContentLimit=32u*1024u*1024u;
     // Entry slots share the existing byte budget; small draws need not evict at 4096.
     static constexpr size_t ContentEntries=8192;
-    struct RetiredContent {std::array<std::unique_ptr<ContentEntry>,ContentEntries> entries;};
+    struct RetiredContent {
+        const std::shared_ptr<const bool> complete=std::make_shared<const bool>(true);
+        std::array<std::unique_ptr<ContentEntry>,ContentEntries> entries;
+    };
+    std::weak_ptr<const bool> retiringContent_;
     std::array<std::unique_ptr<ContentEntry>,ContentEntries> content;
     std::array<size_t,ContentEntries> freeContent{};size_t freeContentCount=ContentEntries;
     std::unordered_multimap<std::uint64_t,ContentEntry*> contentLookup;
@@ -386,6 +390,7 @@ private:
                          const std::vector<unsigned char>& rawIndices,const std::vector<unsigned char>& rawVertices,
                          const std::vector<UINT>& sourceOffsets,
                           const std::shared_ptr<const MeshSnapshot>& snapshot,const Diagnostics& detail,Stamp verified,const DecodedChoice& decoded,std::uint64_t vertexSpan,const std::shared_ptr<SourceIndices>& indexPlan={}){
+      if(!retiringContent_.expired())return;
       try {
         // Keep exact indices and a mapping to the captured XYZ for revalidation
         // after buffer writes. The other vertex attributes are not used here.
@@ -513,6 +518,7 @@ public:
             auto retired=std::make_shared<RetiredContent>();
             for(auto& entry:content)if(entry&&entry->decoded)--entry->decoded->entries;
             retired->entries.swap(content);
+            retiringContent_=retired->complete;
             const auto bytes=size_t(contentBytes)+sizeof(RetiredContent);
             if(batch?batch->retire(retired,bytes):retirement->retire(retired,bytes))deferred=bytes;
         }catch(...){}

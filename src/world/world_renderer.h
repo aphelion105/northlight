@@ -2291,10 +2291,13 @@ private:
             result->solveWorkMs=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-solveWorkStart).count();
             result->movingStats=movingStats;result->pathRecordBytes=dynamicProbes.pathBytes();
             result->relightStats=relightCache.stats();
+            // Completion and later camera/actor publications retain the same
+            // display-only fallback as partial updates; solved invalid wins.
+            NorthlightGI::retainProbeDisplayFallback(result->atlas,displayFallback);
             bool publishObsolete=false;
             {std::lock_guard<std::mutex> lock(mutex);if(stopping)return;
              if(!compatibleTransport())publishObsolete=true;
-             else{result->serial=++serial;published=result;publicationCadence.published(GetTickCount());displayFallback.clear();completedActorHash=solvedActorHash;completedBaseId=r.baseId;concurrentSolves+=concurrent;}}
+             else{result->serial=++serial;published=result;publicationCadence.published(GetTickCount());completedActorHash=solvedActorHash;completedBaseId=r.baseId;concurrentSolves+=concurrent;}}
             if(publishObsolete){noteSuperseded();result->atlas.clear();publishProgress();}
         }
       }catch(const std::bad_alloc&){workerFaultCode.store(1);}

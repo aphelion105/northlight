@@ -273,7 +273,7 @@ static void memmapProcess(const char* point,long device){
 // Sampler thread entry: the same walk, at below-normal priority (it also feeds the memory guard).
 static NorthlightMemoryDiagnostics::Sample queryAddressSpace(void* context) {
     SetThreadPriority(GetCurrentThread(),THREAD_PRIORITY_BELOW_NORMAL); // one cheap call per walk (seconds apart)
-    return queryMemoryDiagnostic(context);
+    const DWORD started=GetTickCount();auto sample=queryMemoryDiagnostic(context);sample.startedTick=started;return sample;
 }
 template<size_t N> static bool contains(const uint64_t (&a)[N], uint64_t value) {
     for (auto x : a) if (x == value) return true;
@@ -3529,7 +3529,7 @@ public:
         stateBlocks.clear();QueryPerformanceCounter(&stateEnd);
         if(water)water->releaseStateCache();QueryPerformanceCounter(&waterEnd);
         const auto& t=worldTrim;
-        QueryPerformanceCounter(&end);const DWORD now=GetTickCount();memoryGuard.trimCompleted(now);
+        QueryPerformanceCounter(&end);const DWORD now=GetTickCount();
         const auto elapsed=[&](LARGE_INTEGER a,LARGE_INTEGER b){return cpuFrequency.QuadPart>0?1000.0*double(b.QuadPart-a.QuadPart)/double(cpuFrequency.QuadPart):0.0;};
         logf("MEMORY guard trim frame=%u exactWalk=1 beforeAvailableVirtualMiB=%llu beforeLargestFreeMiB=%llu regions=%llu freedEstimateMiB=%.1f terrainMiB=%.1f snapshotMiB=%.1f indexMiB=%.1f poolMiB=%.1f gpuCacheMiB=%.1f workerLocalGeometry=1 ms=%.3f surfaceMs=%.3f materialMs=%.3f stateBlocksMs=%.3f waterStateMs=%.3f worldMs=%.3f trims=%u tick=%lu worldQuiesceMs=%.3f terrainClearMs=%.3f snapshotClearMs=%.3f poolClearMs=%.3f replayGpuClearMs=%.3f meshPoolsMs=%.3f rigidClearMs=%.3f snapshotDeferredMiB=%.1f terrainDeferredMiB=%.1f critical=%u",frame,
             (unsigned long long)(trigger.availableVirtual>>20),(unsigned long long)(trigger.largestFree>>20),(unsigned long long)trigger.regions,
@@ -3790,13 +3790,16 @@ public:
         if(memoryDiagnostics&&enabled){
             try{
                 const DWORD now=GetTickCount();
+                if(memoryGuard.retiring()&&NorthlightStreaming::cpuRetirement().waitIdle(0)){
+                    memoryGuard.trimCompleted(now);memoryDiagnostics->request();
+                }
                 if(memoryGuard.requestDue(now))memoryDiagnostics->request();
                 auto& sample=memorySample;
                 if(memoryDiagnostics->take(sample)){
                     if(sample.valid){
                         // The geometry builder's unmet floor also enters pressure (memory_guard.h demand).
                         const std::uint64_t demand=world?world->geometryMemoryDemand.load(std::memory_order_relaxed):0;
-                        const auto decision=memoryGuard.update(sample.availableVirtual,sample.largestFree,DWORD(sample.tick),demand);
+                        const auto decision=memoryGuard.update(sample.availableVirtual,sample.largestFree,DWORD(sample.tick),demand,DWORD(sample.startedTick));
                         memoryTrim=decision.trim;
                         if(decision.afterTrim)logf("MEMORY guard after-trim exactWalk=1 availableVirtualMiB=%llu largestFreeMiB=%llu regions=%llu pressure=%u trims=%u sampleTick=%llu",
                             (unsigned long long)(sample.availableVirtual>>20),(unsigned long long)(sample.largestFree>>20),(unsigned long long)sample.regions,unsigned(memoryGuard.pressure()),memoryGuard.trims(),(unsigned long long)sample.tick);
@@ -3895,7 +3898,7 @@ public:
             LARGE_INTEGER workStart={},worldTrimEnd={},worldEnd={},materialEnd={},replayEnd={},streamEnd={},workEnd={};
             const double ms=cpuFrequency.QuadPart>0?1000.0/double(cpuFrequency.QuadPart):0.0;
             QueryPerformanceCounter(&workStart);worldTrimEnd=workStart;
-            const bool batchCPU=memoryGuard.pressure()&&!memoryGuard.capsHalved();
+            const bool batchCPU=memoryGuard.pressure();
             NorthlightStreaming::CpuRetirementBatch cpuRetirementBatch(batchCPU?&NorthlightStreaming::cpuRetirement():nullptr);
             auto* retirementBatch=batchCPU?&cpuRetirementBatch:nullptr;
             // A mandatory full clear makes cap-driven LRU eviction redundant.
@@ -3912,6 +3915,8 @@ public:
             QueryPerformanceCounter(&streamEnd);
             if(memoryTrim)trimMemory(memorySample,worldTrim,double(worldTrimEnd.QuadPart-workStart.QuadPart)*ms,retirementBatch);
             const bool retirementQueued=cpuRetirementBatch.finish();
+            if(cpuRetirementBatch.queuedBytes())memoryGuard.trimDeferred();
+            else if(memoryTrim)memoryGuard.trimCompleted(GetTickCount());
             QueryPerformanceCounter(&workEnd);
             if(cpuRetirementBatch.count())logf("MEMORY guard retirement frame=%u owners=%zu stagedMiB=%.3f queuedMiB=%.3f synchronousMiB=%.3f queued=%u fallbackSynchronous=%u critical=%u",frame,cpuRetirementBatch.count(),double(cpuRetirementBatch.bytes())/(1u<<20),double(cpuRetirementBatch.queuedBytes())/(1u<<20),double(cpuRetirementBatch.bytes()-cpuRetirementBatch.queuedBytes())/(1u<<20),unsigned(retirementQueued),unsigned(!retirementQueued),unsigned(memoryGuard.capsHalved()));
             // Exclusive phases partition this boundary; the trim line also

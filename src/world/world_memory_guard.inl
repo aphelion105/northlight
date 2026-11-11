@@ -30,10 +30,10 @@
         MemoryTrim t;auto phaseStart=std::chrono::steady_clock::now();
         const auto elapsed=[&](){const auto now=std::chrono::steady_clock::now();const double ms=std::chrono::duration<double,std::milli>(now-phaseStart).count();phaseStart=now;return ms;};
         prepareQuiesce();stateBlocks.clear();t.quiesceMs=elapsed(); /* 0.3.177 */
-        {const auto before=terrainBoundsCache.sourceLiveBytes()+terrainBoundsCache.sourceMetadataBytes();t.terrainDeferred=terrainBoundsCache.clearPersistent(critical?nullptr:&NorthlightStreaming::cpuRetirement(),critical?nullptr:batch);const auto after=terrainBoundsCache.sourceLiveBytes()+terrainBoundsCache.sourceMetadataBytes();t.terrain=size_t(before-std::min(before,after));}
+        {const auto before=terrainBoundsCache.sourceLiveBytes()+terrainBoundsCache.sourceMetadataBytes();t.terrainDeferred=terrainBoundsCache.clearPersistent(critical&&!batch?nullptr:&NorthlightStreaming::cpuRetirement(),batch);const auto after=terrainBoundsCache.sourceLiveBytes()+terrainBoundsCache.sourceMetadataBytes();t.terrain=size_t(before-std::min(before,after));}
         t.terrainMs=elapsed();
         const auto sourceBefore=replaySnapshots.sourceLiveBytes()+replaySnapshots.sharedSourceMetadataBytes();
-        {const auto before=replaySnapshots.indexCacheBytes();t.snapshotDeferred=replaySnapshots.clearIndexCache(critical?nullptr:&NorthlightStreaming::cpuRetirement(),critical?nullptr:batch);t.indices=before-std::min(before,replaySnapshots.indexCacheBytes());} /* clears snapshots too */
+        {const auto before=replaySnapshots.indexCacheBytes();t.snapshotDeferred=replaySnapshots.clearIndexCache(critical&&!batch?nullptr:&NorthlightStreaming::cpuRetirement(),batch);t.indices=before-std::min(before,replaySnapshots.indexCacheBytes());} /* clears snapshots too */
         const auto sourceAfter=replaySnapshots.sourceLiveBytes()+replaySnapshots.sharedSourceMetadataBytes();t.snapshots=sourceBefore-std::min(sourceBefore,sourceAfter);
         t.snapshotsMs=elapsed();
         t.pool=pooledSnapshotBytes+freeReplays.size()*sizeof(Replay);freeReplays.clear();freeReplays.shrink_to_fit();pooledSnapshotBytes=0;
