@@ -42,6 +42,7 @@
       "test_m2_lamp_self_shadow_gpu.py",
       "test_shadow_transition_gpu.py",
       "test_sky_environment_gpu.py",
+      "test_hdr_sun_gpu.py",
       "test_effect_coverage_gpu.py",
       "test_weather_motion_gpu.py",
       "test_sky_planets_gpu.py"

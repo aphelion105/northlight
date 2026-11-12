@@ -10,7 +10,7 @@
 #include "celestial_glow.h"
 
 int main(int argc,char** argv){
-    assert(argc==6);constexpr unsigned N=64;
+    assert(argc==7);constexpr unsigned N=64;
     HWND window=CreateWindowExW(0,L"STATIC",L"",WS_OVERLAPPED,0,0,N,N,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);assert(window);
     auto library=LoadLibraryA(argv[1]);assert(library);
     auto create=reinterpret_cast<IDirect3D9*(WINAPI*)(UINT)>(reinterpret_cast<void*>(GetProcAddress(library,"Direct3DCreate9")));assert(create);auto* api=create(D3D_SDK_VERSION);assert(api);
@@ -95,7 +95,7 @@ int main(int argc,char** argv){
     blocked->Release();hidden->Release();
     c[47][3]=1.8f;for(unsigned k=0;k<3;++k)c[47][k]=c[48][k]=1;
     c[12][3]=0;c[12][0]=1;const auto body=render(disc,clear);
-    float bodyPeak=0;for(unsigned i=0;i<N*N;++i)bodyPeak=std::max(bodyPeak,body[i*4]);assert(bodyPeak>7.9f&&bodyPeak<8.01f);++cases;
+    float bodyPeak=0;for(unsigned i=0;i<N*N;++i)bodyPeak=std::max(bodyPeak,body[i*4]);assert(bodyPeak>31.9f&&bodyPeak<32.1f);++cases;
     // Captured Dalaran inputs include a black native body tint, with a bright
     // selected glow core. The HDR source must use that core without the SDR
     // half mix, including the late sky-layer composition path.
@@ -104,9 +104,12 @@ int main(int argc,char** argv){
     const float core[3]={.977f,1.f,.776f};std::copy(core,core+3,hue.sunCore);
     for(unsigned k=0;k<3;++k){c[9][k]=0;c[48][k]=core[k];}c[47][3]=1;c[12][0]=3.5f;
     auto peakOf=[](const auto& image){float peak=0;for(unsigned i=0;i<N*N;++i)peak=std::max(peak,image[i*4+1]);return peak;};
-    const float solarPeak=peakOf(render(disc,clear));assert(solarPeak>27.9f&&solarPeak<28.1f);++cases;
+    const auto solarBody=render(disc,clear);
+    const float solarPeak=peakOf(solarBody);assert(solarPeak>111.9f&&solarPeak<112.1f);++cases;
     IDirect3DPixelShader9* dimDisc=nullptr;const auto dimCode=read(argv[5]);ok(d->CreatePixelShader(reinterpret_cast<const DWORD*>(dimCode.data()),&dimDisc));
-    const float dimPeak=peakOf(render(dimDisc,clear));assert(dimPeak>5.9f&&dimPeak<6.1f&&solarPeak>4.6f*dimPeak);dimDisc->Release();++cases;
+    const float dimPeak=peakOf(render(dimDisc,clear));assert(dimPeak>23.9f&&dimPeak<24.1f&&solarPeak>4.6f*dimPeak);dimDisc->Release();++cases;
+    IDirect3DPixelShader9* weakDisc=nullptr;const auto weakCode=read(argv[6]);ok(d->CreatePixelShader(reinterpret_cast<const DWORD*>(weakCode.data()),&weakDisc));
+    const auto weakBody=render(weakDisc,clear);assert(peakOf(weakBody)>27.9f&&peakOf(weakBody)<28.1f);weakDisc->Release();++cases;
     c[10][0]=0;const float sdrPeak=peakOf(render(disc,clear));assert(sdrPeak>.499f&&sdrPeak<.501f);++cases;
     NorthlightCelestialGlow::surfaceTint(hue,0,dark,false,expectedTint);assert(expectedTint[1]==.5f);
     NorthlightCelestialGlow::surfaceTint(hue,0,dark,true,c[50]);assert(c[50][1]==1);
@@ -120,6 +123,7 @@ int main(int argc,char** argv){
     for(unsigned k=0;k<3;++k)assert(c[50][k]==expectedTint[k]);
     hue.strength=0;NorthlightCelestialGlow::surfaceTint(hue,0,dark,true,expectedTint);for(float x:expectedTint)assert(x==0);
     std::memset(c[49],0,32);for(unsigned k=0;k<3;++k)c[9][k]=c[48][k]=1;c[47][3]=1.8f;c[12][0]=1;c[12][3]=0;c[12][2]=2.4f;
+    c[10][0]=3;c[11][3]=0;assert(std::fabs(peakOf(render(disc,clear))-2)<.002f);++cases;c[10][0]=2;c[11][3]=1;
     NorthlightHdr::Frame frame;NorthlightHdr::Settings settings;settings.autoExposure=false;settings.bloom=0;settings.paperWhite=203;settings.maxNits=1500;
     ok(d->BeginScene());ok(frame.prepareLegacy(d,white,nullptr,nullptr,N,N,0,.94f,settings));ok(d->EndScene());
     unsigned bright[2]{};float presentedPeak[2]{};
@@ -131,7 +135,26 @@ int main(int argc,char** argv){
         const auto presented=pixels(output);for(unsigned i=0;i<N*N;++i){const float nits=80*presented[i*4];assert(std::isfinite(nits)&&nits<=1501);bright[old]+=nits>203*1.2f;presentedPeak[old]=std::max(presentedPeak[old],nits);}scene->Release();++cases;
     }
     assert(bright[0]>0&&bright[1]>bright[0]*4&&presentedPeak[0]>500);
-    std::printf("HDR_SUN_GPU_PASS cases=%u transferPixels=%u transferMaxError=%g veilChannels=%u veilMaxError=%g wrongVeilMaxError=%g horizonCounterfactualPixels=%u glarePeak=%g oldGlarePeak=%g compactSourcePeak=%g brightArea=%u/%u presentedPeakNits=%g/%g solarCore=%g previousSolarCore=%g\n",cases,transferPixels,maxTransferError,veilChannels,maxVeilError,maxWrongVeilError,oldLeaks,haloPeak,oldPeak,bodyPeak,bright[0],bright[1],presentedPeak[0],presentedPeak[1],solarPeak,dimPeak);
+    // A sun must still read as an HDR source at the daytime adaptation limit,
+    // after moderate atmospheric extinction. Bloom must not supply its energy.
+    settings.autoExposure=true;settings.minEV=settings.maxEV=-2;settings.maxNits=1000;
+    float daylightPeak[2]{};
+    for(float transmission:{1.f,.5f,.25f})for(unsigned previous=0;previous<2;++previous){
+        const auto& source=previous?weakBody:solarBody;
+        Image im{N,N,D3DFMT_A32B32G32R32F,16,std::vector<unsigned char>(N*N*16)};
+        for(unsigned i=0;i<N*N;++i){float pixel[4]={0,0,0,1};
+            for(unsigned k=0;k<3;++k)pixel[k]=.5f+transmission*source[i*4+k]*source[i*4+3];
+            std::memcpy(im.pixels.data()+i*16,pixel,16);}
+        auto* scene=texture(d,im);ok(NorthlightHdr::quadState(d,target,N,N));ok(d->SetTexture(0,scene));ok(d->SetPixelShader(copy));
+        ok(d->BeginScene());ok(NorthlightHdr::drawQuad(d,N,N));ok(frame.finish(d,target,output,settings,0,true,true));ok(d->EndScene());
+        daylightPeak[previous]=80*peakOf(pixels(output));
+        std::printf("HDR_SUN_DAYLIGHT previous=%u transmission=%g peakNits=%g\n",previous,transmission,daylightPeak[previous]);
+        assert(daylightPeak[previous]<=settings.maxNits+1);
+        if(!previous)assert(daylightPeak[0]>settings.maxNits*.75f);
+        else if(transmission<=.5f)assert(daylightPeak[1]<settings.maxNits*.6f&&daylightPeak[0]>daylightPeak[1]*1.5f);
+        scene->Release();++cases;
+    }
+    std::printf("HDR_SUN_GPU_PASS cases=%u transferPixels=%u transferMaxError=%g veilChannels=%u veilMaxError=%g wrongVeilMaxError=%g horizonCounterfactualPixels=%u glarePeak=%g oldGlarePeak=%g compactSourcePeak=%g brightArea=%u/%u presentedPeakNits=%g/%g solarCore=%g halfTintSolarCore=%g daylightPeakNits=%g/%g\n",cases,transferPixels,maxTransferError,veilChannels,maxVeilError,maxWrongVeilError,oldLeaks,haloPeak,oldPeak,bodyPeak,bright[0],bright[1],presentedPeak[0],presentedPeak[1],solarPeak,dimPeak,daylightPeak[0],daylightPeak[1]);
     frame.reset();for(unsigned k=0;k<7;++k)d->SetTexture(k,nullptr);d->SetPixelShader(nullptr);
     clear->Release();white->Release();disc->Release();visibility->Release();veil->Release();wrongDisc->Release();wrongVisibility->Release();wrongVeil->Release();copy->Release();target->Release();output->Release();staging->Release();d->Release();api->Release();FreeLibrary(library);DestroyWindow(window);
 }

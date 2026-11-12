@@ -29,6 +29,9 @@ float4 DiscSourceUV[32] : register(c13); // fixed equal-area taps: xy scene UV (
 float4 DiscHistory : register(c45); // previous valid, falling/rising update factors
 float4 DiscGlowHue : register(c47); // glow hue RGB (zone/time sun glow colour); disc: hue mix, glare: tail weight
 float4 DiscGlowCore : register(c48); // hot-core colour RGB, ring wrap (0 = no ring)
+// Solar emission must retain HDR headroom through daytime -2 EV adaptation
+// and atmospheric transmission; the lunar scale and SDR appearance stay fixed.
+static const float SunHdrScale=32;
 float3 discRay(float2 uv){
     float2 ndc=(uv-.5*DiscImage.xy)*float2(2,-2)+float2(-1,1);
     float3 view=float3(ndc/DiscProjection.xy,DiscProjection.z);
@@ -192,7 +195,7 @@ float4 CelestialDiscPS(float2 uv:TEXCOORD0):COLOR0 {
     bool moon=abs(DiscPolicy.x-3)<.5||DiscPolicy.x>4.5;
     // The linear solar core owns HDR emission. The half-strength tint mix is
     // the SDR surface look; decoding it here squared the loss of headroom.
-    if(DiscPolicy.x>1.5)encoded=discDecode(texel.rgb)*DiscEmission.x*discDecode(lerp(saturate(DiscColor.rgb),DiscGlowCore.rgb,(moon?.5:1)*DiscGlowHue.w))*(moon?2:8);
+    if(DiscPolicy.x>1.5)encoded=discDecode(texel.rgb)*DiscEmission.x*discDecode(lerp(saturate(DiscColor.rgb),DiscGlowCore.rgb,(moon?.5:1)*DiscGlowHue.w))*(moon?2:SunHdrScale);
     if(DiscPolicy.x>3.5)encoded=max(encoded-discDecode(nativeSurface),0);
     alpha=texel.a*saturate(DiscColor.w);
     // The native billboard's horizon fade (DNPlanet::ClipGeometry): on its plane 12 away, opaque from 0.4 over the
@@ -211,7 +214,7 @@ float4 CelestialDiscPS(float2 uv:TEXCOORD0):COLOR0 {
         float surfaceAlpha=texel.a*saturate(DiscSkyComposition.z)*saturate(30*ray.z/forward)*terrainVisible;
         if(max(abs(local.x),abs(local.y))>1||surfaceAlpha<.001)surfaceAlpha=0;
         float3 surface=saturate(texel.rgb*DiscSkyComposition.y)*DiscSurfaceTint.rgb;
-        if(DiscPolicy.x>1.5)surface=discDecode(texel.rgb)*DiscSkyComposition.y*discDecode(DiscSurfaceTint.rgb)*(DiscPolicy.x>2.5?2:8);
+        if(DiscPolicy.x>1.5)surface=discDecode(texel.rgb)*DiscSkyComposition.y*discDecode(DiscSurfaceTint.rgb)*(DiscPolicy.x>2.5?2:SunHdrScale);
         if(DiscPolicy.x>.5&&DiscPolicy.x<1.5)surface=discDecode(surface);
         surface*=surfaceAlpha;
         float3 halo=alpha<.001?0:outputColor(encoded);

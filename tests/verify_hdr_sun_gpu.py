@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # northlight-test: requires=windows-gpu,zig
-"""Authored sun/horizon HDR regression with generated wrong-output controls."""
+"""Sun HDR emission, daytime adaptation and horizon regression with failing controls."""
 import argparse,hashlib,json,os,subprocess,sys
 from pathlib import Path
 sys.path[:0]=[str(Path(__file__).resolve().parents[1]),str(Path(__file__).resolve().parents[1]/'scripts/shaders')]
@@ -10,7 +10,9 @@ from windows_gpu_guard import processes
 
 def main():
     p=argparse.ArgumentParser(__doc__)
-    for name in ('dxvk2','dxvk3','output'):p.add_argument('--'+name,type=Path,required=True)
+    p.add_argument('--dxvk2',type=Path,default=fp.client_root()/'renderer-backends/dxvk2/dxvk2_d3d9.dll')
+    p.add_argument('--dxvk3',type=Path,default=fp.client_root()/'renderer-backends/dxvk/dxvk_d3d9.dll')
+    p.add_argument('--output',type=Path,default=fp.output_dir()/'hdr-sun')
     a=p.parse_args();processes();out=a.output.resolve()
     if fp.is_client(out):raise SystemExit('Use an isolated test output directory.')
     out.mkdir(parents=True,exist_ok=True);source=fp.SHADERS/'celestial_disc_effects.hlsl'
@@ -29,6 +31,10 @@ def main():
     assert dim!=source.read_text(encoding='utf-8')
     dim_source=out/'dim-solar-core.hlsl';dim_source.write_text(dim,encoding='utf-8',newline='\n')
     dim_binary=out/'dim-solar-core.bin';compiler.compile(dim_source,'CelestialDiscPS','ps_3_0',dim_binary);files.append(dim_binary)
+    weak=source.read_text(encoding='utf-8').replace('SunHdrScale=32','SunHdrScale=8')
+    assert weak!=source.read_text(encoding='utf-8')
+    weak_source=out/'weak-daylight-sun.hlsl';weak_source.write_text(weak,encoding='utf-8',newline='\n')
+    weak_binary=out/'weak-daylight-sun.bin';compiler.compile(weak_source,'CelestialDiscPS','ps_3_0',weak_binary);files.append(weak_binary)
     binary=out/'hdr_sun_glare_gpu.exe'
     subprocess.run([str(fp.zig()),'c++','-target','x86-windows-gnu','-std=c++17','-O2','-fno-rtti',*fp.include_flags(),str(fp.TESTS/'hdr_sun_glare_gpu.cpp'),'-luser32','-o',str(binary)],env=fp.zig_env(),check=True)
     digest=lambda path:hashlib.sha256(path.read_bytes()).hexdigest()

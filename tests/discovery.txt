@@ -197,6 +197,7 @@ test_hdr_reset.py
 test_hdr_sky_replay_gpu.py
 test_hdr_sky_residual_gpu.py
 test_hdr_sky_storage_gpu.py
+test_hdr_sun_gpu.py
 test_hdr_ui_patch.py
 test_hdr_water_transfer_gpu.py
 test_horizon_haze.py
