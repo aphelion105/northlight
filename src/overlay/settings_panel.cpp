@@ -796,6 +796,7 @@ struct SettingsPanel::State {
         if(!compact){
             ImGui::TextDisabled("%u frame intervals | hardware 1 Hz",timing.samples);
             if(ImGui::CollapsingHeader("How these metrics are measured")){
+            ImGui::TextWrapped("Current FPS uses the latest ~250 ms and updates every 250 ms.");
             ImGui::TextWrapped("Last %u eligible intervals (up to 4096). Lows use the mean of the slowest 1%% / 0.1%%; at least 100 / 1000 samples are needed. Unfocused frames, capture frames and gaps over 2 seconds are excluded.",timing.samples);
             ImGui::TextWrapped("Hardware is sampled once per second. -- means unavailable. GPU interval covers Northlight effects and can include idle gaps; CPU is elapsed effects time. Neither measures the whole game's GPU busy time.");
             ImGui::TextWrapped("VRAM is driver-reported dedicated-memory use when available; VRAM game is this process's local-memory use / OS budget. It is not the card's total resident memory.");

@@ -18,17 +18,17 @@ struct Frame {
 };
 struct Timing {
     static constexpr unsigned GraphSize=240;
-    unsigned samples=0,graphCount=0;double fps=0,meanMs=0,maxMs=0,low1=-1,low01=-1;
+    unsigned samples=0,graphCount=0;double fps=-1,meanMs=0,maxMs=0,low1=-1,low01=-1;
     std::array<float,GraphSize> graph{};Frame frame;
 };
 class History {
     static constexpr unsigned Capacity=4096;
-    std::array<float,Capacity> samples_{};unsigned count_=0,next_=0;
+    std::array<float,Capacity> samples_{};unsigned count_=0,next_=0,recent_=0;
     int64_t previous_=0;bool primed_=false,countersKnown_=false;
     uint64_t event_=0,idle_=0;Frame latest_;
 public:
     void reset(){count_=next_=0;discontinuity();latest_={};}
-    void discontinuity(){primed_=countersKnown_=false;}
+    void discontinuity(){primed_=countersKnown_=false;recent_=0;}
     void add(int64_t tick,int64_t frequency,bool eligible,Frame frame){
         if(!eligible||frequency<=0){discontinuity();return;}
         if(frame.streamed&&countersKnown_){
@@ -37,7 +37,8 @@ public:
         }
         countersKnown_=frame.streamed;event_=frame.eventWaitNs;idle_=frame.queueIdleNs;latest_=frame;
         if(primed_){const double ms=double(tick-previous_)*1000/double(frequency);
-            if(ms>0&&ms<=2000&&std::isfinite(ms)){samples_[next_]=float(ms);next_=(next_+1)%Capacity;count_=std::min(count_+1,Capacity);}}
+            if(ms>0&&ms<=2000&&std::isfinite(ms)){samples_[next_]=float(ms);next_=(next_+1)%Capacity;count_=std::min(count_+1,Capacity);recent_=std::min(recent_+1,Capacity);}
+            else recent_=0;}
         previous_=tick;primed_=true;
     }
     void graph(Timing& out)const{
@@ -46,9 +47,13 @@ public:
     }
     Timing read()const{
         Timing out;graph(out);if(!count_)return out;
+        // Current FPS uses about 250 ms; lows retain the full history.
+        double recentMs=0;unsigned recentFrames=0;
+        while(recentFrames<recent_&&recentMs<250){recentMs+=samples_[(next_+Capacity-1-recentFrames)%Capacity];++recentFrames;}
+        if(recentFrames)out.fps=1000*recentFrames/recentMs;
         std::array<float,Capacity> ordered{};double sum=0;
         for(unsigned i=0;i<count_;++i){ordered[i]=samples_[i];sum+=ordered[i];}
-        std::sort(ordered.begin(),ordered.begin()+count_);out.meanMs=sum/count_;out.fps=1000/out.meanMs;out.maxMs=ordered[count_-1];
+        std::sort(ordered.begin(),ordered.begin()+count_);out.meanMs=sum/count_;out.maxMs=ordered[count_-1];
         const auto low=[&](unsigned divisor){const unsigned n=(count_+divisor-1)/divisor;double slow=0;for(unsigned i=count_-n;i<count_;++i)slow+=ordered[i];return 1000*n/slow;};
         if(count_>=100)out.low1=low(100);if(count_>=1000)out.low01=low(1000);
         return out;

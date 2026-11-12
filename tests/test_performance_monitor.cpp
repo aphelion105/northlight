@@ -12,8 +12,22 @@ int main(){
     h.reset();h.add(0,1000,true,f);for(unsigned i=1;i<99;++i)h.add(i*16,1000,true,f);assert(h.read().low1<0&&h.read().low01<0);
     h.add(99*16,1000,true,f);h.add(100*16,1000,true,f);assert(h.read().low1==62.5&&h.read().low01<0);
     for(unsigned i=101;i<6000;++i)h.add(i*16,1000,true,f);t=h.read();assert(t.samples==4096&&t.low01==62.5&&t.graph[239]==16);
+    // A full history must not delay the current reading after a speed change.
+    h.reset();int64_t tick=0;h.add(tick,1000,true,f);
+    for(unsigned i=0;i<5000;++i)h.add(tick+=10,1000,true,f);
+    for(unsigned i=0;i<5;++i)h.add(tick+=50,1000,true,f);
+    t=h.read();assert(t.samples==4096&&t.fps==20&&1000/t.meanMs>99&&t.low1>60&&t.low01==20);
+    for(unsigned i=0;i<25;++i)h.add(tick+=10,1000,true,f);
+    t=h.read();assert(t.fps==100&&t.low01==20); // Lows keep the older slow frames.
+    h.add(tick+=1000,1000,false,f);assert(h.read().fps<0);
+    h.add(tick+=1000,1000,true,f);assert(h.read().fps<0);
+    h.add(tick+=50,1000,true,f);assert(h.read().fps==20);
+    h.add(tick+=2001,1000,true,f);assert(h.read().fps<0);
+    h.add(tick+=10,1000,true,f);assert(h.read().fps==100);
+    h.add(tick,1000,true,f);assert(h.read().fps<0);
+    h.add(tick+=50,1000,true,f);assert(h.read().fps==20);
     Store s;assert(!s.active());s.publish(1,1,1000,true,f);s.touch(1);assert(s.wanted(1)&&!s.wanted(2));s.publish(1,1000,1000,true,f);s.publish(1,1010,1000,true,f);assert(s.read(1,t)&&t.fps==100);
     for(unsigned i=1;i<=240;++i){s.publish(1,1010+i,1000,true,f);assert(s.graph(1,t)&&t.graph[t.graphCount-1]==1&&t.samples==i+1&&t.fps==100);}
     assert(s.read(1,t)&&t.fps>900);s.reset(1);assert(s.graph(1,t)&&!t.graphCount&&!t.samples);s.detach(1);assert(!s.wanted(1));
-    std::puts("PERFORMANCE_MONITOR_PASS low-percent-means warmup=100/1000 diagnostic-focus-gap-breaks ring-wrap event-141ms counters owner-lease");
+    std::puts("PERFORMANCE_MONITOR_PASS current-fps-250ms drop-recovery low-percent-means warmup=100/1000 diagnostic-focus-gap-breaks ring-wrap event-141ms counters owner-lease");
 }
