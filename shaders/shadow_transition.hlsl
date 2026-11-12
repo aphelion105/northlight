@@ -254,3 +254,5 @@ float4 MoonFloorFogActorTiledTransition(float2 uv:TEXCOORD0):COLOR0{return MoonF
 
 float4 ForeverFogTransition(float2 uv:TEXCOORD0):COLOR0{return foreverFog(uv,false);}
 float4 ForeverFogActorTransition(float2 uv:TEXCOORD0):COLOR0{return foreverFog(uv,true);}
+float4 ForeverFogNoNoiseTransition(float2 uv:TEXCOORD0):COLOR0{return foreverFog(uv,false,false);}
+float4 ForeverFogActorNoNoiseTransition(float2 uv:TEXCOORD0):COLOR0{return foreverFog(uv,true,false);}

@@ -17,7 +17,11 @@ bool createResources(UINT w,UINT h,D3DFORMAT fmt,const NorthlightFrameRequiremen
            !pixel(kTemporalLightShader,temporalPS,"temporal light shader")||!pixel(kWorldNormalsShader,normalsPS,"world normals shader"))return false;
         if(!image(D3DFMT_A16B16G16R16F,baselineLight,baselineSurface)||!image(D3DFMT_A16B16G16R16F,light,lightSurface)||
            !image(D3DFMT_A16B16G16R16F,normalBuffer,normalSurface)||!image(D3DFMT_A16B16G16R16F,fogBlurred,fogBlurredSurface))return false;
-        for(unsigned i=0;i<2;++i)if(!image(D3DFMT_A16B16G16R16F,temporalLight[i],temporalLightSurface[i])||!image(D3DFMT_R32F,temporalDepth[i],temporalDepthSurface[i]))return false;
+        for(unsigned i=0;i<2;++i)if(!image(D3DFMT_A16B16G16R16F,temporalLight[i],temporalLightSurface[i]))return false;
+    }
+    if(needs.distance){
+        if(!pixel(kWorldDistanceShader,distancePS,"world distance shader"))return false;
+        for(unsigned i=0;i<2;++i)if(!image(D3DFMT_R32F,temporalDepth[i],temporalDepthSurface[i]))return false;
     }
     if(needs.probes&&!pixel(kWorldGIShader,giPS,"world GI shader"))return false;
     if(needs.local){
@@ -30,6 +34,10 @@ bool createResources(UINT w,UINT h,D3DFORMAT fmt,const NorthlightFrameRequiremen
             D3DCAPS9 caps={};if(SUCCEEDED(d->GetDeviceCaps(&caps))&&caps.MaxPixelShader30InstructionSlots>=kForeverFogActorShaderSlots)d->CreatePixelShader(kForeverFogActorShader,&foreverFogActorPS);
             if(caps.MaxPixelShader30InstructionSlots>=kForeverFogTransitionShaderSlots)d->CreatePixelShader(kForeverFogTransitionShader,&foreverFogFadePS);
             if(caps.MaxPixelShader30InstructionSlots>=kForeverFogActorTransitionShaderSlots)d->CreatePixelShader(kForeverFogActorTransitionShader,&foreverFogActorFadePS);
+            d->CreatePixelShader(kForeverFogNoNoiseShader,&foreverFogNoNoisePS);
+            if(caps.MaxPixelShader30InstructionSlots>=kForeverFogActorNoNoiseShaderSlots)d->CreatePixelShader(kForeverFogActorNoNoiseShader,&foreverFogActorNoNoisePS);
+            if(caps.MaxPixelShader30InstructionSlots>=kForeverFogNoNoiseTransitionShaderSlots)d->CreatePixelShader(kForeverFogNoNoiseTransitionShader,&foreverFogNoNoiseFadePS);
+            if(caps.MaxPixelShader30InstructionSlots>=kForeverFogActorNoNoiseTransitionShaderSlots)d->CreatePixelShader(kForeverFogActorNoNoiseTransitionShader,&foreverFogActorNoNoiseFadePS);
         }
         if(!pixel(kWorldFogShader,fogPS,"volume shader")||!pixel(kFogBlurShader,fogBlurPS,"volume blur shader")||
            !image(D3DFMT_A16B16G16R16F,fog,fogSurface)||!image(D3DFMT_A16B16G16R16F,fogBlurred,fogBlurredSurface)||!image(D3DFMT_A16B16G16R16F,fogHistory,fogHistorySurface))return false;

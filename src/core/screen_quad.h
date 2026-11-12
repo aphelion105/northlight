@@ -5,7 +5,7 @@ namespace NorthlightScreen {
 // The caller owns viewport, shaders, samplers and coverage state.
 inline HRESULT drawQuad(IDirect3DDevice9* device,unsigned width,unsigned height){
     struct Vertex{float x,y,z,w,u,v;};
-    const Vertex quad[]={{-.5f,-.5f,0,1,0,0},{float(width)-.5f,-.5f,0,1,1,0},{-.5f,float(height)-.5f,0,1,0,1},{float(width)-.5f,float(height)-.5f,0,1,1,1}};
-    return device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(Vertex));
+    const Vertex triangle[]={{-.5f,-.5f,0,1,0,0},{2.f*width-.5f,-.5f,0,1,2,0},{-.5f,2.f*height-.5f,0,1,0,2}};
+    return device->DrawPrimitiveUP(D3DPT_TRIANGLELIST,1,triangle,sizeof(Vertex));
 }
 }

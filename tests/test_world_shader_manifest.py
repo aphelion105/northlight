@@ -14,7 +14,7 @@ header=fp.src('world_compiled_shaders.h').read_text()
 assert manifest['source_sha256']==hashlib.sha256((fp.SHADERS/'world_effects.hlsl').read_bytes()).hexdigest()
 assert manifest['bump_include_sha256']==hashlib.sha256((fp.SHADERS/'auto_bump_normal.hlsl').read_bytes()).hexdigest()
 assert set(manifest['shaders'])=={entry for entry,_ in ENTRIES}
-extended={'ForeverFogActor','WorldFogActor','FogCloudsActor'}
+extended={'ForeverFogActor','ForeverFogActorNoNoise','WorldFogActor','FogCloudsActor'}
 tiled={'WorldFogActorTiled','FogCloudsActorTiled','WorldMaterialCompositeHdr'}
 tiled.update(entry for entry,_ in ENTRIES if entry.startswith('MoonFloorFog'))
 

@@ -43,6 +43,7 @@
     using PointCandidates=std::array<std::vector<size_t>,6>;
     PointCandidates pointStaticCandidates,pointTerrainCandidates,pointLiveCandidates,pointReplayCandidates;
     std::vector<unsigned char> pointBatchMasks;
+    NorthlightWmoLampShadow::SourceIndex pointLampSources;
     UINT pointPrimitiveLimit=0;bool pointMinBlend=false;
     struct PointWork {unsigned selected=0,statics=0,terrain=0,live=0,replay=0,replayMerged=0,split=0,unions=0,rebuilt=0,restored=0,unboundedRigid=0,unboundedSkinned=0,whiteLightingSkipped=0,paletteDraws=0,palettePackets=0,paletteRegisters=0;uint64_t triangles=0,bridged=0;} pointWork;
     struct PointCold {unsigned cubes=0,statics=0,shared=0,shaders=0;int64_t ticks=0;} pointCold;
@@ -104,6 +105,7 @@
         for(auto* lists:{&pointStaticCandidates,&pointTerrainCandidates,&pointLiveCandidates,&pointReplayCandidates})
             for(auto& list:*lists)std::vector<size_t>().swap(list);
         std::vector<unsigned char>().swap(pointBatchMasks);
+        pointLampSources.clear();
     }
     bool pointCheck(HRESULT hr,const char* operation){
         if(SUCCEEDED(hr))return true;
@@ -830,7 +832,9 @@
         std::map<size_t,PointReplayRuns> replayRuns;
         try {
             pointBatchMasks.assign(batches.size(),63);
-            ownGlass=NorthlightWmoLampShadow::parts(light,batches);
+            const bool indexed=pointLampSources.prepare(batches,meshGeneration);
+            const auto owners=pointLampSources.find(light.sourceId);
+            ownGlass=NorthlightWmoLampShadow::parts(light,batches,indexed?&owners:nullptr);
             if(!ownGlass.empty()){
                 ownShell=batches[ownGlass.front()];
                 if(ownGlass.size()>1){auto proof=std::make_shared<Batch::LampTriangles>();ownShell.count=0;

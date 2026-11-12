@@ -113,8 +113,10 @@ inline float sigma(const Layer& l,float distance,float z,float ground){
 inline float sigma(const Frame& f,float distance,float z,float ground){float result=0;for(const auto& l:f.layer)result+=sigma(l,distance,z,ground);return result;}
 inline void constants(const Frame& frame,float out[38][4],float distance,float sourceWeight){
     std::fill_n(&out[0][0],38*4,0.f);out[1][3]=distance;out[11][3]=sourceWeight;
+    float first=distance;
     for(unsigned i=0;i<3;++i){const auto& l=frame.layer[i];
         out[0][i]=l.flag[3]>0?std::max(l.p[1],0.f)*.01f:0;out[1][i]=std::max(l.p[0],0.f);
+        if(out[0][i]>0)first=std::min(first,out[1][i]);
         out[2][i]=l.p[5];out[3][i]=std::max(l.p[3],0.f)*.01f;
         out[4][i]=l.p[7];out[5][i]=std::max(l.p[6],0.f)*.01f;
         out[6][i]=std::clamp(l.p[10],-.99f,.99f);out[7][i]=std::max(l.p[18],0.f);out[8][i]=std::max(l.p[19],.001f);
@@ -130,5 +132,6 @@ inline void constants(const Frame& frame,float out[38][4],float distance,float s
         out[32][i]=total>0?std::max(0.f,l.p[22])/total:1;out[33][i]=total>0?std::max(0.f,l.p[23])/total:0;
         out[34][i]=l.flag[2];
     }
+    out[34][3]=first; // Earliest active layer; shared by every ray and light source.
 }
 } // namespace NorthlightForever

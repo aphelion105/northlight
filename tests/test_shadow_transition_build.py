@@ -5,11 +5,13 @@ import hashlib,json,re,struct,sys
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
+fp.use_source_modules()
+from compile_shadow_transition_shaders import ENTRIES
 sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
 manifest=json.loads((fp.SHADERS/'shadow-transition-shader-build.json').read_text())
 header=fp.src('shadow_transition_compiled_shaders.h').read_text()
 for name,digest in manifest['sources'].items():assert sha(fp.SHADERS/name)==digest,name
-assert len(manifest['shaders'])==13  # Includes the two optional imported-atmosphere variants.
+assert set(manifest['shaders'])==set(ENTRIES)
 for entry,record in manifest['shaders'].items():
  data=(fp.COMPILED/(entry+'.bin')).read_bytes();assert sha(fp.COMPILED/(entry+'.bin'))==record['sha256']
  limit=768
@@ -17,7 +19,7 @@ for entry,record in manifest['shaders'].items():
  body=re.search(r'k'+entry+r'Shader\[\] = \{(.*?)\};',header,re.S)[1]
  words=[int(word,16) for word in re.findall(r'0x[0-9a-fA-F]+',body)]
  assert struct.pack('<'+'I'*len(words),*words)==data
-print('PASS eight fresh compiled/embedded optional extended SM3 variants <=768 slots and 32 temps; baseline shader gates unchanged')
+print(f'PASS {len(ENTRIES)} fresh compiled/embedded optional extended SM3 variants <=768 slots and 32 temps; baseline shader gates unchanged')
 w=fp.src('world_renderer.h').read_text()+'\n'+fp.src('world_geometry_resources.inl').read_text();h=fp.src('world_shadow_transition.inl').read_text()
 assert 'void invalidateShadowCache(bool retainPointStatic=false){\n        resetShadowTransitions();' in w
 assert 'releaseGeometryTargets(){\n        releaseShadowTransitions();releaseNearEnvironment();' in w

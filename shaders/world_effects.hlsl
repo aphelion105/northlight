@@ -940,6 +940,11 @@ float4 RemovalSmooth(float2 uv:TEXCOORD0):COLOR0 {
 // cross neighbourhood so moving casters leave no trail. Removes per-frame
 // flicker from depth-derived normals, caster set changes and MSAA edges.
 struct TemporalOutput {float4 light:COLOR0;float4 depth:COLOR1;};
+// Same dry distance and half-grid centres as TemporalLight, without lighting inputs.
+float4 WorldDistance(float2 uv:TEXCOORD0):COLOR0 {
+    float2 q=(floor(uv*ScreenSize.zw)+.5)/ScreenSize.zw;
+    return float4(viewDistance(normalizedDepth(depthUV(q))),0,0,1);
+}
 TemporalOutput TemporalLight(float2 uv:TEXCOORD0) {
     TemporalOutput o;float2 half=ScreenSize.zw;
     float2 base=floor(uv*half);float2 q=(base+.5)/half;
@@ -1166,7 +1171,7 @@ float3 foreverNoise(float3 p) {
                     tex3Dlod(CloudNoise,float4((p-PassInfo.w*Forever[30].xyz)*Forever[31].z,0)).r);
     return lerp(1,saturate(2*(a*Forever[32].xyz+b*Forever[33].xyz)),Forever[34].xyz);
 }
-float4 foreverFog(float2 uv,bool actorIntegration) {
+float4 foreverFog(float2 uv,bool actorIntegration,bool samplesNoise=true) {
     if(FogInfo.x<.5)return float4(0,0,0,1);
     uv=depthUV(uv);float depth=normalizedDepth(uv);
     float3 view=viewPositionDistance(uv,fogReceiverDistance(uv,depth));
@@ -1181,6 +1186,8 @@ float4 foreverFog(float2 uv,bool actorIntegration) {
     // Quadratic spacing resolves near shafts while retaining the distant haze.
     [loop]for(int j=0;j<48;++j){
         float a=distance*(j*j)*(1.0/2304),b=distance*((j+1)*(j+1))*(1.0/2304),t=(a+b)*.5;
+        // Zero-density prefix; preserve the original grid and boundary samples.
+        [branch]if(t<Forever[34].w)continue;
         float visible=fogShadowProjected(affinePoint(Camera.xyz+ray*t,FarMatrix));
         if(actorIntegration&&FogActorInfo.x>0&&visible>0)visible=fogCombineActor(visible,fogActorShadow(affinePoint(Camera.xyz+ray*a,FogActorMatrix),(ray.x*FogActorMatrix[0].xyz+ray.y*FogActorMatrix[1].xyz+ray.z*FogActorMatrix[2].xyz)*(b-a)));
         float3 p=Camera.xyz+ray*t;float coverage;
@@ -1194,7 +1201,7 @@ float4 foreverFog(float2 uv,bool actorIntegration) {
         float3 shape=exp(min(0,(Forever[2].xyz-height)*Forever[3].xyz)+min(0,(height-Forever[4].xyz)*Forever[5].xyz));
         float3 curve=1+Forever[7].xyz*pow(max(saturate((t-Forever[1].xyz)*.001),1e-8),Forever[8].xyz);
         float3 density=Forever[0].xyz*shape*curve*step(Forever[1].xyz,t)*valid;
-        float3 noise=foreverNoise(p);density*=noise;
+        float3 noise=samplesNoise?foreverNoise(p):float3(1,1,1);density*=noise;
         float sigma=dot(density,1),absorb=1-exp(-sigma*(b-a));
         float3 lit=lerp(1,visible,Forever[9].xyz)*direct;
         float3 ambient=SourcePolicy.x*lerp(1,visible,Forever[9].xyz);
@@ -1209,6 +1216,8 @@ float4 foreverFog(float2 uv,bool actorIntegration) {
 }
 float4 ForeverFog(float2 uv:TEXCOORD0):COLOR0{return foreverFog(uv,false);}
 float4 ForeverFogActor(float2 uv:TEXCOORD0):COLOR0{return foreverFog(uv,true);}
+float4 ForeverFogNoNoise(float2 uv:TEXCOORD0):COLOR0{return foreverFog(uv,false,false);}
+float4 ForeverFogActorNoNoise(float2 uv:TEXCOORD0):COLOR0{return foreverFog(uv,true,false);}
 
 // Glow of the nearest authored local lights inside the fog (lanterns, fires):
 // in-scattering of an isotropic point source along the view ray in closed form,

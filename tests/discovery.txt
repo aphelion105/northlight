@@ -162,6 +162,7 @@ test_forever_atmosphere.py
 test_forwarder_generation.py
 test_frame_focus_cache.py
 test_frame_logging_batch.py
+test_frame_requirements.py
 test_frame_stall_profile.py
 test_game_snapshot.py
 test_geometry_handoff.py
@@ -239,6 +240,7 @@ test_local_source_shadows.py
 test_log_format_literals.py
 test_log_rotation.py
 test_logger_cost.py
+test_luxvelum_optimizations_gpu.py
 test_m2_lamp_self_shadow.py
 test_m2_lamp_self_shadow_gpu.py
 test_m2_light_geometry.py
@@ -365,6 +367,7 @@ test_pipeline_all_off_gpu.py
 test_pipeline_bindings_cpu.py
 test_pipeline_wave_cpu.py
 test_point_clip_prepared.py
+test_point_lamp_index.py
 test_point_light_shadow.py
 test_point_palette_gpu.py
 test_point_pipeline_init_gpu.py

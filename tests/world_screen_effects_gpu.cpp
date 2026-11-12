@@ -5,6 +5,24 @@
 #include <cassert>
 #include <fstream>
 struct WorldScreenEffectsTest {
+#ifdef NORTHLIGHT_FOG_DISTANCE_TEST
+    static void fogOnlySetup(WorldRenderer& w,unsigned width,unsigned height,bool lighting){
+        w.effects={false,false,true};w.quality.localLights=lighting;w.quality.localLightLimit=1;
+        w.quality.autoBump=w.quality.weather=w.quality.contactAO=w.quality.nightBrightness=0;
+        setup(w,width,height);w.effects={false,false,true};
+        // Pure fog has no celestial surface correction to compare with lighting.
+        w.sourceColors[0]=w.sourceGlowColors[0]={0,0,0};
+        w.context.direct[0]=w.context.direct[1]=w.context.direct[2]=0;
+        assert(w.temporalDepth[0]&&w.temporalDepth[1]&&w.distancePS);
+        if(!lighting)assert(!w.normalBuffer&&!w.baselineLight&&!w.light&&!w.temporalLight[0]&&!w.temporalLight[1]&&!w.surfaceLightingEnabled());
+    }
+    static void fogOnlyFrame(WorldRenderer& w,unsigned frame,bool reference){
+        w.context.camera[0]=w.context.inverseView[12]=float(frame)*.125f;
+        w.quality.localLights=reference||frame==4||frame==5;
+        if(reference&&(frame==4||frame==6))w.temporalValid=false;
+    }
+    static bool distanceLighting(const WorldRenderer& w){return w.temporalLighting;}
+#endif
     static std::pair<IDirect3DSurface9*,IDirect3DSurface9*> removalScratch(WorldRenderer& w){return {w.fogBlurredSurface,w.fogHistorySurface};}
     static std::pair<IDirect3DSurface9*,IDirect3DSurface9*> lightScratch(WorldRenderer& w){return {w.temporalLightSurface[w.temporalIndex],w.temporalLightSurface[1-w.temporalIndex]};}
     static void fogAliasFixtureFrame(WorldRenderer& w,unsigned frame){
@@ -735,6 +753,29 @@ int main(int argc,char** argv){
         }
 
     }
+
+#ifdef NORTHLIGHT_FOG_DISTANCE_TEST
+    {
+        WorldScratchMeter meter(d,W,H);
+        auto fogOnly=std::make_unique<WorldRenderer>(&meter),reference=std::make_unique<WorldRenderer>(&meter);
+        WorldScreenEffectsTest::fogOnlySetup(*fogOnly,W,H,false);WorldScreenEffectsTest::fogOnlySetup(*reference,W,H,true);
+        for(unsigned frame=0;frame<8;++frame){
+            std::vector<unsigned char> actual[2],composite[2];unsigned mode=0;
+            for(auto* world:{reference.get(),fogOnly.get()}){
+                WorldScreenEffectsTest::fogOnlyFrame(*world,frame,world==reference.get());
+                assert(renderChecked(*world,d,out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao,frame));
+                actual[mode]=WorldScreenEffectsTest::fogImage(*world,true);
+                if(msaa)screenOk(d->StretchRect(out,nullptr,resolved,nullptr,D3DTEXF_NONE));screenOk(d->GetRenderTargetData(msaa?resolved:out,readback));
+                D3DLOCKED_RECT lock{};screenOk(readback->LockRect(&lock,nullptr,D3DLOCK_READONLY));composite[mode].resize(W*H*8);
+                for(unsigned y=0;y<H;++y)std::memcpy(composite[mode].data()+y*W*8,static_cast<char*>(lock.pBits)+y*lock.Pitch,W*8);screenOk(readback->UnlockRect());++mode;
+                if(world==fogOnly.get())assert(WorldScreenEffectsTest::distanceLighting(*world)==(frame==4||frame==5));
+            }
+            if(actual[0]!=actual[1]||composite[0]!=composite[1])std::fprintf(stderr,"FOG_DISTANCE_DIFF frame=%u fogEqual=%u compositeEqual=%u\n",frame,unsigned(actual[0]==actual[1]),unsigned(composite[0]==composite[1]));
+            assert(actual[0]==actual[1]);assert(composite[0]==composite[1]);
+        }
+        std::puts("WORLD_FOG_DISTANCE_PASS coldWithoutLightingTargets=1 historyImagesExact=1 lightingSwitches=1 stateRestored=1");
+    }
+#endif
     float bump=0,fog=0;for(unsigned i=0;i<W*H*3;++i){bump=std::max(bump,std::abs(images[1][i]-images[0][i]));fog=std::max(fog,std::abs(images[2][i]-images[0][i]));}
     std::printf("WORLD_SCREEN_GPU bumpDelta=%g fogDelta=%g noGeometry=1 noStaleShadows=1 stateRestored=1 msaa=%u\n",bump,fog,msaa);std::fflush(stdout);assert(bump>.002f&&fog>.002f);
     scene->Release();ao->Release();detail->Release();depth->Release();out->Release();if(resolved)resolved->Release();readback->Release();d->Release();api->Release();FreeLibrary(module);DestroyWindow(window);UnregisterClassW(wc.lpszClassName,wc.hInstance);
