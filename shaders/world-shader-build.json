@@ -1,16 +1,16 @@
 {
   "bump_include_sha256": "b5523a51dc6715f11ac2e7ba9ecb46a4973ba6aa23de159e308a8fd24d4e9ebc",
-  "source_sha256": "4a9bfb055146ed18c8b98a66fd4586a54e8930290d870c1c8440ca9d4f0568be",
+  "source_sha256": "73141a42d766c1a1271128fa87707dfd56d386efcaf2aadcc6dee8b58d12ff61",
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
   "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
   "game_launched": false,
   "shaders": {
     "ForeverFogNoNoise": {
       "target": "ps_3_0",
-      "bytes": 6048,
-      "sha256": "5c53f3e7ddb951e0387fd75a9e71998991a958a2dc78f02fc918eed16612531e",
-      "static_instruction_slots": 346,
-      "temporary_registers": 15,
+      "bytes": 6076,
+      "sha256": "6d6b5e6977b58996de23fe1b2c25f219b4ae12527b2e1dd0f1b2ed4d83373d2a",
+      "static_instruction_slots": 354,
+      "temporary_registers": 16,
       "samplers": [
         1,
         3,
@@ -19,19 +19,20 @@
       ],
       "instructions": {
         "mov": 23,
-        "if": 4,
+        "if": 6,
         "else": 4,
         "mul": 116,
         "frc": 3,
-        "add": 88,
+        "add": 86,
         "max": 5,
         "min": 10,
         "texldl": 10,
         "rcp": 9,
         "cmp": 28,
-        "endif": 4,
-        "dp3": 3,
+        "endif": 6,
+        "dp3": 4,
         "rsq": 4,
+        "abs": 1,
         "rep": 1,
         "dp4": 2,
         "exp": 7,
@@ -39,14 +40,14 @@
         "endrep": 1
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "4a9bfb055146ed18c8b98a66fd4586a54e8930290d870c1c8440ca9d4f0568be"
+      "source_sha256": "73141a42d766c1a1271128fa87707dfd56d386efcaf2aadcc6dee8b58d12ff61"
     },
     "ForeverFogActorNoNoise": {
       "target": "ps_3_0",
-      "bytes": 8036,
-      "sha256": "59eed1b9d19ff6754b2a3f72634356002a23f95d55949df7222ed19d4dfce021",
-      "static_instruction_slots": 476,
-      "temporary_registers": 20,
+      "bytes": 8040,
+      "sha256": "62f3d8cac9e47ef70f32d49bb99aa182acf34ec476105258df2896aa8c9ab2d7",
+      "static_instruction_slots": 482,
+      "temporary_registers": 19,
       "samplers": [
         1,
         3,
@@ -55,29 +56,30 @@
         13
       ],
       "instructions": {
-        "mov": 42,
-        "if": 6,
+        "mov": 40,
+        "if": 8,
         "else": 5,
         "mul": 139,
         "frc": 4,
-        "add": 118,
+        "add": 116,
         "max": 13,
         "min": 17,
         "texldl": 11,
         "rcp": 15,
         "cmp": 37,
-        "endif": 6,
-        "dp3": 3,
+        "endif": 8,
+        "dp3": 4,
         "rsq": 4,
+        "abs": 1,
         "rep": 3,
+        "dp4": 2,
         "break": 2,
         "endrep": 3,
-        "dp4": 2,
         "exp": 7,
         "log": 3
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "4a9bfb055146ed18c8b98a66fd4586a54e8930290d870c1c8440ca9d4f0568be"
+      "source_sha256": "73141a42d766c1a1271128fa87707dfd56d386efcaf2aadcc6dee8b58d12ff61"
     },
     "WorldDistance": {
       "target": "ps_3_0",
@@ -104,9 +106,9 @@
     },
     "ForeverFog": {
       "target": "ps_3_0",
-      "bytes": 6896,
-      "sha256": "360da2e47052ee37b8bd64877ee6264f0c541855f2f9c4d91d9b0d88cdfaba23",
-      "static_instruction_slots": 405,
+      "bytes": 6844,
+      "sha256": "1a097eed18f7c176666e87a811057074b679909e489eb935cd8c17383f6d9e13",
+      "static_instruction_slots": 402,
       "temporary_registers": 29,
       "samplers": [
         1,
@@ -121,12 +123,12 @@
         "else": 4,
         "mul": 135,
         "frc": 3,
-        "add": 103,
+        "add": 101,
         "max": 5,
         "min": 10,
         "texldl": 16,
         "rcp": 9,
-        "cmp": 27,
+        "cmp": 26,
         "endif": 4,
         "dp3": 3,
         "rsq": 4,
@@ -137,13 +139,13 @@
         "endrep": 1
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "4a9bfb055146ed18c8b98a66fd4586a54e8930290d870c1c8440ca9d4f0568be"
+      "source_sha256": "73141a42d766c1a1271128fa87707dfd56d386efcaf2aadcc6dee8b58d12ff61"
     },
     "ForeverFogActor": {
       "target": "ps_3_0",
-      "bytes": 8924,
-      "sha256": "0df02ddecdff39975263d4118a2b4214bcc40e83b3336a05393fac37f595be7a",
-      "static_instruction_slots": 537,
+      "bytes": 8860,
+      "sha256": "212ae9e2a9356420fd92334f00fc23c2d75bdc9ec87a1a047d95f87c9dd12c9b",
+      "static_instruction_slots": 533,
       "temporary_registers": 31,
       "samplers": [
         1,
@@ -154,17 +156,17 @@
         14
       ],
       "instructions": {
-        "mov": 55,
+        "mov": 54,
         "if": 6,
         "else": 5,
         "mul": 160,
         "frc": 4,
-        "add": 133,
+        "add": 131,
         "max": 13,
         "min": 17,
         "texldl": 17,
         "rcp": 15,
-        "cmp": 37,
+        "cmp": 36,
         "endif": 6,
         "dp3": 3,
         "rsq": 4,
@@ -176,7 +178,7 @@
         "log": 3
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "4a9bfb055146ed18c8b98a66fd4586a54e8930290d870c1c8440ca9d4f0568be"
+      "source_sha256": "73141a42d766c1a1271128fa87707dfd56d386efcaf2aadcc6dee8b58d12ff61"
     },
     "DirectionalShadow": {
       "target": "ps_3_0",

@@ -6190,11 +6190,13 @@ public:
                 const auto ground=uploadedFogField?NorthlightSpellFog::fieldAt(*uploadedFogField,context.camera[0],context.camera[1]):NorthlightSpellFog::FieldSample{};
                 importedConstants[0][3]=ground.ground;
                 bool noise=importedConstants[34][0]>0||importedConstants[34][1]>0||importedConstants[34][2]>0;
+                bool quietSelected=false;
                 if(noise&&!ensureCloudNoise()){noise=false;importedConstants[34][0]=importedConstants[34][1]=importedConstants[34][2]=0;}
                 if(!noise){
                     auto* quiet=fading?(actor?foreverFogActorNoNoiseFadePS:foreverFogNoNoiseFadePS):(actor?foreverFogActorNoNoisePS:foreverFogNoNoisePS);
-                    if(quiet)volumeShader=quiet; // Creation failure retains the general shader.
+                    if(quiet){volumeShader=quiet;quietSelected=true;} // Creation failure retains the general shader.
                 }
+                if(profileSampled())logf("FOG imported worldFrame=%u source=%d noise=%u noNoiseShader=%u actor=%u transition=%u cameraAboveGround=%.3f first=%.3f shadow=%.3f,%.3f,%.3f",frames,source,unsigned(noise),unsigned(quietSelected),unsigned(actor),unsigned(fading),context.camera[2]-ground.ground,importedConstants[34][3],importedConstants[9][0],importedConstants[9][1],importedConstants[9][2]);
                 d->SetTexture(14,noise?cloudNoise:nullptr);d->SetSamplerState(14,D3DSAMP_ADDRESSU,D3DTADDRESS_WRAP);d->SetSamplerState(14,D3DSAMP_ADDRESSV,D3DTADDRESS_WRAP);d->SetSamplerState(14,D3DSAMP_ADDRESSW,D3DTADDRESS_WRAP);
                 d->SetSamplerState(14,D3DSAMP_MINFILTER,D3DTEXF_LINEAR);d->SetSamplerState(14,D3DSAMP_MAGFILTER,D3DTEXF_LINEAR);d->SetSamplerState(14,D3DSAMP_MIPFILTER,D3DTEXF_NONE);
                 d->SetSamplerState(14,D3DSAMP_SRGBTEXTURE,FALSE);

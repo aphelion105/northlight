@@ -4,6 +4,7 @@
 import hashlib
 import json
 import os
+import re
 import shutil
 from pathlib import Path
 import subprocess
@@ -16,6 +17,15 @@ from shader_compiler import Compiler, validate_assembly
 from windows_gpu_guard import processes
 
 out = fp.output_dir()
+env = dict(os.environ)
+baseline_ref = env.get('NORTHLIGHT_FOG_BENCHMARK_FROM')
+if baseline_ref:
+    baseline_ref = subprocess.check_output(['git', 'rev-parse', '--verify', baseline_ref + '^{commit}'], cwd=fp.REPO, text=True).strip()
+    baseline = out / 'baseline'
+    baseline.mkdir()
+    for name in ('ForeverFogActor', 'ForeverFogActorNoNoise'):
+        (baseline / (name + '.bin')).write_bytes(subprocess.check_output(['git', 'show', baseline_ref + ':shaders/compiled/' + name + '.bin'], cwd=fp.REPO))
+    env.update(NORTHLIGHT_OPTIMIZATION_BENCHMARK='1', NORTHLIGHT_FOG_BENCHMARK_BASELINE=str(baseline))
 compiler = Compiler(allow_compatible_binary=True)
 reference = (fp.TESTS / 'fixtures/forever_fog_reference.hlsl').read_text()
 for name in ('world_effects.hlsl', 'shadow_transition.hlsl', 'auto_bump_normal.hlsl'):
@@ -42,10 +52,13 @@ backends = [Path(os.environ['WINDIR']) / 'SysWOW64/d3d9.dll', fp.client_root() /
 results = []
 for backend in backends:
     processes()
-    result = subprocess.run([str(exe), str(fp.COMPILED), str(out), str(backend)], cwd=out, capture_output=True, text=True, timeout=180)
+    result = subprocess.run([str(exe), str(fp.COMPILED), str(out), str(backend)], cwd=out, env=env, capture_output=True, text=True, timeout=180)
     (out / (backend.parent.name + '.log')).write_text(result.stdout + result.stderr, encoding='utf-8')
     print(result.stdout + result.stderr, flush=True)
     result.check_returncode()
     assert 'LUXVELUM_GPU_PASS' in result.stdout
-    results.append({'backend': str(backend), 'sha256': hashlib.sha256(backend.read_bytes()).hexdigest(), 'stdout': result.stdout})
-(out / 'validation.json').write_text(json.dumps({'pass': True, 'game_launched': False, 'results': results}, indent=2) + '\n')
+    timings = [dict(re.findall(r'(\w+)=([^ ]+)', line)) for line in result.stdout.splitlines() if line.startswith('LUXVELUM_FOG_GPU_MS ')]
+    if baseline_ref:
+        assert {(int(row['noise']), int(row['state'])) for row in timings} == {(noise, state) for noise in range(2) for state in range(6)}
+    results.append({'backend': str(backend), 'sha256': hashlib.sha256(backend.read_bytes()).hexdigest(), 'timings': timings, 'stdout': result.stdout})
+(out / 'validation.json').write_text(json.dumps({'pass': True, 'game_launched': False, 'baseline_ref': baseline_ref, 'results': results}, indent=2) + '\n')

@@ -58,14 +58,21 @@ int main(int argc,char** argv){
     for(bool transition:{false,true})for(bool actor:{false,true}){
         const std::string suffix=transition?"Transition":"",name=actor?"ForeverFogActor":"ForeverFog";
         auto* reference=shader(argv[2],name+"Reference"+suffix);auto* general=shader(argv[1],name+suffix);auto* quiet=shader(argv[1],name+"NoNoise"+suffix);
-        for(unsigned noisy=0;noisy<2;++noisy)for(unsigned shape=0;shape<9;++shape){
+        for(unsigned noisy=0;noisy<2;++noisy)for(unsigned shape=0;shape<20;++shape){
             float c[116][4]{};c[0][0]=1.f/w;c[0][1]=1.f/h;c[0][2]=.5f;c[0][3]=1000;c[1][0]=c[1][1]=2;c[1][2]=c[2][0]=1;c[2][2]=192;c[2][3]=1.f/1024;
             c[3][0]=c[4][1]=c[5][2]=c[6][3]=1;c[15][2]=20;c[14][2]=.5f;c[14][3]=1;c[16][2]=1;c[21][0]=1;c[27][0]=1;c[24][3]=31;
             c[31][0]=c[31][1]=-256;c[31][2]=1.f/512;c[33][0]=c[33][2]=float(w);c[33][1]=c[33][3]=float(h);
             c[71][2]=.5f;c[71][3]=1;c[72][0]=actor?1.f:0.f;c[89][0]=c[89][1]=.4f;
-            bind(1,solid(1000.f/999.5f*(1-.5f/100)));bind(3,solid(.7f));bind(4,solid(.4f));bind(13,solid(0,0,0,1.25f));ok(d->SetPixelShaderConstantF(0,c[0],116));
+            if(shape==15)c[31][0]=c[31][1]=1024;
+            if(shape==17){c[66][0]=c[66][1]=-1;c[66][2]=c[66][3]=1;c[70][2]=.01f;}
+            bind(1,solid(1000.f/999.5f*(1-.5f/100)));bind(3,solid(.7f));bind(4,solid(.4f));
+            const float ground=shape==9?200.f:shape==11||shape==16?40.f:0.f,tag=shape==10||shape==15?0.f:1.25f;
+            bind(13,solid(ground,0,0,tag));
+            if(shape>=18){Image field{64,64,D3DFMT_A32B32G32R32F,16,std::vector<unsigned char>(64*64*16)};
+                for(unsigned y=0;y<64;++y)for(unsigned x=0;x<64;++x){const float v[]={float(int((x*11+y*7)%53)-12),0,0,shape==19&&(x+y)%3==0?0.f:1.25f};std::memcpy(field.pixels.data()+16*(y*64+x),v,16);}bind(13,field);}
+            ok(d->SetPixelShaderConstantF(0,c[0],116));
             NorthlightForever::Frame f;f.valid=true;
-            for(unsigned layer=0;layer<3;++layer){auto& l=f.layer[layer];l.flag[3]=shape==8||((shape==6)&&layer==0)?0.f:1.f;l.flag[0]=1;l.flag[2]=noisy?1.f:0.f;l.p[0]=shape==0?0.f:shape==7?150.f:float(shape*12+layer*4);l.p[1]=1+float(layer)*.25f;l.p[9]=1;l.p[10]=.3f;l.p[20]=l.p[21]=.1f;l.p[22]=.6f;l.p[23]=.4f;
+            for(unsigned layer=0;layer<3;++layer){auto& l=f.layer[layer];l.flag[3]=shape==8||((shape==6)&&layer==0)?0.f:1.f;l.flag[0]=shape==12?0.f:shape==13?float(layer)*.35f:1.f;l.flag[2]=noisy?1.f:0.f;l.p[0]=shape==0||shape>=9?0.f:shape==7?150.f:float(shape*12+layer*4);l.p[1]=shape==14?0.f:1+float(layer)*.25f;l.p[9]=1;l.p[10]=.3f;l.p[20]=l.p[21]=.1f;l.p[22]=.6f;l.p[23]=.4f;
                 for(unsigned k=0;k<3;++k){l.color[0][k]=.6f;l.color[1][k]=.25f;l.color[2][k]=.1f;l.color[3][k]=.2f;l.p[11+k]=.01f*float(k+1);}}
             float bank[38][4];NorthlightForever::constants(f,bank,128,1);ok(d->SetPixelShaderConstantF(116,bank[0],38));
             std::vector<unsigned char> images[2];for(unsigned mode=0;mode<2;++mode){ok(d->SetPixelShader(mode?(noisy?general:quiet):reference));ok(d->BeginScene());ok(NorthlightScreen::drawQuad(d,w,h));ok(d->EndScene());images[mode]=readback(target,w,h,D3DFMT_A32B32G32R32F,16);}compare(images[0],images[1]);
@@ -74,7 +81,7 @@ int main(int argc,char** argv){
     }
     std::printf("LUXVELUM_GPU_PASS cases=%u distanceBitExact=1 coverageMSAA=0,2,4,8 fogMaxError=%g actor=1 transitions=1\n",cases,maximum);
     if(std::getenv("NORTHLIGHT_OPTIMIZATION_BENCHMARK")){
-        constexpr unsigned bw=960,bh=540,draws=32;
+        constexpr unsigned bw=1920,bh=1080,draws=16;
         IDirect3DSurface9* measured=nullptr;ok(d->CreateRenderTarget(bw,bh,D3DFMT_A16B16G16R16F,D3DMULTISAMPLE_NONE,0,FALSE,&measured,nullptr));ok(d->SetRenderTarget(0,measured));
         IDirect3DQuery9 *begin=nullptr,*end=nullptr,*frequency=nullptr,*disjoint=nullptr;
         ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&begin));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&end));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMPFREQ,&frequency));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMPDISJOINT,&disjoint));
@@ -84,16 +91,23 @@ int main(int argc,char** argv){
             ok(disjoint->Issue(D3DISSUE_BEGIN));ok(frequency->Issue(D3DISSUE_END));ok(begin->Issue(D3DISSUE_END));for(unsigned i=0;i<draws;++i)ok(NorthlightScreen::drawQuad(d,bw,bh));ok(end->Issue(D3DISSUE_END));ok(disjoint->Issue(D3DISSUE_END));ok(d->EndScene());
             UINT64 a=0,b=0,hz=0;BOOL invalid=TRUE;collect(end,&b,sizeof b);collect(begin,&a,sizeof a);collect(frequency,&hz,sizeof hz);collect(disjoint,&invalid,sizeof invalid);assert(!invalid&&hz&&b>=a);return 1000.*double(b-a)/double(hz)/draws;
         };
-        auto* old=shader(argv[2],"ForeverFogReference");auto* noisyShader=shader(argv[1],"ForeverFog");auto* quiet=shader(argv[1],"ForeverFogNoNoise");
-        for(unsigned noisy=0;noisy<2;++noisy)for(float start:{0.f,64.f}){
+        const char* baseline=std::getenv("NORTHLIGHT_FOG_BENCHMARK_BASELINE");
+        IDirect3DPixelShader9* old[2]={shader(baseline?baseline:argv[2],baseline?"ForeverFogActorNoNoise":"ForeverFogActorReference"),shader(baseline?baseline:argv[2],baseline?"ForeverFogActor":"ForeverFogActorReference")};
+        auto* noisyShader=shader(argv[1],"ForeverFogActor");auto* quiet=shader(argv[1],"ForeverFogActorNoNoise");
+        for(unsigned noisy=0;noisy<2;++noisy)for(unsigned state=0;state<6;++state){
             float c[116][4]{};c[0][0]=1.f/bw;c[0][1]=1.f/bh;c[0][2]=.5f;c[0][3]=1000;c[1][0]=c[1][1]=2;c[1][2]=c[2][0]=1;c[2][2]=192;c[2][3]=1.f/1024;c[3][0]=c[4][1]=c[5][2]=c[6][3]=1;c[15][2]=20;c[14][2]=.5f;c[14][3]=1;c[16][2]=1;c[21][0]=c[27][0]=1;c[31][0]=c[31][1]=-256;c[31][2]=1.f/512;c[33][0]=c[33][2]=bw;c[33][1]=c[33][3]=bh;ok(d->SetPixelShaderConstantF(0,c[0],116));
-            NorthlightForever::Frame f;for(auto& l:f.layer){l.flag[3]=1;l.flag[2]=float(noisy);l.p[0]=start;l.p[1]=1;l.p[9]=1;l.p[20]=l.p[21]=.1f;l.p[22]=.6f;l.p[23]=.4f;for(unsigned k=0;k<3;++k){l.color[0][k]=.6f;l.color[1][k]=.25f;l.color[3][k]=.2f;}}
+            if(state==5){c[31][0]=c[31][1]=1024;ok(d->SetPixelShaderConstantF(31,c[31],1));}
+            c[66][0]=c[66][1]=-1;c[66][2]=c[66][3]=1;c[68][0]=c[69][1]=.002f;c[70][2]=.004f;c[71][2]=.2f;c[71][3]=1;c[72][0]=1;
+            ok(d->SetPixelShaderConstantF(66,c[66],7));
+            const float ground=state==1?200.f:state==2?40.f:0.f,tag=state==3||state==5?0.f:1.25f;
+            bind(13,solid(ground,0,0,tag));
+            NorthlightForever::Frame f;for(auto& l:f.layer){l.flag[3]=1;l.flag[0]=state==4?0.f:1.f;l.flag[2]=float(noisy);l.p[0]=0;l.p[1]=1;l.p[9]=1;l.p[20]=l.p[21]=.1f;l.p[22]=.6f;l.p[23]=.4f;for(unsigned k=0;k<3;++k){l.color[0][k]=.6f;l.color[1][k]=.25f;l.color[3][k]=.2f;}}
             float bank[38][4];NorthlightForever::constants(f,bank,128,1);ok(d->SetPixelShaderConstantF(116,bank[0],38));std::vector<double> times[2];
-            for(unsigned block=0;block<8;++block)for(unsigned mode:{0u,1u,1u,0u})times[mode].push_back(measure(mode?(noisy?noisyShader:quiet):old));
+            for(unsigned block=0;block<8;++block)for(unsigned mode:{0u,1u,1u,0u})times[mode].push_back(measure(mode?(noisy?noisyShader:quiet):old[noisy]));
             for(auto& values:times)std::sort(values.begin(),values.end());
-            std::printf("LUXVELUM_FOG_GPU_MS noise=%u start=%.0f width=%u height=%u before=%.6f after=%.6f\n",noisy,start,bw,bh,(times[0][7]+times[0][8])*.5,(times[1][7]+times[1][8])*.5);
+            std::printf("LUXVELUM_FOG_GPU_MS noise=%u actor=1 state=%u width=%u height=%u before=%.6f after=%.6f\n",noisy,state,bw,bh,(times[0][7]+times[0][8])*.5,(times[1][7]+times[1][8])*.5);
         }
-        old->Release();noisyShader->Release();quiet->Release();begin->Release();end->Release();frequency->Release();disjoint->Release();measured->Release();
+        old[0]->Release();old[1]->Release();noisyShader->Release();quiet->Release();begin->Release();end->Release();frequency->Release();disjoint->Release();measured->Release();
     }
     d->SetPixelShader(nullptr);for(unsigned s=0;s<16;++s){d->SetTexture(s,nullptr);textures[s]->Release();}distance->Release();temporal->Release();coverage->Release();volume->Release();target->Release();d->Release();api->Release();FreeLibrary(module);DestroyWindow(window);UnregisterClassW(wc.lpszClassName,wc.hInstance);
 }
