@@ -490,6 +490,39 @@ void DisplacementStateTestAccess::poseHandoff(const char* path,const std::vector
     assert(NorthlightActorDeformation::compile(singleCode.data(),singleCode.size(),single.view,false,2));
     single.rangeKind=NorthlightModelNormalRange::classify(singleCode.data(),singleCode.size());
     assert(single.rangeKind==NorthlightModelNormalRange::Single);
+    g.tracking(+[](void* p,bool)->uint64_t{return reinterpret_cast<uintptr_t>(p);},+[](void*,bool)->uint64_t{return 1;},nullptr);
+    // Normal/POM admission uses the same stock-M2 proof as displacement.
+    // It publishes only a conservative lower depth, never an upper bound or
+    // a stale evaluated pose, and hands off the complete immutable stream.
+    for(float z:{20.f,48.f,48.005f,80.f,-80.f}){
+        float bank[1024];std::memcpy(bank,device.bank,sizeof bank);bank[22]=z<0?-1.f:1.f;
+        for(unsigned bone=0;bone<4;++bone)bank[4*(33+3*bone)+3]=z;
+        assert(SUCCEEDED(extension.SetVertexShaderConstantF(0,bank,256)));
+        float reference=0,actual=0,upper=0;bool ready=false;
+        single.rangeKind=NorthlightModelNormalRange::None;
+        for(unsigned retry=0;retry<100&&!ready;++retry){g.endFrame();ready=g.nearestMaterialDepth(&device.vs,args,reference);}
+        assert(ready);g.endFrame();single.rangeKind=NorthlightModelNormalRange::Single;
+        NorthlightAutoDisplacement::CaptureSource admitted;
+        assert(g.nearestMaterialDepth(&device.vs,args,actual,false,nullptr,&upper,&admitted));
+        assert(admitted.mesh&&admitted.declaration==&layout&&admitted.mesh->streams[0].stride==32&&admitted.mesh->streams[0].bytes.size()>=96*32);
+        assert(actual<=reference&&((actual>48)==(reference>48)));
+        if(g.modelRangeProof.culled)assert(actual==48.01f&&!std::isfinite(upper)&&!g.poseEnvelopes.stats().ready);
+    }
+    // Restore the far, canonical projection for the paired component timing.
+    float farBank[1024];std::memcpy(farBank,device.bank,sizeof farBank);farBank[22]=1;
+    for(unsigned bone=0;bone<4;++bone)farBank[4*(33+3*bone)+3]=80;
+    assert(SUCCEEDED(extension.SetVertexShaderConstantF(0,farBank,256)));
+    std::vector<double> depthCosts[2];
+    for(unsigned round=0;round<12;++round)for(bool fast:{false,true,true,false}){
+        g.endFrame();single.rangeKind=fast?NorthlightModelNormalRange::Single:NorthlightModelNormalRange::None;
+        const auto start=std::chrono::steady_clock::now();
+        for(unsigned draw=0;draw<64;++draw){float depth=0;assert(g.nearestMaterialDepth(&device.vs,args,depth)&&depth>48);}
+        depthCosts[fast].push_back(std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count());
+        assert(fast?g.poseEnvelopes.stats().ready==0:g.poseEnvelopes.stats().ready==64);
+    }
+    for(auto& values:depthCosts)std::sort(values.begin(),values.end());
+    std::printf("M2_NORMAL_RANGE_PASS buffered_draws=64 cpuBeforeMs=%.6f cpuAfterMs=%.6f current_pose positive_negative_depth boundary48 full_stream_handoff no_envelope_on_proven_far\n",depthCosts[0][12],depthCosts[1][12]);
+    single.rangeKind=NorthlightModelNormalRange::Single;
     constexpr unsigned N=400;
     std::vector<double> costs[2];unsigned envelopes[2]={};
     LARGE_INTEGER frequency{};assert(QueryPerformanceFrequency(&frequency));

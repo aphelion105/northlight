@@ -7,6 +7,7 @@ static void logf(const char*,...){}
 #include "auto_bump_renderer.h"
 unsigned northlightReadOnlyPolicy=0; // The test overlay alone adds this control.
 struct MaterialCaptureStateTestAccess {
+    static void noRangeBudget(NorthlightAutoBump& b);
     static void warm(NorthlightAutoBump& b,IDirect3DTexture9* source){assert(b.normals.resolve(source,true));}
     static unsigned equal(const NorthlightAutoBump& b){return b.equalDepthQueued;}
     static unsigned queued(const NorthlightAutoBump& b){return b.queued;}
@@ -15,9 +16,35 @@ struct MaterialCaptureStateTestAccess {
     static void failSnapshot(NorthlightAutoBump& b){assert(b.deferredSnapshots.configureBudget(1,0));}
     static unsigned refused(const NorthlightAutoBump& b){return b.deferredFallback;}
 };
+struct DisplacementStateTestAccess {
+    static void noRangeBudget(NorthlightAutoDisplacement& g){g.envelopeBudget.maxOperations=0;}
+    static void pendingProgress(){
+        using namespace NorthlightActorDeformation;
+        using namespace NorthlightWaterShaderPatch;
+        Program p;p.major=3;p.positionRegister=0;p.inputs={{0,D3DDECLUSAGE_POSITION,0}};
+        Operation op;op.code=1;op.destination=dst(0,0);op.source[0].token=src(1,0);p.operations.push_back(op);
+        const D3DVERTEXELEMENT9 layout[]={{0,0,D3DDECLTYPE_FLOAT3,0,D3DDECLUSAGE_POSITION,0},D3DDECL_END()};
+        auto make=[](unsigned n){auto m=std::make_shared<NorthlightDrawSnapshot::Mesh>();m->vertexCount=n;m->primitiveCount=n/3;m->streams[0].stride=12;m->streams[0].bytes.resize(n*12);return std::shared_ptr<const NorthlightDrawSnapshot::Mesh>(m);};
+        const auto original=make(12),other=make(3);float bank[1024]={};NorthlightReplayBounds::Bounds bounds;
+        NorthlightAutoDisplacement g(nullptr);g.envelopeBudget.maxVertices=1;
+        for(unsigned attempt=0;attempt<200&&!g.poseEnvelopes.hasPendingBuild();++attempt){g.endFrame();g.poseEnvelope(p,original,layout,2,bank,bounds,nullptr,nullptr);}
+        assert(g.poseEnvelopes.hasPendingBuild());const auto before=g.poseEnvelopes.pendingBuildVertices();bool completed=false;
+        for(unsigned frame=0;frame<200&&!completed;++frame){g.endFrame();g.poseEnvelope(p,other,layout,2,bank,bounds,nullptr,nullptr);completed=g.poseEnvelopes.stats().completed>0;}
+        assert(completed&&"M2_PENDING_BUILD_MUST_PROGRESS_WITHOUT_ORIGINAL_DRAW");
+        assert(before<12&&g.envelopeBudget.vertices<=g.envelopeBudget.maxVertices);
+        // Completion must belong to the original source, rather than another
+        // source admitted after the pending build's idle timeout.
+        g.endFrame();g.envelopeBudget.maxVertices=0;
+        assert(g.poseEnvelope(p,original,layout,2,bank,bounds,nullptr,nullptr)==NorthlightReplayBounds::Status::Valid&&"M2_ORIGINAL_PENDING_SOURCE_MUST_COMPLETE");
+        assert(bounds.valid&&!g.envelopeBudget.vertices);
+        std::puts("M2_PENDING_PROGRESS_PASS original_draw_absent existing_vertex_and_time_budgets");
+    }
+};
+void MaterialCaptureStateTestAccess::noRangeBudget(NorthlightAutoBump& b){DisplacementStateTestAccess::noRangeBudget(b.displacement);}
 struct Calls:ForwardIDirect3DDevice9 {
     using ForwardIDirect3DDevice9::ForwardIDirect3DDevice9;
-    unsigned targets=0,draws=0,samplers=0,render=0;
+    unsigned targets=0,draws=0,samplers=0,render=0,vertexReads=0;
+    HRESULT STDMETHODCALLTYPE GetVertexShaderConstantF(UINT first,float* out,UINT count)override{++vertexReads;return real->GetVertexShaderConstantF(first,out,count);}
     HRESULT STDMETHODCALLTYPE SetRenderTarget(DWORD n,IDirect3DSurface9* s)override{++targets;return real->SetRenderTarget(n,s);}
     HRESULT STDMETHODCALLTYPE DrawIndexedPrimitive(D3DPRIMITIVETYPE p,INT b,UINT m,UINT v,UINT i,UINT n)override{++draws;return real->DrawIndexedPrimitive(p,b,m,v,i,n);}
     HRESULT STDMETHODCALLTYPE DrawIndexedPrimitiveUP(D3DPRIMITIVETYPE p,UINT m,UINT v,UINT n,const void* i,D3DFORMAT f,const void* s,UINT stride)override{++draws;return real->DrawIndexedPrimitiveUP(p,m,v,n,i,f,s,stride);}
@@ -33,7 +60,7 @@ struct Fixture {
     IDirect3DTexture9 *texture=nullptr,*unrelated=nullptr;
     std::vector<unsigned char> data;std::vector<WORD> indices;uint64_t revision=1;
     unsigned scenario;bool alpha,equal,blend,up,supported;
-    Fixture(unsigned kind,const char* rigid,const char* skin,const char* ps,const char* consume,bool expectBatch):scenario(kind),alpha(kind!=10),equal(kind!=6),blend(kind==7),up(kind==3||kind==11),supported(expectBatch){
+    Fixture(unsigned kind,const char* rigid,const char* skin,const char* ps,const char* consume,bool expectBatch):scenario(kind),alpha(kind!=10&&kind!=23&&kind!=24),equal(kind!=6&&kind!=23&&kind!=24),blend(kind==7),up(kind==3||kind==11),supported(expectBatch){
         final=target(W,H,D3DFMT_A16B16G16R16F,8);consumer=::ps(consume);
         scene=target(W,H,kind==14?D3DFMT_A16B16G16R16F:D3DFMT_A8R8G8B8,kind==14?8:4);
         const auto samples=kind==12?D3DMULTISAMPLE_2_SAMPLES:D3DMULTISAMPLE_NONE;
@@ -45,7 +72,7 @@ struct Fixture {
         ok(d->CreateVertexBuffer(UINT(data.size()),0,0,D3DPOOL_MANAGED,&vb,nullptr));ok(d->CreateIndexBuffer(24,0,D3DFMT_INDEX16,D3DPOOL_MANAGED,&ib,nullptr));writeGeometry();
         ok(d->CreateTexture(32,32,1,0,D3DFMT_A8R8G8B8,D3DPOOL_MANAGED,&texture,nullptr));ok(d->CreateTexture(1,1,1,0,D3DFMT_A8R8G8B8,D3DPOOL_MANAGED,&unrelated,nullptr));writeTexture(false);
     }
-    IDirect3DVertexShader9* vsCurrent()const{return vertex[scenario==3||scenario==11];}
+    IDirect3DVertexShader9* vsCurrent()const{return vertex[scenario==3||scenario==11||scenario==23||scenario==24];}
     void geometry(){
         const float xy[6][2]={{-.9f,-.9f},{.9f,-.9f},{-.9f,.9f},{-.9f,.9f},{.9f,-.9f},{.9f,.9f}};
         for(unsigned i=0;i<12;++i){auto* v=data.data()+48*i;const float z=i<6?(scenario==2?2.95f:3.f):(scenario==0?3.001f:scenario==2?3.01f:3.f);
@@ -73,7 +100,7 @@ struct Fixture {
     HRESULT draw(){return up?d->DrawIndexedPrimitiveUP(D3DPT_TRIANGLELIST,0,12,4,indices.data(),D3DFMT_INDEX16,data.data(),48):d->DrawIndexedPrimitive(D3DPT_TRIANGLELIST,0,0,12,0,4);}
     ~Fixture(){drop(consumer);drop(final.read);drop(final.s);drop(final.t);drop(vb);drop(ib);drop(declaration);for(auto*& v:vertex)drop(v);drop(pixel);NorthlightMaterialTextures::cache().erase(texture,texture);drop(texture);drop(unrelated);drop(depth);drop(msaaColor);drop(scene.read);drop(scene.s);drop(scene.t);}
 };
-struct Result {std::vector<unsigned char> normal,occlusion,color,final;double cpu=0,gpu=0;unsigned queued=0,equal=0,targets=0,draws=0;};
+struct Result {std::vector<unsigned char> normal,occlusion,color,final;double cpu=0,gpu=0;unsigned queued=0,equal=0,targets=0,draws=0,vertexReads=0;};
 // Production supplies known native raster/sampler state. Benchmark both policies
 // with the same mirror; correctness scenarios also exercise the query fallback.
 struct KnownState {
@@ -90,6 +117,7 @@ static Result run(Calls& calls,Fixture& f,const std::vector<unsigned char>& vsBy
     bump.setGeometryTracking([](void* p,bool){return uint64_t(reinterpret_cast<uintptr_t>(p));},[](void*,bool){return uint64_t(1);},nullptr);
     bump.registerVertex(f.vsCurrent(),NorthlightWaterShaderPatch::fnv1a64((const uint32_t*)vsBytes.data(),vsBytes.size()/4),(const DWORD*)vsBytes.data(),vsBytes.size()/4,3);bump.registerPixel(f.pixel,NorthlightWaterShaderPatch::fnv1a64((const uint32_t*)psBytes.data(),psBytes.size()/4));
     if(f.scenario==11)MaterialCaptureStateTestAccess::failSnapshot(bump);
+    if(f.scenario==24)MaterialCaptureStateTestAccess::noRangeBudget(bump);
     IDirect3DQuery9 *begin=nullptr,*end=nullptr,*frequency=nullptr,*event=nullptr,*disjoint=nullptr;
     ok(d->CreateQuery(D3DQUERYTYPE_EVENT,&event));if(measure){ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&begin));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&end));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMPFREQ,&frequency));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMPDISJOINT,&disjoint));}
     Result r;
@@ -100,7 +128,7 @@ static Result run(Calls& calls,Fixture& f,const std::vector<unsigned char>& vsBy
         f.writeTexture(false);f.bind();ok(d->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0,1,0));
         ok(d->BeginScene());if(frame)MaterialCaptureStateTestAccess::warm(bump,f.texture);
         if(f.equal){ok(d->SetRenderState(D3DRS_COLORWRITEENABLE,0));f.pose(0);ok(f.draw());if(f.scenario==20){f.pose(1);ok(f.draw());}ok(d->SetRenderState(D3DRS_COLORWRITEENABLE,15));ok(d->SetRenderState(D3DRS_ZFUNC,D3DCMP_EQUAL));}
-        if(measure)known.read();const auto beforeTargets=calls.targets,beforeDraws=calls.draws;float original[224][4];ok(d->GetPixelShaderConstantF(0,original[0],224));
+        if(measure)known.read();const auto beforeTargets=calls.targets,beforeDraws=calls.draws,beforeVertexReads=calls.vertexReads;float original[224][4];ok(d->GetPixelShaderConstantF(0,original[0],224));
         if(measure&&frame==2){ok(disjoint->Issue(D3DISSUE_BEGIN));ok(frequency->Issue(D3DISSUE_END));ok(begin->Issue(D3DISSUE_END));}
         auto start=std::chrono::steady_clock::now();
         for(unsigned i=0;i<count;++i){
@@ -113,7 +141,7 @@ static Result run(Calls& calls,Fixture& f,const std::vector<unsigned char>& vsBy
         }
         IDirect3DTexture9* released=nullptr;if(f.scenario==19){released=f.texture;ok(d->SetTexture(0,nullptr));f.texture=nullptr;released->Release();}
         assert(bump.finishCaptures());if(released){released->AddRef();f.texture=released;}auto stop=std::chrono::steady_clock::now();if(measure&&frame==2){ok(end->Issue(D3DISSUE_END));ok(disjoint->Issue(D3DISSUE_END));}ok(d->EndScene());waitQuery(event);
-        r.cpu=std::chrono::duration<double,std::milli>(stop-start).count();r.targets=calls.targets-beforeTargets;r.draws=calls.draws-beforeDraws;r.queued=MaterialCaptureStateTestAccess::queued(bump);r.equal=MaterialCaptureStateTestAccess::equal(bump);
+        r.cpu=std::chrono::duration<double,std::milli>(stop-start).count();r.targets=calls.targets-beforeTargets;r.draws=calls.draws-beforeDraws;r.vertexReads=calls.vertexReads-beforeVertexReads;r.queued=MaterialCaptureStateTestAccess::queued(bump);r.equal=MaterialCaptureStateTestAccess::equal(bump);
         float after[224][4];ok(d->GetPixelShaderConstantF(0,after[0],224));if(std::memcmp(original,after,sizeof original))for(unsigned i=0;i<224;++i)if(std::memcmp(original[i],after[i],16))std::printf("CONSTANT_MISMATCH scenario=%u phase=%u frame=%u policy=%u c%u before=%g,%g,%g,%g after=%g,%g,%g,%g\n",f.scenario,phase,frame,northlightReadOnlyPolicy,i,original[i][0],original[i][1],original[i][2],original[i][3],after[i][0],after[i][1],after[i][2],after[i][3]);assert(!std::memcmp(original,after,sizeof original));
         IDirect3DSurface9 *rt=nullptr,*ds=nullptr;ok(d->GetRenderTarget(0,&rt));ok(d->GetDepthStencilSurface(&ds));assert(rt==(f.msaaColor?f.msaaColor:f.scene.s)&&ds==f.depth);drop(rt);drop(ds);
         if(measure&&frame==2){UINT64 a=0,b=0,hz=0;BOOL invalid=TRUE;ok(begin->GetData(&a,sizeof a,0));ok(end->GetData(&b,sizeof b,0));ok(frequency->GetData(&hz,sizeof hz,0));ok(disjoint->GetData(&invalid,sizeof invalid,0));assert(!invalid&&hz&&b>=a);r.gpu=double(b-a)*1000/hz;}
@@ -141,13 +169,13 @@ int main(int argc,char** argv){assert(argc==6||argc==7);const bool negative=argc
     HWND window=CreateWindowExW(0,L"STATIC",L"",WS_OVERLAPPED,0,0,64,64,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);assert(window);auto module=LoadLibraryA(argv[1]);assert(module);auto create=(IDirect3D9*(WINAPI*)(UINT))GetProcAddress(module,"Direct3DCreate9");assert(create);auto api=create(D3D_SDK_VERSION);
     D3DDISPLAYMODE display{};ok(api->GetAdapterDisplayMode(0,&display));if(FAILED(api->CheckDeviceFormat(0,D3DDEVTYPE_HAL,display.Format,D3DUSAGE_DEPTHSTENCIL,D3DRTYPE_TEXTURE,D3DFORMAT(MAKEFOURCC('D','F','2','4'))))){std::puts("MATERIAL_EQUAL_DEPTH_UNSUPPORTED_DF24: production seed cannot run; unchanged immediate fallback");api->Release();FreeLibrary(module);DestroyWindow(window);return 77;}
     D3DPRESENT_PARAMETERS pp{};pp.Windowed=TRUE;pp.hDeviceWindow=window;pp.BackBufferWidth=pp.BackBufferHeight=64;pp.BackBufferFormat=D3DFMT_X8R8G8B8;pp.SwapEffect=D3DSWAPEFFECT_DISCARD;pp.PresentationInterval=D3DPRESENT_INTERVAL_IMMEDIATE;IDirect3DDevice9* raw=nullptr;ok(api->CreateDevice(0,D3DDEVTYPE_HAL,window,D3DCREATE_HARDWARE_VERTEXPROCESSING|D3DCREATE_FPU_PRESERVE,&pp,&raw));
-    {Calls calls(raw);d=&calls;NorthlightMaterialTextures::enabled.store(true);auto rigid=read(argv[2]),skin=read(argv[3]),pixel=read(argv[4]);unsigned checked=0;
-        for(unsigned scenario=0;scenario<(benchmark||negative?1:23);++scenario){Fixture fixture(scenario,argv[2],argv[3],argv[4],argv[5],expectBatch);
+    {Calls calls(raw);d=&calls;DisplacementStateTestAccess::pendingProgress();NorthlightMaterialTextures::enabled.store(true);auto rigid=read(argv[2]),skin=read(argv[3]),pixel=read(argv[4]);unsigned checked=0;
+        for(unsigned scenario=0;scenario<(benchmark||negative?1:25);++scenario){Fixture fixture(scenario,argv[2],argv[3],argv[4],argv[5],expectBatch);
             if(negative)fixture.equal=false;
-            for(unsigned phase=0;phase<(negative?1u:3u);++phase)for(unsigned round=0;round<(benchmark?20u:1u);++round){Result results[2];for(unsigned turn=0;turn<2;++turn){const unsigned current=(turn+round)&1;northlightReadOnlyPolicy=current?(negative?1:2):0;results[current]=run(calls,fixture,scenario==3||scenario==11?skin:rigid,pixel,phase,benchmark?128u:8u,benchmark);}
+                for(unsigned phase=0;phase<(negative?1u:3u);++phase)for(unsigned round=0;round<(benchmark?20u:1u);++round){Result results[2];for(unsigned turn=0;turn<2;++turn){const unsigned current=(turn+round)&1;northlightReadOnlyPolicy=current?(negative?1:2):0;results[current]=run(calls,fixture,scenario==3||scenario==11||scenario==23||scenario==24?skin:rigid,pixel,phase,benchmark?128u:8u,benchmark);}
                 const bool same=results[0].normal==results[1].normal&&results[0].occlusion==results[1].occlusion&&results[0].color==results[1].color&&results[0].final==results[1].final;
                 if(!same)std::printf("MATERIAL_EQUAL_MISMATCH scenario=%u phase=%u round=%u\n",scenario,phase,round);assert(same);
-                for(unsigned current=0;current<2;++current){const auto& r=results[current];std::printf("EQUAL_FRAME scenario=%u phase=%u round=%u current=%u queued=%u equalQueued=%u targets=%u draws=%u cpuMs=%.6f gpuMs=%.6f\n",scenario,phase,round,current,r.queued,r.equal,r.targets,r.draws,r.cpu,r.gpu);}
+                for(unsigned current=0;current<2;++current){const auto& r=results[current];std::printf("EQUAL_FRAME scenario=%u phase=%u round=%u current=%u queued=%u equalQueued=%u targets=%u draws=%u vertexReads=%u cpuMs=%.6f gpuMs=%.6f\n",scenario,phase,round,current,r.queued,r.equal,r.targets,r.draws,r.vertexReads,r.cpu,r.gpu);}
                 ++checked;
             }
         }

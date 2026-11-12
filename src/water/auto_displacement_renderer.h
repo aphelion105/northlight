@@ -93,6 +93,7 @@ class NorthlightAutoDisplacement {
     NorthlightModelNormalRange::Cache modelRangeProof;
     NorthlightReplayMetadata::Cache<NorthlightReplayBounds::Prepared,IDirect3DVertexShader9,IDirect3DVertexDeclaration9> poseMetadata;
     NorthlightReplayBounds::Budget envelopeBudget;
+    bool envelopeBuildContinued=false;
     float distanceInverseView[16]={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};
     bool distanceViewKnown=false;
     double distanceView[9]={1,0,0,0,1,0,0,0,1};
@@ -236,6 +237,9 @@ class NorthlightAutoDisplacement {
     NorthlightReplayBounds::Status poseEnvelope(const Program& program,const std::shared_ptr<const Mesh>& source,const D3DVERTEXELEMENT9* elements,UINT count,
         const float* bank,NorthlightReplayBounds::Bounds& result,IDirect3DVertexShader9* shader,IDirect3DVertexDeclaration9* declaration,NorthlightReplayBounds::EnvelopeCache::WorkInfo* info=nullptr,const float* basis=nullptr){
         const float identity[16]={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};
+        // Finish an admitted immutable source even when its original draw is
+        // absent. Otherwise it can block every other cold source indefinitely.
+        if(!envelopeBuildContinued){envelopeBuildContinued=true;poseEnvelopes.continuePendingBuild(envelopeBudget);}
         // Immutable shader/declaration keys may be prepared once. Current pose,
         // source ownership, camera and every envelope budget are still checked.
         const auto prepared=poseEnvelopes.canReady()?poseMetadata.get(shader,declaration,[&]{
@@ -532,7 +536,7 @@ public:
     bool skinned(IDirect3DVertexShader9* original)const{auto it=shaders.find(original);return it!=shaders.end()&&it->second.skinned;}
     // Rigid affine bounds and cached skin envelopes. Unknown/budget-limited
     // draws retain per-pixel checks. UP skin draws have no reusable source owner.
-    bool nearestMaterialDepth(IDirect3DVertexShader9* original,const Args& args,float& nearest,bool geometrySource=false,const NorthlightCaptureMetadata::PositionBounds* captured=nullptr,float* farthest=nullptr){
+    bool nearestMaterialDepth(IDirect3DVertexShader9* original,const Args& args,float& nearest,bool geometrySource=false,const NorthlightCaptureMetadata::PositionBounds* captured=nullptr,float* farthest=nullptr,CaptureSource* captureSource=nullptr){
         using P=NorthlightMaterialProfile;P::Scope timing(profile,P::BoundsPose);
         auto shader=materials.find(original);if(shader==materials.end())return false;
         const auto& program=shader->second.view;
@@ -561,8 +565,19 @@ public:
         else if(geometrySource){if(!snapshots.read(d,decl.p,args.draw,local,nullptr,false,&source,false,true))return false;}
         else if(!(skin?skinRangeSnapshots:rangeSnapshots).read(d,decl.p,args.draw,local,nullptr,false,&source))return false;
         if(!source)source=snapshots.retain(std::move(local));
+        // Skin admission reads the complete declaration layout. Reuse that
+        // immutable snapshot in the same draw's deferred material packet.
+        // Rigid range snapshots contain positions only and cannot be replayed.
+        if(skin&&captureSource){captureSource->clear();captureSource->mesh=source;captureSource->declaration=decl.p;decl->AddRef();}
         read.work(source->vertexCount,source->byteSize());read.next(P::BoundsPose);
         if(skin){
+            // The same audited stock-M2 proof already used by displacement
+            // rejects distant uniform single-bone sources without evaluating
+            // every skin-envelope group. This is only a lower bound; larger
+            // configured ranges still keep the draw and its per-pixel checks.
+            if(shader->second.rangeKind==NorthlightModelNormalRange::Single&&
+               modelRangeProof.outside(source,elements,count,rangeConstants,shader->second.rangeKind)){
+                nearest=48.01f;if(farthest)*farthest=INFINITY;return true;}
             P::Scope envelope(profile,P::PoseEnvelope);
             NorthlightReplayBounds::Bounds result;
             if(poseEnvelope(program,source,elements,count,rangeConstants,result,original,decl.p)!=NorthlightReplayBounds::Status::Valid)return false;
@@ -602,8 +617,8 @@ public:
         logf("DISPLACEMENT_MEMORY pressure=%u profiled=%u sourcesMs=%.3f capsMs=%.3f geometryMs=%.3f boundsMs=%.3f deferredMiB=%.3f batched=%u",unsigned(on),unsigned(timed),sourcesMs,capsMs,geometryMs,boundsMs,double(deferred)/(1u<<20),unsigned(batch!=nullptr));
     }
     void trimMemory(NorthlightStreaming::CpuRetirement* retirement=nullptr,NorthlightStreaming::CpuRetirementBatch* batch=nullptr){setMemoryPressure(memoryPressure,retirement,batch);}
-    void reset(NorthlightStreaming::CpuRetirementBatch* batch=nullptr,bool preserveCaptureSources=false){setDistanceView(nullptr);modelRangeProof.clear();snapshots.clearIndexCache(nullptr,batch,preserveCaptureSources);rangeSnapshots.clearIndexCache(nullptr,batch,preserveCaptureSources);skinRangeSnapshots.clearIndexCache(nullptr,batch,preserveCaptureSources);positionBounds.clear();current=nullptr;clearModelOverlays();constantStamp={};rangeConstantStamp={};sourceLookup.clear();contentLookup.clear();materialLookup.clear();indexedEntries=true;entries.clear();boundsLRU.clear();bounds.clear();poseEnvelopes.clear();poseMetadata.clear();poseBindings={};envelopeBudget.reset();boundsBytes=resident=0;for(auto& t:textures){drop(t.gpu);drop(t.source);}textures.clear();declarations.clear();}
-    void endFrame(){setDistanceView(nullptr);modelRangeProof.beginFrame();current=nullptr;clearModelOverlays();if(variantSources)logf("MATERIAL_VARIANT_COLD frame=%u sources=%u cpuBuilt=%u gpuBuilt=%u readFailed=%u sourceBytes=%zu cpuMs=%.6f",frames,variantSources,variantCPU,variantGPU,variantReadFailed,variantBytes,variantMs);variantSources=variantCPU=variantGPU=variantReadFailed=0;variantBytes=0;variantMs=0;if(frames%60==0){MEMORYSTATUSEX memory{};memory.dwLength=sizeof memory;if(GlobalMemoryStatusEx(&memory))refreshBudget(memory);}buildsThisFrame=readsThisFrame=poseVerticesThisFrame=0;for(auto& vertices:poseKernelVertices)vertices=0;poseByteIndexVertices=0;poseEnvelopes.beginFrame(false);poseMetadata.beginFrame();envelopeBudget.reset();snapshots.clearFrame();rangeSnapshots.clearFrame();skinRangeSnapshots.clearFrame();positionBounds.beginFrame();capturedBoundsHits=0;if((draws||snapshotRejected)&&frames%600==0){logf("DISPLACEMENT cached=%zu bytes=%zu builds=%llu hits=%llu draws=%llu triangles=%llu refused=%llu terrain=%u walls=%u grass=%u models=%u stateRejected=%u heightRejected=%u shaderRejected=%u snapshotRejected=%u meshRejected=%u budgetMiB=%zu",entries.size(),resident,(unsigned long long)builds,(unsigned long long)hits,(unsigned long long)draws,(unsigned long long)triangles,(unsigned long long)refused,domainDraws[0],domainDraws[1],domainDraws[2],domainDraws[3],stateRejected,heightRejected,shaderRejected,snapshotRejected,meshRejected,cacheBudget>>20);
+    void reset(NorthlightStreaming::CpuRetirementBatch* batch=nullptr,bool preserveCaptureSources=false){setDistanceView(nullptr);modelRangeProof.clear();snapshots.clearIndexCache(nullptr,batch,preserveCaptureSources);rangeSnapshots.clearIndexCache(nullptr,batch,preserveCaptureSources);skinRangeSnapshots.clearIndexCache(nullptr,batch,preserveCaptureSources);positionBounds.clear();current=nullptr;clearModelOverlays();constantStamp={};rangeConstantStamp={};sourceLookup.clear();contentLookup.clear();materialLookup.clear();indexedEntries=true;entries.clear();boundsLRU.clear();bounds.clear();poseEnvelopes.clear();poseMetadata.clear();poseBindings={};envelopeBudget.reset();envelopeBuildContinued=false;boundsBytes=resident=0;for(auto& t:textures){drop(t.gpu);drop(t.source);}textures.clear();declarations.clear();}
+    void endFrame(){setDistanceView(nullptr);modelRangeProof.beginFrame();current=nullptr;clearModelOverlays();if(variantSources)logf("MATERIAL_VARIANT_COLD frame=%u sources=%u cpuBuilt=%u gpuBuilt=%u readFailed=%u sourceBytes=%zu cpuMs=%.6f",frames,variantSources,variantCPU,variantGPU,variantReadFailed,variantBytes,variantMs);variantSources=variantCPU=variantGPU=variantReadFailed=0;variantBytes=0;variantMs=0;if(frames%60==0){MEMORYSTATUSEX memory{};memory.dwLength=sizeof memory;if(GlobalMemoryStatusEx(&memory))refreshBudget(memory);}buildsThisFrame=readsThisFrame=poseVerticesThisFrame=0;for(auto& vertices:poseKernelVertices)vertices=0;poseByteIndexVertices=0;poseEnvelopes.beginFrame(false);poseMetadata.beginFrame();envelopeBudget.reset();envelopeBuildContinued=false;snapshots.clearFrame();rangeSnapshots.clearFrame();skinRangeSnapshots.clearFrame();positionBounds.beginFrame();capturedBoundsHits=0;if((draws||snapshotRejected)&&frames%600==0){logf("DISPLACEMENT cached=%zu bytes=%zu builds=%llu hits=%llu draws=%llu triangles=%llu refused=%llu terrain=%u walls=%u grass=%u models=%u stateRejected=%u heightRejected=%u shaderRejected=%u snapshotRejected=%u meshRejected=%u budgetMiB=%zu",entries.size(),resident,(unsigned long long)builds,(unsigned long long)hits,(unsigned long long)draws,(unsigned long long)triangles,(unsigned long long)refused,domainDraws[0],domainDraws[1],domainDraws[2],domainDraws[3],stateRejected,heightRejected,shaderRejected,snapshotRejected,meshRejected,cacheBudget>>20);
         logf("DISPLACEMENT snapshots attempts=%llu up=%llu buffered=%llu unknown=%llu arguments=%llu declaration=%llu stream=%llu instancing=%llu indexBuffer=%llu indexRange=%llu vertexRange=%llu budget=%llu lock=%llu unlock=%llu",(unsigned long long)snapshotAttempts,(unsigned long long)snapshotUP,(unsigned long long)(snapshotAttempts-snapshotUP),(unsigned long long)snapshotReasons[0],(unsigned long long)snapshotReasons[1],(unsigned long long)snapshotReasons[2],(unsigned long long)snapshotReasons[3],(unsigned long long)snapshotReasons[4],(unsigned long long)snapshotReasons[5],(unsigned long long)snapshotReasons[6],(unsigned long long)snapshotReasons[7],(unsigned long long)snapshotReasons[8],(unsigned long long)snapshotReasons[9],(unsigned long long)snapshotReasons[10]);}++frames;}
     void registerVariant(IDirect3DVertexShader9* original,const DWORD* code,size_t count,bool skinned=false,bool wmo=false){
         auto old=shaders.find(original);if(old!=shaders.end()){drop(old->second.patched);drop(old->second.gpu);drop(old->second.source);shaders.erase(old);}Shader shader;

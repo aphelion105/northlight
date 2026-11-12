@@ -683,7 +683,8 @@ public:
         const unsigned domain=v->second.kind;
         using P=NorthlightMaterialProfile;profileTag=domain*4+modes[domain-1];profilePrimitives=geometry?geometry->draw.primitives:0;
         P::Scope timing(profile,P::Admission,profileTag);if(profile)profile->count(P::Candidates);
-        float nearestDepth=0,farthestDepth=INFINITY;
+        float nearestDepth=0,farthestDepth=INFINITY;bool rangeAttempted=false;
+        NorthlightAutoDisplacement::CaptureSource geometrySource;
         if((domain==1&&!terrain)||(domain==2&&!walls)||(domain==3&&!grass)||(domain==4&&!modes[3]))return;
         const D3DRENDERSTATETYPE visibilityKeys[]={D3DRS_COLORWRITEENABLE,D3DRS_ZWRITEENABLE};DWORD visibility[2];
         if(!readStates(visibilityKeys,visibility))return;
@@ -708,7 +709,8 @@ public:
         }
         if(!ensureVertex(original,v->second))return;
         if(geometry&&(!geometryMode||!displacement.skinned(original))){float nearest=0;
-            if(displacement.nearestMaterialDepth(original,*geometry,nearest,geometryMode,positions,domain==4&&deferredAllowed?&farthestDepth:nullptr)){++rangeTests;
+            rangeAttempted=true;
+            if(displacement.nearestMaterialDepth(original,*geometry,nearest,geometryMode,positions,domain==4&&deferredAllowed?&farthestDepth:nullptr,domain==4&&deferredAllowed?&geometrySource:nullptr)){++rangeTests;
                 nearestDepth=nearest;
                 if(nearest>=pomControl[1]){pomInRange=false;++pomRangeRejected;}
                 skipGeometry=geometryMode&&nearest>displacement.geometryRange(domain);
@@ -757,7 +759,6 @@ public:
         // A distant proof needs no capture constants, samplers or private depth.
         // Resolve the target size first: reset() would discard prepared geometry.
         const NorthlightAutoDisplacement::Admission geometryAdmission{z,depthWrite,s[5].value,s[1].value,s[7].value,s[8].value,alphaFunc};
-        NorthlightAutoDisplacement::CaptureSource geometrySource;
         if(domain<=4&&geometryMode&&geometry&&!skipGeometry){displacement.prepare(original,domain,material,*geometry,&geometryAdmission,&geometrySource,std::max(captureRange(domain),displacement.geometryRange(domain)));
             if(source&&geometrySource.mesh&&geometrySource.declaration){source->mesh=geometrySource.mesh;source->pose=geometrySource.pose;source->declaration=geometrySource.declaration;source->declaration->AddRef();}
             nearestDepth=displacement.nearestPreparedDepth();farthestDepth=std::min(farthestDepth,displacement.farthestPreparedDepth());
@@ -806,7 +807,9 @@ public:
             // EQUAL leaves depth unchanged, even within an overlapping alpha
             // draw. Range clipping changes only colour, as in immediate replay.
             float nearest=0;
-            if(!equalDepth&&!std::isfinite(farthestDepth))displacement.nearestMaterialDepth(original,*geometry,nearest,false,positions,&farthestDepth);
+            // A failed current-pose proof stays unknown for this draw. Retrying
+            // it repeats snapshot/constant work and spends the same budgets.
+            if(!equalDepth&&!rangeAttempted&&!std::isfinite(farthestDepth))displacement.nearestMaterialDepth(original,*geometry,nearest,false,positions,&farthestDepth,&geometrySource);
             D3DSURFACE_DESC depthDesc{};
             singleSample=(equalDepth||farthestDepth<captureRange(domain))&&SUCCEEDED(saved.depth->GetDesc(&depthDesc))&&depthDesc.Format==D3DFMT_D24S8;
         }
