@@ -1,0 +1,49 @@
+{
+  "source": {
+    "description": "Repository structure, harness failure controls, capture wiring and generated shader consistency. No compiler, GPU or client.",
+    "tests": [
+      "test_project_harness.py",
+      "test_affected_tests.py",
+      "test_build_source_identity.py",
+      "test_capture_skip_wiring.py",
+      "test_gpu_budget_wiring.py",
+      "test_ao_fold.py",
+      "test_quality_docs.py",
+      "test_world_shader_manifest.py",
+      "test_shadow_transition_build.py"
+    ]
+  },
+  "architecture": {
+    "description": "Compiled production contracts for frame demand, four Draw adapters, capture ownership and model-normal consumers. No game or GPU timings.",
+    "tests": [
+      "test_frame_requirements.py",
+      "test_draw_gates.py",
+      "test_draw_orchestration.py",
+      "test_sky_background_order.py",
+      "test_capture_handoff.py",
+      "test_shared_terrain_bounds.py",
+      "test_model_normal_demand.py",
+      "test_model_normal_consumers.py"
+    ]
+  },
+  "gpu": {
+    "description": "Hidden-device image/state oracles for optional effect layers, capture orchestration and shadows. Requires a configured Windows GPU toolchain and client; does not establish game FPS.",
+    "tests": [
+      "test_effect_coverage_gpu.py",
+      "test_sky_environment_gpu.py",
+      "test_celestial_composition_gpu.py",
+      "test_hdr_sky_residual_gpu.py",
+      "test_world_screen_effects_gpu.py"
+    ]
+  },
+  "packaging": {
+    "description": "Installer and package-tool regressions. A release additionally requires the production DLL build and tests/verify_packages.py on the actual produced archives.",
+    "tests": [
+      "test_northlight_install.py",
+      "test_windows_installer.py",
+      "test_linux_package.py",
+      "test_entrypoints_isolated.py",
+      "test_install_delivery.py"
+    ]
+  }
+}

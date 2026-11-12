@@ -1503,7 +1503,7 @@ private:
         gpuProfile->mark("PreCelestial"); /* task 45: the rain and water mask preparation (and GPU work still pending from the game's scene) end here, so CelestialDiscs bills the discs and the terrain mask alone */
         // discs and glare, then the wrap-ring visibility in the same group of
         // 1x1 passes before the scene copy; the veil follows water (below).
-        const bool celestial=celestialDiscs&&world&&debugMode==0&&worldDebug==0;float sunElevation=0;
+        const bool celestial=celestialDiscs&&world&&!skyLayers.native(frame)&&debugMode==0&&worldDebug==0;float sunElevation=0;
         auto renderCelestial=[&](IDirect3DSurface9* target){
             NorthlightCelestial::Context sky;float inverseView[16],projection[3];
             if(world->celestialContext(sky,inverseView,projection)){sunElevation=sky.sun.direction[2]-sky.horizonSine; /* over the camera's far edge, as the composite's haze band */
@@ -1593,6 +1593,7 @@ private:
             LONGLONG aoBlurSetup=0,aoBlurSubmit=0;
             {CpuScope timing(timeAOBlur?&aoBlurSetup:nullptr);
              if (error(ext->SetRenderTarget(0,aoSurface),"AO blur render target")) return;
+             NorthlightEffectCoverage::Capture::bind(ext,effectCoverage.aoTexture(ext,saved.targets[0]));
              bindLegacyFog();ext->SetTexture(2,aoRaw);ext->SetTexture(0,aoRaw);ext->SetPixelShader(!waterMask&&aoBlurNoWaterPS?aoBlurNoWaterPS:aoBlurPS);}
             // Separate state/resource preparation from the draw interval. Both
             // timestamps still include command-stream gaps and dependencies.
@@ -1614,10 +1615,11 @@ private:
         const bool maskOn=nameMask.armed()&&nameMask.hasMarks()&&maskStencil&&worldDepth&&worldDebug==0;nameMask.composited=maskOn;
         IDirect3DSurface9* outputTarget=linearHdr?hdrPresentBack:saved.targets[0];
         if(linearHdr)hdrFrameSettings=effectiveHdrSettings();
-        const bool inlineHdrBase=linearHdr&&fold&&!maskOn&&hdrFrameSettings.legacyExpansion==0&&
+        const bool inlineHdrBase=linearHdr&&fold&&!maskOn&&!celestial&&hdrFrameSettings.legacyExpansion==0&&
             (sceneFormat==D3DFMT_A8R8G8B8||sceneFormat==D3DFMT_X8R8G8B8);
         if(linearHdr){
             if(error(hdrFrame.prepareLegacy(ext,scene,depthTex,hdrSkyValid?hdrSkyTarget():nullptr,width,height,worldMinDepth,worldMaxDepth,hdrFrameSettings,&stateBlocks,!inlineHdrBase),"HDR legacy decode"))return;
+            if(celestial){renderCelestial(hdrFrame.surface());celestialDiscs->renderRing();}
             hdrLegacyPrepared=true;
             if(maskOn&&error(hdrFrame.copyBase(ext,outputTarget,&stateBlocks),"HDR base"))return;
         }
@@ -1670,7 +1672,6 @@ private:
             }
         }
         if(celestial){
-            if(linearHdr){renderCelestial(outputTarget);celestialDiscs->renderRing();}
             const auto& haze=world->horizonHazeConstants();
             // HDR bloom spreads the visible linear source. The old SDR veil
             // would add a second, amplified halo directly over geometry.
@@ -2449,6 +2450,24 @@ private:
         if(particleOn&&world)NorthlightParticleCapture::Capture::submit(prepared,accepted,deferred,world->particleFrame());
     }
     NorthlightSkyComposition::Capture skyLayers;
+    unsigned skyBackgroundFrame=~0u;
+    void composeSkyBackground(){
+        if(skyBackgroundFrame==frame||!celestialDiscs||!world||!enabled||failed||applied||debugMode||worldDebug)return;
+        auto* layers=skyLayers.texture(frame);if(!layers)return;
+        D3DSURFACE_DESC desc{};D3DVIEWPORT9 vp{};
+        if(!fullViewport(desc,&vp,true)||!hdrBackTarget()||
+           NorthlightWorldDrawDomain::classify(worldMinDepth,worldMaxDepth,vp.MinZ,vp.MaxZ)==NorthlightWorldDrawDomain::Band::Sky)return;
+        // Close the sky before the first native foreground draw. Never replace
+        // its background underneath names, particles or native scene grading.
+        skyBackgroundFrame=frame;
+        if(!world->atmosphereEnvironment().skyValid)return;
+        NorthlightCelestial::Context sky;float view[16],p[3];
+        if(!world->celestialContext(sky,view,p)||!resources(desc.Width,desc.Height,desc.Format,true))return;
+        ExtensionDevice::RawScope raw(*ext);SavedState saved(ext,&stateBlocks);if(!saved.ok)return;
+        if(FAILED(ext->StretchRect(saved.targets[0],nullptr,sceneSurface,nullptr,D3DTEXF_NONE)))return;
+        celestialDiscs->renderSkyBackground(saved.targets[0],scene,nullptr,layers,width,height,p,view,world->atmosphereEnvironment().sky.color);
+    }
+
     NorthlightAuroraNative::DiagnosticCapture auroraDiagnostic;
     NorthlightAuroraNative::Registry auroraSources;
     NorthlightAuroraNative::Renderer auroraRenderer;
@@ -2509,6 +2528,7 @@ private:
         if(!fullViewport(full,&vp)||!NorthlightWorldDrawDomain::skyClaimPossible(worldMinDepth,worldMaxDepth,vp.MinZ,vp.MaxZ))return;
         ExtensionDevice::RawScope raw(*ext);
         skyLayers.begin(frame);
+        if(skyLayers.native(frame))return;
         auroraBegin();
         const unsigned generation=NorthlightMirrorResources::generation.load(std::memory_order_relaxed);
         if(skyTextureFrame!=frame||skyTextureGeneration!=generation){skyTextureFrame=frame;skyTextureGeneration=generation;skyTextures.clear();}
@@ -2543,10 +2563,11 @@ private:
             else if(count>4&&diagnostics()&&skyLayerWarnings++<16)logf("SKYLAYERS uncatalogued hash=%016llx format=%u size=%ux%u primitives=%u topology=%u",(unsigned long long)m.hash,m.format,m.width,m.height,count,unsigned(type));
         }
         drop(texture);
+        if(role==Role::Native){skyLayers.preserveNative();return;}
         if(!skyLayers.prepare(ext,&stateBlocks))role=Role::Unknown;
     }
     template<class Draw> void skyLayersReplay(NorthlightSkyComposition::Role role,bool accepted,Draw draw){
-        if(role==NorthlightSkyComposition::Role::Unknown||!accepted)return;
+        if(role==NorthlightSkyComposition::Role::Unknown||role==NorthlightSkyComposition::Role::Native||!accepted)return;
         extensionWork("sky layer transmission",[&]{ExtensionDevice::RawScope raw(*ext);
             if(!skyLayers.draw(ext,role,draw,&stateBlocks)){skyLayers.invalidate();if(skyLayerWarnings++<16)logf("SKYLAYERS capture failed frame=%u",frame);}});
     }
@@ -2643,7 +2664,7 @@ private:
         dropTerrainShadowSwap();dropBlobFaint();
         const bool sky=count<=4&&drawGates.sky;
         if(!frameDrawGates){
-            extensionWork("draw capture/effects",[&]{prepareDrawImpl(capture,count);});
+            extensionWork("draw capture/effects",[&]{prepareDrawImpl(capture,count);composeSkyBackground();});
             {CpuScope hooks(sampledHookTimer());
                 extensionWork("native sky claim",[&]{skyLayersBefore(t,count,skyRole);skyClaim(t,count,claimed);});
                 if(!claimed&&blobFilterActive())extensionWork("blob shadow filter",[&]{blobFilter(count,claimed);});}
@@ -2651,6 +2672,7 @@ private:
             const char* stage="draw capture/effects";
             extensionWork(stage,[&]{
                 prepareDrawImpl(capture,count);
+                composeSkyBackground();
                 CpuScope hooks(sampledHookTimer());
                 stage="skybox cloud order";skyLayersBefore(t,count,skyRole);
                 if(sky){stage="native sky claim";skyClaim(t,count,claimed);}

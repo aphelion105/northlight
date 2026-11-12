@@ -157,9 +157,11 @@ test_fog_optimization_proofs.py
 test_fog_simd_preparation.py
 test_fog_source_visibility.py
 test_fog_temporal_wiring.py
+test_forever_atmosphere.py
 test_forwarder_generation.py
 test_frame_focus_cache.py
 test_frame_logging_batch.py
+test_frame_requirements.py
 test_frame_stall_profile.py
 test_game_snapshot.py
 test_geometry_handoff.py
@@ -392,6 +394,7 @@ test_probe_sphere.py
 test_probe_texture_upload.py
 test_production_draw_timers.py
 test_progressive_gi_worker.py
+test_project_harness.py
 test_projected_draw_audit_gpu.py
 test_quality_docs.py
 test_quality_settings.py
@@ -480,6 +483,8 @@ test_shared_static_preparation.py
 test_shared_terrain_bounds.py
 test_shared_terrain_bounds_gpu.py
 test_single_skin_intervals.py
+test_sky_background_order.py
+test_sky_environment_gpu.py
 test_sky_lightning_coverage.py
 test_sky_material_catalog.py
 test_sky_only_context.py

@@ -21,7 +21,7 @@ def fail(file, key, msg): failures.append(f'{file}: {key}: {msg}')
 table = code[code.index('inline const Key Keys[]={'):]
 table = table[:table.index('\n};')]
 keys = {}
-for m in re.finditer(r'\{\s*"(\w+)"\s*,\s*&Settings::(\w+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*\{\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\}\s*\}', table):
+for m in re.finditer(r'\{\s*"(\w+)"\s*,\s*&Settings::(\w+)\s*,\s*(-?\d+)\s*,\s*(-?\d+)\s*,\s*\{\s*(-?\d+)\s*,\s*(-?\d+)\s*,\s*(-?\d+)\s*\}\s*\}', table):
     keys[m.group(1)] = (m.group(2), int(m.group(3)), int(m.group(4)), tuple(int(m.group(i)) for i in (5, 6, 7)))
 assert len(keys) > 40 and len(keys) == table.count('&Settings::'), (len(keys), table.count('&Settings::'))
 
@@ -29,8 +29,8 @@ assert len(keys) > 40 and len(keys) == table.count('&Settings::'), (len(keys), t
 body = code[code.index('struct Settings'):code.index('struct Key ')]
 body = re.sub(r'/\*.*?\*/|//[^\n]*', '', body, flags=re.S)
 defaults = {}
-for st in re.finditer(r'\bunsigned\s+([^;(){}]*);', body):
-    for name, val in re.findall(r'(\w+)\s*=\s*(\d+)', st.group(1)): defaults[name] = int(val)
+for st in re.finditer(r'\b(?:unsigned|int)\s+([^;(){}]*);', body):
+    for name, val in re.findall(r'(\w+)\s*=\s*(-?\d+)', st.group(1)): defaults[name] = int(val)
 
 # README.txt settings table: the consecutive rows after the "Individual settings" line.
 lines = readme.split('\n')
@@ -38,7 +38,7 @@ start = next(i for i, l in enumerate(lines) if l.startswith('Individual settings
 rows = {}
 for l in lines[start:]:
     if not re.match(r'^  \w', l): break  # the table ends at the first line that is not indented by two spaces
-    m = re.match(r'^  (\w+) +(\d+) ?/ ?(\d+) ?/ ?(\d+)(?: |$)', l)  # MinSkinnedTriangles and ShadowDirectionSteps write "a/b/c"
+    m = re.match(r'^  (\w+) +(-?\d+) ?/ ?(-?\d+) ?/ ?(-?\d+)(?: |$)', l)  # MinSkinnedTriangles and ShadowDirectionSteps write "a/b/c"
     if not m: fail(README_NAME, l[:40], 'line inside the settings table is not a "  Name a / b / c" row'); continue
     rows[m.group(1)] = tuple(int(m.group(i)) for i in (2, 3, 4))
 
@@ -64,11 +64,11 @@ for name, (member, low, high, preset) in keys.items():
         value, block = ini_keys[name]
         if value != str(preset[0]): fail(INI_NAME, name, f';{name}={value} but the Quality preset is {preset[0]}')
         # an "Allowed lo..hi" line in the key's comment block matches the Keys range
-        a = re.findall(r'Allowed (\d+)\.\.(\d+)', block)
+        a = re.findall(r'Allowed (-?\d+)\.\.(-?\d+)', block)
         if a and (int(a[-1][0]), int(a[-1][1])) != (low, high): fail(INI_NAME, name, f'Allowed {a[-1][0]}..{a[-1][1]} but Keys range is {low}..{high}')
         if not a and (low, high) != (0, 1): fail(INI_NAME, name, f'no "Allowed {low}..{high}" line in its comment block (only 0..1 keys may omit it)')
         # a "q / b / p" presets line is required in the comment block and matches the Keys presets
-        p = re.findall(r'(\d+) ?/ ?(\d+) ?/ ?(\d+)', block)
+        p = re.findall(r'(-?\d+) ?/ ?(-?\d+) ?/ ?(-?\d+)', block)
         if not p: fail(INI_NAME, name, 'no "a / b / c" presets line in its comment block')
         elif tuple(int(x) for x in p[-1]) != preset: fail(INI_NAME, name, f'presets {" / ".join(p[-1])} but Keys has {" / ".join(map(str, preset))}')
     # README.txt has the key's row with the Keys presets
@@ -83,7 +83,7 @@ for name in rows:
 assert 'FogTemporal' not in keys and 'FogTemporal' not in ini and 'FogTemporal' not in readme  # always on since the game tests; the key is gone
 
 # the origin array holds one slot per key (the header also static_asserts it)
-m = re.search(r"char origin\[(\d+)\]=\{([^}]*)\}", code)
+m = re.search(r"char origin\[(-?\d+)\]=\{([^}]*)\}", code)
 if not m or int(m.group(1)) != len(keys) or m.group(2).count("'d'") != len(keys): fail('quality_settings.h', 'origin', f'origin array is not {len(keys)} slots of \'d\'')
 
 if failures:

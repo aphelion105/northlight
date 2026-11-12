@@ -226,7 +226,7 @@
     "deathsky_clouds01.blp": "foreground",
     "deathsky_clouds02.blp": "foreground",
     "deathsky_mask.blp": "foreground",
-    "deathsky_skybowl01.blp": "background",
+    "deathsky_skybowl01.blp": "native",
     "deathsky_stream.blp": "foreground",
     "deathsky_vortexcloud01.blp": "foreground",
     "deathwingfightsky_cloudsmask04.blp": "foreground",

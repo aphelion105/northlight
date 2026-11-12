@@ -170,7 +170,10 @@ Individual settings (Quality / Balanced / Performance):
   GIDynamicProbes       1 / 0 / 0      characters' effect on indirect light
   GIThreads             1 / 1 / 1      computation threads (raise only if you have enough cores)
   GIFastBVH             1 / 1 / 1      new fast ray tracing (0 = the 0.3.137 version)
-  GIStrength            60 / 60 / 60   indirect light strength in percent (0..100; 60 = standard, 100 = maximum)
+  ShadowProvider        1 / 1 / 1      directional shadow renderer: native (0) or Northlight (1), live
+  GIBrightness          0 / 0 / 0      signed indirect-light brightness percentage (-100..200), live
+  AuroraStrength        100 / 100 / 100  native Northrend aurora and its GI emission (0..200), live
+  GIStrength            120 / 120 / 120   indirect light influence (0..240; 120 = full ambient replacement)
   GIDistance            76 / 52 / 52   reach of the indirect light from the camera in yards (36..84, rounded down to 36/44/52/60/68/76/84; above 52 the background computation is about 1.3x (60), 1.65x (68), 2x (76) and 2.5x (84), a new area fills more slowly and slightly more memory is used; small FPS impact, because the larger light texture is updated while moving)
   GIProbeAhead          0 / 0 / 0      moves the indirect light area forward from the camera towards your own character, in yards (0..48; 0 = around the camera; the camera is about 15–27 yards behind the character; values near the camera distance, about 15–25 (20 recommended), bring light further ahead of the character and reduce background computation when the camera turns; large values (40+) increase it; turning the camera can move the area)
   HorizonHaze           50 / 50 / 50   horizon haze: distant terrain and the lowest band of the sky in the game's own fog colour, in percent (0..100; 0 = off, the image as in 0.3.153; the fog toggle Ctrl+Shift+F7 also turns off the haze; small FPS impact)

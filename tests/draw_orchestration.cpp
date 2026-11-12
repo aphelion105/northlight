@@ -101,6 +101,7 @@ struct Base {
  bool hdrSkyAdmission(){env.action(HdrAdmission);return env.cfg.linearSky;}
  bool mistDraw(UINT count){env.action(Mist,{count});return env.cfg.mist;}void rainMrtUnbind(){env.event(RainUnbind);rainMrtBound=false;waterStorage.bound=false;}
  bool nextDrawIsWater()const{return env.cfg.waterBound;}
+ void composeSkyBackground(){}
  void skyLayersBefore(D3DPRIMITIVETYPE t,UINT count,NorthlightSkyComposition::Role& role){env.action(SkyBefore,{t,count});role=env.cfg.skyRole?NorthlightSkyComposition::Role::Sky:NorthlightSkyComposition::Role::Unknown;}
  void skyClaim(D3DPRIMITIVETYPE t,UINT count,bool& claimed){env.action(SkyClaim,{t,count});claimed=env.cfg.claimed;}
  bool blobFilterActive()const{return env.cfg.blob;}void blobFilter(UINT count,bool& claimed){env.action(Blob,{count});claimed=env.cfg.blobClaim;}

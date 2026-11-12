@@ -16,6 +16,7 @@ assert catalog.role(roles,'environments\\stars\\icecrown_skybowla_night.blp',320
 assert catalog.role(roles,'environments\\stars\\icecrown_skybowla_night.blp',192)=='foreground'
 assert catalog.role(roles,'environments\\stars\\dalaranday_dome02.blp',17)=='background'
 assert catalog.role(roles,'environments\\stars\\dalaran_night_clouds02.blp',37)=='foreground'
+assert catalog.role(roles,'deathsky_skybowl01.blp',320)=='native'
 try:
     catalog.role(roles,'new_material.blp',1)
 except KeyError:

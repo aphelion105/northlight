@@ -38,7 +38,7 @@ def role(materials, texture, primitives):
     item = materials[texture.rsplit('\\', 1)[-1]]
     if isinstance(item, dict):
         return 'background' if primitives in item['background_primitives'] else 'foreground'
-    if item not in ('background', 'foreground'):
+    if item not in ('background', 'foreground', 'native'):
         raise ValueError(f'Invalid sky material role: {texture}: {item}')
     return item
 

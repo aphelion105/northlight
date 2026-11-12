@@ -15,9 +15,9 @@
     "environments\\stars\\orgrisunclouds01.bl",
     "environments\\stars\\orgrisunclouds11.bl"
   ],
-  "roles_sha256": "30146a2c6592088a98ac1cb44a18b8a3381d3fcd4ad1e647abc75e23c7c9f1c1",
-  "generator_sha256": "42173c2c2ab655acb34f2f308f9ab005269382ecf6d1e8229c33bb6338268952",
-  "header_sha256": "659c8b63cd543758009b623fbd7d31d71e23779f38cc79322aabc1b9798a00cf",
+  "roles_sha256": "882e5d72e6abca0a4c0eea9ac70a64a76bdd6eeca6b7977357f2e30a69fbd822",
+  "generator_sha256": "a1185a24dd659c6a006f85d04e575565c157c4364b2409f265b30b2f0e9d6a62",
+  "header_sha256": "de6b0ab62a26fdf2d181f94f9fac4711695d7458ebdac78714e914b96bd81258",
   "inputs": {
     "dbfilesclient\\lightskybox.dbc": "9d2aae2794ff6e01f2a620a59504a1fa5812929502e1d4218acc81c1b00cd35b",
     "environments\\stars\\03cam01.blp": "cf01189cbc229f7e7a30ba3a92997407fe1e0a16e63fd128a9f10f8e2ce8164d",

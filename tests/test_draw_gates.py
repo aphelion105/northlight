@@ -349,6 +349,7 @@ struct Base{
     template<class Draw> HRESULT projectedDraw(UINT,unsigned,Draw draw){return draw();}
     struct GpuScene{struct{bool currentFrame(unsigned)const{return true;}}native;void setFrame(unsigned){}};GpuScene* gpuScene=nullptr;
     struct {void invalidate(){}} skyLayers;
+    void composeSkyBackground(){}
     void skyLayersBefore(D3DPRIMITIVETYPE,UINT,NorthlightSkyComposition::Role&){}
     template<class Draw> void skyLayersReplay(NorthlightSkyComposition::Role,bool,Draw){}
     bool auroraDrawProven=false;std::array<float,3> auroraDrawScale{};float auroraDrawIntensity=1;

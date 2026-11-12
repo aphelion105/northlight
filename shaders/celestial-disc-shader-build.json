@@ -1,5 +1,5 @@
 {
-  "source_sha256": "7f13c2a2980d9533bb5cd1f21aca38d7460a2fb4f92e467d8edd9fd8a28d7f6d",
+  "source_sha256": "4aaf0ba990e33438b86eae2d815978e97db2dc63bd674b1cc3b434094f955f8a",
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
   "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
   "game_launched": false,
@@ -77,6 +77,32 @@
         "exp": 36,
         "log": 27,
         "lrp": 1
+      }
+    },
+    "CelestialSkyPS": {
+      "target": "ps_3_0",
+      "bytes": 1808,
+      "sha256": "62adeba5d31a706237990c7778479a7ab4e8955d58e301e33879c40ce3f83eff",
+      "static_instruction_slots": 81,
+      "temporary_registers": 6,
+      "samplers": [
+        0,
+        1,
+        6
+      ],
+      "instructions": {
+        "mul": 22,
+        "texldl": 3,
+        "add": 24,
+        "cmp": 5,
+        "mov": 5,
+        "texkill": 1,
+        "rcp": 2,
+        "dp3": 1,
+        "rsq": 1,
+        "max": 1,
+        "log": 6,
+        "exp": 6
       }
     },
     "CelestialHaloVisibilityPS": {

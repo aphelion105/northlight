@@ -260,3 +260,20 @@ float4 CelestialTerrainVS(float3 position:POSITION0):POSITION0 {
     return mul(float4(position,1),TerrainMaskMatrix);
 }
 float4 CelestialTerrainPS():COLOR0 {return 1;}
+
+// Replace the captured background, preserving native cloud colour/transmission.
+// Add a signed linear delta to HDR so existing celestial residual is untouched.
+float4 SkyGradient[6] : register(c51);
+float4 CelestialSkyPS(float2 uv:TEXCOORD0):COLOR0 {
+    if(DiscPolicy.w>.5&&tex2Dlod(DiscDepth,float4(uv,0,0)).r<1.0-1.0/16777216.0)clip(-1);
+    float3 ray=normalize(discRay(uv));float h=ray.z;
+    float3 sky=lerp(SkyGradient[5].rgb,SkyGradient[4].rgb,saturate((h+.1)*10));
+    sky=lerp(sky,SkyGradient[3].rgb,saturate(h/.087156));
+    sky=lerp(sky,SkyGradient[2].rgb,saturate((h-.087156)/.171663));
+    sky=lerp(sky,SkyGradient[1].rgb,saturate((h-.258819)/.241181));
+    sky=lerp(sky,SkyGradient[0].rgb,saturate((h-.5)/.366025));
+    float3 native=tex2Dlod(DiscTexture,float4(uv,0,0)).rgb;
+    float4 layers=tex2Dlod(DiscSkyLayers,float4(uv,0,0));
+    float3 replacement=max(native-layers.rgb,0)+sky*saturate(layers.a);
+    return float4(DiscPolicy.x>1.5?discDecode(replacement)-discDecode(native):replacement,0);
+}

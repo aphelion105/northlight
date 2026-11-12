@@ -104,6 +104,7 @@
 #include "horizon_haze.h"
 #include "weather_state.h"
 #include "weather_effects.h"
+#include "forever_atmosphere.h"
 #include "fog_clouds.h"
 #include "gpu_budget.h" // 0.3.200 (gpu budget)
 #include "job_system.h" // 0.3.200 (jobs)
@@ -410,6 +411,7 @@ private:
     std::string celestialLightMap;V celestialLightCamera;
     bool continuousCelestialShadows=false;
     NorthlightCelestialProfiles::Table celestialProfiles;
+    NorthlightForever::Table foreverAtmosphere;NorthlightForever::Transition foreverTransition;NorthlightForever::Frame skyEnvironment;
     NorthlightRegionalShadow::Table shadowRanges;
     NorthlightCelestialProfiles::Transition paletteTransition;
     NorthlightCelestialProfiles::Profile framePalette;
@@ -2934,6 +2936,7 @@ public:
         replaySnapshots.configureBudget(size_t(captureBudgetMiB)*1048576,size_t(captureBudgetMiB)*524288);setNearReserve();
         logf("SHADOW experiment minSkinnedTriangles=%u captureBudgetMiB=%u actorShadowBudgetMiB=%u actorShadowRadius=%u distance=sampled-current-vertex unknown=first GI=preserved-at-capture-budget",minSkinnedShadowTriangles,captureBudgetMiB,actorShadowBudgetMiB,quality.actorShadowRadius);
         (void)NorthlightStreaming::cpuRetirement();
+        foreverAtmosphere.load(root+"forever-atmosphere.bin");
         bool paletteLoaded=NorthlightCelestialProfiles::load(root+"celestial-profiles.ini",celestialProfiles,paletteError);
         logf("CELESTIAL profiles loaded=%d zones=%zu %s",paletteLoaded,celestialProfiles.zones.size(),paletteError.c_str());
 #if NORTHLIGHT_DEV_TUNING
@@ -3621,6 +3624,7 @@ public:
     // the sun, i.e. the fog.a the composite applies there. 1 with fog off or where the field has no air.
     float skyTransmittance()const{return skyTransmittanceFrame;}
     float underwaterScale()const{return underwaterFade.scale();}
+    const NorthlightForever::Frame& atmosphereEnvironment()const{return skyEnvironment;}
     bool celestialContext(NorthlightCelestial::Context& out,float* inverseView,float* projectionOut)const{
         if(!hasContext()||!celestialValid)return false;
         out=celestial;out.horizonSine=apparentHorizon.valid?apparentHorizon.value:0.f;memcpy(inverseView,context.inverseView,64);memcpy(projectionOut,projection,12);return true;
@@ -3764,6 +3768,9 @@ public:
         {const DWORD now=GetTickCount();
          if(celestialValid){celestialHeld=celestial;celestialHeldMap=map;celestialHeldAt=now;celestialHeldOk=true;}
          else if(celestialHeldOk&&celestialHeldMap==map&&DWORD(now-celestialHeldAt)<=CelestialHoldMs){celestial=celestialHeld;celestialValid=true;++celestialHolds;}}
+        const float storm=quality.weather&&weatherState.kind!=NorthlightWeather::Kind::None?weatherState.blend*weatherState.intensity:0;
+        skyEnvironment=foreverAtmosphere.sample(map,context.camera,celestialValid?celestial.dayFraction:-1.f,storm);
+        skyEnvironment=foreverTransition.update(skyEnvironment,map,context.camera,double(GetTickCount64())*.001);
         if(celestialValid){
             // The native billboards' orbit (resolveRendererSky), shared by discs, shadows and fog.
             const float nativeSunAlpha=celestial.sun.alpha,nativeMoonAlpha=celestial.moon.alpha;
