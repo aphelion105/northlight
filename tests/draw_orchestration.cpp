@@ -16,7 +16,7 @@ struct Args {struct {D3DPRIMITIVETYPE topology;INT base;UINT minimum,vertices,st
 struct CaptureSource {unsigned mesh=0,pose=0;IDirect3DVertexDeclaration9* declaration=nullptr;};
 }
 namespace NorthlightCaptureMetadata {struct PositionBounds {const void* owner=nullptr;IDirect3DVertexShader9* shader=nullptr;bool known=false;};}
-namespace NorthlightSkyComposition {enum class Role{Unknown,Sky};}
+namespace NorthlightSkyComposition {enum class Role{Unknown,Sky,Celestial,Native,Planet};}
 namespace NorthlightWorldDrawDomain {enum class Band{World,Sky};inline Band classify(float,float,float lo,float){return lo>.9f?Band::Sky:Band::World;}}
 namespace NorthlightWeather {enum class Kind{Rain,None};}
 namespace NorthlightRenderThreadProbe {inline bool sampleFrame(unsigned f){return f%2==0;}}
@@ -82,6 +82,7 @@ struct Base {
  struct WaterState{bool bound=false;bool isMrtBound()const{return bound;}}waterStorage;WaterState* water=&waterStorage;
  struct {bool sky=true,blob=false;}drawGates;struct {Gate gate;bool textureKnown[1]={};const void* textures[1]={};bool viewportKnown=true;struct {float MinZ=0,MaxZ=1;}viewport={};}mirrorState{{&env}};
  struct {const void* hot=nullptr;NorthlightWeather::Kind hotKind=NorthlightWeather::Kind::None;bool mistArmed=false;}weatherDetect;struct {unsigned primitives=0,draws=0;}weatherSample;
+ struct CelestialDiscs{bool claimSkyArtwork(){return false;}}celestialStorage;CelestialDiscs* celestialDiscs=&celestialStorage;
  struct SkyLayers{Env* e;void invalidate(){e->event(Invalidate);}}skyLayers{&env};
  struct Scene{Env* e;struct Native{Env* e;bool currentFrame(unsigned)const{return e->cfg.sceneCurrent;}}native{e};void setFrame(unsigned f){e->event(SetFrame,{f});}}sceneStorage{&env};Scene* gpuScene=&sceneStorage;
  std::map<IDirect3DVertexShader9*,uint64_t>vsHashes;NorthlightSpellLayer::DrawArgs spellArgs;
@@ -89,6 +90,7 @@ struct Base {
  virtual HRESULT STDMETHODCALLTYPE DrawPrimitive(D3DPRIMITIVETYPE,UINT,UINT)=0;virtual HRESULT STDMETHODCALLTYPE DrawIndexedPrimitive(D3DPRIMITIVETYPE,INT,UINT,UINT,UINT,UINT)=0;
  virtual HRESULT STDMETHODCALLTYPE DrawPrimitiveUP(D3DPRIMITIVETYPE,UINT,const void*,UINT)=0;virtual HRESULT STDMETHODCALLTYPE DrawIndexedPrimitiveUP(D3DPRIMITIVETYPE,UINT,UINT,UINT,const void*,D3DFORMAT,const void*,UINT)=0;
  void configure(const Config& c){env.cfg=c;enabled=c.enabled;failed=c.failed;applied=c.applied;world=c.world?&worldStorage:nullptr;autoBump=c.material?&bumpStorage:nullptr;modelNormals=c.normals?&normalStorage:nullptr;modelNormalsNeeded=c.normalDemand;frameDrawGates=c.gates;particleOn=c.particle;spellOn=c.spell;hdr.active=c.hdr;drawGates.sky=c.skyGate;drawGates.blob=c.blob;rainMrtBound=c.rainBound;waterStorage.bound=c.waterBound;weatherDetect.mistArmed=c.mist;weatherDetect.hot=c.rain?this:nullptr;weatherDetect.hotKind=c.rain?NorthlightWeather::Kind::Rain:NorthlightWeather::Kind::None;mirrorState.textureKnown[0]=c.rain;mirrorState.textures[0]=this;for(auto& v:kM2ShaderFamilies)if(v.family==3){vsHashes[shader()]=v.hash;break;}}
+ void composeSkyBackground(){}
  bool diagnostics()const{return env.cfg.diagnostics;}HRESULT hdrResumeWorld(){env.event(Resume);return env.cfg.resumeResult;}
  LONGLONG* sampledHookTimer(){return &ticks;}
  template<class Work>bool extensionWork(const char* stage,Work work){if(extensionFault)return false;env.event(Stage,{int64_t(hashString(stage))});try{work();return true;}catch(const std::exception&){env.event(Fault,{int64_t(hashString(stage))});failed=extensionFault=true;enabled=false;return false;}}
@@ -101,6 +103,7 @@ struct Base {
  bool hdrSkyAdmission(){env.action(HdrAdmission);return env.cfg.linearSky;}
  bool mistDraw(UINT count){env.action(Mist,{count});return env.cfg.mist;}void rainMrtUnbind(){env.event(RainUnbind);rainMrtBound=false;waterStorage.bound=false;}
  bool nextDrawIsWater()const{return env.cfg.waterBound;}
+    struct {void clear(){}} skyPlanet;void prepareSkyPlanet(){}
  void skyLayersBefore(D3DPRIMITIVETYPE t,UINT count,NorthlightSkyComposition::Role& role){env.action(SkyBefore,{t,count});role=env.cfg.skyRole?NorthlightSkyComposition::Role::Sky:NorthlightSkyComposition::Role::Unknown;}
  void skyClaim(D3DPRIMITIVETYPE t,UINT count,bool& claimed){env.action(SkyClaim,{t,count});claimed=env.cfg.claimed;}
  bool blobFilterActive()const{return env.cfg.blob;}void blobFilter(UINT count,bool& claimed){env.action(Blob,{count});claimed=env.cfg.blobClaim;}

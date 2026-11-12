@@ -23,7 +23,7 @@ class NorthlightCelestialDiscRenderer {
     IDirect3DDevice9* d;std::string root;NorthlightCelestialDisc::NativeObserver observer;
     IDirect3DSurface9* hdrSkyTarget=nullptr; // borrowed for this frame
     std::function<IDirect3DSurface9*()> beginHdrSky;
-    IDirect3DTexture9* texture[2]={};unsigned textureWidth[2]={};IDirect3DPixelShader9* ps=nullptr;
+    IDirect3DTexture9* texture[2]={};unsigned textureWidth[2]={};IDirect3DPixelShader9* ps=nullptr,*skyBackgroundPS=nullptr;
     IDirect3DTexture9* terrainMask[2]={};IDirect3DSurface9* terrainSurface[2]={};
     IDirect3DVertexShader9* terrainVS=nullptr;IDirect3DPixelShader9* terrainPS=nullptr;
     bool terrainReady[2]={};uint64_t terrainGeneration[2]={};float terrainMatrix[2][16]={},terrainCamera[2][3]={},terrainNear[2]={};
@@ -196,6 +196,45 @@ private:
         return NorthlightCelestialGlow::normalizeOnScreen(c+13,NorthlightCelestialHalo::Samples);
     }
 public:
+    // Catalog-proven sun/moon geometry in an HD skybox is artwork, not a cloud.
+    // Keep native artwork when replacement resources or the previous context failed.
+    bool claimSkyArtwork(){
+        if(!earlyValid||failed||!NorthlightCelestial::suppressNative(renderFrame,frames)||!resources())return false;
+        ownFrame=frames;suppressed|=3;return true;
+    }
+    bool renderSkyBackground(IDirect3DSurface9* target,IDirect3DTexture9* scene,IDirect3DTexture9* depth,
+        IDirect3DTexture9* layers,UINT width,UINT height,const float* projection,const float* inverseView,const float colors[8][3]){
+        if(!target||!scene||!layers)return false;
+        SavedState saved(d);if(!saved.ok)return false;
+        if(!skyBackgroundPS&&FAILED(d->CreatePixelShader(kCelestialSkyPSShader,&skyBackgroundPS)))return false;
+        D3DSURFACE_DESC desc{};if(FAILED(target->GetDesc(&desc)))return false;
+        const bool hdr=desc.Format==D3DFMT_A16B16G16R16F;
+        d->SetDepthStencilSurface(nullptr);for(unsigned k=1;k<4;++k)d->SetRenderTarget(k,nullptr);
+        for(unsigned k=0;k<16;++k)d->SetTexture(k,nullptr);
+        if(FAILED(d->SetRenderTarget(0,target)))return false;
+        D3DVIEWPORT9 vp={0,0,width,height,0,1};d->SetViewport(&vp);
+        const struct{D3DRENDERSTATETYPE s;DWORD v;} states[]={
+            {D3DRS_ZENABLE,FALSE},{D3DRS_ZWRITEENABLE,FALSE},{D3DRS_ALPHATESTENABLE,FALSE},
+            {D3DRS_ALPHABLENDENABLE,DWORD(hdr)},{D3DRS_SRCBLEND,D3DBLEND_ONE},{D3DRS_DESTBLEND,D3DBLEND_ONE},
+            {D3DRS_BLENDOP,D3DBLENDOP_ADD},{D3DRS_SEPARATEALPHABLENDENABLE,FALSE},
+            {D3DRS_CULLMODE,D3DCULL_NONE},{D3DRS_COLORWRITEENABLE,7},{D3DRS_SRGBWRITEENABLE,FALSE},
+            {D3DRS_FOGENABLE,FALSE},{D3DRS_STENCILENABLE,FALSE},{D3DRS_SCISSORTESTENABLE,FALSE},
+            {D3DRS_CLIPPLANEENABLE,0},{D3DRS_FILLMODE,D3DFILL_SOLID},{D3DRS_MULTISAMPLEMASK,0xffffffff}};
+        for(const auto& state:states)d->SetRenderState(state.s,state.v);
+        d->SetVertexShader(nullptr);d->SetFVF(D3DFVF_XYZRHW|D3DFVF_TEX1);d->SetStreamSourceFreq(0,1);d->SetPixelShader(skyBackgroundPS);
+        for(unsigned k:{0u,1u,6u}){
+            d->SetSamplerState(k,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(k,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);
+            d->SetSamplerState(k,D3DSAMP_MINFILTER,D3DTEXF_POINT);d->SetSamplerState(k,D3DSAMP_MAGFILTER,D3DTEXF_POINT);
+            d->SetSamplerState(k,D3DSAMP_MIPFILTER,D3DTEXF_NONE);d->SetSamplerState(k,D3DSAMP_SRGBTEXTURE,FALSE);
+        }
+        d->SetTexture(0,depth);d->SetTexture(1,scene);d->SetTexture(6,layers);
+        float c[57][4]={};c[0][0]=1.f/width;c[0][1]=1.f/height;c[10][0]=hdr?2.f:0.f;c[10][3]=depth?1.f:0.f;
+        std::copy_n(projection,3,c[1]);std::memcpy(c[2],inverseView,64);
+        for(unsigned k=0;k<6;++k)std::copy_n(colors[k],3,c[51+k]);
+        d->SetPixelShaderConstantF(0,c[0],57);
+        const struct V{float x,y,z,w,u,v;} quad[]={{-.5f,-.5f,0,1,0,0},{width-.5f,-.5f,0,1,1,0},{-.5f,height-.5f,0,1,0,1},{width-.5f,height-.5f,0,1,1,1}};
+        return SUCCEEDED(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(V)));
+    }
     void setTerrainSource(std::function<uint64_t()> epoch,std::function<bool(unsigned,const float*)> draw,std::function<void(unsigned)> reuse=nullptr){terrainEpoch=std::move(epoch);terrainDraw=std::move(draw);terrainReuse=std::move(reuse);}
     explicit NorthlightCelestialDiscRenderer(IDirect3DDevice9* device,std::string sourceRoot="world-cache/celestial"):d(device),root(std::move(sourceRoot)){}
     void setHdrSkyTarget(IDirect3DSurface9* target){hdrSkyTarget=target;}
@@ -205,7 +244,7 @@ public:
     NorthlightCelestialDiscRenderer(const NorthlightCelestialDiscRenderer&)=delete;
     void reset(){skyLayers=nullptr;earlySkyOk=false;earlySkyMap.clear();for(auto& s:ringSurface)drop(s);for(auto& t:ringVisibility)drop(t);drop(veilPS);ringIndex=0;ringHistory={};ringWritten=false;sunGlare=Glare{};glow=NorthlightCelestialGlow::Hue{};
         for(unsigned i=0;i<2;++i){edge[i]={};haloWritten[i]=false;haloFrame[i]=0;}
-        for(auto& t:terrainMask)drop(t);for(auto& t:terrainSurface)drop(t);drop(terrainVS);drop(terrainPS);for(unsigned i=0;i<2;++i){terrainReady[i]=false;terrainGeneration[i]=0;std::fill(terrainCamera[i],terrainCamera[i]+3,0.f);terrainNear[i]=0;}maskFarClip=0;skyBand={};for(auto& h:haloHistory)h={};for(auto& body:haloSurface)for(auto& s:body)drop(s);for(auto& body:haloVisibility)for(auto& t:body)drop(t);drop(haloPS);haloIndex[0]=haloIndex[1]=0;for(auto& p:earlyPlacement)p.valid=false;for(auto& t:texture)drop(t);drop(ps);observer.reset();loaded=false;failed=false;drawn=0;earlyValid=false;drawnEarly=drawnSkyboxEarly=0;earlyWidth=earlyHeight=0;glareRead=false;drawnLate=offscreenOwned=0;suppressed=suppressedPrevious=lateOwnedPrevious=0;ownFrame=~0u;skyMode.reset();skyModePrevious=-1;renderFrame=~0u;}
+        for(auto& t:terrainMask)drop(t);for(auto& t:terrainSurface)drop(t);drop(terrainVS);drop(terrainPS);for(unsigned i=0;i<2;++i){terrainReady[i]=false;terrainGeneration[i]=0;std::fill(terrainCamera[i],terrainCamera[i]+3,0.f);terrainNear[i]=0;}maskFarClip=0;skyBand={};for(auto& h:haloHistory)h={};for(auto& body:haloSurface)for(auto& s:body)drop(s);for(auto& body:haloVisibility)for(auto& t:body)drop(t);drop(haloPS);haloIndex[0]=haloIndex[1]=0;for(auto& p:earlyPlacement)p.valid=false;for(auto& t:texture)drop(t);drop(ps);drop(skyBackgroundPS);observer.reset();loaded=false;failed=false;drawn=0;earlyValid=false;drawnEarly=drawnSkyboxEarly=0;earlyWidth=earlyHeight=0;glareRead=false;drawnLate=offscreenOwned=0;suppressed=suppressedPrevious=lateOwnedPrevious=0;ownFrame=~0u;skyMode.reset();skyModePrevious=-1;renderFrame=~0u;}
     // Ownership: once the renderer has a validated sky context,
     // the game's own sun/primary-moon billboards are skipped on later frames.
     // Native planet draws are replaced in place, before clouds and opaque
@@ -232,7 +271,7 @@ public:
         if(!glare&&!draw)++claimGate;return glare||draw;
     }
     bool nativeObservePossible(HRESULT result,D3DPRIMITIVETYPE type,UINT count){return SUCCEEDED(result)&&!failed&&count&&count<=4&&skyTriangles(type);}
-    template<class Palette> bool claimNativeDraw(D3DPRIMITIVETYPE type,UINT count,bool skyPhase,Palette palette,bool skyboxTrigger=false){
+    template<class Palette> bool claimNativeDraw(D3DPRIMITIVETYPE type,UINT count,bool skyPhase,Palette palette,bool skyboxTrigger=false,bool forever=false){
         if(!earlyValid||failed||!skyPhase||(!skyboxTrigger&&count>4)||!count||
            (type!=D3DPT_TRIANGLELIST&&type!=D3DPT_TRIANGLESTRIP&&type!=D3DPT_TRIANGLEFAN)||!load()){++claimGate;return false;}
         IDirect3DBaseTexture9* source=nullptr;int body=-1;
@@ -256,7 +295,7 @@ public:
         else{++claimCamera;return false;}
         if(skyboxTrigger){if(!NorthlightCelestial::skyboxVerified()||!skyboxFrame(currentSky))return false;}
         else if(skyboxFrame(currentSky))return claimSuppress(body);
-        NorthlightCelestial::resolveRendererSky(currentSky,neutralDirect);
+        NorthlightCelestial::resolveRendererSky(currentSky,neutralDirect,forever,map);
         NorthlightCelestialProfiles::apply(palette(map,camera.camera),neutralDirect,currentSky);
         IDirect3DSurface9* target=nullptr;D3DSURFACE_DESC desc={};
         if(FAILED(d->GetRenderTarget(0,&target))||!target)return false;

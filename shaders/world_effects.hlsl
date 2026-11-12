@@ -1133,7 +1133,8 @@ float4 worldFog(float2 uv,bool actorIntegration,bool directIntegration=true,bool
                 if(dot(sunSource,1)>0){
                     float visibility=fogShadowProjected(shadowOrigin+shadowRay*((start+end)*.5));
                     [branch]if(actorIntegration&&FogActorInfo.x>0&&visibility>0)visibility=fogCombineActor(visibility,tiledActor?fogActorShadowTiled(actorOrigin+actorRay*start,actorRay*stepSize):fogActorShadow(actorOrigin+actorRay*start,actorRay*stepSize));
-                    directWeight+=transmittance*absorb*(visibility*heightFade);
+                    // Sun shafts reach the ground; the medium and shadow map already bound them.
+                    directWeight+=transmittance*absorb*(visibility*lerp(1,heightFade,SunDirection.w));
                 }
                 transmittance*=1-absorb;
             }
@@ -1152,6 +1153,63 @@ float4 worldFog(float2 uv,bool actorIntegration,bool directIntegration=true,bool
     float3 skySource=max(AmbientLight.rgb,0)*saturate(FogColor.rgb)*(SourcePolicy.x*.35);
     return float4(skySource*(1-transmittance)+directScatter,transmittance);
 }
+
+// Local Forever DB2 import. Its own medium replaces regional artistic fog.
+// c116..153 avoid the static-shadow transition bank c80..100 and c115.
+float4 Forever[38] : register(c116);
+float3 foreverNoise(float3 p) {
+    float3 a=float3(tex3Dlod(CloudNoise,float4((p-PassInfo.w*Forever[25].xyz)*Forever[24].x,0)).r,
+                    tex3Dlod(CloudNoise,float4((p-PassInfo.w*Forever[26].xyz)*Forever[24].y,0)).r,
+                    tex3Dlod(CloudNoise,float4((p-PassInfo.w*Forever[27].xyz)*Forever[24].z,0)).r);
+    float3 b=float3(tex3Dlod(CloudNoise,float4((p-PassInfo.w*Forever[28].xyz)*Forever[31].x,0)).r,
+                    tex3Dlod(CloudNoise,float4((p-PassInfo.w*Forever[29].xyz)*Forever[31].y,0)).r,
+                    tex3Dlod(CloudNoise,float4((p-PassInfo.w*Forever[30].xyz)*Forever[31].z,0)).r);
+    return lerp(1,saturate(2*(a*Forever[32].xyz+b*Forever[33].xyz)),Forever[34].xyz);
+}
+float4 foreverFog(float2 uv,bool actorIntegration) {
+    if(FogInfo.x<.5)return float4(0,0,0,1);
+    uv=depthUV(uv);float depth=normalizedDepth(uv);
+    float3 view=viewPositionDistance(uv,fogReceiverDistance(uv,depth));
+    float3 ray=view.x*InverseView[0].xyz+view.y*InverseView[1].xyz+view.z*InverseView[2].xyz;
+    float distance=min(length(ray),Forever[1].w);ray*=rsqrt(max(dot(ray,ray),1e-12));
+    float3 g=Forever[6].xyz;
+    // Henyey-Greenstein with unit sphere-average energy (g=0 gives 1).
+    // Peak normalization silently removed 189/190 of the energy at g=.9.
+    float3 phase=(1-g*g)*pow(rsqrt(max(1+g*g-2*g*dot(ray,SunDirection.xyz),1e-6)),3);
+    float3 direct=phase*Forever[11].xyz*Forever[11].w;
+    float T=1;float3 scatter=0;
+    // Quadratic spacing resolves near shafts while retaining the distant haze.
+    [loop]for(int j=0;j<48;++j){
+        float a=distance*(j*j)*(1.0/2304),b=distance*((j+1)*(j+1))*(1.0/2304),t=(a+b)*.5;
+        float visible=fogShadowProjected(affinePoint(Camera.xyz+ray*t,FarMatrix));
+        if(actorIntegration&&FogActorInfo.x>0&&visible>0)visible=fogCombineActor(visible,fogActorShadow(affinePoint(Camera.xyz+ray*a,FogActorMatrix),(ray.x*FogActorMatrix[0].xyz+ray.y*FogActorMatrix[1].xyz+ray.z*FogActorMatrix[2].xyz)*(b-a)));
+        float3 p=Camera.xyz+ray*t;float coverage;
+        float4 field=regionalFogAt((p.xy-RegionalFogInfo.xy)*RegionalFogInfo.z+.5/64,coverage);
+        // Outside the local terrain cache absolute-height atmosphere continues;
+        // covered indoor/underground samples are excluded by the authored field.
+        float inside=all(p.xy>=RegionalFogInfo.xy)&&all(p.xy<=RegionalFogInfo.xy+63.0/(64*max(RegionalFogInfo.z,1e-8)));
+        float valid=inside?(p.z>=field.x?coverage:0):1;
+        float ground=coverage>0?field.x:Forever[0].w;
+        float3 height=p.z-ground*Forever[10].xyz;
+        float3 shape=exp(min(0,(Forever[2].xyz-height)*Forever[3].xyz)+min(0,(height-Forever[4].xyz)*Forever[5].xyz));
+        float3 curve=1+Forever[7].xyz*pow(max(saturate((t-Forever[1].xyz)*.001),1e-8),Forever[8].xyz);
+        float3 density=Forever[0].xyz*shape*curve*step(Forever[1].xyz,t)*valid;
+        float3 noise=foreverNoise(p);density*=noise;
+        float sigma=dot(density,1),absorb=1-exp(-sigma*(b-a));
+        float3 lit=lerp(1,visible,Forever[9].xyz)*direct;
+        float3 ambient=SourcePolicy.x*lerp(1,visible,Forever[9].xyz);
+        float3 shade=SourcePolicy.x*(1-lerp(1,visible,Forever[9].xyz));
+        float3 source0=Forever[12].rgb*lit.x+lerp(Forever[35].rgb,Forever[15].rgb,noise.x)*ambient.x+Forever[18].rgb*shade.x;
+        float3 source1=Forever[13].rgb*lit.y+lerp(Forever[36].rgb,Forever[16].rgb,noise.y)*ambient.y+Forever[19].rgb*shade.y;
+        float3 source2=Forever[14].rgb*lit.z+lerp(Forever[37].rgb,Forever[17].rgb,noise.z)*ambient.z+Forever[20].rgb*shade.z;
+        scatter+=T*absorb*(source0*density.x+source1*density.y+source2*density.z)/max(sigma,1e-8);
+        T*=1-absorb;
+    }
+    return float4(scatter,T);
+}
+float4 ForeverFog(float2 uv:TEXCOORD0):COLOR0{return foreverFog(uv,false);}
+float4 ForeverFogActor(float2 uv:TEXCOORD0):COLOR0{return foreverFog(uv,true);}
+
 // Glow of the nearest authored local lights inside the fog (lanterns, fires):
 // in-scattering of an isotropic point source along the view ray in closed form,
 // integral of a softened inverse-square source, tapered to zero at its range,
@@ -1346,7 +1404,7 @@ float4 fogClouds(float2 uv,bool actorIntegration,bool tiledActor=false) {
                 [branch]if(dot(max(DirectLight.rgb,0),1)>0&&FogInfo.y>0){
                     float visibility=fogShadowProjected(shadowOrigin+shadowRay*((start+end)*.5));
                     [branch]if(actorIntegration&&FogActorInfo.x>0&&visibility>0)visibility=fogCombineActor(visibility,tiledActor?fogActorShadowTiled(actorOrigin+actorRay*start,actorRay*stepSize):fogActorShadow(actorOrigin+actorRay*start,actorRay*stepSize));
-                    directWeight+=exp(-tauBase)*weight*visibility*heightFade;
+                    directWeight+=exp(-tauBase)*weight*visibility*lerp(1,heightFade,SunDirection.w);
                 } // the sun light is dimmed by the base fog in front of the cloud
                 ambientWeight+=weight;
                 tCloud*=1-absorb;

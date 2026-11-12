@@ -8,7 +8,7 @@ The ini is the tracked client-config copy; world-cache comes from the client roo
 """
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
-import argparse, shutil, subprocess, tempfile
+import argparse, os, shutil, subprocess, tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -20,11 +20,13 @@ fog = args.client / 'world-cache' / 'fog'
 assert fog.is_dir(), f'{fog} missing: pass --client <WoW client root>'
 with tempfile.TemporaryDirectory(prefix='northlight-celestial-profiles-') as tmp:
     root = Path(tmp) / 'root'
-    (root / 'world-cache').mkdir(parents=True)
+    root.mkdir()
     shutil.copyfile(args.ini, root / 'celestial-profiles.ini')
-    (root / 'world-cache' / 'fog').symlink_to(fog.resolve(), target_is_directory=True)
-    for label, flags in [('O2', ['-O2']), ('asan', ['-O1', '-g', '-fsanitize=address,undefined', '-fno-sanitize-recover=all'])]:
-        exe = Path(tmp) / ('test-' + label)
-        subprocess.run(['clang++', '-std=c++17', '-Wall', '-Wextra', *flags, *fp.test_include_flags(),
-                        str(HERE / 'test_celestial_profiles.cpp'), '-o', str(exe)], check=True)
-        print(label, subprocess.check_output([str(exe), str(root)], text=True), end='', flush=True)
+    compiler = [str(fp.zig()), 'c++', '-target', 'x86-windows-gnu'] if os.name == 'nt' else ['clang++']
+    modes = [('O2', ['-O2'])]
+    if os.name != 'nt': modes.append(('asan', ['-O1', '-g', '-fsanitize=address,undefined', '-fno-sanitize-recover=all']))
+    for label, flags in modes:
+        exe = Path(tmp) / ('test-' + label + ('.exe' if os.name == 'nt' else ''))
+        subprocess.run([*compiler, '-std=c++17', '-UNDEBUG', '-Wall', '-Wextra', *flags, *fp.test_include_flags(),
+                        str(HERE / 'test_celestial_profiles.cpp'), '-o', str(exe)], env=fp.zig_env() if os.name == 'nt' else None, check=True)
+        print(label, subprocess.check_output([str(exe), str(root), str(fog)], text=True), end='', flush=True)

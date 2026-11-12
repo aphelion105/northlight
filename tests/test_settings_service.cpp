@@ -75,6 +75,12 @@ int main(int argc,char** argv){
      }}
     unsigned live=0;for(const auto& k:NorthlightQuality::Keys)live+=liveQuality(k.name);assert(live>40&&live<std::size(NorthlightQuality::Keys));
     for(const auto& f:fields)if(f.file==2&&f.section=="default"&&f.key=="sun_fog_gain")assert(f.inherited=="1"&&std::stof(f.factory)==4.3f);
+    {auto edited=applyChanges(docs,fields,"C\tdefault\tsun_fog_density\t1.8\n");
+     auto reloaded=configOf(edited,"");assert(reloaded.celestial.fallback.fogDensity[0]==1.8f);
+     assert(reloaded.celestial.fallback.fogDensity[1]==active.celestial.fallback.fogDensity[1]);
+     bool found=false;for(const auto& f:fields)if(f.file==2&&f.section=="default"&&f.key=="sun_fog_density"){
+         found=true;assert(f.apply=="F"&&f.low=="0"&&f.high=="4"&&f.factory=="1");}assert(found);
+     fails([&]{applyChanges(docs,fields,"C\tdefault\tsun_fog_density\t4.1\n");});}
     // HDR mode and grading both participate in live preview and Revert.
     {unsigned hdrFields=0;for(const auto& f:fields)if(f.file==1&&f.section=="Renderer"&&f.key!="Backend"){++hdrFields;assert(f.available&&f.apply=="F");auto edited=applyChanges(docs,fields,f.id()+"\t"+f.factory+"\n");assert(configOf(edited,"").hdr.size()==NorthlightHdrSettingsContract::Count);}assert(hdrFields==NorthlightHdrSettingsContract::Count);
      auto unavailable=fields;for(auto& f:unavailable)if(f.key=="HDRMaxNits")f.available=false;fails([&]{applyChanges(docs,unavailable,"R\tRenderer\tHDRMaxNits\t600\n");});

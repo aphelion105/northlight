@@ -71,7 +71,7 @@ APP_FILES = [
     'renderer/point_transmission_builder.py',
     'renderer/attached_emitter_sources.py',
     'renderer/emission_catalog.py',
-    'tests/validate_world_cache.py', 'src/sky/forest_regions.inc',
+    'tests/validate_world_cache.py', 'src/sky/forest_regions.inc', 'src/sky/expansion_atmosphere.h',
 ]
 PAYLOAD_COMMON = {'celestial-profiles.ini': 'client-config/celestial-profiles.ini',
                   'shadow-range-profiles.ini': 'client-config/shadow-range-profiles.ini',

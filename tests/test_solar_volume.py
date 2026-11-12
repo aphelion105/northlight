@@ -125,7 +125,7 @@ def soften(rgb, cap):
 SUN_CAP = .95  # 0.3.163 sun forward soft cap, sun_hue.h SunForwardCap (was .38)
 
 
-def integrate(distance, sigmas, lit, direct=(1., .8, .6), ambient=(.2, .3, .4), first=True, gain=1.2, cap=SUN_CAP, angle=0., altitude=12.):
+def integrate(distance, sigmas, lit, direct=(1., .8, .6), ambient=(.2, .3, .4), first=True, gain=1.2, cap=SUN_CAP, angle=0., altitude=12., moon=False):
     transmittance, direct_scalar, shadow_reads = 1., 0., 0
     source = tuple(max(value, 0)*phase_gain(angle)*gain for value in direct)
     for index, (start, end) in enumerate(intervals(distance)):
@@ -133,7 +133,7 @@ def integrate(distance, sigmas, lit, direct=(1., .8, .6), ambient=(.2, .3, .4), 
         if sigmas[index] > 0:
             if max(source) > 0:
                 shadow_reads += 1
-                direct_scalar += transmittance*absorb*lit[index]*smooth(altitude/12)
+                direct_scalar += transmittance*absorb*lit[index]*(smooth(altitude/12) if moon else 1)
             transmittance *= 1-absorb
     direct_rgb = soften(tuple(value*direct_scalar for value in source), cap)
     scatter = tuple((a*.35*(1-transmittance) if first else 0)+d for a, d in zip(ambient, direct_rgb))
@@ -151,7 +151,7 @@ def main():
                    'float start=max(0,(i-offset)*stepLength);',
                    'float end=min((i+1-offset)*stepLength,surface);',
                    'visibility+=(receiver<=z?1:0)*w.x*w.y;', 'float4 ScreenSize : register(c33)',
-                   'directWeight+=transmittance*absorb*(visibility*heightFade)',
+                   'directWeight+=transmittance*absorb*(visibility*lerp(1,heightFade,SunDirection.w))',
                    'float3 directScatter=sunSource*directWeight;', 'directScatter*=cap/(cap+peak)', 'skySource*(1-transmittance)+directScatter'):
         assert anchor in shader, anchor
     assert 'if(dot(sunSource,1)>0){' in shader and 'float visibility=fogShadowProjected(shadowOrigin+shadowRay*((start+end)*.5));' in shader
@@ -203,8 +203,14 @@ def main():
         blocked=integrate(100,[after_sigma]*49,[0.]*49,angle=30,altitude=altitude,gain=2.16,cap=SUN_CAP)
         assert blocked[3]==(0.,0.,0.)
         assert all(0<=v<SUN_CAP for v in after[3])
-        if altitude>0:assert after[3][0]>before[3][0]
-        else:assert before[3]==after[3]==(0.,0.,0.)
+        assert after[3][0]>before[3][0]
+    # Sunlit air reaches the ground; blocked air still has no direct radiance.
+    # The moon keeps its existing height response.
+    for height in (0., 1., 2., 6., 12.):
+        sun=integrate(100,[.005]*49,[1.]*49,altitude=height)
+        moon=integrate(100,[.005]*49,[1.]*49,altitude=height,moon=True)
+        assert sun[3][0]>0 and moon[3][0]<=sun[3][0]
+        if height==0: assert moon[3]==(0.,0.,0.)
     assert 'c[33][0]=float(w);c[33][1]=float(h);c[33][2]=float(w/2);c[33][3]=float(h/2)' in cpu
     bank='d->SetPixelShaderConstantF(0,&c[0][0],68)'
     assert cpu.count(bank)==1
@@ -237,7 +243,8 @@ def main():
             assert density((0., 0., 148.), lambda x, y: node(zone), night=night) == (0., 0.)
             assert density((0., 0., 108.), lambda x, y: node(zone, indoor=True), night=night) == (0., 0.)
     assert 'airBase=WeatherInfo.w+airBase*saturate(mad(field.w,1.6,-1))' in shader  # 0.3.198 (rain): c59.w = .0017 + the rain's extra extinction
-    assert 'airBase=airFloor+airBase*std::clamp((t.height-.625f)/.625f,0.f,1.f)' in cpu and 'const float airFloor=.0017f+wx.airExtinction()*denseDamp;' in cpu
+    assert 'airBase=airFloor+airBase*std::clamp((t.height-.625f)/.625f,0.f,1.f)' in cpu and 'const float airFloor=.0017f*airDensity+wx.airExtinction()*denseDamp;' in cpu
+    assert 'c[22][3]*=airDensity;c[32][0]*=airDensity;c[32][1]*=airDensity;' in cpu
     # Stormwind has ~90% of Elwynn daytime air at any shared height;
     # indoor/unknown regions remain empty, with no city ground blanket.
     for night in (0., .25, .5, .75, 1.):
@@ -335,8 +342,8 @@ def main():
                 sigmas.append(ground+air)
                 lit.append(canopy_visibility((0., y, altitude)))
                 blocked.append(canopy_visibility((8., y, altitude)))
-            bright = integrate(80, sigmas, lit, direct=moon_rgb, cap=.24, angle=angle, altitude=altitude)
-            dark = integrate(80, sigmas, blocked, direct=moon_rgb, cap=.24, angle=angle, altitude=altitude)
+            bright = integrate(80, sigmas, lit, direct=moon_rgb, cap=.24, angle=angle, altitude=altitude, moon=True)
+            dark = integrate(80, sigmas, blocked, direct=moon_rgb, cap=.24, angle=angle, altitude=altitude, moon=True)
             # Opaque distant fog still leaves the local illuminated column clear.
             bg = (0., .18824, .25882)
             contrast = tuple(a-b for a, b in zip(composite(bg, bright[0], bright[1]),

@@ -733,36 +733,39 @@
  655:                       cmp r19.x, r8.w, r19.x, r9.w
  656:                     endif
  657:                     mul r8.w, r10.z, r16.w
- 658:                     mul r9.w, r10.w, r19.x
- 659:                     mul r8.w, r8.w, r9.w
- 660:                     add r16.x, r8.w, r16.x
- 661:                   endif
- 662:                   add r8.w, -r10.z, -c39.y
- 663:                   mul r16.w, r8.w, r16.w
- 664:                 endif
- 665:               endif
- 666:             endif
- 667:           endrep
- 669:           mul r0.xyw, r7.xyzz, r16.x
- 670:           max r1.x, r0.y, r0.w
- 671:           max r2.x, r0.x, r1.x
- 672:           max r1.x, r9.z, c38.z
- 673:           add r1.y, r2.x, r1.x
- 674:           rcp r1.y, r1.y
- 675:           mul r1.x, r1.y, r1.x
- 676:           mul r0.xyw, r0, r1.x
- 677:           mul r1.xyz, r8, c18
- 678:           cmp r1.xyz, c18, r1, r0.z
- 679:           mov r1.w, c38.w
- 680:           mul r0.z, r1.w, c27.x
- 681:           mul r1.xyz, r0.z, r1
- 682:           add r0.z, -r16.w, -c39.y
- 683:           mul r1.xyz, r0.z, r1
- 684:           add oC0.xyz, r0.xyww, r1
- 685:           mov oC0.w, r16.w
- 686:         endif
- 687:       endif
- 688:     endif
+ 658:                     add r9.w, r10.w, c39.y
+ 659:                     mul r9.w, r9.w, c16.w
+ 660:                     add r9.w, r9.w, -c39.y
+ 661:                     mul r9.w, r9.w, r19.x
+ 662:                     mul r8.w, r8.w, r9.w
+ 663:                     add r16.x, r8.w, r16.x
+ 664:                   endif
+ 665:                   add r8.w, -r10.z, -c39.y
+ 666:                   mul r16.w, r8.w, r16.w
+ 667:                 endif
+ 668:               endif
+ 669:             endif
+ 670:           endrep
+ 672:           mul r0.xyw, r7.xyzz, r16.x
+ 673:           max r1.x, r0.y, r0.w
+ 674:           max r2.x, r0.x, r1.x
+ 675:           max r1.x, r9.z, c38.z
+ 676:           add r1.y, r2.x, r1.x
+ 677:           rcp r1.y, r1.y
+ 678:           mul r1.x, r1.y, r1.x
+ 679:           mul r0.xyw, r0, r1.x
+ 680:           mul r1.xyz, r8, c18
+ 681:           cmp r1.xyz, c18, r1, r0.z
+ 682:           mov r1.w, c38.w
+ 683:           mul r0.z, r1.w, c27.x
+ 684:           mul r1.xyz, r0.z, r1
+ 685:           add r0.z, -r16.w, -c39.y
+ 686:           mul r1.xyz, r0.z, r1
+ 687:           add oC0.xyz, r0.xyww, r1
+ 688:           mov oC0.w, r16.w
+ 689:         endif
+ 690:       endif
+ 691:     endif
 
-// approximately 713 instruction slots used (24 texture, 689 arithmetic)
+// approximately 716 instruction slots used (24 texture, 692 arithmetic)
  

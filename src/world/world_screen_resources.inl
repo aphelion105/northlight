@@ -25,6 +25,12 @@ bool createResources(UINT w,UINT h,D3DFORMAT fmt,const NorthlightFrameRequiremen
            !pixel(kLocalFlashShader,localFlashPS,"lightning light shader"))return false;
     }
     if(needs.fog){
+        if(!foreverFogPS){
+            if(FAILED(d->CreatePixelShader(kForeverFogShader,&foreverFogPS)))logf("FOREVER atmosphere shader unavailable; regional fallback retained");
+            D3DCAPS9 caps={};if(SUCCEEDED(d->GetDeviceCaps(&caps))&&caps.MaxPixelShader30InstructionSlots>=kForeverFogActorShaderSlots)d->CreatePixelShader(kForeverFogActorShader,&foreverFogActorPS);
+            if(caps.MaxPixelShader30InstructionSlots>=kForeverFogTransitionShaderSlots)d->CreatePixelShader(kForeverFogTransitionShader,&foreverFogFadePS);
+            if(caps.MaxPixelShader30InstructionSlots>=kForeverFogActorTransitionShaderSlots)d->CreatePixelShader(kForeverFogActorTransitionShader,&foreverFogActorFadePS);
+        }
         if(!pixel(kWorldFogShader,fogPS,"volume shader")||!pixel(kFogBlurShader,fogBlurPS,"volume blur shader")||
            !image(D3DFMT_A16B16G16R16F,fog,fogSurface)||!image(D3DFMT_A16B16G16R16F,fogBlurred,fogBlurredSurface)||!image(D3DFMT_A16B16G16R16F,fogHistory,fogHistorySurface))return false;
         if(needs.local&&(!pixel(kLocalFogShader,localFogPS,"local fog glow shader")||!pixel(kLocalFogCombineShader,localFogCombinePS,"local fog combine shader")))return false;

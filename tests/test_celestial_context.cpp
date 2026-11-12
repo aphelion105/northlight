@@ -122,6 +122,10 @@ int main() {
             assert(std::memcmp(&sky,&world,sizeof sky)==0);
         }
     }
+    // HD skyboxes disable the native billboard with black RGB, not zero solar energy.
+    c.sun.nativeAppearance=true;std::fill_n(c.sun.nativeTint,3,0.f);
+    applyRendererPolicy(c,direct);assert(!luminousAppearance(c.sun));
+    assert(c.sun.tint[0]>.9f&&c.sun.emission>1&&c.sun.nativeTint[0]==0);
     c.dayFraction=-1;const auto before=c;
     assert(!resolveRendererSky(c,direct).valid);
     assert(std::memcmp(&before,&c,sizeof c)==0);

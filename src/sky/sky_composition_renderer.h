@@ -19,7 +19,7 @@ class Capture {
     IDirect3DSurface9* target_=nullptr; // identity only; owned by the caller
     unsigned frame_=~0u,width_=0,height_=0;
     D3DFORMAT sourceFormat_=D3DFMT_UNKNOWN;
-    bool valid_=false;
+    bool valid_=false,native_=false;
     struct AlphaShader {IDirect3DPixelShader9 *original=nullptr,*patched=nullptr;unsigned control=0;};
     std::map<std::pair<IDirect3DPixelShader9*,unsigned>,AlphaShader> alphaShaders_;
     bool captureShader(IDirect3DDevice9* d,bool opaque){
@@ -56,17 +56,20 @@ class Capture {
     }
 public:
     ~Capture(){reset();}
-    void reset(){for(auto& entry:alphaShaders_){release(entry.second.original);release(entry.second.patched);}alphaShaders_.clear();release(surface_);release(mask_);release(copySurface_);release(copy_);release(msaa_);device_=nullptr;dirty_=false;target_=nullptr;width_=height_=0;sourceFormat_=D3DFMT_UNKNOWN;valid_=false;frame_=~0u;}
-    void begin(unsigned frame){if(frame_!=frame){frame_=frame;valid_=false;target_=nullptr;}}
+    void reset(){for(auto& entry:alphaShaders_){release(entry.second.original);release(entry.second.patched);}alphaShaders_.clear();release(surface_);release(mask_);release(copySurface_);release(copy_);release(msaa_);device_=nullptr;dirty_=false;target_=nullptr;width_=height_=0;sourceFormat_=D3DFMT_UNKNOWN;valid_=native_=false;frame_=~0u;}
+    void begin(unsigned frame){if(frame_!=frame){frame_=frame;valid_=false;native_=false;target_=nullptr;}}
+    void preserveNative(){native_=true;invalidate();}
+    bool native(unsigned frame)const{return frame_==frame&&native_;}
     void invalidate(){valid_=false;target_=nullptr;}
     void targetSet(std::uintptr_t){} // temporary offscreen passes do not erase main-sky coverage
     void colorWrite(std::uintptr_t target){if(reinterpret_cast<std::uintptr_t>(target_)==target)invalidate();}
     IDirect3DTexture9* texture(unsigned frame){
-        if(!valid_||frame_!=frame)return nullptr;
+        if(!valid_||native_||frame_!=frame)return nullptr;
         if(msaa_&&dirty_){if(FAILED(device_->StretchRect(msaa_,nullptr,surface_,nullptr,D3DTEXF_NONE))){invalidate();return nullptr;}dirty_=false;}
         return mask_;
     }
     bool prepare(IDirect3DDevice9* d,NorthlightStateBlockPool* pool=nullptr){
+        if(native_)return false;
         if(valid_){IDirect3DSurface9* current=nullptr;const bool same=SUCCEEDED(d->GetRenderTarget(0,&current))&&current==target_;release(current);if(same)return true;}
         valid_=false;target_=nullptr;
         SavedState saved(d,pool);if(!saved.ok)return false;

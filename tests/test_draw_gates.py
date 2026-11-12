@@ -278,6 +278,8 @@ struct MockExt{
 };
 struct MockWorld{
     Env* env=nullptr;bool context=true,actorShadows=true,shadows=true,composited=true;IDirect3DPixelShader9 replacement{9,nullptr};
+    struct SurfaceSettings{unsigned celestialStyle=0;} settings; // Historical trace uses the legacy sky style.
+    const SurfaceSettings& surfaceSettings()const{return settings;}
     bool hasContext()const{return context;}
     bool skyContext(const float*)const{return false;}
     bool ready()const{return context;} /* the old code has no ready(); following the context keeps the runs equivalent */
@@ -298,11 +300,12 @@ struct MockWorld{
     int celestialPalette(const char*,const float*){env->call("celestialPalette");return 0;}
 };
 struct MockSky{
+    bool claimSkyArtwork(){return false;}
     Env* env=nullptr;unsigned claimGate=0;
     bool earlyValid=false;unsigned earlyWidth=0,earlyHeight=0;
     bool nativeClaimPossible(D3DPRIMITIVETYPE t,UINT c){env->call("nativeClaimPossible "+drawName(t,0,c),"fault claim gate");const bool r=env->bit("claim possible");if(!r)++claimGate;return r;}
     bool claimNativeGlare(D3DPRIMITIVETYPE,UINT){env->call("claimNativeGlare","fault glare");return env->bit("glare",4);}
-    template<class Palette> bool claimNativeDraw(D3DPRIMITIVETYPE,UINT,bool skyPhase,Palette palette){env->call("claimNativeDraw "+std::to_string(skyPhase),"fault claim draw");if(env->bit("palette"))palette("map",nullptr);return env->bit("claim draw",3);}
+    template<class Palette> bool claimNativeDraw(D3DPRIMITIVETYPE,UINT,bool skyPhase,Palette palette,bool skyboxTrigger=false,bool forever=false){assert(!skyboxTrigger&&!forever);env->call("claimNativeDraw "+std::to_string(skyPhase),"fault claim draw");if(env->bit("palette"))palette("map",nullptr);return env->bit("claim draw",3);}
     bool nativeObservePossible(HRESULT hr,D3DPRIMITIVETYPE,UINT){env->call("nativeObservePossible "+std::to_string(hr));return SUCCEEDED(hr)&&env->bit("observe possible");}
     void observeNativeDraw(HRESULT hr,D3DPRIMITIVETYPE,UINT,bool){env->call("observeNativeDraw "+std::to_string(hr),"fault observe");}
 };
@@ -349,10 +352,13 @@ struct Base{
     template<class Draw> HRESULT projectedDraw(UINT,unsigned,Draw draw){return draw();}
     struct GpuScene{struct{bool currentFrame(unsigned)const{return true;}}native;void setFrame(unsigned){}};GpuScene* gpuScene=nullptr;
     struct {void invalidate(){}} skyLayers;
+    struct {void clear(){}} skyPlanet;void prepareSkyPlanet(){}
     void skyLayersBefore(D3DPRIMITIVETYPE,UINT,NorthlightSkyComposition::Role&){}
+    void composeSkyBackground(){}
     template<class Draw> void skyLayersReplay(NorthlightSkyComposition::Role,bool,Draw){}
     bool auroraDrawProven=false;std::array<float,3> auroraDrawScale{};float auroraDrawIntensity=1;
     template<class Draw> HRESULT auroraNativeDraw(Draw draw){return draw();} // Aurora is inactive in this gate fixture.
+    template<class Draw> HRESULT skyPlanetNativeDraw(Draw draw){return draw();}
     bool projectionValid=false,skySeen=false,captured=false;float scaleX=1,scaleY=1,fogForward=1;
     bool bindWorldDepth(const D3DSURFACE_DESC&){return false;}
     bool extensionFault=false,failed=false,enabled=true,applied=false,terrain=false,gateFrame=false,rainMaskCleared=false,rainMaskDrawn=false,rainMaskFrame=false,rainMaskOk=false,rainMrtBound=false,rainMaskFailed=false,rainMaskMismatchLogged=false;UINT width=0,height=0;IDirect3DTexture9* rainMask=nullptr;IDirect3DSurface9* rainMaskSurface=nullptr;IDirect3DSurface9* rainMaskMS=nullptr;D3DMULTISAMPLE_TYPE rainMaskMsType=D3DMULTISAMPLE_NONE,rainMaskWantType=D3DMULTISAMPLE_NONE;DWORD rainMaskMsQuality=0,rainMaskWantQuality=0;unsigned rainMaskDraws=0;

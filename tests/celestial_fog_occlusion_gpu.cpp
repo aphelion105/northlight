@@ -36,12 +36,16 @@ int main(int argc,char** argv){
     c[17][0]=.6f;c[17][1]=.5f;c[17][2]=.4f;for(unsigned k=0;k<3;++k)c[18][k]=.04f;
     c[21][0]=1;c[21][1]=1.2f;c[21][2]=1.5f;c[21][3]=128;c[22][0]=.7f;c[22][1]=.8f;c[22][2]=1;c[22][3]=.0035f;
     c[27][0]=1;c[31][0]=c[31][1]=-256;c[31][2]=1.f/512;c[32][0]=.0055f;c[32][1]=.0037f;c[32][2]=c[32][3]=128;c[33][0]=c[33][1]=N;c[58][1]=1.f/8;c[59][3]=.0017f;
-    ok(d->SetTexture(13,regional));unsigned failures=0,cases=0,baselineDim=0;double maxError=0,shaftContrast=0;
+    ok(d->SetTexture(13,regional));unsigned failures=0,cases=0,baselineDim=0,legacyDifferences=0;double maxError=0,shaftContrast=0;
     for(float angle:{0.f,.6f,1.57f,3.14f})for(auto depth:{one,nearDepth})for(auto map:{one,zero,shadow}){
         c[16][0]=std::cos(angle);c[16][1]=std::sin(angle);ok(d->SetTexture(1,depth));ok(d->SetTexture(3,map));ok(d->SetTexture(15,one));const auto visible=capture(fog,c),oldVisible=capture(oldFog,c);
         ok(d->SetTexture(15,zero));const auto hidden=capture(fog,c),oldHidden=capture(oldFog,c);
         for(unsigned p=0;p<N*N;++p)for(unsigned k=0;k<4;++k){const auto i=p*4+k;double err=std::fabs(hidden[i]-visible[i]);maxError=std::max(maxError,err);
-            if(!std::isfinite(hidden[i])||err>2e-6||std::fabs(visible[i]-oldVisible[i])>2e-5)++failures;
+            if(!std::isfinite(hidden[i])||err>2e-6)++failures;
+            // The frozen shader predates the current extinction/ground-light policy.
+            // Compare source-occlusion invariance here; atmospheric_fog_gpu checks
+            // current radiance against analytic transport, not the old colour model.
+            if(std::fabs(visible[i]-oldVisible[i])>2e-5)++legacyDifferences;
             if(k<3&&oldVisible[i]>oldHidden[i]+.01f)++baselineDim;
             if(map==zero&&k<3){const float expected=c[18][k]*c[22][k]*.35f*(1-hidden[p*4+3]);if(std::fabs(hidden[i]-expected)>2e-6)++failures;}
             if(depth==nearDepth&&(hidden[p*4+3]<.99f||hidden[i]>.01f&&k<3))++failures;
@@ -49,6 +53,7 @@ int main(int argc,char** argv){
         if(angle==0&&depth==one&&map==shadow)shaftContrast=std::fabs(hidden[(8*N+3)*4]-hidden[(8*N+13)*4]);
         ++cases;
     }
+    std::printf("air-shadow contract failures=%u legacyColourDifferences=%u\n",failures,legacyDifferences);
     // Full source occlusion hides the halo/ring; fog air shadowing above remains independent.
     std::memset(c,0,sizeof c);const float cs=std::cos(.4f),sn=std::sin(.4f);
     c[0][0]=c[0][1]=1.f/N;c[0][3]=1/.94f;c[1][0]=c[1][1]=5;c[1][2]=1;c[2][1]=1;c[3][0]=-sn;c[3][2]=cs;c[4][0]=cs;c[4][2]=sn;

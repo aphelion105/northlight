@@ -23,5 +23,12 @@ int main(){
     assert(!midnight.active[0]&&!midnight.active[1]);
     auto missing=makeRequest("Azeroth",{},directions,dark,false,day(20,12),true);
     assert(!missing.active[0]&&!missing.active[1]);
+    // Forever's 95 -> 25 degree solar polar ramp crosses at 05:57:30.
+    const double foreverDawn=(5*3600.+57*60+20)/86400.;
+    auto forever=makeRequest("Azeroth",{},directions,dark,true,foreverDawn,true,true);
+    auto native=makeRequest("Azeroth",{},directions,dark,true,foreverDawn,true,false);
+    assert(forever.active[0]&&!forever.active[1]&&!native.active[0]);
+    auto foreverNight=makeRequest("Northrend",{},directions,dark,true,(21*3600.+26*60+45)/86400.,true,true);
+    assert(!foreverNight.active[0]&&foreverNight.active[1]);
     puts("PASS static request: unchanged active directions, horizon prewarm, midnight, invalid orbit, memory pressure");
 }

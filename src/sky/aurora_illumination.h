@@ -1,5 +1,5 @@
 #pragma once
-#include "celestial_time_warp.h"
+#include "forever_celestial.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -16,9 +16,9 @@ inline float weight(const char* map,bool valid,double day,float sunZ,float moonZ
 struct Style { bool enabled=false; float gain=0,phase=0; std::uint64_t revision=0; float intensity=1; };
 // Native emission is present whenever the selected Northrend ribbons exist.
 // The orbital gate controls only their extra green/purple twilight emission.
-inline Style style(const char* map,unsigned strength,bool valid,double day){
+inline Style style(const char* map,unsigned strength,bool valid,double day,bool forever=false){
     Style out;
-    const auto orbit=NorthlightCelestialOrbit::evaluateNative(valid?day:-1.);
+    const auto orbit=NorthlightForeverSky::evaluateSelected(valid?day:-1.,forever);
     if(!map||std::strcmp(map,"Northrend")||!orbit.valid)return {};
     out.intensity=float(std::min(strength,200u))*.01f;
     out.gain=4.f*out.intensity*

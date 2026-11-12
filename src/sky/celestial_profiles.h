@@ -19,6 +19,7 @@ struct Profile {
     // Independent artistic volume controls. Identity defaults retain all
     // existing zones; neither control changes surface light or the sun disc.
     float fogGain[2]={1,1},fogHeightScale[2]={1,1};
+    float fogDensity[2]={1,1}; // Air extinction; ground fog and weather retain their own density.
     // Horizon haze optical-depth multiplier (horizon_haze.h), day/night. 1 = the global strength.
     float horizonHaze[2]={1,1};
     // Glow (fog shafts / aureole) colour of the source, independent of light_strength: its own strength, and an optional hue
@@ -34,6 +35,7 @@ inline Profile blend(const Profile& a,const Profile& b,float t){
         p.mix[s]=a.mix[s]+(b.mix[s]-a.mix[s])*t;p.strength[s]=a.strength[s]+(b.strength[s]-a.strength[s])*t;
         p.fogGain[s]=a.fogGain[s]+(b.fogGain[s]-a.fogGain[s])*t;
         p.fogHeightScale[s]=a.fogHeightScale[s]+(b.fogHeightScale[s]-a.fogHeightScale[s])*t;
+        p.fogDensity[s]=a.fogDensity[s]+(b.fogDensity[s]-a.fogDensity[s])*t;
         p.horizonHaze[s]=a.horizonHaze[s]+(b.horizonHaze[s]-a.horizonHaze[s])*t;
     }return p;
 }
@@ -42,6 +44,9 @@ inline float fogHeightScale(const Profile& p,float night){
 }
 inline float horizonHaze(const Profile& p,float night){
     return p.horizonHaze[0]+(p.horizonHaze[1]-p.horizonHaze[0])*std::clamp(night,0.f,1.f);
+}
+inline float fogDensity(const Profile& p,float night){
+    return p.fogDensity[0]+(p.fogDensity[1]-p.fogDensity[0])*std::clamp(night,0.f,1.f);
 }
 inline std::string trim(const std::string& s){auto a=s.find_first_not_of(" \t\r\n"),b=s.find_last_not_of(" \t\r\n");return a==std::string::npos?"":s.substr(a,b-a+1);}
 struct Table {
@@ -64,6 +69,7 @@ inline float* keyTarget(Profile& profile,const std::string& key,unsigned& count,
     else if(name=="light_strength"){target=&p->strength[s];maximum=4;}
     else if(name=="fog_gain"){target=&p->fogGain[s];maximum=8;}
     else if(name=="fog_height_scale"){target=&p->fogHeightScale[s];maximum=4;}
+    else if(name=="fog_density"){target=&p->fogDensity[s];maximum=4;}
     else if(name=="horizon_haze"){target=&p->horizonHaze[s];maximum=4;}
     else if(name=="glow_strength"){target=&p->glowStrength[s];maximum=4;}
     else if(name=="glow"){target=p->glow[s];count=3;}
@@ -150,7 +156,7 @@ inline void apply(const Profile& p,const float* direct,NorthlightCelestial::Cont
         bodies[s]->emission=p.gain[s];
         float luma=p.light[s][0]*.2126f+p.light[s][1]*.7152f+p.light[s][2]*.0722f,glowLuma=p.glow[s][0]*.2126f+p.glow[s][1]*.7152f+p.glow[s][2]*.0722f;
         for(unsigned c=0;c<3;++c){
-            bodies[s]->tint[c]=s==0&&bodies[s]->nativeAppearance?bodies[s]->nativeTint[c]:p.disc[s][c];
+            bodies[s]->tint[c]=s==0&&NorthlightCelestial::luminousAppearance(*bodies[s])?bodies[s]->nativeTint[c]:p.disc[s][c];
             float tinted=p.light[s][c]*(energy/std::max(luma,.001f));
             const float lit=direct[c]+(tinted-direct[c])*p.mix[s];
             colors[s][c]=lit*p.strength[s]*weight[s];

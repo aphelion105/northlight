@@ -104,7 +104,11 @@ inline Result evaluateNative(double dayFraction){
 // it the same way, so the two pass about 9 degrees under the horizon, below where any disc shows. The radii are the
 // renderer's disc sizes (resolveRendererSky).
 inline constexpr double kDiveDepth=10,kEveningDiveSeconds=270,kMorningDiveSeconds=420;
-inline const double kSunRadiusDegrees=std::atan(.506736/24.)*180/kPi,kMoonRadiusDegrees=std::atan(.46176318*1.75/24.)*180/kPi;
+// Northlight's tuned disc sizes before native placement became the default
+// (0f55ea9f). Shared with Forever style; these are appearance calibration,
+// not recovered absolute sizes from the Forever executable.
+inline const double kSunAngularRadius=std::atan(.506736/24.),kMoonAngularRadius=std::atan(.46176318*1.75/24.);
+inline const double kSunRadiusDegrees=kSunAngularRadius*180/kPi,kMoonRadiusDegrees=kMoonAngularRadius*180/kPi;
 inline double hermite(double u,double p0,double m0,double p1,double m1){
     const double u2=u*u,u3=u2*u;return (2*u3-3*u2+1)*p0+(u3-2*u2+u)*m0+(3*u2-2*u3)*p1+(u3-u2)*m1;
 }

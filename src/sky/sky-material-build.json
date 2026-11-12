@@ -1,5 +1,6 @@
 {
-  "version": 1,
+  "version": 2,
+  "planet_meshes": 16,
   "models": 91,
   "batches": 4686,
   "textures": 483,
@@ -15,9 +16,9 @@
     "environments\\stars\\orgrisunclouds01.bl",
     "environments\\stars\\orgrisunclouds11.bl"
   ],
-  "roles_sha256": "30146a2c6592088a98ac1cb44a18b8a3381d3fcd4ad1e647abc75e23c7c9f1c1",
-  "generator_sha256": "42173c2c2ab655acb34f2f308f9ab005269382ecf6d1e8229c33bb6338268952",
-  "header_sha256": "659c8b63cd543758009b623fbd7d31d71e23779f38cc79322aabc1b9798a00cf",
+  "roles_sha256": "1a63c47f79f67d94eeb060a1d44fbd0770834cdd986b6b4675170c9cc61cca30",
+  "generator_sha256": "ce9bee8d92bc9bbd589146cd6ddb7cc1d62d4adfd73694b0241acea3975e8539",
+  "header_sha256": "0b0c08cdec3becc56481d0f26661b67bc169b46ffce7051f30bcf92d06217f9f",
   "inputs": {
     "dbfilesclient\\lightskybox.dbc": "9d2aae2794ff6e01f2a620a59504a1fa5812929502e1d4218acc81c1b00cd35b",
     "environments\\stars\\03cam01.blp": "cf01189cbc229f7e7a30ba3a92997407fe1e0a16e63fd128a9f10f8e2ce8164d",

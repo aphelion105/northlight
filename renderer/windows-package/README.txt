@@ -143,6 +143,7 @@ Balanced and Performance are not opted into Quality effects. Missing ordinary
 settings are appended commented out, so the preset's values apply.
 northlight-renderer.log shows the values in use (QUALITY).
 Individual settings (Quality / Balanced / Performance):
+  CelestialStyle            0 / 0 / 0    Sun & moon placement: 0/Default or 1/Forever; live in Sun & moon.
   Effects              1 / 1 / 1      all scene effects, capture and world/GI workers; 0 uses the F10 bypass while preserving individual settings, HDR output and the menu
   WorldShadows         1 / 1 / 1      all Northlight world/character shadows; F9 remains independent
   WorldFog             1 / 1 / 1      Northlight atmospheric/regional fog, banks and haze; preserves native fog and the independent F7 switch

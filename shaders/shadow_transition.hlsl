@@ -251,3 +251,6 @@ float4 FogCloudsActorTiledTransition(float2 uv:TEXCOORD0):COLOR0 {return FogClou
 float4 MoonFloorFogTransition(float2 uv:TEXCOORD0):COLOR0{return MoonFloorFog(uv);}
 float4 MoonFloorFogActorTransition(float2 uv:TEXCOORD0):COLOR0{return MoonFloorFogActor(uv);}
 float4 MoonFloorFogActorTiledTransition(float2 uv:TEXCOORD0):COLOR0{return MoonFloorFogActorTiled(uv);}
+
+float4 ForeverFogTransition(float2 uv:TEXCOORD0):COLOR0{return foreverFog(uv,false);}
+float4 ForeverFogActorTransition(float2 uv:TEXCOORD0):COLOR0{return foreverFog(uv,true);}

@@ -2,7 +2,7 @@
 #include <cstdint>
 
 namespace NorthlightSkyComposition {
-enum class Role : unsigned char { Unknown, Background, Foreground };
+enum class Role : unsigned char { Unknown, Background, Foreground, Celestial, Native, Planet };
 // The RGB channels retain only the background's contribution. Alpha retains
 // transmission. Native foreground colour is already present in the scene.
 struct Sample { float background[3]{}, transmission=1; };

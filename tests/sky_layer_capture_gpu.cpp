@@ -79,6 +79,8 @@ int main(int argc,char** argv){
                 ++failures;std::printf("FAIL fixed-function msaa=%u mode=%u rgb=%g,%g,%g alpha=%g\n",unsigned(samples),mode,halfFloat(pixel[0]),halfFloat(pixel[1]),halfFloat(pixel[2]),halfFloat(pixel[3]));}
             ok(staging->UnlockRect());++cases;if(samples)++msaaCases;
         }
+        layers.preserveNative();assert(layers.native(cases-1)&&!layers.texture(cases-1)&&!layers.prepare(d));
+        layers.begin(cases);assert(!layers.native(cases)&&!layers.texture(cases));
         layers.reset();d->SetDepthStencilSurface(nullptr);target->Release();depth->Release();
     }
     std::printf("sky layer capture GPU cases=%u msaa=%u failures=%u\n",cases,msaaCases,failures);

@@ -8,7 +8,7 @@ using namespace NorthlightCelestialProfiles;
 static bool near(float a,float b,float eps=1e-5f){return std::fabs(a-b)<eps;}
 static float luma(const float* c){return c[0]*.2126f+c[1]*.7152f+c[2]*.0722f;}
 int main(int argc,char** argv){
-    assert(argc==2);Table t;std::string error;
+    assert(argc==2||argc==3);Table t;std::string error;
     assert(load(std::string(argv[1])+"/celestial-profiles.ini",t,error));assert(t.zones.count({"Azeroth",85})==1);
     const auto configuredCount=t.zones.size();
     const auto& prairie=t.at("Kalimdor",215);
@@ -21,8 +21,10 @@ int main(int argc,char** argv){
         assert(near(entry.second.fogGain[1],2.5f)&&entry.second.fogHeightScale[1]==1);
         if(entry.first==std::make_pair(std::string("Azeroth"),10u))
             assert(near(entry.second.fogGain[0],4.3f)&&entry.second.fogHeightScale[0]==1);
-        else if(entry.first==std::make_pair(std::string("Azeroth"),85u)) /* Tirisfal: sun_fog_gain 3.4 since 2026-09-24 */
-            assert(near(entry.second.fogGain[0],3.4f)&&entry.second.fogHeightScale[0]==2);
+        else if(entry.first==std::make_pair(std::string("Azeroth"),85u))
+            assert(near(entry.second.fogGain[0],4.3f)&&entry.second.fogHeightScale[0]==3);
+        else if(entry.first==std::make_pair(std::string("Azeroth"),267u))
+            assert(near(entry.second.fogGain[0],4.3f)&&entry.second.fogHeightScale[0]==2.5f);
         else if(entry.first==std::make_pair(std::string("Azeroth"),33u)) /* Stranglethorn: sun_fog_height_scale 3 (2026-10-17 tuning) */
             assert(near(entry.second.fogGain[0],4.3f)&&entry.second.fogHeightScale[0]==3);
         else if(entry.first!=std::make_pair(std::string("Kalimdor"),215u))
@@ -34,14 +36,25 @@ int main(int argc,char** argv){
     // All volume knobs inherit and interpolate without changing surface light.
     auto middle=blend(t.fallback,prairie,.5f);
     assert(near(middle.fogGain[0],4.3f)&&near(middle.fogHeightScale[0],2.f));
+    assert(fogDensity(t.fallback,0)==1&&fogDensity(t.fallback,1)==1);
+    const auto& tirisfal=t.at("Azeroth",85);const auto& hillsbrad=t.at("Azeroth",267);
+    assert(near(fogDensity(tirisfal,0),1.8f)&&near(fogDensity(hillsbrad,0),1.3f));
+    assert(fogDensity(tirisfal,1)==1&&fogDensity(hillsbrad,1)==1);
+    assert(near(fogDensity(tirisfal,.5f),1.4f)&&near(blend(tirisfal,hillsbrad,.5f).fogDensity[0],1.55f));
+    assert(fogDensity(tirisfal,-1)==tirisfal.fogDensity[0]&&fogDensity(tirisfal,2)==1);
+    for(const char* bad:{"sun_fog_density=-.01","sun_fog_density=4.01","moon_fog_density=nan","sun_fog_density=1,2"}){
+        Table check=t;std::istringstream input(std::string("[default]\n")+bad);
+        assert(!parse(input,check,error)&&check.zones.size()==t.zones.size());
+    }
     for(const char* bad:{"sun_fog_gain=-1","sun_fog_gain=8.1","sun_fog_height_scale=0","sun_fog_height_scale=nan","moon_fog_height_scale=4.1"}){
         Table check;std::istringstream input(std::string("[Kalimdor:215]\n")+bad);
         assert(!parse(input,check,error));
     }
     {
-        Table check;std::istringstream input("[default]\nsun_fog_gain=2\nsun_fog_height_scale=1.25\n[Kalimdor:215]\nmoon_fog_gain=0\n");
+        Table check;std::istringstream input("[default]\nsun_fog_gain=2\nsun_fog_height_scale=1.25\nsun_fog_density=4\n[Kalimdor:215]\nmoon_fog_gain=0\nmoon_fog_density=0\n");
         assert(parse(input,check,error));const auto& p=check.at("Kalimdor",215);
         assert(p.fogGain[0]==2&&p.fogGain[1]==0&&p.fogHeightScale[0]==1.25f);
+        assert(p.fogDensity[0]==4&&p.fogDensity[1]==0);
         NorthlightCelestial::Context a,b;a.sunWeight=b.sunWeight=1;float direct[3]={1,.7f,.4f};
         apply(p,direct,a);apply(Profile{},direct,b);
         for(unsigned c=0;c<3;++c)assert(a.sunColor[c]==b.sunColor[c]);
@@ -98,7 +111,7 @@ int main(int argc,char** argv){
         ++cases;
     }
     // Real asset zone lookup at the Tirisfal test locations.
-    auto region=NorthlightRegionalFog::loadRegion(std::string(argv[1])+"/world-cache/fog","Azeroth",2251.6284f,311.0387f);
+    auto region=NorthlightRegionalFog::loadRegion(argc==3?argv[2]:std::string(argv[1])+"/world-cache/fog","Azeroth",2251.6284f,311.0387f);
     assert(!region.tiles.empty());assert(NorthlightRegionalFog::zoneAt(region,2251.6284f,311.0387f)==85);
     auto actual=sample(t,region,"Azeroth",2251.6284f,311.0387f);assert(actual.mix[1]>.79f);
     // Synthetic tile edge: left Tirisfal, right default. One-millimeter steps

@@ -26,6 +26,7 @@ struct Settings {
     unsigned gi=1,giRays=64,giBounces=3,giProbeMoveStep=8,giDynamicProbes=1,giThreads=1,giFastBVH=1;
     // 60 retains the legacy half blend; 120 replaces native ambient, 240 doubles the correction.
     unsigned giStrength=120,auroraStrength=100;
+    unsigned celestialStyle=0; // 0 = native placement/size; 1 = Forever orbit and size curves.
     int giBrightness=0; // Signed percent of measured indirect radiance; -100 = none, +100 = double.
     // 0.3.141: shadow fate tracker (diagnostic log only; never changes the image).
     // Diagnostics=0: periodic logs, diagnostic counters and pure measurement off
@@ -151,7 +152,7 @@ struct Settings {
     unsigned autoDisplacementStrength=100,autoDisplacementDistance=12,autoDisplacementDetail=4;
     unsigned autoBumpModels=3,autoModelDisplacementStrength=25,autoModelDisplacementDistance=8,autoModelDisplacementDetail=2;
     unsigned autoHeightPolarity=0,autoHeightDetails=75,autoHeightBalance=50;
-    char origin[117]={'d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d'};
+    char origin[118]={'d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d'};
 };
 struct Key {
     const char* name;unsigned Settings::*field=nullptr;int Settings::*signedField=nullptr;
@@ -222,6 +223,7 @@ inline const Key Keys[]={
     {"ActorShadowCpuMs",&Settings::actorShadowCpuMs,0,20,{3,3,2}}, /* task 45 */
     {"GrassShadows",&Settings::grassShadows,0,1,{1,0,0}},
     {"EquipmentLights",&Settings::equipmentLights,0,1,{1,0,0}},
+    {"CelestialStyle",&Settings::celestialStyle,0,1,{0,0,0}},
     {"AOMethod",&Settings::aoMethod,0,4,{0,0,0}},
     {"AOStrength",&Settings::aoStrength,0,200,{100,100,100}},
     {"AORadius",&Settings::aoRadius,10,1000,{200,200,200}},
@@ -359,6 +361,10 @@ inline bool aoNumber(const std::string& text,unsigned& out){
     else if(value=="hbaoplus"||value=="hbao+")out=2;else if(value=="gtao")out=3;else if(value=="assao")out=4;
     else return number(text,out);return true;
 }
+inline const char* celestialStyleName(unsigned style){return style?"Forever":"Default";}
+inline bool celestialStyleNumber(const std::string& text,unsigned& out){
+    const auto value=lower(text);if(value=="default")out=0;else if(value=="forever")out=1;else return number(text,out);return true;
+}
 inline const char* aoQualityName(unsigned quality){const char* names[]={"High","Medium","Low"};return names[quality<3?quality:0];}
 inline bool aoQualityNumber(const std::string& text,unsigned& out){
     const auto value=lower(text);
@@ -397,7 +403,7 @@ inline void apply(const std::vector<Entry>& entries,Settings& s,const char* sour
         if(!match){problems.push_back(where+"unknown key "+e.key+" ignored");continue;}
         int v=0;unsigned u=0;bool valid=false;
         if(match->signedField)valid=signedNumber(e.value,v);
-        else {valid=match->field==&Settings::aoMethod?aoNumber(e.value,u):match->field==&Settings::aoQuality?aoQualityNumber(e.value,u):number(e.value,u);v=int(u);}
+        else {valid=match->field==&Settings::celestialStyle?celestialStyleNumber(e.value,u):match->field==&Settings::aoMethod?aoNumber(e.value,u):match->field==&Settings::aoQuality?aoQualityNumber(e.value,u):number(e.value,u);v=int(u);}
         if(!valid||v<match->low||v>match->high){
             problems.push_back(where+e.key+"="+e.value+" invalid (allowed "+std::to_string(match->low)+".."+std::to_string(match->high)+"); kept "+std::to_string(match->get(s)));continue;}
         match->set(s,v);s.origin[index]=origin;

@@ -35,7 +35,7 @@ struct Config{NorthlightQuality::Settings quality;NorthlightCelestialProfiles::T
 // still apply immediately without cancelling an otherwise identical solve.
 inline bool giRequestChanged(const NorthlightQuality::Settings& before,const NorthlightQuality::Settings& after,
                              const NorthlightCelestialProfiles::Table& oldProfiles,const NorthlightCelestialProfiles::Table& newProfiles){
-    if(before.gi!=after.gi||before.auroraStrength!=after.auroraStrength||(before.giStrength==0)!=(after.giStrength==0)||before.giBounces!=after.giBounces||before.giDynamicProbes!=after.giDynamicProbes||
+    if(before.celestialStyle!=after.celestialStyle||before.gi!=after.gi||before.auroraStrength!=after.auroraStrength||(before.giStrength==0)!=(after.giStrength==0)||before.giBounces!=after.giBounces||before.giDynamicProbes!=after.giDynamicProbes||
        before.giProbeMoveStep!=after.giProbeMoveStep||before.giProbeAhead!=after.giProbeAhead||before.shadowDirectionSteps!=after.shadowDirectionSteps)return true;
     const auto sameLight=[](const NorthlightCelestialProfiles::Profile& a,const NorthlightCelestialProfiles::Profile& b){
         for(unsigned s=0;s<2;++s){if(a.mix[s]!=b.mix[s]||a.strength[s]!=b.strength[s])return false;
@@ -72,7 +72,7 @@ inline std::pair<std::string,uint32_t> region(const std::string& section){
     if(!maps.count(map)||id.empty()||id.size()>6||id.find_first_not_of("0123456789")!=id.npos||std::stoul(id)==0)throw std::runtime_error("Invalid region");return {maps.at(map),uint32_t(std::stoul(id))};
 }
 inline std::string regionName(const std::string& s){auto r=region(s);return r.first+":"+std::to_string(r.second);}
-inline const std::array<const char*,11> CelestialNames={"disc","disc_gain","light","light_mix","light_strength","fog_gain","fog_height_scale","horizon_haze","glow_strength","glow","glow_mix"};
+inline const std::array<const char*,12> CelestialNames={"disc","disc_gain","light","light_mix","light_strength","fog_gain","fog_height_scale","horizon_haze","glow_strength","glow","glow_mix","fog_density"};
 inline std::string profileValue(NorthlightCelestialProfiles::Profile p,const std::string& key){unsigned n=0;float lo=0,hi=0;auto* v=NorthlightCelestialProfiles::keyTarget(p,key,n,lo,hi);std::string s;for(unsigned i=0;i<n;++i)s+=(i?",":"")+number(v[i]);return s;}
 inline const NorthlightCelestialProfiles::Profile& profile(const NorthlightCelestialProfiles::Table& t,const std::string& s){if(lower(s)=="default")return t.fallback;auto r=region(s);return t.at(r.first,r.second);}
 using Values=std::map<std::string,std::map<std::string,std::string>>;
@@ -85,6 +85,7 @@ struct Field {
 };
 // Case-insensitive match against a comma list of options; unknown values (and "~") stay as written so validation still reports them.
 inline std::string canonicalOption(const std::string& value,const std::string& options){
+    if(options=="Default,Forever"){if(value=="0")return "Default";if(value=="1")return "Forever";}
     if(options=="Manual,Auto"){float mode=0;if(NorthlightHdrSettingsContract::parse(value,mode)&&(mode==0||mode==1))return NorthlightHdrSettingsContract::modeName(mode);}
     std::istringstream s(options);std::string o;while(std::getline(s,o,','))if(lower(o)==lower(value))return o;return value;
 }
@@ -103,6 +104,7 @@ inline std::vector<Field> schema(const Documents& docs,const Documents& initial,
         f.saved=std::to_string(k.get(saved.quality));f.active=std::to_string(k.get(active.quality));f.factory=std::to_string(k.get(defaults.quality));f.apply=liveQuality(k.name)?"F":"R";
         f.options=std::to_string(k.get(legacyQuality))+","+std::to_string(k.preset[1])+","+std::to_string(k.preset[2]);f.inherited=std::to_string(saved.quality.preset==NorthlightQuality::Preset::Quality?k.get(legacyQuality):k.preset[unsigned(saved.quality.preset)]);
         if(f.key=="AOMethod"){const char* names[]={"SSAO","HDAO","HBAOPlus","GTAO","ASSAO"};f.kind="enum";f.saved=names[saved.quality.aoMethod];f.active=names[active.quality.aoMethod];f.factory=f.inherited="SSAO";f.options="SSAO,HDAO,HBAOPlus,GTAO,ASSAO";}
+        if(f.key=="CelestialStyle"){f.kind="enum";f.saved=NorthlightQuality::celestialStyleName(saved.quality.celestialStyle);f.active=NorthlightQuality::celestialStyleName(active.quality.celestialStyle);f.factory=f.inherited="Default";f.options="Default,Forever";}
         if(f.key=="AOQuality"){f.kind="enum";f.saved=NorthlightQuality::aoQualityName(saved.quality.aoQuality);f.active=NorthlightQuality::aoQualityName(active.quality.aoQuality);f.factory=f.inherited="High";f.options="High,Medium,Low";}
         add(f);out.back().origin=std::string(1,saved.quality.origin[index++]);}
     Field b;b.file=1;b.section="Renderer";b.key="Backend";b.kind="enum";b.saved=lower(explicitValue(savedValues[1],b.section,b.key));if(b.saved=="~")b.saved="legacy";b.active=lower(explicitValue(initialValues[1],b.section,b.key));if(b.active=="~")b.active="legacy";b.factory=factoryBackend;b.inherited="legacy";b.options=backendOptions;add(b);

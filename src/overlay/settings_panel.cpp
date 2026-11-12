@@ -36,6 +36,7 @@ const ImVec4 Accent{0.40f,0.70f,1.00f,1.f},Edited{1.00f,0.74f,0.32f,1.f},Muted{0
 
 // ---- Words (from the retired Lua menu) ----
 const std::map<std::string,const char*> Labels={
+    {"CelestialStyle","Celestial placement & size"},
     {"RainRivulets","Merge drops into rivulets"},{"SnowFrost","Frost at screen edges"},{"SnowFrostStrength","Frost strength (%)"},
     {"WeatherWindDirection","Wind heading (world degrees)"},{"WeatherWindStrength","Wind strength (%)"},{"WeatherCameraMotion","React to camera turns"},
     {"SandLens","Sand on lens"},{"SandLensStrength","Sand strength (%)"},{"SandLensSize","Sand grain size (%)"},
@@ -71,9 +72,10 @@ const std::map<std::string,const char*> ShortLabels={
 };
 const std::map<std::string,const char*> CelestialLabels={
     {"disc","Disc tint"},{"disc_gain","Disc brightness"},{"light","Light tint"},{"light_mix","Light tint mix"},{"light_strength","Light strength"},{"fog_gain","Fog illumination"},
-    {"fog_height_scale","Fog height"},{"horizon_haze","Horizon haze"},{"glow_strength","Glow strength"},{"glow","Glow tint"},{"glow_mix","Glow tint mix"},
+    {"fog_height_scale","Fog height"},{"fog_density","Air density"},{"horizon_haze","Horizon haze"},{"glow_strength","Glow strength"},{"glow","Glow tint"},{"glow_mix","Glow tint mix"},
 };
 const std::map<std::string,std::vector<const char*>> Help={
+    {"CelestialStyle",{"Default follows the game. Forever uses imported daily orbit and horizon size curves for the sun and primary moon; light, shadows and rays follow the selected placement. Applies to every region."}},
     {"RainRivulets",{"Falling drops and their wet trails collect nearby beads into longer curved streams, conserving water. Off keeps drops independent."}},
     {"SnowFrost",{"Crystalline ice grows from the screen edges with accumulated snow and storm intensity. Nearby fire melts it. Independent of Snow on camera; requires Enhanced weather."}},
     {"SandLens",{"Dust grains and sparse deposits on the camera lens. They stay in glass coordinates, ignore scene geometry and receive optional inertial forces during camera turns. Shelter hides the effect."}},
@@ -217,6 +219,7 @@ const std::map<std::string,std::vector<const char*>> Help={
     {"light_strength",{"Strength multiplier for sunlight or moonlight on surfaces: 1 is normal. Lower values weaken this lighting; higher values intensify it. Disc brightness and fog illumination are separate."}},
     {"fog_gain",{"Amount of sunlight or moonlight scattered through atmospheric fog. Higher values make illuminated air more prominent without increasing surface light or disc brightness."}},
     {"fog_height_scale",{"Vertical reach of this body's fog illumination. Higher values extend the illuminated atmosphere farther upward. Requires Atmospheric fog."}},
+    {"fog_density",{"Density of atmospheric air: higher values obscure distant scenery and strengthen scattered light together. Blends between the sun and moon profiles over the day. Ground fog and rain keep their own density."}},
     {"horizon_haze",{"Multiplier for horizon haze under this sun or moon profile: 1 uses the global haze strength, 0 removes this contribution. Requires Atmospheric fog and a nonzero global Horizon haze setting."}},
     {"glow_strength",{"Strength of the atmospheric glow around the sun or moon direction. 0 removes this glow. Surface lighting and disc brightness remain separately controlled."}},
     {"glow",{"Custom tint for the atmospheric glow. Glow tint mix controls how much of this color replaces the light's hue."}},
@@ -269,8 +272,8 @@ const std::vector<Group> HdrGroups={
     {"hdr","HDR output","ExperimentalHDR","HDRPaperWhite HDRUIWhite HDRPeakMode HDRMaxNits",""},
     {"hdr-look","World appearance","","HDRExposureMode HDRExposure HDRContrast HDRBloomStrength HDRWideBloom HDRLegacyExpansion","HDRAutoMinEV HDRAutoMaxEV HDRLightAdaptation HDRDarkAdaptation"}};
 const std::vector<Group> CelestialGroups={
-    {"sun","Sun",nullptr,"sun_disc sun_disc_gain sun_light sun_light_strength","sun_light_mix sun_fog_gain sun_fog_height_scale sun_horizon_haze sun_glow_strength sun_glow sun_glow_mix"},
-    {"moon","Moon",nullptr,"moon_disc moon_disc_gain moon_light moon_light_strength","moon_light_mix moon_fog_gain moon_fog_height_scale moon_horizon_haze moon_glow_strength moon_glow moon_glow_mix"},
+    {"sun","Sun",nullptr,"sun_disc sun_disc_gain sun_light sun_light_strength","sun_light_mix sun_fog_gain sun_fog_height_scale sun_fog_density sun_horizon_haze sun_glow_strength sun_glow sun_glow_mix"},
+    {"moon","Moon",nullptr,"moon_disc moon_disc_gain moon_light moon_light_strength","moon_light_mix moon_fog_gain moon_fog_height_scale moon_fog_density moon_horizon_haze moon_glow_strength moon_glow moon_glow_mix"},
 };
 std::vector<std::string> words(const char* text);
 // The old menu's preset page.
@@ -596,7 +599,7 @@ struct SettingsPanel::State {
     // ---- Pages ----
     // Quality keys without an assigned group stay accessible in Renderer fine tuning.
     std::vector<const Field*> unsortedQuality()const{
-        std::vector<std::string> known{"Preset"};for(const auto& s:QualitySections)for(auto& k:sectionKeys(s))known.push_back(k);
+        std::vector<std::string> known{"Preset","CelestialStyle"};for(const auto& s:QualitySections)for(auto& k:sectionKeys(s))known.push_back(k);
         std::vector<const Field*> out;for(const Field* f:fields(D::Quality))if(std::find(known.begin(),known.end(),f->key)==known.end())out.push_back(f);
         return out;
     }
@@ -604,7 +607,7 @@ struct SettingsPanel::State {
     std::vector<const Field*> pageFields(Page p)const{
         std::vector<const Field*> out;
         if(p==Page::Overview){if(const Field* f=draft.quality("Preset"))out.push_back(f);for(auto& k:words(QuickKeys))if(const Field* f=draft.quality(k))out.push_back(f);return out;}
-        if(p==Page::Celestial)return fields(D::Celestial);
+        if(p==Page::Celestial){out=fields(D::Celestial);if(const Field* f=draft.quality("CelestialStyle"))out.push_back(f);return out;}
         if(p==Page::ShadowRange)return fields(D::ShadowRange);
         if(p==Page::Renderer)out=fields(D::Renderer);
         if(const Section* s=qualitySection(Pages[unsigned(p)].quality))for(auto& k:sectionKeys(*s))if(const Field* f=draft.quality(k))out.push_back(f);
@@ -901,6 +904,9 @@ struct SettingsPanel::State {
         return out;
     }
     void celestialTab(){
+        if(const Field* style=draft.quality("CelestialStyle"))loose("celestial-placement",{style});
+        ImGui::TextColored(Color::Muted,"Default: game placement and size. Forever: imported orbit and horizon size curves.");
+        ImGui::Spacing();
         const auto regions=sections(D::Celestial);
         if(regions.empty()){ImGui::TextDisabled("No celestial profiles.");return;}
         if(std::find(regions.begin(),regions.end(),region)==regions.end())region=regions.front();
@@ -1015,12 +1021,13 @@ struct SettingsPanel::State {
         ImGui::SameLine();legend();
     }
     std::string factoryScope()const{
-        if(page==Page::Celestial)return "Restore the factory sun and moon values of the selected region ("+regionLabel(region)+").";
+        if(page==Page::Celestial)return "Restore Default celestial placement and the factory sun and moon values of the selected region ("+regionLabel(region)+").";
         if(page==Page::ShadowRange)return "Restore the factory shadow reach of every region.";
         return std::string("Restore the factory values of every setting on the ")+Pages[unsigned(page)].title+" page.";
     }
     void factoryDefaults(){
-        const auto targets=page==Page::Celestial?fields(D::Celestial,&region):pageFields(page);
+        auto targets=page==Page::Celestial?fields(D::Celestial,&region):pageFields(page);
+        if(page==Page::Celestial)if(const Field* f=draft.quality("CelestialStyle"))targets.push_back(f);
         for(const Field* f:targets)if(f->available){draft.factory(*f);live.erase(f->id());edited(*f);}
     }
     // The old menu's preset choice: quality overrides back to inherit, optionally Sun & moon and Shadow range to factory.

@@ -13,7 +13,8 @@ from world_light_placements import names
 import northlight_paths
 HERE=Path(__file__).resolve().parent
 FOREST_REGIONS={int(i):name for i,name in re.findall(r'^FOREST_REGION\((\d+), "([^"]+)"\)$',northlight_paths.src('forest_regions.inc').read_text(),re.M)}
-SUPPORTED_REGIONS={10:'Duskwood',33:'Stranglethorn Vale',215:'Mulgore',**FOREST_REGIONS}
+EXPANSION_REGIONS={int(i):name for i,name in re.findall(r'^    \{"(?:Expansion01|Northrend)",(\d+),"([^"]+)"',northlight_paths.src('expansion_atmosphere.h').read_text(),re.M)}
+SUPPORTED_REGIONS={10:'Duskwood',33:'Stranglethorn Vale',215:'Mulgore',**FOREST_REGIONS,**EXPANSION_REGIONS}
 
 def dbc(blob):
     magic,n,fields,size,strings=unpack('<4s4I',blob)
@@ -90,6 +91,7 @@ def placed_indoors(root,groups):
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--maps', nargs='+', choices=('Azeroth','Kalimdor','Expansion01','Northrend'), default=('Azeroth','Kalimdor','Expansion01','Northrend'))
     parser.add_argument('--cache',type=Path,help='world cache whose FGS3 tiles select the ADTs (default: <client>/world-cache)')
     parser.add_argument('--output',type=Path,help='default: <cache>/fog')
     client_archives.add_arguments(parser);args=parser.parse_args()
@@ -109,7 +111,7 @@ def main():
     destination=args.output;destination.mkdir(parents=True,exist_ok=True)
     manifest={'format':'FRF1','zones':proof,'maps':{},'unsupported':{},'unreadable_wmos':{},'sources':['ADT MCNK.areaid','AreaTable.dbc parent','MH2O liquid presence (LiquidType.dbc materialID)','MOGP interior (no flag 0x8/0x40) + group bounds','MODF placement'],
               'limitations':['Indoor group bounds conservatively exclude their footprint; this is not exact portal containment.','No dynamic weather source is inferred.','Unknown maps/zones have zero added fog.','Water max authored height is used for near-water influence; no liquid wave simulation.']}
-    for mapname in ('Azeroth','Kalimdor','Expansion01','Northrend'):
+    for mapname in args.maps:
         outdir=destination/mapname;outdir.mkdir(exist_ok=True);files=sorted((cache/mapname).glob('*.fg3'));done=0;digest=hashlib.sha256()
         for tile in files:
             tx,ty=map(int,tile.stem.split('_'));name=f'world\\maps\\{mapname}\\{mapname}_{tx}_{ty}.adt'
@@ -134,6 +136,7 @@ def main():
         manifest['maps'][mapname]={'tiles':done,'expected':len(files),'aggregate_sha256':digest.hexdigest()}
     manifest['clamped_wmo_groups']=sorted(clamped);manifest['archive_fingerprint']=assets.fingerprint();assets.close();manifest['stats']=dict(stats);manifest['seconds']=round(time.time()-started,3)
     manifest['builder_sha256']=hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    manifest['expansion_profiles_sha256']=hashlib.sha256(northlight_paths.src('expansion_atmosphere.h').read_bytes()).hexdigest()
     manifest['forest_catalog_sha256']=hashlib.sha256(northlight_paths.src('forest_regions.inc').read_bytes()).hexdigest()
     (destination/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\n');print(json.dumps(manifest,indent=2),flush=True)
 if __name__=='__main__':main()

@@ -10,7 +10,9 @@ import json
 import hashlib
 import re
 
-w=fp.src('world_renderer.h').read_text()
+w=fp.src('world_renderer.h').read_text(encoding='utf-8')
+for resource in ('world_screen_resources.inl','world_geometry_resources.inl'):
+    w+='\n'+fp.src(resource).read_text(encoding='utf-8')
 h=(fp.SHADERS/'world_effects.hlsl').read_text()
 py=(fp.REPO/'scripts'/'shaders'/'compile_world_shaders.py').read_text()
 manifest=json.loads((fp.SHADERS/'world-shader-build.json').read_text())['shaders']
@@ -18,7 +20,7 @@ checks={}
 for entry in ('WorldFogActor','FogCloudsActor'):
  item=manifest[entry]
  checks[entry+': bounded extended variant and generated runtime slot requirement']=(512<item['static_instruction_slots']<=600 and item['temporary_registers']<=32 and item['sha256']==hashlib.sha256((fp.COMPILED/(entry+'.bin')).read_bytes()).hexdigest() and f"k{entry}ShaderSlots = {item['static_instruction_slots']}" in fp.src('world_compiled_shaders.h').read_text())
-checks['cpp: exact actor variants require device slots and release with baseline']=('fogCaps.MaxPixelShader30InstructionSlots>=std::max(kWorldFogActorShaderSlots,kFogCloudsActorShaderSlots)' in w and 'drop(fogActorPS);drop(fogCloudsActorPS);' in w)
+checks['cpp: exact actor variants require device slots and release with baseline']=('caps.MaxPixelShader30InstructionSlots>=std::max(kWorldFogActorShaderSlots,kFogCloudsActorShaderSlots)' in w and 'drop(fogActorPS);drop(fogCloudsActorPS);' in w)
 checks['hlsl: baseline and integrated entries are explicit']=all(t in h for t in ('return worldFog(uv,false);','return worldFog(uv,true);','return fogClouds(uv,false);','return fogClouds(uv,true);'))
 fc=manifest.get('FogClouds',{})
 names=re.findall(r'\("(\w+)", "[vp]s_3_0"\)',py)
@@ -55,7 +57,7 @@ exact=['float profile=saturate((field.w-2.5)/2.5);','float groundHeight=lerp(fie
     'float nearFade=saturate(((start+end)*.5-FogRange.x)*FogRange.y);nearFade*=nearFade*(3-2*nearFade);'.replace('((start+end)*.5-FogRange.x)','(mid-FogRange.x)')]
 checks['hlsl: FogClouds copies WorldFog\'s groundSigma lines (profile, groundHeight, vertical, groundSigma), altitude and valid exactly; nearFade with mid for (start+end)*.5']=all(l in body and l.replace('(mid-FogRange.x)','((start+end)*.5-FogRange.x)') in wf for l in exact)
 checks['hlsl: base fog only attenuates the cloud light (tBase; the ambient does not carry it: the blend already multiplies the fog by tCloud), alpha out stays tCloud; air term is the documented constant floor WeatherInfo.w (slot budget)']=(
-    'tauBase+=baseSigma*stepSize;' in body and 'float weight=tCloud*absorb;' in body and 'directWeight+=exp(-tauBase)*weight*visibility*heightFade;' in body and '[branch]if(actorIntegration&&FogActorInfo.x>0&&visibility>0)visibility=fogCombineActor(visibility,tiledActor?fogActorShadowTiled(actorOrigin+actorRay*start,actorRay*stepSize):fogActorShadow(actorOrigin+actorRay*start,actorRay*stepSize));' in body and 'ambientWeight+=weight;' in body and 'float airSigma=WeatherInfo.w;' in body and 'for the slot budget' in body and body.rstrip().endswith('directScatter,tCloud);\n}'.rstrip()))
+    'tauBase+=baseSigma*stepSize;' in body and 'float weight=tCloud*absorb;' in body and 'directWeight+=exp(-tauBase)*weight*visibility*lerp(1,heightFade,SunDirection.w);' in body and '[branch]if(actorIntegration&&FogActorInfo.x>0&&visibility>0)visibility=fogCombineActor(visibility,tiledActor?fogActorShadowTiled(actorOrigin+actorRay*start,actorRay*stepSize):fogActorShadow(actorOrigin+actorRay*start,actorRay*stepSize));' in body and 'ambientWeight+=weight;' in body and 'float airSigma=WeatherInfo.w;' in body and 'for the slot budget' in body and body.rstrip().endswith('directScatter,tCloud);\n}'.rstrip()))
 # renderer wiring
 checks['cpp: noise generated off the game and render threads on first need (std::thread, detached, leaked holder), logged once']=(
     'std::thread([this]' in w and '.detach()' in w and 'new FogCloudNoise' in w and 'WORLD fog clouds noise ms=%.1f' in w and 'fogCloudNoise().request()' in w)
@@ -64,7 +66,7 @@ checks['cpp: volume created lazily, L8 with an A8R8G8B8 fallback, honours the pi
 checks['cpp: shader created non-fatally, shader and volume released with the others']=(
     'CreatePixelShader(kFogCloudsShader,&fogCloudsPS)' in w and 'drop(fogCloudsPS);drop(cloudNoise);' in w)
 checks['cpp: frame derived from the settings; active only with the fog effect, no debug view, noise and shader ready']=(
-    'NorthlightFogClouds::derive(quality.fogClouds,unsigned(std::lround(float(quality.fogCloudDensity)*denseDamp)),wx.fog,c[31][3],cloudWind,context.camera,fogCloudNoise().ready.load(std::memory_order_acquire)?&fogCloudNoise().quantiles:nullptr,cloudLush)' in w and
+    'NorthlightFogClouds::derive(a.imported.valid?0:quality.fogClouds,unsigned(std::lround(float(quality.fogCloudDensity)*denseDamp)),wx.fog,c[31][3],cloudWind,context.camera,fogCloudNoise().ready.load(std::memory_order_acquire)?&fogCloudNoise().quantiles:nullptr,cloudLush)' in w and
     'cf.active=cf.active&&effects.fog&&debug==0&&fogCloudsPS&&ensureCloudNoise();' in w and w.index('c[31][3]=NorthlightRegionalFog::nightFactor')<w.index('NorthlightFogClouds::derive('))
 checks['cpp: c59.y and c60..c63 written only while active, by shaderConstants (0.3.200: c60.x, the interval, only at a reduced level and while active)']=(
     w.count('if(cf.active){\n            NorthlightFogClouds::shaderConstants(cf,&c[59]);')==1 and re.findall(r'c\[(6[0-3])\]\[(\d)\]=',w)==[('60','0')] and 'if(gpuBudgetLevel){if(cf.active)c[60][0]=NorthlightGpuBudget::spacingDelta(' in w and 'c[59][1]' not in w)
@@ -117,8 +119,8 @@ checks['colour: c25/c26 set for the cloud pass from NorthlightFogClouds::colour,
     'NorthlightFogClouds::colour(c[26],fw>0,c[31][3],cloudColour)' in cp and 'd->SetPixelShaderConstantF(26,cloudColour,1)' in cp
     and cp.index('fog clouds raymarch')<cp.index('d->SetPixelShaderConstantF(25,c[25],2)'))
 # Duskwood/lamp game test: the rain's extra air and the cloud density thin out in dense zones; the lamp glow ignores the clouds
-checks['dense zones: airFloor = .0017f + rain extra x denseDamp, cloud density x denseDamp, lamps sigmaAt without clouds']=(
-    'const float airFloor=.0017f+wx.airExtinction()*denseDamp;' in w and 'unsigned(std::lround(float(quality.fogCloudDensity)*denseDamp))' in w
+checks['dense zones: scaled dry air + rain extra x denseDamp, cloud density x denseDamp, lamps sigmaAt without clouds']=(
+    'const float airFloor=.0017f*airDensity+wx.airExtinction()*denseDamp;' in w and 'unsigned(std::lround(float(quality.fogCloudDensity)*denseDamp))' in w
     and 'localLights.position[i][2],false,unused);' in w and 'ray.z*t,true,cloudy)' in w and 'if(clouds&&cloudCandidate)' in w)
 # lamp glow game test: the glow fades in over the same near ramp as the air, at the ray's closest approach to the light
 lf=h.split('float4 LocalFog(',1)[1].split('\n}\n',1)[0]

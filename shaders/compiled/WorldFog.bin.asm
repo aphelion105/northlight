@@ -485,37 +485,40 @@
  411:                     add r8.w, -r8.w, c26.w
  412:                     mul r8.w, r8.w, r8.z
  413:                     mul r8.z, r8.w, r8.z
- 414:                     mul r6.w, r6.w, r8.z
- 415:                     mul r8.z, r7.w, r12.w
- 416:                     mul r6.w, r6.w, r8.z
- 417:                     add r12.x, r6.w, r12.x
- 418:                   endif
- 419:                   add r6.w, -r7.w, -c36.y
- 420:                   mul r12.w, r6.w, r12.w
- 421:                 endif
- 422:               endif
- 423:             endif
- 424:           endrep
- 426:           mul r0.xyw, r6.xyzz, r12.x
- 427:           max r1.x, r0.y, r0.w
- 428:           max r2.x, r0.x, r1.x
- 429:           max r1.x, r4.z, c34.w
- 430:           add r1.y, r2.x, r1.x
- 431:           rcp r1.y, r1.y
- 432:           mul r1.x, r1.y, r1.x
- 433:           mul r0.xyw, r0, r1.x
- 434:           mul r1.xyz, r7, c18
- 435:           cmp r1.xyz, c18, r1, r0.z
- 436:           mov r2.x, c27.x
- 437:           mul r0.z, r2.x, c35.x
- 438:           mul r1.xyz, r0.z, r1
- 439:           add r0.z, -r12.w, -c36.y
- 440:           mul r1.xyz, r0.z, r1
- 441:           add oC0.xyz, r0.xyww, r1
- 442:           mov oC0.w, r12.w
- 443:         endif
- 444:       endif
- 445:     endif
+ 414:                     add r8.z, r8.z, c36.y
+ 415:                     mul r8.z, r8.z, c16.w
+ 416:                     add r8.z, r8.z, -c36.y
+ 417:                     mul r6.w, r6.w, r8.z
+ 418:                     mul r8.z, r7.w, r12.w
+ 419:                     mul r6.w, r6.w, r8.z
+ 420:                     add r12.x, r6.w, r12.x
+ 421:                   endif
+ 422:                   add r6.w, -r7.w, -c36.y
+ 423:                   mul r12.w, r6.w, r12.w
+ 424:                 endif
+ 425:               endif
+ 426:             endif
+ 427:           endrep
+ 429:           mul r0.xyw, r6.xyzz, r12.x
+ 430:           max r1.x, r0.y, r0.w
+ 431:           max r2.x, r0.x, r1.x
+ 432:           max r1.x, r4.z, c34.w
+ 433:           add r1.y, r2.x, r1.x
+ 434:           rcp r1.y, r1.y
+ 435:           mul r1.x, r1.y, r1.x
+ 436:           mul r0.xyw, r0, r1.x
+ 437:           mul r1.xyz, r7, c18
+ 438:           cmp r1.xyz, c18, r1, r0.z
+ 439:           mov r2.x, c27.x
+ 440:           mul r0.z, r2.x, c35.x
+ 441:           mul r1.xyz, r0.z, r1
+ 442:           add r0.z, -r12.w, -c36.y
+ 443:           mul r1.xyz, r0.z, r1
+ 444:           add oC0.xyz, r0.xyww, r1
+ 445:           mov oC0.w, r12.w
+ 446:         endif
+ 447:       endif
+ 448:     endif
 
-// approximately 468 instruction slots used (22 texture, 446 arithmetic)
+// approximately 471 instruction slots used (22 texture, 449 arithmetic)
  
