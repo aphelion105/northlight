@@ -456,10 +456,36 @@ void DisplacementStateTestAccess::poseHandoff(const char* path,const std::vector
     {auto& m=g.materials.at(&device.vs);m.rangeKind=NorthlightModelNormalRange::None;
      g.endFrame();assert(!g.prepare(&device.vs,4,1,args,nullptr,&source)&&!source.pose.bounds.valid&&!source.pose.outsideRange);
      m.rangeKind=NorthlightModelNormalRange::Envelope;g.endFrame();assert(!g.prepare(&device.vs,4,1,args,nullptr,&source)&&source.pose.outsideRange);}
+    { // Optional range work precedes exact geometry preparation and capture state.
+        auto& m=g.materials.at(&device.vs);m.envelopeSkin=NorthlightReplayBounds::SkinEnvelope::supports(m.view);assert(m.envelopeSkin);
+        const auto metadata=g.poseMetadata.find(&device.vs,&layout);assert(metadata);
+        std::vector<double> times[2];unsigned cheap[2]={},exact[2]={};
+        for(unsigned round=0;round<12;++round)for(bool fast:{false,true,true,false}){
+            g.endFrame();
+            if(!fast){NorthlightReplayBounds::Bounds scratch;for(unsigned i=0;i<5000;++i)g.poseEnvelopes.coarsePrepared(*metadata,source.mesh,g.constants,g.distanceInverseView,8,scratch);}
+            const auto start=std::chrono::steady_clock::now();
+            for(unsigned draw=0;draw<400;++draw){assert(!g.prepare(&device.vs,4,1,args,nullptr,&source));assert(source.pose.outsideRange&&!g.prepared());}
+            times[fast].push_back(std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count());
+            cheap[fast]=unsigned(g.poseEnvelopes.stats().coarseCulled);exact[fast]=unsigned(g.poseEnvelopes.stats().ready);
+            assert(!g.poseVerticesThisFrame&&!g.buildsThisFrame&&cheap[fast]+exact[fast]==400);
+        }
+        for(auto& t:times)std::sort(t.begin(),t.end());assert(!cheap[0]&&cheap[1]>0&&exact[0]==400);
+        g.endFrame();float depth=0,upper=0;
+        assert(g.nearestMaterialDepth(&device.vs,args,depth,true,nullptr,&upper,&source,true)&&depth>48&&source.pose.outsideRange);
+        assert(!g.poseEnvelopes.stats().ready&&!g.poseVerticesThisFrame&&!g.buildsThisFrame);
+        device.patchMode=1;assert(!g.nearestMaterialDepth(&device.vs,args,depth,true,nullptr,&upper,&source,true));device.patchMode=0;
+        const auto proof=source.pose;assert(SUCCEEDED(extension.SetVertexShaderConstantF(31,device.bank+124,1)));
+        current.requestHeld=true;assert(extension.constantStamp(current)&&!proof.outside(source.mesh.get(),&device.vs,&layout,current));
+        std::printf("M2_COARSE_PREPARE_PASS draws=400 beforeMs=%.6f afterMs=%.6f coarse=%u exact=%u early_capture_proof current_epoch no_scan no_geometry\n",times[0][times[0].size()/2],times[1][times[1].size()/2],cheap[1],exact[1]);
+    }
     { // The existing local skin evaluator still runs after the shared envelope budget refuses.
         auto& configured=g.materials.at(&device.vs);configured.envelopeSkin=NorthlightReplayBounds::SkinEnvelope::supports(configured.view);assert(configured.envelopeSkin);
         g.boundsLRU.clear();g.bounds.clear();g.boundsBytes=0;
-        const auto limit=g.envelopeBudget.maxOperations;auto refuse=[&]{g.endFrame();g.envelopeBudget.maxOperations=0;g.poseEnvelopes.chargeCheapPreparation(UINT64_MAX);};refuse();
+        const auto metadata=g.poseMetadata.find(&device.vs,&layout);assert(metadata);
+        const auto limit=g.envelopeBudget.maxOperations;auto refuse=[&]{g.endFrame();g.envelopeBudget.maxOperations=0;g.poseEnvelopes.chargeCheapPreparation(UINT64_MAX);
+            NorthlightReplayBounds::Bounds scratch;
+            for(unsigned i=0;i<5000;++i)g.poseEnvelopes.coarsePrepared(*metadata,source.mesh,g.constants,g.distanceInverseView,8,scratch);
+        };refuse();
         assert(!g.prepare(&device.vs,4,1,args,nullptr,&source));assert(source.pose.bounds.valid&&source.pose.outsideRange&&g.poseVerticesThisFrame==(configured.view.kernel.skin?0u:96u));
         const auto entries=g.bounds.size();const auto built=g.poseEnvelopes.stats().completed;unsigned checks=0;
         for(float z:{20.f,48.f,48.005f,80.f,-20.f,-80.f,20.f,80.f}){
@@ -506,7 +532,8 @@ void DisplacementStateTestAccess::poseHandoff(const char* path,const std::vector
         assert(g.nearestMaterialDepth(&device.vs,args,actual,false,nullptr,&upper,&admitted));
         assert(admitted.mesh&&admitted.declaration==&layout&&admitted.mesh->streams[0].stride==32&&admitted.mesh->streams[0].bytes.size()>=96*32);
         assert(actual<=reference&&((actual>48)==(reference>48)));
-        if(g.modelRangeProof.culled)assert(actual==48.01f&&!std::isfinite(upper)&&!g.poseEnvelopes.stats().ready);
+        if(g.modelRangeProof.culled){current.requestHeld=true;assert(extension.constantStamp(current));
+            assert(actual==48.01f&&!std::isfinite(upper)&&!g.poseEnvelopes.stats().ready&&admitted.pose.outside(admitted.mesh.get(),&device.vs,&layout,current));}
     }
     // Restore the far, canonical projection for the paired component timing.
     float farBank[1024];std::memcpy(farBank,device.bank,sizeof farBank);farBank[22]=1;

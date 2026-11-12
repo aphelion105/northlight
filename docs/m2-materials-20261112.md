@@ -69,3 +69,76 @@ The source, architecture and GPU suites cover integration and state/image
 contracts. Only a matched game run of the built DLL can establish the final
 FPS improvement. Component timings do not establish game FPS or a total
 Northlight frame budget.
+
+## Follow-up game run (16:38 local)
+
+The second game log is preserved at
+`<out>/m2-followup-20261112/before.log`, SHA-256
+`c825b9d5cb4ebe982ea3913bd0b8036586d270d590d0786606c70a8b298dde74`.
+Its DLL source identity is
+`1fe8ff216114a2ad6d09e6d3d5e44ae694fbb501ea409bb52a26e1f746895d00`;
+this includes the preceding M2 optimization. The run still shows a material cost.
+Terrain/walls/grass stay at 3/3/1; this run switches M2 Displacement, Off,
+Displacement. It does not isolate Normal and Parallax.
+
+| M2 phase | Complete foreground windows | Median window mean | Material CPU exclusive |
+|---|---:|---:|---:|
+| Displacement before Off | 5 | 18.115 ms / 55.20 FPS | 1.990 ms |
+| Off | 2 | 16.426 ms / 60.88 FPS | 0.213 ms |
+| Displacement afterwards | 1 | 17.804 ms / 56.17 FPS | 1.873 ms |
+
+M2 therefore adds about 1.4-1.7 ms to the observed frame and about 1.7 ms
+of material CPU work. These are sequential windows, not a deterministic route
+replay. Login/empty and partial setting-change intervals are excluded.
+At the sampled M2 frame 12192, pose-envelope work is 0.353 ms, deferred flush
+0.300 ms, capture setup 0.210 ms, source lookup 0.201 ms, other bounds work
+0.137 ms, local envelope 0.103 ms and fallback vertex evaluation 0.100 ms.
+There are 711 capture-setup attempts, 646 snapshots and 505 envelope calls.
+Immutable meshes are warm: zero source bytes read, zero mesh uploads/creates;
+225 envelope operation refusals still lead to the local/fallback paths, and
+8189 of the 8192 fallback vertex allowance are used. GPU mesh upload is not
+this sampled bottleneck. Deferred `MaterialCapture=0` excludes inline work
+inside GameScene; it does not establish free materials.
+
+## Follow-up implementation and validation
+
+- A lookup-only metadata query and completed immutable skin envelopes provide
+  an optional broad phase. It uses the existing audited view-axis evaluator,
+  outward padding, current palette and exact source/program/layout ownership.
+  A separate 100 us / 4096-attempt frame cap cannot consume the original build,
+  operation, vertex or exact-evaluation allowances. Cold, unsupported, invalid
+  or exhausted proofs retain the original path.
+- Displacement tries this proof before saving capture state. Distant sources
+  can avoid both exact world-axis preparation and capture setup. Surviving
+  models retain the exact aligned envelope and displacement fade. A known-only
+  palette hint skips optional work for near draws; it never proves rejection.
+  NPatch retains the old path. Declining the optional proof preserves the late
+  exact proof used for batching.
+- Normal/Parallax range admission also hands the raw source and a current far
+  proof to the model-normal receiver. Exact constant epochs, shader,
+  declaration and source identity are required; changed poses cannot consume
+  an earlier result. Near draws avoid publishing unused projection bounds.
+- `MATERIAL_POSE_COARSE` reports attempts, successful bounds, range rejections
+  and time so that the next game log can verify use of the shortcut.
+
+`test_material_pose_coarse.py` checks coarse enclosure against exact aligned
+bounds and interpreted client vertices in four rounding modes, including
+invalid input, program/source replacement, palette definitions and independent
+budget exhaustion. Its equal-work timing disables clock deadlines in both
+policies and does not measure game FPS. `test_displacement_state_reuse.py`
+also exercises actual buffered prepare, early range publication, NPatch,
+constant-epoch invalidation and the original forced-budget fallback.
+
+`test_m2_material_preflight.py` runs 540 paired comparisons on the configured
+DXVK backend: all three modes, near/mixed/far poses, and normal/pressure/recovery.
+It includes material capture, model-normal receiver capture, native draws and
+flush. Normal/receiver, occlusion, scene and final-consumer pixels must match
+exactly, including cold and warm-up frames, with native target/constants restored.
+
+In the follow-up paired run, 128 far draws reduce CPU time for this chain by
+about 27-29% in Normal, 30-35% in Parallax and 17-18% in Displacement. Mixed
+workloads improve about 5-6%, 17-19% and 2-6%, respectively. Near-only timings
+remain close (roughly -3% to +5% depending on mode/pressure); this change targets
+rejected work rather than the shading of nearby models. GPU query results are
+recorded separately; these numbers must not be presented as game FPS or a
+whole-frame speedup. A new game run of the resulting DLL remains necessary.

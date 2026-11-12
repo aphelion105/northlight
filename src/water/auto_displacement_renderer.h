@@ -512,6 +512,7 @@ public:
         const auto& boundsWork=positionBounds.maintenance();
         logf("MATERIAL_POSITION_BOUNDS frame=%llu hits=%u scans=%u positionBytes=%zu entries=%zu unknown=%u coldScans=%u revisionScans=%u evictions=%u budgetRejected=%u capturedBoundsHits=%u",(unsigned long long)frame,positionBounds.cacheHits(),positionBounds.scans(),positionBounds.bytesRead(),positionBounds.count(),positionBounds.failures(),boundsWork.coldScans,boundsWork.revisionScans,boundsWork.evictions,boundsWork.budgetRejected,capturedBoundsHits);
         const auto& e=poseEnvelopes.stats();
+        logf("MATERIAL_POSE_COARSE frame=%llu attempts=%zu valid=%zu culled=%zu cpuMs=%.6f",(unsigned long long)frame,e.coarseAttempts,e.coarseValid,e.coarseCulled,double(e.coarseNanoseconds)/1000000.);
         const auto& p=poseMetadata.stats();
         logf("MATERIAL_POSE_METADATA frame=%llu hits=%zu misses=%zu prepared=%zu fallbacks=%zu evictions=%zu entries=%zu bytes=%zu",(unsigned long long)frame,p.hits,p.misses,p.prepared,p.fallbacks,p.evictions,poseMetadata.entries(),poseMetadata.bytes());
         logf("MATERIAL_REPLAY_CONTENT frame=%llu geometryTests=%u geometryHits=%u geometryComparedBytes=%zu",(unsigned long long)frame,snapshots.replayContentTests(),snapshots.replayContentHits(),snapshots.replayContentComparedBytes());
@@ -536,14 +537,23 @@ public:
     bool skinned(IDirect3DVertexShader9* original)const{auto it=shaders.find(original);return it!=shaders.end()&&it->second.skinned;}
     // Rigid affine bounds and cached skin envelopes. Unknown/budget-limited
     // draws retain per-pixel checks. UP skin draws have no reusable source owner.
-    bool nearestMaterialDepth(IDirect3DVertexShader9* original,const Args& args,float& nearest,bool geometrySource=false,const NorthlightCaptureMetadata::PositionBounds* captured=nullptr,float* farthest=nullptr,CaptureSource* captureSource=nullptr){
+    bool nearestMaterialDepth(IDirect3DVertexShader9* original,const Args& args,float& nearest,bool geometrySource=false,const NorthlightCaptureMetadata::PositionBounds* captured=nullptr,float* farthest=nullptr,CaptureSource* captureSource=nullptr,bool coarseOnly=false){
         using P=NorthlightMaterialProfile;P::Scope timing(profile,P::BoundsPose);
         auto shader=materials.find(original);if(shader==materials.end())return false;
         const auto& program=shader->second.view;
         const bool skin=shader->second.skinned;
         // calculate() must refuse an exhausted ready budget. Avoid fetching the
         // same constants/declaration/source again merely to reach that refusal.
-        if(skin&&(args.vertices||!program.skinned||!poseEnvelopes.canReady()))return false;
+        if(skin&&(args.vertices||!program.skinned||(!coarseOnly&&!poseEnvelopes.canReady())))return false;
+        if(coarseOnly){
+            if(d->GetNPatchMode()!=0)return false;
+            // A known palette hint avoids copying 4 KiB for a near draw that
+            // will need the original exact preparation anyway. Unknown stays open.
+            if(shader->second.envelopeSkin&&trustedConstants&&constantSpan){
+                float row[4];NorthlightConstantEpoch::Stamp stamp;
+                if(constantSpan(constantContext,33,1,row,stamp)&&std::fabs(row[3])<=2*modelRange)return false;
+            }
+        }
         const unsigned input=skin?16:shader->second.rangeRegister==17?rangeInput(program):shader->second.rangeRegister;if(!skin&&input==16)return false;
         {P::Scope read(profile,P::Constants);if(!readConstantBank(shader->second.first,shader->second.count,skin,rangeConstants,rangeConstantStamp,rangeConstantFirst,rangeConstantCount))return false;}
         NorthlightDrawSnapshot::Ref<IDirect3DVertexDeclaration9> decl;if(FAILED(d->GetVertexDeclaration(decl.out()))||!decl.p)return false;
@@ -571,17 +581,33 @@ public:
         if(skin&&captureSource){captureSource->clear();captureSource->mesh=source;captureSource->declaration=decl.p;decl->AddRef();}
         read.work(source->vertexCount,source->byteSize());read.next(P::BoundsPose);
         if(skin){
+            const auto publish=[&](const NorthlightReplayBounds::Bounds* bounds){
+                if(!captureSource||!trustedConstants)return;
+                if(bounds&&bounds->low[2]<=48.01f&&bounds->high[2]>=-48.01f)return;
+                NorthlightConstantEpoch::Stamp current;current.requestHeld=true;
+                if(!constantReader||!constantReader(constantContext,current)||!NorthlightConstantEpoch::exact(rangeConstantStamp,current))return;
+                if(!bounds)captureSource->pose.publishFar(current,source.get(),original,decl.p);
+                else if(shader->second.rangeKind==NorthlightModelNormalRange::Envelope&&rangeConstantFirst<=2&&rangeConstantFirst+rangeConstantCount>=6)
+                    captureSource->pose.publish(*bounds,rangeConstants,current,source.get(),original,decl.p);
+            };
             // The same audited stock-M2 proof already used by displacement
             // rejects distant uniform single-bone sources without evaluating
             // every skin-envelope group. This is only a lower bound; larger
             // configured ranges still keep the draw and its per-pixel checks.
             if(shader->second.rangeKind==NorthlightModelNormalRange::Single&&
                modelRangeProof.outside(source,elements,count,rangeConstants,shader->second.rangeKind)){
-                nearest=48.01f;if(farthest)*farthest=INFINITY;return true;}
+                nearest=48.01f;if(farthest)*farthest=INFINITY;publish(nullptr);return true;}
+            if(coarseOnly&&(!shader->second.envelopeSkin||std::fabs(rangeConstants[4*31+11])<=2*modelRange))return false;
             P::Scope envelope(profile,P::PoseEnvelope);
             NorthlightReplayBounds::Bounds result;
-            if(poseEnvelope(program,source,elements,count,rangeConstants,result,original,decl.p)!=NorthlightReplayBounds::Status::Valid)return false;
-            const float lo=result.low[2],hi=result.high[2];if(farthest)*farthest=std::nextafter(std::max(std::fabs(lo),std::fabs(hi)),INFINITY)+.001f;nearest=std::max(0.f,std::nextafter(lo>0?lo:hi<0?-hi:0,-INFINITY)-.001f);return true;
+            if(coarseOnly){
+                const auto prepared=poseMetadata.find(original,decl.p);
+                const float identity[16]={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};
+                if(!prepared||!poseEnvelopes.coarsePrepared(*prepared,source,rangeConstants,identity,modelRange,result))return false;
+            }else if(poseEnvelope(program,source,elements,count,rangeConstants,result,original,decl.p)!=NorthlightReplayBounds::Status::Valid)return false;
+            publish(&result);
+            const float lo=result.low[2],hi=result.high[2];if(farthest)*farthest=std::nextafter(std::max(std::fabs(lo),std::fabs(hi)),INFINITY)+.001f;nearest=std::max(0.f,std::nextafter(lo>0?lo:hi<0?-hi:0,-INFINITY)-.001f);
+            if(coarseOnly&&nearest>modelRange)poseEnvelopes.coarseCulled();return true;
         }
         auto found=cachedBounds(source);
         if(found==bounds.end()){
@@ -668,6 +694,16 @@ public:
         if(!source)source=snapshots.retain(std::move(local));
         if(captureSource){captureSource->mesh=source;captureSource->declaration=decl.p;decl->AddRef();}
         timing.work(source->vertexCount,source->byteSize());timing.next(P::BoundsPose);
+        const auto publishPose=[&](const NorthlightReplayBounds::Bounds& view){
+            if(captureSource&&source.get()==captureSource->mesh.get()&&view.valid&&trustedConstants&&constantFirst<=2&&constantFirst+constantCount>=6&&
+               shader->second.rangeKind==NorthlightModelNormalRange::Envelope){
+                NorthlightConstantEpoch::Stamp currentStamp;currentStamp.requestHeld=true;
+                if(constantReader&&constantReader(constantContext,currentStamp)&&NorthlightConstantEpoch::exact(constantStamp,currentStamp)){
+                    captureSource->pose.publish(view,constants,currentStamp,source.get(),original,decl.p);
+                }
+            }
+        };
+
         // The same audited clip.w proof as normal capture. Beyond every
         // consumer's range, no pose envelope or material preparation is needed.
         // Unknown/mixed programs and exhausted proof budgets keep the old path.
@@ -678,6 +714,18 @@ public:
                 if(constantReader&&constantReader(constantContext,current)&&NorthlightConstantEpoch::exact(constantStamp,current))
                     captureSource->pose.publishFar(current,source.get(),original,decl.p);}
             lastDepthLower=48.01f;++distanceRejected;return false;
+        }
+        // Palette translation is only a scheduling hint, never a range proof.
+        if(domain==4&&shader->second.envelopeSkin&&std::fabs(constants[4*31+11])>2*range&&d->GetNPatchMode()==0){
+            const auto prepared=poseMetadata.find(original,decl.p);
+            NorthlightReplayBounds::Bounds coarse;const float origin[3]={};
+            if(prepared&&poseEnvelopes.coarsePrepared(*prepared,source,constants,distanceInverseView,range,coarse)&&
+               NorthlightReplayBounds::outsideSphere(coarse,origin,range)){
+                const auto view=distanceBoundsInView(coarse);publishPose(view);
+                lastDepthUpper=std::nextafter(std::max(std::fabs(view.low[2]),std::fabs(view.high[2])),INFINITY)+.001f;
+                lastDepthLower=std::max(0.f,std::nextafter(view.low[2]>0?view.low[2]:view.high[2]<0?-view.high[2]:0,-INFINITY)-.001f);
+                poseEnvelopes.coarseCulled();++distanceRejected;return false;
+            }
         }
         // Cached geometry may retain an older, byte-identical buffer revision.
         // Overlays must match the source of this frame's successful base draw.
@@ -700,15 +748,6 @@ public:
         const bool distant=shader->second.skinned&&distantPoseBounds(shader->second.view,source,elements,count,low,high,original,decl.p,&poseBounds,true,&poseViewBounds);
         // Reuse only the already computed outward envelope and the original raw
         // source. No additional evaluation, scan, admission or cache entry.
-        const auto publishPose=[&](const NorthlightReplayBounds::Bounds& view){
-            if(captureSource&&source.get()==captureSource->mesh.get()&&view.valid&&trustedConstants&&constantFirst<=2&&constantFirst+constantCount>=6&&
-               shader->second.rangeKind==NorthlightModelNormalRange::Envelope){
-                NorthlightConstantEpoch::Stamp currentStamp;currentStamp.requestHeld=true;
-                if(constantReader&&constantReader(constantContext,currentStamp)&&NorthlightConstantEpoch::exact(constantStamp,currentStamp)){
-                    captureSource->pose.publish(view,constants,currentStamp,source.get(),original,decl.p);
-                }
-            }
-        };
         if(poseBounds.valid)publishPose(poseViewBounds);
         if(distant){++distanceRejected;return false;}
         // Skinning without an audited envelope uses posed vertices below, never object-space

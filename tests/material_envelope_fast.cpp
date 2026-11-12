@@ -106,4 +106,5 @@ int main(){
     }
     std::sort(times[0],times[0]+7);std::sort(times[1],times[1]+7);
     std::printf("MATERIAL_ENVELOPE_FAST_PASS exact_bounds=%u fast=%u referenceMs=%.6f currentMs=%.6f referenceValid=%u currentValid=%u sink=%g\n",checks,fast,times[0][3],times[1][3],accepted[0],accepted[1],float(sink));
+    return 0;
 }

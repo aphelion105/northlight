@@ -44,6 +44,8 @@ public:
         size_t effectiveCopiedBytes=0,fastValid=0;
         size_t sourceIdentityHits=0,sourceReconstructedHits=0,sharedKeyHits=0,keyComparedBytes=0;
         size_t rigidPeerHits=0;
+        size_t coarseAttempts=0,coarseValid=0,coarseCulled=0;
+        std::uint64_t coarseNanoseconds=0;
     };
     struct MemoTotals {
         std::uint64_t tests=0,hits=0,cold=0,replaced=0,camera=0,constants=0;
@@ -597,6 +599,30 @@ public:
         Budget& budget,Bounds& output,Stage stage=Stage::All,WorkInfo* info=nullptr){
         return calculateImpl(prepared.program_,mesh,owner,prepared.declaration_.data(),prepared.declaration_.size(),constants,inverse,budget,output,stage,info,&prepared);
     }
+    // Optional material broad phase. Only completed immutable sources and this
+    // draw's palette participate; survivors still need the exact aligned bounds.
+    bool coarsePrepared(const Prepared& prepared,const std::shared_ptr<const NorthlightDrawSnapshot::Mesh>& owner,
+        const float* constants,const float* inverse,float range,Bounds& output){
+        output={};
+        if(!owner||!constants||!inverse||!(range>0)||!std::isfinite(range)||
+           std::fabs(constants[4*31+11])<=2*range||stats_.coarseAttempts>=4096||stats_.coarseNanoseconds>=100000)return false;
+        const auto start=BoundsClock::now();
+        struct Charge {Stats& stats;BoundsClock::time_point start;~Charge(){stats.coarseNanoseconds+=elapsedNs(BoundsClock::now(),start);}} charge{stats_,start};
+        ++stats_.coarseAttempts;
+        const auto found=findSource(owner,*prepared.key_,prepared.key_.get());
+        if(found==entries_.end())return false;
+        auto& e=found->second;
+        if(!e.ready||e.unsupported||!e.skin||e.copyDefinitions||!e.skin->usedBones)return false;
+        e.touched=++clock_;
+        if(!e.skin->evaluate(constants,inverse,output))return false;
+        for(unsigned k=0;k<3;++k){
+            const float margin=.01f+64*std::numeric_limits<float>::epsilon()*std::max(std::fabs(output.low[k]),std::fabs(output.high[k]));
+            output.low[k]=std::nextafter(output.low[k]-margin,-INFINITY);
+            output.high[k]=std::nextafter(output.high[k]+margin,INFINITY);
+        }
+        ++stats_.coarseValid;return true;
+    }
+    void coarseCulled(){++stats_.coarseCulled;}
     Status calculate(const NorthlightActorDeformation::Program& p,const NorthlightDrawSnapshot::Mesh& mesh,
         const std::shared_ptr<const NorthlightDrawSnapshot::Mesh>& owner,const D3DVERTEXELEMENT9* elements,size_t count,
         const float* constants,const float* inverse,Budget& budget,Bounds& output,Stage stage=Stage::All,WorkInfo* info=nullptr){

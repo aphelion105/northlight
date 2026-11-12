@@ -33,6 +33,8 @@
       "test_draw_orchestration_gpu.py",
       "test_model_normal_native_gpu.py",
       "test_m2_material_admission.py",
+      "test_material_pose_coarse.py",
+      "test_m2_material_preflight.py",
       "test_world_screen_effects_gpu.py",
       "test_luxvelum_optimizations_gpu.py",
       "test_point_lamp_index.py",

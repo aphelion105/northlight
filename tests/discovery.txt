@@ -247,6 +247,7 @@ test_m2_lamp_self_shadow.py
 test_m2_lamp_self_shadow_gpu.py
 test_m2_light_geometry.py
 test_m2_material_admission.py
+test_m2_material_preflight.py
 test_m2_shader_families.py
 test_m2_shader_families_client.py
 test_m2_visibility.py
@@ -277,6 +278,7 @@ test_material_packet_auxiliary.py
 test_material_palette_override.py
 test_material_pending_frame_gpu.py
 test_material_pipeline_cpu_micro.py
+test_material_pose_coarse.py
 test_material_pose_handoff_gpu.py
 test_material_pose_metadata.py
 test_material_pose_reuse.py

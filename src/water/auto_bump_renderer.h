@@ -685,6 +685,9 @@ public:
         P::Scope timing(profile,P::Admission,profileTag);if(profile)profile->count(P::Candidates);
         float nearestDepth=0,farthestDepth=INFINITY;bool rangeAttempted=false;
         NorthlightAutoDisplacement::CaptureSource geometrySource;
+        const auto handoff=[&]{
+            if(source&&geometrySource.mesh&&geometrySource.declaration){source->clear();source->mesh=geometrySource.mesh;source->pose=geometrySource.pose;source->declaration=geometrySource.declaration;source->declaration->AddRef();}
+        };
         if((domain==1&&!terrain)||(domain==2&&!walls)||(domain==3&&!grass)||(domain==4&&!modes[3]))return;
         const D3DRENDERSTATETYPE visibilityKeys[]={D3DRS_COLORWRITEENABLE,D3DRS_ZWRITEENABLE};DWORD visibility[2];
         if(!readStates(visibilityKeys,visibility))return;
@@ -708,9 +711,13 @@ public:
             if((domain==1&&material>2)||(domain==2&&material!=3&&material!=5&&material!=6)||(domain==3&&material!=4)){rejected();return;}
         }
         if(!ensureVertex(original,v->second))return;
-        if(geometry&&(!geometryMode||!displacement.skinned(original))){float nearest=0;
+        if(geometry&&(!geometryMode||domain==4||!displacement.skinned(original))){float nearest=0;
+            const bool coarseOnly=domain==4&&geometryMode&&displacement.skinned(original);
             rangeAttempted=true;
-            if(displacement.nearestMaterialDepth(original,*geometry,nearest,geometryMode,positions,domain==4&&deferredAllowed?&farthestDepth:nullptr,domain==4&&deferredAllowed?&geometrySource:nullptr)){++rangeTests;
+            const bool rangeKnown=displacement.nearestMaterialDepth(original,*geometry,nearest,geometryMode,positions,domain==4&&deferredAllowed?&farthestDepth:nullptr,domain==4&&(deferredAllowed||source)?&geometrySource:nullptr,coarseOnly);
+            if(coarseOnly&&!rangeKnown)rangeAttempted=false; // No exact pose was attempted; preserve late batch admission.
+            handoff();
+            if(rangeKnown){++rangeTests;
                 nearestDepth=nearest;
                 if(nearest>=pomControl[1]){pomInRange=false;++pomRangeRejected;}
                 skipGeometry=geometryMode&&nearest>displacement.geometryRange(domain);
@@ -760,7 +767,7 @@ public:
         // Resolve the target size first: reset() would discard prepared geometry.
         const NorthlightAutoDisplacement::Admission geometryAdmission{z,depthWrite,s[5].value,s[1].value,s[7].value,s[8].value,alphaFunc};
         if(domain<=4&&geometryMode&&geometry&&!skipGeometry){displacement.prepare(original,domain,material,*geometry,&geometryAdmission,&geometrySource,std::max(captureRange(domain),displacement.geometryRange(domain)));
-            if(source&&geometrySource.mesh&&geometrySource.declaration){source->mesh=geometrySource.mesh;source->pose=geometrySource.pose;source->declaration=geometrySource.declaration;source->declaration->AddRef();}
+            handoff();
             nearestDepth=displacement.nearestPreparedDepth();farthestDepth=std::min(farthestDepth,displacement.farthestPreparedDepth());
             if(needsCapture&&displacement.nearestPreparedDepth()>captureRange(domain)){++rangeTests;++rangeRejected;if(profile)profile->count(P::RangeRejected);return;}}
         if(!needsCapture){++noCaptureRequired;if(profile)profile->count(P::NoContribution);return;}

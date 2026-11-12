@@ -57,12 +57,19 @@ public:
     const Stats& stats()const{return stats_;}
     size_t entries()const{return entries_.size();}
     size_t bytes()const{return bytes_;}
-    template<class Build> std::shared_ptr<const Prepared> get(Shader* shader,Declaration* declaration,Build build){
-        if(!shader||!declaration){++stats_.fallbacks;return {};}
+    // Optional preflight must neither build metadata nor spend a cold turn.
+    std::shared_ptr<const Prepared> find(Shader* shader,Declaration* declaration){
+        if(!shader||!declaration)return {};
         if(recent_&&recent_->shader==shader&&recent_->declaration==declaration){++stats_.hits;recent_->touched=++clock_;return recent_->prepared;}
         const Key key{shader,declaration};
         auto found=entries_.find(key);
         if(found!=entries_.end()){++stats_.hits;recent_=&found->second;recent_->touched=++clock_;return recent_->prepared;}
+        return {};
+    }
+    template<class Build> std::shared_ptr<const Prepared> get(Shader* shader,Declaration* declaration,Build build){
+        if(!shader||!declaration){++stats_.fallbacks;return {};}
+        if(auto prepared=find(shader,declaration))return prepared;
+        const Key key{shader,declaration};
         ++stats_.misses;
         if(attempts_>=PreparationsPerFrame){++stats_.fallbacks;return {};}
         ++attempts_;
