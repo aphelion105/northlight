@@ -14,9 +14,9 @@ assert 'lerp(sun,moon,SunDirection.w)' in shader
 assert 'if(shadows&&dot(DirectLight.rgb,1)>0){' in shader and 'else shadow=directionalShadow' in shader and 'shadow=min(shadow,SunDirection.w>.5?actor.g:actor.r);}' in shader # Soft and ordinary directional shadows both retain actor visibility.
 # 0.3.170: near cascade 5x5 tent (radius 2.5), far cascade unchanged 4x4 (radius 2).
 shadow_filter = shader[shader.index('float shadowMapFiltered('):shader.index('float shadowMap(')]
-assert '[loop]for(int y=0;y<5&&y<size;++y)' in shadow_filter and '[loop]for(int x=0;x<5&&x<size;++x)' in shadow_filter and 'break;' not in shadow_filter
-assert 'float size=useNear?5:4,reach=size*.5;' in shader and 'float start=useNear?-2:-1;' in shader
-assert 'float2 base=floor(pixel+(useNear?.5:0)),fraction=pixel-base;' in shader
+assert '[loop]for(int y=0;y<6&&y<size;++y)' in shadow_filter and '[loop]for(int x=0;x<6&&x<size;++x)' in shadow_filter and 'break;' not in shadow_filter
+assert 'float size=ceil(2*reach),start=0;' in shader and 'float reach=shadowParameters().z;' in shader
+assert 'float2 base=floor(pixel-reach)+1,fraction=pixel-base;' in shader
 assert 'float rowOffset=y+start,rowUV=(base.y+rowOffset+.5)*DepthParams.w;' in shader
 assert 'float rowWeight=max(reach-abs(rowOffset-fraction.y),0);' in shader
 assert 'float w=max(reach-abs(offset-fraction.x),0)*rowWeight;' in shader

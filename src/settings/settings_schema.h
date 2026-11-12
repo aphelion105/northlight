@@ -26,7 +26,7 @@ inline std::string migrateHdr(const std::filesystem::path& root){
     }catch(const std::exception& error){return std::string("HDR migration failed: ")+error.what();}
 }
 inline bool liveQuality(const std::string& key){
-    static const std::set<std::string> restart={"CommandStream","StreamFramesAhead","StreamFrameSkip","StreamOcclusionLocal","GIThreads","GIFastBVH","GIRays","GIDistance","NameMask","SpellLayer"};
+    static const std::set<std::string> restart={"CommandStream","StreamFramesAhead","StreamFrameSkip","StreamOcclusionLocal","GIThreads","GIFastBVH","GIRays","GIDistance","GIChunkRadius","NameMask","SpellLayer"};
     return restart.count(key)==0;
 }
 inline NorthlightQuality::Settings liveQualityUpdate(NorthlightQuality::Settings current,const NorthlightQuality::Settings& next){for(const auto& k:NorthlightQuality::Keys)if(liveQuality(k.name))k.set(current,k.get(next));current.preset=next.preset;return NorthlightQuality::effective(current);}

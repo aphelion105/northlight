@@ -29,7 +29,7 @@ texture_test = 'namespace NorthlightSpellLayer {\n' + spell[start:end] + '\n}\n'
 assert source.count('if(spellOn||nameMask.setting||(hdr.stream&&hdr.dxvk))shaderReads[static_cast<void*>(*out)]=') == 2
 assert 'NorthlightShaderReads::scan(' in source
 draw_hook = source[source.index('    template<class Capture,class Draw> HRESULT drawHook('):]
-assert draw_hook.index('const HRESULT resumed=hdrResumeWorld();if(FAILED(resumed))return resumed;') < draw_hook.index('prepareDraw(')
+assert draw_hook.index('const HRESULT resumed=hdrResumeWorld();if(FAILED(resumed))return resumed;') < draw_hook.index('prepareDrawImpl(')
 runs = []
 with tempfile.TemporaryDirectory(prefix='northlight-hdr-boundary-') as tmp:
     root = Path(tmp)

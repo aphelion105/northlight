@@ -131,8 +131,19 @@ ao_row = [1.] * 8 + [0.] * 8
 bleed = min(x for x in (5 + i / 100 for i in range(301)) if upsample(ao_row, flat, x, 10.) < 1 - 1e-12)
 checks[f'equal depth: the dark side reaches at most 1 half-res px across (from x={bleed:.2f}, edge at 8)'] = 8 - bleed <= 1.0 + 1e-9
 
+# Extract the function itself: an unrelated helper removed after it must not
+# invalidate the composition contract.
+def function_text(text, signature):
+    start = text.index(signature)
+    end = text.index('{', start) + 1
+    depth = 1
+    while depth:
+        depth += (text[end] == '{') - (text[end] == '}')
+        end += 1
+    return text[start:end]
+
 # 4. wiring
-effects_cpp = renderer[renderer.index('    void renderEffects() {'):renderer.index('template<class Capture> void prepareDraw(')]
+effects_cpp = function_text(renderer, '    void renderEffects() {')
 fold_line = 'const bool fold=world&&debugMode==0&&world->screenReady();'
 legacy_before = 'if(!fold&&!legacyComposite())return;'
 render_call = 'world->render(outputTarget,depthTex,width,height,sceneFormat,nearZ,farZ,worldMinDepth,worldMaxDepth,worldDebug,gpuProfile.get(),waterMask,fold?scene:nullptr,fold&&!neutralAOPending?ao:nullptr,frame,'
@@ -147,7 +158,7 @@ checks['proxy: FOLD condition, legacy composite before render only when not fold
 checks['proxy: one shared effect-state setup, used before the AO pass and before the late legacy composite'] = (
     renderer.count('    void effectState() {') == 1 and effects_cpp.count('effectState();') == 2
     and effects_cpp.index('effectState();') < effects_cpp.index('bindEffects(nullptr);')
-    and 'D3DRS_MULTISAMPLEANTIALIAS,TRUE' in renderer[renderer.index('    void effectState() {'):renderer.index('    void renderEffects() {')]
+    and 'D3DRS_MULTISAMPLEANTIALIAS,TRUE' in function_text(renderer, '    void effectState() {')
     and 'kAoContactBloomShader' in renderer and 'kAoContactShader' not in renderer)
 render_fn = wr[wr.index('    bool render(IDirect3DSurface9* targetSurface'):]
 temporal = render_fn[render_fn.index('{   // Temporal stabilization'):render_fn.index('temporalIndex=prev;temporalValid=true;')]

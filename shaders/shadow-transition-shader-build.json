@@ -1,7 +1,7 @@
 {
   "sources": {
-    "world_effects.hlsl": "8af448de038129705e39d70de2e209522814135a129337720bada39b1b0b38bd",
-    "shadow_transition.hlsl": "7b80f843d7f7b79cc40e05af5a236f0fee321da671cb8b98a354d4643dc55b1d"
+    "world_effects.hlsl": "4a9bfb055146ed18c8b98a66fd4586a54e8930290d870c1c8440ca9d4f0568be",
+    "shadow_transition.hlsl": "235fa6ac880d17ce660c582c63bae2fdcdcf8ec400b4179ca29a14b7a01c3291"
   },
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
   "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
@@ -9,9 +9,9 @@
   "shaders": {
     "ForeverFogNoNoiseTransition": {
       "target": "ps_3_0",
-      "bytes": 7064,
-      "sha256": "9f74cbd3e1b5551d721d7b2368f2a7659b1e35e632f3ee080b36d8511f4f857a",
-      "static_instruction_slots": 399,
+      "bytes": 7080,
+      "sha256": "8dcf404c132fa3b5e4b92bb7e51d190a3a6692faf9a624cbe4a9dcc7afef12c5",
+      "static_instruction_slots": 400,
       "temporary_registers": 19,
       "samplers": [
         1,
@@ -25,7 +25,7 @@
         "mov": 26,
         "if": 6,
         "else": 6,
-        "mul": 121,
+        "mul": 122,
         "frc": 4,
         "add": 104,
         "max": 5,
@@ -45,9 +45,9 @@
     },
     "ForeverFogActorNoNoiseTransition": {
       "target": "ps_3_0",
-      "bytes": 8996,
-      "sha256": "2872969d0b41fb52bebae1c369ec31bab66d9c41755233fcdf2dd7f0fd18c4dc",
-      "static_instruction_slots": 527,
+      "bytes": 9012,
+      "sha256": "3032146c03efaf935688d1f535f67cac97fb17815ab9d71eb2210803bd8c57d3",
+      "static_instruction_slots": 528,
       "temporary_registers": 21,
       "samplers": [
         1,
@@ -62,7 +62,7 @@
         "mov": 44,
         "if": 8,
         "else": 7,
-        "mul": 144,
+        "mul": 145,
         "frc": 5,
         "add": 134,
         "max": 13,
@@ -83,9 +83,9 @@
     },
     "ForeverFogTransition": {
       "target": "ps_3_0",
-      "bytes": 7952,
-      "sha256": "b2fe99fe3034048b3463ba2c208d352f8a36ee74ee84845cd755919802e633f9",
-      "static_instruction_slots": 460,
+      "bytes": 7980,
+      "sha256": "e02aa4a53e3195f4a8309db4dbdebaedd3604de35c2743dec7efbb4a58262e91",
+      "static_instruction_slots": 462,
       "temporary_registers": 30,
       "samplers": [
         1,
@@ -97,10 +97,10 @@
         14
       ],
       "instructions": {
-        "mov": 39,
+        "mov": 40,
         "if": 6,
         "else": 6,
-        "mul": 142,
+        "mul": 143,
         "frc": 4,
         "add": 119,
         "max": 5,
@@ -120,9 +120,9 @@
     },
     "ForeverFogActorTransition": {
       "target": "ps_3_0",
-      "bytes": 9896,
-      "sha256": "0c713145aa99480800f7d3689d64e3528f58d28acf3834567ea28ace2f0eb55b",
-      "static_instruction_slots": 589,
+      "bytes": 9912,
+      "sha256": "426ce374882fcea3796bc5021f2bf992f5ae18a13585e1d9ce73ba1eb53c5974",
+      "static_instruction_slots": 590,
       "temporary_registers": 32,
       "samplers": [
         1,
@@ -138,7 +138,7 @@
         "mov": 58,
         "if": 8,
         "else": 7,
-        "mul": 165,
+        "mul": 166,
         "frc": 5,
         "add": 149,
         "max": 13,
@@ -159,9 +159,9 @@
     },
     "DirectionalShadowTransitionCurrent": {
       "target": "ps_3_0",
-      "bytes": 8004,
-      "sha256": "69d2430b0d993504b3d0973a17a3fe8dc96504149ec6aaca285ddb76d304b947",
-      "static_instruction_slots": 545,
+      "bytes": 7836,
+      "sha256": "3d6ee1940ffb80f6e3af402e025786d78bedd9c7e4bff8e70def3b553a7aacfc",
+      "static_instruction_slots": 535,
       "temporary_registers": 21,
       "samplers": [
         1,
@@ -173,12 +173,12 @@
       "instructions": {
         "mul": 90,
         "frc": 7,
-        "add": 142,
-        "mov": 57,
-        "max": 12,
+        "add": 137,
+        "mov": 53,
+        "max": 13,
         "min": 3,
         "texldl": 15,
-        "cmp": 41,
+        "cmp": 39,
         "if": 18,
         "else": 15,
         "rcp": 10,
@@ -193,10 +193,10 @@
     },
     "DirectionalShadowTransitionPrevious": {
       "target": "ps_3_0",
-      "bytes": 10704,
-      "sha256": "a9854f23d5a58b2f403906167686264fcdb1be7d2305b103fbe74af57d870a0e",
-      "static_instruction_slots": 749,
-      "temporary_registers": 27,
+      "bytes": 10752,
+      "sha256": "701d2d2a40b8d0774eafa40ba117a1e3b4ea8ed00f1be04e7ee3a4f348b9d4dc",
+      "static_instruction_slots": 752,
+      "temporary_registers": 28,
       "samplers": [
         1,
         2,
@@ -209,14 +209,14 @@
         14
       ],
       "instructions": {
-        "mul": 125,
-        "frc": 5,
-        "add": 185,
-        "mov": 64,
-        "max": 11,
+        "mul": 130,
+        "frc": 6,
+        "add": 184,
+        "mov": 63,
+        "max": 12,
         "min": 15,
         "texldl": 21,
-        "cmp": 62,
+        "cmp": 60,
         "if": 33,
         "else": 30,
         "rcp": 10,

@@ -1,6 +1,6 @@
 #!/bin/bash
 # githooks/pre-commit: refuse staged files > 5 MB and game/binary payloads, and run the
-# layout lint (nothing at a pre-move path, unique basenames, no machine paths in code).
+# layout, complete test inventory and named-suite definitions (no compiler/device probes).
 # Enable once per clone: git config core.hooksPath githooks
 limit=5242880
 status=0
@@ -16,7 +16,14 @@ git diff --cached --name-only --diff-filter=AM -z | while IFS= read -r -d '' f; 
             exit 1;;
     esac
 done || status=1
-if ! out=$(python3 scripts/check_layout.py 2>&1); then
+if [ -n "${NORTHLIGHT_PYTHON:-}" ]; then
+    python="$NORTHLIGHT_PYTHON"
+elif python3 -c 'import sys; assert sys.version_info >= (3, 9)' >/dev/null 2>&1; then
+    python=python3
+else
+    python=python
+fi
+if ! out=$("$python" scripts/run_tests.py --suite source --list 2>&1); then
     echo "pre-commit: $out" >&2
     status=1
 fi

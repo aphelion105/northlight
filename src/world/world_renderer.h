@@ -293,6 +293,7 @@ public:
         const bool giRequest=NorthlightSettings::giRequestChanged(quality,effective,celestialProfiles,profiles);
         const bool actorResources=quality.actorShadows!=effective.actorShadows||quality.actorShadowDetail!=effective.actorShadowDetail;
         const bool softChanged=quality.softShadows!=effective.softShadows;
+        const bool shadowTuningChanged=quality.shadowStrength!=effective.shadowStrength||quality.shadowSoftness!=effective.shadowSoftness||quality.shadowContactRadius!=effective.shadowContactRadius;
         const bool nearIntervalChanged=quality.nearShadowInterval!=effective.nearShadowInterval;
         const bool celestialChanged=quality.celestialStyle!=effective.celestialStyle;
         if(celestialChanged){celestialLightMotion.reset();temporalValid=fogHistoryValid=false;}
@@ -311,6 +312,7 @@ public:
         NorthlightWorldContext::SelfReadStats::timed.store(NorthlightQuality::renderProfile(quality),std::memory_order_relaxed);
         if(actorResources)actorSettingsChanged();
         if(directions){invalidateShadowCache(true);temporalValid=fogHistoryValid=false;shadowsComposited=shadowFrameReady=false;}
+        if(shadowTuningChanged)temporalValid=false;
         if(softChanged){temporalValid=false;if(!quality.softShadows)releaseSoftShadows();}
         if(nearIntervalChanged){temporalValid=false;releaseNearEnvironment();}
         staticPrebuild.steps=float(quality.shadowDirectionSteps);
@@ -1040,7 +1042,7 @@ private:
     // Reuse the existing lossless 20-byte caster format in the same bounded arena.
     NorthlightLiveTerrainGPU::Cache<NorthlightTerrainCapture::MeshSnapshot,StaticShadow::Vertex>& liveTerrainGPU=gpuScene->terrain;
     size_t liveTerrainIndexCount=0,liveDirectionalIndexCount=0; /* 0.3.176 (U1a): the live IB holds the point lists, then the directional */
-    uint64_t liveTerrainGeneration=0;
+    uint64_t liveTerrainGeneration=0,liveTerrainRevision=0;
     // Ordered immutable captures preserve exact point-light batch offsets.
     // Vertex residency is per capture; the compact active index stream keeps
     // the directional pass at one draw even when residency is fragmented.
@@ -1768,8 +1770,10 @@ private:
                 const V center=r.geometryCenter;
                 int tx=int(std::floor((17066.6666667-center.y)/533.3333333));
                 int ty=int(std::floor((17066.6666667-center.x)/533.3333333));
+                const int giChunkRadius=int((NorthlightQuality::giChunkSide(quality)-1)/2);
+                const float giGeometryRadius=NorthlightQuality::giGeometryRadius(quality);
                 std::vector<std::string> tiles;
-                for(int y=ty-1;y<=ty+1;++y)for(int x=tx-1;x<=tx+1;++x){
+                for(int y=ty-giChunkRadius;y<=ty+giChunkRadius;++y)for(int x=tx-giChunkRadius;x<=tx+giChunkRadius;++x){
                     char name[MAX_PATH*3];std::snprintf(name,sizeof name,"%sworld-cache/%s/%d_%d.fg3",root.c_str(),r.map.c_str(),x,y);
                     FILE* f=NorthlightFiles::open(name,"rb");if(f){std::fclose(f);tiles.emplace_back(name);}
                 }
@@ -1784,7 +1788,7 @@ private:
                 auto replacement=std::make_shared<NorthlightGI::BVH>();
                 if(!generations.track(replacement))throw std::runtime_error("Geometry generation admission invariant");
                 const auto sourceBefore=sceneSources.stats();const auto preparationBefore=meshPreparation.stats();
-                auto buildLocal=[&]{return !tiles.empty()&&(coldRecovery?pressureGeometry:localGeometry).build(tiles,root+"world-cache/models",r.map,center-V(288,288,320),center+V(288,288,320),*replacement,error,localAdmission,quality.giFastBVH!=0,coldRecovery?NorthlightGI::SceneSourceProvider{}:sceneSource,coldRecovery?NorthlightGI::SceneSourceRevision{}:sceneRevision,chunkedLocal);};
+                auto buildLocal=[&]{return !tiles.empty()&&(coldRecovery?pressureGeometry:localGeometry).build(tiles,root+"world-cache/models",r.map,center-V(giGeometryRadius,giGeometryRadius,320),center+V(giGeometryRadius,giGeometryRadius,320),*replacement,error,localAdmission,quality.giFastBVH!=0,coldRecovery?NorthlightGI::SceneSourceProvider{}:sceneSource,coldRecovery?NorthlightGI::SceneSourceRevision{}:sceneRevision,chunkedLocal);};
                 bool localBuilt=buildLocal();
                 auto noteLocalAllocationFailure=[&]{if(!localBuilt&&!localDeferred&&(error.find("Geometry allocation deferred")!=std::string::npos||error.find("Cannot allocate")!=std::string::npos)){const auto budget=geometryBudget();localSample=workerMemory(budget);localRequired=budget.available;localLargest=budget.largest;localDeferred=true;}};
                 noteLocalAllocationFailure();
@@ -1872,7 +1876,7 @@ private:
                     logf("WORLD shadow terrain reach reduced from=%.0f to=%.0f reason=memory",reach,NorthlightTerrainReach::BaseReach);return true;
                 };
                 const bool extended=reach>NorthlightShadowTerrain::Radius;
-                const int tileReach=extended?int(std::ceil(reach/NorthlightRegionalFog::TileSize)):2;
+                const int tileReach=int(std::ceil(reach/NorthlightRegionalFog::TileSize));
                 std::function<bool(V,V)> terrainFilter,terrainChunkFilter;
                 if(extended)terrainFilter=[center](V lo,V hi){return NorthlightRegionalShadow::selected(center,lo,hi);};
                 if(extended)terrainChunkFilter=[center](V lo,V hi){return NorthlightRegionalShadow::selectedChunk(center,lo,hi);};
@@ -1913,12 +1917,12 @@ private:
                 // Point transmission retains the existing retryable path.
                 const bool consumeTerrain=chunkedLocal&&pointTransmission.triangles.empty();
                 bool shadowPlanBuilt=terrainLoaded&&(consumeTerrain
-                    ?NorthlightShadowTerrain::buildConsuming(replacement->scene(),shadowTerrain,center,*plan,error,terrainAdmission,reach,{},replacement.get(),coldRecovery)
-                    :NorthlightShadowTerrain::build(replacement->scene(),shadowTerrain,center,*plan,error,terrainAdmission,reach,{},true,replacement.get(),&meshPreparation,&pointTransmission,coldRecovery));
+                    ?NorthlightShadowTerrain::buildConsuming(replacement->scene(),shadowTerrain,center,*plan,error,terrainAdmission,reach,{},replacement.get(),coldRecovery,giGeometryRadius)
+                    :NorthlightShadowTerrain::build(replacement->scene(),shadowTerrain,center,*plan,error,terrainAdmission,reach,{},true,replacement.get(),&meshPreparation,&pointTransmission,coldRecovery,giGeometryRadius));
                 if(!shadowPlanBuilt&&!pointTransmission.triangles.empty()){
                     if(NorthlightDiagnostics::enabled())logf("POINT_TRANSMISSION assembly refused; retaining base geometry: %s",error.c_str());
                     pointTransmission=NorthlightGI::WorldScene{};terrainDeferred=false;error.clear();
-                    shadowPlanBuilt=NorthlightShadowTerrain::build(replacement->scene(),shadowTerrain,center,*plan,error,terrainAdmission,reach,{},true,replacement.get(),&meshPreparation,nullptr,coldRecovery);
+                    shadowPlanBuilt=NorthlightShadowTerrain::build(replacement->scene(),shadowTerrain,center,*plan,error,terrainAdmission,reach,{},true,replacement.get(),&meshPreparation,nullptr,coldRecovery,giGeometryRadius);
                 }
                 if(shadowPlanBuilt){terrainDeferred=false; // an oversized reservation may have been refused before a successful fallback
                     if(plan->pagingChunks&&NorthlightDiagnostics::enabled())logf("WORLD shadow geometry prepared in bounded chunks");
@@ -2812,6 +2816,9 @@ private:
         // fence so it stays pending (no NOOVERWRITE overwrite of a slice still drawn) until this frame's draws are submitted.
         // The newest span is the current lists (place() appends, the older spans are earlier lists); liveIndexBase is untouched.
         if(reuse){terrainUploadReused=true;if(liveTerrainIndexCount||liveDirectionalIndexCount)NorthlightDynamicRing::touch(liveIndexRing,fence());return true;}
+        // Point cubes may retain terrain-only faces across refreshes. Advance
+        // before any mutation, including a deferred/failed upload or empty set.
+        ++liveTerrainRevision;
         NorthlightGeometryMemory::Sample arenaMemory;bool arenaSampled=false;
         std::optional<NorthlightStreaming::PhaseProfile::Scope> arenaPhase;arenaPhase.emplace(streamingPhases.peaks[NorthlightStreaming::PhaseProfile::TerrainArena]);
         const HRESULT terrainResult=liveTerrainGPU.update(d,frameTerrain,
@@ -5176,7 +5183,7 @@ public:
         if(memoryPressure||geometryMemoryDemand.load(std::memory_order_relaxed))releaseShadowTransitions();
         for(int source=0;source<2;++source)for(int cascade=0;cascade<2;++cascade){
             const int slot=source*2+cascade;auto& f=shadowTransition[slot];const auto& key=shadowCacheKey[slot];
-            const float radius=cascade?192.f:48.f;long ox=0,oy=0;float dz=0;
+            const float radius=cascade?NorthlightShadowCascades::FarRadius:NorthlightShadowCascades::NearRadius;long ox=0,oy=0;float dz=0;
             const auto sameBasis=NorthlightWorldMath::shadowFrame(cascadePivot,key.direction,radius);
             const bool travel=key.valid&&(!NorthlightWorldMath::cacheOffset(sameBasis,key.frame,ox,oy,dz)||std::labs(ox)>long(ShadowCacheMargin)||std::labs(oy)>long(ShadowCacheMargin));
             const bool jump=key.valid&&different(key.direction,sourceDirections[source],.002f);
@@ -5186,7 +5193,7 @@ public:
         }
         NorthlightWorldMath::ShadowFrame cascadeFrames[2][2];
         for(int source=0;source<2;++source)for(int cascade=0;cascade<2;++cascade){
-            const float radius=cascade==0?48.f:192.f;
+            const float radius=cascade==0?NorthlightShadowCascades::NearRadius:NorthlightShadowCascades::FarRadius;
             cascadeFrames[source][cascade]=NorthlightWorldMath::shadowFrame(cascadePivot,slotDirections[source*2+cascade],radius);
             NorthlightWorldMath::shadowMatrixFrom(cascadeFrames[source][cascade],radius,sourceMatrices[source][cascade]);
         }
@@ -5196,7 +5203,7 @@ public:
         // cascade loop reuses both; a key changes only in its own slot's iteration).
         NorthlightWorldMath::ShadowCachePlacement slotPlacement[4];
         for(int source=0;source<2;++source)if(directionalShadows&&sourceActive[source])for(int cascade=0;cascade<2;++cascade){
-            const int slot=source*2+cascade;const float radius=cascade==0?48.f:192.f;const ShadowCacheKey& key=shadowCacheKey[slot];
+            const int slot=source*2+cascade;const float radius=cascade==0?NorthlightShadowCascades::NearRadius:NorthlightShadowCascades::FarRadius;const ShadowCacheKey& key=shadowCacheKey[slot];
             slotPlacement[slot]=NorthlightWorldMath::shadowCachePlacement(cascadeFrames[source][cascade],key.frame,key.valid,
                 !different(key.direction,slotDirections[slot],1e-6f),long(ShadowCacheMargin));
             NorthlightWorldMath::shadowMatrixFrom(slotPlacement[slot].frame,radius*float(ShadowCacheSize)/1024.f,staticSlotMatrix[slot]);
@@ -5356,7 +5363,7 @@ public:
                 if(directionStep&&transition.state.canPreserveHistory()&&transition.workingValid&&key.valid&&!wasSlicing&&!slices.active&&!shadowTransitionFailed){
                     // Direction has priority in the cache reason. Independently
                     // reject simultaneous content changes before retaining old texels.
-                    float oldMatrix[16];NorthlightWorldMath::shadowMatrixFrom(key.frame,(cascade?192.f:48.f)*float(ShadowCacheSize)/1024.f,oldMatrix);
+                    float oldMatrix[16];NorthlightWorldMath::shadowMatrixFrom(key.frame,(cascade?NorthlightShadowCascades::FarRadius:NorthlightShadowCascades::NearRadius)*float(ShadowCacheSize)/1024.f,oldMatrix);
                     const bool localSame=!NorthlightLocalShadowSignature::needsRefresh(key.localContentKnown,key.localContent,key.serial,
                         bool(uploadedLocalShadowRecords),localShadowSignature(key,oldMatrix),meshGeneration);
                     const bool staticSame=key.staticContent.valid&&key.staticContent.instancing==staticCasters.stats().instancing&&key.staticSignature==staticSignature(oldMatrix);
@@ -5597,7 +5604,7 @@ public:
         }
         transitionFrame.complete=true;
         if(NorthlightStaticPrebuild::Scheduler::Enabled&&directionalShadows)staticPrebuild.frame(cascadePivot,sourceDirections,sourceActive,!anyShadowCacheRender&&!continuousCelestialShadows&&staticScene&&staticCasters.stats().readyModels,GetTickCount(),
-            [&](int,int cascade,V direction,float* m){const float radius=cascade==0?48.f:192.f;NorthlightWorldMath::shadowMatrixFrom(NorthlightWorldMath::shadowFrame(cascadePivot,direction,radius),radius*float(ShadowCacheSize)/1024.f,m);},
+            [&](int,int cascade,V direction,float* m){const float radius=cascade==0?NorthlightShadowCascades::NearRadius:NorthlightShadowCascades::FarRadius;NorthlightWorldMath::shadowMatrixFrom(NorthlightWorldMath::shadowFrame(cascadePivot,direction,radius),radius*float(ShadowCacheSize)/1024.f,m);},
             [&](const float* m){return staticCasters.planReady(m);},
             [&](const float* m){try {staticCasters.signature(m);return true;}catch(...){return false;}}, /* a failed early build never resets the cache */
             [&](const float* m){staticCasters.discardPlan(m);});
@@ -5737,7 +5744,7 @@ public:
         skyTransmittanceFrame=cf.active?atmosphere.veil[1]:atmosphere.veil[0]; /* the clouds' term only when the pass is really active (1: no fog field or no fog) */
         c[33][0]=float(w);c[33][1]=float(h);c[33][2]=float(w/2);c[33][3]=float(h/2);
         c[1][0]=projection[0];c[1][1]=projection[1];c[1][2]=projection[2];c[1][3]=minZ;
-        c[2][0]=1.f/(maxZ-minZ);c[2][1]=48;c[2][2]=192;c[2][3]=1.f/1024;
+        c[2][0]=1.f/(maxZ-minZ);c[2][1]=NorthlightShadowCascades::NearRadius;c[2][2]=NorthlightShadowCascades::FarRadius;c[2][3]=1.f/1024;
         memcpy(c[3],context.inverseView,64);memcpy(c[7],sourceMatrices[firstSource][0],64);memcpy(c[11],sourceMatrices[firstSource][1],64);
         memcpy(c[15],context.camera,12);memcpy(c[16],context.lightDirection,12);memcpy(c[17],context.direct,12);memcpy(c[18],context.ambient,12);
         /* Ambient policies follow the selected solar/lunar schedule. */
@@ -5748,7 +5755,7 @@ public:
         NorthlightNightFloor::nightAmbient(quality.nightBrightness,NorthlightNightFloor::weight(naturalSky.valid,naturalSky.valid?naturalSky.sun.direction[2]:0.f),c[18],c[19]);
         c[66][1]=float(quality.giBrightness)*.01f; // GI only; volume passes later own c66 as FogActorBounds.
         c[19][3]=8; /* c19.rgb: NightBrightness light per unit of albedo, from c18's ambient (WorldComposite only; 0 = off); c19.w: probe spacing */
-        c[20][0]=float(NorthlightGI::probeLayout().atlas);c[20][1]=NorthlightQuality::giIntensity(quality);c[20][2]=.85f;c[20][3]=geometryReady&&giWorkEnabled()&&uploadedSerial&&uploadedSerial==active->serial?1.f:0.f;
+        c[20][0]=float(NorthlightGI::probeLayout().atlas);c[20][1]=NorthlightQuality::giIntensity(quality);c[20][2]=std::max(.01f,std::min(1.f,quality.shadowStrength*.0085f));c[20][3]=geometryReady&&giWorkEnabled()&&uploadedSerial&&uploadedSerial==active->serial?1.f:0.f;
         DWORD now=GetTickCount();
         c[21][0]=uploadedFogField&&(uploadedFogField->fogCells||uploadedFogField->airCells)?1.f:0.f;c[21][1]=1.2f*wx.shaftGain();c[21][2]=hdrMode?64.f:.38f;c[21][3]=128; /* HDR retains radiance above diffuse white until output mapping. */
         // 0.3.200 (gpu budget): fewer march intervals at reduced levels (c60.x clouds, c64.z WorldFog; both stay 0, the bank unchanged, at level 0).
@@ -5796,6 +5803,8 @@ public:
             c[15][3]=std::max(c[15][3],std::max({sourceColors[source].x,sourceColors[source].y,sourceColors[source].z})*drawnWeight/sourceWeights[source]);
         lightingMark(2);
         c[30][0]=waterMask?1.f:0.f;d->SetPixelShaderConstantF(0,&c[0][0],68);
+        const float shadowTuning[]={quality.shadowStrength*.01f,quality.shadowSoftness*.01f,quality.shadowContactRadius*.01f,1.f};
+        d->SetPixelShaderConstantF(115,shadowTuning,1);
         IDirect3DTexture9* textures[]={foldScene?foldScene:color,depth,shadow[0],shadow[1],probe[0],probe[1],probe[2],probe[3],nullptr,nullptr,probe[4],waterMask,nullptr,regionalFogTexture};
         for(int i=0;i<14;++i){d->SetTexture(i,textures[i]);d->SetSamplerState(i,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(i,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);d->SetSamplerState(i,D3DSAMP_MINFILTER,(i==0||i==9)?D3DTEXF_LINEAR:D3DTEXF_POINT);d->SetSamplerState(i,D3DSAMP_MAGFILTER,(i==0||i==9)?D3DTEXF_LINEAR:D3DTEXF_POINT);d->SetSamplerState(i,D3DSAMP_MIPFILTER,D3DTEXF_NONE);d->SetSamplerState(i,D3DSAMP_SRGBTEXTURE,FALSE);}
         if(lightingCapture)lightingCapture->inputs(0,1u<<1,1u<<1); // Actual full-resolution sampled depth, before any post-process reuses its slot.
@@ -5849,7 +5858,7 @@ public:
         const bool anyShadowTransition=geometryReady&&(shadowTransitionActive(0)||shadowTransitionActive(1));
         auto* const smoothSurface=fogBlurredSurface;
         bool first=true;
-        const float occlusionInfo[]={materialOcclusion?1.f:0.f,materialOcclusionDistance,hdrMode&&hdrSkyBase?1.f:0.f,0};d->SetPixelShaderConstantF(78,occlusionInfo,1);
+        const float occlusionInfo[]={materialOcclusion?1.f:0.f,materialOcclusionDistance,hdrMode&&hdrSkyBase?1.f:0.f,atmosphere.imported.valid?1.f:0.f};d->SetPixelShaderConstantF(78,occlusionInfo,1);
         if(lightingNeeded){
         d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE);d->SetRenderState(D3DRS_COLORWRITEENABLE,15);
         d->SetTexture(14,nullptr);d->SetTexture(15,nullptr);
@@ -6426,6 +6435,8 @@ public:
                 char suffix[80];std::snprintf(suffix,sizeof suffix,"/capture-%u-constants.f32",capture);
                 if(FILE* f=NorthlightFiles::open((directory+suffix).c_str(),"wb")){std::fwrite(actual,sizeof actual,1,f);std::fclose(f);}
             }
+            {char suffix[80];std::snprintf(suffix,sizeof suffix,"/capture-%u-shadow-tuning.f32",capture);
+             if(FILE* f=NorthlightFiles::open((directory+suffix).c_str(),"wb")){std::fwrite(shadowTuning,sizeof shadowTuning,1,f);std::fclose(f);}}
             logf("WORLD GPU diagnostic capture=%u map=\"%s\" eye=(%.3f %.3f %.3f) moon=(%.6f %.6f %.6f) constantsHRESULT=%08lx",capture,frameMap.c_str(),context.camera[0],context.camera[1],context.camera[2],sourceDirections[1].x,sourceDirections[1].y,sourceDirections[1].z,(unsigned long)read);
             using NorthlightWorldDiagnostics::dump;
             captureProducts(directory,capture,rendererFrame,w,h,true);

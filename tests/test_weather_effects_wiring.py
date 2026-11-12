@@ -8,9 +8,7 @@ import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).reso
 import northlight_paths as fp
 import re
 
-w=fp.src('world_renderer.h').read_text(encoding='utf-8')
-for resource in ('world_screen_resources.inl','world_geometry_resources.inl'):
-    w+='\n'+fp.src(resource).read_text(encoding='utf-8')
+w=fp.src('world_renderer.h').read_text()
 h=(fp.SHADERS/'world_effects.hlsl').read_text()
 hz=fp.src('horizon_haze.h').read_text()
 dr=fp.src('celestial_disc_renderer.h').read_text()
@@ -23,12 +21,12 @@ checks['hlsl: WeatherInfo at c59, documented (z shadows, w air extinction), Loca
     'float4 WeatherInfo : register(c59);' in h and 'z direct shadow softening (WorldLighting), w the shared air extinction' in h
     and 'free: only .x is read' in h and re.findall(r'LocalLightFog\[[^\]]*\]\.(\w+)',re.sub(r'//[^\n]*','',h))==['x'] and 'LocalLightFog[i].x' in h)
 checks['hlsl: exact shared register layout, including fog height and actor coverage']=(
-    re.findall(r'register\(c6[0-6]\)',h)==['register(c66)','register(c60)','register(c64)','register(c64)','register(c66)','register(c65)','register(c64)']
+    re.findall(r'register\(c6[0-6]\)',h)==['register(c60)','register(c64)','register(c64)','register(c66)','register(c65)','register(c64)']
     and h.count('register(c59)')==2
     and 'float4 FogActorBounds : register(c66);' in h and 'float4 FogHeightControl : register(c65);' in h)
 checks['hlsl: WorldLighting and WorldFog read WeatherInfo (z, w)']=all(
     ('WeatherInfo.'+c) in h for c in 'zw') and len(re.findall(r'WeatherInfo\.x',h))==0
-checks['cpp: c59.zw weather writes and exact existing fog-bank access']=('c[59][2]=std::max(wx.shadowSoften(),1.f-underwaterFade.scale());' in w and 'c[59][3]=airFloor;' in w and 'c[59][0]' not in w and 'c[59][1]' not in w and set(re.findall(r'c\[(6[0-6])\]',w))=={'60','62','64','65','66'})
+checks['cpp: c59.zw weather writes and exact existing fog-bank access']=('c[59][2]=std::max(wx.shadowSoften(),1.f-underwaterFade.scale());' in w and 'c[59][3]=airFloor;' in w and 'c[59][0]' not in w and 'c[59][1]' not in w and set(re.findall(r'c\[(6[0-6])\]',w))=={'60','62','64','65'})
 checks['cpp: c23 untouched']=w.count('memcpy(c[23],context.camera,12);')==1 and 'c[23][' not in w
 checks['cpp: GridInfo.z (c20.z) unchanged']='c[20][2]=.85f;' in w and re.findall(r'c\[20\]\[2\]=[^;]*;',w)==['c[20][2]=.85f;']
 # identity at zero weather
@@ -56,7 +54,7 @@ checks['hlsl: no WorldWet shader; WeatherInfo.y only the fog clouds\' folded ban
 # Exact integrated baseline: combined light passes removed a quad site; the
 # actor-aware fog and cached caster variants added shader creation sites.
 # Static-shadow transitions add the independently gated soft-resolve pass and shader.
-checks['render: exact integrated draw inventory (25 quad sites, 33 pixel shader factories)']=(w.count('quad(')==25 and w.count('CreatePixelShader')==33 and 'if(compositeOk&&unlitMask)' in w) and 'wetPS' not in w
+checks['render: exact integrated draw inventory (25 quad sites, 46 pixel shader factories)']=(w.count('quad(')==25 and w.count('CreatePixelShader')==46 and 'if(compositeOk&&unlitMask)' in w) and 'wetPS' not in w
 # disc and veil
 checks['discs: gain atomic, default 1, opacity and glare weights only, veil inherits']=(
     'std::atomic<float> weatherGain{1.f};' in dr and 'c[9][3]=glare?disc.opacity:disc.opacity*weatherGain.load(std::memory_order_relaxed);' in dr

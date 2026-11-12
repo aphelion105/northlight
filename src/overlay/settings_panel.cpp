@@ -48,6 +48,7 @@ const std::map<std::string,const char*> Labels={
     {"AutoCavity","Cavity shading"},{"AutoCavityStrength","Cavity strength (%)"},
     {"AutoHeightPolarity","Height interpretation"},{"AutoHeightDetails","Colored height detail (%)"},
     {"Preset","Quality preset"},{"Effects","All Northlight effects"},{"WorldShadows","World shadows"},{"WorldFog","Atmospheric fog"},{"LocalLights","Local light illumination"},{"GI","Global illumination"},{"GIStrength","GI influence (120 = full)"},{"GIBrightness","GI brightness adjustment (%)"},{"AuroraStrength","Northrend aurora (%)"},
+    {"ShadowStrength","Shadow strength (%)"},{"ShadowSoftness","Penumbra size (%)"},{"ShadowContactRadius","Contact filter radius (0.01 texel)"},
     {"SoftShadows","Contact-hardening shadows"},{"ActorShadows","Character shadows"},{"ActorShadowDetail","Detailed character shadows"},{"GrassShadows","Grass shadows"},{"ActorShadowRadius","Character shadow distance"},
     {"ContactAO","Ambient occlusion"},{"AOMethod","AO method"},{"AOQuality","AO quality"},{"AutoBumpModels","M2 models (all types)"},{"AutoMaterialOcclusionDistance","Cavity and self-shadow distance (yards)"},{"AutoModelDisplacementDistance","Model geometry distance (yards)"},{"AutoModelDisplacementDetail","Model subdivision"},{"AutoModelDisplacementStrength","Model height (%)"},{"AutoDisplacementDistance","Terrain and object geometry distance (yards)"},{"AutoDisplacementStrength","Terrain and object height (%)"},{"AutoDisplacementDetail","Terrain and object subdivision"},{"AutoHeightBalance","Height balance (%)"},{"AOStrength","AO strength (%)"},{"AORadius","AO radius (0.01 yd)"},
     {"Weather","Enhanced weather"},{"WeatherMemory","Read native weather state"},{"RainFog","Weather fog strength"},{"RainLens","Rain on camera"},{"RainLensStrength","Rain on camera strength (%)"},{"SnowLens","Snow on camera"},{"SnowLensStrength","Snow on camera strength (%)"},{"FogClouds","Drifting fog banks"},{"FogCloudDensity","Fog density (%)"},
@@ -60,7 +61,7 @@ const std::map<std::string,const char*> Labels={
     {"CommandStream","Separate render thread"},{"StreamFramesAhead","Buffered frames"},{"StreamFrameSkip","Skip delayed frames"},{"StreamOcclusionLocal","Local occlusion results"},{"ReplayJobs","Parallel effect preparation"},{"FrameDrawGates","Skip inactive draw work"},
     {"PointShadowLimit","Of these, shadowed lights"},{"PointShadowDistance","Shadow distance (yd)"},{"PointShadows","Local light shadows"},{"PointShadowRefreshMs","Shadow update interval (ms)"},{"PointShadowFacesPerFrame","Faces updated per light"},{"BlobShadows","Round ground shadows"},{"ShadowProvider","Directional shadow renderer"},{"DisableOriginalTerrainShadows","Disable original terrain shadows"},{"BlobShadowStrength","Ground shadow strength (%)"},
     {"FarShadowInterval","Distant shadow interval (frames)"},{"NearShadowInterval","Near environment shadow interval (frames)"},{"StaticCacheSlices","Static cache update slices"},{"ShadowDirectionSteps","Shadow direction precision"},{"ShadowPivotCorrection","Correct shadow pivot"},
-    {"GIDistance","GI distance (yards)"},{"GIProbeAhead","GI look-ahead (yards)"},{"GIRays","GI rays per probe"},{"GIBounces","GI light bounces"},{"GIThreads","GI solver threads"},{"GIFastBVH","Fast geometry tracing"},{"GIProbeMoveStep","GI update movement step"},{"GIDynamicProbes","Dynamic GI probes"},
+    {"GIDistance","GI distance (yards)"},{"GIChunkRadius","GI geometry chunk radius"},{"GIProbeAhead","GI look-ahead (yards)"},{"GIRays","GI rays per probe"},{"GIBounces","GI light bounces"},{"GIThreads","GI solver threads"},{"GIFastBVH","Fast geometry tracing"},{"GIProbeMoveStep","GI update movement step"},{"GIDynamicProbes","Dynamic GI probes"},
     {"SpellLayer","Separate spell effects"},{"SpellLayerClasses","Spell blend types (mask)"},{"SpellFog","Fog on spell effects"},{"NameMask","Protect unit names"},{"DepthFuncAware","Respect draw depth tests"},{"terrain_radius","Terrain shadow reach (yards)"},
     {"Diagnostics","Diagnostic logging"},{"RenderProfile","Render profiling"},{"DiagReplayProbe","Shadow replay probe"},{"ShadowFateDiagnostics","Shadow lifetime diagnostics"},{"SpellTrace","Spell trace frames"},{"NameMaskDebug","Show name protection mask"},{"MemMap","Address space diagnostics"},
 };
@@ -96,6 +97,9 @@ const std::map<std::string,std::vector<const char*>> Help={
     {"AutoParallaxShadows",{"Relief blocks the dominant sunlight or moonlight. Requires Normal maps + POM for the material. Cavity and self-shadowing share the near material shading distance. More shadow steps cost more GPU time. Local lights retain their existing shadows."}},
     {"AutoCavity",{"Reduces ambient light inside small cracks inferred from the texture. Works with normal maps and POM; fog and direct light are preserved. Painted shadows can become too dark at high strength."}},
     {"PointShadows",{"Torches, candles, lamps and compact fires cast shadows. Diffuse glows and short-lived effects do not.","Only nearby eligible sources allocate maps (about 3.5 MiB each). More sources increase rendering cost."}},
+    {"ShadowStrength",{"Controls sun and moon shadow contrast. 100% keeps physical visibility; higher values darken partial coverage and allow deeper shadow removal. GI and local lights retain their illumination."}},
+    {"ShadowSoftness",{"Scales contact-hardening penumbrae for directional and character shadows. Zero keeps the contact filter. Distant cascades use a compact fixed filter."}},
+    {"ShadowContactRadius",{"Minimum directional filter radius in hundredths of a shadow texel. Lower values preserve leaves and thin branches; higher values reduce shimmer."}},
     {"SoftShadows",{"Softens sun, moon and local-light shadow edges with distance from the caster. Covers captured characters, grass and world geometry. Off keeps ordinary filtered shadows and their existing range."}},
     {"BlobShadows",{"Shows the game's round shadow directly below characters, creatures and mounts. Off removes only this decal; detailed sun, moon and local light shadows remain enabled. Takes effect immediately while Northlight effects are on."}},
     {"BlobShadowStrength",{"Adjusts the native round shadow when detailed character shadows are composited. Turning Round ground shadows off hides it independently and preserves this strength for later."}},
@@ -126,6 +130,7 @@ const std::map<std::string,std::vector<const char*>> Help={
     {"GIDynamicProbes",{"Lets captured characters and other animated geometry affect indirect lighting. Turning it off reduces capture and lighting work; direct character shadows have a separate switch."}},
     {"GIThreads",{"CPU threads available to the background lighting solver. More threads can update lighting sooner, but compete with the game for CPU time. The solver also limits itself to available cores."}},
     {"GIFastBVH",{"Uses the faster geometry traversal path for indirect lighting rays. Leave enabled for normal play; disable to compare against the older tracing path when troubleshooting."}},
+    {"GIChunkRadius",{"Geometry tile rings loaded for GI: 1 = 3 x 3 tiles (9), 2 = 5 x 5 (25), 3 = 7 x 7 (49). More tiles let distant probes trace real walls and blockers, at a higher background CPU and memory cost. Save and restart to apply."}},
     {"GIDistance",{"Size of the area covered by indirect lighting around the camera. A larger distance covers more scenery, but needs more memory and background CPU work and takes longer to populate."}},
     {"GIProbeAhead",{"Shifts the indirect lighting grid toward the camera's horizontal viewing direction. Helps prepare lighting ahead of you without enlarging the grid. 0 keeps it centered on the camera."}},
     {"NightBrightness",{"Restores some of the game's ambient light during outdoor nights. 0 keeps Northlight's darker night; 100 restores the native ambient level. Does not brighten daytime, interiors, the sky or water."}},
@@ -229,8 +234,8 @@ const std::map<std::string,std::vector<const char*>> Help={
 struct Group { const char* id; const char* title; const char* master; const char* fields; const char* advanced; };
 struct Section { const char* id; const char* title; const char* keys; std::vector<Group> groups; bool open; };
 const std::vector<Section> QualitySections={
-    {"lighting","Lighting & AO","GI GIStrength GIBrightness GIRays GIBounces GIProbeMoveStep GIDynamicProbes GIThreads GIFastBVH GIDistance GIProbeAhead NightBrightness ContactAO AOMethod AOQuality AOStrength AORadius LocalLights LocalLightLimit EquipmentLights PointShadows PointShadowLimit PointShadowDistance PointShadowRefreshMs PointShadowFacesPerFrame",{
-        {"gi","Global illumination","GI","GIStrength GIBrightness GIDistance GIBounces","GIRays GIProbeMoveStep GIDynamicProbes GIThreads GIFastBVH GIProbeAhead"},
+    {"lighting","Lighting & AO","GI GIStrength GIBrightness GIRays GIBounces GIProbeMoveStep GIDynamicProbes GIThreads GIFastBVH GIDistance GIChunkRadius GIProbeAhead NightBrightness ContactAO AOMethod AOQuality AOStrength AORadius LocalLights LocalLightLimit EquipmentLights PointShadows PointShadowLimit PointShadowDistance PointShadowRefreshMs PointShadowFacesPerFrame",{
+        {"gi","Global illumination","GI","GIStrength GIBrightness GIDistance GIChunkRadius GIBounces","GIRays GIProbeMoveStep GIDynamicProbes GIThreads GIFastBVH GIProbeAhead"},
         {"ao","Ambient occlusion","ContactAO","AOMethod AOQuality AOStrength AORadius",""},
         {"ambient","Environment",nullptr,"NightBrightness",""},
         {"local","Local illumination","LocalLights","LocalLightLimit PointShadows PointShadowLimit EquipmentLights","PointShadowDistance PointShadowRefreshMs PointShadowFacesPerFrame"}},true},
@@ -242,8 +247,8 @@ const std::vector<Section> QualitySections={
         {"parallax","POM",nullptr,"AutoParallaxDepth AutoParallaxDistance AutoParallaxSteps",""},
         {"pomshadow","POM self-shadowing","AutoParallaxShadows","AutoParallaxShadowStrength AutoParallaxShadowSteps",""},
         {"cavity","Cavity shading","AutoCavity","AutoCavityStrength",""}},false},
-    {"shadows","Shadows","WorldShadows ShadowProvider SoftShadows ActorShadows ActorShadowDetail GrassShadows ActorShadowRadius BlobShadows BlobShadowStrength DisableOriginalTerrainShadows FarShadowInterval NearShadowInterval ShadowDirectionSteps StaticCacheSlices ShadowPivotCorrection",{
-        {"filter","World shadows","WorldShadows","SoftShadows",""},
+    {"shadows","Shadows","WorldShadows ShadowProvider SoftShadows ShadowStrength ShadowSoftness ShadowContactRadius ActorShadows ActorShadowDetail GrassShadows ActorShadowRadius BlobShadows BlobShadowStrength DisableOriginalTerrainShadows FarShadowInterval NearShadowInterval ShadowDirectionSteps StaticCacheSlices ShadowPivotCorrection",{
+        {"filter","World shadows","WorldShadows","SoftShadows ShadowStrength ShadowSoftness ShadowContactRadius",""},
         {"provider","Directional shadows",nullptr,"ShadowProvider",""},
         {"actors","Character shadows","ActorShadows","ActorShadowRadius ActorShadowDetail GrassShadows","ActorShadowBudgetMiB ActorShadowCpuMs MinSkinnedTriangles CaptureBudgetMiB"},
         {"blobs","Round ground shadows","BlobShadows","BlobShadowStrength",""},

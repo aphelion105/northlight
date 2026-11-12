@@ -152,14 +152,24 @@ struct WorldScreenEffectsTest {
         unsigned cases=0;for(bool useNear:{false,true})for(float slope:{0.f,.015f})for(float gap:{.2f,20.f,40.f}){
             std::vector<float> map(1024*1024);for(unsigned y=0;y<1024;++y)for(unsigned x=0;x<1024;++x)map[y*1024+x]=x<512?.6f-gap/200+slope*((x+.5f)/1024-.5f):1.f;
             auto* texture=pcTexture(d,1024,1024,1,map);pcOk(d->SetTexture(2,texture));pcOk(d->SetTexture(3,texture));
-            float c[81][4]{};c[2][3]=1.f/1024;c[35][0]=1.f/200;c[80][0]=slope;c[80][2]=useNear?1.f:0.f;
+            float c[81][4]{};c[2][1]=48;c[2][2]=288;c[2][3]=1.f/1024;c[35][0]=1.f/200;c[80][0]=slope;c[80][2]=useNear?1.f:0.f;
             std::vector<float> images[2];unsigned widths[2]{};
             for(unsigned soft=0;soft<2;++soft){c[80][3]=float(soft);pcOk(d->SetPixelShaderConstantF(0,c[0],81));pcOk(d->SetPixelShader(probe));pcOk(d->BeginScene());pcOk(w.quad(256,32));pcOk(d->EndScene());images[soft]=pcRead(d,target);
                 for(unsigned x=0;x<256;++x){float v=images[soft][16*256+x];assert(std::isfinite(v)&&v>=0&&v<=1);widths[soft]+=v>.01f&&v<.99f;}
                 assert(images[soft][16*256+15]<.001f&&images[soft][16*256+240]>.999f);
             }
+            if(useNear&&gap==20.f&&slope==0){
+                const float noSoft[4]={1,0,1,1};pcOk(d->SetPixelShaderConstantF(115,noSoft,1));
+                pcOk(d->BeginScene());pcOk(w.quad(256,32));pcOk(d->EndScene());assert(pcRead(d,target)==images[0]);
+                const float wideContact[4]={1,0,2.5f,1};pcOk(d->SetPixelShaderConstantF(115,wideContact,1));
+                pcOk(d->BeginScene());pcOk(w.quad(256,32));pcOk(d->EndScene());const auto wide=pcRead(d,target);
+                unsigned widePixels=0;for(unsigned x=0;x<256;++x)widePixels+=wide[16*256+x]>.01f&&wide[16*256+x]<.99f;
+                assert(widePixels>widths[0]);const float reset[4]={};pcOk(d->SetPixelShaderConstantF(115,reset,1));
+                std::printf("PCSS_CONTROLS_PASS softnessZero=ordinary contactWidth=%u->%u\n",widths[0],widePixels);
+            }
             if(gap==.2f)assert(images[0]==images[1]);else assert(widths[1]>=widths[0]);
-            if(gap==40)assert(widths[1]>widths[0]);
+            if(gap==40&&useNear)assert(widths[1]>widths[0]);
+            if(!useNear)assert(images[0]==images[1]);
             std::printf("PCSS_EDGE near=%u slope=%.3f gap=%.1f pcf=%u pcss=%u\n",unsigned(useNear),slope,gap,widths[0],widths[1]);++cases;
             pcOk(d->SetTexture(2,nullptr));pcOk(d->SetTexture(3,nullptr));texture->Release();
         }

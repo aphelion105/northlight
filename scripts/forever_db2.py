@@ -90,3 +90,4 @@ def decode(name, root):
     # Keep partial/encrypted section counts visible to the importer.
     print(name,len(out),'skipped',skipped)
     return out
+

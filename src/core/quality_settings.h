@@ -3,6 +3,7 @@
 // no device or Win32 calls. Quality (and a missing/empty file) is exactly the
 // 0.3.136 behaviour; every other value only removes optional CPU/GPU work,
 // except the picture-only keys (GIStrength, HorizonHaze*).
+#include <algorithm>
 #include <cctype>
 #include <array>
 #include <cstdlib>
@@ -45,8 +46,8 @@ struct Settings {
     // redraw is spread over this many frames (1 = one frame, 0.3.150).
     unsigned pointShadowFacesPerFrame=6,staticCacheSlices=1;
     // 0.3.153 GIDistance: yards of solved GI around the probe window centre; snaps down
-    // to 36,44,..,84 (giProbeGrid). 52 = the 0.3.151 14-cell window and 16^3 atlas.
-    unsigned giDistance=76;
+    // to 36,44,..,156 (giProbeGrid). 52 = the 0.3.151 14-cell window and 16^3 atlas.
+    unsigned giDistance=76,giChunkRadius=1;
     // 0.3.153 GIProbeAhead: yards the probe window centre moves ahead of the eye along the
     // horizontal view direction; geometry, fog and everything else stay on the eye. 0 = eye.
     unsigned giProbeAhead=0;
@@ -123,6 +124,7 @@ struct Settings {
     // 0.3.209 (task 29) ActorShadowDetail: 1 = a dedicated 4x finer shadow map around the player holds the moving casters (characters, mounts) and a
     // contact-hardening soft filter pass reads it (sharp at the feet, softer further from the caster); 0 = the 0.3.207 shadows (near cascade, 5x5 tent). ActorShadows=0 disables it too.
     unsigned actorShadowDetail=1;
+    unsigned shadowStrength=125,shadowSoftness=50,shadowContactRadius=100;
     unsigned softShadows=1; // PCSS filtering only; does not change caster capture or shadow-map updates.
     // task 34 SpellLayer: 1 = translucent M2 draws without a depth write (particles, ribbons, spell batches, projected ground effects) are deferred and
     // drawn right after the world effects, so fog, haze, shadow and AO act on the world behind them and not on them; 0 = the old path (no classification).
@@ -152,7 +154,7 @@ struct Settings {
     unsigned autoDisplacementStrength=100,autoDisplacementDistance=12,autoDisplacementDetail=4;
     unsigned autoBumpModels=3,autoModelDisplacementStrength=25,autoModelDisplacementDistance=8,autoModelDisplacementDetail=2;
     unsigned autoHeightPolarity=0,autoHeightDetails=75,autoHeightBalance=50;
-    char origin[118]={'d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d'};
+    char origin[122]={'d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d'};
 };
 struct Key {
     const char* name;unsigned Settings::*field=nullptr;int Settings::*signedField=nullptr;
@@ -188,7 +190,7 @@ inline const Key Keys[]={
     {"ActorShadowRadius",&Settings::actorShadowRadius,0,200,{40,35,20}},
     {"PointShadowFacesPerFrame",&Settings::pointShadowFacesPerFrame,1,6,{6,6,6}},
     {"StaticCacheSlices",&Settings::staticCacheSlices,1,4,{1,1,1}},
-    {"GIDistance",&Settings::giDistance,36,84,{76,52,52}},
+    {"GIDistance",&Settings::giDistance,36,156,{76,52,52}},
     {"GIProbeAhead",&Settings::giProbeAhead,0,48,{0,0,0}},
     {"HorizonHaze",&Settings::horizonHaze,0,100,{50,50,50}},
     {"HorizonHazeStart",&Settings::horizonHazeStart,50,95,{75,75,75}},
@@ -274,6 +276,9 @@ inline const Key Keys[]={
     {"WeatherCameraMotion",&Settings::weatherCameraMotion,0,1,{1,1,1}},
     {"PointShadowDistance",&Settings::pointShadowDistance,8,192,{48,48,48}},
     {"SoftShadows",&Settings::softShadows,0,1,{1,1,0}},
+    {"ShadowStrength",&Settings::shadowStrength,0,200,{125,125,125}},
+    {"ShadowSoftness",&Settings::shadowSoftness,0,200,{50,50,50}},
+    {"ShadowContactRadius",&Settings::shadowContactRadius,50,250,{100,100,100}},
     {"Effects",&Settings::effects,0,1,{1,1,1}},
     {"WorldShadows",&Settings::worldShadows,0,1,{1,1,1}},
     {"WorldFog",&Settings::worldFog,0,1,{1,1,1}},
@@ -282,6 +287,7 @@ inline const Key Keys[]={
     {"ShadowProvider",&Settings::shadowProvider,0,1,{1,1,1}},
     {"GIBrightness",&Settings::giBrightness,-100,200,{0,0,0}},
     {"AuroraStrength",&Settings::auroraStrength,0,200,{100,100,100}},
+    {"GIChunkRadius",&Settings::giChunkRadius,1,3,{1,1,1}},
 };
 // The seven scene groups own their child controls, including sky/ambient work.
 // Presentation/HDR and the settings overlay remain available like F10.
@@ -305,9 +311,12 @@ inline bool shadowFate(const Settings& s){return s.diagnostics&&s.shadowFateDiag
 inline bool renderProfile(const Settings& s){return s.diagnostics&&s.renderProfile;}
 inline bool replayProbe(const Settings& s){return renderProfile(s)&&s.diagReplayProbe;}
 // Horizontal probe window cells for GIDistance: d = 4N-4 with N even, snapped down
-// (36..84 -> 10..22; 52 -> 14). The vertical extent stays 14 cells.
+// (36..156 -> 10..40; 52 -> 14). The vertical extent stays 14 cells.
 inline unsigned giProbeGrid(const Settings& s){
-    const unsigned d=s.giDistance<36?36:s.giDistance>84?84:s.giDistance;return 2*((d+4)/8);}
+    const unsigned d=s.giDistance<36?36:s.giDistance>156?156:s.giDistance;return 2*((d+4)/8);}
+// GI geometry coverage grows only when requested, under the existing build guards.
+inline unsigned giChunkSide(const Settings& s){return 2*std::clamp(s.giChunkRadius,1u,3u)+1;}
+inline float giGeometryRadius(const Settings& s){return 288.f*std::clamp(s.giChunkRadius,1u,3u);}
 // Shader GI intensity (GridInfo.y): GIStrength=60 gives exactly the 0.3.141 constant 0.5.
 inline float giIntensity(const Settings& s){return .5f*float(s.giStrength)/60.f;}
 // 0.3.158 ActorShadows=0: keys that only act on replay (actor) shadows are forced to 0.

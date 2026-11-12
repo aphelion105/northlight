@@ -43,7 +43,7 @@ static void mutate(std::vector<ProbeAtlasEntry>& atlas,unsigned round){
 }
 int main(){
  unsigned cases=0;uint64_t checkedBytes=0;
- for(unsigned n:{16u,22u,24u}){
+ for(unsigned n:{16u,22u,24u,42u}){
   assert(configureProbeLayout(probeLayoutFor(n-2)));
   std::vector<ProbeAtlasEntry> atlas(probeLayout().atlasSize());NorthlightProbeBlend::Mirror blend;
   NorthlightProbeActivation a,b,c;blend.begin("A");a.begin("A");b.begin("A");c.begin("A");

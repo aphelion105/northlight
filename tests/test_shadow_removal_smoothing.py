@@ -33,6 +33,7 @@ import northlight_paths as fp; fp.use_source_modules()
 import json,math,random,re,struct
 
 hlsl=fp.src('world_effects.hlsl').read_text();w=fp.src('world_renderer.h').read_text();q=fp.src('quality_settings.h').read_text();r=fp.src('renderer.cpp').read_text()
+w+='\n'+fp.src('world_screen_resources.inl').read_text()
 ini=fp.src('windows-package/northlight-quality.ini').read_text();readme=fp.src('windows-package/README.txt').read_text(encoding='utf-8')
 checks={}
 # ---- 1. wiring ----
@@ -69,10 +70,10 @@ checks['BaselineLighting (s12): retained through removal/temporal, restored afte
 # 0.3.185 host: the pass is created, drawn right before the temporal pass with the samplers smoothRemoval reads, released and dumped.
 smoothdraw='if(removalDrawn){if(!check(d->SetRenderTarget(0,smoothSurface),"removal smoothing target"))return false;d->SetPixelShader(removalPS);if(!check(quad(w/2,h/2,false),"removal smoothing pass"))return false;}'
 checks['RemovalSmooth host: shader, half-res fp16 target, release, F12 dump, drawn before the temporal pass; s9 (idle, rebound later) carries it']=(
-    'kRemovalSmoothShader,&removalPS' in w and '&smoothLight,&smoothSurface' not in w and 'drop(smoothSurface)' not in w and 'drop(smoothLight)' not in w and 'drop(removalPS)' in w
+    'pixel(kRemovalSmoothShader,removalPS' in w and '&smoothLight,&smoothSurface' not in w and 'drop(smoothSurface)' not in w and 'drop(smoothLight)' not in w and 'drop(removalPS)' in w
     and '*smoothSurface=nullptr' not in w and '*smoothLight=nullptr' not in w and 'auto* const smoothLight=fogBlurred;' in tb
     and w.index('auto* const smoothSurface=fogBlurredSurface;')<w.index('{   // Temporal stabilization: retain this frame')
-    and w.count('dump(d,c[30][1]>0?smoothSurface:lightSurface,directory,"smoothed-light",capture);')==1 and tb.count('const bool removalDrawn=normalsProduceDistance;')==1 and 'const bool normalsProduceDistance=c[30][1]>0;' in w
+    and w.count('dump(d,normalsProduceDistance?smoothSurface:lightSurface,directory,"smoothed-light",capture);')==1 and tb.count('const bool removalDrawn=normalsProduceDistance;')==1 and 'const bool normalsProduceDistance=lightingNeeded&&applyDirectionalShadows&&c[30][1]>0;' in w
     and tb.index('const bool removalDrawn')<tb.index(smoothdraw) and tb.count('d->SetTexture(9,removalDrawn?smoothLight:light);')==1 and tb.count(smoothdraw)==1 and tb.index(smoothdraw)<tb.index('SetRenderTarget(0,temporalLightSurface[cur])')
     and w.index('d->SetTexture(14,normalBuffer);')<w.index('{   // Temporal stabilization: retain this frame') and tb.index('SetTexture(10,')<tb.index(smoothdraw)
     and 'd->SetTexture(8,light);' in tb[:tb.index(smoothdraw)])
@@ -87,23 +88,23 @@ checks['GPU marks: directional/GI filters precede current local and point passes
 recycle=w[w.index('if(profile)profile->mark("TemporalLight");'):w.index('constexpr unsigned directInputs=')]
 checks['Current local target: raw directional input saved before recycling; no additional target']=(
     recycle.index('dump(d,lightSurface,directory,"light",capture);')<recycle.index('d->SetRenderTarget(0,lightSurface)')
-    and recycle.index('dump(d,c[30][1]>0?smoothSurface:lightSurface,directory,"smoothed-light",capture);')<recycle.index('d->SetRenderTarget(0,lightSurface)')
+    and recycle.index('dump(d,normalsProduceDistance?smoothSurface:lightSurface,directory,"smoothed-light",capture);')<recycle.index('d->SetRenderTarget(0,lightSurface)')
     and recycle.index('d->SetTexture(8,nullptr);')<recycle.index('d->SetRenderTarget(0,lightSurface)')
     and 'if(currentLocalLighting)' in recycle and 'd->Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0)' in recycle
     and 'd->SetTexture(3,currentLocalLighting?light:neutralZero);' in w and 'separate-current-local-v1' in w)
 checks['no quality key (always on): no ShadowRemovalSmoothing in settings, ini, README or the log']=all(
     'ShadowRemovalSmoothing' not in t and 'removalSmoothing' not in t for t in (q,ini,readme,r,w))
 # The emulation below mirrors these shader constants; fail loudly if the shader moves.
-for needle in ('clamp(RemovalInfo.w/z,3,16)','-1.442695/max(.25,z*.03)','2*RemovalInfo.z/GridInfo.z','saturate((1-current.a*RemovalInfo.z)/GridInfo.z)','[branch]if(amount>1.0/256){',
-               '[loop]for(int group=0;group<12;++group)','sqrt(t*(1.0/24))','float3 sum=max(ratio,-.45);float total=1,t=.5;float2 dir=float2(1,0);',
+for needle in ('clamp(RemovalInfo.w/z,3,16)','-1.442695/max(.25,z*.03)','32*RemovalInfo.z/GridInfo.z','saturate((1-current.a*RemovalInfo.z)/GridInfo.z)','[branch]if(amount>1.0/256){',
+               '[loop]for(int group=0;group<12;++group)','sqrt(t*(1.0/24))','float3 sum=max(ratio,-shadowRemovalLimit());float total=1,t=.5;float2 dir=float2(1,0);',
                'return max(legacyT*max(baseline,.15),scene-min(fog,scene));','float3 ratio=current.rgb*legacyT/scale;',
                # 0.3.174: both Scene reads carry the contact AO (s10; a neutral 1 unless the world folds it)
                'tex2Dlod(Scene,float4(q,0,0)).rgb*tex2Dlod(AmbientOcclusion,float4(q,0,0)).a,fog,legacyT);',
-               'tex2Dlod(Scene,float4(tq,0,0)).rgb*tex2Dlod(AmbientOcclusion,float4(tq,0,0)).a,fog,legacyT),-.45)*w;total+=w;',
+               'tex2Dlod(Scene,float4(tq,0,0)).rgb*tex2Dlod(AmbientOcclusion,float4(tq,0,0)).a,fog,legacyT),-shadowRemovalLimit())*w;total+=w;',
                # task 43: a zero-weight tap skips its three removalScale reads (it adds exactly 0; total+=w stays outside the branch)
                '[flatten]if(w>0)sum+=max(light.rgb*legacyT/removalScale(tex2Dlod(BaselineLighting,float4(tq,0,0)).rgb,',
                'float legacyT=max(mad(LegacyFog.w,saturate(pow(max(mad(z*Projection.z,LegacyFog.x,LegacyFog.y),0),LegacyFog.z))-1,1),.001);',
-               'float3 fog=(1-legacyT)*LegacyFogColor.rgb;','sum+=max(light.rgb*legacyT/removalScale(','fog,legacyT),-.45)*w;total+=w;',
+               'float3 fog=(1-legacyT)*LegacyFogColor.rgb;','sum+=max(light.rgb*legacyT/removalScale(','fog,legacyT),-shadowRemovalLimit())*w;total+=w;',
                # 0.3.185 normal weight (cos 50 = .6428, 1/(cos 30 - cos 50) = 4.48) and the centre/tap normal reads
                'float4 centreNormal=tex2Dlod(NormalBuffer,float4(q,0,0));','float4 tapNormal=tex2Dlod(NormalBuffer,float4(tq,0,0));',
                'float agree=saturate((dot(centreNormal.xyz,tapNormal.xyz)-.6428)*5.67);',
@@ -113,7 +114,7 @@ for needle in ('clamp(RemovalInfo.w/z,3,16)','-1.442695/max(.25,z*.03)','2*Remov
                # the composite terms mirrored above
                'float legacyT=mad(LegacyFog.w,saturate(pow(max(mad(viewZ*Projection.z,LegacyFog.x,LegacyFog.y),0),LegacyFog.z))-1,1);',
                'float3 fogPart=min((1-legacyT)*LegacyFogColor.rgb,original.rgb);','float3 albedoT=min((hdrMode?hdrSurface:transported)/oldLight,legacyT);',
-               'color=max(color,mad(-.45,transported,original.rgb));'):
+               'color=max(color,mad(-shadowRemovalLimit(),transported,original.rgb));'):
     assert hlsl.count(needle)==1,needle
 
 removal_body=hlsl[hlsl.index('float3 smoothRemoval'):hlsl.index('float4 RemovalSmooth')]
@@ -150,7 +151,7 @@ def smooth(light,base,dist,scene,x,y,size,on,inv,pixel,fog=((0,1,1,0),1),fogcolo
     T=max(legacy_t(z,fog),.001);fc=[(1-T)*c for c in fogcolor]
     scale=removal_scale(base(x,y),scene(x,y),fc,T);ratio=[c*T/k for c,k in zip(cur,scale)]
     nc=normal(x,y) if normal else None
-    radius=min(max(pixel/z,3),16);ds=-1.442695/max(.25,z*.03);vs=2*inv/strength
+    radius=min(max(pixel/z,3),16);ds=-1.442695/max(.25,z*.03);vs=32*inv/strength
     s=[max(r,-.45) for r in ratio];total=1;t=.5;dx,dy=1.,0.
     for _ in range(24):
         r=math.sqrt(t/24)*radius

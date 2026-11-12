@@ -7,6 +7,7 @@
         IDirect3DTexture9 *cacheFace[6]={};
         IDirect3DSurface9 *cacheSurface[6]={};
         unsigned staticOnlyFaces=0;
+        unsigned geometryOnlyFaces=0;uint64_t geometrySerial[6]={},terrainSerial[6]={};
         bool cacheValid=false,ready=false,prewarmed=false;float selectionGain=1;uint64_t cacheSource=0;
         NorthlightLocalShadowSignature::Digest faceContent[6];bool faceKnown[6]={};uint64_t faceSerial[6]={};
         mutable PointContentMemo contentMemo;
@@ -76,7 +77,7 @@
         auto& keep=pointKeeps[victim];releasePointSlot(keep.slot);
         // Retain static faces only. A new cube must render every dynamic face
         // before use, even if the source returns within the ordinary refresh period.
-        for(auto& f:p.faces)drop(f);drop(p.cube);p.ready=false;p.staticOnlyFaces=0;
+        for(auto& f:p.faces)drop(f);drop(p.cube);p.ready=false;p.staticOnlyFaces=p.geometryOnlyFaces=0;
         p.schedule.invalidate();p.faceCycle.reset();p.contentMemo.valid=false;p.retryAt=0;
         std::swap(keep.slot,p);keep.age=++pointKeepAge;keep.wanted=false;
     }
@@ -110,7 +111,7 @@
     bool pointCheck(HRESULT hr,const char* operation){
         if(SUCCEEDED(hr))return true;
         ++nativeCubeRevision;
-        pointSlot().schedule.invalidate();pointSlot().cacheValid=false;pointSlot().staticOnlyFaces=0;
+        pointSlot().schedule.invalidate();pointSlot().cacheValid=false;pointSlot().staticOnlyFaces=pointSlot().geometryOnlyFaces=0;
         pointSlot().ready=false;pointSlot().retryAt=GetTickCount()+1000;
         if(pointFailures++<12)logf("POINT pass skipped: %s hr=%08lx (world effects retained)",operation,(unsigned long)hr);
         return false;
@@ -798,7 +799,8 @@
             }
         }
         if(!pointResources())return false;
-        // Terrain is never cached (its live set follows the view), so the cache key ignores it.
+        // Static-cache keys exclude terrain. Complete cube faces additionally
+        // retain its exact committed mesh/live revisions when no replay enters.
         bool lightChanged=pointSlot().schedule.light.sourceId!=pointSlot().selected.sourceId||pointSlot().schedule.light.attenuationEnd!=pointSlot().selected.attenuationEnd||pointSlot().schedule.light.attenuationStart!=pointSlot().selected.attenuationStart||pointSlot().schedule.light.flags!=pointSlot().selected.flags;
         for(unsigned i=0;i<3;++i)lightChanged=lightChanged||pointSlot().schedule.light.position[i]!=pointSlot().selected.position[i];
         const unsigned rebuildMask=pointStaticRebuild(pointSlot().selected,lightChanged);const bool rebuild=rebuildMask!=0;
@@ -880,12 +882,18 @@
             const unsigned bit=1u<<face;
             const bool staticOnly=pointTerrainCandidates[face].empty()&&
                 (!liveTerrainIndexCount||pointLiveCandidates[face].empty())&&pointReplayCandidates[face].empty();
+            const bool geometryOnly=pointReplayCandidates[face].empty();
             if(!(rebuildMask&bit)){
                 if(pointSlot().faceKnown[face]&&pointSlot().faceSerial[face]!=meshGeneration){pointSlot().faceSerial[face]=meshGeneration;++pointFacesKept;}
                 if(staticOnly&&(pointSlot().staticOnlyFaces&bit)){
                     pointSlot().faceWeights[face]=0;++pointFacesReused;continue;
                 }
+                if(geometryOnly&&(pointSlot().geometryOnlyFaces&bit)&&
+                   pointSlot().geometrySerial[face]==meshGeneration&&pointSlot().terrainSerial[face]==liveTerrainRevision){
+                    ++pointFacesReused;continue;
+                }
             }
+            pointSlot().geometryOnlyFaces&=~bit;
             // A wholly reused cube needs no device state changes. Unbind its
             // samplers only when a face will actually become a render target.
             if(!bound){
@@ -1037,6 +1045,7 @@
             ++pointWork.unions;
             }
             if(staticOnly)pointSlot().staticOnlyFaces|=bit;
+            if(geometryOnly){pointSlot().geometryOnlyFaces|=bit;pointSlot().geometrySerial[face]=meshGeneration;pointSlot().terrainSerial[face]=liveTerrainRevision;}
             d->SetTexture(0,nullptr);d->SetTexture(1,nullptr);
             d->SetRenderState(D3DRS_ZENABLE,TRUE);d->SetRenderState(D3DRS_ZWRITEENABLE,TRUE);
             d->SetSamplerState(0,D3DSAMP_MINFILTER,D3DTEXF_LINEAR);d->SetSamplerState(0,D3DSAMP_MAGFILTER,D3DTEXF_LINEAR);

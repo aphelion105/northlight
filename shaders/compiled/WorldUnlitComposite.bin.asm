@@ -19,6 +19,7 @@
 //   row_major float4x4 InverseView;
 //   float4 LegacyFog;
 //   float4 LegacyFogColor;
+//   float4 MaterialOcclusionInfo;
 //   float4 PassInfo;
 //   float4 Projection;
 //   sampler2D RainMask;
@@ -31,32 +32,33 @@
 //
 // Registers:
 //
-//   Name               Reg   Size
-//   ------------------ ----- ----
-//   ImageClip          c0       1
-//   Projection         c1       1
-//   DepthParams        c2       1
-//   InverseView        c3       3
-//   PassInfo           c24      1
-//   LegacyFog          c25      1
-//   LegacyFogColor     c26      1
-//   WaterInfo          c30      1
-//   ScreenSize         c33      1
-//   HorizonHaze        c34      1
-//   ShadowRange        c35      1
-//   HorizonShape       c57      1
-//   HorizonEdge        c64      1
-//   HorizonSun         c67      1
-//   EffectCoverageInfo c79      1
-//   CompositeWork      c80      1
-//   Scene              s0       1
-//   Depth              s1       1
-//   DitherNoise        s2       1
-//   EffectCoverage     s7       1
-//   FogBuffer          s9       1
-//   AmbientOcclusion   s10      1
-//   WaterMask          s11      1
-//   RainMask           s13      1
+//   Name                  Reg   Size
+//   --------------------- ----- ----
+//   ImageClip             c0       1
+//   Projection            c1       1
+//   DepthParams           c2       1
+//   InverseView           c3       3
+//   PassInfo              c24      1
+//   LegacyFog             c25      1
+//   LegacyFogColor        c26      1
+//   WaterInfo             c30      1
+//   ScreenSize            c33      1
+//   HorizonHaze           c34      1
+//   ShadowRange           c35      1
+//   HorizonShape          c57      1
+//   HorizonEdge           c64      1
+//   HorizonSun            c67      1
+//   MaterialOcclusionInfo c78      1
+//   EffectCoverageInfo    c79      1
+//   CompositeWork         c80      1
+//   Scene                 s0       1
+//   Depth                 s1       1
+//   DitherNoise           s2       1
+//   EffectCoverage        s7       1
+//   FogBuffer             s9       1
+//   AmbientOcclusion      s10      1
+//   WaterMask             s11      1
+//   RainMask              s13      1
 //
 
     ps_3_0
@@ -67,8 +69,10 @@
           def c10, 9.99999997e-007, -3, -0.999989986, 3
           def c11, 2, -2, -1, 1
           def c12, -9.99999996e-013, 1000000, 0.639999986, 1.20000005
-          def c13, 1.36000001, -1.5, 0.25, 0
-          def c14, 0.015625, 0.0078125, 0, 0
+          def c13, 1.36000001, -1.5, 0.25, 0.0773993805
+          def c14, 0.0549999997, 0.947867334, 2.4000001, -0.0404499993
+          def c15, 12.9200001, 0.416666657, 1.05499995, -0.00313080009
+          def c16, 0.015625, 0.0078125, 0, 0
           defi i0, 4, 0, 0, 0
           dcl_texcoord v0.xy
           dcl vPos.xy
@@ -287,8 +291,8 @@
  214:         mul r8.xyz, r1.x, c3
  215:         mul r9.xyz, r1.y, c4
  216:         add r8.xyz, r8, r9
- 217:         mov r2.z, c1.z
- 218:         mul r9.xyz, r2.z, c5
+ 217:         mov r9.z, c1.z
+ 218:         mul r9.xyz, r9.z, c5
  219:         add r8.xyz, r8, r9
  220:         mov r1.z, c1.z
  221:         dp3 r0.y, r1, r1
@@ -331,21 +335,51 @@
  266:         add r7.xyz, r0.xyww, r4
  267:       endif
  268:       mul r0.xyw, r3.xyzz, r6.w
- 269:       mad r0.xyw, r7.xyzz, r3.w, r0
- 270:       mul r1, c6_abs.xxyy, v0.xyxx
- 271:       texldl r1, r1, s13
- 271:       add r1.yzw, -r0.xxyw, r4.xxyz
- 272:       mul r1.xyz, r1.yzww, r1.x
- 273:       add r4.xyz, r0.xyww, r1
- 274:     endif
- 275:     cmp r0.xyz, -r0_abs.z, r3, r4
- 276:     add r1.xyz, -r6, -c6.x
- 277:     mad r0.xyz, r5, r1, r0
- 278:     mad r1.xy, vPos, c14.x, c14.y
- 279:     texld r1, r1, s2
- 279:     add r0.xyz, r0, r1
- 280:     max oC0.xyz, r0, c6.y
- 281:     mov oC0.w, r5.w
+ 269:       if_lt r2.z, c78.w
+ 272:         max r1.xyz, r7, c6.y
+ 273:         add r2.xyz, r1, c14.x
+ 274:         mul r2.xyz, r2, c14.y
+ 275:         log r8.x, r2.x
+ 276:         log r8.y, r2.y
+ 277:         log r8.z, r2.z
+ 278:         mul r2.xyz, r8, c14.z
+ 279:         exp r8.x, r2.x
+ 280:         exp r8.y, r2.y
+ 281:         exp r8.z, r2.z
+ 282:         mul r1.xyz, r1, c13.w
+ 283:         add r2.xyz, r7, c14.w
+ 284:         cmp r1.xyz, r2, r8, r1
+ 285:         mad r1.xyz, r1, r3.w, r0.xyww
+ 286:         max r2.xyz, r1, c6.y
+ 287:         add r1.xyz, r2, c15.w
+ 288:         log r8.x, r2.x
+ 289:         log r8.y, r2.y
+ 290:         log r8.z, r2.z
+ 291:         mul r8.xyz, r8, c15.y
+ 292:         exp r9.x, r8.x
+ 293:         exp r9.y, r8.y
+ 294:         exp r9.z, r8.z
+ 295:         mul r8.xyz, r9, c15.z
+ 296:         add r8.xyz, r8, -c14.x
+ 297:         mul r2.xyz, r2, c15.x
+ 298:         cmp r1.xyz, r1, r8, r2
+ 299:       else
+ 300:         mad r1.xyz, r7, r3.w, r0.xyww
+ 301:       endif
+ 302:       add r0.xyw, -r1.xyzz, r4.xyzz
+ 303:       mul r2, c6_abs.xxyy, v0.xyxx
+ 304:       texldl r2, r2, s13
+ 304:       mul r0.xyw, r0, r2.x
+ 305:       add r4.xyz, r0.xyww, r1
+ 306:     endif
+ 307:     cmp r0.xyz, -r0_abs.z, r3, r4
+ 308:     add r1.xyz, -r6, -c6.x
+ 309:     mad r0.xyz, r5, r1, r0
+ 310:     mad r1.xy, vPos, c16.x, c16.y
+ 311:     texld r1, r1, s2
+ 311:     add r0.xyz, r0, r1
+ 312:     max oC0.xyz, r0, c6.y
+ 313:     mov oC0.w, r5.w
 
-// approximately 300 instruction slots used (18 texture, 282 arithmetic)
+// approximately 332 instruction slots used (18 texture, 314 arithmetic)
  

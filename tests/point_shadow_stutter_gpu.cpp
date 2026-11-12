@@ -163,7 +163,61 @@ struct PointTerrainCoverageTest {
    double submit=0,complete=0;unsigned draws=0;for(unsigned frame=0;frame<8;++frame){w.pointSlot().cacheValid=false;w.pointSlot().schedule.invalidate();drain();auto start=std::chrono::steady_clock::now();must(d->BeginScene());assert(w.renderPointShadow(light,true,false));must(d->EndScene());submit+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();draws+=w.pointDraws;drain();complete+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();}
    assert(image()==expected);std::printf("POINT_GAP_TIMING block=%u optimized=%u submitMs=%.6f completeMs=%.6f draws=%u\n",block,unsigned(optimized),submit/8,complete/8,draws/8);std::fflush(stdout);
   }
-  w.pointPrimitiveLimit=caps.MaxPrimitiveCount;w.releasePointGPU();w.localScissorView={};
+  w.pointPrimitiveLimit=caps.MaxPrimitiveCount;
+#ifndef NORTHLIGHT_POINT_TERRAIN_REFERENCE
+  {
+   // Complete faces containing immutable terrain are reusable too. Force the
+   // old path by clearing only the new proof; all submission code stays shared.
+   const auto savedBatches=w.batches;for(auto& b:w.batches)b.terrain=true;
+   ++w.meshGeneration;w.releasePointGPU();w.quality.pointShadowRefreshMs=0;
+   const auto refresh=[&](bool retain){if(!retain)w.pointSlot().geometryOnlyFaces=0;w.pointSlot().schedule.updatedAt=GetTickCount()-10000;render();};
+   refresh(false);const auto ground=image();const unsigned groundDraws=w.pointDraws;assert(groundDraws>0);
+   const auto weights=std::array<unsigned,6>{w.pointSlot().faceWeights[0],w.pointSlot().faceWeights[1],w.pointSlot().faceWeights[2],w.pointSlot().faceWeights[3],w.pointSlot().faceWeights[4],w.pointSlot().faceWeights[5]};
+   refresh(true);assert(!w.pointDraws&&w.pointFacesReused==6&&image()==ground);
+   assert(std::equal(weights.begin(),weights.end(),w.pointSlot().faceWeights));
+   NorthlightGpuFrameTimer timer(d);
+   for(unsigned block=0;block<16;++block){const bool retain=block%4==1||block%4==2;
+    drain();const auto start=std::chrono::steady_clock::now();unsigned draws=0;
+    must(d->BeginScene());const bool timed=timer.begin(block);
+    for(unsigned frame=0;frame<32;++frame){if(!retain)w.pointSlot().geometryOnlyFaces=0;w.pointSlot().schedule.updatedAt=GetTickCount()-10000;
+     assert(w.renderPointShadow(light,true,false));draws+=w.pointDraws;}
+    timer.end();must(d->EndScene());const double cpu=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count()/32;
+    drain();const double complete=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count()/32;
+    double gpu=-1;if(timed)timer.poll(gpu);assert(image()==ground);
+    assert(retain?draws==0:draws==groundDraws*32);
+    std::printf("POINT_TERRAIN_TIMING block=%u warm=%u retained=%u cpuMs=%.6f completeMs=%.6f gpuMs=%.6f draws=%u\n",block,unsigned(block<4),unsigned(retain),cpu,complete,gpu<0?-1:gpu/32,draws/32);
+   }
+   // Use the actual upload route: stable owners keep the revision, changed,
+   // removed and reintroduced captures invalidate even without a mesh swap.
+   const D3DVERTEXELEMENT9 liveElements[]={{0,0,D3DDECLTYPE_FLOAT3,0,D3DDECLUSAGE_POSITION,0},{0,12,D3DDECLTYPE_FLOAT2,0,D3DDECLUSAGE_TEXCOORD,0},D3DDECL_END()};
+   must(d->CreateVertexDeclaration(liveElements,&w.liveTerrainDecl));
+   auto live=std::make_shared<NorthlightTerrainCapture::MeshSnapshot>();
+   live->positions={{-2,-2,2},{2,-2,2},{-2,2,2}};live->indices={0,1,2};
+   live->bounds.low[0]=live->bounds.low[1]=-2;live->bounds.high[0]=live->bounds.high[1]=2;live->bounds.low[2]=live->bounds.high[2]=2;
+   const auto coldExact=[&]{const auto actual=image();w.pointSlot().cacheValid=false;refresh(false);assert(image()==actual);};
+   w.frameTerrain={live};assert(w.uploadLiveTerrain());const auto revision=w.liveTerrainRevision;
+   refresh(true);assert(w.pointDraws>0&&image()!=ground);coldExact();refresh(true);assert(!w.pointDraws);
+   assert(w.uploadLiveTerrain()&&w.terrainUploadReused&&w.liveTerrainRevision==revision);refresh(true);assert(!w.pointDraws);
+   auto moved=std::make_shared<NorthlightTerrainCapture::MeshSnapshot>(*live);for(auto& p:moved->positions)p.z=3;
+   moved->bounds.low[2]=moved->bounds.high[2]=3;w.frameTerrain={moved};assert(w.uploadLiveTerrain()&&w.liveTerrainRevision!=revision);
+   refresh(true);assert(w.pointDraws>0);coldExact();
+   w.frameTerrain.clear();assert(w.uploadLiveTerrain());refresh(true);assert(w.pointDraws>0&&image()==ground);coldExact();
+   // Geometry, light and failed partial writes must always revoke the proof.
+   for(auto& v:vertices)v.position.z+=.25f;for(auto& b:w.batches){b.boundsLow.z+=.25f;b.boundsHigh.z+=.25f;}
+   must(page.vb->Lock(0,0,&data,0));std::memcpy(data,vertices,sizeof vertices);must(page.vb->Unlock());++w.meshGeneration;
+   refresh(true);assert(w.pointDraws>0&&image()!=ground);coldExact();
+   light.position[0]+=.5f;refresh(true);assert(w.pointDraws>0);coldExact();light.position[0]-=.5f;
+   w.quality.pointShadowFacesPerFrame=1;
+   for(unsigned i=0;i<6;++i)refresh(true);const auto cycle=image();
+   w.quality.pointShadowFacesPerFrame=6;refresh(false);assert(image()==cycle);
+   w.pointSlot().geometryOnlyFaces=0;meter.failClear=true;must(d->BeginScene());assert(!w.renderPointShadow(light,true,false));must(d->EndScene());
+   assert(!w.pointSlot().geometryOnlyFaces&&!w.pointSlot().ready);w.pointSlot().retryAt=0;refresh(true);coldExact();
+   for(auto& v:vertices)v.position.z-=.25f;must(page.vb->Lock(0,0,&data,0));std::memcpy(data,vertices,sizeof vertices);must(page.vb->Unlock());
+   w.batches=savedBatches;++w.meshGeneration;w.releasePointGPU();
+   std::printf("POINT_TERRAIN_REUSE_PASS beforeDraws=%u afterDraws=0 sixFaces=exact liveUpload=exact unchangedUpload=retained meshLightMutation=exact partialCycles=exact failure=revoked\n",groundDraws);
+  }
+#endif
+  w.releasePointGPU();w.localScissorView={};
   NorthlightLocalLightSelection::Selection selection;selection.count=1;selection.sources[0]=light;
   auto pool=[&](bool fresh=true){must(d->BeginScene());w.renderPointShadows(selection,fresh,false);must(d->EndScene());drain();w.pointIndex=0;};
   auto keeps=[&](){unsigned n=0;for(const auto& keep:w.pointKeeps){n+=keep.slot.cacheValid;assert(!keep.slot.cube);for(auto* face:keep.slot.faces)assert(!face);}return n;};
@@ -285,6 +339,24 @@ struct PointTerrainCoverageTest {
   shader->Release();
   IDirect3DTexture9* cutout=nullptr;must(d->CreateTexture(2,2,1,0,D3DFMT_A8R8G8B8,D3DPOOL_MANAGED,&cutout,nullptr));D3DLOCKED_RECT lock{};must(cutout->LockRect(0,&lock,nullptr,0));
   for(unsigned y=0;y<2;++y)for(unsigned x=0;x<2;++x)reinterpret_cast<DWORD*>(static_cast<char*>(lock.pBits)+y*lock.Pitch)[x]=(x==y)?0xffffffffu:0x00ffffffu;must(cutout->UnlockRect(0));
+#ifndef NORTHLIGHT_POINT_TERRAIN_REFERENCE
+  {
+   auto actors=std::move(w.replays);WorldRenderer::Batch terrain{};terrain.page=0;terrain.count=1;terrain.vertexCount=3;terrain.terrain=true;
+   terrain.boundsLow={-16,-16,-16};terrain.boundsHigh={16,16,32};w.batches={terrain};++w.meshGeneration;w.releasePointGPU();
+   const auto refresh=[&]{w.replayBoundsBegin();w.replayBoundsResolved=true;for(auto& p:w.replays)p->pointBounds.valid=false;
+    w.pointSlot().schedule.updatedAt=GetTickCount()-10000;must(d->BeginScene());assert(w.renderPointShadow(light,true,true));must(d->EndScene());drain();};
+   refresh();const auto terrainImage=image();refresh();assert(!w.pointDraws&&image()==terrainImage);
+   for(unsigned cycle=0;cycle<2;++cycle){
+    w.replays=std::move(actors);for(auto& p:w.replays){p->cutoff=.5f;p->texture=cutout;cutout->AddRef();}
+    refresh();assert(w.pointDraws>0&&w.pointSlot().geometryOnlyFaces==0);const auto actorImage=image();
+    w.pointSlot().cacheValid=false;refresh();assert(image()==actorImage);
+    actors=std::move(w.replays);refresh();assert(w.pointDraws>0&&image()==terrainImage);refresh();assert(!w.pointDraws);
+    for(auto& p:actors){p->texture->Release();p->texture=nullptr;}
+   }
+   w.replays=std::move(actors);w.batches.clear();++w.meshGeneration;w.releasePointGPU();
+   std::puts("POINT_TERRAIN_ACTORS_PASS enteringUnknownBounds=redrawn cutout=exact leaving=terrainRestored warm=zeroDraws");
+  }
+#endif
   unsigned replayBefore=0,replayAfter=0;
   for(unsigned alpha=0;alpha<5;++alpha){w.replayBoundsBegin();w.replayBoundsResolved=true;for(auto& p:w.replays){p->cutoff=alpha?.5f:-1.f;p->alphaMode=0;
    if(alpha>=2){const unsigned formats[]={D3DFMT_A8R8G8B8,D3DFMT_A16B16G16R16F,D3DFMT_A32B32G32R32F};p->alphaMode=NorthlightShadowAlpha::FixedTest|(128u<<8)|(formats[alpha-2]<<18);}

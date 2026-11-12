@@ -1,5 +1,6 @@
 #pragma once
 #include "world_gi.h"
+#include "shadow_cascades.h"
 #include <cmath>
 #include <cstdlib>
 #include <cstring>

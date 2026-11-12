@@ -4,6 +4,15 @@
 #include <limits>
 using namespace NorthlightForever;
 int main(int argc,char** argv){
+    // Absent and zero-density layers cannot shorten the shared empty prefix.
+    Frame prefix;float packed[38][4];constants(prefix,packed,128,1);assert(packed[34][3]==128);
+    prefix.layer[0].flag[3]=1;prefix.layer[0].p[0]=12;
+    constants(prefix,packed,128,1);assert(packed[34][3]==128);
+    prefix.layer[1].flag[3]=1;prefix.layer[1].p[0]=64;prefix.layer[1].p[1]=1;
+    constants(prefix,packed,128,1);assert(packed[34][3]==64);
+    prefix.layer[2].flag[3]=1;prefix.layer[2].p[0]=32;prefix.layer[2].p[1]=1;
+    constants(prefix,packed,128,1);assert(packed[34][3]==32);
+    prefix.layer[2].p[0]=-1;constants(prefix,packed,128,1);assert(packed[34][3]==0);
     Table t;Key a,b;a.param=b.param=7;a.time=120;b.time=2760;
     a.layer[0].p[1]=1;b.layer[0].p[1]=3;a.layer[0].flag[3]=b.layer[0].flag[3]=1;t.keys={a,b};
     assert(std::fabs(t.at(7,0).layer[0].p[1]-2)<1e-6);assert(!t.at(8,0).valid);

@@ -47,9 +47,9 @@ def main():
         values = ','.join('{' + ','.join(format(v, '.9e') + 'f' for v in pair) + '}' for pair in table['keys'])
         lines += [f'// RVA {table["rva"]}', f'inline constexpr Key {name}[]={{' + values + '};']
     lines += ['} // namespace NorthlightForeverSky', '']
-    args.output.write_text('\n'.join(lines), encoding='utf-8', newline='\n')
+    args.output.write_text('\n'.join(lines), encoding='utf-8')
     args.output.with_suffix('.json').write_text(json.dumps({'source_build': '1.60.1.70888',
-        'source_sha256': SOURCE_SHA256, 'tables': tables}, indent=2) + '\n', encoding='utf-8', newline='\n')
+        'source_sha256': SOURCE_SHA256, 'tables': tables}, indent=2) + '\n', encoding='utf-8')
 
 if __name__ == '__main__':
     main()

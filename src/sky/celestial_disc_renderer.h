@@ -205,16 +205,21 @@ public:
     bool renderSkyBackground(IDirect3DSurface9* target,IDirect3DTexture9* scene,IDirect3DTexture9* depth,
         IDirect3DTexture9* layers,UINT width,UINT height,const float* projection,const float* inverseView,const float colors[8][3]){
         if(!target||!scene||!layers)return false;
-        SavedState saved(d);if(!saved.ok)return false;
+        SavedState saved(d);if(!saved.ok||!saved.depth)return false;
+        D3DSURFACE_DESC desc{},depthDesc{};
+        if(FAILED(target->GetDesc(&desc))||FAILED(saved.depth->GetDesc(&depthDesc))||
+           desc.Width!=width||desc.Height!=height||depthDesc.Width!=width||depthDesc.Height!=height||
+           depthDesc.MultiSampleType!=desc.MultiSampleType||depthDesc.MultiSampleQuality!=desc.MultiSampleQuality)return false;
         if(!skyBackgroundPS&&FAILED(d->CreatePixelShader(kCelestialSkyPSShader,&skyBackgroundPS)))return false;
-        D3DSURFACE_DESC desc{};if(FAILED(target->GetDesc(&desc)))return false;
         const bool hdr=desc.Format==D3DFMT_A16B16G16R16F;
         d->SetDepthStencilSurface(nullptr);for(unsigned k=1;k<4;++k)d->SetRenderTarget(k,nullptr);
         for(unsigned k=0;k<16;++k)d->SetTexture(k,nullptr);
-        if(FAILED(d->SetRenderTarget(0,target)))return false;
+        if(FAILED(d->SetRenderTarget(0,target))||FAILED(d->SetDepthStencilSurface(saved.depth)))return false;
         D3DVIEWPORT9 vp={0,0,width,height,0,1};d->SetViewport(&vp);
         const struct{D3DRENDERSTATETYPE s;DWORD v;} states[]={
-            {D3DRS_ZENABLE,FALSE},{D3DRS_ZWRITEENABLE,FALSE},{D3DRS_ALPHATESTENABLE,FALSE},
+            // Native terrain/WMO can precede the sky boundary. Test the live
+            // depth at the clear plane, including individual MSAA samples.
+            {D3DRS_ZENABLE,TRUE},{D3DRS_ZFUNC,D3DCMP_LESSEQUAL},{D3DRS_ZWRITEENABLE,FALSE},{D3DRS_ALPHATESTENABLE,FALSE},
             {D3DRS_ALPHABLENDENABLE,DWORD(hdr)},{D3DRS_SRCBLEND,D3DBLEND_ONE},{D3DRS_DESTBLEND,D3DBLEND_ONE},
             {D3DRS_BLENDOP,D3DBLENDOP_ADD},{D3DRS_SEPARATEALPHABLENDENABLE,FALSE},
             {D3DRS_CULLMODE,D3DCULL_NONE},{D3DRS_COLORWRITEENABLE,7},{D3DRS_SRGBWRITEENABLE,FALSE},
@@ -232,7 +237,7 @@ public:
         std::copy_n(projection,3,c[1]);std::memcpy(c[2],inverseView,64);
         for(unsigned k=0;k<6;++k)std::copy_n(colors[k],3,c[51+k]);
         d->SetPixelShaderConstantF(0,c[0],57);
-        const struct V{float x,y,z,w,u,v;} quad[]={{-.5f,-.5f,0,1,0,0},{width-.5f,-.5f,0,1,1,0},{-.5f,height-.5f,0,1,0,1},{width-.5f,height-.5f,0,1,1,1}};
+        const struct V{float x,y,z,w,u,v;} quad[]={{-.5f,-.5f,1,1,0,0},{width-.5f,-.5f,1,1,1,0},{-.5f,height-.5f,1,1,0,1},{width-.5f,height-.5f,1,1,1,1}};
         return SUCCEEDED(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(V)));
     }
     void setTerrainSource(std::function<uint64_t()> epoch,std::function<bool(unsigned,const float*)> draw,std::function<void(unsigned)> reuse=nullptr){terrainEpoch=std::move(epoch);terrainDraw=std::move(draw);terrainReuse=std::move(reuse);}

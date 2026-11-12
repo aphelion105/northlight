@@ -13,6 +13,23 @@ inline bool legacyVertexShader(IDirect3DDevice9* d)try{
     std::vector<DWORD> code(bytes/4);if(FAILED(vs->GetFunction(code.data(),&bytes)))return false;
     return code[0]==D3DVS_VERSION(1,1)||code[0]==D3DVS_VERSION(2,0);
 }catch(const std::bad_alloc&){return false;}
+inline IDirect3DPixelShader9* fixedModulateSource(IDirect3DDevice9* d,IDirect3DPixelShader9*& fixedModulate){
+    // The native rain has a legacy programmable VS and no PS. Reproduce
+    // only its single texture * diffuse stage; keep other FF programs out.
+    if(!legacyVertexShader(d))return nullptr;
+    DWORD value=0;
+    for(auto state:{D3DRS_FOGENABLE,D3DRS_SPECULARENABLE})if(FAILED(d->GetRenderState(state,&value))||value)return nullptr;
+    const D3DTEXTURESTAGESTATETYPE states[]={D3DTSS_COLOROP,D3DTSS_COLORARG1,D3DTSS_COLORARG2,D3DTSS_ALPHAOP,D3DTSS_ALPHAARG1,D3DTSS_ALPHAARG2,D3DTSS_TEXCOORDINDEX,D3DTSS_TEXTURETRANSFORMFLAGS};
+    const DWORD expected[]={D3DTOP_MODULATE,D3DTA_TEXTURE,D3DTA_DIFFUSE,D3DTOP_MODULATE,D3DTA_TEXTURE,D3DTA_DIFFUSE,0,D3DTTFF_DISABLE};
+    for(unsigned i=0;i<8;++i){if(FAILED(d->GetTextureStageState(0,states[i],&value)))return nullptr;
+        const bool diffuse=i==2||i==5;
+        if(value!=expected[i]&&!(diffuse&&value==D3DTA_CURRENT))return nullptr;}
+    if(FAILED(d->GetTextureStageState(1,D3DTSS_COLOROP,&value))||value!=D3DTOP_DISABLE)return nullptr;
+    IDirect3DBaseTexture9* texture=nullptr;const HRESULT hr=d->GetTexture(0,&texture);
+    const bool valid=SUCCEEDED(hr)&&texture&&texture->GetType()==D3DRTYPE_TEXTURE;if(texture)texture->Release();if(!valid)return nullptr;
+    if(!fixedModulate&&FAILED(d->CreatePixelShader(reinterpret_cast<const DWORD*>(kHdrFixedModulate),&fixedModulate)))return nullptr;
+    return fixedModulate;
+}
 // Add the linear foreground to the existing sky in the native draw itself.
 // No geometry replay, new image, depth/stencil write or occlusion-query samples.
 class SkyForeground {
@@ -23,23 +40,6 @@ class SkyForeground {
     bool checked=false,capable=false;unsigned targets=0;
     const bool residual;
     template<class T> static void drop(T*& p){if(p)p->Release();p=nullptr;}
-    IDirect3DPixelShader9* fixedSource(IDirect3DDevice9* d){
-        // The native rain has a legacy programmable VS and no PS. Reproduce
-        // only its single texture * diffuse stage; keep other FF programs out.
-        if(!legacyVertexShader(d))return nullptr;
-        DWORD value=0;
-        for(auto state:{D3DRS_FOGENABLE,D3DRS_SPECULARENABLE})if(FAILED(d->GetRenderState(state,&value))||value)return nullptr;
-        const D3DTEXTURESTAGESTATETYPE states[]={D3DTSS_COLOROP,D3DTSS_COLORARG1,D3DTSS_COLORARG2,D3DTSS_ALPHAOP,D3DTSS_ALPHAARG1,D3DTSS_ALPHAARG2,D3DTSS_TEXCOORDINDEX,D3DTSS_TEXTURETRANSFORMFLAGS};
-        const DWORD expected[]={D3DTOP_MODULATE,D3DTA_TEXTURE,D3DTA_DIFFUSE,D3DTOP_MODULATE,D3DTA_TEXTURE,D3DTA_DIFFUSE,0,D3DTTFF_DISABLE};
-        for(unsigned i=0;i<8;++i){if(FAILED(d->GetTextureStageState(0,states[i],&value)))return nullptr;
-            const bool diffuse=i==2||i==5;
-            if(value!=expected[i]&&!(diffuse&&value==D3DTA_CURRENT))return nullptr;}
-        if(FAILED(d->GetTextureStageState(1,D3DTSS_COLOROP,&value))||value!=D3DTOP_DISABLE)return nullptr;
-        IDirect3DBaseTexture9* texture=nullptr;const HRESULT hr=d->GetTexture(0,&texture);
-        const bool valid=SUCCEEDED(hr)&&texture&&texture->GetType()==D3DRTYPE_TEXTURE;drop(texture);if(!valid)return nullptr;
-        if(!fixedModulate&&FAILED(d->CreatePixelShader(reinterpret_cast<const DWORD*>(kHdrFixedModulate),&fixedModulate)))return nullptr;
-        return fixedModulate;
-    }
     IDirect3DPixelShader9* replacement(IDirect3DDevice9* d,IDirect3DPixelShader9* original,unsigned slot,bool premultiplied)try{
         auto it=shaders.find(original);
         if(it==shaders.end()){
@@ -81,7 +81,7 @@ public:
         auto colorState=[](unsigned n){return n==1?D3DRS_COLORWRITEENABLE1:n==2?D3DRS_COLORWRITEENABLE2:D3DRS_COLORWRITEENABLE3;};
         for(;slot<targets;++slot){const HRESULT hr=d->GetRenderTarget(slot,&aux);if(hr==D3DERR_NOTFOUND||SUCCEEDED(hr)&&!aux)break;if(FAILED(hr))return false;drop(aux);}
         if(slot>=targets||FAILED(d->GetPixelShader(&original)))return false;
-        auto* source=original?original:fixedSource(d);if(!source)return false;
+        auto* source=original?original:fixedModulateSource(d,fixedModulate);if(!source)return false;
         const bool premultiplied=blend&&src==D3DBLEND_ONE&&dst==D3DBLEND_INVSRCALPHA;
         const unsigned variant=(slot-1)*2+unsigned(premultiplied);
         const auto known=shaders.find(source);

@@ -56,25 +56,20 @@ float transitionShadowMap(float3 lp,bool useNear,bool previous,float2 gradient,b
     // incidence (below that saturate(n.L) makes the shadow term negligible).
     // Same world-space slope limit for either depth span; XY texels stay
     // near .094 u / far .375 u. Only normalized depth units change.
-    float limit=(useNear?2.688:10.752)*ShadowRange.x/DepthParams.w;
+    float limit=57.3*(useNear?DepthParams.y:DepthParams.z)*ShadowRange.x;
     gradient=clamp(gradient,-limit,limit);
-    // Continuous tent (4x4 was 3x3): the wider support gently softens
-    // tree/fence edges without random sampling or changing shadow depth bias.
-    // Far: radius 2 texels (4x4). Near (0.3.170): radius 2.5 (5x5). An animated
-    // caster (idle pose) flips single near texels every frame; one tap then
-    // weighs at most 14.8% instead of 25%, for a 24% wider near penumbra.
-    // The far cascade keeps exactly its 4x4 taps and weights.
-    float size=useNear?5:4,reach=size*.5;
+    // Compact contact support keeps leaf coverage; PCSS widens only the near
+    // map. The far map has a fixed sample budget regardless of world reach.
+    float reach=shadowParameters().z;
     float2 pixel=uv/DepthParams.w-.5;
-    // Odd sizes centre on the nearest texel, even sizes on the one below: every tap in the support.
-    float2 base=floor(pixel+(useNear?.5:0)),fraction=pixel-base;
-    float start=useNear?-2:-1;
+    float2 base=floor(pixel-reach)+1,fraction=pixel-base;
+    float size=ceil(2*reach),start=0;
     float visibility=0,total=0,gaps=0,blockers=0;
     // The exit lives in the loop condition: Microsoft's compiler turned the nested bare break into break_ne with identical operands.
-    [loop]for(int y=0;y<5&&y<size;++y){
+    [loop]for(int y=0;y<6&&y<size;++y){
     float rowOffset=y+start,rowUV=(base.y+rowOffset+.5)*DepthParams.w;
     float rowWeight=max(reach-abs(rowOffset-fraction.y),0);
-    [loop]for(int x=0;x<5&&x<size;++x){
+    [loop]for(int x=0;x<6&&x<size;++x){
         float offset=x+start;
         float2 tapUV=float2((base.x+offset+.5)*DepthParams.w,rowUV);
         float w=max(reach-abs(offset-fraction.x),0)*rowWeight;
@@ -85,7 +80,7 @@ float transitionShadowMap(float3 lp,bool useNear,bool previous,float2 gradient,b
         if(soft&&stored<expected){gaps+=expected-stored;++blockers;}
     }
     }
-    if(soft){
+    if(soft&&useNear&&shadowParameters().y>0){
         // Keep every contact tap above, then search the wider support. The
         // separation uses the receiver plane, so slopes do not create softness.
         const float widest=4.25;
@@ -97,7 +92,7 @@ float transitionShadowMap(float3 lp,bool useNear,bool previous,float2 gradient,b
         }
         float texelWorld=2*(useNear?DepthParams.y:DepthParams.z)*DepthParams.w;
         // The fixed shadow span/radius and texel size are positive.
-        float softReach=clamp(.04*gaps/max(blockers,1)/(ShadowRange.x*texelWorld),reach,widest);
+        float softReach=clamp(.04*shadowParameters().y*gaps/max(blockers,1)/(ShadowRange.x*texelWorld),reach,widest);
         // No extra filtering at contact. A sparse search miss retains the
         // complete base PCF instead of erasing thin geometry.
         if(softReach>reach+.001){

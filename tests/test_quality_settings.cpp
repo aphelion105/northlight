@@ -437,11 +437,11 @@ int main(){
     // layout) in Balanced and Performance, own origin slot; yards snap down to d=4N-4 with N even, 36..84 -> 10..22.
     assert(d.giDistance==76&&giProbeGrid(d)==20&&preset(Preset::Performance).giDistance==52&&preset(Preset::Balanced).giDistance==52);
     assert(giProbeGrid(parse("[Quality]\nGIDistance=52\n"))==14&&giProbeGrid(preset(Preset::Balanced))==14&&giProbeGrid(preset(Preset::Performance))==14);
-    for(unsigned y=36;y<=84;++y){auto g=parse(("[Quality]\nGIDistance="+std::to_string(y)+"\n").c_str());const unsigned n=giProbeGrid(g);
-        assert(g.giDistance==y&&n%2==0&&n>=10&&n<=22&&4*n-4<=y&&y<4*n-4+8&&(y==76)==(g==d));}
+    for(unsigned y=36;y<=156;++y){auto g=parse(("[Quality]\nGIDistance="+std::to_string(y)+"\n").c_str());const unsigned n=giProbeGrid(g);
+        assert(g.giDistance==y&&n%2==0&&n>=10&&n<=40&&4*n-4<=y&&y<4*n-4+8&&(y==76)==(g==d));}
     assert(giProbeGrid(parse("[Quality]\nGIDistance=60\n"))==16&&giProbeGrid(parse("[Quality]\nGIDistance=84\n"))==22&&giProbeGrid(parse("[Quality]\nGIDistance=43\n"))==10);
     {auto on=parse("[Quality]\nGIDistance=68\n");unsigned i=0;for(const auto& k:Keys){assert(on.origin[i]==(std::string(k.name)=="GIDistance"?'f':'d'));++i;}
-        std::vector<std::string> p;assert(parse("[Quality]\nGIDistance=35\nGIDistance=85\n",nullptr,p)==d&&p.size()==2);
+        std::vector<std::string> p;assert(parse("[Quality]\nGIDistance=35\nGIDistance=157\n",nullptr,p)==d&&p.size()==2);
         p.clear();assert(parse(nullptr,"[ShadowExperiment]\nGIDistance=60\n",p)==d&&p.size()==1);
         assert(describe(d).find(" GIDistance=76(default)")!=std::string::npos&&describe(on).find(" GIDistance=68(file)")!=std::string::npos);}
     // 0.3.153 GIProbeAhead: 0 (window on the eye) in the code default and every preset, 0..48, own origin slot.
@@ -678,6 +678,11 @@ int main(){
     {const auto native=parse("[Quality]\nShadowProvider=0\n");assert(native.shadowProvider==0&&native.worldShadows==d.worldShadows&&native.pointShadows==d.pointShadows);
      assert(parse("[Quality]\nShadowProvider=1\n").shadowProvider==1);
      std::vector<std::string> issues;assert(parse("[Quality]\nShadowProvider=2\n",nullptr,issues)==d&&issues.size()==1);}
+    {const auto tuned=parse("[Quality]\nShadowStrength=180\nShadowSoftness=0\nShadowContactRadius=50\n");
+     assert(tuned.shadowStrength==180&&tuned.shadowSoftness==0&&tuned.shadowContactRadius==50);
+     assert(d.shadowStrength==125&&d.shadowSoftness==50&&d.shadowContactRadius==100);}
+    assert(giProbeGrid(parse("[Quality]\nGIDistance=156\n"))==40);
+    for(unsigned rings=1;rings<=3;++rings){auto q=parse(("[Quality]\nGIChunkRadius="+std::to_string(rings)+"\n").c_str());assert(giChunkSide(q)==2*rings+1&&giGeometryRadius(q)==288.f*rings);}
     std::printf("quality: %s\n",describe(d).c_str());
     std::printf("quality: defaults==0.3.136, presets, overrides, legacy precedence and fallbacks, BOM/CRLF, range edges, shipped ini, identical default code paths passed\n");
 }

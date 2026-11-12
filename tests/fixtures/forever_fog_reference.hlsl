@@ -1,4 +1,4 @@
-// Frozen pre-optimization implementation from 0634e962.
+// Frozen Northlight march before noise specialization and empty-prefix elision.
 float4 foreverFogReference(float2 uv,bool actorIntegration) {
     if(FogInfo.x<.5)return float4(0,0,0,1);
     uv=depthUV(uv);float depth=normalizedDepth(uv);
@@ -6,9 +6,9 @@ float4 foreverFogReference(float2 uv,bool actorIntegration) {
     float3 ray=view.x*InverseView[0].xyz+view.y*InverseView[1].xyz+view.z*InverseView[2].xyz;
     float distance=min(length(ray),Forever[1].w);ray*=rsqrt(max(dot(ray,ray),1e-12));
     float3 g=Forever[6].xyz;
-    // Henyey-Greenstein with unit sphere-average energy (g=0 gives 1).
-    // Peak normalization silently removed 189/190 of the energy at g=.9.
-    float3 phase=(1-g*g)*pow(rsqrt(max(1+g*g-2*g*dot(ray,SunDirection.xyz),1e-6)),3);
+    // HG integrates to one over solid angle; imported intensity is not a
+    // sphere-average radiance. Omitting 1/(4*pi) amplifies it by 12.57x.
+    float3 phase=(1.0/(4*3.14159265))*(1-g*g)*pow(rsqrt(max(1+g*g-2*g*dot(ray,SunDirection.xyz),1e-6)),3);
     float3 direct=phase*Forever[11].xyz*Forever[11].w;
     float T=1;float3 scatter=0;
     // Quadratic spacing resolves near shafts while retaining the distant haze.

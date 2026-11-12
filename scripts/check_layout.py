@@ -29,12 +29,32 @@ ALLOW = 'layout: allow-machine-path'
 LEGACY_SOURCE = re.compile(r'.*\.(h|inl|inc|def|hlsl|bin|asm|cpp)$|.*-shader-build\.json$|'
                            r'(build_renderer|build_environment|generate_\w+|compile_\w+)\.py$')
 LEGACY_TOOLS = {'probe_loader.cpp', 'tirisfal-light-probe-0.3.55.cpp'}   # not DLL sources (private probes)
+ROOT_PYTHON = {
+    'northlight_paths.py', 'mpq.py', 'client_archives.py', 'renderer_status.py',
+    'build_art_layer.py', 'build_lighting.py', 'build_weather_textures.py',
+    'build_mulgore_lighting.py', 'build_outdoor_single_moon.py',
+    'build_outdoor_single_sun.py', 'build_stormwind_single_sun.py',
+}  # Public installer imports/entry points; new development commands belong in scripts/.
 
 
 def git_files():
     r = subprocess.run(['git', 'ls-files', '-z', '--cached', '--others', '--exclude-standard'],
                        cwd=fp.REPO, capture_output=True)
-    return [n for n in r.stdout.decode('utf-8', 'surrogateescape').split('\0') if n] if r.returncode == 0 else []
+    if r.returncode:
+        raise RuntimeError('Cannot inventory the checkout: ' + r.stderr.decode('utf-8', 'replace').strip())
+    return [n for n in r.stdout.decode('utf-8', 'surrogateescape').split('\0') if n]
+
+
+def root_problems(root):
+    problems = []
+    for p in root.iterdir():
+        if not p.is_file():
+            continue
+        if p.suffix == '.py' and p.name not in ROOT_PYTHON:
+            problems.append(f'{p.name}: development commands live in scripts/; tests live in tests/')
+        elif p.suffix in {'.h', '.cpp', '.inl', '.inc', '.def', '.hlsl'}:
+            problems.append(f'{p.name}: production sources live in src/<group>/ or shaders/, including ignored copies')
+    return problems
 
 
 def top_level(files, d):
@@ -45,7 +65,7 @@ def top_level(files, d):
 
 def layout_problems(files=None):
     """Checks 1-3: nothing at a legacy path, every source in a group, unique basenames."""
-    problems = []
+    problems = root_problems(fp.REPO)
     files = git_files() if files is None else files
     for d in [*fp.SRC_DIRS, *fp.SHADER_DIRS, *fp.SCRIPT_DIRS, *fp.LEGACY_DIRS]:
         for n, name in top_level(files, d):

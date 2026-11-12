@@ -99,6 +99,7 @@ test_cpu_gpu_optimizations.py
 test_cpu_optimizations.py
 test_crystal_overlay_gpu.py
 test_custom_pack_inputs.py
+test_cutout_cache_detail.py
 test_dalaran_candle_geometry.py
 test_detail_doodad_shadow.py
 test_dev_tuning_build.py
@@ -171,6 +172,7 @@ test_geometry_orbit.py
 test_geometry_retry.py
 test_gi_fallback_gpu.py
 test_gi_quality.py
+test_gi_receiver_fallback_gpu.py
 test_gi_settings_dependencies.py
 test_gi_trig.py
 test_glue_emitters.py
@@ -389,6 +391,7 @@ test_prepare_native_scene.py
 test_prepare_worker.py
 test_probe_blend.py
 test_probe_blend_equivalence.py
+test_probe_cache_recycling.py
 test_probe_grid_math.py
 test_probe_moment_pack.py
 test_probe_pool_dispatch.py
@@ -398,6 +401,7 @@ test_probe_sphere.py
 test_probe_texture_upload.py
 test_production_draw_timers.py
 test_progressive_gi_worker.py
+test_project_harness.py
 test_projected_draw_audit_gpu.py
 test_quality_docs.py
 test_quality_settings.py

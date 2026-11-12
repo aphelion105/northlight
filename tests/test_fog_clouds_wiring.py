@@ -10,9 +10,7 @@ import json
 import hashlib
 import re
 
-w=fp.src('world_renderer.h').read_text(encoding='utf-8')
-for resource in ('world_screen_resources.inl','world_geometry_resources.inl'):
-    w+='\n'+fp.src(resource).read_text(encoding='utf-8')
+w=fp.src('world_renderer.h').read_text()
 h=(fp.SHADERS/'world_effects.hlsl').read_text()
 py=(fp.REPO/'scripts'/'shaders'/'compile_world_shaders.py').read_text()
 manifest=json.loads((fp.SHADERS/'world-shader-build.json').read_text())['shaders']
@@ -20,7 +18,7 @@ checks={}
 for entry in ('WorldFogActor','FogCloudsActor'):
  item=manifest[entry]
  checks[entry+': bounded extended variant and generated runtime slot requirement']=(512<item['static_instruction_slots']<=600 and item['temporary_registers']<=32 and item['sha256']==hashlib.sha256((fp.COMPILED/(entry+'.bin')).read_bytes()).hexdigest() and f"k{entry}ShaderSlots = {item['static_instruction_slots']}" in fp.src('world_compiled_shaders.h').read_text())
-checks['cpp: exact actor variants require device slots and release with baseline']=('caps.MaxPixelShader30InstructionSlots>=std::max(kWorldFogActorShaderSlots,kFogCloudsActorShaderSlots)' in w and 'drop(fogActorPS);drop(fogCloudsActorPS);' in w)
+checks['cpp: exact actor variants require device slots and release with baseline']=('fogCaps.MaxPixelShader30InstructionSlots>=std::max(kWorldFogActorShaderSlots,kFogCloudsActorShaderSlots)' in w and 'drop(fogActorPS);drop(fogCloudsActorPS);' in w)
 checks['hlsl: baseline and integrated entries are explicit']=all(t in h for t in ('return worldFog(uv,false);','return worldFog(uv,true);','return fogClouds(uv,false);','return fogClouds(uv,true);'))
 fc=manifest.get('FogClouds',{})
 names=re.findall(r'\("(\w+)", "[vp]s_3_0"\)',py)
@@ -66,7 +64,7 @@ checks['cpp: volume created lazily, L8 with an A8R8G8B8 fallback, honours the pi
 checks['cpp: shader created non-fatally, shader and volume released with the others']=(
     'CreatePixelShader(kFogCloudsShader,&fogCloudsPS)' in w and 'drop(fogCloudsPS);drop(cloudNoise);' in w)
 checks['cpp: frame derived from the settings; active only with the fog effect, no debug view, noise and shader ready']=(
-    'NorthlightFogClouds::derive(a.imported.valid?0:quality.fogClouds,unsigned(std::lround(float(quality.fogCloudDensity)*denseDamp)),wx.fog,c[31][3],cloudWind,context.camera,fogCloudNoise().ready.load(std::memory_order_acquire)?&fogCloudNoise().quantiles:nullptr,cloudLush)' in w and
+    'NorthlightFogClouds::derive(quality.fogClouds,unsigned(std::lround(float(quality.fogCloudDensity)*denseDamp)),wx.fog,c[31][3],cloudWind,context.camera,fogCloudNoise().ready.load(std::memory_order_acquire)?&fogCloudNoise().quantiles:nullptr,cloudLush)' in w and
     'cf.active=cf.active&&effects.fog&&debug==0&&fogCloudsPS&&ensureCloudNoise();' in w and w.index('c[31][3]=NorthlightRegionalFog::nightFactor')<w.index('NorthlightFogClouds::derive('))
 checks['cpp: c59.y and c60..c63 written only while active, by shaderConstants (0.3.200: c60.x, the interval, only at a reduced level and while active)']=(
     w.count('if(cf.active){\n            NorthlightFogClouds::shaderConstants(cf,&c[59]);')==1 and re.findall(r'c\[(6[0-3])\]\[(\d)\]=',w)==[('60','0')] and 'if(gpuBudgetLevel){if(cf.active)c[60][0]=NorthlightGpuBudget::spacingDelta(' in w and 'c[59][1]' not in w)

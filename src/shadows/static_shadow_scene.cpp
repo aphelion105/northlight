@@ -1,5 +1,6 @@
 #include "utf8_path.h"
 #include "static_shadow_scene.h"
+#include "shadow_cascades.h"
 #include "cpu_retirement.h"
 #include <algorithm>
 #include <array>
@@ -109,7 +110,7 @@ public:
             if(!a.valid)continue;
             auto overlaps=[&](Vec3 axis,float reach){float projected=std::fabs(axis.x)*extent.x+std::fabs(axis.y)*extent.y+std::fabs(axis.z)*extent.z;return std::fabs(NorthlightGI::dot(delta,axis))<=reach+margin+projected;};
             // Same symmetric +/-640 depth; axes depend on light, never camera.
-            if(overlaps(a.right,240)&&overlaps(a.up,240)&&overlaps(a.direction,640))return true;
+            if(overlaps(a.right,NorthlightShadowCascades::StaticRadius)&&overlaps(a.up,NorthlightShadowCascades::StaticRadius)&&overlaps(a.direction,640))return true;
         }
         return false;
     }
@@ -342,11 +343,18 @@ struct Streamer::State {
         }
         if(dirty)index();
         Stamp selectionStart=Clock::now();std::set<Identity> candidates;
+        // This request is pivot-centred: sqrt(2*360^2+640^2)+96 < 928.
+        // Keep the existing metadata/cell window and its warm reuse.
         const float reach=928.f;int x0=int(std::floor((r.center.x-reach)/limits.cellSize)),x1=int(std::floor((r.center.x+reach)/limits.cellSize));int y0=int(std::floor((r.center.y-reach)/limits.cellSize)),y1=int(std::floor((r.center.y+reach)/limits.cellSize));
         for(int y=y0;y<=y1;++y)for(int x=x0;x<=x1;++x){auto it=cells.find({x,y});if(it!=cells.end())candidates.insert(it->second.begin(),it->second.end());}candidates.insert(giants.begin(),giants.end());
         std::vector<Placement> chosen;std::map<std::string,float> priority;std::set<std::string> needed;
         SelectionVolume volume(r); // Light-space axes depend on this request, never on the placement.
-        for(const auto& id:candidates){const auto& p=placements.at(id);if(!volume.contains(p.low,p.high))continue;chosen.push_back(p);needed.insert(p.modelKey);float d=distance2((p.low+p.high)*.5f,r.center);auto it=priority.find(p.modelKey);if(it==priority.end()||d<it->second)priority[p.modelKey]=d;}
+        for(const auto& id:candidates){const auto& p=placements.at(id);if(!volume.contains(p.low,p.high))continue;chosen.push_back(p);needed.insert(p.modelKey);
+            // Distance ordering is only for outstanding loads. Warm resident
+            // models keep their draw/retention membership without rebuilding
+            // an unused per-placement priority tree.
+            if(models.count(p.modelKey)||failedModels.count(p.modelKey))continue;
+            float d=distance2((p.low+p.high)*.5f,r.center);auto it=priority.find(p.modelKey);if(it==priority.end()||d<it->second)priority[p.modelKey]=d;}
         lastNeeded=needed;
         for(const auto& key:needed){auto it=models.find(key);if(it!=models.end()){it->second.used=now;++stats.modelReuses;}}
         std::vector<std::pair<float,std::string>> queue;for(const auto& p:priority)if(!models.count(p.first)&&!failedModels.count(p.first))queue.emplace_back(p.second,p.first);std::sort(queue.begin(),queue.end());stats.pendingModels=uint32_t(queue.size());stats.selectionMs+=ms(selectionStart);

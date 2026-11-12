@@ -12,6 +12,7 @@ import re
 import subprocess
 
 w=fp.src('world_renderer.h').read_text()
+resources=fp.src('world_screen_resources.inl').read_text()
 h=(fp.SHADERS/'world_effects.hlsl').read_text()
 py=(fp.REPO/'scripts'/'shaders'/'compile_world_shaders.py').read_text()
 q=fp.src('quality_settings.h').read_text()
@@ -64,13 +65,13 @@ checks['host: FogBlur closes both quads inside the active-fog guard, before c34/
     and maxMarks==44 and len(set(re.findall(r'profile->mark\("(\w+)"\)',w)))+8+8<=maxMarks)
 products=w[w.index('void captureProducts('):w.index('bool captureSkippedDiagnostic(')]
 checks['host: composite and current-frame diagnostic product read the final buffer']=(
-    'SetTexture(9,fogResolved?fogBlurred:fog);d->SetPixelShader(baseComposite?hdrBasePS:hdrMode?hdrFinalPS:finalPS)' in g
+    'SetTexture(9,fogResolved?fogBlurred:fog?fog:neutralAO);d->SetPixelShader(baseComposite?hdrBasePS:hdrMode?hdrFinalPS:finalPS)' in g
     and 'diagnosticFogResolved=fogResolved;' in g and 'captureProducts(directory,capture,rendererFrame,w,h,true);' in g
     and 'ready=current&&composited&&lastRenderDebug==0;' in products
     and 'image("fog",diagnosticFogResolved?fogBlurredSurface:fogSurface,ready&&effects.fog&&uploadedFogField,w/2,h/2,D3DFMT_A16B16G16R16F);' in products
     and 'NorthlightWorldDiagnostics::product(' in products)
 checks['host: history target created with the others, dropped and invalidated in releaseGPU; shader optional']=(
-    '&fogHistory,&fogHistorySurface)' in w and 'drop(fogHistorySurface);drop(fogHistory);drop(fogTemporalPS);fogHistoryValid=fogNeutral=fogHistoryNeutral=false;' in w and 'fogTemporalPS=nullptr;logf("WORLD fog temporal disabled' in w)
+    'image(D3DFMT_A16B16G16R16F,fogHistory,fogHistorySurface)' in resources and 'drop(fogHistorySurface);drop(fogHistory);drop(fogTemporalPS);fogHistoryValid=fogNeutral=fogHistoryNeutral=false;' in w and 'if(!fogTemporalPS&&FAILED(d->CreatePixelShader(kFogTemporalShader,&fogTemporalPS)))fogTemporalPS=nullptr;' in resources)
 checks['host: no per-draw work (nothing in src/stream or src/proxy mentions it)']=all(
     not re.search(r'fogTemporal|FogTemporal|fogHistory',p.read_text(errors='ignore')) for d in ('stream','proxy') for p in (fp.REPO/'src'/d).rglob('*') if p.is_file())
 for k,ok in checks.items():print(('PASS ' if ok else 'FAIL ')+k)

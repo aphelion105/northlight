@@ -1,5 +1,11 @@
 # Tests
 
+Start with [the validation harness](../docs/development.md#validation-harness).
+Named `source`, `architecture`, `gpu` and `packaging` suites are defined in
+[suites.json](suites.json). Use `--strict` for acceptance and `--list` to inspect
+prerequisites without running tools. JSON results bind coverage to the input tree;
+STALE and INCOMPLETE reports do not establish a passing gate.
+
 About 180 `tests/test_*.py` files. Each is a plain script that exits non-zero on failure. Many build
 a native C++ harness (`tests/test_<name>.cpp`, `tests/*.h` or an inline string) against the
 production headers in `src/` and `shaders/`. The whole suite takes about 13 minutes: run it for a
@@ -40,7 +46,7 @@ The selection errs towards too many tests, never too few. The heuristic is docum
 ```sh
 python3 scripts/run_tests.py                     # all tests/test_*.py, 4 at a time, nice 15
 python3 scripts/run_tests.py --require client    # a missing client FAILs instead of SKIPping
-python3 scripts/run_tests.py --record 0.3.158    # reports go to renderer/records/validation-0.3.158
+python3 scripts/run_tests.py --record 0.3.158    # unique runs under renderer/records/validation-0.3.158/
 ```
 
 Reports go to `out/test-output/<run>/<test>/` (logs in `out/test-output/<run>/logs/`). Nothing is

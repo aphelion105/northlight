@@ -1594,6 +1594,7 @@ private:
             LONGLONG aoBlurSetup=0,aoBlurSubmit=0;
             {CpuScope timing(timeAOBlur?&aoBlurSetup:nullptr);
              if (error(ext->SetRenderTarget(0,aoSurface),"AO blur render target")) return;
+             NorthlightEffectCoverage::Capture::bind(ext,effectCoverage.aoTexture(ext,saved.targets[0]));
              bindLegacyFog();ext->SetTexture(2,aoRaw);ext->SetTexture(0,aoRaw);ext->SetPixelShader(!waterMask&&aoBlurNoWaterPS?aoBlurNoWaterPS:aoBlurPS);}
             // Separate state/resource preparation from the draw interval. Both
             // timestamps still include command-stream gaps and dependencies.

@@ -32,7 +32,7 @@ assert r.count('captureGameDraw<NorthlightWaterRenderer::')==4,'all four adapter
 # Consumers of fresh replays on the render path.
 for needle,what in [('if(replayShadows)selectShadowReplays();','selection history + fate frame'),
                     ('(replayShadows&&!timedReplay())','GPU cache LRU/probation clock'),
-                    ('if(effects.shadows&&replayShadows){auto proofs','static dedup proofs/cursor'),
+                    ('if(directionalShadows&&replayShadows){auto proofs','static dedup proofs require the selected directional provider'),
                     ('if(directionalReplayBounds)pointCalculateReplayBounds();','directional bounds cache resume cursors'),
                     ('renderPointShadows(atmosphere.lights,replaysComplete,actorShadows,rendererFrame)','point cube schedule'),
                     ('if(!environmentReuse){if(splitNear||captureMode==CaptureFresh||!actorShadows)reuse.commit(interval,shadowPasses,matrices[cascade]);else captureDemand=true;}','cascade commit')]:
@@ -44,7 +44,7 @@ assert render.count('uploadReplay(')==1 and render.count('timedReplay()')==1,'re
 body=pt[pt.index('    bool renderPointShadow(const NorthlightLocalLights::Light& light,bool fresh=true,bool withReplays=true){'):pt.index('    bool renderPointLighting(')]
 assert body.index('if(!fresh){')<body.index('pointSlot().schedule.commit('),'no point commit from a skipped frame'
 assert body.index('if(!fresh){')<body.index('if(withReplays)replayBoundsRequest();')<body.index('replayBoundsJoin();'),'point bounds belong to actual fresh cube refreshes'
-assert 'const bool directionalReplayBounds=replayShadows&&(sourceActive[0]||sourceActive[1]);' in render
+assert 'const bool directionalReplayBounds=directionalShadows&&replayShadows&&(sourceActive[0]||sourceActive[1]);' in render
 assert 'if(directionalReplayBounds)replayBoundsKick();' in render
 flash=fp.src('world_flash_rendering.inl').read_text()
 flash=flash[flash.index('    void renderFlashShadows('):]

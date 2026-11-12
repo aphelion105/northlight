@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <iterator>
 #include <list>
 #include <mutex>
 #include <type_traits>
@@ -25,14 +26,14 @@ struct ProbeGridKey {
 // Solved request grid around the camera (cells of 8 units): n x n horizontal,
 // nz vertical, in a cubic wrapping atlas of `atlas` cells per axis. Both window
 // extents stay 2 below the atlas so world keys never wrap onto each other.
-// 0.3.153 GIDistance: n is runtime (10..22 even), configured once before the
+// 0.3.153 GIDistance: n is runtime (10..40 even), configured once before the
 // worker starts and fixed for the process; n=14 is the 0.3.151 14^3 in 16^3.
 struct ProbeLayout {
     unsigned n=14,nz=14,atlas=16;
     unsigned count()const{return n*n*nz;}
     size_t atlasSize()const{return size_t(atlas)*atlas*atlas;}
 };
-inline constexpr unsigned ProbeGridNz=14,ProbeGridMaxN=22;
+inline constexpr unsigned ProbeGridNz=14,ProbeGridMaxN=40;
 inline ProbeLayout probeLayoutFor(unsigned n){ProbeLayout l;l.n=n;l.atlas=std::max(n,ProbeGridNz)+2;return l;}
 inline bool validProbeLayout(const ProbeLayout& l){
     return l.n>=2&&l.n%2==0&&l.nz>=2&&l.nz%2==0&&l.n<=ProbeGridMaxN&&l.n+2<=l.atlas&&l.nz+2<=l.atlas&&l.atlas<=ProbeGridMaxN+2;
@@ -140,12 +141,17 @@ public:
     }
     // Only after get() returned false and before this cache is changed.
     void putMissing(ProbeGridKey key,const Probe& value) {
+        if(entries_.size()==capacity_) {
+            // reserve(capacity_) keeps reinsertion below the rehash threshold.
+            // Recycle both nodes: a rolling solve window needs no allocations.
+            auto oldest=std::prev(entries_.end());
+            auto node=lookup_.extract(oldest->key);
+            node.key()=key;lookup_.insert(std::move(node));
+            *oldest={key,value};entries_.splice(entries_.begin(),entries_,oldest);return;
+        }
         entries_.push_front({key,value});
         try{lookup_.emplace(key,entries_.begin());}
         catch(...){entries_.pop_front();throw;}
-        if(entries_.size()>capacity_) {
-            lookup_.erase(entries_.back().key);entries_.pop_back();
-        }
     }
     // Membership without touching LRU order (GIThreads prefetch; 0.3.138).
     bool contains(ProbeGridKey key)const{return lookup_.count(key)!=0;}

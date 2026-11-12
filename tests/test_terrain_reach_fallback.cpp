@@ -143,13 +143,13 @@ int main(){
      assert(choose(s,Ext,1000+BackoffMs-1,5000*GM::MiB,419*GM::MiB).reach==MidReach);                      // hold not over
      assert(choose(s,Ext,1000+BackoffMs,963*GM::MiB,419*GM::MiB).reach==MidReach);                         // hold over, margin missing
      auto c=choose(s,Ext,1000+BackoffMs,964*GM::MiB,419*GM::MiB);assert(c.reach==Ext&&c.tierChanged&&s.tier==0);}
-    // Profile 1856 and 928 zones, and mixed zones sharing the state.
+    // Profile 1856 and 1120 zones, and mixed zones sharing the state.
     {State s;auto c=choose(s,MidReach,0,819*GM::MiB,256*GM::MiB);assert(c.reach==BaseReach&&c.tierChanged&&c.tierFrom==MidReach);
      c=choose(s,MidReach,1,5000*GM::MiB,0);assert(c.reach==BaseReach);                                       // hold applies
      c=choose(s,MidReach,BackoffMs,884*GM::MiB,96*GM::MiB);assert(c.reach==MidReach&&s.tier==0);
      assert(choose(s,MidReach,BackoffMs+1,820*GM::MiB,96*GM::MiB).reach==MidReach);}                      // 1856 never asks for the 4096 rule
     {State s;auto c=choose(s,BaseReach,0,1*GM::MiB,0);assert(c.reach==BaseReach&&!c.tierChanged&&s.tier==0);}
-    {State s;choose(s,Ext,0,819*GM::MiB,256*GM::MiB);                                                       // tier 928 from a 4096 zone
+    {State s;choose(s,Ext,0,819*GM::MiB,256*GM::MiB);                                                       // tier 1120 from a 4096 zone
      auto c=choose(s,MidReach,1,5000*GM::MiB,512*GM::MiB);assert(c.reach==BaseReach&&!c.tierChanged);       // 1856 zone shares the lowered tier: hold applies
      assert(choose(s,BaseReach,2,0,0).reach==BaseReach);}
     // Unknown memory: no memory rule, profile reach, state untouched.
@@ -162,7 +162,7 @@ int main(){
      auto c=choose(s,Ext,11,3000*GM::MiB,512*GM::MiB);assert(c.reach==BaseReach&&c.reduced&&!c.tierChanged);
      c=choose(s,Ext,10+BackoffMs,963*GM::MiB,512*GM::MiB);assert(c.reach==MidReach&&!c.reduced&&c.restored); // refusal cleared; the tier margin caps the raise at 1856
      c=choose(s,Ext,10+2*BackoffMs,964*GM::MiB,512*GM::MiB);assert(c.reach==Ext&&!c.restored&&s.tier==0);
-     assert(memoryRefused(s,MidReach,20+3*BackoffMs));}                                                     // a refused 1856 build also falls to 928
+     assert(memoryRefused(s,MidReach,20+3*BackoffMs));}                                                     // a refused 1856 build also falls to 1120
     // A sample 48 MiB below entry still passes the smaller after-BVH floor.
     assert(GM::admits({Entry-48*GM::MiB,502*GM::MiB,true},GM::inBuildBudget())&&!GM::admits({Entry-48*GM::MiB,502*GM::MiB,true},GM::buildBudget()));
     std::cout<<"terrain reach fallback PASS\n";

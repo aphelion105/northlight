@@ -28,7 +28,7 @@ try:
 float4 ProbeInfo:register(c80);
 float4 PcssProbe(float2 uv:TEXCOORD0):COLOR0{
  float3 lp=float3((uv.x-.5)*.06,(.5-uv.y)*.06,.6);
- return shadowMapFiltered(lp,ProbeInfo.z>.5,ProbeInfo.z>.5?48:192,ProbeInfo.xy,ProbeInfo.w>.5).xxxx;
+ return shadowMapFiltered(lp,ProbeInfo.z>.5,ProbeInfo.z>.5?48:288,ProbeInfo.xy,ProbeInfo.w>.5).xxxx;
 }
 ''')
     compiler=Compiler(allow_compatible_binary=True);compiler.compile(source,'PcssProbe','ps_3_0',out/'probe.bin')

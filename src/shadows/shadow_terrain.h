@@ -2,6 +2,7 @@
 // Worker-side, asset-derived distant shadow casters. Does not extend the GI
 // BVH, change celestial directions, or depend on the camera's viewing angle.
 #include "world_mesh_plan.h"
+#include "shadow_cascades.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -11,15 +12,10 @@
 
 namespace NorthlightShadowTerrain {
 using NorthlightGI::Vec3;
-constexpr float Radius=928.f;
+constexpr float Radius=NorthlightShadowCascades::TerrainRadius;
 constexpr float LocalHorizontal=288.f,LocalVertical=320.f;
-// Far cached cascade: radius 240 including its margin, depth half-span 640.
-// Its enclosing sphere is <725u. Add 80u maximum camera orbit distance and
-// 96u publication/upload applicability margin: 928u covers every direction.
-// 0.3.169: the render thread holds a snapshot past 96u until its replacement
-// applies (hard limit 160u, world_streaming.h). Between 123u and 160u, low-sun
-// terrain casters at the extreme far-cascade corner can be missing for up to
-// one build; the near cascade stays inside the local box.
+// Encloses the 360-unit cached far footprint, +/-640 light depth,
+// 80-unit orbit and the complete 160-unit publication hold at every direction.
 constexpr double Origin=17066.666666666666,Chunk=100.0/3.0;
 inline std::pair<int,int> chunk(Vec3 a,Vec3 b,Vec3 c){
     const double x=std::floor((Origin-(double(a.y)+b.y+c.y)/3)/Chunk);
@@ -83,9 +79,9 @@ template<class Scene> inline bool buildImpl(const NorthlightGI::WorldScene& loca
                   Vec3 center,NorthlightWorldMesh::WorldMeshUploadPlan& output,std::string& error,
                   const NorthlightGI::AllocationAdmission& admit,float radius,
                   const NorthlightWorldMesh::PlanOrder& order,bool pagingOnly,
-                  const NorthlightGI::BVH* sharedLocal,NorthlightWorldMesh::PreparationCache* preparation,const NorthlightGI::WorldScene* pointOnly,bool& reserveRefused,NorthlightGI::WorldScene* consume=nullptr,bool spooled=false){
+                  const NorthlightGI::BVH* sharedLocal,NorthlightWorldMesh::PreparationCache* preparation,const NorthlightGI::WorldScene* pointOnly,bool& reserveRefused,NorthlightGI::WorldScene* consume=nullptr,bool spooled=false,float localHorizontal=LocalHorizontal){
     try {
-    const Vec3 low=center-Vec3(LocalHorizontal,LocalHorizontal,LocalVertical),high=center+Vec3(LocalHorizontal,LocalHorizontal,LocalVertical);
+    const Vec3 low=center-Vec3(localHorizontal,localHorizontal,LocalVertical),high=center+Vec3(localHorizontal,localHorizontal,LocalVertical);
     auto allowed=[&](uint64_t bytes){if(!admit||admit(bytes))return true;error="Geometry allocation deferred";return false;};
     auto merged=[&](){if constexpr(std::is_same_v<Scene,NorthlightGI::WorldScene>)return std::make_shared<Scene>();else return std::make_shared<Scene>(&admit,spooled);}();
     // Reserve final upper bounds once; do not copy then immediately reallocate.
@@ -227,20 +223,20 @@ inline bool build(const NorthlightGI::WorldScene& local,const NorthlightGI::Worl
                   Vec3 center,NorthlightWorldMesh::WorldMeshUploadPlan& output,std::string& error,
                   const NorthlightGI::AllocationAdmission& admit = {},float radius=Radius,
                   const NorthlightWorldMesh::PlanOrder& order = {},bool pagingOnly=false,
-                  const NorthlightGI::BVH* sharedLocal=nullptr,NorthlightWorldMesh::PreparationCache* preparation=nullptr,const NorthlightGI::WorldScene* pointOnly=nullptr,bool spooled=false){
+                  const NorthlightGI::BVH* sharedLocal=nullptr,NorthlightWorldMesh::PreparationCache* preparation=nullptr,const NorthlightGI::WorldScene* pointOnly=nullptr,bool spooled=false,float localHorizontal=LocalHorizontal){
     bool refused=false;
-    if(spooled)return buildImpl<NorthlightWorldMesh::ChunkedShadowScene>(local,terrain,center,output,error,admit,radius,order,pagingOnly,sharedLocal,nullptr,pointOnly,refused,nullptr,true);
-    if(buildImpl<NorthlightGI::WorldScene>(local,terrain,center,output,error,admit,radius,order,pagingOnly,sharedLocal,preparation,pointOnly,refused))return true;
+    if(spooled)return buildImpl<NorthlightWorldMesh::ChunkedShadowScene>(local,terrain,center,output,error,admit,radius,order,pagingOnly,sharedLocal,nullptr,pointOnly,refused,nullptr,true,localHorizontal);
+    if(buildImpl<NorthlightGI::WorldScene>(local,terrain,center,output,error,admit,radius,order,pagingOnly,sharedLocal,preparation,pointOnly,refused,nullptr,false,localHorizontal))return true;
     if(!pagingOnly||!refused)return false;
     if(preparation)preparation->reset();
-    return buildImpl<NorthlightWorldMesh::ChunkedShadowScene>(local,terrain,center,output,error,admit,radius,order,pagingOnly,sharedLocal,nullptr,pointOnly,refused);
+    return buildImpl<NorthlightWorldMesh::ChunkedShadowScene>(local,terrain,center,output,error,admit,radius,order,pagingOnly,sharedLocal,nullptr,pointOnly,refused,nullptr,false,localHorizontal);
 }
 inline bool buildConsuming(const NorthlightGI::WorldScene& local,NorthlightGI::WorldScene& terrain,
                   Vec3 center,NorthlightWorldMesh::WorldMeshUploadPlan& output,std::string& error,
                   const NorthlightGI::AllocationAdmission& admit,float radius,
-                  const NorthlightWorldMesh::PlanOrder& order,const NorthlightGI::BVH* sharedLocal,bool spooled=false){
+                  const NorthlightWorldMesh::PlanOrder& order,const NorthlightGI::BVH* sharedLocal,bool spooled=false,float localHorizontal=LocalHorizontal){
     if(!terrain.vertices.chunked()||!terrain.triangles.chunked()){error="Consuming shadow terrain requires chunked geometry";return false;}
     bool refused=false;
-    return buildImpl<NorthlightWorldMesh::ChunkedShadowScene>(local,terrain,center,output,error,admit,radius,order,true,sharedLocal,nullptr,nullptr,refused,&terrain,spooled);
+    return buildImpl<NorthlightWorldMesh::ChunkedShadowScene>(local,terrain,center,output,error,admit,radius,order,true,sharedLocal,nullptr,nullptr,refused,&terrain,spooled,localHorizontal);
 }
 } // namespace NorthlightShadowTerrain

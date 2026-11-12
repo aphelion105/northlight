@@ -41,6 +41,48 @@ int main(int argc,char** argv){
         const bool floor=std::string(entry).find("MoonFloor")==0;
         const bool imported=std::string(entry).find("Forever")==0;
         ok(d->SetTexture(14,imported?static_cast<IDirect3DBaseTexture9*>(volume):textures[14]));
+        if(imported){
+            // A phase function redistributes unit incident energy over 4*pi sr.
+            // Integrate the production shader, independently of its HG formula.
+            constexpr double pi=3.14159265358979323846;
+            constexpr unsigned samples=96;
+            float c[116][4]{};c[89][0]=c[89][1]=1;
+            c[0][0]=c[0][1]=1.f/size;c[0][2]=.5f;c[0][3]=1000;
+            c[1][0]=c[1][1]=1e12f;c[1][2]=1;c[2][0]=1;
+            c[3][1]=c[4][2]=c[5][0]=1;c[6][3]=1;c[15][2]=20;
+            c[14][2]=.5f;c[14][3]=1;c[21][0]=1;c[27][0]=1;
+            c[31][0]=c[31][1]=-256;c[31][2]=1.f/512;
+            bind(1,rgba(1000.f/999.5f*(1-.5f/100),0,0,0));
+            bind(3,rgba(1,0,0,0));bind(13,rgba(0,0,0,1.25f));
+            for(float g:{-.9f,-.5f,0.f,.5f,.9f}){
+                NorthlightForever::Frame f;auto& l=f.layer[0];
+                l.p[1]=.52f;l.flag[3]=1;l.p[9]=1;l.p[10]=g;
+                for(float& color:l.color[0])color=1;
+                float bank[38][4];NorthlightForever::constants(f,bank,128,1);
+                ok(d->SetPixelShaderConstantF(116,bank[0],38));
+                double energy=0;
+                for(unsigned i=0;i<samples;++i){
+                    // Gauss-Legendre quadrature resolves the narrow forward lobe.
+                    double mu=std::cos(pi*(i+.75)/(samples+.5)),derivative=0;
+                    for(unsigned iteration=0;iteration<16;++iteration){
+                        double p=1,previous=0;
+                        for(unsigned n=1;n<=samples;++n){const double next=((2*n-1)*mu*p-(n-1)*previous)/n;previous=p;p=next;}
+                        derivative=samples*(mu*p-previous)/(mu*mu-1);
+                        const double step=p/derivative;mu-=step;if(std::abs(step)<1e-14)break;
+                    }
+                    const double weight=2/((1-mu*mu)*derivative*derivative);
+                    c[16][0]=float(mu);c[16][1]=float(std::sqrt(1-mu*mu));
+                    ok(d->SetPixelShaderConstantF(0,c[0],116));
+                    ok(d->BeginScene());ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(Vertex)));ok(d->EndScene());
+                    ok(d->GetRenderTargetData(target,staging));D3DLOCKED_RECT lock{};
+                    ok(staging->LockRect(&lock,nullptr,D3DLOCK_READONLY));float value[4];std::memcpy(value,lock.pBits,16);ok(staging->UnlockRect());
+                    if(!std::isfinite(value[0])||std::abs(value[3]-std::exp(-.52))>4e-4){std::fprintf(stderr,"FAIL %s energy probe extinction\n",entry);return 1;}
+                    energy+=2*pi*weight*value[0]/(1-value[3]);
+                }
+                if(!std::isfinite(energy)||std::abs(energy-1)>4e-4){std::fprintf(stderr,"FAIL %s phase integral g=%g actual=%.9g expected=1\n",entry,g,energy);return 1;}
+                ++cases;
+            }
+        }
         for(float g:{0.f,.9f,-.5f})for(float cosine:{-1.f,0.f,1.f})for(float height:{-1.f,2.f,20.f,160.f})for(float density:{0.f,1.f,1.3f,1.8f})for(float distance:{2.f,40.f,100.f})for(bool blocked:{false,true})for(bool moon:{false,true}){
             if(!imported&&(g!=0||cosine!=1))continue;
             if(floor&&!moon)continue; // The host selects the floor pass only for moonlight.
@@ -76,7 +118,7 @@ int main(int argc,char** argv){
                 for(unsigned k=0;k<4;++k){const double legacyExpected=k==3?transmission:ambient[k]*.35*(1-transmission)+direct[k]*5.16*phase*weight*cap;
                     const double it=height>=0?std::exp(-.0052*density*distance):1;
                     const double il=std::pow((.5+.055)/1.055,2.4),ia=std::pow((.25+.055)/1.055,2.4);
-                    const double expected=imported?(k==3?it:(ia+(blocked?0:il*(1-double(g)*g)/std::pow(1+double(g)*g-2*double(g)*cosine,1.5)))*(1-it)):legacyExpected;
+                    const double expected=imported?(k==3?it:(ia+(blocked?0:il*(1-double(g)*g)/(4*3.14159265358979323846*std::pow(1+double(g)*g-2*double(g)*cosine,1.5))))*(1-it)):legacyExpected;
                     double error=std::abs(value[k]-expected);maximum=std::max(maximum,error);
                     if(!std::isfinite(value[k])||error>4e-4*std::max(1.,std::abs(expected))){std::fprintf(stderr,"FAIL %s height=%g density=%g distance=%g blocked=%d moon=%d channel=%u actual=%g expected=%g\n",entry,height,density,distance,int(blocked),int(moon),k,value[k],expected);return 1;}
                 }
@@ -85,7 +127,41 @@ int main(int argc,char** argv){
         }
         ok(d->SetPixelShader(nullptr));shader->Release();
     }
-    std::printf("PASS atmospheric fog GPU: %u cases, max error %.9g; ground sunlight, blocked rays, density, finite height, near fade, moon response\n",cases,maximum);
+    // The same linear fog must transport the same radiance in SDR and HDR.
+    // Include the old encoded-fog contract, neutral fog, sky and protected rain.
+    auto decode=[](double v){return v<=.04045?v/12.92:std::pow((v+.055)/1.055,2.4);};
+    auto encode=[](double v){return v<=.0031308?v*12.92:1.055*std::pow(v,1/2.4)-.055;};
+    unsigned compositeCases=0;
+    for(const char* entry:{"WorldComposite","WorldUnlitComposite","WorldPrelitComposite","WorldCompositeHdr","WorldUnlitCompositeHdr","WorldPrelitCompositeHdr"}){
+        const auto code=read(std::string(argv[1])+"/"+entry+".bin");IDirect3DPixelShader9* shader=nullptr;
+        ok(d->CreatePixelShader(reinterpret_cast<const DWORD*>(code.data()),&shader));ok(d->SetPixelShader(shader));
+        const bool hdr=std::string(entry).find("Hdr")!=std::string::npos;
+        for(float background:{0.f,.2f,.8f})for(float strength:{0.f,.04f,1.8f})for(float transmission:{0.f,.7f,1.f})for(float depth:{.5f,1.f})for(bool rain:{false,true})for(bool imported:{false,true}){
+            float c[116][4]{};c[0][0]=c[0][1]=1.f/size;c[0][2]=.2f;c[0][3]=1000;
+            c[1][0]=c[1][1]=c[1][2]=c[2][0]=1;c[25][1]=c[25][2]=1;
+            c[33][0]=c[33][1]=c[33][2]=c[33][3]=size;c[78][3]=imported?1.f:0.f;
+            for(unsigned s=0;s<16;++s)bind(s,rgba(0,0,0,0));
+            const float source[]={background,background*.6f,background*.3f},fog[]={strength,strength*.5f,strength*.2f};
+            bind(0,rgba(source[0],source[1],source[2],1));bind(1,rgba(depth,0,0,0));
+            if(hdr)bind(2,rgba(float(decode(source[0])),float(decode(source[1])),float(decode(source[2])),1));
+            bind(9,rgba(fog[0],fog[1],fog[2],transmission));bind(10,rgba(0,0,0,1));
+            bind(12,rgba(1,1,1,1));bind(13,rgba(rain?1.f:0.f,0,0,0));
+            ok(d->SetPixelShaderConstantF(0,c[0],116));
+            ok(d->BeginScene());ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(Vertex)));ok(d->EndScene());
+            ok(d->GetRenderTargetData(target,staging));D3DLOCKED_RECT lock{};ok(staging->LockRect(&lock,nullptr,D3DLOCK_READONLY));
+            for(unsigned y=0;y<size;++y)for(unsigned x=0;x<size;++x){float value[4];std::memcpy(value,static_cast<char*>(lock.pBits)+y*lock.Pitch+x*16,16);
+                for(unsigned k=0;k<3;++k){
+                    const double radiance=decode(source[k])*transmission+fog[k];
+                    const double expected=rain?(hdr?decode(source[k]):source[k]):hdr?radiance:imported?encode(radiance):source[k]*transmission+fog[k];
+                    if(!std::isfinite(value[k])||std::abs(value[k]-expected)>4e-4*std::max(1.,expected)){
+                        std::fprintf(stderr,"FAIL %s fog transfer background=%g scatter=%g T=%g depth=%g rain=%d imported=%d channel=%u actual=%g expected=%g\n",entry,background,strength,transmission,depth,int(rain),int(imported),k,value[k],expected);return 1;}
+                }
+            }
+            ok(staging->UnlockRect());++compositeCases;
+        }
+        ok(d->SetPixelShader(nullptr));shader->Release();
+    }
+    std::printf("PASS atmospheric fog GPU: %u transport + %u SDR/HDR composition cases, max error %.9g; unit phase integral, ground sunlight, blocked rays, density, finite height, near fade, moon response\n",cases,compositeCases,maximum);
     for(unsigned s=0;s<16;++s){d->SetTexture(s,nullptr);textures[s]->Release();}
     volume->Release();
     staging->Release();target->Release();d->Release();api->Release();FreeLibrary(module);DestroyWindow(window);UnregisterClassW(wc.lpszClassName,wc.hInstance);
