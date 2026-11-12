@@ -16,6 +16,7 @@ world, point, proxy, probe = read('world_renderer.h'), read('world_point_renderi
 
 # Both shadow shaders bypass every alpha operation at cutoff -1. Native
 # shader masks are enabled only with a nonnegative cutoff and an explicit mode.
+# Fixed alpha testing emits the proved output alpha on RT0; RT1 retains depth.
 for source,material in (('world_effects.hlsl','Material'),('local_light_effects.hlsl','LocalMaterial')):
     text=read(source)
     assert f'if({material}.w>=0)' in text
@@ -25,6 +26,8 @@ for source,material in (('world_effects.hlsl','Material'),('local_light_effects.
     if f'if({material}.x==3)' in text:
         assert 'clip(alpha-(rank+.5)/16);' in text
     assert f'clip(alpha-{material}.w);' in text
+    assert f'if({material}.y>.5){{output.native.a=alpha;return output;}}' in text
+    assert 'float4 depth:COLOR1;' in text
 assert 'p->cutoff=alpha?(float(ref)+(alphaFunc==D3DCMP_GREATER?.5f:0.f))/255.f:shaderCutoff;p->alphaMode=alphaMode;' in world
 assert 'if(skip_&&material_&&p.cutoff<=-1.f)' in read('replay_draw_state.h')
 # Exactly four users (0.3.209: the actor shadow map is a fourth), each with a fixed pixel shader and no other stage-0/PS change inside the loop:
@@ -47,7 +50,8 @@ cube = point[point.index('NorthlightReplayDrawState::Cache replayBindings(d);'):
 for forbidden in ('SetTexture(', 'SetSamplerState(', 'SetPixelShader(', 'SetPixelShaderConstantF(', 'SetRenderState('):
     assert forbidden not in cube, forbidden
 assert 'pointCheck(d->SetPixelShader(pointShadowPS),"cube static PS")' in point
-# Directional pass: LESSEQUAL depth, no blend/alpha test/stencil, all colour channels; every texture unbound on entry.
+# Directional pass baseline: LESSEQUAL depth, no blend/alpha test/stencil, all
+# colour channels. The per-draw native alpha wrapper restores this baseline.
 for state in ('{D3DRS_ZFUNC,D3DCMP_LESSEQUAL}', '{D3DRS_ALPHATESTENABLE,FALSE}', '{D3DRS_ALPHABLENDENABLE,FALSE}', '{D3DRS_STENCILENABLE,FALSE}', '{D3DRS_COLORWRITEENABLE,15}'):
     assert state in world, state
 assert 'for(int i=0;i<14;++i)d->SetTexture(i,nullptr);' in world
@@ -55,7 +59,10 @@ assert 'for(int i=0;i<14;++i)d->SetTexture(i,nullptr);' in world
 for method in ('CreateTexture', 'CreateVolumeTexture', 'CreateCubeTexture'):
     line = next(l for l in proxy.splitlines() if f'HRESULT STDMETHODCALLTYPE {method}(' in l and 'ext->' in l)
     assert 'NorthlightReplayDrawState::noteTextureFormat(Format);' in line, method
-print('PASS preconditions: replay/local shader kill forms, cutoff encoding, three fixed-PS loops (cascade, cube, probe), pass states, float-alpha guard wiring')
+assert 'hr=shadowReplayDraw(*p,' in world
+assert point.count('shadowReplayDraw(')==2  # split and merged point runs
+assert 'const HRESULT hr=NorthlightShadowAlpha::draw(d,p.alphaMode,' in world
+print('PASS preconditions: replay/local alpha outputs, cutoff encoding, fixed-PS loops, native alpha wrapper wiring, pass states, float-alpha guard wiring')
 
 with tempfile.TemporaryDirectory() as tmp:
     for source in ('test_replay_draw_state.cpp', 'test_render_state_caches.cpp'):

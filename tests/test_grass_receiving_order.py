@@ -14,8 +14,8 @@ prepare = renderer[renderer.index('template<class Capture> void prepareDrawImpl(
 assert prepare.index('beforeDraw(vs);') < prepare.index('capture(vs);')
 assert prepare.index('NorthlightTranslucentDepth::isUndo(') < prepare.index('NorthlightTranslucentDepth::shouldResolve(') < prepare.index('capture(vs);')
 hook = renderer[renderer.index('template<class Capture,class Draw> HRESULT drawHook('):renderer.index('    // 0.3.154: blob shadow claim')]
-assert hook.index('prepareDraw(capture,count)') < hook.index('waterMrtDraw(nativeDraw,')
-assert hook.index('prepareDrawImpl(capture,count)') < hook.rindex('waterMrtDraw(nativeDraw,')
+assert hook.count('prepareDrawImpl(capture,count);')==2 and '}else{' in hook
+assert hook.rindex('prepareDrawImpl(capture,count);') < hook.index('waterMrtDraw(nativeDraw,')
 boundary = renderer[renderer.index('void beforeDraw('):renderer.index('    // 0.3.203 (task 17): fallback boundary')]
 assert 'renderEffects();spellReplay();' in boundary
 effects = renderer[renderer.index('void renderEffects()'):renderer.index('    /* The guards of every mask decision')]

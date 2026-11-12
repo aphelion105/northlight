@@ -108,9 +108,9 @@ def compile_gpu(out,source_root=None):
         'executable_sha256':hashlib.sha256(exe.read_bytes()).hexdigest()},indent=2)+'\n')
     return exe
 
-def run_actor(exe,backend,settings,case,mode,out,character_source):
+def run_actor(exe,backend,settings,case,mode,out,character_source,allow_running_game=False):
     from validate_native_scene_trace import processes
-    processes(False);out.mkdir(exist_ok=True)
+    processes(allow_running_game);out.mkdir(exist_ok=True)
     for name in ('character.bin','character-vs.bin','character.json'):
         if (out/name).resolve()!=(character_source/name).resolve():shutil.copyfile(character_source/name,out/name)
     command=[str(exe),str(backend),str(settings)+os.sep,str(case.resolve()),mode,str(out)]
@@ -173,6 +173,7 @@ def benchmark(out,exe,args,backends,baseline_exe=None):
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source-root',type=Path)
+    parser.add_argument('--allow-running-game',action='store_true',help='Explicitly allow independent correctness stands alongside WoW; excludes benchmark runs')
     parser.add_argument('--city-regression',action='store_true',help='Generate all seven actual city fixtures and native bridge evidence, then run night/day/physical-controls integration coverage')
     parser.add_argument('--compile-only',action='store_true')
     parser.add_argument('--backend',type=Path,action='append')
@@ -181,13 +182,14 @@ def main():
     parser.add_argument('--blocked-floor-case',type=Path,action='append',default=[],help='Additional physical negative control: original floor/box/body remain entirely shadowed by the opaque lamp')
     parser.add_argument('--partial-floor-case',type=Path,action='append',default=[],help='Additional original-floor control: metal occludes the moved body/box while part of the initial body silhouette remains visible')
     parser.add_argument('--actor-only',action='store_true',help='Run only explicitly selected actor cases; keep the ordinary lamp matrix separate')
-    parser.add_argument('--actor-soft',action='store_true',help='Require the production soft-shadow resolve and consumer for actor cases')
+    parser.add_argument('--actor-soft',action='store_true',help='Require the production fused soft-shadow consumer for actor cases')
     parser.add_argument('--sunlit',action='store_true',help='Full sun baseline, unchanged 30% direct lamp gain, and sun-energy independence checks')
     parser.add_argument('--legacy-sun-gate',action='store_true',help='Require the pre-fix daylight failure: positive direct lamp light and zero shadow correction')
     parser.add_argument('--benchmark',action='store_true',help='Measure equal selected workloads in balanced baseline/candidate processes, separate from correctness cases')
     parser.add_argument('--baseline-source-root',type=Path,help='Pristine source tree for --benchmark')
     parser.add_argument('--benchmark-hard',action='store_true',help='Measure the hard-shadow consumer instead of PCSS')
     args=parser.parse_args()
+    if args.allow_running_game and args.benchmark:parser.error('--allow-running-game is for correctness checks, not performance measurements')
     if args.city_regression:
         from city_lamp_fixtures import build
         city=build(fp.output_dir()/'city-fixtures')
@@ -205,28 +207,28 @@ def main():
     out=fp.output_dir();cases=[] if args.actor_only or args.benchmark else fixtures(out/'fixtures');character_fixture(out);exe=compile_gpu(out,args.source_root)
     if args.compile_only:return
     from validate_native_scene_trace import processes
-    processes(False)
+    processes(args.allow_running_game)
     backends=args.backend or [Path(os.environ['WINDIR'])/'SysWOW64/d3d9.dll',fp.client_root()/'renderer-backends/dxvk/dxvk_d3d9.dll']
     if args.benchmark:return benchmark(out,exe,args,backends)
     results=[]
     for i,backend in enumerate(backends):
         settings=out/f'settings-{i}';settings.mkdir(exist_ok=True)
         for case in cases:
-            processes(False)
+            processes(args.allow_running_game)
             result=subprocess.run([str(exe),str(backend),str(settings)+os.sep,str(case),'fixture',str(out)],capture_output=True,text=True,env={**os.environ,'DXVK_LOG_PATH':str(out),'DISABLE_VULKAN_OBS_CAPTURE':'1'},timeout=180,cwd=out)
             (out/f'gpu-{i}-{case.name}.log').write_text(result.stdout+result.stderr)
             print(result.stdout+result.stderr,flush=True);assert result.returncode==0
             results.append({'backend':str(backend),'case':str(case),'mode':'fixture','exit_code':result.returncode})
         for case in args.actor_case:
             mode=('actor-day-'+('soft' if args.actor_soft else 'hard')+('-legacy' if args.legacy_sun_gate else '')) if args.sunlit else ('actor-soft' if args.actor_soft else 'actor')
-            results.append(run_actor(exe,backend,settings,case,mode,out/f'actor-{i}-{case.name}',out))
+            results.append(run_actor(exe,backend,settings,case,mode,out/f'actor-{i}-{case.name}',out,args.allow_running_game))
         for mode,controls_cases in (('actor-floor-blocked',args.blocked_floor_case),('actor-floor-partial',args.partial_floor_case)):
             for case in controls_cases:
-                results.append(run_actor(exe,backend,settings,case,mode,out/f'{mode}-{i}-{case.name}',out))
+                results.append(run_actor(exe,backend,settings,case,mode,out/f'{mode}-{i}-{case.name}',out,args.allow_running_game))
         if args.city_regression:
             stormwind=next(case for case in args.actor_case if case.name=='stormwind-street')
             for mode in ('actor-day-soft','actor-day-hard'):
-                results.append(run_actor(exe,backend,settings,stormwind,mode,out/f'{mode}-{i}',out))
-    (out/'validation.json').write_text(json.dumps({'pass':True,'game_launched':False,'command':sys.argv,'source_root':str(args.source_root or fp.REPO),'results':results},indent=2)+'\n')
+                results.append(run_actor(exe,backend,settings,stormwind,mode,out/f'{mode}-{i}',out,args.allow_running_game))
+    (out/'validation.json').write_text(json.dumps({'pass':True,'game_launched':False,'allow_running_game':args.allow_running_game,'command':sys.argv,'source_root':str(args.source_root or fp.REPO),'results':results},indent=2)+'\n')
 
 if __name__=='__main__':main()

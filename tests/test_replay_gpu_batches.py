@@ -25,7 +25,7 @@ assert '    NorthlightGpuScene::NativeClient& replayGpuCache=gpuScene->shadows;'
 bind=world[world.index('auto bindReplay=[&](Replay& p){'):world.index('replayTimeDeferredIndices.clear();',world.index('auto bindReplay=[&](Replay& p){'))]
 scene=fp.src('scene_native_store.h').read_text()
 assert 'sharedReplayGeometry' not in world
-assert 'p.start=p.indexed?at.indexStart:at.vertexBase;p.base=p.indexed?INT(at.vertexBase):0;' in scene
+assert 'p.start=p.indexed?at.indexStart:at.vertexBase;p.base=p.indexed?at.baseVertex():0;p.min=p.indexed?at.minimumVertex():0;' in scene
 assert 'NorthlightReplayGPU::bindResident(replayGpuCache,d,p,allowCache,growthAdmission);' in bind
 assert batched.count('D3DUSAGE_WRITEONLY,0,D3DPOOL_DEFAULT')==2 and batched.count('D3DUSAGE_WRITEONLY,D3DFMT_INDEX32,D3DPOOL_DEFAULT')==2
 # Every buffer is written once, fresh, like the per-mesh buffers: NOOVERWRITE through upload_lock.h (a flags-0 lock drains DXVK's CS thread), never DISCARD.
@@ -36,9 +36,11 @@ for text in (batched,cache):
     assert 'D3DLOCK_DISCARD' not in text and 'D3DLOCK_NOOVERWRITE' not in text and text.count('->Lock(')==len(locks)
 assert len(re.findall(r'->Lock\(',batched))==3 and len(re.findall(r'->Lock\(',cache))==2
 assert '#include "upload_lock.h"' in cache and 'inline constexpr DWORD FreshBufferLock=NoOverwriteFreshBuffers?DWORD(D3DLOCK_NOOVERWRITE):DWORD(0);' in fp.src('upload_lock.h').read_text()
-# Draws read BaseVertexIndex/StartIndex from the replay in both loops.
-for f in ('world_renderer.h','world_point_rendering.inl'):
-    assert 'p->indexed?d->DrawIndexedPrimitive(p->type,p->base,p->min,p->vertices,p->start,p->count):d->DrawPrimitive(p->type,p->start,p->count);' in fp.tracked(f).read_text()
+# Cascades use the whole packet; point shadows use split-emitter or merged runs.
+assert 'p->indexed?d->DrawIndexedPrimitive(p->type,p->base,p->min,p->vertices,p->start,p->count):d->DrawPrimitive(p->type,p->start,p->count);' in world
+point=fp.src('world_point_rendering.inl').read_text()
+assert 'p->indexed?d->DrawIndexedPrimitive(p->type,p->base,p->min,p->vertices,start,run.second):d->DrawPrimitive(p->type,start,run.second);' in point
+assert 'p->indexed?d->DrawIndexedPrimitive(p->type,p->base,run.min,run.vertices,run.start,run.count):d->DrawPrimitive(p->type,run.start,run.count);' in point
 print('PASS wiring: SelectedCache, bindResident, DEFAULT|WRITEONLY buffers, fresh buffers written once with FreshBufferLock, base/start in both replay loops')
 with tempfile.TemporaryDirectory(prefix='northlight-replay-batches-') as tmp:
     p=Path(tmp);(p/'d3d9.h').write_text(stub)

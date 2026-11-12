@@ -13,13 +13,13 @@ sys.path[:0] = [str(Path(__file__).resolve().parents[2]), str(Path(__file__).res
 import northlight_paths as fp  # noqa: E402
 from shader_compiler import Compiler, DLL_SHA256, COMPATIBLE_DLL_SHA256, bytecode, rows, validate_assembly
 
-ENTRIES = (("DirectionalShadow", "ps_3_0"), ("WorldLightingSoft", "ps_3_0"), ("ActorShadowUniform", "ps_3_0"), ("WorldNormals", "ps_3_0"), ("WorldNormalsNoDistance", "ps_3_0"), ("WorldLighting", "ps_3_0"), ("ActorShadow", "ps_3_0"), ("ActorTiles", "ps_3_0"), ("WorldGI", "ps_3_0"), ("WorldFog", "ps_3_0"), ("WorldFogAmbient", "ps_3_0"), ("WorldFogActor", "ps_3_0"), ("FogBlur", "ps_3_0"), ("FogClouds", "ps_3_0"), ("FogCloudsActor", "ps_3_0"), ("FogTemporal", "ps_3_0"), ("LocalDirect", "ps_3_0"), ("LocalDirect1", "ps_3_0"), ("LocalDirect16", "ps_3_0"), ("LocalFlash", "ps_3_0"), ("FlashShadow", "ps_3_0"), ("RemovalSmooth", "ps_3_0"), ("TemporalLight", "ps_3_0"), ("LocalFog", "ps_3_0"), ("LocalFogCombine", "ps_3_0"), ("SourceVisibilityPS", "ps_3_0"),
+ENTRIES = (("ForeverFogNoNoise", "ps_3_0"), ("ForeverFogActorNoNoise", "ps_3_0"), ("WorldDistance", "ps_3_0"), ("ForeverFog", "ps_3_0"), ("ForeverFogActor", "ps_3_0"), ("DirectionalShadow", "ps_3_0"), ("WorldLightingSoft", "ps_3_0"), ("ActorShadowUniform", "ps_3_0"), ("WorldNormals", "ps_3_0"), ("WorldNormalsNoDistance", "ps_3_0"), ("WorldLighting", "ps_3_0"), ("WorldLightingUnshadowed", "ps_3_0"), ("WorldLightingUnshadowedGI", "ps_3_0"), ("ActorShadow", "ps_3_0"), ("ActorTiles", "ps_3_0"), ("WorldGI", "ps_3_0"), ("WorldFog", "ps_3_0"), ("WorldFogAmbient", "ps_3_0"), ("WorldFogActor", "ps_3_0"), ("FogBlur", "ps_3_0"), ("FogClouds", "ps_3_0"), ("FogCloudsActor", "ps_3_0"), ("FogTemporal", "ps_3_0"), ("LocalDirect", "ps_3_0"), ("LocalDirect1", "ps_3_0"), ("LocalDirect16", "ps_3_0"), ("LocalFlash", "ps_3_0"), ("FlashShadow", "ps_3_0"), ("RemovalSmooth", "ps_3_0"), ("TemporalLight", "ps_3_0"), ("LocalFog", "ps_3_0"), ("LocalFogCombine", "ps_3_0"), ("SourceVisibilityPS", "ps_3_0"),
            ("WorldComposite", "ps_3_0"), ("WorldUnlitComposite", "ps_3_0"), ("MaterialComposite", "ps_3_0"),
-           ("WorldCompositeHdr", "ps_3_0"), ("WorldUnlitCompositeHdr", "ps_3_0"), ("MaterialCompositeHdr", "ps_3_0"),
+           ("WorldCompositeHdr", "ps_3_0"), ("WorldBaseCompositeHdr", "ps_3_0"), ("WorldUnlitCompositeHdr", "ps_3_0"), ("MaterialCompositeHdr", "ps_3_0"),
            ("WorldMaterialCompositeHdr", "ps_3_0"), ("WorldPrelitComposite", "ps_3_0"), ("WorldPrelitCompositeHdr", "ps_3_0"),
            ("MaterialAudit", "ps_3_0"), ("ShadowVS", "vs_3_0"), ("ShadowCacheVS", "vs_3_0"),
            ("ShadowPS", "ps_3_0"), ("ShadowReplayPS", "ps_3_0"), ("ShadowUnion", "ps_3_0"),
-           ("ActorTilesWide", "ps_3_0"), ("WorldFogActorTiled", "ps_3_0"), ("FogCloudsActorTiled", "ps_3_0"))
+           ("ActorTilesWide", "ps_3_0"), ("WorldFogActorTiled", "ps_3_0"), ("FogCloudsActorTiled", "ps_3_0"), ("MoonFloorFog", "ps_3_0"), ("MoonFloorFogActor", "ps_3_0"), ("MoonFloorFogActorTiled", "ps_3_0"))
 
 
 def main():
@@ -44,8 +44,8 @@ def main():
             data,words=bytecode(output,target)
             if hashlib.sha256(data).hexdigest()!=previous["shaders"][entry]["sha256"]:
                 raise ValueError(f"{entry}: retained bytecode differs from its previous manifest")
-        extended=entry in {"WorldFogActor","FogCloudsActor"}
-        tiled=entry in {"WorldFogActorTiled","FogCloudsActorTiled","WorldMaterialCompositeHdr"}
+        extended=entry in {"ForeverFogActor","ForeverFogActorNoNoise","WorldFogActor","FogCloudsActor"}
+        tiled=entry.startswith("MoonFloorFog") or entry in {"WorldFogActorTiled","FogCloudsActorTiled","WorldMaterialCompositeHdr"}
         stats=validate_assembly(asm,target,slot_limit=768 if tiled else 600 if extended else 512)
         if extended or tiled:header.append(f"static constexpr unsigned k{entry}ShaderSlots = {stats['static_instruction_slots']};")
         header.append(f"static const DWORD k{entry}Shader[] = {{\n"+"\n".join(rows(words))+"\n};")

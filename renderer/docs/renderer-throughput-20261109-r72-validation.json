@@ -1,0 +1,160 @@
+{
+  "base_commit": "489c30a054946838986c51351b456e8d759d804c",
+  "source_identity": "ad7adb2bd7892fb1ab6464a474ce19c9d2c74a16b76cbedcf673e787735d14fe",
+  "built_utc": "2026-11-09 20:38:26 UTC",
+  "compiler": "Zig 0.15.2, scripts/build_renderer.py, x86 Windows",
+  "scope": "Focused regressions; user-authorized concurrent WoW. No isolated GPU timing or gameplay FPS claim.",
+  "selected_changes": [
+    "Reuse same-slot point cube storage on immediate same-map source replacement",
+    "Transfer reused cube storage when restoring retained static content",
+    "Prepare matrices and clip planes only for requested faces",
+    "Combine prepared sphere and face clipping; avoid duplicate bounds validation and temporary copies"
+  ],
+  "point_gpu_comparison": {
+    "pass": true,
+    "scope": "Baseline/current authored point-renderer component, no gameplay FPS claim.",
+    "results": [
+      {
+        "backend_index": 0,
+        "cube_images": 10,
+        "face_images": 60,
+        "whole_cube_hashes": "exact",
+        "reuse_switches": 8,
+        "cold_reference_faces": 48,
+        "cube_creates_before": 8,
+        "cube_creates_after": 0
+      },
+      {
+        "backend_index": 1,
+        "cube_images": 10,
+        "face_images": 60,
+        "whole_cube_hashes": "exact",
+        "reuse_switches": 8,
+        "cold_reference_faces": 48,
+        "cube_creates_before": 8,
+        "cube_creates_after": 0
+      },
+      {
+        "backend_index": 2,
+        "cube_images": 10,
+        "face_images": 60,
+        "whole_cube_hashes": "exact",
+        "reuse_switches": 8,
+        "cold_reference_faces": 48,
+        "cube_creates_before": 8,
+        "cube_creates_after": 0
+      },
+      {
+        "backend_index": 3,
+        "cube_images": 10,
+        "face_images": 60,
+        "whole_cube_hashes": "exact",
+        "reuse_switches": 8,
+        "cold_reference_faces": 48,
+        "cube_creates_before": 8,
+        "cube_creates_after": 0
+      }
+    ],
+    "face_hash_comparisons": 240,
+    "reuse_vs_fresh_face_comparisons": 192,
+    "cube_creates_before": 32,
+    "cube_creates_after": 0,
+    "timing_valid": false
+  },
+  "publication_guards": [
+    "six fresh faces for every replacement/restored source",
+    "partial cycle reset",
+    "missing capture remains unpublished",
+    "failed Clear remains unpublished",
+    "cold recovery exact",
+    "map/pressure/zero-limit release retained"
+  ],
+  "cpu_proof": {
+    "base_boxes_and_transforms": 174335,
+    "additional_cases": "requested subsets, invalid bounds/matrices/spheres, neighboring plane/sphere boundary floats",
+    "optimized_and_asan_ubsan": true,
+    "native_x86": true,
+    "admission_schedule_selection_hotpath": true
+  },
+  "cpu_component": {
+    "candidates_per_sample": 163840,
+    "warmups": 4,
+    "samples_per_variant": 6,
+    "results": [
+      {
+        "requested_mask": 1,
+        "spread": 15.0,
+        "previous_ms": 3.8289,
+        "combined_ms": 3.44595
+      },
+      {
+        "requested_mask": 1,
+        "spread": 64.0,
+        "previous_ms": 1.95595,
+        "combined_ms": 1.76525
+      },
+      {
+        "requested_mask": 1,
+        "spread": 4000.0,
+        "previous_ms": 0.60605,
+        "combined_ms": 0.6145
+      },
+      {
+        "requested_mask": 63,
+        "spread": 15.0,
+        "previous_ms": 15.38845,
+        "combined_ms": 15.03555
+      },
+      {
+        "requested_mask": 63,
+        "spread": 64.0,
+        "previous_ms": 5.215,
+        "combined_ms": 5.1588
+      },
+      {
+        "requested_mask": 63,
+        "spread": 4000.0,
+        "previous_ms": 0.6012,
+        "combined_ms": 0.6141
+      }
+    ],
+    "limitation": "Distribution dependent; all-rejected fixture about 1-2% slower in this run; no frame-time inference."
+  },
+  "proof_sha256": {
+    "out/perf-20261109-r72/point-verified/validation.json": "fe9e0f9e28c4c9a99b3a97e30235d8607489e654febf0a31e3cee3d26eb8499e",
+    "out/perf-20261109-r72/point-reference-verified/validation.json": "a0a8baad31a3fbc93cada5591d4b2a75c6f51a77f87196048fab677689825baa",
+    "out/perf-20261109-r72/point-comparison.json": "dc4d156bc58b8289c1114a77aab060e592f1146dabfdd76f4a5dea30c5cafc3d",
+    "out/perf-20261109-r72/linux-verified.log": "449b40b1842f5e331376a94f008e3c57f1f5024c9a1454b2fa92afbc748672ff",
+    "out/perf-20261109-r72/selection-final.log": "d978d5f18a45a0add346ed74248296d9d1b6c863b0c1feb6d8557f01e5fe80f3",
+    "out/perf-20261109-r72/clip-native-final.log": "191faf4971ee40c59db9ab23798510e33396ca6c38a6f23a6e2a71a4a50958f8",
+    "out/perf-20261109-r72/artifacts.json": "e454f6030940615198d517e13cdcfd2e6a8e46a1a82271ff880fc9955c7ae3bd",
+    "out/perf-20261109-r72/package-verification/verification.json": "e78855e34e7c4e3759e1dd41ffb314f537d6e1433a3aeba273fcdcd8c22d3472"
+  },
+  "test_sources_sha256": {
+    "tests/point_shadow_stutter_gpu.cpp": "85ac0806b4b23e92fa4203a2f4b00de8de27d907e18886918c8e11874fa3a9f5",
+    "tests/test_point_shadow_stutter_gpu.py": "ad72e4cfff499d01a8abfe083d051ae443d53a292d638c2a3e06f9f61e2cb2cb",
+    "tests/test_point_clip_prepared.cpp": "7dcc90902885b5fea6231e49c8f2c18795b57cd6819d105052f096e92a6c31c1",
+    "tests/test_point_replay_admission.py": "845af17abab5121ddaf6b99f7ecb9901955d620cda965705b5a9e596d1a44bba"
+  },
+  "artifacts": {
+    "renderer/frd9.dll": {
+      "bytes": 10834944,
+      "sha256": "f849a0b3518a0704f6c649f0e3375a52b2281aa7dd6a14941058bebd12db3412"
+    },
+    "releases/Northlight-0.3.217-test.20261109.6/d3d9.dll": {
+      "bytes": 10834944,
+      "sha256": "f849a0b3518a0704f6c649f0e3375a52b2281aa7dd6a14941058bebd12db3412"
+    },
+    "releases/Northlight-0.3.217-test.20261109.6-Windows.zip": {
+      "bytes": 20811315,
+      "sha256": "ceffb33a2ae2744fd49b35154f7577803e38c7c9dc4cd2bd3200820103c8ce4b"
+    }
+  },
+  "package_verified": true,
+  "source_unchanged": true,
+  "full_repository_suite": false,
+  "shader_changes": false,
+  "resident_cube_memory": "unchanged",
+  "castle_issue": "Deferred by the user; this component fixture does not establish a fix for the exact video.",
+  "installation": "No client DLL installed and no game started."
+}

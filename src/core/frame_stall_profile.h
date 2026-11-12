@@ -26,14 +26,15 @@ struct Frame {
     double totalMs=0,sceneMs=-1,effectsMs=0,tailMs=-1,finishMs=0,presentMs=0;
     double sceneIdleMs=-1,frameIdleMs=-1;   // Queue waiting overlaps the phases; it is not extra time.
     Queries queries;
+    std::uint64_t observationStartNs=0,observationEndNs=0;
 };
 struct Report {unsigned frames=0,slow=0,count=0;std::array<Frame,4> worst{};};
 class Tracker {
     int64_t previousDone=0;unsigned long long previousLogs=0;bool previousLogged=true,primed=false;
-    std::uint64_t previousIdle=0;bool idlePrimed=false;
+    std::uint64_t previousIdle=0,previousObservation=0;bool idlePrimed=false;
     Report window;
 public:
-    void reset(){previousDone=0;previousLogs=0;previousLogged=true;primed=false;previousIdle=0;idlePrimed=false;window={};}
+    void reset(){previousDone=0;previousLogs=0;previousLogged=true;primed=false;previousIdle=0;previousObservation=0;idlePrimed=false;window={};}
     // Previous Present done -> current Present done, with non-overlapping phases.
     bool presented(Frame frame,int64_t entry,int64_t finished,int64_t done,int64_t frequency,
                    int64_t scene,unsigned long long logs,bool idleKnown=false,std::uint64_t sceneIdle=0,std::uint64_t doneIdle=0){
@@ -42,6 +43,8 @@ public:
         frame.logged=logged||previousLogged;previousLogged=logged;
         const int64_t old=previousDone;const bool had=primed;previousDone=done;primed=true;
         const auto oldIdle=previousIdle;const bool hadIdle=idlePrimed;previousIdle=doneIdle;idlePrimed=idleKnown;
+        const auto observation=previousObservation;previousObservation=frame.observationEndNs;
+        frame.observationStartNs=observation&&frame.observationEndNs>=observation?observation:0;
         if(!had)return false;
         if(entry<old){window={};return false;}
         const double ms=1000.0/double(frequency);

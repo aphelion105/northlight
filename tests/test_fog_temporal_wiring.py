@@ -12,6 +12,7 @@ import re
 import subprocess
 
 w=fp.src('world_renderer.h').read_text()
+resources=fp.src('world_screen_resources.inl').read_text()
 h=(fp.SHADERS/'world_effects.hlsl').read_text()
 py=(fp.REPO/'scripts'/'shaders'/'compile_world_shaders.py').read_text()
 q=fp.src('quality_settings.h').read_text()
@@ -33,7 +34,7 @@ checks['HLSL: c64 is the only new constant, only .y read; s14 history, s15 depth
     'float4 FogTemporalInfo : register(c64);' in h and 'FogTemporalInfo.y' in body and len(re.findall(r'FogTemporalInfo\.[xzw]',body))==0
     and 'sampler2D FogHistory : register(s14);' in h and 'DepthHistory' in body)
 checks['HLSL: no other shader reads c64.y (0.3.200: FogStepInfo, c64.z, only in WorldFog\'s interval)']=(len(re.findall(r'register\(c64\)',h))==3 and re.findall(r'HorizonEdge\.\w+',re.sub(r'//[^\n]*','',h))==['HorizonEdge.w'] and 'LocalLightFog[5].' not in h
-    and re.findall(r'FogStepInfo\.\w+',re.sub(r'//[^\n]*','',h))==['FogStepInfo.z'] and 'mad(FogInfo.w,1.0/48,FogStepInfo.z)' in h[h.index('float4 worldFog('):h.index('float4 FogBlur(')])
+    and re.findall(r'FogStepInfo\.\w+',re.sub(r'//[^\n]*','',h))==['FogStepInfo.z','FogStepInfo.z'] and 'mad(FogInfo.w,1.0/48,FogStepInfo.z)' in h[h.index('float4 worldFog('):h.index('float4 FogBlur(')])
 checks['HLSL: sky reprojects the direction only, clamp over the neighbourhood, lerp by the weight, passthrough at 0']=(
     'sky' in body and 'PreviousView[0].xyz' in body and 'min(lo,s)' in body and 'clamp(history,lo,hi)' in body and 'lerp(current,' in body
     and 'if(FogTemporalInfo.y<=0)return current;' in body and 'max(.25,w*.03)' in body)
@@ -46,7 +47,7 @@ checks['host: pass and swap guarded by the setting, the shader, the history targ
     'std::swap(fogBlurred,fogHistory);std::swap(fogBlurredSurface,fogHistorySurface)' in pas and pas.count('std::swap')==2 and 'else fogHistoryValid=false;' in pas)
 checks['host: history weight 0 unless fogHistoryValid&&useHistory; weight constant is c64 only, previous view c53 from the bank']=(
     'fogHistoryValid&&useHistory?FogTemporalWeight:0.f' in pas and 'SetPixelShaderConstantF(64,info,1)' in pas and 'SetPixelShaderConstantF(53,c[53],4)' in pas
-    and re.findall(r'SetPixelShaderConstantF\((6[4-7]),',w)==['66','64'] and 'SetPixelShaderConstantF(66,fogActor?actorFogBounds[source]:wholeActorMap,1)' in w)
+    and re.findall(r'SetPixelShaderConstantF\((6[4-7]),',w)==['65','65','66','64'] and 'SetPixelShaderConstantF(66,fogActor?actorFogBounds[source]:wholeActorMap,1)' in w)
 checks['host: reads raw fog s9 + fogHistory s14 + previous depth temporalDepth[temporalIndex] s15, writes fogBlurred; s14/s15 put back']=(
     'SetRenderTarget(0,fogBlurredSurface)' in pas and 'SetTexture(9,fog)' in pas and 'SetTexture(14,fogHistory)' in pas and 'SetTexture(15,temporalDepth[temporalIndex])' in pas
     and 'SetTexture(14,nullptr)' in pas and 'SetTexture(15,nullptr)' in pas and 'D3DSAMP_MINFILTER,D3DTEXF_POINT' in pas)
@@ -64,13 +65,13 @@ checks['host: FogBlur closes both quads inside the active-fog guard, before c34/
     and maxMarks==44 and len(set(re.findall(r'profile->mark\("(\w+)"\)',w)))+8+8<=maxMarks)
 products=w[w.index('void captureProducts('):w.index('bool captureSkippedDiagnostic(')]
 checks['host: composite and current-frame diagnostic product read the final buffer']=(
-    'SetTexture(9,fogResolved?fogBlurred:fog);d->SetPixelShader(hdrMode?hdrFinalPS:finalPS)' in g
+    'SetTexture(9,fogResolved?fogBlurred:fog?fog:neutralAO);d->SetPixelShader(baseComposite?hdrBasePS:hdrMode?hdrFinalPS:finalPS)' in g
     and 'diagnosticFogResolved=fogResolved;' in g and 'captureProducts(directory,capture,rendererFrame,w,h,true);' in g
     and 'ready=current&&composited&&lastRenderDebug==0;' in products
     and 'image("fog",diagnosticFogResolved?fogBlurredSurface:fogSurface,ready&&effects.fog&&uploadedFogField,w/2,h/2,D3DFMT_A16B16G16R16F);' in products
     and 'NorthlightWorldDiagnostics::product(' in products)
 checks['host: history target created with the others, dropped and invalidated in releaseGPU; shader optional']=(
-    '&fogHistory,&fogHistorySurface)' in w and 'drop(fogHistorySurface);drop(fogHistory);drop(fogTemporalPS);fogHistoryValid=false;' in w and 'fogTemporalPS=nullptr;logf("WORLD fog temporal disabled' in w)
+    'image(D3DFMT_A16B16G16R16F,fogHistory,fogHistorySurface)' in resources and 'drop(fogHistorySurface);drop(fogHistory);drop(fogTemporalPS);fogHistoryValid=fogNeutral=fogHistoryNeutral=false;' in w and 'if(!fogTemporalPS&&FAILED(d->CreatePixelShader(kFogTemporalShader,&fogTemporalPS)))fogTemporalPS=nullptr;' in resources)
 checks['host: no per-draw work (nothing in src/stream or src/proxy mentions it)']=all(
     not re.search(r'fogTemporal|FogTemporal|fogHistory',p.read_text(errors='ignore')) for d in ('stream','proxy') for p in (fp.REPO/'src'/d).rglob('*') if p.is_file())
 for k,ok in checks.items():print(('PASS ' if ok else 'FAIL ')+k)

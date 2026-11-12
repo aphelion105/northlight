@@ -7,6 +7,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <mutex>
+#include <thread>
 #ifdef _WIN32
 #include <windows.h>
 #ifndef PM_QS_SENDMESSAGE
@@ -26,6 +27,66 @@ inline void (*pumpHook)()=nullptr;
 
 struct WaitResult {bool signaled;std::uint64_t ns;};
 struct PumpScope {bool saved;PumpScope():saved(inPumpedWait){inPumpedWait=true;}~PumpScope(){inPumpedWait=saved;}PumpScope(const PumpScope&)=delete;PumpScope& operator=(const PumpScope&)=delete;};
+
+// A scheduler yield can hand a short GPU poll to unrelated CPU work for a
+// quantum. Keep short waits on the replay thread; yield longer waits as before.
+// A single-CPU process must yield so the backend's command thread can progress.
+class QueryPollPause {
+#ifdef _WIN32
+    bool checked_=false,spin_=false;
+#endif
+public:
+    void operator()(std::uint64_t,std::uint64_t elapsedNs){
+#ifdef _WIN32
+        if(!checked_){
+            checked_=true;DWORD_PTR process=0,system=0;
+            spin_=GetProcessAffinityMask(GetCurrentProcess(),&process,&system)&&(process&(process-1));
+        }
+        if(spin_&&elapsedNs<2000000){YieldProcessor();return;}
+#else
+        (void)elapsedNs;
+#endif
+        std::this_thread::yield();
+    }
+};
+
+// After the short spin window, or on a generation that exhausted a trip, the
+// query poller sleeps between real reads instead of burning a core.
+class QueryLongPause {
+#ifdef _WIN32
+    HANDLE timer_=nullptr;bool tried_=false;std::uint64_t previous_=UINT64_MAX;
+#endif
+public:
+    QueryLongPause()=default;
+    QueryLongPause(const QueryLongPause&)=delete;QueryLongPause& operator=(const QueryLongPause&)=delete;
+    ~QueryLongPause(){
+#ifdef _WIN32
+        if(timer_)CloseHandle(timer_);
+#endif
+    }
+    void begin(){
+#ifdef _WIN32
+        previous_=UINT64_MAX;
+#endif
+    }
+    void operator()(std::uint64_t remainingNs,std::uint64_t elapsedNs){
+#ifdef _WIN32
+        const bool advancing=elapsedNs!=previous_;previous_=elapsedNs;
+        // A stopped clock must not turn the poller's bounded spin guard into
+        // thousands of kernel waits. One pause is enough to detect no progress.
+        if(advancing){
+            if(!tried_){tried_=true;timer_=CreateWaitableTimerExW(nullptr,nullptr,0x2,TIMER_MODIFY_STATE|SYNCHRONIZE);} // HIGH_RESOLUTION; optional
+            if(timer_){LARGE_INTEGER due;due.QuadPart=-LONGLONG((remainingNs+99)/100);
+                if(SetWaitableTimer(timer_,&due,0,nullptr,nullptr,FALSE)&&WaitForSingleObject(timer_,INFINITE)==WAIT_OBJECT_0)return;
+                CloseHandle(timer_);timer_=nullptr;
+            }
+        }
+#else
+        (void)remainingNs;(void)elapsedNs;
+#endif
+        std::this_thread::yield();
+    }
+};
 
 #ifdef _WIN32
 class Event {

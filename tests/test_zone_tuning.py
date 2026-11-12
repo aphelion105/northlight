@@ -8,15 +8,18 @@ reusable NorthlightCelestialProfiles::assignKey / explicitKeys in src/sky/celest
 C++ test writes is loaded here and checked against the contract keys of scripts/dev_tuning/. Writes only a temp folder."""
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
-import json, subprocess, tempfile
+import json, os, subprocess, tempfile
 
 HERE = Path(__file__).resolve().parent
-CELESTIAL = ['disc', 'disc_gain', 'light', 'light_mix', 'light_strength', 'fog_gain', 'fog_height_scale', 'horizon_haze', 'glow_strength', 'glow', 'glow_mix']
+CELESTIAL = ['disc', 'disc_gain', 'light', 'light_mix', 'light_strength', 'fog_gain', 'fog_height_scale', 'horizon_haze', 'glow_strength', 'glow', 'glow_mix', 'fog_density']
 with tempfile.TemporaryDirectory(prefix='northlight-zone-tuning-') as tmp:
-    for label, flags in [('O2', ['-O2']), ('asan', ['-O1', '-g', '-fsanitize=address,undefined', '-fno-sanitize-recover=all'])]:
-        exe = Path(tmp) / ('test-' + label)
-        subprocess.run(['clang++', '-std=c++17', '-Wall', '-Wextra', *flags, *fp.test_include_flags(),
-                        str(HERE / 'test_zone_tuning.cpp'), '-o', str(exe)], check=True)
+    compiler = [str(fp.zig()), 'c++', '-target', 'x86-windows-gnu'] if os.name == 'nt' else ['clang++']
+    modes = [('O2', ['-O2'])]
+    if os.name != 'nt': modes.append(('asan', ['-O1', '-g', '-fsanitize=address,undefined', '-fno-sanitize-recover=all']))
+    for label, flags in modes:
+        exe = Path(tmp) / ('test-' + label + ('.exe' if os.name == 'nt' else ''))
+        subprocess.run([*compiler, '-std=c++17', '-UNDEBUG', '-Wall', '-Wextra', *flags, *fp.test_include_flags(),
+                        str(HERE / 'test_zone_tuning.cpp'), '-o', str(exe)], env=fp.zig_env() if os.name == 'nt' else None, check=True)
         state = Path(tmp) / f'state-{label}.json'
         print(label, subprocess.check_output([str(exe), str(state)], text=True), end='', flush=True)
     j = json.loads(state.read_text(encoding='utf-8'))

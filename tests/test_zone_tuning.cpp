@@ -1,4 +1,7 @@
 #include "zone_tuning.h"
+#ifdef near
+#undef near
+#endif
 #include <cassert>
 #include <fstream>
 #include <iostream>

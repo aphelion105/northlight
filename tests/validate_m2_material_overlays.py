@@ -18,8 +18,9 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--backend', type=Path, required=True)
 parser.add_argument('--fixture', type=Path, required=True, help='source.fgr mip chain and PreviewBase.bin')
 parser.add_argument('--quick', action='store_true')
+parser.add_argument('--allow-running-game',action='store_true',help='Correctness and occlusion counts only; never measure timings alongside the game')
 args = parser.parse_args()
-subprocess.run(['powershell', '-NoProfile', '-Command',
+if not args.allow_running_game:subprocess.run(['powershell', '-NoProfile', '-Command',
                 "if (Get-Process Wow,WowClassic,WowClient64 -ErrorAction SilentlyContinue) { throw 'Close WoW before the GPU test.' }"], check=True)
 out = fp.output_dir()
 env = fp.zig_env()
@@ -55,7 +56,7 @@ try:
                                  cwd=out, env=env, capture_output=True, text=True, timeout=120)
             (folder/'gpu.log').write_text(run.stdout+run.stderr, encoding='utf-8')
             assert run.returncode == 0, run.stdout[-4500:]+run.stderr[-1500:]
-            assert 'M2_OVERLAY_SYNC_GPU_PASS' in run.stdout and run.stdout.count('M2_EFFECT_BLEND_PASS') == 5
+            assert 'M2_OVERLAY_PREFLIGHT_PASS' in run.stdout and 'M2_OVERLAY_SYNC_GPU_PASS' in run.stdout and run.stdout.count('M2_EFFECT_BLEND_PASS') == 5
             records.append(dict(shader_model=model, skin=skin, blend_modes=5, output=run.stdout))
             print(f'M2_EFFECTS_PASS sm{model} {skin} blends=5', flush=True)
 finally:

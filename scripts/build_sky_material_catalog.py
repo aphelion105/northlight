@@ -38,7 +38,7 @@ def role(materials, texture, primitives):
     item = materials[texture.rsplit('\\', 1)[-1]]
     if isinstance(item, dict):
         return 'background' if primitives in item['background_primitives'] else 'foreground'
-    if item not in ('background', 'foreground'):
+    if item not in ('background', 'foreground', 'celestial', 'native', 'planet'):
         raise ValueError(f'Invalid sky material role: {texture}: {item}')
     return item
 
@@ -62,6 +62,7 @@ def compile_catalog(assets):
         if model:
             models.add(model[:-4]+'.m2')
     records, textures, batches, unavailable_skins, unavailable_textures = {}, {}, 0, [], set()
+    planet_meshes = set()
     for path in sorted(models):
         model = read(path)
         names, lookup = texture_names(model)
@@ -78,7 +79,29 @@ def compile_catalog(assets):
             n, offset = struct.unpack_from('<II', skin, 28)
             subsets = array(skin, offset, n, '<10H7f')
             n, offset = struct.unpack_from('<II', skin, 36)
-            for batch in array(skin, offset, n, '<2B11H'):
+            skin_batches = array(skin, offset, n, '<2B11H')
+            # Exact input geometry for the small, reviewed planet meshes. Runtime
+            # refuses deformed/unknown inputs instead of scaling arbitrary sky art.
+            vn, vo = struct.unpack_from('<II', model, 60)
+            vertices = array(model, vo, vn, '<3f4B4B3f2f2f')
+            ln, lo = struct.unpack_from('<II', skin, 4)
+            vertex_lookup = array(skin, lo, ln, '<H')
+            planets = {}
+            for batch in skin_batches:
+                texture = name(names[lookup[batch[9]]])
+                sub = subsets[batch[3]]
+                if role(materials, texture, sub[5]//3) != 'planet':
+                    continue
+                assert batch[8] == 1 and sub[3] in (4, 8) and sub[5] == sub[3]*3//2
+                points = tuple(sorted(tuple(vertices[vertex_lookup[i][0]][:3]) for i in range(sub[2], sub[2]+sub[3])))
+                center = tuple(sum(v[c] for v in points)/len(points) for c in range(3))
+                planets[texture.rsplit('\\', 1)[-1]] = points, center
+            for texture, (points, center) in planets.items():
+                # Both halves of the ring scale about the parent planet, not
+                # their separate, slightly offset artist-authored centers.
+                anchor = planets[texture.replace('planetring', 'planet05')][1] if 'planetring' in texture else center
+                planet_meshes.add((points, anchor))
+            for batch in skin_batches:
                 primitives = subsets[batch[3]][5]//3
                 assert batch[8] and primitives
                 texture = name(names[lookup[batch[9]]])
@@ -128,8 +151,16 @@ def compile_catalog(assets):
               '    for(;lo<sizeof(Materials)/sizeof(Materials[0])&&Materials[lo].hash==hash;++lo){const auto& m=Materials[lo];',
               '        if(m.format==format&&m.width==width&&m.height==height&&m.primitives==primitives)return m.role;}',
               '    return Role::Unknown;', '}', '}']
+    lines.pop() # namespace remains open for geometry identities
+    lines += ['struct PlanetMesh {unsigned count;float positions[8][3],anchor[3];};',
+              'inline constexpr PlanetMesh PlanetMeshes[]={']
+    def floats(values):
+        return '{'+','.join(f'{v:.9e}f' for v in values)+'}'
+    for points, anchor in sorted(planet_meshes):
+        lines.append('    {'+str(len(points))+',{'+','.join(floats(p) for p in points)+'},'+floats(anchor)+'},')
+    lines += ['};', '}']
     header = ('\n'.join(lines)+'\n').encode()
-    manifest = dict(version=1, models=len(models), batches=batches, textures=len(textures), identities=len(records),
+    manifest = dict(version=2, planet_meshes=len(planet_meshes), models=len(models), batches=batches, textures=len(textures), identities=len(records),
                     unavailable_skins=unavailable_skins, unavailable_textures=sorted(unavailable_textures), roles_sha256=hashlib.sha256(ROLES.read_bytes()).hexdigest(),
                     generator_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
                     header_sha256=hashlib.sha256(header).hexdigest(), inputs=dict(sorted(inputs.items())))

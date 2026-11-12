@@ -75,7 +75,7 @@ print('wiring ok')
 assert 'meshStore.beginStaging(pageKeys,anyElided?elidedPages:std::vector<uint8_t>(),compatiblePage)' in begin
 compatible = begin[begin.index('const auto compatiblePage='):begin.index('if(!meshStore.beginStaging(')]
 assert 'payload->pages->temporary||' in compatible and 'vbPool==D3DPOOL_MANAGED' in compatible and 'ibPool==D3DPOOL_MANAGED' in compatible
-reset_mesh = w[w.index('void releaseDefaultMesh(){'):w.index('void reset(){')]
+reset_mesh = w[w.index('void releaseDefaultMesh(){'):w.index('void reset(bool preserveCaptureSources=false){')]
 assert 'meshStore.table()' in reset_mesh and 'D3DPOOL_DEFAULT' in reset_mesh
 assert 'if(activeLost){' in reset_mesh and 'keepPressureProbes=true;resetReplayPending=true;clearMesh(resetReplayScoped);releaseMeshPool();uploadedMap.clear();' in reset_mesh and 'else trimMeshPools();' in reset_mesh
 assert 'resetReplayScoped=active&&active->bvh==uploaded.lock()&&active->meshPlan==uploadedMeshPlan.lock();' in reset_mesh and 'resetReplayPlan=active->meshPlan;' in reset_mesh
@@ -83,7 +83,7 @@ assert reset_mesh.index('meshStore.cancel();') < reset_mesh.index('if(activeLost
 
 # Pressure Reset waits for retirement with a separate, nonblocking query. The
 # shared live-ring frame fence must never be ended by this recovery gate.
-reset = w[w.index('void reset(){'):w.index('// 0.3.176 (U0/S0)')]
+reset = w[w.index('void reset(bool preserveCaptureSources=false){'):w.index('// 0.3.176 (U0/S0)')]
 assert reset.index('drop(resetReplayQuery);resetReplayFence.drop();') < reset.index('releaseDefaultMesh();')
 fence = w[w.index('bool pressureReplayReady(){'):w.index('bool upload(NorthlightStreaming::Budget& streamBudget){')]
 assert 'auto& queries=resetReplayFence;' in fence and 'resetReplayQuery->GetData(nullptr,0,0)' in fence

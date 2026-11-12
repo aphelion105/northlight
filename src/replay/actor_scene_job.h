@@ -2,6 +2,7 @@
 #include "actor_deformation.h"
 #include "actor_texture.h"
 #include "world_gi.h"
+#include "mesh_page_key.h"
 #include <chrono>
 #include <memory>
 
@@ -21,7 +22,9 @@ inline std::uint64_t sceneHash(const NorthlightGI::WorldScene& scene){
     for(auto& v:scene.vertices){mix(std::uint32_t(std::int32_t(std::llround(v.position.x*32))));mix(std::uint32_t(std::int32_t(std::llround(v.position.y*32))));mix(std::uint32_t(std::int32_t(std::llround(v.position.z*32))));scalar(v.u);scalar(v.v);}
     for(auto& t:scene.triangles){mix(t.v0);mix(t.v1);mix(t.v2);mix(t.material);}
     for(auto& m:scene.materials){scalar(m.albedo.x);scalar(m.albedo.y);scalar(m.albedo.z);scalar(m.alphaCutoff);mix(m.width);mix(m.height);mix(m.addressU);mix(m.addressV);
-        for(auto byte:m.texels()){hash^=byte;hash*=0x100000001b3ull;}}
+        // Reuse the mesh/texel content key; no retained cache or extra scan.
+        const auto bytes=m.texels();if(!bytes.empty()){const auto key=NorthlightMeshPageKey::keyOf(bytes.data(),bytes.size(),nullptr,0);
+            mix(key.vertexBytes);mix(std::uint32_t(key.lo));mix(std::uint32_t(key.lo>>32));mix(std::uint32_t(key.hi));mix(std::uint32_t(key.hi>>32));}}
     return hash;
 }
 struct Packet {

@@ -1,6 +1,6 @@
 #pragma once
 #include "static_shadow_scene.h"
-#include "celestial_time_warp.h"
+#include "forever_celestial.h"
 
 namespace StaticShadow {
 // Horizon casters are warmed this long before the sun or moon rises (was 300 s: needless shadow work).
@@ -9,12 +9,12 @@ inline constexpr double PrewarmSeconds=20;
 // shadow matrices or GI. An approaching source warms horizon casters before
 // becoming visible; the live light keeps its existing smooth motion.
 inline Request makeRequest(const std::string& map,Vec3 pivot,const Vec3* directions,
-                           const bool* lit,bool orbitValid,double day,bool allowLoads){
+                           const bool* lit,bool orbitValid,double day,bool allowLoads,bool forever=false){
     Request r;r.map=map;r.center=pivot;r.allowLoads=allowLoads;
-    const auto current=NorthlightCelestialOrbit::evaluateNative(day);
+    const auto current=NorthlightForeverSky::evaluateSelected(day,forever);
     double nextDay=day+PrewarmSeconds/NorthlightCelestialOrbit::kDaySeconds;
     nextDay-=std::floor(nextDay);
-    const auto future=NorthlightCelestialOrbit::evaluateNative(nextDay);
+    const auto future=NorthlightForeverSky::evaluateSelected(nextDay,forever);
     for(unsigned source=0;source<2;++source){
         r.directions[source]=directions[source];r.active[source]=lit[source];
         if(lit[source]||!orbitValid||!current.valid||!future.valid)continue;

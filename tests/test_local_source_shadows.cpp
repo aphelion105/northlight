@@ -44,26 +44,28 @@ int main(){
     static_assert(NorthlightLocalLightSelection::Capacity>=NorthlightPointShadow::MaxLights);
     std::vector<Light> many;
     for(unsigned i=0;i<128;++i)many.push_back({{float(i%16)*.1f,float(i/16)*.1f,2},{1,.4f,.1f},1,12,1000+i,3,CastShadow});
-    for(unsigned level=0;level<4;++level)for(unsigned limit:{4u,8u,16u,32u,64u,128u}){
-        const unsigned pool=NorthlightGpuBudget::lightLimit(32,level,limit);assert(pool>=limit);
+    for(unsigned pool:{4u,32u,128u})for(unsigned limit:{4u,8u,16u,32u,64u,128u}){
+        auto quality=defaults;quality.localLightLimit=pool;quality.pointShadowLimit=limit;const auto expected=std::min(pool,limit);
         std::vector<Light> scene(many.begin(),many.begin()+limit);
         NorthlightLocalLightSelection::Tracker t;auto selection=t.update(scene,camera,pool,0,false);
-        assert(selection.count==limit);
-        const auto picks=NorthlightPointShadow::selectMany(selection.sources.data(),selection.count,camera,limit);
-        assert(picks.count==limit);std::set<uint64_t> ids;
+        assert(selection.count==expected);
+        const auto picks=NorthlightPointShadow::selectMany(selection.sources.data(),selection.count,camera,NorthlightQuality::localShadowLimit(quality));
+        // A saturated illumination selection also fades its budget edge.
+        // Very dim outgoing sources are intentionally ineligible for maps.
+        assert(picks.count<=expected);if(pool>=limit)assert(picks.count==expected);std::set<uint64_t> ids;
         for(unsigned i=0;i<picks.count;++i)assert(ids.insert(selection.sources[picks.index[i]].sourceId).second);
         unsigned direct=0,fog=0;
         for(unsigned i=0;i<selection.count;i+=8)direct+=selection.batch<8>(i).count;
         for(unsigned i=0;i<selection.count;i+=4)fog+=selection.batch<4>(i).count;
         assert(direct==selection.count&&fog==selection.count);
     }
-    // GPU budgeting preserves the configured lamp limit, including without a shadow reserve.
-    for(unsigned level=0;level<4;++level)for(unsigned limit:{4u,8u,16u,32u,64u,128u})
-        assert(NorthlightGpuBudget::lightLimit(limit,level)==limit);
     assert(NorthlightPointShadow::selectMany(many.data(),many.size(),camera,999).count==128);
     auto full=tracker.update(many,camera,128,0,false);assert(full.count==128);
     auto changed=many;for(unsigned i=0;i<8;++i)changed[i].sourceId+=1000;
     auto fading=tracker.update(changed,camera,128,.1f,true);assert(fading.count==136);
+    auto small=defaults;small.localLightLimit=8;small.pointShadowLimit=128;
+    const auto reducing=tracker.update(changed,camera,8,.01f,true);assert(reducing.count>8);
+    assert(NorthlightPointShadow::selectMany(reducing.sources.data(),reducing.count,camera,NorthlightQuality::localShadowLimit(small)).count<=8);
     unsigned batched=0;for(unsigned i=0;i<fading.count;i+=8)batched+=fading.batch<8>(i).count;assert(batched==136);
     assert(NorthlightPointShadow::selectMany(fading.sources.data(),fading.count,camera,128).count==128);
     tracker.update(many,camera,128,0,false);

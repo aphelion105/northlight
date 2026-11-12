@@ -3,9 +3,32 @@
 #include "../src/proxy/renderer.cpp"
 #include <cassert>
 #include <fstream>
+#include "forwarders.h"
 static void must(HRESULT hr){assert(SUCCEEDED(hr));}
 static std::vector<DWORD> code(const std::string& path){std::ifstream f(path,std::ios::binary|std::ios::ate);assert(f);auto n=f.tellg();assert(n>0&&size_t(n)%4==0);std::vector<DWORD> v(size_t(n)/4);f.seekg(0);f.read(reinterpret_cast<char*>(v.data()),n);assert(f);return v;}
 struct GrassShadowTest {
+ static void shaderCreation(IDirect3DDevice9* d,const std::string& prefix){
+  auto raw=code(prefix+"shadow-model.bin");std::vector<uint32_t> full,compact;
+  assert(NorthlightShadowShader::patch(reinterpret_cast<const uint32_t*>(raw.data()),raw.size(),full));
+  assert(NorthlightModelNormalSlice::shadowVertex(full.data(),full.size(),compact)&&compact.size()<full.size());
+  IDirect3DVertexShader9* original=nullptr;must(d->CreateVertexShader(raw.data(),&original));
+  struct FaultDevice:ForwardIDirect3DDevice9 {
+   unsigned calls=0,mode;FaultDevice(IDirect3DDevice9* d,unsigned m):ForwardIDirect3DDevice9(d),mode(m){}
+   HRESULT STDMETHODCALLTYPE CreateVertexShader(const DWORD* code,IDirect3DVertexShader9** out)override{
+    ++calls;if((mode&&calls==1)||mode==4){*out=nullptr;if(mode==3)must(real->CreateVertexShader(code,out));return mode==2?D3D_OK:E_FAIL;}return real->CreateVertexShader(code,out);
+   }
+  };
+  for(unsigned mode=0;mode<5;++mode){FaultDevice device(d,mode);WorldRenderer w(&device);device.calls=0;
+   w.registerShader(original,NorthlightShaderTags::fnv1a(raw.data(),raw.size()*4));
+   assert(w.shadowSliceCandidates==1&&w.shadowSliceCreated==unsigned(mode==0)&&w.shadowSliceFallback==unsigned(mode!=0));
+   const auto lookup=w.lookupShader(original);assert(bool(lookup.capture)==(mode!=4));
+   if(mode!=4){UINT size=0;must(lookup.capture->replacement->GetFunction(nullptr,&size));std::vector<uint32_t> actual(size/4);must(lookup.capture->replacement->GetFunction(actual.data(),&size));assert(actual==(mode?full:compact));
+    const auto expected=NorthlightShaderConstants::analyze(reinterpret_cast<const uint32_t*>(raw.data()),raw.size(),lookup.capture->projectionKind);const auto& actualReads=lookup.capture->usage;
+    const auto equal=[](NorthlightShaderConstants::Range a,NorthlightShaderConstants::Range b){return a.first==b.first&&a.count==b.count;};assert(equal(actualReads.floats,expected.floats)&&equal(actualReads.booleans,expected.booleans)&&equal(actualReads.integers,expected.integers)&&actualReads.relativeFloat==expected.relativeFloat&&actualReads.analyzed==expected.analyzed);assert(lookup.capture->program&&w.actorPrograms.count(original));}
+   assert(device.calls==(mode?2u:1u));
+  }
+  original->Release();std::puts("SHADOW_SLICE_CREATION_PASS scenarios=5 compactOnly=1 fullFallback=error,null,errorWithObject bothFailed=closed originalMetadata=preserved");
+ }
  static void dense(WorldRenderer& w,IDirect3DDevice9* d,const std::string& prefix,IDirect3DTexture9* texture,IDirect3DVertexDeclaration9* decl,IDirect3DPixelShader9* shadow,IDirect3DPixelShader9* local,IDirect3DSurface9* target,IDirect3DSurface9* staging){
   struct Vertex {float x,y,z,nx,ny,nz;DWORD color;float u,v;};std::vector<Vertex> vertices(1024);std::vector<WORD> indices;
   for(unsigned q=0;q<256;++q)for(unsigned i:{0u,1u,2u,2u,1u,3u})indices.push_back(WORD(4*q+i));
@@ -34,6 +57,7 @@ struct GrassShadowTest {
   std::printf("GRASS_DENSE_GPU_PASS batches=64 vertices=65536 snapshotBytes=%zu drawOrders=4 directionalLocalMasks=%u profileModes=0,1 exact=1 bounded=1 timings=0\n",w.detailBudget.bytes,masks);native->Release();pixel->Release();
  }
  static void run(IDirect3DDevice9* d,const std::string& prefix){
+  shaderCreation(d,prefix);
   WorldRenderer w(d);w.valid=true;w.active=std::make_shared<WorldRenderer::Snapshot>();w.active->bvh=std::make_shared<NorthlightGI::BVH>();
   w.quality.actorShadows=w.quality.actorShadowDetail=w.quality.grassShadows=1;w.effects.shadows=true;w.captureMode=WorldRenderer::CaptureFresh;
   for(unsigned i=0;i<16;++i)w.context.view[i]=w.context.inverseView[i]=(i%5==0);w.projection[0]=w.projection[1]=w.projection[2]=1;

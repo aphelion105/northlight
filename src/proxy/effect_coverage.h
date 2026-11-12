@@ -4,23 +4,24 @@
 #include <memory>
 #include "hdr_ui_patch.h"
 #include "saved_state.h"
+#include "hdr_sky_foreground.h"
 
 // Coverage of proven native overlays already drawn into Scene before composition.
 // Depth still belongs to the surface behind them. Accumulate A = a+(1-a)*A
 // in a free MRT using the native shader's final alpha and unchanged blend/test state.
 // A second MRT preserves early additive RGB; world receivers erase both planes
 // using the native blend. No geometry replay or change to native colour/depth;
-// ordinary translucent models still receive lighting/fog.
+// ordinary translucent models still receive lighting/fog; green keeps AO behind them.
 namespace NorthlightEffectCoverage {
-enum class Write { None, Alpha, Premultiplied, Replace, Clear, Additive, Modulate };
+enum class Write { None, Alpha, Premultiplied, Replace, Clear, Additive, Modulate, LitAlpha, LitPremultiplied };
 inline Write classify(bool active,bool zWrite,bool blend,unsigned src,unsigned dst,unsigned op,unsigned rgb,bool nativeOverlay){
     if((rgb&7)!=7)return Write::None;
     const bool protect=nativeOverlay&&!zWrite;
     if(!blend||(src==D3DBLEND_ONE&&dst==D3DBLEND_ZERO&&op==D3DBLENDOP_ADD))
         return protect?Write::Replace:(active?Write::Clear:Write::None);
     if(op==D3DBLENDOP_ADD&&dst==D3DBLEND_INVSRCALPHA){
-        if(src==D3DBLEND_SRCALPHA)return protect?Write::Alpha:(active?Write::Clear:Write::None);
-        if(src==D3DBLEND_ONE)return protect?Write::Premultiplied:(active?Write::Clear:Write::None);
+        if(src==D3DBLEND_SRCALPHA)return protect?Write::Alpha:!zWrite?Write::LitAlpha:(active?Write::Clear:Write::None);
+        if(src==D3DBLEND_ONE)return protect?Write::Premultiplied:!zWrite?Write::LitPremultiplied:(active?Write::Clear:Write::None);
     }
     if(op==D3DBLENDOP_ADD&&dst==D3DBLEND_ONE&&(src==D3DBLEND_ONE||src==D3DBLEND_SRCALPHA))
         return protect?Write::Additive:Write::None;
@@ -44,31 +45,52 @@ inline bool patch(const std::uint32_t* words,size_t count,Write write,std::vecto
         }
     }
     unsigned tmp=0,c=0;while(tmp<temps&&usedTemps[tmp])++tmp;while(c<constants&&usedConstants[c])++c;
-    if(mask!=15||tmp==temps||c==constants||slot<1||slot>3||(outputs&(1u<<slot))||cost+3>(major==2?64u:512u))return false;
+    const bool lit=write==Write::LitAlpha||write==Write::LitPremultiplied;
+    if(mask!=15||tmp==temps||c==constants||slot<1||slot>3||(outputs&(1u<<slot))||cost+(lit?4:3)>(major==2?64u:512u))return false;
     out.assign(words,words+count-1);
     // def cN = (0,1,0,0), local to this shader; no game constants are changed.
     out.insert(out.begin()+1,{0x05000051u,reg(0xa00f0000u,2,c),0,0x3f800000u,0,0});
     for(const auto& ins:ops)if(ins.op!=31&&ins.op!=47&&ins.op!=48&&ins.op!=81&&ins.count>1){
         const Word dst=words[ins.at+1];if(type(dst)==8&&index(dst)==0)out[ins.at+7]=reg(dst,0,tmp);
     }
-    const Word value=write==Write::Premultiplied?reg(0x80ff0000u,0,tmp):reg(write==Write::Clear?0xa0000000u:0xa0550000u,2,c);
+    const Word value=write==Write::Premultiplied?reg(0x80ff0000u,0,tmp):reg(write==Write::Clear||lit?0xa0000000u:0xa0550000u,2,c);
     out.insert(out.end(),{0x02000001u,0x800f0800u,reg(0x80e40000u,0,tmp)});
     if(write!=Write::Additive&&write!=Write::Modulate)
         out.insert(out.end(),{0x02000001u,reg(0x80070000u,0,tmp),value});
+    // Red protects native overlays from relighting. Green includes every
+    // no-depth alpha layer, so AO can stay behind lit translucent models too.
+    if(lit)out.insert(out.end(),{0x02000001u,reg(0x80020000u,0,tmp),
+        write==Write::LitPremultiplied?reg(0x80ff0000u,0,tmp):reg(0xa0550000u,2,c)});
     out.insert(out.end(),{0x02000001u,reg(0x800f0000u,8,slot),reg(0x80e40000u,0,tmp),0x0000ffffu});
     return true;
 }
+// Borrowed only inside the factory's submission. Reapply our owned MRT writes
+// after another native material transform instead of treating them as game code.
+struct NativePixel {
+    IDirect3DPixelShader9 *source=nullptr,*bound=nullptr;
+    Write writes[2]{};unsigned slots[2]{},count=0;
+    bool matches(IDirect3DPixelShader9* ps)const{return source&&bound==ps&&count&&count<=2;}
+    unsigned recipe()const{unsigned key=count;for(unsigned i=0;i<count;++i)key|=(unsigned(writes[i])|(slots[i]<<4))<<(2+6*i);return key;}
+    bool compose(std::vector<std::uint32_t>& code)const{
+        if(!source||!count||count>2)return false;
+        std::vector<std::uint32_t> next;
+        for(unsigned i=0;i<count;++i){if(!patch(code.data(),code.size(),writes[i],next,slots[i]))return false;code.swap(next);}
+        return true;
+    }
+    unsigned addedSlots()const{unsigned cost=0;for(unsigned i=0;i<count;++i)cost+=writes[i]==Write::Additive||writes[i]==Write::Modulate?2:writes[i]==Write::LitAlpha||writes[i]==Write::LitPremultiplied?4:3;return cost;}
+};
 class Plane {
-    struct Shaders {IDirect3DPixelShader9* shader[18]={};bool tried[18]={};};
+    struct Shaders {IDirect3DPixelShader9* shader[24]={};bool tried[24]={};};
     std::unordered_map<IDirect3DPixelShader9*,Shaders> shaders;
     IDirect3DTexture9* mask=nullptr;IDirect3DSurface9 *surface=nullptr,*msaa=nullptr,*target=nullptr;
     D3DSURFACE_DESC desc{};bool capsChecked=false,capsOk=false,valid=true,marked=false,multisample=false;unsigned targets=0,boundSlot=0;
     IDirect3DDevice9* boundDevice=nullptr;
+    IDirect3DPixelShader9* fixedModulate=nullptr;
     template<class T> static void drop(T*& p){if(p){p->Release();p=nullptr;}}
     void releaseImage(){drop(msaa);drop(surface);drop(mask);desc={};}
     IDirect3DPixelShader9* replacement(IDirect3DDevice9* d,IDirect3DPixelShader9* original,Write write,unsigned slot)try{
         auto it=shaders.find(original);if(it==shaders.end()){if(shaders.size()>=256)return nullptr;it=shaders.emplace(original,Shaders{}).first;}
-        auto& bank=it->second;const unsigned index=(slot-1)*6+unsigned(write)-1;if(bank.tried[index])return bank.shader[index];bank.tried[index]=true;
+        auto& bank=it->second;const unsigned index=(slot-1)*8+unsigned(write)-1;if(bank.tried[index])return bank.shader[index];bank.tried[index]=true;
         UINT bytes=0;if(FAILED(original->GetFunction(nullptr,&bytes))||bytes<12||bytes>262144||bytes%4)return nullptr;
         std::vector<std::uint32_t> words(bytes/4),patched;
         if(FAILED(original->GetFunction(words.data(),&bytes))||!patch(words.data(),words.size(),write,patched,slot))return nullptr;
@@ -86,10 +108,11 @@ public:
     void colorWrite(IDirect3DSurface9* destination){if(destination&&destination==target)endFrame();}
     template<class Forget> void forget(IDirect3DPixelShader9* original,Forget derived){auto it=shaders.find(original);if(it!=shaders.end()){for(auto*& p:it->second.shader){if(p)derived(p);drop(p);}shaders.erase(it);}}
     void forget(IDirect3DPixelShader9* original){forget(original,[](IDirect3DPixelShader9*){});}
-    void reset(){endFrame();for(auto& entry:shaders)for(auto*& p:entry.second.shader)drop(p);shaders.clear();releaseImage();capsChecked=capsOk=false;}
-    template<class Draw> HRESULT draw(IDirect3DDevice9* d,Write write,Draw submit,bool batch=false,bool rgb=false){
+    void reset(){endFrame();for(auto& entry:shaders)for(auto*& p:entry.second.shader)drop(p);shaders.clear();drop(fixedModulate);releaseImage();capsChecked=capsOk=false;}
+    template<class Draw> HRESULT draw(IDirect3DDevice9* d,Write write,Draw submit,bool batch=false,bool rgb=false,const NativePixel** activePixel=nullptr){
         auto fallback=[&]{endBatch();return submit();};
         if(write==Write::None||!valid)return fallback();
+        const bool erases=write==Write::Clear||write==Write::LitAlpha||write==Write::LitPremultiplied;
         if(!capsChecked){D3DCAPS9 caps{};capsChecked=true;capsOk=SUCCEEDED(d->GetDeviceCaps(&caps))&&caps.NumSimultaneousRTs>=2&&
             (caps.PrimitiveMiscCaps&D3DPMISCCAPS_INDEPENDENTWRITEMASKS)&&(caps.PrimitiveMiscCaps&D3DPMISCCAPS_MRTPOSTPIXELSHADERBLENDING);targets=caps.NumSimultaneousRTs;}
         if(!capsOk)return fallback();
@@ -103,9 +126,10 @@ public:
         const bool already=boundDevice==d&&boundSlot==slot&&aux==(msaa?msaa:surface);
         if(already)drop(aux);
         if(slot>=targets||(FAILED(got)&&got!=D3DERR_NOTFOUND)||aux||FAILED(d->GetRenderTarget(0,&rt))||!rt||
-           FAILED(rt->GetDesc(&current))||FAILED(d->GetPixelShader(&ps))||!ps||FAILED(d->GetRenderState(colorState,&color))){if(write==Write::Clear)valid=false;return fallback();}
+           FAILED(rt->GetDesc(&current))||FAILED(d->GetPixelShader(&ps))||FAILED(d->GetRenderState(colorState,&color))){if(erases)valid=false;return fallback();}
         if((current.MultiSampleType&&!multisample)||(target&&rt!=target))return fallback();
-        auto* patched=replacement(d,ps,write,slot);if(!patched){if(write==Write::Clear)valid=false;return fallback();}
+        auto* source=ps?ps:NorthlightHdr::fixedModulateSource(d,fixedModulate);
+        auto* patched=source?replacement(d,source,write,slot):nullptr;if(!patched){if(erases)valid=false;return fallback();}
         if(!target){
             if(desc.Width!=current.Width||desc.Height!=current.Height||desc.Format!=current.Format||desc.MultiSampleType!=current.MultiSampleType||desc.MultiSampleQuality!=current.MultiSampleQuality)releaseImage();
             // Match RT0's bit depth, including MSAA. This also supports devices
@@ -122,8 +146,14 @@ public:
         }
         restore.changed=true;
         if(!already)++bindings;
-        if((!already&&FAILED(d->SetRenderTarget(slot,msaa?msaa:surface)))||FAILED(d->SetRenderState(colorState,rgb?7:D3DCOLORWRITEENABLE_RED))||FAILED(d->SetPixelShader(patched))){
+        if((!already&&FAILED(d->SetRenderTarget(slot,msaa?msaa:surface)))||FAILED(d->SetRenderState(colorState,rgb?7:D3DCOLORWRITEENABLE_RED|D3DCOLORWRITEENABLE_GREEN))||FAILED(d->SetPixelShader(patched))){
             d->SetPixelShader(ps);d->SetRenderState(colorState,color);d->SetRenderTarget(slot,nullptr);restore.changed=false;valid=false;return fallback();}
+        NativePixel pixel;
+        if(activePixel&&*activePixel&&(*activePixel)->matches(ps))pixel=**activePixel;else pixel.source=ps;
+        if(pixel.count<2){pixel.writes[pixel.count]=write;pixel.slots[pixel.count++]=slot;pixel.bound=patched;}else pixel={};
+        struct Provenance {const NativePixel** owner;const NativePixel* previous;~Provenance(){if(owner)*owner=previous;}}
+            provenance{activePixel,activePixel?*activePixel:nullptr};
+        if(activePixel)*activePixel=pixel.source?&pixel:nullptr;
         const HRESULT hr=submit();if(SUCCEEDED(hr)&&write!=Write::Clear){marked=true;++draws;}
         if(batch){restore.keep=true;boundDevice=d;boundSlot=slot;}else{boundDevice=nullptr;boundSlot=0;}return hr;
     }
@@ -140,6 +170,7 @@ public:
 // attenuate/erase old emission; modulate shadows multiply it in native order.
 class Capture {
     Plane coverage,emission;
+    const NativePixel* activePixel=nullptr;
     IDirect3DPixelShader9* pack=nullptr;
     std::unique_ptr<NorthlightStateBlockPool> states;
     bool packed=false;
@@ -149,6 +180,8 @@ public:
     ~Capture(){reset();}
     bool active()const{return coverage.active()||emission.active();}
     bool hasEmission()const{return packed;}
+    const NativePixel* nativePixel()const{return activePixel;}
+    IDirect3DTexture9* aoTexture(IDirect3DDevice9* d,IDirect3DSurface9* scene){endBatch();return coverage.texture(d,scene);}
     void allowMultisample(bool allow){coverage.allowMultisample(allow);emission.allowMultisample(allow);}
     void endBatch(){emission.endBatch();coverage.endBatch();batchWrite=Write::None;}
     void endFrame(){endBatch();coverage.endFrame();emission.endFrame();packed=false;draws=bindings=0;}
@@ -162,7 +195,7 @@ public:
         if(write!=batchWrite)endBatch();batchWrite=write;
         const auto ew=write==Write::Additive?write:emission.active()?(write==Write::Modulate?write:write!=Write::None?Write::Clear:Write::None):Write::None;
         const auto cw=write==Write::Additive||write==Write::Modulate?Write::None:write;
-        const HRESULT hr=coverage.draw(d,cw,[&]{return emission.draw(d,ew,submit,batch,true);},batch);
+        const HRESULT hr=coverage.draw(d,cw,[&]{return emission.draw(d,ew,submit,batch,true,&activePixel);},batch,false,&activePixel);
         draws=coverage.draws+emission.draws;bindings=coverage.bindings+emission.bindings;return hr;
     }
     IDirect3DTexture9* texture(IDirect3DDevice9* d,IDirect3DSurface9* scene){

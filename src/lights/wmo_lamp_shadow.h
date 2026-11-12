@@ -5,10 +5,36 @@
 #include <cstddef>
 #include <vector>
 #include <algorithm>
+#include <utility>
 
 // A bounded FGS2 fixture tag is resolved to its exact FGL source identity on
 // FGS3 instance expansion. Incomplete or ambiguous enclosures fail closed.
 namespace NorthlightWmoLampShadow {
+// Mesh metadata is immutable within a generation. Index only tagged fixtures;
+// validation below still proves ownership against the current light and mesh.
+class SourceIndex {
+    using Entry=std::pair<uint64_t,size_t>;
+    std::vector<Entry> entries;
+    const void* data=nullptr;size_t count=0;uint64_t generation=0;bool valid=false;
+public:
+    using Range=std::pair<std::vector<Entry>::const_iterator,std::vector<Entry>::const_iterator>;
+    void clear(){std::vector<Entry>().swap(entries);data=nullptr;count=0;valid=false;}
+    template<class Batches> bool prepare(const Batches& batches,uint64_t revision){
+        if(valid&&data==batches.data()&&count==batches.size()&&generation==revision)return true;
+        valid=false;
+        try {
+            entries.clear();
+            for(size_t i=0;i<batches.size();++i)if(!batches[i].terrain&&batches[i].lampSourceId)
+                entries.emplace_back(batches[i].lampSourceId,i);
+            std::sort(entries.begin(),entries.end());
+            data=batches.data();count=batches.size();generation=revision;valid=true;return true;
+        }catch(...){clear();return false;} // Allocation failure retains the linear ownership proof.
+    }
+    Range find(uint64_t source)const{
+        return {std::lower_bound(entries.begin(),entries.end(),Entry{source,0}),
+                std::upper_bound(entries.begin(),entries.end(),Entry{source,size_t(-1)})};
+    }
+};
 inline bool matches(const NorthlightLocalLights::Light& light,uint64_t sourceId,unsigned triangles,
                     NorthlightGI::Vec3 low,NorthlightGI::Vec3 high){
     const bool native=(light.kind==2||(light.kind==3&&!(light.flags&NorthlightLocalLights::GlassEmitter)))&&(light.flags&NorthlightLocalLights::CastShadow);
@@ -29,10 +55,11 @@ inline bool matches(const NorthlightLocalLights::Light& light,uint64_t sourceId,
     return light.kind==1||native||distance<=tolerance*tolerance;
 }
 template<class Batches>
-inline size_t unique(const NorthlightLocalLights::Light& light,const Batches& batches){
+inline size_t unique(const NorthlightLocalLights::Light& light,const Batches& batches,const SourceIndex::Range* candidates=nullptr){
     size_t found=size_t(-1);
     if(!(light.flags&NorthlightLocalLights::CastShadow))return found;
-    for(size_t i=0;i<batches.size();++i){const auto& b=batches[i];
+    const size_t count=candidates?size_t(candidates->second-candidates->first):batches.size();
+    for(size_t at=0;at<count;++at){const size_t i=candidates?(candidates->first+at)->second:at;const auto& b=batches[i];
         if(!b.terrain&&matches(light,b.lampSourceId,b.count,b.boundsLow,b.boundsHigh)){
             if(found!=size_t(-1))return size_t(-1);found=i;
         }}
@@ -41,12 +68,13 @@ inline size_t unique(const NorthlightLocalLights::Light& light,const Batches& ba
 // One M2 bulb can span several materials/components. Ownership comes from the
 // same FGS3 instance/source identity; keep the legacy WMO uniqueness contract.
 template<class Batches>
-std::vector<size_t> parts(const NorthlightLocalLights::Light& light,const Batches& batches){
+std::vector<size_t> parts(const NorthlightLocalLights::Light& light,const Batches& batches,const SourceIndex::Range* candidates=nullptr){
     if(light.kind==1||(light.flags&NorthlightLocalLights::GlassEmitter)){
-        const size_t i=unique(light,batches);return i==size_t(-1)?std::vector<size_t>{}:std::vector<size_t>{i};
+        const size_t i=unique(light,batches,candidates);return i==size_t(-1)?std::vector<size_t>{}:std::vector<size_t>{i};
     }
     std::vector<size_t> result;unsigned triangles=0;NorthlightGI::Vec3 lo{},hi{};
-    for(size_t i=0;i<batches.size();++i){const auto& b=batches[i];
+    const size_t count=candidates?size_t(candidates->second-candidates->first):batches.size();
+    for(size_t at=0;at<count;++at){const size_t i=candidates?(candidates->first+at)->second:at;const auto& b=batches[i];
         if(b.terrain||b.lampSourceId!=light.sourceId||!b.lampSourceId)continue;
         if(!b.lampTriangles||b.lampTriangles->size()!=b.count||b.count>4096-triangles)return {};
         const float low[]={b.boundsLow.x,b.boundsLow.y,b.boundsLow.z},high[]={b.boundsHigh.x,b.boundsHigh.y,b.boundsHigh.z};

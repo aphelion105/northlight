@@ -52,7 +52,7 @@ DEFAULT_RADIUS = 928
 CELESTIAL = {'disc': (0, 1, True), 'disc_gain': (0, 4, False), 'light': (0, 1, True), 'light_mix': (0, 1, False),
              'light_strength': (0, 4, False), 'fog_gain': (0, 8, False), 'fog_height_scale': (.25, 4, False),
              'horizon_haze': (0, 4, False), 'glow_strength': (0, 4, False), 'glow': (0, 1, True),
-             'glow_mix': (0, 1, False)}
+             'glow_mix': (0, 1, False), 'fog_density': (0, 4, False)}
 ZONE_ONLY = {'terrain_radius': (DEFAULT_RADIUS, 4096, False), 'ground_fog_day_scale': (0, 4, False),
              'ground_fog_night_scale': (0, 4, False), 'ground_fog_day_add': (0, .05, False),
              'ground_fog_night_add': (0, .05, False)}
@@ -60,10 +60,10 @@ FOG_KEYS = ('ground_fog_day_scale', 'ground_fog_night_scale', 'ground_fog_day_ad
 KEYS = {**{s + k: r for s in ('sun_', 'moon_') for k, r in CELESTIAL.items()}, **ZONE_ONLY}
 # The DLL's built-in profile (NorthlightCelestialProfiles::Profile) under celestial-profiles.ini [default].
 BUILTIN = {'sun_disc': [1, .96, .88], 'sun_disc_gain': 3.5, 'sun_light': [1, 1, 1], 'sun_light_mix': 0,
-           'sun_light_strength': 1, 'sun_fog_gain': 1, 'sun_fog_height_scale': 1, 'sun_horizon_haze': 1,
+           'sun_light_strength': 1, 'sun_fog_gain': 1, 'sun_fog_height_scale': 1, 'sun_fog_density': 1, 'sun_horizon_haze': 1,
            'sun_glow_strength': 1, 'sun_glow': [1, 1, 1], 'sun_glow_mix': 0,
            'moon_disc': [.94, .97, 1], 'moon_disc_gain': 1.1, 'moon_light': [1, 1, 1], 'moon_light_mix': 0,
-           'moon_light_strength': 1, 'moon_fog_gain': 1, 'moon_fog_height_scale': 1, 'moon_horizon_haze': 1,
+           'moon_light_strength': 1, 'moon_fog_gain': 1, 'moon_fog_height_scale': 1, 'moon_fog_density': 1, 'moon_horizon_haze': 1,
            'moon_glow_strength': 1, 'moon_glow': [1, 1, 1], 'moon_glow_mix': 0,
            'terrain_radius': DEFAULT_RADIUS, 'ground_fog_day_scale': 1, 'ground_fog_night_scale': 1,
            'ground_fog_day_add': 0, 'ground_fog_night_add': 0}

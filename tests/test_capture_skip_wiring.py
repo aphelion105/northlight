@@ -18,21 +18,23 @@ render=w[w.index('    bool render(IDirect3DSurface9* targetSurface'):]
 once(w,'        if(modelCaptureSkipped())return; /* previous replays/actor packets are not needed this frame */\n        const CaptureShader* found=lookupShader(current).capture;if(!found){if(sample)++unknownCaptureCalls;return;}','model skip at captureModel entry')
 cap=w[w.index('    void capture(D3DPRIMITIVETYPE type'):w.index('    void releaseReplayGPU()')]
 assert cap.index('if(isTerrain)')<cap.index('captureModel('),'terrain capture precedes (and is independent of) the model skip'
-assert 'modelCaptureSkipped' not in r and len(re.findall(r'world->capture(?:UP)?\([^;]*\);captureWater\(vs,',r))==3,'non-DIP routes still capture water immediately after world capture'
-dip=r[r.index('    HRESULT STDMETHODCALLTYPE DrawIndexedPrimitive('):r.index('    HRESULT STDMETHODCALLTYPE DrawPrimitiveUP(')]
-once(dip,'auto captureWorld=', 'one DIP world publisher')
+assert 'modelCaptureSkipped' not in r,'capture skip stays inside WorldRenderer'
+dip=r[r.index('    template<NorthlightWaterRenderer::UserPointer UserPointer,class Raw,class Draw> void captureGameDraw('):r.index('    template<class Draw> HRESULT terrainShadowDraw(')]
+once(dip,'auto captureWorld=', 'one shared world publisher')
 once(dip,'if(sharedTerrain)captureWorld(&positions);', 'shared terrain captured before materials')
-once(dip,'if(!sharedTerrain)captureWorld();', 'all other DIP draws retain world capture')
-once(dip,'captureWater(vs,NorthlightWaterRenderer::NoUserPointer,draw);', 'DIP water capture retained')
+once(dip,'if(!sharedTerrain)captureWorld();', 'all other draws retain world capture')
+once(dip,'captureWater(vs,UserPointer,draw);', 'water capture retained after world')
+assert '!userMemory&&args.indexed&&autoBump&&autoBump->active()' in dip
 assert dip.index('if(sharedTerrain)captureWorld(&positions);')<dip.index('autoBump->capture(')<dip.index('if(!sharedTerrain)captureWorld();')<dip.index('captureWater('),'DIP shares fresh terrain bounds without moving water before world capture'
+assert r.count('captureGameDraw<NorthlightWaterRenderer::')==4,'all four adapters use the same route'
 # test_shared_terrain_bounds compiles this production route and exercises every
 # material/terrain/ready combination, including failed capture and exact arguments.
 # Consumers of fresh replays on the render path.
 for needle,what in [('if(replayShadows)selectShadowReplays();','selection history + fate frame'),
                     ('(replayShadows&&!timedReplay())','GPU cache LRU/probation clock'),
-                    ('if(effects.shadows&&replayShadows){auto proofs','static dedup proofs/cursor'),
-                    ('if(effects.shadows&&replayShadows)pointCalculateReplayBounds();','bounds cache resume cursors'),
-                    ('renderPointShadows(atmosphere.lights,replaysComplete,actorShadows)','point cube schedule'),
+                    ('if(directionalShadows&&replayShadows){auto proofs','static dedup proofs require the selected directional provider'),
+                    ('if(directionalReplayBounds)pointCalculateReplayBounds();','directional bounds cache resume cursors'),
+                    ('renderPointShadows(atmosphere.lights,replaysComplete,actorShadows,rendererFrame)','point cube schedule'),
                     ('if(!environmentReuse){if(splitNear||captureMode==CaptureFresh||!actorShadows)reuse.commit(interval,shadowPasses,matrices[cascade]);else captureDemand=true;}','cascade commit')]:
     once(render,needle,what)
 assert render.count('selectShadowReplays(')==1 and w.count('selectShadowReplays()')==1,'selection runs only from render'
@@ -41,6 +43,12 @@ assert render.count('uploadReplay(')==1 and render.count('timedReplay()')==1,'re
 # Point: a frame without replays never commits the schedule.
 body=pt[pt.index('    bool renderPointShadow(const NorthlightLocalLights::Light& light,bool fresh=true,bool withReplays=true){'):pt.index('    bool renderPointLighting(')]
 assert body.index('if(!fresh){')<body.index('pointSlot().schedule.commit('),'no point commit from a skipped frame'
+assert body.index('if(!fresh){')<body.index('if(withReplays)replayBoundsRequest();')<body.index('replayBoundsJoin();'),'point bounds belong to actual fresh cube refreshes'
+assert 'const bool directionalReplayBounds=directionalShadows&&replayShadows&&(sourceActive[0]||sourceActive[1]);' in render
+assert 'if(directionalReplayBounds)replayBoundsKick();' in render
+flash=fp.src('world_flash_rendering.inl').read_text()
+flash=flash[flash.index('    void renderFlashShadows('):]
+assert flash.index('if(!fresh)')<flash.index('if(!flashResources(s))continue;')<flash.index('if(withReplays)replayBoundsRequest();')<flash.index('renderFlashMap('),'flash bounds follow fresh/resource guards'
 assert body.index('pointSlot().schedule.due(')<body.index('if(!fresh){')<body.index('for(unsigned face=0;face<6;++face)'), 'retain the refresh interval and return before cube writes'
 assert 'if(!pointSlot().schedule.usable||lightChanged)return false;' in body, 'only a compatible usable cube may be published without capture'
 assert 'pointSlot().schedule.due(updateAt,pointSlot().selected,meshGeneration,pointReplayCount' in body and 'if(fresh)pointReplayCount=withReplays?replays.size():0;' in body
@@ -56,6 +64,6 @@ once(w,'captureSkipped=%u','sampled capture log marks skipped frames');assert 'c
 fin=w[w.index('    void finishActorScene(){'):w.index('    std::shared_ptr<const NorthlightActorGeometry::ActorJob> completedActorJob()')]
 assert fin.index('if(!actorCaptureEnabled())return;')<fin.index('lastActorCapture='),'no GI stamp without a capture'
 dec=w[w.index('    bool modelCaptureSkipped(){'):w.index('    void captureModel(')]
-assert 'in.actorDue=actorCaptureEnabled();' in dec and 'const bool shadows=ready()&&NorthlightQuality::actorShadowWork(quality,effects.shadows);' in dec
+assert 'in.actorDue=actorCaptureEnabled();' in dec and 'const bool shadows=shadowCaptureDemand();' in dec
 assert 'captureSkipPossible(quality,shadows)' in dec and 'in.shadows=shadows;' in dec and 'in.pointDue=in.shadows&&!in.actorDue&&!in.demand&&pointRefreshPredicted();' in dec
 print('capture-skip wiring: model-only skip inside WorldRenderer; selection/fate, GPU cache, proofs, bounds, point schedule, snapshot frame gated; commits only from capture frames')

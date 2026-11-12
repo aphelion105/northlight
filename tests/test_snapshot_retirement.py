@@ -24,7 +24,8 @@ original=header.read_text()
 modes=[('O2',['-O2']),('O0',['-O0']),('ASan-UBSan',['-O1','-g','-fsanitize=address,undefined','-fno-sanitize-recover=all','-fno-omit-frame-pointer']),('TSan',['-O1','-g','-fsanitize=thread'])]
 controls=[('no-retirement','if((retirement||batch)&&!sources_->entries.empty())try{','if(false&&(retirement||batch)&&!sources_->entries.empty())try{','RETIREMENT_NOT_QUEUED'),
           ('no-index-retirement','if((retirement||batch)&&indexCacheEntries())try{','if(false&&(retirement||batch)&&indexCacheEntries())try{','INDEX_RETIREMENT_NOT_QUEUED'),
-          ('worker-COM','declaration->Release();declaration=nullptr;','/* counterfactual: COM ownership reaches the worker */','COM_RELEASE_BEFORE_ENQUEUE')]
+          ('worker-COM','declaration->Release();declaration=nullptr;','/* counterfactual: COM ownership reaches the worker */','COM_RELEASE_BEFORE_ENQUEUE'),
+          ('early-refill','if(!sources_->retiring.expired())return false;','/* counterfactual: refill during physical free */','REFILL_BEFORE_PHYSICAL_FREE')]
 try:
     for name,body,rejection in [('current',original,None),*[(n,original.replace(a,b),r) for n,a,b,r in controls]]:
         folder=out/name;folder.mkdir();(folder/'d3d9.h').write_text(stub);(folder/'draw_snapshot.h').write_text(body)

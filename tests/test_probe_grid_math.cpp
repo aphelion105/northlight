@@ -12,6 +12,6 @@ int main(){std::mt19937 random(458291);unsigned cases=0;
   ProbeGridKey a{1,2,3},b=a;bool ok=reference({p[0],p[1],p[2]},a);assert(probeGridKey({p[0],p[1],p[2]},b)==ok&&a==b);++cases;
  }}
  assert(std::fesetround(FE_TONEAREST)==0);
- for(unsigned width=4;width<=24;++width){assert(configureProbeLayout({2,2,width}));for(unsigned i=0;i<20000;++i){ProbeGridKey key{int32_t(random()),int32_t(random()),int32_t(random())};if(i==0)key={INT32_MIN,INT32_MAX,-1};const auto wrap=[width](int32_t v){const int64_t r=int64_t(v)%int64_t(width);return size_t(r<0?r+width:r);};assert(probeAtlasIndex(key)==wrap(key.x)+wrap(key.y)*width+wrap(key.z)*width*width);++cases;}}
+ for(unsigned width=4;width<=42;++width){assert(configureProbeLayout({2,2,width}));for(unsigned i=0;i<20000;++i){ProbeGridKey key{int32_t(random()),int32_t(random()),int32_t(random())};if(i==0)key={INT32_MIN,INT32_MAX,-1};const auto wrap=[width](int32_t v){const int64_t r=int64_t(v)%int64_t(width);return size_t(r<0?r+width:r);};assert(probeAtlasIndex(key)==wrap(key.x)+wrap(key.y)*width+wrap(key.z)*width*width);++cases;}}
  assert(configureProbeLayout({14,14,16}));std::printf("PROBE_GRID_MATH_PASS cases=%u exactKeys=1 exactModulo=1 roundingModes=4 timings=0\n",cases);
 }

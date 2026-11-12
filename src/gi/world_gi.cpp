@@ -480,7 +480,7 @@ bool BVH::buildImpl(WorldScene&& s,std::string& error,bool fast,std::shared_ptr<
         }
         if constexpr(TracePairNodes){
             if(next.sah_){
-                next.buildSahTree();
+                next.buildSahTree(admit);
             }else{
                 // Exact interior count of the median tree, so the array never regrows.
                 struct Count {static size_t interior(uint32_t n){return n<=6?0:1+interior(n/2)+interior(n-n/2);}};
@@ -497,13 +497,21 @@ bool BVH::buildImpl(WorldScene&& s,std::string& error,bool fast,std::shared_ptr<
     next.scene_.vertices.detachAdmission();next.scene_.triangles.detachAdmission();next.order_.detachAdmission();next.pairs_.detachAdmission();next.nodes_.detachAdmission();next.centers_.detachAdmission();*this=std::move(next);return true;
 }
 
-void BVH::buildSahTree(){
+void BVH::buildSahTree(const AllocationAdmission& admit){
     if(order_.empty())return;
     centers_.resize(scene_.triangles.size());
-    for(uint32_t i:order_){const auto&t=scene_.triangles[i];centers_[i]=(scene_.vertices[t.v0].position+scene_.vertices[t.v1].position+scene_.vertices[t.v2].position)/3.f;}
     pairs_.reserve(size_t(double(order_.size())*TraceSahPairsPerTriangle));
-    if(!order_.empty()){BuildBox box=bounds(0,uint32_t(order_.size()));root_=makeSah(0,uint32_t(order_.size()),box);rootLow_=box.low;rootHigh_=box.high;inflate(rootLow_,rootHigh_);}
-    centers_.free();
+    // Large fallback trees revisit each triangle at many SAH levels. Cache its
+    // exact bounds only for this build, when the existing admission allows it.
+    std::vector<TriangleBox> boxes;
+    if(order_.size()>=4096&&(!admit||admit(uint64_t(scene_.triangles.size())*sizeof(TriangleBox)))){
+        try{boxes.resize(scene_.triangles.size());}catch(const std::bad_alloc&){/* optional scratch: retain the original builder */}
+    }
+    for(uint32_t i:order_){const auto&t=scene_.triangles[i];const auto a=scene_.vertices[t.v0].position,b=scene_.vertices[t.v1].position,c=scene_.vertices[t.v2].position;
+        centers_[i]=(a+b+c)/3.f;if(!boxes.empty())boxes[i]={minimum(a,minimum(b,c)),maximum(a,maximum(b,c))};}
+    const auto cached=boxes.empty()?nullptr:boxes.data();
+    if(!order_.empty()){BuildBox box=bounds(0,uint32_t(order_.size()),cached);root_=makeSah(0,uint32_t(order_.size()),box,cached);rootLow_=box.low;rootHigh_=box.high;inflate(rootLow_,rootHigh_);}
+    centers_.free();std::vector<TriangleBox>().swap(boxes);
     if(pairs_.capacity()>pairs_.size()+pairs_.size()/8)pairs_.shrink_to_fit();
 }
 
@@ -527,13 +535,17 @@ uint32_t BVH::partition(uint32_t start,uint32_t count,Vec3& low,Vec3& high) {
     return mid;
 }
 // Triangle and centroid bounds of order_[start,start+count).
-BVH::BuildBox BVH::bounds(uint32_t start,uint32_t count) const {
+__attribute__((always_inline)) inline BVH::TriangleBox BVH::triangleBox(uint32_t index,const TriangleBox* cached)const{
+    if(cached)return cached[index];const auto& t=scene_.triangles[index];
+    const Vec3 a=scene_.vertices[t.v0].position,b=scene_.vertices[t.v1].position,c=scene_.vertices[t.v2].position;
+    return {minimum(a,minimum(b,c)),maximum(a,maximum(b,c))};
+}
+BVH::BuildBox BVH::bounds(uint32_t start,uint32_t count,const TriangleBox* cached) const {
     const float inf=std::numeric_limits<float>::infinity();
     BuildBox box{{inf,inf,inf},{-inf,-inf,-inf},{inf,inf,inf},{-inf,-inf,-inf}};
     for(uint32_t i=start;i<start+count;++i){
-        const auto&t=scene_.triangles[order_[i]];
-        Vec3 a=scene_.vertices[t.v0].position,b=scene_.vertices[t.v1].position,c=scene_.vertices[t.v2].position;
-        box.low=minimum(box.low,minimum(a,minimum(b,c)));box.high=maximum(box.high,maximum(a,maximum(b,c)));
+        const auto triangle=triangleBox(order_[i],cached);
+        box.low=minimum(box.low,triangle.low);box.high=maximum(box.high,triangle.high);
         box.cl=minimum(box.cl,centers_[order_[i]]);box.ch=maximum(box.ch,centers_[order_[i]]);
     }
     return box;
@@ -541,7 +553,7 @@ BVH::BuildBox BVH::bounds(uint32_t start,uint32_t count) const {
 // Binned SAH split (0 for a leaf) over precomputed centroids. Child bounds come
 // from the bins, so each level makes one binning and one partition pass. Depth
 // is capped; below the cap a median split guarantees progress (depth < 80).
-uint32_t BVH::sahSplit(uint32_t start,uint32_t count,const BuildBox& box,BuildBox (&child)[2]) {
+uint32_t BVH::sahSplit(uint32_t start,uint32_t count,const BuildBox& box,BuildBox (&child)[2],const TriangleBox* cached) {
     if(count<=2)return 0;
     const float inf=std::numeric_limits<float>::infinity();
     constexpr unsigned B=16;
@@ -560,9 +572,7 @@ uint32_t BVH::sahSplit(uint32_t start,uint32_t count,const BuildBox& box,BuildBo
         // Only axes considered below can be read by binning or cost evaluation.
         for(unsigned ax=0;ax<3;++ax)if(scale[ax]>0&&(allAxes||ax==widest))for(unsigned k=0;k<B;++k)bins[ax][k]={{inf,inf,inf},{-inf,-inf,-inf},0};
         for(uint32_t i=start;i<start+count;++i){
-            const uint32_t index=order_[i];const auto&t=scene_.triangles[index];
-            Vec3 a=scene_.vertices[t.v0].position,b=scene_.vertices[t.v1].position,c=scene_.vertices[t.v2].position;
-            const Vec3 lo=minimum(a,minimum(b,c)),hi=maximum(a,maximum(b,c));
+            const uint32_t index=order_[i];const auto triangle=triangleBox(index,cached);const Vec3 lo=triangle.low,hi=triangle.high;
             for(unsigned i=0;i<axisCount;++i){const unsigned ax=activeAxes[i];Bin& e=bins[ax][bin(index,ax)];e.low=minimum(e.low,lo);e.high=maximum(e.high,hi);++e.count;}
         }
         // Cost in triangle tests: one two-box pair test plus area-weighted children.
@@ -595,14 +605,14 @@ uint32_t BVH::sahSplit(uint32_t start,uint32_t count,const BuildBox& box,BuildBo
     unsigned axis=extent.y>extent.x?1:0;if(extent.z>component(extent,axis))axis=2;
     const uint32_t mid=start+count/2;
     std::nth_element(order_.begin()+start,order_.begin()+mid,order_.begin()+start+count,[&](uint32_t a,uint32_t b){return component(centers_[a],axis)<component(centers_[b],axis);});
-    child[0]=bounds(start,mid-start);child[1]=bounds(mid,start+count-mid);
+    child[0]=bounds(start,mid-start,cached);child[1]=bounds(mid,start+count-mid,cached);
     return mid;
 }
-uint32_t BVH::makeSah(uint32_t start,uint32_t count,const BuildBox& box) {
-    BuildBox child[2];const uint32_t mid=sahSplit(start,count,box,child);
+uint32_t BVH::makeSah(uint32_t start,uint32_t count,const BuildBox& box,const TriangleBox* cached) {
+    BuildBox child[2];const uint32_t mid=sahSplit(start,count,box,child,cached);
     if(!mid)return LeafBit|start<<3|count;
     const uint32_t result=uint32_t(pairs_.size());pairs_.emplace_back();
-    ++depth_;const uint32_t refs[2]={makeSah(start,mid-start,child[0]),makeSah(mid,start+count-mid,child[1])};--depth_;
+    ++depth_;const uint32_t refs[2]={makeSah(start,mid-start,child[0],cached),makeSah(mid,start+count-mid,child[1],cached)};--depth_;
     Pair& p=pairs_[result];
     for(unsigned side=0;side<2;++side){
         Vec3 l=child[side].low,h=child[side].high;inflate(l,h);p.child[side]=refs[side];
@@ -923,7 +933,7 @@ bool BVH::buildRegion(WorldScene&& scene,std::vector<PieceReference>&& pieces,st
         if(!next.order_.empty()){
             const uint64_t tree=next.order_.capacity()*sizeof(uint32_t)+uint64_t(double(next.order_.size())*TraceSahPairsPerTriangle)*sizeof(Pair);
             if(!next.order_.chunked()&&admit&&(!admit(tree)||!admit(buildScratchBytes(next.scene_.triangles.size())))){error="Hybrid fallback allocation deferred";return false;}
-            next.buildSahTree();next.opaque_.resize(next.scene_.materials.size());for(size_t i=0;i<next.opaque_.size();++i)next.opaque_[i]=alphaNeverCut(next.material(i));
+            next.buildSahTree(admit);next.opaque_.resize(next.scene_.materials.size());for(size_t i=0;i<next.opaque_.size();++i)next.opaque_[i]=alphaNeverCut(next.material(i));
         }else next.order_.free();
         // Region acceleration replaces the mandatory full-scene tree. Its
         // actual storage is admitted and retirement-accounted, not retained in
@@ -1223,11 +1233,12 @@ Vec3 cosineDirection(Vec3 n,RNG& rng){
     float sine,cosine;sincosAngle(phi,sine,cosine);
     return normalized(tangent*(r*cosine)+bitangent*(r*sine)+n*std::sqrt(std::max(0.f,1-u)));
 }
+struct SkyEscape { int sector=-1; Vec3 weight; };
 // Record: static-only transport (movingGeometry null) that logs every moving
 // query a moving solve would issue along this unchanged path, in order.
 template<bool Record=false,bool Response=false>
 Vec3 transport(const BVH& bvh,Vec3 origin,Vec3 direction,const Lighting& l,const BVH* movingGeometry,RNG& rng,float& firstDistance,bool& firstBackFace,
-               std::vector<StaticPathRecord::Query>* record=nullptr,Vec3* response=nullptr){
+               std::vector<StaticPathRecord::Query>* record=nullptr,Vec3* response=nullptr,SkyEscape* escape=nullptr){
     Vec3 throughput(1,1,1),radiance;const Vec3 sun=l.sunDirection,up=l.worldUp;
     firstDistance=l.maxDistance;firstBackFace=false;
     for(unsigned bounce=0;bounce<=l.maxBounces;++bounce){
@@ -1237,6 +1248,17 @@ Vec3 transport(const BVH& bvh,Vec3 origin,Vec3 direction,const Lighting& l,const
         if(bounce==0){firstDistance=h.hit?h.distance:l.maxDistance;firstBackFace=h.hit&&h.backFace;}
         if(!h.hit){
             if(dot(direction,up)>0){radiance=radiance+throughput*l.skyRadiance;if constexpr(Response)response[1]=response[1]+throughput;}
+            if(l.aurora||escape){
+                const int sector=NorthlightAuroraSource::sector(direction.x,direction.y,direction.z);
+                if(sector>=0){
+                    Vec3 emitted;
+                    if(l.aurora){const auto& rgb=l.aurora->radiance[unsigned(sector)];emitted=throughput*Vec3(rgb[0],rgb[1],rgb[2]);radiance=radiance+emitted;}
+                    if constexpr(Response){
+                        if(escape){escape->sector=sector;escape->weight=throughput;}
+                        else response[3]=response[3]+emitted;
+                    }
+                }
+            }
             break;
         }
         if(bounce==l.maxBounces)break;
@@ -1277,6 +1299,7 @@ Vec3 transport(const BVH& bvh,Vec3 origin,Vec3 direction,const Lighting& l,const
 
 PreparedLighting prepareLighting(const Lighting& input){
     PreparedLighting prepared;
+    if(input.aurora&&!NorthlightAuroraSource::valid(*input.aurora))return prepared;
     if(!finite(input.sunDirection)||!finite(input.sunIrradiance)||!finite(input.skyRadiance)||
        !finite(input.worldUp)||!std::isfinite(input.maxDistance)||!std::isfinite(input.rayBias)||input.maxDistance<=0||
        input.rayBias<=0||input.maxDistance>1000000.f||dot(input.worldUp,input.worldUp)<.1f)return prepared;
@@ -1354,32 +1377,39 @@ Probe solveProbePrepared(const BVH& bvh,Vec3 position,const PreparedLighting& pr
     return accumulateProbe(position,l,rays,seed,[&](unsigned,Vec3 direction,RNG& rng,float& distance,bool& backFace){
         return transport(bvh,position,direction,l,movingGeometry,rng,distance,backFace);});
 }
-Probe solveProbeResponse(const BVH& bvh,Vec3 position,const PreparedLighting& prepared,unsigned rays,uint32_t seed,ProbeResponse& response){
+Probe solveProbeResponse(const BVH& bvh,Vec3 position,const PreparedLighting& prepared,unsigned rays,uint32_t seed,ProbeResponse& response,AngularSkyResponse* angular){
     response={};
+    if(angular)*angular={};
     if(!prepared.valid()||prepared.values().additionalDirections.size()>1||!finite(position)||rays<6||rays>1048576)
         return solveProbePrepared(bvh,position,prepared,rays,seed);
     Vec3 fixed[4];const auto& l=prepared.values();
     Probe out=accumulateProbe(position,l,rays,seed,[&](unsigned,Vec3 direction,RNG& rng,float& distance,bool& backFace){
-        Vec3 terms[4];
-        const Vec3 color=transport<false,true>(bvh,position,direction,l,nullptr,rng,distance,backFace,nullptr,terms);
+        Vec3 terms[4];SkyEscape escape;
+        const Vec3 color=transport<false,true>(bvh,position,direction,l,nullptr,rng,distance,backFace,nullptr,terms,angular?&escape:nullptr);
         const float sh[4]={.2820947918f,.4886025119f*direction.x,.4886025119f*direction.y,.4886025119f*direction.z};
         for(unsigned j=0;j<4;++j){
             const float weight=sh[j]*(4*PI/float(rays));
             for(unsigned source=0;source<3;++source)response.sources[source][j]=response.sources[source][j]+terms[source]*weight;
             fixed[j]=fixed[j]+terms[3]*weight;
+            if(angular&&escape.sector>=0){auto& coefficient=angular->sectors[unsigned(escape.sector)][j];coefficient=coefficient+escape.weight*weight;}
         }
         return color;
     });
     response.fixed=out;
     for(unsigned j=0;j<4;++j)response.fixed.sh[j]=out.valid?fixed[j]:Vec3{};
     if(!out.valid)for(auto& source:response.sources)for(auto& sh:source)sh={};
+    if(!out.valid&&angular)*angular={};
     return out;
 }
-Probe relightProbe(const ProbeResponse& response,const PreparedLighting& prepared){
+Probe relightProbe(const ProbeResponse& response,const PreparedLighting& prepared,const AngularSkyResponse* angular){
     Probe out=response.fixed;const auto& l=prepared.values();
     const Vec3 secondary=l.additionalDirections.empty()?Vec3{}:l.additionalDirections[0].irradiance;
     for(unsigned j=0;j<4;++j)out.sh[j]=out.sh[j]+response.sources[0][j]*l.sunIrradiance+
         response.sources[1][j]*l.skyRadiance+response.sources[2][j]*secondary;
+    if(angular&&l.aurora)for(unsigned sector=0;sector<NorthlightAuroraSource::SectorCount;++sector){
+        const auto& rgb=l.aurora->radiance[sector];const Vec3 color(rgb[0],rgb[1],rgb[2]);
+        for(unsigned j=0;j<4;++j)out.sh[j]=out.sh[j]+angular->sectors[sector][j]*color;
+    }
     return out;
 }
 Probe solveProbeMoving(const BVH& bvh,Vec3 position,const PreparedLighting& prepared,unsigned rays,uint32_t seed,

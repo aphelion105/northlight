@@ -22,7 +22,8 @@ checks={
     'NorthlightLiveTerrainGPU::Cache<NorthlightTerrainCapture::MeshSnapshot,StaticShadow::Vertex>& liveTerrainGPU=gpuScene->terrain;' in w
     and 'NorthlightLiveTerrainGPU::Cache<NorthlightTerrainCapture::MeshSnapshot,StaticShadow::Vertex> terrain;' in fp.src('gpu_scene.h').read_text()
     and 'return StaticShadow::Vertex{p.x,p.y,p.z,0,0};' in up
-    and 'CreateVertexDeclaration(liveElements,&liveTerrainDecl)' in w
+    and '#include "world_screen_resources.inl"' in w
+    and 'CreateVertexDeclaration(liveElements,&liveTerrainDecl)' in fp.src('world_screen_resources.inl').read_text()
     and 'drop(liveTerrainDecl);' in release
     and w.count('SetVertexDeclaration(liveTerrainDecl)')==1 and pr.count('SetVertexDeclaration(liveTerrainDecl)')==1
     and w.count('liveTerrainGPU.vertices(),0,sizeof(StaticShadow::Vertex)')==1 and pr.count('liveTerrainGPU.vertices(),0,sizeof(StaticShadow::Vertex)')==1
@@ -60,7 +61,7 @@ checks={
     and 'if(reuse){terrainUploadReused=true;if(liveTerrainIndexCount||liveDirectionalIndexCount)NorthlightDynamicRing::touch(liveIndexRing,fence());return true;}' in up
     and w.count('NorthlightDynamicRing::touch(')==2 and pr.count('NorthlightDynamicRing::touch(liveIndexRing,fence());')==1
     and 'd->SetIndices(liveIndicesGPU);NorthlightDynamicRing::touch(liveIndexRing,fence());' in w
-    and 'void reset(){' in w and 'cascadeAnchor.reset();endFrame();' in w,
+    and 'void reset(bool preserveCaptureSources=false){' in w and 'cascadeAnchor.reset();endFrame();' in w,
  'bitmap filled from the committed set at the swap, dropped with the set':'std::swap(fixedTerrain,committedFixed);std::swap(uploadedStaticOwners,committedOwners);fixedTerrainBits.assign(fixedTerrain.get());' in w
     and 'fixedTerrain.reset();fixedTerrainBits.reset();' in release and w.count('fixedTerrainBits.assign(')==1,
  'bitmap only for the set it describes, the set otherwise':'const auto& fixed=fixedTerrainChunks();const bool bits=fixedTerrainBits.source()==&fixed;' in up

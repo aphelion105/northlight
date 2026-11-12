@@ -21,6 +21,7 @@ struct Inputs {
     bool actorShadows=false;                        /* ActorShadows (quality, device creation) */
     bool hideBlobs=false;                           /* explicit native decal suppression, independent of replacement shadows */
     bool worldShadows=false;                        /* the world renderer's effects.shadows (setEffects) */
+    bool hideTerrainShadows=false;                  /* explicit suppression, independent of replacement maps */
     bool debugOff=false;                            /* debugMode==0 && worldDebug==0 (F12) */
 };
 struct Frame {
@@ -32,7 +33,7 @@ inline Frame latch(bool on,const Inputs& i){
     Frame f;if(!on)return f;
     f.sky=i.sky&&i.enabled;                                                         /* native sky claim and observation */
     f.blob=i.blobs&&i.enabled&&!i.failed&&i.world&&(i.hideBlobs||(i.shadowsKey&&i.actorShadows));  /* blobFilterActive() */
-    f.terrainShadow=i.world&&i.enabled&&!i.failed&&i.debugOff&&i.worldShadows;    /* planTerrainShadowSwap() */
+    f.terrainShadow=i.world&&i.enabled&&!i.failed&&i.debugOff&&(i.worldShadows||i.hideTerrainShadows); /* planTerrainShadowSwap() */
     return f;
 }
 }

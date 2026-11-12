@@ -46,7 +46,9 @@ void DisplacementStateTestAccess::poseMetadataChecks(const char* path){
             NorthlightReplayBounds::Bounds a,b;
             const auto sa=prepared.poseEnvelope(program,owner,declaration.layout,4,prepared.constants,a,shader,&declaration);
             const auto sb=uncached.poseEnvelope(program,owner,declaration.layout,4,uncached.constants,b,shader,&declaration);
-            assert(sa==sb&&a.valid==b.valid&&!std::memcmp(a.low,b.low,sizeof a.low)&&!std::memcmp(a.high,b.high,sizeof a.high));
+            const bool same=sa==sb&&a.valid==b.valid&&!std::memcmp(a.low,b.low,sizeof a.low)&&!std::memcmp(a.high,b.high,sizeof a.high);
+            if(!same)std::fprintf(stderr,"pose oracle frame=%u draw=%u status=%u/%u valid=%u/%u low=%a,%a,%a/%a,%a,%a high=%a,%a,%a/%a,%a,%a\n",frame,draw,unsigned(sa),unsigned(sb),a.valid,b.valid,a.low[0],a.low[1],a.low[2],b.low[0],b.low[1],b.low[2],a.high[0],a.high[1],a.high[2],b.high[0],b.high[1],b.high[2]);
+            assert(same);
             assert(prepared.envelopeBudget.operations==uncached.envelopeBudget.operations&&prepared.envelopeBudget.vertices==uncached.envelopeBudget.vertices);
             ++compared;
         }
@@ -67,6 +69,15 @@ void DisplacementStateTestAccess::poseMetadataChecks(const char* path){
     for(unsigned i=0;i<4;++i){prepared.endFrame();prepared.poseEnvelope(program,owner,declarations[0].layout,4,prepared.constants,a,&shaders[0],&declarations[0]);}
     assert(prepared.poseMetadata.entries()==1);
     prepared.reset();assert(shaders[0].refs==1&&declarations[0].refs==1);
+    prepared.endFrame();posePalette(prepared.constants,20);prepared.poseEnvelopes.chargeCheapPreparation(UINT64_MAX);
+    const auto metadata=prepared.poseMetadata.stats();const auto entries=prepared.poseMetadata.entries();const auto deferred=prepared.poseEnvelopes.stats().timeDeferred;
+    for(unsigned call=0;call<1000;++call){NorthlightReplayBounds::Bounds result;result.valid=true;NorthlightReplayBounds::EnvelopeCache::WorkInfo info;info.kind=NorthlightReplayBounds::WorkKind::Heavy;
+        const auto status=prepared.poseEnvelope(program,owner,declarations[0].layout,4,prepared.constants,result,&shaders[0],&declarations[0],&info);
+        assert(status==NorthlightReplayBounds::Status::Budget&&!result.valid&&info.kind==NorthlightReplayBounds::WorkKind::Unknown);}
+    const auto after=prepared.poseMetadata.stats();assert(metadata.hits==after.hits&&metadata.misses==after.misses&&metadata.fallbacks==after.fallbacks&&metadata.prepared==after.prepared&&prepared.poseMetadata.entries()==entries);
+    assert(prepared.poseEnvelopes.stats().timeDeferred==deferred+1000&&!prepared.envelopeBudget.vertices&&!prepared.envelopeBudget.operations);
+    prepared.endFrame();prepared.poseEnvelope(program,owner,declarations[0].layout,4,prepared.constants,a,&shaders[0],&declarations[0]);assert(a.valid&&prepared.poseMetadata.entries()==1);prepared.reset();
+    std::puts("MATERIAL_EXHAUSTED_METADATA_PASS calls=1000 metadataLookups=0 exactBudgetStatus=1 nextFrame=valid");
     std::printf("MATERIAL_POSE_METADATA_PASS comparisons=%zu exact_status bounds_bits current_pose rotations owner_replacement quotas invalidation pressure reset allocation_fallback COM_lifetime\n",compared);
 }
 template<class G>double DisplacementStateTestAccess::poseMetadataTiming(const NorthlightActorDeformation::Program& program,unsigned draws,bool rotating){

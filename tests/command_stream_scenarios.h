@@ -49,6 +49,23 @@ static void lifetimeAndIdentity(){
     CHECK(get(core.q.stats.deadCreates)>=1);rig.dev->SetTexture(1,nullptr);cube->Release();rig.sync();
     rig.finish();checkClean();
 }
+// A producer may stop recording to decode an asset after one create/upload.
+// Each must become executable without another draw, flush or synchronous call.
+static void sparseResourcePublications(){
+    gTrace.clear();Rig rig(true);auto& q=rig.core().q;const auto syncs=get(q.stats.syncCalls);
+    IDirect3DTexture9* texture=nullptr;
+    CHECK(rig.dev->CreateTexture(8,8,1,0,(D3DFORMAT)22,(D3DPOOL)1,&texture,nullptr)==D3D_OK&&texture);
+    const auto created=q.recordedSeq();CHECK(waitFor([&]{return q.replayedSeq()>=created;}));
+    for(unsigned write=0;write<2;++write){D3DLOCKED_RECT lock{};CHECK(texture->LockRect(0,&lock,nullptr,0)==D3D_OK);
+        for(unsigned y=0;y<8;++y)std::memset(static_cast<unsigned char*>(lock.pBits)+y*lock.Pitch,0x31+write,32);
+        CHECK(texture->UnlockRect(0)==D3D_OK);const auto uploaded=q.recordedSeq();
+        CHECK(waitFor([&]{return q.replayedSeq()>=uploaded;}));
+    }
+    CHECK(get(q.stats.syncCalls)==syncs);
+    D3DLOCKED_RECT read{};CHECK(texture->LockRect(0,&read,nullptr,D3::kLockReadOnly)==D3D_OK);
+    for(unsigned y=0;y<8;++y)for(unsigned x=0;x<32;++x)CHECK(static_cast<unsigned char*>(read.pBits)[y*read.Pitch+x]==0x32);
+    CHECK(texture->UnlockRect(0)==D3D_OK);texture->Release();rig.finish();checkClean();
+}
 
 static void stateKnownUnknown(){
     gTrace.clear();Rig rig(true);auto& core=rig.core();auto& s=core.q.stats;
@@ -651,8 +668,8 @@ static void queriesAndSyncCensus(){
     DWORD data=0;CHECK(q->Issue(D3::kIssueEnd)==D3D_OK);
     int spins=0;HRESULT hr;while((hr=q->GetData(&data,4,0))==S_FALSE&&++spins<2000000)std::this_thread::yield();   // terminates: every GetData publishes
     CHECK(hr==D3D_OK&&data==0xABCD0000u);(void)spins;
-    data=0;CHECK(q->Issue(D3::kIssueEnd)==D3D_OK&&q->GetData(&data,4,D3::kGetDataFlush)==D3D_OK&&data==0xABCD0000u);   // FLUSH: the real GetData after everything recorded
-    CHECK(get(s.census[(std::size_t)Cmd::SyncGetData])==1&&std::string(cmdName(Cmd::SyncGetData))=="SyncGetData"&&get(s.queryFlushLocal)==1&&get(s.queryFlushSynced)==0);   // the never-issued query shows by name; the occlusion FLUSH (a result is polled) is answered locally (StreamOcclusionLocal)
+    gKnobs.holdQueries.store(true);data=0;CHECK(q->Issue(D3::kIssueEnd)==D3D_OK&&q->GetData(&data,4,D3::kGetDataFlush)==D3D_OK&&data==0xABCD0000u);gKnobs.holdQueries.store(false);
+    CHECK(get(s.census[(std::size_t)Cmd::SyncGetData])==2&&std::string(cmdName(Cmd::SyncGetData))=="SyncGetData"&&get(s.queryFlushLocal)==0&&get(s.queryFlushSynced)==1);   // a previous generation cannot answer the new END
     q->Release();
     // every sync class drains and is counted by name
     rig.dev->SetRenderState((D3DRENDERSTATETYPE)7,1);DWORD n=0;D3DDISPLAYMODE dm{};D3DRASTER_STATUS rs{};D3DGAMMARAMP ramp{};D3DCLIPSTATUS9 cs{};
@@ -774,13 +791,13 @@ static void eventQueryBatch(){
     CHECK(hr==S_FALSE&&calls==5);    // time bound precedes the iteration bound
     // waitEventQuery: the held pumped trip polls at 20, 40, then 50 us and stops at completion or the budget.
     unsigned yields=0;std::vector<std::uint64_t> at;std::uint64_t clock=0;
-    hr=waitEventQuery([&]()->HRESULT{at.push_back(clock);return at.size()==5?D3D_OK:S_FALSE;},[&]{clock+=5000;return clock;},[&]{++yields;},calls);
+    hr=waitEventQuery([&]()->HRESULT{at.push_back(clock);return at.size()==5?D3D_OK:S_FALSE;},[&]{clock+=5000;return clock;},[&](std::uint64_t left,std::uint64_t elapsed){CHECK(left&&left<=50000&&elapsed<2000000);++yields;},calls);
     CHECK(hr==D3D_OK&&calls==5&&yields>0&&at[1]-at[0]>=20000&&at[2]-at[1]>=40000&&at[3]-at[2]>=50000&&at[4]-at[3]>=50000);
-    clock=0;hr=waitEventQuery([]{return S_FALSE;},[&]{clock+=5000;return clock;},[]{},calls);
+    clock=0;hr=waitEventQuery([]{return S_FALSE;},[&]{clock+=5000;return clock;},[](std::uint64_t,std::uint64_t){},calls);
     CHECK(hr==S_FALSE&&calls>=35&&calls<=45&&clock>=2000000&&clock<2020000);   // the same 2 ms budget, bounded driver polls
-    hr=waitEventQuery([]{return D3DERR_DEVICELOST;},[]()->std::uint64_t{return 0;},[]{},calls);
+    hr=waitEventQuery([]{return D3DERR_DEVICELOST;},[]()->std::uint64_t{return 0;},[](std::uint64_t,std::uint64_t){},calls);
     CHECK(hr==D3DERR_DEVICELOST&&calls==1);
-    hr=waitEventQuery([]{return S_FALSE;},[]()->std::uint64_t{return 0;},[]{},calls);
+    hr=waitEventQuery([]{return S_FALSE;},[]()->std::uint64_t{return 0;},[](std::uint64_t,std::uint64_t){},calls);
     CHECK(hr==S_FALSE&&calls==1);   // a stalled clock ends on the check limit, without a driver-poll storm
 
     gTrace.clear();gKnobs.holdQueries.store(true);gKnobs.eventPendingFlush.store(7);Rig rig(true);auto& s=rig.core().q.stats;
@@ -827,8 +844,8 @@ static void queryProbeAndDeadQuery(){
     rig.sync();DWORD v=0;CHECK(q->Issue(D3::kIssueEnd)==D3D_OK);CHECK(q->GetData(&v,4,0)==D3DERR_INVALIDCALL&&get(rig.core().q.stats.deadCreates)>=1);
     q->Release();gKnobs.failQueries.store(false);rig.finish();checkClean();
 }
-// StreamOcclusionLocal: a FLUSH GetData on an occlusion query (WoW's glare QueryGetData loop) is answered from the latest polled result without a sync; the first one (nothing
-// polled yet) and a never-issued query still run the real GetData, an event query (type 8, the gxFixLag wait) always does, and occlusionLocal=false restores every FLUSH sync.
+// StreamOcclusionLocal caches only the current generation. A newer END and
+// never-issued queries use the backend; disabling it keeps every FLUSH sync.
 static void occlusionFlushLocal(bool on){
     gTrace.clear();StreamDevice::Options opt;opt.occlusionLocal=on;Rig rig(true,opt);auto& s=rig.core().q.stats;
     rig.core().timing=true;
@@ -842,14 +859,14 @@ static void occlusionFlushLocal(bool on){
     CHECK(oq->GetData(&d,4,D3::kGetDataFlush)==D3D_OK&&d==0xABCD0000u);
     if(on)CHECK(get(s.syncCalls)==sy1&&get(s.queryFlushLocal)==1&&get(s.queryFlushSynced)==f1);   // answered on the game thread: no drain
     else CHECK(get(s.syncCalls)==sy1+1&&get(s.queryFlushLocal)==0&&get(s.queryFlushSynced)==f1+1);   // switched off: as before
-    if(on){   // a newer END whose result is not in yet: the previous result, still no sync (the query is held back)
-        gKnobs.holdQueries.store(true);CHECK(oq->Issue(D3::kIssueEnd)==D3D_OK);d=0;const auto sy2=get(s.syncCalls);
-        CHECK(oq->GetData(&d,4,D3::kGetDataFlush)==D3D_OK&&d==0xABCD0000u&&get(s.syncCalls)==sy2&&get(s.queryFlushLocal)==2);gKnobs.holdQueries.store(false);}
+    if(on){
+        gKnobs.holdQueries.store(true);CHECK(oq->Issue(D3::kIssueEnd)==D3D_OK);gKnobs.occlusionPayload.store(4096);d=0;const auto sy2=get(s.syncCalls);
+        CHECK(oq->GetData(&d,4,D3::kGetDataFlush)==D3D_OK&&d==0xABCD1000u&&get(s.syncCalls)==sy2+1&&get(s.queryFlushLocal)==1);gKnobs.holdQueries.store(false);}
     IDirect3DQuery9* eq=nullptr;CHECK(rig.dev->CreateQuery((D3DQUERYTYPE)8,&eq)==D3D_OK&&eq);   // the event query: always the real wait
     CHECK(eq->Issue(D3::kIssueEnd)==D3D_OK);spins=0;while((hr=eq->GetData(&d,4,0))==S_FALSE&&++spins<2000000)std::this_thread::yield();CHECK(hr==D3D_OK);
     const auto sy3=get(s.syncCalls),l3=get(s.queryFlushLocal);CHECK(eq->GetData(&d,4,D3::kGetDataFlush)==D3D_OK&&get(s.syncCalls)==sy3&&get(s.queryFlushLocal)==l3);
     CHECK(rig.core().queryWait[8].calls==0&&rig.core().queryWait[8].unissued==0);
-    CHECK(rig.core().queryWait[9].calls==(on?2u:3u)&&rig.core().queryWait[9].unissued==1);
+    CHECK(rig.core().queryWait[9].calls==3&&rig.core().queryWait[9].unissued==1);
     const auto& profile=rig.core().queryWait[9];const auto& frame=rig.core().queryFrame[9];
     CHECK(profile.beforeNs+profile.replayNs+profile.afterNs==profile.tripNs&&profile.maxTripNs<=profile.tripNs);
     CHECK(frame.calls==profile.calls&&frame.tripNs==profile.tripNs);
@@ -860,10 +877,15 @@ static void occlusionFlushLocal(bool on){
     CHECK(!rig.core().queryFrame[9].calls&&rig.core().queryWait[9].calls==profile.calls);
     rig.core().queryFrame[9]=profile;rig.core().frameNo=128;
     rig.core().reportQueryFrame([&](const char* text){lines.emplace_back(text);});
-    CHECK(lines.size()==(profile.maxTripNs>=20000000?2u:1u)&&!rig.core().queryFrame[9].calls);rig.core().frameNo=frameNo;
+    CHECK(lines.size()==(profile.tripNs>=20000000?2u:1u)&&!rig.core().queryFrame[9].calls);
+    auto& repeated=rig.core().queryFrame[8];repeated.calls=8;repeated.tripNs=128000000;repeated.maxTripNs=16000000;
+    const auto reported=lines.size();rig.core().reportQueryFrame([&](const char* text){lines.emplace_back(text);});
+    CHECK(lines.size()==reported+1&&lines.back().find("type=8 calls=8")!=std::string::npos&&
+          lines.back().find("tripMs=128.0000")!=std::string::npos&&!rig.core().queryFrame[8].calls);
+    rig.core().frameNo=frameNo;
     rig.core().reportQueryWait(nullptr);CHECK(rig.core().queryWait[8].calls==0&&rig.core().queryWait[9].calls==0);
     rig.core().timing=false;CHECK(eq->GetData(&d,4,D3::kGetDataFlush)==D3D_OK&&rig.core().queryWait[8].calls==0);
-    eq->Release();oq->Release();rig.finish();checkClean();
+    eq->Release();oq->Release();rig.finish();gKnobs.occlusionPayload.store(0);checkClean();
 }
 // An init failure after the replay thread ran the owner callback: the implicit objects bound so far are released, no proxy or
 // Target object leaks, the callback runs again on this thread, and the caller keeps its device.

@@ -1,6 +1,6 @@
 # Northlight renderer
 
-<img width="50%" height="1058" alt="Näyttökuva 2026-10-10 kello 22 38 31" src="https://github.com/user-attachments/assets/c1996381-8dc2-481c-97c9-e3f1316a08bf" /><img width="50%" height="768" alt="image" src="https://github.com/user-attachments/assets/20cc99fb-216c-4430-901b-35b5b5df30d9" />
+<img width="50%" height="1058" alt="NaМ€yttoМ€kuva 2026-10-10 kello 22 38 31" src="https://github.com/user-attachments/assets/c1996381-8dc2-481c-97c9-e3f1316a08bf" /><img width="50%" height="768" alt="image" src="https://github.com/user-attachments/assets/20cc99fb-216c-4430-901b-35b5b5df30d9" />
 <img width="50%" height="768" alt="image" src="https://github.com/user-attachments/assets/e1181ddd-953d-4fd0-a703-eb97e5969ed2" /><img width="50%" height="1696" alt="image" src="https://github.com/user-attachments/assets/7b2c2595-f32b-42b0-bf67-95f7ee9ad570" />
 
 
@@ -81,6 +81,11 @@ Every effect below is on by default and is drawn on top of the game's own frame.
 - **Settings.** `northlight-quality.ini` has three presets (Quality, the default, Balanced and
   Performance) and about 30 keys for shadows, GI, lamps and haze; `celestial-profiles.ini` sets the
   sun and moon look per zone.
+- **Indirect lighting.** In Lighting & AO, GI influence defaults to 120 (full
+  ambient replacement); 60 restores the old half blend. GI brightness accepts
+  negative and positive percentages (-100..200). Northrend aurora adds a subtle
+  green/purple sky fill between sunset and moonrise, transported through the
+  existing GI probes and blocked by geometry. Its strength is adjustable (0 disables it).
 - **Hotkeys** (with Ctrl+Shift): F7 fog and haze, F8 GI, F9 shadows, F10 all effects, F11 the settings window, F12 debug views
   (shadows, GI, fog volume). On a Mac, first remove macOS's own Control+F7 shortcut. The settings window (Ctrl+Shift+F11) is
   drawn by the renderer over the game; it takes the mouse only over the window and the keyboard only while one of its text
@@ -100,123 +105,9 @@ Every effect below is on by default and is drawn on top of the game's own frame.
   regions) and the lighting art layer from your own client on your machine, about 10-40 minutes and
   at least 8 GB of RAM; nothing from the game is shipped. The packages bundle their own Python and StormLib, and uninstall restores every change.
 
-## Layout
+## Development
 
-| Path | Contents |
-|---|---|
-| `src/<group>/` | DLL sources, grouped: `proxy` (the D3D9 proxy and device mirror), `core` (settings, memory, logging, profiling), `world`, `replay`, `shadows`, `gi`, `lights`, `sky`, `water`, `gamedata` (tables derived from the game's MPQs), `generated` (headers written by the generators and shader compilers; do not edit) |
-| `shaders/` | `*.hlsl` and their `*-shader-build.json` manifests; `shaders/compiled/` holds the compiled `<Entry>.bin` and `.bin.asm` |
-| `scripts/` | `build_renderer.py`, `build_environment.py`, `generate_*.py`, `run_tests.py`, `check_layout.py`, `pe_normalized_hash.py`; `scripts/shaders/` holds the shader compilers (`compile_*_shaders.py`, `compile_shaders.cpp`, `disassemble_*.cpp`) |
-| `renderer/` | `windows-package/`, `mac-package/`, `linux-package/`, the player installer `northlight_install.py`, the pipeline and packaging tools (`world_*_builder.py`, `extract_*.py`, `migrate_mac_proxy.py`, `build_packages.py`, `package-pins.json`, ...) and the built `frd9.dll` |
-| `tests/` | test runners (`test_*.py`), native tests (`test_*.cpp/.h`), release validators (`validate_*.py`, `verify_*.py`) |
-| `tests/support/`, `tests/fixtures/` | d3d9.h/windows.h shims for native builds; the archived baselines (old sources of this project, digests) that tests compare against. Real client data (shaders, doodad placements) is read from your client by `tests/client_fixtures.py`, never stored |
-| `northlight_paths.py` | the only place that knows where the client, toolchain and outputs are |
-| `client-config/` | factory profile `.ini` files for packages and settings reset; personal client profiles may differ |
-| `*.py` (top level) | the art layer (MPQ patch) builder `build_art_layer.py` and its steps, `mpq.py`, `client_archives.py`, `renderer_status.py` (install/uninstall on macOS) |
-| `out/` | build and test output (ignored) |
-
-`tools/` and `backups/` are local and untracked.
-
-## Requirements
-
-- macOS on Apple Silicon is the primary development host. Windows can build the DLL with Zig
-  and run Windows-native/GPU checks; other tests still need their declared host toolchains.
-  Linux may work with zig, clang and Wine on `PATH`, but it is untested.
-- Python 3.9 or newer; only the standard library is used.
-- [zig 0.15.2](https://ziglang.org/download/) to build the DLL (it cross-compiles to 32-bit Windows).
-- clang++ and c++ (Xcode command line tools) for the native tests.
-- Optional:
-  - a WoW 3.3.5a client (game data, world cache);
-  - Wine and Microsoft's redistributable `d3dcompiler_47.dll` 10.0.17134.12 (x64), for the shader
-    compilers only (`scripts/shaders/compile_*_shaders.py`): put the DLL in
-    `tools/d3dcompiler_47-10.0.17134.12-x64/` (it is not in git; `shader_compiler.py` pins its SHA-256);
-  - StormLib, for reading MPQs;
-  - the external archive and `backups/`, for differential tests against old versions.
-
-## Build
-
-```sh
-python3 scripts/build_renderer.py           # -> renderer/frd9.dll
-python3 scripts/pe_normalized_hash.py renderer/frd9.dll
-```
-
-The build first runs the layout check (nothing back at a pre-move path, unique basenames). On
-Windows it also compiles a minimal C++ file before starting the renderer build. Zig 0.15.2
-can report `error: Unexpected` inside a restricted execution sandbox, even with fresh local
-caches. Run Windows builds and native/GPU tests outside that sandbox through the normal
-approval mechanism; a failed compiler check saves its diagnostics to `<out>/build-preflight.log`.
-
-The build regenerates the forwarding headers in `src/generated/`. It checks every `shaders/*.hlsl` against its
-`*-shader-build.json` and refuses to build if a shader changed without a recompile. The raw
-DLL bytes depend on the build directory, because the PDB paths feed the build ID. Compare builds
-with `pe_normalized_hash.py`, which zeroes only those fields.
-
-After editing a shader, recompile it (Microsoft's compiler under Wine, natively on Windows; nothing
-touches the game):
-
-```sh
-python3 scripts/shaders/compile_world_shaders.py   # or compile_shaders, compile_local_light_shaders, ...
-```
-
-A compiler writes `shaders/compiled/<Entry>.bin` and `.bin.asm`, `src/generated/*_compiled_shaders.h`
-and the `shaders/*-shader-build.json` manifest. Every shader uses the one toolchain in
-`scripts/shaders/shader_compiler.py` (IEEE strict, O3; Wine's builtin compiler is refused).
-`build_environment.py` keeps the Wine prefix outside the client folder.
-
-## Test
-
-```sh
-python3 scripts/affected_tests.py --run          # only the tests your change affects
-python3 scripts/run_tests.py test_replay_*       # by name pattern
-python3 scripts/run_tests.py                     # the whole suite (about 13 minutes): release and main verification
-```
-
-Reports go to `out/test-output/<run>/<test>/`. Nothing is written into the tree unless you pass
-`--record <version>` (`renderer/records/` is ignored by git, and no test reads from it). The test
-tags (`requires=`, `slow`, `timing`, `manual`, `known-fail=`), the skip rules, `tests/discovery.txt`
-and the rules for writing a test are in [tests/README.md](tests/README.md). With no client,
-toolchain or archive you can still build the DLL (given zig) and run most tests, which are pure
-Python or native C++.
-
-## Machine configuration
-
-Nothing in the code names a machine path. Each setting comes from, in order, an environment
-variable, then `northlight.local.ini` (copy [northlight.local.ini.example](northlight.local.ini.example);
-it is ignored by git), then a default. `python3 northlight_paths.py` prints what resolves.
-
-| Variable | Default | Used for |
-|---|---|---|
-| `NORTHLIGHT_CLIENT` | the repository's parent folder, if it holds `Wow.exe` and `Data/` | client data for tests, validators and pipeline scripts, and the client `renderer_status.py` installs into |
-| `NORTHLIGHT_ZIG` | `tools/zig-*/zig`, then `zig` on `PATH` (must be 0.15.2) | DLL build, generators, shader tools |
-| `NORTHLIGHT_WINE` | WoWSilicon's bundled Wine, then `wine` on `PATH` | shader compilers only |
-| `NORTHLIGHT_STORMLIB` | `tools/storm-build/storm.framework/storm` | `mpq.py` |
-| `NORTHLIGHT_TOOLS` | `tools/` | third-party downloads (DXVK, StormLib, zig, d3dcompiler_47) |
-| `NORTHLIGHT_ARCHIVE` | none | old rollbacks and runtime diagnostics (`<archive>/renderer/`) |
-| `NORTHLIGHT_BACKUPS` | `backups/` | old renderer tarballs |
-| `NORTHLIGHT_OUT` | `out/` | build and test output |
-| `NORTHLIGHT_TEST_OUTPUT_DIR` | set by `run_tests.py` | where a test writes its report |
-| `NORTHLIGHT_SHADER_CORPUS` | none | optional captured shader corpus (extra sub-cases) |
-| `NORTHLIGHT_DOWNLOADS` | none (then `tools/`) | pinned runtime downloads for `renderer/build_packages.py` (`renderer/package-pins.json`) |
-| `NORTHLIGHT_LIVE_CLIENT`, `NORTHLIGHT_STOCK_CLIENT`, `NORTHLIGHT_LIGHTS_STAGE`, `BASE` | none | a few specific tests; see their docstrings (`NORTHLIGHT_STOCK_CLIENT`: a stock 3.3.5a client for the identity and variant tests) |
-
-## Conventions
-
-- **Basenames are the include namespace.** C++ includes use bare names (`#include "world_gi.h"`),
-  each `src/<group>/` is one `-I` (`northlight_paths.include_flags()`), and Python finds sources the
-  same way, with `northlight_paths.src('world_gi.h')` (sources and shaders) or `tracked()` (also
-  scripts and tests). Directories only group files: moving a file between groups needs no edit.
-  Every basename must be unique; `scripts/check_layout.py` enforces this.
-- A test starts with the tag line and these two lines, then uses `fp.src(...)`,
-  `fp.test_include_flags()`, `fp.output_dir()` and so on:
-  ```python
-  import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
-  import northlight_paths as fp
-  ```
-- Tests never write next to the sources. They write to `fp.output_dir()`.
-- `.gitattributes` has `* -text`: hash gates compare raw bytes, so keep LF line endings.
-- The pre-commit hook rejects files over 5 MB and game or binary payloads, and it runs
-  `check_layout.py`. Enable it in each clone with `git config core.hooksPath githooks`.
-- `git clean -x` also deletes the ignored local folders (`tools/`, `backups/`, `out/`).
+See [the development guide](docs/development.md) for repository structure, setup, build and validation commands, and [the architecture map](docs/architecture.md) for runtime ownership and contracts.
 
 ## Install on macOS (WoWSilicon)
 

@@ -67,21 +67,24 @@ class NorthlightAutoBump {
     unsigned residentDraws=0,uploadDraws=0;uint64_t uploadDrawBytes=0;
     unsigned replaySetters=0,replaySkipped=0;
     unsigned captureTargetBinds=0,captureMaskSets=0,stableCaptureFlushes=0,switchedCaptureFlushes=0,nearCapturePackets=0,farCapturePackets=0;
-    std::vector<std::unique_ptr<Deferred>> deferred,sparePackets;size_t deferredBytes=0;bool deferredAllowed=false;
+    std::vector<std::unique_ptr<Deferred>> deferred,sparePackets;size_t deferredBytes=0;bool deferredAllowed=false,equalDepthBatchAllowed=false;
     unsigned deferredPacketLimit=512;size_t deferredByteLimit=8u<<20;
     std::unordered_map<void*,uint64_t> deferredTextures;uint64_t deferredTextureBytes=0;
     // A 1x batch starts with native depth, then reproduces its ordered writes.
-    // Only fully in-range opaque models can write exactly the native coverage.
+    // Depth-changing captures need full opaque coverage; EQUAL is read-only.
     IDirect3DTexture9* singleDepth=nullptr;IDirect3DSurface9* singleDepthSurface=nullptr;
     bool singleSampleBatch=false,drawDeferred=false,nativeSubmitted=false;
-    unsigned singleSampleQueued=0,depthSeeds=0,depthBarriers=0,singleDepthRetry=0;
+    unsigned singleSampleQueued=0,equalDepthQueued=0,depthSeeds=0,depthBarriers=0,depthReadOnlySkips=0,singleDepthRetry=0;
+#ifdef NORTHLIGHT_MATERIAL_DEPTH_TEST
+    bool forceNativeDepthBarriers=false;
+#endif
     bool textureWriteGuarded=false;void(*pendingChanged)(void*)=nullptr;void* pendingContext=nullptr;
     void clearDeferred(){
         for(auto& packet:deferred)if(!memoryPressure&&sparePackets.size()<deferredPacketLimit&&sparePackets.size()<sparePackets.capacity()){
             packet->recycle();sparePackets.push_back(std::move(packet));}
         deferred.clear();singleSampleBatch=false;deferredBytes=deferredTextureBytes=0;deferredTextures.clear();if(pendingChanged)pendingChanged(pendingContext);
     }
-    unsigned queued=0,flushed=0,deferredFallback=0,deferredDiscarded=0,deferredUnsafe=0,deferredGeometry=0;
+    unsigned queued=0,flushed=0,deferredFallback=0,deferredDiscarded=0,deferredUnsafe=0,deferredGeometry=0,packetPixelReadsSkipped=0;
     unsigned queuedDomain[4]={},earlyRangeRejected=0,opaqueCoverage=0;
     unsigned deferredTextureDraws=0,textureBarriers=0,snapshotBudget=0,snapshotStreams=0,textureRefused=0,batchLimit=0;
     bool deferredReport=false;uint64_t deferredReportFrame=0;
@@ -101,10 +104,12 @@ class NorthlightAutoBump {
         UINT offset=0,stride=0;
         D3DVIEWPORT9 viewport;
         RECT scissor{};DWORD scissorEnabled=FALSE;
-        float constant[36]={};unsigned constantBase=20,constantCount=5,normalStage=2,stateCount=14;
+        // save() fills every consumed lane before apply() can set changed.
+        // Range rejection does not need these restore banks initialized.
+        float constant[36];unsigned constantBase=20,constantCount=5,normalStage=2,stateCount=14,stateMask=~0u;
         IDirect3DBaseTexture9* texture2=nullptr,*texture3=nullptr;bool composite=false;
-        const D3DSAMPLERSTATETYPE samplerKeys[8]={D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER,D3DSAMP_MIPFILTER,D3DSAMP_ADDRESSU,D3DSAMP_ADDRESSV,D3DSAMP_SRGBTEXTURE,D3DSAMP_MAXMIPLEVEL,D3DSAMP_MIPMAPLODBIAS};
-        DWORD samplerValues[8]={},samplerValues3[8]={};unsigned samplerChanged=0,samplerChanged3=0;
+        inline static constexpr D3DSAMPLERSTATETYPE samplerKeys[8]={D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER,D3DSAMP_MIPFILTER,D3DSAMP_ADDRESSU,D3DSAMP_ADDRESSV,D3DSAMP_SRGBTEXTURE,D3DSAMP_MAXMIPLEVEL,D3DSAMP_MIPMAPLODBIAS};
+        DWORD samplerValues[8],samplerValues3[8];unsigned samplerChanged=0,samplerChanged3=0;
         struct State{D3DRENDERSTATETYPE key;DWORD value,replay;};
         State states[16]={
             {D3DRS_ZWRITEENABLE,0,FALSE},{D3DRS_ALPHATESTENABLE,0,FALSE},
@@ -137,14 +142,14 @@ class NorthlightAutoBump {
                 d->SetVertexShader(vertex);d->SetPixelShader(pixel);d->SetPixelShaderConstantF(constantBase,constant,constantCount);
                 d->SetTexture(normalStage,texture2);for(unsigned i=0;i<8;++i)if(samplerChanged&(1u<<i))d->SetSamplerState(normalStage,samplerKeys[i],samplerValues[i]);
                 if(composite){d->SetTexture(3,texture3);for(unsigned i=0;i<8;++i)if(samplerChanged3&(1u<<i))d->SetSamplerState(3,samplerKeys[i],samplerValues3[i]);}
-                for(unsigned i=0;i<stateCount;++i){auto& s=states[i];if(s.value!=s.replay)d->SetRenderState(s.key,s.value);}
+                for(unsigned i=0;i<stateCount;++i){auto& s=states[i];if((stateMask&(1u<<i))&&s.value!=s.replay)d->SetRenderState(s.key,s.value);}
                 if(privateEqual)d->SetRenderState(D3DRS_ZFUNC,D3DCMP_EQUAL);
                 // UP draws reset stream 0 and (for indexed UP) the index binding.
                 if(userMemory){d->SetStreamSource(0,stream,offset,stride);d->SetIndices(indices);}
             }
             drop(pixel);drop(target);drop(depth);drop(stream);drop(indices);drop(texture2);drop(texture3);
         }
-        HRESULT apply(){changed=true;for(unsigned i=0;i<stateCount;++i){auto& s=states[i];if(s.value!=s.replay)d->SetRenderState(s.key,s.replay);}return privateEqual?d->SetRenderState(D3DRS_ZFUNC,D3DCMP_LESSEQUAL):D3D_OK;}
+        HRESULT apply(){changed=true;for(unsigned i=0;i<stateCount;++i){auto& s=states[i];if((stateMask&(1u<<i))&&s.value!=s.replay)d->SetRenderState(s.key,s.replay);}return privateEqual?d->SetRenderState(D3DRS_ZFUNC,D3DCMP_LESSEQUAL):D3D_OK;}
     };
     struct Vertex {IDirect3DVertexShader9* patched=nullptr;unsigned kind=0;IDirect3DVertexShader9* shared=nullptr;bool sharedChecked=false,deferredSafe=false,failed=false,smoothTerrain=false,floatOnly=false;IDirect3DVertexShader9* pending=nullptr;uint64_t pendingHash=0;unsigned constantFirst=0,constantCount=256;};
     bool sharedVertex(Vertex& vertex){if(!vertex.sharedChecked){vertex.sharedChecked=true;vertex.shared=NorthlightSharedPOM::vertexShader(d,vertex.patched);}return vertex.shared!=nullptr;}
@@ -157,7 +162,7 @@ class NorthlightAutoBump {
     struct NativeCapture {IDirect3DPixelShader9* source=nullptr,*shader=nullptr;unsigned constant=128,first=256,last=0,samplers=0;bool deferredSafe=false,pixelFloatOnly=false;};
     // Rare CPU creation work can happen outside sampled draw scopes, including
     // recognized vertex registration while materials are disabled.
-    struct ColdWork {unsigned vertexSources=0,vertexQueued=0,modelMisses=0,modelBuilt=0,staticCreates=0,staticBuilt=0;uint64_t sourceBytes=0;double vertexMs=0,modelMs=0,staticMs=0;} cold;
+    struct ColdWork {unsigned vertexSources=0,vertexQueued=0,modelMisses=0,modelBuilt=0,staticCreates=0,staticBuilt=0,pendingMaterialRejected=0;uint64_t sourceBytes=0;double vertexMs=0,modelMs=0,staticMs=0;} cold;
     struct ColdTimer {double& total;std::chrono::steady_clock::time_point start=std::chrono::steady_clock::now();
         ~ColdTimer(){total+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();}};
     HRESULT createCaptureShader(const DWORD* code,IDirect3DPixelShader9** output){
@@ -193,7 +198,7 @@ class NorthlightAutoBump {
         if(vertices.size()>=4096){auto unused=std::find_if(vertices.begin(),vertices.end(),[](const auto& entry){return entry.second.pending!=nullptr;});
             if(unused==vertices.end())return vertices.end();drop(unused->second.pending);--pendingVertices;vertices.erase(unused);}
         auto added=vertices.emplace(original,Vertex{nullptr,k}).first;original->AddRef();added->second.pending=original;added->second.pendingHash=hash;++pendingVertices;
-        if(!ensureVertex(original,added->second))return vertices.end();return added;
+        return added; // Both consumers compile only after material admission.
     }
     std::unordered_map<IDirect3DPixelShader9*,NativeCapture> nativeCaptures[3][2];
     NativeCapture* modelCapture(IDirect3DPixelShader9* source,bool alpha,bool shared=false,bool normalOnly=false){
@@ -262,10 +267,23 @@ class NorthlightAutoBump {
         for(unsigned i=0;i<saved.stateCount;++i){if(i==0||i==4)continue;auto& state=saved.states[i];if(FAILED(d->GetRenderState(state.key,&state.value)))return false;}
         return true;
     }
+    template<size_t N> bool readReplayStates(ReplayState& saved,const unsigned(&indices)[N]){
+        D3DRENDERSTATETYPE keys[N];DWORD values[N];for(unsigned i=0;i<N;++i)keys[i]=saved.states[indices[i]].key;
+        if(!readStates(keys,values))return false;
+        for(unsigned i=0;i<N;++i)saved.states[indices[i]].value=values[i];return true;
+    }
     template<size_t N> bool readStates(const D3DRENDERSTATETYPE(&keys)[N],DWORD(&values)[N]){
         if(rasterReader&&rasterReader(rasterContext,keys,N,values))return true;
         for(unsigned i=0;i<N;++i)if(FAILED(d->GetRenderState(keys[i],values+i)))return false;
         return true;
+    }
+    bool nativeMayWriteDepth(){
+#ifdef NORTHLIGHT_MATERIAL_DEPTH_TEST
+        if(forceNativeDepthBarriers)return true;
+#endif
+        const D3DRENDERSTATETYPE keys[]={D3DRS_ZENABLE,D3DRS_ZWRITEENABLE,D3DRS_ZFUNC};DWORD values[3];
+        // EQUAL can only rewrite the stored depth; NEVER cannot pass the test.
+        return !readStates(keys,values)||(values[0]!=FALSE&&values[1]!=FALSE&&values[2]!=D3DCMP_EQUAL&&values[2]!=D3DCMP_NEVER);
     }
     bool seedSingleDepth(){
         if(singleDepthRetry)return false;
@@ -337,8 +355,11 @@ class NorthlightAutoBump {
             for(unsigned i=0;i<14;++i)packet->states[i]=saved.states[i].replay;
             if(!rasterReader||!rasterReader(rasterContext,deferredRasterKeys,DeferredRasterCount,packet->raster))
                 for(unsigned i=0;i<DeferredRasterCount;++i)if(FAILED(d->GetRenderState(deferredRasterKeys[i],packet->raster+i)))return false;
-            if(FAILED(d->GetScissorRect(&packet->scissor))||FAILED(d->GetVertexShaderConstantF(packet->vertexFirst,packet->vertexConstants,packet->vertexCount))||FAILED(d->GetPixelShaderConstantF(packet->first,packet->pixelConstants.data(),UINT(packet->pixelConstants.size()/4)))||
-               (!packet->vertexFloatOnly&&FAILED(d->GetVertexShaderConstantI(0,packet->vertexInt,16)))||(!packet->pixelFloatOnly&&FAILED(d->GetPixelShaderConstantI(0,packet->pixelInt,16)))||(!packet->vertexFloatOnly&&FAILED(d->GetVertexShaderConstantB(0,packet->vertexBool,16)))||(!packet->pixelFloatOnly&&FAILED(d->GetPixelShaderConstantB(0,packet->pixelBool,16))))return false;
+            if(FAILED(d->GetScissorRect(&packet->scissor))||FAILED(d->GetVertexShaderConstantF(packet->vertexFirst,packet->vertexConstants,packet->vertexCount)))return false;
+            // The capture controls replace every lane only for this exact span.
+            if(packet->first==model.constant&&packet->pixelConstants.size()==size_t(saved.constantCount)*4)++packetPixelReadsSkipped;
+            else if(FAILED(d->GetPixelShaderConstantF(packet->first,packet->pixelConstants.data(),UINT(packet->pixelConstants.size()/4))))return false;
+            if((!packet->vertexFloatOnly&&FAILED(d->GetVertexShaderConstantI(0,packet->vertexInt,16)))||(!packet->pixelFloatOnly&&FAILED(d->GetPixelShaderConstantI(0,packet->pixelInt,16)))||(!packet->vertexFloatOnly&&FAILED(d->GetVertexShaderConstantB(0,packet->vertexBool,16)))||(!packet->pixelFloatOnly&&FAILED(d->GetPixelShaderConstantB(0,packet->pixelBool,16))))return false;
             std::copy(captureConstants,captureConstants+saved.constantCount*4,packet->pixelConstants.begin()+(model.constant-packet->first)*4);
             if(singleSample){
                 // Immediate 1x capture leaves native depth read-only; the private
@@ -348,10 +369,10 @@ class NorthlightAutoBump {
             }
             void* inserted[16]={};unsigned insertedCount=0;
             try{
-                for(const auto& t:packet->textures)if(t.texture&&deferredTextures.emplace(t.texture,t.bytes).second){inserted[insertedCount++]=t.texture;deferredTextureBytes+=t.bytes;}
+                for(const auto& t:packet->textures)if(t.texture&&deferredTextures.try_emplace(t.texture,t.bytes).second){inserted[insertedCount++]=t.texture;deferredTextureBytes+=t.bytes;}
                 deferred.push_back(std::move(packet));
             }catch(...){for(unsigned i=0;i<insertedCount;++i){auto entry=deferredTextures.find(inserted[i]);deferredTextureBytes-=entry->second;deferredTextures.erase(entry);}throw;}
-            singleSampleBatch=singleSample;drawDeferred=true;singleSampleQueued+=singleSample;deferred.back()->normal=std::move(normal);deferredBytes+=cost;++queued;++queuedDomain[profileTag/4-1];deferredTextureDraws+=model.samplers!=0;if(pendingChanged)pendingChanged(pendingContext);timing.work(mesh->vertexCount,mesh->byteSize());return true;
+            singleSampleBatch=singleSample;drawDeferred=true;singleSampleQueued+=singleSample;equalDepthQueued+=singleSample&&deferred.back()->raster[2]==D3DCMP_EQUAL;deferred.back()->normal=std::move(normal);deferredBytes+=cost;++queued;++queuedDomain[profileTag/4-1];deferredTextureDraws+=model.samplers!=0;if(pendingChanged)pendingChanged(pendingContext);timing.work(mesh->vertexCount,mesh->byteSize());return true;
         }catch(...){return false;}
     }
 public:
@@ -363,7 +384,7 @@ public:
         displacement.shareCaptureSources(deferredSnapshots);
         deferredSnapshots.setDeclarationProvider(&deferredDeclarations,[](void* c,IDirect3DVertexDeclaration9* v,const D3DVERTEXELEMENT9*& e,UINT& n){return static_cast<NorthlightVertexDeclarations::Cache*>(c)->get(v,e,n);});
         deferredSnapshots.setLayoutProvider(&deferredDeclarations,[](void* c,IDirect3DVertexDeclaration9* v,UINT* e){return static_cast<NorthlightVertexDeclarations::Cache*>(c)->captureLayout(v,e);});}
-    void setDeferredCapture(bool on){deferredAllowed=on;if(!on)sparePackets.clear();}
+    void setDeferredCapture(bool on,bool readOnlyDepthSafe=false){deferredAllowed=on;equalDepthBatchAllowed=readOnlyDepthSafe;if(!on)sparePackets.clear();}
     // Enabled only by the serialized game-resource writer, never from a backend
     // guess. Source writes drain matching packets before changing bytes.
     void setTextureWriteGuard(bool on,void(*changed)(void*)=nullptr,void* context=nullptr){
@@ -373,20 +394,29 @@ public:
     bool samplesTexture(void* texture)const{return texture&&deferredTextures.count(texture);}
     void beforeTextureWrite(void* texture){if(texture&&deferredTextures.count(texture)){++textureBarriers;finishCaptures();}}
     void beforeDepthChange(){if(singleSampleBatch&&!deferred.empty()){++depthBarriers;finishCaptures();}}
-    void beforeNativeDraw(){if(!drawDeferred)beforeDepthChange();nativeSubmitted=true;}
+    void beforeNativeDraw(){
+        if(!drawDeferred&&singleSampleBatch&&!deferred.empty()){
+            // Read-only native draws leave the batch's private depth snapshot valid.
+            if(nativeMayWriteDepth())beforeDepthChange();else ++depthReadOnlySkips;
+        }
+        nativeSubmitted=true;
+    }
     bool finishCaptures(){
         if(deferred.empty())return true;using P=NorthlightMaterialProfile;P::Scope timing(profile,P::DeferredFlush,deferred.front()->tag,true);timing.work(deferred.size(),deferredBytes);
         struct Result {NorthlightAutoBump& owner;bool ok=false;~Result(){if(!ok){owner.deferredDiscarded+=unsigned(owner.deferred.size());owner.clearDeferred();owner.drawn=owner.occlusionDrawn=false;owner.check(E_FAIL,"deferred material replay");}}} result{*this};
+        // Native ALL blocks need an explicit backup above c127. Lower rows
+        // already belong to the state block; do not copy/upload them twice.
         UINT vertexFirst=256,vertexEnd=0,pixelFirst=224,pixelEnd=0;
         for(const auto& packet:deferred){
             if(packet->vertexCount){vertexFirst=std::min(vertexFirst,packet->vertexFirst);vertexEnd=std::max(vertexEnd,packet->vertexFirst+packet->vertexCount);}
             if(!packet->pixelConstants.empty()){pixelFirst=std::min(pixelFirst,packet->first);pixelEnd=std::max(pixelEnd,packet->first+UINT(packet->pixelConstants.size()/4));}}
-        struct Constants {IDirect3DDevice9* d;UINT vf,vc,pf,pc;float bank[256*4],pixel[224*4];bool valid=false;
-            Constants(IDirect3DDevice9* device,UINT first,UINT count,UINT pixelFirst,UINT pixelCount):d(device),vf(first),vc(count),pf(pixelFirst),pc(pixelCount){}
-            ~Constants(){if(valid){if(vc)d->SetVertexShaderConstantF(vf,bank,vc);if(pc)d->SetPixelShaderConstantF(pf,pixel,pc);}}}
-            constants{d,vertexFirst,vertexEnd?vertexEnd-vertexFirst:0,pixelFirst,pixelEnd?pixelEnd-pixelFirst:0};
-        constants.valid=(!constants.vc||SUCCEEDED(d->GetVertexShaderConstantF(constants.vf,constants.bank,constants.vc)))&&(!constants.pc||SUCCEEDED(d->GetPixelShaderConstantF(constants.pf,constants.pixel,constants.pc)));
-        SavedState saved(d,&captureStates);if(!saved.ok||!constants.valid)return false;
+        vertexFirst=std::max(vertexFirst,128u);pixelFirst=std::max(pixelFirst,128u);
+        struct Constants {IDirect3DDevice9* d;UINT vf,vc,pf,pc;float vertex[128*4],pixel[96*4];bool valid=false;
+            ~Constants(){if(valid){if(vc)d->SetVertexShaderConstantF(vf,vertex,vc);if(pc)d->SetPixelShaderConstantF(pf,pixel,pc);}}}
+            constants{d,vertexFirst,vertexEnd>vertexFirst?vertexEnd-vertexFirst:0,pixelFirst,pixelEnd>pixelFirst?pixelEnd-pixelFirst:0};
+        constants.valid=(!constants.vc||SUCCEEDED(d->GetVertexShaderConstantF(constants.vf,constants.vertex,constants.vc)))&&(!constants.pc||SUCCEEDED(d->GetPixelShaderConstantF(constants.pf,constants.pixel,constants.pc)));
+        if(!constants.valid)return false;
+        SavedState saved(d,&captureStates);if(!saved.ok)return false;
         for(unsigned i=1;i<4;++i)if(FAILED(d->SetRenderTarget(i,nullptr)))return false;
         if(FAILED(d->SetDepthStencilSurface(nullptr))||FAILED(d->SetRenderTarget(0,target))||FAILED(d->SetDepthStencilSurface(singleSampleBatch?singleDepthSurface:captureDepth)))return false;
         if(FAILED(d->SetRenderState(D3DRS_STENCILENABLE,FALSE))||FAILED(d->SetRenderState(D3DRS_CLIPPLANEENABLE,0))||FAILED(d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE)))return false;
@@ -400,8 +430,8 @@ public:
         // One ordered admission phase creates immutable pages for this flush.
         // Packet views own their references across trims and UP fallbacks.
         for(auto& packet:deferred)packet->resident=deferredGPU.bind(d,packet->mesh,packet->gpuVertex,packet->gpuIndex,[](size_t){return true;},packet->placement);
-        deferredGPU.commitPending();
-        for(auto& packet:deferred)if(!packet->resident&&deferredGPU.resident(packet->mesh))packet->resident=deferredGPU.bind(d,packet->mesh,packet->gpuVertex,packet->gpuIndex,[](size_t){return true;},packet->placement);
+        if(deferredGPU.commitPending())
+            for(auto& packet:deferred)if(!packet->resident)packet->resident=deferredGPU.bind(d,packet->mesh,packet->gpuVertex,packet->gpuIndex,[](size_t){return true;},packet->placement,true);
         const bool stableAuxiliary=auxiliary&&occlusionTarget&&independentCaptureWrites;
         stableAuxiliary?++stableCaptureFlushes:++switchedCaptureFlushes;
         bool success=true;const Deferred* previous=nullptr;
@@ -482,12 +512,13 @@ public:
             if(!packet->vertexFloatOnly&&needed(previous&&!previous->vertexFloatOnly&&!std::memcmp(previous->vertexBool,packet->vertexBool,sizeof(packet->vertexBool))))step(d->SetVertexShaderConstantB(0,packet->vertexBool,16));
             if(!packet->pixelFloatOnly&&needed(previous&&!previous->pixelFloatOnly&&!std::memcmp(previous->pixelBool,packet->pixelBool,sizeof(packet->pixelBool))))step(d->SetPixelShaderConstantB(0,packet->pixelBool,16));
             if(SUCCEEDED(hr)){P::Scope draw(profile,P::CaptureDraw,packet->tag);draw.work(mesh.primitiveCount);
-                if(resident){++residentDraws;hr=mesh.indexed?d->DrawIndexedPrimitive(mesh.topology,INT(placement.vertexBase),0,mesh.vertexCount,placement.indexStart,mesh.primitiveCount):d->DrawPrimitive(mesh.topology,placement.vertexBase,mesh.primitiveCount);}
+                if(resident){++residentDraws;hr=mesh.indexed?d->DrawIndexedPrimitive(mesh.topology,placement.baseVertex(),placement.minimumVertex(),mesh.vertexCount,placement.indexStart,mesh.primitiveCount):d->DrawPrimitive(mesh.topology,placement.vertexBase,mesh.primitiveCount);}
                 else {++uploadDraws;uploadDrawBytes+=mesh.byteSize();hr=mesh.indexed?d->DrawIndexedPrimitiveUP(mesh.topology,0,mesh.vertexCount,mesh.primitiveCount,mesh.indices.data(),D3DFMT_INDEX32,mesh.streams[0].bytes.data(),mesh.streams[0].stride):d->DrawPrimitiveUP(mesh.topology,mesh.primitiveCount,mesh.streams[0].bytes.data(),mesh.streams[0].stride);
                     // Keep no binding assumptions across the UP fallback.
                     frequencyKnown=viewportKnown=auxiliaryKnown=false;vertexKnown=indexKnown=false;auxiliaryWritesKnown=false;}}
             if(FAILED(hr)){success=false;break;}previous=packet.get();++flushed;++draws[packet->tag/4-1];if(packet->occlusion){occlusionDrawn=true;if(profile)profile->count(P::OcclusionDraw);}
         }
+        success=saved.restore()&&success;
         if(success){clearDeferred();result.ok=true;}return success;
     }
     void setPersistentCache(const std::filesystem::path& path,const char* backend,const char* identity=nullptr,bool asyncReadback=false){normals.setPersistentCache(path,backend,identity,asyncReadback);}
@@ -512,17 +543,13 @@ public:
         sharedPOM.setMemoryPressure(on);const double sharedPomMs=phase();
         logf("MATERIAL_MEMORY pressure=%u normalBudgetMiB=%u geometryBudgetMiB=%u relief=active transitionProfiled=%u sourceBeforeMiB=%.3f sourceAfterMiB=%.3f sourceClearMs=%.3f sourceLimitMs=%.3f packetClearMs=%.3f replayGpuMs=%.3f declarationClearMs=%.3f normalMs=%.3f geometryMs=%.3f sharedPomMs=%.3f sourceDeferredMiB=%.3f",unsigned(on),on?32:96,on?32:128,unsigned(timed),double(sourceBefore)/(1u<<20),double(deferredSnapshots.sharedSourceBytes())/(1u<<20),sourceClearMs,sourceLimitMs,packetClearMs,replayGpuMs,declarationClearMs,normalMs,geometryMs,sharedPomMs,double(sourceDeferred)/(1u<<20));
     }
-    void trimMemory(bool releaseReplay=true,NorthlightStreaming::CpuRetirementBatch* batch=nullptr){captureStates.clear();auto* retirement=releaseReplay?nullptr:&NorthlightStreaming::cpuRetirement();if(!deferred.empty()){deferredDiscarded+=unsigned(deferred.size());clearDeferred();drawn=occlusionDrawn=false;}sparePackets.clear();sharedMaps[0]={};sharedMaps[1]={};sharedPOM.reset();normals.trimMemory();displacement.trimMemory(retirement,releaseReplay?nullptr:batch);deferredSnapshots.clearIndexCache(retirement,releaseReplay?nullptr:batch);if(releaseReplay){deferredGPU.clear();drop(singleDepthSurface);drop(singleDepth);}}
+    void trimMemory(bool releaseReplay=true,NorthlightStreaming::CpuRetirementBatch* batch=nullptr){captureStates.clear();auto* retirement=releaseReplay&&!batch?nullptr:&NorthlightStreaming::cpuRetirement();if(!deferred.empty()){deferredDiscarded+=unsigned(deferred.size());clearDeferred();drawn=occlusionDrawn=false;}sparePackets.clear();sharedMaps[0]={};sharedMaps[1]={};sharedPOM.reset();normals.trimMemory();displacement.trimMemory(retirement,batch);deferredSnapshots.clearIndexCache(retirement,batch);if(releaseReplay){deferredGPU.clear();drop(singleDepthSurface);drop(singleDepth);}}
     void setMemoryPressurePolicy(bool episode,bool critical,NorthlightStreaming::CpuRetirementBatch* batch=nullptr){
-        setMemoryPressure(episode,critical?0:32u<<20,episode&&!critical?&NorthlightStreaming::cpuRetirement():nullptr,episode&&!critical?batch:nullptr);
-        // Builder demand keeps the reduced CPU pools, but need not turn every
-        // immutable replay into DrawUP. Real VA pressure still releases all GPU
-        // residents. Promotion/time limits and allocation-failure fallback stay.
-        const size_t limit=episode&&critical?0:32u<<20;
+        gpuScene->setMemoryPressure(episode,critical);
+        setMemoryPressure(episode,32u<<20,episode&&(!critical||batch)?&NorthlightStreaming::cpuRetirement():nullptr,episode?batch:nullptr);
         const unsigned packets=episode&&critical?64:512;const size_t bytes=episode&&critical?1u<<20:8u<<20;
-        if(deferredGPU.limit()!=limit||deferredPacketLimit!=packets||deferredByteLimit!=bytes){deferredGPU.setLimit(limit);
-            deferredPacketLimit=packets;deferredByteLimit=bytes;
-            logf("MATERIAL_MEMORY_POLICY episode=%u critical=%u replayLimitMiB=%zu packetLimit=%u packetMiB=%zu",unsigned(episode),unsigned(critical),limit>>20,packets,bytes>>20);}
+        if(deferredPacketLimit!=packets||deferredByteLimit!=bytes){deferredPacketLimit=packets;deferredByteLimit=bytes;
+            logf("MATERIAL_MEMORY_POLICY episode=%u critical=%u replayLimitMiB=%zu packetLimit=%u packetMiB=%zu",unsigned(episode),unsigned(critical),deferredGPU.limit()>>20,packets,bytes>>20);}
     }
     bool geometryPrepared()const{return displacement.prepared();}
     unsigned geometryPrimitives()const{return displacement.preparedPrimitives();}
@@ -538,10 +565,14 @@ public:
     void setEmptyTargetSource(void* context,bool(*reader)(void*)){emptyTargetContext=context;emptyTargetReader=context==d?reader:nullptr;}
     void setSamplerStateSource(void* context,bool(*reader)(void*,DWORD,unsigned,DWORD*)){samplerContext=context;samplerReader=context==d?reader:nullptr;}
     void setVertexIdentity(void* context,VertexIdentity reader){vertexIdentityContext=context;vertexIdentity=reader;}
-    template<class Draw> HRESULT geometryDraw(Draw draw,bool native=false){return parallax.shared()?sharedPOM.drawBound(true):displacement.draw(draw,native);}
+    template<class Draw,class Submit> HRESULT geometryDraw(Draw draw,bool native,Submit submit){
+        if(parallax.shared())return submit([&]{return sharedPOM.drawBound(native);},nullptr);
+        return displacement.drawBound(draw,native,[&](unsigned vertices,unsigned primitives,IDirect3DVertexShader9* source){return submit([&]{return d->DrawIndexedPrimitive(D3DPT_TRIANGLELIST,0,0,vertices,0,primitives);},source);});
+    }
+    template<class Draw> HRESULT geometryDraw(Draw draw,bool native=false){return geometryDraw(draw,native,[](auto submit,IDirect3DVertexShader9*){return submit();});}
     template<class Submit> bool deferModelOverlay(Submit submit){return displacement.deferModelOverlay(submit);}
     void setProjection(float x,float y,float z){projection[0]=x;projection[1]=y;projection[2]=z;}
-    void setInverseView(const float* rows){std::copy(rows,rows+12,captureToWorld);}
+    void setInverseView(const float* rows,bool known=true){std::copy(rows,rows+12,captureToWorld);displacement.setDistanceView(known?rows:nullptr);}
     void setLight(const float* light){std::copy(light,light+4,occlusionLight);}
     void configure(const NorthlightQuality::Settings& settings){
         const bool retireDisabled=enabled&&!settings.autoBump&&!memoryPressure;
@@ -567,15 +598,15 @@ public:
         if(batch){retirement.finish();logf("MATERIAL_RESET queuedCpuMiB=%.3f ownerThreadGpuRelease=1",double(retirement.queuedBytes())/1048576);}
     }
     ~NorthlightAutoBump(){reset();for(auto& v:vertices){drop(v.second.patched);drop(v.second.shared);drop(v.second.pending);}for(auto*& p:shaders)drop(p);for(auto*& p:sharedShaders)drop(p);for(auto*& p:normalShaders)drop(p);for(auto& groups:nativeCaptures)for(auto& variants:groups)for(auto& n:variants){drop(n.second.shader);drop(n.second.source);}}
-    void reset(NorthlightStreaming::CpuRetirementBatch* batch=nullptr){drop(singleDepthSurface);drop(singleDepth);captureStates.clear();clearDeferred();sparePackets.clear();deferredSnapshots.clearIndexCache(nullptr,batch);deferredDeclarations.clear();deferredGPU.clear();sharedMaps[0]={};sharedMaps[1]={};sharedPOM.reset(batch);displacement.reset(batch);normals.reset();drop(captureDepth);drop(target);drop(height);drop(occlusionTarget);drop(occlusionMap);occlusionUnavailable=false;occlusionRetry=0;singleDepthRetry=0;width=heightPixels=0;cleared=privateDepthCleared=drawn=failed=occlusionCleared=occlusionDrawn=false;}
+    void reset(NorthlightStreaming::CpuRetirementBatch* batch=nullptr,bool preserveCaptureSources=false){drop(singleDepthSurface);drop(singleDepth);captureStates.clear();clearDeferred();sparePackets.clear();deferredSnapshots.clearIndexCache(nullptr,batch,preserveCaptureSources);deferredDeclarations.clear();deferredGPU.clear();sharedMaps[0]={};sharedMaps[1]={};sharedPOM.reset(batch);displacement.reset(batch,preserveCaptureSources);normals.reset();drop(captureDepth);drop(target);drop(height);drop(occlusionTarget);drop(occlusionMap);occlusionUnavailable=false;occlusionRetry=0;singleDepthRetry=0;width=heightPixels=0;cleared=privateDepthCleared=drawn=failed=occlusionCleared=occlusionDrawn=false;}
     void endFrame(){
         deferredDiscarded+=unsigned(deferred.size());clearDeferred();
         // Reuse within a frame, without retaining captured game resources
         // across frame boundaries or device resets.
         captureStates.clear();
-        if(deferredReport||cold.vertexSources||cold.vertexQueued||cold.modelMisses||cold.staticCreates)logf("MATERIAL_COLD frame=%llu sampled=%u enabled=%u vertexSources=%u vertexQueued=%u pendingVertices=%u vertexCpuMs=%.6f modelMisses=%u modelBuilt=%u modelCpuMs=%.6f staticCreates=%u staticBuilt=%u staticCpuMs=%.6f sourceBytes=%llu",(unsigned long long)(deferredReport?deferredReportFrame:frames),unsigned(deferredReport),unsigned(enabled),cold.vertexSources,cold.vertexQueued,pendingVertices,cold.vertexMs,cold.modelMisses,cold.modelBuilt,cold.modelMs,cold.staticCreates,cold.staticBuilt,cold.staticMs,(unsigned long long)cold.sourceBytes);
+        if(deferredReport||cold.vertexSources||cold.vertexQueued||cold.modelMisses||cold.staticCreates)logf("MATERIAL_COLD frame=%llu sampled=%u enabled=%u vertexSources=%u vertexQueued=%u pendingVertices=%u pendingMaterialRejected=%u vertexCpuMs=%.6f modelMisses=%u modelBuilt=%u modelCpuMs=%.6f staticCreates=%u staticBuilt=%u staticCpuMs=%.6f sourceBytes=%llu",(unsigned long long)(deferredReport?deferredReportFrame:frames),unsigned(deferredReport),unsigned(enabled),cold.vertexSources,cold.vertexQueued,pendingVertices,cold.pendingMaterialRejected,cold.vertexMs,cold.modelMisses,cold.modelBuilt,cold.modelMs,cold.staticCreates,cold.staticBuilt,cold.staticMs,(unsigned long long)cold.sourceBytes);
         cold={};
-        if(deferredReport||((queued||flushed||deferredFallback||deferredDiscarded)&&frames%600==0))logf("MATERIAL_DEFERRED frame=%llu sampled=%u enabled=%u queued=%u flushed=%u snapshotFallback=%u liveState=%u preparedGeometry=%u discardedUnused=%u terrain=%u walls=%u grass=%u models=%u earlyRangeRejected=%u opaqueCoverage=%u packetLimit=%u packetMiB=%u sourceMiB=%zu singleSample=%u depthSeeds=%u depthBarriers=%u",(unsigned long long)(deferredReport?deferredReportFrame:frames),unsigned(deferredReport),unsigned(deferredAllowed),queued,flushed,deferredFallback,deferredUnsafe,deferredGeometry,deferredDiscarded,queuedDomain[0],queuedDomain[1],queuedDomain[2],queuedDomain[3],earlyRangeRejected,opaqueCoverage,deferredPacketLimit,unsigned(deferredByteLimit>>20),deferredSnapshots.snapshotCacheLimit()>>20,singleSampleQueued,depthSeeds,depthBarriers);
+        if(deferredReport||((queued||flushed||deferredFallback||deferredDiscarded)&&frames%600==0))logf("MATERIAL_DEFERRED frame=%llu sampled=%u enabled=%u queued=%u flushed=%u snapshotFallback=%u liveState=%u preparedGeometry=%u discardedUnused=%u terrain=%u walls=%u grass=%u models=%u earlyRangeRejected=%u opaqueCoverage=%u packetLimit=%u packetMiB=%u sourceMiB=%zu singleSample=%u equalDepthQueued=%u depthSeeds=%u depthBarriers=%u readOnlyDepthSkips=%u",(unsigned long long)(deferredReport?deferredReportFrame:frames),unsigned(deferredReport),unsigned(deferredAllowed),queued,flushed,deferredFallback,deferredUnsafe,deferredGeometry,deferredDiscarded,queuedDomain[0],queuedDomain[1],queuedDomain[2],queuedDomain[3],earlyRangeRejected,opaqueCoverage,deferredPacketLimit,unsigned(deferredByteLimit>>20),deferredSnapshots.snapshotCacheLimit()>>20,singleSampleQueued,equalDepthQueued,depthSeeds,depthBarriers,depthReadOnlySkips);
         if(deferredReport||((queued||flushed||deferredFallback)&&frames%600==0)){
             logf("MATERIAL_REPLAY_CONTENT frame=%llu captureTests=%u captureHits=%u captureComparedBytes=%zu",(unsigned long long)(deferredReport?deferredReportFrame:frames),deferredSnapshots.replayContentTests(),deferredSnapshots.replayContentHits(),deferredSnapshots.replayContentComparedBytes());
             logf("MATERIAL_BATCH_SOURCE frame=%llu textureGuard=%u textureDraws=%u writeBarriers=%u refusedTexture=%u snapshotBudget=%u snapshotStreams=%u batchLimit=%u sourceHits=%u sourcePeerHits=%u sourceMisses=%u sourceReadBytes=%zu sourceEntries=%zu sourceBytes=%zu sourceLimitMiB=%zu",(unsigned long long)(deferredReport?deferredReportFrame:frames),unsigned(textureWriteGuarded),deferredTextureDraws,textureBarriers,textureRefused,snapshotBudget,snapshotStreams,batchLimit,deferredSnapshots.snapshotCacheHits(),deferredSnapshots.residentPeerHits(),deferredSnapshots.snapshotCacheMisses(),deferredSnapshots.bytesRead(),deferredSnapshots.snapshotCacheEntries(),deferredSnapshots.snapshotCacheBytes(),deferredSnapshots.snapshotCacheLimit()>>20);
@@ -583,16 +614,16 @@ public:
             displacement.reportSources(deferredReport?deferredReportFrame:frames);
         }
         if(deferredReport||((queued||flushed||deferredFallback)&&frames%600==0)){
-            logf("MATERIAL_BATCH_STATE frame=%llu issued=%u skippedIdentical=%u",(unsigned long long)(deferredReport?deferredReportFrame:frames),replaySetters,replaySkipped);
+            logf("MATERIAL_BATCH_STATE frame=%llu issued=%u skippedIdentical=%u packetPixelReadsSkipped=%u",(unsigned long long)(deferredReport?deferredReportFrame:frames),replaySetters,replaySkipped,packetPixelReadsSkipped);
             logf("MATERIAL_TARGETS frame=%llu independentMasks=%u stableFlushes=%u switchedFlushes=%u nearPackets=%u farPackets=%u targetBinds=%u maskSets=%u cavityRange=%.1f farOcclusionWrites=0",(unsigned long long)(deferredReport?deferredReportFrame:frames),unsigned(independentCaptureWrites),stableCaptureFlushes,switchedCaptureFlushes,nearCapturePackets,farCapturePackets,captureTargetBinds,captureMaskSets,occlusionDistance());
-            logf("GPU_SCENE consumer=materials frame=%llu residentHits=%u crossConsumerHits=%u reusedDrawBytes=%zu ownedBytes=%zu ownedLimitMiB=%zu",(unsigned long long)(deferredReport?deferredReportFrame:frames),deferredGPU.counters().hits,deferredGPU.counters().crossOwner,deferredGPU.reused(),deferredGPU.bytes(),deferredGPU.limit()>>20);
+            logf("GPU_SCENE consumer=materials frame=%llu residentHits=%u crossConsumerHits=%u reusedDrawBytes=%zu ownedBytes=%zu ownedLimitMiB=%zu spareLoans=%u spareLoanedBytes=%zu sceneChargedBytes=%zu sceneLimitBytes=%zu",(unsigned long long)(deferredReport?deferredReportFrame:frames),deferredGPU.counters().hits,deferredGPU.counters().crossOwner,deferredGPU.reused(),deferredGPU.bytes(),deferredGPU.limit()>>20,deferredGPU.counters().loans,deferredGPU.counters().loanedBytes,gpuScene->native.chargedBytes(),std::min(gpuScene->native.totalLimit(),gpuScene->materials.limit()+gpuScene->shadows.limit()));
             const auto& g=deferredGPU.stats();const auto population=deferredGPU.population();
             logf("MATERIAL_BATCH_GPU frame=%llu residentDraws=%u upDraws=%u upBytes=%llu uploadedBytes=%zu reusedBytes=%zu cacheBytes=%zu cacheLimitMiB=%zu residentMeshes=%zu probationMeshes=%zu created=%u createCpuMs=%.4f warmup=%u attemptDeferred=%u byteDeferred=%u timeDeferred=%u evicted=%u expired=%u countPressure=%u bytePressure=%u probationEvictions=%u residentEvictions=%u countOnlyProbationEvictions=%u",(unsigned long long)(deferredReport?deferredReportFrame:frames),residentDraws,uploadDraws,(unsigned long long)uploadDrawBytes,deferredGPU.uploaded(),deferredGPU.reused(),deferredGPU.bytes(),deferredGPU.limit()>>20,population.resident,population.probation,g.created,g.createMs,g.warmup,g.attemptDeferred,g.uploadByteDeferred,g.timeDeferred,g.evictions,g.expiredEntries,g.countPressure,g.bytePressure,g.probationEvictions,g.residentEvictions,g.countOnlyProbationEvictions);
         }
         captureTargetBinds=captureMaskSets=stableCaptureFlushes=switchedCaptureFlushes=nearCapturePackets=farCapturePackets=0;
-        residentDraws=uploadDraws=replaySetters=replaySkipped=0;uploadDrawBytes=0;deferredGPU.beginFrame();deferredReport=false;
+        residentDraws=uploadDraws=replaySetters=replaySkipped=packetPixelReadsSkipped=0;uploadDrawBytes=0;deferredGPU.beginFrame();deferredReport=false;
 
-        singleSampleQueued=depthSeeds=depthBarriers=0;queued=flushed=deferredFallback=deferredDiscarded=deferredUnsafe=deferredGeometry=0;
+        singleSampleQueued=equalDepthQueued=depthSeeds=depthBarriers=depthReadOnlySkips=0;queued=flushed=deferredFallback=deferredDiscarded=deferredUnsafe=deferredGeometry=0;
         std::fill(std::begin(queuedDomain),std::end(queuedDomain),0);earlyRangeRejected=opaqueCoverage=0;
         deferredTextureDraws=textureBarriers=snapshotBudget=snapshotStreams=textureRefused=batchLimit=0;deferredSnapshots.clearFrame();
         if(occlusionRetry)--occlusionRetry;
@@ -616,6 +647,8 @@ public:
     float occlusionDistance()const{return std::min(range,projection[3]);}
     float gain()const{return texture()?strength:0;}
     float distance()const{return range;}
+    const NorthlightNativePOM* nativePOM()const{return parallax.nativePOM();}
+    const NorthlightNativeDisplacement* nativeDisplacement()const{return displacement.nativeDisplacement();}
     template<class Draw> HRESULT nativeDraw(Draw draw,IDirect3DVertexShader9* provenVS=nullptr,IDirect3DPixelShader9* provenPS=nullptr){
         beforeNativeDraw();
         using P=NorthlightMaterialProfile;
@@ -646,12 +679,15 @@ public:
         if(source)source->clear();
         pomInRange=true;
         if(!active())return;
-        auto v=vertices.find(original);if(v==vertices.end()&&active())v=recoverVertex(original);if(v==vertices.end())return;
+        auto v=vertices.find(original);if(v==vertices.end())v=recoverVertex(original);if(v==vertices.end())return;
         const unsigned domain=v->second.kind;
         using P=NorthlightMaterialProfile;profileTag=domain*4+modes[domain-1];profilePrimitives=geometry?geometry->draw.primitives:0;
         P::Scope timing(profile,P::Admission,profileTag);if(profile)profile->count(P::Candidates);
-        if(!active())return;
-        float nearestDepth=0,farthestDepth=INFINITY;
+        float nearestDepth=0,farthestDepth=INFINITY;bool rangeAttempted=false;
+        NorthlightAutoDisplacement::CaptureSource geometrySource;
+        const auto handoff=[&]{
+            if(source&&geometrySource.mesh&&geometrySource.declaration){source->clear();source->mesh=geometrySource.mesh;source->pose=geometrySource.pose;source->declaration=geometrySource.declaration;source->declaration->AddRef();}
+        };
         if((domain==1&&!terrain)||(domain==2&&!walls)||(domain==3&&!grass)||(domain==4&&!modes[3]))return;
         const D3DRENDERSTATETYPE visibilityKeys[]={D3DRS_COLORWRITEENABLE,D3DRS_ZWRITEENABLE};DWORD visibility[2];
         if(!readStates(visibilityKeys,visibility))return;
@@ -661,10 +697,27 @@ public:
             if(domain==4&&modes[3]==3&&geometry&&ensureVertex(original,v->second))displacement.prepareModelOverlay(original,*geometry);
             ++invisibleRejected;return;
         }
-        if(!ensureVertex(original,v->second))return;
+        if(!v->second.patched&&(!v->second.pending||v->second.failed))return;
         const bool geometryMode=modes[domain-1]==3;bool skipGeometry=false;
-        if(geometry&&(!geometryMode||!displacement.skinned(original))){float nearest=0;
-            if(displacement.nearestMaterialDepth(original,*geometry,nearest,geometryMode,positions,domain==4&&deferredAllowed?&farthestDepth:nullptr)){++rangeTests;
+        // Unsupported material pairs cannot capture or apply native POM.
+        // Reject them before reading geometry or evaluating a skin envelope.
+        NorthlightDrawSnapshot::Ref<IDirect3DPixelShader9> nativeSource;
+        unsigned material=0;
+        if(captureNeeded(domain)||geometryMode){
+            const auto rejected=[&]{cold.pendingMaterialRejected+=v->second.pending!=nullptr;};
+            if(FAILED(d->GetPixelShader(nativeSource.out()))||!nativeSource.p){rejected();return;}
+            const auto p=pixels.find(nativeSource.p);if(p==pixels.end()){rejected();return;}
+            material=p->second;
+            if((domain==1&&material>2)||(domain==2&&material!=3&&material!=5&&material!=6)||(domain==3&&material!=4)){rejected();return;}
+        }
+        if(!ensureVertex(original,v->second))return;
+        if(geometry&&(!geometryMode||domain==4||!displacement.skinned(original))){float nearest=0;
+            const bool coarseOnly=domain==4&&geometryMode&&displacement.skinned(original);
+            rangeAttempted=true;
+            const bool rangeKnown=displacement.nearestMaterialDepth(original,*geometry,nearest,geometryMode,positions,domain==4&&deferredAllowed?&farthestDepth:nullptr,domain==4&&(deferredAllowed||source)?&geometrySource:nullptr,coarseOnly);
+            if(coarseOnly&&!rangeKnown)rangeAttempted=false; // No exact pose was attempted; preserve late batch admission.
+            handoff();
+            if(rangeKnown){++rangeTests;
                 nearestDepth=nearest;
                 if(nearest>=pomControl[1]){pomInRange=false;++pomRangeRejected;}
                 skipGeometry=geometryMode&&nearest>displacement.geometryRange(domain);
@@ -674,11 +727,7 @@ public:
         const bool needsCapture=captureNeeded(domain);
         if(!needsCapture&&modes[domain-1]!=3){++noCaptureRequired;if(profile)profile->count(P::NoContribution);return;}
         timing.next(P::CaptureSetup);
-        IDirect3DPixelShader9* native=nullptr;if(FAILED(d->GetPixelShader(&native))||!native)return;
-        auto p=pixels.find(native);if(p==pixels.end()){drop(native);return;}
-        const unsigned material=p->second;
-        if((domain==1&&material>2)||(domain==2&&material!=3&&material!=5&&material!=6)||(domain==3&&material!=4)){drop(native);return;}
-        ReplayState saved(d,original,D3DVIEWPORT9{},profile);saved.pixel=native;NorthlightSharedPOM::Binding sharedBinding(d);
+        ReplayState saved(d,original,D3DVIEWPORT9{},profile);saved.pixel=nativeSource.p;nativeSource.p=nullptr;auto* native=saved.pixel;NorthlightSharedPOM::Binding sharedBinding(d);
         NativeCapture* model=nullptr;
         const D3DRENDERSTATETYPE depthKeys[]={D3DRS_ZENABLE,D3DRS_ZFUNC,D3DRS_ALPHAREF,D3DRS_ALPHAFUNC,D3DRS_STENCILENABLE};DWORD depthState[5];
         if(!readStates(depthKeys,depthState))return;
@@ -689,13 +738,20 @@ public:
             for(unsigned i=1;i<4;++i){IDirect3DSurface9* extra=nullptr;d->GetRenderTarget(i,&extra);if(extra){drop(extra);return;}}
         if(FAILED(d->GetDepthStencilSurface(&saved.depth))||!saved.depth)return;
         saved.states[0].value=depthWrite;saved.states[4].value=colorWrite;
-        if(!readAdmissionStates(saved))return;
+        // Distant geometry needs admission, not a saved pixel replay state.
+        // Read blend factors only when native blending can reject the draw.
+        const unsigned admissionIndices[]={1,5};
+        if(!readReplayStates(saved,admissionIndices))return;
+        if(saved.states[5].value){const unsigned blendIndices[]={7,8};if(!readReplayStates(saved,blendIndices))return;}
         const auto& s=saved.states;
         const bool alpha=s[1].value!=0;
         const bool coverageAlpha=domain==4?alpha:alpha||s[5].value!=0;
         // These capture programs produce alpha exactly one. Their normal,
         // occlusion and UV outputs overwrite the destination without blending.
         if((domain==1&&material==1)||(domain==2&&!coverageAlpha)||(domain==4&&!alpha))saved.states[5].replay=FALSE;
+        // Blend factors/operations have no effect when capture blending is off.
+        // Leave their native values untouched instead of saving and restoring.
+        if(!saved.states[5].replay)saved.stateMask&=~(((1u<<13)-1)^((1u<<6)-1));
         if(!(s[4].value&7)||(!s[0].value&&domain!=1)||
            (s[5].value&&(s[7].value!=D3DBLEND_SRCALPHA||s[8].value!=D3DBLEND_INVSRCALPHA))||
            (alpha&&alphaFunc!=D3DCMP_GREATER&&alphaFunc!=D3DCMP_GREATEREQUAL))return;
@@ -706,13 +762,12 @@ public:
         // The private depth starts at 1 and represents nearest visible material.
         // Special comparisons need their native prepass; keep the native draw.
         if(multisampled&&!privateDepthSupported(zfunc))return;
-        if(width!=desc.Width||heightPixels!=desc.Height){reset();width=desc.Width;heightPixels=desc.Height;}
+        if(width!=desc.Width||heightPixels!=desc.Height){reset(nullptr,true);width=desc.Width;heightPixels=desc.Height;}
         // A distant proof needs no capture constants, samplers or private depth.
         // Resolve the target size first: reset() would discard prepared geometry.
         const NorthlightAutoDisplacement::Admission geometryAdmission{z,depthWrite,s[5].value,s[1].value,s[7].value,s[8].value,alphaFunc};
-        NorthlightAutoDisplacement::CaptureSource geometrySource;
-        if(domain<=4&&geometryMode&&geometry&&!skipGeometry){displacement.prepare(original,domain,material,*geometry,&geometryAdmission,&geometrySource);
-            if(source&&geometrySource.mesh&&geometrySource.declaration){source->mesh=geometrySource.mesh;source->pose=geometrySource.pose;source->declaration=geometrySource.declaration;source->declaration->AddRef();}
+        if(domain<=4&&geometryMode&&geometry&&!skipGeometry){displacement.prepare(original,domain,material,*geometry,&geometryAdmission,&geometrySource,std::max(captureRange(domain),displacement.geometryRange(domain)));
+            handoff();
             nearestDepth=displacement.nearestPreparedDepth();farthestDepth=std::min(farthestDepth,displacement.farthestPreparedDepth());
             if(needsCapture&&displacement.nearestPreparedDepth()>captureRange(domain)){++rangeTests;++rangeRejected;if(profile)profile->count(P::RangeRejected);return;}}
         if(!needsCapture){++noCaptureRequired;if(profile)profile->count(P::NoContribution);return;}
@@ -738,19 +793,45 @@ public:
         // An opaque native wall does not consume diffuse/vertex alpha. Use
         // the existing map-only capture, avoiding a live diffuse dependency.
         const bool opaqueWall=domain==2&&material==3&&!coverageAlpha&&!sharing;
+        // Map misses need no replay-state snapshot or private target allocation.
+        // Geometry/source handoff above remains available to the native draw
+        // and receiver capture, including when map admission is deferred.
+        const unsigned captureIndex=model?0:opaqueWall?4:terrainIndex;
+        if(!model&&normalOnly&&!normalShaders[captureIndex]&&FAILED(createCaptureShader(normalCodes[captureIndex],&normalShaders[captureIndex])))normalOnly=false;
+        auto& captureShader=sharing?sharedShaders[captureIndex]:normalOnly?normalShaders[captureIndex]:shaders[captureIndex];
+        if(!model&&!captureShader&&!check(createCaptureShader(sharing?sharedCodes[captureIndex]:normalOnly?normalCodes[captureIndex]:codes[captureIndex],&captureShader),"capture shader"))return;
+        IDirect3DBaseTexture9* diffuse=nullptr;if(FAILED(d->GetTexture(0,&diffuse)))return;
+        auto normal=normals.acquire(diffuse,domain==4);drop(diffuse);if(!normal)return;
+        NorthlightAutoNormalCache::Lease normal1;
+        if(material==6&&domain!=4){IDirect3DBaseTexture9* second=nullptr;if(FAILED(d->GetTexture(1,&second)))return;normal1=normals.acquire(second);drop(second);if(!normal1)return;}
         const bool independent=(domain==4&&model&&model->deferredSafe&&(!model->samplers||textureWriteGuarded))||(domain==1&&material==1)||(domain==2&&material==5)||opaqueWall;
         bool singleSample=false;
         const bool deferredSafe=deferredAllowed&&!sharing&&!displacement.prepared()&&geometry&&independent&&v->second.deferredSafe;
-        if(deferredSafe&&!multisampled&&domain==4&&modes[3]!=2&&!alpha&&!s[5].value){
+        // Packaged DXVK preserves native depth across DS switches, including
+        // Discard surfaces. Keep the old admission on other D3D9 backends.
+        const bool equalDepth=equalDepthBatchAllowed&&zfunc==D3DCMP_EQUAL;
+        if(deferredSafe&&!multisampled&&domain==4&&modes[3]!=2&&(!alpha||equalDepth)&&!s[5].value){
+            // EQUAL leaves depth unchanged, even within an overlapping alpha
+            // draw. Range clipping changes only colour, as in immediate replay.
             float nearest=0;
-            if(!std::isfinite(farthestDepth))displacement.nearestMaterialDepth(original,*geometry,nearest,false,positions,&farthestDepth);
+            // A failed current-pose proof stays unknown for this draw. Retrying
+            // it repeats snapshot/constant work and spends the same budgets.
+            if(!equalDepth&&!rangeAttempted&&!std::isfinite(farthestDepth))displacement.nearestMaterialDepth(original,*geometry,nearest,false,positions,&farthestDepth,&geometrySource);
             D3DSURFACE_DESC depthDesc{};
-            singleSample=farthestDepth<captureRange(domain)&&SUCCEEDED(saved.depth->GetDesc(&depthDesc))&&depthDesc.Format==D3DFMT_D24S8;
+            singleSample=(equalDepth||farthestDepth<captureRange(domain))&&SUCCEEDED(saved.depth->GetDesc(&depthDesc))&&depthDesc.Format==D3DFMT_D24S8;
         }
         const bool canDefer=deferredSafe&&(multisampled||singleSample);
         if(!deferred.empty()&&singleSampleBatch!=singleSample)if(!finishCaptures())return;
         if(deferredAllowed&&multisampled){if(displacement.prepared())++deferredGeometry;else if(sharing||!independent||!v->second.deferredSafe)++deferredUnsafe;}
-        saved.viewport=viewport;if(!canDefer&&!saved.save(userMemory&&!sharing,material==6&&domain!=4))return;
+        // Packets contain desired replay values; the flush saves native state
+        // once. Only an immediate replay needs this draw's restore values.
+        auto saveReplay=[&]{bool known;
+            if(!saved.states[5].replay){const unsigned indices[]={2,3,13};known=readReplayStates(saved,indices);}
+            else if(saved.states[5].value){const unsigned indices[]={2,3,6,9,10,11,12,13};known=readReplayStates(saved,indices);}
+            else{const unsigned indices[]={2,3,6,7,8,9,10,11,12,13};known=readReplayStates(saved,indices);}
+            if(!known){displacement.beginDraw();if(source)source->clear();return false;}
+            return saved.save(userMemory&&!sharing,material==6&&domain!=4);};
+        saved.viewport=viewport;if(!canDefer&&!saveReplay())return;
         // The private depth starts empty, so native EQUAL cannot match its prepass.
         // Final composition still validates captured depth against the scene.
         saved.privateEqual=multisampled&&zfunc==D3DCMP_EQUAL;
@@ -773,14 +854,6 @@ public:
             if(available)available=SUCCEEDED(d->CreateTexture(width,heightPixels,1,D3DUSAGE_RENDERTARGET,D3DFMT_A8R8G8B8,D3DPOOL_DEFAULT,&occlusionMap,nullptr))&&SUCCEEDED(occlusionMap->GetSurfaceLevel(0,&occlusionTarget));
             if(!available){drop(occlusionTarget);drop(occlusionMap);occlusionUnavailable=!supported;occlusionRetry=supported?60:0;logf("MATERIAL_OCCLUSION allocation retry=%u unsupported=%u; settings retained",occlusionRetry,unsigned(!supported));}
         }
-        const unsigned captureIndex=model?0:opaqueWall?4:terrainIndex;
-        if(!model&&normalOnly&&!normalShaders[captureIndex]&&FAILED(createCaptureShader(normalCodes[captureIndex],&normalShaders[captureIndex])))normalOnly=false;
-        auto& captureShader=sharing?sharedShaders[captureIndex]:normalOnly?normalShaders[captureIndex]:shaders[captureIndex];
-        if(!model&&!captureShader&&!check(createCaptureShader(sharing?sharedCodes[captureIndex]:normalOnly?normalCodes[captureIndex]:codes[captureIndex],&captureShader),"capture shader"))return;
-        IDirect3DBaseTexture9* diffuse=nullptr;if(FAILED(d->GetTexture(0,&diffuse)))return;
-        auto normal=normals.acquire(diffuse,domain==4);drop(diffuse);if(!normal)return;
-        NorthlightAutoNormalCache::Lease normal1;
-        if(material==6&&domain!=4){IDirect3DBaseTexture9* second=nullptr;if(FAILED(d->GetTexture(1,&second)))return;normal1=normals.acquire(second);drop(second);if(!normal1)return;}
         DWORD addressU=D3DTADDRESS_WRAP,addressV=D3DTADDRESS_WRAP;d->GetSamplerState(0,D3DSAMP_ADDRESSU,&addressU);d->GetSamplerState(0,D3DSAMP_ADDRESSV,&addressV);
         if(domain==2&&!coverageAlpha)++opaqueCoverage;
         const float constants[]={domain==1?.18f:domain==2?.14f:.06f,captureRange(domain),alpha?(float(ref)+(alphaFunc==D3DCMP_GREATER?.5f:0.f))/255.f:.001f,domain==4?(alpha?1.f:0.f):(coverageAlpha?0.f:1.f)};
@@ -806,7 +879,7 @@ public:
         }
         if(!finishCaptures())return;
         if(singleSample)drop(saved.depth);
-        if(canDefer&&!saved.save(userMemory&&!sharing,material==6&&domain!=4))return;
+        if(canDefer&&!saveReplay())return;
         bool cacheBound=false;
         {P::Scope setup(profile,P::CaptureSetup,0,true);
         if(!check(saved.apply(),"material private depth compare"))return;d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE);d->SetTexture(saved.normalStage,normal.get());

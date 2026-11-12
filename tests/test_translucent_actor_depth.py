@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-# northlight-test: requires=cxx
+# northlight-test: requires=zig
 """0.3.188 (task 3), always on: the depth resolve moves ahead of the first translucent Z-writing actor draw.
 
 Native part: translucent_depth.h (the trigger predicate with lazy state reads and the once-per-frame latch) is driven
 through the same glue shape renderer.cpp uses (a terrain draw clears `captured`, a failed resolve leaves it false,
 the UI-time resolve finishes the frame) over a fake draw sequence. Source part: the glue in prepareDrawImpl, the
-RawScope, the reset in clearFrame, and that no setting remains. Native clang++, plain -O2 and ASan/UBSan. No device or game."""
+RawScope, the reset in clearFrame, and that no setting remains. Windows x86 O0/O2; native ASan/UBSan elsewhere. No device or game."""
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
-import re,subprocess,tempfile
+import os,re,subprocess,tempfile
 
 HARNESS=r'''
 #include "translucent_depth.h"
@@ -113,9 +113,11 @@ int main(){
 
 with tempfile.TemporaryDirectory(prefix='northlight-translucent-depth-') as tmp:
     (Path(tmp)/'t.cpp').write_text(HARNESS)
-    for label,flags in [('O2',['-O2']),('asan',['-O1','-g','-fsanitize=address,undefined','-fno-sanitize-recover=all'])]:
-        exe=Path(tmp)/('test-'+label)
-        subprocess.run(['clang++','-std=c++17','-Wall','-Wextra','-Werror',*flags,*fp.test_include_flags(),str(Path(tmp)/'t.cpp'),'-o',str(exe)],check=True)
+    compiler=[str(fp.zig()),'c++','-target','x86-windows-gnu'] if os.name=='nt' else ['clang++']
+    modes=[('O2',['-O2']),('O0',['-O0'])] if os.name=='nt' else [('O2',['-O2']),('asan',['-O1','-g','-fsanitize=address,undefined','-fno-sanitize-recover=all'])]
+    for label,flags in modes:
+        exe=Path(tmp)/('test-'+label+('.exe' if os.name=='nt' else ''))
+        subprocess.run([*compiler,'-std=c++17','-UNDEBUG','-Wall','-Wextra','-Werror',*flags,*fp.test_include_flags(),str(Path(tmp)/'t.cpp'),'-o',str(exe)],env=fp.zig_env(),check=True)
         print(label,subprocess.check_output([str(exe)],text=True),end='',flush=True)
 
 # source checks
@@ -132,9 +134,9 @@ checks['no SetRenderState and no resolve in the early/undo/census region']='SetR
 checks['state reads include Z write, blend, src/dst, colour write, skinned']=all(x in impl[dom:cen] for x in ('D3DRS_ZWRITEENABLE','D3DRS_ALPHABLENDENABLE','D3DRS_SRCBLEND','D3DRS_DESTBLEND','D3DRS_COLORWRITEENABLE','classifyVs(vs).skinned'))
 hook=r[r.index('template<class Capture,class Draw> HRESULT drawHook('):];hook=hook[:hook.index('\n    }\n')+7]
 # 0.3.193: the real draw goes through blobFaintDraw (it wraps terrainShadowDraw) in both drawHook modes.
-checks['early block runs before the real draw (prepareDraw/prepareDrawImpl precede draw in both drawHook modes)']=(
-    hook.index('prepareDraw(capture,count);')<hook.index('nameMaskDraw(rainBlend,claimed||mist,nativeDraw)')<hook.index('prepareDrawImpl(capture,count);')<hook.rindex('nameMaskDraw(rainBlend,claimed||mist,nativeDraw)'))
-cf=r[r.index('void clearFrame() {'):r.index('void releaseResources()')]
+checks['early block in both preparation paths precedes the common native draw']=(
+    hook.count('prepareDrawImpl(capture,count);')==2 and hook.rindex('prepareDrawImpl(capture,count);')<hook.index('nameMaskDraw(rainBlend,claimed||mist,nativeDraw)') and hook.count('nameMaskDraw(rainBlend,claimed||mist,nativeDraw)')==1)
+cf=r[r.index('void clearFrame() {'):r.index('void releaseResources(bool preserveCaptureSources=false)')]
 checks['clearFrame resets the latch and the census']='earlyDepth.reset()' in cf and 'resetTranslucentCensus()' in cf
 fin=r[r.index('void finishFrameImpl() {'):r.index('++frame;mirrorState.gate.frame')]
 checks['TRANSLUCENT logged before clearFrame in finishFrameImpl']=fin.index('TRANSLUCENT frame=')<fin.index('clearFrame();')

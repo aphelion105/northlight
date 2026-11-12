@@ -430,9 +430,9 @@ static void mrtPath(){
     m.water.unbindMrt();assert(!m.water.isMrtBound()&&m.run.b.snapshot()==before);
     // Before the resolve nothing is handed out; the resolve: twin -> data texture, mask clear, one decode pass, all state back.
     assert(!m.water.maskTextureForDepth(0,1));
-    const size_t stretchBefore=m.events(7),fillsBefore=m.events(6),drawsAtResolve=m.run.b.events.size();trace.clear();m.run.b.trace=&trace;
+    const size_t stretchBefore=m.events(7),fillsBefore=m.events(6),clearsBefore=m.events(5),drawsAtResolve=m.run.b.events.size();trace.clear();m.run.b.trace=&trace;
     assert(m.water.resolveMask());m.run.b.trace=nullptr;
-    assert(m.events(7)==stretchBefore+1&&m.events(6)==fillsBefore+1&&m.run.b.events.back()[0]==3);   // StretchRect(twin->raw), ColorFill(mask), the decode quad (DrawPrimitiveUP)
+    assert(m.events(7)==stretchBefore+1&&m.events(6)==fillsBefore&&m.events(5)==clearsBefore+1&&m.run.b.events.back()[0]==3); // resolve, in-scope Clear, decode
     assert(m.run.b.snapshot()==before&&m.run.b.s.rt[1]==nullptr);
     IDirect3DTexture9* mask=m.water.maskTextureForDepth(0,1);assert(mask&&!m.water.maskTextureForDepth(.25f,.75f));   // the min/max Z contract of the handout
     assert(m.water.hasCapturedWater());

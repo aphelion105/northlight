@@ -30,15 +30,17 @@
         MemoryTrim t;auto phaseStart=std::chrono::steady_clock::now();
         const auto elapsed=[&](){const auto now=std::chrono::steady_clock::now();const double ms=std::chrono::duration<double,std::milli>(now-phaseStart).count();phaseStart=now;return ms;};
         prepareQuiesce();stateBlocks.clear();t.quiesceMs=elapsed(); /* 0.3.177 */
-        {const auto before=terrainBoundsCache.sourceLiveBytes()+terrainBoundsCache.sourceMetadataBytes();t.terrainDeferred=terrainBoundsCache.clearPersistent(critical?nullptr:&NorthlightStreaming::cpuRetirement(),critical?nullptr:batch);const auto after=terrainBoundsCache.sourceLiveBytes()+terrainBoundsCache.sourceMetadataBytes();t.terrain=size_t(before-std::min(before,after));}
+        {const auto before=terrainBoundsCache.sourceLiveBytes()+terrainBoundsCache.sourceMetadataBytes();t.terrainDeferred=terrainBoundsCache.clearPersistent(critical&&!batch?nullptr:&NorthlightStreaming::cpuRetirement(),batch);const auto after=terrainBoundsCache.sourceLiveBytes()+terrainBoundsCache.sourceMetadataBytes();t.terrain=size_t(before-std::min(before,after));}
         t.terrainMs=elapsed();
         const auto sourceBefore=replaySnapshots.sourceLiveBytes()+replaySnapshots.sharedSourceMetadataBytes();
-        {const auto before=replaySnapshots.indexCacheBytes();t.snapshotDeferred=replaySnapshots.clearIndexCache(critical?nullptr:&NorthlightStreaming::cpuRetirement(),critical?nullptr:batch);t.indices=before-std::min(before,replaySnapshots.indexCacheBytes());} /* clears snapshots too */
+        {const auto before=replaySnapshots.indexCacheBytes();t.snapshotDeferred=replaySnapshots.clearIndexCache(critical&&!batch?nullptr:&NorthlightStreaming::cpuRetirement(),batch);t.indices=before-std::min(before,replaySnapshots.indexCacheBytes());} /* clears snapshots too */
         const auto sourceAfter=replaySnapshots.sourceLiveBytes()+replaySnapshots.sharedSourceMetadataBytes();t.snapshots=sourceBefore-std::min(sourceBefore,sourceAfter);
         t.snapshotsMs=elapsed();
         t.pool=pooledSnapshotBytes+freeReplays.size()*sizeof(Replay);freeReplays.clear();freeReplays.shrink_to_fit();pooledSnapshotBytes=0;
         t.poolMs=elapsed();
         t.gpu=replayGpuCache.bytes();replayGpuCache.clear();t.replayGpuMs=elapsed();
+        t.gpu+=clearPointKeeps();
+        t.gpu+=shadowAlphaTargets.bytes();shadowAlphaTargets.reset();
         t.gpu+=trimMeshPools();t.meshPoolsMs=elapsed(); /* 0.3.216: idle page buffers (never the active table), unless a staged upload is in progress */
         rigidMemoryClear(); /* 0.3.172: remembered rigid replays (their shared meshes and COM references) */
         t.rigidMs=elapsed();
@@ -50,8 +52,8 @@
     // Demand keeps the existing world savings and one-shot trim, but terrain
     // retention is halved only after an actual low-address-space sample.
     void setMemoryPressure(bool on,bool halveTerrain){
-        memoryPressure=on;setNearReserve();
+        memoryPressure=on;if(on){clearPointKeeps();shadowAlphaTargets.reset();}setNearReserve();
         replaySnapshots.setSnapshotCacheLimit(on?NorthlightDrawSnapshot::Frame::SnapshotCacheLimit/2:NorthlightDrawSnapshot::Frame::SnapshotCacheLimit);
         terrainBoundsCache.setPersistentByteLimit(halveTerrain?16u*1024u*1024u:32u*1024u*1024u);
-        replayGpuCache.setLimit(on?32u*1024u*1024u:64u*1024u*1024u);
+        gpuScene->setMemoryPressure(on,halveTerrain);
     }

@@ -71,14 +71,26 @@ int main(int argc,char** argv){
     std::vector<Word> out;PatchInfo info;
     auto t1=terrain1();assert(patch(t1.data(),t1.size(),out,&info));
     assert(info.replaced==2&&info.shadowRegister==4&&info.shadowComponent==3&&info.oneConstant==0&&info.oneComponent==2);
-    assert(out.size()==t1.size()&&differences(t1,out)==2&&out[0]==t1[0]&&out.back()==0xffff);
+    assert(out.size()==t1.size()&&differences(t1,out)==5&&out[0]==t1[0]&&out.back()==0xffff);
     const Word one=src(Const,0,ZZZZ);
     // Only the specular multiply and the diffuse scale read the literal now;
     // the earlier r4.w meaning and the reuse after the scale are untouched.
-    unsigned literalReads=0;for(Word w:out)literalReads+=w==one;assert(literalReads==2);
-    for(size_t i=0;i<t1.size();++i)if(t1[i]!=out[i]){assert(t1[i]==src(Temp,4,WWWW)&&out[i]==one);}
+    unsigned literalReads=0;for(Word w:out)literalReads+=w==one;assert(literalReads==1);
+    size_t scale=0;while(t1[scale]!=instr(4,4))++scale;
+    assert(out[scale]==instr(2,3)&&out[scale+1]==t1[scale+1]&&out[scale+2]==src(Const,0,XXXX)&&out[scale+3]==src(Const,0,YYYY)&&out[scale+4]==0);
+    for(size_t i=0;i<t1.size();++i)if(t1[i]!=out[i]&&(i<scale||i>scale+4)){assert(t1[i]==src(Temp,4,WWWW)&&out[i]==one);}
     // Fail closed.
     auto noOne=terrain1(false);assert(patch(noOne.data(),noOne.size(),out,&info)&&info.oneConstant==-1&&info.replaced==2); // folded: add+nop, mov+nop
+    // Terrain0 has no literal one and reads S in the second MAD multiplicand.
+    // Both A*S+B and S*A+B must fold to A+B, retaining the original word count.
+    for(Word version:{0xffff0200u,0xffff0300u})for(bool second:{false,true}){
+        std::vector<Word> p{version};def(p,0,.3f,.7f,0,0);dclTexcoord(p,0,0);dclSampler(p,1);texld(p,4,0,1);
+        p.insert(p.end(),{instr(4,4),dst(Temp,1,1),src(Temp,4,WWWW),src(Const,0,XXXX),src(Const,0,YYYY)});
+        const auto at=p.size();p.insert(p.end(),{instr(4,4),dst(Temp,0,7),second?src(Temp,0):src(Temp,4,WWWW),second?src(Temp,4,WWWW):src(Temp,0),src(Temp,1)});
+        p.insert(p.end(),{instr(1,2),dst(ColorOut,0),src(Temp,0),65535u});
+        assert(patch(p.data(),p.size(),out,&info)&&info.replaced==2&&info.oneConstant==-1&&out.size()==p.size());
+        assert(out[at]==instr(2,3)&&out[at+1]==dst(Temp,0,7)&&out[at+2]==src(Temp,0)&&out[at+3]==src(Temp,1)&&out[at+4]==0);
+    }
     auto predicated=terrain1(true,true);assert(!patch(predicated.data(),predicated.size(),out,&info));
     auto ps14=terrain1(true,false,0xffff0104);assert(!patch(ps14.data(),ps14.size(),out,&info));
     auto ps20=terrain1(true,false,0xffff0200);assert(patch(ps20.data(),ps20.size(),out,&info)&&info.major==2&&info.replaced==2);
@@ -111,7 +123,7 @@ int main(int argc,char** argv){
      p.insert(p.end(),{instr(4,4),dst(Temp,0,8),src(Temp,0,WWWW),src(Const,0,XXXX),src(Const,0,YYYY)});
      p.insert(p.end(),{instr(5,3),dst(Temp,0,7),src(Temp,0),src(Temp,0,WWWW)});
      p.insert(p.end(),{instr(1,2),dst(ColorOut,0),src(Temp,0)});p.push_back(0xffff);
-     assert(patch(p.data(),p.size(),out,&info)&&info.replaced==1&&differences(p,out)==1);}
+     assert(patch(p.data(),p.size(),out,&info)&&info.replaced==1&&differences(p,out)==4);}
     // A specular multiply with a second constant and no literal available fails closed... unless foldable: mul → mov+nop.
     {std::vector<Word> p{0xffff0300};def(p,2,0,0,.3f,.7f);dclTexcoord(p,6,6);dclSampler(p,4);
      texld(p,1,6,4);
@@ -125,7 +137,7 @@ int main(int argc,char** argv){
     {auto p=terrain1();unsigned seen=0;for(auto& w:p)if(w==src(Temp,4,WWWW)&&++seen==2){w|=1u<<24;break;}assert(seen==2&&!patch(p.data(),p.size(),out,&info)&&out.empty());}
     std::puts("PASS terrain shadow literal replaced in specular and diffuse scale only; earlier/later register meanings kept");
     std::puts("PASS terminating-write source read, in-place scale, single-constant folding (add/mov + nop), modifier refusal");
-    std::puts("PASS fail-closed on missing 1.0 literal, predication, ps_1_x, truncation, missing 0.3/0.7 scale; ps_2_0 accepted");
+    std::puts("PASS fail-closed on unsupported folds, predication, ps_1_x, truncation, missing 0.3/0.7 scale; ps_2_0 accepted");
     std::puts("PASS combined baked/dynamic shadow register through if/else (Terrain3 shape)");
     return 0;
 }

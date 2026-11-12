@@ -20,7 +20,7 @@ struct Program{
     std::array<bool,32> temps{};std::array<bool,12> outputs{};std::array<bool,10> inputs{};
     std::size_t declEnd=1;
 };
-inline bool analyse(const Word* w,std::size_t count,Program& p){
+inline bool analyse(const Word* w,std::size_t count,Program& p,bool relativeVertex=false){
     if(!w||count<3||count>16384||w[count-1]!=65535)return false;
     p.major=(w[0]>>8)&255;p.vertex=(w[0]>>16)==65534;
     if(w[0]!=0xfffe0300u&&w[0]!=0xffff0300u)return false;
@@ -40,7 +40,7 @@ inline bool analyse(const Word* w,std::size_t count,Program& p){
         for(unsigned i=(op==31?2:1);i<=n;++i){
             if((op==81||op==48||op==47)&&i>1)break;
             Word t=w[at+i];if(!(t&0x80000000u))continue;
-            if(t&0x2000)return false;
+            if((t&0x2000)&&!(p.vertex&&relativeVertex))return false;
             unsigned type=sourceType(t),index=t&2047;
             if(type==2){if(index>=256)return false;p.constants[index]=true;}
             if(type==0){if(index>=32)return false;p.temps[index]=true;}

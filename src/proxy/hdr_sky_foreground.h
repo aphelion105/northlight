@@ -6,12 +6,39 @@
 #include "hdr_compiled_shaders.h"
 
 namespace NorthlightHdr {
+inline bool legacyVertexShader(IDirect3DDevice9* d)try{
+    IDirect3DVertexShader9* vs=nullptr;if(FAILED(d->GetVertexShader(&vs))||!vs)return false;
+    struct Release {IDirect3DVertexShader9* p;~Release(){p->Release();}} release{vs};
+    UINT bytes=0;if(FAILED(vs->GetFunction(nullptr,&bytes))||bytes<8||bytes>65536||bytes%4)return false;
+    std::vector<DWORD> code(bytes/4);if(FAILED(vs->GetFunction(code.data(),&bytes)))return false;
+    return code[0]==D3DVS_VERSION(1,1)||code[0]==D3DVS_VERSION(2,0);
+}catch(const std::bad_alloc&){return false;}
+inline IDirect3DPixelShader9* fixedModulateSource(IDirect3DDevice9* d,IDirect3DPixelShader9*& fixedModulate){
+    // The native rain has a legacy programmable VS and no PS. Reproduce
+    // only its single texture * diffuse stage; keep other FF programs out.
+    if(!legacyVertexShader(d))return nullptr;
+    DWORD value=0;
+    for(auto state:{D3DRS_FOGENABLE,D3DRS_SPECULARENABLE})if(FAILED(d->GetRenderState(state,&value))||value)return nullptr;
+    const D3DTEXTURESTAGESTATETYPE states[]={D3DTSS_COLOROP,D3DTSS_COLORARG1,D3DTSS_COLORARG2,D3DTSS_ALPHAOP,D3DTSS_ALPHAARG1,D3DTSS_ALPHAARG2,D3DTSS_TEXCOORDINDEX,D3DTSS_TEXTURETRANSFORMFLAGS};
+    const DWORD expected[]={D3DTOP_MODULATE,D3DTA_TEXTURE,D3DTA_DIFFUSE,D3DTOP_MODULATE,D3DTA_TEXTURE,D3DTA_DIFFUSE,0,D3DTTFF_DISABLE};
+    for(unsigned i=0;i<8;++i){if(FAILED(d->GetTextureStageState(0,states[i],&value)))return nullptr;
+        const bool diffuse=i==2||i==5;
+        if(value!=expected[i]&&!(diffuse&&value==D3DTA_CURRENT))return nullptr;}
+    if(FAILED(d->GetTextureStageState(1,D3DTSS_COLOROP,&value))||value!=D3DTOP_DISABLE)return nullptr;
+    IDirect3DBaseTexture9* texture=nullptr;const HRESULT hr=d->GetTexture(0,&texture);
+    const bool valid=SUCCEEDED(hr)&&texture&&texture->GetType()==D3DRTYPE_TEXTURE;if(texture)texture->Release();if(!valid)return nullptr;
+    if(!fixedModulate&&FAILED(d->CreatePixelShader(reinterpret_cast<const DWORD*>(kHdrFixedModulate),&fixedModulate)))return nullptr;
+    return fixedModulate;
+}
 // Add the linear foreground to the existing sky in the native draw itself.
 // No geometry replay, new image, depth/stencil write or occlusion-query samples.
 class SkyForeground {
+    friend struct HdrSkyForegroundTest;
     struct Entry {IDirect3DPixelShader9* original=nullptr;IDirect3DPixelShader9* shader[6]{};bool tried[6]{};};
     std::unordered_map<IDirect3DPixelShader9*,Entry> shaders;
+    IDirect3DPixelShader9* fixedModulate=nullptr;
     bool checked=false,capable=false;unsigned targets=0;
+    const bool residual;
     template<class T> static void drop(T*& p){if(p)p->Release();p=nullptr;}
     IDirect3DPixelShader9* replacement(IDirect3DDevice9* d,IDirect3DPixelShader9* original,unsigned slot,bool premultiplied)try{
         auto it=shaders.find(original);
@@ -25,16 +52,17 @@ class SkyForeground {
         std::vector<std::uint32_t> words(bytes/4),patched;
         if(FAILED(original->GetFunction(words.data(),&bytes)))return nullptr;
         const bool sm2=words[0]==0xffff0200;
-        const auto* transfer=sm2?kHdrUiPs2:kHdrUiPs3;
-        const auto count=sm2?sizeof(kHdrUiPs2)/4:sizeof(kHdrUiPs3)/4;
+        const auto* transfer=residual?(sm2?kHdrSkyResidualPs2:kHdrSkyResidualPs3):(sm2?kHdrUiPs2:kHdrUiPs3);
+        const auto count=residual?(sm2?sizeof(kHdrSkyResidualPs2)/4:sizeof(kHdrSkyResidualPs3)/4):(sm2?sizeof(kHdrUiPs2)/4:sizeof(kHdrUiPs3)/4);
         if(!NorthlightHdrUi::patch(words.data(),words.size(),transfer,count,80,premultiplied,patched,nullptr,false,slot)||
            FAILED(d->CreatePixelShader(reinterpret_cast<const DWORD*>(patched.data()),&entry.shader[index])))return nullptr;
         return entry.shader[index];
     }catch(const std::bad_alloc&){return nullptr;}
 public:
-    std::uint64_t draws=0;
+    explicit SkyForeground(bool emissionOnly=false):residual(emissionOnly){}
+    std::uint64_t draws=0,cachedRejections=0;
     ~SkyForeground(){reset();}
-    void reset(){for(auto& item:shaders){drop(item.second.original);for(auto*& p:item.second.shader)drop(p);}shaders.clear();checked=capable=false;targets=0;draws=0;}
+    void reset(){for(auto& item:shaders){drop(item.second.original);for(auto*& p:item.second.shader)drop(p);}shaders.clear();drop(fixedModulate);checked=capable=false;targets=0;draws=cachedRejections=0;}
     template<class Draw> bool draw(IDirect3DDevice9* d,IDirect3DSurface9* sky,bool allowMultisample,Draw submit,HRESULT& result){
         if(!sky)return false;
         if(!checked){D3DCAPS9 caps{};checked=true;capable=SUCCEEDED(d->GetDeviceCaps(&caps))&&caps.NumSimultaneousRTs>=2&&
@@ -52,17 +80,25 @@ public:
             ~Restore(){if(changed){d->SetPixelShader(original);d->SetRenderTarget(slot,nullptr);d->SetRenderState(D3DRENDERSTATETYPE(D3DRS_COLORWRITEENABLE1+slot-1),writes);}drop(native);drop(aux);drop(depth);drop(original);}} restore{d,native,aux,depth,original,slot,oldWrites};
         auto colorState=[](unsigned n){return n==1?D3DRS_COLORWRITEENABLE1:n==2?D3DRS_COLORWRITEENABLE2:D3DRS_COLORWRITEENABLE3;};
         for(;slot<targets;++slot){const HRESULT hr=d->GetRenderTarget(slot,&aux);if(hr==D3DERR_NOTFOUND||SUCCEEDED(hr)&&!aux)break;if(FAILED(hr))return false;drop(aux);}
-        if(slot>=targets||FAILED(d->GetRenderTarget(0,&native))||!native||FAILED(d->GetPixelShader(&original))||!original)return false;
+        if(slot>=targets||FAILED(d->GetPixelShader(&original)))return false;
+        auto* source=original?original:fixedModulateSource(d,fixedModulate);if(!source)return false;
+        const bool premultiplied=blend&&src==D3DBLEND_ONE&&dst==D3DBLEND_INVSRCALPHA;
+        const unsigned variant=(slot-1)*2+unsigned(premultiplied);
+        const auto known=shaders.find(source);
+        // A failed patch for this exact retained shader/output/alpha variant
+        // cannot become eligible because a target or its depth changed.
+        if(known!=shaders.end()&&known->second.tried[variant]&&!known->second.shader[variant]){++cachedRejections;return false;}
+        if(FAILED(d->GetRenderTarget(0,&native))||!native)return false;
         D3DSURFACE_DESC a{},b{},z{};
         if(FAILED(native->GetDesc(&a))||FAILED(sky->GetDesc(&b))||a.Width!=b.Width||a.Height!=b.Height||a.MultiSampleType!=b.MultiSampleType||
            a.MultiSampleQuality!=b.MultiSampleQuality||(a.MultiSampleType&&!allowMultisample)||
            FAILED(d->GetDepthStencilSurface(&depth))||!depth||FAILED(depth->GetDesc(&z))||z.Width<a.Width||z.Height<a.Height||
            z.MultiSampleType!=a.MultiSampleType||z.MultiSampleQuality!=a.MultiSampleQuality)return false;
-        auto* patched=replacement(d,original,slot,blend&&src==D3DBLEND_ONE&&dst==D3DBLEND_INVSRCALPHA);if(!patched)return false;
+        auto* patched=replacement(d,source,slot,premultiplied);if(!patched)return false;
         const auto state=colorState(slot);if(FAILED(d->GetRenderState(state,&oldWrites)))return false;
         // The three COLORWRITEENABLE enums are consecutive in D3D9.
         restore.changed=true;
-        if(FAILED(d->SetRenderTarget(slot,sky))||FAILED(d->SetRenderState(state,writes))||FAILED(d->SetPixelShader(patched)))return false;
+        if(FAILED(d->SetRenderTarget(slot,sky))||FAILED(d->SetRenderState(state,residual?writes&7:writes))||FAILED(d->SetPixelShader(patched)))return false;
         ++draws;result=submit();return true;
     }
 };

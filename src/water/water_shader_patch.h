@@ -252,7 +252,7 @@ inline std::vector<Word> resolveShader() {
         0x05000051,dst(2,0),floatBits(.5f),floatBits(1.f),floatBits(0.f),floatBits(0.f),   // def c0, .5, 1, 0, 0
         0x0200001f,0x80000000,dst(3,0,3),                                                  // dcl t0
         0x0200001f,0x90000000,dst(10,0),                                                   // dcl_2d s0
-        0x03000042,dst(0,0),src(3,0,0x04),src(10,0),                                       // texld r0, t0, s0
+        0x03000042,dst(0,0),src(3,0),src(10,0),                                            // ps_2_0 texld requires the identity swizzle
         0x03000002,dst(0,1),src(0,0,0x55),src(2,0,0x00)|0x01000000u,                       // add r1, r0.yyyy, -c0.xxxx
         0x01000041,dst(0,1),                                                               // texkill r1
         0x02000006,dst(0,2,1),src(0,0,0x55),                                               // rcp r2.x, r0.y

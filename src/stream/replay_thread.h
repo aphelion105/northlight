@@ -223,7 +223,7 @@ public:
     // pooled), buffer shadows, texture shadows, snapshots.
     struct Memory {std::size_t queue,bufferShadows,textureShadows,snapshots;std::size_t total()const{return queue+bufferShadows+textureShadows+snapshots;}};
     Memory memory()const{
-        const auto& s=core.q.stats;const auto bs=s.shadowBytes.load(std::memory_order_relaxed)+s.largeShadowBytes.load(std::memory_order_relaxed)+s.ringBytes.load(std::memory_order_relaxed)+s.retiredBytes.load(std::memory_order_relaxed)+s.zcPatchBytes.load(std::memory_order_relaxed),ts=s.texShadowBytes.load(std::memory_order_relaxed);
+        const auto& s=core.q.stats;const auto bs=s.shadowBytes.load(std::memory_order_relaxed)+s.largeShadowBytes.load(std::memory_order_relaxed)+s.ringBytes.load(std::memory_order_relaxed)+s.retiredBytes.load(std::memory_order_relaxed)+s.zcPatchBytes.load(std::memory_order_relaxed)+s.rangeShadowBytes.load(std::memory_order_relaxed),ts=s.texShadowBytes.load(std::memory_order_relaxed);
         return {core.q.reservedBytes(),bs>0?std::size_t(bs):0,ts>0?std::size_t(ts):0,snapshots.reservedBytes()};
     }
     // The background workers (GI, geometry builder, static shadow streamer) run BELOW_NORMAL; the replay thread is the critical path and
@@ -283,6 +283,8 @@ private:
         for(std::size_t i=0;i<pending_.size();){
             StreamQuery* q=pending_[i];bool done=false;
             if(q->dead.load()||!q->inner)done=true;
+            else if(q->type!=8&&q->issueSeen&&q->issueSeenEpoch==core.queryEpoch.load(std::memory_order_relaxed)&&
+                    q->readyGen.load(std::memory_order_acquire)==q->issueSeen)done=true;
             else{
                 unsigned char buf[64]={};HRESULT hr;
                 // A FLUSH batch may already have completed this EVENT generation.
@@ -433,7 +435,7 @@ private:
         avg_.depth+=double(depth);avg_.bytes+=double(bytes);++avg_.n;if(depth>avg_.maxDepth)avg_.maxDepth=depth;if(bytes>avg_.maxBytes)avg_.maxBytes=bytes;
         const bool diag=diagnostics&&diagnostics();
         const bool audit=diag_;diag_=diag;   // the next frame records the audit state iff diagnostics are on now; switched on mid-frame: starts clean next frame
-        if(idleTracking_){if(idleProfile_.presented())logIdleGaps();idleProfile_.enable(diag);}
+        if(idleTracking_){if(idleProfile_.presented(frames))logIdleGaps();idleProfile_.enable(diag);}
         if(audit&&diag&&frames%sampleEvery==1)runAudit();
         if(diag&&log&&frames%sampleEvery==0)cstreamLine(frames);
         if(log&&diag&&frames%sampleEvery==0){
@@ -456,12 +458,21 @@ private:
     void finishIdle(std::uint64_t end,const IdlePoint& last,std::uint16_t after,bool interrupted=false){
         if(!idleProfile_.open())return;
         const auto start=idleProfile_.startNs();
-        if(end>=start&&end-start>=IdleGapProfile::ThresholdNs)
-            idleProfile_.finish(end,last,after,interrupted,producerCpuSample(),core.idleImages.select(start,end));
+        if((end>=start&&end-start>=IdleGapProfile::ThresholdNs)||idleProfile_.sampleShortMaximum(end))
+            idleProfile_.finish(end,last,after,interrupted,producerCpuSample(),core.idleImages.select(start,end),true);
         else idleProfile_.finish(end,last,after,interrupted);
     }
     void logIdleGaps(){
         const auto report=idleProfile_.take();if(!log||!diag_)return;
+        for(unsigned i=0;i<report.frameCount;++i){
+            const auto& f=report.worstFrames[i];const auto& g=f.largest;const auto& a=g.first;const auto& b=g.last;char line[1800];
+            const bool cpuKnown=g.cpuFirst.known&&g.cpuLast.known&&g.cpuFirst.readBeforeNs<=g.cpuFirst.readAfterNs&&g.cpuFirst.readAfterNs<=g.cpuLast.readBeforeNs&&g.cpuLast.readBeforeNs<=g.cpuLast.readAfterNs;
+            std::snprintf(line,sizeof line,"CSTREAM IDLE_FRAME streamFrameEnd=%llu windowFrames=%u slowFrames=%u retainedFrames=%u totalWaitMs=%.6f gaps=%u segments=%u firstWaitNs=%llu lastWaitNs=%llu largestWallMs=%.6f largestWaitMs=%.6f largestStartNs=%llu largestEndNs=%llu before=%s after=%s queueStart=%s queueEnd=%s producerDeltaNonexclusiveNs[sync=%lld,present=%lld,backpressure=%lld,recordSampled=%lld,lock=%lld,snapshot=%lld] producerKernelNs=%lld producerUserNs=%lld producerScope=largest-gap-boundary imageSampled=%u selectedImage=%u imageOverlapNs=%llu imageStable=%u imageScope=active-or-retained-ge20ms frameDomain=stream-replayed applicationPhase=unknown",
+                (unsigned long long)f.streamFrame,report.frames,report.slowFrames,report.frameCount,double(f.waitNs)*1e-6,f.gaps,f.segments,(unsigned long long)f.firstNs,(unsigned long long)f.lastNs,double(g.wallNs())*1e-6,double(g.waitNs)*1e-6,(unsigned long long)g.startNs,(unsigned long long)g.endNs,
+                g.before==kExpressIdle?"idle":cmdName((Cmd)g.before),g.after==kExpressIdle?"none":cmdName((Cmd)g.after),a.queueState(),b.queueState(),
+                IdleGapProfile::delta(a.syncNs,b.syncNs),IdleGapProfile::delta(a.presentNs,b.presentNs),IdleGapProfile::delta(a.backpressureNs,b.backpressureNs),IdleGapProfile::delta(a.recordNs,b.recordNs),IdleGapProfile::delta(a.lockNs,b.lockNs),IdleGapProfile::delta(a.snapshotNs,b.snapshotNs),
+                cpuKnown?IdleGapProfile::delta(g.cpuFirst.kernelNs,g.cpuLast.kernelNs):-1,cpuKnown?IdleGapProfile::delta(g.cpuFirst.userNs,g.cpuLast.userNs):-1,unsigned(g.imageSampled),unsigned(g.image.lock.id!=0),(unsigned long long)g.image.overlapNs,unsigned(g.image.stable));log(line);
+        }
         for(unsigned i=0;i<report.count;++i){
             const auto& g=report.worst[i];const auto& a=g.first;const auto& b=g.last;char line[2300],cpuText[40];
             const bool cpuKnown=g.cpuFirst.known&&g.cpuLast.known&&g.cpuFirst.readBeforeNs<=g.cpuFirst.readAfterNs&&g.cpuFirst.readAfterNs<=g.cpuLast.readBeforeNs&&g.cpuLast.readBeforeNs<=g.cpuLast.readAfterNs;
@@ -553,6 +564,7 @@ private:
              double(std::max<std::int64_t>(0,s.shadowBytes.load()))/1048576.0,double(core.q.shadowCap())/1048576.0,double(rbD-lastBufRbD_)*f,double(rbS-lastBufRbS_)*f,double(evD+evS-lastBufEv_)*f,double(evH-lastBufHot_)*f,double(rf-lastBufRef_)*f,
              (unsigned long long)get(s.shadowCapGrows),double(core.q.largeBytes())/1048576.0,double(LargeShadowBudgetBytes)/1048576.0,(unsigned long long)get(s.largeShadowGrants),(unsigned long long)get(s.largeShadowDrops),(unsigned long long)rbD,(unsigned long long)rbS,(unsigned long long)evD,(unsigned long long)evS,(unsigned long long)evH,(unsigned long long)rf,get(s.relockRefusedBytes)/1048576.0);
          lastBufRbD_=rbD;lastBufRbS_=rbS;lastBufEv_=evD+evS;lastBufHot_=evH;lastBufRef_=rf;}
+        put(buf,n," rangeShadow=%.2f/%.0fMB hits=%llu stores=%llu refused=%llu",double(std::max<std::int64_t>(0,s.rangeShadowBytes.load()))/1048576.0,double(RangeShadowBudgetBytes)/1048576.0,(unsigned long long)get(s.rangeShadowHits),(unsigned long long)get(s.rangeShadowStores),(unsigned long long)get(s.rangeShadowRefused));
         put(buf,n," syncStorms=%llu",(unsigned long long)get(s.syncStorms));
         put(buf,n," pass[");
         for(unsigned r=0;r<Counters::kPassReasons;++r)put(buf,n,"%s%s=%llu",r?",":"",passReasonName(r),(unsigned long long)get(s.passThrough[r]));
@@ -565,8 +577,8 @@ private:
         log(buf);avg_=Avg();
         if(idleTracking_&&diag_){
             const auto wake=core.q.wakePublicationDiagnostics();char line[384];
-            std::snprintf(line,sizeof line,"CSTREAM WAKE_PUBLICATIONS streamFrame=%llu heldBatches=%llu heldCommands=%llu heldBytes=%llu wakeSignals=%llu scope=cumulative-independent-counters duration=unmeasured",
-                (unsigned long long)frames,(unsigned long long)wake.heldBatches,(unsigned long long)wake.heldCommands,(unsigned long long)wake.heldBytes,(unsigned long long)wake.wakeSignals);
+            std::snprintf(line,sizeof line,"CSTREAM WAKE_PUBLICATIONS streamFrame=%llu heldBatches=%llu heldCommands=%llu heldBytes=%llu wakeSignals=%llu partialBatches=%llu partialCommands=%llu scope=cumulative-independent-counters duration=unmeasured",
+                (unsigned long long)frames,(unsigned long long)wake.heldBatches,(unsigned long long)wake.heldCommands,(unsigned long long)wake.heldBytes,(unsigned long long)wake.wakeSignals,(unsigned long long)wake.partialBatches,(unsigned long long)wake.partialCommands);
             log(line);
         }
         logZeroCopy();
@@ -651,7 +663,8 @@ private:
                 if(diag_&&a->Stage<StreamState::kTSStages&&unsigned(a->Type)<StreamState::kTSTypes){auditTss_[a->Stage][a->Type]=a->Value;note(StreamState::bitTss(a->Stage,unsigned(a->Type)));}}
             else if(h->id==(std::uint16_t)Cmd::Query_Issue){const auto* a=reinterpret_cast<const Args_Query_Issue*>(h+1);
                 auto* q=static_cast<StreamQuery*>(a->self);
-                if((a->dwIssueFlags&D3::kIssueEnd)&&!q->dead.load()){++q->issueSeen;q->issueSeenEpoch=core.queryEpoch.load(std::memory_order_relaxed);if(std::find(pending_.begin(),pending_.end(),q)==pending_.end())pending_.push_back(q);}}
+                if((a->dwIssueFlags&D3::kIssueEnd)&&!q->dead.load()){++q->issueSeen;q->issueSeenEpoch=core.queryEpoch.load(std::memory_order_relaxed);q->eventWaitExpired=false;
+                    if(std::find(pending_.begin(),pending_.end(),q)==pending_.end())pending_.push_back(q);}}
             else if(h->id==(std::uint16_t)Cmd::Device_DrawPrimitive||h->id==(std::uint16_t)Cmd::Device_DrawIndexedPrimitive){
                 ++draws_;if(current_&&(draws_&31)==0){SnapshotStats::ageDraws.fetch_add(draws_>=current_->triggerDraw?draws_-current_->triggerDraw:0,std::memory_order_relaxed);SnapshotStats::ageSamples.fetch_add(1,std::memory_order_relaxed);}}   // game_snapshot.h noteAge, sampled
             return;

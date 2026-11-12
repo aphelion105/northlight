@@ -20,7 +20,7 @@ int main(){
         for(float& value:p.state.rows)value=0;p.state.rows[0]=p.state.rows[5]=p.state.rows[10]=p.state.rows[15]=1;
         p.state.z=0;p.state.zf=D3DCMP_ALWAYS;
         p.beforeDraw(shader);
-        const bool accepted=(!hdr||back)&&((!hdr&&tag==2)||input);
+        const bool accepted=back&&((!hdr&&tag==2)||input);
         if(p.effects!=unsigned(accepted)){std::printf("FAIL HDR=%d tag=%d safeInput=%d mainTarget=%d effects=%u expected=%u\n",hdr,tag,input,back,p.effects,unsigned(accepted));std::fflush(stdout);}
         assert(p.effects==unsigned(accepted)&&p.spells==unsigned(accepted));
         if(!accepted){

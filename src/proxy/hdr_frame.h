@@ -6,6 +6,7 @@
 #include "hdr_compiled_shaders.h"
 #include "hdr_quad.h"
 #include "saved_state.h"
+#include "memory_admission_probe.h"
 
 namespace NorthlightHdr {
 // Scene values use a relative linear white of 1. Display nits enter only in
@@ -22,17 +23,54 @@ class Frame {
             if(SUCCEEDED(hr))hr=texture->GetSurfaceLevel(0,&surface);
             if(FAILED(hr))reset();return hr;
         }
-    } linear,meter64,meter8,legacyStatistics,worldStatistics,history[2],bloomTargets[2];
+    } linear,meter64,meter8,legacyStatistics,worldStatistics,history[2],bloomTargets[2],wideTargets[3],wideCompanion;
+    IDirect3DPixelShader9 *wideHorizontal=nullptr,*wideVertical=nullptr,*wideResolve=nullptr;
+    bool wideFailed=false,widePaired=false;
+    NorthlightMemoryAdmission::Probe wideAdmission;
     IDirect3DPixelShader9 *decode=nullptr,*meter=nullptr,*reduce=nullptr,*adapt=nullptr,*bloom=nullptr,*bloomVertical=nullptr,*output=nullptr,*constant=nullptr,*copy=nullptr,*legacyComposite=nullptr,*outputOnly=nullptr,*legacyEncode=nullptr;
     unsigned width=0,height=0,historyIndex=0;bool historyReady=false,worldWasValid=false;
     float restoredExposure=0;bool restoredReady=false;
+    bool skyResidual=false,skyResolved=false;
+
+    void resetWide(){
+        for(auto& target:wideTargets)target.reset();wideCompanion.reset();release(wideHorizontal);release(wideVertical);release(wideResolve);
+        wideFailed=widePaired=false;wideAdmission.invalidate();
+    }
+    bool ensureWide(IDirect3DDevice9* device){
+        if(wideFailed)return false;
+        if(wideTargets[2].texture)return true;
+        D3DCAPS9 caps{};
+        widePaired=SUCCEEDED(device->GetDeviceCaps(&caps))&&caps.NumSimultaneousRTs>=2&&(caps.PrimitiveMiscCaps&D3DPMISCCAPS_INDEPENDENTWRITEMASKS);
+        const auto budget=NorthlightGeometryMemory::defaultTargetBudget();
+        const auto sample=wideAdmission.sample(budget,
+            [](std::uint64_t& available){MEMORYSTATUSEX info{};info.dwLength=sizeof info;
+                if(!GlobalMemoryStatusEx(&info))return false;available=NorthlightGeometryMemory::corrected(info.ullAvailVirtual);return true;},
+            [](std::uint64_t address,NorthlightMemoryAdmission::Region& out){MEMORY_BASIC_INFORMATION region{};
+                if(VirtualQuery(reinterpret_cast<const void*>(std::uintptr_t(address)),&region,sizeof region)!=sizeof region)return false;
+                out={std::uint64_t(reinterpret_cast<std::uintptr_t>(region.BaseAddress)),std::uint64_t(region.RegionSize),region.State==MEM_FREE};return true;});
+        const unsigned bw=(width+15)/16,bh=(height+15)/16,hw=widePaired?(bw+1)/2:bw;
+        if(!NorthlightGeometryMemory::admits(sample.memory,budget)||
+           FAILED(device->CreatePixelShader(reinterpret_cast<const DWORD*>(widePaired?kHdrBloomWidePairHorizontal:kHdrBloomWideHorizontal),&wideHorizontal))||
+           FAILED(device->CreatePixelShader(reinterpret_cast<const DWORD*>(widePaired?kHdrBloomWidePairVertical:kHdrBloomWideVertical),&wideVertical))||
+           FAILED(device->CreatePixelShader(reinterpret_cast<const DWORD*>(kHdrBloomWideResolve),&wideResolve))||
+           FAILED(wideTargets[0].create(device,hw,height))||(widePaired&&FAILED(wideCompanion.create(device,hw,height)))||FAILED(wideTargets[1].create(device,bw,bh))||FAILED(wideTargets[2].create(device,bw,bh))){
+            resetWide();wideFailed=true;return false; // Retry after toggle, resize or device reset.
+        }
+        return true;
+    }
 
     static HRESULT pass(IDirect3DDevice9* device,IDirect3DSurface9* target,IDirect3DPixelShader9* shader,
-                        unsigned width,unsigned height,IDirect3DTexture9* first,IDirect3DTexture9* second=nullptr,IDirect3DTexture9* third=nullptr,const float* parameters=nullptr,bool prepared=false){
+                        unsigned width,unsigned height,IDirect3DTexture9* first,IDirect3DTexture9* second=nullptr,IDirect3DTexture9* third=nullptr,const float* parameters=nullptr,bool prepared=false,IDirect3DSurface9* companion=nullptr){
         HRESULT hr=prepared?quadTarget(device,target,width,height,3):quadState(device,target,width,height,3);if(FAILED(hr))return hr;
-        device->SetPixelShader(shader);device->SetTexture(0,first);device->SetTexture(1,second);device->SetTexture(2,third);
-        if(parameters)device->SetPixelShaderConstantF(2,parameters,1);
-        return drawQuad(device,width,height);
+        if(companion){hr=device->SetRenderTarget(1,companion);if(SUCCEEDED(hr))hr=device->SetRenderState(D3DRS_COLORWRITEENABLE1,15);}
+        if(SUCCEEDED(hr))hr=device->SetPixelShader(shader);
+        if(SUCCEEDED(hr))hr=device->SetTexture(0,first);
+        if(SUCCEEDED(hr))hr=device->SetTexture(1,second);
+        if(SUCCEEDED(hr))hr=device->SetTexture(2,third);
+        if(SUCCEEDED(hr)&&parameters)hr=device->SetPixelShaderConstantF(2,parameters,1);
+        if(SUCCEEDED(hr))hr=drawQuad(device,width,height);
+        if(companion){const auto detached=device->SetRenderTarget(1,nullptr);if(FAILED(detached)){device->SetRenderTarget(1,nullptr);hr=detached;}}
+        return hr;
     }
     HRESULT measure(IDirect3DDevice9* device,IDirect3DTexture9* source,bool encoded,Target& result){
         float parameters[]={0,0,encoded?1.f:0.f,0};
@@ -49,22 +87,27 @@ public:
     Frame()=default;Frame(const Frame&)=delete;Frame& operator=(const Frame&)=delete;
     ~Frame(){reset();}
     void reset(){
+        resetWide();
         linear.reset();meter64.reset();meter8.reset();legacyStatistics.reset();worldStatistics.reset();for(auto& target:history)target.reset();for(auto& target:bloomTargets)target.reset();
         release(decode);release(meter);release(reduce);release(adapt);release(bloom);release(bloomVertical);release(output);release(constant);release(copy);release(legacyComposite);release(outputOnly);release(legacyEncode);
-        width=height=historyIndex=0;historyReady=worldWasValid=false;
+        width=height=historyIndex=0;historyReady=worldWasValid=false;skyResidual=skyResolved=false;
     }
     void invalidateExposure(){historyReady=false;worldWasValid=false;restoredReady=false;}
     IDirect3DTexture9* texture()const{return linear.texture;}
     IDirect3DSurface9* surface()const{return linear.surface;}
+    void beginSkyResidual(){skyResidual=true;skyResolved=false;}
     IDirect3DSurface9* exposureSurface()const{return history[historyIndex].surface;}
     std::uint64_t payloadBytes()const{
         std::uint64_t bytes=linear.texture?std::uint64_t(width)*height*8:0;
         for(const auto* target:{&meter64,&meter8,&legacyStatistics,&worldStatistics,&history[0],&history[1]})if(target->texture){const unsigned size=target==&meter64?64:target==&meter8?8:1;bytes+=size*size*8;}
-        for(const auto& target:bloomTargets)if(target.texture)bytes+=std::uint64_t(std::max(1u,width/2))*std::max(1u,height/2)*8;return bytes;
+        for(const auto& target:bloomTargets)if(target.texture)bytes+=std::uint64_t(std::max(1u,width/2))*std::max(1u,height/2)*8;
+        const unsigned bw=(width+15)/16,hw=widePaired?(bw+1)/2:bw;
+        for(unsigned i=0;i<3;++i)if(wideTargets[i].texture)bytes+=std::uint64_t(i?bw:hw)*(i?(height+15)/16:height)*8;
+        if(wideCompanion.texture)bytes+=std::uint64_t(hw)*height*8;return bytes;
     }
     HRESULT ensure(IDirect3DDevice9* device,unsigned w,unsigned h){
         if(!w||!h)return D3DERR_INVALIDCALL;
-        if(w!=width||h!=height){linear.reset();for(auto& target:bloomTargets)target.reset();width=w;height=h;}
+        if(w!=width||h!=height){linear.reset();for(auto& target:bloomTargets)target.reset();resetWide();width=w;height=h;}
         struct Shader{const std::uint32_t* code;IDirect3DPixelShader9** shader;};
         const Shader shaders[]={{kHdrDecodeWorld,&decode},{kHdrMeter,&meter},{kHdrReduceLinear,&reduce},{kHdrAdapt,&adapt},{kHdrBloomHorizontal,&bloom},{kHdrBloomVertical,&bloomVertical},{kHdrWorldLinear,&output},{kHdrWorldLinearOnly,&outputOnly},{kHdrLegacyEncode,&legacyEncode},{kHdrCalibration,&constant},{kHdrCopy,&copy},{kHdrLegacyComposite,&legacyComposite}};
         for(const auto& shader:shaders)if(!*shader.shader){HRESULT hr=device->CreatePixelShader(reinterpret_cast<const DWORD*>(shader.code),shader.shader);if(FAILED(hr))return hr;}
@@ -107,7 +150,19 @@ public:
         const bool preserveSky=capturedSky&&depth&&maxDepth>minDepth;
         // A failed inline world pass decodes over the already resolved sky;
         // its output target may have been partially overwritten by then.
-        if(preserveSky&&capturedSky!=linear.surface){for(unsigned i=0;i<3;++i)device->SetTexture(i,nullptr);hr=device->StretchRect(capturedSky,nullptr,linear.surface,nullptr,D3DTEXF_NONE);if(FAILED(hr))return hr;}
+        if(preserveSky&&capturedSky!=linear.surface&&!(skyResidual&&skyResolved)){for(unsigned i=0;i<3;++i)device->SetTexture(i,nullptr);hr=device->StretchRect(capturedSky,nullptr,linear.surface,nullptr,D3DTEXF_NONE);if(FAILED(hr))return hr;}
+        if(preserveSky&&skyResidual&&!skyResolved){
+            // Decode the complete authored sky once, after all native layers.
+            // This preserves its additive colour/brightness and adds only the
+            // separately accumulated linear headroom. No extra image is needed.
+            hr=quadState(device,linear.surface,w,h,3);if(FAILED(hr))return hr;
+            const float parameters[]={minDepth,1/(maxDepth-minDepth),-1,0};
+            device->SetPixelShader(decode);device->SetPixelShaderConstantF(2,parameters,1);
+            device->SetTexture(0,source);device->SetTexture(1,depth);device->SetTexture(2,nullptr);
+            device->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE);device->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_ONE);
+            device->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_ONE);device->SetRenderState(D3DRS_BLENDOP,D3DBLENDOP_ADD);device->SetRenderState(D3DRS_COLORWRITEENABLE,7);
+            hr=drawQuad(device,w,h);if(FAILED(hr))return hr;skyResolved=true;
+        }
         // Inline composition still needs the resolved owned sky, but decodes
         // covered native pixels in the compositor without a full-screen pass.
         if(!materialize)return hr;
@@ -152,7 +207,21 @@ public:
         }
         worldWasValid=validWorld;
         IDirect3DTexture9* bloomTexture=nullptr;
-        if(settings.bloom>0){
+        if(!settings.wideBloom||settings.bloom<=0)resetWide();
+        if(settings.bloom>0&&settings.wideBloom&&ensureWide(device)){
+            const unsigned bw=(width+15)/16,bh=(height+15)/16,hw=widePaired?(bw+1)/2:bw;
+            const float parameters[]={1.f/width,1.f/height,float(width)/bw,float(height)/bh};
+            hr=pass(device,wideTargets[0].surface,wideHorizontal,hw,height,linear.texture,nullptr,nullptr,parameters,prepared,wideCompanion.surface);
+            const float vertical[]={parameters[0],parameters[1],widePaired?float(hw):parameters[2],parameters[3]};
+            if(SUCCEEDED(hr))hr=pass(device,wideTargets[1].surface,wideVertical,bw,bh,wideTargets[0].texture,wideCompanion.texture,nullptr,vertical,true);
+            const float haloParameters[]={1.f/bw,1.f/bh,0,0};
+            device->SetSamplerState(0,D3DSAMP_MINFILTER,D3DTEXF_LINEAR);device->SetSamplerState(0,D3DSAMP_MAGFILTER,D3DTEXF_LINEAR);
+            if(SUCCEEDED(hr))hr=pass(device,wideTargets[2].surface,wideResolve,bw,bh,wideTargets[1].texture,nullptr,nullptr,haloParameters,true);
+            device->SetSamplerState(0,D3DSAMP_MINFILTER,D3DTEXF_POINT);device->SetSamplerState(0,D3DSAMP_MAGFILTER,D3DTEXF_POINT);
+            if(SUCCEEDED(hr)){bloomTexture=wideTargets[2].texture;prepared=true;}
+            else{for(unsigned i=0;i<3;++i)device->SetTexture(i,nullptr);resetWide();wideFailed=true;prepared=false;}
+        }
+        if(settings.bloom>0&&!bloomTexture){
             const unsigned bw=std::max(1u,width/2),bh=std::max(1u,height/2);
             if(!firstBloom||!firstBloomSurface||!secondBloom||!secondBloomSurface){
                 for(auto& target:bloomTargets){hr=target.create(device,bw,bh);if(FAILED(hr))return hr;}

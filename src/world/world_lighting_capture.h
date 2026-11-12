@@ -22,7 +22,7 @@ class Capture {
     unsigned capture_=0,frame_=0,rendererFrame_=0,passes_=0;
     bool complete_=true,finished_=false;
     struct Input {IDirect3DBaseTexture9* identity=nullptr;unsigned snapshot=0;bool known=false;};
-    std::array<std::array<Input,16>,4> groups_{};
+    std::array<std::array<Input,16>,5> groups_{};
     std::array<IDirect3DPixelShader9*,8> shaders_{};unsigned shaderCount_=0;
 
     bool path(const char* name,const char* extension,char (&output)[2048])noexcept{
@@ -163,14 +163,104 @@ public:
         :device_(device),directory_(&directory),journalName_(journalName),capture_(capture),frame_(frame),rendererFrame_(rendererFrame){
         char output[2048];if(device_&&!directory.empty()&&path(journalName_,"jsonl.tmp",output))journal_=NorthlightFiles::open(output,"wb");
         logf("WORLD LIGHT_CAPTURE begin capture=%u worldFrame=%u rendererFrame=%u rendererFrameKnown=%u normalView=1 diagnostic=1 fpsEligible=0 saved=%u",capture_,frame_,rendererFrame_,unsigned(rendererFrame_!=0),unsigned(journal_!=nullptr));
-        if(journal_)std::fprintf(journal_,"{\"event\":\"begin\",\"schema\":1,\"capture\":%u,\"world_frame\":%u,\"renderer_frame\":%u,\"renderer_frame_known\":%s,\"width\":%u,\"height\":%u,\"normal_view\":true,\"scope\":\"%s\",\"constant_register_count\":%u,\"per_source_bank_missing\":false,\"depth_reconstructed\":false,\"source_physical_ownership_proven\":false,\"material_replay_complete\":false,\"whole_scene_replay\":false,\"replay_execution_verified\":false,\"per_sample_color_exported\":false,\"stencil_image_exported\":false,\"scene_boundary_changed\":false,\"fps_eligible\":false}\n",capture_,frame_,rendererFrame_,rendererFrame_?"true":"false",width,height,std::strcmp(journalName_,"weather-inputs")==0?"weather-inputs":"local-light-contribution-inputs",std::strcmp(journalName_,"weather-inputs")==0?10u:116u);
+        if(journal_)std::fprintf(journal_,"{\"event\":\"begin\",\"schema\":1,\"capture\":%u,\"world_frame\":%u,\"renderer_frame\":%u,\"renderer_frame_known\":%s,\"width\":%u,\"height\":%u,\"normal_view\":true,\"scope\":\"%s\",\"constant_register_count\":%u,\"per_source_bank_missing\":false,\"depth_reconstructed\":false,\"source_physical_ownership_proven\":false,\"material_replay_complete\":false,\"whole_scene_replay\":false,\"replay_execution_verified\":false,\"per_sample_color_exported\":false,\"stencil_image_exported\":false,\"scene_boundary_changed\":false,\"fps_eligible\":false}\n",capture_,frame_,rendererFrame_,rendererFrame_?"true":"false",width,height,std::strcmp(journalName_,"weather-inputs")==0?"weather-inputs":std::strcmp(journalName_,"native-inputs")==0?"native-receiver-inputs":"local-light-contribution-inputs",std::strcmp(journalName_,"weather-inputs")==0?10u:116u);
     }
     ~Capture(){if(journal_)finish(false);}
     Capture(const Capture&)=delete;
     Capture& operator=(const Capture&)=delete;
     bool active()const noexcept{return journal_!=nullptr&&!finished_;}
+    unsigned nativeDraws_=0,nativeImages_=0,nativeSkipped_=0;
+    template<class Scene> void nativeScene(const Scene& scene)noexcept{
+        if(!active())return;
+        std::fprintf(journal_,"{\"event\":\"native-scene\",\"valid\":%u,\"count\":%u,\"scene\":%u,\"time\":%u,\"point_stride\":%zu,\"snapshot_bytes\":%zu}\n",scene.valid,scene.count,scene.scene,scene.time,sizeof scene.lights[0],sizeof scene);
+        bytes("native-scene","bin",&scene,sizeof scene);
+    }
+    void nativeImage(const char* name)noexcept{
+        Ref<IDirect3DSurface9> source,copy;D3DSURFACE_DESC desc{};
+        if(!call("GetRenderTarget-native",device_->GetRenderTarget(0,&source.p))||!source.p||!call("GetDesc-native",source.p->GetDesc(&desc)))return;
+        // Exact central actor/ground ROI. Never allocate a full 4K staging image
+        // in the 32-bit game, including the multisample diagnostic path.
+        if(desc.MultiSampleType!=D3DMULTISAMPLE_NONE){unavailable(name,"multisample-native-roi-unavailable");return;}
+        const unsigned width=std::min(768u,desc.Width),height=std::min(768u,desc.Height);
+        const LONG x=LONG((desc.Width-width)/2),y=LONG(std::min(desc.Height-height,desc.Height*7/10-height/2));
+        const RECT rect{x,y,x+LONG(width),y+LONG(height)};
+        std::fprintf(journal_,"{\"event\":\"native-image-roi\",\"name\":\"%s\",\"rect\":[%ld,%ld,%ld,%ld],\"source_width\":%u,\"source_height\":%u,\"filter\":\"none\"}\n",name,rect.left,rect.top,rect.right,rect.bottom,desc.Width,desc.Height);
+        if(!call("CreateRenderTarget-native-roi",device_->CreateRenderTarget(width,height,desc.Format,D3DMULTISAMPLE_NONE,0,FALSE,&copy.p,nullptr))||!copy.p)return;
+        if(call("StretchRect-native-roi",device_->StretchRect(source.p,&rect,copy.p,nullptr,D3DTEXF_NONE)))surface(name,copy.p,false);
+    }
+    unsigned nativeBefore(unsigned rendererFrame,uint64_t source,unsigned slot,bool prepared,bool focus,IDirect3DVertexShader9* originalVS,IDirect3DPixelShader9* originalPS,const uint64_t (&sources)[4])noexcept{
+        if(!active())return 0;
+        if(nativeDraws_>=128||(!focus&&nativeDraws_>=32)){++nativeSkipped_;return 0;}
+        const unsigned draw=++nativeDraws_;char name[96];
+        std::fprintf(journal_,"{\"event\":\"native-draw\",\"draw\":%u,\"renderer_frame\":%u,\"source_id\":%llu,\"native_slot\":%u,\"prepared_geometry\":%s,\"focus_source\":%s}\n",draw,rendererFrame,(unsigned long long)source,slot,prepared?"true":"false",focus?"true":"false");
+        std::fprintf(journal_,"{\"event\":\"native-sources\",\"draw\":%u,\"source_ids\":[%llu,%llu,%llu,%llu]}\n",draw,(unsigned long long)sources[0],(unsigned long long)sources[1],(unsigned long long)sources[2],(unsigned long long)sources[3]);
+        try{
+            Ref<IDirect3DVertexShader9> vs;Ref<IDirect3DPixelShader9> ps;
+            call("GetVertexShader-native",device_->GetVertexShader(&vs.p));call("GetPixelShader-native",device_->GetPixelShader(&ps.p));
+            auto shader=[&](auto* p,const char* stage){if(!p){unavailable(stage,"missing-shader");return;}UINT size=0;if(!call("GetFunction-native-size",p->GetFunction(nullptr,&size))||size<8||size>65536){unavailable(stage,"shader-size");return;}std::vector<unsigned char> code(size);if(call("GetFunction-native",p->GetFunction(code.data(),&size))){std::snprintf(name,sizeof name,"native-draw-%u-%s",draw,stage);bytes(name,"bin",code.data(),size);}};
+            shader(vs.p,"vs");shader(ps.p,"ps");shader(originalVS,"original-vs");shader(originalPS,"original-ps");
+            float vertex[256][4],pixel[224][4];
+            if(call("GetVertexShaderConstantF-native",device_->GetVertexShaderConstantF(0,vertex[0],256))){std::snprintf(name,sizeof name,"native-draw-%u-vs-constants",draw);bytes(name,"f32",vertex,sizeof vertex);}
+            if(call("GetPixelShaderConstantF-native",device_->GetPixelShaderConstantF(0,pixel[0],224))){std::snprintf(name,sizeof name,"native-draw-%u-ps-constants",draw);bytes(name,"f32",pixel,sizeof pixel);}
+            Ref<IDirect3DVertexDeclaration9> declaration;if(call("GetVertexDeclaration-native",device_->GetVertexDeclaration(&declaration.p))&&declaration.p){D3DVERTEXELEMENT9 elements[MAXD3DDECLLENGTH+1];UINT count=MAXD3DDECLLENGTH+1;if(call("GetDeclaration-native",declaration.p->GetDeclaration(elements,&count))){std::snprintf(name,sizeof name,"native-draw-%u-declaration",draw);bytes(name,"bin",elements,count*sizeof *elements);}}
+            std::fprintf(journal_,"{\"event\":\"native-programs\",\"draw\":%u,\"private_vs\":%s,\"private_ps\":%s}\n",draw,vs.p!=originalVS?"true":"false",ps.p!=originalPS?"true":"false");
+            if(focus&&nativeImages_<8){++nativeImages_;std::snprintf(name,sizeof name,"native-draw-%u-before",draw);nativeImage(name);return draw|0x80000000u;}
+        }catch(...){unavailable("native-draw","allocation-failed");}
+        return draw;
+    }
+    void nativeSlot(unsigned token,unsigned count,unsigned slot,bool decoded,const float* position,const float* color,const float* attenuation,const char* reason,uint64_t source=0,int physicalSlot=-1)noexcept{
+        if(!active()||!token||count>4||slot>=count)return;
+        std::fprintf(journal_,"{\"event\":\"native-slot\",\"draw\":%u,\"native_slot_count\":%u,\"native_slot\":%u,\"decoded\":%s,\"status\":\"%s\",\"candidate_source_id\":\"%llu\",\"point_slot\":%d,\"position\":[%.9g,%.9g,%.9g],\"rgb\":[%.9g,%.9g,%.9g],\"attenuation\":[%.9g,%.9g,%.9g]}\n",token&0x7fffffffu,count,slot,decoded?"true":"false",reason,(unsigned long long)source,physicalSlot,position[0],position[1],position[2],color[0],color[1],color[2],attenuation[0],attenuation[1],attenuation[2]);
+    }
+    void directional(unsigned slot,bool sampled,char action,const float* matrix,const void* texture,unsigned productSource,bool reusable,unsigned committedPass,uint64_t cacheGeneration,uint64_t cacheSignature)noexcept{
+        if(!active()||slot>=4)return;
+        std::fprintf(journal_,"{\"event\":\"directional-map\",\"slot\":%u,\"source\":%u,\"cascade\":%u,\"sampled\":%s,\"action\":\"%c\",\"texture_identity\":\"%p\",\"product\":\"%s\",\"reuse_valid\":%s,\"reuse_committed_pass\":%u,\"static_cache_generation\":\"%llu\",\"static_cache_signature\":\"%llu\",\"working_content_proven\":false,\"receiver_matrix\":[",slot,slot/2,slot%2,sampled?"true":"false",action,texture,slot/2==productSource?(slot%2?"shadow-far":"shadow-near"):"",reusable?"true":"false",committedPass,(unsigned long long)cacheGeneration,(unsigned long long)cacheSignature);
+        for(unsigned i=0;i<16;++i)std::fprintf(journal_,"%s%.9g",i?",":"",matrix[i]);std::fprintf(journal_,"]}\n");
+    }
+    void nativeAfter(unsigned token,unsigned corrected,HRESULT result,const char* reason=nullptr,unsigned coldDelta=0,unsigned deferredDelta=0,uint64_t fallbackDelta=0,bool rendererObserved=false)noexcept{
+        if(!active()||!token)return;const unsigned draw=token&0x7fffffffu;
+        std::fprintf(journal_,"{\"event\":\"native-result\",\"draw\":%u,\"corrected_sources\":%u,\"reason\":\"%s\",\"HRESULT\":\"%08lx\",\"renderer_counters_observed\":%s,\"cold_pairs_delta\":%u,\"deferred_pairs_delta\":%u,\"fallbacks_delta\":%llu,\"fallback_cause_proven\":false}\n",draw,corrected,reason?reason:corrected?"corrected":"endpoint-unsupported-or-cold",(unsigned long)result,rendererObserved?"true":"false",coldDelta,deferredDelta,(unsigned long long)fallbackDelta);
+        if(token&0x80000000u){char name[96];std::snprintf(name,sizeof name,"native-draw-%u-after",draw);nativeImage(name);}
+    }
     void image(const char* name,IDirect3DSurface9* value)noexcept{if(active())surface(name,value);}
     bool imageSaved(const char* name,IDirect3DSurface9* value)noexcept{return active()&&surface(name,value);}
+    template<class Slots> void pointSources(const Slots& slots,uint32_t now,bool enabled,bool nativeScene=false)noexcept{
+        if(!active())return;
+        if(slots.size()>128){unavailable("point-sources","source-limit");return;}
+        std::fprintf(journal_,"{\"event\":\"point-source-stage\",\"stage\":\"%s\"}\n",nativeScene?"native-scene-before-refresh":"point-correction-after-refresh");
+        for(unsigned i=0;i<slots.size();++i){const auto& p=slots[i];if(!p.cube&&!p.selected.sourceId)continue;
+            const auto& l=p.selected;
+            std::fprintf(journal_,"{\"event\":\"point-source\",\"slot\":%u,\"source_id\":\"%llu\",\"enabled\":%s,\"ready\":%s,\"usable\":%s,\"age_ms\":%u,\"gain\":%.9g,\"position\":[%.9g,%.9g,%.9g],\"range\":%.9g,\"static_valid\":%s,\"actor_admission_proven\":false}\n",i,(unsigned long long)l.sourceId,enabled?"true":"false",p.ready?"true":"false",p.schedule.usable?"true":"false",uint32_t(now-p.schedule.updatedAt),p.selectionGain,l.position[0],l.position[1],l.position[2],l.attenuationEnd,p.cacheValid?"true":"false");
+            std::fprintf(journal_,"{\"event\":\"point-publication\",\"slot\":%u,\"cube_identity\":\"%p\",\"schedule_source_id\":\"%llu\",\"schedule_generation\":\"%llu\",\"schedule_complete\":%s,\"cache_source_id\":\"%llu\",\"static_only_faces\":%u,\"map\":\"",i,static_cast<void*>(p.cube),(unsigned long long)p.schedule.light.sourceId,(unsigned long long)p.schedule.generation,p.schedule.complete?"true":"false",(unsigned long long)p.cacheSource,p.staticOnlyFaces);
+            for(unsigned char c:p.map){if(c=='"'||c=='\\')std::fputc('\\',journal_);if(c<32)std::fprintf(journal_,"\\u%04x",unsigned(c));else std::fputc(c,journal_);}std::fprintf(journal_,"\",\"schedule_position\":[%.9g,%.9g,%.9g],\"schedule_range\":[%.9g,%.9g],\"selected_rgb\":[%.9g,%.9g,%.9g],\"faces\":[",p.schedule.light.position[0],p.schedule.light.position[1],p.schedule.light.position[2],p.schedule.light.attenuationStart,p.schedule.light.attenuationEnd,l.diffuse[0],l.diffuse[1],l.diffuse[2]);
+            for(unsigned face=0;face<6;++face)std::fprintf(journal_,"%s{\"face\":%u,\"static_known\":%s,\"static_serial\":\"%llu\",\"static_content\":[\"%llu\",\"%llu\"],\"static_triangles\":\"%llu\"}",face?",":"",face,p.faceKnown[face]?"true":"false",(unsigned long long)p.faceSerial[face],(unsigned long long)p.faceContent[face].words[0],(unsigned long long)p.faceContent[face].words[1],(unsigned long long)p.faceContent[face].triangles);
+            std::fprintf(journal_,"]}\n");
+            if(!enabled||!p.ready)continue;
+            if(!p.cube){unavailable("point-cube","ready-source-without-cube");continue;}
+            for(unsigned face=0;face<6;++face){char name[96];Ref<IDirect3DSurface9> value;
+                std::snprintf(name,sizeof name,"%spoint-%u-face-%u",nativeScene?"native-":"",i,face);
+                if(call("GetCubeMapSurface-point",p.cube->GetCubeMapSurface(D3DCUBEMAP_FACES(face),0,&value.p)))surface(name,value.p);
+                if(!nativeScene&&p.cacheValid&&p.cacheSurface[face]){std::snprintf(name,sizeof name,"point-%u-static-%u",i,face);surface(name,p.cacheSurface[face]);}
+            }
+        }
+    }
+    void pointPass(unsigned slot,bool soft,IDirect3DSurface9* resolved,HRESULT result)noexcept{
+        if(!active())return;
+        if(slot>=128){unavailable("point-pass","source-limit");return;}
+        constexpr unsigned inputsMask=(1u<<0)|(1u<<2)|(1u<<3)|(1u<<4)|(1u<<5);
+        inputs(4,inputsMask,inputsMask);
+        const bool cubeInput=!resolved;const unsigned mask=inputsMask|(cubeInput?(1u<<1):0);
+        if(cubeInput){
+            Ref<IDirect3DBaseTexture9> bound;
+            if(call("GetTexture-point-cube",device_->GetTexture(1,&bound.p))&&bound.p&&bound.p->GetType()==D3DRTYPE_CUBETEXTURE){
+                auto& input=groups_[4][1];input.identity=bound.p;input.known=true;input.snapshot=4;
+                // pointSources already exported the six exact faces of this slot.
+                std::fprintf(journal_,"{\"event\":\"input-binding\",\"group\":4,\"slot\":1,\"null\":false,\"snapshot_group\":4,\"texture_type\":\"cube\",\"file_base\":\"point-%u\",\"faces\":6}\n",slot);
+            }else unavailable("point-cube","missing-cube-binding");
+        }
+        if(soft&&resolved){char name[64];std::snprintf(name,sizeof name,"point-%u-resolved",slot);surface(name,resolved);}
+        pass(soft?(cubeInput?"LocalLightingPcss":"LocalLightingSoft"):"LocalLighting",4,mask,slot,1,SUCCEEDED(result),result);
+    }
     bool sampledDepthSaved(const char* name,IDirect3DTexture9* value)noexcept{
         D3DSURFACE_DESC desc{};return active()&&value&&call("GetLevelDesc-sampled-depth",value->GetLevelDesc(0,&desc))&&depth(name,value,desc);
     }
@@ -207,7 +297,7 @@ public:
         if(active())std::fprintf(journal_,"{\"event\":\"skipped\",\"entry\":\"%s\",\"first\":%u,\"count\":%u,\"reason\":\"%s\",\"bank_present\":false}\n",entry,first,count,reason);
     }
     void pass(const char* entry,unsigned group,unsigned mask,unsigned first,unsigned count,bool submitted,HRESULT result)noexcept{
-        if(!active())return;if(++passes_>64){unavailable("pass","pass-limit");return;}
+        if(!active())return;if(++passes_>256){unavailable("pass","pass-limit");return;}
         std::fprintf(journal_,"{\"event\":\"pass\",\"index\":%u,\"world_frame\":%u,\"renderer_frame\":%u,\"entry\":\"%s\",\"input_group\":%u,\"first\":%u,\"count\":%u,\"submitted\":%s,\"draw_HRESULT\":\"%08lx\",\"vertex_contract\":\"world-quad-XYZRHW-TEX1\"}\n",passes_,frame_,rendererFrame_,entry,group,first,count,submitted?"true":"false",(unsigned long)result);
         if(FAILED(result))complete_=false;
         float bank[116][4];if(call("GetPixelShaderConstantF-pass",device_->GetPixelShaderConstantF(0,bank[0],116))){char name[80];std::snprintf(name,sizeof name,"lighting-pass-%u-constants",passes_);bytes(name,"f32",bank,sizeof bank);}
@@ -232,6 +322,7 @@ public:
     }
     void finish(bool renderCompleted)noexcept{
         if(!active())return;finished_=true;complete_=complete_&&renderCompleted&&std::ferror(journal_)==0;
+        if(std::strcmp(journalName_,"native-inputs")==0)std::fprintf(journal_,"{\"event\":\"native-summary\",\"recorded_draws\":%u,\"image_pairs\":%u,\"skipped_draws\":%u,\"record_limit\":128,\"nonfocus_limit\":32,\"image_pair_limit\":8,\"whole_scene_replay\":false}\n",nativeDraws_,nativeImages_,nativeSkipped_);
         std::fprintf(journal_,"{\"event\":\"end\",\"render_completed\":%s,\"export_complete\":%s,\"passes\":%u,\"authentic_source_replay\":false,\"whole_scene_replay\":false,\"fps_eligible\":false}\n",renderCompleted?"true":"false",complete_?"true":"false",passes_);
         if(std::fclose(journal_))complete_=false;journal_=nullptr;
         char from[2048],to[2048],incomplete[128];std::snprintf(incomplete,sizeof incomplete,"%s-incomplete",journalName_);

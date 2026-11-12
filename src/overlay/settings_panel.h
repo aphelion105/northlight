@@ -7,6 +7,7 @@
 #include <functional>
 
 namespace NorthlightSettings { class Service; }
+struct IDirect3DDevice9;
 
 namespace NorthlightOverlay {
 class SettingsPanel {
@@ -23,6 +24,9 @@ public:
     void opened();
     // scale: the overlay's UI scale (1 at 1080p). Returns false when the user closed the window. Polls the service itself.
     bool draw(float scale);
+    void performanceDevice(IDirect3DDevice9* device);
+    bool hudEnabled()const;
+    void drawHud(float scale);
     // While the window is closed (no ImGui needed): advances pending service work (preview, clear, commit result, snapshot).
     void poll();
     bool pending()const;   // service work is still outstanding

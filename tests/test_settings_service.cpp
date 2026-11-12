@@ -4,9 +4,31 @@
 #include <cassert>
 #include <iostream>
 #include <chrono>
+#ifdef _WIN32
+static int chmod(const wchar_t* path,int mode){return _wchmod(path,mode);}
+static int access(const wchar_t* path,int mode){return _waccess(path,mode);}
+#endif
 using namespace NorthlightSettings;
 template<class F> void fails(F f){bool failed=false;try{f();}catch(...){failed=true;}assert(failed);}
+static void lightLimits(){
+    for(const char* preset:{"Quality","Balanced","Performance"}){
+        Document d(std::string("[Quality]\nPreset=")+preset+"\n");assert(qualityOf(d,"").localLightLimit==64);
+        assert(upgradeLightLimits(d));const auto saved=d.bytes();assert(!upgradeLightLimits(d)&&d.bytes()==saved);
+        assert(qualityOf(d,"").localLightLimit==64);
+    }
+    for(auto pair:{std::pair<unsigned,unsigned>{48,64},{128,16},{0,128},{8,16}}){
+        const auto raw=std::string("; keep\r\n[Quality]\r\nLocalLightLimit=")+std::to_string(pair.first)+"\r\nPointShadowLimit="+std::to_string(pair.second)+"\r\nUnknown=preserve\r\n";
+        Document old(raw);const auto expected=pair.first?std::max(pair.first,pair.second):0;assert(qualityOf(old,"").localLightLimit==expected);
+        assert(upgradeLightLimits(old));assert(old.bytes().find("Unknown=preserve\r\n")!=std::string::npos);assert(qualityOf(old,"").localLightLimit==expected);
+        auto docs=factoryDocuments();docs[0]=old;const auto runtime=configOf(docs,"");const auto fields=schema(docs,docs,runtime,"");
+        const auto edited=applyChanges(docs,fields,"Q\tQuality\tLocalLightLimit\t8\n");
+        const auto next=configOf(edited,"");assert(next.quality.localLightLimit==8&&NorthlightQuality::localShadowLimit(next.quality)==std::min(8u,pair.second));
+    }
+    Document off("[Quality]\nWorldShadows=0\nLocalLightLimit=48\nPointShadowLimit=64\n");assert(upgradeLightLimits(off)&&qualityOf(off,"").localLightLimit==48);
+    Document modern("[Quality]\nLocalLightLimitsVersion=2\nLocalLightLimit=8\nPointShadowLimit=128\n");const auto q=qualityOf(modern,"");assert(q.localLightLimit==8&&NorthlightQuality::localShadowLimit(q)==8&&!upgradeLightLimits(modern));
+}
 int main(int argc,char** argv){
+    lightLimits();
     assert(argc==2);auto root=std::filesystem::path(argv[1]);std::filesystem::create_directories(root);
     std::string raw="\xef\xbb\xbf; note\r\n[Quality]\r\n  Weather = 1  ; keep\r\nUnknown=future\r\n";Document d(raw);assert(d.bytes()==raw);
     std::string zero="0";d.set("Quality","Weather",&zero);assert(d.bytes().find("  Weather = 0  ; keep")!=std::string::npos);d.set("Quality","Weather",nullptr);assert(d.bytes().find("; keep")!=std::string::npos&&d.bytes().find("Unknown=future")!=std::string::npos);
@@ -26,6 +48,15 @@ int main(int argc,char** argv){
     auto docs=documents(after);Config active=configOf(docs,"");auto fields=schema(docs,docs,active,"");unsigned q=0,c=0;for(auto& f:fields){q+=f.file==0;c+=f.file==2;}
     assert(q==std::size(NorthlightQuality::Keys)+1&&c>=22*28);fails([&]{applyChanges(docs,fields,"Q\tQuality\tWeather\t2\n");});fails([&]{applyChanges(docs,fields,"Q\tQuality\t../path\t1\n");});
     auto changed=applyChanges(docs,fields,"Q\tQuality\tWeather\t~\n");assert(explicitValue(changed[0],"Quality","Weather")=="~");assert(qualityOf(changed[0],"").weather==1);
+    for(const auto* value:{"-100","-50","0","+100","200"}){
+        auto adjusted=applyChanges(docs,fields,std::string("Q\tQuality\tGIBrightness\t")+value+"\n");
+        const auto config=configOf(adjusted,"");const auto live=liveQualityUpdate(active.quality,config.quality);
+        assert(live.giBrightness==std::stoi(value));
+        assert(!giRequestChanged(active.quality,live,active.celestial,active.celestial));
+        adjusted=applyChanges(adjusted,fields,"Q\tQuality\tGIBrightness\t@factory\n");assert(configOf(adjusted,"").quality.giBrightness==0);
+    }
+    for(const auto* value:{"-101","201","-1.5","--1","+","99999999999999999"})
+        fails([&]{applyChanges(docs,fields,std::string("Q\tQuality\tGIBrightness\t")+value+"\n");});
     auto next=active.quality;next.weather=1;next.commandStream=0;auto applied=liveQualityUpdate(active.quality,next);assert(applied.weather==1&&applied.commandStream==active.quality.commandStream);
     // Preserve the local material and AO schema through the new in-process service.
     for(const auto* key:{"AutoBumpModels","AutoDisplacementStrength","AutoDisplacementDistance","AutoDisplacementDetail","AutoModelDisplacementStrength","AutoModelDisplacementDistance","AutoModelDisplacementDetail","AutoHeightBalance","AutoMaterialOcclusionDistance","AOQuality"}){
@@ -44,10 +75,27 @@ int main(int argc,char** argv){
      }}
     unsigned live=0;for(const auto& k:NorthlightQuality::Keys)live+=liveQuality(k.name);assert(live>40&&live<std::size(NorthlightQuality::Keys));
     for(const auto& f:fields)if(f.file==2&&f.section=="default"&&f.key=="sun_fog_gain")assert(f.inherited=="1"&&std::stof(f.factory)==4.3f);
+    {auto edited=applyChanges(docs,fields,"C\tdefault\tsun_fog_density\t1.8\n");
+     auto reloaded=configOf(edited,"");assert(reloaded.celestial.fallback.fogDensity[0]==1.8f);
+     assert(reloaded.celestial.fallback.fogDensity[1]==active.celestial.fallback.fogDensity[1]);
+     bool found=false;for(const auto& f:fields)if(f.file==2&&f.section=="default"&&f.key=="sun_fog_density"){
+         found=true;assert(f.apply=="F"&&f.low=="0"&&f.high=="4"&&f.factory=="1");}assert(found);
+     fails([&]{applyChanges(docs,fields,"C\tdefault\tsun_fog_density\t4.1\n");});}
     // HDR mode and grading both participate in live preview and Revert.
     {unsigned hdrFields=0;for(const auto& f:fields)if(f.file==1&&f.section=="Renderer"&&f.key!="Backend"){++hdrFields;assert(f.available&&f.apply=="F");auto edited=applyChanges(docs,fields,f.id()+"\t"+f.factory+"\n");assert(configOf(edited,"").hdr.size()==NorthlightHdrSettingsContract::Count);}assert(hdrFields==NorthlightHdrSettingsContract::Count);
      auto unavailable=fields;for(auto& f:unavailable)if(f.key=="HDRMaxNits")f.available=false;fails([&]{applyChanges(docs,unavailable,"R\tRenderer\tHDRMaxNits\t600\n");});
      Document hdrDoc("[Renderer]\nHDRContrast=1.35\nHDRExposure=-1.25\nHDRPaperWhite=240\n");auto g=configOf({Document(""),hdrDoc,Document(""),Document("")},"");assert(g.hdr[4]==1.35f&&g.hdr[5]==-1.25f&&g.hdr[1]==240);}
+    // Wide bloom is opt-in, persisted globally while HDR is off, and live.
+    {using namespace NorthlightHdrSettingsContract;
+     assert(configOf(std::array<Document,4>{},"").hdr[WideBloom]==0);
+     auto path=root/"wide-bloom";std::filesystem::create_directories(path);Store wide(path);auto before=wide.read();auto documentsBefore=documents(before);
+     auto config=configOf(documentsBefore,"");auto available=schema(documentsBefore,documentsBefore,config,"");
+     bool checkbox=false;for(const auto& f:available)if(f.key=="HDRWideBloom"){checkbox=true;assert(f.kind=="check"&&f.factory=="0"&&f.apply=="F");}assert(checkbox);
+     auto changed=applyChanges(documentsBefore,available,"R\tRenderer\tHDRWideBloom\t1\nR\tRenderer\tExperimentalHDR\t0\n");
+     auto after=before;after[1]={true,changed[1].bytes()};wide.commit(before,after);auto reloaded=configOf(documents(wide.read()),"");
+     assert(reloaded.hdr[WideBloom]==1&&reloaded.hdr[Enabled]==0);
+     assert(configOf(documents(wide.read()),"",false,"another-display").hdr[WideBloom]==1);
+    }
     // Lock waits: a holder that lets go within the wait is tolerated, one that does not is not.
     {std::thread holder([&]{TransactionLock lease(root);std::this_thread::sleep_for(std::chrono::milliseconds(150));});std::this_thread::sleep_for(std::chrono::milliseconds(30));
      TransactionLock waited(root,2000);holder.join();}
@@ -115,8 +163,8 @@ int main(int argc,char** argv){
      service.acknowledge(*saved);assert(service.revision()==saved->revision);
      // HDR preview changes the running grading while preserving every saved byte.
      {bool listed=false;for(const auto& f:service.snapshot()->fields)if(f.key=="HDRMaxNits"){listed=true;assert(f.available);}assert(listed);
-      const auto before=store.read();const auto serial=service.status().serial;assert(service.preview({{"R\tRenderer\tHDRMaxNits","600"},{"R\tRenderer\tExperimentalHDR","1"}}));
-      assert(waitFor([&]{return idle()&&service.status().serial>serial;}));auto p=service.after(saved->revision);assert(p&&p->preview&&p->runtime->hdr[3]==600&&p->runtime->hdr[0]==1&&store.read()==before);
+      const auto before=store.read();const auto serial=service.status().serial;assert(service.preview({{"R\tRenderer\tHDRMaxNits","600"},{"R\tRenderer\tExperimentalHDR","1"},{"R\tRenderer\tHDRWideBloom","1"}}));
+      assert(waitFor([&]{return idle()&&service.status().serial>serial;}));auto p=service.after(saved->revision);assert(p&&p->preview&&p->runtime->hdr[3]==600&&p->runtime->hdr[0]==1&&p->runtime->hdr[NorthlightHdrSettingsContract::WideBloom]==1&&store.read()==before);
       service.acknowledge(*p);assert(service.clearPreview());assert(waitFor([&]{auto v=service.after(p->revision);return idle()&&v&&!v->preview;}));auto restored=service.after(p->revision);assert(restored->runtime->hdr==saved->runtime->hdr&&store.read()==before);service.acknowledge(*restored);
       const auto bad=service.status().serial;assert(service.commit(saved->revision,{{"R\tRenderer\tHDRMaxNits","99999999"}}));assert(waitFor([&]{return idle()&&service.status().serial>bad;}));assert(service.status().state==Status::State::Error&&store.read()==before);
       service.setHdrStatus(true,0,"active scRGB");const auto status=service.hdrStatus();assert(status.active&&status.code==0&&status.reason=="active scRGB");}
@@ -167,7 +215,10 @@ int main(int argc,char** argv){
     // One-time reset is one transaction. A failed migration cannot set its marker or modify other renderer settings.
     {auto path=root/"hdr-migration";std::filesystem::create_directories(path);Store migrating(path);auto before=migrating.read(),after=before;
      after[1]={true,"[Renderer]\nBackend=dxvk2\nExperimentalHDR=0\nHDRExposure=3\nHDRLegacyExpansion=2\n[HDR.old]\nHDRMaxNits=500\n"};migrating.commit(before,after);
-     {TransactionLock lock(path);assert(!migrateHdr(path).empty());assert(migrating.readUnlocked()==after);}
+     { // Windows named mutexes are recursive on the owning thread.
+      std::atomic<bool> held{false},done{false};std::thread holder([&]{TransactionLock lock(path);held=true;while(!done)std::this_thread::sleep_for(std::chrono::milliseconds(2));});
+      while(!held)std::this_thread::sleep_for(std::chrono::milliseconds(2));
+      assert(!migrateHdr(path).empty());assert(migrating.readUnlocked()==after);done=true;holder.join();}
      assert(migrateHdr(path).empty());auto migrated=migrating.read();auto docs=documents(migrated);const auto config=configOf(docs,"");
      assert(config.hdr[0]==1&&config.hdr[5]==0&&config.hdr[6]==1&&config.hdr[7]==1&&config.hdr[9]==0);
      assert(explicitValue(docs[1],"Renderer","Backend")=="dxvk2"&&explicitValue(docs[1],"Renderer","HDRPipelineVersion")=="2"&&explicitValue(docs[1],"HDR.old","HDRMaxNits")=="~");

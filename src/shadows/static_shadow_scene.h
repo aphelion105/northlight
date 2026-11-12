@@ -80,7 +80,7 @@ struct Limits {
     unsigned cellSize=128;
     unsigned retainSeconds=30;
 };
-// Same conservative light-space box as the cached 240u far shadow frame,
+// Same conservative light-space box as the cached 360u far shadow frame,
 // plus 96u publication/cache drift margin. No camera vector is an input.
 bool selected(const Request&,Vec3 low,Vec3 high,float margin=96.f);
 Vec3 transformPoint(const Placement&,Vec3);

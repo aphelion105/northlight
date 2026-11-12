@@ -25,7 +25,7 @@ checks['anchor once per capture frame, no shadowPivot()']=('if(!nearAnchorReady)
     and 'actorShadowHistory.selfHold()>0?actorShadowHistory.selfAt():nullptr' in w)
 checks['reserve 4 MiB, 0 under memory pressure or ActorShadows=0']=('constexpr std::size_t ReserveBytes=4u<<20;' in r
     and 'void setNearReserve(){replaySnapshots.setNearReserve(memoryPressure||!quality.actorShadows?0:NorthlightNearReserve::ReserveBytes);}' in g
-    and 'memoryPressure=on;setNearReserve();' in g and 'configureBudget(size_t(captureBudgetMiB)*1048576,size_t(captureBudgetMiB)*524288);setNearReserve();' in w)
+    and 'memoryPressure=on;if(on){clearPointKeeps();shadowAlphaTargets.reset();}setNearReserve();' in g and 'configureBudget(size_t(captureBudgetMiB)*1048576,size_t(captureBudgetMiB)*524288);setNearReserve();' in w)
 checks['logged on the sampled MODEL frame capture line']='nearAdmitted=%u nearBytes=%zu nearRefused=%u nearSelf=%d nearReserve=%zu' in w
 checks['anchors: 6 yd self, 3.5 yd ray miss, +-12 yd window, 0.5..80 yd']='constexpr float SelfRadius=6.f,RayMiss=3.5f,RayWindow=12.f,RayMin=.5f,RayMax=80.f;' in r
 for name,ok in checks.items():print(('PASS ' if ok else 'FAIL ')+name)

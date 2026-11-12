@@ -26,7 +26,7 @@ exe=out/'canonical-scene.exe';command=[str(fp.zig()),'c++','-target','x86-window
 subprocess.run(command,env=env,check=True)
 backend=Path(os.environ.get('NORTHLIGHT_TEST_D3D9',fp.client_root()/'renderer-backends/dxvk/dxvk_d3d9.dll'));base=[str(exe),str(backend),str(out)+'/',str(fixture)]
 guard.processes();result=subprocess.run(base,cwd=out,env=env,text=True,capture_output=True,timeout=240);exact=result.stdout;(out/'gpu.log').write_text(result.stdout+result.stderr)
-print(result.stdout+result.stderr,flush=True);result.check_returncode();assert 'CANONICAL_GPU_NATIVE_PASS' in exact
+print(result.stdout+result.stderr,flush=True);result.check_returncode();assert 'CANONICAL_GPU_NATIVE_PASS' in exact and exact.count('GPU_SPARE_PIXELS_PASS')==6
 rows=[];summary={}
 if a.benchmark:
  for pair in range(a.pairs+2):

@@ -48,11 +48,20 @@ assert veil.index('if(!(veil>0)')<veil.index('CreatePixelShader')  # no shader o
 ring=host[host.index('    bool renderRing('):host.index('    NorthlightCelestialVeil::Stats veilStats;')]
 assert 'd->SetPixelShader(haloPS);' in ring and 'SetPixelShaderConstantF(0,c[0],47)' in ring
 assert 'sourceTaps(g.disc,g.inverseView,g.projection,g.width,g.height,SunMaskRadius,true,c)' in ring
+assert 'const float cloudControl[]={0,0,0,skyLayers?1.f:0.f};' in ring
+assert 'd->SetPixelShaderConstantF(49,cloudControl,1);d->SetTexture(6,skyLayers);' in ring
+assert 'for(unsigned k:{0u,2u,3u,4u,6u})' in ring
+draw=host[host.index('    bool drawDisc('):host.index('    // Call only for the original draw')]
+assert draw.index('const float cloudControl[]={0,0,0,!i&&skyLayers?1.f:0.f};')<draw.index('"halo visibility draw"')
+assert 'd->SetPixelShaderConstantF(49,cloudControl,1);d->SetTexture(6,!i?skyLayers:nullptr);' in draw
 
 shader_path=fp.src('celestial_disc_effects.hlsl');shader=shader_path.read_text()
 # Disc and ring share source-depth occlusion, including immediate full coverage.
 halo_ps=body(shader,'float4 CelestialHaloVisibilityPS(')
-assert 'current+=filteredSkyVisibility(source)*terrain*' in halo_ps
+assert 'float visible=filteredSkyVisibility(source)*terrain*' in halo_ps
+assert 'current+=visible;transmitted+=visible*cloud;' in halo_ps
+assert 'current=(transmitted*(1.0/32))*(2-current);' in halo_ps
+assert 'DiscSkyComposition.w>.5?saturate(tex2Dlod(DiscSkyLayers,float4(source.xy,0,0)).a):1' in halo_ps
 assert 'if(current<=0)return 0;' in halo_ps
 veil_ps=body(shader,'float4 CelestialVeilPS(')
 # Raw-depth classification: WDL/beyond-far silhouettes (normalised depth 1, raw
@@ -64,7 +73,7 @@ assert 'overEdge' not in veil_ps  # no far-edge cut: it drew a line across near 
 # the core only by the disc taps' visibility; the ring (x wrap) only for the
 # core-free tail shifted out by 3R, so the profile is monotonic (no dark ring).
 profile=shader[shader.index('float glareProfile(float radius){'):shader.index('float3 glowColor(')]
-assert 'float ring=skyCore?0:DiscGlowCore.w*saturate(tex2Dlod(DiscRingVisibility,float4(.5,.5,0,0)).r);' in profile
+assert 'float ring=skyCore||disc<=0?0:DiscGlowCore.w*saturate(tex2Dlod(DiscRingVisibility,float4(.5,.5,0,0)).r);' in profile
 assert 'float disc=skyCore?1:saturate(tex2Dlod(DiscHaloVisibility,float4(.5,.5,0,0)).r);' in profile
 assert 'float tailed=max(disc*dot(tail,float3(.25,.35,.40)),ring*dot(tail,float3(.118257,.299458,.380527)));' in profile
 assert 'return (DiscEmission.z*exp2(-DiscEmission.x*r2)*disc+DiscGlowHue.w*tailed)*edge;' in profile

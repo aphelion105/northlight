@@ -49,7 +49,7 @@ struct Device {
     GPU gpu;GPU* gpuProfile=&gpu;Extension extension;Extension* ext=&extension;Buckets effectsBuckets;
     LARGE_INTEGER cpuFrequency{1000000};
     unsigned width=137,height=79,aoMethod=2,draws=0,bindings=0;bool failDraw=false;
-    int aoSurface=3,aoRaw=4,aoBlurPS=5,scene=6;
+    int aoSurface=3,aoRaw=4,aoBlurPS=5,scene=6,waterMask=0,aoBlurNoWaterPS=0;
     LONGLONG cpuAOBlurSetup=0,cpuAOBlurSubmit=0;std::uint64_t cpuAOBlurFrame=0;
     unsigned cpuAOBlurMethod=0,cpuAOBlurWidth=0,cpuAOBlurHeight=0;bool cpuAOBlurPending=false,diagnosticAo=false;
     bool error(HRESULT hr,const char*){return hr<0;}
@@ -60,15 +60,17 @@ struct Device {
     }
 };
 int main(){
-    for(bool recording:{false,true})for(bool frequency:{false,true})for(bool targetFailure:{false,true})for(bool drawFailure:{false,true}){
+    for(bool recording:{false,true})for(bool frequency:{false,true})for(bool targetFailure:{false,true})for(bool drawFailure:{false,true})for(bool water:{false,true})for(bool specialized:{false,true}){
         Device d;d.gpu.on=recording;d.cpuFrequency.QuadPart=frequency?1000000:0;d.extension.fail=targetFailure;d.failDraw=drawFailure;
+        d.waterMask=water;d.aoBlurNoWaterPS=specialized?7:0;
         clocks=0;CpuScope::reads=0;d.run();
         const bool timed=recording&&frequency;
         assert(clocks==(timed?(targetFailure?2u:4u):0u)&&CpuScope::reads==clocks);
         assert(d.draws==(targetFailure?0u:1u)&&d.bindings==(targetFailure?0u:1u));
         assert(d.cpuAOBlurPending==(timed&&!targetFailure&&!drawFailure));assert(d.diagnosticAo==(!targetFailure&&!drawFailure));
         if(d.cpuAOBlurPending){assert(d.cpuAOBlurFrame==9876&&d.cpuAOBlurMethod==2&&d.cpuAOBlurWidth==68&&d.cpuAOBlurHeight==39);assert(d.cpuAOBlurSetup==1&&d.cpuAOBlurSubmit==1);}
-        const std::vector<int> states=targetFailure?std::vector<int>{300}:drawFailure?std::vector<int>{300,1402,1400,2005}:std::vector<int>{300,1402,1400,2005,1002,1600};
+        const int shader=!water&&specialized?2007:2005;
+        const std::vector<int> states=targetFailure?std::vector<int>{300}:drawFailure?std::vector<int>{300,1402,1400,shader}:std::vector<int>{300,1402,1400,shader,1002,1600};
         assert(d.extension.calls==states);
         const auto count=recording?(targetFailure?0u:drawFailure?1u:2u):0u;assert(d.gpu.labels.size()==count);
         if(count)assert(d.gpu.labels[0]=="AOBlurSetup");if(count==2)assert(d.gpu.labels[1]=="AOBlur");
@@ -79,7 +81,7 @@ exe = folder / 'actual-region.exe'
 subprocess.run([str(fp.zig()), 'c++', '-target', 'x86-windows-gnu', '-std=c++17', '-O2', '-UNDEBUG',
                 str(cpp), '-o', str(exe)], env=fp.zig_env(), check=True)
 subprocess.run([str(exe)], check=True)
-print('PASS actual AO instrumentation: 16 success/failure gates, off=0 clocks, sampled=4 clocks, unchanged states and one draw')
+print('PASS actual AO instrumentation: 64 success/failure/water/shader gates, off=0 clocks, sampled=4 clocks, unchanged states and one draw')
 ring = folder / 'query-ring.exe'
 subprocess.run([str(fp.zig()), 'c++', '-target', 'x86-windows-gnu', '-std=c++17', '-O2', '-UNDEBUG',
                 '-I' + str(ROOT / 'tests/support/gpu_profile'), *fp.test_include_flags(),

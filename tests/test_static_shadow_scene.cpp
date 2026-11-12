@@ -39,7 +39,7 @@ int main(int argc,char**argv){
     assert(packModel(std::move(whiteScene),"white",white,error));assert(white.contentRevision==opaque.contentRevision&&white.materialKeys==opaque.materialKeys);
     auto nearOpaqueScene=triangle();nearOpaqueScene.materials[0].rgba[3]=254;Model nearOpaque;
     assert(packModel(std::move(nearOpaqueScene),"nearopaque",nearOpaque,error));assert(nearOpaque.materials[0].width==2&&nearOpaque.alphaAt(0,0)==254&&nearOpaque.materials[0].rgba.capacity()==0);
-    auto largeSource=triangle();largeSource.vertices.resize(65537,largeSource.vertices[0]);largeSource.triangles[0].v2=65536;Model largeModel;
+    auto largeSource=triangle();const auto largeVertex=largeSource.vertices[0];largeSource.vertices.resize(65537);for(auto& vertex:largeSource.vertices)vertex=largeVertex;largeSource.triangles[0].v2=65536;Model largeModel;
     assert(packModel(std::move(largeSource),"wide-index",largeModel,error));assert(!largeModel.index16&&largeModel.uploadPrepared&&largeModel.uploadIndices16.empty()&&largeModel.indexCount()==3&&largeModel.indexAt(2)==65536);
     Placement transformed;float mat[9]={0,-2,0,3,0,0,0,0,-1};std::copy(mat,mat+9,transformed.matrix);transformed.translation={4,5,6};Vec3 p=transformPoint(transformed,{1,2,3});assert(p.x==0&&p.y==8&&p.z==3);Vec3 lo,hi;transformBounds(transformed,{0,0,0},{1,2,3},lo,hi);
     const float exactLow[]={0,5,3},exactHigh[]={4,8,6},actualLow[]={lo.x,lo.y,lo.z},actualHigh[]={hi.x,hi.y,hi.z};

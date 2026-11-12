@@ -217,14 +217,14 @@
     // program && the declaration was read (the stable selection's declared()).
     void prepareFill(Replay& p,const CaptureShader& metadata){
         p.program=metadata.program.get(); /* 0.3.179 (T1): the capture metadata's (the program map's object): no lookup, no reference */
-        p.declCopy=nullptr;p.elementCount=0;
+        p.declCopy=nullptr;p.elements.clear();
         // 0.3.179 (T2): the frame's copy of the declaration, read once a frame; the per-record copy when full.
         const NorthlightActorPrepare::DeclCopy* copy=p.program&&prepareDecls?prepareDecls->find(p.decl,[this](IDirect3DVertexDeclaration9* decl,const D3DVERTEXELEMENT9*& elements,UINT& count){
             return declarationCache.get(decl,elements,count);}):nullptr;
         if(copy){p.declCopy=copy;p.declared=copy->declared;}
         else{const D3DVERTEXELEMENT9* elements=nullptr;UINT count=0;
-            p.declared=p.program&&declarationCache.get(p.decl,elements,count)&&count<=p.elements.size();
-            p.elementCount=p.declared?count:0;if(p.declared)std::copy(elements,elements+count,p.elements.begin());}
+            p.declared=p.program&&declarationCache.get(p.decl,elements,count)&&count<=MAXD3DDECLLENGTH+1;
+            if(p.declared)try{p.elements.assign(elements,elements+count);}catch(...){p.declared=false;}}
     }
     // 0.3.179 (M2): a warm lower bound of the handoff. At the join of a RenderProfile sample frame, the
     // fill's work for every published record again, into a scratch value (no replay written, no reference

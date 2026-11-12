@@ -36,6 +36,7 @@ def method(text, signature):
 
 
 def game_absent():
+    if args.allow_running_game:return False
     if os.name == 'nt':
         command = ['powershell', '-NoProfile', '-Command',
                    'Get-Process -Name Wow,Wow64 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id']
@@ -46,11 +47,14 @@ def game_absent():
                                  'Get-Process -Name Wow,Wow64 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id'],
                                 capture_output=True, text=True)
         assert result.returncode in (0, 1) and not result.stdout.strip(), 'Game is active: refuse component jobs'
+    return True
 
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--pairs', type=int, choices=range(1, 6), help='Optional alternating component timing pairs; five boundaries/case/process')
+parser.add_argument('--allow-running-game',action='store_true',help='Explicitly allow CPU correctness checks alongside WoW; excludes timing pairs')
 args = parser.parse_args()
+if args.allow_running_game and args.pairs:parser.error('--allow-running-game cannot be used for timing pairs')
 out = fp.output_dir() / 'world-pressure-transition'
 out.mkdir(parents=True, exist_ok=True)
 source = fp.TESTS / 'test_world_pressure_transition.cpp'
@@ -59,6 +63,7 @@ watched = [p for p in fp.SRC.rglob('*') if p.is_file()] + [source, stub_source, 
 inputs = {str(p.resolve()): sha(p) for p in watched}
 renderer = fp.src('renderer.cpp').read_text(encoding='utf-8')
 world = fp.src('world_memory_guard.inl').read_text(encoding='utf-8')
+scene_policy = method(fp.src('gpu_scene.h').read_text(encoding='utf-8'), 'void setMemoryPressure(bool episode,bool critical)')
 stub = next(ast.literal_eval(node.value) for node in ast.parse(stub_source.read_text()).body
             if isinstance(node, ast.Assign) and any(getattr(target, 'id', '') == 'stub' for target in node.targets))
 methods = '\n'.join([method(world, 'struct MemoryTrim') + ';', method(world, 'MemoryTrim trimMemory('),
@@ -75,15 +80,13 @@ assert old != generated
 report = {'scope': __doc__, 'inputs': inputs, 'runs': [], 'pairs': [], 'gpu_or_game_launched': False,
           'actual_cache': 'NorthlightDrawSnapshot::Frame shared SourcePool; populated through existing friend access',
           'empty_recording_consumers': ['terrain cache', 'replay GPU cache', 'mesh pools', 'material pressure policy', 'surface/state/water'],
-          'game_absence_checks': 0}
+          'game_absence_checks': 0,'allow_running_game':args.allow_running_game}
 
 
 def run(exe, arguments, label, rejection=None):
-    game_absent()
-    report['game_absence_checks'] += 1
+    report['game_absence_checks'] += int(game_absent())
     result = subprocess.run([str(exe), *arguments], capture_output=True, text=True, timeout=120)
-    game_absent()
-    report['game_absence_checks'] += 1
+    report['game_absence_checks'] += int(game_absent())
     log = result.stdout + result.stderr
     (out / (label + '.log')).write_text(log, encoding='utf-8')
     report['runs'].append({'label': label, 'exe_sha256': sha(exe), 'arguments': arguments,
@@ -110,13 +113,13 @@ def compare(control, current):
 
 executables = {}
 try:
-    game_absent()
-    report['game_absence_checks'] += 1
+    report['game_absence_checks'] += int(game_absent())
     for name, body in [('old-order', old), ('current', generated)]:
         folder = out / name
         folder.mkdir(exist_ok=True)
         (folder / 'd3d9.h').write_text(stub, encoding='utf-8')
         (folder / 'world_pressure_methods.h').write_text(methods, encoding='utf-8')
+        (folder / 'scene_pressure_policy.h').write_text(scene_policy, encoding='utf-8')
         (folder / 'world_pressure_renderer.h').write_text(body, encoding='utf-8')
         modes = [('O2', ['-O2'])]
         if name == 'current':

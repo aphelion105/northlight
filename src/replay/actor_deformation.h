@@ -1,6 +1,7 @@
 #pragma once
 #include "draw_snapshot.h"
 #include "patch_shadow_shader.h"
+#include "finite_floats.h"
 #include <array>
 #include <cmath>
 
@@ -273,7 +274,11 @@ NO_FUSED_MULTIPLY_ADD
     for(unsigned j=0;j<4;++j){const float value=Commuted?v2[j]*c0[0]:c0[0]*v2[j];
         if constexpr(ByteIndex)address[j]=value;
         else{if(!std::isfinite(value)||std::fabs(value-std::floor(value)-.5f)<1e-6f)return false;address[j]=std::round(value);}}
-    auto row=[&](int base,unsigned channel,Four& m){const float a=address[channel];if(!std::isfinite(a)||a<-4096||a>4096)return false;return constant(base+int(a),m);};
+    auto row=[&](int base,unsigned channel,Four& m){const float a=address[channel];
+        // The prepared byte-index path already proves 0 <= address <= 765.
+        // Palette bounds and DEF lookup remain checked for every actual read.
+        if constexpr(!ByteIndex){if(!std::isfinite(a)||a<-4096||a>4096)return false;}
+        return constant(base+int(a),m);};
     // Generic-derived paths publish after all reads, preserving aliased inputs and failed outputs.
     Four local;Four& result=Deferred?local:viewPosition;
     for(unsigned r=0;r<3;++r){const int base=31+int(r);Four t,m;
@@ -282,7 +287,9 @@ NO_FUSED_MULTIPLY_ADD
         if(!row(base,2,m))return false;for(unsigned j=0;j<4;++j)t[j]=m[j]*v1[2]+t[j];
         if(!row(base,3,m))return false;for(unsigned j=0;j<4;++j)t[j]=m[j]*v1[3]+t[j];
         float sum=0;for(unsigned j=0;j<4;++j)sum+=t[j]*v0[j];result[r]=sum;}
-    result[3]=c0[1];if constexpr(Deferred)viewPosition=result;for(unsigned i=0;i<4;++i)if(!std::isfinite(viewPosition[i]))return false;
+    result[3]=c0[1];if constexpr(Deferred)viewPosition=result;
+    if constexpr(ByteIndex){if(!NorthlightFloatChecks::bounded<4>(viewPosition.data()))return false;}
+    else for(unsigned i=0;i<4;++i)if(!std::isfinite(viewPosition[i]))return false;
     return std::fabs(viewPosition[3]-1.f)<.0001f;
 }
 inline Four singleSkinControl(const Program& p,const float* constants){
@@ -302,7 +309,10 @@ template<bool Prepared=false,bool ByteIndex=false> inline bool evaluateSingleSki
         const float address=p.major==1?std::floor(value):std::round(value);if(address<-4096||address>4096)return false;
         first=31+int(address);if(first<0||first+2>=256)return false;}
     Four result;for(unsigned axis=0;axis<3;++axis){const Four row=constant(unsigned(first)+axis);float sum=0;for(unsigned j=0;j<4;++j)sum+=row[j]*inputs[0][j];result[axis]=sum;}
-    result[3]=c0[1];viewPosition=result;for(float f:viewPosition)if(!std::isfinite(f))return false;return std::fabs(viewPosition[3]-1.f)<.0001f;
+    result[3]=c0[1];viewPosition=result;
+    if constexpr(ByteIndex){if(!NorthlightFloatChecks::bounded<4>(viewPosition.data()))return false;}
+    else for(float f:viewPosition)if(!std::isfinite(f))return false;
+    return std::fabs(viewPosition[3]-1.f)<.0001f;
 }
 template<bool Strict=false> inline bool evaluateFast(const Program& p,const Four inputs[16],const float* constants,Four& viewPosition){
     NO_FUSED_MULTIPLY_ADD
@@ -429,7 +439,7 @@ inline bool weightedByteIndices(const Program& program,const PreparedBindings& p
 }
 // The complete audited single-bone kernel reads only v0/v1. Both are fully
 // decoded each vertex; the draw-local c0 never outlives its current pose bank.
-template<bool Validated=false> inline bool singleSkinBoundsPrepared(const Program& program,const NorthlightDrawSnapshot::Mesh& mesh,const PreparedBindings& prepared,const float* constants,float* low,float* high){
+template<bool Validated=false> inline bool singleSkinBoundsPrepared(const Program& program,const NorthlightDrawSnapshot::Mesh& mesh,const PreparedBindings& prepared,const float* constants,float* low,float* high,const float* basis=nullptr){
     if(!program.kernel.singleSkin()||!constants||(!Validated&&!prepared.validFor(program,mesh))||prepared.bindings.size()!=2||prepared.bindings[0].input.reg>=2||prepared.bindings[1].input.reg>=2||prepared.bindings[0].input.reg==prepared.bindings[1].input.reg)return false;
     const Four control=singleSkinControl(program,constants);Four inputs[2];
     if(!mesh.vertexCount)return true;
@@ -443,14 +453,14 @@ template<bool Validated=false> inline bool singleSkinBoundsPrepared(const Progra
             std::memcpy(inputs[0].data(),positions.bytes.data()+size_t(vertex)*positions.stride+position.element.Offset,12);
             inputs[1][0]=float(indices.bytes[size_t(vertex)*indices.stride+index.element.Offset]);
             Four view;if(control[0]==3.f?!evaluateSingleSkin<true,true>(program,inputs,constants,view,&control):!evaluateSingleSkin<true>(program,inputs,constants,view,&control))return false;
-            for(unsigned k=0;k<3;++k){if(!std::isfinite(view[k]))return false;low[k]=std::min(low[k],view[k]);high[k]=std::max(high[k],view[k]);}}
+            for(unsigned k=0;k<3;++k){const float value=basis?view[0]*basis[k]+view[1]*basis[4+k]+view[2]*basis[8+k]:view[k];if(!std::isfinite(value))return false;low[k]=std::min(low[k],value);high[k]=std::max(high[k],value);}}
         return true;
     }
     for(UINT vertex=0;vertex<mesh.vertexCount;++vertex){
         if(!decodeElement(firstStream.bytes.data()+size_t(vertex)*firstStream.stride+first.element.Offset,first.element.Type,inputs[first.input.reg])||
            !decodeElement(secondStream.bytes.data()+size_t(vertex)*secondStream.stride+second.element.Offset,second.element.Type,inputs[second.input.reg]))return false;
         Four view;if(!evaluateSingleSkin<true>(program,inputs,constants,view,&control))return false;
-        for(unsigned k=0;k<3;++k){if(!std::isfinite(view[k]))return false;low[k]=std::min(low[k],view[k]);high[k]=std::max(high[k],view[k]);}}
+        for(unsigned k=0;k<3;++k){const float value=basis?view[0]*basis[k]+view[1]*basis[4+k]+view[2]*basis[8+k]:view[k];if(!std::isfinite(value))return false;low[k]=std::min(low[k],value);high[k]=std::max(high[k],value);}}
     return true;
 }
 inline bool worldPositionsPrepared(const Program& program,const NorthlightDrawSnapshot::Mesh& mesh,const PreparedBindings& prepared,const float* constants,const float* inverseView,std::vector<Position>& output){

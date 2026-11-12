@@ -53,7 +53,8 @@ float4 precipitation(float2 uv,int layers,bool snow) {
         float weight=layer==0?.45:layer==1?.35:.20;
         float3 p=toWorld(position(uv,distance));
         float time=Proj.w,scale=snow?.8:1.2;
-        p+=float3(time*.5,time*.2,time*(snow?1.3:19));p*=scale;
+        // Sampling moves against particle travel: +X/+Y wind, falling along -Z.
+        p+=float3(-time*.5,-time*.2,time*(snow?1.3:19));p*=scale;
         float3 cell=floor(p),seed=random3(cell);float3 delta=frac(p)-seed;
         if(snow)delta.xy+=sin(time*.7+cell.z+seed.xy*6.28)*.08;
         float radius=(snow?.036+.026*seed.x:.014)*clamp(1+Weather.z,.25,3);

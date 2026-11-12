@@ -44,7 +44,8 @@ class Guard {
     bool demandOnly_=false; // pressure entered by a demand and no own-threshold low sample since
     bool halved_=false;     // 0.3.216: the caps are halved: only the guard's own thresholds do that (a demand-only episode keeps full caps: halving dropped the buffer shadows and made every lock a sync round trip)
     bool fragmentationUnchanged_=false;
-    std::uint64_t trimLargest_=0;
+    bool retiring_=false;
+    std::uint64_t trimLargest_=0,trimAvailable_=0;
     std::uint32_t lastTrim_=0,trimDone_=0,healthySince_=0,lastRequest_=0,lastReport_=0,lastDemand_=0;
     std::uint64_t minAvailable_=~0ull,minLargest_=~0ull,demandFloor_=0;
     unsigned trims_=0,entries_=0,samples_=0;
@@ -61,12 +62,15 @@ public:
     // One valid sample; sampleTick is when the walk finished. demand: aggregate available
     // the geometry builder is waiting for (0: not stalled for memory).
     Decision update(std::uint64_t available,std::uint64_t largest,std::uint32_t sampleTick,std::uint64_t demand=0){
+        return update(available,largest,sampleTick,demand,sampleTick);
+    }
+    Decision update(std::uint64_t available,std::uint64_t largest,std::uint32_t sampleTick,std::uint64_t demand,std::uint32_t sampleStarted){
         Decision d;++samples_;
         if(available<minAvailable_)minAvailable_=available;
         if(largest<minLargest_)minLargest_=largest;
-        if(afterPending_&&after(sampleTick,trimDone_)){
+        if(afterPending_&&after(sampleStarted,trimDone_)){
             afterPending_=false;d.afterTrim=true;
-            fragmentationUnchanged_=largest<=trimLargest_;trimLargest_=largest;
+            fragmentationUnchanged_=largest<=trimLargest_;trimLargest_=largest;trimAvailable_=available;
         }
         const bool low=largest<policy_.enterLargest||available<policy_.enterAvailable;
         const bool demanded=available<demand;
@@ -80,16 +84,16 @@ public:
             if(!halved_){halved_=true;fragmentationUnchanged_=false;d.capsChanged=d.halfCaps=true;}   // also a demand-only episode that now meets a real low sample
             // A trim cannot coalesce free regions occupied by the game/driver. If it did not
             // grow the largest region, keep the pressure caps but leave rebuilt caches alone
-            // until that region shrinks, aggregate VA is low, or the builder needs memory.
-            const bool retry=d.entered||d.capsChanged||!fragmentationUnchanged_||largest<trimLargest_||available<policy_.enterAvailable||demanded;
-            if(retry&&(!trimmed_||sampleTick-lastTrim_>=policy_.trimCooldownMs)){
+            // until that region shrinks, low aggregate VA falls further, or the builder needs memory.
+            const bool retry=d.entered||d.capsChanged||!fragmentationUnchanged_||largest<trimLargest_||(available<policy_.enterAvailable&&available<trimAvailable_)||demanded;
+            if(!retiring_&&!afterPending_&&retry&&(!trimmed_||sampleTick-lastTrim_>=policy_.trimCooldownMs)){
                 trimmed_=true;lastTrim_=sampleTick;trimLargest_=largest;fragmentationUnchanged_=false;++trims_;d.trim=true;
             }
         }else if(demanded&&!pressure_){
             // One trim (cooldown-limited), caps unchanged; a demand alone never repeats the trim while it stays unmet.
             healthy_=false;pressure_=true;demandOnly_=true;++entries_;d.entered=true;d.demand=true;
-            if(!trimmed_||sampleTick-lastTrim_>=policy_.trimCooldownMs){trimmed_=true;lastTrim_=sampleTick;trimLargest_=largest;fragmentationUnchanged_=false;++trims_;d.trim=true;}
-        }else if(pressure_&&healthy){
+            if(!retiring_&&!afterPending_&&(!trimmed_||sampleTick-lastTrim_>=policy_.trimCooldownMs)){trimmed_=true;lastTrim_=sampleTick;trimLargest_=largest;fragmentationUnchanged_=false;++trims_;d.trim=true;}
+        }else if(pressure_&&healthy&&!retiring_){
             if(!healthy_){healthy_=true;healthySince_=sampleTick;}
             if(sampleTick-healthySince_>=policy_.recoverHoldMs&&(!demandOnly_||sampleTick-lastDemand_>=policy_.demandQuietMs)){
                 pressure_=false;healthy_=false;demandOnly_=false;demandFloor_=0;d.recovered=true;
@@ -100,7 +104,9 @@ public:
         return d;
     }
     // The caller finished the trim a decision asked for (frame tick).
-    void trimCompleted(std::uint32_t now){trimDone_=now;afterPending_=true;}
+    void trimCompleted(std::uint32_t now){trimDone_=now;afterPending_=true;retiring_=false;}
+    void trimDeferred(){retiring_=true;afterPending_=false;healthy_=false;}
+    bool retiring()const{return retiring_;}
     bool pressure()const{return pressure_;}
     bool capsHalved()const{return halved_;}
     std::uint64_t demandFloor()const{return demandFloor_;}

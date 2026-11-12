@@ -1238,6 +1238,17 @@ static void testDeltas(){
     }
     Pair q=runBoth(sTwoFrames);checkEquivalent(q);CHECK(q.lay->layer.totalCounters().replayedDraws==4);
 }
+static void testRenderStateKnown(){
+    alignas(16) bool storage[272];unsigned checks=0;uint32_t random=1721;
+    for(unsigned offset=0;offset<16;++offset){bool* flags=storage+offset;
+        auto same=[&]{bool expected=true;for(unsigned id:kRenderStateIds)expected=expected&&flags[id];CHECK(renderStatesKnown(flags)==expected);++checks;};
+        std::fill(flags,flags+256,true);same();std::fill(flags,flags+256,false);same();
+        for(unsigned a=0;a<256;++a){std::fill(flags,flags+256,true);flags[a]=false;same();
+            for(unsigned b=0;b<256;++b){const bool old=flags[b];flags[b]=false;same();flags[b]=old;}}
+        for(unsigned run=0;run<1000;++run){for(unsigned i=0;i<256;++i){random=random*1664525u+1013904223u;flags[i]=(random>>24)!=0;}same();}
+    }
+    std::printf("SPELL_RENDER_STATE_KNOWN_PASS checks=%u all_ids holes single_pair_unknown unaligned random\n",checks);
+}
 // Shaders with scanned read sets: only the registers and samplers they read are recorded and replayed; the unread state of a replayed draw may differ from
 // the original (it cannot be seen), the read state is exact. Fewer sets, less delta.
 static void setBit(uint64_t* m,unsigned i){m[i>>6]|=1ull<<(i&63);}
@@ -2386,6 +2397,7 @@ int main(int argc,char** argv){
     const bool fixedMode=argc>2;if(fixedMode)gMirrorMode=std::atoi(argv[2]);
     struct T{const char* name;void(*fn)();};
     const T tests[]={{"classify",testClassify},{"lazy classify",testLazyClassify},{"glow verdict",testGlowVerdict},{"spell fog fit",testSpellFogFit},{"spell glow copy",testSpellGlowCopy},{"spell fog early drain",testSpellFogEarlyDrain},{"spell fog record",testSpellFogRecord},{"spell fog toggle",testSpellFogToggle},{"spell fog march",testSpellFogMarch},{"vs fog proof",testVsFogProof},{"spell fog fresh",testSpellFogFresh},{"spell fog cache and blend",testSpellFogCacheAndBlend},{"spell fog flat",testSpellFogFlat},{"spell fog colour",testSpellFogColour},{"spell fog precomputed",testSpellFogPrecomputed},{"spell fog review",testSpellFogReview},{"order split cap",testOrderSplitCap},{"stride 0 stream",testStride0},{"fvf vertex size",testFvfVertexSize},{"allocation failures",testAllocFailures},{"stride 0 fvf",testStride0Fvf},{"upload cursor",testUploadCursor},{"depth stencil texture",testDepthStencilTexture},{"trim and reuse",testTrimReuse},{"dirty record random",testDirtyRandom},{"record slots",testRecordSlots},{"dirty fail safe",testDirtyFailSafe},{"frame state",testFrameState},{"guard table",testGuardTable},{"equivalence",testEquivalence},{"projected draw audit",testAuditReplay},
+        {"render state known",testRenderStateKnown},
         {"discard copy",testDiscard},{"partial overlap",testPartialOverlap},{"two entries",testTwoEntries},{"count-based marks",testMarkIsCountBased},
         {"rebase negative base",testRebaseNegativeBase},{"rebase kept base",testRebasePositiveBase},{"index buffer copy",testIbMaterialized},
         {"mixed streams",testMixedStreams},{"32-bit UP",test32bitUP},{"non-dynamic buffer",testNonDynamic},{"copy disabled",testConflictCopyDisabled},

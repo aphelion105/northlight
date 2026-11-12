@@ -1,5 +1,6 @@
 #include <windows.h>
 #include "command_queue.h"
+#include "query_poll.h"
 #include <algorithm>
 #include <atomic>
 #include <cassert>
@@ -12,7 +13,38 @@ static LRESULT CALLBACK windowProc(HWND h,UINT m,WPARAM w,LPARAM l){
     if(m==WM_APP){assert(inPumpedWait);++pumped;return 7;}
     return DefWindowProcW(h,m,w,l);
 }
+static void queryPauseLifetime(){
+    DWORD before=0,during=0,after=0;assert(GetProcessHandleCount(GetCurrentProcess(),&before));
+    {
+        QueryPollPause pause;pause(20000,0);
+        assert(GetProcessHandleCount(GetCurrentProcess(),&during)&&during==before);
+        for(unsigned i=0;i<32;++i){pause(20000,0);pause(20000,2000000);}
+        assert(GetProcessHandleCount(GetCurrentProcess(),&after)&&after==during);
+    }
+    assert(GetProcessHandleCount(GetCurrentProcess(),&after)&&after==before);
+    DWORD_PTR process=0,system=0;assert(GetProcessAffinityMask(GetCurrentProcess(),&process,&system));
+    assert(SetProcessAffinityMask(GetCurrentProcess(),process&(~process+1)));
+    {
+        QueryPollPause pause;for(unsigned i=0;i<32;++i)pause(20000,2000000);
+        assert(GetProcessHandleCount(GetCurrentProcess(),&after)&&after==before); // Single-CPU backend must retain the yielding path.
+    }
+    assert(SetProcessAffinityMask(GetCurrentProcess(),process));
+    {
+        QueryLongPause pause;
+        assert(GetProcessHandleCount(GetCurrentProcess(),&during)&&during==before); // Lazy: no timer for an ordinary frame.
+        for(unsigned trip=0;trip<3;++trip){pause.begin();for(unsigned i=0;i<8;++i)pause(20000,i*50000);}
+        assert(GetProcessHandleCount(GetCurrentProcess(),&during)&&(during==before||during==before+1));
+        pause.begin();for(unsigned i=0;i<8;++i)pause(20000,i*50000);
+        assert(GetProcessHandleCount(GetCurrentProcess(),&after)&&after==during);
+        // A stopped operational clock must preserve the existing spin guard,
+        // rather than sleep 65,536 times on the native timer.
+        unsigned calls=0;pause.begin();
+        assert(waitEventQuery([]{return S_FALSE;},[]{return std::uint64_t(0);},pause,calls,kEventFlushWaitNs)==S_FALSE&&calls==1);
+    }
+    assert(GetProcessHandleCount(GetCurrentProcess(),&after)&&after==before);
+}
 int main(int argc,char** argv){
+    queryPauseLifetime();
     {Queue idle;assert(!idle.nextTimed(0));assert(!idle.nextTimed(1));assert(get(idle.stats.consumerSleeps)==2);
      idle.interrupt();assert(!idle.nextTimed(10000));assert(get(idle.stats.consumerSleeps)==2);}
     WNDCLASSW wc{};wc.lpfnWndProc=windowProc;wc.lpszClassName=L"NorthlightQueueWaitTest";wc.hInstance=GetModuleHandleW(nullptr);

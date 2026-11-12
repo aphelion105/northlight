@@ -8,6 +8,8 @@ sun_light_mix = 0
 sun_light_strength = 1
 sun_fog_gain = 4.3
 sun_fog_height_scale = 2.0
+sun_fog_density = 1
+moon_fog_density = 1
 moon_disc = 0.94, 0.97, 1.00
 moon_disc_gain = 1.1
 moon_light = 1.00, 1.00, 1.00
@@ -36,7 +38,9 @@ moon_disc = 0.79, 0.87, 0.97
 moon_light = 0.76, 0.85, 1.00
 moon_light_mix = 0.45
 [Azeroth:85]
-sun_fog_gain = 3.4
+sun_fog_gain = 4.3
+sun_fog_density = 1.8
+sun_fog_height_scale = 3
 sun_disc = 0.94, 1.00, 0.78
 sun_light = 0.94, 1.00, 0.88
 sun_light_mix = 0.45
@@ -44,6 +48,9 @@ sun_light_strength = 1.00
 moon_disc = 0.68, 1.00, 0.62
 moon_light = 0.72, 1.00, 0.64
 moon_light_mix = 0.80
+[Azeroth:267]
+sun_fog_density = 1.3
+sun_fog_height_scale = 2.5
 [Azeroth:130]
 sun_disc = 0.99, 0.97, 0.90
 sun_light = 0.93, 0.98, 0.94
@@ -150,6 +157,10 @@ moon_disc = 0.96, 0.97, 0.82
 moon_light = 0.95, 0.98, 0.84
 moon_light_mix = 0.40
 [Kalimdor:14]
+sun_glow = 1.00, 0.72, 0.42
+sun_glow_mix = 0.35
+sun_glow_strength = 1.10
+sun_horizon_haze = 1.15
 sun_disc = 1.00, 0.86, 0.69
 sun_light = 1.00, 0.91, 0.82
 sun_light_mix = 0.35

@@ -103,7 +103,22 @@ int main(){
  reset();Fixture moving;onTick=[&]{moving.observe();};unsigned changes=0;afterSolve=[&]{if(changes<8&&solveCalls>=unsigned(100*(changes+1))){++changes;moving.next({float(changes*4),0,0});}};moving.run();assert(changes==8&&moving.retargeted==8&&moving.superseded==0&&!moving.pending&&!moving.published->partial&&moving.completedBaseId==moving.request.baseId);assert(moving.published->lightingGeneration==1&&moving.published->reusedProbes>0);assert(solveCalls<W+8*400);moving.immutable();
  // A new static lighting generation keeps already displayed GI until each
  // replacement is solved. Old samples never enter the new solve cache.
- afterSolve={};onTick={};auto old=cold.published;cold.next({},16);cold.request.light.skyRadiance={.7f,.8f,.9f};cold.observed.clear();unsigned before=solveCalls;onTick=[&]{cold.observe();};cold.run();assert(cold.published->lightingGeneration==2&&cold.published->solvedProbes==W&&cold.probeCache.size()==W&&cold.displayFallback.empty());bool checked=false;for(const auto& o:cold.observed)if(o.value->lightingGeneration==2&&o.value->partial){assert(occupied(o.value->atlas)==W);assert(o.value->solvedProbes==8);unsigned unchanged=0;for(size_t i=0;i<o.value->atlas.size();++i)if(o.value->atlas[i].occupied&&o.value->atlas[i].probe.sh[0].x==old->atlas[i].probe.sh[0].x)++unchanged;assert(unchanged>=W-8);checked=true;break;}assert(checked&&solveCalls-before==W);cold.immutable();
+ afterSolve={};onTick={};auto old=cold.published;cold.next({},16);cold.request.light.skyRadiance={.7f,.8f,.9f};cold.observed.clear();unsigned before=solveCalls;onTick=[&]{cold.observe();};cold.run();assert(cold.published->lightingGeneration==2&&cold.published->solvedProbes==W&&cold.probeCache.size()==W);bool checked=false;for(const auto& o:cold.observed)if(o.value->lightingGeneration==2&&o.value->partial){assert(occupied(o.value->atlas)==W);assert(o.value->solvedProbes==8);unsigned unchanged=0;for(size_t i=0;i<o.value->atlas.size();++i)if(o.value->atlas[i].occupied&&o.value->atlas[i].probe.sh[0].x==old->atlas[i].probe.sh[0].x)++unchanged;assert(unchanged>=W-8);checked=true;break;}assert(checked&&solveCalls-before==W);cold.immutable();
+ // A visited strip lies outside the next solve window but remains on screen.
+ // Completion, then camera/actor finals must preserve its exact display value.
+ {reset();Fixture continuity;continuity.run();continuity.next({8,0,0});continuity.run();
+  const NorthlightGI::ProbeGridKey key{-6,0,0};const auto slot=NorthlightGI::probeAtlasIndex(key);
+  const auto saved=continuity.published->atlas[slot];assert(saved.occupied&&saved.key==key);
+  continuity.next({8,0,0},16);continuity.request.light.skyRadiance={.9f,.8f,.7f};continuity.run();
+  for(unsigned reason:{2u,64u}){
+   const auto& shown=continuity.published->atlas[slot];
+   assert(shown.occupied&&shown.key==key&&!std::memcmp(shown.probe.sh,saved.probe.sh,sizeof saved.probe.sh)&&"GI_FINAL_COVERAGE_LOST");
+   assert(!continuity.probeCache.contains(key));continuity.next({9,0,0},reason);continuity.run();
+  }
+  assert(continuity.published->atlas[slot].occupied&&"GI_FINAL_COVERAGE_LOST");
+  auto invalid=saved.probe;invalid.valid=false;continuity.probeCache.put(key,invalid);continuity.next({9,0,0});continuity.run();
+  assert(continuity.published->atlas[slot].occupied&&!continuity.published->atlas[slot].probe.valid);
+ }
  // Latest reason may be camera-only after overwriting a light-change request.
  // No superseded generation may publish against those latest light values.
  reset();Fixture lighting;onTick=[&]{lighting.observe();};afterSolve=[&]{if(solveCalls==100){lighting.next({8,0,0});lighting.request.light.skyRadiance={2,3,4};}};lighting.run();assert(lighting.superseded==1&&lighting.retargeted==0&&lighting.lightingGeneration==2&&!lighting.published->partial);for(const auto& o:lighting.observed)if(o.value->lightingGeneration==1)assert(o.at<=100);lighting.immutable();
@@ -140,11 +155,17 @@ int main(){
 report={'status':'pass','game_launched':False,'render_device_created':False,'scope':'actual production solve/publication tail; deterministic request/clock fixture; geometry and actor loaders not executed','runs':[],'sha256':{n:hashlib.sha256(fp.tracked(n).read_bytes()).hexdigest() for n in ['world_renderer.h','world_probe_progress.h','world_dynamic_probes.h','world_probe_cache.h','world_gi.h','world_gi.cpp','test_progressive_gi_worker.py','test_world_probe_progress.cpp']}}
 with tempfile.TemporaryDirectory(prefix='northlight-progressive-gi-') as tmp:
  path=Path(tmp);(path/'worker.cpp').write_text(fixture)
- for target in ['worker','helpers']:
+ for target in ['worker','helpers','no-final-fallback','clear-after-final']:
+  if target in ('no-final-fallback','clear-after-final'):
+   broken=fixture.replace('NorthlightGI::retainProbeDisplayFallback(result->atlas,displayFallback);','') if target=='no-final-fallback' else fixture.replace('published=result;publicationCadence.published(GetTickCount());','published=result;displayFallback.clear();publicationCadence.published(GetTickCount());')
+   assert broken!=fixture;(path/'negative.cpp').write_text(broken)
   cpp=path/'worker.cpp' if target=='worker' else HERE/'test_world_probe_progress.cpp'
-  for mode,flags in [('O2',['-O2']),('asan-ubsan',['-O1','-g','-fsanitize=address,undefined','-fno-omit-frame-pointer'])]:
+  if target in ('no-final-fallback','clear-after-final'):cpp=path/'negative.cpp'
+  for mode,flags in ([('O2',['-O2'])] if target in ('no-final-fallback','clear-after-final') else [('O2',['-O2']),('asan-ubsan',['-O1','-g','-fsanitize=address,undefined','-fno-omit-frame-pointer'])]):
    command=['clang++','-std=c++17',*flags,*fp.test_include_flags(),str(cpp),str(fp.src('world_gi.cpp')),'-o',str(path/'test')]
    subprocess.run(command,check=True)
-   result=subprocess.run([str(path/'test')],check=True,capture_output=True,text=True,cwd=tmp)
+   result=subprocess.run([str(path/'test')],capture_output=True,text=True,cwd=tmp)
+   if target in ('no-final-fallback','clear-after-final'):assert result.returncode and 'GI_FINAL_COVERAGE_LOST' in result.stderr
+   else:result.check_returncode()
    print(target,mode,result.stdout.strip());report['runs'].append({'target':target,'mode':mode,'stdout':result.stdout,'command':command})
 (fp.output_dir()/'progressive-gi-validation.json').write_text(json.dumps(report,indent=2)+'\n')

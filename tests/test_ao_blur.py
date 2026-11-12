@@ -425,8 +425,9 @@ def check_passthrough():
 
 def audit_source():
     text = fp.src('effects.hlsl').read_text()
-    assert 'float4 AOBlur(float2 uv : TEXCOORD0) : COLOR0' in text
-    blur = text[text.index('float4 AOBlur('):text.index('float4 Composite(')]
+    assert 'float4 AOBlur(float2 uv:TEXCOORD0):COLOR0{return aoBlur(uv,true);}' in text
+    assert 'float4 AOBlurNoWater(float2 uv:TEXCOORD0):COLOR0{return aoBlur(uv,false);}' in text
+    blur = text[text.index('float4 aoBlur('):text.index('float4 Composite(')]
     assert 'float2 o=float2(x-2,y-2);' in blur, '25 taps in row order'
     assert 'float rowWeight=abs(y-2)>1.5?.5:1;' in blur, '.5 row edge weights'
     assert '(a.x > 1.5 ? 0.5 : 1.0) * rowWeight' in blur, '.5 column edge weights'
@@ -449,7 +450,7 @@ def audit_source():
     spots = [min(2*s_-1.5, 2.) for s_ in range(3)]
     assert spots == [-1.5, .5, 2.] and sorted(t for f in FOOT for t in f) == [-2, -1, 0, 1, 2]
     assert all(tuple(range(math.floor(c), math.ceil(c)+1)) if c % 1 else (int(c),) == f for c, f in zip(spots, FOOT))
-    assert blur.index('if (d >= SKY_DEPTH || IsWater(cuv, d)) return raw;') > early, 'sky/water passthrough kept'
+    assert blur.index('if (d >= SKY_DEPTH || (water && IsWater(cuv, d))) return raw;') > early, 'sky/water passthrough kept'
     # the guard: one extra depth read per tap (no NeighbourNormal), tangent along the axis the normal leans towards
     assert 'NeighbourNormal' not in blur, 'the two-read normal term must be gone'
     assert 'abs(n.x) > abs(n.y) ? float2(ImageAndClip.x, 0) : float2(0, ImageAndClip.y)' in blur
@@ -460,7 +461,7 @@ def audit_source():
         (i-math.floor((i+.5)*.2)*5-2,math.floor((i+.5)*.2)-2) for i in range(25)]
     assert '[loop] for(int y=0;y<5;++y)' in blur and '[loop] for(int x=0;x<5;++x)' in blur
     assert blur.count('ReadDepth(') == 3, 'centre + tap + tangent: one extra depth read per tap'
-    assert re.search(r'qd < SKY_DEPTH && !IsWater\(quv, qd\) \? 1\.0 : 0\.0', blur), 'sky/water taps weight 0'
+    assert re.search(r'qd < SKY_DEPTH && \(!water \|\| !IsWater\(quv, qd\)\) \? 1\.0 : 0\.0', blur), 'sky/water taps weight 0'
     assert 'return float4(raw.rgb' in blur
     impl = text[text.index('float4 AOImpl('):text.index('float4 AO(float2 uv')]
     assert '0.03355528, 0.002918575' in impl and '0.06711056' not in impl, 'AOImpl IGN coefficients changed'
@@ -469,6 +470,7 @@ def audit_source():
         'shaders/shader-build.json is stale: run scripts/shaders/compile_shaders.py'
     b = build['shaders']['AOBlur']
     assert b['static_instruction_slots'] <= 512 and b['temporary_registers'] <= 32, b
+    dry=build['shaders']['AOBlurNoWater'];assert dry['static_instruction_slots']<b['static_instruction_slots'] and 3 not in dry['samplers']
     script = (fp.SCRIPTS/'shaders'/'compile_shaders.py').read_text()
     assert re.search(r'\("AOBlur",\s*"kAoBlurShader"(,\s*"ps_3_0")?\)', script)
     return {'static_instruction_slots': b['static_instruction_slots'], 'temporary_registers': b['temporary_registers']}
@@ -543,7 +545,7 @@ def audit_wiring():
     fn = text[text.index('SetRenderTarget(0,aoRawSurface)')-400:]
     a = fn.index('SetRenderTarget(0,aoRawSurface)')
     seq = [fn.index(s, a) for s in ('quad(width/2,height/2,false),"AO pass"', 'SetRenderTarget(0,aoSurface)', 'SetTexture(2,aoRaw)',
-                                    'SetTexture(0,aoRaw)', 'SetPixelShader(aoBlurPS)', 'gpuProfile->mark("AOBlurSetup")',
+                                    'SetTexture(0,aoRaw)', 'SetPixelShader(!waterMask&&aoBlurNoWaterPS?aoBlurNoWaterPS:aoBlurPS)', 'gpuProfile->mark("AOBlurSetup")',
                                     'aoBlurResult=quad(width/2,height/2,false)', 'error(aoBlurResult,"AO blur pass")',
                                     'ext->SetTexture(2,nullptr);ext->SetTexture(0,scene);',
                                     'auto legacyComposite', 'world->render(')]
@@ -561,6 +563,8 @@ def audit_wiring():
     assert re.search(r'drop\(sceneSurface\); drop\(aoSurface\); drop\(aoRawSurface\); drop\(scene\); drop\(depthTex\); drop\(ao\); drop\(aoRaw\);', text), 'releaseResources'
     assert re.search(r'drop\(aoSurface\); drop\(ao\); drop\(aoRawSurface\); drop\(aoRaw\); drop\(depthTex\);', text), 'resize path'
     assert 'drop(aoBlurPS)' in text and 'CreatePixelShader(kAoBlurShader, &aoBlurPS)' in text
+    assert 'if(!aoBlurNoWaterPS&&!aoBlurNoWaterRefused&&FAILED(ext->CreatePixelShader(kAoBlurNoWaterShader,&aoBlurNoWaterPS))){drop(aoBlurNoWaterPS);aoBlurNoWaterRefused=true;}' in text
+    assert 'drop(aoBlurNoWaterPS);aoBlurNoWaterRefused=false;' in text
     return True
 
 
@@ -580,7 +584,7 @@ def audit_contact_ao():
     assert 'quad(' not in legacy and 'D3DCLEAR_ZBUFFER' not in legacy and 'D3DCLEAR_STENCIL' not in legacy
     assert off.count('effectsBuckets.mark(Bucket::AO)') == 1 and on.count('effectsBuckets.mark(Bucket::AO)') == 1
     assert 'contactShader=aoActorUsed?(alphaOnly?aoActorAlphaPS:aoActorPS):(alphaOnly?aoOnlyPS:aoContactBloomPS);' in on
-    assert 'SetPixelShader(linearHdr||constants[7]==0.f?contactShader:aoPS)' in on and 'SetPixelShader(aoBlurPS)' in on and 'contactBloomPS' not in on
+    assert 'SetPixelShader(linearHdr||constants[7]==0.f?contactShader:aoPS)' in on and 'SetPixelShader(!waterMask&&aoBlurNoWaterPS?aoBlurNoWaterPS:aoBlurPS)' in on and 'contactBloomPS' not in on
     assert 'if(aoActorUsed){ext->SetTexture(2,nullptr);ext->SetTexture(4,nullptr);}' in on, 'unbind preparation before the blur writes its target'
     assert 'bool contactAO=true;' in text and 'contactAO=world->contactAO();' in text
     assert 'drop(contactBloomPS)' in text and 'CreatePixelShader(kContactBloomShader, &contactBloomPS)' in text

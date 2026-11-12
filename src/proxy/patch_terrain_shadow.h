@@ -19,7 +19,7 @@
 //
 // Fail closed: any shader without exactly this shape, with predication,
 // relative addressing on the affected operands, ps_1_x encoding, or without a
-// defined 1.0 literal is left untouched (returns false, output empty).
+// safe literal substitution or identity fold is left untouched (returns false, output empty).
 namespace NorthlightTerrainShadow {
 using Word=std::uint32_t;
 struct PatchInfo {
@@ -127,13 +127,15 @@ inline bool patch(const Word* code,std::size_t count,std::vector<Word>& output,P
             } else if((token&0x80000000u)&&sourceType(token)==2&&(local.oneConstant<0||(token&2047)!=unsigned(local.oneConstant)))++otherConstant;
         }
         if(!reads)continue;
-        if(local.oneConstant>=0&&!otherConstant){
+        // Native D3D9 rejects the all-constant MAD produced by substituting
+        // S=1 into its literal 0.3/0.7 scale. Fold that scale to ADD + NOP.
+        if(local.oneConstant>=0&&!otherConstant&&i!=std::size_t(mad)){
             for(unsigned k=first;k<in.size;++k)if(isShadowRead(code[in.at+1+k])){output[in.at+1+k]=one;++local.replaced;}
             continue;
         }
         // Single-c# rule: fold S=1 into the instruction and pad with nop.
         Word* w=output.data()+in.at;
-        if(in.op==4&&in.size==4&&reads==1&&readAt==1){w[0]=2u|(3u<<24);w[2]=w[3];w[3]=w[4];w[4]=0;++local.replaced;continue;}
+        if(in.op==4&&in.size==4&&reads==1&&(readAt==1||readAt==2)){w[0]=2u|(3u<<24);w[2]=w[readAt==1?3:2];w[3]=w[4];w[4]=0;++local.replaced;continue;}
         if(in.op==5&&in.size==3&&reads==1){w[0]=1u|(2u<<24);w[2]=w[readAt==1?3:2];w[3]=0;++local.replaced;continue;}
         output.clear();return false;
     }

@@ -1,12 +1,13 @@
 #pragma once
 #include <filesystem>
 #include "celestial_profiles.h"
+#include "shadow_cascades.h"
 #include "celestial_time_warp.h"
 
 // Immutable startup configuration. Extended coverage is TERRAIN ONLY; model
 // streaming, GI, shadow resolution/depth and upload budgets remain unchanged.
 namespace NorthlightRegionalShadow {
-constexpr float DefaultRadius=928.f,MaximumRadius=4096.f;
+constexpr float DefaultRadius=NorthlightShadowCascades::TerrainRadius,MaximumRadius=4096.f;
 struct Table {
     std::map<std::pair<std::string,uint32_t>,float> zones;
     float fallback=DefaultRadius;
@@ -33,19 +34,20 @@ inline bool parse(std::istream& input,Table& out,std::string& error){
         }else{
             auto eq=line.find('=');if(assigned||eq==std::string::npos||NorthlightCelestialProfiles::trim(line.substr(0,eq))!="terrain_radius")return fail();
             float radius;std::string extra;std::istringstream value(line.substr(eq+1));
-            if(!(value>>radius)||!std::isfinite(radius)||radius<DefaultRadius||radius>MaximumRadius||(value>>extra))return fail();
+            if(!(value>>radius)||!std::isfinite(radius)||radius<928.f||radius>MaximumRadius||(value>>extra))return fail();
+            radius=std::max(radius,DefaultRadius); // Upgrade legacy 928-unit profiles to complete cascade coverage.
             if(map.empty())next.fallback=radius;else next.zones[{map,zone}]=radius;assigned=true;
         }
     }
     if(input.bad()||!assigned)return fail();out=std::move(next);error.clear();return true;
 }
 inline bool load(const std::string& path,Table& out,std::string& error){
-    std::ifstream f(std::filesystem::u8path(path),std::ios::binary);if(!f){error="no override; 928-unit defaults";return false;}
+    std::ifstream f(std::filesystem::u8path(path),std::ios::binary);if(!f){error="no override; 1120-unit defaults";return false;}
     std::string text;if(!NorthlightCelestialProfiles::readIniText(f,text,error))return false;std::istringstream decoded(text);return parse(decoded,out,error);
 }
 // Keep the entire original cube. Outside it, retain a vertical corridor toward
-// the shared OWNED orbital azimuth for ALL elevations, day and night. 512u
-// half-width covers far cached radius240 + orbit80 + publication96 + diagonal
+// the shared OWNED orbital azimuth for ALL elevations, day and night. 640u
+// half-width covers far cached radius360 + orbit80 + publication160 + diagonal
 // receiver extent. No camera direction or instantaneous altitude dependency.
 // Test whole tile/model bounds: a retained terrain tile is never sparsely cut,
 // so fixedTerrainChunks still denotes complete chunks.
@@ -57,7 +59,7 @@ inline bool selected(NorthlightGI::Vec3 center,NorthlightGI::Vec3 low,Northlight
     const double ex=(double(high.x)-low.x)*.5,ey=(double(high.y)-low.y)*.5;
     const double side=-ay*dx+ax*dy,sideExtent=std::fabs(ay)*ex+std::fabs(ax)*ey;
     const double along=ax*dx+ay*dy,alongExtent=std::fabs(ax)*ex+std::fabs(ay)*ey;
-    return std::fabs(side)<=512+sideExtent&&along+alongExtent>=-512;
+    return std::fabs(side)<=640+sideExtent&&along+alongExtent>=-640;
 }
 inline bool selectedChunk(NorthlightGI::Vec3 center,NorthlightGI::Vec3 low,NorthlightGI::Vec3 high){
     // Select complete ADT chunks, not individual triangles: this preserves the

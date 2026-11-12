@@ -55,9 +55,7 @@ def sample(atlas,position,grid_origin=(0,0,0),mean=32):
         for channel in range(3):
             irradiance[channel]+=math.pi*record[2][channel]*weight
         total+=weight
-    if total<=.00001:
-        return (0.,0.,0.),0.
-    return tuple(v/total for v in irradiance),min(1.,max(0.,coverage))
+    return tuple(v/max(total,.00001) for v in irradiance),min(1.,max(0.,coverage))
 
 
 def main():
@@ -78,7 +76,7 @@ def main():
     assert 'BlendSeconds=.3f' in blend_header and '(1/.3)' in body
     renderer=fp.src('world_renderer.h').read_text()
     gi_pass=renderer.index('"world GI pass"')
-    assert renderer.index('SetTexture(8,probePrev)')<gi_pass<renderer.index('SetTexture(8,textures[8])')
+    assert renderer.index('SetTexture(8,probePrev)')<gi_pass<renderer.index('SetTexture(8,textures[8])',gi_pass)
     assert renderer[gi_pass:].split('SetTexture(8,textures[8])',1)[0].count('\n')<=2  # restored right after the GI quad
 
     atlas={}
@@ -107,6 +105,9 @@ def main():
     for key in BITS:insert(occluded,key)
     assert sample(occluded,(4,4,4),mean=6)[1]==1
     assert sample(occluded,(4,4,4),mean=32)[1]==1
+    dark,coverage=sample(occluded,(4,4,4),mean=0)
+    assert coverage==1 and max(dark)<.02
+    assert sample({},(4,4,4))==((0.,0.,0.),0.)
 
     wrap_cases=0
     for key in itertools.product((-33,-32,-17,-16,-1,0,15,16,31,32),repeat=3):

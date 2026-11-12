@@ -10,7 +10,7 @@
 #include <random>
 using namespace NorthlightQuality;
 static Settings parse(const char* own,const char* legacy,std::vector<std::string>& problems){
-    std::istringstream a(own?own:""),b(legacy?legacy:"");return load(own?&a:nullptr,legacy?&b:nullptr,problems);
+    std::istringstream a(std::string(own?own:"")+"\n[Quality]\nLocalLightLimitsVersion=2\n"),b(legacy?legacy:"");return load(own?&a:nullptr,legacy?&b:nullptr,problems);
 }
 static Settings parse(const char* own,const char* legacy=nullptr){std::vector<std::string> p;return parse(own,legacy,p);}
 /* Verbatim 0.3.136 code paths, for defaults-equal-today comparisons. */
@@ -67,6 +67,22 @@ int main(){
     /* Defaults: absent files, empty file and Preset=Quality are the 0.3.136 constants, except the 0.3.167 FarShadowInterval 4
        and the 0.3.176 PointShadows 0 (off in every preset). */
     const Settings d{};
+    assert(d.giStrength==120&&d.giBrightness==0&&d.auroraStrength==100&&giIntensity(d)==1);
+    {auto legacy=d;legacy.giStrength=60;assert(giIntensity(legacy)==.5f);legacy.giStrength=240;assert(giIntensity(legacy)==2);}
+    for(int brightness:{-100,-50,0,100,200}){
+        const auto ini=std::string("[Quality]\nGIBrightness=")+std::to_string(brightness)+"\n";
+        const auto parsed=parse(ini.c_str());assert(parsed.giBrightness==brightness);
+        assert(describe(parsed).find("GIBrightness="+std::to_string(brightness)+"(file)")!=std::string::npos);
+    }
+    assert(parse("[Quality]\nGIBrightness=+100\n").giBrightness==100);
+    for(const char* bad:{"-101","201","-","+","--1","-1.5","-1x","2147483648","-999999999999"}){
+        std::vector<std::string> warnings;const auto ini=std::string("[Quality]\nGIBrightness=")+bad+"\n";
+        assert(parse(ini.c_str(),nullptr,warnings)==d&&warnings.size()==1);
+    }
+    {for(auto p:{Preset::Quality,Preset::Balanced,Preset::Performance})assert(preset(p).disableOriginalTerrainShadows==1);
+     auto off=parse("[Quality]\nDisableOriginalTerrainShadows=0\n");assert(!off.disableOriginalTerrainShadows&&off!=d&&effective(off).disableOriginalTerrainShadows==0);
+     assert(parse("[Quality]\nDisableOriginalTerrainShadows=1\n")==d);
+     std::vector<std::string> problems;assert(parse("[Quality]\nDisableOriginalTerrainShadows=2\n",nullptr,problems)==d&&problems.size()==1);}
     assert(d.aoQuality==0);
     for(auto p:{Preset::Quality,Preset::Balanced,Preset::Performance})assert(preset(p).aoQuality==0);
     for(const auto& pair:std::vector<std::pair<const char*,unsigned>>{{"High",0},{"Medium",1},{"Low",2},{"hIgH",0},{"MEDIUM",1},{"low",2},{"0",0},{"1",1},{"2",2}}){
@@ -92,11 +108,11 @@ int main(){
     {std::vector<std::string> notes;assert(parse("[Quality]\nWater=1\nWaterSSR=1\nWaterSSRResolution=100\n",nullptr,notes)==d);assert(notes.size()==3);
      for(const auto& note:notes)assert(note.find("retired")!=std::string::npos);for(const auto& key:Keys)assert(std::string(key.name).rfind("Water",0)!=0);}
     assert(d.minSkinnedTriangles==100&&d.captureBudgetMiB==32&&d.actorShadowBudgetMiB==0&&d.farShadowInterval==4);
-    assert(d.localLightLimit==48&&d.pointShadows==1&&d.pointShadowLimit==64&&d.pointShadowRefreshMs==0&&d.shadowDirectionSteps==2048);
+    assert(d.localLightLimit==64&&d.pointShadows==1&&d.pointShadowLimit==64&&d.pointShadowRefreshMs==0&&d.shadowDirectionSteps==2048);
     for(auto p:{Preset::Quality,Preset::Balanced,Preset::Performance})assert(preset(p).pointShadowDistance==48);
     assert(parse("[Quality]\nPointShadowDistance=96\n").pointShadowDistance==96);
     assert(parse(nullptr)==d&&parse("")==d&&parse("[Quality]\nPreset=Quality\n")==d&&preset(Preset::Quality)==d);
-    for(const auto& k:Keys){assert(k.preset[0]==d.*k.field);for(unsigned p=0;p<3;++p)assert(k.preset[p]>=k.low&&k.preset[p]<=k.high);}
+    for(const auto& k:Keys){assert(k.preset[0]==k.get(d));for(unsigned p=0;p<3;++p)assert(k.preset[p]>=k.low&&k.preset[p]<=k.high);}
     { /* The shipped default file must be exactly Quality, with no warnings. */
         std::ifstream f("windows-package/northlight-quality.ini");assert(f);std::vector<std::string> problems;
         auto s=load(&f,nullptr,problems);assert(s==d&&s.preset==Preset::Quality&&problems.empty());}
@@ -116,7 +132,7 @@ int main(){
     problems.clear();s=parse("[Quality]\nPreset=Ultra\n",nullptr,problems);assert(s==d&&problems.size()==1);
     for(const auto& k:Keys){ /* range edges */
         std::string lo="[Quality]\n"+std::string(k.name)+"="+std::to_string(k.low)+"\n",hi="[Quality]\n"+std::string(k.name)+"="+std::to_string(k.high)+"\n";
-        assert(parse(lo.c_str()).*k.field==k.low&&parse(hi.c_str()).*k.field==k.high);
+        assert(k.get(parse(lo.c_str()))==k.low&&k.get(parse(hi.c_str()))==k.high);
         std::string over="[Quality]\n"+std::string(k.name)+"="+std::to_string(k.high+1)+"\n";assert(parse(over.c_str())==d);
         if(k.low){std::string under="[Quality]\n"+std::string(k.name)+"="+std::to_string(k.low-1)+"\n";assert(parse(under.c_str())==d);}}
     /* Legacy shadow-experiment.ini: same values and fallbacks as 0.3.136's GetPrivateProfileInt path. */
@@ -421,11 +437,11 @@ int main(){
     // layout) in Balanced and Performance, own origin slot; yards snap down to d=4N-4 with N even, 36..84 -> 10..22.
     assert(d.giDistance==76&&giProbeGrid(d)==20&&preset(Preset::Performance).giDistance==52&&preset(Preset::Balanced).giDistance==52);
     assert(giProbeGrid(parse("[Quality]\nGIDistance=52\n"))==14&&giProbeGrid(preset(Preset::Balanced))==14&&giProbeGrid(preset(Preset::Performance))==14);
-    for(unsigned y=36;y<=84;++y){auto g=parse(("[Quality]\nGIDistance="+std::to_string(y)+"\n").c_str());const unsigned n=giProbeGrid(g);
-        assert(g.giDistance==y&&n%2==0&&n>=10&&n<=22&&4*n-4<=y&&y<4*n-4+8&&(y==76)==(g==d));}
+    for(unsigned y=36;y<=156;++y){auto g=parse(("[Quality]\nGIDistance="+std::to_string(y)+"\n").c_str());const unsigned n=giProbeGrid(g);
+        assert(g.giDistance==y&&n%2==0&&n>=10&&n<=40&&4*n-4<=y&&y<4*n-4+8&&(y==76)==(g==d));}
     assert(giProbeGrid(parse("[Quality]\nGIDistance=60\n"))==16&&giProbeGrid(parse("[Quality]\nGIDistance=84\n"))==22&&giProbeGrid(parse("[Quality]\nGIDistance=43\n"))==10);
     {auto on=parse("[Quality]\nGIDistance=68\n");unsigned i=0;for(const auto& k:Keys){assert(on.origin[i]==(std::string(k.name)=="GIDistance"?'f':'d'));++i;}
-        std::vector<std::string> p;assert(parse("[Quality]\nGIDistance=35\nGIDistance=85\n",nullptr,p)==d&&p.size()==2);
+        std::vector<std::string> p;assert(parse("[Quality]\nGIDistance=35\nGIDistance=157\n",nullptr,p)==d&&p.size()==2);
         p.clear();assert(parse(nullptr,"[ShadowExperiment]\nGIDistance=60\n",p)==d&&p.size()==1);
         assert(describe(d).find(" GIDistance=76(default)")!=std::string::npos&&describe(on).find(" GIDistance=68(file)")!=std::string::npos);}
     // 0.3.153 GIProbeAhead: 0 (window on the eye) in the code default and every preset, 0..48, own origin slot.
@@ -606,12 +622,12 @@ int main(){
     { /* effective(): the identity with ActorShadows=1 (any value of every key), with 0 only the two replay keys drop. */
       std::mt19937 er(158);
       for(int round=0;round<4000;++round){Settings s;s.preset=Preset(er()%3);unsigned i=0;
-          for(const auto& k:Keys){s.*k.field=k.low+unsigned(er()%(k.high-k.low+1));s.origin[i++]="dplf"[er()%4];}
+          for(const auto& k:Keys){k.set(s,k.low+int(er()%unsigned(k.high-k.low+1)));s.origin[i++]="dplf"[er()%4];}
           const Settings e=effective(s);
           if(s.actorShadows){assert(e==s&&!std::memcmp(e.origin,s.origin,sizeof s.origin)&&e.preset==s.preset&&forcedOff(s)=="none");continue;}
           assert(e.shadowFateDiagnostics==0&&e.diagReplayProbe==0&&!shadowFate(e)&&!replayProbe(e));
           for(const auto& k:Keys){const std::string n=k.name;
-              if(n!="ShadowFateDiagnostics"&&n!="DiagReplayProbe")assert(e.*k.field==s.*k.field);}
+              if(n!="ShadowFateDiagnostics"&&n!="DiagReplayProbe")assert(k.get(e)==k.get(s));}
           assert(!std::memcmp(e.origin,s.origin,sizeof s.origin)&&e.preset==s.preset&&effective(e)==e);}
       assert(effective(d)==d&&forcedOff(d)=="none");
       auto off=parse("[Quality]\nActorShadows=0\nPersistentRigidProps=1\nDiagReplayProbe=1\n");
@@ -659,6 +675,14 @@ int main(){
      const auto off=parse("[Quality]\nSoftShadows=0\n");assert(!off.softShadows&&off.actorShadowDetail==d.actorShadowDetail&&off.actorShadows==d.actorShadows&&off.pointShadows==d.pointShadows);
      assert(effective(parse("[Quality]\nActorShadows=0\nSoftShadows=1\n")).softShadows==1);
      std::vector<std::string> issues;assert(parse("[Quality]\nSoftShadows=2\n",nullptr,issues)==d&&issues.size()==1);}
+    {const auto native=parse("[Quality]\nShadowProvider=0\n");assert(native.shadowProvider==0&&native.worldShadows==d.worldShadows&&native.pointShadows==d.pointShadows);
+     assert(parse("[Quality]\nShadowProvider=1\n").shadowProvider==1);
+     std::vector<std::string> issues;assert(parse("[Quality]\nShadowProvider=2\n",nullptr,issues)==d&&issues.size()==1);}
+    {const auto tuned=parse("[Quality]\nShadowStrength=180\nShadowSoftness=0\nShadowContactRadius=50\n");
+     assert(tuned.shadowStrength==180&&tuned.shadowSoftness==0&&tuned.shadowContactRadius==50);
+     assert(d.shadowStrength==125&&d.shadowSoftness==50&&d.shadowContactRadius==100);}
+    assert(giProbeGrid(parse("[Quality]\nGIDistance=156\n"))==40);
+    for(unsigned rings=1;rings<=3;++rings){auto q=parse(("[Quality]\nGIChunkRadius="+std::to_string(rings)+"\n").c_str());assert(giChunkSide(q)==2*rings+1&&giGeometryRadius(q)==288.f*rings);}
     std::printf("quality: %s\n",describe(d).c_str());
     std::printf("quality: defaults==0.3.136, presets, overrides, legacy precedence and fallbacks, BOM/CRLF, range edges, shipped ini, identical default code paths passed\n");
 }

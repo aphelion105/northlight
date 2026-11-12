@@ -26,6 +26,7 @@ from validate_native_scene_trace import processes
 parser = argparse.ArgumentParser(__doc__)
 parser.add_argument('--output', type=Path, default=fp.output_dir()/'captured-lamp-actor')
 parser.add_argument('--backend', type=Path, action='append')
+parser.add_argument('--actor-foot', type=float, nargs=3, default=(-8564., 1011.55, 95.73))
 args = parser.parse_args()
 out = args.output.resolve()
 out.mkdir(parents=True, exist_ok=True)
@@ -54,7 +55,7 @@ fp.use_source_modules()
 from world_lights_builder import RECORD
 source = (-8564.9423828125, 1011.7713012695312, 99.7315444946289, 1., .55, .2, 1., 12., source_id, 2, 2)
 (case/'sources.fgl').write_bytes(struct.pack('<4sIII', b'FGL1', 2, RECORD.size, 1)+RECORD.pack(*source))
-(case/'actor-foot.f32').write_bytes(struct.pack('<3f', -8564., 1011.55, 95.73))
+(case/'actor-foot.f32').write_bytes(struct.pack('<3f', *args.actor_foot))
 character = character_fixture(out)
 digest = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
 inputs = {str(path): digest(path) for path in [*fp.SRC.rglob('*.h'), *fp.SRC.rglob('*.inl'), *fp.SRC.rglob('*.cpp'),
@@ -73,6 +74,7 @@ settings.mkdir(exist_ok=True)
 (settings/'northlight-renderer.ini').write_text('[Renderer]\nSettingsOverlay=0\n')
 inputs.update({str(path): digest(path) for path in [exe, settings/'northlight-renderer.ini']})
 report = {'pass': False, 'source_id': str(source_id), 'source': source[:3], 'model': str(model),
+          'actor_foot': args.actor_foot,
           'model_sha256': expected, 'character': character, 'game_modified': False,
           'historical_actor_admission_proven': False, 'controlled_pose': True,
           'receiver': 'horizontal plane at captured curb Z95.73; independent top-down view', 'inputs': inputs, 'cases': []}
@@ -89,7 +91,7 @@ for index, backend in enumerate(backends):
         folder.mkdir(exist_ok=True)
         for name in ('character.bin', 'character-vs.bin'):
             shutil.copy2(out/name, folder/name)
-        processes(False)
+        processes()
         run = subprocess.run(list(map(str, [exe, backend, str(settings)+os.sep, case,
                                             'housing-actor-soft' if soft else 'housing-actor', folder])),
                              cwd=out, env=env, text=True, capture_output=True, timeout=120)

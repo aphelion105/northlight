@@ -29,6 +29,8 @@ static float half(std::uint16_t h){const unsigned e=(h>>10)&31, m=h&1023;const f
 struct Vertex{float x,y,z,w,u,v;};
 int main(int argc,char** argv){
     assert(argc==8);const std::string prefix=argv[1];
+    const bool directNormals=std::getenv("NORTHLIGHT_REMOVAL_DIRECT_NORMALS")!=nullptr;
+    if(directNormals)assert(read(argv[4])==read(argv[5]));
     auto bank=constantBank(read(prefix+"constants.f32"));auto& c=bank.values;
     auto light=image(prefix+"light.fgr"),dist=image(prefix+"distance.fgr"),scene=image(prefix+"scene.fgr"),base=image(prefix+"baseline.fgr"),normals=image(prefix+"normals.fgr");
     assert(light.format==D3DFMT_A16B16G16R16F&&dist.format==D3DFMT_R32F&&dist.width==light.width&&dist.height==light.height);
@@ -66,15 +68,20 @@ int main(int argc,char** argv){
     IDirect3DQuery9 *event=nullptr,*start=nullptr,*end=nullptr,*freq=nullptr,*disjoint=nullptr;ok(dev->CreateQuery(D3DQUERYTYPE_EVENT,&event));ok(dev->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&start));ok(dev->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&end));ok(dev->CreateQuery(D3DQUERYTYPE_TIMESTAMPFREQ,&freq));ok(dev->CreateQuery(D3DQUERYTYPE_TIMESTAMPDISJOINT,&disjoint));
     std::vector<unsigned char> output[2], normalOutput[2];double means[2]={};
     unsigned activeMode=0;
+    bool distanceReady=false;
     auto draw=[&](unsigned n){ok(dev->BeginScene());for(unsigned j=0;j<n;++j){
+        if(!directNormals||!distanceReady){
         ok(dev->SetTexture(14,nullptr));ok(dev->SetTexture(15,nullptr));
         ok(dev->SetRenderTarget(0,normalSurface));ok(dev->SetRenderTarget(1,distanceSurface));
         ok(dev->SetPixelShader(normalShaders[activeMode]));ok(dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,vertices,sizeof(Vertex)));
+        distanceReady=true;}
         ok(dev->SetRenderTarget(1,nullptr));ok(dev->SetRenderTarget(0,target));
-        ok(dev->SetTexture(14,normalTexture));ok(dev->SetTexture(15,distanceTexture));
+        ok(dev->SetTexture(14,directNormals?textures[4]:normalTexture));ok(dev->SetTexture(15,distanceTexture));
         ok(dev->SetPixelShader(shaders[activeMode]));ok(dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,vertices,sizeof(Vertex)));
     }ok(dev->EndScene());};
-    for(unsigned block=0;block<8;++block){const unsigned mode=block%2;activeMode=mode;ok(dev->SetPixelShader(shaders[mode]));draw(4);wait(event);ok(disjoint->Issue(D3DISSUE_BEGIN));ok(start->Issue(D3DISSUE_END));draw(16);ok(end->Issue(D3DISSUE_END));ok(freq->Issue(D3DISSUE_END));ok(disjoint->Issue(D3DISSUE_END));wait(event);UINT64 a=0,b=0,f=0;BOOL bad=FALSE;assert(start->GetData(&a,sizeof a,0)==S_OK&&end->GetData(&b,sizeof b,0)==S_OK&&freq->GetData(&f,sizeof f,0)==S_OK&&disjoint->GetData(&bad,sizeof bad,0)==S_OK&&!bad&&b>=a&&f);means[mode]+=double(b-a)/double(f)*1000/16/4;
+    const unsigned batch=std::getenv("NORTHLIGHT_REMOVAL_BENCH_DRAWS")?unsigned(std::atoi(std::getenv("NORTHLIGHT_REMOVAL_BENCH_DRAWS"))):16;assert(batch>0&&batch<=4096);
+    if(batch>16)for(unsigned mode=0;mode<2;++mode){activeMode=mode;draw(batch*4);wait(event);}
+    for(unsigned block=0;block<8;++block){const unsigned mode=batch>16?unsigned(block%4==1||block%4==2):block%2;activeMode=mode;ok(dev->SetPixelShader(shaders[mode]));draw(4);wait(event);ok(disjoint->Issue(D3DISSUE_BEGIN));ok(start->Issue(D3DISSUE_END));draw(batch);ok(end->Issue(D3DISSUE_END));ok(freq->Issue(D3DISSUE_END));ok(disjoint->Issue(D3DISSUE_END));wait(event);UINT64 a=0,b=0,f=0;BOOL bad=FALSE;assert(start->GetData(&a,sizeof a,0)==S_OK&&end->GetData(&b,sizeof b,0)==S_OK&&freq->GetData(&f,sizeof f,0)==S_OK&&disjoint->GetData(&bad,sizeof bad,0)==S_OK&&!bad&&b>=a&&f);means[mode]+=double(b-a)/double(f)*1000/batch/4;
         if(block<2){ok(dev->GetRenderTargetData(target,staging));D3DLOCKED_RECT lock{};ok(staging->LockRect(&lock,nullptr,D3DLOCK_READONLY));output[mode].resize(std::size_t(W)*H*8);for(unsigned y=0;y<H;++y)std::memcpy(output[mode].data()+std::size_t(y)*W*8,(char*)lock.pBits+y*lock.Pitch,W*8);ok(staging->UnlockRect());
             ok(dev->GetRenderTargetData(normalSurface,staging));ok(staging->LockRect(&lock,nullptr,D3DLOCK_READONLY));
             normalOutput[mode].resize(std::size_t(W)*H*8);
@@ -84,6 +91,8 @@ int main(int argc,char** argv){
     std::size_t changed=0,big=0,alpha=0,nonfinite=0;double maxAbs=0,sumSq=0;for(std::size_t i=0;i<std::size_t(W)*H*4;++i){std::uint16_t a,b;std::memcpy(&a,output[0].data()+i*2,2);std::memcpy(&b,output[1].data()+i*2,2);const double error=std::fabs(double(half(a))-half(b));nonfinite+=!std::isfinite(error);changed+=a!=b;alpha+=i%4==3&&a!=b;big+=error>1.0/1024;maxAbs=std::max(maxAbs,error);sumSq+=error*error;}
     std::printf("{\"capture\":\"%s\",\"old_ms\":%.6f,\"native_ms\":%.6f,\"ratio\":%.4f,\"components\":%llu,\"changed\":%llu,\"over_1_1024\":%llu,\"alpha_changes\":%llu,\"nonfinite\":%llu,\"max_abs\":%.9g,\"rmse\":%.9g,\"depth_reconstructed\":%s,\"AO_neutral\":%s,\"constant_register_count\":%u,\"constant_bank_stage\":\"unversioned\",\"invented_fog_environment\":false,\"neutral_composite_auxiliary_textures\":%s,\"per_source_bank_missing\":true,\"material_inputs_complete\":false,\"authentic_source_replay\":false,\"whole_scene_replay\":false}\n",argv[6],means[0],means[1],means[1]/means[0],(unsigned long long)std::size_t(W)*H*4,(unsigned long long)changed,(unsigned long long)big,(unsigned long long)alpha,(unsigned long long)nonfinite,maxAbs,std::sqrt(sumSq/(std::size_t(W)*H*4)),depthReconstructed?"true":"false",neutralAO?"true":"false",bank.count,composite?"true":"false");std::fflush(stdout);
     assert(!nonfinite&&!alpha&&maxAbs<=1.0/1024);
+    if(std::getenv("NORTHLIGHT_REMOVAL_EXACT"))assert(!changed);
+    std::printf("{\"direct_normals\":%s,\"exact\":%s}\n",directNormals?"true":"false",changed?"false":"true");
     std::size_t normalChanged=0,normalAlpha=0;double normalMax=0;
     for(std::size_t i=0;i<normalOutput[0].size()/2;++i){std::uint16_t a,b;
         std::memcpy(&a,normalOutput[0].data()+i*2,2);std::memcpy(&b,normalOutput[1].data()+i*2,2);

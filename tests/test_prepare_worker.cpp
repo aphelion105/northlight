@@ -48,11 +48,11 @@ struct Rec {
     const Program* program=nullptr; /* 0.3.179 (T1): the capture metadata's program */
     std::uint64_t prepareStamp=0; /* 0.3.183: the prepare epoch at capture */
     const NorthlightActorPrepare::DeclCopy* declCopy=nullptr; /* 0.3.179 (T2): the frame's copy; null: the per-record copy */
-    std::array<D3DVERTEXELEMENT9,MAXD3DDECLLENGTH+1> elements{};UINT elementCount=0;bool declared=false;
+    std::vector<D3DVERTEXELEMENT9> elements;bool declared=false;
     bool shadowSelected=true,shadowSkinned=true,boneKnown=false;float bone=NAN;
     const Mesh& mesh()const{return shared?*shared:snapshot;}
     const D3DVERTEXELEMENT9* declarationElements()const{return declCopy?declCopy->elements:elements.data();}
-    UINT declarationCount()const{return declCopy?declCopy->count:elementCount;}
+    UINT declarationCount()const{return declCopy?declCopy->count:UINT(elements.size());}
 };
 // The 0.3.178 record layout: a program handle and a per-record declaration copy.
 struct RecR83 {
@@ -101,11 +101,11 @@ struct World {
     // The capture-side fill (the renderer's prepareFill): the program, the frame's declaration copy or,
     // when the arena is full, a per-record copy.
     void fill(Rec& r){
-        r.program=handle(r).get();r.declCopy=nullptr;r.elementCount=0;
+        r.program=handle(r).get();r.declCopy=nullptr;r.elements.clear();
         const auto* copy=r.program?arena.find(r.decl,[this](IDirect3DVertexDeclaration9* d,const D3DVERTEXELEMENT9*& e,UINT& n){return declarationCache.get(d,e,n);}):nullptr;
         if(copy){r.declCopy=copy;r.declared=copy->declared;return;}
-        const D3DVERTEXELEMENT9* e=nullptr;UINT n=0;r.declared=r.program&&declarationCache.get(r.decl,e,n)&&n<=r.elements.size();
-        if(r.declared){std::copy(e,e+n,r.elements.begin());r.elementCount=n;}
+        const D3DVERTEXELEMENT9* e=nullptr;UINT n=0;r.declared=r.program&&declarationCache.get(r.decl,e,n)&&n<=MAXD3DDECLLENGTH+1;
+        if(r.declared)r.elements.assign(e,e+n);
     }
     // The same record in the 0.3.178 layout (fill: a handle and a copy through the live cache).
     RecR83 r83(const Rec& r){RecR83 o;o.count=r.count;std::memcpy(o.captureRoot,r.captureRoot,sizeof o.captureRoot);o.captureRootValid=r.captureRootValid;o.constantGroup=r.constantGroup;o.originalShader=r.originalShader;o.decl=r.decl;o.shared=r.shared;o.snapshot=r.snapshot;o.constants=r.constants;
@@ -245,7 +245,7 @@ static void evictedDeclaration(World& world){
         for(auto& d:others){const D3DVERTEXELEMENT9* e=nullptr;UINT m=0;cache.get(&d,e,m);} /* 200 > 128 slots: every slot turned over */
         std::vector<Rec> stale(n);for(std::size_t k=0;k<n;++k){stale[k].count=p.records[k]->count;std::memcpy(stale[k].captureRoot,p.records[k]->captureRoot,sizeof stale[k].captureRoot);stale[k].captureRootValid=p.records[k]->captureRootValid;stale[k].constantGroup=p.records[k]->constantGroup;stale[k].originalShader=p.records[k]->originalShader;
             stale[k].decl=p.records[k]->decl;stale[k].shared=p.records[k]->shared;stale[k].snapshot=p.records[k]->snapshot;stale[k].constants=p.records[k]->constants;
-            stale[k].program=p.records[k]->program;stale[k].declared=p.records[k]->declared;stale[k].elementCount=counts[k];
+            stale[k].program=p.records[k]->program;stale[k].declared=p.records[k]->declared;stale[k].elements.resize(counts[k]);
             if(live[k])std::copy(live[k],live[k]+counts[k],stale[k].elements.begin());}
         Published q2;for(std::size_t k=0;k<n;++k){q2.records.push_back(&stale[k]);q2.index.push_back(p.index[k]);}
         std::vector<Output> reference(n),read(n);auto a=std::make_unique<Caches>(),b=std::make_unique<Caches>();
@@ -303,7 +303,7 @@ static void staleDeclaration(World& world){
                 Rec base;base.count=rec->count;std::memcpy(base.captureRoot,rec->captureRoot,sizeof base.captureRoot);base.captureRootValid=rec->captureRootValid;base.constantGroup=rec->constantGroup;base.originalShader=rec->originalShader;base.decl=&reused;base.shared=rec->shared;base.snapshot=rec->snapshot;base.constants=rec->constants;base.program=world.handle(*rec).get();
                 Rec x=base,y=base,z=base;
                 if(base.program){const auto* e=perFrame.find(base.decl,get);x.declCopy=e;x.declared=e->declared;const auto* g=crossFrame.find(base.decl,get);y.declCopy=g;y.declared=g->declared;
-                    const D3DVERTEXELEMENT9* el=nullptr;UINT n=0;z.declared=get(base.decl,el,n);z.elementCount=n;std::copy(el,el+n,z.elements.begin());}
+                    const D3DVERTEXELEMENT9* el=nullptr;UINT n=0;z.declared=get(base.decl,el,n);z.elements.assign(el,el+n);}
                 arena.push_back(std::move(x));cross.push_back(std::move(y));fresh.push_back(std::move(z));}
             auto run=[&](std::vector<Rec>& v){std::vector<Output> out(v.size());NorthlightActorPrepare::State st;auto cc=std::make_unique<Caches>();
                 for(std::size_t k=0;k<v.size();++k)NorthlightActorPrepare::prepareRecord(st,v[k],k,*cc,c.inverseView,c.camera,out[k]);return out;};
@@ -476,7 +476,7 @@ static void integration(World& world,unsigned frames,unsigned maxGroups){
         NorthlightRenderThreadProbe::on=rng()%3==0;r.sampled=NorthlightRenderThreadProbe::on&&rng()%2;tickNow=DWORD(rng()%100000);
         const bool trim=rng()%12==0;const std::size_t trimAt=records.empty()?0:rng()%records.size();
         for(std::size_t i=0;i<records.size();++i){auto rec=std::move(records[i]);
-            rec->program=nullptr;rec->declCopy=nullptr;rec->declared=false;rec->elementCount=0; /* the renderer's fill below */
+            rec->program=nullptr;rec->declCopy=nullptr;rec->declared=false;rec->elements.clear(); /* the renderer's fill below */
             if(rng()%4==0)delay(rng);
             const bool handoff=rec->shadowSelected&&rec->shadowSkinned,timedHandoff=handoff&&r.prepareHandoffSample(); /* captureModel's M1 span */
             const auto handoffStart=timedHandoff?r.prepareMeter.start():std::chrono::steady_clock::time_point{};
@@ -515,7 +515,7 @@ static void rearmCap(World& world){
         std::vector<std::unique_ptr<Rec>> records;
         do records=world.frame(rng,8);while(published(records).records.empty());
         const Camera c=camera(rng);std::memcpy(r.context.inverseView,c.inverseView,64);std::memcpy(r.context.camera,c.camera,12);
-        for(std::size_t i=0;i<records.size();++i){auto rec=std::move(records[i]);rec->program=nullptr;rec->declCopy=nullptr;rec->declared=false;rec->elementCount=0;
+        for(std::size_t i=0;i<records.size();++i){auto rec=std::move(records[i]);rec->program=nullptr;rec->declCopy=nullptr;rec->declared=false;rec->elements.clear();
             if(stall&&rec->shadowSelected&&rec->shadowSkinned&&stallAt.load()==SIZE_MAX)stallAt=i;
             const bool handoff=rec->shadowSelected&&rec->shadowSkinned,timedHandoff=handoff&&r.prepareHandoffSample(); /* captureModel's M1 span */
             const auto handoffStart=timedHandoff?r.prepareMeter.start():std::chrono::steady_clock::time_point{};
@@ -553,7 +553,7 @@ static void programLifetime(World& world,bool counterfactual){
     std::vector<std::unique_ptr<Rec>> records;do records=world.frame(rng,10);while(published(records).records.size()<4);
     const Camera c=camera(rng);std::memcpy(r.context.inverseView,c.inverseView,64);std::memcpy(r.context.camera,c.camera,12);
     IDirect3DVertexShader9* retired=nullptr;
-    for(std::size_t i=0;i<records.size();++i){auto rec=std::move(records[i]);rec->program=nullptr;rec->declCopy=nullptr;rec->declared=false;rec->elementCount=0;
+    for(std::size_t i=0;i<records.size();++i){auto rec=std::move(records[i]);rec->program=nullptr;rec->declCopy=nullptr;rec->declared=false;rec->elements.clear();
         if(rec->shadowSelected&&rec->shadowSkinned){if(stallAt.load()==SIZE_MAX&&r.captureShaders[rec->originalShader].program){stallAt=i;retired=rec->originalShader;}
             r.prepareFill(*rec,r.captureShaders[rec->originalShader]);}
         r.replays.emplace_back(std::move(rec));r.preparePublish();}
@@ -585,7 +585,7 @@ static void abandonedBound(World& world,Bound mode){
     r.keep=mode==Bound::All?Renderer::Keep::All:mode==Bound::Published?Renderer::Keep::Published:Renderer::Keep::Tagged;
     r.prepareWorker.setWatchdogMs(5);NorthlightRenderThreadProbe::on=false;tickNow=1000;
     auto capture=[&](std::vector<std::unique_ptr<Rec>>& records){
-        for(std::size_t i=0;i<records.size();++i){auto rec=std::move(records[i]);rec->program=nullptr;rec->declCopy=nullptr;rec->declared=false;rec->elementCount=0;
+        for(std::size_t i=0;i<records.size();++i){auto rec=std::move(records[i]);rec->program=nullptr;rec->declCopy=nullptr;rec->declared=false;rec->elements.clear();
             if(rec->shadowSelected&&rec->shadowSkinned)r.prepareFill(*rec,r.captureShaders[rec->originalShader]);
             r.replays.emplace_back(std::move(rec));r.preparePublish();}};
     auto select=[&](const Camera& c){std::size_t tests=0,reused=0;r.actorShadowDraws.clear();r.prepareStable(tests,reused);
@@ -639,7 +639,7 @@ static void shutdownOrder(World& world,bool counterfactual){
     r->prepareWorker.setWatchdogMs(5);NorthlightRenderThreadProbe::on=false;
     std::vector<std::unique_ptr<Rec>> records;do records=world.frame(rng,10);while(published(records).records.size()<4);
     const Camera c=camera(rng);std::memcpy(r->context.inverseView,c.inverseView,64);std::memcpy(r->context.camera,c.camera,12);
-    for(std::size_t i=0;i<records.size();++i){auto rec=std::move(records[i]);rec->program=nullptr;rec->declCopy=nullptr;rec->declared=false;rec->elementCount=0;
+    for(std::size_t i=0;i<records.size();++i){auto rec=std::move(records[i]);rec->program=nullptr;rec->declCopy=nullptr;rec->declared=false;rec->elements.clear();
         if(rec->shadowSelected&&rec->shadowSkinned){if(stallAt.load()==SIZE_MAX&&r->captureShaders[rec->originalShader].program)stallAt=i;r->prepareFill(*rec,r->captureShaders[rec->originalShader]);}
         r->replays.emplace_back(std::move(rec));r->preparePublish();}
     std::this_thread::sleep_for(std::chrono::milliseconds(2)); /* the worker is inside the stalled record, before it reads the program */

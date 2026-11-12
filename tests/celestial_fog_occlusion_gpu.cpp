@@ -36,12 +36,16 @@ int main(int argc,char** argv){
     c[17][0]=.6f;c[17][1]=.5f;c[17][2]=.4f;for(unsigned k=0;k<3;++k)c[18][k]=.04f;
     c[21][0]=1;c[21][1]=1.2f;c[21][2]=1.5f;c[21][3]=128;c[22][0]=.7f;c[22][1]=.8f;c[22][2]=1;c[22][3]=.0035f;
     c[27][0]=1;c[31][0]=c[31][1]=-256;c[31][2]=1.f/512;c[32][0]=.0055f;c[32][1]=.0037f;c[32][2]=c[32][3]=128;c[33][0]=c[33][1]=N;c[58][1]=1.f/8;c[59][3]=.0017f;
-    ok(d->SetTexture(13,regional));unsigned failures=0,cases=0,baselineDim=0;double maxError=0,shaftContrast=0;
+    ok(d->SetTexture(13,regional));unsigned failures=0,cases=0,baselineDim=0,legacyDifferences=0;double maxError=0,shaftContrast=0;
     for(float angle:{0.f,.6f,1.57f,3.14f})for(auto depth:{one,nearDepth})for(auto map:{one,zero,shadow}){
         c[16][0]=std::cos(angle);c[16][1]=std::sin(angle);ok(d->SetTexture(1,depth));ok(d->SetTexture(3,map));ok(d->SetTexture(15,one));const auto visible=capture(fog,c),oldVisible=capture(oldFog,c);
         ok(d->SetTexture(15,zero));const auto hidden=capture(fog,c),oldHidden=capture(oldFog,c);
         for(unsigned p=0;p<N*N;++p)for(unsigned k=0;k<4;++k){const auto i=p*4+k;double err=std::fabs(hidden[i]-visible[i]);maxError=std::max(maxError,err);
-            if(!std::isfinite(hidden[i])||err>2e-6||std::fabs(visible[i]-oldVisible[i])>2e-5)++failures;
+            if(!std::isfinite(hidden[i])||err>2e-6)++failures;
+            // The frozen shader predates the current extinction/ground-light policy.
+            // Compare source-occlusion invariance here; atmospheric_fog_gpu checks
+            // current radiance against analytic transport, not the old colour model.
+            if(std::fabs(visible[i]-oldVisible[i])>2e-5)++legacyDifferences;
             if(k<3&&oldVisible[i]>oldHidden[i]+.01f)++baselineDim;
             if(map==zero&&k<3){const float expected=c[18][k]*c[22][k]*.35f*(1-hidden[p*4+3]);if(std::fabs(hidden[i]-expected)>2e-6)++failures;}
             if(depth==nearDepth&&(hidden[p*4+3]<.99f||hidden[i]>.01f&&k<3))++failures;
@@ -49,6 +53,7 @@ int main(int argc,char** argv){
         if(angle==0&&depth==one&&map==shadow)shaftContrast=std::fabs(hidden[(8*N+3)*4]-hidden[(8*N+13)*4]);
         ++cases;
     }
+    std::printf("air-shadow contract failures=%u legacyColourDifferences=%u\n",failures,legacyDifferences);
     // Full source occlusion hides the halo/ring; fog air shadowing above remains independent.
     std::memset(c,0,sizeof c);const float cs=std::cos(.4f),sn=std::sin(.4f);
     c[0][0]=c[0][1]=1.f/N;c[0][3]=1/.94f;c[1][0]=c[1][1]=5;c[1][2]=1;c[2][1]=1;c[3][0]=-sn;c[3][2]=cs;c[4][0]=cs;c[4][2]=sn;
@@ -58,6 +63,28 @@ int main(int argc,char** argv){
     ok(d->SetTexture(0,nearDepth));const auto blocked=capture(halo,c),oldBlocked=capture(oldHalo,c);
     for(unsigned p=0;p<N*N;++p)if(clear[p*4]<.999f||blocked[p*4]!=0||oldBlocked[p*4]!=0)++failures;
     c[46][0]=1;ok(d->SetTexture(4,one));const auto mountain=capture(halo,c);for(unsigned p=0;p<N*N;++p)if(mountain[p*4]!=0)++failures;
+    // Cloud transmission gates only the solar optical halo, not world fog.
+    // Source geometry remains independently authoritative; no stale history at zero.
+    unsigned cloudCases=0,oldCloudLeaks=0;
+    for(float transmission:{0.f,.05f,.25f,.5f,.8f,1.f}){
+        Image cloudImage{1,1,D3DFMT_A32B32G32R32F,16,std::vector<unsigned char>(16)};
+        const float layer[]={.2f,.3f,.4f,transmission};std::memcpy(cloudImage.pixels.data(),layer,16);auto cloud=texture(d,cloudImage);
+        ok(d->SetTexture(6,cloud));c[46][0]=0;ok(d->SetTexture(0,one));c[49][3]=1;c[45][0]=0;
+        const auto solar=capture(halo,c),oldSolar=capture(oldHalo,c);
+        for(unsigned p=0;p<N*N;++p){if(std::fabs(solar[p*4]-transmission)>2e-6)++failures;if(transmission==0&&oldSolar[p*4]>.99f)++oldCloudLeaks;}
+        for(unsigned j=13;j<29;++j)c[j][0]=-1;
+        const auto partial=capture(halo,c);for(unsigned p=0;p<N*N;++p)if(std::fabs(partial[p*4]-.75f*transmission)>2e-6)++failures;
+        for(unsigned j=13;j<29;++j)c[j][0]=.5f;
+        c[49][3]=0;const auto moon=capture(halo,c);for(unsigned p=0;p<N*N;++p)if(moon[p*4]<.999f)++failures;
+        c[49][3]=1;c[45][0]=1;c[45][1]=.2f;c[45][2]=.3f;ok(d->SetTexture(3,one));
+        const auto history=capture(halo,c);const float expected=transmission==0?0:1+(transmission-1)*.2f;
+        for(unsigned p=0;p<N*N;++p)if(std::fabs(history[p*4]-expected)>2e-6)++failures;
+        ok(d->SetTexture(0,nearDepth));const auto solid=capture(halo,c);for(unsigned p=0;p<N*N;++p)if(solid[p*4]!=0)++failures;
+        ok(d->SetTexture(0,one));c[46][0]=1;ok(d->SetTexture(4,one));const auto terrain=capture(halo,c);for(unsigned p=0;p<N*N;++p)if(terrain[p*4]!=0)++failures;
+        ok(d->SetTexture(6,nullptr));cloud->Release();cloudCases+=6;
+    }
+    if(!oldCloudLeaks)++failures;
+    std::printf("solar cloud GPU cases=%u oldOpaqueCloudLeaks=%u failures=%u\n",cloudCases,oldCloudLeaks,failures);
     if(!baselineDim||shaftContrast<.02)++failures;
     std::printf("fog/halo GPU cases=%u baselineDimChannels=%u shaftContrast=%g maxOcclusionError=%g failures=%u\n",cases+3,baselineDim,shaftContrast,maxError,failures);
     for(unsigned s=0;s<16;++s)d->SetTexture(s,nullptr);d->SetPixelShader(nullptr);zero->Release();one->Release();nearDepth->Release();regional->Release();shadow->Release();oldFog->Release();fog->Release();oldHalo->Release();halo->Release();target->Release();staging->Release();d->Release();api->Release();FreeLibrary(module);DestroyWindow(window);UnregisterClassW(wc.lpszClassName,wc.hInstance);return failures?1:0;

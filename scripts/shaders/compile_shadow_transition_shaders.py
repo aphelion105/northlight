@@ -8,7 +8,7 @@ sys.path[:0] = [str(Path(__file__).resolve().parents[2]), str(Path(__file__).res
 import northlight_paths as fp
 from shader_compiler import Compiler, rows, validate_assembly
 
-ENTRIES = ('DirectionalShadowTransitionCurrent', 'DirectionalShadowTransitionPrevious', 'WorldFogTransition', 'WorldFogActorTransition', 'WorldFogActorTiledTransition', 'FogCloudsTransition', 'FogCloudsActorTransition', 'FogCloudsActorTiledTransition')
+ENTRIES = ("ForeverFogNoNoiseTransition", "ForeverFogActorNoNoiseTransition", "ForeverFogTransition", "ForeverFogActorTransition", 'DirectionalShadowTransitionCurrent', 'DirectionalShadowTransitionPrevious', 'WorldFogTransition', 'WorldFogActorTransition', 'WorldFogActorTiledTransition', 'FogCloudsTransition', 'FogCloudsActorTransition', 'FogCloudsActorTiledTransition', 'MoonFloorFogTransition', 'MoonFloorFogActorTransition', 'MoonFloorFogActorTiledTransition')
 SOURCES = ("world_effects.hlsl", "shadow_transition.hlsl")
 
 

@@ -39,8 +39,8 @@ static float dynamicAt(V3 q,const Map& map,const Constants& c) {
 static float surfacePCF(V3 q,bool nearCascade,bool old,const Map& map,const Map& dynamic,const Constants& c,V3 gradient={0,0,0}) {
     const float t=c[2][3],u=q[0]*.5f+.5f+.5f*t,v=.5f-q[1]*.5f+.5f*t;
     if(u<.003f||u>.997f||v<.003f||v>.997f||q[2]<=0||q[2]>=1)return 1;
-    const int size=nearCascade?5:4,start=nearCascade?-2:-1;
-    const float pixelX=u/t-.5f,pixelY=v/t-.5f,bx=std::floor(pixelX+(nearCascade?.5f:0)),by=std::floor(pixelY+(nearCascade?.5f:0));
+    const int size=2,start=0;
+    const float pixelX=u/t-.5f,pixelY=v/t-.5f,bx=std::floor(pixelX-1)+1,by=std::floor(pixelY-1)+1;
     const float fx=pixelX-bx,fy=pixelY-by,bias=c[24][0]*(nearCascade?1:2),receiver=q[2]-bias;
     auto stored=[&](float x,float y,float expected){
         float value=map.at(x,y);
@@ -51,11 +51,11 @@ static float surfacePCF(V3 q,bool nearCascade,bool old,const Map& map,const Map&
     float sum=0,total=0,gaps=0,blockers=0;
     for(int y=0;y<size;++y)for(int x=0;x<size;++x){
         const float tx=(bx+x+start+.5f)*t,ty=(by+y+start+.5f)*t;
-        const float w=std::max(size*.5f-std::fabs(x+start-fx),0.f)*std::max(size*.5f-std::fabs(y+start-fy),0.f);
+        const float w=std::max(1.f-std::fabs(x+start-fx),0.f)*std::max(1.f-std::fabs(y+start-fy),0.f);
         const float expected=receiver+gradient[0]*(tx-u)+gradient[1]*(ty-v),depth=stored(tx,ty,expected);
         sum+=(expected<=depth?1.f:0.f)*w;total+=w;if(depth<expected){gaps+=expected-depth;++blockers;}
     }
-    if(c[117][0]>.5f){
+    if(c[117][0]>.5f&&nearCascade){
         for(int y=0;y<4;++y)for(int x=0;x<4;++x){
             const float tx=(std::floor(pixelX+(x-1.5f)*(4.25f/1.5f)+.5f)+.5f)*t;
             const float ty=(std::floor(pixelY+(y-1.5f)*(4.25f/1.5f)+.5f)+.5f)*t;
@@ -63,8 +63,8 @@ static float surfacePCF(V3 q,bool nearCascade,bool old,const Map& map,const Map&
             if(depth<expected){gaps+=expected-depth;++blockers;}
         }
         const float texelWorld=2*c[2][nearCascade?1:2]*t;
-        const float reach=std::clamp(.04f*gaps/std::max(blockers,1.f)/(c[35][0]*texelWorld),size*.5f,4.25f);
-        if(reach>size*.5f+.001f){sum=total=0;const float firstX=std::floor(pixelX-reach)+1,firstY=std::floor(pixelY-reach)+1;
+        const float reach=std::clamp(.02f*gaps/std::max(blockers,1.f)/(c[35][0]*texelWorld),1.f,4.25f);
+        if(reach>1.f+.001f){sum=total=0;const float firstX=std::floor(pixelX-reach)+1,firstY=std::floor(pixelY-reach)+1;
             const int extent=int(std::floor(2*reach)+1);
             for(int y=0;y<extent&&y<9;++y)for(int x=0;x<extent&&x<9;++x){
                 const float px=firstX+x,py=firstY+y,tx=(px+.5f)*t,ty=(py+.5f)*t;
@@ -85,7 +85,7 @@ static float referenceDirect(V3 p,const Map& map,const Map& oldMap,const Map& dy
         const float lift=(1-sat(std::fabs(facing)))*confidence*2/1024;
         const float inverseSpan=old?c[100][nearCascade?2:3]:c[35][0];
         const float factor=confidence*2*inverseSpan/(facing<0?-std::max(std::fabs(facing),.15f):std::max(std::fabs(facing),.15f));
-        const float limit=(nearCascade?2.688f:10.752f)*inverseSpan/c[2][3];
+        const float limit=57.3f*c[2][nearCascade?1:2]*inverseSpan;
         gradient[0]=std::max(-limit,std::min(limit,(n[0]*c[m][0]+n[1]*c[m+1][0]+n[2]*c[m+2][0])*radius*factor*radius));
         gradient[1]=std::max(-limit,std::min(limit,-(n[0]*c[m][1]+n[1]*c[m+1][1]+n[2]*c[m+2][1])*radius*factor*radius));
         if(inputs)return (*inputs)[(old?2:0)+(nearCascade?0:1)];

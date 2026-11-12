@@ -12,6 +12,7 @@
 #include "replay_thread.h"
 #include "game_snapshot.h"
 #include "shader_tags.h"
+#include "native_shadow_control_windows.h"
 
 // Redundant-state filtering (a repeated Set of the value the game last set is not recorded) can be compiled out for the tests that need
 // the exact backend trace: -DNORTHLIGHT_STREAM_FILTER=0.
@@ -444,6 +445,7 @@ public:
         PresentMark& slot=presentHist[core.frameNo%framesAhead_];const PresentMark prev=slot;slot=PresentMark{q.recordedSeq(),core.frameNo};
         HRESULT result=D3D_OK;
         if(prev.seq){q.waitReplayed(prev.seq,WaitKind::Present);result=presentResult(prev);}   // framesAhead_ frames ahead: that frame's real HRESULT
+        NorthlightNativeShadowControl::producerPresent();
         const bool pressureAsked=core.memoryPressure.load(std::memory_order_relaxed)||NorthlightStream::memoryPressure.load(std::memory_order_relaxed);
         q.setPressure(pressureAsked);stormWatch(q,pressureAsked,nowAtPresent);
         frameEnd=nowNs();
@@ -509,7 +511,7 @@ public:
                 pp.BackBufferWidth,pp.BackBufferHeight,unsigned(pp.BackBufferFormat),unsigned(pp.Windowed),unsigned(pp.MultiSampleType),(unsigned long)pp.MultiSampleQuality,pp.BackBufferCount,pp.PresentationInterval,
                 p->BackBufferWidth,p->BackBufferHeight,unsigned(p->BackBufferFormat),unsigned(p->Windowed),unsigned(p->MultiSampleType),(unsigned long)p->MultiSampleQuality,p->BackBufferCount,p->PresentationInterval,p->FullScreen_RefreshRateInHz,(unsigned long)p->Flags);callerLog(line);
         }
-        st.clear();recording=false;
+        st.clear();recording=false;core.queryBackendThreads.clear();
         HRESULT hr=D3DERR_INVALIDCALL;
         std::uint64_t replayStart=0,replayEnd=0;
         const bool ran=runTask(core,[&](StreamCore& c){   // everything recorded so far has run; the game waits, pumped
@@ -523,6 +525,7 @@ public:
         if(profile){const auto end=nowNs();char line[384];std::snprintf(line,sizeof line,"CSTREAM RESET end frame=%llu ran=%u result=0x%08lx coop=0x%08lx totalMs=%.3f beforeReplayMs=%.3f replayMs=%.3f afterReplayMs=%.3f",
             (unsigned long long)core.frameNo,unsigned(ran),(unsigned long)std::uint32_t(hr),(unsigned long)std::uint32_t(core.coopState.load()),double(end-start)/1e6,
             replayStart?double(replayStart-start)/1e6:0.0,replayEnd?double(replayEnd-replayStart)/1e6:0.0,replayEnd?double(end-replayEnd)/1e6:0.0);callerLog(line);}
+        NorthlightNativeShadowControl::producerPresent();
         if(!ran)return D3DERR_INVALIDCALL;
         if(SUCCEEDED(hr))pp=sc0->pp;
         return hr;
@@ -545,7 +548,10 @@ public:
         a.extraBytes=extraBytes;
         auto* p=static_cast<CreateArgs*>(q.reserve((std::uint16_t)id,std::uint32_t(sizeof(CreateArgs)+((extraBytes+7u)&~7u))));
         *p=a;if(extraBytes)std::memcpy(p+1,extra,extraBytes);q.commit();proxy->readySeq=q.recordedSeq();   // 0.3.206 (task 31)
-        proxy->pinDevice();*out=static_cast<typename std::remove_pointer<decltype(firstIface(proxy))>::type*>(proxy);return D3D_OK;
+        proxy->pinDevice();*out=static_cast<typename std::remove_pointer<decltype(firstIface(proxy))>::type*>(proxy);
+        // Prepare the resource while the caller fills/decodes its data; a lone
+        // create must not wait for the next 64-command batch.
+        q.publish();return D3D_OK;
     }
     static IDirect3DTexture9* firstIface(StreamTexture*);static IDirect3DCubeTexture9* firstIface(StreamCubeTexture*);static IDirect3DVolumeTexture9* firstIface(StreamVolumeTexture*);
     static IDirect3DVertexBuffer9* firstIface(StreamVertexBuffer*);static IDirect3DIndexBuffer9* firstIface(StreamIndexBuffer*);static IDirect3DSurface9* firstIface(StreamSurface*);
@@ -697,6 +703,7 @@ private:
         :coreOwner(new StreamCore(opt.budget)),core(*coreOwner),replayer(core,SnapshotPool::capFor(clampFramesAhead(opt.framesAhead))),parent(par),framesAhead_(clampFramesAhead(opt.framesAhead)),capture(opt.capture),snapshotCompleted(opt.snapshotCompleted),snapshotSink(opt.snapshotSink),snapshotObserved(opt.snapshotObserved){
         core.target=target;core.game=this;core.framesAhead=framesAhead_;core.logLine=nullptr;core.callerModule=opt.callerModule;core.queryCaller=opt.queryCaller;core.occlusionLocal=opt.occlusionLocal;callerLog=opt.log;callerDiag=opt.diagnostics;core.readBackLock=opt.readBackLock;st.core=&core;
         if(opt.cursorApi)cursor=*opt.cursorApi;
+        core.queryThreadLog=opt.log;
         restoreOwner=opt.threadStart;replayer.frameSkip=opt.frameSkip!=0;replayer.threadStart=std::move(opt.threadStart);replayer.log=opt.log;replayer.diagnostics=opt.diagnostics;replayer.idleProfiling=opt.idleProfiling;filter=opt.filterRedundant;
         if(kDirectReplay&&opt.directReplay&&opt.extension&&opt.rawOf){core.ext=opt.extension;auto f=opt.rawOf;core.reg.rawOf=[f](IUnknown* e,Kind k){return f(e,unsigned(k));};}
         if(p)pp=*p;
@@ -735,6 +742,7 @@ private:
         st.clear();sc0->comRelease();   // binds and the swap chain's own reference go; the Destroys run before the Target's release
         runTask(core,[&](StreamCore& c){c.target->Release();c.target=nullptr;},Cmd::SyncRelease);   // the Device's final release happens on the replay thread
         replayer.stop();
+        NorthlightNativeShadowControl::producerPresent();
         innerOf=nullptr;activeCore.store(nullptr,std::memory_order_release);
 #ifdef NORTHLIGHT_REPLAY_STAND
         StandInputs::textureAliasGeneration=nullptr;

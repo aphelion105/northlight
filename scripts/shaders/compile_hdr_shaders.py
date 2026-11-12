@@ -26,12 +26,17 @@ def main():
                ('HdrUi', 'ps_3_0', 'HdrUi-ps_3_0', 'kHdrUiPs3'),
                ('HdrParticle', 'ps_2_0', 'HdrParticle-ps_2_0', 'kHdrParticlePs2'),
                ('HdrParticle', 'ps_3_0', 'HdrParticle-ps_3_0', 'kHdrParticlePs3'),
+               ('HdrSkyResidual', 'ps_2_0', 'HdrSkyResidual-ps_2_0', 'kHdrSkyResidualPs2'),
+               ('HdrSkyResidual', 'ps_3_0', 'HdrSkyResidual-ps_3_0', 'kHdrSkyResidualPs3'),
                ('HdrWorld', 'ps_3_0', 'HdrWorld', 'kHdrWorld'),
                ('HdrOverlay', 'ps_3_0', 'HdrOverlay', 'kHdrOverlay'),
                ('HdrFixedUi', 'ps_3_0', 'HdrFixedUi', 'kHdrFixedUi'),
+               ('HdrFixedAdditive', 'ps_2_0', 'HdrFixedAdditive', 'kHdrFixedAdditive'),
+               ('HdrFixedModulate', 'ps_2_0', 'HdrFixedModulate', 'kHdrFixedModulate'),
                ('HdrFixedUi2', 'ps_3_0', 'HdrFixedUi2', 'kHdrFixedUi2'),
+               ('HdrFixedSky2', 'ps_3_0', 'HdrFixedSky2', 'kHdrFixedSky2'),
                *[(name, 'ps_3_0', name, 'k'+name) for name in
-                 ('HdrMeter','HdrReduce','HdrReduceLinear','HdrDecodeWorld','HdrCopy','HdrLegacyComposite','HdrAdapt','HdrBloom','HdrBloomHorizontal','HdrBloomVertical','HdrWorldLinear','HdrWorldLinearOnly','HdrLegacyEncode','HdrCalibration','HdrLayer')]]
+                 ('HdrMeter','HdrReduce','HdrReduceLinear','HdrDecodeWorld','HdrCopy','HdrLegacyComposite','HdrAdapt','HdrBloom','HdrBloomHorizontal','HdrBloomVertical','HdrBloomWideHorizontal','HdrBloomWideVertical','HdrBloomWidePairHorizontal','HdrBloomWidePairVertical','HdrBloomWideResolve','HdrWorldLinear','HdrWorldLinearOnly','HdrLegacyEncode','HdrCalibration','HdrLayer')]]
     for entry, target, name, symbol in entries:
         binary = fp.COMPILED / (name + '.bin')
         data, words = compiler.compile(source, entry, target, binary)

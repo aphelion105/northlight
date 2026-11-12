@@ -16,4 +16,5 @@ finally:assets.close()
 source=out/'range-rigid.bin';source.write_bytes(code);exe=out/'model-normal-range.exe'
 client_fixtures.actor_client_programs(out)
 subprocess.run([str(fp.zig()),'c++','-target','x86-windows-gnu','-std=c++17','-O2','-UNDEBUG','-I'+str(out),*fp.test_include_flags(),str(fp.TESTS/'model_normal_range.cpp'),'-o',str(exe)],env=fp.zig_env(),check=True)
-subprocess.run([str(exe),str(source),str(client_fixtures.four_bone_body_vs3())],check=True)
+for skin in (client_fixtures.four_bone_body_vs3(),client_fixtures.four_bone_vs3()):
+    subprocess.run([str(exe),str(source),str(skin)],check=True)

@@ -1,10 +1,12 @@
 #pragma once
+#include <optional>
 #include "world_gi.h"
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <iterator>
 #include <list>
 #include <mutex>
 #include <type_traits>
@@ -24,14 +26,14 @@ struct ProbeGridKey {
 // Solved request grid around the camera (cells of 8 units): n x n horizontal,
 // nz vertical, in a cubic wrapping atlas of `atlas` cells per axis. Both window
 // extents stay 2 below the atlas so world keys never wrap onto each other.
-// 0.3.153 GIDistance: n is runtime (10..22 even), configured once before the
+// 0.3.153 GIDistance: n is runtime (10..40 even), configured once before the
 // worker starts and fixed for the process; n=14 is the 0.3.151 14^3 in 16^3.
 struct ProbeLayout {
     unsigned n=14,nz=14,atlas=16;
     unsigned count()const{return n*n*nz;}
     size_t atlasSize()const{return size_t(atlas)*atlas*atlas;}
 };
-inline constexpr unsigned ProbeGridNz=14,ProbeGridMaxN=22;
+inline constexpr unsigned ProbeGridNz=14,ProbeGridMaxN=40;
 inline ProbeLayout probeLayoutFor(unsigned n){ProbeLayout l;l.n=n;l.atlas=std::max(n,ProbeGridNz)+2;return l;}
 inline bool validProbeLayout(const ProbeLayout& l){
     return l.n>=2&&l.n%2==0&&l.nz>=2&&l.nz%2==0&&l.n<=ProbeGridMaxN&&l.n+2<=l.atlas&&l.nz+2<=l.atlas&&l.atlas<=ProbeGridMaxN+2;
@@ -139,12 +141,17 @@ public:
     }
     // Only after get() returned false and before this cache is changed.
     void putMissing(ProbeGridKey key,const Probe& value) {
+        if(entries_.size()==capacity_) {
+            // reserve(capacity_) keeps reinsertion below the rehash threshold.
+            // Recycle both nodes: a rolling solve window needs no allocations.
+            auto oldest=std::prev(entries_.end());
+            auto node=lookup_.extract(oldest->key);
+            node.key()=key;lookup_.insert(std::move(node));
+            *oldest={key,value};entries_.splice(entries_.begin(),entries_,oldest);return;
+        }
         entries_.push_front({key,value});
         try{lookup_.emplace(key,entries_.begin());}
         catch(...){entries_.pop_front();throw;}
-        if(entries_.size()>capacity_) {
-            lookup_.erase(entries_.back().key);entries_.pop_back();
-        }
     }
     // Membership without touching LRU order (GIThreads prefetch; 0.3.138).
     bool contains(ProbeGridKey key)const{return lookup_.count(key)!=0;}
@@ -187,8 +194,9 @@ public:
 class ProbeRelightCache {
     struct Entry {ProbeGridKey key;ProbeResponse response;uint64_t epoch=0;uint32_t seed=0;};
     std::vector<Entry> entries_;
+    std::vector<AngularSkyResponse> angular_;
     Lighting shape_;unsigned rays_=0,mask_=0;uint64_t epoch_=1;
-    bool ready_=false,allocationTried_=false;
+    bool ready_=false,allocationTried_=false,angularStorage_=false;
     mutable std::mutex mutex_;
     static bool same(Vec3 a,Vec3 b){return a.x==b.x&&a.y==b.y&&a.z==b.z;}
     bool sameShape(const Lighting& l,unsigned rays,unsigned mask)const{
@@ -217,41 +225,51 @@ private:
 public:
     void reset(){std::lock_guard<std::mutex> lock(mutex_);ready_=false;++epoch_;}
     // Frees the slots (memory trim, map change); the next configure() allocates them again.
-    void release(){std::lock_guard<std::mutex> lock(mutex_);std::vector<Entry>().swap(entries_);ready_=allocationTried_=false;++epoch_;stats_.bytes=0;}
+    void release(){std::lock_guard<std::mutex> lock(mutex_);std::vector<Entry>().swap(entries_);std::vector<AngularSkyResponse>().swap(angular_);ready_=allocationTried_=false;angularStorage_=false;++epoch_;stats_.bytes=0;}
     // Called between solve groups, never while a pool job is running.
     void configure(const PreparedLighting& prepared,unsigned rays){
         std::lock_guard<std::mutex> lock(mutex_);
         if(!prepared.valid()||prepared.values().additionalDirections.size()>1){ready_=false;return;}
         const auto& l=prepared.values();
         const unsigned mask=(dot(l.sunIrradiance,l.sunIrradiance)>=1e-16f?1u:0u)|
-            (!l.additionalDirections.empty()&&dot(l.additionalDirections[0].irradiance,l.additionalDirections[0].irradiance)>=1e-16f?2u:0u);
+            (!l.additionalDirections.empty()&&dot(l.additionalDirections[0].irradiance,l.additionalDirections[0].irradiance)>=1e-16f?2u:0u)|(l.aurora?4u:0u);
         if(ready_&&sameShape(l,rays,mask))return;
         ready_=false;
         try{
-            if(!allocationTried_){allocationTried_=true;entries_.resize(std::min(probeLayout().atlasSize(),BudgetBytes/sizeof(Entry)));}
+            if(angularStorage_!=bool(l.aurora)){
+                std::vector<Entry>().swap(entries_);std::vector<AngularSkyResponse>().swap(angular_);
+                allocationTried_=false;angularStorage_=bool(l.aurora);stats_.bytes=0;
+            }
+            if(!allocationTried_){
+                allocationTried_=true;
+                const size_t count=std::min(probeLayout().atlasSize(),BudgetBytes/(sizeof(Entry)+(angularStorage_?sizeof(AngularSkyResponse):0)));
+                entries_.resize(count);if(angularStorage_)angular_.resize(count);
+            }
+            if(angularStorage_&&angular_.size()!=entries_.size())return;
             if(entries_.empty())return;
-            shape_=l;rays_=rays;mask_=mask;++epoch_;++stats_.resets;stats_.bytes=entries_.capacity()*sizeof(Entry);ready_=true;
-        }catch(...){ready_=false;} // optional cache: allocation failure keeps the ordinary solver
+            shape_=l;rays_=rays;mask_=mask;++epoch_;++stats_.resets;stats_.bytes=entries_.capacity()*sizeof(Entry)+angular_.capacity()*sizeof(AngularSkyResponse);ready_=true;
+        }catch(...){std::vector<Entry>().swap(entries_);std::vector<AngularSkyResponse>().swap(angular_);stats_.bytes=0;ready_=false;} // allocation failure keeps the ordinary solver
     }
     Probe solve(const BVH& bvh,ProbeGridKey key,Vec3 position,const PreparedLighting& prepared,unsigned rays,uint32_t seed){
         bool cached=false;
         {std::lock_guard<std::mutex> lock(mutex_);cached=ready_;
          if(cached){const auto& e=entries_[slotIndex(key)];
              if(e.epoch==epoch_&&e.key==key&&e.seed==seed&&same(e.response.fixed.position,position)){
-                 ++stats_.hits;return relightProbe(e.response,prepared);
+                 ++stats_.hits;return relightProbe(e.response,prepared,angularStorage_?&angular_[slotIndex(key)]:nullptr);
              }}++stats_.misses;}
         if(!cached)return solveProbePrepared(bvh,position,prepared,rays,seed);
-        ProbeResponse response;
-        Probe result=solveProbeResponse(bvh,position,prepared,rays,seed,response);
+        ProbeResponse response;std::optional<AngularSkyResponse> angular;
+        if(angularStorage_)angular.emplace();
+        Probe result=solveProbeResponse(bvh,position,prepared,rays,seed,response,angular?&*angular:nullptr);
         {std::lock_guard<std::mutex> lock(mutex_);
-         auto& e=entries_[slotIndex(key)];e.key=key;e.seed=seed;e.response=response;e.epoch=epoch_;}
+         const auto slot=slotIndex(key);auto& e=entries_[slot];e.key=key;e.seed=seed;e.response=response;e.epoch=epoch_;if(angular)angular_[slot]=*angular;}
         return result;
     }
     void accountMemory(NorthlightMemoryFootprint::Counter& memory)const{
         using namespace NorthlightMemoryFootprint;
         std::lock_guard<std::mutex> lock(mutex_);
         if(!memory.visit(this))return;
-        memory.add(Metadata,sizeof(*this));memory.vector(Probes,entries_);
+        memory.add(Metadata,sizeof(*this));memory.vector(Probes,entries_);memory.vector(Probes,angular_);
         memory.vector(Metadata,shape_.points);memory.vector(Metadata,shape_.additionalDirections);
     }
     Stats stats()const{std::lock_guard<std::mutex> lock(mutex_);return stats_;}

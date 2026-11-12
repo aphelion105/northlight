@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cstdint>
+#include <vector>
 
 using NorthlightReplayConstants::DirtyRegisters;
 using NorthlightReplayConstants::DirtySpan;
@@ -56,6 +57,29 @@ static void specialFloats(){
     cache.reset();span=cache.update(values);assert(span.first==0&&span.count==256);
     std::puts("PASS NaN payloads, signed zero, unchanged NaNs, edge registers and minimal bounding span");
 }
+static void directSpans(){
+    using NorthlightReplayConstants::Detail::knownFloatSpan;
+    assert(knownFloatSpan(nullptr,nullptr,0).count==0);
+    unsigned cases=0;
+    for(unsigned offset=0;offset<4;++offset)for(unsigned count=1;count<=256;++count){
+        std::vector<float> first(count*4+offset),second(count*4+offset);
+        float* a=first.data()+offset;float* b=second.data()+offset;
+        assert(knownFloatSpan(a,b,count).count==0);
+        for(unsigned byte=0;byte<count*16;++byte){
+            auto* bytes=reinterpret_cast<unsigned char*>(b);bytes[byte]^=0x80;
+            const auto span=knownFloatSpan(a,b,count);
+            assert(span.first==byte/16&&span.count==1);
+            bytes[byte]^=0x80;++cases;
+        }
+        for(unsigned reg=0;reg<count;++reg){
+            auto* bytes=reinterpret_cast<unsigned char*>(b);bytes[reg*16]^=0x5a;bytes[(count-1)*16+15]^=0xa5;
+            const auto span=knownFloatSpan(a,b,count);
+            assert(span.first==reg&&span.count==count-reg);
+            bytes[reg*16]^=0x5a;bytes[(count-1)*16+15]^=0xa5;++cases;
+        }
+    }
+    std::printf("PASS %u exact-span cases, every byte/register, counts1..256 and four SSE alignments\n",cases);
+}
 static void staticMatrixBenchmark(){
     constexpr unsigned Draws=200000;
     DirtyRegisters<float,256,4> cache;float desired[1024]={};
@@ -74,4 +98,4 @@ static void staticMatrixBenchmark(){
     std::printf("BENCH %u static-matrix replay draws: %.3f MiB dirty uploads vs %.3f MiB full uploads (%.3f%%), %llu upload calls, native helper %.6fs\n",
         Draws,double(actualBytes)/(1024*1024),double(fullBytes)/(1024*1024),double(actualBytes)*100/double(fullBytes),static_cast<unsigned long long>(updates),seconds);
 }
-int main(){specialFloats();backendSequence<float,256,4>("VS float256 vec4");backendSequence<int32_t,16,1>("VS bool16 DWORD");backendSequence<int32_t,16,4>("VS int16 vec4");staticMatrixBenchmark();std::puts("All replay constant tests passed");}
+int main(){specialFloats();directSpans();backendSequence<float,256,4>("VS float256 vec4");backendSequence<int32_t,16,1>("VS bool16 DWORD");backendSequence<int32_t,16,4>("VS int16 vec4");staticMatrixBenchmark();std::puts("All replay constant tests passed");}

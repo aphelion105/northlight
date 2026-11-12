@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include "shadow_cascades.h"
 
 // Portable decision logic (no D3D/Windows; the caller passes the tick clock).
 // A 32-bit process whose largest free block is ~63 MiB cannot build the 64 MiB
@@ -7,7 +8,7 @@
 // every second until the camera left the region. A memory refusal of an EXTENDED
 // build now rebuilds at the base reach at once; no admission margin is relaxed.
 namespace NorthlightTerrainReach {
-constexpr float BaseReach=928.f; // == NorthlightShadowTerrain::Radius
+constexpr float BaseReach=NorthlightShadowCascades::TerrainRadius; // == NorthlightShadowTerrain::Radius
 // Restore rule: the extended reach is tried again no sooner than BackoffMs after the
 // LAST memory refusal of an extended build (each refused retry restarts the clock), and
 // only when the build's entry sample reaches restoreAvailable: the refused attempt's entry

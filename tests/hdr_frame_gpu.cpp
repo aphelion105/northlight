@@ -173,10 +173,16 @@ static unsigned uiStateOracle(IDirect3DDevice9* raw,IDirect3DSurface9* target,ID
         ok(raw->SetTextureStageState(0,D3DTSS_ALPHAOP,D3DTOP_SELECTARG1));ok(raw->SetTextureStageState(0,D3DTSS_ALPHAARG1,D3DTA_DIFFUSE));
         ok(raw->SetTextureStageState(0,D3DTSS_TEXCOORDINDEX,0));ok(raw->SetTextureStageState(0,D3DTSS_TEXTURETRANSFORMFLAGS,D3DTTFF_DISABLE));
         ok(raw->SetRenderState(D3DRS_SRGBWRITEENABLE,srgb));d.blendReads=d.srgbWrites=0;d.failRead=failure;
-        unsigned submits=0;const HRESULT hr=color.draw(&d,160,[&]{++submits;return S_OK;});
+        unsigned submits=0;const HRESULT hr=color.draw(&d,160,[&]{
+            DWORD active=1;ok(raw->GetRenderState(D3DRS_SRGBWRITEENABLE,&active));assert(active==FALSE);
+            ++submits;return S_OK;
+        });
         assert(failure?FAILED(hr):SUCCEEDED(hr));assert(submits==unsigned(!failure));
-        assert(d.blendReads==(blend?2u:0u)&&d.srgbWrites==(failure?0u:srgb||fixed?2u:1u));
+        // Programmable draws with sRGB already off now omit both redundant
+        // setters. Enabled sRGB and fixed-function paths still restore state.
+        assert(d.blendReads==(blend?2u:0u)&&d.srgbWrites==(failure?0u:srgb||fixed?2u:0u));
         DWORD restored=0;ok(raw->GetRenderState(D3DRS_SRGBWRITEENABLE,&restored));assert(restored==unsigned(srgb));++cases;
+        IDirect3DPixelShader9* restoredShader=nullptr;ok(raw->GetPixelShader(&restoredShader));assert(restoredShader==(fixed?nullptr:constant));if(restoredShader)restoredShader->Release();
     }
     ok(raw->SetPixelShader(nullptr));ok(raw->SetRenderState(D3DRS_SRGBWRITEENABLE,FALSE));
     std::printf("HDR_UI_STATE_ORACLE cases=%u disabledBlendReads=0 srgbRestored=true failedReadSubmits=0\n",cases);return cases;

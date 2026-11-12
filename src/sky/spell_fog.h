@@ -11,6 +11,7 @@
 // is the previous frame's. Fixed-function effects and the ps_2_0 fixed-function fog colour are not touched.
 #include <algorithm>
 #include <cmath>
+#include <cfenv>
 #include <cstdint>
 #include <cstring>
 namespace NorthlightSpellFog {
@@ -119,6 +120,20 @@ struct Hold{
 struct Freshness{
     unsigned seen=0;
     bool next(unsigned stamp){const bool moved=stamp!=seen;seen=stamp;return moved;}
+};
+// Frozen input and a private result: publish only after the CPU job is joined.
+struct PendingUpdate {
+    Hold result;Frame raw;bool wanted,ready=false,environmentKnown;float dt;
+    std::fenv_t environment;
+    PendingUpdate(const Hold& current,const Frame& input,bool on,float seconds):result(current),raw(input),wanted(on),dt(seconds){environmentKnown=std::fegetenv(&environment)==0;}
+    void operator()(){
+        std::fenv_t previous;
+        if(!environmentKnown||std::fegetenv(&previous)!=0)return;
+        struct Restore {std::fenv_t& state;~Restore(){std::fesetenv(&state);}} restore{previous};
+        if(std::fesetenv(&environment)!=0)return;
+        result.update(raw,wanted,dt);ready=true;
+    }
+    void publish(Hold& current)const{if(ready)current=result;else current.update(raw,wanted,dt);}
 };
 // bareBase: the vertex shader raises the bare ramp to the power (vs_3_0 Model/Projected variants) instead of max(ramp, 0) or lit; a fit for it must not end before the game's ramp does.
 // Close to the camera Northlight's fog is not folded: none within kClearNear units, fading in with a smoothstep over the next kClearFade units, full beyond. The fit target is

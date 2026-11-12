@@ -8,6 +8,7 @@ using HRESULT=int;
 #define FAILED(x) ((x)<0)
 #define SUCCEEDED(x) ((x)>=0)
 constexpr int D3DSBT_ALL=1;
+constexpr HRESULT D3DERR_NOTFOUND=-1;
 struct D3DVIEWPORT9 { unsigned X=0,Y=0,Width=0,Height=0;float MinZ=0,MaxZ=1; };
 struct IDirect3DSurface9 {
     int refs=1;
@@ -17,17 +18,19 @@ struct IDirect3DSurface9 {
 struct IDirect3DStateBlock9;
 struct IDirect3DDevice9 {
     int refs=1,creates=0,captures=0,applies=0,alive=0,state=17;
-    bool failCreate=false,failCapture=false,failViewport=false,failApply=false;
+    bool failCreate=false,failCapture=false,failViewport=false,failApply=false,failApplyOnce=false;
+    int failTargetRead=-1;
+    int failNullTargetOnce=-1;
     std::array<IDirect3DSurface9*,4> targets{};
     IDirect3DSurface9* depth=nullptr;
     IDirect3DSurface9* boundResource=nullptr;
     D3DVIEWPORT9 viewport{3,4,800,600,.1f,.9f};
     std::vector<int> changes;
     HRESULT CreateStateBlock(int,IDirect3DStateBlock9**);
-    HRESULT GetRenderTarget(int i,IDirect3DSurface9** out){*out=targets[i];if(*out)(*out)->AddRef();return *out?0:-1;}
+    HRESULT GetRenderTarget(int i,IDirect3DSurface9** out){*out=nullptr;if(failTargetRead==i)return -2;*out=targets[i];if(*out)(*out)->AddRef();return *out?0:D3DERR_NOTFOUND;}
     HRESULT GetDepthStencilSurface(IDirect3DSurface9** out){*out=depth;if(*out)(*out)->AddRef();return *out?0:-1;}
     HRESULT GetViewport(D3DVIEWPORT9* out){if(failViewport)return -1;*out=viewport;return 0;}
-    HRESULT SetRenderTarget(int i,IDirect3DSurface9* value){targets[i]=value;changes.push_back(10+i);return 0;}
+    HRESULT SetRenderTarget(int i,IDirect3DSurface9* value){changes.push_back(10+i);if(!value&&failNullTargetOnce==i){failNullTargetOnce=-1;return -1;}targets[i]=value;return 0;}
     HRESULT SetDepthStencilSurface(IDirect3DSurface9* value){depth=value;changes.push_back(value?21:20);return 0;}
     HRESULT SetViewport(const D3DVIEWPORT9* v){viewport=*v;changes.push_back(30);return 0;}
 };
@@ -35,7 +38,7 @@ struct IDirect3DStateBlock9 {
     IDirect3DDevice9* d;int value;IDirect3DSurface9* retained;
     explicit IDirect3DStateBlock9(IDirect3DDevice9* p):d(p),value(p->state),retained(p->boundResource){++d->refs;++d->alive;if(retained)retained->AddRef();}
     HRESULT Capture(){++d->captures;if(d->failCapture)return -1;value=d->state;if(retained)retained->Release();retained=d->boundResource;if(retained)retained->AddRef();return 0;}
-    HRESULT Apply(){++d->applies;d->changes.push_back(40);if(d->failApply)return -1;d->state=value;d->boundResource=retained;return 0;}
+    HRESULT Apply(){++d->applies;d->changes.push_back(40);if(d->failApplyOnce){d->failApplyOnce=false;return -1;}if(d->failApply)return -1;d->state=value;d->boundResource=retained;return 0;}
     void Release(){if(retained)retained->Release();--d->refs;--d->alive;delete this;}
 };
 HRESULT IDirect3DDevice9::CreateStateBlock(int kind,IDirect3DStateBlock9** out){assert(kind==D3DSBT_ALL);++creates;if(failCreate){*out=nullptr;return -1;}*out=new IDirect3DStateBlock9(this);return 0;}
@@ -47,6 +50,22 @@ struct Fixture {
 };
 static void mutate(Fixture& f,int state){f.d.state=state;f.d.targets={f.surface+5,nullptr,nullptr,nullptr};f.d.depth=nullptr;f.d.viewport={0,0,7,9,0,1};}
 int main(){
+    for(unsigned mask=0;mask<8;++mask){Fixture f;
+        for(unsigned i=1;i<4;++i)if(!(mask&(1u<<(i-1))))f.d.targets[i]=nullptr;
+        const auto original=f.d.targets;
+        {SavedState s(&f.d);assert(s.ok);mutate(f,99);
+            // Every auxiliary target is dirty, even those saved as null.
+            for(unsigned i=1;i<4;++i)f.d.targets[i]=f.surface+5;}
+        assert(f.d.targets==original&&f.d.depth==f.surface+4&&f.d.state==17);
+        std::vector<int> expected={20,11,12,13,10};
+        for(unsigned i=1;i<4;++i)if(original[i])expected.push_back(10+i);
+        expected.insert(expected.end(),{21,40,30});assert(f.d.changes==expected);
+    }
+    {Fixture f;f.d.targets[2]=nullptr;
+        {SavedState s(&f.d);assert(s.ok);mutate(f,99);f.d.targets[2]=f.surface+5;f.d.failNullTargetOnce=2;}
+        assert(!f.d.targets[2]);
+        const std::vector<int> expected={20,11,12,12,13,10,11,13,21,40,30};assert(f.d.changes==expected);
+    }
     {Fixture f;{SavedState s(&f.d);assert(s.ok);mutate(f,99);}assert(f.d.state==17&&f.d.targets[3]==f.surface+3&&f.d.depth==f.surface+4);assert(f.d.viewport.X==3&&f.d.viewport.Width==800);assert(f.d.creates==1&&f.d.captures==0&&f.d.alive==0);
         const std::vector<int> expected={20,11,12,13,10,11,12,13,21,40,30};assert(f.d.changes==expected);}
     {Fixture f;NorthlightStateBlockPool pool(&f.d);
@@ -64,6 +83,9 @@ int main(){
     {Fixture f;NorthlightStateBlockPool pool(&f.d);{SavedState s(&f.d,&pool);assert(s.ok);}assert(f.surface[5].refs==2);f.d.boundResource=f.surface+2;{SavedState s(&f.d,&pool);assert(s.ok);assert(f.surface[5].refs==1);}assert(f.surface[2].refs==2);pool.clear();assert(f.surface[2].refs==1&&f.d.refs==1);}
     {SavedState s(nullptr);assert(!s.ok);NorthlightStateBlockPool pool(nullptr);assert(!pool.acquire());pool.clear();}
     {Fixture f;NorthlightStateBlockPool pool(&f.d);f.d.depth=nullptr;{SavedState s(&f.d,&pool);assert(s.ok);f.d.depth=f.surface+5;}assert(!f.d.depth);}
-    {Fixture f;NorthlightStateBlockPool pool(&f.d);{SavedState s(&f.d,&pool);assert(s.ok);f.d.failApply=true;}assert(f.d.applies==1);pool.clear();assert(f.d.alive==0);}
+    {Fixture f;NorthlightStateBlockPool pool(&f.d);{SavedState s(&f.d,&pool);assert(s.ok);f.d.failApply=true;assert(!s.restore()&&!s.restore());}assert(f.d.applies==2);pool.clear();assert(f.d.alive==0);}
+    {Fixture f;{SavedState s(&f.d);mutate(f,99);f.d.failApplyOnce=true;assert(s.restore()&&s.restore()&&f.d.state==17);}assert(f.d.applies==2);}
+    {Fixture f;{SavedState s(&f.d);mutate(f,99);assert(s.restore());f.d.state=74;assert(s.restore());}assert(f.d.state==74&&f.d.applies==1);}
+    for(int target=0;target<4;++target){Fixture f;f.d.failTargetRead=target;{SavedState s(&f.d);assert(!s.ok&&!s.restore());}assert(f.d.applies==0&&f.d.changes.empty());}
     std::cout<<"SavedState: restoration order, 10000 reuses (1 create / 9999 captures), 7 nested leases, active clear, failures, device identity, null depth, resource release passed\n";
 }

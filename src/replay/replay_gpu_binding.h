@@ -1,7 +1,13 @@
 #pragma once
 #include "draw_snapshot.h"
 namespace NorthlightReplayGPU {
-struct Placement {UINT vertexBase=0,indexStart=0;};
+struct Placement {
+    // Canonical batches share absolute indices; legacy/separate buffers keep
+    // their original relative indices and BaseVertexIndex convention.
+    UINT vertexBase=0,indexStart=0;bool absoluteIndices=false;
+    INT baseVertex()const{return absoluteIndices?0:INT(vertexBase);}
+    UINT minimumVertex()const{return absoluteIndices?vertexBase:0;}
+};
 // A read-only residency lookup never admits, uploads, waits or changes draw state.
 struct ResidentSource {
     void* context=nullptr;

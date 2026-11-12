@@ -5,12 +5,17 @@
 #include <cstring>
 #include <cstdint>
 #include <vector>
+#include "draw_gates.h"
 using HRESULT=long;
+using DWORD=unsigned;
+constexpr unsigned D3DRS_ZENABLE=1,D3DRS_ZWRITEENABLE=2;
 constexpr HRESULT D3D_OK=0;
 #define SUCCEEDED(x) ((x)>=0)
-struct Shader {int releases=0;void Release(){++releases;}};
+#define FAILED(x) ((x)<0)
+struct Shader {int releases=0,refs=0;void Release(){++releases;}void AddRef(){++refs;}};
 using IDirect3DVertexShader9=Shader;
 using IDirect3DPixelShader9=Shader;
+template<class T> void drop(T*& p){if(p)p->Release();p=nullptr;}
 struct CpuScope {explicit CpuScope(int){}};
 struct SwapCalls {unsigned getRequests=0,getNative=0,setVS=0,setPS=0,setPSConstants=0,constantRegisters=0,failures=0;};
 struct DeviceState{
@@ -33,6 +38,81 @@ struct Hook{
     // Exact current production method, extracted by the Python driver.
 #include "terrain_shadow_draw.inc"
 };
+struct PlanWorld {
+    bool native=true,active=false,coverage=true,patch=true;unsigned coverageCalls=0,patchCalls=0;
+    Shader pixel,vertex;
+    bool nativeTerrainShadowsEnabled()const{return native;}
+    bool terrainShadowActive()const{return active;}
+    bool terrainShadowCoverage(Shader*,Shader*,Shader*& v,Shader*& p,unsigned& base,unsigned& count,float*){
+        ++coverageCalls;if(!coverage)return false;v=&vertex;p=&pixel;base=221;count=3;return true;
+    }
+    Shader* terrainShadowReplacement(Shader*){++patchCalls;return patch?&pixel:nullptr;}
+};
+struct PlanDevice {
+    Shader pixel,vertex;unsigned reads=0,vsReads=0;bool fail=false,cached=true,vertexPresent=true,failVS=false;
+    HRESULT GetPixelShader(Shader** p){++reads;if(fail)return -1;*p=&pixel;pixel.AddRef();return 0;}
+    bool peekVertexShader(Shader*& p){p=cached&&vertexPresent?&vertex:nullptr;return cached;}
+    HRESULT GetVertexShader(Shader** p){++vsReads;if(failVS)return -1;*p=vertexPresent?&vertex:nullptr;if(*p)(*p)->AddRef();return 0;}
+};
+struct PlanHook {
+    PlanWorld* world=nullptr;PlanDevice* ext=nullptr;NorthlightDrawGates::Frame drawGates;
+    bool applied=false,enabled=true,failed=false,terrain=true;unsigned debugMode=0,worldDebug=0;
+    unsigned tag=1;static constexpr unsigned kTagMask=255;
+    struct Class {unsigned entry;bool world=false,skinned=false;};using VsClass=Class;
+    Class classifyVs(Shader* p)const{return {p?tag:0,p&&tag==1,false};}
+    static constexpr unsigned kWaterTag=256;
+    bool diagnostics=false;unsigned postEffectDepthWrites=0,postEffectDepthStateFailures=0,postEffectWorldDraws=0,postEffectSkinnedDraws=0,waterAfterEffects=0,observations=0;
+    bool sampled()const{return diagnostics;}
+    bool readDrawRenderState(unsigned,DWORD& value){value=1;return true;}
+    void observeGrassReceiver(Shader*,bool){++observations;}
+    Shader *shadowSwapOriginal=nullptr,*shadowSwapReplacement=nullptr,*shadowSwapVertexOriginal=nullptr,*shadowSwapVertexReplacement=nullptr;
+    unsigned shadowSwapConstantBase=0,shadowSwapConstantCount=0;float shadowSwapConstants[24]={};
+#include "terrain_shadow_plan.inc"
+    void lateDraw(){if(failed||!enabled)return;
+#include "terrain_shadow_late.inc"
+    }
+};
+static void visibilityPlanning(){
+    unsigned cases=0;
+    for(unsigned flags=0;flags<128;++flags)for(bool native:{false,true})for(bool requested:{false,true})
+    for(bool active:{false,true})for(bool coverage:{false,true})for(bool patch:{false,true})for(bool gates:{false,true}){
+        PlanWorld w;w.native=native;w.active=requested&&active;w.coverage=coverage;w.patch=patch;
+        PlanDevice device;PlanHook h;Shader vertex;h.world=flags&1?nullptr:&w;h.ext=&device;
+        h.enabled=!(flags&2);h.failed=flags&4;h.applied=flags&8;h.terrain=!(flags&16);h.debugMode=flags&32?1:0;h.tag=flags&64?2:1;
+        NorthlightDrawGates::Inputs inputs;inputs.world=h.world;inputs.enabled=h.enabled;inputs.failed=h.failed;inputs.debugOff=!h.debugMode;inputs.worldShadows=requested;inputs.hideTerrainShadows=!native;
+        h.drawGates=NorthlightDrawGates::latch(gates,inputs);h.planTerrainShadowSwap(&vertex);
+        const bool admitted=h.world&&h.enabled&&!h.failed&&h.terrain&&!h.debugMode&&h.tag==1&&(!native||(!h.applied&&w.active));
+        const bool expected=admitted&&((native&&coverage)||patch);
+        assert(device.reads==unsigned(admitted));assert(bool(h.shadowSwapReplacement)==expected);
+        assert(w.coverageCalls==unsigned(admitted&&native));assert(w.patchCalls==unsigned(admitted&&(!native||!coverage)));
+        assert(bool(h.shadowSwapVertexReplacement)==(expected&&native&&coverage));
+        assert(device.pixel.releases==unsigned(admitted&&!expected));
+        if(h.shadowSwapOriginal)h.shadowSwapOriginal->Release();if(h.shadowSwapVertexOriginal)h.shadowSwapVertexOriginal->Release();
+        assert(device.pixel.releases==unsigned(admitted)&&vertex.refs==vertex.releases);++cases;
+    }
+    std::printf("TERRAIN_SHADOW_VISIBILITY_PASS cases=%u off_without_replacement=1 default_coverage=1 frame_gates=0/1\n",cases);
+}
+static void lateDrawPlanning(){
+    unsigned cases=0;
+    for(unsigned flags=0;flags<64;++flags)for(bool native:{false,true})for(bool sample:{false,true})for(bool cached:{false,true})
+    for(bool present:{false,true})for(bool failVS:{false,true})for(bool failPS:{false,true})for(unsigned tag:{0u,1u,2u}){
+        PlanWorld w;w.native=native;w.active=true;PlanDevice d;d.cached=cached;d.vertexPresent=present;d.failVS=failVS;d.fail=failPS;
+        PlanHook h;h.world=flags&1?nullptr:&w;h.ext=&d;h.applied=!(flags&2);h.enabled=!(flags&4);h.failed=flags&8;h.terrain=!(flags&16);h.debugMode=flags&32;h.tag=tag;h.diagnostics=sample;
+        h.lateDraw();
+        const bool entered=h.applied&&h.enabled&&!h.failed;
+        const bool hide=h.world&&h.terrain&&!h.debugMode&&!native;
+        const bool query=entered&&(sample||hide);
+        const bool vertex=query&&present&&(cached||!failVS);
+        const bool planned=vertex&&hide&&tag==1;
+        assert(d.vsReads==unsigned(query&&!cached));assert(d.reads==unsigned(planned));
+        assert(bool(h.shadowSwapReplacement)==(planned&&!failPS));
+        assert(!w.coverageCalls); // Automatic replacement never follows the composite.
+        if(!sample)assert(!h.observations&&!h.postEffectDepthWrites);
+        if(h.shadowSwapOriginal)h.shadowSwapOriginal->Release();if(h.shadowSwapVertexOriginal)h.shadowSwapVertexOriginal->Release();
+        assert(d.vertex.refs==d.vertex.releases&&d.pixel.refs==d.pixel.releases);++cases;
+    }
+    std::printf("LATE_TERRAIN_SHADOW_PASS cases=%u explicitSuppression=late unknownUi=unchanged automaticCoverage=preComposite getters=bounded references=balanced diagnostics=optional\n",cases);
+}
 void checkCalls(const Hook& hook,const DeviceState& state,unsigned count,const std::vector<unsigned>& expected){
     assert(state.trace==expected&&state.calls==expected.size());
     const auto& c=hook.terrainSwapCalls;
@@ -43,6 +123,8 @@ void checkCalls(const Hook& hook,const DeviceState& state,unsigned count,const s
     assert(c.failures==unsigned(hook.gateFrame&&state.failAt&&state.failAt<=state.calls));
 }
 int main(){
+    lateDrawPlanning();
+    visibilityPlanning();
     unsigned cases=0;
     for(unsigned count:{3u,6u})for(unsigned fail=0;fail<=7;++fail)for(bool claimed:{false,true})for(HRESULT drawResult:{0l,-7l})for(bool profile:{false,true})for(bool cached:{false,true}){
         if(cached&&fail==1)continue; // A cached success cannot simulate a native getter failure.

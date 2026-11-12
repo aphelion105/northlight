@@ -41,6 +41,7 @@ template<class Bool> class Pass {
 public:
     NorthlightReplayConstants::DirtySpan floats,booleans,integers;
     size_t prepared=0,reused=0;
+    void reset(){floatBank_.reset();boolBank_.reset();intBank_.reset();valid_=false;}
     const float* desired()const{return floatBank_.data();}
     template<class Replay> bool prepare(const Replay& p,const float* rows,const float* worldMatrix=nullptr){
         floats={};booleans={};integers={};

@@ -77,6 +77,9 @@ struct WorldRenderer {
     unsigned trims=0;
     CacheLimit replaySnapshots{NorthlightDrawSnapshot::Frame::SnapshotCacheLimit};
     CacheLimit terrainBoundsCache{32*MiB},replayGpuCache{64*MiB};
+    void clearPointKeeps(){}
+    struct GpuScene {CacheLimit& shadows;void setMemoryPressure(bool on,bool){shadows.setLimit(on?32*MiB:64*MiB);}} gpuState{replayGpuCache};
+    GpuScene* gpuScene=&gpuState;
     void setNearReserve(){assert(frameCleared);nearReserve=!memoryPressure;++updates;}
     MemoryTrim trimMemory(bool,NorthlightStreaming::CpuRetirementBatch*){assert(frameCleared);++trims;return {};}
     @SETTER@

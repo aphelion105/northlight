@@ -32,7 +32,7 @@ inline bool same(const Field& f,const std::string& a,const std::string& b){
     return true;
 }
 // Material domains use named modes; grass exposes only its supported range.
-inline bool modeField(const Field& f){return f.file==Quality&&(f.key=="AutoBumpTerrain"||f.key=="AutoBumpWalls"||f.key=="AutoBumpGrass"||f.key=="AutoBumpModels");}
+inline bool modeField(const Field& f){return f.file==Quality&&(f.key=="ShadowProvider"||f.key=="AutoBumpTerrain"||f.key=="AutoBumpWalls"||f.key=="AutoBumpGrass"||f.key=="AutoBumpModels");}
 inline std::vector<std::string> modeOptions(const Field& f){std::vector<std::string> out;for(int i=0;i<=std::atoi(f.high.c_str());++i)out.push_back(std::to_string(i));return out;}
 // Quality keys other than Preset and the named enums carry their per-preset values in options ("quality,balanced,performance").
 inline bool presetValued(const Field& f){return f.file==Quality&&f.key!="Preset"&&f.kind!="enum";}
@@ -100,6 +100,7 @@ inline bool canInherit(const Field& f){return f.available&&!(f.file==Renderer&&f
 // Keys a Quality field needs switched on (the old menu's dependencies; every GI* key needs GI).
 inline std::vector<std::string> dependencies(const Field& f){
     static const std::map<std::string,std::vector<std::string>> table={
+        {"GIBrightness",{"GI","GIStrength"}},
         {"AutoBumpStrength",{"AutoBump"}},{"AutoBumpDistance",{"AutoBump"}},{"AutoBumpTerrain",{"AutoBump"}},{"AutoBumpWalls",{"AutoBump"}},{"AutoBumpGrass",{"AutoBump"}},{"AutoBumpModels",{"AutoBump"}},{"AutoMaterialOcclusionDistance",{"AutoBump"}},
         {"AutoParallaxDepth",{"AutoBump"}},{"AutoParallaxDistance",{"AutoBump"}},{"AutoParallaxSteps",{"AutoBump"}},
         {"AutoParallaxShadows",{"AutoBump"}},{"AutoParallaxShadowStrength",{"AutoBump","AutoParallaxShadows"}},{"AutoParallaxShadowSteps",{"AutoBump","AutoParallaxShadows"}},
@@ -107,7 +108,8 @@ inline std::vector<std::string> dependencies(const Field& f){
         {"AOMethod",{"ContactAO"}},{"AOQuality",{"ContactAO"}},{"AOStrength",{"ContactAO"}},{"AORadius",{"ContactAO"}},
         {"ActorShadowBudgetMiB",{"ActorShadows"}},{"ActorShadowRadius",{"ActorShadows"}},{"ActorShadowCpuMs",{"ActorShadows"}},{"ActorShadowDetail",{"ActorShadows"}},
         {"BlobShadowStrength",{"BlobShadows"}},
-        {"PointShadowDistance",{"PointShadows"}},{"PointShadowLimit",{"PointShadows"}},{"PointShadowRefreshMs",{"PointShadows"}},{"PointShadowFacesPerFrame",{"PointShadows"}},
+        {"LocalLightLimit",{"LocalLights"}},{"EquipmentLights",{"LocalLights"}},{"PointShadows",{"LocalLights","WorldShadows"}},
+        {"PointShadowDistance",{"LocalLights","WorldShadows","PointShadows"}},{"PointShadowLimit",{"LocalLights","WorldShadows","PointShadows"}},{"PointShadowRefreshMs",{"LocalLights","WorldShadows","PointShadows"}},{"PointShadowFacesPerFrame",{"LocalLights","WorldShadows","PointShadows"}},
         {"FogCloudDensity",{"FogClouds"}},{"RainFog",{"Weather"}},{"RainLens",{"Weather"}},{"SnowLens",{"Weather"}},{"RainLensStrength",{"Weather","RainLens"}},{"SnowLensStrength",{"Weather","SnowLens"}},{"RenderProfile",{"Diagnostics"}},
         {"RainDropSize",{"Weather"}},{"SnowFlakeSize",{"Weather"}},{"RainLensSize",{"Weather","RainLens"}},{"SnowLensSize",{"Weather","SnowLens"}},
         {"RainRivulets",{"Weather","RainLens"}},{"SnowFrost",{"Weather"}},{"SnowFrostStrength",{"Weather","SnowFrost"}},
@@ -130,6 +132,7 @@ inline Block blocked(const Draft& d,const Field& f,std::string& missing){
     if(f.file==Renderer&&f.key!="Backend"&&f.key!="ExperimentalHDR")
         if(const Field* hdr=d.field(Renderer,"Renderer","ExperimentalHDR"))if(d.effective(*hdr)=="0")return Block::NeedsHdr;
     if(f.file==Renderer&&f.key=="HDRMaxNits")if(const Field* mode=d.field(Renderer,f.section,"HDRPeakMode"))if(d.effective(*mode)=="Auto")return Block::NeedsManual;
+    if(f.file==Renderer&&f.key=="HDRWideBloom")if(const Field* bloom=d.field(Renderer,"Renderer","HDRBloomStrength"))if(std::strtof(d.effective(*bloom).c_str(),nullptr)<=0){missing=bloom->key;return Block::NeedsKey;}
     for(const auto& key:dependencies(f))if(const Field* parent=d.quality(key))if(d.effective(*parent)=="0"){missing=key;return Block::NeedsKey;}
     return Block::None;
 }

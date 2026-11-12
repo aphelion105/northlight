@@ -101,6 +101,7 @@ template<class Arming>struct Common {
  bool fixedUiGeometry(){return false;}
  bool orthographicUiGeometry(){return false;} // This fixture exercises shader-proven stock/learned UI, not geometry admission.
  bool hdrUiInputs(){return true;}
+ struct {bool armed()const{return false;}}nameMask;
  void rememberUiTextVs(){}
  void hdrLayerDiagnostic(){}
  bool sampled()const{return false;}

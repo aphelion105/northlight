@@ -9,8 +9,8 @@
 // Locks (the rule: the game never sees bytes that differ from the real resource except bytes D3D9 leaves undefined):
 //   buffers   a persistent CPU shadow (DYNAMIC at creation or later, or <= 4 MiB non-DYNAMIC; all evictable LRU, made by one readback at a
 //             write re-lock, for DYNAMIC also at a DISCARD lock, while the budget admits it); every lock returns shadow memory and Unlock
-//             records the locked range. Without a shadow only the first write lock and DISCARD are asynchronous (a pooled staging Block);
-//             every other lock passes through to the replay thread (counted by reason).
+//             records the locked range. Buffers above the full-shadow limit retain one bounded exact interval for staged re-locks;
+//             unknown ranges pass through. First writes and DISCARD need no old bytes and stage directly.
 //   textures  the first write lock of a level/face after creation (or any DISCARD lock) is asynchronous through a staging
 //             Block with our own pitch; everything else passes through. Surfaces of render targets and depth buffers always do.
 #include <atomic>
@@ -25,7 +25,9 @@
 #include <unordered_map>
 #include <vector>
 #include "command_queue.h"
+#include "buffer_range_shadow.h"
 #include "query_poll.h"
+#include "query_backend_threads.h"
 #include "command_stream.inl"
 #include "tex_readback_diag.h"
 #include "atlas_upload_proof.h"
@@ -310,21 +312,28 @@ struct StreamCore {
     // Game-thread counters; reuse runTask's wait clock, without timing each GetData again.
     using QueryWait=QueryWaitProfile;
     QueryWait queryWait[21]{},queryFrame[21]{};unsigned queryWaitFrames=0; // 20 includes unknown query types
-    void clearQueryWait(){for(auto& item:queryWait)item={};for(auto& item:queryFrame)item={};queryWaitFrames=0;}
+    QueryLongPause queryLongPause; // replay-thread only; at most one lazy timer per stream
+    QueryBackendThreads queryBackendThreads; // game-thread only; bounded RenderProfile diagnostics
+    std::function<void(const char*)> queryThreadLog; // Options::log, like QUERYFRAME; legacy logLine is unset
+    void clearQueryWait(){for(auto& item:queryWait)item={};for(auto& item:queryFrame)item={};queryWaitFrames=0;queryBackendThreads.clear();}
     void reportQueryFrame(const std::function<void(const char*)>& sink){
-        if(sink)for(unsigned type=0;type<21;++type){const auto& s=queryFrame[type];if(!s.calls||(frameNo%127!=0&&s.maxTripNs<20000000))continue;
-            char line[512];std::snprintf(line,sizeof line,"CSTREAM QUERYFRAME gameFrame=%llu replayed=%llu type=%u calls=%llu pending=%llu errors=%llu syncWaitMs=%.4f beforeReplayMs=%.4f replayMs=%.4f afterReplayMs=%.4f tripMs=%.4f maxTripMs=%.4f",
+        if(sink)for(unsigned type=0;type<21;++type){const auto& s=queryFrame[type];if(!s.frameReportDue(frameNo%127==0))continue;
+            char line[1024];std::snprintf(line,sizeof line,"CSTREAM QUERYFRAME gameFrame=%llu replayed=%llu type=%u calls=%llu pending=%llu errors=%llu syncWaitMs=%.4f beforeReplayMs=%.4f replayMs=%.4f afterReplayMs=%.4f tripMs=%.4f maxTripMs=%.4f eventFastTrips=%llu eventLongTrips=%llu eventFastMs=%.4f eventLongMs=%.4f observedPauseCalls=%llu observedPauseMs=%.4f observedPauseOverMs=%.4f observedPauseMaxMs=%.4f observedPauseMaxRequestedUs=%.3f observedPauseMaxOverMs=%.4f backendUntouched=%llu backendFalse=%llu backendReady=%llu backendOther=%llu fenceCalls=%llu fenceMs=%.4f fenceTimeout=%llu",
                 (unsigned long long)frameNo,(unsigned long long)framesReplayed.load(std::memory_order_relaxed),type,
                 (unsigned long long)s.calls,(unsigned long long)s.pending,(unsigned long long)s.errors,
-                double(s.waitNs)/1e6,double(s.beforeNs)/1e6,double(s.replayNs)/1e6,double(s.afterNs)/1e6,double(s.tripNs)/1e6,double(s.maxTripNs)/1e6);sink(line);}
+                double(s.waitNs)/1e6,double(s.beforeNs)/1e6,double(s.replayNs)/1e6,double(s.afterNs)/1e6,double(s.tripNs)/1e6,double(s.maxTripNs)/1e6,
+                (unsigned long long)s.eventFastTrips,(unsigned long long)s.eventLongTrips,double(s.eventFastNs)/1e6,double(s.eventLongNs)/1e6,
+                (unsigned long long)s.eventPauses.count,double(s.eventPauses.actualNs)/1e6,double(s.eventPauses.overshootNs)/1e6,double(s.eventPauses.maxNs)/1e6,double(s.eventPauses.maxRequestedNs)/1e3,double(s.eventPauses.maxOvershootNs)/1e6,(unsigned long long)s.backendUntouched,(unsigned long long)s.backendFalse,(unsigned long long)s.backendReady,(unsigned long long)s.backendOther,(unsigned long long)s.fenceCalls,double(s.fenceNs)/1e6,(unsigned long long)s.fenceTimeouts);sink(line);}
         for(auto& item:queryFrame)item={};
     }
     void reportQueryWait(const std::function<void(const char*)>& sink){
         if(sink)for(unsigned type=0;type<21;++type){const auto& s=queryWait[type];if(!s.calls)continue;
-            char line[512];std::snprintf(line,sizeof line,"CSTREAM QUERY frames=%u type=%u calls=%llu flush=%llu unissued=%llu pending=%llu errors=%llu syncWaitMs=%.3f beforeReplayMs=%.3f replayMs=%.3f afterReplayMs=%.3f tripMs=%.3f maxTripMs=%.3f",
+            char line[1024];std::snprintf(line,sizeof line,"CSTREAM QUERY frames=%u type=%u calls=%llu flush=%llu unissued=%llu pending=%llu errors=%llu syncWaitMs=%.3f beforeReplayMs=%.3f replayMs=%.3f afterReplayMs=%.3f tripMs=%.3f maxTripMs=%.3f eventFastTrips=%llu eventLongTrips=%llu eventFastMs=%.3f eventLongMs=%.3f observedPauseCalls=%llu observedPauseMs=%.3f observedPauseOverMs=%.3f observedPauseMaxMs=%.3f observedPauseMaxRequestedUs=%.3f observedPauseMaxOverMs=%.3f backendUntouched=%llu backendFalse=%llu backendReady=%llu backendOther=%llu fenceCalls=%llu fenceMs=%.4f fenceTimeout=%llu",
                 queryWaitFrames,type,(unsigned long long)s.calls,(unsigned long long)s.flush,(unsigned long long)s.unissued,
                 (unsigned long long)s.pending,(unsigned long long)s.errors,double(s.waitNs)/1e6,
-                double(s.beforeNs)/1e6,double(s.replayNs)/1e6,double(s.afterNs)/1e6,double(s.tripNs)/1e6,double(s.maxTripNs)/1e6);sink(line);}
+                double(s.beforeNs)/1e6,double(s.replayNs)/1e6,double(s.afterNs)/1e6,double(s.tripNs)/1e6,double(s.maxTripNs)/1e6,
+                (unsigned long long)s.eventFastTrips,(unsigned long long)s.eventLongTrips,double(s.eventFastNs)/1e6,double(s.eventLongNs)/1e6,
+                (unsigned long long)s.eventPauses.count,double(s.eventPauses.actualNs)/1e6,double(s.eventPauses.overshootNs)/1e6,double(s.eventPauses.maxNs)/1e6,double(s.eventPauses.maxRequestedNs)/1e3,double(s.eventPauses.maxOvershootNs)/1e6,(unsigned long long)s.backendUntouched,(unsigned long long)s.backendFalse,(unsigned long long)s.backendReady,(unsigned long long)s.backendOther,(unsigned long long)s.fenceCalls,double(s.fenceNs)/1e6,(unsigned long long)s.fenceTimeouts);sink(line);}
         clearQueryWait();
     }
     std::uint64_t clockNs=0;   // the cost of one nowNs() as the scopes see it (measured once at the first timed Present), subtracted from every timed span
@@ -775,7 +784,7 @@ inline HRESULT unlockImage(ProxyBase& self,SubRes& sub,UINT route,UINT level,UIN
     if(sub.mode==SubRes::Staged){
         auto* a=static_cast<UnlockImageArgs*>(q.reserveWithBlock(cmd,sizeof(UnlockImageArgs),sub.stage));
         *a=makeUnlockArgs(self,sub,route,level,face);
-        q.commit();sub.stage=nullptr;sub.mode=SubRes::Free;sub.written=true;sub.contentSeq=q.recordedSeq();return D3D_OK;
+        q.commit();sub.stage=nullptr;sub.mode=SubRes::Free;sub.written=true;sub.contentSeq=q.recordedSeq();q.publish();return D3D_OK;
     }
     if(sub.mode==SubRes::Shadowed){
         sub.mode=SubRes::Free;
@@ -793,7 +802,7 @@ inline HRESULT unlockImage(ProxyBase& self,SubRes& sub,UINT route,UINT level,UIN
             add(self.core->q.stats.passThrough[unsigned(PassReason::Budget)]);
             if(!runTask(*self.core,[&](StreamCore& c){applyImageUnlock(c,a,tmp.data());},Cmd::SyncUnlock))return D3DERR_INVALIDCALL;
         }
-        sub.written=true;sub.contentSeq=q.recordedSeq();return D3D_OK;   // (the no-Block fallback ran as a task: recordedSeq() is that already replayed task)
+        sub.written=true;sub.contentSeq=q.recordedSeq();q.publish();return D3D_OK;   // Ready uploads can run while the caller decodes the next image.
     }
     HRESULT hr=D3DERR_INVALIDCALL;
     if(!runTask(*self.core,[&](StreamCore&){if(!(sub.flags&D3::kLockReadOnly)){invalidateParticleTexture(&self);if(NorthlightAtlasProof::enabled.load(std::memory_order_relaxed))NorthlightAtlasProof::cache().invalidate((self.parent?self.parent:&self)->raw);}if(self.inner)hr=callUnlock(route,self.inner,level,face);},Cmd::SyncUnlock))return D3DERR_INVALIDCALL;
@@ -806,10 +815,11 @@ inline HRESULT unlockImage(ProxyBase& self,SubRes& sub,UINT route,UINT level,UIN
 constexpr std::size_t kMaxStaticShadow=std::size_t(4)<<20;
 struct BufferState {
     SliceMem shadow;bool shadowOn=false,written=false,whole=false;
+    BufferRangeShadow range;void* passData=nullptr;
     // lastUse: StreamCore::frameNo of its last shadow lock. lru: StreamCore::bufRegular / bufLarge, least recently locked first, so lastUse never decreases from the head
     // (an eviction scan stops at the first entry locked in the current frame). proxy: the owner, set when the shadow is registered.
     std::uint64_t lastUse=0;LruNode<BufferState> lru;ProxyBase* proxy=nullptr;
-    enum Mode:std::uint8_t{Free,Shadow,Staged,Pass,Scratch} mode=Free;UINT off=0,size=0;DWORD flags=0;Block* stage=nullptr;unsigned char scratchSlot=0;   // Scratch: a small staged lock in StreamCore::scratch
+    enum Mode:std::uint8_t{Free,Shadow,Staged,Pass,Scratch,Busy} mode=Free;UINT off=0,size=0;DWORD flags=0;Block* stage=nullptr;unsigned char scratchSlot=0;   // Scratch: a small staged lock in StreamCore::scratch
     // canShadow: made by the game and shadow-able (DYNAMIC of any size, or non-DYNAMIC <= kMaxStaticShadow). shadowDead: never a shadow again
     // (GPU-written by ProcessVertices, or the readback failed). A buffer without a shadow (refused at creation, evicted) is not
     // "refused for good": it gets one at its next write re-lock (one readback) or, DYNAMIC, at a DISCARD lock, whenever room can be made.
@@ -833,6 +843,20 @@ struct BufferState {
     struct Patch {std::uint64_t seq;UINT off;std::vector<unsigned char> bytes;};
     std::vector<Patch> patches;std::size_t patchBytes=0;std::uint64_t patchMinSeq=0,stageSeq=0;
 };
+inline bool rangeShadowCandidate(const ProxyBase& p,const BufferState& s){return s.canShadow&&!s.shadowDead&&p.info.length>kMaxLargeShadow&&(p.info.usage&D3::kUsageDynamic);}
+inline void clearRangeShadow(ProxyBase& p,BufferState& s){
+    const auto bytes=s.range.capacity();s.range.clear();
+    if(bytes)p.core->q.stats.rangeShadowBytes.fetch_sub(std::int64_t(bytes),std::memory_order_relaxed);
+}
+inline void rememberBufferRange(ProxyBase& p,BufferState& s,const void* data){
+    if(!rangeShadowCandidate(p,s)||!s.size)return;
+    auto& st=p.core->q.stats;const auto before=s.range.capacity();
+    const auto total=std::size_t(std::max<std::int64_t>(0,st.rangeShadowBytes.load(std::memory_order_relaxed)));
+    s.range.remember(s.off,s.size,data,RangeShadowBudgetBytes-std::min(total,RangeShadowBudgetBytes));
+    const auto after=s.range.capacity();
+    if(after!=before)st.rangeShadowBytes.fetch_add(std::int64_t(after)-std::int64_t(before),std::memory_order_relaxed);
+    if(s.range.covers(s.off,s.size))own(st.rangeShadowStores);else own(st.rangeShadowRefused);
+}
 inline void clearPending(BufferState& s){s.pend.clear();s.pendMin=s.pendMax=0;}
 // 0.3.205 (#34): the slice's contents no longer matter (a DISCARD, a rename, a dropped or fresh shadow): the patches go unapplied (their bytes are in the queue already, in the staged unlocks).
 inline void dropPatches(Queue& q,BufferState& s){if(s.patches.empty())return;q.stats.zcPatchBytes.fetch_sub(std::int64_t(s.patchBytes),std::memory_order_relaxed);s.patches.clear();s.patchBytes=0;s.patchMinSeq=0;}
@@ -986,7 +1010,7 @@ inline void initShadow(ProxyBase& p,BufferState& s,bool game=true){   // game=fa
     if(!takeShadow(p,s)){add(p.core->q.stats.shadowRefused);add(p.core->q.stats.shadowRefusedBytes,p.info.length);}   // no shadow yet: see BufferState::canShadow
 }
 inline void dropShadow(ProxyBase& p,BufferState& s){   // a GPU-side write or the proxy's end: the shadow no longer mirrors the buffer
-    std::lock_guard<std::mutex> l(p.core->texMutex);dropShadowLocked(p,s);
+    std::lock_guard<std::mutex> l(p.core->texMutex);dropShadowLocked(p,s);clearRangeShadow(p,s);
 }
 // A GPU-side write (ProcessVertices into the buffer): the shadow is stale for good, and never made again (a read-back right after a GPU write is not
 // one the NOOVERWRITE flag may skip the wait for).
@@ -1115,12 +1139,13 @@ inline HRESULT lockBuffer(ProxyBase& self,BufferState& s,UINT off,UINT size,void
     if(!size||std::uint64_t(off)+size>length)size=length-off;
     s.off=off;s.size=size;s.flags=flags;
     const DWORD eff=effectiveLockFlags(flags,self.info.pool);
+    const bool rangeHit=rangeShadowCandidate(self,s)&&!(flags&D3::kLockReadOnly)&&!(eff&D3::kLockDiscard)&&s.range.canRead(off,size);
     // a buffer without a shadow (refused at creation, evicted, dropped) gets one now when room can be made: where its contents are undefined anyway (a DYNAMIC
     // buffer's DISCARD lock, default pool) a zero-filled one; at a WRITE lock of a written buffer one whole-buffer readback (a first write / non-DYNAMIC DISCARD
     // stays on the staged path; a READONLY lock stays a pass-through like a texture's); a refusal keeps the old paths
     if(!s.shadowOn&&s.canShadow&&!s.shadowDead){
         if(dynamicBuffer(self)&&(eff&D3::kLockDiscard)){if(takeShadow(self,s,true))add(q.stats.shadowLate);}
-        else if(s.written&&!(eff&D3::kLockDiscard)&&!(flags&D3::kLockReadOnly)){
+        else if(s.written&&!(eff&D3::kLockDiscard)&&!(flags&D3::kLockReadOnly)&&!rangeHit){
             if(readBackShadow(self,s)<0)return D3DERR_INVALIDCALL;
         }
     }
@@ -1158,11 +1183,21 @@ inline HRESULT lockBuffer(ProxyBase& self,BufferState& s,UINT off,UINT size,void
     if(s.shadowOn){s.mode=BufferState::Shadow;touchBufferShadow(*self.core,s);*pp=s.shadow.data()+off;own(q.stats.lockAsync);return D3D_OK;}
     PassReason why=PassReason::NoShadow;
     if(flags&D3::kLockReadOnly)why=PassReason::ReadOnly;
-    else if(!s.written||(eff&D3::kLockDiscard)){
+    else if(!s.written||(eff&D3::kLockDiscard)||rangeHit){
         // 0.3.192 (CS): a small lock stages in game-side scratch and unlocks as an inline record (like the shadow path): no pooled Block, no cross-thread pool mutex.
         // The range is zeroed (bytes the game leaves unwritten replay deterministically); the slack past it is never replayed and stays as it was.
-        if(unsigned char* sp=self.core->scratch.take(size,s.scratchSlot)){s.mode=BufferState::Scratch;std::memset(sp,0,size);*pp=sp;own(q.stats.lockAsync);return D3D_OK;}
-        if(Block* b=q.tryAllocBlock(size+kLockSlack)){s.mode=BufferState::Staged;s.stage=b;b->used=size;std::memset(b->data(),0,size);*pp=b->data();own(q.stats.lockAsync);return D3D_OK;}
+        if(unsigned char* sp=self.core->scratch.take(size,s.scratchSlot)){
+            s.mode=BufferState::Scratch;if(rangeHit){s.range.read(sp,off,size);own(q.stats.rangeShadowHits);}else{if(rangeShadowCandidate(self,s)&&(eff&D3::kLockDiscard))s.range.discard();else s.range.invalidate();std::memset(sp,0,size);}
+            *pp=sp;own(q.stats.lockAsync);return D3D_OK;
+        }
+        s.mode=BufferState::Busy; // A budget wait may pump a nested Lock, Unlock or GPU write.
+        Block* staged=q.tryAllocBlock(size+kLockSlack);s.mode=BufferState::Free;
+        if(staged&&((rangeHit&&(!rangeShadowCandidate(self,s)||!s.range.canRead(off,size)))||(!rangeHit&&s.written&&!(eff&D3::kLockDiscard)))){q.freeBlock(staged);staged=nullptr;}
+        if(Block* b=staged){
+            s.mode=BufferState::Staged;s.stage=b;b->used=size;
+            if(rangeHit){s.range.read(b->data(),off,size);own(q.stats.rangeShadowHits);}else{if(rangeShadowCandidate(self,s)&&(eff&D3::kLockDiscard))s.range.discard();else s.range.invalidate();std::memset(b->data(),0,size);}
+            *pp=b->data();own(q.stats.lockAsync);return D3D_OK;
+        }
         why=PassReason::Budget;
     }
     countPass(self,why);
@@ -1172,13 +1207,14 @@ inline HRESULT lockBuffer(ProxyBase& self,BufferState& s,UINT off,UINT size,void
         hr=self.kind==Kind::VertexBuffer?static_cast<IDirect3DVertexBuffer9*>(self.inner)->Lock(off,size,&got,flags)
                                          :static_cast<IDirect3DIndexBuffer9*>(self.inner)->Lock(off,size,&got,flags);},Cmd::SyncLock);
     if(!ran)return D3DERR_INVALIDCALL;
-    if(SUCCEEDED(hr)){s.mode=BufferState::Pass;*pp=got;}
+    if(SUCCEEDED(hr)){s.mode=BufferState::Pass;s.passData=got;if(eff&D3::kLockDiscard)s.range.invalidate();*pp=got;}
     return hr;
 }
 inline void noteRecorded(ProxyBase& p,const BufferState& s,UINT bytes){auto& st=p.core->q.stats;own(st.lockRecordedBytes,bytes);if(s.whole)own(st.wholeLockBytes,bytes);}   // game thread is the only writer: no locked instruction per buffer unlock
 inline HRESULT unlockBufferImpl(ProxyBase& self,BufferState& s,bool& zcDone,bool& overlapStaged){
     LockScope _ts(*self.core);Queue& q=self.core->q;
     switch(s.mode){
+    case BufferState::Busy:return D3DERR_INVALIDCALL;
     case BufferState::Free:return D3DERR_INVALIDCALL;
     case BufferState::Shadow:{
         s.mode=BufferState::Free;const bool zc=s.zc;s.zc=false;
@@ -1210,11 +1246,13 @@ inline HRESULT unlockBufferImpl(ProxyBase& self,BufferState& s,bool& zcDone,bool
         return D3D_OK;}
     case BufferState::Scratch:{
         noteRecorded(self,s,s.size);
+        rememberBufferRange(self,s,self.core->scratch.slot[s.scratchSlot].data());
         auto* a=static_cast<UnlockBufferArgs*>(q.reserve((std::uint16_t)Cmd::UnlockBuffer,std::uint32_t(sizeof(UnlockBufferArgs)+s.size)));
         *a=UnlockBufferArgs{&self,s.off,s.size,s.flags,1};std::memcpy(a+1,self.core->scratch.slot[s.scratchSlot].data(),s.size);q.commit();
         self.core->scratch.give(s.scratchSlot);s.mode=BufferState::Free;s.written=true;return D3D_OK;}
     case BufferState::Staged:{
         noteRecorded(self,s,s.size);
+        rememberBufferRange(self,s,s.stage->data());
         if(const std::uint64_t ov=s.stageSeq){   // 0.3.205 (#34): an overlap stage: the slice gets these bytes once the replay thread has passed ov (applyPatches); copied before the commit hands the Block over
             s.stageSeq=0;overlapStaged=true;
             if(s.shadowOn){
@@ -1229,7 +1267,9 @@ inline HRESULT unlockBufferImpl(ProxyBase& self,BufferState& s,bool& zcDone,bool
         *a=UnlockBufferArgs{&self,s.off,s.size,s.flags,0};q.commit();s.stage=nullptr;s.mode=BufferState::Free;s.written=true;return D3D_OK;}
     default:{
         HRESULT hr=D3DERR_INVALIDCALL;
+        if(s.mode==BufferState::Pass&&s.passData&&!(s.flags&D3::kLockReadOnly))rememberBufferRange(self,s,s.passData);
         if(!runTask(*self.core,[&](StreamCore&){if(self.inner)hr=self.kind==Kind::VertexBuffer?static_cast<IDirect3DVertexBuffer9*>(self.inner)->Unlock():static_cast<IDirect3DIndexBuffer9*>(self.inner)->Unlock();},Cmd::SyncUnlock))return D3DERR_INVALIDCALL;
+        s.passData=nullptr;if(FAILED(hr))clearRangeShadow(self,s);
         s.mode=BufferState::Free;if(!(s.flags&D3::kLockReadOnly))s.written=true;return hr;}
     }
 }
@@ -1493,7 +1533,16 @@ struct StreamQuery final:IDirect3DQuery9,ProxyBase {
     std::atomic<std::uint32_t> eventDoneGen{0};
     std::atomic<HRESULT> eventStatus{S_FALSE};
     std::atomic<BOOL> eventValue{FALSE};
+    bool eventWaitExpired=false; // replay-thread only, reset at each replayed END
     std::uint32_t eventEpoch=0;std::uint64_t eventPendingSince=0;bool eventCallerLogged=false; // game thread only
+    std::uint32_t eventThreadProbeGen=0,eventThreadProbeEpoch=0; // one diagnostic attempt per exact generation
+    void observeBackendThreads(std::uint32_t issued,std::uint32_t epoch,HRESULT hr,EventPendingKind kind){
+        if(!core->timing||core->queryEpoch.load()!=epoch||gen.load()!=issued)return;
+        const bool first=eventThreadProbeGen!=issued||eventThreadProbeEpoch!=epoch;
+        if(core->queryBackendThreads.observe(reinterpret_cast<std::uintptr_t>(this),issued,epoch,first,hr,kind,core->frameNo,core->queryThreadLog)){
+            eventThreadProbeGen=issued;eventThreadProbeEpoch=epoch;
+        }
+    }
     void completeEvent(HRESULT hr,const unsigned char* buf){
         // Replay thread only. Publish a generation once: pollQueries polls a query PollEventQuery already completed, and a
         // later error must not replace the published status or value (two relaxed stores a reader could pair across publications).
@@ -1506,12 +1555,12 @@ struct StreamQuery final:IDirect3DQuery9,ProxyBase {
     unsigned char result[64]{};DWORD resultSize=0;std::uint32_t issueSeen=0,issueSeenEpoch=0;   // replay thread: END generation and device-reset epoch
     std::atomic<std::uint32_t> resultSeq{0};   // seqlock around result/resultSize: odd while the replay thread writes, so a stale read (FLUSH, below) never sees a torn result
     void writeResult(const unsigned char* buf,DWORD n){const std::uint32_t s=resultSeq.load(std::memory_order_relaxed);resultSeq.store(s+1,std::memory_order_relaxed);std::atomic_thread_fence(std::memory_order_release);
-        std::memcpy(result,buf,sizeof result);resultSize=n;resultSeq.store(s+2,std::memory_order_release);}
+        n=std::min<DWORD>(n,sizeof result);std::memcpy(result,buf,n);resultSize=n;resultSeq.store(s+2,std::memory_order_release);}
     DWORD readResult(void* data,DWORD size){   // the latest polled result into the game's buffer, consistent
         for(;;){const std::uint32_t s1=resultSeq.load(std::memory_order_acquire);if(s1&1)continue;
-            const DWORD n=resultSize;unsigned char tmp[sizeof result];std::memcpy(tmp,result,sizeof tmp);std::atomic_thread_fence(std::memory_order_acquire);
+            const DWORD n=resultSize,copy=std::min(size,n);unsigned char tmp[sizeof result];if(data&&copy)std::memcpy(tmp,result,copy);std::atomic_thread_fence(std::memory_order_acquire);
             if(resultSeq.load(std::memory_order_relaxed)!=s1)continue;
-            if(data&&size)std::memcpy(data,tmp,size<n?size:n);return n;}}
+            if(data&&copy)std::memcpy(data,tmp,copy);return n;}}
     StreamQuery(StreamCore* c,unsigned t):ProxyBase(c,Kind::Query),type(t),dataSize(queryDataSize(t)){info.type=t;ProxyInit<ProxyBase>::apply(this,static_cast<IDirect3DQuery9*>(this));}
     ~StreamQuery(){liveProxyObjects.fetch_sub(1);}
     NORTHLIGHT_STREAM_QUERY_METHODS
@@ -1542,7 +1591,7 @@ struct StreamQuery final:IDirect3DQuery9,ProxyBase {
                 const HRESULT hr=eventStatus.load(std::memory_order_relaxed);
                 if(hr==S_OK&&data){const BOOL value=eventValue.load(std::memory_order_relaxed);std::memcpy(data,&value,sizeof value);}
                 if(eventPendingSince){own(q.stats.eventPendingNs,nowNs()-eventPendingSince);own(q.stats.eventCompleted);eventPendingSince=0;}
-                own(q.stats.eventLocal);return hr;
+                own(q.stats.eventLocal);observeBackendThreads(issued,eventEpoch,hr,EventPendingKind::Ready);return hr;
             }
             if(flags==D3::kGetDataFlush){
                 if(inPumpedWait)return D3DERR_INVALIDCALL;
@@ -1561,13 +1610,20 @@ struct StreamQuery final:IDirect3DQuery9,ProxyBase {
 #endif
             return S_FALSE;
         }
-        // StreamOcclusionLocal: WoW's QueryGetData (glare occlusion, D3DQUERYTYPE_OCCLUSION) loops GetData(FLUSH) while S_FALSE, normally after a non-FLUSH availability probe that
-        // succeeded; the pixel count only fades the sun/moon glare, so the latest completed result (this frame's when the probe saw it, else older) is answered without draining the
-        // queue. Never completed (readyGen 0): the real GetData below once, so the game's loop cannot spin. EVENT completion above never substitutes an older result.
-        if(flags&D3::kGetDataFlush&&type==9&&core->occlusionLocal&&gen.load()&&readyGen.load(std::memory_order_acquire)){
-            readResult(data,size);own(core->q.stats.queryFlushLocal);return D3D_OK;}
+        // A completed current generation needs no backend round trip. An older
+        // occlusion result can describe a different object or alpha threshold.
+        {
+            const bool localFlush=flags==D3::kGetDataFlush&&type==9&&core->occlusionLocal;
+            if((flags==0||localFlush)&&issued&&readyGen.load(std::memory_order_acquire)==issued&&
+               eventEpoch==core->queryEpoch.load()&&core->coopState.load()==D3D_OK&&
+               ((!data&&!size)||(data&&size==dataSize))){
+                if(flags==0)q.publish();else own(q.stats.queryFlushLocal);
+                readResult(data,size);return D3D_OK;
+            }
+        }
         pumped:
-        if((flags&D3::kGetDataFlush)||!gen.load()){   // FLUSH, or a query never issued: the real GetData with the game's buffer, after everything recorded so far
+        if(flags||!issued||eventEpoch!=core->queryEpoch.load()||core->coopState.load()!=D3D_OK||
+           (data?size!=dataSize:size!=0)){   // Invalidated/uncached requests use the real query after all recorded work.
             // Sent-message handlers may release the last external reference
             // while this call pumps. Keep both the query and its device alive.
             struct Hold {StreamQuery* query;explicit Hold(StreamQuery* p):query(p){query->comAddRef();}~Hold(){query->comRelease();}} hold(this);
@@ -1579,20 +1635,51 @@ struct StreamQuery final:IDirect3DQuery9,ProxyBase {
             // bounds an unresponsive query; completion returns immediately.
             const bool event=type==8&&flags==D3::kGetDataFlush&&gen.load();
             const auto tripStart=measure||event?nowNs():0;std::uint64_t replayStart=0,replayEnd=0;
+            EventPauseProfile eventPauses;bool eventLongPhase=false;EventPendingKind backendPending=EventPendingKind::None;
+            std::uint64_t fenceCalls=0,fenceNs=0,fenceTimeouts=0;
             const auto epoch=eventEpoch;
-            auto body=[&](bool cached){if(measure||event)replayStart=nowNs();if(inner){
+            auto body=[&](bool cached){if(measure||event)replayStart=nowNs();if(event)eventLongPhase=eventWaitExpired;if(inner){
                 if(cached&&eventDoneGen.load(std::memory_order_acquire)==issued){
                     hr=eventStatus.load(std::memory_order_relaxed);
                     if(hr==S_OK&&data){const BOOL value=eventValue.load(std::memory_order_relaxed);std::memcpy(data,&value,sizeof value);}
                 }else{
+                    BOOL eventPayload=0;bool eventPayloadKnown=false;
+                    const bool auditedPayload=event&&dxvk311EventPayload.load(std::memory_order_relaxed)&&
+                        ((!data&&!size)||(data&&size==sizeof(BOOL)));
                     EventFlushCadence cadence;
-                    auto poll=[&]{return static_cast<IDirect3DQuery9*>(inner)->GetData(data,size,event?cadence.flags(nowNs()):flags);};
-                    if(event){unsigned calls=0;std::uint64_t pendingNs=0;hr=waitEventQuery(poll,nowNs,[]{std::this_thread::yield();},calls,kEventFlushWaitNs,&pendingNs);own(q.stats.eventGpuWaitNs,pendingNs);own(q.stats.eventPollCalls,calls);own(q.stats.eventWaitTrips);}
+                    auto poll=[&]{
+                        const auto nativeFlags=event?cadence.flags(nowNs()):flags;
+                        if(!auditedPayload)return static_cast<IDirect3DQuery9*>(inner)->GetData(data,size,nativeFlags);
+                        // Reuse the real poll. Zero upper bytes also handle
+                        // DXVK's cached path, which writes a C++ bool, not BOOL.
+                        BOOL payload=EventPayloadMarker;
+                        const auto result=static_cast<IDirect3DQuery9*>(inner)->GetData(&payload,sizeof payload,nativeFlags);
+                        backendPending=eventPendingKind(result,payload);
+                        if(result==S_OK){eventPayload=payload;eventPayloadKnown=true;if(data)std::memcpy(data,&payload,sizeof payload);}
+                        return result;
+                    };
+                    if(event){unsigned calls=0;std::uint64_t pendingNs=0;
+                        // DXVK interop Flush/LockSubmissionQueue drain its CS and
+                        // submission queues without a deadline. Never introduce
+                        // that whole-queue barrier to wait for one D3D9 EVENT.
+                        core->queryLongPause.begin();QueryPollPause shortPause;
+                        const auto pause=[&](std::uint64_t left,std::uint64_t elapsed){
+                            pauseEventQuery(backendPending,eventWaitExpired,left,elapsed,shortPause,core->queryLongPause);
+                        };
+                        hr=waitEventQuery(poll,nowNs,pause,calls,kEventFlushWaitNs,&pendingNs,measure?&eventPauses:nullptr);
+                        if(hr==S_FALSE)eventWaitExpired=true;
+                        own(q.stats.eventGpuWaitNs,pendingNs);own(q.stats.eventPollCalls,calls);own(q.stats.eventWaitTrips);
+                    }
                     else hr=poll();
                     // A completed pumped wait is also terminal for the background poller.
-                    // Null successful payloads and malformed calls cannot publish an unknown EVENT value.
+                    // NULL callers publish only when the audited native poll supplied a known full BOOL.
                     if(event&&hr!=S_FALSE&&issueSeen==issued&&issueSeenEpoch==epoch&&core->queryEpoch.load()==epoch&&
-                       ((data&&size==sizeof(BOOL))||(!data&&!size&&hr<0)))completeEvent(hr,static_cast<const unsigned char*>(data));
+                       ((data&&size==sizeof(BOOL))||(!data&&!size&&(hr<0||eventPayloadKnown))))
+                        completeEvent(hr,eventPayloadKnown?reinterpret_cast<const unsigned char*>(&eventPayload):static_cast<const unsigned char*>(data));
+                    if(!event&&hr==S_OK&&issued&&data&&size==dataSize&&size<=sizeof result&&issueSeen==issued&&
+                       issueSeenEpoch==epoch&&core->queryEpoch.load()==epoch&&gen.load()==issued&&core->coopState.load()==D3D_OK){
+                        writeResult(static_cast<const unsigned char*>(data),size);readyGen.store(issued,std::memory_order_release);
+                    }
                 }
             }if(measure)replayEnd=nowNs();};
             bool ran=false;
@@ -1620,16 +1707,13 @@ struct StreamQuery final:IDirect3DQuery9,ProxyBase {
             const auto tripEnd=measure?nowNs():0;
             if(event&&ran&&hr!=S_FALSE&&eventPendingSince){own(q.stats.eventPendingNs,nowNs()-eventPendingSince);own(q.stats.eventCompleted);eventPendingSince=0;}   // a wait that ended on this pumped path
             if(measure){const auto waitNs=get(q.stats.syncNs)-waitBefore;
-                const auto record=[&](StreamCore::QueryWait& s){s.record(flags,unissued,ran,hr,waitNs,tripStart,replayStart,replayEnd,tripEnd);};
+                const auto record=[&](StreamCore::QueryWait& s){s.record(flags,unissued,ran,hr,waitNs,tripStart,replayStart,replayEnd,tripEnd,event?&eventPauses:nullptr,eventLongPhase,backendPending);s.fenceCalls+=fenceCalls;s.fenceNs+=fenceNs;s.fenceTimeouts+=fenceTimeouts;};
                 const unsigned index=type<20?type:20;record(core->queryWait[index]);record(core->queryFrame[index]);}
             if(!ran)return D3DERR_INVALIDCALL;
+            if(measure&&event)observeBackendThreads(issued,epoch,hr,backendPending);
             return hr;
         }
         q.publish();   // the replay thread must see the Issue this GetData polls for, or a spin on S_FALSE would never end
-        const std::uint32_t g=gen.load();
-        if(g&&readyGen.load(std::memory_order_acquire)==g){
-            readResult(data,size);
-            return D3D_OK;}
         return S_FALSE;}
 };
 struct StreamSwapChain final:IDirect3DSwapChain9,ProxyBase {

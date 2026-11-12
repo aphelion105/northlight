@@ -18,7 +18,7 @@ inline const std::map<std::string,const char*> Regions={
     {"Expansion01:3521","Zangarmarsh"},{"Expansion01:3522","Blade's Edge Mountains"},{"Expansion01:3523","Netherstorm"},{"Expansion01:3703","Shattrath City"},
     {"Northrend:65","Dragonblight"},{"Northrend:66","Zul'Drak"},{"Northrend:67","The Storm Peaks"},{"Northrend:210","Icecrown"},{"Northrend:394","Grizzly Hills"},
     {"Northrend:495","Howling Fjord"},{"Northrend:2817","Crystalsong Forest"},{"Northrend:3537","Borean Tundra"},{"Northrend:3711","Sholazar Basin"},
-    {"Northrend:4197","Wintergrasp"},{"Northrend:4395","Dalaran"},
+    {"Northrend:4742","Hrothgar's Landing"},{"Northrend:4197","Wintergrasp"},{"Northrend:4395","Dalaran"},
 };
 
 } // namespace NorthlightSettings

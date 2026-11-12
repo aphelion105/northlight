@@ -21,26 +21,45 @@ args = parser.parse_args()
 out = args.output.resolve()
 out.mkdir(parents=True, exist_ok=True)
 renderer = args.renderer.read_text()
+scope_source = fp.src('renderer.cpp').read_text()
+start = scope_source.index('    template<class Draw> HRESULT nativeEffectDraw(')
+scope = scope_source[start:scope_source.index('    bool hdrWorldAlphaDraw(', start)]
 start = renderer.index('    bool hdrWorldAlphaDraw(')
 end = renderer.index('    template<class Draw> HRESULT projectedDraw(', start)
-methods = renderer[start:end]
+methods = scope+renderer[start:end]
+start = renderer.index('    template<class Draw> HRESULT rainMrtDraw(')
+end = renderer.index('    // renderEffects: the mask', start)
+methods += renderer[start:end]
 start = renderer.index('    template<class Draw> void hdrReplaySky(')
 end = renderer.index('    template<class Capture,class Draw> HRESULT drawHook(', start)
 (out/'smoke_sky_methods.inc').write_text(methods+renderer[start:end])
 fp.use_source_modules()
 from world_scene_builder import Assets
-from extract_signatures import variants
+from extract_signatures import variants, fnv1a64
 from shader_compiler import Compiler
 compiler = Compiler(allow_compatible_binary=True)
 arrays, entries, provenance = [], [], []
 def array(name, code):
     words = struct.unpack('<%dI' % (len(code)//4), code)
     arrays.append('static const DWORD '+name+'[]={'+','.join(hex(w) for w in words)+'};\n')
-for major in (3,):
-    code, _ = compiler.compile(fp.TESTS/'hdr_foreground_fixture.hlsl', 'ForegroundVS', f'vs_{major}_0', out/f'foreground-vs{major}.bin')
+for major in (1, 2, 3):
+    profile = 'vs_1_1' if major == 1 else f'vs_{major}_0'
+    code, _ = compiler.compile(fp.TESTS/'hdr_foreground_fixture.hlsl', 'ForegroundVS', profile, out/f'foreground-vs{major}.bin')
     array(f'kForegroundVs{major}', code)
 assets = Assets(archives='stock')
 try:
+    ui_vertices = []
+    for index, _, code in variants(assets.read('shaders\\vertex\\vs_3_0\\UI.bls')):
+        name = f'kNativeUiVs{index}'
+        array(name, code)
+        assert f'UINT64_C(0x{fnv1a64(code):016x})' in fp.src('signatures.h').read_text().split('kUiVS[] = {', 1)[1].split('};', 1)[0]
+        ui_vertices.append(name)
+        provenance.append(dict(path='shaders/vertex/vs_3_0/UI.bls', index=index, sha256=hashlib.sha256(code).hexdigest()))
+    ui_pixels = list(variants(assets.read('shaders\\pixel\\ps_3_0\\UI.bls')))
+    assert len(ui_pixels) == 1
+    array('kNativeUiPs', ui_pixels[0][2])
+    provenance.append(dict(path='shaders/pixel/ps_3_0/UI.bls', index=ui_pixels[0][0], sha256=hashlib.sha256(ui_pixels[0][2]).hexdigest()))
+    arrays.append('static const DWORD* kNativeUiVs[]={'+','.join(ui_vertices)+'};\n')
     for major in (3,):
         path = f'shaders\\pixel\\ps_{major}_0\\Combiners_Mod_Mod.bls'
         for index, _, code in variants(assets.read(path)):
@@ -52,7 +71,11 @@ finally:
     assets.close()
 (out/'smoke_sky_native.h').write_text(''.join(arrays)+'struct NativeForeground{unsigned major,index;const DWORD* code;size_t count;};\nstatic const NativeForeground kNativeForeground[]={'+','.join(entries)+'};\n')
 (out/'native-shaders.json').write_text(json.dumps(provenance, indent=2)+'\n')
-assert renderer.count('effectCoverageDraw([&]{return ext->Draw') == 4
+for entry in ('DrawPrimitive(', 'DrawIndexedPrimitive(', 'DrawPrimitiveUP(', 'DrawIndexedPrimitiveUP('):
+    draw=renderer[renderer.index('HRESULT STDMETHODCALLTYPE '+entry,renderer.index('class Device final')):]
+    draw=draw[:draw.index('\n    HRESULT STDMETHODCALLTYPE ',1)]
+    assert 'materialNativeDraw(' in draw or 'submitGameDraw(' in draw
+assert renderer.count('effectCoverageDraw([&]{return nativeLocalSubmit(submit);},false,nativeSky,skyCaptured)') == 1
 assert 'owner.effectCoverageDraw([&]{return args.submit(device);},true)' in renderer
 exe = out/'smoke-sky.exe'
 subprocess.run([str(fp.zig()), 'c++', '-target', 'x86-windows-gnu', '-std=c++17', '-O2', '-UNDEBUG',
@@ -74,3 +97,5 @@ for index, backend in enumerate(backends):
             print(backend, run.stdout+run.stderr, end='', flush=True)
             run.check_returncode()
             assert 'SMOKE_SKY_GPU_PASS' in run.stdout
+            assert 'HDR_RAIN_SKY_PASS' in run.stdout
+            assert 'HDR_NAME_SKY_PASS' in run.stdout

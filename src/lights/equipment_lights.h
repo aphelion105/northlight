@@ -32,16 +32,31 @@ template<class Mirror> inline bool cachedBank(const Mirror* mirror){
 struct Native {float position[3]{},color[3]{},attenuation[3]{};};
 // c17..20 = diffuse, c21..24 = VIEW-space position, c25..27 = the
 // constant/linear/quadratic denominator. Layout is admitted only by the proof.
-inline bool decode(const float* bank,unsigned slot,const float* inverseView,const float* camera,Native& out){
-    if(!bank||!inverseView||!camera||slot>=4)return false;Native n;
+namespace Detail {
+inline bool finiteTransform(const float* inverseView,const float* camera){
+    if(!inverseView||!camera)return false;
     for(unsigned i=0;i<16;++i)if(!std::isfinite(inverseView[i]))return false;
+    for(unsigned i=0;i<3;++i)if(!std::isfinite(camera[i]))return false;
+    return true;
+}
+inline bool decodeSlot(const float* bank,unsigned slot,const float* inverseView,const float* camera,Native& out){
+    Native n;
     for(unsigned i=0;i<3;++i){const float p=bank[4*(4+slot)+i];if(!std::isfinite(p)||std::fabs(p)>100000)return false;
         n.color[i]=bank[4*slot+i];n.attenuation[i]=bank[4*(8+i)+slot];
         if(!std::isfinite(n.color[i])||n.color[i]<0||n.color[i]>16||!std::isfinite(n.attenuation[i])||n.attenuation[i]<0||n.attenuation[i]>10000)return false;}
     if(std::max({n.color[0],n.color[1],n.color[2]})<.01f||n.attenuation[0]+n.attenuation[1]+n.attenuation[2]<.001f)return false;
     float d2=0;for(unsigned i=0;i<3;++i){n.position[i]=inverseView[12+i];for(unsigned k=0;k<3;++k)n.position[i]+=bank[4*(4+slot)+k]*inverseView[4*k+i];
-        if(!std::isfinite(camera[i])||!std::isfinite(n.position[i])||std::fabs(n.position[i])>=100000)return false;const float d=n.position[i]-camera[i];d2+=d*d;}
+        if(!std::isfinite(n.position[i])||std::fabs(n.position[i])>=100000)return false;const float d=n.position[i]-camera[i];d2+=d*d;}
     if(d2>MaxDistance*MaxDistance)return false;out=n;return true;
+}
+} // namespace Detail
+inline bool decode(const float* bank,unsigned slot,const float* inverseView,const float* camera,Native& out){
+    return bank&&slot<4&&Detail::finiteTransform(inverseView,camera)&&Detail::decodeSlot(bank,slot,inverseView,camera,out);
+}
+inline void decodeBank(const float* bank,unsigned count,const float* inverseView,const float* camera,Native (&values)[4],bool (&valid)[4]){
+    std::fill_n(valid,4,false);
+    if(!bank||!count||count>4||!Detail::finiteTransform(inverseView,camera))return;
+    for(unsigned slot=0;slot<count;++slot)valid[slot]=Detail::decodeSlot(bank,slot,inverseView,camera,values[slot]);
 }
 inline float distance2(const float* a,const float* b){float d=0;for(unsigned k=0;k<3;++k){const float v=a[k]-b[k];d+=v*v;}return d;}
 inline bool hueClose(const float* a,const float* b){const float ap=std::max({a[0],a[1],a[2]}),bp=std::max({b[0],b[1],b[2]});
@@ -78,7 +93,7 @@ struct Tracker {
         for(unsigned i=0;i<points;++i)for(unsigned k=0;k<3;++k){auto& s=key.sources[i];s[k]=bank[4*i+k];s[3+k]=bank[4*(4+i)+k];s[6+k]=bank[4*(8+k)+i];}
         for(unsigned i=0;i<points;++i)for(float v:key.sources[i])if(!std::isfinite(v))return false;
         std::sort(key.sources.begin(),key.sources.begin()+points);
-        for(unsigned i=0;i<std::min(banks,MemoBanks);++i)if(frameBanks[i].count==points&&frameBanks[i].sources==key.sources){++bankDuplicates;return false;}
+        for(unsigned i=0;i<std::min(banks,MemoBanks);++i)if(frameBanks[i].count==points&&std::equal(key.sources.begin(),key.sources.begin()+points,frameBanks[i].sources.begin())){++bankDuplicates;return false;}
         frameBanks[banks++%MemoBanks]=key;if(!actor)++backgroundBanks;return true;
     }
     void observe(const Native& n,std::uint32_t now,const std::vector<NorthlightLocalLights::Light>& fixed,const float* camera=nullptr,std::uint64_t nativeId=0,std::uint32_t flags=0,std::uint32_t fixtureTag=0){

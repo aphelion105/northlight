@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # northlight-test: requires=cxx,libcxx,client,stormlib slow timing
 """0.3.143 replay bounds worker: the asynchronous pass must reproduce the 0.3.142
-synchronous pass bit for bit (bounds, work classes, visit counts, cache state)
+production synchronous pass bit for bit (bounds, work classes, visit counts, cache state)
 under a deterministic bounds clock, whether the render thread joins early or
 late; stress mode adds cancellation, mesh churn during the job, unknown
 programs and a protocol violation. Builds -O2, ASan+UBSan and TSan, then a
@@ -28,84 +28,11 @@ fixture = fixture.replace('static Status finish(', '[[maybe_unused]] static Stat
 point = fp.src('world_point_rendering.inl').read_text()
 # The renderer's own kick/join/abandon glue, compiled verbatim below.
 glue = point[point.index('    NorthlightReplayBoundsJob::Worker replayBoundsWorker;'):point.index('    void pointCalculateReplayBounds(){')]
-# 0.3.142 pointCalculateReplayBounds pass, verbatim (logging tail excluded).
-LEGACY = r"""        const auto start=std::chrono::steady_clock::now();
-        using WorkKind=NorthlightReplayBounds::WorkKind;
-        NorthlightReplayBounds::Budget cheapBudget,heavyBudget,buildBudget;
-        cheapBudget.maxVertices=0;cheapBudget.maxOperations=163840;
-        heavyBudget.maxVertices=0;heavyBudget.maxOperations=32768;
-        buildBudget.maxVertices=2048;buildBudget.maxOperations=65536;
-        const bool diagnostics=NorthlightDiagnostics::enabled()&&(frames==0||frames%120==0); /* logs and envelope timing fields only */
-        pointBoundsValid=0;replayBoundsCache.beginFrame(diagnostics,replays.size());replayBoundsMetadata.beginFrame();
-        // Hints contain no entry/declaration pointers. Current pose bounds and
-        // classifications never survive to another frame or recycled packet.
-        for(auto& p:replays){p->pointBounds={};p->boundsWork={};p->boundsPrepared.reset();}
-        size_t cheapVisited=0,heavyVisited=0,buildVisited=0;
-        const auto visit=[&](size_t index,unsigned phase){
-            auto& p=replays[index];if(p->pointBounds.valid)return false;
-            // This check precedes declaration/program/cache lookups. In a warm
-            // crowd the cold pass consequently performs no repeated lookups.
-            if(phase==1&&p->boundsWork.kind!=WorkKind::Heavy)return false;
-            if(phase==2&&p->boundsWork.kind!=WorkKind::Cold)return false;
-            // The borrowed cheap turn cannot spend already-closed heavy/build
-            // allowances. Newly built cold packets evaluate on a later frame.
-            if(phase==0&&(p->boundsWork.kind==WorkKind::Heavy||p->boundsWork.kind==WorkKind::Cold||p->boundsWork.kind==WorkKind::Unsupported))return false;
-            if(!p->shared){p->boundsWork.kind=WorkKind::Unsupported;return false;}
-            if(phase==0&&!p->boundsPrepared){
-                p->boundsPrepared=replayBoundsMetadata.get(p->originalShader,p->decl,[&]()->std::shared_ptr<const NorthlightReplayBounds::Prepared>{
-                    // Key preparation used to run inside each cache lookup.
-                    // Charge misses to the same budget; hits need no new timer.
-                    struct PreparationCost {
-                        NorthlightReplayBounds::Cache& cache;
-                        std::chrono::steady_clock::time_point start=std::chrono::steady_clock::now();
-                        ~PreparationCost(){cache.chargeCheapPreparation(std::uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now()-start).count()));}
-                    } cost{replayBoundsCache};
-                    auto program=actorPrograms.find(p->originalShader);
-                    if(program==actorPrograms.end())return {};
-                    const D3DVERTEXELEMENT9* elements=nullptr;UINT count=0;
-                    if(!declarationCache.get(p->decl,elements,count))return {};
-                    return NorthlightReplayBounds::EnvelopeCache::prepareProgram(*program->second,elements,count);
-                });
-            }
-            NorthlightReplayBounds::Status status;
-            if(p->boundsPrepared){
-                const auto& prepared=*p->boundsPrepared;
-                if(phase==0){++cheapVisited;status=replayBoundsCache.calculateCheap(prepared,p->mesh(),p->shared,p->constants,context.inverseView,cheapBudget,p->pointBounds,p->boundsWork);}
-                else if(phase==1){++heavyVisited;status=replayBoundsCache.evaluateHeavy(prepared,p->mesh(),p->shared,p->constants,context.inverseView,heavyBudget,p->pointBounds,p->boundsWork);}
-                else{++buildVisited;status=replayBoundsCache.buildEnclosed(prepared,p->mesh(),p->shared,p->constants,context.inverseView,buildBudget,p->pointBounds);}
-            }else{
-                // Allocation/metadata-cap failures retain the audited full key
-                // path and do not turn missing metadata into missing shadows.
-                auto program=actorPrograms.find(p->originalShader);
-                if(program==actorPrograms.end()){p->boundsWork.kind=WorkKind::Unsupported;return false;}
-                const D3DVERTEXELEMENT9* elements=nullptr;UINT count=0;
-                if(!declarationCache.get(p->decl,elements,count)){p->boundsWork.kind=WorkKind::Unsupported;return false;}
-                if(phase==0){++cheapVisited;status=replayBoundsCache.calculateCheap(*program->second,p->mesh(),p->shared,elements,count,p->constants,context.inverseView,cheapBudget,p->pointBounds,p->boundsWork);}
-                else if(phase==1){++heavyVisited;status=replayBoundsCache.evaluateHeavy(*program->second,p->mesh(),p->shared,elements,count,p->constants,context.inverseView,heavyBudget,p->pointBounds,p->boundsWork);}
-                else{++buildVisited;status=replayBoundsCache.buildEnclosed(*program->second,p->mesh(),p->shared,elements,count,p->constants,context.inverseView,buildBudget,p->pointBounds);}
-            }
-            if(status==NorthlightReplayBounds::Status::Valid)++pointBoundsValid;
-            return status==NorthlightReplayBounds::Status::Budget;
-        };
-        replayBoundsCache.readyResume(NorthlightReplaySchedule::pass(replays.size(),replayBoundsCache.readyStart(replays.size()),
-            [&](){return replayBoundsCache.canCheap()&&cheapBudget.operations<cheapBudget.maxOperations;},[&](size_t index){return visit(index,0);}));
-        replayBoundsCache.heavyResume(NorthlightReplaySchedule::pass(replays.size(),replayBoundsCache.heavyStart(replays.size()),
-            [&](){return replayBoundsCache.canHeavy()&&heavyBudget.operations<heavyBudget.maxOperations;},[&](size_t index){return visit(index,1);}));
-        replayBoundsCache.lendToBuild(buildBudget);
-        replayBoundsCache.continuePendingBuild(buildBudget);
-        replayBoundsCache.buildResume(NorthlightReplaySchedule::pass(replays.size(),replayBoundsCache.buildStart(replays.size()),
-            [&](){return replayBoundsCache.canBuild()&&buildBudget.vertices<buildBudget.maxVertices&&buildBudget.operations<buildBudget.maxOperations;},[&](size_t index){return visit(index,2);}));
-        const size_t reservedCheapVisited=cheapVisited;
-        replayBoundsCache.finishReservedTurnsAndLend();
-        cheapBudget.maxOperations=262144-heavyBudget.operations-buildBudget.operations;
-        // Preserve the first turn's cursor for the next frame. Advancing it
-        // through this bonus turn could strand cold/heavy packets exclusively
-        // after their reserved phases on every frame of a periodic draw list.
-        NorthlightReplaySchedule::pass(replays.size(),replayBoundsCache.readyStart(replays.size()),
-            [&](){return replayBoundsCache.canCheap()&&cheapBudget.operations<cheapBudget.maxOperations;},[&](size_t index){return visit(index,0);});
-        replayBoundsCache.settleClock();
-        pointBoundVertices=buildBudget.vertices;pointBoundOperations=cheapBudget.operations+heavyBudget.operations+buildBudget.operations;
-"""
+# Compile the production synchronous schedule as the oracle for its worker.
+# Exclude the diagnostic logging tail; World::legacyPass stores its totals below.
+_sync = point.index('    void pointCalculateReplayBounds(){')
+LEGACY = point[point.index('        const auto start=', _sync):point.index('        const double wallMs=', _sync)]
+calculation = point[_sync:point.index('    void pointLogReplayBounds(', _sync)]
 
 clock = r"""
 #include <atomic>
@@ -164,7 +91,7 @@ struct World {
 """ + LEGACY + r"""
         visits={cheapVisited,heavyVisited,buildVisited,reservedCheapVisited,pointBoundVertices,pointBoundOperations,pointBoundsValid};(void)start;
     }
-""" + glue + r"""
+""" + glue + calculation + r"""
 };
 static bool same(const NorthlightReplayBounds::Bounds& a,const NorthlightReplayBounds::Bounds& b){return a.valid==b.valid&&(!a.valid||(!std::memcmp(a.low,b.low,12)&&!std::memcmp(a.high,b.high,12)));}
 [[maybe_unused]] static bool sameVisits(const Totals& a,const Totals& b){return a.cheapVisited==b.cheapVisited&&a.heavyVisited==b.heavyVisited&&a.buildVisited==b.buildVisited&&a.reservedCheapVisited==b.reservedCheapVisited&&a.boundVertices==b.boundVertices&&a.boundOperations==b.boundOperations&&a.valid==b.valid;}
@@ -210,6 +137,7 @@ struct Scene {
         pool[i]=std::make_shared<const Mesh>(randomMesh(rng,kinds[i]==2?12+rng()%60:30+rng()%700,bones));}}
     // Identical packet lists for both worlds: same meshes, same frozen banks.
     void frame(unsigned f,size_t count,bool unknown,std::vector<World*> worlds){
+        for(auto* w:worlds)w->replayBoundsBegin();
         const size_t actors=count/4+1;banks.resize(actors);for(size_t a=0;a<actors;++a)pose(rng,banks[a].data(),unsigned(a),f);
         for(auto* w:worlds){w->replays.clear();view(w->context.inverseView,f);w->frames=f*120+(f%7?1:0);} /* monotonic rendered frames; every seventh sample is diagnostic */
         std::mt19937 local(f*2654435761u+17);
@@ -237,6 +165,24 @@ static void spin(double us){const auto end=std::chrono::steady_clock::now()+std:
 int main(int argc,char** argv){
     assert(argc>=3);const std::string mode=argv[2];auto skin=load(argv[1]);assert(SkinEnvelope::supports(skin));
 #ifdef NORTHLIGHT_TEST_CLOCK
+    if(mode=="demand"){
+        Scene scene(skin,12);World w(scene.programs);warm(w,scene);
+        scene.frame(1,64,false,{&w});const auto initial=w.replayBoundsCache.envelopeBytes();
+        // A render attempt with no shadow consumer must not advance the cache.
+        w.pointBoundsValid=91;w.pointBoundVertices=87;w.replayBoundsBegin();
+        assert(!w.replayBoundsResolved&&!w.replayBoundsWorker.pending()&&!w.replayBoundsRuns&&!w.pointBoundsValid&&!w.pointBoundVertices&&w.replayBoundsCache.envelopeBytes()==initial);
+        // Directional kick and the first point refresh share one job/result.
+        w.replayBoundsKick();assert(w.replayBoundsWorker.pending());w.replayBoundsKick();w.replayBoundsRequest();w.replayBoundsJoin();
+        assert(w.replayBoundsResolved&&!w.replayBoundsWorker.pending());const auto stats=w.replayBoundsCache.envelopeStats();const auto logs=w.logs;
+        w.replayBoundsRequest();w.pointCalculateReplayBounds();w.replayBoundsJoin();
+        assert(!w.replayBoundsWorker.pending()&&w.replayBoundsResolved&&w.replayBoundsRuns==1&&w.logs==logs&&!std::memcmp(&stats,&w.replayBoundsCache.envelopeStats(),sizeof stats));
+        // A new render attempt is independent of the successful-frame counter.
+        const auto frame=w.frames;w.replayBoundsBegin();assert(w.frames==frame&&!w.replayBoundsResolved);
+        w.pointCalculateReplayBounds();assert(w.replayBoundsResolved);
+        w.replayBoundsBegin();w.replayBoundsKick();assert(w.replayBoundsWorker.pending());w.replayBoundsAbandon();
+        assert(!w.replayBoundsResolved&&!w.replayBoundsWorker.pending());
+        std::puts("DEMAND_PASS zeroConsumerNoWork oncePerAttempt syncFallback cancelledReset sameFrameRetry");return 0;
+    }
     if(mode=="priority"){
         // A dense crowd through the real Worker (schedule with a priority list): 1500 packets, 360 of them where a caster can be in the actor map
         // (the self's 12 parts, 100 around the pivot of which 60 are stacked on the self, 150 in the middle, 98 in the edge band), 1140 far away, all
@@ -423,7 +369,7 @@ with tempfile.TemporaryDirectory(prefix='northlight-bounds-job-') as tmp:
             ('tsan', ['-O1', '-g', '-fsanitize=thread'], [('equivalence', '150'), ('stress', '200'), ('priority', '0')])]
     for name, flags, modes in runs:
         binary = build(root, name, source, flags)
-        for mode, frames, *extra in modes:
+        for mode, frames, *extra in [('demand','0'),*modes]:
             out = subprocess.run([str(binary), shader, mode, frames, *extra], capture_output=True, text=True)
             if out.returncode or 'WARNING' in out.stderr or 'ERROR' in out.stderr:
                 sys.exit(f'{name} {mode} failed ({out.returncode}):\n{out.stdout}{out.stderr[-6000:]}')
@@ -432,4 +378,4 @@ with tempfile.TemporaryDirectory(prefix='northlight-bounds-job-') as tmp:
     bench = json.loads(subprocess.run([str(binary), shader, 'bench'], check=True, capture_output=True, text=True).stdout)
     for row in bench:
         print('bench', json.dumps(row))
-print('PASS replay bounds worker: async pass bit-identical to the 0.3.142 synchronous pass (bounds, work classes, visits, cache state and cursors) under a deterministic clock with early/late joins; stress: cancellation, mesh churn during the job, unknown programs and a protocol breach fail open; ASan/UBSan and TSan clean')
+print('PASS replay bounds worker: async pass bit-identical to the production synchronous pass (bounds, work classes, visits, cache state and cursors) under a deterministic clock with early/late joins; stress: cancellation, mesh churn during the job, unknown programs and a protocol breach fail open; ASan/UBSan and TSan clean')

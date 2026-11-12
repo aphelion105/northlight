@@ -30,8 +30,10 @@ struct Body {float direction[3]={0,0,1},tint[3]={1,1,1},alpha=1,angularRadius=.0
 struct Context {Body sun,moon;float skyboxCover=0;bool nativePlanets=true;};
 struct FrameMode {int mode=-1;bool skybox()const{return mode==1;}bool decide(const Context& c){if(mode<0)mode=(!c.nativePlanets||c.skyboxCover>.01f)?1:0;return mode==1;}void reset(){mode=-1;}};
 bool read(const float*,const float*,Context& sky){sky=Context{};sky.skyboxCover=skyCover;return skyValid;}
-void resolveRendererSky(Context&,const float*){}
+bool selectedForever=false;
+void resolveRendererSky(Context&,const float*,bool forever=false,const char* map=""){selectedForever=forever;}
 bool skyboxVerified(){return true;}
+bool suppressNative(unsigned rendered,unsigned frame){return rendered+1==frame;}
 }
 namespace NorthlightCelestialProfiles {struct Profile {};void apply(Profile,const float*,NorthlightCelestial::Context&){} }
 struct Device {
@@ -54,6 +56,7 @@ struct Phase {
     NorthlightCelestial::FrameMode skyMode;unsigned suppressed=0,suppressedDraws=0,renderFrame=~0u;
     bool skyboxFrame(const NorthlightCelestial::Context& c){return skyMode.decide(c);}
     bool claimSuppress(int body){if(renderFrame+1!=frames)return false;ownFrame=frames;suppressed|=1u<<body;++suppressedDraws;return true;}
+    bool resourceReady=true;bool resources(){return resourceReady;}
     bool load(){return true;}
     bool prepareTerrain(unsigned,const NorthlightCelestialDisc::Disc&,const float*){return true;}
     bool drawDisc(unsigned,IDirect3DSurface9*,UINT,UINT,const float*,const float*,const NorthlightCelestialDisc::Disc&,const int*,
@@ -94,5 +97,15 @@ int main(){
     assert(p.drawnSkyboxEarly==3&&p.surfaceDraws==before+2);
     assert(p.claimNativeDraw(D3DPT_TRIANGLELIST,768,true,[](const char*,const float*){return NorthlightCelestialProfiles::Profile{};},true));
     assert(p.surfaceDraws==before+2);
+    p.next();skyCover=0;
+    assert(p.claimNativeDraw(D3DPT_TRIANGLELIST,2,true,[](const char*,const float*){return NorthlightCelestialProfiles::Profile{};},false,true));
+    assert(NorthlightCelestial::selectedForever&&p.drawnEarly==3);
+    p.next();assert(p.claim());assert(!NorthlightCelestial::selectedForever);
+    p.next();p.renderFrame=p.frames-1;p.suppressed=0;
+    assert(p.claimSkyArtwork()&&p.suppressed==3&&p.owning());
+    p.next();p.renderFrame=~0u;assert(!p.claimSkyArtwork()&&p.suppressed==0);
+    p.renderFrame=p.frames-1;p.resourceReady=false;assert(!p.claimSkyArtwork()&&p.suppressed==0);
+    p.resourceReady=true;p.failed=true;assert(!p.claimSkyArtwork());
+    p.failed=false;p.earlyValid=false;assert(!p.claimSkyArtwork());
     std::puts("PASS celestial phase: 120 sky-only frames, one draw per body, transient sky hold, expiry/map/camera/reset/target gates, clock wrap");
 }

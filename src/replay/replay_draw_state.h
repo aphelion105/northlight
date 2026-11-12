@@ -1,6 +1,7 @@
 #pragma once
 #include <atomic>
 #include <cstring>
+#include "shadow_alpha.h"
 
 // Valid only during one uninterrupted model-replay loop on the real device.
 // Never shadows game state or survives a StateBlock/other rendering pass.
@@ -31,6 +32,7 @@ public:
     struct Counts {unsigned declarations=0,streams=0,indices=0,shaders=0,textures=0,samplers=0,cutoffs=0,legacyTextures=0,legacySamplers=0,opaqueKept=0;} counts;
     explicit BasicCache(IDirect3DDevice9* device):d_(device),skip_(Skip&&skipOpaque()){}
     bool skipping()const{return skip_;}
+    void invalidate(){geometry_=material_=legacy_=false;}
     template<class Replay> HRESULT geometry(const Replay& p){
         HRESULT hr;
         if(!geometry_||declaration_!=p.decl){hr=d_->SetVertexDeclaration(p.decl);if(FAILED(hr)){geometry_=false;return hr;}declaration_=p.decl;++counts.declarations;}
@@ -53,7 +55,7 @@ public:
             if(!material_||u_!=p.addressU){hr=d_->SetSamplerState(0,D3DSAMP_ADDRESSU,p.addressU);if(FAILED(hr)){material_=false;return hr;}u_=p.addressU;++counts.samplers;}
             if(!material_||v_!=p.addressV){hr=d_->SetSamplerState(0,D3DSAMP_ADDRESSV,p.addressV);if(FAILED(hr)){material_=false;return hr;}v_=p.addressV;++counts.samplers;}
         }
-        if(!material_||std::memcmp(&cutoff_,&p.cutoff,sizeof(float))||alphaMode_!=p.alphaMode){float c[]={float(p.alphaMode),0,0,p.cutoff};hr=d_->SetPixelShaderConstantF(0,c,1);if(FAILED(hr)){material_=false;return hr;}cutoff_=p.cutoff;alphaMode_=p.alphaMode;++counts.cutoffs;}
+        if(!material_||std::memcmp(&cutoff_,&p.cutoff,sizeof(float))||alphaMode_!=p.alphaMode){float c[]={float(NorthlightShadowAlpha::recipe(p.alphaMode)),NorthlightShadowAlpha::fixed(p.alphaMode)?1.f:0.f,0,p.cutoff};hr=d_->SetPixelShaderConstantF(0,c,1);if(FAILED(hr)){material_=false;return hr;}cutoff_=p.cutoff;alphaMode_=p.alphaMode;++counts.cutoffs;}
         material_=true;return D3D_OK;
     }
 };

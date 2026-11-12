@@ -30,7 +30,7 @@ static void layoutCheck(unsigned n){
 int main(){
  {const ProbeLayout d;assert(d.n==14&&d.nz==14&&d.atlas==16&&d.count()==2744&&d.atlasSize()==4096&&ProbeCache().capacity()==4096);
   for(unsigned n:{10u,12u,16u,18u,20u,22u,14u})layoutCheck(n);
-  ProbeLayout bad;bad.n=12;bad.atlas=14;assert(!configureProbeLayout(bad));bad=probeLayoutFor(24);assert(!configureProbeLayout(bad));bad=probeLayoutFor(15);assert(!configureProbeLayout(bad));
+  ProbeLayout bad;bad.n=12;bad.atlas=14;assert(!configureProbeLayout(bad));bad=probeLayoutFor(ProbeGridMaxN+2);assert(!configureProbeLayout(bad));bad=probeLayoutFor(15);assert(!configureProbeLayout(bad));
   assert(probeLayout().n==14&&probeLayout().atlas==16);}
  unsigned windows=0;
  for(float x:{-129.f,-128.f,-7.99f,0.f,7.99f,128.f})for(float y:{-2048.5f,-8.f,.1f,100.f})for(float z:{-10.f,0.f,3.f,8.f,1000.f}){

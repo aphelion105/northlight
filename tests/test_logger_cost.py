@@ -48,6 +48,7 @@ static int QueryPerformanceCounter(LARGE_INTEGER* p){
 static int QueryPerformanceFrequency(LARGE_INTEGER* p){p->QuadPart=1000000000;return 1;}
 static FILE* _wfopen(const wchar_t*,const wchar_t*){++openCalls;if(failOpen.exchange(false))return nullptr;return std::tmpfile();}
 static int fake_vfprintf(FILE* f,const char* format,va_list args){if(failPrint.exchange(false))return -1;return std::vfprintf(f,format,args);}
+static size_t fake_fwrite(const void* data,size_t size,size_t count,FILE* f){if(failPrint.exchange(false))return 0;return std::fwrite(data,size,count,f);}
 static int fake_fputc(int c,FILE* f){if(failNewline.exchange(false))return EOF;return std::fputc(c,f);}
 static int fake_fflush(FILE* f){if(failFlush.exchange(false))return EOF;return std::fflush(f);}
 static wchar_t rootPath[MAX_PATH]={};
@@ -55,12 +56,14 @@ static FILE* logFile=nullptr;
 static std::atomic<unsigned> rotations{0},openCallsAtRotation{0};
 static void rotatePreviousLog(){++rotations;openCallsAtRotation=openCalls.load();}
 #define vfprintf fake_vfprintf
+#define fwrite fake_fwrite
 #define fputc fake_fputc
 #define fflush fake_fflush
 '''
 
 SUFFIX = r'''
 #undef vfprintf
+#undef fwrite
 #undef fputc
 #undef fflush
 static void reset(){

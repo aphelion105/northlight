@@ -59,27 +59,37 @@ struct SavedState {
     IDirect3DSurface9* depth=nullptr;
     D3DVIEWPORT9 viewport={};
     bool ok=false;
+    bool restored=false,restoreOK=false;
     explicit SavedState(IDirect3DDevice9* device,NorthlightStateBlockPool* cache=nullptr)
         :d(device),pool(cache&&cache->ownsDevice(device)?cache:nullptr){
         if(!d)return;
         if(pool)block=pool->acquire();
         else if(FAILED(d->CreateStateBlock(D3DSBT_ALL,&block)))return;
         if(!block)return;
-        for(int i=0;i<4;++i)d->GetRenderTarget(i,&targets[i]);
-        d->GetDepthStencilSurface(&depth);
+        for(int i=0;i<4;++i){const auto hr=d->GetRenderTarget(i,&targets[i]);if(FAILED(hr)&&hr!=D3DERR_NOTFOUND)return;}
+        const auto hr=d->GetDepthStencilSurface(&depth);if(FAILED(hr)&&hr!=D3DERR_NOTFOUND)return;
         ok=targets[0]&&SUCCEEDED(d->GetViewport(&viewport));
     }
     SavedState(const SavedState&)=delete;
     SavedState& operator=(const SavedState&)=delete;
-    ~SavedState(){
+    bool restore(){
+        if(restored)return restoreOK;
+        restored=true;
         if(ok){
-            d->SetDepthStencilSurface(nullptr);
-            for(int i=1;i<4;++i)d->SetRenderTarget(i,nullptr);
-            d->SetRenderTarget(0,targets[0]);
-            for(int i=1;i<4;++i)d->SetRenderTarget(i,targets[i]);
-            d->SetDepthStencilSurface(depth);
-            block->Apply();d->SetViewport(&viewport);
+            auto retry=[](auto call){return SUCCEEDED(call())||SUCCEEDED(call());};
+            restoreOK=retry([&]{return d->SetDepthStencilSurface(nullptr);});
+            bool scrubbed[4]={};
+            for(int i=1;i<4;++i)scrubbed[i]=retry([&]{return d->SetRenderTarget(i,nullptr);});
+            restoreOK=retry([&]{return d->SetRenderTarget(0,targets[0]);})&&restoreOK;
+            for(int i=1;i<4;++i)if(targets[i]||!scrubbed[i])restoreOK=retry([&]{return d->SetRenderTarget(i,targets[i]);})&&restoreOK;
+            restoreOK=retry([&]{return d->SetDepthStencilSurface(depth);})&&restoreOK;
+            restoreOK=retry([&]{return block->Apply();})&&restoreOK;
+            restoreOK=retry([&]{return d->SetViewport(&viewport);})&&restoreOK;
         }
+        return restoreOK;
+    }
+    ~SavedState(){
+        restore();
         if(pool)pool->release(block);else if(block)block->Release();
         if(depth)depth->Release();
         for(auto* target:targets)if(target)target->Release();

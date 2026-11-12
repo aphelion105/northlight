@@ -7,6 +7,7 @@
 #include "settings_service.h"
 #include "settings_overlay.h"
 #include "memory_profile_snapshot.h"
+#include "performance_monitor.h"
 #include "imgui.h"
 #include "imgui_internal.h"
 
@@ -38,9 +39,16 @@ int main(int argc,char** argv){
     for(unsigned attempt=0;attempt<500&&!service->snapshot();++attempt)Sleep(10);
     assert(service->snapshot());
     auto overlay=NorthlightOverlay::create(&device,true,"F11",service,[](const char* text){std::puts(text);});assert(overlay&&!overlay->visible());
-    SendMessageW(window,WM_KEYDOWN,VK_F11,0);SendMessageW(window,WM_KEYUP,VK_F11,0);assert(overlay->visible());
+    auto toggle=[&]{
+        // Do not make a private-window test depend on the user's held modifiers.
+        for(unsigned i=0;i<200&&((GetKeyState(VK_CONTROL)|GetKeyState(VK_SHIFT)|GetKeyState(VK_MENU))&0x8000);++i)Sleep(10);
+        SendMessageW(window,WM_KEYDOWN,VK_F11,0);SendMessageW(window,WM_KEYUP,VK_F11,0);
+    };
+    toggle();assert(overlay->visible());
     bool calibrationExpected=false;
     auto draw=[&](float white){
+        const auto owner=reinterpret_cast<uintptr_t>(&device);
+        if(NorthlightPerformance::store().wanted(owner)){LARGE_INTEGER qpc{},frequency{};QueryPerformanceCounter(&qpc);QueryPerformanceFrequency(&frequency);NorthlightPerformance::Frame f;f.at=NorthlightPerformance::nowMs();f.sceneWidth=W;f.sceneHeight=H;NorthlightPerformance::store().publish(owner,qpc.QuadPart,frequency.QuadPart,true,f);}
         ok(real->ColorFill(device.target,nullptr,0xff000000));device.stateBlockCreates=0;device.allowNested=calibrationExpected;
         ok(real->SetRenderState(D3DRS_CULLMODE,D3DCULL_CW));ok(real->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE));
         D3DMATRIX transform{};for(unsigned i=0;i<4;++i)transform.m[i][i]=float(i+1);transform.m[3][0]=3.25f;
@@ -54,7 +62,7 @@ int main(int argc,char** argv){
     ImGuiWindow* nav=nullptr;
     for(auto* child:parent->DC.ChildWindows)if(child->ChildId==parent->GetID("nav"))nav=child;
     assert(nav);
-    const char* pages[]={"Materials & parallax","Lighting & AO","Renderer & HDR","Diagnostics","Diagnostics","Diagnostics","Shadow range","Shadow range"};
+    const char* pages[]={"Materials & parallax","Lighting & AO","Renderer & HDR","Diagnostics","Performance","Performance","Shadow range","Shadow range"};
     for(unsigned page=0;page<sizeof(pages)/sizeof(pages[0]);++page){
       if(page==4){
         // Synthetic presentation data in the private test process only. The
@@ -125,5 +133,19 @@ int main(int argc,char** argv){
         assert(ranges.fallback==3000&&ranges.at("Azeroth",40)==3000&&ranges.at("Azeroth",12)==2048);
       }
     }
+    ImGui::ActivateItemByID(nav->GetID("Performance"));draw(0);draw(0);
+    ImGuiWindow* content=nullptr;for(auto* child:parent->DC.ChildWindows)if(child!=nav&&child->Active)content=child;assert(content);
+    ImGui::SetScrollY(content,0);draw(0);draw(0);
+    ImGui::ActivateItemByID(content->GetID("Show compact HUD while settings are closed (this session)"));draw(0);draw(0);
+    toggle();assert(overlay->visible());
+    NorthlightPerformance::store().reset(reinterpret_cast<uintptr_t>(&device));
+    for(unsigned i=0;i<240;++i){draw(0);Sleep(5);}
+    auto* hud=ImGui::FindWindowByName("##NorthlightPerformanceHUD");assert(hud&&hud->Active&&!ImGui::GetIO().WantTextInput);
+    ok(real->GetRenderTargetData(device.target,readback));D3DLOCKED_RECT l{};ok(readback->LockRect(&l,nullptr,D3DLOCK_READONLY));
+    {std::ofstream image(std::string(argv[2])+"/monitor-hud.fgr",std::ios::binary);const uint32_t header[]={0x31524746,W,H,D3DFMT_A16B16G16R16F,8};image.write(reinterpret_cast<const char*>(header),sizeof header);for(unsigned y=0;y<H;++y)image.write(static_cast<const char*>(l.pBits)+y*l.Pitch,W*8);}ok(readback->UnlockRect());
+    std::puts("MONITOR_HUD_GPU_PASS closed_menu=visible input=passthrough state=restored real_private_frame_intervals=1");
+    toggle();draw(0);draw(0);
+    ok(real->GetRenderTargetData(device.target,readback));ok(readback->LockRect(&l,nullptr,D3DLOCK_READONLY));
+    {std::ofstream image(std::string(argv[2])+"/monitor-performance.fgr",std::ios::binary);const uint32_t header[]={0x31524746,W,H,D3DFMT_A16B16G16R16F,8};image.write(reinterpret_cast<const char*>(header),sizeof header);for(unsigned y=0;y<H;++y)image.write(static_cast<const char*>(l.pBits)+y*l.Pitch,W*8);}ok(readback->UnlockRect());
     overlay.reset();service.reset();readback->Release();device.target->Release();real->Release();api->Release();FreeLibrary(module);DestroyWindow(window);UnregisterClassW(wc.lpszClassName,wc.hInstance);
 }

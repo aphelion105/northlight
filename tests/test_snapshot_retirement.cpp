@@ -33,21 +33,37 @@ struct SnapshotTestAccess {
         for(unsigned i=0;i<20;++i){
             Mesh mesh;mesh.streams[0].stride=16;mesh.streams[0].bytes.assign(4u<<20,static_cast<unsigned char>(i+1));
             mesh.vertexCount=3;mesh.primitiveCount=1;
-            auto entry=std::make_unique<Frame::CacheEntry>();entry->key.vb[0]=i+1;entry->producer=&frame;
-            entry->declaration.p=declaration;declaration->AddRef();entry->rawIndices.assign(512u<<10,1);
-            entry->metadataBytes=sizeof(Frame::CacheEntry)+entry->rawIndices.capacity()+96;
-            entry->bytes=entry->metadataBytes+NorthlightSourceIdentity::allocationBytes<Mesh>(mesh.capacityBytes());
-            entry->mesh=frame.retain(std::move(mesh));entry->serial=frame.sources_->serial++;
-            if(!held)held=entry->mesh;
-            const auto bytes=entry->bytes,metadata=entry->metadataBytes;
-            auto inserted=frame.sources_->entries.emplace(Frame::hashKey(entry->key),std::move(entry));assert(inserted.second);
-            frame.sources_->lru.append(*inserted.first->second);frame.sources_->bytes+=bytes;frame.sources_->metadataBytes+=metadata;
-            frame.predicted_=inserted.first->second.get();frame.predictionGeneration_=frame.sources_->generation;
+            Frame::CacheEntry entry;entry.key.vb[0]=i+1;entry.producer=&frame;
+            entry.declaration.p=declaration;declaration->AddRef();entry.rawIndices.assign(512u<<10,1);
+            entry.metadataBytes=sizeof(Frame::CacheEntry)+entry.rawIndices.capacity()+96;
+            entry.bytes=entry.metadataBytes+NorthlightSourceIdentity::allocationBytes<Mesh>(mesh.capacityBytes());
+            entry.mesh=frame.retain(std::move(mesh));entry.serial=frame.sources_->serial++;
+            if(!held)held=entry.mesh;
+            const auto bytes=entry.bytes,metadata=entry.metadataBytes;
+            auto inserted=frame.sources_->entries.emplace(Frame::hashKey(entry.key),std::move(entry));assert(inserted.second);
+            frame.sources_->lru.append(inserted.first->second);frame.sources_->bytes+=bytes;frame.sources_->metadataBytes+=metadata;
+            frame.predicted_=&inserted.first->second;frame.predictionGeneration_=frame.sources_->generation;
         }
         assert(frame.sharedSourceBytes()<=frame.sharedSourceLimit());return held;
     }
     static bool invalidated(const Frame& frame){return !frame.predicted_||frame.predictionGeneration_!=frame.sources_->generation;}
     static bool indicesInvalidated(const Frame& frame){return !frame.recent_&&frame.activeRuns_==&frame.copyRuns_&&!frame.decodedLRU_.oldest()&&frame.decodedLookup_.empty()&&frame.decodedFreeCount_==frame.decoded_.size();}
+    static bool store(Frame& frame,IDirect3DVertexDeclaration9* declaration){
+        Mesh mesh;mesh.streams[0].bytes.assign(48,17);mesh.streams[0].stride=16;mesh.vertexCount=3;mesh.primitiveCount=1;
+        Frame::CacheKey key;key.vb[0]=123;key.declaration=declaration;uint64_t spans[4]={};std::shared_ptr<const Mesh> shared;
+        const bool accepted=frame.store(key,std::move(mesh),0,0,0,spans,spans,spans,&shared);
+        assert(accepted?bool(shared):mesh.streams[0].bytes.size()==48);return accepted;
+    }
+    static void remember(Frame& frame){
+        const uint16_t raw[]={0,1,2};Mesh mesh;mesh.indices={0,1,2};mesh.vertexCount=3;
+        frame.rememberPlan(raw,sizeof raw,7,D3DFMT_INDEX16,{D3DPT_TRIANGLELIST,0,0,3,0,1,true},mesh,0,2);
+    }
+    static void retiringDestructor(Frame& frame,NorthlightStreaming::CpuRetirement& queue,std::atomic<bool>& entered,std::atomic<bool>& proceed){
+        auto retired=std::make_shared<Frame::RetiredSources>();Frame::CacheEntry entry;
+        entry.mesh=std::shared_ptr<const Mesh>(new Mesh,[&](const Mesh* p){entered=true;while(!proceed)std::this_thread::yield();delete p;});
+        retired->entries.emplace(0,std::move(entry));frame.sources_->retiring=retired->complete;
+        assert(queue.retire(retired,1));
+    }
 };
 }
 struct Declaration:IDirect3DVertexDeclaration9 {
@@ -131,6 +147,22 @@ static void one(const char* name,bool defer,bool full,bool allocationFailure,boo
 }
 int main(){
     batchLimits();
+    {
+        Declaration declaration;NorthlightDrawSnapshot::Frame frame,peer;assert(peer.shareSnapshotPool(frame));
+        NorthlightStreaming::CpuRetirement queue;std::atomic<bool> entered{false},proceed{false};
+        NorthlightDrawSnapshot::SnapshotTestAccess::retiringDestructor(frame,queue,entered,proceed);
+        while(!entered)std::this_thread::yield();
+        // The container destructor has already begun, but its storage is live.
+        assert(!NorthlightDrawSnapshot::SnapshotTestAccess::store(peer,&declaration)&&"REFILL_BEFORE_PHYSICAL_FREE");
+        NorthlightDrawSnapshot::SnapshotTestAccess::remember(peer);assert(!peer.indexCacheEntries());
+        assert(!frame.clearIndexCache(&queue)); // An empty clear must not lose the marker.
+        assert(!NorthlightDrawSnapshot::SnapshotTestAccess::store(frame,&declaration));
+        proceed=true;assert(queue.waitIdle(10000));
+        assert(NorthlightDrawSnapshot::SnapshotTestAccess::store(peer,&declaration));
+        NorthlightDrawSnapshot::SnapshotTestAccess::remember(peer);assert(peer.indexCacheEntries()==1);
+        peer.clearIndexCache();assert(declaration.refs==1);
+        std::puts("SNAPSHOT_REFILL_PASS shared_pool transient_mesh destructor_completion empty_retrim refill_after_free");
+    }
     one("demand",true,false,false);
     one("critical",false,false,false);
     one("queue-full",true,true,false);

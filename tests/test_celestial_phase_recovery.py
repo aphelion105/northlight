@@ -9,7 +9,8 @@ host = fp.src('celestial_disc_renderer.h').read_text()
 claim = host[host.index('    template<class Palette> bool claimNativeDraw('):host.index('    bool claimNativeGlare(')]
 owning = re.search(r'    bool owning\(\)const\{[^\n]+', host).group()
 out = fp.output_dir(); out.mkdir(parents=True, exist_ok=True)
-(out/'celestial_phase_methods.inc').write_text(owning+'\n'+claim)
+artwork = host[host.index('    bool claimSkyArtwork('):host.index('    bool renderSkyBackground(')]
+(out/'celestial_phase_methods.inc').write_text(owning+'\n'+claim+'\n'+artwork)
 exe = out/'celestial_phase_recovery.exe'
 command=([str(fp.zig()), 'c++', '-target', 'x86-windows-gnu'] if os.name=='nt' else ['c++'])
 subprocess.run([*command, '-std=c++17', '-O2', '-UNDEBUG', *fp.include_flags(), '-I'+str(out),

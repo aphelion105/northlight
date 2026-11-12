@@ -130,9 +130,28 @@ int main(int argc,char** argv){
     // Pass transport is a separate exact-bit contract, not inferred from a final
     // end-of-frame bank. This synthetic pass is never labelled a game replay.
     setup(nullptr);ok(d->SetTextureStageState(0,D3DTSS_TEXCOORDINDEX,0));ok(d->SetTextureStageState(0,D3DTSS_TEXTURETRANSFORMFLAGS,D3DTTFF_DISABLE));
-    const unsigned id=++capture;{NorthlightLightingCapture::Capture output(d,folder,id,20,34,W,H);output.inputs(0,1u);output.pass("FixtureTransport",0,1u,0,0,false,S_OK);output.finish(true);}
+    Ref<IDirect3DCubeTexture9> cube;ok(d->CreateCubeTexture(16,1,D3DUSAGE_RENDERTARGET,D3DFMT_R32F,D3DPOOL_DEFAULT,&cube.p,nullptr));
+    ok(d->SetDepthStencilSurface(nullptr));for(unsigned i=1;i<4;++i)ok(d->SetRenderTarget(i,nullptr));
+    for(unsigned face=0;face<6;++face){Ref<IDirect3DSurface9> target;ok(cube.p->GetCubeMapSurface(D3DCUBEMAP_FACES(face),0,&target.p));ok(d->SetRenderTarget(0,target.p));ok(d->Clear(0,nullptr,D3DCLEAR_TARGET,face%2?0xffffffff:0xff000000,1,0));}
+    setup(nullptr);ok(d->SetTexture(1,cube.p));State pointState(d);
+    struct PointFixture {IDirect3DCubeTexture9* cube=nullptr;NorthlightLocalLights::Light selected{};bool ready=true,cacheValid=false;float selectionGain=1;struct {bool usable=true,complete=true;uint32_t updatedAt=123;uint64_t generation=17;NorthlightLocalLights::Light light{};} schedule;uint64_t cacheSource=42;unsigned staticOnlyFaces=3;std::string map="Azeroth";bool faceKnown[6]={true};uint64_t faceSerial[6]={17};struct {uint64_t words[2]={11,22},triangles=33;} faceContent[6];IDirect3DSurface9* cacheSurface[6]{};};
+    std::array<PointFixture,128> points{};points[0].cube=cube.p;points[0].selected.sourceId=42;points[0].schedule.light.sourceId=42;
+    const unsigned id=++capture;{NorthlightLightingCapture::Capture output(d,folder,id,20,34,W,H);float matrix[16]={};for(unsigned i=0;i<4;++i)matrix[i*5]=1;for(unsigned slot=0;slot<4;++slot)output.directional(slot,slot>=2,slot<2?'-':slot==2?'R':'U',matrix,cube.p,1,slot==3,91,17,23);output.inputs(0,1u);output.pass("FixtureTransport",0,1u,0,0,false,S_OK);output.pointSources(points,130,true,true);output.pointSources(points,130,true);output.pointPass(0,false,nullptr,S_OK);output.pointPass(0,true,nullptr,S_OK);output.finish(true);}
+    pointState.same(d);
+    for(unsigned face=0;face<6;++face){auto image=read(file(folder,id,("point-0-face-"+std::to_string(face)+".fgr").c_str()));assert(image==read(file(folder,id,("native-point-0-face-"+std::to_string(face)+".fgr").c_str())));assert(image.size()==20+16*16*4);for(unsigned i=0;i<16*16;++i){float value;std::memcpy(&value,image.data()+20+i*4,4);assert(value==float(face%2));}}
     auto bank=read(file(folder,id,"lighting-pass-1-constants.f32"));assert(bank.size()==116*16&&!std::memcmp(bank.data(),pixel,bank.size()));
     auto journal=read(file(folder,id,"lighting-inputs.jsonl"));assert(std::string(journal.begin(),journal.end()).find("\"export_complete\":true")!=std::string::npos);
+    {const std::string text(journal.begin(),journal.end());assert(text.find("\"texture_type\":\"cube\",\"file_base\":\"point-0\",\"faces\":6")!=std::string::npos&&text.find("\"entry\":\"LocalLightingPcss\"")!=std::string::npos);}
+    const DWORD vertexCode[]={0xfffe0300,0x0200001f,0x80000000,0x900f0000,0x0200001f,0x80000000,0xe00f0000,0x02000001,0xe00f0000,0x90e40000,0x0000ffff};
+    Ref<IDirect3DVertexShader9> nativeVS;ok(d->CreateVertexShader(vertexCode,&nativeVS.p));ok(d->SetVertexShader(nativeVS.p));
+    const unsigned nativeId=++capture;State nativeState(d);const uint64_t sources[4]={42,55,0,0},emptySources[4]={};
+    ok(d->BeginScene());{NorthlightLightingCapture::Capture output(d,folder,nativeId,21,35,W,H,"native-inputs");
+        for(unsigned i=0;i<130;++i){const unsigned token=output.nativeBefore(35,i?42:0,0,i%2,true,nativeVS.p,ps.p,i?sources:emptySources);assert((token&0x7fffffffu)==(i<128?i+1:0));assert(bool(token&0x80000000u)==(i<8));const float position[3]={1,2,3},rgb[3]={.5f,.6f,.7f},attenuation[3]={1,0,.01f};for(unsigned slot=0;slot<4;++slot)output.nativeSlot(token,4,slot,slot!=3,position,rgb,attenuation,!i?"no-binding":slot==0?"matched-ready":slot==1?"not-ready":slot==2?"no-binding":"decode-rejected",i&&slot<2?42:0,i&&slot<2?0:-1);output.nativeAfter(token,i%2,S_OK,nullptr,i%3,i%5,i%7,i!=0);}
+        output.finish(true);const float zero[3]={};output.nativeSlot(1,4,0,false,nullptr,nullptr,nullptr,"disabled");output.directional(0,false,'-',nullptr,nullptr,0,false,0,0,0);output.pointSources(points,130,true);assert(!output.nativeBefore(35,0,0,false,false,nullptr,nullptr,emptySources));}ok(d->EndScene());nativeState.same(d);
+    assert(read(file(folder,nativeId,"native-draw-1-vs.bin"))==std::vector<unsigned char>(reinterpret_cast<const unsigned char*>(vertexCode),reinterpret_cast<const unsigned char*>(vertexCode)+sizeof vertexCode));
+    auto nativeBank=read(file(folder,nativeId,"native-draw-128-vs-constants.f32"));assert(nativeBank.size()==sizeof vertex&&!std::memcmp(nativeBank.data(),vertex,sizeof vertex));
+    for(unsigned i=1;i<=8;++i)assert(read(file(folder,nativeId,("native-draw-"+std::to_string(i)+"-before.fgr").c_str()))==read(file(folder,nativeId,("native-draw-"+std::to_string(i)+"-after.fgr").c_str())));
+    logf("NATIVE_CAPTURE_PASS draws=128 imagePairs=8 exactShaders=1 exactConstants=1 stateUnchanged=1");
     logf("LIGHT_CAPTURE_PASS depthFormats=%u exactDepthPixels=%u apiFailureCases=%u constantRegisters=116 stateVS=256 statePS=224 timing=none",positive,positive*W*H,failures);
     // Release device-held references before the stack-owned reference guards.
     ok(d->SetDepthStencilSurface(nullptr));for(unsigned s=0;s<16;++s)ok(d->SetTexture(s,nullptr));for(unsigned i=1;i<4;++i)ok(d->SetRenderTarget(i,nullptr));ok(d->SetStreamSource(0,nullptr,0,0));ok(d->SetIndices(nullptr));ok(d->SetPixelShader(nullptr));

@@ -63,6 +63,30 @@ int main(int argc,char** argv){
             if(residentCoverage==0&&visibility==0&&gain>0){assert(old[0]<actual[0]-.09f);++negativeControls;}
         }++cases;
     }
+    // Signed brightness and the extended influence range, including partial residency.
+    unsigned tuningCases=0;float tuningError=0;
+    for(float coverage:{0.f,.25f,1.f})for(float gain:{0.f,.5f,1.f,2.f})
+    for(float brightness:{-1.f,-.5f,0.f,1.f,2.f})for(float irradiance:{0.f,.1f,.7f})for(float confidence:{0.f,1.f}){
+        c[20][1]=gain;c[20][3]=1;c[66][1]=brightness;ok(d->SetPixelShaderConstantF(0,c[0],79));
+        bind(10,metadata(coverage));bind(14,solid(0,0,1,confidence));
+        for(unsigned slot:{4u,5u,6u})bind(slot,solid(irradiance/.28209479f));
+        draw(gi);const auto actual=sample(target);
+        for(unsigned k=0;k<3;++k){
+            const float correction=std::max((irradiance*(1+brightness)-c[18][k])*gain,-c[18][k])*coverage;
+            const float expected=std::min(correction,0.f)+std::max(correction,0.f)*confidence;
+            tuningError=std::max(tuningError,std::fabs(actual[k]-expected));
+            assert(std::isfinite(actual[k])&&std::fabs(actual[k]-expected)<.003f);
+            assert(actual[k]>=-c[18][k]-.001f);if(coverage==0)assert(actual[k]==0);
+        }
+        assert(actual[3]==0);++tuningCases;
+    }
+    // Sky/water must stay neutral even with resident bright probes and maximum settings.
+    c[20][1]=2;c[66][1]=2;bind(10,metadata(1));bind(14,solid(0,0,1,1));
+    for(unsigned slot:{4u,5u,6u})bind(slot,solid(.7f/.28209479f));
+    ok(d->SetPixelShaderConstantF(0,c[0],79));bind(1,solid(1));draw(gi);assert(sample(target)==(std::array<float,4>{}));
+    bind(1,solid(depth));c[30][0]=1;bind(11,solid(5,1));ok(d->SetPixelShaderConstantF(0,c[0],79));draw(gi);assert(sample(target)==(std::array<float,4>{}));
+    c[30][0]=0;bind(11,solid(0));c[66][1]=0;
+    std::printf("GI_TUNING_PASS cases=%u maxError=%.9g signedRange=1 ambientBound=1 missingProbeNeutral=1\n",tuningCases,tuningError);
     // Spatial fade at a missing neighboring probe, independent of born-time fade.
     c[20][1]=.5f;bind(10,metadata(1,true));bind(12,solid(0,0,0,.15f));bind(14,solid(0,0,1,1));for(unsigned s:{4u,5u,6u})bind(s,solid(.1f/.28209479f));
     float previous=0;for(unsigned i=0;i<=32;++i){c[6][0]=float(i)*.25f;ok(d->SetPixelShaderConstantF(0,c[0],79));draw(gi);const float actual=sample(target)[0],coverage=1-float(i)/32;
@@ -91,7 +115,7 @@ int main(int argc,char** argv){
     shader(std::string(argv[1])+"/WorldCompositeHdr.bin",&composites[1]);
     const float palettes[][3]={{.2f,.3f,.4f},{.31373f,.35686f,.4f}};
     unsigned chainCases=0,chainNative=0,chainShadow=0,chainResident=0,chainAO=0;float chainError=0;
-    for(const auto& ambient:palettes)for(float coverage:{0.f,.25f,1.f})for(bool shadowed:{false,true})for(float ao:{.6f,1.f})for(float value:{0.f,.01f,.18f,.7f,1.f}){
+    for(const auto& ambient:palettes)for(float coverage:{0.f,.25f,1.f})for(bool shadowed:{false,true})for(float ao:{.6f,1.f})for(float value:{0.f,.01f,.18f,.7f,1.f})for(float influence:{.5f,1.f,2.f})for(float brightness:{-1.f,0.f,2.f}){
         ok(d->SetTexture(8,nullptr));ok(d->SetRenderTarget(0,chainSurface));ok(d->SetRenderTarget(1,baseline));
         std::memset(c,0,sizeof c);c[0][0]=1.f/(W*2);c[0][1]=1.f/(H*2);c[0][2]=.2f;c[0][3]=1000;
         c[1][0]=c[1][1]=c[1][2]=c[2][0]=1;c[2][1]=48;c[2][2]=192;c[2][3]=1.f/1024;
@@ -103,12 +127,13 @@ int main(int argc,char** argv){
         bind(9,solid(0));bind(11,solid(0));bind(12,solid(1,1,1,1));bind(14,solid(0,0,1,1));
         ok(d->SetPixelShaderConstantF(0,c[0],79));draw(lighting[0]);
         const float visibility=shadowed?.15f:1.f;
+        c[20][1]=influence;c[66][1]=brightness;ok(d->SetPixelShaderConstantF(0,c[0],79));
         ok(d->SetRenderTarget(1,nullptr));bind(10,metadata(coverage));bind(7,solid(100,10000,1,-1000));
-        for(unsigned slot:{4u,5u,6u})bind(slot,solid(0));
+        for(unsigned slot:{4u,5u,6u})bind(slot,solid(.1f/.28209479f));
         ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE));ok(d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_ONE));ok(d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_ONE));
         ok(d->SetRenderState(D3DRS_COLORWRITEENABLE,7));draw(gi);ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE));ok(d->SetRenderState(D3DRS_COLORWRITEENABLE,15));
         const auto coefficient=sample(chainSurface);
-        for(unsigned k=0;k<3;++k)assert(std::fabs(coefficient[k]-(.4f*(visibility-1)-ambient[k]*.5f*coverage))<.001f);
+        for(unsigned k=0;k<3;++k)assert(std::fabs(coefficient[k]-(.4f*(visibility-1)+std::max((.1f*(1+brightness)-ambient[k])*influence,-ambient[k])*coverage))<.001f);
         ok(d->SetRenderTarget(0,target));ok(d->SetTexture(8,chainLight));
         bind(0,solid(value,value*.7f,value*.2f,.375f));bind(2,solid(0));bind(3,solid(0));bind(7,solid(0));
         bind(9,solid(0,0,0,1));bind(10,solid(0,0,0,ao));bind(12,solid(ambient[0]+.4f,ambient[1]+.4f,ambient[2]+.4f));bind(13,solid(0));bind(15,solid(10));
@@ -118,8 +143,9 @@ int main(int argc,char** argv){
             for(unsigned k=0;k<3;++k){
                 const float encoded=value*(k==0?1.f:k==1?.7f:.2f);
                 const float native=hdr?(encoded<=.04045f?encoded/12.92f:std::pow((encoded+.055f)/1.055f,2.4f)):encoded;
-                const float transported=native*ao,delta=.4f*(visibility-1)-ambient[k]*.5f*coverage;
-                const float expected=std::max(transported+std::min(transported/(ambient[k]+.4f),1.f)*delta,transported*.55f);
+                const float transported=native*ao,delta=.4f*(visibility-1)+std::max((.1f*(1+brightness)-ambient[k])*influence,-ambient[k])*coverage;
+                const float composed=std::max(transported+std::min(transported/(ambient[k]+.4f),1.f)*delta,transported*.55f);
+                const float expected=composed;
                 const float error=std::fabs(actual[k]-expected);chainError=std::max(chainError,error);assert(std::isfinite(actual[k])&&error<.0015f);
                 if(coverage==0&&!shadowed&&ao==1){assert(std::fabs(actual[k]-native)<.0015f);++chainNative;}
                 if(value>0&&shadowed&&actual[k]<transported-.00001f)++chainShadow;

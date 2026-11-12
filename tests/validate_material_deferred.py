@@ -9,6 +9,7 @@ import numpy as np
 
 p=argparse.ArgumentParser(description=__doc__)
 p.add_argument('--single-sample',action='store_true',help='Audit opaque 1x model batches, prepasses and depth barriers')
+p.add_argument('--depth-only',action='store_true',help='Only audit the 1x depth comparisons, barriers and unsupported-DF24 fallback')
 p.add_argument('--backend',required=True);p.add_argument('--benchmark',action='store_true')
 p.add_argument('--family',choices=['models','terrain','wall'],default='models')
 p.add_argument('--vertex-alpha-zero',action='store_true')
@@ -24,8 +25,12 @@ p.add_argument('--output-subdir',default='material-deferred')
 p.add_argument('--mesh-grid',type=int,default=0,help='Benchmark a buffered tessellated plane (side subdivisions)')
 p.add_argument('--capture-draws',type=int,default=32,help='Native/capture draws per benchmark frame')
 p.add_argument('--vary-pose',action='store_true',help='Change the four-bone pose between benchmark draws')
+p.add_argument('--benchmark-depth-case',type=int,choices=range(8,14),help='Interleave read-only native draws; cases 12/13 insert EQUAL/NEVER every fourth draw; compare forced barriers in the same executable')
 p.add_argument('--benchmark-resolution',type=int,nargs=2,default=[3840,2160],metavar=('WIDTH','HEIGHT'))
 a=p.parse_args();out=fp.out()/a.output_subdir;out.mkdir(exist_ok=True)
+if a.depth_only:assert a.single_sample and not a.benchmark and not a.reuse_exe
+if a.benchmark_depth_case:
+    assert a.single_sample and a.family=='models' and not a.baseline_ref
 backend=str(Path(a.backend).resolve())
 # replay_bounds must accompany actor_deformation: its same-directory quoted
 # include would otherwise load the current actor header beside the frozen one.
@@ -33,7 +38,7 @@ BASELINE_FILES=['src/water/auto_bump_renderer.h','src/water/auto_displacement_re
 
 def compile_fixture(width,height,name,override=None):
     exe=out/(name+'.exe')
-    subprocess.run([str(fp.zig()),'c++','-target','x86-windows-gnu','-O2','-UNDEBUG','-std=c++17','-Wno-microsoft-exception-spec','-DNORTHLIGHT_MATERIAL_MIRROR',f'-DNORTHLIGHT_OBLIQUE_WIDTH={width}',f'-DNORTHLIGHT_OBLIQUE_HEIGHT={height}',*(['-DNORTHLIGHT_TEST_CAPTURE_BASELINE','-I'+str(override)] if override else []),*fp.test_include_flags(),str(fp.TESTS/'auto_normal_oblique_gpu.cpp'),'-luser32','-luuid','-o',str(exe)],env=fp.zig_env(),check=True)
+    subprocess.run([str(fp.zig()),'c++','-target','x86-windows-gnu','-O2','-UNDEBUG','-std=c++17','-Wno-microsoft-exception-spec','-DNORTHLIGHT_MATERIAL_MIRROR',*(['-DNORTHLIGHT_MATERIAL_DEPTH_TEST'] if not override else []),f'-DNORTHLIGHT_OBLIQUE_WIDTH={width}',f'-DNORTHLIGHT_OBLIQUE_HEIGHT={height}',*(['-DNORTHLIGHT_TEST_CAPTURE_BASELINE','-I'+str(override)] if override else []),*fp.test_include_flags(),str(fp.TESTS/'auto_normal_oblique_gpu.cpp'),'-luser32','-luuid','-o',str(exe)],env=fp.zig_env(),check=True)
     data=bytearray(exe.read_bytes());at=struct.unpack_from('<I',data,0x3c)[0]+22
     struct.pack_into('<H',data,at,struct.unpack_from('<H',data,at)[0]|0x20);exe.write_bytes(data)
     return exe
@@ -85,17 +90,36 @@ if not a.reuse_exe:
         count=compare(pair,'*.fgr');records.append(dict(fixture=fixture.name,outputs=count,bit_exact=True))
     if a.single_sample:
         assert a.family=='models' and not a.alpha_test
+        single_depth_capable=None
         for case in range(1,8):
             runs=[run(exe,source,'single-depth-'+str(case),on,0,MATERIAL_BATCH_TIMING=1,MATERIAL_BATCH_VALIDATE=1,DEFERRED_RESIDENT=1,SINGLE_DEPTH_CASE=case) for on in [0,1]]
-            assert 'MATERIAL_SINGLE_SAMPLE queued='+str(16 if case==7 else 32) in runs[1][1]
-            records.append(dict(single_depth_case=case,outputs=compare([r[0] for r in runs],'batch-*.fgr'),bit_exact=True))
+            single_depth_capable='MATERIAL_SINGLE_DEPTH_CAPABLE value=1' in runs[1][1]
+            assert 'MATERIAL_SINGLE_SAMPLE queued='+str((16 if case==7 else 32) if single_depth_capable else 0) in runs[1][1]
+            records.append(dict(single_depth_case=case,outputs=compare([r[0] for r in runs],'batch-*.fgr'),bit_exact=True,depth_copy_supported=single_depth_capable))
+        for case in [8,9,10,11]:
+            flags=dict(MATERIAL_BATCH_TIMING=1,MATERIAL_BATCH_VALIDATE=1,DEFERRED_RESIDENT=1,SINGLE_DEPTH_CASE=case)
+            immediate=run(exe,source,'single-readonly-immediate-'+str(case),0,0,**flags)
+            legacy=run(exe,source,'single-readonly-legacy-'+str(case),1,0,DEPTH_FORCE_BARRIER=1,**flags)
+            optimized=run(exe,source,'single-readonly-optimized-'+str(case),1,0,**flags)
+            assert ('MATERIAL_SINGLE_SAMPLE queued=32 seeds=32 barriers=31 readOnlySkips=0' if single_depth_capable else 'MATERIAL_SINGLE_SAMPLE queued=0 seeds=0 barriers=0') in legacy[1],legacy[1]
+            assert ('MATERIAL_SINGLE_SAMPLE queued=32 seeds=1 barriers=0 readOnlySkips=31' if single_depth_capable else 'MATERIAL_SINGLE_SAMPLE queued=0 seeds=0 barriers=0') in optimized[1],optimized[1]
+            count=compare([immediate[0],optimized[0]],'batch-*.fgr')
+            assert compare([legacy[0],optimized[0]],'batch-*.fgr')==count
+            records.append(dict(single_readonly_depth_case=case,outputs=count,legacy_seeds=32 if single_depth_capable else 0,optimized_seeds=1 if single_depth_capable else 0,barriers_removed=31 if single_depth_capable else 0,bit_exact=True,depth_copy_supported=single_depth_capable))
+        if a.depth_only:
+            result=dict(backend=backend,checks=records,single_sample=True,depth_only=True,depth_copy_supported=single_depth_capable)
+            (out/'validation.json').write_text(json.dumps(result,indent=2)+'\n',encoding='utf-8')
+            print('MATERIAL_DEPTH_PASS',len(records),flush=True);sys.exit(0)
         runs=[run(exe,source,'single-geometry-mode',on,0,MATERIAL_BATCH_TIMING=1,MATERIAL_BATCH_VALIDATE=1,DEFERRED_RESIDENT=1,SINGLE_GEOMETRY_MODE=1,MATERIAL_DEPTH=12) for on in [0,1]]
-        assert 'MATERIAL_SINGLE_SAMPLE queued=32' in runs[1][1]
+        assert 'MATERIAL_SINGLE_SAMPLE queued='+str(32 if single_depth_capable else 0) in runs[1][1]
         records.append(dict(single_geometry_mode=True,outputs=compare([r[0] for r in runs],'batch-*.fgr'),bit_exact=True))
         runs=[run(exe,source,'single-seed-failure',on,0,MATERIAL_BATCH_TIMING=1,MATERIAL_BATCH_VALIDATE=1,DEFERRED_RESIDENT=1,SINGLE_SEED_FAILURE=1) for on in [0,1]]
         assert 'MATERIAL_SINGLE_SAMPLE queued=0 seeds=0' in runs[1][1]
         records.append(dict(single_seed_failure=True,outputs=compare([r[0] for r in runs],'batch-*.fgr'),bit_exact=True))
         for flag in ['DEFERRED_RESIDENT','DEFERRED_POSE','DEFERRED_STRIP','DEFERRED_CACHE_FAILURE','DEFERRED_MUTATION','DEFERRED_BARRIER','DEFERRED_UNUSED','DEFERRED_LIMIT','DEFERRED_MULTISTREAM']:
+            if flag=='DEFERRED_UNUSED' and not single_depth_capable:
+                records.append(dict(single_safety=flag,skipped='DF24 unsupported; no deferred 1x queue'))
+                continue
             runs=[run(exe,source,'single-'+flag.lower(),on,0,MATERIAL_BATCH_TIMING=1,MATERIAL_BATCH_VALIDATE=1,**dict(DEFERRED_RESIDENT=1,**({flag:1} if flag!='DEFERRED_RESIDENT' else {}))) for on in [0,1]]
             records.append(dict(single_safety=flag,outputs=compare([r[0] for r in runs],'batch-*.fgr'),bit_exact=True))
     if a.texture_guard and a.alpha_test:
@@ -173,23 +197,36 @@ if a.benchmark or a.reuse_exe:
             (overrides/Path(file).name).write_bytes(subprocess.check_output(['git','show',a.baseline_ref+':'+file]))
         old_bench=compile_fixture(*a.benchmark_resolution,'baseline-bench',overrides.resolve())
     timings=[]
-    for repeat in range(3):
+    for repeat in range(4 if a.benchmark_depth_case else 3):
         folders={}
-        order=[0,1]+([2] if old_bench else [])
+        order=[0,2,1] if a.benchmark_depth_case else [0,1]+([2] if old_bench else [])
         for on in (order if repeat%2==0 else order[::-1]):
             flags=dict(MATERIAL_BATCH_TIMING=1,MATERIAL_BATCH_VALIDATE=1,MESH_GRID=a.mesh_grid,CAPTURE_DRAWS=a.capture_draws)
             if a.vary_pose:flags['DEFERRED_POSE']=1
-            folder,log=run(old_bench if on==2 else exe,source,'timing-'+str(repeat)+('-baseline' if on==2 else ''),int(on!=0),0 if a.single_sample else 2,**flags)
+            if a.benchmark_depth_case:
+                flags.update(SINGLE_DEPTH_CASE=a.benchmark_depth_case,DEFERRED_RESIDENT=1)
+                if on==2:flags['DEPTH_FORCE_BARRIER']=1
+            folder,log=run(old_bench if old_bench and on==2 else exe,source,'timing-'+str(repeat)+('-baseline' if on==2 else ''),int(on!=0),0 if a.single_sample else 2,**flags)
+            size=re.search(r'MATERIAL_BATCH_TIMING width=(\d+) height=(\d+) msaa=(\d+)',log);assert size
+            assert list(map(int,size.groups()))==[*a.benchmark_resolution,0 if a.single_sample else 2],'Benchmark executable resolution/sample count differs from the request'
             m=re.search(r'MATERIAL_BATCH_TIMING .*gpuMs=([\d.]+) submitMs=([\d.]+)',log);assert m
             record=dict(repeat=repeat,deferred=on,gpu_ms=float(m[1]),cpu_ms=float(m[2]));timings.append(record);folders[on]=folder
+            if a.benchmark_depth_case and on:
+                assert 'MATERIAL_SINGLE_DEPTH_CAPABLE value=1' in log,'Depth-barrier benchmark requires DF24'
+                counts=re.search(r'MATERIAL_SINGLE_SAMPLE queued=(\d+) seeds=(\d+) barriers=(\d+) readOnlySkips=(\d+)',log);assert counts,log
+                record.update(zip(['queued','seeds','barriers','read_only_skips'],map(int,counts.groups())))
+                barriers=(a.capture_draws-1)//(4 if a.benchmark_depth_case>=12 else 1)
+                assert record['queued']==a.capture_draws and record['seeds']==(barriers+1 if on==2 else 1)
+                assert record['barriers']==(barriers if on==2 else 0)
             print('MATERIAL_DEFERRED_TIMING',record,flush=True)
         assert compare([folders[0],folders[1]],'batch-*.fgr')==(2 if a.occlusion_off else 3)
-        if old_bench:assert compare([folders[1],folders[2]],'batch-*.fgr')==(2 if a.occlusion_off else 3)
+        if old_bench or a.benchmark_depth_case:assert compare([folders[1],folders[2]],'batch-*.fgr')==(2 if a.occlusion_off else 3)
     result=dict(backend=backend,occlusion_enabled=not a.occlusion_off,runs=timings,checks=records,targets_bit_exact=True)
     for on in [0,1]:result['deferred' if on else 'immediate']={key:statistics.median(r[key] for r in timings if r['deferred']==on) for key in ['gpu_ms','cpu_ms']}
-    if old_bench:result['baseline_deferred']={key:statistics.median(r[key] for r in timings if r['deferred']==2) for key in ['gpu_ms','cpu_ms']}
+    if old_bench or a.benchmark_depth_case:result['baseline_deferred']={key:statistics.median(r[key] for r in timings if r['deferred']==2) for key in ['gpu_ms','cpu_ms']}
     result['gpu_reduction_percent']=100*(1-result['deferred']['gpu_ms']/result['immediate']['gpu_ms'])
 else:result=dict(backend=backend,checks=records)
 result.update(single_sample=a.single_sample,family=a.family,vertex_alpha_zero=a.vertex_alpha_zero,wall_diffuse=a.wall_diffuse,baseline_ref=a.baseline_ref,alpha_test=a.alpha_test,texture_guard=a.texture_guard,pressure=a.pressure,lazy_registration=a.lazy_registration,mesh_grid=a.mesh_grid,capture_draws=a.capture_draws,vary_pose=a.vary_pose,benchmark_resolution=a.benchmark_resolution)
+result['benchmark_depth_case']=a.benchmark_depth_case
 (out/'validation.json').write_text(json.dumps(result,indent=2)+'\n',encoding='utf-8')
 print('MATERIAL_DEFERRED_PASS',json.dumps(result),flush=True)

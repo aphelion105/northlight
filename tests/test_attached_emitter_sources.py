@@ -56,6 +56,37 @@ def mesh_model():
 
 
 class AttachedEmission(unittest.TestCase):
+    def test_gameobject_fallback_retains_disabled_world_policy(self):
+        assets, original = mesh_model()
+        names = ('vr_cookpot_off_01', 'collectortubes_straight_off',
+                 'taurenlamppostbroken', 'firewoodpile01', 'candle_unlit',
+                 'lanternoff01', 'torch_extinguished')
+        candidates = {'world\\'+name+'.m2': {} for name in names}
+        candidates['world\\ordinary_lamp.m2'] = {}
+        native_path = 'world\\native_lamp_off.m2'
+        emitters, _ = attached_sources(assets, 'creature\\glow.m2', original)
+        existing = append_spell_lights(original, emitters)
+        assets.extra[native_path] = existing
+        candidates[native_path] = {}
+        for path in candidates:
+            assets.extra[path[:-3]+'00.skin'] = assets.extra['creature\\glow00.skin']
+        assets.extra['creature\\glow_broken00.skin'] = assets.extra['creature\\glow00.skin']
+        assets.extra['dbfilesclient\\gameobjectdisplayinfo.dbc'] = table([], 19)
+        assets.providers = dict.fromkeys(candidates)
+        before = dict(assets.extra)
+        with tempfile.TemporaryDirectory(dir=northlight_paths.output_dir()) as folder:
+            report = gameobjects.build(assets, Path(folder))
+            self.assertEqual(set(report['models']), {'world\\ordinary_lamp.m2'})
+            for path in candidates:
+                if path == 'world\\ordinary_lamp.m2':
+                    continue
+                self.assertEqual(report['skipped'][path]['category'], 'native' if path == native_path else 'not_emissive')
+            with Archive(Path(folder)/'gameobject-lights-staged.mpq') as archive:
+                self.assertEqual({n for n in archive.names() if not n.startswith('(')}, {'world\\ordinary_lamp.m2'})
+        self.assertEqual(assets.extra, before)
+        # A broken creature/weapon mesh can still be intentionally luminous.
+        self.assertTrue(attached_sources(assets, 'creature\\glow_broken.m2', original)[0])
+
     def test_equipment_energy_is_independent_of_particle_population(self):
         path = 'item\\objectcomponents\\weapon\\source.m2'
         # Like the live particle fit, the offline estimate represents measured

@@ -3,7 +3,9 @@
 // no device or Win32 calls. Quality (and a missing/empty file) is exactly the
 // 0.3.136 behaviour; every other value only removes optional CPU/GPU work,
 // except the picture-only keys (GIStrength, HorizonHaze*).
+#include <algorithm>
 #include <cctype>
+#include <array>
 #include <cstdlib>
 #include <istream>
 #include <sstream>
@@ -16,15 +18,17 @@ struct Settings {
     Preset preset=Preset::Quality;
     unsigned effects=1,worldShadows=1,worldFog=1,localLights=1;
     unsigned minSkinnedTriangles=100,captureBudgetMiB=32,actorShadowBudgetMiB=0;
-    unsigned farShadowInterval=4,nearShadowInterval=1,localLightLimit=48,pointShadows=1,pointShadowLimit=64,pointShadowRefreshMs=0,shadowDirectionSteps=2048;
+    unsigned farShadowInterval=4,nearShadowInterval=1,localLightLimit=64,pointShadows=1,pointShadowLimit=64,pointShadowRefreshMs=0,shadowDirectionSteps=2048;
     // Camera distance to the light's influence sphere, in yards.
     unsigned pointShadowDistance=48;
     // Where each value in Keys order came from: 'd' code default (Quality), 'p' Balanced/Performance
     // preset, 'l' legacy shadow-experiment.ini, 'f' northlight-quality.ini key. Not part of ==.
     // 0.3.138 GI: worker probe solve (rays, bounces, request step), actor/dynamic probes, solver threads.
     unsigned gi=1,giRays=64,giBounces=3,giProbeMoveStep=8,giDynamicProbes=1,giThreads=1,giFastBVH=1;
-    // 0.3.142: bounce-light strength in percent; 60 = the 0.3.141 constant 0.5, 100 = maximum (0.5*100/60).
-    unsigned giStrength=60;
+    // 60 retains the legacy half blend; 120 replaces native ambient, 240 doubles the correction.
+    unsigned giStrength=120,auroraStrength=100;
+    unsigned celestialStyle=0; // 0 = native placement/size; 1 = Forever orbit and size curves.
+    int giBrightness=0; // Signed percent of measured indirect radiance; -100 = none, +100 = double.
     // 0.3.141: shadow fate tracker (diagnostic log only; never changes the image).
     // Diagnostics=0: periodic logs, diagnostic counters and pure measurement off
     // (diagnostics_switch.h); it also forces the fate tracker off.
@@ -42,8 +46,8 @@ struct Settings {
     // redraw is spread over this many frames (1 = one frame, 0.3.150).
     unsigned pointShadowFacesPerFrame=6,staticCacheSlices=1;
     // 0.3.153 GIDistance: yards of solved GI around the probe window centre; snaps down
-    // to 36,44,..,84 (giProbeGrid). 52 = the 0.3.151 14-cell window and 16^3 atlas.
-    unsigned giDistance=76;
+    // to 36,44,..,156 (giProbeGrid). 52 = the 0.3.151 14-cell window and 16^3 atlas.
+    unsigned giDistance=76,giChunkRadius=1;
     // 0.3.153 GIProbeAhead: yards the probe window centre moves ahead of the eye along the
     // horizontal view direction; geometry, fog and everything else stay on the eye. 0 = eye.
     unsigned giProbeAhead=0;
@@ -75,6 +79,9 @@ struct Settings {
     unsigned blobShadowStrength=50;
     // Independent visibility of the native round ground decal; detailed shadows are unchanged.
     unsigned blobShadows=1;
+    // Suppress the original baked/client terrain shadow term; Northlight shadows are independent.
+    unsigned disableOriginalTerrainShadows=1;
+    unsigned shadowProvider=1; // 0: native directional shadows; 1: Northlight cascades.
     // Weather 1 = Northlight's effects follow detected rain, snow and sand; 0 = nothing reacts.
     // RainFog 0..2 scales the haze/fog/shafts/sun/shadow/GI/lamp couplings (1 = the tuned look).
     unsigned weather=1,rainFog=1;
@@ -117,6 +124,7 @@ struct Settings {
     // 0.3.209 (task 29) ActorShadowDetail: 1 = a dedicated 4x finer shadow map around the player holds the moving casters (characters, mounts) and a
     // contact-hardening soft filter pass reads it (sharp at the feet, softer further from the caster); 0 = the 0.3.207 shadows (near cascade, 5x5 tent). ActorShadows=0 disables it too.
     unsigned actorShadowDetail=1;
+    unsigned shadowStrength=125,shadowSoftness=50,shadowContactRadius=100;
     unsigned softShadows=1; // PCSS filtering only; does not change caster capture or shadow-map updates.
     // task 34 SpellLayer: 1 = translucent M2 draws without a depth write (particles, ribbons, spell batches, projected ground effects) are deferred and
     // drawn right after the world effects, so fog, haze, shadow and AO act on the world behind them and not on them; 0 = the old path (no classification).
@@ -146,9 +154,16 @@ struct Settings {
     unsigned autoDisplacementStrength=100,autoDisplacementDistance=12,autoDisplacementDetail=4;
     unsigned autoBumpModels=3,autoModelDisplacementStrength=25,autoModelDisplacementDistance=8,autoModelDisplacementDetail=2;
     unsigned autoHeightPolarity=0,autoHeightDetails=75,autoHeightBalance=50;
-    char origin[113]={'d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d'};
+    char origin[122]={'d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d'};
 };
-struct Key { const char* name; unsigned Settings::*field; unsigned low,high; unsigned preset[3]; };
+struct Key {
+    const char* name;unsigned Settings::*field=nullptr;int Settings::*signedField=nullptr;
+    int low,high;std::array<int,3> preset;
+    constexpr Key(const char* n,unsigned Settings::*f,int lo,int hi,std::array<int,3> p):name(n),field(f),low(lo),high(hi),preset(p){}
+    constexpr Key(const char* n,int Settings::*f,int lo,int hi,std::array<int,3> p):name(n),signedField(f),low(lo),high(hi),preset(p){}
+    int get(const Settings& s)const{return signedField?s.*signedField:int(s.*field);}
+    void set(Settings& s,int v)const{if(signedField)s.*signedField=v;else s.*field=unsigned(v);}
+};
 // preset[] = Quality, Balanced, Performance. Quality must equal Settings{}.
 inline const Key Keys[]={
     {"MinSkinnedTriangles",&Settings::minSkinnedTriangles,0,500,{100,150,180}},
@@ -156,7 +171,7 @@ inline const Key Keys[]={
     {"ActorShadowBudgetMiB",&Settings::actorShadowBudgetMiB,0,32,{0,16,8}},
     {"FarShadowInterval",&Settings::farShadowInterval,1,16,{4,5,6}},
     {"NearShadowInterval",&Settings::nearShadowInterval,1,16,{1,2,2}},
-    {"LocalLightLimit",&Settings::localLightLimit,0,128,{48,32,24}},
+    {"LocalLightLimit",&Settings::localLightLimit,0,128,{64,64,64}},
     {"PointShadows",&Settings::pointShadows,0,1,{1,1,1}},
     {"PointShadowRefreshMs",&Settings::pointShadowRefreshMs,0,100,{0,33,33}},
     {"ShadowDirectionSteps",&Settings::shadowDirectionSteps,256,2048,{2048,2048,2048}},
@@ -167,7 +182,7 @@ inline const Key Keys[]={
     {"GIDynamicProbes",&Settings::giDynamicProbes,0,1,{1,0,0}},
     {"GIThreads",&Settings::giThreads,1,4,{1,1,1}},
     {"GIFastBVH",&Settings::giFastBVH,0,1,{1,1,1}},
-    {"GIStrength",&Settings::giStrength,0,100,{60,60,60}},
+    {"GIStrength",&Settings::giStrength,0,240,{120,120,120}},
     {"ShadowFateDiagnostics",&Settings::shadowFateDiagnostics,0,1,{0,0,0}},
     {"Diagnostics",&Settings::diagnostics,0,1,{0,0,0}},
     {"RenderProfile",&Settings::renderProfile,0,1,{0,0,0}},
@@ -175,7 +190,7 @@ inline const Key Keys[]={
     {"ActorShadowRadius",&Settings::actorShadowRadius,0,200,{40,35,20}},
     {"PointShadowFacesPerFrame",&Settings::pointShadowFacesPerFrame,1,6,{6,6,6}},
     {"StaticCacheSlices",&Settings::staticCacheSlices,1,4,{1,1,1}},
-    {"GIDistance",&Settings::giDistance,36,84,{76,52,52}},
+    {"GIDistance",&Settings::giDistance,36,156,{76,52,52}},
     {"GIProbeAhead",&Settings::giProbeAhead,0,48,{0,0,0}},
     {"HorizonHaze",&Settings::horizonHaze,0,100,{50,50,50}},
     {"HorizonHazeStart",&Settings::horizonHazeStart,50,95,{75,75,75}},
@@ -210,6 +225,7 @@ inline const Key Keys[]={
     {"ActorShadowCpuMs",&Settings::actorShadowCpuMs,0,20,{3,3,2}}, /* task 45 */
     {"GrassShadows",&Settings::grassShadows,0,1,{1,0,0}},
     {"EquipmentLights",&Settings::equipmentLights,0,1,{1,0,0}},
+    {"CelestialStyle",&Settings::celestialStyle,0,1,{0,0,0}},
     {"AOMethod",&Settings::aoMethod,0,4,{0,0,0}},
     {"AOStrength",&Settings::aoStrength,0,200,{100,100,100}},
     {"AORadius",&Settings::aoRadius,10,1000,{200,200,200}},
@@ -260,15 +276,24 @@ inline const Key Keys[]={
     {"WeatherCameraMotion",&Settings::weatherCameraMotion,0,1,{1,1,1}},
     {"PointShadowDistance",&Settings::pointShadowDistance,8,192,{48,48,48}},
     {"SoftShadows",&Settings::softShadows,0,1,{1,1,0}},
+    {"ShadowStrength",&Settings::shadowStrength,0,200,{125,125,125}},
+    {"ShadowSoftness",&Settings::shadowSoftness,0,200,{50,50,50}},
+    {"ShadowContactRadius",&Settings::shadowContactRadius,50,250,{100,100,100}},
     {"Effects",&Settings::effects,0,1,{1,1,1}},
     {"WorldShadows",&Settings::worldShadows,0,1,{1,1,1}},
     {"WorldFog",&Settings::worldFog,0,1,{1,1,1}},
     {"LocalLights",&Settings::localLights,0,1,{1,1,1}},
+    {"DisableOriginalTerrainShadows",&Settings::disableOriginalTerrainShadows,0,1,{1,1,1}},
+    {"ShadowProvider",&Settings::shadowProvider,0,1,{1,1,1}},
+    {"GIBrightness",&Settings::giBrightness,-100,200,{0,0,0}},
+    {"AuroraStrength",&Settings::auroraStrength,0,200,{100,100,100}},
+    {"GIChunkRadius",&Settings::giChunkRadius,1,3,{1,1,1}},
 };
 // The seven scene groups own their child controls, including sky/ambient work.
 // Presentation/HDR and the settings overlay remain available like F10.
 inline bool pipelineWork(const Settings& s){return s.effects&&(s.gi||s.worldShadows||s.worldFog||(s.localLights&&s.localLightLimit)||s.contactAO||s.autoBump||s.weather);}
-inline bool operator==(const Settings& a,const Settings& b){for(const auto& k:Keys)if(a.*k.field!=b.*k.field)return false;return true;}
+inline unsigned localShadowLimit(const Settings& s){return std::min(s.localLightLimit,s.pointShadowLimit);}
+inline bool operator==(const Settings& a,const Settings& b){for(const auto& k:Keys)if(k.get(a)!=k.get(b))return false;return true;}
 inline bool operator!=(const Settings& a,const Settings& b){return !(a==b);}
 // Probe work actually requested: GI=0 also removes actor capture and dynamic probes.
 inline bool giActorCapture(const Settings& s){return s.gi&&s.giDynamicProbes;}
@@ -286,9 +311,12 @@ inline bool shadowFate(const Settings& s){return s.diagnostics&&s.shadowFateDiag
 inline bool renderProfile(const Settings& s){return s.diagnostics&&s.renderProfile;}
 inline bool replayProbe(const Settings& s){return renderProfile(s)&&s.diagReplayProbe;}
 // Horizontal probe window cells for GIDistance: d = 4N-4 with N even, snapped down
-// (36..84 -> 10..22; 52 -> 14). The vertical extent stays 14 cells.
+// (36..156 -> 10..40; 52 -> 14). The vertical extent stays 14 cells.
 inline unsigned giProbeGrid(const Settings& s){
-    const unsigned d=s.giDistance<36?36:s.giDistance>84?84:s.giDistance;return 2*((d+4)/8);}
+    const unsigned d=s.giDistance<36?36:s.giDistance>156?156:s.giDistance;return 2*((d+4)/8);}
+// GI geometry coverage grows only when requested, under the existing build guards.
+inline unsigned giChunkSide(const Settings& s){return 2*std::clamp(s.giChunkRadius,1u,3u)+1;}
+inline float giGeometryRadius(const Settings& s){return 288.f*std::clamp(s.giChunkRadius,1u,3u);}
 // Shader GI intensity (GridInfo.y): GIStrength=60 gives exactly the 0.3.141 constant 0.5.
 inline float giIntensity(const Settings& s){return .5f*float(s.giStrength)/60.f;}
 // 0.3.158 ActorShadows=0: keys that only act on replay (actor) shadows are forced to 0.
@@ -311,14 +339,14 @@ inline std::string forcedOff(const Settings& requested){
     for(const auto& k:ActorShadowForced)if(requested.*k.field&&!(e.*k.field)){if(!out.empty())out+=' ';out+=k.name;}
     return out.empty()?"none":out;}
 // Replay shadow work actually requested: shadows on (F9) and ActorShadows=1.
-inline bool actorShadowWork(const Settings& s,bool shadows){return shadows&&s.actorShadows;}
+inline bool actorShadowWork(const Settings& s,bool shadows){return shadows&&s.actorShadows&&(s.shadowProvider||(s.localLights&&s.localLightLimit&&s.pointShadows&&s.pointShadowLimit));}
 inline bool grassShadowWork(const Settings& s,bool shadows){return s.grassShadows&&actorShadowWork(s,shadows);}
 // 0.3.209 (task 29): the dedicated actor shadow map is drawn and read.
-inline bool actorShadowMap(const Settings& s,bool shadows){return actorShadowWork(s,shadows)&&s.actorShadowDetail;}
+inline bool actorShadowMap(const Settings& s,bool shadows){return s.shadowProvider&&actorShadowWork(s,shadows)&&s.actorShadowDetail;}
 inline const char* name(Preset p){return p==Preset::Balanced?"Balanced":p==Preset::Performance?"Performance":"Quality";}
 static_assert(sizeof(Keys)/sizeof(Keys[0])==sizeof(Settings::origin),"one origin per key");
 inline Settings preset(Preset p){Settings s;s.preset=p;unsigned i=0;
-    for(const auto& k:Keys){s.*k.field=k.preset[unsigned(p)];s.origin[i++]=p==Preset::Quality?'d':'p';}return s;}
+    for(const auto& k:Keys){k.set(s,k.preset[unsigned(p)]);s.origin[i++]=p==Preset::Quality?'d':'p';}return s;}
 inline std::string lower(std::string s){for(auto& c:s)c=char(std::tolower((unsigned char)c));return s;}
 inline std::string trim(const std::string& s){
     size_t a=s.find_first_not_of(" \t\r\n"),b=s.find_last_not_of(" \t\r\n");
@@ -329,12 +357,22 @@ inline bool number(const std::string& text,unsigned& out){
     if(text.empty()||text.size()>6||text.find_first_not_of("0123456789")!=std::string::npos)return false;
     out=unsigned(std::strtoul(text.c_str(),nullptr,10));return true;
 }
+// Bounded decimal parser; signs are accepted only for signed quality fields.
+inline bool signedNumber(const std::string& text,int& out){
+    const bool sign=!text.empty()&&(text[0]=='-'||text[0]=='+');unsigned magnitude=0;
+    if(!number(text.substr(sign?1:0),magnitude))return false;
+    out=sign&&text[0]=='-'?-int(magnitude):int(magnitude);return true;
+}
 inline const char* aoName(unsigned method){const char* names[]={"SSAO","HDAO","HBAOPlus-D3D9","GTAO","ASSAO"};return names[method<5?method:0];}
 inline bool aoNumber(const std::string& text,unsigned& out){
     const auto value=lower(text);
     if(value=="ssao")out=0;else if(value=="hdao")out=1;
     else if(value=="hbaoplus"||value=="hbao+")out=2;else if(value=="gtao")out=3;else if(value=="assao")out=4;
     else return number(text,out);return true;
+}
+inline const char* celestialStyleName(unsigned style){return style?"Forever":"Default";}
+inline bool celestialStyleNumber(const std::string& text,unsigned& out){
+    const auto value=lower(text);if(value=="default")out=0;else if(value=="forever")out=1;else return number(text,out);return true;
 }
 inline const char* aoQualityName(unsigned quality){const char* names[]={"High","Medium","Low"};return names[quality<3?quality:0];}
 inline bool aoQualityNumber(const std::string& text,unsigned& out){
@@ -367,14 +405,17 @@ inline void apply(const std::vector<Entry>& entries,Settings& s,const char* sour
     for(const auto& e:entries){
         const std::string key=lower(e.key);const std::string where=std::string(source)+" line "+std::to_string(e.line)+": ";
         if(key=="preset"){if(!allowPreset)problems.push_back(where+"Preset ignored here");continue;}
+        if(key=="locallightlimitsversion"){unsigned version=0;if(!number(e.value,version))problems.push_back(where+"Invalid LocalLightLimitsVersion ignored");continue;}
         const Key* match=nullptr;unsigned index=0;for(unsigned i=0;i<sizeof(Keys)/sizeof(Keys[0]);++i)if(lower(Keys[i].name)==key){match=&Keys[i];index=i;}
         const RetiredKey* retired=nullptr;for(const auto& r:Retired)if(lower(r.name)==key)retired=&r;
         if(retired){problems.push_back(where+retired->name+" retired in "+retired->version+" (ignored)");continue;}
         if(!match){problems.push_back(where+"unknown key "+e.key+" ignored");continue;}
-        unsigned v=0;
-        if(!(match->field==&Settings::aoMethod?aoNumber(e.value,v):match->field==&Settings::aoQuality?aoQualityNumber(e.value,v):number(e.value,v))||v<match->low||v>match->high){
-            problems.push_back(where+e.key+"="+e.value+" invalid (allowed "+std::to_string(match->low)+".."+std::to_string(match->high)+"); kept "+std::to_string(s.*match->field));continue;}
-        s.*match->field=v;s.origin[index]=origin;
+        int v=0;unsigned u=0;bool valid=false;
+        if(match->signedField)valid=signedNumber(e.value,v);
+        else {valid=match->field==&Settings::celestialStyle?celestialStyleNumber(e.value,u):match->field==&Settings::aoMethod?aoNumber(e.value,u):match->field==&Settings::aoQuality?aoQualityNumber(e.value,u):number(e.value,u);v=int(u);}
+        if(!valid||v<match->low||v>match->high){
+            problems.push_back(where+e.key+"="+e.value+" invalid (allowed "+std::to_string(match->low)+".."+std::to_string(match->high)+"); kept "+std::to_string(match->get(s)));continue;}
+        match->set(s,v);s.origin[index]=origin;
     }
 }
 inline Preset presetOf(const std::vector<Entry>& entries,std::vector<std::string>& problems){
@@ -396,9 +437,12 @@ inline std::string narrow(const std::string& raw){
 //   Balanced/Performance: the preset's values win over the legacy file (it is not applied).
 //   Explicit northlight-quality.ini keys win over everything.
 // Either stream may be null (file absent). Both absent gives Settings{}.
+inline bool currentLightLimits(const std::vector<Entry>& entries){unsigned version=0;for(const auto& e:entries)if(lower(e.key)=="locallightlimitsversion"){unsigned value=0;if(number(e.value,value))version=value;}return version>=2;}
 inline Settings load(std::istream* quality,std::istream* legacy,std::vector<std::string>& problems){
     std::vector<Entry> own;if(quality)own=section(*quality,"Quality",problems);
     Settings s=preset(presetOf(own,problems));
+    const bool oldLimits=!currentLightLimits(own);
+    if(oldLimits){const unsigned defaults[]={48,32,24};s.localLightLimit=defaults[unsigned(s.preset)];}
     if(legacy&&s.preset!=Preset::Quality)problems.push_back(std::string("shadow-experiment.ini not applied: Preset=")+name(s.preset)+" sets these values");
     else if(legacy){auto old=section(*legacy,"ShadowExperiment",problems);
         // The legacy file only ever held these three keys.
@@ -407,6 +451,8 @@ inline Settings load(std::istream* quality,std::istream* legacy,std::vector<std:
             else problems.push_back("shadow-experiment.ini line "+std::to_string(e.line)+": unknown key "+e.key+" ignored");}
         apply(kept,s,"shadow-experiment.ini",'l',problems,false);}
     apply(own,s,"northlight-quality.ini",'f',problems,true);
+    // Preserve the old effective pool once; shadow maps no longer expand it.
+    if(oldLimits&&s.localLightLimit&&s.worldShadows&&s.pointShadows)s.localLightLimit=std::max(s.localLightLimit,s.pointShadowLimit);
     return s;
 }
 // Far cascade or near environment: retain a complete depth map with the
@@ -451,7 +497,7 @@ inline bool skipModelCapture(const Settings&,const CaptureInputs& in,const Shado
 inline std::string describe(const Settings& s){
     std::ostringstream o;o<<"preset="<<name(s.preset);
     unsigned i=0;for(const auto& k:Keys){const char c=s.origin[i++];
-        o<<' '<<k.name<<'='<<s.*k.field<<'('<<(c=='f'?"file":c=='l'?"legacy":c=='p'?"preset":"default")<<')';}
+        o<<' '<<k.name<<'='<<k.get(s)<<'('<<(c=='f'?"file":c=='l'?"legacy":c=='p'?"preset":"default")<<')';}
     o<<" shadowFateEffective="<<(shadowFate(s)?1:0)<<" renderProfileEffective="<<(renderProfile(s)?1:0)<<" replayProbeEffective="<<(replayProbe(s)?1:0)<<" codeDefaults="<<(s==Settings{}?1:0);
     return o.str();
 }

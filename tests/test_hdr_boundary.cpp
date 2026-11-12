@@ -68,6 +68,7 @@ struct Backend{
 struct Fixture{
     Backend backend;Backend* ext=&backend;
     struct{bool active=true;struct{float uiWhite=160;}settings;}hdr;
+    struct{bool setting=false;bool armed()const{return setting;}}nameMask;
     struct{float uiWhite=160;}hdrFrameSettings;
     int stateBlocks=0;
     struct{unsigned rejected=0,draws=0;std::uint64_t layers=0;template<class Draw>HRESULT draw(Backend*,float,Draw work,unsigned,int*){++draws;return work();}}hdrColor;
@@ -79,7 +80,7 @@ struct Fixture{
     Discs* celestialDiscs=&discs;
     unsigned begins=0,effects=0,hdrFailuresLogged=0,hdrDeferredLogs=0,hdrDeferredFrame=~0u;
     bool gateFrame=false,gateUntimed=false;
-    bool hdrSkyValid=false,backbuffer=true,failSky=false;unsigned skyCaptures=0;
+    bool hdrSkyValid=false,hdrSkyRejected=false,backbuffer=true,failSky=false;unsigned skyCaptures=0;
     float worldMinDepth=0,worldMaxDepth=.94f;
     LONGLONG cpuHdrAdmission=0,cpuHdrBoundary=0,cpuHdrTransfer=0;
     unsigned hdrAdmissionCalls=0,hdrTransferCalls=0;
@@ -163,15 +164,16 @@ int main(){
     {Fixture f;f.hdrUiPhase=f.backend.hdrBound=true;f.backend.z=1;f.backend.function=4;f.backend.viewport.MaxZ=.94f;f.failBind=true;
         assert(f.hdrResumeWorld()==E_FAIL&&f.hdrUiPhase&&f.backend.hdrBound);}
     // A font mod uses different VS identities for logical UI and physical-pixel
-    // text. HDR completes before the old dominant-shader fallback can learn.
-    {Fixture f;IDirect3DTexture9 atlas;IDirect3DVertexShader9 font;
+    // text. Learn both in SDR as well: stock UI can disarm fallback learning.
+    for(bool hdr:{true,false}){Fixture f;IDirect3DTexture9 atlas;IDirect3DVertexShader9 font;
+        f.hdr.active=hdr;f.nameMask.setting=true;
         f.stockUi=false;f.world=true;f.backend.scaledProjection=true;f.backend.textures[0]=&atlas;
         assert(!f.uiTextVs(&f.backend.vs,0));
-        assert(f.draw(101)==S_OK&&f.hdrUiPhase);
+        assert(f.draw(101)==S_OK&&f.hdrUiPhase==hdr);
         assert(f.uiTextVs(&f.backend.vs,f.vsTags[&f.backend.vs]));
         f.backend.vertex=&font;f.shaderReads[&font]=f.shaderReads[&f.backend.vs];
         f.backend.scaledProjection=false;f.backend.pixelProjection=true;
-        assert(f.draw(102)==S_OK&&f.begins==1);
+        assert(f.draw(102)==S_OK&&f.begins==unsigned(hdr));
         assert(f.uiTextVs(&font,f.vsTags[&font])&&f.vsGeneration==2);
         const auto reads=f.backend.textureReads;
         assert(f.draw(103)==S_OK&&f.vsGeneration==2&&f.backend.textureReads==reads);
@@ -182,6 +184,16 @@ int main(){
         assert(f.uiTextVs(&f.backend.vs,f.vsTags[&f.backend.vs]));
         f.vsTags[&font]=0;++f.vsGeneration;assert(!f.uiTextVs(&font,f.vsTags[&font]));
         assert(font.refs==1);
+    }
+    // SDR learning uses the same UI proof and obeys the name-mask switch.
+    for(unsigned rejected=0;rejected<9;++rejected){Fixture f;IDirect3DTexture9 atlas;
+        f.hdr.active=false;f.nameMask.setting=true;f.stockUi=false;f.backend.pixelProjection=true;f.backend.textures[0]=&atlas;
+        switch(rejected){case 0:f.nameMask.setting=false;break;case 1:f.fullViewportOk=false;break;
+            case 2:atlas.usage=D3DUSAGE_RENDERTARGET;break;case 3:f.backend.write=1;break;
+            case 4:f.backend.pixelProjection=false;break;case 5:f.shaderReads.erase(&f.backend.ps);break;
+            case 6:f.vc.world=true;break;case 7:f.backend.failViewport=true;break;case 8:f.backbuffer=false;break;}
+        assert(f.draw(104)==S_OK&&!f.hdrUiPhase&&f.begins==0&&f.vsGeneration==0);
+        assert(!f.uiTextVs(&f.backend.vs,f.vsTags[&f.backend.vs]));
     }
     for(unsigned reject=0;reject<11;++reject){
         Fixture f;IDirect3DTexture9 atlas;f.stockUi=false;f.world=true;f.hdrUiPhase=true;

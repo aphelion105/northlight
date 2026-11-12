@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-# northlight-test: requires=windows-exe,zig
+# northlight-test: requires=windows-exe,zig,client,stormlib
 """Actual material pressure transition, full shared-pool and unchanged recovery oracle."""
 from pathlib import Path
 import hashlib,json,re,subprocess,sys
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
+import client_fixtures
 
 def sha(p):return hashlib.sha256(p.read_bytes()).hexdigest()
 out=fp.output_dir()/'material-pressure-transition';out.mkdir(parents=True,exist_ok=True)
+client_fixtures.actor_client_programs(out)
 source=fp.TESTS/'test_material_pressure_transition.cpp';reference=fp.TESTS/'displacement_state_reuse.cpp'
 watched=[p for p in fp.SRC.rglob('*') if p.is_file()]+[source,reference,Path(__file__),fp.REPO/'northlight_paths.py']
 inputs={str(p.resolve()):sha(p) for p in watched}

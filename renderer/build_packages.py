@@ -71,7 +71,7 @@ APP_FILES = [
     'renderer/point_transmission_builder.py',
     'renderer/attached_emitter_sources.py',
     'renderer/emission_catalog.py',
-    'tests/validate_world_cache.py', 'src/sky/forest_regions.inc',
+    'tests/validate_world_cache.py', 'src/sky/forest_regions.inc', 'src/sky/expansion_atmosphere.h',
 ]
 PAYLOAD_COMMON = {'celestial-profiles.ini': 'client-config/celestial-profiles.ini',
                   'shadow-range-profiles.ini': 'client-config/shadow-range-profiles.ini',
@@ -160,6 +160,8 @@ def check_dll(data):
         raise SystemExit('the renderer DLL is a NORTHLIGHT DEV TUNING BUILD (built with build_renderer.py --dev-tuning); rebuild it without --dev-tuning')
     if STAND_MARKER in data:
         raise SystemExit('the renderer DLL is an imported-input stand build; rebuild without --stand-replay for game installation')
+    if b'NORTHLIGHT PROFILING BUILD' in data:
+        raise SystemExit('the renderer DLL is a profiling build; rebuild without --profile-symbols for release packages')
     return MARKER.search(data).group(1).decode()
 
 
@@ -397,6 +399,7 @@ def build(platform, version, dll, variants, out, stormlib_dir):
     tree.add('LICENSES/AO-methods.txt', fp.REPO / 'licenses/ao-methods.txt')
     tree.add('LICENSES/Dear-ImGui.txt', fp.REPO / 'licenses/imgui.txt')   # src/imgui/ (settings overlay)
     tree.add('LICENSES/Roboto.txt', fp.REPO / 'licenses/roboto.txt')   # the settings overlay's embedded font
+    tree.add('LICENSES/NVAPI.txt', fp.REPO / 'licenses/nvapi.txt')
     path = out / f'{top}.zip'
     tree.write_zip(path, stamp)
     return {'platform': platform, 'file': path.name, 'sha256': sha(path), 'bytes': path.stat().st_size,

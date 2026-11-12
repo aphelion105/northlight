@@ -22,7 +22,7 @@ def method(signature,text=w):
     start=text.index(signature);end=text.index('\n    }\n',start);return text[start:end]
 render=method('    bool render(IDirect3DSurface9* targetSurface');upload=method('    bool upload(NorthlightStreaming::Budget& streamBudget){')
 context=method('    void updateWorldContext(const char* map,const float* camera,const NorthlightWmoContext::Lighting* global=nullptr){');helper=method('    void releaseOrphanedPending(const char* site){')
-gate='const bool screenResourcesReady=ready()&&resources(w,h,fmt);'
+gate='const bool screenResourcesReady=screenReady()&&resources(w,h,fmt);'
 upload_gate='const bool geometryReady=sceneTargetsReady&&(hadTargets||upload(streamBudget));'
 reset='active.reset();expiredMeshPending|=heldDrawable;}'
 retire='const char* retired=active&&!NorthlightWorldStreaming::retained(active->map,active->center,r.map,r.camera)?(active->map!=r.map?"map":"retired"):nullptr;'

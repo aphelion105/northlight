@@ -12,9 +12,9 @@ using NorthlightShadowShader::replaceReg;
 
 // The caller proves the original material family. Only diffuse lookups change;
 // the original shader's lighting, masks, alpha, fog and shadow coverage remain.
-inline bool pixel(const Word* code,size_t count,bool dual,std::vector<Word>& result,unsigned* constantBase=nullptr,bool shared=false,unsigned* sharedResultRegister=nullptr) {
+inline bool pixel(const Word* code,size_t count,bool dual,std::vector<Word>& result,unsigned* constantBase=nullptr,bool shared=false,unsigned* sharedResultRegister=nullptr,unsigned nativeSlotLimit=190) {
     NorthlightTerrainCoverage::Program native;
-    if(!NorthlightTerrainCoverage::analyse(code,count,native)||native.vertex||native.slots>190)return false;
+    if(!NorthlightTerrainCoverage::analyse(code,count,native)||native.vertex||native.slots>nativeSlotLimit)return false;
     const unsigned limit=shared?190:191;
     unsigned control=160;while(control<limit&&(native.constants[control]||native.constants[control+1]||(shared&&native.constants[control+2])))++control;if(control==limit)return false;
     int uv[2]={-1,-1};bool samplers[16]={},integers[16]={},position=false;size_t first=count-1;

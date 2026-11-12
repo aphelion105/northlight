@@ -32,7 +32,7 @@ checks['cpp: GridInfo.z (c20.z) unchanged']='c[20][2]=.85f;' in w and re.findall
 # identity at zero weather
 checks['cpp: every coupling is a gain (x1) or an addend (+0) from the one derived Frame']=all(s in w for s in (
     'const auto wx=weatherEffects();','c[58][2]=10.f*lampGain*wx.lampFogGain();','c[58][3]=.12f*lampGain*wx.lampFogGain();','c[18][3]+=wx.ambientLift();',
-    'c[21][1]=1.2f*wx.shaftGain();','c[21][1]=1.2f*volumePalette.fogGain[source]*wx.shaftGain();','hazeLift,wx.hazeTauScale());','const float airFloor=.0017f+wx.airExtinction()*denseDamp;'))
+    'c[21][1]=1.2f*wx.shaftGain();','c[21][1]=1.2f*volumePalette.fogGain[source]*wx.shaftGain();','hazeLift,wx.hazeTauScale());','const float airFloor=.0017f*airDensity+wx.airExtinction()*denseDamp;'))
 checks['cpp: no other 1.2f volume gain site']=w.count('c[21][1]=')==2
 checks['haze: tauScale defaults to 1 and multiplies the optical depth only']=('float tauScale=1.f)' in hz and '*.01f*scale*(std::isfinite(tauScale)&&tauScale>0?tauScale:1.f);' in hz)
 checks['hlsl: WorldFog takes the air floor from c59.w (the old literal .0017 moved into the constant)']=('airBase=WeatherInfo.w+airBase*saturate(mad(field.w,1.6,-1));' in h and '.0017+airBase' not in h)
@@ -48,13 +48,13 @@ checks['hlsl WorldLighting: correction.a and baseline.a keep the true visibility
 checks['hlsl: GridInfo.z still the divisor of the removal']=('/GridInfo.z' in h and 'max(GridInfo.z,.001)' in h)
 checks['hlsl: c24.y (softness) still unread']='PassInfo.y' not in h.replace('softness,debug','')
 # WorldGI carries no weather code (0.3.198 rebase onto task 13: it is at 31 temps)
-gi=h[h.index('float4 WorldGI('):h.index('// Four POINT reads work')]
+gi=h[h.index('float3 worldGIValue('):h.index('LightingOutput worldLightingValue(')]+h[h.index('float4 WorldGI('):h.index('// Four POINT reads work')]
 checks['hlsl WorldGI: no weather code (it is at 31 temps)']='WeatherInfo' not in gi
 checks['hlsl: no WorldWet shader; WeatherInfo.y only the fog clouds\' folded bank top (0.3.199 optimisation)']='WorldWet' not in h and h.count('WeatherInfo.y')==1 and 'mad(nL,CloudInfo[2].z,WeatherInfo.y)' in h
 # Exact integrated baseline: combined light passes removed a quad site; the
 # actor-aware fog and cached caster variants added shader creation sites.
 # Static-shadow transitions add the independently gated soft-resolve pass and shader.
-checks['render: exact draw budget, including HDR and shadow transitions (24 quad sites, 41 pixel shaders)']=(w.count('quad(')==24 and w.count('CreatePixelShader')==41 and 'if(compositeOk&&unlitMask)' in w) and 'wetPS' not in w
+checks['render: exact integrated draw inventory (25 quad sites, 46 pixel shader factories)']=(w.count('quad(')==25 and w.count('CreatePixelShader')==46 and 'if(compositeOk&&unlitMask)' in w) and 'wetPS' not in w
 # disc and veil
 checks['discs: gain atomic, default 1, opacity and glare weights only, veil inherits']=(
     'std::atomic<float> weatherGain{1.f};' in dr and 'c[9][3]=glare?disc.opacity:disc.opacity*weatherGain.load(std::memory_order_relaxed);' in dr

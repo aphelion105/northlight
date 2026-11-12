@@ -191,16 +191,18 @@ private:
     };
     std::array<Entry,MaxEntries> entries_{};
     Entry* recent_=nullptr;
+    // An absent identity stays absent until slot() inserts a new record.
+    const void* missing_=nullptr;
     std::size_t bytes_=0;
     std::uint64_t serial_=0,clock_=0;
-    Entry* find(const void* raw){if(raw){if(recent_&&recent_->raw==raw)return recent_;for(auto& e:entries_)if(e.raw==raw){recent_=&e;return &e;}}return nullptr;}
+    Entry* find(const void* raw){if(raw){if(recent_&&recent_->raw==raw)return recent_;if(missing_==raw)return nullptr;for(auto& e:entries_)if(e.raw==raw){recent_=&e;return &e;}missing_=raw;}return nullptr;}
     void drop(Entry& e){bytes_-=e.pixels.size();std::vector<std::uint8_t>().swap(e.pixels);e.width=e.height=0;}
     Entry* oldest(const Entry* except=nullptr){Entry* result=nullptr;for(auto& e:entries_)if(e.raw && &e!=except&&(!result||e.used<result->used))result=&e;return result;}
     Entry& slot(const void* raw,const void* owner){
         if(auto* e=find(raw)){if(e->owner==owner)return *e;drop(*e);*e={};e->raw=raw;e->owner=owner;e->lifetime=++serial_;e->used=++clock_;return *e;}
         Entry* selected=nullptr;for(auto& e:entries_)if(!e.raw){selected=&e;break;}
         if(!selected){selected=oldest();drop(*selected);++counts.evictions;}
-        *selected={};selected->raw=raw;selected->owner=owner;selected->lifetime=++serial_;selected->used=++clock_;return *selected;
+        *selected={};selected->raw=raw;selected->owner=owner;selected->lifetime=++serial_;selected->used=++clock_;recent_=selected;missing_=nullptr;return *selected;
     }
     static bool format(unsigned d3d,NorthlightActorTexture::Format& out){
         using F=NorthlightActorTexture::Format;

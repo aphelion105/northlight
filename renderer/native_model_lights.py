@@ -10,6 +10,7 @@ import build_gameobject_emitters
 
 def build(assets, work, read_archive, excluded=()):
     payload, steps = {}, []
+    excluded = {p.lower().replace('/', '\\') for p in excluded}
 
     def stage(name, archive, generate, empty, prefixes):
         output = work / name
@@ -26,17 +27,30 @@ def build(assets, work, read_archive, excluded=()):
             steps.append({'step': name, 'skipped': str(error), **details})
             return
         models = read_archive(output / archive)
-        suppressed=0
+        suppressed=native_existing=0
         for path, blob in models.items():
             key = path.lower().replace('/', '\\')
             if not key.startswith(prefixes) or not key.endswith('.m2') or any(p in ('.', '..') for p in key.split('\\')):
                 raise ValueError('Dynamic emitter archive contains a non-model entry: ' + path)
             if key in excluded:
                 suppressed+=1;continue
+            original = assets.read(key)
+            if len(original)<304 or original[:4]!=b'MD20' or struct.unpack_from('<I',original,4)[0]!=264:
+                raise ValueError('Cannot establish native light ownership: ' + path)
+            # Existing lights in any source MPQ win. A validated repair may
+            # retain their count/lifecycle, but must not introduce a source.
+            count=struct.unpack_from('<I',original,264)[0]
+            if count:
+                repair=report.get('models',{}).get(key,{})
+                if (repair.get('preserved_native_light_count')!=count or repair.get('emitters')!=[] or
+                        len(blob)<304 or blob[:8]!=original[:8] or struct.unpack_from('<I',blob,264)[0]!=count):
+                    native_existing+=1;continue
             if key in payload and payload[key] != blob:
                 raise ValueError('Conflicting dynamic emitter models: ' + path)
             payload[key] = blob
-        steps.append({'step': name, 'models': len(models)-suppressed, 'world_owned_suppressed':suppressed, 'counts': report['counts']})
+        steps.append({'step': name, 'models': len(models)-suppressed-native_existing,
+                      'world_owned_suppressed':suppressed, 'native_existing_suppressed':native_existing,
+                      'counts': report['counts']})
 
     stage('equipment_model_lights', 'equipment-lights-staged.mpq',
           lambda out: build_equipment_emitters.build(assets, out),

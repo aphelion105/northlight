@@ -214,10 +214,14 @@ def mesh_sources(assets, path, blob):
 
 def attached_sources(assets, path, blob, particle_palette=None):
     from build_spell_emitters import spell_sources
+    from world_emitter_coverage import DISABLED
     if len(blob) < 304 or blob[:4] != b'MD20' or unpack('<I',blob,4)[0] != 264:
         raise EmissionError('unsupported','Not WotLK v264')
     if unpack('<I',blob,264)[0]:
         raise EmissionError('native','Existing native lights preserved')
+    # The attached fallback must retain the world owner's admission policy.
+    if path.startswith('world\\') and DISABLED.search(path.rsplit('\\', 1)[-1]):
+        raise EmissionError('not_emissive', 'Explicit disabled/broken variant')
     count, offset = unpack('<II',blob,296)
     stride = 492 if unpack('<I',blob,16)[0]&512 else 476
     if count > 4096 or offset+count*stride > len(blob):

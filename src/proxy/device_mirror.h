@@ -106,9 +106,12 @@ struct DeviceMirror {
     std::uint64_t mutations=0;
     bool active()const{return enabled&&!recording&&!rawDepth;}
     struct TargetWrite {
-        DeviceMirror* mirror;
-        explicit TargetWrite(DeviceMirror* p):mirror(p){++mirror->targetWrites;std::memset(mirror->targetAbsent,0,sizeof mirror->targetAbsent);}
-        ~TargetWrite(){std::memset(mirror->targetAbsent,0,sizeof mirror->targetAbsent);--mirror->targetWrites;}
+        DeviceMirror* mirror;unsigned slot;
+        // A single RT setter cannot populate another empty slot. Keep those
+        // proofs; unknown writes (Reset/state blocks) still invalidate all.
+        void clear(){if(slot<Targets)mirror->targetAbsent[slot]=false;else std::memset(mirror->targetAbsent,0,sizeof mirror->targetAbsent);}
+        explicit TargetWrite(DeviceMirror* p,unsigned changedSlot=Targets):mirror(p),slot(changedSlot){++mirror->targetWrites;clear();}
+        ~TargetWrite(){clear();--mirror->targetWrites;}
     };
     bool heldByThisThread()const{return MirrorGuard::heldByThisThread(gate);} /* 0.3.180 (C1): the in-place epoch source's precondition */
     // Accepted, active setter whose value is already in the slot's field.
@@ -324,7 +327,7 @@ public:
     // Target 0 implicitly resets viewport (and scissor): never computed here.
     HRESULT STDMETHODCALLTYPE SetRenderTarget(DWORD n,IDirect3DSurface9* value) override{
         Guard lock(m->gate);
-        DeviceMirror::TargetWrite write(m);
+        DeviceMirror::TargetWrite write(m,n);
         if(n==0&&m->synced)m->synced->viewport(); /* target 0 resets the viewport */const std::uint64_t serial=m->mutations+1;HRESULT hr=real->SetRenderTarget(n,value);const bool slot=n<DeviceMirror::Targets;if(slot)m->targetKnown[n]=false;
         if(n==0){m->viewportKnown=false;m->forget(DeviceMirror::ViewportSlot);}
         if(accepted(hr)&&slot&&value){m->targets[n]=value;m->targetKnown[n]=m->written(DeviceMirror::TargetSlot+n,serial);}else if(slot)m->forget(DeviceMirror::TargetSlot+n);return hr;
@@ -552,6 +555,7 @@ public:
 #include "extension_raw_methods.inl"
 
     ExtensionDevice(IDirect3DDevice9* device,DeviceMirror* mirror):MirrorDevice(device,mirror){}
+    const DeviceMirror* constantMirror()const{return m;}
     NorthlightConstantEpoch::TrustedSource trustedConstantSource(){
         return NorthlightConstantEpoch::TrustedSource(static_cast<IDirect3DDevice9*>(this),[](void* context,NorthlightConstantEpoch::Stamp& stamp){return static_cast<ExtensionDevice*>(static_cast<IDirect3DDevice9*>(context))->constantStamp(stamp);},[](void* context,unsigned first,unsigned count,float* out,NorthlightConstantEpoch::Stamp& stamp){return static_cast<ExtensionDevice*>(static_cast<IDirect3DDevice9*>(context))->knownVertexConstantSpan(first,count,out,stamp);});
     }

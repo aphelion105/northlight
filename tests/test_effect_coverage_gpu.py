@@ -12,7 +12,10 @@ from shader_compiler import Compiler
 
 renderer = fp.src('renderer.cpp').read_text()
 world = fp.src('world_renderer.h').read_text()
-assert renderer.count('effectCoverageDraw([&]{return ext->Draw') == 4
+assert renderer.count('auto draw=[&]{return submitGameDraw(') == 4
+submission = renderer[renderer.index('    template<class Draw> HRESULT submitGameDraw('):renderer.index('    // 0.3.187: the four draw entry points')]
+assert submission.index('effectCoverageDraw(') < submission.index('auroraNativeDraw(') < submission.index('nativeLocalSubmit(')
+assert 'autoBump->nativeDisplacement():nullptr,effectCoverage.nativePixel())' in renderer
 assert 'owner.effectCoverageDraw([&]{return args.submit(device);},true)' in renderer
 assert 'void spellSync(){effectCoverage.endBatch();' in renderer
 assert 'effectCoverage.texture(ext,saved.targets[0])' in renderer

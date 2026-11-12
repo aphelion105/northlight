@@ -2,40 +2,17 @@
 #include "replay_gpu_binding.h"
 #include "upload_lock.h"
 #include "lock_meter.h"
+#include "replay_gpu_policy.h"
 
 #include <chrono>
 
 namespace NorthlightReplayGPU {
-/* 0.3.138: resident-cache creation (Create*Buffer + Lock + copy) is also
-   bounded by render-thread time per frame. A deferred mesh is drawn from the
-   per-frame bulk buffers with the same bytes, exactly like the existing
-   16-attempt/4 MiB deferrals, so shadows never wait on residency. The first
-   attempt in a frame is always allowed (progress). */
-inline constexpr bool CreateTimeBudget=true;
-inline constexpr double CreateBudgetMs=1.0;
-/* Process-wide knob so exact-count limit tests can disable the time bound. */
-inline double& createBudgetMs(){static double value=CreateBudgetMs;return value;}
-// Immutable CPU snapshots identify GPU contents, never an original mutable VB.
-// Weak owners prevent the GPU cache from keeping evicted CPU scenes alive.
+// Legacy per-mesh implementation retained for residency comparison tests.
 class Cache {
 public:
-    struct Stats {
-        unsigned countPressure=0,bytePressure=0,roomRejected=0,promotionCountOnly=0,promotionCountRejected=0,evictions=0;
-        unsigned probationEvictions=0,residentEvictions=0,countOnlyProbationEvictions=0;
-        unsigned warmup=0,uploadDeferred=0,admissionRejected=0;
-        // Retained as zero for comparisons with pre-LRU diagnostic logs.
-        unsigned scanPasses=0,scanVisits=0,scanMemoHits=0;
-        unsigned evictionChecks=0,lruMoves=0;
-        // Exclusive reasons: the original attempt-limit check takes priority.
-        unsigned attemptDeferred=0,uploadByteDeferred=0,expiredEntries=0;
-        unsigned timeDeferred=0,created=0;double createMs=0; /* 0.3.138, per frame */
-        size_t expiredBytes=0;
-        unsigned identityHits=0,reconstructedHits=0;size_t identityBytes=0;
-    };
-    struct Population {size_t entries=0,resident=0,probation=0;};
-    // Lifetime totals survive beginFrame, including clear-before-beginFrame in
-    // the caller's recursive bulk-upload fallback. Caller supplies the reason.
-    struct ClearStats {uint64_t calls=0,entries=0,bytes=0;};
+    using Stats=NorthlightReplayGPU::Stats;
+    using Population=NorthlightReplayGPU::Population;
+    using ClearStats=NorthlightReplayGPU::ClearStats;
 private:
     struct Entry {
         std::weak_ptr<const NorthlightDrawSnapshot::Mesh> owner;

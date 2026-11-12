@@ -24,16 +24,16 @@ struct SnapshotTestAccess {
         std::shared_ptr<const Mesh> held;
         for(unsigned i=0;i<count;++i){
             Mesh mesh;mesh.streams[0].stride=16;mesh.streams[0].bytes.assign(payloadBytes,static_cast<unsigned char>(i+1));mesh.vertexCount=3;mesh.primitiveCount=1;
-            auto entry=std::make_unique<Frame::CacheEntry>();entry->key.vb[0]=i+1;entry->key.declaration=declaration;entry->producer=&frame;
-            entry->declaration.p=declaration;declaration->AddRef();
-            entry->metadataBytes=sizeof(Frame::CacheEntry)+96;
-            entry->bytes=entry->metadataBytes+NorthlightSourceIdentity::allocationBytes<Mesh>(mesh.capacityBytes());
-            entry->mesh=frame.retain(std::move(mesh));entry->serial=frame.sources_->serial++;
-            if(!held)held=entry->mesh;
-            const auto bytes=entry->bytes,metadata=entry->metadataBytes;
-            const auto hash=Frame::hashKey(entry->key);auto added=frame.sources_->entries.emplace(hash,std::move(entry));assert(added.second);
-            frame.sources_->lru.append(*added.first->second);frame.sources_->bytes+=bytes;frame.sources_->metadataBytes+=metadata;
-            frame.predicted_=added.first->second.get();frame.predictionGeneration_=frame.sources_->generation;
+            Frame::CacheEntry entry;entry.key.vb[0]=i+1;entry.key.declaration=declaration;entry.producer=&frame;
+            entry.declaration.p=declaration;declaration->AddRef();
+            entry.metadataBytes=sizeof(Frame::CacheEntry)+96;
+            entry.bytes=entry.metadataBytes+NorthlightSourceIdentity::allocationBytes<Mesh>(mesh.capacityBytes());
+            entry.mesh=frame.retain(std::move(mesh));entry.serial=frame.sources_->serial++;
+            if(!held)held=entry.mesh;
+            const auto bytes=entry.bytes,metadata=entry.metadataBytes;
+            const auto hash=Frame::hashKey(entry.key);auto added=frame.sources_->entries.emplace(hash,std::move(entry));assert(added.second);
+            frame.sources_->lru.append(added.first->second);frame.sources_->bytes+=bytes;frame.sources_->metadataBytes+=metadata;
+            frame.predicted_=&added.first->second;frame.predictionGeneration_=frame.sources_->generation;
         }
         assert(frame.sharedSourceBytes()<=frame.sharedSourceLimit());return held;
     }
@@ -178,7 +178,7 @@ void MaterialCaptureStateTestAccess::pressureTransition(){
         assert(bump.deferredPacketLimit==512&&bump.deferredByteLimit==(8u<<20));
         assert(bump.deferredSnapshots.snapshotCacheLimit()==(4u<<20)&&DisplacementStateTestAccess::pressureLimit(bump.displacement)==(6u<<20));
         bump.setMemoryPressurePolicy(true,false);assert(bump.deferredGPU.limit()==(32u<<20));
-        bump.setMemoryPressurePolicy(true,true);assert(bump.memoryPressure&&!bump.deferredGPU.limit()&&!bump.deferredGPU.chargedBytes());
+        bump.setMemoryPressurePolicy(true,true);assert(bump.memoryPressure&&bump.deferredGPU.limit()==(32u<<20)&&!bump.deferredGPU.chargedBytes()&&bump.gpuScene->native.totalLimit()==(32u<<20));
         assert(bump.deferredPacketLimit==64&&bump.deferredByteLimit==(1u<<20));
         bump.setMemoryPressurePolicy(true,true);assert(bump.deferredPacketLimit==64&&bump.deferredByteLimit==(1u<<20));
         bump.setMemoryPressurePolicy(true,false);assert(bump.deferredGPU.limit()==(32u<<20));
@@ -186,7 +186,15 @@ void MaterialCaptureStateTestAccess::pressureTransition(){
         bump.trimMemory();assert(!bump.deferredGPU.chargedBytes()&&bump.deferredGPU.limit()==(32u<<20));
         bump.setMemoryPressurePolicy(false,false);assert(!bump.memoryPressure&&bump.deferredGPU.limit()==(32u<<20));
         assert(bump.deferredPacketLimit==512&&bump.deferredByteLimit==(8u<<20));
-        std::puts("MATERIAL_PRESSURE_POLICY_PASS demand_32 critical_0 recovery_32 reduced_cpu_pools repeated trim");
+        std::puts("MATERIAL_PRESSURE_POLICY_PASS demand_32 aggregate_critical_32 recovery_32 reduced_cpu_pools repeated trim");
+        bump.setMemoryPressurePolicy(true,true);
+        assert(bump.memoryPressure&&bump.deferredGPU.limit()==(32u<<20)&&bump.gpuScene->native.totalLimit()==(32u<<20));
+        assert(bump.deferredPacketLimit==64&&bump.deferredByteLimit==(1u<<20));
+        bump.setMemoryPressurePolicy(true,true);assert(bump.deferredGPU.limit()==(32u<<20));
+        bump.trimMemory();assert(!bump.gpuScene->native.chargedBytes());
+        bump.setMemoryPressurePolicy(false,false);
+        assert(!bump.memoryPressure&&bump.deferredGPU.limit()==(32u<<20));
+        std::puts("MATERIAL_SHARED_PRESSURE_PASS aggregate_32 material_32 unchanged_cpu_caps trim_recovery");
     }
 #endif
     std::printf("MATERIAL_PRESSURE_PASS before=%zu after=%zu shrinkEvictions=%u geometryShrinkEvictions=%u pressureMemoryReads=%u trimMemoryReads=%u recoveryMemoryReads=%u capMiB=42 allocationFree=1 heldBytesExact=1 declarationThread=1 predictionCleared=1 recovery=1\n",before,after,evictions,geometryEvictions,pressureReads,trimReads,recoveryReads);

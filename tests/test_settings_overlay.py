@@ -12,6 +12,7 @@ overlay before the extension device; the ImGui licence ships in the packages.
 Behaviour (native clang++, tests/test_settings_overlay.cpp): overlay_input.h routing (mouse moves and
 key-ups always reach the game, hotkey swallowed, presses only over the window) and settings_draft.h.
 """
+import os
 import re
 import subprocess
 import sys
@@ -19,6 +20,7 @@ import tempfile
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
+compiler=[str(fp.zig()),'c++','-target','x86-windows-gnu'] if os.name=='nt' else ['clang++']
 HERE = Path(__file__).resolve().parent
 
 problems = []
@@ -132,14 +134,14 @@ check("tree.add('LICENSES/Roboto.txt', fp.REPO / 'licenses/roboto.txt')" in (fp.
 
 with tempfile.TemporaryDirectory(prefix='northlight-overlay-') as tmp:
     exe = Path(tmp) / 'overlay.exe'
-    built = subprocess.run(['clang++', '-std=c++17', '-O1', '-Wall', '-Wextra', '-Werror', *fp.test_include_flags(),
+    built = subprocess.run([*compiler, '-std=c++17', '-O1', '-Wall', '-Wextra', '-Werror', *fp.test_include_flags(),
                             str(Path(__file__).with_suffix('.cpp')), '-o', str(exe)])
     check(built.returncode == 0, 'test_settings_overlay.cpp did not build')
     if built.returncode == 0:
         check(subprocess.run([str(exe)]).returncode == 0, 'test_settings_overlay.cpp failed')
     # ImGui built natively with the overlay's config decodes and rasterizes the embedded font.
     font_exe = Path(tmp) / 'overlay_font.exe'
-    built = subprocess.run(['clang++', '-std=c++17', '-O1', '-w', *fp.test_include_flags(), '-DIMGUI_USER_CONFIG="northlight_imconfig.h"',
+    built = subprocess.run([*compiler, '-std=c++17', '-O1', '-w', *fp.test_include_flags(), '-DIMGUI_USER_CONFIG="northlight_imconfig.h"',
                             str(HERE / 'test_settings_overlay_font.cpp'), *[str(fp.src(n)) for n in ('imgui.cpp', 'imgui_draw.cpp', 'imgui_tables.cpp', 'imgui_widgets.cpp')],
                             '-o', str(font_exe)])
     check(built.returncode == 0, 'test_settings_overlay_font.cpp did not build')

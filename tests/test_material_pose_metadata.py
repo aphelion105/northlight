@@ -43,6 +43,11 @@ adapter='''    NorthlightReplayBounds::Status poseEnvelope(const Program& progra
 marker='    bool distantPoseBounds('
 assert original.count(marker)==1
 control=original.replace(marker,adapter+marker,1)
+# Compare metadata reuse with the same conservative skin-envelope mode. The
+# historical class predates the production switch to aligned skin bounds.
+old_envelopes='NorthlightReplayBounds::EnvelopeCache poseEnvelopes;'
+assert control.count(old_envelopes)==1
+control=control.replace(old_envelopes,'NorthlightReplayBounds::EnvelopeCache poseEnvelopes{true};',1)
 fixture_source=fp.TESTS/'displacement_state_reuse.cpp'
 reference=fixture_source.read_text(encoding='utf-8')
 assert reference.count('int main(')==1 and reference.count('struct DisplacementStateTestAccess {')==1
@@ -57,6 +62,7 @@ Path(environment['TEMP']).mkdir(exist_ok=True)
 # client_fixtures checks the stock shader digest; keep its bytes in private output.
 os.environ['NORTHLIGHT_OUT']=environment['NORTHLIGHT_OUT']
 fixture=client_fixtures.four_bone_vs3()
+client_fixtures.actor_client_programs(out)
 compiler=[str(fp.zig()),'c++','-target','x86-windows-gnu']
 common=['-UNDEBUG','-std=c++17','-Wno-microsoft-exception-spec','-I',str(out),*fp.test_include_flags()]
 watched=[p for p in fp.SRC.rglob('*') if p.is_file()]+[fixture_source,fp.TESTS/'test_material_pose_metadata.cpp',fp.TESTS/'test_replay_bounds_metadata.cpp',Path(__file__)]

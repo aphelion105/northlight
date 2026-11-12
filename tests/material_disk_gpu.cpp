@@ -52,6 +52,36 @@ struct BusySurface:IDirect3DSurface9 {
     HRESULT STDMETHODCALLTYPE GetDC(HDC*)override{return E_NOTIMPL;}HRESULT STDMETHODCALLTYPE ReleaseDC(HDC)override{return E_NOTIMPL;}
 };
 struct MaterialDiskGpuTestAccess {
+    static void readMatching(DiskMeter& device,const std::filesystem::path& root){
+        using Disk=NorthlightMaterialMapPersistence;using Store=NorthlightMaterialDisk::Store;
+        Disk disk(&device,root/"matching","test");
+        auto* source=texture(device.real,{1,1,D3DFMT_A8R8G8B8,4,{20,40,80,255}});
+        auto* other=texture(device.real,{1,1,D3DFMT_A8R8G8B8,4,{40,80,20,255}});
+        D3DSURFACE_DESC desc{};ok(source->GetLevelDesc(0,&desc));unsigned cases=0;
+        for(bool model:{false,true})for(unsigned position=0;position<8;++position)for(auto state:{Store::State::Pending,Store::State::Hit,Store::State::Miss,Store::State::Stored,Store::State::Error}){
+            disk.reads.clear();disk.frame=100+cases;
+            for(unsigned i=0;i<8;++i){
+                auto r=std::make_unique<Disk::Read>();r->source=i==position||i%2?source:other;r->source->AddRef();
+                r->revision=i==position?17:i%2?16:17;r->model=model;r->polarity=model?0:1;r->details=model?0:75;r->balance=50;r->used=i;
+                r->profile={float(i),.2f,.3f,.4f};r->ticket=std::make_shared<Store::Ticket>();r->ticket->state.store(state);
+                disk.reads.push_back(std::move(r));
+            }
+            std::vector<Disk::Read*> expected;
+            for(auto& r:disk.reads)if(r->source!=source||r->revision==17)expected.push_back(r.get());
+            auto* match=disk.reads[position].get();const auto ticket=match->ticket;const auto profile=match->profile;
+            auto got=disk.probe(source,desc,model,1,75,50,17);
+            const auto status=state==Store::State::Hit?Disk::Status::Hit:state==Store::State::Miss?Disk::Status::Miss:state==Store::State::Pending?Disk::Status::Pending:Disk::Status::Skip;
+            assert(got.status==status&&got.ticket==ticket&&got.profile==profile&&match->used==disk.frame&&disk.reads.size()==expected.size());
+            for(unsigned i=0;i<expected.size();++i)assert(disk.reads[i].get()==expected[i]);
+            // A worker completion must be observed immediately in the same frame.
+            ticket->state.store(Store::State::Hit);assert(disk.probe(source,desc,model,1,75,50,17).status==Disk::Status::Hit);
+            ++cases;
+        }
+        disk.reads.clear();disk.captured=true;
+        assert(disk.probe(source,desc,false,0,75,50,18).status==Disk::Status::Pending&&disk.reads.empty());
+        drop(source);drop(other);
+        std::printf("MATERIAL_READ_MATCH_PASS cases=%u stale_after_match=1 stable_record_identity=1 model_recipe=1 same_frame_ready=1\n",cases);
+    }
     static void uploads(DiskMeter& device,const std::filesystem::path& root){
         NorthlightMaterialMapPersistence disk(&device,root/"uploads","test");
         NorthlightMaterialMapPersistence::Probe probe;probe.status=NorthlightMaterialMapPersistence::Status::Hit;
@@ -128,6 +158,7 @@ int main(int argc,char** argv){
     IDirect3DDevice9* raw=nullptr;ok(api->CreateDevice(0,D3DDEVTYPE_HAL,window,D3DCREATE_HARDWARE_VERTEXPROCESSING|D3DCREATE_FPU_PRESERVE,&pp,&raw));
     DiskMeter meter(raw);meter.queuedReadback=std::strstr(argv[1],"dxvk")!=nullptr;const char* backend=meter.queuedReadback?(std::strstr(argv[1],"dxvk2")?"dxvk2":"dxvk"):"native";unsigned checked=0,expectedGenerations=0,expectedFailures=0;
     if(mode=="uploads"){
+        MaterialDiskGpuTestAccess::readMatching(meter,root);
         MaterialDiskGpuTestAccess::uploads(meter,root);
         drop(raw);drop(api);FreeLibrary(module);DestroyWindow(window);return 0;
     }

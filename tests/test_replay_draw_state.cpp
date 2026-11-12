@@ -178,6 +178,19 @@ int main(int argc,char** argv){
         for(unsigned mode:{0u,1u,2u,0u}){p.alphaMode=mode;const auto before=d.calls.constants;assert(!cache.material(p));assert(d.calls.constants==before+1&&d.c0[0]==float(mode)&&d.c0[3]==.5f);}
         const auto before=d.calls.constants;assert(!cache.material(p));assert(d.calls.constants==before);
         std::puts("PASS alpha source: equal cutoffs rebind when texture/color mask changes");}
+    {IDirect3DDevice9 d;NorthlightReplayDrawState::Cache cache(&d);Replay p;
+        IDirect3DBaseTexture9 opaque,cutout;p.texture=&opaque;p.cutoff=-1;assert(!cache.material(p));
+        const auto skipped=cache.counts.opaqueKept;
+        p.texture=&cutout;p.addressU=CLAMP;p.cutoff=.5f;
+        // The descriptor carries recipe, native reference and comparison. Only
+        // the recipe and native-test flag belong in the pixel-shader controls.
+        for(unsigned recipe:{0u,1u,2u})for(unsigned reference:{0u,64u,128u,255u})for(bool greaterEqual:{false,true})for(unsigned sourceFormat:{21u,22u,113u,116u}){
+            p.alphaMode=recipe|(reference<<8)|(1u<<16)|(unsigned(greaterEqual)<<17)|(sourceFormat<<18);
+            assert(!cache.material(p));assert(d.c0[0]==float(recipe)&&d.c0[1]==1&&d.c0[3]==.5f);
+            assert(d.texture==&cutout&&d.u==CLAMP&&cache.counts.opaqueKept==skipped);
+        }
+        p.alphaMode=1;assert(!cache.material(p));assert(d.c0[0]==1&&d.c0[1]==0);
+        std::puts("PASS fixed alpha descriptor: decoded shader controls, references/comparisons/source formats, cutout texture retained, legacy restored");}
     using New=NorthlightReplayDrawState::Cache;using Old=Legacy::Cache;
     static_assert(NorthlightReplayDrawState::SkipOpaqueMaterial,"shipped switch");
     assert(NorthlightReplayDrawState::skipOpaque());

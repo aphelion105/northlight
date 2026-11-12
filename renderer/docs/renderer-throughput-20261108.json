@@ -1,0 +1,148 @@
+{
+  "date": "2026-11-08",
+  "baseline_commit": "759f1efc90a43dd7c33e433bdfd492fa39cdeb8b",
+  "source_identity": "275b49fda06680c6c527af807b9bf28a2408db3f80b6e33dd31d2166e5e93419",
+  "build_utc": "2026-11-08 11:17:48 UTC",
+  "renderer_version": "0.3.217",
+  "dll_sha256": "c4061eae362448999346c4d031c5327ed6ae059e70ab37276a449713ec7c47cf",
+  "dll_bytes": 10594304,
+  "artifact_local_path": "out/dll-20261108-r42/d3d9.dll",
+  "installer_rebuilt": false,
+  "client_modified": false,
+  "full_current_head_suite_run": false,
+  "tested_backends": [
+    "Windows native D3D9",
+    "Windows upstream DXVK 1.10.3",
+    "Windows DXVK 2.7.1",
+    "Windows DXVK 3.1.1"
+  ],
+  "mac_moltenvk_tested": false,
+  "r42_production_event_generations": 192,
+  "r42_production_event_generations_per_backend": 64,
+  "r42_capture_policy": [
+    {
+      "backend": "legacy",
+      "line": "CAPTURE_BATCH_POLICY material=1 modelNormals=1 textureGuard=1 sourceLockFlags=0x10 scope=immutable-snapshots"
+    },
+    {
+      "backend": "dxvk2",
+      "line": "CAPTURE_BATCH_POLICY material=1 modelNormals=1 textureGuard=1 sourceLockFlags=0x10 scope=immutable-snapshots"
+    },
+    {
+      "backend": "dxvk",
+      "line": "CAPTURE_BATCH_POLICY material=1 modelNormals=1 textureGuard=1 sourceLockFlags=0x1010 scope=immutable-snapshots"
+    }
+  ],
+  "batch_fixture": {
+    "draws": 640,
+    "width": 3840,
+    "height": 2160,
+    "msaa": 2,
+    "order": "ABBA",
+    "warm_rounds": 2,
+    "retained_pairs": 4,
+    "target_sets_immediate": 1280,
+    "target_sets_deferred": 44,
+    "measurements": [
+      {
+        "backend": "dxvk1",
+        "gpu_ms_immediate": 13.868032,
+        "gpu_ms_deferred": 5.275648,
+        "cpu_ms_immediate": 3.2511,
+        "cpu_ms_deferred": 4.0854
+      },
+      {
+        "backend": "dxvk2",
+        "gpu_ms_immediate": 12.597248,
+        "gpu_ms_deferred": 4.442112,
+        "cpu_ms_immediate": 3.2198,
+        "cpu_ms_deferred": 4.082
+      }
+    ],
+    "scope": "Isolated mutable-source capture component, not gameplay FPS or Mac measurements."
+  },
+  "known_limits": [
+    "Historical full normal-camera wrapper on DXVK1 fails its 3x relative improvement metric at baseline/control/fixed jumps 51/21/20. Capture implementation, shader algorithms and thresholds were not changed. Batch image equivalence and state/lifetime oracles pass for all eight real programs.",
+    "Mac/WoWSilicon/MoltenVK not run on this Windows host; official upstream DXVK1.10.3 is the compatibility stand-in.",
+    "No claim that this alone restores the reporting Mac crowd FPS or eliminates all EVENT waits.",
+    "Long EVENT waits and all user-visible lamp flicker are not established as eliminated.",
+    "R40 maximum retained EVENT replay wait was 495.6744ms in an unfocused pre-world frame with effects off.",
+    "This publication adds no claim that the historical full-suite result applies to the accumulated current tree."
+  ],
+  "evidence": [
+    {
+      "path": "out/perf-20261107-r36/validation.json",
+      "sha256": "6eb04397a1a639413146a924a0d6e89408a050c35de671bf65da641c055536fc",
+      "scope": "Historical per-iteration evidence; does not certify every current-head test."
+    },
+    {
+      "path": "out/perf-20261108-r37/validation.json",
+      "sha256": "a188e632a57da33b83f9c40fdedf76d61f38700525f7c2dcca730b3a1e654b65",
+      "scope": "Historical per-iteration evidence; does not certify every current-head test."
+    },
+    {
+      "path": "out/perf-20261108-r38/validation.json",
+      "sha256": "a1d1edced0b12c039adcf9a27b040175ed8a00350ded1ffd4185750f72b38807",
+      "scope": "Historical per-iteration evidence; does not certify every current-head test."
+    },
+    {
+      "path": "out/perf-20261108-r39/validation.json",
+      "sha256": "54e9e99884e0b8ee809544b969f3200f44f9d82686d62217eec3a72231db760a",
+      "scope": "Historical per-iteration evidence; does not certify every current-head test."
+    },
+    {
+      "path": "out/perf-20261108-r40/validation.json",
+      "sha256": "e3f44d91cb0ee0e44cd310851307adfe75cae6266bd0bc5a1d5d335ce60d7ed1",
+      "scope": "Historical per-iteration evidence; does not certify every current-head test."
+    },
+    {
+      "path": "out/perf-20261108-r41/validation.json",
+      "sha256": "78f70838627cb5448abcc29ab57d51f88034ea88c9fb4ef10a9f9f330510b4a1",
+      "scope": "Historical per-iteration evidence; does not certify every current-head test."
+    },
+    {
+      "path": "out/perf-20261108-r42/validation.json",
+      "sha256": "efdaa7a21dbadd2734b54e8d7e11f147b5398021e4a8e3c8ee3dfa5659693fd5",
+      "scope": "Historical per-iteration evidence; does not certify every current-head test."
+    }
+  ],
+  "publication_checks": {
+    "layout": "PASS",
+    "diff_whitespace": "PASS",
+    "python_syntax_files": 83,
+    "test_inventory_count": 576,
+    "focused_tests": {
+      "pass": 10,
+      "fail": 0,
+      "skip": 0,
+      "names": [
+        "test_capture_batch_policy.py",
+        "test_draw_submission_route.py",
+        "test_event_cs_pause.py",
+        "test_local_light_transform_freshness.py",
+        "test_native_derivative_hoist.py",
+        "test_query_backend_threads.py",
+        "test_query_gpu_wait.py",
+        "test_rigid_static_coverage.py",
+        "test_sparse_publish.py",
+        "test_world_shader_manifest.py"
+      ]
+    },
+    "world_shader_manifest": {
+      "shaders": 48,
+      "corrupt_payload_and_metadata_controls": "rejected",
+      "optional_moon_device_capability_guard": "checked"
+    },
+    "moon_floor_gpu": {
+      "runs": 22,
+      "pass": true,
+      "backends": [
+        "native D3D9",
+        "DXVK2",
+        "DXVK3"
+      ],
+      "log_sha256": "03bf8804da463f8d02ce104746ab03a2f2cd4a93ced74b955d4ec74b6bcae362"
+    },
+    "production_source_identity_still_matches_r42_dll": true
+  }
+}

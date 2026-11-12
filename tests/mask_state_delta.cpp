@@ -1,6 +1,7 @@
 #include <d3d9.h>
 #include "name_stencil.h"
 #include "unlit_receiver.h"
+#include "device_mirror.h"
 #include <array>
 #include <cassert>
 #include <chrono>
@@ -11,6 +12,7 @@ struct Backend {
     __attribute__((noinline)) HRESULT GetRenderState(D3DRENDERSTATETYPE t,DWORD* value){++gets;if(int(t)==failRead)return E_FAIL;if(real)return real->GetRenderState(t,value);*value=state[t];return D3D_OK;}
 };
 struct Reader {
+    DeviceMirror mirrorState;
     Backend* ext;bool mirrored=false;
     bool readDrawRenderState(D3DRENDERSTATETYPE t,DWORD& value){if(mirrored){value=ext->state[t];return int(t)!=ext->failRead;}return SUCCEEDED(ext->GetRenderState(t,&value));}
 };

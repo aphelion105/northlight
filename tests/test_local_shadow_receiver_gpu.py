@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 # northlight-test: requires=windows-gpu,zig manual
 """Self-shadow stripes, grazing receivers and real blockers on all cube faces."""
-import argparse,ctypes,hashlib,importlib.util,json,subprocess,sys,time
+import argparse,ctypes,hashlib,importlib.util,json,os,subprocess,sys,time
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
 sys.path.insert(0,str(fp.SCRIPTS/'shaders'))
 from shader_compiler import Compiler
-parser=argparse.ArgumentParser(__doc__);parser.add_argument('--backend',action='append',required=True);parser.add_argument('--compatible-compiler',action='store_true');parser.add_argument('--soft',action='store_true');args=parser.parse_args()
+parser=argparse.ArgumentParser(__doc__);parser.add_argument('--backend',action='append',required=True);parser.add_argument('--compatible-compiler',action='store_true');parser.add_argument('--soft',action='store_true');parser.add_argument('--native',action='store_true');args=parser.parse_args()
+if args.native and args.soft:parser.error('--native and --soft select different receiver paths')
 api=ctypes.WinDLL('kernel32',use_last_error=True);api.CreateMutexW.argtypes=[ctypes.c_void_p,ctypes.c_int,ctypes.c_wchar_p];api.CreateMutexW.restype=ctypes.c_void_p;api.WaitForSingleObject.argtypes=[ctypes.c_void_p,ctypes.c_ulong];api.ReleaseMutex.argtypes=[ctypes.c_void_p];api.CloseHandle.argtypes=[ctypes.c_void_p]
 mutex=api.CreateMutexW(None,0,'Local\\NorthlightOfflineGPU')
 if not mutex or api.WaitForSingleObject(mutex,0) not in (0,128):raise RuntimeError('Another offline GPU test is active')
@@ -15,12 +16,12 @@ try:
     spec=importlib.util.spec_from_file_location('guard',fp.TESTS/'validate_native_scene_trace.py');guard=importlib.util.module_from_spec(spec);spec.loader.exec_module(guard)
     def check_game():
         processes=guard.processes()
-        if any(p['name'].lower().startswith('wow') and p['name'].lower().endswith('.exe') for p in processes):raise RuntimeError('Game process exists; defer GPU tests')
+        if any(p['name'].lower().startswith('wow') and p['name'].lower().endswith('.exe') for p in processes) and os.environ.get('NORTHLIGHT_TEST_ALLOW_RUNNING_GAME')!='1':raise RuntimeError('Game process exists; defer GPU tests')
     check_game();out=fp.output_dir()/f'local-shadow-receiver-{time.time_ns()}';out.mkdir(parents=True,exist_ok=False)
     source=out/'receiver.hlsl';source.write_text((fp.SHADERS/'local_light_effects.hlsl').read_text().replace('#include "auto_bump_normal.hlsl"',(fp.SHADERS/'auto_bump_normal.hlsl').read_text())+'''
 float4 Origin:register(c80);float4 AxisU:register(c81);float4 AxisV:register(c82);float4 SurfaceNormal:register(c83);
 float4 Receiver(float2 uv:TEXCOORD0):COLOR0{float3 p=Origin.xyz+(uv.x-.5)*AxisU.xyz+(uv.y-.5)*AxisV.xyz;return localVisibility(p-LocalPosition.xyz,SurfaceNormal.xyz).xxxx;}
-'''.replace('localVisibility(p-LocalPosition.xyz,SurfaceNormal.xyz)', 'localVisibilityFiltered(p-LocalPosition.xyz,SurfaceNormal.xyz,true)' if args.soft else 'localVisibility(p-LocalPosition.xyz,SurfaceNormal.xyz)'))
+'''.replace('localVisibility(p-LocalPosition.xyz,SurfaceNormal.xyz)', 'nativeLocalVisibility(p-LocalPosition.xyz,SurfaceNormal.xyz,LocalShadow.y,0,1)' if args.native else 'localVisibilityFiltered(p-LocalPosition.xyz,SurfaceNormal.xyz,true)' if args.soft else 'localVisibilityFiltered(p-LocalPosition.xyz,SurfaceNormal.xyz,false)'))
     fp.out=lambda:out/'toolchain'
     compiler=Compiler(allow_compatible_binary=args.compatible_compiler)
     for entry,target in [('Receiver','ps_3_0'),('LocalShadowVS','vs_3_0'),('LocalShadowPS','ps_3_0')]:compiler.compile(source,entry,target,out/(entry+'.bin'))
@@ -36,7 +37,7 @@ float4 Receiver(float2 uv:TEXCOORD0):COLOR0{float3 p=Origin.xyz+(uv.x-.5)*AxisU.
         (out/f'gpu-{index}.log').write_text(run.stdout+run.stderr);print(run.stdout,flush=True)
         if run.returncode or 'failures=0' not in run.stdout:raise RuntimeError(run.stdout+run.stderr)
         results.append({'backend':str(Path(backend).resolve()),'result':run.stdout.strip()})
-    report={'soft':args.soft,'game_launched':False,'authored_geometry':True,'production_caster_and_receiver':True,'results':results,'source_sha256':hashlib.sha256((fp.SHADERS/'local_light_effects.hlsl').read_bytes()).hexdigest()}
+    report={'soft':args.soft,'native':args.native,'game_launched':False,'timing_claims':False,'authored_geometry':True,'production_caster_and_receiver':True,'results':results,'source_sha256':hashlib.sha256((fp.SHADERS/'local_light_effects.hlsl').read_bytes()).hexdigest()}
     (out/'validation.json').write_text(json.dumps(report,indent=2)+'\n');print(out,flush=True)
 finally:
     api.ReleaseMutex(mutex);api.CloseHandle(mutex)

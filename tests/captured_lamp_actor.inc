@@ -29,7 +29,7 @@ static void housingActor(IDirect3DDevice9* d,const std::string& root,const std::
   const auto image=readSurface(d,target,16);save(image,output+"/"+name+".fgr");std::vector<float> energy(Size*Size);for(unsigned i=0;i<energy.size();++i){float p[4];std::memcpy(p,image.bytes.data()+i*16,16);energy[i]=-p[0]-p[1]-p[2];assert(std::isfinite(energy[i])&&energy[i]>=-1e-6f);}return std::make_pair(map,energy);};
  const auto housingOnly=render("housing-only");
  const auto pose=[&](float shift){auto& p=*w.replays.back();for(unsigned bone=0;bone<h[3];++bone){float* c=p.constantStorage+4*(31+3*bone);std::fill(c,c+12,0.f);c[0]=c[5]=c[10]=.9f;c[3]=foot[0]-camera[0]-(low[0]+high[0])*.45f+shift;c[7]=foot[1]-camera[1]-(low[1]+high[1])*.45f;c[11]=foot[2]-camera[2]-low[2]*.9f;}
-  p.pointBounds={};w.captureMode=WorldRenderer::CaptureFresh;w.shadowSelectionDone=true;for(unsigned n=0;n<8&&!p.pointBounds.valid;++n){w.replayBoundsKick();w.replayBoundsJoin();}assert(p.pointBounds.valid);};
+  p.pointBounds={};w.captureMode=WorldRenderer::CaptureFresh;w.shadowSelectionDone=true;for(unsigned n=0;n<8&&!p.pointBounds.valid;++n){w.replayBoundsBegin();w.replayBoundsKick();w.replayBoundsJoin();}assert(p.pointBounds.valid);};
  w.replays.push_back(std::move(actor));pose(0);const auto combined=render("housing-actor");assert(w.pointReplayCount==unsigned(!omitActor));
  w.batches.clear();const auto actorOnly=render("actor-only");w.batches=housing;pose(2);const auto shifted=render("housing-shifted-actor");
  unsigned nearCube=0,nearPixels=0,actorPixels=0,shiftCube=0,shiftPixels=0;for(size_t i=0;i<housingOnly.first.size();++i){nearCube+=combined.first[i]+1e-5f<housingOnly.first[i];shiftCube+=shifted.first[i]+1e-5f<housingOnly.first[i];}

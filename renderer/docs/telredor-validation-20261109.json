@@ -1,0 +1,144 @@
+{
+  "scope": "Initial broad host suites plus focused follow-ups; not a full final-head suite rerun. A passed test name means a successful run on at least one supported host. Concurrent WoW correctness runs supply no valid performance measurements.",
+  "base_commit": "211dd2848b34e9012e62b8eb4a00b8023eec09ef",
+  "source_identity": "564eb5b385b6d14a6c55125a15fa8df37fcfc440e302da09df70a4b77ba3a958",
+  "built_utc": "2026-11-09 18:52:10 UTC",
+  "compiler": "Zig 0.15.2, production scripts/build_renderer.py, x86 Windows",
+  "initial_broad_runs": {
+    "windows": {
+      "pass": 294,
+      "fail": 48,
+      "skip": 249,
+      "log": "out/perf-20261109-r68/windows-suite.log"
+    },
+    "linux": {
+      "pass": 233,
+      "fail": 33,
+      "skip": 326,
+      "log": "out/perf-20261109-r68/linux-suite.log"
+    }
+  },
+  "historical_and_followup_passed_test_names": 518,
+  "failed_test_names_with_later_supported_host_pass": [
+    "test_actor_shadow_map.py",
+    "test_actor_shadows_wiring.py",
+    "test_canonical_gpu_scene.py",
+    "test_capture_skip_wiring.py",
+    "test_celestial_composition_gpu.py",
+    "test_city_lamp_regression.py",
+    "test_diagnostics_switch.py",
+    "test_effect_switches.py",
+    "test_equipment_light_proof_client.py",
+    "test_event_terminal_reuse.py",
+    "test_five_path_perf.py",
+    "test_fog_empty_intervals.py",
+    "test_fog_temporal_wiring.py",
+    "test_hdr_fixed_sky_gpu.py",
+    "test_hdr_sky_storage_gpu.py",
+    "test_horizon_haze.py",
+    "test_live_terrain_gpu.py",
+    "test_local_fog_zero.py",
+    "test_mask_state_delta.py",
+    "test_material_alias_wave2.py",
+    "test_material_batch_bindings.py",
+    "test_material_capture_targets.py",
+    "test_material_epoch_guard.py",
+    "test_material_followup_cpu.py",
+    "test_material_normal_variants.py",
+    "test_material_packet_auxiliary.py",
+    "test_material_palette_override.py",
+    "test_material_pipeline_cpu_micro.py",
+    "test_material_private_depth.py",
+    "test_material_raster_batch.py",
+    "test_material_terrain_bounds.py",
+    "test_memory_footprint.py",
+    "test_mesh_buffer_store.py",
+    "test_name_mask.py",
+    "test_near_reserve.py",
+    "test_pending_release_wiring.py",
+    "test_pipeline_all_off_gpu.py",
+    "test_point_shadow_schedule.py",
+    "test_point_shadow_stutter_gpu.py",
+    "test_projected_draw_audit_gpu.py",
+    "test_quality_docs.py",
+    "test_rain_mask.py",
+    "test_regional_surface_shadow.py",
+    "test_replay_gpu_batches.py",
+    "test_settings_overlay_gpu.py",
+    "test_shadow_transition_build.py",
+    "test_shadow_transition_resources.py",
+    "test_shared_terrain_bounds.py",
+    "test_sky_material_catalog.py",
+    "test_smoke_sky_gpu.py",
+    "test_snapshot_prediction.py",
+    "test_solar_volume.py",
+    "test_static_plan_job.py",
+    "test_temporal_history.py",
+    "test_terrain_capture_demand_gpu.py",
+    "test_terrain_pressure_policy.py",
+    "test_translucent_actor_depth.py",
+    "test_translucent_depth_census.py",
+    "test_ui_water_boundary.py",
+    "test_upload_payload_release.py",
+    "test_water_geometry.py",
+    "test_weather_capture_gpu.py",
+    "test_weather_effects_wiring.py",
+    "test_weather_wiring.py",
+    "test_wmo_vertex_color_gpu.py",
+    "test_world_lighting_capture.py",
+    "test_world_pressure_transition.py",
+    "test_world_screen_effects_gpu.py"
+  ],
+  "unresolved_failed_test_names": [],
+  "receipt_sha256": {
+    "out/perf-20261109-r68/canonical-followup/validation.json": "db49e24046de7777613287c645fe3b51ff707b9ee55096aefe2d48ef75d366c9",
+    "out/perf-20261109-r69/city-correctness/validation.json": "6f51841b44a799c1b6dbc27889cd1f78c24bc7163ce8a58af97e22f19fa029c4",
+    "out/perf-20261109-r69/pipeline-off-fixed/all-off/validation.json": "6fafeaecde9aaf24f71015e8eb19c359f5313de6a349dca09abc4a7ba3e4f847",
+    ".local/out/test-output/test_settings_overlay_gpu/overlay-gpu/validation.json": "3d9efa082e2c57a9775c17526e5e566b51c81f27e8555c79b7723e057118898c",
+    "out/perf-20261109-r69/world-pressure/world-pressure-transition/validation.json": "92d4552ba2325986b79cec06c355e77caae0731e205ca449e9dfe4bab47bb6f3",
+    "out/perf-20261109-r69/native-mrt-final/validation.json": "34bb33d5a11084e1b0bb460c564366bced8113679e1b9eaaa11498206a9008f7",
+    "out/cage-20261109/alpha-exact-scissor/validation.json": "6dbf436db30d23b2339a32924db57b841bae274f5f9beb0c174273807a6c299d",
+    "out/perf-20261109-r69/static-plan-final.log": "648379007c7f5f201c0f19939d11032e184d5ab2a7df87fbfc4d8cc1df072dc6",
+    "out/perf-20261109-r69/celestial-final.log": "3896681f3994fdb0c76d1c6d64d52984d07f7beb2893e347b65178a271e4b4c9",
+    "out/cage-20261109/near-oracle-scissor-final/validation.json": "ba0bb36a42d7f50ec40604219d4e4c342aeeb41ff6bc5346db6737a0b62fc060",
+    "out/cage-20261109/near-resource-scissor-final/validation.json": "3ef4cd0dce14cdca1b5dd2c98db8188d94e851d25590e5cb8352fafe65be14ff",
+    "out/cage-20261109/normal-oracle-final/validation.json": "5d974e3981c2708733a5d3cf7130722a1258dca1d51e815cb7f604040ec023ac"
+  },
+  "artifacts": {
+    "renderer\\frd9.dll": {
+      "bytes": 10830848,
+      "sha256": "806dc05ec38ef1e9cf6eb2ec52049d6c754dae3a6e0dc2e8efd6d5234e8f8900"
+    },
+    "releases\\Northlight-0.3.217-test.20261109.3-Windows.zip": {
+      "bytes": 20808171,
+      "sha256": "e7109cd588a1b18721f9263f1e66ee653ef21b2dae6f0ed82b89f72cd48f8b58"
+    }
+  },
+  "final_gpu_checks": {
+    "native_model_normals": {
+      "backends": 4,
+      "frames_per_backend": 4698,
+      "committed_frames_per_backend": 1126,
+      "color_and_normals": "exact"
+    },
+    "fixed_shadow_alpha": {
+      "backend_shader_format_combinations": 32,
+      "coverage_depth_cases": 11520,
+      "current_mismatching_pixels": 0,
+      "frozen_old_mismatching_pixels": 1678232,
+      "failure_restoration_cases": 672
+    },
+    "real_cage_near": {
+      "backends": 2,
+      "comparisons_per_backend": 252,
+      "poses": "synthetic current pose, stock mesh and cutout texture"
+    }
+  },
+  "limits": [
+    "No game FPS or whole-game stutter-elimination claim.",
+    "Cage native-alpha defect independently reproduced; its exact causal connection to the two recordings is unproved.",
+    "Full castle video playback/download unavailable; storyboard and HUD only, no synchronized log.",
+    "No game launched and no DLL installed in a client by this completion task.",
+    "Initial celestial tolerance failure was not reproduced in isolated baseline/current follow-ups; original acceptance tolerances retained."
+  ]
+}

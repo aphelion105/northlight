@@ -9,6 +9,7 @@
 // and the two-MOV suffix replaced by the MRT suffix, nothing else. patchMrt() itself is a deterministic transform cross-checked against the Python oracle
 // (tests/test_water_shader_patch.py).
 #include <d3d9.h>
+#include "screen_quad.h"
 #include <cstdint>
 #include <cstring>
 #include <cmath>
@@ -66,7 +67,6 @@ class NorthlightWaterRenderer {
         if(NorthlightDiagnostics::enabled())logf("WATER mask patch time %s hash=%016llx words=%u us=%.1f total_us=%.1f shaders=%u (one-time, at shader creation)",isVertex?"vertex":"pixel",(unsigned long long)hash,unsigned(patched.size()),us,patchMicroseconds,patchedShaders);
         return reinterpret_cast<const DWORD*>(patched.data());
     }
-    HRESULT quad(){struct V{float x,y,z,w,u,v;} v[]={{-.5f,-.5f,0,1,0,0},{float(width)-.5f,-.5f,0,1,1,0},{-.5f,float(height)-.5f,0,1,0,1},{float(width)-.5f,float(height)-.5f,0,1,1,1}};D3DVIEWPORT9 vp={0,0,width,height,0,1};d->SetViewport(&vp);return d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,v,sizeof(V));}
 public:
     // identities: the generated table; tests inject their own.
     // mrt: build the MRT pixel variants at registration (the host's creation-time setting; tests that pin the second-draw pass to 0.3.140 pass false).
@@ -282,7 +282,6 @@ public:
         unbindMrt();mrtDirty=false;
         if(failed||mrtFailed||!raw||!rawSurface||!maskSurface||!resolvePS){mrtFailed=true;return false;}
         if(twin){const HRESULT hr=d->StretchRect(twin,nullptr,rawSurface,nullptr,D3DTEXF_NONE);if(FAILED(hr)){mrtFail("resolve",hr);return false;}}
-        if(!captured&&!clearTarget(maskSurface)){mrtFail("mask clear",D3DERR_INVALIDCALL);return false;}
         SavedState save(d,&stateBlocks);if(!save.ok){mrtFail("state save",D3DERR_INVALIDCALL);return false;}
         d->SetDepthStencilSurface(nullptr);for(unsigned i=1;i<4;++i)d->SetRenderTarget(i,nullptr);
         for(unsigned i=0;i<16;++i)d->SetTexture(i,nullptr); // the mask is about to be render target 0; no stage may still hold it
@@ -293,8 +292,13 @@ public:
         d->SetTexture(0,raw);d->SetSamplerState(0,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(0,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);
         d->SetSamplerState(0,D3DSAMP_MINFILTER,D3DTEXF_POINT);d->SetSamplerState(0,D3DSAMP_MAGFILTER,D3DTEXF_POINT);d->SetSamplerState(0,D3DSAMP_MIPFILTER,D3DTEXF_NONE);d->SetSamplerState(0,D3DSAMP_SRGBTEXTURE,FALSE);
         HRESULT hr=d->SetRenderTarget(0,maskSurface);
+        const D3DVIEWPORT9 viewport={0,0,width,height,0,1};
+        if(SUCCEEDED(hr))hr=d->SetViewport(&viewport);
+        // Decode discards uncovered samples, so clear only without a captured
+        // fallback. Keep clear and draw inside the same target/state scope.
+        if(SUCCEEDED(hr)&&!captured)hr=d->Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0);
         if(SUCCEEDED(hr))hr=d->SetPixelShader(resolvePS);
-        if(SUCCEEDED(hr))hr=quad();
+        if(SUCCEEDED(hr))hr=NorthlightScreen::drawQuad(d,width,height);
         if(FAILED(hr)){mrtFail("decode pass",hr);return false;}
         mrtResolved=true;maskMayBeBound=true;return true;
     }

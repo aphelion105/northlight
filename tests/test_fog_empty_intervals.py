@@ -4,7 +4,7 @@ import random
 from pathlib import Path
 
 shader = (Path(__file__).resolve().parents[1] / 'shaders/world_effects.hlsl').read_text()
-assert shader.count('[branch]if(surface<=max(FogRange.x,0))return float4(0,0,0,1);') == 2
+assert shader.count('[branch]if(surface<=max(FogRange.x,0))return float4(0,0,0,1);') == 3  # Regional, clouds and the optional moon-floor volume.
 
 rng = random.Random(21)
 near_empty_cases = 0

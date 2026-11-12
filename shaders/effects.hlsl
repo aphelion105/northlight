@@ -560,7 +560,7 @@ float3 PositionInv(float2 uv, float d, float2 invFocal)
     return float3((uv.x * 2.0 - 1.0) * z * invFocal.x, (1.0 - uv.y * 2.0) * z * invFocal.y, z);
 }
 
-float4 AOBlur(float2 uv : TEXCOORD0) : COLOR0
+float4 aoBlur(float2 uv,bool water)
 {
     float2 tapStep = 2.0 * ImageAndClip.xy;
     float4 raw = tex2Dlod(Ambient, float4(uv, 0, 0));
@@ -583,7 +583,7 @@ float4 AOBlur(float2 uv : TEXCOORD0) : COLOR0
     float2 size = 1.0 / ImageAndClip.xy;
     float2 cuv = DepthTexelUV(uv, size);
     float d = ReadDepth(cuv);
-    if (d >= SKY_DEPTH || IsWater(cuv, d)) return raw;
+    if (d >= SKY_DEPTH || (water && IsWater(cuv, d))) return raw;
     float3 p = Position(cuv, d);
     float3 n = SurfaceNormal(cuv, p);
     float2 tangentStep = abs(n.x) > abs(n.y) ? float2(ImageAndClip.x, 0) : float2(0, ImageAndClip.y);
@@ -610,13 +610,26 @@ float4 AOBlur(float2 uv : TEXCOORD0) : COLOR0
         float tangentOff = dot(tangent, n);
         weight *= saturate(1.0 - 2.0 * tangentOff * tangentOff / dot(tangent, tangent));
         // Sky and water taps carry no usable AO.
-        weight *= qd < SKY_DEPTH && !IsWater(quv, qd) ? 1.0 : 0.0;
+        weight *= qd < SKY_DEPTH && (!water || !IsWater(quv, qd)) ? 1.0 : 0.0;
         sumAO += tex2Dlod(Ambient, float4(tapUV, 0, 0)).a * weight;
         sumWeight += weight;
         }
     }
     return float4(raw.rgb, sumWeight > 1e-5 ? sumAO / sumWeight : raw.a);
 }
+
+float4 aoBlurCoverage(float2 uv,bool water){
+    float4 ambient=aoBlur(uv,water);
+    [branch]if(EffectCoverageInfo.x>.5){
+        float2 coverage=saturate(tex2Dlod(EffectCoverage,float4(uv,0,0)).rg);
+        // The final composite already protects red coverage. Apply only the
+        // remaining lit-alpha share here, after filtering the opaque AO.
+        ambient.a=1-(1-ambient.a)*saturate((1-coverage.g)/max(1-coverage.r,.00001));
+    }
+    return ambient;
+}
+float4 AOBlur(float2 uv:TEXCOORD0):COLOR0{return aoBlurCoverage(uv,true);}
+float4 AOBlurNoWater(float2 uv:TEXCOORD0):COLOR0{return aoBlurCoverage(uv,false);}
 
 float4 Composite(float2 uv : TEXCOORD0) : COLOR0
 {

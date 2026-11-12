@@ -5,11 +5,13 @@ import hashlib,json,re,struct,sys
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
+fp.use_source_modules()
+from compile_shadow_transition_shaders import ENTRIES
 sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
 manifest=json.loads((fp.SHADERS/'shadow-transition-shader-build.json').read_text())
 header=fp.src('shadow_transition_compiled_shaders.h').read_text()
 for name,digest in manifest['sources'].items():assert sha(fp.SHADERS/name)==digest,name
-assert len(manifest['shaders'])==8
+assert set(manifest['shaders'])==set(ENTRIES)
 for entry,record in manifest['shaders'].items():
  data=(fp.COMPILED/(entry+'.bin')).read_bytes();assert sha(fp.COMPILED/(entry+'.bin'))==record['sha256']
  limit=768
@@ -17,11 +19,12 @@ for entry,record in manifest['shaders'].items():
  body=re.search(r'k'+entry+r'Shader\[\] = \{(.*?)\};',header,re.S)[1]
  words=[int(word,16) for word in re.findall(r'0x[0-9a-fA-F]+',body)]
  assert struct.pack('<'+'I'*len(words),*words)==data
-print('PASS eight fresh compiled/embedded optional extended SM3 variants <=768 slots and 32 temps; baseline shader gates unchanged')
-w=fp.src('world_renderer.h').read_text();h=fp.src('world_shadow_transition.inl').read_text()
-assert 'void invalidateShadowCache(){resetShadowTransitions();' in w
+print(f'PASS {len(ENTRIES)} fresh compiled/embedded optional extended SM3 variants <=768 slots and 32 temps; baseline shader gates unchanged')
+w=fp.src('world_renderer.h').read_text()+'\n'+fp.src('world_geometry_resources.inl').read_text();h=fp.src('world_shadow_transition.inl').read_text()
+assert 'void invalidateShadowCache(bool retainPointStatic=false){\n        resetShadowTransitions();' in w
 assert 'releaseGeometryTargets(){\n        releaseShadowTransitions();releaseNearEnvironment();' in w
-assert 'releaseGPU(bool keepMesh=false){releaseShadowTransitions();' in w
+release=w[w.index('void releaseGPU(bool keepMesh=false){'):].split('\n',1)[0]
+assert 'releaseShadowTransitions();releaseNearEnvironment();' in release
 assert 'if(!next.shadows)releaseShadowTransitions();' in w
 assert 'if(memoryPressure||geometryMemoryDemand.load(std::memory_order_relaxed))releaseShadowTransitions();' in w
 assert 'item.history,ShadowMaps' not in w and 'inventory.texture(transition.history,ShadowMaps)' in w and 'inventory.texture(transition.dynamic,ShadowMaps)' in w
@@ -51,7 +54,7 @@ assert 'if(anyShadowTransition){bindShadowTransition(source);d->SetPixelShader(t
 assert 'bindShadowTransition(source,true);d->SetPixelShader(transitionPreviousPS)' in w
 assert 'if(anyShadowTransition&&!softResolved)releaseShadowTransitions();' in w
 assert w.count('if(anyShadowTransition)for(unsigned sampler=6;sampler<10;++sampler)')==2
-assert w.index('if(anyShadowTransition)for(unsigned sampler=6;sampler<10;++sampler)')<w.index('d->SetPixelShader(softResolved?lightingSoftPS:lightingPS)')
+assert w.index('if(anyShadowTransition)for(unsigned sampler=6;sampler<10;++sampler)')<w.index('d->SetPixelShader(unshadowedLighting?lightingUnshadowedPS:softResolved?lightingSoftPS:lightingPS)')
 for selector in ['fogActorTiledCurrent?fogActorTiledFadePS:fogActorCurrent?fogActorFadePS:fogFadePS','cloudActorTiledFadePS:cloudActorFadePS','cloudFade=geometryReady&&shadowVolumeTransitionActive(firstSource)']:
  assert selector in w,selector
 assert 'if(fading)bindShadowTransition(source)' in w and 'if(cloudFade)bindShadowTransition(firstSource)' in w

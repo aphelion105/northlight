@@ -40,7 +40,7 @@ def run(exe, backend, label):
     settings = out/label
     settings.mkdir()
     (settings/'northlight-renderer.ini').write_text('[Renderer]\nSettingsOverlay=0\nExperimentalHDR=0\n', encoding='utf-8')
-    processes(False)
+    processes()
     result = subprocess.run([str(exe), str(backend), str(settings)+os.sep], cwd=settings, env=env,
                             capture_output=True, text=True, timeout=120)
     (out/(label+'.log')).write_text(result.stdout+result.stderr, encoding='utf-8')
@@ -70,7 +70,7 @@ try:
     report['baseline_failed_zero_work_assertion'] = True
     report['pass'] = True
 finally:
-    processes(False)
+    processes()
     report['inputs_unchanged'] = all(digest(Path(p)) == sha for p, sha in inputs.items())
     report['pass'] &= report['inputs_unchanged']
     (out/'validation.json').write_text(json.dumps(report, indent=2)+'\n', encoding='utf-8')

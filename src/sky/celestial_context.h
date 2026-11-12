@@ -2,6 +2,7 @@
 // Read-only, fixed-build sky data. See celestial-context-proof.md for provenance.
 #include "world_context.h"
 #include "celestial_time_warp.h"
+#include "forever_celestial.h"
 #include <algorithm>
 #include <cstddef>
 
@@ -34,6 +35,7 @@ struct Context {
     float sunGlowColor[3]={}, moonGlowColor[3]={}; // The same source colour for the volumetric glow (fog shafts, aureole): scaled by glow_strength, own hue (profiles apply()).
     float horizonSine=0; // the camera's far edge (apparent_horizon.h), 0..-sin 3 deg; the veil's haze at the sun
     float skyboxCover=0;      // 0..1: the strongest zone skybox (full or blended) the game draws over its planets
+    bool lunarBody=true; // Outland uses authored skybox planets instead of an Azeroth moon.
     bool nativePlanets=true;  // RenderSky's drawObjects rule: false when a full skybox makes the game skip the sun/moon billboards
 };
 // Zone skybox state, mirroring DayNight::RenderSky: a skybox (m_skybox or a blend one) counts when its pointer is set and its weight finite.
@@ -159,11 +161,12 @@ inline void clampLightElevation(float* direction){
 // midnight captures have moon z=.81 but alpha 0, 14/255 or 1 by location.
 // A raw-alpha change must not switch off the disc, shadows or fog lighting.
 // Keep decode() faithful to the audited records for diagnostics/native use.
+inline bool luminousAppearance(const Body& body){return body.nativeAppearance&&std::max({body.nativeTint[0],body.nativeTint[1],body.nativeTint[2]})>1.f/255;}
 inline void applyRendererPolicy(Context& c,const float* direct){
-    c.sun.alpha=c.moon.alpha=1;
+    c.sun.alpha=1;c.moon.alpha=c.lunarBody?1.f:0.f;
     c.sun.emission=3.5f;c.moon.emission=1.1f;
     const float tint[2][3]={{1,.96f,.88f},{.94f,.97f,1}};
-    for(unsigned i=0;i<3;++i){c.sun.tint[i]=c.sun.nativeAppearance?c.sun.nativeTint[i]:tint[0][i];c.moon.tint[i]=tint[1][i];}
+    for(unsigned i=0;i<3;++i){c.sun.tint[i]=luminousAppearance(c.sun)?c.sun.nativeTint[i]:tint[0][i];c.moon.tint[i]=tint[1][i];}
     // Each body lights the world (rays, shadows) as much as its disc is seen; the sun first, the moon takes the rest.
     c.sun.altitudeVisibility=discVisibility(c.sun.direction[2],c.sun.angularRadius);
     c.moon.altitudeVisibility=(1-c.sun.altitudeVisibility)*discVisibility(c.moon.direction[2],c.moon.angularRadius);
@@ -174,18 +177,23 @@ inline void applyRendererPolicy(Context& c,const float* direct){
         c.moonColor[i]=direct[i]*c.moonWeight;
     }
 }
-inline NorthlightCelestialOrbit::Result resolveRendererSky(Context& c,const float* direct){
+inline NorthlightCelestialOrbit::Result resolveRendererSky(Context& c,const float* direct,bool forever=false,const char* map=""){
     NorthlightCelestialOrbit::Result orbit;
     if(!std::isfinite(c.dayFraction)||c.dayFraction<0||c.dayFraction>=1)return orbit;
-    // Keep the native billboard's orbit and animated horizon enlargement. Effects
-    // may change its appearance, but toggling them must not move or resize it.
+    c.sun.angularRadius=c.sun.nativeAngularRadius;
+    c.moon.angularRadius=c.moon.nativeAngularRadius;
+    if(forever){
+        const auto imported=NorthlightForeverSky::evaluate(c.dayFraction);
+        std::copy_n(imported.sun.direction,3,c.sun.direction);std::copy_n(imported.moon.direction,3,c.moon.direction);
+        c.sun.angularRadius=NorthlightForeverSky::sunRadius(c.dayFraction);
+        c.moon.angularRadius=NorthlightForeverSky::moonRadius(c.dayFraction);
+    }
     std::memcpy(orbit.sun.direction,c.sun.direction,sizeof c.sun.direction);
     std::memcpy(orbit.moon.direction,c.moon.direction,sizeof c.moon.direction);
     orbit.sun.elevation=NorthlightCelestialOrbit::elevationDegrees(c.sun.direction[2]);
     orbit.moon.elevation=NorthlightCelestialOrbit::elevationDegrees(c.moon.direction[2]);
     orbit.valid=true;
-    c.sun.angularRadius=c.sun.nativeAngularRadius;
-    c.moon.angularRadius=c.moon.nativeAngularRadius;
+    c.lunarBody=!map||std::strcmp(map,"Expansion01")!=0;
     applyRendererPolicy(c,direct);return orbit;
 }
 

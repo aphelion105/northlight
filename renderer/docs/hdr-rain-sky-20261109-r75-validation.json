@@ -1,0 +1,168 @@
+{
+  "schema": "northlight-hdr-rain-sky-r75",
+  "pass_": true,
+  "base_commit": "23fd1d957addf5ff4f3a4848340c78e4d507570b",
+  "source_identity": "d0f48b9a7537caea8bc18a60f41cf7a8f4b8a427c3defe9e889b9c7a72ef7672",
+  "built_utc": "2026-11-09 22:13:47 UTC",
+  "fix": "Retain recognized rain identity through the native draw, capture its HDR sky contribution outside the model depth band, and support fixed-pixel VS1/2 rain in the existing MRT transfer.",
+  "baseline_negative": {
+    "log": "out/hdr-rain-20261109/before-domain/backend-0-msaa-0-draws-0.log",
+    "sha256": "d293461741983f5a06f2cf88069194f7f80fcf7774d1f0ee97dd8b66b0aa8c0b",
+    "old_sky_red": 2,
+    "expected_sky_red": 1.02903,
+    "current_transfer_helpers": true
+  },
+  "runs": [
+    {
+      "backend": "native-d3d9",
+      "samples": 0,
+      "rain_cases": 288,
+      "rejected_fixed_states": 20,
+      "general_admission_controls": 16,
+      "log": "out/hdr-rain-20261109/final-native-scope/backend-0-msaa-0-draws-0.log",
+      "sha256": "2b6decf1420d7ff71ad0c564b7d649cb6226eddc631a3460071538a8def20940"
+    },
+    {
+      "backend": "dxvk2",
+      "samples": 0,
+      "rain_cases": 288,
+      "rejected_fixed_states": 20,
+      "general_admission_controls": 16,
+      "log": "out/hdr-rain-20261109/final-native-scope/backend-1-msaa-0-draws-0.log",
+      "sha256": "2b6decf1420d7ff71ad0c564b7d649cb6226eddc631a3460071538a8def20940"
+    },
+    {
+      "backend": "dxvk2",
+      "samples": 2,
+      "rain_cases": 288,
+      "rejected_fixed_states": 20,
+      "general_admission_controls": 16,
+      "log": "out/hdr-rain-20261109/final-native-scope/backend-1-msaa-2-draws-0.log",
+      "sha256": "cbd5667157bcad4abf64073d5576c03b9f41b397a6b09e409d7f7efe462ffd7f"
+    },
+    {
+      "backend": "dxvk2",
+      "samples": 8,
+      "rain_cases": 288,
+      "rejected_fixed_states": 20,
+      "general_admission_controls": 16,
+      "log": "out/hdr-rain-20261109/final-native-scope/backend-1-msaa-8-draws-0.log",
+      "sha256": "21271aef892ae775f088c3753cf66ce12fbe3bb30c551139700b606dd086ca84"
+    },
+    {
+      "backend": "dxvk3",
+      "samples": 0,
+      "rain_cases": 288,
+      "rejected_fixed_states": 20,
+      "general_admission_controls": 16,
+      "log": "out/hdr-rain-20261109/final-native-scope/backend-2-msaa-0-draws-0.log",
+      "sha256": "2b6decf1420d7ff71ad0c564b7d649cb6226eddc631a3460071538a8def20940"
+    },
+    {
+      "backend": "dxvk3",
+      "samples": 2,
+      "rain_cases": 288,
+      "rejected_fixed_states": 20,
+      "general_admission_controls": 16,
+      "log": "out/hdr-rain-20261109/final-native-scope/backend-2-msaa-2-draws-0.log",
+      "sha256": "cbd5667157bcad4abf64073d5576c03b9f41b397a6b09e409d7f7efe462ffd7f"
+    },
+    {
+      "backend": "dxvk3",
+      "samples": 8,
+      "rain_cases": 288,
+      "rejected_fixed_states": 20,
+      "general_admission_controls": 16,
+      "log": "out/hdr-rain-20261109/final-native-scope/backend-2-msaa-8-draws-0.log",
+      "sha256": "21271aef892ae775f088c3753cf66ce12fbe3bb30c551139700b606dd086ca84"
+    }
+  ],
+  "rain_cases": 2016,
+  "native_rgba": "byte-exact",
+  "linear_sky_tolerance": 0.003,
+  "fog_oracle": "Includes existing RGBA8 premultiplied-source/alpha quantization",
+  "rain_identity_failure_exception_nested_restoration": true,
+  "prior_hdr_shaders_byte_identical": 30,
+  "new_shader": {
+    "static_instruction_slots": 3,
+    "temporary_registers": 1,
+    "samplers": [
+      0
+    ],
+    "instructions": {
+      "texld": 1,
+      "mul": 1,
+      "mov": 1
+    },
+    "target": "ps_2_0",
+    "sha256": "ab9f0e69f12746092ba08a00cc03b66cf173f3bb358f086616cb9cc4a9505226",
+    "bytes": 220
+  },
+  "regression_receipts": {
+    "out/hdr-rain-ui-patch.log": "4f7c7d7d200e52e5ba67ae2b4d77f06ce1321ecfa7d3d1da6d7e6c30a95d62bd",
+    "out/hdr-rain-lifetime.log": "e752645aa9edc882b823404c6b38e6e1e64da88688c799e1da2d6a9cbe5100a3",
+    "out/hdr-rain-wiring.log": "3914be87fd4ae1f8a3d5775692425a3e1586bcfe1412e0d60f0db3642eb1ad40",
+    "out/hdr-rain-mask.log": "57b7876ff87542f5df253ef97c25de5330e9d0b615a16935dd84d29324567fdb",
+    "out/hdr-rain-exterior.log": "5d8e4c5cdf1539acb3421fed6e5668fc566a748c19aa900fb5b636f64e5c4038",
+    "out/hdr-rain-boundary.log": "674e4309c3be694f33cd188d143072ae5bf202086f8c3d58b1619d6ee8739c0b",
+    "out/hdr-rain-replay.log": "190c3162ebed0a64b2b17cf5897e2ae9648c1490566ac26eeccca86c3dfbe598",
+    "out/hdr-rain-additive.log": "f423f78cdd19e6e90071b39d85df4b1680c397d700e6e4e8e8cc85480047856c",
+    "out/hdr-rain-20261109/renderer-build.log": "aedcd6f907458cf4ed72f249d3b975b844f8eb9ebe13626481f70d2eaebb14dc",
+    "out/hdr-rain-20261109/package-verification/run.log": "957e1e21832eb8320261d99d6932948dbf356c1b9c35db6b314ca152e0ce023c",
+    "out/hdr-rain-20261109/artifacts.json": "0f965bad77c3edc0c0e1c8e2020ffaeb624e1410480be00f615b5e414ed2e8cb"
+  },
+  "source_sha256": {
+    "src/proxy/renderer.cpp": "71462582def0dcf7400086db276a5cf704a981c135acd248fa033037a47e204f",
+    "src/proxy/hdr_color.h": "1cdd8dcef5faf2e01d8aded5c42151d285368836d6eb32879a47138bf633b317",
+    "src/proxy/hdr_sky_foreground.h": "7a98fb4d51edde025e652c4e469b0664aaa29775d5b09d79efc56252c02bd6a0",
+    "shaders/hdr_effects.hlsl": "c129d36958bc936b568321b8fa9edd73eb60860c79d0431da5b3625423715ec8",
+    "scripts/shaders/compile_hdr_shaders.py": "45fd6677f4a21cd6471e4b64a4a31cf871e31ea3a9ee1e6d7bd87ac0cd3fca5e",
+    "src/generated/hdr_compiled_shaders.h": "c677f4596457b5fb3c1727898f42657026dad308448c7ef2e99502664b9d661c",
+    "shaders/compiled/HdrFixedModulate.bin": "ab9f0e69f12746092ba08a00cc03b66cf173f3bb358f086616cb9cc4a9505226",
+    "shaders/compiled/HdrFixedModulate.bin.asm": "c7afb350988b1e430dd73008878426045e5de37ccc5e29e4c111f763e253024d",
+    "tests/smoke_sky_gpu.cpp": "a45de75bc404c3601696ef54aab189ea0da1bdc94a0f22fa4ddd103dfb9a97aa",
+    "tests/test_smoke_sky_gpu.py": "e308620decf3bab392b0b20b169dd8fe1c93078f3aa7c0608f66a1211db8a1cc",
+    "tests/test_weather_wiring.py": "7e964b1026fa245b4f71da84036fb219db0234979b37823cea5baf26e2d7be32",
+    "tests/hdr_foreground_fixture.hlsl": "619ea32cb23e56dbfaa68ad40f17589a25023587ae66bedd13c283ec8843d849"
+  },
+  "artifacts": {
+    "renderer/frd9.dll": {
+      "bytes": 10834944,
+      "sha256": "fc6106641c3fa878dd2a97fba5bf4a4e86c1614784085bf397c28a054b0957ee"
+    },
+    "releases/Northlight-0.3.217-test.20261109.9/d3d9.dll": {
+      "bytes": 10834944,
+      "sha256": "fc6106641c3fa878dd2a97fba5bf4a4e86c1614784085bf397c28a054b0957ee"
+    },
+    "releases/Northlight-0.3.217-test.20261109.9-Windows.zip": {
+      "bytes": 20814289,
+      "sha256": "a2108663cb64a76fab23589597ae1e00f8fc89d58d34ab9edddf671659e97e7f"
+    }
+  },
+  "exports": {
+    "D3DPERF_BeginEvent": 27,
+    "D3DPERF_EndEvent": 28,
+    "D3DPERF_GetStatus": 29,
+    "D3DPERF_QueryRepeatFrame": 30,
+    "D3DPERF_SetMarker": 31,
+    "D3DPERF_SetOptions": 32,
+    "D3DPERF_SetRegion": 33,
+    "DebugSetLevel": 34,
+    "DebugSetMute": 35,
+    "Direct3D9EnableMaximizedWindowedModeShim": 36,
+    "Direct3DCreate9": 37,
+    "Direct3DCreate9Ex": 38,
+    "Direct3DCreate9On12": 20,
+    "Direct3DCreate9On12Ex": 21,
+    "Direct3DShaderValidatorCreate9": 24,
+    "PSGPError": 25,
+    "PSGPSampleTexture": 26
+  },
+  "package_verified": true,
+  "game_launched": false,
+  "client_modified": false,
+  "running_game_allowed": true,
+  "performance_claims": false,
+  "exact_attached_client_frame_replayed": false,
+  "castle_video_deferred": true
+}

@@ -55,7 +55,7 @@ exact=['float profile=saturate((field.w-2.5)/2.5);','float groundHeight=lerp(fie
     'float nearFade=saturate(((start+end)*.5-FogRange.x)*FogRange.y);nearFade*=nearFade*(3-2*nearFade);'.replace('((start+end)*.5-FogRange.x)','(mid-FogRange.x)')]
 checks['hlsl: FogClouds copies WorldFog\'s groundSigma lines (profile, groundHeight, vertical, groundSigma), altitude and valid exactly; nearFade with mid for (start+end)*.5']=all(l in body and l.replace('(mid-FogRange.x)','((start+end)*.5-FogRange.x)') in wf for l in exact)
 checks['hlsl: base fog only attenuates the cloud light (tBase; the ambient does not carry it: the blend already multiplies the fog by tCloud), alpha out stays tCloud; air term is the documented constant floor WeatherInfo.w (slot budget)']=(
-    'tauBase+=baseSigma*stepSize;' in body and 'float weight=tCloud*absorb;' in body and 'directWeight+=exp(-tauBase)*weight*visibility*heightFade;' in body and '[branch]if(actorIntegration&&FogActorInfo.x>0&&visibility>0)visibility=fogCombineActor(visibility,tiledActor?fogActorShadowTiled(actorOrigin+actorRay*start,actorRay*stepSize):fogActorShadow(actorOrigin+actorRay*start,actorRay*stepSize));' in body and 'ambientWeight+=weight;' in body and 'float airSigma=WeatherInfo.w;' in body and 'for the slot budget' in body and body.rstrip().endswith('directScatter,tCloud);\n}'.rstrip()))
+    'tauBase+=baseSigma*stepSize;' in body and 'float weight=tCloud*absorb;' in body and 'directWeight+=exp(-tauBase)*weight*visibility*lerp(1,heightFade,SunDirection.w);' in body and '[branch]if(actorIntegration&&FogActorInfo.x>0&&visibility>0)visibility=fogCombineActor(visibility,tiledActor?fogActorShadowTiled(actorOrigin+actorRay*start,actorRay*stepSize):fogActorShadow(actorOrigin+actorRay*start,actorRay*stepSize));' in body and 'ambientWeight+=weight;' in body and 'float airSigma=WeatherInfo.w;' in body and 'for the slot budget' in body and body.rstrip().endswith('directScatter,tCloud);\n}'.rstrip()))
 # renderer wiring
 checks['cpp: noise generated off the game and render threads on first need (std::thread, detached, leaked holder), logged once']=(
     'std::thread([this]' in w and '.detach()' in w and 'new FogCloudNoise' in w and 'WORLD fog clouds noise ms=%.1f' in w and 'fogCloudNoise().request()' in w)
@@ -117,8 +117,8 @@ checks['colour: c25/c26 set for the cloud pass from NorthlightFogClouds::colour,
     'NorthlightFogClouds::colour(c[26],fw>0,c[31][3],cloudColour)' in cp and 'd->SetPixelShaderConstantF(26,cloudColour,1)' in cp
     and cp.index('fog clouds raymarch')<cp.index('d->SetPixelShaderConstantF(25,c[25],2)'))
 # Duskwood/lamp game test: the rain's extra air and the cloud density thin out in dense zones; the lamp glow ignores the clouds
-checks['dense zones: airFloor = .0017f + rain extra x denseDamp, cloud density x denseDamp, lamps sigmaAt without clouds']=(
-    'const float airFloor=.0017f+wx.airExtinction()*denseDamp;' in w and 'unsigned(std::lround(float(quality.fogCloudDensity)*denseDamp))' in w
+checks['dense zones: scaled dry air + rain extra x denseDamp, cloud density x denseDamp, lamps sigmaAt without clouds']=(
+    'const float airFloor=.0017f*airDensity+wx.airExtinction()*denseDamp;' in w and 'unsigned(std::lround(float(quality.fogCloudDensity)*denseDamp))' in w
     and 'localLights.position[i][2],false,unused);' in w and 'ray.z*t,true,cloudy)' in w and 'if(clouds&&cloudCandidate)' in w)
 # lamp glow game test: the glow fades in over the same near ramp as the air, at the ray's closest approach to the light
 lf=h.split('float4 LocalFog(',1)[1].split('\n}\n',1)[0]

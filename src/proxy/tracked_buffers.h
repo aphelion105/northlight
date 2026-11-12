@@ -43,6 +43,7 @@ struct Record {
     std::atomic<uint64_t> revision{0};
     std::atomic<unsigned> locks{0};
     bool index=false;
+    D3DPOOL pool=D3DPOOL_DEFAULT;bool poolKnown=false;
     NorthlightCaptureMetadata::Info metadata;
     std::atomic<bool> spellGuard{false}; // task 34: the spell layer guards bytes of this buffer; set/cleared through markSpellGuard, tested (relaxed) by Buffer::Lock
     NorthlightReplayCopies::Slot copy; // 0.3.192 (CS): the replay-side CPU copy (replay_copies.h); attached only while the stream is active
@@ -125,10 +126,14 @@ inline void markSpellGuard(void* buffer,bool on){
     std::lock_guard<std::mutex> guard(mutex);auto it=records.find(buffer);
     if(it!=records.end())it->second->spellGuard.store(on,std::memory_order_relaxed);
 }
-inline void invalidateAll(){
+inline void invalidateAll(bool preserveManaged=false){
     NorthlightParticleUploads::cache().clear();
     std::lock_guard<std::mutex> guard(mutex);
-    for(auto& entry:records){entry.second->revision=clock.fetch_add(1);NorthlightReplayCopies::invalidate(entry.second->copy);}
+    for(auto& entry:records){auto& r=*entry.second;
+        // Managed bytes survive Reset. Lock/Unlock still advances revisions;
+        // unknown/default pools and in-flight writes keep full invalidation.
+        if(!preserveManaged||!r.poolKnown||r.pool!=D3DPOOL_MANAGED||r.locks.load(std::memory_order_relaxed))r.revision=clock.fetch_add(1);
+        NorthlightReplayCopies::invalidate(r.copy);}
 }
 template<class T,class Forward> class Buffer final:public Forward {
     LONG refs=1;IDirect3DDevice9* owner;Record record;
@@ -151,14 +156,14 @@ public:
         if constexpr(std::is_same<T,IDirect3DIndexBuffer9>::value){
             D3DINDEXBUFFER_DESC desc={};
             if(index&&SUCCEEDED(real->GetDesc(&desc))&&desc.Size){
-                record.metadata.size=desc.Size;record.metadata.usage=desc.Usage;record.metadata.format=desc.Format;
+                record.pool=desc.Pool;record.poolKnown=true;record.metadata.size=desc.Size;record.metadata.usage=desc.Usage;record.metadata.format=desc.Format;
                 record.metadata.identity=identity(real,true);record.metadata.known=record.metadata.identity!=0;
                 discardBytes=desc.Pool==D3DPOOL_DEFAULT&&(desc.Usage&D3DUSAGE_DYNAMIC)?desc.Size:0;
             }
         }else{
             D3DVERTEXBUFFER_DESC desc={};
             if(!index&&SUCCEEDED(real->GetDesc(&desc))&&desc.Size){
-                record.metadata.size=desc.Size;record.metadata.usage=desc.Usage;record.metadata.format=desc.Format;
+                record.pool=desc.Pool;record.poolKnown=true;record.metadata.size=desc.Size;record.metadata.usage=desc.Usage;record.metadata.format=desc.Format;
                 record.metadata.identity=identity(real,false);record.metadata.known=record.metadata.identity!=0;
                 discardBytes=desc.Pool==D3DPOOL_DEFAULT&&(desc.Usage&D3DUSAGE_DYNAMIC)?desc.Size:0;
             }

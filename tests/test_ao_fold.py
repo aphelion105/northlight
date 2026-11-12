@@ -131,23 +131,34 @@ ao_row = [1.] * 8 + [0.] * 8
 bleed = min(x for x in (5 + i / 100 for i in range(301)) if upsample(ao_row, flat, x, 10.) < 1 - 1e-12)
 checks[f'equal depth: the dark side reaches at most 1 half-res px across (from x={bleed:.2f}, edge at 8)'] = 8 - bleed <= 1.0 + 1e-9
 
+# Extract the function itself: an unrelated helper removed after it must not
+# invalidate the composition contract.
+def function_text(text, signature):
+    start = text.index(signature)
+    end = text.index('{', start) + 1
+    depth = 1
+    while depth:
+        depth += (text[end] == '{') - (text[end] == '}')
+        end += 1
+    return text[start:end]
+
 # 4. wiring
-effects_cpp = renderer[renderer.index('    void renderEffects() {'):renderer.index('template<class Capture> void prepareDraw(')]
+effects_cpp = function_text(renderer, '    void renderEffects() {')
 fold_line = 'const bool fold=world&&debugMode==0&&world->screenReady();'
 legacy_before = 'if(!fold&&!legacyComposite())return;'
-render_call = 'world->render(outputTarget,depthTex,width,height,sceneFormat,nearZ,farZ,worldMinDepth,worldMaxDepth,worldDebug,gpuProfile.get(),waterMask,fold?scene:nullptr,fold?ao:nullptr,frame,'
+render_call = 'world->render(outputTarget,depthTex,width,height,sceneFormat,nearZ,farZ,worldMinDepth,worldMaxDepth,worldDebug,gpuProfile.get(),waterMask,fold?scene:nullptr,fold&&!neutralAOPending?ao:nullptr,frame,'
 legacy_after = 'if(fold&&!world->composited){'
 checks['proxy: FOLD condition, legacy composite before render only when not folding, after it only if not composited'] = (
     all(effects_cpp.count(s) == 1 for s in (fold_line, legacy_before, render_call, legacy_after))
-    and 'effectState();bindEffects(ao);if(!legacyComposite())return;' in effects_cpp.split(legacy_after,1)[1]
-    and effects_cpp.index('gpuProfile->mark("AO");') < effects_cpp.index(fold_line) < effects_cpp.index(legacy_before)
+    and 'if(neutralAOPending&&!clearNeutralAO())return;\n                bindEffects(ao);if(!legacyComposite())return;' in effects_cpp.split(legacy_after,1)[1]
+    and effects_cpp.index(fold_line) < effects_cpp.index('gpuProfile->mark("AO");') < effects_cpp.index(legacy_before)
     < effects_cpp.index(render_call) < effects_cpp.index(legacy_after) < effects_cpp.index('celestialDiscs->renderVeil(')
     and 'contactShader=aoActorUsed?(alphaOnly?aoActorAlphaPS:aoActorPS):(alphaOnly?aoOnlyPS:aoContactBloomPS);' in effects_cpp
     and 'ext->SetPixelShader(linearHdr||constants[7]==0.f?contactShader:aoPS);' in effects_cpp)
 checks['proxy: one shared effect-state setup, used before the AO pass and before the late legacy composite'] = (
     renderer.count('    void effectState() {') == 1 and effects_cpp.count('effectState();') == 2
     and effects_cpp.index('effectState();') < effects_cpp.index('bindEffects(nullptr);')
-    and 'D3DRS_MULTISAMPLEANTIALIAS,TRUE' in renderer[renderer.index('    void effectState() {'):renderer.index('    void renderEffects() {')]
+    and 'D3DRS_MULTISAMPLEANTIALIAS,TRUE' in function_text(renderer, '    void effectState() {')
     and 'kAoContactBloomShader' in renderer and 'kAoContactShader' not in renderer)
 render_fn = wr[wr.index('    bool render(IDirect3DSurface9* targetSurface'):]
 temporal = render_fn[render_fn.index('{   // Temporal stabilization'):render_fn.index('temporalIndex=prev;temporalValid=true;')]
@@ -156,12 +167,12 @@ checks['world: copy skipped only with foldScene, Scene s0 = foldScene, s10 = AO 
     and 'IDirect3DTexture9* textures[]={foldScene?foldScene:color,' in render_fn
     and temporal.count('d->SetTexture(10,foldAO?foldAO:neutralAO);d->SetSamplerState(10,D3DSAMP_MINFILTER,D3DTEXF_LINEAR);d->SetSamplerState(10,D3DSAMP_MAGFILTER,D3DTEXF_LINEAR);') == 1
     and temporal.index('SetTexture(10,') < temporal.index('quad(w/2,h/2,false),"temporal light pass"')
-    and 'SetTexture(10' not in render_fn[render_fn.index('temporalIndex=prev;temporalValid=true;'):render_fn.index('"world composite"')])
+    and 'd->SetTexture(10,foldAO?foldAO:neutralAO);' in render_fn[render_fn.index('}else{\n            temporalValid=false;'):render_fn.index('"world composite"')])
 checks['world: composited cleared at entry, set right after the WorldComposite quad; neutral 1x1 (0,0,0,1) created and released'] = (
     'shadowsComposited=false;composited=false;lastRenderDebug=debug;' in render_fn
     and 'compositeOk=check(quad(w,h),"world composite");' in render_fn and render_fn.index('compositeOk=check(quad(w,h),"world composite");')<render_fn.index('if(!compositeOk)return false;') < render_fn.index('composited=true;') # 0.3.212: the quad inside the name mask's composite bind
-    and 'CreateTexture(1,1,1,0,D3DFMT_A8R8G8B8,D3DPOOL_MANAGED,&neutralAO,nullptr)' in wr
-    and '*static_cast<DWORD*>(lock.pBits)=0xff000000u;' in wr and 'drop(neutralAO);' in wr)
+    and 'CreateTexture(1,1,1,0,D3DFMT_A8R8G8B8,D3DPOOL_MANAGED,&neutralAO,nullptr)' in fp.src('world_screen_resources.inl').read_text()
+    and '*static_cast<DWORD*>(lock.pBits)=0xff000000u;' in fp.src('world_screen_resources.inl').read_text() and 'drop(neutralAO);' in wr)
 checks['diagnostic capture: the folded scene dump is labelled pre-AO'] = 'foldScene?"pre-AO (folded AO/bloom)":"post-AO composite"' in wr
 
 # 5. shaders: WorldComposite folds, smoothRemoval reads the AO, removalScale has no floor
@@ -183,7 +194,7 @@ checks['smoothRemoval: both Scene reads times the AO alpha; removalScale without
 wm = json.loads(fp.src('world-shader-build.json').read_text())['shaders']
 # 0.3.185: the removal smoothing (Scene, AO, baseline reads) moved to RemovalSmooth; TemporalLight keeps no s0/s10/s12 read and gains s9.
 checks[f"world manifest: WorldComposite {wm['WorldComposite']['static_instruction_slots']} <= 512 with s10; RemovalSmooth {wm['RemovalSmooth']['static_instruction_slots']} (s10 AO) <= 512; TemporalLight {wm['TemporalLight']['static_instruction_slots']} == 210"] = (
-    wm['WorldComposite']['static_instruction_slots'] <= 512 and wm['WorldComposite']['samplers'] == [0, 1, 2, 3, 7, 8, 9, 10, 11, 12, 13, 15]  # Native translucent-effect coverage uses s7; retain the exact sampler set and SM3 limit.
+    wm['WorldComposite']['static_instruction_slots'] <= 512 and wm['WorldComposite']['samplers'] == [0, 1, 2, 3, 7, 8, 9, 10, 11, 12, 13]  # Current scene depth replaces the lighting-distance dependency on s15.
     and wm['RemovalSmooth']['static_instruction_slots'] <= 512 and wm['RemovalSmooth']['samplers'] == [0, 1, 8, 10, 12, 14, 15]
     and wm['TemporalLight']['static_instruction_slots'] == 210 and  # Microsoft d3dcompiler_47 (Wine's builtin: 293)
     wm['TemporalLight']['samplers'] == [1, 8, 9, 14, 15])

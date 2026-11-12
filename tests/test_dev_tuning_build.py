@@ -59,6 +59,15 @@ class DevTuningBuild(unittest.TestCase):
         header = fp.src('zone_tuning.h').read_text()
         self.assertEqual(re.search(r'Marker\[\]="([^"]+)"', header).group(1).encode(), bp.DEV_MARKER)
 
+    def test_profile_symbols_keep_optimization_and_release_dll(self):
+        command = self.zig_command(['--profile-symbols'])
+        self.assertIn('-O2', command)
+        self.assertIn('-g', command)
+        self.assertIn('-DNORTHLIGHT_PROFILE_BUILD=1', command)
+        self.assertEqual(Path(command[-1]).name, 'frd9-profile.dll')
+        with self.assertRaisesRegex(SystemExit, 'profiling build'):
+            bp.check_dll(fake_dll(b'NORTHLIGHT PROFILING BUILD'))
+
     def test_windows_preflight_reports_sandbox_failure_before_build(self):
         with tempfile.TemporaryDirectory() as folder, \
                 mock.patch.object(br.check_layout, 'layout_problems', return_value=[]), \

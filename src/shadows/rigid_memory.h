@@ -14,7 +14,7 @@
 // turnTolerance since the track began: lifts, boats, a door opened while seen), held (0.3.173,
 // a state: a non-rigid group's palette root within attachRadius on at least heldRatio of the
 // complete capture frames it was observed on, a rolling window of heldWindow; bodies on a
-// static-cache placement are doodads and hold nothing: weapons, shields), static (sticky: the
+// static-cache placement are doodads and hold nothing: weapons, shields), static (until scene revision: the
 // static cache draws it: staticPlacement at W). Held never drops an entry: only motion does.
 // Identity: a hash of the draws' shapes and W's origin within identityTolerance, never the
 // snapshot pointer (a re-created snapshot keeps the entry; the renderer refreshes its copy on
@@ -164,6 +164,9 @@ public:
     bool small(const Observation& o)const{return o.draws&&o.draws<=t_.maxDraws&&o.triangles<=t_.maxTriangles&&o.bytes<=t_.maxMeshBytes;}
     // A settled track waits for the static-cache screen (the renderer builds its index meanwhile).
     bool screening()const{return screening_;}
+    // Placement decisions belong to one static scene revision. Keep settled poses,
+    // motion/held classification and retained payloads when that scene changes.
+    void invalidateStaticCoverage(){for(auto& t:tracks_)if(t.entry<0){t.statics=false;t.placed=0;}}
     // Map change, device loss, trim, shadows off: everything is forgotten (payloads released).
     void clear(){stats_.cleared+=entries_.size();entries_.clear();tracks_.clear();trackIndex_.clear();stats_.bytes=0;hasPivot_=false;screening_=false;}
     // Tests: tracks strictly in (shape, serial) order (= a full sort), the serial index exact, every

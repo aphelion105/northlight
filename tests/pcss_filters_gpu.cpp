@@ -10,14 +10,73 @@ static IDirect3DTexture9* pcTexture(IDirect3DDevice9* d,unsigned width,unsigned 
     IDirect3DTexture9* t=nullptr;pcOk(d->CreateTexture(width,height,1,0,components==1?D3DFMT_R32F:D3DFMT_A32B32G32R32F,D3DPOOL_MANAGED,&t,nullptr));
     D3DLOCKED_RECT lock{};pcOk(t->LockRect(0,&lock,nullptr,0));for(unsigned y=0;y<height;++y)std::memcpy(static_cast<char*>(lock.pBits)+y*lock.Pitch,data.data()+y*width*components,width*components*4);pcOk(t->UnlockRect(0));return t;
 }
-static std::vector<float> pcRead(IDirect3DDevice9* d,IDirect3DSurface9* surface){
+static std::vector<float> pcRead(IDirect3DDevice9* d,IDirect3DSurface9* surface,bool rgba=false){
     D3DSURFACE_DESC desc{};pcOk(surface->GetDesc(&desc));IDirect3DSurface9* stage=nullptr;pcOk(d->CreateOffscreenPlainSurface(desc.Width,desc.Height,desc.Format,D3DPOOL_SYSTEMMEM,&stage,nullptr));pcOk(d->GetRenderTargetData(surface,stage));
-    D3DLOCKED_RECT lock{};pcOk(stage->LockRect(&lock,nullptr,D3DLOCK_READONLY));std::vector<float> values(desc.Width*desc.Height);
-    for(unsigned y=0;y<desc.Height;++y)for(unsigned x=0;x<desc.Width;++x){const char* row=static_cast<const char*>(lock.pBits)+y*lock.Pitch;
-        values[y*desc.Width+x]=desc.Format==D3DFMT_A16B16G16R16F?pcHalf(reinterpret_cast<const uint16_t*>(row)[x*4]):reinterpret_cast<const float*>(row)[x*(desc.Format==D3DFMT_R32F?1:4)];}
+    const unsigned channels=rgba?4:1;assert(!rgba||desc.Format==D3DFMT_A16B16G16R16F||desc.Format==D3DFMT_A32B32G32R32F);
+    D3DLOCKED_RECT lock{};pcOk(stage->LockRect(&lock,nullptr,D3DLOCK_READONLY));std::vector<float> values(desc.Width*desc.Height*channels);
+    for(unsigned y=0;y<desc.Height;++y)for(unsigned x=0;x<desc.Width;++x)for(unsigned c=0;c<channels;++c){const char* row=static_cast<const char*>(lock.pBits)+y*lock.Pitch;
+        values[(y*desc.Width+x)*channels+c]=desc.Format==D3DFMT_A16B16G16R16F?pcHalf(reinterpret_cast<const uint16_t*>(row)[x*4+c]):reinterpret_cast<const float*>(row)[x*(desc.Format==D3DFMT_R32F?1:4)+c];}
     pcOk(stage->UnlockRect());stage->Release();return values;
 }
 struct WorldScreenEffectsTest {
+    struct Meter:ForwardIDirect3DDevice9 {
+        using ForwardIDirect3DDevice9::ForwardIDirect3DDevice9;
+        unsigned draws=0,targets=0,getTargets=0,textures=0;bool suppress=false,failSoft=false;IDirect3DPixelShader9* soft=nullptr;
+        HRESULT STDMETHODCALLTYPE DrawPrimitiveUP(D3DPRIMITIVETYPE t,UINT n,const void* v,UINT s)override{if(suppress)return S_OK;++draws;return real->DrawPrimitiveUP(t,n,v,s);}
+        HRESULT STDMETHODCALLTYPE SetRenderTarget(DWORD i,IDirect3DSurface9* s)override{targets+=i==0;return real->SetRenderTarget(i,s);}
+        HRESULT STDMETHODCALLTYPE GetRenderTarget(DWORD i,IDirect3DSurface9** s)override{getTargets+=i==0;return real->GetRenderTarget(i,s);}
+        HRESULT STDMETHODCALLTYPE CreateTexture(UINT w,UINT h,UINT n,DWORD u,D3DFORMAT f,D3DPOOL p,IDirect3DTexture9** t,HANDLE* x)override{++textures;return real->CreateTexture(w,h,n,u,f,p,t,x);}
+        HRESULT STDMETHODCALLTYPE SetPixelShader(IDirect3DPixelShader9* s)override{if(failSoft&&s==soft){failSoft=false;return E_FAIL;}return real->SetPixelShader(s);}
+        void reset(){draws=targets=getTargets=textures=0;}
+    };
+    static void pointFusion(IDirect3DDevice9* d,const char* resolveFile,const char* lightingFile){
+        auto shader=[&](const char* path){std::ifstream f(path,std::ios::binary);std::vector<char> code{std::istreambuf_iterator<char>(f),{}};assert(!code.empty());IDirect3DPixelShader9* s=nullptr;pcOk(d->CreatePixelShader(reinterpret_cast<const DWORD*>(code.data()),&s));return s;};
+        auto* oldResolve=shader(resolveFile);auto* oldLighting=shader(lightingFile);unsigned cases=0,nonzero=0,differences=0,referenceDraws=0,fusedDraws=0;float maxError=0;
+        for(unsigned odd=0;odd<2;++odd){const unsigned W=128+3*odd,H=96+3*odd,X=W/2,Y=H/2;
+            Meter meter(d);WorldRenderer w(&meter);w.valid=true;assert(w.resources(W,H,D3DFMT_A8R8G8B8));w.pointIndex=0;auto& slot=w.pointSlot();slot.ready=true;
+            slot.selected.attenuationEnd=64;slot.selected.diffuse[0]=.8f;slot.selected.diffuse[1]=.5f;slot.selected.diffuse[2]=.3f;assert(w.pointResources());
+            w.projection[0]=1.2f;w.projection[1]=1.4f;w.projection[2]=1;for(unsigned k=0;k<4;++k)w.context.inverseView[k*5]=1;
+            w.context.inverseView[12]=3;w.context.inverseView[13]=-4;
+            pcOk(d->SetDepthStencilSurface(nullptr));pcOk(d->SetVertexShader(nullptr));pcOk(d->SetFVF(D3DFVF_XYZRHW|D3DFVF_TEX1));
+            for(auto state:{D3DRS_ZENABLE,D3DRS_ZWRITEENABLE,D3DRS_ALPHATESTENABLE,D3DRS_ALPHABLENDENABLE,D3DRS_SCISSORTESTENABLE,D3DRS_SRGBWRITEENABLE,D3DRS_FOGENABLE,D3DRS_STENCILENABLE})pcOk(d->SetRenderState(state,FALSE));
+            pcOk(d->SetRenderState(D3DRS_CULLMODE,D3DCULL_NONE));pcOk(d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_ONE));pcOk(d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_ONE));pcOk(d->SetRenderState(D3DRS_BLENDOP,D3DBLENDOP_ADD));
+            pcOk(d->SetRenderTarget(0,w.baselineSurface));pcOk(d->Clear(0,nullptr,D3DCLEAR_TARGET,0x80ffffff,1,0));
+            IDirect3DTexture9* resolved=nullptr;IDirect3DSurface9* resolveTarget=nullptr;
+            pcOk(d->CreateTexture(X,Y,1,D3DUSAGE_RENDERTARGET,D3DFMT_A16B16G16R16F,D3DPOOL_DEFAULT,&resolved,nullptr));pcOk(resolved->GetSurfaceLevel(0,&resolveTarget));
+            for(unsigned scene=0;scene<24;++scene){const float z[]={.05f,.1f,.1001f,1.f,5.f,20.f};const float distance=z[scene%6];slot.selected.attenuationEnd=scene%2?64.f:12.f;
+                slot.selected.position[0]=3+(scene%2?.35f:-.25f);slot.selected.position[1]=-4;slot.selectionGain=scene%4?.9f:.25f;
+                const float nearZ=.1f,farZ=64,minZ=scene%2?.15f:0.f,maxZ=scene%2?.85f:1.f;
+                const float depth=scene==5||scene==17?maxZ:minZ+(maxZ-minZ)*(farZ/(farZ-nearZ))*(1-nearZ/distance);
+                auto* depths=pcTexture(d,W,H,1,std::vector<float>(W*H,depth));std::vector<float> normal(X*Y*4),detail(W*H*4),water(W*H*4);
+                for(unsigned i=0;i<X*Y;++i){normal[4*i]=scene%5==0?.8f:0;normal[4*i+2]=scene%7==0?1.f:scene%5==0?-.6f:-1.f;normal[4*i+3]=1;}
+                for(unsigned i=0;i<W*H;++i){const float cover=scene%3?1.f:0.f;detail[4*i]=.58f*cover;detail[4*i+1]=.41f*cover;detail[4*i+2]=(distance+(scene%3==2?10:0))*cover;detail[4*i+3]=cover;water[4*i]=.5f;water[4*i+1]=.8f;}
+                drop(w.normalBuffer);w.normalBuffer=pcTexture(d,X,Y,4,normal);drop(w.materialDetail);w.materialDetail=pcTexture(d,W,H,4,detail);w.materialBumpGain=1;w.materialBumpDistance=120;
+                auto* mask=scene%4==0?pcTexture(d,W,H,4,water):nullptr;
+                pcOk(d->SetTexture(1,nullptr));for(unsigned face=0;face<6;++face){pcOk(d->SetRenderTarget(0,slot.faces[face]));pcOk(d->Clear(0,nullptr,D3DCLEAR_TARGET,0xffffffff,1,0));
+                    if(face==D3DCUBEMAP_FACE_POSITIVE_Z){D3DRECT rect{0,0,128,256};const float blocker=scene%3?.2f:2.f;const float stored=slot.selected.attenuationEnd/(slot.selected.attenuationEnd-.1f)*(1-.1f/blocker);pcOk(d->Clear(1,&rect,D3DCLEAR_TARGET,D3DCOLOR_COLORVALUE(stored,stored,stored,1),1,0));}}
+                for(auto format:{D3DFMT_A16B16G16R16F,D3DFMT_A32B32G32R32F}){IDirect3DSurface9* target=nullptr;pcOk(d->CreateRenderTarget(X,Y,format,D3DMULTISAMPLE_NONE,0,FALSE,&target,nullptr));
+                    auto prepare=[&](bool soft){pcOk(d->SetRenderTarget(0,target));pcOk(d->Clear(0,nullptr,D3DCLEAR_TARGET,0xff8090a0,1,0));w.quality.softShadows=soft;};
+                    auto draw=[&](){return w.renderPointLighting(depths,mask,W,H,nearZ,farZ,minZ,maxZ,1.2f,.4f,.7f,0);};
+                    prepare(false);meter.suppress=true;pcOk(d->BeginScene());assert(draw());pcOk(d->EndScene());meter.suppress=false;
+                    meter.reset();pcOk(meter.SetRenderTarget(0,resolveTarget));pcOk(d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE));pcOk(d->SetRenderState(D3DRS_COLORWRITEENABLE,15));pcOk(d->SetPixelShader(oldResolve));pcOk(d->BeginScene());pcOk(w.quad(X,Y));
+                    pcOk(meter.SetRenderTarget(0,target));pcOk(d->SetTexture(1,resolved));pcOk(d->SetPixelShader(oldLighting));pcOk(d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE));pcOk(d->SetRenderState(D3DRS_COLORWRITEENABLE,7));pcOk(w.quad(X,Y));pcOk(d->EndScene());
+                    assert(meter.draws==2&&meter.targets==2);referenceDraws+=meter.draws;const auto before=pcRead(d,target,true);
+                    pcOk(d->SetTexture(1,nullptr));prepare(true);meter.reset();pcOk(d->BeginScene());assert(draw());pcOk(d->EndScene());
+                    assert(meter.draws==1&&!meter.targets&&!meter.getTargets&&!meter.textures&&!w.softVisibility&&!w.directionalSoftPS&&!w.lightingSoftPS);fusedDraws+=meter.draws;
+                    const auto after=pcRead(d,target,true);assert(before.size()==after.size());
+                    for(unsigned i=0;i<before.size();++i){assert(std::isfinite(before[i])&&std::isfinite(after[i]));const float error=std::fabs(before[i]-after[i]);maxError=std::max(maxError,error);differences+=error>0;
+                        if(i%4==3)assert(before[i]==after[i]);else{int exponent=0;std::frexp(std::fabs(before[i]),&exponent);const float step=std::max(std::ldexp(1.f,exponent-11),std::ldexp(1.f,-24));assert(error<=step+2e-6f);nonzero+=before[i]<.4f;}}
+                    if(scene==11&&format==D3DFMT_A16B16G16R16F){prepare(false);pcOk(d->BeginScene());assert(draw());pcOk(d->EndScene());const auto hard=pcRead(d,target,true);
+                        prepare(true);meter.soft=w.pointSoftLightingPS;meter.failSoft=true;pcOk(d->BeginScene());assert(draw());pcOk(d->EndScene());assert(!meter.failSoft&&slot.ready&&pcRead(d,target,true)==hard);}
+                    ++cases;pcOk(d->SetTexture(1,nullptr));target->Release();
+                }
+                for(unsigned sampler=0;sampler<6;++sampler)pcOk(d->SetTexture(sampler,nullptr));depths->Release();drop(mask);
+            }
+            pcOk(d->SetRenderTarget(0,w.lightSurface));resolveTarget->Release();resolved->Release();
+        }
+        assert(cases==96&&nonzero>0);std::printf("POINT_PCSS_FUSION_PASS cases=%u rgba=checked nonzero=%u changedComponents=%u maxAbsError=%.9g tolerance=one-fp16-step draws=%u->%u target0Switches=2->0 getTarget0=0 auxiliaryTextures=0 alpha=exact\n",cases,nonzero,differences,maxError,referenceDraws,fusedDraws);
+        oldResolve->Release();oldLighting->Release();
+    }
     template<class Draw> static void timing(IDirect3DDevice9* d,const char* label,Draw draw){
         IDirect3DQuery9 *begin=nullptr,*end=nullptr,*frequency=nullptr,*disjoint=nullptr;
         pcOk(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&begin));pcOk(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&end));
@@ -93,14 +152,24 @@ struct WorldScreenEffectsTest {
         unsigned cases=0;for(bool useNear:{false,true})for(float slope:{0.f,.015f})for(float gap:{.2f,20.f,40.f}){
             std::vector<float> map(1024*1024);for(unsigned y=0;y<1024;++y)for(unsigned x=0;x<1024;++x)map[y*1024+x]=x<512?.6f-gap/200+slope*((x+.5f)/1024-.5f):1.f;
             auto* texture=pcTexture(d,1024,1024,1,map);pcOk(d->SetTexture(2,texture));pcOk(d->SetTexture(3,texture));
-            float c[81][4]{};c[2][3]=1.f/1024;c[35][0]=1.f/200;c[80][0]=slope;c[80][2]=useNear?1.f:0.f;
+            float c[81][4]{};c[2][1]=48;c[2][2]=288;c[2][3]=1.f/1024;c[35][0]=1.f/200;c[80][0]=slope;c[80][2]=useNear?1.f:0.f;
             std::vector<float> images[2];unsigned widths[2]{};
             for(unsigned soft=0;soft<2;++soft){c[80][3]=float(soft);pcOk(d->SetPixelShaderConstantF(0,c[0],81));pcOk(d->SetPixelShader(probe));pcOk(d->BeginScene());pcOk(w.quad(256,32));pcOk(d->EndScene());images[soft]=pcRead(d,target);
                 for(unsigned x=0;x<256;++x){float v=images[soft][16*256+x];assert(std::isfinite(v)&&v>=0&&v<=1);widths[soft]+=v>.01f&&v<.99f;}
                 assert(images[soft][16*256+15]<.001f&&images[soft][16*256+240]>.999f);
             }
+            if(useNear&&gap==20.f&&slope==0){
+                const float noSoft[4]={1,0,1,1};pcOk(d->SetPixelShaderConstantF(115,noSoft,1));
+                pcOk(d->BeginScene());pcOk(w.quad(256,32));pcOk(d->EndScene());assert(pcRead(d,target)==images[0]);
+                const float wideContact[4]={1,0,2.5f,1};pcOk(d->SetPixelShaderConstantF(115,wideContact,1));
+                pcOk(d->BeginScene());pcOk(w.quad(256,32));pcOk(d->EndScene());const auto wide=pcRead(d,target);
+                unsigned widePixels=0;for(unsigned x=0;x<256;++x)widePixels+=wide[16*256+x]>.01f&&wide[16*256+x]<.99f;
+                assert(widePixels>widths[0]);const float reset[4]={};pcOk(d->SetPixelShaderConstantF(115,reset,1));
+                std::printf("PCSS_CONTROLS_PASS softnessZero=ordinary contactWidth=%u->%u\n",widths[0],widePixels);
+            }
             if(gap==.2f)assert(images[0]==images[1]);else assert(widths[1]>=widths[0]);
-            if(gap==40)assert(widths[1]>widths[0]);
+            if(gap==40&&useNear)assert(widths[1]>widths[0]);
+            if(!useNear)assert(images[0]==images[1]);
             std::printf("PCSS_EDGE near=%u slope=%.3f gap=%.1f pcf=%u pcss=%u\n",unsigned(useNear),slope,gap,widths[0],widths[1]);++cases;
             pcOk(d->SetTexture(2,nullptr));pcOk(d->SetTexture(3,nullptr));texture->Release();
         }
@@ -126,7 +195,7 @@ struct WorldScreenEffectsTest {
             IDirect3DSurface9* current=nullptr;pcOk(d->GetRenderTarget(0,&current));assert(current==w.lightSurface);current->Release();assert(slot.ready&&w.pointDraws==0);
             auto pixels=pcRead(d,w.lightSurface);for(float v:pixels)assert(std::isfinite(v)&&v<=.0001f&&v>=-1.001f);
             if(iteration<2)previous[soft]=pixels;else assert(previous[soft]==pixels);
-            if(soft){assert(w.pointSoftResolvePS&&w.softVisibility);for(unsigned i=0;i<pixels.size();++i)different+=std::fabs(pixels[i]-previous[0][i])>.0001f;}
+            if(soft){assert(w.pointSoftLightingPS);for(unsigned i=0;i<pixels.size();++i)different+=std::fabs(pixels[i]-previous[0][i])>.0001f;}
         }
         assert(different>0&&cubeBefore==pcRead(d,slot.faces[D3DCUBEMAP_FACE_POSITIVE_Z]));
         // Live Off drops only the optional scratch and invalidates lighting
@@ -136,26 +205,27 @@ struct WorldScreenEffectsTest {
         config.quality.softShadows=0;w.temporalValid=true;w.applyLiveSettings(config);
         assert(!w.softVisibility&&!w.temporalValid&&w.actorShadowPS==actor&&w.actorTilesPS==tiles&&slot.ready&&slot.cube==cube);
         config.quality.softShadows=1;w.applyLiveSettings(config);
-        // Simulate either optional allocation backoff or unavailable shaders:
-        // both must reproduce ordinary PCF without invalidating the cube.
+        // Directional resolve allocation backoff cannot disable fused point PCSS.
+        // An unavailable point shader still reproduces ordinary PCF.
         for(unsigned failure=0;failure<2;++failure){
             if(failure==0)w.softShadowRetryAt=GetTickCount()+1000;
-            else{w.softShadowRetryAt=0;drop(w.pointSoftResolvePS);w.pointSoftTried=true;}
+            else{w.softShadowRetryAt=0;drop(w.pointSoftLightingPS);w.pointSoftTried=true;}
             pcOk(d->SetRenderTarget(0,w.lightSurface));pcOk(d->Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0));
             pcOk(d->BeginScene());assert(w.renderPointLighting(depths,nullptr,128,128,.1f,64,0,1,1,0,1,0));pcOk(d->EndScene());
-            assert(pcRead(d,w.lightSurface)==previous[0]&&slot.ready&&slot.cube==cube&&w.pointDraws==0);
+            assert(pcRead(d,w.lightSurface)==previous[failure==0?1:0]&&slot.ready&&slot.cube==cube&&w.pointDraws==0);
         }
         std::printf("PCSS_PIPELINE_PASS edgeCases=%u localChanged=%u cubeUnchanged=1 toggleStable=1 targetRestored=1\n",cases,different);
-        std::puts("PCSS_FALLBACK_PASS allocationBackoff=1 shaderUnavailable=1 liveOff=1 historyInvalidated=1 actorMapsRetained=1 cubeRetained=1");
+        std::puts("PCSS_FALLBACK_PASS directionalAllocationIndependent=1 shaderUnavailable=1 liveOff=1 historyInvalidated=1 actorMapsRetained=1 cubeRetained=1");
         for(unsigned sampler=0;sampler<16;++sampler)d->SetTexture(sampler,nullptr);depths->Release();
     }
 };
 int main(int argc,char** argv){
-    assert(argc==3||argc==4);WNDCLASSW wc{};wc.lpfnWndProc=DefWindowProcW;wc.lpszClassName=L"PCSSFilters";wc.hInstance=GetModuleHandleW(nullptr);assert(RegisterClassW(&wc));
+    assert(argc>=3&&argc<=6);WNDCLASSW wc{};wc.lpfnWndProc=DefWindowProcW;wc.lpszClassName=L"PCSSFilters";wc.hInstance=GetModuleHandleW(nullptr);assert(RegisterClassW(&wc));
     HWND window=CreateWindowExW(0,wc.lpszClassName,L"",WS_OVERLAPPED,0,0,64,64,nullptr,nullptr,wc.hInstance,nullptr);assert(window);
     HMODULE module=LoadLibraryA(argv[1]);assert(module);auto create=reinterpret_cast<IDirect3D9*(WINAPI*)(UINT)>(reinterpret_cast<void*>(GetProcAddress(module,"Direct3DCreate9")));assert(create);auto* api=create(D3D_SDK_VERSION);
     D3DPRESENT_PARAMETERS pp{};pp.Windowed=TRUE;pp.hDeviceWindow=window;pp.BackBufferWidth=pp.BackBufferHeight=64;pp.BackBufferFormat=D3DFMT_X8R8G8B8;pp.SwapEffect=D3DSWAPEFFECT_DISCARD;
     IDirect3DDevice9* device=nullptr;pcOk(api->CreateDevice(0,D3DDEVTYPE_HAL,window,D3DCREATE_HARDWARE_VERTEXPROCESSING|D3DCREATE_FPU_PRESERVE,&pp,&device));
     D3DADAPTER_IDENTIFIER9 adapter{};pcOk(api->GetAdapterIdentifier(0,0,&adapter));std::printf("PCSS_ADAPTER name=%s vendor=%04lx device=%04lx\n",adapter.Description,(unsigned long)adapter.VendorId,(unsigned long)adapter.DeviceId);
-    WorldScreenEffectsTest::run(device,argv[2]);if(argc==4)WorldScreenEffectsTest::benchmark(device);device->Release();api->Release();FreeLibrary(module);DestroyWindow(window);
+    const bool fusionOnly=argc==6&&!std::strcmp(argv[5],"fusion-only");
+    if(!fusionOnly)WorldScreenEffectsTest::run(device,argv[2]);if(argc>=5)WorldScreenEffectsTest::pointFusion(device,argv[3],argv[4]);if(!fusionOnly&&(argc==4||argc==6))WorldScreenEffectsTest::benchmark(device);device->Release();api->Release();FreeLibrary(module);DestroyWindow(window);
 }

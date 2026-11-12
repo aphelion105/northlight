@@ -7,6 +7,7 @@ struct TargetKnobs {
     std::atomic<bool> hold2{false};           // 0.3.206 (task 31): EndScene blocks while set (a second, independent stall point behind `hold`)
     std::atomic<int> presents{0};
     std::atomic<bool> failSwapChain{false},failQueries{false},noRaw{false},holdQueries{false};   // holdQueries: a polled query stays S_FALSE
+    std::atomic<DWORD> occlusionPayload{0};
     std::atomic<unsigned> eventPendingFlush{0};std::atomic<HRESULT> eventFlushResult{D3D_OK};
     std::atomic<HRESULT> coop{D3D_OK};        // 0.3.204 (task 21): what the Target's TestCooperativeLevel reports (D3D_OK / D3DERR_DEVICELOST / D3DERR_DEVICENOTRESET); Present fails with DEVICELOST while it is not D3D_OK
     std::atomic<bool> noDigest{false};        // 0.3.200 (frame skip): STATE lines carry no ids, so a run without some draws numbers the objects the same
@@ -139,7 +140,7 @@ struct TQuery:Counted<FakeQuery> {
             if(gKnobs.eventFlushResult.load()!=D3D_OK)return gKnobs.eventFlushResult.load();
         }
         if(!(f&D3::kGetDataFlush)&&(++polls<3||gKnobs.holdQueries.load()))return S_FALSE;   // the result takes a few polls
-        if(d&&size>=4){const DWORD v=0xABCD0000u+issued;std::memcpy(d,&v,4);}return D3D_OK;}
+        if(d&&size>=4){const DWORD v=0xABCD0000u+issued+(type==9?gKnobs.occlusionPayload.load():0);std::memcpy(d,&v,4);}return D3D_OK;}
 };
 struct TSwapChain:Counted<FakeSwapChain> {
     D3DPRESENT_PARAMETERS pp{};std::vector<TSurface*> back;

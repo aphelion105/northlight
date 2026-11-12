@@ -62,7 +62,7 @@ int main(int argc,char** argv){
         }
         dep->Release();source->Release();surround->Release();++cases;
     }
-    if(!(restoredPixels>10000&&newSky>oldSky*4&&hotPeak>diffusePeak+.3))++failures;
-    std::printf("diffuse bloom GPU cases=%u pixels=%u restoredAcrossSilhouette=%u coreBlockedPixels=%u lowSunSkyGain=%.4f hotPeak=%.4f diffusePeak=%.4f maxError=%.9g failures=%u\n",cases,cases*N*N,restoredPixels,coreRejected,newSky/oldSky,hotPeak,diffusePeak,maxError,failures);
+    if(!(restoredPixels>10000&&newSky==0&&oldSky==0&&hotPeak>diffusePeak+.3))++failures;
+    std::printf("diffuse bloom GPU cases=%u pixels=%u restoredAcrossSilhouette=%u coreBlockedPixels=%u fullyHiddenSky=%.4f hotPeak=%.4f diffusePeak=%.4f maxError=%.9g failures=%u\n",cases,cases*N*N,restoredPixels,coreRejected,newSky,hotPeak,diffusePeak,maxError,failures);
     for(unsigned s=0;s<6;++s)d->SetTexture(s,nullptr);d->SetPixelShader(nullptr);white->Release();oldVeil->Release();hotVeil->Release();veil->Release();sky->Release();target->Release();staging->Release();d->Release();api->Release();FreeLibrary(module);DestroyWindow(window);UnregisterClassW(wc.lpszClassName,wc.hInstance);return failures?1:0;
 }

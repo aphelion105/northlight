@@ -23,9 +23,9 @@ int main(int argc,char** argv){
     // portals. Blend/depth alone cannot grant an exemption from world lighting.
     for(bool zWrite:{false,true})for(bool overlay:{false,true}){
         const bool protect=overlay&&!zWrite;
-        assert(classify(false,zWrite,true,5,6,1,15,overlay)==(protect?Write::Alpha:Write::None));
-        assert(classify(true,zWrite,true,5,6,1,15,overlay)==(protect?Write::Alpha:Write::Clear));
-        assert(classify(true,zWrite,true,2,6,1,15,overlay)==(protect?Write::Premultiplied:Write::Clear));
+        assert(classify(false,zWrite,true,5,6,1,15,overlay)==(protect?Write::Alpha:!zWrite?Write::LitAlpha:Write::None));
+        assert(classify(true,zWrite,true,5,6,1,15,overlay)==(protect?Write::Alpha:!zWrite?Write::LitAlpha:Write::Clear));
+        assert(classify(true,zWrite,true,2,6,1,15,overlay)==(protect?Write::Premultiplied:!zWrite?Write::LitPremultiplied:Write::Clear));
         assert(classify(false,zWrite,false,0,0,0,15,overlay)==(protect?Write::Replace:Write::None));
     }
     assert(classify(false,false,true,9,3,1,15,false)==Write::None); // Projected modulate shadow.
@@ -39,7 +39,7 @@ int main(int argc,char** argv){
     IDirect3DPixelShader9* native[]={shader(std::string(argv[3])+"/native2.bin"),shader(std::string(argv[3])+"/native3.bin")};
     IDirect3DPixelShader9* nativeMrt[]={shader(std::string(argv[3])+"/native-mrt2.bin"),shader(std::string(argv[3])+"/native-mrt3.bin")};
     {D3DCAPS9 caps{};ok(d->GetDeviceCaps(&caps));std::printf("caps mrt=%lu misc=%08lx\n",caps.NumSimultaneousRTs,caps.PrimitiveMiscCaps);std::fflush(stdout);
-     for(unsigned sm=2;sm<=3;++sm){auto bytes=read(std::string(argv[3])+"/native"+std::to_string(sm)+".bin");for(auto write:{Write::Alpha,Write::Premultiplied,Write::Replace,Write::Clear}){std::vector<std::uint32_t> patched;assert(patch(reinterpret_cast<const std::uint32_t*>(bytes.data()),bytes.size()/4,write,patched));IDirect3DPixelShader9* p=nullptr;const HRESULT hr=d->CreatePixelShader(reinterpret_cast<const DWORD*>(patched.data()),&p);if(FAILED(hr)){std::printf("patch sm=%u write=%u\n",sm,unsigned(write));for(auto word:patched)std::printf("%08x ",word);std::puts("");std::fflush(stdout);}ok(hr);p->Release();}}}
+     for(unsigned sm=2;sm<=3;++sm){auto bytes=read(std::string(argv[3])+"/native"+std::to_string(sm)+".bin");for(auto write:{Write::Alpha,Write::Premultiplied,Write::Replace,Write::Clear,Write::LitAlpha,Write::LitPremultiplied}){std::vector<std::uint32_t> patched;assert(patch(reinterpret_cast<const std::uint32_t*>(bytes.data()),bytes.size()/4,write,patched));IDirect3DPixelShader9* p=nullptr;const HRESULT hr=d->CreatePixelShader(reinterpret_cast<const DWORD*>(patched.data()),&p);if(FAILED(hr)){std::printf("patch sm=%u write=%u\n",sm,unsigned(write));for(auto word:patched)std::printf("%08x ",word);std::puts("");std::fflush(stdout);}ok(hr);p->Release();}}}
     const char* entries[]={"WorldComposite","WorldUnlitComposite","WorldCompositeHdr","WorldUnlitCompositeHdr","MaterialComposite","MaterialCompositeHdr","WorldMaterialCompositeHdr","Composite","HdrLegacyComposite","WorldPrelitComposite","WorldPrelitCompositeHdr"};
     IDirect3DPixelShader9* composites[11]{};for(unsigned i=0;i<11;++i)composites[i]=shader(std::string(argv[1])+"/"+entries[i]+".bin");
     IDirect3DTexture9* scene=nullptr;IDirect3DSurface9 *surface=nullptr,*stage=nullptr,*output=nullptr,*outputStage=nullptr;
@@ -94,9 +94,9 @@ int main(int argc,char** argv){
             if(ms&&!allowMsaa){assert(!mask&&!capture.active()&&capture.draws==0&&capture.bindings==0);++cases;continue;}
             if(!mask&&control<6){std::fprintf(stderr,"missing mask sm=%u ms=%u blend=%u alpha=%g layers=%u control=%u draws=%u bindings=%u active=%u emission=%u\n",sm+2,ms,blend,alpha,layers,control,capture.draws,capture.bindings,unsigned(capture.active()),unsigned(capture.hasEmission()));}
             assert(mask||control>=6);
-            assert(control>=6?!capture.active():capture.active());
-            assert(capture.draws==(control>=6?0:layers));
-            if(!additive)assert(capture.bindings==(control>=6?0:1+(control==3||control==4))); // Three-layer early drain binds once.
+            assert(control>=6&&additive?!capture.active():capture.active());
+            assert(capture.draws==(control>=6&&additive?0:layers)+(control==4));
+            if(!additive)assert(capture.bindings==1+(control==3||control==4)); // Three-layer early drain binds once.
             if(mask){IDirect3DSurface9* maskSurface=nullptr;ok(mask->GetSurfaceLevel(0,&maskSurface));coverage=pixels(maskSurface);maskSurface->Release();}
             else coverage.assign(N*N*4,0);
             if(!additive&&control==4)for(unsigned y=0;y<N;++y)for(unsigned x=0;x<N;++x){const float value=coverage[(y*N+x)*4+2]/255.f;
@@ -104,7 +104,9 @@ int main(int argc,char** argv){
             float a=0;for(unsigned i=0;i<layers;++i)a=std::round(255*alpha+(1-alpha)*a*255)/255;
             if(control==1||(control==2&&alpha<=128.f/255))a=0;
             for(unsigned y=0;y<N;++y)for(unsigned x=0;x<N;++x){
-                if(!additive){const float expected=control>=6||(control==3&&x<N/2)?0:control==4&&x<N/2?a*.4f:a;assert(std::fabs(coverage[(y*N+x)*4+2]/255.f-expected)<.012f);}
+                if(!additive){const float expected=control>=6||(control==3&&x<N/2)?0:control==4&&x<N/2?a*.4f:a;assert(std::fabs(coverage[(y*N+x)*4+2]/255.f-expected)<.012f);
+                    const float all=(control==3&&x<N/2)?0:control==4&&x<N/2?a*.4f+.6f:a;
+                    assert(std::fabs(coverage[(y*N+x)*4+1]/255.f-all)<.012f);}
                 else for(unsigned k=0;k<3;++k){
                     const float glow[]={control>=5?.025f:.1f,control>=5?.015f:.8f,control>=5?.005f:.4f};
                     float expected=0;for(unsigned i=0;i<layers;++i)expected=std::min(1.f,std::round((expected+glow[k]*(premult?1:alpha))*255)/255);
@@ -164,11 +166,36 @@ int main(int argc,char** argv){
             }
             ok(outputStage->UnlockRect());
             for(unsigned s=0;s<16;++s)ok(d->SetTexture(s,nullptr));for(auto* t:owned)t->Release();
-            capture.colorWrite(output);assert(control>=6?!capture.active():capture.active());capture.colorWrite(target);assert(!capture.active()&&!capture.texture(d,target));
+            capture.colorWrite(output);assert(control>=6&&additive?!capture.active():capture.active());capture.colorWrite(target);assert(!capture.active()&&!capture.texture(d,target));
         }
         capture.endFrame();depth->Release();aux->Release();auxResolve->Release();if(ms)target->Release();
     }
     unsigned mixed=0;
+    unsigned aoCases=0;
+    auto* blur=shader(std::string(argv[1])+"/AOBlurNoWater.bin");
+    for(bool premult:{false,true})for(float alpha:{0.f,.25f,.75f,1.f})for(bool overlay:{false,true}){
+        capture.endFrame();for(unsigned s=0;s<16;++s)ok(d->SetTexture(s,nullptr));baseState();
+        ok(d->SetRenderTarget(0,surface));ok(d->SetDepthStencilSurface(nullptr));ok(d->SetRenderState(D3DRS_ZENABLE,FALSE));
+        ok(d->SetRenderState(D3DRS_ZWRITEENABLE,FALSE));ok(d->SetPixelShader(native[1]));ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE));
+        ok(d->SetRenderState(D3DRS_SRCBLEND,premult?D3DBLEND_ONE:D3DBLEND_SRCALPHA));ok(d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_INVSRCALPHA));
+        const float color[]={.1f,.2f,.3f,alpha};ok(d->SetPixelShaderConstantF(0,color,1));ok(d->BeginScene());
+        ok(capture.draw(d,premult?Write::LitPremultiplied:Write::LitAlpha,[&]{return quad(.5f);}));
+        if(overlay){const float unlit[]={.2f,.1f,.3f,.5f};ok(d->SetPixelShaderConstantF(0,unlit,1));
+            ok(d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_SRCALPHA));ok(capture.draw(d,Write::Alpha,[&]{return quad(.5f);}));}
+        ok(d->EndScene());auto* mask=capture.aoTexture(d,surface);assert(mask);
+        auto* raw=texture(d,solid(.1f,.2f,.3f,.2f));auto* depth=texture(d,solid(1));
+        baseState();ok(d->SetRenderTarget(0,output));ok(d->SetRenderState(D3DRS_ZENABLE,FALSE));
+        D3DVIEWPORT9 vp={0,0,N,N,0,1};ok(d->SetViewport(&vp));ok(d->SetTexture(0,raw));ok(d->SetTexture(1,depth));ok(d->SetTexture(2,raw));
+        for(unsigned s:{0u,1u,2u}){for(auto state:{D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER})ok(d->SetSamplerState(s,state,D3DTEXF_POINT));ok(d->SetSamplerState(s,D3DSAMP_SRGBTEXTURE,FALSE));}
+        const float image[]={1.f/N,1.f/N,.1f,100};ok(d->SetPixelShaderConstantF(0,image,1));
+        Capture::bind(d,mask);ok(d->SetPixelShader(blur));ok(d->BeginScene());ok(quad(.5f));ok(d->EndScene());
+        ok(d->GetRenderTargetData(output,outputStage));D3DLOCKED_RECT lock{};ok(outputStage->LockRect(&lock,nullptr,D3DLOCK_READONLY));
+        for(unsigned y=0;y<N;++y)for(unsigned x=0;x<N;++x){unsigned short value;std::memcpy(&value,static_cast<char*>(lock.pBits)+y*lock.Pitch+x*8+6,2);
+            const float expected=.2f+.8f*alpha;assert(std::fabs(half(value)-expected)<.012f);}
+        ok(outputStage->UnlockRect());for(unsigned s=0;s<16;++s)ok(d->SetTexture(s,nullptr));raw->Release();depth->Release();++aoCases;
+    }
+    blur->Release();assert(aoCases==16);
+    std::printf("AO_ALPHA_ORDER_PASS cases=%u straight/premultiplied lit alpha below AO; unlit coverage applied once\n",aoCases);
     for(unsigned sm=0;sm<2;++sm)for(bool alphaFirst:{false,true})for(bool batch:{false,true})for(unsigned modulate=0;modulate<4;++modulate){
         capture.endFrame();std::vector<unsigned char> reference;float expected[3]={};
         for(bool tracked:{false,true}){

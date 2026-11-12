@@ -25,24 +25,42 @@ parser.add_argument('--backend', type=Path, required=True)
 parser.add_argument('--output', type=Path)
 parser.add_argument('--quick', action='store_true')
 parser.add_argument('--no-timing', action='store_true', help='Run pixel/state oracles without GPU timestamps (unsupported native drivers).')
+parser.add_argument('--allow-running-game', action='store_true', help='Allow correctness-only validation alongside WoW; requires --no-timing.')
+parser.add_argument('--reference-header', type=Path, help='Frozen model_normal_renderer.h for a negative control.')
+parser.add_argument('--shadow-slice', action='store_true', help='Compare full/sliced shadow VS with real directional/point alpha coverage.')
+parser.add_argument('--shadow-only', action='store_true', help='Run just the shadow comparison, independently of native 4K ModelNormals readback support.')
+parser.add_argument('--constants-only', action='store_true', help='Compare deferred constant reuse with a disabled control, including invalidation and exact GPU output.')
+parser.add_argument('--palette-validate', action='store_true', help='Validate every certified constant bank; requires --constants-only.')
 args = parser.parse_args()
+assert not args.palette_validate or args.constants_only
+if args.shadow_only:args.shadow_slice=True;args.no_timing=True;args.quick=True
+if args.constants_only:args.no_timing=True;args.quick=True
 out = (args.output or fp.output_dir()/'model-normals').resolve()
 out.mkdir(parents=True, exist_ok=True)
 fixture = args.fixture.resolve()
 inputs = json.loads((fixture/'inputs.json').read_text())
 assert inputs['mesh_sha256'] == hashlib.sha256((fixture/'human-0.mesh').read_bytes()).hexdigest()
-assert '"wow.exe"' not in subprocess.check_output(['tasklist', '/fi', 'IMAGENAME eq Wow.exe', '/fo', 'csv', '/nh'], text=True).lower()
+game_running = '"wow.exe"' in subprocess.check_output(['tasklist', '/fi', 'IMAGENAME eq Wow.exe', '/fo', 'csv', '/nh'], text=True).lower()
+assert not args.allow_running_game or args.no_timing, '--allow-running-game requires --no-timing'
+assert not game_running or args.allow_running_game, 'WoW is running; use --no-timing --allow-running-game for correctness-only checks.'
 for name in ('terrain.bin', 'human-0.mesh', 'WorldNormals.bin', 'ShadowVS.bin', 'ShadowPS.bin', 'ActorShadow.bin', 'ActorTiles.bin', 'RasterVS.bin', 'RasterPS.bin'):
     shutil.copyfile(fixture/name, out/name)
 for name, digest in inputs['shaders'].items():
     assert hashlib.sha256((out/(name+'.bin')).read_bytes()).hexdigest() == digest
 shutil.copyfile(fp.COMPILED/'WorldNormals.bin', out/'WorldNormalsFixed.bin')
 shutil.copyfile(fp.COMPILED/'WorldNormalsNoDistance.bin', out/'WorldNormalsNoDistance.bin')
+if args.shadow_slice:
+    for name in ('ShadowReplayPS.bin','LocalShadowPS.bin'):shutil.copyfile(fp.COMPILED/name,out/name)
 assets = Assets()
 cases = []
 try:
     for model in ('3',) if args.quick else ('2', '3'):
         programs = {i: code for i, _, code in variants(assets.read(f'shaders\\vertex\\vs_{model}_0\\diffuse_t1.bls'))}
+        if model == '3':
+            for skin, index in [('rigid', 1), ('skinned', 11)]:
+                (out/f'model-vs3-{skin}.bin').write_bytes(programs[index])
+            if args.shadow_slice:
+                for skin,index in [('weighted',21),('weighted4',51)]:(out/f'model-vs3-{skin}.bin').write_bytes(programs[index])
         for skin, index in ([('skinned', 11)] if args.quick else [('rigid', 1), ('skinned', 11), ('weighted', 21), ('weighted4', 51)]):
             name = f'model-vs{model}-{skin}.bin'
             (out/name).write_bytes(programs[index]);cases.append((f'{model}-{skin}', name))
@@ -60,13 +78,38 @@ env = fp.zig_env()
 for key, name in [('TEMP', 'tmp'), ('TMP', 'tmp'), ('ZIG_LOCAL_CACHE_DIR', 'zig-local'), ('ZIG_GLOBAL_CACHE_DIR', 'zig-global')]:
     (out/name).mkdir(exist_ok=True);env[key] = str(out/name)
 env.update(DISABLE_VULKAN_OBS_CAPTURE='1', DXVK_LOG_PATH=str(out))
+if not args.reference_header:env['NORTHLIGHT_TEST_VERTEX_SHARING']='1'
 exe = out/'model-normals.exe'
+includes = []
+slice_flags = [] if args.reference_header and not args.constants_only else ['-DNORTHLIGHT_MODEL_NORMALS_SLICE_TEST']
+if args.shadow_slice:slice_flags.append('-DNORTHLIGHT_SHADOW_SLICE_TEST')
+if args.shadow_only:slice_flags.append('-DNORTHLIGHT_SHADOW_SLICE_ONLY')
+if args.constants_only:slice_flags.append('-DNORTHLIGHT_MODEL_NORMALS_CONSTANT_TEST')
+if args.palette_validate:slice_flags.append('-DNORTHLIGHT_PALETTE_VALIDATE=1')
+if args.reference_header:
+    reference = out/'reference-header';reference.mkdir(exist_ok=True)
+    shutil.copyfile(args.reference_header, reference/'model_normal_renderer.h')
+    includes = ['-I'+str(reference)]
 subprocess.run([str(fp.zig()), 'c++', '-target', 'x86-windows-gnu', '-std=c++17', '-O2', '-UNDEBUG', '-Wno-microsoft-exception-spec',
-                *fp.test_include_flags(), str(fp.TESTS/'model_normals_gpu.cpp'), str(fp.src('world_gi.cpp')),
+                *includes, *slice_flags, *fp.test_include_flags(), str(fp.TESTS/'model_normals_gpu.cpp'), str(fp.src('world_gi.cpp')),
                 '-luser32', '-o', str(exe)], env=env, check=True)
 # Match the game's address space for the native 4K/MSAA readbacks, as the HDR oracle does.
 data=bytearray(exe.read_bytes());flags=struct.unpack_from('<I',data,0x3c)[0]+22
 struct.pack_into('<H',data,flags,struct.unpack_from('<H',data,flags)[0]|0x20);exe.write_bytes(data)
+if args.constants_only:
+    run=subprocess.run([str(exe),str(args.backend.resolve()),str(out)+os.sep,'3-skinned','model-vs3-skinned.bin','--no-timing'],cwd=out,env=env,capture_output=True,text=True,timeout=120)
+    (out/'constants-only.log').write_text(run.stdout+run.stderr)
+    assert run.returncode==0 and 'MODEL_NORMALS_CONSTANT_REUSE_PASS cases=30 packets=1536' in run.stdout,run.stdout+run.stderr
+    files=[args.reference_header or fp.src('model_normal_renderer.h'),fp.src('replay_capture_constants.h'),fp.src('device_mirror.h'),fp.src('captured_constant_epoch.h'),fp.src('mirror_guard.h'),fp.TESTS/'model_normal_constants.inc',fp.TESTS/'model_normals_gpu.cpp',Path(__file__)]
+    (out/'validation.json').write_text(json.dumps({'status':'PASS','backend':str(args.backend),'scope':'ModelNormals constant bank and GPU output correctness; no timing claim','palette_validate':args.palette_validate,'game_running':game_running,'inputs':{str(p):hashlib.sha256(p.read_bytes()).hexdigest() for p in files},'stdout':run.stdout},indent=2)+'\n')
+    print(run.stdout,flush=True);sys.exit(0)
+if args.shadow_only:
+    run=subprocess.run([str(exe),str(args.backend.resolve()),str(out)+os.sep,'3-skinned','model-vs3-skinned.bin','--no-timing'],cwd=out,env=env,capture_output=True,text=True,timeout=120)
+    (out/'shadow-only.log').write_text(run.stdout+run.stderr)
+    assert run.returncode==0 and 'SHADOW_SLICE_IMAGE_PASS programs=5 cases=320 pixels=bitexact' in run.stdout,run.stdout+run.stderr
+    files=[fp.src('model_normal_slice.h'),fp.src('patch_shadow_shader.h'),fp.TESTS/'shadow_slice_images.inc',fp.TESTS/'model_normals_gpu.cpp',Path(__file__),*(out/name for name in ('ShadowReplayPS.bin','LocalShadowPS.bin')),*out.glob('model-vs3-*.bin')]
+    (out/'validation.json').write_text(json.dumps({'status':'PASS','backend':str(args.backend),'scope':'shadow VS pixels only; no timing or ModelNormals validation claim','game_running':game_running,'inputs':{str(p):hashlib.sha256(p.read_bytes()).hexdigest() for p in files},'stdout':run.stdout},indent=2)+'\n')
+    print(run.stdout,flush=True);sys.exit(0)
 records = []
 for tag, source in cases:
     run = subprocess.run([str(exe), str(args.backend.resolve()), str(out)+os.sep, tag, source]+(['--no-timing'] if args.no_timing else []), cwd=out,
@@ -75,7 +118,9 @@ for tag, source in cases:
     assert run.returncode == 0, run.stdout+run.stderr
     assert 'MODEL_NORMALS_GPU_PASS' in run.stdout
     assert 'MODEL_NORMALS_BATCH_PASS pixels=exact' in run.stdout
+    assert 'MODEL_NORMALS_CONSTANTS_PASS' in run.stdout and 'opaqueNotices=zero shaderSwitches=exact highBone=74' in run.stdout
     assert 'MODEL_NORMALS_ALPHA_PASS' in run.stdout and 'MODEL_NORMALS_VALIDATION_PASS' in run.stdout
+    if args.shadow_slice:assert 'SHADOW_SLICE_IMAGE_PASS programs=5 cases=320 pixels=bitexact' in run.stdout
     if tag.endswith(('-rigid', '-skinned')):
         expected = 'kind=1 cases=2' if tag.endswith('-rigid') else 'kind=2 cases=3'
         assert f'MODEL_NORMALS_RANGE_PASS {expected} culled=1 pixels=exact' in run.stdout, run.stdout
@@ -103,9 +148,10 @@ run = subprocess.run([str(exe), str(args.backend.resolve()), str(out)+os.sep, '3
                      cwd=out, env=env, capture_output=True, text=True, timeout=120)
 (out/'3-envelope-range.log').write_text(run.stdout+run.stderr)
 assert run.returncode == 0, run.stdout+run.stderr
-assert 'MODEL_NORMALS_RANGE_PASS kind=3 cases=3 culled=1 pixels=exact' in run.stdout, run.stdout
+assert 'MODEL_NORMALS_RANGE_PASS kind=3 cases=13 culled=7 pixels=exact' in run.stdout, run.stdout
 print(run.stdout.strip(), flush=True)
 (out/'validation.json').write_text(json.dumps({'status': 'PASS', 'backend': str(args.backend), 'inputs': inputs,
-    'game_launched': False, 'cases': records,
+    'game_launched': False, 'game_running': game_running, 'cases': records,
+    'renderer_header_sha256': hashlib.sha256((args.reference_header or fp.src('model_normal_renderer.h')).read_bytes()).hexdigest(),
     'range_envelope': {'source_sha256': hashlib.sha256(envelope_source.read_bytes()).hexdigest(), 'result': run.stdout.strip()},
     'fixed_shader_sha256': hashlib.sha256((out/'WorldNormalsFixed.bin').read_bytes()).hexdigest()}, indent=2)+'\n')

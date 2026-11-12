@@ -49,6 +49,8 @@ void identitiesAndLifetime(){
 void preparationQuotaAndFailures(){
     Shader shader;Declaration decls[8];Cache cache;unsigned builds=0;
     auto build=[&](){++builds;return make();};
+    for(unsigned i=0;i<1000;++i)assert(!cache.find(&shader,&decls[i%8]));
+    assert(!cache.entries()&&!cache.stats().misses&&!cache.stats().fallbacks&&!builds);
     for(unsigned i=0;i<4;++i)assert(cache.get(&shader,&decls[i],build));
     assert(!cache.get(&shader,&decls[4],build)&&builds==4);
     assert(cache.get(&shader,&decls[0],build)&&builds==4); // Quota never blocks hits.

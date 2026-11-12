@@ -20,13 +20,14 @@ checks['no weather in any Set*/Get* Device method']=not re.search(r'HRESULT STDM
 
 a=r.index('template<class Capture,class Draw> HRESULT drawHook(');b=r.index('    // 0.3.154: blob shadow claim')
 hook=r[a:b]
-cmp_line='if(weatherDetect.hot&&mirrorState.textureKnown[0]&&mirrorState.textures[0]==weatherDetect.hot){weatherSample.primitives+=count;++weatherSample.draws;rainBlend=weatherDetect.hotKind==NorthlightWeather::Kind::Rain&&world&&world->rainBlendSetting();}'
+cmp_line='if(weatherDetect.hot&&mirrorState.textureKnown[0]&&mirrorState.textures[0]==weatherDetect.hot){weatherSample.primitives+=count;++weatherSample.draws;nativeRain=weatherDetect.hotKind==NorthlightWeather::Kind::Rain;rainBlend=nativeRain&&world&&world->rainBlendSetting();}'
 checks['drawHook: the single comparison, once']=hook.count(cmp_line+' /* 0.3.199 (rain): counted after applied too (the rest of the rain); 0.3.202: no boundary here, the effects run at the UI again */')==1 and hook.count('weatherDetect')==4 and hook.count('weatherSample')==2
-checks['drawHook: before the gate split and any other work']=0<=hook.index(cmp_line)<hook.index('if(!frameDrawGates){')<hook.index('prepareDraw(capture,count)')<hook.index('prepareDrawImpl(capture,count)') and hook.index(cmp_line)<hook.index('noteFirst')
+checks['drawHook: before the gate split and both preparation paths']=0<=hook.index(cmp_line)<hook.index('if(!frameDrawGates){')<hook.index('prepareDrawImpl(capture,count);')<hook.rindex('prepareDrawImpl(capture,count);') and hook.index(cmp_line)<hook.index('noteFirst')
 # 0.3.199 (rain): RainBlend - the override lives in the matched branch (a bool set there), only for Rain and the setting, wraps exactly the game's draw
 helper=r[r.index('template<class Draw> HRESULT rainBlendDraw('):r.index('    // One game draw: capture')]
-checks['RainBlend: the bool is set only inside the matched branch, for Rain and the setting']=hook.count('rainBlend=weatherDetect')==1 and 'rainBoundary' not in r and hook.count('rainBlend=weatherDetect.hotKind==NorthlightWeather::Kind::Rain&&world&&world->rainBlendSetting();')==1 and cmp_line.split('{',1)[1].count('rainBlend=')==1 and 'bool claimed=false,rainBlend=false,mist=false;' in hook
-checks['RainBlend: both gate paths draw through rainBlendDraw, none through blobFaintDraw directly']=hook.count('nameMaskDraw(rainBlend,claimed||mist,nativeDraw)')==2 and 'blobFaintDraw' not in hook
+checks['RainBlend: the bool is set only inside the matched branch, for Rain and the setting']=hook.count('rainBlend=nativeRain&&world&&world->rainBlendSetting();')==1 and 'rainBoundary' not in r and cmp_line.split('{',1)[1].count('rainBlend=')==1 and 'bool claimed=false,rainBlend=false,mist=false,nativeRain=false;' in hook
+checks['HDR rain identity does not depend on the supplemental weather setting']='return nativeEffectDraw(nativeRain,[&]{return aoActorNativeDraw(draw);});' in hook and 'nativeRain=weatherDetect.hotKind==NorthlightWeather::Kind::Rain;rainBlend=nativeRain&&world&&world->rainBlendSetting();' in cmp_line
+checks['RainBlend: both preparation paths share the mist-aware native tail']=hook.count('nameMaskDraw(rainBlend,claimed||mist,nativeDraw)')==1 and hook.count('prepareDrawImpl(capture,count);')==2 and hook.rindex('prepareDrawImpl(capture,count);')<hook.index('nameMaskDraw(rainBlend,claimed||mist,nativeDraw)') and 'blobFaintDraw' not in hook
 # 0.3.199 (rain mist): the mist skip is the else branch of the one comparison, gated first by the armed bool; armed only at frame end for rain and RainBlend
 mist_line='else if(weatherDetect.mistArmed)mist=mistDraw(count);'
 checks['rain mist: the else branch right after the comparison, armed bool first']=hook.count(mist_line)==1 and hook.index(cmp_line)<hook.index(mist_line)<hook.index('if(!frameDrawGates){') and hook[hook.index(cmp_line)+len(cmp_line):hook.index(mist_line)].strip().startswith('/*')
@@ -109,7 +110,7 @@ checks['rain mask MRT: the swap clear (fallback) keeps the old rules: RT, viewpo
 rd=r[r.index('bool resolveDepth() {'):r.index('HRESULT quad(UINT w')]
 checks['resolveDepth: the same RESZ code serves depthTex (fatal) and rainDepth (non-fatal); RT1 unbound first; captured set only for depthTex']=(
     'resolveDepthInto(depthTex, true)' in rd and 'bool resolveDepthInto(IDirect3DTexture9* target, bool fatal) {\n        rainMrtUnbind();' in rd and rd.count('captured = true; return true;')==1 and rd.index('resolveDepthInto(depthTex, true)')<rd.index('captured = true;')<rd.index('bool resolveDepthInto('))
-rr=r[r.index('    void releaseResources() {'):r.index('    bool error(HRESULT hr')]
+rr=r[r.index('    void releaseResources(bool preserveCaptureSources=false) {'):r.index('    bool error(HRESULT hr')]
 rs=r[r.index('    bool resources(UINT w'):r.index('    // Swap chain 0')]
 checks['rain mask: dropped in releaseResources (RT1 unbound first, failed flag reset, shaders and rain depth too) and on a size change']=('rainMrtUnbind();stateBlocks.clear();' in rr and 'drop(rainMaskMS);drop(rainMaskSurface);drop(rainMask);drop(rainDepth);rainMaskFailed=false;' in rr and 'drop(rainMrtPS);drop(rainScrubPS);' in rr and 'drop(rainMaskMS);drop(rainMaskSurface);drop(rainMask);drop(rainDepth);' in rs.split('captured=false;')[1].split('}')[0])
 checks['rain mask: per-frame flags reset where terrain/applied reset (clearFrame), RT1 unbound there']='rainMrtUnbind();terrain = captured = applied = projectionValid = skySeen = false;rainMaskCleared=rainMaskDrawn=rainMaskFrame=rainMaskOk=rainDepthOk=false;' in r
@@ -133,11 +134,11 @@ def dmethod(name):  # the whole Device method, up to the next one (a fixed span 
     i=r.index('HRESULT STDMETHODCALLTYPE '+name+'(',r.index('class Device final'));return r[i:r.index('\n    HRESULT STDMETHODCALLTYPE ',i+1)]
 rst=dmethod('Reset');pre=dmethod('Present');es=dmethod('EndScene')
 checks['rain mask MRT: Reset, Present and EndScene unbind first; finishFrame (also SwapChain::Present) unbinds before the extension work']=(
-    'rainMrtUnbind();' in rst and rst.index('rainMrtUnbind();')<rst.index('releaseResources();')<rst.index('ext->Reset(')  # RT1 unbound before the resources and the real Reset go
+    'rainMrtUnbind();' in rst and rst.index('rainMrtUnbind();')<rst.index('releaseResources(true);')<rst.index('ext->Reset(')  # RT1 unbound before the resources and the real Reset go
     and 'rainMrtUnbind();' in pre and pre.index('rainMrtUnbind();')<pre.index('finishFrame()') and 'rainMrtUnbind();' in es and es.index('rainMrtUnbind();')<es.index('GuardedMirrorDevice::EndScene()')
     and 'void finishFrame(bool implicitChain=true) {\n        Guard mirrorLock(mirrorState.gate);\n        rainMrtUnbind();' in r and 'finishDeviceFrame(owner,primary);' in r)
 checks['rain mask MRT: renderEffects unbinds before its first device work; drawHook unbinds for every draw that is not a rain draw, before any capture or effect work']=(
-    'rainMrtUnbind(); /* 0.3.202 (rain mask MRT) */\n        ExtensionDevice::RawScope rawEffects(*ext);' in r and 'if(rainMrtBound&&!rainBlend)rainMrtUnbind();' in hook and hook.index('if(rainMrtBound&&!rainBlend)rainMrtUnbind();')<hook.index('if(!frameDrawGates){')<hook.index('prepareDraw(capture,count)'))
+    'rainMrtUnbind(); /* 0.3.202 (rain mask MRT) */\n        ExtensionDevice::RawScope rawEffects(*ext);' in r and 'if(rainMrtBound&&!rainBlend)rainMrtUnbind();' in hook and hook.index('if(rainMrtBound&&!rainBlend)rainMrtUnbind();')<hook.index('if(!frameDrawGates){')<hook.index('prepareDrawImpl(capture,count);'))
 checks['rain mask MRT: logical HDR target mapping stays on the Device; depth target remains a pure forward']=(
     'if(hdr.active&&hdrUiPhase&&RenderTargetIndex==0&&target==hdrLegacyBack)target=hdrPresentBack;const HRESULT hr=ext->SetRenderTarget(RenderTargetIndex,target);if(SUCCEEDED(hr)&&RenderTargetIndex==0)skyLayers.targetSet(reinterpret_cast<std::uintptr_t>(target));return hr;' in r
     and 'return ext->SetDepthStencilSurface(mirrorResources.unwrap(pNewZStencil));' in r)

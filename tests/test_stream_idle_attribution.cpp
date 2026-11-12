@@ -191,9 +191,31 @@ static void boundedProducerLog(){
     core.idleLog=nullptr;core.reportIdleImage(p);CHECK(lines.size()==5&&callerFormats==5);
     core.idleLog=&sink;core.callerModule=nullptr;core.reportIdleImage(p);CHECK(lines.size()==5&&callerFormats==5);++groups;
 }
+static void aggregateFrames(){
+    IdleGapProfile profile;profile.enable(true);IdlePoint point;point.known=point.consistent=true;
+    for(unsigned i=0;i<12;++i){const std::uint64_t at=1000+std::uint64_t(i)*20000000,end=at+15500000;
+        profile.wait(at,end,point,point,7);profile.finish(end,point,8);}
+    CHECK(!profile.presented(78));auto report=profile.take();CHECK(!report.count&&report.frameCount==1&&report.slowFrames==1);
+    const auto& frame=report.worstFrames[0];CHECK(frame.waitNs==186000000&&frame.gaps==12&&frame.segments==12&&frame.streamFrame==78);
+    CHECK(frame.largest.wallNs()==15500000&&frame.firstNs==1000&&frame.lastNs==235501000);
+    unsigned sampled=0;
+    for(unsigned i=1;i<=5;++i){const std::uint64_t at=300000000+std::uint64_t(i)*20000000,end=at+i*1000000;
+        IdleCpuSample first{1,2,at-2,at-1,true},last{2,3,end,end+1,true};IdleImageSelection image;image.lock.id=i;
+        profile.wait(at,end,point,point,7,first);const bool sample=profile.sampleShortMaximum(end);sampled+=sample;
+        profile.finish(end,point,8,false,sample?last:IdleCpuSample{},sample?image:IdleImageSelection{},sample);}
+    CHECK(sampled==4); // Fifth maximum must not inherit the fourth's metadata.
+    profile.wait(500000000,510000000,point,point,7);profile.finish(510000000,point,8);profile.presented(79);report=profile.take();
+    CHECK(report.frameCount==1&&!report.worstFrames[0].largest.cpuLast.known&&!report.worstFrames[0].largest.image.lock.id&&!report.worstFrames[0].largest.imageSampled);
+    for(unsigned i=1;i<=10;++i){const std::uint64_t at=1000000000+std::uint64_t(i)*100000000,span=10000000+i*500000;
+        for(unsigned k=0;k<3;++k){const auto start=at+k*20000000;profile.wait(start,start+span,point,point,7);profile.finish(start+span,point,8);}profile.presented(i);}
+    report=profile.take();CHECK(report.slowFrames==10&&report.frameCount==4&&!report.count);
+    for(unsigned i=0;i<report.frameCount;++i)CHECK(report.worstFrames[i].streamFrame>=7);
+    profile.enable(false);CHECK(!profile.sampleShortMaximum(10000000000));profile.wait(1,100000000,point,point,7);profile.finish(100000000,point,8);CHECK(!profile.presented());
+    profile.enable(true);CHECK(!profile.take().frameCount);++groups;
+}
 int main(){
     views();publicationABA();producerWaits();boundedTracker();concurrentPublication();
     replayerGap(false,false,false);replayerGap(true,false,false);replayerGap(true,true,false);replayerGap(true,false,true);
-    cpuLifetime();imageLifecycle();imageBounds();imagePublicationRace();actualImageLocks();boundedProducerLog();
+    cpuLifetime();imageLifecycle();imageBounds();imagePublicationRace();actualImageLocks();boundedProducerLog();aggregateFrames();
     std::printf("STREAM_IDLE_ATTRIBUTION_PASS groups=%u actualQueue=1 actualReplayer=1 noGame=1 noGPU=1\n",groups);
 }

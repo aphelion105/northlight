@@ -7,7 +7,7 @@
 // payloads above MaxInlinePayload. Everything counts against one budget (chunks in use + live blocks + registered
 // shadow bytes); when a request would exceed it the producer publishes and waits until the consumer frees memory.
 //
-// Publishing: a committed command becomes visible to the consumer at publish(). commit() publishes by itself every 64
+// Publishing: a committed command becomes visible to the consumer at publish(). commit() publishes immediately for a sleeping consumer, otherwise every 64
 // commands or 64 KiB, and a chunk switch publishes the closed chunk. Callers publish explicitly at BeginScene/EndScene/
 // Clear/SetRenderTarget, sync points, Present, and on every GetData / locally answered Get (no spin loop may starve).
 //
@@ -67,9 +67,9 @@ constexpr std::size_t LargeShadowBudgetBytes=std::size_t(36)<<20,kMaxLargeShadow
 constexpr std::uint64_t kLargeIdleFrames=60;
 constexpr std::size_t kPoolMaxChunks=4,kReserveChunks=2;   // idle chunks kept at most / after a quiet window
 constexpr std::uint32_t kAutoPublishCommands=64,kAutoPublishBytes=64u<<10;
-// 0.3.200 (pipeline): commit()'s automatic publish wakes a SLEEPING consumer only once this much has been published without a wake (a sleeping replay
-// thread has caught up: waking it per 64 commands cost a SetEvent each time). Explicit publishes (scene/target/clear/sync/Present/GetData), a chunk
-// switch and backpressure always wake; an explicit publish with nothing new still wakes when an automatic one held its wake back (never strands work).
+// Batch accounting while replay is busy; a sleeping consumer wakes on the first
+// automatic publication. Otherwise a sparse upload can sit ready until a later
+// explicit publish or the consumer's safety timeout. wake() signals once per sleep.
 constexpr std::uint32_t kLazyWakeCommands=256,kLazyWakeBytes=256u<<10;
 constexpr std::uint32_t kNoPayload=0xFFFFFFFFu;   // a nullable pointer's offset in a generated Args struct
 
@@ -98,7 +98,7 @@ struct ExpressTask {void (*fn)(void*);void* arg;bool (*ready)(void*);bool timed;
 struct ExpressTimes {std::uint16_t behindCmd=kExpressIdle;std::uint64_t startNs=0;};   // what a timed runExpress hands back
 // Counts observations, not elapsed time: a held publication proves work existed
 // while replay was asleep; it does not make the whole queue-idle span avoidable.
-struct WakePublicationDiagnostics {std::uint64_t heldBatches=0,heldCommands=0,heldBytes=0,wakeSignals=0;};
+struct WakePublicationDiagnostics {std::uint64_t heldBatches=0,heldCommands=0,heldBytes=0,wakeSignals=0,partialBatches=0,partialCommands=0;};
 class Queue {
     struct Chunk {
         std::atomic<Chunk*> next{nullptr};
@@ -124,6 +124,7 @@ class Queue {
     alignas(kLine) std::atomic<std::uint64_t> recorded_{0};
     std::atomic<std::uint64_t> diagnosticPublished_{0},diagnosticPublishSerial_{0};
     Counter diagnosticHeldBatches_{0},diagnosticHeldCommands_{0},diagnosticHeldBytes_{0},diagnosticWakeSignals_{0};
+    Counter diagnosticPartialBatches_{0},diagnosticPartialCommands_{0};
     bool idleTracking_=false;   // configured by the producer before the consumer starts; immutable during replay
     // Consumer-private.
     alignas(kLine) Chunk* rchunk_;
@@ -202,7 +203,7 @@ class Queue {
 #endif
             consumerEv_.set();}
     }
-    // commit()'s automatic publish: the same publication, but a sleeping consumer is woken only past kLazyWakeCommands/kLazyWakeBytes (see there).
+    // Automatic publication keeps the existing batch sizes and command order.
     void publishLazy(){
         const std::uint32_t c=sinceCmds_,b=sinceBytes_;
         beginDiagnosticPublish();
@@ -211,7 +212,7 @@ class Queue {
         std::atomic_thread_fence(std::memory_order_seq_cst);   // as in publish()
         own(stats.publishes);raiseMax(stats.highWaterDepth,recorded_.load(std::memory_order_relaxed)-replayed_.load(std::memory_order_relaxed));
         lazyCmds_+=c;lazyBytes_+=b;
-        if(lazyCmds_<kLazyWakeCommands&&lazyBytes_<kLazyWakeBytes){
+        if(lazyCmds_<kLazyWakeCommands&&lazyBytes_<kLazyWakeBytes&&!sleeping_.load()){
             lazyWake_=true;
             if(idleTracking_&&sleeping_.load()){
                 own(diagnosticHeldBatches_);own(diagnosticHeldCommands_,c);own(diagnosticHeldBytes_,b);
@@ -333,6 +334,10 @@ public:
 #endif
         own(stats.commands);own(stats.bytes,openSize_);
         if(sinceCmds_>=kAutoPublishCommands||sinceBytes_>=kAutoPublishBytes)publishLazy();   // 0.3.200 (pipeline): lazy wake
+        else if(sleeping_.load()){
+            if(idleTracking_){own(diagnosticPartialBatches_);own(diagnosticPartialCommands_,sinceCmds_);}
+            publishLazy(); // A sleeping replay needs the ready prefix, not a full batch.
+        }
     }
     // Makes everything committed visible to the consumer and wakes it if it sleeps.
     void publish(){
@@ -346,7 +351,7 @@ public:
     }
     std::uint64_t recordedSeq()const{return recorded_.load(std::memory_order_acquire);}
     WakePublicationDiagnostics wakePublicationDiagnostics()const{
-        return {get(diagnosticHeldBatches_),get(diagnosticHeldCommands_),get(diagnosticHeldBytes_),get(diagnosticWakeSignals_)};
+        return {get(diagnosticHeldBatches_),get(diagnosticHeldCommands_),get(diagnosticHeldBytes_),get(diagnosticWakeSignals_),get(diagnosticPartialBatches_),get(diagnosticPartialCommands_)};
     }
     // Producer only, before start/restart of the consumer. No producer-private
     // queue cursor is read by the consumer or written by this diagnostic.

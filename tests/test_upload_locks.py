@@ -29,9 +29,11 @@ Fresh,Managed,Dynamic,Read,Forward,Pooled='fresh DEFAULT|WRITEONLY','MANAGED','D
 expected={
  ('imgui_impl_dx9.cpp','bd->pVB'):('D3DLOCK_DISCARD',Dynamic,'D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY, D3DFVF_CUSTOMVERTEX, D3DPOOL_DEFAULT, &bd->pVB'),
  ('imgui_impl_dx9.cpp','bd->pIB'):('D3DLOCK_DISCARD',Dynamic,'D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY, sizeof(ImDrawIdx) == 2 ? D3DFMT_INDEX16 : D3DFMT_INDEX32, D3DPOOL_DEFAULT, &bd->pIB'),
+ ('model_normal_renderer.h','streamVB'):('vslot.flags',Dynamic,'D3DUSAGE_DYNAMIC|D3DUSAGE_WRITEONLY,0,D3DPOOL_DEFAULT,&streamVB'),
+ ('model_normal_renderer.h','streamIB'):('islot.flags',Dynamic,'D3DUSAGE_DYNAMIC|D3DUSAGE_WRITEONLY,D3DFMT_INDEX32,D3DPOOL_DEFAULT,&streamIB'),
  ('scene_native_store.h','b'):(F,Fresh,'D3DUSAGE_WRITEONLY,0,D3DPOOL_DEFAULT,&built.vb[s]'),
  ('scene_native_store.h','batch->vb'):(F,Fresh,'D3DUSAGE_WRITEONLY,0,D3DPOOL_DEFAULT,&batch->vb'),
- ('scene_native_store.h','batch->ib'):(F,Fresh,'D3DUSAGE_WRITEONLY,D3DFMT_INDEX32,D3DPOOL_DEFAULT,&batch->ib'),
+ ('scene_native_store.h','batch->ib'):(F,Fresh,'D3DUSAGE_WRITEONLY,narrow?D3DFMT_INDEX16:D3DFMT_INDEX32,D3DPOOL_DEFAULT,&batch->ib'),
  ('replay_gpu_batches.h','b'):(F,Fresh,'D3DUSAGE_WRITEONLY,0,D3DPOOL_DEFAULT,&built->vertices[s]'),
  ('replay_gpu_batches.h','batch->vertices'):(F,Fresh,'D3DUSAGE_WRITEONLY,0,D3DPOOL_DEFAULT,&batch->vertices'),
  ('replay_gpu_batches.h','batch->indices'):(F,Fresh,'D3DUSAGE_WRITEONLY,D3DFMT_INDEX32,D3DPOOL_DEFAULT,&batch->indices'),
@@ -148,7 +150,10 @@ print('PASS read-back lock: readBackLock() defined once, 8 read-back sites, no b
 tracked=sources['tracked_buffers.h'];copies=sources['replay_copies.h']
 assert tracked.count('NorthlightReplayCopies::writeLocked(')==1 and tracked.count('NorthlightReplayCopies::beforeUnlock(')==1 # the only two write hooks: Lock records the range, Unlock copies it out of the mapped pointer
 assert tracked.index('NorthlightReplayCopies::beforeUnlock(')<tracked.index('this->real->Unlock()') # before the pointer is released
-assert tracked.count('NorthlightReplayCopies::invalidate(it->second->copy,true)')==1 and 'invalidate(entry.second->copy)' in tracked # ProcessVertices (written) and Reset (invalidateAll)
+assert tracked.count('NorthlightReplayCopies::invalidate(it->second->copy,true)')==1 # ProcessVertices wrote the buffer.
+reset=tracked[tracked.index('inline void invalidateAll('):tracked.index('template<class T,class Forward> class Buffer')]
+assert 'NorthlightReplayCopies::invalidate(r.copy)' in reset
+assert '!preserveManaged||!r.poolKnown||r.pool!=D3DPOOL_MANAGED||r.locks.load(std::memory_order_relaxed)' in reset
 assert tracked.count('NorthlightReplayCopies::enabled.load(')>=3 # attach, Lock and Unlock are all behind the stream gate
 assert renderer.count('NorthlightReplayCopies::enabled.store(true')==1 and renderer.index('NorthlightReplayCopies::enabled.store(true')<renderer.index('real->CreateDevice(adapter,type,window,flags,pp,out)')
 assert 'if(stream)NorthlightReplayCopies::enabled.store(true' in renderer and 'NorthlightReplayCopies::setPressure(memoryCaps==1)' in renderer

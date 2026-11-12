@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-# northlight-test: requires=cxx
+# northlight-test: requires=zig
 """Compile the production terrain publisher and DIP routing with real CPU snapshots."""
 import argparse
 import ast
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -20,19 +21,25 @@ world = fp.src('world_renderer.h').read_text()
 start = world.index('    void capture(D3DPRIMITIVETYPE type,INT base,UINT min,UINT vertexTotal,')
 publisher = world[start:world.index('    void releaseReplayGPU()', start)]
 device = fp.src('renderer.cpp').read_text()
-start = device.index('            NorthlightCaptureMetadata::PositionBounds positions;')
-route = device[start:device.index('},draw);}', start)]
+start = device.index('template<NorthlightWaterRenderer::UserPointer UserPointer,class Raw,class Draw> void captureGameDraw(')
+end=device.index('{',start)+1;depth=1
+while depth:depth+=(device[end]=='{')-(device[end]=='}');end+=1
+route=device[start:end]
 fixture = ast.parse((fp.TESTS / 'test_terrain_snapshot.py').read_text())
 values = {n.targets[0].id: ast.literal_eval(n.value) for n in fixture.body
           if isinstance(n, ast.Assign) and isinstance(n.targets[0], ast.Name)
           and n.targets[0].id in ('stub', 'harness')}
+if os.name=='nt':
+    values['stub']=values['stub'].replace('#include <climits>','#include <climits>\n#include <windows.h>\n#undef E_POINTER\n#undef FAILED\n#undef SUCCEEDED').replace('using DWORD=unsigned;using HRESULT=std::int32_t;','')
+values['stub']=values['stub'].replace('enum D3DFORMAT{','enum D3DFORMAT{D3DFMT_UNKNOWN=0,')
 source = values['harness'].split('int main(){')[0] + r'''
 #include <string>
 struct IDirect3DVertexShader9 {};
+namespace NorthlightDrawSnapshot {struct Mesh;}
 static void logf(const char*,...){}
 struct CpuScope {explicit CpuScope(long long*){}};
 namespace NorthlightRenderThreadProbe {static bool sampleFrame(unsigned){return true;}}
-namespace NorthlightWaterRenderer {static constexpr unsigned NoUserPointer=0;}
+namespace NorthlightWaterRenderer {enum UserPointer:unsigned{NoUserPointer,UserVertices,UserVerticesAndIndices};}
 struct CaptureDevice:Device {
  bool projectionBad=false;
  HRESULT GetVertexShaderConstantF(UINT first,float* out,UINT count)override{
@@ -40,6 +47,7 @@ struct CaptureDevice:Device {
  }
 };
 struct World {
+ struct {bool shadows=true;} effects;
  using TerrainSnapshot=std::shared_ptr<const MeshSnapshot>;
  CaptureDevice* d;FrameCache terrainBoundsCache;std::vector<int> replays;
  bool readyValue=true,terrain=true,constantSelfCheck=false,captureSampled=false;
@@ -51,11 +59,13 @@ struct World {
  struct Shader {bool terrain;};Shader lookupShader(IDirect3DVertexShader9*)const{return {terrain};}
  bool terrainShader(IDirect3DVertexShader9* shader){return lookupShader(shader).terrain;}
  template<class... T>void captureModel(T...){++models;}
+ template<class... T>void captureUP(T...){assert(false);}
  void appendTerrain(TerrainSnapshot snapshot){accepted=std::move(snapshot);}
  PUBLISHER
 };
-struct Geometry {struct {D3DPRIMITIVETYPE topology;INT base;UINT minimum,vertices,start,primitives;bool indexed;} draw;};
-struct NormalSource {bool captured=false;};
+struct Geometry {struct {D3DPRIMITIVETYPE topology;INT base;UINT minimum,vertices,start,primitives;bool indexed;} draw;const void* indices=nullptr;D3DFORMAT format=D3DFMT_UNKNOWN;const void* vertices=nullptr;UINT stride=0;};
+struct NormalSource {bool captured=false;std::shared_ptr<const NorthlightDrawSnapshot::Mesh> mesh;IDirect3DVertexDeclaration9* declaration=nullptr;};
+namespace NorthlightAutoDisplacement {using Args=Geometry;using CaptureSource=NormalSource;}
 struct Bump {
  std::vector<std::string>* events;unsigned calls=0;bool hint=false,activeValue=true;
  bool active()const{return activeValue;}
@@ -77,10 +87,11 @@ struct Route {
  template<class Draw>void captureModelNormals(IDirect3DVertexShader9*,Draw,bool up,const Geometry&,const NormalSource* source){
   assert(!up&&source&&source->captured==bool(autoBump&&enabled&&!applied&&!failed));events->push_back("normals");
  }
+ ROUTE
  void run(IDirect3DVertexShader9* vs){
   D3DPRIMITIVETYPE t=D3DPT_TRIANGLELIST;INT base=-3;UINT min=7,vertices=3,start=1,count=1;
-  Geometry geometry{{t,base,min,vertices,start,count,true}};auto draw=[]{};NormalSource normalSource;
-  ROUTE
+  Geometry geometry{{t,base,min,vertices,start,count,true}};auto draw=[]{};auto raw=[&]{return ext->DrawIndexedPrimitive(t,base,min,vertices,start,count);};
+  captureGameDraw<NorthlightWaterRenderer::NoUserPointer>(vs,geometry,raw,draw);
  }
 };
 static void fill(CaptureDevice& d){d.put(4,{-10200,-1180,3});d.put(5,{-10198,-1180,4});d.put(6,{-10200,-1178,5});}
@@ -115,10 +126,12 @@ with tempfile.TemporaryDirectory(prefix='shared-terrain-bounds-') as tmp:
     out.mkdir(parents=True, exist_ok=True)
     (out / 'd3d9.h').write_text(values['stub'])
     (out / 'shared.cpp').write_text(source)
-    for label, flags in [('O2', ['-O2']), ('O0', ['-O0']), ('asan', ['-O1', '-g', '-fsanitize=address,undefined'])]:
-        binary = out / label
-        subprocess.run(['clang++', '-std=c++17', '-UNDEBUG', '-Wall', '-Wextra', '-Werror', *flags,
-                        '-I', str(out), *fp.test_include_flags(), str(out / 'shared.cpp'), '-o', str(binary)], check=True)
+    compiler=[str(fp.zig()),'c++','-target','x86-windows-gnu'] if os.name=='nt' else ['clang++']
+    modes=[('O2', ['-O2']), ('O0', ['-O0'])]+([] if os.name=='nt' else [('asan', ['-O1', '-g', '-fsanitize=address,undefined'])])
+    for label, flags in modes:
+        binary = out / (label+('.exe' if os.name=='nt' else ''))
+        subprocess.run([*compiler, '-std=c++17', '-UNDEBUG', '-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter', *flags,
+                        '-I', str(out), *fp.test_include_flags(), str(out / 'shared.cpp'), '-o', str(binary)],env=fp.zig_env(),check=True)
         result = subprocess.check_output([str(binary)], text=True)
         (out / (label + '.log')).write_text(result)
         print(label, result, end='', flush=True)
@@ -129,8 +142,8 @@ with tempfile.TemporaryDirectory(prefix='shared-terrain-bounds-') as tmp:
         assert source.count(old) == 1
         cpp = out / (label + '.cpp')
         cpp.write_text(source.replace(old, new))
-        binary = out / label
-        subprocess.run(['clang++', '-std=c++17', '-O2', '-UNDEBUG', '-I', str(out), *fp.test_include_flags(), str(cpp), '-o', str(binary)], check=True)
+        binary = out / (label+('.exe' if os.name=='nt' else ''))
+        subprocess.run([*compiler, '-std=c++17', '-O2', '-UNDEBUG', '-I', str(out), *fp.test_include_flags(), str(cpp), '-o', str(binary)],env=fp.zig_env(),check=True)
         result = subprocess.run([str(binary)], capture_output=True, text=True)
         (out / (label + '.log')).write_text(result.stdout + result.stderr)
         assert result.returncode != 0 and marker in result.stderr, result

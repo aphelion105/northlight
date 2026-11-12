@@ -25,12 +25,9 @@ UNIT=533.3333333333334/128
 # Alpha cutoff of a cutout (blend 1) material in this occluder set. The set feeds shadows, and the game's
 # own shadow-map pass tests the full-resolution texture against 128/255 (0.502, CM2Model::
 # RenderModelBatchesShadowMap SetAlphaRef(0.50196081)), not against its visible-surface key 224/255 (0.878,
-# CGxDevice::s_alphaRef). NL tests the BLP mip of up to 128 px (decode_blp), whose box-filtered alpha has
-# softer edges. Measured on 25 stock-client foliage BLPs (leaves, ferns, vines, branches; 128..512 px, cutout
-# alpha): the share of texels passing the cutoff on the mip, against the share passing the game's cutoff at
-# full resolution, differs on average by 0.006 at 0.5 against the shadow-map 128 (signed -0.002), and by
-# 0.039 at 0.5 but 0.013 at 0.75 against the visible 224. A raw 0.878 on the mip erases thin foliage (0.064
-# short of the shadow pass, 0.027 of the visible one). 0.5 is kept: it reproduces the shadow casters.
+# CGxDevice::s_alphaRef). Ordinary GI textures use a 128px mip; cutout materials
+# retain up to 512px so fine leaf/branch silhouettes survive the cache. The .5
+# cutoff remains compatible with existing models and the stock shadow threshold.
 ALPHA_KEY_CUTOFF=.5
 CASTER_MIN_ALPHA=.55   # GatherModelBatchesShadowMap: opacity below this casts nothing
 
@@ -328,7 +325,7 @@ def decode_blp(b,maximum=128):
 
 class Builder:
     def __init__(self,assets):
-        self.assets=assets;self.meshes={};self.mesh_names={};self.textures={};self.skipped_groups=[];self.skip_bad_groups=False;self.reset()
+        self.assets=assets;self.meshes={};self.mesh_names={};self.textures={};self.cutout_textures={};self.skipped_groups=[];self.skip_bad_groups=False;self.reset()
     def reset(self):
         self.vertices=[];self.triangles=[];self.materials=[];self.material_ids={};self.tile_stats=collections.Counter();self.tile_errors=0
     def material(self,path='',blend=0,flat=False,point_glass=False):
@@ -339,6 +336,14 @@ class Builder:
             except (ValueError,FileNotFoundError,IndexError) as exc:
                 self.assets.unsupported.add('texture:'+path+':'+str(exc));self.textures[path]=(0,0,b'')
         w,h,rgba=self.textures[path]
+        # Cutout silhouettes feed high-resolution directional shadow maps.
+        # A 128px GI mip loses thin leaves before raster/filtering even begins.
+        if blend==1 and path:
+            if path not in self.cutout_textures:
+                try:self.cutout_textures[path]=decode_blp(self.assets.read(path),maximum=512)
+                except (ValueError,FileNotFoundError,IndexError) as exc:
+                    self.assets.unsupported.add('cutout-texture:'+path+':'+str(exc));self.cutout_textures[path]=self.textures[path]
+            w,h,rgba=self.cutout_textures[path]
         color=(1.,1.,1.) if rgba else (.17,.17,.17)
         if flat and rgba:
             count=len(rgba)//4;color=tuple(sum(srgb_to_linear(v/255) for v in rgba[channel::4])/count for channel in range(3));w=h=0;rgba=b''
@@ -651,7 +656,7 @@ class InstancedBuilder(Builder):
             if not triangles:return
             used=sorted(set(i for triangle in triangles for i in triangle[:3]));remap={old:new for new,old in enumerate(used)}
             compact=([vertices[i] for i in used],[(remap[a],remap[b],remap[c],m) for a,b,c,m in triangles],materials)
-            temporary=Builder(self.assets);temporary.textures=self.textures
+            temporary=Builder(self.assets);temporary.textures=self.textures;temporary.cutout_textures=self.cutout_textures
             temporary.add_mesh(compact,((1,0,0),(0,1,0),(0,0,1)),(0,0,0),'model')
             temporary.write_scene(self.output/'models'/(key.hex()+'.fgs'))
             bounds=tuple(tuple(fn(v[i] for v in compact[0]) for i in range(3)) for fn in (min,max))

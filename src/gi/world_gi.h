@@ -1,5 +1,6 @@
 #pragma once
 #include "adaptive_geometry_array.h"
+#include "../sky/aurora_source.h"
 
 #include <cstdint>
 #include <functional>
@@ -228,7 +229,7 @@ private:
     bool region_=false;size_t regionTriangles_=0;
     bool buildImpl(WorldScene&&,std::string&,bool,std::shared_ptr<const MaterialBank>,std::vector<uint32_t>,const AllocationAdmission& admit={});
     bool buildRegion(WorldScene&&,std::vector<PieceReference>&&,std::string&,const AllocationAdmission&,const std::shared_ptr<SceneMemoryBudget>&);
-    void buildSahTree();
+    void buildSahTree(const AllocationAdmission&);
     void shadeHit(RayHit&,Vec3 origin,Vec3 direction,uint32_t triangle,float u,float v,float distance)const;
     uint32_t makeRegionNode(uint32_t start,uint32_t count,uint32_t depth=0);
     struct Node { Vec3 low, high; uint32_t start = 0, count = 0, left = 0, right = 0; };
@@ -252,9 +253,11 @@ private:
     AdaptiveGeometryArray<Vec3> centers_; // build-time only
     uint32_t partition(uint32_t start, uint32_t count, Vec3& low, Vec3& high);
     struct BuildBox { Vec3 low, high, cl, ch; };
-    BuildBox bounds(uint32_t start, uint32_t count) const;
-    uint32_t sahSplit(uint32_t start, uint32_t count, const BuildBox& box, BuildBox (&child)[2]);
-    uint32_t makeSah(uint32_t start, uint32_t count, const BuildBox& box);
+    struct TriangleBox { Vec3 low, high; };
+    TriangleBox triangleBox(uint32_t index,const TriangleBox* cached)const;
+    BuildBox bounds(uint32_t start, uint32_t count,const TriangleBox* cached) const;
+    uint32_t sahSplit(uint32_t start, uint32_t count, const BuildBox& box, BuildBox (&child)[2],const TriangleBox* cached);
+    uint32_t makeSah(uint32_t start, uint32_t count, const BuildBox& box,const TriangleBox* cached);
     uint32_t makeNode(uint32_t start, uint32_t count);
     uint32_t makePair(uint32_t start, uint32_t count, Vec3& low, Vec3& high);
 };
@@ -307,6 +310,9 @@ struct Lighting {
     Vec3 sunIrradiance = Vec3(1.f, .95f, .85f);
     // Constant upper-hemisphere environmental radiance. Lower hemisphere is 0.
     Vec3 skyRadiance = Vec3(.10f, .14f, .20f);
+    // Immutable world-oriented emission, independently visible in the sky.
+    // The producer publishes only complete native-source observations.
+    std::shared_ptr<const NorthlightAuroraSource::Snapshot> aurora;
     Vec3 worldUp = Vec3(0, 0, 1);
     float maxDistance = 256.f;
     float rayBias = .006f;
@@ -357,9 +363,12 @@ Probe solveProbePrepared(const BVH& bvh, Vec3 position, const PreparedLighting& 
 // direction. Point-light irradiance is fixed by the cache's geometry signature.
 // Relighting changes only floating-point grouping, not paths or sample counts.
 struct ProbeResponse { Probe fixed; Vec3 sources[3][4]; };
+// Optional sidecar: ordinary environments retain the original cache layout.
+struct AngularSkyResponse { Vec3 sectors[NorthlightAuroraSource::SectorCount][4]; };
 Probe solveProbeResponse(const BVH& bvh,Vec3 position,const PreparedLighting& lighting,
-                         unsigned rays,uint32_t seed,ProbeResponse& response);
-Probe relightProbe(const ProbeResponse& response,const PreparedLighting& lighting);
+                         unsigned rays,uint32_t seed,ProbeResponse& response,AngularSkyResponse* angular=nullptr);
+// Without an angular sidecar, that source is fixed at solve time.
+Probe relightProbe(const ProbeResponse& response,const PreparedLighting& lighting,const AngularSkyResponse* angular=nullptr);
 // Static-only paths of one probe's rays, stored as the exact moving-geometry
 // queries a moving solve issues while its path equals the static path. Owned
 // per probe by the caller; valid for one static BVH/lighting generation.

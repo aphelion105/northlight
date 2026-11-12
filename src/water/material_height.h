@@ -63,7 +63,7 @@ inline std::array<float,4> textureProfile(IDirect3DTexture9* source,unsigned pol
     Image image;NorthlightParticleTextures::View uploaded;
     const bool accents=polarity==0&&details!=0;
     if(NorthlightMaterialTextures::cache().lookup(source,uploaded)){image.width=uploaded.width;image.height=uploaded.height;uploadedMeans(image,uploaded,accents);}
-    else read(source,image,true,accents);
+    else read(source,image,true,accents,false);
     return profile(image,polarity,details,balance);
 }
 inline float value(float r,float g,float b,const std::array<float,4>& p){

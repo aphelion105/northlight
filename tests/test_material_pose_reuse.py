@@ -12,6 +12,7 @@ import client_fixtures
 
 out = fp.output_dir()
 out.mkdir(parents=True, exist_ok=True)
+client_fixtures.actor_client_programs(out)
 prefix = (fp.TESTS / 'displacement_state_reuse.cpp').read_text(encoding='utf-8').split('struct DisplacementStateTestAccess {')[0]
 tree = ast.parse((fp.TESTS / 'test_replay_skin_safety.py').read_text(encoding='utf-8'))
 fixture = next(ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'harness' for t in n.targets)).split('int main(')[0]
@@ -47,7 +48,9 @@ struct DisplacementStateTestAccess {
                 Bounds reused;float low[3],high[3];
                 for(unsigned attempt=0;attempt<1000&&!reused.valid;++attempt){g.endFrame();
                     g.distantPoseBounds(current,owner,declaration,4,low,high,nullptr,nullptr,&reused);}
-                Bounds old;assert(reused.valid&&g.evaluateLocalSkin(independent,current,g.constants,identity,old));
+                // The material cache uses aligned skin bounds, including when
+                // the requested basis is identity. Compare the same mode.
+                Bounds old;assert(reused.valid&&g.evaluateLocalSkin(independent,current,g.constants,identity,old,true));
                 assert(!std::memcmp(reused.low,old.low,sizeof old.low)&&!std::memcmp(reused.high,old.high,sizeof old.high));
                 enclosed(current,*owner,g.constants,identity,reused);++checked;
                 // A failed current-pose proof must not expose the previous result.
@@ -67,5 +70,5 @@ fixture_path = client_fixtures.four_bone_vs3()
 for opt in ('-O0', '-O2'):
     exe = out / ('pose-reuse' + opt + '.exe')
     subprocess.run([str(fp.zig()), 'c++', '-target', 'x86-windows-gnu', opt, '-UNDEBUG', '-std=c++17',
-                    '-Wno-microsoft-exception-spec', *fp.test_include_flags(), str(cpp), '-luser32', '-luuid', '-o', str(exe)], env=fp.zig_env(), check=True)
+                    '-Wno-microsoft-exception-spec', '-I', str(out), *fp.test_include_flags(), str(cpp), '-luser32', '-luuid', '-o', str(exe)], env=fp.zig_env(), check=True)
     subprocess.run([str(exe), str(fixture_path)], check=True)

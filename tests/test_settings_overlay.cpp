@@ -195,6 +195,8 @@ static void draft(){
         field(D::ShadowRange,"Azeroth:12","terrain_radius","slider","","1000","1500"),
         field(D::Quality,"Quality","PointShadows","check","1,1,1","1"),
         field(D::Quality,"Quality","PointShadowDistance","slider","48,48,48","48"),
+        field(D::Renderer,"Renderer","HDRWideBloom","check","","0"),
+        field(D::Renderer,"Renderer","HDRBloomStrength","slider","","1"),
     };
     fields[4].high="2";fields[1].high="1";
     D::Draft d;d.bind(&fields);
@@ -224,6 +226,10 @@ static void draft(){
     std::string missing;
     CHECK(D::blocked(d,exposure,missing)==D::Block::NeedsHdr);
     d.set(hdr,"1");CHECK(D::blocked(d,exposure,missing)==D::Block::None);
+    const auto& wide=fields[14];const auto& bloom=fields[15];CHECK(D::blocked(d,wide,missing)==D::Block::None);
+    d.set(wide,"1");d.set(bloom,"0");CHECK(D::blocked(d,wide,missing)==D::Block::NeedsKey&&missing=="HDRBloomStrength");
+    d.set(hdr,"0");CHECK(D::blocked(d,wide,missing)==D::Block::NeedsHdr&&d.effective(wide)=="1");
+    d.set(hdr,"1");d.set(bloom,"1");CHECK(D::blocked(d,wide,missing)==D::Block::None);d.inherit(wide);
     CHECK(D::blocked(d,strength,missing)==D::Block::None);
     d.set(gi,"0");CHECK(D::blocked(d,strength,missing)==D::Block::NeedsKey&&missing=="GI");
     Field gone=strength;gone.available=false;CHECK(D::blocked(d,gone,missing)==D::Block::Unavailable);
@@ -249,8 +255,8 @@ static void shadowRange(){
     CHECK(base&&westfall&&elwynn);if(!base||!westfall||!elwynn)return;
     for(const auto& r:Regions)CHECK(d.field(D::ShadowRange,r.first,"terrain_radius"));
     CHECK(d.field(D::ShadowRange,"Azeroth:9999","terrain_radius"));
-    CHECK(d.effective(*base)=="928"&&d.effective(*westfall)=="928"&&!d.overrides(*westfall));
-    d.set(*base,"3000");CHECK(d.effective(*westfall)=="3000"&&d.saved(*westfall)=="928"&&d.restartPending(*westfall));
+    CHECK(d.effective(*base)=="1120"&&d.effective(*westfall)=="1120"&&!d.overrides(*westfall));
+    d.set(*base,"3000");CHECK(d.effective(*westfall)=="3000"&&d.saved(*westfall)=="1120"&&d.restartPending(*westfall));
     CHECK(d.effective(*elwynn)=="2048");
     d.set(*westfall,"3000");CHECK(!d.edited(*westfall));
     d.set(*westfall,"3500");CHECK(d.overrides(*westfall)&&d.effective(*westfall)=="3500");
@@ -263,16 +269,16 @@ static void shadowRange(){
     CHECK(changed[3].bytes().find("# keep\r\n")!=std::string::npos);
     fields=schema(changed,initial,active,"");d.bind(&fields);d.clear();
     base=d.field(D::ShadowRange,"default","terrain_radius");westfall=d.field(D::ShadowRange,"Azeroth:40","terrain_radius");
-    const auto* inherited=d.field(D::ShadowRange,"Kalimdor:405","terrain_radius");CHECK(inherited&&inherited->saved=="3000"&&inherited->active=="928");
-    CHECK(base->saved=="3000"&&base->active=="928"&&westfall->saved=="3500");
+    const auto* inherited=d.field(D::ShadowRange,"Kalimdor:405","terrain_radius");CHECK(inherited&&inherited->saved=="3000"&&inherited->active=="1120");
+    CHECK(base->saved=="3000"&&base->active=="1120"&&westfall->saved=="3500");
     d.set(*base,"4096");CHECK(d.effective(*inherited)=="4096"&&d.effective(*westfall)=="3500");
     d.clear();CHECK(d.effective(*inherited)=="3000");
-    d.factory(*base);CHECK(d.effective(*base)=="928"&&d.effective(*inherited)=="928");
+    d.factory(*base);CHECK(d.effective(*base)=="1120"&&d.effective(*inherited)=="1120");
     auto reset=applyChanges(changed,fields,"S\tdefault\tterrain_radius\t~\nS\tAzeroth:40\tterrain_radius\t~\n");
-    std::istringstream cleared(reset[3].text());CHECK(NorthlightRegionalShadow::parse(cleared,ranges,error));CHECK(ranges.fallback==928&&ranges.at("Azeroth",40)==928);
+    std::istringstream cleared(reset[3].text());CHECK(NorthlightRegionalShadow::parse(cleared,ranges,error));CHECK(ranges.fallback==1120&&ranges.at("Azeroth",40)==1120);
     for(const char* bad:{"[default]\n", "[default]\nterrain_radius=927", "[default]\nterrain_radius=4097", "[default]\nterrain_radius=nan",
         "[default]\nterrain_radius=2048\n[default]\nterrain_radius=3000"}){
-        std::istringstream invalid(bad);CHECK(!NorthlightRegionalShadow::parse(invalid,ranges,error));CHECK(ranges.fallback==928);
+        std::istringstream invalid(bad);CHECK(!NorthlightRegionalShadow::parse(invalid,ranges,error));CHECK(ranges.fallback==1120);
     }
     for(const char* bad:{"927","4097","NaN"}){bool rejected=false;try{applyChanges(changed,fields,std::string("S\tdefault\tterrain_radius\t")+bad+"\n");}catch(...){rejected=true;}CHECK(rejected);}
 }
@@ -294,7 +300,36 @@ static void pointShadowDistance(){
     }
 }
 
+static void disableOriginalTerrainShadows(){
+    using namespace NorthlightSettings;
+    const auto docs=factoryDocuments();const auto active=configOf(docs,"");const auto fields=schema(docs,docs,active,"");D::Draft draft;draft.bind(&fields);
+    const auto* checkbox=draft.field(D::Quality,"Quality","DisableOriginalTerrainShadows");
+    CHECK(checkbox&&checkbox->kind=="check"&&checkbox->factory=="1"&&checkbox->apply=="F");
+    draft.set(*draft.field(D::Quality,"Quality","WorldShadows"),"0");std::string missing;
+    CHECK(D::blocked(draft,*checkbox,missing)==D::Block::None);
+    for(const auto* value:{"1","0"}){
+        auto edited=applyChanges(docs,fields,checkbox->id()+"\t"+value+"\n");edited[0]=Document(edited[0].bytes());
+        const auto config=configOf(edited,"");CHECK(liveQualityUpdate(active.quality,config.quality).disableOriginalTerrainShadows==std::stoul(value));
+    }
+}
 int main(){
+    {
+        using namespace NorthlightSettings;
+        const auto docs=factoryDocuments();const auto active=configOf(docs,"");const auto fields=schema(docs,docs,active,"");
+        D::Draft draft;draft.bind(&fields);const auto* brightness=draft.quality("GIBrightness");const auto* aurora=draft.quality("AuroraStrength");
+        CHECK(brightness&&aurora&&brightness->low=="-100"&&brightness->high=="200");
+        for(const char* value:{"-100","-50","0","100","200"}){draft.set(*brightness,value);CHECK(draft.effective(*brightness)==value);}
+        draft.clear();std::string missing;
+        for(const char* parent:{"GI","GIStrength"}){
+            draft.set(*draft.quality(parent),"0");
+            CHECK(D::blocked(draft,*brightness,missing)==D::Block::NeedsKey&&missing==parent);
+            CHECK(D::blocked(draft,*aurora,missing)==D::Block::None);draft.clear();
+        }
+        for(const char* parent:{"Weather","WorldFog"}){
+            draft.set(*draft.quality(parent),"0");CHECK(D::blocked(draft,*aurora,missing)==D::Block::None);draft.clear();
+        }
+    }
+    disableOriginalTerrainShadows();
     masterHotkey();routing();draft();shadowRange();pointShadowDistance();
     if(failures){std::fprintf(stderr,"%d failure(s)\n",failures);return 1;}
     std::puts("settings overlay: routing and draft OK");

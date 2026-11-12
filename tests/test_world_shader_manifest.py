@@ -14,8 +14,9 @@ header=fp.src('world_compiled_shaders.h').read_text()
 assert manifest['source_sha256']==hashlib.sha256((fp.SHADERS/'world_effects.hlsl').read_bytes()).hexdigest()
 assert manifest['bump_include_sha256']==hashlib.sha256((fp.SHADERS/'auto_bump_normal.hlsl').read_bytes()).hexdigest()
 assert set(manifest['shaders'])=={entry for entry,_ in ENTRIES}
-extended={'WorldFogActor','FogCloudsActor'}
+extended={'ForeverFogActor','ForeverFogActorNoNoise','WorldFogActor','FogCloudsActor'}
 tiled={'WorldFogActorTiled','FogCloudsActorTiled','WorldMaterialCompositeHdr'}
+tiled.update(entry for entry,_ in ENTRIES if entry.startswith('MoonFloorFog'))
 
 def verify(entry,target,info,data,words):
     assert info['target']==target and info['bytes']==len(data)
@@ -41,6 +42,18 @@ for entry,target in ENTRIES:
         except AssertionError:pass
         else:raise AssertionError('corrupt bytecode/metadata was accepted: '+entry)
 world=fp.src('world_renderer.h').read_text()
-assert 'fogCaps.MaxPixelShader30InstructionSlots>=std::max(kWorldFogActorShaderSlots,kFogCloudsActorShaderSlots)' in world
-assert 'fogCaps.MaxPixelShader30InstructionSlots>=std::max(kWorldFogActorTiledShaderSlots,kFogCloudsActorTiledShaderSlots)' in world
+for name in ['world_screen_resources.inl','world_geometry_resources.inl']:
+    world=world.replace('#include "'+name+'"',fp.src(name).read_text())
+assert 'caps.MaxPixelShader30InstructionSlots>=std::max(kWorldFogActorShaderSlots,kFogCloudsActorShaderSlots)' in world
+# This imported-atmosphere variant uses the existing optional extended budget;
+# it must remain capability-gated rather than raising the baseline SM3 limit.
+if 'ForeverFogActor' in manifest['shaders']:
+    assert 'caps.MaxPixelShader30InstructionSlots>=kForeverFogActorShaderSlots' in world
+    assert 'd->CreatePixelShader(kForeverFogActorShader,&foreverFogActorPS)' in world
+actor=world[world.index('    void actorShaderResources('):world.index('bool createResources(')]
+assert 'caps.MaxPixelShader30InstructionSlots>=std::max(kWorldFogActorTiledShaderSlots,kFogCloudsActorTiledShaderSlots)' in actor
+assert world.count('d->GetDeviceCaps(&caps);actorShaderResources(caps);')==2
+moon=world[world.index('    IDirect3DPixelShader9* moonFloorShader('):world.index('    bool ensureMoonFloor(')]
+assert 'caps.MaxPixelShader30InstructionSlots<slots[index]||caps.PS20Caps.NumTemps<temps[index]' in moon
+assert all(f'k{entry}ShaderSlots' in moon for entry,_ in ENTRIES if entry.startswith('MoonFloorFog'))
 print(f'PASS {len(ENTRIES)} shader binaries/header arrays, assembly metrics, capabilities; corrupt data/slot controls rejected')

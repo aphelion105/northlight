@@ -117,8 +117,8 @@ old_d2=[(c-b)-(b-a) for a,b,c in zip(old,old[1:],old[2:])]
 assert max(abs(v) for v in old_d2[6:])>.012
 shader=fp.src('celestial_disc_effects.hlsl').read_text()
 host=fp.src('celestial_disc_renderer.h').read_text()
-assert 'current=current*(2-current);' in shader
-assert shader.index('current=current*(2-current);')<shader.index('value=lerp(previous,current')
+assert 'current=(transmitted*(1.0/32))*(2-current);' in shader
+assert shader.index('current=(transmitted*(1.0/32))*(2-current);')<shader.index('value=lerp(previous,current')
 assert 'constexpr float SunCoreWeight=2.4f,SunCoreRate=1.1f,SunTailWeight=.9f,SunTailWeightLow=1.8f,MoonGlareStrength=1.f;' in glow
 # The occlusion-only pass suppresses the compact solar core; the colour pass keeps this baseline.
 assert 'c[12][2]=i?NorthlightCelestialGlow::MoonGlareStrength:(occlude&&!fullGlare?0.f:NorthlightCelestialGlow::SunCoreWeight);' in host

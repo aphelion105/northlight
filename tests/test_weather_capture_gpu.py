@@ -23,8 +23,9 @@ exe = out / 'weather-capture.exe'
 subprocess.run([str(fp.zig()), 'c++', '-target', 'x86-windows-gnu', '-std=c++17', '-O2', '-UNDEBUG', '-Wno-microsoft-exception-spec',
                 *fp.test_include_flags(), str(fp.TESTS / 'weather_capture_gpu.cpp'), '-luser32', '-o', str(exe)],
                env=fp.zig_env(), check=True)
-guard = subprocess.run(['tasklist', '/FI', 'IMAGENAME eq Wow.exe', '/FO', 'CSV', '/NH'], capture_output=True, text=True, check=True)
-assert not any(line.startswith('"Wow.exe"') for line in guard.stdout.splitlines()), 'Stop the game before the private GPU fixture'
+import windows_gpu_guard
+windows_gpu_guard.processes()
+
 subprocess.run([str(exe), str(backend.resolve()), str(out), '1' if args.backend else '0'], cwd=out, check=True, timeout=180)
 for folder in out.glob('case-*'):
     metadata = json.loads((folder / 'capture-1-weather.json').read_text())

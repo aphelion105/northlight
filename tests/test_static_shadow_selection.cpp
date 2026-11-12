@@ -1,4 +1,5 @@
 #include "static_shadow_scene.cpp"
+#include "world_math.h"
 #include <cassert>
 #include <cstdio>
 #include <limits>
@@ -14,7 +15,7 @@ static bool reference(const StaticShadow::Request& r,StaticShadow::Vec3 low,Stat
         Vec3 ref=std::fabs(d.z)>.95f?Vec3(0,1,0):Vec3(0,0,1);
         Vec3 right=normalized(cross(d,ref)),up=cross(right,d);
         auto overlaps=[&](Vec3 a,float reach){float projected=std::fabs(a.x)*extent.x+std::fabs(a.y)*extent.y+std::fabs(a.z)*extent.z;return std::fabs(dot(delta,a))<=reach+margin+projected;};
-        if(overlaps(right,240)&&overlaps(up,240)&&overlaps(d,640))return true;
+        if(overlaps(right,360)&&overlaps(up,360)&&overlaps(d,640))return true;
     }
     return false;
 }
@@ -24,6 +25,19 @@ static float randomFloat(float span){seed=seed*1664525u+1013904223u;return (floa
 static volatile size_t checksum=0;
 int main(){
     using namespace StaticShadow;
+    // Every corner of the expanded cache, at every light elevation, fits the
+    // terrain volume even after the complete orbit/publication displacement.
+    static_assert(NorthlightShadowCascades::NearRadius==48.f);
+    for(unsigned elevation=0;elevation<=90;++elevation){
+        const float angle=elevation*3.14159265f/180;
+        auto frame=NorthlightWorldMath::shadowFrame({},Vec3(std::cos(angle),0,std::sin(angle)),NorthlightShadowCascades::FarRadius);
+        for(float x:{-360.f,360.f})for(float y:{-360.f,360.f})for(float z:{-640.f,640.f}){
+            const auto p=frame.x*x+frame.y*y+frame.z*z;
+            assert(std::max({std::fabs(p.x),std::fabs(p.y),std::fabs(p.z)})+240<NorthlightShadowCascades::TerrainRadius);
+            Request request;request.directions[0]=frame.z;request.active[0]=true;
+            assert(SelectionVolume(request).contains(p,p,.001f));
+        }
+    }
     const Vec3 special[]={{0,0,0},{0,0,1},{0,0,-1},{1,0,0},{0,1,0},{.1f,.1f,.95f},{.1f,.1f,.9500001f},{1e-30f,0,0},{1,0,.035f}};
     size_t compared=0;
     for(unsigned request=0;request<1024;++request){

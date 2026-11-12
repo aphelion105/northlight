@@ -16,6 +16,17 @@ float4 ModelNormalCapture(float3 normal:TEXCOORD5,float4 p:TEXCOORD7,float4 nati
     clip(lerp(1,nativeColor.a,BumpCapture.w)-BumpCapture.z);
     return float4(normalize(normal),p.w);
 }
+// Far bound for WorldNormals' FP16 distance acceptance, in private depth only.
+float4 ModelSeedView:register(c0); // near, far, resolved min Z, inverse range
+float4 ModelSeedProjection:register(c1); // A/C, B, viewport min Z, viewport range
+struct ModelSeedOutput {float4 color:COLOR0;float depth:DEPTH;};
+ModelSeedOutput ModelNormalDepthSeed(float2 uv:TEXCOORD0) {
+    float d=saturate((tex2D(Diffuse,uv).r-ModelSeedView.z)*ModelSeedView.w);
+    float z=ModelSeedView.x*ModelSeedView.y/max(ModelSeedView.y-d*(ModelSeedView.y-ModelSeedView.x),.00001);
+    float guard=(z+max(.006,z*.0015))*(1+1.0/512)+.0001;
+    float hardware=ModelSeedProjection.z+ModelSeedProjection.w*(ModelSeedProjection.x+ModelSeedProjection.y/guard);
+    ModelSeedOutput o;o.color=0;o.depth=d>=.99999?1:saturate(hardware+64.0/16777215);return o;
+}
 #ifdef NORTHLIGHT_SHARED_POM
 float4 SharedPomControl:register(c25);
 #define POM_ID_INPUT ,float primitive:TEXCOORD6

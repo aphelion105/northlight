@@ -42,6 +42,7 @@ struct MaterialBindingDevice:CaptureBackend {
     MaterialBindingDevice(){state.targets[0]=&surface;state.depth=&surface;state.viewport={0,0,64,64,.1f,.9f};state.vertex=&vs;state.pixel=&ps;state.declaration=&decl;state.scissor={1,2,40,50};for(unsigned i=0;i<state.vf.size();++i)state.vf[i]=float(i)*.01f;for(unsigned i=0;i<state.pf.size();++i)state.pf[i]=-float(i)*.02f;capture.samples=auxiliary.samples=privateDepth.samples=D3DMULTISAMPLE_NONE;}
     bool refuse(unsigned kind){if(fault==kind&&!faultUsed&&draws.empty()){faultUsed=true;return true;}return false;}
     HRESULT STDMETHODCALLTYPE CreateStateBlock(D3DSTATEBLOCKTYPE,IDirect3DStateBlock9** out)override{*out=new Block(*this);return D3D_OK;}
+    HRESULT STDMETHODCALLTYPE GetDeviceCaps(D3DCAPS9* out)override{*out={};out->MaxVertexIndex=UINT_MAX;return D3D_OK;}
     HRESULT STDMETHODCALLTYPE GetRenderTarget(DWORD n,IDirect3DSurface9** out)override{*out=state.targets[n];if(*out)(*out)->AddRef();return *out?D3D_OK:D3DERR_NOTFOUND;}
     HRESULT STDMETHODCALLTYPE SetRenderTarget(DWORD n,IDirect3DSurface9* value)override{
         if(n==1){++auxiliaryCalls;if(fault==3&&!faultUsed&&draws.size()>=2&&draws.size()<6&&state.targets[1]!=value){faultUsed=true;return E_FAIL;}}
@@ -149,7 +150,6 @@ void MaterialCaptureStateTestAccess::replayConstantRanges(){
             std::array<float,1024> vertex{};std::vector<float> pixel(shape==9?0:20,0.f);UINT first=20;
             unsigned vertexFirst=shape==10||shape==13?31:shape==11?255:0,vertexCount=shape==10||shape==13?3:shape>=11?1:256;
             const auto initialFirst=vertexFirst,initialCount=vertexCount;
-            UINT restoreFirst=256,restoreEnd=0,restorePixelFirst=224,restorePixelEnd=0;
             MaterialBindingDevice::FloatBanks expected{initial.vf,initial.pf};
             auto setBits=[](float& value,uint32_t bits){std::memcpy(&value,&bits,sizeof bits);};
             for(unsigned i=0;i<5;++i){
@@ -170,19 +170,16 @@ void MaterialCaptureStateTestAccess::replayConstantRanges(){
                 auto packet=std::make_unique<NorthlightAutoBump::Deferred>();packet->mesh=mixed&&i%2?std::shared_ptr<const NorthlightDrawSnapshot::Mesh>(upMesh):residentMesh;
                 packet->vertex=&d.vs;packet->vertex->AddRef();packet->pixel=&d.ps;packet->pixel->AddRef();packet->declaration=&d.decl;packet->declaration->AddRef();packet->viewport={0,0,64,64,0,1};packet->occlusion=true;packet->tag=19;packet->first=first;packet->pixelConstants=pixel;
                 packet->vertexFirst=vertexFirst;packet->vertexCount=vertexCount;
-                restoreFirst=std::min(restoreFirst,vertexFirst);restoreEnd=std::max(restoreEnd,vertexFirst+vertexCount);
-                if(!pixel.empty()){restorePixelFirst=std::min(restorePixelFirst,first);restorePixelEnd=std::max(restorePixelEnd,first+UINT(pixel.size()/4));}
                 std::memcpy(packet->vertexConstants,vertex.data()+vertexFirst*4,vertexCount*16);std::fill(packet->vertexInt,packet->vertexInt+64,0);std::fill(packet->pixelInt,packet->pixelInt+64,0);std::fill(packet->vertexBool,packet->vertexBool+16,FALSE);std::fill(packet->pixelBool,packet->pixelBool+16,FALSE);std::fill(packet->states,packet->states+14,0);std::fill(packet->raster,packet->raster+NorthlightAutoBump::DeferredRasterCount,0);
                 std::memcpy(expected.vertex.data()+vertexFirst*4,vertex.data()+vertexFirst*4,vertexCount*16);if(!pixel.empty())std::memcpy(expected.pixel.data()+first*4,pixel.data(),pixel.size()*sizeof(float));d.expectedFloatBanks.push_back(expected);
                 b.deferred.push_back(std::move(packet));
             }
             d.fault=failure?failure+9:0;success=b.finishCaptures();resident=b.residentDraws;up=b.uploadDraws;assert(b.deferred.empty());
             if(failure)assert(!success&&d.faultUsed&&b.failed&&d.draws.size()==1);else assert(success&&d.draws.size()==5&&b.flushed==5);
-            assert(d.floatCalls.size()>=4&&d.floatCalls[0].vertex&&d.floatCalls[0].first==initialFirst&&d.floatCalls[0].count==initialCount);
+            assert(d.floatCalls.size()>=2&&d.floatCalls[0].vertex&&d.floatCalls[0].first==initialFirst&&d.floatCalls[0].count==initialCount);
             assert(!d.floatCalls[1].vertex&&d.floatCalls[1].first==20&&d.floatCalls[1].count==(shape==9?0u:5u));
-            const auto& restoreVertex=d.floatCalls[d.floatCalls.size()-2];const auto& restorePixel=d.floatCalls.back();
-            assert(restoreVertex.vertex&&restoreVertex.first==restoreFirst&&restoreVertex.count==restoreEnd-restoreFirst&&!restoreVertex.failed);
-            assert(!restorePixel.vertex&&restorePixel.first==restorePixelFirst&&restorePixel.count==restorePixelEnd-restorePixelFirst&&!restorePixel.failed);
+            // ALL owns VS restoration; the touched PS span is restored explicitly.
+            // Draw-time writes are checked against the full-bank oracle above.
             assert(d.state==initial);
         }
         assert(d.state==initial&&d.vs.refs==1&&d.ps.refs==1&&d.decl.refs==1&&d.surface.refs==1&&d.capture.refs==1&&d.auxiliary.refs==1&&d.privateDepth.refs==1);
