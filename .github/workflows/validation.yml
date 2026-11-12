@@ -10,11 +10,13 @@ permissions:
 
 jobs:
   source:
+    env:
+      PYTHONUTF8: '1'
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-22.04
             python: '3.9'
           - os: windows-latest
             python: '3.13'
