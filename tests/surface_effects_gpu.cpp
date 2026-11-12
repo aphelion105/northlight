@@ -42,7 +42,7 @@ int main(int argc,char** argv){
   else ok(d->CreatePixelShader(i<2?kPrecipitationQualityShader:kPrecipitationPerformanceShader,&baseline[i]));
  }
  { NorthlightSurfaceRenderer surface(d);
- unsigned cases=0,targets=0,unsupported=0,redesignedSnow=0;
+ unsigned cases=0,targets=0,unsupported=0,redesignedPrecipitation=0;
  for(unsigned odd:{0u,1u})for(D3DFORMAT format:{D3DFMT_A8R8G8B8,D3DFMT_A16B16G16R16F,D3DFMT_A32B32G32R32F})for(unsigned samples:{0u,2u,4u,8u}){
   requireNoGame();const unsigned W=160+odd,H=128+odd,bytes=format==D3DFMT_A8R8G8B8?4:format==D3DFMT_A16B16G16R16F?8:16;
   IDirect3DSurface9 *target=nullptr,*resolved=nullptr,*staging=nullptr;
@@ -62,7 +62,9 @@ int main(int argc,char** argv){
     requireNoGame();Image depth{W,H,D3DFMT_R32F,4,std::vector<unsigned char>(W*H*4)};const float raw=mode==1?1000.f/(1000.f-.1f)*(1-.1f):1.f;for(unsigned at=0;at<W*H;++at)std::memcpy(depth.pixels.data()+at*4,&raw,4);auto input=texture(d,depth);d->SetTexture(3,input);
     c[1][3]=phase*.31f;c[3][0]=mode==0?0.f:mode==3?.35f:1.f;c[3][1]=float(snow);c[7][0]=phase*.73f;c[7][1]=-phase*.19f;c[8][0]=phase%2?.1f:1.f;c[9][1]=phase%2?.7f:.1f;ok(d->SetPixelShaderConstantF(0,c[0],10));const float travel[4]={-c[1][3]*.5f,-c[1][3]*.2f,-c[1][3]*(snow?1.3f:19.f),1};ok(d->SetPixelShaderConstantF(12,travel,1));ok(d->SetPixelShader(shaders[entry*2+snow]));ok(d->Clear(0,nullptr,D3DCLEAR_TARGET,0x00143250,1,0));ok(d->BeginScene());ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,v,sizeof(Vertex)));ok(d->EndScene());const auto result=read();
     ok(d->SetPixelShader(baseline[entry*2+snow]));ok(d->Clear(0,nullptr,D3DCLEAR_TARGET,0x00143250,1,0));ok(d->BeginScene());ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,v,sizeof(Vertex)));ok(d->EndScene());const auto original=read();
-    if(argc==3||!snow||mode<2)assert(result==original);else redesignedSnow+=result!=original;
+    // The historical rain reference agrees before animation; lateral travel
+    // changed intentionally and is checked by weather_occlusion_gpu.cpp.
+    if(argc==3||mode<2||(!snow&&phase==0))assert(result==original);else redesignedPrecipitation+=result!=original;
     NorthlightSurfaceFrame context{};std::memcpy(context.c,c,sizeof c);ok(d->Clear(0,nullptr,D3DCLEAR_TARGET,0x00143250,1,0));ok(d->BeginScene());surface.precipitation(target,input,W,H,context,entry?NorthlightQuality::Preset::Performance:NorthlightQuality::Preset::Quality,nullptr);ok(d->EndScene());const auto production=read();
     assert(production==result);
     if(mode<2)assert(result==clear);else changed+=result!=clear;
@@ -73,8 +75,8 @@ int main(int argc,char** argv){
   }
   d->SetRenderTarget(0,nullptr);staging->Release();resolved->Release();target->Release();
  }
- assert(argc==3||redesignedSnow>0);
- std::printf("PASS precipitation: cases=%u targets=%u unsupportedTargets=%u redesignedSnow=%u; rain baseline parity, textured snow production parity, zero weather, transition, dense, camera motion, foreground occlusion, odd grids, UNORM/FP16/FP32 HDR, MSAA0/2/4/8\n",cases,targets,unsupported,redesignedSnow);
+ assert(argc==3||redesignedPrecipitation>0);
+ std::printf("PASS precipitation: cases=%u targets=%u unsupportedTargets=%u redesignedPrecipitation=%u; initial rain baseline parity, animated rain/snow production parity, zero weather, transition, dense, camera motion, foreground occlusion, odd grids, UNORM/FP16/FP32 HDR, MSAA0/2/4/8\n",cases,targets,unsupported,redesignedPrecipitation);
  surface.reset();d->SetPixelShader(nullptr);for(auto* s:shaders)s->Release();for(auto* s:baseline)s->Release(); } d->Release();api->Release();FreeLibrary(module);DestroyWindow(window);UnregisterClassW(wc.lpszClassName,wc.hInstance);
 }
 #endif

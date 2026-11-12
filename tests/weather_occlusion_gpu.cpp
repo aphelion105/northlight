@@ -63,6 +63,33 @@ int main(int argc,char** argv){
                 else{assert(result[0][at]==result[1][at]);exteriorChanges[snow]+=result[1][at]!=0xff143250;}
             }
         }
+        if(!band){
+            // Following the physical particle velocity must preserve the image
+            // better than following horizontally reversed velocity (snow sways).
+            unsigned long long forwardError=0,reversedError=0;
+            auto render=[&](){
+                ok(d->ColorFill(target,nullptr,0xff143250));ok(d->BeginScene());
+                surface.precipitation(target,skyTexture,W,H,c,preset?NorthlightQuality::Preset::Performance:NorthlightQuality::Preset::Quality,nullptr);
+                ok(d->EndScene());auto image=readPixels();surface.endFrame();return image;
+            };
+            for(unsigned yaw=0;yaw<4;++yaw)for(unsigned phase=0;phase<4;++phase){
+                const float angle=yaw*1.57079632679f,dt=.125f,time=phase*.31f;
+                c.c[4][0]=-std::sin(angle);c.c[4][1]=std::cos(angle);
+                c.c[6][0]=-std::cos(angle);c.c[6][1]=-std::sin(angle);
+                c.c[1][3]=time;c.c[7][0]=phase*.73f;c.c[7][1]=-phase*.19f;c.c[7][2]=3;
+                const auto before=render();
+                for(int direction:{1,-1}){
+                    c.c[1][3]=time+dt;c.c[7][0]=phase*.73f+direction*.5f*dt;
+                    c.c[7][1]=-phase*.19f+direction*.2f*dt;c.c[7][2]=3-(snow?1.3f:19.f)*dt;
+                    const auto after=render();
+                    auto& error=direction>0?forwardError:reversedError;
+                    for(unsigned at=0;at<W*H;++at)for(unsigned channel=0;channel<3;++channel)
+                        error+=std::abs(int((before[at]>>(channel*8))&255)-int((after[at]>>(channel*8))&255));
+                }
+            }
+            std::printf("WEATHER_DIRECTION snow=%u preset=%u followError=%llu reversedError=%llu\n",snow,preset,forwardError,reversedError);
+            assert(reversedError>0&&forwardError<reversedError*.6);
+        }
         d->SetTexture(3,nullptr);drop(skyTexture);drop(maskTexture);
     }
     }

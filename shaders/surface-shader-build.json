@@ -1,36 +1,36 @@
 {
-  "source_sha256": "680950c1b2aeeee22fcb4d1ca92f753617943eebd0c5ee596c5f7a9273f0f169",
+  "source_sha256": "a45903183d0998915d416a3d74d56b4947d32112b480f7bfa6fb3b776039cec7",
   "target": "ps_3_0",
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
   "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
   "game_launched": false,
   "shaders": {
     "RainQuality": {
-      "bytes": 3652,
-      "sha256": "61f11c91ba98602e046a8819afd2c5c69b1a14b27678c208f24fa16610a955ea",
-      "static_instruction_slots": 190,
+      "bytes": 3668,
+      "sha256": "ae52cf2f21811403e88a9ea04e0fc62029e092d14abefba5f1a7d4c6d3f66d25",
+      "static_instruction_slots": 191,
       "temporary_registers": 6,
       "samplers": [
         3
       ],
       "instructions": {
         "mov": 7,
-        "mul": 74,
+        "mul": 75,
         "add": 62,
         "rcp": 7,
         "frc": 9,
         "dp3": 9,
         "dp2add": 3,
-        "rsq": 3,
         "max": 7,
+        "rsq": 3,
         "cmp": 5,
         "texld": 1
       }
     },
     "SnowQuality": {
-      "bytes": 6752,
-      "sha256": "607b5dd71175684298beead48000a3934658841e793fae7b600363204679e6f5",
-      "static_instruction_slots": 402,
+      "bytes": 6768,
+      "sha256": "f5e4df23fd883c799dc78fd21d9d7cfd73fa11e578a39b194a8058a34b2a66ba",
+      "static_instruction_slots": 403,
       "temporary_registers": 7,
       "samplers": [
         2,
@@ -38,7 +38,7 @@
       ],
       "instructions": {
         "mov": 12,
-        "mul": 164,
+        "mul": 165,
         "add": 123,
         "rcp": 9,
         "frc": 24,
@@ -52,16 +52,16 @@
       }
     },
     "RainPerformance": {
-      "bytes": 2872,
-      "sha256": "3874eca5969e75f3b6d235cd0ba69e1193f91a065d5ba8e82521c01b1602012f",
-      "static_instruction_slots": 141,
+      "bytes": 2888,
+      "sha256": "ed02e79576994ed84f6904ed9cd49dd3d5401449d48e51ba838cf407c092cad4",
+      "static_instruction_slots": 142,
       "temporary_registers": 5,
       "samplers": [
         3
       ],
       "instructions": {
         "mov": 7,
-        "mul": 55,
+        "mul": 56,
         "add": 45,
         "rcp": 6,
         "frc": 6,
@@ -74,9 +74,9 @@
       }
     },
     "SnowPerformance": {
-      "bytes": 5012,
-      "sha256": "e82040e44fa2a9af5351820659142cf93a111de741d80de7d532644804eb76d7",
-      "static_instruction_slots": 282,
+      "bytes": 5028,
+      "sha256": "4cee99eb481412c8da707fed4638380fc506f41ded55c239418455a37fddba69",
+      "static_instruction_slots": 283,
       "temporary_registers": 6,
       "samplers": [
         2,
@@ -84,7 +84,7 @@
       ],
       "instructions": {
         "mov": 10,
-        "mul": 115,
+        "mul": 116,
         "add": 86,
         "rcp": 7,
         "frc": 16,

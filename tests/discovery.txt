@@ -582,6 +582,7 @@ test_weather_lab_capture.py
 test_weather_lens.py
 test_weather_lens_clock.py
 test_weather_memory.py
+test_weather_motion_gpu.py
 test_weather_shelter.py
 test_weather_state.py
 test_weather_textures.py
