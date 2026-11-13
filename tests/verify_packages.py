@@ -114,6 +114,13 @@ def verify_installer(path):
     # payload
     dll = files.get('payload/d3d9.dll', b'')
     check(problems, sha(dll) == info['dll_sha256'] and bp.MARKER.search(dll) is not None, 'payload/d3d9.dll')
+    try:
+        asset_name = bp.build_renderer_assets.FILENAME
+        asset_identity = bp.build_renderer_assets.verify_pair(dll, files.get('payload/' + asset_name, b''))
+        check(problems, asset_name in payload and asset_identity == info.get('renderer_assets_sha256'),
+              'renderer resources missing from manifest or BUILD-INFO')
+    except ValueError as error:
+        problems.append(str(error))
     for p, e in payload.items():
         check(problems, sha(files.get('payload/' + p, b'')) == e['sha256'], f'payload/{p} does not match its manifest')
     check(problems, {p for p, e in payload.items() if e.get('preserve')} == {'northlight-quality.ini', 'celestial-profiles.ini', 'shadow-range-profiles.ini'}, 'preserve flags')

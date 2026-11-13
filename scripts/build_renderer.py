@@ -7,6 +7,8 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import shutil
+import re
 
 ROOT = Path(__file__).resolve().parent                 # scripts/: the generators
 sys.path.insert(0, str(ROOT.parent))
@@ -22,6 +24,9 @@ def source_identity(repo=northlight_paths.REPO):
     digest = hashlib.sha256()
     paths = [p for folder in ('src', 'shaders') for p in (repo/folder).rglob('*') if p.is_file()]
     paths += [repo/'scripts/build_renderer.py', repo/'northlight_paths.py']
+    assets_builder = repo/'scripts/build_renderer_assets.py'
+    if assets_builder.is_file():
+        paths.append(assets_builder)
     for path in sorted(paths, key=lambda path: path.relative_to(repo).as_posix()):
         data = path.read_bytes()
         if path.suffix in ('.h', '.cpp', '.inl', '.inc', '.def', '.hlsl', '.asm', '.py', '.json'):
@@ -31,6 +36,30 @@ def source_identity(repo=northlight_paths.REPO):
         digest.update(data)
     return digest.hexdigest()
 OVERLAY_SOURCES = ('settings_overlay.cpp', 'settings_panel.cpp', 'imgui.cpp', 'imgui_draw.cpp', 'imgui_tables.cpp', 'imgui_widgets.cpp', 'imgui_impl_dx9.cpp')
+
+
+def link_renderer(command, env, output_dll):
+    # Zig 0.15.2 does not forward --gc-sections to COFF, and rejects /OPT:REF.
+    # Reuse its exact library/CRT selection, then repeat the cheap link with REF.
+    # Keep PDBs and distinct function addresses; do not enable ICF or change -O2.
+    log = northlight_paths.out() / (output_dll.stem + '-build.log')
+    result = subprocess.run([*command, '-v'], env=env, capture_output=True, text=True)
+    log.write_text(result.stdout + result.stderr, encoding='utf-8')
+    if result.returncode:
+        raise SystemExit(f'Renderer compilation failed; see {log}\n{result.stderr[-6000:]}')
+    lines = [line for line in result.stderr.splitlines() if line.startswith('lld-link ')]
+    if len(lines) != 1:
+        raise SystemExit(f'Expected one Zig 0.15.2 COFF link command; see {log}')
+    # The pinned Zig driver prints raw arguments without quoting spaces. Its
+    # COFF switches are uppercase (except -lldmingw); input files are absolute.
+    # Split at argument starts, not at arbitrary whitespace inside a path.
+    linker = re.split(r' (?=-[A-Z]|-lldmingw\b|[A-Za-z]:[\\/]|/)', lines[0])
+    if linker[0] != 'lld-link' or '-OUT:' + str(output_dll) not in linker or any(
+            not Path(arg).is_file() for arg in linker[1:] if not arg.startswith('-')):
+        raise SystemExit(f'Cannot safely reconstruct Zig COFF inputs; see {log}')
+    final = [command[0], *linker, '-OPT:REF', '-OPT:NOICF',
+             '-MAP:' + str(northlight_paths.out() / (output_dll.stem + '.map'))]
+    subprocess.run(final, env=env, check=True)
 
 def check_compiler(zig, env):
     if sys.platform != 'win32':
@@ -141,6 +170,11 @@ def main(argv=None):
         raise SystemExit("Automatic normal-map generator differs from the offline build.")
     if any(digest!=hashlib.sha256((SHADERS/name).read_bytes()).hexdigest() for name,digest in bump_manifest.get('parallax_source_sha256',{}).items()):
         raise SystemExit("Parallax shaders differ from the offline build.")
+    from build_renderer_assets import prepare, FILENAME, built_path
+    output_dll = PROFILE_DLL if profile_symbols else STAND_DLL if stand_replay else DEV_DLL if dev_tuning else DLL
+    assets_dir = northlight_paths.out() / 'renderer-assets' / output_dll.stem
+    assets = prepare(assets_dir)
+    print('Resources', assets['raw_bytes'], '->', assets['bytes'], 'bytes', flush=True)
     identity = source_identity()
     built_utc = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
     print('Source identity', identity, flush=True)
@@ -148,13 +182,15 @@ def main(argv=None):
     command = [str(zig), 'c++', '-target', 'x86-windows-gnu', '-O2', '-shared',
                '-DNORTHLIGHT_SOURCE_ID="' + identity + '"',
                '-DNORTHLIGHT_BUILD_UTC="' + built_utc + '"',
-               '-std=c++17', '-fno-rtti', '-Wall', '-Wextra', '-Wno-microsoft-exception-spec',
+               '-std=c++17', '-fno-rtti', '-ffunction-sections', '-fdata-sections',
+               '-DNORTHLIGHT_EXTERNAL_ASSETS=1', '-I', str(assets_dir),
+               '-Wall', '-Wextra', '-Wno-microsoft-exception-spec',
                *northlight_paths.include_flags(),
-               *[str(northlight_paths.src(n)) for n in ('renderer.cpp', 'world_gi.cpp', 'world_mesh_plan.cpp', 'static_shadow_scene.cpp', 'frd9.def')],
+               *[str(northlight_paths.src(n)) for n in ('renderer.cpp', 'world_gi.cpp', 'world_mesh_plan.cpp', 'static_shadow_scene.cpp', 'renderer_assets.cpp', 'frd9.def')],
                # Settings overlay (src/overlay/) and the vendored Dear ImGui it draws with (src/imgui/, configured by northlight_imconfig.h).
                '-DIMGUI_USER_CONFIG="northlight_imconfig.h"',
                *[str(northlight_paths.src(n)) for n in OVERLAY_SOURCES],
-               '-luser32', '-luuid', '-o', str(PROFILE_DLL if profile_symbols else STAND_DLL if stand_replay else DEV_DLL if dev_tuning else DLL)]
+               '-luser32', '-luuid', '-o', str(output_dll)]
     if profile_symbols:
         command[command.index('-shared'):command.index('-shared')] = ['-g', '-DNORTHLIGHT_PROFILE_BUILD=1']
     if dev_tuning:
@@ -164,8 +200,9 @@ def main(argv=None):
     if stand_replay:
         command.insert(command.index('-luser32'), '-DNORTHLIGHT_REPLAY_STAND=1')
         print('Building the STAND REPLAY variant: imported context only, not for game installation.')
-    subprocess.run(command, env=env, check=True)
-    print('Built', PROFILE_DLL if profile_symbols else STAND_DLL if stand_replay else DEV_DLL if dev_tuning else DLL)
+    link_renderer(command, env, output_dll)
+    shutil.copyfile(assets_dir/FILENAME, built_path(output_dll))
+    print('Built', output_dll, 'and', built_path(output_dll))
 
 if __name__ == '__main__':
     main()

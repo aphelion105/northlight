@@ -6,9 +6,7 @@
 #include <cassert>
 #include <filesystem>
 #include <fstream>
-#if __has_include("native_fixture_shadow.h")
-#define NORTHLIGHT_LIVE_LAMP_TEST 1
-#endif
+#include "lamp_fixture_metadata.h"
 static void must(HRESULT hr){if(FAILED(hr)){std::printf("HRESULT %08lx\n",(unsigned long)hr);std::abort();}}
 static std::vector<unsigned char> readBytes(const std::string& path){std::ifstream f(path,std::ios::binary);assert(f);return {std::istreambuf_iterator<char>(f),{}};}
 struct Fgr{unsigned magic=0x31524746,w=0,h=0,format=0,stride=0;std::vector<unsigned char> bytes;};
@@ -41,7 +39,7 @@ struct PointTerrainCoverageTest{
   w.replayBoundsBegin();++w.meshGeneration;w.pointSlot().cacheValid=false;states(w.d,true);must(w.d->BeginScene());assert(w.renderPointShadow(l,true,replays));must(w.d->EndScene());assert(w.pointSlot().ready);
   std::vector<float> result;for(auto* face:w.pointSlot().faces){auto im=readSurface(w.d,face,4);const auto n=result.size();result.resize(n+im.w*im.h);std::memcpy(result.data()+n,im.bytes.data(),im.bytes.size());}return result;
  }
- static void replayProof(WorldRenderer& w,const WorldRenderer::Batch& shell,bool mixed=false,bool indexed=false,bool strip=false,const NorthlightLocalLights::Light* native=nullptr){
+ static void replayProof(WorldRenderer& w,const LampFixtureMetadata::Triangles& shell,bool mixed=false,bool indexed=false,bool strip=false,const NorthlightLocalLights::Light* native=nullptr){
   std::vector<uint32_t> words={0xfffe0300};auto op=[&](unsigned c,std::initializer_list<uint32_t> a){words.push_back(c|(unsigned(a.size())<<24));words.insert(words.end(),a);};
   op(81,{0xa00f0000,0x40400000,0x3f800000,0,0});op(31,{0x80000000,0x900f0000});op(31,{0x80000002,0x900f0001});op(31,{0x80000005,0x900f0003});op(31,{0x80000000,0xe00f0000});op(31,{0x80000005,0xe0030001});
   op(1,{0x80080000,0xa0550000});op(5,{0x80010001,0x90000001,0xa0000000});op(46,{0xb0010000,0x80000001});
@@ -52,7 +50,7 @@ struct PointTerrainCoverageTest{
   std::vector<uint32_t> patched;assert(NorthlightShadowShader::patch(words.data(),words.size(),patched));must(w.d->CreateVertexShader((DWORD*)patched.data(),&p->shader));
   D3DVERTEXELEMENT9 decl[]={{0,0,D3DDECLTYPE_FLOAT3,0,D3DDECLUSAGE_POSITION,0},{0,12,D3DDECLTYPE_UBYTE4,0,D3DDECLUSAGE_BLENDINDICES,0},{0,16,D3DDECLTYPE_FLOAT2,0,D3DDECLUSAGE_TEXCOORD,0},D3DDECL_END()};must(w.d->CreateVertexDeclaration(decl,&p->decl));
   struct Vertex{float x,y,z;uint32_t bone;float u,v;};std::vector<Vertex> vertices;
-  for(const auto& t:*shell.lampTriangles)for(auto v:t)vertices.push_back({v.x,v.y,v.z,0,0,0});
+  for(const auto& t:shell)for(auto v:t)vertices.push_back({v.x,v.y,v.z,0,0,0});
   if(mixed){const auto& scene=w.active->bvh->scene();bool added=false;
     for(const auto& t:scene.triangles)if(!scene.materials[t.material].lampSourceId&&scene.materials[t.material].alphaCutoff==0){
       for(unsigned i:{t.v0,t.v1,t.v2}){const auto v=scene.vertices[i].position;vertices.push_back({v.x,v.y,v.z,0,0,0});}added=true;break;}assert(added);}
@@ -72,80 +70,34 @@ struct PointTerrainCoverageTest{
       for(const auto& v:vertices){const float value[]={v.x,v.y,v.z};p->pointBounds.low[k]=std::min(p->pointBounds.low[k],value[k]);p->pointBounds.high[k]=std::max(p->pointBounds.high[k],value[k]);}
       auto* row=p->constantStorage+4*(31+k);for(unsigned j=0;j<3;++j)row[j]=w.context.inverseView[k*4+j];row[3]=0;for(unsigned j=0;j<3;++j)row[3]-=row[j]*w.context.camera[j];}
     p->shared=std::make_shared<const NorthlightDrawSnapshot::Mesh>(std::move(p->snapshot));
-#ifdef NORTHLIGHT_LIVE_LAMP_TEST
-    WorldRenderer::PointReplayRuns runs;assert(w.pointOwnNativeShell(*p,*native,runs));unsigned kept=0;for(auto run:runs)kept+=run.second;assert(kept>0&&kept<p->count);
-    std::printf("NATIVE_LIVE_ENCLOSURE totalTriangles=%u excludedBulb=%u retainedFrame=%u cachedLampCasters=0\n",p->count,p->count-kept,kept);
-#endif
+
     w.replays.push_back(std::move(p));return;
   }
-  WorldRenderer::PointReplayRuns runs;assert(w.pointOwnShell(*p,shell,runs));
-  if(strip){unsigned kept=0;for(auto r:runs)kept+=r.second;assert(p->count-kept==shell.count);}
-  else if(mixed)assert(runs.size()==1&&runs[0].first==shell.count&&runs[0].second==1);else assert(runs.empty());
-  p->constantStorage[31*4+3]=.02f;assert(!w.pointOwnShell(*p,shell,runs));p->constantStorage[31*4+3]=0;
-  p->cutoff=.5f;assert(w.pointOwnShell(*p,shell,runs));p->cutoff=.75f;assert(!w.pointOwnShell(*p,shell,runs));p->cutoff=-1;
-  // Real city coordinates, model-local vertices and a moving view palette.
-  // The luminous triangles and the retained metal must not change with the camera.
-  assert(w.pointOwnShell(*p,shell,runs));const auto expected=runs;
-  const auto savedBytes=s.bytes;float savedInverse[16],savedBank[1024];
-  std::memcpy(savedInverse,w.context.inverseView,sizeof savedInverse);std::memcpy(savedBank,p->constantStorage,sizeof savedBank);
-  const float origin[]={shell.boundsLow.x,shell.boundsLow.y,shell.boundsLow.z};
-  for(auto& v:vertices){v.x-=origin[0];v.y-=origin[1];v.z-=origin[2];}
-  std::memcpy(s.bytes.data(),vertices.data(),s.bytes.size());
-  for(unsigned frame=0;frame<180;++frame){
-    const float yaw=frame*.037f,pitch=.15f+frame*.004f,c=std::cos(yaw),sn=std::sin(yaw),cp=std::cos(pitch),sp=std::sin(pitch);
-    const float axes[3][3]={{c,sn,0},{-sn*cp,c*cp,sp},{sn*sp,-c*sp,cp}};
-    const float eye[]={origin[0]+12*c,origin[1]+12*sn,origin[2]+5+2*sp};
-    for(unsigned k=0;k<3;++k){
-      auto* row=p->constantStorage+4*(31+k);row[3]=0;
-      for(unsigned j=0;j<3;++j){w.context.inverseView[k*4+j]=axes[k][j];row[j]=axes[k][j];row[3]+=axes[k][j]*(origin[j]-eye[j]);}
-      w.context.inverseView[12+k]=eye[k];
-    }
-    assert(w.pointOwnShell(*p,shell,runs)&&runs==expected);
-  }
-  s.bytes=savedBytes;std::memcpy(w.context.inverseView,savedInverse,sizeof savedInverse);std::memcpy(p->constantStorage,savedBank,sizeof savedBank);
   w.replays.push_back(std::move(p));
  }
  static void fixture(IDirect3DDevice9* d,const std::string& root){
-  WorldRenderer w(d);load(w,root,false);const auto l=w.active->localLights[0];const auto owners=NorthlightWmoLampShadow::parts(l,w.batches);assert(!owners.empty());
-  auto shell=w.batches[owners.front()];auto proof=std::make_shared<WorldRenderer::Batch::LampTriangles>();shell.count=0;
-  for(auto i:owners){auto& b=w.batches[i];proof->insert(proof->end(),b.lampTriangles->begin(),b.lampTriangles->end());shell.count+=b.count;b.lampSourceId=0;
-    shell.boundsLow={std::min(shell.boundsLow.x,b.boundsLow.x),std::min(shell.boundsLow.y,b.boundsLow.y),std::min(shell.boundsLow.z,b.boundsLow.z)};
-    shell.boundsHigh={std::max(shell.boundsHigh.x,b.boundsHigh.x),std::max(shell.boundsHigh.y,b.boundsHigh.y),std::max(shell.boundsHigh.z,b.boundsHigh.z)};}
-  shell.lampTriangles=proof;const auto before=cube(w,l);for(auto i:owners)w.batches[i].lampSourceId=l.sourceId;const auto after=cube(w,l);
+  WorldRenderer w(d);load(w,root,false);const auto l=w.active->localLights[0];const auto owners=LampFixtureMetadata::parts(l,w.batches);assert(!owners.empty());
+  LampFixtureMetadata::Triangles shell;
+  const auto& scene=w.active->bvh->scene();
+  for(const auto& t:scene.triangles)if(scene.materials[t.material].lampSourceId==l.sourceId)
+    shell.push_back({scene.vertices[t.v0].position,scene.vertices[t.v1].position,scene.vertices[t.v2].position});
+  assert(!shell.empty());for(auto i:owners)w.batches[i].lampSourceId=0;
+  const auto before=cube(w,l);for(auto i:owners)w.batches[i].lampSourceId=l.sourceId;const auto after=cube(w,l);
   unsigned opened=0,blocked=0,improved=0;for(size_t i=0;i<before.size();++i){opened+=before[i]<.9999f&&after[i]==1.f;blocked+=after[i]<.9999f;improved+=after[i]>before[i]+1e-5f;assert(after[i]+1e-6f>=before[i]);}
-  std::printf("CUBE_CHECK parts=%zu batches=%zu draws=%u opened=%u blocked=%u improved=%u minBefore=%g minAfter=%g\n",owners.size(),w.batches.size(),w.pointDraws,opened,blocked,improved,*std::min_element(before.begin(),before.end()),*std::min_element(after.begin(),after.end()));std::fflush(stdout);assert(improved>1000&&blocked>1000);
+  std::printf("CUBE_CHECK parts=%zu batches=%zu draws=%u opened=%u blocked=%u improved=%u minBefore=%g minAfter=%g\n",owners.size(),w.batches.size(),w.pointDraws,opened,blocked,improved,*std::min_element(before.begin(),before.end()),*std::min_element(after.begin(),after.end()));std::fflush(stdout);assert(before==after&&blocked>1000&&opened==0&&improved==0);
   auto other=l;other.sourceId^=1;assert(cube(w,other)==before);
   replayProof(w,shell);assert(cube(w,l,true)==after);
   for(bool strip:{false,true})for(bool indexed:{false,true}){w.replays.clear();replayProof(w,shell,true,indexed,strip);const auto mixed=cube(w,l,true);
     for(size_t i=0;i<after.size();++i)assert(std::fabs(mixed[i]-after[i])<1e-5f);}
   // GI can leave replays while ActorShadows=0. A null entry makes any accidental
-  // bounds/enclosure/draw read fail, including the new pointOwnShell path.
+  // bounds/draw read fail.
   w.replays.clear();w.replays.push_back(nullptr);w.captureDemand=false;
   assert(cube(w,l,false)==after&&!w.pointReplayCount&&!w.captureDemand);
   for(const auto& candidates:w.pointReplayCandidates)assert(candidates.empty());
   w.replays.clear();
-  std::printf("LAMP_GPU_PASS %s opened=%u frameBlocked=%u foreignExact=1 liveShellExact=1 mixedIndexedAndUP=1 triangleListsAndStrips=1 actorOffNoReplayReads=1\n",root.c_str(),opened,blocked);std::fflush(stdout);
+  std::printf("LAMP_GPU_PASS %s opened=%u housingBlocked=%u foreignExact=1 liveShellExact=1 mixedIndexedAndUP=1 triangleListsAndStrips=1 actorOffNoReplayReads=1\n",root.c_str(),opened,blocked);std::fflush(stdout);
  }
-#ifdef NORTHLIGHT_LIVE_LAMP_TEST
- static void nativeMemoBenchmark(WorldRenderer& w,WorldRenderer::Replay& p,const NorthlightLocalLights::Light& light,const std::string& root){
-  float inverse[16],camera[3],bank[1024];std::memcpy(inverse,w.context.inverseView,sizeof inverse);std::memcpy(camera,w.context.camera,sizeof camera);std::memcpy(bank,p.constants,sizeof bank);const auto bounds=p.pointBounds;
-  WorldRenderer::PointReplayRuns expected;assert(w.pointOwnNativeShell(p,light,expected));LARGE_INTEGER frequency;assert(QueryPerformanceFrequency(&frequency));constexpr unsigned Iterations=1024;
-  unsigned kept=0;for(auto run:expected)kept+=run.second;bool compact=false;for(const auto& memo:w.nativeShellMemo)if(memo.mesh.lock()==p.shared){std::size_t bytes=0;for(const auto& stream:memo.ownedMesh.streams)bytes+=stream.bytes.size();assert(memo.ownedMesh.primitiveCount==p.count-kept&&memo.ownedMesh.vertexCount<p.mesh().vertexCount);std::printf("LAMP_NATIVE_WORK {\"case\":\"%s\",\"original_vertices\":%u,\"owned_vertices\":%u,\"owned_triangles\":%u,\"owned_stream_bytes\":%zu,\"all_owned_vertices_verified\":true}\n",std::filesystem::path(root).filename().string().c_str(),p.mesh().vertexCount,memo.ownedMesh.vertexCount,memo.ownedMesh.primitiveCount,bytes);compact=true;break;}assert(compact);
-  for(unsigned mode=0;mode<3;++mode){const auto proofs=w.nativeShellProofs,hits=w.nativeShellMemoHits,checks=w.nativeShellPoseChecks;LARGE_INTEGER begin,end;QueryPerformanceCounter(&begin);
-    for(unsigned i=0;i<Iterations;++i){auto source=light;
-      if(mode){const float angle=mode==1?.01f*float(int(i%11)-5):0.f,c=std::cos(angle),s=std::sin(angle),move=.002f*float(int(i%17)-8);std::memcpy(w.context.inverseView,inverse,sizeof inverse);
-        for(unsigned k=0;k<3;++k){w.context.inverseView[k]=c*inverse[k]+s*inverse[4+k];w.context.inverseView[4+k]=-s*inverse[k]+c*inverse[4+k];w.context.camera[k]=camera[k]+(mode==1?move*inverse[k]:0);w.context.inverseView[12+k]=w.context.camera[k];}
-        const float translation[]={mode==2?move:0,mode==2?move*.4f:0,0};p.pointBounds=bounds;
-        for(unsigned k=0;k<3;++k){source.position[k]+=translation[k];p.pointBounds.low[k]+=translation[k];p.pointBounds.high[k]+=translation[k];auto* row=p.constantStorage+4*(31+k);row[3]=0;for(unsigned j=0;j<3;++j){row[j]=w.context.inverseView[k*4+j];row[3]+=row[j]*(translation[j]-w.context.camera[j]);}}
-      }
-      WorldRenderer::PointReplayRuns runs;assert(w.pointOwnNativeShell(p,source,runs)&&runs==expected);
-    }
-    QueryPerformanceCounter(&end);assert(w.nativeShellProofs==proofs&&w.nativeShellMemoHits-hits==Iterations);if(mode)assert(w.nativeShellPoseChecks-checks>0);
-    std::printf("LAMP_NATIVE_CPU {\"case\":\"%s\",\"mode\":\"%s\",\"iterations\":%u,\"membership_proofs_added\":%u,\"memo_hits_added\":%u,\"pose_checks_added\":%u,\"cpu_ms_per_call\":%.9f,\"includes_transform_setup\":true}\n",std::filesystem::path(root).filename().string().c_str(),mode==0?"warm-bank":mode==1?"moving-camera":"rigid-pose",Iterations,w.nativeShellProofs-proofs,w.nativeShellMemoHits-hits,w.nativeShellPoseChecks-checks,double(end.QuadPart-begin.QuadPart)*1000/double(frequency.QuadPart)/Iterations);std::fflush(stdout);
-    std::memcpy(w.context.inverseView,inverse,sizeof inverse);std::memcpy(w.context.camera,camera,sizeof camera);std::memcpy(p.constantStorage,bank,sizeof bank);p.pointBounds=bounds;
-  }
- }
-#endif
+
  static void character(IDirect3DDevice9* d,const std::string& root,const std::string& output,bool soft=false,bool benchmark=false,bool blockedFloor=false,bool partialFloor=false,unsigned daylight=0){
   std::vector<NorthlightLocalLights::Light> sources;assert(NorthlightLocalLights::readFile(root+"/sources.fgl",sources)&&sources.size()==1);const auto l=sources[0];WorldRenderer w(d);load(w,root,false,{l.position[0],l.position[1],l.position[2]});w.quality.softShadows=soft;
   // A corrected emitter position must not move the receiver or its controls.
@@ -157,13 +109,11 @@ struct PointTerrainCoverageTest{
   const auto world=[&](float x,float y,float z){return NorthlightGI::Vec3{receiverAnchor[0]+basis[0]*x+basis[3]*y+basis[6]*z,receiverAnchor[1]+basis[1]*x+basis[4]*y+basis[7]*z,receiverAnchor[2]+basis[2]*x+basis[5]*y+basis[8]*z};};
   const auto camera=world(2,0,5);std::memcpy(w.context.camera,&camera.x,12);std::memcpy(w.context.inverseView+12,&camera.x,12);w.projection[0]=w.projection[1]=1.4f;w.projection[2]=-1;
   if(std::filesystem::exists(root+"/native-lamp.bin")){
-#ifdef NORTHLIGHT_LIVE_LAMP_TEST
     w.nativeFixtures=NorthlightNativeFixtures::load(std::filesystem::path(root).parent_path().string()+"/native-fixtures.bin");assert(w.nativeFixtures);
     const auto snapshot=readBytes(root+"/native-snapshot.bin");NorthlightNativeLights::Snapshot scene;assert(snapshot.size()==sizeof scene);std::memcpy(&scene,snapshot.data(),sizeof scene);assert(NorthlightNativeLights::wellFormed(scene));
     for(unsigned frame=0;frame<30;++frame){const unsigned now=1000+frame*20;w.equipmentLights.observeScene(scene,now,{},w.context.camera);w.equipmentLights.publish(now);}assert(w.equipmentLights.outputCount==1&&w.equipmentLights.fixture(l.sourceId));
-#endif
     const auto bytes=readBytes(root+"/native-lamp.bin");unsigned count=0;assert(bytes.size()>=8&&!std::memcmp(bytes.data(),"NLL1",4));std::memcpy(&count,bytes.data()+4,4);assert(count>4&&count<=4096&&bytes.size()==8+count*36);
-    WorldRenderer::Batch shell{};auto triangles=std::make_shared<WorldRenderer::Batch::LampTriangles>();triangles->resize(count);std::memcpy(triangles->data(),bytes.data()+8,count*36);shell.lampTriangles=triangles;shell.count=count;w.batches.clear();replayProof(w,shell,false,false,false,&l);
+    LampFixtureMetadata::Triangles shell(count);std::memcpy(shell.data(),bytes.data()+8,count*36);w.batches.clear();replayProof(w,shell,false,false,false,&l);
   }
   const unsigned nativeReplays=unsigned(w.replays.size());const auto lampOnly=cube(w,l,nativeReplays!=0);
   Fgr cubeImage;cubeImage.w=256;cubeImage.h=256*6;cubeImage.format=D3DFMT_R32F;cubeImage.stride=4;cubeImage.bytes.resize(lampOnly.size()*4);std::memcpy(cubeImage.bytes.data(),lampOnly.data(),cubeImage.bytes.size());save(cubeImage,output+"/"+std::filesystem::path(root).filename().string()+"-lamp-cube.fgr");
@@ -179,7 +129,7 @@ struct PointTerrainCoverageTest{
   WorldRenderer::Batch obstacle{};obstacle.page=boxPage;obstacle.count=12;obstacle.vertexCount=8;obstacle.material=unsigned(w.materials.size());obstacle.boundsLow={INFINITY,INFINITY,INFINITY};obstacle.boundsHigh={-INFINITY,-INFINITY,-INFINITY};for(const auto& v:box){obstacle.boundsLow={std::min(obstacle.boundsLow.x,v.position.x),std::min(obstacle.boundsLow.y,v.position.y),std::min(obstacle.boundsLow.z,v.position.z)};obstacle.boundsHigh={std::max(obstacle.boundsHigh.x,v.position.x),std::max(obstacle.boundsHigh.y,v.position.y),std::max(obstacle.boundsHigh.z,v.position.z)};}w.materials.push_back(nullptr);w.uploadedAlphaCutoffs.push_back(-1);w.batches.push_back(obstacle);
   const auto empty=cube(w,l,nativeReplays!=0);unsigned boxTexels=0;for(size_t i=0;i<empty.size();++i)boxTexels+=empty[i]+1e-5f<lampOnly[i];
   unsigned boxFaces=0;for(const auto& candidates:w.pointStaticCandidates)boxFaces+=std::find(candidates.begin(),candidates.end(),w.batches.size()-1)!=candidates.end();
-  const auto plane=world(0,0,-4);std::printf("BOX_CONTROL texels=%u faces=%u draws=%u lampMin=%g boxMin=%g source=%.9g,%.9g,%.9g standAnchor=%.9g,%.9g,%.9g receiverPoint=%.9g,%.9g,%.9g receiverNormal=%g,%g,%g range=%g owners=%zu\n",boxTexels,boxFaces,w.pointDraws,*std::min_element(lampOnly.begin(),lampOnly.end()),*std::min_element(empty.begin(),empty.end()),l.position[0],l.position[1],l.position[2],anchor[0],anchor[1],anchor[2],plane.x,plane.y,plane.z,basis[6],basis[7],basis[8],l.attenuationEnd,NorthlightWmoLampShadow::parts(l,w.batches).size());std::fflush(stdout);
+  const auto plane=world(0,0,-4);std::printf("BOX_CONTROL texels=%u faces=%u draws=%u lampMin=%g boxMin=%g source=%.9g,%.9g,%.9g standAnchor=%.9g,%.9g,%.9g receiverPoint=%.9g,%.9g,%.9g receiverNormal=%g,%g,%g range=%g owners=%zu\n",boxTexels,boxFaces,w.pointDraws,*std::min_element(lampOnly.begin(),lampOnly.end()),*std::min_element(empty.begin(),empty.end()),l.position[0],l.position[1],l.position[2],anchor[0],anchor[1],anchor[2],plane.x,plane.y,plane.z,basis[6],basis[7],basis[8],l.attenuationEnd,LampFixtureMetadata::parts(l,w.batches).size());std::fflush(stdout);
   const auto data=readBytes(output+"/character.bin");assert(data.size()>=20);unsigned h[5];std::memcpy(h,data.data(),20);
   assert(h[0]==0x31414c4e&&h[1]>100&&h[2]>300&&h[2]%3==0&&h[3]>1&&h[3]<=75&&h[4]<h[3]&&data.size()==20+h[1]*48+h[2]*4);
   if(!blockedFloor&&std::filesystem::exists(root+"/stand-pose-bone.u32")){const auto bone=readBytes(root+"/stand-pose-bone.u32");assert(bone.size()==4);std::memcpy(h+4,bone.data(),4);assert(h[4]<h[3]);}
@@ -218,9 +168,7 @@ struct PointTerrainCoverageTest{
     // Equal selected workload on both source revisions, including revisions
     // that did not admit the native light. This does not measure city FPS.
     w.quality.pointShadowLimit=1;pose(0,0);
-#ifdef NORTHLIGHT_LIVE_LAMP_TEST
-    if(nativeReplays)nativeMemoBenchmark(w,*w.replays[0],l,root);
-#endif
+
     IDirect3DQuery9 *start=nullptr,*end=nullptr,*frequency=nullptr,*disjoint=nullptr,*done=nullptr;
     must(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&start));must(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&end));must(d->CreateQuery(D3DQUERYTYPE_TIMESTAMPFREQ,&frequency));must(d->CreateQuery(D3DQUERYTYPE_TIMESTAMPDISJOINT,&disjoint));must(d->CreateQuery(D3DQUERYTYPE_EVENT,&done));
     const auto wait=[&](IDirect3DQuery9* query,void* data,DWORD size){const DWORD begun=GetTickCount();for(;;){const HRESULT hr=query->GetData(data,size,D3DGETDATA_FLUSH);if(hr==S_OK)return;must(hr);assert(GetTickCount()-begun<10000);Sleep(0);}};
@@ -303,9 +251,9 @@ struct PointTerrainCoverageTest{
   for(unsigned mode=0;mode<2;++mode){
    for(size_t i=0;i<w.batches.size();++i)w.batches[i].lampSourceId=mode?ids[i]:0;
    must(d->SetRenderTarget(0,target));must(d->Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0));unsigned owners=0;
-   for(const auto& l:w.active->localLights){if(mode)owners+=!NorthlightWmoLampShadow::parts(l,w.batches).empty();const auto pixels=cube(w,l);
+   for(const auto& l:w.active->localLights){if(mode)owners+=!LampFixtureMetadata::parts(l,w.batches).empty();const auto pixels=cube(w,l);
     if(!mode)unownedCubes.push_back(pixels);else{const auto& before=unownedCubes[&l-w.active->localLights.data()];unsigned opened=0,blocked=0,improved=0;
-     for(size_t i=0;i<pixels.size();++i){opened+=before[i]<.9999f&&pixels[i]==1.f;blocked+=pixels[i]<.9999f;improved+=pixels[i]>before[i]+1e-5f;assert(pixels[i]+1e-6f>=before[i]);}
+     for(size_t i=0;i<pixels.size();++i){opened+=before[i]<.9999f&&pixels[i]==1.f;blocked+=pixels[i]<.9999f;improved+=pixels[i]>before[i]+1e-5f;assert(pixels[i]==before[i]);}
      std::printf("CAPTURE_CUBE source=%llu opened=%u blocked=%u improved=%u texels=%zu\n",(unsigned long long)l.sourceId,opened,blocked,improved,pixels.size());std::fflush(stdout);}
     w.pointSlot().selectionGain=1;
     must(d->SetRenderTarget(0,target));must(d->SetDepthStencilSurface(nullptr));states(d,false);must(d->BeginScene());

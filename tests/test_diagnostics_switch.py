@@ -18,6 +18,13 @@ FILES=['renderer.cpp','world_renderer.h','world_shadow_experiment.inl','world_po
 GATES=('NorthlightDiagnostics::enabled()','diagnostics()','sampled()','captureSampled','if(diagnostics)','shadowFate.active()','sampledFrame','profiling()','profileSampled()','if(lightingClock)','profile->recording()','materialProfile->recording()','if(profileThisBuild)','if(resetProfile)')
 # Ungated lines that stay with Diagnostics=0: format prefix -> label.
 KEEP={
+ 'NATIVE light stay status=':'start-up: one native lighting hook verdict',
+ 'NATIVE more lights status=':'start-up: one native light count hook verdict',
+ 'NORTHLIGHT PROFILING BUILD ':'start-up: profiling build identity',
+ 'RESOURCES ':'start-up: one checked asset bundle load',
+ 'Northlight effects disabled:':'error: required asset bundle could not be loaded',
+ 'PROFILE effective diagnostics=':'device initialization or explicit live settings update',
+ 'FOREVER atmosphere loaded=':'device initialization: one atmosphere catalog load per WorldRenderer',
  'CAPTURE_BATCH_POLICY ':'device initialization: reports the selected capture ownership contract',
  'BACKEND_WORK ':'start-up: selected loaded-runtime work policy',
  'CSTREAM EVENT wait=':'start-up: bounded wait policy configuration',
@@ -195,7 +202,8 @@ checks={
  'reset clock and stage lines require Diagnostics':'const bool resetProfile=diagnostics()&&cpuFrequency.QuadPart>0;' in r,
  'projected visibility queries require Diagnostics and sampled RenderProfile':'if(count>256||!diagnostics()||!world||!NorthlightQuality::renderProfile(world->surfaceSettings())||' in r
    and '!NorthlightRenderThreadProbe::sampleFrame(frame)||!projectedAudit.canSample(frame)||' in r,
- 'footprint log helper has only the two gated callers':w.count('logCpuFootprint(')==3
+ 'footprint log helper has only the three gated callers':w.count('logCpuFootprint(')==4
+   and 'if(!NorthlightDiagnostics::enabled())return;' in w[w.index('void profileResourceMemory()'):w.index('logCpuFootprint("probe-upload-mirror"')]
    and 'const bool profileThisBuild=NorthlightDiagnostics::enabled()&&(!memoryFootprintReportAt||started-memoryFootprintReportAt>=10000);' in w
    and 'auto profileMemory=[&]' in w and 'if(!profileThisBuild)return;' in w[w.index('auto profileMemory=[&]'):w.index('auto publishError=')]
    and 'if(!NorthlightDiagnostics::enabled())return;' in w[w.index('auto profileGiMemory=[&]'):w.index('logCpuFootprint("gi-worker-reachable"')]
@@ -224,9 +232,9 @@ checks={
    and 'const bool timeAOBlur=gpuProfile->recording()&&cpuFrequency.QuadPart>0;' in r
    and 'bool recording()const {return active_>=0&&!disabled_;}' in fp.src('gpu_profile.h').read_text(),
  'world capture: raw sample frame in, diagnostics gated inside':
-   len(re.findall(r'world->capture(?:UP)?\([^;]+;',r))==4
-   and all(re.search(r',vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame\(frame\)(?:,(?:nullptr|out),&normalSource\.mesh,normalSource\.declaration)?\);$',call) for call in re.findall(r'world->capture(?:UP)?\([^;]+;',r))
-   and r.count(',vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame(frame),out,&normalSource.mesh,normalSource.declaration);')==1
+   len(re.findall(r'world->capture(?:UP)?\([^;]+;',r))==2
+   and all(re.search(r',vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame\(frame\)(?:,bounds,&source\.mesh,source\.declaration)?\);$',call) for call in re.findall(r'world->capture(?:UP)?\([^;]+;',r))
+   and r.count(',vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame(frame),bounds,&source.mesh,source.declaration);')==1
    and w.count('constantSelfCheck=selfCheck;sample=sample&&NorthlightDiagnostics::enabled();')==2,
  'constant self-check keeps its 0.3.140 cadence (0.3.180 C0: its own flag and serial; the profile Stats only on diagnostic samples)':'},sample?&constantEpochProfile:nullptr,constantSelfCheck,constantSelfCheckState))return;' in w,
  'GPU timestamp queries only when on':'if(diagnostics())gpuProfile->beginFrame(frame,NorthlightRenderThreadProbe::sampleFrame(frame))' in r and 'if(diagnostics()){gpuProfile->poll();if(gpuSceneProfile)gpuSceneProfile->poll();}' in r and 'if(gpuSceneProfile&&diagnostics())gpuSceneProfile->beginFrame(frame,' in r,

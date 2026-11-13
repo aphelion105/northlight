@@ -15,12 +15,18 @@ int main(){
     bool outside=false;
     for(unsigned i=0;i<1000&&!outside;++i){outside=worker.sample(floor,{0,0,0},"Azeroth",100);std::this_thread::sleep_for(std::chrono::milliseconds(1));}
     assert(outside&&floor.use_count()==1);
-    assert(!worker.sample(floor,{3,0,0},"Azeroth",101));
+    // A fast orbit can move the camera over two yards in one frame. Keep the
+    // last proven outdoor answer while the worker checks the new position.
+    for(unsigned frame=1;frame<=20;++frame){
+        assert(worker.sample(floor,{float(frame*3),0,0},"Azeroth",100+frame*16));
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    assert(!worker.sample(floor,{120,0,0},"Azeroth",421)); // Teleport: no reused exposure.
     assert(!worker.sample(floor,{0,0,0},"Azeroth",1100));
     for(unsigned i=0;i<100;++i){assert(!worker.sample(roof,{0,0,0},"Northrend",1200));std::this_thread::sleep_for(std::chrono::milliseconds(1));}
     assert(roof.use_count()==1);
     outside=false;
     for(unsigned i=0;i<1000&&!outside;++i){outside=worker.sample(floor,{0,0,0},"Azeroth",1500);std::this_thread::sleep_for(std::chrono::milliseconds(1));}
     assert(outside);
-    std::cout<<"Shelter: outdoor/roof, unknown, movement, staleness, map change and BVH release passed\n";
+    std::cout<<"Shelter: outdoor/roof, unknown, moving-camera continuity, teleport, staleness, map change and BVH release passed\n";
 }

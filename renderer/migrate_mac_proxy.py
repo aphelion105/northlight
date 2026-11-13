@@ -40,7 +40,7 @@ KIND='mac-proxy-migration'
 WOWSILICON_DXVK='675e41e8467bc5a4dad6268269fa73e41f8c2e4979da5a9a6aca56199f0073c0'   # d9vk bundled with WoWSilicon 3.2.1; informational
 GAME_D3D9='d3d9.dll';BACKEND='renderer-backends/dxvk/dxvk_d3d9.dll';PROXY='mods/d3d9.dll';DLLS='dlls.txt';ENTRY='mods/d3d9.dll'
 CONFIG=b'[Renderer]\r\nBackend=legacy\r\nBackendPath=renderer-backends/dxvk/dxvk_d3d9.dll\r\n'
-MANAGED=(BACKEND,m.CONFIG,PROXY,DLLS)   # the only client files this tool writes
+MANAGED=(BACKEND,m.CONFIG,m.RESOURCES,PROXY,DLLS)   # the only client files this tool writes
 # WoWSilicon settings, read-only: which client it launches and its D3D9 backend.
 VERSIONS=Path.home()/'Library/Application Support/WoWSilicon/versions.json'
 BUSY=('wow.exe','wineserver','WoWSilicon')   # processes that hold or rewrite the game folder
@@ -127,6 +127,7 @@ def plan(client,dll,roots=()):
     """Steps (path, before, after bytes) in crash-safe order; raises before any write.
     roots: backup roots whose records also mark an existing mods/d3d9.dll as ours."""
     data=dll.read_bytes()
+    resources=m.renderer_resources(dll)
     # Only a proxy-capable build (guarded loader, root = exe directory) may be preloaded.
     if m.MARKER not in data or m.PROXY_SIGNATURE not in data:raise ValueError('Not a proxy-capable Northlight renderer build: '+str(dll))
     if not (client/'wow.exe').is_file():raise ValueError('wow.exe missing in '+str(client))   # presence only
@@ -143,7 +144,9 @@ def plan(client,dll,roots=()):
     if current[BACKEND] is not None and current[BACKEND]!=game and not m.is_dxvk(current[BACKEND]):
         raise ValueError(BACKEND+' exists and is not DXVK; nothing changed.')
     dlls=(current[DLLS] or b'').decode('utf-8')
-    steps=[(BACKEND,current[BACKEND],game),(m.CONFIG,current[m.CONFIG],CONFIG),(PROXY,current[PROXY],data),
+    steps=[(BACKEND,current[BACKEND],game),(m.CONFIG,current[m.CONFIG],CONFIG)]
+    if resources is not None:steps.append((m.RESOURCES,read(client/m.RESOURCES),resources))
+    steps += [(PROXY,current[PROXY],data),
            (DLLS,current[DLLS],with_entry(dlls).encode('utf-8'))]
     return [{'path':p,'before':None if b is None else digest(b),'after':digest(a),'data':a,'old':b} for p,b,a in steps if b!=a]
 

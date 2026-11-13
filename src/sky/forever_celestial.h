@@ -26,9 +26,10 @@ inline NorthlightCelestialOrbit::Result evaluateSelected(double day,bool forever
 // Apply the existing lunar linear-size calibration to Outland's authored
 // planet system. Keep its relative sizes and ring/body proportions; no lunar orbit.
 inline float planetScale(){return float(std::tan(NorthlightCelestialOrbit::kMoonAngularRadius)/(1.75/24.));}
-// Import the size animation over Northlight's existing tuned base sizes.
+// Keep the solar calibration; use the client's 1.75 lunar base without the
+// historical 0.46176318 reduction. Absolute Forever sizes were not recovered.
 // The table scales linear size, not angular radius.
 inline float radius(float baseRadius,float scale){return std::atan(std::tan(baseRadius)*scale);}
 inline float sunRadius(double day){return radius(float(NorthlightCelestialOrbit::kSunAngularRadius),sample(SunScale,day));}
-inline float moonRadius(double day){return radius(float(NorthlightCelestialOrbit::kMoonAngularRadius),sample(MoonScale,day));}
+inline float moonRadius(double day){return std::atan((1.75f/24.f)*sample(MoonScale,day));}
 }

@@ -57,7 +57,7 @@ inline NorthlightForever::Frame at(const std::string& map,uint32_t zone,float da
     }
     return f;
 }
-inline NorthlightForever::Frame sample(const NorthlightRegionalFog::Region& region,const std::string& map,const float* position,float day,float storm){
+inline NorthlightForever::Frame sample(const NorthlightRegionalFog::Region& region,const std::string& map,const float* position,float day,float storm,const float* direct,const float* ambient){
     using namespace NorthlightRegionalFog;
     NorthlightForever::Frame result;if(map!="Expansion01"&&map!="Northrend")return result;
     for(unsigned c=0;c<3;++c)if(!std::isfinite(position[c])||std::fabs(position[c])>100000)return result;
@@ -67,6 +67,9 @@ inline NorthlightForever::Frame sample(const NorthlightRegionalFog::Region& regi
         const auto zone=zoneAtChunk(region,int(ix)+int(col),int(iy)+int(row));
         NorthlightForever::add(result,at(map,zone,day,storm),(col?u:1-u)*(row?v:1-v));
     }
+    // These profiles author only the medium. Preserve the client's regional
+    // lighting, including Outland's coloured sky, instead of publishing black.
+    if(result.valid){std::copy_n(direct,3,result.direct);std::copy_n(ambient,3,result.ambient);}
     return result;
 }
 }

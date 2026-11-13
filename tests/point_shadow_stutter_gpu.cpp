@@ -136,6 +136,20 @@ struct PointTerrainCoverageTest {
   auto drain=[&](){must(fence->Issue(D3DISSUE_END));const DWORD started=GetTickCount();HRESULT hr;while((hr=fence->GetData(nullptr,0,D3DGETDATA_FLUSH))==S_FALSE){assert(DWORD(GetTickCount()-started)<10000);SwitchToThread();}must(hr);};
   auto image=[&](){std::vector<float> result(6*256*256);for(unsigned f=0;f<6;++f){must(d->GetRenderTargetData(w.pointSlot().faces[f],readback));D3DLOCKED_RECT lock{};must(readback->LockRect(&lock,nullptr,D3DLOCK_READONLY));for(unsigned y=0;y<256;++y)std::memcpy(result.data()+f*256*256+y*256,static_cast<char*>(lock.pBits)+y*lock.Pitch,256*4);must(readback->UnlockRect());}return result;};
   NorthlightLocalLights::Light light{{0,0,4},{1,.4f,.1f},1,12,17,3,NorthlightLocalLights::CastShadow};
+  {
+   const auto saved=w.batches;WorldRenderer::Batch shell{};shell.page=0;shell.count=2;shell.vertexCount=6;
+   shell.boundsLow={-1,-1,0};shell.boundsHigh={1,1,8};shell.lampSourceId=light.sourceId;
+   w.batches={shell};std::vector<float> expected;
+   for(const auto source:{light.sourceId,uint64_t(0),light.sourceId^uint64_t(1),light.sourceId}){
+    w.batches[0].lampSourceId=source;++w.meshGeneration;w.releasePointGPU();w.pointWork={};
+    must(d->BeginScene());assert(w.renderPointShadow(light,true,false));must(d->EndScene());drain();const auto pixels=image();
+    assert(w.pointWork.statics>0&&std::any_of(pixels.begin(),pixels.end(),[](float v){return v<1.f;}));
+    if(expected.empty())expected=pixels;else assert(pixels==expected);
+   }
+   w.batches=saved;++w.meshGeneration;w.releasePointGPU();w.pointWork={};
+   std::puts("POINT_LAMP_CASTER_PASS taggedUntaggedForeign=exact housingOccludes=1");
+  }
+
   auto render=[&](){must(d->BeginScene());assert(w.renderPointShadow(light,true,false));must(d->EndScene());drain();};
   std::vector<float> expected;unsigned referenceDraws=0,mergedDraws=0;
   for(unsigned mode=0;mode<2;++mode){w.pointPrimitiveLimit=mode?caps.MaxPrimitiveCount:1;w.pointSlot().cacheValid=false;w.pointSlot().schedule.invalidate();w.pointWork={};render();
@@ -386,17 +400,17 @@ struct PointTerrainCoverageTest {
   const auto newDynamic=image();assert(newDynamic!=oldDynamic&&w.pointWork.replay>0&&w.pointWork.statics==0);
   w.invalidateShadowCache();must(d->BeginScene());assert(w.renderPointShadow(light,true,true));must(d->EndScene());drain();assert(image()==newDynamic);
   std::puts("POINT_TOGGLE_GPU_PASS staticRetained=1 keepsRetained=1 staleCaptureDeferred=1 changedDynamic=exact fullInvalidation=exact");
-  const std::vector<size_t> adjacent={0,1};std::map<size_t,WorldRenderer::PointReplayRuns> splits;
+  const std::vector<size_t> adjacent={0,1};
   auto& next=*w.replays[1];const auto& firstReplay=*w.replays[0];
-  for(unsigned reason=0;reason<10;++reason){
+  for(unsigned reason=0;reason<9;++reason){
    if(reason==1)++next.constantGroup;if(reason==2)++next.stride[0];if(reason==3)++next.start;if(reason==4)next.type=D3DPT_TRIANGLESTRIP;
    if(reason==5)next.cutoff=-1;if(reason==6)next.constantUsage.booleans={0,1};if(reason==7)next.offset[0]=4;
-   if(reason==8)splits[1]={{0,1}};if(reason==9){next.min=UINT_MAX;next.vertices=2;}
-   size_t at=0;w.pointPrimitiveLimit=caps.MaxPrimitiveCount;const auto run=w.pointReplayRun(adjacent,at,splits,false);assert(at==(reason?1u:2u)&&run.count==(reason?64u:128u));
-   next.constantGroup=firstReplay.constantGroup;next.stride[0]=firstReplay.stride[0];next.start=192;next.type=firstReplay.type;next.cutoff=firstReplay.cutoff;next.constantUsage.booleans={};next.offset[0]=0;next.min=0;next.vertices=6;splits.clear();
+   if(reason==8){next.min=UINT_MAX;next.vertices=2;}
+   size_t at=0;w.pointPrimitiveLimit=caps.MaxPrimitiveCount;const auto run=w.pointReplayRun(adjacent,at,false);assert(at==(reason?1u:2u)&&run.count==(reason?64u:128u));
+   next.constantGroup=firstReplay.constantGroup;next.stride[0]=firstReplay.stride[0];next.start=192;next.type=firstReplay.type;next.cutoff=firstReplay.cutoff;next.constantUsage.booleans={};next.offset[0]=0;next.min=0;next.vertices=6;
   }
   w.replays.clear();cutout->Release();
-  std::printf("POINT_REPLAY_COALESCE_GPU_PASS opaqueCutout=exact faces=6 beforeDraws=%u afterDraws=%u poseStateStripEmitterOverflow=barriers faceWeights=unchanged\n",replayBefore,replayAfter);
+  std::printf("POINT_REPLAY_COALESCE_GPU_PASS opaqueCutout=exact faces=6 beforeDraws=%u afterDraws=%u poseStateStripOverflow=barriers faceWeights=unchanged\n",replayBefore,replayAfter);
   // Camera rotation exposes many cold immutable casters at once. Completed
   // source envelopes must cull them this frame, without changing any cube texel.
   std::vector<uint32_t> coldSource(std::begin(shaderSource),std::end(shaderSource));

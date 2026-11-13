@@ -90,7 +90,7 @@ def live_fixture(case):
         builder.add_mesh(mesh,((1,0,0),(0,1,0),(0,0,1)),(0,0,0),'m2',1)
         builder.write_tile(case/'tile.fg3',builder.instances)
         (case/'native-lamp.json').write_text(json.dumps({'asset':name,'asset_sha256':hashlib.sha256(assets.read(name)).hexdigest(),'triangles':len(triangles),
-            'cached_lamp_casters':0,'draw':'actual opaque M2 triangles, controlled one-bone SM3 replay; production patch, deformation and ownership helper; lamp remains fixed in world space'},indent=2)+'\n')
+            'cached_lamp_casters':0,'draw':'actual opaque M2 triangles, controlled one-bone SM3 replay; production patch and deformation; lamp remains fixed in world space'},indent=2)+'\n')
     finally:assets.close()
 
 
@@ -126,7 +126,7 @@ def benchmark(out,exe,args,backends,baseline_exe=None):
     from validate_native_scene_trace import processes
     baseline=out/'baseline';baseline.mkdir(exist_ok=True)
     executables={'baseline':baseline_exe or compile_gpu(baseline,args.baseline_source_root),'candidate':exe}
-    records=[];native_cpu=[]
+    records=[]
     for i,backend in enumerate(backends):
         settings=out/f'settings-{i}';settings.mkdir(exist_ok=True)
         for case in args.actor_case:
@@ -140,7 +140,6 @@ def benchmark(out,exe,args,backends,baseline_exe=None):
                     log=out/f'benchmark-{i}-{case.name}-{pair}-{variant}.log';log.write_text(result.stdout+result.stderr)
                     assert result.returncode==0,(log,result.stdout+result.stderr)
                     samples=[json.loads(line.removeprefix('LAMP_BENCH ')) for line in result.stdout.splitlines() if line.startswith('LAMP_BENCH ')]
-                    native_cpu.extend(dict(json.loads(line.removeprefix('LAMP_NATIVE_CPU ')),backend=str(backend),variant=variant,pair=pair) for line in result.stdout.splitlines() if line.startswith('LAMP_NATIVE_CPU '))
                     assert len(samples)==32 and all(row['selected_lights']==row['point_shadow_limit']==1 and (row['facing'] or row['shadow_pixels']==0) for row in samples)
                     records.extend(dict(row,backend=str(backend),variant=variant,pair=pair) for row in samples)
     summary=[]
@@ -167,7 +166,7 @@ def benchmark(out,exe,args,backends,baseline_exe=None):
         'harness_source_sha256':{name:hashlib.sha256((path.parent/'lamp-gpu-stand.cpp').read_bytes()).hexdigest() for name,path in executables.items()},
         'backend_sha256':{str(path):hashlib.sha256(path.read_bytes()).hexdigest() for path in backends},
         'fixture_sha256':{str(path):hashlib.sha256(path.read_bytes()).hexdigest() for case in args.actor_case for path in (case/'tile.fg3',case/'sources.fgl',case/'stand-origin.f32',case/'stand-basis.f32',case/'stand-ground.f32',case/'stand-pose-bone.u32',*sorted((case/'models').glob('*.fgs'))) if path.exists()},
-        'summary':summary,'samples':records,'native_cpu':native_cpu}
+        'summary':summary,'samples':records}
     (out/'benchmark.json').write_text(json.dumps(evidence,indent=2)+'\n')
 
 def main():

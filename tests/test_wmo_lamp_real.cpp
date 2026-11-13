@@ -1,4 +1,4 @@
-#include "wmo_lamp_shadow.h"
+#include "lamp_fixture_metadata.h"
 #include "world_mesh_plan.h"
 #include "world_mesh_pages.h"
 #include <cassert>
@@ -38,23 +38,23 @@ static void checkTags(const char* path){
 }
 static void checkMatches(const NorthlightGI::WorldScene& scene,const std::vector<NorthlightLocalLights::Light>& lights){
     NorthlightWorldMesh::WorldMeshUploadPlan plan;std::string error;assert(NorthlightWorldMesh::buildUploadPlan(scene,plan,error));
-    std::vector<size_t> matched;for(const auto& light:lights){const size_t index=NorthlightWmoLampShadow::unique(light,plan.batches);assert(index!=size_t(-1));matched.push_back(index);}
+    std::vector<size_t> matched;for(const auto& light:lights){const size_t index=LampFixtureMetadata::unique(light,plan.batches);assert(index!=size_t(-1));matched.push_back(index);}
     for(size_t i=0;i<matched.size();++i)for(size_t j=0;j<i;++j)assert(matched[i]!=matched[j]);
     for(unsigned anchor:{0u,NorthlightWorldMeshPages::AnchorModulus}){
         NorthlightWorldMeshPages::Options options;options.anchorModulus=anchor;
         NorthlightWorldMeshPages::Plan pages;assert(NorthlightWorldMeshPages::build(plan,pages,error,{},options));
-        for(const auto& light:lights)assert(NorthlightWmoLampShadow::unique(light,pages.batches)!=size_t(-1));
+        for(const auto& light:lights)assert(LampFixtureMetadata::unique(light,pages.batches)!=size_t(-1));
         NorthlightMeshPageKey::KeySet resident;for(const auto& page:pages.pages)resident.insert(page.key);
         options.resident=&resident;NorthlightWorldMeshPages::Plan reused;assert(NorthlightWorldMeshPages::build(plan,reused,error,{},options));
         for(const auto& page:reused.pages)assert(page.elided);
-        for(const auto& light:lights)assert(NorthlightWmoLampShadow::unique(light,reused.batches)!=size_t(-1));
+        for(const auto& light:lights)assert(LampFixtureMetadata::unique(light,reused.batches)!=size_t(-1));
     }
 }
 int main(int argc,char** argv){assert(argc==7);NorthlightGI::WorldScene scene;std::string error;assert(NorthlightGI::loadScene(argv[1],scene,error));
     checkTags(argv[1]);
     const size_t expected=std::strtoul(argv[6],nullptr,10);
     std::vector<NorthlightLocalLights::Light> lights;assert(NorthlightLocalLights::readFile(argv[2],lights)&&lights.size()==expected);
-    NorthlightWorldMesh::WorldMeshUploadPlan flat;assert(NorthlightWorldMesh::buildUploadPlan(scene,flat,error));for(const auto& light:lights)assert(NorthlightWmoLampShadow::unique(light,flat.batches)==size_t(-1));
+    NorthlightWorldMesh::WorldMeshUploadPlan flat;assert(NorthlightWorldMesh::buildUploadPlan(scene,flat,error));for(const auto& light:lights)assert(LampFixtureMetadata::unique(light,flat.batches)==size_t(-1));
     const NorthlightGI::Vec3 low{-100000,-100000,-100000},high{100000,100000,100000};const std::vector<std::string> tiles={argv[3]};NorthlightGI::WorldScene instanced;
     assert(NorthlightGI::loadInstancedScenes(tiles,argv[4],low,high,instanced,error));checkMatches(instanced,lights);
     auto native=lights;for(auto& light:native){light.kind=1;light.flags|=NorthlightLocalLights::Baked;light.attenuationStart=0.f;assert(NorthlightLocalLights::valid(light));}checkMatches(instanced,native);
@@ -66,16 +66,16 @@ int main(int argc,char** argv){assert(argc==7);NorthlightGI::WorldScene scene;st
         std::puts("PASS custom hidden lamps: empty light cache, no shadow exemptions, scene and cache reuse retained");return 0;
     }
     NorthlightGI::WorldScene overlap;assert(NorthlightGI::loadInstancedScenes({argv[5]},argv[4],low,high,overlap,error));NorthlightWorldMesh::WorldMeshUploadPlan overlapPlan;assert(NorthlightWorldMesh::buildUploadPlan(overlap,overlapPlan,error));
-    const auto ownIndex=NorthlightWmoLampShadow::unique(lights[0],overlapPlan.batches);assert(ownIndex!=size_t(-1));auto otherSource=lights[0];otherSource.sourceId^=1;assert(NorthlightWmoLampShadow::unique(otherSource,overlapPlan.batches)==size_t(-1));
+    const auto ownIndex=LampFixtureMetadata::unique(lights[0],overlapPlan.batches);assert(ownIndex!=size_t(-1));auto otherSource=lights[0];otherSource.sourceId^=1;assert(LampFixtureMetadata::unique(otherSource,overlapPlan.batches)==size_t(-1));
     unsigned coincidentOthers=0;const auto& ownBatch=overlapPlan.batches[ownIndex];for(const auto& candidate:overlapPlan.batches)if(candidate.lampSourceId&&candidate.lampSourceId!=ownBatch.lampSourceId&&candidate.count==8&&candidate.boundsLow.x==ownBatch.boundsLow.x&&candidate.boundsHigh.x==ownBatch.boundsHigh.x&&candidate.boundsLow.y==ownBatch.boundsLow.y&&candidate.boundsHigh.y==ownBatch.boundsHigh.y)++coincidentOthers;assert(coincidentOthers==1);
     scene=std::move(instanced);NorthlightWorldMesh::WorldMeshUploadPlan plan;assert(NorthlightWorldMesh::buildUploadPlan(scene,plan,error));
-    std::vector<size_t> matched;for(const auto& light:lights){const size_t index=NorthlightWmoLampShadow::unique(light,plan.batches);assert(index!=size_t(-1));matched.push_back(index);}
-    const auto& source=lights[0];const auto& batch=plan.batches[matched[0]];NorthlightGI::WorldScene filtered=scene;std::vector<NorthlightGI::WorldTriangle> keep;
-    for(const auto& triangle:scene.triangles)if(triangle.material!=batch.material)keep.push_back(triangle);assert(keep.size()+8==scene.triangles.size());filtered.triangles.clear();filtered.triangles.insert(filtered.triangles.end(),keep.begin(),keep.end());
-    NorthlightGI::BVH full,point;assert(full.build(std::move(scene),error,true)&&point.build(std::move(filtered),error,true));
+    std::vector<size_t> matched;for(const auto& light:lights){const size_t index=LampFixtureMetadata::unique(light,plan.batches);assert(index!=size_t(-1));matched.push_back(index);}
+    const auto& source=lights[0];const auto& batch=plan.batches[matched[0]];NorthlightGI::WorldScene untagged=scene;
+    for(auto& material:untagged.materials)material.lampSourceId=0;
+    NorthlightGI::BVH full,point;assert(full.build(std::move(scene),error,true)&&point.build(std::move(untagged),error,true));
     const NorthlightGI::Vec3 origin{source.position[0],source.position[1],source.position[2]};unsigned visible=0;
     for(const auto& triangle:full.scene().triangles)if(triangle.material==batch.material){const auto a=full.scene().vertices[triangle.v0].position,b=full.scene().vertices[triangle.v1].position,c=full.scene().vertices[triangle.v2].position;const auto dir=NorthlightGI::normalized((a+b+c)/3.f-origin);
         const auto before=full.trace(origin,dir,.01f,source.attenuationStart*1.2f),after=point.trace(origin,dir,.01f,source.attenuationStart*1.2f);
-        if(before.hit&&before.triangle<full.scene().triangles.size()&&full.scene().triangles[before.triangle].material==batch.material){assert(!after.hit||after.distance>=before.distance);++visible;}}
+        if(before.hit&&before.triangle<full.scene().triangles.size()&&full.scene().triangles[before.triangle].material==batch.material){assert(after.hit&&after.distance==before.distance);++visible;}}
     assert(visible>0);std::printf("PASS %zu real lamp matches; shared geometry retained; %u enclosure rays tested\n",lights.size(),visible);
 }

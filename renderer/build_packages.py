@@ -46,6 +46,7 @@ import northlight_paths as fp  # noqa: E402
 fp.use_source_modules()
 import build_stormlib  # noqa: E402
 import install_world_cache  # noqa: E402
+import build_renderer_assets  # noqa: E402
 
 PINS = json.loads((fp.RENDERER / 'package-pins.json').read_text(encoding='utf-8'))
 PLATFORMS = {'mac': 'macOS', 'windows': 'Windows', 'linux': 'Linux'}
@@ -355,6 +356,8 @@ def build(platform, version, dll, variants, out, stormlib_dir):
         tree.add('app/' + name, fp.REPO / name)
     dll_data = dll.read_bytes()
     dll_version = check_dll(dll_data)
+    resources = build_renderer_assets.built_path(dll).read_bytes()
+    resource_identity = build_renderer_assets.verify_pair(dll_data, resources)
     lib = build_stormlib.build(platform, stormlib_dir / platform)
     problems, _ = build_stormlib.verify(lib)
     if problems or sha(lib) != PINS['stormlib'][platform + '_sha256']:
@@ -362,6 +365,7 @@ def build(platform, version, dll, variants, out, stormlib_dir):
     runtime_pin = PINS['python_' + platform]
     {'windows': windows_runtime, 'mac': mac_runtime, 'linux': linux_runtime}[platform](tree, runtime_pin, lib)
     payload = {n: (fp.REPO / src).read_bytes() for n, src in PAYLOAD_COMMON.items()}
+    payload[build_renderer_assets.FILENAME] = resources
     if platform in PROXY_PLATFORMS:
         backend, license_text = dxvk_files('dxvk')
         backend2, license_text2 = dxvk_files('dxvk2')
@@ -388,6 +392,7 @@ def build(platform, version, dll, variants, out, stormlib_dir):
     info = {'format': 'northlight-package/1', 'version': version, 'platform': platform,
             'dll_version': dll_version, 'dll_sha256': hashlib.sha256(dll_data).hexdigest(),
             'dll_pe_normalized_sha256': hashlib.sha256(pe_normalized(dll_data)).hexdigest(),
+            'renderer_assets_sha256': resource_identity,
             'stormlib_sha256': sha(lib), 'stormlib_source_tree_sha256': PINS['stormlib']['source_tree_sha256'],
             'runtime': {k: runtime_pin[k] for k in ('name', 'version', 'url', 'sha256')},
             'dxvk': {k: PINS['dxvk'][k] for k in ('version', 'url', 'sha256')} if platform in PROXY_PLATFORMS else None,
@@ -399,6 +404,7 @@ def build(platform, version, dll, variants, out, stormlib_dir):
     tree.add('LICENSES/AO-methods.txt', fp.REPO / 'licenses/ao-methods.txt')
     tree.add('LICENSES/Dear-ImGui.txt', fp.REPO / 'licenses/imgui.txt')   # src/imgui/ (settings overlay)
     tree.add('LICENSES/Roboto.txt', fp.REPO / 'licenses/roboto.txt')   # the settings overlay's embedded font
+    tree.add('LICENSES/miniz.txt', fp.REPO / 'licenses/miniz.txt')
     tree.add('LICENSES/NVAPI.txt', fp.REPO / 'licenses/nvapi.txt')
     tree.add('LICENSES/St0ny-More-Lights.txt', fp.REPO / 'licenses/st0ny-more-lights.txt')
     path = out / f'{top}.zip'

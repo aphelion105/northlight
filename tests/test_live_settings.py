@@ -44,12 +44,13 @@ struct World {
     struct Fx{bool gi=true,shadows=true,fog=true;};Fx effects,requestedEffects;unsigned effectResets=0;
     void setEffects(const Fx& requested){requestedEffects=requested;Fx next=requested;next.gi=NorthlightQuality::giPass(quality,next.gi);next.shadows=quality.worldShadows&&next.shadows;next.fog=quality.worldFog&&next.fog;if(effects.gi==next.gi&&effects.shadows==next.shadows&&effects.fog==next.fog)return;++effectResets;settingsRequestDirty|=effects.gi!=next.gi||effects.fog!=next.fog;effects=next;}
     struct {float steps=0;} staticPrebuild;
+    struct {unsigned resets=0;void reset(){++resets;}} celestialLightMotion;
     unsigned resets=0,invalidates=0,actorChanges=0;
     struct {size_t full=0,half=0;void configureBudget(size_t a,size_t b){full=a;half=b;}} replaySnapshots;
     void setNearReserve(){}
     void releaseGPU(bool keep){assert(keep);++resets;}
     void actorSettingsChanged(){++actorChanges;}
-    void invalidateShadowCache(bool keepPointStatic=false){++invalidates;assert(keepPointStatic);}
+    void invalidateShadowCache(bool=true){++invalidates;}
     void releaseSoftShadows(){}
     void releaseNearEnvironment(){}
 __METHOD__

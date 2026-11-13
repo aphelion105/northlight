@@ -3,9 +3,17 @@
 #define NORTHLIGHT_TEST_REAL_NAME_MASK
 #include "surface_effects_gpu.cpp"
 #undef NORTHLIGHT_SURFACE_HELPERS_ONLY
+#ifdef NORTHLIGHT_EXTERNAL_ASSETS
+#include "resource_shader_checks.h"
+#endif
 
 int main(int argc,char** argv){
-    assert(argc==2);requireNoGame();
+    assert(argc==2||(argc==3&&std::strcmp(argv[2],"--allow-running-game")==0));
+    if(argc==2)requireNoGame();
+#ifdef NORTHLIGHT_EXTERNAL_ASSETS
+    std::string resourceError;
+    assert(NorthlightAssets::initialize("assets/northlight-assets.bin",resourceError));
+#endif
     HWND window=CreateWindowExW(0,L"STATIC",L"Northlight weather occlusion",WS_OVERLAPPED,0,0,64,64,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);assert(window);
     auto module=LoadLibraryA(argv[1]);assert(module);
     auto create=reinterpret_cast<IDirect3D9*(WINAPI*)(UINT)>(reinterpret_cast<void*>(GetProcAddress(module,"Direct3DCreate9")));assert(create);
@@ -13,6 +21,9 @@ int main(int argc,char** argv){
     D3DPRESENT_PARAMETERS pp{};pp.Windowed=TRUE;pp.hDeviceWindow=window;pp.BackBufferWidth=pp.BackBufferHeight=64;
     pp.BackBufferFormat=D3DFMT_X8R8G8B8;pp.SwapEffect=D3DSWAPEFFECT_DISCARD;pp.PresentationInterval=D3DPRESENT_INTERVAL_IMMEDIATE;
     IDirect3DDevice9* d=nullptr;ok(api->CreateDevice(0,D3DDEVTYPE_HAL,window,D3DCREATE_HARDWARE_VERTEXPROCESSING|D3DCREATE_FPU_PRESERVE,&pp,&d));
+#ifdef NORTHLIGHT_EXTERNAL_ASSETS
+    checkResourceShaders(d);
+#endif
     const unsigned W=320,H=180;
     IDirect3DSurface9 *target=nullptr,*stage=nullptr;
     ok(d->CreateRenderTarget(W,H,D3DFMT_A8R8G8B8,D3DMULTISAMPLE_NONE,0,FALSE,&target,nullptr));

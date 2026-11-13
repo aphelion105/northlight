@@ -4,27 +4,30 @@ The **Sun & moon → Celestial placement & size** selector saves
 `[Quality] CelestialStyle=Default` or `Forever` in `northlight-quality.ini`.
 Default follows the client's visible billboard positions and animated sizes.
 Forever uses the locally recovered daily orbit and enlargement tables, with
-Northlight's previously tuned base disc sizes:
+Northlight's solar calibration and the client's unreduced lunar base:
 
 | Body | Base angular radius | Imported enlargement |
 |---|---|---|
 | Sun | `atan(0.506736 / 24)` | 1–2 × linear size |
-| Moon | `atan(0.46176318 × 1.75 / 24)` | 1–1.5 × linear size |
+| Moon | `atan(1.75 / 24)` | 1–1.5 × linear size |
 
-These constants were used by `resolveRendererSky` in the initial public
-snapshot `90bcd597`. Commit `0f55ea9f` switched rendering to native sizes;
-the constants remained in `celestial_time_warp.h` for the earlier orbit's
-horizon crossings. They now provide one shared base calibration for that
-orbit and the Forever mode. Native base-size and animated-size fields do not
-multiply the Forever mode again.
+The original lunar calibration multiplied the base by `0.46176318`, making
+the disc about half as wide. Forever placement now omits that historical
+reduction. Native base-size and animated-size fields do not multiply it again.
+The earlier orbit's horizon constants and Outland planet scale remain separate.
 
-This reuses Northlight's earlier appearance tuning; the history does not prove
-that those absolute diameters match Forever. The provenance and limitations of
+The absolute diameter is a Northlight artistic choice, not a recovered Forever
+constant. The provenance and limitations of
 the imported orbit/scale tables are recorded in the
 [import investigation](../renderer/docs/expansion-atmosphere-and-celestial-20261112.md).
-Discs, halos, lighting and fog use the same resolved size and position.
+Discs, halos, lighting and fog use the same resolved size and position. HDR
+lunar surface radiance uses a linear gain of 8 instead of 2 before atmospheric
+extinction, retaining texture contrast and energy above the bloom threshold.
+The early, late and native-sky residual paths share this gain. World lighting,
+fog intensity and global exposure are independent.
 
-`test_expansion_atmosphere.py` checks both bodies at four time keys with nine
+`test_expansion_atmosphere.py` checks equality across Azeroth, Kalimdor and
+Northrend, and both bodies at four time keys with nine
 different combinations of native size/base size, repeated resolution without
 compounding, and preservation of Default mode. Existing native celestial and
 orbit tests cover the unchanged default and the shared horizon calculations.

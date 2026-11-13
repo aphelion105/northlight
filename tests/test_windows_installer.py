@@ -63,6 +63,39 @@ class InstallerTests(unittest.TestCase):
         self.assertIsNone(m.install(self.client,self.pkg))
         m.restore(self.client,backup)
         self.assertEqual(self.snapshot(),before)
+    def resource_package(self):
+        resources=b'NLA1'+b'compressed resource fixture'
+        dll=PROXY+b'\0NORTHLIGHT_ASSETS_V1:'+hashlib.sha256(resources).hexdigest().encode()+b'\0'
+        manifest=json.loads((self.pkg/'payload-manifest.json').read_text())
+        for name,data in [(m.RESOURCES,resources),('d3d9.dll',dll)]:
+            (self.pkg/'payload'/name).write_bytes(data)
+            manifest=[e for e in manifest if e['path']!=name]+[{'path':name,'sha256':hashlib.sha256(data).hexdigest()}]
+        (self.pkg/'payload-manifest.json').write_text(json.dumps(manifest))
+        return resources
+    def test_resources_install_before_dll_and_restore(self):
+        resources=self.resource_package();before=self.snapshot()
+        backup=m.install(self.client,self.pkg)
+        self.assertEqual(self.read(m.RESOURCES),resources)
+        entries=[e['path'] for e in json.loads((backup/'transaction.json').read_text())['files']]
+        self.assertLess(entries.index(m.RESOURCES),entries.index('d3d9.dll'))
+        m.restore(self.client,backup);self.assertEqual(self.snapshot(),before)
+    def test_mismatched_resources_refused_before_writes(self):
+        self.resource_package();before=self.snapshot()
+        (self.pkg/'payload'/m.RESOURCES).write_bytes(b'damaged')
+        with self.assertRaisesRegex(ValueError,'does not match'):
+            m.install(self.client,self.pkg)
+        self.assertEqual(self.snapshot(),before)
+        (self.pkg/'payload'/m.RESOURCES).unlink()
+        with self.assertRaisesRegex(ValueError,'Missing or invalid'):
+            m.install(self.client,self.pkg)
+        self.assertEqual(self.snapshot(),before)
+    def test_resources_must_be_listed_in_manifest(self):
+        self.resource_package();before=self.snapshot()
+        path=self.pkg/'payload-manifest.json'
+        path.write_text(json.dumps([e for e in json.loads(path.read_text()) if e['path']!=m.RESOURCES]))
+        with self.assertRaisesRegex(ValueError,'manifest lacks'):
+            m.install(self.client,self.pkg)
+        self.assertEqual(self.snapshot(),before)
     def test_foreign_moved_and_restore_round_trip(self):
         self.foreign();before=self.snapshot()
         backup=m.install(self.client,self.pkg)

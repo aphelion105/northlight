@@ -5,6 +5,8 @@
       "test_project_harness.py",
       "test_affected_tests.py",
       "test_build_source_identity.py",
+      "test_renderer_assets.py",
+      "test_dev_tuning_build.py",
       "test_capture_skip_wiring.py",
       "test_gpu_budget_wiring.py",
       "test_ao_fold.py",
@@ -21,6 +23,7 @@
     "description": "Compiled production contracts for frame demand, four Draw adapters, capture ownership and model-normal consumers. No game or GPU timings.",
     "tests": [
       "test_frame_requirements.py",
+      "test_point_replay_admission.py",
       "test_static_shadow_selection.py",
       "test_shadow_transition_math.py",
       "test_draw_gates.py",
@@ -37,7 +40,12 @@
       "test_world_shader_contract.py",
       "test_world_snapshot_domain.py",
       "test_world_environment.py",
+      "test_weather_shelter.py",
+      "test_expansion_atmosphere.py",
       "test_probe_local_visibility.py",
+      "test_renderer_assets_native.py",
+      "test_renderer_assets_dll.py",
+      "test_renderer_link.py",
       "test_world_shader_contract_client.py"
     ]
   },
@@ -53,7 +61,6 @@
       "test_m2_material_preflight.py",
       "test_world_screen_effects_gpu.py",
       "test_luxvelum_optimizations_gpu.py",
-      "test_point_lamp_index.py",
       "test_native_local_light_gpu.py",
       "test_native_more_lights_gpu.py",
       "test_point_shadow_stutter_gpu.py",
@@ -64,7 +71,9 @@
       "test_hdr_sun_gpu.py",
       "test_effect_coverage_gpu.py",
       "test_weather_motion_gpu.py",
+      "test_renderer_assets_gpu.py",
       "test_sky_planets_gpu.py",
+      "test_celestial_composition_gpu.py",
       "test_fog_volume_gpu.py",
       "test_probe_local_visibility_gpu.py"
     ]

@@ -3,6 +3,7 @@
 #include "composite_distance_gpu.cpp"
 #undef main
 #include "celestial_disc_compiled_shaders.h"
+#include "hdr_compiled_shaders.h"
 #include "celestial_disc.h"
 
 int main(int argc,char** argv){
@@ -70,7 +71,11 @@ int main(int argc,char** argv){
     weatherGain=1;
     for(unsigned body=0;body<2;++body){hdrPolicy=body?3:2;
         ok(d->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0,1,0));ok(d->BeginScene());planet(body,true,true,false);ok(d->EndScene());const auto bright=capture();
-        float peak=0;for(unsigned p=0;p<N*N;++p)peak=std::max(peak,bright[p*4]);assert(peak>1);++cases;
+        float peak=0;for(unsigned p=0;p<N*N;++p)peak=std::max(peak,bright[p*4]);assert(peak>1);
+        // A 190/255 lunar texel must retain >4 linear units before extinction,
+        // leaving substantial energy above the production bloom threshold of 1.
+        if(body)assert(peak>4&&peak<5);
+        ++cases;
         ok(d->BeginScene());flat(D3DCOLOR_ARGB(128,51,77,102),.99996f,true);ok(d->EndScene());const auto covered=capture();
         for(unsigned p=0;p<N*N;++p)for(unsigned k=0;k<3;++k){const float tint[]={51.f/255,77.f/255,102.f/255};const float expected=bright[p*4+k]*(127.f/255)+tint[k]*(128.f/255);if(std::fabs(covered[p*4+k]-expected)>5e-5f)++failures;}++cases;
         std::printf("HDR celestial body=%u relativePeak=%g cloudOrder=linear\n",body,peak);
@@ -82,6 +87,25 @@ int main(int argc,char** argv){
             const float alpha=std::sqrt(native[p*4+3]),n=native[p*4+k]/alpha,linear=n<=.04045f?n/12.92f:std::pow((n+.055f)/1.055f,2.4f);
             const float expected=std::max(bright[p*4+k]-linear*alpha,0.f);assert(std::fabs(residual[p*4+k]-expected)<.00005f);++checked;
         }assert(checked);++cases;
+        if(body){
+            Image input{N,N,D3DFMT_A32B32G32R32F,16,std::vector<unsigned char>(bright.size()*sizeof(float))};
+            std::memcpy(input.pixels.data(),bright.data(),input.pixels.size());auto source=texture(d,input);
+            IDirect3DPixelShader9* bloom=nullptr;ok(d->CreatePixelShader(reinterpret_cast<const DWORD*>(kHdrBloomHorizontal),&bloom));
+            ok(d->SetTexture(0,source));ok(d->SetPixelShader(bloom));ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE));
+            const float params[]={1.f/N,0,0,0};ok(d->SetPixelShaderConstantF(2,params,1));
+            const Vertex q[]={{-.5f,-.5f,0,1,0,0},{N-.5f,-.5f,0,1,1,0},{-.5f,N-.5f,0,1,0,1},{N-.5f,N-.5f,0,1,1,1}};
+            ok(d->BeginScene());ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,q,sizeof(Vertex)));ok(d->EndScene());const auto glow=capture();
+            unsigned haloPixels=0;
+            for(unsigned y=0;y<N;++y)for(unsigned x=0;x<N;++x){
+                float expected=0;
+                for(int tap=-2;tap<=2;++tap){unsigned tx=unsigned(std::clamp(int(x)+tap,0,int(N)-1));
+                    expected+=std::max(bright[(y*N+tx)*4]-1.f,0.f)*(tap==0?6:std::abs(tap)==1?4:1)/16.f;}
+                assert(std::fabs(glow[(y*N+x)*4]-expected)<.00002f);
+                haloPixels+=bright[(y*N+x)*4]==0&&glow[(y*N+x)*4]>.001f;
+            }
+            assert(haloPixels>0);std::printf("HDR lunar bloom outside disc pixels=%u\n",haloPixels);
+            d->SetTexture(0,white);source->Release();bloom->Release();++cases;
+        }
     }
     std::printf("cloud order GPU cases=%u checkedPixels=%u baselineWrongChannels=%u geometryPixels=%u maxError=%.9g failures=%u\n",cases,cases*N*N,baselineWrong,geometryPixels,maxError,failures);
     d->SetPixelShader(nullptr);for(unsigned s=0;s<6;++s)d->SetTexture(s,nullptr);moon->Release();white->Release();before->Release();after->Release();staging->Release();target->Release();zbuffer->Release();d->Release();api->Release();FreeLibrary(module);DestroyWindow(window);UnregisterClassW(wc.lpszClassName,wc.hInstance);return failures?1:0;

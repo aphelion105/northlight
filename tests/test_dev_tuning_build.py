@@ -33,6 +33,8 @@ class DevTuningBuild(unittest.TestCase):
         fp.src('renderer.cpp')  # build the source index before subprocess.run is replaced
         calls = []
         with mock.patch.object(br.subprocess, 'run', side_effect=lambda cmd, **kw: calls.append(cmd)), \
+                mock.patch.object(br, 'link_renderer', side_effect=lambda cmd, env, dll: calls.append(cmd)), \
+                mock.patch.object(br.shutil, 'copyfile'), \
                 mock.patch.object(br, 'check_compiler'), \
                 mock.patch.object(br.check_layout, 'layout_problems', return_value=[]), \
                 mock.patch.object(br.northlight_paths, 'zig', return_value=Path('zig')), \
@@ -51,6 +53,7 @@ class DevTuningBuild(unittest.TestCase):
         self.assertFalse([a for a in default if 'DEV_TUNING' in a], 'the default build gets no tuning define')
         self.assertIn('-DNORTHLIGHT_DEV_TUNING=1', dev)
         dev.remove('-DNORTHLIGHT_DEV_TUNING=1')
+        dev[dev.index('-I')+1] = default[default.index('-I')+1]
         self.assertEqual(dev[:-1], default[:-1], 'the flag changes nothing else but the output')
         self.assertEqual(Path(default[-1]).name, 'frd9.dll')
         self.assertEqual(Path(dev[-1]).name, 'frd9-dev-tuning.dll', 'the dev build never overwrites frd9.dll')

@@ -60,6 +60,21 @@ class Migration(unittest.TestCase):
     def test_dry_run_writes_nothing(self):
         before=tree(self.client);out=self.run_main()
         self.assertIn('Dry run',out);self.assertEqual(tree(self.client),before);self.assertFalse(self.backups.exists())
+    def test_resources_follow_mac_proxy_transaction(self):
+        resources=b'NLA1mac compressed resource fixture'
+        self.dll.write_bytes(PROXY+b'\0NORTHLIGHT_ASSETS_V1:'+sha(resources).encode()+b'\0')
+        self.dll.with_name(m.RESOURCES).write_bytes(resources)
+        before=tree(self.client)
+        steps=mig.plan(self.client,self.dll)
+        names=[s['path'] for s in steps]
+        self.assertLess(names.index(m.RESOURCES),names.index(mig.PROXY))
+        self.run_main('--apply')
+        self.assertEqual((self.client/m.RESOURCES).read_bytes(),resources)
+        self.run_main('--restore','--apply');self.assertEqual(tree(self.client),before)
+        self.dll.with_name(m.RESOURCES).write_bytes(b'wrong')
+        with self.assertRaisesRegex(ValueError,'does not match'):
+            self.run_main('--apply')
+        self.assertEqual(tree(self.client),before)
     def test_apply_order_and_restore(self):
         self.before=tree(self.client);self.run_main('--apply')
         self.assertEqual(tree(self.client),self.migrated())   # d3d9.dll (WoWSilicon DXVK) and wow.exe untouched

@@ -31,6 +31,24 @@ CONFIG = 'northlight-renderer.ini'
 MARKER = b'Northlight renderer '
 PROXY_SIGNATURE = b'PROXY module=%ls root=%ls'   # the proxy's start-up log line; carries no product name
 PACKAGE = Path(__file__).resolve().parent
+RESOURCES = 'northlight-assets.bin'
+
+
+def renderer_resources(dll):
+    """Legacy DLLs are self-contained; new ones require their exact sidecar."""
+    data = Path(dll).read_bytes()
+    identities = set(re.findall(rb'NORTHLIGHT_ASSETS_V1:([0-9a-f]{64})', data))
+    if not identities:
+        return None
+    path = Path(dll).with_suffix('.assets.bin')
+    if not path.is_file():
+        path = Path(dll).with_name(RESOURCES)
+    if len(identities) != 1 or not path.is_file() or path.stat().st_size > 16 * 1024 * 1024:
+        raise ValueError('Missing or invalid ' + RESOURCES + '; reinstall the complete renderer package')
+    resources = path.read_bytes()
+    if hashlib.sha256(resources).hexdigest().encode() not in identities or not resources.startswith(b'NLA1'):
+        raise ValueError(RESOURCES + ' does not match this renderer DLL')
+    return resources
 
 def sha(path):
     h = hashlib.sha256()
@@ -450,6 +468,10 @@ def payload_plan(client, package, use_existing=False, backend=None, extra=None, 
     effective = 'legacy' if config else backend if backend in ('dxvk', 'dxvk2', 'native') else None
     if config is None and backend in ('dxvk', 'dxvk2', 'native'): config = config_bytes(backend)
     manifest = json.loads((package/'payload-manifest.json').read_text(encoding='utf-8'))
+    resource_dll = package/'payload'/PROXY
+    resource_data = renderer_resources(resource_dll) if resource_dll.is_file() else None
+    if resource_data is not None and not any(e['path'] == RESOURCES and e.get('sha256') == hashlib.sha256(resource_data).hexdigest() for e in manifest):
+        raise ValueError('Package manifest lacks matching ' + RESOURCES)
     if proxy and PROXY not in [e['path'] for e in manifest]: raise ValueError('Package lacks the renderer '+PROXY)
     if foreign:
         print('Existing', PROXY, 'is not this renderer; it is kept as', LEGACY, flush=True)

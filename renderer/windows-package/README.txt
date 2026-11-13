@@ -6,6 +6,10 @@ an unmodified (stock) 3.3.5a client. You do not need to install anything else:
 the installer's own Python, StormLib and DXVK are in the package. The installer
 never starts the game and never changes wow.exe.
 
+The installer updates d3d9.dll and northlight-assets.bin together. Keep the
+resource file in the game folder; copying only a newer DLL disables effects
+until its matching resources are installed.
+
 DOWNLOADS
 - Northlight-__RELEASE_VERSION__-Windows.zip: the installer and the renderer (about 20 MB).
 - Nothing else: the installer builds the world cache (world-cache) itself from

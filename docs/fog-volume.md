@@ -5,6 +5,19 @@ D3D9. The implementation is independent of the shipped Forever shader code;
 [the client investigation](forever-fog-renderer-investigation.md) describes the
 reference and the limits of the static evidence.
 
+For Azeroth/Kalimdor the local `forever-atmosphere.bin` must be beside the DLL.
+`CelestialStyle=Forever` selects orbital placement only; it does not supply
+atmosphere data. `FOREVER atmosphere loaded=0` means those continents use the
+regional fallback even when all volume shaders are in the resource bundle.
+An active volume reports `FOG_VOLUME` on sampled frames. Outland/Northrend
+instead use the built-in biome profiles and their FRF parent-zone coverage;
+they do not require the external Forever table.
+
+Expansion profiles author scattering/extinction only. They inherit the native
+direct/ambient palette before interpolation, preserving skybox and material
+emission. Publishing their default zero palette would incorrectly remove
+environment lighting when the shared atmosphere consumers become active.
+
 `fog_volume.hlsl` evaluates the existing three-layer medium, noise and celestial
 shadow functions per cell instead of per screen-ray sample. The grid has one cell per 16 screen pixels in
 XY and 64 radial slices with cubic distance spacing. An 8×8 slice atlas allows

@@ -88,9 +88,6 @@ struct PointTerrainCoverageTest {
                 for(auto& p:w.replays)for(unsigned bone=0;bone<21;++bone)p->constantStorage[4*(31+3*bone)+3]+=.05f;bounds(21);}
             assert(render(false));const auto reference=image();const auto oldDraws=w.pointDraws;unsigned weights[6];std::copy_n(w.pointSlot().faceWeights,6,weights);
             assert(render(true));compare(reference,image());assert(std::equal(weights,weights+6,w.pointSlot().faceWeights));assert(w.pointWork.palettePackets>0&&w.pointDraws<oldDraws/2);++comparisons;}
-        for(unsigned emitter:{0u,1u}){WorldRenderer::PointReplayRuns runs{{0,1}};std::map<size_t,WorldRenderer::PointReplayRuns> splits{{emitter,runs}};
-            const std::vector<size_t> pair={0,1};size_t at=0;bool drawn=false;float rows[16]={};const auto draws=w.pointDraws;
-            assert(w.pointPaletteDraw(pair,at,splits,rows,drawn)&&!drawn&&!at&&w.pointDraws==draws);}
         // Sparse bone IDs must use their span, not the number of groups.
         auto sparse=std::make_shared<NorthlightDrawSnapshot::Mesh>(*source);auto sparseVertices=vertices;for(auto& v:sparseVertices)v.bones[0]=BYTE(v.bones[0]+50);std::memcpy(sparse->streams[0].bytes.data(),sparseVertices.data(),sparse->streams[0].bytes.size());
         must(vb->Lock(8*sizeof(Vertex),UINT(source->streams[0].bytes.size()),&data,0));std::memcpy(data,sparseVertices.data(),sparse->streams[0].bytes.size());must(vb->Unlock());for(auto& p:w.replays)p->shared=sparse;bounds(71);

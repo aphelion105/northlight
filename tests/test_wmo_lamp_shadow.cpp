@@ -1,4 +1,4 @@
-#include "wmo_lamp_shadow.h"
+#include "lamp_fixture_metadata.h"
 #include "point_light_shadow.h"
 #include <cassert>
 #include <cmath>
@@ -6,7 +6,7 @@
 #include <vector>
 struct Batch{unsigned material=0,count=8;bool terrain=false;NorthlightGI::Vec3 boundsLow,boundsHigh;uint64_t lampSourceId=0;};
 int main(){
-    using namespace NorthlightLocalLights;using NorthlightWmoLampShadow::unique;
+    using namespace NorthlightLocalLights;using LampFixtureMetadata::unique;
     Light source{};source.position[0]=10;source.diffuse[0]=.3f;source.attenuationStart=.8f;source.attenuationEnd=5.f;source.kind=3;source.flags=CastShadow|GlassEmitter;source.sourceId=1;
     assert(valid(source));auto invalid=source;invalid.kind=1;assert(!valid(invalid));invalid=source;invalid.flags=GlassEmitter;assert(!valid(invalid));
     std::vector<Batch> batches={{0,8,false,{9.5f,-.5f,-.5f},{10.5f,.5f,.5f},1},

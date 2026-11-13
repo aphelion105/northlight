@@ -40,7 +40,7 @@ checks['key ActorShadows 0..1, presets 1/1/1, default 1']=re.search(r'\{\s*"Acto
 checks['effective() forces exactly the two replay keys']=('inline Settings effective(Settings s){if(!s.actorShadows)for(const auto& k:ActorShadowForced)s.*k.field=0;return s;}' in q
     and 'inline const ForcedKey ActorShadowForced[]={\n    {"ShadowFateDiagnostics",' in q and 'persistentRigidProps' not in q and 'persistentCasters' not in q
     and '{"ShadowFateDiagnostics",&Settings::shadowFateDiagnostics},{"DiagReplayProbe",&Settings::diagReplayProbe}};' in q)
-checks['actorShadowWork']='inline bool actorShadowWork(const Settings& s,bool shadows){return shadows&&s.actorShadows;}' in q
+checks['actorShadowWork']='inline bool actorShadowWork(const Settings& s,bool shadows){return shadows&&s.actorShadows&&(s.shadowProvider||(s.localLights&&s.localLightLimit&&s.pointShadows&&s.pointShadowLimit));}' in q
 # loadQuality: effective() right after the QUALITY/warning lines, before anything reads the settings.
 lq=w[w.index('    void loadQuality(){'):w.index('    HRESULT quad(UINT w,UINT h,')]
 eff='quality=NorthlightQuality::effective(quality);'
@@ -70,8 +70,8 @@ checks['ActorShadows=1 reduces both to freshReplays; 0: consumers off, schedules
 checks['unavailable geometry never consumes shadow replays']=all(value(defs['replayShadows'],f,a,False) is False for f in (False,True) for a in (False,True))
 checks['disabled component never selects shadow replays']=all(value(defs['replayShadows'],f,a,g,False) is False for f in (False,True) for a in (False,True) for g in (False,True))
 # Consumers (replayShadows) and schedules/commits (replaysComplete, actorShadows).
-consumers=['if(replayShadows)selectShadowReplays();','const bool directionalReplayBounds=replayShadows&&(sourceActive[0]||sourceActive[1]);','if(directionalReplayBounds)replayBoundsKick();','(replayShadows&&!timedReplay())',
-           'if(effects.shadows&&replayShadows){auto proofs','if(directionalReplayBounds)pointCalculateReplayBounds();']
+consumers=['if(replayShadows)selectShadowReplays();','const bool directionalReplayBounds=directionalShadows&&replayShadows&&(sourceActive[0]||sourceActive[1]);','if(directionalReplayBounds)replayBoundsKick();','(replayShadows&&!timedReplay())',
+           'if(directionalShadows&&replayShadows){auto proofs','if(directionalReplayBounds)pointCalculateReplayBounds();']
 schedules=['||!replaysComplete||shadowTransitionFailed||memoryPressure', '!reason&&key.valid&&!pull&&!actorLost&&!transition.state.fading(),shadowDiagnosticCapture!=0,replaysComplete);','if(cascade==0)nearRendered=!environmentReuse&&captureMode==CaptureFresh&&interval>1&&actorShadows;',
            'if(!environmentReuse){if(splitNear||captureMode==CaptureFresh||!actorShadows)reuse.commit(interval,shadowPasses,matrices[cascade]);else captureDemand=true;}',
            'renderPointShadows(atmosphere.lights,replaysComplete,actorShadows,rendererFrame);else pointReady=false;',
@@ -104,11 +104,11 @@ count='if(fresh)pointReplayCount=withReplays?replays.size():0;'
 def point_replays_guarded(text):
     candidates=guarded_block(text,candidate_head);draws=guarded_block(text,'if(withReplays){')
     once(text,count,'point replay count')
-    for needle in ('const auto& bounds=replays[i]->pointBounds;', 'pointOwnShell(*replays[i],ownShell,runs)',
+    for needle in ('const auto& bounds=replays[i]->pointBounds;',
                    'pointAppendCandidates(pointReplayCandidates,i,mask,faces);'):once(candidates,needle,'point candidate guard')
     for needle in ('for(size_t at=0;at<pointReplayCandidates[face].size();){const size_t index=pointReplayCandidates[face][at];const auto& p=replays[index];',
-                   'pointReplayRun(pointReplayCandidates[face],at,replayRuns,replayBindings.skipping())',
-                   '"cube animated draw"','"cube split emitter draw"'):once(draws,needle,'point draw guard')
+                   'pointReplayRun(pointReplayCandidates[face],at,replayBindings.skipping())',
+                   '"cube animated draw"'):once(draws,needle,'point draw guard')
     outside=text.replace(candidates,'').replace(draws,'').replace(count,'')
     return (text.index(candidates)+len(candidates)<=text.index(draws)
             and text.index(draws)+len(draws)<text.index('// With no dynamic casters, min(cache, cache) copies the static face')
@@ -137,7 +137,7 @@ mutations=[
     (point_replays_guarded,pb.replace(candidate_head,candidate_head.removeprefix('if(withReplays)')),'unguarded point candidates'),
     (point_replays_guarded,pb.replace('if(withReplays){','if(true){'),'unguarded point draws'),
     (point_replays_guarded,pb.replace(count,'if(fresh)pointReplayCount=replays.size();'),'unguarded replay count'),
-    (point_replays_guarded,pb.replace(candidate_head,'pointOwnShell(*replays[0],ownShell,runs);'+candidate_head),'unguarded emitter read'),
+    (point_replays_guarded,pb.replace(candidate_head,'consume(replays[0]->pointBounds);'+candidate_head),'unguarded bounds read'),
     (point_replays_guarded,pb+' for(const auto& p:replays)consume(p);','unguarded replay range'),
     (flash_replays_guarded,flash.replace('if(withReplays){','if(true){'),'unguarded flash actors'),
     (flash_replays_guarded,flash.replace('renderFlashMap(s,1,withReplays)','renderFlashMap(s,1,true)'),'far flash switch bypass'),
@@ -147,7 +147,7 @@ for audit,text,label in mutations:rejected(audit,text,label)
 checks['audit rejects all broken shadow guards']=True
 # Blob filter: the default strength policy follows actor shadows; explicit hiding is independent.
 helper='bool blobFilterActive()const{return shadowBlobs&&shadowBlobs->active()&&enabled&&terrain&&!failed&&world&&world->hasContext()&&(!world->blobShadowsEnabled()||(!applied&&effectKeys.settings.shadows&&world->terrainShadowActive()&&world->actorShadowsEnabled()));}'
-checks['native blob stays when no replacement shadow was composited']=('bool terrainShadowActive()const{return effects.shadows&&ready()&&shadowsComposited;}' in w and 'shadowsComposited=geometryReady&&effects.shadows&&(sourceActive[0]||sourceActive[1])&&debug==0;' in w)
+checks['native blob stays when no replacement shadow was composited']=('bool terrainShadowActive()const{return directionalShadowWork()&&ready()&&shadowsComposited;}' in w and 'shadowsComposited=geometryReady&&applyDirectionalShadows&&(sourceActive[0]||sourceActive[1])&&debug==0;' in w)
 # 0.3.187: the four draw entry points share drawHook(); FrameDrawGates=0 and =1 both test the helper.
 checks['blob filter: one helper, every draw through drawHook']=(r.count(helper)==1 and r.count('if(!claimed&&blobFilterActive())extensionWork("blob shadow filter",[&]{blobFilter(count,claimed);});')==1
     and r.count('if(!claimed&&drawGates.blob){stage="blob shadow filter";if(blobFilterActive())blobFilter(count,claimed);}')==1 and r.count('return drawHook(t,count,')==4

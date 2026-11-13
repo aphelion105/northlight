@@ -56,6 +56,21 @@ Source basenames form the existing include namespace and must stay unique.
 
 ## Runtime contracts
 
+The production DLL loads `northlight-assets.bin` once, outside `DllMain`, before
+constructing its D3D9 factory. It checks the complete file's SHA-256 against the
+identity compiled into the DLL, bounds both file and output sizes, and validates
+the zlib stream before publishing immutable, aligned resource storage. Rendering
+uses those resident bytes; there is no per-frame file access or decompression.
+The decoded bundle occupies about 2.2 MiB of process memory. Smaller installation
+files are not a claim of lower rendering memory or improved FPS.
+
+Missing, damaged or mismatched resources leave the backend's original D3D9 factory
+unwrapped and log why effects were disabled. Windows/Linux transactions install
+the resource file before the DLL; macOS migration includes it in the same rollback
+record. Package verification checks the DLL/resource identity as well as manifest
+hashes. Canonical generated arrays remain available to independent native/GPU
+oracles, including byte equality and malformed-input controls.
+
 1. **One native submit owner.** Four `Draw*` adapters preserve their D3D9 argument
    tuples. `drawHook` owns preparation, fault boundaries and the shared tail.
    `captureGameDraw` preserves terrain-before-material ordering and the current
@@ -116,14 +131,14 @@ Source basenames form the existing include namespace and must stay unique.
    MSAA image pairs reuse a GPU resolve capped at 64 MiB;
    only the cropped region (at most 768 by 768) reaches system-memory staging.
    Resolving never changes the game's scene boundaries or render state.
-7. **Fixture identity and self-shadow exclusion are separate.** An exact
+7. **Fixture identity grants shadow intent.** An exact
    GameObjectDisplayInfo owner plus a supported authored M2 point source grants
    root-fixture shadow intent after runtime name, vertex and structure hashes
    match. Constant and animated emitters use the same proof. NLF1 v3 permits
    zero owned-shell triangles and shell sources that are a subset of the proven
-   source mask; v2 retains its stricter legacy validation. Shell geometry only
-   controls exclusion of the emitter's own luminous surfaces. Its absence cannot
-   disqualify an open brazier. Parent-attached sources and unmatched assets gain
+   source mask; v2 retains its stricter legacy validation. Lamp geometry casts
+   shadows like other geometry; the renderer does not match or exclude a
+   light's own triangles. Missing shell metadata cannot disqualify an open brazier. Parent-attached sources and unmatched assets gain
    no fixture classification. See [point-light investigation](point-light-investigation.md)
    for the capture evidence and remaining live acceptance gap.
 8. **Track evaluation reads only semantic dependencies.** A single-key M2

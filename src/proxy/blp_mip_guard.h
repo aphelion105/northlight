@@ -9,18 +9,27 @@
 // targets stay in the client, so a probe/unload of d3d9 cannot leave a callback
 // pointing into an unloaded DLL. No client instruction bytes are embedded.
 namespace NorthlightBlpMipGuard {
-inline constexpr uintptr_t DirectRva=0x2affd0,PatchOffset=0x12f;
+inline constexpr uintptr_t DirectRva=0x2affd0,PatchOffset=0x119,DirectBranch=0xa5,LoopOffset=0x129;
 inline constexpr size_t DirectSize=350;
 inline constexpr unsigned char BoundedLoop[]={
-    0x8b,0x8e,0xa0,0x04,0x00,0x00, // mov ecx,[esi+4a0h]
+    // Shared success epilogue. The direct branch below enters after it.
+    0x5b,0x5f,0x31,0xc0,0x89,0x86,0x98,0x04,0x00,0x00,0x40,0x5e,0x5d,0xc2,0x14,0x00,
+    // The native allocator sizes its table from dimensions, even when the BLP
+    // mip flag is zero. Reuse its count helper (including six-face strips).
+    0xff,0x76,0x14,0xff,0x76,0x10,0xe8,0xfc,0xb5,0xff,0xff,0x59,0x59,0x91,
     0x83,0xf9,0x10,0x76,0x03,0x6a,0x10,0x59, // min(count,16)
     0x8b,0x96,0x98,0x04,0x00,0x00,0x56,0x83,0xc6,0x18,
-    0x8b,0x7d,0x10,0x8b,0x3f,0xe3,0x0c,
+    0x8b,0x7d,0x10,0x8b,0x3f,
     0x83,0x7e,0x40,0x00,0x74,0x06, // stop on the first zero size too
     0xad,0x01,0xd0,0xab,0xe2,0xf4, // offset + source -> output; loop
-    0x5e,0xeb,0xbc,0x90            // restore self; original success epilogue
+    0x5e,0xeb,0xbc,0x90            // restore self; shared success epilogue
 };
 static_assert(PatchOffset+sizeof BoundedLoop==DirectSize);
+inline void patched(unsigned char* function){
+    std::memcpy(function+PatchOffset,BoundedLoop,sizeof BoundedLoop);
+    const int32_t displacement=int32_t(LoopOffset-(DirectBranch+6));
+    std::memcpy(function+DirectBranch+2,&displacement,sizeof displacement);
+}
 
 inline bool read(uintptr_t address,void* out,size_t size){
     SIZE_T got=0;return ReadProcessMemory(GetCurrentProcess(),reinterpret_cast<void*>(address),out,size,&got)&&got==size;
@@ -93,20 +102,20 @@ struct MemoryOps {
 };
 inline const char* replace(unsigned char* function,const unsigned char (&before)[DirectSize],MemoryOps ops={}){
     PausedThreads threads;
-    auto* target=function+PatchOffset;
-    if(const auto* error=threads.pause(reinterpret_cast<uintptr_t>(target),sizeof BoundedLoop))return error;
+    auto* target=function;
+    if(const auto* error=threads.pause(reinterpret_cast<uintptr_t>(target),DirectSize))return error;
     if(std::memcmp(function,before,DirectSize))return "decoder-changed-concurrently";
     DWORD old=0;
-    if(!ops.protect(target,sizeof BoundedLoop,PAGE_EXECUTE_READWRITE,&old))return "code-protection-failed";
-    std::memcpy(target,BoundedLoop,sizeof BoundedLoop);
-    const bool flushed=ops.flush(GetCurrentProcess(),target,sizeof BoundedLoop)!=FALSE;
+    if(!ops.protect(target,DirectSize,PAGE_EXECUTE_READWRITE,&old))return "code-protection-failed";
+    patched(target);
+    const bool flushed=ops.flush(GetCurrentProcess(),target,DirectSize)!=FALSE;
     DWORD ignored=0;
-    if(flushed&&ops.protect(target,sizeof BoundedLoop,old,&ignored))return "active";
+    if(flushed&&ops.protect(target,DirectSize,old,&ignored))return "active";
     // Restore the exact saved code before any thread resumes if publication
     // failed. A failed protection restore leaves the page writable here.
-    std::memcpy(target,before+PatchOffset,sizeof BoundedLoop);
-    const bool rollbackFlush=ops.flush(GetCurrentProcess(),target,sizeof BoundedLoop)!=FALSE;
-    const bool rollbackProtect=ops.protect(target,sizeof BoundedLoop,old,&ignored)!=FALSE;
+    std::memcpy(target,before,DirectSize);
+    const bool rollbackFlush=ops.flush(GetCurrentProcess(),target,DirectSize)!=FALSE;
+    const bool rollbackProtect=ops.protect(target,DirectSize,old,&ignored)!=FALSE;
     if(!rollbackFlush)return "rollback-cache-failed";
     if(!rollbackProtect)return "rollback-protection-failed";
     return flushed?"code-protection-restore-failed":"code-cache-flush-failed";
@@ -126,7 +135,7 @@ inline const char* install(HMODULE image=GetModuleHandleW(nullptr)){
     if(!read(base+DirectRva,direct,sizeof direct)||!read(base+0x2ae900,attach,sizeof attach)||!read(base+0x2ab700,levels,sizeof levels))return "client-code-unreadable";
     if(!digest(attach,sizeof attach,"d0e0b60eaec5970f40cb7a1942eb997ccd5293ad0f272ca3585d20e38f1b54a1")||
        !digest(levels,sizeof levels,"54b9266c7fa1b3c636c9c8f27f8ced76730c10bd43d0bc157353e6b341d5cebc"))return "client-layout-mismatch";
-    if(digest(direct,sizeof direct,"019e36b156bbca51383f29635599008ff4ec8cfbfc1233207fd9b088818809c6"))return "already-active";
+    if(digest(direct,sizeof direct,"06299ea91a3dfa4370155206bb6b49f880dbd63c1ae2b50e7c6e0fc912bd1936"))return "already-active";
     if(!digest(direct,sizeof direct,"f74ce8ec7778092011d97da5cd9b8e3a38347cd7aead0fbfaf6da05dbe318409"))return "decoder-signature-mismatch";
     return replace(reinterpret_cast<unsigned char*>(base+DirectRva),direct);
 #else

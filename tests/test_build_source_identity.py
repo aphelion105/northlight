@@ -30,6 +30,9 @@ with tempfile.TemporaryDirectory() as folder:
     assert ordered=='2999f0c376f87e604ca537470577a54e8d79fc483fd09d0f4ae81428986a1742'
     (root/'src/new.cpp').write_text('Added input')
     assert build.source_identity(root)!=ordered
+    before_assets=build.source_identity(root)
+    (root/'scripts/build_renderer_assets.py').write_text('Resource pack generator')
+    assert build.source_identity(root)!=before_assets
 source=fp.src('renderer.cpp').read_text()
 assert 'BUILD identity source=%s' in source and 'NORTHLIGHT_SOURCE_ID' in source
 assert '__DATE__' not in source and '__TIME__' not in source

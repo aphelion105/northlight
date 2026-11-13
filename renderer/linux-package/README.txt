@@ -9,6 +9,10 @@ renderer files) runs natively on Linux with the package's own Python and
 StormLib; you do not need to install anything else. The installer never
 starts the game and never changes Wow.exe.
 
+The installer updates d3d9.dll and northlight-assets.bin together. Keep both
+files in the game folder; copying only a newer DLL disables effects until its
+matching resources are installed.
+
 NOT TESTED IN GAME YET
 This Linux package has been checked only by automated tests. Nobody has played
 with it under Wine or Proton yet. Please report what works and what does not

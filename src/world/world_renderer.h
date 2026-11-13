@@ -39,7 +39,6 @@
 #include "local_light_selection.h"
 #include "equipment_lights.h"
 #include "native_light_bridge.h"
-#include "native_fixture_shadow.h"
 #include "particle_lights.h"
 #include "particle_uploads.h"
 #include "equipment_light_proof.h"
@@ -49,7 +48,6 @@
 #include "local_light_batches.h"
 #include "local_light_trace.h"
 #include "point_light_shadow.h"
-#include "wmo_lamp_shadow.h"
 #include "point_transmission_filter.h"
 #include "weather_lens_heat.h"
 #include "fog_ambient.h"
@@ -3142,7 +3140,7 @@ public:
         flushDeferredLogs(); /* 0.3.176 (U0/S0): after every bucketed span of the frame */
         if(profileSampled()){unsigned typed=0,eligible=0;for(const auto& p:replays){typed+=p->boundsWork.paletteSpan!=0;eligible+=pointPaletteSpan(*p)!=0;}
             logf("POINT palette rendererFrame=%u draws=%u packets=%u registers=%u instanceBytes=%u typedSources=%u eligibleSources=%u disabled=%u retryFrames=%llu",rendererFrame,pointWork.paletteDraws,pointWork.palettePackets,pointWork.paletteRegisters,pointPaletteIds?unsigned(84*sizeof(float)):0,typed,eligible,unsigned(pointPaletteUnavailable),(unsigned long long)(pointPaletteRetryFrame>frames?pointPaletteRetryFrame-frames:0));}
-        if(profileSampled())logf("POINT workload rendererFrame=%u selected=%u staticDraws=%u terrainDraws=%u liveDraws=%u replayDraws=%u replayMerged=%u emitterDraws=%u unionDraws=%u casterTriangles=%llu clippedGapTriangles=%llu staticRebuiltFaces=%u staticRestores=%u boundsTotal=%zu boundsValid=%u boundsUnbounded=%zu unboundedRigidFacePackets=%u unboundedSkinnedFacePackets=%u whiteLightingSkipped=%u boundsRuns=%u",rendererFrame,pointWork.selected,pointWork.statics,pointWork.terrain,pointWork.live,pointWork.replay,pointWork.replayMerged,pointWork.split,pointWork.unions,(unsigned long long)pointWork.triangles,(unsigned long long)pointWork.bridged,pointWork.rebuilt,pointWork.restored,replays.size(),pointBoundsValid,replays.size()-std::min(replays.size(),size_t(pointBoundsValid)),pointWork.unboundedRigid,pointWork.unboundedSkinned,pointWork.whiteLightingSkipped,replayBoundsRuns);
+        if(profileSampled())logf("POINT workload rendererFrame=%u selected=%u staticDraws=%u terrainDraws=%u liveDraws=%u replayDraws=%u replayMerged=%u unionDraws=%u casterTriangles=%llu clippedGapTriangles=%llu staticRebuiltFaces=%u staticRestores=%u boundsTotal=%zu boundsValid=%u boundsUnbounded=%zu unboundedRigidFacePackets=%u unboundedSkinnedFacePackets=%u whiteLightingSkipped=%u boundsRuns=%u",rendererFrame,pointWork.selected,pointWork.statics,pointWork.terrain,pointWork.live,pointWork.replay,pointWork.replayMerged,pointWork.unions,(unsigned long long)pointWork.triangles,(unsigned long long)pointWork.bridged,pointWork.rebuilt,pointWork.restored,replays.size(),pointBoundsValid,replays.size()-std::min(replays.size(),size_t(pointBoundsValid)),pointWork.unboundedRigid,pointWork.unboundedSkinned,pointWork.whiteLightingSkipped,replayBoundsRuns);
         if(profileSampled())logf("NATIVE_DIRECT workload rendererFrame=%u nativeSlots=%u attempts=%u otherMatchedKept=%u unavailableCube=%u submittedTotal=%llu dualSubmittedTotal=%llu tripleSubmittedTotal=%llu fallbackTotal=%llu coldPairs=%u deferredPairs=%u rendererDirect=unchanged",rendererFrame,nativeDirectSlots,nativeDirectMatched,nativeDirectMultiple,nativeDirectMissingCube,(unsigned long long)(nativeDirectRenderer?nativeDirectRenderer->draws:0),(unsigned long long)(nativeDirectRenderer?nativeDirectRenderer->multiDraws:0),(unsigned long long)(nativeDirectRenderer?nativeDirectRenderer->tripleDraws:0),(unsigned long long)(nativeDirectRenderer?nativeDirectRenderer->fallbacks:0),nativeDirectRenderer?nativeDirectRenderer->coldPairs:0,nativeDirectRenderer?nativeDirectRenderer->deferredPairs:0);
         if(profileSampled())logf("NATIVE_DIRECT coverage rendererFrame=%u nativeCounts=%u,%u,%u,%u,%u matchedCounts=%u,%u,%u,%u,%u unclassifiedPreparedBypass=%u unclassifiedPrivateBypass=%u bankMemoHits=%u bankMemoMisses=%u scope=decoded-native-pairs counts=draws-by-slot-count",
             rendererFrame,nativeDirectSlotCounts[0],nativeDirectSlotCounts[1],nativeDirectSlotCounts[2],nativeDirectSlotCounts[3],nativeDirectSlotCounts[4],nativeDirectMatchCounts[0],nativeDirectMatchCounts[1],nativeDirectMatchCounts[2],nativeDirectMatchCounts[3],nativeDirectMatchCounts[4],nativeDirectPreparedBypass,nativeDirectPrivateBypass,nativeDirectBankHits,nativeDirectBankMisses);
@@ -3976,7 +3974,7 @@ public:
         if(!skyEnvironment.valid&&(!std::strcmp(map,"Expansion01")||!std::strcmp(map,"Northrend"))){
             std::shared_ptr<const PaletteRegion> region;
             {std::lock_guard<std::mutex> lock(mutex);region=publishedPaletteRegion;}
-            if(region&&region->map==map)skyEnvironment=NorthlightExpansionAtmosphere::sample(region->region,map,context.camera,celestialValid?celestial.dayFraction:-1.f,storm);
+            if(region&&region->map==map)skyEnvironment=NorthlightExpansionAtmosphere::sample(region->region,map,context.camera,celestialValid?celestial.dayFraction:-1.f,storm,context.direct,context.ambient);
         }
         skyEnvironment=foreverTransition.update(skyEnvironment,map,context.camera,double(GetTickCount64())*.001);
         const float* renderDirect=skyEnvironment.valid?skyEnvironment.direct:context.direct;

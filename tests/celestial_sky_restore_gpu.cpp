@@ -74,6 +74,13 @@ int main(int argc,char** argv){
     for(unsigned scenario=0;scenario<3;++scenario)for(unsigned opacity:{0u,64u,255u}){
         const float transition=scenario==0?0.f:scenario==1?128.f/255:1.f;
         const unsigned alpha1=opacity,alpha2=opacity?128u:0u,horizonAlpha=opacity?32u:0u;
+        // Production stores transmission in RGBA16F after every layer. Its
+        // rounding multiplies HDR radiance; an SDR-only absolute bound misses it.
+        auto fp16=[](float v){return float(_Float16(v));};
+        float transmission=1-alpha1/255.f,stored=fp16(transmission);
+        if(scenario){transmission=transition+transmission*(1-transition);stored=fp16(transition+stored*(1-transition));}
+        transmission*=1-alpha2/255.f;stored=fp16(stored*(1-alpha2/255.f));
+        transmission*=1-horizonAlpha/255.f;stored=fp16(stored*(1-horizonAlpha/255.f));
         layers.begin(10+cases);captureLayers=true;composition=nullptr;
 
         ok(d->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0,1,0));ok(d->BeginScene());
@@ -106,7 +113,8 @@ int main(int argc,char** argv){
             if(foreground)expected=c1[k];
             else{expected=unobscured[p*4+k];expected=expected*(1-alpha1/255.f)+c1[k]*(alpha1/255.f);
                 expected=expected*(1-transition)+secondSky[p*4+k]*transition;
-                expected=expected*(1-alpha2/255.f)+c2[k]*(alpha2/255.f);expected=expected*(1-horizonAlpha/255.f)+hz[k]*(horizonAlpha/255.f);}
+                expected=expected*(1-alpha2/255.f)+c2[k]*(alpha2/255.f);expected=expected*(1-horizonAlpha/255.f)+hz[k]*(horizonAlpha/255.f);
+                if(linear){const float background[]={34.f/255,38.f/255,42.f/255};expected+=(stored-transmission)*(unobscured[p*4+k]-background[k]);}}
             if(std::fabs(fallback[p*4+k]-expected)>.01f)++baselineWrong;
             double error=std::fabs(actual[p*4+k]-expected);maxError=std::max(maxError,error);
             if(!std::isfinite(actual[p*4+k])||error>8e-4){if(failures++<5)std::printf("FAIL kind=%u scenario=%u opacity=%u pixel=%u channel=%u got=%g expected=%g\n",kind,scenario,opacity,p,k,actual[p*4+k],expected);}

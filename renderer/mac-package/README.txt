@@ -7,6 +7,10 @@ the installer's own Python and StormLib are in the package (the Xcode tools and
 the system Python are not used). The installer never starts the game or
 WoWSilicon and never changes wow.exe.
 
+The installer updates mods/d3d9.dll and northlight-assets.bin together. Keep
+northlight-assets.bin in the game folder, outside mods/. A mismatched resource
+file disables Northlight effects until the complete package is reinstalled.
+
 DOWNLOADS
 - Northlight-__RELEASE_VERSION__-macOS.zip: the installer and the renderer.
 - Nothing else: the installer builds the world cache (world-cache) itself from

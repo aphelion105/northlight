@@ -329,7 +329,6 @@ test_native_derivative_hoist.py
 test_native_direct_ownership.py
 test_native_event_cold_gpu.py
 test_native_event_thread_log.py
-test_native_fixture_shadow.py
 test_native_light_asset_cache.py
 test_native_light_snapshot.py
 test_native_light_transport.py
@@ -377,7 +376,6 @@ test_pipeline_all_off_gpu.py
 test_pipeline_bindings_cpu.py
 test_pipeline_wave_cpu.py
 test_point_clip_prepared.py
-test_point_lamp_index.py
 test_point_light_shadow.py
 test_point_palette_gpu.py
 test_point_pipeline_init_gpu.py
@@ -426,6 +424,11 @@ test_regional_fog_water_mask.py
 test_regional_surface_shadow.py
 test_removal_confidence_gpu.py
 test_render_thread_probe.py
+test_renderer_assets.py
+test_renderer_assets_dll.py
+test_renderer_assets_gpu.py
+test_renderer_assets_native.py
+test_renderer_link.py
 test_renderer_status.py
 test_replay_adaptive_safety.py
 test_replay_bounds.py

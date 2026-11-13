@@ -77,6 +77,9 @@
 #endif
 #include "ao_actor_stencil.h"
 #include "ao_actor_policy.h"
+#ifdef NORTHLIGHT_EXTERNAL_ASSETS
+#include "renderer_assets.h"
+#endif
 
 // 0.3.181 (r90): the DLL's one memcmp. This strong definition overrides zig compiler_rt's weak byte
 // loop for every call site in all four TUs (libc++ included) and returns the same value for every
@@ -4631,7 +4634,7 @@ static HMODULE backend() {
     // DllMain. This one-shot guard has no callbacks into the proxy after unload.
     const bool blpGuard=GetPrivateProfileIntW(L"Renderer",L"BlpMipGuard",1,config)!=0;
     const char* blpStatus=blpGuard?NorthlightBlpMipGuard::install():"disabled";
-    logf("BLP mip guard status=%s runtime-only=1 limit=client-count/16 files-written=0",blpStatus);
+    logf("BLP mip guard status=%s runtime-only=1 limit=allocated-dimensions/16 files-written=0",blpStatus);
     logf("GLUE lighting selection status=%s own-source-priority=1 slot-limit=4 runtime-only=1",NorthlightGlueLighting::install());
     const bool lightStay=GetPrivateProfileIntW(L"Renderer",L"NativeLightStay",1,config)!=0;
     logf("NATIVE light stay status=%s requested=%u runtime-only=1 files-written=0 restart-required=1",NorthlightNativeLightStay::install(lightStay),unsigned(lightStay));
@@ -4726,6 +4729,18 @@ extern "C" IDirect3D9* WINAPI Direct3DCreate9(UINT sdk) {
     if(!fn)return nullptr;
     // The outer (game) call wraps once; a re-entered call returns the raw runtime.
     IDirect3D9* p=fn(sdk);
+#ifdef NORTHLIGHT_EXTERNAL_ASSETS
+    if(p&&!NorthlightBackendLoader::ExportScope::reentered()){
+        static const bool resources=[](){
+            std::string error;
+            const bool loaded=NorthlightAssets::initialize(std::filesystem::path(rootPath)/L"northlight-assets.bin",error);
+            logf("RESOURCES %s loaded=%u %s",NorthlightAssets::identity(),unsigned(loaded),error.c_str());
+            if(!loaded)logf("Northlight effects disabled: reinstall the matching northlight-assets.bin; native rendering retained");
+            return loaded;
+        }();
+        if(!resources)return p;
+    }
+#endif
     return p&&!NorthlightBackendLoader::ExportScope::reentered()?new Factory(p):p;
 }
 extern "C" HRESULT WINAPI Direct3DCreate9Ex(UINT sdk,IDirect3D9Ex** out) {

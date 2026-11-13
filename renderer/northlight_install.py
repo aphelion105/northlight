@@ -604,6 +604,13 @@ class Installer:
         backend other than the selected one may be missing or damaged (antivirus products remove DXVK builds):
         they are reported and skipped by install.payload_plan."""
         manifest = read_json(self.pkg.root / 'payload-manifest.json')
+        try:
+            if self.pkg.dll.is_file():
+                resources = INSTALL.renderer_resources(self.pkg.dll)
+                if resources is not None and not any(e.get('path') == INSTALL.RESOURCES for e in (manifest or [])):
+                    raise ValueError('Package manifest lacks ' + INSTALL.RESOURCES)
+        except ValueError as error:
+            raise Refusal(str(error)) from error
         if manifest is None or not self.pkg.dll.is_file():
             raise Refusal('The package is incomplete (payload-manifest.json or payload/d3d9.dll missing). '
                           'Unzip the download again.')

@@ -42,6 +42,28 @@ python3 scripts/build_renderer.py           # -> renderer/frd9.dll
 python3 scripts/pe_normalized_hash.py renderer/frd9.dll
 ```
 
+The DLL is delivered with `renderer/northlight-assets.bin`. Install both: the
+resource file contains losslessly compressed shader bytecode, weather textures
+with their existing mip levels, and the overlay font. The package builder refuses
+a missing or mismatched pair. Developer/profile/stand variants write a separate
+`<dll-stem>.assets.bin`, so they cannot replace the production resource file;
+copy that file as `northlight-assets.bin` into the target game's root (the stand's
+module folder). macOS keeps the resources in the game root even though its DLL
+is installed under `mods/`.
+
+`scripts/build_renderer_assets.py` builds the bundle and lightweight array-access
+headers under the configured output directory. Original generated headers remain
+the byte-for-byte reference for offline compilation and tests. The build puts its
+resource headers first on the include path. No shader source, bytecode, texture
+resolution, mip level or rendering quality is changed by packing.
+
+Zig 0.15.2 does not forward GNU `--gc-sections` to its COFF linker. The build records
+the pinned driver's actual link command and repeats that inexpensive link with
+`/OPT:REF /OPT:NOICF`. This removes unused code while retaining the separate PDB
+and distinct function addresses. Compilation remains `-O2`; global `-Os` is not
+used without matched performance evidence. Link diagnostics and the map are saved
+under the configured output root.
+
 The build first runs the layout check (nothing back at a pre-move path, unique basenames). On
 Windows it also compiles a minimal C++ file before starting the renderer build. Zig 0.15.2
 can report `error: Unexpected` inside a restricted execution sandbox, even with fresh local

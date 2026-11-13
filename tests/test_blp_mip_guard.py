@@ -47,6 +47,10 @@ if args.client:
 if args.dll:
     proxy = out / 'd3d9.dll'
     shutil.copy2(args.dll, proxy)
+    from scripts.build_renderer_assets import built_path, verify_pair, FILENAME
+    bundle = built_path(args.dll).read_bytes()
+    verify_pair(args.dll.read_bytes(), bundle)
+    (out / FILENAME).write_bytes(bundle)
     runtime = out / 'renderer-backends' / args.backend / (args.backend + '_d3d9.dll')
     runtime.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(args.backend_dll, runtime)

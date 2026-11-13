@@ -31,10 +31,13 @@ int main(){
     for(unsigned y=0;y<16;++y)for(unsigned x=0;x<16;++x)tile.zones[y*16+x]=x<8?3518:3521;
     region.tiles.push_back(tile);
     float pos[3]={float(NorthlightRegionalFog::WorldZero-(512+8)*NorthlightRegionalFog::ChunkSize),float(NorthlightRegionalFog::WorldZero-(512+8)*NorthlightRegionalFog::ChunkSize),100};
-    const auto middle=sample(region,"Expansion01",pos,.5f,0);
+    const float regionDirect[]={.8f,.6f,.4f},regionAmbient[]={.15f,.2f,.3f};
+    const auto middle=sample(region,"Expansion01",pos,.5f,0,regionDirect,regionAmbient);
+    for(unsigned c=0;c<3;++c){assert(middle.direct[c]==regionDirect[c]);assert(middle.ambient[c]==regionAmbient[c]);}
+    assert(!middle.skyValid); // Native expansion sky art and emission stay native.
     const float expected=(density("Expansion01",3518)+density("Expansion01",3521))*.5f;
     assert(std::fabs(NorthlightForever::sigma(middle,100,0,0)-expected)<1e-5);
-    pos[1]-=.001f;const auto right=sample(region,"Expansion01",pos,.5f,0);pos[1]+=.002f;const auto left=sample(region,"Expansion01",pos,.5f,0);
+    pos[1]-=.001f;const auto right=sample(region,"Expansion01",pos,.5f,0,regionDirect,regionAmbient);pos[1]+=.002f;const auto left=sample(region,"Expansion01",pos,.5f,0,regionDirect,regionAmbient);
     assert(std::fabs(NorthlightForever::sigma(right,100,0,0)-NorthlightForever::sigma(left,100,0,0))<1e-6);
 
     using namespace NorthlightForeverSky;
@@ -63,8 +66,8 @@ int main(){
     const auto once=imported;NorthlightCelestial::resolveRendererSky(imported,direct,true);
     assert(imported.sun.angularRadius==once.sun.angularRadius); // never accumulate enlargement
 
-    // Preserve the pre-native Northlight calibration, then apply only the
-    // imported size curve. Native animation/base changes must not resize this mode.
+    // Apply the imported curve once. Native animation/base changes must not
+    // resize this mode; all three Azeroth continents share the resolved radii.
     unsigned sizeCases=0;
     for(float nativeSize:{.3f,1.f,3.f})for(float baseSize:{.5f,1.f,1.75f})for(float day:{0.f,.25f,.5f,.875f}){
         snap.dayFraction=day;for(auto& b:snap.bodies){b.size=nativeSize;b.baseSize=baseSize;}
@@ -75,7 +78,11 @@ int main(){
         const float sunScale=day==0||day==.25f||day==.875f?2.f:1.f;
         const float moonScale=day==0?1.f:1.5f;
         assert(std::fabs(imported.sun.angularRadius-std::atan(.506736f*sunScale/24))<1e-7);
-        assert(std::fabs(imported.moon.angularRadius-std::atan(.46176318f*1.75f*moonScale/24))<1e-7);
+        assert(std::fabs(imported.moon.angularRadius-std::atan(1.75f*moonScale/24))<1e-7);
+        for(const char* map:{"Azeroth","Kalimdor","Northrend"}){
+            auto continent=native;NorthlightCelestial::resolveRendererSky(continent,direct,true,map);
+            assert(continent.sun.angularRadius==imported.sun.angularRadius&&continent.moon.angularRadius==imported.moon.angularRadius&&continent.lunarBody);
+        }
         const auto fixed=imported;NorthlightCelestial::resolveRendererSky(imported,direct,true);
         assert(imported.sun.angularRadius==fixed.sun.angularRadius&&imported.moon.angularRadius==fixed.moon.angularRadius);
         ++sizeCases;

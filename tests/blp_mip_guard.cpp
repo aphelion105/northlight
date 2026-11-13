@@ -21,9 +21,9 @@ static std::vector<unsigned char> readFile(const char* name){
     FILE* f=std::fopen(name,"rb");assert(f);std::fseek(f,0,SEEK_END);long n=std::ftell(f);assert(n>0);std::rewind(f);
     std::vector<unsigned char> bytes(n);assert(std::fread(bytes.data(),1,bytes.size(),f)==bytes.size());std::fclose(f);return bytes;
 }
-static unsigned levels(const unsigned char* p){
+static unsigned levels(const unsigned char* p,bool allocation=false){
     unsigned w=word(p+12),h=word(p+16);assert(w&&h);if(w==h*6)w/=6;
-    if(!(p[11]&15))return 1;unsigned n=1;while(w>1||h>1){w=std::max(w/2,1u);h=std::max(h/2,1u);++n;}return n;
+    if(!allocation&&!(p[11]&15))return 1;unsigned n=1;while(w>1||h>1){w=std::max(w/2,1u);h=std::max(h/2,1u);++n;}return n;
 }
 static DWORD protection(void* p){MEMORY_BASIC_INFORMATION info={};assert(VirtualQuery(p,&info,sizeof info));return info.Protect;}
 static void writable(void* p,size_t size){DWORD old;assert(VirtualProtect(p,size,PAGE_EXECUTE_READWRITE,&old));}
@@ -34,7 +34,7 @@ static void executable(void* p,size_t size){DWORD old;assert(VirtualProtect(p,si
 static std::array<unsigned char,B::DirectSize> harness(){
     std::array<unsigned char,B::DirectSize> bytes;bytes.fill(0xcc);
     const unsigned char entry[]={0x55,0x89,0xe5,0x56,0x57,0x53,0x89,0xce,0xe9,0,0,0,0};
-    std::memcpy(bytes.data(),entry,sizeof entry);put(bytes.data()+9,uint32_t(B::PatchOffset-13));
+    std::memcpy(bytes.data(),entry,sizeof entry);put(bytes.data()+9,uint32_t(B::LoopOffset-13));
     const unsigned char leave[]={0x5b,0x5f,0xc7,0x86,0x98,0x04,0,0,0,0,0,0,0xb8,1,0,0,0,0x5e,0x5d,0xc2,0x14,0};
     static_assert(sizeof leave==22);std::memcpy(bytes.data()+B::PatchOffset-22,leave,sizeof leave);
     return bytes;
@@ -48,12 +48,13 @@ static unsigned invoke(Direct code,const std::vector<unsigned char>& source,unsi
 static unsigned cases=0;
 static void check(Direct code,const std::vector<unsigned char>& source,unsigned count){
     const auto before=source;unsigned wanted=0;
-    while(wanted<std::min(count,16u)&&word(source.data()+84+4*wanted))++wanted;
+    while(wanted<std::min(levels(source.data(),true),16u)&&word(source.data()+84+4*wanted))++wanted;
     SYSTEM_INFO sys={};GetSystemInfo(&sys);const size_t page=sys.dwPageSize;
     auto* block=static_cast<unsigned char*>(VirtualAlloc(nullptr,3*page,MEM_COMMIT|MEM_RESERVE,PAGE_NOACCESS));assert(block);
     DWORD old;assert(VirtualProtect(block+page,page,PAGE_READWRITE,&old));
-    // Exactly the number of entries permitted by the client, then a guard page.
-    const unsigned capacity=std::min(count,16u);auto* table=reinterpret_cast<uint32_t*>(block+2*page)-capacity;
+    // Exactly the native allocator's capacity, then a guard page; mip flags
+    // and decoder counts do not determine this table's size.
+    const unsigned capacity=std::min(levels(source.data(),true),16u);auto* table=reinterpret_cast<uint32_t*>(block+2*page)-capacity;
     for(unsigned i=0;i<capacity;++i)table[i]=0xa5a5a5a5;
     assert(invoke(code,source,count,table)==1);
     for(unsigned i=0;i<wanted;++i)assert(table[i]==uint32_t(uintptr_t(source.data())+word(source.data()+20+4*i)));
@@ -113,7 +114,11 @@ static void proxySmoke(unsigned char* image,int count,char** samples){
 }
 static void mechanics(){
     const auto authored=harness();unsigned char before[B::DirectSize];std::memcpy(before,authored.data(),sizeof before);
-    auto* code=static_cast<unsigned char*>(VirtualAlloc(nullptr,4096,MEM_COMMIT|MEM_RESERVE,PAGE_READWRITE));assert(code);
+    auto* allocation=static_cast<unsigned char*>(VirtualAlloc(nullptr,0x6000,MEM_COMMIT|MEM_RESERVE,PAGE_READWRITE));assert(allocation);
+    auto* code=allocation+0x5000;
+    // Independently authored dimension-count oracle at the relative helper VA.
+    const unsigned char dimensionCount[]={0x8b,0x4c,0x24,4,0x8b,0x54,0x24,8,0x8d,4,0x52,1,0xc0,0x39,0xc1,0x75,2,0x89,0xd1,9,0xd1,0xb8,1,0,0,0,0x0f,0xbd,0xc9,0x74,3,0x8d,0x41,1,0xc3};
+    auto* helper=code-(B::DirectRva-0x2ab700);std::memcpy(helper,dimensionCount,sizeof dimensionCount);executable(allocation,0x5000);
     std::memcpy(code,before,sizeof before);executable(code,4096);
     equal(B::install(),"client-layout-mismatch");
     equal(B::replace(code,before,{&failProtect,&FlushInstructionCache}),"code-protection-failed");
@@ -142,12 +147,12 @@ static void mechanics(){
     for(unsigned i=0;i<6;++i)workers.emplace_back([&]{while(!stop.load()){std::vector<unsigned> a(1024,turns.fetch_add(1));if(a[0]==UINT32_MAX)std::abort();}});
     while(turns.load()<100)std::this_thread::yield();
     const char* installed=B::replace(code,before);stop.store(true);for(auto& worker:workers)worker.join();equal(installed,"active");
-    assert(!std::memcmp(code,before,B::PatchOffset)&&!std::memcmp(code+B::PatchOffset,B::BoundedLoop,sizeof B::BoundedLoop));
+    unsigned char expected[B::DirectSize];std::memcpy(expected,before,sizeof expected);B::patched(expected);assert(!std::memcmp(code,expected,sizeof expected));
     assert(protection(code)==PAGE_EXECUTE_READ);
     std::vector<unsigned char> source(8192,0x55);put(source.data(),0x32504c42);put(source.data()+4,1);source[8]=2;source[11]=1;
     for(unsigned prefix=0;prefix<=16;++prefix){
         for(unsigned i=0;i<16;++i){put(source.data()+20+4*i,1172+4*i);put(source.data()+84+4*i,i<prefix?4:0);}
-        for(unsigned count=0;count<=20;++count)check(reinterpret_cast<Direct>(code),source,count);
+        for(unsigned count=0;count<=20;++count){put(source.data()+12,1u<<std::min(count,31u));put(source.data()+16,1);check(reinterpret_cast<Direct>(code),source,count);}
         check(reinterpret_cast<Direct>(code),source,UINT32_MAX);
     }
     // A pre-existing suspend count is preserved by the installer.
@@ -156,7 +161,7 @@ static void mechanics(){
     // Destruction is needed before checking the caller-owned suspend count.
     for(size_t i=parked.count;i>0;--i){auto& t=parked.threads[i-1];if(t.paused){assert(ResumeThread(t.handle)!=DWORD(-1));t.paused=false;}}
     assert(ResumeThread(held)==1);assert(WaitForSingleObject(held,10000)==WAIT_OBJECT_0);CloseHandle(held);
-    assert(VirtualFree(code,0,MEM_RELEASE));
+    assert(VirtualFree(allocation,0,MEM_RELEASE));
     std::printf("BLP_GUARD_MECHANICS_PASS cases=%u heapTurns=%u rollback=1 busyRefused=1 suspendCountsPreserved=1\n",cases,turns.load());
 }
 static void client(const char* file,int count,char** samples){
@@ -177,7 +182,7 @@ static void client(const char* file,int count,char** samples){
     }
     // Only three explicitly audited code fragments are copied to our reserved
     // storage. No client PE entrypoint, imports or game initialization are run.
-    const auto original=std::vector<unsigned char>(clientReserve,clientReserve+sizeof clientReserve);
+    auto original=std::vector<unsigned char>(clientReserve,clientReserve+sizeof clientReserve);
     unsigned char pristine[B::DirectSize];std::memcpy(pristine,image+B::DirectRva,sizeof pristine);
     const auto code=reinterpret_cast<Direct>(image+B::DirectRva);std::vector<std::array<uint32_t,512>> baseline(count);std::vector<uint32_t> bases(count);
     for(int i=0;i<count;++i){auto source=readFile(samples[i]);bases[i]=uint32_t(uintptr_t(source.data()));baseline[i].fill(0xa5a5a5a5);assert(invoke(code,source,levels(source.data()),baseline[i].data())==1);}
@@ -189,8 +194,8 @@ static void client(const char* file,int count,char** samples){
     equal(B::install(reinterpret_cast<HMODULE>(image)),"client-layout-mismatch");
     writable(image+0x2ae900,144);image[0x2ae900]^=1;executable(image+0x2ae900,144);
     equal(B::install(reinterpret_cast<HMODULE>(image)),"active");equal(B::install(reinterpret_cast<HMODULE>(image)),"already-active");
-    for(size_t i=0;i<original.size();++i){const auto address=uintptr_t(clientReserve+i),start=uintptr_t(image+B::DirectRva+B::PatchOffset);
-        assert(clientReserve[i]==(address>=start&&address-start<sizeof B::BoundedLoop?B::BoundedLoop[address-start]:original[i]));}
+    B::patched(original.data()+uintptr_t(image+B::DirectRva)-uintptr_t(clientReserve));
+    assert(!std::memcmp(clientReserve,original.data(),original.size()));
     using Count=unsigned(__cdecl*)(unsigned,unsigned);const auto clientCount=reinterpret_cast<Count>(image+0x2ab700);
     std::vector<unsigned char> synthetic(8192,0x55);put(synthetic.data(),0x32504c42);put(synthetic.data()+4,1);synthetic[8]=2;
     for(unsigned i=0;i<16;++i){put(synthetic.data()+20+4*i,1172+4*i);put(synthetic.data()+84+4*i,4);}
@@ -207,7 +212,7 @@ static void client(const char* file,int count,char** samples){
         const auto n=levels(synthetic.data());assert(clientCount(side*6,side)==n);check(code,synthetic,n);++geometryCases;}
     std::printf("BLP_GUARD_GEOMETRY_PASS cases=%u cubeStrip=1 noMip=1 firstLevelBounds=1\n",geometryCases);
     unsigned removed=0;
-    for(int i=0;i<count;++i){auto source=readFile(samples[i]);const auto before=source;const auto n=levels(source.data());check(code,source,n);
+    for(int i=0;i<count;++i){auto source=readFile(samples[i]);const auto before=source;const auto n=levels(source.data(),true);check(code,source,levels(source.data()));
         std::array<uint32_t,512> after;after.fill(0xa5a5a5a5);assert(invoke(code,source,n,after.data())==1);
         unsigned valid=0;while(valid<n&&valid<16&&word(source.data()+84+4*valid))++valid;
         for(unsigned j=0;j<valid;++j)assert(baseline[i][j]-bases[i]==after[j]-uint32_t(uintptr_t(source.data())));assert(source==before);
@@ -225,7 +230,7 @@ static void client(const char* file,int count,char** samples){
         for(int i=0;i<count;++i){auto source=readFile(samples[i]);check(code,source,levels(source.data()));}
         std::puts("BLP_GUARD_UNLOAD_PASS moduleResident=0 clientCodeCallable=1");
     }
-    std::printf("BLP_GUARD_CLIENT_PASS samples=%d extraPointerCasesRemoved=%u changedBytes=47 idempotent=1\n",count,removed);
+    std::printf("BLP_GUARD_CLIENT_PASS samples=%d extraPointerCasesRemoved=%u boundedHeaderSlots=16 idempotent=1\n",count,removed);
 }
 int main(int argc,char** argv){
     static_assert(sizeof(void*)==4);

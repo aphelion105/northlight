@@ -44,10 +44,9 @@
     using PointCandidates=std::array<std::vector<size_t>,6>;
     PointCandidates pointStaticCandidates,pointTerrainCandidates,pointLiveCandidates,pointReplayCandidates;
     std::vector<unsigned char> pointBatchMasks;
-    NorthlightWmoLampShadow::SourceIndex pointLampSources;
     UINT pointPrimitiveLimit=0;bool pointMinBlend=false;
-    struct PointWork {unsigned selected=0,statics=0,terrain=0,live=0,replay=0,replayMerged=0,split=0,unions=0,rebuilt=0,restored=0,unboundedRigid=0,unboundedSkinned=0,whiteLightingSkipped=0,paletteDraws=0,palettePackets=0,paletteRegisters=0;uint64_t triangles=0,bridged=0;} pointWork;
-    struct PointCold {unsigned cubes=0,statics=0,shared=0,shaders=0;int64_t ticks=0;} pointCold;
+    struct PointWork {unsigned selected=0,statics=0,terrain=0,live=0,replay=0,replayMerged=0,unions=0,rebuilt=0,restored=0,unboundedRigid=0,unboundedSkinned=0,whiteLightingSkipped=0,paletteDraws=0,palettePackets=0,paletteRegisters=0;uint64_t triangles=0,bridged=0;} pointWork;
+    struct PointCold {unsigned cubes=0,statics=0,shared=0,shaders=0;int64_t ticks=0,prepare=0,boundsWait=0,candidates=0,submit=0;} pointCold;
     template<class Call> HRESULT pointAllocate(unsigned& attempts,Call call){
         ++attempts;const bool timed=NorthlightQuality::renderProfile(quality);const int64_t start=timed?QpcClock::now():0;
         const HRESULT hr=call();if(timed)pointCold.ticks+=QpcClock::now()-start;return hr;
@@ -106,7 +105,6 @@
         for(auto* lists:{&pointStaticCandidates,&pointTerrainCandidates,&pointLiveCandidates,&pointReplayCandidates})
             for(auto& list:*lists)std::vector<size_t>().swap(list);
         std::vector<unsigned char>().swap(pointBatchMasks);
-        pointLampSources.clear();
     }
     bool pointCheck(HRESULT hr,const char* operation){
         if(SUCCEEDED(hr))return true;
@@ -609,85 +607,6 @@
         return NorthlightPointShadow::selectMany(active->localLights.data(),active->localLights.size(),context.camera,NorthlightQuality::localShadowLimit(quality),{},float(quality.pointShadowDistance),true).count!=0||
             NorthlightPointShadow::selectMany(equipmentLights.output.data(),equipmentLights.outputCount,context.camera,NorthlightQuality::localShadowLimit(quality),{},float(quality.pointShadowDistance),true).count!=0;
     }
-    using PointReplayRuns=std::vector<std::pair<UINT,UINT>>;
-    struct NativeShellMemo {
-        std::weak_ptr<const NorthlightDrawSnapshot::Mesh> mesh;
-        std::shared_ptr<const NorthlightActorDeformation::Program> program;
-        std::array<float,1024> constants{};std::array<float,16> inverse{};
-        std::array<float,3> point{};std::uint64_t declaration=0;unsigned tag=0,source=0;
-        NorthlightNativeFixtureShadow::Prepared prepared;
-        NorthlightDrawSnapshot::Mesh ownedMesh;
-        Batch::LampTriangles local,worldTriangles;
-        std::vector<NorthlightActorDeformation::Position> world;
-        bool matched=false;PointReplayRuns runs;
-    };
-    std::array<NativeShellMemo,32> nativeShellMemo;unsigned nativeShellNext=0,nativeShellProofs=0,nativeShellMemoHits=0,nativeShellPoseChecks=0;
-    bool pointOwnNativeShell(const Replay& p,const NorthlightLocalLights::Light& light,PointReplayRuns& remaining,const NorthlightEquipmentLights::Tracker::Entry* resolved=nullptr){
-        const auto* entry=resolved?resolved:equipmentLights.fixture(light.sourceId);
-        if(!entry||!nativeFixtures||entry->fixtureTag>nativeFixtures->records.size()||(p.cutoff>=0&&p.cutoff!=.5f)||!p.count||p.count>4096||
-           p.mesh().vertexCount>12288||p.count!=p.mesh().primitiveCount||(p.type!=D3DPT_TRIANGLELIST&&p.type!=D3DPT_TRIANGLESTRIP))return false;
-        if(!p.pointBounds.valid)return false;
-        for(unsigned k=0;k<3;++k)if(entry->source.position[k]<p.pointBounds.low[k]-.003f||entry->source.position[k]>p.pointBounds.high[k]+.003f)return false;
-        const auto program=actorPrograms.find(p.originalShader);const D3DVERTEXELEMENT9* elements=nullptr;UINT elementCount=0;
-        if(program==actorPrograms.end()||!program->second||!declarationCache.get(p.decl,elements,elementCount))return false;
-        const auto declaration=NorthlightNativeFixtures::hash(elements,elementCount*sizeof(*elements));
-        const auto source=unsigned((entry->nativeId-1)&63);
-        NativeShellMemo transient,*memo=nullptr;
-        if(p.shared)for(auto& cached:nativeShellMemo)if(cached.tag==entry->fixtureTag&&cached.source==source&&cached.program==program->second&&cached.declaration==declaration&&cached.mesh.lock()==p.shared){memo=&cached;break;}
-        if(memo){++nativeShellMemoHits;if(!memo->prepared.valid())return false;
-            if(!std::memcmp(memo->constants.data(),p.constants,sizeof memo->constants)&&!std::memcmp(memo->inverse.data(),context.inverseView,sizeof memo->inverse)&&!std::memcmp(memo->point.data(),entry->source.position,sizeof memo->point)){
-                remaining=memo->runs;return memo->matched;}}
-        else{
-        memo=p.shared?&nativeShellMemo[nativeShellNext++%nativeShellMemo.size()]:&transient;*memo=NativeShellMemo{};
-        memo->mesh=p.shared;memo->program=program->second;memo->declaration=declaration;memo->tag=entry->fixtureTag;memo->source=source;
-        const auto& record=nativeFixtures->records[entry->fixtureTag-1];
-        const NorthlightNativeFixtures::ShellView shell{nativeFixtures->shells.data()+record.shellFirst,record.shellCount};
-        const D3DVERTEXELEMENT9* position=nullptr;
-        for(UINT i=0;i<elementCount&&elements[i].Stream!=0xff;++i)if(elements[i].Usage==D3DDECLUSAGE_POSITION&&!elements[i].UsageIndex){if(position)return false;position=elements+i;}
-        if(!position||position->Stream>=4||position->Method!=D3DDECLMETHOD_DEFAULT)return false;
-        const auto& stream=p.mesh().streams[position->Stream];const unsigned width=NorthlightDrawSnapshot::declarationBytes(position->Type);
-        if(!width||unsigned(position->Offset)+width>stream.stride||!p.mesh().vertexCount||std::uint64_t(p.mesh().vertexCount-1)*stream.stride+position->Offset+width>stream.bytes.size())return false;
-        ++nativeShellProofs;std::vector<NorthlightActorDeformation::Position> raw(p.mesh().vertexCount);
-        for(UINT i=0;i<p.mesh().vertexCount;++i){NorthlightActorDeformation::Four value;
-            if(!NorthlightActorDeformation::decodeElement(stream.bytes.data()+std::size_t(i)*stream.stride+position->Offset,position->Type,value))return false;
-            raw[i]={value[0],value[1],value[2]};}
-        if(!StaticShadowDedup::makeTriangles(raw,p.mesh().indices,p.mesh().indexed,p.count,p.type==D3DPT_TRIANGLESTRIP,memo->local,4096))return false;
-        memo->prepared=NorthlightNativeFixtureShadow::prepare(shell,source,memo->local);if(!memo->prepared.valid())return false;
-        const auto& excluded=memo->prepared.excluded;
-        for(UINT first=0;first<excluded.size();){if(excluded[first]){++first;continue;}UINT end=first+1;while(end<excluded.size()&&!excluded[end])++end;memo->runs.push_back({first,end-first});first=end;}
-        NorthlightActorDeformation::Binding bindings[16];std::size_t bindingCount=0;unsigned provided=0,streams=0;
-        if(!NorthlightActorDeformation::transientBindings(*program->second,p.mesh(),elements,elementCount,bindings,bindingCount,provided)){memo->prepared={};return false;}
-        for(std::size_t i=0;i<bindingCount;++i)streams|=1u<<bindings[i].element.Stream;
-        if(!NorthlightNativeFixtureShadow::compact(p.mesh(),p.type==D3DPT_TRIANGLESTRIP,streams,memo->prepared,memo->local,memo->ownedMesh)){memo->prepared={};return false;}
-        }
-        // Membership survives camera/pose changes. Only the current rigid fit,
-        // source anchor and all owned vertices are checked again, in linear work.
-        ++nativeShellPoseChecks;
-        if(!NorthlightActorDeformation::worldPositions(*program->second,memo->ownedMesh,elements,elementCount,p.constants,context.inverseView,memo->world)||
-           !StaticShadowDedup::makeTriangles(memo->world,memo->ownedMesh.indices,true,memo->ownedMesh.primitiveCount,false,memo->worldTriangles,4096))return false;
-        const bool matched=NorthlightNativeFixtureShadow::verify(memo->prepared,memo->local,memo->worldTriangles,entry->source.position);memo->matched=matched;
-        remaining.clear();if(matched)remaining=memo->runs;
-        std::copy_n(p.constants,1024,memo->constants.begin());std::copy_n(context.inverseView,16,memo->inverse.begin());std::copy_n(entry->source.position,3,memo->point.begin());
-        return matched;
-    }
-    bool pointOwnShell(const Replay& p,const Batch& shell,PointReplayRuns& remaining){
-        if(!shell.lampTriangles||shell.count!=shell.lampTriangles->size()||(p.cutoff>=0&&p.cutoff!=.5f)||!p.count||p.count>4096||
-           p.mesh().vertexCount>12288||p.count!=p.mesh().primitiveCount||(p.type!=D3DPT_TRIANGLELIST&&p.type!=D3DPT_TRIANGLESTRIP))return false;
-        if(p.pointBounds.valid){const auto& b=p.pointBounds;const float lo[]={shell.boundsLow.x,shell.boundsLow.y,shell.boundsLow.z},hi[]={shell.boundsHigh.x,shell.boundsHigh.y,shell.boundsHigh.z};
-            for(unsigned k=0;k<3;++k)if(b.high[k]<lo[k]-.003f||b.low[k]>hi[k]+.003f)return false;}
-        const auto program=actorPrograms.find(p.originalShader);const D3DVERTEXELEMENT9* elements=nullptr;UINT count=0;
-        if(program==actorPrograms.end()||!program->second||!declarationCache.get(p.decl,elements,count))return false;
-        std::vector<NorthlightActorDeformation::Position> positions;Batch::LampTriangles triangles;
-        if(!NorthlightActorDeformation::worldPositions(*program->second,p.mesh(),elements,count,p.constants,context.inverseView,positions)||
-           !StaticShadowDedup::makeTriangles(positions,p.mesh().indices,p.mesh().indexed,p.count,p.type==D3DPT_TRIANGLESTRIP,triangles,4096))return false;
-        const auto excluded=NorthlightWmoLampShadow::matching(*shell.lampTriangles,triangles);
-        if(excluded.empty()||std::none_of(excluded.begin(),excluded.end(),[](bool hit){return hit;}))return false;
-        remaining.clear();
-        for(UINT first=0;first<excluded.size();){if(excluded[first]){++first;continue;}
-            UINT end=first+1;while(end<excluded.size()&&!excluded[end])++end;
-            remaining.push_back({first,end-first});first=end;}
-        return true;
-    }
     struct PointReplayRun {UINT start,count,min,vertices;};
     unsigned pointPaletteSpan(const Replay& p)const{
         const auto span=p.boundsWork.paletteSpan;
@@ -722,17 +641,17 @@
         if(!data){ids->Unlock();return false;}for(unsigned i=0;i<84;++i)static_cast<float*>(data)[i]=float(3*i);
         if(FAILED(ids->Unlock())){ids->Unlock();return false;}pointPaletteIds=ids.p;ids.p=nullptr;pointPaletteRetryFrame=0;return true;
     }
-    // Batch only adjacent compatible casters. Unsupported/alpha/emitter packets
+    // Batch only adjacent compatible casters. Unsupported/alpha packets
     // stay barriers; unique geometry needs no sorting or frame-local allocations.
-    bool pointPaletteDraw(const std::vector<size_t>& candidates,size_t& at,const std::map<size_t,PointReplayRuns>& splits,const float* rows,bool& drawn){
+    bool pointPaletteDraw(const std::vector<size_t>& candidates,size_t& at,const float* rows,bool& drawn){
         drawn=false;if(pointPaletteUnavailable||frames<pointPaletteRetryFrame||at+1>=candidates.size())return true;
         const auto index=candidates[at];const auto& p=*replays[index];
         if(!pointPaletteSame(p,*replays[candidates[at+1]]))return true;
         const UINT span=pointPaletteSpan(p);
-        if(!span||(!splits.empty()&&splits.count(index)))return true;
+        if(!span)return true;
         size_t end=at+1;
         while(end<candidates.size()){const auto next=candidates[end];
-            if(!pointPaletteSame(p,*replays[next])||!pointPaletteSpan(*replays[next])||(!splits.empty()&&splits.count(next)))break;++end;}
+            if(!pointPaletteSame(p,*replays[next])||!pointPaletteSpan(*replays[next]))break;++end;}
         if(end-at<2||!pointPaletteResources())return true;
         const float opaque[]={0,0,0,-1};HRESULT result=d->SetVertexDeclaration(pointPaletteDecl);
         if(SUCCEEDED(result))result=d->SetVertexShader(pointPaletteVS);
@@ -757,12 +676,12 @@
         for(unsigned stream=0;stream<2;++stream){auto hr=d->SetStreamSourceFreq(stream,1);if(FAILED(hr))hr=d->SetStreamSourceFreq(stream,1);if(FAILED(hr))result=hr;}
         drawn=true;return pointCheck(result,"cube palette replay");
     }
-    PointReplayRun pointReplayRun(const std::vector<size_t>& candidates,size_t& at,const std::map<size_t,PointReplayRuns>& splits,bool opaque){
+    PointReplayRun pointReplayRun(const std::vector<size_t>& candidates,size_t& at,bool opaque){
         const auto& first=*replays[candidates[at++]];PointReplayRun run{first.start,first.count,first.min,first.vertices};
         if(!first.indexed||first.type!=D3DPT_TRIANGLELIST)return run;
         while(at<candidates.size()){
             const size_t index=candidates[at];const auto& next=*replays[index];
-            if(splits.count(index)||next.type!=first.type||next.indexed!=first.indexed||next.base!=first.base||
+            if(next.type!=first.type||next.indexed!=first.indexed||next.base!=first.base||
                next.decl!=first.decl||next.shader!=first.shader||next.originalShader!=first.originalShader||next.index!=first.index||
                next.constantGroup!=first.constantGroup||next.alphaMode!=first.alphaMode||std::memcmp(&next.cutoff,&first.cutoff,sizeof(float))||
                std::memcmp(next.stream,first.stream,sizeof first.stream)||std::memcmp(next.offset,first.offset,sizeof first.offset)||std::memcmp(next.stride,first.stride,sizeof first.stride)||
@@ -830,21 +749,10 @@
         for(unsigned face=0;face<6;++face)
             if((faces&(1u<<face))&&!NorthlightPointShadow::faceMatrix(pointSlot().selected.position,.1f,pointSlot().selected.attenuationEnd,face,faceMatrices[face],PointResolution))return pointCheck(E_FAIL,"cube projection");
         const NorthlightPointShadow::FaceClip clip(faceMatrices,pointSlot().selected,faces);
-        std::vector<size_t> ownGlass;Batch ownShell{};
-        std::map<size_t,PointReplayRuns> replayRuns;
+        const bool pointTimed=NorthlightQuality::renderProfile(quality);
+        const int64_t prepareStart=pointTimed?QpcClock::now():0;
         try {
             pointBatchMasks.assign(batches.size(),63);
-            const bool indexed=pointLampSources.prepare(batches,meshGeneration);
-            const auto owners=pointLampSources.find(light.sourceId);
-            ownGlass=NorthlightWmoLampShadow::parts(light,batches,indexed?&owners:nullptr);
-            if(!ownGlass.empty()){
-                ownShell=batches[ownGlass.front()];
-                if(ownGlass.size()>1){auto proof=std::make_shared<Batch::LampTriangles>();ownShell.count=0;
-                    for(size_t i:ownGlass){const auto& b=batches[i];proof->insert(proof->end(),b.lampTriangles->begin(),b.lampTriangles->end());ownShell.count+=b.count;
-                        ownShell.boundsLow={std::min(ownShell.boundsLow.x,b.boundsLow.x),std::min(ownShell.boundsLow.y,b.boundsLow.y),std::min(ownShell.boundsLow.z,b.boundsLow.z)};
-                        ownShell.boundsHigh={std::max(ownShell.boundsHigh.x,b.boundsHigh.x),std::max(ownShell.boundsHigh.y,b.boundsHigh.y),std::max(ownShell.boundsHigh.z,b.boundsHigh.z)};}
-                    ownShell.lampTriangles=std::move(proof);}
-            }
             for(auto* lists:{&pointStaticCandidates,&pointTerrainCandidates,&pointLiveCandidates,&pointReplayCandidates})for(auto& list:*lists)list.clear();
             // Reuse the mesh's terrain list shared with the directional passes.
             // Camera-visible native chunks may contain only part of a caster.
@@ -856,26 +764,27 @@
             }else for(size_t i=0;i<batches.size();++i)if(batches[i].terrain)terrainCandidate(i);
             if(rebuildMask&faces){
                 for(size_t i=0;i<batches.size();++i){const auto& batch=batches[i];
-                    if(!batch.terrain&&std::find(ownGlass.begin(),ownGlass.end(),i)==ownGlass.end()){
+                    if(!batch.terrain){
                         const unsigned mask=pointMask(batch.boundsLow,batch.boundsHigh,clip,rebuildMask&faces);pointBatchMasks[i]=static_cast<unsigned char>(mask);
                         pointAppendCandidates(pointStaticCandidates,i,mask,rebuildMask&faces);}
                 }
             }
             for(size_t i=0;i<pointLiveBatches.size();++i){const auto& batch=pointLiveBatches[i];
                 pointAppendCandidates(pointLiveCandidates,i,pointMask(batch.low,batch.high,clip,faces),faces);}
-            const auto* nativeFixture=ownGlass.empty()?equipmentLights.fixture(light.sourceId):nullptr;
+            const int64_t boundsStart=pointTimed?QpcClock::now():0;
             replayBoundsJoin();
+            const int64_t candidatesStart=pointTimed?QpcClock::now():0;
+            if(pointTimed)pointCold.boundsWait+=candidatesStart-boundsStart;
             if(withReplays)for(size_t i=0;i<replays.size();++i){const auto& bounds=replays[i]->pointBounds;
                 const unsigned mask=clip.mask(bounds.low,bounds.high,bounds.valid,faces);
-                // Ownership can decode the complete emitter mesh. Culled packets
-                // cannot contribute to this refresh, including partial-face cycles.
                 if(!(mask&faces)){pointCulled+=unsigned(__builtin_popcount(faces));continue;}
-                {PointReplayRuns runs;const bool owned=!ownGlass.empty()?pointOwnShell(*replays[i],ownShell,runs):(nativeFixture&&pointOwnNativeShell(*replays[i],light,runs,nativeFixture));if(owned){
-                    if(runs.empty())continue;replayRuns.emplace(i,std::move(runs));}}
                 if(!bounds.valid)(replays[i]->shadowSkinned?pointWork.unboundedSkinned:pointWork.unboundedRigid)+=unsigned(__builtin_popcount(mask&faces));
                 pointAppendCandidates(pointReplayCandidates,i,mask,faces);
             }
+            if(pointTimed)pointCold.candidates+=QpcClock::now()-candidatesStart;
         }catch(...){return pointCheck(E_OUTOFMEMORY,"cube candidate allocation");}
+        const int64_t submitStart=pointTimed?QpcClock::now():0;
+        if(pointTimed)pointCold.prepare+=submitStart-prepareStart;
         bool bound=false;
         for(unsigned face=0;face<6;++face){
             if(!(faces&(1u<<face)))continue; /* a later frame of this face cycle */
@@ -991,7 +900,7 @@
             // LocalShadowPS reads patched TEXCOORD7 and writes perspective z/w;
             // the directional replay PS assumes orthographic w=1 and is invalid here.
             for(size_t at=0;at<pointReplayCandidates[face].size();){const size_t index=pointReplayCandidates[face][at];const auto& p=replays[index];
-                bool instanced=false;if(!pointPaletteDraw(pointReplayCandidates[face],at,replayRuns,rows,instanced))return false;
+                bool instanced=false;if(!pointPaletteDraw(pointReplayCandidates[face],at,rows,instanced))return false;
                 if(instanced){replayBindings.invalidate();poseConstants.reset();continue;}
                 if(!pointCheck(replayBindings.geometry(*p),"cube replay geometry state"))return false;
                 if(!poseConstants.prepare(*p,rows,matrix))return false;
@@ -1001,17 +910,9 @@
                 if(b.count&&!pointCheck(d->SetVertexShaderConstantB(b.first,p->bools+b.first,b.count),"cube replay bool constants"))return false;
                 if(i.count&&!pointCheck(d->SetVertexShaderConstantI(i.first,p->ints+4*i.first,i.count),"cube replay integer constants"))return false;
                 if(!pointCheck(replayBindings.material(*p),"cube replay material state"))return false;
-                const auto split=replayRuns.find(index);
-                if(split!=replayRuns.end()){
-                    ++at;
-                    for(const auto& run:split->second){const UINT start=p->start+run.first*(p->type==D3DPT_TRIANGLELIST?3:1);
-                        const HRESULT hr=shadowReplayDraw(*p,[&]{return p->indexed?d->DrawIndexedPrimitive(p->type,p->base,p->min,p->vertices,start,run.second):d->DrawPrimitive(p->type,start,run.second);});
-                        if(!pointCheck(hr,"cube split emitter draw"))return false;++pointDraws;++pointWork.split;pointWork.triangles+=run.second;}
-                }else{
-                    const auto run=pointReplayRun(pointReplayCandidates[face],at,replayRuns,replayBindings.skipping());
-                    const HRESULT hr=shadowReplayDraw(*p,[&]{return p->indexed?d->DrawIndexedPrimitive(p->type,p->base,run.min,run.vertices,run.start,run.count):d->DrawPrimitive(p->type,run.start,run.count);});
-                    if(!pointCheck(hr,"cube animated draw"))return false;++pointDraws;++pointWork.replay;pointWork.triangles+=run.count;
-                }
+                const auto run=pointReplayRun(pointReplayCandidates[face],at,replayBindings.skipping());
+                const HRESULT hr=shadowReplayDraw(*p,[&]{return p->indexed?d->DrawIndexedPrimitive(p->type,p->base,run.min,run.vertices,run.start,run.count):d->DrawPrimitive(p->type,run.start,run.count);});
+                if(!pointCheck(hr,"cube animated draw"))return false;++pointDraws;++pointWork.replay;pointWork.triangles+=run.count;
             }
             } /* withReplays */
             } /* dynamic candidates */
@@ -1050,6 +951,7 @@
             d->SetRenderState(D3DRS_ZENABLE,TRUE);d->SetRenderState(D3DRS_ZWRITEENABLE,TRUE);
             d->SetSamplerState(0,D3DSAMP_MINFILTER,D3DTEXF_LINEAR);d->SetSamplerState(0,D3DSAMP_MAGFILTER,D3DTEXF_LINEAR);
         }
+        if(pointTimed)pointCold.submit+=QpcClock::now()-submitStart;
         if(rebuild){pointSlot().cacheValid=true;pointSlot().cacheSource=pointSlot().selected.sourceId;} /* cycling: already valid, its remaining faces wait for their frame */
         if(cycling&&!pointSlot().faceCycle.advance()){pointSlot().ready=true;++pointUpdates;return true;} /* stale until the last group */
         if(cycling)pointSlot().schedule.commit(pointSlot().faceCycle.startedAt,pointSlot().selected,pointSlot().faceCycle.generation);
@@ -1106,6 +1008,7 @@
         }
         if(coldTimed&&captureFrequency.QuadPart>0){const double scale=1000.0/double(captureFrequency.QuadPart),cpuMs=double(QpcClock::now()-coldStarted)*scale;
             if(cpuMs>=8||profileSampled()){
+                logf("POINT_PHASE rendererFrame=%u prepareMs=%.3f boundsWaitMs=%.3f candidatesMs=%.3f submitMs=%.3f prepareIncludesBoundsAndCandidates=1",rendererFrame,double(pointCold.prepare)*scale,double(pointCold.boundsWait)*scale,double(pointCold.candidates)*scale,double(pointCold.submit)*scale);
                 // A reused cube may leave the bounds job running. Its mutable
                 // counters are readable only after that job has been joined.
                 const auto* stats=replayBoundsWorker.pending()?nullptr:&replayBoundsCache.envelopeStats();

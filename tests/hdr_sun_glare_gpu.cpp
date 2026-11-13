@@ -118,12 +118,12 @@ int main(int argc,char** argv){
         auto* layers=texture(d,{1,1,D3DFMT_A8R8G8B8,4,{0,0,0,static_cast<unsigned char>(alpha)}});
         const float peak=peakOf(render(disc,clear,nullptr,layers));assert(std::fabs(peak-solarPeak*alpha/255.f)<.04f);++cases;layers->Release();
     }
-    // Lunar surface and an intentionally unmodified tint keep their old energy.
+    // Lunar tint stays independent; its surface now carries useful HDR headroom.
     NorthlightCelestialGlow::surfaceTint(hue,1,dark,true,c[50]);NorthlightCelestialGlow::surfaceTint(hue,1,dark,false,expectedTint);
     for(unsigned k=0;k<3;++k)assert(c[50][k]==expectedTint[k]);
     hue.strength=0;NorthlightCelestialGlow::surfaceTint(hue,0,dark,true,expectedTint);for(float x:expectedTint)assert(x==0);
     std::memset(c[49],0,32);for(unsigned k=0;k<3;++k)c[9][k]=c[48][k]=1;c[47][3]=1.8f;c[12][0]=1;c[12][3]=0;c[12][2]=2.4f;
-    c[10][0]=3;c[11][3]=0;assert(std::fabs(peakOf(render(disc,clear))-2)<.002f);++cases;c[10][0]=2;c[11][3]=1;
+    c[10][0]=3;c[11][3]=0;assert(std::fabs(peakOf(render(disc,clear))-8)<.002f);++cases;c[10][0]=2;c[11][3]=1;
     NorthlightHdr::Frame frame;NorthlightHdr::Settings settings;settings.autoExposure=false;settings.bloom=0;settings.paperWhite=203;settings.maxNits=1500;
     ok(d->BeginScene());ok(frame.prepareLegacy(d,white,nullptr,nullptr,N,N,0,.94f,settings));ok(d->EndScene());
     unsigned bright[2]{};float presentedPeak[2]{};

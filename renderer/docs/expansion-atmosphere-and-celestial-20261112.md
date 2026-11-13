@@ -43,6 +43,45 @@ bounds for every profiled zone. Existing cache geometry still controls shelter
 and underground exclusion. The built-in profiles work without the optional
 `forever-atmosphere.bin` import.
 
+### Restoration audit, 13 November
+
+The 20 profiles, Outland planet/ring geometry and native emission handling are
+retained from `0634e962`; they were not removed by resource externalization.
+The installed FRF cache contains 800 Expansion01 and 1,131 Northrend tiles,
+including all eight authored Outland land-zone profiles and eleven Northrend
+terrain profiles. Dalaran's floating city is not a terrain parent in these tiles.
+Unknown/ocean regions and the blood elf/draenei starting regions keep their
+native fallback instead of inheriting an unrelated biome.
+
+These are artistic projections onto the shared Forever-compatible volume
+integrator, not recovered expansion data. The existing choices are consistent
+with Blizzard's descriptions of [Dragonblight's arctic landscape and Grizzly
+Hills' forest](https://worldofwarcraft.blizzard.com/en-gb/news/23840668),
+[Sholazar's tropical anomaly](https://worldofwarcraft.blizzard.com/en-us/news/23846691),
+and [Netherstorm's chaotic skies and fel-touched Shadowmoon](https://news.blizzard.com/en-us/article/23625673/world-of-warcraft-burning-crusade-classic-deep-dive).
+Those descriptions motivate the palettes; numeric densities and noise are
+Northlight tuning, not lore facts or Blizzard renderer parameters.
+
+Expansion profiles previously left direct/ambient colours at zero. After the
+shared atmosphere consumers began using those fields, that removed native
+environment lighting. Sampling now inherits the client's direct/ambient colours
+before temporal blending. The existing skybox textures, planet/ring emission,
+aurora emission and material lights keep their respective owners.
+
+Forever 1.60.1.70938 has byte-identical readable atmosphere inputs and orbital
+tables to 70888. Rebuilding the current NFA2 import yields SHA-256
+`803c56797d9dba03d3afb2aa4db146179bad8be1d9340ecffbdee43a5c90e04e`,
+matching the 12 November sky-audit installation receipt. The game directory
+had lost this optional file; all three checked 0.3.217/0.3.218 installers omit
+it because local extracted DB2 assets are not public package payloads.
+The unavailable encrypted table sections remain unavailable. Current CASC
+moon texture reads also fail, so no new texture parity is claimed.
+
+The current lunar size/HDR correction is documented in
+[celestial placement](../../docs/celestial-placement.md). Azeroth, Kalimdor and
+Northrend share identical resolved solar/lunar radii at each time key; Outland
+retains the earlier planet scale and emission.
+
 ## Celestial source and limits
 
 Source: local Forever **1.60.1.70888**, `Wow.exe` SHA256

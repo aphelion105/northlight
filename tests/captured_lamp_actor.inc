@@ -4,7 +4,7 @@ static void housingActor(IDirect3DDevice9* d,const std::string& root,const std::
  std::vector<NorthlightLocalLights::Light> lights;assert(NorthlightLocalLights::readFile(root+"/sources.fgl",lights)&&lights.size()==1);const auto l=lights[0];
  const auto placement=readBytes(root+"/actor-foot.f32");assert(placement.size()==12);float foot[3];std::memcpy(foot,placement.data(),12);
  WorldRenderer w(d);load(w,root,false,{l.position[0],l.position[1],l.position[2]});w.quality.softShadows=soft;
- assert(NorthlightWmoLampShadow::parts(l,w.batches).size()==1);const auto housing=w.batches;
+ assert(LampFixtureMetadata::parts(l,w.batches).size()==1);const auto housing=w.batches;
  const float camera[]={l.position[0]+.5f,l.position[1],foot[2]+9};std::memcpy(w.context.camera,camera,12);std::memcpy(w.context.inverseView+12,camera,12);w.projection[0]=w.projection[1]=1.4f;w.projection[2]=-1;
  const auto bytes=readBytes(output+"/character.bin");unsigned h[5];assert(bytes.size()>=20);std::memcpy(h,bytes.data(),20);assert(h[0]==0x31414c4e&&bytes.size()==20+size_t(h[1])*48+size_t(h[2])*4);
  const auto code=readBytes(output+"/character-vs.bin");std::vector<uint32_t> words(code.size()/4);std::memcpy(words.data(),code.data(),code.size());
