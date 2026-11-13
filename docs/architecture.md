@@ -182,6 +182,12 @@ records are reread, not extrapolated. Map changes, camera jumps over 40 units,
 invalid cameras and observation gaps over 500 ms revoke that permission. The
 strict standalone sky decoders and shorter coherent-light fallback remain.
 
+Sky background composition closes before the first native foreground draw.
+That draw may not establish world context: the read-only background camera
+path then uses the current validated sky-phase basis and a same-map held
+projection/palette. It must not mark world capture valid, depend on celestial
+disc visibility, or retry past the foreground/scene-grading boundary.
+
 ## Evidence for a change
 
 World shader admission is shared between command recording and renderer

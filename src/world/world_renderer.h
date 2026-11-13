@@ -3816,6 +3816,19 @@ public:
     float skyTransmittance()const{return skyTransmittanceFrame;}
     float underwaterScale()const{return underwaterFade.scale();}
     const NorthlightForever::Frame& atmosphereEnvironment()const{return skyEnvironment;}
+    // The first foreground draw need not establish a world context. Reuse only
+    // its validated projection/palette; read this frame's camera without marking
+    // world capture valid or depending on the visibility of a celestial disc.
+    bool skyBackgroundContext(float* inverseView,float* projectionOut)const{
+        if(!pipelineActive||failed||workerFault()||!skyEnvironment.skyValid)return false;
+        if(hasContext())memcpy(inverseView,context.inverseView,64);
+        else{
+            char map[64]={};NorthlightWorldCamera::Camera camera;
+            if(lastRequest.map.empty()||!NorthlightWorldCamera::readSkyPhase(map,projection[2],camera)||lastRequest.map!=map)return false;
+            memcpy(inverseView,camera.inverseView,64);
+        }
+        memcpy(projectionOut,projection,12);return true;
+    }
     bool celestialContext(NorthlightCelestial::Context& out,float* inverseView,float* projectionOut)const{
         if(!hasContext()||!celestialValid)return false;
         out=celestial;out.horizonSine=apparentHorizon.valid?apparentHorizon.value:0.f;memcpy(inverseView,context.inverseView,64);memcpy(projectionOut,projection,12);return true;

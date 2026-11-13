@@ -4,8 +4,10 @@ The supplied `northlight-renderer (4).log` comes from `D:\Wow_3.3.5a`,
 not the local development client. Its runtime source identity is
 `80bb1b6bfd8bd1b5cc478caf91a94298bdee16aaaab33a6890fd075919ce0579`,
 so it includes the previous lamp-register and shadow-history fixes.
-The Discord video returned HTTP 403; no visual correspondence with that clip
-has been established. A working link or local file was requested.
+The Discord video returned HTTP 403 during the initial investigation. The user
+subsequently supplied `D:\dl\2026-11-13_22-25-45.mp4`; it has now been inspected
+locally. The first two fixes below shipped in v0.3.218.2 before the clip was
+available. Exact video-frame correspondence with log timestamps is not known.
 
 The original log is preserved at
 `.local/out/test-output/lighting-toggle-20261114/renderer.log`, SHA-256
@@ -95,7 +97,48 @@ binary fails the same sentinel (`native-prior-control/`). Do not report full
 native-D3D9 acceptance from these results. The supplied gameplay log uses
 DXVK 3.1.1, on which the full test passes.
 
-These component checks do not establish game FPS or prove that every change
-in the unavailable video has been resolved. Genuine probe/caster coverage can
-still change when memory pressure retires geometry; the admission stalls need
-separate profiling rather than weakening memory safety.
+## Sky background switches in the local video
+
+The clip is 1920x1080, 24 fps, 281 frames (11.708 seconds), SHA-256
+`42b24c13f85019b8ba594d735c037d8be46095aa32e777216cf8a87d419e9951`.
+Its original and extracted frames are preserved in the investigation folder's
+`video/` directory. `switches.png` pairs frames 12/13, 37/38 and 74/75;
+`overview.png` shows the flight from Wintergarde Keep toward The Carrion Fields.
+The background abruptly alternates between a brighter teal horizon and a dark
+horizon band at approximately 0.54, 1.58, 2.50 and 3.13 seconds. Nearby buildings
+remain comparatively stable. `brightness.csv` records per-frame region luma;
+camera movement and video encoding mean these values are observations, not
+an image oracle. The clip therefore warrants a separate sky-path investigation
+rather than assuming the two geometry-dependent lighting gates explain it all.
+
+`composeSkyBackground()` closes the sky before the first non-sky foreground
+draw. It latched that boundary and then called `celestialContext()`, requiring
+both a recognized world draw and valid celestial-disc data. An unclassified
+foreground draw before terrain/WMO/actors can thus skip the background for the
+whole frame. Deferring the latch would instead repaint native names, particles
+or scene grading later, violating existing foreground ownership.
+
+The boundary now uses a separate read-only `skyBackgroundContext()`. If world
+context is already available it uses that camera. Otherwise it reads the current
+validated sky-phase camera, requires the same map as the last world context,
+and reuses only the validated projection and atmosphere palette. It neither
+sets world capture valid nor borrows the previous frame's camera basis, and
+does not require a visible/valid sun or moon. The original foreground latch
+remains. Sampled `SKY_BACKGROUND` records report context availability and the
+draw/skip result for subsequent gameplay confirmation.
+
+`tests/test_sky_background_order.py` failed on the original boundary when an
+early foreground draw lacked world context. It now exercises both production
+methods and passes: current-camera movement, map/cold-start/fault rejection,
+unchanged world admission, and foreground/scene-grading preservation. Evidence
+is under `.local/out/test-output/sky-background-20261114/{before,after}`.
+`tests/test_sky_environment_gpu.py` also passes all 96 shader cases and 16
+production-boundary cases on system D3D9, DXVK 2.7.1 and DXVK 3.1.1, including
+SDR/HDR, supported MSAA modes, geometry preservation and device-state restore.
+
+The skipped sky pass is reproduced in isolation; attributing the recorded
+switches specifically to this gate remains an inference until a new gameplay
+log/video confirms it. These component checks do not establish game FPS.
+Genuine probe/caster coverage can still change when memory pressure retires
+geometry; the admission stalls need separate profiling rather than weakening
+memory safety.

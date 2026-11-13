@@ -2467,12 +2467,14 @@ private:
         // Close the sky before the first native foreground draw. Never replace
         // its background underneath names, particles or native scene grading.
         skyBackgroundFrame=frame;
-        if(!world->atmosphereEnvironment().skyValid)return;
-        NorthlightCelestial::Context sky;float view[16],p[3];
-        if(!world->celestialContext(sky,view,p)||!resources(desc.Width,desc.Height,desc.Format,true))return;
-        ExtensionDevice::RawScope raw(*ext);SavedState saved(ext,&stateBlocks);if(!saved.ok)return;
-        if(FAILED(ext->StretchRect(saved.targets[0],nullptr,sceneSurface,nullptr,D3DTEXF_NONE)))return;
-        celestialDiscs->renderSkyBackground(saved.targets[0],scene,nullptr,layers,width,height,p,view,world->atmosphereEnvironment().sky.color);
+        auto report=[&](const char* result){if(sampled())logf("SKY_BACKGROUND frame=%u draw=%u worldContext=%u result=%s",frame,drawCalls,unsigned(world->hasContext()),result);};
+        if(!world->atmosphereEnvironment().skyValid){report("palette");return;}
+        float view[16],p[3];
+        if(!world->skyBackgroundContext(view,p)){report("camera");return;}
+        if(!resources(desc.Width,desc.Height,desc.Format,true)){report("resources");return;}
+        ExtensionDevice::RawScope raw(*ext);SavedState saved(ext,&stateBlocks);if(!saved.ok){report("state");return;}
+        if(FAILED(ext->StretchRect(saved.targets[0],nullptr,sceneSurface,nullptr,D3DTEXF_NONE))){report("copy");return;}
+        report(celestialDiscs->renderSkyBackground(saved.targets[0],scene,nullptr,layers,width,height,p,view,world->atmosphereEnvironment().sky.color)?"drawn":"draw-failed");
     }
     NorthlightAuroraNative::DiagnosticCapture auroraDiagnostic;
     NorthlightAuroraNative::Registry auroraSources;
