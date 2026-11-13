@@ -5202,6 +5202,7 @@ public:
         const bool meshReady=geometryWanted&&ready()&&screenResourcesReady&&upload(streamBudget);
         const bool sceneTargetsReady=meshReady&&geometryResources(w,h);
         const bool geometryReady=sceneTargetsReady&&(hadTargets||upload(streamBudget));
+        const bool fogDirectionalReady=geometryReady&&applyDirectionalShadows;
         if(geometryReady!=temporalGeometryReady){
             const DWORD now=GetTickCount();
             if(DWORD(now-traceGeometryTick)>=1000){traceGeometryTick=now;traceGeometryCount=0;}
@@ -6022,7 +6023,9 @@ public:
             if(volume){const float keep=underwaterFade.scale();rgb[0]*=keep;rgb[1]*=keep;rgb[2]*=keep;} /* underwater: the fog/volume pass (shafts) fades with the sun; the lighting and actor passes keep the real colour (their shadow test and alpha read it) */
             // fog passes only: the sun's direct scatter takes the glow hue; the forward soft cap
             // rises so the aureole brightens toward the sun. c17/c18 are restored after the fog loop.
-            if(volume&&!geometryReady)rgb[0]=rgb[1]=rgb[2]=0; // no unoccluded celestial shafts while shadow geometry is unavailable
+            // A resident GI/fog mesh is not proof of usable directional maps.
+            // Unsupported/native providers bind neutral maps even with geometry.
+            if(volume&&!fogDirectionalReady)rgb[0]=rgb[1]=rgb[2]=0;
             if(volume&&source==0)NorthlightSunHue::fogDirect(rgb,glowHueFrame,rgb);
             d->SetPixelShaderConstantF(16,dir,1);d->SetPixelShaderConstantF(17,rgb,1);
             if(volume){
@@ -6154,7 +6157,10 @@ public:
             else {if(optional)optional->Release();lightingUnshadowedRefused=true;}
         }
         const bool unshadowedLighting=!applyDirectionalShadows&&lightingUnshadowedPS;
-        const bool giRequested=geometryReady&&requirements.probes;
+        // The shader's analytic ambient fallback also applies without a mesh.
+        // GridInfo.w independently guards atlas reads while probes are unavailable.
+        // Dropping this pass during streaming made every unprobed wall brighten.
+        const bool giRequested=requirements.probes;
         if(unshadowedLighting&&giRequested&&!lightingUnshadowedGIPS&&!lightingUnshadowedGIRefused){
             IDirect3DPixelShader9* optional=nullptr;
             if(SUCCEEDED(d->CreatePixelShader(kWorldLightingUnshadowedGIShader,&optional))&&optional)lightingUnshadowedGIPS=optional;
@@ -6166,7 +6172,7 @@ public:
         d->SetPixelShaderConstantF(82,localInfo,1);
         if(giRequested)d->SetTexture(13,probeLocal);
         d->SetRenderTarget(0,lightSurface);d->SetPixelShader(unshadowedLighting?lightingUnshadowedPS:softResolved?lightingSoftPS:lightingPS);
-        if(profileSampled())logf("WORLD_LIGHTING rendererFrame=%u variant=%s shadows=%u geometry=%u shadowTransitionStarts=%u shadowTransitionFailures=%u moonFade=%u,%u moonWeights=%.4f,%.4f",rendererFrame,unshadowedLighting?"unshadowed":softResolved?"soft":"standard",unsigned(applyDirectionalShadows),unsigned(geometryReady),shadowTransitionStarts,shadowTransitionFailures,unsigned(shadowTransition[2].state.fading()),unsigned(shadowTransition[3].state.fading()),shadowTransition[2].state.weight(),shadowTransition[3].state.weight());
+        if(profileSampled())logf("WORLD_LIGHTING rendererFrame=%u variant=%s shadows=%u geometry=%u gi=%u probes=%u fogDirect=%u shadowTransitionStarts=%u shadowTransitionFailures=%u moonFade=%u,%u moonWeights=%.4f,%.4f",rendererFrame,unshadowedLighting?"unshadowed":softResolved?"soft":"standard",unsigned(applyDirectionalShadows),unsigned(geometryReady),unsigned(giRequested),unsigned(c[20][3]>.5f),unsigned(fogDirectionalReady),shadowTransitionStarts,shadowTransitionFailures,unsigned(shadowTransition[2].state.fading()),unsigned(shadowTransition[3].state.fading()),shadowTransition[2].state.weight(),shadowTransition[3].state.weight());
         d->SetTexture(15,softResolved?softVisibility:nullptr);
         if(softResolved){
             for(auto state:{D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER})d->SetSamplerState(15,state,D3DTEXF_POINT);
@@ -6432,7 +6438,7 @@ public:
                 const bool actor=fogActorCurrent&&foreverFogActorPS;
                 volumeShader=fading?(actor&&foreverFogActorFadePS?foreverFogActorFadePS:foreverFogFadePS):(actor?foreverFogActorPS:foreverFogPS);
                 if(!volumeShader)volumeShader=foreverFogPS;
-                float importedConstants[38][4];NorthlightForever::constants(atmosphere.imported,importedConstants,std::clamp(farZ,128.f,4000.f),geometryReady?sourceWeights[source]*underwaterFade.scale():0);
+                float importedConstants[38][4];NorthlightForever::constants(atmosphere.imported,importedConstants,std::clamp(farZ,128.f,4000.f),fogDirectionalReady?sourceWeights[source]*underwaterFade.scale():0);
                 const auto ground=uploadedFogField?NorthlightSpellFog::fieldAt(*uploadedFogField,context.camera[0],context.camera[1]):NorthlightSpellFog::FieldSample{};
                 importedConstants[0][3]=ground.ground;
                 bool noise=importedConstants[34][0]>0||importedConstants[34][1]>0||importedConstants[34][2]>0;

@@ -106,6 +106,29 @@ struct WorldScreenEffectsTest {
         std::puts("WORLD_GI_PAUSE_PASS hidden=1 zeroStrength=1 positivePreserved=1 qualityOff=1");
     }
     static void gi(WorldRenderer& w,bool enabled){w.effects.gi=enabled;}
+    static void giFallbackSetup(WorldRenderer& w,IDirect3DVertexBuffer9* vb,IDirect3DIndexBuffer9* ib,unsigned mode,bool merged){
+        fixtureContext(w);w.pipelineActive=true;w.lastRequest.map="OfflineGIStreaming";
+        w.quality.effects=w.quality.gi=1;w.quality.giStrength=120;w.quality.giBrightness=80;
+        w.quality.localLights=w.quality.weather=w.quality.contactAO=w.quality.autoBump=w.quality.equipmentLights=0;
+        w.quality.pointShadows=w.quality.nightBrightness=w.quality.horizonHaze=w.quality.fogClouds=0;
+        fakeScene(w,vb,ib,false);w.active->serial=0; // No solved probes, even with a resident mesh.
+        w.effects={mode!=2,false,false};if(mode==3)w.quality.giStrength=0;
+        if(mode==1)w.active.reset();
+        w.nativeShadowOwned=w.nativeShadowAvailable=false;
+        w.lightingUnshadowedGIRefused=!merged;w.frames=7;w.gpuDiagnosticCaptures=4;
+    }
+    static void fogStreamingSetup(WorldRenderer& w,IDirect3DVertexBuffer9* vb,IDirect3DIndexBuffer9* ib,unsigned mode,unsigned medium){
+        giFallbackSetup(w,vb,ib,mode==1?1:0,true);w.effects={false,true,true};
+        w.nativeShadowOwned=w.nativeShadowAvailable=mode==2;
+        auto field=std::make_shared<NorthlightRegionalFog::Field>();field->originX=field->originY=-256;field->fogCells=field->airCells=4096;
+        for(auto& t:field->texels){t.ground=-2;t.day=.015f;t.height=2.5f;}
+        auto region=std::make_shared<WorldRenderer::FogRegion>();region->map=w.lastRequest.map;region->field=field;w.publishedFogRegion=region;
+        if(medium){
+            w.skyEnvironment.valid=true;auto& l=w.skyEnvironment.layer[0];l.flag[3]=l.flag[0]=1;l.p[1]=.3f;l.p[9]=1;l.p[10]=.5f;
+            for(unsigned c=0;c<3;++c){l.color[0][c]=.7f-.15f*c;l.color[1][c]=.4f-.1f*c;l.color[3][c]=.2f;}
+            w.memoryPressure=medium==1; // Exercise both the raymarch fallback and volume atlas.
+        }
+    }
 #ifdef NORTHLIGHT_GI_MERGE_TEST
     static void giMergeControl(WorldRenderer& w,unsigned mode){drop(w.lightingUnshadowedGIPS);w.lightingUnshadowedGIRefused=mode==0;w.effects.gi=mode!=3;w.temporalValid=false;}
     static bool giMerged(const WorldRenderer& w){return w.lightingUnshadowedGIPS!=nullptr;}
@@ -460,8 +483,8 @@ struct WorldScreenEffectsTest {
             l.diffuse[0]=1;l.diffuse[1]=.3f;l.diffuse[2]=.1f;l.attenuationStart=1;l.attenuationEnd=9;}
         if(frame==24)drop(w.fogTemporalPS); // Optional temporal-shader fallback.
     }
-    static std::vector<unsigned char> fogImage(WorldRenderer& w,bool history=false,bool final=false){
-        assert(w.uploadedFogField==w.publishedFogRegion->field&&!w.fogGeometryReady);
+    static std::vector<unsigned char> fogImage(WorldRenderer& w,bool history=false,bool final=false,bool geometry=false){
+        assert(w.uploadedFogField==w.publishedFogRegion->field&&w.fogGeometryReady==geometry);
         auto* surface=history?w.fogHistorySurface:final&&w.diagnosticFogResolved?w.fogBlurredSurface:w.fogSurface;
         D3DSURFACE_DESC desc{};assert(SUCCEEDED(surface->GetDesc(&desc)));
         IDirect3DSurface9* read=nullptr;assert(SUCCEEDED(w.d->CreateOffscreenPlainSurface(desc.Width,desc.Height,desc.Format,D3DPOOL_SYSTEMMEM,&read,nullptr)));
@@ -652,6 +675,42 @@ int main(int argc,char** argv){
         WorldScreenEffectsTest::ambientVariant(*world);
         IDirect3DVertexBuffer9* vb=nullptr;IDirect3DIndexBuffer9* ib=nullptr;
         screenOk(d->CreateVertexBuffer(32,0,0,D3DPOOL_MANAGED,&vb,nullptr));screenOk(d->CreateIndexBuffer(12,0,D3DFMT_INDEX32,D3DPOOL_MANAGED,&ib,nullptr));
+        // Mesh expiry must not switch the analytic GI fallback off. There are no
+        // resident probe keys in either image; disabling GI is the negative control.
+        for(bool hdr:{false,true})for(bool merged:{false,true}){
+            std::vector<unsigned char> images[4];
+            for(unsigned mode=0;mode<4;++mode){
+                WorldRenderer fallback(d);WorldScreenEffectsTest::giFallbackSetup(fallback,vb,ib,mode,merged);
+                assert(renderChecked(fallback,d,out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao,7,hdr?scene:nullptr));
+                assert(WorldScreenEffectsTest::sceneDrawn(fallback)==(mode==0||mode==3));
+                images[mode]=composedImage();
+                WorldScreenEffectsTest::removeFakeScene(fallback); // vb/ib belong to this fixture.
+            }
+            float delta=0,control=0;for(size_t i=0;i<images[0].size();i+=2){
+                unsigned short a,b,c;std::memcpy(&a,&images[0][i],2);std::memcpy(&b,&images[1][i],2);std::memcpy(&c,&images[2][i],2);
+                assert(std::isfinite(screenHalf(a))&&std::isfinite(screenHalf(b)));
+                delta=std::max(delta,std::abs(screenHalf(a)-screenHalf(b)));control=std::max(control,std::abs(screenHalf(a)-screenHalf(c)));
+            }
+            std::printf("WORLD_GI_STREAMING_FALLBACK hdr=%u merged=%u maxDifference=%g negativeControl=%g msaa=%u\n",unsigned(hdr),unsigned(merged),delta,control,msaa);
+            assert(delta==0&&control>.001f&&images[2]==images[3]);
+        }
+        for(unsigned medium=0;medium<3;++medium){
+            std::vector<unsigned char> images[3];
+            for(unsigned mode=0;mode<3;++mode){
+                WorldRenderer fallback(d);WorldScreenEffectsTest::fogStreamingSetup(fallback,vb,ib,mode,medium);
+                assert(renderChecked(fallback,d,out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao));
+                assert(WorldScreenEffectsTest::sceneDrawn(fallback)==(mode!=1));
+                images[mode]=WorldScreenEffectsTest::fogImage(fallback,false,false,mode!=1);
+                WorldScreenEffectsTest::removeFakeScene(fallback);
+            }
+            float delta=0,control=0;for(size_t i=0;i<images[0].size();i+=2){
+                unsigned short a,b,c;std::memcpy(&a,&images[0][i],2);std::memcpy(&b,&images[1][i],2);std::memcpy(&c,&images[2][i],2);
+                assert(std::isfinite(screenHalf(a))&&std::isfinite(screenHalf(b)));
+                delta=std::max(delta,std::abs(screenHalf(a)-screenHalf(b)));control=std::max(control,std::abs(screenHalf(a)-screenHalf(c)));
+            }
+            std::printf("WORLD_FOG_STREAMING_PROVIDER medium=%u maxDifference=%g ownedShadowControl=%g msaa=%u\n",medium,delta,control,msaa);
+            assert(delta==0&&control>.00001f);
+        }
         auto* screenFog=WorldScreenEffectsTest::screenFog(*world);WorldScreenEffectsTest::fakeScene(*world,vb,ib);meter.failSceneAt=3;
         meter.fogWeight=-1;
         assert(renderChecked(*world,d,out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao));
