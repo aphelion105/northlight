@@ -23,6 +23,8 @@ For the local Forever extraction, missing import fields and preserved research
 artifacts, start with [the Forever data audit](forever-data-audit.md).
 For the installed build, material/shadow optimizations and old `.local` copies,
 see [the integration audit](integration-audit-20261113.md).
+For each installed runtime file and its delivery/generation path, see
+[the release payload audit](release-payload-audit.md).
 
 ## Requirements
 

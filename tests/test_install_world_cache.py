@@ -124,6 +124,9 @@ finally:
 assert iwc.plan(base, pre_ownership, cache, False, 'z') == ('full', iwc.POST)
 old_resolution_inputs=dict(inputs,cache_versions=dict(iwc.CACHE_VERSIONS,scene=1,lights=1))
 assert iwc.plan(base,{'inputs':old_resolution_inputs,'maps_built':iwc.MAPS,'digests':iwc.step_digests(old_resolution_inputs)},cache,False,'z')==('full',iwc.POST)
+old_fog_inputs=dict(inputs,cache_versions=dict(iwc.CACHE_VERSIONS,fog=1))
+assert iwc.plan(base,{'inputs':old_fog_inputs,'maps_built':iwc.MAPS,'digests':iwc.step_digests(old_fog_inputs)},cache,False,'z')==('partial',['fog'])
+assert 'expansion_atmosphere.h' in iwc.STEP_SOURCES['fog'] and 'expansion_atmosphere.h' in inputs['sources']
 assert iwc.plan(base, {'inputs': pre_ownership_inputs}, cache, False, 'z') == ('full', iwc.POST)
 assert iwc.plan(digests(versions={'scene':iwc.CACHE_VERSIONS['scene']+1}),recorded,cache,False,'z') == ('full',iwc.POST)
 assert iwc.plan(digests(sources={n:'new DLL build' for n in iwc.SOURCES}),recorded,cache,False,'z') == ('up_to_date',[])

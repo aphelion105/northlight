@@ -85,7 +85,8 @@ FORMAT = 'northlight-world-cache-install/1'
 # Compatibility revisions, independent of DLL releases and source hashes. Bump
 # the affected revision when generated data changes; source hashes below are
 # build provenance and support reading pre-versioned manifests only.
-CACHE_VERSIONS = {'scene': 2, 'lights': 2, 'fog': 1, 'celestial': 1, 'instances': 1, 'validation': 1}
+# Fog v2 includes indoor exclusion bounds for the added expansion regions.
+CACHE_VERSIONS = {'scene': 2, 'lights': 2, 'fog': 2, 'celestial': 1, 'instances': 1, 'validation': 1}
 # Source provenance and legacy digest dependencies. New cache compatibility is
 # controlled by CACHE_VERSIONS, never by a DLL or source-file hash.
 STEP_SOURCES = {
@@ -98,7 +99,7 @@ STEP_SOURCES = {
                'world_emitter_coverage.py', 'world_fixture_emission.py', 'native_fixture_catalog.py', 'world_emitter_index.py', 'build_equipment_emitters.py', 'emitter_pin_report.py',
                  'attached_emitter_sources.py', 'emitter_tracks.py', 'equipment_emitter_patch.py', 'point_transmission_builder.py', 'build_glue_emitters.py',
                'outdoor-light-profiles.json', 'wotlk-emitter-profiles.json'],
-    'fog': ['regional_fog_builder.py', 'world_light_placements.py', 'forest_regions.inc'],
+    'fog': ['regional_fog_builder.py', 'world_light_placements.py', 'forest_regions.inc', 'expansion_atmosphere.h'],
     'celestial': ['build_celestial_disc_assets.py', 'world_scene_builder.py', 'mpq.py', 'client_archives.py'],
 }
 TOP_LEVEL = ['client_archives.py', 'mpq.py']   # at the repository root, outside fp.tracked()'s namespace
