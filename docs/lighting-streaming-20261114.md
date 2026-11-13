@@ -135,6 +135,10 @@ is under `.local/out/test-output/sky-background-20261114/{before,after}`.
 `tests/test_sky_environment_gpu.py` also passes all 96 shader cases and 16
 production-boundary cases on system D3D9, DXVK 2.7.1 and DXVK 3.1.1, including
 SDR/HDR, supported MSAA modes, geometry preservation and device-state restore.
+The adjacent sky-only recovery test had stale extraction boundaries and a host
+compiler requirement even though Windows uses Zig. Those harness issues are
+corrected, and the test is now part of the architecture suite so it cannot
+silently fall outside routine camera/ownership checks.
 
 The skipped sky pass is reproduced in isolation; attributing the recorded
 switches specifically to this gate remains an inference until a new gameplay

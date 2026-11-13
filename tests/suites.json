@@ -30,6 +30,7 @@
       "test_draw_gates.py",
       "test_draw_orchestration.py",
       "test_sky_background_order.py",
+      "test_sky_only_context.py",
       "test_capture_handoff.py",
       "test_shared_terrain_bounds.py",
       "test_model_normal_demand.py",

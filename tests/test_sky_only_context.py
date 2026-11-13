@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# northlight-test: requires=cxx
+# northlight-test: requires=zig
 """Execute the sky-only context recovery with fresh cameras and rejected reads."""
 import os
 import subprocess
@@ -10,7 +10,7 @@ import northlight_paths as fp
 
 world = fp.src('world_renderer.h').read_text()
 device = fp.src('renderer.cpp').read_text()
-context = world[world.index('    bool skyContext('):world.index('    bool wmoContext(')]
+context = world[world.index('    bool skyContext('):world.index('    bool readWorldLighting(')]
 recover = device[device.index('    void recoverSkyContext('):device.index('    void skyObserve(')]
 source = r'''
 #include <cassert>
@@ -42,6 +42,7 @@ struct World{
  struct{std::string map="Northrend";}lastRequest;
  void updateWorldContext(const char* map,const float* camera,const NorthlightWmoContext::Lighting*){assert(map==lastRequest.map&&camera[0]==123);++updates;}
  bool hasContext()const{return valid;}
+ bool readWorldLighting(const char* map,const float* camera,NorthlightWmoContext::Lighting& light){assert(map==lastRequest.map);return NorthlightWmoContext::readGlobalLighting(camera,light);}
 CONTEXT
 };
 struct D3DSURFACE_DESC{unsigned Width=1920,Height=1080;};
