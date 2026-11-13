@@ -59,13 +59,13 @@ def prepare(output, generated=fp.GENERATED):
     packed = b'NLA1' + struct.pack('<I', len(raw)) + zlib.compress(raw, 9)
     digest = hashlib.sha256(packed).hexdigest()
     for name, text in headers.items():
-        (output/name).write_text(text, encoding='utf-8', newline='\n')
-    (output/'renderer_asset_manifest.h').write_text(
+        (output/name).write_bytes(text.encode('utf-8'))
+    (output/'renderer_asset_manifest.h').write_bytes((
         '#pragma once\nnamespace NorthlightAssets {\n'
         f'inline constexpr char PackIdentity[]="{MARKER.decode()}{digest}";\n'
         f'inline constexpr unsigned PackBytes={len(packed)}, RawBytes={len(raw)};\n'
         f'inline constexpr wchar_t PackFilename[]=L"{FILENAME}";\n'
-        '}\n', encoding='utf-8', newline='\n')
+        '}\n').encode('utf-8'))
     (output/FILENAME).write_bytes(packed)
     manifest = {'format': 'northlight-assets/1', 'sha256': digest, 'bytes': len(packed),
                 'raw_bytes': len(raw), 'entries': entries}
