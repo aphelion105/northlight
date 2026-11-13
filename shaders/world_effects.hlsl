@@ -14,7 +14,9 @@ float4 EffectCoverageInfo : register(c79);
 // Final passes: neutral volume fog (x), local light (y), absent rain mask (z),
 // zero native surface-fog term in an encoded nonnegative scene (w).
 float4 CompositeWork : register(c80); // zero retains the complete calculation
+float4 PrelitDaylightInfo : register(c81); // x: this frame produced the separate prelit daylight image.
 sampler2D LightingBuffer : register(s8);
+sampler2D PrelitDaylight : register(s14); // Prelit composite only: independent, shadowed celestial irradiance.
 sampler2D ProbePrevious : register(s8); // 0.3.197: WorldGI only: previous SH R|G|B in three horizontal thirds of a 3n*n x n texture
 sampler2D FogBuffer : register(s9);
 sampler2D WaterMask : register(s11);
@@ -257,6 +259,7 @@ float shadowMapFiltered(float3 lp,bool useNear,float radius,float2 gradient,bool
     return lerp(1,visibility/max(total,.0001),edge);
 }
 float shadowMap(float3 lp,bool useNear,float radius,float2 gradient){return shadowMapFiltered(lp,useNear,radius,gradient,false);}
+float shadowNearBlend(float3 q){return q.z<=0||q.z>=1?1:saturate((max(abs(q.x),abs(q.y))-.72)/.18);}
 float directionalShadowFiltered(float3 p,float3 normal,float confidence,bool soft) {
     float facing=dot(normal,SunDirection.xyz);
     // Normal-offset per cascade: at grazing incidence (low sun on flat sand)
@@ -268,7 +271,7 @@ float directionalShadowFiltered(float3 p,float3 normal,float confidence,bool sof
     // unreliable normal gets no lift.
     float lift=(1-saturate(abs(facing)))*confidence*2/1024;
     float3 q=affinePoint(p+normal*(lift*DepthParams.y),NearMatrix),farQ=affinePoint(p+normal*(lift*DepthParams.z),FarMatrix);
-    float blend=saturate((max(abs(q.x),abs(q.y))-.72)/.18);
+    float blend=shadowNearBlend(q);
     // Matrix columns contain light basis vectors divided by cascade radius.
     float2 plane=float2(dot(normal,float3(NearMatrix[0].x,NearMatrix[1].x,NearMatrix[2].x)),
                         -dot(normal,float3(NearMatrix[0].y,NearMatrix[1].y,NearMatrix[2].y)))*DepthParams.y;
@@ -388,10 +391,39 @@ float fogActorShadowTiled(float3 q,float3 delta){
 // than multiplying the caster twice; an empty actor map preserves world bits.
 float fogCombineActor(float world,float actor){return actor<1?min(world,actor):world;}
 
+// Static probe-to-receiver visibility. s13 is idle during the GI pass.
+sampler2D LocalVisibility : register(s13);
+float4 LocalVisibilityInfo : register(c82); // columns, reciprocal width/height, reciprocal columns
+float localPlaneVisibility(float3 plane,float3 delta){
+    return saturate((.04-(dot(plane,delta)-1)*rsqrt(max(dot(plane,plane),1e-16)))*25);
+}
+float localProbeVisibility(float index,float3 delta){
+    float2 tile=float2(index-floor(index*LocalVisibilityInfo.w)*LocalVisibilityInfo.x,floor(index*LocalVisibilityInfo.w))*9;
+    float3 d=delta/max(dot(abs(delta),1),1e-6);
+    if(d.z<0)d.xy=(1-abs(d.yx))*float2(d.x>=0?1:-1,d.y>=0?1:-1);
+    float2 q=saturate(d.xy*.5+.5)*8,base=floor(q),f=q-base;
+    float2 uv=(tile+base+.5)*LocalVisibilityInfo.yz;
+    float4 a=tex2Dlod(LocalVisibility,float4(uv,0,0));
+    [branch]if(a.w<-.5)return 0;
+    float v=localPlaneVisibility(a.xyz,delta);
+#ifndef LOCAL_VISIBILITY_FOUR_READS
+    [branch]if(a.w>.5){v*=v;return v*v;}
+#endif
+    // Clamp within this probe's tile at the four octahedral vertices.
+    float2 step=min(1,8-base)*LocalVisibilityInfo.yz;
+    float b=localPlaneVisibility(tex2Dlod(LocalVisibility,float4(uv+float2(step.x,0),0,0)).xyz,delta);
+    float c=localPlaneVisibility(tex2Dlod(LocalVisibility,float4(uv+float2(0,step.y),0,0)).xyz,delta);
+    float e=localPlaneVisibility(tex2Dlod(LocalVisibility,float4(uv+step,0,0)).xyz,delta);
+    v=lerp(lerp(v,b,f.x),lerp(c,e,f.x),f.y);v*=v;return v*v;
+}
+float localProbeFacing(float3 normal,float3 delta){
+    return max(0,(dot(normal,-delta)*rsqrt(max(dot(delta,delta),1e-10))+.15)*(1/1.15));
+}
+
 float2 probeUV(float3 cell) {
     return (float2(cell.x+cell.z*GridInfo.x,cell.y)+.5)/float2(GridInfo.x*GridInfo.x,GridInfo.x);
 }
-float4 probeIrradiance(float3 p,float3 n) {
+float4 probeIrradiance(float3 p,float3 n,uniform bool localOnly) {
     if(GridInfo.w<.5)return 0;
     // World lattice is independent of the camera/request grid. Wrapped atlas
     // slots are usable only when metadata names this exact world probe.
@@ -415,16 +447,23 @@ float4 probeIrradiance(float3 p,float3 n) {
         coverage+=weight;
         float3 pp=cell*GridOrigin.w;
         float3 delta=p-pp;float distance=length(delta);
+        float4 moment;float visibility;
+        [branch]if(localOnly||LocalVisibilityInfo.x>0){
+            moment=tex2Dlod(ProbeVisibility,float4(uv.x,(wrapped.y+.5)/(GridInfo.x*6),0,0));
+            float index=wrapped.x+wrapped.y*GridInfo.x+wrapped.z*GridInfo.x*GridInfo.x;
+            visibility=localProbeVisibility(index,delta)*localProbeFacing(n,delta);
+        }else{
         float3 absolute=abs(delta);float axis;
         if(absolute.x>=absolute.y&&absolute.x>=absolute.z)axis=delta.x>=0?0:1;
         else if(absolute.y>=absolute.z)axis=delta.y>=0?2:3;
         else axis=delta.z>=0?4:5;
         float2 visibilityUV=float2(uv.x,(wrapped.y+axis*GridInfo.x+.5)/(GridInfo.x*6));
-        float4 moment=tex2Dlod(ProbeVisibility,float4(visibilityUV,0,0));
+        moment=tex2Dlod(ProbeVisibility,float4(visibilityUV,0,0));
         float variance=max(moment.y-moment.x*moment.x,.02);
         float excess=max(distance-moment.x,0);
-        float visibility=variance/(variance+excess*excess);
-        weight*=visibility*visibility*moment.z;
+        visibility=variance/(variance+excess*excess);visibility*=visibility;
+        }
+        weight*=visibility*moment.z;
         float3 irradiance=float3(dot(tex2Dlod(ProbeR,float4(uv,0,0)),basis),dot(tex2Dlod(ProbeG,float4(uv,0,0)),basis),dot(tex2Dlod(ProbeB,float4(uv,0,0)),basis));
         // 0.3.197: a same-key re-publication blends from what was on screen over .3 s (moment.w = start, -1000 = none); first residency keeps born's fade.
         float blend=saturate((PassInfo.w-moment.w)*(1/.3));
@@ -553,10 +592,10 @@ NormalDistanceOutput WorldNormals(float2 uv:TEXCOORD0) {
 // No distance MRT is bound when no light source is drawn.
 float4 WorldNormalsNoDistance(float2 uv:TEXCOORD0):COLOR0 { return worldNormalValue(uv); }
 
-struct LightingOutput {float4 correction:COLOR0;float4 baseline:COLOR1;};
-float3 worldGIValue(float3 p,float4 smoothNormal) {
+struct LightingOutput {float4 correction:COLOR0;float4 baseline:COLOR1;float4 daylight:COLOR2;};
+float3 worldGIValue(float3 p,float4 smoothNormal,uniform bool localOnly) {
     float3 n=smoothNormal.xyz;
-    float4 probe=probeIrradiance(p+n*.25,n);
+    float4 probe=probeIrradiance(p+n*.25,n,localOnly);
     float3 ambient=max(AmbientLight.rgb,0);
     float3 radiance=probe.rgb/3.14159265*max(1+GIResponse.y,0);
     // Clamp before residency fade: strong GI cannot remove more than ambient,
@@ -582,11 +621,11 @@ float3 worldGIValue(float3 p,float4 smoothNormal) {
 LightingOutput worldLightingValue(float2 uv,bool soft,bool shadows,bool gi=false) {
     float2 halfUV=uv;
     uv=depthUV(uv);float d=normalizedDepth(uv);
-    LightingOutput o;o.correction=float4(0,0,0,SourcePolicy.y);o.baseline=float4(max(AmbientLight.rgb,.15),1);
+    LightingOutput o;o.correction=float4(0,0,0,SourcePolicy.y);o.baseline=float4(max(AmbientLight.rgb,.15),1);o.daylight=0;
     if(d>=.99999||waterDistance(uv,d)>0)return o;
     float4 smoothNormal=tex2Dlod(NormalBuffer,float4(halfUV,0,0));
     float3 p=worldPosition(uv,d);float3 n=smoothNormal.xyz;
-    float3 indirect=gi?worldGIValue(p,smoothNormal):0;
+    float3 indirect=gi?worldGIValue(p,smoothNormal,true):0;
     // Fine material light is applied after the half-res spatial/temporal filters.
     // The legacy route remains available when there is no independent scene copy.
     float3 detailNormal=n;
@@ -622,7 +661,12 @@ LightingOutput worldLightingValue(float2 uv,bool soft,bool shadows,bool gi=false
     // dim lamps as if this receiver had proven direct daylight.
     float3 cover=affinePoint(p,FarMatrix);
     float known=max(abs(cover.x),abs(cover.y))<=1&&cover.z>=0&&cover.z<=1?1:0;
-    o.baseline=float4(max(old+AmbientLight.rgb,.15),known?lerp(visibility,shadow,SunDirection.w):-1);return o;
+    o.baseline=float4(max(old+AmbientLight.rgb,.15),known?lerp(visibility,shadow,SunDirection.w):-1);
+    // Prelit WMO has no native sunlight to subtract. Publish incoming daylight
+    // separately from the outdoor correction and GI's ambient replacement.
+    // Uncovered receivers retain authored lighting rather than leaking sun.
+    o.daylight=float4(DirectLight.rgb*saturate(dot(detailNormal,SunDirection.xyz))*shadow*known,0);
+    return o;
 }
 LightingOutput WorldLighting(float2 uv:TEXCOORD0){return worldLightingValue(uv,false,true);}
 LightingOutput WorldLightingSoft(float2 uv:TEXCOORD0){return worldLightingValue(uv,true,true);}
@@ -749,7 +793,7 @@ float4 WorldGI(float2 uv:TEXCOORD0):COLOR0 {
     float4 smoothNormal=tex2Dlod(NormalBuffer,float4(uv,0,0));
     uv=depthUV(uv);
     float d=normalizedDepth(uv);if(d>=.99999||waterDistance(uv,d)>0)return 0;
-    return float4(worldGIValue(worldPosition(uv,d),smoothNormal),0);
+    return float4(worldGIValue(worldPosition(uv,d),smoothNormal,false),0);
 }
 // Four POINT reads work on float32 textures without optional linear filtering.
 // Empty metadata nodes must never interpolate their dummy ground=0 into real
@@ -1173,13 +1217,17 @@ float4 worldFog(float2 uv,bool actorIntegration,bool directIntegration=true,bool
 // c116..153 avoid the static-shadow transition bank c80..100 and c115.
 float4 Forever[38] : register(c116);
 float3 foreverNoise(float3 p) {
-    float3 a=float3(tex3Dlod(CloudNoise,float4((p-PassInfo.w*Forever[25].xyz)*Forever[24].x,0)).r,
-                    tex3Dlod(CloudNoise,float4((p-PassInfo.w*Forever[26].xyz)*Forever[24].y,0)).r,
-                    tex3Dlod(CloudNoise,float4((p-PassInfo.w*Forever[27].xyz)*Forever[24].z,0)).r);
-    float3 b=float3(tex3Dlod(CloudNoise,float4((p-PassInfo.w*Forever[28].xyz)*Forever[31].x,0)).r,
-                    tex3Dlod(CloudNoise,float4((p-PassInfo.w*Forever[29].xyz)*Forever[31].y,0)).r,
-                    tex3Dlod(CloudNoise,float4((p-PassInfo.w*Forever[30].xyz)*Forever[31].z,0)).r);
-    return lerp(1,saturate(2*(a*Forever[32].xyz+b*Forever[33].xyz)),Forever[34].xyz);
+    float3 noise=1;
+    // A noisy layer selects this shader for the whole volume. Other layers
+    // still have exact unit noise; do not fetch their two unused octaves.
+    [unroll]for(int i=0;i<3;++i){
+        [branch]if(Forever[34][i]!=0){
+            float a=tex3Dlod(CloudNoise,float4((p-PassInfo.w*Forever[25+i].xyz)*Forever[24][i],0)).r;
+            float b=tex3Dlod(CloudNoise,float4((p-PassInfo.w*Forever[28+i].xyz)*Forever[31][i],0)).r;
+            noise[i]=lerp(1,saturate(2*(a*Forever[32][i]+b*Forever[33][i])),Forever[34][i]);
+        }
+    }
+    return noise;
 }
 float foreverVisibility(float3 ray,float a,float b,float t,bool actorIntegration,bool cullUnneeded){
     float visible=1;
@@ -1190,7 +1238,12 @@ float foreverVisibility(float3 ray,float a,float b,float t,bool actorIntegration
     return visible;
 }
 float4 foreverFog(float2 uv,bool actorIntegration,bool samplesNoise=true) {
-    const bool earlyCull=!samplesNoise; // The noisy actor variants already fill all 32 SM3 temporaries.
+    // The noisy actor and transition variants exhaust SM3 temporaries with early culling.
+#if NORTHLIGHT_SHADOW_TRANSITION
+    const bool earlyCull=!samplesNoise;
+#else
+    const bool earlyCull=!samplesNoise||!actorIntegration;
+#endif
     if(FogInfo.x<.5)return float4(0,0,0,1);
     uv=depthUV(uv);float depth=normalizedDepth(uv);
     float3 view=viewPositionDistance(uv,fogReceiverDistance(uv,depth));
@@ -1222,7 +1275,11 @@ float4 foreverFog(float2 uv,bool actorIntegration,bool samplesNoise=true) {
         float3 shape=exp(min(0,(Forever[2].xyz-height)*Forever[3].xyz)+min(0,(height-Forever[4].xyz)*Forever[5].xyz));
         float3 curve=1+Forever[7].xyz*pow(max(saturate((t-Forever[1].xyz)*.001),1e-8),Forever[8].xyz);
         float3 density=Forever[0].xyz*shape*curve*step(Forever[1].xyz,t)*valid;
-        float3 noise=samplesNoise?foreverNoise(p):float3(1,1,1);density*=noise;
+        float3 noise=1;
+        // No layer can scatter when its pre-noise density is exactly zero.
+        // Keep the actor path within SM3's register limit by gating only noise.
+        [branch]if(samplesNoise&&dot(density,1)>0)noise=foreverNoise(p);
+        density*=noise;
         float sigma=dot(density,1),absorb=1-exp(-sigma*(b-a));
         float3 lit=lerp(1,visible,Forever[9].xyz)*direct;
         float3 ambient=SourcePolicy.x*lerp(1,visible,Forever[9].xyz);
@@ -1246,7 +1303,7 @@ float4 ForeverFogActorNoNoise(float2 uv:TEXCOORD0):COLOR0{return foreverFog(uv,t
 // in-scattering of an isotropic point source along the view ray in closed form,
 // integral of a softened inverse-square source, tapered to zero at its range,
 // with the fog extinction sampled at the light. Unshadowed; added to the
-// scattering buffer before its blur. 0.3.205 (gh#20): the batches of four lights add their raw sums into a half-resolution accumulator
+// current scattering buffer after atmospheric history/blur. 0.3.205 (gh#20): the batches of four lights add their raw sums into a half-resolution accumulator
 // (LocalFog) and LocalFogCombine soft-caps that total once, so the glow does not depend on how the closest-first lights are grouped:
 // a per-batch cap made overlapping glows sum to about 1x the cap in one batch and 2x when a lamp swapped into another batch (flicker).
 float atanFast(float x){
@@ -1256,8 +1313,11 @@ float atanFast(float x){
 }
 float4 LocalFog(float2 uv:TEXCOORD0):COLOR0 {
     uv=depthUV(uv);
-    float depth=normalizedDepth(uv);float3 endpoint=affinePoint(viewPositionDistance(uv,fogReceiverDistance(uv,depth)),InverseView);
-    float3 ray=endpoint-Camera.xyz;float D=min(length(ray),max(FogInfo.w,0));
+    float depth=normalizedDepth(uv);float3 view=viewPositionDistance(uv,fogReceiverDistance(uv,depth));
+    // Rotate the direction without a world-position round trip: nearby rays
+    // otherwise quantize as the camera moves at large world coordinates.
+    float3 ray=view.x*InverseView[0].xyz+view.y*InverseView[1].xyz+view.z*InverseView[2].xyz;
+    float D=min(length(ray),max(FogInfo.w,0));
     ray*=rsqrt(max(dot(ray,ray),1e-12));
     float3 result=0;float capped=0;
     // Four lights per pass (SM3 slot budget); up to sixteen across batches. 0.3.205: about 473 of the 512 slots are used (the capped
@@ -1592,7 +1652,7 @@ float4 worldComposite(float2 uv,float2 pixel,bool surfaceLighting,bool hdrMode,s
             float4 light=tex2Dlod(LightingBuffer,float4(q,0,0));
             float3 lit=tex2Dlod(BaselineLighting,float4(q,0,0)).rgb;
             float occlusion=tex2Dlod(AmbientOcclusion,float4(q,0,0)).a;
-            bounce=mad(light.rgb,weight,bounce);
+            bounce=mad(prelit?tex2Dlod(PrelitDaylight,float4(q,0,0)).rgb:light.rgb,weight,bounce);
             [branch]if(!baseLighting&&CompositeWork.y<.5)local=mad(tex2Dlod(CurrentLocalLighting,float4(q,0,0)).rgb,weight,local);
             shadow=mad(light.a,weight,shadow);baseline=mad(lit,weight,baseline);ao=mad(occlusion,weight,ao);total+=weight;
             if(score<closest){closest=score;fallbackUV=q;}
@@ -1619,6 +1679,7 @@ float4 worldComposite(float2 uv,float2 pixel,bool surfaceLighting,bool hdrMode,s
     float4 fallbackLight=0;float3 fallbackBase=0;float fallbackAO=1;
     [branch]if(relight&&total<.02&&closest<1e20){
         fallbackLight=tex2Dlod(LightingBuffer,float4(fallbackUV,0,0));
+        if(prelit)fallbackLight.rgb=tex2Dlod(PrelitDaylight,float4(fallbackUV,0,0)).rgb;
         fallbackBase=tex2Dlod(BaselineLighting,float4(fallbackUV,0,0)).rgb;
         fallbackAO=tex2Dlod(AmbientOcclusion,float4(fallbackUV,0,0)).a;
     }
@@ -1656,16 +1717,18 @@ float4 worldComposite(float2 uv,float2 pixel,bool surfaceLighting,bool hdrMode,s
         // nearest-depth texel instead of losing their shadow and GI entirely.
         if(total<.02){bounce=fallbackLight.rgb;[branch]if(!baseLighting&&CompositeWork.y<.5)local=tex2Dlod(CurrentLocalLighting,float4(fallbackUV,0,0)).rgb;shadow=fallbackLight.a;baseline=fallbackBase;total=1;}
         float inverseWeight=1/max(total,.0001);
-        bounce*=inverseWeight;shadow*=inverseWeight;
+        bounce*=inverseWeight*(prelit?PrelitDaylightInfo.x:1);shadow*=inverseWeight;
 
         // The framebuffer already contains atmospheric fog. Relight only the
         // transported surface term: do not infer material albedo from fog RGB.
         float3 oldLight=max(baseline*inverseWeight,.15);
         float3 transported=max(original.rgb-fogPart,0);
         float3 albedoT=min((hdrMode?hdrSurface:transported)/oldLight,legacyT);
-        // Prelit WMO RGB has no native global direct/ambient term to replace.
-        // Keep its authored illumination, while retaining contact AO and lamps.
-        color=prelit?original.rgb:mad(albedoT,bounce,original.rgb);
+        // Prelit RGB retains baked/local illumination. Add only the independent
+        // daylight term, which roofs, walls and actors shadow before this pass.
+        // As for local lamps, native transported RGB supplies a bounded material
+        // estimate; this is not an extraction of the original diffuse texture.
+        color=mad(albedoT,bounce,original.rgb);
         // Bound combined GI/shadow darkening relative to the existing surface;
         // this preserves black and does not introduce an absolute exposure floor.
         color=max(color,mad(-shadowRemovalLimit(),transported,original.rgb));

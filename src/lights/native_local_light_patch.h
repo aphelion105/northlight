@@ -93,6 +93,12 @@ inline bool alphaIndependent(const Word* code,size_t size,unsigned diffuse){
             for(unsigned lane=0;lane<4;++lane)if((channels&(1u<<lane))&&((s>>(16+2*lane))&3)<3)return false;}
     }return true;
 }
+inline bool pointOwnerPixel(const Word* code,size_t size){
+    NorthlightTerrainCoverage::Program program;if(!NorthlightTerrainCoverage::analyse(code,size,program)||program.vertex||program.major!=3)return false;
+    for(const auto& op:program.ops)if(op.code==31&&regType(code[op.at+2])==1&&(code[op.at+1]&0xf000fu)==10)
+        return alphaIndependent(code,size,regIndex(code[op.at+2]));
+    return false;
+}
 // Share only pure, straight-line values that cannot depend on native diffuse.
 // First-endpoint order is retained. Persistent registers are never native temps;
 // the helper may reuse them only after every endpoint has consumed its values.

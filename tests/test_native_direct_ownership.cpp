@@ -87,12 +87,73 @@ static void bankMemoParity(){
 int main(){
     matchAllSlots();
     bankMemoParity();
+    {struct Binding {const NorthlightNativeLights::Point* native=nullptr;const NorthlightLocalLights::Light* authored=nullptr;float ownerGain=0;};
+     for(bool terrain:{false,true}){float bank[60]{},view[16]{},camera[3]{};for(unsigned i=0;i<16;++i)view[i]=i%5==0?1.f:0.f;
+         NorthlightNativeLights::Point points[5]{};Binding bindings[5];const unsigned count=terrain?5:4;
+         for(unsigned s=0;s<count;++s){auto& p=points[s];p.position[0]=float(s+1);p.color[0]=.8f;p.color[1]=.4f;p.color[2]=.2f;p.attenuation[0]=1;
+             bindings[s]={&p,nullptr,s==0?1.f:s==1?.5f:0.f};
+             for(unsigned k=0;k<3;++k){bank[terrain?12*s+k:4*(4+s)+k]=p.position[k];bank[terrain?12*s+4+k:4*s+k]=p.color[k];bank[terrain?12*s+8+k:4*(8+k)+s]=p.attenuation[k];}}
+         float original[60];std::copy_n(bank,60,original);NorthlightNativeDirect::ownExtraBank(terrain,bank,view,camera,bindings,count);
+         for(unsigned i=0;i<60;++i){float expected=original[i];for(unsigned s=0;s<count;++s){const unsigned rgb=terrain?12*s+4:4*s;if(i>=rgb&&i<rgb+3)expected*=1-bindings[s].ownerGain;}assert(bank[i]==expected);}
+         std::copy_n(original,60,bank);bindings[1]=bindings[0];NorthlightNativeDirect::ownExtraBank(terrain,bank,view,camera,bindings,2);assert(!std::memcmp(bank,original,sizeof bank));
+         bindings[0]={&points[count-1],nullptr,1};NorthlightNativeDirect::ownExtraBank(terrain,bank,view,camera,bindings,1);
+         const unsigned last=terrain?12*(count-1)+4:4*(count-1);for(unsigned k=0;k<3;++k)assert(bank[last+k]==0);
+     }
+     std::puts("NATIVE_EXTRA_OWNER_PASS model4 terrain5 full_and_partial_handoff unmatched_preserved ambiguous_preserved RGB_only=1");}
     using namespace NorthlightNativeDirect;
     NorthlightNativeLights::Snapshot scene;scene.valid=1;scene.scene=1;scene.count=1;auto& point=scene.lights[0];point.id=1;
     point.position[0]=-8564.9423828125f;point.position[1]=1011.7713012695312f;point.position[2]=99.7315444946289f;
     point.color[0]=4;point.color[1]=2.2f;point.color[2]=.8f;point.attenuation[1]=.7f;point.attenuation[2]=.03f;
     NorthlightLocalLights::Light raw{};std::copy_n(point.position,3,raw.position);std::copy_n(point.color,3,raw.diffuse);raw.kind=2;raw.flags=2;raw.sourceId=14933062424609180460ull;
     const auto light=NorthlightLocalLights::nativeTransport(raw,point.attenuation);
+    {
+        auto shifted=light;shifted.position[2]+=.4f;
+        assert(!ownershipGain(shifted,point)); // Coordinates alone cannot authorize a handoff.
+        point.emitterOffset[2]=.4f;const auto resolved=NorthlightNativeLights::emitterPosition(point);
+        assert(ownershipGain(shifted,point,resolved.data())==1);
+        for(float& value:shifted.diffuse)value*=.5f;
+        assert(ownershipGain(shifted,point,resolved.data())==.5f);
+        shifted.position[0]+=.01f;assert(!ownershipGain(shifted,point,resolved.data()));
+        point.emitterOffset[2]=0;
+    }
+    {
+        NorthlightEquipmentLights::Tracker::Entry entry;entry.id=6;entry.seen=1000;
+        std::copy_n(point.position,3,entry.source.position);std::copy_n(point.color,3,entry.source.color);std::copy_n(point.attenuation,3,entry.source.attenuation);
+        auto selected=light;selected.sourceId=0xfec0000000000000ull|entry.id;selected.flags=0;
+        NorthlightNativeLights::Snapshot unavailable;assert(!source(selected,unavailable));
+        assert(observedOwnershipGain(selected,entry,1000,unavailable)==1&&observedOwnershipGain(selected,entry,1099,unavailable)==1);
+        assert(observedOwnershipGain(selected,entry,1000,scene)==1);
+        entry.nativeId=123;assert(observedOwnershipGain(selected,entry,1000,unavailable)==1);
+        assert(observedOwnershipGain(selected,entry,1000,scene)==1); // Unrelated scene observations do not revoke this source.
+        entry.nativeId=point.id;assert(!observedOwnershipGain(selected,entry,1000,scene));entry.nativeId=0;
+        assert(!observedOwnershipGain(selected,entry,1100,unavailable));entry.seen=0xfffffff0u;assert(observedOwnershipGain(selected,entry,0x10u,unavailable)==1);entry.seen=1000;
+        for(float fade:{0.f,.25f,.5f,1.f}){auto fading=selected;for(float& c:fading.diffuse)c*=fade;assert(observedOwnershipGain(fading,entry,1000,unavailable)==fade);}
+        for(unsigned control=0;control<7;++control){auto changed=selected;auto witness=entry;
+            switch(control){case 0:witness.nativeId=point.id;break;case 1:changed.sourceId++;break;case 2:changed.sourceId=raw.sourceId;break;
+                case 3:changed.diffuse[1]+=.01f;break;case 4:changed.position[0]+=.02f;break;case 5:changed.attenuationEnd+=1;break;case 6:changed.flags|=NorthlightLocalLights::Flash;break;}
+            assert(!observedOwnershipGain(changed,witness,1000,scene));
+        }
+        std::puts("NATIVE_OBSERVED_OWNER_PASS missing_scene_inventory exact_selected_draw_source fresh_100ms fade clock_wrap identity_hue_position_falloff_and_expiry_controls no_shadow_flag_added");
+    }
+    assert(ownershipGain(light,point)==1); // Attached/root classification cannot toggle direct RGB ownership.
+    point.flags=NorthlightNativeLights::RootAnchor;
+    assert(ownershipGain(light,point)==1);
+    for(float fade:{0.f,.25f,.5f,1.f}){auto selected=light;for(float& c:selected.diffuse)c*=fade;assert(ownershipGain(selected,point)==fade);}
+    for(unsigned control=0;control<7;++control){auto selected=light;auto native=point;
+        switch(control){case 0:native.position[0]=NAN;break;case 1:selected.position[0]+=.02f;break;case 2:selected.diffuse[1]+=.01f;break;
+            case 3:selected.attenuationEnd+=1;break;case 4:selected.flags|=NorthlightLocalLights::Flash;break;case 5:selected.diffuse[0]=NAN;break;case 6:selected.kind=3;break;}
+        assert(ownershipGain(selected,native)==0);
+    }
+    // The same selected lamp can occupy any native slot, or disappear from the
+    // game's bank. Only the former gets removed; other slots and alpha survive.
+    struct OwnerBinding {float ownerGain;};const OwnerBinding owners[]={{1},{.5f},{NAN},{0}};
+    float input[44],rgb[16];for(unsigned i=0;i<44;++i)input[i]=float(i+1);
+    BankMatch owned;for(unsigned s=0;s<4;++s){owned.valid[s]=true;owned.bindings[s]=int(s);}
+    assert(ownedBank(input,4,owned,owners,rgb)==3);
+    for(unsigned s=0;s<4;++s)for(unsigned c=0;c<4;++c)assert(rgb[s*4+c]==input[s*4+c]*(c==3||s>=2?1:s==0?0:.5f));
+    owned.bindings[0]=-1;owned.bindings[1]=-2;assert(!ownedBank(input,4,owned,owners,rgb)&&!std::memcmp(input,rgb,16*sizeof(float)));
+    owned.bindings[0]=0;owned.valid[0]=false;assert(!ownedBank(input,4,owned,owners,rgb));
+    std::puts("NATIVE_POINT_OWNER_PASS exact_scene fade missing_slot ambiguity alpha unselected_and_mismatched_sources_preserved");
     assert(source(light,scene)==&point);
     NorthlightEquipmentLights::Native value;std::copy_n(point.position,3,value.position);std::copy_n(point.color,3,value.color);std::copy_n(point.attenuation,3,value.attenuation);
     assert(slot(value,scene)==&point);

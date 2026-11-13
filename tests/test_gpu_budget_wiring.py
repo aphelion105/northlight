@@ -20,8 +20,8 @@ checks={}
 
 # controller and timer headers
 checks['gpu_budget.h: portable (no D3D, Win32, clock or allocation)']=all(x not in code(b) for x in ('d3d9','windows.h','chrono','QueryPerformance','new ','malloc','std::vector'))
-checks['gpu_budget.h: level 0 is the full image (40 cloud / 48 fog intervals, no alternation, zero interval constant)']=all(x in b for x in (
-    'return level==0?40u:level==1?32u:24u;','return level>=3?40u:48u;','return steps==fullSteps||!steps||!fullSteps?0.f:'))
+checks['gpu_budget.h: banks retain 40 intervals at every level, regional fog keeps its bounded grid']=all(x in b for x in (
+    'inline unsigned cloudSteps(unsigned){return 40u;}','return level>=3?40u:48u;','return steps==fullSteps||!steps||!fullSteps?0.f:'))
 tc=code(t)
 reads=re.findall(r'->GetData\(([^;]*?)\)',tc)
 checks['timer: every GetData with flags 0, no D3DGETDATA_FLUSH, no wait loop, sleep or spin']=(len(reads)==4 and all(x.rstrip().endswith(',0') for x in reads)
@@ -71,7 +71,7 @@ checks['renderer: GPUBUDGET line on RenderProfile sample frames, level changes l
 
 # world: level gated, full level unchanged
 wc=code(w)
-checks['world: the level is 0 whenever GpuBudgetMs is 0, clamped to MaxLevel']='void setGpuBudgetLevel(unsigned level){gpuBudgetLevel=quality.gpuBudgetMs?std::min(level,NorthlightGpuBudget::MaxLevel):0u;}' in wc
+checks['world: budget level is clamped and changed sampling invalidates fog history']=all(s in wc for s in ('const auto next=quality.gpuBudgetMs?std::min(level,NorthlightGpuBudget::MaxLevel):0u;','if(next!=gpuBudgetLevel)fogHistoryValid=false;gpuBudgetLevel=next;'))
 checks['world: the interval constants are written only at a reduced level (bank unchanged at level 0), c60.x only with the clouds active']=(
     'if(gpuBudgetLevel){if(cf.active)c[60][0]=NorthlightGpuBudget::spacingDelta(c[21][3],NorthlightGpuBudget::cloudSteps(gpuBudgetLevel),40);c[64][2]=NorthlightGpuBudget::spacingDelta(c[21][3],NorthlightGpuBudget::fogSteps(gpuBudgetLevel),48);}' in wc
     and len(re.findall(r'c\[64\]\[[0-2]\]=',wc))==1 and wc.index('c[21][3]=128;')<wc.index('if(gpuBudgetLevel){')<wc.index('d->SetPixelShaderConstantF(0,&c[0][0],68);'))

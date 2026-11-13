@@ -187,14 +187,14 @@ static void testActualPe(const char* path){
 static void testTriggers() {
     using NorthlightShaderTags::kTerrain;using NorthlightShaderTags::kUi;using NorthlightShaderTags::kWmo;using NorthlightShaderTags::kWorld;
     TriggerPolicy t;
-    assert(t.onDraw(0)==Trigger::FrameStart&&t.onDraw(0)==Trigger::None&&t.onDraw(kWorld)==Trigger::None); // the first draw of the frame; untagged world model draws are not a trigger
-    assert(t.onDraw(kTerrain|kWorld)==Trigger::World&&t.onDraw(kTerrain)==Trigger::None&&t.onDraw(kWmo)==Trigger::None); // first terrain/WMO only
-    assert(t.onDraw(kUi)==Trigger::Ui&&t.onDraw(kUi)==Trigger::None&&t.onDraw(0)==Trigger::None); // first UI draw; nothing else after
+    assert(t.onDraw(0,true)==Trigger::FrameStart&&t.onDraw(0,true)==Trigger::None&&t.onDraw(kWorld,true)==Trigger::None); // the first draw of the frame; untagged world model draws are not a trigger
+    assert(t.onDraw(kTerrain|kWorld,true)==Trigger::World&&t.onDraw(kTerrain,true)==Trigger::None&&t.onDraw(kWmo,true)==Trigger::None); // first terrain/WMO only
+    assert(t.onDraw(kUi,true)==Trigger::Ui&&t.onDraw(kUi,true)==Trigger::None&&t.onDraw(0,true)==Trigger::None); // first UI draw; nothing else after
     t.onPresent(); // a new frame starts clean
-    assert(t.onDraw(kWmo|kWorld)==Trigger::World&&t.onDraw(0)==Trigger::None&&t.onDraw(kUi)==Trigger::Ui);
+    assert(t.onDraw(kWmo|kWorld,true)==Trigger::World&&t.onDraw(0,true)==Trigger::None&&t.onDraw(kUi,true)==Trigger::Ui);
     t.beginFrame();assert(!t.frame&&!t.world&&!t.ui);
-    assert(t.onDraw(kUi)==Trigger::Ui&&t.onDraw(kTerrain)==Trigger::World&&t.onDraw(0)==Trigger::None); // a UI first draw also starts the frame
-    unsigned triggers=0;t.onPresent();for(int i=0;i<500;++i)triggers+=t.onDraw(i==100?kTerrain:i==400?kUi:0)!=Trigger::None;
+    assert(t.onDraw(kUi,true)==Trigger::Ui&&t.onDraw(kTerrain,true)==Trigger::World&&t.onDraw(0,true)==Trigger::None); // a UI first draw also starts the frame
+    unsigned triggers=0;t.onPresent();for(int i=0;i<500;++i)triggers+=t.onDraw(i==100?kTerrain:i==400?kUi:0,true)!=Trigger::None;
     assert(triggers==3); // FrameStart, World, Ui: three captures a frame however many draws
 }
 static void testLearnedUi() {
@@ -203,11 +203,11 @@ static void testLearnedUi() {
     assert(drawTags(0,h,h)==unsigned(kUi)&&drawTags(0,h,0)==0&&drawTags(kTerrain,h,other)==unsigned(kTerrain)&&drawTags(0,0,0)==0);
     assert(drawTags(kTerrain,h,h)==(unsigned(kTerrain)|unsigned(kUi)));
     TriggerPolicy t;
-    assert(t.onDraw(kTerrain)==Trigger::World&&t.onDraw(drawTags(0,h,h))==Trigger::Ui&&t.onDraw(drawTags(0,h,h))==Trigger::None);
+    assert(t.onDraw(kTerrain,true)==Trigger::World&&t.onDraw(drawTags(0,h,h),true)==Trigger::Ui&&t.onDraw(drawTags(0,h,h),true)==Trigger::None);
     t.onPresent();
-    assert(t.onDraw(kTerrain)==Trigger::World&&t.onDraw(drawTags(0,h,0))==Trigger::None); // not learned: no UI trigger
+    assert(t.onDraw(kTerrain,true)==Trigger::World&&t.onDraw(drawTags(0,h,0),true)==Trigger::None); // not learned: no UI trigger
     t.onPresent();
-    assert(t.onDraw(drawTags(0,h,h))==Trigger::Ui&&t.onDraw(kTerrain)==Trigger::World); // learned draw as the frame's first draw
+    assert(t.onDraw(drawTags(0,h,h),true)==Trigger::Ui&&t.onDraw(kTerrain,true)==Trigger::World); // learned draw as the frame's first draw
     unsigned char code[40];for(unsigned i=0;i<sizeof code;++i)code[i]=(unsigned char)(i*37+5);
     const std::uint64_t ch=NorthlightShaderTags::fnv1a(code,sizeof code);
     assert(NorthlightShaderTags::triggerTags(ch)==NorthlightShaderTags::triggerTagsOfBytecode(code,sizeof code));

@@ -86,9 +86,11 @@ def fixtures(out):
 
 def component_fixtures(out):
     names={
+        'tall-brazier-noomni':r'world\generic\orc\passive doodads\braziers\tallbraziernoomni01.m2',
         'westfall':r'world\azeroth\westfall\passivedoodads\lamppost\westfalllamppost.m2',
         'northrend-torch':r'world\expansion02\doodads\generic\northrend fires\northrendgeneraltorch01.m2',
         'dwarf-lantern':r'world\generic\dwarf\passive doodads\lanterns\dwarvenhanginglanternsmall01.m2',
+        'bloodelf-sconce':r'world\expansion01\doodads\generic\bloodelf\sconce\be_sconce01.m2',
         'druid-lantern':r'world\expansion06\doodads\nightelf\7ne_druid_hanginglamp01.m2'}
     assets=Assets();cases=[]
     try:
@@ -106,7 +108,10 @@ def component_fixtures(out):
                                 struct.pack_into('<3f',blob,o+i*stride+relative,*(x*1.7 for x in point))
                     source=Variant(assets,blob,skin)
                 folder=out/(label+'-'+variant);folder.mkdir(parents=True,exist_ok=True)
-                builder=InstancedBuilder(source,folder);mesh=builder.m2(path)
+                builder=InstancedBuilder(source,folder)
+                # This oracle publishes the original native point below; isolate
+                # its shell ownership from the separately tested emitter resolver.
+                builder.resolve_fixture_emission=False;mesh=builder.m2(path)
                 own=tagged(mesh);assert own,(label,variant)
                 shell=sum(t[3] in own for t in mesh[1]);assert 0<shell<len(mesh[1])
                 # There is one native light, and no asset/profile name is needed.

@@ -190,7 +190,7 @@ public:
         using namespace NorthlightMemoryFootprint;
         if(!memory.visit(this))return;
         memory.add(Metadata,sizeof(*this));memory.vector(Metadata,bounds_);memory.vector(Metadata,previousBounds_);
-        for(const auto& entry:solved_)memory.allocation(Probes,&entry,sizeof(entry));
+        for(const auto& entry:solved_){memory.allocation(Probes,&entry,sizeof(entry));entry.second.probe.accountVisibility(memory);}
         for(const auto& entry:paths_){memory.allocation(Metadata,&entry,sizeof(entry));memory.vector(Probes,entry.second.record.rays);memory.vector(Probes,entry.second.record.queries);}
     }
     size_t retained()const{return solved_.size();}

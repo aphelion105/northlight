@@ -38,7 +38,7 @@ float queryVisibility(float2 uv,bool previous){
  float3 nc=tex2Dlod(QueryCoverNear,float4(uv,0,0)).xyz,fc=tex2Dlod(QueryCoverFar,float4(uv,0,0)).xyz;
  bool nh=!any(abs(nc*float3(1,1,2)-float3(0,0,1))>.99),fh=!any(abs(fc*float3(1,1,2)-float3(0,0,1))>.99);
  float4 n=tex2Dlod(NormalBuffer,float4(uv,0,0));
- float blend=lerp(saturate((max(abs(pn.x),abs(pn.y))-.72)/.18),saturate((max(abs(cn.x),abs(cn.y))-.72)/.18),ShadowTransition.x),result=0;
+ float blend=lerp(shadowNearBlend(pn),shadowNearBlend(cn),ShadowTransition.x),result=0;
  [loop]for(int cascade=0;cascade<2;++cascade){
   bool nearCascade=cascade==0,history=previous&&(nearCascade?nh:fh);float radius=nearCascade?DepthParams.y:DepthParams.z;
   float weight=(nearCascade?1-blend:blend)*(previous?1-(nearCascade?ShadowTransition.x:ShadowTransition.y):(nearCascade?ShadowTransition.x:ShadowTransition.y));

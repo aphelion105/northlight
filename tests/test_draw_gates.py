@@ -277,6 +277,8 @@ struct MockExt{
     HRESULT DrawPrimitive(D3DPRIMITIVETYPE t,UINT s,UINT c){env->call("DrawPrimitive "+drawName(t,s,c));return env->bit("draw failure",6)?HRESULT(-2005530516):D3D_OK;}
 };
 struct MockWorld{
+    bool nativeExtra=false;void requestNativeExtra(bool value){nativeExtra=value;}bool ownsNativeExtra()const{return false;}void nativeExtraRgb(bool,float*){}
+    unsigned sceneTraceCalls=0;template<class Draw> HRESULT captureNativeSceneDraw(unsigned,unsigned,Draw draw){++sceneTraceCalls;return draw();}
     Env* env=nullptr;bool context=true,actorShadows=true,shadows=true,composited=true;IDirect3DPixelShader9 replacement{9,nullptr};
     struct SurfaceSettings{unsigned celestialStyle=0;} settings; // Historical trace uses the legacy sky style.
     const SurfaceSettings& surfaceSettings()const{return settings;}
@@ -324,7 +326,10 @@ struct MockBlobs{Env* env=nullptr;MockExt* ext=nullptr;bool faintMode=false;unsi
     IDirect3DTexture9* faintTexture(){return env->bit("faint texture",8)?nullptr:&faint;}};
 namespace NorthlightSpellLayer{struct DrawArgs{template<class... A> static DrawArgs primitive(A...){return {};}template<class... A> static DrawArgs indexed(A...){return {};}template<class... A> static DrawArgs primitiveUP(A...){return {};}template<class... A> static DrawArgs indexedUP(A...){return {};}};} /* task 34: the spell layer is off in this model (spellOn=false): the draw hook's one bool test */
 struct Gate{int drawTid=7;void noteFirst(int){}};
-struct MirrorStateMock{Gate gate;std::uint64_t forwarded=0;bool textureKnown[1]={};void* textures[1]={};bool viewportKnown=false;struct{float MinZ=0,MaxZ=1;}viewport;};
+struct MirrorStateMock{Gate gate;IDirect3DVertexShader9* vertexShader=nullptr;std::uint64_t forwarded=0;bool textureKnown[1]={};void* textures[1]={};bool viewportKnown=false;struct{float MinZ=0,MaxZ=1;}viewport;};
+namespace NorthlightNativeMoreLightShader {enum class Kind{None,Model,Terrain};}
+struct MoreLightsMock {bool restoreFailed=false;unsigned draws=0;NorthlightNativeMoreLightShader::Kind kind(IDirect3DVertexShader9*)const{return NorthlightNativeMoreLightShader::Kind::Model;}
+    template<class Mirror,class Handoff,class Draw> HRESULT draw(NorthlightNativeMoreLightShader::Kind,const Mirror*,Handoff handoff,Draw submit,bool=false){++draws;float bank[60]{};handoff(false,bank);return submit();}};
 struct WeatherDetectMock{const void* hot=nullptr;NorthlightWeather::Kind hotKind=NorthlightWeather::Kind::None;bool mistArmed=false;bool isMist(const void*)const{return false;}void proveMist(const void*){}};struct WeatherSampleMock{unsigned primitives=0,draws=0;}; /* 0.3.198 (rain): drawHook's one comparison; hot stays null here (test_weather_detect drives it) */
 struct Guard{explicit Guard(Gate&){}};
 namespace NorthlightRenderThreadProbe{inline bool sampleFrame(unsigned f){return f%3==0;}inline bool profiling(){return true;}}
@@ -338,6 +343,7 @@ namespace NorthlightAutoDisplacement{struct Args{struct{D3DPRIMITIVETYPE t;INT b
 struct ExtensionDevice{struct RawScope{explicit RawScope(MockExt&){}};};
 struct BumpMock{void beginDraw(){}void beforeNativeDraw(){}template<class... A> void capture(A&&...){}template<class Draw> HRESULT geometryDraw(Draw draw,bool){return draw();}template<class Draw,class Submit> HRESULT geometryDraw(Draw draw,bool,Submit){return draw();}template<class Draw> HRESULT nativeDraw(Draw draw,IDirect3DVertexShader9*,IDirect3DPixelShader9*){return draw();}};
 struct Base{
+    MoreLightsMock* nativeMoreLights=nullptr;
     struct NormalStub{unsigned begins=0;void beginNativeDraw(){++begins;}};NormalStub* modelNormals=nullptr;
     virtual ~Base()=default;
     virtual HRESULT DrawPrimitive(D3DPRIMITIVETYPE,UINT,UINT)=0;
@@ -486,6 +492,12 @@ static void runFaint(std::uint64_t seed,bool gates,unsigned faultOneIn,FaintCove
     }
 }
 int main(){
+    {NewDevice d;MoreLightsMock more;d.nativeMoreLights=&more;bool sky=false;unsigned draws=0;
+     for(bool enabled:{true,false}){d.enabled=enabled;assert(d.submitGameDraw(2,sky,nullptr,[&]{assert(more.draws==draws+1&&d.worldObj.nativeExtra);++draws;return HRESULT(23);})==23);}
+     assert(draws==2&&more.draws==2);}
+    {NewDevice d;d.enabled=true;d.applied=d.failed=d.projectionValid=false;d.worldDebug=0;bool sky=false;unsigned draws=0;
+     assert(d.submitGameDraw(2,sky,nullptr,[&]{++draws;return HRESULT(17);})==17);assert(draws==1&&d.worldObj.sceneTraceCalls==1);
+     d.applied=true;assert(d.submitGameDraw(2,sky,nullptr,[&]{++draws;return HRESULT(19);})==19);assert(draws==2&&d.worldObj.sceneTraceCalls==1);}
     for(bool gates:{false,true})for(unsigned mode=0;mode<4;++mode){
         NewDevice d;Base::NormalStub normals;d.modelNormals=&normals;d.frameDrawGates=gates;
         d.enabled=mode!=1;d.applied=mode==2;d.failed=mode==3;d.latchDrawGates();

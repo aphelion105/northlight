@@ -313,6 +313,10 @@ static void disableOriginalTerrainShadows(){
     }
 }
 int main(){
+    {using namespace NorthlightSettings;const auto docs=factoryDocuments();const auto fields=schema(docs,docs,configOf(docs,""),"");D::Draft draft;draft.bind(&fields);std::string missing;
+     draft.set(*draft.field(D::Renderer,"Renderer","ExperimentalHDR"),"0");
+     for(const char* key:{"NativeLightStay","NativeMoreLights","NativeModelLightLimit","NativeTerrainLightLimit"}){
+         const auto* field=draft.field(D::Renderer,"Renderer",key);CHECK(field&&D::blocked(draft,*field,missing)==D::Block::None);}}
     {
         using namespace NorthlightSettings;
         const auto docs=factoryDocuments();const auto active=configOf(docs,"");const auto fields=schema(docs,docs,active,"");

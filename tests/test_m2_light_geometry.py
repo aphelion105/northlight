@@ -39,6 +39,13 @@ class Enclosure(unittest.TestCase):
         self.assertFalse(self.detect([self.light,(*self.light[:4],8,*self.light[5:])]))
         self.assertFalse(self.detect([(*self.light[:-1],0)]))
 
+    def test_large_bulb_with_separate_frame(self):
+        self.vertices=[];self.triangles=[]
+        cube(self.vertices,self.triangles,(0,0,2),.5)
+        cube(self.vertices,self.triangles,(0,0,.7),.25)
+        # The bulb occupies 8/17.5 of the rendered bounds, above the old 25% gate.
+        self.assertEqual(self.detect(),dict.fromkeys(range(12),7))
+
     def test_moving_or_alpha_material_keeps_geometry(self):
         self.assertFalse(self.detect(static=lambda _:False))
         self.materials=[('cutout',1,False)];self.assertFalse(self.detect())

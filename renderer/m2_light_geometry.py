@@ -71,7 +71,9 @@ def source_components(vertices,triangles,materials,lights,static_vertex,alpha_at
         span=[hi[k]-lo[k] for k in range(3)]
         # A room/body occupying the fixture is not a bulb. Bounds and tests use
         # model units, so a uniformly scaled mod asset retains the same policy.
-        if min(span)<=0 or math.prod(span)>volume*.25:continue
+        # Replacement fixtures can be mostly bulb (the installed BE sconce is
+        # 28%). Keep a distinct frame and the independent enclosure proof.
+        if min(span)<=0 or math.prod(span)>volume*.5:continue
         inside=[s for s in lights if all(lo[k]<s[0][k]<hi[k] for k in range(3))]
         if len(inside)!=1:continue
         light=inside[0]

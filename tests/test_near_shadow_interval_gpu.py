@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# northlight-test: requires=windows-gpu,zig manual
+# northlight-test: requires=windows-gpu,zig,client
 """Moving near casters remain current with retained environment shadows."""
 import argparse,ctypes,json,os,subprocess,sys
 from pathlib import Path
@@ -7,7 +7,8 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
 sys.path.insert(0,str(fp.TESTS))
 from validate_native_scene_trace import processes
-p=argparse.ArgumentParser(__doc__);p.add_argument('--output',type=Path,required=True);p.add_argument('--backend',action='append',required=True);a=p.parse_args()
+p=argparse.ArgumentParser(__doc__);p.add_argument('--output',type=Path,default=fp.output_dir()/'near-shadow-interval-gpu');p.add_argument('--backend',action='append');a=p.parse_args()
+if not a.backend:a.backend=[os.environ.get('NORTHLIGHT_TEST_D3D9',str(fp.client_root()/'renderer-backends/dxvk/dxvk_d3d9.dll'))]
 out=a.output.resolve();out.mkdir(parents=True,exist_ok=True);processes()
 api=ctypes.WinDLL('kernel32',use_last_error=True)
 api.CreateMutexW.argtypes=[ctypes.c_void_p,ctypes.c_int,ctypes.c_wchar_p];api.CreateMutexW.restype=ctypes.c_void_p
@@ -28,7 +29,7 @@ try:
     for index,backend in enumerate(a.backend):
         processes();run=subprocess.run([str(exe),str(Path(backend).resolve())],cwd=out,env=env,capture_output=True,text=True,timeout=120,creationflags=subprocess.CREATE_NO_WINDOW)
         text=run.stdout+run.stderr;(out/f'gpu-{index}.log').write_text(text);print(text,flush=True)
-        assert run.returncode==0 and 'NEAR_INTERVAL_PASS' in text and 'ACTOR_SETTINGS_PASS' in text and 'ALPHA_RESOURCE_RETRY_PASS' in text
+        assert run.returncode==0 and 'NEAR_INTERVAL_PASS' in text and 'ACTOR_SETTINGS_PASS' in text and 'ALPHA_RESOURCE_RETRY_PASS' in text and 'FLIGHT_SHADOW_PASS' in text and 'INTERIOR_SHADOW_PASS' in text
         results.append({'backend':backend,'output':text})
     (out/'validation.json').write_text(json.dumps({'pass':True,'game_launched':False,'results':results},indent=2)+'\n')
 finally:

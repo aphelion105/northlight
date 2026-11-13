@@ -39,14 +39,26 @@ checks['HLSL: sky reprojects the direction only, clamp over the neighbourhood, l
     'sky' in body and 'PreviousView[0].xyz' in body and 'min(lo,s)' in body and 'clamp(history,lo,hi)' in body and 'lerp(current,' in body
     and 'if(FogTemporalInfo.y<=0)return current;' in body and 'max(.25,w*.03)' in body)
 
+lamp=w[w.index('if(effects.fog&&localFogActive){'):w.index('// c34 belongs')]
+checks['host: current lamp/spell fog follows history and both blur passes, without writing fog history']=(
+    w.index('"volume blur vertical"')<w.index('if(effects.fog&&localFogActive){')<w.index('"local fog glow combine"')
+    and 'currentFogSurface=fogResolved?fogBlurredSurface:fogSurface;' in lamp
+    and 'SetRenderTarget(0,currentFogSurface)' in lamp and 'fogHistorySurface' not in lamp
+    and 'SetRenderState(D3DRS_SRCBLEND,D3DBLEND_ONE)' in lamp
+    and 'SetRenderState(D3DRS_DESTBLEND,D3DBLEND_ONE)' in lamp)
+local=h[h.index('float4 LocalFog('):h.index('float4 LocalFogCombine(')]
+checks['HLSL: lamp rays rotate without adding/subtracting large world positions']=(
+    'view.x*InverseView[0].xyz+view.y*InverseView[1].xyz+view.z*InverseView[2].xyz' in local
+    and 'endpoint-Camera.xyz' not in local)
+
 checks['setting: no key (always on since the game tests)']=('FogTemporal' not in q and 'fogTemporal' not in q)  # the docs side (no FogTemporal in the ini or README.txt) is test_quality_docs
 
 g=w[w.index('bool fogResolved=false;'):]
-pas=g[g.index('if(effects.fog&&fogTemporalPS&&fogHistory&&debug==0){'):g.index('// Separable depth-aware blur')]
+pas=g[g.index('if(effects.fog&&fogTemporalPS&&fogHistory&&debug==0&&!volumeFog){'):g.index('// Separable depth-aware blur')]
 checks['host: pass and swap guarded by the setting, the shader, the history target, fog and debug==0']=(
     'std::swap(fogBlurred,fogHistory);std::swap(fogBlurredSurface,fogHistorySurface)' in pas and pas.count('std::swap')==2 and 'else fogHistoryValid=false;' in pas)
 checks['host: history weight 0 unless fogHistoryValid&&useHistory; weight constant is c64 only, previous view c53 from the bank']=(
-    'fogHistoryValid&&useHistory?FogTemporalWeight:0.f' in pas and 'SetPixelShaderConstantF(64,info,1)' in pas and 'SetPixelShaderConstantF(53,c[53],4)' in pas
+    'fogHistoryValid&&useHistory?historyWeight:0.f' in pas and 'historyWeight=cf.active?.5f:FogTemporalWeight;' in pas and 'SetPixelShaderConstantF(64,info,1)' in pas and 'SetPixelShaderConstantF(53,c[53],4)' in pas
     and re.findall(r'SetPixelShaderConstantF\((6[4-7]),',w)==['65','65','66','64'] and 'SetPixelShaderConstantF(66,fogActor?actorFogBounds[source]:wholeActorMap,1)' in w)
 checks['host: reads raw fog s9 + fogHistory s14 + previous depth temporalDepth[temporalIndex] s15, writes fogBlurred; s14/s15 put back']=(
     'SetRenderTarget(0,fogBlurredSurface)' in pas and 'SetTexture(9,fog)' in pas and 'SetTexture(14,fogHistory)' in pas and 'SetTexture(15,temporalDepth[temporalIndex])' in pas
@@ -55,7 +67,7 @@ checks['host: reads raw fog s9 + fogHistory s14 + previous depth temporalDepth[t
 maxMarks=int(re.search(r'MaxMarks=(\d+)',fp.src('gpu_profile.h').read_text())[1])
 checks['host: FogTemporal profile mark after the pass (worst case <= MaxMarks)']=(pas.index('quad(w/2,h/2),"fog temporal pass"')<pas.index('profile->mark("FogTemporal")') and
     len(set(re.findall(r'profile->mark\("(\w+)"\)',w)))+8+8<=maxMarks)
-bl=g[g.index('// Separable depth-aware blur'):g.index('// c34 belongs')]
+bl=g[g.index('// Separable depth-aware blur'):g.index('// Local radiance has no receiver depth.')]
 checks['host: blur unchanged when the pass did not run (fog -> fogBlurred -> fog), resolved: fogHistory -> fog -> fogBlurred']=(
     'SetRenderTarget(0,fogResolved?fogSurface:fogBlurredSurface);d->SetTexture(9,fogResolved?fogHistory:fog)' in bl
     and 'SetRenderTarget(0,fogResolved?fogBlurredSurface:fogSurface);d->SetTexture(9,fogResolved?fog:fogBlurred)' in bl)

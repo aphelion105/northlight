@@ -1,6 +1,6 @@
 {
   "bump_include_sha256": "b5523a51dc6715f11ac2e7ba9ecb46a4973ba6aa23de159e308a8fd24d4e9ebc",
-  "source_sha256": "73141a42d766c1a1271128fa87707dfd56d386efcaf2aadcc6dee8b58d12ff61",
+  "source_sha256": "c214df6154da569c533ee89372b7662573636a4864db2ba1e4d0019ed406ab3f",
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
   "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
   "game_launched": false,
@@ -40,7 +40,7 @@
         "endrep": 1
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "73141a42d766c1a1271128fa87707dfd56d386efcaf2aadcc6dee8b58d12ff61"
+      "source_sha256": "c214df6154da569c533ee89372b7662573636a4864db2ba1e4d0019ed406ab3f"
     },
     "ForeverFogActorNoNoise": {
       "target": "ps_3_0",
@@ -79,7 +79,7 @@
         "log": 3
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "73141a42d766c1a1271128fa87707dfd56d386efcaf2aadcc6dee8b58d12ff61"
+      "source_sha256": "c214df6154da569c533ee89372b7662573636a4864db2ba1e4d0019ed406ab3f"
     },
     "WorldDistance": {
       "target": "ps_3_0",
@@ -102,14 +102,14 @@
         "cmp": 1
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "d9f66c204be80d0008cfc841034486ef75790768bdd63005ab4d0056b9dccbe4"
+      "source_sha256": "c214df6154da569c533ee89372b7662573636a4864db2ba1e4d0019ed406ab3f"
     },
     "ForeverFog": {
       "target": "ps_3_0",
-      "bytes": 6844,
-      "sha256": "1a097eed18f7c176666e87a811057074b679909e489eb935cd8c17383f6d9e13",
-      "static_instruction_slots": 402,
-      "temporary_registers": 29,
+      "bytes": 7268,
+      "sha256": "84139bec1aaa86a142ab13effd4c20481d79289ad4e4f4e4d35e07cda40d851e",
+      "static_instruction_slots": 450,
+      "temporary_registers": 30,
       "samplers": [
         1,
         3,
@@ -119,19 +119,20 @@
       ],
       "instructions": {
         "mov": 37,
-        "if": 4,
-        "else": 4,
-        "mul": 135,
+        "if": 10,
+        "else": 9,
+        "mul": 143,
         "frc": 3,
-        "add": 101,
+        "add": 107,
         "max": 5,
         "min": 10,
         "texldl": 16,
         "rcp": 9,
-        "cmp": 26,
-        "endif": 4,
-        "dp3": 3,
+        "cmp": 28,
+        "endif": 10,
+        "dp3": 5,
         "rsq": 4,
+        "abs": 1,
         "rep": 1,
         "dp4": 2,
         "exp": 7,
@@ -139,14 +140,14 @@
         "endrep": 1
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "73141a42d766c1a1271128fa87707dfd56d386efcaf2aadcc6dee8b58d12ff61"
+      "source_sha256": "c214df6154da569c533ee89372b7662573636a4864db2ba1e4d0019ed406ab3f"
     },
     "ForeverFogActor": {
       "target": "ps_3_0",
-      "bytes": 8860,
-      "sha256": "212ae9e2a9356420fd92334f00fc23c2d75bdc9ec87a1a047d95f87c9dd12c9b",
-      "static_instruction_slots": 533,
-      "temporary_registers": 31,
+      "bytes": 9156,
+      "sha256": "13f4aba58ce011c6e615912bb639c2d4049f3e2f0a34c169f78277c654ad0802",
+      "static_instruction_slots": 566,
+      "temporary_registers": 32,
       "samplers": [
         1,
         3,
@@ -156,19 +157,19 @@
         14
       ],
       "instructions": {
-        "mov": 54,
-        "if": 6,
-        "else": 5,
-        "mul": 160,
+        "mov": 52,
+        "if": 10,
+        "else": 9,
+        "mul": 168,
         "frc": 4,
-        "add": 131,
+        "add": 137,
         "max": 13,
         "min": 17,
         "texldl": 17,
         "rcp": 15,
         "cmp": 36,
-        "endif": 6,
-        "dp3": 3,
+        "endif": 10,
+        "dp3": 4,
         "rsq": 4,
         "rep": 3,
         "break": 2,
@@ -178,13 +179,13 @@
         "log": 3
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "73141a42d766c1a1271128fa87707dfd56d386efcaf2aadcc6dee8b58d12ff61"
+      "source_sha256": "c214df6154da569c533ee89372b7662573636a4864db2ba1e4d0019ed406ab3f"
     },
     "DirectionalShadow": {
       "target": "ps_3_0",
-      "bytes": 6888,
-      "sha256": "5cec0b8e17d3f327e44b7d6eecb837ffc9dbf64c6720f3671722e5b0f80f479c",
-      "static_instruction_slots": 485,
+      "bytes": 6980,
+      "sha256": "72df3bb089e5282007e3143f275673a550b7e779af0ff1c6ee00c307d425d469",
+      "static_instruction_slots": 490,
       "temporary_registers": 20,
       "samplers": [
         1,
@@ -196,12 +197,12 @@
       "instructions": {
         "mul": 72,
         "frc": 7,
-        "add": 127,
+        "add": 129,
         "mov": 45,
         "max": 11,
         "min": 3,
         "texldl": 15,
-        "cmp": 33,
+        "cmp": 36,
         "if": 18,
         "else": 15,
         "rcp": 9,
@@ -213,14 +214,14 @@
         "endrep": 6
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "d9f66c204be80d0008cfc841034486ef75790768bdd63005ab4d0056b9dccbe4"
+      "source_sha256": "c214df6154da569c533ee89372b7662573636a4864db2ba1e4d0019ed406ab3f"
     },
     "WorldLightingSoft": {
       "target": "ps_3_0",
-      "bytes": 4656,
-      "sha256": "2686fd5f0f756836f7e282fef7ba194c11efcd72abe4ea4c9123362d6f2a7835",
-      "static_instruction_slots": 250,
-      "temporary_registers": 7,
+      "bytes": 4724,
+      "sha256": "4ff500a016e69544d3f93a638db9497647d16e4660153eadb392a4f879b5a963",
+      "static_instruction_slots": 255,
+      "temporary_registers": 8,
       "samplers": [
         1,
         9,
@@ -230,11 +231,11 @@
         15
       ],
       "instructions": {
-        "mul": 59,
+        "mul": 61,
         "frc": 1,
         "add": 61,
         "max": 5,
-        "mov": 12,
+        "mov": 15,
         "min": 3,
         "texldl": 6,
         "if": 8,
@@ -247,7 +248,7 @@
         "dp2add": 2
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "d9f66c204be80d0008cfc841034486ef75790768bdd63005ab4d0056b9dccbe4"
+      "source_sha256": "c214df6154da569c533ee89372b7662573636a4864db2ba1e4d0019ed406ab3f"
     },
     "ActorShadowUniform": {
       "target": "ps_3_0",
@@ -282,7 +283,7 @@
         "endrep": 2
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "d9f66c204be80d0008cfc841034486ef75790768bdd63005ab4d0056b9dccbe4"
+      "source_sha256": "c214df6154da569c533ee89372b7662573636a4864db2ba1e4d0019ed406ab3f"
     },
     "WorldNormals": {
       "target": "ps_3_0",
@@ -314,7 +315,7 @@
         "endrep": 3
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "d9f66c204be80d0008cfc841034486ef75790768bdd63005ab4d0056b9dccbe4"
+      "source_sha256": "c214df6154da569c533ee89372b7662573636a4864db2ba1e4d0019ed406ab3f"
     },
     "WorldNormalsNoDistance": {
       "target": "ps_3_0",
@@ -346,14 +347,14 @@
         "endrep": 3
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "d9f66c204be80d0008cfc841034486ef75790768bdd63005ab4d0056b9dccbe4"
+      "source_sha256": "c214df6154da569c533ee89372b7662573636a4864db2ba1e4d0019ed406ab3f"
     },
     "WorldLighting": {
       "target": "ps_3_0",
-      "bytes": 7192,
-      "sha256": "89604f55fc87f2576c23541ea740d84492a03d46ec9bc9430224281997d3880f",
-      "static_instruction_slots": 431,
-      "temporary_registers": 16,
+      "bytes": 7348,
+      "sha256": "b6151b74091e262ac83f0a4871ee7fb5aa62a653fc4a9630c26bab0ee4655713",
+      "static_instruction_slots": 441,
+      "temporary_registers": 17,
       "samplers": [
         1,
         2,
@@ -364,17 +365,17 @@
         14
       ],
       "instructions": {
-        "mul": 95,
+        "mul": 96,
         "frc": 3,
-        "add": 110,
+        "add": 112,
         "max": 11,
-        "mov": 30,
+        "mov": 34,
         "min": 4,
         "texldl": 7,
         "if": 12,
         "else": 11,
         "rcp": 11,
-        "cmp": 45,
+        "cmp": 48,
         "endif": 12,
         "dp3": 14,
         "rsq": 4,
@@ -384,14 +385,14 @@
         "endrep": 3
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "d9f66c204be80d0008cfc841034486ef75790768bdd63005ab4d0056b9dccbe4"
+      "source_sha256": "c214df6154da569c533ee89372b7662573636a4864db2ba1e4d0019ed406ab3f"
     },
     "WorldLightingUnshadowed": {
       "target": "ps_3_0",
-      "bytes": 4248,
-      "sha256": "30ccdf714e289d2edfb222098d3c4eedbcda80e89a6fb53a4bf811c37a80872f",
-      "static_instruction_slots": 230,
-      "temporary_registers": 7,
+      "bytes": 4300,
+      "sha256": "b7c76099c93cac1448d894d1ba4c551383b5e13744a4b747a125a3db6709bb45",
+      "static_instruction_slots": 234,
+      "temporary_registers": 8,
       "samplers": [
         1,
         9,
@@ -399,11 +400,11 @@
         14
       ],
       "instructions": {
-        "mul": 58,
+        "mul": 59,
         "frc": 1,
         "add": 56,
         "max": 5,
-        "mov": 12,
+        "mov": 15,
         "min": 2,
         "texldl": 4,
         "if": 7,
@@ -416,14 +417,14 @@
         "dp2add": 2
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "d9f66c204be80d0008cfc841034486ef75790768bdd63005ab4d0056b9dccbe4"
+      "source_sha256": "c214df6154da569c533ee89372b7662573636a4864db2ba1e4d0019ed406ab3f"
     },
     "WorldLightingUnshadowedGI": {
       "target": "ps_3_0",
-      "bytes": 7136,
-      "sha256": "e00651efe3f2666134f5a135703c4580b3928d2f8418826a853f57dd4c366d36",
-      "static_instruction_slots": 401,
-      "temporary_registers": 23,
+      "bytes": 8644,
+      "sha256": "9f2d23beb311e2f7d2ce083d06011e60194e0ef2491e2d5de2878cdbb1407a68",
+      "static_instruction_slots": 501,
+      "temporary_registers": 29,
       "samplers": [
         1,
         4,
@@ -434,30 +435,31 @@
         9,
         10,
         11,
+        13,
         14
       ],
       "instructions": {
-        "mul": 102,
-        "frc": 4,
-        "add": 102,
-        "max": 12,
-        "mov": 24,
-        "min": 3,
-        "texldl": 12,
-        "if": 10,
-        "else": 8,
-        "rcp": 15,
-        "cmp": 36,
-        "endif": 10,
-        "dp3": 11,
-        "rsq": 5,
+        "mul": 127,
+        "frc": 6,
+        "add": 132,
+        "max": 10,
+        "mov": 33,
+        "min": 4,
+        "texldl": 16,
+        "if": 12,
+        "else": 10,
+        "rcp": 14,
+        "cmp": 40,
+        "endif": 12,
+        "dp3": 21,
+        "rsq": 9,
         "dp2add": 2,
         "rep": 1,
         "dp4": 6,
         "endrep": 1
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "d9f66c204be80d0008cfc841034486ef75790768bdd63005ab4d0056b9dccbe4"
+      "source_sha256": "c214df6154da569c533ee89372b7662573636a4864db2ba1e4d0019ed406ab3f"
     },
     "ActorShadow": {
       "target": "ps_3_0",
@@ -492,7 +494,7 @@
         "endrep": 5
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "d9f66c204be80d0008cfc841034486ef75790768bdd63005ab4d0056b9dccbe4"
+      "source_sha256": "c214df6154da569c533ee89372b7662573636a4864db2ba1e4d0019ed406ab3f"
     },
     "ActorTiles": {
       "target": "ps_3_0",
@@ -513,14 +515,14 @@
         "min": 16
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "d9f66c204be80d0008cfc841034486ef75790768bdd63005ab4d0056b9dccbe4"
+      "source_sha256": "c214df6154da569c533ee89372b7662573636a4864db2ba1e4d0019ed406ab3f"
     },
     "WorldGI": {
       "target": "ps_3_0",
-      "bytes": 4644,
-      "sha256": "3e264e944b4269ff5914e4774945f54ee46687e422074e5bf4b47f240ab4ac7d",
-      "static_instruction_slots": 247,
-      "temporary_registers": 19,
+      "bytes": 6576,
+      "sha256": "425f9bbc1502578392f4bfa98d92e5350a28b11a62f4149c1bcbcb1bae4c1df6",
+      "static_instruction_slots": 377,
+      "temporary_registers": 25,
       "samplers": [
         1,
         4,
@@ -530,29 +532,30 @@
         8,
         10,
         11,
+        13,
         14
       ],
       "instructions": {
-        "mul": 62,
-        "frc": 4,
-        "add": 65,
+        "mul": 92,
+        "frc": 6,
+        "add": 101,
         "max": 9,
-        "mov": 19,
-        "min": 2,
-        "texldl": 11,
-        "if": 5,
-        "else": 3,
-        "rcp": 11,
-        "cmp": 17,
-        "endif": 5,
+        "mov": 30,
+        "min": 3,
+        "texldl": 16,
+        "if": 8,
+        "else": 6,
+        "rcp": 12,
+        "cmp": 26,
+        "endif": 8,
         "rep": 1,
+        "dp3": 11,
+        "rsq": 6,
         "dp4": 6,
-        "dp3": 1,
-        "rsq": 1,
         "endrep": 1
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "d9f66c204be80d0008cfc841034486ef75790768bdd63005ab4d0056b9dccbe4"
+      "source_sha256": "c214df6154da569c533ee89372b7662573636a4864db2ba1e4d0019ed406ab3f"
     },
     "WorldFog": {
       "target": "ps_3_0",
@@ -591,7 +594,7 @@
         "endrep": 1
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "d9f66c204be80d0008cfc841034486ef75790768bdd63005ab4d0056b9dccbe4"
+      "source_sha256": "c214df6154da569c533ee89372b7662573636a4864db2ba1e4d0019ed406ab3f"
     },
     "WorldFogAmbient": {
       "target": "ps_3_0",
@@ -628,7 +631,7 @@
         "endrep": 1
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "d9f66c204be80d0008cfc841034486ef75790768bdd63005ab4d0056b9dccbe4"
+      "source_sha256": "c214df6154da569c533ee89372b7662573636a4864db2ba1e4d0019ed406ab3f"
     },
     "WorldFogActor": {
       "target": "ps_3_0",
@@ -668,7 +671,7 @@
         "endrep": 3
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "d9f66c204be80d0008cfc841034486ef75790768bdd63005ab4d0056b9dccbe4"
+      "source_sha256": "c214df6154da569c533ee89372b7662573636a4864db2ba1e4d0019ed406ab3f"
     },
     "FogBlur": {
       "target": "ps_3_0",
@@ -697,7 +700,7 @@
         "exp": 4
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "d9f66c204be80d0008cfc841034486ef75790768bdd63005ab4d0056b9dccbe4"
+      "source_sha256": "c214df6154da569c533ee89372b7662573636a4864db2ba1e4d0019ed406ab3f"
     },
     "FogClouds": {
       "target": "ps_3_0",
@@ -735,7 +738,7 @@
         "endrep": 1
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "d9f66c204be80d0008cfc841034486ef75790768bdd63005ab4d0056b9dccbe4"
+      "source_sha256": "c214df6154da569c533ee89372b7662573636a4864db2ba1e4d0019ed406ab3f"
     },
     "FogCloudsActor": {
       "target": "ps_3_0",
@@ -774,7 +777,7 @@
         "endrep": 3
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "d9f66c204be80d0008cfc841034486ef75790768bdd63005ab4d0056b9dccbe4"
+      "source_sha256": "c214df6154da569c533ee89372b7662573636a4864db2ba1e4d0019ed406ab3f"
     },
     "FogTemporal": {
       "target": "ps_3_0",
@@ -805,7 +808,7 @@
         "endif": 7
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "d9f66c204be80d0008cfc841034486ef75790768bdd63005ab4d0056b9dccbe4"
+      "source_sha256": "c214df6154da569c533ee89372b7662573636a4864db2ba1e4d0019ed406ab3f"
     },
     "LocalDirect": {
       "target": "ps_3_0",
@@ -838,7 +841,7 @@
         "dp2add": 2
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "d9f66c204be80d0008cfc841034486ef75790768bdd63005ab4d0056b9dccbe4"
+      "source_sha256": "c214df6154da569c533ee89372b7662573636a4864db2ba1e4d0019ed406ab3f"
     },
     "LocalDirect1": {
       "target": "ps_3_0",
@@ -871,7 +874,7 @@
         "dp2add": 2
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "d9f66c204be80d0008cfc841034486ef75790768bdd63005ab4d0056b9dccbe4"
+      "source_sha256": "c214df6154da569c533ee89372b7662573636a4864db2ba1e4d0019ed406ab3f"
     },
     "LocalDirect16": {
       "target": "ps_3_0",
@@ -904,7 +907,7 @@
         "dp2add": 2
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "d9f66c204be80d0008cfc841034486ef75790768bdd63005ab4d0056b9dccbe4"
+      "source_sha256": "c214df6154da569c533ee89372b7662573636a4864db2ba1e4d0019ed406ab3f"
     },
     "LocalFlash": {
       "target": "ps_3_0",
@@ -937,13 +940,13 @@
         "dp2add": 2
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "d9f66c204be80d0008cfc841034486ef75790768bdd63005ab4d0056b9dccbe4"
+      "source_sha256": "c214df6154da569c533ee89372b7662573636a4864db2ba1e4d0019ed406ab3f"
     },
     "FlashShadow": {
       "target": "ps_3_0",
-      "bytes": 6412,
-      "sha256": "1b7db5beb53454397777db49bdb8e5244e300ebd56d9d33aefa1af4719917b43",
-      "static_instruction_slots": 385,
+      "bytes": 6504,
+      "sha256": "e6caaf09b16c517da359eac656ffc7a4aab3ca2dce523fb40d11e8364da105df",
+      "static_instruction_slots": 390,
       "temporary_registers": 13,
       "samplers": [
         1,
@@ -956,7 +959,7 @@
       "instructions": {
         "mul": 86,
         "frc": 3,
-        "add": 95,
+        "add": 97,
         "max": 9,
         "mov": 28,
         "min": 3,
@@ -964,7 +967,7 @@
         "if": 10,
         "else": 9,
         "rcp": 13,
-        "cmp": 39,
+        "cmp": 42,
         "endif": 10,
         "dp3": 12,
         "rsq": 5,
@@ -974,7 +977,7 @@
         "endrep": 3
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "d9f66c204be80d0008cfc841034486ef75790768bdd63005ab4d0056b9dccbe4"
+      "source_sha256": "c214df6154da569c533ee89372b7662573636a4864db2ba1e4d0019ed406ab3f"
     },
     "RemovalSmooth": {
       "target": "ps_3_0",
@@ -1012,7 +1015,7 @@
         "endif": 2
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "d9f66c204be80d0008cfc841034486ef75790768bdd63005ab4d0056b9dccbe4"
+      "source_sha256": "c214df6154da569c533ee89372b7662573636a4864db2ba1e4d0019ed406ab3f"
     },
     "TemporalLight": {
       "target": "ps_3_0",
@@ -1045,13 +1048,13 @@
         "endif": 4
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "d9f66c204be80d0008cfc841034486ef75790768bdd63005ab4d0056b9dccbe4"
+      "source_sha256": "c214df6154da569c533ee89372b7662573636a4864db2ba1e4d0019ed406ab3f"
     },
     "LocalFog": {
       "target": "ps_3_0",
-      "bytes": 7128,
-      "sha256": "f8b6e4539ce3fce3dc5913959114b991f9e6868dbdebc27c0283fd0a4dd37145",
-      "static_instruction_slots": 417,
+      "bytes": 7096,
+      "sha256": "f34745fa41cfbdd1b1c742a5c0fa158626dd00485ff367dc67a72dd0c0dcf081",
+      "static_instruction_slots": 415,
       "temporary_registers": 6,
       "samplers": [
         1,
@@ -1060,7 +1063,7 @@
       "instructions": {
         "mul": 124,
         "frc": 1,
-        "add": 131,
+        "add": 129,
         "max": 36,
         "mov": 12,
         "min": 11,
@@ -1074,7 +1077,7 @@
         "rsq": 9
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "d9f66c204be80d0008cfc841034486ef75790768bdd63005ab4d0056b9dccbe4"
+      "source_sha256": "c214df6154da569c533ee89372b7662573636a4864db2ba1e4d0019ed406ab3f"
     },
     "LocalFogCombine": {
       "target": "ps_3_0",
@@ -1096,7 +1099,7 @@
         "mov": 1
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "d9f66c204be80d0008cfc841034486ef75790768bdd63005ab4d0056b9dccbe4"
+      "source_sha256": "c214df6154da569c533ee89372b7662573636a4864db2ba1e4d0019ed406ab3f"
     },
     "SourceVisibilityPS": {
       "target": "ps_3_0",
@@ -1122,7 +1125,7 @@
         "endif": 2
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "d9f66c204be80d0008cfc841034486ef75790768bdd63005ab4d0056b9dccbe4"
+      "source_sha256": "c214df6154da569c533ee89372b7662573636a4864db2ba1e4d0019ed406ab3f"
     },
     "WorldComposite": {
       "target": "ps_3_0",
@@ -1169,7 +1172,7 @@
         "log": 6
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "d9f66c204be80d0008cfc841034486ef75790768bdd63005ab4d0056b9dccbe4"
+      "source_sha256": "c214df6154da569c533ee89372b7662573636a4864db2ba1e4d0019ed406ab3f"
     },
     "WorldUnlitComposite": {
       "target": "ps_3_0",
@@ -1213,7 +1216,7 @@
         "log": 6
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "d9f66c204be80d0008cfc841034486ef75790768bdd63005ab4d0056b9dccbe4"
+      "source_sha256": "c214df6154da569c533ee89372b7662573636a4864db2ba1e4d0019ed406ab3f"
     },
     "MaterialComposite": {
       "target": "ps_3_0",
@@ -1256,7 +1259,7 @@
         "pow": 1
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "d9f66c204be80d0008cfc841034486ef75790768bdd63005ab4d0056b9dccbe4"
+      "source_sha256": "c214df6154da569c533ee89372b7662573636a4864db2ba1e4d0019ed406ab3f"
     },
     "WorldCompositeHdr": {
       "target": "ps_3_0",
@@ -1303,12 +1306,12 @@
         "dp2add": 4
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "d9f66c204be80d0008cfc841034486ef75790768bdd63005ab4d0056b9dccbe4"
+      "source_sha256": "c214df6154da569c533ee89372b7662573636a4864db2ba1e4d0019ed406ab3f"
     },
     "WorldBaseCompositeHdr": {
       "target": "ps_3_0",
       "bytes": 7328,
-      "sha256": "80362ece09ba4821a3475cd5b2d9bae5819b5ab87ddd90fa301c8a437966195d",
+      "sha256": "d8b1dff4c2afffcf27279c7f40cc1ddb27c485632058e6a54d33aaa4fb297916",
       "static_instruction_slots": 429,
       "temporary_registers": 16,
       "samplers": [
@@ -1347,7 +1350,7 @@
         "dp2add": 4
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "d9f66c204be80d0008cfc841034486ef75790768bdd63005ab4d0056b9dccbe4"
+      "source_sha256": "c214df6154da569c533ee89372b7662573636a4864db2ba1e4d0019ed406ab3f"
     },
     "WorldUnlitCompositeHdr": {
       "target": "ps_3_0",
@@ -1390,7 +1393,7 @@
         "dp2add": 4
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "d9f66c204be80d0008cfc841034486ef75790768bdd63005ab4d0056b9dccbe4"
+      "source_sha256": "c214df6154da569c533ee89372b7662573636a4864db2ba1e4d0019ed406ab3f"
     },
     "MaterialCompositeHdr": {
       "target": "ps_3_0",
@@ -1435,7 +1438,7 @@
         "pow": 1
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "d9f66c204be80d0008cfc841034486ef75790768bdd63005ab4d0056b9dccbe4"
+      "source_sha256": "c214df6154da569c533ee89372b7662573636a4864db2ba1e4d0019ed406ab3f"
     },
     "WorldMaterialCompositeHdr": {
       "target": "ps_3_0",
@@ -1487,14 +1490,14 @@
         "dp2add": 6
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "d9f66c204be80d0008cfc841034486ef75790768bdd63005ab4d0056b9dccbe4"
+      "source_sha256": "c214df6154da569c533ee89372b7662573636a4864db2ba1e4d0019ed406ab3f"
     },
     "WorldPrelitComposite": {
       "target": "ps_3_0",
-      "bytes": 8036,
-      "sha256": "73b357865acec1291a8df051ddd0300392681359968e74d00de8025a2c267365",
-      "static_instruction_slots": 474,
-      "temporary_registers": 22,
+      "bytes": 8228,
+      "sha256": "eedc4533137fe779a3b456cbb94702dabb31c0a0addfbdc9b383bfce6868ecc2",
+      "static_instruction_slots": 481,
+      "temporary_registers": 23,
       "samplers": [
         0,
         1,
@@ -1506,11 +1509,12 @@
         10,
         11,
         12,
-        13
+        13,
+        14
       ],
       "instructions": {
         "texld": 4,
-        "mul": 81,
+        "mul": 82,
         "frc": 4,
         "add": 91,
         "mov": 40,
@@ -1518,11 +1522,11 @@
         "min": 9,
         "if": 15,
         "else": 8,
-        "texldl": 16,
+        "texldl": 18,
         "rcp": 24,
-        "cmp": 41,
+        "cmp": 42,
         "endif": 15,
-        "mad": 19,
+        "mad": 20,
         "pow": 2,
         "dp3": 3,
         "rep": 1,
@@ -1534,14 +1538,14 @@
         "log": 6
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "d9f66c204be80d0008cfc841034486ef75790768bdd63005ab4d0056b9dccbe4"
+      "source_sha256": "c214df6154da569c533ee89372b7662573636a4864db2ba1e4d0019ed406ab3f"
     },
     "WorldPrelitCompositeHdr": {
       "target": "ps_3_0",
-      "bytes": 8380,
-      "sha256": "18da9cb224b80632867db97c4b2723d6d1098257918a47725b7571be76b27f0e",
-      "static_instruction_slots": 504,
-      "temporary_registers": 22,
+      "bytes": 8552,
+      "sha256": "bd8db8438b063908afe33e4ad0782050bfec466b035352b7c3a269bb51d203cc",
+      "static_instruction_slots": 510,
+      "temporary_registers": 23,
       "samplers": [
         0,
         1,
@@ -1553,11 +1557,12 @@
         10,
         11,
         12,
-        13
+        13,
+        14
       ],
       "instructions": {
         "texld": 2,
-        "mul": 88,
+        "mul": 89,
         "frc": 4,
         "add": 97,
         "mov": 41,
@@ -1565,11 +1570,11 @@
         "min": 8,
         "if": 15,
         "else": 8,
-        "texldl": 18,
+        "texldl": 20,
         "rcp": 24,
         "cmp": 45,
         "endif": 15,
-        "mad": 16,
+        "mad": 17,
         "pow": 2,
         "dp3": 3,
         "rep": 1,
@@ -1581,7 +1586,7 @@
         "dp2add": 4
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "d9f66c204be80d0008cfc841034486ef75790768bdd63005ab4d0056b9dccbe4"
+      "source_sha256": "c214df6154da569c533ee89372b7662573636a4864db2ba1e4d0019ed406ab3f"
     },
     "MaterialAudit": {
       "target": "ps_3_0",
@@ -1615,7 +1620,7 @@
         "dp2add": 2
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "d9f66c204be80d0008cfc841034486ef75790768bdd63005ab4d0056b9dccbe4"
+      "source_sha256": "c214df6154da569c533ee89372b7662573636a4864db2ba1e4d0019ed406ab3f"
     },
     "ShadowVS": {
       "target": "vs_3_0",
@@ -1630,7 +1635,7 @@
         "mov": 3
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "d9f66c204be80d0008cfc841034486ef75790768bdd63005ab4d0056b9dccbe4"
+      "source_sha256": "c214df6154da569c533ee89372b7662573636a4864db2ba1e4d0019ed406ab3f"
     },
     "ShadowCacheVS": {
       "target": "vs_3_0",
@@ -1645,7 +1650,7 @@
         "mov": 4
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "d9f66c204be80d0008cfc841034486ef75790768bdd63005ab4d0056b9dccbe4"
+      "source_sha256": "c214df6154da569c533ee89372b7662573636a4864db2ba1e4d0019ed406ab3f"
     },
     "ShadowPS": {
       "target": "ps_3_0",
@@ -1663,7 +1668,7 @@
         "mov": 1
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "d9f66c204be80d0008cfc841034486ef75790768bdd63005ab4d0056b9dccbe4"
+      "source_sha256": "c214df6154da569c533ee89372b7662573636a4864db2ba1e4d0019ed406ab3f"
     },
     "ShadowReplayPS": {
       "target": "ps_3_0",
@@ -1687,7 +1692,7 @@
         "endif": 1
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "d9f66c204be80d0008cfc841034486ef75790768bdd63005ab4d0056b9dccbe4"
+      "source_sha256": "c214df6154da569c533ee89372b7662573636a4864db2ba1e4d0019ed406ab3f"
     },
     "ShadowUnion": {
       "target": "ps_3_0",
@@ -1714,7 +1719,7 @@
         "min": 1
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "d9f66c204be80d0008cfc841034486ef75790768bdd63005ab4d0056b9dccbe4"
+      "source_sha256": "c214df6154da569c533ee89372b7662573636a4864db2ba1e4d0019ed406ab3f"
     },
     "ActorTilesWide": {
       "target": "ps_3_0",
@@ -1735,7 +1740,7 @@
         "min": 64
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "d9f66c204be80d0008cfc841034486ef75790768bdd63005ab4d0056b9dccbe4"
+      "source_sha256": "c214df6154da569c533ee89372b7662573636a4864db2ba1e4d0019ed406ab3f"
     },
     "WorldFogActorTiled": {
       "target": "ps_3_0",
@@ -1776,7 +1781,7 @@
         "endrep": 4
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "d9f66c204be80d0008cfc841034486ef75790768bdd63005ab4d0056b9dccbe4"
+      "source_sha256": "c214df6154da569c533ee89372b7662573636a4864db2ba1e4d0019ed406ab3f"
     },
     "FogCloudsActorTiled": {
       "target": "ps_3_0",
@@ -1816,7 +1821,7 @@
         "endrep": 4
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "d9f66c204be80d0008cfc841034486ef75790768bdd63005ab4d0056b9dccbe4"
+      "source_sha256": "c214df6154da569c533ee89372b7662573636a4864db2ba1e4d0019ed406ab3f"
     },
     "MoonFloorFog": {
       "target": "ps_3_0",
@@ -1856,7 +1861,7 @@
         "endrep": 1
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "d9f66c204be80d0008cfc841034486ef75790768bdd63005ab4d0056b9dccbe4"
+      "source_sha256": "c214df6154da569c533ee89372b7662573636a4864db2ba1e4d0019ed406ab3f"
     },
     "MoonFloorFogActor": {
       "target": "ps_3_0",
@@ -1897,7 +1902,7 @@
         "endrep": 3
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "d9f66c204be80d0008cfc841034486ef75790768bdd63005ab4d0056b9dccbe4"
+      "source_sha256": "c214df6154da569c533ee89372b7662573636a4864db2ba1e4d0019ed406ab3f"
     },
     "MoonFloorFogActorTiled": {
       "target": "ps_3_0",
@@ -1939,7 +1944,7 @@
         "endrep": 4
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "d9f66c204be80d0008cfc841034486ef75790768bdd63005ab4d0056b9dccbe4"
+      "source_sha256": "c214df6154da569c533ee89372b7662573636a4864db2ba1e4d0019ed406ab3f"
     }
   }
 }

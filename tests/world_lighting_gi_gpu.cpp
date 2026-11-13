@@ -20,8 +20,10 @@ int main(int argc,char** argv){
  bind(10,16,4,[&](unsigned x,unsigned y){const int a=int(x%4),b=int(y),c=int(x/4);return std::array<float,4>{float(a<2?a:a-4),float(b<2?b:b-4),float(c<2?c:c-4),1};});
  bind(7,16,24,[&](unsigned,unsigned){return std::array<float,4>{100,10000,1,5.f};});
  for(unsigned i=4;i<7;++i)bind(i,16,4,[&](unsigned x,unsigned){return std::array<float,4>{.3f+float(x%3)*.5f,0,0,0};});
+ bind(13,72,72,[](unsigned,unsigned){return std::array<float,4>{0,0,0,1};});
  bind(8,48,4,[&](unsigned,unsigned){return std::array<float,4>{.2f,0,0,0};});
  float c[128][4]{};c[0][0]=.5f/W;c[0][1]=.5f/H;c[0][2]=.2f;c[0][3]=1000;c[1][0]=c[1][1]=1;c[1][2]=1;c[2][0]=1;c[2][1]=48;c[2][2]=192;c[2][3]=1.f/1024;for(unsigned i=0;i<4;++i)c[3+i][i]=1;for(unsigned i=0;i<4;++i)c[7+i][i]=c[11+i][i]=.01f;c[16][2]=-1;c[18][0]=.2f;c[18][1]=.3f;c[18][2]=.4f;c[19][3]=16;c[20][0]=4;c[20][1]=.7f;c[20][2]=.8f;c[20][3]=1;c[24][3]=5;c[27][1]=1;c[28][2]=-1;c[29][0]=.8f;c[29][1]=.6f;c[29][2]=.4f;c[33][0]=W*2;c[33][1]=H*2;c[33][2]=W;c[33][3]=H;c[73][2]=1;
+ c[82][0]=8;c[82][1]=c[82][2]=1.f/72;c[82][3]=1.f/8;
  IDirect3DSurface9 *light=nullptr,*base=nullptr,*back=nullptr;ok(d->CreateRenderTarget(W,H,D3DFMT_A16B16G16R16F,D3DMULTISAMPLE_NONE,0,FALSE,&light,nullptr));ok(d->CreateRenderTarget(W,H,D3DFMT_A16B16G16R16F,D3DMULTISAMPLE_NONE,0,FALSE,&base,nullptr));ok(d->CreateOffscreenPlainSurface(W,H,D3DFMT_A16B16G16R16F,D3DPOOL_SYSTEMMEM,&back,nullptr));
  auto gi=shader(d,root+"/WorldGI.bin");IDirect3DQuery9 *a=nullptr,*b=nullptr,*hz=nullptr;for(auto p:{&a,&b})ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,p));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMPFREQ,&hz));const auto get=[&](IDirect3DQuery9* q){UINT64 v=0;HRESULT hr;while((hr=q->GetData(&v,sizeof v,D3DGETDATA_FLUSH))==S_FALSE)SwitchToThread();ok(hr);return v;};
  auto quad=[&]{const Vertex v[]={{-.5f,-.5f,0,1,0,0},{float(W)-.5f,-.5f,0,1,1,0},{-.5f,float(H)-.5f,0,1,0,1},{float(W)-.5f,float(H)-.5f,0,1,1,1}};ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,v,sizeof v[0]));};

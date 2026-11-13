@@ -25,7 +25,7 @@ with tempfile.TemporaryDirectory(prefix='northlight-equipment-') as tmp:
 
 renderer = fp.src('renderer.cpp').read_text()
 world = fp.src('world_renderer.h').read_text()
-assert 'world->registerNativePointShader(*out,(m2ShaderFamily(h)==3||NorthlightWmoContext::signature(h))?words.data():nullptr,(m2ShaderFamily(h)==3||NorthlightWmoContext::signature(h))?words.size():0,m2ShaderFamily(h)==3)' in renderer
+assert 'world->registerNativePointShader(*out,(m2ShaderFamily(h)==3||world->recognizesWmo(*out)||contains(kTerrainVS,h))?words.data():nullptr,(m2ShaderFamily(h)==3||world->recognizesWmo(*out)||contains(kTerrainVS,h))?words.size():0,m2ShaderFamily(h)==3)' in renderer
 assert 'if(world->equipmentLightsOn())world->captureEquipmentLights(vs,worldDepth);' in renderer
 capture = world[world.index('    void captureEquipmentLights('):world.index('    unsigned spellLayerSetting()')]
 assert capture.index('equipmentCapture.take(actor,') < capture.index('GetVertexShaderConstantF(17,readBank,11)')

@@ -12,6 +12,9 @@ by [DBCD's reader](https://github.com/wowdev/DBCD/blob/master/DBCD.IO/Readers/WD
 The volume field interpretations are inferred from the public
 [CoA fog converter and model](https://github.com/ghbset/coa-vfog), not confirmed by
 executing or disassembling Forever's renderer. No implementation code was copied.
+The subsequent [local shader investigation](../../docs/forever-fog-renderer-investigation.md)
+examines the volume-grid renderer separately; it does not establish live update
+frequency or turn the original import into an implementation port.
 
 Observed client settings: `volumeFogLevel=4`, `sunShafts=2`, `weatherDensity=3`,
 `graphicsLightMode=3`, `graphicsShadowQuality=5`, `shadowSoft=1`,

@@ -92,7 +92,7 @@ def _mean_axis(blob,bone,local):
     return anchor,tuple(mean),tuple(low),tuple(high),duration
 
 
-def native_fixture_offsets(assets,path,blob,sources):
+def _authored_offsets(assets,path,blob,sources):
     """Native source index -> original anchor, mean offset and bounded evidence."""
     if not path.lower().replace('/','\\').startswith('world\\'):return {}
     from world_scene_builder import array,unpack
@@ -138,3 +138,99 @@ def native_fixture_offsets(assets,path,blob,sources):
                 'basis':'Time-averaged authored luminous volume; bounded steady proxy, not current particle replay'}
         return result
     except (ValueError,IndexError,KeyError,FileNotFoundError,struct.error):return {}
+
+
+def open_flame_position(vertices, triangles, point, nozzle, radius, reach):
+    """Smallest bounded lift exposing an annulus; body and central shadow remain."""
+    from m2_light_geometry import sub, cross, dot
+    if not vertices or not triangles or len(vertices)>4096 or len(triangles)>2048:return None
+    if not all(math.isfinite(x) for row in (*vertices,point,nozzle) for x in row):return None
+    low=[min(v[k] for v in vertices) for k in range(3)]
+    high=[max(v[k] for v in vertices) for k in range(3)]
+    width=max(high[0]-low[0],high[1]-low[1]);extent=max(high[k]-low[k] for k in range(3))
+    if not 0<width<=extent or point[2]<=low[2] or not all(low[k]<point[k]<high[k] for k in range(2)):return None
+    limit=min(extent*.25,reach*.1,radius*.5)
+    if not math.isfinite(limit) or limit<=0 or math.dist(point,nozzle)>min(width*.5,radius*.5):return None
+    prepared=[]
+    for tri in triangles:
+        a,b,c=(vertices[i] for i in tri[:3]);prepared.append((a,sub(b,a),sub(c,a)))
+    epsilon=extent*1e-5
+    def clear(a,b):
+        direction=sub(b,a)
+        for origin,e1,e2 in prepared:
+            h=cross(direction,e2);det=dot(e1,h)
+            if abs(det)<1e-12:continue
+            offset=sub(a,origin);u=dot(offset,h)/det
+            if not 0<=u<=1:continue
+            q=cross(offset,e1);v=dot(direction,q)/det
+            if v<0 or u+v>1:continue
+            t=dot(e2,q)/det
+            if 1e-5<t<1-1e-5:return False
+        return True
+    top=(point[0],point[1],point[2]+limit)
+    if not clear(point,top):return None
+    floor=low[2]+epsilon
+    receivers=[(point[0]+width*r*math.cos(i*math.tau/16),point[1]+width*r*math.sin(i*math.tau/16),floor)
+               for r in (.75,1.25,2.) for i in range(16)]
+    def visible(p):return sum(clear(p,q) for q in receivers)/len(receivers)
+    baseline=visible(point)
+    if baseline>.1:return None
+    for step in range(1,17):
+        candidate=(point[0],point[1],point[2]+limit*step/16)
+        # A raised emitter must still belong to the observed fire region.
+        if math.dist(candidate,nozzle)>radius or not clear(point,candidate):continue
+        exposure=visible(candidate)
+        if exposure>=.45 and not clear(candidate,(point[0],point[1],floor)):
+            return {'position':candidate,'offset':(0.,0.,candidate[2]-point[2]),
+                    'baseline_visibility':baseline,'resolved_visibility':exposure,'max_lift':limit,
+                    'basis':'Bounded open-flame geometry policy; opaque centre retained'}
+    return None
+
+
+def _opaque_body(assets,path,blob):
+    """Use the winning skin and strict static opaque caster geometry only."""
+    from world_scene_builder import Builder,array,unpack
+    from world_lights_builder import static_bone_offset
+    n,at=unpack('<II',blob,60)
+    if not 0<n<=4096:raise ValueError('Fixture vertex budget')
+    data=array(blob,at,n,'<3f4B4B3f4f')
+    vertices,mesh,materials=Builder(assets,resolve_fixture_emission=False).m2(path)
+    triangles=[]
+    for tri in mesh:
+        material=materials[tri[3]]
+        if material[1]:raise ValueError('Non-opaque fixture body')
+        if len(material)>3:continue # The existing exact source-shell proof, never the bowl.
+        triangles.append(tri[:3])
+    if len(triangles)>2048:raise ValueError('Fixture triangle budget')
+    used={i for tri in triangles for i in tri}
+    for bone in {bone for i in used for weight,bone in zip(data[i][3:7],data[i][7:11]) if weight}:
+        if static_bone_offset(blob,bone)!=(0.,0.,0.):raise ValueError('Moving fixture body')
+    remap={old:new for new,old in enumerate(sorted(used))}
+    return [tuple(vertices[i][:3]) for i in sorted(used)],[tuple(remap[i] for i in tri) for tri in triangles]
+
+
+def native_fixture_offsets(assets,path,blob,sources):
+    """One resolver for placed and live fixtures, independent of draw visibility."""
+    result=_authored_offsets(assets,path,blob,sources)
+    if not path.lower().replace('/','\\').startswith('world\\'):return result
+    from world_emitter_coverage import particle_sources
+    from world_lights_builder import static_bone_point
+    import collections
+    try:
+        particles=[p for p in particle_sources(assets,path,blob,{},collections.Counter()) if p['emission']=='fire']
+        if not particles:return result
+        vertices,triangles=_opaque_body(assets,path,blob)
+        for source in sources:
+            if source[4] in result or source[5]!=2 or not source[6]&2:continue
+            candidates=[]
+            for p in particles:
+                nozzle=static_bone_point(blob,p['bones'][0],p['local_position'])
+                radius=math.sqrt(p['area']/math.pi)
+                if math.dist(source[0],nozzle)<=radius*.5:candidates.append((p,nozzle,radius))
+            if len(candidates)!=1:continue
+            p,nozzle,radius=candidates[0]
+            if sum(s[5]==2 and math.dist(s[0],nozzle)<=radius*.5 for s in sources)!=1:continue
+            resolved=open_flame_position(vertices,triangles,source[0],nozzle,radius,source[3])
+            if resolved:result[source[4]]={**resolved,'anchor':source[0],'particle':p['particle']}
+    except (ValueError,IndexError,KeyError,FileNotFoundError,struct.error):pass
+    return result

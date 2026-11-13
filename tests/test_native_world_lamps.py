@@ -9,6 +9,8 @@ sys.path[:0] = [str(Path(__file__).resolve().parents[1]), str(Path(__file__).res
 import northlight_paths as fp
 from world_scene_builder import Assets, Builder
 from native_fixture_catalog import qualify, shell_geometry, write
+from native_fixture_catalog import sources
+from world_fixture_emission import native_fixture_offsets
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--fixtures', type=Path, default=fp.output_dir()/'native-world-lamps')
@@ -16,14 +18,22 @@ args = parser.parse_args()
 args.fixtures.mkdir(parents=True, exist_ok=True)
 assets = Assets()
 builder = Builder(assets)
-proof = []
+proof, resolved = [], []
+cases = [('dalaran-post', 'dalaran_lamppost01'), ('dalaran-wall', 'dalaran_lampwall01'),
+         ('medium-brazier', 'mediumbrazier01'), ('tall-brazier', 'tallbrazier01'),
+         ('medium-brazier-noomni', 'mediumbraziernoomni01'),
+         ('tall-brazier-noomni', 'tallbraziernoomni01'),
+         ('small-brazier-noomni', 'smallbraziernoomni01')]
 try:
-    for name in ('dalaran_lamppost01', 'dalaran_lampwall01'):
-        path = 'world\\expansion02\\doodads\\dalaran\\'+name+'.m2'
+    for _, name in cases:
+        paths = [p for p in assets.providers if p.endswith('\\'+name+'.m2')]
+        assert len(paths) == 1, (name, paths)
+        path = paths[0]
         blob = assets.read(path)
         record = qualify(assets, path, blob, builder)
         assert record and record[3] == 1, name
         proof.append((record, shell_geometry(builder, path, blob, record[3])))
+        resolved.append((*proof[-1],native_fixture_offsets(assets,path,blob,sources(blob))))
         (args.fixtures/(name+'.m2')).write_bytes(blob)
     # The same provenance cannot be obtained by a native weapon or spell.
     for path in ('item\\objectcomponents\\weapon\\knife_1h_utgarde_d_03.m2',
@@ -43,10 +53,33 @@ for label, invalid in (('truncated', data[:-1]), ('trailing', data+b'\0'), ('ver
     path = args.fixtures/(label+'.bin')
     path.write_bytes(invalid)
     subprocess.run([str(exe), '--invalid-catalog', str(path)], check=True)
-for case, name in (('dalaran-post', 'dalaran_lamppost01'), ('dalaran-wall', 'dalaran_lampwall01')):
+for case, name in cases:
     output = args.fixtures/case
     output.mkdir(exist_ok=True)
     subprocess.run([str(exe), str(args.fixtures/(name+'.m2')), str(catalog), '-', '-', str(output/'sources.fgl')], check=True)
+resolved_catalog=args.fixtures/'native-fixtures-v4.bin'
+payload=write(resolved_catalog,resolved)
+assert any(profile for _,_,profile in resolved), 'Actual client must exercise emitter resolution'
+for case,name in cases:
+    output=args.fixtures/(case+'-resolved');output.mkdir(exist_ok=True)
+    subprocess.run([str(exe),str(args.fixtures/(name+'.m2')),str(resolved_catalog),'-','-',str(output/'sources.fgl')],check=True)
+import struct
+profile_start=32+struct.unpack_from('<I',payload,12)[0]*48+struct.unpack_from('<I',payload,20)[0]*52
+for field,value in ((0,0),(4,64),(8,0x7fc00000)):
+    invalid=bytearray(payload);struct.pack_into('<I',invalid,profile_start+field,value)
+    path=args.fixtures/('invalid-profile-'+str(field)+'.bin');path.write_bytes(invalid)
+    subprocess.run([str(exe),'--invalid-catalog',str(path)],check=True)
+# Existing v2 catalogs remain readable and keep their stricter shell contract.
+legacy = args.fixtures/'native-fixtures-v2.bin'
+legacy_data = bytearray(write(legacy, proof[:2]))
+legacy_data[4:8] = (2).to_bytes(4, 'little')
+legacy.write_bytes(legacy_data)
+subprocess.run([str(exe), str(args.fixtures/'dalaran_lampwall01.m2'), str(legacy), '-', '-',
+                str(args.fixtures/'legacy-sources.fgl')], check=True)
+without_shells = args.fixtures/'native-fixtures-no-shells.bin'
+write(without_shells, [(record, []) for record, _ in proof])
+subprocess.run([str(exe), str(args.fixtures/'mediumbrazier01.m2'), str(without_shells), '-', '-',
+                str(args.fixtures/'open-sources.fgl')], check=True)
 for case in ('orc-street', 'orc-hanging'):
     output = args.fixtures/case
     if not (output/'source.m2').exists():

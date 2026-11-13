@@ -12,6 +12,22 @@ struct WorldScreenEffectsTest {
   std::vector<float> pixels(desc.Width*desc.Height);for(unsigned y=0;y<desc.Height;++y)std::memcpy(pixels.data()+y*desc.Width,static_cast<char*>(lock.pBits)+y*lock.Pitch,desc.Width*4);
   must(read->UnlockRect());read->Release();return pixels;
  }
+ static void flightCoverage(IDirect3DDevice9* d,IDirect3DTexture9* depth,IDirect3DSurface9* target){
+  WorldRenderer old(d),fixed(d);setup(old,1,0);setup(fixed,1,0);
+  auto plan=std::make_shared<NorthlightWorldMesh::WorldMeshUploadPlan>();plan->shadowGround=-2;plan->shadowTerrainReach=1792;fixed.uploadedMeshPlan=plan;
+  for(auto* w:{&old,&fixed}){
+   w->context.camera[2]=1400;w->context.inverseView[14]=1400;w->context.view[14]=-1400;
+   must(d->BeginScene());assert(w->render(target,depth,64,64,D3DFMT_A8R8G8B8,1,2000,0,1,1,nullptr,nullptr));must(d->EndScene());
+  }
+  for(unsigned source=0;source<2;++source){
+   const auto before=image(d,old.shadowSurface[source*2+1]),after=image(d,fixed.shadowSurface[source*2+1]);
+   const auto count=[](const auto& pixels){return std::count_if(pixels.begin(),pixels.end(),[](float v){return v<.999f;});};
+   assert(count(before)==0&&count(after)>100);
+  }
+  assert(fixed.farShadowCoverage.radius==768&&fixed.farShadowCoverage.center.z==126);
+  fixed.farShadowCoverage.radius=288;assert(fixed.farMapRadius(0)==768&&fixed.farMapRadius(1)==768); // Deferred maps retain their own scale.
+  std::puts("FLIGHT_SHADOW_PASS altitude=1400 sources=2 oldEmpty=1 fixedGround=1");
+ }
  static void setup(WorldRenderer& w,unsigned interval,unsigned detail){
   w.valid=true;w.traceContext=2;w.gpuDiagnosticArmed=false;w.quality.nearShadowInterval=interval;w.quality.farShadowInterval=4;w.quality.actorShadowDetail=detail;
   w.quality.gi=0;w.quality.pointShadows=0;w.quality.fogClouds=0;w.effects.gi=w.effects.fog=false;
@@ -151,10 +167,70 @@ struct WorldScreenEffectsTest {
   retained.reset();assert(!retained.geometryTargetsReady&&!retained.actorTargetsPending&&!retained.light&&!retained.lightingPS&&!retained.probe[0]);
   std::printf("ACTOR_SETTINGS_PASS cases=%u sharedObjects=%zu pointStaticPixels=exact nearFarActorMaps=exact fullRelease=1 reset=1\n",cases,original.size());std::fflush(stdout);
  }
+ static void interiorDaylight(IDirect3DDevice9* d,unsigned msaa,bool hdr){
+  IDirect3DTexture9 *depth=nullptr,*scene=nullptr;IDirect3DSurface9 *mask=nullptr,*target=nullptr,*read=nullptr,*resolved=nullptr;
+  must(d->CreateTexture(64,64,1,0,D3DFMT_R32F,D3DPOOL_MANAGED,&depth,nullptr));
+  must(d->CreateTexture(64,64,1,0,D3DFMT_A8R8G8B8,D3DPOOL_MANAGED,&scene,nullptr));
+  D3DLOCKED_RECT lock{};must(depth->LockRect(0,&lock,nullptr,0));
+  for(unsigned y=0;y<64;++y)for(unsigned x=0;x<64;++x)reinterpret_cast<float*>(static_cast<char*>(lock.pBits)+y*lock.Pitch)[x]=1000.f/999.f-1000.f/(999.f*2);
+  must(depth->UnlockRect(0));must(scene->LockRect(0,&lock,nullptr,0));
+  for(unsigned y=0;y<64;++y)for(unsigned x=0;x<64;++x)reinterpret_cast<DWORD*>(static_cast<char*>(lock.pBits)+y*lock.Pitch)[x]=0xff404040;
+  must(scene->UnlockRect(0));
+  must(d->CreateDepthStencilSurface(64,64,D3DFMT_D24S8,D3DMULTISAMPLE_TYPE(msaa),0,FALSE,&mask,nullptr));
+  must(d->CreateRenderTarget(64,64,D3DFMT_A16B16G16R16F,D3DMULTISAMPLE_TYPE(msaa),0,FALSE,&target,nullptr));
+  must(d->CreateOffscreenPlainSurface(64,64,D3DFMT_A16B16G16R16F,D3DPOOL_SYSTEMMEM,&read,nullptr));
+  if(msaa)must(d->CreateRenderTarget(64,64,D3DFMT_A16B16G16R16F,D3DMULTISAMPLE_NONE,0,FALSE,&resolved,nullptr));
+  auto half=[](uint16_t h){const unsigned e=h>>10&31,m=h&1023;return e==0?std::ldexp(float(m),-24):std::ldexp(float(1024+m),int(e)-25);};
+  const float base=hdr?.0512695f:64.f/255;
+  float pixels[5][2]={};
+  for(unsigned mode=0;mode<5;++mode){WorldRenderer w(d);setup(w,1,mode==3?1:0);
+   w.quality.localLights=w.quality.contactAO=w.quality.autoBump=w.quality.nightBrightness=w.quality.weather=0;
+   w.quality.shadowStrength=100;w.quality.shadowSoftness=0;w.quality.softShadows=0;
+   w.context.camera[2]=w.context.inverseView[14]=2;w.context.view[14]=2;
+   w.context.view[10]=w.context.inverseView[10]=-1;
+   w.context.lightDirection[0]=w.context.lightDirection[1]=0;w.context.lightDirection[2]=1;
+   w.context.direct[0]=.6f;w.context.direct[1]=.5f;w.context.direct[2]=.4f;
+   w.context.ambient[0]=w.context.ambient[1]=w.context.ambient[2]=.25f;
+   w.rawSourceDirections[0]=w.sourceDirections[0]={0,0,1};w.sourceColors[0]=w.sourceGlowColors[0]={.6f,.5f,.4f};w.sourceWeights[0]=1;
+   w.sourceColors[1]=w.sourceGlowColors[1]={};w.sourceWeights[1]=0;
+   const float x=mode>=2?0.f:-20.f,z=mode?4.f:-2.f;
+   const NorthlightGI::WorldVertex roof[]={{{x,-20,z},{0,0,1},0,0},{{20,-20,z},{0,0,1},1,0},{{x,20,z},{0,0,1},0,1},{{20,20,z},{0,0,1},1,1}};
+   void* bytes=nullptr;must(w.vertices->Lock(0,sizeof roof,&bytes,0));std::memcpy(bytes,roof,sizeof roof);must(w.vertices->Unlock());
+   w.batches[0].boundsLow={x,-20,z};w.batches[0].boundsHigh={20,20,z};
+   if(mode==3){pose(w,-1);auto& p=*w.replays[0];p.constantStorage[4*31]=p.constantStorage[4*32+1]=.25f;p.constantStorage[4*33+3]=-1;}
+   if(mode==4)w.prelitDaylightRetryAt=GetTickCount()+60000;
+   must(d->SetRenderTarget(0,target));must(d->SetDepthStencilSurface(mask));D3DVIEWPORT9 vp{0,0,64,64,0,1};must(d->SetViewport(&vp));
+   must(d->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_STENCIL,0xff404040,1,NorthlightUnlitReceiver::PrelitBit));must(d->SetDepthStencilSurface(nullptr));
+   w.setPrelitMask(mask);must(d->BeginScene());assert(w.render(target,depth,64,64,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,nullptr,0,hdr?scene:nullptr,hdr));must(d->EndScene());
+   if(mode<4)assert(w.prelitDaylightSurface);else assert(!w.prelitDaylightSurface);
+   if(msaa)must(d->StretchRect(target,nullptr,resolved,nullptr,D3DTEXF_NONE));
+   must(d->GetRenderTargetData(msaa?resolved:target,read));must(read->LockRect(&lock,nullptr,D3DLOCK_READONLY));
+   const auto* row=reinterpret_cast<uint16_t*>(static_cast<char*>(lock.pBits)+32*lock.Pitch);
+   pixels[mode][0]=half(row[16*4]);pixels[mode][1]=half(row[48*4]);
+   must(read->UnlockRect());
+   // A following frame without caster coverage must not reuse the last daylight.
+   w.effects.shadows=false;w.setPrelitMask(mask);w.temporalValid=false;
+   must(d->BeginScene());assert(w.render(target,depth,64,64,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,nullptr,0,hdr?scene:nullptr,hdr));must(d->EndScene());
+   if(msaa)must(d->StretchRect(target,nullptr,resolved,nullptr,D3DTEXF_NONE));
+   must(d->GetRenderTargetData(msaa?resolved:target,read));must(read->LockRect(&lock,nullptr,D3DLOCK_READONLY));
+   assert(std::fabs(half(reinterpret_cast<uint16_t*>(static_cast<char*>(lock.pBits)+32*lock.Pitch)[16*4])-base)<.002f);must(read->UnlockRect());
+  }
+  std::printf("INTERIOR_PIXELS hdr=%u msaa=%u open=%g/%g roof=%g/%g window=%g/%g actor=%g/%g unavailable=%g/%g\n",unsigned(hdr),msaa,pixels[0][0],pixels[0][1],pixels[1][0],pixels[1][1],pixels[2][0],pixels[2][1],pixels[3][0],pixels[3][1],pixels[4][0],pixels[4][1]);std::fflush(stdout);
+  const auto baked=[&](float value){return std::fabs(value-base)<.002f;};
+  assert(pixels[0][0]>base+.01f&&pixels[0][1]>base+.01f);
+  assert(baked(pixels[1][0])&&baked(pixels[1][1]));
+  assert(pixels[2][0]>base+.01f&&baked(pixels[2][1]));
+  assert(pixels[3][0]+.01f<pixels[2][0]&&baked(pixels[3][1]));
+  assert(baked(pixels[4][0])&&baked(pixels[4][1]));
+  for(unsigned s=0;s<16;++s)d->SetTexture(s,nullptr);drop(read);drop(resolved);drop(target);drop(mask);drop(scene);drop(depth);
+  std::printf("INTERIOR_SHADOW_PASS openSun=1 roofBehindCamera=1 aperture=1 actorShadow=1 bakedPreserved=1 unavailableFallback=1 staleDaylightRejected=1 hdr=%u msaa=%u\n",unsigned(hdr),msaa);
+ }
  static void run(IDirect3DDevice9* d){
   IDirect3DTexture9* depth=nullptr;IDirect3DSurface9* target=nullptr;must(d->CreateTexture(64,64,1,0,D3DFMT_R32F,D3DPOOL_MANAGED,&depth,nullptr));D3DLOCKED_RECT lock{};must(depth->LockRect(0,&lock,nullptr,0));for(unsigned y=0;y<64;++y)for(unsigned x=0;x<64;++x)reinterpret_cast<float*>(static_cast<char*>(lock.pBits)+y*lock.Pitch)[x]=.5f;must(depth->UnlockRect(0));
   must(d->CreateRenderTarget(64,64,D3DFMT_A8R8G8B8,D3DMULTISAMPLE_NONE,0,FALSE,&target,nullptr));unsigned cases=0,reuses=0,changes=0;
   boundsDemand(d,depth,target);
+  flightCoverage(d,depth,target);
+  for(unsigned msaa:{0u,2u})for(bool hdr:{false,true})interiorDaylight(d,msaa,hdr);
   for(unsigned detail:{0u,1u})for(unsigned interval:{2u,4u,16u}){
    auto reference=std::make_unique<WorldRenderer>(d),retained=std::make_unique<WorldRenderer>(d);setup(*reference,1,detail);setup(*retained,interval,detail);std::vector<float> previous;
    for(unsigned frame=0;frame<21;++frame){const float x=frame%3==0?0.f:frame%3==1?14.f:-4.f;

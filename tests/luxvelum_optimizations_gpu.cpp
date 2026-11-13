@@ -58,7 +58,7 @@ int main(int argc,char** argv){
     for(bool transition:{false,true})for(bool actor:{false,true}){
         const std::string suffix=transition?"Transition":"",name=actor?"ForeverFogActor":"ForeverFog";
         auto* reference=shader(argv[2],name+"Reference"+suffix);auto* general=shader(argv[1],name+suffix);auto* quiet=shader(argv[1],name+"NoNoise"+suffix);
-        for(unsigned noisy=0;noisy<2;++noisy)for(unsigned shape=0;shape<20;++shape){
+        for(unsigned noisy=0;noisy<2;++noisy)for(unsigned shape=0;shape<32;++shape){
             float c[116][4]{};c[0][0]=1.f/w;c[0][1]=1.f/h;c[0][2]=.5f;c[0][3]=1000;c[1][0]=c[1][1]=2;c[1][2]=c[2][0]=1;c[2][2]=192;c[2][3]=1.f/1024;
             c[3][0]=c[4][1]=c[5][2]=c[6][3]=1;c[15][2]=20;c[14][2]=.5f;c[14][3]=1;c[16][2]=1;c[21][0]=1;c[27][0]=1;c[24][3]=31;
             c[31][0]=c[31][1]=-256;c[31][2]=1.f/512;c[33][0]=c[33][2]=float(w);c[33][1]=c[33][3]=float(h);
@@ -74,10 +74,27 @@ int main(int argc,char** argv){
             NorthlightForever::Frame f;f.valid=true;
             for(unsigned layer=0;layer<3;++layer){auto& l=f.layer[layer];l.flag[3]=shape==8||((shape==6)&&layer==0)?0.f:1.f;l.flag[0]=shape==12?0.f:shape==13?float(layer)*.35f:1.f;l.flag[2]=noisy?1.f:0.f;l.p[0]=shape==0||shape>=9?0.f:shape==7?150.f:float(shape*12+layer*4);l.p[1]=shape==14?0.f:1+float(layer)*.25f;l.p[9]=1;l.p[10]=.3f;l.p[20]=l.p[21]=.1f;l.p[22]=.6f;l.p[23]=.4f;
                 for(unsigned k=0;k<3;++k){l.color[0][k]=.6f;l.color[1][k]=.25f;l.color[2][k]=.1f;l.color[3][k]=.2f;l.p[11+k]=.01f*float(k+1);}}
+            if(noisy&&shape>=20)for(unsigned layer=0;layer<3;++layer)
+                f.layer[layer].flag[2]=shape<28?float(((shape-20)>>layer)&1):shape==28?.35f:shape==29?(layer==1?.7f:0.f):shape==30?float(layer)*.5f:1.f;
             float bank[38][4];NorthlightForever::constants(f,bank,128,1);ok(d->SetPixelShaderConstantF(116,bank[0],38));
             std::vector<unsigned char> images[2];for(unsigned mode=0;mode<2;++mode){ok(d->SetPixelShader(mode?(noisy?general:quiet):reference));ok(d->BeginScene());ok(NorthlightScreen::drawQuad(d,w,h));ok(d->EndScene());images[mode]=readback(target,w,h,D3DFMT_A32B32G32R32F,16);}compare(images[0],images[1]);
         }
         reference->Release();general->Release();quiet->Release();
+    }
+    {
+        auto* local=shader(argv[1],"LocalFog");std::vector<unsigned char> origin;
+        for(float translation:{0.f,17000.f,-17000.f}){
+            float c[68][4]{};c[0][0]=1.f/w;c[0][1]=1.f/h;c[0][2]=.5f;c[0][3]=1000;c[1][0]=c[1][1]=2;c[1][2]=c[2][0]=1;
+            c[3][0]=c[4][1]=c[5][2]=c[6][3]=1;c[6][0]=c[6][1]=c[6][2]=translation;
+            c[15][0]=c[15][1]=c[15][2]=translation;c[21][3]=128;
+            c[36][0]=translation+1.25f;c[36][1]=translation+.5f;c[36][2]=translation+10;c[36][3]=9;
+            c[44][0]=1;c[44][1]=.3f;c[44][2]=.1f;c[58][0]=3.5f;c[58][1]=1.f/12;c[58][2]=10;c[58][3]=.12f;c[59][0]=.01f;
+            c[33][0]=c[33][2]=w;c[33][1]=c[33][3]=h;
+            bind(1,solid(1000.f/999.5f*(1-.5f/20)));ok(d->SetPixelShaderConstantF(0,c[0],68));ok(d->SetPixelShader(local));
+            ok(d->BeginScene());ok(NorthlightScreen::drawQuad(d,w,h));ok(d->EndScene());auto image=readback(target,w,h,D3DFMT_A32B32G32R32F,16);
+            if(translation==0)origin=image;else assert(image==origin);
+        }
+        local->Release();std::puts("LOCAL_FOG_TRANSLATION_PASS offsets=0,17000,-17000 bitExact=1");
     }
     std::printf("LUXVELUM_GPU_PASS cases=%u distanceBitExact=1 coverageMSAA=0,2,4,8 fogMaxError=%g actor=1 transitions=1\n",cases,maximum);
     if(std::getenv("NORTHLIGHT_OPTIMIZATION_BENCHMARK")){
@@ -94,7 +111,7 @@ int main(int argc,char** argv){
         const char* baseline=std::getenv("NORTHLIGHT_FOG_BENCHMARK_BASELINE");
         IDirect3DPixelShader9* old[2]={shader(baseline?baseline:argv[2],baseline?"ForeverFogActorNoNoise":"ForeverFogActorReference"),shader(baseline?baseline:argv[2],baseline?"ForeverFogActor":"ForeverFogActorReference")};
         auto* noisyShader=shader(argv[1],"ForeverFogActor");auto* quiet=shader(argv[1],"ForeverFogActorNoNoise");
-        for(unsigned noisy=0;noisy<2;++noisy)for(unsigned state=0;state<6;++state){
+        for(unsigned noisy=0;noisy<2;++noisy)for(unsigned state=0;state<8;++state){
             float c[116][4]{};c[0][0]=1.f/bw;c[0][1]=1.f/bh;c[0][2]=.5f;c[0][3]=1000;c[1][0]=c[1][1]=2;c[1][2]=c[2][0]=1;c[2][2]=192;c[2][3]=1.f/1024;c[3][0]=c[4][1]=c[5][2]=c[6][3]=1;c[15][2]=20;c[14][2]=.5f;c[14][3]=1;c[16][2]=1;c[21][0]=c[27][0]=1;c[31][0]=c[31][1]=-256;c[31][2]=1.f/512;c[33][0]=c[33][2]=bw;c[33][1]=c[33][3]=bh;ok(d->SetPixelShaderConstantF(0,c[0],116));
             if(state==5){c[31][0]=c[31][1]=1024;ok(d->SetPixelShaderConstantF(31,c[31],1));}
             c[66][0]=c[66][1]=-1;c[66][2]=c[66][3]=1;c[68][0]=c[69][1]=.002f;c[70][2]=.004f;c[71][2]=.2f;c[71][3]=1;c[72][0]=1;
@@ -102,6 +119,7 @@ int main(int argc,char** argv){
             const float ground=state==1?200.f:state==2?40.f:0.f,tag=state==3||state==5?0.f:1.25f;
             bind(13,solid(ground,0,0,tag));
             NorthlightForever::Frame f;for(auto& l:f.layer){l.flag[3]=1;l.flag[0]=state==4?0.f:1.f;l.flag[2]=float(noisy);l.p[0]=0;l.p[1]=1;l.p[9]=1;l.p[20]=l.p[21]=.1f;l.p[22]=.6f;l.p[23]=.4f;for(unsigned k=0;k<3;++k){l.color[0][k]=.6f;l.color[1][k]=.25f;l.color[3][k]=.2f;}}
+            if(state>=6)for(unsigned layer=0;layer<3;++layer)f.layer[layer].flag[2]=noisy&&layer<state-5?1.f:0.f;
             float bank[38][4];NorthlightForever::constants(f,bank,128,1);ok(d->SetPixelShaderConstantF(116,bank[0],38));std::vector<double> times[2];
             for(unsigned block=0;block<8;++block)for(unsigned mode:{0u,1u,1u,0u})times[mode].push_back(measure(mode?(noisy?noisyShader:quiet):old[noisy]));
             for(auto& values:times)std::sort(values.begin(),values.end());

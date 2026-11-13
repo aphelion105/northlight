@@ -59,6 +59,6 @@ for backend in backends:
     assert 'LUXVELUM_GPU_PASS' in result.stdout
     timings = [dict(re.findall(r'(\w+)=([^ ]+)', line)) for line in result.stdout.splitlines() if line.startswith('LUXVELUM_FOG_GPU_MS ')]
     if baseline_ref:
-        assert {(int(row['noise']), int(row['state'])) for row in timings} == {(noise, state) for noise in range(2) for state in range(6)}
+        assert {(int(row['noise']), int(row['state'])) for row in timings} == {(noise, state) for noise in range(2) for state in range(8)}
     results.append({'backend': str(backend), 'sha256': hashlib.sha256(backend.read_bytes()).hexdigest(), 'timings': timings, 'stdout': result.stdout})
 (out / 'validation.json').write_text(json.dumps({'pass': True, 'game_launched': False, 'baseline_ref': baseline_ref, 'results': results}, indent=2) + '\n')

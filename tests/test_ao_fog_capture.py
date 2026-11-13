@@ -24,7 +24,7 @@ def main():
 ''')
     harness = harness.replace('Ext* d;bool', 'explicit World(Ext* device):d(device){}\nExt* d;bool')
     harness = harness.replace('std::map<IDirect3DVertexShader9*,Capture> captureShaders;',
-                              'std::map<IDirect3DVertexShader9*,Capture> captureShaders;\nstd::map<IDirect3DVertexShader9*,std::shared_ptr<Capture>> wmoShaders;')
+                              'std::map<IDirect3DVertexShader9*,Capture> captureShaders;\nstd::map<IDirect3DVertexShader9*,Capture> wmoShaders;')
     harness = harness.replace('assert(reg==30)', 'assert(reg==12||reg==30)')
     terrain = method('src/world/world_renderer.h', 'void terrainContext(').split('float view[16]')[0] + 'valid=true;}'
     wmo = method('src/world/world_renderer.h', 'bool wmoContext(').split('float columns[16]')[0] + 'valid=true;return true;}'
@@ -43,7 +43,7 @@ int main(){
         Device p;p.world->captureShaders[shader].fog=false;p.beforeDraw(shader);
         assert(p.world->hasContext()&&!p.world->legacyFogKnown);
         p.vc.skinned=false;p.vc.entry=kind?0:1;p.vc.wmo=kind!=0;
-        p.world->wmoShaders[shader]=std::make_shared<World::Capture>();
+        p.world->wmoShaders[shader]=World::Capture{};
         p.beforeDraw(shader);
         assert(p.world->hasContext()&&p.terrain);
         assert(p.world->legacyFogKnown!=expectBug);++cases;
@@ -53,7 +53,7 @@ int main(){
      assert(!p.world->legacyFogKnown);++cases;}
     {Device p;p.world->captureShaders[shader].fog=false;p.beforeDraw(shader);
      p.vc.skinned=false;p.vc.wmo=true;p.viewportOK=false;
-     p.world->wmoShaders[shader]=std::make_shared<World::Capture>();p.beforeDraw(shader);
+     p.world->wmoShaders[shader]=World::Capture{};p.beforeDraw(shader);
      assert(!p.world->legacyFogKnown);++cases;}
     {Device p;auto& w=*p.world;NorthlightLegacyFog::Constants fog;
      fog.parameters[0]=-.02f;fog.parameters[3]=1;fog.color[0]=.55f;fog.color[1]=.32f;fog.color[2]=.12f;
@@ -67,7 +67,7 @@ int main(){
     std::printf("AO fog capture: %u cases, %s\n",cases,expectBug?"original regression reproduced":"PASS");
 }
 '''
-    output = ROOT / 'out/fog-capture'
+    output = fp.output_dir()
     output.mkdir(parents=True, exist_ok=True)
     cpp, exe = output / 'fog-capture.cpp', output / 'fog-capture.exe'
     cpp.write_text(harness, encoding='utf-8')

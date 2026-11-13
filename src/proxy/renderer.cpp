@@ -47,6 +47,8 @@
 #include "blp_mip_guard.h"
 #include "native_shadow_control_windows.h"
 #include "glue_lighting_selection.h"
+#include "native_more_lights.h"
+#include "native_more_light_renderer.h"
 #include "art_inputs_guard.h"
 #include "frame_intervals.h"
 #include "effect_switches.h"
@@ -402,6 +404,7 @@ class Device final : public GuardedMirrorDevice {
     DeviceMirror mirrorState;
     NorthlightMirrorResources::Registry mirrorResources;
     ExtensionDevice* ext;
+    std::unique_ptr<NorthlightNativeMoreLightRenderer> nativeMoreLights;
     NorthlightHdr::Presentation hdr;NorthlightHdr::Color hdrColor;
     NorthlightHdr::OutputMonitor hdrMonitor;NorthlightHdr::OutputChain hdrOutput;
     NorthlightHdr::Frame hdrFrame;NorthlightHdr::Settings hdrFrameSettings;
@@ -3228,11 +3231,10 @@ private:
             if(tag==1)++terrainDraws;
             D3DSURFACE_DESC desc={};D3DVIEWPORT9 viewport={};
             if (!fullViewport(desc,&viewport)) return;
-            if(model){
+            if(model||wmo){
                 DWORD z=FALSE,zf=D3DCMP_ALWAYS;
                 if(FAILED(ext->GetRenderState(D3DRS_ZENABLE,&z))||FAILED(ext->GetRenderState(D3DRS_ZFUNC,&zf))||
-                   !NorthlightWorldDrawDomain::depthTested(z,zf)||
-                   NorthlightWorldDrawDomain::classify(0.f,NorthlightWorldDrawDomain::kWorldMaxZ,viewport.MinZ,viewport.MaxZ)!=NorthlightWorldDrawDomain::Band::World)return;
+                   !NorthlightWorldDrawDomain::mainWorldDraw(z,zf,viewport.MinZ,viewport.MaxZ))return;
             }
             if (!readProjection(wmo||model)) {
                 if (++projectionRejects==1) {
@@ -3483,6 +3485,9 @@ public:
         try{settingsService=NorthlightSettings::acquire(std::filesystem::path(rootPath));settingsRevision=settingsService->revision();if(!settingsRecovery.empty())logf("SETTINGS startup recovery incomplete: %s",settingsRecovery.c_str());}
         catch(const std::exception& e){logf("SETTINGS unavailable: %s",e.what());}
         gpuProfile=std::make_unique<NorthlightGpuProfile>(ext);gpuSceneProfile=std::make_unique<NorthlightGpuProfile>(ext,"GPU frame",5);materialProfile=std::make_unique<NorthlightMaterialProfile>(ext);gpuTimer=std::make_unique<NorthlightGpuFrameTimer>(ext); gpuScene=std::make_shared<NorthlightGpuScene::Scene>(ext);world=std::make_unique<WorldRenderer>(ext,gpuScene);world->setEffectsBuckets(&effectsBuckets);world->setMaterialProfiler(materialProfile.get());
+        if(NorthlightNativeMoreLights::available){nativeMoreLights=std::make_unique<NorthlightNativeMoreLightRenderer>(ext);
+            NorthlightSettings::Documents docs;docs[1]=NorthlightSettings::Document(NorthlightSettings::readImage(std::filesystem::path(rootPath)/L"northlight-renderer.ini").raw);
+            const auto config=NorthlightSettings::configOf(docs,"");nativeMoreLights->limits(config.nativeLightLimits[0],config.nativeLightLimits[1]);}
         // Shader parity and buffer lock flags are independent backend contracts.
         world->setHdrBaseCompositeEnabled(backendHdrBaseComposite);
         surface=std::make_unique<NorthlightSurfaceRenderer>(ext);
@@ -3557,7 +3562,7 @@ public:
         mirrorState.beforeDisable=nullptr;mirrorState.disableContext=nullptr;
         surface.reset();autoBump.reset();modelNormals.reset();
         dropBlobFaint();shadowBlobs.reset();celestialDiscs.reset();gpuProfile.reset();gpuSceneProfile.reset();materialProfile.reset();gpuTimer.reset();drop(latencyQuery);water.reset();world.reset();gpuScene.reset();releaseResources();
-        skyLayers.reset();hdrFrame.reset();hdrColor.reset();hdrSkyForeground.reset();releaseHdrTargets();stateBlocks.clear();ext->Release();ext=nullptr;
+        skyLayers.reset();hdrFrame.reset();hdrColor.reset();hdrSkyForeground.reset();releaseHdrTargets();stateBlocks.clear();nativeMoreLights.reset();ext->Release();ext=nullptr;
         const ULONG backendReferences=real->Release();parent->Release();
         logf("DEVICE lifetime event=destroy-end id=%ld live=%ld backendReleaseCount=%lu tick=%lu",diagnosticId,InterlockedDecrement(&liveDevices),(unsigned long)backendReferences,(unsigned long)GetTickCount());
         memmap("destroy-end");
@@ -3641,7 +3646,7 @@ public:
         resetMark(6);hdrFrame.saveAndReset(ext);hdrColor.reset();hdrSkyForeground.reset();hdrUiPhase=false;releaseHdrTargets();resetMark(7);
         hdrAtUiBoundary=hdrLegacyPrepared=hdrSceneReady=hdrWorldSeen=hdrPresentFallback=hdrLegacySynced=false;hdrSkyValid=hdrSkyRejected=false;hdrTick=0;
         hdr.active=false;HRESULT hr=ext->Reset(pp);resetMark(8);
-        if(SUCCEEDED(hr)){hdr.logical=*pp;refreshWindowSize();hr=initHdrTargets();}resetMark(9);
+        if(SUCCEEDED(hr)){if(nativeMoreLights)nativeMoreLights->deviceReset();hdr.logical=*pp;refreshWindowSize();hr=initHdrTargets();}resetMark(9);
         if(resetProfile){auto ms=[&](unsigned a,unsigned b){return 1000.*double(resetTicks[b].QuadPart-resetTicks[a].QuadPart)/double(cpuFrequency.QuadPart);};
             logf("RESET stages frame=%llu prepareMs=%.3f cachesMs=%.3f resourcesMs=%.3f worldMs=%.3f auxiliaryMs=%.3f overlayMs=%.3f hdrReleaseMs=%.3f backendMs=%.3f hdrTargetsMs=%.3f totalMs=%.3f",(unsigned long long)frame,ms(0,1),ms(1,2),ms(2,3),ms(3,4),ms(4,5),ms(5,6),ms(6,7),ms(7,8),ms(8,9),ms(0,9));}
         if(diagnostics()&&world)logf("RESET capture sources entries=%zu bytes=%zu limit=%zu retainedCPU=1 currentRevisionChecks=1",world->captureSources().snapshotCacheEntries(),world->captureSources().sharedSourceBytes(),world->captureSources().sharedSourceLimit());
@@ -4010,6 +4015,7 @@ public:
             particleOn=world->equipmentLightsOn();NorthlightParticleUploads::enabled.store(particleOn,std::memory_order_relaxed);NorthlightParticleTextures::enabled.store(true,std::memory_order_relaxed); // Aurora also needs the bounded CPU mip cache.
             if(hdr.settings.requested!=(update->runtime->hdr[0]!=0)){hdr.settings.requested=update->runtime->hdr[0]!=0;hdrRequestChanged=true;}
             hdr.settings.apply(update->runtime->hdr);
+            if(nativeMoreLights)nativeMoreLights->limits(update->runtime->nativeLightLimits[0],update->runtime->nativeLightLimits[1]);
             reportHdrStatus();
             settingsRevision=update->revision;settingsService->acknowledge(*update);
             logf("SETTINGS frame %s revision=%s (creation-time changes require restart)",update->preview?"preview":"saved",settingsRevision.c_str());
@@ -4258,7 +4264,7 @@ public:
     }
     HRESULT STDMETHODCALLTYPE CreateVertexShader(const DWORD* code,IDirect3DVertexShader9** out) override { Guard mirrorLock(mirrorState.gate);
         HRESULT hr=ext->CreateVertexShader(code,out);
-        if(SUCCEEDED(hr)&&out&&*out)extensionWork("vertex shader registration",[&]{++vsGeneration;std::vector<DWORD> words;auto h=shaderHash(*out,words);int tag=NorthlightShaderTags::deviceTag(h);tag|=registerNativeShadow(*out,words);if(NorthlightUnlitReceiver::shader(reinterpret_cast<const uint32_t*>(words.data()),words.size(),m2ShaderFamily(h)==3))tag|=kUnlitTag;if(NorthlightUnlitReceiver::prelitShader(reinterpret_cast<const uint32_t*>(words.data()),words.size(),NorthlightWmoContext::signature(h)!=nullptr))tag|=kPrelitTag;vsHashes[*out]=h;if(spellOn||nameMask.setting||(hdr.stream&&hdr.dxvk))shaderReads[static_cast<void*>(*out)]=NorthlightShaderReads::scan(reinterpret_cast<const uint32_t*>(words.data()),words.size());if(spellOn){bool bare=false;const bool ok=NorthlightSpellFog::vsFogProven(reinterpret_cast<const uint32_t*>(words.data()),words.size(),&bare);vsFogProven[*out]=uint8_t(ok?(bare?2:1):0);}uiFallbackForget(*out);vsMajor[*out]=!words.empty()&&(words[0]>>16)==0xFFFEu?unsigned((words[0]>>8)&0xFFu):0u;if(world){world->registerShader(*out,h);world->registerNativePointShader(*out,(m2ShaderFamily(h)==3||NorthlightWmoContext::signature(h))?words.data():nullptr,(m2ShaderFamily(h)==3||NorthlightWmoContext::signature(h))?words.size():0,m2ShaderFamily(h)==3);particleCapture.registerVertex(*out,m2ShaderFamily(h));}if(autoBump)autoBump->registerVertex(*out,h,words.data(),words.size(),m2ShaderFamily(h));if(water)water->registerVertex(*out,h,words.data(),words.size());vsTags[*out]=tag|(water&&water->hasVertex(*out)?kWaterTag:0)|int(m2ShaderFamily(h)<<kFamilyShift);if(tag==1)++matchedTerrain;else if(tag==2)++matchedUI;});
+        if(SUCCEEDED(hr)&&out&&*out)extensionWork("vertex shader registration",[&]{++vsGeneration;std::vector<DWORD> words;auto h=shaderHash(*out,words);int tag=NorthlightShaderTags::deviceTag(h);tag|=registerNativeShadow(*out,words);if(NorthlightUnlitReceiver::shader(reinterpret_cast<const uint32_t*>(words.data()),words.size(),m2ShaderFamily(h)==3))tag|=kUnlitTag;if(NorthlightUnlitReceiver::prelitShader(reinterpret_cast<const uint32_t*>(words.data()),words.size(),NorthlightWmoContext::signature(h)!=nullptr))tag|=kPrelitTag;vsHashes[*out]=h;if(spellOn||nameMask.setting||(hdr.stream&&hdr.dxvk))shaderReads[static_cast<void*>(*out)]=NorthlightShaderReads::scan(reinterpret_cast<const uint32_t*>(words.data()),words.size());if(spellOn){bool bare=false;const bool ok=NorthlightSpellFog::vsFogProven(reinterpret_cast<const uint32_t*>(words.data()),words.size(),&bare);vsFogProven[*out]=uint8_t(ok?(bare?2:1):0);}uiFallbackForget(*out);vsMajor[*out]=!words.empty()&&(words[0]>>16)==0xFFFEu?unsigned((words[0]>>8)&0xFFu):0u;if(world){world->registerShader(*out,h);world->registerNativePointShader(*out,(m2ShaderFamily(h)==3||world->recognizesWmo(*out)||contains(kTerrainVS,h))?words.data():nullptr,(m2ShaderFamily(h)==3||world->recognizesWmo(*out)||contains(kTerrainVS,h))?words.size():0,m2ShaderFamily(h)==3);particleCapture.registerVertex(*out,m2ShaderFamily(h));}if(autoBump)autoBump->registerVertex(*out,h,words.data(),words.size(),m2ShaderFamily(h));if(water)water->registerVertex(*out,h,words.data(),words.size());if(nativeMoreLights)nativeMoreLights->registerShader(*out,words.data(),words.size(),contains(kTerrainVS,h));vsTags[*out]=tag|(water&&water->hasVertex(*out)?kWaterTag:0)|int(m2ShaderFamily(h)<<kFamilyShift);if(tag==1)++matchedTerrain;else if(tag==2)++matchedUI;});
         if(SUCCEEDED(hr))mirrorResources.wrap(out);return hr;
     }
     HRESULT STDMETHODCALLTYPE CreatePixelShader(const DWORD* code,IDirect3DPixelShader9** out) override { Guard mirrorLock(mirrorState.gate);
@@ -4268,14 +4274,24 @@ public:
     }
     // Keep native and prepared material submissions in one ordering for all Draw* forms.
     template<class Draw> HRESULT submitGameDraw(UINT count,bool& nativeSky,bool* skyCaptured,Draw submit){
-        if(!enabled&&!failed&&!hdr.active&&worldDebug==0&&!diagnostics())return submit();
+        const auto kind=nativeMoreLights?nativeMoreLights->kind(mirrorState.vertexShader):NorthlightNativeMoreLightShader::Kind::None;
+        if(world)world->requestNativeExtra(kind!=NorthlightNativeMoreLightShader::Kind::None);
+        const auto expanded=[&](auto draw)->HRESULT{if(!nativeMoreLights)return draw();
+            const HRESULT result=nativeMoreLights->draw(kind,&mirrorState,[&](bool terrain,float* bank){if(world)world->nativeExtraRgb(terrain,bank);},draw,world&&world->ownsNativeExtra());
+            if(nativeMoreLights->restoreFailed)failed=true;return result;};
+        const auto final=[&]()->HRESULT{return expanded(submit);};
+        if(!enabled&&!failed&&!hdr.active&&worldDebug==0&&!diagnostics())return final();
         return hdrDraw([&]{
-            auto raw=[&]{return effectCoverageDraw([&]{return auroraNativeDraw([&]{return nativeLocalSubmit([&]{return skyPlanetNativeDraw(submit);});});},false,nativeSky,skyCaptured);};
+            auto sceneDraw=[&](){
+            auto raw=[&]{return effectCoverageDraw([&]{return auroraNativeDraw([&]{return nativeLocalSubmit([&]{return skyPlanetNativeDraw(final);});});},false,nativeSky,skyCaptured);};
             return projectedDraw(count,applied?1u:0u,[&]{
                 return autoBump&&enabled?autoBump->geometryDraw(raw,true,[&](auto prepared,IDirect3DVertexShader9* source){
-                    return nativeLocalSubmit(prepared,true,source);
+                    const auto finalPrepared=[&](){return expanded(prepared);};return nativeLocalSubmit(finalPrepared,true,source);
                 }):raw();
             });
+            };
+            return world&&enabled&&!applied&&!failed&&!debugMode&&!worldDebug?
+                world->captureNativeSceneDraw(frame,count,sceneDraw):sceneDraw();
         });
     }
     // 0.3.187: the four draw entry points share drawHook(); each passes its capture and its real draw.
@@ -4617,6 +4633,10 @@ static HMODULE backend() {
     const char* blpStatus=blpGuard?NorthlightBlpMipGuard::install():"disabled";
     logf("BLP mip guard status=%s runtime-only=1 limit=client-count/16 files-written=0",blpStatus);
     logf("GLUE lighting selection status=%s own-source-priority=1 slot-limit=4 runtime-only=1",NorthlightGlueLighting::install());
+    const bool lightStay=GetPrivateProfileIntW(L"Renderer",L"NativeLightStay",1,config)!=0;
+    logf("NATIVE light stay status=%s requested=%u runtime-only=1 files-written=0 restart-required=1",NorthlightNativeLightStay::install(lightStay),unsigned(lightStay));
+    const bool moreLights=GetPrivateProfileIntW(L"Renderer",L"NativeMoreLights",1,config)!=0;
+    logf("NATIVE more lights status=%s requested=%u max=8 runtime-only=1 files-written=0 shader-path=1",NorthlightNativeMoreLights::install(moreLights),unsigned(moreLights));
 #else
     logf("BLP mip guard status=disabled-imported-replay runtime-only=1 files-written=0");
 #endif
@@ -4630,7 +4650,7 @@ static HMODULE backend() {
     // Only DXVK keeps the legacy (unchecked, no RESZ dummy draw) rules; every
     // other runtime, including the system fallback, gets the native rules.
     if(module&&(result.fallback||(configured==NorthlightBackend::Kind::Legacy&&!last.info.dxvk)))selectedBackend=NorthlightBackend::Kind::Native;
-    logf("Northlight renderer 0.3.217; reference sun look (sun glow hue from native/sunHalo band, soft-shoulder glare, veil, sun-tinted haze), native sun/moon suppressed (F1b), lamps dimmed to 30 pct in direct sun, native moon02 skipped by texture identity, no game bytes in the DLL, MEMREAD self-read profile (RenderProfile), soft sun removal in shadow, jump-stable shadow anchor, geometry coverage hold with travel lead, steadier animated shadow edges (near 5x5 tent, still-camera shadow history), native blob shadows kept at BlobShadowStrength (faint texture under modulate blend), bilinear lighting history, near capture reserve for the player and companions, remembered rigid prop shadows (drawn-by-game states, windowed held), AO and bloom folded into the world composite, ground normals reject object tops, both wide samples, batched celestial terrain mask, DXVK async left to the runtime, render-thread terrain upload and rigid bookkeeping trims, moon without the horizon stall, art layer bands retimed to the sun and moon, actor prepare on a worker, trimmed prepare handoff, in-place capture constants, gate thread census, predicted snapshot lookups, word-wise memcmp, owner-thread gate elision; abandoned-frame prepare quarantine; removal smoothing on matching normals in its own pass (35/50 degree gate); per-frame draw gates; translucent depth census; early depth for translucent actors; DXVK 3.1.1 default, dxvk2 (2.7.1) by choice only, no automatic fallback; AO depth texel snap; shadow cascades follow camera zoom and collision; reduced terrain shadow reach under address-space pressure; command-stream replay thread; draw-hook lookup caches; lighter replay retire; fresh texture shadows evict only stale keeps; soft local-light cap with fades; blended GI re-publication; Forever-style rain (storm light bands, weather draw detection); moving fog clouds; GPU budget control; frames ahead and frame skipping in the command stream; replay jobs; AO denoise pass; rain mask (MRT, depth scrub), effect boundary at the UI in rain; UI boundary fallback for font mods; TestCooperativeLevel answered on the game thread; two large buffer shadows (36 MiB allowance); lamp fog glow capped once over all lamps; texture readback diagnostics, texture readbacks without a queue drain; sky light held across the weather rescale; colour-guided lighting upsample and colour-picked contact normals at wall and actor feet; actor shadow map with soft contact-hardening filter; uncached maps skip geometry builds; nearest-first actor capture (radius gate, distance cut), stride-aligned replay bulk; floating names keep the game's colour (stencil mask); instance map names with an apostrophe or a space reach the world context; lamps in view first, screen-coherent lamp batches (16-lamp passes); backend=%s path=%ls loaded=%d error=%lu",
+    logf("Northlight renderer 0.3.218; reference sun look (sun glow hue from native/sunHalo band, soft-shoulder glare, veil, sun-tinted haze), native sun/moon suppressed (F1b), lamps dimmed to 30 pct in direct sun, native moon02 skipped by texture identity, no game bytes in the DLL, MEMREAD self-read profile (RenderProfile), soft sun removal in shadow, jump-stable shadow anchor, geometry coverage hold with travel lead, steadier animated shadow edges (near 5x5 tent, still-camera shadow history), native blob shadows kept at BlobShadowStrength (faint texture under modulate blend), bilinear lighting history, near capture reserve for the player and companions, remembered rigid prop shadows (drawn-by-game states, windowed held), AO and bloom folded into the world composite, ground normals reject object tops, both wide samples, batched celestial terrain mask, DXVK async left to the runtime, render-thread terrain upload and rigid bookkeeping trims, moon without the horizon stall, art layer bands retimed to the sun and moon, actor prepare on a worker, trimmed prepare handoff, in-place capture constants, gate thread census, predicted snapshot lookups, word-wise memcmp, owner-thread gate elision; abandoned-frame prepare quarantine; removal smoothing on matching normals in its own pass (35/50 degree gate); per-frame draw gates; translucent depth census; early depth for translucent actors; DXVK 3.1.1 default, dxvk2 (2.7.1) by choice only, no automatic fallback; AO depth texel snap; shadow cascades follow camera zoom and collision; reduced terrain shadow reach under address-space pressure; command-stream replay thread; draw-hook lookup caches; lighter replay retire; fresh texture shadows evict only stale keeps; soft local-light cap with fades; blended GI re-publication; Forever-style rain (storm light bands, weather draw detection); moving fog clouds; GPU budget control; frames ahead and frame skipping in the command stream; replay jobs; AO denoise pass; rain mask (MRT, depth scrub), effect boundary at the UI in rain; UI boundary fallback for font mods; TestCooperativeLevel answered on the game thread; two large buffer shadows (36 MiB allowance); lamp fog glow capped once over all lamps; texture readback diagnostics, texture readbacks without a queue drain; sky light held across the weather rescale; colour-guided lighting upsample and colour-picked contact normals at wall and actor feet; actor shadow map with soft contact-hardening filter; uncached maps skip geometry builds; nearest-first actor capture (radius gate, distance cut), stride-aligned replay bulk; floating names keep the game's colour (stencil mask); instance map names with an apostrophe or a space reach the world context; lamps in view first, screen-coherent lamp batches (16-lamp passes); backend=%s path=%ls loaded=%d error=%lu",
          NorthlightBackend::name(configured),last.path.c_str(),module!=nullptr,module?0ul:(last.error?last.error:(unsigned long)ERROR_INVALID_PARAMETER));
     logAttempts(result.attempts);
     logHostExecutable(sys.selfPath);

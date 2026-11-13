@@ -89,7 +89,12 @@ assert depth_formats in (1, 2), run.stdout
 assert f'LIGHT_CAPTURE_PASS depthFormats={depth_formats} exactDepthPixels={851*depth_formats} apiFailureCases=22 constantRegisters=116 stateVS=256 statePS=224 timing=none' in run.stdout, run.stdout
 complete = sorted(folder.glob('capture-*-lighting-inputs.jsonl'))
 incomplete = sorted(folder.glob('capture-*-lighting-inputs-incomplete.jsonl'))
-assert len(complete) == depth_formats + 1 and len(incomplete) == 22
+assert len(complete) == depth_formats + 2 and len(incomplete) == 30
+assert 'NATIVE_TRACE_PASS unknownProgram=1 fixedVertex=1 msaaColorsExact=1 stateUnchanged=1 failureCases=4' in run.stdout
+traces = [e for e in native_events if e['event'] == 'native-trace']
+assert len(traces) == 1 and not traces[0]['receiver_classification_required']
+assert next(e for e in native_events if e['event'] == 'native-trace-summary')['skipped'] == 0
+assert 'NATIVE_CAPTURE_MSAA_PASS samples=2 imagePairs=1 roi=768x768 gpuResolveReused=1 stateUnchanged=1 failureCases=4' in run.stdout
 for path in complete + incomplete:
     events = [json.loads(line) for line in path.read_text(encoding='utf-8').splitlines()]
     assert events[0]['event'] == 'begin' and events[-1]['event'] == 'end'
@@ -98,6 +103,17 @@ for path in complete + incomplete:
     assert not events[0]['material_replay_complete'] and not events[0]['per_sample_color_exported']
     assert not events[0]['stencil_image_exported'] and not events[0]['scene_boundary_changed']
     assert events[-1]['export_complete'] == (path in complete)
+    fixed=[e for e in events if e['event']=='native-trace-fixed-light']
+    if fixed:
+        assert len(fixed)==8 and fixed[0]['index']==0 and fixed[0]['enabled']
+        assert fixed[0]['light_HRESULT']=='00000000'
+        assert next(e for e in events if e['event']=='native-trace-fvf')['value']==0x44
+    msaa=[e for e in events if e['event']=='native-image-roi' and e.get('msaa_resolved')]
+    if msaa:
+        assert all(e['source_samples']==2 and not e['per_sample_color_exported'] for e in msaa)
+        if path in complete:
+            assert len(msaa)==2 and all(e['rect'][2]-e['rect'][0]==768 and e['rect'][3]-e['rect'][1]==768 for e in msaa)
+            assert sum(e.get('operation')=='CreateRenderTarget-native-resolve' for e in events)==1
     directional=[e for e in events if e['event']=='directional-map']
     if directional:
         assert len(directional)==4 and [e['action'] for e in directional]==['-','-','R','U']
@@ -118,9 +134,9 @@ files = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(fold
 (folder / 'validation.json').write_text(json.dumps(dict(status='pass', command=command, source_guard=guard,
     backend=str(backend), backend_sha256=backend_hash, adapter=adapter,
     dxvk_device_filter=environment.get('DXVK_FILTER_DEVICE_NAME'),
-    files=files, captures=depth_formats+1, depth_formats=depth_formats,
-    unsupported_depth_formats=re.findall(r'LIGHT_CAPTURE_UNSUPPORTED format=(\w+)', run.stdout), incomplete_controls=22,
+    files=files, captures=depth_formats+2, depth_formats=depth_formats,
+    unsupported_depth_formats=re.findall(r'LIGHT_CAPTURE_UNSUPPORTED format=(\w+)', run.stdout), incomplete_controls=26,
     game_before=before_game, game_after=after_game,
-    scope='Supported odd-size DF24/INTZ helper inputs, exact 0/1 pixel centers and state/constant transport; unsupported formats explicitly listed',
+    scope='Odd-size DF24/INTZ exact depth, state/constant transport and cropped native MSAA pairs with bounded reusable GPU resolve; unsupported depth formats explicitly listed',
     authentic_source_replay=False, whole_scene_replay=False, timing_benchmark=False), indent=2) + '\n', encoding='utf-8')
 print(run.stdout.strip())

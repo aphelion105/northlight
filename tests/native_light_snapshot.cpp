@@ -41,9 +41,11 @@ static void animatedDrawIdentity(){
         tracker.observeScene(s,now,{},camera);tracker.observe(drawn,now,{},camera);tracker.publish(now);
         assert(tracker.count==1&&tracker.entries[0].id==oldId);
     }
-    s.count=0;tracker.observeScene(s,3500,{},camera);tracker.publish(3500);assert(!tracker.count&&!tracker.outputCount);
+    s.count=0;tracker.observeScene(s,3500,{},camera);tracker.publish(3500);assert(tracker.count==1&&tracker.outputCount==1);
     s.count=1;tracker.observeScene(s,3550,{},camera);tracker.publish(3550);tracker.publish(3600);
-    assert(tracker.count==1&&tracker.outputCount==1&&tracker.entries[0].id!=oldId);
+    assert(tracker.count==1&&tracker.outputCount==1&&tracker.entries[0].id==oldId);
+    s.count=0;tracker.observeScene(s,3650,{},camera);tracker.publish(3650);tracker.publish(3750);tracker.publish(3850);
+    assert(!tracker.count&&!tracker.outputCount); // No observation from either producer: bounded expiry.
     // Two real scene lights may occupy the same point. Neither can claim an
     // anonymous observation solely because the other's hue changed.
     tracker.reset();s=scene();s.count=2;s.lights[1]=s.lights[0];++s.lights[1].id;
@@ -78,12 +80,12 @@ static void publication(){
     std::copy_n(s.lights[0].color,3,drawn.color);std::copy_n(s.lights[0].attenuation,3,drawn.attenuation);
     native.observe(drawn,6050,{},camera);native.observeScene(s,6050,{},camera);native.publish(6050);
     assert(native.outputCount==1&&native.output[0].sourceId==identity&&native.output[0].position[0]==12);
-    // Authored disable and detachment expire the source in this publication,
-    // including the shared selector's old fade tail.
+    // An observed disable is immediate; omission waits for bounded expiry.
     unsigned now=6100;
     for(bool removed:{false,true}){
         auto dark=s;if(removed)dark.count=0;else std::fill_n(dark.lights[0].color,3,0.f);
         native.observeScene(dark,now,{},camera);native.publish(now);
+        if(removed){assert(native.outputCount==1);native.publish(now+100);native.publish(now+200);now+=200;}
         assert(native.outputCount==0&&native.suppressedCount==1);
         auto ids=native.suppressed;std::sort(ids.begin(),ids.begin()+native.suppressedCount);
         selected.forgetSorted(ids.data(),native.suppressedCount);
@@ -102,18 +104,18 @@ static void cachedAttachment(){
     std::copy_n(s.lights[0].anchor,3,lamp.position);auto unrelated=lamp;unrelated.sourceId=88;unrelated.position[0]=50;
     const std::vector<NorthlightLocalLights::Light> fixed{lamp,unrelated};std::vector<NorthlightLocalLights::Light> moved;
     auto records=std::make_shared<NorthlightLightAttachments::Records>();records->push_back({});records->back().sourceId=77;
-    NorthlightLightAttachments::Tracker attachments;attachments.bind(records);attachments.observeScene(s,fixed);
+    NorthlightLightAttachments::Tracker attachments;attachments.bind(records);attachments.observeScene(s,fixed,1000);
     assert(!attachments.needsDrawPose()); // Current native poses must not force extra model replay capture.
     auto output=attachments.apply(fixed,moved);assert(output.size()==2&&output[0].position[0]==4&&output[1].position[0]==50);
     assert(output[0].sourceId==77&&output[0].flags==lamp.flags&&output[0].attenuationEnd==lamp.attenuationEnd);
     NorthlightEquipmentLights::Tracker native;float camera[3]{};native.observeScene(s,1000,output,camera);native.publish(1100,&output);assert(!native.outputCount);
-    s.lights[0].position[0]=20;attachments.observeScene(s,fixed);assert(attachments.apply(fixed,moved)[0].position[0]==20&&fixed[0].position[0]==3);
-    s.count=0;attachments.observeScene(s,fixed);output=attachments.apply(fixed,moved);assert(output.size()==1&&output[0].sourceId==88);
-    s=scene();s.lights[0].id+=10;attachments.observeScene(s,fixed);output=attachments.apply(fixed,moved);assert(output.size()==2&&output[0].position[0]==4);
-    s.count=0;attachments.observeScene(s,fixed);attachments.releaseScene();assert(attachments.apply(fixed,moved).size()==2&&attachments.needsDrawPose());
-    attachments.reset();attachments.bind(records);s=scene();s.lights[0].flags=0;attachments.observeScene(s,fixed);
+    s.lights[0].position[0]=20;attachments.observeScene(s,fixed,1000);assert(attachments.apply(fixed,moved)[0].position[0]==20&&fixed[0].position[0]==3);
+    s.count=0;attachments.observeScene(s,fixed,1050);assert(attachments.apply(fixed,moved).size()==2);attachments.observeScene(s,fixed,1100);output=attachments.apply(fixed,moved);assert(output.size()==1&&output[0].sourceId==88);
+    s=scene();s.lights[0].id+=10;attachments.observeScene(s,fixed,1000);output=attachments.apply(fixed,moved);assert(output.size()==2&&output[0].position[0]==4);
+    s.count=0;attachments.observeScene(s,fixed,1000);attachments.releaseScene();assert(attachments.apply(fixed,moved).size()==2&&attachments.needsDrawPose());
+    attachments.reset();attachments.bind(records);s=scene();s.lights[0].flags=0;attachments.observeScene(s,fixed,1000);
     assert(attachments.apply(fixed,moved)[0].position[0]==3); // An attached child cannot claim a root world placement.
-    s=scene();const std::vector<NorthlightLocalLights::Light> reversed{unrelated,lamp};attachments.observeScene(s,reversed);
+    s=scene();const std::vector<NorthlightLocalLights::Light> reversed{unrelated,lamp};attachments.observeScene(s,reversed,1000);
     output=attachments.apply(reversed,moved);assert(output[0].sourceId==88&&output[1].sourceId==77&&output[1].position[0]==4);
     attachments.prune({unrelated},camera);assert(attachments.nativeBindings.empty());
     // Two bones can share the same authored anchor and hue before animation.
@@ -121,7 +123,7 @@ static void cachedAttachment(){
     pairRecords->push_back({});pairRecords->back().sourceId=88;attachments.bind(pairRecords);
     auto twin=lamp;twin.sourceId=88;const std::vector<NorthlightLocalLights::Light> pair{lamp,twin};
     s=scene();s.count=2;s.lights[1]=s.lights[0];++s.lights[1].id;s.lights[1].position[0]=9;
-    for(unsigned i=0;i<2;++i){attachments.observeScene(s,pair);output=attachments.apply(pair,moved);
+    for(unsigned i=0;i<2;++i){attachments.observeScene(s,pair,1000);output=attachments.apply(pair,moved);
         assert(output.size()==2&&output[0].position[0]==4&&output[1].position[0]==9);}
     std::puts("NATIVE_FGA_PASS offscreenPose=1 noDuplicate=1 lifecycle=1 sourceIdentityRangeShadowPreserved=1");
 }
@@ -133,9 +135,9 @@ static void attachmentCost(){
     for(unsigned i=0;i<fixed.size();++i){auto& lamp=fixed[i];lamp.kind=2;lamp.sourceId=i+1;lamp.position[0]=float(i*10);lamp.diffuse[0]=1;
         if(i<256){records->push_back({});records->back().sourceId=lamp.sourceId;}}
     for(unsigned i=0;i<s.count;++i){s.lights[i]=scene().lights[0];s.lights[i].id+=i;s.lights[i].anchor[0]=-float(i+1);}
-    NorthlightLightAttachments::Tracker tracker;tracker.bind(records);tracker.observeScene(s,fixed);
+    NorthlightLightAttachments::Tracker tracker;tracker.bind(records);tracker.observeScene(s,fixed,1000);
     const auto start=std::chrono::steady_clock::now();
-    for(unsigned i=0;i<100;++i){tracker.observeScene(s,fixed);assert(tracker.apply(fixed,moved).size()==fixed.size());}
+    for(unsigned i=0;i<100;++i){tracker.observeScene(s,fixed,1000);assert(tracker.apply(fixed,moved).size()==fixed.size());}
     const auto elapsed=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count()/100;
     assert(tracker.nativeBindings.empty());std::printf("NATIVE_FGA_CPU static=4096 unmatched=32 ms=%.4f\n",elapsed);
 }
@@ -143,7 +145,7 @@ int main(int argc,char** argv){
     assert(argc==2);animatedDrawIdentity();publication();cachedAttachment();attachmentCost();auto source=std::make_unique<GameSnapshot>(),target=std::make_unique<GameSnapshot>();
     unsigned value=42;assert(source->record(0x123456,&value,4,true));source->triggerKind=2;source->triggerDraw=123;
     source->nativeLights=scene();std::vector<unsigned char> bytes(A::MaxBytes);std::size_t written=0;A::Error error;
-    assert(A::encode(*source,bytes.data(),bytes.size(),written,error));bytes.resize(written);assert(A::u32(bytes.data()+8)==3);
+    assert(A::encode(*source,bytes.data(),bytes.size(),written,error));bytes.resize(written);assert(A::u32(bytes.data()+8)==4);
     assert(A::decode(bytes.data(),bytes.size(),*target,error));
     assert(target->nativeLights.count==1&&target->nativeLights.lights[0].id==source->nativeLights.lights[0].id);
     source->nativeLights.lights[0].position[0]=999;source->nativeLights.lights[0].anchor[0]=999;
@@ -157,9 +159,9 @@ int main(int argc,char** argv){
 #endif
     }
     std::ofstream file(argv[1],std::ios::binary);file.write(reinterpret_cast<const char*>(bytes.data()),bytes.size());file.close();assert(file.good());
-    {source->nativeLights=target->nativeLights;auto& point=source->nativeLights.lights[0];point.id=0xfea0000000000001ull;point.flags=RootAnchor|WorldFixture;point.reserved=2;
+    {source->nativeLights=target->nativeLights;auto& point=source->nativeLights.lights[0];point.id=0xfea0000000000001ull;point.flags=RootAnchor|WorldFixture|ResolvedEmitter;point.reserved=2;point.emitterOffset[2]=.4f;
         std::vector<unsigned char> tagged(A::MaxBytes);std::size_t size=0;assert(A::encode(*source,tagged.data(),tagged.size(),size,error)&&A::decode(tagged.data(),size,*target,error));
-        assert(target->nativeLights.lights[0].reserved==2&&target->nativeLights.lights[0].flags==(RootAnchor|WorldFixture));
+        assert(target->nativeLights.lights[0].reserved==2&&target->nativeLights.lights[0].flags==(RootAnchor|WorldFixture|ResolvedEmitter)&&target->nativeLights.lights[0].emitterOffset[2]==.4f);
         std::ofstream fixture(std::string(argv[1])+".fixture",std::ios::binary);fixture.write(reinterpret_cast<const char*>(tagged.data()),size);assert(fixture);}
     // Corrupt count/map/value with a valid checksum: strict import rejects it.
     const auto extension=A::HeaderBytes+A::RecordBytes+4;
@@ -167,7 +169,10 @@ int main(int argc,char** argv){
         auto bad=bytes;A::put32(bad.data()+change.first,change.second);A::put32(bad.data()+bad.size()-4,A::checksum(bad.data(),bad.size()-4));
         assert(!A::decode(bad.data(),bad.size(),*target,error)&&!target->nativeLights.valid);
     }
-    auto v2=bytes;v2.erase(v2.begin()+extension+80+48,v2.begin()+extension+80+64);
+    auto v3=bytes;v3.erase(v3.begin()+extension+80+64,v3.begin()+extension+80+80);
+    A::put32(v3.data()+8,3);A::put32(v3.data()+12,unsigned(v3.size()));A::put32(v3.data()+v3.size()-4,A::checksum(v3.data(),v3.size()-4));
+    assert(A::decode(v3.data(),v3.size(),*target,error)&&target->nativeLights.lights[0].flags==RootAnchor&&!target->nativeLights.lights[0].emitterOffset[2]);
+    auto v2=bytes;v2.erase(v2.begin()+extension+80+48,v2.begin()+extension+80+80);
     A::put32(v2.data()+8,2);A::put32(v2.data()+12,unsigned(v2.size()));A::put32(v2.data()+v2.size()-4,A::checksum(v2.data(),v2.size()-4));
     assert(A::decode(v2.data(),v2.size(),*target,error)&&target->nativeLights.count==1&&!target->nativeLights.lights[0].flags);
     target->clear();assert(!target->nativeLights.valid&&!target->nativeLights.count);

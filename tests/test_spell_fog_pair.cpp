@@ -9,6 +9,17 @@ using namespace NorthlightSpellFog;
 
 int main(){
     using namespace NorthlightRegionalFog;
+    {
+        Field moving;moving.originX=moving.originY=-256;
+        for(unsigned y=0;y<N;++y)for(unsigned x=0;x<N;++x)moving.texels[y*N+x]={float(x)*.25f,.02f,0,5};
+        March medium;medium.volume[2]=medium.volume[3]=48;medium.airFloor=.0017f;
+        // A moving emitter crosses a metadata-cell boundary on sloping ground.
+        // The shared lamp/veil medium must interpolate through it continuously.
+        FieldSample sample;const float boundary=moving.originX+32*Spacing;
+        const float a=sigma(moving,medium,boundary-.001f,0,10,sample);
+        const float b=sigma(moving,medium,boundary+.001f,0,10,sample);
+        assert(a>0&&b>0&&std::abs(a-b)<1e-6f);
+    }
     Field field;field.originX=field.originY=-256;
     for(unsigned i=0;i<N*N;++i)field.texels[i]={float(int(i%23)-10),.02f,.01f,i%7?5.f:0.f};
     March march;march.night=.5f;march.volume[0]=.02f;march.volume[1]=.01f;march.volume[2]=60;march.volume[3]=30;

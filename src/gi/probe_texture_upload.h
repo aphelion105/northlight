@@ -1,6 +1,7 @@
 #pragma once
 #include "probe_activation.h"
 #include "probe_blend.h"
+#include "probe_local_visibility.h"
 #include <cstddef>
 #include <cstring>
 #include <limits>
@@ -9,6 +10,50 @@
 #endif
 
 namespace NorthlightProbeUpload {
+// Retain the immutable payload identity until the GPU has its replacement.
+// Light-only publications skip both LockRect and the managed texture upload.
+class LocalVisibilityMirror {
+    using Payload=std::shared_ptr<const NorthlightGI::ProbeLocalVisibility>;
+    std::vector<Payload> values_;
+    bool ready_=false;
+    static const Payload& payload(const NorthlightGI::ProbeAtlasEntry& e){static const Payload none;return e.occupied&&e.probe.valid?e.probe.localVisibility:none;}
+public:
+    struct Dirty {unsigned left=0,top=0,right=0,bottom=0;};
+    void reset(){values_.clear();ready_=false;}
+    bool prepare(size_t count){
+        if(values_.size()==count)return true;
+        try{values_.assign(count,nullptr);ready_=false;return true;}catch(const std::bad_alloc&){return false;}
+    }
+    bool changed(const std::vector<NorthlightGI::ProbeAtlasEntry>& atlas)const{
+        if(!ready_||values_.size()!=atlas.size())return true;
+        for(size_t i=0;i<atlas.size();++i)if(values_[i]!=payload(atlas[i]))return true;
+        return false;
+    }
+    Dirty write(void* bits,size_t pitch,unsigned n,const std::vector<NorthlightGI::ProbeAtlasEntry>& entries){
+        const auto layout=NorthlightGI::LocalProbeVisibility::atlas(n);
+        Dirty dirty{layout.width,layout.height,0,0};
+        const std::array<uint16_t,4> missing={0,0,0,0xbc00}; // w=-1: fail closed
+        if(!ready_){
+            for(unsigned y=0;y<layout.height;++y)for(unsigned x=0;x<layout.width;++x)
+                std::memcpy(static_cast<char*>(bits)+y*pitch+x*8,missing.data(),8);
+            dirty={0,0,layout.width,layout.height};
+        }
+        for(size_t i=0;i<entries.size();++i){auto p=payload(entries[i]);
+            if((ready_&&p==values_[i])||(!ready_&&!p))continue;
+            const unsigned x=unsigned(i%layout.columns)*9,y=unsigned(i/layout.columns)*9;
+            for(unsigned row=0;row<9;++row){auto* dst=static_cast<char*>(bits)+(y+row)*pitch+x*8;
+                if(p)std::memcpy(dst,p->texels.data()+row*9,9*8);
+                else for(unsigned col=0;col<9;++col)std::memcpy(dst+col*8,missing.data(),8);}
+            dirty.left=std::min(dirty.left,x);dirty.top=std::min(dirty.top,y);
+            dirty.right=std::max(dirty.right,x+9);dirty.bottom=std::max(dirty.bottom,y+9);values_[i]=std::move(p);
+        }
+        ready_=true;return dirty;
+    }
+    void accountMemory(NorthlightMemoryFootprint::Counter& memory)const{
+        memory.vector(NorthlightMemoryFootprint::Probes,values_);
+        for(const auto& p:values_)if(p)memory.allocation(NorthlightMemoryFootprint::Probes,p.get(),sizeof(NorthlightGI::ProbeLocalVisibility));
+    }
+};
 // Match the shader's x+z*n, y atlas layout. Specialize outside the texel loop
 // so every texel writes just its own channel, with no runtime channel tests.
 template<unsigned Channel,bool KnownValid=false,int PreviousMode=-1,bool BlendValid=false,bool Contiguous=false>

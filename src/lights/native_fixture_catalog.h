@@ -13,7 +13,16 @@ namespace NorthlightNativeFixtures {
 struct Record {std::uint64_t name=0,vertices=0,shape=0,sources=0;std::uint32_t count=0,shellFirst=0,shellCount=0,reserved=0;};
 struct Shell {std::uint32_t source=0;float point[3]{};std::array<float,9> triangle{};};
 static_assert(sizeof(Record)==48&&sizeof(Shell)==52,"NLF1 record layout");
-struct Catalog {std::vector<Record> records;std::vector<Shell> shells;};
+struct Profile {std::uint32_t fixture=0,source=0;float offset[3]{};};
+static_assert(sizeof(Profile)==20,"NLF1 resolution layout");
+struct Catalog {
+    std::vector<Record> records;std::vector<Shell> shells;std::vector<Profile> profiles;
+    const Profile* resolution(std::uint32_t fixture,unsigned source)const{
+        const auto key=std::make_pair(fixture,source);
+        const auto at=std::lower_bound(profiles.begin(),profiles.end(),key,[](const auto& p,const auto& k){return std::make_pair(p.fixture,p.source)<k;});
+        return at!=profiles.end()&&at->fixture==fixture&&at->source==source?&*at:nullptr;
+    }
+};
 struct ShellView {const Shell* data=nullptr;std::size_t count=0;bool empty()const{return !count;}std::size_t size()const{return count;}const Shell& operator[](std::size_t i)const{return data[i];}};
 inline std::uint64_t hash(const void* data,std::size_t size,std::uint64_t value=14695981039346656037ull){
     const auto* bytes=static_cast<const unsigned char*>(data);for(std::size_t i=0;i<size;++i)value=(value^bytes[i])*1099511628211ull;return value;
@@ -21,18 +30,25 @@ inline std::uint64_t hash(const void* data,std::size_t size,std::uint64_t value=
 inline std::shared_ptr<const Catalog> load(const std::string& path){
     std::ifstream file(std::filesystem::u8path(path),std::ios::binary|std::ios::ate);if(!file)return {};
     const auto size=file.tellg();if(size<24)return {};file.seekg(0);char magic[4];std::uint32_t header[5];file.read(magic,4);file.read(reinterpret_cast<char*>(header),20);
-    if(!file||std::memcmp(magic,"NLF1",4)||header[0]!=2||header[1]!=sizeof(Record)||header[2]>4096||header[3]!=sizeof(Shell)||header[4]>262144||std::uint64_t(size)!=24+std::uint64_t(header[2])*sizeof(Record)+std::uint64_t(header[4])*sizeof(Shell))return {};
-    auto result=std::make_shared<Catalog>();result->records.resize(header[2]);result->shells.resize(header[4]);
+    if(!file||std::memcmp(magic,"NLF1",4)||(header[0]!=2&&header[0]!=3&&header[0]!=4)||header[1]!=sizeof(Record)||header[2]>4096||header[3]!=sizeof(Shell)||header[4]>262144)return {};
+    std::uint32_t profiles[2]{};if(header[0]==4){file.read(reinterpret_cast<char*>(profiles),8);if(!file||profiles[0]!=sizeof(Profile)||profiles[1]>262144)return {};}
+    if(std::uint64_t(size)!=(header[0]==4?32:24)+std::uint64_t(header[2])*sizeof(Record)+std::uint64_t(header[4])*sizeof(Shell)+std::uint64_t(profiles[1])*sizeof(Profile))return {};
+    auto result=std::make_shared<Catalog>();result->records.resize(header[2]);result->shells.resize(header[4]);result->profiles.resize(profiles[1]);
     if(!result->records.empty())file.read(reinterpret_cast<char*>(result->records.data()),result->records.size()*sizeof(Record));
-    if(!result->shells.empty())file.read(reinterpret_cast<char*>(result->shells.data()),result->shells.size()*sizeof(Shell));if(!file)return {};
+    if(!result->shells.empty())file.read(reinterpret_cast<char*>(result->shells.data()),result->shells.size()*sizeof(Shell));
+    if(!result->profiles.empty())file.read(reinterpret_cast<char*>(result->profiles.data()),result->profiles.size()*sizeof(Profile));if(!file)return {};
     std::size_t next=0;
-    for(std::size_t i=0;i<result->records.size();++i){const auto& r=result->records[i];if(!r.sources||!r.count||r.count>4096||r.reserved||r.shellFirst!=next||r.shellCount<4||r.shellCount>4096||r.shellCount>result->shells.size()-next||(i&&result->records[i-1].name>r.name))return {};
+    for(std::size_t i=0;i<result->records.size();++i){const auto& r=result->records[i];if(!r.sources||!r.count||r.count>4096||r.reserved||r.shellFirst!=next||(header[0]==2&&r.shellCount<4)||r.shellCount>4096||r.shellCount>result->shells.size()-next||(i&&result->records[i-1].name>r.name))return {};
         for(std::size_t j=i;j&&result->records[j-1].name==r.name;--j){const auto& p=result->records[j-1];if(p.vertices==r.vertices&&p.shape==r.shape)return {};}
         std::uint64_t sources=0;for(std::size_t j=next;j<next+r.shellCount;++j){const auto& s=result->shells[j];if(s.source>=64)return {};sources|=1ull<<s.source;
             for(float v:s.point)if(!std::isfinite(v)||std::fabs(v)>=100000)return {};
             for(float v:s.triangle)if(!std::isfinite(v)||std::fabs(v)>=100000)return {};}
-        if(sources!=r.sources)return {};next+=r.shellCount;}
+        if((sources&~r.sources)||(header[0]==2&&sources!=r.sources))return {};next+=r.shellCount;}
     if(next!=result->shells.size())return {};
+    std::pair<std::uint32_t,std::uint32_t> previous{};
+    for(const auto& p:result->profiles){const auto key=std::make_pair(p.fixture,p.source);
+        if(!p.fixture||p.fixture>result->records.size()||p.source>=64||!(result->records[p.fixture-1].sources&(1ull<<p.source))||key<=previous)return {};
+        float length=0;for(float v:p.offset){if(!std::isfinite(v)||std::fabs(v)>100)return {};length+=v*v;}if(!(length>0)||length>10000)return {};previous=key;}
     return result;
 }
 template<class Header,class Bones,class Lights> std::uint64_t shape(const Header& header,const Bones& bones,const Lights& lights){

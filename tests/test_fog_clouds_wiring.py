@@ -11,6 +11,7 @@ import hashlib
 import re
 
 w=fp.src('world_renderer.h').read_text()
+resources=fp.src('world_screen_resources.inl').read_text()
 h=(fp.SHADERS/'world_effects.hlsl').read_text()
 py=(fp.REPO/'scripts'/'shaders'/'compile_world_shaders.py').read_text()
 manifest=json.loads((fp.SHADERS/'world-shader-build.json').read_text())['shaders']
@@ -18,7 +19,7 @@ checks={}
 for entry in ('WorldFogActor','FogCloudsActor'):
  item=manifest[entry]
  checks[entry+': bounded extended variant and generated runtime slot requirement']=(512<item['static_instruction_slots']<=600 and item['temporary_registers']<=32 and item['sha256']==hashlib.sha256((fp.COMPILED/(entry+'.bin')).read_bytes()).hexdigest() and f"k{entry}ShaderSlots = {item['static_instruction_slots']}" in fp.src('world_compiled_shaders.h').read_text())
-checks['cpp: exact actor variants require device slots and release with baseline']=('fogCaps.MaxPixelShader30InstructionSlots>=std::max(kWorldFogActorShaderSlots,kFogCloudsActorShaderSlots)' in w and 'drop(fogActorPS);drop(fogCloudsActorPS);' in w)
+checks['cpp: exact actor variants require device slots and release with baseline']=('caps.MaxPixelShader30InstructionSlots>=std::max(kWorldFogActorShaderSlots,kFogCloudsActorShaderSlots)' in resources and 'drop(fogActorPS);drop(fogCloudsActorPS);' in w)
 checks['hlsl: baseline and integrated entries are explicit']=all(t in h for t in ('return worldFog(uv,false);','return worldFog(uv,true);','return fogClouds(uv,false);','return fogClouds(uv,true);'))
 fc=manifest.get('FogClouds',{})
 names=re.findall(r'\("(\w+)", "[vp]s_3_0"\)',py)
@@ -62,14 +63,14 @@ checks['cpp: noise generated off the game and render threads on first need (std:
 checks['cpp: volume created lazily, L8 with an A8R8G8B8 fallback, honours the pitches and the memory guard, one failure disables the clouds only']=(
     'D3DFMT_L8' in w and 'D3DFMT_A8R8G8B8,D3DPOOL_MANAGED' in w and 'box.SlicePitch' in w and 'box.RowPitch' in w and 'memoryPressure' in w[w.index('bool ensureCloudNoise()'):w.index('bool ensureCloudNoise()')+600] and 'cloudNoiseFailed=true' in w)
 checks['cpp: shader created non-fatally, shader and volume released with the others']=(
-    'CreatePixelShader(kFogCloudsShader,&fogCloudsPS)' in w and 'drop(fogCloudsPS);drop(cloudNoise);' in w)
+    'CreatePixelShader(kFogCloudsShader,&fogCloudsPS)' in resources and 'drop(fogCloudsPS);drop(cloudNoise);' in w)
 checks['cpp: frame derived from the settings; active only with the fog effect, no debug view, noise and shader ready']=(
-    'NorthlightFogClouds::derive(quality.fogClouds,unsigned(std::lround(float(quality.fogCloudDensity)*denseDamp)),wx.fog,c[31][3],cloudWind,context.camera,fogCloudNoise().ready.load(std::memory_order_acquire)?&fogCloudNoise().quantiles:nullptr,cloudLush)' in w and
+    'NorthlightFogClouds::derive(a.imported.valid?0:quality.fogClouds,unsigned(std::lround(float(quality.fogCloudDensity)*denseDamp)),wx.fog,c[31][3],cloudWind,context.camera,fogCloudNoise().ready.load(std::memory_order_acquire)?&fogCloudNoise().quantiles:nullptr,cloudLush)' in w and
     'cf.active=cf.active&&effects.fog&&debug==0&&fogCloudsPS&&ensureCloudNoise();' in w and w.index('c[31][3]=NorthlightRegionalFog::nightFactor')<w.index('NorthlightFogClouds::derive('))
 checks['cpp: c59.y and c60..c63 written only while active, by shaderConstants (0.3.200: c60.x, the interval, only at a reduced level and while active)']=(
     w.count('if(cf.active){\n            NorthlightFogClouds::shaderConstants(cf,&c[59]);')==1 and re.findall(r'c\[(6[0-3])\]\[(\d)\]=',w)==[('60','0')] and 'if(gpuBudgetLevel){if(cf.active)c[60][0]=NorthlightGpuBudget::spacingDelta(' in w and 'c[59][1]' not in w)
 # the pass
-a=w.index('if(cf.active&&c[21][0]>=.5f){');b=w.index('d->SetPixelShaderConstantF(17,c[17],2);',a);c_=w.index('if(localFogActive){',b)
+a=w.index('if(cf.active&&c[21][0]>=.5f){');b=w.index('d->SetPixelShaderConstantF(17,c[17],2);',a);c_=w.index('if(effects.fog&&localFogActive){',b)
 pas=w[a:b]
 checks['cpp: the pass is guarded by cf.active and the field-ready flag, between the source loop and the c17/c18 restore (before lamp fog)']=(
     w.index('"celestial volumetric raymarch"')<a<b<c_ and w.count('d->SetPixelShader(cloudFade?(fogActorCurrent?(fogActorTiledCurrent?cloudActorTiledFadePS:cloudActorFadePS):cloudFadePS):(fogActorCurrent?(fogActorTiledCurrent?fogCloudsActorTiledPS:fogCloudsActorPS):fogCloudsPS))')==1 and w.count('"fog clouds raymarch"')==1)
@@ -87,10 +88,10 @@ checks['cpp: FogMarch closes the base source loop even without clouds; FogClouds
 mirror=[l for l in w.splitlines() if 'cloudy+=NorthlightFogClouds::sigmaAt(' in l] # the WorldFog sum; SpellFog's own lambda (below) is a second caller
 # 0.3.200 (jobs): the mirror runs in atmosphereWork (a job with ReplayJobs=1) before ensureCloudNoise (the device) is decided: the cloud term is
 # added to a second sum (cloudy) for a candidate pass, and the bank takes that sum only when cf.active is final (same value as the old sigma+=).
-checks['cpp: sigmaAt adds the cloud term only for a candidate pass, to the base value, inside the t.height>0 branch; the bank picks it only when cf.active']=(
+checks['cpp: lamp/veil density shares the bilinear medium; clouds require valid above-ground coverage and a candidate pass']=(
     len(mirror)==1 and 'if(!cloudCandidate)return 0.f;' in w[w.index('const auto clouds=[&]'):] # SpellFog's march adds clouds only for a candidate pass too
-    and mirror[0].strip().startswith('if(clouds&&cloudCandidate){') and 'cloudy+=NorthlightFogClouds::sigmaAt(cloudData,cf,context.camera,point,t.ground,t.height,1.f)' in mirror[0] and
-    w.index('if(t.height>0){')<w.index(mirror[0])<w.index('return sigma;') and 'sigma=altitude>=0?ground+airBase*airVertical*airVertical:0;cloudy=sigma;' in w
+    and mirror[0].strip().startswith('if(clouds&&cloudCandidate&&sample.coverage>0&&lz>=sample.ground){') and 'cloudy+=NorthlightFogClouds::sigmaAt(cloudData,cf,context.camera,point,sample.ground,sample.height,sample.coverage)' in mirror[0] and
+    w.index('sigma=NorthlightSpellFog::sigma(field,medium,lx,ly,lz,sample);cloudy=sigma;')<w.index(mirror[0])<w.index('return sigma;')
     and 'const bool cloudCandidate=cf.active&&effects.fog&&debug==0&&fogCloudsPS;' in w and 'skyTransmittanceFrame=cf.active?atmosphere.veil[1]:atmosphere.veil[0];' in w
     and w.index('cf.active=cf.active&&effects.fog&&debug==0&&fogCloudsPS&&ensureCloudNoise();')<w.index('skyTransmittanceFrame=cf.active?atmosphere.veil[1]'))
 # 0.3.199 (fog clouds): lush zones - the camera texel's CPU-only lush flag, smoothed; the field's lush comes from lushZone (forests, grass, Duskwood, STV, Mulgore, Stormwind), outdoors only
@@ -119,7 +120,7 @@ checks['colour: c25/c26 set for the cloud pass from NorthlightFogClouds::colour,
 # Duskwood/lamp game test: the rain's extra air and the cloud density thin out in dense zones; the lamp glow ignores the clouds
 checks['dense zones: scaled dry air + rain extra x denseDamp, cloud density x denseDamp, lamps sigmaAt without clouds']=(
     'const float airFloor=.0017f*airDensity+wx.airExtinction()*denseDamp;' in w and 'unsigned(std::lround(float(quality.fogCloudDensity)*denseDamp))' in w
-    and 'localLights.position[i][2],false,unused);' in w and 'ray.z*t,true,cloudy)' in w and 'if(clouds&&cloudCandidate)' in w)
+    and 'localLights.position[i][2],false,unused);' in w and 'ray.z*t,true,cloudy)' in w and 'if(clouds&&cloudCandidate&&sample.coverage>0' in w)
 # lamp glow game test: the glow fades in over the same near ramp as the air, at the ray's closest approach to the light
 lf=h.split('float4 LocalFog(',1)[1].split('\n}\n',1)[0]
 checks['LocalFog: smooth near ramp at the closest approach (no hard FogRange.x cut of the glow core)']=(

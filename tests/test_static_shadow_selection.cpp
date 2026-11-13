@@ -1,5 +1,7 @@
 #include "static_shadow_scene.cpp"
 #include "world_math.h"
+#include "flight_shadow.h"
+#include "regional_shadow_range.h"
 #include <cassert>
 #include <cstdio>
 #include <limits>
@@ -23,7 +25,40 @@ struct Box {StaticShadow::Vec3 low,high;};
 static uint32_t seed=20261022;
 static float randomFloat(float span){seed=seed*1664525u+1013904223u;return (float(seed>>8)/16777216.f-.5f)*span;}
 static volatile size_t checksum=0;
+static void flight(){
+    using namespace NorthlightGI;namespace FS=NorthlightFlightShadow;
+    WorldScene scene;scene.vertices={{{-100,-100,200},{0,0,1},0,0},{{100,-100,200},{0,0,1},0,0},{{0,100,240},{0,0,1},0,0}};scene.triangles={{0,1,2,0}};
+    assert(std::fabs(FS::ground(scene,{0,0,1000})-220)<1e-5f);
+    assert(!std::isfinite(FS::ground(scene,{500,0,1000})));
+    assert(!std::isfinite(FS::ground(scene,{0,0,100})));
+    for(float altitude:{0.f,100.f,128.f,200.f,400.f,800.f,1600.f}){
+        Vec3 pivot(5833,496,220+altitude);const auto fit=FS::coverage(pivot,220,4096);
+        assert(fit.radius>=288&&fit.radius<=768);
+        if(altitude<=128){assert(fit.center.z==pivot.z&&fit.radius==288);continue;}
+        assert(fit.center.z==348);
+        for(Vec3 direction:{Vec3(0,0,1),normalized(Vec3(.6f,.6f,.2f)),normalized(Vec3(.4f,.2f,.89f))}){
+            float matrix[16];NorthlightWorldMath::shadowMatrix(fit.center,direction,fit.radius,matrix);
+            const Vec3 receiver(pivot.x,pivot.y,220);
+            const float x=receiver.x*matrix[0]+receiver.y*matrix[4]+receiver.z*matrix[8]+matrix[12];
+            const float y=receiver.x*matrix[1]+receiver.y*matrix[5]+receiver.z*matrix[9]+matrix[13];
+            const float z=receiver.x*matrix[2]+receiver.y*matrix[6]+receiver.z*matrix[10]+matrix[14];
+            assert(std::max(std::fabs(x),std::fabs(y))<.88f&&z>0&&z<1);
+            StaticShadow::Request request;request.center=pivot;request.directions[0]=direction;request.groundOffset=pivot.z-fit.center.z;request.farRadius=fit.radius;
+            assert(StaticShadow::selected(request,receiver,receiver,0));
+        }
+        const auto pressure=FS::coverage(pivot,220,1120);assert(FS::terrainReach(pressure.radius)<=1120);
+    }
+    assert(FS::coverage({0,0,400},0,4096,576).radius==576); // Scale hold.
+    assert(FS::coverage({0,0,100},0,4096,768).radius==288); // Landing restores the original scale.
+    assert(!NorthlightRegionalShadow::selected({}, {1300,-1400,0},{1400,-1300,20}));
+    assert(NorthlightRegionalShadow::selected({}, {1300,-1400,0},{1400,-1300,20},1792));
+    StaticShadow::Request old;old.center={0,0,1400};old.directions[0]={0,0,1};
+    assert(!StaticShadow::selected(old,{-10,-10,0},{10,10,20},0));
+    old.groundOffset=1272;old.farRadius=768;assert(StaticShadow::selected(old,{-10,-10,0},{10,10,20},0));
+    std::puts("PASS flight coverage: terrain-derived height, altitude 0..1600, pressure, landing, static caster admission");
+}
 int main(){
+    flight();
     using namespace StaticShadow;
     // Every corner of the expanded cache, at every light elevation, fits the
     // terrain volume even after the complete orbit/publication displacement.

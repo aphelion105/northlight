@@ -168,9 +168,65 @@ class Base(unittest.TestCase):
         backup = INSTALL.commit(self.client, plan, staged, self.pkg_root / 'payload', 'guard-test')
         self.assertEqual((self.client / guard).read_bytes(), guard_bytes)
         self.assertEqual((self.client / emission).read_bytes(), emission_bytes)
+        self.assertIn(fi.ART_STATE, layer)
+        calls = len(self.calls)
+        self.assertEqual(inst.art_layer(self.client, 'enUS')[0], layer)
+        self.assertEqual(len(self.calls), calls, 'unchanged art must not launch a builder')
+        (self.client / emission).write_bytes(b'corrupt catalog')
+        repaired, why, _ = inst.art_layer(self.client, 'enUS')
+        self.assertIsNone(why)
+        self.assertEqual(repaired[emission], emission_bytes)
+        self.assertEqual(len(self.calls), calls + 1)
+        (self.client / emission).write_bytes(emission_bytes)
         INSTALL.restore(self.client, backup)
         self.assertFalse((self.client / guard).exists())
         self.assertFalse((self.client / emission).exists())
+        self.assertFalse((self.client / fi.ART_STATE).exists())
+
+    def test_art_cache_tracks_all_external_inputs_and_generator_changes(self):
+        self.installer().install(self.client)
+        files = ['Data/common.mpq', 'world-cache/fog/Azeroth/1_2.frf',
+                 'world-cache/lights/world-emitters-v1.json', 'Cache/WDB/enUS/creaturecache.wdb']
+        for name in files:
+            with self.subTest(name=name):
+                calls = len(self.calls)
+                path = self.client / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b'changed input')
+                self.installer().install(self.client)
+                self.assertEqual(len(self.calls), calls + 1)
+                self.installer().install(self.client)
+                self.assertEqual(len(self.calls), calls + 1)
+        inst = self.installer()
+        old_sha = fi.sha
+        with patch.object(fi, 'sha', side_effect=lambda p: 'new-generator' if p == fi.APP / 'build_art_layer.py' else old_sha(p)):
+            inst.install(self.client)
+        self.assertEqual(len(self.calls), calls + 2)
+
+    def test_art_cache_rejects_missing_modified_or_unsafe_outputs(self):
+        self.installer().install(self.client)
+        inst = self.installer()
+        inputs = inst.art_inputs(self.client, 'enUS')
+        state = self.client / fi.ART_STATE
+        original = json.loads(state.read_text())
+        for files in ({'wow.exe': sha(b'any wow.exe')}, {'../escape': 'x'}, {}, None):
+            state.write_text(json.dumps(dict(original, files=files)))
+            self.assertIsNone(inst.cached_art(self.client, 'enUS', inputs))
+        state.write_text(json.dumps(original))
+        target = self.client / 'Data/patch-z.mpq'
+        target.unlink()
+        self.assertIsNone(inst.cached_art(self.client, 'enUS', inputs))
+        target.write_bytes(b'modified MPQ')
+        self.assertIsNone(inst.cached_art(self.client, 'enUS', inputs))
+
+    def test_art_inputs_changed_during_generation_are_not_committed(self):
+        (self.client / fi.CACHE / 'fog').mkdir(parents=True)
+        inst = self.installer()
+        with patch.object(inst, 'art_inputs', side_effect=['before', 'after']):
+            with self.assertRaisesRegex(fi.Failed, 'inputs changed'):
+                inst.art_layer(self.client, 'enUS')
+        self.assertFalse((self.client / fi.ART_STATE).exists())
+        self.assertFalse((self.client / 'Data/patch-z.mpq').exists())
 
     def fake_run(self, script, args, show=True):
         args = [str(a) for a in args]
@@ -520,6 +576,7 @@ class Install(Base):
         self.assertIn(f'kept-identical {sha(ART)[:8]}', report['art_layer'])
         self.assertIn('already installed; nothing changed', inst.out.getvalue())
         self.assertEqual((self.backups(), tree(self.client)), (backups, after))
+        self.assertEqual([c[0] for c in self.calls], ['build_art_layer.py'])
 
     def test_no_match_builds_locally(self):
         self.variant = None
@@ -756,7 +813,10 @@ class Install(Base):
         layers = [b'MPQ\x1a layer one', b'MPQ\x1a layer two', b'MPQ\x1a layer three']
         for layer in layers:
             with patch.object(sys.modules[__name__], 'ART', layer):
-                report = self.installer().install(self.client)
+                inst = self.installer()
+                # Each fake output represents a different art generator revision.
+                with patch.object(inst, 'art_inputs', return_value=sha(layer)):
+                    report = inst.install(self.client)
             self.assertEqual(self.installer().foreign_z(self.client, 'enUS'), [])
         self.assertIn(f'replaced {sha(layers[2])[:8]} Data/patch-z.mpq', report['art_layer'])
         self.installer().uninstall(self.client)
@@ -1419,6 +1479,15 @@ class FailureOutput(Base):
         self.assertEqual(code, 1)
         self.assertIn('--- last lines of boom.py (exit 1) ---', out)
         self.assertIn('  | libstorm.so: cannot open shared object file', out)
+
+    def test_art_progress_is_visible_without_dumping_child_reports(self):
+        script = self.base / 'progress.py'
+        script.write_text('print("Art layer: live emission catalog...")\nprint(\'{"large": "report"}\')\n')
+        inst = fi.Installer(fi.Package(self.pkg_root, 'mac'), 'mac', out=io.StringIO())
+        code, last = inst.run(script, [], show=False)
+        self.assertEqual((code, last), (0, {'large': 'report'}))
+        self.assertIn('Art layer: live emission catalog...', inst.out.getvalue())
+        self.assertNotIn('large', inst.out.getvalue())
 
 
 if __name__ == '__main__':

@@ -92,7 +92,8 @@ static float referenceDirect(V3 p,const Map& map,const Map& oldMap,const Map& dy
         return point({p[0]+n[0]*lift*radius,p[1]+n[1]*lift*radius,p[2]+n[2]*lift*radius},c,m);
     };
     V3 g{};auto nn=projected(false,true,g),on=projected(true,true,g);
-    const float oldBlend=sat((std::max(std::fabs(on[0]),std::fabs(on[1]))-.72f)/.18f),newBlend=sat((std::max(std::fabs(nn[0]),std::fabs(nn[1]))-.72f)/.18f);
+    const auto nearBlend=[](V3 q){return q[2]<=0||q[2]>=1?1.f:sat((std::max(std::fabs(q[0]),std::fabs(q[1]))-.72f)/.18f);};
+    const float oldBlend=nearBlend(on),newBlend=nearBlend(nn);
     const float blend=oldBlend*(1-c[89][0])+newBlend*c[89][0];float result=0;
     for(unsigned cascade=0;cascade<2;++cascade){const bool nearCascade=cascade==0;V3 ng{},og{};auto nq=projected(false,nearCascade,ng),oq=projected(true,nearCascade,og);
         float nv=surfacePCF(nq,nearCascade,false,map,dynamic,c,ng),ov=surfacePCF(oq,nearCascade,true,oldMap,dynamic,c,og);
@@ -254,6 +255,19 @@ int main(int argc,char** argv){
     auto currentProbe=gpu.shader(std::string(argv[4])+"/TransitionCurrentPoints.bin"),previousProbe=gpu.shader(std::string(argv[4])+"/TransitionPreviousPoints.bin"),coverProbe=gpu.shader(std::string(argv[4])+"/TransitionPreviousCoverage.bin");
     auto queryCurrent=gpu.shader(std::string(argv[4])+"/TransitionCurrentQuery.bin"),queryPrevious=gpu.shader(std::string(argv[4])+"/TransitionPreviousQuery.bin");
     auto current=gpu.shader(dir+"/DirectionalShadowTransitionCurrent.bin"),previous=gpu.shader(dir+"/DirectionalShadowTransitionPrevious.bin"),baseline=gpu.shader(dir+"/DirectionalShadow.bin");
+    // Looking down from flight can put the receiver beyond near light depth
+    // while its near XY is central. The far map must still darken that receiver.
+    for(float nearZ:{-.25f,.5f,1.25f}){
+        auto c=constants(4,4);c[2][2]=768;
+        for(unsigned m:{7u,11u,80u,84u}){for(unsigned row=0;row<4;++row)c[m+row]={0,0,0,0};c[m+3]={0,0,(m==7||m==80)?nearZ:.5f,1};}
+        retainCurrent(c);c[89]={1,1,0,0};
+        gpu.bind(14,solid(0,0,1,1));gpu.bind(2,white);gpu.bind(3,solid(.25f,.25f,.25f,1));
+        gpu.bind(6,white);gpu.bind(7,white);gpu.bind(8,white);gpu.bind(9,white);
+        const float expected=nearZ==.5f?1.f:0.f;
+        for(const auto& pixels:{gpu.capture(baseline,c,2,2),gpu.combined(current,previous,c,2,2)})
+            for(unsigned i=0;i<pixels.size();i+=4)for(unsigned channel=0;channel<3;++channel)assert(pixels[i+channel]==expected);
+    }
+    std::puts("FLIGHT_RECEIVER_PASS clippedNear=2 validNear=1 baselineAndTransition=1");
     for(unsigned scene=0;scene<5;++scene)for(unsigned mode=0;mode<3;++mode)for(unsigned soft=0;soft<2;++soft){
         Constants c=constants(W*2+1,H*2+1);productionMatrices(c,scene);retainCurrent(c);c[116]=mode==2?std::array<float,4>{.3f,-.4f,.8660254f,1}:std::array<float,4>{0,0,1,float(mode)};c[117][0]=float(soft);
         gpu.bind(14,solid(c[116][0],c[116][1],c[116][2],c[116][3]));gpu.bind(2,currentTex);gpu.bind(3,currentTex);gpu.bind(6,oldTex);gpu.bind(7,oldTex);gpu.bind(8,dynamicTex);gpu.bind(9,dynamicTex);

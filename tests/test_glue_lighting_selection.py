@@ -2,6 +2,7 @@
 # northlight-test: requires=client,windows-exe,zig
 """Execute the actual 12340 light selector and the installed source-priority thunk."""
 from pathlib import Path
+import hashlib
 import subprocess
 import struct
 import sys
@@ -9,6 +10,8 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
 
+client = fp.client_root() / 'Wow.exe'
+original_hash = hashlib.sha256(client.read_bytes()).hexdigest()
 for mode in ('-O0', '-O2'):
     exe = fp.output_dir() / ('glue-lighting' + mode + '.exe')
     subprocess.run([str(fp.zig()), 'c++', '-target', 'x86-windows-gnu', '-std=c++17', mode,
@@ -20,4 +23,5 @@ for mode in ('-O0', '-O2'):
     flags = struct.unpack_from('<H', image, optional + 70)[0]
     struct.pack_into('<H', image, optional + 70, flags & ~0x40)
     exe.write_bytes(image)
-    subprocess.run([str(exe), str(fp.client_root() / 'Wow.exe')], check=True, timeout=30)
+    subprocess.run([str(exe), str(client)], check=True, timeout=30)
+assert hashlib.sha256(client.read_bytes()).hexdigest() == original_hash, 'local client EXE changed'

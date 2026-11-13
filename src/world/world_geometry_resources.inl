@@ -6,7 +6,8 @@
         for(auto& surface:shadowSurface)drop(surface);for(auto& texture:shadow)drop(texture);
         for(auto& surface:shadowCacheSurface)drop(surface);for(auto& texture:shadowCache)drop(texture);
         drop(shadowDepth);drop(shadowCacheDepth);drop(shadowScratchSurface);drop(shadowScratch);releaseActorTargetTextures();
-        if(!keepPressureProbes){for(auto& texture:probe)drop(texture);drop(probePrev);}
+        if(!keepPressureProbes){for(auto& texture:probe)drop(texture);drop(probePrev);drop(probeLocal);}
+        probeLocalMirror.reset();
         if(uploadedSerial){probeActivation.reset();probeBlend.reset();}uploadedSerial=0;
         drop(shadowVerifySurface);drop(shadowVerify);for(auto& read:shadowVerifyRead)drop(read);
         geometryTargetsReady=false;geometryGroups=0;invalidateShadowCache();
@@ -18,6 +19,7 @@
         const bool hadGeometryTargets=geometryTargetsReady;
         if(actorTargetsPending){D3DCAPS9 caps={};d->GetDeviceCaps(&caps);actorShaderResources(caps);}
         const uint64_t n=NorthlightGI::probeLayout().atlas;
+        const auto visibilityLayout=NorthlightGI::LocalProbeVisibility::atlas(unsigned(n));
         HRESULT hr=S_OK;const char* stage="scene target";bool admissionRefused=false,exact=true,deferred=false;unsigned allocations=0;
         // Stage one allocation per loading frame under the same upload deadline.
         // Partial targets are private until the complete set is ready. A normal
@@ -44,6 +46,7 @@
             const auto compatible=[&](IDirect3DTexture9* texture,UINT tw,UINT th){D3DSURFACE_DESC desc{};return texture&&SUCCEEDED(texture->GetLevelDesc(0,&desc))&&desc.Width==tw&&desc.Height==th&&desc.Format==D3DFMT_A32B32G32R32F&&desc.Pool==D3DPOOL_MANAGED;};
             for(int i=0;i<5;++i)if(probe[i]&&!compatible(probe[i],UINT(n*n),UINT(i==3?n*6:n)))drop(probe[i]);
             if(probePrev&&!compatible(probePrev,UINT(n*n*3),UINT(n)))drop(probePrev);
+            if(probeLocal){D3DSURFACE_DESC desc{};if(FAILED(probeLocal->GetLevelDesc(0,&desc))||desc.Width!=visibilityLayout.width||desc.Height!=visibilityLayout.height||desc.Format!=D3DFMT_A16B16G16R16F||desc.Pool!=D3DPOOL_MANAGED){drop(probeLocal);probeLocalMirror.reset();}}
         }
         auto make=[&](){
             if(needs.shadows){
@@ -62,6 +65,10 @@
             }
             if(!needs.probes)return true;
             for(int i=0;i<5;++i)if(!probe[i]&&(!allocate()||!admit(n*n*(i==3?n*6:n)*16)||!required(d->CreateTexture(UINT(n*n),UINT(i==3?n*6:n),1,0,D3DFMT_A32B32G32R32F,D3DPOOL_MANAGED,&probe[i],nullptr),"GI probe texture")))return false;
+            if(!probeLocal){
+                if(!allocate()||!admit(uint64_t(visibilityLayout.width)*visibilityLayout.height*8)||!required(d->CreateTexture(visibilityLayout.width,visibilityLayout.height,1,0,D3DFMT_A16B16G16R16F,D3DPOOL_MANAGED,&probeLocal,nullptr),"GI local visibility texture"))return false;
+                probeLocalMirror.reset();logf("GI local visibility atlas=%ux%u probes=%llu bytesPerProbe=648 staticGeometryOnly=1",visibilityLayout.width,visibilityLayout.height,(unsigned long long)(n*n*n));
+            }
             if(probePrev)return true;
             if(!allocate()||!admit(n*n*3*n*16))return false;
             const HRESULT previous=d->CreateTexture(UINT(n*n*3),UINT(n),1,0,D3DFMT_A32B32G32R32F,D3DPOOL_MANAGED,&probePrev,nullptr);

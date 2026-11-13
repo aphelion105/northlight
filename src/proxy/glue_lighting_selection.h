@@ -1,5 +1,6 @@
 #pragma once
 #include "blp_mip_guard.h"
+#include "native_light_stay.h"
 
 // Build 12340: retain a UI_ backdrop's own visible point lights before filling
 // its four native slots with nearby equipment. Native positions, colours,
@@ -111,7 +112,7 @@ inline const char* install(HMODULE image=GetModuleHandleW(nullptr)){
     unsigned char setup[SetupSize],select[400],layout[166];
     if(!read(base+SetupRva,setup,sizeof setup)||!read(base+0x41e400,select,sizeof select)||
        !read(base+0x4333d0,layout,sizeof layout))return "unsupported-client";
-    if(!digest(select,sizeof select,"0d28ec8c69bda0bb2e0a6ff8ef04d6271d898b5be15636a1d4ab70fdef71aa32")||
+    if(!NorthlightNativeLightStay::knownQuery(select)||
        !digest(layout,sizeof layout,"b910edc9143293226bc9ca203642a7f7cb85f4645e07f6842fa9e14d17b4fded"))return "client-layout-mismatch";
     auto* call=reinterpret_cast<unsigned char*>(base+SetupRva+CallOffset);
     int32_t original=int32_t((base+0x41e400)-(reinterpret_cast<uintptr_t>(call)+5));

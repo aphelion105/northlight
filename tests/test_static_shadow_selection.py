@@ -7,7 +7,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
 
-out = fp.out()/'static-shadow-selection'
+out = fp.output_dir()
 out.mkdir(parents=True, exist_ok=True)
 for flags, name in ((['-O2'], 'release'), (['-O0', '-g'], 'debug')):
     exe = out/(name+'.exe')

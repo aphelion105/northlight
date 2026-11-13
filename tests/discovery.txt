@@ -144,6 +144,8 @@ test_fast_memcmp.py
 test_fgr_constant_bank.py
 test_finite_floats.py
 test_five_path_perf.py
+test_fixture_light_resolution.py
+test_fixture_resolution_client.py
 test_flash_lighting_gpu.py
 test_flash_shadow_gpu.py
 test_fog_actor_tiles.py
@@ -159,6 +161,8 @@ test_fog_optimization_proofs.py
 test_fog_simd_preparation.py
 test_fog_source_visibility.py
 test_fog_temporal_wiring.py
+test_fog_volume_build.py
+test_fog_volume_gpu.py
 test_forever_atmosphere.py
 test_forwarder_generation.py
 test_frame_focus_cache.py
@@ -341,6 +345,7 @@ test_native_local_stability_gpu.py
 test_native_local_three_light_gpu.py
 test_native_local_vertex_reuse_gpu.py
 test_native_model_install.py
+test_native_more_lights_gpu.py
 test_native_replay_plan.py
 test_native_scene_lights.py
 test_native_shadow_control.py
@@ -396,6 +401,8 @@ test_probe_blend.py
 test_probe_blend_equivalence.py
 test_probe_cache_recycling.py
 test_probe_grid_math.py
+test_probe_local_visibility.py
+test_probe_local_visibility_gpu.py
 test_probe_moment_pack.py
 test_probe_pool_dispatch.py
 test_probe_relight_cache.py
@@ -616,6 +623,7 @@ test_wmo_vertex_color_gpu.py
 test_world_cache_diff.py
 test_world_emitter_coverage.py
 test_world_emitter_index.py
+test_world_environment.py
 test_world_fixture_emission.py
 test_world_light_placements.py
 test_world_lighting_capture.py
@@ -627,7 +635,10 @@ test_world_mesh_plan.py
 test_world_pressure_transition.py
 test_world_probe_coverage.py
 test_world_screen_effects_gpu.py
+test_world_shader_contract.py
+test_world_shader_contract_client.py
 test_world_shader_manifest.py
+test_world_snapshot_domain.py
 test_world_unshadowed_lighting_gpu.py
 test_zone_tuner.py
 test_zone_tuning.py

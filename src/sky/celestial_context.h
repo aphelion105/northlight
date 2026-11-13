@@ -242,17 +242,20 @@ template<class Read> inline bool verifyCode(Read read) {
            std::memcmp(actual,table[i].bytes,table[i].size))return false;
     return true;
 }
+inline void unpackSnapshot(const unsigned char* a,Snapshot& out) {
+    Snapshot s;std::memcpy(&s.dayFraction,a+4,4);
+    std::memcpy(s.skyCamera,a+0x18,sizeof s.skyCamera);
+    std::memcpy(s.bodies,a+0x328,sizeof s.bodies);
+    std::memcpy(&s.skybox,a+0x5c,4);std::memcpy(&s.skyboxWeight,a+0x60,4);std::memcpy(s.blendSkybox,a+0x64,12);
+    std::memcpy(s.blendWeight,a+0x70,12);std::memcpy(s.blendFlags,a+0x7c,12);out=s;
+}
 template<class Read> inline bool readSnapshot(Read read,Snapshot& out) {
     // Includes the render clock, sky camera and all three adjacent body records.
     // Two identical copies reject concurrent updates. Call on the render thread (0.3.192 CS: with the command stream on,
     // the replay thread reads this from the game thread's snapshot, which holds the same two copies in order).
     unsigned char a[0x388],b[sizeof a];
     if(!read(0xd38b00,a,sizeof a)||!read(0xd38b00,b,sizeof b)||std::memcmp(a,b,sizeof a))return false;
-    Snapshot s;std::memcpy(&s.dayFraction,a+4,4);
-    std::memcpy(s.skyCamera,a+0x18,sizeof s.skyCamera);
-    std::memcpy(s.bodies,a+0x328,sizeof s.bodies);
-    std::memcpy(&s.skybox,a+0x5c,4);std::memcpy(&s.skyboxWeight,a+0x60,4);std::memcpy(s.blendSkybox,a+0x64,12);
-    std::memcpy(s.blendWeight,a+0x70,12);std::memcpy(s.blendFlags,a+0x7c,12);out=s;return true;
+    unpackSnapshot(a,out);return true;
 }
 #ifdef _WIN32
 inline bool skyboxVerified(){static const bool v=NorthlightWorldContext::supportedClient()&&verifyCode(NorthlightWorldContext::readSelf)&&verifySkyboxCode(NorthlightWorldContext::readSelf);return v;}

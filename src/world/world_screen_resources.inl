@@ -98,3 +98,20 @@ bool resources(UINT w,UINT h,D3DFORMAT fmt,const NorthlightFrameRequirements::Pl
     return ok;
 }
 bool resources(UINT w,UINT h,D3DFORMAT fmt){return resources(w,h,fmt,frameRequirements(quality.autoBump));}
+
+// One half-resolution MRT, only after a proven prelit receiver is present.
+// Allocation/capability failure keeps its authored lighting and can retry.
+bool prelitDaylightResources(UINT w,UINT h){
+    if(prelitDaylightSurface)return true;
+    const DWORD now=GetTickCount();
+    if(prelitDaylightRetryAt&&LONG(now-prelitDaylightRetryAt)<0)return false;
+    prelitDaylightRetryAt=now+1000;
+    D3DCAPS9 caps={};
+    const auto budget=NorthlightGeometryMemory::defaultTargetBudget();
+    if(FAILED(d->GetDeviceCaps(&caps))||caps.NumSimultaneousRTs<3||
+       !NorthlightGeometryMemory::admits(geometryAdmission(budget),budget))return false;
+    HRESULT hr=d->CreateTexture(w/2,h/2,1,D3DUSAGE_RENDERTARGET,D3DFMT_A16B16G16R16F,D3DPOOL_DEFAULT,&prelitDaylight,nullptr);
+    if(SUCCEEDED(hr)&&prelitDaylight)hr=prelitDaylight->GetSurfaceLevel(0,&prelitDaylightSurface);
+    if(SUCCEEDED(hr)&&prelitDaylightSurface){prelitDaylightRetryAt=0;return true;}
+    drop(prelitDaylightSurface);drop(prelitDaylight);return false;
+}

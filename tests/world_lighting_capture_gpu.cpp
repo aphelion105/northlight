@@ -44,6 +44,7 @@ struct Meter:ForwardIDirect3DDevice9{
     HRESULT STDMETHODCALLTYPE DrawPrimitiveUP(D3DPRIMITIVETYPE t,UINT n,const void* p,UINT s)override{if(fail("DrawPrimitiveUP"))return E_FAIL;return real->DrawPrimitiveUP(t,n,p,s);}
     HRESULT STDMETHODCALLTYPE CreateOffscreenPlainSurface(UINT w,UINT h,D3DFORMAT f,D3DPOOL q,IDirect3DSurface9** p,HANDLE* x)override{if(fail("CreateOffscreenPlainSurface")){*p=nullptr;return E_FAIL;}return real->CreateOffscreenPlainSurface(w,h,f,q,p,x);}
     HRESULT STDMETHODCALLTYPE GetRenderTargetData(IDirect3DSurface9* a,IDirect3DSurface9* b)override{if(fail("GetRenderTargetData"))return E_FAIL;return real->GetRenderTargetData(a,b);}
+    HRESULT STDMETHODCALLTYPE StretchRect(IDirect3DSurface9* a,const RECT* b,IDirect3DSurface9* c,const RECT* e,D3DTEXTUREFILTERTYPE f)override{if(fail("StretchRect"))return E_FAIL;return real->StretchRect(a,b,c,e,f);}
 };
 static const D3DRENDERSTATETYPE states[]={D3DRS_ZENABLE,D3DRS_ZWRITEENABLE,D3DRS_ALPHABLENDENABLE,D3DRS_ALPHATESTENABLE,D3DRS_STENCILENABLE,D3DRS_FOGENABLE,D3DRS_SRGBWRITEENABLE,D3DRS_SCISSORTESTENABLE,D3DRS_CLIPPLANEENABLE,D3DRS_DITHERENABLE,D3DRS_WRAP0,D3DRS_COLORWRITEENABLE,D3DRS_CULLMODE,D3DRS_FILLMODE,D3DRS_MULTISAMPLEMASK};
 struct State{
@@ -52,7 +53,7 @@ struct State{
     D3DVIEWPORT9 viewport{};RECT scissor{};DWORD fvf=0,sampler[16][13]{},render[std::size(states)]{},stage[2]{};UINT frequency=0,offset=0,stride=0;
     float vertex[256][4]{},pixel[224][4]{};
     explicit State(IDirect3DDevice9* d){
-        for(unsigned i=0;i<4;++i)ok(d->GetRenderTarget(i,&rt[i].p));ok(d->GetDepthStencilSurface(&ds.p));
+        for(unsigned i=0;i<4;++i){const HRESULT hr=d->GetRenderTarget(i,&rt[i].p);assert(SUCCEEDED(hr)||(hr==D3DERR_NOTFOUND&&!rt[i].p));}ok(d->GetDepthStencilSurface(&ds.p));
         for(unsigned s=0;s<16;++s){ok(d->GetTexture(s,&texture[s].p));for(unsigned k=1;k<=13;++k)ok(d->GetSamplerState(s,D3DSAMPLERSTATETYPE(k),&sampler[s][k-1]));}
         ok(d->GetVertexShader(&vs.p));ok(d->GetPixelShader(&ps.p));ok(d->GetVertexDeclaration(&declaration.p));ok(d->GetFVF(&fvf));
         ok(d->GetStreamSource(0,&stream.p,&offset,&stride));ok(d->GetStreamSourceFreq(0,&frequency));ok(d->GetIndices(&indices.p));
@@ -81,7 +82,7 @@ int main(int argc,char** argv){
     Ref<IDirect3D9> api;api.p=create(D3D_SDK_VERSION);assert(api.p);Ref<IDirect3DDevice9> device;
     assert(adapter<api.p->GetAdapterCount());D3DADAPTER_IDENTIFIER9 identity{};ok(api.p->GetAdapterIdentifier(adapter,0,&identity));
     logf("LIGHT_CAPTURE_ADAPTER index=%u vendor=%04lx device=%04lx description=%s",adapter,(unsigned long)identity.VendorId,(unsigned long)identity.DeviceId,identity.Description);
-    D3DPRESENT_PARAMETERS pp{};pp.Windowed=TRUE;pp.hDeviceWindow=window;pp.BackBufferWidth=64;pp.BackBufferHeight=64;pp.BackBufferFormat=D3DFMT_X8R8G8B8;pp.SwapEffect=D3DSWAPEFFECT_DISCARD;pp.PresentationInterval=D3DPRESENT_INTERVAL_IMMEDIATE;
+    D3DPRESENT_PARAMETERS pp{};pp.Windowed=TRUE;pp.hDeviceWindow=window;pp.BackBufferWidth=800;pp.BackBufferHeight=790;pp.BackBufferFormat=D3DFMT_X8R8G8B8;pp.SwapEffect=D3DSWAPEFFECT_DISCARD;pp.PresentationInterval=D3DPRESENT_INTERVAL_IMMEDIATE;
     ok(api.p->CreateDevice(adapter,D3DDEVTYPE_HAL,window,D3DCREATE_HARDWARE_VERTEXPROCESSING|D3DCREATE_FPU_PRESERVE,&pp,&device.p));Meter meter(device.p);auto* d=&meter;
     D3DCAPS9 caps{};ok(d->GetDeviceCaps(&caps));assert(caps.MaxVertexShaderConst>=256&&caps.NumSimultaneousRTs>=4);
     Ref<IDirect3DSurface9> rt[4],ds;for(auto& target:rt)ok(d->CreateRenderTarget(W,H,D3DFMT_A8R8G8B8,D3DMULTISAMPLE_NONE,0,FALSE,&target.p,nullptr));
@@ -146,12 +147,54 @@ int main(int argc,char** argv){
     Ref<IDirect3DVertexShader9> nativeVS;ok(d->CreateVertexShader(vertexCode,&nativeVS.p));ok(d->SetVertexShader(nativeVS.p));
     const unsigned nativeId=++capture;State nativeState(d);const uint64_t sources[4]={42,55,0,0},emptySources[4]={};
     ok(d->BeginScene());{NorthlightLightingCapture::Capture output(d,folder,nativeId,21,35,W,H,"native-inputs");
-        for(unsigned i=0;i<130;++i){const unsigned token=output.nativeBefore(35,i?42:0,0,i%2,true,nativeVS.p,ps.p,i?sources:emptySources);assert((token&0x7fffffffu)==(i<128?i+1:0));assert(bool(token&0x80000000u)==(i<8));const float position[3]={1,2,3},rgb[3]={.5f,.6f,.7f},attenuation[3]={1,0,.01f};for(unsigned slot=0;slot<4;++slot)output.nativeSlot(token,4,slot,slot!=3,position,rgb,attenuation,!i?"no-binding":slot==0?"matched-ready":slot==1?"not-ready":slot==2?"no-binding":"decode-rejected",i&&slot<2?42:0,i&&slot<2?0:-1);output.nativeAfter(token,i%2,S_OK,nullptr,i%3,i%5,i%7,i!=0);}
+        {State before(d);const unsigned token=output.traceBefore(35,2);assert(token==1);before.same(d);output.traceAfter(token,S_OK);before.same(d);}
+        for(unsigned i=0;i<130;++i){const unsigned token=output.nativeBefore(35,i?42:0,0,i%2,true,nativeVS.p,ps.p,i?sources:emptySources,i<4||i>=124);assert((token&0x7fffffffu)==(i<128?i+1:0));assert(bool(token&0x80000000u)==(i<4||(i>=124&&i<128)));const float position[3]={1,2,3},rgb[3]={.5f,.6f,.7f},attenuation[3]={1,0,.01f};for(unsigned slot=0;slot<4;++slot)output.nativeSlot(token,4,slot,slot!=3,position,rgb,attenuation,!i?"no-binding":slot==0?"matched-ready":slot==1?"not-ready":slot==2?"no-binding":"decode-rejected",i&&slot<2?42:0,i&&slot<2?0:-1);output.nativeAfter(token,i%2,S_OK,nullptr,i%3,i%5,i%7,i!=0);}
         output.finish(true);const float zero[3]={};output.nativeSlot(1,4,0,false,nullptr,nullptr,nullptr,"disabled");output.directional(0,false,'-',nullptr,nullptr,0,false,0,0,0);output.pointSources(points,130,true);assert(!output.nativeBefore(35,0,0,false,false,nullptr,nullptr,emptySources));}ok(d->EndScene());nativeState.same(d);
     assert(read(file(folder,nativeId,"native-draw-1-vs.bin"))==std::vector<unsigned char>(reinterpret_cast<const unsigned char*>(vertexCode),reinterpret_cast<const unsigned char*>(vertexCode)+sizeof vertexCode));
     auto nativeBank=read(file(folder,nativeId,"native-draw-128-vs-constants.f32"));assert(nativeBank.size()==sizeof vertex&&!std::memcmp(nativeBank.data(),vertex,sizeof vertex));
-    for(unsigned i=1;i<=8;++i)assert(read(file(folder,nativeId,("native-draw-"+std::to_string(i)+"-before.fgr").c_str()))==read(file(folder,nativeId,("native-draw-"+std::to_string(i)+"-after.fgr").c_str())));
+    assert(read(file(folder,nativeId,"native-trace-1-vs.bin"))==read(file(folder,nativeId,"native-draw-1-vs.bin")));
+    assert(read(file(folder,nativeId,"native-trace-1-vs-constants.f32"))==nativeBank);
+    for(unsigned i:{1u,2u,3u,4u,125u,126u,127u,128u})assert(read(file(folder,nativeId,("native-draw-"+std::to_string(i)+"-before.fgr").c_str()))==read(file(folder,nativeId,("native-draw-"+std::to_string(i)+"-after.fgr").c_str())));
     logf("NATIVE_CAPTURE_PASS draws=128 imagePairs=8 exactShaders=1 exactConstants=1 stateUnchanged=1");
+    {
+        constexpr unsigned mw=800,mh=790;Ref<IDirect3DSurface9> multisample[4];ok(d->SetDepthStencilSurface(nullptr));
+        for(unsigned i=1;i<4;++i)ok(d->SetRenderTarget(i,nullptr));
+        ok(d->CreateRenderTarget(mw,mh,D3DFMT_A8R8G8B8,D3DMULTISAMPLE_2_SAMPLES,0,FALSE,&multisample[0].p,nullptr));ok(d->SetRenderTarget(0,multisample[0].p));
+        Ref<IDirect3DSurface9> msDepth;ok(d->CreateDepthStencilSurface(mw,mh,D3DFMT_D24S8,D3DMULTISAMPLE_2_SAMPLES,0,TRUE,&msDepth.p,nullptr));ok(d->SetDepthStencilSurface(msDepth.p));
+        D3DVIEWPORT9 vp{0,0,mw,mh,0,1};const RECT full{0,0,mw,mh};ok(d->SetViewport(&vp));ok(d->SetScissorRect(&full));
+        for(auto state:{D3DRS_SRGBWRITEENABLE,D3DRS_ALPHABLENDENABLE,D3DRS_ALPHATESTENABLE,D3DRS_STENCILENABLE,D3DRS_SCISSORTESTENABLE,D3DRS_CLIPPLANEENABLE,D3DRS_ZENABLE})ok(d->SetRenderState(state,FALSE));
+        ok(d->SetRenderState(D3DRS_COLORWRITEENABLE,15));ok(d->SetRenderState(D3DRS_MULTISAMPLEMASK,0xffffffffu));ok(d->SetRenderState(D3DRS_MULTISAMPLEANTIALIAS,TRUE));
+        ok(d->SetRenderState(D3DRS_FOGENABLE,FALSE));ok(d->SetRenderState(D3DRS_LIGHTING,FALSE));ok(d->SetRenderState(D3DRS_DITHERENABLE,FALSE));ok(d->SetRenderState(D3DRS_CULLMODE,D3DCULL_NONE));ok(d->SetRenderState(D3DRS_FILLMODE,D3DFILL_SOLID));
+        const DWORD colorCode[]={0xffff0300u,0x0200001fu,0x8000000au,0x900f0000u,0x02000001u,0x800f0800u,0x90e40000u,0xffffu};Ref<IDirect3DPixelShader9> colorPS;ok(d->CreatePixelShader(colorCode,&colorPS.p));ok(d->SetPixelShader(colorPS.p));ok(d->SetVertexShader(nullptr));ok(d->SetFVF(D3DFVF_XYZRHW|D3DFVF_DIFFUSE));ok(d->SetStreamSourceFreq(0,1));ok(d->SetStreamSource(0,nullptr,0,0));
+        assert(!NorthlightLightingCapture::traceTargetMatches(d,mw,mh));ok(d->SetRenderState(D3DRS_ZENABLE,TRUE));
+        {State state(d);assert(NorthlightLightingCapture::traceTargetMatches(d,mw,mh));state.same(d);assert(!NorthlightLightingCapture::traceTargetMatches(d,mw+1,mh));}
+        ok(d->SetDepthStencilSurface(nullptr));assert(!NorthlightLightingCapture::traceTargetMatches(d,mw,mh));ok(d->SetDepthStencilSurface(msDepth.p));ok(d->SetRenderState(D3DRS_ZENABLE,FALSE));
+        D3DLIGHT9 fixedLight{};fixedLight.Type=D3DLIGHT_POINT;fixedLight.Diffuse={.8f,.3f,.1f,1};fixedLight.Position={1,2,3};fixedLight.Range=12;fixedLight.Attenuation0=1;
+        ok(d->SetLight(0,&fixedLight));ok(d->LightEnable(0,TRUE));
+        const auto drawColor=[&](DWORD color){struct V{float x,y,z,w;DWORD color;};const V quad[]={{-.5f,-.5f,0,1,color},{mw-.5f,-.5f,0,1,color},{-.5f,mh-.5f,0,1,color},{mw-.5f,mh-.5f,0,1,color}};ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(V)));};
+        const unsigned msaaId=++capture;ok(d->BeginScene());
+        {NorthlightLightingCapture::Capture output(d,folder,msaaId,22,36,mw,mh);
+            drawColor(0x6f2468ac);{State before(d);output.nativeImage("msaa-before");before.same(d);}
+            unsigned trace=0;{State before(d);trace=output.traceBefore(36,2);assert(trace==1);before.same(d);}
+            drawColor(0xd1528394);{State before(d);output.traceAfter(trace,S_OK);before.same(d);}
+            drawColor(0xd1528394);{State before(d);output.nativeImage("msaa-after");before.same(d);}output.finish(true);}
+        ok(d->EndScene());State unchanged(d);
+        {const auto bytes=read(file(folder,msaaId,"native-trace-1-light-0.bin"));assert(bytes.size()==sizeof fixedLight&&!std::memcmp(bytes.data(),&fixedLight,sizeof fixedLight));}
+        for(const auto& image:std::initializer_list<std::pair<const char*,DWORD>>{{"msaa-before.fgr",0x6f2468ac},{"msaa-after.fgr",0xd1528394}}){
+            const auto bytes=read(file(folder,msaaId,image.first));assert(bytes.size()==20+768*768*4);for(size_t p=20;p<bytes.size();p+=4){DWORD value;std::memcpy(&value,bytes.data()+p,4);assert(value==image.second);}}
+        for(const auto& image:std::initializer_list<std::pair<const char*,DWORD>>{{"native-trace-1-before.fgr",0x6f2468ac},{"native-trace-1-after.fgr",0xd1528394}}){
+            const auto bytes=read(file(folder,msaaId,image.first));assert(bytes.size()==20+384*(mh*384/mw)*4);for(size_t p=20;p<bytes.size();p+=4){DWORD value;std::memcpy(&value,bytes.data()+p,4);assert(value==image.second);}}
+        for(const char* fault:{"CreateRenderTarget","StretchRect","CreateOffscreenPlainSurface","GetRenderTargetData"}){
+            const unsigned failed=++capture;meter.arm(fault);ok(d->BeginScene());{NorthlightLightingCapture::Capture output(d,folder,failed,23,37,mw,mh);output.nativeImage("msaa-fault");output.finish(true);}ok(d->EndScene());assert(meter.triggered);unchanged.same(d);
+            const auto journal=read(file(folder,failed,"lighting-inputs-incomplete.jsonl"));assert(std::string(journal.begin(),journal.end()).find("\"export_complete\":false")!=std::string::npos);
+        }
+        for(const char* fault:{"CreateRenderTarget","StretchRect","CreateOffscreenPlainSurface","GetRenderTargetData"}){
+            const unsigned failed=++capture;meter.arm(fault);ok(d->BeginScene());{NorthlightLightingCapture::Capture output(d,folder,failed,23,37,mw,mh);output.traceImage(1,"fault");output.finish(true);}ok(d->EndScene());assert(meter.triggered);unchanged.same(d);
+            const auto journal=read(file(folder,failed,"lighting-inputs-incomplete.jsonl"));assert(std::string(journal.begin(),journal.end()).find("\"export_complete\":false")!=std::string::npos);
+        }
+        logf("NATIVE_TRACE_PASS unknownProgram=1 fixedVertex=1 msaaColorsExact=1 stateUnchanged=1 failureCases=4");
+        logf("NATIVE_CAPTURE_MSAA_PASS samples=2 imagePairs=1 roi=768x768 gpuResolveReused=1 stateUnchanged=1 failureCases=4");
+    }
     logf("LIGHT_CAPTURE_PASS depthFormats=%u exactDepthPixels=%u apiFailureCases=%u constantRegisters=116 stateVS=256 statePS=224 timing=none",positive,positive*W*H,failures);
     // Release device-held references before the stack-owned reference guards.
     ok(d->SetDepthStencilSurface(nullptr));for(unsigned s=0;s<16;++s)ok(d->SetTexture(s,nullptr));for(unsigned i=1;i<4;++i)ok(d->SetRenderTarget(i,nullptr));ok(d->SetStreamSource(0,nullptr,0,0));ok(d->SetIndices(nullptr));ok(d->SetPixelShader(nullptr));

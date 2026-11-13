@@ -122,10 +122,12 @@ try:
 finally:
     iwc.STEP_SOURCES['scene'] = scene_sources
 assert iwc.plan(base, pre_ownership, cache, False, 'z') == ('full', iwc.POST)
+old_resolution_inputs=dict(inputs,cache_versions=dict(iwc.CACHE_VERSIONS,scene=1,lights=1))
+assert iwc.plan(base,{'inputs':old_resolution_inputs,'maps_built':iwc.MAPS,'digests':iwc.step_digests(old_resolution_inputs)},cache,False,'z')==('full',iwc.POST)
 assert iwc.plan(base, {'inputs': pre_ownership_inputs}, cache, False, 'z') == ('full', iwc.POST)
-assert iwc.plan(digests(versions={'scene':2}),recorded,cache,False,'z') == ('full',iwc.POST)
+assert iwc.plan(digests(versions={'scene':iwc.CACHE_VERSIONS['scene']+1}),recorded,cache,False,'z') == ('full',iwc.POST)
 assert iwc.plan(digests(sources={n:'new DLL build' for n in iwc.SOURCES}),recorded,cache,False,'z') == ('up_to_date',[])
-lights_only = digests(versions={'lights':2})
+lights_only = digests(versions={'lights':iwc.CACHE_VERSIONS['lights']+1})
 assert iwc.plan(lights_only, recorded, cache, False, 'z') == ('partial', ['lights'])
 (cache / 'celestial/moon.fct').unlink()
 assert iwc.plan(base, recorded, cache, False, 'z') == ('partial', ['celestial'])
@@ -360,7 +362,7 @@ assert iwc.instance_digests(dict(inputs, sources={n:'another build' for n in iwc
 def inst_with(**versions):
     return iwc.instance_digests(dict(inputs, cache_versions=dict(inputs['cache_versions'], **versions)))
 assert inst_with(fog=2,celestial=2) == inst
-assert all(inst_with(**{n:2}) != inst for n in ('scene','lights','instances','validation'))
+assert all(inst_with(**{n:iwc.CACHE_VERSIONS[n]+1}) != inst for n in ('scene','lights','instances','validation'))
 assert digests() == base                                                       # the continents never see the layer
 os.rename(client / 'Data/PATCH-3.mpq', client / 'Data/patch-3.MPQ')
 assert iwc.instance_digests(iwc.gather_inputs(client, 'all', 'enUS', [], None, 'z')) == inst   # name case, our art layer
@@ -523,7 +525,7 @@ unchanged[unique] = (unique.read_bytes(), unique.stat().st_mtime_ns, unique.stat
 shared_path = icache / 'models' / (SHARED.hex() + '.fgs')
 unchanged[shared_path] = (shared_path.read_bytes(), shared_path.stat().st_mtime_ns, shared_path.stat().st_ino)
 try:
-    iwc.CACHE_VERSIONS = dict(original_versions, lights=2)
+    iwc.CACHE_VERSIONS = dict(original_versions, lights=original_versions['lights']+1)
     assert inst_run('2 6')[1]['built'] == ['classic-raids', 'wotlk-raids']
     assert built_groups == [] and called_steps == ['instances lights', 'instances validate'], called_steps
     assert all((p.read_bytes(), p.stat().st_mtime_ns, p.stat().st_ino) == value for p, value in unchanged.items())
@@ -535,7 +537,7 @@ try:
     assert all(p.stat().st_mtime_ns == t for p, t in light_times.items())
     assert all((p.read_bytes(), p.stat().st_mtime_ns, p.stat().st_ino) == value for p, value in unchanged.items())
     # Adding a new group alongside a light update must preserve shared models of the reused groups.
-    iwc.CACHE_VERSIONS = dict(light_versions, lights=3)
+    iwc.CACHE_VERSIONS = dict(light_versions, lights=light_versions['lights']+1)
     assert inst_run('2 4 6')[1]['built'] == ['classic-raids', 'tbc-raids', 'wotlk-raids']
     assert built_groups == ['tbc-raids']
     assert all((p.read_bytes(), p.stat().st_mtime_ns, p.stat().st_ino) == value for p, value in unchanged.items())

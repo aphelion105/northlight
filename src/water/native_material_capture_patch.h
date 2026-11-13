@@ -25,6 +25,7 @@ inline bool alphaSlice(const Word* code,const NorthlightTerrainCoverage::Program
     unsigned dimensions[16]={};for(const auto& op:p.ops)if(op.code==31&&regType(code[op.at+2])==10){const unsigned sampler=regIndex(code[op.at+2]);if(sampler>=16)return false;dimensions[sampler]=(code[op.at+1]>>27)&15;}
     for(auto it=p.ops.rbegin();it!=p.ops.rend();++it){const auto& op=*it;
         if(op.code==31||op.code==81||op.code==48||op.code==47)continue;
+        if(op.code==0){if(op.size)return false;continue;}
         const auto mark=[&](Word source,unsigned channels){if(regType(source)!=0)return true;const unsigned r=regIndex(source);if(r>=32)return false;
             const unsigned modifier=(source>>24)&15;if(modifier==9)channels|=4;else if(modifier==10)channels|=8;
             for(unsigned c=0;c<4;++c)if(channels&(1u<<c))needed[r]|=1u<<((source>>(16+2*c))&3);return true;};

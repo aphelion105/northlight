@@ -20,6 +20,11 @@ inline Band classify(float worldMin,float worldMax,float drawMin,float drawMax){
     if(within(drawMin,kSkyMinZ)&&within(drawMax,kSkyMaxZ))return Band::Sky;
     return Band::Other;
 }
+// Shader coordinates are shared by world, sky and shadow-map draws. Only this
+// depth-tested client band may establish the frame's main-world camera.
+inline bool mainWorldDraw(unsigned long zEnable,unsigned long zFunc,float minZ,float maxZ){
+    return depthTested(zEnable,zFunc)&&classify(0.f,kWorldMaxZ,minZ,maxZ)==Band::World;
+}
 // Sun/moon/glare pre-filter: with a client-shaped world band only a sky-band draw can be one; on an unusual client the answer is "maybe" so the identity test stays the only gate.
 inline bool skyClaimPossible(float worldMin,float worldMax,float drawMin,float drawMax){
     const Band b=classify(worldMin,worldMax,drawMin,drawMax);

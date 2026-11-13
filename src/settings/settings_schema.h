@@ -30,7 +30,7 @@ inline bool liveQuality(const std::string& key){
     return restart.count(key)==0;
 }
 inline NorthlightQuality::Settings liveQualityUpdate(NorthlightQuality::Settings current,const NorthlightQuality::Settings& next){for(const auto& k:NorthlightQuality::Keys)if(liveQuality(k.name))k.set(current,k.get(next));current.preset=next.preset;return NorthlightQuality::effective(current);}
-struct Config{NorthlightQuality::Settings quality;NorthlightCelestialProfiles::Table celestial;std::array<float,NorthlightHdrSettingsContract::Count> hdr=NorthlightHdrSettingsContract::defaults();};
+struct Config{NorthlightQuality::Settings quality;NorthlightCelestialProfiles::Table celestial;std::array<float,NorthlightHdrSettingsContract::Count> hdr=NorthlightHdrSettingsContract::defaults();std::array<unsigned,2> nativeLightLimits{{8,8}};};
 // Only these live inputs can change the worker's GI Request. Display settings
 // still apply immediately without cancelling an otherwise identical solve.
 inline bool giRequestChanged(const NorthlightQuality::Settings& before,const NorthlightQuality::Settings& after,
@@ -63,7 +63,11 @@ inline Config configOf(const Documents& d,const std::string& legacy,bool validat
     Config c;c.quality=qualityOf(d[0],legacy);std::string error;std::istringstream celestial(d[2].text()),shadow(d[3].text());NorthlightRegionalShadow::Table ranges;
     if(!NorthlightCelestialProfiles::parse(celestial,c.celestial,error)&&validate)throw std::runtime_error("Celestial: "+error);
     if(!NorthlightRegionalShadow::parse(shadow,ranges,error)&&validate)throw std::runtime_error("Shadow range: "+error);
-    auto renderer=d[1].values();for(unsigned i=0;i<c.hdr.size();++i){const auto& key=NorthlightHdrSettingsContract::Keys[i];const auto section=!hdrProfile.empty()&&NorthlightHdrSettingsContract::displayKey(i)?"hdr."+hdrProfile:"renderer";
+    auto renderer=d[1].values();const char* limits[]={"nativemodellightlimit","nativeterrainlightlimit"};
+    for(unsigned i=0;i<2;++i){unsigned n=8;const auto& raw=renderer["renderer"][limits[i]];
+        if(!raw.empty()&&!NorthlightQuality::number(raw,n)){if(validate)throw std::runtime_error("Invalid native light limit");n=8;}
+        if(validate&&(n<(i?3u:4u)||n>8))throw std::runtime_error("Native light limit out of range");c.nativeLightLimits[i]=std::clamp(n,i?3u:4u,8u);}
+    for(unsigned i=0;i<c.hdr.size();++i){const auto& key=NorthlightHdrSettingsContract::Keys[i];const auto section=!hdrProfile.empty()&&NorthlightHdrSettingsContract::displayKey(i)?"hdr."+hdrProfile:"renderer";
         c.hdr[i]=NorthlightHdrSettingsContract::read(key,renderer[section][lower(key.name)]);}return c;
 }
 inline std::pair<std::string,uint32_t> region(const std::string& section){
@@ -108,6 +112,13 @@ inline std::vector<Field> schema(const Documents& docs,const Documents& initial,
         if(f.key=="AOQuality"){f.kind="enum";f.saved=NorthlightQuality::aoQualityName(saved.quality.aoQuality);f.active=NorthlightQuality::aoQualityName(active.quality.aoQuality);f.factory=f.inherited="High";f.options="High,Medium,Low";}
         add(f);out.back().origin=std::string(1,saved.quality.origin[index++]);}
     Field b;b.file=1;b.section="Renderer";b.key="Backend";b.kind="enum";b.saved=lower(explicitValue(savedValues[1],b.section,b.key));if(b.saved=="~")b.saved="legacy";b.active=lower(explicitValue(initialValues[1],b.section,b.key));if(b.active=="~")b.active="legacy";b.factory=factoryBackend;b.inherited="legacy";b.options=backendOptions;add(b);
+    Field lightStay;lightStay.file=1;lightStay.section="Renderer";lightStay.key="NativeLightStay";lightStay.kind="check";lightStay.factory=lightStay.inherited="1";
+    lightStay.saved=explicitValue(savedValues[1],lightStay.section,lightStay.key);if(lightStay.saved=="~")lightStay.saved="1";
+    lightStay.active=explicitValue(initialValues[1],lightStay.section,lightStay.key);if(lightStay.active=="~")lightStay.active="1";add(lightStay);
+    Field more=lightStay;more.key="NativeMoreLights";more.saved=explicitValue(savedValues[1],more.section,more.key);if(more.saved=="~")more.saved="1";
+    more.active=explicitValue(initialValues[1],more.section,more.key);if(more.active=="~")more.active="1";add(more);
+    for(unsigned i=0;i<2;++i){Field f;f.file=1;f.section="Renderer";f.key=i?"NativeTerrainLightLimit":"NativeModelLightLimit";f.low=i?"3":"4";f.high="8";f.factory=f.inherited="8";f.apply="F";
+        f.saved=std::to_string(saved.nativeLightLimits[i]);f.active=std::to_string(active.nativeLightLimits[i]);add(f);}
     unsigned hdrIndex=0;for(const auto& key:NorthlightHdrSettingsContract::Keys){Field f;f.file=1;f.section="Renderer";f.key=key.name;f.kind=key.low==0&&key.high==1?"check":"slider";f.low=number(key.low);f.high=number(key.high);f.step=number(key.step);f.factory=f.inherited=number(key.value);f.apply="F";
         if(!hdrProfile.empty()&&NorthlightHdrSettingsContract::displayKey(hdrIndex))f.section="HDR."+hdrProfile;
         f.saved=number(NorthlightHdrSettingsContract::read(key,explicitValue(savedValues[1],f.section,f.key)));

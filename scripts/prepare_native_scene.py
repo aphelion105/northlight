@@ -16,7 +16,7 @@ import zlib
 
 HEADER_BYTES = 40
 MAX_KEYS, MAX_COPIES, ARENA_BYTES = 64, 256, 64 * 1024
-MAX_ARCHIVE_BYTES = HEADER_BYTES + MAX_COPIES * 16 + ARENA_BYTES + 4 + 80 + 128 * 64
+MAX_ARCHIVE_BYTES = HEADER_BYTES + MAX_COPIES * 16 + ARENA_BYTES + 4 + 80 + 128 * 80
 
 
 def digest(path):
@@ -92,7 +92,7 @@ def inspect_snapshot(path):
         raise ValueError('Snapshot archive size is outside the fixed capacity')
     data = path.read_bytes()
     magic, version, size, trigger, keys, copies, payload, draw = struct.unpack_from('<8s6IQ', data)
-    if magic != b'NLSNAP1\0' or version not in (1, 2, 3):
+    if magic != b'NLSNAP1\0' or version not in (1, 2, 3, 4):
         raise ValueError('Unsupported snapshot archive magic/version')
     base_size = HEADER_BYTES + copies * 16 + payload + 4
     if (size != len(data) or trigger > 3 or not 0 < keys <= MAX_KEYS
@@ -121,7 +121,7 @@ def inspect_snapshot(path):
     if offset != base_size - 4 or copied != payload or len(seen) != keys:
         raise ValueError('Snapshot record/header counts differ')
     if version >= 2:
-        light_bytes = 48 if version == 2 else 64
+        light_bytes = 48 if version == 2 else 64 if version == 3 else 80
         scene, _, count, valid = struct.unpack_from('<4I', data, offset)
         if (not scene or valid != 1 or count > 128 or size - base_size != 80 + count * light_bytes
                 or b'\0' not in data[offset + 16:offset + 80]):
@@ -134,13 +134,20 @@ def inspect_snapshot(path):
                     or any(not 0 <= v <= 10000 for v in values[3:])):
                 raise ValueError('Invalid native light snapshot value')
             flags = 0
-            if version == 3:
+            if version >= 3:
                 *anchor, flags = struct.unpack_from('<3fI', data, offset + 48)
-                if flags & ~3 or any(not math.isfinite(v) or abs(v) >= 100000 for v in anchor):
+                if flags & ~(7 if version >= 4 else 3) or any(not math.isfinite(v) or abs(v) >= 100000 for v in anchor):
                     raise ValueError('Invalid native light source anchor')
             if ((flags & 2 and (not flags & 1 or identity >> 52 != 0xfea or not 1 <= reserved <= 4096))
                     or (not flags & 2 and reserved)):
                 raise ValueError('Invalid native fixture proof tag')
+            if version >= 4:
+                *shift, pad = struct.unpack_from('<3fI', data, offset + 64)
+                if (pad or (flags & 4 and not flags & 2)
+                        or any(not math.isfinite(v) or abs(v) > 100 for v in shift)
+                        or (not flags & 4 and any(shift))
+                        or any(abs(values[k]+shift[k]) >= 100000 for k in range(3))):
+                    raise ValueError('Invalid resolved emitter offset')
             offset += light_bytes
     return {'sha256': hashlib.sha256(data).hexdigest(), 'bytes': size,
             'keys': keys, 'copies': copies, 'payload_bytes': payload,

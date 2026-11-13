@@ -27,7 +27,8 @@ static void sliceChecks(){
  std::vector<Word> code={0xffff0300,0x0200001f,0x80000005,dst(1,0),0x02000001,dst(0,0),src(1,0),0x01000041,dst(0,0),0x02000001,dst(8,0),src(2,0),65535};
  assert(NorthlightTerrainCoverage::analyse(code.data(),code.size(),p));assert(NorthlightNativeMaterialCapture::alphaSlice(code.data(),p,false,result));
  NorthlightTerrainCoverage::Program sliced;assert(NorthlightTerrainCoverage::analyse(result.data(),result.size(),sliced)&&sliced.slots==2); // Keep the kill and all its initialized lanes.
- assert(result[5]==dst(0,0));code.insert(code.end()-1,{0x01000028,src(2,0)});p={};assert(NorthlightTerrainCoverage::analyse(code.data(),code.size(),p));assert(!NorthlightNativeMaterialCapture::alphaSlice(code.data(),p,true,result));
+ assert(result[5]==dst(0,0));const auto noNop=result;code.insert(code.end()-1,0);p={};assert(NorthlightTerrainCoverage::analyse(code.data(),code.size(),p));assert(NorthlightNativeMaterialCapture::alphaSlice(code.data(),p,false,result)&&result==noNop);
+ code.insert(code.end()-1,{0x01000028,src(2,0)});p={};assert(NorthlightTerrainCoverage::analyse(code.data(),code.size(),p));assert(!NorthlightNativeMaterialCapture::alphaSlice(code.data(),p,true,result));
  std::puts("NATIVE_SLICE_PASS kill_dependencies unknown_flow_fallback");
 }
 int main(int argc,char**argv){std::setvbuf(stdout,nullptr,_IONBF,0);assert(argc>2);auto module=LoadLibraryA(argv[1]);assert(module);auto api=((IDirect3D9*(WINAPI*)(UINT))GetProcAddress(module,"Direct3DCreate9"))(D3D_SDK_VERSION);HWND window=CreateWindowExW(0,L"STATIC",L"",WS_OVERLAPPED,0,0,32,32,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);assert(window);D3DPRESENT_PARAMETERS pp{};pp.Windowed=TRUE;pp.hDeviceWindow=window;pp.BackBufferWidth=pp.BackBufferHeight=32;pp.BackBufferFormat=D3DFMT_X8R8G8B8;pp.SwapEffect=D3DSWAPEFFECT_DISCARD;IDirect3DDevice9*d=nullptr;ok(api->CreateDevice(0,D3DDEVTYPE_HAL,window,D3DCREATE_HARDWARE_VERTEXPROCESSING|D3DCREATE_FPU_PRESERVE,&pp,&d));

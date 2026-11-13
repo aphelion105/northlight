@@ -90,6 +90,7 @@ INSTANCES = 'instances-manifest.json'   # in world-cache/: the groups built
 CHOICE = 'world-cache.instances.json'   # beside world-cache/, ours: the groups chosen (survives a swap of the folder)
 EXTRACT = 'world-cache.extract'   # this installer's extraction folder
 LOCK = 'northlight-installer.lock'   # one installer run per client at a time
+ART_STATE = 'northlight-art-cache.json'   # committed with the generated art files
 VARIANT_FORMAT = 'northlight-cache-variant/1'
 LOCAL_FORMAT = 'northlight-world-cache-install/1'
 VARIANT_FILE = 'northlight-cache.json'
@@ -472,7 +473,8 @@ class Installer:
             tail = (tail + [line])[-25:]
             report = line.lstrip().startswith(('{', '}', '[', ']', '"'))
             step = PERCENT.search(line)   # install_world_cache's 5% steps: the console shows every 10%
-            self.say('  ' + line, console=show and not report and not (step and int(step.group(1)) % 10))
+            self.say('  ' + line, console=line.startswith('Art layer: ') or
+                     (show and not report and not (step and int(step.group(1)) % 10)))
             if line.startswith('{'):
                 try:
                     last = json.loads(line)
@@ -581,7 +583,7 @@ class Installer:
         if self.platform == 'linux':
             manifest = read_json(self.pkg.root / 'payload-manifest.json') or []
             conflicts = case_conflicts(client, [e['path'] for e in manifest] + [
-                INSTALL.CONFIG, INSTALL.LEGACY, CACHE, STAGING, EXTRACT, PREVIOUS, 'renderer-backups', LOCK])
+                INSTALL.CONFIG, INSTALL.LEGACY, CACHE, STAGING, EXTRACT, PREVIOUS, 'renderer-backups', LOCK, ART_STATE])
             if conflicts:
                 raise Refusal('The game folder has files whose names differ only in upper/lower case from the ones '
                               'Northlight installs, and Wine could load either one. Rename or remove these first: ' +
@@ -868,6 +870,45 @@ class Installer:
                 found.append((rel, current))
         return found
 
+    def art_inputs(self, client, locale):
+        """Conservative build identity; renderer DLL releases are not art inputs."""
+        sources = sorted({p for folder in (APP, APP / 'renderer') for pattern in ('*.py', '*.json')
+                          for p in folder.glob(pattern) if p.is_file()})
+        cache = client / CACHE
+        data = sorted((cache / 'fog').rglob('*.frf'))
+        data += [cache / 'lights/world-emitters-v1.json',
+                 client / 'Cache/WDB' / locale / 'creaturecache.wdb']
+        inputs = {'locale': locale, 'letter': LETTER,
+                  'archives': client_archives.fingerprint(client_archives.chain(client, 'all', locale, LETTER), client),
+                  'sources': {p.relative_to(APP).as_posix(): sha(p) for p in sources},
+                  'data': {p.relative_to(client).as_posix(): sha(p) if p.is_file() else None for p in data}}
+        return hashlib.sha256(json.dumps(inputs, sort_keys=True).encode()).hexdigest()
+
+    def cached_art(self, client, locale, inputs):
+        state = INSTALL.safe_path(client, ART_STATE)
+        record = read_json(state)
+        if not isinstance(record, dict) or record.get('format') != 'northlight-art-cache/1' or record.get('inputs') != inputs:
+            return None
+        files = record.get('files')
+        required = {'data/patch-z.mpq', f'data/{locale.lower()}/patch-{locale.lower()}-z.mpq'}
+        allowed = required | {'northlight-art-inputs.ini', 'northlight-emission.bin'}
+        if not isinstance(files, dict) or not all(isinstance(n, str) for n in files):
+            return None
+        names = {n.lower() for n in files}
+        if len(names) != len(files) or not required <= names <= allowed:
+            return None
+        layer = {}
+        try:
+            for name, digest in files.items():
+                data = INSTALL.safe_path(client, name).read_bytes()
+                if hashlib.sha256(data).hexdigest() != digest:
+                    return None
+                layer[name] = data
+            layer[ART_STATE] = state.read_bytes()
+        except (OSError, ValueError):
+            return None
+        return layer
+
     def art_layer(self, client, locale):
         """({client path: bytes} to install, None, {client path: action}) or ({}, reason it is skipped, {}).
         The action per target is installed (absent before), replaced (another layer of ours) or kept-identical.
@@ -875,6 +916,12 @@ class Installer:
         Wine never sees two files."""
         if not (client / CACHE / 'fog').is_dir():
             return {}, 'no world cache (its fog zones are an input)', {}
+        inputs = self.art_inputs(client, locale)
+        layer = self.cached_art(client, locale, inputs)
+        if layer is not None:
+            self.say('Art layer: up to date (inputs and installed files verified)')
+            return layer, None, {name: 'kept-identical' for name in layer if name != ART_STATE}
+        self.say('Art layer: building lighting, model emitters and emission catalog...')
         work = self.pkg.work / 'art-layer'
         remove_tree(work)
         work.mkdir(parents=True)
@@ -911,6 +958,12 @@ class Installer:
         if emission_data is not None:
             layer[emission] = emission_data
             actions[emission] = 'kept-identical' if (client / emission).is_file() and sha(client / emission) == hashlib.sha256(emission_data).hexdigest() else 'replaced' if (client / emission).exists() else 'installed'
+        if self.art_inputs(client, locale) != inputs:
+            raise Failed('Art layer inputs changed during generation; run the installer again.')
+        # The marker becomes visible only in the same rollback-safe transaction as
+        # both MPQs, the dependency guard and the runtime emission catalog.
+        layer[ART_STATE] = (json.dumps({'format': 'northlight-art-cache/1', 'inputs': inputs,
+            'files': {name: hashlib.sha256(data).hexdigest() for name, data in layer.items()}}, indent=2) + '\n').encode()
         return layer, None, actions
 
     # ---- transactions ----

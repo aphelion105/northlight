@@ -1,11 +1,12 @@
 #pragma once
 // Vertex-shader identity from bytecode, shared by Device::CreateVertexShader and the command stream's
-// snapshot triggers (0.3.192 CS). Pure and portable: static tables only, no device, no game memory.
+// snapshot triggers. Pure and portable: identities and coordinate proof, no device or game memory.
 #include <cstddef>
 #include <cstdint>
 #include "signatures.h"
 #include "world_shader_signatures.h"
 #include "wmo_shader_signatures.h"
+#include "world_shader_contract.h"
 
 namespace NorthlightShaderTags {
 // Low bits are the Device's vsTags values (1 terrain, 2 UI). kWorld: any shader of kWorldShaderSignatures
@@ -35,7 +36,12 @@ inline bool inWmoSignatures(std::uint64_t hash){
 inline unsigned triggerTags(std::uint64_t hash){
     return unsigned(deviceTag(hash))|(inWorldSignatures(hash)?kWorld:0u)|(inWmoSignatures(hash)?kWmo:0u);
 }
+inline unsigned triggerTags(std::uint64_t hash,const void* code,std::size_t bytes){
+    unsigned tags=triggerTags(hash);
+    if(!(tags&(kTerrain|kUi|kWmo))&&bytes%4==0&&NorthlightWorldShaderContract::rigidWmo(static_cast<const std::uint32_t*>(code),bytes/4))tags|=kWorld|kWmo;
+    return tags;
+}
 // From the bytecode the game passed to CreateVertexShader (the bytes the shader reports back later); bytes = its length
 // up to and including the 0x0000FFFF end token, so the stream can tag a shader before the replay thread creates it.
-inline unsigned triggerTagsOfBytecode(const void* code,std::size_t bytes){return triggerTags(fnv1a(code,bytes));}
+inline unsigned triggerTagsOfBytecode(const void* code,std::size_t bytes){return triggerTags(fnv1a(code,bytes),code,bytes);}
 }

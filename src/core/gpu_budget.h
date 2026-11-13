@@ -73,8 +73,8 @@ private:
 };
 
 // Level map. Every function returns the full-quality value at level 0.
-// FogClouds march intervals over the same 128 units: 40 (full), 32 (level 1), 24 (level 2+).
-inline unsigned cloudSteps(unsigned level){return level==0?40u:level==1?32u:24u;}
+// Sharp bank density needs the full grid; 24 intervals alias into visible sheets.
+inline unsigned cloudSteps(unsigned){return 40u;}
 // WorldFog march intervals: 48 (full), 40 (level 3).
 inline unsigned fogSteps(unsigned level){return level>=3?40u:48u;}
 // Shader constant that lengthens an interval of a march written as mad(range,1/fullSteps,delta): 0 when steps==fullSteps.

@@ -42,7 +42,7 @@ subprocess.run([str(exe)], check=True)
 renderer = fp.src('world_renderer.h').read_text(encoding='utf-8')
 assert 'const bool localFogActive=localDirectCount&&debug==0&&localLights.hasFog(localDirectCount);' in renderer
 assert 'const bool fogActive=effects.fog&&(regionalFogActive||localFogActive);' in renderer
-start = renderer.index('if(localFogActive){')
-end = renderer.index('}else if(!fogNeutral){', start)
+start = renderer.index('if(effects.fog&&localFogActive){')
+end = renderer.index('// c34 belongs', start)
 assert all(x in renderer[start:end] for x in ('"lamp fog accumulator clear"', '"LocalFogCombine"', '"local fog glow batch"'))
 assert 'float3 lamp=LocalLightColor[i].rgb*(integral*LocalLightFog[i].x*nearGlow);' in (fp.SHADERS / 'world_effects.hlsl').read_text(encoding='utf-8')

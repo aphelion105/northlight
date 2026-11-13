@@ -37,6 +37,8 @@ const ImVec4 Accent{0.40f,0.70f,1.00f,1.f},Edited{1.00f,0.74f,0.32f,1.f},Muted{0
 // ---- Words (from the retired Lua menu) ----
 const std::map<std::string,const char*> Labels={
     {"CelestialStyle","Celestial placement & size"},
+    {"NativeLightStay","Keep off-screen lights"},
+    {"NativeMoreLights","Expand native light slots"},{"NativeModelLightLimit","Lights per model / building"},{"NativeTerrainLightLimit","Lights per terrain chunk"},
     {"RainRivulets","Merge drops into rivulets"},{"SnowFrost","Frost at screen edges"},{"SnowFrostStrength","Frost strength (%)"},
     {"WeatherWindDirection","Wind heading (world degrees)"},{"WeatherWindStrength","Wind strength (%)"},{"WeatherCameraMotion","React to camera turns"},
     {"SandLens","Sand on lens"},{"SandLensStrength","Sand strength (%)"},{"SandLensSize","Sand grain size (%)"},
@@ -119,6 +121,10 @@ const std::map<std::string,std::vector<const char*>> Help={
     {"HDRWideBloom",{"Adds a wider, softer glow around bright world light. Uses more GPU arithmetic and extra memory. Falls back to compact bloom if resources are unavailable. UI brightness is unchanged."}},
     {"HDRBloomStrength",{"Bloom reads unclipped HDR radiance. Setting 0 removes its halo while preserving the source's brightness."}},
     {"Backend",{"Which Direct3D 9 implementation the renderer runs on. Takes effect after a game restart."}},
+    {"NativeLightStay",{"Keeps nearby torch and lamp lighting when their models leave the view. Takes effect after a game restart."}},
+    {"NativeMoreLights",{"Raises supported native shaders to eight point-light slots. Takes effect after a game restart."}},
+    {"NativeModelLightLimit",{"Maximum native point lights affecting each model or building. Applies live. Separate from Northlight's total light and shadow budgets."}},
+    {"NativeTerrainLightLimit",{"Maximum native point lights affecting each terrain chunk. Applies live. More slots improve coverage near groups of lamps. The minimum limit can use the original shader; partial limits retain eight-light arithmetic."}},
     {"terrain_radius",{"How far terrain casts shadows in this region. Larger values cost more GPU time."}},
     {"GI",{"Adds indirect sky light, bounced colors and occlusion from surrounding geometry. Turning it off stops the background lighting solver and leaves the game's ambient lighting."}},
     {"GIStrength",{"Influence of measured sky light, bounced color and occlusion on terrain and objects. 120 fully replaces native ambient; 60 restores the old half blend; up to 240 strengthens the contrast. 0 suspends GI work."}},
@@ -669,6 +675,7 @@ struct SettingsPanel::State {
         std::map<std::string,const Field*> byKey;for(const Field* f:fields(D::Renderer))byKey[f->key]=f;
         std::map<std::string,bool> used;
         if(auto b=byKey.find("Backend");b!=byKey.end()){used["Backend"]=true;titled("Renderer",{b->second});}
+        {std::vector<const Field*> native;for(const auto* key:{"NativeLightStay","NativeMoreLights","NativeModelLightLimit","NativeTerrainLightLimit"})if(auto b=byKey.find(key);b!=byKey.end()){used[key]=true;native.push_back(b->second);}titled("Native lighting",native);}
         if(const Section* s=qualitySection("rendering"))qualityPage(*s,true);
         for(const auto& g:HdrGroups)group(g,byKey,used);
         if(service){const auto hdr=service->hdrStatus();ImGui::Text("HDR output: %s",hdr.active?"active":"inactive");if(!hdr.reason.empty())ImGui::TextWrapped("%s",hdr.reason.c_str());

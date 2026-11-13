@@ -4,6 +4,28 @@ The current renderer is an x86 D3D9 proxy in the client process. This map descri
 the implemented boundaries. Historical investigations and release reports remain
 in `renderer/docs/`; they do not replace the current contracts or prove current performance.
 
+The command producer and renderer share `NorthlightWorldDrawDomain::mainWorldDraw`
+when admitting a rigid shader as the first world draw. Coordinate proof alone also
+accepts client sky and shadow-map programs. The World snapshot therefore requires
+known depth-test state and the client main-world viewport band (0..0.94); sky,
+horizon, auxiliary and depth-off draws cannot consume its once-per-frame trigger.
+Missing cached state after a target/state-block change is recovered through the
+ordered device Get path; a failed read cannot grant world admission.
+The renderer repeats this admission before reading WMO camera context, alongside
+its full-viewport and projection checks. Camera matrix validation remains strict.
+
+Native point sources retain their original position for draw-slot ownership.
+Optional eight-light compatibility retains public shader identity and uses
+scoped private variants. Proven no-extra-light draws keep the original shader;
+resource caches are bounded independently of source capability metadata.
+See [native light performance](native-light-performance.md) for image-checked
+A/B measurements, cache ownership and remaining costs.
+An independently resolved emitter position feeds direct light, fog and point
+shadows. Per-installation NLF1 v4 profiles are computed from actual fixture
+geometry and emission evidence without writing MPQs; unsupported profiles retain
+the original point. See [point-light-resolution.md](point-light-resolution.md)
+for placement bounds, cache compatibility and acceptance requirements.
+
 ## Repository map
 
 | Path | Responsibility |
@@ -47,6 +69,9 @@ Source basenames form the existing include namespace and must stay unique.
    Lighting frames share that pair with WorldNormals/TemporalLight. A producer
    change invalidates history before the pair rotates; fog blur always reads the
    current dry distance and validates water independently.
+   Local lamp/spell scattering is added to the current final fog after
+   atmospheric history and blur: its volume has no receiver depth for surface
+   reprojection. Lamp/veil density uses the shared bilinear medium sampler.
 3. **Resources follow consumers.** `world_screen_resources.inl` owns screen
    groups; `world_geometry_resources.inl` owns geometry targets. Groups remain
    warm until reset, resize or pressure. Frame-local/transient sharing requires
@@ -57,8 +82,107 @@ Source basenames form the existing include namespace and must stay unique.
 5. **Completion is real.** EVENT/query availability, source mutation barriers and
    resource leases are correctness contracts. Neither an optimization nor a
    fixture may treat unfinished work as completed.
+6. **Native lamps have one direct-light owner.** A selected lamp can hand
+   its native RGB contribution to the renderer when a fresh scene identity or
+   an anonymous, proven draw-bank source agrees with its position, hue, falloff
+   and selection gain. Draw witnesses expire after 100 ms and grant no shadow
+   intent. A valid scene contains positive observations, not a complete inventory:
+   a missing ID cannot withdraw a source. A current observation of that same ID
+   supersedes its draw witness; unrelated scene entries do not. Scene/draw
+   observations share stable identity and the existing 100 ms freshness / 250 ms
+   expiry. An observed zero intensity or ownership claim retires the duplicate
+   immediately. Required native attachments retain poses and claims for at most
+   100 ms across omitted samples, then stop publishing.
+   Model/WMO handoff applies to opaque, depth-writing receivers with proven
+   vertex outputs and independent pixel coverage. Exact original SM1/2/3 terrain
+   shaders use the separate interleaved c28..36 bank, with camera-relative world
+   positions. Terrain RGB handoff also covers blended material layers when
+   vertex outputs and pixel coverage are independent of the lamp RGB.
+   Only the RGB rows c29/c32/c35 change; neighbouring positions, falloff and alpha
+   retain their original values. Terrain shadow-neutralization and coverage
+   factories audit their derived shaders too; prepared displacement keeps the
+   source shader's bank through its existing provenance.
+   Alpha slicing ignores zero-operand NOPs inserted by shadow neutralization.
+   The native constant change is scoped to the real submit and restored
+   even on failure. Unselected, ambiguous and unsupported sources retain native
+   lighting. The original bank and the handoff status remain capture inputs.
+   Explicit native diagnostics also record selected sources on receivers where
+   handoff is unsafe, and opaque WMO receivers without a proven point bank.
+   Receivers without a proven point bank share at most four of the eight image
+   pairs per capture. The first four terrain point-bank draws are prioritized
+   even when source matching fails. Registration logs their actual shader model.
+   Four draw records and four image pairs remain available for terrain point
+   banks when other native receivers arrive first.
+   MSAA image pairs reuse a GPU resolve capped at 64 MiB;
+   only the cropped region (at most 768 by 768) reaches system-memory staging.
+   Resolving never changes the game's scene boundaries or render state.
+7. **Fixture identity and self-shadow exclusion are separate.** An exact
+   GameObjectDisplayInfo owner plus a supported authored M2 point source grants
+   root-fixture shadow intent after runtime name, vertex and structure hashes
+   match. Constant and animated emitters use the same proof. NLF1 v3 permits
+   zero owned-shell triangles and shell sources that are a subset of the proven
+   source mask; v2 retains its stricter legacy validation. Shell geometry only
+   controls exclusion of the emitter's own luminous surfaces. Its absence cannot
+   disqualify an open brazier. Parent-attached sources and unmatched assets gain
+   no fixture classification. See [point-light investigation](point-light-investigation.md)
+   for the capture evidence and remaining live acceptance gap.
+8. **Track evaluation reads only semantic dependencies.** A single-key M2
+   track is constant and does not depend on timestamp memory. The reader still
+   validates the descriptor, key count and value. Multi-key curves require
+   readable, ordered timestamps. This distinction is necessary for existing
+   client assets whose shared constant timestamp tables are relocated repeatedly;
+   rejecting an unused pointer must not delete their lights.
+
+9. **Diagnostics do not require receiver or projection admission.** An explicit
+   normal-view capture traces full-size, depth-tested native submissions at the
+   common Draw adapter, outside shader-family and point-bank gates. It validates
+   the bound target, depth and viewport directly: `worldDepth` and
+   `projectionValid` are populated too late for an unknown terrain program.
+   Each submission exports its
+   original programs, constants, render states and before/after thumbnails.
+   The 2048-draw cap marks the export incomplete when exceeded. This is causal
+   image evidence, not a full geometry replay or a performance measurement.
+
+Directional shadows retain the player-centred near map in flight. Above 128
+units of terrain clearance, the far map follows authored ground height and grows
+in 96-unit steps, up to radius 768. Its static caster request uses the same
+shifted volume; shadow-only terrain loads retain ground below the camera.
+The committed mesh carries the ground height and admitted terrain reach, so
+memory fallback limits the far scale to supported geometry.
+
+Prelit WMO receivers keep their authored illumination and receive celestial
+light as a separate additive term. The directional pass publishes its shadowed
+irradiance into a lazy half-resolution FP16 MRT; the prelit compositor uses the
+same depth/colour-guided upsample and bounded material estimate as local lamps.
+It does not subtract outdoor ambient or apply a solar mask to baked RGB. Roofs
+and off-camera casters use the existing camera-independent geometry path; actor
+visibility also gates this daylight. Missing coverage/resources retain authored
+lighting. GI still replaces ambient only on ordinary lit receivers: baked WMO
+lighting is not separable into ambient, lamps and emissive material here.
+
+The world environment validates coherent sky samples in their own origin frame.
+A source witnessed near the camera may continue during a continuous same-map
+walk into an interior whose sky origin stops updating. Colours and celestial
+records are reread, not extrapolated. Map changes, camera jumps over 40 units,
+invalid cameras and observation gaps over 500 ms revoke that permission. The
+strict standalone sky decoders and shorter coherent-light fallback remain.
 
 ## Evidence for a change
+
+World shader admission is shared between command recording and renderer
+registration (`shader_tags.h`, `world_shader_contract.h`). An exact known
+identity or a complete rigid WMO coordinate proof grants the world camera and
+geometry path. The proof follows position input through c31..33 model-view and
+c2..5 projection to the final clip output, rejecting later position rewrites,
+relative addressing and control flow. Material instruction changes alone must
+not remove world admission. Fog, native point-bank layout, RGB-only ownership,
+pixel alpha and the current main-target/projection checks remain independent.
+Dynamic coordinate admission does not grant c10..12 lighting fallback or a
+material replacement. Unknown capabilities retain native rendering.
+
+The producer must run the same proof before the first draw snapshot; accepting
+a program only on the replay thread is too late to record its current camera
+and native light scene. Admission is computed at shader creation, not per draw.
 
 | Boundary changed | Required checks |
 |---|---|
@@ -77,6 +201,10 @@ invalidate it. An INCOMPLETE run does not establish missing coverage. Use
 `--strict` for acceptance and keep the generated JSON with the reviewed change.
 
 ## Remaining architectural work
+
+The imported atmosphere now uses a D3D9 slice atlas for medium/light injection,
+3D temporal history, parallel column integration and depth resolve. Its ownership,
+cache invalidation and raymarch fallback are documented in [Volumetric fog](fog-volume.md).
 
 The common consumer plan and capture entry are implemented foundations. Complete
 full capture-inclusive CPU/GPU budgeting, compact

@@ -41,6 +41,11 @@ int main(){
     for(unsigned k=0;k<3;++k){native.position[k]=blue.position[k];native.diffuse[k]=blue.rgb[k];}
     native.kind=2;native.attenuationStart=.5f;native.attenuationEnd=8;native.sourceId=0xfec0000000000001ull;
     frame.publish(&native,1,fixed,camera,selection);assert(frame.outputCount==1&&frame.immediateCount==1);
+    // A current particle glow must not replace the fixture's identity/range/shadows.
+    native.flags=NorthlightLocalLights::CastShadow;
+    for(unsigned i=0;i<4;++i){frame.nextFrame();if(i%2==0)frame.observe(blue,camera);
+        frame.publish(&native,1,fixed,camera,selection);
+        assert(frame.outputCount==1&&frame.immediateCount==0&&frame.output[0].sourceId==native.sourceId&&frame.output[0].flags==native.flags&&frame.output[0].attenuationEnd==native.attenuationEnd);}
     frame.reset();for(unsigned i=0;i<40;++i){blue.position[0]=float(i)*2;frame.observe(blue,camera);}
     frame.publish(nullptr,0,fixed,camera,selection);assert(frame.outputCount<=8);
     frame.reset();blue.position[0]=0;frame.observe(blue,camera);native.position[0]=0;fixed.push_back(native);

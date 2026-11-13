@@ -1,5 +1,20 @@
 #include "native_scene_light_fixture.h"
 #include "particle_lights.h"
+static void constantTrackTimestampTests(){
+    // Captured TallBrazierNoOmni01 aliases one timestamp table across seven
+    // tracks. Native relocation leaves its unused single-key pointer invalid.
+    // Constant values must still work; multi-key animation must not guess.
+    for(unsigned keys:{1u,2u})for(unsigned broken:{0u,1u}){
+        Bytes b=modelAsset();const std::vector<float> intensity=keys==1?std::vector<float>{1.f}:std::vector<float>{1.f,.5f};
+        authoredTrack(b,648+76,4,{intensity});Fixture f(b);f.add(0,1);
+        auto& asset=f.memory.object(f.data);const unsigned times=get<unsigned>(asset,648+76+8),values=get<unsigned>(asset,648+76+16);
+        f.memory.set(broken?values:times,4,0xea5d7de0u);
+        f.update();
+        if(keys==1&&!broken){assert(f.output.count==1&&!f.reader.failures&&std::fabs(f.output.lights[0].color[0]-.97254908f)<1e-6f);}
+        else assert(!f.output.count&&f.reader.failures);
+    }
+    std::puts("NATIVE_CONSTANT_TRACK_PASS unreadable_unused_timestamp=accepted unreadable_value_or_animated_timestamps=rejected");
+}
 static void calibratedEquipmentTests(){
     // Knife_1H_Utgarde_D_03's three calibrated sources. The reader must keep
     // their authored energy without a model draw, even below bridge admission.
@@ -94,7 +109,7 @@ static void movingPoseTests(){
      put<std::uint16_t>(f.memory.object(f.bones[0]),0x48,2);f.update();assert(!f.output.count);float translated[3]={8,0,0};Bytes loaded(sizeof translated);std::memcpy(loaded.data(),translated,sizeof translated);const auto pointer=f.memory.add(std::move(loaded));f.memory.set(table,2*8+4,pointer);f.update();assert(f.output.count==1&&f.output.lights[0].position[0]==21);}
 }
 int main(int argc,char** argv){
-    std::setvbuf(stdout,nullptr,_IONBF,0);calibratedEquipmentTests();movingPoseTests();
+    std::setvbuf(stdout,nullptr,_IONBF,0);constantTrackTimestampTests();calibratedEquipmentTests();movingPoseTests();
     {Fixture f;f.add();f.update();assert(f.output.valid&&f.output.count==1);const auto first=f.output.lights[0];
      assert(std::fabs(first.color[0]-.97254908f*.75f)<1e-6f&&first.position[2]==1); // never drawn, native RGB/visible/stamp all zero
      put(f.memory.object(f.models[0]),0xe4,7.f);put(f.memory.object(f.models[0]),0x178,.5f);f.update();assert(f.output.lights[0].id==first.id&&f.output.lights[0].position[0]==7&&std::fabs(f.output.lights[0].color[0]-first.color[0]*.5f)<1e-6f);

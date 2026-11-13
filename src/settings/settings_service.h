@@ -49,7 +49,7 @@ class Service {
     // Live part of a parsed config on top of what the renderer runs: "R" keys keep their running values.
     static std::shared_ptr<Config> effective(const Config& runtime,const Config& config){
         auto out=std::make_shared<Config>(runtime);out->quality=liveQualityUpdate(runtime.quality,config.quality);out->celestial=config.celestial;
-        out->hdr=config.hdr;return out;
+        out->hdr=config.hdr;out->nativeLightLimits=config.nativeLightLimits;return out;
     }
     // Caller holds no lock. Publishes the update the renderer applies at its next frame boundary.
     void publish(Config config,std::string revision,std::shared_ptr<const Config> runtime,bool preview){

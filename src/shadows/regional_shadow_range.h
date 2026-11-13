@@ -51,9 +51,9 @@ inline bool load(const std::string& path,Table& out,std::string& error){
 // receiver extent. No camera direction or instantaneous altitude dependency.
 // Test whole tile/model bounds: a retained terrain tile is never sparsely cut,
 // so fixedTerrainChunks still denotes complete chunks.
-inline bool selected(NorthlightGI::Vec3 center,NorthlightGI::Vec3 low,NorthlightGI::Vec3 high){
-    if(high.x>=center.x-DefaultRadius&&low.x<=center.x+DefaultRadius&&
-       high.y>=center.y-DefaultRadius&&low.y<=center.y+DefaultRadius)return true;
+inline bool selected(NorthlightGI::Vec3 center,NorthlightGI::Vec3 low,NorthlightGI::Vec3 high,float fullRadius=DefaultRadius){
+    if(high.x>=center.x-fullRadius&&low.x<=center.x+fullRadius&&
+       high.y>=center.y-fullRadius&&low.y<=center.y+fullRadius)return true;
     const double ax=std::cos(NorthlightCelestialOrbit::kAzimuthRadians),ay=std::sin(NorthlightCelestialOrbit::kAzimuthRadians);
     const double dx=(double(low.x)+high.x)*.5-center.x,dy=(double(low.y)+high.y)*.5-center.y;
     const double ex=(double(high.x)-low.x)*.5,ey=(double(high.y)-low.y)*.5;
@@ -61,7 +61,7 @@ inline bool selected(NorthlightGI::Vec3 center,NorthlightGI::Vec3 low,Northlight
     const double along=ax*dx+ay*dy,alongExtent=std::fabs(ax)*ex+std::fabs(ay)*ey;
     return std::fabs(side)<=640+sideExtent&&along+alongExtent>=-640;
 }
-inline bool selectedChunk(NorthlightGI::Vec3 center,NorthlightGI::Vec3 low,NorthlightGI::Vec3 high){
+inline bool selectedChunk(NorthlightGI::Vec3 center,NorthlightGI::Vec3 low,NorthlightGI::Vec3 high,float fullRadius=DefaultRadius){
     // Select complete ADT chunks, not individual triangles: this preserves the
     // fixed-chunk ownership contract at the corridor boundary. Unexpected
     // cross-chunk triangles are conservatively kept, never guessed away.
@@ -71,6 +71,6 @@ inline bool selectedChunk(NorthlightGI::Vec3 center,NorthlightGI::Vec3 low,North
     NorthlightGI::Vec3 lo(float(zero-(gx+1)*size),float(zero-(gy+1)*size),low.z);
     NorthlightGI::Vec3 hi(float(zero-gx*size),float(zero-gy*size),high.z);
     if(low.x<lo.x-.03f||low.y<lo.y-.03f||high.x>hi.x+.03f||high.y>hi.y+.03f)return true;
-    return selected(center,lo,hi);
+    return selected(center,lo,hi,fullRadius);
 }
 } // namespace NorthlightRegionalShadow

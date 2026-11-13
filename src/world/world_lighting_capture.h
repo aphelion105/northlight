@@ -13,6 +13,18 @@
 // Explicit, bounded normal-view diagnostics. Nothing is retained beyond this
 // render call; a missing export is never replaced with an invented texture.
 namespace NorthlightLightingCapture {
+// Diagnostic admission precedes world projection discovery. Terrain may use a
+// program outside the registered families and draw before the first model.
+inline bool traceTargetMatches(IDirect3DDevice9* device,unsigned width,unsigned height){
+    if(!device||!width||!height)return false;
+    IDirect3DSurface9 *target=nullptr,*depth=nullptr;D3DSURFACE_DESC rt{},ds{};D3DVIEWPORT9 vp{};DWORD z=FALSE;
+    const bool ok=SUCCEEDED(device->GetRenderTarget(0,&target))&&target&&SUCCEEDED(target->GetDesc(&rt))&&
+        SUCCEEDED(device->GetDepthStencilSurface(&depth))&&depth&&SUCCEEDED(depth->GetDesc(&ds))&&
+        SUCCEEDED(device->GetViewport(&vp))&&SUCCEEDED(device->GetRenderState(D3DRS_ZENABLE,&z))&&z!=FALSE&&
+        rt.Width==width&&rt.Height==height&&ds.Width==width&&ds.Height==height&&
+        !vp.X&&!vp.Y&&vp.Width==width&&vp.Height==height;
+    if(depth)depth->Release();if(target)target->Release();return ok;
+}
 class Capture {
     template<class T> struct Ref {T* p=nullptr;~Ref(){if(p)p->Release();}};
     IDirect3DDevice9* device_=nullptr;
@@ -24,6 +36,13 @@ class Capture {
     struct Input {IDirect3DBaseTexture9* identity=nullptr;unsigned snapshot=0;bool known=false;};
     std::array<std::array<Input,16>,5> groups_{};
     std::array<IDirect3DPixelShader9*,8> shaders_{};unsigned shaderCount_=0;
+    Ref<IDirect3DSurface9> nativeResolve_;D3DSURFACE_DESC nativeResolveDesc_{};
+    Ref<IDirect3DSurface9> traceTarget_;D3DSURFACE_DESC traceDesc_{};
+    unsigned traceDraws_=0,traceSkipped_=0;
+    static unsigned pixelBytes(D3DFORMAT format){
+        return format==D3DFMT_A16B16G16R16F||format==D3DFMT_G32R32F?8:
+            format==D3DFMT_R32F||format==D3DFMT_A8R8G8B8||format==D3DFMT_X8R8G8B8?4:0;
+    }
 
     bool path(const char* name,const char* extension,char (&output)[2048])noexcept{
         const int n=std::snprintf(output,sizeof output,"%s/capture-%u-%s.%s",directory_->c_str(),capture_,name,extension);
@@ -47,8 +66,7 @@ class Capture {
     bool surface(const char* name,IDirect3DSurface9* source,bool resolveAllowed=true)noexcept{
         if(!source){unavailable(name,"missing-surface");return false;}
         D3DSURFACE_DESC desc{};if(!call("GetDesc",source->GetDesc(&desc)))return false;
-        const unsigned stride=desc.Format==D3DFMT_A16B16G16R16F||desc.Format==D3DFMT_G32R32F?8:
-            desc.Format==D3DFMT_R32F||desc.Format==D3DFMT_A8R8G8B8||desc.Format==D3DFMT_X8R8G8B8?4:0;
+        const unsigned stride=pixelBytes(desc.Format);
         std::fprintf(journal_,"{\"event\":\"image\",\"name\":\"%s\",\"width\":%u,\"height\":%u,\"format\":%u,\"usage\":%lu,\"pool\":%u,\"samples\":%u,\"sample_quality\":%u}\n",name,desc.Width,desc.Height,unsigned(desc.Format),(unsigned long)desc.Usage,unsigned(desc.Pool),unsigned(desc.MultiSampleType),unsigned(desc.MultiSampleQuality));
         if(!stride||!desc.Width||!desc.Height||uint64_t(desc.Width)*desc.Height*stride>64u*1024u*1024u){unavailable(name,"unsupported-format-or-size");return false;}
         if(desc.MultiSampleType!=D3DMULTISAMPLE_NONE){
@@ -174,21 +192,105 @@ public:
         if(!active())return;
         std::fprintf(journal_,"{\"event\":\"native-scene\",\"valid\":%u,\"count\":%u,\"scene\":%u,\"time\":%u,\"point_stride\":%zu,\"snapshot_bytes\":%zu}\n",scene.valid,scene.count,scene.scene,scene.time,sizeof scene.lights[0],sizeof scene);
         bytes("native-scene","bin",&scene,sizeof scene);
+        for(unsigned i=0;i<scene.count&&i<scene.lights.size();++i){const auto& p=scene.lights[i];
+            std::fprintf(journal_,"{\"event\":\"native-emitter\",\"id\":%llu,\"fixture\":%u,\"flags\":%u,\"raw\":[%.9g,%.9g,%.9g],\"resolved\":[%.9g,%.9g,%.9g]}\n",
+                (unsigned long long)p.id,p.reserved,p.flags,p.position[0],p.position[1],p.position[2],p.position[0]+p.emitterOffset[0],p.position[1]+p.emitterOffset[1],p.position[2]+p.emitterOffset[2]);}
     }
     void nativeImage(const char* name)noexcept{
         Ref<IDirect3DSurface9> source,copy;D3DSURFACE_DESC desc{};
         if(!call("GetRenderTarget-native",device_->GetRenderTarget(0,&source.p))||!source.p||!call("GetDesc-native",source.p->GetDesc(&desc)))return;
-        // Exact central actor/ground ROI. Never allocate a full 4K staging image
-        // in the 32-bit game, including the multisample diagnostic path.
-        if(desc.MultiSampleType!=D3DMULTISAMPLE_NONE){unavailable(name,"multisample-native-roi-unavailable");return;}
+        // MSAA resolves require the complete surface. Reuse one bounded GPU
+        // target, then crop before staging; never stage a full 4K native image.
+        IDirect3DSurface9* input=source.p;
+        if(desc.MultiSampleType!=D3DMULTISAMPLE_NONE){
+            const unsigned stride=pixelBytes(desc.Format);
+            if(!stride||!desc.Width||!desc.Height||uint64_t(desc.Width)*desc.Height*stride>64u*1024u*1024u){unavailable(name,"native-resolve-size-or-format");return;}
+            if(nativeResolve_.p&&(nativeResolveDesc_.Width!=desc.Width||nativeResolveDesc_.Height!=desc.Height||nativeResolveDesc_.Format!=desc.Format)){nativeResolve_.p->Release();nativeResolve_.p=nullptr;}
+            if(!nativeResolve_.p){
+                if(!call("CreateRenderTarget-native-resolve",device_->CreateRenderTarget(desc.Width,desc.Height,desc.Format,D3DMULTISAMPLE_NONE,0,FALSE,&nativeResolve_.p,nullptr))||!nativeResolve_.p)return;
+                nativeResolveDesc_=desc;
+            }
+            if(!call("StretchRect-native-resolve",device_->StretchRect(source.p,nullptr,nativeResolve_.p,nullptr,D3DTEXF_NONE)))return;
+            input=nativeResolve_.p;
+        }
         const unsigned width=std::min(768u,desc.Width),height=std::min(768u,desc.Height);
         const LONG x=LONG((desc.Width-width)/2),y=LONG(std::min(desc.Height-height,desc.Height*7/10-height/2));
         const RECT rect{x,y,x+LONG(width),y+LONG(height)};
-        std::fprintf(journal_,"{\"event\":\"native-image-roi\",\"name\":\"%s\",\"rect\":[%ld,%ld,%ld,%ld],\"source_width\":%u,\"source_height\":%u,\"filter\":\"none\"}\n",name,rect.left,rect.top,rect.right,rect.bottom,desc.Width,desc.Height);
+        std::fprintf(journal_,"{\"event\":\"native-image-roi\",\"name\":\"%s\",\"rect\":[%ld,%ld,%ld,%ld],\"source_width\":%u,\"source_height\":%u,\"source_samples\":%u,\"msaa_resolved\":%s,\"filter\":\"none\",\"per_sample_color_exported\":false}\n",name,rect.left,rect.top,rect.right,rect.bottom,desc.Width,desc.Height,unsigned(desc.MultiSampleType),desc.MultiSampleType!=D3DMULTISAMPLE_NONE?"true":"false");
         if(!call("CreateRenderTarget-native-roi",device_->CreateRenderTarget(width,height,desc.Format,D3DMULTISAMPLE_NONE,0,FALSE,&copy.p,nullptr))||!copy.p)return;
-        if(call("StretchRect-native-roi",device_->StretchRect(source.p,&rect,copy.p,nullptr,D3DTEXF_NONE)))surface(name,copy.p,false);
+        if(call("StretchRect-native-roi",device_->StretchRect(input,&rect,copy.p,nullptr,D3DTEXF_NONE)))surface(name,copy.p,false);
     }
-    unsigned nativeBefore(unsigned rendererFrame,uint64_t source,unsigned slot,bool prepared,bool focus,IDirect3DVertexShader9* originalVS,IDirect3DPixelShader9* originalPS,const uint64_t (&sources)[4])noexcept{
+    // This census is deliberately independent of receiver classification. A
+    // rejected/unknown shader is often exactly the draw being investigated.
+    // Thumbnails locate a contribution; they are not a geometry replay.
+    void traceImage(unsigned draw,const char* stage)noexcept{
+        Ref<IDirect3DSurface9> source;D3DSURFACE_DESC desc{};
+        if(!call("GetRenderTarget-trace",device_->GetRenderTarget(0,&source.p))||!source.p||!call("GetDesc-trace",source.p->GetDesc(&desc)))return;
+        if(!pixelBytes(desc.Format)||!desc.Width||!desc.Height){unavailable("native-trace","target-format");return;}
+        IDirect3DSurface9* input=source.p;
+        if(desc.MultiSampleType!=D3DMULTISAMPLE_NONE){
+            if(nativeResolve_.p&&(nativeResolveDesc_.Width!=desc.Width||nativeResolveDesc_.Height!=desc.Height||nativeResolveDesc_.Format!=desc.Format)){nativeResolve_.p->Release();nativeResolve_.p=nullptr;}
+            if(!nativeResolve_.p){
+                if(!call("CreateRenderTarget-trace-resolve",device_->CreateRenderTarget(desc.Width,desc.Height,desc.Format,D3DMULTISAMPLE_NONE,0,FALSE,&nativeResolve_.p,nullptr))||!nativeResolve_.p)return;
+                nativeResolveDesc_=desc;
+            }
+            if(!call("StretchRect-trace-resolve",device_->StretchRect(source.p,nullptr,nativeResolve_.p,nullptr,D3DTEXF_NONE)))return;
+            input=nativeResolve_.p;
+        }
+        const unsigned w=std::min(384u,desc.Width),h=std::max(1u,unsigned(uint64_t(desc.Height)*w/desc.Width));
+        if(h>384){unavailable("native-trace","portrait-target");return;}
+        if(traceTarget_.p&&(traceDesc_.Width!=w||traceDesc_.Height!=h||traceDesc_.Format!=desc.Format)){traceTarget_.p->Release();traceTarget_.p=nullptr;}
+        if(!traceTarget_.p){
+            if(!call("CreateRenderTarget-trace",device_->CreateRenderTarget(w,h,desc.Format,D3DMULTISAMPLE_NONE,0,FALSE,&traceTarget_.p,nullptr))||!traceTarget_.p)return;
+            traceDesc_=desc;traceDesc_.Width=w;traceDesc_.Height=h;
+        }
+        if(!call("StretchRect-trace-thumbnail",device_->StretchRect(input,nullptr,traceTarget_.p,nullptr,D3DTEXF_POINT)))return;
+        char name[80];std::snprintf(name,sizeof name,"native-trace-%u-%s",draw,stage);surface(name,traceTarget_.p,false);
+    }
+    unsigned traceBefore(unsigned rendererFrame,unsigned primitives)noexcept{
+        if(!active())return 0;
+        if(traceDraws_>=2048){if(!traceSkipped_++)unavailable("native-trace","draw-limit");return 0;}
+        const unsigned draw=++traceDraws_;char name[96];
+        std::fprintf(journal_,"{\"event\":\"native-trace\",\"draw\":%u,\"renderer_frame\":%u,\"primitives\":%u,\"receiver_classification_required\":false}\n",draw,rendererFrame,primitives);
+        try{
+            Ref<IDirect3DVertexShader9> vs;Ref<IDirect3DPixelShader9> ps;
+            call("GetVertexShader-trace",device_->GetVertexShader(&vs.p));call("GetPixelShader-trace",device_->GetPixelShader(&ps.p));
+            auto shader=[&](auto* p,const char* stage){
+                std::fprintf(journal_,"{\"event\":\"native-trace-program\",\"draw\":%u,\"stage\":\"%s\",\"present\":%s}\n",draw,stage,p?"true":"false");
+                if(!p)return;UINT size=0;
+                if(!call("GetFunction-trace-size",p->GetFunction(nullptr,&size))||size<8||size>65536){unavailable("native-trace","shader-size");return;}
+                std::vector<unsigned char> code(size);if(call("GetFunction-trace",p->GetFunction(code.data(),&size))){std::snprintf(name,sizeof name,"native-trace-%u-%s",draw,stage);bytes(name,"bin",code.data(),size);}
+            };
+            shader(vs.p,"vs");shader(ps.p,"ps");
+            DWORD fvf=0;if(call("GetFVF-trace",device_->GetFVF(&fvf)))std::fprintf(journal_,"{\"event\":\"native-trace-fvf\",\"draw\":%u,\"value\":%lu}\n",draw,(unsigned long)fvf);
+            Ref<IDirect3DVertexDeclaration9> declaration;
+            if(call("GetVertexDeclaration-trace",device_->GetVertexDeclaration(&declaration.p))&&declaration.p){D3DVERTEXELEMENT9 elements[MAXD3DDECLLENGTH+1];UINT count=MAXD3DDECLLENGTH+1;
+                if(call("GetDeclaration-trace",declaration.p->GetDeclaration(elements,&count))){std::snprintf(name,sizeof name,"native-trace-%u-declaration",draw);bytes(name,"bin",elements,count*sizeof *elements);}}
+            if(!vs.p){
+                D3DMATRIX transforms[3];const D3DTRANSFORMSTATETYPE states[]={D3DTS_WORLD,D3DTS_VIEW,D3DTS_PROJECTION};
+                bool valid=true;for(unsigned i=0;i<3;++i)valid=call("GetTransform-trace",device_->GetTransform(states[i],&transforms[i]))&&valid;
+                if(valid){std::snprintf(name,sizeof name,"native-trace-%u-transforms",draw);bytes(name,"f32",transforms,sizeof transforms);}
+                D3DMATERIAL9 material{};if(call("GetMaterial-trace",device_->GetMaterial(&material))){std::snprintf(name,sizeof name,"native-trace-%u-material",draw);bytes(name,"bin",&material,sizeof material);}
+                for(unsigned i=0;i<8;++i){BOOL enabled=FALSE;D3DLIGHT9 light{};const HRESULT enableHr=device_->GetLightEnable(i,&enabled),lightHr=device_->GetLight(i,&light);
+                    std::fprintf(journal_,"{\"event\":\"native-trace-fixed-light\",\"draw\":%u,\"index\":%u,\"enabled\":%s,\"enable_HRESULT\":\"%08lx\",\"light_HRESULT\":\"%08lx\"}\n",draw,i,enabled?"true":"false",(unsigned long)enableHr,(unsigned long)lightHr);
+                    if(SUCCEEDED(lightHr)){std::snprintf(name,sizeof name,"native-trace-%u-light-%u",draw,i);bytes(name,"bin",&light,sizeof light);}}
+            }
+            float vertex[256][4],pixel[224][4];D3DCAPS9 caps{};
+            if(call("GetDeviceCaps-trace",device_->GetDeviceCaps(&caps))){const unsigned count=std::min(256u,unsigned(caps.MaxVertexShaderConst));
+                if(count&&call("GetVertexShaderConstantF-trace",device_->GetVertexShaderConstantF(0,vertex[0],count))){std::snprintf(name,sizeof name,"native-trace-%u-vs-constants",draw);bytes(name,"f32",vertex,count*sizeof vertex[0]);}}
+            if(call("GetPixelShaderConstantF-trace",device_->GetPixelShaderConstantF(0,pixel[0],224))){std::snprintf(name,sizeof name,"native-trace-%u-ps-constants",draw);bytes(name,"f32",pixel,sizeof pixel);}
+            for(auto key:{D3DRS_ZENABLE,D3DRS_ZWRITEENABLE,D3DRS_ZFUNC,D3DRS_ALPHABLENDENABLE,D3DRS_SRCBLEND,D3DRS_DESTBLEND,D3DRS_BLENDOP,D3DRS_ALPHATESTENABLE,D3DRS_ALPHAFUNC,D3DRS_ALPHAREF,D3DRS_COLORWRITEENABLE,D3DRS_STENCILENABLE,D3DRS_STENCILFUNC,D3DRS_STENCILREF,D3DRS_CULLMODE,D3DRS_DEPTHBIAS,D3DRS_SLOPESCALEDEPTHBIAS,D3DRS_LIGHTING,D3DRS_COLORVERTEX,D3DRS_AMBIENT,D3DRS_DIFFUSEMATERIALSOURCE,D3DRS_EMISSIVEMATERIALSOURCE,D3DRS_AMBIENTMATERIALSOURCE}){
+                DWORD value=0;if(call("GetRenderState-trace",device_->GetRenderState(key,&value)))std::fprintf(journal_,"{\"event\":\"native-trace-state\",\"draw\":%u,\"state\":%u,\"value\":%lu}\n",draw,unsigned(key),(unsigned long)value);}
+            traceImage(draw,"before");
+        }catch(...){unavailable("native-trace","allocation-failed");}
+        return draw;
+    }
+    void traceAfter(unsigned token,HRESULT result)noexcept{
+        if(!active()||!token)return;
+        std::fprintf(journal_,"{\"event\":\"native-trace-result\",\"draw\":%u,\"HRESULT\":\"%08lx\"}\n",token,(unsigned long)result);
+        if(FAILED(result))complete_=false;traceImage(token,"after");
+    }
+    unsigned nativeBefore(unsigned rendererFrame,uint64_t source,unsigned slot,bool prepared,bool focus,IDirect3DVertexShader9* originalVS,IDirect3DPixelShader9* originalPS,const uint64_t (&sources)[4],bool allowImages=true)noexcept{
         if(!active())return 0;
         if(nativeDraws_>=128||(!focus&&nativeDraws_>=32)){++nativeSkipped_;return 0;}
         const unsigned draw=++nativeDraws_;char name[96];
@@ -204,7 +306,7 @@ public:
             if(call("GetPixelShaderConstantF-native",device_->GetPixelShaderConstantF(0,pixel[0],224))){std::snprintf(name,sizeof name,"native-draw-%u-ps-constants",draw);bytes(name,"f32",pixel,sizeof pixel);}
             Ref<IDirect3DVertexDeclaration9> declaration;if(call("GetVertexDeclaration-native",device_->GetVertexDeclaration(&declaration.p))&&declaration.p){D3DVERTEXELEMENT9 elements[MAXD3DDECLLENGTH+1];UINT count=MAXD3DDECLLENGTH+1;if(call("GetDeclaration-native",declaration.p->GetDeclaration(elements,&count))){std::snprintf(name,sizeof name,"native-draw-%u-declaration",draw);bytes(name,"bin",elements,count*sizeof *elements);}}
             std::fprintf(journal_,"{\"event\":\"native-programs\",\"draw\":%u,\"private_vs\":%s,\"private_ps\":%s}\n",draw,vs.p!=originalVS?"true":"false",ps.p!=originalPS?"true":"false");
-            if(focus&&nativeImages_<8){++nativeImages_;std::snprintf(name,sizeof name,"native-draw-%u-before",draw);nativeImage(name);return draw|0x80000000u;}
+            if(focus&&allowImages&&nativeImages_<8){++nativeImages_;std::snprintf(name,sizeof name,"native-draw-%u-before",draw);nativeImage(name);return draw|0x80000000u;}
         }catch(...){unavailable("native-draw","allocation-failed");}
         return draw;
     }
@@ -322,6 +424,7 @@ public:
     }
     void finish(bool renderCompleted)noexcept{
         if(!active())return;finished_=true;complete_=complete_&&renderCompleted&&std::ferror(journal_)==0;
+        if(traceDraws_||traceSkipped_)std::fprintf(journal_,"{\"event\":\"native-trace-summary\",\"draws\":%u,\"skipped\":%u,\"limit\":2048,\"whole_scene_replay\":false,\"thumbnail_filter\":\"point\"}\n",traceDraws_,traceSkipped_);
         if(std::strcmp(journalName_,"native-inputs")==0)std::fprintf(journal_,"{\"event\":\"native-summary\",\"recorded_draws\":%u,\"image_pairs\":%u,\"skipped_draws\":%u,\"record_limit\":128,\"nonfocus_limit\":32,\"image_pair_limit\":8,\"whole_scene_replay\":false}\n",nativeDraws_,nativeImages_,nativeSkipped_);
         std::fprintf(journal_,"{\"event\":\"end\",\"render_completed\":%s,\"export_complete\":%s,\"passes\":%u,\"authentic_source_replay\":false,\"whole_scene_replay\":false,\"fps_eligible\":false}\n",renderCompleted?"true":"false",complete_?"true":"false",passes_);
         if(std::fclose(journal_))complete_=false;journal_=nullptr;

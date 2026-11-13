@@ -85,7 +85,7 @@ FORMAT = 'northlight-world-cache-install/1'
 # Compatibility revisions, independent of DLL releases and source hashes. Bump
 # the affected revision when generated data changes; source hashes below are
 # build provenance and support reading pre-versioned manifests only.
-CACHE_VERSIONS = {'scene': 1, 'lights': 1, 'fog': 1, 'celestial': 1, 'instances': 1, 'validation': 1}
+CACHE_VERSIONS = {'scene': 2, 'lights': 2, 'fog': 1, 'celestial': 1, 'instances': 1, 'validation': 1}
 # Source provenance and legacy digest dependencies. New cache compatibility is
 # controlled by CACHE_VERSIONS, never by a DLL or source-file hash.
 STEP_SOURCES = {

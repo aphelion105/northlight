@@ -29,6 +29,15 @@ static void lightLimits(){
 }
 int main(int argc,char** argv){
     lightLimits();
+    {const auto initial=factoryDocuments();const auto config=configOf(initial,"");const auto fields=schema(initial,initial,config,"");
+     for(const char* key:{"NativeMoreLights","NativeModelLightLimit","NativeTerrainLightLimit"}){
+         auto f=std::find_if(fields.begin(),fields.end(),[&](const Field& value){return value.key==key;});assert(f!=fields.end());
+         if(f->kind=="check"){assert(f->saved=="1"&&f->factory=="1"&&f->apply=="R");continue;}
+         assert(f->saved=="8"&&f->factory=="8"&&f->apply=="F"&&f->high=="8");
+         const auto edited=applyChanges(initial,fields,f->id()+"\t"+f->low+"\n");const auto next=configOf(edited,"",true);
+         assert(next.nativeLightLimits[f->key=="NativeTerrainLightLimit"]==unsigned(std::stoul(f->low)));
+         fails([&]{applyChanges(initial,fields,f->id()+"\t9\n");});fails([&]{applyChanges(initial,fields,f->id()+"\t2\n");});
+     }}
     assert(argc==2);auto root=std::filesystem::path(argv[1]);std::filesystem::create_directories(root);
     std::string raw="\xef\xbb\xbf; note\r\n[Quality]\r\n  Weather = 1  ; keep\r\nUnknown=future\r\n";Document d(raw);assert(d.bytes()==raw);
     std::string zero="0";d.set("Quality","Weather",&zero);assert(d.bytes().find("  Weather = 0  ; keep")!=std::string::npos);d.set("Quality","Weather",nullptr);assert(d.bytes().find("; keep")!=std::string::npos&&d.bytes().find("Unknown=future")!=std::string::npos);
@@ -47,6 +56,12 @@ int main(int argc,char** argv){
     store.commit(before,after);assert(store.read()==after);fails([&]{store.commit(before,after);});
     auto docs=documents(after);Config active=configOf(docs,"");auto fields=schema(docs,docs,active,"");unsigned q=0,c=0;for(auto& f:fields){q+=f.file==0;c+=f.file==2;}
     assert(q==std::size(NorthlightQuality::Keys)+1&&c>=22*28);fails([&]{applyChanges(docs,fields,"Q\tQuality\tWeather\t2\n");});fails([&]{applyChanges(docs,fields,"Q\tQuality\t../path\t1\n");});
+    {const auto findStay=[](const std::vector<Field>& list)->Field{for(const auto& f:list)if(f.key=="NativeLightStay")return f;assert(false);return {};};
+     const auto initial=findStay(fields);assert(initial.saved=="1"&&initial.active=="1"&&initial.factory=="1"&&initial.apply=="R");
+     const auto disabled=applyChanges(docs,fields,initial.id()+"\t0\n");
+     const auto pending=findStay(schema(disabled,docs,active,""));assert(pending.saved=="0"&&pending.active=="1");
+     const auto restarted=findStay(schema(disabled,disabled,configOf(disabled,""),""));assert(restarted.active=="0");
+     fails([&]{applyChanges(docs,fields,initial.id()+"\t2\n");});}
     auto changed=applyChanges(docs,fields,"Q\tQuality\tWeather\t~\n");assert(explicitValue(changed[0],"Quality","Weather")=="~");assert(qualityOf(changed[0],"").weather==1);
     for(const auto* value:{"-100","-50","0","+100","200"}){
         auto adjusted=applyChanges(docs,fields,std::string("Q\tQuality\tGIBrightness\t")+value+"\n");
@@ -82,7 +97,7 @@ int main(int argc,char** argv){
          found=true;assert(f.apply=="F"&&f.low=="0"&&f.high=="4"&&f.factory=="1");}assert(found);
      fails([&]{applyChanges(docs,fields,"C\tdefault\tsun_fog_density\t4.1\n");});}
     // HDR mode and grading both participate in live preview and Revert.
-    {unsigned hdrFields=0;for(const auto& f:fields)if(f.file==1&&f.section=="Renderer"&&f.key!="Backend"){++hdrFields;assert(f.available&&f.apply=="F");auto edited=applyChanges(docs,fields,f.id()+"\t"+f.factory+"\n");assert(configOf(edited,"").hdr.size()==NorthlightHdrSettingsContract::Count);}assert(hdrFields==NorthlightHdrSettingsContract::Count);
+    {unsigned hdrFields=0;for(const auto& f:fields)if(f.file==1&&f.section=="Renderer"&&f.key!="Backend"&&f.key.rfind("Native",0)!=0){++hdrFields;assert(f.available&&f.apply=="F");auto edited=applyChanges(docs,fields,f.id()+"\t"+f.factory+"\n");assert(configOf(edited,"").hdr.size()==NorthlightHdrSettingsContract::Count);}assert(hdrFields==NorthlightHdrSettingsContract::Count);
      auto unavailable=fields;for(auto& f:unavailable)if(f.key=="HDRMaxNits")f.available=false;fails([&]{applyChanges(docs,unavailable,"R\tRenderer\tHDRMaxNits\t600\n");});
      Document hdrDoc("[Renderer]\nHDRContrast=1.35\nHDRExposure=-1.25\nHDRPaperWhite=240\n");auto g=configOf({Document(""),hdrDoc,Document(""),Document("")},"");assert(g.hdr[4]==1.35f&&g.hdr[5]==-1.25f&&g.hdr[1]==240);}
     // Wide bloom is opt-in, persisted globally while HDR is off, and live.

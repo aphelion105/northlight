@@ -131,6 +131,16 @@ Wine/CrossOver/Lutris: the game folder's d3d9.dll loads only if d3d9 is set to
 native (WINEDLLOVERRIDES=d3d9=n,b), as DXVK also requires.
 WTF/Config.wtf, login details and addon settings are not part of the package.
 
+NATIVE LIGHTING
+Northlight keeps nearby torch and lamp lighting when their models leave the
+view. This is enabled by default on recognized 3.3.5a clients. An existing
+LightStay patch is preserved; unknown client code is left alone.
+To disable it, clear "Keep off-screen lights" in the settings window's Renderer
+page, or set NativeLightStay=0 under [Renderer] in northlight-renderer.ini,
+then restart WoW. This disables Northlight's installation, not a patch already
+present in your EXE or supplied by another mod. Only process memory changes;
+the EXE on disk is never rewritten and no MPQ is needed.
+
 QUALITY SETTINGS (northlight-quality.ini)
 northlight-quality.ini in the game folder chooses the quality: Preset=Quality (the
 default, full quality), Balanced or Performance. On a weaker processor, Balanced
@@ -337,9 +347,21 @@ uninstall puts those originals back. Files changed later are not overwritten;
 a conflict stops the restore before any change.
   Uninstall.cmd --client "C:\Games\WoW"
 
+EIGHT NATIVE LIGHTS
+[Renderer] NativeMoreLights=1 is enabled by default. This optional startup
+compatibility patch changes process memory only; it never rewrites Wow.exe or
+creates an MPQ. Disable it with NativeMoreLights=0 and restart the game.
+The Renderer menu has separate live limits for models/buildings (4..8) and
+terrain (3..8), both defaulting to 8. Supported SM2/SM3 native shaders use private
+expanded variants; unsupported shaders retain their original path. With no extra
+RGB or the minimum limit, supported original shaders draw directly. Partial
+limits remove extra RGB contributions while retaining eight-light arithmetic.
+These limits do not change Northlight's Total local lights, shadow budget or GI.
+
 SOURCES AND LICENSES
 LICENSES folder: Python (PSF), StormLib (MIT) and the zlib, bzip2,
 LibTomCrypt/LibTomMath and LZMA SDK that come with it, DXVK 3.1.1 and 2.7.1 (zlib license).
 DXVK 3.1.1: https://github.com/doitsujin/dxvk/releases/tag/v3.1.1
 DXVK 2.7.1: https://github.com/doitsujin/dxvk/releases/tag/v2.7.1
+St0ny More Lights native thunks: MIT, LICENSES/St0ny-More-Lights.txt.
 BUILD-INFO.json lists the versions and checksums of every part of the package.

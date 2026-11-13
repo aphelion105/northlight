@@ -13,6 +13,7 @@
 #include "celestial_glare_native.h"
 #include "weather_memory.h"
 #include "shader_tags.h"
+#include "world_draw_domain.h"
 #include "native_light_bridge.h"
 #include "native_shadow_control.h"
 
@@ -25,8 +26,9 @@ inline const char* triggerName(Trigger t){return t==Trigger::FrameStart?"frame":
 // is about 45 reads of game memory, so a frame takes at most three, and the replay keeps the latest one active until the
 // next (the sky and glare draws of a frame replay under the FrameStart or World snapshot of that same frame):
 //   FrameStart: the first draw after Present, so the draws of frame N see frame N's game memory, not N-1's.
-//   World:      the first draw whose VS is terrain or WMO (the camera / view stack / sky block are valid for the whole
-//               world pass and the light and camera hooks read them at its first draw).
+//   World:      the first depth-tested main-world draw whose VS is terrain or rigid world.
+//               Coordinate-compatible sky/shadow draws must not consume this trigger:
+//               their current view stack is not the main camera.
 //   Ui:         the first UI-tagged draw (renderEffects runs there). 0.3.203 (task 17): the tag can also come from the learned
 //               VS (the UI boundary fallback of renderer.cpp, see drawTags); as before it may fire before World, and the
 //               later World snapshot covers the world draws. The learned hash reaches the game thread a few frames after
@@ -37,9 +39,9 @@ inline unsigned drawTags(unsigned tags,std::uint64_t hash,std::uint64_t learned)
 struct TriggerPolicy {
     bool frame=false,world=false,ui=false;
     void beginFrame(){frame=false;world=false;ui=false;}
-    Trigger onDraw(unsigned vsTags){
+    Trigger onDraw(unsigned vsTags,bool mainWorld){
         if(vsTags&unsigned(NorthlightShaderTags::kUi)){if(ui)return Trigger::None;ui=true;frame=true;return Trigger::Ui;}
-        if((vsTags&NorthlightShaderTags::kTriggerWorld)&&!world){world=true;frame=true;return Trigger::World;}
+        if(mainWorld&&(vsTags&NorthlightShaderTags::kTriggerWorld)&&!world){world=true;frame=true;return Trigger::World;}
         if(!frame){frame=true;return Trigger::FrameStart;}
         return Trigger::None;
     }

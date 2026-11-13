@@ -43,6 +43,8 @@ import shutil
 import sys
 import tempfile
 import configparser
+import contextlib
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))   # the repo root, also under python -I
@@ -67,6 +69,18 @@ SKYBOX = DBC_NAME.format('LightSkybox')
 OWNER_FILE = 'northlight\\art-layer.json'
 OWNER_FORMAT = 'northlight-art-layer/1'
 INPUTS_FILE = 'northlight-art-inputs.ini'
+
+
+@contextlib.contextmanager
+def timed_step(report, name):
+    print(f'Art layer: {name}...', flush=True)
+    started = time.perf_counter()
+    try:
+        yield
+    finally:
+        seconds = round(time.perf_counter() - started, 2)
+        report.setdefault('timings_seconds', {})[name] = seconds
+        print(f'Art layer: {name} finished in {seconds:.1f} s', flush=True)
 
 
 def write_inputs(output, client, locale, letter, archives, expected):
@@ -179,7 +193,8 @@ def build(client, output, world_cache, locale=None, letter='z', archives='all'):
                 payload, last = {**payload, SKYBOX: chain_skybox}, None
             write_archive(source, payload)
             try:
-                step(source, out)
+                with timed_step(report, name):
+                    step(source, out)
             except Skip as skip:
                 report['steps'].append({'step': name, 'skipped': str(skip)})
                 print(f'{name}: skipped ({skip})', flush=True)
@@ -194,12 +209,15 @@ def build(client, output, world_cache, locale=None, letter='z', archives='all'):
                 print(f"{name}: sky clone skipped ({manifest['sky_clone_skipped']})", flush=True)
         index_file=world_cache/'lights'/'world-emitters-v1.json'
         extra_paths=json.loads(index_file.read_text())['models'] if index_file.is_file() else ()
-        emitter_metadata, emitter_counts = world_emitter_index.build(assets,extra_paths)
+        with timed_step(report, 'world emitter metadata'):
+            emitter_metadata, emitter_counts = world_emitter_index.build(assets,extra_paths)
         world_owned=set(json.loads(emitter_metadata)['models'])
-        dynamic_models, dynamic_steps = native_model_lights.build(assets, work, read_archive,excluded=world_owned)
+        with timed_step(report, 'dynamic model emitters'):
+            dynamic_models, dynamic_steps = native_model_lights.build(assets, work, read_archive,excluded=world_owned)
         payload.update(dynamic_models)
         report['steps'].extend(dynamic_steps)
-        emission = emission_catalog.build(assets, output)
+        with timed_step(report, 'live emission catalog'):
+            emission = emission_catalog.build(assets, output)
         report['runtime_emission_catalog'] = emission_catalog.FILE
         report['steps'].append({'step': 'live_emission_catalog', **emission['counts']})
         payload[world_emitter_index.ARCHIVE_PATH] = emitter_metadata
@@ -222,12 +240,17 @@ def build(client, output, world_cache, locale=None, letter='z', archives='all'):
         data = client_archives.data_dir(client).name
         local = client_archives.locale_dir(client, locale).name
         targets = [f'{data}/patch-{letter}.mpq', f'{data}/{local}/patch-{local.lower()}-{letter}.mpq']
-        for target in targets:
+        with timed_step(report, 'writing verified archives'):
+            first = output / targets[0]
             if last and not unchanged:   # keep the step's archive bytes (reproducible against the HD chain)
-                (output / target).parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(last, output / target)
+                first.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(last, first)
             else:
-                write_archive(output / target, payload)
+                write_archive(first, payload)
+            # Both placements contain the same verified archive. Compress once.
+            for target in targets[1:]:
+                (output / target).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(first, output / target)
     finally:
         assets.close()
         shutil.rmtree(work, ignore_errors=True)

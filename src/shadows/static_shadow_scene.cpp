@@ -100,6 +100,7 @@ public:
         Vec3 center=(low+high)*.5f,extent=(high-low)*.5f,delta=center-request.center;
         // Retain near fallback geometry and nearby unlit street surfaces.
         if(std::fabs(delta.x)<=288+margin+extent.x&&std::fabs(delta.y)<=288+margin+extent.y&&std::fabs(delta.z)<=320+margin+extent.z)return true;
+        delta.z+=request.groundOffset;
         for(unsigned i=0;i<2;++i)if(request.active[i]){
             auto& a=axes[i];
             if(!a.prepared){
@@ -110,7 +111,8 @@ public:
             if(!a.valid)continue;
             auto overlaps=[&](Vec3 axis,float reach){float projected=std::fabs(axis.x)*extent.x+std::fabs(axis.y)*extent.y+std::fabs(axis.z)*extent.z;return std::fabs(NorthlightGI::dot(delta,axis))<=reach+margin+projected;};
             // Same symmetric +/-640 depth; axes depend on light, never camera.
-            if(overlaps(a.right,NorthlightShadowCascades::StaticRadius)&&overlaps(a.up,NorthlightShadowCascades::StaticRadius)&&overlaps(a.direction,640))return true;
+            const float radius=request.farRadius*NorthlightShadowCascades::CacheScale;
+            if(overlaps(a.right,radius)&&overlaps(a.up,radius)&&overlaps(a.direction,640))return true;
         }
         return false;
     }
@@ -326,7 +328,10 @@ struct Streamer::State {
         // conservatively covers large objects crossing the requested envelope.
         int tx=int(std::floor((17066.6666667-r.center.y)/533.3333333)),ty=int(std::floor((17066.6666667-r.center.x)/533.3333333));
         std::vector<Cell> wanted;
-        for(int y=ty-2;y<=ty+2;++y)for(int x=tx-2;x<=tx+2;++x)if(x>=0&&x<64&&y>=0&&y<64)wanted.emplace_back(x,y);
+        const float radius=r.farRadius*NorthlightShadowCascades::CacheScale;
+        const float reach=std::max(928.f,std::sqrt(2*radius*radius+640.f*640.f)+96.f);
+        const int tileReach=std::max(2,int(std::ceil(reach/533.3333333f)));
+        for(int y=ty-tileReach;y<=ty+tileReach;++y)for(int x=tx-tileReach;x<=tx+tileReach;++x)if(x>=0&&x<64&&y>=0&&y<64)wanted.emplace_back(x,y);
         lastWanted=std::set<Cell>(wanted.begin(),wanted.end());
         std::sort(wanted.begin(),wanted.end(),[&](Cell a,Cell b){return (a.first-tx)*(a.first-tx)+(a.second-ty)*(a.second-ty)<(b.first-tx)*(b.first-tx)+(b.second-ty)*(b.second-ty);});
         for(auto it=tiles.begin();it!=tiles.end();){bool keep=std::find(wanted.begin(),wanted.end(),it->first)!=wanted.end();if(!keep&&(ms(it->second.used,now)>limits.retainSeconds*1000.0||tiles.size()>49)){it=tiles.erase(it);dirty=true;}else ++it;}
@@ -343,9 +348,9 @@ struct Streamer::State {
         }
         if(dirty)index();
         Stamp selectionStart=Clock::now();std::set<Identity> candidates;
-        // This request is pivot-centred: sqrt(2*360^2+640^2)+96 < 928.
-        // Keep the existing metadata/cell window and its warm reuse.
-        const float reach=928.f;int x0=int(std::floor((r.center.x-reach)/limits.cellSize)),x1=int(std::floor((r.center.x+reach)/limits.cellSize));int y0=int(std::floor((r.center.y-reach)/limits.cellSize)),y1=int(std::floor((r.center.y+reach)/limits.cellSize));
+        // The cell window encloses the admitted far cache and its depth.
+        // Ground-level requests retain the original 928-unit window.
+        int x0=int(std::floor((r.center.x-reach)/limits.cellSize)),x1=int(std::floor((r.center.x+reach)/limits.cellSize));int y0=int(std::floor((r.center.y-reach)/limits.cellSize)),y1=int(std::floor((r.center.y+reach)/limits.cellSize));
         for(int y=y0;y<=y1;++y)for(int x=x0;x<=x1;++x){auto it=cells.find({x,y});if(it!=cells.end())candidates.insert(it->second.begin(),it->second.end());}candidates.insert(giants.begin(),giants.end());
         std::vector<Placement> chosen;std::map<std::string,float> priority;std::set<std::string> needed;
         SelectionVolume volume(r); // Light-space axes depend on this request, never on the placement.
@@ -404,9 +409,11 @@ Streamer::Streamer(std::string root,Limits limits,NorthlightGI::SceneSourceProvi
 Streamer::~Streamer()=default;
 void Streamer::request(const Request& r){
     if(r.map.empty()||r.map.find("..")!=std::string::npos||r.map.find_first_of("/\\")!=std::string::npos||!finite(r.center)||std::fabs(r.center.x)>100000||std::fabs(r.center.y)>100000||std::fabs(r.center.z)>100000)return;
+    if(!std::isfinite(r.groundOffset)||r.groundOffset<0||r.groundOffset>200000||!std::isfinite(r.farRadius)||r.farRadius<NorthlightShadowCascades::FarRadius||r.farRadius>768)return;
     for(unsigned i=0;i<2;++i)if(r.active[i]&&!finite(r.directions[i]))return;
     auto& s=*state_;std::shared_ptr<const Snapshot> retired;
     {std::lock_guard<std::mutex> lock(s.mutex);bool mapChanged=!s.hasRequest||s.requested.map!=r.map;bool changed=mapChanged||distance2(s.requested.center,r.center)>=32*32||s.requested.allowLoads!=r.allowLoads;
+    changed=changed||std::fabs(s.requested.groundOffset-r.groundOffset)>=32||s.requested.farRadius!=r.farRadius;
     for(unsigned i=0;i<2;++i)if(r.active[i]!=s.requested.active[i]||(r.active[i]&&NorthlightGI::dot(NorthlightGI::normalized(r.directions[i]),NorthlightGI::normalized(s.requested.directions[i]))<.999847695f))changed=true;
     if(!changed&&s.published&&(s.published->stats.pendingModels||s.published->stats.pendingTiles)&&s.doneSerial==s.requestSerial&&Clock::now()>=s.retryAfter)changed=true;
     if(!changed)return;

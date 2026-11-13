@@ -162,11 +162,11 @@ int main() {
     world.clear();for(int x=-7;x<9;++x)world.put({x,0,0},probe({x,0,0}));
     WorldScene pair;pair.materials.push_back({});quad(pair,{-1,-1,0},{1,-1,0},{1,1,0},{-1,1,0});
     layer.reset(&pair);auto line=world.atlas();hits=misses=0;assert(layer.apply(line,tagged,[]{return false;},hits,misses));
-    const unsigned near=misses;assert(near>0&&hits==0);
+    const unsigned nearCount=misses;assert(nearCount>0&&hits==0);
     pair.materials.push_back({});quad(pair,{39,-1,0},{41,-1,0},{41,1,0},{39,1,0});for(auto& tri:pair.triangles)if(tri.v0>=4)tri.material=1;
-    layer.observe(&pair);line=world.atlas();hits=misses=0;assert(layer.apply(line,tagged,[]{return false;},hits,misses));assert(hits<near&&misses>near);
+    layer.observe(&pair);line=world.atlas();hits=misses=0;assert(layer.apply(line,tagged,[]{return false;},hits,misses));assert(hits<nearCount&&misses>nearCount);
     WorldScene swapped=pair;for(auto& tri:swapped.triangles)tri.material=1-tri.material;
-    layer.observe(&swapped);line=world.atlas();hits=misses=0;assert(layer.apply(line,tagged,[]{return false;},hits,misses));assert(misses==0&&hits>near);
+    layer.observe(&swapped);line=world.atlas();hits=misses=0;assert(layer.apply(line,tagged,[]{return false;},hits,misses));assert(misses==0&&hits>nearCount);
     std::puts("PASS static coverage survives actor generation changes, camera-window shifts, invalid actors and cancellation");
     std::puts("PASS exact static moments/validity, world-keyed cache reuse, smooth geometry-bound support, unreferenced vertex rejection");
     std::puts("PASS actual colored moving-geometry transport, 512-probe candidate ceiling, 128-solve budget, anchored signature reuse, stale limit, order independence and retention bound");

@@ -135,7 +135,7 @@ float directionalShadowFade(float3 p,float3 normal,float confidence,bool previou
     float3 pf=affinePoint(p+normal*(pfLift*DepthParams.z),PreviousFarMatrix);
     bool nearHistory=!any(abs(pnCover*float3(1,1,2)-float3(0,0,1))>.99);
     bool farHistory=!any(abs(pfCover*float3(1,1,2)-float3(0,0,1))>.99);
-    float blend=lerp(saturate((max(abs(pn.x),abs(pn.y))-.72)/.18),saturate((max(abs(cn.x),abs(cn.y))-.72)/.18),ShadowTransition.x);
+    float blend=lerp(shadowNearBlend(pn),shadowNearBlend(cn),ShadowTransition.x);
     float3 q=nearHistory?pn:cn,farQ=farHistory?pf:cf;
     float result=0;
     [loop]for(int cascade=0;cascade<2;++cascade){
@@ -203,13 +203,13 @@ float currentDirectionalShadowFade(float3 p,float3 normal,float confidence){
     // projection, matching the baseline's affine accumulation order.
     float oldLift=(1-saturate(abs(dot(normal,PreviousSunDirection.xyz))))*confidence*2/1024;
     float3 oldNear=affinePoint(p+normal*(oldLift*DepthParams.y),PreviousNearMatrix);
-    float oldBlend=saturate((max(abs(oldNear.x),abs(oldNear.y))-.72)/.18);
+    float oldBlend=shadowNearBlend(oldNear);
     float nearFacing=dot(normal,CurrentNearDirection.xyz),farFacing=dot(normal,CurrentFarDirection.xyz);
     float nearLift=(1-saturate(abs(nearFacing)))*confidence*2/1024;
     float farLift=(1-saturate(abs(farFacing)))*confidence*2/1024;
     float3 q=affinePoint(p+normal*(nearLift*DepthParams.y),NearMatrix);
     float3 farQ=affinePoint(p+normal*(farLift*DepthParams.z),FarMatrix);
-    float blend=lerp(oldBlend,saturate((max(abs(q.x),abs(q.y))-.72)/.18),ShadowTransition.x);
+    float blend=lerp(oldBlend,shadowNearBlend(q),ShadowTransition.x);
     float2 nearPlane=float2(dot(normal,float3(NearMatrix[0].x,NearMatrix[1].x,NearMatrix[2].x)),-dot(normal,float3(NearMatrix[0].y,NearMatrix[1].y,NearMatrix[2].y)))*DepthParams.y;
     nearPlane*=confidence*2*ShadowRange.x/(nearFacing<0?-max(abs(nearFacing),.15):max(abs(nearFacing),.15));
     float2 farPlane=float2(dot(normal,float3(FarMatrix[0].x,FarMatrix[1].x,FarMatrix[2].x)),-dot(normal,float3(FarMatrix[0].y,FarMatrix[1].y,FarMatrix[2].y)))*DepthParams.z;

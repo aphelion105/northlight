@@ -31,18 +31,31 @@ static std::vector<DWORD> words(const char* path){std::ifstream f(path,std::ios:
 static std::vector<float> pixels(IDirect3DDevice9* d,IDirect3DSurface9* rt,unsigned size){IDirect3DSurface9* copy=nullptr;must(d->CreateOffscreenPlainSurface(size,size,D3DFMT_A16B16G16R16F,D3DPOOL_SYSTEMMEM,&copy,nullptr));must(d->GetRenderTargetData(rt,copy));D3DLOCKED_RECT lock;must(copy->LockRect(&lock,nullptr,D3DLOCK_READONLY));std::vector<float> out(size*size*4);for(unsigned y=0;y<size;++y)for(unsigned x=0;x<size*4;++x)out[y*size*4+x]=NorthlightActorDeformation::half(reinterpret_cast<const uint16_t*>(static_cast<const char*>(lock.pBits)+y*lock.Pitch)[x]);must(copy->UnlockRect());copy->Release();nativeLocalRecord(out);return out;}
 static void save(const std::string& path,const std::vector<float>& image,unsigned size){std::ofstream f(path,std::ios::binary);unsigned h[]={0x31524746,size,size,116,16};f.write(reinterpret_cast<char*>(h),20);f.write(reinterpret_cast<const char*>(image.data()),image.size()*4);assert(f);}
 #include "native_local_light_final.inc"
+#ifdef NORTHLIGHT_TEST_NATIVE_OWNER
+#include "native_owner_submit.h"
+#endif
 struct FaultDevice:ForwardIDirect3DDevice9 {
     using ForwardIDirect3DDevice9::ForwardIDirect3DDevice9;
-    unsigned sets=0,failAt=0;bool failPrivatePS=false,failOriginalVS=false;IDirect3DVertexShader9* originalVS=nullptr;IDirect3DPixelShader9* originalPS=nullptr;
+    unsigned sets=0,failAt=0;bool failPrivatePS=false,failOriginalVS=false,failNativeRestore=false;IDirect3DVertexShader9* originalVS=nullptr;IDirect3DPixelShader9* originalPS=nullptr;
     bool fail(){return ++sets==failAt;}
     HRESULT STDMETHODCALLTYPE SetVertexShader(IDirect3DVertexShader9* p)override{if(fail()||(failOriginalVS&&p==originalVS))return E_FAIL;return real->SetVertexShader(p);}
     HRESULT STDMETHODCALLTYPE SetPixelShader(IDirect3DPixelShader9* p)override{if(fail())return E_FAIL;if(failPrivatePS&&p!=originalPS){failPrivatePS=false;return E_FAIL;}return real->SetPixelShader(p);}
     HRESULT STDMETHODCALLTYPE SetPixelShaderConstantF(UINT first,const float* p,UINT n)override{if(fail())return E_FAIL;return real->SetPixelShaderConstantF(first,p,n);}
+    HRESULT STDMETHODCALLTYPE SetVertexShaderConstantF(UINT first,const float* p,UINT n)override{if(fail()||(failNativeRestore&&p[0]!=0))return E_FAIL;return real->SetVertexShaderConstantF(first,p,n);}
     HRESULT STDMETHODCALLTYPE SetTexture(DWORD stage,IDirect3DBaseTexture9* p)override{if(fail())return E_FAIL;return real->SetTexture(stage,p);}
     HRESULT STDMETHODCALLTYPE SetSamplerState(DWORD stage,D3DSAMPLERSTATETYPE key,DWORD value)override{if(fail())return E_FAIL;return real->SetSamplerState(stage,key,value);}
 };
+#ifdef NORTHLIGHT_TEST_NATIVE_OWNER
+#include "native_terrain_light_checks.h"
+#endif
 int main(int argc,char** argv){
     std::setvbuf(stdout,nullptr,_IONBF,0);
+#ifdef NORTHLIGHT_TEST_NATIVE_OWNER
+    if(argc==7&&std::strncmp(argv[5],"terrain",7)==0)return nativeTerrainLightChecks(argv);
+#endif
+    if(argc==4&&std::strcmp(argv[1],"--audit-native")==0){auto v=words(argv[2]),p=words(argv[3]);bool rgbOnly=false;
+        const unsigned slots=NorthlightEquipmentLightProof::analyze(reinterpret_cast<const uint32_t*>(v.data()),v.size(),&rgbOnly);
+        std::printf("{\"slots\":%u,\"rgb_only\":%s,\"pixel_alpha_independent\":%s}\n",slots,rgbOnly?"true":"false",NorthlightNativeLocalPatch::pointOwnerPixel(reinterpret_cast<const uint32_t*>(p.data()),p.size())?"true":"false");return 0;}
     assert(argc==7||argc==8);constexpr unsigned Size=256;const bool wmo=std::strcmp(argv[5],"wmo")==0;
     WNDCLASSW wc{};wc.lpfnWndProc=DefWindowProcW;wc.hInstance=GetModuleHandleW(nullptr);wc.lpszClassName=L"NorthlightNativeLocalTest";assert(RegisterClassW(&wc));auto hwnd=CreateWindowW(wc.lpszClassName,L"",WS_OVERLAPPED,0,0,Size,Size,nullptr,nullptr,wc.hInstance,nullptr);assert(hwnd);
     auto library=LoadLibraryA(argv[1]);assert(library);auto create=reinterpret_cast<IDirect3D9*(WINAPI*)(UINT)>(reinterpret_cast<void*>(GetProcAddress(library,"Direct3DCreate9")));assert(create);auto api=create(D3D_SDK_VERSION);assert(api);
@@ -55,6 +68,19 @@ int main(int argc,char** argv){
 #endif
     d=&samplerDevice;
     auto v=words(argv[2]),p=words(argv[3]);IDirect3DVertexShader9* vs=nullptr;IDirect3DPixelShader9* ps=nullptr;must(d->CreateVertexShader(v.data(),&vs));must(d->CreatePixelShader(p.data(),&ps));
+#ifdef NORTHLIGHT_TEST_NATIVE_OWNER
+    assert(NorthlightNativeLocalPatch::pointOwnerPixel(reinterpret_cast<const uint32_t*>(p.data()),p.size()));
+    {int diffuse=-1;for(size_t at=1;at+1<p.size();){const unsigned op=p[at]&65535,n=op==65534?(p[at]>>16)&32767:(p[at]>>24)&15;
+            if(op==31&&NorthlightWaterShaderPatch::regType(p[at+2])==1&&(p[at+1]&0xf000fu)==10)diffuse=int(NorthlightWaterShaderPatch::regIndex(p[at+2]));at+=n+1;}
+        assert(diffuse>=0);auto changed=p;changed.insert(changed.end()-1,{0x02000001u,NorthlightWaterShaderPatch::dst(8,0,8),NorthlightWaterShaderPatch::src(1,unsigned(diffuse))&~0x00ff0000u});
+        assert(!NorthlightNativeLocalPatch::pointOwnerPixel(reinterpret_cast<const uint32_t*>(changed.data()),changed.size()));
+    }
+    for(unsigned semantic:{0u,10u}){int target=-1;for(size_t at=1;at+1<v.size();){const unsigned op=v[at]&65535,n=op==65534?(v[at]>>16)&32767:(v[at]>>24)&15;
+            if(op==31&&NorthlightWaterShaderPatch::regType(v[at+2])==6&&(v[at+1]&0xf000fu)==semantic)target=int(NorthlightWaterShaderPatch::regIndex(v[at+2]));at+=n+1;}
+        assert(target>=0);auto changed=v;changed.insert(changed.end()-1,{0x02000001u,NorthlightWaterShaderPatch::dst(6,unsigned(target),semantic?8:1),0xa0000011u});
+        bool safe=true;assert(NorthlightEquipmentLightProof::analyze(reinterpret_cast<const uint32_t*>(changed.data()),changed.size(),&safe)&&!safe);
+    }
+#endif
     unsigned slots[]={0,1};std::vector<uint32_t> negative;NorthlightNativeLocalPatch::VertexInfo vi;const bool two=NorthlightEquipmentLightProof::analyze(reinterpret_cast<const uint32_t*>(v.data()),v.size())>=2;assert(NorthlightNativeLocalPatch::vertex(reinterpret_cast<const uint32_t*>(v.data()),v.size(),slots,2,negative,vi)==two);
     D3DVERTEXELEMENT9 elements[]={{0,0,D3DDECLTYPE_FLOAT3,0,D3DDECLUSAGE_POSITION,0},{0,12,D3DDECLTYPE_UBYTE4,0,D3DDECLUSAGE_BLENDINDICES,0},{0,16,D3DDECLTYPE_FLOAT3,0,D3DDECLUSAGE_NORMAL,0},{0,28,D3DDECLTYPE_D3DCOLOR,0,D3DDECLUSAGE_COLOR,0},{0,32,D3DDECLTYPE_FLOAT2,0,D3DDECLUSAGE_TEXCOORD,0},D3DDECL_END()};IDirect3DVertexDeclaration9* declaration=nullptr;must(d->CreateVertexDeclaration(elements,&declaration));
     struct Vertex {float x,y,z;DWORD index;float nx,ny,nz;DWORD color;float u,v;};const Vertex plane[]={{-8,8,8,0,0,0,-1,0xb3ffffff,0,0},{8,8,8,0,0,0,-1,0xb3ffffff,1,0},{-8,-8,8,0,0,0,-1,0xb3ffffff,0,1},{8,-8,8,0,0,0,-1,0xb3ffffff,1,1}};
@@ -84,8 +110,20 @@ int main(int argc,char** argv){
         constants[25][0]=constants[25][1]=1;constants[26][0]=constants[26][1]=.2f;constants[27][0]=constants[27][1]=.01f;constants[30][1]=fog;constants[30][2]=1;constants[31][0]=constants[32][1]=constants[33][2]=1;
         NorthlightLocalLights::Light authored{};authored.kind=2;authored.flags=2;authored.sourceId=3183403080900234831ull;std::copy_n(light.position,3,authored.position);std::copy_n(constants[17],3,authored.diffuse);
         const float denominator[]={constants[25][0],constants[26][0],constants[27][0]};authored=NorthlightLocalLights::nativeTransport(authored,denominator);
-        struct OwnBinding {const NorthlightNativeLights::Point* native;const NorthlightLocalLights::Light* authored;};
+        struct OwnBinding {const NorthlightNativeLights::Point* native;const NorthlightLocalLights::Light* authored;float ownerGain=1;};
         const OwnBinding ownBinding{nullptr,&authored};NorthlightNativeDirect::BankMemo ownershipMemo;unsigned ownershipHits=0;
+#ifdef NORTHLIGHT_TEST_NATIVE_OWNER
+        bool rgbOnly=false;assert(NorthlightEquipmentLightProof::analyze(reinterpret_cast<const uint32_t*>(v.data()),v.size(),&rgbOnly)&&rgbOnly);
+        NativeOwnerSubmitTest nativeOwner(d);
+        NorthlightEquipmentLights::Tracker::Entry witness;witness.id=6;witness.seen=1000;
+        std::copy_n(light.position,3,witness.source.position);std::copy_n(constants[17],3,witness.source.color);std::copy_n(denominator,3,witness.source.attenuation);
+        auto observedSelected=authored;observedSelected.sourceId=0xfec0000000000006ull;observedSelected.flags=0;
+        witness.emitterOffset[2]=.4f;observedSelected.position[2]+=.4f; // Resolve elsewhere; native slot matching stays raw.
+        NorthlightNativeLights::Point observedPoint;std::copy_n(witness.source.position,3,observedPoint.position);std::copy_n(witness.source.color,3,observedPoint.color);std::copy_n(witness.source.attenuation,3,observedPoint.attenuation);
+        const OwnBinding observedBinding{&observedPoint,nullptr,NorthlightNativeDirect::observedOwnershipGain(observedSelected,witness,1000,{})};assert(observedBinding.ownerGain==1);
+        assert(!NorthlightNativeDirect::source(observedSelected,NorthlightNativeLights::Snapshot{})); // Missing inventory cannot identify this live bank source.
+        NorthlightNativeDirect::BankMemo observedMemo;
+#endif
         NorthlightNativeLights::Snapshot incomplete;assert(!NorthlightNativeDirect::source(authored,incomplete));
         must(d->SetVertexShaderConstantF(0,constants[0],256));float pixelConstants[224][4]{};pixelConstants[2][0]=.05f;pixelConstants[2][1]=.1f;pixelConstants[2][2]=.2f;must(d->SetPixelShaderConstantF(0,pixelConstants[0],224));must(d->SetTexture(0,texture));
         for(auto key:{D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER})must(d->SetSamplerState(0,key,D3DTEXF_POINT));must(d->SetSamplerState(0,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP));must(d->SetSamplerState(0,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP));
@@ -101,14 +139,26 @@ int main(int argc,char** argv){
             nativeEventCold(samplerDevice,renderer,light,vs,otherPS,[&]{return d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,plane,sizeof(Vertex));},[&]{return pixels(d,target,Size);},3,true);otherPS->Release();}
         return 0;
 #endif
-        auto render=[&](bool patched,bool zero){float color[4];std::memcpy(color,constants[17],16);if(zero)color[0]=color[1]=color[2]=0;must(d->SetVertexShaderConstantF(17,color,1));must(d->Clear(0,nullptr,D3DCLEAR_TARGET,0x80204060,1,0));must(d->BeginScene());auto submit=[&]{return d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,plane,sizeof(Vertex));};const bool cold=patched&&!renderer.coldPairs;const auto start=std::chrono::steady_clock::now();
+        auto render=[&](bool patched,bool zero,bool rendererOwned=false){float color[4];std::memcpy(color,constants[17],16);if(zero)color[0]=color[1]=color[2]=0;must(d->SetVertexShaderConstantF(17,color,1));must(d->Clear(0,nullptr,D3DCLEAR_TARGET,0x80204060,1,0));must(d->BeginScene());auto submit=[&]{return d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,plane,sizeof(Vertex));};const bool cold=patched&&!renderer.coldPairs;const auto start=std::chrono::steady_clock::now();
             float bank[44];must(d->GetVertexShaderConstantF(17,bank,11));const unsigned count=two?2:1;bool ownershipHit=false;
             const auto& ownership=ownershipMemo.resolve(bank,count,light.inverseView,light.inverseView+12,&ownBinding,1,ownershipHit);ownershipHits+=ownershipHit;
             const bool owns=ownership.bindings[0]==0;
+#ifdef NORTHLIGHT_TEST_NATIVE_OWNER
+            if(rendererOwned){float rgb[16],restored[44];bool hit=false;const auto& observed=observedMemo.resolve(bank,count,light.inverseView,light.inverseView+12,&observedBinding,1,hit);
+                const unsigned mask=NorthlightNativeDirect::ownedBank(bank,count,observed,&observedBinding,rgb);
+                must(nativeOwner.draw(mask,rgb,bank,submit));must(d->GetVertexShaderConstantF(17,restored,11));assert(!std::memcmp(bank,restored,sizeof bank));
+            }else
+#else
+            (void)rendererOwned;
+#endif
             must(patched&&owns?renderer.draw(light,vs,ps,submit):submit());if(cold)coldMs=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();must(d->EndScene());if(ms)must(d->StretchRect(target,nullptr,resolved,nullptr,D3DTEXF_NONE));return pixels(d,resolved,Size);};
         fillCube(0);native=render(false,false);const auto clear=render(true,false);assert(renderer.draws>0&&renderer.coldPairs==1);
         assert(native==clear);assert(ownershipHits>0); // Includes nonidentity projection clipping and all MSAA edge pixels.
         fillCube(1);const auto without=render(false,true);blocked=render(true,false);
+#ifdef NORTHLIGHT_TEST_NATIVE_OWNER
+        assert(render(false,false,true)==without);assert(render(false,true,true)==without);
+        assert(nativeOwner.nativeOwnedDraws==1&&nativeOwner.nativeOwnedSlots==1&&!nativeOwner.failed);
+#endif
         const auto owned=authored;authored.diffuse[1]+=.02f;ownershipMemo.reset();assert(render(true,false)==native);authored=owned;ownershipMemo.reset();authored.attenuationEnd+=1;ownershipMemo.reset();assert(render(true,false)==native);authored=owned;ownershipMemo.reset();authored.position[0]+=.02f;ownershipMemo.reset();assert(render(true,false)==native);authored=owned;ownershipMemo.reset();
         light.gain=0;const auto gain0=render(true,false);assert(gain0==native);light.gain=.5f;const auto fade=render(true,false);light.gain=1;
         float removed=0;for(unsigned i=0;i<native.size();i+=4)removed=std::max(removed,native[i]-without[i]);assert(removed>.03f); // Never accept an empty/cutout/transparent fixture.
@@ -136,6 +186,18 @@ int main(int argc,char** argv){
     // Every changed setter can fail during setup or restore. A single transient
     // failure must still submit exactly once and restore the entire native state.
     FaultDevice fault(d);fault.originalVS=vs;fault.originalPS=ps;NorthlightNativeLocalLighting checked(&fault);
+#ifdef NORTHLIGHT_TEST_NATIVE_OWNER
+    {
+        float original[16],owned[16],after[16];must(d->GetVertexShaderConstantF(17,original,4));std::copy_n(original,16,owned);owned[0]=owned[1]=owned[2]=0;assert(original[0]>0);
+        const auto restored=[&]{must(d->GetVertexShaderConstantF(17,after,4));assert(!std::memcmp(original,after,sizeof original));};
+        for(unsigned fail:{0u,1u,2u}){NativeOwnerSubmitTest scope(&fault);fault.sets=0;fault.failAt=fail;unsigned submits=0;
+            must(scope.draw(1,owned,original,[&]{++submits;return S_OK;}));assert(submits==1&&!scope.failed);restored();}
+        fault.failAt=0;{NativeOwnerSubmitTest scope(&fault);bool caught=false;try{scope.draw(1,owned,original,[]()->HRESULT{throw 7;});}catch(int){caught=true;}assert(caught&&!scope.failed);restored();}
+        {NativeOwnerSubmitTest scope(&fault);fault.failNativeRestore=true;unsigned submits=0;assert(FAILED(scope.draw(1,owned,original,[&]{++submits;return S_OK;})));assert(submits==1&&scope.failed);fault.failNativeRestore=false;}
+        must(d->SetVertexShaderConstantF(17,original,4));fault.sets=0;restored();
+        std::puts("NATIVE_POINT_OWNER_GPU_PASS present_and_absent_bank=identical native_fog_alpha_blend_msaa=preserved source_scope=exact_world_submit restore_transient_and_exception=pass persistent_restore_failure=propagated");
+    }
+#endif
     const D3DSAMPLERSTATETYPE keys[]={D3DSAMP_ADDRESSU,D3DSAMP_ADDRESSV,D3DSAMP_ADDRESSW,D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER,D3DSAMP_MIPFILTER,D3DSAMP_SRGBTEXTURE};
     const DWORD previous[]={D3DTADDRESS_WRAP,D3DTADDRESS_MIRROR,D3DTADDRESS_WRAP,D3DTEXF_LINEAR,D3DTEXF_LINEAR,D3DTEXF_LINEAR,TRUE};
     must(d->SetTexture(1,texture));for(unsigned i=0;i<7;++i)must(d->SetSamplerState(1,keys[i],previous[i]));must(d->SetRenderTarget(0,resolved));

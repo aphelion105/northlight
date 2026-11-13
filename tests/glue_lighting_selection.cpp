@@ -5,9 +5,16 @@
 #include <fstream>
 #include <vector>
 #include "glue_lighting_selection.h"
+#include "native_more_lights.h"
 
 template<class T> T& at(void* p,unsigned offset){return *reinterpret_cast<T*>(static_cast<unsigned char*>(p)+offset);}
 using Block=std::array<unsigned char,1024>;
+static unsigned lightStayFlushes=0,lightStayProtects=0;
+static unsigned moreFlushes=0;
+static BOOL WINAPI moreFailPublishFlushOnce(HANDLE p,LPCVOID a,SIZE_T n){return ++moreFlushes==2?FALSE:FlushInstructionCache(p,a,n);}
+static BOOL WINAPI lightStayFailFlushOnce(HANDLE p,LPCVOID a,SIZE_T n){return ++lightStayFlushes==1?FALSE:FlushInstructionCache(p,a,n);}
+static BOOL WINAPI lightStayFailRestoreOnce(LPVOID p,SIZE_T n,DWORD value,PDWORD old){return ++lightStayProtects==2?FALSE:VirtualProtect(p,n,value,old);}
+static BOOL WINAPI lightStayFailProtect(LPVOID,SIZE_T,DWORD,PDWORD){return FALSE;}
 alignas(4096) static unsigned char clientReserve[0x700000];
 extern "C" __attribute__((naked)) void invoke(void*,void*,void*,void*){
     __asm__ volatile("push %ebp; mov %esp,%ebp; push %esi; mov 8(%ebp),%esi; mov 12(%ebp),%ecx; push 16(%ebp); call *20(%ebp); pop %esi; pop %ebp; ret");
@@ -99,5 +106,49 @@ int main(int argc,char** argv){
     auto* setup=reinterpret_cast<unsigned char*>(0x831af0);setup[0]^=1;
     assert(std::strcmp(NorthlightGlueLighting::install(reinterpret_cast<HMODULE>(0x400000)),"setup-signature-mismatch")==0);
     setup[0]^=1;
+    // LightStay changes exactly one opcode in the local mapped client copy.
+    // A disabled option and an existing external patch never acquire or undo it.
+    namespace Stay=NorthlightNativeLightStay;
+    auto* query=reinterpret_cast<unsigned char*>(0x81e400);
+    std::array<unsigned char,Stay::QuerySize> queryBefore;std::memcpy(queryBefore.data(),query,queryBefore.size());
+    const auto same=[&]{return !std::memcmp(query,queryBefore.data(),queryBefore.size());};
+    const auto statusIs=[](const char* actual,const char* wanted){assert(!std::strcmp(actual,wanted));};
+    statusIs(Stay::install(false,nullptr),"disabled");assert(same());
+    query[0]^=1;const auto changed=query[0];
+    statusIs(Stay::install(),"query-signature-mismatch");assert(query[0]==changed&&query[Stay::BranchOffset]==0x74);query[0]^=1;
+    query[Stay::BranchOffset]=0xeb;
+    statusIs(Stay::install(),"already-active");statusIs(Stay::install(false),"disabled");assert(query[Stay::BranchOffset]==0xeb);
+    statusIs(NorthlightGlueLighting::install(),"already-active");query[Stay::BranchOffset]=0x74;
+    assert(VirtualProtect(query,Stay::QuerySize,PAGE_EXECUTE_READ,&old));
+    const auto protection=[&]{MEMORY_BASIC_INFORMATION m={};assert(VirtualQuery(query,&m,sizeof m));return m.Protect;};
+    const auto imageBase=reinterpret_cast<HMODULE>(0x400000);
+    statusIs(Stay::install(true,imageBase,{lightStayFailProtect,&FlushInstructionCache}),"code-protection-failed");assert(same()&&protection()==PAGE_EXECUTE_READ);
+    statusIs(Stay::install(true,imageBase,{&VirtualProtect,lightStayFailFlushOnce}),"code-cache-flush-failed");assert(same()&&protection()==PAGE_EXECUTE_READ&&lightStayFlushes==2);
+    statusIs(Stay::install(true,imageBase,{lightStayFailRestoreOnce,&FlushInstructionCache}),"code-protection-restore-failed");assert(same()&&protection()==PAGE_EXECUTE_READ&&lightStayProtects==3);
+    statusIs(Stay::install(),"active");assert(protection()==PAGE_EXECUTE_READ);
+    queryBefore[Stay::BranchOffset]=0xeb;assert(same());statusIs(Stay::install(),"already-active");
+    statusIs(NorthlightGlueLighting::install(),"already-active");
+    puts("NATIVE_LIGHT_STAY_PASS disabled=unchanged existing=unchanged unknown=unchanged branch-only=1 rollback=1 protection-restored=1 glue-compatible=1");
+    namespace More=NorthlightNativeMoreLights;
+    for(const auto& p:NorthlightNativeMoreLightsCode::Proofs)copy(p.address,p.size);
+    statusIs(More::install(false),"disabled");assert(!More::available);
+    auto* nativeInit=reinterpret_cast<unsigned char*>(NorthlightNativeMoreLightsCode::Proofs[0].address);nativeInit[0]^=1;
+    statusIs(More::install(),"client-layout-mismatch");assert(!More::available);nativeInit[0]^=1;
+    statusIs(More::install(true,imageBase,{lightStayFailProtect,&FlushInstructionCache}),"thunk-publication-failed");assert(More::verified(false)&&!More::available);
+    statusIs(More::install(true,imageBase,{&VirtualProtect,moreFailPublishFlushOnce}),"code-cache-flush-failed");assert(More::verified(false)&&!More::available);
+    statusIs(More::install(),"active");assert(More::available);
+    statusIs(More::install(),"already-active");
+    uintptr_t code=0;assert(More::existing(code));
+    using GetEntry=void*(__thiscall*)(void*);using AddLight=void(__thiscall*)(void*,void*);
+    auto getEntry=reinterpret_cast<GetEntry>(code);auto addLight=reinterpret_cast<AddLight>(0x834f60);
+    std::array<std::array<unsigned char,108>,12> sources{};Block receiver{};
+    for(unsigned i=0;i<sources.size();++i){at<unsigned>(sources[i].data(),8)=1;at<unsigned>(sources[i].data(),96)=1;at<float>(sources[i].data(),12)=float(i+1);}
+    for(bool reverse:{false,true}){
+        receiver={};for(unsigned i=0;i<sources.size();++i)addLight(receiver.data(),sources[reverse?sources.size()-1-i:i].data());
+        assert(at<unsigned>(receiver.data(),164)==4);for(unsigned i=0;i<4;++i)assert(at<void*>(receiver.data(),132+4*i)==sources[i].data());
+        auto* extra=getEntry(receiver.data());assert(extra&&at<void*>(extra,0)==receiver.data()&&at<unsigned>(extra,4)==4);
+        for(unsigned i=0;i<4;++i)assert(at<void*>(extra,8+4*i)==sources[i+4].data());
+    }
+    puts("NATIVE_MORE_LIGHTS_PASS nativeAddLight=1 closest8=1 originalSlots=unchanged rejectAndEvict=1 idempotent=1 unknownCode=skip publicationFailure=rollback fileWrites=0");
     puts("GLUE_LIGHTING_PASS native-12340-selector=1 eviction-control=1 own-sources=2 slots=4 positions-unchanged=1 non-glue-unchanged=1");
 }

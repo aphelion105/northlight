@@ -10,20 +10,35 @@
       "test_ao_fold.py",
       "test_quality_docs.py",
       "test_world_shader_manifest.py",
-      "test_shadow_transition_build.py"
+      "test_fog_temporal_wiring.py",
+      "test_fog_clouds_wiring.py",
+      "test_shadow_transition_build.py",
+      "test_fog_volume_build.py",
+      "test_fixture_light_resolution.py"
     ]
   },
   "architecture": {
     "description": "Compiled production contracts for frame demand, four Draw adapters, capture ownership and model-normal consumers. No game or GPU timings.",
     "tests": [
       "test_frame_requirements.py",
+      "test_static_shadow_selection.py",
+      "test_shadow_transition_math.py",
       "test_draw_gates.py",
       "test_draw_orchestration.py",
       "test_sky_background_order.py",
       "test_capture_handoff.py",
       "test_shared_terrain_bounds.py",
       "test_model_normal_demand.py",
-      "test_model_normal_consumers.py"
+      "test_model_normal_consumers.py",
+      "test_native_light_snapshot.py",
+      "test_native_scene_lights.py",
+      "test_glue_lighting_selection.py",
+      "test_native_direct_ownership.py",
+      "test_world_shader_contract.py",
+      "test_world_snapshot_domain.py",
+      "test_world_environment.py",
+      "test_probe_local_visibility.py",
+      "test_world_shader_contract_client.py"
     ]
   },
   "gpu": {
@@ -31,6 +46,7 @@
     "tests": [
       "test_ao_optional_layers_gpu.py",
       "test_draw_orchestration_gpu.py",
+      "test_world_lighting_capture.py",
       "test_model_normal_native_gpu.py",
       "test_m2_material_admission.py",
       "test_material_pose_coarse.py",
@@ -38,14 +54,19 @@
       "test_world_screen_effects_gpu.py",
       "test_luxvelum_optimizations_gpu.py",
       "test_point_lamp_index.py",
+      "test_native_local_light_gpu.py",
+      "test_native_more_lights_gpu.py",
       "test_point_shadow_stutter_gpu.py",
       "test_m2_lamp_self_shadow_gpu.py",
       "test_shadow_transition_gpu.py",
+      "test_near_shadow_interval_gpu.py",
       "test_sky_environment_gpu.py",
       "test_hdr_sun_gpu.py",
       "test_effect_coverage_gpu.py",
       "test_weather_motion_gpu.py",
-      "test_sky_planets_gpu.py"
+      "test_sky_planets_gpu.py",
+      "test_fog_volume_gpu.py",
+      "test_probe_local_visibility_gpu.py"
     ]
   },
   "packaging": {
@@ -55,7 +76,10 @@
       "test_windows_installer.py",
       "test_linux_package.py",
       "test_entrypoints_isolated.py",
-      "test_install_delivery.py"
+      "test_install_delivery.py",
+      "test_install_world_cache.py",
+      "test_custom_pack_inputs.py",
+      "test_cutout_cache_detail.py"
     ]
   }
 }

@@ -627,7 +627,7 @@
         if(!entry||!nativeFixtures||entry->fixtureTag>nativeFixtures->records.size()||(p.cutoff>=0&&p.cutoff!=.5f)||!p.count||p.count>4096||
            p.mesh().vertexCount>12288||p.count!=p.mesh().primitiveCount||(p.type!=D3DPT_TRIANGLELIST&&p.type!=D3DPT_TRIANGLESTRIP))return false;
         if(!p.pointBounds.valid)return false;
-        for(unsigned k=0;k<3;++k)if(light.position[k]<p.pointBounds.low[k]-.003f||light.position[k]>p.pointBounds.high[k]+.003f)return false;
+        for(unsigned k=0;k<3;++k)if(entry->source.position[k]<p.pointBounds.low[k]-.003f||entry->source.position[k]>p.pointBounds.high[k]+.003f)return false;
         const auto program=actorPrograms.find(p.originalShader);const D3DVERTEXELEMENT9* elements=nullptr;UINT elementCount=0;
         if(program==actorPrograms.end()||!program->second||!declarationCache.get(p.decl,elements,elementCount))return false;
         const auto declaration=NorthlightNativeFixtures::hash(elements,elementCount*sizeof(*elements));
@@ -635,7 +635,7 @@
         NativeShellMemo transient,*memo=nullptr;
         if(p.shared)for(auto& cached:nativeShellMemo)if(cached.tag==entry->fixtureTag&&cached.source==source&&cached.program==program->second&&cached.declaration==declaration&&cached.mesh.lock()==p.shared){memo=&cached;break;}
         if(memo){++nativeShellMemoHits;if(!memo->prepared.valid())return false;
-            if(!std::memcmp(memo->constants.data(),p.constants,sizeof memo->constants)&&!std::memcmp(memo->inverse.data(),context.inverseView,sizeof memo->inverse)&&!std::memcmp(memo->point.data(),light.position,sizeof memo->point)){
+            if(!std::memcmp(memo->constants.data(),p.constants,sizeof memo->constants)&&!std::memcmp(memo->inverse.data(),context.inverseView,sizeof memo->inverse)&&!std::memcmp(memo->point.data(),entry->source.position,sizeof memo->point)){
                 remaining=memo->runs;return memo->matched;}}
         else{
         memo=p.shared?&nativeShellMemo[nativeShellNext++%nativeShellMemo.size()]:&transient;*memo=NativeShellMemo{};
@@ -665,9 +665,9 @@
         ++nativeShellPoseChecks;
         if(!NorthlightActorDeformation::worldPositions(*program->second,memo->ownedMesh,elements,elementCount,p.constants,context.inverseView,memo->world)||
            !StaticShadowDedup::makeTriangles(memo->world,memo->ownedMesh.indices,true,memo->ownedMesh.primitiveCount,false,memo->worldTriangles,4096))return false;
-        const bool matched=NorthlightNativeFixtureShadow::verify(memo->prepared,memo->local,memo->worldTriangles,light.position);memo->matched=matched;
+        const bool matched=NorthlightNativeFixtureShadow::verify(memo->prepared,memo->local,memo->worldTriangles,entry->source.position);memo->matched=matched;
         remaining.clear();if(matched)remaining=memo->runs;
-        std::copy_n(p.constants,1024,memo->constants.begin());std::copy_n(context.inverseView,16,memo->inverse.begin());std::copy_n(light.position,3,memo->point.begin());
+        std::copy_n(p.constants,1024,memo->constants.begin());std::copy_n(context.inverseView,16,memo->inverse.begin());std::copy_n(entry->source.position,3,memo->point.begin());
         return matched;
     }
     bool pointOwnShell(const Replay& p,const Batch& shell,PointReplayRuns& remaining){

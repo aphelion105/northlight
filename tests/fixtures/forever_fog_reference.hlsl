@@ -1,4 +1,13 @@
 // Frozen Northlight march before noise specialization and empty-prefix elision.
+float3 foreverNoiseReference(float3 p) {
+    float3 a=float3(tex3Dlod(CloudNoise,float4((p-PassInfo.w*Forever[25].xyz)*Forever[24].x,0)).r,
+                    tex3Dlod(CloudNoise,float4((p-PassInfo.w*Forever[26].xyz)*Forever[24].y,0)).r,
+                    tex3Dlod(CloudNoise,float4((p-PassInfo.w*Forever[27].xyz)*Forever[24].z,0)).r);
+    float3 b=float3(tex3Dlod(CloudNoise,float4((p-PassInfo.w*Forever[28].xyz)*Forever[31].x,0)).r,
+                    tex3Dlod(CloudNoise,float4((p-PassInfo.w*Forever[29].xyz)*Forever[31].y,0)).r,
+                    tex3Dlod(CloudNoise,float4((p-PassInfo.w*Forever[30].xyz)*Forever[31].z,0)).r);
+    return lerp(1,saturate(2*(a*Forever[32].xyz+b*Forever[33].xyz)),Forever[34].xyz);
+}
 float4 foreverFogReference(float2 uv,bool actorIntegration) {
     if(FogInfo.x<.5)return float4(0,0,0,1);
     uv=depthUV(uv);float depth=normalizedDepth(uv);
@@ -27,7 +36,7 @@ float4 foreverFogReference(float2 uv,bool actorIntegration) {
         float3 shape=exp(min(0,(Forever[2].xyz-height)*Forever[3].xyz)+min(0,(height-Forever[4].xyz)*Forever[5].xyz));
         float3 curve=1+Forever[7].xyz*pow(max(saturate((t-Forever[1].xyz)*.001),1e-8),Forever[8].xyz);
         float3 density=Forever[0].xyz*shape*curve*step(Forever[1].xyz,t)*valid;
-        float3 noise=foreverNoise(p);density*=noise;
+        float3 noise=foreverNoiseReference(p);density*=noise;
         float sigma=dot(density,1),absorb=1-exp(-sigma*(b-a));
         float3 lit=lerp(1,visible,Forever[9].xyz)*direct;
         float3 ambient=SourcePolicy.x*lerp(1,visible,Forever[9].xyz);

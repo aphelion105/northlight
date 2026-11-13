@@ -72,7 +72,10 @@ template<class Read> Value poseSample(Read& read,Asset& a,PoseTrack& cache,const
         const unsigned n=times[0],width=compressed?8:fields==1?1:fields==0?4:fields*4;const std::size_t bytes=n*(sizeof(Value)+4);
         if(!curveRoom(a,cache,bytes,epoch)){ok=false;return fallback;}
         Keys loaded;loaded.times.resize(n);loaded.values.resize(n);Bytes valuesRaw(n*width);
-        if(n&&(!read(times[1],loaded.times.data(),n*4)||!read(values[1],valuesRaw.data(),valuesRaw.size())||!std::is_sorted(loaded.times.begin(),loaded.times.end()))){ok=false;return fallback;}
+        // A single key is constant at every time. Some loaded M2s alias the
+        // timestamp table across tracks; native relocation can invalidate that
+        // unused pointer. Only animated curves depend on readable timestamps.
+        if(n&&((n>1&&!read(times[1],loaded.times.data(),n*4))||!read(values[1],valuesRaw.data(),valuesRaw.size())||!std::is_sorted(loaded.times.begin(),loaded.times.end()))){ok=false;return fallback;}
         for(unsigned i=0;i<n;++i)for(unsigned k=0;k<(compressed?4:fields<=1?1:fields);++k){const float value=compressed?float(at<std::uint16_t>(valuesRaw.data()+i*width,k*2))*(2.f/65535.f)-1.f:fields==1?float(valuesRaw[i]):at<float>(valuesRaw.data()+i*width,k*4);
             if(!std::isfinite(value)||std::fabs(value)>100000||(fields==1&&value>1)||(fields==0&&value<0)){ok=false;return fallback;}loaded.values[i][k]=value;}
         found=std::find_if(cache.curves.begin(),cache.curves.end(),[](const auto& c){return c.sequence==~0u;});if(found==cache.curves.end()){const auto capacity=cache.curves.capacity();cache.curves.reserve(cache.curves.size()+1);a.bytes+=(cache.curves.capacity()-capacity)*sizeof(CachedCurve);cache.curves.emplace_back();found=cache.curves.end()-1;}
@@ -306,7 +309,13 @@ public:
             Runtime<decltype(read)> runtime(*this,read,*a,m,matrix,header[3]);it->second.distance=std::numeric_limits<float>::infinity();
             for(auto& l:a->lights){Point p;p.id=0xfea0000000000000ull|(model.firstId+l.index);
                 if(!at<std::uint32_t>(m,0x48)){const auto anchor=transform(l.point,matrix);bool finite=true;for(unsigned k=0;k<3;++k)finite=finite&&std::isfinite(anchor[k])&&std::fabs(anchor[k])<100000;if(finite){p.flags=RootAnchor|((a->fixtureSources>>l.index)&1?WorldFixture:0);if(p.flags&WorldFixture)p.reserved=a->fixtureTag;std::copy(anchor.begin(),anchor.begin()+3,p.anchor);}}
-                if(!runtime.position(l,p.position)){++unsupported;continue;}const float d=distance(p.position,camera);it->second.distance=std::min(it->second.distance,d);
+                if(!runtime.position(l,p.position)){++unsupported;continue;}
+                if((p.flags&WorldFixture)&&l.fixed)if(const auto* profile=fixtures_->resolution(p.reserved,l.index)){
+                    bool finite=true;float offset[3]{};
+                    for(unsigned k=0;k<3;++k){for(unsigned j=0;j<3;++j)offset[k]+=profile->offset[j]*matrix[j*4+k];finite=finite&&std::isfinite(offset[k])&&std::fabs(offset[k])<=100&&std::fabs(p.position[k]+offset[k])<100000;}
+                    if(finite){std::copy_n(offset,3,p.emitterOffset);p.flags|=ResolvedEmitter;}
+                }
+                const float d=distance(p.position,camera);it->second.distance=std::min(it->second.distance,d);
                 const float reach=NorthlightLocalLightSelection::VisibilityEnd+12.f;if(!std::isfinite(d)||d>reach*reach||!visible||alpha==0)continue;
                 const auto timing=runtime.timing(l.bone);if(!timing.valid){++malformed;continue;}
                 std::array<unsigned char,LightBytes> liveStorage;const unsigned char* live=nullptr;if(!runtime.light(l.index,liveStorage,live))continue;

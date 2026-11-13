@@ -9,6 +9,7 @@
 #include <vector>
 #include <memory>
 #include <atomic>
+#include <array>
 #include "memory_footprint.h"
 
 // Independent, portable world-geometry transport. No D3D or game addresses.
@@ -336,6 +337,11 @@ public:
 PreparedLighting prepareLighting(const Lighting& lighting);
 
 struct DistanceMoment { float mean = 0, meanSquare = 0; };
+struct ProbeLocalVisibility {
+    static constexpr unsigned Side=9;
+    // FP16 blocker plane xyz; w identifies identical 2x2 planes.
+    std::array<std::array<uint16_t,4>,Side*Side> texels{};
+};
 struct Probe {
     Vec3 position;
     // Real SH radiance coefficients ordered Y00, Y1x, Y1y, Y1z. Projection uses
@@ -347,6 +353,10 @@ struct Probe {
     unsigned backFaceSamples = 0;
     float maxDistance = 0;
     bool valid = false;
+    std::shared_ptr<const ProbeLocalVisibility> localVisibility;
+    void accountVisibility(NorthlightMemoryFootprint::Counter& memory)const{
+        if(localVisibility)memory.allocation(NorthlightMemoryFootprint::Probes,localVisibility.get(),sizeof(ProbeLocalVisibility));
+    }
 };
 
 // Deterministic stratified sphere rays and cosine-weighted diffuse scattering.

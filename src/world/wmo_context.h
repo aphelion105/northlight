@@ -251,16 +251,19 @@ inline bool supportedClient() {
         !NorthlightWorldContext::readSelf(proof[i].address,actual,proof[i].size)||std::memcmp(actual,proof[i].bytes,proof[i].size))return false;}
     return true;
 }
+inline void proveGlobalLighting(Lighting& out) {
+    static const bool slots=[]{size_t count;const auto* proof=lightSlotProofs(count);return proven(proof,count);}();
+    static const bool predictionCode=[]{size_t count;const auto* proof=predictionProofs(count);return proven(proof,count);}();
+    readPredictors(NorthlightWorldContext::readSelf,out);out.predictors=out.predictors&&predictionCode&&slots&&out.slotsConsistent;
+    out.slotsProven=slots&&out.slotsConsistent;
+}
 inline bool readGlobalLighting(const float* expectedCamera,Lighting& out) {
     static const bool supported=supportedClient();if(!supported)return false;
     unsigned char first[SkyBytes],second[SkyBytes];
-    static const bool slots=[]{size_t count;const auto* proof=lightSlotProofs(count);return proven(proof,count);}();
     if(!(NorthlightWorldContext::readSelf(0xd38b00,first,sizeof first)&&
          NorthlightWorldContext::readSelf(0xd38b00,second,sizeof second)&&
          decodeCoherentGlobalLighting(first,second,SkyBytes,expectedCamera,out)))return false;
-    static const bool predictionCode=[]{size_t count;const auto* proof=predictionProofs(count);return proven(proof,count);}();
-    readPredictors(NorthlightWorldContext::readSelf,out);out.predictors=out.predictors&&predictionCode&&slots&&out.slotsConsistent;
-    out.slotsProven=slots&&out.slotsConsistent;return true;
+    proveGlobalLighting(out);return true;
 }
 #endif
 } // namespace NorthlightWmoContext

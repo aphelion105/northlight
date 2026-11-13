@@ -126,6 +126,7 @@ using PreparationLayout=std::vector<PreparationIdentity>;
 
 
 struct WorldMeshUploadPlan {
+    float shadowGround=std::numeric_limits<float>::quiet_NaN(),shadowTerrainReach=0;
     // Private pressure preparation spool; ownership moves into sealed pages.
     std::shared_ptr<NorthlightGI::TemporaryGeometryFile> temporary;
     void accountMemory(NorthlightMemoryFootprint::Counter&,bool includeObject=true)const;

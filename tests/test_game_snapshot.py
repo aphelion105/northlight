@@ -24,9 +24,9 @@ checks['Device tags through the shared function; shaderHash through the shared F
     and 'return NorthlightShaderTags::fnv1a(words.data(), size);' in r and '#include "shader_tags.h"' in r)
 sd=fp.src('stream_device.h').read_text();sp=fp.src('stream_proxies.h').read_text()
 checks['learned UI VS: onDraw uses drawTags with the relaxed atomic; CreateVertexShader hashes once; the atomic lives in stream_hooks.h']=(
-    'drawTags(v->tags,v->hash,learnedUiVsHash.load(std::memory_order_relaxed))' in sd and 'p->hash=NorthlightShaderTags::fnv1a(code,tokens*4);p->tags=NorthlightShaderTags::triggerTags(p->hash);' in sd
+    'drawTags(v->tags,v->hash,learnedUiVsHash.load(std::memory_order_relaxed))' in sd and 'p->hash=NorthlightShaderTags::fnv1a(code,tokens*4);p->tags=NorthlightShaderTags::triggerTags(p->hash,code,tokens*4);' in sd
     and 'std::uint64_t hash=0;' in sp and 'inline std::atomic<std::uint64_t> learnedUiVsHash{0};' in hooks and 'inline unsigned drawTags(' in snap)
-checks['shader_tags.h: static tables only, no device, no game memory']=all(x not in tags for x in ('readSelf','d3d9','windows.h','GetFunction'))
+checks['shader_tags.h: pure registration proof, no device or game memory']=all(x not in tags for x in ('readSelf','d3d9','windows.h','GetFunction'))
 checks['stream_hooks.h: UP identity thread_local, innerOf null by default, core budget subtracts one only when active']=(
     'inline thread_local const void* upIdentity=nullptr;' in hooks and 'inline const void* (*innerOf)(const void*)=nullptr;' in hooks
     and 'hw>1&&streamActive.load(std::memory_order_relaxed)?hw-1:hw;' in hooks)

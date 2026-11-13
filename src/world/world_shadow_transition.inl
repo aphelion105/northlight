@@ -78,7 +78,7 @@
         set(d->SetTexture(0,nullptr));set(d->SetTexture(1,nullptr));
         set(d->SetRenderState(D3DRS_ZENABLE,TRUE));set(d->SetRenderState(D3DRS_ZWRITEENABLE,TRUE));
         set(d->SetSamplerState(0,D3DSAMP_MINFILTER,D3DTEXF_LINEAR));set(d->SetSamplerState(0,D3DSAMP_MAGFILTER,D3DTEXF_LINEAR));
-        if(ok){f.previous=f.working;NorthlightWorldMath::shadowMatrixFrom(f.previous,slot%2?192.f:48.f,f.previousMatrix);}
+        if(ok){f.previous=f.working;NorthlightWorldMath::shadowMatrixFrom(f.previous,f.previous.texel*512.f,f.previousMatrix);}
         return ok;
     }
     bool shadowTransitionActive(int source)const{
@@ -101,7 +101,7 @@
             const auto oldDirection=fade?f.state.previous():f.state.valid()?f.state.current():fallback;
             float direction[4]={oldDirection.x,oldDirection.y,oldDirection.z,0};d->SetPixelShaderConstantF(cascade?98:88,direction,1);
             float reproject[16]={};
-            if(fade)ShadowTransitionMath::reproject(f.previous,sourceMatrices[source][cascade],cascade?192.f:48.f,reproject);
+            if(fade)ShadowTransitionMath::reproject(f.previous,sourceMatrices[source][cascade],f.previous.texel*512.f,reproject);
             else for(unsigned i=0;i<4;++i)reproject[i*5]=1;
             d->SetPixelShaderConstantF(90+cascade*4,reproject,4);
             d->SetTexture(6+cascade,fade?f.history:neutralWhite);d->SetTexture(8+cascade,fade?f.dynamic:neutralWhite);
@@ -129,7 +129,7 @@
             NorthlightWorldMath::InverseShadowDepth,NorthlightWorldMath::InverseShadowDepth};
         d->SetPixelShaderConstantF(100,oldInfo,1);
         const auto& farSlot=shadowTransition[first+1];float inverse[16]={};
-        if(farSlot.state.fading())ShadowTransitionMath::reproject(farSlot.working,farSlot.previousMatrix,192.f,inverse);
+        if(farSlot.state.fading())ShadowTransitionMath::reproject(farSlot.working,farSlot.previousMatrix,farSlot.working.texel*512.f,inverse);
         else for(unsigned i=0;i<4;++i)inverse[i*5]=1;
         d->SetPixelShaderConstantF(101,inverse,4);
         for(unsigned s=6;s<10;++s){d->SetSamplerState(s,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(s,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);

@@ -12,7 +12,7 @@ HERE=Path(__file__).resolve().parent
 ROOT=HERE.parent
 w=fp.src('world_renderer.h').read_text();e=fp.src('world_shadow_experiment.inl').read_text();h=fp.src('shadow_pivot.h').read_text();q=fp.src('quality_settings.h').read_text()
 ini=(ROOT/'renderer/windows-package/northlight-quality.ini').read_text();readme=(ROOT/'renderer/windows-package/README.txt').read_text()
-pivot=w[w.index('    V shadowPivot(){'):w.index('    std::unordered_map<IDirect3DVertexShader9*,const WmoShaderSignature*> wmoShaders;')]
+pivot=w[w.index('    V shadowPivot(){'):w.index('    std::unordered_map<IDirect3DVertexShader9*,WmoShaderSignature> wmoShaders;')]
 checks={}
 checks['applied after the orbit estimator, written back to pivotDistance']=(pivot.count('NorthlightShadowPivot::correct(')==1
     and pivot.index('pivotDistance+=step;')<pivot.index('NorthlightShadowPivot::correct(')<pivot.index('return eye+forward*pivotDistance;')

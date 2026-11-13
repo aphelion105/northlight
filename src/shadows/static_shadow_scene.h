@@ -1,5 +1,6 @@
 #pragma once
 #include "world_gi.h"
+#include "shadow_cascades.h"
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -48,6 +49,7 @@ struct Placement {
 struct Request {
     std::string map;
     Vec3 center;
+    float groundOffset=0,farRadius=NorthlightShadowCascades::FarRadius;
     Vec3 directions[2]={{0,0,1},{0,0,1}}; // toward the source
     bool active[2]={true,false}; // may include an upcoming source for prewarm
     bool allowLoads=true; // admission pressure never removes already-ready casters
@@ -80,7 +82,7 @@ struct Limits {
     unsigned cellSize=128;
     unsigned retainSeconds=30;
 };
-// Same conservative light-space box as the cached 360u far shadow frame,
+// Same conservative light-space box as the admitted far shadow cache,
 // plus 96u publication/cache drift margin. No camera vector is an input.
 bool selected(const Request&,Vec3 low,Vec3 high,float margin=96.f);
 Vec3 transformPoint(const Placement&,Vec3);

@@ -607,7 +607,7 @@ public:
     HRESULT STDMETHODCALLTYPE CreateVertexShader(const DWORD* code,IDirect3DVertexShader9** out) override{
         if(!out)return D3DERR_INVALIDCALL;*out=nullptr;const std::size_t tokens=shaderTokens(code);if(!tokens)return D3DERR_INVALIDCALL;
         StreamVertexShader* p;try{p=new StreamVertexShader(&core);p->code.assign(code,code+tokens);}catch(...){return E_OUTOFMEMORY;}
-        p->hash=NorthlightShaderTags::fnv1a(code,tokens*4);p->tags=NorthlightShaderTags::triggerTags(p->hash);   // from the bytes the game passed: the same ones GetFunction returns
+        p->hash=NorthlightShaderTags::fnv1a(code,tokens*4);p->tags=NorthlightShaderTags::triggerTags(p->hash,code,tokens*4);   // from the bytes the game passed: the same ones GetFunction returns
         CreateArgs a{p,{},0};void* o=nullptr;const HRESULT hr=finishCreate(p,Cmd::CreateVertexShader,a,code,UINT(tokens*4),false,&o);*out=static_cast<IDirect3DVertexShader9*>(o);return hr;}
     HRESULT STDMETHODCALLTYPE CreatePixelShader(const DWORD* code,IDirect3DPixelShader9** out) override{
         if(!out)return D3DERR_INVALIDCALL;*out=nullptr;const std::size_t tokens=shaderTokens(code);if(!tokens)return D3DERR_INVALIDCALL;
@@ -756,7 +756,18 @@ private:
         ++drawOrdinal;if(!capture)return;
         const StreamVertexShader* v=st.vs?static_cast<StreamVertexShader*>(st.vs):nullptr;
         const unsigned tags=v?drawTags(v->tags,v->hash,learnedUiVsHash.load(std::memory_order_relaxed)):0;
-        takeSnapshot(policy.onDraw(tags));
+        bool mainWorld=false;
+        if(!policy.world&&(tags&NorthlightShaderTags::kTriggerWorld)){
+            // SetRenderTarget and StateBlock::Apply can invalidate cached state.
+            // Recover it through the ordered device Get path, never infer defaults.
+            if(!st.viewport.known){D3DVIEWPORT9 vp{};if(SUCCEEDED(GetViewport(&vp)))st.viewport.learn(vp);}
+            if(st.viewport.known&&NorthlightWorldDrawDomain::classify(0.f,NorthlightWorldDrawDomain::kWorldMaxZ,st.viewport.v.MinZ,st.viewport.v.MaxZ)==NorthlightWorldDrawDomain::Band::World){
+                for(auto state:{D3DRS_ZENABLE,D3DRS_ZFUNC})if(!st.rs[state].known){DWORD value=0;if(SUCCEEDED(GetRenderState(state,&value)))st.rs[state].learn(value);}
+                mainWorld=st.viewport.known&&st.rs[D3DRS_ZENABLE].known&&st.rs[D3DRS_ZFUNC].known&&
+                    NorthlightWorldDrawDomain::mainWorldDraw(st.rs[D3DRS_ZENABLE].v,st.rs[D3DRS_ZFUNC].v,st.viewport.v.MinZ,st.viewport.v.MaxZ);
+            }
+        }
+        takeSnapshot(policy.onDraw(tags,mainWorld));
     }
     void takeSnapshot(Trigger t){
         if(t==Trigger::None||!capture)return;

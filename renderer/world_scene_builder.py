@@ -121,6 +121,8 @@ def normalize(v):
 def srgb_to_linear(value):
     return value/12.92 if value<=.04045 else ((value+.055)/1.055)**2.4
 
+SRGB8_TO_LINEAR=tuple(srgb_to_linear(value/255) for value in range(256))
+
 def matmul(a,b):return tuple(tuple(sum(a[i][k]*b[k][j] for k in range(3)) for j in range(3)) for i in range(3))
 def matvec(a,v):return tuple(sum(a[i][j]*v[j] for j in range(3)) for i in range(3))
 
@@ -279,20 +281,20 @@ def decode_blp(b,maximum=128):
     data=b[offset:offset+size];result=bytearray(w*h*4)
     if encoding==3:
         if len(data)<w*h*4:raise ValueError('Truncated RGBA mip')
-        for i in range(w*h):
-            bb,g,r,a=data[i*4:i*4+4];result[i*4:i*4+4]=bytes((r,g,bb,a))
+        result[0::4]=data[2::4];result[1::4]=data[1::4]
+        result[2::4]=data[0::4];result[3::4]=data[3::4]
     elif encoding==1:
         palette=b[148:1172]
         if len(palette)!=1024 or len(data)<w*h:raise ValueError('Truncated palette mip')
-        alpha=data[w*h:]
-        for i in range(w*h):
-            bb,g,r,_=palette[data[i]*4:data[i]*4+4]
-            if alpha_depth==0:a=255
-            elif alpha_depth==1:a=((alpha[i//8]>>(i%8))&1)*255
-            elif alpha_depth==4:a=((alpha[i//2]>>((i%2)*4))&15)*17
-            elif alpha_depth==8:a=alpha[i]
-            else:raise ValueError('Unsupported palette alpha')
-            result[i*4:i*4+4]=bytes((r,g,bb,a))
+        pixels=w*h;indices=data[:pixels];alpha=data[pixels:]
+        result[0::4]=indices.translate(palette[2::4])
+        result[1::4]=indices.translate(palette[1::4])
+        result[2::4]=indices.translate(palette[0::4])
+        if alpha_depth==0:result[3::4]=b'\xff'*pixels
+        elif alpha_depth==8:result[3::4]=alpha
+        elif alpha_depth==1:
+            result[3::4]=bytes(((alpha[i//8]>>(i%8))&1)*255 for i in range(pixels))
+        else:result[3::4]=bytes(((alpha[i//2]>>((i%2)*4))&15)*17 for i in range(pixels))
     elif encoding==2:
         bc=1 if alpha_depth in (0,1) else (2 if alpha_encoding==1 else 3)
         block_size=8 if bc==1 else 16;offset=0
@@ -313,19 +315,23 @@ def decode_blp(b,maximum=128):
                     a0,a1=block[:2];ap=[a0,a1]
                     ap+=([(a0*(7-i)+a1*i)//7 for i in range(1,7)] if a0>a1 else [(a0*(5-i)+a1*i)//5 for i in range(1,5)]+[0,255])
                     ab=int.from_bytes(block[2:8],'little');alphas=[ap[(ab>>(i*3))&7] for i in range(16)]
-                for i in range(16):
-                    xx,yy=bx*4+i%4,by*4+i//4
-                    if xx>=w or yy>=h:continue
-                    color=palette[(bits>>(i*2))&3]
-                    if alphas is not None:color=(*color[:3],alphas[i])
-                    result[(yy*w+xx)*4:(yy*w+xx)*4+4]=bytes(color)
+                palette=[bytes(color) for color in palette]
+                width=min(4,w-bx*4)*4
+                for row in range(min(4,h-by*4)):
+                    codes=bits>>(row*8)
+                    pixels=palette[codes&3]+palette[(codes>>2)&3]+palette[(codes>>4)&3]+palette[(codes>>6)&3]
+                    if alphas is not None:
+                        pixels=bytearray(pixels);pixels[3::4]=bytes(alphas[row*4:row*4+4])
+                    start=((by*4+row)*w+bx*4)*4
+                    result[start:start+width]=pixels[:width]
     else:raise ValueError('Unsupported BLP encoding')
     return w,h,bytes(result)
 
 
 class Builder:
-    def __init__(self,assets):
-        self.assets=assets;self.meshes={};self.mesh_names={};self.textures={};self.cutout_textures={};self.skipped_groups=[];self.skip_bad_groups=False;self.reset()
+    def __init__(self,assets,resolve_fixture_emission=True):
+        self.resolve_fixture_emission=resolve_fixture_emission
+        self.assets=assets;self.meshes={};self.mesh_names={};self.textures={};self.cutout_textures={};self.flat_colors={};self.skipped_groups=[];self.skip_bad_groups=False;self.reset()
     def reset(self):
         self.vertices=[];self.triangles=[];self.materials=[];self.material_ids={};self.tile_stats=collections.Counter();self.tile_errors=0
     def material(self,path='',blend=0,flat=False,point_glass=False):
@@ -346,7 +352,11 @@ class Builder:
             w,h,rgba=self.cutout_textures[path]
         color=(1.,1.,1.) if rgba else (.17,.17,.17)
         if flat and rgba:
-            count=len(rgba)//4;color=tuple(sum(srgb_to_linear(v/255) for v in rgba[channel::4])/count for channel in range(3));w=h=0;rgba=b''
+            flat_key=(path,blend==1)
+            if flat_key not in self.flat_colors:
+                count=len(rgba)//4
+                self.flat_colors[flat_key]=tuple(sum(SRGB8_TO_LINEAR[v] for v in rgba[channel::4])/count for channel in range(3))
+            color=self.flat_colors[flat_key];w=h=0;rgba=b''
         result=len(self.materials);self.material_ids[key]=result
         # Negative exact integers carry fixture IDs. Older readers reject them
         # even when the game's floating-point mode flushes subnormal values.
@@ -366,9 +376,14 @@ class Builder:
             return
         verts,tris,mats=mesh
         base=len(self.vertices);material_map=[self.material(*m) for m in mats]
-        for vertex in verts:
-            p=matvec(matrix,vertex[:3]);n=normalize(matvec(matrix,vertex[3:6]))
-            self.vertices.append(tuple(p[i]+translation[i] for i in range(3))+n+vertex[6:8])
+        if matrix==((1,0,0),(0,1,0),(0,0,1)) and translation==(0,0,0):
+            # Model export keeps object-space positions; retain normal normalization
+            # and positive zero from the original identity transform.
+            self.vertices.extend(tuple(v+0. for v in vertex[:3])+normalize(tuple(v+0. for v in vertex[3:6]))+vertex[6:8] for vertex in verts)
+        else:
+            for vertex in verts:
+                p=matvec(matrix,vertex[:3]);n=normalize(matvec(matrix,vertex[3:6]))
+                self.vertices.append(tuple(p[i]+translation[i] for i in range(3))+n+vertex[6:8])
         for a,b,c,m in tris:self.triangles.append((base+a,base+b,base+c,material_map[m]))
         self.tile_stats[category+'_instances']+=1;self.tile_stats[category+'_triangles']+=len(tris)
     def m2(self,path):
@@ -400,7 +415,7 @@ class Builder:
             try:
                 if not hasattr(self,'lamp_emitters'):self.lamp_emitters=world_emitter_index.Index(self.assets,lazy=True)
                 lights=m2_sources(path,b,extract_m2(b,collections.Counter())+native_sources(b),self.lamp_emitters)
-                offsets=native_fixture_offsets(self.assets,path,b,lights)
+                offsets=native_fixture_offsets(self.assets,path,b,lights) if self.resolve_fixture_emission else {}
                 lights=[(offsets[s[4]]['position'],*s[1:]) if s[4] in offsets else s for s in lights]
             except (ValueError,FileNotFoundError,IndexError,KeyError,struct.error):lights=[]
             candidates=collections.defaultdict(list)
@@ -656,13 +671,14 @@ class InstancedBuilder(Builder):
             if not triangles:return
             used=sorted(set(i for triangle in triangles for i in triangle[:3]));remap={old:new for new,old in enumerate(used)}
             compact=([vertices[i] for i in used],[(remap[a],remap[b],remap[c],m) for a,b,c,m in triangles],materials)
-            temporary=Builder(self.assets);temporary.textures=self.textures;temporary.cutout_textures=self.cutout_textures
+            temporary=Builder(self.assets);temporary.textures=self.textures;temporary.cutout_textures=self.cutout_textures;temporary.flat_colors=self.flat_colors
             temporary.add_mesh(compact,((1,0,0),(0,1,0),(0,0,1)),(0,0,0),'model')
             temporary.write_scene(self.output/'models'/(key.hex()+'.fgs'))
             bounds=tuple(tuple(fn(v[i] for v in compact[0]) for i in range(3)) for fn in (min,max))
             self.exported[name]=(key,bounds);self.model_triangles[key]=len(triangles)
         key,(lo,hi)=self.exported[name]
-        corners=[tuple(matvec(matrix,(x,y,z))[i]+translation[i] for i in range(3)) for x in (lo[0],hi[0]) for y in (lo[1],hi[1]) for z in (lo[2],hi[2])]
+        corners=[tuple(p[i]+translation[i] for i in range(3)) for x in (lo[0],hi[0]) for y in (lo[1],hi[1]) for z in (lo[2],hi[2])
+                 for p in (matvec(matrix,(x,y,z)),)]
         bounds=tuple(fn(v[i] for v in corners) for fn in (min,max) for i in range(3))
         kind={'m2':1,'wmo':2,'wmo_doodad':3}[category]
         self.instances.append((key,instance_id,kind,*bounds,*(v for row in matrix for v in row),*translation))

@@ -28,7 +28,7 @@ assert 'releaseShadowTransitions();releaseNearEnvironment();' in release
 assert 'if(!next.shadows)releaseShadowTransitions();' in w
 assert 'if(memoryPressure||geometryMemoryDemand.load(std::memory_order_relaxed))releaseShadowTransitions();' in w
 assert 'item.history,ShadowMaps' not in w and 'inventory.texture(transition.history,ShadowMaps)' in w and 'inventory.texture(transition.dynamic,ShadowMaps)' in w
-assert 'slotDirections[slot]=' in w and 'shadowFrame(cascadePivot,slotDirections[source*2+cascade],radius)' in w
+assert 'slotDirections[slot]=' in w and 'shadowFrame(cascade?farPivot:cascadePivot,slotDirections[source*2+cascade],radius)' in w
 assert 'NorthlightActorShadowMap::matrix(actorCenter[source],pivot,rawSourceDirections[source]' in w
 assert 'sliceBand||wasSlicing||slices.active||(reason&&!directionStep)' in w
 assert 'localSame&&staticSame' in w and 'staticSignature(oldMatrix)' in w

@@ -43,7 +43,7 @@ static void cases(){
     const Vec3 centers[]={{0,0,0},{-10432.37f,145.61f,87.2f},{5872,672,650},{999999,-777777,333333}};
     const Vec3 directions[]={{0,0,1},{.3f,-.4f,.7f},{-.5f,.2f,.6f},{.1f,.9f,.3f},{.3003f,-.4002f,.7001f}};
     unsigned checked=0;double analyticWorst=0,worldWorst=0,roundTripWorst=0;
-    for(float radius:{48.f,192.f})for(Vec3 center:centers)for(Vec3 before:directions)for(Vec3 after:directions){
+    for(float radius:{48.f,192.f,288.f,384.f,768.f})for(Vec3 center:centers)for(Vec3 before:directions)for(Vec3 after:directions){
         const auto old=WM::shadowFrame(center,before,radius);
         const auto current=WM::shadowFrame(center+Vec3(13.25f,-9.5f,7.75f),after,radius);
         float oldMatrix[16],currentMatrix[16],toCurrent[16],toOld[16];

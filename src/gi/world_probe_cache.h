@@ -50,6 +50,10 @@ struct ProbeAtlasEntry {
     Probe probe;
     bool occupied=false;
 };
+inline void accountProbeAtlas(NorthlightMemoryFootprint::Counter& memory,const std::vector<ProbeAtlasEntry>& atlas){
+    memory.vector(NorthlightMemoryFootprint::Probes,atlas);
+    for(const auto& e:atlas)e.probe.accountVisibility(memory);
+}
 template<int32_t N> inline size_t fixedProbeAtlasIndex(ProbeGridKey key){
     const auto wrap=[](int32_t cell){const int32_t r=cell%N;return size_t(r<0?r+N:r);};
     return wrap(key.x)+wrap(key.y)*N+wrap(key.z)*N*N;
@@ -162,7 +166,7 @@ public:
         using namespace NorthlightMemoryFootprint;
         if(!memory.visit(this))return;
         memory.add(Metadata,sizeof(*this));
-        for(const auto& entry:entries_)memory.allocation(Probes,&entry,sizeof(entry));
+        for(const auto& entry:entries_){memory.allocation(Probes,&entry,sizeof(entry));entry.value.accountVisibility(memory);}
         for(const auto& entry:lookup_)memory.allocation(Metadata,&entry,sizeof(entry));
         // Node links and the implementation's bucket array are allocator/STL
         // overhead; their sizes are deliberately not claimed as measured bytes.

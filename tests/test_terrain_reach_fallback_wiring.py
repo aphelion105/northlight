@@ -55,7 +55,7 @@ assert 'entryLift.clear();' in body('cacheCheckedMap=r.map;', '\n') and 'stallEn
 assert 'geometryMemoryDemand.store(std::min(required,NorthlightGeometryMemory::buildBudget().available)' in body('auto stallBegin=', '};')
 assert 'geometryMemoryDemand.store(0,' in body('auto stallEnd=', '};')
 # Extended reach is restored only when an entry sample covers what the refused attempt lacked.
-assert 'NorthlightTerrainReach::choose(reachState,profileReach,GetTickCount(),entryAvailable,entryLargest)' in w
+assert 'NorthlightTerrainReach::choose(reachState,std::max(profileReach,flightReach),GetTickCount(),entryAvailable,entryLargest)' in w
 assert 'memoryRefused(reachState,reach,GetTickCount(),restore,terrainRequiredLargest)' in w
 assert 'entryLift.clear();chunkLift.clear();coldLift.clear();reachState={};' in w  # a map change forgets both
 # Entry admitted: the build's own allocations are not a demand on the guard.
@@ -66,14 +66,14 @@ for error in ('Geometry allocation deferred', 'Paged mesh worker allocation fail
     block=body('!terrainDeferred&&error=="'+error+'"', '}')
     assert 'const auto budget=geometryBudget()' in block and 'terrainSample=workerMemory(budget)' in block
     assert 'terrainDeferred=true' in block and 'terrainRequired=budget.available' in block and 'terrainRequiredLargest=budget.largest' in block
-assert 'BaseReach=928.f' in f and 'BackoffMs=30000' in f and '#include <windows.h>' not in f
+assert 'BaseReach=NorthlightShadowCascades::TerrainRadius' in f and 'BackoffMs=30000' in f and '#include <windows.h>' not in f
 st = fp.src('shadow_terrain.h').read_text()
-assert 'constexpr float Radius=928.f;' in st
+assert 'constexpr float Radius=NorthlightShadowCascades::TerrainRadius;' in st
 assert '#include "terrain_reach_fallback.h"' in w
 for stage in ('shadow-terrain', 'mesh-page"', 'mesh-page-seal'):
     assert re.search(r'stallBegin\("%s,?[^;]*,terrainRequired(?:,terrainRequiredLargest)?\);\s*if\(reduceReach\(\)\)goto terrainStage;' % re.escape(stage.rstrip('"')), w.replace('\n', ' ')), stage
-assert w.count('goto terrainStage') == 3 and w.count('terrainStage:') == 1
-assert 'NorthlightTerrainReach::choose(reachState,profileReach' in w
+assert w.count('goto terrainStage') == 4 and w.count('terrainStage:') == 1
+assert 'NorthlightTerrainReach::choose(reachState,std::max(profileReach,flightReach)' in w
 assert 'reach=reachChoice.reach;' in w and 'const bool extended=reach>NorthlightShadowTerrain::Radius;' in w
 for text in ('WORLD geometry memory stall begin stage=%s availableMiB=%llu largestMiB=%s generations=%zu refused=%s need=%llu',
              'WORLD geometry memory stall end ms=%u attempts=%u outcome=%s',

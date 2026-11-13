@@ -14,17 +14,21 @@ inline unsigned kind(std::uint32_t t){return ((t>>28)&7)|((t>>8)&24);}
 inline unsigned index(std::uint32_t t){return t&2047;}
 struct Key {unsigned op,a,b;bool operator==(const Key& o)const{return op==o.op&&a==o.a&&b==o.b;}};
 struct Hash {size_t operator()(const Key& k)const{return (size_t(k.a)*16777619u+k.b)*16777619u+k.op;}};
-struct Node {Key key{};unsigned attenuation=0;std::array<unsigned,3> color{};};
+struct Node {Key key{};unsigned attenuation=0,nativeRGB=0;std::array<unsigned,3> color{};};
 struct Expressions {
-    enum {Constant=1,Literal,Atom,Add,Mul,Neg,Reciprocal,InvRoot,Minimum,Maximum,Other};
+    enum {RGBDependency=0,Constant=1,Literal,Atom,Add,Mul,Neg,Reciprocal,InvRoot,Minimum,Maximum,Other};
     std::vector<Node> nodes{{}};std::unordered_map<Key,unsigned,Hash> intern;
     unsigned expected[4]{};
+    bool terrain=false;
+    unsigned rgbSlot(unsigned r)const{return terrain?(r>=29&&r<=35&&(r-29)%3==0?(r-29)/3+1:0):(r>=17&&r<=20?r-16:0);}
     unsigned make(unsigned op,unsigned a,unsigned b=0){
         if((op==Add||op==Mul||op==Minimum||op==Maximum)&&a>b)std::swap(a,b);
         Key key{op,a,b};const auto old=intern.find(key);if(old!=intern.end())return old->second;
-        Node n;n.key=key;
+        Node n;n.key=key;if(op==RGBDependency)n.nativeRGB=a;
+        if(op==Constant&&a%4<3&&rgbSlot(a/4)){n.nativeRGB=1;if(terrain)n.color[a%4]=1u<<(rgbSlot(a/4)-1);}
         if(op>=Add){if(a<nodes.size()){n.attenuation|=nodes[a].attenuation;for(unsigned k=0;k<3;++k)n.color[k]|=nodes[a].color[k];}
-            if(b<nodes.size()){n.attenuation|=nodes[b].attenuation;for(unsigned k=0;k<3;++k)n.color[k]|=nodes[b].color[k];}}
+            if(b<nodes.size()){n.attenuation|=nodes[b].attenuation;for(unsigned k=0;k<3;++k)n.color[k]|=nodes[b].color[k];}
+            if(a<nodes.size())n.nativeRGB|=nodes[a].nativeRGB;if(b<nodes.size())n.nativeRGB|=nodes[b].nativeRGB;}
         if(op==Reciprocal)for(unsigned i=0;i<4;++i)if(expected[i]&&a==expected[i])n.attenuation|=1u<<i;
         if(op==Mul){const auto color=[&](unsigned c,unsigned factor){if(c>=nodes.size()||factor>=nodes.size())return;
             const auto& key=nodes[c].key;if(key.op!=Constant||key.a/4<17||key.a/4>20||key.a%4>=3)return;
@@ -44,11 +48,15 @@ inline int operands(unsigned op){switch(op){
     case 1:case 6:case 7:case 14:case 15:case 16:case 19:case 35:case 36:case 46:return 1;
     case 2:case 3:case 5:case 8:case 9:case 10:case 11:case 12:case 13:case 17:case 32:case 33:return 2;
     case 4:case 18:return 3;default:return -1;}}
-inline unsigned analyze(const std::uint32_t* w,std::size_t n){
-    if(!w||n<2||(w[0]!=0xfffe0200u&&w[0]!=0xfffe0300u)||n>4096)return 0;
-    const unsigned major=(w[0]>>8)&255;Expressions e;
+// knownTerrain is admitted only by the exact original terrain bytecode identity.
+// Its interleaved c28..36 layout differs from the model bank. The identity proves
+// that layout; this walk checks RGB output dependencies and coverage separately.
+inline unsigned analyze(const std::uint32_t* w,std::size_t n,bool* rgbOnly=nullptr,bool knownTerrain=false){
+    if(rgbOnly)*rgbOnly=false;
+    if(!w||n<2||(w[0]!=0xfffe0200u&&w[0]!=0xfffe0300u&&!(knownTerrain&&w[0]==0xfffe0101u))||n>4096)return 0;
+    const unsigned major=(w[0]>>8)&255;Expressions e;e.terrain=knownTerrain;
     std::array<unsigned,4> temp[32]{},address{},output[16]{},definitions[256]{};bool defined[256]={};
-    int color=major==2?0:-1,position=major==2?0:-1;unsigned serial=0;bool projected=false;
+    int color=major<3?0:-1,position=major<3?0:-1;unsigned serial=0,legacyOutputRGB=0;bool projected=false;
     auto read=[&](std::uint32_t token,std::uint32_t relative,std::array<unsigned,4>& value){
         const unsigned type=kind(token),r=index(token),modifier=(token>>24)&15;
         if((type==0&&r>=32)||(type==1&&r>=16)||(type==2&&r>=256)||(type==3&&r)||type>3||modifier>1)return false;
@@ -61,15 +69,21 @@ inline unsigned analyze(const std::uint32_t* w,std::size_t n){
         return true;
     };
     for(std::size_t p=1;p<n;){const auto token=w[p];const unsigned op=token&65535;
-        if(op==65535){if(p+1!=n||color<0||color>=16||!projected)return 0;
+        if(op==65535){if(p+1!=n||color<0||color>=16||(!projected&&!knownTerrain))return 0;
             const unsigned mask=e.nodes[output[color][0]].color[0]&e.nodes[output[color][1]].color[1]&e.nodes[output[color][2]].color[2];
-            if(!mask||(mask&(mask+1)))return 0;unsigned count=0;for(unsigned m=mask;m;m>>=1)++count;return count;}
+            if(!mask||(mask&(mask+1)))return 0;
+            if(rgbOnly&&(major==3||knownTerrain)&&position>=0&&position<16){unsigned dependency=e.nodes[output[color][3]].nativeRGB|legacyOutputRGB;
+                if(major==3)for(unsigned r=0;r<16;++r)if(int(r)!=color)for(unsigned k=0;k<4;++k)dependency|=e.nodes[output[r][k]].nativeRGB;
+                *rgbOnly=dependency==0;}
+            unsigned count=0;for(unsigned m=mask;m;m>>=1)++count;return count;}
         if(op==65534){const auto count=(token>>16)&32767;if(count>=n-p)return 0;p+=count+1;continue;}
-        const unsigned count=(token>>24)&15;if(count>=n-p||(token&0xf0000000u))return 0;
+        const int inputs=operands(op);
+        const unsigned count=major==1?(op==31?2:op==81?5:inputs<0?0:unsigned(inputs+1)):(token>>24)&15;if(count>=n-p||(token&0xf0000000u))return 0;
+        if(op==0&&!count){++p;continue;}
         const auto* a=w+p+1;p+=count+1;++serial;
         if(op==31&&count==2){if(major==3&&kind(a[1])==6){if((a[0]&0xf000fu)==10)color=int(index(a[1]));if((a[0]&0xf000fu)==0)position=int(index(a[1]));}continue;}
         if(op==81&&count==5&&kind(a[0])==2&&index(a[0])<256){const unsigned r=index(a[0]);defined[r]=true;for(unsigned k=0;k<4;++k)definitions[r][k]=e.make(Expressions::Literal,a[k+1]);continue;}
-        const int inputs=operands(op);if(inputs<0||!count)return 0;
+        if(inputs<0||!count)return 0;
         std::array<unsigned,4> v[3]{};unsigned cursor=1;
         for(int i=0;i<inputs;++i){if(cursor>=count)return 0;const auto source=a[cursor++];std::uint32_t relative=0;
             if(source&0x2000u){if(kind(source)!=2)return 0;if(cursor>=count)return 0;relative=a[cursor++];}
@@ -96,8 +110,13 @@ inline unsigned analyze(const std::uint32_t* w,std::size_t n){
             case 10:case 11:result[k]=e.make(op==10?Expressions::Minimum:Expressions::Maximum,v[0][k],v[1][k]);break;
             default: // Other native arithmetic is opaque, but retains proved
                 // light contributions. It cannot create a new light proof.
-                result[k]=e.make(Expressions::Other,v[0][k],v[1][k]);result[k]=e.make(Expressions::Other,result[k],v[2][k]);break;}
+                result[k]=e.make(Expressions::Other,v[0][k],v[1][k]);result[k]=e.make(Expressions::Other,result[k],v[2][k]);
+                // Opaque vector operations may couple lanes (e.g. LIT/NRM).
+                {unsigned dependency=0;for(const auto& source:v)for(unsigned id:source)dependency|=e.nodes[id].nativeRGB;
+                    if(dependency&&!e.nodes[result[k]].nativeRGB)result[k]=e.make(Expressions::Other,result[k],e.make(Expressions::RGBDependency,1));}
+                break;}
             if(a[0]&0x100000u)result[k]=e.make(Expressions::Other,result[k]);}
+        if(major<3&&type>=4&&type<=6)for(unsigned k=0;k<4;++k)if((mask&(1u<<k))&&!(type==5&&r==0&&k<3))legacyOutputRGB|=e.nodes[result[k]].nativeRGB;
         std::array<unsigned,4> ignored{};auto* dest=type==0?&temp[r]:type==3?&address:type==(major==3?6u:5u)?&output[r]:&ignored;for(unsigned k=0;k<4;++k)if(mask&(1u<<k))(*dest)[k]=result[k];
         if(e.nodes.size()>32768)return 0;
     }

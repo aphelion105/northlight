@@ -25,6 +25,7 @@ subprocess.run([str(fp.zig()),'c++','-target','x86-windows-gnu','-std=c++17','-O
 run=subprocess.run([str(exe),str(fp.COMPILED),str(backend),str(out/'result.json'),str(out),*(['--timing'] if args.timing else [])],cwd=out,env=fp.zig_env(),capture_output=True,text=True,timeout=120)
 (out/'gpu.log').write_text(run.stdout+run.stderr,encoding='utf-8');print(run.stdout,end='',flush=True)
 assert run.returncode==0,run.stderr
+assert 'FLIGHT_RECEIVER_PASS' in run.stdout
 report=json.loads((out/'result.json').read_text())
 expected={'failures':0,'surface_cases':210,'unequal_near_far_epoch_cases':42,'scalar_checks':161280,'volume_checks':36864,'crop_checks':7340032,'dynamic_redirect_checks':2097152,'sky_water_skip_checks':3072,'lifted_border_negative_controls':16,'production_fp16_visibility_endpoint_error':0}
 for key,value in expected.items():assert report[key]==value,(key,report[key],value)

@@ -76,9 +76,10 @@ int main() {
     tiny.put({5,0,0},solved({5,0,0}));assert(!tiny.get({1,0,0},out));
     out.samples=777;assert(!tiny.get({99,0,0},out)&&out.samples==777);
 
-    ProbeCache bounded(1000000);assert(bounded.capacity()==8192);
-    for(int i=0;i<12000;++i){bounded.put({i,0,0},solved({i,0,0}));assert(bounded.size()<=8192);}
-    assert(bounded.size()==8192&&!bounded.get({0,0,0},out)&&bounded.get({11999,0,0},out));
+    ProbeCache bounded(1000000);assert(bounded.capacity()==ProbeCache::MaxCapacity);
+    const int count=int(ProbeCache::MaxCapacity)+3808;
+    for(int i=0;i<count;++i){bounded.put({i,0,0},solved({i,0,0}));assert(bounded.size()<=ProbeCache::MaxCapacity);}
+    assert(bounded.size()==ProbeCache::MaxCapacity&&!bounded.get({0,0,0},out)&&bounded.get({count-1,0,0},out));
     ProbeCache minimum(0);assert(minimum.capacity()==1);
 
     assert(probeAtlasIndex({0,0,0})==0);

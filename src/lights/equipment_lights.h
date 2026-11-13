@@ -10,6 +10,7 @@
 namespace NorthlightEquipmentLights {
 inline constexpr unsigned Capacity=NorthlightLocalLightSelection::Capacity,MemoBanks=64,MaxReadsPerFrame=64,BackgroundReads=32;
 inline constexpr float LifeSeconds=.25f,FadeSeconds=.10f,MaxRadius=NorthlightLocalLights::NativeMaxRadius,MaxDistance=NorthlightLocalLightSelection::VisibilityEnd+MaxRadius;
+inline constexpr unsigned FreshMilliseconds=100;
 // Unknown state retains a bounded backend-read budget. Proven mirror state
 // costs no backend calls, so early draws cannot starve later sources.
 struct CaptureBudget {
@@ -27,6 +28,12 @@ template<class Mirror> inline bool cachedBank(const Mirror* mirror){
     if(!mirror||!mirror->heldByThisThread()||!mirror->active()||!mirror->depthKnown)return false;
     for(unsigned i=2;i<6;++i)if(!mirror->vsFloatKnown[i])return false;
     for(unsigned i=17;i<28;++i)if(!mirror->vsFloatKnown[i])return false;
+    return true;
+}
+template<class Mirror> inline bool cachedTerrainBank(const Mirror* mirror){
+    if(!mirror||!mirror->heldByThisThread()||!mirror->active()||!mirror->depthKnown)return false;
+    for(unsigned i=0;i<8;++i)if(!mirror->vsFloatKnown[i])return false;
+    for(unsigned i=28;i<37;++i)if(!mirror->vsFloatKnown[i])return false;
     return true;
 }
 struct Native {float position[3]{},color[3]{},attenuation[3]{};};
@@ -78,7 +85,7 @@ inline NorthlightLocalLights::Light light(const Native& n,std::uint64_t id,float
     l.sourceId=0xfec0000000000000ull|id;l.kind=2;return NorthlightLocalLights::nativeTransport(l,n.attenuation,gain);
 }
 struct Tracker {
-    struct Entry {Native source;std::uint64_t id=0;std::uint32_t seen=0;float gain=0;std::uint64_t nativeId=0;std::uint32_t flags=0,fixtureTag=0;};
+    struct Entry {Native source;std::uint64_t id=0;std::uint32_t seen=0;float gain=0;std::uint64_t nativeId=0;std::uint32_t flags=0,fixtureTag=0;std::array<float,3> emitterOffset{};};
     std::array<Entry,Capacity> entries{};unsigned count=0,banks=0,backgroundBanks=0,bankDuplicates=0,observed=0,duplicates=0,dropped=0;std::uint64_t serial=0;std::uint32_t updated=0;
     struct Bank {std::array<std::array<float,9>,4> sources{};unsigned count=0;};
     std::array<Bank,MemoBanks> frameBanks{};
@@ -127,8 +134,11 @@ struct Tracker {
         else{entries[at].source=n;entries[at].seen=now;if(nativeId){entries[at].nativeId=nativeId;entries[at].flags=flags;entries[at].fixtureTag=fixtureTag;}}
     }
     void observeScene(const NorthlightNativeLights::Snapshot& scene,std::uint32_t now,const std::vector<NorthlightLocalLights::Light>& fixed,const float* camera,const uint64_t* claimed=nullptr,unsigned claimedCount=0){
-        if(!scene.valid||!NorthlightNativeLights::wellFormed(scene))return;
         const auto owned=[&](uint64_t id){return claimed&&std::binary_search(claimed,claimed+claimedCount,id);};
+        for(unsigned i=0;i<count;++i)if(entries[i].nativeId&&owned(entries[i].nativeId)){
+            entries[i].seen=now-unsigned(LifeSeconds*1000);entries[i].gain=0;
+        }
+        if(!scene.valid||!NorthlightNativeLights::wellFormed(scene))return;
         // Draw banks have no identity and may contain the previous animated
         // hue. Adopt only an unambiguous scene source with the same position
         // and denominator; colour must not leave a second 250 ms light behind.
@@ -146,7 +156,9 @@ struct Tracker {
         for(unsigned i=0;i<count;++i)if(entries[i].nativeId){
             const auto end=scene.lights.begin()+scene.count;
             const auto p=std::find_if(scene.lights.begin(),end,[&](const auto& light){return light.id==entries[i].nativeId;});
-            if(p==end||owned(entries[i].nativeId)||std::max({p->color[0],p->color[1],p->color[2]})<.01f){
+            // The bounded reader reports observations, not deletions. A fresh
+            // draw can sustain this identity through an omitted scene sample.
+            if(owned(entries[i].nativeId)||(p!=end&&std::max({p->color[0],p->color[1],p->color[2]})<.01f)){
                 entries[i].seen=now-unsigned(LifeSeconds*1000);entries[i].gain=0;
             }
         }
@@ -155,6 +167,7 @@ struct Tracker {
             if(std::max({p.color[0],p.color[1],p.color[2]})<.01f||p.attenuation[0]+p.attenuation[1]+p.attenuation[2]<.001f||distance2(p.position,camera)>MaxDistance*MaxDistance)continue;
             Native n;std::copy_n(p.position,3,n.position);std::copy_n(p.color,3,n.color);std::copy_n(p.attenuation,3,n.attenuation);
             observe(n,now,fixed,camera,p.id,(p.flags&NorthlightNativeLights::WorldFixture)?NorthlightLocalLights::CastShadow:0,p.reserved);
+            for(unsigned j=0;j<count;++j)if(entries[j].nativeId==p.id){std::copy_n(p.emitterOffset,3,entries[j].emitterOffset.begin());break;}
         }
         // A draw can have reported the new hue before the scene snapshot
         // updates its existing identity. Retire that anonymous duplicate.
@@ -176,13 +189,13 @@ struct Tracker {
     }
     void publish(std::uint32_t now,const std::vector<NorthlightLocalLights::Light>* fixed=nullptr){
         const float dt=updated?std::min(float(std::uint32_t(now-updated))*.001f,.1f):0;updated=now;outputCount=suppressedCount=0;
-        for(unsigned i=0;i<count;){auto& e=entries[i];const auto age=std::uint32_t(now-e.seen);const float target=age<100?1.f:std::clamp((LifeSeconds-float(age)*.001f)/(LifeSeconds-.1f),0.f,1.f);
+        for(unsigned i=0;i<count;){auto& e=entries[i];const auto age=std::uint32_t(now-e.seen);const float target=age<FreshMilliseconds?1.f:std::clamp((LifeSeconds-float(age)*.001f)/(LifeSeconds-FreshMilliseconds*.001f),0.f,1.f);
             // Scene publication can add a static lamp after this entry was
             // observed. Drop it now, including the local selection's old tail.
             if(fixed&&staticDuplicate(e.source,*fixed)){suppressed[suppressedCount++]=0xfec0000000000000ull|e.id;++duplicates;entries[i]=entries[--count];continue;}
             const float step=dt/FadeSeconds;e.gain+=std::clamp(target-e.gain,-step,step);
             if(age>=unsigned(LifeSeconds*1000)&&e.gain<=.0001f){suppressed[suppressedCount++]=0xfec0000000000000ull|e.id;entries[i]=entries[--count];continue;}
-            if(e.gain>.0001f){auto l=light(e.source,e.id,e.gain);l.flags=e.flags;output[outputCount++]=l;}++i;}
+            if(e.gain>.0001f){auto l=light(e.source,e.id,e.gain);l.flags=e.flags;for(unsigned k=0;k<3;++k)l.position[k]+=e.emitterOffset[k];output[outputCount++]=l;}++i;}
     }
 };
 // The opposite publication transition: an FGL lamp disappears, but its former
