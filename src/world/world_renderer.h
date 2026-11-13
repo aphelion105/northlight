@@ -6166,7 +6166,7 @@ public:
         d->SetPixelShaderConstantF(82,localInfo,1);
         if(giRequested)d->SetTexture(13,probeLocal);
         d->SetRenderTarget(0,lightSurface);d->SetPixelShader(unshadowedLighting?lightingUnshadowedPS:softResolved?lightingSoftPS:lightingPS);
-        if(profileSampled())logf("WORLD_LIGHTING rendererFrame=%u variant=%s shadows=%u geometry=%u",rendererFrame,unshadowedLighting?"unshadowed":softResolved?"soft":"standard",unsigned(applyDirectionalShadows),unsigned(geometryReady));
+        if(profileSampled())logf("WORLD_LIGHTING rendererFrame=%u variant=%s shadows=%u geometry=%u shadowTransitionStarts=%u shadowTransitionFailures=%u moonFade=%u,%u moonWeights=%.4f,%.4f",rendererFrame,unshadowedLighting?"unshadowed":softResolved?"soft":"standard",unsigned(applyDirectionalShadows),unsigned(geometryReady),shadowTransitionStarts,shadowTransitionFailures,unsigned(shadowTransition[2].state.fading()),unsigned(shadowTransition[3].state.fading()),shadowTransition[2].state.weight(),shadowTransition[3].state.weight());
         d->SetTexture(15,softResolved?softVisibility:nullptr);
         if(softResolved){
             for(auto state:{D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER})d->SetSamplerState(15,state,D3DTEXF_POINT);
@@ -6339,6 +6339,9 @@ public:
                 firstLight+=N;
             }
             d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE);
+            // LocalDirect16 borrows c100..115 for lamp colors. FlashShadow and
+            // the final compositor need ShadowTuning at c115 again afterwards.
+            d->SetPixelShaderConstantF(115,shadowTuning,1);
             profileSplit(profile,lightSurface);
         }
         if(lightingCapture)lightingCapture->image("lighting-after-local",lightSurface);

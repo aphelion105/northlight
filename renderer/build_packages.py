@@ -80,6 +80,22 @@ PAYLOAD_COMMON = {'celestial-profiles.ini': 'client-config/celestial-profiles.in
 PRESERVE = set(PAYLOAD_COMMON)
 DXVK_BACKEND = 'renderer-backends/dxvk/dxvk_d3d9.dll'
 DXVK2_BACKEND = 'renderer-backends/dxvk2/dxvk2_d3d9.dll'
+ATMOSPHERE = 'forever-atmosphere.bin'
+
+
+def atmosphere_metadata(data):
+    """Check the NFA2 framing; the renderer validates individual records on load."""
+    if len(data) < 24:
+        raise ValueError('Truncated Forever atmosphere header')
+    magic, version, lights, keys, zones, points = struct.unpack_from('<6I', data)
+    if magic != 0x3141464e or version != 2:
+        raise ValueError('Forever atmosphere must be NFA2 (including sky colors)')
+    if not (0 < lights <= 8192 and 0 < keys <= 32768 and zones <= 8192 and points <= 131072):
+        raise ValueError('Invalid Forever atmosphere record counts')
+    if len(data) != 24 + lights * 60 + keys * (520 + 96) + zones * 24 + points * 8:
+        raise ValueError('Forever atmosphere size does not match its record counts')
+    return {'format': 'NFA2', 'sha256': hashlib.sha256(data).hexdigest(), 'bytes': len(data),
+            'lights': lights, 'time_keys': keys, 'outlines': zones, 'points': points}
 
 
 def runtime_drop(config, extra=''):
@@ -345,7 +361,8 @@ def launchers(platform, version):
             'Uninstall Northlight.command': command('uninstall', 'uninstall')}
 
 
-def build(platform, version, dll, variants, out, stormlib_dir):
+def build(platform, version, dll, variants, out, stormlib_dir, atmosphere=None):
+    atmosphere_info = atmosphere_metadata(atmosphere) if atmosphere is not None else None
     for manifest in variants.values():
         check_variant_sources(manifest)
     top = f'Northlight-{version}-{PLATFORMS[platform]}'
@@ -366,6 +383,8 @@ def build(platform, version, dll, variants, out, stormlib_dir):
     {'windows': windows_runtime, 'mac': mac_runtime, 'linux': linux_runtime}[platform](tree, runtime_pin, lib)
     payload = {n: (fp.REPO / src).read_bytes() for n, src in PAYLOAD_COMMON.items()}
     payload[build_renderer_assets.FILENAME] = resources
+    if atmosphere is not None:
+        payload[ATMOSPHERE] = atmosphere
     if platform in PROXY_PLATFORMS:
         backend, license_text = dxvk_files('dxvk')
         backend2, license_text2 = dxvk_files('dxvk2')
@@ -400,6 +419,8 @@ def build(platform, version, dll, variants, out, stormlib_dir):
             'variants': {n: {'cache_digest': m['cache_digest'], 'files': len(m['files'])} for n, m in sorted(variants.items())},
             'app_files': {n: sha(fp.REPO / n) for n in APP_FILES}}
     info['cache_versions'] = dict(install_world_cache.CACHE_VERSIONS)
+    if atmosphere_info is not None:
+        info['forever_atmosphere'] = atmosphere_info
     tree.add('BUILD-INFO.json', (json.dumps(info, indent=2) + '\n').encode())
     tree.add('LICENSES/AO-methods.txt', fp.REPO / 'licenses/ao-methods.txt')
     tree.add('LICENSES/Dear-ImGui.txt', fp.REPO / 'licenses/imgui.txt')   # src/imgui/ (settings overlay)
@@ -428,6 +449,8 @@ def main():
     ap.add_argument('--cache-zip', type=Path, action='append', default=[],
                     help='a variant cache zip to verify and copy next to the packages')
     ap.add_argument('--out', type=Path, help='default: <out>/packages')
+    ap.add_argument('--forever-atmosphere', type=Path,
+                    help='include this converted NFA2 atmosphere in the transactional payload')
     args = ap.parse_args()
     if not re.fullmatch(r'\d+\.\d+\.\d+([.-][A-Za-z0-9]+)*', args.version):
         ap.error('--version must look like 0.3.162')
@@ -459,8 +482,9 @@ def main():
         reports.append({'platform': 'any', 'file': name, 'sha256': sha(out / name), 'bytes': (out / name).stat().st_size,
                         'variant': manifest['variant'], 'cache_digest': manifest['cache_digest']})
     dll = args.dll or fp.dll()
+    atmosphere = args.forever_atmosphere.read_bytes() if args.forever_atmosphere else None
     for platform in list(PLATFORMS) if args.platform == 'all' else [args.platform]:
-        reports.append(build(platform, args.version, dll, variants, out, fp.out() / 'stormlib'))
+        reports.append(build(platform, args.version, dll, variants, out, fp.out() / 'stormlib', atmosphere))
         print('Built', reports[-1]['file'], reports[-1]['bytes'], 'bytes', flush=True)
     (out / 'packages.json').write_text(json.dumps({'version': args.version, 'packages': reports}, indent=2) + '\n')
     return 0

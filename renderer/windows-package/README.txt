@@ -10,6 +10,11 @@ The installer updates d3d9.dll and northlight-assets.bin together. Keep the
 resource file in the game folder; copying only a newer DLL disables effects
 until its matching resources are installed.
 
+Packages with Forever atmosphere also install forever-atmosphere.bin alongside
+the DLL. Keep it in the game folder for the imported main-continent fog and sky
+colors. It is included in the same backup and uninstall transaction. Outland
+and Northrend use Northlight's expansion atmosphere and celestial profiles.
+
 DOWNLOADS
 - Northlight-__RELEASE_VERSION__-Windows.zip: the installer and the renderer (about 20 MB).
 - Nothing else: the installer builds the world cache (world-cache) itself from

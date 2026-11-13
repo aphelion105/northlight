@@ -19,6 +19,11 @@ Run commands from the repository root. Start with [the architecture map](archite
 
 `tools/` and `backups/` are local and untracked.
 
+For the local Forever extraction, missing import fields and preserved research
+artifacts, start with [the Forever data audit](forever-data-audit.md).
+For the installed build, material/shadow optimizations and old `.local` copies,
+see [the integration audit](integration-audit-20261113.md).
+
 ## Requirements
 
 - macOS on Apple Silicon is the primary development host. Windows can build the DLL with Zig
@@ -50,6 +55,16 @@ a missing or mismatched pair. Developer/profile/stand variants write a separate
 copy that file as `northlight-assets.bin` into the target game's root (the stand's
 module folder). macOS keeps the resources in the game root even though its DLL
 is installed under `mods/`.
+
+To deliver the converted Forever atmosphere as well, pass
+`--forever-atmosphere <path/to/forever-atmosphere.bin>` to
+`python renderer/build_packages.py --platform windows --version <version>`.
+The builder requires NFA2 with sky colors, records its hash/counts in BUILD-INFO,
+and includes it in the ordinary install/rollback transaction. `verify_packages.py`
+checks its framing, metadata and payload digest. Raw Forever research stays local;
+the converted `.bin` is an explicit release input, not an implicit workstation file.
+Expansion atmosphere/emissive rules and celestial profiles remain in the renderer
+and packaged generators/configuration. They are not part of the map-0/1 NFA2 file.
 
 `scripts/build_renderer_assets.py` builds the bundle and lightweight array-access
 headers under the configured output directory. Original generated headers remain

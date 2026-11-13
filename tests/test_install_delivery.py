@@ -5,6 +5,7 @@ from pathlib import Path
 import copy
 import hashlib
 import json
+import struct
 import sys
 import tempfile
 import unittest
@@ -21,6 +22,18 @@ import build_cache_variant
 
 
 class Delivery(unittest.TestCase):
+    def test_atmosphere_payload_framing(self):
+        data = struct.pack('<6I', 0x3141464e, 2, 1, 1, 0, 0) + bytes(60 + 520 + 96)
+        info = packages.atmosphere_metadata(data)
+        self.assertEqual(info['format'], 'NFA2')
+        self.assertEqual(info['sha256'], hashlib.sha256(data).hexdigest())
+        self.assertEqual((info['lights'], info['time_keys'], info['bytes']), (1, 1, len(data)))
+        for bad in (b'', data[:-1], data+b'x', b'VFD1'+data[4:],
+                    data[:4]+struct.pack('<I', 1)+data[8:],
+                    data[:8]+struct.pack('<I', 8193)+data[12:]):
+            with self.subTest(size=len(bad)), self.assertRaises(ValueError):
+                packages.atmosphere_metadata(bad)
+
     def test_release_checks_cache_versions_independently_of_dll_and_sources(self):
         manifest = {'variant': 'stock', 'build': {'cache_versions': dict(packages.install_world_cache.CACHE_VERSIONS),
                                                 'sources': {'world_scene_builder.py': 'different release'}}}

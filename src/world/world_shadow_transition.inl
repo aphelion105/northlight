@@ -78,6 +78,9 @@
         set(d->SetTexture(0,nullptr));set(d->SetTexture(1,nullptr));
         set(d->SetRenderState(D3DRS_ZENABLE,TRUE));set(d->SetRenderState(D3DRS_ZWRITEENABLE,TRUE));
         set(d->SetSamplerState(0,D3DSAMP_MINFILTER,D3DTEXF_LINEAR));set(d->SetSamplerState(0,D3DSAMP_MAGFILTER,D3DTEXF_LINEAR));
+        // The caller now renders the new static cache. Its alpha-tested caster
+        // textures repeat; only the history crop above uses clamped addressing.
+        set(d->SetSamplerState(0,D3DSAMP_ADDRESSU,D3DTADDRESS_WRAP));set(d->SetSamplerState(0,D3DSAMP_ADDRESSV,D3DTADDRESS_WRAP));
         if(ok){f.previous=f.working;NorthlightWorldMath::shadowMatrixFrom(f.previous,f.previous.texel*512.f,f.previousMatrix);}
         return ok;
     }

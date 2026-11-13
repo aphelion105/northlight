@@ -96,6 +96,22 @@ class InstallerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'manifest lacks'):
             m.install(self.client,self.pkg)
         self.assertEqual(self.snapshot(),before)
+    def test_atmosphere_upgrade_and_restore(self):
+        name='forever-atmosphere.bin';old=b'NFA1 existing atmosphere';new=b'NFA1 updated atmosphere'
+        (self.client/name).write_bytes(old);before=self.snapshot()
+        (self.pkg/'payload'/name).write_bytes(new)
+        path=self.pkg/'payload-manifest.json';manifest=json.loads(path.read_text())
+        manifest.append({'path':name,'sha256':hashlib.sha256(new).hexdigest()})
+        path.write_text(json.dumps(manifest))
+        backup=m.install(self.client,self.pkg)
+        self.assertEqual(self.read(name),new)
+        entries=[e['path'] for e in json.loads((backup/'transaction.json').read_text())['files']]
+        self.assertLess(entries.index(name),entries.index('d3d9.dll'))
+        m.restore(self.client,backup);self.assertEqual(self.snapshot(),before)
+        (self.pkg/'payload'/name).write_bytes(new+b'damaged')
+        with self.assertRaisesRegex(ValueError,'damaged|modified'):
+            m.install(self.client,self.pkg)
+        self.assertEqual(self.snapshot(),before)
     def test_foreign_moved_and_restore_round_trip(self):
         self.foreign();before=self.snapshot()
         backup=m.install(self.client,self.pkg)

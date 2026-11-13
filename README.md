@@ -14,7 +14,11 @@ The repository holds no game files: every tool that needs game data reads it fro
 
 The changelog, release notes and validation records are not part of the public source.
 
-Download latest release: https://github.com/lepola/northlight/releases
+Download this fork's releases: https://github.com/aphelion105/northlight/releases
+
+The Windows installer includes the matching `d3d9.dll` and `northlight-assets.bin`.
+Releases with imported Forever atmosphere also include `forever-atmosphere.bin`;
+keep all three files together when installing a DLL update manually.
 
 ## What Northlight adds
 

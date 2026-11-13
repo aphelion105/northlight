@@ -5,7 +5,7 @@
     python3 tests/verify_packages.py [ZIP ...]     # default: every package in <out>/packages/packages.json
 
 Per installer zip: one top folder; only allowlisted paths (app/ = build_packages.APP_FILES, byte-equal to
-this repository; runtime/, payload/, variants/, LICENSES/, the launchers); no game data (suffixes and
+this repository; runtime/, payload/, variants/, LICENSES/, the launchers); no raw game data (suffixes and
 magic bytes), no records, logs, caches or machine paths (check_layout.MACHINE) outside runtime/; the pins
 (runtime, DXVK, StormLib) and BUILD-INFO.json agree with the bytes; the payload manifest is exact; the
 StormLib binary verifies (build_stormlib.verify); the Windows runtime has _ctypes, libffi, _hashlib,
@@ -15,6 +15,7 @@ Linux carry both pinned DXVK builds; launchers: .cmd with CRLF and chcp 65001, .
 `bash -n`, .sh with LF, executable, passing `sh -n` and `bash -n`; none uses the system Python. On a macOS host the macOS package is unpacked and its own Python runs every
 shipped entry point with -I -X utf8 --help (that loads the packaged StormLib). A cache zip in
 packages.json is checked against its manifest (allowlist, every sha256).
+An explicitly included converted NFA2 atmosphere is checked against BUILD-INFO and the payload manifest.
 """
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
@@ -123,6 +124,14 @@ def verify_installer(path):
         problems.append(str(error))
     for p, e in payload.items():
         check(problems, sha(files.get('payload/' + p, b'')) == e['sha256'], f'payload/{p} does not match its manifest')
+    atmosphere = files.get('payload/' + bp.ATMOSPHERE)
+    check(problems, (atmosphere is not None) == ('forever_atmosphere' in info), 'Forever atmosphere metadata/payload mismatch')
+    if atmosphere is not None:
+        try:
+            check(problems, bp.ATMOSPHERE in payload and bp.atmosphere_metadata(atmosphere) == info.get('forever_atmosphere'),
+                  'Forever atmosphere does not match BUILD-INFO')
+        except ValueError as error:
+            problems.append(str(error))
     check(problems, {p for p, e in payload.items() if e.get('preserve')} == {'northlight-quality.ini', 'celestial-profiles.ini', 'shadow-range-profiles.ini'}, 'preserve flags')
     d3d9 = [r for r in files if r.lower().endswith('/d3d9.dll') and not r.startswith('runtime/')]
     check(problems, d3d9 == ['payload/d3d9.dll'], f'd3d9.dll copies: {d3d9}')

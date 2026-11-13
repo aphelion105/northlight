@@ -12,15 +12,17 @@
 #include <memory>
 #include <vector>
 
+#ifndef _WIN32
 using HRESULT=int32_t;using DWORD=uint32_t;using UINT=unsigned;
 constexpr HRESULT S_OK=0,E_FAIL=-1,E_OUTOFMEMORY=-2;
 static bool SUCCEEDED(HRESULT h){return h>=0;}static bool FAILED(HRESULT h){return h<0;}
 constexpr unsigned FALSE=0,TRUE=1;
+#endif
 enum {D3DUSAGE_RENDERTARGET=1,D3DFMT_R32F,D3DPOOL_DEFAULT,D3DRS_ZENABLE,D3DRS_ZWRITEENABLE,
     D3DRS_ALPHABLENDENABLE,D3DRS_SCISSORTESTENABLE,D3DFVF_XYZRHW,D3DFVF_TEX1=16,
     D3DTSS_TEXCOORDINDEX,D3DTSS_TEXTURETRANSFORMFLAGS,D3DTTFF_DISABLE,
     D3DSAMP_ADDRESSU,D3DSAMP_ADDRESSV,D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER,D3DSAMP_MIPFILTER,D3DSAMP_SRGBTEXTURE,
-    D3DTADDRESS_CLAMP,D3DTEXF_POINT,D3DTEXF_NONE,D3DTEXF_LINEAR};
+    D3DTADDRESS_CLAMP,D3DTADDRESS_WRAP,D3DTEXF_POINT,D3DTEXF_NONE,D3DTEXF_LINEAR};
 static const DWORD kDirectionalShadowTransitionCurrentShader[]={1},kDirectionalShadowTransitionPreviousShader[]={2},kWorldFogTransitionShader[]={3},kFogCloudsTransitionShader[]={4},kWorldFogActorTransitionShader[]={5},kWorldFogActorTiledTransitionShader[]={6},kFogCloudsActorTransitionShader[]={7},kFogCloudsActorTiledTransitionShader[]={8};
 static constexpr unsigned kDirectionalShadowTransitionCurrentShaderSlots=NORTHLIGHT_TEST_DIRECTIONALSHADOWTRANSITIONCURRENT_SLOTS,kDirectionalShadowTransitionPreviousShaderSlots=NORTHLIGHT_TEST_DIRECTIONALSHADOWTRANSITIONPREVIOUS_SLOTS,kWorldFogTransitionShaderSlots=NORTHLIGHT_TEST_WORLDFOGTRANSITION_SLOTS,kWorldFogActorTransitionShaderSlots=NORTHLIGHT_TEST_WORLDFOGACTORTRANSITION_SLOTS,kWorldFogActorTiledTransitionShaderSlots=NORTHLIGHT_TEST_WORLDFOGACTORTILEDTRANSITION_SLOTS,kFogCloudsTransitionShaderSlots=NORTHLIGHT_TEST_FOGCLOUDSTRANSITION_SLOTS,kFogCloudsActorTransitionShaderSlots=NORTHLIGHT_TEST_FOGCLOUDSACTORTRANSITION_SLOTS,kFogCloudsActorTiledTransitionShaderSlots=NORTHLIGHT_TEST_FOGCLOUDSACTORTILEDTRANSITION_SLOTS;
 struct D3DCAPS9 {unsigned MaxPixelShader30InstructionSlots=0;};
@@ -190,6 +192,10 @@ static void capture(){
         assert(!std::memcmp(expected,f.previousMatrix,sizeof expected));
         assert(d.states[D3DRS_ZENABLE]&&d.states[D3DRS_ZWRITEENABLE]);
         assert(d.samplers[0][D3DSAMP_MINFILTER]==D3DTEXF_LINEAR);
+        // The next draw fills the new static cache with repeating alpha textures.
+        // A history crop must not leave its CLAMP addressing on that draw.
+        assert(d.samplers[0][D3DSAMP_ADDRESSU]==D3DTADDRESS_WRAP);
+        assert(d.samplers[0][D3DSAMP_ADDRESSV]==D3DTADDRESS_WRAP);
         const auto calls=d.calls;key.valid=false;assert(!w.preserveShadowStatic(slot)&&d.calls==calls);
         key.valid=true;f.workingValid=false;assert(!w.preserveShadowStatic(slot)&&d.calls==calls);
         f.workingValid=true;f.working.cx=key.frame.cx+129*f.working.texel;
@@ -236,7 +242,7 @@ static void bindingsAndLifetime(){
     w.bindShadowTransition(0,true);
     assert(d.constants[99][0]==1&&d.constants[99][1]==0); // Selected previous far epoch.
     assert(d.constants[113][0]==0&&d.constants[113][1]==1&&d.constants[114][0]==0&&d.constants[114][1]==1); // Exact current directions survive old epoch binding.
-    float expected[16];const auto& near=w.shadowTransition[0];ShadowTransitionMath::reproject(near.previous,w.sourceMatrices[0][0],48,expected);
+    float expected[16];const auto& nearSlot=w.shadowTransition[0];ShadowTransitionMath::reproject(nearSlot.previous,w.sourceMatrices[0][0],48,expected);
     assert(!std::memcmp(d.constants[90],expected,sizeof expected));
     // Reset removes all sampling eligibility but keeps optional allocations warm.
     const unsigned live=d.live(),calls=d.calls;w.resetShadowTransitions();assert(d.live()==live&&d.calls==calls);
