@@ -164,6 +164,7 @@ test_fog_temporal_wiring.py
 test_fog_volume_build.py
 test_fog_volume_gpu.py
 test_forever_atmosphere.py
+test_forever_shader_evidence.py
 test_forwarder_generation.py
 test_frame_focus_cache.py
 test_frame_logging_batch.py

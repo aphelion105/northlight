@@ -1,6 +1,12 @@
 // Included inside WorldRenderer. Each source owns a complete cube and its static cache.
     static constexpr UINT PointResolution=256;
     struct PointContentMemo {const NorthlightLocalShadowSignature::Records* records=nullptr;uint64_t generation=0;float position[3]={},range=0;bool valid=false;NorthlightLocalShadowSignature::Digest faces[6];};
+    struct PointTerrainMemo {
+        // One byte per committed batch, at most 64 KiB per active light.
+        static constexpr size_t Limit=65536;
+        std::vector<unsigned char> masks;
+        uint64_t generation=0;float position[3]={},range=0;bool valid=false;
+    };
     struct PointSlot {
         IDirect3DCubeTexture9* cube=nullptr;
         IDirect3DSurface9* faces[6]={};
@@ -11,6 +17,7 @@
         bool cacheValid=false,ready=false,prewarmed=false;float selectionGain=1;uint64_t cacheSource=0;
         NorthlightLocalShadowSignature::Digest faceContent[6];bool faceKnown[6]={};uint64_t faceSerial[6]={};
         mutable PointContentMemo contentMemo;
+        PointTerrainMemo terrainMemo;
         NorthlightPointShadow::FaceCycle faceCycle;unsigned faceWeights[6]={};
         NorthlightPointShadow::RefreshSchedule schedule;
         NorthlightLocalLights::Light selected{};std::string map;DWORD retryAt=0;
@@ -46,7 +53,7 @@
     std::vector<unsigned char> pointBatchMasks;
     UINT pointPrimitiveLimit=0;bool pointMinBlend=false;
     struct PointWork {unsigned selected=0,statics=0,terrain=0,live=0,replay=0,replayMerged=0,unions=0,rebuilt=0,restored=0,unboundedRigid=0,unboundedSkinned=0,whiteLightingSkipped=0,paletteDraws=0,palettePackets=0,paletteRegisters=0;uint64_t triangles=0,bridged=0;} pointWork;
-    struct PointCold {unsigned cubes=0,statics=0,shared=0,shaders=0;int64_t ticks=0,prepare=0,boundsWait=0,candidates=0,submit=0;} pointCold;
+    struct PointCold {unsigned cubes=0,statics=0,shared=0,shaders=0,terrainMemoHits=0,terrainMemoMisses=0;int64_t ticks=0,prepare=0,boundsWait=0,candidates=0,submit=0;} pointCold;
     template<class Call> HRESULT pointAllocate(unsigned& attempts,Call call){
         ++attempts;const bool timed=NorthlightQuality::renderProfile(quality);const int64_t start=timed?QpcClock::now():0;
         const HRESULT hr=call();if(timed)pointCold.ticks+=QpcClock::now()-start;return hr;
@@ -78,6 +85,7 @@
         // before use, even if the source returns within the ordinary refresh period.
         for(auto& f:p.faces)drop(f);drop(p.cube);p.ready=false;p.staticOnlyFaces=p.geometryOnlyFaces=0;
         p.schedule.invalidate();p.faceCycle.reset();p.contentMemo.valid=false;p.retryAt=0;
+        p.terrainMemo=PointTerrainMemo{};
         std::swap(keep.slot,p);keep.age=++pointKeepAge;keep.wanted=false;
     }
     void restorePointSlot(const NorthlightLocalLights::Light& light){
@@ -313,6 +321,32 @@
     }
     void pointAppendCandidates(PointCandidates& lists,size_t index,unsigned mask,unsigned faces=63){
         for(unsigned face=0;face<6;++face){if(!(faces&(1u<<face)))continue;if(mask&(1u<<face))lists[face].push_back(index);else ++pointCulled;}
+    }
+    void preparePointTerrain(const NorthlightPointShadow::FaceClip& clip,unsigned faces){
+        auto& memo=pointSlot().terrainMemo;const auto& light=pointSlot().selected;
+        bool reuse=memo.valid&&memo.generation==meshGeneration&&memo.masks.size()==batches.size()&&memo.range==light.attenuationEnd;
+        for(unsigned i=0;i<3;++i)reuse=reuse&&memo.position[i]==light.position[i];
+        if(reuse)++pointCold.terrainMemoHits;else ++pointCold.terrainMemoMisses;
+        if(reuse)pointBatchMasks=memo.masks;
+        else{memo.valid=false;pointBatchMasks.assign(batches.size(),63);}
+        // Immutable bounds belong to meshGeneration. Live terrain and animated
+        // casters are classified separately on every refresh, as before.
+        const auto append=[&](size_t i){const auto& batch=batches[i];
+            const unsigned mask=reuse?(pointBatchMasks[i]&faces):pointMask(batch.boundsLow,batch.boundsHigh,clip,faces);
+            pointBatchMasks[i]=static_cast<unsigned char>(mask);
+            pointAppendCandidates(pointTerrainCandidates,i,mask,faces);};
+        if(terrainBatchListGeneration==meshGeneration&&terrainBatchListSize==batches.size()){
+            for(size_t i:terrainBatchList)append(i);
+        }else for(size_t i=0;i<batches.size();++i)if(batches[i].terrain)append(i);
+        // Partial refreshes cannot publish masks for faces they did not test.
+        // Cache allocation is optional: failure leaves the exact current lists.
+        if(!reuse&&faces==63&&batches.size()<=PointTerrainMemo::Limit){
+            try{if(memo.masks.capacity()<pointBatchMasks.size())std::vector<unsigned char>(pointBatchMasks).swap(memo.masks);
+                else memo.masks=pointBatchMasks;
+                memo.generation=meshGeneration;memo.range=light.attenuationEnd;
+                std::copy(light.position,light.position+3,memo.position);memo.valid=true;
+            }catch(...){memo=PointTerrainMemo{};}
+        }
     }
     Batch pointBatchRun(const std::vector<size_t>& candidates,size_t& at,unsigned face=6){
         size_t last=candidates[at++];Batch run=batches[last];uint64_t selected=run.count,bridged=0;
@@ -752,16 +786,8 @@
         const bool pointTimed=NorthlightQuality::renderProfile(quality);
         const int64_t prepareStart=pointTimed?QpcClock::now():0;
         try {
-            pointBatchMasks.assign(batches.size(),63);
             for(auto* lists:{&pointStaticCandidates,&pointTerrainCandidates,&pointLiveCandidates,&pointReplayCandidates})for(auto& list:*lists)list.clear();
-            // Reuse the mesh's terrain list shared with the directional passes.
-            // Camera-visible native chunks may contain only part of a caster.
-            const auto terrainCandidate=[&](size_t i){const auto& batch=batches[i];
-                const unsigned mask=pointMask(batch.boundsLow,batch.boundsHigh,clip,faces);pointBatchMasks[i]=static_cast<unsigned char>(mask);
-                pointAppendCandidates(pointTerrainCandidates,i,mask,faces);};
-            if(terrainBatchListGeneration==meshGeneration&&terrainBatchListSize==batches.size()){
-                for(size_t i:terrainBatchList)terrainCandidate(i);
-            }else for(size_t i=0;i<batches.size();++i)if(batches[i].terrain)terrainCandidate(i);
+            preparePointTerrain(clip,faces);
             if(rebuildMask&faces){
                 for(size_t i=0;i<batches.size();++i){const auto& batch=batches[i];
                     if(!batch.terrain){
@@ -1008,7 +1034,7 @@
         }
         if(coldTimed&&captureFrequency.QuadPart>0){const double scale=1000.0/double(captureFrequency.QuadPart),cpuMs=double(QpcClock::now()-coldStarted)*scale;
             if(cpuMs>=8||profileSampled()){
-                logf("POINT_PHASE rendererFrame=%u prepareMs=%.3f boundsWaitMs=%.3f candidatesMs=%.3f submitMs=%.3f prepareIncludesBoundsAndCandidates=1",rendererFrame,double(pointCold.prepare)*scale,double(pointCold.boundsWait)*scale,double(pointCold.candidates)*scale,double(pointCold.submit)*scale);
+                logf("POINT_PHASE rendererFrame=%u prepareMs=%.3f boundsWaitMs=%.3f candidatesMs=%.3f submitMs=%.3f prepareIncludesBoundsAndCandidates=1 terrainMemoHits=%u terrainMemoMisses=%u terrainListSize=%zu totalBatches=%zu",rendererFrame,double(pointCold.prepare)*scale,double(pointCold.boundsWait)*scale,double(pointCold.candidates)*scale,double(pointCold.submit)*scale,pointCold.terrainMemoHits,pointCold.terrainMemoMisses,terrainBatchList.size(),batches.size());
                 // A reused cube may leave the bounds job running. Its mutable
                 // counters are readable only after that job has been joined.
                 const auto* stats=replayBoundsWorker.pending()?nullptr:&replayBoundsCache.envelopeStats();

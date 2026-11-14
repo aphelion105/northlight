@@ -7,6 +7,59 @@
 #include "actor_client_programs.h"
 static void must(HRESULT hr){assert(SUCCEEDED(hr));}
 struct PointTerrainCoverageTest {
+#ifndef NORTHLIGHT_POINT_TERRAIN_MEMO_REFERENCE
+ static void terrainCandidates(IDirect3DDevice9* d){
+  WorldRenderer w(d);w.meshGeneration=1;
+  NorthlightLocalLights::Light light{{0,0,4},{1,.4f,.1f},1,12,17,3,NorthlightLocalLights::CastShadow};
+  const auto fill=[&](size_t count){w.batches.clear();
+   for(size_t i=0;i<count;++i){WorldRenderer::Batch b{};b.terrain=i%7!=0;
+    const float x=float(int(i%41)-20),y=float(int(i%53)-26),z=float(int(i%19)-9);
+    b.boundsLow={x,y,z};b.boundsHigh={x+2,y+2,z+2};w.batches.push_back(b);}
+   ++w.meshGeneration;w.rebuildTerrainLists();};
+  const auto clear=[&]{for(auto& list:w.pointTerrainCandidates)list.clear();w.pointCulled=0;};
+  // Uncached terrain classification from adaeaa4a, kept as a differential
+  // oracle. It does not populate or invalidate the new cache while timing.
+  const auto reference=[&](const NorthlightPointShadow::FaceClip& clip,unsigned faces){
+   w.pointBatchMasks.assign(w.batches.size(),63);
+   const auto append=[&](size_t i){const auto& b=w.batches[i];const unsigned mask=w.pointMask(b.boundsLow,b.boundsHigh,clip,faces);
+    w.pointBatchMasks[i]=static_cast<unsigned char>(mask);w.pointAppendCandidates(w.pointTerrainCandidates,i,mask,faces);};
+   if(w.terrainBatchListGeneration==w.meshGeneration&&w.terrainBatchListSize==w.batches.size()){
+    for(size_t i:w.terrainBatchList)append(i);
+   }else for(size_t i=0;i<w.batches.size();++i)if(w.batches[i].terrain)append(i);
+  };
+  const auto check=[&](unsigned faces){w.pointSlot().selected=light;float matrices[6][16]={};
+   for(unsigned f=0;f<6;++f)if(faces&(1u<<f))assert(NorthlightPointShadow::faceMatrix(light.position,.1f,light.attenuationEnd,f,matrices[f],WorldRenderer::PointResolution));
+   const NorthlightPointShadow::FaceClip clip(matrices,light,faces);
+   clear();reference(clip,faces);const auto masks=w.pointBatchMasks;const auto lists=w.pointTerrainCandidates;const unsigned culled=w.pointCulled;
+   clear();w.preparePointTerrain(clip,faces);assert(w.pointBatchMasks==masks&&w.pointTerrainCandidates==lists&&w.pointCulled==culled);
+  };
+  for(size_t count:{size_t(0),size_t(128),size_t(4096),size_t(65536),size_t(65537)}){
+   fill(count);check(63);assert(w.pointSlot().terrainMemo.valid==(count<=WorldRenderer::PointTerrainMemo::Limit));
+   check(63);for(unsigned faces:{1u,2u,4u,8u,16u,32u,21u,42u})check(faces);
+   w.terrainBatchListGeneration=UINT64_MAX;check(63); // list fallback is equivalent
+   light.position[0]+=.25f;check(1);assert(!w.pointSlot().terrainMemo.valid);check(63);
+   light.attenuationEnd+=.25f;check(63);
+   if(count){w.batches[0].terrain=true;w.batches[0].boundsLow={-1,-1,0};w.batches[0].boundsHigh={1,1,8};}
+   ++w.meshGeneration;check(63);
+   assert(w.pointSlot().terrainMemo.masks.capacity()<=WorldRenderer::PointTerrainMemo::Limit);
+  }
+  fill(2048);float matrices[14][6][16]={};
+  for(unsigned l=0;l<14;++l){w.pointIndex=l;light.position[0]=float(l)*.2f;w.pointSlot().selected=light;
+   for(unsigned f=0;f<6;++f)assert(NorthlightPointShadow::faceMatrix(light.position,.1f,light.attenuationEnd,f,matrices[l][f],WorldRenderer::PointResolution));
+   const NorthlightPointShadow::FaceClip clip(matrices[l],light);clear();w.preparePointTerrain(clip,63);}
+  for(unsigned block=0;block<16;++block){const bool cached=block%4==1||block%4==2;const auto start=std::chrono::steady_clock::now();
+   for(unsigned frame=0;frame<32;++frame)for(unsigned l=0;l<14;++l){w.pointIndex=l;const NorthlightPointShadow::FaceClip clip(matrices[l],w.pointSlot().selected);
+    clear();if(cached)w.preparePointTerrain(clip,63);else reference(clip,63);}
+   const double ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count()/32;
+   std::printf("POINT_TERRAIN_CANDIDATES_TIMING block=%u warm=%u cached=%u lights=14 batches=2048 cpuMs=%.6f\n",block,unsigned(block<4),unsigned(cached),ms);
+  }
+  w.pointIndex=0;w.active=std::make_shared<WorldRenderer::Snapshot>();w.active->map="terrain-memo";
+  auto& slot=w.pointSlot();slot.map=w.active->map;slot.cacheValid=true;slot.cacheSource=slot.selected.sourceId;
+  w.keepPointSlot(slot,1);assert(w.pointKeeps[0].slot.terrainMemo.masks.empty());
+  w.releasePointGPU();for(const auto& p:w.pointSlots)assert(p.terrainMemo.masks.empty());
+  std::puts("POINT_TERRAIN_CANDIDATES_PASS reference=exact partialFaces=exact meshLightRangeMutation=exact fallback=exact boundedKiB=4096 keeps=empty reset=empty");
+ }
+#endif
  static void captureDemand(IDirect3DDevice9* d){
   WorldRenderer w(d);w.active=std::make_shared<WorldRenderer::Snapshot>();w.active->bvh=std::make_shared<NorthlightGI::BVH>();w.active->map=w.lastRequest.map="capture-demand";
   w.valid=w.celestialValid=true;w.sourceColors[0]=w.sourceColors[1]={};w.quality.actorShadows=w.quality.localLights=w.quality.pointShadows=w.quality.equipmentLights=1;
@@ -114,6 +167,9 @@ struct PointTerrainCoverageTest {
   }
  };
  static void run(IDirect3DDevice9* d,const char* skinPath){
+#ifndef NORTHLIGHT_POINT_TERRAIN_MEMO_REFERENCE
+  terrainCandidates(d);
+#endif
   captureDemand(d);prewarm(d);prewarmPoints(d);
   UnionMeter meter(d);WorldRenderer w(&meter);
   // Deliberate fail-open oracle: no usable bounds, and no hidden warmup.
@@ -186,6 +242,11 @@ struct PointTerrainCoverageTest {
    ++w.meshGeneration;w.releasePointGPU();w.quality.pointShadowRefreshMs=0;
    const auto refresh=[&](bool retain){if(!retain)w.pointSlot().geometryOnlyFaces=0;w.pointSlot().schedule.updatedAt=GetTickCount()-10000;render();};
    refresh(false);const auto ground=image();const unsigned groundDraws=w.pointDraws;assert(groundDraws>0);
+#ifndef NORTHLIGHT_POINT_TERRAIN_MEMO_REFERENCE
+   assert(w.pointSlot().terrainMemo.valid);refresh(false);assert(image()==ground&&w.pointDraws==groundDraws);
+   w.pointSlot().terrainMemo.valid=false;refresh(false);assert(image()==ground&&w.pointDraws==groundDraws);
+   std::puts("POINT_TERRAIN_CANDIDATES_GPU_PASS sixFaces=exact warmCold=exact draws=unchanged");
+#endif
    const auto weights=std::array<unsigned,6>{w.pointSlot().faceWeights[0],w.pointSlot().faceWeights[1],w.pointSlot().faceWeights[2],w.pointSlot().faceWeights[3],w.pointSlot().faceWeights[4],w.pointSlot().faceWeights[5]};
    refresh(true);assert(!w.pointDraws&&w.pointFacesReused==6&&image()==ground);
    assert(std::equal(weights.begin(),weights.end(),w.pointSlot().faceWeights));

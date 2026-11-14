@@ -17,6 +17,7 @@
       "test_shadow_transition_build.py",
       "test_fog_volume_build.py",
       "test_fixture_light_resolution.py",
+      "test_forever_shader_evidence.py",
       "test_weather_lab_capture.py"
     ]
   },

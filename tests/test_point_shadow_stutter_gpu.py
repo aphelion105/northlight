@@ -52,6 +52,7 @@ if a.reference_point_from:
  if 'const bool direct=!pointSlot().cacheFace[face];' not in point:reference+=['-DNORTHLIGHT_POINT_UNION_REFERENCE=1']
  if 'PointSlot recycled;' not in point:reference+=['-DNORTHLIGHT_POINT_RECYCLE_REFERENCE=1']
  if 'geometryOnlyFaces' not in point:reference+=['-DNORTHLIGHT_POINT_TERRAIN_REFERENCE=1']
+ if 'preparePointTerrain(' not in point:reference+=['-DNORTHLIGHT_POINT_TERRAIN_MEMO_REFERENCE=1']
 cmd=[fp.zig(),'c++','-target','x86-windows-gnu','-O2','-UNDEBUG','-std=c++17','-Wno-microsoft-exception-spec','-DIMGUI_USER_CONFIG="northlight_imconfig.h"',*reference,'-I',out,*fp.test_include_flags(),fp.TESTS/'point_shadow_stutter_gpu.cpp',*(fp.src(s) for s in sources),'-luser32','-luuid','-o',exe]
 with (out/'compile.log').open('w') as log:subprocess.run(list(map(str,cmd)),env=env,stdout=log,stderr=subprocess.STDOUT,check=True,timeout=300)
 backends=a.backend or [Path(os.environ['WINDIR'])/'SysWOW64/d3d9.dll',fp.client_root()/'renderer-backends/dxvk2/dxvk2_d3d9.dll',fp.client_root()/'renderer-backends/dxvk/dxvk_d3d9.dll']
@@ -67,6 +68,13 @@ for i,backend in enumerate(backends):
  assert 'POINT_WHITE_CUBE_GPU_PASS ' in text
  assert text.count('POINT_DIRECT_GPU_PASS ')==10
  assert 'POINT_RECYCLE_GPU_PASS ' in text
+ candidates=[]
+ if not a.reference_point_from or 'preparePointTerrain(' in point:
+  assert 'POINT_TERRAIN_CANDIDATES_PASS ' in text and 'POINT_TERRAIN_CANDIDATES_GPU_PASS ' in text
+  rows=[dict(re.findall(r'(\w+)=([^ ]+)',line)) for line in text.splitlines() if line.startswith('POINT_TERRAIN_CANDIDATES_TIMING ') and 'warm=0 ' in line]
+  for cached in (0,1):
+   values=[float(r['cpuMs']) for r in rows if int(r['cached'])==cached];assert len(values)==6
+   candidates.append({'cached':bool(cached),'cpu_ms':statistics.median(values),'lights':14,'batches':2048})
  terrain=[]
  if not a.reference_point_from or 'geometryOnlyFaces' in point:
   assert 'POINT_TERRAIN_REUSE_PASS ' in text and 'POINT_TERRAIN_ACTORS_PASS ' in text
@@ -86,7 +94,7 @@ for i,backend in enumerate(backends):
    preparation.append(entry)
  samples=[dict(re.findall(r'(\w+)=([^ ]+)',line)) for line in text.splitlines() if line.startswith('POINT_GAP_TIMING ')]
  timing={str(mode):{key:statistics.median(float(s[key]) for s in samples if s['optimized']==str(mode)) for key in ('submitMs','completeMs','draws')} for mode in (0,1)}
- report['cases'].append({'backend':str(backend.resolve()),'sha256':sha(backend),'log':str(run/'gpu.log'),'timing':timing if timing_valid else None,'preparation':preparation if timing_valid else None,'terrain':terrain if timing_valid else None})
+ report['cases'].append({'backend':str(backend.resolve()),'sha256':sha(backend),'log':str(run/'gpu.log'),'timing':timing if timing_valid else None,'preparation':preparation if timing_valid else None,'terrain':terrain if timing_valid else None,'terrain_candidates':candidates if timing_valid else None})
 assert all(sha(Path(path))==digest for path,digest in inputs.items()),'Source changed during the oracle'
 report['pass']=True;report['timing_valid']=timing_valid;report['scope']='Authored static workload; no gameplay FPS claim. Concurrent game invalidates timing; pixel/state assertions remain valid.'
 (out/'validation.json').write_text(json.dumps(report,indent=2)+'\n');print('PASS',out)
