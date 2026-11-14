@@ -29,6 +29,8 @@ For the Northrend lighting switches, streaming gaps and GPU regressions, see
 [the lighting investigation](lighting-streaming-20261114.md).
 For the latest gameplay profile and image-checked shader experiments, see
 [the performance investigation](performance-20261114.md).
+For the subsequent CPU source-reuse change and local-session baseline, see
+[material admission snapshot reuse](cpu-source-reuse-20261114.md).
 
 ## Requirements
 

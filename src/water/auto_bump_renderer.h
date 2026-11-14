@@ -762,11 +762,13 @@ public:
         // The private depth starts at 1 and represents nearest visible material.
         // Special comparisons need their native prepass; keep the native draw.
         if(multisampled&&!privateDepthSupported(zfunc))return;
-        if(width!=desc.Width||heightPixels!=desc.Height){reset(nullptr,true);width=desc.Width;heightPixels=desc.Height;}
+        if(width!=desc.Width||heightPixels!=desc.Height){geometrySource.clear();reset(nullptr,true);width=desc.Width;heightPixels=desc.Height;}
         // A distant proof needs no capture constants, samplers or private depth.
         // Resolve the target size first: reset() would discard prepared geometry.
         const NorthlightAutoDisplacement::Admission geometryAdmission{z,depthWrite,s[5].value,s[1].value,s[7].value,s[8].value,alphaFunc};
-        if(domain<=4&&geometryMode&&geometry&&!skipGeometry){displacement.prepare(original,domain,material,*geometry,&geometryAdmission,&geometrySource,std::max(captureRange(domain),displacement.geometryRange(domain)));
+        // Only getters separate the same draw's full skin snapshot from prepare.
+        // UP/rigid/cold preflights leave it empty and retain ordinary capture.
+        if(domain<=4&&geometryMode&&geometry&&!skipGeometry){displacement.prepare(original,domain,material,*geometry,&geometryAdmission,&geometrySource,std::max(captureRange(domain),displacement.geometryRange(domain)),&geometrySource);
             handoff();
             nearestDepth=displacement.nearestPreparedDepth();farthestDepth=std::min(farthestDepth,displacement.farthestPreparedDepth());
             if(needsCapture&&displacement.nearestPreparedDepth()>captureRange(domain)){++rangeTests;++rangeRejected;if(profile)profile->count(P::RangeRejected);return;}}

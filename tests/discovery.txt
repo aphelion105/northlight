@@ -258,6 +258,7 @@ test_m2_shader_families_client.py
 test_m2_visibility.py
 test_mask_state_delta.py
 test_material_actor_decode_wave2.py
+test_material_admission_source_gpu.py
 test_material_alias_wave2.py
 test_material_batch_bindings.py
 test_material_byte_ops.py

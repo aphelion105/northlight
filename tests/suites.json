@@ -62,6 +62,7 @@
       "test_m2_material_admission.py",
       "test_material_pose_coarse.py",
       "test_m2_material_preflight.py",
+      "test_material_admission_source_gpu.py",
       "test_world_screen_effects_gpu.py",
       "test_luxvelum_optimizations_gpu.py",
       "test_native_local_light_gpu.py",
