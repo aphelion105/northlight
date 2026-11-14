@@ -2,6 +2,7 @@
 #include <d3d9.h>
 #include <unordered_map>
 #include "model_normal_mrt_patch.h"
+#include "model_normal_msaa.h"
 
 // Owns programs and a frame transaction, but borrows the existing normal RT.
 // The immutable replay queue remains the rollback journal until commit.
@@ -18,6 +19,7 @@ class NorthlightNativeModelNormals {
     Vertex* recentVertex=nullptr;Pixel* recentPixel=nullptr;
     IDirect3DSurface9* describedColor=nullptr;D3DSURFACE_DESC colorDescription{};
     IDirect3DSurface9* sceneDepth=nullptr;
+    NorthlightModelNormalMsaa msaa;bool multisampled=false;
     D3DCAPS9 caps{};bool capable=false,linearTarget=false,blendTarget=false,enabled=false,lastComplete=false,allowed=false,complete=true,started=false,refused=false,depthOnlySeen=false;
     const char* reason="none";
     unsigned probes=0,modelDraws=0,zeroDraws=0,builds=0,committed=0,fallbacks=0,coldPairs=0;
@@ -105,17 +107,21 @@ public:
             if(!std::strcmp(cause,"depth-only-before-rgb")||!std::strcmp(cause,"occupied-mrt")||!std::strcmp(cause,"fixed-pixel")||
                (!std::strcmp(cause,"capture-hazard")&&probes&&!allowed))retryFrames=3;
         }complete=false;lastComplete=false;}
-    void beginFrame(){drop(sceneDepth);describedColor=nullptr;allowed=enabled&&lastComplete;complete=retryFrames==0;if(retryFrames)--retryFrames;started=depthOnlySeen=false;reason=complete?"none":"structural-retry";probes=modelDraws=zeroDraws=builds=committed=fallbacks=coldPairs=0;}
+    void beginFrame(){drop(sceneDepth);describedColor=nullptr;multisampled=false;allowed=enabled&&lastComplete;complete=retryFrames==0;if(retryFrames)--retryFrames;started=depthOnlySeen=false;reason=complete?"none":"structural-retry";probes=modelDraws=zeroDraws=builds=committed=fallbacks=coldPairs=0;}
     void reset(){retryFrames=0;beginFrame();lastComplete=allowed=false;refused=false;
-        recentVertex=nullptr;recentPixel=nullptr;
+        msaa.reset();recentVertex=nullptr;recentPixel=nullptr;
         for(auto& item:vertices){for(auto*& shader:item.second.shader)drop(shader);drop(item.second.source);}vertices.clear();
         for(auto& item:pixels){for(auto& row:item.second.normal)for(auto*& shader:row)drop(shader);for(auto*& shader:item.second.zero)drop(shader);drop(item.second.source);}pixels.clear();
     }
     bool finish(bool allProbed,bool allWritten,unsigned packets){
         lastComplete=enabled&&capable&&!refused&&complete&&allProbed&&packets!=0;
-        if(lastComplete&&allowed&&started&&allWritten){committed=packets;return true;}
+        if(lastComplete&&allowed&&started&&allWritten){
+            if(!multisampled||msaa.resolve()){committed=packets;return true;}
+            cancel("msaa-resolve");
+        }
         if(packets)++fallbacks;return false;
     }
+    IDirect3DTexture9* resolvedTexture()const{return committed&&multisampled?msaa.texture():nullptr;}
     template<class Log> void report(unsigned frame,Log log)const{
         log("MODEL_NORMALS MRT frame=%u enabled=%u allowed=%u complete=%u committed=%u probes=%u modelDraws=%u occluderDraws=%u shaderBuilds=%u fallbacks=%u reason=%s vertices=%zu pixels=%zu retryFrames=%u",frame,unsigned(enabled),unsigned(allowed),unsigned(lastComplete),committed,probes,modelDraws,zeroDraws,builds,fallbacks,reason,vertices.size(),pixels.size(),retryFrames);
     }
@@ -155,8 +161,12 @@ public:
         if(!describedColor){if(FAILED(color->GetDesc(&colorDescription)))return fallback("target-state");describedColor=color;}
         const auto& desc=colorDescription;
         if(vp.X||vp.Y||vp.Width!=width||vp.Height!=height||desc.Width!=width||desc.Height!=height||
-           desc.MultiSampleType!=D3DMULTISAMPLE_NONE||(sceneDepth&&sceneDepth!=depth.p)||
+           (sceneDepth&&sceneDepth!=depth.p)||
            (desc.Format!=D3DFMT_A16B16G16R16F&&!(caps.PrimitiveMiscCaps&D3DPMISCCAPS_MRTINDEPENDENTBITDEPTHS)))return fallback("target-msaa");
+        if(desc.MultiSampleType!=D3DMULTISAMPLE_NONE){
+            if(!msaa.ensure(d,desc,color))return fallback(msaa.failureReason());
+            target=msaa.surface();multisampled=true;
+        }
         Ref<IDirect3DPixelShader9> oldPS;if(FAILED(d->GetPixelShader(&oldPS.p))||!oldPS.p)return fallback("fixed-pixel");
         Pixel* p=nullptr;try{p=pixel(oldPS.p);}catch(const std::bad_alloc&){return fallback("allocation");}if(!p||!p->valid)return fallback("pixel-program");
         const bool vacant=emptyTargets&&emptyTargets(targetContext);

@@ -26,6 +26,8 @@ parser.add_argument('--output',type=Path,required=True)
 parser.add_argument('--timing-draws',type=int,action='append',default=[],help='Additionally measure complete 4K capture/submission paths (resident geometry)')
 parser.add_argument('--timing-copies',type=int,default=1,help='Repeat stock geometry within each timing draw (1..32)')
 parser.add_argument('--timing-local',action='store_true',help='Measure the actual three-local-light factory with MRT')
+parser.add_argument('--timing-msaa',action='store_true',help='Measure the experimental MSAA2 capture path, including interop resolve')
+parser.add_argument('--timing-near',action='store_true',help='Place timing receivers at view depth 2 instead of 10')
 parser.add_argument('--reference-packet-layout',help='Replace only Pending with its layout at this git revision; retain current capture/render methods')
 parser.add_argument('--reference-native',help='Use native MRT admission from this git revision for a paired comparison')
 timing_state=parser.add_mutually_exclusive_group()
@@ -85,6 +87,7 @@ for i,path in enumerate(args.backend):
         assert 0<draws<=512
         assert 1<=args.timing_copies<=32
         mode=('capture-hazard' if args.timing_capture_hazard else 'fixed-pixel' if args.timing_fixed_pixel else 'srgb' if args.timing_srgb else 'blend' if args.timing_blend else 'plain')+('-local' if args.timing_local else '')
+        mode+=('-msaa' if args.timing_msaa else '')+('-near' if args.timing_near else '')
         text=run('timing-'+str(i)+'-'+str(draws),[exe,path,str(fixture)+'/',draws,args.timing_copies,mode])
         print('\n'.join(line for line in text.splitlines() if line.startswith('MODEL_NORMAL_NATIVE_TIMING')),flush=True)
 inputs={str(p.relative_to(ROOT)):hashlib.sha256(p.read_bytes()).hexdigest() for p in fp.SRC.rglob('*') if p.is_file()}
@@ -98,4 +101,8 @@ report['reference_packet_layout']=args.reference_packet_layout
 report['reference_native']=args.reference_native
 report['timing']['fixed_pixel']=args.timing_fixed_pixel
 report['timing']['capture_hazard']=args.timing_capture_hazard
+report['timing']['msaa']=2 if args.timing_msaa else 0
+report['timing']['near']=args.timing_near
+report['commit']=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip()
+report['environment']={key:env.get(key) for key in ('DXVK_CONFIG','DXVK_FILTER_DEVICE_NAME','NORTHLIGHT_TEST_ALLOW_RUNNING_GAME')}
 (out/'validation.json').write_text(json.dumps(report,indent=2)+'\n')
