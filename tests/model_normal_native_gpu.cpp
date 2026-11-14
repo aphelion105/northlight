@@ -37,6 +37,8 @@ int main(int argc,char** argv){
     const bool timingFixed=timingMode.find("fixed-pixel")!=std::string::npos;
     const bool timingHazard=timingMode.find("capture-hazard")!=std::string::npos;
     const bool timingMsaa=timingMode.find("msaa")!=std::string::npos;
+    const bool timingAlpha=timingMode.find("alpha")!=std::string::npos;
+    const auto timingShader=timingMode.find("weighted4")!=std::string::npos?"model-vs3-weighted4.bin":timingMode.find("weighted")!=std::string::npos?"model-vs3-weighted.bin":timingMode.find("skinned")!=std::string::npos?"model-vs3-skinned.bin":timingLocal?"model-vs3-local.bin":"model-vs3-rigid.bin";
     WNDCLASSW wc{};wc.lpfnWndProc=DefWindowProcW;wc.lpszClassName=L"NorthlightNativeNormalTransaction";wc.hInstance=GetModuleHandleW(nullptr);assert(RegisterClassW(&wc));auto window=CreateWindowExW(0,wc.lpszClassName,L"",WS_OVERLAPPED,0,0,64,64,nullptr,nullptr,wc.hInstance,nullptr);assert(window);
     auto module=LoadLibraryA(argv[1]);assert(module);auto create=(IDirect3D9*(WINAPI*)(UINT))GetProcAddress(module,"Direct3DCreate9");assert(create);auto api=create(D3D_SDK_VERSION);assert(api);
     D3DPRESENT_PARAMETERS pp{};pp.Windowed=TRUE;pp.hDeviceWindow=window;pp.BackBufferWidth=pp.BackBufferHeight=64;pp.BackBufferFormat=D3DFMT_X8R8G8B8;pp.SwapEffect=D3DSWAPEFFECT_DISCARD;pp.PresentationInterval=D3DPRESENT_INTERVAL_IMMEDIATE;
@@ -77,7 +79,7 @@ int main(int argc,char** argv){
     std::vector<std::string> files={"model-vs3-rigid.bin","model-vs3-skinned.bin","model-vs3-weighted.bin","model-vs3-weighted4.bin"};
     if(std::ifstream(dir+"model-vs3-local.bin").good())files.push_back("model-vs3-local.bin");
     for(const auto& filename:files)for(unsigned material=0;material<3;++material)for(bool hdr:{false,true})for(bool alpha:{false,true}){
-        if(timing&&(filename!=(timingLocal?"model-vs3-local.bin":"model-vs3-rigid.bin")||material||alpha))continue;
+        if(timing&&(filename!=timingShader||material||alpha!=timingAlpha))continue;
         const auto* file=filename.c_str();const bool local=filename=="model-vs3-local.bin";
         auto source=vs(dir+file);auto color=target(W,H,hdr?D3DFMT_A16B16G16R16F:D3DFMT_A8R8G8B8,hdr?8:4);
         IDirect3DSurface9 *alternateColor=nullptr,*alternateDepth=nullptr;
