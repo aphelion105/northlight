@@ -1,4 +1,4 @@
-# Native work, capture and composition audit — 2026-11-14
+# Native work, capture and composition audit вЂ” 2026-11-14
 
 Audited runtime: `06fbc8b31c385c541c737f7030c1b12089d342dc`.
 This investigation does not change production shaders, the DLL, client settings
@@ -14,7 +14,7 @@ claimed. Read this with [the architecture contracts](architecture.md) and
 - Preserved log: `.local/out/test-output/performance-20261114/profile-before.log`;
   SHA-256 `e7d7a4d0b209a2bff31db6ec65a7cff64a2cfae6a0e68ba30e0a6b230b512737`.
   `profile-before-analysis.json` contains the sampled distributions below.
-- Configuration: 3840×2160, MSAA 2, installed DXVK 3.1.1, HDR,
+- Configuration: 3840Г—2160, MSAA 2, installed DXVK 3.1.1, HDR,
   legacy expansion 0.50, automatic exposure and wide bloom. Diagnostics and
   RenderProfile are on. Their CPU instrumentation is part of these samples.
 - Private scene/depth/material capture: client diagnostics directory
@@ -93,11 +93,11 @@ flowchart TD
 | --- | --- | --- |
 | Model normals | Full-resolution FP16 capture with depth/coverage contracts | Resident shared source, pose/constant caches, compact shaders, merge rules, native MRT only where eligible |
 | Material capture | Native target dimensions; height/detail and optional occlusion | Deferred batching, range/visibility rejection, shared pose/source, capture output MRT; this is not automatically a merge with native color or model normals |
-| AO → blur | Half resolution; blur consumes neighboring AO results | AO application is folded into world composition. Neutral AO can use a 1×1 texture instead of a clear |
+| AO в†’ blur | Half resolution; blur consumes neighboring AO results | AO application is folded into world composition. Neutral AO can use a 1Г—1 texture instead of a clear |
 | WorldNormals | Half resolution, reconstructed geometry plus captured model normals | Writes the current dry-distance target in the same draw |
 | Actor visibility / shadow filtering | Different hierarchy/filter grids and shadow inputs | Actor tiles and static shadow caches are already present; different light views are not interchangeable draws |
 | Lighting / GI | Half resolution; visibility and probe inputs | Unshadowed lighting can merge GI for the eligible final source; other variants preserve their caps/performance guards |
-| RemovalSmooth → TemporalLight | Half resolution; spatial neighborhood followed by history validation | The temporal pass reuses current distance; its removed duplicate distance output must not be restored |
+| RemovalSmooth в†’ TemporalLight | Half resolution; spatial neighborhood followed by history validation | The temporal pass reuses current distance; its removed duplicate distance output must not be restored |
 | Current local lights | Current light selection and normals | Reuses the dead raw-light target; batched direct and point work remain separate where shadow/input semantics differ |
 | Fog and lamp scattering | Reduced grids, selected volume variant, current distance, history, height/shadows | Fog history/blur remain distinct from current lamp scattering; scattering lacks the receiver depth needed for surface reprojection |
 | World composite / materials | Full resolution; world effects first, high-frequency detail afterward | Combined HDR shader exists; legacy expansion currently prevents its use. Name/prelit/unlit masks require the correct separate equations |
@@ -240,13 +240,13 @@ image controls and their timings before its captured-input assertion failed:
 
 | Completed initial case | Separate, ms | Merged, ms |
 | --- | ---: | ---: |
-| 1920×1080 | 0.1430 | 0.1381 |
-| 3840×2160 | 0.5175 | 0.4637 |
-| 3840×2160, MSAA 2 | 0.5317 | 0.4848 |
+| 1920Г—1080 | 0.1430 | 0.1381 |
+| 3840Г—2160 | 0.5175 | 0.4637 |
+| 3840Г—2160, MSAA 2 | 0.5317 | 0.4848 |
 
 Those three controls had exact alpha, no nonfinite/out-of-tolerance channels,
 maximum absolute scRGB error 0.0078125, a nonzero material control of 0.08203125,
-and 62→61 draws with two unchanged resolves. They establish a limited candidate,
+and 62в†’61 draws with two unchanged resolves. They establish a limited candidate,
 not captured-scene acceptance, bit equality or game FPS improvement.
 
 The initial captured case used a constant authored material depth unrelated to
@@ -265,3 +265,14 @@ the user's standing permission with `NORTHLIGHT_TEST_ALLOW_RUNNING_GAME=1` and
 record background contention. Before shipping any fusion, additionally run the
 actual WorldRenderer mask/caps/failure/diagnostic tests and current source,
 architecture and affected GPU acceptance; this small graph does not cover them.
+
+
+## Follow-up: MSAA capture experiment
+
+The [MSAA-normal investigation](msaa-normal-experiment-20261114.md) contains the
+implemented native MRT prototype, GPU image oracles, final timing evidence and
+its separate source branch. Hidden DXVK GPU tests now work under RDP with a
+process-local physical-adapter override. Both the direct DXVK 2 sample-zero
+resolve and the DXVK 3 copy-assisted variant failed performance acceptance on
+the ordinary and skinned fixtures. Main therefore retains the existing MSAA
+replay path; merely deleting it would not deliver the requested speedup.
