@@ -1,11 +1,5 @@
 // Compare the production merged pass with independent lighting + GI.
-#define main compositeFixtureMain
-#include "composite_distance_gpu.cpp"
-#undef main
-#include <array>
-#include <chrono>
-static IDirect3DPixelShader9* shader(IDirect3DDevice9* d,const std::string& path){auto b=read(path);IDirect3DPixelShader9* p=nullptr;ok(d->CreatePixelShader((const DWORD*)b.data(),&p));return p;}
-template<class Pixel>static IDirect3DTexture9* pixels(IDirect3DDevice9* d,unsigned w,unsigned h,Pixel pixel){Image im{w,h,D3DFMT_A32B32G32R32F,16,std::vector<unsigned char>(size_t(w)*h*16)};for(unsigned y=0;y<h;++y)for(unsigned x=0;x<w;++x){const auto v=pixel(x,y);std::memcpy(im.pixels.data()+(size_t(y)*w+x)*16,v.data(),16);}return texture(d,im);}
+#include "lighting_gpu_support.h"
 int main(int argc,char** argv){
  assert(argc==5);const std::string root=argv[2],proto=argv[3];const bool timing=std::atoi(argv[4]);const unsigned W=timing?1920:97,H=timing?1080:65;
  auto window=CreateWindowExW(0,L"STATIC",L"",WS_OVERLAPPED,0,0,64,64,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);assert(window);auto module=LoadLibraryA(argv[1]);assert(module);auto create=(IDirect3D9*(WINAPI*)(UINT))GetProcAddress(module,"Direct3DCreate9");auto* api=create(D3D_SDK_VERSION);assert(api);
@@ -24,20 +18,68 @@ int main(int argc,char** argv){
  bind(8,48,4,[&](unsigned,unsigned){return std::array<float,4>{.2f,0,0,0};});
  float c[128][4]{};c[0][0]=.5f/W;c[0][1]=.5f/H;c[0][2]=.2f;c[0][3]=1000;c[1][0]=c[1][1]=1;c[1][2]=1;c[2][0]=1;c[2][1]=48;c[2][2]=192;c[2][3]=1.f/1024;for(unsigned i=0;i<4;++i)c[3+i][i]=1;for(unsigned i=0;i<4;++i)c[7+i][i]=c[11+i][i]=.01f;c[16][2]=-1;c[18][0]=.2f;c[18][1]=.3f;c[18][2]=.4f;c[19][3]=16;c[20][0]=4;c[20][1]=.7f;c[20][2]=.8f;c[20][3]=1;c[24][3]=5;c[27][1]=1;c[28][2]=-1;c[29][0]=.8f;c[29][1]=.6f;c[29][2]=.4f;c[33][0]=W*2;c[33][1]=H*2;c[33][2]=W;c[33][3]=H;c[73][2]=1;
  c[82][0]=8;c[82][1]=c[82][2]=1.f/72;c[82][3]=1.f/8;
- IDirect3DSurface9 *light=nullptr,*base=nullptr,*back=nullptr;ok(d->CreateRenderTarget(W,H,D3DFMT_A16B16G16R16F,D3DMULTISAMPLE_NONE,0,FALSE,&light,nullptr));ok(d->CreateRenderTarget(W,H,D3DFMT_A16B16G16R16F,D3DMULTISAMPLE_NONE,0,FALSE,&base,nullptr));ok(d->CreateOffscreenPlainSurface(W,H,D3DFMT_A16B16G16R16F,D3DPOOL_SYSTEMMEM,&back,nullptr));
+ IDirect3DSurface9 *light=nullptr,*base=nullptr,*prelit=nullptr,*back=nullptr;ok(d->CreateRenderTarget(W,H,D3DFMT_A16B16G16R16F,D3DMULTISAMPLE_NONE,0,FALSE,&light,nullptr));ok(d->CreateRenderTarget(W,H,D3DFMT_A16B16G16R16F,D3DMULTISAMPLE_NONE,0,FALSE,&base,nullptr));ok(d->CreateOffscreenPlainSurface(W,H,D3DFMT_A16B16G16R16F,D3DPOOL_SYSTEMMEM,&back,nullptr));
+ ok(d->CreateRenderTarget(W,H,D3DFMT_A16B16G16R16F,D3DMULTISAMPLE_NONE,0,FALSE,&prelit,nullptr));
  auto gi=shader(d,root+"/WorldGI.bin");IDirect3DQuery9 *a=nullptr,*b=nullptr,*hz=nullptr;for(auto p:{&a,&b})ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,p));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMPFREQ,&hz));const auto get=[&](IDirect3DQuery9* q){UINT64 v=0;HRESULT hr;while((hr=q->GetData(&v,sizeof v,D3DGETDATA_FLUSH))==S_FALSE)SwitchToThread();ok(hr);return v;};
  auto quad=[&]{const Vertex v[]={{-.5f,-.5f,0,1,0,0},{float(W)-.5f,-.5f,0,1,1,0},{-.5f,float(H)-.5f,0,1,0,1},{float(W)-.5f,float(H)-.5f,0,1,1,1}};ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,v,sizeof v[0]));};
  auto image=[&](IDirect3DSurface9* s){ok(d->GetRenderTargetData(s,back));D3DLOCKED_RECT lock{};ok(back->LockRect(&lock,nullptr,D3DLOCK_READONLY));std::vector<uint16_t> out(size_t(W)*H*4);for(unsigned y=0;y<H;++y)std::memcpy(out.data()+size_t(y)*W*4,(char*)lock.pBits+y*lock.Pitch,W*8);ok(back->UnlockRect());return out;};
- unsigned cases=0;float maximum=0;
+ unsigned cases=0,prelitCases=0,darkPixels=0;float maximum=0;std::array<std::vector<uint16_t>,16> noMix,halfMix,ordinary;
  {const unsigned soft=0;const std::string name="WorldLightingUnshadowed";auto old=shader(d,root+"/"+name+".bin"),fused=shader(d,proto+"/"+name+"GI.bin");
- for(unsigned test=0;test<(timing?2u:16u);++test){const unsigned sources=1+test%2;c[20][1]=(test%4)*2.f/3;c[66][1]=float(int(test%4)-1);c[18][3]=test%3*.2f;c[24][2]=test%5==2?2.f:0.f;c[20][3]=test%6!=3;c[24][3]=timing?6.f:5.f+float(test%4)*.15f;c[30][0]=!timing&&test%7==4?1.f:0.f;ok(d->SetPixelShaderConstantF(0,c[0],128));std::vector<uint16_t> reference,baseline;
+ for(unsigned blend=0;blend<(timing?1u:3u);++blend)for(unsigned test=0;test<(timing?2u:16u);++test){c[66][0]=blend*.5f;const unsigned sources=1+test%2;c[20][1]=(test%4)*2.f/3;c[66][1]=float(int(test%4)-1);c[18][3]=test%3*.2f;c[24][2]=test%5==2?2.f:0.f;c[20][3]=test%6!=3;c[24][3]=timing?6.f:5.f+float(test%4)*.15f;c[30][0]=!timing&&test%7==4?1.f:0.f;ok(d->SetPixelShaderConstantF(0,c[0],128));std::vector<uint16_t> reference,baseline,prelitReference;
  for(unsigned pass=0;pass<(timing?12u:2u);++pass){const bool merge=timing?(pass%4==1||pass%4==2):pass!=0;
  ok(hz->Issue(D3DISSUE_END));ok(a->Issue(D3DISSUE_END));const auto start=std::chrono::steady_clock::now();ok(d->BeginScene());ok(d->SetRenderTarget(0,light));D3DVIEWPORT9 vp{0,0,W,H,0,1};ok(d->SetViewport(&vp));ok(d->SetRenderState(D3DRS_COLORWRITEENABLE,15));ok(d->SetRenderState(D3DRS_COLORWRITEENABLE1,15));
- for(unsigned source=0;source<sources;++source){float color[4]={source?.1f:.8f,.6f,.4f,1};ok(d->SetPixelShaderConstantF(17,color,1));ok(d->SetRenderTarget(1,source?nullptr:base));ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,source!=0));ok(d->SetPixelShader(merge&&source+1==sources?fused:old));quad();}
- ok(d->SetRenderTarget(1,nullptr));if(!merge){ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE));ok(d->SetRenderState(D3DRS_COLORWRITEENABLE,7));ok(d->SetPixelShader(gi));quad();}ok(d->EndScene());const auto end=std::chrono::steady_clock::now();ok(b->Issue(D3DISSUE_END));const double gpu=double(get(b)-get(a))*1000/get(hz);
- if(timing){printf("FUSED_GI_TIMING soft=%u sources=%u pass=%u merged=%u cpuMs=%.6f gpuMs=%.6f\n",soft,sources,pass,unsigned(merge),std::chrono::duration<double,std::milli>(end-start).count(),gpu);fflush(stdout);}else{auto out=image(light),baseOut=image(base);if(!pass){reference=std::move(out);baseline=std::move(baseOut);}else{assert(baseOut==baseline);for(size_t i=0;i<out.size();++i){if(i%4==3){assert(out[i]==reference[i]);continue;}const float a=half(reference[i]),b=half(out[i]),error=std::fabs(a-b);maximum=std::max(maximum,error);assert(std::isfinite(a)&&std::isfinite(b)&&error<=.002f+.002f*std::max(std::fabs(a),std::fabs(b)));}++cases;}}
+ ok(d->SetRenderTarget(2,prelit));ok(d->SetRenderState(D3DRS_COLORWRITEENABLE2,15));
+ for(unsigned source=0;source<sources;++source){float color[4]={source?.1f:.8f,.6f,.4f,test%2?0.f:1.f};ok(d->SetPixelShaderConstantF(17,color,1));ok(d->SetRenderTarget(1,source?nullptr:base));ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,source!=0));ok(d->SetPixelShader(merge&&source+1==sources?fused:old));quad();}
+ ok(d->SetRenderTarget(1,nullptr));ok(d->SetRenderTarget(2,nullptr));if(!merge){ok(d->SetRenderTarget(1,prelit));ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE));ok(d->SetRenderState(D3DRS_COLORWRITEENABLE,7));ok(d->SetPixelShader(gi));quad();ok(d->SetRenderTarget(1,nullptr));}ok(d->EndScene());const auto end=std::chrono::steady_clock::now();ok(b->Issue(D3DISSUE_END));const double gpu=double(get(b)-get(a))*1000/get(hz);
+ if(timing){printf("FUSED_GI_TIMING soft=%u sources=%u pass=%u merged=%u cpuMs=%.6f gpuMs=%.6f\n",soft,sources,pass,unsigned(merge),std::chrono::duration<double,std::milli>(end-start).count(),gpu);fflush(stdout);}else{auto out=image(light),baseOut=image(base),prelitOut=image(prelit);if(!pass){reference=std::move(out);baseline=std::move(baseOut);prelitReference=std::move(prelitOut);}else{assert(baseOut==baseline);for(size_t i=0;i<out.size();++i){if(i%4==3){assert(out[i]==reference[i]);continue;}const float a=half(reference[i]),b=half(out[i]),error=std::fabs(a-b);maximum=std::max(maximum,error);assert(std::isfinite(a)&&std::isfinite(b)&&error<=.002f+.002f*std::max(std::fabs(a),std::fabs(b)));}
+ for(size_t i=0;i<prelitOut.size();++i){const float v=half(prelitOut[i]),ref=half(prelitReference[i]);assert(std::isfinite(v)&&std::fabs(v-ref)<=.002f+.002f*std::max(std::fabs(v),std::fabs(ref)));
+  if(test%2&&(!blend||!c[20][3]))assert(v==0); // No roof visibility proof: no sunlight leak into authored interiors.
+  if(i%4==3){assert(v>=0&&v<=1);if(!blend||!c[20][3])assert(v==0);darkPixels+=v>.01f;}
+ }
+ if(!blend){noMix[test]=prelitOut;ordinary[test]=out;}else{assert(ordinary[test]==out);if(blend==1)halfMix[test]=prelitOut;else for(size_t i=0;i<prelitOut.size();++i){const float midpoint=(half(noMix[test][i])+half(prelitOut[i]))*.5f;assert(std::fabs(half(halfMix[test][i])-midpoint)<.003f);}}
+ ++prelitCases;++cases;}}
  }
  }old->Release();fused->Release();}
- printf("FUSED_GI_PASS cases=%u maxAbs=%.9f baselineAlphaExact=1\n",cases,maximum);return 0;
+ if(!timing){
+  // Exercise the final consumer, including sky and self-lit receivers. The
+  // aux texture contains independent daylight plus the probe contribution.
+  std::memset(c,0,sizeof c);c[0][0]=1.f/W;c[0][1]=1.f/H;c[0][2]=.2f;c[0][3]=1000;
+  c[1][0]=c[1][1]=c[1][2]=1;c[2][0]=1;c[25][1]=c[25][2]=1;
+  c[33][0]=c[33][2]=W;c[33][1]=c[33][3]=H;c[81][0]=1;c[115][0]=c[115][3]=1;
+  auto solid=[&](unsigned slot,std::array<float,4> v){bind(slot,1,1,[&](unsigned,unsigned){return v;});};
+  solid(0,{.4f,.3f,.2f,.7f});solid(7,{0,0,0,0});solid(8,{0,0,0,0});solid(9,{0,0,0,1});
+  solid(10,{0,0,0,1});solid(11,{0,0,0,0});solid(12,{.4f,.3f,.2f,1});solid(13,{0,0,0,0});
+  unsigned consumerCases=0;
+  for(bool hdr:{false,true})for(const char* receiver:{"WorldPrelitComposite","WorldComposite","WorldUnlitComposite"}){
+   const bool prelitReceiver=std::strstr(receiver,"Prelit"),unlitReceiver=std::strstr(receiver,"Unlit");
+   auto ps=shader(d,proto+"/"+receiver+(hdr?"Hdr":"")+".bin");
+   solid(2,hdr?std::array<float,4>{.132868f,.073239f,.033105f,1}:std::array<float,4>{0,0,0,0});
+   for(bool positive:{false,true}){
+    std::vector<uint16_t> results[2][3];
+    for(unsigned lamp=0;lamp<2;++lamp)for(unsigned mix=0;mix<3;++mix){
+     solid(3,{lamp*.3f,lamp*.1f,lamp*.04f,0});
+     const float amount=mix*.5f;
+     solid(14,{.03f+(positive?.12f*amount:0),.04f+(positive?.08f*amount:0),.05f+(positive?.04f*amount:0),positive?0:.75f*amount});
+     ok(d->SetPixelShaderConstantF(0,c[0],128));ok(d->SetRenderTarget(0,light));ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE));ok(d->SetRenderState(D3DRS_COLORWRITEENABLE,15));
+     ok(d->SetPixelShader(ps));ok(d->BeginScene());quad();ok(d->EndScene());results[lamp][mix]=image(light);++consumerCases;
+    }
+    for(size_t i=0;i<results[0][0].size();++i){
+     const unsigned y=unsigned(i/4/W);const bool protectedPixel=i%4==3||y>H-7||!prelitReceiver;
+     for(unsigned lamp=0;lamp<2;++lamp){const auto& r=results[lamp];const float a=half(r[0][i]),b=half(r[1][i]),e=half(r[2][i]);
+      assert(std::isfinite(a)&&std::isfinite(b)&&std::isfinite(e));
+      if(protectedPixel)assert(r[0][i]==r[1][i]&&r[1][i]==r[2][i]);
+      else if(!lamp||hdr){assert(std::fabs(b-(a+e)*.5f)<.001f);assert(positive?e>a:e<a);}
+     }
+     // Fresh direct lamp radiance is added after GI; changing this blend
+     // cannot dim that contribution in the HDR radiance target.
+     if(hdr)for(unsigned mix=1;mix<3;++mix){const float delta=half(results[1][mix][i])-half(results[0][mix][i]);
+      const float reference=half(results[1][0][i])-half(results[0][0][i]);assert(std::fabs(delta-reference)<.001f);}
+    }
+   }
+   ps->Release();
+  }
+  printf("PRELIT_COMPOSITE_PASS cases=%u midpoint=1 skyUnlitOrdinaryExact=1 hdrDirectLampIndependent=1\n",consumerCases);
+ }
+ assert(timing||darkPixels);printf("FUSED_GI_PASS cases=%u maxAbs=%.9f baselineAlphaExact=1 prelitCases=%u darkPixels=%u mix0_50_100=1 ordinaryUnaffected=1\n",cases,maximum,prelitCases,darkPixels);return 0;
 }
 

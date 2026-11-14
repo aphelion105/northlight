@@ -26,7 +26,7 @@ struct Settings {
     // 0.3.138 GI: worker probe solve (rays, bounces, request step), actor/dynamic probes, solver threads.
     unsigned gi=1,giRays=64,giBounces=3,giProbeMoveStep=8,giDynamicProbes=1,giThreads=1,giFastBVH=1;
     // 60 retains the legacy half blend; 120 replaces native ambient, 240 doubles the correction.
-    unsigned giStrength=120,auroraStrength=100;
+    unsigned giStrength=120,giPrelitMix=100,auroraStrength=100;
     unsigned celestialStyle=0; // 0 = native placement/size; 1 = Forever orbit and size curves.
     int giBrightness=0; // Signed percent of measured indirect radiance; -100 = none, +100 = double.
     // 0.3.141: shadow fate tracker (diagnostic log only; never changes the image).
@@ -154,7 +154,7 @@ struct Settings {
     unsigned autoDisplacementStrength=100,autoDisplacementDistance=12,autoDisplacementDetail=4;
     unsigned autoBumpModels=3,autoModelDisplacementStrength=25,autoModelDisplacementDistance=8,autoModelDisplacementDetail=2;
     unsigned autoHeightPolarity=0,autoHeightDetails=75,autoHeightBalance=50;
-    char origin[122]={'d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d'};
+    char origin[123]={'d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d'};
 };
 struct Key {
     const char* name;unsigned Settings::*field=nullptr;int Settings::*signedField=nullptr;
@@ -288,6 +288,7 @@ inline const Key Keys[]={
     {"GIBrightness",&Settings::giBrightness,-100,200,{0,0,0}},
     {"AuroraStrength",&Settings::auroraStrength,0,200,{100,100,100}},
     {"GIChunkRadius",&Settings::giChunkRadius,1,3,{1,1,1}},
+    {"GIPrelitMix",&Settings::giPrelitMix,0,100,{100,100,100}},
 };
 // The seven scene groups own their child controls, including sky/ambient work.
 // Presentation/HDR and the settings overlay remain available like F10.

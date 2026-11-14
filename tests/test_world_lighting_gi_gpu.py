@@ -23,9 +23,11 @@ backends = args.backend or [Path(os.environ['WINDIR']) / 'SysWOW64/d3d9.dll',
     fp.client_root() / 'renderer-backends/dxvk2/dxvk2_d3d9.dll',
     fp.client_root() / 'renderer-backends/dxvk/dxvk_d3d9.dll']
 sha = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
-inputs = [Path(__file__), fp.TESTS / 'world_lighting_gi_gpu.cpp', fp.TESTS / 'composite_distance_gpu.cpp',
+inputs = [Path(__file__), fp.TESTS / 'lighting_gpu_support.h', fp.TESTS / 'world_lighting_gi_gpu.cpp', fp.TESTS / 'composite_distance_gpu.cpp',
           args.reference / 'WorldLightingUnshadowed.bin', args.reference / 'WorldGI.bin',
           fp.COMPILED / 'WorldLightingUnshadowedGI.bin', *backends]
+inputs += [fp.COMPILED / (name + suffix + '.bin') for name in
+           ('WorldPrelitComposite', 'WorldComposite', 'WorldUnlitComposite') for suffix in ('', 'Hdr')]
 hashes = {str(p): sha(p) for p in inputs}
 exe = out / 'lighting-gi.exe'
 command = [fp.zig(), 'c++', '-target', 'x86-windows-gnu', '-O2', '-UNDEBUG', '-std=c++17',

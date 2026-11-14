@@ -288,22 +288,23 @@
  224:       dp3_sat r1.x, r4, c16
  225:       mul r1.xyw, r1.x, c17.xyzz
  226:       mul r4.xyz, r5.x, r1.xyww
- 227:       mul r2.xyz, r0.y, r4
- 228:       mul r4.xyz, r1.z, c17
- 229:       mul r4.xyz, r0.w, r4
+ 227:       mul r4.xyz, r0.y, r4
+ 228:       mul r5.xyz, r1.z, c17
+ 229:       mul r5.xyz, r0.w, r5
  230:       mul r0.xyw, r0.x, r1
- 231:       add r0.xyw, -r4.xyzz, r0
+ 231:       add r0.xyw, -r5.xyzz, r0
  232:       mul r0.xyw, r0, c16.w
- 233:       add r0.xyw, r0, r4.xyzz
+ 233:       add r0.xyw, r0, r5.xyzz
  234:       mul r1.xyz, r3, c27.y
  235:       add r0.xyw, r0, -r1.xyzz
  236:       mov r1.w, c8.w
  237:       add r1.x, r1.w, c24.z
  238:       cmp oC0.xyz, -r1_abs.x, c9.y, r0.xyww
  239:       mul oC0.w, r0.z, c27.y
- 240:     endif
- 241:     mov oC2.xyz, r2
- 242:     mov oC2.w, c9.y
+ 240:       mul r2.xyz, r4, c17.w
+ 241:     endif
+ 242:     mov oC2.xyz, r2
+ 243:     mov oC2.w, c9.y
 
-// approximately 255 instruction slots used (12 texture, 243 arithmetic)
+// approximately 256 instruction slots used (12 texture, 244 arithmetic)
  

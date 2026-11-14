@@ -5,8 +5,8 @@ Lamps are drawn four per pass in closest-first order (score = distance -
 attenuationEnd, ties by id). Applying the non-linear soft cap per batch makes
 the sum depend on how lamps are grouped, so a regroup (two lamps swapping
 order across a batch boundary) steps or spikes the glow wherever glows
-overlap. Capping the accumulated raw sums once (plus a brightness restoration that
-uses only per-lamp quantities) is grouping independent.
+overlap. Capping the accumulated raw sums once is grouping independent. Multiple lamps
+add radiance without an extra count-dependent brightness boost.
 """
 import math
 import random
@@ -17,10 +17,9 @@ from pathlib import Path
 BATCH = 4
 FOG_X, FOG_Y = 3.5, 1 / 12                      # near start, near ramp 1/length
 GAIN = .755                                      # night lamp gain
-FOG_Z, FOG_W = 10 * GAIN, .12 * GAIN
+FOG_Z, FOG_W = .25 * GAIN, .12 * GAIN
 COLOR = (1., .6, .3)
 RECEIVER = 60.                                   # fixed far receiver distance
-BOOST = .6                                       # LocalFogCombine's n_eff exponent
 HLSL = Path(__file__).resolve().parents[1] / 'shaders' / 'world_effects.hlsl'
 
 
@@ -80,20 +79,11 @@ def legacy(lights, cam, ray):
 
 
 def total_cap(lights, cam, ray, seq=None):
-    """Shipped law: one cap on the summed raw glow, then a brightness
-    restoration k = max(a / capPeak, 1)^.6 where a is the sum of the per-lamp
-    capped peaks (so many overlapping lamps do not look dimmer than the
-    legacy per-batch result)."""
-    raw, a = [0.] * 3, 0.
-    for l in (seq if seq is not None else order(lights, cam)):
-        g = raw_glow(cam, ray, l)
-        raw = add(raw, g)
-        p = max(g) * FOG_Z
-        a += FOG_W * p / (FOG_W + p)
-    c = cap(raw)
-    peak = max(c)
-    k = max(a / peak, 1.) ** BOOST if peak > 0 else 1.
-    return [x * k for x in c]
+    """One hue-preserving cap on the sum, independent of grouping."""
+    raw = [0.] * 3
+    for light in (seq if seq is not None else order(lights, cam)):
+        raw = add(raw, raw_glow(cam, ray, light))
+    return cap(raw)
 
 
 def batches(lights, cam):
@@ -204,48 +194,31 @@ class LocalFogBatching(unittest.TestCase):
                 for a, b in zip(legacy(lamps, cam, ray), total_cap(lamps, cam, ray)):
                     self.assertAlmostEqual(a, b, delta=1e-12)
 
-    def test_brightness_parity_with_legacy(self):
-        lamps, ratios = make_lamps(), []
-        for ray in RAYS:
-            for f in range(0, 1100, 5):
-                cam = camera(f, 0)
-                old = sum(legacy(lamps, cam, ray))
-                if old > 1e-4:
-                    ratios.append(sum(total_cap(lamps, cam, ray)) / old)
-        mean, med = statistics.mean(ratios), statistics.median(ratios)
-        print('brightness new/legacy: mean %.3f median %.3f (n=%d)' % (mean, med, len(ratios)))
-        self.assertTrue(.85 <= mean <= 1.15)
-        self.assertTrue(.85 <= med <= 1.15)
-
-    def test_clustered_lamps_brightness(self):
-        # Lamps a few units apart (brazier groups, campfire rings) fell into one old batch of four and saturated at about one cap; the total law
-        # brightens k overlapping saturated glows as about k^0.6 caps. Kept on purpose (PR #35 review); report the ratios and bound them.
-        def cluster(k):
-            return [{'id': i + 1, 'pos': (2 * math.cos(i * 2.4) * (i % 3 + 1) / 3, 1.5 + .3 * (i % 2), 30 + 2 * math.sin(i * 2.4) * (i % 3 + 1) / 3),
-                     'end': 10.} for i in range(k)]
-        ratios = {}
-        for k in (2, 4, 8, 16):
-            lamps, r = cluster(k), []
-            for ray in RAYS:
-                for f in range(0, 200, 10):
-                    cam = camera(f, 0)
-                    old = sum(legacy(lamps, cam, ray))
-                    if old > 1e-4:
-                        r.append(sum(total_cap(lamps, cam, ray)) / old)
-            ratios[k] = statistics.mean(r)
-        print('clustered lamps new/legacy: ' + ' '.join('k=%d %.2f' % kv for kv in ratios.items()))
-        self.assertTrue(all(1. <= v <= 2.5 for v in ratios.values()))
+    def test_cluster_energy_is_bounded_and_subadditive(self):
+        light = {'id': 1, 'pos': (0., 1.5, 30.), 'end': 12.}
+        cam, ray = (0., 1.5, 0.), (0., 0., 1.)
+        single = total_cap([light], cam, ray)
+        previous = single
+        for count in (2, 4, 8, 16, 64):
+            value = total_cap([light] * count, cam, ray)
+            self.assertLess(max(value), FOG_W)
+            for channel in range(3):
+                self.assertGreaterEqual(value[channel], previous[channel])
+                self.assertLessEqual(value[channel], count * single[channel])
+                self.assertAlmostEqual(value[channel] / value[0], COLOR[channel] / COLOR[0])
+            previous = value
+        self.assertEqual(total_cap([], cam, ray), [0., 0., 0.])
 
     def test_model_matches_the_shader(self):
-        # The law above is a transcription of LocalFog (alpha) and LocalFogCombine; pin the shader lines so the two cannot drift apart.
+        # Keep the offline radiance law attached to the production shader.
         h = HLSL.read_text()
         fog = h[h.index('float4 LocalFog('):h.index('float4 LocalFogCombine(')]
         combine = h[h.index('float4 LocalFogCombine('):]
         combine = combine[:combine.index('\n}\n')]
-        self.assertIn('capped+=FogRange.w*lampPeak/(FogRange.w+lampPeak);', fog)
-        self.assertIn('return float4(result*FogRange.z,capped);', fog)
+        self.assertNotIn('capped', fog)
+        self.assertIn('return float4(result*FogRange.z,0);', fog)
         self.assertIn('scatter*=FogRange.w/(FogRange.w+peak);', combine)
-        self.assertIn('scatter*=pow(max(acc.a/max(capPeak,1e-6),1),%s);' % ('%g' % BOOST).lstrip('0'), combine)
+        self.assertNotIn('pow(', combine)
 
 
 if __name__ == '__main__':

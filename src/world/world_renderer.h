@@ -5215,7 +5215,7 @@ public:
         const bool meshReady=geometryWanted&&ready()&&screenResourcesReady&&upload(streamBudget);
         const bool sceneTargetsReady=meshReady&&geometryResources(w,h);
         const bool geometryReady=sceneTargetsReady&&(hadTargets||upload(streamBudget));
-        const bool fogDirectionalReady=geometryReady&&applyDirectionalShadows;
+        const bool fogShadowMapsReady=geometryReady&&applyDirectionalShadows;
         if(geometryReady!=temporalGeometryReady){
             const DWORD now=GetTickCount();
             if(DWORD(now-traceGeometryTick)>=1000){traceGeometryTick=now;traceGeometryCount=0;}
@@ -5900,7 +5900,9 @@ public:
         c[52][0]=float(std::min(localDirectCount,NorthlightLocalLightSelection::DirectBatchSize));c[52][1]=.9f*lampGain;
         // Near fade: no added fog within 3.5 units of the viewer, full at 15.5.
         // Same soft ramp, shifted 0.5 world units closer.
-        c[58][0]=3.5f;c[58][1]=1.f/12;c[58][2]=10.f*lampGain*wx.lampFogGain();c[58][3]=.12f*lampGain*wx.lampFogGain(); /* 0.3.198 (rain): lamp fog gain (x1 since 0.3.199); 0.3.199 (fog clouds): 10 / .12 (were 13 / .156): the glow read too strong in the game test */
+        // Isotropic scattering is much weaker than the diffuse surface response.
+        // Keep the real medium/range; do not amplify it into a luminous sphere.
+        c[58][0]=3.5f;c[58][1]=1.f/12;c[58][2]=.25f*lampGain*wx.lampFogGain();c[58][3]=.12f*lampGain*wx.lampFogGain();
         const float airFloor=atmosphere.airFloor; /* atmosphereWork: .0017f plus the rain's extra, thinned in dense zones */
         c[59][2]=std::max(wx.shadowSoften(),1.f-underwaterFade.scale()); /* underwater: the sun correction goes to 0 and the shadow softens fully (the rain path), alpha and baseline keep the true visibility */ c[59][3]=airFloor; /* 0.3.198 (rain): direct shadow softening (0 when dry), air extinction floor (WorldFog) */
         if(uploadedFogField){c[31][0]=uploadedFogField->originX;c[31][1]=uploadedFogField->originY;}
@@ -5958,7 +5960,7 @@ public:
             naturalSky.valid?naturalSky.sun.direction[2]:0.f,naturalSky.valid?naturalSky.moon.direction[2]:0.f);
         c[18][3]+=wx.ambientLift(); /* 0.3.198 (rain): a little more sky ambient from the GI pass in rain (+0 when dry; the probes themselves are untouched) */
         NorthlightNightFloor::nightAmbient(quality.nightBrightness,NorthlightNightFloor::weight(naturalSky.valid,naturalSky.valid?naturalSky.sun.direction[2]:0.f),c[18],c[19]);
-        c[66][1]=float(quality.giBrightness)*.01f; // GI only; volume passes later own c66 as FogActorBounds.
+        c[66][0]=float(quality.giPrelitMix)*.01f;c[66][1]=float(quality.giBrightness)*.01f; // GI only; volume passes later own c66 as FogActorBounds.
         c[19][3]=8; /* c19.rgb: NightBrightness light per unit of albedo, from c18's ambient (WorldComposite only; 0 = off); c19.w: probe spacing */
         c[20][0]=float(NorthlightGI::probeLayout().atlas);c[20][1]=NorthlightQuality::giIntensity(quality);c[20][2]=std::max(.01f,std::min(1.f,quality.shadowStrength*.0085f));c[20][3]=geometryReady&&giWorkEnabled()&&uploadedSerial&&uploadedSerial==active->serial?1.f:0.f;
         DWORD now=GetTickCount();
@@ -6015,6 +6017,8 @@ public:
         if(lightingCapture)lightingCapture->inputs(0,1u<<1,1u<<1); // Actual full-resolution sampled depth, before any post-process reuses its slot.
         bool fogActorCurrent=false,fogActorTiledCurrent=false,fogAmbientOnlyCurrent=false,actorTilesWideCurrent[2]={};
         auto directionFor=[&](int source,bool volume){
+            // Shadow-map history controls visibility, never the sky's light direction.
+            if(volume)return rawSourceDirections[source];
             const auto& transition=shadowTransition[source*2+(volume?1:0)];const auto selected=transition.state.current();
             return geometryReady&&applyDirectionalShadows&&transition.workingValid?V(selected.x,selected.y,selected.z):sourceDirections[source];
         };
@@ -6032,13 +6036,12 @@ public:
             // ambient-only volume pass must never read an unrendered map for
             // a sub-threshold celestial source.
             const V& shown=volume?sourceGlowColors[source]:sourceColors[source]; // the fog volume's glow has its own strength and hue; surface passes keep the light colour
-            float rgb[4]={sourceActive[source]?shown.x:0.f,sourceActive[source]?shown.y:0.f,sourceActive[source]?shown.z:0.f,0};
+            float rgb[4]={sourceActive[source]?shown.x:0.f,sourceActive[source]?shown.y:0.f,sourceActive[source]?shown.z:0.f,geometryReady&&applyDirectionalShadows?1.f:0.f};
             if(volume){const float keep=underwaterFade.scale();rgb[0]*=keep;rgb[1]*=keep;rgb[2]*=keep;} /* underwater: the fog/volume pass (shafts) fades with the sun; the lighting and actor passes keep the real colour (their shadow test and alpha read it) */
             // fog passes only: the sun's direct scatter takes the glow hue; the forward soft cap
             // rises so the aureole brightens toward the sun. c17/c18 are restored after the fog loop.
-            // A resident GI/fog mesh is not proof of usable directional maps.
-            // Unsupported/native providers bind neutral maps even with geometry.
-            if(volume&&!fogDirectionalReady)rgb[0]=rgb[1]=rgb[2]=0;
+            // Missing/disabled shadow maps are neutral visibility. They must
+            // not turn off sunlight, moonlight or their atmospheric aureoles.
             if(volume&&source==0)NorthlightSunHue::fogDirect(rgb,glowHueFrame,rgb);
             d->SetPixelShaderConstantF(16,dir,1);d->SetPixelShaderConstantF(17,rgb,1);
             if(volume){
@@ -6063,8 +6066,8 @@ public:
         d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_ONE);d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_ONE);d->SetRenderState(D3DRS_BLENDOP,D3DBLENDOP_ADD);
         // Smoothed normals for the lighting, GI and local light passes (s14).
         const bool lightingNeeded=requirements.lighting;
-        const bool prelitDaylightCurrent=prelitMask&&lightingNeeded&&geometryReady&&applyDirectionalShadows&&
-            (sourceActive[0]||sourceActive[1])&&prelitDaylightResources(w,h);
+        const bool prelitDaylightCurrent=prelitMask&&lightingNeeded&&
+            ((requirements.probes&&quality.giPrelitMix)||(geometryReady&&applyDirectionalShadows&&(sourceActive[0]||sourceActive[1])))&&prelitDaylightResources(w,h);
         // Without shadow visibility changes, removal smoothing is a copy.
         // TemporalLight can consume raw light and produce distance itself.
         const bool normalsProduceDistance=lightingNeeded&&applyDirectionalShadows&&c[30][1]>0;
@@ -6185,7 +6188,7 @@ public:
         d->SetPixelShaderConstantF(82,localInfo,1);
         if(giRequested)d->SetTexture(13,probeLocal);
         d->SetRenderTarget(0,lightSurface);d->SetPixelShader(unshadowedLighting?lightingUnshadowedPS:softResolved?lightingSoftPS:lightingPS);
-        if(profileSampled())logf("WORLD_LIGHTING rendererFrame=%u variant=%s shadows=%u geometry=%u gi=%u probes=%u fogDirect=%u shadowTransitionStarts=%u shadowTransitionFailures=%u moonFade=%u,%u moonWeights=%.4f,%.4f",rendererFrame,unshadowedLighting?"unshadowed":softResolved?"soft":"standard",unsigned(applyDirectionalShadows),unsigned(geometryReady),unsigned(giRequested),unsigned(c[20][3]>.5f),unsigned(fogDirectionalReady),shadowTransitionStarts,shadowTransitionFailures,unsigned(shadowTransition[2].state.fading()),unsigned(shadowTransition[3].state.fading()),shadowTransition[2].state.weight(),shadowTransition[3].state.weight());
+        if(profileSampled())logf("WORLD_LIGHTING rendererFrame=%u variant=%s shadows=%u geometry=%u gi=%u probes=%u fogShadowMaps=%u shadowTransitionStarts=%u shadowTransitionFailures=%u moonFade=%u,%u moonWeights=%.4f,%.4f",rendererFrame,unshadowedLighting?"unshadowed":softResolved?"soft":"standard",unsigned(applyDirectionalShadows),unsigned(geometryReady),unsigned(giRequested),unsigned(c[20][3]>.5f),unsigned(fogShadowMapsReady),shadowTransitionStarts,shadowTransitionFailures,unsigned(shadowTransition[2].state.fading()),unsigned(shadowTransition[3].state.fading()),shadowTransition[2].state.weight(),shadowTransition[3].state.weight());
         d->SetTexture(15,softResolved?softVisibility:nullptr);
         if(softResolved){
             for(auto state:{D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER})d->SetSamplerState(15,state,D3DTEXF_POINT);
@@ -6220,8 +6223,13 @@ public:
         bucket(NorthlightEffectsBuckets::Lighting);
         if(giRequested&&!mergedGI){
             d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE);d->SetRenderState(D3DRS_COLORWRITEENABLE,7);d->SetPixelShader(giPS);
+            // Reuse the existing prelit lighting target in the same GI draw.
+            // RGB carries added bounce; alpha carries resident-probe occlusion.
+            if(!check(d->SetRenderTarget(1,prelitDaylightCurrent?prelitDaylightSurface:nullptr),"prelit GI MRT"))return false;
+            d->SetRenderState(D3DRS_COLORWRITEENABLE1,15);
             d->SetTexture(8,probePrev); // WorldGI reads previous SH here, not LightingBuffer.
             if(!check(quad(w/2,h/2),"world GI pass"))return false;
+            d->SetRenderTarget(1,nullptr);
             d->SetTexture(8,textures[8]);
         }
         if(profile)profile->mark("GI"); /* task 43: the GI pass alone; the lamp batches are LocalLights */
@@ -6451,7 +6459,7 @@ public:
                 const bool actor=fogActorCurrent&&foreverFogActorPS;
                 volumeShader=fading?(actor&&foreverFogActorFadePS?foreverFogActorFadePS:foreverFogFadePS):(actor?foreverFogActorPS:foreverFogPS);
                 if(!volumeShader)volumeShader=foreverFogPS;
-                float importedConstants[38][4];NorthlightForever::constants(atmosphere.imported,importedConstants,std::clamp(farZ,128.f,4000.f),fogDirectionalReady?sourceWeights[source]*underwaterFade.scale():0);
+                float importedConstants[38][4];NorthlightForever::constants(atmosphere.imported,importedConstants,std::clamp(farZ,128.f,4000.f),sourceWeights[source]*underwaterFade.scale());
                 const auto ground=uploadedFogField?NorthlightSpellFog::fieldAt(*uploadedFogField,context.camera[0],context.camera[1]):NorthlightSpellFog::FieldSample{};
                 importedConstants[0][3]=ground.ground;
                 bool noise=importedConstants[34][0]>0||importedConstants[34][1]>0||importedConstants[34][2]>0;

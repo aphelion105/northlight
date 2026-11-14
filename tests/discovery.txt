@@ -231,6 +231,7 @@ test_live_terrain_order_gpu.py
 test_local_brightness_gpu.py
 test_local_direct_batches_gpu.py
 test_local_fog_batching.py
+test_local_fog_gpu.py
 test_local_fog_profile.py
 test_local_fog_zero.py
 test_local_ini.py

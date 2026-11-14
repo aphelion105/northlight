@@ -35,6 +35,9 @@ int main(int argc,char** argv){
     const bool timingSrgb=timingMode.find("srgb")!=std::string::npos;
     const bool timingFixed=timingMode.find("fixed-pixel")!=std::string::npos;
     const bool timingHazard=timingMode.find("capture-hazard")!=std::string::npos;
+    const bool captureSource=std::getenv("NORTHLIGHT_TEST_NORMAL_SOURCE")!=nullptr;
+    const bool lookupReference=std::getenv("NORTHLIGHT_TEST_NORMAL_SOURCE_LOOKUP")!=nullptr;
+    unsigned publishedSources=0;
     WNDCLASSW wc{};wc.lpfnWndProc=DefWindowProcW;wc.lpszClassName=L"NorthlightNativeNormalTransaction";wc.hInstance=GetModuleHandleW(nullptr);assert(RegisterClassW(&wc));auto window=CreateWindowExW(0,wc.lpszClassName,L"",WS_OVERLAPPED,0,0,64,64,nullptr,nullptr,wc.hInstance,nullptr);assert(window);
     auto module=LoadLibraryA(argv[1]);assert(module);auto create=(IDirect3D9*(WINAPI*)(UINT))GetProcAddress(module,"Direct3DCreate9");assert(create);auto api=create(D3D_SDK_VERSION);assert(api);
     D3DPRESENT_PARAMETERS pp{};pp.Windowed=TRUE;pp.hDeviceWindow=window;pp.BackBufferWidth=pp.BackBufferHeight=64;pp.BackBufferFormat=D3DFMT_X8R8G8B8;pp.SwapEffect=D3DSWAPEFFECT_DISCARD;pp.PresentationInterval=D3DPRESENT_INTERVAL_IMMEDIATE;
@@ -63,10 +66,10 @@ int main(int argc,char** argv){
     auto pose=[&](float z,float side){for(unsigned b=0;b<75;++b){const auto r=31+3*b;bank[r][0]=bank[r+1][1]=z*.4f;bank[r+2][2]=.01f;bank[r][3]=z*side;bank[r+1][3]=-.3f*z;bank[r+2][3]=z;}ok(d->SetVertexShaderConstantF(0,bank[0],256));};
     auto draw=[&]{return d->DrawIndexedPrimitiveUP(D3DPT_TRIANGLELIST,0,nv,ni/3,indices,D3DFMT_INDEX32,vertices,Stride);};
     IDirect3DVertexBuffer9* vb=nullptr;IDirect3DIndexBuffer9* ib=nullptr;
-    if(timing){ok(d->CreateVertexBuffer(nv*Stride,D3DUSAGE_WRITEONLY,0,D3DPOOL_DEFAULT,&vb,nullptr));ok(d->CreateIndexBuffer(ni*4,D3DUSAGE_WRITEONLY,D3DFMT_INDEX32,D3DPOOL_DEFAULT,&ib,nullptr));void* p=nullptr;
+    if(timing||captureSource){ok(d->CreateVertexBuffer(nv*Stride,0,0,D3DPOOL_MANAGED,&vb,nullptr));ok(d->CreateIndexBuffer(ni*4,0,D3DFMT_INDEX32,D3DPOOL_MANAGED,&ib,nullptr));void* p=nullptr;
         ok(vb->Lock(0,0,&p,0));std::memcpy(p,vertices,nv*Stride);ok(vb->Unlock());ok(ib->Lock(0,0,&p,0));std::memcpy(p,indices,ni*4);ok(ib->Unlock());
         m->sourceIdentity=NorthlightSourceIdentity::make({0x6d7274u,1});m->sharedCapture=true;}
-    auto nativeGeometry=[&]{return timing?d->DrawIndexedPrimitive(D3DPT_TRIANGLELIST,0,0,nv,0,ni/3):draw();};
+    auto nativeGeometry=[&]{return timing||captureSource?d->DrawIndexedPrimitive(D3DPT_TRIANGLELIST,0,0,nv,0,ni/3):draw();};
 
     auto state=[&](Target& color){for(unsigned i=1;i<4;++i)ok(d->SetRenderTarget(i,nullptr));ok(d->SetDepthStencilSurface(nullptr));ok(d->SetRenderTarget(0,color.s));ok(d->SetDepthStencilSurface(depth));viewport(color);
         for(auto key:{D3DRS_ALPHABLENDENABLE,D3DRS_ALPHATESTENABLE,D3DRS_STENCILENABLE,D3DRS_SCISSORTESTENABLE,D3DRS_SRGBWRITEENABLE,D3DRS_FOGENABLE})ok(d->SetRenderState(key,FALSE));
@@ -85,6 +88,11 @@ int main(int argc,char** argv){
            SUCCEEDED(api->CheckDeviceMultiSampleType(0,D3DDEVTYPE_HAL,D3DFMT_D24S8,TRUE,D3DMULTISAMPLE_2_SAMPLES,nullptr))){
             ok(d->CreateRenderTarget(W,H,color.format,D3DMULTISAMPLE_2_SAMPLES,0,FALSE,&msColor,nullptr));ok(d->CreateDepthStencilSurface(W,H,D3DFMT_D24S8,D3DMULTISAMPLE_2_SAMPLES,0,FALSE,&msDepth,nullptr));}
         auto n=std::make_unique<NorthlightModelNormals>(d);n->setDeferredCapture(true);n->setRasterStateSource(&extension,[](void* e,const D3DRENDERSTATETYPE* keys,unsigned count,DWORD* values){return static_cast<ExtensionDevice*>(e)->knownRenderStates(keys,count,values);});
+        NorthlightDrawSnapshot::Frame sourcePool,worldConsumer;
+        auto identity=[](void* p,bool)->uint64_t{return uint64_t(reinterpret_cast<uintptr_t>(p));};
+        auto version=[](void*,bool)->uint64_t{return 1;}; // Immutable fixture buffers.
+        if(captureSource){sourcePool.setIdentityProvider(identity);sourcePool.setVersionProvider(version);sourcePool.setSnapshotCacheLimit(24u<<20);
+            assert(n->shareCaptureSources(sourcePool,identity,version,nullptr));worldConsumer.setIdentityProvider(identity);worldConsumer.setVersionProvider(version);assert(worldConsumer.shareSnapshotPool(sourcePool));}
         n->setEmptyTargetSource(&extension,[](void* e){return static_cast<ExtensionDevice*>(e)->emptyAuxiliaryTargets();});
         NorthlightGpuScene::NativeStore store;NorthlightGpuScene::NativeClient cache(store,NorthlightGpuScene::Consumer::Material);if(timing)n->setGeometryCache(&cache);
         IDirect3DVertexShader9* privateVS=nullptr;IDirect3DPixelShader9* privatePS=nullptr;unsigned pomControl=0;NorthlightDisplacementPatch::Binding displacementBinding;
@@ -108,6 +116,7 @@ int main(int argc,char** argv){
         auto sky=target(W,H,D3DFMT_A16B16G16R16F,8);NorthlightHdr::SkyForeground skyCapture;
         std::vector<unsigned char> referenceColor,referenceNormals,referenceSky;
         auto frame=[&](bool mrt,unsigned scenario=0,unsigned fault=0){
+            if(captureSource)worldConsumer.clearFrame();
             n->endFrame();n->enableNativeMrt(mrt);state(color);
             if(scenario==34)assert(n->finishCaptures()); // No audited draw: no new cooldown.
             if(scenario==10){ok(d->SetDepthStencilSurface(alternateDepth));ok(d->Clear(0,nullptr,D3DCLEAR_ZBUFFER,0,1,0));ok(d->SetDepthStencilSurface(depth));}
@@ -139,8 +148,15 @@ int main(int argc,char** argv){
             for(unsigned i=0;i<N;++i){
                 auto* receiver=scenario==11&&i==1?alternateSource:source;
                 n->beginNativeDraw();ok(d->SetVertexShader(receiver));ok(d->SetPixelShader(nativePS));ok(d->SetRenderState(D3DRS_ALPHATESTENABLE,alpha));ok(d->SetRenderState(D3DRS_ALPHAFUNC,D3DCMP_GREATER));ok(d->SetRenderState(D3DRS_ALPHAREF,128));pose(i==2?49.f:i?20.f:2.f,i==2?.5f:0);
-                if(timing){pose(10.f+(i%7)*.1f,(int(i%17)-8)*.025f);ok(d->SetStreamSource(0,vb,0,Stride));ok(d->SetIndices(ib));}
-                n->capture(receiver,nativeGeometry,!timing,&geometry,nullptr,D3DFMT_UNKNOWN,nullptr,0,&mesh,decl);
+                if(timing)pose(10.f+(i%7)*.1f,(int(i%17)-8)*.025f);
+                if(timing||captureSource){ok(d->SetStreamSource(0,vb,0,Stride));ok(d->SetIndices(ib));}
+                std::shared_ptr<const NorthlightDrawSnapshot::Mesh> published;IDirect3DVertexDeclaration9* publishedDecl=nullptr;
+                n->capture(receiver,nativeGeometry,!timing&&!captureSource,&geometry,nullptr,D3DFMT_UNKNOWN,nullptr,0,captureSource?nullptr:&mesh,captureSource?nullptr:decl,nullptr,captureSource?&published:nullptr,captureSource?&publishedDecl:nullptr);
+                if(published){assert(publishedDecl==decl&&published->sourceIdentity);++publishedSources;
+                    bool served=false;NorthlightDrawSnapshot::Mesh scratch;std::shared_ptr<const NorthlightDrawSnapshot::Mesh> admitted;
+                    if(lookupReference)assert(worldConsumer.read(d,decl,geometry,scratch,nullptr,false,&admitted));
+                    else assert(worldConsumer.readShared(decl,geometry,published,admitted,served)&&served);
+                    assert(admitted==published);publishedDecl->Release();}
                 IDirect3DSurface9* occupied[3]={};
                 if(scenario==1&&i==1)for(unsigned slot=1;slot<4;++slot){ok(d->CreateRenderTarget(W,H,color.format,D3DMULTISAMPLE_NONE,0,FALSE,occupied+slot-1,nullptr));ok(d->SetRenderTarget(slot,occupied[slot-1]));}
                 if(privateVS)ok(d->SetVertexShader(privateVS));if(privatePS)ok(d->SetPixelShader(privatePS));
@@ -247,6 +263,7 @@ int main(int argc,char** argv){
         n.reset();if(alternateColor)alternateColor->Release();if(alternateDepth)alternateDepth->Release();if(msColor)msColor->Release();if(msDepth)msDepth->Release();if(cube)cube->Release();if(height){ok(d->SetTexture(D3DVERTEXTEXTURESAMPLER0+displacementBinding.sampler,nullptr));height->Release();}if(privateVS)privateVS->Release();if(privatePS)privatePS->Release();alternateSource->Release();source->Release();dispose(color);dispose(sky);
     }
     if(vb)vb->Release();if(ib)ib->Release();
+    if(captureSource){assert(publishedSources>0);printf("MODEL_NORMAL_SOURCE_PASS published=%u lookupReference=%u\n",publishedSources,lookupReference);}
     if(!timing){assert(commits>0);std::printf("MODEL_NORMAL_NATIVE_GPU_PASS cases=%u committedFrames=%u RGB=exact normals=exact fallback=whole-frame faults=before-after nativeCalls=once hdrSky=exact fillSuccess=%u fillFailure=%u\n",cases,commits,calls.fillSuccess,calls.fillFailure);}
     return 0;
 }

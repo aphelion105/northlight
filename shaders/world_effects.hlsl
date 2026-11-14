@@ -46,10 +46,10 @@ row_major float4x4 FarMatrix : register(c11);
 float4 Camera : register(c15);
 float4 TemporalReach : register(c15); // w: TemporalLight only, largest drawn source channel per unit of normalised visibility
 float4 SunDirection : register(c16); // toward source
-float4 DirectLight : register(c17);
+float4 DirectLight : register(c17); // w: directional maps can prove daylight access for prelit receivers
 float4 AmbientLight : register(c18); // native ambient RGB, evening surface ambient gain in w
 float4 GridOrigin : register(c19); // rgb: NightBrightness light per unit of albedo (WorldComposite only, 0 = off); w: world probe spacing
-float4 GIResponse : register(c66); // y: signed brightness delta; GI only, before FogActorBounds/LocalLightFog own c66
+float4 GIResponse : register(c66); // x: prelit GI mix, y: brightness delta; GI only, before fog owns c66
 float4 GridInfo : register(c20); // atlas N,GI intensity,shadow strength,probe ready
 float4 FogInfo : register(c21); // regional field ready,direct volume gain,direct RGB bound,max distance
 float4 FogColor : register(c22); // scattering albedo.rgb, generic-forest daytime air extinction
@@ -593,7 +593,7 @@ NormalDistanceOutput WorldNormals(float2 uv:TEXCOORD0) {
 float4 WorldNormalsNoDistance(float2 uv:TEXCOORD0):COLOR0 { return worldNormalValue(uv); }
 
 struct LightingOutput {float4 correction:COLOR0;float4 baseline:COLOR1;float4 daylight:COLOR2;};
-float3 worldGIValue(float3 p,float4 smoothNormal,uniform bool localOnly) {
+float3 worldGIValue(float3 p,float4 smoothNormal,uniform bool localOnly,out float4 prelitGI) {
     float3 n=smoothNormal.xyz;
     float4 probe=probeIrradiance(p+n*.25,n,localOnly);
     float3 ambient=max(AmbientLight.rgb,0);
@@ -616,6 +616,10 @@ float3 worldGIValue(float3 p,float4 smoothNormal,uniform bool localOnly) {
     // its hue and existing occlusion. No absolute brightness floor, direct-light
     // multiplier or brightened sky/fog.
     correction+=max(AmbientLight.rgb+correction,0)*AmbientLight.w;
+    // Resident probes also constrain authored WMO illumination. Missing probes
+    // retain it; a measured dark room must not inherit the outdoor ambient.
+    float occlusion=saturate(-dot(correction,float3(.2126,.7152,.0722))/max(dot(ambient,float3(.2126,.7152,.0722)),.0001));
+    prelitGI=float4(max(correction,0),occlusion)*(probe.a*GIResponse.x);
     return correction;
 }
 LightingOutput worldLightingValue(float2 uv,bool soft,bool shadows,bool gi=false) {
@@ -625,7 +629,8 @@ LightingOutput worldLightingValue(float2 uv,bool soft,bool shadows,bool gi=false
     if(d>=.99999||waterDistance(uv,d)>0)return o;
     float4 smoothNormal=tex2Dlod(NormalBuffer,float4(halfUV,0,0));
     float3 p=worldPosition(uv,d);float3 n=smoothNormal.xyz;
-    float3 indirect=gi?worldGIValue(p,smoothNormal,true):0;
+    float4 prelitGI=0;float3 indirect=0;
+    if(gi)indirect=worldGIValue(p,smoothNormal,true,prelitGI);
     // Fine material light is applied after the half-res spatial/temporal filters.
     // The legacy route remains available when there is no independent scene copy.
     float3 detailNormal=n;
@@ -665,7 +670,7 @@ LightingOutput worldLightingValue(float2 uv,bool soft,bool shadows,bool gi=false
     // Prelit WMO has no native sunlight to subtract. Publish incoming daylight
     // separately from the outdoor correction and GI's ambient replacement.
     // Uncovered receivers retain authored lighting rather than leaking sun.
-    o.daylight=float4(DirectLight.rgb*saturate(dot(detailNormal,SunDirection.xyz))*shadow*known,0);
+    o.daylight=float4(DirectLight.rgb*saturate(dot(detailNormal,SunDirection.xyz))*shadow*known*DirectLight.w,0)+prelitGI;
     return o;
 }
 LightingOutput WorldLighting(float2 uv:TEXCOORD0){return worldLightingValue(uv,false,true);}
@@ -789,11 +794,14 @@ float4 ActorShadowUniform(float2 uv:TEXCOORD0,uniform row_major float4x4 ActorMa
 // Probes contain sky + bounce, so replace ambient instead of adding it twice.
 // Missing probes do not establish hemispherical sky visibility. Preserve the
 // native ambient there; only resident probes can replace it with measured GI.
-float4 WorldGI(float2 uv:TEXCOORD0):COLOR0 {
+struct GIOutput {float4 correction:COLOR0;float4 prelit:COLOR1;};
+GIOutput WorldGI(float2 uv:TEXCOORD0) {
+    GIOutput o;o.correction=0;o.prelit=0;
     float4 smoothNormal=tex2Dlod(NormalBuffer,float4(uv,0,0));
     uv=depthUV(uv);
-    float d=normalizedDepth(uv);if(d>=.99999||waterDistance(uv,d)>0)return 0;
-    return float4(worldGIValue(worldPosition(uv,d),smoothNormal,false),0);
+    float d=normalizedDepth(uv);if(d>=.99999||waterDistance(uv,d)>0)return o;
+    float3 correction=worldGIValue(worldPosition(uv,d),smoothNormal,false,o.prelit);
+    o.correction=float4(correction,0);return o;
 }
 // Four POINT reads work on float32 textures without optional linear filtering.
 // Empty metadata nodes must never interpolate their dummy ground=0 into real
@@ -1322,9 +1330,9 @@ float4 LocalFog(float2 uv:TEXCOORD0):COLOR0 {
     float3 ray=view.x*InverseView[0].xyz+view.y*InverseView[1].xyz+view.z*InverseView[2].xyz;
     float D=min(length(ray),max(FogInfo.w,0));
     ray*=rsqrt(max(dot(ray,ray),1e-12));
-    float3 result=0;float capped=0;
-    // Four lights per pass (SM3 slot budget); up to sixteen across batches. 0.3.205: about 473 of the 512 slots are used (the capped
-    // peak in alpha added ~26), so a new per-light term here needs a slot count first (shaders/world-shader-build.json).
+    float3 result=0;
+    // Four lights per pass to fit SM3. Accumulate radiance across batches;
+    // apply the display bound once, without a light-count brightness boost.
     [unroll]for(int i=0;i<4;++i){
         float3 oc=Camera.xyz-LocalLightPos[i].xyz;
         float b=dot(oc,ray);float h2=max(dot(oc,oc)-b*b,0);
@@ -1345,25 +1353,16 @@ float4 LocalFog(float2 uv:TEXCOORD0):COLOR0 {
         float nearGlow=saturate((clamp(-b,t0,t1)-FogRange.x)*FogRange.y);nearGlow*=nearGlow*(3-2*nearGlow);
         float3 lamp=LocalLightColor[i].rgb*(integral*LocalLightFog[i].x*nearGlow);
         result+=lamp;
-        // 0.3.205 (gh#20): the lamp's own capped peak, summed in alpha for LocalFogCombine's effective lamp count.
-        float lampPeak=max(lamp.r,max(lamp.g,lamp.b))*FogRange.z;capped+=FogRange.w*lampPeak/(FogRange.w+lampPeak);
         }
     }
-    return float4(result*FogRange.z,capped);
+    return float4(result*FogRange.z,0);
 }
-// 0.3.205 (gh#20): the cap over everything the batches accumulated (rgb: raw sum, a: sum of every lamp's own capped peak); the accumulator is bound as
-// FogBuffer (s9) and read at its own texel. A single cap over the total alone made overlapping saturated glows 0.25-0.45x the old per-batch look (the glows
-// are deep in the cap, peak/w about 70-100), so the capped total is boosted by the effective lamp count n_eff = sum of capped peaks / capped total peak (>= 1,
-// exactly 1 for a single lamp): overlapping saturated glows brighten as n_eff^0.6. That reproduces the pre-0.3.205 per-batch look on average while the result
-// depends only on the set of lamps, not on how the closest-first batches group them. 0.6 was fitted offline against the per-batch cap on a lamp-road model
-// (tests/test_local_fog_batching.py).
+// One hue-preserving bound over all lamps, independent of their batch order.
 float4 LocalFogCombine(float2 uv:TEXCOORD0):COLOR0 {
     float4 acc=tex2Dlod(FogBuffer,float4(uv,0,0));
     float3 scatter=acc.rgb;
     float peak=max(scatter.r,max(scatter.g,scatter.b));
     scatter*=FogRange.w/(FogRange.w+peak);
-    float capPeak=max(scatter.r,max(scatter.g,scatter.b));
-    scatter*=pow(max(acc.a/max(capPeak,1e-6),1),.6);
     return float4(scatter,0);
 }
 float4 upsampleFog(float2 uv,float centerDepth) {
@@ -1655,7 +1654,8 @@ float4 worldComposite(float2 uv,float2 pixel,bool surfaceLighting,bool hdrMode,s
             float4 light=tex2Dlod(LightingBuffer,float4(q,0,0));
             float3 lit=tex2Dlod(BaselineLighting,float4(q,0,0)).rgb;
             float occlusion=tex2Dlod(AmbientOcclusion,float4(q,0,0)).a;
-            bounce=mad(prelit?tex2Dlod(PrelitDaylight,float4(q,0,0)).rgb:light.rgb,weight,bounce);
+            if(prelit)light=tex2Dlod(PrelitDaylight,float4(q,0,0));
+            bounce=mad(light.rgb,weight,bounce);
             [branch]if(!baseLighting&&CompositeWork.y<.5)local=mad(tex2Dlod(CurrentLocalLighting,float4(q,0,0)).rgb,weight,local);
             shadow=mad(light.a,weight,shadow);baseline=mad(lit,weight,baseline);ao=mad(occlusion,weight,ao);total+=weight;
             if(score<closest){closest=score;fallbackUV=q;}
@@ -1682,7 +1682,7 @@ float4 worldComposite(float2 uv,float2 pixel,bool surfaceLighting,bool hdrMode,s
     float4 fallbackLight=0;float3 fallbackBase=0;float fallbackAO=1;
     [branch]if(relight&&total<.02&&closest<1e20){
         fallbackLight=tex2Dlod(LightingBuffer,float4(fallbackUV,0,0));
-        if(prelit)fallbackLight.rgb=tex2Dlod(PrelitDaylight,float4(fallbackUV,0,0)).rgb;
+        if(prelit)fallbackLight=tex2Dlod(PrelitDaylight,float4(fallbackUV,0,0));
         fallbackBase=tex2Dlod(BaselineLighting,float4(fallbackUV,0,0)).rgb;
         fallbackAO=tex2Dlod(AmbientOcclusion,float4(fallbackUV,0,0)).a;
     }
@@ -1727,27 +1727,28 @@ float4 worldComposite(float2 uv,float2 pixel,bool surfaceLighting,bool hdrMode,s
         float3 oldLight=max(baseline*inverseWeight,.15);
         float3 transported=max(original.rgb-fogPart,0);
         float3 albedoT=min((hdrMode?hdrSurface:transported)/oldLight,legacyT);
-        // Prelit RGB retains baked/local illumination. Add only the independent
-        // daylight term, which roofs, walls and actors shadow before this pass.
+        // Prelit RGB retains authored illumination at zero GI blend. Resident
+        // probes attenuate that layer and add bounce independently of daylight.
         // As for local lamps, native transported RGB supplies a bounded material
         // estimate; this is not an extraction of the original diffuse texture.
         color=mad(albedoT,bounce,original.rgb);
+        if(prelit)color=mad(-saturate(shadow)*PrelitDaylightInfo.x,transported,color);
         // Bound combined GI/shadow darkening relative to the existing surface;
         // this preserves black and does not introduce an absolute exposure floor.
-        color=max(color,mad(-shadowRemovalLimit(),transported,original.rgb));
+        float removalLimit=prelit?max(shadowRemovalLimit(),saturate(shadow)*PrelitDaylightInfo.x):shadowRemovalLimit();
+        color=max(color,mad(-removalLimit,transported,original.rgb));
         // Bound shadow/GI removal before adding current local radiance, so a
         // darkening floor cannot swallow a weaker overlapping lamp channel.
-        // Native indoor/prelit surfaces already contain lamp illumination.
-        // Compress the final, shadowed lamp sum once, preserving its RGB ratio.
-        // Add at most one stop to the surface and use half its SDR headroom;
-        // HDR radiance has no ceiling at the SDR white of 1.
-        // bright fixtures retain texture instead of clipping to yellow/white.
+        // Compress the final, shadowed lamp sum once in SDR, preserving hue.
+        // HDR radiance remains available to the tone mapper and bloom.
         if(!baseLighting){
         float3 localAdd=max(albedoT*(local*inverseWeight),0);
-        float3 localRoom=hdrMode?transported:min(transported,.5*max(1-color,0));
+        // A dark native surface is not a cap on incoming lamp radiance. HDR
+        // retains it for the tone mapper; SDR uses its remaining display room.
+        float3 localRoom=max(1-color,0);
         float3 localRatio=localAdd/max(localRoom,.00001);
         float localScale=1/(1+max(localRatio.r,max(localRatio.g,localRatio.b)));
-        color+=min(localAdd*localScale,localRoom);
+        color+=hdrMode?localAdd:min(localAdd*localScale,localRoom);
         }
         // NightBrightness: gives back a share of the art layer's darker night ambient (x .82 x cool tint) as light: albedoT times
         // share x ambient x (1/factor-1), the per-frame product computed on the CPU (night_floor.h nightAmbient). Added like

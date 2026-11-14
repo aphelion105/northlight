@@ -49,7 +49,7 @@ const std::map<std::string,const char*> Labels={
     {"AutoParallaxShadows","POM self-shadowing"},{"AutoParallaxShadowStrength","Self-shadow strength (%)"},{"AutoParallaxShadowSteps","Self-shadow trace steps"},
     {"AutoCavity","Cavity shading"},{"AutoCavityStrength","Cavity strength (%)"},
     {"AutoHeightPolarity","Height interpretation"},{"AutoHeightDetails","Colored height detail (%)"},
-    {"Preset","Quality preset"},{"Effects","All Northlight effects"},{"WorldShadows","World shadows"},{"WorldFog","Atmospheric fog"},{"LocalLights","Local light illumination"},{"GI","Global illumination"},{"GIStrength","GI influence (120 = full)"},{"GIBrightness","GI brightness adjustment (%)"},{"AuroraStrength","Northrend aurora (%)"},
+    {"Preset","Quality preset"},{"Effects","All Northlight effects"},{"WorldShadows","World shadows"},{"WorldFog","Atmospheric fog"},{"LocalLights","Local light illumination"},{"GI","Global illumination"},{"GIStrength","GI influence (120 = full)"},{"GIBrightness","GI brightness adjustment (%)"},{"GIPrelitMix","GI / baked lighting blend (%)"},{"AuroraStrength","Northrend aurora (%)"},
     {"ShadowStrength","Shadow strength (%)"},{"ShadowSoftness","Penumbra size (%)"},{"ShadowContactRadius","Contact filter radius (0.01 texel)"},
     {"SoftShadows","Contact-hardening shadows"},{"ActorShadows","Character shadows"},{"ActorShadowDetail","Detailed character shadows"},{"GrassShadows","Grass shadows"},{"ActorShadowRadius","Character shadow distance"},
     {"ContactAO","Ambient occlusion"},{"AOMethod","AO method"},{"AOQuality","AO quality"},{"AutoBumpModels","M2 models (all types)"},{"AutoMaterialOcclusionDistance","Cavity and self-shadow distance (yards)"},{"AutoModelDisplacementDistance","Model geometry distance (yards)"},{"AutoModelDisplacementDetail","Model subdivision"},{"AutoModelDisplacementStrength","Model height (%)"},{"AutoDisplacementDistance","Terrain and object geometry distance (yards)"},{"AutoDisplacementStrength","Terrain and object height (%)"},{"AutoDisplacementDetail","Terrain and object subdivision"},{"AutoHeightBalance","Height balance (%)"},{"AOStrength","AO strength (%)"},{"AORadius","AO radius (0.01 yd)"},
@@ -69,7 +69,7 @@ const std::map<std::string,const char*> Labels={
 };
 // Shorter row labels where the group title already gives the context.
 const std::map<std::string,const char*> ShortLabels={
-    {"GIStrength","GI influence"},{"GIBrightness","Brightness adjustment (%)"},{"AuroraStrength","Northrend aurora (%)"},{"GIDistance","GI distance (yd)"},{"GIBounces","Light bounces"},{"AOStrength","Strength (%)"},{"AORadius","Radius (0.01 yd)"},
+    {"GIStrength","GI influence"},{"GIBrightness","Brightness adjustment (%)"},{"GIPrelitMix","Baked lighting blend (%)"},{"AuroraStrength","Northrend aurora (%)"},{"GIDistance","GI distance (yd)"},{"GIBounces","Light bounces"},{"AOStrength","Strength (%)"},{"AORadius","Radius (0.01 yd)"},
     {"ActorShadowRadius","Distance (yd)"},{"ActorShadowDetail","Detailed shadows"},{"EquipmentLights","Equipment lights"},{"FogCloudDensity","Density (%)"},
     {"HDRMaxNits","Manual peak (nits)"},{"AutoBumpDistance","Relief distance (yd)"},
 };
@@ -129,6 +129,7 @@ const std::map<std::string,std::vector<const char*>> Help={
     {"GI",{"Adds indirect sky light, bounced colors and occlusion from surrounding geometry. Turning it off stops the background lighting solver and leaves the game's ambient lighting."}},
     {"GIStrength",{"Influence of measured sky light, bounced color and occlusion on terrain and objects. 120 fully replaces native ambient; 60 restores the old half blend; up to 240 strengthens the contrast. 0 suspends GI work."}},
     {"GIBrightness",{"Adjusts measured indirect light: negative values darken, positive values brighten. -100 removes it, 0 keeps it unchanged, +100 doubles it. Missing probes keep native lighting; direct sun and lamps are unchanged."}},
+    {"GIPrelitMix",{"Blend GI with the game's authored building lighting. 0% preserves it; 100% applies resident-probe occlusion and bounce. Missing probes preserve the original. Direct sunlight, moonlight and lamps are unchanged."}},
     {"AuroraStrength",{"Scales all native Northrend aurora emission and its light: 0 turns it off, 100 is normal, 200 doubles it. Extra green/purple emission strengthens it between sunset and moonrise. Surface illumination requires GI and resident probes; roofs and walls occlude it. Independent of enhanced rain/snow and fog."}},
     {"GIRays",{"Samples the surroundings in more directions for each lighting probe. More rays improve indirect lighting stability and detail, but increase background CPU work."}},
     {"GIBounces",{"How many times indirect light can reflect between surfaces. More bounces carry light farther into enclosed spaces and cost more background CPU time."}},
@@ -240,8 +241,8 @@ const std::map<std::string,std::vector<const char*>> Help={
 struct Group { const char* id; const char* title; const char* master; const char* fields; const char* advanced; };
 struct Section { const char* id; const char* title; const char* keys; std::vector<Group> groups; bool open; };
 const std::vector<Section> QualitySections={
-    {"lighting","Lighting & AO","GI GIStrength GIBrightness GIRays GIBounces GIProbeMoveStep GIDynamicProbes GIThreads GIFastBVH GIDistance GIChunkRadius GIProbeAhead NightBrightness ContactAO AOMethod AOQuality AOStrength AORadius LocalLights LocalLightLimit EquipmentLights PointShadows PointShadowLimit PointShadowDistance PointShadowRefreshMs PointShadowFacesPerFrame",{
-        {"gi","Global illumination","GI","GIStrength GIBrightness GIDistance GIChunkRadius GIBounces","GIRays GIProbeMoveStep GIDynamicProbes GIThreads GIFastBVH GIProbeAhead"},
+    {"lighting","Lighting & AO","GI GIStrength GIBrightness GIPrelitMix GIRays GIBounces GIProbeMoveStep GIDynamicProbes GIThreads GIFastBVH GIDistance GIChunkRadius GIProbeAhead NightBrightness ContactAO AOMethod AOQuality AOStrength AORadius LocalLights LocalLightLimit EquipmentLights PointShadows PointShadowLimit PointShadowDistance PointShadowRefreshMs PointShadowFacesPerFrame",{
+        {"gi","Global illumination","GI","GIStrength GIBrightness GIPrelitMix GIDistance GIChunkRadius GIBounces","GIRays GIProbeMoveStep GIDynamicProbes GIThreads GIFastBVH GIProbeAhead"},
         {"ao","Ambient occlusion","ContactAO","AOMethod AOQuality AOStrength AORadius",""},
         {"ambient","Environment",nullptr,"NightBrightness",""},
         {"local","Local illumination","LocalLights","LocalLightLimit PointShadows PointShadowLimit EquipmentLights","PointShadowDistance PointShadowRefreshMs PointShadowFacesPerFrame"}},true},

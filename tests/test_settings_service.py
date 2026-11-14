@@ -1,4 +1,4 @@
-# northlight-test: requires=cxx
+# northlight-test: requires=zig
 """Transactional INI persistence and bounded settings transport, without running the game."""
 from pathlib import Path
 import os

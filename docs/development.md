@@ -33,6 +33,8 @@ For the subsequent CPU source-reuse change and local-session baseline, see
 [material admission snapshot reuse](cpu-source-reuse-20261114.md).
 For character-shadow CPU costs and removed runtime profiling experiments, see
 [the shadow profiling audit](shadow-profile-cleanup-20261114.md).
+For the crypt captures, authored-lighting GI blend, lamp/fog fixes and normal
+snapshot handoff, see [the lighting and shadow review](lighting-shadow-review-20261114.md).
 
 ## Requirements
 

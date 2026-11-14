@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# northlight-test: requires=cxx
+# northlight-test: requires=zig
 """Ctrl+Shift+F11 settings overlay (src/overlay/, vendored Dear ImGui in src/imgui/).
 
 Static: the DLL build compiles the overlay and ImGui translation units with the overlay's ImGui config;

@@ -28,6 +28,8 @@ parser.add_argument('--timing-copies',type=int,default=1,help='Repeat stock geom
 parser.add_argument('--timing-local',action='store_true',help='Measure the actual three-local-light factory with MRT')
 parser.add_argument('--reference-packet-layout',help='Replace only Pending with its layout at this git revision; retain current capture/render methods')
 parser.add_argument('--reference-native',help='Use native MRT admission from this git revision for a paired comparison')
+parser.add_argument('--capture-source',action='store_true',help='Read immutable buffered geometry in normals and hand it to the shadow consumer')
+parser.add_argument('--source-lookup-reference',action='store_true',help='Repeat the consumer lookup instead of accepting the same-draw handoff (stand only)')
 timing_state=parser.add_mutually_exclusive_group()
 timing_state.add_argument('--timing-blend',action='store_true',help='Include a source-alpha blended depth writer before the commit')
 timing_state.add_argument('--timing-srgb',action='store_true',help='Keep native sRGB writes enabled throughout the receiver draws')
@@ -47,6 +49,10 @@ finally:assets.close()
 local=collect(fp.client_root())[0][0xe8d455338d8ae2ff][1]
 (fixture/'model-vs3-local.bin').write_bytes(local)
 env={**fp.zig_env(),'DXVK_LOG_PATH':str(out),'DISABLE_VULKAN_OBS_CAPTURE':'1'}
+if args.capture_source:env['NORTHLIGHT_TEST_NORMAL_SOURCE']='1'
+if args.source_lookup_reference:
+    assert args.capture_source,'Reference requires --capture-source'
+    env['NORTHLIGHT_TEST_NORMAL_SOURCE_LOOKUP']='1'
 
 def run(tag,command):
     log=out/(tag+'.log')
@@ -96,6 +102,8 @@ report['timing']['blended_depth']=args.timing_blend
 report['timing']['srgb']=args.timing_srgb
 report['reference_packet_layout']=args.reference_packet_layout
 report['reference_native']=args.reference_native
+report['source_handoff']=env.get('NORTHLIGHT_TEST_NORMAL_SOURCE')=='1'
+report['source_lookup_reference']=env.get('NORTHLIGHT_TEST_NORMAL_SOURCE_LOOKUP')=='1'
 report['timing']['fixed_pixel']=args.timing_fixed_pixel
 report['timing']['capture_hazard']=args.timing_capture_hazard
 (out/'validation.json').write_text(json.dumps(report,indent=2)+'\n')

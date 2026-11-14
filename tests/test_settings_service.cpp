@@ -29,6 +29,14 @@ static void lightLimits(){
 }
 int main(int argc,char** argv){
     lightLimits();
+    {const auto docs=factoryDocuments();const auto config=configOf(docs,"");const auto fields=schema(docs,docs,config,"");
+     auto f=std::find_if(fields.begin(),fields.end(),[](const Field& value){return value.key=="GIPrelitMix";});
+     assert(f!=fields.end()&&f->low=="0"&&f->high=="100"&&f->saved=="100"&&f->apply=="F");
+     for(const char* value:{"0","50","100"}){const auto changed=applyChanges(docs,fields,f->id()+"\t"+value+"\n");
+         const auto next=configOf(changed,"",true);assert(next.quality.giPrelitMix==unsigned(std::stoul(value)));
+         assert(next.quality.giStrength==config.quality.giStrength&&next.quality.giBrightness==config.quality.giBrightness);
+         const Document reloaded(changed[0].bytes());assert(qualityOf(reloaded,"").giPrelitMix==next.quality.giPrelitMix);}
+     fails([&]{applyChanges(docs,fields,f->id()+"\t101\n");});fails([&]{applyChanges(docs,fields,f->id()+"\t-1\n");});}
     {const auto initial=factoryDocuments();const auto config=configOf(initial,"");const auto fields=schema(initial,initial,config,"");
      for(const char* key:{"NativeMoreLights","NativeModelLightLimit","NativeTerrainLightLimit"}){
          auto f=std::find_if(fields.begin(),fields.end(),[&](const Field& value){return value.key==key;});assert(f!=fields.end());

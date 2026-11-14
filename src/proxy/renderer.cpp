@@ -1998,11 +1998,12 @@ private:
         };
         return world&&nativeLocalDomain&&enabled&&!applied&&!failed&&projectionValid&&!debugMode&&!worldDebug?world->nativeLocalDraw(frame,worldDepth,native,prepared,autoBump?autoBump->nativePOM():nullptr,source,autoBump?autoBump->nativeDisplacement():nullptr,effectCoverage.nativePixel()):native();
     }
-    template<class Draw> void captureModelNormals(IDirect3DVertexShader9* vs,Draw draw,bool userMemory,const NorthlightAutoDisplacement::Args& geometry,const NorthlightAutoDisplacement::CaptureSource* source=nullptr){
+    template<class Draw> void captureModelNormals(IDirect3DVertexShader9* vs,Draw draw,bool userMemory,const NorthlightAutoDisplacement::Args& geometry,NorthlightAutoDisplacement::CaptureSource* source=nullptr){
         if(!modelNormals||!modelNormalsNeeded||!enabled||applied||failed)return;
         const auto found=vsHashes.find(vs);
         if(found!=vsHashes.end()&&m2ShaderFamily(found->second)==3)
-            modelNormals->capture(vs,draw,userMemory,&geometry.draw,geometry.indices,geometry.format,geometry.vertices,geometry.stride,source?&source->mesh:nullptr,source?source->declaration:nullptr,source?&source->pose:nullptr);
+            modelNormals->capture(vs,draw,userMemory,&geometry.draw,geometry.indices,geometry.format,geometry.vertices,geometry.stride,source?&source->mesh:nullptr,source?source->declaration:nullptr,source?&source->pose:nullptr,
+                source&&!userMemory?&source->mesh:nullptr,source&&!userMemory?&source->declaration:nullptr);
     }
     template<NorthlightWaterRenderer::UserPointer UserPointer,class Raw,class Draw> void captureGameDraw(IDirect3DVertexShader9* vs,const NorthlightAutoDisplacement::Args& geometry,Raw raw,Draw draw){
         constexpr bool userMemory=UserPointer!=NorthlightWaterRenderer::NoUserPointer;

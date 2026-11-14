@@ -246,7 +246,8 @@ class NorthlightModelNormals {
         pending.clear();pendingBytes=0;pendingTextureSlots=0;snapshots.clearFrame();if(hadPending&&pendingChanged)pendingChanged(pendingContext);}
     template<class Admit> bool record(Vertex* vs,Pixel* ps,const float* control,const D3DVIEWPORT9& viewport,Admit& admit,const NorthlightDrawSnapshot::Draw* geometry,
                 const void* indices,D3DFORMAT format,const void* vertices,UINT stride,
-                const std::shared_ptr<const NorthlightDrawSnapshot::Mesh>* captured,IDirect3DVertexDeclaration9* capturedDeclaration,const NorthlightPoseBounds::Handoff* pose){
+                const std::shared_ptr<const NorthlightDrawSnapshot::Mesh>* captured,IDirect3DVertexDeclaration9* capturedDeclaration,const NorthlightPoseBounds::Handoff* pose,
+                std::shared_ptr<const NorthlightDrawSnapshot::Mesh>* published,IDirect3DVertexDeclaration9** publishedDeclaration){
         if(!deferred||!vs->reads.exact||vs->reads.samplers||!ps->reads.exact||!geometry||pending.size()>=2048||d->GetNPatchMode()!=0)return false;
         try{
             std::unique_ptr<Pending> packet;
@@ -266,6 +267,12 @@ class NorthlightModelNormals {
                 const bool captured=snapshots.read(d,declaration.p,*geometry,packet->mesh,nullptr,false,sourceSharing?&packet->sharedMesh:nullptr);
                 sourceReadBytes+=snapshots.bytesRead()-read;sourceReused+=snapshots.snapshotCacheHits()-hits;
                 if(!captured)return false;
+            }
+            // The next shadow consumer can admit this same immutable source
+            // without repeating buffer/declaration discovery. Publish before
+            // receiver culling or replacing CPU bytes with a resident GPU lease.
+            if(!vertices&&published&&publishedDeclaration&&!*published&&!*publishedDeclaration&&packet->sharedMesh){
+                *published=packet->sharedMesh;declaration.p->AddRef();*publishedDeclaration=declaration.p;
             }
             const auto& mesh=packet->geometry();
             if(mesh.streams[0].bytes.empty())return false;
@@ -719,7 +726,8 @@ public:
     }
     template<class Draw> void capture(IDirect3DVertexShader9* source,Draw draw,bool userMemory=false,
             const NorthlightDrawSnapshot::Draw* geometry=nullptr,const void* indices=nullptr,D3DFORMAT format=D3DFMT_UNKNOWN,const void* vertices=nullptr,UINT stride=0,
-            const std::shared_ptr<const NorthlightDrawSnapshot::Mesh>* captured=nullptr,IDirect3DVertexDeclaration9* capturedDeclaration=nullptr,const NorthlightPoseBounds::Handoff* pose=nullptr){
+            const std::shared_ptr<const NorthlightDrawSnapshot::Mesh>* captured=nullptr,IDirect3DVertexDeclaration9* capturedDeclaration=nullptr,const NorthlightPoseBounds::Handoff* pose=nullptr,
+            std::shared_ptr<const NorthlightDrawSnapshot::Mesh>* published=nullptr,IDirect3DVertexDeclaration9** publishedDeclaration=nullptr){
         if(bad||!source)return;
         // Reuse the current pose's receiver range/clip proof before admission.
         // Solid triangles only; caster capture remains independent of the camera.
@@ -766,11 +774,11 @@ public:
         // source caches/counters. Later far draws can avoid target reads entirely.
         if(!frameTarget&&!admit())return;
         const float control[]={0,48.f,alpha?(float(ref)+(func==D3DCMP_GREATER?.5f:0.f))/255.f:.001f,alpha?1.f:0.f};
-        if(record(vs,ps,control,saved.viewport,admit,geometry,indices,format,vertices,stride,captured,capturedDeclaration,pose))return;
+        if(record(vs,ps,control,saved.viewport,admit,geometry,indices,format,vertices,stride,captured,capturedDeclaration,pose,published,publishedDeclaration))return;
         if(!admit())return;
         if(deferred&&!pending.empty()){
             if(!finishCaptures())return;
-            if(record(vs,ps,control,saved.viewport,admit,geometry,indices,format,vertices,stride,captured,capturedDeclaration,pose))return;
+            if(record(vs,ps,control,saved.viewport,admit,geometry,indices,format,vertices,stride,captured,capturedDeclaration,pose,published,publishedDeclaration))return;
         }
         if(deferred&&!saved.saveRest())return;
         // Keep depth-tie ordering when a draw cannot use immutable replay.

@@ -120,6 +120,7 @@ struct WorldScreenEffectsTest {
     static void fogStreamingSetup(WorldRenderer& w,IDirect3DVertexBuffer9* vb,IDirect3DIndexBuffer9* ib,unsigned mode,unsigned medium){
         giFallbackSetup(w,vb,ib,mode==1?1:0,true);w.effects={false,true,true};
         w.nativeShadowOwned=w.nativeShadowAvailable=mode==2;
+        if(mode==3){for(unsigned source=0;source<2;++source){w.sourceColors[source]=w.sourceGlowColors[source]={};w.sourceWeights[source]=0;}}
         auto field=std::make_shared<NorthlightRegionalFog::Field>();field->originX=field->originY=-256;field->fogCells=field->airCells=4096;
         for(auto& t:field->texels){t.ground=-2;t.day=.015f;t.height=2.5f;}
         auto region=std::make_shared<WorldRenderer::FogRegion>();region->map=w.lastRequest.map;region->field=field;w.publishedFogRegion=region;
@@ -171,6 +172,7 @@ struct WorldScreenEffectsTest {
         w.context.lightDirection[0]=.4f;w.context.lightDirection[1]=.2f;w.context.lightDirection[2]=-.8944272f;
         w.projection[0]=w.projection[1]=w.projection[2]=1;
         w.sourceDirections[0]={.4f,.2f,-.8944272f};w.sourceDirections[1]={0,0,1};
+        w.rawSourceDirections[0]=w.sourceDirections[0];w.rawSourceDirections[1]=w.sourceDirections[1];
         w.sourceColors[0]=w.sourceGlowColors[0]={.6f,.5f,.4f};w.sourceColors[1]=w.sourceGlowColors[1]={0,0,0};w.sourceWeights[0]=1;w.sourceWeights[1]=0;
     }
     static void sceneOwnership(WorldRenderer& w,IDirect3DDevice9* d){
@@ -377,7 +379,7 @@ struct WorldScreenEffectsTest {
         std::puts("WORLD_CLOUD_PRESSURE_PASS demandPressure=1 fullNoiseTexture=1");
     }
     static void ambientVariant(WorldRenderer& w){
-        assert(w.fogAmbientPS&&w.fogVolumeShader(true,true)==w.fogAmbientPS);
+        auto* ambient=w.fogVolumeShader(true,true);assert(ambient&&ambient==w.fogAmbientPS);
         assert(w.fogVolumeShader(false,false)==w.fogPS);
         // Optional variant refusal must retain the complete shader and avoid retries.
         drop(w.fogAmbientPS);w.fogAmbientRefused=true;
@@ -696,8 +698,8 @@ int main(int argc,char** argv){
             assert(delta==0&&control>.001f&&images[2]==images[3]);
         }
         for(unsigned medium=0;medium<3;++medium){
-            std::vector<unsigned char> images[3];
-            for(unsigned mode=0;mode<3;++mode){
+            std::vector<unsigned char> images[4];
+            for(unsigned mode=0;mode<4;++mode){
                 WorldRenderer fallback(d);WorldScreenEffectsTest::fogStreamingSetup(fallback,vb,ib,mode,medium);
                 assert(renderChecked(fallback,d,out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao));
                 assert(WorldScreenEffectsTest::sceneDrawn(fallback)==(mode!=1));
@@ -705,12 +707,16 @@ int main(int argc,char** argv){
                 WorldScreenEffectsTest::removeFakeScene(fallback);
             }
             float delta=0,control=0;for(size_t i=0;i<images[0].size();i+=2){
-                unsigned short a,b,c;std::memcpy(&a,&images[0][i],2);std::memcpy(&b,&images[1][i],2);std::memcpy(&c,&images[2][i],2);
+                unsigned short a,b,c;std::memcpy(&a,&images[0][i],2);std::memcpy(&b,&images[1][i],2);std::memcpy(&c,&images[3][i],2);
                 assert(std::isfinite(screenHalf(a))&&std::isfinite(screenHalf(b)));
                 delta=std::max(delta,std::abs(screenHalf(a)-screenHalf(b)));control=std::max(control,std::abs(screenHalf(a)-screenHalf(c)));
             }
-            std::printf("WORLD_FOG_STREAMING_PROVIDER medium=%u maxDifference=%g ownedShadowControl=%g msaa=%u\n",medium,delta,control,msaa);
+            std::printf("WORLD_FOG_STREAMING_PROVIDER medium=%u maxDifference=%g sourceOffControl=%g msaa=%u\n",medium,delta,control,msaa);
             assert(delta==0&&control>.00001f);
+            // Owned maps may occlude radiance. Neither visibility nor source
+            // strength may change where fog exists or its optical thickness.
+            for(unsigned mode=1;mode<4;++mode)for(size_t pixel=0;pixel<images[0].size()/8;++pixel)
+                assert(!std::memcmp(images[0].data()+pixel*8+6,images[mode].data()+pixel*8+6,2));
         }
         auto* screenFog=WorldScreenEffectsTest::screenFog(*world);WorldScreenEffectsTest::fakeScene(*world,vb,ib);meter.failSceneAt=3;
         meter.fogWeight=-1;
@@ -779,11 +785,15 @@ int main(int argc,char** argv){
             assert(renderChecked(*world,d,out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao));
             ambientOnly[direct]=WorldScreenEffectsTest::fogImage(*world);
         }
-        assert(ambientOnly[0]==ambientOnly[1]); // missing shadow geometry disables direct shafts, never ambient extinction
+        // Missing shadow maps keep neutral visibility; they cannot extinguish
+        // the source or move/remove the medium itself.
+        assert(ambientOnly[0]!=ambientOnly[1]);
+        for(size_t pixel=0;pixel<ambientOnly[0].size()/8;++pixel)
+            assert(!std::memcmp(ambientOnly[0].data()+pixel*8+6,ambientOnly[1].data()+pixel*8+6,2));
         float maximumScatter=0,minimumTransmission=1;
         for(size_t pixel=0;pixel<ambientOnly[0].size()/8;++pixel)for(unsigned channel=0;channel<4;++channel){unsigned short bits;std::memcpy(&bits,ambientOnly[0].data()+pixel*8+channel*2,2);const float value=screenHalf(bits);assert(std::isfinite(value)&&value>=0);if(channel<3)maximumScatter=std::max(maximumScatter,value);else minimumTransmission=std::min(minimumTransmission,value);}
         assert(maximumScatter>.00001f&&minimumTransmission<.999f);
-        std::printf("WORLD_AMBIENT_FOG_PASS noBvh=1 independentUpload=1 resetRestored=1 sunZero=1 moonZero=1 scatter=%g transmission=%g unshadowedDirectDisabled=1 msaa=%u\n",maximumScatter,minimumTransmission,msaa);
+        std::printf("WORLD_AMBIENT_FOG_PASS noBvh=1 independentUpload=1 resetRestored=1 sunZero=1 moonZero=1 scatter=%g transmission=%g unshadowedDirectRetained=1 extinctionIndependent=1 msaa=%u\n",maximumScatter,minimumTransmission,msaa);
         WorldScreenEffectsTest::diagnosticFrames(*world,W,H);
         WorldScreenEffectsTest::emptyDebugViews(*world,out,resolved,readback,depth,W,H);
         {

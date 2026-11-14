@@ -270,15 +270,16 @@
  214:       add r0.xyw, -r3.xyzz, r0
  215:       mul r0.xyw, r0, c16.w
  216:       add r0.xyw, r0, r3.xyzz
- 217:       mul r2.xyz, r0.z, r4
+ 217:       mul r3.xyz, r0.z, r4
  218:       mul r1.xyz, r1.xyww, c27.y
  219:       add r0.xyz, r0.xyww, -r1
  220:       mov r0.w, c7.w
  221:       add r0.w, r0.w, c24.z
  222:       cmp oC0.xyz, -r0_abs.w, c9.y, r0
- 223:     endif
- 224:     mov oC2.xyz, r2
- 225:     mov oC2.w, c9.y
+ 223:       mul r2.xyz, r3, c17.w
+ 224:     endif
+ 225:     mov oC2.xyz, r2
+ 226:     mov oC2.w, c9.y
 
-// approximately 234 instruction slots used (8 texture, 226 arithmetic)
+// approximately 235 instruction slots used (8 texture, 227 arithmetic)
  
