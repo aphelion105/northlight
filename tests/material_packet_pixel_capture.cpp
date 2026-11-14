@@ -39,7 +39,7 @@ struct ModelNormalPacketTestAccess {
             NorthlightModelNormals::Pixel pixel;pixel.shader=&d.ps;pixel.reads.exact=true;pixel.control=20;pixel.first=20-prefix;pixel.count=1+prefix+suffix;
             float vertices[12]={0,0,0,0,1,0,0,0,0,1,0,0},values[4];controls(values,4);
             const NorthlightDrawSnapshot::Draw geometry{D3DPT_TRIANGLELIST,0,0,3,0,1,false};auto admit=[](){return true;};
-            const bool complete=!prefix&&!suffix;const bool recorded=b.record(&vertex,&pixel,values,d.state.viewport,admit,&geometry,nullptr,D3DFMT_UNKNOWN,vertices,16,nullptr,nullptr,nullptr);
+            const bool complete=!prefix&&!suffix;const bool recorded=b.record(&vertex,&pixel,values,d.state.viewport,admit,&geometry,nullptr,D3DFMT_UNKNOWN,vertices,16,nullptr,nullptr,nullptr,nullptr,nullptr);
             assert(recorded==(complete||!fail)&&d.pixelReads==unsigned(!complete)&&b.packetPixelReadsSkipped==unsigned(complete));
             if(recorded)exactPacket(b.pending.back()->ps,d,pixel.first,20,values,1);
             assert(d.state.pf==before);b.endFrame();assert(!b.packetPixelReadsSkipped);

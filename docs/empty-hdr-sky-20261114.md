@@ -20,8 +20,9 @@ about 0.014 ms here; it is not the largest GPU cost in this run.
 
 With AutoBump restored, CPU capture is around 1.6..2 ms. Late material-profile
 medians include snapshots 0.254 ms, bounds/pose 0.208 ms, deferred flush 0.190 ms
-and capture setup 0.132 ms. Pose-envelope time is nested in bounds/pose and must
-not be added again. Existing snapshot handoff is active (139 reuses per sample),
+and capture setup 0.132 ms. The stage totals are exclusive; only inclusive
+bounds/pose time contains the nested pose-envelope work. Existing snapshot
+handoff is active (139 reuses per sample),
 as are prepared pose metadata and coarse admission. No earlier material
 optimization was removed. The current change leaves their quality/work intact.
 

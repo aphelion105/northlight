@@ -282,6 +282,7 @@ test_material_equal_depth_gpu.py
 test_material_followup_cpu.py
 test_material_frame_rotation_gpu.py
 test_material_geometry.py
+test_material_grass_batch_gpu.py
 test_material_index_decode_wave2.py
 test_material_normal_capabilities_gpu.py
 test_material_normal_native_gpu.py
@@ -302,6 +303,7 @@ test_material_raster_batch.py
 test_material_ray_work.py
 test_material_replay_content.py
 test_material_replay_state.py
+test_material_rigid_range_cpu.py
 test_material_terrain_bounds.py
 test_material_texel_sharing.py
 test_material_texture_lookup.py

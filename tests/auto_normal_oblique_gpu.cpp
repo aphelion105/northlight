@@ -20,6 +20,9 @@ static void logf(const char* f,...){va_list a;va_start(a,f);std::vprintf(f,a);st
 // Match the renderer's strong memcmp implementation in submission benchmarks.
 extern "C" __attribute__((no_builtin("memcmp"),no_builtin("bcmp"))) int memcmp(const void* a,const void* b,size_t n){return NorthlightMem::compare(a,b,n);}
 struct MaterialDepthMeter:ForwardIDirect3DDevice9 {
+    uint64_t targetBinds=0,depthBinds=0;
+    HRESULT STDMETHODCALLTYPE SetRenderTarget(DWORD slot,IDirect3DSurface9* target)override{++targetBinds;return real->SetRenderTarget(slot,target);}
+    HRESULT STDMETHODCALLTYPE SetDepthStencilSurface(IDirect3DSurface9* depth)override{++depthBinds;return real->SetDepthStencilSurface(depth);}
     uint64_t vertexRegistersRead=0,vertexRegistersWritten=0;
     uint64_t vertexIntegerReads=0,vertexBooleanReads=0,vertexIntegerWrites=0,vertexBooleanWrites=0;
     HRESULT STDMETHODCALLTYPE GetVertexShaderConstantF(UINT first,float* values,UINT count)override{vertexRegistersRead+=count;return real->GetVertexShaderConstantF(first,values,count);}
@@ -805,10 +808,12 @@ int NORTHLIGHT_OBLIQUE_ENTRY(int argc,char** argv){
             captureDevice.failResident=std::getenv("NORTHLIGHT_TEST_DEFERRED_CACHE_FAILURE")!=nullptr;
             for(unsigned i=0;i<4;++i)render();
             ok(disjoint->Issue(D3DISSUE_BEGIN));ok(frequency->Issue(D3DISSUE_END));ok(start->Issue(D3DISSUE_END));LARGE_INTEGER cpuStart,cpuEnd,cpuHz;QueryPerformanceFrequency(&cpuHz);QueryPerformanceCounter(&cpuStart);
+            const auto targetStart=captureDevice.targetBinds,depthStart=captureDevice.depthBinds;
             const unsigned repeats=batchTiming?8:32;for(unsigned i=0;i<repeats;++i)render();QueryPerformanceCounter(&cpuEnd);
             ok(finish->Issue(D3DISSUE_END));ok(disjoint->Issue(D3DISSUE_END));ok(d->EndScene());
             const auto wait=[](IDirect3DQuery9* q,void* result,DWORD size){const auto began=GetTickCount();HRESULT hr;while((hr=q->GetData(result,size,D3DGETDATA_FLUSH))==S_FALSE){assert(GetTickCount()-began<10000);Sleep(1);}ok(hr);};
             UINT64 hz=0,a=0,b=0;BOOL invalid=TRUE;wait(finish,&b,sizeof b);wait(start,&a,sizeof a);wait(frequency,&hz,sizeof hz);wait(disjoint,&invalid,sizeof invalid);assert(!invalid&&hz&&b>=a);
+            std::printf("MATERIAL_BATCH_SWITCHES targets=%llu depths=%llu repeats=%u\n",(unsigned long long)(captureDevice.targetBinds-targetStart),(unsigned long long)(captureDevice.depthBinds-depthStart),repeats);
             std::printf("%s width=%u height=%u msaa=%u gpuMs=%.6f submitMs=%.6f repeats=%u draws=%u batched=%u\n",batchTiming?"MATERIAL_BATCH_TIMING":"SHARED_POM_TIMING",W,H,unsigned(samples),double(b-a)*1000/double(hz)/repeats,double(cpuEnd.QuadPart-cpuStart.QuadPart)*1000/double(cpuHz.QuadPart)/repeats,repeats,draws,unsigned(batched));
             if(identicalRewrite)std::printf("MATERIAL_IDENTICAL_REWRITE frames=%u draws=%u resident=%llu up=%llu readBytes=%llu verifiedHits=%llu changed=%u\n",4+repeats,draws,rewriteResident,rewriteUP,rewriteReads,rewriteHits,unsigned(std::getenv("NORTHLIGHT_TEST_REWRITE_CHANGED")!=nullptr));
             if(batchTiming&&deferredEnabled){std::printf("MATERIAL_DEFERRED_BENCH queued=%u flushed=%u mutation=%u barrier=%u\n",MaterialCaptureStateTestAccess::queued(bump),MaterialCaptureStateTestAccess::flushed(bump),unsigned(deferredMutation),unsigned(barrier));assert(((drawRewrite||depthCase==7)?MaterialCaptureStateTestAccess::queued(bump)<=draws:MaterialCaptureStateTestAccess::queued(bump)==(multiStream||(!samples&&(!singleDepthCapable||!model||!indexed||std::getenv("NORTHLIGHT_TEST_MATERIAL_ALPHA_TEST")||std::getenv("NORTHLIGHT_TEST_SINGLE_SEED_FAILURE")))?0:draws-(barrier?draws/8:0)))&&MaterialCaptureStateTestAccess::flushed(bump)==MaterialCaptureStateTestAccess::queued(bump));

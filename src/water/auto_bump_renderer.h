@@ -806,7 +806,7 @@ public:
         auto normal=normals.acquire(diffuse,domain==4);drop(diffuse);if(!normal)return;
         NorthlightAutoNormalCache::Lease normal1;
         if(material==6&&domain!=4){IDirect3DBaseTexture9* second=nullptr;if(FAILED(d->GetTexture(1,&second)))return;normal1=normals.acquire(second);drop(second);if(!normal1)return;}
-        const bool independent=(domain==4&&model&&model->deferredSafe&&(!model->samplers||textureWriteGuarded))||(domain==1&&material==1)||(domain==2&&material==5)||opaqueWall;
+        const bool independent=(domain==4&&model&&model->deferredSafe&&(!model->samplers||textureWriteGuarded))||(domain==1&&material==1)||(domain==2&&material==5)||opaqueWall||(domain==3&&textureWriteGuarded);
         bool singleSample=false;
         const bool deferredSafe=deferredAllowed&&!sharing&&!displacement.prepared()&&geometry&&independent&&v->second.deferredSafe;
         // Packaged DXVK preserves native depth across DS switches, including
@@ -872,6 +872,9 @@ public:
         if(canDefer){
             const bool auxiliary=needsOcclusion&&occlusionTarget;
             NativeCapture world;world.shader=captureShader;world.constant=world.first=20;world.last=20+saved.constantCount-1;
+            // Grass coverage reads diffuse alpha. Retain its texture/sampler and
+            // flush before a texture write, just like native model cutouts.
+            if(domain==3){world.samplers=1;world.pixelFloatOnly=true;}
             const auto limits=batchLimit;
             if(recordCapture(*geometry,normal,auxiliary,saved,model?*model:world,v->second,bank,addressU,addressV,singleSample,&geometrySource)){drawn=true;return;}++deferredFallback;
             if(batchLimit!=limits&&!deferred.empty()){
