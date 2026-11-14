@@ -62,7 +62,14 @@ int main(){unsigned cases=0;
   assert(bool(r.fogActorTiledPS)==tiled);assert(bool(r.fogCloudsActorTiledPS)==tiled&&bool(r.actorTilesWidePS)==tiled);
   const unsigned attempts=settings!=3?0:(fail&&fail<=3)?fail:eligible?(fail?fail:6):3;
   assert(r.device.attempts==attempts);assert(live==(base?3:0)+(tiled?3:0));
-  if(base){r.create();assert(r.device.attempts==attempts&&live==3+(tiled?3:0));}
+  if(base){
+   // A one-shot allocation failure leaves the optional trio empty; a later
+   // resource request retries it. Successful resources are reused unchanged.
+   r.create();const unsigned retried=attempts+(eligible&&!tiled?3:0);
+   assert(r.device.attempts==retried&&live==3+(eligible?3:0));
+   assert(bool(r.fogActorTiledPS)==eligible&&bool(r.fogCloudsActorTiledPS)==eligible&&bool(r.actorTilesWidePS)==eligible);
+   r.create();assert(r.device.attempts==retried&&live==3+(eligible?3:0));
+  }
   r.clear();assert(!live);++cases;
  }
  for(unsigned flags=0;flags<64;++flags)for(int source=0;source<2;++source){

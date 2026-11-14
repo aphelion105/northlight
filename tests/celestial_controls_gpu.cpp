@@ -10,9 +10,9 @@ struct ControlMeter:ForwardIDirect3DDevice9 {
     std::map<std::string,unsigned> draws;
     HRESULT STDMETHODCALLTYPE CreatePixelShader(const DWORD* code,IDirect3DPixelShader9** out)override{
         const auto hr=real->CreatePixelShader(code,out);if(SUCCEEDED(hr)){
-            const DWORD* codes[]={kWorldAOCompositeHdrShader,kWorldBaseCompositeHdrShader,kWorldFogShader,kWorldFogAmbientShader,kVolumeInjectShader,kVolumeInjectQuietShader,kVolumeInjectAmbientShader,kVolumeInjectAmbientQuietShader};
-            const char* labels[]={"ao-base","base","fog-direct","fog-ambient","volume-direct","volume-direct","volume-ambient","volume-ambient"};
-            for(unsigned i=0;i<8;++i)if(code==codes[i])names[*out]=labels[i];
+            const DWORD* codes[]={kWorldAOCompositeHdrShader,kWorldBaseCompositeHdrShader,kWorldFogShader,kWorldFogAmbientShader,kVolumeInjectShader,kVolumeInjectQuietShader,kVolumeInjectAmbientShader,kVolumeInjectAmbientQuietShader,kFogCloudsShader,kFogCloudsAmbientShader};
+            const char* labels[]={"ao-base","base","fog-direct","fog-ambient","volume-direct","volume-direct","volume-ambient","volume-ambient","cloud-direct","cloud-ambient"};
+            for(unsigned i=0;i<10;++i)if(code==codes[i])names[*out]=labels[i];
         }return hr;
     }
     HRESULT STDMETHODCALLTYPE SetPixelShader(IDirect3DPixelShader9* p)override{bound=p;return real->SetPixelShader(p);}
@@ -46,7 +46,8 @@ struct PipelineOffTest {
     static void fog(WorldRenderer& w,unsigned type,bool rays){
         w.effects={false,false,true};w.quality.godrays=rays;w.quality.fogClouds=0;
         w.sourceWeights[0]=w.sourceWeights[1]=.5f;w.sourceColors[1]=w.sourceGlowColors[1]={.3f,.4f,.5f};
-        if(type){
+        if(type==4){w.quality.fogClouds=1;w.quality.fogCloudDensity=100;WorldScreenEffectsTest::cloudPressure(w);}
+        else if(type){
             WorldScreenEffectsTest::volumeFixture(w,type==3?18:0);w.quality.godrays=rays;
             w.sourceWeights[0]=w.sourceWeights[1]=.5f;w.sourceColors[1]=w.sourceGlowColors[1]={.3f,.4f,.5f};
             auto& layer=w.skyEnvironment.layer[0];layer.flag[0]=1;layer.p[2]=1;layer.p[9]=12;layer.p[10]=.6f;
@@ -94,17 +95,18 @@ int main(int argc,char** argv){
         }
     }
     std::printf("AO_BASE_PARITY_PASS cases=4 msaa=%u differing=%u maxError=%g\n",msaa,differing,peak);
-    for(unsigned type=0;type<4;++type){std::vector<unsigned char> reference;
+    for(unsigned type=0;type<5;++type){std::vector<unsigned char> reference;
         for(unsigned rays=0;rays<2;++rays){ControlMeter meter(d);auto w=std::make_unique<WorldRenderer>(&meter);PipelineOffTest::setup(*w,W,H,false,0);PipelineOffTest::fog(*w,type,rays);
             assert(renderChecked(*w,d,out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao,0,scene));
             auto result=WorldScreenEffectsTest::fogImage(*w,false,true);
             if(!rays)reference=result;else{assert(reference.size()==result.size());float lightDelta=0;
                 for(size_t i=0;i<result.size();i+=2){unsigned short a,b;std::memcpy(&a,reference.data()+i,2);std::memcpy(&b,result.data()+i,2);assert(std::isfinite(screenHalf(a))&&std::isfinite(screenHalf(b)));
                     if(i%8==6)assert(a==b);else lightDelta=std::max(lightDelta,screenHalf(b)-screenHalf(a));}std::printf("FOG_DELTA type=%u delta=%g bytes=%zu\n",type,lightDelta,result.size());assert(lightDelta>.0001f);}
-            if(!rays){assert(meter.draws["fog-direct"]==0&&meter.draws["volume-direct"]==0);if(type>=2)assert(meter.draws["volume-ambient"]==(type==3?2u:1u));}
+            if(!rays){assert(meter.draws["fog-direct"]==0&&meter.draws["volume-direct"]==0&&meter.draws["cloud-direct"]==0);if(type==2||type==3)assert(meter.draws["volume-ambient"]==(type==3?2u:1u));}
+            if(type==4)assert(meter.draws[rays?"cloud-direct":"cloud-ambient"]==1);
             PipelineOffTest::liveToggle(*w);
         }
     }
-    std::printf("GODRAYS_PASS mediumAlpha=exact regional=1 importedFallback=1 atlas=1 noise=1 disabledDirectionalDraws=0 liveHistoryReset=1 msaa=%u\n",msaa);
+    std::printf("GODRAYS_PASS mediumAlpha=exact regional=1 importedFallback=1 atlas=1 noise=1 clouds=1 disabledDirectionalDraws=0 liveHistoryReset=1 msaa=%u\n",msaa);
     scene->Release();ao->Release();depth->Release();out->Release();if(resolved)resolved->Release();readback->Release();d->Release();api->Release();FreeLibrary(module);DestroyWindow(window);UnregisterClassW(wc.lpszClassName,wc.hInstance);
 }

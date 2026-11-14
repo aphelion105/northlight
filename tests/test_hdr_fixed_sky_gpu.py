@@ -24,7 +24,7 @@ assert renderer.count('bool nativeSky=false,skyCaptured=false;') == 4
 assert renderer.count('return submitGameDraw(count,nativeSky,&skyCaptured,') == 4
 assert renderer.count('},false,nativeSky,skyCaptured);') == 1
 assert renderer.count('},draw,&nativeSky,&skyCaptured);}') == 4
-assert renderer.count('claimed||mist||(skyCaptured&&*skyCaptured)') == 2
+assert renderer.count('claimed||mist||(skyCaptured&&*skyCaptured)') == 1  # Shared prepareDrawImpl for all four adapters.
 assert 'if(nativeSky)*nativeSky=linearSky;' in renderer
 assert 'sky&&skyCaptured&&hdr.logical.MultiSampleType==D3DMULTISAMPLE_NONE' in renderer
 out = args.output.resolve()

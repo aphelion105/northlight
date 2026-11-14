@@ -80,7 +80,8 @@ struct Fixture{
     Discs* celestialDiscs=&discs;
     unsigned begins=0,effects=0,hdrFailuresLogged=0,hdrDeferredLogs=0,hdrDeferredFrame=~0u;
     bool gateFrame=false;
-    bool hdrSkyValid=false,hdrSkyRejected=false,backbuffer=true,failSky=false;unsigned skyCaptures=0;
+    bool hdrSkyValid=false,hdrSkyRejected=false,backbuffer=true,failSky=false,celestialOn=true;unsigned skyCaptures=0;
+    bool celestialEnabled()const{return celestialOn;}
     float worldMinDepth=0,worldMaxDepth=.94f;
     LONGLONG cpuHdrAdmission=0,cpuHdrBoundary=0,cpuHdrTransfer=0;
     unsigned hdrAdmissionCalls=0,hdrTransferCalls=0;
@@ -211,13 +212,13 @@ int main(){
         assert(f.hdrSkyAdmission()&&f.hdrSkyValid&&f.skyCaptures==1);
         assert(f.hdrSkyAdmission()&&f.skyCaptures==1);
         f.backbuffer=false;assert(!f.hdrSkyAdmission()&&f.skyCaptures==1);}
-    for(unsigned reject=0;reject<7;++reject){
+    for(unsigned reject=0;reject<8;++reject){
         Fixture f;f.backend.viewport.MinZ=.9990234375f;
         switch(reject){case 0:f.hdr.active=false;break;case 1:f.hdrUiPhase=true;break;
             case 2:f.backbuffer=false;break;case 3:f.backend.failViewport=true;break;
             case 4:f.backend.viewport.MinZ=0;f.backend.viewport.MaxZ=.94f;break;
             case 5:f.backend.viewport.MinZ=.998046875f;f.backend.viewport.MaxZ=.9990234375f;break;
-            case 6:f.backend.viewport.MinZ=0;break;}
+            case 6:f.backend.viewport.MinZ=0;break;case 7:f.celestialOn=false;break;}
         assert(!f.hdrSkyAdmission()&&!f.hdrSkyValid&&f.skyCaptures==0);
     }
     {Fixture f;f.backend.viewport.MinZ=.9990234375f;f.failSky=true;

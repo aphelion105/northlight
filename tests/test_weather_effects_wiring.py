@@ -32,7 +32,7 @@ checks['cpp: GridInfo.z follows shadow strength, independent of weather']=re.fin
 # identity at zero weather
 checks['cpp: every coupling is a gain (x1) or an addend (+0) from the one derived Frame']=all(s in w for s in (
     'const auto wx=weatherEffects();','c[58][2]=.25f*lampGain*wx.lampFogGain();','c[58][3]=.12f*lampGain*wx.lampFogGain();','c[18][3]+=wx.ambientLift();',
-    'c[21][1]=1.2f*wx.shaftGain();','c[21][1]=1.2f*volumePalette.fogGain[source]*wx.shaftGain();','hazeLift,wx.hazeTauScale());','const float airFloor=.0017f*airDensity+wx.airExtinction()*denseDamp;'))
+    'c[21][1]=1.2f*wx.shaftGain();','c[21][1]=quality.godrays?1.2f*volumePalette.fogGain[source]*wx.shaftGain():0.f;','hazeLift,wx.hazeTauScale());','const float airFloor=.0017f*airDensity+wx.airExtinction()*denseDamp;'))
 checks['cpp: no other 1.2f volume gain site']=w.count('c[21][1]=')==2
 checks['haze: tauScale defaults to 1 and multiplies the optical depth only']=('float tauScale=1.f)' in hz and '*.01f*scale*(std::isfinite(tauScale)&&tauScale>0?tauScale:1.f);' in hz)
 checks['hlsl: WorldFog takes the air floor from c59.w (the old literal .0017 moved into the constant)']=('airBase=WeatherInfo.w+airBase*saturate(mad(field.w,1.6,-1));' in h and '.0017+airBase' not in h)

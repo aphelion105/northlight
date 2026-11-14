@@ -63,18 +63,18 @@ checks['host: history weight 0 unless fogHistoryValid&&useHistory; weight consta
 checks['host: reads raw fog s9 + fogHistory s14 + previous depth temporalDepth[temporalIndex] s15, writes fogBlurred; s14/s15 put back']=(
     'SetRenderTarget(0,fogBlurredSurface)' in pas and 'SetTexture(9,fog)' in pas and 'SetTexture(14,fogHistory)' in pas and 'SetTexture(15,temporalDepth[temporalIndex])' in pas
     and 'SetTexture(14,nullptr)' in pas and 'SetTexture(15,nullptr)' in pas and 'D3DSAMP_MINFILTER,D3DTEXF_POINT' in pas)
-# task 43: worst case = the world's literal marks + its 8 per-source names (Sun/Moon Near, Far, NearReplays, Actor) + the 8 renderer.cpp marks of one frame (task 45: PreCelestial)
+# Worst case: world literal marks, 8 per-source names and 10 proxy marks including HDR base/sky.
 maxMarks=int(re.search(r'MaxMarks=(\d+)',fp.src('gpu_profile.h').read_text())[1])
 checks['host: FogTemporal profile mark after the pass (worst case <= MaxMarks)']=(pas.index('quad(w/2,h/2),"fog temporal pass"')<pas.index('profile->mark("FogTemporal")') and
-    len(set(re.findall(r'profile->mark\("(\w+)"\)',w)))+8+8<=maxMarks)
+    len(set(re.findall(r'profile->mark\("(\w+)"\)',w)))+8+10<=maxMarks)
 bl=g[g.index('// Separable depth-aware blur'):g.index('// Local radiance has no receiver depth.')]
 checks['host: blur unchanged when the pass did not run (fog -> fogBlurred -> fog), resolved: fogHistory -> fog -> fogBlurred']=(
     'SetRenderTarget(0,fogResolved?fogSurface:fogBlurredSurface);d->SetTexture(9,fogResolved?fogHistory:fog)' in bl
     and 'SetRenderTarget(0,fogResolved?fogBlurredSurface:fogSurface);d->SetTexture(9,fogResolved?fog:fogBlurred)' in bl)
-checks['host: FogBlur closes both quads inside the active-fog guard, before c34/composite; worst case fits 44 marks']=(
+checks['host: FogBlur closes both quads inside the active-fog guard, before c34/composite; worst case fits 48 marks']=(
     bl.count('profile->mark("FogBlur")')==1 and bl.count('quad(w/2,h/2)')==2
     and bl.index('if(fogActive){')<bl.index('"volume blur vertical"')<bl.index('profile->mark("FogBlur")')<bl.rindex('}')
-    and maxMarks==44 and len(set(re.findall(r'profile->mark\("(\w+)"\)',w)))+8+8<=maxMarks)
+    and maxMarks==48 and len(set(re.findall(r'profile->mark\("(\w+)"\)',w)))+10+8<=maxMarks)
 products=w[w.index('void captureProducts('):w.index('bool captureSkippedDiagnostic(')]
 checks['host: composite and current-frame diagnostic product read the final buffer']=(
     'SetTexture(9,fogResolved?fogBlurred:fog?fog:neutralAO);d->SetPixelShader(aoBaseComposite?hdrAOBasePS:baseComposite?hdrBasePS:hdrMode?hdrFinalPS:finalPS)' in g
