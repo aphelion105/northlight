@@ -196,6 +196,7 @@ test_hdr_bloom_wide_gpu.py
 test_hdr_boundary.py
 test_hdr_color_lifetime.py
 test_hdr_diffuse_gpu.py
+test_hdr_empty_sky_gpu.py
 test_hdr_fixed_sky_admission.py
 test_hdr_fixed_sky_gpu.py
 test_hdr_layer_sparse_gpu.py

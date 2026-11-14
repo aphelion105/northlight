@@ -26,7 +26,7 @@ assert renderer.count('},false,nativeSky,skyCaptured);') == 1
 assert renderer.count('},draw,&nativeSky,&skyCaptured);}') == 4
 assert renderer.count('claimed||mist||(skyCaptured&&*skyCaptured)') == 1  # Shared prepareDrawImpl for all four adapters.
 assert 'if(nativeSky)*nativeSky=linearSky;' in renderer
-assert 'sky&&skyCaptured&&hdr.logical.MultiSampleType==D3DMULTISAMPLE_NONE' in renderer
+assert 'sky&&skyCaptured&&hdrSkyHasEmission()&&hdr.logical.MultiSampleType==D3DMULTISAMPLE_NONE' in renderer
 out = args.output.resolve()
 out.mkdir(parents=True, exist_ok=True)
 binary = out/'hdr-fixed-sky.exe'

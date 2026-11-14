@@ -22,6 +22,7 @@ class NorthlightCelestialDiscRenderer {
     static constexpr float SunGlareSupport=NorthlightCelestialGlow::SunGlareSupport,MoonGlareSupport=NorthlightCelestialGlow::MoonGlareSupport;
     IDirect3DDevice9* d;std::string root;NorthlightCelestialDisc::NativeObserver observer;
     IDirect3DSurface9* hdrSkyTarget=nullptr; // borrowed for this frame
+    bool hdrSkyWritten=false;
     std::function<IDirect3DSurface9*()> beginHdrSky;
     IDirect3DTexture9* texture[2]={};unsigned textureWidth[2]={};IDirect3DPixelShader9* ps=nullptr,*skyBackgroundPS=nullptr;
     IDirect3DTexture9* terrainMask[2]={};IDirect3DSurface9* terrainSurface[2]={};
@@ -242,7 +243,8 @@ public:
     }
     void setTerrainSource(std::function<uint64_t()> epoch,std::function<bool(unsigned,const float*)> draw,std::function<void(unsigned)> reuse=nullptr){terrainEpoch=std::move(epoch);terrainDraw=std::move(draw);terrainReuse=std::move(reuse);}
     explicit NorthlightCelestialDiscRenderer(IDirect3DDevice9* device,std::string sourceRoot="world-cache/celestial"):d(device),root(std::move(sourceRoot)){}
-    void setHdrSkyTarget(IDirect3DSurface9* target){hdrSkyTarget=target;}
+    void setHdrSkyTarget(IDirect3DSurface9* target){hdrSkyTarget=target;hdrSkyWritten=false;}
+    bool hasHdrSkyEmission()const{return hdrSkyTarget&&hdrSkyWritten;}
     void setSkyLayers(IDirect3DTexture9* layers){skyLayers=layers;}
     void setHdrSkyCapture(std::function<IDirect3DSurface9*()> begin){beginHdrSky=std::move(begin);}
     ~NorthlightCelestialDiscRenderer(){reset();}
@@ -326,7 +328,7 @@ public:
             if(!hdrSkyTarget&&beginHdrSky)hdrSkyTarget=beginHdrSky();
             if(surfaceVisible&&!drawDisc(i,target,desc.Width,desc.Height,earlyProjection,camera.inverseView,disc,bounds,nullptr,nullptr,0,earlyWorldMaxDepth,1,2,nullptr,false,bodies[i]->emission))return (drawnEarly&(1u<<body))!=0;
             if(surfaceVisible){drawnEarly|=1u<<i;if(skyboxTrigger)drawnSkyboxEarly|=1u<<i;++claimDrawn;}
-            if(surfaceVisible&&hdrSkyTarget)drawDisc(i,hdrSkyTarget,desc.Width,desc.Height,earlyProjection,camera.inverseView,disc,bounds,nullptr,nullptr,0,earlyWorldMaxDepth,1,2,nullptr,false,bodies[i]->emission);
+            if(surfaceVisible&&hdrSkyTarget){hdrSkyWritten=true;drawDisc(i,hdrSkyTarget,desc.Width,desc.Height,earlyProjection,camera.inverseView,disc,bounds,nullptr,nullptr,0,earlyWorldMaxDepth,1,2,nullptr,false,bodies[i]->emission);}
             // The lunar surface and its full halo share cloud/weather blending.
             // Solar keeps only its compact core here; its broad tail stays late.
             if(glareVisible){if(!drawDisc(i,target,desc.Width,desc.Height,earlyProjection,camera.inverseView,disc,glareBounds,nullptr,nullptr,0,earlyWorldMaxDepth,1,2,nullptr,false,bodies[i]->emission,true))return (drawnEarly&(1u<<body))!=0;

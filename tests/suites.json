@@ -90,7 +90,8 @@
       "test_celestial_composition_gpu.py",
       "test_fog_volume_gpu.py",
       "test_probe_local_visibility_gpu.py",
-      "test_celestial_controls_gpu.py"
+      "test_celestial_controls_gpu.py",
+      "test_hdr_empty_sky_gpu.py"
     ]
   },
   "shadow-experiments": {

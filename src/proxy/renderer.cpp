@@ -413,7 +413,8 @@ class Device final : public GuardedMirrorDevice {
     NorthlightHdr::OutputMonitor hdrMonitor;NorthlightHdr::OutputChain hdrOutput;
     NorthlightHdr::Frame hdrFrame;NorthlightHdr::Settings hdrFrameSettings;
     bool hdrAtUiBoundary=false,hdrLegacyPrepared=false,hdrSceneReady=false,hdrWorldSeen=false,hdrPresentFallback=false,hdrLegacySynced=false;
-    bool hdrSkyValid=false,hdrSkyReplaying=false,hdrSkyRejected=false;
+    bool hdrSkyValid=false,hdrSkyReplaying=false,hdrSkyRejected=false,hdrSkyEmission=false;
+    unsigned hdrSkyZeroSkips=0;
     LONGLONG hdrTick=0;std::string hdrMap;float hdrCamera[3]{};bool hdrCameraValid=false;
     bool hdrRequestChanged=false;
     IDirect3DSurface9* hdrLegacyBack=nullptr;IDirect3DSurface9* hdrPresentBack=nullptr;
@@ -822,8 +823,9 @@ private:
             ~Restore(){native=nativeBefore;rain=rainBefore;}} restore{effectCoverageNative,hdrRainDraw,nativeBefore,rainBefore};
         return draw();
     }
+    bool hdrSkyHasEmission()const{return hdrSkyValid&&(hdrSkyEmission||(celestialDiscs&&celestialDiscs->hasHdrSkyEmission()));}
     bool hdrWorldAlphaDraw(bool replay){
-        if((!effectCoverageNative&&!replay)||!hdr.active||!hdrSkyValid||hdrUiPhase||hdrAtUiBoundary||
+        if((!effectCoverageNative&&!replay)||!hdr.active||!hdrSkyHasEmission()||hdrUiPhase||hdrAtUiBoundary||
            !enabled||failed||applied||debugMode||worldDebug)return false;
         const bool text=!replay&&drawUiHashVS;
         if((drawRenderState(D3DRS_ZWRITEENABLE)&&!text)||!(drawRenderState(D3DRS_COLORWRITEENABLE)&7))return false;
@@ -855,7 +857,7 @@ private:
     template<class Draw> HRESULT effectCoverageDraw(Draw submit,bool replay=false,bool sky=false,bool* skyCaptured=nullptr){
         bool foregroundCaptured=false;
         auto native=[&]()->HRESULT{
-            if(sky&&skyCaptured&&hdr.logical.MultiSampleType==D3DMULTISAMPLE_NONE&&hdrFixedSkyPossible()){
+            if(sky&&skyCaptured&&hdrSkyHasEmission()&&hdr.logical.MultiSampleType==D3DMULTISAMPLE_NONE&&hdrFixedSkyPossible()){
                 ExtensionDevice::RawScope raw(*ext);bool captured=false;
                 const HRESULT hr=hdrColor.fixedDraw(ext,80,submit,&stateBlocks,&hdrSkyForeground,hdrSkyTarget(),&captured);
                 if(captured){*skyCaptured=true;return hr;}
@@ -2612,7 +2614,7 @@ private:
             ext->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE);
             if(FAILED(ext->Clear(0,nullptr,D3DCLEAR_TARGET,0xff000000,1,0)))return false;
             hdrFrame.beginSkyResidual();
-            hdrSkyValid=true;if(celestialDiscs)celestialDiscs->setHdrSkyTarget(hdrSkyTarget());
+            hdrSkyEmission=false;hdrSkyValid=true;if(celestialDiscs)celestialDiscs->setHdrSkyTarget(hdrSkyTarget());
         }
         return true;
     }
@@ -2628,6 +2630,9 @@ private:
     }
     template<class Draw> void hdrReplaySky(bool sky,bool claimed,Draw draw){
         if(!sky||claimed)return;
+        // Ordinary layers only multiply existing headroom. Until an owned
+        // source writes it, replaying sky/rain/smoke would multiply zero.
+        if(!auroraDrawProven&&!hdrSkyHasEmission()){++hdrSkyZeroSkips;return;}
         ExtensionDevice::RawScope raw(*ext);
         // Color::draw restores its shaders/constants/raster state. Only the
         // sky target and write masks belong to this outer scope.
@@ -2657,7 +2662,7 @@ private:
            FAILED(ext->SetRenderState(D3DRS_ZWRITEENABLE,FALSE))||FAILED(ext->SetRenderState(D3DRS_STENCILWRITEMASK,0)))return;
         hdrSkyReplaying=true;
         HRESULT auroraResult=E_FAIL;
-        if(auroraDrawProven&&auroraRenderer.draw(ext,true,auroraDrawScale,draw,auroraResult,hdrFrameSettings.legacyExpansion,auroraDrawIntensity))++auroraHdrDraws;
+        if(auroraDrawProven&&auroraRenderer.draw(ext,true,auroraDrawScale,draw,auroraResult,hdrFrameSettings.legacyExpansion,auroraDrawIntensity)){hdrSkyEmission=true;++auroraHdrDraws;}
         else auroraResult=NorthlightHdr::attenuateSky(ext,draw);
         hdrSkyReplaying=false;
         if(FAILED(auroraResult)){hdrSkyValid=false;hdrSkyRejected=true;if(celestialDiscs)celestialDiscs->setHdrSkyTarget(nullptr);}
@@ -3893,7 +3898,7 @@ public:
         uiFallbackEndFrame();
         if(frame==1||(frame%600==0&&diagnostics()))logf("frame=%u applied=%u terrainShaders=%u uiShaders=%u projectionRejects=%u terrainThisFrame=%d depth=%d draws=%u missingVS=%u terrainDraws=%u terrainShadowDraws=%u viewportRejects=%u depthRejects=%u uiDraws=%u uiAfterTerrain=%u uiFallback=%u uiFallbackState=%c",frame,appliedFrames,matchedTerrain,matchedUI,projectionRejects,terrain,captured,drawCalls,missingVS,terrainDraws,terrainShadowDraws,viewportRejects,depthRejects,uiDraws,uiAfterTerrain,uiFallbackBoundaries,uiFallback.disarmed()?'d':uiFallback.armed()?'a':'l');
         if(hdr.active&&diagnostics()&&frame%600==0)logf("HDR state frame=%u uiPhase=%u effectsEnabled=%u patched=%u rejected=%u logicalCopiesAfterUI=%u",frame,unsigned(hdrUiPhase),unsigned(enabled),hdrColor.patched,hdrColor.rejected,hdrLogicalCopies);
-        if(hdr.active&&diagnostics()&&frame%600==0)logf("HDR_WORK frame=%u compatibilityLayers=%llu layerPixels=%llu screenDirect=%llu attenuationDirect=%llu multiTextureDirect=%llu fixedAdditiveDirect=%llu skyMrtAttempts=%llu skyMrtDraws=%llu foregroundDraws=%llu foregroundCachedRejects=%llu",frame,(unsigned long long)hdrColor.layers,(unsigned long long)hdrColor.layerPixels,(unsigned long long)hdrColor.screenDirect,(unsigned long long)hdrColor.attenuationDirect,(unsigned long long)hdrColor.multiTextureDirect,(unsigned long long)hdrColor.fixedAdditiveDirect,(unsigned long long)hdrColor.skyMrtAttempts,(unsigned long long)hdrColor.skyMrtDraws,(unsigned long long)hdrSkyForeground.draws,(unsigned long long)hdrSkyForeground.cachedRejections);
+        if(hdr.active&&diagnostics()&&frame%600==0)logf("HDR_WORK frame=%u compatibilityLayers=%llu layerPixels=%llu screenDirect=%llu attenuationDirect=%llu multiTextureDirect=%llu fixedAdditiveDirect=%llu skyMrtAttempts=%llu skyMrtDraws=%llu foregroundDraws=%llu foregroundCachedRejects=%llu emptySkySkips=%u skyEmission=%u",frame,(unsigned long long)hdrColor.layers,(unsigned long long)hdrColor.layerPixels,(unsigned long long)hdrColor.screenDirect,(unsigned long long)hdrColor.attenuationDirect,(unsigned long long)hdrColor.multiTextureDirect,(unsigned long long)hdrColor.fixedAdditiveDirect,(unsigned long long)hdrColor.skyMrtAttempts,(unsigned long long)hdrColor.skyMrtDraws,(unsigned long long)hdrSkyForeground.draws,(unsigned long long)hdrSkyForeground.cachedRejections,hdrSkyZeroSkips,unsigned(hdrSkyHasEmission()));
         // The address-space sweep is asynchronous; the render thread only compares
         // its result. Trims run below, after clearFrame(), at the frame boundary.
         bool memoryTrim=false;int memoryCaps=-1,memoryWorld=-1; /* -1 unchanged, 0 full, 1 half; memoryWorld follows any pressure episode, terrain follows only memoryCaps */

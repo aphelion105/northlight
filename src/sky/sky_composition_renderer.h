@@ -100,12 +100,16 @@ public:
     }
     template<class Draw> bool draw(IDirect3DDevice9* d,Role role,Draw submit,NorthlightStateBlockPool* pool=nullptr){
         if(!valid_||role==Role::Unknown)return false;
-        SavedState saved(d,pool);if(!saved.ok||saved.targets[0]!=target_)return false;
         DWORD blend=0,src=0,dst=0,op=0,writes=0;
         if(FAILED(d->GetRenderState(D3DRS_ALPHABLENDENABLE,&blend))||FAILED(d->GetRenderState(D3DRS_SRCBLEND,&src))||FAILED(d->GetRenderState(D3DRS_DESTBLEND,&dst))||FAILED(d->GetRenderState(D3DRS_BLENDOP,&op))||FAILED(d->GetRenderState(D3DRS_COLORWRITEENABLE,&writes)))return false;
-        if(!(writes&7))return true;
+        const auto sameTarget=[&]{IDirect3DSurface9* current=nullptr;const bool same=SUCCEEDED(d->GetRenderTarget(0,&current))&&current==target_;release(current);return same;};
+        if(!(writes&7))return sameTarget();
         if(!blend){src=D3DBLEND_ONE;dst=D3DBLEND_ZERO;op=D3DBLENDOP_ADD;}
         if(op!=D3DBLENDOP_ADD||(dst!=D3DBLEND_ZERO&&dst!=D3DBLEND_ONE&&dst!=D3DBLEND_INVSRCALPHA)||(src!=D3DBLEND_ONE&&src!=D3DBLEND_SRCALPHA))return false;
+        // Foreground colour already belongs to the native scene. Additive
+        // foreground changes neither captured background nor transmission.
+        if(role!=Role::Background&&dst==D3DBLEND_ONE)return sameTarget();
+        SavedState saved(d,pool);if(!saved.ok||saved.targets[0]!=target_)return false;
         if(!captureShader(d,src==D3DBLEND_ONE&&dst==D3DBLEND_ZERO&&role==Role::Background))return false;
         for(unsigned i=1;i<4;++i)d->SetRenderTarget(i,nullptr);
         if(FAILED(d->SetRenderTarget(0,msaa_?msaa_:surface_)))return false;

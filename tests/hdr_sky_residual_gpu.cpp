@@ -91,6 +91,7 @@ static void check(DeviceMeter& d,unsigned samples,bool inlineBase){
     }
     frame.reset();assert(!frame.surface());constant->Release();depth->Release();
 }
+#ifndef NORTHLIGHT_HDR_SKY_RESIDUAL_LIBRARY
 int main(int argc,char** argv){
     assert(argc==2||argc==4);HWND window=CreateWindowExW(0,L"STATIC",L"",WS_OVERLAPPED,0,0,64,64,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);assert(window);
     HMODULE library=LoadLibraryA(argv[1]);assert(library);auto create=reinterpret_cast<IDirect3D9*(WINAPI*)(UINT)>(reinterpret_cast<void*>(GetProcAddress(library,"Direct3DCreate9")));assert(create);auto* api=create(D3D_SDK_VERSION);
@@ -99,3 +100,4 @@ int main(int argc,char** argv){
     {DeviceMeter d(raw);for(unsigned samples:{0u,2u,4u})for(bool inlineBase:{false,true})check(d,samples,inlineBase);if(argc==4)replayCapture(d,argv[2],argv[3]);}
     raw->Release();api->Release();FreeLibrary(library);DestroyWindow(window);std::puts("HDR_SKY_RESIDUAL_GPU_PASS cases=18");
 }
+#endif
