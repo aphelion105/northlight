@@ -7,6 +7,77 @@
 #include "shadow_transition_compiled_shaders.h"
 #include "forever_atmosphere.h"
 
+// A regional field stores the TOP surface of a whole WMO column. A roof at
+// z=64 must not remove the authored global medium around a street at z=8.
+static void globalMediumOracle(IDirect3DDevice9* d){
+    const unsigned w=128,h=64,ow=w/2,oh=h/2;
+    NorthlightFogVolume volume;assert(volume.resources(d,w,h));
+    const DWORD* code[]={kForeverFogShader,kForeverFogNoNoiseShader,kForeverFogActorShader,kForeverFogActorNoNoiseShader,kForeverFogTransitionShader,kForeverFogNoNoiseTransitionShader,kForeverFogActorTransitionShader,kForeverFogActorNoNoiseTransitionShader};
+    IDirect3DPixelShader9* fallback[8]={};for(unsigned i=0;i<8;++i)ok(d->CreatePixelShader(code[i],&fallback[i]));
+    IDirect3DSurface9 *output=nullptr,*staging=nullptr;
+    ok(d->CreateRenderTarget(ow,oh,D3DFMT_A32B32G32R32F,D3DMULTISAMPLE_NONE,0,FALSE,&output,nullptr));
+    ok(d->CreateOffscreenPlainSurface(ow,oh,D3DFMT_A32B32G32R32F,D3DPOOL_SYSTEMMEM,&staging,nullptr));
+    auto scalar=[&](float v){Image im{1,1,D3DFMT_R32F,4,std::vector<unsigned char>(4)};std::memcpy(im.pixels.data(),&v,4);return texture(d,im);};
+    auto* depth=scalar(1000.f/999.5f*(1-.5f/100));IDirect3DTexture9* shadow[]={scalar(.6f),scalar(.4f)};
+    unsigned cases=0;float maximum=0;
+    for(unsigned variant=0;variant<8;++variant)for(unsigned mode=0;mode<2;++mode)for(unsigned profile=0;profile<3;++profile){
+        std::vector<float> baseline;
+        for(unsigned fieldCase=0;fieldCase<(profile==0?5u:2u);++fieldCase){
+            Image im{64,64,D3DFMT_A32B32G32R32F,16,std::vector<unsigned char>(64*64*16)};
+            for(unsigned y=0;y<64;++y)for(unsigned x=0;x<64;++x){
+                const float v[]={fieldCase==1||(fieldCase==2&&x>=32)?64.f:0.f,0,0,fieldCase==3?0.f:1.25f};
+                std::memcpy(im.pixels.data()+(y*64+x)*16,v,16);
+            }
+            auto* field=texture(d,im);std::vector<float> lit;
+            for(unsigned blocked=0;blocked<2;++blocked){
+                float c[157][4]{};c[0][0]=1.f/w;c[0][1]=1.f/h;c[0][2]=.5f;c[0][3]=1000;
+                c[1][0]=2;c[1][1]=100;c[1][2]=c[2][0]=1;c[2][2]=192;c[2][3]=1.f/1024;
+                c[3][0]=c[4][2]=c[5][1]=c[6][3]=1;c[6][2]=c[15][2]=8;
+                c[16][1]=blocked?-1.f:1.f;c[21][0]=c[27][0]=1;
+                c[31][0]=c[31][1]=fieldCase==4?10000.f:-256.f;c[31][2]=1.f/512;
+                c[33][0]=w;c[33][1]=h;c[33][2]=ow;c[33][3]=oh;
+                c[14][2]=c[71][2]=.5f;c[70][2]=.001f;c[72][0]=(variant&2)?1.f:0.f;
+                c[66][0]=c[66][1]=-1;c[66][2]=c[66][3]=1;
+                c[89][1]=.4f;c[94][0]=c[95][1]=c[96][2]=c[97][3]=1;c[101][0]=c[102][1]=c[103][2]=c[104][3]=1;
+                NorthlightForever::Frame frame;auto& layer=frame.layer[0];layer.flag[3]=layer.flag[0]=1;
+                layer.p[1]=1;layer.p[9]=2;layer.p[10]=.4f;
+                if(profile){layer.p[6]=2;layer.p[7]=10;layer.flag[1]=profile==2?1.f:0.f;}
+                for(unsigned k=0;k<3;++k){layer.color[0][k]=.8f;layer.color[1][k]=layer.color[3][k]=.3f;layer.color[2][k]=.2f;}
+                float bank[38][4];NorthlightForever::constants(frame,bank,100,1);
+                ok(d->SetPixelShaderConstantF(0,c[0],116));ok(d->SetPixelShaderConstantF(116,bank[0],38));volume.grid(d,100);
+                ok(d->SetTexture(1,depth));ok(d->SetTexture(3,shadow[blocked]));ok(d->SetTexture(4,shadow[0]));
+                ok(d->SetTexture(7,shadow[blocked]));ok(d->SetTexture(9,shadow[0]));ok(d->SetTexture(13,field));
+                ok(d->BeginScene());
+                if(mode){assert(volume.target(d,volume.raw()));assert(volume.injection(d,volume.inject[variant],100,(variant&1)==0,true));assert(volume.integrate(d,100,c[1],false));assert(volume.composite(d,output,ow,oh));}
+                else{ok(d->SetTexture(0,nullptr));ok(d->SetRenderTarget(0,output));ok(d->SetPixelShader(fallback[variant]));D3DVIEWPORT9 vp={0,0,ow,oh,0,1};ok(d->SetViewport(&vp));ok(NorthlightScreen::drawQuad(d,ow,oh));}
+                ok(d->EndScene());ok(d->GetRenderTargetData(output,staging));D3DLOCKED_RECT lock{};ok(staging->LockRect(&lock,nullptr,D3DLOCK_READONLY));
+                std::vector<float> values(size_t(ow)*oh*4);for(unsigned y=0;y<oh;++y)std::memcpy(values.data()+size_t(y)*ow*4,static_cast<char*>(lock.pBits)+y*lock.Pitch,ow*16);ok(staging->UnlockRect());
+                double litEnergy=0,energy=0;
+                for(unsigned y=0;y<oh;++y)for(unsigned x=0;x<ow;++x){
+                    const size_t i=(size_t(y)*ow+x)*4;
+                    float rx=(2.f*x/w*2-1)/2,rz=(1-2.f*y/h*2)/100,rayZ=rz/std::sqrt(1+rx*rx+rz*rz);
+                    double optical=0;for(unsigned j=0;j<512;++j){float t=100.f*(j+.5f)/512;optical+=NorthlightForever::sigma(frame,t,8+rayZ*t,fieldCase==1?64.f:0.f)*(100./512);}
+                    const float expected=fieldCase==3?1.f:float(std::exp(-optical)),error=std::abs(values[i+3]-expected);maximum=std::max(maximum,error);
+                    if(error>.006f){std::fprintf(stderr,"MEDIUM_FAIL variant=%u atlas=%u profile=%u field=%u blocked=%u xy=%u,%u T=%g expected=%g\n",variant,mode,profile,fieldCase,blocked,x,y,values[i+3],expected);std::abort();}
+                    for(unsigned k=0;k<4;++k)assert(std::isfinite(values[i+k]));
+                    // Light changes may alter RGB, never extinction. An absolute
+                    // profile must also ignore a raised/split roof envelope.
+                    if(blocked){assert(values[i+3]==lit[i+3]);energy+=values[i];litEnergy+=lit[i];}
+                    if((fieldCase==1||fieldCase==2)&&profile!=2&&values[i+3]!=baseline[i+3]){
+                        std::fprintf(stderr,"MEDIUM_FIELD variant=%u atlas=%u profile=%u field=%u blocked=%u xy=%u,%u T=%.9g baseline=%.9g\n",variant,mode,profile,fieldCase,blocked,x,y,values[i+3],baseline[i+3]);std::abort();
+                    }
+                }
+                if(!blocked)lit=values;else if(fieldCase!=3)assert(energy>0&&energy<litEnergy*.9);
+                if(!fieldCase&&!blocked)baseline=values;
+                ++cases;
+            }
+            d->SetTexture(13,nullptr);field->Release();
+        }
+    }
+    for(unsigned s=0;s<16;++s)d->SetTexture(s,nullptr);volume.reset();for(auto* p:fallback)p->Release();for(auto* p:shadow)p->Release();depth->Release();output->Release();staging->Release();
+    std::printf("FOG_GLOBAL_MEDIUM_PASS cases=%u maxTransmittanceError=%g\n",cases,maximum);
+}
+
 int main(int argc,char** argv){
     std::setvbuf(stdout,nullptr,_IONBF,0);
     assert(argc==2);
@@ -17,6 +88,7 @@ int main(int argc,char** argv){
     IDirect3DDevice9* d=nullptr;ok(api->CreateDevice(0,D3DDEVTYPE_HAL,window,D3DCREATE_HARDWARE_VERTEXPROCESSING|D3DCREATE_FPU_PRESERVE,&pp,&d));
     ok(d->SetDepthStencilSurface(nullptr));ok(d->SetFVF(D3DFVF_XYZRHW|D3DFVF_TEX1));ok(d->SetRenderState(D3DRS_ZENABLE,FALSE));ok(d->SetRenderState(D3DRS_CULLMODE,D3DCULL_NONE));ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE));
     for(unsigned s=0;s<16;++s){NorthlightFogVolume::sampler(d,s);ok(d->SetSamplerState(s,D3DSAMP_MINFILTER,D3DTEXF_POINT));ok(d->SetSamplerState(s,D3DSAMP_MAGFILTER,D3DTEXF_POINT));}
+    globalMediumOracle(d);
     float maximum=0;unsigned cases=0;
     for(auto dimensions:{std::pair<unsigned,unsigned>{64,48},{137,79},{2,2}}){
         const unsigned w=dimensions.first,h=dimensions.second,ow=w/2,oh=h/2;

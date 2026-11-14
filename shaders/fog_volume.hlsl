@@ -31,7 +31,9 @@ float4 volumeInjectPoint(float3 ray,float a,float b,float t,bool actor,bool nois
     float3 p=Camera.xyz+ray*t;float coverage;
     float4 field=regionalFogAt((p.xy-RegionalFogInfo.xy)*RegionalFogInfo.z+.5/64,coverage);
     float inside=all(p.xy>=RegionalFogInfo.xy)&&all(p.xy<=RegionalFogInfo.xy+63.0/(64*max(RegionalFogInfo.z,1e-8)));
-    float valid=inside?(p.z>=field.x?coverage:0):1;
+    // Match foreverFog: a top-surface field cannot classify air under roofs.
+    // Authored height profiles place the medium; shadows only light it.
+    float valid=inside?coverage:1;
     float ground=coverage>0?field.x:Forever[0].w;
     float3 height=p.z-ground*Forever[10].xyz;
     float3 shape=exp(min(0,(Forever[2].xyz-height)*Forever[3].xyz)+min(0,(height-Forever[4].xyz)*Forever[5].xyz));

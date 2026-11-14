@@ -25,6 +25,14 @@ SM3 raster passes to implement the volume without compute shaders or 3D render
 targets. Sun and moon add radiance into the same coefficients; density is written
 only by the first source.
 
+The imported medium uses the authored absolute/relative height profiles. The
+regional field supplies coverage and a reference elevation for relative layers;
+its topmost WMO/terrain height is not an occupancy test. Treating everything
+below that surface as solid erases fog under city overhangs. Both the atlas and
+fallback raymarch preserve air below roofs; scene depth supplies the receiver
+endpoint. Shadows affect scattering, never extinction. See the
+[Orgrimmar capture diagnosis](fog-overhang-20261114.md).
+
 Noisy cells use two-point Gauss quadrature within their radial interval. This
 reduces aliasing of density noise in wider distant slices without adding atlas
 memory or prefix passes. Quiet cells retain a single density evaluation.
@@ -80,9 +88,16 @@ is required by fog-off or other effect-only frames.
 `test_fog_volume_build.py` checks dependency freshness, all eleven generated
 SM3 kernels and embedded bytecode. `test_fog_volume_gpu.py` checks independent
 Beer–Lambert integration, atlas boundaries, odd sizes, 3D reprojection and all
-eight injection variants against the previous production raymarch on native
+eight injection variants against the fallback raymarch on native
 D3D9 and DXVK. This comparison measures numerical differences; it does not
 establish identical output for every scene.
+
+The same test checks roofs above the camera, a split roof field, masked regions,
+outside-field fallback, absolute and relative profiles, and lit/shadowed source
+directions. Roof changes preserve absolute-profile transmittance bit for bit;
+light changes preserve transmittance while changing scattering. `--backend`
+can be repeated to test an explicit backend scope; the report records that scope
+and DXVK environment instead of implying native D3D9 coverage.
 
 `test_world_screen_effects_gpu.py` exercises the production executor, cache
 settling, on/off, partial allocation failure, shader/capability fallback,

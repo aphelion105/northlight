@@ -1267,7 +1267,10 @@ float4 foreverFog(float2 uv,bool actorIntegration,bool samplesNoise=true) {
         float4 field=regionalFogAt((p.xy-RegionalFogInfo.xy)*RegionalFogInfo.z+.5/64,coverage);
         float fieldGround=field.x;
         float inside=all(p.xy>=RegionalFogInfo.xy)&&all(p.xy<=RegionalFogInfo.xy+63.0/(64*max(RegionalFogInfo.z,1e-8)));
-        float valid=inside?(p.z>=fieldGround?coverage:0):1;
+        // The regional height is the top WMO/terrain envelope, not a solid
+        // column: a roof must not erase global fog in the air below it.
+        // Coverage still excludes masked regions; authored profiles own Z.
+        float valid=inside?coverage:1;
         [branch]if(!earlyCull||valid>0){
         float ground=coverage>0?fieldGround:Forever[0].w;
         if(earlyCull)visible=foreverVisibility(ray,a,b,t,actorIntegration,true);
