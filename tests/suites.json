@@ -89,7 +89,8 @@
       "test_sky_planets_gpu.py",
       "test_celestial_composition_gpu.py",
       "test_fog_volume_gpu.py",
-      "test_probe_local_visibility_gpu.py"
+      "test_probe_local_visibility_gpu.py",
+      "test_celestial_controls_gpu.py"
     ]
   },
   "shadow-experiments": {
@@ -101,7 +102,9 @@
   },
   "weather-experiments": {
     "description": "Sparse precipitation roof-query experiment: exact image comparisons and contended component timings. Does not enable a production shader.",
-    "tests": ["test_weather_sparse_roof_gpu.py"]
+    "tests": [
+      "test_weather_sparse_roof_gpu.py"
+    ]
   },
   "cpu-bounds": {
     "description": "Current-pose CPU bounds, shader numeric equivalence, metadata ownership and conservative admission. No gameplay FPS claim.",

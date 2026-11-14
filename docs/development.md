@@ -39,6 +39,8 @@ For precipitation inside the crypt and the world-space shelter field, see
 [the weather roof regression](weather-roof-20261114.md).
 For the later weather-toggle profile, exact roof-cell reuse and unshipped GPU
 experiment, see [weather cost and shelter reuse](weather-cost-20261114.md).
+The subsequent native-precipitation path and independent sky/godray controls are
+described in [celestial controls and weather ownership](celestial-controls-20261114.md).
 For the subsequent focused shadow profile, terrain classification cache and
 copied Forever shader evidence, see [the shadow pipeline review](shadow-pipeline-review-20261114.md).
 For the shared world/actor visibility filter and the remaining fine-cascade work,

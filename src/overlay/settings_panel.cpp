@@ -37,6 +37,7 @@ const ImVec4 Accent{0.40f,0.70f,1.00f,1.f},Edited{1.00f,0.74f,0.32f,1.f},Muted{0
 // ---- Words (from the retired Lua menu) ----
 const std::map<std::string,const char*> Labels={
     {"CelestialStyle","Celestial placement & size"},
+    {"CelestialEffects","Enhanced sun, moon & sky"},{"Godrays","Sun & moon godrays"},
     {"NativeLightStay","Keep off-screen lights"},
     {"NativeMoreLights","Expand native light slots"},{"NativeModelLightLimit","Lights per model / building"},{"NativeTerrainLightLimit","Lights per terrain chunk"},
     {"RainRivulets","Merge drops into rivulets"},{"SnowFrost","Frost at screen edges"},{"SnowFrostStrength","Frost strength (%)"},
@@ -78,6 +79,8 @@ const std::map<std::string,const char*> CelestialLabels={
     {"fog_height_scale","Fog height"},{"fog_density","Air density"},{"horizon_haze","Horizon haze"},{"glow_strength","Glow strength"},{"glow","Glow tint"},{"glow_mix","Glow tint mix"},
 };
 const std::map<std::string,std::vector<const char*>> Help={
+    {"CelestialEffects",{"Replaces the sun, moon, glare and sky background independently of AO, shadows and other effects. Off preserves the native sky and skips Northlight sky capture and composition. HDR output remains separate."}},
+    {"Godrays",{"Directional sunlight and moonlight scattered through atmospheric fog. Off skips directional fog shading, shadow sampling and extra source passes while retaining fog density, ambient scattering and local lights. Requires Atmospheric fog."}},
     {"CelestialStyle",{"Default follows the game. Forever uses imported daily orbit and horizon size curves for the sun and primary moon; light, shadows and rays follow the selected placement. Applies to every region."}},
     {"RainRivulets",{"Falling drops and their wet trails collect nearby beads into longer curved streams, conserving water. Off keeps drops independent."}},
     {"SnowFrost",{"Crystalline ice grows from the screen edges with accumulated snow and storm intensity. Nearby fire melts it. Independent of Snow on camera; requires Enhanced weather."}},
@@ -261,10 +264,10 @@ const std::vector<Section> QualitySections={
         {"blobs","Round ground shadows","BlobShadows","BlobShadowStrength",""},
         {"nativeTerrain","Disable original terrain shadows","DisableOriginalTerrainShadows","",""},
         {"cache","Shadow updates",nullptr,"","FarShadowInterval NearShadowInterval ShadowDirectionSteps StaticCacheSlices ShadowPivotCorrection"}},false},
-    {"atmosphere","Atmosphere & weather","WorldFog Weather AuroraStrength WeatherMemory RainFog RainLens RainLensStrength RainRivulets SnowLens SnowLensStrength SnowFrost SnowFrostStrength SandLens SandLensStrength SandLensSize WeatherWindDirection WeatherWindStrength WeatherCameraMotion FogClouds FogCloudDensity HorizonHaze HorizonHazeStart HorizonHazeBand HorizonHazeTerrain",{
-        {"atmosphere","Atmospheric fog","WorldFog","",""},
+    {"atmosphere","Atmosphere & weather","WorldFog Godrays Weather AuroraStrength WeatherMemory RainFog RainLens RainLensStrength RainRivulets SnowLens SnowLensStrength SnowFrost SnowFrostStrength SandLens SandLensStrength SandLensSize WeatherWindDirection WeatherWindStrength WeatherCameraMotion FogClouds FogCloudDensity HorizonHaze HorizonHazeStart HorizonHazeBand HorizonHazeTerrain",{
+        {"atmosphere","Atmospheric fog","WorldFog","Godrays",""},
         {"fog","Fog banks","FogClouds","FogCloudDensity",""},
-        {"weather","Weather","Weather","AuroraStrength RainFog RainDropSize SnowFlakeSize","WeatherMemory"},
+        {"weather","Weather","Weather","AuroraStrength RainFog","WeatherMemory"},
         {"rainlens","Rain on camera","RainLens","RainLensStrength RainLensSize RainRivulets",""},
         {"snowlens","Snow on camera","SnowLens","SnowLensStrength SnowLensSize",""},
         {"snowfrost","Frost at screen edges","SnowFrost","SnowFrostStrength",""},
@@ -291,7 +294,7 @@ std::vector<std::string> words(const char* text);
 // The old menu's preset page.
 struct Preset { const char* key; const char* text; };
 const Preset Presets[3]={{"Quality","Maximum effect detail."},{"Balanced","Quality with a moderate effect budget."},{"Performance","Less work spent on effects."}};
-const char* const QuickKeys="Effects GI WorldShadows WorldFog LocalLights ContactAO AutoBump Weather ActorShadows FogClouds";
+const char* const QuickKeys="Effects GI WorldShadows WorldFog LocalLights ContactAO AutoBump Weather CelestialEffects Godrays ActorShadows FogClouds";
 // Sidebar pages, in order. quality: the QualitySections id a Quality page draws.
 enum class Page { Overview, Lighting, Materials, Shadows, Atmosphere, Celestial, ShadowRange, Spells, Renderer, Performance, Diagnostics, Count };
 struct PageInfo { Page page; const char* title; const char* quality; };
@@ -611,7 +614,7 @@ struct SettingsPanel::State {
     // ---- Pages ----
     // Quality keys without an assigned group stay accessible in Renderer fine tuning.
     std::vector<const Field*> unsortedQuality()const{
-        std::vector<std::string> known{"Preset","CelestialStyle"};for(const auto& s:QualitySections)for(auto& k:sectionKeys(s))known.push_back(k);
+        std::vector<std::string> known{"Preset","CelestialStyle","CelestialEffects","RainDropSize","SnowFlakeSize"};for(const auto& s:QualitySections)for(auto& k:sectionKeys(s))known.push_back(k);
         std::vector<const Field*> out;for(const Field* f:fields(D::Quality))if(std::find(known.begin(),known.end(),f->key)==known.end())out.push_back(f);
         return out;
     }
@@ -619,7 +622,7 @@ struct SettingsPanel::State {
     std::vector<const Field*> pageFields(Page p)const{
         std::vector<const Field*> out;
         if(p==Page::Overview){if(const Field* f=draft.quality("Preset"))out.push_back(f);for(auto& k:words(QuickKeys))if(const Field* f=draft.quality(k))out.push_back(f);return out;}
-        if(p==Page::Celestial){out=fields(D::Celestial);if(const Field* f=draft.quality("CelestialStyle"))out.push_back(f);return out;}
+        if(p==Page::Celestial){out=fields(D::Celestial);for(const char* key:{"CelestialEffects","CelestialStyle"})if(const Field* f=draft.quality(key))out.push_back(f);return out;}
         if(p==Page::ShadowRange)return fields(D::ShadowRange);
         if(p==Page::Renderer)out=fields(D::Renderer);
         if(const Section* s=qualitySection(Pages[unsigned(p)].quality))for(auto& k:sectionKeys(*s))if(const Field* f=draft.quality(k))out.push_back(f);
@@ -918,6 +921,7 @@ struct SettingsPanel::State {
         return out;
     }
     void celestialTab(){
+        if(const Field* enabled=draft.quality("CelestialEffects"))loose("celestial-enabled",{enabled});
         if(const Field* style=draft.quality("CelestialStyle"))loose("celestial-placement",{style});
         ImGui::TextColored(Color::Muted,"Default: game placement and size. Forever: imported orbit and horizon size curves.");
         ImGui::Spacing();
@@ -1041,7 +1045,7 @@ struct SettingsPanel::State {
     }
     void factoryDefaults(){
         auto targets=page==Page::Celestial?fields(D::Celestial,&region):pageFields(page);
-        if(page==Page::Celestial)if(const Field* f=draft.quality("CelestialStyle"))targets.push_back(f);
+        if(page==Page::Celestial)for(const char* key:{"CelestialEffects","CelestialStyle"})if(const Field* f=draft.quality(key))targets.push_back(f);
         for(const Field* f:targets)if(f->available){draft.factory(*f);live.erase(f->id());edited(*f);}
     }
     // The old menu's preset choice: quality overrides back to inherit, optionally Sun & moon and Shadow range to factory.

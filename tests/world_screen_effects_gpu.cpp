@@ -103,10 +103,19 @@ struct WorldScreenEffectsTest {
         w.sourceColors[0]=w.sourceGlowColors[0]={c[116],c[117],c[118]};w.sourceColors[1]=w.sourceGlowColors[1]={0,0,0};w.sourceWeights[0]=1;w.sourceWeights[1]=0;
         if(std::getenv("NORTHLIGHT_BASE_NO_DIRECTIONAL"))w.sourceWeights[0]=w.sourceWeights[1]=0;
     }
-    static IDirect3DPixelShader9* baseCompositor(const WorldRenderer& w){return w.hdrBasePS;}
+    static IDirect3DPixelShader9* baseCompositor(const WorldRenderer& w){
+#ifdef NORTHLIGHT_AO_BASE_TEST
+        if(w.hdrAOBasePS)return w.hdrAOBasePS;
+#endif
+        return w.hdrBasePS;
+    }
     static IDirect3DTexture9* currentDistance(const WorldRenderer& w){return w.temporalDepth[1-w.temporalIndex];}
     static IDirect3DTexture9* rawFog(const WorldRenderer& w){return w.fog;}
-    static void refuseBaseCompositor(WorldRenderer& w){drop(w.hdrBasePS);w.hdrBaseTried=true;}
+    static void refuseBaseCompositor(WorldRenderer& w){drop(w.hdrBasePS);w.hdrBaseTried=true;
+#ifdef NORTHLIGHT_AO_BASE_TEST
+        drop(w.hdrAOBasePS);w.hdrAOBaseTried=true;
+#endif
+    }
     static void inactiveGI(WorldRenderer& w){
         const auto quality=w.quality;const auto effects=w.effects;
         const bool expectPaused=!std::getenv("NORTHLIGHT_PIPELINE_BASELINE_RUN");

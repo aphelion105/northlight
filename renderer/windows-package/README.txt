@@ -162,6 +162,8 @@ Balanced and Performance are not opted into Quality effects. Missing ordinary
 settings are appended commented out, so the preset's values apply.
 northlight-renderer.log shows the values in use (QUALITY).
 Individual settings (Quality / Balanced / Performance):
+  CelestialEffects         1 / 1 / 1    Independent sun, moon, glare and sky replacement; off preserves native sky.
+  Godrays                  1 / 1 / 1    Directional scattering in WorldFog; off keeps the fog medium and ambient light.
   CelestialStyle            0 / 0 / 0    Sun & moon placement: 0/Default or 1/Forever; live in Sun & moon.
   Effects              1 / 1 / 1      all scene effects, capture and world/GI workers; 0 uses the F10 bypass while preserving individual settings, HDR output and the menu
   WorldShadows         1 / 1 / 1      all Northlight world/character shadows; F9 remains independent
@@ -213,8 +215,8 @@ Individual settings (Quality / Balanced / Performance):
   RainLensStrength      60 / 60 / 60   camera rain strength in percent (0..100)
   SnowLens              1 / 1 / 1      soft camera ice flakes adhere and melt during outdoor snow (requires Weather; skipped indoors)
   SnowLensStrength      60 / 60 / 60   camera snow strength in percent (0..100)
-  RainDropSize           100 / 100 / 100 Rain streak size, in percent (100 = standard). (25..300)
-  SnowFlakeSize          100 / 100 / 100 Falling snowflake size, in percent (100 = standard). (25..300)
+  RainDropSize           100 / 100 / 100 Legacy lab/capture particle size; native game rain is unchanged. (25..300)
+  SnowFlakeSize          100 / 100 / 100 Legacy lab/capture particle size; native game snow is unchanged. (25..300)
   RainLensSize           100 / 100 / 100 Camera raindrop size, in percent (100 = standard). (25..300)
   SnowLensSize           100 / 100 / 100 Camera snowflake size, in percent (100 = standard). (25..300)
   RainRivulets           1 / 1 / 1       Curved camera rain trails (0 = off, 1 = on). (0..1)

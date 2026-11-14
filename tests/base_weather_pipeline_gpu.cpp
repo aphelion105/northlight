@@ -46,7 +46,11 @@ struct BaseMeter:ForwardIDirect3DDevice9 {
     bool failNextDraw=false;
     HRESULT STDMETHODCALLTYPE CreatePixelShader(const DWORD* code,IDirect3DPixelShader9** out)override{
         const char* path=std::getenv("NORTHLIGHT_BASE_SHADER");
-        if(path&&code==kWorldBaseCompositeHdrShader){
+        if(path&&(code==kWorldBaseCompositeHdrShader
+#ifdef NORTHLIGHT_AO_BASE_TEST
+            ||code==kWorldAOCompositeHdrShader
+#endif
+        )){
             std::ifstream f(path,std::ios::binary|std::ios::ate);assert(f);const auto bytes=f.tellg();assert(bytes>=8&&bytes<=65536&&bytes%4==0);
             std::vector<DWORD> words(size_t(bytes)/4);f.seekg(0);f.read(reinterpret_cast<char*>(words.data()),bytes);assert(f);
             return real->CreatePixelShader(words.data(),out);

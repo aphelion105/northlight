@@ -10,7 +10,7 @@ import northlight_paths as fp
 from shader_compiler import Compiler, rows, validate_assembly
 
 SOURCES = ('fog_volume.hlsl', 'world_effects.hlsl', 'shadow_transition.hlsl', 'auto_bump_normal.hlsl')
-ENTRIES = ('VolumeInject', 'VolumeInjectQuiet', 'VolumeInjectActor', 'VolumeInjectActorQuiet', 'VolumeTemporal', 'VolumePrefix', 'VolumeResolve')
+ENTRIES = ('VolumeInject', 'VolumeInjectQuiet', 'VolumeInjectActor', 'VolumeInjectActorQuiet', 'VolumeTemporal', 'VolumePrefix', 'VolumeResolve', 'VolumeInjectAmbient', 'VolumeInjectAmbientQuiet')
 
 
 def source_hashes():

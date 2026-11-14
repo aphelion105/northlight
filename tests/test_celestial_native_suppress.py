@@ -30,12 +30,12 @@ assert 'celestialDiscs->setIdentityMap([this](std::uintptr_t exposed){return mir
 assert 'if((!early&&!observer.lateDisc(i,suppressed))||' in fp.src('celestial_disc_renderer.h').read_text()
 # F10: every native claim is gated by the effects switch and the pre-effects phase.
 # 0.3.187: one claim helper (count<=4 first) used by drawHook, the shared body of the four draw entry points.
-hooks=re.findall(r'if\(count<=4&&celestialDiscs&&enabled&&debugMode==0&&worldDebug==0&&!applied&&celestialDiscs->nativeClaimPossible\(t,count\)\)',renderer)
+hooks=re.findall(r'if\(count<=4&&celestialDiscs&&celestialEnabled\(\)&&debugMode==0&&worldDebug==0&&!applied&&celestialDiscs->nativeClaimPossible\(t,count\)\)',renderer)
 assert len(hooks)==1,len(hooks)
 # item 8: viewport-band pre-filter ahead of the texture-identity claim
 assert 'skyClaimPossible(worldMinDepth,worldMaxDepth,vp.MinZ,vp.MaxZ)' in renderer and renderer.index('skyClaimPossible(')<renderer.index('claimNativeGlare(t,count)')
 assert renderer.count('skyClaim(t,count,claimed);')==2 and renderer.count('return drawHook(t,count,')==4
-effects=renderer[renderer.index('    void renderEffects() {'):renderer.index('template<class Capture> void prepareDraw(')]
+effects=renderer[renderer.index('    void renderEffects() {'):renderer.index('    bool nameMaskReady(){')]
 assert effects.index('if (applied || !enabled || failed || !projectionValid) return;')<effects.index('celestialDiscs->render(')
 
 host=fp.src('celestial_disc_renderer.h').read_text()
@@ -51,7 +51,7 @@ assert 'if(i==1)continue;' in late  # never repaint an unattenuated lunar halo a
 assert 'MoonGlareSupport:4.f' in claim and 'surfaceVisible' in claim and 'glareVisible' in claim
 assert 'disc,glareBounds,nullptr,nullptr,0,earlyWorldMaxDepth,1,2,nullptr,false,bodies[i]->emission,true)' in claim
 assert '(occlude&&!fullGlare?0.f:NorthlightCelestialGlow::SunCoreWeight)' in host
-assert host.count('ownFrame=frames;')==2 and 'observer.finishObservations();ownFrame=renderFrame=frames;' in host
+assert host.count('ownFrame=frames;')==3 and 'observer.finishObservations();ownFrame=renderFrame=frames;' in host
 assert 'bool owning()const{return ownFrame==frames||ownFrame+1==frames;}' in host
 glare=host[host.index('    bool claimNativeGlare('):host.index('    bool drawDisc(')]
 assert 'const unsigned owned=drawnEarly|drawnLate|offscreenOwned|suppressed|suppressedPrevious|lateOwnedPrevious;' in glare

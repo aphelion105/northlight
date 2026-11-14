@@ -56,7 +56,7 @@ assert 'if(anyShadowTransition&&!softResolved)releaseShadowTransitions();' in w
 assert w.count('if(anyShadowTransition)for(unsigned sampler=6;sampler<10;++sampler)')==2
 assert w.index('if(anyShadowTransition)for(unsigned sampler=6;sampler<10;++sampler)')<w.index('d->SetRenderTarget(0,lightSurface);d->SetPixelShader(unshadowedLighting?')
 assert 'sharedResolveRequested=anyActorPass&&quality.softShadows&&!anyShadowTransition' in w
-for selector in ['fogActorTiledCurrent?fogActorTiledFadePS:fogActorCurrent?fogActorFadePS:fogFadePS','cloudActorTiledFadePS:cloudActorFadePS','cloudFade=geometryReady&&shadowVolumeTransitionActive(firstSource)']:
+for selector in ['fogActorTiledCurrent?fogActorTiledFadePS:fogActorCurrent?fogActorFadePS:fogFadePS','cloudActorTiledFadePS:cloudActorFadePS','cloudFade=quality.godrays&&geometryReady&&shadowVolumeTransitionActive(firstSource)']:
  assert selector in w,selector
 assert 'if(fading)bindShadowTransition(source)' in w and 'if(cloudFade)bindShadowTransition(firstSource)' in w
 print('PASS optional cap/budget/failure fallback; two-epoch resolve only during fades; GI/material sampler restore and current actor/tiled/HDR volume consumers')

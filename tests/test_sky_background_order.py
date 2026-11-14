@@ -77,6 +77,8 @@ struct Fixture {
     bool fullViewport(D3DSURFACE_DESC&,D3DVIEWPORT9* out,bool){*out=vp;return full;}
     bool hdrBackTarget(){return back;}
     bool resources(unsigned,unsigned,unsigned,bool){return resourceOk;}
+    bool celestialSetting=true;
+    bool celestialEnabled()const{return enabled&&!failed&&world&&celestialSetting;}
     bool sampled()const{return false;}
 '''
 fixture += method + r'''
@@ -109,7 +111,7 @@ int main(){
     Fixture early;early.worldStorage.valid=false;
     early.composeSkyBackground();assert(early.celestialStorage.draws==1&&early.device.target.color==20);
     assert(!early.worldStorage.valid);
-    for(unsigned kind=0;kind<6;++kind){
+    for(unsigned kind=0;kind<7;++kind){
         Fixture g;
         if(kind==0)g.skyLayers.available=false; // Catalog-proven native death sky.
         if(kind==1){g.worldStorage.valid=false;NorthlightWorldCamera::available=false;}
@@ -117,6 +119,7 @@ int main(){
         if(kind==3)g.resourceOk=false;
         if(kind==4)g.device.copyOk=false;
         if(kind==5)g.back=false;
+        if(kind==6)g.celestialSetting=false;
         g.composeSkyBackground();assert(!g.celestialStorage.draws&&g.device.target.color==10);
         if(kind==1){NorthlightWorldCamera::available=true;g.worldStorage.valid=true;g.device.target.color=70;g.composeSkyBackground();assert(g.device.target.color==70);}
     }

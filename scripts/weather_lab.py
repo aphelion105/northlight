@@ -102,6 +102,10 @@ def prepare_capture(metadata_path, output):
     flags = int(mask_available) | int(required) << 1 | int(hdr) << 2 | int(bool(meta.get('complete'))) << 3
     flags |= int(bool(meta.get('sky_seen'))) << 4 | int(meta.get('lens_exposed') is False) << 5
     flags |= int(bool(meta.get('roof_required'))) << 6
+    particles = meta.get('scene_precipitation', 'supplemental')
+    if particles not in ('native', 'supplemental'):
+        raise ValueError('Invalid scene precipitation owner')
+    flags |= int(particles == 'native') << 8
     roof_bytes = b''
     roof = meta.get('roof')
     if roof is not None:

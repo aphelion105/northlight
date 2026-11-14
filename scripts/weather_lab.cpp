@@ -245,7 +245,7 @@ int main(int argc,char** argv){try{
         const bool rotatedCapture=replay.loaded&&(cameraYaw!=0||cameraPitch!=0);
         auto* weatherDepth=occlusion&&!rotatedCapture?depth:noDepth;
         check(d->BeginScene());
-        if(precipitation&&!sand&&(!replay.loaded||!(replay.flags&64)||replay.roof))surface.precipitation(targetSurface,weatherDepth,W,H,c,q.preset,nullptr,nullptr,replay.roof);
+        if(precipitation&&!sand&&(!replay.loaded||(!(replay.flags&256)&&(!(replay.flags&64)||replay.roof))))surface.precipitation(targetSurface,weatherDepth,W,H,c,q.preset,nullptr,nullptr,replay.roof);
         if(active&&!shelter){
             if(sand&&q.sandLens)surface.sandLens(targetSurface,W,H,seconds,c.c[3][0]*float(q.sandLensStrength)*.01f,nullptr,state.intensity,float(q.sandLensSize)*.01f);
             if(!sand){const bool on=snow?q.snowLens:q.rainLens;const float frost=snow&&q.snowFrost?c.c[3][0]*float(q.snowFrostStrength)*.01f:0;
@@ -336,7 +336,10 @@ int main(int argc,char** argv){try{
         if(orbit){ImGui::SetNextItemWidth(-1);ImGui::SliderFloat("##OrbitSpeed",&orbitSpeed,-90,90,"Turn %.0f deg/s");}
         if(ImGui::Button("Reset view")){cameraYaw=cameraPitch=0;orbit=false;}}
         ImGui::TextWrapped("Drag the preview to turn. Disabling turn response removes camera inertia; wind still projects from the viewing direction.");
-        ImGui::SeparatorText("Particles in the scene");ImGui::Checkbox("Show precipitation",&precipitation);ImGui::Checkbox(replay.loaded?"Captured depth occlusion":"Synthetic depth occlusion",&occlusion);
+        ImGui::SeparatorText("Particles in the scene");
+        if(replay.loaded&&(replay.flags&256))ImGui::TextUnformatted("Native particles are already in this captured scene.");
+        else ImGui::Checkbox("Show precipitation",&precipitation);
+        ImGui::Checkbox(replay.loaded?"Captured depth occlusion":"Synthetic depth occlusion",&occlusion);
         if(maskRestore)ImGui::Checkbox("Respect captured name mask",&respectMask);
         ImGui::SetNextItemWidth(-1);int preset=int(q.preset);if(ImGui::Combo("##Quality",&preset,"Quality (3 layers)\0Balanced (3 layers)\0Performance (2 layers)\0"))q.preset=NorthlightQuality::Preset(preset);
         if(mode==1)slider("Rain particle size (%)",q.rainDropSize,25,300);if(mode==2)slider("Snow particle size (%)",q.snowFlakeSize,25,300);

@@ -28,6 +28,7 @@ struct Settings {
     // 60 retains the legacy half blend; 120 replaces native ambient, 240 doubles the correction.
     unsigned giStrength=120,giPrelitMix=100,auroraStrength=100;
     unsigned celestialStyle=0; // 0 = native placement/size; 1 = Forever orbit and size curves.
+    unsigned celestialEffects=1,godrays=1; // Sky replacement and directional fog scattering have independent owners.
     int giBrightness=0; // Signed percent of measured indirect radiance; -100 = none, +100 = double.
     // 0.3.141: shadow fate tracker (diagnostic log only; never changes the image).
     // Diagnostics=0: periodic logs, diagnostic counters and pure measurement off
@@ -154,7 +155,7 @@ struct Settings {
     unsigned autoDisplacementStrength=100,autoDisplacementDistance=12,autoDisplacementDetail=4;
     unsigned autoBumpModels=3,autoModelDisplacementStrength=25,autoModelDisplacementDistance=8,autoModelDisplacementDetail=2;
     unsigned autoHeightPolarity=0,autoHeightDetails=75,autoHeightBalance=50;
-    char origin[123]={'d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d'};
+    char origin[125]={'d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d'};
 };
 struct Key {
     const char* name;unsigned Settings::*field=nullptr;int Settings::*signedField=nullptr;
@@ -289,10 +290,13 @@ inline const Key Keys[]={
     {"AuroraStrength",&Settings::auroraStrength,0,200,{100,100,100}},
     {"GIChunkRadius",&Settings::giChunkRadius,1,3,{1,1,1}},
     {"GIPrelitMix",&Settings::giPrelitMix,0,100,{100,100,100}},
+    {"CelestialEffects",&Settings::celestialEffects,0,1,{1,1,1}},
+    {"Godrays",&Settings::godrays,0,1,{1,1,1}},
 };
-// The seven scene groups own their child controls, including sky/ambient work.
+// Sky replacement is a consumer in its own right. Godrays need the fog medium.
 // Presentation/HDR and the settings overlay remain available like F10.
-inline bool pipelineWork(const Settings& s){return s.effects&&(s.gi||s.worldShadows||s.worldFog||(s.localLights&&s.localLightLimit)||s.contactAO||s.autoBump||s.weather);}
+inline bool pipelineWork(const Settings& s){return s.effects&&(s.gi||s.worldShadows||s.worldFog||(s.localLights&&s.localLightLimit)||s.contactAO||s.autoBump||s.weather||s.celestialEffects);}
+inline bool foreverCelestial(const Settings& s){return s.celestialEffects&&s.celestialStyle;}
 inline unsigned localShadowLimit(const Settings& s){return std::min(s.localLightLimit,s.pointShadowLimit);}
 inline bool operator==(const Settings& a,const Settings& b){for(const auto& k:Keys)if(k.get(a)!=k.get(b))return false;return true;}
 inline bool operator!=(const Settings& a,const Settings& b){return !(a==b);}

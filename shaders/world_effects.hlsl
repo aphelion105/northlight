@@ -1428,7 +1428,7 @@ float4 FogBlur(float2 uv:TEXCOORD0):COLOR0 {
 // scattering (rgb) and the cloud transmittance (a); drawn with ONE, SRCALPHA so it adds to the fog buffer and attenuates what is there.
 // Exactly (0,0,0,1) where no cloud is met. The base fog only attenuates the cloud light (Tbase, never written to alpha); its density is a cut-down
 // copy of WorldFog's (the full lines do not fit the 512-slot budget next to the field fetch and the shadow filter), see the comments below.
-float4 fogClouds(float2 uv,bool actorIntegration,bool tiledActor=false) {
+float4 fogClouds(float2 uv,bool actorIntegration,bool tiledActor=false,bool directional=true) {
     // (no FogInfo.x test: the host draws this pass only when c21.x >= .5)
     uv=depthUV(uv);
     float depth=normalizedDepth(uv);float3 view=viewPositionDistance(uv,fogReceiverDistance(uv,depth));
@@ -1505,7 +1505,7 @@ float4 fogClouds(float2 uv,bool actorIntegration,bool tiledActor=false) {
                 float heightFade=saturate(altitude*(1.0/12));heightFade*=heightFade*(3-2*heightFade);
                 float weight=tCloud*absorb; // the ambient: the pass blend already multiplies the base fog by tCloud, tBase must not enter twice (S*(1-Tb*Tc) in either order)
                 // With no direct source/gain the shadowed term is exactly zero; ambient extinction still accumulates.
-                [branch]if(dot(max(DirectLight.rgb,0),1)>0&&FogInfo.y>0){
+                [branch]if(directional&&dot(max(DirectLight.rgb,0),1)>0&&FogInfo.y>0){
                     float visibility=fogShadowProjected(shadowOrigin+shadowRay*((start+end)*.5));
                     [branch]if(actorIntegration&&FogActorInfo.x>0&&visibility>0)visibility=fogCombineActor(visibility,tiledActor?fogActorShadowTiled(actorOrigin+actorRay*start,actorRay*stepSize):fogActorShadow(actorOrigin+actorRay*start,actorRay*stepSize));
                     directWeight+=exp(-tauBase)*weight*visibility*lerp(1,heightFade,SunDirection.w);
@@ -1517,7 +1517,7 @@ float4 fogClouds(float2 uv,bool actorIntegration,bool tiledActor=false) {
         }
     }
     // The narrow forward aureole of WorldFog is dropped here (register/slot budget): the broad phase alone.
-    float3 directScatter=max(DirectLight.rgb,0)*mad(.033,dot(ray,SunDirection.xyz),.22)*(max(FogInfo.y,0)*directWeight); // FogColor.rgb (the albedo) is always 1 (host): left out for the slots
+    float3 directScatter=directional?max(DirectLight.rgb,0)*mad(.033,dot(ray,SunDirection.xyz),.22)*(max(FogInfo.y,0)*directWeight):0; // FogColor.rgb (the albedo) is always 1 (host): left out for the slots
     float peak=max(directScatter.r,max(directScatter.g,directScatter.b));
     float cap=max(FogInfo.z,.0001);
     directScatter*=cap/(cap+peak);
@@ -1617,7 +1617,7 @@ float3 effectWeight(float2 uv,float3 source,bool hdrMode,out float coverageTrans
     return saturate(mad(remaining-source,rcp(max(source,.000001)),1))*coverageTransmission;
 }
 // SDR and HDR are separate compiled variants; validate the actual slot counts.
-float4 worldComposite(float2 uv,float2 pixel,bool surfaceLighting,bool hdrMode,sampler2D fogInput,out float3 effect,bool prelit=false,bool baseLighting=false,bool depthFromScene=true) {
+float4 worldComposite(float2 uv,float2 pixel,bool surfaceLighting,bool hdrMode,sampler2D fogInput,out float3 effect,bool prelit=false,bool baseLighting=false,bool depthFromScene=true,bool noLighting=false) {
     // Fetches before any flow control use texld (1 slot; tex2Dlod costs 3-4): Scene and Depth have one level and no mip filter, so texld reads what tex2Dlod(.,0) does.
     float4 original=tex2D(Scene,uv);
     effect=0;
@@ -1661,8 +1661,8 @@ float4 worldComposite(float2 uv,float2 pixel,bool surfaceLighting,bool hdrMode,s
             // The fallback ranks depth at a quarter: at a wall foot a top-row ground pixel is several depth tolerances from the
             // ground texels, and the full depth weight would pick a wall texel again (the light line; measured in test_colour_tent_2d).
             float score=mad(bits,.25,guide);
-            float4 light=tex2Dlod(LightingBuffer,float4(q,0,0));
-            float3 lit=tex2Dlod(BaselineLighting,float4(q,0,0)).rgb;
+            float4 light=noLighting?0:tex2Dlod(LightingBuffer,float4(q,0,0));
+            float3 lit=noLighting?0:tex2Dlod(BaselineLighting,float4(q,0,0)).rgb;
             float occlusion=tex2Dlod(AmbientOcclusion,float4(q,0,0)).a;
             if(prelit)light=tex2Dlod(PrelitDaylight,float4(q,0,0));
             bounce=mad(light.rgb,weight,bounce);
@@ -1691,9 +1691,9 @@ float4 worldComposite(float2 uv,float2 pixel,bool surfaceLighting,bool hdrMode,s
     float4 fog=baseLighting?float4(0,0,0,1):fogTotal>.00001?fogSum*(1/fogTotal):fogFallback;
     float4 fallbackLight=0;float3 fallbackBase=0;float fallbackAO=1;
     [branch]if(relight&&total<.02&&closest<1e20){
-        fallbackLight=tex2Dlod(LightingBuffer,float4(fallbackUV,0,0));
+        fallbackLight=noLighting?0:tex2Dlod(LightingBuffer,float4(fallbackUV,0,0));
         if(prelit)fallbackLight=tex2Dlod(PrelitDaylight,float4(fallbackUV,0,0));
-        fallbackBase=tex2Dlod(BaselineLighting,float4(fallbackUV,0,0)).rgb;
+        fallbackBase=noLighting?0:tex2Dlod(BaselineLighting,float4(fallbackUV,0,0)).rgb;
         fallbackAO=tex2Dlod(AmbientOcclusion,float4(fallbackUV,0,0)).a;
     }
     // Native distance fog is already in Scene. AO belongs to its transported
@@ -1808,6 +1808,8 @@ float4 WorldCompositeHdr(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {float3 e
 // With no volume/local buffers, retain AO and the same colour-guided light
 // upsample. Native fog, weather haze and coverage still use their normal path.
 float4 WorldBaseCompositeHdr(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {float3 effect;return worldComposite(uv,pixel,true,true,FogBuffer,effect,false,true);}
+// No lighting producer: its two inputs are proven zero, while AO and night lift remain unchanged.
+float4 WorldAOCompositeHdr(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {float3 effect;return worldComposite(uv,pixel,true,true,FogBuffer,effect,false,true,true,true);}
 float4 WorldUnlitCompositeHdr(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {float3 effect;return worldComposite(uv,pixel,false,true,FogBuffer,effect);}
 float4 WorldPrelitComposite(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {float3 effect;return worldComposite(uv,pixel,true,false,FogBuffer,effect,true);}
 float4 WorldPrelitCompositeHdr(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {float3 effect;return worldComposite(uv,pixel,true,true,FogBuffer,effect,true);}
@@ -1955,6 +1957,7 @@ float4 WorldFog(float2 uv:TEXCOORD0):COLOR0{return worldFog(uv,false);}
 float4 WorldFogAmbient(float2 uv:TEXCOORD0):COLOR0{return worldFog(uv,false,false);}
 float4 WorldFogActor(float2 uv:TEXCOORD0):COLOR0{return worldFog(uv,true);}
 float4 WorldFogActorTiled(float2 uv:TEXCOORD0):COLOR0{return worldFog(uv,true,true,true);}
+float4 FogCloudsAmbient(float2 uv:TEXCOORD0):COLOR0{return fogClouds(uv,false,false,false);}
 float4 FogClouds(float2 uv:TEXCOORD0):COLOR0{return fogClouds(uv,false);}
 float4 FogCloudsActor(float2 uv:TEXCOORD0):COLOR0{return fogClouds(uv,true);}
 float4 FogCloudsActorTiled(float2 uv:TEXCOORD0):COLOR0{return fogClouds(uv,true,true);}

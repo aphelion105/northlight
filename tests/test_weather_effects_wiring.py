@@ -54,7 +54,7 @@ checks['hlsl: no WorldWet shader; WeatherInfo.y only the fog clouds\' folded ban
 # Exact integrated baseline: combined light passes removed a quad site; the
 # actor-aware fog and cached caster variants added shader creation sites.
 # Static-shadow transitions add the independently gated soft-resolve pass and shader.
-checks['weather scalars do not own draw passes; precipitation has a separate surface owner']=('quad(' not in we and 'CreatePixelShader' not in we and 'wetPS' not in w and 'surface->precipitation(' in rc)
+checks['weather scalars and lens tail do not create scene precipitation']=('quad(' not in we and 'CreatePixelShader' not in we and 'wetPS' not in w and 'surface->precipitation(' not in rc and 'precipitationRoof(' not in rc+w)
 # disc and veil
 checks['discs: gain atomic, default 1, opacity and glare weights only, veil inherits']=(
     'std::atomic<float> weatherGain{1.f};' in dr and 'c[9][3]=glare?disc.opacity:disc.opacity*weatherGain.load(std::memory_order_relaxed);' in dr

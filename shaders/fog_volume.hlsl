@@ -27,7 +27,7 @@ float3 volumeRay(float2 uv) {
     float3 v=float3((uv*float2(2,-2)+float2(-1,1))/Projection.xy,Projection.z);
     return normalize(v.x*InverseView[0].xyz+v.y*InverseView[1].xyz+v.z*InverseView[2].xyz);
 }
-float4 volumeInjectPoint(float3 ray,float a,float b,float t,bool actor,bool noisy) {
+float4 volumeInjectPoint(float3 ray,float a,float b,float t,bool actor,bool noisy,bool directional) {
     float3 p=Camera.xyz+ray*t;float coverage;
     float4 field=regionalFogAt((p.xy-RegionalFogInfo.xy)*RegionalFogInfo.z+.5/64,coverage);
     float inside=all(p.xy>=RegionalFogInfo.xy)&&all(p.xy<=RegionalFogInfo.xy+63.0/(64*max(RegionalFogInfo.z,1e-8)));
@@ -42,29 +42,32 @@ float4 volumeInjectPoint(float3 ray,float a,float b,float t,bool actor,bool nois
     float3 noise=1;
     [branch]if(noisy&&dot(density,1)>0)noise=foreverNoise(p);
     density*=noise;
-    float visible=foreverVisibility(ray,a,b,t,actor,true);
+    float visible=directional?foreverVisibility(ray,a,b,t,actor,true):1;
     float3 g=Forever[6].xyz;
     float3 phase=(1.0/(4*3.14159265))*(1-g*g)*pow(rsqrt(max(1+g*g-2*g*dot(ray,SunDirection.xyz),1e-6)),3);
-    float3 lit=lerp(1,visible,Forever[9].xyz)*phase*Forever[11].xyz*Forever[11].w;
+    float3 lit=directional?lerp(1,visible,Forever[9].xyz)*phase*Forever[11].xyz*Forever[11].w:0;
     float3 ambient=SourcePolicy.x*lerp(1,visible,Forever[9].xyz),shade=SourcePolicy.x*(1-lerp(1,visible,Forever[9].xyz));
     float3 s0=Forever[12].rgb*lit.x+lerp(Forever[35].rgb,Forever[15].rgb,noise.x)*ambient.x+Forever[18].rgb*shade.x;
     float3 s1=Forever[13].rgb*lit.y+lerp(Forever[36].rgb,Forever[16].rgb,noise.y)*ambient.y+Forever[19].rgb*shade.y;
     float3 s2=Forever[14].rgb*lit.z+lerp(Forever[37].rgb,Forever[17].rgb,noise.z)*ambient.z+Forever[20].rgb*shade.z;
     return float4(s0*density.x+s1*density.y+s2*density.z,dot(density,1));
 }
-float4 volumeInject(float2 uv,bool actor,bool noisy) {
+float4 volumeInject(float2 uv,bool actor,bool noisy,bool directional=true) {
     float3 cell=volumeCell(uv),ray=volumeRay(cell.xy);
     float a=volumeDistance(cell.z),b=volumeDistance(cell.z+1);
     // Two-point Gauss quadrature resolves noise inside distant, wide slices
     // without doubling atlas memory. The host adds the two raster passes;
     // an in-shader loop exceeds SM3's 32 temporaries in the actor variant.
     float t=noisy?lerp(a,b,VolumePass.w):volumeDistance(cell.z+.5);
-    return volumeInjectPoint(ray,a,b,t,actor,noisy)*(noisy?.5:1);
+    return volumeInjectPoint(ray,a,b,t,actor,noisy,directional)*(noisy?.5:1);
 }
 float4 VolumeInject(float2 uv:TEXCOORD0):COLOR0 {return volumeInject(uv,false,true);}
 float4 VolumeInjectQuiet(float2 uv:TEXCOORD0):COLOR0 {return volumeInject(uv,false,false);}
 float4 VolumeInjectActor(float2 uv:TEXCOORD0):COLOR0 {return volumeInject(uv,true,true);}
 float4 VolumeInjectActorQuiet(float2 uv:TEXCOORD0):COLOR0 {return volumeInject(uv,true,false);}
+
+float4 VolumeInjectAmbient(float2 uv:TEXCOORD0):COLOR0 {return volumeInject(uv,false,true,false);}
+float4 VolumeInjectAmbientQuiet(float2 uv:TEXCOORD0):COLOR0 {return volumeInject(uv,false,false,false);}
 
 float4 VolumeTemporal(float2 uv:TEXCOORD0):COLOR0 {
     float3 cell=volumeCell(uv);float4 current=volumeAt(VolumeInput,cell.xy,cell.z);

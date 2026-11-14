@@ -1,6 +1,6 @@
 {
   "sources": {
-    "world_effects.hlsl": "e5c2fa97c21187faa213d1f06941b30544db7987c5935cf96dc8aa7d83c50d1e",
+    "world_effects.hlsl": "c9562a0d398b690c5c4beaee2d12f1498ed56a751140e73795dfe6f581764be2",
     "shadow_transition.hlsl": "6da7e4eebf2b0cd30a0b763e3b85d19f2d30e2074d3f7514cb87b67c4a920f8a"
   },
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
@@ -354,7 +354,7 @@
     "FogCloudsTransition": {
       "target": "ps_3_0",
       "bytes": 8904,
-      "sha256": "585f6750d95629c2252c754fd808d52634de2924626bc9bd33bba80b0420f3d2",
+      "sha256": "c2f06b1c4e37f6026ce9a3162b2c222e0df1f5f157f863fc0909e8c28917bba7",
       "static_instruction_slots": 519,
       "temporary_registers": 23,
       "samplers": [
@@ -392,7 +392,7 @@
     "FogCloudsActorTransition": {
       "target": "ps_3_0",
       "bytes": 10812,
-      "sha256": "8b178c36a54ae485f23ff90986ac21471146d325148434f67972bf8836d86e81",
+      "sha256": "56f71ec6214424493833669e949e5074c8ba3ade3c5aea00b7d5c178ca2db0a1",
       "static_instruction_slots": 645,
       "temporary_registers": 25,
       "samplers": [
@@ -431,7 +431,7 @@
     "FogCloudsActorTiledTransition": {
       "target": "ps_3_0",
       "bytes": 11704,
-      "sha256": "269967377e815a296648bee9941dc375549edbe657685e91a936ca37709907fe",
+      "sha256": "8dae3ccaee0f0f991f3f09955b85620020ef067600be772d9abf3b2f728a90bb",
       "static_instruction_slots": 710,
       "temporary_registers": 26,
       "samplers": [

@@ -43,6 +43,14 @@ class WeatherCapture(unittest.TestCase):
             self.assertEqual(settings[10:], (1, 1, 70, 1, 60, 100, 45, 100, 1))
             self.assertEqual(data[276 + 96 + 3], 255)
             self.assertEqual(data[276 + 96 + 7], 0)
+            metadata['scene_precipitation'] = 'native'
+            native = prepare()
+            self.assertEqual(struct.unpack_from('<6I', native)[5], 27 | 256)
+            self.assertEqual(native[24:], data[24:])
+            metadata['scene_precipitation'] = 'unknown'
+            with self.assertRaisesRegex(ValueError, 'precipitation owner'):
+                prepare()
+            del metadata['scene_precipitation']
             metadata['roof_required'] = True
             metadata['roof'] = dict(size=128, span=96, origin=[-48, -48, 3], height=[5.0] * 16384)
             roof = prepare()

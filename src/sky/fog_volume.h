@@ -6,7 +6,7 @@
 // The screen depth only participates in resolve, so receiver motion cannot drag history.
 struct NorthlightFogVolume {
     IDirect3DTexture9* texture[3]={};IDirect3DSurface9* surface[3]={};
-    IDirect3DPixelShader9* inject[8]={},*temporal=nullptr,*prefix=nullptr,*resolve=nullptr;
+    IDirect3DPixelShader9* inject[10]={},*temporal=nullptr,*prefix=nullptr,*resolve=nullptr;
     unsigned cellWidth=0,cellHeight=0,history=2,result=1;
     bool valid=false,refused=false,cacheReady=false;
     float previous[4]={};
@@ -22,8 +22,8 @@ struct NorthlightFogVolume {
         D3DCAPS9 caps={};
         bool ok=SUCCEEDED(d->GetDeviceCaps(&caps))&&cellWidth*8<=caps.MaxTextureWidth&&cellHeight*8<=caps.MaxTextureHeight&&caps.MaxPixelShader30InstructionSlots>=kVolumeInjectActorTransitionShaderSlots;
         const DWORD* code[]={kVolumeInjectShader,kVolumeInjectQuietShader,kVolumeInjectActorShader,kVolumeInjectActorQuietShader,
-            kVolumeInjectTransitionShader,kVolumeInjectQuietTransitionShader,kVolumeInjectActorTransitionShader,kVolumeInjectActorQuietTransitionShader};
-        for(unsigned i=0;i<8&&ok;++i)ok=SUCCEEDED(d->CreatePixelShader(code[i],&inject[i]));
+            kVolumeInjectTransitionShader,kVolumeInjectQuietTransitionShader,kVolumeInjectActorTransitionShader,kVolumeInjectActorQuietTransitionShader,kVolumeInjectAmbientShader,kVolumeInjectAmbientQuietShader};
+        for(unsigned i=0;i<10&&ok;++i)ok=SUCCEEDED(d->CreatePixelShader(code[i],&inject[i]));
         if(ok)ok=SUCCEEDED(d->CreatePixelShader(kVolumeTemporalShader,&temporal))&&SUCCEEDED(d->CreatePixelShader(kVolumePrefixShader,&prefix))&&SUCCEEDED(d->CreatePixelShader(kVolumeResolveShader,&resolve));
         for(unsigned i=0;i<3&&ok;++i)ok=SUCCEEDED(d->CreateTexture(cellWidth*8,cellHeight*8,1,D3DUSAGE_RENDERTARGET,D3DFMT_A16B16G16R16F,D3DPOOL_DEFAULT,&texture[i],nullptr))&&SUCCEEDED(texture[i]->GetSurfaceLevel(0,&surface[i]));
         if(!ok){reset();refused=true;}return ok;

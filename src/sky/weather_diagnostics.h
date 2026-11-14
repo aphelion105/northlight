@@ -15,6 +15,7 @@ struct Frame {
     const NorthlightWeather::State* weather=nullptr;
     std::shared_ptr<const NorthlightWeatherShelter::Roof> roof;
     bool roofRequired=false;
+    bool nativePrecipitation=false; // Legacy captures/lab fixtures default to supplemental particles.
     unsigned rendererFrame=0,width=0,height=0;
     unsigned sourceSamples=0;
     float layerGate=0,heat=0;
@@ -46,7 +47,7 @@ inline bool capture(IDirect3DDevice9* device,const std::string& directory,const 
         finite(frame.layerGate),finite(frame.heat),frame.skySeen?"true":"false",q&&q->weather?"true":"false",frame.lensExposureKnown?(frame.lensExposed?"true":"false"):"null",preset);
     if(finiteConstants){std::fputc('[',file);for(unsigned i=0;i<10;++i){std::fprintf(file,"%s[",i?",":"");for(unsigned k=0;k<4;++k)std::fprintf(file,"%s%.9g",k?",":"",frame.constants->c[i][k]);std::fputc(']',file);}std::fputc(']',file);}
     else std::fputs("null",file);
-    std::fprintf(file,",\"roof_required\":%s,\"roof\":",frame.roofRequired?"true":"false");
+    std::fprintf(file,",\"scene_precipitation\":\"%s\",\"roof_required\":%s,\"roof\":",frame.nativePrecipitation?"native":"supplemental",frame.roofRequired?"true":"false");
     if(frame.roof){const auto& roof=*frame.roof;
         std::fprintf(file,"{\"size\":%u,\"span\":%.9g,\"origin\":[%.9g,%.9g,%.9g],\"traced_cells\":%u,\"height\":[",roof.Size,roof.Span,roof.x,roof.y,roof.z,roof.tracedCells);
         for(unsigned i=0;i<roof.height.size();++i)std::fprintf(file,"%s%.9g",i?",":"",finite(roof.height[i]));

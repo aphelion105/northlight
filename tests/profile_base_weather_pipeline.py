@@ -95,7 +95,7 @@ def main():
  def run(label,cmd):
   processes();r=subprocess.run(list(map(str,cmd)),cwd=out,env=env,capture_output=True,text=True,timeout=300);(out/(label+'.log')).write_bytes((r.stdout+r.stderr).encode());print(label,r.returncode,flush=True);r.check_returncode();return r.stdout
  try:
-  run('compile',[fp.zig(),'c++','-target','x86-windows-gnu','-O2','-UNDEBUG','-std=c++17','-Wno-microsoft-exception-spec','-DIMGUI_USER_CONFIG="northlight_imconfig.h"',*(['-DNORTHLIGHT_TEST_WORLD_ENCLOSING_STATE'] if caller_state_api else []),'-I'+str(overlay),*fp.test_include_flags(),ROOT/'tests/base_weather_pipeline_gpu.cpp',*(fp.src(name) for name in sources),'-luser32','-luuid','-o',exe])
+  run('compile',[fp.zig(),'c++','-target','x86-windows-gnu','-O2','-UNDEBUG','-std=c++17','-Wno-microsoft-exception-spec','-DIMGUI_USER_CONFIG="northlight_imconfig.h"',*(['-DNORTHLIGHT_TEST_WORLD_ENCLOSING_STATE'] if caller_state_api else []),*(['-DNORTHLIGHT_AO_BASE_TEST'] if 'hdrAOBasePS' in world else []),'-I'+str(overlay),*fp.test_include_flags(),ROOT/'tests/base_weather_pipeline_gpu.cpp',*(fp.src(name) for name in sources),'-luser32','-luuid','-o',exe])
   settings=out/'settings';settings.mkdir();(settings/'northlight-renderer.ini').write_bytes(b'[Renderer]\nSettingsOverlay=0\nExperimentalHDR=0\n')
   text=run('baseline',[exe,a.backend.resolve(),settings,a.capture/'capture-1-scene.fgr',a.capture/'capture-1-depth.fgr',a.capture/'capture-1-constants.f32',out/'baseline-output'])
   assert 'BASE_WEATHER_PROFILE_PASS' in text

@@ -20,7 +20,7 @@ struct PipelineMeter:ForwardIDirect3DDevice9 {
 struct PipelineOffTest {
     static void mode(Device& d,unsigned mode){
         d.clearFrame();auto q=d.world->quality;
-        q.gi=q.actorShadows=q.contactAO=q.autoBump=q.weather=q.equipmentLights=0;q.localLightLimit=0;
+        q.gi=q.actorShadows=q.contactAO=q.autoBump=q.weather=q.celestialEffects=q.equipmentLights=0;q.localLightLimit=0;
 #ifdef NORTHLIGHT_PIPELINE_BASELINE
         d.world->quality=q;d.enabled=mode!=0;d.world->setEffects({false,false,false});
 #else

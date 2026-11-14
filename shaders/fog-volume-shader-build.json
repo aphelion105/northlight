@@ -1,7 +1,7 @@
 {
   "sources": {
-    "fog_volume.hlsl": "a7a32b45970344095c5b6b044a341032a39780a6d4316251d501beadca87b5dd",
-    "world_effects.hlsl": "e5c2fa97c21187faa213d1f06941b30544db7987c5935cf96dc8aa7d83c50d1e",
+    "fog_volume.hlsl": "189ec962e2105943f20e7e096b4b738d822660e1d901e8cd75c3f85245f01212",
+    "world_effects.hlsl": "c9562a0d398b690c5c4beaee2d12f1498ed56a751140e73795dfe6f581764be2",
     "shadow_transition.hlsl": "6da7e4eebf2b0cd30a0b763e3b85d19f2d30e2074d3f7514cb87b67c4a920f8a",
     "auto_bump_normal.hlsl": "b5523a51dc6715f11ac2e7ba9ecb46a4973ba6aa23de159e308a8fd24d4e9ebc"
   },
@@ -223,6 +223,60 @@
         "pow": 1,
         "log": 1,
         "exp": 1
+      }
+    },
+    "VolumeInjectAmbient": {
+      "target": "ps_3_0",
+      "sha256": "37d1a1eb3fbc1e82089fb4235789e32a100da0978ce9de458bf1bdcf97947121",
+      "static_instruction_slots": 267,
+      "temporary_registers": 9,
+      "samplers": [
+        13,
+        14
+      ],
+      "instructions": {
+        "rcp": 8,
+        "mul": 97,
+        "frc": 3,
+        "add": 62,
+        "mov": 24,
+        "nrm": 1,
+        "cmp": 13,
+        "min": 3,
+        "texldl": 10,
+        "dp4": 2,
+        "exp": 6,
+        "max": 1,
+        "log": 3,
+        "dp3": 2,
+        "if": 4,
+        "else": 4,
+        "endif": 4
+      }
+    },
+    "VolumeInjectAmbientQuiet": {
+      "target": "ps_3_0",
+      "sha256": "84f755a3d6f5e83977363b2a0d10846114a27a055959f1da04411eb7b6504187",
+      "static_instruction_slots": 162,
+      "temporary_registers": 8,
+      "samplers": [
+        13
+      ],
+      "instructions": {
+        "rcp": 8,
+        "mul": 64,
+        "frc": 3,
+        "add": 40,
+        "mov": 7,
+        "nrm": 1,
+        "cmp": 13,
+        "texldl": 4,
+        "dp4": 2,
+        "min": 3,
+        "exp": 6,
+        "max": 1,
+        "log": 3,
+        "dp3": 1
       }
     },
     "VolumeInjectTransition": {

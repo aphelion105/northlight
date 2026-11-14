@@ -1114,7 +1114,7 @@ private:
             snapshot.sourceSamples=worldDepthDescKnown?unsigned(worldDepthDesc.MultiSampleType):0;
             snapshot.multisampleVerified=NorthlightBackend::isPackagedDxvk(selectedBackend);
             if(world){snapshot.quality=&world->surfaceSettings();snapshot.weather=&world->weather();
-                snapshot.roofRequired=true;snapshot.roof=world->precipitationRoof();
+                snapshot.nativePrecipitation=true; // Native particles are already in the captured scene.
                 const bool snow=snapshot.weather->kind==NorthlightWeather::Kind::Snow,sand=snapshot.weather->kind==NorthlightWeather::Kind::Sand;const auto& q=*snapshot.quality;
                 const bool cameraWanted=sand?(q.sandLens&&q.sandLensStrength):(((snow?q.snowLens:q.rainLens)&&(snow?q.snowLensStrength:q.rainLensStrength))||(snow&&q.snowFrost&&q.snowFrostStrength));
                 if(constants&&cameraWanted&&(sand||(scene&&sceneSurface))){
@@ -1415,24 +1415,24 @@ private:
         if(!surface||!world||!applied||!enabled||failed||debugMode||worldDebug||!depthTex||!world->weatherSetting()||world->underwaterScale()<.9f||memoryGuard.capsHalved()){weatherLayerGate=0;if(diagnostic)captureWeatherDiagnostics(nullptr,nullptr,nullptr,"weather-pass-unavailable");return;}
         const auto& weather=world->weather();
         if((weather.kind!=NorthlightWeather::Kind::Rain&&weather.kind!=NorthlightWeather::Kind::Snow&&weather.kind!=NorthlightWeather::Kind::Sand)||weather.blend<=0){weatherLayerGate=0;if(diagnostic)captureWeatherDiagnostics(nullptr,nullptr,nullptr,"no-active-weather");return;}
-        // Each precipitation sample needs its own roof test: camera exposure
-        // cannot distinguish an interior from the exterior through a doorway.
-        // Scene depth still clips foreground walls; sky visibility is unrelated.
+        // WoW owns scene particles, motion and shelter. This tail only adds
+        // camera optics; it must never generate a second rain/snow layer.
         weatherLayerGate+=(1-weatherLayerGate)*.1f;
         NorthlightSurfaceFrame context;if(!surfaceContext(context)){if(diagnostic)captureWeatherDiagnostics(nullptr,nullptr,nullptr,"surface-context-unavailable");return;}
         context.c[3][0]=weatherLayerGate*weather.blend*(.35f+.65f*weather.intensity);context.c[3][1]=weather.kind==NorthlightWeather::Kind::Snow?1.f:0.f;
         const auto& q=world->surfaceSettings();const bool snow=weather.kind==NorthlightWeather::Kind::Snow,sand=weather.kind==NorthlightWeather::Kind::Sand;
-        context.c[3][2]=(float(snow?q.snowFlakeSize:q.rainDropSize)-100.f)*.01f;
+        const unsigned lensOn=snow?q.snowLens:q.rainLens,strength=snow?q.snowLensStrength:q.rainLensStrength;
+        const float frost=snow&&q.snowFrost?context.c[3][0]*float(q.snowFrostStrength)*.01f:0;
+        const bool cameraWanted=sand?(q.sandLens&&q.sandLensStrength):((lensOn&&strength)||frost>0);
+        if(!cameraWanted&&!diagnostic)return;
         surface->setMotion(context,unsigned(weather.kind),q,surfaceTime);
+        const bool cameraExposed=cameraWanted&&world->supplementalWeatherOutdoors();
+        if(!cameraExposed&&!diagnostic)return;
         ExtensionDevice::RawScope raw(*ext);SavedState saved(ext,&stateBlocks);if(!saved.ok){if(diagnostic)captureWeatherDiagnostics(nullptr,nullptr,nullptr,"state-save-failed");return;}
         IDirect3DSurface9* nameDepth=nameMask.armed()&&nameMask.hasMarks()&&maskStencil?worldDepth:nullptr;
         auto* weatherTarget=hdrSceneReady?hdrPresentBack:saved.targets[0];
         if(diagnostic)captureWeatherDiagnostics(&context,weatherTarget,nameDepth,nullptr);
-        if(!sand){const auto roof=world->precipitationRoof();if(roof){surface->precipitation(weatherTarget,depthTex,width,height,context,world->qualityPreset(),nameDepth,&saved,roof);gpuProfile->mark("Precipitation");}}
-        const unsigned lensOn=snow?q.snowLens:q.rainLens,strength=snow?q.snowLensStrength:q.rainLensStrength;
-        const float frost=snow&&q.snowFrost?context.c[3][0]*float(q.snowFrostStrength)*.01f:0;
-        const bool cameraWanted=sand?(q.sandLens&&q.sandLensStrength):((lensOn&&strength)||frost>0);
-        if(cameraWanted&&world->supplementalWeatherOutdoors()){
+        if(cameraExposed){
             if(sand)surface->sandLens(weatherTarget,width,height,surfaceTime,context.c[3][0]*float(q.sandLensStrength)*.01f,nameDepth,weather.intensity,float(q.sandLensSize)*.01f,&saved);
             else if(scene&&sceneSurface)surface->lens(weatherTarget,hdrSceneReady?hdrFrame.texture():scene,hdrSceneReady?hdrFrame.surface():sceneSurface,width,height,snow,surfaceTime,lensOn?context.c[3][0]*float(strength)*.01f:0,nameDepth,weather.intensity,snow?world->weatherLensHeat():0.f,float(snow?q.snowLensSize:q.rainLensSize)*.01f,snow||q.rainRivulets!=0,frost,&saved);
             gpuProfile->mark("WeatherLens");
@@ -1507,7 +1507,7 @@ private:
         gpuProfile->mark("PreCelestial"); /* task 45: the rain and water mask preparation (and GPU work still pending from the game's scene) end here, so CelestialDiscs bills the discs and the terrain mask alone */
         // discs and glare, then the wrap-ring visibility in the same group of
         // 1x1 passes before the scene copy; the veil follows water (below).
-        const bool celestial=celestialDiscs&&world&&!skyLayers.native(frame)&&debugMode==0&&worldDebug==0;float sunElevation=0;
+        const bool celestial=celestialDiscs&&celestialEnabled()&&!skyLayers.native(frame)&&debugMode==0&&worldDebug==0;float sunElevation=0;
         auto renderCelestial=[&](IDirect3DSurface9* target){
             NorthlightCelestial::Context sky;float inverseView[16],projection[3];
             if(world->celestialContext(sky,inverseView,projection)){sunElevation=sky.sun.direction[2]-sky.horizonSine; /* over the camera's far edge, as the composite's haze band */
@@ -1623,7 +1623,8 @@ private:
             (sceneFormat==D3DFMT_A8R8G8B8||sceneFormat==D3DFMT_X8R8G8B8);
         if(linearHdr){
             if(error(hdrFrame.prepareLegacy(ext,scene,depthTex,hdrSkyValid?hdrSkyTarget():nullptr,width,height,worldMinDepth,worldMaxDepth,hdrFrameSettings,&stateBlocks,!inlineHdrBase),"HDR legacy decode"))return;
-            if(celestial){renderCelestial(hdrFrame.surface());celestialDiscs->renderRing();}
+            gpuProfile->mark("HDRBase");
+            if(celestial){renderCelestial(hdrFrame.surface());celestialDiscs->renderRing();gpuProfile->mark("HDRCelestial");}
             hdrLegacyPrepared=true;
             if(maskOn&&error(hdrFrame.copyBase(ext,outputTarget,&stateBlocks),"HDR base"))return;
         }
@@ -2173,7 +2174,7 @@ private:
     void latchDrawGates(){
         modelNormalsNeeded=world&&(worldDebug!=0||world->surfaceLightingEnabled()||world->needsDiagnosticFallback());
         NorthlightDrawGates::Inputs in;
-        in.sky=celestialDiscs!=nullptr;in.blobs=shadowBlobs!=nullptr&&shadowBlobs->active();in.world=world!=nullptr;in.enabled=enabled;in.failed=failed;
+        in.sky=celestialDiscs!=nullptr&&celestialEnabled();in.blobs=shadowBlobs!=nullptr&&shadowBlobs->active();in.world=world!=nullptr;in.enabled=enabled;in.failed=failed;
         in.shadowsKey=effectKeys.settings.shadows;in.actorShadows=world&&world->actorShadowsEnabled();
         in.hideBlobs=world&&!world->blobShadowsEnabled();
         in.hideTerrainShadows=world&&!world->nativeTerrainShadowsEnabled();
@@ -2182,6 +2183,7 @@ private:
         hookTimer=sampledDrawTimers()&&NorthlightRenderThreadProbe::profiling()?&cpuDrawHooks:nullptr;
     }
     LONGLONG* sampledHookTimer()const{return hookTimer;}
+    bool celestialEnabled()const{return enabled&&!failed&&world&&world->surfaceSettings().celestialEffects;}
     void refreshPipeline(){
         const bool wasEnabled=enabled;
         enabled=!extensionFault&&masterEnabled&&(!world||world->effectsEnabled());
@@ -2195,10 +2197,10 @@ private:
     }
     // Native sky claim: glare, then the native disc draw, for full-viewport sky draws of 1..4 primitives.
     void skyClaim(D3DPRIMITIVETYPE t,UINT count,bool& claimed){
-        if(count<=4&&celestialDiscs&&enabled&&debugMode==0&&worldDebug==0&&!applied&&celestialDiscs->nativeClaimPossible(t,count)){D3DSURFACE_DESC desc;D3DVIEWPORT9 vp={};if(fullViewport(desc,&vp)&&NorthlightWorldDrawDomain::skyClaimPossible(worldMinDepth,worldMaxDepth,vp.MinZ,vp.MaxZ)){ /* viewport band pre-filter: no texture-identity read for a draw outside the sky band */
+        if(count<=4&&celestialDiscs&&celestialEnabled()&&debugMode==0&&worldDebug==0&&!applied&&celestialDiscs->nativeClaimPossible(t,count)){D3DSURFACE_DESC desc;D3DVIEWPORT9 vp={};if(fullViewport(desc,&vp)&&NorthlightWorldDrawDomain::skyClaimPossible(worldMinDepth,worldMaxDepth,vp.MinZ,vp.MaxZ)){ /* viewport band pre-filter: no texture-identity read for a draw outside the sky band */
             skySeen=true;
             claimed=celestialDiscs->claimNativeGlare(t,count);
-            if(!claimed)claimed=celestialDiscs->claimNativeDraw(t,count,true,[&](const char* map,const float* camera){return world->celestialPalette(map,camera);},false,world->surfaceSettings().celestialStyle!=0);}}
+            if(!claimed)claimed=celestialDiscs->claimNativeDraw(t,count,true,[&](const char* map,const float* camera){return world->celestialPalette(map,camera);},false,NorthlightQuality::foreverCelestial(world->surfaceSettings()));}}
     }
     void recoverSkyContext(const D3DSURFACE_DESC& desc){
         if(projectionValid||!skySeen||!world||!celestialDiscs->earlyValid||
@@ -2208,7 +2210,7 @@ private:
         projectionValid=terrain=true;captured=false;
     }
     void skyObserve(HRESULT hr,D3DPRIMITIVETYPE t,UINT count){
-        if(count<=4&&celestialDiscs&&enabled&&!applied&&celestialDiscs->nativeObservePossible(hr,t,count)){D3DSURFACE_DESC desc;if(fullViewport(desc))celestialDiscs->observeNativeDraw(hr,t,count,true);}
+        if(count<=4&&celestialDiscs&&celestialEnabled()&&!applied&&celestialDiscs->nativeObservePossible(hr,t,count)){D3DSURFACE_DESC desc;if(fullViewport(desc))celestialDiscs->observeNativeDraw(hr,t,count,true);}
     }
     // 0.3.193 faint blob: planned inside the guarded claim, applied around the real draw (outside
     // extensionWork, like the terrain shadow swap): texture 0 is shadowBlobs->faintTexture() for the draw and
@@ -2458,7 +2460,7 @@ private:
     NorthlightSkyComposition::Capture skyLayers;
     unsigned skyBackgroundFrame=~0u;
     void composeSkyBackground(){
-        if(skyBackgroundFrame==frame||!celestialDiscs||!world||!enabled||failed||applied||debugMode||worldDebug)return;
+        if(skyBackgroundFrame==frame||!celestialDiscs||!celestialEnabled()||applied||debugMode||worldDebug)return;
         auto* layers=skyLayers.texture(frame);if(!layers)return;
         D3DSURFACE_DESC desc{};D3DVIEWPORT9 vp{};
         if(!fullViewport(desc,&vp,true)||!hdrBackTarget()||
@@ -2490,7 +2492,7 @@ private:
         if(world&&NorthlightWorldCamera::readSkyPhase(map,1.f,camera)&&NorthlightCelestial::skyboxVerified()&&
            NorthlightCelestial::readSnapshot(NorthlightWorldContext::readSelf,sky)){
             auroraMap=map;std::copy(camera.inverseView,camera.inverseView+16,auroraInverse);auroraCameraValid=true;
-            auroraStyle=NorthlightAurora::style(map,world->auroraStrength(),true,sky.dayFraction,world->surfaceSettings().celestialStyle!=0);
+            auroraStyle=NorthlightAurora::style(map,world->auroraStrength(),true,sky.dayFraction,NorthlightQuality::foreverCelestial(world->surfaceSettings()));
             // Identity is independent of camera and animation. Native alpha in
             // each bounded observation carries the current skybox blend.
             std::uint64_t selection=14695981039346656037ull;
@@ -2542,7 +2544,7 @@ private:
     unsigned skyTextureFrame=~0u,skyTextureGeneration=~0u,skyLayerWarnings=0;
     void skyLayersBefore(D3DPRIMITIVETYPE type,UINT count,NorthlightSkyComposition::Role& role){
         using NorthlightSkyComposition::Role;
-        if(!celestialDiscs||!world||!enabled||failed||applied||debugMode||worldDebug||!count)return;
+        if(!celestialDiscs||!celestialEnabled()||applied||debugMode||worldDebug||!count)return;
         D3DSURFACE_DESC full{};D3DVIEWPORT9 vp{};
         if(!fullViewport(full,&vp)||!NorthlightWorldDrawDomain::skyClaimPossible(worldMinDepth,worldMaxDepth,vp.MinZ,vp.MaxZ))return;
         ExtensionDevice::RawScope raw(*ext);
@@ -2591,7 +2593,7 @@ private:
             if(!skyLayers.draw(ext,role,draw,&stateBlocks)){skyLayers.invalidate();if(skyLayerWarnings++<16)logf("SKYLAYERS capture failed frame=%u",frame);}});
     }
     bool hdrSkyDraw(){
-        if(!hdr.active||hdrUiPhase||hdrAtUiBoundary||hdrSkyRejected||!enabled||failed||debugMode||worldDebug)return false;
+        if(!hdr.active||hdrUiPhase||hdrAtUiBoundary||hdrSkyRejected||!celestialEnabled()||debugMode||worldDebug)return false;
         D3DVIEWPORT9 viewport{};if(FAILED(ext->GetViewport(&viewport)))return false;
         const auto band=NorthlightWorldDrawDomain::classify(worldMinDepth,worldMaxDepth,viewport.MinZ,viewport.MaxZ);
         // Horizon is native opaque terrain, already retained by the legacy decode.
@@ -2615,7 +2617,7 @@ private:
         return true;
     }
     bool hdrSkyAdmission(){
-        if(!hdr.active||hdrUiPhase||hdrSkyRejected)return false;
+        if(!hdr.active||hdrUiPhase||hdrSkyRejected||!celestialEnabled())return false;
         D3DVIEWPORT9 viewport{};
         if(FAILED(ext->GetViewport(&viewport))||
            NorthlightWorldDrawDomain::classify(worldMinDepth,worldMaxDepth,viewport.MinZ,viewport.MaxZ)!=NorthlightWorldDrawDomain::Band::Sky||

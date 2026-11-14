@@ -202,7 +202,7 @@ struct NameMaskCompositeBind {
 class WorldRenderer {
     IDirect3DPixelShader9 *hdrFinalPS=nullptr,*hdrUnlitPS=nullptr,*hdrMaterialPS=nullptr;
     IDirect3DPixelShader9* hdrCombinedPS=nullptr;bool hdrCombineTried=false;
-    IDirect3DPixelShader9* hdrBasePS=nullptr;bool hdrBaseTried=false,hdrBaseAllowed=false;
+    IDirect3DPixelShader9* hdrBasePS=nullptr,*hdrAOBasePS=nullptr;bool hdrBaseTried=false,hdrAOBaseTried=false,hdrBaseAllowed=false;
     D3DFORMAT colorStorageFormat=D3DFMT_UNKNOWN;
     friend struct WorldScreenEffectsTest;
     friend struct PipelineOffTest;
@@ -297,7 +297,8 @@ public:
         const bool softChanged=quality.softShadows!=effective.softShadows;
         const bool shadowTuningChanged=quality.shadowStrength!=effective.shadowStrength||quality.shadowSoftness!=effective.shadowSoftness||quality.shadowContactRadius!=effective.shadowContactRadius;
         const bool nearIntervalChanged=quality.nearShadowInterval!=effective.nearShadowInterval;
-        const bool celestialChanged=quality.celestialStyle!=effective.celestialStyle;
+        const bool celestialChanged=quality.celestialStyle!=effective.celestialStyle||quality.celestialEffects!=effective.celestialEffects;
+        if(quality.godrays!=effective.godrays){fogHistoryValid=false;fogVolume.valid=false;}
         if(celestialChanged){celestialLightMotion.reset();temporalValid=fogHistoryValid=false;}
         const bool directions=celestialChanged||quality.shadowDirectionSteps!=effective.shadowDirectionSteps||quality.shadowProvider!=effective.shadowProvider;
         const bool giToggle=quality.gi!=effective.gi||quality.worldShadows!=effective.worldShadows||quality.worldFog!=effective.worldFog;
@@ -731,6 +732,12 @@ private:
             if(FAILED(d->CreatePixelShader(kLocalDirect1Shader,&localDirectSinglePS))||!localDirectSinglePS){drop(localDirectSinglePS);localDirectSingleRefused=true;}
         }
         return localDirectSinglePS?localDirectSinglePS:localDirectPS;
+    }
+    IDirect3DPixelShader9* fogCloudsAmbientPS=nullptr;bool ambientFogRefused=false;
+    bool ambientFogResources(){
+        if(ambientFogRefused)return false;
+        if(!fogCloudsAmbientPS&&FAILED(d->CreatePixelShader(kFogCloudsAmbientShader,&fogCloudsAmbientPS))){ambientFogRefused=true;return false;}
+        return true;
     }
     IDirect3DPixelShader9* fogVolumeShader(bool ambientOnly,bool actor,bool tiled=false){
         if(!ambientOnly)return actor?(tiled&&fogActorTiledPS?fogActorTiledPS:fogActorPS):fogPS;
@@ -1432,7 +1439,7 @@ private:
                            NorthlightGI::dot(sourceColors[1],sourceColors[1])>1e-10f};
         farShadowCoverage=flightCoverage(staticFramePivot,map);
         try {auto request=StaticShadow::makeRequest(map,staticFramePivot,sourceDirections,lit,
-                celestialValid,celestialValid?celestial.dayFraction:0.,staticAllowLoads,quality.celestialStyle!=0);
+                celestialValid,celestialValid?celestial.dayFraction:0.,staticAllowLoads,NorthlightQuality::foreverCelestial(quality));
              request.groundOffset=staticFramePivot.z-farShadowCoverage.center.z;request.farRadius=farShadowCoverage.radius;staticStream->request(request);
              if(staticRecoveryPaused){staticStream->setPaused(false);staticRecoveryPaused=false;logf("STATIC SHADOW recovery paused=0 reason=geometry-ready");}}
         catch(...){if(staticDrawFailures++<4)logf("STATIC SHADOW request deferred: allocation failure; existing shadows retained");}
@@ -3040,7 +3047,7 @@ public:
     // too; its cursor continues). Everything else (DEFAULT targets, dynamic rings, queries, state blocks, caches derived from
     // them) is released as before. recover() and the destructor release the mesh as well; the CPU payload is gone by then, so
     // upload() asks the builder for a fresh generation.
-    void releaseGPU(bool keepMesh=false){fogVolume.reset();fogVolumeField.reset();fogVolumeKey=0;screenGroups=geometryGroups=0;shadowAlphaTargets.reset();shadowAlphaRetryAt=0;releaseMoonFloor();if(nativeDiagnosticCapture){nativeDiagnosticCapture->finish(false);nativeDiagnosticCapture.reset();}actorTargetsPending=false;releaseShadowTransitions();releaseNearEnvironment();releaseSoftShadows();drop(hdrBasePS);hdrBaseTried=false;drop(hdrFinalPS);drop(hdrUnlitPS);drop(hdrMaterialPS);drop(hdrCombinedPS);hdrCombineTried=false;colorStorageFormat=D3DFMT_UNKNOWN;drop(resetReplayQuery);resetReplayFence.drop();if(!keepMesh){resetReplaySource.reset();resetReplayPlan.reset();resetReplayScoped=false;resetReplayPending=false;}screenResourceRetry=false;fogUploadRetry=false;NorthlightMemoryProfile::store().invalidateGpu();resourceMemoryProfileAt=0;materialPixelAudit.reset();replayBoundsAbandon();releaseReplayProbe();staticCasters.settle();rigidMemoryClear();admission.reset();admissionOn=false;gatedBodies.clear();prepareQuiesce();prepareCaches->sampled.clear();prepareCaches->bones.clear();prepareCachesStale=false;if(replays.empty()&&heldShadowReplays.empty())prepareFrameRelease(); /* 0.3.179: no replay left to point at them */actorShadowHistory.clear();actorShadowOriginValid=false;replayBoundsMetadata.clear();if(!keepMesh)replayBoundsCache.clear(); /* CPU envelopes validate immutable source, program, declaration and current pose; GPU reset must not make every caster unbounded. */declarationCache.clear();if(!keepMesh)uploadedStaticOwners.reset();staticOwnerGeneration=UINT64_MAX;staticCasters.reset();staticMatcher.clear();staticM2Memory.clear();staticScene.reset();staticRetryTick=0;stateBlocks.clear();uploadedTerrain.clear();liveTerrainIndexCount=liveDirectionalIndexCount=0;if(!keepMesh){fixedTerrain.reset();fixedTerrainBits.reset();}liveTerrainGeneration=0;drop(regionalFogTexture);drop(fogHeightTexture);fogHeightReady=false;drop(neutralAO);drop(neutralZero);drop(ditherNoise);rainMask=nullptr;uploadedFogField.reset();releasePointGPU(keepMesh);releaseFlashGPU();probeActivation.reset();probeBlend.reset();drop(baselineSurface);drop(baselineLight);drop(prelitDaylightSurface);drop(prelitDaylight);prelitDaylightRetryAt=0;releaseReplayGPU();liveTerrainGPU.clear();{auto& queries=fence();NorthlightDynamicRing::reset(liveIndexRing,0,queries);queries.drop();}drop(liveIndicesGPU);liveIndexBytes=0;liveIndexBase=0;if(!keepMesh){pendingMesh.reset();clearMesh();}retiredMaterials.clear();if(!keepMesh){releaseMeshPool();uploadedMap.clear();}for(auto& t:shadow)drop(t);for(auto& s:shadowSurface)drop(s);for(auto& t:shadowCache)drop(t);for(auto& s:shadowCacheSurface)drop(s);drop(shadowCacheDepth);drop(shadowVerifySurface);drop(shadowVerify);for(auto& r:shadowVerifyRead)drop(r);drop(shadowScratch);drop(shadowScratchSurface);releaseActorTargets();drop(neutralWhite);actorValid[0]=actorValid[1]=false;actorCenterValid[0]=actorCenterValid[1]=false;drop(unionPS);invalidateShadowCache();if(!keepMesh||!keepPressureProbes){for(auto& t:probe)drop(t);drop(probePrev);drop(probeLocal);probeLocalMirror.reset();}drop(shadowDepth);drop(lightSurface);drop(fogSurface);drop(fogBlurredSurface);drop(fogHistorySurface);drop(fogHistory);drop(fogTemporalPS);fogHistoryValid=fogNeutral=fogHistoryNeutral=false;drop(colorSurface);drop(light);drop(fog);drop(fogBlurred);drop(color);drop(distancePS);drop(foreverFogNoNoisePS);drop(foreverFogActorNoNoisePS);drop(foreverFogNoNoiseFadePS);drop(foreverFogActorNoNoiseFadePS);drop(foreverFogPS);drop(foreverFogActorPS);drop(foreverFogFadePS);drop(foreverFogActorFadePS);drop(lightingPS);drop(lightingUnshadowedPS);lightingUnshadowedRefused=false;drop(lightingUnshadowedGIPS);lightingUnshadowedGIRefused=false;drop(giPS);drop(fogPS);drop(fogAmbientPS);fogAmbientRefused=false;drop(fogActorPS);drop(fogCloudsActorPS);drop(fogBlurPS);drop(fogCloudsPS);drop(cloudNoise);drop(localDirectPS);drop(localDirect16PS);drop(localFlashPS);drop(localDirectSinglePS);localDirectSingleRefused=false;drop(profileSplitSurface);profileSplitFailed=false;drop(removalPS);drop(temporalPS);drop(localFogPS);drop(localFogCombinePS);drop(normalsPS);drop(normalsNoDistancePS);normalsNoDistanceRefused=false;drop(normalBuffer);drop(normalSurface);for(int i=0;i<2;++i){drop(temporalLight[i]);drop(temporalLightSurface[i]);drop(temporalDepth[i]);drop(temporalDepthSurface[i]);}temporalValid=false;drop(finalPS);drop(unlitPS);unlitShaderRefused=false;drop(prelitPS);drop(hdrPrelitPS);prelitShaderRefused=false;drop(materialPS);drop(shadowPS);drop(replayPS);drop(shadowVS);drop(cachedShadowVS);drop(cachedShadowPS);drop(cachedFastPS);drop(cachedOpaqueFastPS);drop(cachedOpaquePS);drop(shadowDecl);drop(liveTerrainDecl);geometryTargetsReady=false;geometryTargetsRetry=false;width=height=0;uploadedSerial=0;}
+    void releaseGPU(bool keepMesh=false){fogVolume.reset();fogVolumeField.reset();fogVolumeKey=0;screenGroups=geometryGroups=0;shadowAlphaTargets.reset();shadowAlphaRetryAt=0;releaseMoonFloor();if(nativeDiagnosticCapture){nativeDiagnosticCapture->finish(false);nativeDiagnosticCapture.reset();}actorTargetsPending=false;releaseShadowTransitions();releaseNearEnvironment();releaseSoftShadows();drop(hdrBasePS);drop(hdrAOBasePS);hdrBaseTried=hdrAOBaseTried=false;drop(hdrFinalPS);drop(hdrUnlitPS);drop(hdrMaterialPS);drop(hdrCombinedPS);hdrCombineTried=false;colorStorageFormat=D3DFMT_UNKNOWN;drop(resetReplayQuery);resetReplayFence.drop();if(!keepMesh){resetReplaySource.reset();resetReplayPlan.reset();resetReplayScoped=false;resetReplayPending=false;}screenResourceRetry=false;fogUploadRetry=false;NorthlightMemoryProfile::store().invalidateGpu();resourceMemoryProfileAt=0;materialPixelAudit.reset();replayBoundsAbandon();releaseReplayProbe();staticCasters.settle();rigidMemoryClear();admission.reset();admissionOn=false;gatedBodies.clear();prepareQuiesce();prepareCaches->sampled.clear();prepareCaches->bones.clear();prepareCachesStale=false;if(replays.empty()&&heldShadowReplays.empty())prepareFrameRelease(); /* 0.3.179: no replay left to point at them */actorShadowHistory.clear();actorShadowOriginValid=false;replayBoundsMetadata.clear();if(!keepMesh)replayBoundsCache.clear(); /* CPU envelopes validate immutable source, program, declaration and current pose; GPU reset must not make every caster unbounded. */declarationCache.clear();if(!keepMesh)uploadedStaticOwners.reset();staticOwnerGeneration=UINT64_MAX;staticCasters.reset();staticMatcher.clear();staticM2Memory.clear();staticScene.reset();staticRetryTick=0;stateBlocks.clear();uploadedTerrain.clear();liveTerrainIndexCount=liveDirectionalIndexCount=0;if(!keepMesh){fixedTerrain.reset();fixedTerrainBits.reset();}liveTerrainGeneration=0;drop(regionalFogTexture);drop(fogHeightTexture);fogHeightReady=false;drop(neutralAO);drop(neutralZero);drop(ditherNoise);rainMask=nullptr;uploadedFogField.reset();releasePointGPU(keepMesh);releaseFlashGPU();probeActivation.reset();probeBlend.reset();drop(baselineSurface);drop(baselineLight);drop(prelitDaylightSurface);drop(prelitDaylight);prelitDaylightRetryAt=0;releaseReplayGPU();liveTerrainGPU.clear();{auto& queries=fence();NorthlightDynamicRing::reset(liveIndexRing,0,queries);queries.drop();}drop(liveIndicesGPU);liveIndexBytes=0;liveIndexBase=0;if(!keepMesh){pendingMesh.reset();clearMesh();}retiredMaterials.clear();if(!keepMesh){releaseMeshPool();uploadedMap.clear();}for(auto& t:shadow)drop(t);for(auto& s:shadowSurface)drop(s);for(auto& t:shadowCache)drop(t);for(auto& s:shadowCacheSurface)drop(s);drop(shadowCacheDepth);drop(shadowVerifySurface);drop(shadowVerify);for(auto& r:shadowVerifyRead)drop(r);drop(shadowScratch);drop(shadowScratchSurface);releaseActorTargets();drop(neutralWhite);actorValid[0]=actorValid[1]=false;actorCenterValid[0]=actorCenterValid[1]=false;drop(unionPS);invalidateShadowCache();if(!keepMesh||!keepPressureProbes){for(auto& t:probe)drop(t);drop(probePrev);drop(probeLocal);probeLocalMirror.reset();}drop(shadowDepth);drop(lightSurface);drop(fogSurface);drop(fogBlurredSurface);drop(fogHistorySurface);drop(fogHistory);drop(fogTemporalPS);fogHistoryValid=fogNeutral=fogHistoryNeutral=false;drop(colorSurface);drop(light);drop(fog);drop(fogBlurred);drop(color);drop(distancePS);drop(foreverFogNoNoisePS);drop(foreverFogActorNoNoisePS);drop(foreverFogNoNoiseFadePS);drop(foreverFogActorNoNoiseFadePS);drop(foreverFogPS);drop(foreverFogActorPS);drop(foreverFogFadePS);drop(foreverFogActorFadePS);drop(lightingPS);drop(lightingUnshadowedPS);lightingUnshadowedRefused=false;drop(lightingUnshadowedGIPS);lightingUnshadowedGIRefused=false;drop(giPS);drop(fogPS);drop(fogAmbientPS);fogAmbientRefused=false;drop(fogCloudsAmbientPS);ambientFogRefused=false;drop(fogActorPS);drop(fogCloudsActorPS);drop(fogBlurPS);drop(fogCloudsPS);drop(cloudNoise);drop(localDirectPS);drop(localDirect16PS);drop(localFlashPS);drop(localDirectSinglePS);localDirectSingleRefused=false;drop(profileSplitSurface);profileSplitFailed=false;drop(removalPS);drop(temporalPS);drop(localFogPS);drop(localFogCombinePS);drop(normalsPS);drop(normalsNoDistancePS);normalsNoDistanceRefused=false;drop(normalBuffer);drop(normalSurface);for(int i=0;i<2;++i){drop(temporalLight[i]);drop(temporalLightSurface[i]);drop(temporalDepth[i]);drop(temporalDepthSurface[i]);}temporalValid=false;drop(finalPS);drop(unlitPS);unlitShaderRefused=false;drop(prelitPS);drop(hdrPrelitPS);prelitShaderRefused=false;drop(materialPS);drop(shadowPS);drop(replayPS);drop(shadowVS);drop(cachedShadowVS);drop(cachedShadowPS);drop(cachedFastPS);drop(cachedOpaqueFastPS);drop(cachedOpaquePS);drop(shadowDecl);drop(liveTerrainDecl);geometryTargetsReady=false;geometryTargetsRetry=false;width=height=0;uploadedSerial=0;}
     // Explicit enable/retry only, called after the wrapper's clearFrame(). This
     // never calls endFrame(), so packet capture and cleanup run exactly once.
     void recover(){meshRetry.clear();if(!failed)return;releaseGPU(true);failed=false;valid=false;streamingReports=0;logf("WORLD explicit recovery requested");}
@@ -3434,11 +3441,6 @@ public:
         if(weatherShelterUnavailable)return false;
         if(!weatherShelter)try{weatherShelter=std::make_unique<NorthlightWeatherShelter::Worker>();}catch(...){weatherShelterUnavailable=true;logf("WEATHER supplemental shelter worker unavailable; native precipitation retained");return false;}
         return weatherShelter->sample(active->bvh,vec(context.camera),active->map,GetTickCount64());
-    }
-    std::shared_ptr<const NorthlightWeatherShelter::Roof> precipitationRoof(){
-        if(!hasContext()||!active||!active->bvh||active->map!=lastRequest.map||weatherShelterUnavailable)return {};
-        if(!weatherShelter)try{weatherShelter=std::make_unique<NorthlightWeatherShelter::Worker>();}catch(...){weatherShelterUnavailable=true;return {};}
-        return weatherShelter->roof(active->bvh,vec(context.camera),active->map,GetTickCount64());
     }
     unsigned frameTraceFog()const{return traceFog;}
     unsigned frameTraceContext()const{return traceContext;} /* 0.3.200 (frame trace) */
@@ -3841,7 +3843,7 @@ public:
     unsigned auroraStrength()const{return quality.auroraStrength;}
     const std::string& auroraMap()const{return lastRequest.map;}
     NorthlightAurora::Style auroraStyle()const{
-        return NorthlightAurora::style(lastRequest.map.c_str(),quality.auroraStrength,hasContext()&&celestialValid,celestial.dayFraction,quality.celestialStyle!=0);
+        return NorthlightAurora::style(lastRequest.map.c_str(),quality.auroraStrength,hasContext()&&celestialValid,celestial.dayFraction,NorthlightQuality::foreverCelestial(quality));
     }
     // Render-thread handoff; worker requests retain immutable observations.
     void setAuroraSource(std::shared_ptr<const NorthlightAuroraSource::Snapshot> source,const std::string& map){
@@ -4001,7 +4003,7 @@ public:
             const float nativeSunAlpha=celestial.sun.alpha,nativeMoonAlpha=celestial.moon.alpha;
             const double nativeSun=NorthlightCelestialOrbit::elevationDegrees(celestial.sun.direction[2]);
             const double nativeMoon=NorthlightCelestialOrbit::elevationDegrees(celestial.moon.direction[2]);
-            const auto orbit=NorthlightCelestial::resolveRendererSky(celestial,renderDirect,quality.celestialStyle!=0,map);
+            const auto orbit=NorthlightCelestial::resolveRendererSky(celestial,renderDirect,NorthlightQuality::foreverCelestial(quality),map);
             const auto lightOrbit=celestialLightMotion.update(orbit,celestial.dayFraction,GetTickCount(),
                 celestialLightMap!=map||different(celestialLightCamera,vec(camera),40));
             celestialLightMap=map;celestialLightCamera=vec(camera);
@@ -4013,7 +4015,7 @@ public:
             NorthlightCelestialProfiles::apply(palette,renderDirect,celestial);
             NorthlightCelestialProfiles::apply(palette,renderDirect,celestialLight);
             continuousCelestialShadows=false; // Native-speed orbit: ordinary cache policy, no accelerated phases.
-            if(++celestialOrbitReports%600==1&&(celestialOrbitReports==1||NorthlightDiagnostics::enabled()))logf("CELESTIAL orbit gameDay=%.6f sun=%.2f->%.2f moon=%.2f->%.2f schedule=%s weights=%.3f/%.3f nativeAlpha=%.3f/%.3f rendererAlpha=%.1f/%.1f",celestial.dayFraction,nativeSun,orbit.sun.elevation,nativeMoon,orbit.moon.elevation,NorthlightQuality::celestialStyleName(quality.celestialStyle),celestial.sunWeight,celestial.moonWeight,nativeSunAlpha,nativeMoonAlpha,celestial.sun.alpha,celestial.moon.alpha);
+            if(++celestialOrbitReports%600==1&&(celestialOrbitReports==1||NorthlightDiagnostics::enabled()))logf("CELESTIAL orbit gameDay=%.6f sun=%.2f->%.2f moon=%.2f->%.2f schedule=%s weights=%.3f/%.3f nativeAlpha=%.3f/%.3f rendererAlpha=%.1f/%.1f",celestial.dayFraction,nativeSun,orbit.sun.elevation,nativeMoon,orbit.moon.elevation,NorthlightQuality::celestialStyleName(NorthlightQuality::foreverCelestial(quality)),celestial.sunWeight,celestial.moonWeight,nativeSunAlpha,nativeMoonAlpha,celestial.sun.alpha,celestial.moon.alpha);
         }
         if(!celestialValid){celestialLightMotion.reset();continuousCelestialShadows=false;}
         // glow hue: the light slots of this frame's proven read, else held for 2 s on the same map.
@@ -4024,7 +4026,7 @@ public:
         glowHueFrame=NorthlightSunHue::compute(lightSlotsValid?lightSlots:nullptr,glowPalette.disc[1]);
         celestialGlowHueFrame=glowHueFrame;
         if(celestialValid&&NorthlightCelestial::luminousAppearance(celestial.sun))celestialGlowHueFrame=NorthlightSunHue::compute(lightSlotsValid?lightSlots:nullptr,glowPalette.disc[1],celestial.sun.nativeTint);
-        if(skyEnvironment.skyValid){
+        if(quality.celestialEffects&&skyEnvironment.skyValid){
             float solar[3];const auto& colors=skyEnvironment.sky.color;
             const float* tint=std::max({colors[6][0],colors[6][1],colors[6][2]})>1.f/255?colors[6]:colors[7];
             if(NorthlightSunHue::normMax(tint,solar)){
@@ -4050,7 +4052,7 @@ public:
         if(celestialValid){sourceGlowColors[0]=vec(celestialLight.sunGlowColor);sourceGlowColors[1]=vec(celestialLight.moonGlowColor);}
         requestStaticCasters(map);
         Request r;r.map=map;r.camera=vec(camera);r.light.sunDirection=sourceDirections[0];r.light.sunIrradiance=sourceColors[0]*3.14159265f;r.light.skyRadiance=vec(skyEnvironment.valid?skyEnvironment.ambient:context.ambient);r.light.maxBounces=quality.giBounces;r.giEnabled=giWorkEnabled();r.fogEnabled=effects.fog;
-        if(auroraSourceMap==map&&NorthlightAurora::style(map,quality.auroraStrength,celestialValid,celestial.dayFraction,quality.celestialStyle!=0).enabled)r.light.aurora=auroraSource;
+        if(auroraSourceMap==map&&NorthlightAurora::style(map,quality.auroraStrength,celestialValid,celestial.dayFraction,NorthlightQuality::foreverCelestial(quality)).enabled)r.light.aurora=auroraSource;
         r.auroraActive=bool(r.light.aurora);
         r.light.additionalDirections.push_back({sourceDirections[1],sourceColors[1]*3.14159265f});
         // 0.3.153 GIProbeAhead: centre the probe window ahead of the eye along the horizontal
@@ -5243,6 +5245,8 @@ public:
             if((!hdrFinalPS&&FAILED(d->CreatePixelShader(kWorldCompositeHdrShader,&hdrFinalPS)))||
                (!hdrUnlitPS&&FAILED(d->CreatePixelShader(kWorldUnlitCompositeHdrShader,&hdrUnlitPS)))||
                (!hdrMaterialPS&&FAILED(d->CreatePixelShader(kMaterialCompositeHdrShader,&hdrMaterialPS)))){skipReason="hdr-shader";return false;}
+            if(hdrBaseAllowed&&!requirements.lighting&&!hdrAOBaseTried){hdrAOBaseTried=true;
+                if(FAILED(d->CreatePixelShader(kWorldAOCompositeHdrShader,&hdrAOBasePS)))deferLogf("WORLD AO HDR compositor unavailable; ordinary composition retained");}
             if(hdrBaseAllowed&&!hdrBaseTried){hdrBaseTried=true;if(FAILED(d->CreatePixelShader(kWorldBaseCompositeHdrShader,&hdrBasePS)))deferLogf("WORLD base HDR compositor unavailable; ordinary composition retained");}
         }
         if(hdrMode&&hdrCombineAllowed&&materialDetail&&!hdrCombineTried){hdrCombineTried=true;D3DCAPS9 caps{};
@@ -5960,7 +5964,7 @@ public:
         memcpy(c[3],context.inverseView,64);memcpy(c[7],sourceMatrices[firstSource][0],64);memcpy(c[11],sourceMatrices[firstSource][1],64);
         memcpy(c[15],context.camera,12);memcpy(c[16],context.lightDirection,12);memcpy(c[17],context.direct,12);memcpy(c[18],context.ambient,12);
         /* Ambient policies follow the selected solar/lunar schedule. */
-        const auto naturalSky=NorthlightForeverSky::evaluateSelected(celestialValid?celestial.dayFraction:-1.,quality.celestialStyle!=0);
+        const auto naturalSky=NorthlightForeverSky::evaluateSelected(celestialValid?celestial.dayFraction:-1.,NorthlightQuality::foreverCelestial(quality));
         c[18][3]=NorthlightTwilightFill::gain(naturalSky.valid,naturalSky.valid?celestial.dayFraction:-1.,
             naturalSky.valid?naturalSky.sun.direction[2]:0.f,naturalSky.valid?naturalSky.moon.direction[2]:0.f);
         c[18][3]+=wx.ambientLift(); /* 0.3.198 (rain): a little more sky ambient from the GI pass in rain (+0 when dry; the probes themselves are untouched) */
@@ -6042,7 +6046,7 @@ public:
             // a sub-threshold celestial source.
             const V& shown=volume?sourceGlowColors[source]:sourceColors[source]; // the fog volume's glow has its own strength and hue; surface passes keep the light colour
             float rgb[4]={sourceActive[source]?shown.x:0.f,sourceActive[source]?shown.y:0.f,sourceActive[source]?shown.z:0.f,geometryReady&&applyDirectionalShadows?1.f:0.f};
-            if(volume){const float keep=underwaterFade.scale();rgb[0]*=keep;rgb[1]*=keep;rgb[2]*=keep;} /* underwater: the fog/volume pass (shafts) fades with the sun; the lighting and actor passes keep the real colour (their shadow test and alpha read it) */
+            if(volume){const float keep=quality.godrays?underwaterFade.scale():0.f;rgb[0]*=keep;rgb[1]*=keep;rgb[2]*=keep;} /* underwater: the fog/volume pass (shafts) fades with the sun; the lighting and actor passes keep the real colour (their shadow test and alpha read it) */
             // fog passes only: the sun's direct scatter takes the glow hue; the forward soft cap
             // rises so the aureole brightens toward the sun. c17/c18 are restored after the fog loop.
             // Missing/disabled shadow maps are neutral visibility. They must
@@ -6050,7 +6054,7 @@ public:
             if(volume&&source==0)NorthlightSunHue::fogDirect(rgb,glowHueFrame,rgb);
             d->SetPixelShaderConstantF(16,dir,1);d->SetPixelShaderConstantF(17,rgb,1);
             if(volume){
-                const bool fogActor=fogActorPS&&fogCloudsActorPS&&geometryReady&&applyDirectionalShadows&&quality.actorShadows&&quality.actorShadowDetail&&sourceActive[source]&&actorValid[source]&&actorShadow[source]&&actorCasterCount[source]>0;
+                const bool fogActor=quality.godrays&&fogActorPS&&fogCloudsActorPS&&geometryReady&&applyDirectionalShadows&&quality.actorShadows&&quality.actorShadowDetail&&sourceActive[source]&&actorValid[source]&&actorShadow[source]&&actorCasterCount[source]>0;
                 fogActorCurrent=fogActor;
                 const float fogActorInfo[4]={fogActor?1.f:0.f,0,0,0};
                 d->SetTexture(4,fogActor?actorShadow[source]:neutralWhite);
@@ -6063,7 +6067,7 @@ public:
                 fogActorTiledCurrent=fogActorCurrent&&actorTilesWideCurrent[source]&&fogActorTiledPS&&fogCloudsActorTiledPS&&NorthlightActorShadowMap::tiledFogRange(actorMatrices[source],c[15],c[24][0]);
                 d->SetTexture(5,fogActorTiledCurrent?actorTiles[source]:textures[5]);
                 if(profileSampled())logf("FOG_ACTOR_TILES frame=%u source=%d enabled=%u wideCurrent=%u",unsigned(frames),source,unsigned(fogActorTiledCurrent),unsigned(actorTilesWideCurrent[source]));
-                c[21][1]=1.2f*volumePalette.fogGain[source]*wx.shaftGain();c[21][2]=hdrMode?64.f:source==0?NorthlightSunHue::SunForwardCap:NorthlightSunHue::MoonForwardCap;d->SetPixelShaderConstantF(21,c[21],1);fogAmbientOnlyCurrent=NorthlightFogAmbient::eligible(rgb,c[21][1]);}
+                c[21][1]=quality.godrays?1.2f*volumePalette.fogGain[source]*wx.shaftGain():0.f;c[21][2]=hdrMode?64.f:source==0?NorthlightSunHue::SunForwardCap:NorthlightSunHue::MoonForwardCap;d->SetPixelShaderConstantF(21,c[21],1);fogAmbientOnlyCurrent=NorthlightFogAmbient::eligible(rgb,c[21][1]);}
             c[27][0]=first?(volume?1.f:1.f-authoredFill):0.f;c[27][1]=sourceWeights[source];d->SetPixelShaderConstantF(27,c[27],1);
         };
         lightingMark(3);
@@ -6121,7 +6125,7 @@ public:
                 if(!check(quad(mid,mid),"actor shadow tile pass"))return false;
                 if(!check(d->SetRenderTarget(0,actorTilesSurface[source]),"actor tile target"))return false;
                 d->SetTexture(12,actorTilesMid);d->SetPixelShaderConstantF(72,midInfo,1);
-                const bool wideFogTiles=effects.fog&&actorTilesWidePS&&fogActorTiledPS&&fogCloudsActorTiledPS&&NorthlightActorShadowMap::tiledFogRange(actorMatrices[source],c[15],c[24][0]);
+                const bool wideFogTiles=quality.godrays&&effects.fog&&actorTilesWidePS&&fogActorTiledPS&&fogCloudsActorTiledPS&&NorthlightActorShadowMap::tiledFogRange(actorMatrices[source],c[15],c[24][0]);
                 if(wideFogTiles)d->SetPixelShader(actorTilesWidePS);
                 if(!check(quad(tiles,tiles),"actor shadow tile pass"))return false;
                 actorTilesWideCurrent[source]=wideFogTiles;
@@ -6420,6 +6424,7 @@ public:
         bool fogResolved=false; // The final fog is fogBlurred when the temporal pass runs.
         // Every view ray ends within c21.w. Unknown bounds fail open; local
         // lamps have their own longer range, so retain their path independently.
+        if(effects.fog&&!quality.godrays&&!ambientFogResources())return false;
         const bool regionalFogActive=c[21][0]>=.5f&&(atmosphere.imported.valid||!(c[65][2]>0&&
             (c[15][2]-c[21][3]>c[65][1]||c[15][2]+c[21][3]<c[65][0])));
         const bool localFogActive=localDirectCount&&debug==0&&localLights.hasFog(localDirectCount);
@@ -6432,10 +6437,11 @@ public:
         if(volumeFog){
             volumeHash(c[31],sizeof(float)*3); // The imported medium does not read regional night fraction.
             volumeHash(atmosphere.imported.layer,sizeof atmosphere.imported.layer);volumeHash(atmosphere.imported.direct,sizeof atmosphere.imported.direct);volumeHash(atmosphere.imported.ambient,sizeof atmosphere.imported.ambient);
-            for(unsigned source=0;source<2;++source){const V dir=directionFor(source,true);const float xyz[]={dir.x,dir.y,dir.z};volumeHash(xyz,sizeof xyz);}
-            volumeHash(sourceWeights,sizeof sourceWeights);volumeHash(&geometryReady,sizeof geometryReady);
+            volumeHash(&quality.godrays,sizeof quality.godrays);
+            if(quality.godrays)for(unsigned source=0;source<2;++source){const V dir=directionFor(source,true);const float xyz[]={dir.x,dir.y,dir.z};volumeHash(xyz,sizeof xyz);}
+            if(quality.godrays){volumeHash(sourceWeights,sizeof sourceWeights);volumeHash(&geometryReady,sizeof geometryReady);
             volumeHash(sourceActive,sizeof sourceActive);volumeHash(&applyDirectionalShadows,sizeof applyDirectionalShadows);
-            const float fade=underwaterFade.scale();volumeHash(&fade,sizeof fade);
+            const float fade=underwaterFade.scale();volumeHash(&fade,sizeof fade);}
             auto* field=uploadedFogField.get();volumeHash(&field,sizeof field);
             volumeHash(c[0],sizeof(float)*4*7);volumeHash(c[15],sizeof c[15]);
             bool shadowed=false,needsNoise=false;
@@ -6450,7 +6456,7 @@ public:
             // A cached quiet fallback must wake when the asynchronous noise
             // becomes available, including on a stationary windless frame.
             const bool noiseReady=!needsNoise||ensureCloudNoise();volumeHash(&noiseReady,sizeof noiseReady);
-            if(shadowed){
+            if(shadowed&&quality.godrays){
                 volumeHash(&fogShadowRevision,sizeof fogShadowRevision);
                 for(unsigned source=0;source<2;++source)volumeMoving|=sourceActive[source]&&
                     ((geometryReady&&applyDirectionalShadows&&quality.actorShadows&&quality.actorShadowDetail&&actorValid[source]&&actorCasterCount[source])||shadowVolumeTransitionActive(source));
@@ -6473,7 +6479,7 @@ public:
         if(volumeFog&&!volumeReuse){
             if(!fogVolume.target(d,fogVolume.raw()))return false;
         }
-        if(!volumeReuse)for(int source=0;source<2;++source){if(!sourceActive[source]&&source!=firstSource)continue;
+        if(!volumeReuse)for(int source=0;source<2;++source){if((!quality.godrays||!sourceActive[source])&&source!=firstSource)continue;
             setSource(source,first,true);const bool fading=geometryReady&&shadowVolumeTransitionActive(source)&&!fogAmbientOnlyCurrent;
             if(fading)bindShadowTransition(source);
             auto* volumeShader=fading?(fogActorTiledCurrent?fogActorTiledFadePS:fogActorCurrent?fogActorFadePS:fogFadePS):fogVolumeShader(fogAmbientOnlyCurrent,fogActorCurrent,fogActorTiledCurrent);
@@ -6487,6 +6493,8 @@ public:
                 float importedConstants[38][4];NorthlightForever::constants(atmosphere.imported,importedConstants,std::clamp(farZ,128.f,4000.f),sourceWeights[source]*underwaterFade.scale());
                 const auto ground=uploadedFogField?NorthlightSpellFog::fieldAt(*uploadedFogField,context.camera[0],context.camera[1]):NorthlightSpellFog::FieldSample{};
                 importedConstants[0][3]=ground.ground;
+                // The fallback uses its existing uniform branch to skip every shadow query.
+                if(!quality.godrays){std::fill_n(importedConstants[9],3,0.f);importedConstants[11][3]=0;}
                 bool noise=importedConstants[34][0]>0||importedConstants[34][1]>0||importedConstants[34][2]>0;
                 bool quietSelected=false;
                 if(noise&&!ensureCloudNoise()){noise=false;importedConstants[34][0]=importedConstants[34][1]=importedConstants[34][2]=0;}
@@ -6500,7 +6508,7 @@ public:
                 d->SetSamplerState(14,D3DSAMP_SRGBTEXTURE,FALSE);
                 d->SetPixelShaderConstantF(116,importedConstants[0],38);
                 volumeNoise=noise;
-                if(volumeFog)volumeShader=fogVolume.inject[(fading?4:0)+(actor?2:0)+(noise?0:1)];
+                if(volumeFog)volumeShader=fogVolume.inject[quality.godrays?(fading?4:0)+(actor?2:0)+(noise?0:1):8+(noise?0:1)];
             }
             if(volumeFog){if(!fogVolume.injection(d,volumeShader,std::clamp(farZ,128.f,4000.f),volumeNoise,first))return false;}
             else if(!check(drawFogVolume(w/2,h/2,volumeShader,floorEligible,fogActorCurrent,fogActorTiledCurrent,fading,textures[0],c[65]),"celestial volumetric raymarch"))return false;
@@ -6545,8 +6553,8 @@ public:
             const DWORD cloudFilter=D3DTEXF_LINEAR;d->SetSamplerState(14,D3DSAMP_MINFILTER,cloudFilter);d->SetSamplerState(14,D3DSAMP_MAGFILTER,cloudFilter);d->SetSamplerState(14,D3DSAMP_MIPFILTER,D3DTEXF_NONE);d->SetSamplerState(14,D3DSAMP_SRGBTEXTURE,FALSE);
             d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE);d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_ONE);d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_SRCALPHA);d->SetRenderState(D3DRS_BLENDOP,D3DBLENDOP_ADD);
             d->SetRenderState(D3DRS_SEPARATEALPHABLENDENABLE,TRUE);d->SetRenderState(D3DRS_SRCBLENDALPHA,D3DBLEND_ZERO);d->SetRenderState(D3DRS_DESTBLENDALPHA,D3DBLEND_SRCALPHA);d->SetRenderState(D3DRS_BLENDOPALPHA,D3DBLENDOP_ADD);
-            const bool cloudFade=geometryReady&&shadowVolumeTransitionActive(firstSource);if(cloudFade)bindShadowTransition(firstSource);
-            d->SetRenderState(D3DRS_COLORWRITEENABLE,15);d->SetPixelShader(cloudFade?(fogActorCurrent?(fogActorTiledCurrent?cloudActorTiledFadePS:cloudActorFadePS):cloudFadePS):(fogActorCurrent?(fogActorTiledCurrent?fogCloudsActorTiledPS:fogCloudsActorPS):fogCloudsPS));
+            const bool cloudFade=quality.godrays&&geometryReady&&shadowVolumeTransitionActive(firstSource);if(cloudFade)bindShadowTransition(firstSource);
+            d->SetRenderState(D3DRS_COLORWRITEENABLE,15);d->SetPixelShader(!quality.godrays?fogCloudsAmbientPS:cloudFade?(fogActorCurrent?(fogActorTiledCurrent?cloudActorTiledFadePS:cloudActorFadePS):cloudFadePS):(fogActorCurrent?(fogActorTiledCurrent?fogCloudsActorTiledPS:fogCloudsActorPS):fogCloudsPS));
             const bool cloudsDrawn=check(quad(w/2,h/2),"fog clouds raymarch");
             if(!sameSource)setSource(lastFogSource,lastFogFirst,true);
             d->SetPixelShaderConstantF(25,c[25],2); /* 0.3.199 (fog clouds): the bank's game fog parameters and colour back for the lamp fog, blur and composite */
@@ -6688,6 +6696,7 @@ public:
         const bool baseComposite=hdrBaseAllowed&&hdrMode&&!combinedMaterial&&!fogActive&&!currentLocalLighting&&hdrBasePS;
         // Only the folded UNORM input has a nonnegative encoded-RGB proof.
         // Use the held values actually uploaded at c25/c26, including their fade.
+        const bool aoBaseComposite=baseComposite&&!lightingNeeded&&hdrAOBasePS;
         const bool nativeSurfaceShared=baseComposite&&foldScene&&
             NorthlightLegacyFog::surfaceFogIsZero(uploadedFog,fmt==D3DFMT_A8R8G8B8||fmt==D3DFMT_X8R8G8B8);
         // c80 is rebound after all shadow-transition users; rainMask is frame-local.
@@ -6701,7 +6710,7 @@ public:
         // or captured HDR sky requires a separate linear base image.
         d->SetSamplerState(2,D3DSAMP_SRGBTEXTURE,hdrMode&&hdrBaseEncoded?TRUE:FALSE);
         d->SetTexture(3,currentLocalLighting?light:neutralZero); // CurrentLocalLighting in WorldComposite only.
-        d->SetRenderTarget(0,fullMaterial&&!combinedMaterial?colorSurface:targetSurface);d->SetTexture(8,lightingNeeded?temporalLight[1-temporalIndex]:neutralZero);d->SetTexture(9,fogResolved?fogBlurred:fog?fog:neutralAO);d->SetPixelShader(baseComposite?hdrBasePS:hdrMode?hdrFinalPS:finalPS);
+        d->SetRenderTarget(0,fullMaterial&&!combinedMaterial?colorSurface:targetSurface);d->SetTexture(8,lightingNeeded?temporalLight[1-temporalIndex]:neutralZero);d->SetTexture(9,fogResolved?fogBlurred:fog?fog:neutralAO);d->SetPixelShader(aoBaseComposite?hdrAOBasePS:baseComposite?hdrBasePS:hdrMode?hdrFinalPS:finalPS);
         if(combinedMaterial){
             d->SetTexture(4,fogResolved?fogBlurred:fog?fog:neutralAO);d->SetTexture(5,foldScene);d->SetTexture(6,materialOcclusion);d->SetTexture(9,materialDetail);d->SetTexture(14,normalBuffer);
             for(unsigned sampler:{4u,5u,6u,9u,12u,14u}){
@@ -6842,7 +6851,7 @@ public:
         if(frames==1||frames%600==0){if(frames==1||NorthlightDiagnostics::enabled())logf("SHADOW reuse nearInterval=%u farInterval=%u nearReuses=%u farReuses=%u captureSkippedFrames=%u captureDeferrals=%u captureSkip=%u",
             quality.nearShadowInterval,quality.farShadowInterval,nearReuses,farReuses,captureSkippedFrames,captureDeferrals,unsigned(NorthlightQuality::captureSkipPossible(quality,NorthlightQuality::actorShadowWork(quality,applyDirectionalShadows))));
             nearReuses=farReuses=captureSkippedFrames=captureDeferrals=0;}
-        if(profile&&profile->recording())deferLogf("WORLD composite rendererFrame=%u variant=%s width=%u height=%u fog=%u local=%u aoAlphaNeutral=%u combined=%u rainAbsent=%u nativeSurfaceShared=%u distanceFromNormals=%u fogClearSkipped=%u fogHistoryClearSkipped=%u callerStateShared=%u",rendererFrame,baseComposite?"base-hdr":hdrMode?"standard-hdr":"standard-sdr",w,h,unsigned(fogActive),unsigned(currentLocalLighting),unsigned(!foldAO||foldAOAlphaNeutral),unsigned(combinedMaterial),unsigned(compositeWork[2]>.5f),unsigned(nativeSurfaceShared),unsigned(normalsProduceDistance),unsigned(fogClearSkipped),unsigned(fogHistoryClearSkipped),unsigned(callerRestores));
+        if(profile&&profile->recording())deferLogf("WORLD composite rendererFrame=%u variant=%s width=%u height=%u fog=%u local=%u aoAlphaNeutral=%u combined=%u rainAbsent=%u nativeSurfaceShared=%u distanceFromNormals=%u fogClearSkipped=%u fogHistoryClearSkipped=%u callerStateShared=%u",rendererFrame,aoBaseComposite?"ao-hdr":baseComposite?"base-hdr":hdrMode?"standard-hdr":"standard-sdr",w,h,unsigned(fogActive),unsigned(currentLocalLighting),unsigned(!foldAO||foldAOAlphaNeutral),unsigned(combinedMaterial),unsigned(compositeWork[2]>.5f),unsigned(nativeSurfaceShared),unsigned(normalsProduceDistance),unsigned(fogClearSkipped),unsigned(fogHistoryClearSkipped),unsigned(callerRestores));
         if(lightingClock)logf("WORLD lighting setup prefixMs=%.3f atmosphereMs=%.3f constantsMs=%.3f bindingsMs=%.3f spellFitMs=%.3f spellFitRevision=%u spellAsync=%u spellWorker=%u spellJoinMs=%.3f",lightingSetupMs[0],lightingSetupMs[1],lightingSetupMs[2],lightingSetupMs[3],spellFitMs,spellFogHold.out.revision,unsigned(spellAsync),unsigned(spellWorker),spellJoinMs);
         if(captureSampled)logf("WORLD terrain reuse=%u snapshots=%zu uploadBytes=%zu vertexUploadBytes=%zu reusedVertices=%zu arenaMiB=%.2f vertexStride=%zu vertexCapacity=%u rollovers=%u change=%s newOwners=%u directionalBuilds=%u directionalAliases=%u indexCacheMiB=%.2f directionalTriangles=%zu straddlingTriangleTests=%zu collectVisited=%zu terrainMs=%.3f,%.3f,%.3f",unsigned(terrainUploadReused),frameTerrain.size(),terrainUploadBytes,liveTerrainGPU.uploadedBytes,liveTerrainGPU.reusedVertices,double(liveTerrainGPU.bytes())/1048576,sizeof(StaticShadow::Vertex),liveTerrainGPU.vertexCapacity(),liveTerrainGPU.rollovers,
             terrainChange,liveTerrainGPU.newOwners,liveTerrainGPU.directionalBuilds,liveTerrainGPU.directionalAliases,double(liveTerrainGPU.indexBytes())/1048576,liveTerrainGPU.directionalTriangles,terrainTriangleTests,liveTerrainGPU.collectVisited,terrainPartMs[0],terrainPartMs[1],terrainPartMs[2]);

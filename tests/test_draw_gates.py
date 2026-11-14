@@ -140,7 +140,7 @@ assert OLD_MEMBERS.count(old_blob)==1
 OLD_MEMBERS=OLD_MEMBERS.replace(old_blob,'world->hasContext()&&world->terrainShadowActive()&&world->actorShadowsEnabled()')
 
 checks={}
-checks['native sky claims retain the documented debug guard']='celestialDiscs&&enabled&&debugMode==0&&worldDebug==0&&!applied' in member(renderer,'void skyClaim(')
+checks['native sky claims retain the documented debug guard']='celestialDiscs&&celestialEnabled()&&debugMode==0&&worldDebug==0&&!applied' in member(renderer,'void skyClaim(')
 checks['the rain mask members were found and stubbed (rainMrtBegin inside the cut span)']=checks_rain_stub
 checkflag=fp.src('shadow_blob_filter.h').read_text()
 checks['real source: no compile-time switch left; BlobShadowStrength gates blobFilterActive and the latch (the equivalence runs use strength 0 = skip)']=('HidesNativeBlobs' not in checkflag and 'HidesNativeBlobs' not in renderer
@@ -221,6 +221,7 @@ HARNESS=r'''
 #include "native_shadow_observation.h"
 #include "native_local_light_probe.h"
 #include "sky_composition.h"
+#include "quality_settings.h"
 #include <cassert>
 #include <cstdarg>
 #include <cstdint>
@@ -280,7 +281,7 @@ struct MockWorld{
     bool nativeExtra=false;void requestNativeExtra(bool value){nativeExtra=value;}bool ownsNativeExtra()const{return false;}void nativeExtraRgb(bool,float*){}
     unsigned sceneTraceCalls=0;template<class Draw> HRESULT captureNativeSceneDraw(unsigned,unsigned,Draw draw){++sceneTraceCalls;return draw();}
     Env* env=nullptr;bool context=true,actorShadows=true,shadows=true,composited=true;IDirect3DPixelShader9 replacement{9,nullptr};
-    struct SurfaceSettings{unsigned celestialStyle=0;} settings; // Historical trace uses the legacy sky style.
+    using SurfaceSettings=NorthlightQuality::Settings;SurfaceSettings settings; // Historical trace uses the legacy sky style.
     const SurfaceSettings& surfaceSettings()const{return settings;}
     bool hasContext()const{return context;}
     bool skyContext(const float*)const{return false;}
@@ -498,6 +499,8 @@ int main(){
     {NewDevice d;d.enabled=true;d.applied=d.failed=d.projectionValid=false;d.worldDebug=0;bool sky=false;unsigned draws=0;
      assert(d.submitGameDraw(2,sky,nullptr,[&]{++draws;return HRESULT(17);})==17);assert(draws==1&&d.worldObj.sceneTraceCalls==1);
      d.applied=true;assert(d.submitGameDraw(2,sky,nullptr,[&]{++draws;return HRESULT(19);})==19);assert(draws==2&&d.worldObj.sceneTraceCalls==1);}
+    {NewDevice d;d.worldObj.settings.celestialEffects=0;d.latchDrawGates();assert(!d.drawGates.sky);bool claimed=false;
+     d.skyClaim(D3DPT_TRIANGLELIST,2,claimed);d.skyObserve(D3D_OK,D3DPT_TRIANGLELIST,2);assert(!claimed&&d.trace.empty());}
     for(bool gates:{false,true})for(unsigned mode=0;mode<4;++mode){
         NewDevice d;Base::NormalStub normals;d.modelNormals=&normals;d.frameDrawGates=gates;
         d.enabled=mode!=1;d.applied=mode==2;d.failed=mode==3;d.latchDrawGates();
@@ -525,6 +528,8 @@ int main(){
 '''
 
 src=HARNESS.replace('@OLD@',OLD_MEMBERS+'\n'+old_draws[0]).replace('@NEW@',new_members).replace('@PREPARE_BEGIN@',prepare_begin)
+# Apply the independent sky owner to the historical reference; rendering order remains frozen.
+src=src.replace('celestialDiscs&&enabled', 'celestialDiscs&&enabled&&!failed&&world&&world->surfaceSettings().celestialEffects')
 with tempfile.TemporaryDirectory(prefix='northlight-draw-gates-') as tmp:
     (Path(tmp)/'draw_gates_test.cpp').write_text(src)
     variants=[('O2',['-O2'])] if os.name=='nt' else [('O2',['-O2']),('asan',['-O1','-g','-fsanitize=address,undefined','-fno-sanitize-recover=all'])]
