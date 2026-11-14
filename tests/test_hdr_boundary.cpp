@@ -224,10 +224,10 @@ int main(){
         assert(!f.hdrSkyAdmission()&&!f.hdrSkyValid&&f.skyCaptures==1);
         f.failSky=false;assert(f.hdrSkyAdmission()&&f.hdrSkyValid&&f.skyCaptures==2);}
     // Execute the extracted production timer predicates, with a counting clock:
-    // quiet/untimed/SDR calls retain native submission and open no clock scope.
-    for(bool sample:{false,true})for(bool untimed:{false,true})for(bool active:{false,true}){
-        Fixture f;f.gateFrame=sample;f.gateUntimed=untimed;f.hdr.active=active;CpuScope::reads=0;
-        assert(f.draw(101)==S_OK);const bool timed=sample&&!untimed&&active;
+    // Quiet/SDR calls retain native submission and open no clock scope.
+    for(bool sample:{false,true})for(bool active:{false,true}){
+        Fixture f;f.gateFrame=sample;f.hdr.active=active;CpuScope::reads=0;
+        assert(f.draw(101)==S_OK);const bool timed=sample&&active;
         assert(CpuScope::reads==(timed?6u:0u));
         assert(f.hdrAdmissionCalls==unsigned(timed)&&f.hdrTransferCalls==unsigned(timed));
         assert(f.cpuHdrAdmission==int(timed)&&f.cpuHdrBoundary==int(timed)&&f.cpuHdrTransfer==int(timed));
