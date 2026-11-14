@@ -37,6 +37,7 @@ try:
         overlay=out/'reference-header';overlay.mkdir();shutil.copyfile(reference_header,overlay/'world_renderer.h');includes=['-I',str(overlay),*includes]
     selected_header=Path(reference_header) if reference_header else sourceRoot/fp.src('world_renderer.h').relative_to(fp.REPO)
     if 'lightingUnshadowedGIPS' in selected_header.read_text():includes+=['-DNORTHLIGHT_GI_MERGE_TEST=1']
+    if 'sharedResolveRequested' in selected_header.read_text():includes+=['-DNORTHLIGHT_SHARED_SHADOW_TEST=1']
     if 'distancePS' in selected_header.read_text():includes+=['-DNORTHLIGHT_FOG_DISTANCE_TEST=1']
     if 'NorthlightFogVolume fogVolume' in selected_header.read_text():includes+=['-DNORTHLIGHT_FOG_VOLUME_TEST=1']
     run('compile',[fp.zig(),'c++','-target','x86-windows-gnu','-O2','-UNDEBUG','-std=c++17','-Wno-microsoft-exception-spec','-DIMGUI_USER_CONFIG="northlight_imconfig.h"',*includes,'-I'+str(fp.TESTS),fp.TESTS/'world_screen_effects_gpu.cpp',*(sourceRoot/fp.src(s).relative_to(fp.REPO) for s in sources),'-luser32','-luuid','-o',exe])

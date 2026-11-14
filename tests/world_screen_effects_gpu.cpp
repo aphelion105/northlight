@@ -5,6 +5,30 @@
 #include <cassert>
 #include <fstream>
 struct WorldScreenEffectsTest {
+#ifdef NORTHLIGHT_SHARED_SHADOW_TEST
+    template<class Meter> static void sharedResources(WorldRenderer& w,Meter& meter){
+        const unsigned saved=meter.shaderCreates;
+        meter.shaderSlotLimit=512;assert(!w.sharedShadowResources());assert(meter.shaderCreates==saved);
+        w.releaseSoftShadows();meter.shaderSlotLimit=0;
+        for(unsigned fail=1;fail<=2;++fail){
+            meter.failShaderAt=meter.shaderCreates+fail;assert(!w.sharedShadowResources());
+            assert(!w.sharedDirectionalPS&&!w.lightingSharedPS);
+            const unsigned tried=meter.shaderCreates;assert(!w.sharedShadowResources()&&meter.shaderCreates==tried);
+            w.releaseSoftShadows();
+        }
+        meter.failShaderAt=0;assert(w.sharedShadowResources());const unsigned tries=meter.shaderCreates;
+        assert(w.sharedShadowResources()&&meter.shaderCreates==tries);
+        w.releaseSoftShadows();assert(!w.sharedDirectionalPS&&!w.lightingSharedPS&&!w.sharedShadowTried);
+        meter.shaderCreates=saved;
+        std::puts("WORLD_SHARED_SHADOW_RESOURCES_PASS caps=guarded failures=contained retry=reset noRepeatedCreates=1");
+    }
+    static void sharedSetup(WorldRenderer& w,IDirect3DVertexBuffer9* vb,IDirect3DIndexBuffer9* ib,unsigned mode){
+        giFallbackSetup(w,vb,ib,0,false);w.quality.gi=0;w.effects={false,true,false};
+        w.quality.worldShadows=w.quality.actorShadows=w.quality.actorShadowDetail=1;w.quality.softShadows=mode==4?0:1;
+        w.nativeShadowOwned=w.nativeShadowAvailable=true;w.captureMode=WorldRenderer::CaptureFresh;
+        if(mode==5){w.sourceColors[1]=w.sourceGlowColors[1]={.3f,.4f,.5f};w.sourceWeights[0]=w.sourceWeights[1]=.5f;}
+    }
+#endif
 #ifdef NORTHLIGHT_FOG_VOLUME_TEST
     static void volumeFixture(WorldRenderer& w,unsigned frame){
         fixtureContext(w);w.effects={false,false,frame!=4};w.quality.localLights=w.quality.weather=0;
@@ -497,6 +521,11 @@ struct WorldScreenEffectsTest {
     }
 };
 struct WorldScratchMeter:ForwardIDirect3DDevice9 {
+#ifdef NORTHLIGHT_SHARED_SHADOW_TEST
+    IDirect3DPixelShader9 *sharedShadowShader=nullptr,*sharedLightingShader=nullptr,*actorFilterShader=nullptr,*actorUniformShader=nullptr;
+    bool sharedShadowBound=false,sharedLightingBound=false,actorFilterBound=false,refuseSharedShadow=false;
+    unsigned sharedShadowDraws=0,sharedLightingDraws=0,actorFilterDraws=0,failSharedShadowAt=0,sharedShadowAttempts=0;
+#endif
 #ifdef NORTHLIGHT_GI_MERGE_TEST
     IDirect3DPixelShader9* giShader=nullptr;bool refuseGI=false,giBound=false;unsigned giCreates=0,giDraws=0;
 #endif
@@ -510,12 +539,20 @@ struct WorldScratchMeter:ForwardIDirect3DDevice9 {
     WorldScratchMeter(IDirect3DDevice9* d,unsigned w,unsigned h):ForwardIDirect3DDevice9(d),width(w),height(h){}
     HRESULT STDMETHODCALLTYPE GetDeviceCaps(D3DCAPS9* caps)override{const auto hr=real->GetDeviceCaps(caps);if(SUCCEEDED(hr)&&shaderSlotLimit)caps->MaxPixelShader30InstructionSlots=shaderSlotLimit;return hr;}
     HRESULT STDMETHODCALLTYPE SetPixelShader(IDirect3DPixelShader9* shader)override{
+#ifdef NORTHLIGHT_SHARED_SHADOW_TEST
+        sharedShadowBound=shader&&shader==sharedShadowShader;sharedLightingBound=shader&&shader==sharedLightingShader;
+        actorFilterBound=shader&&(shader==actorFilterShader||shader==actorUniformShader);
+#endif
         volumePrefixBound=shader&&shader==volumePrefix;
 #ifdef NORTHLIGHT_GI_MERGE_TEST
         giBound=shader&&shader==giShader;
 #endif
         combinedBound=shader&&shader==combinedShader;fogBound=shader&&(shader==fogMarch||shader==fogAmbient||shader==fogTemporal||shader==fogBlur);return real->SetPixelShader(shader);}
     HRESULT STDMETHODCALLTYPE DrawPrimitiveUP(D3DPRIMITIVETYPE type,UINT n,const void* vertices,UINT stride)override{
+#ifdef NORTHLIGHT_SHARED_SHADOW_TEST
+        if(sharedShadowBound&&++sharedShadowAttempts==failSharedShadowAt)return D3DERR_INVALIDCALL;
+        sharedShadowDraws+=sharedShadowBound;sharedLightingDraws+=sharedLightingBound;actorFilterDraws+=actorFilterBound;
+#endif
         if(failVolumeDraw&&volumePrefixBound){failVolumeDraw=false;return D3DERR_INVALIDCALL;}
         if(failCombinedDraw&&combinedBound){failCombinedDraw=false;return D3DERR_INVALIDCALL;}
 #ifdef NORTHLIGHT_GI_MERGE_TEST
@@ -534,6 +571,9 @@ struct WorldScratchMeter:ForwardIDirect3DDevice9 {
         return real->CreateTexture(w,h,levels,usage,format,pool,t,shared);
     }
     HRESULT STDMETHODCALLTYPE CreatePixelShader(const DWORD* code,IDirect3DPixelShader9** shader)override{
+#ifdef NORTHLIGHT_SHARED_SHADOW_TEST
+        if(code==kUnifiedDirectionalShadowShader&&refuseSharedShadow){*shader=nullptr;return D3DERR_NOTAVAILABLE;}
+#endif
 #ifdef NORTHLIGHT_FOG_VOLUME_TEST
         if(refuseVolume&&code==kVolumeInjectShader){if(shader)*shader=nullptr;return D3DERR_NOTAVAILABLE;}
 #endif
@@ -543,6 +583,12 @@ struct WorldScratchMeter:ForwardIDirect3DDevice9 {
         if(++shaderCreates==failShaderAt)return E_OUTOFMEMORY;
         if(code==kWorldMaterialCompositeHdrShader&&refuseCombined){*shader=nullptr;return D3DERR_NOTAVAILABLE;}
         const auto hr=real->CreatePixelShader(code,shader);if(SUCCEEDED(hr)){
+#ifdef NORTHLIGHT_SHARED_SHADOW_TEST
+            if(code==kUnifiedDirectionalShadowShader)sharedShadowShader=*shader;
+            if(code==kWorldLightingSharedShader)sharedLightingShader=*shader;
+            if(code==kActorShadowShader)actorFilterShader=*shader;
+            if(code==kActorShadowUniformShader)actorUniformShader=*shader;
+#endif
 #ifdef NORTHLIGHT_FOG_VOLUME_TEST
             if(code==kVolumePrefixShader)volumePrefix=*shader;
 #endif
@@ -583,10 +629,34 @@ int main(int argc,char** argv){
     // Capture stores positive-hemisphere normal detail relative to its reference.
     const float rgb[]={.4f,.4f,.4f,1},ambient[]={0,0,0,1},normal[]={.7f,.6f,20,1},z[]={1000.f/999.f-1000.f/(999.f*20)};
     auto* scene=screenTexture(d,W,H,rgb);auto* ao=screenTexture(d,W/2,H/2,ambient);auto* detail=screenTexture(d,W,H,normal);auto* depth=screenTexture(d,W,H,z,1);
+#ifdef NORTHLIGHT_SHARED_SHADOW_TEST
+    {
+        IDirect3DVertexBuffer9* vb=nullptr;IDirect3DIndexBuffer9* ib=nullptr;
+        screenOk(d->CreateVertexBuffer(3*sizeof(NorthlightGI::WorldVertex),0,0,D3DPOOL_MANAGED,&vb,nullptr));
+        screenOk(d->CreateIndexBuffer(6,0,D3DFMT_INDEX16,D3DPOOL_MANAGED,&ib,nullptr));
+        for(unsigned mode=0;mode<6;++mode){
+            WorldScratchMeter meter(d,W,H);meter.shaderSlotLimit=mode==1?512:0;meter.refuseSharedShadow=mode==2;meter.failSharedShadowAt=mode==3?1:0;
+            auto world=std::make_unique<WorldRenderer>(&meter);WorldScreenEffectsTest::sharedSetup(*world,vb,ib,mode);
+            const bool rendered=renderChecked(*world,d,out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao);
+            std::printf("WORLD_SHARED_SHADOW mode=%u rendered=%u shared=%u lighting=%u separate=%u attempts=%u\n",mode,unsigned(rendered),meter.sharedShadowDraws,meter.sharedLightingDraws,meter.actorFilterDraws,meter.sharedShadowAttempts);std::fflush(stdout);
+            assert(rendered);
+            const unsigned expected=mode==0?1:mode==5?2:0;
+            assert(meter.sharedShadowDraws==expected&&meter.sharedLightingDraws==expected);
+            assert(meter.actorFilterDraws==(expected?0:1));
+            if(mode==3)assert(meter.sharedShadowAttempts==1);
+            WorldScreenEffectsTest::removeFakeScene(*world);
+        }
+        vb->Release();ib->Release();
+        std::puts("WORLD_SHARED_SHADOW_PASS onePass=1 twoSources=1 unsupported=legacy createFailure=legacy drawFailure=actorRestored hardShadows=legacy stateRestored=1");
+    }
+#endif
     std::vector<float> images[4];
     {
         WorldScratchMeter meter(d,W,H);
         auto world=std::make_unique<WorldRenderer>(&meter);
+#ifdef NORTHLIGHT_SHARED_SHADOW_TEST
+        WorldScreenEffectsTest::sharedResources(*world,meter);
+#endif
         WorldScreenEffectsTest::inactiveGI(*world);
         WorldScreenEffectsTest::fixtureContext(*world);WorldScreenEffectsTest::localLightCPU(*world);
         meter.failShaderAt=3;assert(!WorldScreenEffectsTest::resources(*world,W,H));

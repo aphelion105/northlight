@@ -28,9 +28,9 @@ def verify(entry,target,info,data,words):
     assert shipped==list(words),entry
     assert struct.pack('<'+'I'*len(words),*words)==data
     stats=validate_assembly(fp.COMPILED/(entry+'.bin.asm'),target,
-                            slot_limit=768 if entry in tiled else 600 if entry in extended else 512)
+                            slot_limit=1024 if entry=='UnifiedDirectionalShadow' else 768 if entry in tiled else 600 if entry in extended else 512)
     assert all(info[key]==value for key,value in stats.items()),entry
-    if entry in extended|tiled:
+    if entry in extended|tiled or entry=='UnifiedDirectionalShadow':
         assert f'k{entry}ShaderSlots = {stats["static_instruction_slots"]};' in header
 
 for entry,target in ENTRIES:
@@ -42,9 +42,10 @@ for entry,target in ENTRIES:
         except AssertionError:pass
         else:raise AssertionError('corrupt bytecode/metadata was accepted: '+entry)
 world=fp.src('world_renderer.h').read_text()
-for name in ['world_screen_resources.inl','world_geometry_resources.inl']:
+for name in ['world_screen_resources.inl','world_geometry_resources.inl','world_soft_shadows.inl']:
     world=world.replace('#include "'+name+'"',fp.src(name).read_text())
 assert 'caps.MaxPixelShader30InstructionSlots>=std::max(kWorldFogActorShaderSlots,kFogCloudsActorShaderSlots)' in world
+assert 'caps.MaxPixelShader30InstructionSlots>=kUnifiedDirectionalShadowShaderSlots' in world
 # This imported-atmosphere variant uses the existing optional extended budget;
 # it must remain capability-gated rather than raising the baseline SM3 limit.
 if 'ForeverFogActor' in manifest['shaders']:

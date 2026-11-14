@@ -54,7 +54,8 @@ assert 'if(anyShadowTransition){bindShadowTransition(source);d->SetPixelShader(t
 assert 'bindShadowTransition(source,true);d->SetPixelShader(transitionPreviousPS)' in w
 assert 'if(anyShadowTransition&&!softResolved)releaseShadowTransitions();' in w
 assert w.count('if(anyShadowTransition)for(unsigned sampler=6;sampler<10;++sampler)')==2
-assert w.index('if(anyShadowTransition)for(unsigned sampler=6;sampler<10;++sampler)')<w.index('d->SetPixelShader(unshadowedLighting?lightingUnshadowedPS:softResolved?lightingSoftPS:lightingPS)')
+assert w.index('if(anyShadowTransition)for(unsigned sampler=6;sampler<10;++sampler)')<w.index('d->SetRenderTarget(0,lightSurface);d->SetPixelShader(unshadowedLighting?')
+assert 'sharedResolveRequested=anyActorPass&&quality.softShadows&&!anyShadowTransition' in w
 for selector in ['fogActorTiledCurrent?fogActorTiledFadePS:fogActorCurrent?fogActorFadePS:fogFadePS','cloudActorTiledFadePS:cloudActorFadePS','cloudFade=geometryReady&&shadowVolumeTransitionActive(firstSource)']:
  assert selector in w,selector
 assert 'if(fading)bindShadowTransition(source)' in w and 'if(cloudFade)bindShadowTransition(firstSource)' in w

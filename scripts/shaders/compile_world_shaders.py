@@ -19,7 +19,8 @@ ENTRIES = (("ForeverFogNoNoise", "ps_3_0"), ("ForeverFogActorNoNoise", "ps_3_0")
            ("WorldMaterialCompositeHdr", "ps_3_0"), ("WorldPrelitComposite", "ps_3_0"), ("WorldPrelitCompositeHdr", "ps_3_0"),
            ("MaterialAudit", "ps_3_0"), ("ShadowVS", "vs_3_0"), ("ShadowCacheVS", "vs_3_0"),
            ("ShadowPS", "ps_3_0"), ("ShadowReplayPS", "ps_3_0"), ("ShadowUnion", "ps_3_0"),
-           ("ActorTilesWide", "ps_3_0"), ("WorldFogActorTiled", "ps_3_0"), ("FogCloudsActorTiled", "ps_3_0"), ("MoonFloorFog", "ps_3_0"), ("MoonFloorFogActor", "ps_3_0"), ("MoonFloorFogActorTiled", "ps_3_0"))
+           ("ActorTilesWide", "ps_3_0"), ("WorldFogActorTiled", "ps_3_0"), ("FogCloudsActorTiled", "ps_3_0"), ("MoonFloorFog", "ps_3_0"), ("MoonFloorFogActor", "ps_3_0"), ("MoonFloorFogActorTiled", "ps_3_0"),
+           ("UnifiedDirectionalShadow", "ps_3_0"), ("WorldLightingShared", "ps_3_0"))
 
 
 def main():
@@ -46,8 +47,9 @@ def main():
                 raise ValueError(f"{entry}: retained bytecode differs from its previous manifest")
         extended=entry in {"ForeverFogActor","ForeverFogActorNoNoise","WorldFogActor","FogCloudsActor"}
         tiled=entry.startswith("MoonFloorFog") or entry in {"WorldFogActorTiled","FogCloudsActorTiled","WorldMaterialCompositeHdr"}
-        stats=validate_assembly(asm,target,slot_limit=768 if tiled else 600 if extended else 512)
-        if extended or tiled:header.append(f"static constexpr unsigned k{entry}ShaderSlots = {stats['static_instruction_slots']};")
+        shared=entry=="UnifiedDirectionalShadow"
+        stats=validate_assembly(asm,target,slot_limit=1024 if shared else 768 if tiled else 600 if extended else 512)
+        if extended or tiled or shared:header.append(f"static constexpr unsigned k{entry}ShaderSlots = {stats['static_instruction_slots']};")
         header.append(f"static const DWORD k{entry}Shader[] = {{\n"+"\n".join(rows(words))+"\n};")
         manifest["shaders"][entry]={"target":target,"bytes":len(data),"sha256":hashlib.sha256(data).hexdigest(),**stats,
             "compiler_sha256":compiler.provenance["compiler_sha256"] if compile_entry else previous["shaders"][entry].get("compiler_sha256",previous["compiler_sha256"]),

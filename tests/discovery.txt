@@ -495,6 +495,7 @@ test_shadow_transition_build.py
 test_shadow_transition_gpu.py
 test_shadow_transition_math.py
 test_shadow_transition_resources.py
+test_shared_directional_gpu.py
 test_shared_gpu_residency.py
 test_shared_gpu_residency_gpu.py
 test_shared_gpu_wiring.py

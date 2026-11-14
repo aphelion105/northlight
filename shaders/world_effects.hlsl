@@ -622,7 +622,7 @@ float3 worldGIValue(float3 p,float4 smoothNormal,uniform bool localOnly,out floa
     prelitGI=float4(max(correction,0),occlusion)*(probe.a*GIResponse.x);
     return correction;
 }
-LightingOutput worldLightingValue(float2 uv,bool soft,bool shadows,bool gi=false) {
+LightingOutput worldLightingValue(float2 uv,bool soft,bool shadows,bool gi=false,bool separateActors=true) {
     float2 halfUV=uv;
     uv=depthUV(uv);float d=normalizedDepth(uv);
     LightingOutput o;o.correction=float4(0,0,0,SourcePolicy.y);o.baseline=float4(max(AmbientLight.rgb,.15),1);o.daylight=0;
@@ -641,7 +641,7 @@ LightingOutput worldLightingValue(float2 uv,bool soft,bool shadows,bool gi=false
     if(shadows&&dot(DirectLight.rgb,1)>0){
         if(soft){float2 v=tex2Dlod(DirectionalVisibility,float4(halfUV,0,0)).rg;shadow=SunDirection.w>.5?v.g:v.r;}
         else shadow=directionalShadow(p+n*(.08*smoothNormal.w),n,smoothNormal.w);
-        float2 actor=tex2Dlod(ActorVisibility,float4(halfUV,0,0)).rg;shadow=min(shadow,SunDirection.w>.5?actor.g:actor.r);}
+        if(separateActors){float2 actor=tex2Dlod(ActorVisibility,float4(halfUV,0,0)).rg;shadow=min(shadow,SunDirection.w>.5?actor.g:actor.r);}}
     shadow=1-saturate((1-shadow)*shadowParameters().x);
     float visibility=lerp(1,shadow,GridInfo.z);
     // Sun retains the authored angular response, with the regional light color.
@@ -675,6 +675,7 @@ LightingOutput worldLightingValue(float2 uv,bool soft,bool shadows,bool gi=false
 }
 LightingOutput WorldLighting(float2 uv:TEXCOORD0){return worldLightingValue(uv,false,true);}
 LightingOutput WorldLightingSoft(float2 uv:TEXCOORD0){return worldLightingValue(uv,true,true);}
+LightingOutput WorldLightingShared(float2 uv:TEXCOORD0){return worldLightingValue(uv,true,true,false,false);}
 // Disabled shadows bind neutral maps: keep the same relighting and baseline,
 // without filtering an all-lit map or reading the neutral actor visibility.
 LightingOutput WorldLightingUnshadowed(float2 uv:TEXCOORD0){return worldLightingValue(uv,false,false);}
@@ -790,6 +791,15 @@ float4 actorShadowValue(float2 uv,row_major float4x4 ActorMatrix,float4 ActorInf
 }
 float4 ActorShadow(float2 uv:TEXCOORD0,uniform row_major float4x4 ActorMatrix:register(c68),uniform float4 ActorInfo:register(c72)):COLOR0 {return actorShadowValue(uv,ActorMatrix,ActorInfo,true);}
 float4 ActorShadowUniform(float2 uv:TEXCOORD0,uniform row_major float4x4 ActorMatrix:register(c68),uniform float4 ActorInfo:register(c72)):COLOR0 {return actorShadowValue(uv,ActorMatrix,ActorInfo,false);}
+// Resolve both caster domains directly into the FP16 directional visibility.
+// Actor depth/tile tests and world PCSS retain their own projections and filters.
+// A fully occluded actor receiver cannot be made brighter by the world maps.
+float4 UnifiedDirectionalShadow(float2 uv:TEXCOORD0,uniform row_major float4x4 ActorMatrix:register(c68),uniform float4 ActorInfo:register(c72)):COLOR0 {
+    float actor=actorShadowValue(uv,ActorMatrix,ActorInfo,true).r;
+    if(actor<=0)return float4(0,0,0,1);
+    float visibility=min(actor,DirectionalShadow(uv).r);
+    return float4(visibility,visibility,visibility,1);
+}
 // Second pass to the same FP16 lighting buffer with COLORWRITEENABLE=RGB.
 // Probes contain sky + bounce, so replace ambient instead of adding it twice.
 // Missing probes do not establish hemispherical sky visibility. Preserve the

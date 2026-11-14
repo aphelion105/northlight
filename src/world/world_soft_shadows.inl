@@ -2,10 +2,23 @@
     IDirect3DTexture9* softVisibility=nullptr;
     IDirect3DSurface9* softVisibilitySurface=nullptr;
     IDirect3DPixelShader9 *directionalSoftPS=nullptr,*lightingSoftPS=nullptr;
+    IDirect3DPixelShader9 *sharedDirectionalPS=nullptr,*lightingSharedPS=nullptr;
+    bool sharedShadowTried=false;
     DWORD softShadowRetryAt=0;unsigned softShadowFailures=0;
     void releaseSoftShadows(){
         resetShadowTransitions();
         drop(softVisibilitySurface);drop(softVisibility);drop(directionalSoftPS);drop(lightingSoftPS);softShadowRetryAt=0;
+        drop(sharedDirectionalPS);drop(lightingSharedPS);sharedShadowTried=false;
+    }
+    bool sharedShadowResources(){
+        if(!sharedShadowTried){
+            sharedShadowTried=true;D3DCAPS9 caps={};
+            if(SUCCEEDED(d->GetDeviceCaps(&caps))&&caps.MaxPixelShader30InstructionSlots>=kUnifiedDirectionalShadowShaderSlots){
+                if(FAILED(d->CreatePixelShader(kUnifiedDirectionalShadowShader,&sharedDirectionalPS))||
+                   FAILED(d->CreatePixelShader(kWorldLightingSharedShader,&lightingSharedPS))){drop(sharedDirectionalPS);drop(lightingSharedPS);}
+            }
+        }
+        return sharedDirectionalPS&&lightingSharedPS;
     }
     bool softShadowResources(UINT w,UINT h){
         if(softVisibilitySurface&&directionalSoftPS&&lightingSoftPS)return true;

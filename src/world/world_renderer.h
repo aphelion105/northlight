@@ -6097,12 +6097,10 @@ public:
         d->SetTexture(13,nullptr);
         if(normalsProduceDistance&&!check(d->SetRenderTarget(1,nullptr),"current distance unbind"))return false;
         d->SetTexture(14,normalBuffer);d->SetSamplerState(14,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(14,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);d->SetSamplerState(14,D3DSAMP_MINFILTER,D3DTEXF_POINT);d->SetSamplerState(14,D3DSAMP_MAGFILTER,D3DTEXF_POINT);d->SetSamplerState(14,D3DSAMP_MIPFILTER,D3DTEXF_NONE);d->SetSamplerState(14,D3DSAMP_SRGBTEXTURE,FALSE);
-        // 0.3.209 (task 29): actor visibility (half res, r sun, g moon). Per drawn source with an actor map, first its 64x64 tile minimum (ActorTiles in
-        // two 4x4 steps, 1024 -> 256 (shared target) -> 64 (own target per source); one 256-tap step was latency bound, ~.15 ms), then the visibility target is cleared white and gets one ActorShadow pass per source masked to its channel (s12 the actor
-        // map, s10 its tiles; s10 is rebound to the probe metadata after). All tile passes come first, so the visibility target is cleared and drawn in one
-        // run without switching away from it (a switch made a tiled GPU store and reload the half-res target, ~.07 ms). A frame without any pass
-        // (ActorShadowDetail=0, shadows off, no valid map) skips the target and its clear: WorldLighting reads neutralWhite on s12 instead.
-        // At dusk both sources draw a pass, each refetching depth and normals: the tile early out keeps the lit majority at four taps in both.
+        // Build the actor min-depth tiles first (1024 -> 256 -> 64). Supported
+        // soft-shadow frames filter actors and world together into FP16 visibility
+        // (r sun, g moon). Direction transitions, hard shadows and device failures
+        // retain the separate actor mask. Fog also consumes the depth/tile maps.
         if(profile)profile->mark("WorldNormals");bucket(NorthlightEffectsBuckets::Lighting); /* 0.3.209 (task 29): the normals pass, so ActorShadow below is billed alone */
         bool actorPass[2]={},anyActorPass=false;
         for(int source=0;source<2;++source){
@@ -6110,6 +6108,8 @@ public:
             anyActorPass=anyActorPass||actorPass[source];
         }
         const float actorInfo[4]={1.f,1.f/float(NorthlightActorShadowMap::Size),NorthlightActorShadowMap::Radius,0.f};
+        const bool sharedResolveRequested=anyActorPass&&quality.softShadows&&!anyShadowTransition&&
+            softShadowResources(w,h)&&sharedShadowResources();
         if(anyActorPass){
             d->SetPixelShader(actorTilesPS);
             const UINT mid=NorthlightActorShadowMap::Size/NorthlightActorShadowMap::TileStep,tiles=NorthlightActorShadowMap::Size/NorthlightActorShadowMap::TileTexels;
@@ -6128,29 +6128,41 @@ public:
                 if(wideFogTiles)d->SetPixelShader(actorTilesPS);
             }
             if(profile)profile->mark("ActorTiles");
-            if(!check(d->SetRenderTarget(0,actorVisibilitySurface),"actor visibility target")||!check(d->Clear(0,nullptr,D3DCLEAR_TARGET,0xffffffff,1,0),"clear actor visibility"))return false;
         }
-        for(int source=0;source<2;++source){
-            if(!actorPass[source])continue;
-            setSource(source,false); /* c16 direction, c17 colour, c7/c11 maps: the bank ActorShadow reads (the lighting loop sets them again) */
-            d->SetPixelShaderConstantF(68,actorMatrices[source],4);d->SetPixelShaderConstantF(72,actorInfo,1);
-            d->SetTexture(12,actorShadow[source]);d->SetTexture(10,actorTiles[source]);
-            d->SetRenderState(D3DRS_COLORWRITEENABLE,source?D3DCOLORWRITEENABLE_GREEN:D3DCOLORWRITEENABLE_RED);
-            d->SetPixelShader(quality.softShadows?actorShadowPS:actorUniformPS);
-            if(!check(quad(w/2,h/2),"actor shadow visibility pass"))return false;
-        }
-        d->SetRenderState(D3DRS_COLORWRITEENABLE,15);
-        if(anyActorPass)d->SetTexture(10,textures[10]); /* the frame-start binding (probe metadata) again */
+        const auto resolveActorVisibility=[&]()->bool{
+            if(!anyActorPass)return true;
+            if(!check(d->SetTexture(12,nullptr),"actor visibility unbind")||
+               !check(d->SetRenderTarget(0,actorVisibilitySurface),"actor visibility target")||!check(d->Clear(0,nullptr,D3DCLEAR_TARGET,0xffffffff,1,0),"clear actor visibility"))return false;
+            for(int source=0;source<2;++source){
+                if(!actorPass[source])continue;
+                setSource(source,false);
+                d->SetPixelShaderConstantF(68,actorMatrices[source],4);d->SetPixelShaderConstantF(72,actorInfo,1);
+                d->SetTexture(12,actorShadow[source]);d->SetTexture(10,actorTiles[source]);
+                d->SetRenderState(D3DRS_COLORWRITEENABLE,source?D3DCOLORWRITEENABLE_GREEN:D3DCOLORWRITEENABLE_RED);
+                d->SetPixelShader(quality.softShadows?actorShadowPS:actorUniformPS);
+                if(!check(quad(w/2,h/2),"actor shadow visibility pass"))return false;
+            }
+            d->SetRenderState(D3DRS_COLORWRITEENABLE,15);
+            d->SetTexture(10,textures[10]);
+            return true;
+        };
+        if(!sharedResolveRequested&&!resolveActorVisibility())return false;
         if(profile)profile->mark("ActorShadow");bucket(NorthlightEffectsBuckets::ActorShadow);
         bool softResolved=false;
         if((quality.softShadows||anyShadowTransition)&&geometryReady&&applyDirectionalShadows&&(sourceActive[0]||sourceActive[1])&&softShadowResources(w,h)){
             // Never sample a texture while it is a render target. A failed
             // optional resolve retains the original PCF consumer this frame.
             softResolved=SUCCEEDED(d->SetTexture(15,nullptr))&&SUCCEEDED(d->SetRenderTarget(0,softVisibilitySurface))&&
-                SUCCEEDED(d->Clear(0,nullptr,D3DCLEAR_TARGET,0xffffffff,1,0))&&SUCCEEDED(d->SetPixelShader(directionalSoftPS));
+                SUCCEEDED(d->Clear(0,nullptr,D3DCLEAR_TARGET,0xffffffff,1,0))&&SUCCEEDED(d->SetPixelShader(sharedResolveRequested?sharedDirectionalPS:directionalSoftPS));
             for(int source=0;source<2&&softResolved;++source){
                 if(!sourceActive[source]||(sourceWeights[source]<=0&&source!=firstSource))continue;
                 setSource(source,false);
+                if(sharedResolveRequested){
+                    const float info[4]={actorPass[source]?1.f:0.f,actorInfo[1],actorInfo[2],0.f};
+                    softResolved=SUCCEEDED(d->SetPixelShaderConstantF(68,actorMatrices[source],4))&&SUCCEEDED(d->SetPixelShaderConstantF(72,info,1))&&
+                        SUCCEEDED(d->SetTexture(12,actorPass[source]?actorShadow[source]:neutralWhite))&&SUCCEEDED(d->SetTexture(10,actorPass[source]?actorTiles[source]:neutralWhite));
+                    if(!softResolved)break;
+                }
                 const bool fading=shadowTransitionActive(source);
                 if(anyShadowTransition){bindShadowTransition(source);d->SetPixelShader(transitionCurrentPS);d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE);}
                 softResolved=SUCCEEDED(d->SetRenderState(D3DRS_COLORWRITEENABLE,source?D3DCOLORWRITEENABLE_GREEN:D3DCOLORWRITEENABLE_RED))&&SUCCEEDED(quad(w/2,h/2));
@@ -6168,8 +6180,16 @@ public:
             d->SetRenderState(D3DRS_COLORWRITEENABLE,15);
             if(profile)profile->mark("ShadowFilter");
         }
+        const bool sharedResolved=sharedResolveRequested&&softResolved;
+        if(sharedResolveRequested){
+            d->SetTexture(10,textures[10]);
+            // A failed optional shared draw must restore the actor mask before
+            // the ordinary lighting fallback: those casters left the near map.
+            if(!softResolved&&!resolveActorVisibility())return false;
+        }
+        if(profileSampled())logf("WORLD_SHADOW_RESOLVE rendererFrame=%u shared=%u requested=%u actors=%u transitions=%u visibilityBits=%u",rendererFrame,unsigned(sharedResolved),unsigned(sharedResolveRequested),unsigned(actorPass[0])+unsigned(actorPass[1]),unsigned(anyShadowTransition),sharedResolved?16u:8u);
         if(anyShadowTransition&&!softResolved)releaseShadowTransitions();
-        d->SetTexture(12,anyActorPass?actorVisibility:neutralWhite);
+        d->SetTexture(12,!sharedResolved&&anyActorPass?actorVisibility:neutralWhite);
         // Neutral shadow maps still made the general shader run its PCF loop.
         // Keep source colors, normals, baseline and temporal stabilization.
         if(!applyDirectionalShadows&&!lightingUnshadowedPS&&!lightingUnshadowedRefused){
@@ -6192,7 +6212,7 @@ public:
         const float localInfo[]={giRequested&&probeLocal?float(localLayout.columns):0.f,1.f/localLayout.width,1.f/localLayout.height,1.f/localLayout.columns};
         d->SetPixelShaderConstantF(82,localInfo,1);
         if(giRequested)d->SetTexture(13,probeLocal);
-        d->SetRenderTarget(0,lightSurface);d->SetPixelShader(unshadowedLighting?lightingUnshadowedPS:softResolved?lightingSoftPS:lightingPS);
+        d->SetRenderTarget(0,lightSurface);d->SetPixelShader(unshadowedLighting?lightingUnshadowedPS:sharedResolved?lightingSharedPS:softResolved?lightingSoftPS:lightingPS);
         if(profileSampled())logf("WORLD_LIGHTING rendererFrame=%u variant=%s shadows=%u geometry=%u gi=%u probes=%u fogShadowMaps=%u shadowTransitionStarts=%u shadowTransitionFailures=%u moonFade=%u,%u moonWeights=%.4f,%.4f",rendererFrame,unshadowedLighting?"unshadowed":softResolved?"soft":"standard",unsigned(applyDirectionalShadows),unsigned(geometryReady),unsigned(giRequested),unsigned(c[20][3]>.5f),unsigned(fogShadowMapsReady),shadowTransitionStarts,shadowTransitionFailures,unsigned(shadowTransition[2].state.fading()),unsigned(shadowTransition[3].state.fading()),shadowTransition[2].state.weight(),shadowTransition[3].state.weight());
         d->SetTexture(15,softResolved?softVisibility:nullptr);
         if(softResolved){
