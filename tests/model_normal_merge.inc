@@ -18,7 +18,14 @@ struct ModelNormalMergeTest {
         auto vertex=*p.vertex;vertex.shader=nullptr;change(p.vertex,&vertex);
         auto pixel=*p.pixel;change(p.pixel,&pixel);
         std::vector<float> bank(1024);std::memcpy(bank.data()+p.vertex->first*4,p.constants+p.vertex->first*4,p.vertex->count*16);const auto* saved=p.constants;p.constants=bank.data();
-        change(bank[p.vertex->first*4],bank[p.vertex->first*4]+1.f);p.constants=saved;
+        change(bank[p.vertex->first*4],bank[p.vertex->first*4]+1.f);
+        unsigned unused=p.vertex->first;
+        while(unused<p.vertex->first+p.vertex->count&&(p.vertex->reads.f[unused>>6]&(1ull<<(unused&63))))++unused;
+        assert(unused<p.vertex->first+p.vertex->count);
+        const float ignored=bank[unused*4];bank[unused*4]+=1.f;assert(packets()==16);
+        auto uncertain=*p.vertex;uncertain.reads.exact=false;auto* known=p.vertex;p.vertex=&uncertain;
+        assert(packets()==1);p.vertex=known;
+        bank[unused*4]=ignored;p.constants=saved;
         change(p.ps.back(),p.ps.back()+1.f);
         change(n.primitiveLimit,n.pending[0]->geometry().primitiveCount);
         // All integer/boolean banks and sampled inputs participate in equality.
@@ -83,7 +90,17 @@ struct ModelNormalMergeTest {
 };
 
 static void normalMerge(IDirect3DVertexShader9* shader,IDirect3DVertexDeclaration9* declaration,
-        unsigned vertexCount,unsigned indexCount,const std::vector<unsigned char>& source,const std::string& directory){
+        unsigned vertexCount,unsigned indexCount,const std::vector<unsigned char>& input,const std::string& directory){
+    // Keep only the referenced range so sixteen copies fit one native batch,
+    // including M2 submeshes whose file contains unrelated vertex groups.
+    std::vector<unsigned> indices(indexCount);assert(indexCount);
+    std::memcpy(indices.data(),input.data()+12+vertexCount*48,indexCount*4);
+    const auto bounds=std::minmax_element(indices.begin(),indices.end());
+    const unsigned first=*bounds.first,last=*bounds.second;assert(last<vertexCount);
+    std::vector<unsigned char> source(input.begin(),input.begin()+12);
+    source.insert(source.end(),input.begin()+12+first*48,input.begin()+12+(last+1)*48);
+    vertexCount=last-first+1;for(auto& i:indices)i-=first;
+    source.insert(source.end(),reinterpret_cast<unsigned char*>(indices.data()),reinterpret_cast<unsigned char*>(indices.data()+indexCount));
     SavedState saved(d);assert(saved.ok);
     constexpr unsigned N=16,W=384,H=288;
     auto color=target(W,H,D3DFMT_A8R8G8B8,4);IDirect3DSurface9* depth=nullptr;
@@ -117,6 +134,34 @@ static void normalMerge(IDirect3DVertexShader9* shader,IDirect3DVertexDeclaratio
         if(frame==0)reference=image;else assert(image==reference);
         if(frame>=2){assert(normals->cachedDraws()==N);assert(calls.submitted==(merged?1u:N));assert(ModelNormalMergeTest::submitted(*normals)==calls.submitted);submitted[merged]=calls.submitted;}}
     std::printf("MODEL_NORMALS_MERGE_GPU_PASS pixels=bitexact draws=%u/%u width=%u height=%u\n",submitted[0],submitted[1],W,H);
+    {
+        SavedState state(d);assert(state.ok);
+        using NorthlightWaterShaderPatch::dst;using NorthlightWaterShaderPatch::src;
+        const DWORD alphaCode[]={0xffff0300u,0x0200001fu,0x80000005u,dst(1,0,3),
+            0x0200001fu,0x8000000au,dst(1,1),0x02000001u,dst(8,0),src(1,1,0),65535u};
+        IDirect3DPixelShader9* alpha=nullptr;ok(d->CreatePixelShader(alphaCode,&alpha));
+        float bank[256][4];ok(d->GetVertexShaderConstantF(0,bank[0],256));
+        bank[28][0]=bank[28][1]=bank[28][2]=bank[28][3]=1;
+        bank[10][0]=bank[10][1]=bank[10][2]=0;
+        std::vector<unsigned char> expected;
+        for(unsigned trial=0;trial<3;++trial){
+            normals->endFrame();ModelNormalMergeTest::enable(*normals,trial==1);ModelNormalMergeTest::dedup(*normals,false);
+            ok(d->BeginScene());
+            for(unsigned draw=0;draw<3;++draw){auto current=std::array<float,1024>{};std::memcpy(current.data(),bank,sizeof bank);
+                current[11*4]=draw==0||trial==2&&draw==2?.2f:.8f;
+                if(draw==2)current[31*4+3]-=3;
+                ok(d->SetVertexShaderConstantF(0,current.data(),256));ok(d->SetPixelShader(draw==2?alpha:pixel));
+                ok(d->SetRenderState(D3DRS_ALPHATESTENABLE,draw==2));ok(d->SetRenderState(D3DRS_ALPHAFUNC,D3DCMP_GREATER));ok(d->SetRenderState(D3DRS_ALPHAREF,128));
+                const auto& mesh=meshes[0];const NorthlightDrawSnapshot::Draw geometry{D3DPT_TRIANGLELIST,0,0,vertexCount,0,mesh->primitiveCount,true};
+                normals->capture(shader,[]{return D3D_OK;},true,&geometry,nullptr,D3DFMT_UNKNOWN,nullptr,0,&mesh,declaration);
+            }
+            assert(normals->testPendingPackets()==3);assert(normals->finishCaptures());ok(d->EndScene());
+            const auto image=capturedPixels(normals->texture(),W,H);
+            if(!trial)expected=image;else if(trial==1)assert(image==expected);else assert(image!=expected);
+        }
+        alpha->Release();ModelNormalMergeTest::enable(*normals,true);ModelNormalMergeTest::dedup(*normals,true);
+        std::puts("MODEL_NORMALS_UNUSED_CONSTANTS_PASS pixels=bitexact laterShaderReadsGap=1 negativeImageControl=1");
+    }
     // Eight genuinely different native RGB programs reduce to identical
     // receiver code. Alternating them used to split an otherwise adjacent run.
     std::vector<IDirect3DPixelShader9*> variants;

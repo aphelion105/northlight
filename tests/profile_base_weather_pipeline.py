@@ -17,7 +17,7 @@ def main():
  p.add_argument('--base-shader',type=Path,help='Isolated base-compositor bytecode control.')
  p.add_argument('--world-header',type=Path,help='Frozen world_renderer.h for a CPU preparation/state-binding control; all other inputs stay current.')
  p.add_argument('--compare-current',action='store_true',help='Compare the frozen --world-header with current code using identical shaders and exact SDR/HDR readbacks.')
- p.add_argument('--no-directional-source',action='store_true',help='Zero fixture source weights to check the TemporalLight distance fallback.')
+ p.add_argument('--no-directional-source',action='store_true',help='Zero fixture source weights; weather-only composition still needs no lighting history.')
  p.add_argument('--keep-world-state-save',action='store_true',help='Retain the nested WorldRenderer state save as a control for caller-owned restoration.')
  a=p.parse_args()
  if a.compare_current and (a.ao_input or a.base_shader or a.expect_base_ao):p.error('AO/shader controls use standalone runs; --compare-current does not select per-variant expectations.')
@@ -40,21 +40,21 @@ def main():
   assert identity==source_identity(ROOT),'Production source changed between controls'
   common=reports['reference']['inputs'].keys()&reports['current']['inputs'].keys()
   assert all(reports['reference']['inputs'][k]==reports['current']['inputs'][k] for k in common),'Shared inputs changed between controls'
-  for stage,expected in (('WorldNormals',0 if a.no_directional_source else 1),('TemporalLight',1 if a.no_directional_source else 0)):
+  for stage in ('WorldNormals','TemporalLight'):
    rows=[r for r in reports['current']['raw_cpu'] if r['stage']==stage]
-   assert rows and all(r['mrtBinds']==expected for r in rows),(stage,'unexpected distance producer')
+   assert all(r['mrtBinds']==0 for r in rows),(stage,'unexpected distance producer in weather-only composition')
   fog_rows=[r for r in reports['current']['raw_cpu'] if r['stage']=='Fog']
   assert fog_rows and all(r['clears']==0 for r in fog_rows),'Warm neutral fog was cleared again'
   expected=int(not reports['current']['world_state_shared'])
   for stage,counter in (('WorldStateCapture','captures'),('WorldReturn','applies')):
    rows=[r for r in reports['current']['raw_cpu'] if r['stage']==stage]
    assert rows and all(r[counter]==expected for r in rows),(stage,'unexpected nested state block')
-  images={label:{mode:hashlib.sha256((out/label/('baseline-output-'+mode+'.fgr')).read_bytes()).hexdigest() for mode in ('sdr','hdr','sdr-distance','hdr-distance','sdr-fog','hdr-fog')} for label in reports}
+  images={label:{mode:hashlib.sha256((out/label/('baseline-output-'+mode+'.fgr')).read_bytes()).hexdigest() for mode in ('sdr','hdr')} for label in reports}
   result=dict(pass_=images['reference']==images['current'],source_identity=identity,images=images,world_header=str(a.world_header.resolve()),no_directional_source=a.no_directional_source,game_fps_measured=False,timing_comparison_valid=False,
-   scope='Frozen/current WorldRenderer preparation with identical shaders/inputs; exact SDR/HDR, R32F current distance and raw fog control. One run per variant; use ABBA for performance conclusions.',
+   scope='Frozen/current weather-only WorldRenderer preparation with identical shaders/inputs; exact SDR/HDR color. Unused distance/fog targets are recorded separately, not compared as image outputs. One run per variant; use ABBA for performance conclusions.',
    profiles={label:str(out/label/'profile.json') for label in reports})
-  (out/'comparison.json').write_bytes((json.dumps(result,indent=2)+'\n').encode());assert result['pass_'],'WorldRenderer changed color/distance/fog pixels'
-  print('PASS frozen/current WorldRenderer color/distance/fog=exact; raw API/register counters in profiles');return
+  (out/'comparison.json').write_bytes((json.dumps(result,indent=2)+'\n').encode());assert result['pass_'],'WorldRenderer changed color pixels'
+  print('PASS frozen/current WorldRenderer color=exact; unused targets and API/register counters in profiles');return
  baseline=out/'baseline';baseline.mkdir();shutil.copytree(ROOT/'src',baseline/'src')
  world_input=a.world_header.resolve() if a.world_header else ROOT/'src/world/world_renderer.h'
  shutil.copyfile(world_input,baseline/'input-world_renderer.h')
@@ -99,6 +99,10 @@ def main():
   settings=out/'settings';settings.mkdir();(settings/'northlight-renderer.ini').write_bytes(b'[Renderer]\nSettingsOverlay=0\nExperimentalHDR=0\n')
   text=run('baseline',[exe,a.backend.resolve(),settings,a.capture/'capture-1-scene.fgr',a.capture/'capture-1-depth.fgr',a.capture/'capture-1-constants.f32',out/'baseline-output'])
   assert 'BASE_WEATHER_PROFILE_PASS' in text
+  auxiliary=[dict((k,int(v)) for k,v in re.findall(r'(\w+)=(\d+)',line)) for line in text.splitlines() if line.startswith('BASE_AUXILIARY ')]
+  assert len(auxiliary)==2
+  if not a.world_header:assert all(not r['distance'] and not r['fog'] for r in auxiliary),'Weather-only composition allocated unused histories'
+  report['auxiliary_targets']=auxiliary
   if caller_state_api:
    assert 'BASE_STATE_PASS hdr=0 validEnclosure=1 invalidEnclosureFallback=1 bindingsConstantsRestored=1' in text
    assert 'BASE_STATE_PASS hdr=1 validEnclosure=1 invalidEnclosureFallback=1 bindingsConstantsRestored=1 drawFailureRestored=1' in text

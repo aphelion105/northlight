@@ -35,7 +35,14 @@ int main(int argc,char** argv){
     ok(d->CreateIndexBuffer(ni*4,0,D3DFMT_INDEX32,D3DPOOL_MANAGED,&ib,nullptr));ok(ib->Lock(0,0,&memory,0));std::memcpy(memory,mesh.data()+12+nv*48,ni*4);ok(ib->Unlock());
     D3DVERTEXELEMENT9 elements[]={{0,0,D3DDECLTYPE_FLOAT3,0,D3DDECLUSAGE_POSITION,0},{0,12,D3DDECLTYPE_UBYTE4N,0,D3DDECLUSAGE_BLENDWEIGHT,0},{0,16,D3DDECLTYPE_UBYTE4,0,D3DDECLUSAGE_BLENDINDICES,0},{0,20,D3DDECLTYPE_FLOAT3,0,D3DDECLUSAGE_NORMAL,0},{0,32,D3DDECLTYPE_FLOAT2,0,D3DDECLUSAGE_TEXCOORD,0},D3DDECL_END()};
     IDirect3DVertexDeclaration9* declaration=nullptr;ok(d->CreateVertexDeclaration(elements,&declaration));auto* shader=vs(dir+"model-vs3-rigid.bin");auto* pixel=ps(dir+"ModelPS.bin");
-    IDirect3DTexture9* white=nullptr;ok(d->CreateTexture(1,1,1,0,D3DFMT_A8R8G8B8,D3DPOOL_MANAGED,&white,nullptr));D3DLOCKED_RECT lock;ok(white->LockRect(0,&lock,nullptr,0));*static_cast<DWORD*>(lock.pBits)=0xffffffff;ok(white->UnlockRect(0));
+    IDirect3DTexture9* white=nullptr;ok(d->CreateTexture(16,16,1,0,D3DFMT_A8R8G8B8,D3DPOOL_MANAGED,&white,nullptr));D3DLOCKED_RECT lock;ok(white->LockRect(0,&lock,nullptr,0));
+    for(unsigned y=0;y<16;++y)for(unsigned x=0;x<16;++x)reinterpret_cast<DWORD*>(static_cast<char*>(lock.pBits)+y*lock.Pitch)[x]=
+#ifdef NORTHLIGHT_BASE_ALPHA
+        (x^y)&1?0xffffffff:0x20ffffff;
+#else
+        0xffffffff;
+#endif
+    ok(white->UnlockRect(0));
 #ifndef NORTHLIGHT_BASE_NEAR
 #define NORTHLIGHT_BASE_NEAR 133
 #define NORTHLIGHT_BASE_FAR 310
@@ -63,11 +70,25 @@ int main(int argc,char** argv){
         ok(d->SetDepthStencilSurface(nullptr));ok(d->SetRenderTarget(0,color));ok(d->SetDepthStencilSurface(depth));D3DVIEWPORT9 vp{0,0,W,H,0,1};ok(d->SetViewport(&vp));
         ok(d->SetVertexDeclaration(declaration));ok(d->SetStreamSource(0,vb,0,48));ok(d->SetIndices(ib));ok(d->SetVertexShader(shader));ok(d->SetPixelShader(pixel));bind(0,white);
         for(auto k:{D3DRS_ALPHABLENDENABLE,D3DRS_ALPHATESTENABLE,D3DRS_STENCILENABLE,D3DRS_SCISSORTESTENABLE,D3DRS_FOGENABLE,D3DRS_SRGBWRITEENABLE})ok(d->SetRenderState(k,FALSE));
+#ifdef NORTHLIGHT_BASE_ALPHA
+        ok(d->SetRenderState(D3DRS_ALPHATESTENABLE,TRUE));ok(d->SetRenderState(D3DRS_ALPHAFUNC,D3DCMP_GREATEREQUAL));ok(d->SetRenderState(D3DRS_ALPHAREF,128));
+#endif
         ok(d->SetRenderState(D3DRS_ZENABLE,TRUE));ok(d->SetRenderState(D3DRS_ZWRITEENABLE,TRUE));ok(d->SetRenderState(D3DRS_ZFUNC,D3DCMP_LESSEQUAL));ok(d->SetRenderState(D3DRS_CULLMODE,D3DCULL_NONE));ok(d->SetRenderState(D3DRS_COLORWRITEENABLE,15));
         float bank[256][4]={};bank[2][0]=bank[3][1]=bank[4][2]=bank[5][2]=1;bank[4][3]=-.5f;bank[28][3]=1;for(unsigned bone=0;bone<75;++bone)bank[31+bone*3][0]=bank[32+bone*3][1]=bank[33+bone*3][2]=1;ok(d->SetVertexShaderConstantF(0,bank[0],256));float pixelBank[224][4]={};ok(d->SetPixelShaderConstantF(0,pixelBank[0],224));
+#ifdef NORTHLIGHT_BASE_ALPHA
+        bank[6][0]=bank[7][1]=1;bank[30][1]=bank[30][2]=1;
+        ok(d->SetVertexShaderConstantF(0,bank[0],256));
+#endif
         ok(d->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0xff204080,1,0));ok(d->BeginScene());
         double captureMs=0,nativeMs=0;const auto begin=Clock::now();
-        for(unsigned i=0;i<Near+Far;++i){float pose[3][4]={{1,0,0,float(int(i%13)-6)*.6f},{0,1,0,-4},{0,0,1,i<Near?15.f:80.f}};ok(d->SetVertexShaderConstantF(31,pose[0],3));
+        for(unsigned i=0;i<Near+Far;++i){float pose[3][4]={{1,0,0,float(int(i%13)-6)*.6f},{0,1,0,-4},{0,0,1,i<Near?15.f:80.f}};
+#ifdef NORTHLIGHT_BASE_ALPHA
+            pose[1][3]+=float(i/13)*.17f;
+#endif
+            ok(d->SetVertexShaderConstantF(31,pose[0],3));
+#ifdef NORTHLIGHT_BASE_UNUSED
+            const float ambient[]={float(i)*.001f,.1f,.2f,0};ok(d->SetVertexShaderConstantF(11,ambient,1));
+#endif
             auto at=Clock::now();normals->capture(shader,draw,false,&geometry);captureMs+=std::chrono::duration<double,std::milli>(Clock::now()-at).count();
             at=Clock::now();ok(draw());nativeMs+=std::chrono::duration<double,std::milli>(Clock::now()-at).count();
         }
@@ -94,6 +115,9 @@ int main(int argc,char** argv){
 #else
         std::printf("CAPTURE_FRAME frame=%u warm=%u profiled=%u captureMs=%.9f flushCpuMs=%.9f replayGpuMs=%.9f nativeSubmitMs=%.9f totalCpuMs=%.9f queued=%zu culled=%u sourceBytes=%zu cached=%u stateReads=%u\n",frame,unsigned(frame<16),unsigned(frame%2==0),captureMs,flushMs,gpu,nativeMs,totalMs,queued,culled,normals->readSourceBytes(),normals->cachedDraws(),stateReads);
         if(frame%2==0){capturePrint("capture_inclusive",baseCapture);capturePrint("record",baseRecord);capturePrint("flush",baseFlush);}
+#endif
+#ifdef NORTHLIGHT_BASE_UNUSED
+        if(frame==0){ExtensionDevice::RawScope privateTest(extension);normalMerge(shader,declaration,nv,ni,mesh,dir);}
 #endif
     };
 #ifdef NORTHLIGHT_MODEL_NORMALS_RANGE_REFERENCE

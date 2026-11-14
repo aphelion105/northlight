@@ -11,6 +11,10 @@ from build_renderer import source_identity
 def main():
  p=argparse.ArgumentParser(__doc__);p.add_argument('--backend',type=Path,required=True);p.add_argument('--output',type=Path,required=True)
  p.add_argument('--near',type=int,default=133);p.add_argument('--far',type=int,default=310)
+ p.add_argument('--alpha-tested',action='store_true',help='Checker alpha coverage with distinct near draw poses.')
+ p.add_argument('--vary-unused',action='store_true',help='Vary native ambient RGB between repeated poses; capture output must stay exact.')
+ p.add_argument('--mesh',type=Path,help='Frozen 48-byte-vertex mesh instead of the streetlamp subset.')
+ p.add_argument('--vertex',type=Path,help='Frozen native vertex shader for the supplied mesh.')
  p.add_argument('--normal-header',type=Path,help='Frozen model_normal_renderer.h for a preparation control using the same shaders and fixture.')
  p.add_argument('--range-reference',type=Path,help='Compare a frozen model_normal_range.h and current range cache in one executable with ABBA blocks.')
  p.add_argument('--renderer-reference',type=Path,help='Compare a frozen model_normal_renderer.h and current capture in one executable with ABBA blocks.')
@@ -59,22 +63,33 @@ def main():
   n,o=struct.unpack_from('<II',skin,28);subset=next(s for s in struct.iter_unpack('<10H7f',skin[o:o+n*48]) if s[5]);first=subset[4]+(subset[1]<<16);used=indices[first:first+subset[5]];lo,hi=min(used),max(used)
   assert hi<nv and used and len(used)%3==0
   mesh=struct.pack('<III',0,hi-lo+1,len(used))+data[at+lo*48:at+(hi+1)*48]+struct.pack('<%dI'%len(used),*(i-lo for i in used));(out/'lamp.mesh').write_bytes(mesh)
-  for path,index,name in [('shaders/vertex/vs_3_0/diffuse_t1.bls',1,'model-vs3-rigid.bin'),('shaders/pixel/ps_3_0/combiners_opaque.bls',0,'ModelPS.bin')]:
+  for path,index,name in [('shaders/vertex/vs_3_0/diffuse_t1.bls',1,'model-vs3-rigid.bin'),('shaders/pixel/ps_3_0/combiners_opaque.bls',0,'ModelPS.bin'),('shaders/pixel/ps_3_0/combiners_mod.bls',0,'ModelAlphaPS.bin')]:
    codes={i:code for i,_,code in variants(assets.read(path))};(out/name).write_bytes(codes[index])
  finally:assets.close()
+ if a.mesh:
+  mesh=a.mesh.read_bytes();_,vertices,indices=struct.unpack_from('<III',mesh)
+  assert len(mesh)==12+vertices*48+indices*4 and vertices and indices%3==0
+  (out/'lamp.mesh').write_bytes(mesh)
+ if a.vertex:shutil.copyfile(a.vertex,out/'model-vs3-rigid.bin')
+ if a.alpha_tested:
+  assets=Assets(archives='stock')
+  try:(out/'ModelPS.bin').write_bytes(next(code for i,_,code in variants(assets.read('shaders/pixel/ps_3_0/combiners_mod.bls')) if i==0))
+  finally:assets.close()
  sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
- inputs=[ROOT/'tests/base_capture_pipeline_gpu.cpp',ROOT/'tests/profile_base_capture.py',ROOT/'tests/model_normals_gpu.cpp',ROOT/'tests/model_normal_batch.inc',normal_input,a.backend.resolve(),out/'lamp.mesh',out/'model-vs3-rigid.bin',out/'ModelPS.bin']
+ inputs=[ROOT/'tests/base_capture_pipeline_gpu.cpp',ROOT/'tests/profile_base_capture.py',ROOT/'tests/model_normals_gpu.cpp',ROOT/'tests/model_normal_batch.inc',ROOT/'tests/model_normal_merge.inc',normal_input,a.backend.resolve(),out/'lamp.mesh',out/'model-vs3-rigid.bin',out/'ModelPS.bin',out/'ModelAlphaPS.bin']
  if a.range_reference:inputs.append(a.range_reference.resolve())
  if a.renderer_reference:inputs.append(a.renderer_reference.resolve())
  report=dict(pass_=False,source_identity=source_identity(ROOT),normal_header_override=str(normal_input) if a.normal_header else None,inputs={str(p):sha(p) for p in inputs},model=model,model_sha256=hashlib.sha256(data).hexdigest(),skin_sha256=hashlib.sha256(skin).hexdigest(),vertices=hi-lo+1,triangles=len(used)//3,
-  game_fps_measured=False,whole_scene_replay=False,near=a.near,far=a.far,scope=f'Controlled repeated stock streetlamp subset: {a.near} near + {a.far} far draws; 4K MSAA2. Actual ExtensionDevice mirror, shared source pool, resident GPU store, no AutoBump or pose/source handoff. Native submission is separate. Capture CPU includes per-draw clocks; instrumented phases include QPC overhead. Replay GPU excludes preceding game draws; isolated from game/other benchmarks.')
- env={k:v for k,v in fp.zig_env().items() if not k.startswith(('NORTHLIGHT_','DXVK_'))};env.update(DISABLE_VULKAN_OBS_CAPTURE='1',DXVK_CONFIG='d3d9.customVendorId = 1002',DXVK_LOG_PATH=str(out))
+  mesh_override=str(a.mesh.resolve()) if a.mesh else None,vertex_override=str(a.vertex.resolve()) if a.vertex else None,alpha_tested=a.alpha_tested,vary_unused=a.vary_unused,
+  game_fps_measured=False,whole_scene_replay=False,near=a.near,far=a.far,scope=f'Controlled frozen mesh: {a.near} near + {a.far} far draws; 4K MSAA2. Actual ExtensionDevice mirror, shared source pool, resident GPU store, no AutoBump or pose/source handoff. Native submission is separate. Capture CPU includes per-draw clocks; instrumented phases include QPC overhead. Replay GPU excludes preceding game draws; background game permitted by explicit guard override.')
+ if a.mesh:report.update(vertices=vertices,triangles=indices//3,model='frozen mesh override',model_sha256=None,skin_sha256=None)
+ env={k:v for k,v in fp.zig_env().items() if not k.startswith(('NORTHLIGHT_','DXVK_'))};env.update(DISABLE_VULKAN_OBS_CAPTURE='1',DXVK_CONFIG='d3d9.customVendorId = 1002',DXVK_LOG_PATH=str(out),NORTHLIGHT_TEST_VERTEX_SHARING='1')
  for key,name in [('TEMP','temp'),('TMP','temp'),('ZIG_LOCAL_CACHE_DIR','zig-local'),('ZIG_GLOBAL_CACHE_DIR','zig-global')]:
   (out/name).mkdir(exist_ok=True);env[key]=str(out/name)
  def run(label,cmd):
   processes();r=subprocess.run(list(map(str,cmd)),env=env,cwd=out,capture_output=True,text=True,timeout=300);(out/(label+'.log')).write_bytes((r.stdout+r.stderr).encode());print(label,r.returncode,flush=True);r.check_returncode();return r.stdout
  try:
-  exe=out/'base-capture.exe';run('compile',[fp.zig(),'c++','-target','x86-windows-gnu','-O2','-UNDEBUG','-std=c++17','-DNORTHLIGHT_BASE_NEAR='+str(a.near),'-DNORTHLIGHT_BASE_FAR='+str(a.far),'-Wno-microsoft-exception-spec',*(['-DNORTHLIGHT_MODEL_NORMALS_RANGE_REFERENCE=1'] if compare else []),'-I'+str(overlay),*fp.test_include_flags(),ROOT/'tests/base_capture_pipeline_gpu.cpp',fp.src('world_gi.cpp'),'-luser32','-o',exe])
+  exe=out/'base-capture.exe';run('compile',[fp.zig(),'c++','-target','x86-windows-gnu','-O2','-UNDEBUG','-std=c++17','-DNORTHLIGHT_BASE_NEAR='+str(a.near),'-DNORTHLIGHT_BASE_FAR='+str(a.far),'-Wno-microsoft-exception-spec',*(['-DNORTHLIGHT_BASE_ALPHA=1'] if a.alpha_tested else []),*(['-DNORTHLIGHT_BASE_UNUSED=1'] if a.vary_unused else []),*(['-DNORTHLIGHT_MODEL_NORMALS_RANGE_REFERENCE=1'] if compare else []),'-I'+str(overlay),*fp.test_include_flags(),ROOT/'tests/base_capture_pipeline_gpu.cpp',fp.src('world_gi.cpp'),'-luser32','-o',exe])
   text=run('baseline',[exe,a.backend.resolve(),out]);assert 'BASE_CAPTURE_PROFILE_PASS' in text
   if compare:
    rows=[{k:float(v) for k,v in re.findall(r'(\w+)=([0-9.]+)',line)} for line in text.splitlines() if line.startswith('CAPTURE_COMPARE_FRAME ')]

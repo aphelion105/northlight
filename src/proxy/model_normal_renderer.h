@@ -94,7 +94,13 @@ class NorthlightModelNormals {
         if(a.vertex->shader!=b.vertex->shader||a.vertex->first!=b.vertex->first||a.vertex->count!=b.vertex->count||a.pixel!=b.pixel||a.declaration!=b.declaration||
            std::memcmp(&a.viewport,&b.viewport,sizeof a.viewport)||std::memcmp(a.raster,b.raster,sizeof a.raster))return false;
         const auto first=a.vertex->first,count=a.vertex->count;
-        if(a.constants!=b.constants&&std::memcmp(a.constants+first*4,b.constants+first*4,size_t(count)*16))return false;
+        if(a.constants!=b.constants&&std::memcmp(a.constants+first*4,b.constants+first*4,size_t(count)*16)){
+            // The enclosing bank includes gaps (native lighting, UV transforms)
+            // which the capture shader never reads. They cannot split a run.
+            if(!a.vertex->reads.exact||!b.vertex->reads.exact)return false;
+            for(unsigned c=first;c<first+count;++c)if(a.vertex->reads.f[c>>6]&(1ull<<(c&63)))
+                if(std::memcmp(a.constants+c*4,b.constants+c*4,16))return false;
+        }
         if(a.ps.size()!=b.ps.size()||(!a.ps.empty()&&std::memcmp(a.ps.data(),b.ps.data(),a.ps.size()*sizeof(float))))return false;
         if((a.vertex->reads.i&&std::memcmp(a.ints,b.ints,sizeof a.intStorage))||
            (a.vertex->reads.b&&std::memcmp(a.bools,b.bools,sizeof a.boolStorage))||
@@ -702,7 +708,9 @@ public:
                             d->DrawPrimitiveUP(mesh.topology,mesh.primitiveCount,mesh.streams[0].bytes.data(),mesh.streams[0].stride));
                         bufferKnown=false;if(ok)upBytes+=mesh.byteSize();
                     }
-                    if(ok){draws+=run.packets;compactDraws+=unsigned(p->vertex->compact)*run.packets;mergedDraws+=run.packets-1;previous=pending[at-1].get();}
+                    // Only the first packet's bank was uploaded. Merged packets
+                    // can differ in unused rows that a later shader may read.
+                    if(ok){draws+=run.packets;compactDraws+=unsigned(p->vertex->compact)*run.packets;mergedDraws+=run.packets-1;previous=p.get();}
                 }
                 ok=saved.restore()&&ok;
             }

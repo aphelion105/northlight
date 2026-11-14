@@ -80,8 +80,10 @@ int main(int argc,char** argv){
         ok(dev->SetPixelShader(shaders[activeMode]));ok(dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,vertices,sizeof(Vertex)));
     }ok(dev->EndScene());};
     const unsigned batch=std::getenv("NORTHLIGHT_REMOVAL_BENCH_DRAWS")?unsigned(std::atoi(std::getenv("NORTHLIGHT_REMOVAL_BENCH_DRAWS"))):16;assert(batch>0&&batch<=4096);
-    if(batch>16)for(unsigned mode=0;mode<2;++mode){activeMode=mode;draw(batch*4);wait(event);}
-    for(unsigned block=0;block<8;++block){const unsigned mode=batch>16?unsigned(block%4==1||block%4==2):block%2;activeMode=mode;ok(dev->SetPixelShader(shaders[mode]));draw(4);wait(event);ok(disjoint->Issue(D3DISSUE_BEGIN));ok(start->Issue(D3DISSUE_END));draw(batch);ok(end->Issue(D3DISSUE_END));ok(freq->Issue(D3DISSUE_END));ok(disjoint->Issue(D3DISSUE_END));wait(event);UINT64 a=0,b=0,f=0;BOOL bad=FALSE;assert(start->GetData(&a,sizeof a,0)==S_OK&&end->GetData(&b,sizeof b,0)==S_OK&&freq->GetData(&f,sizeof f,0)==S_OK&&disjoint->GetData(&bad,sizeof bad,0)==S_OK&&!bad&&b>=a&&f);means[mode]+=double(b-a)/double(f)*1000/batch/4;
+    const unsigned first=std::getenv("NORTHLIGHT_REMOVAL_CANDIDATE_FIRST")?1:0;
+    if(batch>16)for(unsigned mode=0;mode<2;++mode){activeMode=mode^first;draw(batch*4);wait(event);}
+    for(unsigned block=0;block<8;++block){const unsigned mode=(batch>16?unsigned(block%4==1||block%4==2):block%2)^first;activeMode=mode;ok(dev->SetPixelShader(shaders[mode]));draw(4);wait(event);ok(disjoint->Issue(D3DISSUE_BEGIN));ok(start->Issue(D3DISSUE_END));draw(batch);ok(end->Issue(D3DISSUE_END));ok(freq->Issue(D3DISSUE_END));ok(disjoint->Issue(D3DISSUE_END));wait(event);UINT64 a=0,b=0,f=0;BOOL bad=FALSE;assert(start->GetData(&a,sizeof a,0)==S_OK&&end->GetData(&b,sizeof b,0)==S_OK&&freq->GetData(&f,sizeof f,0)==S_OK&&disjoint->GetData(&bad,sizeof bad,0)==S_OK&&!bad&&b>=a&&f);const double ms=double(b-a)/double(f)*1000/batch;means[mode]+=ms/4;
+        std::printf("{\"block\":%u,\"variant\":%u,\"draws\":%u,\"ms\":%.9f}\n",block,mode,batch,ms);
         if(block<2){ok(dev->GetRenderTargetData(target,staging));D3DLOCKED_RECT lock{};ok(staging->LockRect(&lock,nullptr,D3DLOCK_READONLY));output[mode].resize(std::size_t(W)*H*8);for(unsigned y=0;y<H;++y)std::memcpy(output[mode].data()+std::size_t(y)*W*8,(char*)lock.pBits+y*lock.Pitch,W*8);ok(staging->UnlockRect());
             ok(dev->GetRenderTargetData(normalSurface,staging));ok(staging->LockRect(&lock,nullptr,D3DLOCK_READONLY));
             normalOutput[mode].resize(std::size_t(W)*H*8);

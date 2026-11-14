@@ -27,6 +27,8 @@ For each installed runtime file and its delivery/generation path, see
 [the release payload audit](release-payload-audit.md).
 For the Northrend lighting switches, streaming gaps and GPU regressions, see
 [the lighting investigation](lighting-streaming-20261114.md).
+For the latest gameplay profile and image-checked shader experiments, see
+[the performance investigation](performance-20261114.md).
 
 ## Requirements
 

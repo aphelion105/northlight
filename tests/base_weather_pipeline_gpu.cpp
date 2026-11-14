@@ -145,8 +145,11 @@ int main(int argc,char** argv){
             std::printf("BASE_FRAME frame=%u hdr=%u warm=%u cpuMs=%.9f\n",frame+1000*hdr,unsigned(hdr),unsigned(frame<16),ms);
             if(frame==39){screenOk(d->GetRenderTargetData(target,readback));D3DLOCKED_RECT lock{};screenOk(readback->LockRect(&lock,nullptr,D3DLOCK_READONLY));std::string name=std::string(argv[6])+(hdr?"-hdr.fgr":"-sdr.fgr");FILE* file=std::fopen(name.c_str(),"wb");assert(file);const unsigned header[]={0x31524746,W,H,unsigned(format),hdr?8u:4u};assert(std::fwrite(header,20,1,file)==1);for(unsigned y=0;y<H;++y)assert(std::fwrite(static_cast<char*>(lock.pBits)+y*lock.Pitch,W*header[4],1,file)==1);std::fclose(file);screenOk(readback->UnlockRect());
                 const std::string prefix=std::string(argv[6])+(hdr?"-hdr":"-sdr");
-                baseDumpAuxiliary(d,WorldScreenEffectsTest::currentDistance(*world),prefix+"-distance.fgr");
-                baseDumpAuxiliary(d,WorldScreenEffectsTest::rawFog(*world),prefix+"-fog.fgr");
+                // Weather-only composition no longer allocates lighting/fog histories.
+                auto* distance=WorldScreenEffectsTest::currentDistance(*world);auto* fog=WorldScreenEffectsTest::rawFog(*world);
+                if(distance)baseDumpAuxiliary(d,distance,prefix+"-distance.fgr");
+                if(fog)baseDumpAuxiliary(d,fog,prefix+"-fog.fgr");
+                std::printf("BASE_AUXILIARY hdr=%u distance=%u fog=%u\n",unsigned(hdr),unsigned(distance!=nullptr),unsigned(fog!=nullptr));
             }
         }
         // An invalid enclosure must retain the standalone save. The valid one
