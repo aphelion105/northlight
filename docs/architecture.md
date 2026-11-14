@@ -4,6 +4,9 @@ The current renderer is an x86 D3D9 proxy in the client process. This map descri
 the implemented boundaries. Historical investigations and release reports remain
 in `renderer/docs/`; they do not replace the current contracts or prove current performance.
 
+For native-versus-Northlight work ownership, current pass dependencies and
+measured optimization priorities, see the [2026-11-14 pipeline audit](pipeline-audit-20261114.md).
+
 The command producer and renderer share `NorthlightWorldDrawDomain::mainWorldDraw`
 when admitting a rigid shader as the first world draw. Coordinate proof alone also
 accepts client sky and shadow-map programs. The World snapshot therefore requires
