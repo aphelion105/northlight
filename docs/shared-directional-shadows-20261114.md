@@ -78,6 +78,11 @@ comparison-only combine draw, so it does not charge the old renderer extra work.
 
 ## More detailed world shadows: next structural change
 
+The subsequent [common-cascade experiment](common-near-cascade-experiment-20261114.md)
+implements a test-only common depth route and compares the complete old and new
+WorldRenderer shadow costs. It is not enabled in production and has not
+established a consistent performance improvement.
+
 The actor map has 1024 texels across 24 yards; the near world map has 1024 across
 96 yards. A uniform 4096 near map would match actor density but increase its
 texel area sixteenfold. Merely removing the actor map at the current world

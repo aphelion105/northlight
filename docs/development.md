@@ -41,6 +41,8 @@ For the subsequent focused shadow profile, terrain classification cache and
 copied Forever shader evidence, see [the shadow pipeline review](shadow-pipeline-review-20261114.md).
 For the shared world/actor visibility filter and the remaining fine-cascade work,
 see [the shared directional shadow review](shared-directional-shadows-20261114.md).
+For the experimental common fine depth cascade and the complete old/new
+CPU/GPU comparison, see [the common-cascade experiment](common-near-cascade-experiment-20261114.md).
 
 ## Requirements
 

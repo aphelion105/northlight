@@ -92,6 +92,13 @@
       "test_probe_local_visibility_gpu.py"
     ]
   },
+  "shadow-experiments": {
+    "description": "Experimental common near-cascade depth union, summaries, CPU/GPU filter oracles and component timings. Does not enable or accept a production renderer path.",
+    "tests": [
+      "test_common_shadow_cascade_gpu.py",
+      "test_common_shadow_pipeline_gpu.py"
+    ]
+  },
   "cpu-bounds": {
     "description": "Current-pose CPU bounds, shader numeric equivalence, metadata ownership and conservative admission. No gameplay FPS claim.",
     "tests": [
