@@ -16,7 +16,8 @@
       "test_fog_clouds_wiring.py",
       "test_shadow_transition_build.py",
       "test_fog_volume_build.py",
-      "test_fixture_light_resolution.py"
+      "test_fixture_light_resolution.py",
+      "test_weather_lab_capture.py"
     ]
   },
   "architecture": {
@@ -45,6 +46,7 @@
       "test_world_snapshot_domain.py",
       "test_world_environment.py",
       "test_weather_shelter.py",
+      "test_weather_exterior.py",
       "test_expansion_atmosphere.py",
       "test_probe_local_visibility.py",
       "test_renderer_assets_native.py",
@@ -80,6 +82,7 @@
       "test_hdr_sun_gpu.py",
       "test_effect_coverage_gpu.py",
       "test_weather_motion_gpu.py",
+      "test_weather_capture_gpu.py",
       "test_renderer_assets_gpu.py",
       "test_sky_planets_gpu.py",
       "test_celestial_composition_gpu.py",

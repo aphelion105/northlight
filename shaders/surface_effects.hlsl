@@ -3,6 +3,8 @@ sampler2D FinalDepth : register(s3);
 sampler2D FrostMaterial : register(s1);
 sampler2D SnowMaterial : register(s2);
 sampler2D WeatherNoise : register(s4);
+sampler2D WeatherRoof : register(s5);
+float4 RoofMap : register(c12); // world XY origin, inverse span, available
 float4 Clip : register(c0);       // inverse image size, near, far
 float4 Proj : register(c1);       // scale x/y, forward sign, animation time
 float4 DepthRange : register(c2); // viewport min, reciprocal extent
@@ -52,6 +54,12 @@ float4 precipitation(float2 uv,int layers,bool snow) {
         float distance=layer==0?3.5:layer==1?11:26;
         float weight=layer==0?.45:layer==1?.35:.20;
         float3 p=toWorld(position(uv,distance));
+        float exposed=1;
+        if(RoofMap.w>.5){
+            float2 roofUV=(p.xy-RoofMap.xy)*RoofMap.z;
+            float roof=tex2Dlod(WeatherRoof,float4(roofUV,0,0)).r;
+            exposed=step(roof+.03,p.z)*step(0,min(roofUV.x,roofUV.y))*step(max(roofUV.x,roofUV.y),.999999);
+        }
         float time=Proj.w,scale=snow?.8:1.2;
         // Sampling moves against particle travel: +X/+Y wind, falling along -Z.
         p+=float3(-time*.5,-time*.2,time*(snow?1.3:19));p*=scale;
@@ -59,7 +67,7 @@ float4 precipitation(float2 uv,int layers,bool snow) {
         if(snow)delta.xy+=sin(time*.7+cell.z+seed.xy*6.28)*.08;
         float radius=(snow?.036+.026*seed.x:.014)*clamp(1+Weather.z,.25,3);
         float shape=snow?snowFloc(delta.xy/radius,seed.y)*saturate(1-abs(delta.z)/(radius*.9)):saturate(1-length(delta.xy)/radius)*saturate(1-abs(delta.z)/.32);
-        shape*=smoothstep(distance-.5,distance+.5,scene)*step(seed.z,Weather.x);
+        shape*=smoothstep(distance-.5,distance+.5,scene)*step(seed.z,Weather.x)*exposed;
         opacity+=shape*weight;
     }
     float alpha=saturate(opacity*.45*Weather.x);

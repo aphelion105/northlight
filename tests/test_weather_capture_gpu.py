@@ -41,6 +41,9 @@ for folder in out.glob('case-*'):
     assert metadata['constants'][1][3] == 7.25 and metadata['constants'][0][3] == 1277
     assert metadata['name_mask_required'] and metadata['stencil_exported']
     assert metadata['kind'] == 'rain' and not metadata['depth_reconstructed'] and not metadata['per_sample']
+    assert metadata['roof_required'] and metadata['roof']['origin'] == [-48, 24, 3]
+    assert metadata['roof']['size'] == 128 and metadata['roof']['span'] == 96
+    assert metadata['roof']['height'] == [5] * 16384
     for key in ('depth_file', 'scene_file', 'name_mask_file'):
         assert (folder / metadata[key]).is_file()
 for name in ('missing-mask', 'failed-mask', 'skipped', 'invalid-context'):

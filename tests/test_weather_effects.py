@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-# northlight-test: requires=cxx
+# northlight-test: requires=zig
 """0.3.198 (rain): NorthlightWeatherEffects (src/sky/weather_effects.h), the real header compiled natively.
 All-zero state, Weather=0 and RainFog=0 give exactly the identity (gains 1, addends 0); rain vs snow (snow at 60 percent); the intensity floor (0.35); the coefficient table; RainFog=2 never goes negative or removes shadows altogether; non-finite input is dry. Native clang++, plain
 -O2 and ASan/UBSan. No device or game."""
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
-import subprocess,tempfile
+import os,subprocess,tempfile
 
 SRC=r'''
 #include "weather_effects.h"
@@ -60,9 +60,9 @@ int main(){
     std::printf("PASS weather effects scalars\n");
 }
 '''
-with tempfile.TemporaryDirectory() as tmp:
+with tempfile.TemporaryDirectory(dir=fp.output_dir()) as tmp:
     (Path(tmp)/'t.cpp').write_text(SRC)
-    for label,flags in [('O2',['-O2']),('asan',['-O1','-g','-fsanitize=address,undefined','-fno-sanitize-recover=all'])]:
-        exe=Path(tmp)/label
-        subprocess.run(['clang++','-std=c++17','-Wall','-Wextra','-Werror',*flags,*fp.test_include_flags(),str(Path(tmp)/'t.cpp'),'-o',str(exe)],check=True)
+    for label,flags in [('O2',['-O2']),('ubsan' if os.name=='nt' else 'asan',['-O1','-g','-fsanitize=undefined' if os.name=='nt' else '-fsanitize=address,undefined','-fno-sanitize-recover=all'])]:
+        exe=Path(tmp)/(label+('.exe' if os.name=='nt' else ''))
+        subprocess.run([str(fp.zig()),'c++','-std=c++17','-UNDEBUG','-Wall','-Wextra','-Werror',*flags,*fp.test_include_flags(),str(Path(tmp)/'t.cpp'),'-o',str(exe)],env=fp.zig_env(),check=True)
         print(label,subprocess.check_output([str(exe)],text=True),end='',flush=True)

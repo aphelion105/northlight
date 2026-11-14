@@ -1114,6 +1114,7 @@ private:
             snapshot.sourceSamples=worldDepthDescKnown?unsigned(worldDepthDesc.MultiSampleType):0;
             snapshot.multisampleVerified=NorthlightBackend::isPackagedDxvk(selectedBackend);
             if(world){snapshot.quality=&world->surfaceSettings();snapshot.weather=&world->weather();
+                snapshot.roofRequired=true;snapshot.roof=world->precipitationRoof();
                 const bool snow=snapshot.weather->kind==NorthlightWeather::Kind::Snow,sand=snapshot.weather->kind==NorthlightWeather::Kind::Sand;const auto& q=*snapshot.quality;
                 const bool cameraWanted=sand?(q.sandLens&&q.sandLensStrength):(((snow?q.snowLens:q.rainLens)&&(snow?q.snowLensStrength:q.rainLensStrength))||(snow&&q.snowFrost&&q.snowFrostStrength));
                 if(constants&&cameraWanted&&(sand||(scene&&sceneSurface))){
@@ -1414,9 +1415,9 @@ private:
         if(!surface||!world||!applied||!enabled||failed||debugMode||worldDebug||!depthTex||!world->weatherSetting()||world->underwaterScale()<.9f||memoryGuard.capsHalved()){weatherLayerGate=0;if(diagnostic)captureWeatherDiagnostics(nullptr,nullptr,nullptr,"weather-pass-unavailable");return;}
         const auto& weather=world->weather();
         if((weather.kind!=NorthlightWeather::Kind::Rain&&weather.kind!=NorthlightWeather::Kind::Snow&&weather.kind!=NorthlightWeather::Kind::Sand)||weather.blend<=0){weatherLayerGate=0;if(diagnostic)captureWeatherDiagnostics(nullptr,nullptr,nullptr,"no-active-weather");return;}
-        // A roof above the camera only shelters the lens. The visible exterior
-        // must keep its precipitation; scene depth clips it at foreground roofs.
-        // Looking away from the sky does not end the weather.
+        // Each precipitation sample needs its own roof test: camera exposure
+        // cannot distinguish an interior from the exterior through a doorway.
+        // Scene depth still clips foreground walls; sky visibility is unrelated.
         weatherLayerGate+=(1-weatherLayerGate)*.1f;
         NorthlightSurfaceFrame context;if(!surfaceContext(context)){if(diagnostic)captureWeatherDiagnostics(nullptr,nullptr,nullptr,"surface-context-unavailable");return;}
         context.c[3][0]=weatherLayerGate*weather.blend*(.35f+.65f*weather.intensity);context.c[3][1]=weather.kind==NorthlightWeather::Kind::Snow?1.f:0.f;
@@ -1427,7 +1428,7 @@ private:
         IDirect3DSurface9* nameDepth=nameMask.armed()&&nameMask.hasMarks()&&maskStencil?worldDepth:nullptr;
         auto* weatherTarget=hdrSceneReady?hdrPresentBack:saved.targets[0];
         if(diagnostic)captureWeatherDiagnostics(&context,weatherTarget,nameDepth,nullptr);
-        if(!sand){surface->precipitation(weatherTarget,depthTex,width,height,context,world->qualityPreset(),nameDepth,&saved);gpuProfile->mark("Precipitation");}
+        if(!sand){const auto roof=world->precipitationRoof();if(roof){surface->precipitation(weatherTarget,depthTex,width,height,context,world->qualityPreset(),nameDepth,&saved,roof);gpuProfile->mark("Precipitation");}}
         const unsigned lensOn=snow?q.snowLens:q.rainLens,strength=snow?q.snowLensStrength:q.rainLensStrength;
         const float frost=snow&&q.snowFrost?context.c[3][0]*float(q.snowFrostStrength)*.01f:0;
         const bool cameraWanted=sand?(q.sandLens&&q.sandLensStrength):((lensOn&&strength)||frost>0);

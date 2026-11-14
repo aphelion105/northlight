@@ -103,10 +103,11 @@ struct Replay {
     bool loaded=false;unsigned mode=0,flags=0;NorthlightSurfaceFrame context{};NorthlightQuality::Settings quality;
     float intensity=1,blend=1,gate=1,heat=0,depthLow=0,depthHigh=1;
     std::vector<DWORD> scene,restore;std::vector<float> depth;
+    std::shared_ptr<NorthlightWeatherShelter::Roof> roof;
     void load(const fs::path& path){
         std::ifstream input(path,std::ios::binary);auto read=[&](void* p,size_t bytes){if(!input.read(static_cast<char*>(p),bytes))throw std::runtime_error("Truncated weather replay");};
         unsigned header[6];read(header,sizeof header);
-        if((header[0]!=0x32504357&&header[0]!=0x33504357)||!header[1]||!header[2]||header[1]>8192||header[2]>8192||uint64_t(header[1])*header[2]*8>64*1024*1024||header[3]>3||header[4]>2||header[5]>63)throw std::runtime_error("Invalid weather replay header");
+        if((header[0]!=0x32504357&&header[0]!=0x33504357)||!header[1]||!header[2]||header[1]>8192||header[2]>8192||uint64_t(header[1])*header[2]*8>64*1024*1024||header[3]>3||header[4]>2||header[5]>255)throw std::runtime_error("Invalid weather replay header");
         W=header[1];H=header[2];mode=header[3];flags=header[5];quality.preset=NorthlightQuality::Preset(header[4]);read(&context,sizeof context);
         for(const auto& row:context.c)for(float v:row)if(!std::isfinite(v))throw std::runtime_error("Invalid replay constants");
         const unsigned settingCount=header[0]==0x33504357?19:16;unsigned values[19];read(values,settingCount*4);unsigned* fields[]={&quality.weather,&quality.rainLens,&quality.snowLens,&quality.rainLensStrength,&quality.snowLensStrength,&quality.rainDropSize,&quality.snowFlakeSize,&quality.rainLensSize,&quality.snowLensSize,&quality.rainFog,&quality.rainRivulets,&quality.snowFrost,&quality.snowFrostStrength,&quality.sandLens,&quality.sandLensStrength,&quality.sandLensSize,&quality.weatherWindDirection,&quality.weatherWindStrength,&quality.weatherCameraMotion};
@@ -115,6 +116,10 @@ struct Replay {
         float state[4];read(state,sizeof state);for(float v:state)if(!std::isfinite(v)||v<0||v>1)throw std::runtime_error("Invalid replay weather state");
         intensity=state[0];blend=state[1];gate=state[2];heat=state[3];scene.resize(W*H);depth.resize(W*H);restore.resize(W*H);
         read(scene.data(),scene.size()*4);read(depth.data(),depth.size()*4);read(restore.data(),restore.size()*4);
+        if(flags&128){roof=std::make_shared<NorthlightWeatherShelter::Roof>();float origin[3];read(origin,sizeof origin);
+            for(float v:origin)if(!std::isfinite(v)||std::abs(v)>=1e6)throw std::runtime_error("Invalid replay roof origin");
+            roof->x=origin[0];roof->y=origin[1];roof->z=origin[2];read(roof->height.data(),roof->height.size()*sizeof(float));
+            for(float v:roof->height)if(!std::isfinite(v)||std::abs(v)>=1e6)throw std::runtime_error("Invalid replay roof height");}
         if(input.peek()!=std::char_traits<char>::eof())throw std::runtime_error("Unexpected weather replay data");
         for(float v:depth)if(!std::isfinite(v)||v<0||v>1.00001f)throw std::runtime_error("Invalid replay depth");
         const auto range=std::minmax_element(depth.begin(),depth.end());depthLow=*range.first;depthHigh=*range.second;loaded=true;
@@ -240,7 +245,7 @@ int main(int argc,char** argv){try{
         const bool rotatedCapture=replay.loaded&&(cameraYaw!=0||cameraPitch!=0);
         auto* weatherDepth=occlusion&&!rotatedCapture?depth:noDepth;
         check(d->BeginScene());
-        if(precipitation&&!sand)surface.precipitation(targetSurface,weatherDepth,W,H,c,q.preset,nullptr);
+        if(precipitation&&!sand&&(!replay.loaded||!(replay.flags&64)||replay.roof))surface.precipitation(targetSurface,weatherDepth,W,H,c,q.preset,nullptr,nullptr,replay.roof);
         if(active&&!shelter){
             if(sand&&q.sandLens)surface.sandLens(targetSurface,W,H,seconds,c.c[3][0]*float(q.sandLensStrength)*.01f,nullptr,state.intensity,float(q.sandLensSize)*.01f);
             if(!sand){const bool on=snow?q.snowLens:q.rainLens;const float frost=snow&&q.snowFrost?c.c[3][0]*float(q.snowFrostStrength)*.01f:0;

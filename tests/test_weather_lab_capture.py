@@ -43,6 +43,17 @@ class WeatherCapture(unittest.TestCase):
             self.assertEqual(settings[10:], (1, 1, 70, 1, 60, 100, 45, 100, 1))
             self.assertEqual(data[276 + 96 + 3], 255)
             self.assertEqual(data[276 + 96 + 7], 0)
+            metadata['roof_required'] = True
+            metadata['roof'] = dict(size=128, span=96, origin=[-48, -48, 3], height=[5.0] * 16384)
+            roof = prepare()
+            self.assertEqual(len(roof), len(data) + 16387 * 4)
+            self.assertEqual(struct.unpack_from('<6I', roof)[5] & 192, 192)
+            self.assertEqual(struct.unpack_from('<4f', roof, len(data)), (-48, -48, 3, 5))
+            metadata['roof']['height'][0] = float('nan')
+            with self.assertRaisesRegex(ValueError, 'roof heights'):
+                prepare()
+            del metadata['roof']
+            del metadata['roof_required']
             fgr('scene.fgr', 113, 8, struct.pack('<4e', .25, .5, 1, 1) * 12)
             hdr = prepare()
             self.assertTrue(struct.unpack_from('<6I', hdr)[5] & 4)

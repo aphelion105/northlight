@@ -16,6 +16,8 @@ source = r'''
 #include <algorithm>
 #include <cassert>
 #include <cstdio>
+#include <memory>
+#include "weather_roof.h"
 #include "quality_settings.h"
 #include "surface_frame.h"
 #include "weather_state.h"
@@ -28,6 +30,8 @@ struct World {
     NorthlightQuality::Settings q;
     NorthlightWeather::State state{NorthlightWeather::Kind::Rain,1,1,0,0};
     bool exposed=false;float underwater=1;unsigned shelterQueries=0;
+    std::shared_ptr<NorthlightWeatherShelter::Roof> roof=std::make_shared<NorthlightWeatherShelter::Roof>();
+    std::shared_ptr<const NorthlightWeatherShelter::Roof> precipitationRoof(){return roof;}
     unsigned weatherSetting()const{return q.weather;}
     float underwaterScale()const{return underwater;}
     const NorthlightWeather::State& weather()const{return state;}
@@ -39,8 +43,8 @@ struct World {
 struct Surface {
     unsigned particles=0,lenses=0,sand=0;bool snow=false,rivulets=false;float particleAmount=0,particleSize=0,lensSize=0,frost=0,lensVisibility=0;
     void setMotion(const NorthlightSurfaceFrame&,unsigned,const NorthlightQuality::Settings&,double){}
-    void precipitation(IDirect3DSurface9*,Texture*,unsigned,unsigned,const NorthlightSurfaceFrame& c,NorthlightQuality::Preset,IDirect3DSurface9*,const SavedState* saved){
-        assert(saved&&saved->ok);++particles;particleAmount=c.c[3][0];snow=c.c[3][1]>.5f;particleSize=c.c[3][2];}
+    void precipitation(IDirect3DSurface9*,Texture*,unsigned,unsigned,const NorthlightSurfaceFrame& c,NorthlightQuality::Preset,IDirect3DSurface9*,const SavedState* saved,std::shared_ptr<const NorthlightWeatherShelter::Roof> roof){
+        assert(saved&&saved->ok&&roof);++particles;particleAmount=c.c[3][0];snow=c.c[3][1]>.5f;particleSize=c.c[3][2];}
     void lens(IDirect3DSurface9*,Texture*,IDirect3DSurface9*,unsigned,unsigned,bool,double,float visibility,IDirect3DSurface9*,float,float,float size,bool streams,float edge,const SavedState* saved){assert(saved&&saved->ok);++lenses;lensSize=size;rivulets=streams;frost=edge;lensVisibility=visibility;}
     void sandLens(IDirect3DSurface9*,unsigned,unsigned,double,float visibility,IDirect3DSurface9*,float,float,const SavedState* saved){assert(saved&&saved->ok&&visibility>0);++sand;}
 };
@@ -62,6 +66,7 @@ struct Host {
 __METHOD__
 };
 int main(){
+    Host missing;missing.instance.roof.reset();missing.surfaceWeather();assert(missing.draw.particles==0);
     // The eye is sheltered by a mushroom/roof, with open exterior still visible.
     for(auto kind:{NorthlightWeather::Kind::Rain,NorthlightWeather::Kind::Snow}){
         Host h;h.instance.state.kind=kind;h.surfaceWeather();

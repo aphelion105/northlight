@@ -3435,6 +3435,11 @@ public:
         if(!weatherShelter)try{weatherShelter=std::make_unique<NorthlightWeatherShelter::Worker>();}catch(...){weatherShelterUnavailable=true;logf("WEATHER supplemental shelter worker unavailable; native precipitation retained");return false;}
         return weatherShelter->sample(active->bvh,vec(context.camera),active->map,GetTickCount64());
     }
+    std::shared_ptr<const NorthlightWeatherShelter::Roof> precipitationRoof(){
+        if(!hasContext()||!active||!active->bvh||active->map!=lastRequest.map||weatherShelterUnavailable)return {};
+        if(!weatherShelter)try{weatherShelter=std::make_unique<NorthlightWeatherShelter::Worker>();}catch(...){weatherShelterUnavailable=true;return {};}
+        return weatherShelter->roof(active->bvh,vec(context.camera),active->map,GetTickCount64());
+    }
     unsigned frameTraceFog()const{return traceFog;}
     unsigned frameTraceContext()const{return traceContext;} /* 0.3.200 (frame trace) */
     bool actorShadowsEnabled()const{return quality.actorShadows!=0;}

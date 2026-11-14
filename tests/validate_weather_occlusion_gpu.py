@@ -8,6 +8,7 @@ import subprocess
 import sys
 import struct
 import zlib
+import json
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
@@ -15,6 +16,8 @@ import northlight_paths as fp
 parser = argparse.ArgumentParser(__doc__)
 parser.add_argument('--backend', type=Path, help='System D3D9 by default; optional plain x86 DXVK DLL')
 parser.add_argument('--external-assets', action='store_true', help='Exercise production compressed resource loading')
+parser.add_argument('--capture', type=Path, help='Optional crypt weather JSON for an image regression')
+parser.add_argument('--roof', type=Path, help='Roof binary reconstructed from the crypt world cache')
 parser.add_argument('--allow-running-game', action='store_true',
                     default=os.environ.get('NORTHLIGHT_TEST_ALLOW_RUNNING_GAME') == '1',
                     help='Independent image correctness only; no timing or game FPS claim')
@@ -57,4 +60,13 @@ command = [str(exe), str(backend.resolve())]
 if args.allow_running_game:
     command.append('--allow-running-game')
     print('Concurrent game allowed explicitly: image/state correctness only, no performance claim.', flush=True)
+if args.capture:
+    if not args.roof:
+        parser.error('--capture requires --roof')
+    metadata = json.loads(args.capture.read_text(encoding='utf-8'))
+    constants = out/'capture-constants.f32'
+    constants.write_bytes(struct.pack('<40f', *(v for row in metadata['constants'] for v in row)))
+    command += ['--capture', str(constants.resolve()),
+                str((args.capture.parent/metadata['depth_file']).resolve()),
+                str((args.capture.parent/metadata['scene_file']).resolve()), str(args.roof.resolve())]
 subprocess.run(command, cwd=out, check=True, timeout=180)

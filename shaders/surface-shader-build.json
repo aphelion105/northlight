@@ -1,100 +1,120 @@
 {
-  "source_sha256": "a45903183d0998915d416a3d74d56b4947d32112b480f7bfa6fb3b776039cec7",
+  "source_sha256": "9bc28c640440a14146c4002de83907e1957a74ad51496454dac935b830e3d65f",
   "target": "ps_3_0",
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
   "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
   "game_launched": false,
   "shaders": {
     "RainQuality": {
-      "bytes": 3668,
-      "sha256": "ae52cf2f21811403e88a9ea04e0fc62029e092d14abefba5f1a7d4c6d3f66d25",
-      "static_instruction_slots": 191,
-      "temporary_registers": 6,
+      "bytes": 4524,
+      "sha256": "909cf60f00095877aa3533c9d20be33f353126af1ab9c385a6620927181c9a18",
+      "static_instruction_slots": 250,
+      "temporary_registers": 7,
       "samplers": [
-        3
+        3,
+        5
       ],
       "instructions": {
-        "mov": 7,
-        "mul": 75,
-        "add": 62,
+        "texld": 1,
+        "add": 77,
+        "mul": 80,
         "rcp": 7,
+        "cmp": 17,
+        "mov": 13,
+        "if": 3,
+        "texldl": 3,
+        "else": 3,
+        "endif": 3,
+        "max": 7,
         "frc": 9,
         "dp3": 9,
         "dp2add": 3,
-        "max": 7,
-        "rsq": 3,
-        "cmp": 5,
-        "texld": 1
+        "rsq": 3
       }
     },
     "SnowQuality": {
-      "bytes": 6768,
-      "sha256": "f5e4df23fd883c799dc78fd21d9d7cfd73fa11e578a39b194a8058a34b2a66ba",
-      "static_instruction_slots": 403,
+      "bytes": 7612,
+      "sha256": "fdae14fb2cfc5ba8dd67c43e6ae433e547b459621c3bc9baaa4df01e19053934",
+      "static_instruction_slots": 461,
       "temporary_registers": 7,
       "samplers": [
         2,
-        3
+        3,
+        5
       ],
       "instructions": {
-        "mov": 12,
-        "mul": 165,
-        "add": 123,
+        "texld": 4,
+        "add": 138,
+        "mul": 171,
         "rcp": 9,
+        "cmp": 19,
+        "mov": 16,
+        "if": 3,
+        "texldl": 3,
+        "else": 3,
+        "endif": 3,
         "frc": 24,
         "dp3": 9,
-        "sincos": 3,
         "max": 4,
         "min": 10,
-        "dp2add": 6,
-        "texld": 4,
-        "cmp": 7
+        "sincos": 3,
+        "dp2add": 6
       }
     },
     "RainPerformance": {
-      "bytes": 2888,
-      "sha256": "ed02e79576994ed84f6904ed9cd49dd3d5401449d48e51ba838cf407c092cad4",
-      "static_instruction_slots": 142,
-      "temporary_registers": 5,
+      "bytes": 3464,
+      "sha256": "4252badcb9acaa3a36167c3d14d2fd9085990360a7b251a6c9c9e3146b701fad",
+      "static_instruction_slots": 179,
+      "temporary_registers": 6,
       "samplers": [
-        3
+        3,
+        5
       ],
       "instructions": {
-        "mov": 7,
-        "mul": 56,
-        "add": 45,
+        "texld": 1,
+        "add": 55,
+        "mul": 58,
         "rcp": 6,
+        "cmp": 12,
+        "mov": 10,
+        "if": 2,
+        "texldl": 2,
+        "else": 2,
+        "endif": 2,
         "frc": 6,
         "dp3": 6,
         "dp2add": 2,
-        "max": 5,
         "rsq": 2,
-        "cmp": 4,
-        "texld": 1
+        "max": 5
       }
     },
     "SnowPerformance": {
-      "bytes": 5028,
-      "sha256": "4cee99eb481412c8da707fed4638380fc506f41ded55c239418455a37fddba69",
-      "static_instruction_slots": 283,
+      "bytes": 5592,
+      "sha256": "82e25a9ead79401f990b23451a6fffc13f26c8fcf445a82b5888d104aca10792",
+      "static_instruction_slots": 321,
       "temporary_registers": 6,
       "samplers": [
         2,
-        3
+        3,
+        5
       ],
       "instructions": {
-        "mov": 10,
-        "mul": 116,
-        "add": 86,
+        "texld": 3,
+        "add": 96,
+        "mul": 119,
         "rcp": 7,
+        "cmp": 13,
+        "mov": 13,
+        "if": 2,
+        "texldl": 2,
+        "else": 2,
+        "endif": 2,
+        "max": 3,
+        "min": 7,
         "frc": 16,
         "dp3": 6,
         "sincos": 2,
-        "max": 3,
-        "min": 7,
-        "dp2add": 4,
-        "texld": 3,
-        "cmp": 5
+        "dp2add": 4
       }
     },
     "RainLens": {

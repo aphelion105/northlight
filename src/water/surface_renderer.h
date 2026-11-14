@@ -6,8 +6,10 @@
 #include "weather_lens.h"
 #include "weather_sand_lens.h"
 #include "weather_texture_data.h"
+#include "weather_roof.h"
 #include <cstring>
 #include <optional>
+#include <memory>
 
 // Included after SavedState, drop, logf and NameMaskCompositeBind.
 class NorthlightSurfaceRenderer {
@@ -17,6 +19,8 @@ class NorthlightSurfaceRenderer {
     IDirect3DPixelShader9* weatherPS[4]={};IDirect3DPixelShader9* lensPS=nullptr;bool failed=false,lensFailed=false,weatherUsed=false;
     IDirect3DPixelShader9* coatingPS[2]={};bool coatingFailed[2]={};NorthlightWeatherSand::State sandState;
     IDirect3DTexture9* art[3]={};bool artFailed[3]={};
+    IDirect3DTexture9* roofTexture=nullptr;
+    std::shared_ptr<const NorthlightWeatherShelter::Roof> uploadedRoof;
     NorthlightWeatherMotion::Tracker motion;
     NorthlightWeatherLens::State lensState;
     std::array<NorthlightWeatherLens::Vertex,NorthlightWeatherLens::MaxVertices> lensVertices{};
@@ -56,20 +60,28 @@ class NorthlightSurfaceRenderer {
 public:
     explicit NorthlightSurfaceRenderer(IDirect3DDevice9* device):d(device),stateBlocks(device){}
     ~NorthlightSurfaceRenderer(){reset();for(auto& p:weatherPS)drop(p);for(auto& p:coatingPS)drop(p);for(auto& p:art)drop(p);drop(lensPS);}
-    void reset(){stateBlocks.clear();failed=lensFailed=weatherUsed=false;lensState={};sandState={};motion={};coatingFailed[0]=coatingFailed[1]=false;for(auto& f:artFailed)f=false;}
+    void reset(){drop(roofTexture);uploadedRoof.reset();stateBlocks.clear();failed=lensFailed=weatherUsed=false;lensState={};sandState={};motion={};coatingFailed[0]=coatingFailed[1]=false;for(auto& f:artFailed)f=false;}
     void setMotion(const NorthlightSurfaceFrame& context,unsigned kind,const NorthlightQuality::Settings& q,double time){motion.update(context,kind,q.weatherWindDirection,q.weatherWindStrength,q.weatherCameraMotion!=0,time);}
     const NorthlightWeatherMotion::Flow& weatherFlow()const{return motion.flow;}
     void endFrame(){if(!weatherUsed||failed)stateBlocks.clear();weatherUsed=false;}
     unsigned lensParticleCount()const{return lensState.count;}
     unsigned lensMergeCount()const{return lensState.merges;}
     float frostCoverage()const{return lensState.frost;}
-    void precipitation(IDirect3DSurface9* targetSurface,IDirect3DTexture9* finalDepth,UINT w,UINT h,const NorthlightSurfaceFrame& context,NorthlightQuality::Preset preset,IDirect3DSurface9* nameDepth,const SavedState* enclosingState=nullptr){
+    void precipitation(IDirect3DSurface9* targetSurface,IDirect3DTexture9* finalDepth,UINT w,UINT h,const NorthlightSurfaceFrame& context,NorthlightQuality::Preset preset,IDirect3DSurface9* nameDepth,const SavedState* enclosingState=nullptr,std::shared_ptr<const NorthlightWeatherShelter::Roof> roof={}){
         if(failed||!finalDepth||context.c[3][0]<=0)return;const bool snow=context.c[3][1]>.5f;if(snow&&!ensureArt(1))return;
         auto saved=saveState(enclosingState);if(saved&&!saved->ok)return;state();unsigned i=(preset==NorthlightQuality::Preset::Performance?2:0)+(snow?1:0);
         weatherUsed=true;
         const DWORD* shaders[]={kRainQualityShader,kSnowQualityShader,kRainPerformanceShader,kSnowPerformanceShader};
         if(!weatherPS[i]&&!check(d->CreatePixelShader(shaders[i],&weatherPS[i]),"precipitation shader"))return;
         if(!check(d->SetRenderTarget(0,targetSurface),"precipitation target"))return;blend();d->SetRenderState(D3DRS_COLORWRITEENABLE,7);d->SetPixelShader(weatherPS[i]);d->SetTexture(3,finalDepth);d->SetPixelShaderConstantF(0,&context.c[0][0],10);
+        if(roof&&uploadedRoof!=roof){
+            if(!roofTexture&&!check(d->CreateTexture(roof->Size,roof->Size,1,0,D3DFMT_R32F,D3DPOOL_MANAGED,&roofTexture,nullptr),"weather roof texture"))return;
+            D3DLOCKED_RECT lock{};if(!check(roofTexture->LockRect(0,&lock,nullptr,0),"weather roof upload"))return;
+            for(unsigned y=0;y<roof->Size;++y)std::memcpy(static_cast<char*>(lock.pBits)+y*lock.Pitch,roof->height.data()+y*roof->Size,roof->Size*sizeof(float));
+            if(!check(roofTexture->UnlockRect(0),"weather roof unlock"))return;uploadedRoof=roof;
+        }
+        const float roofMap[]={roof?roof->x:0,roof?roof->y:0,1.f/NorthlightWeatherShelter::Roof::Span,roof?1.f:0.f};
+        d->SetPixelShaderConstantF(12,roofMap,1);d->SetTexture(5,roof?roofTexture:nullptr);
         if(snow)bindArt(1,2);
         NameMaskCompositeBind protect(d,nameDepth);check(quad(w,h),"supplemental precipitation");
     }

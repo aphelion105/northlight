@@ -4,6 +4,7 @@
 #include "quality_settings.h"
 #include "weather_state.h"
 #include "world_lighting_capture.h"
+#include "weather_roof.h"
 
 // Explicit weather snapshots reuse the lighting capture's checked depth copy,
 // MSAA color resolve and full state/constant restoration. No work is scheduled here.
@@ -12,6 +13,8 @@ struct Frame {
     const NorthlightSurfaceFrame* constants=nullptr;
     const NorthlightQuality::Settings* quality=nullptr;
     const NorthlightWeather::State* weather=nullptr;
+    std::shared_ptr<const NorthlightWeatherShelter::Roof> roof;
+    bool roofRequired=false;
     unsigned rendererFrame=0,width=0,height=0;
     unsigned sourceSamples=0;
     float layerGate=0,heat=0;
@@ -43,6 +46,12 @@ inline bool capture(IDirect3DDevice9* device,const std::string& directory,const 
         finite(frame.layerGate),finite(frame.heat),frame.skySeen?"true":"false",q&&q->weather?"true":"false",frame.lensExposureKnown?(frame.lensExposed?"true":"false"):"null",preset);
     if(finiteConstants){std::fputc('[',file);for(unsigned i=0;i<10;++i){std::fprintf(file,"%s[",i?",":"");for(unsigned k=0;k<4;++k)std::fprintf(file,"%s%.9g",k?",":"",frame.constants->c[i][k]);std::fputc(']',file);}std::fputc(']',file);}
     else std::fputs("null",file);
+    std::fprintf(file,",\"roof_required\":%s,\"roof\":",frame.roofRequired?"true":"false");
+    if(frame.roof){const auto& roof=*frame.roof;
+        std::fprintf(file,"{\"size\":%u,\"span\":%.9g,\"origin\":[%.9g,%.9g,%.9g],\"height\":[",roof.Size,roof.Span,roof.x,roof.y,roof.z);
+        for(unsigned i=0;i<roof.height.size();++i)std::fprintf(file,"%s%.9g",i?",":"",finite(roof.height[i]));
+        std::fputs("]}",file);
+    }else std::fputs("null",file);
     std::fputs(",\"quality\":",file);
     if(q)std::fprintf(file,"{\"Weather\":%u,\"RainFog\":%u,\"RainDropSize\":%u,\"SnowFlakeSize\":%u,\"RainLens\":%u,\"SnowLens\":%u,\"RainLensStrength\":%u,\"SnowLensStrength\":%u,\"RainLensSize\":%u,\"SnowLensSize\":%u,\"RainRivulets\":%u,\"SnowFrost\":%u,\"SnowFrostStrength\":%u,\"SandLens\":%u,\"SandLensStrength\":%u,\"SandLensSize\":%u,\"WeatherWindDirection\":%u,\"WeatherWindStrength\":%u,\"WeatherCameraMotion\":%u}",
         q->weather,q->rainFog,q->rainDropSize,q->snowFlakeSize,q->rainLens,q->snowLens,q->rainLensStrength,q->snowLensStrength,q->rainLensSize,q->snowLensSize,

@@ -38,6 +38,8 @@ int main(int argc,char** argv){
         NorthlightWeather::State weather{NorthlightWeather::Kind::Rain,.8f,1,0,0};
         NorthlightWeatherDiagnostics::Frame frame;frame.constants=&constants;frame.quality=&quality;frame.weather=&weather;frame.rendererFrame=123;frame.width=W;frame.height=H;
         frame.layerGate=1;frame.skySeen=true;frame.linearHdr=format==D3DFMT_A16B16G16R16F;frame.nameMaskRequired=true;
+        auto roof=std::make_shared<NorthlightWeatherShelter::Roof>();roof->x=-48;roof->y=24;roof->z=3;roof->height.fill(5);
+        frame.roofRequired=true;frame.roof=roof;
         frame.sourceSamples=samples;frame.multisampleVerified=multisampleVerified;
         const auto folder=root/("case-"+std::to_string(samples)+"-"+std::to_string(unsigned(format)));std::filesystem::create_directory(folder);
         const bool expectedComplete=!samples||multisampleVerified;

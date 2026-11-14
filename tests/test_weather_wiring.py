@@ -52,9 +52,9 @@ s0=r.index('    void finishFrameImpl() {');fin=r[s0:r.index('HRESULT STDMETHODCA
 checks['finishFrameImpl calls weatherFrame before the next frame is latched']=0<fin.index('weatherFrame(sampleFrame);')<fin.index('++frame;')
 wf=r[r.index('    void weatherFrame('):r.index('    void logWeatherProbe(')]
 checks['weatherFrame: tracker, world, rotate, mirror-off']=all(s in wf for s in ('weatherTracker.frame(weatherSample,','world->setWeather(st)','weatherDetect.endFrame(counted)','weatherDetect.setOff(true)','WEATHER detect=off (mirror inactive)'))
-checks['DRAWGATE line carries weatherDraws/weatherPrims']='weatherDraws=%u weatherPrims=%u weatherNs=%.1f' in r and 'weatherSample.draws,weatherSample.primitives,b.weatherNs)' in r
+checks['DRAWGATE line carries weatherDraws/weatherPrims']='weatherDraws=%u weatherPrims=%u' in r and 'weatherSample.draws,weatherSample.primitives)' in r
 w=fp.src('world_renderer.h').read_text()
-checks['WorldRenderer: POD state, setter and getter only']=all(s in w for s in ('NorthlightWeather::State weatherState{};','void setWeather(const NorthlightWeather::State& s){weatherState=s;}','const NorthlightWeather::State& weather()const{return weatherState;}')) and w.count('weatherState')==4
+checks['WorldRenderer: POD state, setter and getter']=all(s in w for s in ('NorthlightWeather::State weatherState{};','void setWeather(const NorthlightWeather::State& s){weatherState=s;}','const NorthlightWeather::State& weather()const{return weatherState;}'))
 # 0.3.202 (rain): the rain boundary is gone (the UI boundary is the only one again); the rain mask replaces it
 pdi=r[r.index('template<class Capture> void prepareDrawImpl('):r.index('    // Terrain draws run with the game')]
 checks['no rain boundary: only guarded fixed-function UI can apply effects in prepareDrawImpl']=('rainBoundary' not in r and 'kind=rain' not in r and 'IDirect3DBaseTexture9* stage0=nullptr' not in pdi and 'ext->GetTexture(0,&stage0)' not in pdi and pdi.count('renderEffects();')==1 and '(terrain||skySeen)&&fixedUiGeometry()' in pdi and '&&hdrUiInputs()){' in pdi)

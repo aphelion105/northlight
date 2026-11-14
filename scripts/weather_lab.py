@@ -101,10 +101,24 @@ def prepare_capture(metadata_path, output):
         raise ValueError('Invalid captured weather state')
     flags = int(mask_available) | int(required) << 1 | int(hdr) << 2 | int(bool(meta.get('complete'))) << 3
     flags |= int(bool(meta.get('sky_seen'))) << 4 | int(meta.get('lens_exposed') is False) << 5
+    flags |= int(bool(meta.get('roof_required'))) << 6
+    roof_bytes = b''
+    roof = meta.get('roof')
+    if roof is not None:
+        if not isinstance(roof, dict) or roof.get('size') != 128 or roof.get('span') != 96:
+            raise ValueError('Invalid weather roof layout')
+        origin, heights = roof.get('origin'), roof.get('height')
+        if not isinstance(origin, list) or len(origin) != 3 or not isinstance(heights, list) or len(heights) != 128 * 128:
+            raise ValueError('Invalid weather roof dimensions')
+        roof_values = [float(v) for v in origin + heights]
+        if not all(math.isfinite(v) and abs(v) < 1e6 for v in roof_values):
+            raise ValueError('Invalid weather roof heights')
+        roof_bytes = struct.pack('<16387f', *roof_values)
+        flags |= 128
     packed = struct.pack('<6I40f19I4f', 0x33504357, width, height, kinds[meta['kind']], presets[meta['preset']], flags,
                          *values, *settings, *state)
     destination = Path(output) / 'weather-capture.bin'
-    destination.write_bytes(packed + scene + depth + restore)
+    destination.write_bytes(packed + scene + depth + restore + roof_bytes)
     return destination
 
 

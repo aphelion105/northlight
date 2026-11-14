@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-# northlight-test: requires=cxx
+# northlight-test: requires=zig
 """NorthlightWeatherMemory (src/sky/weather_memory.h) and the Tracker's memory path (src/sky/weather_state.h), the real headers compiled natively
 against a fake client memory: pointer and object double reads, pointer/field validation, kind order (rain, snow, sand), the intensity mapping, the
 code proofs (every proof's bytes served from a fake image, one flipped byte rejects), the texture-detector cross-check, and the Tracker following
 the memory without a hold (kind incl. sand, intensity as given, ramp out when the weather ends). Plain and ASan/UBSan. No game, no device."""
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
-import subprocess,tempfile
+import os,subprocess,tempfile
 
 SRC=r'''
 #include "weather_memory.h"
@@ -116,10 +116,10 @@ int main(){
     std::puts("PASS weather memory reader: kinds, intensity, double reads, validation, proofs, cross-check, tracker memory path");
 }
 '''
-with tempfile.TemporaryDirectory(prefix='northlight-weather-memory-') as tmp:
+with tempfile.TemporaryDirectory(prefix='northlight-weather-memory-',dir=fp.output_dir()) as tmp:
     source=Path(tmp)/'test.cpp';source.write_text(SRC)
-    for name,flags in (('plain',['-O2']),('asan',['-O1','-g','-fsanitize=address,undefined'])):
-        binary=str(Path(tmp)/name)
-        subprocess.run(['clang++','-std=c++17',*flags,*fp.test_include_flags(),str(source),'-o',binary],check=True)
+    for name,flags in (('plain',['-O2']),('ubsan' if os.name=='nt' else 'asan',['-O1','-g','-fsanitize=undefined' if os.name=='nt' else '-fsanitize=address,undefined','-fno-sanitize-recover=all'])):
+        binary=str(Path(tmp)/(name+('.exe' if os.name=='nt' else '')))
+        subprocess.run([str(fp.zig()),'c++','-std=c++17','-UNDEBUG',*flags,*fp.test_include_flags(),str(source),'-o',binary],env=fp.zig_env(),check=True)
         out=subprocess.check_output([binary],text=True);print(name,out.strip())
 print('PASS test_weather_memory')

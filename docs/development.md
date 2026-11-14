@@ -35,6 +35,8 @@ For character-shadow CPU costs and removed runtime profiling experiments, see
 [the shadow profiling audit](shadow-profile-cleanup-20261114.md).
 For the crypt captures, authored-lighting GI blend, lamp/fog fixes and normal
 snapshot handoff, see [the lighting and shadow review](lighting-shadow-review-20261114.md).
+For precipitation inside the crypt and the world-space shelter field, see
+[the weather roof regression](weather-roof-20261114.md).
 
 ## Requirements
 
