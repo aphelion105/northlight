@@ -58,6 +58,8 @@
       "test_draw_orchestration_gpu.py",
       "test_world_lighting_capture.py",
       "test_model_normal_native_gpu.py",
+      "test_model_normal_msaa_gpu.py",
+      "test_world_normals_msaa_gpu.py",
       "test_m2_material_admission.py",
       "test_material_pose_coarse.py",
       "test_m2_material_preflight.py",

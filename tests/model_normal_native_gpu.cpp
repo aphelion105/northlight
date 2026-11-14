@@ -6,8 +6,15 @@
 #include "native_local_light_renderer.h"
 #include "displacement_shader_patch.h"
 #include "hdr_sky_foreground.h"
+#ifdef NORTHLIGHT_WORLD_NORMAL_MSAA_TEST
+#include "world_normals_msaa_fixture.h"
+#endif
 
 struct ModelNormalPacketTestAccess {
+#ifdef NORTHLIGHT_WORLD_NORMAL_MSAA_TEST
+    static NorthlightModelNormalMsaa& msaa(NorthlightModelNormals& n){n.nativeMrt.deferMsaaResolve=true;return n.nativeMrt.msaaTest();}
+#endif
+    static void swapTargets(NorthlightModelNormals& n,IDirect3DSurface9*& surface,IDirect3DSurface9*& depth){std::swap(n.surface,surface);std::swap(n.depth,depth);}
     static unsigned committed(const NorthlightModelNormals& n){return n.nativeCommittedPackets;}
     static std::string stats(const NorthlightModelNormals& n){std::string text;n.nativeMrt.report(0,[&](const char* format,auto... args){char line[1024];std::snprintf(line,sizeof line,format,args...);text+=line;});return text;}
     static unsigned stat(const NorthlightModelNormals& n,const char* name){const auto text=stats(n);const std::string key=std::string(name)+"=";const auto at=text.find(key);assert(at!=std::string::npos);return unsigned(std::strtoul(text.c_str()+at+key.size(),nullptr,10));}
@@ -35,6 +42,9 @@ int main(int argc,char** argv){
     const bool timingSrgb=timingMode.find("srgb")!=std::string::npos;
     const bool timingFixed=timingMode.find("fixed-pixel")!=std::string::npos;
     const bool timingHazard=timingMode.find("capture-hazard")!=std::string::npos;
+    const bool timingMsaa=timingMode.find("msaa")!=std::string::npos;
+    const bool timingAlpha=timingMode.find("alpha")!=std::string::npos;
+    const auto timingShader=timingMode.find("weighted4")!=std::string::npos?"model-vs3-weighted4.bin":timingMode.find("weighted")!=std::string::npos?"model-vs3-weighted.bin":timingMode.find("skinned")!=std::string::npos?"model-vs3-skinned.bin":timingLocal?"model-vs3-local.bin":"model-vs3-rigid.bin";
     WNDCLASSW wc{};wc.lpfnWndProc=DefWindowProcW;wc.lpszClassName=L"NorthlightNativeNormalTransaction";wc.hInstance=GetModuleHandleW(nullptr);assert(RegisterClassW(&wc));auto window=CreateWindowExW(0,wc.lpszClassName,L"",WS_OVERLAPPED,0,0,64,64,nullptr,nullptr,wc.hInstance,nullptr);assert(window);
     auto module=LoadLibraryA(argv[1]);assert(module);auto create=(IDirect3D9*(WINAPI*)(UINT))GetProcAddress(module,"Direct3DCreate9");assert(create);auto api=create(D3D_SDK_VERSION);assert(api);
     D3DPRESENT_PARAMETERS pp{};pp.Windowed=TRUE;pp.hDeviceWindow=window;pp.BackBufferWidth=pp.BackBufferHeight=64;pp.BackBufferFormat=D3DFMT_X8R8G8B8;pp.SwapEffect=D3DSWAPEFFECT_DISCARD;pp.PresentationInterval=D3DPRESENT_INTERVAL_IMMEDIATE;
@@ -75,16 +85,21 @@ int main(int argc,char** argv){
     std::vector<std::string> files={"model-vs3-rigid.bin","model-vs3-skinned.bin","model-vs3-weighted.bin","model-vs3-weighted4.bin"};
     if(std::ifstream(dir+"model-vs3-local.bin").good())files.push_back("model-vs3-local.bin");
     for(const auto& filename:files)for(unsigned material=0;material<3;++material)for(bool hdr:{false,true})for(bool alpha:{false,true}){
-        if(timing&&(filename!=(timingLocal?"model-vs3-local.bin":"model-vs3-rigid.bin")||material||alpha))continue;
+        if(timing&&(filename!=timingShader||material||alpha!=timingAlpha))continue;
         const auto* file=filename.c_str();const bool local=filename=="model-vs3-local.bin";
         auto source=vs(dir+file);auto color=target(W,H,hdr?D3DFMT_A16B16G16R16F:D3DFMT_A8R8G8B8,hdr?8:4);
         IDirect3DSurface9 *alternateColor=nullptr,*alternateDepth=nullptr;
         if(!timing){ok(d->CreateRenderTarget(W,H,color.format,D3DMULTISAMPLE_NONE,0,FALSE,&alternateColor,nullptr));ok(d->CreateDepthStencilSurface(W,H,D3DFMT_D24S8,D3DMULTISAMPLE_NONE,0,FALSE,&alternateDepth,nullptr));}
         IDirect3DSurface9 *msColor=nullptr,*msDepth=nullptr;
-        if(!timing&&SUCCEEDED(api->CheckDeviceMultiSampleType(0,D3DDEVTYPE_HAL,color.format,TRUE,D3DMULTISAMPLE_2_SAMPLES,nullptr))&&
+        NorthlightModelNormalMsaa msOracle;IDirect3DSurface9* oracleDepth=nullptr;
+        if((!timing||timingMsaa)&&SUCCEEDED(api->CheckDeviceMultiSampleType(0,D3DDEVTYPE_HAL,color.format,TRUE,D3DMULTISAMPLE_2_SAMPLES,nullptr))&&
            SUCCEEDED(api->CheckDeviceMultiSampleType(0,D3DDEVTYPE_HAL,D3DFMT_D24S8,TRUE,D3DMULTISAMPLE_2_SAMPLES,nullptr))){
             ok(d->CreateRenderTarget(W,H,color.format,D3DMULTISAMPLE_2_SAMPLES,0,FALSE,&msColor,nullptr));ok(d->CreateDepthStencilSurface(W,H,D3DFMT_D24S8,D3DMULTISAMPLE_2_SAMPLES,0,FALSE,&msDepth,nullptr));}
+        bool msInterop=false;if(msColor&&!timing){D3DSURFACE_DESC desc{};ok(msColor->GetDesc(&desc));msInterop=msOracle.ensure(raw,desc);if(msInterop)ok(d->CreateDepthStencilSurface(W,H,D3DFMT_D24S8,D3DMULTISAMPLE_2_SAMPLES,0,FALSE,&oracleDepth,nullptr));}
         auto n=std::make_unique<NorthlightModelNormals>(d);n->setDeferredCapture(true);n->setRasterStateSource(&extension,[](void* e,const D3DRENDERSTATETYPE* keys,unsigned count,DWORD* values){return static_cast<ExtensionDevice*>(e)->knownRenderStates(keys,count,values);});
+#ifdef NORTHLIGHT_WORLD_NORMAL_MSAA_TEST
+        assert(timing&&timingMsaa);WorldNormalsMsaaFixture world(d,W,H);auto& fusedWorld=ModelNormalPacketTestAccess::msaa(*n);
+#endif
         n->setEmptyTargetSource(&extension,[](void* e){return static_cast<ExtensionDevice*>(e)->emptyAuxiliaryTargets();});
         NorthlightGpuScene::NativeStore store;NorthlightGpuScene::NativeClient cache(store,NorthlightGpuScene::Consumer::Material);if(timing)n->setGeometryCache(&cache);
         IDirect3DVertexShader9* privateVS=nullptr;IDirect3DPixelShader9* privatePS=nullptr;unsigned pomControl=0;NorthlightDisplacementPatch::Binding displacementBinding;
@@ -106,12 +121,12 @@ int main(int argc,char** argv){
             (material==1&&pom.originalVS==original&&pom.matches(bound,pixel))||(material==2&&displacement.originalVS==original&&displacement.matches(bound))||lighting.provesReceiverPair(original,bound,pixel);};
         unsigned frameNumber=0;
         auto sky=target(W,H,D3DFMT_A16B16G16R16F,8);NorthlightHdr::SkyForeground skyCapture;
-        std::vector<unsigned char> referenceColor,referenceNormals,referenceSky;
-        auto frame=[&](bool mrt,unsigned scenario=0,unsigned fault=0){
+        std::vector<unsigned char> referenceColor,referenceNormals,referenceSky,referenceMsaaFallback;
+        auto frame=[&](bool mrt,unsigned scenario=0,unsigned fault=0,bool msaaOracle=false){
             n->endFrame();n->enableNativeMrt(mrt);state(color);
             if(scenario==34)assert(n->finishCaptures()); // No audited draw: no new cooldown.
             if(scenario==10){ok(d->SetDepthStencilSurface(alternateDepth));ok(d->Clear(0,nullptr,D3DCLEAR_ZBUFFER,0,1,0));ok(d->SetDepthStencilSurface(depth));}
-            if(scenario==7){ok(d->SetDepthStencilSurface(nullptr));ok(d->SetRenderTarget(0,msColor));ok(d->SetDepthStencilSurface(msDepth));}
+            if(scenario==7||timingMsaa){ok(d->SetDepthStencilSurface(nullptr));ok(d->SetRenderTarget(0,msColor));ok(d->SetDepthStencilSurface(msDepth));}
             ok(d->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0xff112233,1,0));
             if(scenario==22){IDirect3DSurface9* previous=nullptr;ok(d->GetRenderTarget(0,&previous));ok(d->SetRenderTarget(0,sky.s));ok(d->Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0));ok(d->SetRenderTarget(0,previous));previous->Release();}
             unsigned nativeDraws=0;ok(d->BeginScene());
@@ -139,7 +154,7 @@ int main(int argc,char** argv){
             for(unsigned i=0;i<N;++i){
                 auto* receiver=scenario==11&&i==1?alternateSource:source;
                 n->beginNativeDraw();ok(d->SetVertexShader(receiver));ok(d->SetPixelShader(nativePS));ok(d->SetRenderState(D3DRS_ALPHATESTENABLE,alpha));ok(d->SetRenderState(D3DRS_ALPHAFUNC,D3DCMP_GREATER));ok(d->SetRenderState(D3DRS_ALPHAREF,128));pose(i==2?49.f:i?20.f:2.f,i==2?.5f:0);
-                if(timing){pose(10.f+(i%7)*.1f,(int(i%17)-8)*.025f);ok(d->SetStreamSource(0,vb,0,Stride));ok(d->SetIndices(ib));}
+                if(timing){pose((timingMode.find("near")!=std::string::npos?2.f:10.f)+(i%7)*.1f,(int(i%17)-8)*.025f);ok(d->SetStreamSource(0,vb,0,Stride));ok(d->SetIndices(ib));}
                 n->capture(receiver,nativeGeometry,!timing,&geometry,nullptr,D3DFMT_UNKNOWN,nullptr,0,&mesh,decl);
                 IDirect3DSurface9* occupied[3]={};
                 if(scenario==1&&i==1)for(unsigned slot=1;slot<4;++slot){ok(d->CreateRenderTarget(W,H,color.format,D3DMULTISAMPLE_NONE,0,FALSE,occupied+slot-1,nullptr));ok(d->SetRenderTarget(slot,occupied[slot-1]));}
@@ -165,14 +180,21 @@ int main(int argc,char** argv){
                 if(scenario>=26&&scenario<32&&i==0)occluder();
             }
             if(scenario==3||scenario==6||(scenario>=12&&scenario<=22)||scenario==24||scenario==25||scenario==32)occluder();
-            assert(nativeDraws==N);assert(n->finishCaptures(true));ok(d->EndScene());assert(n->texture());
-            if(timing)return ModelNormalPacketTestAccess::committed(*n);
+            IDirect3DSurface9* oracleSurface=msOracle.surface();
+            if(msaaOracle)ModelNormalPacketTestAccess::swapTargets(*n,oracleSurface,oracleDepth);
+            assert(nativeDraws==N);assert(n->finishCaptures(true));
+            if(msaaOracle)ModelNormalPacketTestAccess::swapTargets(*n,oracleSurface,oracleDepth);
+            ok(d->EndScene());assert(n->texture());if(msaaOracle)assert(msOracle.resolve());
+#ifdef NORTHLIGHT_WORLD_NORMAL_MSAA_TEST
+            world.render(ModelNormalPacketTestAccess::committed(*n)?&fusedWorld:nullptr,n->texture(),msColor,color);
+#endif
+            if(timing){if(timingMsaa&&mrt&&!ModelNormalPacketTestAccess::committed(*n))std::puts(ModelNormalPacketTestAccess::stats(*n).c_str());return ModelNormalPacketTestAccess::committed(*n);}
             if(scenario==7)ok(d->StretchRect(msColor,nullptr,color.s,nullptr,D3DTEXF_NONE));
-            auto rgb=pixels(color),normals=canonicalNormals(capturedPixels(n->texture(),W,H));
+            auto rgb=pixels(color),normals=canonicalNormals(capturedPixels(msaaOracle?msOracle.texture():n->texture(),W,H));
             const unsigned committed=ModelNormalPacketTestAccess::committed(*n);commits+=committed!=0;++cases;
-            if(!mrt){referenceColor=rgb;referenceNormals=normals;}else{if(rgb!=referenceColor)std::printf("RGB_DIFFERENCE fixture=%s material=%u hdr=%u alpha=%u scenario=%u fault=%u localDraws=%llu localFallbacks=%llu %s\n",file,material,hdr,alpha,scenario,fault,(unsigned long long)lighting.draws,(unsigned long long)lighting.fallbacks,ModelNormalPacketTestAccess::stats(*n).c_str());assert(rgb==referenceColor);auto expected=referenceNormals;
+            if(!mrt){referenceColor=rgb;referenceNormals=normals;if(scenario==7&&!msaaOracle)referenceMsaaFallback=normals;}else{if(rgb!=referenceColor)std::printf("RGB_DIFFERENCE fixture=%s material=%u hdr=%u alpha=%u scenario=%u fault=%u localDraws=%llu localFallbacks=%llu %s\n",file,material,hdr,alpha,scenario,fault,(unsigned long long)lighting.draws,(unsigned long long)lighting.fallbacks,ModelNormalPacketTestAccess::stats(*n).c_str());assert(rgb==referenceColor);auto expected=scenario==7&&!committed?referenceMsaaFallback:referenceNormals;
                 if(committed&&(scenario==2||scenario==3||scenario==6||scenario==12||scenario==19||scenario==22||(scenario>=14&&scenario<=16))){for(unsigned y=0;y<H;++y)std::memset(expected.data()+size_t(y)*W*8,0,W/2*8);}
-                assert(normals==expected);}
+                if(normals!=expected)std::printf("NORMAL_DIFFERENCE fixture=%s material=%u hdr=%u alpha=%u scenario=%u committed=%u\n",file,material,hdr,alpha,scenario,committed);assert(normals==expected);}
             if(scenario==22){const auto actual=pixels(sky);if(!mrt)referenceSky=actual;else assert(actual==referenceSky);}
             assert(!extension.audit());return committed;
         };
@@ -180,15 +202,19 @@ int main(int argc,char** argv){
             IDirect3DQuery9 *q0=nullptr,*q1=nullptr,*hz=nullptr;ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&q0));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&q1));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMPFREQ,&hz));
             auto get=[](IDirect3DQuery9* q){UINT64 v=0;HRESULT hr;while((hr=q->GetData(&v,sizeof v,D3DGETDATA_FLUSH))==S_FALSE)Sleep(0);ok(hr);return v;};
             LARGE_INTEGER frequency;QueryPerformanceFrequency(&frequency);std::vector<double> gpu[2],cpu[2];unsigned probes[2]={};
-            for(unsigned block=0;block<4;++block)for(bool mrt:{false,true})for(unsigned round=0;round<8;++round){
+            for(unsigned block=0;block<4;++block)for(bool mrt:{false,true,true,false})for(unsigned round=0;round<8;++round){
                 store.setFrame(++frameNumber);ok(hz->Issue(D3DISSUE_END));ok(q0->Issue(D3DISSUE_END));LARGE_INTEGER a,b;QueryPerformanceCounter(&a);
                 const auto committed=frame(mrt,timingHazard?33:timingFixed?32:timingSrgb?23:timingBlend?12:0);QueryPerformanceCounter(&b);ok(q1->Issue(D3DISSUE_END));const auto ticks=get(q1)-get(q0),rate=get(hz);
                 if(round>=4){assert(!mrt||committed==((timingBaseline||timingFixed||timingHazard)?0u:N));gpu[mrt].push_back(double(ticks)*1000/rate);cpu[mrt].push_back(double(b.QuadPart-a.QuadPart)*1000/frequency.QuadPart);probes[mrt]+=ModelNormalPacketTestAccess::stat(*n,"probes");}
             }
             auto median=[](std::vector<double> a){std::sort(a.begin(),a.end());return a[a.size()/2];};
             auto mean=[](const std::vector<double>& a){double sum=0;for(double value:a)sum+=value;return sum/a.size();};
-            std::printf("MODEL_NORMAL_NATIVE_TIMING size=%ux%u draws=%u vertices=%u copies=%u local=%u hdr=%u blendedDepth=%u srgb=%u baseline=%u gpu_replay=%.6f gpu_mrt=%.6f cpu_replay=%.6f cpu_mrt=%.6f lateHazard=%u probesReplay=%u probesMrt=%u scope=capture-queue-native-draw-replay-or-commit\n",W,H,N,nv,copies,timingLocal,hdr,timingBlend,timingSrgb,timingBaseline,median(gpu[0]),median(gpu[1]),median(cpu[0]),median(cpu[1]),timingHazard,probes[0],probes[1]);
-            std::printf("MODEL_NORMAL_NATIVE_CYCLE draws=%u hdr=%u lateHazard=%u frames=16 probesMrt=%u cpuReplayMean=%.6f cpuMrtMean=%.6f\n",N,hdr,timingHazard,probes[1],mean(cpu[0]),mean(cpu[1]));
+            const char* scope="capture-queue-native-draw-replay-or-commit";
+#ifdef NORTHLIGHT_WORLD_NORMAL_MSAA_TEST
+            scope="capture-native-draw-replay-or-MRT-scene-depth-resolve-WorldNormals";
+#endif
+            std::printf("MODEL_NORMAL_NATIVE_TIMING size=%ux%u draws=%u vertices=%u copies=%u local=%u hdr=%u blendedDepth=%u srgb=%u baseline=%u gpu_replay=%.6f gpu_mrt=%.6f cpu_replay=%.6f cpu_mrt=%.6f lateHazard=%u probesReplay=%u probesMrt=%u scope=%s\n",W,H,N,nv,copies,timingLocal,hdr,timingBlend,timingSrgb,timingBaseline,median(gpu[0]),median(gpu[1]),median(cpu[0]),median(cpu[1]),timingHazard,probes[0],probes[1],scope);
+            std::printf("MODEL_NORMAL_NATIVE_CYCLE draws=%u hdr=%u lateHazard=%u framesPerVariant=32 probesMrt=%u cpuReplayMean=%.6f cpuMrtMean=%.6f\n",N,hdr,timingHazard,probes[1],mean(cpu[0]),mean(cpu[1]));
             q0->Release();q1->Release();hz->Release();
         }else{
         auto ready=[&](unsigned scenario=0){unsigned committed=0;for(unsigned i=0;i<8&&!committed;++i)committed=frame(true,scenario);assert(committed>0);};
@@ -229,7 +255,7 @@ int main(int argc,char** argv){
         frame(false,32);for(unsigned retry=0;retry<8;++retry)assert(!frame(true,32));frame(false);ready();
         for(unsigned unchangedDepth:{28u,29u,30u,31u}){frame(false,unchangedDepth);assert(!frame(true,unchangedDepth));ready(unchangedDepth);assert(frame(true,unchangedDepth)>0);}
         for(unsigned rejected:{17u,18u}){frame(false,rejected);assert(!frame(true,rejected));assert(!frame(true,rejected));}
-        if(msColor){frame(false,7);assert(!frame(true,7));assert(!frame(true,7));assert(ModelNormalPacketTestAccess::stats(*n).find("modelDraws=0 ")!=std::string::npos);}
+        if(msColor){n->reset();frame(false,7);if(msInterop)frame(false,7,0,true);assert(!frame(true,7));if(msInterop)ready(7);else assert(!frame(true,7));}
         for(unsigned changed:{8u,9u,10u}){frame(false,changed);const auto changedColor=referenceColor,changedNormals=referenceNormals;frame(false);ready();referenceColor=changedColor;referenceNormals=changedNormals;assert(!frame(true,changed));assert(!frame(true,changed));assert(ModelNormalPacketTestAccess::stats(*n).find("modelDraws=0 ")!=std::string::npos);}
         for(unsigned hazard:{4u,5u}){
             if(hazard==5&&!alpha)continue;
@@ -244,7 +270,7 @@ int main(int argc,char** argv){
         std::printf("MODEL_NORMAL_NATIVE_CASE_PASS fixture=%s material=%u hdr=%u alpha=%u %s\n",file,material,hdr,alpha,ModelNormalPacketTestAccess::stats(*n).c_str());
         if(local)assert(lighting.draws>0);
         }
-        n.reset();if(alternateColor)alternateColor->Release();if(alternateDepth)alternateDepth->Release();if(msColor)msColor->Release();if(msDepth)msDepth->Release();if(cube)cube->Release();if(height){ok(d->SetTexture(D3DVERTEXTEXTURESAMPLER0+displacementBinding.sampler,nullptr));height->Release();}if(privateVS)privateVS->Release();if(privatePS)privatePS->Release();alternateSource->Release();source->Release();dispose(color);dispose(sky);
+        n.reset();if(oracleDepth)oracleDepth->Release();if(alternateColor)alternateColor->Release();if(alternateDepth)alternateDepth->Release();if(msColor)msColor->Release();if(msDepth)msDepth->Release();if(cube)cube->Release();if(height){ok(d->SetTexture(D3DVERTEXTEXTURESAMPLER0+displacementBinding.sampler,nullptr));height->Release();}if(privateVS)privateVS->Release();if(privatePS)privatePS->Release();alternateSource->Release();source->Release();dispose(color);dispose(sky);
     }
     if(vb)vb->Release();if(ib)ib->Release();
     if(!timing){assert(commits>0);std::printf("MODEL_NORMAL_NATIVE_GPU_PASS cases=%u committedFrames=%u RGB=exact normals=exact fallback=whole-frame faults=before-after nativeCalls=once hdrSky=exact fillSuccess=%u fillFailure=%u\n",cases,commits,calls.fillSuccess,calls.fillFailure);}

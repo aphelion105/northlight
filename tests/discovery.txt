@@ -314,6 +314,7 @@ test_model_light_attachments.py
 test_model_normal_consumers.py
 test_model_normal_demand.py
 test_model_normal_depth_seed_gpu.py
+test_model_normal_msaa_gpu.py
 test_model_normal_native_gpu.py
 test_model_normal_range.py
 test_model_normal_slice.py
@@ -637,6 +638,7 @@ test_world_local_lights.py
 test_world_mesh_pages.py
 test_world_mesh_pages_real.py
 test_world_mesh_plan.py
+test_world_normals_msaa_gpu.py
 test_world_pressure_transition.py
 test_world_probe_coverage.py
 test_world_screen_effects_gpu.py
