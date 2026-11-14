@@ -272,6 +272,7 @@ test_material_capture_allocations.py
 test_material_capture_targets.py
 test_material_capture_targets_gpu.py
 test_material_constant_spans.py
+test_material_deferred_blocks.py
 test_material_disk_cache.py
 test_material_disk_gpu.py
 test_material_early_alpha_gpu.py

@@ -121,6 +121,17 @@
       "test_position_bounds.py"
     ]
   },
+  "cpu-materials": {
+    "description": "Deferred material submission, state restoration, packet reuse and CPU timings. Component timings do not establish gameplay FPS.",
+    "tests": [
+      "test_material_deferred_blocks.py",
+      "test_material_batch_bindings.py",
+      "test_material_raster_batch.py",
+      "test_material_capture_targets.py",
+      "test_material_capture_allocations.py",
+      "test_displacement_state_reuse.py"
+    ]
+  },
   "packaging": {
     "description": "Installer and package-tool regressions. A release additionally requires the production DLL build and tests/verify_packages.py on the actual produced archives.",
     "tests": [

@@ -45,6 +45,8 @@ For the subsequent gameplay profile and eliminated empty HDR-sky work, see
 [empty HDR sky work](empty-hdr-sky-20261114.md).
 For the next capture profile and rigid-range/grass packet optimizations, see
 [material CPU capture](material-cpu-20261114.md).
+For the next whole-pipeline profile, warm-cache evidence and deferred state-block
+comparison, see [cache and deferred work](cache-deferred-20261115.md).
 For the subsequent focused shadow profile, terrain classification cache and
 copied Forever shader evidence, see [the shadow pipeline review](shadow-pipeline-review-20261114.md).
 For the shared world/actor visibility filter and the remaining fine-cascade work,

@@ -442,9 +442,10 @@ public:
         IDirect3DVertexBuffer9* boundVertex=nullptr;IDirect3DIndexBuffer9* boundIndex=nullptr;
         UINT boundStride=0;bool vertexKnown=false,indexKnown=false;
         D3DVIEWPORT9 boundViewport{};
+        ReplayState keys(d,nullptr,{});
         for(auto& packet:deferred){
             if(!singleSampleBatch&&packet->raster[2]==D3DCMP_EQUAL)packet->raster[2]=D3DCMP_LESSEQUAL;
-            auto& mesh=*packet->mesh;ReplayState keys(d,nullptr,{});HRESULT hr=D3D_OK;
+            auto& mesh=*packet->mesh;HRESULT hr=D3D_OK;
             auto step=[&](HRESULT result){if(FAILED(result))hr=result;};
             // This cache lives only inside this uninterrupted replay. Creation,
             // buffer uploads and draws do not change these captured states.
@@ -480,8 +481,12 @@ public:
             if(needed(viewportKnown&&!std::memcmp(&boundViewport,&packet->viewport,sizeof boundViewport))){
                 const HRESULT result=d->SetViewport(&packet->viewport);step(result);if(SUCCEEDED(result)){boundViewport=packet->viewport;viewportKnown=true;}}
             if(needed(previous&&!std::memcmp(&previous->scissor,&packet->scissor,sizeof(RECT))))step(d->SetScissorRect(&packet->scissor));
-            for(unsigned i=0;i<14;++i)if(!(stableAuxiliary&&keys.states[i].key==D3DRS_COLORWRITEENABLE1)&&needed(previous&&previous->states[i]==packet->states[i]))step(d->SetRenderState(keys.states[i].key,packet->states[i]));
-            for(unsigned i=0;i<DeferredRasterCount;++i)if(needed(previous&&previous->raster[i]==packet->raster[i]))step(d->SetRenderState(deferredRasterKeys[i],packet->raster[i]));
+            // Warm packets usually share both blocks. Compare their contiguous
+            // bytes once; mixed packets retain per-slot writes in original order.
+            if(previous&&!std::memcmp(previous->states,packet->states,sizeof packet->states))replaySkipped+=14-unsigned(stableAuxiliary);
+            else for(unsigned i=0;i<14;++i)if(!(stableAuxiliary&&keys.states[i].key==D3DRS_COLORWRITEENABLE1)&&needed(previous&&previous->states[i]==packet->states[i]))step(d->SetRenderState(keys.states[i].key,packet->states[i]));
+            if(previous&&!std::memcmp(previous->raster,packet->raster,sizeof packet->raster))replaySkipped+=DeferredRasterCount;
+            else for(unsigned i=0;i<DeferredRasterCount;++i)if(needed(previous&&previous->raster[i]==packet->raster[i]))step(d->SetRenderState(deferredRasterKeys[i],packet->raster[i]));
             texture(packet->normalStage,packet->normal.get());const DWORD sampler[]={D3DTEXF_LINEAR,D3DTEXF_LINEAR,D3DTEXF_LINEAR,packet->addressU,packet->addressV,FALSE,0,0};
             for(unsigned i=0;i<8;++i)samplerState(packet->normalStage,keys.samplerKeys[i],sampler[i]);
             for(const auto& t:packet->textures){texture(t.stage,t.texture);for(unsigned i=0;i<13;++i)if(DeferredTexture::SamplerMask&(1u<<i))samplerState(t.stage,D3DSAMPLERSTATETYPE(i+1),t.sampler[i]);}
