@@ -5,14 +5,18 @@
 #undef main
 
 struct AliasMeter:WorldScratchMeter {
-    IDirect3DPixelShader9 *removal=nullptr,*temporal=nullptr,*bound=nullptr;
+    IDirect3DPixelShader9 *removal=nullptr,*temporal=nullptr,*merged=nullptr,*bound=nullptr;
     IDirect3DSurface9 *scratch=nullptr,*history=nullptr;
     unsigned frame=0,removals=0,temporalDraws=0,historyDraws=0;bool dedicated=false;
+    unsigned mergedDraws=0;bool refuseMerge=true,failTemporalDraw=false;
     std::string directory;
     using WorldScratchMeter::WorldScratchMeter;
     HRESULT STDMETHODCALLTYPE CreatePixelShader(const DWORD* code,IDirect3DPixelShader9** out)override{
+        // The scratch alias oracle deliberately exercises the separate pass.
+        if(code==kTemporalLightMergedShader&&refuseMerge){*out=nullptr;return D3DERR_NOTAVAILABLE;}
         auto hr=WorldScratchMeter::CreatePixelShader(code,out);if(SUCCEEDED(hr)){
             if(code==kRemovalSmoothShader)removal=*out;if(code==kTemporalLightShader)temporal=*out;
+            if(code==kTemporalLightMergedShader)merged=*out;
         }return hr;
     }
     HRESULT STDMETHODCALLTYPE SetPixelShader(IDirect3DPixelShader9* shader)override{bound=shader;return WorldScratchMeter::SetPixelShader(shader);}
@@ -21,7 +25,10 @@ struct AliasMeter:WorldScratchMeter {
         if(bound&&bound==removal){
             IDirect3DSurface9* target=nullptr;screenOk(real->GetRenderTarget(0,&target));
             assert(target!=history);assert(dedicated?target!=scratch:target==scratch);target->Release();++removals;name="removal";
-        }else if(bound&&bound==temporal){++temporalDraws;name="temporal";}
+        }else if(bound&&(bound==temporal||bound==merged)){
+            if(failTemporalDraw){failTemporalDraw=false;return D3DERR_INVALIDCALL;}
+            ++temporalDraws;mergedDraws+=bound==merged;name="temporal";
+        }
         else if(bound&&bound==fogTemporal){++historyDraws;name="fog-temporal";}
         const auto hr=WorldScratchMeter::DrawPrimitiveUP(type,n,vertices,stride);
         if(name&&SUCCEEDED(hr)){

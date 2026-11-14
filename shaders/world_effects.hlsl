@@ -995,8 +995,8 @@ float3 smoothRemoval(float4 current,float2 q,float2 base,float2 size,float z){
     }
     return result;
 }
-// Half-res pass before TemporalLight: the lighting buffer with the removal smoothing applied (own
-// pass for the slot budget). Lit, sky and no-source pixels are a bit-identical copy.
+// Separate smoothing remains the diagnostic and device-failure fallback.
+// Normal frames fuse the same filter into TemporalLightMerged; no taps are removed.
 float4 RemovalSmooth(float2 uv:TEXCOORD0):COLOR0 {
     float2 half=ScreenSize.zw;
     float2 base=floor(uv*half);float2 q=(base+.5)/half;
@@ -1017,11 +1017,12 @@ float4 WorldDistance(float2 uv:TEXCOORD0):COLOR0 {
     float2 q=(floor(uv*ScreenSize.zw)+.5)/ScreenSize.zw;
     return float4(viewDistance(normalizedDepth(depthUV(q))),0,0,1);
 }
-TemporalOutput TemporalLight(float2 uv:TEXCOORD0) {
+TemporalOutput temporalLight(float2 uv,bool merged,sampler2D historyDepth,sampler2D historyLight) {
     TemporalOutput o;float2 half=ScreenSize.zw;
     float2 base=floor(uv*half);float2 q=(base+.5)/half;
-    float4 current=tex2Dlod(SmoothedLighting,float4(q,0,0));
+    float4 current=merged?tex2Dlod(LightingBuffer,float4(q,0,0)):tex2Dlod(SmoothedLighting,float4(q,0,0));
     float2 duv=depthUV(q);float d=normalizedDepth(duv);float z=viewDistance(d);
+    [branch]if(merged&&RemovalInfo.y>0&&d<.99999)current.rgb=smoothRemoval(current,q,base,half,z);
     o.light=current;o.depth=float4(z,0,0,1);
     if(TemporalInfo.x<=0||d>=.99999)return o;
     float3 p=worldPosition(duv,d);
@@ -1030,21 +1031,21 @@ TemporalOutput TemporalLight(float2 uv:TEXCOORD0) {
     float2 puv=(v.xy*Projection.xy/w)*float2(.5,-.5)+.5;
     if(any(puv<0)||any(puv>1))return o;
     float2 pq=(clamp(floor(puv*half),0,half-1)+.5)/half;
-    float hz=tex2Dlod(DepthHistory,float4(pq,0,0)).r;
+    float hz=tex2Dlod(historyDepth,float4(pq,0,0)).r;
     if(abs(hz-w)>max(.25,w*.03))return o;
-    // 0.3.171: bilinear history (s14 LINEAR in this pass). The nearest history texel drifted
+    // Bilinear light history (s14 separately, s9 in the merged pass). The nearest history texel drifted
     // up to .75 half-res px while moving (sign flipping with the flow's fraction: waves on
     // static edges). A per-tap weighted depth test does not fit the slot budget (515): read
     // bilinearly only where all four footprint depths agree with this surface; elsewhere
     // (silhouettes) read the nearest texel's centre, which LINEAR returns unmixed, as before.
     float tol=max(.25,w*.03);
     float2 texel=1/half,corner=(floor(puv*half-.5)+.5)*texel; // CLAMP addressing repeats the border
-    float4 footprint=float4(tex2Dlod(DepthHistory,float4(corner,0,0)).r,
-        tex2Dlod(DepthHistory,float4(corner+float2(texel.x,0),0,0)).r,
-        tex2Dlod(DepthHistory,float4(corner+float2(0,texel.y),0,0)).r,
-        tex2Dlod(DepthHistory,float4(corner+texel,0,0)).r);
+    float4 footprint=float4(tex2Dlod(historyDepth,float4(corner,0,0)).r,
+        tex2Dlod(historyDepth,float4(corner+float2(texel.x,0),0,0)).r,
+        tex2Dlod(historyDepth,float4(corner+float2(0,texel.y),0,0)).r,
+        tex2Dlod(historyDepth,float4(corner+texel,0,0)).r);
     bool agree=all(abs(footprint-w)<=tol);
-    float4 history=tex2Dlod(LightHistory,float4(agree?puv:pq,0,0));
+    float4 history=tex2Dlod(historyLight,float4(agree?puv:pq,0,0));
     float4 lo=current,hi=current;
     [unroll]for(int i=0;i<4;++i){
         float2 offset=float2(i==0?-1:(i==1?1:0),i==2?-1:(i==3?1:0));
@@ -1067,6 +1068,11 @@ TemporalOutput TemporalLight(float2 uv:TEXCOORD0) {
     o.light=lerp(current,float4(clamp(history.rgb,lo.rgb-reach,hi.rgb+reach),loose),TemporalInfo.x);
     return o;
 }
+// Keep current normals/distance at s14/s15 for smoothing; histories use idle slots.
+sampler2D MergedLightHistory:register(s9);
+sampler2D MergedDepthHistory:register(s13);
+TemporalOutput TemporalLight(float2 uv:TEXCOORD0){return temporalLight(uv,false,DepthHistory,LightHistory);}
+TemporalOutput TemporalLightMerged(float2 uv:TEXCOORD0){return temporalLight(uv,true,MergedDepthHistory,MergedLightHistory);}
 // 1x1 pass: fraction of the source disc (on screen) that is clear sky, from
 // 16 depth taps in a 4x4 grid over the disc, or .6 x the clear fraction of a ring
 // around it when larger (r43 wrap), blended with last frame's value.
@@ -1617,9 +1623,9 @@ float3 effectWeight(float2 uv,float3 source,bool hdrMode,out float coverageTrans
     return saturate(mad(remaining-source,rcp(max(source,.000001)),1))*coverageTransmission;
 }
 // SDR and HDR are separate compiled variants; validate the actual slot counts.
-float4 worldComposite(float2 uv,float2 pixel,bool surfaceLighting,bool hdrMode,sampler2D fogInput,out float3 effect,bool prelit=false,bool baseLighting=false,bool depthFromScene=true,bool noLighting=false) {
+float4 worldCompositeInputs(float2 uv,float2 pixel,bool surfaceLighting,bool hdrMode,sampler2D fogInput,out float3 effect,out float4 receiver,out float3 sourceColor,bool prelit=false,bool baseLighting=false,bool depthFromScene=true,bool noLighting=false) {
     // Fetches before any flow control use texld (1 slot; tex2Dlod costs 3-4): Scene and Depth have one level and no mip filter, so texld reads what tex2Dlod(.,0) does.
-    float4 original=tex2D(Scene,uv);
+    float4 original=tex2D(Scene,uv);sourceColor=original.rgb;
     effect=0;
     float3 nativeColor=original.rgb;
     float2 centerUV=depthUV(uv);
@@ -1628,6 +1634,7 @@ float4 worldComposite(float2 uv,float2 pixel,bool surfaceLighting,bool hdrMode,s
     // Original Terrain VS uses SIGNED view Z, including right-handed cameras.
     // Unknown fog uploads the safe identity (0,1,1,0), giving T=1 exactly.
     float legacyT=mad(LegacyFog.w,saturate(pow(max(mad(viewZ*Projection.z,LegacyFog.x,LegacyFog.y),0),LegacyFog.z))-1,1);
+    receiver=float4(d,viewZ,liquid,legacyT);
     bool relight=surfaceLighting&&d<.99999&&liquid<=0;
         float3 baseline=0;
         float3 bounce=0,local=0;float shadow=0,total=0,closest=1e20;
@@ -1800,6 +1807,7 @@ float4 worldComposite(float2 uv,float2 pixel,bool surfaceLighting,bool hdrMode,s
     return float4(max(color+tex2D(DitherNoise,mad(pixel,1.0/64,.5/64)).rgb,0),original.a);
 }
 
+float4 worldComposite(float2 uv,float2 pixel,bool surfaceLighting,bool hdrMode,sampler2D fogInput,out float3 effect,bool prelit=false,bool baseLighting=false,bool depthFromScene=true,bool noLighting=false) {float4 receiver;float3 source;return worldCompositeInputs(uv,pixel,surfaceLighting,hdrMode,fogInput,effect,receiver,source,prelit,baseLighting,depthFromScene,noLighting);}
 float4 WorldComposite(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {float3 effect;return worldComposite(uv,pixel,true,false,FogBuffer,effect);}
 // Self-lit M2 receivers keep their native radiance under the same atmosphere.
 // Selected with the existing depth-stencil; no additional image or geometry replay.
@@ -1817,9 +1825,9 @@ float4 WorldPrelitCompositeHdr(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {fl
 // Full-resolution material relighting. The base composition has already handled
 // shadows, GI, AO and fog; only the normal-dependent directional difference is
 // added here. Both the inferred albedo and atmospheric transmission are bounded.
-float4 materialComposite(float2 uv,bool hdrMode,float4 color,float3 effect) {
-    float2 q=depthUV(uv);float d=normalizedDepth(q);float z=viewDistance(d);
-    if(d>=.99999||waterDistance(q,d)>0||(BumpControl.x<=0&&MaterialOcclusionInfo.x<=0))return color;
+float4 materialComposite(float2 uv,bool hdrMode,float4 color,float3 effect,bool reuseInputs=false,float4 receiver=0,float3 sharedSource=0) {
+    float2 q=depthUV(uv);float d=reuseInputs?receiver.x:normalizedDepth(q);float z=reuseInputs?receiver.y:viewDistance(d);
+    if(d>=.99999||(reuseInputs?receiver.z:waterDistance(q,d))>0||(BumpControl.x<=0&&MaterialOcclusionInfo.x<=0))return color;
     float occlusionRange=MaterialOcclusionInfo.y>0?MaterialOcclusionInfo.y:BumpControl.y;
     // Outside both effects' support the relighting delta is exactly zero.
     [branch]if((BumpControl.x<=0||z>=BumpControl.y)&&(MaterialOcclusionInfo.x<=0||z>=occlusionRange))return float4(max(color.rgb,0),color.a);
@@ -1840,8 +1848,8 @@ float4 materialComposite(float2 uv,bool hdrMode,float4 color,float3 effect) {
     [unroll]for(int i=0;i<2;++i)
         delta+=MaterialColor[i].rgb*(saturate(dot(detail,MaterialDirection[i].xyz))*occlusion[i]-saturate(dot(normal,MaterialDirection[i].xyz)));
     float visibility=saturate((tex2Dlod(LightingBuffer,float4(uv,0,0)).a*WaterInfo.z-(1-GridInfo.z))/max(GridInfo.z,.001));
-    float legacyT=mad(LegacyFog.w,saturate(pow(max(mad(z*Projection.z,LegacyFog.x,LegacyFog.y),0),LegacyFog.z))-1,1);
-    float3 source=tex2D(MaterialSource,uv).rgb;
+    float legacyT=reuseInputs?receiver.w:mad(LegacyFog.w,saturate(pow(max(mad(z*Projection.z,LegacyFog.x,LegacyFog.y),0),LegacyFog.z))-1,1);
+    float3 source=reuseInputs?sharedSource:tex2D(MaterialSource,uv).rgb;
     float3 surface=max(source-min((1-legacyT)*LegacyFogColor.rgb,source),0);
     if(hdrMode)surface=worldHdrDecode(surface);
     surface*=tex2D(AmbientOcclusion,uv).a;
@@ -1861,8 +1869,8 @@ float4 MaterialCompositeHdr(float2 uv:TEXCOORD0):COLOR0 {return materialComposit
 float4 WorldMaterialCompositeHdr(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {
     // Material detail already requires the lighting distance target. Retain its
     // read here to keep this combined SM3 entry below its device slot limit.
-    float3 effect;float4 color=worldComposite(uv,pixel,true,true,MaterialFog,effect,false,false,false);
-    return materialComposite(uv,true,color,effect);
+    float3 effect,source;float4 receiver;float4 color=worldCompositeInputs(uv,pixel,true,true,MaterialFog,effect,receiver,source,false,false,false);
+    return materialComposite(uv,true,color,effect,true,receiver,source);
 }
 
 // Sampled diagnostic only: nine small occlusion queries count a regular grid,

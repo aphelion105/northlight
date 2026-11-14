@@ -434,6 +434,7 @@ test_regional_fog_runner_guards.py
 test_regional_fog_water_mask.py
 test_regional_surface_shadow.py
 test_removal_confidence_gpu.py
+test_removal_temporal_merge_gpu.py
 test_render_thread_probe.py
 test_renderer_assets.py
 test_renderer_assets_dll.py
@@ -639,6 +640,7 @@ test_wmo_lamp_runtime.py
 test_wmo_vertex_color.py
 test_wmo_vertex_color_gpu.py
 test_world_cache_diff.py
+test_world_composite_inputs_gpu.py
 test_world_emitter_coverage.py
 test_world_emitter_index.py
 test_world_environment.py
@@ -657,6 +659,7 @@ test_world_shader_contract.py
 test_world_shader_contract_client.py
 test_world_shader_manifest.py
 test_world_snapshot_domain.py
+test_world_temporal_merge_gpu.py
 test_world_unshadowed_lighting_gpu.py
 test_zone_tuner.py
 test_zone_tuning.py

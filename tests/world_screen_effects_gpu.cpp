@@ -5,6 +5,17 @@
 #include <cassert>
 #include <fstream>
 struct WorldScreenEffectsTest {
+#ifdef NORTHLIGHT_TEMPORAL_MERGE_TEST
+    template<class Meter> static void temporalMergeResources(WorldRenderer& w,Meter& meter){
+        meter.refuseMerge=false;meter.failShaderAt=meter.shaderCreates+1;
+        assert(!w.temporalMergeResources()&&!w.failed);
+        const auto attempts=meter.shaderCreates;
+        assert(!w.temporalMergeResources()&&meter.shaderCreates==attempts);
+        w.releaseGPU(true);assert(!w.temporalMergeTried&&!w.temporalMergedPS);
+        meter.failShaderAt=0;assert(w.temporalMergeResources());
+        w.releaseGPU(true);assert(!w.temporalMergeTried&&!w.temporalMergedPS);
+    }
+#endif
 #ifdef NORTHLIGHT_SHARED_SHADOW_TEST
     template<class Meter> static void sharedResources(WorldRenderer& w,Meter& meter){
         const unsigned saved=meter.shaderCreates;

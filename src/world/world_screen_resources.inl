@@ -1,6 +1,17 @@
 // Included inside WorldRenderer. Resource groups follow the frame's consumers;
 // completed groups remain warm across switches until reset, resize or pressure.
 unsigned screenGroups=0;
+// Optional fused filter: no additional images, and no repeated create attempts
+// after a device refusal. Reset/resize releases the shader and permits a retry.
+IDirect3DPixelShader9* temporalMergedPS=nullptr;
+bool temporalMergeTried=false;
+bool temporalMergeResources(){
+    if(!temporalMergeTried){
+        temporalMergeTried=true;
+        if(FAILED(d->CreatePixelShader(kTemporalLightMergedShader,&temporalMergedPS)))drop(temporalMergedPS);
+    }
+    return temporalMergedPS!=nullptr;
+}
 bool createResources(UINT w,UINT h,D3DFORMAT fmt,const NorthlightFrameRequirements::Plan& needs){
     if(width!=w||height!=h){releaseGPU(true);width=w;height=h;}
     const auto required=needs.screenGroups();
