@@ -620,6 +620,7 @@ test_weather_lens_clock.py
 test_weather_memory.py
 test_weather_motion_gpu.py
 test_weather_shelter.py
+test_weather_sparse_roof_gpu.py
 test_weather_state.py
 test_weather_textures.py
 test_weather_wiring.py

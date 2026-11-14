@@ -37,6 +37,8 @@ For the crypt captures, authored-lighting GI blend, lamp/fog fixes and normal
 snapshot handoff, see [the lighting and shadow review](lighting-shadow-review-20261114.md).
 For precipitation inside the crypt and the world-space shelter field, see
 [the weather roof regression](weather-roof-20261114.md).
+For the later weather-toggle profile, exact roof-cell reuse and unshipped GPU
+experiment, see [weather cost and shelter reuse](weather-cost-20261114.md).
 For the subsequent focused shadow profile, terrain classification cache and
 copied Forever shader evidence, see [the shadow pipeline review](shadow-pipeline-review-20261114.md).
 For the shared world/actor visibility filter and the remaining fine-cascade work,

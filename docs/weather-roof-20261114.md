@@ -29,6 +29,8 @@ inside the existing pass. There is no new geometry draw or full-screen pass.
 Stationary cameras do not cause timer-driven rebuilds: eight yards of horizontal
 travel, a new BVH generation, a map change or 256 yards vertically requests a
 refresh. Cached output is accepted only for the same map/BVH and covered camera.
+Scrolling updates now reuse unchanged rays for the same map/BVH and exact Z
+interval; see [weather cost and shelter reuse](weather-cost-20261114.md).
 Unknown coverage suppresses supplemental precipitation while native weather
 remains available. Roof boundaries have the field's finite spatial resolution;
 very narrow geometry and geometry absent from the resident BVH are limitations.

@@ -48,7 +48,7 @@ inline bool capture(IDirect3DDevice9* device,const std::string& directory,const 
     else std::fputs("null",file);
     std::fprintf(file,",\"roof_required\":%s,\"roof\":",frame.roofRequired?"true":"false");
     if(frame.roof){const auto& roof=*frame.roof;
-        std::fprintf(file,"{\"size\":%u,\"span\":%.9g,\"origin\":[%.9g,%.9g,%.9g],\"height\":[",roof.Size,roof.Span,roof.x,roof.y,roof.z);
+        std::fprintf(file,"{\"size\":%u,\"span\":%.9g,\"origin\":[%.9g,%.9g,%.9g],\"traced_cells\":%u,\"height\":[",roof.Size,roof.Span,roof.x,roof.y,roof.z,roof.tracedCells);
         for(unsigned i=0;i<roof.height.size();++i)std::fprintf(file,"%s%.9g",i?",":"",finite(roof.height[i]));
         std::fputs("]}",file);
     }else std::fputs("null",file);

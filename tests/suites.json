@@ -99,6 +99,10 @@
       "test_common_shadow_pipeline_gpu.py"
     ]
   },
+  "weather-experiments": {
+    "description": "Sparse precipitation roof-query experiment: exact image comparisons and contended component timings. Does not enable a production shader.",
+    "tests": ["test_weather_sparse_roof_gpu.py"]
+  },
   "cpu-bounds": {
     "description": "Current-pose CPU bounds, shader numeric equivalence, metadata ownership and conservative admission. No gameplay FPS claim.",
     "tests": [

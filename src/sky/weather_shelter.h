@@ -17,15 +17,29 @@ class Worker {
     std::weak_ptr<const NorthlightGI::BVH> roofRequestedScene,roofResultScene;
     std::shared_ptr<const Roof> roofResultGrid;
     bool roofPending=false;
-    void work(){for(;;){Request r;bool makeRoof=false;{std::unique_lock<std::mutex> lock(mutex);wake.wait(lock,[&]{return stopping||pending||roofPending;});if(stopping)return;
+    void work(){for(;;){Request r;bool makeRoof=false;std::shared_ptr<const Roof> previousRoof;{std::unique_lock<std::mutex> lock(mutex);wake.wait(lock,[&]{return stopping||pending||roofPending;});if(stopping)return;
         if(pending){r=request;request.bvh.reset();pending=false;}
-        else{r=roofRequest;roofRequest.bvh.reset();roofPending=false;makeRoof=true;}}
+        else{r=roofRequest;roofRequest.bvh.reset();roofPending=false;makeRoof=true;
+            if(roofResult.map==r.map&&roofResultScene.lock()==r.bvh&&roofResultGrid&&roofResultGrid->z==r.eye.z)previousRoof=roofResultGrid;}}
         if(makeRoof){
             std::shared_ptr<Roof> grid;
             try{grid=std::make_shared<Roof>();grid->x=std::floor(r.eye.x/Roof::Step)*Roof::Step-Roof::Span*.5f;
                 grid->y=std::floor(r.eye.y/Roof::Step)*Roof::Step-Roof::Span*.5f;grid->z=r.eye.z;
+                // A scrolling grid retains identical world-space rays. Reuse
+                // only exact coordinates, the same scene/map and the same Z
+                // interval; changed geometry or height always traces afresh.
+                if(previousRoof&&(std::abs(grid->x-previousRoof->x)>=Roof::Span||std::abs(grid->y-previousRoof->y)>=Roof::Span))previousRoof.reset();
+                const int shiftX=previousRoof?int(std::lround((grid->x-previousRoof->x)/Roof::Step)):0;
+                const int shiftY=previousRoof?int(std::lround((grid->y-previousRoof->y)/Roof::Step)):0;
                 for(unsigned y=0;y<Roof::Size;++y)for(unsigned x=0;x<Roof::Size;++x){
-                    const auto hit=r.bvh->trace({grid->x+(x+.5f)*Roof::Step,grid->y+(y+.5f)*Roof::Step,r.eye.z+4096},{0,0,-1},.001f,8192);
+                    const float wx=grid->x+(x+.5f)*Roof::Step,wy=grid->y+(y+.5f)*Roof::Step;
+                    const int oldX=int(x)+shiftX,oldY=int(y)+shiftY;
+                    if(previousRoof&&oldX>=0&&oldY>=0&&oldX<int(Roof::Size)&&oldY<int(Roof::Size)&&
+                       wx==previousRoof->x+(oldX+.5f)*Roof::Step&&wy==previousRoof->y+(oldY+.5f)*Roof::Step){
+                        grid->height[y*Roof::Size+x]=previousRoof->height[oldY*Roof::Size+oldX];continue;
+                    }
+                    ++grid->tracedCells;
+                    const auto hit=r.bvh->trace({wx,wy,r.eye.z+4096},{0,0,-1},.001f,8192);
                     grid->height[y*Roof::Size+x]=hit.hit?hit.position.z:r.eye.z-4096;
                 }
             }catch(...){grid.reset();}
