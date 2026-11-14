@@ -177,3 +177,10 @@ on DXVK 3.1.1. The loaded-runtime gate now permits the existing combined shader
 with highlight expansion on that version. DXVK 2 retains its guard because its
 MSAA regression still reproduces. This changes the selector, not shader
 bytecode/assets or quality settings; a new game profile is still required.
+
+## Follow-up: CPU pose bounds
+
+The [CPU bounds report](cpu-bounds-20261114.md) records the measured capture
+hotspot, exact interval arithmetic checks, paired CPU results and the remaining
+uncertainty in total game FPS. The single-bone bounds path performs less input
+preparation and processes two axes together without changing its numeric bounds.

@@ -644,10 +644,14 @@ private:
             if(stop())return Status::Budget;
             budget.operations+=p.operations.size();detail::Vector inputs[CompactSingle?2:16]={};
             const auto& limits=pair.second.limits;
-            for(size_t i=0;i<e.bindings->size();++i)for(unsigned j=0;j<4;++j){const float lo=limits[i*8+j],hi=limits[i*8+4+j],mid=float((double(lo)+hi)*.5);inputs[(*e.bindings)[i].reg][j]={mid,std::max(double(mid)-lo,double(hi)-mid)};}
+            const auto input=[&](size_t i,unsigned j){const float lo=limits[i*8+j],hi=limits[i*8+4+j],mid=float((double(lo)+hi)*.5);inputs[(*e.bindings)[i].reg][j]={mid,std::max(double(mid)-lo,double(hi)-mid)};};
+            for(size_t i=0;i<e.bindings->size();++i)for(unsigned j=0;j<(CompactSingle&&(*e.bindings)[i].reg==1?1u:4u);++j)input(i,j);
             detail::Vector position;
             if(!detail::singleSkinIntervals(p,inputs,constants,position,e.copyDefinitions)){
                 if constexpr(CompactSingle){
+                    // The audited kernel reads only v1.x. Restore the unused
+                    // lanes if its numeric checks require the interpreter.
+                    for(size_t i=0;i<e.bindings->size();++i)if((*e.bindings)[i].reg==1)for(unsigned j=1;j<4;++j)input(i,j);
                     detail::Vector fallback[16]={};for(unsigned i=0;i<2;++i)fallback[i]=inputs[i];
                     if(!detail::evaluateIntervals(p,fallback,constants,position,e.copyDefinitions))return Status::Unsupported;
                 }else if(!detail::evaluateIntervals(p,inputs,constants,position,e.copyDefinitions))return Status::Unsupported;
@@ -659,7 +663,7 @@ private:
                 low[axis]=std::min(low[axis],double(world.value)-world.error);high[axis]=std::max(high[axis],double(world.value)+world.error);
             }
         }
-        for(unsigned axis=0;axis<3;++axis){output.low[axis]=std::nextafter(float(low[axis]),-std::numeric_limits<float>::infinity());output.high[axis]=std::nextafter(float(high[axis]),std::numeric_limits<float>::infinity());}
+        for(unsigned axis=0;axis<3;++axis){output.low[axis]=detail::outwardNormal<false>(float(low[axis]));output.high[axis]=detail::outwardNormal<true>(float(high[axis]));}
         output.valid=true;return Status::Valid;
     }
     template<class Stop> __attribute__((always_inline)) static inline Status evaluateGroups(const NorthlightActorDeformation::Program& p,const Entry& e,

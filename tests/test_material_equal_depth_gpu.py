@@ -126,13 +126,13 @@ games=processes();results=[]
 for index,backend in enumerate(a.backend):
  for count,negative in product(a.draws or [128 if a.benchmark else 8],[False,True] if a.negative_control else [False]):
   processes();args=[exe,backend.resolve(),out/'rigid.bin',out/'skin.bin',out/'alpha.bin',out/'consumer.bin'];args+=['negative'] if negative else ['benchmark'] if a.benchmark else []
-  env={**os.environ,'DISABLE_VULKAN_OBS_CAPTURE':'1','DXVK_LOG_PATH':str(out),'DXVK_CONFIG':'d3d9.customVendorId = 1002; d3d9.supportDFFormats = True','NORTHLIGHT_MATERIAL_TEST_DRAWS':str(count),'NORTHLIGHT_MATERIAL_TEST_ROUNDS':str(a.rounds)}
+  env={**os.environ,'DISABLE_VULKAN_OBS_CAPTURE':'1','DXVK_LOG_PATH':str(out),'DXVK_CONFIG':os.environ.get('DXVK_CONFIG','d3d9.customVendorId = 1002; d3d9.supportDFFormats = True'),'NORTHLIGHT_MATERIAL_TEST_DRAWS':str(count),'NORTHLIGHT_MATERIAL_TEST_ROUNDS':str(a.rounds)}
   r=subprocess.run(list(map(str,args)),env=env,capture_output=True,timeout=300);name=f'gpu-{index}'+('-n'+str(count) if a.draws else '')+('-negative' if negative else '')+'.log';(out/name).write_bytes(r.stdout+r.stderr);text=(r.stdout+r.stderr).decode(errors='replace');print(name,r.returncode,text[-1000:],flush=True)
   unsupported=r.returncode==77 and 'MATERIAL_EQUAL_DEPTH_UNSUPPORTED_DF24:' in text
   if unsupported:assert 'dxvk' not in str(backend).lower(),'Packaged DXVK must exercise the optimized path'
   elif negative:assert r.returncode and 'MATERIAL_EQUAL_MISMATCH' in text,'Unsafe non-EQUAL control must be rejected'
   else:r.check_returncode();assert 'MATERIAL_EQUAL_DEPTH_PASS' in text
-  results.append(dict(backend=str(backend.resolve()),backend_sha256=sha(backend),log=name,sha256=sha(out/name),negative=negative,exit_code=r.returncode,unsupported_df24=unsupported,test_draws=count))
+  results.append(dict(backend=str(backend.resolve()),backend_sha256=sha(backend),log=name,sha256=sha(out/name),negative=negative,exit_code=r.returncode,unsupported_df24=unsupported,test_draws=count,environment={key:env[key] for key in ('DXVK_CONFIG','DXVK_FILTER_DEVICE_NAME','DISABLE_VULKAN_OBS_CAPTURE') if key in env}))
 if a.m2_admission:
  from statistics import median
  timings=[]

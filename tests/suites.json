@@ -83,6 +83,17 @@
       "test_probe_local_visibility_gpu.py"
     ]
   },
+  "cpu-bounds": {
+    "description": "Current-pose CPU bounds, shader numeric equivalence, metadata ownership and conservative admission. No gameplay FPS claim.",
+    "tests": [
+      "test_single_skin_intervals.py",
+      "test_material_envelope_fast.py",
+      "test_material_envelope_kernel.py",
+      "test_material_pose_metadata.py",
+      "test_material_palette_override.py",
+      "test_material_pose_coarse.py"
+    ]
+  },
   "packaging": {
     "description": "Installer and package-tool regressions. A release additionally requires the production DLL build and tests/verify_packages.py on the actual produced archives.",
     "tests": [

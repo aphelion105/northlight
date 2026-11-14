@@ -4,8 +4,10 @@
 #include <cassert>
 #include <cstdio>
 #include <chrono>
+#include <cfenv>
 #include "replay_bounds.h"
 #include "actor_client_programs.h"
+#pragma STDC FENV_ACCESS ON
 using namespace NorthlightActorDeformation;
 namespace B=NorthlightReplayBounds;
 static uint32_t seed=12345;
@@ -15,6 +17,15 @@ int main(){
     std::vector<Program> programs={load(ClientShaders::OneBoneVs3),load(ClientShaders::OneBoneVs3WLast),load(ClientShaders::OneBoneVs3WMid),load(ClientShaders::OneBoneVs2)};
     auto vs1=programs.back();vs1.major=1;for(auto& op:vs1.operations){if(op.code==46)op.code=1;for(auto& src:op.source)src.address=0;}buildKernel(vs1);assert(vs1.kernel.singleSkin());programs.push_back(vs1);
     float bank[1024]{};B::detail::Vector input[16]={},reference,fast;uint64_t accepted=0,refused=0;
+    std::fenv_t saved;assert(std::fegetenv(&saved)==0);
+#if defined(__SSE2__)
+    const auto savedMxcsr=_mm_getcsr();
+#endif
+    for(int rounding:{FE_TONEAREST,FE_DOWNWARD,FE_UPWARD,FE_TOWARDZERO})for(unsigned flushing=0;flushing<4;++flushing){
+    assert(std::fesetround(rounding)==0);
+#if defined(__SSE2__)
+    _mm_setcsr((_mm_getcsr()&~0x8040u)|((flushing&1)?0x8000u:0u)|((flushing&2)?0x40u:0u));
+#endif
     for(auto& p:programs)for(unsigned trial=0;trial<5000;++trial){
         for(auto& f:bank)f=next();bank[0]=3;bank[1]=1;
         for(const auto& def:p.definitions)std::copy(def.value.begin(),def.value.end(),bank+4*def.reg);
@@ -27,12 +38,19 @@ int main(){
         if(trial%37==0)bank[4*(31+3*(trial%75))+3]=std::numeric_limits<float>::quiet_NaN();
         if(trial%41==0)input[1][0].value=75;
         if(trial%43==0)input[0][0].value=std::numeric_limits<float>::max();
+        if(trial%47==0)input[0][1].error=0;
+        if(trial%53==0)bank[4*(31+3*(trial%75))+4]=std::numeric_limits<float>::infinity();
         const bool old=B::detail::evaluateIntervals(p,input,bank,reference,true);
         const bool eligible=B::detail::singleSkinIntervals(p,input,bank,fast);
         const bool current=eligible||B::detail::evaluateIntervals(p,input,bank,fast,true);
         assert(old==current);if(old)for(unsigned i=0;i<4;++i){assert(reference[i].value==fast[i].value);assert(reference[i].error==fast[i].error);}
         eligible?++accepted:++refused;
     }
+    }
+    assert(std::fesetenv(&saved)==0);
+#if defined(__SSE2__)
+    _mm_setcsr(savedMxcsr);
+#endif
     assert(accepted>10000&&refused>1000);
     for(auto& f:bank)f=next();bank[0]=3;bank[1]=1;for(auto& v:input[0])v={next(),.125};input[0][3]={1,0};
     volatile float sink=0;double oldNs[5],newNs[5];const auto& p=programs.front();
@@ -42,5 +60,5 @@ int main(){
         return std::chrono::duration<double,std::nano>(std::chrono::steady_clock::now()-start).count()/20000;};
     for(unsigned i=0;i<5;++i){if(i%2){newNs[i]=timed(true);oldNs[i]=timed(false);}else{oldNs[i]=timed(false);newNs[i]=timed(true);}}
     std::sort(oldNs,oldNs+5);std::sort(newNs,newNs+5);
-    std::printf("SINGLE_SKIN_INTERVALS_PASS accepted=%llu fallback=%llu bit_exact_values_and_errors=1 genericNs=%.3f specializedNs=%.3f speedup=%.3f sink=%g\n",accepted,refused,oldNs[2],newNs[2],oldNs[2]/newNs[2],float(sink));
+    std::printf("SINGLE_SKIN_INTERVALS_PASS accepted=%llu fallback=%llu bit_exact_values_and_errors=1 rounding=4 flushing=4 genericNs=%.3f specializedNs=%.3f speedup=%.3f sink=%g\n",accepted,refused,oldNs[2],newNs[2],oldNs[2]/newNs[2],float(sink));
 }

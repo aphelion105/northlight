@@ -113,6 +113,29 @@ inline bool evaluate(const NorthlightActorDeformation::Program& p,const Northlig
 }
 // Same interval arithmetic as the audited single-bone MUL/MOVA/DP4 program,
 // without decoding its six instructions for each warm bounds group.
+#if defined(__SSE2__)
+struct IntervalPair {__m128d value,error;};
+inline __m128d pairAbs(__m128d v){return _mm_andnot_pd(_mm_set1_pd(-0.0),v);}
+inline __m128d pairRoundError(__m128d magnitude){return _mm_add_pd(_mm_mul_pd(magnitude,_mm_set1_pd(2*std::numeric_limits<float>::epsilon())),_mm_set1_pd(std::numeric_limits<float>::min()));}
+inline __m128d pairRounding(__m128d exact,__m128d value,__m128d inherited,__m128d magnitude){
+    const auto zero=_mm_setzero_pd(),absolute=pairAbs(value);
+    const auto ordinary=_mm_or_pd(_mm_cmpeq_pd(value,zero),_mm_cmpge_pd(absolute,_mm_set1_pd(std::numeric_limits<float>::min())));
+    const auto noError=_mm_and_pd(_mm_and_pd(_mm_cmpeq_pd(inherited,zero),_mm_cmpeq_pd(value,exact)),ordinary);
+    return _mm_andnot_pd(noError,pairRoundError(magnitude));
+}
+inline IntervalPair pairMul(__m128d row,Value input){
+    const auto exact=_mm_mul_pd(row,_mm_set1_pd(input.value));
+    const auto value=_mm_cvtps_pd(_mm_cvtpd_ps(exact));
+    const auto inherited=_mm_add_pd(_mm_add_pd(_mm_mul_pd(pairAbs(row),_mm_set1_pd(input.error)),_mm_setzero_pd()),_mm_setzero_pd());
+    return {value,_mm_add_pd(inherited,pairRounding(exact,value,inherited,_mm_add_pd(pairAbs(exact),inherited)))};
+}
+inline IntervalPair pairAdd(IntervalPair a,IntervalPair b){
+    const auto exact=_mm_add_pd(a.value,b.value),value=_mm_cvtps_pd(_mm_cvtpd_ps(exact));
+    const auto inherited=_mm_add_pd(a.error,b.error);
+    const auto absoluteSum=_mm_cvtps_pd(_mm_cvtpd_ps(_mm_add_pd(pairAbs(a.value),pairAbs(b.value))));
+    return {value,_mm_add_pd(inherited,pairRounding(exact,value,inherited,_mm_add_pd(absoluteSum,inherited)))};
+}
+#endif
 inline bool singleSkinIntervals(const NorthlightActorDeformation::Program& p,const Vector inputs[2],const float* constants,Vector& position,bool definitionsApplied=true){
     if(!p.kernel.valid||p.kernel.ops.size()!=p.operations.size()||!p.kernel.singleSkin())return false;
     const auto control=definitionsApplied?NorthlightActorDeformation::Four{constants[0],constants[1],constants[2],constants[3]}:NorthlightActorDeformation::singleSkinControl(p,constants);
@@ -122,7 +145,20 @@ inline bool singleSkinIntervals(const NorthlightActorDeformation::Program& p,con
     const auto ordinary=[](float x){return std::isfinite(x)&&(x==0||std::fabs(x)>=std::numeric_limits<float>::min());};
     for(const auto& v:inputs[0])if(!ordinary(v.value)||!std::isfinite(v.error)||v.error<0)return false;
     Vector result{};result[3]={1,0};const unsigned first=31+3*unsigned(index.value);
-    for(unsigned axis=0;axis<3;++axis){Value sum;double magnitude=0;
+#if defined(__SSE2__)
+    // X/Y retain the scalar DP4's four MUL/ADD steps, including the float
+    // rounding of each value and the double error bound. No reassociation.
+    IntervalPair sum{_mm_setzero_pd(),_mm_setzero_pd()};auto magnitude=_mm_setzero_pd();
+    for(unsigned j=0;j<4;++j){const float x=constants[4*first+j],y=constants[4*(first+1)+j];if(!ordinary(x)||!ordinary(y))return false;
+        const auto term=pairMul(_mm_set_pd(y,x),inputs[0][j]);magnitude=_mm_add_pd(magnitude,_mm_add_pd(pairAbs(term.value),term.error));sum=pairAdd(sum,term);}
+    sum.error=_mm_add_pd(sum.error,_mm_mul_pd(pairRoundError(magnitude),_mm_set1_pd(8)));
+    double values[2],errors[2];_mm_storeu_pd(values,sum.value);_mm_storeu_pd(errors,sum.error);
+    for(unsigned axis=0;axis<2;++axis){if(!std::isfinite(values[axis])||!std::isfinite(errors[axis])||errors[axis]<0)return false;result[axis]={float(values[axis]),errors[axis]};}
+    constexpr unsigned scalarAxis=2;
+#else
+    constexpr unsigned scalarAxis=0;
+#endif
+    for(unsigned axis=scalarAxis;axis<3;++axis){Value sum;double magnitude=0;
         for(unsigned j=0;j<4;++j){const float row=constants[4*(first+axis)+j];if(!ordinary(row))return false;
             const auto term=mul({row,0},inputs[0][j]);magnitude+=std::fabs(term.value)+term.error;sum=add(sum,term);}
         sum.error+=roundError(magnitude)*8;
