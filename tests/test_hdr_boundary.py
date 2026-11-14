@@ -12,7 +12,7 @@ import northlight_paths as fp
 
 source = fp.src('renderer.cpp').read_text()
 start = source.index('    bool orthographicUiGeometry(){')
-end = source.index('    // 0.3.154: the per-draw timing scopes;', start)
+end = source.index('    bool sampledDrawTimers()', start)
 methods = source[start:end]
 boundary_start = source.index('    void rememberUiTextVs(){')
 boundary_end = source.index('    HRESULT hdrLogicalCopy(', boundary_start)

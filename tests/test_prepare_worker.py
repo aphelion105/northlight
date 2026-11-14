@@ -14,11 +14,14 @@ frame's replays, RenderProfile-only diagnostics. No game or GPU."""
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
 import client_fixtures  # the real client programs, from the tester's client
-import ast,re,subprocess,tempfile
+import ast,contextlib,os,re,subprocess
 HERE=Path(__file__).resolve().parent
 def literal(path,name):
     return next(ast.literal_eval(n.value) for n in ast.parse(path.read_text()).body if isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and t.id==name for t in n.targets))
 stub=literal(HERE/'test_terrain_snapshot.py','stub')
+if os.name=='nt':
+    stub=stub.replace('#include <climits>','#include <climits>\n#include <windows.h>\n#undef E_POINTER\n#undef FAILED\n#undef SUCCEEDED')
+    stub=stub.replace('using UINT=unsigned;using INT=int;using DWORD=unsigned;using HRESULT=std::int32_t;','')
 deformation=literal(HERE/'test_actor_deformation.py','harness')
 code=deformation[deformation.index('std::vector<Word> code(unsigned major){'):deformation.index('int main(')]
 worker=re.sub(r'/\*.*?\*/','',re.sub(r'//[^\n]*','',fp.src('prepare_worker.h').read_text()),flags=re.S)
@@ -54,17 +57,17 @@ checks.update({
  'the caches are cleared by their owner only: at open (stale), releaseGPU after quiesce':
     w.count('prepareCaches->sampled.clear()')==1 and x.count('prepareCaches->sampled.clear()')==1
     and 'if(prepareCachesStale.exchange(false)){prepareCaches->sampled.clear();prepareCaches->bones.clear();' in x,
- 'one prepare function: the worker (Prepare), the join tail, the self-check and inline all call prepareRecord':
+ 'one prepare function: the worker (Prepare), the join tail and inline all call prepareRecord':
     fp.src('prepare_worker.h').read_text().count('prepareRecord(s,p,index,c,f.inverseView,f.camera,out);')==1
-    and x.count('NorthlightActorPrepare::prepareRecord(')==3 and 'NorthlightActorPrepare::prepareRecord(state,p,index,*prepareCaches,context.inverseView,context.camera,out);prepareConsume(out);' in x,
+    and x.count('NorthlightActorPrepare::prepareRecord(')==2 and 'NorthlightActorPrepare::prepareRecord(state,p,index,*prepareCaches,context.inverseView,context.camera,out);prepareConsume(out);' in x,
  'the stable loop body exists only in prepareRecord (the legacy loop has no stable identity branch)':
     'if(tuning.stableIdentity){' not in x and 'if(tuning.stableIdentity)prepareStable(distanceTests,distanceReused);' in x,
  'the worker frame copies the camera at open, and the join tail uses that copy':
     'std::memcpy(frame.inverseView,context.inverseView,sizeof frame.inverseView);std::memcpy(frame.camera,context.camera,sizeof frame.camera);' in x
     and 'prepareWorker.index(k),*prepareCaches,frame.inverseView,frame.camera,outputs[k]);' in x,
- 'offload only with 6+ cores, ActorShadows=1, the stable tuning and no watchdog; RenderProfile A/B windows':
+ 'offload only with 6+ cores, ActorShadows=1, the stable tuning and no watchdog; profiling cannot change the schedule':
     'bool prepareOffload()const{return prepareCores>=6&&quality.actorShadows&&selectionTuning().stableIdentity&&!prepareWorker.abandoned();}' in x
-    and 'const bool abInline=NorthlightRenderThreadProbe::profiling()&&(GetTickCount()/10000u)%2u==1u;' in x,
+    and 'profiling()' not in body(x,'    void prepareOpen(){') and 'GetTickCount()' not in body(x,'    void prepareOpen(){'),
  'an abandoned worker: its frame\'s replays quarantined (recycle, resize, clear) until it settles; stamped at publish, cleared at release (0.3.183)':
     'if(prepareHeld(*raw)){try{prepareQuarantine.emplace_back(raw);}catch(...){} return;}' in w and 'prepareUnsettled()' not in body(w,'    void recycleReplay(Replay* raw){')
     and 'bool prepareHeld(const Replay& p)const{return prepareUnsettled()&&p.prepareStamp==prepareAbandonedEpoch;}' in x
@@ -101,12 +104,12 @@ checks.update({
     (lambda h:'slots_[n]={record,index};published_.store(n+1,std::memory_order_release);\n        if(n+1-done_.load(std::memory_order_relaxed)>=wakeBatch_){std::atomic_thread_fence(std::memory_order_seq_cst);if(wakeable_.exchange(false))notify();}' in h
         and 'blocked_=true;wakeable_.store(true,std::memory_order_relaxed);std::atomic_thread_fence(std::memory_order_seq_cst);\n            wake_.wait(lock,' in h
         and h.count('std::atomic_thread_fence(std::memory_order_seq_cst)')==2 and 'published_.store(n+1,std::memory_order_seq_cst)' not in h)(fp.src('prepare_worker.h').read_text()),
- 'M1/M2 (0.3.179): one span per sampled record around fill and publish in captureModel; the meter and the warm re-run gated by profileSampled()':
+ 'one span per sampled record around real fill and publish; no synthetic replay or self-check':
     'const bool handoff=p->shadowSelected&&p->shadowSkinned,timedHandoff=handoff&&prepareHandoffSample();' in capture
     and capture.index('prepareMeter.start()')<capture.index('prepareFill(*p,metadata);')<capture.index('replays.emplace_back(p.release());preparePublish();if(timedHandoff)prepareMeter.stop(handoffStart);')
-    and 'prepareMeter.beginFrame(profileSampled(),prepareFrameSerial);' in x and 'if(profileSampled()&&r.published)prepareWarmHandoff(r.published);' in x
+    and 'prepareMeter.beginFrame(profileSampled(),prepareFrameSerial);' in x and all(n not in x for n in ('prepareWarmHandoff','prepareSelfCheck','prepareWarmCounter','ab-inline'))
     and 'steady_clock' not in body(x,'    void prepareFill(Replay& p,const CaptureShader& metadata){') and 'steady_clock' not in body(x,'    void preparePublish(){')
-    and 'handoffUs=%.1f handoffRawUs=%.1f pairNs=%.1f handoffSamples=%u handoffWarmUs=%.1f' in x,
+    and 'handoffUs=%.1f handoffRawUs=%.1f pairNs=%.1f handoffSamples=%u' in x,
  'diagnostics only with RenderProfile (the fields and every clock)':
     'if(NorthlightRenderThreadProbe::profiling())std::snprintf(prepareFields,' in x and 'prepareTimed=profileSampled();' in x,
  'the worker is joined first in ~WorldRenderer and destroyed before the replays, caches, arenas, quarantine, pinned programs, actorPrograms, captureShaders and retiredPrograms it reads':
@@ -120,16 +123,28 @@ checks.update({
 })
 for name,ok in checks.items():print(('PASS ' if ok else 'FAIL ')+name)
 assert all(checks.values())
-with tempfile.TemporaryDirectory(prefix='northlight-prepare-worker-') as tmp:
-    p=Path(tmp);(p/'d3d9.h').write_text(stub);client_fixtures.actor_client_programs(p)
+with contextlib.nullcontext(fp.output_dir()/'prepare-worker') as tmp:
+    p=Path(tmp);p.mkdir(parents=True,exist_ok=True);(p/'d3d9.h').write_text(stub);client_fixtures.actor_client_programs(p)
     xs=fp.src('world_shadow_experiment.inl').read_text()
     block=xs[xs.index('    // ---- 0.3.177 (r83 a1-prepare)'):xs.index('    // Stable per-actor quota (see actor_shadow_selection.h).')]
     wr=fp.src('world_renderer.h').read_text();retire=body(wr,'    void retireProgram(std::shared_ptr<const NorthlightActorDeformation::Program>&& program){')
-    (p/'test_prepare_worker.cpp').write_text((HERE/'test_prepare_worker.cpp').read_text().replace('/*SYNTHETIC_PROGRAMS*/',code).replace('/*PREPARE_BLOCK*/',block).replace('/*RETIRE_PROGRAM*/',retire))
+    generated=(HERE/'test_prepare_worker.cpp').read_text().replace('/*SYNTHETIC_PROGRAMS*/',code).replace('/*PREPARE_BLOCK*/',block).replace('/*RETIRE_PROGRAM*/',retire)
+    if os.name=='nt':generated=generated.replace('GetTickCount()', 'testTickCount()')
+    (p/'test_prepare_worker.cpp').write_text(generated)
     four=str(client_fixtures.four_bone_vs3())
-    for label,flags,mode in (('O2',['-O2'],'full'),('asan',['-O1','-g','-fsanitize=address,undefined','-fno-omit-frame-pointer'],'full'),('tsan',['-O1','-g','-fsanitize=thread'],'tsan')):
-        exe=p/('test-'+label)
-        subprocess.run(['clang++','-std=c++17','-Wall','-Wextra','-Werror','-UNDEBUG',*flags,'-I',str(p),*fp.test_include_flags(),str(p/'test_prepare_worker.cpp'),str(fp.src('world_gi.cpp')),'-o',str(exe)],check=True)
+    variants=[('O2',['-O2'],'full')]
+    if os.name=='nt':
+        # Zig's MinGW target does not provide the ASan runtime: accepting the flag
+        # is not proof of heap instrumentation. Keep its supported UBSan separate.
+        variants.append(('ubsan',['-O1','-g','-fsanitize=undefined','-fno-omit-frame-pointer'],'full'))
+        print('Coverage: Windows O2 and UBSan. ASan lifetime counterfactuals and TSan require the supported-host driver.',flush=True)
+    else:
+        variants.extend([('asan',['-O1','-g','-fsanitize=address,undefined','-fno-omit-frame-pointer'],'full'),
+                         ('tsan',['-O1','-g','-fsanitize=thread'],'tsan')])
+    compiler=[str(fp.zig()),'c++','-target','x86_64-windows-gnu','-DNOMINMAX'] if os.name=='nt' else ['clang++']
+    for label,flags,mode in variants:
+        exe=p/('test-'+label+('.exe' if os.name=='nt' else ''))
+        subprocess.run([*compiler,'-std=c++17','-Wall','-Wextra','-Werror','-UNDEBUG',*flags,'-I',str(p),*fp.test_include_flags(),str(p/'test_prepare_worker.cpp'),str(fp.src('world_gi.cpp')),'-o',str(exe)],env=fp.zig_env() if os.name=='nt' else None,check=True)
         out=subprocess.run([str(exe),four,mode],capture_output=True,text=True)
         if out.returncode or 'WARNING' in out.stderr or 'ERROR' in out.stderr:
             sys.exit(f'{label} failed ({out.returncode}):\n{out.stdout}{out.stderr[-6000:]}')

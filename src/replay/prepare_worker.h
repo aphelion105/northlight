@@ -103,7 +103,7 @@ template<class Record> void prepareRecord(State& s,const Record& p,std::size_t i
     s.previousKnown=item.known;s.previousDistance=item.distanceSquared;std::memcpy(s.previousAt,item.at,sizeof s.previousAt);
     out.after=s;
 }
-// Bitwise equality (floats by their bits): the runtime self-check and the tests.
+// Bitwise equality (floats by their bits) for the worker/inline test oracle.
 inline bool sameBits(const void* a,const void* b,std::size_t n){return std::memcmp(a,b,n)==0;}
 inline bool same(const State& a,const State& b){
     return a.previousGroup==b.previousGroup&&a.previousShader==b.previousShader&&a.previousDecl==b.previousDecl&&sameBits(&a.previousDistance,&b.previousDistance,4)&&

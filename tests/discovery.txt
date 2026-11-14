@@ -396,6 +396,7 @@ test_position_bounds_scan.py
 test_prelit_wmo_client.py
 test_prepare_native_scene.py
 test_prepare_worker.py
+test_prepare_worker_windows.py
 test_probe_blend.py
 test_probe_blend_equivalence.py
 test_probe_cache_recycling.py

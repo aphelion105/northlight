@@ -22,8 +22,8 @@
 // Folded into the DLL's memcmp (no call inside it).
 #define NORTHLIGHT_MEM_INLINE inline __attribute__((always_inline))
 namespace NorthlightMem {
-// compiler_rt's loop, kept as the reference and for the in-situ benchmark (keyEqLegacyNs): the DLL's
-// memcmp is no longer this. no_builtin: the loop must not be recognized as a memcmp call.
+// compiler_rt's loop, kept as the test reference; unused in the DLL.
+// no_builtin: the loop must not be recognized as a memcmp call.
 __attribute__((noinline,no_builtin("memcmp"),no_builtin("bcmp")))
 inline int byteCompare(const void* pa,const void* pb,std::size_t n){
     const unsigned char* a=static_cast<const unsigned char*>(pa);const unsigned char* b=static_cast<const unsigned char*>(pb);

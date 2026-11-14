@@ -25,6 +25,7 @@
       "test_frame_requirements.py",
       "test_backend_work_policy.py",
       "test_point_replay_admission.py",
+      "test_prepare_worker_windows.py",
       "test_static_shadow_selection.py",
       "test_shadow_transition_math.py",
       "test_shadow_transition_resources.py",

@@ -82,7 +82,7 @@ template<class Arming>struct Common {
  struct {bool active=false;struct{float uiWhite=160;}settings;}hdr;
  struct {unsigned rejected=0,layers=0;template<class Draw,class... Rest>HRESULT draw(FakeDevice*,float,Draw submit,Rest...){return submit();}}hdrColor;
  struct {float uiWhite=160;}hdrFrameSettings;
- bool hdrWorldSeen=false,hdrSkyReplaying=false,hdrAtUiBoundary=false,skySeen=false,gateFrame=false,gateUntimed=false;
+ bool hdrWorldSeen=false,hdrSkyReplaying=false,hdrAtUiBoundary=false,skySeen=false,gateFrame=false;
  long long cpuHdrAdmission=0,cpuHdrBoundary=0,cpuHdrTransfer=0;
  unsigned hdrAdmissionCalls=0,hdrTransferCalls=0;int stateBlocks=0;
  std::unordered_map<IDirect3DPixelShader9*,int>psTags;

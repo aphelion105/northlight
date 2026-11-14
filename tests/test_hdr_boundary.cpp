@@ -79,7 +79,7 @@ struct Fixture{
     struct Discs{bool cleared=false;void setHdrSkyTarget(void*){cleared=true;}}discs;
     Discs* celestialDiscs=&discs;
     unsigned begins=0,effects=0,hdrFailuresLogged=0,hdrDeferredLogs=0,hdrDeferredFrame=~0u;
-    bool gateFrame=false,gateUntimed=false;
+    bool gateFrame=false;
     bool hdrSkyValid=false,hdrSkyRejected=false,backbuffer=true,failSky=false;unsigned skyCaptures=0;
     float worldMinDepth=0,worldMaxDepth=.94f;
     LONGLONG cpuHdrAdmission=0,cpuHdrBoundary=0,cpuHdrTransfer=0;

@@ -52,8 +52,7 @@ import generate_mirror_guarded_device
 generated=fp.GENERATED/'mirror_guarded_device.h';before=generated.read_text();regenerated=generate_mirror_guarded_device.generated()
 checks={
  'no lock_guard/unique_lock on a recursive mutex in src/proxy or generated':not any(re.search(r'(lock_guard|unique_lock)<std::recursive_mutex>',t) for t in proxy.values()),
- 'the only recursive mutexes: MirrorGate::mutex and the private lockNs bench lock':sorted((n,l.strip()) for n,t in proxy.items() for l in t.splitlines() if 'std::recursive_mutex ' in l)==
-   [('renderer.cpp','std::recursive_mutex gateBenchLock; /* private, uncontended: the microbenchmark\'s lock */')]
+ 'the only recursive mutex is MirrorGate::mutex':not any('std::recursive_mutex ' in t for t in proxy.values())
    and '#define NORTHLIGHT_GATE_MUTEX std::recursive_mutex' in guard and guard.count('NORTHLIGHT_GATE_MUTEX mutex;')==1,
  'no direct lock/unlock of a gate outside mirror_guard.h':not any(re.search(r'(\bgate(_|\(\))?|\bmutex)\.(lock|unlock|try_lock)\(',t) for n,t in proxy.items() if n!='mirror_guard.h'),
  'both generators emit MirrorGuard':'MirrorGuard lock(m->gate,MirrorSite::Device);' in fp.tracked('generate_mirror_guarded_device.py').read_text()
@@ -94,7 +93,7 @@ checks.update({
     and proxy['renderer.cpp'].count('setExclusiveOwner(true)')==1 and proxy['renderer.cpp'].count('setExclusiveOwner(false)')==1)(guard[guard.index('OwnerEntry enterOwnerExclusive(){'):guard.index('bool setExclusive(bool on){')],foreignEntry),
  'compile-time switch on, counterfactuals off by default':'#define NORTHLIGHT_MIRROR_OWNER_FAST_PATH 1' in guard and 'static constexpr bool kMirrorOwnerFastPath=NORTHLIGHT_MIRROR_OWNER_FAST_PATH!=0;' in guard
    and '#define NORTHLIGHT_GATE_ELISION_COUNTERFACTUAL 0' in guard and '#define NORTHLIGHT_GATE_CENSUS_BY_HELD 0' in guard,
- 'ownerNs benches the real guard; GATE threads logs ownerLocked':'{MirrorGuard probe(gateBenchGate);}' in proxy['renderer.cpp'] and 'ownerProbe' not in guard+proxy['renderer.cpp']
+ 'no in-game guard benchmark; GATE threads logs ownerLocked':'gateBench' not in proxy['renderer.cpp'] and 'ownerProbe' not in guard+proxy['renderer.cpp']
    and 'ownerLocked=%u' in proxy['renderer.cpp'],
 })
 for name,ok in checks.items():print(('PASS ' if ok else 'FAIL ')+name)

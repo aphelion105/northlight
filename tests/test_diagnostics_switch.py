@@ -141,7 +141,7 @@ KEEP={
  'PROXY WARNING':'start-up warning','GAME d3d9.dll':'start-up: game-folder d3d9.dll identity','GAME WARNING':'start-up warning',
  'WORLD shadow cache VERIFY MISMATCH':'error (debug verify)','GEOMETRY MEMORY':'warning: allocation deferral',
  'STATIC SHADOW request deferred':'warning: allocation failure','STATIC SHADOW upload deferred':'warning: allocation failure',
- 'WEATHER rain mask disabled':'error: the mask target, its depth snapshot texture or shaders could not be created, or the device lacks MRT / independent write masks / separate alpha blend / ps_2_0, once per session (0.3.202 rain)','WEATHER rain mask resolve failed':'error: the MSAA mask could not be resolved into its texture or the depth scrub pass failed, once per session (0.3.202 rain)','WEATHER rain mask skip:':'one-off: the first rain draw the MRT mask could not take, with the reason bits and the game state read (0.3.202 rain mask MRT)','WEATHER rain mask skipped':'one-off: the bound render target is not the effect size or its multisampling differs from the depth, once per session (0.3.202 rain)','WEATHER detect=off':'one-off: the mirror is disabled (0.3.198 rain)','WEATHER probe':'gated: RenderProfile sample frames only, like DRAWGATE ab (0.3.198 rain)','WEATHER draw states':'gated: RenderProfile sample frames only, first 4 detected weather draws per session (0.3.199)','WEATHER mist draw':'one-off: the first 4 skipped rain mist draws per session (0.3.199)',
+ 'WEATHER rain mask disabled':'error: the mask target, its depth snapshot texture or shaders could not be created, or the device lacks MRT / independent write masks / separate alpha blend / ps_2_0, once per session (0.3.202 rain)','WEATHER rain mask resolve failed':'error: the MSAA mask could not be resolved into its texture or the depth scrub pass failed, once per session (0.3.202 rain)','WEATHER rain mask skip:':'one-off: the first rain draw the MRT mask could not take, with the reason bits and the game state read (0.3.202 rain mask MRT)','WEATHER rain mask skipped':'one-off: the bound render target is not the effect size or its multisampling differs from the depth, once per session (0.3.202 rain)','WEATHER detect=off':'one-off: the mirror is disabled (0.3.198 rain)','WEATHER probe':'gated: RenderProfile sample frames only, like DRAWGATE (0.3.198 rain)','WEATHER draw states':'gated: RenderProfile sample frames only, first 4 detected weather draws per session (0.3.199)','WEATHER mist draw':'one-off: the first 4 skipped rain mist draws per session (0.3.199)',
  'CSTREAM active':'start-up one-off: the replay thread runs (0.3.192)','CSTREAM disabled':'start-up one-off: why the command stream is off (0.3.192)',
  'SPELLFOG estimate':'one-off error: a non-finite fog estimate reset the hold (once per session), task 34',
  'SPELLLAYER config':'start-up: SpellLayer configuration (task 34)','SPELLLAYER first hazard':'one-off: the session\'s first spell layer hazard (task 34)','SPELLTRACE':'gated: only frames of the SpellTrace window, which needs diagnostics() (task 34)','SPELLHAZARD':'capped: first 64 a session, gated by diagnostics() (task 34)','SPELLGLOW':'capped: first 8 a session, gated by diagnostics() (task 34)','SPELLFOG':'capped: the first 16 entries per sub-class and session, gated by diagnostics() (task 34)','SPELLDIRTY':'one-off: the first synced-bit mismatch of a session, gated by diagnostics() (task 34)',
@@ -189,12 +189,13 @@ checks={
    'if(consumeRequest&&!NorthlightDiagnosticCapture::take(NorthlightDiagnosticCapture::Weather))return;' in r
    and 'if(scopes&Weather)captureWeatherDiagnostics(' in r
    and 'if(!pointSoftTried){\n            pointSoftTried=true;' in fp.src('world_point_rendering.inl').read_text(),
- 'HDR CPU timers require the latched diagnostic sample and exclude untimed frames':
+ 'HDR CPU timers require the latched diagnostic sample without A/B scheduling':
    'mirrorState.rawCounting=sampled()&&NorthlightRenderThreadProbe::profiling();' in r
    and 'gateFrame=mirrorState.rawCounting;' in r
-   and r.count('const bool sampledHdr=gateFrame&&!gateUntimed;')==3
+   and all(name not in r for name in ('gateUntimed','gateBench','GateBenchIters'))
+   and r.count('const bool sampledHdr=gateFrame;')==3
    and 'CpuScope boundaryTimer(sampledHdr?&cpuHdrBoundary:nullptr);' in r
-   and 'if(gateFrame&&!gateUntimed&&hdr.active)logf("CPU HDR frame=' in r,
+   and 'if(gateFrame&&hdr.active)logf("CPU HDR frame=' in r,
  'HDR layer-state diagnostics require Diagnostics and stop after twelve reports':
    'void hdrLayerDiagnostic(const char* path="ui"){\n        if(hdrLayerStateLogs>=12||!diagnostics())return;\n        ++hdrLayerStateLogs;' in r,
     'effect captures require an explicit request and exclude the captured frame':'if(!scopes&&!fallback)return;' in r[r.index('void captureEffectDiagnostics()'):r.index('void releaseResources(bool preserveCaptureSources=false)')]

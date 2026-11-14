@@ -1149,7 +1149,7 @@ private:
     // after retiredPrograms). After a watchdog the abandoned worker keeps its caches and (0.3.183) only the
     // abandoned frame's replays (quarantined, never recycled), its arena and the programs pinned at the
     // abandon, all until it settles.
-    std::unique_ptr<NorthlightActorPrepare::Caches> prepareAbandonedCaches,prepareCheckCaches;
+    std::unique_ptr<NorthlightActorPrepare::Caches> prepareAbandonedCaches;
     // 0.3.179 (T2): this frame's declaration copies (null: allocation failed, per-record copies), and the
     // arena an abandoned worker's frame may still read (0.3.183: moved there at the abandon, at most one).
     std::unique_ptr<NorthlightActorPrepare::DeclArena> prepareDecls=std::make_unique<NorthlightActorPrepare::DeclArena>();

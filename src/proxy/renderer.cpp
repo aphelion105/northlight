@@ -675,19 +675,14 @@ private:
     NorthlightRenderThreadProbe::FrameCostWindow frameCost;uint64_t frameCostWindow=0;NorthlightRenderThreadProbe::ProbeMode frameCostMode=NorthlightRenderThreadProbe::ProbeOff;
     NorthlightFrameStalls::Tracker stallFrames;NorthlightFrameStalls::Frame stallFrame;LONGLONG stallScene=0;std::uint64_t stallSceneIdle=0;
     unsigned frameStartDrawCalls=0;std::uint64_t frameStartAnswered=0,frameStartForwarded=0;unsigned long long frameStartScopeReads=0;
-    // 0.3.154 drawGate A/B, RenderProfile sample frames only (both flags set once per frame in
-    // finishFrameImpl from profiling(); RenderProfile=0 leaves them false). Sample frames alternate
-    // T (today's timers) and U (the per-draw prep/capture/water-mask CpuScopes off); both log
-    // sceneMs (previous Present done -> renderEffects entry) and exact counts: DRAWGATE ab.
-    bool gateFrame=false,gateUntimed=false;
+    // Counters and timing scopes observe the same rendering path on every profile sample.
+    bool gateFrame=false;
     struct GateCounts {unsigned prep=0,capture=0,water=0,wmo=0,fullPasses=0,audits=0,blobCalls=0,blobTextures=0,blobClaimed=0,bufferCreates=0,processVertices=0;};
     struct TerrainSwapCalls {unsigned getRequests=0,getNative=0,setVS=0,setPS=0,setPSConstants=0,constantRegisters=0,failures=0;};
     TerrainSwapCalls terrainSwapCalls;
     struct GateStart {unsigned missingVS=0,terrain=0,ui=0,shadowSwaps=0;std::uint64_t generations=0,vsHits=0,vsMisses=0;};
     GateCounts gateCounts;GateStart gateStart;
     LARGE_INTEGER gateSceneEnd={};LONGLONG gatePresentDone=0;unsigned gateSceneDraws=0;unsigned long long gateSceneReads=0;
-    std::recursive_mutex gateBenchLock; /* private, uncontended: the microbenchmark's lock */
-    MirrorGate gateBenchGate; /* 0.3.180: private, for ownerNs (0.3.182: the real owner entry and exit on it) */
     const int debugMode = 0;int worldDebug=0;bool gpuDiagnosticFrame=false,nativeCaptureDiagnostic=false;
     bool diagnosticAoRaw=false,diagnosticAo=false,diagnosticWorld=false;
     NorthlightEffectSwitches::Hotkeys effectKeys;
@@ -779,7 +774,7 @@ private:
     }
     HRESULT hdrBegin(bool present,const char* boundary="present"){
         if(!hdr.active||hdrUiPhase)return S_FALSE;
-        const bool sampledHdr=gateFrame&&!gateUntimed;CpuScope hdrTimer(sampledHdr?&cpuHdrFinish:nullptr);
+        const bool sampledHdr=gateFrame;CpuScope hdrTimer(sampledHdr?&cpuHdrFinish:nullptr);
         if(!hdrLegacyBack||!hdrPresentBack)return E_FAIL;
         D3DSURFACE_DESC desc{};HRESULT hr=hdrLegacyBack->GetDesc(&desc);
         if(SUCCEEDED(hr)&&!resources(desc.Width,desc.Height,desc.Format,true))hr=E_FAIL;
@@ -1059,7 +1054,7 @@ private:
         }
         bool linear=false;
         extensionWork("HDR UI preparation",[&]{
-            const bool sampledHdr=gateFrame&&!gateUntimed;CpuScope hdrTimer(sampledHdr?&cpuHdrAdmission:nullptr);if(sampledHdr)++hdrAdmissionCalls;
+            const bool sampledHdr=gateFrame;CpuScope hdrTimer(sampledHdr?&cpuHdrAdmission:nullptr);if(sampledHdr)++hdrAdmissionCalls;
             if(!hdrUiPhase)if(const char* boundary=hdrBoundarySource()){
                 D3DSURFACE_DESC desc{};float rows[16];DWORD zwrite=1,zfunc=0,z=1;
                 const bool geometry=std::strcmp(boundary,"fixed-ui")==0?fixedUiGeometry():
@@ -1075,13 +1070,13 @@ private:
         });
         if(!linear)return draw();
         bool submitted=false;HRESULT hr=E_FAIL;const unsigned rejected=hdrColor.rejected;const auto previousLayers=hdrColor.layers;
-        extensionWork("HDR UI draw",[&]{const bool sampledHdr=gateFrame&&!gateUntimed;CpuScope hdrTimer(sampledHdr?&cpuHdrTransfer:nullptr);if(sampledHdr)++hdrTransferCalls;hr=hdrColor.draw(ext,hdrFrameSettings.uiWhite,[&]{submitted=true;return draw();},0,&stateBlocks);});
+        extensionWork("HDR UI draw",[&]{const bool sampledHdr=gateFrame;CpuScope hdrTimer(sampledHdr?&cpuHdrTransfer:nullptr);if(sampledHdr)++hdrTransferCalls;hr=hdrColor.draw(ext,hdrFrameSettings.uiWhite,[&]{submitted=true;return draw();},0,&stateBlocks);});
         if(hdrColor.layers!=previousLayers)hdrLayerDiagnostic();
         if(hdrColor.rejected!=rejected&&hdrFailuresLogged++<8)logf("HDR legacy compatibility layer frame=%u shaderPatchFallbacks=%u",frame,hdrColor.rejected);
         return submitted?hr:draw();
     }
-    // 0.3.154: the per-draw timing scopes; off on drawGate U frames (gateUntimed needs RenderProfile).
-    bool sampledDrawTimers()const{return NorthlightRenderThreadProbe::profiling()&&sampled()&&!gateUntimed;}
+    // Per-draw scopes run only on RenderProfile sample frames.
+    bool sampledDrawTimers()const{return NorthlightRenderThreadProbe::profiling()&&sampled();}
     // stage is read when a fault is reported (0.3.187: drawHook names the step that was running).
     template<class Work> bool extensionWork(const char* const& stage,Work&& work) noexcept {
         if(extensionFault)return false;
@@ -2172,7 +2167,7 @@ private:
     NorthlightDrawGates::Frame drawGates;bool frameDrawGates=true;bool contactAO=true,modelNormalsNeeded=true;
     unsigned aoMethod=0,aoQuality=0;float aoStrength=.6f,aoRadius=2.f;
     LONGLONG cpuDrawHooks=0; /* RenderProfile sample frames: per-draw work outside prepareDraw (CPU profile drawHooks=) */
-    LONGLONG* hookTimer=nullptr; /* &cpuDrawHooks on a timed RenderProfile sample frame (frame, gateUntimed: set before the latch) */
+    LONGLONG* hookTimer=nullptr; /* &cpuDrawHooks on a timed RenderProfile sample frame (frame: set before the latch) */
     void latchDrawGates(){
         modelNormalsNeeded=world&&(worldDebug!=0||world->surfaceLightingEnabled()||world->needsDiagnosticFallback());
         NorthlightDrawGates::Inputs in;
@@ -3691,36 +3686,9 @@ public:
                 s[P::Finish].mean,s[P::Finish].p50,s[P::Finish].p95,s[P::Finish].p99,s[P::Finish].max,s[P::Present].mean,s[P::Present].p50,s[P::Present].p95,s[P::Present].p99,s[P::Present].max,5*qpcNs/1000.0);
         }
     }
-    // 0.3.154 microbenchmark (DRAWGATE lines, at log time): GateBenchIters x each per-draw primitive,
-    // ns per op including the loop. The gate is held here, so the lock is a private recursive_mutex.
-    static constexpr unsigned GateBenchIters=256;
-    struct GateBench {double lockNs=-1,findNs=-1,getVsNs=-1,qpcNs=-1,ownerNs=-1,weatherNs=-1;unsigned findHits=0;};
-    GateBench gateBench(){
-        GateBench b;if(cpuFrequency.QuadPart<=0)return b;const double ns=1e9/double(cpuFrequency.QuadPart);
-        LARGE_INTEGER t0={},t1={},t={};
-        QueryPerformanceCounter(&t0);for(unsigned i=0;i<GateBenchIters;++i){gateBenchLock.lock();gateBenchLock.unlock();}QueryPerformanceCounter(&t1);
-        b.lockNs=double(t1.QuadPart-t0.QuadPart)*ns/GateBenchIters;
-        // 0.3.182 (D1): a MirrorGuard on the private gate, the owner's elided entry and exit as every game call
-        // takes it (tid compare, xchg, seq_cst load, TLS held set/restore, census check, release store).
-        QueryPerformanceCounter(&t0);for(unsigned i=0;i<GateBenchIters;++i){MirrorGuard probe(gateBenchGate);}QueryPerformanceCounter(&t1);
-        b.ownerNs=double(t1.QuadPart-t0.QuadPart)*ns/GateBenchIters;
-        IDirect3DVertexShader9* bound=nullptr;ext->GetVertexShader(&bound);IDirect3DVertexShader9* volatile key=bound;std::size_t hits=0;
-        QueryPerformanceCounter(&t0);for(unsigned i=0;i<GateBenchIters;++i){IDirect3DVertexShader9* k=key;hits+=vsTags.find(k)!=vsTags.end();}QueryPerformanceCounter(&t1);
-        b.findNs=double(t1.QuadPart-t0.QuadPart)*ns/GateBenchIters;drop(bound);
-        const std::uint64_t answered=mirrorState.answered,forwarded=mirrorState.forwarded; /* the MIRROR line keeps the game's counts */
-        QueryPerformanceCounter(&t0);for(unsigned i=0;i<GateBenchIters;++i){IDirect3DVertexShader9* v=nullptr;ext->GetVertexShader(&v);drop(v);}QueryPerformanceCounter(&t1);
-        b.getVsNs=double(t1.QuadPart-t0.QuadPart)*ns/GateBenchIters;mirrorState.answered=answered;mirrorState.forwarded=forwarded;
-        QueryPerformanceCounter(&t0);for(unsigned i=0;i<GateBenchIters;++i)QueryPerformanceCounter(&t);QueryPerformanceCounter(&t1);
-        b.qpcNs=double(t1.QuadPart-t0.QuadPart)*ns/(GateBenchIters+1);
-        // 0.3.198 (rain): the draw hook's weather comparison, hot set and matching (the worst case), on a throwaway sample.
-        {const void* volatile benchHot=&b;const void* volatile benchTexture=&b;NorthlightWeather::Sample sample;
-            QueryPerformanceCounter(&t0);for(unsigned i=0;i<GateBenchIters;++i){const void* hot=benchHot;if(hot&&!applied&&benchTexture==hot){sample.primitives+=i;++sample.draws;}}QueryPerformanceCounter(&t1);
-            b.weatherNs=double(t1.QuadPart-t0.QuadPart)*ns/GateBenchIters;}
-        b.findHits=unsigned(hits);return b;
-    }
-    // 0.3.154: one DRAWGATE ab line per RenderProfile sample frame; -1 = not measured.
+    // Actual draw counters and timings; synthetic microbenchmarks belong in tests.
     void logDrawGate(unsigned sampleFrame,bool frameApplied,double qpcNs,unsigned long long frameReads){
-        const double ms=1000.0/double(cpuFrequency.QuadPart);const bool timed=!gateUntimed;
+        const double ms=1000.0/double(cpuFrequency.QuadPart);
         const bool scene=gateSceneEnd.QuadPart&&gatePresentDone&&gateSceneEnd.QuadPart>=gatePresentDone;
         // 0.3.180 (D0): the owner's outer gate entries by site class; gameCalls is their sum (every lock site is a MirrorGuard now).
         // 0.3.182 (D1): they are elided (the mutex only while a foreign call is in flight: GATE threads ownerLocked).
@@ -3729,16 +3697,16 @@ public:
             acqOther=gate.takeAcquired(MirrorSite::StateBlock)+gate.takeAcquired(MirrorSite::SwapChain)+gate.takeAcquired(MirrorSite::Raw);
         const unsigned gameCalls=acqDevice+acqRegistry+acqResource+acqOther,perf=perfCalls.load(std::memory_order_relaxed);
         const unsigned long long generations=NorthlightTrackedBuffers::clock.load(std::memory_order_relaxed)-gateStart.generations;
-        const GateBench b=gateBench();const GateCounts& n=gateCounts;
-        if(NorthlightRenderThreadProbe::profiling())logf("DRAWGATE ab frame=%u mode=%c perDrawTimers=%u applied=%u far=%u captureSkipped=%u draws=%u sceneDraws=%u sceneMs=%.4f sceneReads=%llu frameReads=%llu qpcNs=%.1f "
+        const GateCounts& n=gateCounts;
+        if(NorthlightRenderThreadProbe::profiling())logf("DRAWGATE frame=%u perDrawTimers=1 applied=%u far=%u captureSkipped=%u draws=%u sceneDraws=%u sceneMs=%.4f sceneReads=%llu frameReads=%llu qpcNs=%.1f "
             "drawGateMs=%.4f prepMs=%.4f captureMs=%.4f waterMs=%.4f effectsMs=%.4f p=%u c=%u w=%u missingVS=%u terrain=%u wmo=%u ui=%u fullPasses=%u shadowSwaps=%u audits=%u "
-            "blobCalls=%u blobTextures=%u blobClaimed=%u gameCalls=%u perfCalls=%u bufferGenerations=%llu bufferCreates=%u processVertices=%u benchIters=%u lockNs=%.1f findNs=%.1f findHits=%u getVsNs=%.1f qpcBackNs=%.1f ownerNs=%.1f acqDevice=%u acqRegistry=%u acqResource=%u acqOther=%u vsCacheHits=%llu vsCacheMisses=%llu weatherDraws=%u weatherPrims=%u weatherNs=%.1f",
-            sampleFrame,timed?'T':'U',unsigned(timed),unsigned(frameApplied),unsigned(world&&world->lastFarDrawn()),unsigned(world&&world->captureSkippedLastFrame()),drawCalls-frameStartDrawCalls,scene?gateSceneDraws-frameStartDrawCalls:0u,
+            "blobCalls=%u blobTextures=%u blobClaimed=%u gameCalls=%u perfCalls=%u bufferGenerations=%llu bufferCreates=%u processVertices=%u acqDevice=%u acqRegistry=%u acqResource=%u acqOther=%u vsCacheHits=%llu vsCacheMisses=%llu weatherDraws=%u weatherPrims=%u",
+            sampleFrame,unsigned(frameApplied),unsigned(world&&world->lastFarDrawn()),unsigned(world&&world->captureSkippedLastFrame()),drawCalls-frameStartDrawCalls,scene?gateSceneDraws-frameStartDrawCalls:0u,
             scene?double(gateSceneEnd.QuadPart-gatePresentDone)*ms:-1.0,scene?gateSceneReads-frameStartScopeReads:0ull,frameReads,qpcNs,
-            timed?std::max(0.0,double(cpuPrep-cpuCapture-cpuEffects)*ms):-1.0,timed?cpuPrep*ms:-1.0,timed?cpuCapture*ms:-1.0,timed?cpuWaterCapture*ms:-1.0,cpuEffects*ms,
+            std::max(0.0,double(cpuPrep-cpuCapture-cpuEffects)*ms),cpuPrep*ms,cpuCapture*ms,cpuWaterCapture*ms,cpuEffects*ms,
             n.prep,n.capture,n.water,missingVS-gateStart.missingVS,terrainDraws-gateStart.terrain,n.wmo,uiDraws-gateStart.ui,n.fullPasses,terrainShadowDraws-gateStart.shadowSwaps,n.audits,
-            n.blobCalls,n.blobTextures,n.blobClaimed,gameCalls,perf,generations,n.bufferCreates,n.processVertices,GateBenchIters,b.lockNs,b.findNs,b.findHits,b.getVsNs,b.qpcNs,
-            b.ownerNs,acqDevice,acqRegistry,acqResource,acqOther,vsCacheHits-gateStart.vsHits,vsCacheMisses-gateStart.vsMisses,weatherSample.draws,weatherSample.primitives,b.weatherNs); /* 0.3.198 (rain): derived from the sample, no per-draw counter */
+            n.blobCalls,n.blobTextures,n.blobClaimed,gameCalls,perf,generations,n.bufferCreates,n.processVertices,
+            acqDevice,acqRegistry,acqResource,acqOther,vsCacheHits-gateStart.vsHits,vsCacheMisses-gateStart.vsMisses,weatherSample.draws,weatherSample.primitives); /* 0.3.198 (rain): derived from the sample, no per-draw counter */
     }
     // The settings window over the finished frame (game UI included): once per presented frame of the implicit swap chain, on both
     // Present paths (Device and SwapChain reach finishFrame), last before the real Present. Closed with nothing pending: atomic loads
@@ -4083,16 +4051,16 @@ public:
                     (unsigned long long)cpuAOBlurFrame,cpuAOBlurMethod,cpuAOBlurWidth,cpuAOBlurHeight,double(cpuAOBlurSetup)*ms,double(cpuAOBlurSubmit)*ms);
                 cpuAOBlurPending=false;}
             const bool drawTimed=NorthlightRenderThreadProbe::profiling(); // the per-draw scopes (prep, capture, water) need RenderProfile: -1 = not measured
-            if(gateFrame&&!gateUntimed&&hdr.active)logf("CPU HDR frame=%u admission=%.6fms boundary=%.6fms finish=%.6fms transferWithNativeDraw=%.6fms admissionCalls=%u transferCalls=%u finishIncludedInBoundary=1 transferIncludesNativeSubmission=1",
+            if(gateFrame&&hdr.active)logf("CPU HDR frame=%u admission=%.6fms boundary=%.6fms finish=%.6fms transferWithNativeDraw=%.6fms admissionCalls=%u transferCalls=%u finishIncludedInBoundary=1 transferIncludesNativeSubmission=1",
                 sampleFrame,std::max(0.0,double(cpuHdrAdmission-cpuHdrBoundary)*ms),cpuHdrBoundary*ms,cpuHdrFinish*ms,cpuHdrTransfer*ms,hdrAdmissionCalls,hdrTransferCalls);
             // 0.3.154: U frames have no per-draw timers; their numbers are on the DRAWGATE ab line.
-            if(!gateUntimed)logf("CPU profile frame=%u drawGate=%.3fms capture=%.3fms effects=%.3fms cleanup=%.3fms total=%.3fms enabled=%d gi=%u shadows=%u fog=%u captureSkipped=%u drawHooks=%.3fms frameDrawGates=%u totalIncludesHooks=1 cpuGpuAdditive=0",sampleFrame,drawTimed?std::max(0.0,double(cpuPrep-cpuCapture-cpuEffects)*ms):-1.0,drawTimed?cpuCapture*ms:-1.0,cpuEffects*ms,cleanup*ms,drawTimed?(cpuPrep+cpuDrawHooks+cleanup)*ms:-1.0,frameEnabled,unsigned(frameEffects.gi),unsigned(frameEffects.shadows),unsigned(frameEffects.fog),unsigned(world&&world->captureSkippedLastFrame()),
+            logf("CPU profile frame=%u drawGate=%.3fms capture=%.3fms effects=%.3fms cleanup=%.3fms total=%.3fms enabled=%d gi=%u shadows=%u fog=%u captureSkipped=%u drawHooks=%.3fms frameDrawGates=%u totalIncludesHooks=1 cpuGpuAdditive=0",sampleFrame,drawTimed?std::max(0.0,double(cpuPrep-cpuCapture-cpuEffects)*ms):-1.0,drawTimed?cpuCapture*ms:-1.0,cpuEffects*ms,cleanup*ms,drawTimed?(cpuPrep+cpuDrawHooks+cleanup)*ms:-1.0,frameEnabled,unsigned(frameEffects.gi),unsigned(frameEffects.shadows),unsigned(frameEffects.fog),unsigned(world&&world->captureSkippedLastFrame()),
                 NorthlightRenderThreadProbe::profiling()?cpuDrawHooks*ms:-1.0,unsigned(frameDrawGates)); /* 0.3.187: drawHooks -1 = not measured (RenderProfile=0) */
             // captureWorld+captureWater=capture. qpcNs: one QueryPerformanceCounter call,
             // so a profile can subtract timer overhead (2 calls per CpuScope).
             LARGE_INTEGER a={},b={},t={};QueryPerformanceCounter(&a);for(unsigned i=0;i<32;++i)QueryPerformanceCounter(&t);QueryPerformanceCounter(&b);
             const double qpcNs=double(b.QuadPart-a.QuadPart)*1e9/double(cpuFrequency.QuadPart)/33.0;
-            if(!gateUntimed)logf("CPU capture split frame=%u captureWorld=%.3fms captureWater=%.3fms qpcNs=%.1f",sampleFrame,drawTimed?std::max(0.0,double(cpuCapture-cpuWaterCapture)*ms):-1.0,drawTimed?cpuWaterCapture*ms:-1.0,qpcNs);
+            logf("CPU capture split frame=%u captureWorld=%.3fms captureWater=%.3fms qpcNs=%.1f",sampleFrame,drawTimed?std::max(0.0,double(cpuCapture-cpuWaterCapture)*ms):-1.0,drawTimed?cpuWaterCapture*ms:-1.0,qpcNs);
             logf("WATER mask draws=%u deferred=%u clears=%u scans=%u readFailures=%u mrt=%u redraw=%u degraded=%u binds=%u longestRun=%u afterEffects=%u",waterDraws,0u,waterClears,waterScans,waterReadFailures,waterMrt,waterRedraws,waterDegraded,waterBinds,waterLongestRun,waterLate); /* 0.3.215: binds = render target 1 binds for the water mask, longestRun = the most MRT draws under one bind (both per frame like the rest); 0.3.214 (water MRT): draws = mrt (the game draw wrote the mask itself) + redraw (second draws; degraded = planned as mrt, made as second draws) */
             if(NorthlightRenderThreadProbe::profiling()){
                 // Extension D3D9 calls of this frame by method, inside renderEffects' raw scope (all
@@ -4116,7 +4084,7 @@ public:
                 const unsigned long long reads=CpuScope::reads-frameStartScopeReads;
                 // 0.3.150: capture net of its timers: reads inside cpuCapture (CpuScopes and the capture-phase subset) x qpcNs.
                 const unsigned long long captureReads=cpuCaptureReads+(world?world->capturePhaseReadsLastFrame():0);
-                if(!gateUntimed)logf("CPU timers frame=%u mirrorAudit=%u cpuScopeClockReads=%llu qpcNs=%.1f timerOverheadMs=%.3f captureClockReads=%llu captureNetMs=%.3f",sampleFrame,unsigned(sampleFrame%120==60),reads,qpcNs,double(reads)*qpcNs/1e6,
+                logf("CPU timers frame=%u mirrorAudit=%u cpuScopeClockReads=%llu qpcNs=%.1f timerOverheadMs=%.3f captureClockReads=%llu captureNetMs=%.3f",sampleFrame,unsigned(sampleFrame%120==60),reads,qpcNs,double(reads)*qpcNs/1e6,
                     captureReads,drawTimed?std::max(0.0,double(cpuCapture)*ms-double(captureReads)*qpcNs/1e6):-1.0);
                 if(gateFrame)logDrawGate(sampleFrame,frameApplied,qpcNs,reads);
             }
@@ -4150,9 +4118,7 @@ public:
         terrainSwapCalls={};
         if(mirrorState.rawCounting){std::memset(mirrorState.rawMethodCalls,0,sizeof mirrorState.rawMethodCalls);
             frameStartDrawCalls=drawCalls;frameStartAnswered=mirrorState.answered;frameStartForwarded=mirrorState.forwarded;frameStartScopeReads=CpuScope::reads;}
-        // 0.3.154: drawGate A/B flags of the next frame; U = top bit of a multiplicative hash of the sample
-        // index (parity phase-locks to FarShadowInterval: 16 of 21 far frames would have been U).
-        gateFrame=mirrorState.rawCounting;gateUntimed=gateFrame&&(((frame/NorthlightRenderThreadProbe::ProfilePeriod)*2654435761u)>>31);
+        gateFrame=mirrorState.rawCounting;
         mirrorState.gate.counting.store(gateFrame,std::memory_order_relaxed);perfCounting.store(gateFrame,std::memory_order_relaxed);
         if(gateFrame){gateCounts={};gateStart={missingVS,terrainDraws,uiDraws,terrainShadowDraws,NorthlightTrackedBuffers::clock.load(std::memory_order_relaxed),vsCacheHits,vsCacheMisses};
             gateSceneEnd={};gateSceneDraws=0;gateSceneReads=0;for(unsigned s=0;s<MirrorGate::Sites;++s)mirrorState.gate.takeAcquired(MirrorSite(s));perfCalls.store(0,std::memory_order_relaxed);}

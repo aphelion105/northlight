@@ -12,7 +12,7 @@
 //     the frame opened: equal to inline. An exception on record j and a stalled record (the watchdog)
 //     are taken over inline with equal outputs.
 //   - The renderer's prepare block (fill, publish, join, consumption, quiesce, endFrame), pasted from
-//     world_shadow_experiment.inl, equals inline over random frames with delays and A/B windows.
+//     world_shadow_experiment.inl, equals inline over random frames with delays and profiling on/off.
 //   - The watchdog re-arm: a settled abandoned worker returns after 10 s, at most 4 times a session.
 //   - 0.3.183: an abandoned worker held in its record for 32 more frames: only the abandoned frame's replays
 //     (a constant donor never published and a replay moved to held included), one arena and the programs
@@ -443,7 +443,7 @@ struct Renderer {
     static NorthlightActorShadowSelection::Tuning selectionTuning(){return NorthlightActorShadowSelection::active();}
     unsigned logs=0;void logf(const char*,...){++logs;}
     std::unique_ptr<Caches> prepareCaches=std::make_unique<Caches>();
-    std::unique_ptr<Caches> prepareAbandonedCaches,prepareCheckCaches;
+    std::unique_ptr<Caches> prepareAbandonedCaches;
     std::vector<std::unique_ptr<Rec>> prepareQuarantine;
     explicit Renderer(NorthlightVertexDeclarations::Cache& d):declarationCache(d){prepareWorker.setWatchdogMs(2000);}
     // 0.3.183: Tagged is the production predicate; All (0.3.182: every replay while unsettled) and Published
@@ -465,15 +465,16 @@ struct Renderer {
 // The production integration over random frames: captures with random delays (fill, publish), the
 // join, the selection's consumption: draws, rigid bones and distance counters equal to inline over the
 // same replays. Also frames without a selection, mid-frame quiesce (trimMemory), deferred cache clears
-// (registerShader) and the RenderProfile A/B windows. No resync, no self-check mismatch, no log.
+// (registerShader), disabled-shadow inline fallback and profiling on/off. No resync, no self-check mismatch, no log.
 static void integration(World& world,unsigned frames,unsigned maxGroups){
     std::mt19937 rng(1776);Renderer r(world.declarationCache);auto referenceCaches=std::make_unique<Caches>();
     for(unsigned k=0;k<world.programs.size();++k)if(world.programs[k])r.actorPrograms[World::shader(k)]=r.captureShaders[World::shader(k)].program=world.programs[k];
-    std::size_t modes[3]={},selections=0,draws=0,quiesced=0,worker=0,joined=0;unsigned mismatch=0;
+    std::size_t modes[3]={},selections=0,draws=0,quiesced=0,worker=0,joined=0;
     for(unsigned f=0;f<frames;++f){
         auto records=world.frame(rng,1+rng()%maxGroups);const Camera c=camera(rng);
         std::memcpy(r.context.inverseView,c.inverseView,64);std::memcpy(r.context.camera,c.camera,12);
         NorthlightRenderThreadProbe::on=rng()%3==0;r.sampled=NorthlightRenderThreadProbe::on&&rng()%2;tickNow=DWORD(rng()%100000);
+        r.quality.actorShadows=f%3?1:0;
         const bool trim=rng()%12==0;const std::size_t trimAt=records.empty()?0:rng()%records.size();
         for(std::size_t i=0;i<records.size();++i){auto rec=std::move(records[i]);
             rec->program=nullptr;rec->declCopy=nullptr;rec->declared=false;rec->elements.clear(); /* the renderer's fill below */
@@ -496,12 +497,12 @@ static void integration(World& world,unsigned frames,unsigned maxGroups){
             for(std::size_t k=0;k<n;++k){Output got;got.item=r.actorShadowDraws[k];got.tested=p.records[k]->boneKnown;got.after=reference[k].after;
                 assert(NorthlightActorPrepare::same(got,reference[k]));assert(NorthlightActorPrepare::sameBits(&p.records[k]->bone,&reference[k].item.bone,4));}
             assert(!n||(tests==reference[n-1].after.distanceTests&&reused==reference[n-1].after.distanceReused));
-            ++selections;draws+=n;assert(!r.prepareStats.resync);mismatch+=r.prepareStats.mismatch;}
+            ++selections;draws+=n;assert(!r.prepareStats.resync);}
         r.prepareQuiesce();r.prepareEndFrame();
         for(auto& rec:r.replays)r.recycleReplay(rec.release());r.replays.clear();
     }
-    assert(!mismatch&&!r.logs&&modes[0]&&modes[1]&&worker&&joined&&quiesced&&!r.prepareWorker.abandoned());
-    std::printf("integration: %u frames, %zu selections (%zu draws) equal to inline; modes worker=%zu ab-inline=%zu inline=%zu; %zu draws by the worker, %zu by the join; %zu mid-frame quiesces; self-check mismatches 0\n",
+    assert(!r.logs&&modes[0]&&!modes[1]&&modes[2]&&worker&&joined&&quiesced&&!r.prepareWorker.abandoned());
+    std::printf("integration: %u frames, %zu selections (%zu draws) equal to inline; modes worker=%zu ab-inline=%zu inline=%zu; %zu draws by the worker, %zu by the join; %zu mid-frame quiesces; reference comparisons exact\n",
         frames,selections,draws,modes[0],modes[1],modes[2],worker,joined,quiesced);
 }
 // The renderer's watchdog re-arm: 5 abandons (a stalled record), each settled; no re-arm before 10 s,

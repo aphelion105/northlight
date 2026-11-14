@@ -210,7 +210,7 @@ checks['ActorShadows and effects.shadows: device creation and setEffects only']=
     and re.search(r'\beffects\s*=(?!=)',wcode.replace('effects=next;','')) is None and re.search(r'\bquality\s*=(?!=)',wcode[:wcode.index('void loadQuality(){')]+wcode[wcode.index('void loadQuality(){')+len(member(world_h,'void loadQuality(){')):]) is None
     and 'bool shadowsRequested()const{return effects.shadows;}' in world_h)
 checks['real draw outside every extension region']=all('extensionWork' not in l for l in gates_block.split('\n') if 'terrainShadowDraw(claimed,draw)' in l)
-checks['hook timer latched after the next frame number and its drawGate T/U flag']=(finish.index('++frame;')<finish.index('gateUntimed=gateFrame&&')<finish.index('latchDrawGates();')
+checks['hook timer latched after the next frame number and its profile flag']=(finish.index('++frame;')<finish.index('gateFrame=mirrorState.rawCounting;')<finish.index('latchDrawGates();')
     and 'hookTimer=sampledDrawTimers()&&NorthlightRenderThreadProbe::profiling()?&cpuDrawHooks:nullptr;' in gates_block)
 checks['CPU profile logs drawHooks and frameDrawGates']='drawHooks=%.3fms frameDrawGates=%u' in renderer and 'NorthlightRenderThreadProbe::profiling()?cpuDrawHooks*ms:-1.0,unsigned(frameDrawGates)' in renderer
 
