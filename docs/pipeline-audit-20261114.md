@@ -276,3 +276,14 @@ process-local physical-adapter override. Both the direct DXVK 2 sample-zero
 resolve and the DXVK 3 copy-assisted variant failed performance acceptance on
 the ordinary and skinned fixtures. Main therefore retains the existing MSAA
 replay path; merely deleting it would not deliver the requested speedup.
+
+## Follow-up: fused MSAA WorldNormals consumer
+
+The [consumer-fusion investigation](msaa-worldnormals-fusion-20261114.md) removes
+the standalone normal resolve in a Vulkan WorldNormals prototype. It speeds up
+that isolated experimental stage, but the complete capture/draw/consumer graph
+is slower on DXVK 3 and incurs more CPU work on both tested DXVK versions. The
+4K image oracle also fails. Code and tests are preserved separately in
+`experiment/msaa-worldnormals-fusion-20261114` (`b292b52f`), pushed to the user
+repository. Main and the installed DLL do not enable it. Revisit native MSAA
+attachment access and submission overhead before attempting production integration.
