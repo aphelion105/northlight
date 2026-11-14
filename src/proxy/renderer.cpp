@@ -118,6 +118,7 @@ static NorthlightBackend::Kind selectedBackend=NorthlightBackend::Kind::Legacy;
 static std::string materialCacheBackendIdentity;
 static bool materialCacheAsyncReadback=false;
 static bool backendHdrBaseComposite=false,backendPointPipelinePrewarm=false;
+static bool backendHdrExpandedMaterial=false;
 // Called once, under logLock, before the first open truncates the log.
 struct WindowsLogFiles {
     DWORD error=0;
@@ -1650,11 +1651,12 @@ private:
             world->setPrelitMask(prelitMarks&&maskStencil&&!nameMask.disabled&&worldDebug==0?worldDepth:nullptr);
             world->setUnlitMask(unlitMarks&&maskStencil&&!nameMask.disabled&&worldDebug==0?worldDepth:nullptr); /* 0.3.212 (task 32) */
             world->setRainMask(rainMaskTex); /* 0.3.202 (rain): RainMask for this frame's composite only (resolved and scrubbed at the top of renderEffects) */
-            // Expanded legacy inputs retain two passes: the combined variant
-            // regresses reproducibly on DXVK 2 with that transfer path.
+            // Expanded HDR can omit the FP16 world/material intermediate on
+            // verified DXVK 3.1.1. DXVK 2 regresses with MSAA; retain its guard.
+            const bool hdrMaterialCombine=hdrFrameSettings.legacyExpansion==0||backendHdrExpandedMaterial;
             // This is the terminal world pass inside saved. Fallback and later
             // celestial/mask passes bind their own state; saved restores the game.
-            const bool rendered=world->render(outputTarget,depthTex,width,height,sceneFormat,nearZ,farZ,worldMinDepth,worldMaxDepth,worldDebug,gpuProfile.get(),waterMask,fold?scene:nullptr,fold&&!neutralAOPending?ao:nullptr,frame,linearHdr?(inlineHdrBase&&!hdrSkyValid?scene:hdrFrame.texture()):nullptr,inlineHdrBase&&!hdrSkyValid,hdrFrameSettings.legacyExpansion==0,inlineHdrBase&&hdrSkyValid,!contactAO,&saved);
+            const bool rendered=world->render(outputTarget,depthTex,width,height,sceneFormat,nearZ,farZ,worldMinDepth,worldMaxDepth,worldDebug,gpuProfile.get(),waterMask,fold?scene:nullptr,fold&&!neutralAOPending?ao:nullptr,frame,linearHdr?(inlineHdrBase&&!hdrSkyValid?scene:hdrFrame.texture()):nullptr,inlineHdrBase&&!hdrSkyValid,hdrMaterialCombine,inlineHdrBase&&hdrSkyValid,!contactAO,&saved);
             diagnosticWorld=rendered;
             if(world->diagnosticCaptureInLastRender()){
                 gpuDiagnosticFrame=true;
@@ -4669,9 +4671,10 @@ static HMODULE backend() {
     const bool dxvk3=loadedDxvk&&NorthlightBackend::dxvkMajor(last.info.dxvkVersion)>=3;
     // DXVK 1.10.3 has a one-FP16-step compositor difference; retain its ordinary shader.
     backendHdrBaseComposite=verifiedDxvk2||dxvk3;
+    backendHdrExpandedMaterial=loadedDxvk&&last.info.dxvkVersion=="v3.1.1";
     backendPointPipelinePrewarm=verifiedDxvk1||verifiedDxvk2||dxvk3;
     materialCacheAsyncReadback=verifiedDxvk1||verifiedDxvk2||(loadedDxvk&&last.info.dxvkVersion=="v3.1.1");
-    logf("BACKEND_WORK hdrBaseComposite=%u pointPipelinePrewarm=%u asyncMaterialReadback=%u",unsigned(backendHdrBaseComposite),unsigned(backendPointPipelinePrewarm),unsigned(materialCacheAsyncReadback));
+    logf("BACKEND_WORK hdrBaseComposite=%u pointPipelinePrewarm=%u asyncMaterialReadback=%u expandedHdrMaterial=%u",unsigned(backendHdrBaseComposite),unsigned(backendPointPipelinePrewarm),unsigned(materialCacheAsyncReadback),unsigned(backendHdrExpandedMaterial));
     NorthlightStream::dxvk311EventPayload.store(module&&!result.fallback&&last.info.dxvk&&last.info.dxvkVersion=="v3.1.1",std::memory_order_relaxed);
     logf("CSTREAM EVENT wait=bounded-timer shortSpinUs=2000 queueFence=0 completion=real-GetData csPendingSpinUs=200 backendObservation=trip-final");
     NorthlightUpload::ReadBackNoOverwrite.store(module&&!result.fallback&&last.info.dxvk&&NorthlightBackend::dxvkMajor(last.info.dxvkVersion)>=3,std::memory_order_relaxed);

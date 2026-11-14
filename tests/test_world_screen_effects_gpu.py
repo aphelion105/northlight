@@ -16,12 +16,16 @@ for key,name in [('TEMP','temp'),('TMP','temp'),('ZIG_LOCAL_CACHE_DIR','zig-loca
     (out/name).mkdir(exist_ok=True);env[key]=str(out/name)
 (out/'dxvk.conf').write_bytes(b'dxvk.allowFse = False\nd3d9.presentInterval = 0\n')
 env.update(DXVK_CONFIG='d3d9.customVendorId = 1002',DISABLE_VULKAN_OBS_CAPTURE='1',DXVK_CONFIG_FILE=str(out/'dxvk.conf'),DXVK_LOG_PATH=str(out))
+# Explicit per-test RDP adapter overrides; never change client/global settings.
+if os.environ.get('DXVK_CONFIG'):env['DXVK_CONFIG']+='; '+os.environ['DXVK_CONFIG']
+if os.environ.get('DXVK_FILTER_DEVICE_NAME'):env['DXVK_FILTER_DEVICE_NAME']=os.environ['DXVK_FILTER_DEVICE_NAME']
 sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
 sources=['world_gi.cpp','world_mesh_plan.cpp','static_shadow_scene.cpp','settings_overlay.cpp','settings_panel.cpp','imgui.cpp','imgui_draw.cpp','imgui_tables.cpp','imgui_widgets.cpp','imgui_impl_dx9.cpp']
 inputs={str(p):sha(p) for p in [fp.TESTS/'world_screen_effects_gpu.cpp',*(fp.src(s) for s in sources),fp.src('hdr_compiled_shaders.h'),fp.src('world_renderer.h'),fp.src('renderer.cpp'),fp.src('settings_service.h'),backend]}
 reference_header=os.environ.get('NORTHLIGHT_WORLD_RENDERER_REFERENCE')
 if reference_header:inputs[reference_header]=sha(Path(reference_header))
 report={'pass':False,'inputs':inputs,'commands':[],'game_launched':False,'actual_world_renderer':True,'private_render_target':True,'geometry_available':False}
+report['environment']={key:env.get(key) for key in ('DXVK_CONFIG','DXVK_FILTER_DEVICE_NAME')}
 def run(label,command,extra=None):
     guard.processes();p=subprocess.run(list(map(str,command)),cwd=out,env={**env,**(extra or {})},capture_output=True,text=True,timeout=240)
     (out/(label+'.log')).write_text(p.stdout+p.stderr);report['commands'].append({'label':label,'exit_code':p.returncode});print(label,p.returncode,(p.stdout+p.stderr)[-6000:],flush=True);assert p.returncode==0,label

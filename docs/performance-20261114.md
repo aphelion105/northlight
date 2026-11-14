@@ -168,3 +168,12 @@ Production shader bytecode and the asset bundle remain unchanged. Profiling
 stays enabled in the local client's quality INI for the next matched run; its
 original file is preserved in `initial/`. Restore only the two diagnostic
 overrides when measurement is finished, preserving any subsequent user edits.
+
+## Follow-up: expanded-HDR material fusion
+
+The [HDR material fusion report](hdr-material-fusion-20261114.md) records a
+repeatable reduction of about 0.09–0.10 ms in the 4K/MSAA2 captured-input graph
+on DXVK 3.1.1. The loaded-runtime gate now permits the existing combined shader
+with highlight expansion on that version. DXVK 2 retains its guard because its
+MSAA regression still reproduces. This changes the selector, not shader
+bytecode/assets or quality settings; a new game profile is still required.

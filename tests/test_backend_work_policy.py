@@ -27,7 +27,10 @@ def gates(text):
     end = text.index('    NorthlightStream::dxvk311EventPayload.store(', begin)
     setup = re.search(r'world->setHdrBaseCompositeEnabled\([^\n]+', text).group()
     warm = re.search(r'HRESULT warmPointPipelinesAtDeviceInit\(\)\{\s*([^\n]+)', text).group(1)
-    return text[begin:end], setup, warm
+    match = re.search(r'const bool hdrMaterialCombine=([^;]+);', text)
+    material = match.group(1) if match else 'hdrFrameSettings.legacyExpansion==0'
+    if match:assert ',hdrMaterialCombine,inlineHdrBase&&hdrSkyValid,' in text
+    return text[begin:end], setup, warm, material
 
 
 harness = r'''#include "backend_policy.h"
@@ -38,11 +41,13 @@ using HRESULT=int;
 constexpr int S_OK=0;
 namespace NorthlightUpload {std::atomic<bool> ReadBackNoOverwrite{false};}
 bool materialCacheAsyncReadback=false,backendHdrBaseComposite=false,backendPointPipelinePrewarm=false;
+bool backendHdrExpandedMaterial=false;
 template<class... A> void logf(const char*,A...){}
 struct Info {bool dxvk;std::string dxvkVersion;};
 struct Attempt {Info info;};
 struct Result {bool fallback;};
 void load(bool module,const Result& result,const Attempt& last){LOADER}
+bool material(float expansion){struct {float legacyExpansion;} hdrFrameSettings{expansion};return MATERIAL;}
 struct World {bool hdr=false;unsigned warms=0;
  void setHdrBaseCompositeEnabled(bool on){hdr=on;}
  HRESULT warmPointPipelinesAtDeviceInit(){++warms;return 42;}
@@ -67,6 +72,9 @@ int main(){
   Device d;d.selectedBackend=NorthlightBackend::Kind(kind);d.setup();const auto hr=d.warmPointPipelinesAtDeviceInit();
   assert(d.state.hdr==(loaded&&c.hdr));assert(d.state.warms==unsigned(loaded&&c.warm));
   assert(hr==(loaded&&c.warm?42:S_OK));assert(materialCacheAsyncReadback==(loaded&&c.readback));
+  const bool expanded=loaded&&std::string(c.version)=="v3.1.1";
+  assert(backendHdrExpandedMaterial==expanded);
+  for(float expansion:{0.f,.5f,2.f})assert(material(expansion)==(expansion==0||expanded));
   assert(NorthlightUpload::ReadBackNoOverwrite.load()==lock);++count;
  }
  std::printf("BACKEND_WORK_POLICY_PASS cases=%u actualLoadedRuntime=1 fallbackDisabled=1 nativeUnchanged=1 lockFlagsIndependent=1\n",count);
@@ -75,9 +83,9 @@ int main(){
 
 
 def run(label, text):
-    loader, setup, warm = gates(text)
+    loader, setup, warm, material = gates(text)
     cpp, exe = out / (label+'.cpp'), out / (label+'.exe')
-    cpp.write_text(harness.replace('LOADER', loader).replace('SETUP', setup).replace('WARM', warm), encoding='utf-8', newline='\n')
+    cpp.write_text(harness.replace('LOADER', loader).replace('SETUP', setup).replace('WARM', warm).replace('MATERIAL', material), encoding='utf-8', newline='\n')
     command = list(map(str, [fp.zig(), 'c++', '-target', 'x86-windows-gnu', '-std=c++17', '-O2', '-UNDEBUG',
                              '-I', fp.src('backend_policy.h').parent, cpp, '-o', exe]))
     subprocess.run(command, env=fp.zig_env(), check=True)

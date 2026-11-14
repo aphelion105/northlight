@@ -498,7 +498,7 @@ struct WorldScratchMeter:ForwardIDirect3DDevice9 {
 #ifdef NORTHLIGHT_GI_MERGE_TEST
     IDirect3DPixelShader9* giShader=nullptr;bool refuseGI=false,giBound=false;unsigned giCreates=0,giDraws=0;
 #endif
-    unsigned shaderSlotLimit=0,combinedDraws=0;bool refuseCombined=false,combinedBound=false,refuseVolume=false;
+    unsigned shaderSlotLimit=0,combinedDraws=0;bool refuseCombined=false,combinedBound=false,refuseVolume=false,failCombinedDraw=false;
     IDirect3DPixelShader9* volumePrefix=nullptr;bool volumePrefixBound=false,failVolumeDraw=false;
     IDirect3DPixelShader9* combinedShader=nullptr;
     IDirect3DPixelShader9 *fogMarch=nullptr,*fogAmbient=nullptr,*fogTemporal=nullptr,*fogBlur=nullptr;
@@ -515,6 +515,7 @@ struct WorldScratchMeter:ForwardIDirect3DDevice9 {
         combinedBound=shader&&shader==combinedShader;fogBound=shader&&(shader==fogMarch||shader==fogAmbient||shader==fogTemporal||shader==fogBlur);return real->SetPixelShader(shader);}
     HRESULT STDMETHODCALLTYPE DrawPrimitiveUP(D3DPRIMITIVETYPE type,UINT n,const void* vertices,UINT stride)override{
         if(failVolumeDraw&&volumePrefixBound){failVolumeDraw=false;return D3DERR_INVALIDCALL;}
+        if(failCombinedDraw&&combinedBound){failCombinedDraw=false;return D3DERR_INVALIDCALL;}
 #ifdef NORTHLIGHT_GI_MERGE_TEST
         giDraws+=giBound;
 #endif
@@ -832,9 +833,10 @@ int main(int argc,char** argv){
         // diagnostic capture retaining the original two-pass input ownership.
         const float linear[]={.132868f,.132868f,.132868f,1};auto* hdrBase=screenTexture(d,W,H,linear);
         const float skyOnly[]={.8f,.1f,.6f,1};auto* skyBase=screenTexture(d,W,H,skyOnly);
+        const float expanded[]={2.f,1.3f,.8f,1};auto* expandedBase=screenTexture(d,W,H,expanded);
         std::vector<unsigned short> hdrReference;WorldScreenEffectsTest::fog(*world,false);
         world->setMaterialDetail(detail,1,48,nullptr,8);
-        for(unsigned mode=0;mode<6;++mode){
+        for(unsigned mode=0;mode<8;++mode){
             WorldScreenEffectsTest::fixtureContext(*world);
             if(mode<3){WorldScreenEffectsTest::retryHdrCombined(*world);meter.combinedShader=nullptr;}
             meter.shaderSlotLimit=mode==0?512:0;meter.refuseCombined=mode==1;
@@ -842,18 +844,30 @@ int main(int argc,char** argv){
             screenOk(d->ColorFill(out,nullptr,0xff00ff00));world->setNameMask(receiverDepth);world->setUnlitMask(receiverDepth);world->setPrelitMask(receiverDepth);
             const auto combinedBefore=meter.combinedDraws;
             WorldScreenEffectsTest::discardScratch(*world);
-            assert(renderChecked(*world,d,out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao,100+mode,mode==5?skyBase:hdrBase,mode!=4,mode==5));
-            WorldScreenEffectsTest::scratch(*world,mode!=2&&mode!=5);
+            assert(renderChecked(*world,d,out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao,100+mode,mode>=6?expandedBase:mode==5?skyBase:hdrBase,mode!=4&&mode!=6,mode==5));
+            WorldScreenEffectsTest::scratch(*world,mode!=2&&mode!=5&&mode!=7);
             assert(WorldScreenEffectsTest::hdrCombined(*world)==(mode>=2));
-            assert(meter.combinedDraws-combinedBefore==(mode==2||mode==5?1u:0u));
+            assert(meter.combinedDraws-combinedBefore==(mode==2||mode==5||mode==7?1u:0u));
             if(msaa)screenOk(d->StretchRect(out,nullptr,resolved,nullptr,D3DTEXF_NONE));screenOk(d->GetRenderTargetData(msaa?resolved:out,readback));
             D3DLOCKED_RECT lock{};screenOk(readback->LockRect(&lock,nullptr,D3DLOCK_READONLY));
             std::vector<unsigned short> image(W*H*4);for(unsigned y=0;y<H;++y)std::memcpy(image.data()+y*W*4,static_cast<char*>(lock.pBits)+y*lock.Pitch,W*8);screenOk(readback->UnlockRect());
-            if(!mode)hdrReference=image;
-            for(unsigned i=0;i<image.size();++i){assert(std::isfinite(screenHalf(image[i])));assert(std::abs(screenHalf(image[i])-screenHalf(hdrReference[i]))<.004f);}
+            if(!mode||mode==6)hdrReference=image;
+            for(unsigned i=0;i<image.size();++i){assert(std::isfinite(screenHalf(image[i])));assert(std::abs(screenHalf(image[i])-screenHalf(hdrReference[i]))<.004f);if(i%4==3)assert(image[i]==hdrReference[i]);}
         }
-        meter.shaderSlotLimit=0;meter.refuseCombined=false;skyBase->Release();hdrBase->Release();receiverDepth->Release();
-        std::printf("HDR_COMBINED_WORLD_GPU_PASS capFallback=1 creationFallback=1 actualCombinedDraw=1 skyBaseGeometry=1 diagnosticFallback=1 expansionFallback=1 namesUnlitPreserved=1 msaa=%u\n",msaa);
+        // A failed draw restores native state and disables WorldRenderer until
+        // its existing explicit recovery path is invoked.
+        WorldScreenEffectsTest::fixtureContext(*world);meter.failCombinedDraw=true;
+        IDirect3DSurface9* beforeTarget=nullptr;IDirect3DPixelShader9* beforeShader=nullptr;
+        screenOk(d->GetRenderTarget(0,&beforeTarget));screenOk(d->GetPixelShader(&beforeShader));
+        assert(!renderChecked(*world,d,out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao,108,expandedBase));
+        IDirect3DSurface9* afterTarget=nullptr;IDirect3DPixelShader9* afterShader=nullptr;
+        screenOk(d->GetRenderTarget(0,&afterTarget));screenOk(d->GetPixelShader(&afterShader));assert(afterTarget==beforeTarget&&afterShader==beforeShader);
+        beforeTarget->Release();afterTarget->Release();if(beforeShader)beforeShader->Release();if(afterShader)afterShader->Release();
+        assert(!meter.failCombinedDraw&&!world->screenReady());world->recover();WorldScreenEffectsTest::fixtureContext(*world);
+        world->setMaterialDetail(detail,1,48,nullptr,8);
+        assert(renderChecked(*world,d,out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao,109,expandedBase));
+        meter.shaderSlotLimit=0;meter.refuseCombined=false;expandedBase->Release();skyBase->Release();hdrBase->Release();receiverDepth->Release();
+        std::printf("HDR_COMBINED_WORLD_GPU_PASS capFallback=1 creationFallback=1 actualCombinedDraw=1 skyBaseGeometry=1 diagnosticFallback=1 policyFallback=1 expandedHdrCompared=1 drawFailureRestored=1 namesUnlitPrelitPreserved=1 msaa=%u\n",msaa);
         std::printf("UNLIT_RECEIVER_GPU_PASS nativeRadiance=1 atmosphereRetained=1 materialInvariant=1 namesRetained=1 extraFullSizeTextures=0 msaa=%u\n",msaa);
         std::printf("PRELIT_WMO_PIPELINE_PASS SDR_HDR_materialInvariant=1 namesUnlitIsolated=1 extraFullSizeTextures=0 msaa=%u\n",msaa);
         }

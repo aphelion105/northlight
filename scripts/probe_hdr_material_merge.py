@@ -1,4 +1,4 @@
-"""Measure the currently disabled expanded-HDR material fusion, without changing the client.
+"""Compare separate and fused expanded-HDR material graphs without changing the client.
 
 This is a manual research probe, not production acceptance or game FPS evidence.
 Scene, depth, camera, normals and material height may come from a capture;
@@ -25,6 +25,7 @@ def main():
     parser.add_argument('--backend', type=Path, required=True)
     parser.add_argument('--capture-prefix', type=Path)
     parser.add_argument('--output', type=Path)
+    parser.add_argument('--control', action='store_true', help='A/A timing control: both labelled variants draw the separate graph; image tests still compare fusion')
     args = parser.parse_args()
     out = (args.output or fp.output_dir() / 'hdr-material-merge-probe').resolve()
     if fp.is_client(out):
@@ -34,7 +35,8 @@ def main():
     backend = args.backend.resolve()
     digest = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
     report = dict(scope=__doc__, source=source_identity(ROOT), backend=str(backend),
-                  backend_sha256=digest(backend), processes=census, status='running')
+                  backend_sha256=digest(backend), processes=census, status='running', control=args.control,
+                  environment={k:fp.zig_env().get(k) for k in ('DXVK_CONFIG','DXVK_FILTER_DEVICE_NAME','NORTHLIGHT_TEST_ALLOW_RUNNING_GAME')})
     inputs = [Path(__file__).resolve(), fp.TESTS / 'hdr_material_merge_probe.cpp', fp.TESTS / 'hdr_pipeline_gpu.cpp']
     if args.capture_prefix:
         inputs += [Path(str(args.capture_prefix.resolve()) + name) for name in ('scene.fgr', 'depth.fgr', 'constants.f32', 'material-height.fgr', 'normals.fgr', 'distance.fgr')]
@@ -59,7 +61,7 @@ def main():
         pe = bytearray(exe.read_bytes()); flags = struct.unpack_from('<I', pe, 0x3c)[0] + 22
         struct.pack_into('<H', pe, flags, struct.unpack_from('<H', pe, flags)[0] | 0x20); exe.write_bytes(pe)
         report['executable_sha256'] = digest(exe)
-        output = run('probe', [exe, backend, *([args.capture_prefix.resolve()] if args.capture_prefix else [])], 300)
+        output = run('probe', [exe, backend, args.capture_prefix.resolve() if args.capture_prefix else '-', *(['control'] if args.control else [])], 300)
         assert 'HDR_MATERIAL_MERGE_PROBE_PASS' in output
         events = [json.loads(line) for line in output.splitlines() if line.startswith('{')]
         report['cases'] = []
@@ -77,7 +79,10 @@ def main():
         report['status'] = 'failed'; report['error'] = str(error)
         raise
     finally:
+        report['inputs_unchanged']=all(digest(Path(p))==value for p,value in report['inputs'].items()) and source_identity(ROOT)==report['source']
+        if not report['inputs_unchanged']:report['status']='stale'
         save()
+    assert report['inputs_unchanged']
 
 
 if __name__ == '__main__':

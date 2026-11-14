@@ -191,6 +191,11 @@ path then uses the current validated sky-phase basis and a same-map held
 projection/palette. It must not mark world capture valid, depend on celestial
 disc visibility, or retry past the foreground/scene-grading boundary.
 
+Expanded-HDR world/material composition may use the existing fused shader only
+on a verified loaded DXVK v3.1.1 runtime; DXVK 2 and unknown runtimes retain their
+expanded-input guard. Caps, diagnostics and receiver masks retain their existing
+fallbacks. See [HDR material fusion](hdr-material-fusion-20261114.md).
+
 ## Evidence for a change
 
 World shader admission is shared between command recording and renderer
