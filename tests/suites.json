@@ -75,6 +75,7 @@
       "test_material_admission_source_gpu.py",
       "test_world_screen_effects_gpu.py",
       "test_prelit_receiver_gpu.py",
+      "test_local_shadow_continuity_gpu.py",
       "test_shared_directional_gpu.py",
       "test_luxvelum_optimizations_gpu.py",
       "test_native_local_light_gpu.py",

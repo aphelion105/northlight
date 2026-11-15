@@ -96,6 +96,34 @@ float3 localCubeTexelRay(float3 ray) {
     return (a.x>=a.y&&a.x>=a.z)?float3(direction.x,center.yz):
         (a.y>=a.z?float3(center.x,direction.y,center.z):float3(center.xy,direction.z));
 }
+// Interpolate depth comparisons, never depths. Four equally weighted POINT
+// samples quantized contact shadows into quarter-visibility steps on walls.
+float localCubePcf(float3 position,float3 depthPlane,float depthA) {
+    float3 major=abs(position);bool faceX=major.x>=major.y&&major.x>=major.z;bool faceY=!faceX&&major.y>=major.z;
+    float3 face=position/max(major.x,max(major.y,major.z));
+    float2 uv=faceX?face.yz:faceY?face.xz:face.xy;
+    float2 texel=(uv+1)*(.5/LocalShadow.z)-.5;
+    float2 blend=frac(texel),base=(floor(texel)+.5)*(2*LocalShadow.z)-1;
+    // Across an edge, sample the neighbouring face's border texel. At a cube
+    // corner the fourth footprint corner is shared by the three real faces.
+    float2 outsideWeight=max(0,(abs(uv)-(1-LocalShadow.z))*(.5/LocalShadow.z));
+    float cornerShare=outsideWeight.x*outsideWeight.y/3;
+    float visibility=0,lit=0;
+    [loop]for(int i=0;i<4;++i){
+        float2 offset=float2((i==1||i==3)?1:0,i>=2?1:0);
+        float2 center=base+offset*(2*LocalShadow.z);
+        float3 ray=faceX?float3(face.x,center):faceY?float3(center.x,face.y,center.y):float3(center,face.z);
+        float3 magnitude=abs(ray),clamped=clamp(ray,-1+LocalShadow.z,1-LocalShadow.z);
+        ray=(magnitude.x>=magnitude.y&&magnitude.x>=magnitude.z)?float3(ray.x<0?-1:1,clamped.yz):
+            (magnitude.y>=magnitude.z?float3(clamped.x,ray.y<0?-1:1,clamped.z):float3(clamped.xy,ray.z<0?-1:1));
+        float deltaDepth=dot(depthPlane,ray);
+        float stored=texCUBElod(LocalCube,float4(ray,0)).r;
+        float compare=(deltaDepth<=0||saturate(depthA-deltaDepth)<=stored+.000002)?1:0;
+        float2 weight=lerp(1-blend,blend,offset);
+        visibility+=compare*(min(abs(center.x),abs(center.y))>1?0:weight.x*weight.y+cornerShare);lit+=compare;
+    }
+    return lit==4?1:visibility;
+}
 float localVisibilityInRange(float3 delta,float3 normal,float distance,bool soft) {
     // Task 43: dot(normal,delta)>=0 is a face turned from the lamp (facing 0, estimate 0): the correction is 0 whatever
     // the visibility, so the 4-tap cube PCF is skipped.
@@ -111,19 +139,9 @@ float localVisibilityInRange(float3 delta,float3 normal,float distance,bool soft
     float depthA=LocalShadow.y/(LocalShadow.y-LocalShadow.x);
     float3 depthPlane=normal*(depthA*LocalShadow.x/plane);
     float angular=2*LocalShadow.z*LocalShadow.w;
-    float visibility=0;
-    [loop]for(int i=0;i<4;++i) {
-        float2 offset=float2((i==0||i==2)?-.5:.5,(i<2)?-.5:.5);
-        float3 ray=localCubeTexelRay(biased+distance*angular*(tangent*offset.x+bitangent*offset.y));
-        // Projected depth is affine in this face ray. No per-tap division or
-        // grazing-angle fallback: both previously made a plane shadow itself.
-        float deltaDepth=dot(depthPlane,ray);
-        float receiver=saturate(depthA-deltaDepth);
-        float stored=texCUBElod(LocalCube,float4(ray,0)).r;
-        visibility+=(deltaDepth<=0||receiver<=stored+.000002)?1:0;
-    }
-    float baseline=visibility*.25;
-    if(!soft)return baseline;
+    if(!soft)return localCubePcf(biased,depthPlane,depthA);
+    float extra=0;
+    if(soft){
     // A bounded .08-world-unit emitter. Attenuation range is not emitter size.
     // Reconstruct each face's axial depth before measuring its ray distance.
     float cone=0,blockers=0;
@@ -143,19 +161,20 @@ float localVisibilityInRange(float3 delta,float3 normal,float distance,bool soft
     }
     // A sparse blocker miss retains the base PCF, including thin casters.
     float radius=clamp(2*cone/max(blockers,1),angular,angular*4);
-    if(radius<=angular*1.001)return baseline;
-    visibility=0;
-    [loop]for(int fy=0;fy<4;++fy){
-        float3 row=bitangent*((fy-1.5)/3);
-        [loop]for(int fx=0;fx<4;++fx){
-        float offset=(fx-1.5)/3;
-        float3 ray=localCubeTexelRay(biased+distance*radius*(tangent*offset+row));
-        float deltaDepth=dot(depthPlane,ray);
-        float stored=texCUBElod(LocalCube,float4(ray,0)).r;
-        visibility+=(deltaDepth<=0||saturate(depthA-deltaDepth)<=stored+.000002)?1:0;
+    extra=max(radius-angular,0);
+    }
+    // The base footprint already filters one texel. Expand from zero additional
+    // support so PCSS converges to exactly that footprint at contact. Each of
+    // the nine samples interpolates comparisons, including at cube seams.
+    float visibility=0;int rows=extra>0?3:1;
+    [loop]for(int fy=0;fy<rows;++fy){
+        float3 row=bitangent*((fy-1)*.5);
+        [loop]for(int fx=0;fx<rows;++fx){
+        float offset=(fx-1)*.5;
+        visibility+=localCubePcf(biased+distance*extra*(tangent*offset+row),depthPlane,depthA);
     }
     }
-    return visibility/16;
+    return visibility/(rows*rows);
 }
 float localVisibilityFiltered(float3 delta,float3 normal,bool soft){
     float distance=length(delta);if(distance<=LocalShadow.x||distance>=LocalShadow.y)return 1;
