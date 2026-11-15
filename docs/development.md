@@ -55,6 +55,8 @@ For the runtime cache inventory, remaining churn and mixed-size material upload
 reuse, see [the cache inventory](cache-inventory-20261115.md).
 For the subsequent focused shadow profile, terrain classification cache and
 copied Forever shader evidence, see [the shadow pipeline review](shadow-pipeline-review-20261114.md).
+For the supplied inn/tower captures, room lighting overrides, four-lamp blend
+ownership and timing limits, see [the interior lighting review](interior-lighting-20261116.md).
 For the shared world/actor visibility filter and the remaining fine-cascade work,
 see [the shared directional shadow review](shared-directional-shadows-20261114.md).
 For the experimental common fine depth cascade and the complete old/new

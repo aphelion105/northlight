@@ -6,6 +6,16 @@
 // Authored lights can prove presence in the receiver's actual slots even when
 // the scene inventory is incomplete. Ambiguous sources keep the original draw.
 namespace NorthlightNativeDirect {
+// Alpha-only blend factors do not depend on the RGB bank being handed off.
+// Room WMO layers use SRCALPHA/ZERO and INVSRCALPHA/ONE with depth writes.
+// Leaving those on the endpoint fallback can leave two of four lamps unshadowed.
+inline bool independentBlend(unsigned source,unsigned destination,unsigned operation){
+    const auto alpha=[](unsigned factor){return factor==1||factor==2||(factor>=5&&factor<=8);};
+    return operation==1&&alpha(source)&&alpha(destination);
+}
+inline bool receiverOwnership(bool terrain,bool wmo,bool writes,bool blend,unsigned source,unsigned destination,unsigned operation){
+    return (writes||terrain)&&(!blend||terrain||(wmo&&independentBlend(source,destination,operation)));
+}
 // Terrain stores camera-relative world positions, RGB and denominator in
 // interleaved triples. Normalize to the model bank before exact source matching.
 inline bool terrainBank(const float* source,const float* view,float* bank){

@@ -33,6 +33,7 @@ static void save(const std::string& path,const std::vector<float>& image,unsigne
 #include "native_local_light_final.inc"
 #ifdef NORTHLIGHT_TEST_NATIVE_OWNER
 #include "native_owner_submit.h"
+#include "native_layered_light_checks.h"
 #endif
 struct FaultDevice:ForwardIDirect3DDevice9 {
     using ForwardIDirect3DDevice9::ForwardIDirect3DDevice9;
@@ -56,7 +57,7 @@ int main(int argc,char** argv){
     if(argc==4&&std::strcmp(argv[1],"--audit-native")==0){auto v=words(argv[2]),p=words(argv[3]);bool rgbOnly=false;
         const unsigned slots=NorthlightEquipmentLightProof::analyze(reinterpret_cast<const uint32_t*>(v.data()),v.size(),&rgbOnly);
         std::printf("{\"slots\":%u,\"rgb_only\":%s,\"pixel_alpha_independent\":%s}\n",slots,rgbOnly?"true":"false",NorthlightNativeLocalPatch::pointOwnerPixel(reinterpret_cast<const uint32_t*>(p.data()),p.size())?"true":"false");return 0;}
-    assert(argc==7||argc==8);constexpr unsigned Size=256;const bool wmo=std::strcmp(argv[5],"wmo")==0;
+    assert(argc==7||argc==8);constexpr unsigned Size=256;const bool wmo=std::strncmp(argv[5],"wmo",3)==0;
     WNDCLASSW wc{};wc.lpfnWndProc=DefWindowProcW;wc.hInstance=GetModuleHandleW(nullptr);wc.lpszClassName=L"NorthlightNativeLocalTest";assert(RegisterClassW(&wc));auto hwnd=CreateWindowW(wc.lpszClassName,L"",WS_OVERLAPPED,0,0,Size,Size,nullptr,nullptr,wc.hInstance,nullptr);assert(hwnd);
     auto library=LoadLibraryA(argv[1]);assert(library);auto create=reinterpret_cast<IDirect3D9*(WINAPI*)(UINT)>(reinterpret_cast<void*>(GetProcAddress(library,"Direct3DCreate9")));assert(create);auto api=create(D3D_SDK_VERSION);assert(api);
     D3DPRESENT_PARAMETERS pp{};pp.Windowed=TRUE;pp.hDeviceWindow=hwnd;pp.BackBufferWidth=pp.BackBufferHeight=Size;pp.BackBufferFormat=D3DFMT_X8R8G8B8;pp.SwapEffect=D3DSWAPEFFECT_DISCARD;pp.PresentationInterval=D3DPRESENT_INTERVAL_IMMEDIATE;
@@ -138,6 +139,17 @@ int main(int argc,char** argv){
         if(argc>7){const auto other=words(argv[7]);IDirect3DPixelShader9* otherPS=nullptr;must(d->CreatePixelShader(other.data(),&otherPS));must(d->SetPixelShader(otherPS));
             nativeEventCold(samplerDevice,renderer,light,vs,otherPS,[&]{return d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,plane,sizeof(Vertex));},[&]{return pixels(d,target,Size);},3,true);otherPS->Release();}
         return 0;
+#endif
+#ifdef NORTHLIGHT_TEST_NATIVE_OWNER
+        if(std::strcmp(argv[5],"wmo-layered")==0){
+            assert(NorthlightEquipmentLightProof::analyze(reinterpret_cast<const uint32_t*>(v.data()),v.size())==4);
+            fillCube(2);NorthlightNativeLocalDraw other=light;other.slot=1;
+            light.position[0]=-1.5f;other.position[0]=-.5f;
+            Vertex layered[4];std::copy_n(plane,4,layered);for(auto& vertex:layered)vertex.color=0xb3404040;
+            auto submit=[&]{return d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,layered,sizeof(Vertex));};
+            nativeLayeredLightChecks(d,nativeOwner,constants,submit,[&]{return pixels(d,target,Size);},
+                [&]{++light.rendererFrame;return renderer.draw(light,vs,ps,submit,&other);});return 0;
+        }
 #endif
         auto render=[&](bool patched,bool zero,bool rendererOwned=false){float color[4];std::memcpy(color,constants[17],16);if(zero)color[0]=color[1]=color[2]=0;must(d->SetVertexShaderConstantF(17,color,1));must(d->Clear(0,nullptr,D3DCLEAR_TARGET,0x80204060,1,0));must(d->BeginScene());auto submit=[&]{return d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,plane,sizeof(Vertex));};const bool cold=patched&&!renderer.coldPairs;const auto start=std::chrono::steady_clock::now();
             float bank[44];must(d->GetVertexShaderConstantF(17,bank,11));const unsigned count=two?2:1;bool ownershipHit=false;

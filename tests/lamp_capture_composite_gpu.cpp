@@ -9,10 +9,11 @@
 #include <string>
 #include <vector>
 #include "world_compiled_shaders.h"
+#include "lighting_pair_timing.h"
 static void must(HRESULT h){assert(SUCCEEDED(h));}
 static std::vector<unsigned char> read(const std::string& p){std::ifstream f(p,std::ios::binary);assert(f);return {std::istreambuf_iterator<char>(f),{}};}
 static IDirect3DTexture9* texture(IDirect3DDevice9* d,const std::string& p){auto b=read(p);unsigned h[5];std::memcpy(h,b.data(),20);assert(h[0]==0x31524746&&b.size()==20+size_t(h[1])*h[2]*h[4]);IDirect3DTexture9* t=nullptr;must(d->CreateTexture(h[1],h[2],1,0,D3DFORMAT(h[3]),D3DPOOL_MANAGED,&t,nullptr));D3DLOCKED_RECT l;must(t->LockRect(0,&l,nullptr,0));for(unsigned y=0;y<h[2];++y)std::memcpy((char*)l.pBits+y*l.Pitch,b.data()+20+size_t(y)*h[1]*h[4],h[1]*h[4]);must(t->UnlockRect(0));return t;}
-int main(int argc,char** argv){assert(argc==9||argc==10);const std::string prefix=argv[2],out=argv[3],group="lighting-input-g"+std::string(argv[7])+"-s";const bool material=std::string(argv[4])=="material",hdr=std::atoi(argv[8])!=0;
+int main(int argc,char** argv){assert(argc==9||argc==10);const std::string prefix=argv[2],out=argv[3],group="lighting-input-g"+std::string(argv[7])+"-s";const bool material=std::string(argv[4])=="material",authored=std::string(argv[4])=="authored",hdr=std::atoi(argv[8])!=0;
  auto dimensions=read(prefix+group+"0.fgr");unsigned imageHeader[5];std::memcpy(imageHeader,dimensions.data(),20);const unsigned width=imageHeader[1],height=imageHeader[2];
  WNDCLASSW wc{};wc.lpfnWndProc=DefWindowProcW;wc.hInstance=GetModuleHandleW(nullptr);wc.lpszClassName=L"LampComposite";assert(RegisterClassW(&wc));auto hwnd=CreateWindowW(wc.lpszClassName,L"",WS_OVERLAPPED,0,0,64,64,nullptr,nullptr,wc.hInstance,nullptr);
  auto module=LoadLibraryA(argv[1]);assert(module);auto create=(IDirect3D9*(WINAPI*)(UINT))GetProcAddress(module,"Direct3DCreate9");auto api=create(D3D_SDK_VERSION);D3DPRESENT_PARAMETERS pp{};pp.Windowed=TRUE;pp.hDeviceWindow=hwnd;pp.BackBufferWidth=pp.BackBufferHeight=64;pp.BackBufferFormat=D3DFMT_X8R8G8B8;pp.SwapEffect=D3DSWAPEFFECT_DISCARD;
@@ -48,10 +49,25 @@ int main(int argc,char** argv){assert(argc==9||argc==10);const std::string prefi
  for(const auto& s:std::initializer_list<std::pair<D3DRENDERSTATETYPE,DWORD>>{{D3DRS_ZENABLE,FALSE},{D3DRS_CULLMODE,D3DCULL_NONE},{D3DRS_ALPHABLENDENABLE,FALSE},{D3DRS_FOGENABLE,FALSE},{D3DRS_STENCILENABLE,FALSE},{D3DRS_COLORWRITEENABLE,15}})must(d->SetRenderState(s.first,s.second));
  struct V{float x,y,z,w,u,v;};const V quad[]={{-.5f,-.5f,0,1,0,0},{width-.5f,-.5f,0,1,1,0},{-.5f,height-.5f,0,1,0,1},{width-.5f,height-.5f,0,1,1,1}};must(d->SetFVF(D3DFVF_XYZRHW|D3DFVF_TEX1));D3DVIEWPORT9 vp{0,0,width,height,0,1};must(d->SetViewport(&vp));
  for(unsigned mode=0;mode<2;++mode){
+  if(authored&&mode){
+   IDirect3DPixelShader9* replacement=nullptr;must(d->CreatePixelShader(hdr?kWorldPrelitCompositeHdrShader:kWorldPrelitCompositeShader,&replacement));
+   must(d->SetPixelShader(replacement));replacement->Release();constants[81][1]=1;must(d->SetPixelShaderConstantF(81,constants[81],1));
+   bind(14,prefix+"prelit-daylight.fgr");
+  }
   if(material)bind(0,mode?out+"/material-input-fixed.fgr":prefix+group+"0.fgr",true);
-  else bind(3,mode?out+"/current-local-fixed.fgr":prefix+"current-local-light.fgr");
+  else bind(3,mode&&!authored?out+"/current-local-fixed.fgr":prefix+"current-local-light.fgr");
   must(d->BeginScene());must(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(V)));must(d->EndScene());must(d->GetRenderTargetData(target,copy));D3DLOCKED_RECT l;must(copy->LockRect(&l,nullptr,D3DLOCK_READONLY));
   std::ofstream f(out+(material?"/material-":"/world-")+(mode?"after.fgr":"before.fgr"),std::ios::binary);unsigned h[]={0x31524746,width,height,D3DFMT_A16B16G16R16F,8};f.write((const char*)h,20);for(unsigned y=0;y<height;++y)f.write((char*)l.pBits+y*l.Pitch,width*8);assert(f);must(copy->UnlockRect());
+ }
+ if(authored&&std::getenv("NORTHLIGHT_LIGHTING_BENCH")){
+  IDirect3DPixelShader9* replacement=nullptr;must(d->CreatePixelShader(hdr?kWorldPrelitCompositeHdrShader:kWorldPrelitCompositeShader,&replacement));
+  auto* normals=texture(d,prefix+"normals.fgr");auto* daylight=texture(d,prefix+"prelit-daylight.fgr");
+  const bool control=std::getenv("NORTHLIGHT_LIGHTING_CONTROL")!=nullptr;
+  lightingPairTiming(d,control?"composite-AA":"composite-AB",32,[&](unsigned mode){
+   const bool fixed=mode&&!control;must(d->SetPixelShader(fixed?replacement:ps));must(d->SetTexture(14,fixed?daylight:normals));
+   constants[81][1]=fixed?1.f:0.f;must(d->SetPixelShaderConstantF(81,constants[81],1));
+  },[&](unsigned){return d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(V));});
+  replacement->Release();normals->Release();daylight->Release();
  }
  for(auto* t:owned)t->Release();ps->Release();target->Release();copy->Release();d->Release();api->Release();FreeLibrary(module);DestroyWindow(hwnd);
  return 0;

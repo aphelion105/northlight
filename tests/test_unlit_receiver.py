@@ -40,14 +40,34 @@ int main(){
  }
  assert(!NorthlightUnlitReceiver::shader(nullptr,0,true));
  using namespace NorthlightUnlitReceiver;
+ // The equation must be in live RGB, use native constants and a normalized normal.
+ std::vector<Word> room={0xfffe0300,0x0200001f,0x80000003,0x900f0001,
+  0x0200001f,0x8000000a,0xe00f0001,0x02000024,0x80070000,0x90e40001,
+  0x03000008,0x80010001,0x80e40000,0xa1e4000c,
+  0x04000004,0xe0070001,0x80000001,0xa0e4000b,0xa0e4000a,
+  0x02000001,0xe0080001,0xa0ff001c,0xffff};
+ assert(nativeLightingShader(room.data(),room.size()));
+ auto moved=room;moved[17]=0x80e40002;moved.insert(moved.begin()+14,{0x02000001u,0x80070002u,0xa0e4000bu});assert(nativeLightingShader(moved.data(),moved.size()));
+ for(auto mutation:std::initializer_list<std::pair<unsigned,Word>>{{7,0x02000001},{13,0xa0e4000c},{17,0xa0e4001b},{18,0xa0e4001a},{17,0xa000000b}}){
+  auto changed=room;changed[mutation.first]=mutation.second;assert(!nativeLightingShader(changed.data(),changed.size()));
+ }
+ auto dead=room;dead.insert(dead.end()-1,{0x02000001u,0xe0070001u,0xa0e4001cu});assert(!nativeLightingShader(dead.data(),dead.size()));
+ auto defined=room;defined.insert(defined.begin()+1,{0x05000051u,0xa00f000bu,0,0,0,0});assert(!nativeLightingShader(defined.data(),defined.size()));
+ assert(!nativeLightingShader(nullptr,0));
+ const float ambient[]={.196078f,.305882f,.258824f},direct[]={0,.360784f,.478431f};
+ float bank[]={.439216f,.419608f,.47451f,0,0,0,0,0};
+ assert(lightingOverride(bank,ambient,direct));
+ for(unsigned i=0;i<3;++i){bank[i]=ambient[i];bank[4+i]=direct[i];}
+ assert(!lightingOverride(bank,ambient,direct));bank[3]=NAN;assert(!lightingOverride(bank,ambient,direct));
+ bank[0]=NAN;assert(!lightingOverride(bank,ambient,direct));bank[0]=-1;assert(!lightingOverride(bank,ambient,direct));
  assert(stencilFormat(75,123)&&stencilFormat(81,123)&&stencilFormat(123,123));
  assert(!stencilFormat(79,123)&&!stencilFormat(73,123)&&!stencilFormat(77,123));
  assert((Bit&NorthlightNameStencil::kBit)==0&&(PrelitBit&(Bit|NorthlightNameStencil::kBit))==0);
  unsigned long marks=0,names=NorthlightNameStencil::kBit;
  for(const auto& s:Mark)if(s.state==StencilWriteMask)marks=s.value;
- assert(marks==(Bit|PrelitBit|names)&&((names&~marks)|(Bit&marks))==Bit);
- for(const auto& s:Unmark)if(s.state==StencilWriteMask)assert(s.value==(Bit|PrelitBit|names));
- for(const auto& s:MarkPrelit){if(s.state==StencilRef)assert(s.value==PrelitBit);if(s.state==StencilWriteMask)assert(s.value==(Bit|PrelitBit|names));}
+ assert(marks==(Bit|PrelitBit|AuthoredBit|names)&&((names&~marks)|(Bit&marks))==Bit);
+ for(const auto& s:Unmark)if(s.state==StencilWriteMask)assert(s.value==(Bit|PrelitBit|AuthoredBit|names));
+ for(const auto& s:MarkPrelit){if(s.state==StencilRef)assert(s.value==PrelitBit);if(s.state==StencilWriteMask)assert(s.value==(Bit|PrelitBit|AuthoredBit|names));}
  for(bool normal:{false,true})for(bool global:{false,true}){
   std::vector<Word> w={0xfffe0300,0x0200001f,0x8000000a,0x900f0002,0x0200001f,0x80000003,0x900f0001,
    0x0200001f,0x8000000a,0xe00f0001,0x03000005,0xe0070001,0x90e40002,global?0xa0e4000au:normal?0x90e40001u:0x90e40002u,

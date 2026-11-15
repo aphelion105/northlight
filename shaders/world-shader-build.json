@@ -1,6 +1,6 @@
 {
   "bump_include_sha256": "b5523a51dc6715f11ac2e7ba9ecb46a4973ba6aa23de159e308a8fd24d4e9ebc",
-  "source_sha256": "62837ac5de532b463d63f6a0727247d4d0fab799d019aa9420cf12f7a38acd3e",
+  "source_sha256": "d4594645a49f8c3629e540fccfa0b085ddc3ded5a4f997657032a56637edf306",
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
   "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
   "game_launched": false,
@@ -1658,9 +1658,9 @@
     },
     "WorldPrelitComposite": {
       "target": "ps_3_0",
-      "bytes": 8208,
-      "sha256": "c48df46256cfcae1f6a80a34b4d439c05410038753f36f661decd2f7fb8603dc",
-      "static_instruction_slots": 482,
+      "bytes": 8240,
+      "sha256": "689c9e2984e03f5261edbd5d20b3881badc5f5c18e13b238f239cc842839f9b0",
+      "static_instruction_slots": 484,
       "temporary_registers": 21,
       "samplers": [
         0,
@@ -1677,9 +1677,9 @@
       ],
       "instructions": {
         "texld": 4,
-        "mul": 83,
+        "mul": 84,
         "frc": 4,
-        "add": 91,
+        "add": 92,
         "mov": 42,
         "max": 22,
         "min": 8,
@@ -1701,13 +1701,13 @@
         "log": 6
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "62837ac5de532b463d63f6a0727247d4d0fab799d019aa9420cf12f7a38acd3e"
+      "source_sha256": "d4594645a49f8c3629e540fccfa0b085ddc3ded5a4f997657032a56637edf306"
     },
     "WorldPrelitCompositeHdr": {
       "target": "ps_3_0",
-      "bytes": 8432,
-      "sha256": "bae03b8f9f158104aa4338c681cc1339b1a495e12cdcd400d645c981b3133de2",
-      "static_instruction_slots": 502,
+      "bytes": 8464,
+      "sha256": "c09e2db24569ff81309ae62cf47b46db6961bfb99765cc76173b4fc13ef7ba4c",
+      "static_instruction_slots": 504,
       "temporary_registers": 21,
       "samplers": [
         0,
@@ -1724,9 +1724,9 @@
       ],
       "instructions": {
         "texld": 2,
-        "mul": 89,
+        "mul": 90,
         "frc": 4,
-        "add": 96,
+        "add": 97,
         "mov": 43,
         "max": 20,
         "min": 7,
@@ -1748,7 +1748,7 @@
         "dp2add": 4
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "62837ac5de532b463d63f6a0727247d4d0fab799d019aa9420cf12f7a38acd3e"
+      "source_sha256": "d4594645a49f8c3629e540fccfa0b085ddc3ded5a4f997657032a56637edf306"
     },
     "MaterialAudit": {
       "target": "ps_3_0",

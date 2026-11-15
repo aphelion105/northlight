@@ -1820,7 +1820,9 @@ float4 worldCompositeInputs(float2 uv,float2 pixel,bool surfaceLighting,bool hdr
         // As for local lamps, native transported RGB supplies a bounded material
         // estimate; this is not an extraction of the original diffuse texture.
         color=mad(albedoT,bounce,original.rgb);
-        if(prelit)color=mad(-saturate(shadow)*PrelitDaylightInfo.x,transported,color);
+        // A room's explicit native lighting is not the outdoor ambient that
+        // the GI correction replaces. Keep that authored term independently.
+        if(prelit)color=mad(-saturate(shadow)*PrelitDaylightInfo.x*(1-PrelitDaylightInfo.y),transported,color);
         // Bound combined GI/shadow darkening relative to the existing surface;
         // this preserves black and does not introduce an absolute exposure floor.
         float removalLimit=prelit?max(shadowRemovalLimit(),saturate(shadow)*PrelitDaylightInfo.x):shadowRemovalLimit();

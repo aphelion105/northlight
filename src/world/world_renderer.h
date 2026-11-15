@@ -409,6 +409,7 @@ private:
     bool effectEmission=false;
     bool unlitShaderRefused=false;IDirect3DSurface9* nameMaskDepth=nullptr,*unlitMaskDepth=nullptr; // 0.3.212 (task 32): non-owning, set per frame before render(), consumed by the composite quad
     IDirect3DSurface9* prelitMaskDepth=nullptr;
+    IDirect3DSurface9* authoredMaskDepth=nullptr;
     IDirect3DPixelShader9 *prelitPS=nullptr,*hdrPrelitPS=nullptr;
     bool prelitShaderRefused=false;
     IDirect3DTexture9* prelitDaylight=nullptr;IDirect3DSurface9* prelitDaylightSurface=nullptr;DWORD prelitDaylightRetryAt=0;
@@ -799,6 +800,7 @@ private:
     IDirect3DPixelShader9* localFogCombinePS=nullptr;
     // 0.3.197: soft cap, incumbent bias and fades for the local lights (task 13). The clock is the selection's own: its gap and reset policy mirror useHistory.
     NorthlightEquipmentLights::Tracker equipmentLights;std::unordered_map<IDirect3DVertexShader9*,unsigned> equipmentShaders,nativePointShaders;
+    std::unordered_set<IDirect3DVertexShader9*> nativeLightingShaders;
     std::unordered_map<IDirect3DVertexShader9*,bool> nativePointOwners;
     std::unordered_map<IDirect3DPixelShader9*,bool> nativePointPixelOwners;
     std::unique_ptr<NorthlightNativeLocalLighting> nativeDirectRenderer;
@@ -3187,7 +3189,7 @@ public:
                 rendererFrame,(unsigned long long)r.requestsByCount[0],(unsigned long long)r.requestsByCount[1],(unsigned long long)r.requestsByCount[2],(unsigned long long)r.coldAttemptsByCount[0],(unsigned long long)r.coldAttemptsByCount[1],(unsigned long long)r.coldAttemptsByCount[2],(unsigned long long)r.deferredByCount[0],(unsigned long long)r.deferredByCount[1],(unsigned long long)r.deferredByCount[2],(unsigned long long)r.coldRejectedByCount[0],(unsigned long long)r.coldRejectedByCount[1],(unsigned long long)r.coldRejectedByCount[2],(unsigned long long)r.successfulByCount[0],(unsigned long long)r.successfulByCount[1],(unsigned long long)r.successfulByCount[2],(unsigned long long)r.legacyByCount[0],(unsigned long long)r.legacyByCount[1],(unsigned long long)r.legacyByCount[2], (unsigned long long)r.samplerBulkHits,(unsigned long long)r.samplerBulkFallbacks,(unsigned long long)(r.samplerBulkHits*7),(unsigned long long)r.whiteCubeSkips,(unsigned long long)r.whiteCubeBypasses,(unsigned long long)r.zeroGainSkips,(unsigned long long)r.zeroGainBypasses);}
         nativeDirectMissReasons={};nativeDirectSlotCounts={};nativeDirectMatchCounts={};nativeDirectPreparedBypass=nativeDirectPrivateBypass=nativeDirectBankHits=nativeDirectBankMisses=0;
         nativeDirectSlots=nativeDirectMatched=nativeDirectMultiple=nativeDirectMissingCube=0;nativeOwnedDraws=nativeOwnedSlots=nativeObservedOwnedSlots=nativeTerrainOwnedDraws=0;
-        nameMaskDepth=unlitMaskDepth=prelitMaskDepth=nullptr;effectCoverage=nullptr;effectEmission=false;
+        nameMaskDepth=unlitMaskDepth=prelitMaskDepth=authoredMaskDepth=nullptr;effectCoverage=nullptr;effectEmission=false;
         frameFence.endFrame(); /* 0.3.192 (DXVK3): the one Issue of the frame's fence, after every replay/terrain draw, before any early return; reset() calls endFrame() too */
         NorthlightLockMeter::endFrame();
         if(NorthlightReplayCopies::enabled.load(std::memory_order_relaxed))NorthlightReplayCopies::advanceFrame(); /* 0.3.192 (CS): the CPU copies' thrash/fill time base, once per frame on the replay thread */
@@ -3487,6 +3489,15 @@ public:
     void setEffectCoverage(IDirect3DTexture9* texture,bool emission=false){effectCoverage=texture;effectEmission=emission;}
     void setUnlitMask(IDirect3DSurface9* depthStencil){unlitMaskDepth=depthStencil;}
     void setPrelitMask(IDirect3DSurface9* depthStencil){prelitMaskDepth=depthStencil;}
+    void setAuthoredMask(IDirect3DSurface9* depthStencil){authoredMaskDepth=depthStencil;}
+    bool authoredReceiver(IDirect3DVertexShader9* shader,bool model){
+        if(!hasContext())return false;
+        if(!(model||wmoShaders.count(shader))||!nativeLightingShaders.count(shader))return false;
+        float values[8];const auto* mirror=constantEpochSource.mirror;
+        if(mirror&&mirror->active()&&mirror->vsFloatKnown[10]&&mirror->vsFloatKnown[11])std::memcpy(values,mirror->vsFloat[10],sizeof values);
+        else if(FAILED(d->GetVertexShaderConstantF(10,values,2)))return false;
+        return NorthlightUnlitReceiver::lightingOverride(values,context.ambient,context.direct);
+    }
     void setNameMask(IDirect3DSurface9* depthStencil){nameMaskDepth=depthStencil;} /* 0.3.212 (task 32): the world depth-stencil holding this frame's name marks (non-owning, for the next render() only; null: no marks) */
     void setRainMask(IDirect3DTexture9* t){rainMask=t;} /* 0.3.202 (rain): non-owning, for the next render() only */
     const NorthlightWeather::State& weather()const{return weatherState;}
@@ -3518,6 +3529,8 @@ public:
         std::memcpy(inverseView,context.inverseView,64);std::memcpy(camera,context.camera,12);std::memcpy(projectionOut,projection,12);return true;
     }
     void registerNativePointShader(IDirect3DVertexShader9* shader,const DWORD* words,size_t count,bool model,bool terrainVariant=false){
+        nativeLightingShaders.erase(shader);
+        if(shader&&(model||wmoShaders.count(shader))&&NorthlightUnlitReceiver::nativeLightingShader(reinterpret_cast<const uint32_t*>(words),count))nativeLightingShaders.insert(shader);
         // EquipmentLights can be enabled live after these shaders were created.
         // Keep only its small proven layout, never shader bytecode or a COM owner.
         bool rgbOnly=false;const bool terrain=terrainVariant||terrainShaders.count(shader)!=0;nativeTerrainPointShaders.erase(shader);
@@ -3719,8 +3732,12 @@ public:
             if(!ps&&SUCCEEDED(d->GetPixelShader(psOwner.out())))ps=psOwner.p;
             auto* sourcePS=pom?pom->originalPS:coverage&&coverage->matches(ps)?coverage->source:ps;
             const auto pixelOwner=nativePointPixelOwners.find(sourcePS);
-            DWORD writes=FALSE,blend=TRUE;
-            if(pixelOwner!=nativePointPixelOwners.end()&&pixelOwner->second&&SUCCEEDED(d->GetRenderState(D3DRS_ZWRITEENABLE,&writes))&&(writes||terrainReceiver)&&SUCCEEDED(d->GetRenderState(D3DRS_ALPHABLENDENABLE,&blend))&&(!blend||terrainReceiver)){
+            DWORD writes=FALSE,blend=TRUE,sourceBlend=0,destinationBlend=0,blendOperation=0;
+            const bool known=SUCCEEDED(d->GetRenderState(D3DRS_ZWRITEENABLE,&writes))&&SUCCEEDED(d->GetRenderState(D3DRS_ALPHABLENDENABLE,&blend));
+            const bool layered=known&&blend&&wmoShaders.count(sourceVS)&&
+                SUCCEEDED(d->GetRenderState(D3DRS_SRCBLEND,&sourceBlend))&&SUCCEEDED(d->GetRenderState(D3DRS_DESTBLEND,&destinationBlend))&&SUCCEEDED(d->GetRenderState(D3DRS_BLENDOP,&blendOperation));
+            if(pixelOwner!=nativePointPixelOwners.end()&&pixelOwner->second&&known&&
+               NorthlightNativeDirect::receiverOwnership(terrainReceiver,layered,writes!=FALSE,blend!=FALSE,sourceBlend,destinationBlend,blendOperation)){
                 extraCanOwn=true;ownerMask=candidateMask;if(ownerMask)std::copy_n(bank,16,originalRGB);
             }
         }
@@ -4238,6 +4255,7 @@ public:
         ++worldShaderGen; /* 0.3.196 (task 12): before any map changes */
         replayBoundsMetadata.invalidateShader(shader);
         wmoShaders.erase(shader);
+        nativeLightingShaders.erase(shader);
         terrainShaders.erase(shader);if(contains(kTerrainVS,hash))terrainShaders.insert(shader);
         auto begin=std::begin(kWorldShaderSignatures),end=std::end(kWorldShaderSignatures);
         auto it=std::lower_bound(begin,end,hash,[](const WorldShaderSignature& a,uint64_t h){return a.hash<h;});
@@ -5290,9 +5308,10 @@ public:
         if(!hdrMode&&unlitMaskDepth&&!unlitPS&&!unlitShaderRefused)if(FAILED(d->CreatePixelShader(kWorldUnlitCompositeShader,&unlitPS))){unlitShaderRefused=true;deferLogf("UNLIT receiver shader unavailable; ordinary composition retained");}
         const bool unlitMask=unlitMaskDepth&&(hdrMode?hdrUnlitPS:unlitPS)&&debug==0;
         auto*& prelitShader=hdrMode?hdrPrelitPS:prelitPS;
-        if(prelitMaskDepth&&!prelitShader&&!prelitShaderRefused)
+        if((prelitMaskDepth||authoredMaskDepth)&&!prelitShader&&!prelitShaderRefused)
             if(FAILED(d->CreatePixelShader(hdrMode?kWorldPrelitCompositeHdrShader:kWorldPrelitCompositeShader,&prelitShader)))prelitShaderRefused=true;
         const bool prelitMask=prelitMaskDepth&&prelitShader&&debug==0;
+        const bool authoredMask=authoredMaskDepth&&prelitShader&&debug==0;
         const bool fullMaterial=materialWanted&&materialPS;
         const bool normalDiagnosticCapture=debug==0&&gpuNormalDiagnosticRequested&&gpuDiagnosticCaptures<4;
         if(nativeDiagnosticCapture){nativeDiagnosticCapture->finish(normalDiagnosticCapture&&active&&nativeDiagnosticMap==active->map);nativeDiagnosticCapture.reset();}
@@ -6108,7 +6127,7 @@ public:
         d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_ONE);d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_ONE);d->SetRenderState(D3DRS_BLENDOP,D3DBLENDOP_ADD);
         // Smoothed normals for the lighting, GI and local light passes (s14).
         const bool lightingNeeded=requirements.lighting;
-        const bool prelitDaylightCurrent=prelitMask&&lightingNeeded&&
+        const bool prelitDaylightCurrent=(prelitMask||authoredMask)&&lightingNeeded&&
             ((requirements.probes&&quality.giPrelitMix)||(geometryReady&&applyDirectionalShadows&&(sourceActive[0]||sourceActive[1])))&&prelitDaylightResources(w,h);
         // Without shadow visibility changes, removal smoothing is a copy.
         // TemporalLight can consume raw light and produce distance itself.
@@ -6767,9 +6786,9 @@ public:
         NorthlightEffectCoverage::Capture::bind(d,effectCoverage,effectEmission);
         if(lightingCapture)lightingCapture->inputs(3,(1u<<7)|(1u<<13),(1u<<7)|(1u<<13)); // Native alpha/emission and rain needed to reproduce final atmosphere.
         bool compositeOk=false;
-        {IDirect3DSurface9* maskDepth=prelitMask?prelitMaskDepth:unlitMask?unlitMaskDepth:nameMaskDepth;
-         const DWORD maskBits=(nameMaskDepth?NorthlightNameStencil::kBit:0)|(unlitMask?NorthlightUnlitReceiver::Bit:0)|(prelitMask?NorthlightUnlitReceiver::PrelitBit:0);
-         nameMaskDepth=unlitMaskDepth=prelitMaskDepth=nullptr;
+        {IDirect3DSurface9* maskDepth=authoredMask?authoredMaskDepth:prelitMask?prelitMaskDepth:unlitMask?unlitMaskDepth:nameMaskDepth;
+         const DWORD maskBits=(nameMaskDepth?NorthlightNameStencil::kBit:0)|(unlitMask?NorthlightUnlitReceiver::Bit:0)|(prelitMask?NorthlightUnlitReceiver::PrelitBit:0)|(authoredMask?NorthlightUnlitReceiver::AuthoredBit:0);
+         nameMaskDepth=unlitMaskDepth=prelitMaskDepth=authoredMaskDepth=nullptr;
          {NameMaskCompositeBind mask(d,fullMaterial&&!combinedMaterial?nullptr:maskDepth,maskBits);compositeOk=check(quad(w,h),"world composite");}
          if(compositeOk&&unlitMask){
              if(combinedMaterial){d->SetTexture(9,fogResolved?fogBlurred:fog?fog:neutralAO);d->SetSamplerState(9,D3DSAMP_MINFILTER,D3DTEXF_LINEAR);d->SetSamplerState(9,D3DSAMP_MAGFILTER,D3DTEXF_LINEAR);}
@@ -6777,13 +6796,13 @@ public:
              NameMaskCompositeBind mask(d,maskDepth,maskBits,NorthlightUnlitReceiver::Bit);
              compositeOk=check(quad(w,h),"unlit atmosphere composite");
          }
-         if(compositeOk&&prelitMask){
+         for(unsigned authored=0;authored<2;++authored)if(compositeOk&&(authored?authoredMask:prelitMask)){
              if(combinedMaterial){d->SetTexture(9,fogResolved?fogBlurred:fog?fog:neutralAO);d->SetSamplerState(9,D3DSAMP_MINFILTER,D3DTEXF_LINEAR);d->SetSamplerState(9,D3DSAMP_MAGFILTER,D3DTEXF_LINEAR);}
-             const float daylightInfo[]={prelitDaylightCurrent?1.f:0.f,0,0,0};d->SetPixelShaderConstantF(81,daylightInfo,1);
+             const float daylightInfo[]={prelitDaylightCurrent?1.f:0.f,float(authored),0,0};d->SetPixelShaderConstantF(81,daylightInfo,1);
              d->SetTexture(14,prelitDaylightCurrent?prelitDaylight:neutralZero);
              d->SetSamplerState(14,D3DSAMP_MINFILTER,D3DTEXF_POINT);d->SetSamplerState(14,D3DSAMP_MAGFILTER,D3DTEXF_POINT);
              d->SetRenderTarget(0,targetSurface);d->SetPixelShader(prelitShader);
-             NameMaskCompositeBind mask(d,maskDepth,maskBits,NorthlightUnlitReceiver::PrelitBit);
+             NameMaskCompositeBind mask(d,maskDepth,maskBits,authored?NorthlightUnlitReceiver::AuthoredBit:NorthlightUnlitReceiver::PrelitBit);
              compositeOk=check(quad(w,h),"prelit WMO composite");
          }
          if(profile)profile->mark("WorldComposite");
@@ -6806,7 +6825,7 @@ public:
          }
          if(profile)profile->mark("MaterialDetail");}
         if(compositeOk&&fullMaterial){
-            if(combinedMaterial&&(unlitMask||prelitMask)){d->SetTexture(9,materialDetail);d->SetSamplerState(9,D3DSAMP_MINFILTER,D3DTEXF_POINT);d->SetSamplerState(9,D3DSAMP_MAGFILTER,D3DTEXF_POINT);}
+            if(combinedMaterial&&(unlitMask||prelitMask||authoredMask)){d->SetTexture(9,materialDetail);d->SetSamplerState(9,D3DSAMP_MINFILTER,D3DTEXF_POINT);d->SetSamplerState(9,D3DSAMP_MAGFILTER,D3DTEXF_POINT);}
             if(materialProfile&&materialProfile->recording())logf("MATERIAL_APPLY frame=%llu gain=%.3f normalRange=%.1f occlusion=%u occlusionRange=%.1f sunRGB=%.4f,%.4f,%.4f moonRGB=%.4f,%.4f,%.4f ambientRGB=%.4f,%.4f,%.4f",(unsigned long long)materialProfile->frameNumber(),materialBumpGain,materialBumpDistance,unsigned(materialOcclusion!=nullptr),materialOcclusionDistance,sourceColors[0].x,sourceColors[0].y,sourceColors[0].z,sourceColors[1].x,sourceColors[1].y,sourceColors[1].z,context.ambient[0],context.ambient[1],context.ambient[2]);
             materialPixelAudit.sample(materialProfile,&stateBlocks,[&](UINT x,UINT y){return quad(x,y);});}
         d->SetTexture(3,textures[3]);d->SetTexture(7,textures[7]);

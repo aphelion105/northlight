@@ -14,7 +14,7 @@ fp.use_source_modules()
 from world_scene_builder import Assets
 from extract_signatures import variants
 
-windows_gpu_guard.processes(allow_game=True)  # Image assertions only, no timing claims.
+windows_gpu_guard.processes(allow_game=not bool(os.environ.get('NORTHLIGHT_LIGHTING_BENCH')))
 out = fp.output_dir()
 assets = Assets(archives='stock')
 try:
@@ -23,6 +23,10 @@ finally:
     assets.close()
 for name, index in [('prelit', 0), ('lit', 1)]:
     (out/(name+'.bin')).write_bytes(programs[index])
+if os.environ.get('NORTHLIGHT_CAPTURE_VERTEX'):
+    (out/'foreign.bin').write_bytes(Path(os.environ['NORTHLIGHT_CAPTURE_VERTEX']).read_bytes())
+else:
+    (out/'foreign.bin').unlink(missing_ok=True)
 sources = ['world_gi.cpp', 'world_mesh_plan.cpp', 'static_shadow_scene.cpp',
            'settings_overlay.cpp', 'settings_panel.cpp', 'imgui.cpp', 'imgui_draw.cpp',
            'imgui_tables.cpp', 'imgui_widgets.cpp', 'imgui_impl_dx9.cpp']
