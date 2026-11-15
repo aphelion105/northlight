@@ -47,6 +47,8 @@ int main(){
   0x04000004,0xe0070001,0x80000001,0xa0e4000b,0xa0e4000a,
   0x02000001,0xe0080001,0xa0ff001c,0xffff};
  assert(nativeLightingShader(room.data(),room.size()));
+ assert(!nativeLightingShader(room.data(),room.size(),true));
+ auto model=room;std::swap(model[17],model[18]);assert(nativeLightingShader(model.data(),model.size(),true));assert(!nativeLightingShader(model.data(),model.size()));
  auto moved=room;moved[17]=0x80e40002;moved.insert(moved.begin()+14,{0x02000001u,0x80070002u,0xa0e4000bu});assert(nativeLightingShader(moved.data(),moved.size()));
  for(auto mutation:std::initializer_list<std::pair<unsigned,Word>>{{7,0x02000001},{13,0xa0e4000c},{17,0xa0e4001b},{18,0xa0e4001a},{17,0xa000000b}}){
   auto changed=room;changed[mutation.first]=mutation.second;assert(!nativeLightingShader(changed.data(),changed.size()));
@@ -58,6 +60,9 @@ int main(){
  float bank[]={.439216f,.419608f,.47451f,0,0,0,0,0};
  assert(lightingOverride(bank,ambient,direct));
  for(unsigned i=0;i<3;++i){bank[i]=ambient[i];bank[4+i]=direct[i];}
+ float modelBank[8];std::copy_n(bank+4,4,modelBank);std::copy_n(bank,4,modelBank+4);
+ assert(!lightingOverride(modelBank,ambient,direct,true));assert(lightingOverride(modelBank,ambient,direct,false));
+ modelBank[4]+=.1f;assert(lightingOverride(modelBank,ambient,direct,true));
  assert(!lightingOverride(bank,ambient,direct));bank[3]=NAN;assert(!lightingOverride(bank,ambient,direct));
  bank[0]=NAN;assert(!lightingOverride(bank,ambient,direct));bank[0]=-1;assert(!lightingOverride(bank,ambient,direct));
  assert(stencilFormat(75,123)&&stencilFormat(81,123)&&stencilFormat(123,123));

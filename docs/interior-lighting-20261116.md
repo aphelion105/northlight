@@ -21,6 +21,12 @@ bank marks the depth-writing receiver using stencil bit 0x10. Packed W lanes,
 malformed constants, dead RGB equations and unrelated shaders cannot qualify.
 This proof does not broaden the global WMO context fallback.
 
+M2 has the opposite bank order: c10 is directional and c11 is ambient. The proof
+and comparison both use that layout for known model families. The captured rug
+shader `bc62083b7435826c` is checked separately with its actual room constants;
+an outdoor M2 bank must not acquire a room mask merely because the rows differ
+from WMO's convention.
+
 Marked receivers preserve their explicit native room lighting. Shadowed incoming
 daylight, positive GI, shadowed local lighting, AO and atmosphere still apply.
 Outdoor ambient subtraction and GI's outdoor-ambient removal do not apply to
@@ -71,9 +77,9 @@ At 2560x1440, repeated full WorldRenderer runs with material detail enabled:
 
 | Backend | SDR old/new GPU ms | HDR old/new GPU ms |
 |---|---:|---:|
-| D3D9 | 0.3704 / 0.3710 | 0.3025 / 0.2559 |
-| DXVK 2 | 0.3837 / 0.3441 | 0.3046 / 0.2469 |
-| DXVK 3 | 0.3784 / 0.3332 | 0.2993 / 0.2324 |
+| D3D9 | 0.3679 / 0.3702 | 0.3013 / 0.2552 |
+| DXVK 2 | 0.3855 / 0.3450 | 0.3049 / 0.2472 |
+| DXVK 3 | 0.3794 / 0.3348 | 0.3017 / 0.2335 |
 
 The no-material synthetic case has a small added cost: at most 0.024 ms on
 D3D9, 0.006 ms on DXVK 2 and 0.009 ms on DXVK 3 in the repeated runs. It would
@@ -93,7 +99,8 @@ cube generation and the deferred local-light pass are unchanged.
 
 Private artifacts are under `.local/out/lighting-captures-20261116/`, including
 `capture-replay/validation.json`, `native-bench/*/gpu.log` and
-`pipeline-bench/*/{gpu,control,repeat}.log`.
+`pipeline-bench/*/{gpu,control,repeat}.log`. The final M2-layout run is in
+`pipeline-model-checked/*/gpu.log` and supplies the table above.
 
 Run `tests/validate_interior_capture.py --capture SESSION --benchmark` with
 `NORTHLIGHT_TEST_OUTPUT_DIR` set to a new output directory. It validates completed
@@ -104,6 +111,7 @@ the paired authored composition is a receiver-path comparison, not a new game
 screenshot. Production registration and stencil routing are checked separately
 by `test_prelit_receiver_gpu.py`, including its optional
 `NORTHLIGHT_CAPTURE_VERTEX` input.
+`NORTHLIGHT_CAPTURE_MODEL_VERTEX` adds the exact captured M2 registration case.
 
 `NORTHLIGHT_LIGHTING_BENCH=1` enables the CPU and full-pipeline measurements in
 that test. `NORTHLIGHT_LIGHTING_CONTROL=1` selects A/A. For the native WMO checks,

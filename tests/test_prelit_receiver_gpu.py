@@ -13,6 +13,7 @@ import windows_gpu_guard
 fp.use_source_modules()
 from world_scene_builder import Assets
 from extract_signatures import variants
+from extract_m2_shader_families import collect
 
 windows_gpu_guard.processes(allow_game=not bool(os.environ.get('NORTHLIGHT_LIGHTING_BENCH')))
 out = fp.output_dir()
@@ -23,6 +24,11 @@ finally:
     assets.close()
 for name, index in [('prelit', 0), ('lit', 1)]:
     (out/(name+'.bin')).write_bytes(programs[index])
+(out/'model.bin').write_bytes(collect(fp.client_root())[0][0xe8d455338d8ae2ff][1])
+if os.environ.get('NORTHLIGHT_CAPTURE_MODEL_VERTEX'):
+    (out/'captured-model.bin').write_bytes(Path(os.environ['NORTHLIGHT_CAPTURE_MODEL_VERTEX']).read_bytes())
+else:
+    (out/'captured-model.bin').unlink(missing_ok=True)
 if os.environ.get('NORTHLIGHT_CAPTURE_VERTEX'):
     (out/'foreign.bin').write_bytes(Path(os.environ['NORTHLIGHT_CAPTURE_VERTEX']).read_bytes())
 else:

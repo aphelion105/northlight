@@ -3496,7 +3496,7 @@ public:
         float values[8];const auto* mirror=constantEpochSource.mirror;
         if(mirror&&mirror->active()&&mirror->vsFloatKnown[10]&&mirror->vsFloatKnown[11])std::memcpy(values,mirror->vsFloat[10],sizeof values);
         else if(FAILED(d->GetVertexShaderConstantF(10,values,2)))return false;
-        return NorthlightUnlitReceiver::lightingOverride(values,context.ambient,context.direct);
+        return NorthlightUnlitReceiver::lightingOverride(values,context.ambient,context.direct,model);
     }
     void setNameMask(IDirect3DSurface9* depthStencil){nameMaskDepth=depthStencil;} /* 0.3.212 (task 32): the world depth-stencil holding this frame's name marks (non-owning, for the next render() only; null: no marks) */
     void setRainMask(IDirect3DTexture9* t){rainMask=t;} /* 0.3.202 (rain): non-owning, for the next render() only */
@@ -3530,7 +3530,7 @@ public:
     }
     void registerNativePointShader(IDirect3DVertexShader9* shader,const DWORD* words,size_t count,bool model,bool terrainVariant=false){
         nativeLightingShaders.erase(shader);
-        if(shader&&(model||wmoShaders.count(shader))&&NorthlightUnlitReceiver::nativeLightingShader(reinterpret_cast<const uint32_t*>(words),count))nativeLightingShaders.insert(shader);
+        if(shader&&(model||wmoShaders.count(shader))&&NorthlightUnlitReceiver::nativeLightingShader(reinterpret_cast<const uint32_t*>(words),count,model))nativeLightingShaders.insert(shader);
         // EquipmentLights can be enabled live after these shaders were created.
         // Keep only its small proven layout, never shader bytecode or a COM owner.
         bool rgbOnly=false;const bool terrain=terrainVariant||terrainShaders.count(shader)!=0;nativeTerrainPointShaders.erase(shader);

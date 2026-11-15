@@ -10,7 +10,7 @@ constexpr unsigned long AuthoredBit=0x10;
 // Prove the live COLOR0 lighting equation independently of shader identity.
 // Material-modified WMO programs retain c10 + dot(normal,-c12)*c11 even when
 // their hash no longer belongs to the stock catalog. Alpha/fog do not qualify.
-inline bool nativeLightingShader(const uint32_t* words,size_t count){
+inline bool nativeLightingShader(const uint32_t* words,size_t count,bool model=false){
     using namespace NorthlightActorDeformation;
     Program color;if(!compile(words,count,color,true,2,10,0,7)||!color.kernel.valid)return false;
     unsigned values[33][4]={},found=0;
@@ -33,7 +33,7 @@ inline bool nativeLightingShader(const uint32_t* words,size_t count){
             }
         }else if(op.code==4){
             for(unsigned c=0;c<3;++c)if((op.mask&(1u<<c))&&component(op.source[0],c)==4&&
-                component(op.source[1],c)==20+c&&component(op.source[2],c)==10+c)found|=1u<<c;
+                component(op.source[1],c)==(model?10u:20u)+c&&component(op.source[2],c)==(model?20u:10u)+c)found|=1u<<c;
         }
         for(unsigned c=0;c<4;++c)if(op.mask&(1u<<c))values[op.target][c]=result[c];
     }
@@ -42,11 +42,12 @@ inline bool nativeLightingShader(const uint32_t* words,size_t count){
 // A lit shader may receive a room/group override instead of world lighting.
 // Those native colours are already in the framebuffer; outdoor subtraction
 // cannot recover them. Compare only RGB, never the packed neighbouring W lane.
-inline bool lightingOverride(const float* native,const float* ambient,const float* direct){
+inline bool lightingOverride(const float* native,const float* ambient,const float* direct,bool model=false){
     bool different=false;
     for(unsigned i=0;i<3;++i){
         for(unsigned row=0;row<2;++row){
-            const float a=native[row*4+i],b=(row?direct:ambient)[i];
+            // M2 uses c10=direct,c11=ambient; WMO uses the opposite order.
+            const float a=native[(row^unsigned(model))*4+i],b=(row?direct:ambient)[i];
             if(!std::isfinite(a)||!std::isfinite(b)||a<0||a>8||b<0||b>8)return false;
             different|=std::fabs(a-b)>.02f;
         }

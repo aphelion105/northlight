@@ -5,29 +5,31 @@
 #include "lighting_pair_timing.h"
 
 struct PipelineOffTest {
-    static __attribute__((noinline)) bool receiver(WorldRenderer& world,IDirect3DVertexShader9* shader){return world.authoredReceiver(shader,false);}
+    static __attribute__((noinline)) bool receiver(WorldRenderer& world,IDirect3DVertexShader9* shader,bool model){return world.authoredReceiver(shader,model);}
     static bool prelit(Device& device,const std::vector<DWORD>& words){
         IDirect3DVertexShader9* shader=nullptr;
         screenOk(device.CreateVertexShader(words.data(),&shader));
         const auto entry=device.classifyVs(device.mirrorResources.unwrap(shader)).entry;
         shader->Release();return (entry&Device::kPrelitTag)!=0;
     }
-    static void overrideRegistration(Device& device,const std::vector<DWORD>& words){
+    static void overrideRegistration(Device& device,const std::vector<DWORD>& words,bool model=false){
         IDirect3DVertexShader9* shader=nullptr;screenOk(device.CreateVertexShader(words.data(),&shader));
         auto* original=device.mirrorResources.unwrap(shader);auto& world=*device.world;
         lighting(world,true);
-        const float room[]={.439216f,.419608f,.47451f,0,0,0,0,0};
+        assert((device.classifyVs(original).family==3)==model);
+        float room[]={.439216f,.419608f,.47451f,0,0,0,0,0};
+        if(model){const float captured[]={.9999994f,.8666662f,.4784311f,0,.3764707f,.3254903f,.1803922f,0};std::copy_n(captured,8,room);}
         screenOk(device.SetVertexShaderConstantF(10,room,2));
-        assert(world.authoredReceiver(original,false));
-        float outdoor[8]{};std::copy_n(world.context.ambient,3,outdoor);std::copy_n(world.context.direct,3,outdoor+4);
-        screenOk(device.SetVertexShaderConstantF(10,outdoor,2));assert(!world.authoredReceiver(original,false));
+        assert(world.authoredReceiver(original,model));
+        float outdoor[8]{};std::copy_n(model?world.context.direct:world.context.ambient,3,outdoor);std::copy_n(model?world.context.ambient:world.context.direct,3,outdoor+4);
+        screenOk(device.SetVertexShaderConstantF(10,outdoor,2));assert(!world.authoredReceiver(original,model));
         if(std::getenv("NORTHLIGHT_LIGHTING_BENCH"))for(bool indoor:{false,true}){
             screenOk(device.SetVertexShaderConstantF(10,indoor?room:outdoor,2));volatile unsigned hits=0;
             const auto start=std::chrono::steady_clock::now();
-            for(unsigned i=0;i<1000000;++i)hits+=receiver(world,original);
+            for(unsigned i=0;i<1000000;++i)hits+=receiver(world,original,model);
             const double perThousand=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count()/1000;
             assert(hits==(indoor?1000000u:0u));
-            std::printf("AUTHORED_CLASSIFY_COST indoor=%u draws=1000000 cpuMsPerThousand=%.6f\n",unsigned(indoor),perThousand);
+            std::printf("AUTHORED_CLASSIFY_COST model=%u indoor=%u draws=1000000 cpuMsPerThousand=%.6f\n",unsigned(model),unsigned(indoor),perThousand);
         }
         shader->Release();
     }
@@ -76,6 +78,11 @@ int main(int argc,char** argv){
         auto editedLit=lit;editedLit.insert(editedLit.end()-1,{0x0001fffeu,0x87654321u});
         assert(!NorthlightShaderTags::inWmoSignatures(identity(editedLit)));
         PipelineOffTest::overrideRegistration(*device,editedLit);
+        PipelineOffTest::overrideRegistration(*device,readShader(std::string(argv[3])+"/model.bin"),true);
+        if(std::ifstream(std::string(argv[3])+"/captured-model.bin").good()){
+            PipelineOffTest::overrideRegistration(*device,readShader(std::string(argv[3])+"/captured-model.bin"),true);
+            std::puts("CAPTURED_M2_ROOM_REGISTRATION_PASS");
+        }
         if(std::ifstream(std::string(argv[3])+"/foreign.bin").good()){
             const auto foreign=readShader(std::string(argv[3])+"/foreign.bin");
             assert(!NorthlightShaderTags::inWmoSignatures(identity(foreign)));
