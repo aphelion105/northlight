@@ -6,7 +6,7 @@
 int main(int argc,char** argv){
     assert(argc==4);std::setvbuf(stdout,nullptr,_IONBF,0);logFile=stdout;
     std::string root=std::string(argv[2])+"/";assert(MultiByteToWideChar(CP_UTF8,0,root.c_str(),-1,rootPath,MAX_PATH));
-    const bool merged=std::string(argv[3])=="merged";
+    const bool merged=std::string(argv[3])!="reference",zeroWeight=std::string(argv[3])=="zero-weight";
     HWND window=CreateWindowExW(0,L"STATIC",L"",WS_OVERLAPPED,0,0,256,160,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);assert(window);
     auto library=LoadLibraryA(argv[1]);assert(library);auto create=reinterpret_cast<IDirect3D9*(WINAPI*)(UINT)>(reinterpret_cast<void*>(GetProcAddress(library,"Direct3DCreate9")));assert(create);
     auto* api=create(D3D_SDK_VERSION);assert(api);D3DPRESENT_PARAMETERS pp{};pp.Windowed=TRUE;pp.hDeviceWindow=window;pp.BackBufferWidth=256;pp.BackBufferHeight=160;
@@ -15,6 +15,7 @@ int main(int argc,char** argv){
     AliasMeter meter(d,256,160);meter.directory=root;meter.refuseMerge=!merged;
     auto world=std::make_unique<WorldRenderer>(&meter);
     WorldScreenEffectsTest::temporalMergeResources(*world,meter);meter.refuseMerge=!merged;meter.merged=nullptr;
+    world->setTemporalZeroWeightEnabled(zeroWeight);
     unsigned allocated=0;
     for(unsigned stage=0;stage<3;++stage){
         unsigned width=stage==1?193:256,height=stage==1?129:160;meter.width=width;meter.height=height;

@@ -952,16 +952,16 @@ float4 FlashShadow(float2 uv:TEXCOORD0):COLOR0 {
 // over untested); 55 and the vertical faces are rejected. Source-aware variants (reject only taps
 // facing away from the source) changed nothing: the away-facing dune facet is that very case. A
 // silhouette centre (confidence 0: its one-sided normal may be the neighbour's) skips the test (the old weights); silhouette taps of
-// a confident centre are tested with their own normal. Own half-res pass (RemovalSmooth): the extra
-// read does not fit TemporalLight's 512 slots; TemporalLight reads its result as SmoothedLighting (s9)
-// and clamps against the raw s8.
+// a confident centre are tested with their own normal. This filter is shared by RemovalSmooth
+// and TemporalLightMerged. The separate path writes SmoothedLighting (s9); both temporal
+// variants clamp against the raw s8.
 // The composite applies correction*min(transported/baseline,T); as a fraction of the
 // transported colour that is correction*T/removalScale.
 // legacyT>=.001 keeps the first operand >=.00015, so the scene term needs no floor.
 float3 removalScale(float3 baseline,float3 scene,float3 fog,float legacyT){
     return max(legacyT*max(baseline,.15),scene-min(fog,scene));
 }
-float3 smoothRemoval(float4 current,float2 q,float2 base,float2 size,float z){
+float3 smoothRemoval(float4 current,float2 q,float2 base,float2 size,float z,bool skipZeroTaps=false){
     float amount=saturate((1-current.a*RemovalInfo.z)/GridInfo.z);
     float3 result=current.rgb;
     // Fractional source weights leave fp16 alpha a hair below 1/RemovalInfo.z in sunlight: skip
@@ -986,8 +986,14 @@ float3 smoothRemoval(float4 current,float2 q,float2 base,float2 size,float z){
             float4 tapNormal=tex2Dlod(NormalBuffer,float4(tq,0,0));
             float agree=saturate((dot(centreNormal.xyz,tapNormal.xyz)-.6428)*5.67);
             float w=exp2(abs(tex2Dlod(CurrentDistance,float4(tq,0,0)).r-z)*depthScale)*saturate(1-abs(light.a-current.a)*visibilityScale)*(centreNormal.w>.5?agree:1);
-            // Predication keeps the wave on one path while retaining the zero-weight guard.
-            [flatten]if(w>0)sum+=max(light.rgb*legacyT/removalScale(tex2Dlod(BaselineLighting,float4(tq,0,0)).rgb,tex2Dlod(Scene,float4(tq,0,0)).rgb*tex2Dlod(AmbientOcclusion,float4(tq,0,0)).a,fog,legacyT),-shadowRemovalLimit())*w;total+=w;
+            // Zero-weight taps cannot contribute. Skip their scene/AO/baseline reads;
+            // retain every accepted tap and the original accumulation order.
+            if(skipZeroTaps){
+                [branch]if(w>0)sum+=max(light.rgb*legacyT/removalScale(tex2Dlod(BaselineLighting,float4(tq,0,0)).rgb,tex2Dlod(Scene,float4(tq,0,0)).rgb*tex2Dlod(AmbientOcclusion,float4(tq,0,0)).a,fog,legacyT),-shadowRemovalLimit())*w;
+            }else{
+                [flatten]if(w>0)sum+=max(light.rgb*legacyT/removalScale(tex2Dlod(BaselineLighting,float4(tq,0,0)).rgb,tex2Dlod(Scene,float4(tq,0,0)).rgb*tex2Dlod(AmbientOcclusion,float4(tq,0,0)).a,fog,legacyT),-shadowRemovalLimit())*w;
+            }
+            total+=w;
             dir=float2(dir.x*-.7373688-dir.y*.6754903,dir.x*.6754903-dir.y*.7373688);t+=1;
         }
         }
@@ -1017,12 +1023,12 @@ float4 WorldDistance(float2 uv:TEXCOORD0):COLOR0 {
     float2 q=(floor(uv*ScreenSize.zw)+.5)/ScreenSize.zw;
     return float4(viewDistance(normalizedDepth(depthUV(q))),0,0,1);
 }
-TemporalOutput temporalLight(float2 uv,bool merged,sampler2D historyDepth,sampler2D historyLight) {
+TemporalOutput temporalLight(float2 uv,bool merged,sampler2D historyDepth,sampler2D historyLight,bool skipZeroTaps=false) {
     TemporalOutput o;float2 half=ScreenSize.zw;
     float2 base=floor(uv*half);float2 q=(base+.5)/half;
     float4 current=merged?tex2Dlod(LightingBuffer,float4(q,0,0)):tex2Dlod(SmoothedLighting,float4(q,0,0));
     float2 duv=depthUV(q);float d=normalizedDepth(duv);float z=viewDistance(d);
-    [branch]if(merged&&RemovalInfo.y>0&&d<.99999)current.rgb=smoothRemoval(current,q,base,half,z);
+    [branch]if(merged&&RemovalInfo.y>0&&d<.99999)current.rgb=smoothRemoval(current,q,base,half,z,skipZeroTaps);
     o.light=current;o.depth=float4(z,0,0,1);
     if(TemporalInfo.x<=0||d>=.99999)return o;
     float3 p=worldPosition(duv,d);
@@ -1073,6 +1079,7 @@ sampler2D MergedLightHistory:register(s9);
 sampler2D MergedDepthHistory:register(s13);
 TemporalOutput TemporalLight(float2 uv:TEXCOORD0){return temporalLight(uv,false,DepthHistory,LightHistory);}
 TemporalOutput TemporalLightMerged(float2 uv:TEXCOORD0){return temporalLight(uv,true,MergedDepthHistory,MergedLightHistory);}
+TemporalOutput TemporalLightMergedZeroWeight(float2 uv:TEXCOORD0){return temporalLight(uv,true,MergedDepthHistory,MergedLightHistory,true);}
 // 1x1 pass: fraction of the source disc (on screen) that is clear sky, from
 // 16 depth taps in a 4x4 grid over the disc, or .6 x the clear fraction of a ring
 // around it when larger (r43 wrap), blended with last frame's value.

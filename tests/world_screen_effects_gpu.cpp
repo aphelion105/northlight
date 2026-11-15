@@ -14,6 +14,15 @@ struct WorldScreenEffectsTest {
         w.releaseGPU(true);assert(!w.temporalMergeTried&&!w.temporalMergedPS);
         meter.failShaderAt=0;assert(w.temporalMergeResources());
         w.releaseGPU(true);assert(!w.temporalMergeTried&&!w.temporalMergedPS);
+        w.setTemporalZeroWeightEnabled(true);
+        meter.failShaderAt=meter.shaderCreates+1;
+        // An optimized shader refusal keeps the old fused path, with no retry per frame.
+        assert(w.temporalMergeResources()&&!w.temporalZeroWeightActive);
+        const auto fallbackAttempts=meter.shaderCreates;
+        assert(w.temporalMergeResources()&&meter.shaderCreates==fallbackAttempts);
+        w.releaseGPU(true);assert(!w.temporalZeroWeightActive);
+        meter.failShaderAt=0;assert(w.temporalMergeResources()&&w.temporalZeroWeightActive);
+        w.releaseGPU(true);w.setTemporalZeroWeightEnabled(false);
     }
 #endif
 #ifdef NORTHLIGHT_SHARED_SHADOW_TEST

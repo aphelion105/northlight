@@ -118,7 +118,7 @@ static NorthlightBackend::Kind selectedBackend=NorthlightBackend::Kind::Legacy;
 static std::string materialCacheBackendIdentity;
 static bool materialCacheAsyncReadback=false;
 static bool backendHdrBaseComposite=false,backendPointPipelinePrewarm=false;
-static bool backendHdrExpandedMaterial=false;
+static bool backendHdrExpandedMaterial=false,backendTemporalZeroWeight=false;
 // Called once, under logLock, before the first open truncates the log.
 struct WindowsLogFiles {
     DWORD error=0;
@@ -776,6 +776,8 @@ private:
     HRESULT hdrBegin(bool present,const char* boundary="present"){
         if(!hdr.active||hdrUiPhase)return S_FALSE;
         const bool sampledHdr=gateFrame;CpuScope hdrTimer(sampledHdr?&cpuHdrFinish:nullptr);
+        auto* const hdrProfile=gpuSceneProfile&&gpuSceneProfile->recording()?gpuSceneProfile.get():nullptr;
+        if(hdrProfile)hdrProfile->mark("LateScene");
         if(!hdrLegacyBack||!hdrPresentBack)return E_FAIL;
         D3DSURFACE_DESC desc{};HRESULT hr=hdrLegacyBack->GetDesc(&desc);
         if(SUCCEEDED(hr)&&!resources(desc.Width,desc.Height,desc.Format,true))hr=E_FAIL;
@@ -794,7 +796,9 @@ private:
             const bool validWorld=hdrWorldSeen&&!debugMode&&!worldDebug&&world&&world->hdrExposureContext(map,camera,reference);
             bool cut=false;if(validWorld){float distance=0;for(unsigned i=0;i<3;++i){float delta=camera[i]-hdrCamera[i];distance+=delta*delta;}
                 cut=hdrCameraValid&&(map!=hdrMap||distance>1600);hdrMap=map;memcpy(hdrCamera,camera,sizeof camera);hdrCameraValid=true;}
-            if(SUCCEEDED(hr))hr=hdrFrame.finish(ext,hdrSceneReady?hdrPresentBack:nullptr,hdrPresentBack,hdrFrameSettings,dt,validWorld,cut,reference,&stateBlocks,aoRaw,aoRawSurface,ao,aoSurface,hdr.logical.SwapEffect==D3DSWAPEFFECT_DISCARD?nullptr:hdrLegacyBack);
+            if(hdrProfile)hdrProfile->mark("HDRPrepare");
+            if(SUCCEEDED(hr))hr=hdrFrame.finish(ext,hdrSceneReady?hdrPresentBack:nullptr,hdrPresentBack,hdrFrameSettings,dt,validWorld,cut,reference,&stateBlocks,aoRaw,aoRawSurface,ao,aoSurface,hdr.logical.SwapEffect==D3DSWAPEFFECT_DISCARD?nullptr:hdrLegacyBack,
+                hdrProfile?+[](void* context,const char* stage){static_cast<NorthlightGpuProfile*>(context)->mark(stage);}:nullptr,hdrProfile);
         }
         if(ownScene)ext->EndScene();
         if(SUCCEEDED(hr)&&!present)hr=hdrBindBack(hdrPresentBack);
@@ -3495,12 +3499,13 @@ public:
          logf("EMISSION catalog loaded=%u identities=%u",unsigned(loaded),particleCapture.catalog.size());}
         try{settingsService=NorthlightSettings::acquire(std::filesystem::path(rootPath));settingsRevision=settingsService->revision();if(!settingsRecovery.empty())logf("SETTINGS startup recovery incomplete: %s",settingsRecovery.c_str());}
         catch(const std::exception& e){logf("SETTINGS unavailable: %s",e.what());}
-        gpuProfile=std::make_unique<NorthlightGpuProfile>(ext);gpuSceneProfile=std::make_unique<NorthlightGpuProfile>(ext,"GPU frame",5);materialProfile=std::make_unique<NorthlightMaterialProfile>(ext);gpuTimer=std::make_unique<NorthlightGpuFrameTimer>(ext); gpuScene=std::make_shared<NorthlightGpuScene::Scene>(ext);world=std::make_unique<WorldRenderer>(ext,gpuScene);world->setEffectsBuckets(&effectsBuckets);world->setMaterialProfiler(materialProfile.get());
+        gpuProfile=std::make_unique<NorthlightGpuProfile>(ext);gpuSceneProfile=std::make_unique<NorthlightGpuProfile>(ext,"GPU frame",12);materialProfile=std::make_unique<NorthlightMaterialProfile>(ext);gpuTimer=std::make_unique<NorthlightGpuFrameTimer>(ext); gpuScene=std::make_shared<NorthlightGpuScene::Scene>(ext);world=std::make_unique<WorldRenderer>(ext,gpuScene);world->setEffectsBuckets(&effectsBuckets);world->setMaterialProfiler(materialProfile.get());
         if(NorthlightNativeMoreLights::available){nativeMoreLights=std::make_unique<NorthlightNativeMoreLightRenderer>(ext);
             NorthlightSettings::Documents docs;docs[1]=NorthlightSettings::Document(NorthlightSettings::readImage(std::filesystem::path(rootPath)/L"northlight-renderer.ini").raw);
             const auto config=NorthlightSettings::configOf(docs,"");nativeMoreLights->limits(config.nativeLightLimits[0],config.nativeLightLimits[1]);}
         // Shader parity and buffer lock flags are independent backend contracts.
         world->setHdrBaseCompositeEnabled(backendHdrBaseComposite);
+        world->setTemporalZeroWeightEnabled(backendTemporalZeroWeight);
         surface=std::make_unique<NorthlightSurfaceRenderer>(ext);
         modelNormals=std::make_unique<NorthlightModelNormals>(ext);modelNormals->enableNativeMrt(true);
         autoBump=std::make_unique<NorthlightAutoBump>(ext,gpuScene);if(rootPath[0])autoBump->setPersistentCache(std::filesystem::path(rootPath)/L"Cache"/L"Northlight"/L"Materials-v1",NorthlightBackend::name(selectedBackend),materialCacheBackendIdentity.c_str(),materialCacheAsyncReadback);autoBump->setGeometryTracking(&NorthlightTrackedBuffers::identity,&NorthlightTrackedBuffers::version,&NorthlightTrackedBuffers::captureMetadata);autoBump->configure(world->surfaceSettings());
@@ -4606,7 +4611,7 @@ static HMODULE backend() {
     if(artInputs.blocked){
         const bool russian=PRIMARYLANGID(GetUserDefaultUILanguage())==LANG_RUSSIAN;
         const auto text=NorthlightArtInputs::message(artInputs,russian);
-        MessageBoxW(nullptr,text.c_str(),russian?L"Northlight — нужна пересборка":L"Northlight — rebuild required",MB_OK|MB_ICONWARNING|MB_SETFOREGROUND);
+        MessageBoxW(nullptr,text.c_str(),russian?L"Northlight РІР‚вЂќ Р Р…РЎС“Р В¶Р Р…Р В° Р С—Р ВµРЎР‚Р ВµРЎРѓР В±Р С•РЎР‚Р С”Р В°":L"Northlight РІР‚вЂќ rebuild required",MB_OK|MB_ICONWARNING|MB_SETFOREGROUND);
         ExitProcess(ERROR_BAD_ENVIRONMENT);
     }
     // Install before loading the backend (and its worker threads), outside
@@ -4647,9 +4652,10 @@ static HMODULE backend() {
     // DXVK 1.10.3 has a one-FP16-step compositor difference; retain its ordinary shader.
     backendHdrBaseComposite=verifiedDxvk2||dxvk3;
     backendHdrExpandedMaterial=loadedDxvk&&last.info.dxvkVersion=="v3.1.1";
+    backendTemporalZeroWeight=loadedDxvk&&last.info.dxvkVersion=="v3.1.1";
     backendPointPipelinePrewarm=verifiedDxvk1||verifiedDxvk2||dxvk3;
     materialCacheAsyncReadback=verifiedDxvk1||verifiedDxvk2||(loadedDxvk&&last.info.dxvkVersion=="v3.1.1");
-    logf("BACKEND_WORK hdrBaseComposite=%u pointPipelinePrewarm=%u asyncMaterialReadback=%u expandedHdrMaterial=%u",unsigned(backendHdrBaseComposite),unsigned(backendPointPipelinePrewarm),unsigned(materialCacheAsyncReadback),unsigned(backendHdrExpandedMaterial));
+    logf("BACKEND_WORK hdrBaseComposite=%u pointPipelinePrewarm=%u asyncMaterialReadback=%u expandedHdrMaterial=%u temporalZeroWeight=%u",unsigned(backendHdrBaseComposite),unsigned(backendPointPipelinePrewarm),unsigned(materialCacheAsyncReadback),unsigned(backendHdrExpandedMaterial),unsigned(backendTemporalZeroWeight));
     NorthlightStream::dxvk311EventPayload.store(module&&!result.fallback&&last.info.dxvk&&last.info.dxvkVersion=="v3.1.1",std::memory_order_relaxed);
     logf("CSTREAM EVENT wait=bounded-timer shortSpinUs=2000 queueFence=0 completion=real-GetData csPendingSpinUs=200 backendObservation=trip-final");
     NorthlightUpload::ReadBackNoOverwrite.store(module&&!result.fallback&&last.info.dxvk&&NorthlightBackend::dxvkMajor(last.info.dxvkVersion)>=3,std::memory_order_relaxed);

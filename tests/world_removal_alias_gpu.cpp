@@ -13,10 +13,10 @@ struct AliasMeter:WorldScratchMeter {
     using WorldScratchMeter::WorldScratchMeter;
     HRESULT STDMETHODCALLTYPE CreatePixelShader(const DWORD* code,IDirect3DPixelShader9** out)override{
         // The scratch alias oracle deliberately exercises the separate pass.
-        if(code==kTemporalLightMergedShader&&refuseMerge){*out=nullptr;return D3DERR_NOTAVAILABLE;}
+        if((code==kTemporalLightMergedShader||code==kTemporalLightMergedZeroWeightShader)&&refuseMerge){*out=nullptr;return D3DERR_NOTAVAILABLE;}
         auto hr=WorldScratchMeter::CreatePixelShader(code,out);if(SUCCEEDED(hr)){
             if(code==kRemovalSmoothShader)removal=*out;if(code==kTemporalLightShader)temporal=*out;
-            if(code==kTemporalLightMergedShader)merged=*out;
+            if(code==kTemporalLightMergedShader||code==kTemporalLightMergedZeroWeightShader)merged=*out;
         }return hr;
     }
     HRESULT STDMETHODCALLTYPE SetPixelShader(IDirect3DPixelShader9* shader)override{bound=shader;return WorldScratchMeter::SetPixelShader(shader);}

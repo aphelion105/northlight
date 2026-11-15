@@ -435,6 +435,7 @@ test_regional_fog_water_mask.py
 test_regional_surface_shadow.py
 test_removal_confidence_gpu.py
 test_removal_temporal_merge_gpu.py
+test_removal_zero_weight_gpu.py
 test_render_thread_probe.py
 test_renderer_assets.py
 test_renderer_assets_dll.py

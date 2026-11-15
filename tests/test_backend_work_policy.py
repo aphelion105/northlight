@@ -26,6 +26,8 @@ def gates(text):
         begin = text.index('    const bool loadedDxvk=')
     end = text.index('    NorthlightStream::dxvk311EventPayload.store(', begin)
     setup = re.search(r'world->setHdrBaseCompositeEnabled\([^\n]+', text).group()
+    zero_weight = re.search(r'world->setTemporalZeroWeightEnabled\([^\n]+', text)
+    setup += '\n' + (zero_weight.group() if zero_weight else 'world->setTemporalZeroWeightEnabled(false);')
     warm = re.search(r'HRESULT warmPointPipelinesAtDeviceInit\(\)\{\s*([^\n]+)', text).group(1)
     match = re.search(r'const bool hdrMaterialCombine=([^;]+);', text)
     material = match.group(1) if match else 'hdrFrameSettings.legacyExpansion==0'
@@ -41,15 +43,16 @@ using HRESULT=int;
 constexpr int S_OK=0;
 namespace NorthlightUpload {std::atomic<bool> ReadBackNoOverwrite{false};}
 bool materialCacheAsyncReadback=false,backendHdrBaseComposite=false,backendPointPipelinePrewarm=false;
-bool backendHdrExpandedMaterial=false;
+bool backendHdrExpandedMaterial=false,backendTemporalZeroWeight=false;
 template<class... A> void logf(const char*,A...){}
 struct Info {bool dxvk;std::string dxvkVersion;};
 struct Attempt {Info info;};
 struct Result {bool fallback;};
 void load(bool module,const Result& result,const Attempt& last){LOADER}
 bool material(float expansion){struct {float legacyExpansion;} hdrFrameSettings{expansion};return MATERIAL;}
-struct World {bool hdr=false;unsigned warms=0;
+struct World {bool hdr=false,zeroWeight=false;unsigned warms=0;
  void setHdrBaseCompositeEnabled(bool on){hdr=on;}
+ void setTemporalZeroWeightEnabled(bool on){zeroWeight=on;}
  HRESULT warmPointPipelinesAtDeviceInit(){++warms;return 42;}
 };
 struct Device {World state;World* world=&state;
@@ -74,6 +77,7 @@ int main(){
   assert(hr==(loaded&&c.warm?42:S_OK));assert(materialCacheAsyncReadback==(loaded&&c.readback));
   const bool expanded=loaded&&std::string(c.version)=="v3.1.1";
   assert(backendHdrExpandedMaterial==expanded);
+  assert(backendTemporalZeroWeight==expanded&&d.state.zeroWeight==expanded);
   for(float expansion:{0.f,.5f,2.f})assert(material(expansion)==(expansion==0||expanded));
   assert(NorthlightUpload::ReadBackNoOverwrite.load()==lock);++count;
  }

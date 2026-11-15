@@ -102,8 +102,12 @@ static unsigned batchStateOracle(IDirect3DDevice9* raw,IDirect3DSurface9* source
         const unsigned passes=1+(automatic&&valid?4:0)+(bloom?2:0);
         for(unsigned failure=0;failure<=passes;++failure){
             d.states=d.samplers=d.targets=0;d.failAt=failure;
-            ok(d.BeginScene());const HRESULT hr=frame.finish(&d,source,destination,settings,1.f/60,valid,true,.18f,&pool);ok(d.EndScene());
+            std::vector<std::string> marks;
+            const auto mark=+[](void* context,const char* label){static_cast<std::vector<std::string>*>(context)->emplace_back(label);};
+            ok(d.BeginScene());const HRESULT hr=frame.finish(&d,source,destination,settings,1.f/60,valid,true,.18f,&pool,nullptr,nullptr,nullptr,nullptr,nullptr,mark,&marks);ok(d.EndScene());
             assert(failure?FAILED(hr):SUCCEEDED(hr));
+            assert(!marks.empty()&&marks.front()=="HDRResolve");
+            assert(failure?marks.size()<4:marks.size()==4&&marks.back()=="HDROutput");
             if(!failure){assert(d.states==15&&d.samplers==20+(automatic&&valid?4:0)+(bloom?4:0));assert(d.targets==passes+1);}
             DWORD restored=0;ok(raw->GetRenderState(D3DRS_SCISSORTESTENABLE,&restored));assert(restored==TRUE);
             ok(raw->GetSamplerState(0,D3DSAMP_SRGBTEXTURE,&restored));assert(restored==TRUE);
@@ -113,6 +117,36 @@ static unsigned batchStateOracle(IDirect3DDevice9* raw,IDirect3DSurface9* source
     }
     ok(raw->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE));ok(raw->SetSamplerState(0,D3DSAMP_SRGBTEXTURE,FALSE));
     std::printf("HDR_BATCH_STATE_ORACLE cases=%u setupPerEntry=1 targetFailureRecovery=true\n",cases);return cases;
+}
+static unsigned profileOracle(IDirect3DDevice9* d,IDirect3DSurface9* source,IDirect3DSurface9* destination,IDirect3DTexture9* encoded){
+    struct Marks {
+        IDirect3DQuery9* stamps[4]={};unsigned count=0;
+        static void mark(void* context,const char* label){
+            auto& self=*static_cast<Marks*>(context);
+            const char* expected[]={"HDRResolve","HDRExposure","HDRBloom","HDROutput"};
+            assert(self.count<4&&!std::strcmp(label,expected[self.count]));
+            ok(self.stamps[self.count++]->Issue(D3DISSUE_END));
+        }
+        ~Marks(){for(auto* stamp:stamps)if(stamp)stamp->Release();}
+    } marks;
+    for(auto& stamp:marks.stamps)ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&stamp));
+    IDirect3DSurface9* staging=nullptr;ok(d->CreateOffscreenPlainSurface(W,H,D3DFMT_A16B16G16R16F,D3DPOOL_SYSTEMMEM,&staging,nullptr));
+    auto pixels=[&](){
+        ok(d->GetRenderTargetData(destination,staging));D3DLOCKED_RECT lock{};ok(staging->LockRect(&lock,nullptr,D3DLOCK_READONLY));
+        std::vector<unsigned char> result(W*H*8);
+        for(unsigned y=0;y<H;++y)std::memcpy(result.data()+y*W*8,static_cast<const char*>(lock.pBits)+y*lock.Pitch,W*8);
+        ok(staging->UnlockRect());return result;
+    };
+    NorthlightHdr::Frame frame;NorthlightHdr::Settings settings;unsigned cases=0;
+    for(bool automatic:{false,true})for(bool valid:{false,true})for(bool wide:{false,true})for(bool bloom:{false,true}){
+        settings.autoExposure=automatic;settings.wideBloom=wide;settings.bloom=bloom?1:0;
+        ok(d->BeginScene());ok(frame.prepareLegacy(d,encoded,nullptr,nullptr,W,H,0,1,settings));ok(d->EndScene());
+        ok(d->BeginScene());ok(frame.finish(d,source,destination,settings,0,valid,true));ok(d->EndScene());const auto expected=pixels();
+        marks.count=0;
+        ok(d->BeginScene());ok(frame.finish(d,source,destination,settings,0,valid,true,.18f,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,Marks::mark,&marks));ok(d->EndScene());
+        assert(marks.count==4&&pixels()==expected);++cases;
+    }
+    staging->Release();std::printf("HDR_PROFILE_ORACLE cases=%u stages=4 image=byte-exact realTimestamps=true\n",cases);return cases;
 }
 static unsigned filterOracle(IDirect3DDevice9* d){
     unsigned cases=0;float reduceError=0,bloomError=0;
@@ -347,7 +381,7 @@ int main(int argc,char** argv){
     auto prepare=[&](IDirect3DTexture9* input){ok(device->BeginScene());ok(frame.prepareLegacy(device,input,nullptr,nullptr,W,H,0,1,settings));ok(device->EndScene());};
     auto finish=[&](float dt=1.f/60,bool cut=false){ok(device->BeginScene());ok(frame.finish(device,source,destination,settings,dt,true,cut));ok(device->EndScene());};
     auto exposure=[&]{float value[4];sample(device,frame.exposureSurface(),scalar,value);return value[0];};
-    prepare(white);unsigned cases=decodeOracle(device)+batchStateOracle(device,source,destination,white)+filterOracle(device)+uiStateOracle(device,destination,constant)+gradeOracle(device,source,destination,readback,constant,white);
+    prepare(white);unsigned cases=decodeOracle(device)+batchStateOracle(device,source,destination,white)+profileOracle(device,source,destination,white)+filterOracle(device)+uiStateOracle(device,destination,constant)+gradeOracle(device,source,destination,readback,constant,white);
     float actual[4],reference[4];
     const float ordinary[]={1,1,1,1};fill(device,source,constant,ordinary);finish();sample(device,destination,readback,actual,W/2,H/2);
     assert(std::fabs(actual[0]*80-203)<.406);++cases;

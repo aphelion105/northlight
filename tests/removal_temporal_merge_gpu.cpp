@@ -1,4 +1,4 @@
-// Compare the two-pass FP16 graph with fused smoothing/current-pose history.
+// Compare two-pass/fused graphs or frozen/current fused shaders over the same history.
 #define main unused_removal_distance_main
 #include "removal_distance_gpu.cpp"
 #undef main
@@ -9,7 +9,7 @@ struct Target {
     ~Target(){surface->Release();texture->Release();}
 };
 int main(int argc,char** argv){
-    assert(argc==6);std::setvbuf(stdout,nullptr,_IONBF,0);
+    assert(argc==6||argc==7);const bool referenceFused=argc==7;std::setvbuf(stdout,nullptr,_IONBF,0);
     const std::string prefix=argv[1],baseline=std::string(argv[2])+"/";
     const bool control=std::strcmp(argv[5],"control")==0;
     auto bank=constantBank(read(prefix+"constants.f32"));auto& c=bank.values;
@@ -20,9 +20,9 @@ int main(int argc,char** argv){
     auto api=create(D3D_SDK_VERSION);assert(api);D3DPRESENT_PARAMETERS pp{};pp.Windowed=TRUE;pp.hDeviceWindow=window;pp.BackBufferWidth=pp.BackBufferHeight=64;pp.BackBufferFormat=D3DFMT_X8R8G8B8;pp.SwapEffect=D3DSWAPEFFECT_DISCARD;pp.PresentationInterval=D3DPRESENT_INTERVAL_IMMEDIATE;
     IDirect3DDevice9* d=nullptr;ok(api->CreateDevice(0,D3DDEVTYPE_HAL,window,D3DCREATE_HARDWARE_VERTEXPROCESSING|D3DCREATE_FPU_PRESERVE,&pp,&d));
     {
-        IDirect3DPixelShader9* shaders[4]={};
-        const std::string files[]={baseline+"RemovalSmooth.bin",baseline+"TemporalLight.bin",argv[3],baseline+"WorldDistance.bin"};
-        for(unsigned i=0;i<4;++i){auto code=read(files[i]);ok(d->CreatePixelShader(reinterpret_cast<const DWORD*>(code.data()),&shaders[i]));}
+        IDirect3DPixelShader9* shaders[5]={};
+        const std::string files[]={baseline+"RemovalSmooth.bin",baseline+"TemporalLight.bin",argv[3],baseline+"WorldDistance.bin",argc==7?argv[6]:argv[3]};
+        for(unsigned i=0;i<5;++i){auto code=read(files[i]);ok(d->CreatePixelShader(reinterpret_cast<const DWORD*>(code.data()),&shaders[i]));}
         auto changedLight=light;
         for(size_t i=3;i<changedLight.pixels.size()/2;i+=4){std::uint16_t alpha=0x3800;std::memcpy(changedLight.pixels.data()+i*2,&alpha,2);}
         IDirect3DTexture9* textures[]={texture(d,scene),texture(d,depth),texture(d,light),texture(d,image(prefix+"baseline.fgr")),texture(d,image(prefix+"normals.fgr")),texture(d,image(prefix+"ao.fgr")),texture(d,changedLight)};
@@ -42,7 +42,7 @@ int main(int argc,char** argv){
         IDirect3DSurface9* staging=nullptr;ok(d->CreateOffscreenPlainSurface(W,H,D3DFMT_A16B16G16R16F,D3DPOOL_SYSTEMMEM,&staging,nullptr));
         auto pixels=[&](Target& target){ok(d->GetRenderTargetData(target.surface,staging));D3DLOCKED_RECT lock{};ok(staging->LockRect(&lock,nullptr,D3DLOCK_READONLY));std::vector<std::uint16_t> result(size_t(W)*H*4);for(unsigned y=0;y<H;++y)std::memcpy(result.data()+size_t(y)*W*4,static_cast<char*>(lock.pBits)+y*lock.Pitch,W*8);ok(staging->UnlockRect());return result;};
         auto render=[&](unsigned variant,unsigned frame,unsigned count){
-            const bool merged=variant&&!control;const unsigned current=frame%2,previous=1-current;
+            const bool merged=referenceFused||(variant&&!control);const unsigned current=frame%2,previous=1-current;
             ok(d->BeginScene());
             for(unsigned n=0;n<count;++n){
                 ok(d->SetTexture(9,nullptr));ok(d->SetTexture(13,nullptr));ok(d->SetTexture(14,nullptr));ok(d->SetTexture(15,nullptr));
@@ -52,7 +52,7 @@ int main(int argc,char** argv){
                 if(merged){
                     ok(d->SetTexture(9,history[variant][previous]->texture));ok(d->SetTexture(13,distance.texture));
                     for(auto state:{D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER})ok(d->SetSamplerState(9,state,D3DTEXF_LINEAR));
-                    draw(shaders[2],*history[variant][current]);
+                    draw(shaders[referenceFused&&(!variant||control)?4:2],*history[variant][current]);
                 }else{
                     draw(shaders[0],smooth);
                     ok(d->SetRenderTarget(0,history[variant][current]->surface));ok(d->SetTexture(9,smooth.texture));
@@ -74,13 +74,15 @@ int main(int argc,char** argv){
         }
         std::printf("{\"event\":\"image\",\"changed\":%u,\"alpha\":%u,\"outside\":%u,\"nonfinite\":%u,\"max_abs\":%.9g}\n",changed,alpha,outside,nonfinite,maximum);
         assert(!alpha&&!outside&&!nonfinite);
+        if(referenceFused)assert(!changed); // Same arithmetic: zero-weight read elision must be byte-exact.
         if(timing){
+            const char* batchText=std::getenv("NORTHLIGHT_TIMING_BATCH");const unsigned batch=batchText?unsigned(std::atoi(batchText)):32;assert(batch>=32&&batch<=256);
             IDirect3DQuery9 *event=nullptr,*start=nullptr,*end=nullptr,*frequency=nullptr,*disjoint=nullptr;
             ok(d->CreateQuery(D3DQUERYTYPE_EVENT,&event));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&start));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&end));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMPFREQ,&frequency));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMPDISJOINT,&disjoint));
-            for(unsigned block=0;block<64;++block){unsigned variant=block%4==1||block%4==2;render(variant,0,4);wait(event);
-                ok(disjoint->Issue(D3DISSUE_BEGIN));ok(start->Issue(D3DISSUE_END));render(variant,0,32);ok(end->Issue(D3DISSUE_END));ok(frequency->Issue(D3DISSUE_END));ok(disjoint->Issue(D3DISSUE_END));wait(event);
+            for(unsigned block=0;block<64;++block){unsigned variant=block%4==1||block%4==2;render(variant,0,std::max(4u,batch/4));wait(event);
+                ok(disjoint->Issue(D3DISSUE_BEGIN));ok(start->Issue(D3DISSUE_END));render(variant,0,batch);ok(end->Issue(D3DISSUE_END));ok(frequency->Issue(D3DISSUE_END));ok(disjoint->Issue(D3DISSUE_END));wait(event);
                 UINT64 a=0,b=0,hz=0;BOOL bad=FALSE;ok(start->GetData(&a,8,0));ok(end->GetData(&b,8,0));ok(frequency->GetData(&hz,8,0));ok(disjoint->GetData(&bad,sizeof bad,0));assert(hz&&b>=a&&!bad);
-                std::printf("{\"event\":\"timing\",\"block\":%u,\"variant\":%u,\"ms\":%.9f}\n",block,variant,double(b-a)*1000/double(hz)/32);
+                std::printf("{\"event\":\"timing\",\"block\":%u,\"variant\":%u,\"ms\":%.9f}\n",block,variant,double(b-a)*1000/double(hz)/batch);
             }
             for(auto* q:{event,start,end,frequency,disjoint})q->Release();
         }

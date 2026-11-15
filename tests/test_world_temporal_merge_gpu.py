@@ -46,7 +46,7 @@ try:
                    *fp.test_include_flags(), '-I' + str(fp.TESTS), fp.TESTS / 'world_temporal_merge_gpu.cpp',
                    *(fp.src(s) for s in sources), '-luser32', '-luuid', '-o', exe], out)
     for name, backend in backends:
-        for mode in ('reference', 'merged'):
+        for mode in ('reference', 'merged', 'zero-weight'):
             folder = out / name / mode
             folder.mkdir(parents=True, exist_ok=True)
             text = run('gpu', [exe, backend, folder, mode], folder)
@@ -61,6 +61,9 @@ try:
             assert len(result) == len(paths), 'ambiguous image identity'
             return result
 
+        merged_images, optimized_images = images('merged'), images('zero-weight')
+        assert merged_images.keys() == optimized_images.keys()
+        assert all(path.read_bytes() == optimized_images[key].read_bytes() for key, path in merged_images.items()), 'zero-weight image drift'
         before, after = images('reference'), images('merged')
         assert before.keys() == after.keys() and len(before) >= 180
         differences = []

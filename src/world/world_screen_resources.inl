@@ -4,11 +4,17 @@ unsigned screenGroups=0;
 // Optional fused filter: no additional images, and no repeated create attempts
 // after a device refusal. Reset/resize releases the shader and permits a retry.
 IDirect3DPixelShader9* temporalMergedPS=nullptr;
-bool temporalMergeTried=false;
+bool temporalMergeTried=false,temporalZeroWeightAllowed=false,temporalZeroWeightActive=false;
 bool temporalMergeResources(){
     if(!temporalMergeTried){
         temporalMergeTried=true;
-        if(FAILED(d->CreatePixelShader(kTemporalLightMergedShader,&temporalMergedPS)))drop(temporalMergedPS);
+        // DXVK 3.1.1 benefits from skipping zero-weight reads. Other backends
+        // retain the measured predicated shader; only one variant is executed.
+        if(temporalZeroWeightAllowed){
+            if(SUCCEEDED(d->CreatePixelShader(kTemporalLightMergedZeroWeightShader,&temporalMergedPS)))temporalZeroWeightActive=true;
+            else drop(temporalMergedPS);
+        }
+        if(!temporalMergedPS&&FAILED(d->CreatePixelShader(kTemporalLightMergedShader,&temporalMergedPS)))drop(temporalMergedPS);
     }
     return temporalMergedPS!=nullptr;
 }

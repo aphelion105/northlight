@@ -191,10 +191,13 @@ public:
     HRESULT finish(IDirect3DDevice9* device,IDirect3DSurface9* composed,IDirect3DSurface9* destination,const Settings& settings,
                    float dt,bool validWorld,bool sceneCut,float reference=.18f,NorthlightStateBlockPool* pool=nullptr,
                    IDirect3DTexture9* firstBloom=nullptr,IDirect3DSurface9* firstBloomSurface=nullptr,
-                   IDirect3DTexture9* secondBloom=nullptr,IDirect3DSurface9* secondBloomSurface=nullptr,IDirect3DSurface9* legacyDestination=nullptr){
+                   IDirect3DTexture9* secondBloom=nullptr,IDirect3DSurface9* secondBloomSurface=nullptr,IDirect3DSurface9* legacyDestination=nullptr,
+                   void (*mark)(void*,const char*)=nullptr,void* profile=nullptr){
+        // Optional asynchronous stage boundaries. The owner supplies a callback only on sampled frames.
         SavedState saved(device,pool);if(!saved.ok||!linear.texture)return E_FAIL;
         HRESULT hr=S_OK;bool prepared=false;
         if(composed){for(unsigned i=0;i<3;++i)device->SetTexture(i,nullptr);hr=device->StretchRect(composed,nullptr,linear.surface,nullptr,D3DTEXF_NONE);if(FAILED(hr))return hr;}
+        if(mark)mark(profile,"HDRResolve");
         if(settings.autoExposure&&validWorld){
             hr=measure(device,linear.texture,false,worldStatistics);if(FAILED(hr))return hr;
             float timing[]={std::isfinite(dt)?std::clamp(dt,0.f,60.f):0,settings.lightT90,settings.darkT90,reference};
@@ -205,6 +208,7 @@ public:
             prepared=true;
             historyIndex=next;historyReady=true;
         }
+        if(mark)mark(profile,"HDRExposure");
         worldWasValid=validWorld;
         IDirect3DTexture9* bloomTexture=nullptr;
         if(!settings.wideBloom||settings.bloom<=0)resetWide();
@@ -237,6 +241,7 @@ public:
             prepared=true;
             bloomTexture=secondBloom;
         }
+        if(mark)mark(profile,"HDRBloom");
         hr=prepared?quadTarget(device,destination,width,height,3):quadState(device,destination,width,height,3);if(FAILED(hr))return hr;
         if(legacyDestination){hr=device->SetRenderTarget(1,legacyDestination);if(FAILED(hr))return hr;device->SetRenderState(D3DRS_COLORWRITEENABLE1,15);}
         const float peak=std::max(settings.maxNits,80.f),white=std::min(settings.paperWhite,peak)/80;
@@ -246,7 +251,9 @@ public:
         device->SetPixelShaderConstantF(0,scale,1);device->SetPixelShaderConstantF(1,grade,1);
         device->SetPixelShader(legacyDestination?output:outputOnly);device->SetTexture(0,linear.texture);device->SetTexture(1,history[historyIndex].texture);device->SetTexture(2,bloomTexture);
         device->SetSamplerState(2,D3DSAMP_MINFILTER,D3DTEXF_LINEAR);device->SetSamplerState(2,D3DSAMP_MAGFILTER,D3DTEXF_LINEAR);
-        return drawQuad(device,width,height);
+        hr=drawQuad(device,width,height);
+        if(SUCCEEDED(hr)&&mark)mark(profile,"HDROutput");
+        return hr;
     }
 };
 }

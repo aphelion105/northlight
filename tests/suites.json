@@ -95,6 +95,7 @@
       "test_material_grass_batch_gpu.py",
       "test_world_composite_inputs_gpu.py",
       "test_removal_temporal_merge_gpu.py",
+      "test_removal_zero_weight_gpu.py",
       "test_world_temporal_merge_gpu.py"
     ]
   },
@@ -153,6 +154,7 @@
     "tests": [
       "test_world_composite_inputs_gpu.py",
       "test_removal_temporal_merge_gpu.py",
+      "test_removal_zero_weight_gpu.py",
       "test_world_temporal_merge_gpu.py",
       "test_world_screen_effects_gpu.py",
       "test_world_lighting_capture.py",
