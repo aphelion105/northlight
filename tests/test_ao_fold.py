@@ -188,9 +188,10 @@ checks['WorldComposite: AO in the tent, native fog preserved before surface AO, 
     < composite.index('original.rgb=saturate(mad(bloom,1-saturate(original.rgb),original.rgb));')
     < composite.index('float3 color=original.rgb;')
     < composite.index('if(relight){\n        // Thin receivers'))
-checks['smoothRemoval: both Scene reads times the AO alpha; removalScale without the .0001 floor'] = (
+checks['smoothRemoval: centre and both compile-time tap variants multiply Scene by AO alpha; removalScale has no floor'] = (
     world.count('tex2Dlod(Scene,float4(q,0,0)).rgb*tex2Dlod(AmbientOcclusion,float4(q,0,0)).a') == 1
-    and world.count('tex2Dlod(Scene,float4(tq,0,0)).rgb*tex2Dlod(AmbientOcclusion,float4(tq,0,0)).a') == 1
+    and world.count('tex2Dlod(Scene,float4(tq,0,0)).rgb*tex2Dlod(AmbientOcclusion,float4(tq,0,0)).a') == 2
+    and 'if(skipZeroTaps){' in world and '[branch]if(w>0)' in world and '[flatten]if(w>0)' in world
     and 'return max(legacyT*max(baseline,.15),scene-min(fog,scene));' in world and '.0001));' not in world[world.index('float3 removalScale('):world.index('float3 smoothRemoval(')])
 wm = json.loads(fp.src('world-shader-build.json').read_text())['shaders']
 # 0.3.185: the removal smoothing (Scene, AO, baseline reads) moved to RemovalSmooth; TemporalLight keeps no s0/s10/s12 read and gains s9.
