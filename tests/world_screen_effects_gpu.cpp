@@ -184,7 +184,7 @@ struct WorldScreenEffectsTest {
         }
     }
 #ifdef NORTHLIGHT_GI_MERGE_TEST
-    static void giMergeControl(WorldRenderer& w,unsigned mode){drop(w.lightingUnshadowedGIPS);w.lightingUnshadowedGIRefused=mode==0;w.effects.gi=mode!=3;w.temporalValid=false;}
+    static void giMergeControl(WorldRenderer& w,unsigned mode){drop(w.lightingUnshadowedGIPS);w.lightingUnshadowedGIRefused=mode==0;w.effects.shadows=false;w.effects.gi=mode!=3;w.temporalValid=false;}
     static bool giMerged(const WorldRenderer& w){return w.lightingUnshadowedGIPS!=nullptr;}
 #endif
     static void zeroGINight(WorldRenderer& w,unsigned brightness){
@@ -463,6 +463,8 @@ struct WorldScreenEffectsTest {
         w.active->serial=1;w.active->atlas.resize(NorthlightGI::probeLayout().atlasSize());auto& entry=w.active->atlas[0];entry.occupied=true;entry.probe.valid=true;entry.probe.sh[0]={.3f,.4f,.5f};
         auto visibility=std::make_shared<NorthlightGI::ProbeLocalVisibility>();
         for(auto& p:visibility->texels)p={0x3800,0,0,0x3c00};entry.probe.localVisibility=visibility;
+        auto coarse=std::make_shared<std::vector<NorthlightGI::ProbeAtlasEntry>>(w.active->atlas);
+        (*coarse)[0].probe.sh[0]={.7f,.8f,.9f};w.active->coarseAtlas=coarse;
         w.uploaded=w.active->bvh;w.uploadedMap=w.active->map;w.vertices=vb;w.indices=ib;w.effects.shadows=shadows;w.effects.gi=false;
     }
     static void retryScene(WorldRenderer& w){w.geometryTargetsRetryAt-=1000;}
@@ -475,9 +477,17 @@ struct WorldScreenEffectsTest {
         assert(SUCCEEDED(w.probe[0]->LockRect(0,&lock,nullptr,D3DLOCK_READONLY)));std::vector<unsigned char> image(size_t(desc.Width)*desc.Height*16);
         for(unsigned y=0;y<desc.Height;++y)std::memcpy(image.data()+size_t(y)*desc.Width*16,static_cast<const char*>(lock.pBits)+size_t(y)*lock.Pitch,size_t(desc.Width)*16);
         assert(SUCCEEDED(w.probe[0]->UnlockRect(0)));
-        assert(w.probeLocal&&!w.probeLocalMirror.changed(w.active->atlas));
+        const unsigned n=NorthlightGI::probeLayout().atlas;
+        assert(desc.Height==2*n);float fineValue,coarseValue;
+        std::memcpy(&fineValue,image.data(),4);std::memcpy(&coarseValue,image.data()+size_t(n)*desc.Width*16,4);
+        assert(fineValue==.3f&&coarseValue==.7f);
+        auto combined=w.active->atlas;combined.insert(combined.end(),w.active->coarseAtlas->begin(),w.active->coarseAtlas->end());
+        assert(w.probeLocal&&!w.probeLocalMirror.changed(combined));
         assert(SUCCEEDED(w.probeLocal->LockRect(0,&lock,nullptr,D3DLOCK_READONLY)));
         for(unsigned y=0;y<9;++y)assert(!std::memcmp(static_cast<const char*>(lock.pBits)+size_t(y)*lock.Pitch,w.active->atlas[0].probe.localVisibility->texels.data()+y*9,9*8));
+        const auto layout=NorthlightGI::LocalProbeVisibility::atlas(n,2);const size_t index=size_t(n)*n*n;
+        const unsigned cx=unsigned(index%layout.columns)*9,cy=unsigned(index/layout.columns)*9;
+        for(unsigned y=0;y<9;++y)assert(!std::memcmp(static_cast<const char*>(lock.pBits)+size_t(cy+y)*lock.Pitch+cx*8,(*w.active->coarseAtlas)[0].probe.localVisibility->texels.data()+y*9,9*8));
         std::array<uint16_t,4> empty;std::memcpy(empty.data(),static_cast<const char*>(lock.pBits)+9*8,8);assert(empty[3]==0xbc00);
         assert(SUCCEEDED(w.probeLocal->UnlockRect(0)));return image;
     }
@@ -855,16 +865,19 @@ int main(int argc,char** argv){
         assert(renderChecked(*world,d,out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao));
         assert(WorldScreenEffectsTest::sceneBytes(*world)==probeBytes&&WorldScreenEffectsTest::screenFog(*world)==screenFog&&WorldScreenEffectsTest::probeImage(*world)==probeBefore);
 #ifdef NORTHLIGHT_GI_MERGE_TEST
+        for(bool resident:{true,false}){
+        if(!resident)WorldScreenEffectsTest::removeFakeScene(*world);
         for(unsigned mode=0;mode<5;++mode){
             WorldScreenEffectsTest::giMergeControl(*world,mode);meter.refuseGI=mode==1;meter.giShader=nullptr;meter.giBound=false;
             const auto creates=meter.giCreates,draws=meter.giDraws;
             assert(renderChecked(*world,d,out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao));
-            const bool merged=mode==2||mode==4;
-            assert(WorldScreenEffectsTest::giMerged(*world)==merged&&meter.giDraws-draws==unsigned(merged));
-            assert(meter.giCreates-creates==unsigned(mode==1||merged));
+            const bool available=mode==2||mode==4,merged=available&&!resident;
+            assert(WorldScreenEffectsTest::giMerged(*world)==available&&meter.giDraws-draws==unsigned(merged));
+            assert(meter.giCreates-creates==unsigned(mode==1||available));
+        }
         }
         meter.refuseGI=false;meter.giShader=nullptr;meter.giBound=false;
-        std::printf("WORLD_GI_MERGE_SELECTOR_PASS blocked=1 creationFailure=1 merged=1 giOff=1 resume=1 msaa=%u\n",msaa);
+        std::printf("WORLD_GI_MERGE_SELECTOR_PASS blocked=1 creationFailure=1 merged=1 residentSeparate=1 giOff=1 resume=1 msaa=%u\n",msaa);
 #endif
         WorldScreenEffectsTest::removeFakeScene(*world);vb->Release();ib->Release();
         std::printf("WORLD_SCENE_LAZY_PASS noBvhBytes=0 partialFailureKeptScreen=1 retryWithoutReset=1 pressuredExpiryReclaimed=1 probesRestored=1 sceneBytes=%llu\n",(unsigned long long)sceneBytes);

@@ -1,8 +1,8 @@
 {
   "sources": {
     "fog_volume.hlsl": "189ec962e2105943f20e7e096b4b738d822660e1d901e8cd75c3f85245f01212",
-    "world_effects.hlsl": "0568dc7090456ce47aba01fce7a43f834b5ddc5e6d8f0959dab6aed812cf313a",
-    "shadow_transition.hlsl": "6da7e4eebf2b0cd30a0b763e3b85d19f2d30e2074d3f7514cb87b67c4a920f8a",
+    "world_effects.hlsl": "62837ac5de532b463d63f6a0727247d4d0fab799d019aa9420cf12f7a38acd3e",
+    "shadow_transition.hlsl": "571ba1c03b3e6c0e36965f2a5107526f16d29b07c23d934982030c0f45de96d1",
     "auto_bump_normal.hlsl": "b5523a51dc6715f11ac2e7ba9ecb46a4973ba6aa23de159e308a8fd24d4e9ebc"
   },
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",

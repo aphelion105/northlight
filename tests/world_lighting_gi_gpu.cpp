@@ -79,6 +79,40 @@ int main(int argc,char** argv){
    ps->Release();
   }
   printf("PRELIT_COMPOSITE_PASS cases=%u midpoint=1 skyUnlitOrdinaryExact=1 hdrDirectLampIndependent=1\n",consumerCases);
+  // A dark probe replaces all ambient at full GI strength. Neither the final
+  // ordinary receiver nor the shadow-removal filter may restore 45-55% of it.
+  // This is an energy oracle, independent of the shader's removal expression.
+  unsigned darkRoomCases=0;
+  solid(12,{.4f,.3f,.2f,1});solid(14,{0,0,0,1});solid(15,{8,8,8,8});
+  for(float strength:{0.f,.25f,.5f,.75f,1.f,2.f})for(float shadowStrength:{1.f,1.25f,2.f}){
+   const float removal=std::min(strength,1.f);c[20][1]=strength;c[115][0]=shadowStrength;
+   solid(8,{-.4f*removal,-.3f*removal,-.2f*removal,0});
+   for(bool hdr:{false,true})for(bool lamp:{false,true}){
+    auto ps=shader(d,proto+std::string("/WorldComposite")+(hdr?"Hdr":"")+".bin");
+    solid(2,hdr?std::array<float,4>{.132868f,.073239f,.033105f,1}:std::array<float,4>{0,0,0,0});solid(3,{lamp?.02f:0.f,lamp?.01f:0.f,lamp?.005f:0.f,0});
+    ok(d->SetPixelShaderConstantF(0,c[0],128));ok(d->SetPixelShader(ps));ok(d->BeginScene());quad();ok(d->EndScene());
+    auto values=image(light);
+    for(unsigned k=0;k<3;++k){
+     const float native=hdr?(k==0?.132868f:k==1?.073239f:.033105f):(k==0?.4f:k==1?.3f:.2f);
+     const float actual=half(values[(W*H/2)*4+k]);
+     if(!lamp){if(std::fabs(actual-native*(1-removal))>=.001f)std::fprintf(stderr,"DARK_ROOM strength=%g shadow=%g hdr=%u channel=%u actual=%g expected=%g\n",strength,shadowStrength,unsigned(hdr),k,actual,native*(1-removal));assert(std::fabs(actual-native*(1-removal))<.001f);}
+     else assert(actual>native*(1-removal)+.0001f);
+    }
+    ps->Release();++darkRoomCases;
+   }
+   // A constant field must survive both temporal variants and standalone
+   // smoothing, including when shadow alpha enables the spatial kernel.
+   c[20][2]=1;c[30][1]=c[30][2]=1;c[30][3]=30;c[57][0]=0;
+   solid(3,{0,0,0,0});solid(14,{0,0,1,1});
+   for(const char* name:{"RemovalSmooth","TemporalLightMerged","TemporalLightMergedZeroWeight"}){
+    auto ps=shader(d,proto+"/"+name+".bin");ok(d->SetPixelShaderConstantF(0,c[0],128));ok(d->SetPixelShader(ps));
+    ok(d->BeginScene());quad();ok(d->EndScene());auto values=image(light);
+    for(unsigned k=0;k<3;++k){const float expected=-(k==0?.4f:k==1?.3f:.2f)*removal;
+     assert(std::fabs(half(values[(W*H/2)*4+k])-expected)<.001f);}
+    ps->Release();++darkRoomCases;
+   }
+  }
+  printf("GI_DARK_ROOM_PASS cases=%u fullAmbientRemoval=1 smoothingPreserved=1 lampsPreserved=1\n",darkRoomCases);
  }
  assert(timing||darkPixels);printf("FUSED_GI_PASS cases=%u maxAbs=%.9f baselineAlphaExact=1 prelitCases=%u darkPixels=%u mix0_50_100=1 ordinaryUnaffected=1\n",cases,maximum,prelitCases,darkPixels);return 0;
 }

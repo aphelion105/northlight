@@ -181,6 +181,7 @@ test_geometry_retry.py
 test_gi_fallback_gpu.py
 test_gi_quality.py
 test_gi_receiver_fallback_gpu.py
+test_gi_residency_gpu.py
 test_gi_settings_dependencies.py
 test_gi_trig.py
 test_gi_zero_weight_gpu.py
@@ -404,6 +405,7 @@ test_pose_viewport_culling.py
 test_pose_viewport_math.py
 test_position_bounds.py
 test_position_bounds_scan.py
+test_prelit_receiver_gpu.py
 test_prelit_wmo_client.py
 test_prepare_native_scene.py
 test_prepare_worker.py
@@ -411,6 +413,7 @@ test_prepare_worker_windows.py
 test_probe_blend.py
 test_probe_blend_equivalence.py
 test_probe_cache_recycling.py
+test_probe_cascade.py
 test_probe_grid_math.py
 test_probe_local_visibility.py
 test_probe_local_visibility_gpu.py
@@ -499,6 +502,7 @@ test_shadow_lamp_constants_gpu.py
 test_shadow_layer_analysis.py
 test_shadow_paging_memory.py
 test_shadow_pivot.py
+test_shadow_receiver_gpu.py
 test_shadow_removal_smoothing.py
 test_shadow_shimmer.py
 test_shadow_transition.py

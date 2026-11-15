@@ -54,7 +54,10 @@ def fixtures(out, benchmark, fp32=False):
             c[82] = [0 if mode == 'legacy' else columns, 1/(columns*9), 1/(n**3//columns*9), 1/columns]
             textures = {s: (1, 1, lambda x, y: (0, 0, 0, 0)) for s in range(16)}
             textures[1] = (64, 48, lambda x, y: (1 if mode == 'sky' else 1000/999.8*(1-.2/(8+8*x/63)), 0, 0, 0))
-            textures[14] = (64, 48, lambda x, y: (0, 0, -1, float(mode != 'uncertain')))
+            # Keep the historical optimization oracle on an unchanged fallback:
+            # low-confidence upward normals still test bounce suppression.
+            # Non-upward seam behavior is checked by test_gi_residency_gpu.py.
+            textures[14] = (64, 48, lambda x, y: (0, 0, 1 if mode == 'uncertain' else -1, float(mode != 'uncertain')))
             textures[11] = (1, 1, lambda x, y: (1, 1, 0, 0))
             textures[10] = (n*n, n, lambda x, y: (x%n if x%n<n//2 else x%n-n, y if y<n//2 else y-n, x//n if x//n<n//2 else x//n-n, -1 if mode == 'missing' else 5 if mode == 'fresh' else 4.8 if mode == 'history' else 1))
             textures[7] = (n*n, n*6, lambda x, y: (100, 10000, 0 if mode == 'closed' else 1, 4.85 if mode == 'history' else -1000))

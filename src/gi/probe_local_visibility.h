@@ -40,10 +40,10 @@ inline void uniformTiles(ProbeLocalVisibility& value){
         p[3]=same?0x3c00:0;
     }
 }
-inline std::shared_ptr<const ProbeLocalVisibility> build(const BVH& bvh,Vec3 position){
+inline std::shared_ptr<const ProbeLocalVisibility> build(const BVH& bvh,Vec3 position,float reach=Reach){
     auto value=std::make_shared<ProbeLocalVisibility>();
     for(unsigned y=0;y<Side;++y)for(unsigned x=0;x<Side;++x){const Vec3 ray=direction(x,y);
-        value->texels[y*Side+x]=pack(bvh.trace(position,ray,.0005f,Reach),position,ray);}
+        value->texels[y*Side+x]=pack(bvh.trace(position,ray,.0005f,reach),position,ray);}
     uniformTiles(*value);return value;
 }
 inline std::shared_ptr<const ProbeLocalVisibility> overlay(const std::shared_ptr<const ProbeLocalVisibility>& base,const BVH* moving,Vec3 position){
@@ -79,9 +79,9 @@ inline float facing(Vec3 normal,Vec3 delta){
     return std::max(0.f,(dot(normal,-delta)/std::max(std::sqrt(dot(delta,delta)),.00001f)+.15f)/1.15f);
 }
 struct Atlas {unsigned columns=0,width=0,height=0;};
-inline Atlas atlas(unsigned n){
+inline Atlas atlas(unsigned n,unsigned layers=1){
     if(!n||n>ProbeGridMaxN+2)return {};
-    const unsigned count=n*n*n,columns=unsigned(std::ceil(std::sqrt(double(count))));
+    const unsigned count=n*n*n*layers,columns=unsigned(std::ceil(std::sqrt(double(count))));
     return {columns,columns*Side,((count+columns-1)/columns)*Side};
 }
 }

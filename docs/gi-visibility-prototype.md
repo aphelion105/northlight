@@ -83,8 +83,19 @@ acceptance remain separate from these component checks.
 publications and upload mirror. `ProbeVisibilityCache` is bounded by atlas slots
 and is reset when the static BVH changes. Lighting-only relights reuse it. Static
 cache misses, including GIThreads prefetch, attach visibility before publication.
-Fallback SH may survive a same-map geometry swap, but its old visibility is
-removed immediately; missing local data cannot transmit light through new walls.
+Display fallback retains SH and visibility together across a same-map geometry
+swap until each world key is solved again. Clearing only visibility incorrectly
+made the retained lighting black during streaming. The fallback never enters
+the new generation's solve caches; solved invalid points replace it as well.
+Map changes do not retain fallback. As with the retained SH, old visibility can
+remain displayed until that point receives its replacement.
+
+Probe metadata distinguishes missing (`w=-1`) from a solved point inside solid
+geometry (`w=-2`). Both supply zero radiance, but a solved interior corner still
+establishes cell coverage. Otherwise interpolation mixes native ambient back
+into terrain on an eight-unit lattice. Valid points retain their activation time.
+The analytic upper-sky fallback uses the receiver normal even at low confidence;
+confidence suppresses added bounce, without restoring full ambient at seams.
 
 Moving actors keep the existing bounded colour correction. Their small surfaces
 do not become extrapolated structural blocker planes, which would cause large

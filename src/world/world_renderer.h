@@ -82,6 +82,7 @@
 #include <chrono>
 #include "world_probe_cache.h"
 #include "world_probe_progress.h"
+#include "probe_cascade.h"
 #include "probe_activation.h"
 #include "probe_blend.h" // 0.3.197
 #include "probe_texture_upload.h"
@@ -225,6 +226,7 @@ class WorldRenderer {
         std::shared_ptr<NorthlightGI::BVH> bvh;
         std::shared_ptr<NorthlightWorldMesh::WorldMeshUploadPlan> meshPlan;
         std::vector<NorthlightGI::ProbeAtlasEntry> atlas;
+        std::shared_ptr<const std::vector<NorthlightGI::ProbeAtlasEntry>> coarseAtlas;
         std::vector<NorthlightLocalLights::Light> localLights;
         std::shared_ptr<const NorthlightLightAttachments::Records> lightAttachments;
         V origin, center;
@@ -376,8 +378,8 @@ private:
     uint64_t meshGeneration=0; // committed mesh identity; content signatures decide shadow reuse
     NorthlightEffectsBuckets::Frame* effectsBuckets=nullptr;
     void bucket(NorthlightEffectsBuckets::Bucket b){if(effectsBuckets)effectsBuckets->mark(b);}
-    NorthlightProbeActivation probeActivation;
-    NorthlightProbeBlend::Mirror probeBlend; // 0.3.197: same-key re-publication blend (probePrev, s8 in the GI pass)
+    NorthlightProbeActivation probeActivation,coarseActivation;
+    NorthlightProbeBlend::Mirror probeBlend,coarseBlend; // 0.3.197: same-key re-publication blend (probePrev, s8 in the GI pass)
     NorthlightProbeUpload::LocalVisibilityMirror probeLocalMirror;
     unsigned probeBlendPublishes=0,probeBlendSlots=0; // 0.3.197: per LOCAL log interval
     bool valid=false,failed=false,reportedContext=false;
@@ -1665,7 +1667,7 @@ private:
                 std::shared_ptr<Snapshot> publication;std::shared_ptr<NorthlightWorldMesh::WorldMeshUploadPlan> pendingPlan;
                 {std::lock_guard<std::mutex> lock(mutex);publication=published;if(builtGeometry)pendingPlan=builtGeometry->plan;}
                 if(publication){if(publication->bvh)publication->bvh->accountMemory(memory);if(publication->meshPlan)publication->meshPlan->accountMemory(memory);
-                    NorthlightGI::accountProbeAtlas(memory,publication->atlas);memory.vector(Metadata,publication->localLights);
+                    NorthlightGI::accountProbeAtlas(memory,publication->atlas);if(publication->coarseAtlas)NorthlightGI::accountProbeAtlas(memory,*publication->coarseAtlas);memory.vector(Metadata,publication->localLights);
                     if(publication->fogField)memory.allocation(Fog,publication->fogField.get(),sizeof(*publication->fogField));}
                 if(pendingPlan)pendingPlan->accountMemory(memory);
                 if(plan)plan->accountMemory(memory);if(scratch)scratch->accountMemory(memory);if(pages)pages->accountMemory(memory);
@@ -2093,6 +2095,7 @@ private:
         std::shared_ptr<NorthlightGI::BVH> bvh;std::shared_ptr<NorthlightWorldMesh::WorldMeshUploadPlan> scenePlan;std::shared_ptr<const PreparedCommit> scenePrepared;V sceneCenter;std::shared_ptr<const NorthlightRegionalFog::Field> sceneFog;std::string sceneMap;uint64_t serial=0,sceneBuild=0;
         std::shared_ptr<Snapshot> previousLighting;
         NorthlightGI::ProbeCache probeCache;
+        NorthlightGI::CoarseProbeLayer coarseProbes;
         NorthlightGI::ProbeVisibilityCache visibilityCache;
         NorthlightGI::ProbeRelightCache relightCache;std::string relightMap;
         NorthlightGI::DynamicProbeLayer dynamicProbes;
@@ -2116,10 +2119,10 @@ private:
             using namespace NorthlightMemoryFootprint;Counter memory;
             if(bvh)bvh->accountMemory(memory);if(actors)actors->accountMemory(memory);if(probeCacheGeometry)probeCacheGeometry->accountMemory(memory);
             if(scenePlan)scenePlan->accountMemory(memory);
-            probeCache.accountMemory(memory);relightCache.accountMemory(memory);dynamicProbes.accountMemory(memory);visibilityCache.accountMemory(memory);
+            coarseProbes.accountMemory(memory);probeCache.accountMemory(memory);relightCache.accountMemory(memory);dynamicProbes.accountMemory(memory);visibilityCache.accountMemory(memory);
             NorthlightGI::accountProbeAtlas(memory,displayFallback);memory.vector(Metadata,sceneLights);memory.vector(Metadata,rawSceneLights);
             if(sceneFog)memory.allocation(Fog,sceneFog.get(),sizeof(*sceneFog));
-            if(previousLighting){NorthlightGI::accountProbeAtlas(memory,previousLighting->atlas);if(previousLighting->bvh)previousLighting->bvh->accountMemory(memory);if(previousLighting->meshPlan)previousLighting->meshPlan->accountMemory(memory);}
+            if(previousLighting){NorthlightGI::accountProbeAtlas(memory,previousLighting->atlas);if(previousLighting->coarseAtlas)NorthlightGI::accountProbeAtlas(memory,*previousLighting->coarseAtlas);if(previousLighting->bvh)previousLighting->bvh->accountMemory(memory);if(previousLighting->meshPlan)previousLighting->meshPlan->accountMemory(memory);}
             logCpuFootprint("gi-worker-reachable",stage,id,memory);
             logf("WORLD MEMORY probes buildId=%llu cached=%zu capacity=%zu relightInclusiveMiB=%.3f pathInclusiveMiB=%.3f diagnosticMs=%.3f ledgersNotAdditive=1",(unsigned long long)id,probeCache.size(),probeCache.capacity(),double(relightCache.stats().bytes)/1048576,double(dynamicProbes.pathBytes())/1048576,std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count());
         };
@@ -2241,7 +2244,7 @@ private:
             // An unchanged actor packet must not republish/upload an identical
             // 4096-entry probe atlas every capture interval. Only skip after a
             // complete solve for this actor generation has actually published.
-            if(r.reason==64&&!actorsChanged&&completedActorHash==solvedActorHash&&completedBaseId==r.baseId&&r.baseId!=0&&probeCacheGeometry==bvh)continue;
+            if(r.reason==64&&!actorsChanged&&completedActorHash==solvedActorHash&&completedBaseId==r.baseId&&r.baseId!=0&&probeCacheGeometry==bvh&&coarseProbes.completeFor(r.probeCenter))continue;
             r.light.points=sceneLights;r.light.movingGeometry=nullptr;
             // A probe belongs to a fixed world point and a geometry/lighting
             // generation. Camera motion alone must not recompute that point.
@@ -2258,7 +2261,10 @@ private:
                 {std::lock_guard<std::mutex> lock(mutex);
                  if(published&&published->map==r.map)displayFallback=published->atlas;
                  else if(previousLighting&&previousLighting->map==r.map)displayFallback=previousLighting->atlas;}
-                if(visibilityGeometryChanged)for(auto& entry:displayFallback)entry.probe.localVisibility.reset();
+                // Retain the complete displayed sample while streaming a new
+                // same-map region. Removing only visibility turns its retained
+                // radiance black until the worker reaches that point again.
+                // This atlas never enters the new geometry's solve caches.
                 dynamicProbes.reset(actors?&actors->scene():nullptr);
             }
             const auto solveStatic=[&](NorthlightGI::ProbeGridKey key,V p){
@@ -2270,6 +2276,7 @@ private:
             // request-ID gate here discarded useful work on every camera move.
             result->fogField=sceneFog;result->bvh=bvh;result->meshPlan=scenePlan;result->prepared=scenePrepared;result->retirementBytes=bvh->retainedBytes()+scenePlan->cpuBytes()+sizeof(Snapshot);result->localLights=rawSceneLights;result->lightAttachments=sceneLightAttachments;result->origin=NorthlightGI::probeWindowOrigin(r.probeCenter);
             result->lightingGeneration=lightingGeneration;
+            result->coarseAtlas=coarseProbes.atlas(r.map);
             DWORD solveStart=GetTickCount();bool obsolete=false,replaced=false;
             const auto solveWorkStart=std::chrono::steady_clock::now();
             // Called with mutex held. A camera-only request may consume this
@@ -2363,6 +2370,14 @@ private:
              if(!compatibleTransport())publishObsolete=true;
              else{result->serial=++serial;published=result;publicationCadence.published(GetTickCount());completedActorHash=solvedActorHash;completedBaseId=r.baseId;concurrentSolves+=concurrent;}}
             if(publishObsolete){noteSuperseded();result->atlas.clear();publishProgress();}
+            else coarseProbes.run(r.probeCenter,sceneCenter,NorthlightQuality::giGeometryRadius(quality),*bvh,preparedLight,
+                quality.giRays,lightingGeneration,r.map,
+                [&](){std::lock_guard<std::mutex> lock(mutex);return stopping||request.id!=r.id||builtGeometry!=nullptr;},
+                [&](auto atlas){
+                    auto progress=std::make_shared<Snapshot>(*result);progress->coarseAtlas=std::move(atlas);
+                    std::lock_guard<std::mutex> lock(mutex);if(stopping||!compatiblePublication())return;
+                    progress->serial=++serial;published=std::move(progress);
+                },[](){return GetTickCount();});
         }
       }catch(const std::bad_alloc&){workerFaultCode.store(1);}
        catch(const std::exception&){workerFaultCode.store(2);}
@@ -2394,6 +2409,7 @@ private:
     static size_t snapshotRetireBytes(const Snapshot& s){
         size_t bytes=sizeof(Snapshot)+s.atlas.capacity()*sizeof(NorthlightGI::ProbeAtlasEntry);
         for(const auto& e:s.atlas)if(e.probe.localVisibility&&e.probe.localVisibility.use_count()==1)bytes+=sizeof(NorthlightGI::ProbeLocalVisibility);
+        if(s.coarseAtlas&&s.coarseAtlas.use_count()==1){bytes+=s.coarseAtlas->capacity()*sizeof(NorthlightGI::ProbeAtlasEntry);for(const auto& e:*s.coarseAtlas)if(e.probe.localVisibility&&e.probe.localVisibility.use_count()==1)bytes+=sizeof(NorthlightGI::ProbeLocalVisibility);}
         if(s.bvh&&s.bvh.use_count()==1)bytes+=s.bvh->retainedBytes();
         if(s.meshPlan&&s.meshPlan.use_count()==1)bytes+=size_t(s.meshPlan->cpuBytes());
         return bytes;
@@ -2825,28 +2841,41 @@ private:
         if(giWorkEnabled()&&(geometryGroups&2u)&&uploadedSerial!=active->serial){
             auto phase=streamingPhases.measure(NorthlightStreaming::PhaseProfile::Probes);frameProbeUpload=true; /* 0.3.176 (D3) */
             if(active->atlas.size()!=NorthlightGI::probeLayout().atlasSize())return false;
-            traceUpload("probe-enter");probeActivation.begin(active->map);
+            traceUpload("probe-enter");
             float activationNow=float(DWORD(GetTickCount()-animationEpoch))*.001f;
-            probeBlend.begin(active->map);const unsigned blendedSlots=probePrev?probeBlend.publish(active->atlas,activationNow):0; // 0.3.197
-            traceUpload("probe-mirrors");const unsigned n=NorthlightGI::probeLayout().atlas;
-            if(probeLocalMirror.changed(active->atlas)){
-                if(!probeLocal||!probeLocalMirror.prepare(active->atlas.size()))return false;
-                D3DLOCKED_RECT lock{};traceUpload("probe-before-lock",6);
+            const unsigned n=NorthlightGI::probeLayout().atlas;
+            const std::vector<NorthlightGI::ProbeAtlasEntry> empty(active->coarseAtlas?0:NorthlightGI::probeLayout().atlasSize());
+            const auto& coarse=active->coarseAtlas?*active->coarseAtlas:empty;
+            if(coarse.size()!=active->atlas.size())return false;
+            auto combined=active->atlas;combined.insert(combined.end(),coarse.begin(),coarse.end());
+            if(probeLocalMirror.changed(combined)){
+                if(!probeLocal||!probeLocalMirror.prepare(combined.size()))return false;
+                D3DLOCKED_RECT lock{};
                 if(!check(probeLocal->LockRect(0,&lock,nullptr,D3DLOCK_NO_DIRTY_UPDATE),"probe local visibility upload"))return false;
-                const auto dirty=probeLocalMirror.write(lock.pBits,size_t(lock.Pitch),n,active->atlas);
+                const auto dirty=probeLocalMirror.write(lock.pBits,size_t(lock.Pitch),n,combined,NorthlightGI::ProbeCascadeCount);
                 const RECT rect={LONG(dirty.left),LONG(dirty.top),LONG(dirty.right),LONG(dirty.bottom)};
                 if(!check(probeLocal->UnlockRect(0),"probe local visibility unlock")||!check(probeLocal->AddDirtyRect(&rect),"probe local visibility dirty")){probeLocalMirror.reset();return false;}
-                traceUpload("probe-after-unlock",6);
             }
-            for(int channel=0;channel<5;++channel){traceUpload("probe-before-lock",unsigned(channel));D3DLOCKED_RECT lock;if(!check(probe[channel]->LockRect(0,&lock,nullptr,0),"probe upload"))return false;traceUpload("probe-after-lock",unsigned(channel));
-                NorthlightProbeUpload::write(unsigned(channel),lock.pBits,size_t(lock.Pitch),n,active->atlas,probeBlend,probeActivation,activationNow,probePrev!=nullptr,true); // Locked texture does not alias the CPU atlas.
-                probe[channel]->UnlockRect(0);traceUpload("probe-after-unlock",unsigned(channel));
+            probeActivation.begin(active->map);coarseActivation.begin(active->map);
+            probeBlend.begin(active->map);coarseBlend.begin(active->map);
+            unsigned blendedSlots=probePrev?probeBlend.publish(active->atlas,activationNow)+coarseBlend.publish(coarse,activationNow):0;
+            for(unsigned channel=0;channel<5;++channel){
+                D3DLOCKED_RECT lock{};
+                if(!check(probe[channel]->LockRect(0,&lock,nullptr,0),"probe upload"))return false;
+                for(unsigned level=0;level<NorthlightGI::ProbeCascadeCount;++level){
+                    auto* bits=static_cast<char*>(lock.pBits)+size_t(level)*n*(channel==3?6:1)*lock.Pitch;
+                    NorthlightProbeUpload::write(channel,bits,size_t(lock.Pitch),n,level?coarse:active->atlas,
+                        level?coarseBlend:probeBlend,level?coarseActivation:probeActivation,activationNow,probePrev!=nullptr,true);
+                }
+                if(!check(probe[channel]->UnlockRect(0),"probe unlock"))return false;
             }
-            if(probePrev){D3DLOCKED_RECT lock; /* 0.3.197: what was on screen before each slot's latest SH, R|G|B in three horizontal thirds */
-                traceUpload("probe-before-lock",5);if(!check(probePrev->LockRect(0,&lock,nullptr,0),"probe blend upload"))return false;traceUpload("probe-after-lock",5);
+            if(probePrev){D3DLOCKED_RECT lock{};
+                if(!check(probePrev->LockRect(0,&lock,nullptr,0),"probe blend upload"))return false;
                 NorthlightProbeUpload::previous(lock.pBits,size_t(lock.Pitch),n,probeBlend);
-                probePrev->UnlockRect(0);traceUpload("probe-after-unlock",5);}
-            ++probeBlendPublishes;probeBlendSlots+=blendedSlots; /* 0.3.197: logged with LOCAL direct (the upload span has no log line) */
+                NorthlightProbeUpload::previous(static_cast<char*>(lock.pBits)+size_t(n)*lock.Pitch,size_t(lock.Pitch),n,coarseBlend);
+                if(!check(probePrev->UnlockRect(0),"probe blend unlock"))return false;
+            }
+            ++probeBlendPublishes;probeBlendSlots+=blendedSlots;
             uploadedSerial=active->serial;
         }return true;
     }
@@ -3047,7 +3076,7 @@ public:
     // too; its cursor continues). Everything else (DEFAULT targets, dynamic rings, queries, state blocks, caches derived from
     // them) is released as before. recover() and the destructor release the mesh as well; the CPU payload is gone by then, so
     // upload() asks the builder for a fresh generation.
-    void releaseGPU(bool keepMesh=false){fogVolume.reset();fogVolumeField.reset();fogVolumeKey=0;screenGroups=geometryGroups=0;shadowAlphaTargets.reset();shadowAlphaRetryAt=0;releaseMoonFloor();if(nativeDiagnosticCapture){nativeDiagnosticCapture->finish(false);nativeDiagnosticCapture.reset();}actorTargetsPending=false;releaseShadowTransitions();releaseNearEnvironment();releaseSoftShadows();drop(hdrBasePS);drop(hdrAOBasePS);hdrBaseTried=hdrAOBaseTried=false;drop(hdrFinalPS);drop(hdrUnlitPS);drop(hdrMaterialPS);drop(hdrCombinedPS);hdrCombineTried=false;colorStorageFormat=D3DFMT_UNKNOWN;drop(resetReplayQuery);resetReplayFence.drop();if(!keepMesh){resetReplaySource.reset();resetReplayPlan.reset();resetReplayScoped=false;resetReplayPending=false;}screenResourceRetry=false;fogUploadRetry=false;NorthlightMemoryProfile::store().invalidateGpu();resourceMemoryProfileAt=0;materialPixelAudit.reset();replayBoundsAbandon();releaseReplayProbe();staticCasters.settle();rigidMemoryClear();admission.reset();admissionOn=false;gatedBodies.clear();prepareQuiesce();prepareCaches->sampled.clear();prepareCaches->bones.clear();prepareCachesStale=false;if(replays.empty()&&heldShadowReplays.empty())prepareFrameRelease(); /* 0.3.179: no replay left to point at them */actorShadowHistory.clear();actorShadowOriginValid=false;replayBoundsMetadata.clear();if(!keepMesh)replayBoundsCache.clear(); /* CPU envelopes validate immutable source, program, declaration and current pose; GPU reset must not make every caster unbounded. */declarationCache.clear();if(!keepMesh)uploadedStaticOwners.reset();staticOwnerGeneration=UINT64_MAX;staticCasters.reset();staticMatcher.clear();staticM2Memory.clear();staticScene.reset();staticRetryTick=0;stateBlocks.clear();uploadedTerrain.clear();liveTerrainIndexCount=liveDirectionalIndexCount=0;if(!keepMesh){fixedTerrain.reset();fixedTerrainBits.reset();}liveTerrainGeneration=0;drop(regionalFogTexture);drop(fogHeightTexture);fogHeightReady=false;drop(neutralAO);drop(neutralZero);drop(ditherNoise);rainMask=nullptr;uploadedFogField.reset();releasePointGPU(keepMesh);releaseFlashGPU();probeActivation.reset();probeBlend.reset();drop(baselineSurface);drop(baselineLight);drop(prelitDaylightSurface);drop(prelitDaylight);prelitDaylightRetryAt=0;releaseReplayGPU();liveTerrainGPU.clear();{auto& queries=fence();NorthlightDynamicRing::reset(liveIndexRing,0,queries);queries.drop();}drop(liveIndicesGPU);liveIndexBytes=0;liveIndexBase=0;if(!keepMesh){pendingMesh.reset();clearMesh();}retiredMaterials.clear();if(!keepMesh){releaseMeshPool();uploadedMap.clear();}for(auto& t:shadow)drop(t);for(auto& s:shadowSurface)drop(s);for(auto& t:shadowCache)drop(t);for(auto& s:shadowCacheSurface)drop(s);drop(shadowCacheDepth);drop(shadowVerifySurface);drop(shadowVerify);for(auto& r:shadowVerifyRead)drop(r);drop(shadowScratch);drop(shadowScratchSurface);releaseActorTargets();drop(neutralWhite);actorValid[0]=actorValid[1]=false;actorCenterValid[0]=actorCenterValid[1]=false;drop(unionPS);invalidateShadowCache();if(!keepMesh||!keepPressureProbes){for(auto& t:probe)drop(t);drop(probePrev);drop(probeLocal);probeLocalMirror.reset();}drop(shadowDepth);drop(lightSurface);drop(fogSurface);drop(fogBlurredSurface);drop(fogHistorySurface);drop(fogHistory);drop(fogTemporalPS);fogHistoryValid=fogNeutral=fogHistoryNeutral=false;drop(colorSurface);drop(light);drop(fog);drop(fogBlurred);drop(color);drop(distancePS);drop(foreverFogNoNoisePS);drop(foreverFogActorNoNoisePS);drop(foreverFogNoNoiseFadePS);drop(foreverFogActorNoNoiseFadePS);drop(foreverFogPS);drop(foreverFogActorPS);drop(foreverFogFadePS);drop(foreverFogActorFadePS);drop(lightingPS);drop(lightingUnshadowedPS);lightingUnshadowedRefused=false;drop(lightingUnshadowedGIPS);lightingUnshadowedGIRefused=false;drop(giPS);drop(fogPS);drop(fogAmbientPS);fogAmbientRefused=false;drop(fogCloudsAmbientPS);ambientFogRefused=false;drop(fogActorPS);drop(fogCloudsActorPS);drop(fogBlurPS);drop(fogCloudsPS);drop(cloudNoise);drop(localDirectPS);drop(localDirect16PS);drop(localFlashPS);drop(localDirectSinglePS);localDirectSingleRefused=false;drop(profileSplitSurface);profileSplitFailed=false;drop(removalPS);drop(temporalPS);drop(temporalMergedPS);temporalMergeTried=temporalZeroWeightActive=false;drop(localFogPS);drop(localFogCombinePS);drop(normalsPS);drop(normalsNoDistancePS);normalsNoDistanceRefused=false;drop(normalBuffer);drop(normalSurface);for(int i=0;i<2;++i){drop(temporalLight[i]);drop(temporalLightSurface[i]);drop(temporalDepth[i]);drop(temporalDepthSurface[i]);}temporalValid=false;drop(finalPS);drop(unlitPS);unlitShaderRefused=false;drop(prelitPS);drop(hdrPrelitPS);prelitShaderRefused=false;drop(materialPS);drop(shadowPS);drop(replayPS);drop(shadowVS);drop(cachedShadowVS);drop(cachedShadowPS);drop(cachedFastPS);drop(cachedOpaqueFastPS);drop(cachedOpaquePS);drop(shadowDecl);drop(liveTerrainDecl);geometryTargetsReady=false;geometryTargetsRetry=false;width=height=0;uploadedSerial=0;}
+    void releaseGPU(bool keepMesh=false){fogVolume.reset();fogVolumeField.reset();fogVolumeKey=0;screenGroups=geometryGroups=0;shadowAlphaTargets.reset();shadowAlphaRetryAt=0;releaseMoonFloor();if(nativeDiagnosticCapture){nativeDiagnosticCapture->finish(false);nativeDiagnosticCapture.reset();}actorTargetsPending=false;releaseShadowTransitions();releaseNearEnvironment();releaseSoftShadows();drop(hdrBasePS);drop(hdrAOBasePS);hdrBaseTried=hdrAOBaseTried=false;drop(hdrFinalPS);drop(hdrUnlitPS);drop(hdrMaterialPS);drop(hdrCombinedPS);hdrCombineTried=false;colorStorageFormat=D3DFMT_UNKNOWN;drop(resetReplayQuery);resetReplayFence.drop();if(!keepMesh){resetReplaySource.reset();resetReplayPlan.reset();resetReplayScoped=false;resetReplayPending=false;}screenResourceRetry=false;fogUploadRetry=false;NorthlightMemoryProfile::store().invalidateGpu();resourceMemoryProfileAt=0;materialPixelAudit.reset();replayBoundsAbandon();releaseReplayProbe();staticCasters.settle();rigidMemoryClear();admission.reset();admissionOn=false;gatedBodies.clear();prepareQuiesce();prepareCaches->sampled.clear();prepareCaches->bones.clear();prepareCachesStale=false;if(replays.empty()&&heldShadowReplays.empty())prepareFrameRelease(); /* 0.3.179: no replay left to point at them */actorShadowHistory.clear();actorShadowOriginValid=false;replayBoundsMetadata.clear();if(!keepMesh)replayBoundsCache.clear(); /* CPU envelopes validate immutable source, program, declaration and current pose; GPU reset must not make every caster unbounded. */declarationCache.clear();if(!keepMesh)uploadedStaticOwners.reset();staticOwnerGeneration=UINT64_MAX;staticCasters.reset();staticMatcher.clear();staticM2Memory.clear();staticScene.reset();staticRetryTick=0;stateBlocks.clear();uploadedTerrain.clear();liveTerrainIndexCount=liveDirectionalIndexCount=0;if(!keepMesh){fixedTerrain.reset();fixedTerrainBits.reset();}liveTerrainGeneration=0;drop(regionalFogTexture);drop(fogHeightTexture);fogHeightReady=false;drop(neutralAO);drop(neutralZero);drop(ditherNoise);rainMask=nullptr;uploadedFogField.reset();releasePointGPU(keepMesh);releaseFlashGPU();probeActivation.reset();probeBlend.reset();coarseActivation.reset();coarseBlend.reset();drop(baselineSurface);drop(baselineLight);drop(prelitDaylightSurface);drop(prelitDaylight);prelitDaylightRetryAt=0;releaseReplayGPU();liveTerrainGPU.clear();{auto& queries=fence();NorthlightDynamicRing::reset(liveIndexRing,0,queries);queries.drop();}drop(liveIndicesGPU);liveIndexBytes=0;liveIndexBase=0;if(!keepMesh){pendingMesh.reset();clearMesh();}retiredMaterials.clear();if(!keepMesh){releaseMeshPool();uploadedMap.clear();}for(auto& t:shadow)drop(t);for(auto& s:shadowSurface)drop(s);for(auto& t:shadowCache)drop(t);for(auto& s:shadowCacheSurface)drop(s);drop(shadowCacheDepth);drop(shadowVerifySurface);drop(shadowVerify);for(auto& r:shadowVerifyRead)drop(r);drop(shadowScratch);drop(shadowScratchSurface);releaseActorTargets();drop(neutralWhite);actorValid[0]=actorValid[1]=false;actorCenterValid[0]=actorCenterValid[1]=false;drop(unionPS);invalidateShadowCache();if(!keepMesh||!keepPressureProbes){for(auto& t:probe)drop(t);drop(probePrev);drop(probeLocal);probeLocalMirror.reset();}drop(shadowDepth);drop(lightSurface);drop(fogSurface);drop(fogBlurredSurface);drop(fogHistorySurface);drop(fogHistory);drop(fogTemporalPS);fogHistoryValid=fogNeutral=fogHistoryNeutral=false;drop(colorSurface);drop(light);drop(fog);drop(fogBlurred);drop(color);drop(distancePS);drop(foreverFogNoNoisePS);drop(foreverFogActorNoNoisePS);drop(foreverFogNoNoiseFadePS);drop(foreverFogActorNoNoiseFadePS);drop(foreverFogPS);drop(foreverFogActorPS);drop(foreverFogFadePS);drop(foreverFogActorFadePS);drop(lightingPS);drop(lightingUnshadowedPS);lightingUnshadowedRefused=false;drop(lightingUnshadowedGIPS);lightingUnshadowedGIRefused=false;drop(giPS);drop(fogPS);drop(fogAmbientPS);fogAmbientRefused=false;drop(fogCloudsAmbientPS);ambientFogRefused=false;drop(fogActorPS);drop(fogCloudsActorPS);drop(fogBlurPS);drop(fogCloudsPS);drop(cloudNoise);drop(localDirectPS);drop(localDirect16PS);drop(localFlashPS);drop(localDirectSinglePS);localDirectSingleRefused=false;drop(profileSplitSurface);profileSplitFailed=false;drop(removalPS);drop(temporalPS);drop(temporalMergedPS);temporalMergeTried=temporalZeroWeightActive=false;drop(localFogPS);drop(localFogCombinePS);drop(normalsPS);drop(normalsNoDistancePS);normalsNoDistanceRefused=false;drop(normalBuffer);drop(normalSurface);for(int i=0;i<2;++i){drop(temporalLight[i]);drop(temporalLightSurface[i]);drop(temporalDepth[i]);drop(temporalDepthSurface[i]);}temporalValid=false;drop(finalPS);drop(unlitPS);unlitShaderRefused=false;drop(prelitPS);drop(hdrPrelitPS);prelitShaderRefused=false;drop(materialPS);drop(shadowPS);drop(replayPS);drop(shadowVS);drop(cachedShadowVS);drop(cachedShadowPS);drop(cachedFastPS);drop(cachedOpaqueFastPS);drop(cachedOpaquePS);drop(shadowDecl);drop(liveTerrainDecl);geometryTargetsReady=false;geometryTargetsRetry=false;width=height=0;uploadedSerial=0;}
     // Explicit enable/retry only, called after the wrapper's clearFrame(). This
     // never calls endFrame(), so packet capture and cleanup run exactly once.
     void recover(){meshRetry.clear();if(!failed)return;releaseGPU(true);failed=false;valid=false;streamingReports=0;logf("WORLD explicit recovery requested");}
@@ -5975,7 +6004,7 @@ public:
         NorthlightNightFloor::nightAmbient(quality.nightBrightness,NorthlightNightFloor::weight(naturalSky.valid,naturalSky.valid?naturalSky.sun.direction[2]:0.f),c[18],c[19]);
         c[66][0]=float(quality.giPrelitMix)*.01f;c[66][1]=float(quality.giBrightness)*.01f; // GI only; volume passes later own c66 as FogActorBounds.
         c[19][3]=8; /* c19.rgb: NightBrightness light per unit of albedo, from c18's ambient (WorldComposite only; 0 = off); c19.w: probe spacing */
-        c[20][0]=float(NorthlightGI::probeLayout().atlas);c[20][1]=NorthlightQuality::giIntensity(quality);c[20][2]=std::max(.01f,std::min(1.f,quality.shadowStrength*.0085f));c[20][3]=geometryReady&&giWorkEnabled()&&uploadedSerial&&uploadedSerial==active->serial?1.f:0.f;
+        c[20][0]=float(NorthlightGI::probeLayout().atlas);c[20][1]=requirements.probes?NorthlightQuality::giIntensity(quality):0.f;c[20][2]=std::max(.01f,std::min(1.f,quality.shadowStrength*.0085f));c[20][3]=geometryReady&&giWorkEnabled()&&uploadedSerial&&uploadedSerial==active->serial?1.f:0.f;
         DWORD now=GetTickCount();
         c[21][0]=uploadedFogField&&(uploadedFogField->fogCells||uploadedFogField->airCells)?1.f:0.f;c[21][1]=1.2f*wx.shaftGain();c[21][2]=hdrMode?64.f:.38f;c[21][3]=128; /* HDR retains radiance above diffuse white until output mapping. */
         // 0.3.200 (gpu budget): fewer march intervals at reduced levels (c60.x clouds, c64.z WorldFog; both stay 0, the bank unchanged, at level 0).
@@ -6215,8 +6244,9 @@ public:
             if(SUCCEEDED(d->CreatePixelShader(kWorldLightingUnshadowedGIShader,&optional))&&optional)lightingUnshadowedGIPS=optional;
             else {if(optional)optional->Release();lightingUnshadowedGIRefused=true;}
         }
-        const bool mergedGI=unshadowedLighting&&giRequested&&lightingUnshadowedGIPS;
-        const auto localLayout=NorthlightGI::LocalProbeVisibility::atlas(NorthlightGI::probeLayout().atlas);
+        const bool mergedGI=unshadowedLighting&&giRequested&&lightingUnshadowedGIPS&&c[20][3]<.5f; // The fused fallback has no packed cascade reads.
+        const auto localLayout=NorthlightGI::LocalProbeVisibility::atlas(NorthlightGI::probeLayout().atlas,NorthlightGI::ProbeCascadeCount);
+        const float cascadeInfo[]={0,0,0,1};d->SetPixelShaderConstantF(83,cascadeInfo,1);
         const float localInfo[]={giRequested&&probeLocal?float(localLayout.columns):0.f,1.f/localLayout.width,1.f/localLayout.height,1.f/localLayout.columns};
         d->SetPixelShaderConstantF(82,localInfo,1);
         if(giRequested)d->SetTexture(13,probeLocal);
@@ -6841,6 +6871,8 @@ public:
                 const auto& r=active->relightStats;
                 logf("GI relight hits=%llu tracedProbes=%llu shapeResets=%llu cacheKiB=%.1f",(unsigned long long)r.hits,(unsigned long long)r.misses,(unsigned long long)r.resets,double(r.bytes)/1024);
                 const auto& v=active->visibilityStats;
+                const auto coarseSlots=active->coarseAtlas?std::count_if(active->coarseAtlas->begin(),active->coarseAtlas->end(),[](const auto& e){return e.occupied;}):0;
+                logf("GI cascades layers=2 spacing=8,32 coarseResident=%zu coarseRays=%u coarseStaticOnly=1 priority=near-first",size_t(coarseSlots),std::max(8u,quality.giRays/4));
                 logf("GI local visibility built=%llu reused=%llu failed=%llu bytesPerProbe=648",(unsigned long long)v.built,(unsigned long long)v.reused,(unsigned long long)v.failed);
             }
             probeBlendPublishes=probeBlendSlots=0;}

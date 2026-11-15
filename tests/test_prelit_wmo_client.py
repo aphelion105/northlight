@@ -64,6 +64,7 @@ with closing(Assets(archives='stock')) as assets:
             header.append(f'static const uint32_t {name}[]={{' + ','.join(hex(w) for w in words) + '};')
             calls.append(f'assert(prelitShader({name},sizeof({name})/4,true)=={str(variant == 0).lower()});')
             calls.append(f'assert(!prelitShader({name},sizeof({name})/4,false));')
+            calls.append(f'audit({name},sizeof({name})/4);')
     # Audit every registered WMO identity available in the stock archives, not
     # just the representative maps. The Python outdoor-light proof is separate
     # from the production C++ backward RGB slice used for prelit classification.
@@ -84,6 +85,7 @@ with closing(Assets(archives='stock')) as assets:
                 words = struct.unpack(f'<{len(code) // 4}I', code)
                 header.append(f'static const uint32_t {name}[]={{' + ','.join(hex(w) for w in words) + '};')
                 calls.append(f'accepted+=prelitShader({name},sizeof({name})/4,true);')
+                calls.append(f'audit({name},sizeof({name})/4);')
                 if lit_wmo(code):
                     lit_count += 1
                     calls.append(f'assert(!prelitShader({name},sizeof({name})/4,true));')
@@ -93,8 +95,29 @@ with closing(Assets(archives='stock')) as assets:
     assert seen and seen <= registered
     assert lit_count > 0
 source = out / 'prelit-client.cpp'
-source.write_text('#include "unlit_receiver.h"\n#include <cassert>\n#include <cstdio>\n' + '\n'.join(header) +
+audit = r'''
+static unsigned editedPrelit=0, editedLit=0;
+static void audit(const uint32_t* words,size_t count){
+    using namespace NorthlightUnlitReceiver;
+    const auto hash=NorthlightShaderTags::fnv1a(words,count*4);
+    const bool baked=prelitShader(words,count,true);
+    assert(prelitWorldShader(words,count,hash)==baked);
+    if(!NorthlightWorldShaderContract::rigidWmo(words,count))return;
+    std::vector<uint32_t> edited(words,words+count);edited.insert(edited.end()-1,{0x0001fffeu,0x12345678u});
+    const auto changed=NorthlightShaderTags::fnv1a(edited.data(),edited.size()*4);
+    assert(!NorthlightShaderTags::inWmoSignatures(changed));
+    assert(prelitWorldShader(edited.data(),edited.size(),changed)==baked);
+    if(baked)++editedPrelit;else ++editedLit;
+    // The independent RGB proof cannot grant camera/receiver admission after
+    // the model-view transform changes. Unknown coordinates retain fallback.
+    for(auto& token:edited)if((token&0x80000000u)&&NorthlightWorldShaderContract::type(token)==2&&(token&2047)==31)
+        token=(token&~2047u)|80;
+    assert(!prelitWorldShader(edited.data(),edited.size(),NorthlightShaderTags::fnv1a(edited.data(),edited.size()*4)));
+}
+'''
+source.write_text('#include "unlit_receiver.h"\n#include <cassert>\n#include <cstdio>\n' + '\n'.join(header) + audit +
                   '\nint main(){using namespace NorthlightUnlitReceiver;unsigned accepted=0;\n' + '\n'.join(calls) +
+                  '\nassert(editedPrelit&&editedLit);printf("EDITED_PRELIT_PASS accepted=%u outdoorRejected=%u brokenCoordinatesRejected=1\\n",editedPrelit,editedLit);' +
                   f'\nassert(accepted>0);printf("PRELIT_CLIENT_SHADER_PASS identities={len(seen)} unavailableHistorical={len(registered-seen)} outdoorRejected={lit_count} prelitAccepted=%u sm2 sm3 identity_required\\n",accepted);}}\n', encoding='utf-8')
 exe = out / 'prelit-client.exe'
 subprocess.run([str(fp.zig()), 'c++', '-target', 'x86-windows-gnu', '-std=c++17', '-O2', '-UNDEBUG',

@@ -29,8 +29,8 @@ public:
         for(size_t i=0;i<atlas.size();++i)if(values_[i]!=payload(atlas[i]))return true;
         return false;
     }
-    Dirty write(void* bits,size_t pitch,unsigned n,const std::vector<NorthlightGI::ProbeAtlasEntry>& entries){
-        const auto layout=NorthlightGI::LocalProbeVisibility::atlas(n);
+    Dirty write(void* bits,size_t pitch,unsigned n,const std::vector<NorthlightGI::ProbeAtlasEntry>& entries,unsigned layers=1){
+        const auto layout=NorthlightGI::LocalProbeVisibility::atlas(n,layers);
         Dirty dirty{layout.width,layout.height,0,0};
         const std::array<uint16_t,4> missing={0,0,0,0xbc00}; // w=-1: fail closed
         if(!ready_){

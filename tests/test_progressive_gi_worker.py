@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-# northlight-test: requires=cxx slow
+# northlight-test: requires=zig slow
 """Execute the production worker publication/solve tail using deterministic requests.
 Native CPU only: no Windows, Wine, game, D3D, geometry loading or actor capture.
 """
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
-import hashlib,json,subprocess,tempfile
+import hashlib,json,subprocess
 from pathlib import Path
 HERE=Path(__file__).resolve().parent
 source=fp.src('world_renderer.h').read_text()
@@ -16,6 +16,8 @@ start=source.index('    struct Snapshot {');end=source.index('\n    struct Reque
 snapshot=source[start:end]
 fixture=r'''
 #include "world_probe_progress.h"
+#include "probe_cascade.h"
+#include "probe_local_visibility.h"
 #include "world_dynamic_probes.h"
 #include "gi_solve_pool.h"
 #include "quality_settings.h"
@@ -25,7 +27,11 @@ fixture=r'''
 #include <memory>
 #include <mutex>
 #include <cstdio>
-using V=NorthlightGI::Vec3;using DWORD=uint32_t;
+using V=NorthlightGI::Vec3;
+#ifndef _WIN32
+using DWORD=uint32_t;
+#endif
+#define GetTickCount fixtureTickCount
 namespace NorthlightWorldMesh {struct WorldMeshUploadPlan {size_t cpuBytes()const{return 16;}};}
 namespace NorthlightRegionalFog {struct Field {};}
 namespace NorthlightLocalLights {struct Light {};}
@@ -64,7 +70,8 @@ SNAPSHOT
  std::vector<NorthlightGI::ProbeAtlasEntry> displayFallback;
  std::shared_ptr<Snapshot> published,previousLighting;
  V sceneCenter;std::string sceneMap="Azeroth";
- NorthlightGI::ProbeCache probeCache;NorthlightGI::DynamicProbeLayer dynamicProbes;
+ NorthlightGI::ProbeCache probeCache;NorthlightGI::DynamicProbeLayer dynamicProbes;NorthlightGI::CoarseProbeLayer coarseProbes;
+ NorthlightGI::ProbeVisibilityCache visibilityCache;
  NorthlightQuality::Settings quality;std::unique_ptr<NorthlightGI::SolvePool> solvePool; /* 0.3.138 knobs at defaults: serial loop, 64 rays, 3 bounces */
  NorthlightGI::Lighting probeCacheLight;NorthlightGI::PreparedLighting preparedLight;
  NorthlightGI::ProbePublicationCadence publicationCadence;
@@ -94,6 +101,16 @@ int main(){
  reset();Fixture cold;onTick=[&]{cold.observe();};cold.run();assert(!cold.pending&&cold.published&&!cold.published->partial&&cold.published->processedProbes==W&&cold.completedBaseId==1);assert(cold.observed.front().value->partial&&cold.observed.front().value->processedProbes==8&&cold.observed.front().at==8);const unsigned interval=NorthlightGI::ProbePublicationCadence::IntervalMs;assert(cold.observed.size()>5&&cold.observed.size()<=W/interval+3);
  DWORD lastTick=0;for(const auto& o:cold.observed)if(o.value->partial){if(lastTick)assert(o.at-lastTick>=interval);lastTick=o.at;assert(o.value->lightingGeneration==1);}cold.immutable();
  assert(cold.published->lightAttachments==cold.sceneLightAttachments);
+ // Streaming a replacement BVH must retain visibility with its display-only
+ // colour until that exact world point is solved in the new generation.
+ {reset();Fixture region;region.run();auto oldRegion=region.published;
+  region.bvh=std::make_shared<NorthlightGI::BVH>();std::string error;assert(region.bvh->build({},error));
+  region.next({8,0,0});region.observed.clear();onTick=[&]{region.observe();};region.run();
+  unsigned retained=0;for(const auto& o:region.observed)if(o.value->lightingGeneration==2&&o.value->partial){
+   for(size_t i=0;i<o.value->atlas.size();++i){const auto& before=oldRegion->atlas[i];const auto& after=o.value->atlas[i];
+    if(before.occupied&&after.occupied&&before.key==after.key){assert(after.probe.localVisibility&&"GI_VISIBILITY_LOST");retained+=after.probe.localVisibility==before.probe.localVisibility;}}
+   break;
+  }assert(retained>100);region.immutable();onTick={};}
  // Disabling renderer/GI work during a solve must fence partial and final publication.
  for(unsigned mode=0;mode<2;++mode){reset();Fixture disabled;onTick=[&]{disabled.observe();};afterSolve=[&]{if(solveCalls==100){if(mode)disabled.request.giEnabled=false;else disabled.request.enabled=false;}};disabled.run(1);
   assert(disabled.completedBaseId==0&&disabled.superseded==1&&disabled.published&&disabled.published->partial);
@@ -153,19 +170,23 @@ int main(){
 }
 '''.replace('SNAPSHOT',snapshot).replace('BODY',body)
 report={'status':'pass','game_launched':False,'render_device_created':False,'scope':'actual production solve/publication tail; deterministic request/clock fixture; geometry and actor loaders not executed','runs':[],'sha256':{n:hashlib.sha256(fp.tracked(n).read_bytes()).hexdigest() for n in ['world_renderer.h','world_probe_progress.h','world_dynamic_probes.h','world_probe_cache.h','world_gi.h','world_gi.cpp','test_progressive_gi_worker.py','test_world_probe_progress.cpp']}}
-with tempfile.TemporaryDirectory(prefix='northlight-progressive-gi-') as tmp:
- path=Path(tmp);(path/'worker.cpp').write_text(fixture)
- for target in ['worker','helpers','no-final-fallback','clear-after-final']:
-  if target in ('no-final-fallback','clear-after-final'):
-   broken=fixture.replace('NorthlightGI::retainProbeDisplayFallback(result->atlas,displayFallback);','') if target=='no-final-fallback' else fixture.replace('published=result;publicationCadence.published(GetTickCount());','published=result;displayFallback.clear();publicationCadence.published(GetTickCount());')
-   assert broken!=fixture;(path/'negative.cpp').write_text(broken)
-  cpp=path/'worker.cpp' if target=='worker' else HERE/'test_world_probe_progress.cpp'
-  if target in ('no-final-fallback','clear-after-final'):cpp=path/'negative.cpp'
-  for mode,flags in ([('O2',['-O2'])] if target in ('no-final-fallback','clear-after-final') else [('O2',['-O2']),('asan-ubsan',['-O1','-g','-fsanitize=address,undefined','-fno-omit-frame-pointer'])]):
-   command=['clang++','-std=c++17',*flags,*fp.test_include_flags(),str(cpp),str(fp.src('world_gi.cpp')),'-o',str(path/'test')]
-   subprocess.run(command,check=True)
-   result=subprocess.run([str(path/'test')],capture_output=True,text=True,cwd=tmp)
-   if target in ('no-final-fallback','clear-after-final'):assert result.returncode and 'GI_FINAL_COVERAGE_LOST' in result.stderr
-   else:result.check_returncode()
-   print(target,mode,result.stdout.strip());report['runs'].append({'target':target,'mode':mode,'stdout':result.stdout,'command':command})
+path=fp.output_dir();(path/'worker.cpp').write_text(fixture)
+for target in ['worker','helpers','activation','packing','no-final-fallback','clear-after-final','drop-visibility']:
+ negative=target in ('no-final-fallback','clear-after-final','drop-visibility')
+ if negative:
+  if target=='drop-visibility':broken=fixture.replace('dynamicProbes.reset(actors?&actors->scene():nullptr);','for(auto& entry:displayFallback)entry.probe.localVisibility.reset();dynamicProbes.reset(actors?&actors->scene():nullptr);')
+  else:broken=fixture.replace('NorthlightGI::retainProbeDisplayFallback(result->atlas,displayFallback);','') if target=='no-final-fallback' else fixture.replace('published=result;publicationCadence.published(GetTickCount());','published=result;displayFallback.clear();publicationCadence.published(GetTickCount());')
+  assert broken!=fixture;(path/'negative.cpp').write_text(broken)
+ cpp=path/'worker.cpp' if target=='worker' else HERE/({'activation':'test_probe_activation.cpp','packing':'test_probe_texture_upload.cpp'}.get(target,'test_world_probe_progress.cpp'))
+ if negative:cpp=path/'negative.cpp'
+ windows=sys.platform=='win32'
+ for mode,flags in ([('O2',['-O2'])] if negative or windows else [('O2',['-O2']),('asan-ubsan',['-O1','-g','-fsanitize=address,undefined','-fno-omit-frame-pointer'])]):
+  exe=path/('test.exe' if windows else 'test')
+  compiler=[str(fp.zig()),'c++','-target','x86-windows-gnu'] if windows else ['clang++']
+  command=[*compiler,'-std=c++17','-UNDEBUG',*flags,*fp.test_include_flags(),str(cpp),str(fp.src('world_gi.cpp')),'-o',str(exe)]
+  subprocess.run(command,check=True,env=fp.zig_env())
+  result=subprocess.run([str(exe)],capture_output=True,text=True,cwd=path)
+  if negative:assert result.returncode and ('GI_VISIBILITY_LOST' if target=='drop-visibility' else 'GI_FINAL_COVERAGE_LOST') in result.stderr
+  else:result.check_returncode()
+  print(target,mode,result.stdout.strip());report['runs'].append({'target':target,'mode':mode,'stdout':result.stdout,'command':command})
 (fp.output_dir()/'progressive-gi-validation.json').write_text(json.dumps(report,indent=2)+'\n')

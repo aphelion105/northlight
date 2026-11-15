@@ -65,31 +65,31 @@ float transitionShadowMap(float3 lp,bool useNear,bool previous,float2 gradient,b
     float2 base=floor(pixel-reach)+1,fraction=pixel-base;
     float size=ceil(2*reach),start=0;
     float visibility=0,total=0,gaps=0,blockers=0;
-    // The exit lives in the loop condition: Microsoft's compiler turned the nested bare break into break_ne with identical operands.
-    [loop]for(int y=0;y<6&&y<size;++y){
-    float rowOffset=y+start,rowUV=(base.y+rowOffset+.5)*DepthParams.w;
-    float rowWeight=max(reach-abs(rowOffset-fraction.y),0);
-    [loop]for(int x=0;x<6&&x<size;++x){
-        float offset=x+start;
-        float2 tapUV=float2((base.x+offset+.5)*DepthParams.w,rowUV);
-        float w=max(reach-abs(offset-fraction.x),0)*rowWeight;
-        // Compare each sample against the depth of the receiver's plane there.
-        float expected=receiver+dot(gradient,tapUV-uv);
-        float stored=transitionDepth(tapUV,useNear,previous,expected);
-        visibility+=(expected<=stored?1:0)*w;total+=w;
-        if(soft&&stored<expected){gaps+=expected-stored;++blockers;}
-    }
+    const float widest=4.25;
+    bool searchWide=soft&&useNear&&shadowParameters().y>0;
+    // Contact and blocker-search phases share the expensive epoch comparison.
+    // Their row-major sample order and accumulators remain unchanged.
+    [loop]for(int phase=0;phase<2;++phase){
+      bool wide=phase==1;
+      [branch]if(!wide||searchWide){
+        float count=wide?4:size;
+        [loop]for(int y=0;y<6&&y<count;++y){
+          float rowOffset=y+start,rowUV=(base.y+rowOffset+.5)*DepthParams.w;
+          float rowWeight=max(reach-abs(rowOffset-fraction.y),0);
+          [loop]for(int x=0;x<6&&x<count;++x){
+            float offset=x+start;
+            float2 tapUV=float2((base.x+offset+.5)*DepthParams.w,rowUV);
+            float w=max(reach-abs(offset-fraction.x),0)*rowWeight;
+            if(wide){float2 tap=floor(pixel+(float2(x,y)-1.5)*(widest/1.5)+.5);tapUV=(tap+.5)*DepthParams.w;}
+            float expected=receiver+dot(gradient,tapUV-uv);
+            float stored=transitionDepth(tapUV,useNear,previous,expected);
+            if(!wide){visibility+=(expected<=stored?1:0)*w;total+=w;}
+            if(soft&&stored<expected){gaps+=expected-stored;++blockers;}
+          }
+        }
+      }
     }
     if(soft&&useNear&&shadowParameters().y>0){
-        // Keep every contact tap above, then search the wider support. The
-        // separation uses the receiver plane, so slopes do not create softness.
-        const float widest=4.25;
-        [loop]for(int by=0;by<4;++by)[loop]for(int bx=0;bx<4;++bx){
-            float2 tap=floor(pixel+(float2(bx,by)-1.5)*(widest/1.5)+.5);
-            float2 tapUV=(tap+.5)*DepthParams.w;
-            float expected=receiver+dot(gradient,tapUV-uv),stored=transitionDepth(tapUV,useNear,previous,expected);
-            if(stored<expected){gaps+=expected-stored;++blockers;}
-        }
         float texelWorld=2*(useNear?DepthParams.y:DepthParams.z)*DepthParams.w;
         // The fixed shadow span/radius and texel size are positive.
         float softReach=clamp(.04*shadowParameters().y*gaps/max(blockers,1)/(ShadowRange.x*texelWorld),reach,widest);
@@ -121,7 +121,7 @@ float2 transitionPlane(float3 normal,float confidence,float facing,float radius,
     float2 plane=float2(dot(normal,float3(m[0].x,m[1].x,m[2].x)),-dot(normal,float3(m[0].y,m[1].y,m[2].y)))*radius;
     return plane*(confidence*2*ShadowRange.x/(facing<0?-max(abs(facing),.15):max(abs(facing),.15)));
 }
-float directionalShadowFade(float3 p,float3 normal,float confidence,bool previous){
+float directionalShadowFade(float3 p,float3 normal,float confidence,bool previous,float receiverScale=1){
     float cnFacing=dot(normal,CurrentNearDirection.xyz),cfFacing=dot(normal,CurrentFarDirectionFallback.xyz);
     float pnFacing=dot(normal,PreviousSunDirection.xyz),pfFacing=dot(normal,PreviousFarDirection.xyz);
     float cnLift=(1-saturate(abs(cnFacing)))*confidence*2/1024,cfLift=(1-saturate(abs(cfFacing)))*confidence*2/1024;
@@ -130,9 +130,13 @@ float directionalShadowFade(float3 p,float3 normal,float confidence,bool previou
     // baseline, p's final use is the far affine point, never a matrix selector.
     float3 cn=affinePoint(p+normal*(cnLift*DepthParams.y),CurrentNearMatrix);
     float3 cf=affinePoint(p+normal*(cfLift*DepthParams.z),CurrentFarMatrix);
+    cn.z-=shadowReceiverAllowance(confidence,receiverScale,cnLift*DepthParams.y);
+    cf.z-=shadowReceiverAllowance(confidence,receiverScale,cfLift*DepthParams.z);
     float3 pnCover=affinePoint(p,PreviousNearMatrix),pfCover=affinePoint(p,PreviousFarMatrix);
     float3 pn=affinePoint(p+normal*(pnLift*DepthParams.y),PreviousNearMatrix);
     float3 pf=affinePoint(p+normal*(pfLift*DepthParams.z),PreviousFarMatrix);
+    pn.z-=shadowReceiverAllowance(confidence,receiverScale,pnLift*DepthParams.y);
+    pf.z-=shadowReceiverAllowance(confidence,receiverScale,pfLift*DepthParams.z);
     bool nearHistory=!any(abs(pnCover*float3(1,1,2)-float3(0,0,1))>.99);
     bool farHistory=!any(abs(pfCover*float3(1,1,2)-float3(0,0,1))>.99);
     float blend=lerp(shadowNearBlend(pn),shadowNearBlend(cn),ShadowTransition.x);
@@ -145,7 +149,7 @@ float directionalShadowFade(float3 p,float3 normal,float confidence,bool previou
             row_major float4x4 m=nearCascade?(nearHistory?PreviousNearMatrix:CurrentNearMatrix):(farHistory?PreviousFarMatrix:CurrentFarMatrix);
             float facing=nearCascade?(nearHistory?pnFacing:cnFacing):(farHistory?pfFacing:cfFacing);
             float2 plane=transitionPlane(normal,confidence,facing,radius,m);
-            result+=transitionShadowMap(nearCascade?q:farQ,nearCascade,nearCascade?nearHistory:farHistory,plane*radius,ShadowTransition.z>.5)*weight;
+            result+=transitionShadowMap(nearCascade?q:farQ,nearCascade,nearCascade?nearHistory:farHistory,plane*radius,ShadowTransition.z>.5)*weight*shadowReceiverFacing(facing,confidence);
         }
     }
     return result;
@@ -198,17 +202,20 @@ float fogShadowProjected(float3 q){return fogShadowFade(q,affinePoint(q,CurrentF
 // Keep the current projections as direct constant-bank expressions, like the
 // baseline. Selecting a whole matrix inside the loop changes native DX9 JIT
 // contraction/order and can shift a 1024-map PCF phase by one float ULP.
-float currentDirectionalShadowFade(float3 p,float3 normal,float confidence){
+float currentDirectionalShadowFade(float3 p,float3 normal,float confidence,float receiverScale=1){
     // Consume the old projection first so p's final use is the current far
     // projection, matching the baseline's affine accumulation order.
     float oldLift=(1-saturate(abs(dot(normal,PreviousSunDirection.xyz))))*confidence*2/1024;
     float3 oldNear=affinePoint(p+normal*(oldLift*DepthParams.y),PreviousNearMatrix);
+    oldNear.z-=shadowReceiverAllowance(confidence,receiverScale,oldLift*DepthParams.y);
     float oldBlend=shadowNearBlend(oldNear);
     float nearFacing=dot(normal,CurrentNearDirection.xyz),farFacing=dot(normal,CurrentFarDirection.xyz);
     float nearLift=(1-saturate(abs(nearFacing)))*confidence*2/1024;
     float farLift=(1-saturate(abs(farFacing)))*confidence*2/1024;
     float3 q=affinePoint(p+normal*(nearLift*DepthParams.y),NearMatrix);
     float3 farQ=affinePoint(p+normal*(farLift*DepthParams.z),FarMatrix);
+    q.z-=shadowReceiverAllowance(confidence,receiverScale,nearLift*DepthParams.y);
+    farQ.z-=shadowReceiverAllowance(confidence,receiverScale,farLift*DepthParams.z);
     float blend=lerp(oldBlend,shadowNearBlend(q),ShadowTransition.x);
     float2 nearPlane=float2(dot(normal,float3(NearMatrix[0].x,NearMatrix[1].x,NearMatrix[2].x)),-dot(normal,float3(NearMatrix[0].y,NearMatrix[1].y,NearMatrix[2].y)))*DepthParams.y;
     nearPlane*=confidence*2*ShadowRange.x/(nearFacing<0?-max(abs(nearFacing),.15):max(abs(nearFacing),.15));
@@ -218,23 +225,23 @@ float currentDirectionalShadowFade(float3 p,float3 normal,float confidence){
     [loop]for(int cascade=0;cascade<2;++cascade){
         bool nearCascade=cascade==0;float radius=nearCascade?DepthParams.y:DepthParams.z;
         float weight=(nearCascade?1-blend:blend)*(nearCascade?ShadowTransition.x:ShadowTransition.y);
-        [branch]if(weight>0)result+=shadowMapFiltered(nearCascade?q:farQ,nearCascade,radius,(nearCascade?nearPlane:farPlane)*radius,ShadowTransition.z>.5)*weight;
+        [branch]if(weight>0)result+=shadowMapFiltered(nearCascade?q:farQ,nearCascade,radius,(nearCascade?nearPlane:farPlane)*radius,ShadowTransition.z>.5)*weight*shadowReceiverFacing(nearCascade?nearFacing:farFacing,confidence);
     }
     return result;
 }
 float4 DirectionalShadowTransitionCurrent(float2 uv:TEXCOORD0):COLOR0 {
  float2 screen=uv;uv=depthUV(uv);float depth=normalizedDepth(uv);
  if(depth>=.99999||waterDistance(uv,depth)>0)return 1;
- float4 normal=tex2Dlod(NormalBuffer,float4(screen,0,0));
- float3 p=worldPosition(uv,depth)+normal.xyz*(.08*normal.w);
- float v=currentDirectionalShadowFade(p,normal.xyz,normal.w);return float4(v,v,v,1);
+ float4 normal=shadowReceiver(screen,depth,tex2Dlod(NormalBuffer,float4(screen,0,0)));
+ float3 p=worldPosition(uv,depth)+normal.xyz*(.08*saturate(normal.w));
+ float v=currentDirectionalShadowFade(p,normal.xyz,saturate(normal.w),normal.w);return float4(v,v,v,1);
 }
 float4 DirectionalShadowTransitionPrevious(float2 uv:TEXCOORD0):COLOR0 {
  float2 screen=uv;uv=depthUV(uv);float depth=normalizedDepth(uv);
  if(depth>=.99999||waterDistance(uv,depth)>0)return 0;
- float4 normal=tex2Dlod(NormalBuffer,float4(screen,0,0));
- float3 p=worldPosition(uv,depth)+normal.xyz*(.08*normal.w);
- float v=directionalShadowFade(p,normal.xyz,normal.w,true);return float4(v,v,v,1);
+ float4 normal=shadowReceiver(screen,depth,tex2Dlod(NormalBuffer,float4(screen,0,0)));
+ float3 p=worldPosition(uv,depth)+normal.xyz*(.08*saturate(normal.w));
+ float v=directionalShadowFade(p,normal.xyz,saturate(normal.w),true,normal.w);return float4(v,v,v,1);
 }
 float4 WorldFogTransition(float2 uv:TEXCOORD0):COLOR0 {return WorldFog(uv);}
 float4 WorldFogActorTransition(float2 uv:TEXCOORD0):COLOR0 {return WorldFogActor(uv);}

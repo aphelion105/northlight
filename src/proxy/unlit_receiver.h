@@ -1,6 +1,7 @@
 #pragma once
 #include "actor_deformation.h"
 #include "name_stencil.h"
+#include "shader_tags.h"
 
 namespace NorthlightUnlitReceiver {
 constexpr unsigned long Bit=0x40;
@@ -28,6 +29,13 @@ inline bool prelitShader(const uint32_t* words,size_t count,bool wmo){
     for(const auto& op:color.kernel.ops)for(int i=0;i<op.operands;++i){const auto& s=op.source[i];
         if(s.kind==2&&(s.relative||(s.index>=10&&s.index<=12&&s.definition<0)))return false;}
     return vertexColor;
+}
+// Material edits may change an interior shader's identity without changing
+// its coordinates or baked RGB. Use the same admission as world capture, then
+// prove RGB separately; coordinate proof alone never grants prelit lighting.
+inline bool prelitWorldShader(const uint32_t* words,size_t count,uint64_t hash){
+    const bool world=(NorthlightShaderTags::triggerTags(hash,words,count*sizeof(*words))&NorthlightShaderTags::kWmo)!=0;
+    return prelitShader(words,count,world);
 }
 using namespace NorthlightNameStencil;
 inline constexpr Set Mark[]={{StencilEnable,1},{StencilFunc,kCmpAlways},{StencilPass,kOpReplace},{StencilFail,kOpKeep},{StencilZFail,kOpKeep},{StencilRef,Bit},{StencilWriteMask,Bit|PrelitBit|kBit},{TwoSidedStencilMode,0}};

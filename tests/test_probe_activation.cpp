@@ -10,7 +10,8 @@ int main(){
     for(unsigned n=0;n<1000;++n){a.probe.sh[0].x=float(n);assert(activation.update(i,a,2+n*.01f)==1);}
     auto b=a;b.key.x+=16;assert(NorthlightGI::probeAtlasIndex(b.key)==i);
     assert(activation.update(i,b,20)==20);assert(activation.update(i,a,21)==21);
-    a.probe.valid=false;assert(activation.update(i,a,22)==-1);
+    a.probe.valid=false;assert(activation.update(i,a,22)==-2);
+    a.occupied=false;assert(activation.update(i,a,22)==-1);a.occupied=true;
     a.probe.valid=true;assert(activation.update(i,a,23)==23);
     activation.begin("Kalimdor");assert(activation.update(i,a,24)==24);
     activation.reset();activation.begin("Kalimdor");assert(activation.update(i,a,25)==25);

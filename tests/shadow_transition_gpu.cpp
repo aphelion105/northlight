@@ -78,7 +78,7 @@ static float surfacePCF(V3 q,bool nearCascade,bool old,const Map& map,const Map&
     return 1+(sum/std::max(total,.0001f)-1)*edge;
 }
 static float referenceDirect(V3 p,const Map& map,const Map& oldMap,const Map& dynamic,const Constants& c,const std::array<V3,4>* inputs=nullptr,const std::array<V3,2>* covers=nullptr) {
-    const V3 n{c[116][0],c[116][1],c[116][2]};const float confidence=c[116][3];
+    const V3 n{c[116][0],c[116][1],c[116][2]};const float confidence=n[0]*n[0]+n[1]*n[1]+n[2]*n[2]>.5f?1.f:0.f;
     auto projected=[&](bool old,bool nearCascade,V3& gradient){
         const unsigned m=old?(nearCascade?80:84):(nearCascade?7:11),di=old?(nearCascade?88:98):(nearCascade?16:99);
         const float radius=c[2][nearCascade?1:2],facing=n[0]*c[di][0]+n[1]*c[di][1]+n[2]*c[di][2];
@@ -97,6 +97,8 @@ static float referenceDirect(V3 p,const Map& map,const Map& oldMap,const Map& dy
     const float blend=oldBlend*(1-c[89][0])+newBlend*c[89][0];float result=0;
     for(unsigned cascade=0;cascade<2;++cascade){const bool nearCascade=cascade==0;V3 ng{},og{};auto nq=projected(false,nearCascade,ng),oq=projected(true,nearCascade,og);
         float nv=surfacePCF(nq,nearCascade,false,map,dynamic,c,ng),ov=surfacePCF(oq,nearCascade,true,oldMap,dynamic,c,og);
+        auto hemisphere=[&](unsigned di){return sat(1+32*confidence*(n[0]*c[di][0]+n[1]*c[di][1]+n[2]*c[di][2]));};
+        nv*=hemisphere(nearCascade?16:99);ov*=hemisphere(nearCascade?88:98);
         auto cover=covers?(*covers)[nearCascade?0:1]:point(p,c,nearCascade?80:84);if(std::max({std::fabs(cover[0]),std::fabs(cover[1]),std::fabs(2*cover[2]-1)})>.99f)ov=nv;
         const float f=c[89][cascade];result+=(ov*(1-f)+nv*f)*(nearCascade?1-blend:blend);
     }return result;
@@ -281,7 +283,7 @@ int main(int argc,char** argv){
             c[89]={weights[0],weights[1],float(soft),0};gpu.bind(1,depth);gpu.bind(11,zero);const auto productionPixels=gpu.combined(current,previous,c,W,H);bindQueries();const auto pixels=gpu.combined(queryCurrent,queryPrevious,c,W,H);
             for(unsigned i=0;i<pixels.size();i+=4){productionQueryInputError=std::max(productionQueryInputError,std::fabs(double(productionPixels[i])-pixels[i]));failures+=!std::isfinite(productionPixels[i])||productionPixels[i]<-1e-6f||productionPixels[i]>1.000001f;}
             for(unsigned y=0;y<H;++y)for(unsigned x=0;x<W;++x){V3 p{};for(unsigned k=0;k<3;++k)p[k]=inputPoints[(y*W+x)*4+k];
-                auto cpu=receiver(x,y,W,H,c,rawDepth);for(unsigned k=0;k<3;++k){cpu[k]+=c[116][k]*.08f*c[116][3];receiverMaxError=std::max(receiverMaxError,std::fabs(double(cpu[k])-p[k]));}
+                auto cpu=receiver(x,y,W,H,c,rawDepth);for(unsigned k=0;k<3;++k){cpu[k]+=c[116][k]*.08f;receiverMaxError=std::max(receiverMaxError,std::fabs(double(cpu[k])-p[k]));}
                 const float originalReference=referenceDirect(cpu,unionMap,oldStatic,dynamic,c);
                 std::array<V3,4> query{};std::array<V3,2> cover{};for(unsigned a=0;a<4;++a)for(unsigned k=0;k<3;++k)query[a][k]=projections[a][(y*W+x)*4+k];for(unsigned a=0;a<2;++a)for(unsigned k=0;k<3;++k)cover[a][k]=coverPoints[a][(y*W+x)*4+k];
                 const float expected=referenceDirect(p,unionMap,oldStatic,dynamic,c,&query,&cover);const float actual=pixels[(y*W+x)*4];const double originalError=std::fabs(double(actual)-originalReference);originalScalarMaxError=std::max(originalScalarMaxError,originalError);

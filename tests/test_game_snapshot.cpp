@@ -140,9 +140,12 @@ static void requireWritableSnapshot(bool ok){if(!ok){std::fputs("SNAPSHOT_WRITAB
 static void testWritableReplayRange(const CodeRange& range){
     // Explicit client globals form an independent oracle: their captured values
     // must remain frozen even when a later writable section is executable.
-    for(std::uintptr_t address:{0xb7436cu,0xc5df88u,0xce06d0u,0xd38b00u,0xcd7544u})requireWritableSnapshot(!range.contains(address,4));
+    for(std::uintptr_t address:{0xb7436cu,0xc5df88u,0xce06d0u,0xd38b00u,0xcd7544u,
+            0xcd85dcu,0xd43154u,0xb1d51cu})requireWritableSnapshot(!range.contains(address,4));
     requireWritableSnapshot(range.contains(0x4f6650,4)&&!range.contains(range.hi-2,4));
     Memory memory;memory.camera();const char map[64]="Northrend";memory.put(0xce06d0,map,sizeof map);memory.put32(0x4f6650,0x12345678);
+    namespace Shadow=NorthlightNativeShadowControl;
+    memory.put32(Shadow::CVar,0x3001000);memory.put32(0x3001030,5);memory.put32(Shadow::Quality,0);memory.put32(Shadow::Dirty,0);
     const std::uint32_t crossing=0x11223344;memory.put(range.hi-2,&crossing,4);
     auto snapshot=fresh();auto live=[&](std::uintptr_t address,void* out,std::size_t bytes){return memory.read(address,out,bytes);};
     std::vector<Spy> captured,replayed;
@@ -155,8 +158,11 @@ static void testWritableReplayRange(const CodeRange& range){
      requireWritableSnapshot(!snapshotRead(*snapshot,0xd38000,&value,4,live,range));}
     requireWritableSnapshot(snapshot->usable()&&snapshot->has(0xb7436c,4)&&snapshot->has(0xce06d0,64)&&snapshot->has(0xd38b00,0x388)&&snapshot->has(0xcd7544,4)&&snapshot->has(0xd38000,4));
     requireWritableSnapshot(!snapshot->has(0x4f6650,4)&&!snapshot->has(0x4f6654,4)&&snapshot->has(range.hi-2,4));
+    requireWritableSnapshot(snapshot->has(Shadow::CVar,4)&&snapshot->has(Shadow::Quality,4)&&snapshot->has(Shadow::Dirty,4));
     memory.clobber();memory.put32(0x4f6650,0x87654321);memory.put32(0x4f6654,99);memory.put32(0xd38000,88);memory.live=0;
     {ScopedPlayback playback(*snapshot);readState(replayed);std::uint32_t value=0;
+     const auto shadow=Shadow::sampleFrame(snapshot.get(),true,live);
+     requireWritableSnapshot(shadow.readable&&shadow.runtime==0&&shadow.configured==5&&shadow.pending==0);
      requireWritableSnapshot(snapshotRead(*snapshot,0x4f6650,&value,4,live,range)&&value==0x87654321);
      requireWritableSnapshot(snapshotRead(*snapshot,0x4f6654,&value,4,live,range)&&value==99);
      value=0xa5a5a5a5;requireWritableSnapshot(!snapshotRead(*snapshot,0xd38000,&value,4,live,range)&&value==0xa5a5a5a5&&snapshot->misses==0);}
@@ -170,6 +176,13 @@ static void testWritableExecutable(){
     const std::uint32_t sections[4][3]={{6149043,0x1000,0x60000020},{878201,0x5df000,0x40000040},{3253512,0x6b6000,0xc0000040},{4096,0x9d1000,0xe0000040}};
     for(unsigned i=0;i<4;++i){put32(table+i*40+8,sections[i][0]);put32(table+i*40+12,sections[i][1]);put32(table+i*40+36,sections[i][2]);}
     CodeRange range;requireWritableSnapshot(parseImageCode(image,sizeof image,0x400000,range));testWritableReplayRange(range);
+    // The foreign QA client's code envelope ends at 0xe100b3. A readonly
+    // appended section must not make the intervening globals bypass snapshots.
+    put32(table+3*40+8,0xb3);put32(table+3*40+12,0xa10000);put32(table+3*40+36,0x60000020);
+    requireWritableSnapshot(parseImageCode(image,sizeof image,0x400000,range));
+    requireWritableSnapshot(range.hi==0xe100b3&&range.count==2&&range.contains(0xe10000,0xb3));
+    requireWritableSnapshot(!range.contains(0xe0ffff,2)&&!range.contains(0xe100b2,2)&&!range.contains(0x9de3b2,0x432000));
+    testWritableReplayRange(range);
 }
 static void testActualPe(const char* path){
     std::ifstream file(path,std::ios::binary);std::array<unsigned char,0x1000> image{};requireWritableSnapshot(bool(file.read(reinterpret_cast<char*>(image.data()),image.size())));

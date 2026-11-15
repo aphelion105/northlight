@@ -2,6 +2,9 @@
 float4 TransitionWorldPoint(float2 uv:TEXCOORD0):COLOR0 {
  float2 screen=uv;uv=depthUV(uv);float depth=normalizedDepth(uv);
  float4 n=tex2Dlod(NormalBuffer,float4(screen,0,0));
+ // Uniform-normal fixtures have no crease allowance. Plane validity is
+ // independent of the shading-confidence flag, including its zero mode.
+ n.w=dot(n.xyz,n.xyz)>.5?1:0;
  return float4(worldPosition(uv,depth)+n.xyz*(.08*n.w),1);
 }
 
@@ -9,6 +12,7 @@ struct ProjectionPair {float4 nearPoint:COLOR0;float4 farPoint:COLOR1;};
 ProjectionPair projectedReceiver(float2 uv,bool previous,bool lift){
  float2 screen=uv;uv=depthUV(uv);float depth=normalizedDepth(uv);
  float4 n=tex2Dlod(NormalBuffer,float4(screen,0,0));
+ n.w=dot(n.xyz,n.xyz)>.5?1:0;
  float3 p=worldPosition(uv,depth)+n.xyz*(.08*n.w);
  float nearFacing=dot(n.xyz,previous?PreviousSunDirection.xyz:CurrentNearDirection.xyz);
  float farFacing=dot(n.xyz,previous?PreviousFarDirection.xyz:CurrentFarDirection.xyz);
@@ -38,6 +42,7 @@ float queryVisibility(float2 uv,bool previous){
  float3 nc=tex2Dlod(QueryCoverNear,float4(uv,0,0)).xyz,fc=tex2Dlod(QueryCoverFar,float4(uv,0,0)).xyz;
  bool nh=!any(abs(nc*float3(1,1,2)-float3(0,0,1))>.99),fh=!any(abs(fc*float3(1,1,2)-float3(0,0,1))>.99);
  float4 n=tex2Dlod(NormalBuffer,float4(uv,0,0));
+ n.w=dot(n.xyz,n.xyz)>.5?1:0;
  float blend=lerp(shadowNearBlend(pn),shadowNearBlend(cn),ShadowTransition.x),result=0;
  [loop]for(int cascade=0;cascade<2;++cascade){
   bool nearCascade=cascade==0,history=previous&&(nearCascade?nh:fh);float radius=nearCascade?DepthParams.y:DepthParams.z;

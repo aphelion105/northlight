@@ -45,6 +45,7 @@
       "test_native_direct_ownership.py",
       "test_world_shader_contract.py",
       "test_world_snapshot_domain.py",
+      "test_native_shadow_control.py",
       "test_world_environment.py",
       "test_weather_shelter.py",
       "test_weather_exterior.py",
@@ -53,7 +54,10 @@
       "test_renderer_assets_native.py",
       "test_renderer_assets_dll.py",
       "test_renderer_link.py",
-      "test_world_shader_contract_client.py"
+      "test_world_shader_contract_client.py",
+      "test_prelit_wmo_client.py",
+      "test_progressive_gi_worker.py",
+      "test_probe_cascade.py"
     ]
   },
   "gpu": {
@@ -70,6 +74,7 @@
       "test_m2_material_preflight.py",
       "test_material_admission_source_gpu.py",
       "test_world_screen_effects_gpu.py",
+      "test_prelit_receiver_gpu.py",
       "test_shared_directional_gpu.py",
       "test_luxvelum_optimizations_gpu.py",
       "test_native_local_light_gpu.py",
@@ -97,7 +102,9 @@
       "test_world_composite_inputs_gpu.py",
       "test_removal_temporal_merge_gpu.py",
       "test_removal_zero_weight_gpu.py",
-      "test_world_temporal_merge_gpu.py"
+      "test_world_temporal_merge_gpu.py",
+      "test_gi_residency_gpu.py",
+      "test_shadow_receiver_gpu.py"
     ]
   },
   "shadow-experiments": {

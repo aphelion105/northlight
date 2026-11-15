@@ -183,6 +183,12 @@ and off-camera casters use the existing camera-independent geometry path; actor
 visibility also gates this daylight. Missing coverage/resources retain authored
 lighting. GI still replaces ambient only on ordinary lit receivers: baked WMO
 lighting is not separable into ambient, lamps and emissive material here.
+Receiver registration accepts either a known WMO identity or the same rigid
+coordinate proof used by world capture, followed by an independent baked-RGB
+dependency proof. A material edit must not remove the prelit mask while its
+geometry remains admitted. Normal/global-light dependencies still reject prelit
+classification, and known self-lit M2 receivers retain their separate mask.
+The sampled `NAMEMASK` record includes prelit and unlit draw counts.
 
 The world environment validates coherent sky samples in their own origin frame.
 A source witnessed near the camera may continue during a continuous same-map

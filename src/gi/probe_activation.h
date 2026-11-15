@@ -11,7 +11,9 @@ class NorthlightProbeActivation {
     std::vector<Slot> slots;
     std::string map;
     static float updateSlot(Slot& slot,const NorthlightGI::ProbeAtlasEntry& entry,float now){
-        if(!entry.occupied||!entry.probe.valid){if(slot.valid)slot.valid=false;return -1.f;}
+        // A solved point inside solid geometry still establishes grid coverage.
+        // -1 means missing; -2 means resident but unable to supply radiance.
+        if(!entry.occupied||!entry.probe.valid){if(slot.valid)slot.valid=false;return entry.occupied?-2.f:-1.f;}
         // Compare all key components without short-circuiting resident probes.
         if(!slot.valid||((std::uint32_t(slot.key.x)^std::uint32_t(entry.key.x))|(std::uint32_t(slot.key.y)^std::uint32_t(entry.key.y))|(std::uint32_t(slot.key.z)^std::uint32_t(entry.key.z)))!=0){slot.key=entry.key;slot.born=now;slot.valid=true;}
         return slot.born;

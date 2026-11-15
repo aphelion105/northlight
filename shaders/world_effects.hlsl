@@ -32,7 +32,7 @@ sampler2D HdrLinearBase : register(s2); // HDR composition: decoded/expanded leg
 float4 RegionalFogInfo : register(c31); // world node0 XY, inverse field span, night fraction
 float4 WaterInfo : register(c30);
 float4 RemovalInfo : register(c30); // RemovalSmooth, TemporalLight: y 1 when a lit source is drawn, z 1/(summed source weight), w disc radius in half-res pixels at view distance 1
-sampler2D ProbeMetadata : register(s10); // exact integer world-cell xyz, first-valid time w (-1 invalid)
+sampler2D ProbeMetadata : register(s10); // exact world-cell xyz; w: born time, -1 missing, -2 solved inside geometry
 // 0.3.209 (task 29): ActorShadow only: the 64x64 tile minimum of the actor map (ActorTiles writes it; R32F, POINT, CLAMP)
 sampler2D ActorTileMap : register(s10);
 sampler2D AmbientOcclusion : register(s10); // 0.3.174 TemporalLight/WorldComposite: half-res contact AO (a), pre-weighted bloom (rgb), LINEAR; neutral (0,0,0,1) unless the world composites
@@ -178,7 +178,39 @@ float3 surfaceNormal(float2 uv,float d) {
 // the optional bank for offline/legacy callers that only upload c0..c67.
 float4 ShadowTuning : register(c115);
 float3 shadowParameters(){return ShadowTuning.w>.5?ShadowTuning.xyz:float3(1,.5,1);}
-float shadowRemovalLimit(){return .45+.4*saturate(shadowParameters().x-1);}
+// The shared lighting buffer includes ambient replacement. A direct-shadow
+// art limit must not restore native ambient inside a measured dark room.
+// GridInfo.y is zero when the GI pass is disabled, including the live toggle.
+float shadowRemovalLimit(){return max(.45+.4*saturate(shadowParameters().x-1),saturate(GridInfo.y));}
+
+// Shading confidence is not geometric validity: a selected one-sided normal
+// still needs a receiver plane. Removing its plane/lift creates acne at joins.
+// At a crease the filtered shading plane spans two facets. Enlarge only that
+// receiver's depth allowance, bounded by three existing receiver offsets.
+// Reject sky and depth breaks so an unrelated silhouette cannot set the scale.
+float4 shadowReceiver(float2 screen,float depth,float4 normal) {
+    float bend=0,z=viewDistance(depth);float2 center=depthUV(screen);
+    [loop]for(int k=0;k<4;++k){
+        float2 step=k<2?float2((k==0?-1:1)/ScreenSize.z,0):float2(0,(k==2?-1:1)/ScreenSize.w);
+        float4 other=tex2Dlod(NormalBuffer,float4(screen+step,0,0));
+        float otherZ=viewDistance(normalizedDepth(center+step));
+        float3 delta=normal.xyz-other.xyz;
+        if(other.w<=1&&abs(otherZ-z)<max(.05,z*.01))bend=max(bend,dot(delta,delta));
+    }
+    float valid=dot(normal.xyz,normal.xyz)>.5?1:0;
+    return float4(normal.xyz,valid*(1+3*saturate(4*sqrt(bend))));
+}
+float shadowReceiverAllowance(float confidence,float scale,float lift) {
+    // Extra allowance follows the light ray. Enlarging the normal displacement
+    // crosses the opposite facet of a concave join and creates a second seam.
+    return (scale-1)*confidence*(.08+lift)*ShadowRange.x;
+}
+float shadowReceiverFacing(float facing,float confidence){
+    // PCF can see past a silhouette on a face turned away from this light.
+    // The native sun's angular response uses a different direction, so that
+    // leaked visibility remains visible as bright teeth on a shaded cliff.
+    return saturate(1+32*facing*confidence);
+}
 
 float shadowDepth(float2 uv,bool useNear) {
     if(useNear)return tex2Dlod(ShadowNear,float4(uv,0,0)).r;
@@ -230,7 +262,7 @@ float shadowMapFiltered(float3 lp,bool useNear,float radius,float2 gradient,bool
         // Keep every contact tap above, then search the wider support. The
         // separation uses the receiver plane, so slopes do not create softness.
         const float widest=4.25;
-        [loop]for(int by=0;by<4;++by)[unroll]for(int bx=0;bx<4;++bx){
+        [loop]for(int by=0;by<4;++by)[loop]for(int bx=0;bx<4;++bx){
             float2 tap=floor(pixel+(float2(bx,by)-1.5)*(widest/1.5)+.5);
             float2 tapUV=(tap+.5)*DepthParams.w;
             float expected=receiver+dot(gradient,tapUV-uv),stored=shadowDepth(tapUV,useNear);
@@ -260,17 +292,19 @@ float shadowMapFiltered(float3 lp,bool useNear,float radius,float2 gradient,bool
 }
 float shadowMap(float3 lp,bool useNear,float radius,float2 gradient){return shadowMapFiltered(lp,useNear,radius,gradient,false);}
 float shadowNearBlend(float3 q){return q.z<=0||q.z>=1?1:saturate((max(abs(q.x),abs(q.y))-.72)/.18);}
-float directionalShadowFiltered(float3 p,float3 normal,float confidence,bool soft) {
+float directionalShadowFiltered(float3 p,float3 normal,float confidence,bool soft,float receiverScale=1) {
     float facing=dot(normal,SunDirection.xyz);
     // Normal-offset per cascade: at grazing incidence (low sun on flat sand)
     // one far texel (.375 u) spans over a unit of light depth, so any error
     // in the receiver plane exceeds the .1 u constant bias and the far
     // cascade shades the whole plain, with a front that follows the pivot.
     // Lifting the receiver along its normal by one texel times (1-|n.l|)
-    // removes that without a larger depth bias; a silhouette pixel's
-    // unreliable normal gets no lift.
+    // removes that without a larger constant depth bias. The caller separates
+    // geometric validity from the shading-confidence flag at a silhouette.
     float lift=(1-saturate(abs(facing)))*confidence*2/1024;
     float3 q=affinePoint(p+normal*(lift*DepthParams.y),NearMatrix),farQ=affinePoint(p+normal*(lift*DepthParams.z),FarMatrix);
+    q.z-=shadowReceiverAllowance(confidence,receiverScale,lift*DepthParams.y);
+    farQ.z-=shadowReceiverAllowance(confidence,receiverScale,lift*DepthParams.z);
     float blend=shadowNearBlend(q);
     // Matrix columns contain light basis vectors divided by cascade radius.
     float2 plane=float2(dot(normal,float3(NearMatrix[0].x,NearMatrix[1].x,NearMatrix[2].x)),
@@ -285,15 +319,15 @@ float directionalShadowFiltered(float3 p,float3 normal,float confidence,bool sof
             result+=visibility*weight;
         }
     }
-    return result;
+    return result*shadowReceiverFacing(facing,confidence);
 }
 float directionalShadow(float3 p,float3 normal,float confidence){return directionalShadowFiltered(p,normal,confidence,false);}
 float4 DirectionalShadow(float2 uv:TEXCOORD0):COLOR0 {
     float2 screen=uv;uv=depthUV(uv);float depth=normalizedDepth(uv);
     if(depth>=.99999||waterDistance(uv,depth)>0)return 1;
-    float4 normal=tex2Dlod(NormalBuffer,float4(screen,0,0));
-    float3 p=worldPosition(uv,depth)+normal.xyz*(.08*normal.w);
-    float v=directionalShadowFiltered(p,normal.xyz,normal.w,true);
+    float4 normal=shadowReceiver(screen,depth,tex2Dlod(NormalBuffer,float4(screen,0,0)));
+    float3 p=worldPosition(uv,depth)+normal.xyz*(.08*saturate(normal.w));
+    float v=directionalShadowFiltered(p,normal.xyz,saturate(normal.w),true,normal.w);
     return float4(v,v,v,1);
 }
 #ifndef NORTHLIGHT_SHADOW_TRANSITION
@@ -393,6 +427,7 @@ float fogCombineActor(float world,float actor){return actor<1?min(world,actor):w
 
 // Static probe-to-receiver visibility. s13 is idle during the GI pass.
 sampler2D LocalVisibility : register(s13);
+float4 GICascadeInfo : register(c83); // w: second layer present; zero preserves single-grid captures
 float4 LocalVisibilityInfo : register(c82); // columns, reciprocal width/height, reciprocal columns
 float localPlaneVisibility(float3 plane,float3 delta){
     return saturate((.04-(dot(plane,delta)-1)*rsqrt(max(dot(plane,plane),1e-16)))*25);
@@ -423,11 +458,12 @@ float localProbeFacing(float3 normal,float3 delta){
 float2 probeUV(float3 cell) {
     return (float2(cell.x+cell.z*GridInfo.x,cell.y)+.5)/float2(GridInfo.x*GridInfo.x,GridInfo.x);
 }
-float4 probeIrradiance(float3 p,float3 n,uniform bool localOnly) {
+float4 probeCascadeIrradiance(float3 p,float3 n,uniform bool localOnly,float level,float layers) {
     if(GridInfo.w<.5)return 0;
     // World lattice is independent of the camera/request grid. Wrapped atlas
     // slots are usable only when metadata names this exact world probe.
-    float3 grid=p/GridOrigin.w;
+    float spacing=localOnly?GridOrigin.w:GridOrigin.w*(level==0?1:4);
+    float3 grid=p/spacing;
     float3 base=floor(grid),fraction=grid-base;
     float4 basis=float4(.28209479,.48860251*n.x,.48860251*n.y,.48860251*n.z);
     // SH radiance -> cosine-convolved diffuse irradiance.
@@ -437,27 +473,32 @@ float4 probeIrradiance(float3 p,float3 n,uniform bool localOnly) {
         float3 bit=float3(i-floor(i/2.0)*2,floor(i/2.0)-floor(i/4.0)*2,floor(i/4.0));
         float3 cell=base+bit;
         float3 wrapped=cell-GridInfo.x*floor(cell/GridInfo.x);
-        float2 uv=probeUV(wrapped);
+        float2 uv=probeUV(wrapped);if(!localOnly)uv.y=(wrapped.y+level*GridInfo.x+.5)/(GridInfo.x*layers);
         float4 metadata=tex2Dlod(ProbeMetadata,float4(uv,0,0));
-        if(all(metadata.xyz==cell)&&metadata.w>=0){
+        if(all(metadata.xyz==cell)&&metadata.w!=-1){
         float3 t=lerp(1-fraction,fraction,bit);float weight=t.x*t.y*t.z;
         // First residency fades in at this world point; camera movement and
         // same-key atlas publication cannot reset its activation time.
         weight*=saturate((PassInfo.w-metadata.w)*(1/.45));
+        // Interior probes establish residency too. moment.z excludes their
+        // radiance below; treating them as missing paints the 8-unit lattice
+        // onto terrain as the interpolation weights change across a surface.
         coverage+=weight;
-        float3 pp=cell*GridOrigin.w;
+        float3 pp=cell*spacing;
         float3 delta=p-pp;float distance=length(delta);
         float4 moment;float visibility;
         [branch]if(localOnly||LocalVisibilityInfo.x>0){
-            moment=tex2Dlod(ProbeVisibility,float4(uv.x,(wrapped.y+.5)/(GridInfo.x*6),0,0));
+            float momentY=localOnly?(wrapped.y+.5)/(GridInfo.x*6):(wrapped.y+level*GridInfo.x*6+.5)/(GridInfo.x*6*layers);
+            moment=tex2Dlod(ProbeVisibility,float4(uv.x,momentY,0,0));
             float index=wrapped.x+wrapped.y*GridInfo.x+wrapped.z*GridInfo.x*GridInfo.x;
+            if(!localOnly)index+=level*GridInfo.x*GridInfo.x*GridInfo.x;
             visibility=localProbeVisibility(index,delta)*localProbeFacing(n,delta);
         }else{
         float3 absolute=abs(delta);float axis;
         if(absolute.x>=absolute.y&&absolute.x>=absolute.z)axis=delta.x>=0?0:1;
         else if(absolute.y>=absolute.z)axis=delta.y>=0?2:3;
         else axis=delta.z>=0?4:5;
-        float2 visibilityUV=float2(uv.x,(wrapped.y+axis*GridInfo.x+.5)/(GridInfo.x*6));
+        float2 visibilityUV=float2(uv.x,(wrapped.y+(axis+level*6)*GridInfo.x+.5)/(GridInfo.x*6*layers));
         moment=tex2Dlod(ProbeVisibility,float4(visibilityUV,0,0));
         float variance=max(moment.y-moment.x*moment.x,.02);
         float excess=max(distance-moment.x,0);
@@ -481,6 +522,20 @@ float4 probeIrradiance(float3 p,float3 n,uniform bool localOnly) {
     // Residency is independent of moment visibility. A covered, fully blocked
     // receiver must not fall back to unoccluded native ambient.
     return float4(result/max(total,.00001),saturate(coverage));
+}
+float4 probeIrradiance(float3 p,float3 n,uniform bool localOnly){
+    if(localOnly)return probeCascadeIrradiance(p,n,true,0,1);
+    float4 accumulated=0;float layers=1+GICascadeInfo.w;
+    [loop]for(int level=0;level<2&&level<layers&&accumulated.a<=.9999;++level){
+        float4 sample=probeCascadeIrradiance(p,n,false,level,layers);
+        if(level==0)accumulated=sample;
+        else {
+            float contribution=sample.a*(1-accumulated.a);
+            float coverage=accumulated.a+contribution;
+            accumulated=float4((accumulated.rgb*accumulated.a+sample.rgb*contribution)/max(coverage,.00001),coverage);
+        }
+    }
+    return accumulated;
 }
 
 // Half-resolution smoothed surface normal. Depth-derived normals are constant
@@ -522,8 +577,9 @@ float3 wideNeighbour(float2 uv,float2 dir,float pixels,float3 center,float cente
 // on the side that looks like the centre in the scene copy, the closer side in depth when the colours do not tell (the receiver's own surface).
 // A silhouette pixel (no consistent pair even at one pixel) reports
 // confidence 0 in the normal buffer's w: its one-sided normal may belong to
-// the neighbouring surface. Suppress uncertain positive bounce and normal
-// bias there, but retain ambient occlusion: skipping negative GI exposed
+// the neighbouring surface. Suppress uncertain positive bounce there; shadow
+// receivers validate their geometry separately. Retain ambient occlusion:
+// skipping negative GI exposed
 // a bright native-ambient seam where the ground touches a wall.
 // c, step: the centre texel and the one-pixel step of this axis. The one-sided tangent follows the side whose colour looks
 // more like the centre (sand next to a dark face turned away at a wall foot), not the closer side in depth: at a wall foot
@@ -609,7 +665,9 @@ float3 worldGIValue(float3 p,float4 smoothNormal,uniform bool localOnly,out floa
     // the finite probe window, a vertical wall receives half that sky term,
     // not the horizontal surface's full ambient. Valid probes replace this
     // analytic fallback, including their occlusion and measured bounce.
-    float skyView=lerp(1,saturate(.5+.5*n.z),smoothNormal.w);
+    // A one-sided normal still describes a receiver. Confidence may suppress
+    // added bounce, but must not restore full ambient along every facet seam.
+    float skyView=saturate(.5+.5*n.z);
     float3 indirect=lerp(ambient*skyView,radiance,probe.a);
     float3 correction=max((indirect-ambient)*GridInfo.y,-ambient);
     // Confidence describes the depth-derived NORMAL, not probe coverage.
@@ -643,9 +701,10 @@ LightingOutput worldLightingValue(float2 uv,bool soft,bool shadows,bool gi=false
     float shadow=1;
     // 0.3.209 (task 29): the moving casters near the player shadow from the actor map (ActorShadow, written per source at this
     // pass's half-res grid; white when off); the near cascade skips those, so take the darker of both.
-    if(shadows&&dot(DirectLight.rgb,1)>0){
+    if(shadows&&DirectLight.w>.5&&dot(DirectLight.rgb,1)>0){
         if(soft){float2 v=tex2Dlod(DirectionalVisibility,float4(halfUV,0,0)).rg;shadow=SunDirection.w>.5?v.g:v.r;}
-        else shadow=directionalShadow(p+n*(.08*smoothNormal.w),n,smoothNormal.w);
+        else {float4 receiver=shadowReceiver(halfUV,d,smoothNormal);
+            shadow=directionalShadowFiltered(p+n*(.08*saturate(receiver.w)),n,saturate(receiver.w),false,receiver.w);}
         if(separateActors){float2 actor=tex2Dlod(ActorVisibility,float4(halfUV,0,0)).rg;shadow=min(shadow,SunDirection.w>.5?actor.g:actor.r);}}
     shadow=1-saturate((1-shadow)*shadowParameters().x);
     float visibility=lerp(1,shadow,GridInfo.z);
@@ -807,8 +866,8 @@ float4 UnifiedDirectionalShadow(float2 uv:TEXCOORD0,uniform row_major float4x4 A
 }
 // Second pass to the same FP16 lighting buffer with COLORWRITEENABLE=RGB.
 // Probes contain sky + bounce, so replace ambient instead of adding it twice.
-// Missing probes do not establish hemispherical sky visibility. Preserve the
-// native ambient there; only resident probes can replace it with measured GI.
+// Missing probes use the analytic upper-sky fallback; resident cells replace
+// it with measured GI, including cells with corners inside solid geometry.
 struct GIOutput {float4 correction:COLOR0;float4 prelit:COLOR1;};
 GIOutput WorldGI(float2 uv:TEXCOORD0) {
     GIOutput o;o.correction=0;o.prelit=0;

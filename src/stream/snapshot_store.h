@@ -34,7 +34,15 @@ struct SnapshotStats {
 // writable executable .zdata must not extend this range across runtime globals.
 struct CodeRange {
     std::uintptr_t lo=0x400000,hi=0xA00000;
-    bool contains(std::uintptr_t a,std::size_t bytes=1)const{return a>=lo&&a<hi&&bytes<=hi-a;}
+    struct Section {std::uintptr_t lo=0,hi=0;};
+    Section sections[96]{};unsigned count=0;
+    bool contains(std::uintptr_t a,std::size_t bytes=1)const{
+        if(a<lo||a>=hi||bytes>hi-a)return false;
+        if(!count)return true; // Fixed .text fallback when PE headers are unavailable.
+        for(unsigned i=0;i<count;++i){const auto& s=sections[i];
+            if(a>=s.lo&&a<s.hi&&bytes<=s.hi-a)return true;}
+        return false;
+    }
 };
 // Readonly code sections of the supported fixed-base PE32 image (headers only).
 // A writable executable section is runtime data, not a signature-only domain.
@@ -48,16 +56,19 @@ inline bool parseImageCode(const unsigned char* image,std::size_t size,std::uint
     if(optional>size-nt-24)return false;
     const std::size_t table=nt+24+optional;
     if(!sections||sections>96||table>size||size-table<sections*40)return false;
-    std::uintptr_t end=0;
+    CodeRange parsed;parsed.lo=base;parsed.hi=base;
     for(std::size_t i=0;i<sections;++i){
         const std::size_t s=table+i*40;const std::uint32_t flags=u32(s+36),virtualSize=u32(s+8),rva=u32(s+12);
         if((flags&0x80000000u)||!(flags&(0x20u|0x20000000u))||!virtualSize)continue;
         const auto maximum=(std::numeric_limits<std::uintptr_t>::max)();
         if(rva>maximum-base||virtualSize>maximum-base-rva)return false;
-        const std::uintptr_t top=base+rva+virtualSize;if(top>end)end=top;
+        const std::uintptr_t begin=base+rva,top=begin+virtualSize;
+        parsed.sections[parsed.count++]={begin,top};if(top>parsed.hi)parsed.hi=top;
     }
-    if(!end||end<=base)return false;
-    out.lo=base;out.hi=end;return true;
+    if(!parsed.count)return false;
+    // Patched clients can append readonly code after .data. The envelope is
+    // diagnostic only: its gaps still contain mutable camera/light/shadow state.
+    out=parsed;return true;
 }
 inline const CodeRange& codeRange(){
     static const CodeRange range=[]{
