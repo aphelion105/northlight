@@ -89,8 +89,11 @@ public:
         // One bounded scratch image (at most the generator's 512x512 map),
         // reused across disk hits. A queued copy must never make a hit block.
         if(!width||!height||width>512||height>512)return false;
-        if(uploadWidth!=width||uploadHeight!=height)trimUploads();
-        auto create=[&]{if(FAILED(d->CreateOffscreenPlainSurface(width,height,D3DFMT_A8R8G8B8,D3DPOOL_SYSTEMMEM,&uploadStaging,nullptr)))return false;uploadWidth=width;uploadHeight=height;++uploadCreates;return true;};
+        // Disk hits alternate map sizes. Keep the high-water dimensions and
+        // copy only the written rectangle; smaller maps need no allocation.
+        const unsigned stagingWidth=std::max(width,uploadWidth),stagingHeight=std::max(height,uploadHeight);
+        if(uploadWidth<width||uploadHeight<height)trimUploads();
+        auto create=[&]{if(FAILED(d->CreateOffscreenPlainSurface(stagingWidth,stagingHeight,D3DFMT_A8R8G8B8,D3DPOOL_SYSTEMMEM,&uploadStaging,nullptr)))return false;uploadWidth=stagingWidth;uploadHeight=stagingHeight;++uploadCreates;return true;};
         const bool reused=uploadStaging!=nullptr;
         if(!uploadStaging&&!create())return false;
         IDirect3DSurface9* target=nullptr;D3DLOCKED_RECT lock{};
@@ -99,7 +102,8 @@ public:
         else if(SUCCEEDED(hr)&&reused)++uploadReuses;
         bool ok=SUCCEEDED(hr);
         if(ok){const bool valid=lock.pBits&&lock.Pitch>=INT(width*4)&&height-1<=(SIZE_MAX-width*4)/size_t(lock.Pitch);if(valid)for(unsigned y=0;y<height;++y)std::memcpy(static_cast<std::uint8_t*>(lock.pBits)+size_t(y)*lock.Pitch,probe.ticket->pixels.data()+size_t(y)*width*4,width*4);ok=SUCCEEDED(uploadStaging->UnlockRect())&&valid;}
-        if(ok)ok=SUCCEEDED(normal->GetSurfaceLevel(0,&target))&&SUCCEEDED(d->UpdateSurface(uploadStaging,nullptr,target,nullptr));
+        const RECT written{0,0,LONG(width),LONG(height)};
+        if(ok)ok=SUCCEEDED(normal->GetSurfaceLevel(0,&target))&&SUCCEEDED(d->UpdateSurface(uploadStaging,&written,target,nullptr));
         drop(target);if(ok){++uploads;forget(probe.ticket);}else trimUploads();return ok;
     }
     void capture(const Probe& probe,IDirect3DTexture9* normal,unsigned width,unsigned height){

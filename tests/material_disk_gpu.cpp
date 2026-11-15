@@ -149,6 +149,7 @@ static std::vector<unsigned char> mipSamples(IDirect3DDevice9* d,IDirect3DTextur
     for(unsigned level:{0u,2u,4u,6u,8u}){const float bias=float(level)-footprint;DWORD bits;std::memcpy(&bits,&bias,4);ok(d->SetSamplerState(0,D3DSAMP_MIPMAPLODBIAS,bits));ok(d->SetSamplerState(0,D3DSAMP_MAXMIPLEVEL,0));ok(d->BeginScene());ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(Vertex)));ok(d->EndScene());ok(d->GetRenderTargetData(target,readback));D3DLOCKED_RECT lock{};ok(readback->LockRect(&lock,nullptr,D3DLOCK_READONLY));for(unsigned y=0;y<16;++y){const auto* p=static_cast<const unsigned char*>(lock.pBits)+size_t(y)*lock.Pitch;out.insert(out.end(),p,p+64);}ok(readback->UnlockRect());}
     drop(readback);drop(target);ok(d->SetVertexShaderConstantF(0,bank,256));return out;
 }
+#ifndef NORTHLIGHT_MATERIAL_DISK_SUPPORT_ONLY
 int main(int argc,char** argv){
     assert(argc>=4&&argc<=6);const std::string mode=argv[3],format=argc==6?argv[5]:"rgba";const std::filesystem::path root=std::filesystem::u8path(argv[2]);const bool basicCold=mode=="produce"||mode=="repair"||mode=="settings";
     if(std::strstr(argv[1],"dxvk")){const char* existing=std::getenv("DXVK_CONFIG");const auto config=NorthlightDxvkCompatibility::config(existing?existing:"");assert(SetEnvironmentVariableA("DXVK_CONFIG",config.c_str()));}
@@ -210,3 +211,4 @@ int main(int argc,char** argv){
     drop(raw);drop(api);FreeLibrary(module);DestroyWindow(window);
     std::printf("MATERIAL_DISK_GPU_PASS mode=%s maps=%u blockingReadbacks=0 vsConstantsRestored=1 resetReload=1 mipLevels=5 busyBackoff=1 uploadRetry=1\n",mode.c_str(),checked);
 }
+#endif

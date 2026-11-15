@@ -51,6 +51,8 @@ For the complete offline shader inventory, unused packaged resources and the
 measured GI optimization, see [the shader audit](shader-audit-20261115.md).
 For the supplied town/ziggurat and Zangarmarsh logs, queue stalls and sparse
 buffer caching, see [the QA performance review](qa-performance-20261115.md).
+For the runtime cache inventory, remaining churn and mixed-size material upload
+reuse, see [the cache inventory](cache-inventory-20261115.md).
 For the subsequent focused shadow profile, terrain classification cache and
 copied Forever shader evidence, see [the shadow pipeline review](shadow-pipeline-review-20261114.md).
 For the shared world/actor visibility filter and the remaining fine-cascade work,

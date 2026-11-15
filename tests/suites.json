@@ -150,6 +150,17 @@
       "test_cutout_cache_detail.py"
     ]
   },
+  "material-cache": {
+    "description": "Normal-map cache identity, memory limits, disk persistence, GPU reuse and mixed-size upload correctness. Component timings do not establish game FPS.",
+    "tests": [
+      "test_auto_normal_memory.py",
+      "test_auto_normal_index_windows.py",
+      "test_material_disk_cache.py",
+      "test_auto_normal_reuse_gpu.py",
+      "test_material_upload_reuse_gpu.py",
+      "test_material_staging_sizes_gpu.py"
+    ]
+  },
   "stream-buffers": {
     "description": "Sparse oversized VB/IB ownership, budgets, queued writes and exact real GPU output. Does not establish game FPS.",
     "tests": [

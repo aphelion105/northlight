@@ -306,6 +306,7 @@ test_material_ray_work.py
 test_material_replay_content.py
 test_material_replay_state.py
 test_material_rigid_range_cpu.py
+test_material_staging_sizes_gpu.py
 test_material_terrain_bounds.py
 test_material_texel_sharing.py
 test_material_texture_lookup.py
