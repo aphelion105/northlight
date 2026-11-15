@@ -35,7 +35,7 @@ int main(int argc,char** argv){
     std::ifstream list(argv[1]);assert(list);std::string entry,folder;unsigned jobs=0,failures=0,samples=0;
     while(list>>entry>>folder>>samples){
         const auto raw=read(folder+"/params.bin");assert(raw.size()==32+128*16+32);
-        std::uint32_t h[8];std::memcpy(h,raw.data(),32);const unsigned W=h[0],H=h[1];assert(samples==0||samples==4);
+        std::uint32_t h[8];std::memcpy(h,raw.data(),32);const unsigned W=h[0],H=h[1],targets=h[2]&0x100?h[2]&3:1;assert(targets>=1&&targets<=3&&(samples==0||samples==4));
         float c[128][4],flow[4],state[4];std::memcpy(c,raw.data()+32,sizeof c);std::memcpy(flow,raw.data()+32+sizeof c,16);std::memcpy(state,raw.data()+48+sizeof c,16);
         std::vector<IDirect3DBaseTexture9*> owned;
         for(unsigned s=0;s<16;++s){const auto im=image(folder+"/"+std::to_string(s)+".fgr");IDirect3DBaseTexture9* t=s==h[4]?static_cast<IDirect3DBaseTexture9*>(optimizationCube(d,im)):h[7]&(1u<<s)?optimizationMips(d,im):texture(d,im);owned.push_back(t);ok(d->SetTexture(s,t));
@@ -43,9 +43,13 @@ int main(int argc,char** argv){
             ok(d->SetSamplerState(s,D3DSAMP_MIPFILTER,h[7]&(1u<<s)?D3DTEXF_LINEAR:D3DTEXF_NONE));for(auto key:{D3DSAMP_ADDRESSU,D3DSAMP_ADDRESSV})ok(d->SetSamplerState(s,key,D3DTADDRESS_CLAMP));ok(d->SetSamplerState(s,D3DSAMP_SRGBTEXTURE,FALSE));}
         IDirect3DPixelShader9* shaders[2]{};for(unsigned i=0;i<2;++i){auto bytes=read(std::string(argv[i+2])+"/"+entry+".bin");ok(d->CreatePixelShader(reinterpret_cast<const DWORD*>(bytes.data()),&shaders[i]));}
         IDirect3DSurface9 *target=nullptr,*resolved=nullptr,*staging=nullptr;
-        ok(d->CreateRenderTarget(W,H,D3DFMT_A32B32G32R32F,D3DMULTISAMPLE_TYPE(samples),0,FALSE,&target,nullptr));
-        if(samples)ok(d->CreateRenderTarget(W,H,D3DFMT_A32B32G32R32F,D3DMULTISAMPLE_NONE,0,FALSE,&resolved,nullptr));else{resolved=target;resolved->AddRef();}
-        ok(d->CreateOffscreenPlainSurface(W,H,D3DFMT_A32B32G32R32F,D3DPOOL_SYSTEMMEM,&staging,nullptr));ok(d->SetRenderTarget(0,target));D3DVIEWPORT9 vp={0,0,W,H,0,1};ok(d->SetViewport(&vp));
+        const bool fp16=h[2]&0x200;const unsigned stride=fp16?8:16;
+        const auto format=fp16?D3DFMT_A16B16G16R16F:D3DFMT_A32B32G32R32F;
+        ok(d->CreateRenderTarget(W,H,format,D3DMULTISAMPLE_TYPE(samples),0,FALSE,&target,nullptr));
+        if(samples)ok(d->CreateRenderTarget(W,H,format,D3DMULTISAMPLE_NONE,0,FALSE,&resolved,nullptr));else{resolved=target;resolved->AddRef();}
+        ok(d->CreateOffscreenPlainSurface(W,H,format,D3DPOOL_SYSTEMMEM,&staging,nullptr));ok(d->SetRenderTarget(0,target));D3DVIEWPORT9 vp={0,0,W,H,0,1};ok(d->SetViewport(&vp));
+        IDirect3DSurface9* extra[2]{};
+        for(unsigned i=1;i<targets;++i){assert(!samples);ok(d->CreateRenderTarget(W,H,format,D3DMULTISAMPLE_NONE,0,FALSE,&extra[i-1],nullptr));ok(d->SetRenderTarget(i,extra[i-1]));}
         ok(d->SetPixelShaderConstantF(0,c[0],128));ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,h[3]));ok(d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_SRCALPHA));ok(d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_INVSRCALPHA));ok(d->SetRenderState(D3DRS_BLENDOP,D3DBLENDOP_ADD));ok(d->SetRenderState(D3DRS_COLORWRITEENABLE,h[5]));
         OptimizationVertex quad[4]{};for(unsigned i=0;i<4;++i){auto& v=quad[i];v.x=(i&1?float(W):0)-.5f;v.y=(i&2?float(H):0)-.5f;v.z=0;v.w=1;v.color=0xBF8F6F3F;v.u=i&1?1:0;v.v=i&2?1:0;v.dx=(v.u-.5f)*.24f;v.dy=(v.v-.5f)*.24f;std::memcpy(v.flow,flow,16);std::memcpy(v.state,state,16);}
         std::vector<unsigned char> output[2];double median[2]{};
@@ -53,18 +57,23 @@ int main(int argc,char** argv){
         ok(d->CreateQuery(D3DQUERYTYPE_EVENT,&event));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&start));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&end));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMPFREQ,&frequency));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMPDISJOINT,&disjoint));
         std::vector<double> timings[2];
         const bool clearCandidate=entry=="ContactBloom"&&c[1][3]==0&&c[2][0]==0;
-        for(unsigned block=0;block<12;++block){unsigned variant=(block/2)&1?1-block%2:block%2;ok(d->SetPixelShader(shaders[variant]));ok(d->Clear(0,nullptr,D3DCLEAR_TARGET,0x406080a0,1,0));
+        const bool detailedTiming=std::getenv("NORTHLIGHT_SHADER_LONG_TIMING")!=nullptr;
+        const unsigned batches=detailedTiming?72:12,repeats=detailedTiming?256:8,warm=detailedTiming?8:4;
+        for(unsigned block=0;block<batches;++block){unsigned variant=(block/2)&1?1-block%2:block%2;ok(d->SetPixelShader(shaders[variant]));ok(d->Clear(0,nullptr,D3DCLEAR_TARGET,0x406080a0,1,0));
             const bool neutralClear=variant&&clearCandidate;
-            ok(disjoint->Issue(D3DISSUE_BEGIN));ok(start->Issue(D3DISSUE_END));ok(d->BeginScene());for(unsigned repeat=0;repeat<8;++repeat){
+            ok(disjoint->Issue(D3DISSUE_BEGIN));ok(start->Issue(D3DISSUE_END));ok(d->BeginScene());for(unsigned repeat=0;repeat<repeats;++repeat){
                 if(neutralClear)ok(d->Clear(0,nullptr,D3DCLEAR_TARGET,0xff000000,1,0));
                 else ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(OptimizationVertex)));
             }ok(d->EndScene());ok(end->Issue(D3DISSUE_END));ok(frequency->Issue(D3DISSUE_END));ok(disjoint->Issue(D3DISSUE_END));wait(event);
             UINT64 a=0,b=0,f=0;BOOL bad=FALSE;ok(start->GetData(&a,sizeof a,0));ok(end->GetData(&b,sizeof b,0));ok(frequency->GetData(&f,sizeof f,0));ok(disjoint->GetData(&bad,sizeof bad,0));assert(!bad&&b>=a&&f);
-            if(block>=4)timings[variant].push_back(double(b-a)*1000/double(f)/8);
-            if(block<2){if(samples)ok(d->StretchRect(target,nullptr,resolved,nullptr,D3DTEXF_NONE));ok(d->GetRenderTargetData(resolved,staging));D3DLOCKED_RECT lock{};ok(staging->LockRect(&lock,nullptr,D3DLOCK_READONLY));output[variant].resize(size_t(W)*H*16);for(unsigned y=0;y<H;++y)std::memcpy(output[variant].data()+size_t(y)*W*16,static_cast<char*>(lock.pBits)+y*lock.Pitch,W*16);ok(staging->UnlockRect());}}
-        for(unsigned v=0;v<2;++v){std::sort(timings[v].begin(),timings[v].end());median[v]=(timings[v][1]+timings[v][2])*.5;}
-        size_t changed=0,big=0,nonfinite=0;double maxAbs=0,sum=0;for(size_t i=0;i<size_t(W)*H*4;++i){float a,b;std::memcpy(&a,output[0].data()+i*4,4);std::memcpy(&b,output[1].data()+i*4,4);double error=std::fabs(double(a)-b);changed+=a!=b;nonfinite+=!std::isfinite(a)||!std::isfinite(b);maxAbs=std::max(maxAbs,error);sum+=error*error;big+=error>1e-5+std::fabs(a)*1e-5;}
-        std::printf("{\"entry\":\"%s\",\"case\":\"%s\",\"candidate_operation\":\"%s\",\"samples\":%u,\"pixels\":%u,\"changed\":%llu,\"over_tolerance\":%llu,\"nonfinite\":%llu,\"max_abs\":%.9g,\"rmse\":%.9g,\"before_ms\":%.7f,\"after_ms\":%.7f}\n",entry.c_str(),folder.c_str(),clearCandidate?"neutral-clear":"shader-draw",samples,W*H,static_cast<unsigned long long>(changed),static_cast<unsigned long long>(big),static_cast<unsigned long long>(nonfinite),maxAbs,std::sqrt(sum/(size_t(W)*H*4)),median[0],median[1]);std::fflush(stdout);failures+=big||nonfinite;++jobs;
+            if(block>=warm){double ms=double(b-a)*1000/double(f)/repeats;timings[variant].push_back(ms);if(detailedTiming)std::printf("TIMING case=%s block=%u variant=%u ms=%.9f\n",folder.c_str(),block,variant,ms);}
+            if(block<2){if(samples)ok(d->StretchRect(target,nullptr,resolved,nullptr,D3DTEXF_NONE));output[variant].resize(size_t(W)*H*stride*targets);
+                for(unsigned rt=0;rt<targets;++rt){ok(d->GetRenderTargetData(rt?extra[rt-1]:resolved,staging));D3DLOCKED_RECT lock{};ok(staging->LockRect(&lock,nullptr,D3DLOCK_READONLY));for(unsigned y=0;y<H;++y)std::memcpy(output[variant].data()+(size_t(rt)*W*H+size_t(y)*W)*stride,static_cast<char*>(lock.pBits)+y*lock.Pitch,W*stride);ok(staging->UnlockRect());}}}
+        for(unsigned v=0;v<2;++v){std::sort(timings[v].begin(),timings[v].end());const size_t mid=timings[v].size()/2;median[v]=(timings[v][mid-1]+timings[v][mid])*.5;}
+        const auto component=[&](unsigned variant,size_t i){float value;if(fp16){uint16_t h;std::memcpy(&h,output[variant].data()+i*2,2);value=half(h);}else std::memcpy(&value,output[variant].data()+i*4,4);return value;};
+        size_t changed=0,big=0,nonfinite=0;double maxAbs=0,sum=0;for(size_t i=0;i<size_t(W)*H*4*targets;++i){float a=component(0,i),b=component(1,i);double error=std::fabs(double(a)-b);changed+=a!=b;nonfinite+=!std::isfinite(a)||!std::isfinite(b);maxAbs=std::max(maxAbs,error);sum+=error*error;big+=error>1e-5+std::fabs(a)*1e-5;}
+        std::printf("{\"entry\":\"%s\",\"case\":\"%s\",\"candidate_operation\":\"%s\",\"samples\":%u,\"pixels\":%u,\"targets\":%u,\"output_bits\":%u,\"changed\":%llu,\"over_tolerance\":%llu,\"nonfinite\":%llu,\"max_abs\":%.9g,\"rmse\":%.9g,\"before_ms\":%.7f,\"after_ms\":%.7f}\n",entry.c_str(),folder.c_str(),clearCandidate?"neutral-clear":"shader-draw",samples,W*H,targets,fp16?16:32,static_cast<unsigned long long>(changed),static_cast<unsigned long long>(big),static_cast<unsigned long long>(nonfinite),maxAbs,std::sqrt(sum/(size_t(W)*H*4*targets)),median[0],median[1]);std::fflush(stdout);failures+=big||nonfinite;++jobs;
+        for(unsigned i=1;i<targets;++i){ok(d->SetRenderTarget(i,nullptr));extra[i-1]->Release();}
         for(unsigned s=0;s<16;++s){ok(d->SetTexture(s,nullptr));owned[s]->Release();}for(auto* q:{event,start,end,frequency,disjoint})q->Release();for(auto* shader:shaders)shader->Release();staging->Release();resolved->Release();target->Release();
     }
     std::printf("SHADER_OPTIMIZATIONS_GPU_%s jobs=%u failures=%u\n",failures?"FAIL":"PASS",jobs,failures);

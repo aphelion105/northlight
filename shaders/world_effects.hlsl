@@ -464,6 +464,10 @@ float4 probeIrradiance(float3 p,float3 n,uniform bool localOnly) {
         visibility=variance/(variance+excess*excess);visibility*=visibility;
         }
         weight*=visibility*moment.z;
+        // Coverage above describes residency even for occluded probes. Only
+        // their zero-weight radiance/history reads can be omitted. The fused
+        // localOnly entry stays unchanged to fit its 510-slot SM3 budget.
+        [branch]if(localOnly||weight>0){
         float3 irradiance=float3(dot(tex2Dlod(ProbeR,float4(uv,0,0)),basis),dot(tex2Dlod(ProbeG,float4(uv,0,0)),basis),dot(tex2Dlod(ProbeB,float4(uv,0,0)),basis));
         // 0.3.197: a same-key re-publication blends from what was on screen over .3 s (moment.w = start, -1000 = none); first residency keeps born's fade.
         float blend=saturate((PassInfo.w-moment.w)*(1/.3));
@@ -471,6 +475,7 @@ float4 probeIrradiance(float3 p,float3 n,uniform bool localOnly) {
             float3 previous=float3(dot(tex2Dlod(ProbePrevious,float4(third,0,0)),basis),dot(tex2Dlod(ProbePrevious,float4(third+float2(1/3.,0),0,0)),basis),dot(tex2Dlod(ProbePrevious,float4(third+float2(2/3.,0),0,0)),basis));
             irradiance=lerp(previous,irradiance,blend);}
         result+=max(irradiance,0)*weight;total+=weight;
+        }
         }
     }
     // Residency is independent of moment visibility. A covered, fully blocked

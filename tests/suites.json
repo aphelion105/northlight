@@ -90,6 +90,7 @@
       "test_celestial_composition_gpu.py",
       "test_fog_volume_gpu.py",
       "test_probe_local_visibility_gpu.py",
+      "test_gi_zero_weight_gpu.py",
       "test_celestial_controls_gpu.py",
       "test_hdr_empty_sky_gpu.py",
       "test_material_grass_batch_gpu.py",
@@ -152,6 +153,7 @@
   "lighting-composite": {
     "description": "Frozen/current composite images, fused smoothing history and actual renderer resource/state contracts. No gameplay FPS claim.",
     "tests": [
+      "test_gi_zero_weight_gpu.py",
       "test_world_composite_inputs_gpu.py",
       "test_removal_temporal_merge_gpu.py",
       "test_removal_zero_weight_gpu.py",

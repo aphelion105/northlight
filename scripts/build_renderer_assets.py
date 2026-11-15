@@ -13,6 +13,15 @@ import northlight_paths as fp
 FILENAME = 'northlight-assets.bin'
 MARKER = b'NORTHLIGHT_ASSETS_V1:'
 ARRAY = re.compile(r'(?:alignas\(4\)\s*)?(?:static|inline)\s+(?:const|constexpr)\s+(DWORD|std::uint32_t|unsigned char)\s+(\w+)\s*\[[^\]]*\]\s*=\s*\{([^}]+)\};', re.S)
+# Retain the canonical bytecode for regression oracles, but do not ship it.
+# The production include overlay removes these declarations too: a new runtime
+# caller must explicitly restore the resource or the renderer will not compile.
+ORACLE_ONLY = {
+    'kHdrReduce', 'kHdrBloom',                    # Replaced by linear/axis filters.
+    'kLocalShadowResolveShader', 'kLocalLightingSoftShader', # Single-pass PCSS.
+    'kRainLensShader', 'kSnowLensShader',        # Replaced by WeatherLensParticle.
+    'kSourceVisibilityPSShader',                # Visibility belongs to celestial.
+}
 
 
 def built_path(dll):
@@ -24,7 +33,7 @@ def prepare(output, generated=fp.GENERATED):
     """Canonical headers remain the oracle; only this build's include directory is replaced."""
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
-    raw, offsets, headers, entries = bytearray(), {}, {}, []
+    raw, offsets, headers, entries, excluded = bytearray(), {}, {}, [], []
     sources = sorted({*generated.glob('*compiled_shaders.h'), generated/'weather_texture_data.h',
                       generated/'overlay_font_roboto.h'})
     for path in sources:
@@ -40,6 +49,10 @@ def prepare(output, generated=fp.GENERATED):
             data = b''.join(int(t, 16 if t.startswith('0x') else 10).to_bytes(width, 'little') for t in tokens)
             if not data:
                 raise ValueError(f'Empty resource: {name}')
+            if name in ORACLE_ONLY:
+                excluded.append({'header': path.name, 'name': name, 'bytes': len(data),
+                                 'sha256': hashlib.sha256(data).hexdigest()})
+                return f'// {name}: regression oracle, excluded from production.'
             if data not in offsets:
                 raw.extend(b'\0' * (-len(raw) % 4))
                 offsets[data] = len(raw)
@@ -68,7 +81,7 @@ def prepare(output, generated=fp.GENERATED):
         '}\n').encode('utf-8'))
     (output/FILENAME).write_bytes(packed)
     manifest = {'format': 'northlight-assets/1', 'sha256': digest, 'bytes': len(packed),
-                'raw_bytes': len(raw), 'entries': entries}
+                'raw_bytes': len(raw), 'entries': entries, 'excluded_oracles': excluded}
     (output/'renderer-assets.json').write_text(json.dumps(manifest, indent=2)+'\n', encoding='utf-8')
     return manifest
 

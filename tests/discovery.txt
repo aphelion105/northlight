@@ -183,6 +183,7 @@ test_gi_quality.py
 test_gi_receiver_fallback_gpu.py
 test_gi_settings_dependencies.py
 test_gi_trig.py
+test_gi_zero_weight_gpu.py
 test_glue_emitters.py
 test_glue_lighting_selection.py
 test_gpu_budget.py

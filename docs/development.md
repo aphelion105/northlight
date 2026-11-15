@@ -47,6 +47,8 @@ For the next capture profile and rigid-range/grass packet optimizations, see
 [material CPU capture](material-cpu-20261114.md).
 For the next whole-pipeline profile, warm-cache evidence and deferred state-block
 comparison, see [cache and deferred work](cache-deferred-20261115.md).
+For the complete offline shader inventory, unused packaged resources and the
+measured GI optimization, see [the shader audit](shader-audit-20261115.md).
 For the subsequent focused shadow profile, terrain classification cache and
 copied Forever shader evidence, see [the shadow pipeline review](shadow-pipeline-review-20261114.md).
 For the shared world/actor visibility filter and the remaining fine-cascade work,
