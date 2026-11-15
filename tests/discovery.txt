@@ -539,6 +539,8 @@ test_snapshot_prediction.py
 test_snapshot_retirement.py
 test_snapshot_wide_decode.py
 test_solar_volume.py
+test_sparse_buffer_ranges.py
+test_sparse_buffer_ranges_gpu.py
 test_sparse_publish.py
 test_spell_asset_manifest.py
 test_spell_asset_manifest_client.py

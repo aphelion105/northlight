@@ -150,6 +150,13 @@
       "test_cutout_cache_detail.py"
     ]
   },
+  "stream-buffers": {
+    "description": "Sparse oversized VB/IB ownership, budgets, queued writes and exact real GPU output. Does not establish game FPS.",
+    "tests": [
+      "test_sparse_buffer_ranges.py",
+      "test_sparse_buffer_ranges_gpu.py"
+    ]
+  },
   "lighting-composite": {
     "description": "Frozen/current composite images, fused smoothing history and actual renderer resource/state contracts. No gameplay FPS claim.",
     "tests": [

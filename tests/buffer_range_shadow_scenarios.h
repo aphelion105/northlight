@@ -31,7 +31,9 @@ static void bufferRangeShadowModel(){
     cache.invalidate();CHECK(!cache.canRead(64,128));
     cache.discard();CHECK(cache.canRead(8192,64));cache.read(a,8192,64);for(auto c:a)CHECK(c==0);
     cache.remember(8192,64,a,RangeShadowBudgetBytes);CHECK(cache.canRead(16384,64));
-    cache.remember(16384,64,a,RangeShadowBudgetBytes);CHECK(cache.covers(8192,8256));
+    cache.remember(16384,64,a,RangeShadowBudgetBytes);CHECK(cache.canRead(8192,8256));
+    std::vector<unsigned char> discardedGap(8256,0xff);cache.read(discardedGap.data(),8192,8256);
+    for(auto c:discardedGap)CHECK(c==0);
     // A failed growth drops all proof, including DISCARD's undefined remainder.
     cache.remember(20000,8192,locked.data(),0);CHECK(!cache.canRead(8192,64));
     cache.clear();CHECK(cache.capacity()==0);
