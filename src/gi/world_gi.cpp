@@ -1020,7 +1020,7 @@ void LocalSceneCache::accountMemory(NorthlightMemoryFootprint::Counter& memory)c
     account(cache.pieces);account(cache.chunks);
 }
 
-bool LocalSceneCache::build(const std::vector<std::string>& files,const std::string& directory,const std::string& map,Vec3 low,Vec3 high,BVH& output,std::string& error,const AllocationAdmission& admit,bool fast,const SceneSourceProvider& sourceProvider,const SceneSourceRevision& sourceRevision,bool chunked){
+bool LocalSceneCache::build(const std::vector<std::string>& files,const std::string& directory,const std::string& map,Vec3 low,Vec3 high,BVH& output,std::string& error,const AllocationAdmission& admit,bool fast,const SceneSourceProvider& sourceProvider,const SceneSourceRevision& sourceRevision,bool chunked,const BVH* reuseTexels){
     const auto begin=CacheClock::now();error.clear();
     if(files.size()>64||!finite(low)||!finite(high)||low.x>high.x||low.y>high.y||low.z>high.z){error="Invalid incremental FGS3 region or tile count";return false;}
     try{
@@ -1043,6 +1043,24 @@ bool LocalSceneCache::build(const std::vector<std::string>& files,const std::str
         stats.retainedBytes=cacheBytes();trimCache();
         WorldScene next;if(chunked){next.vertices.chunks(&admit);next.triangles.chunks(&admit);}std::vector<BVH::PieceReference> references;if(sourceProvider){if(!allowed(uint64_t(wanted.size())*sizeof(SourcePieceRange)))return false;next.sourcePieces.reserve(wanted.size());}if(accelerate){if(!allowed(uint64_t(wanted.size())*sizeof(BVH::PieceReference)))return false;references.reserve(wanted.size());}
         uint64_t textureBytes=0;
+        // Neighbouring regions retain their own geometry and material metadata,
+        // but can share immutable pixels with the still-drawable generation.
+        std::unordered_map<NorthlightMeshPageKey::Key,std::vector<const WorldMaterial*>,NorthlightMeshPageKey::KeyHash> retainedTexels;
+        if(reuseTexels){std::unordered_set<const uint8_t*> seen;
+            for(size_t i=0;i<reuseTexels->scene().materials.size();++i){const auto& m=reuseTexels->material(i);
+                if(m.sharedTexels&&seen.insert(m.sharedTexels.get()).second){const auto pixels=m.texels();
+                    retainedTexels[NorthlightMeshPageKey::keyOf(pixels.data(),pixels.size(),nullptr,0)].push_back(&m);}
+            }
+        }
+        auto retainedMaterial=[&](const WorldMaterial& m)->const WorldMaterial*{
+            if(retainedTexels.empty()||m.texels().empty())return nullptr;const auto pixels=m.texels();
+            auto found=retainedTexels.find(NorthlightMeshPageKey::keyOf(pixels.data(),pixels.size(),nullptr,0));
+            if(found!=retainedTexels.end())for(const auto* previous:found->second)if(previous->texels()==pixels)return previous;
+            return nullptr;
+        };
+        // Repeated WMO groups and fixtures retain distinct material/owner metadata,
+        // but byte-identical immutable texels consume the region budget once.
+        std::unordered_map<NorthlightMeshPageKey::Key,std::vector<uint32_t>,NorthlightMeshPageKey::KeyHash> texelOwners;
         // Previous build's counts (+1/16) as the one up-front block when the regions overlap (IoU >= 1/2);
         // beyond that, growth is +1/4 rather than +1/2. A denied hint falls back to normal growth, error unset.
         bool hinted=false;
@@ -1071,8 +1089,8 @@ bool LocalSceneCache::build(const std::vector<std::string>& files,const std::str
             // never raise the allocator's address-space high-water mark.
             if(chunked&&!cache.limits.retainedBytes&&!sharedSource){
                 for(size_t i=0;i<loaded.materials.size();++i){auto& m=loaded.materials[i];if(m.texels().empty())continue;
-                    const WorldMaterial* identical=nullptr;
-                    for(const auto& previous:next.materials)if(previous.sharedTexels&&m.texels()==previous.texels()){identical=&previous;break;}
+                    const WorldMaterial* identical=retainedMaterial(m);
+                    if(!identical)for(const auto& previous:next.materials)if(previous.sharedTexels&&m.texels()==previous.texels()){identical=&previous;break;}
                     if(!identical)for(size_t j=0;j<i;++j)if(loaded.materials[j].sharedTexels&&m.texels()==loaded.materials[j].texels()){identical=&loaded.materials[j];break;}
                     if(identical){m.sharedTexels=identical->sharedTexels;m.sharedTexelBytes=identical->sharedTexelBytes;std::vector<uint8_t>().swap(m.rgba);}
                 }
@@ -1094,6 +1112,7 @@ bool LocalSceneCache::build(const std::vector<std::string>& files,const std::str
                 }
             }
             std::vector<uint32_t> materialRemap[3];for(auto& remap:materialRemap)remap.assign(materials.size(),UINT32_MAX);
+            std::vector<uint32_t> texelRemap(materials.size(),UINT32_MAX);
             uint64_t decodedBytes=sceneBytes(source),largestPiece=0;for(const auto& material:materials)decodedBytes+=sizeof(WorldMaterial)+material.texelCapacity();
             for(const auto& instance:group.second){
                 auto key=pieceKey(group.first,instance);auto old=cache.pieces.find(key);std::shared_ptr<Impl::Piece> piece;
@@ -1134,7 +1153,34 @@ bool LocalSceneCache::build(const std::vector<std::string>& files,const std::str
                 if(!reserve(next.vertices,vertexBase+scene.vertices.size())||!reserve(next.triangles,triangleBase+scene.triangles.size()))return false;
                 next.vertices.insert(next.vertices.end(),scene.vertices.begin(),scene.vertices.end());
                 for(const auto& triangle:scene.triangles){auto t=triangle;uint32_t original=p.materialSources[t.material];
-                    if(remap[original]==UINT32_MAX){const auto& m=materials[original];if(next.materials.size()>=65536||textureBytes+m.texels().size()>256ull*1024*1024){error="FGS3 local region material limit exceeded";return false;}if(!reserve(next.materials,next.materials.size()+1)||!allowed(m.texels().size()))return false;remap[original]=uint32_t(next.materials.size());next.materials.push_back(m);auto& dest=next.materials.back();dest.terrain=instance.terrain;dest.wmo=instance.wmo;dest.lampSourceId=m.lampLocalId?lampIdentity(group.first,instance,m.lampLocalId):scene.materials[t.material].lampSourceId;textureBytes+=m.texels().size();}
+                    if(remap[original]==UINT32_MAX){
+                        const auto& m=materials[original];const auto pixels=m.texels();
+                        uint32_t identical=texelRemap[original];
+                        if(identical==UINT32_MAX){
+                            const auto key=NorthlightMeshPageKey::keyOf(pixels.data(),pixels.size(),nullptr,0);
+                            auto& owners=texelOwners[key];
+                            for(auto index:owners)if(next.materials[index].texels()==pixels){identical=index;break;}
+                            if(identical==UINT32_MAX&&!pixels.empty())owners.push_back(uint32_t(next.materials.size()));
+                        }
+                        const uint64_t bytes=identical==UINT32_MAX?pixels.size():0;
+                        if(next.materials.size()>=65536||textureBytes+bytes>256ull*1024*1024){error="FGS3 local region material limit exceeded: materials="+std::to_string(next.materials.size())+" uniqueTexelBytes="+std::to_string(textureBytes)+" nextBytes="+std::to_string(bytes);return false;}
+                        const auto* retained=identical==UINT32_MAX?retainedMaterial(m):nullptr;
+                        if(!reserve(next.materials,next.materials.size()+1)||!allowed(retained?0:bytes))return false;
+                        WorldMaterial dest;
+                        dest.albedo=m.albedo;dest.width=m.width;dest.height=m.height;dest.alphaCutoff=m.alphaCutoff;
+                        dest.addressU=m.addressU;dest.addressV=m.addressV;dest.pointOnly=m.pointOnly;dest.lampLocalId=m.lampLocalId;
+                        if(identical!=UINT32_MAX){dest.sharedTexels=next.materials[identical].sharedTexels;dest.sharedTexelBytes=pixels.size();}
+                        else if(!pixels.empty()){
+                            if(retained)dest.sharedTexels=retained->sharedTexels;
+                            else if(m.sharedTexels)dest.sharedTexels=m.sharedTexels;
+                            else{auto storage=geometryBlock<uint8_t>(pixels.size());std::memcpy(storage.get(),pixels.data(),pixels.size());dest.sharedTexels=std::shared_ptr<const uint8_t>(storage.release(),GeometryBlockDelete<uint8_t>{});}
+                            dest.sharedTexelBytes=pixels.size();
+                        }
+                        dest.terrain=instance.terrain;dest.wmo=instance.wmo;
+                        dest.lampSourceId=m.lampLocalId?lampIdentity(group.first,instance,m.lampLocalId):scene.materials[t.material].lampSourceId;
+                        remap[original]=uint32_t(next.materials.size());texelRemap[original]=identical==UINT32_MAX?remap[original]:identical;
+                        next.materials.push_back(std::move(dest));textureBytes+=bytes;
+                    }
                     t.v0+=vertexBase;t.v1+=vertexBase;t.v2+=vertexBase;t.material=remap[original];next.triangles.push_back(t);
                 }
                 if(p.sourceIdentity&&!scene.triangles.empty()){

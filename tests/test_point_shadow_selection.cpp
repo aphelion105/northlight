@@ -17,24 +17,25 @@ int main(){
             auto small=lamp(kind);small.kind=kind;small.attenuationEnd=5;
             if(kind==1)small.flags|=NorthlightLocalLights::Baked;
             lights.push_back(small);
-            assert(NorthlightLocalLights::valid(small)&&!eligible(small));
-            small.attenuationEnd=5.001f;assert(eligible(small));
+            assert(NorthlightLocalLights::valid(small)&&eligible(small));
+            small.attenuationEnd=.11f;assert(!eligible(small));
+            small.attenuationEnd=.12f;assert(eligible(small));
         }
         auto candle=lamp(4);candle.attenuationEnd=32;
         candle.flags|=NorthlightLocalLights::CandlePulse;lights.push_back(candle);
         // Old caches may still request candle shadows; illumination survives.
-        assert(selectMany(lights.data(),lights.size(),camera,16).count==0);
+        assert(selectMany(lights.data(),lights.size(),camera,16).count==3);
         const auto direct=NorthlightLocalLightSelection::select(lights,camera);
         assert(direct.count==lights.size());
         for(unsigned i=0;i<direct.count;++i)assert(direct.color[i][0]>0);
         lights.push_back(lamp(5));
         const auto shadows=selectMany(lights.data(),lights.size(),camera,16);
-        assert(shadows.count==1&&lights[shadows.index[0]].sourceId==5);
+        assert(shadows.count==4&&lights[shadows.index[0]].sourceId==5);
         SelectionTracker tracker;auto slots=tracker.update(&lights.back(),1,camera,1,100);
         assert(slots[0].index==0);
-        lights.back().attenuationEnd=5;
+        lights.back().attenuationEnd=.1f;
         slots=tracker.update(&lights.back(),1,camera,1,116);
-        assert(slots[0].index<0); // No stale correction when a light becomes small.
+        assert(slots[0].index<0); // No stale correction below the cube's near plane.
     }
     for(unsigned i=0;i<16;i+=5)inverse[i]=1;
     auto view=NorthlightLocalLightScissor::view(inverse,projection,.1f,.1f,512,512);assert(view.valid);

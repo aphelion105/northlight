@@ -20,7 +20,7 @@ static void sceneEqual(const WorldScene& a,const WorldScene& b){
     assert(a.vertices.size()==b.vertices.size()&&a.triangles.size()==b.triangles.size()&&a.materials.size()==b.materials.size()&&a.completePlacements.size()==b.completePlacements.size());
     for(size_t i=0;i<a.vertices.size();++i){const auto& x=a.vertices[i];const auto& y=b.vertices[i];assert(exact(x.position,y.position)&&exact(x.normal,y.normal)&&x.u==y.u&&x.v==y.v);}
     for(size_t i=0;i<a.triangles.size();++i){const auto& x=a.triangles[i];const auto& y=b.triangles[i];assert(x.v0==y.v0&&x.v1==y.v1&&x.v2==y.v2&&x.material==y.material);}
-    for(size_t i=0;i<a.materials.size();++i){const auto& x=a.materials[i];const auto& y=b.materials[i];assert(exact(x.albedo,y.albedo)&&x.width==y.width&&x.height==y.height&&x.alphaCutoff==y.alphaCutoff&&x.rgba==y.rgba&&x.addressU==y.addressU&&x.addressV==y.addressV&&x.terrain==y.terrain&&x.wmo==y.wmo);}
+    for(size_t i=0;i<a.materials.size();++i){const auto& x=a.materials[i];const auto& y=b.materials[i];assert(exact(x.albedo,y.albedo)&&x.width==y.width&&x.height==y.height&&x.alphaCutoff==y.alphaCutoff&&x.texels()==y.texels()&&x.addressU==y.addressU&&x.addressV==y.addressV&&x.terrain==y.terrain&&x.wmo==y.wmo);}
     for(size_t i=0;i<a.completePlacements.size();++i){const auto& x=a.completePlacements[i];const auto& y=b.completePlacements[i];assert(x.uid==y.uid&&x.category==y.category&&x.modelKey==y.modelKey&&exact(x.translation,y.translation)&&exact(x.low,y.low)&&exact(x.high,y.high));for(unsigned j=0;j<9;++j)assert(x.matrix[j]==y.matrix[j]);}
 }
 static void hitEqual(const RayHit& a,const RayHit& b){

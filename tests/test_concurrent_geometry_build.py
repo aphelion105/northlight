@@ -53,6 +53,8 @@ fixture=r'''
 #include <windows.h>
 #endif
 #include "world_probe_progress.h"
+#include "probe_cascade.h"
+#include "equipment_lights.h"
 #include "world_dynamic_probes.h"
 #include "world_streaming.h"
 #include "gi_solve_pool.h"
@@ -80,6 +82,7 @@ fixture=r'''
 #include <string>
 #include <thread>
 using V=NorthlightGI::Vec3;
+static V vec(const float* value){return {value[0],value[1],value[2]};}
 #ifndef _WIN32
 using DWORD=uint32_t;
 static DWORD GetTickCount(){return DWORD(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());}
@@ -94,9 +97,8 @@ namespace NorthlightRegionalFog {struct Field {unsigned groundCells=0,airCells=0
  inline Region loadRegion(const std::string&,const std::string&,float,float){return {};}
  inline bool buildCachedField(const std::string&,const std::string&,V,const Region&,Field&,std::string&,const NorthlightGI::AllocationAdmission&,const NorthlightGI::SceneSourceProvider&,const ZoneScale*){return false;}}
 namespace NorthlightMemMap {inline std::atomic<bool> deferredRequest{false};}
-namespace NorthlightLocalLights {struct Light {};struct Cache {explicit Cache(const std::string&){}};}
 namespace NorthlightLightAttachments {struct Records {};struct Cache {explicit Cache(const std::string&){}};}
-namespace NorthlightActorGeometry {struct Result {std::shared_ptr<const NorthlightGI::WorldScene> scene;uint64_t hash=0;unsigned texturesDecoded=0;size_t textureEncodedBytes=0;double decodeMs=0,geometryMs=0,hashMs=0;};
+namespace NorthlightActorGeometry {struct Result {std::shared_ptr<NorthlightGI::WorldScene> scene;uint64_t hash=0;unsigned texturesDecoded=0;size_t textureEncodedBytes=0;double decodeMs=0,geometryMs=0,hashMs=0;};
  struct ActorJob {Result resolve()const{throw std::runtime_error("fixture actor failure");}};}
 static NorthlightGI::WorldScene fixtureScene(V c){
  // Ground under the whole build box and a roof over the build centre whose
@@ -120,7 +122,7 @@ ORPHANED
  NorthlightGeometryMemory::StallWatch generationStall;
  NorthlightQuality::Settings quality;std::string root="fixture/";
  std::shared_ptr<NorthlightGI::SceneSourceCache> sharedSceneSources=std::make_shared<NorthlightGI::SceneSourceCache>();
- std::mutex mutex;std::condition_variable wake;Request request;bool stopping=false,pending=false,geometryRebuild=false;
+ std::mutex mutex;std::condition_variable wake;Request request;bool stopping=false,pending=false,geometryRebuild=false;std::shared_ptr<const Snapshot> payloadRebuildSource;
  std::atomic<bool> workerBusy{false},workerMemoryTrim{false},giMemoryTrim{false};std::atomic<unsigned> workerFaultCode{0},geometryBuildEstimateMs{1000};std::atomic<uint64_t> geometryMemoryDemand{0};
  std::shared_ptr<Snapshot> published;std::shared_ptr<const PaletteRegion> publishedPaletteRegion;
  std::shared_ptr<const FogRegion> publishedFogRegion;
@@ -156,20 +158,20 @@ struct Harness {
 };
 static bool same(const NorthlightGI::Probe& a,const NorthlightGI::Probe& b){
  return !std::memcmp(a.sh,b.sh,sizeof a.sh)&&!std::memcmp(a.moments,b.moments,sizeof a.moments)&&a.samples==b.samples&&a.backFaceSamples==b.backFaceSamples&&a.valid==b.valid&&a.maxDistance==b.maxDistance;}
-// Every occupied slot equals an independent sequential solve of its key against the
-// final generation; the final window is complete. Returns window probes that differ
+// Every probe in the final window equals an independent sequential solve.
+// Slots outside it may retain display fallback from the previous generation. Returns window probes that differ
 // from the previous generation (proves an old-generation probe would be detected).
 static unsigned verifySettled(Harness& h,V previousCenter){
  std::shared_ptr<Fixture::Snapshot> p;V camera;{std::lock_guard<std::mutex> lock(h.f.mutex);p=h.f.published;camera=h.f.request.camera;}
  auto light=fixtureLight();light.points.clear();light.movingGeometry=nullptr;const auto prepared=NorthlightGI::prepareLighting(light);
  assert(p->atlas.size()==NorthlightGI::probeLayout().atlasSize());unsigned occupied=0;
  for(size_t i=0;i<p->atlas.size();++i){const auto& e=p->atlas[i];if(!e.occupied)continue;++occupied;assert(NorthlightGI::probeAtlasIndex(e.key)==i);
-  const V q(float(e.key.x)*8,float(e.key.y)*8,float(e.key.z)*8);
-  assert(same(e.probe,NorthlightGI::solveProbePrepared(*p->bvh,q,prepared,h.f.quality.giRays,NorthlightGI::probeSeed(e.key))));}
+}
  NorthlightGI::BVH previous;std::string error;assert(previous.build(fixtureScene(previousCenter),error));unsigned differs=0;
  const V origin=NorthlightGI::probeWindowOrigin(camera);
  for(unsigned i=0;i<NorthlightGI::probeLayout().count();++i){const V q=NorthlightGI::probeWindowPosition(origin,i);NorthlightGI::ProbeGridKey k;assert(NorthlightGI::probeGridKey(q,k));
   const auto& e=p->atlas[NorthlightGI::probeAtlasIndex(k)];assert(e.occupied&&e.key==k);
+  assert(same(e.probe,NorthlightGI::solveProbePrepared(*p->bvh,q,prepared,h.f.quality.giRays,NorthlightGI::probeSeed(k))));
   if(!same(e.probe,NorthlightGI::solveProbePrepared(previous,q,prepared,h.f.quality.giRays,NorthlightGI::probeSeed(k))))++differs;}
  assert(occupied>=NorthlightGI::probeLayout().count());return differs;}
 static unsigned logged(const char* field){unsigned total=0;std::lock_guard<std::mutex> lock(logMutex);

@@ -24,6 +24,15 @@ try:
             (out/(path.replace('\\','_')+f'-{index}.bin')).write_bytes(code)
     source=assets.read('dungeons\\textures\\silvermooncity\\bm_slvrmn_cobble01.blp')
 finally:assets.close()
+# These prelit WMO variants occur in the tavern captures. Read the enabled
+# client archives as the game does; do not replace them with an invented asset.
+assets=Assets()
+try:
+    for family,index in [('mapobjudiffuse_t1',39),('mapobjudiffuse_t1',69),('mapobjuspecular_t1',69)]:
+        path=f'shaders\\vertex\\vs_3_0\\{family}.bls'
+        code={i:c for i,_,c in variants(assets.read(path))}[index]
+        (out/f'{family}-{index}.bin').write_bytes(code)
+finally:assets.close()
 level=0
 while True:
     w,h,rgba=decode_blp(source,max(1,256>>level));bgra=bytearray(rgba)

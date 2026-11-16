@@ -111,7 +111,7 @@ oracles, including byte equality and malformed-input controls.
 1. **One native submit owner.** Four `Draw*` adapters preserve their D3D9 argument
    tuples. `drawHook` owns preparation, fault boundaries and the shared tail.
    `captureGameDraw` preserves terrain-before-material ordering and the current
-   material → normal → world → water sequence. Raw and wrapped callbacks have
+   material в†’ normal в†’ world в†’ water sequence. Raw and wrapped callbacks have
    different consumers; UP draws retain their separate memory/lifetime rules.
 2. **Potential demand and available inputs are separate phases.**
    `NorthlightFrameRequirements::make` is the shared consumer plan. Capture can
@@ -209,8 +209,14 @@ same depth/colour-guided upsample and bounded material estimate as local lamps.
 It does not subtract outdoor ambient or apply a solar mask to baked RGB. Roofs
 and off-camera casters use the existing camera-independent geometry path; actor
 visibility also gates this daylight. Missing coverage/resources retain authored
-lighting. GI still replaces ambient only on ordinary lit receivers: baked WMO
-lighting is not separable into ambient, lamps and emissive material here.
+lighting. GI replaces outdoor ambient on ordinary lit receivers, clamping its
+correction before the probe residency fade. Measured probe occlusion can also
+attenuate transported baked RGB without subtracting the outdoor light bank.
+Explicit room banks keep their authored fill: their baked, ambient and emissive
+components cannot be separated by the outdoor GI estimate. GI brightness controls
+added indirect radiance independently of measured occlusion; current local and
+directional light remain separate. Missing probes and zero prelit mix preserve
+authored illumination.
 Receiver registration accepts either a known WMO identity or the same rigid
 coordinate proof used by world capture, followed by an independent baked-RGB
 dependency proof. A material edit must not remove the prelit mask while its
@@ -284,5 +290,5 @@ pass executor; moving resources into files did not complete its decomposition.
 The GPU controller includes deferred captures/effects, while in-scene capture
 remains outside that interval. The CPU controller does not cover all distributed
 draw-hook work. These controllers do not prove a total Northlight budget.
-Component tests and worker timings cannot establish game FPS or a 2–3 ms total.
+Component tests and worker timings cannot establish game FPS or a 2вЂ“3 ms total.
 That claim needs matched live routes with identical quality, output and current poses.

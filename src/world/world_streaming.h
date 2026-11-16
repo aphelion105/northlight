@@ -120,7 +120,7 @@ inline const char* validate(const NorthlightWorldMesh::WorldMeshUploadPlan& p,co
     }
     if(expected!=p.indices.size())return "incomplete batch coverage";
     for(const auto& m:p.materials)
-        if(!m.width||!m.height||m.width>4096||m.height>4096||uint64_t(m.width)*m.height*4!=m.bgra.size())return "invalid texture size";
+        if(!m.width||!m.height||m.width>4096||m.height>4096||uint64_t(m.width)*m.height*4!=m.pixelBytes())return "invalid texture size";
     return nullptr;
 }
 enum class BeginResult { Ready, InvalidPlan, VertexFailure, IndexFailure };

@@ -21,7 +21,7 @@ struct Admission {
 struct Gpu {
     uint64_t at=0,managed=0,defaults=0,system=0,geometry=0,probes=0,shadows=0,post=0,noise=0,dynamic=0;
     uint64_t retiredMaterials=0,materialReuseCpu=0;unsigned unknown=0;bool complete=false;
-    uint64_t staticManagedLedger=0,replayDefaultLedger=0,liveTerrainDefault=0,captureCpu=0,captureIdentity=0;
+    uint64_t staticDefaultLedger=0,replayDefaultLedger=0,liveTerrainDefault=0,captureCpu=0,captureIdentity=0;
 };
 struct Snapshot {Cpu builder,solver;Admission admission;Gpu gpu;};
 class Store {

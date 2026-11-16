@@ -8,6 +8,8 @@ template<class T> static void drop(T*& p){if(p)p->Release();p=nullptr;}
 static void logf(const char* format,...){va_list args;va_start(args,format);std::vprintf(format,args);std::puts("");std::fflush(stdout);va_end(args);}
 #include "saved_state.h"
 #include "auto_bump_renderer.h"
+#define NORTHLIGHT_MODEL_NORMALS_TEST
+#include "model_normal_renderer.h"
 #include "world_compiled_shaders.h"
 #include "forwarders.h"
 #ifdef NORTHLIGHT_MATERIAL_MIRROR
@@ -114,7 +116,17 @@ int main(int argc,char** argv){
             const float invisible[]={0,0,0,0};d->SetVertexShaderConstantF(9,invisible,1);ok(d->BeginScene());capture(vs,[&]{return d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,mesh,sizeof(V));},true);ok(d->EndScene());assert(bump.texture());
             IDirect3DSurface9 *a=nullptr,*b=nullptr;ok(bump.texture()->GetSurfaceLevel(0,&a));ok(d->CreateOffscreenPlainSurface(W,H,D3DFMT_A16B16G16R16F,D3DPOOL_SYSTEMMEM,&b,nullptr));ok(d->GetRenderTargetData(a,b));D3DLOCKED_RECT lock{};ok(b->LockRect(&lock,nullptr,D3DLOCK_READONLY));for(unsigned y=0;y<H;++y)for(unsigned x=0;x<W;++x)assert(((std::uint16_t*)((char*)lock.pBits+y*lock.Pitch))[x*4+3]==0);b->UnlockRect();drop(a);drop(b);bump.endFrame();d->SetVertexShaderConstantF(9,constants[9],1);++cases;
         }
+        // Receiver marking in the captured tavern uses ALWAYS, not a stencil
+        // coverage test. Reject a real test, then capture with our tag enabled.
+        bump.endFrame();ok(d->SetRenderState(D3DRS_STENCILENABLE,TRUE));
+        ok(d->SetRenderState(D3DRS_STENCILFUNC,D3DCMP_EQUAL));ok(d->SetRenderState(D3DRS_TWOSIDEDSTENCILMODE,FALSE));
+        unsigned rejectedDraws=0;capture(vs,[&]{++rejectedDraws;return S_OK;},true);assert(!rejectedDraws&&!bump.texture());
+        ok(d->SetRenderState(D3DRS_STENCILFUNC,D3DCMP_ALWAYS));
+        ok(d->SetRenderState(D3DRS_STENCILPASS,D3DSTENCILOP_REPLACE));ok(d->SetRenderState(D3DRS_STENCILREF,0x10));
+        ok(d->SetRenderState(D3DRS_STENCILWRITEMASK,0xf0));
         ok(d->BeginScene());capture(vs,[&]{return d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,mesh,sizeof(V));},true);ok(d->EndScene());assert(bump.texture());
+        DWORD retainedStencil=0;ok(d->GetRenderState(D3DRS_STENCILENABLE,&retainedStencil));assert(retainedStencil==TRUE);
+        ok(d->SetRenderState(D3DRS_STENCILENABLE,FALSE));
         IDirect3DSurface9 *materialSurface=nullptr,*materialRead=nullptr;ok(bump.texture()->GetSurfaceLevel(0,&materialSurface));ok(d->CreateOffscreenPlainSurface(W,H,D3DFMT_A16B16G16R16F,D3DPOOL_SYSTEMMEM,&materialRead,nullptr));ok(d->GetRenderTargetData(materialSurface,materialRead));
         D3DLOCKED_RECT materialLock{};ok(materialRead->LockRect(&materialLock,nullptr,D3DLOCK_READONLY));std::vector<float> materialValues(W*H*4);unsigned covered=0;float minHeight=2,maxHeight=-1;
         for(unsigned y=0;y<H;++y)for(unsigned x=0;x<W;++x){auto* p=(std::uint16_t*)((char*)materialLock.pBits+y*materialLock.Pitch)+x*4;for(unsigned k=0;k<4;++k)materialValues[(y*W+x)*4+k]=half(p[k]);if(half(p[3])>.01f){++covered;minHeight=std::min(minHeight,half(p[0]));maxHeight=std::max(maxHeight,half(p[0]));}}
@@ -164,6 +176,37 @@ int main(int argc,char** argv){
         }
 #endif
         if(terrain&&!sm2&&!layer){
+            // Keep smooth authored ground normals at both material distance
+            // and beyond the actor receiver cutoff, independently of AutoBump.
+            for(float distance:{1.f,80.f})for(unsigned path=0;path<3;++path){
+                SavedState saved(d);assert(saved.ok);
+                NorthlightModelNormals ground(d);V smooth[4];std::copy_n(mesh,4,smooth);
+                for(auto& v:smooth){v.z=-distance;v.nx=v.x*.3f;v.nz=std::sqrt(1-v.nx*v.nx);}
+                auto terrainBank=std::array<std::array<float,4>,34>{};std::memcpy(terrainBank.data(),constants,sizeof constants);
+                terrainBank[4][0]=terrainBank[5][1]=distance;terrainBank[7][2]=.5f*distance;terrainBank[7][3]=distance;
+                ok(d->SetVertexShaderConstantF(0,terrainBank[0].data(),34));
+                ground.setDeferredCapture(path!=0);ground.enableNativeMrt(path==2);
+                const NorthlightDrawSnapshot::Draw geometry{D3DPT_TRIANGLESTRIP,0,0,4,0,2,false};
+                for(unsigned frame=0;frame<(path==2?3u:1u);++frame){
+                    ground.endFrame();ground.beginNativeDraw();
+                    ok(d->SetDepthStencilSurface(depth));ok(d->Clear(0,nullptr,D3DCLEAR_ZBUFFER,0,1,0));
+                    ok(d->SetVertexShader(vs));ok(d->SetPixelShader(ps));ok(d->SetVertexDeclaration(decl));
+                    auto submit=[&]{return d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,smooth,sizeof(V));};
+                    ok(d->BeginScene());
+                    ground.capture(vs,submit,true,&geometry,nullptr,D3DFMT_UNKNOWN,smooth,sizeof(V),nullptr,nullptr,nullptr,nullptr,nullptr,true);
+                    if(path==2)ok(ground.nativeDraw(submit,true,[](auto* original,auto* bound,auto*)->unsigned{return original==bound?NorthlightNativeModelNormals::PairValid:0;}));
+                    assert(ground.finishCaptures(true));ok(d->EndScene());assert(ground.texture());
+                }
+                if(path==2)assert(ground.testNativeCommittedPackets()==1);
+                IDirect3DSurface9 *surface=nullptr,*staging=nullptr;ok(ground.texture()->GetSurfaceLevel(0,&surface));
+                ok(d->CreateOffscreenPlainSurface(W,H,D3DFMT_A16B16G16R16F,D3DPOOL_SYSTEMMEM,&staging,nullptr));
+                ok(d->GetRenderTargetData(surface,staging));D3DLOCKED_RECT lock{};ok(staging->LockRect(&lock,nullptr,D3DLOCK_READONLY));
+                float samples[3];for(unsigned i=0;i<3;++i){const auto* p=reinterpret_cast<const uint16_t*>(static_cast<const char*>(lock.pBits)+(H/2)*lock.Pitch)+(W*(i+1)/4)*4;
+                    samples[i]=half(p[0]);std::printf("GROUND_SAMPLE distance=%.0f x=%u normal=%.4f/%.4f/%.4f depth=%.4f\n",distance,i,half(p[0]),half(p[1]),half(p[2]),half(p[3]));std::fflush(stdout);assert(std::fabs(half(p[3])-distance)<.1f&&half(p[2])>.9f);}
+                assert(samples[0]<-.1f&&std::fabs(samples[1])<.02f&&samples[2]>.1f);
+                staging->UnlockRect();drop(staging);drop(surface);++cases;
+                std::printf("TERRAIN_SMOOTH_NORMAL_PASS distance=%.0f path=%u left=%.4f center=%.4f right=%.4f\n",distance,path,samples[0],samples[1],samples[2]);
+            }
             std::vector<std::uint32_t> shadowVS,shadowPS;NorthlightTerrainCoverage::PixelInfo info;
             assert(NorthlightTerrainCoverage::vertex(reinterpret_cast<std::uint32_t*>(vsBytes.data()),vsBytes.size()/4,shadowVS));
             assert(NorthlightTerrainCoverage::pixel(reinterpret_cast<std::uint32_t*>(psBytes.data()),psBytes.size()/4,shadowPS,info));
@@ -243,6 +286,28 @@ int main(int argc,char** argv){
             if(mode==1||mode==6||mode==7)assert(changed>100);else assert(changed==0);++cases;
         }
         d->SetTexture(6,nullptr);drop(blockedSun);drop(blockedMoon);drop(cavity);d->SetTexture(9,nullptr);bump.endFrame();drop(vs);drop(ps);
+    }
+    for(const char* name:{"mapobjudiffuse_t1-39","mapobjudiffuse_t1-69","mapobjuspecular_t1-69"}){
+        const auto code=read(folder+name+".bin"),pixel=read(folder+"shaders_pixel_ps_3_0_mapobjdiffuse.bls-0.bin");
+        IDirect3DVertexShader9* vs=nullptr;IDirect3DPixelShader9* ps=nullptr;
+        ok(d->CreateVertexShader(reinterpret_cast<const DWORD*>(code.data()),&vs));ok(d->CreatePixelShader(reinterpret_cast<const DWORD*>(pixel.data()),&ps));
+        const auto hash=NorthlightShaderTags::fnv1a(code.data(),code.size());
+        const bool wmo=(NorthlightShaderTags::triggerTags(hash,code.data(),code.size())&NorthlightShaderTags::kWmo)!=0;assert(wmo);
+        settings.autoBumpWalls=3;bump.configure(settings);
+        bump.registerVertex(vs,hash,reinterpret_cast<const DWORD*>(code.data()),code.size()/4,0,wmo);
+        bump.registerPixel(ps,NorthlightShaderTags::fnv1a(pixel.data(),pixel.size()));
+        ok(d->SetVertexShader(vs));ok(d->SetPixelShader(ps));ok(d->SetTexture(0,diffuse));
+        ok(d->SetRenderState(D3DRS_ZENABLE,TRUE));ok(d->SetRenderState(D3DRS_ZWRITEENABLE,TRUE));
+        ok(d->SetRenderState(D3DRS_ZFUNC,D3DCMP_LESSEQUAL));ok(d->SetRenderState(D3DRS_STENCILENABLE,FALSE));
+        ok(d->SetRenderState(D3DRS_STENCILFUNC,D3DCMP_ALWAYS));ok(d->SetRenderState(D3DRS_TWOSIDEDSTENCILMODE,FALSE));
+        ok(d->SetRenderState(D3DRS_STENCILENABLE,TRUE));
+        unsigned changed=0;bump.beginDraw();ok(bump.nativeDraw([&]{IDirect3DPixelShader9* bound=nullptr;ok(d->GetPixelShader(&bound));changed+=bound!=ps;drop(bound);return S_OK;},vs,ps));
+        assert(changed==1&&!bump.geometryPrepared());
+        ok(d->SetRenderState(D3DRS_STENCILFUNC,D3DCMP_EQUAL));unsigned rejected=0;
+        ok(bump.nativeDraw([&]{IDirect3DPixelShader9* bound=nullptr;ok(d->GetPixelShader(&bound));rejected+=bound!=ps;drop(bound);return S_OK;},vs,ps));assert(!rejected);
+        ok(d->SetRenderState(D3DRS_STENCILENABLE,FALSE));IDirect3DVertexShader9* restored=nullptr;ok(d->GetVertexShader(&restored));assert(restored==vs);drop(restored);
+        std::printf("PRELIT_WMO_POM_FALLBACK_PASS program=%s hash=%016llx\n",name,(unsigned long long)hash);
+        bump.endFrame();drop(vs);drop(ps);++cases;
     }
     bump.reset();
 #ifdef NORTHLIGHT_MATERIAL_MIRROR

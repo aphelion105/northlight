@@ -18,6 +18,8 @@ struct CaptureSource {int mesh=0,pose=0;void* declaration=nullptr;};
 struct Normals {unsigned calls=0;template<class...T>void capture(T&&...){++calls;}};
 struct Map:std::map<IDirect3DVertexShader9*,uint64_t>{unsigned lookups=0;auto find(IDirect3DVertexShader9* p){++lookups;return std::map<IDirect3DVertexShader9*,uint64_t>::find(p);}};
 struct Device {
+ struct World {bool terrainShader(IDirect3DVertexShader9*)const{return false;}} scene;
+ World* world=&scene;
  Normals* modelNormals=nullptr;bool modelNormalsNeeded=false,enabled=false,applied=false,failed=false;Map vsHashes;
  __BODY__
 };

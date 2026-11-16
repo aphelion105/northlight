@@ -120,7 +120,7 @@ class NorthlightAutoBump {
             {D3DRS_BLENDOPALPHA,0,D3DBLENDOP_ADD},{D3DRS_SRCBLENDALPHA,0,D3DBLEND_ONE},
             {D3DRS_DESTBLENDALPHA,0,D3DBLEND_INVSRCALPHA},{D3DRS_COLORWRITEENABLE1,0,15},
             {D3DRS_COLORWRITEENABLE2,0,15},{D3DRS_COLORWRITEENABLE3,0,15}};
-        bool changed=false,userMemory=false,auxiliary=false,sharedTargets=false,privateEqual=false;
+        bool changed=false,userMemory=false,auxiliary=false,sharedTargets=false,privateEqual=false;DWORD stencilEnabled=FALSE;
         ReplayState(IDirect3DDevice9* device,IDirect3DVertexShader9* vs,const D3DVIEWPORT9& vp,NorthlightMaterialProfile* p=nullptr):d(device),profile(p),vertex(vs),viewport(vp){}
         bool save(bool up,bool twoLayers=false){
             composite=twoLayers;
@@ -135,6 +135,7 @@ class NorthlightAutoBump {
         ~ReplayState(){
             NorthlightMaterialProfile::Scope timing(changed?profile:nullptr,NorthlightMaterialProfile::CaptureRestore,0,true);
             if(changed){
+                if(stencilEnabled)d->SetRenderState(D3DRS_STENCILENABLE,stencilEnabled);
                 if(sharedTargets){d->SetRenderTarget(2,nullptr);d->SetRenderTarget(3,nullptr);}
                 if(auxiliary)d->SetRenderTarget(1,nullptr);
                 if(depth)d->SetDepthStencilSurface(nullptr);
@@ -149,13 +150,13 @@ class NorthlightAutoBump {
             }
             drop(pixel);drop(target);drop(depth);drop(stream);drop(indices);drop(texture2);drop(texture3);
         }
-        HRESULT apply(){changed=true;for(unsigned i=0;i<stateCount;++i){auto& s=states[i];if((stateMask&(1u<<i))&&s.value!=s.replay)d->SetRenderState(s.key,s.replay);}return privateEqual?d->SetRenderState(D3DRS_ZFUNC,D3DCMP_LESSEQUAL):D3D_OK;}
+        HRESULT apply(){changed=true;if(stencilEnabled&&FAILED(d->SetRenderState(D3DRS_STENCILENABLE,FALSE)))return E_FAIL;for(unsigned i=0;i<stateCount;++i){auto& s=states[i];if((stateMask&(1u<<i))&&s.value!=s.replay)d->SetRenderState(s.key,s.replay);}return privateEqual?d->SetRenderState(D3DRS_ZFUNC,D3DCMP_LESSEQUAL):D3D_OK;}
     };
     struct Vertex {IDirect3DVertexShader9* patched=nullptr;unsigned kind=0;IDirect3DVertexShader9* shared=nullptr;bool sharedChecked=false,deferredSafe=false,failed=false,smoothTerrain=false,floatOnly=false;IDirect3DVertexShader9* pending=nullptr;uint64_t pendingHash=0;unsigned constantFirst=0,constantCount=256;};
     bool sharedVertex(Vertex& vertex){if(!vertex.sharedChecked){vertex.sharedChecked=true;vertex.shared=NorthlightSharedPOM::vertexShader(d,vertex.patched);}return vertex.shared!=nullptr;}
     std::unordered_map<IDirect3DVertexShader9*,Vertex> vertices;
     unsigned pendingVertices=0;
-    using VertexIdentity=bool(*)(void*,IDirect3DVertexShader9*,uint64_t&,unsigned&);
+    using VertexIdentity=bool(*)(void*,IDirect3DVertexShader9*,uint64_t&,unsigned&,bool&);
     VertexIdentity vertexIdentity=nullptr;void* vertexIdentityContext=nullptr;bool vertexOverflow=false;
     std::unordered_map<IDirect3DPixelShader9*,unsigned> pixels;
     IDirect3DPixelShader9* shaders[8]={},*sharedShaders[8]={},*normalShaders[8]={};
@@ -192,9 +193,9 @@ class NorthlightAutoBump {
     auto recoverVertex(IDirect3DVertexShader9* original){
         // An inactive registry may fill with shaders an eager patch would reject.
         // Recover a live missing consumer, without evicting a compiled variant.
-        if(!vertexOverflow||!vertexIdentity)return vertices.end();uint64_t hash=0;unsigned family=0;
-        if(!vertexIdentity(vertexIdentityContext,original,hash,family))return vertices.end();
-        const unsigned k=family==3?4:kind(kAutoBumpVertex,hash);if(!k||!modes[k-1])return vertices.end();
+        if(!vertexOverflow||!vertexIdentity)return vertices.end();uint64_t hash=0;unsigned family=0;bool wmo=false;
+        if(!vertexIdentity(vertexIdentityContext,original,hash,family,wmo))return vertices.end();
+        const unsigned k=family==3?4:wmo?2:kind(kAutoBumpVertex,hash);if(!k||!modes[k-1])return vertices.end();
         if(vertices.size()>=4096){auto unused=std::find_if(vertices.begin(),vertices.end(),[](const auto& entry){return entry.second.pending!=nullptr;});
             if(unused==vertices.end())return vertices.end();drop(unused->second.pending);--pendingVertices;vertices.erase(unused);}
         auto added=vertices.emplace(original,Vertex{nullptr,k}).first;original->AddRef();added->second.pending=original;added->second.pendingHash=hash;++pendingVertices;
@@ -237,6 +238,9 @@ class NorthlightAutoBump {
     bool enabled=false,terrain=true,walls=true,grass=true,memoryPressure=false;
     float strength=.75f,range=48;
     unsigned modes[4]={2,2,1,3};float pomControl[4]={.018f,16,16,0};
+    // An unprepared wall draw still needs relief when mesh subdivision is
+    // unsupported or outside its range. Never shift an already displaced draw.
+    bool parallaxMode(unsigned domain)const{return modes[domain-1]==2||(domain==2&&modes[1]==3&&!displacement.prepared());}
     // WMO keeps the generic capture; its specialization has FP16 rounding differences.
     bool normalOnlyCapture(unsigned domain)const{return (domain==1||domain==3||domain==4)&&modes[domain-1]!=2;}
     unsigned draws[4]={},frames=0,rejected=0,invisibleRejected=0,noCaptureRequired=0;
@@ -244,7 +248,7 @@ class NorthlightAutoBump {
     float captureRange(unsigned domain)const{
         if(strength>0)return range;
         if(occlusionControl[2]>0)return std::min(range,projection[3]);
-        return modes[domain-1]==2&&pomControl[0]>0&&pomInRange&&occlusionControl[0]>0&&occlusionLight[3]>0?std::min({range,pomControl[1],projection[3]}):0;
+        return parallaxMode(domain)&&pomControl[0]>0&&pomInRange&&occlusionControl[0]>0&&occlusionLight[3]>0?std::min({range,pomControl[1],projection[3]}):0;
     }
     bool captureNeeded(unsigned domain)const{return captureRange(domain)>0;}
     template<size_t N> static unsigned kind(const AutoBumpIdentity (&table)[N],std::uint64_t hash){
@@ -643,7 +647,7 @@ public:
         for(auto& n:draws)n=0;rejected=rangeTests=rangeRejected=pomRangeRejected=invisibleRejected=noCaptureRequired=0;cleared=privateDepthCleared=drawn=occlusionCleared=occlusionDrawn=false;pomInRange=true;if(singleDepthRetry)--singleDepthRetry;++frames;
     }
     bool active()const{return enabled&&(modes[0]||modes[1]||modes[2]||modes[3])&&(strength>0||occlusionControl[2]>0||
-        ((modes[0]==2||modes[1]==2||modes[2]==2||modes[3]==2)&&pomControl[0]>0)||
+        ((modes[0]==2||modes[1]==2||modes[1]==3||modes[2]==2||modes[3]==2)&&pomControl[0]>0)||
         ((modes[0]==3||modes[1]==3||modes[2]==3||modes[3]==3)&&displacement.hasDisplacement()))&&!failed;}
     IDirect3DTexture9* texture()const{return active()&&drawn?height:nullptr;}
     bool hasCaptureResources()const{return height!=nullptr;}
@@ -659,19 +663,19 @@ public:
         using P=NorthlightMaterialProfile;
         const bool materialActive=active();
         auto native=[&]{P::Scope timing(profileTag?profile:nullptr,P::NativeDraw,profileTag,materialActive);timing.work(displacement.prepared()?displacement.preparedPrimitives():profilePrimitives);return draw();};
-        if(!materialActive||!pomInRange||pomControl[0]<=0||(modes[0]!=2&&modes[1]!=2&&modes[2]!=2&&modes[3]!=2))return native();
+        if(!materialActive||!pomInRange||pomControl[0]<=0||(modes[0]!=2&&modes[1]!=2&&modes[1]!=3&&modes[2]!=2&&modes[3]!=2))return native();
         struct BoundShaders {IDirect3DVertexShader9* vs=nullptr;IDirect3DPixelShader9* ps=nullptr;~BoundShaders(){drop(vs);drop(ps);}} bound;
         if((!provenVS&&FAILED(d->GetVertexShader(&bound.vs)))||(!provenPS&&FAILED(d->GetPixelShader(&bound.ps))))return native();
         auto v=vertices.find(provenVS?provenVS:bound.vs);if(v==vertices.end())v=recoverVertex(provenVS?provenVS:bound.vs);auto p=pixels.find(provenPS?provenPS:bound.ps);
-        if(v==vertices.end()||p==pixels.end()||v->second.kind>4||modes[v->second.kind-1]!=2)return native();
+        if(v==vertices.end()||p==pixels.end()||v->second.kind>4||!parallaxMode(v->second.kind))return native();
         const unsigned domain=v->second.kind,material=p->second;
         if((domain==1&&material>2)||(domain==2&&material!=3&&material!=5&&material!=6)||(domain==3&&material!=4))return native();
         if(!ensureVertex(v->first,v->second))return native();
         return parallax.draw(v->first,v->second.patched,material,projection,pomControl,native,domain==4,bound.vs,bound.ps,&sharedPOM,v->second.shared,provenVS!=nullptr);
     }
-    void registerVertex(IDirect3DVertexShader9* original,std::uint64_t hash,const DWORD* code,size_t count,unsigned modelFamily=0){
+    void registerVertex(IDirect3DVertexShader9* original,std::uint64_t hash,const DWORD* code,size_t count,unsigned modelFamily=0,bool provenWmo=false){
         auto found=vertices.find(original);if(found!=vertices.end()){drop(found->second.patched);drop(found->second.shared);if(found->second.pending){drop(found->second.pending);--pendingVertices;}vertices.erase(found);}
-        const unsigned k=modelFamily==3?4:kind(kAutoBumpVertex,hash);if(!k)return;if(vertices.size()>=4096){vertexOverflow=true;return;}
+        const unsigned k=modelFamily==3?4:provenWmo?2:kind(kAutoBumpVertex,hash);if(!k)return;if(vertices.size()>=4096){vertexOverflow=true;return;}
         if(!active()||!modes[k-1]){auto added=vertices.emplace(original,Vertex{nullptr,k}).first;original->AddRef();added->second.pending=original;added->second.pendingHash=hash;++pendingVertices;++cold.vertexQueued;return;}
         ++cold.vertexSources;cold.sourceBytes+=count*sizeof(DWORD);ColdTimer timer{cold.vertexMs};
         Vertex vertex;vertex.kind=k;vertex.pendingHash=hash;if(compileVertex(original,vertex,code,count))try{vertices.emplace(original,vertex);}catch(...){drop(vertex.patched);throw;}
@@ -703,6 +707,11 @@ public:
             ++invisibleRejected;return;
         }
         if(!v->second.patched&&(!v->second.pending||v->second.failed))return;
+        // Reject real stencil/depth tests before pose scans and snapshots.
+        const D3DRENDERSTATETYPE depthKeys[]={D3DRS_ZENABLE,D3DRS_ZFUNC,D3DRS_ALPHAREF,D3DRS_ALPHAFUNC,D3DRS_STENCILENABLE};DWORD depthState[5];
+        if(!readStates(depthKeys,depthState))return;
+        const DWORD z=depthState[0],zfunc=depthState[1],ref=depthState[2],alphaFunc=depthState[3],stencil=depthState[4];
+        if(!z||zfunc==D3DCMP_ALWAYS||zfunc==D3DCMP_NEVER||!northlightMaterialStencilAllows(d,stencil))return;
         const bool geometryMode=modes[domain-1]==3;bool skipGeometry=false;
         // Unsupported material pairs cannot capture or apply native POM.
         // Reject them before reading geometry or evaluating a skin envelope.
@@ -734,10 +743,7 @@ public:
         timing.next(P::CaptureSetup);
         ReplayState saved(d,original,D3DVIEWPORT9{},profile);saved.pixel=nativeSource.p;nativeSource.p=nullptr;auto* native=saved.pixel;NorthlightSharedPOM::Binding sharedBinding(d);
         NativeCapture* model=nullptr;
-        const D3DRENDERSTATETYPE depthKeys[]={D3DRS_ZENABLE,D3DRS_ZFUNC,D3DRS_ALPHAREF,D3DRS_ALPHAFUNC,D3DRS_STENCILENABLE};DWORD depthState[5];
-        if(!readStates(depthKeys,depthState))return;
-        const DWORD z=depthState[0],zfunc=depthState[1],ref=depthState[2],alphaFunc=depthState[3],stencil=depthState[4];
-        if(!z||zfunc==D3DCMP_ALWAYS||zfunc==D3DCMP_NEVER||stencil)return;
+        saved.stencilEnabled=stencil;
         D3DVIEWPORT9 viewport{};if(FAILED(d->GetViewport(&viewport))||viewport.X||viewport.Y||viewport.Width<8||viewport.Height<8)return;
         if(!emptyTargetReader||!emptyTargetReader(emptyTargetContext))
             for(unsigned i=1;i<4;++i){IDirect3DSurface9* extra=nullptr;d->GetRenderTarget(i,&extra);if(extra){drop(extra);return;}}
@@ -773,14 +779,14 @@ public:
         const NorthlightAutoDisplacement::Admission geometryAdmission{z,depthWrite,s[5].value,s[1].value,s[7].value,s[8].value,alphaFunc};
         // Only getters separate the same draw's full skin snapshot from prepare.
         // UP/rigid/cold preflights leave it empty and retain ordinary capture.
-        if(domain<=4&&geometryMode&&geometry&&!skipGeometry){displacement.prepare(original,domain,material,*geometry,&geometryAdmission,&geometrySource,std::max(captureRange(domain),displacement.geometryRange(domain)),&geometrySource);
+        if(domain<=4&&geometryMode&&geometry&&!skipGeometry){displacement.prepare(original,domain,material,*geometry,&geometryAdmission,&geometrySource,std::max(captureRange(domain),displacement.geometryRange(domain)),&geometrySource,domain==2?v->second.patched:nullptr);
             handoff();
             nearestDepth=displacement.nearestPreparedDepth();farthestDepth=std::min(farthestDepth,displacement.farthestPreparedDepth());
             if(needsCapture&&displacement.nearestPreparedDepth()>captureRange(domain)){++rangeTests;++rangeRejected;if(profile)profile->count(P::RangeRejected);return;}}
         if(!needsCapture){++noCaptureRequired;if(profile)profile->count(P::NoContribution);return;}
         const bool occlusionInRange=nearestDepth<occlusionDistance();
         const bool needsOcclusion=occlusionInRange&&(occlusionControl[2]>0||
-            (modes[domain-1]==2&&pomControl[0]>0&&pomInRange&&occlusionControl[0]>0&&occlusionLight[3]>0));
+            (parallaxMode(domain)&&pomControl[0]>0&&pomInRange&&occlusionControl[0]>0&&occlusionLight[3]>0));
         if(!occlusionInRange&&profile)profile->count(P::OcclusionFarSkipped);
         const DWORD* codes[]={kBumpOpaqueShader,kBumpLayerShader,kBumpWallShader,kBumpGrassShader,kBumpWallOpaqueShader,kBumpCompositeShader,kBumpTerrainOpaqueShader,kBumpTerrainLayerShader};
         const DWORD* normalCodes[]={kBumpNormalOpaqueShader,kBumpNormalLayerShader,kBumpWallShader,kBumpNormalGrassShader,kBumpWallOpaqueShader,kBumpCompositeShader,kBumpNormalTerrainOpaqueShader,kBumpNormalTerrainLayerShader};
@@ -789,7 +795,7 @@ public:
         const unsigned terrainIndex=smoothTerrain?5+material:material-1;
         bool normalOnly=normalOnlyCapture(domain);
         bool sharing=false;
-        if(geometry&&modes[domain-1]==2&&pomInRange&&pomControl[0]>0&&sharedPOM.canTry()&&!(domain==4&&material==6)){
+        if(geometry&&parallaxMode(domain)&&pomInRange&&pomControl[0]>0&&sharedPOM.canTry()&&!(domain==4&&material==6)){
             P::Scope shared(profile,P::SharedPOM);sharing=parallax.supportsShared(native,material)&&sharedVertex(v->second)&&
                 sharedPOM.prepare(geometry->draw,geometry->indices,geometry->format,geometry->vertices,geometry->stride,width,heightPixels,material==6);}
         if(sharing&&domain!=4&&!sharedShaders[terrainIndex]&&FAILED(createCaptureShader(sharedCodes[terrainIndex],&sharedShaders[terrainIndex])))sharing=false;
@@ -864,7 +870,7 @@ public:
         DWORD addressU=D3DTADDRESS_WRAP,addressV=D3DTADDRESS_WRAP;d->GetSamplerState(0,D3DSAMP_ADDRESSU,&addressU);d->GetSamplerState(0,D3DSAMP_ADDRESSV,&addressV);
         if(domain==2&&!coverageAlpha)++opaqueCoverage;
         const float constants[]={domain==1?.18f:domain==2?.14f:.06f,captureRange(domain),alpha?(float(ref)+(alphaFunc==D3DCMP_GREATER?.5f:0.f))/255.f:.001f,domain==4?(alpha?1.f:0.f):(coverageAlpha?0.f:1.f)};
-        float pom[4];std::copy(pomControl,pomControl+4,pom);if(modes[domain-1]!=2||!parallax.supports(saved.pixel,material))pom[0]=0;
+        float pom[4];std::copy(pomControl,pomControl+4,pom);if(!parallaxMode(domain)||!parallax.supports(saved.pixel,material))pom[0]=0;
         float occult[4];std::copy(occlusionControl,occlusionControl+4,occult);occult[3]=needsOcclusion&&occlusionTarget?occlusionDistance():0.f;if(pom[0]<=0||occlusionLight[3]<=0)occult[0]=0;
         float bank[36]={};for(unsigned i=0;i<4;++i){bank[i]=constants[i];bank[4+i]=projection[i];bank[8+i]=pom[i];bank[12+i]=occult[i];bank[16+i]=occlusionLight[i];bank[20+i]=sharedPOM.control[i];}
         std::copy(captureToWorld,captureToWorld+12,bank+24);

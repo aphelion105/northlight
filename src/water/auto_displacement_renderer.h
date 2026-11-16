@@ -677,7 +677,7 @@ public:
         if(first>last||last>=256)return;m.first=m.skinned?0:first;m.count=m.skinned?256:last-first+1;m.id=++materialClock;
         m.uvRegisters[0]=usedUVRegisters(m,false);m.uvRegisters[1]=usedUVRegisters(m,true);const bool skinned=m.skinned;materials.emplace(original,std::move(m));if(domain!=4)registerVariant(original,code,count,skinned,domain==2);
     }
-    bool prepare(IDirect3DVertexShader9* original,unsigned domain,unsigned material,const Args& args,const Admission* captured=nullptr,CaptureSource* captureSource=nullptr,float requiredRange=INFINITY,const CaptureSource* admittedSource=nullptr){
+    bool prepare(IDirect3DVertexShader9* original,unsigned domain,unsigned material,const Args& args,const Admission* captured=nullptr,CaptureSource* captureSource=nullptr,float requiredRange=INFINITY,const CaptureSource* admittedSource=nullptr,IDirect3DVertexShader9* replayVariant=nullptr){
         // Optional full snapshot from this capture invocation's read-only range
         // preflight. The caller must not change streams or geometry in between.
         // Retain before clearing: admission and output may be the same handoff.
@@ -819,6 +819,15 @@ public:
         float closestSquared=0;for(unsigned r=0;r<3;++r){float v=low[r]>0?low[r]:high[r]<0?high[r]:0;closestSquared+=v*v;}if(closestSquared>=range*range){++distanceRejected;return false;}
         if(shader->second.skinned){const float a=range*range,b=a*.5625f;controls[0][0]=strength*std::clamp((a-closestSquared)/(a-b),0.f,1.f);controls[0][1]=controls[0][2]=controls[0][3]=0;}
         if(!ensureVariant(patched->second)){++shaderRejected;return false;}
+        // Native colour and private material depth must use the same relief.
+        // Complex WMO programs can fit the CPU-offset variant while their
+        // capture variant exceeds SM3's GPU-height budget. Build cached CPU
+        // offsets in that case instead of silently replaying a flat surface.
+        bool gpuVariant=patched->second.gpu!=nullptr;
+        if(replayVariant){auto replay=shaders.find(replayVariant);
+            if(replay==shaders.end()||!ensureVariant(replay->second)){++shaderRejected;return false;}
+            gpuVariant=gpuVariant&&replay->second.gpu;
+        }
         timing.next(P::HeightRead);
         NorthlightDrawSnapshot::Ref<IDirect3DBaseTexture9> tex,tex1;if(FAILED(d->GetTexture(0,tex.out()))||!tex.p||tex->GetType()!=D3DRTYPE_TEXTURE)return false;
         if(domain==2&&material==6&&(FAILED(d->GetTexture(1,tex1.out()))||!tex1.p||tex1->GetType()!=D3DRTYPE_TEXTURE||!shader->second.layered))return false;
@@ -827,7 +836,7 @@ public:
         const unsigned address=u|(v<<8);uvKey(shader->second,constants,domain==2&&material==6,uvScratch);
         Entry* overlay=domain==1&&material==2?findOverlay(source,fingerprint,decl.p):nullptr;
         Entry* hit=domain==1&&material==2?nullptr:firstMaterial(materialFingerprint(equivalent?fingerprint:retainedFingerprint(source),shader->second.id,detail,address,domain,material,tex.p,tex1.p,revision,revision1,uvScratch),[&](Entry& e){if(e.sourceDecl!=decl.p||e.domain!=domain)return false;
-            return e.program==shader->second.id&&e.detail==detail&&e.address==address&&e.material==material&&e.texture==tex.p&&e.texture1==tex1.p&&e.uvConstants==uvScratch&&e.heightVersion==revision&&e.heightVersion1==revision1&&sameSource(e,source,equivalent);});
+            return (!e.height||gpuVariant)&&e.program==shader->second.id&&e.detail==detail&&e.address==address&&e.material==material&&e.texture==tex.p&&e.texture1==tex1.p&&e.uvConstants==uvScratch&&e.heightVersion==revision&&e.heightVersion1==revision1&&sameSource(e,source,equivalent);});
         if(hit){current=hit;userDraw=args.vertices!=nullptr;indexedUserDraw=userDraw&&args.draw.indexed;hit->used=++clock;hit->baseFrame=uint64_t(frames)+1;++hits;if(profile)profile->count(P::GeometryHit);return true;}
         if(overlay){current=overlay;userDraw=args.vertices!=nullptr;indexedUserDraw=userDraw&&args.draw.indexed;overlay->used=++clock;++hits;if(profile)profile->count(P::GeometryHit);return true;}
         if((domain==1&&material==2)||buildsThisFrame>=2){++refused;return false;}
@@ -847,7 +856,7 @@ public:
         if(domain==3)factor=std::min(factor,16u);
         IDirect3DTexture9* gpuHeight=nullptr;
         const bool layoutFree=std::none_of(elements,elements+count,[](const D3DVERTEXELEMENT9& e){return e.Usage==D3DDECLUSAGE_TEXCOORD&&e.UsageIndex==6;});
-        if(!second&&patched->second.gpu&&stream.stride<=232&&count+2<=MAXD3DDECLLENGTH&&layoutFree)gpuHeight=heightTexture(static_cast<IDirect3DTexture9*>(tex.p),domain==4);
+        if(!second&&gpuVariant&&stream.stride<=232&&count+2<=MAXD3DDECLLENGTH&&layoutFree)gpuHeight=heightTexture(static_cast<IDirect3DTexture9*>(tex.p),domain==4);
         timing.next(P::Subdivide);
         const auto* color=domain==2?&patched->second.color:nullptr;
         ++buildsThisFrame;Mesh output;if(!NorthlightDisplacementGeometry::build(*source,elements,count,uv,first,factor,domain==1,u==D3DTADDRESS_CLAMP,v==D3DTADDRESS_CLAMP,output,second,second?&uv1:nullptr,second?&weights:nullptr,shader->second.influences,gpuHeight!=nullptr,color)){++meshRejected;return false;}

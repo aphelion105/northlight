@@ -877,7 +877,7 @@ struct SettingsPanel::State {
                 if(beginRows("memory-gpu-pools")){bytesRow("Managed resources (logical)",gpu.managed);bytesRow("Default resources (logical)",gpu.defaults);bytesRow("System-memory resources (logical)",gpu.system);bytesRow("CPU material reuse cache",gpu.materialReuseCpu);bytesRow("Retired material resource ledger",gpu.retiredMaterials);ImGui::EndTable();}
                 ImGui::TextWrapped("Managed resources can retain a system-memory copy. Default placement is chosen by the driver. These are logical sizes, not measured resident VRAM or RAM backing. Static and replay caches are reported separately in the log.");
                 if(ImGui::TreeNode("Additional cache ledgers")){
-                    if(beginRows("memory-cache-ledgers")){bytesRow("Static shadows (managed)",gpu.staticManagedLedger);bytesRow("Replay cache (default)",gpu.replayDefaultLedger);bytesRow("Live terrain buffer (default)",gpu.liveTerrainDefault);bytesRow("Captured geometry on CPU",gpu.captureCpu);bytesRow("Capture identity metadata",gpu.captureIdentity);ImGui::EndTable();}
+                    if(beginRows("memory-cache-ledgers")){bytesRow("Static shadows (default)",gpu.staticDefaultLedger);bytesRow("Replay cache (default)",gpu.replayDefaultLedger);bytesRow("Live terrain buffer (default)",gpu.liveTerrainDefault);bytesRow("Captured geometry on CPU",gpu.captureCpu);bytesRow("Capture identity metadata",gpu.captureIdentity);ImGui::EndTable();}
                     ImGui::TextWrapped("The GPU caches above are outside the world-resource inventory. CPU capture data may also be referenced by the sampled scene scopes.");ImGui::TreePop();
                 }
                 if(ImGui::TreeNode("Resources by purpose")){

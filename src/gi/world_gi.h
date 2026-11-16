@@ -290,7 +290,7 @@ public:
     bool build(const std::vector<std::string>& tiles,const std::string& modelDirectory,
                const std::string& map,Vec3 low,Vec3 high,BVH& output,
                std::string& error,const AllocationAdmission& admit={},bool fast=true,
-               const SceneSourceProvider& sourceProvider={},const SceneSourceRevision& sourceRevision={},bool chunked=false);
+               const SceneSourceProvider& sourceProvider={},const SceneSourceRevision& sourceRevision={},bool chunked=false,const BVH* reuseTexels=nullptr);
     void reset();
     const Stats& stats() const;
 private:

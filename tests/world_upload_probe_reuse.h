@@ -12,19 +12,22 @@ inline void WorldColdUploadTest::probeReuse(UploadFaultDevice& d,D3DPRESENT_PARA
             for(unsigned k=0;k<4;++k)e.probe.sh[k]={float(generation)*.125f+float(k)*.015625f,float(i%7)*.03125f,.25f+float(k)*.015625f};
             for(unsigned a=0;a<6;++a){e.probe.moments[a].mean=float(a+1);e.probe.moments[a].meanSquare=float((a+1)*(a+1));}
         }
+        auto coarse=std::make_shared<std::vector<NorthlightGI::ProbeAtlasEntry>>(snapshot->atlas);
+        for(auto& e:*coarse){e.key.x+=100;for(auto& sh:e.probe.sh)sh=sh*2.f;}
+        snapshot->coarseAtlas=std::move(coarse);
     };
     auto texture=[&](unsigned c){return c<5?w.probe[c]:w.probePrev;};
     auto poison=[&]{for(unsigned c=0;c<6;++c){auto* t=texture(c);assert(t);D3DSURFACE_DESC desc{};assert(SUCCEEDED(t->GetLevelDesc(0,&desc)));D3DLOCKED_RECT lock{};assert(SUCCEEDED(t->LockRect(0,&lock,nullptr,0)));
         for(unsigned y=0;y<desc.Height;++y){auto* row=reinterpret_cast<float*>(static_cast<char*>(lock.pBits)+size_t(y)*lock.Pitch);std::fill(row,row+size_t(desc.Width)*4,12345.f);}assert(SUCCEEDED(t->UnlockRect(0)));}};
     auto exact=[&]{
         const unsigned n=NorthlightGI::probeLayout().atlas;assert(w.uploadedSerial==snapshot->serial&&w.geometryTargetsReady);
-        for(unsigned c=0;c<6;++c){auto* t=texture(c);assert(t);D3DSURFACE_DESC desc{};assert(SUCCEEDED(t->GetLevelDesc(0,&desc)));assert(desc.Pool==D3DPOOL_MANAGED&&desc.Format==D3DFMT_A32B32G32R32F&&desc.Width==n*n*(c==5?3:1)&&desc.Height==n*(c==3?6:1));
+        for(unsigned c=0;c<6;++c){auto* t=texture(c);assert(t);D3DSURFACE_DESC desc{};assert(SUCCEEDED(t->GetLevelDesc(0,&desc)));assert(desc.Pool==D3DPOOL_MANAGED&&desc.Format==D3DFMT_A32B32G32R32F&&desc.Width==n*n*(c==5?3:1)&&desc.Height==n*(c==3?6:1)*NorthlightGI::ProbeCascadeCount);
             D3DLOCKED_RECT lock{};assert(SUCCEEDED(t->LockRect(0,&lock,nullptr,D3DLOCK_READONLY)));
             for(unsigned y=0;y<desc.Height;++y){const auto* row=reinterpret_cast<const float*>(static_cast<const char*>(lock.pBits)+size_t(y)*lock.Pitch);
-                for(unsigned x=0;x<desc.Width;++x){const unsigned localX=c==5?x%(n*n):x;const size_t index=(size_t(localX/n)*n+y%n)*n+localX%n;const auto& e=snapshot->atlas[index];
+                for(unsigned x=0;x<desc.Width;++x){const unsigned localX=c==5?x%(n*n):x;const size_t index=(size_t(localX/n)*n+y%n)*n+localX%n;const unsigned layer=y/(n*(c==3?6:1));const auto& e=layer?(*snapshot->coarseAtlas)[index]:snapshot->atlas[index];
                     for(unsigned k=0;k<4;++k){float expected=0;bool activation=false;
                         if(c<3||c==5){const unsigned channel=c==5?x/(n*n):c;const auto& sh=e.probe.sh[k];expected=channel==0?sh.x:channel==1?sh.y:sh.z;}
-                        else if(c==3){const unsigned axis=y/n;expected=k==0?e.probe.moments[axis].mean:k==1?e.probe.moments[axis].meanSquare:k==2?float(e.occupied&&e.probe.valid):NorthlightProbeBlend::None;}
+                        else if(c==3){const unsigned axis=(y/n)%6;expected=k==0?e.probe.moments[axis].mean:k==1?e.probe.moments[axis].meanSquare:k==2?float(e.occupied&&e.probe.valid):NorthlightProbeBlend::None;}
                         else if(k<3)expected=k==0?float(e.key.x):k==1?float(e.key.y):float(e.key.z);
                         else if(e.occupied&&e.probe.valid)activation=true;else expected=-1;
                         if(activation)assert(std::isfinite(row[x*4+k])&&row[x*4+k]>=0&&row[x*4+k]!=12345.f);else assert(row[x*4+k]==expected);
@@ -61,5 +64,5 @@ inline void WorldColdUploadTest::probeReuse(UploadFaultDevice& d,D3DPRESENT_PARA
     drop(w.probe[0]);IDirect3DTexture9* wrong=nullptr;assert(SUCCEEDED(d.CreateTexture(1,1,1,0,D3DFMT_A32B32G32R32F,D3DPOOL_MANAGED,&wrong,nullptr)));w.probe[0]=wrong;wrong->AddRef();
     w.valid=true;assert(w.resources(128,128,D3DFMT_A16B16G16R16F));complete(w,snapshot);assert(w.probe[0]!=wrong&&w.probe[0]!=retained[0]);
     for(unsigned c=1;c<6;++c)assert(texture(c)==retained[c]);exact();wrong->Release();for(auto* t:retained)t->Release();
-    assert(!w.failed);std::puts("COLD_PROBE_REUSE_PASS realReset=6 interruptedBeforePage=1 interruptedDuringCopy=1 managedIdentity=1 fullAtlasRewrite=1 invalidCellsCleared=1 historyCleared=1 incompatibleDescriptorRecreated=1 uploadedSerial=5");Spooling=wasSpooling;
+    assert(!w.failed);std::puts("COLD_PROBE_REUSE_PASS realReset=6 interruptedBeforePage=1 interruptedDuringCopy=1 managedIdentity=1 fineAndCoarseAtlases=1 fullAtlasRewrite=1 invalidCellsCleared=1 historyCleared=1 incompatibleDescriptorRecreated=1 uploadedSerial=5");Spooling=wasSpooling;
 }

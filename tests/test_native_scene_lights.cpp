@@ -44,7 +44,9 @@ static void calibratedEquipmentTests(){
     assert(particles.outputCount==1&&particles.immediateCount==0&&particles.output[0].sourceId==native.sourceId);
     NorthlightParticleLights::Sample sample{};std::copy_n(native.position,3,sample.position);sample.rgb[0]=.04f;sample.rgb[1]=.02f;sample.rgb[2]=.005f;
     particles.nextFrame();particles.observe(sample,f.camera);particles.publish(bridge.output.data(),bridge.outputCount,{},f.camera,selection);
-    assert(particles.outputCount==1&&particles.immediateCount==1&&std::fabs(particles.output[0].diffuse[0]-.028f)<1e-7f);
+    // An identified moving emitter now owns its shadow and calibrated energy;
+    // its overlapping glow must not replace it with an unshadowed particle.
+    assert(particles.outputCount==1&&particles.immediateCount==0&&particles.output[0].sourceId==native.sourceId&&particles.output[0].diffuse[0]==native.diffuse[0]);
     particles.nextFrame();particles.publish(bridge.output.data(),bridge.outputCount,{},f.camera,selection);
     assert(particles.outputCount==1&&particles.immediateCount==0&&particles.output[0].sourceId==native.sourceId&&particles.output[0].diffuse[0]==native.diffuse[0]);
     // A genuine model lamp keeps the established denominator fit and range.
@@ -53,7 +55,7 @@ static void calibratedEquipmentTests(){
     assert(lamps.outputCount==1&&lamps.output[0].attenuationEnd==12);
     for(unsigned k=0;k<3;++k)assert(std::fabs(lamps.output[0].diffuse[k]-lamp.output.lights[0].color[k]/.73f)<1e-6f);
     assert(lamps.output[0].diffuse[0]*NorthlightLocalLights::attenuation(lamps.output[0],8)>.35f);
-    std::puts("CALIBRATED_EQUIPMENT_PASS no-draw energy, native/particle replacement, unchanged lamp reach");
+    std::puts("CALIBRATED_EQUIPMENT_PASS no-draw energy, native/particle ownership, unchanged lamp reach");
 }
 static void movingPoseTests(){
     {Bytes b=modelAsset();authoredTrack(b,320,12,{{0,0,0,4,0,0}},3);Fixture f(b);f.add();f.update();assert(f.output.count==1&&std::fabs(f.output.lights[0].position[0]-2)<1e-6f&&f.output.lights[0].flags==1&&f.output.lights[0].anchor[0]==0);

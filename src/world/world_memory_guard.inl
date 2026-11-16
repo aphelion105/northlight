@@ -12,11 +12,14 @@
     std::atomic<bool> giMemoryTrim{false}; /* the GI worker frees its relight cache (ProbeRelightCache) on its next request */
     std::atomic<uint64_t> geometryMemoryDemand{0}; /* the geometry builder's refused aggregate floor while it stalls for memory (0: none); the guard's demand */
     bool staticRecoveryPaused=false;
+    bool worldMeshDrawable()const{return vertices&&indices&&active&&uploadedMap==active->map;}
     void reclaimInactiveCasters(){
-        if(staticRecoveryPaused||!staticStream||(active&&active->bvh)||!geometryMemoryDemand.load(std::memory_order_relaxed))return;
+        if(staticRecoveryPaused||!staticStream||worldMeshDrawable()||
+           (!geometryMemoryDemand.load(std::memory_order_relaxed)&&!meshRetry.waiting))return;
         // The last selected models are pinned indefinitely by lastNeeded and
         // the published snapshot even while no world can use them. Give the
-        // geometry builder priority; do this once, after all frame draws end.
+        // geometry recovery priority, including a retained BVH whose DEFAULT
+        // mesh was lost on Reset. Do this once, after all frame draws end.
         const auto cpu=staticScene?staticScene->stats.cpuBytes:0,metadata=staticScene?staticScene->stats.metadataBytes:0;
         staticRecoveryPaused=true;staticStream->setPaused(true);
         staticCasters.reset();staticMatcher.clear();staticM2Memory.clear();staticScene.reset();staticOwnerGeneration=UINT64_MAX;

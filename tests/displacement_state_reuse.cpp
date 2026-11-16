@@ -697,6 +697,12 @@ struct MaterialCaptureStateTestAccess {
         Device eager;Source baseline;
         {NorthlightAutoBump b(&eager);enable(b);b.registerVertex(&baseline,baseline.hash(),baseline.code.data(),baseline.code.size(),3);assert(b.vertices.at(&baseline).patched&&b.vertices.at(&baseline).kind==4);}
         assert(!eager.created.empty()&&baseline.refs==1&&eager.vs.refs==1);
+        {Device d;Source s;NorthlightAutoBump b(&d);b.enabled=true;b.modes[1]=3;
+            b.registerVertex(&s,s.hash(),s.code.data(),s.code.size());assert(b.vertices.empty());
+            b.registerVertex(&s,s.hash(),s.code.data(),s.code.size(),0,true);
+            assert(b.vertices.at(&s).kind==2&&b.vertices.at(&s).patched&&b.parallaxMode(2));
+            b.modes[1]=1;assert(!b.parallaxMode(2));b.modes[1]=2;assert(b.parallaxMode(2));
+        }
         Device lazy;Source source;
         {NorthlightAutoBump b(&lazy);b.modes[3]=1;b.registerVertex(&source,source.hash(),source.code.data(),source.code.size(),3);
             assert(!source.reads&&source.refs==2&&lazy.created.empty()&&b.pendingVertices==1&&b.cold.vertexQueued==1&&!b.cold.vertexSources);
@@ -724,7 +730,7 @@ struct MaterialCaptureStateTestAccess {
             failAllocationAfter=0;bool failed=false;try{b.registerVertex(&s,s.hash(),s.code.data(),s.code.size(),3);}catch(const std::bad_alloc&){failed=true;}failAllocationAfter=-1;assert(failed&&s.refs==1&&b.vertices.empty());}
         // Live identity recovery cannot let unsupported deferred entries exhaust supported capacity.
         struct Identity {Source* valid=nullptr;uint64_t hash=0;unsigned calls=0;};
-        auto lookup=[](void* context,IDirect3DVertexShader9* shader,uint64_t& hash,unsigned& family){auto& i=*static_cast<Identity*>(context);++i.calls;if(shader!=i.valid)return false;hash=i.hash;family=3;return true;};
+        auto lookup=[](void* context,IDirect3DVertexShader9* shader,uint64_t& hash,unsigned& family,bool& wmo){wmo=false;auto& i=*static_cast<Identity*>(context);++i.calls;if(shader!=i.valid)return false;hash=i.hash;family=3;return true;};
         {Device d;Source good,unknown;std::vector<std::unique_ptr<Source>> rejected;rejected.reserve(4096);Identity identity{&good,good.hash()};
             {NorthlightAutoBump b(&d);b.setVertexIdentity(&identity,lookup);
                 for(unsigned i=0;i<4096;++i){rejected.push_back(std::make_unique<Source>());auto& s=*rejected.back();s.fail=true;b.registerVertex(&s,s.hash(),s.code.data(),s.code.size(),3);}

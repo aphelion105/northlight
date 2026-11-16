@@ -5,9 +5,13 @@ import argparse,hashlib,json,re,subprocess,sys
 ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT));import northlight_paths as fp
 p=argparse.ArgumentParser(__doc__);p.add_argument('--output',type=Path);p.add_argument('--headers',type=Path);p.add_argument('--reference',default='d9b39749');a=p.parse_args()
 out=(a.output or fp.output_dir()/'material-capture-allocations').resolve();out.mkdir(parents=True,exist_ok=True)
-fixture=(fp.TESTS/'displacement_state_reuse.cpp').read_text().split('int main(')[0]
-fixture=fixture.replace('struct MaterialCaptureStateTestAccess {','struct MaterialCaptureStateTestAccess {\n static void captureAllocations();\n static void replayBindings();\n static void replayConstantRanges();')
-fixture=fixture.replace('static int failAllocationAfter=-1;','static size_t allocationCount=0;static int failAllocationAfter=-1;').replace('void* operator new(std::size_t n){','void* operator new(std::size_t n){++allocationCount;')
+def instrument_fixture(source):
+ fixture=source.split('int main(')[0]
+ fixture=fixture.replace('struct MaterialCaptureStateTestAccess {','struct MaterialCaptureStateTestAccess {\n static void captureAllocations();\n static void replayBindings();\n static void replayConstantRanges();')
+ return fixture.replace('static int failAllocationAfter=-1;','static size_t allocationCount=0;static int failAllocationAfter=-1;').replace('void* operator new(std::size_t n){','void* operator new(std::size_t n){++allocationCount;')
+# Frozen headers require their matching fixture API, including vertex identity.
+reference_fixture=subprocess.check_output(['git','show',a.reference+':tests/displacement_state_reuse.cpp'],cwd=ROOT,text=True)
+fixture='#ifdef NORTHLIGHT_ALLOCATIONS_REFERENCE\n'+instrument_fixture(reference_fixture)+'\n#else\n'+instrument_fixture((fp.TESTS/'displacement_state_reuse.cpp').read_text())+'\n#endif\n'
 (out/'material_bindings_reference.h').write_text(fixture,encoding='utf-8')
 (out/'material_packet_bindings.h').write_text((fp.TESTS/'test_material_batch_bindings.cpp').read_text().rsplit('int main(',1)[0],encoding='utf-8')
 (out/'packet_batch_fixture.h').write_text((fp.TESTS/'test_material_packet_auxiliary.cpp').read_text().split('void MaterialCaptureStateTestAccess::packetAuxiliary()')[0],encoding='utf-8')
@@ -20,6 +24,7 @@ inputs={str(f.resolve()):sha(f) for f in watched};runs=[];executables={}
 for opt in ['O2','O0']:
  for name,folder in [('control',control),('current',header.parent)]:
   exe=out/(name+'-'+opt+'.exe');cmd=[fp.zig(),'c++','-target','x86-windows-gnu','-'+opt,'-UNDEBUG','-std=c++17','-Wno-microsoft-exception-spec','-Wno-return-type','-I'+str(folder),'-I'+str(out),*fp.test_include_flags(),fp.TESTS/'material_capture_allocations.cpp','-luser32','-luuid','-o',exe]
+  if name=='control':cmd.insert(2,'-DNORTHLIGHT_ALLOCATIONS_REFERENCE=1')
   if name=='current' and texture_intern:cmd.insert(2,'-DNORTHLIGHT_TEXTURE_INTERN_TEST=1')
   with (out/(name+'-'+opt+'-build.log')).open('w') as log:subprocess.run(list(map(str,cmd)),env=fp.zig_env(),stdout=log,stderr=subprocess.STDOUT,check=True,timeout=300)
   executables[name,opt]=exe

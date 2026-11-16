@@ -30,7 +30,7 @@ constexpr uint32_t AnchorModulus=6144;
 // whose key is in it is freed the moment it is finished (key computed first), so the worker never holds more than the pages
 // that must be uploaded plus the one being filled. Anchors and page boundaries never depend on it. peakLiveBytes (optional)
 // receives the largest live page capacity during the build (kept pages + the page just finished), for measurements.
-struct Options {uint32_t anchorModulus=AnchorModulus,minFillVertices=MinFillVertices;const NorthlightMeshPageKey::KeySet* resident=nullptr;uint64_t* peakLiveBytes=nullptr;NorthlightWorldMesh::PreparationCache* preparation=nullptr;bool spooled=false;};
+struct Options {uint32_t anchorModulus=AnchorModulus,minFillVertices=MinFillVertices;const NorthlightMeshPageKey::KeySet* resident=nullptr;uint64_t* peakLiveBytes=nullptr;NorthlightWorldMesh::PreparationCache* preparation=nullptr;bool spooled=false,deviceLocal=false;};
 struct Page {
     std::vector<NorthlightGI::WorldVertex> vertices;
     // Page-local indices fit losslessly in 16 bits; source indices stay 32-bit.
@@ -46,7 +46,9 @@ struct Batch : NorthlightWorldMesh::Batch {
     uint32_t page=0,minVertex=0,vertexCount=0;
 };
 struct Plan {
+    bool deviceLocal=false;
     std::shared_ptr<NorthlightGI::TemporaryGeometryFile> temporary;
+    bool defaultPool()const{return deviceLocal||bool(temporary);}
     std::vector<Page> pages;
     std::vector<Batch> batches;
     uint64_t vertexBytes=0,indexBytes=0;
@@ -59,7 +61,7 @@ struct Plan {
     }
     bool copyMaterial(const NorthlightWorldMesh::MaterialUpload& material,size_t offset,size_t bytes,void* target)const{
         const auto size=material.pixelBytes();if(!target||offset>size||bytes>size-offset)return false;
-        if(!material.spooled){std::memcpy(target,material.bgra.data()+offset,bytes);return true;}
+        if(!material.spooled){std::memcpy(target,material.pixels().data()+offset,bytes);return true;}
         if(!temporary||material.fileOffset>temporary->size()||size>temporary->size()-material.fileOffset)return false;
         try{temporary->read(material.fileOffset+offset,target,bytes);return true;}catch(const std::exception&){return false;}
     }
@@ -118,7 +120,7 @@ template<bool Segmented> inline bool buildImpl(const NorthlightWorldMesh::WorldM
             return fail("Paged mesh source ownership mismatch");
         if(input.pagingIndexCount()&&(!input.hasPagingVertices()||input.pagingVertexCount()!=input.vertexCount))
             return fail("Paged mesh source/vertex count mismatch");
-        Plan next;if(options.spooled)next.temporary=input.temporary;
+        Plan next;next.deviceLocal=options.deviceLocal;if(options.spooled)next.temporary=input.temporary;
         if(!input.pagingIndexCount()){
             if(!input.batches.empty())return fail("Paged mesh empty indices with batches");
             output=std::move(next);error.clear();return true;
@@ -130,7 +132,7 @@ template<bool Segmented> inline bool buildImpl(const NorthlightWorldMesh::WorldM
         // Immutable layout memo has no CPU geometry. Require every page still
         // resident and the exact production partition options before reuse.
         if(options.preparation&&options.resident&&options.anchorModulus==AnchorModulus&&options.minFillVertices==MinFillVertices&&
-           options.preparation->reuseResident(input,output,*options.resident,admit)){if(options.peakLiveBytes)*options.peakLiveBytes=0;error.clear();return true;}
+           options.preparation->reuseResident(input,output,*options.resident,admit)){output.deviceLocal=options.deviceLocal;if(options.peakLiveBytes)*options.peakLiveBytes=0;error.clear();return true;}
         auto allowed=[&](uint64_t bytes){return !admit||admit(bytes);};
         // Reserve admission for both bounded index tables.
         if(!allowed(2u*1024u*1024u))return fail("Paged mesh working memory deferred");
@@ -330,9 +332,16 @@ inline const char* validatePages(const NorthlightWorldMesh::WorldMeshUploadPlan&
         if(nextIndex==page.indexCount()){++pageIndex;nextIndex=0;}
     }
     if(pageIndex!=pages.pages.size()||nextIndex)return "incomplete paged batch coverage";
-    for(const auto& material:materials){
+    for(size_t i=0;i<materials.size();++i){const auto& material=materials[i];
         if(!material.width||!material.height||material.width>4096||material.height>4096||uint64_t(material.width)*material.height*4!=material.pixelBytes())return "invalid paged texture size";
-        if(material.spooled&&(!material.bgra.empty()||!pages.temporary||material.fileOffset>pages.temporary->size()||material.pixelBytes()>pages.temporary->size()-material.fileOffset))return "invalid paged texture temporary range";
+        if(material.spooled&&(!material.pixels().empty()||!pages.temporary||material.fileOffset>pages.temporary->size()||material.pixelBytes()>pages.temporary->size()-material.fileOffset))return "invalid paged texture temporary range";
+        if(material.textureOwner!=UINT32_MAX){
+            if(material.textureOwner>=i)return "invalid paged texture owner";
+            const auto& owner=materials[material.textureOwner];
+            if(owner.textureOwner!=UINT32_MAX||owner.width!=material.width||owner.height!=material.height||
+               !(owner.textureIdentity==material.textureIdentity)||owner.spooled!=material.spooled||
+               (material.spooled?owner.fileOffset!=material.fileOffset:!owner.sharedBgra||owner.sharedBgra!=material.sharedBgra))return "invalid paged texture alias";
+        }
     }
     return nullptr;
 }
@@ -369,7 +378,7 @@ inline bool seal(NorthlightWorldMesh::WorldMeshUploadPlan& input,std::shared_ptr
         if(pages->temporary){
             pixelOffsets.resize(input.materials.size());
             for(size_t i=0;i<input.materials.size();++i){const auto& material=input.materials[i];
-                if(material.bgra.size()>4)pixelOffsets[i]=pages->temporary->append(material.bgra.data(),material.bgra.size());
+                if(material.pixels().size()>4)pixelOffsets[i]=material.textureOwner!=UINT32_MAX?pixelOffsets[material.textureOwner]:pages->temporary->append(material.pixels().data(),material.pixels().size());
             }
             pages->temporary->flush();
         }
@@ -378,10 +387,10 @@ inline bool seal(NorthlightWorldMesh::WorldMeshUploadPlan& input,std::shared_ptr
         payload->pageMetadataBytes=sizeof(*pages)+pages->pages.capacity()*sizeof(Page)+pages->batches.capacity()*sizeof(Batch);
         for(const auto& page:pages->pages)payload->pageStorageBytes+=page.vertices.capacity()*sizeof(NorthlightGI::WorldVertex)+page.indices.capacity()*sizeof(uint16_t);
         payload->materialMetadataBytes=input.materials.capacity()*sizeof(NorthlightWorldMesh::MaterialUpload);
-        for(const auto& material:input.materials)if(!pages->temporary||material.bgra.size()<=4)payload->materialPixelBytes+=material.bgra.capacity();
+        for(const auto& material:input.materials)if(!pages->temporary||material.pixels().size()<=4)payload->materialPixelBytes+=material.retainedPixelBytes();
         payload->bytes=cpuBytes+sizeof(NorthlightWorldMesh::UploadPayload)+input.materials.capacity()*sizeof(NorthlightWorldMesh::MaterialUpload)+64;
         payload->bytes+=payload->materialPixelBytes;
-        if(pages->temporary)for(size_t i=0;i<input.materials.size();++i){auto& material=input.materials[i];if(material.bgra.size()>4){material.fileOffset=pixelOffsets[i];material.spooled=true;std::vector<uint8_t>().swap(material.bgra);}}
+        if(pages->temporary)for(size_t i=0;i<input.materials.size();++i){auto& material=input.materials[i];if(material.pixels().size()>4){material.fileOffset=pixelOffsets[i];material.spooled=true;std::vector<uint8_t>().swap(material.bgra);material.sharedBgra.reset();}}
         payload->pages=std::move(pages);payload->materials.swap(input.materials);
         input.completePlacements=std::move(owners);input.payload.set(std::move(payload));input.pagedCpuBytes=cpuBytes;
         input.source=nullptr;input.ownedSource.reset();input.pagingVertices.reset();input.pagingChunks.reset();input.pagingIndices.reset();input.temporary.reset();input.preparationLayout.reset();std::vector<uint32_t>().swap(input.indices);

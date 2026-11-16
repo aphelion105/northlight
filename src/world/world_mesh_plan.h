@@ -69,8 +69,13 @@ struct MaterialUpload {
     uint32_t width=1,height=1;
     // Tightly packed D3DFMT_A8R8G8B8 memory bytes: B,G,R,A.
     std::vector<uint8_t> bgra;
+    std::shared_ptr<const std::vector<uint8_t>> sharedBgra;
+    // Earlier canonical material with identical pixels; draw metadata stays local.
+    uint32_t textureOwner=UINT32_MAX;
+    const std::vector<uint8_t>& pixels()const{return sharedBgra?*sharedBgra:bgra;}
+    uint64_t retainedPixelBytes()const{return textureOwner==UINT32_MAX?pixels().capacity()+(sharedBgra?sizeof(*sharedBgra)+64:0):0;}
     bool spooled=false;uint64_t fileOffset=0;
-    uint64_t pixelBytes()const{return spooled?uint64_t(width)*height*4:bgra.size();}
+    uint64_t pixelBytes()const{return spooled?uint64_t(width)*height*4:pixels().size();}
     // Full BGRA identity, prepared on the worker. A hash match is only a
     // lookup shortcut; reuse also requires equal dimensions and exact bytes.
     NorthlightLocalShadowSignature::Digest textureIdentity;
@@ -177,7 +182,7 @@ struct WorldMeshUploadPlan {
         if(pagingChunks)bytes+=sizeof(*pagingChunks)+pagingChunks->bytes()+64;
         if(pagingIndices)bytes+=sizeof(*pagingIndices)+pagingIndices->bytes()+64;
         for(const auto& owner:completePlacements)bytes+=owner.modelKey.capacity();
-        for(const auto& material:materials)bytes+=material.bgra.capacity();
+        for(const auto& material:materials)bytes+=material.retainedPixelBytes();
         bytes+=fixedTerrainChunks.size()*(sizeof(std::pair<int,int>)+4*sizeof(void*));
         if(localShadowRecords)bytes+=sizeof(NorthlightLocalShadowSignature::Records)+localShadowRecords->capacity()*sizeof(NorthlightLocalShadowSignature::Record)+64;
         if(ownedSource)bytes+=ownedSource->retainedBytes()+64;

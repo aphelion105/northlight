@@ -73,7 +73,7 @@ builder=w[w.index('    void work() {'):w.index('\n    bool check(HRESULT h,const
 plan=fp.src('world_mesh_plan.h').read_text();pagesH=fp.src('world_mesh_pages.h').read_text()
 commit=upload[upload.index('auto phase=streamingPhases.measure(NorthlightStreaming::PhaseProfile::Commit);'):]
 release=w[w.index('    void releaseGPU(bool keepMesh=false){'):w.index('\n',w.index('    void releaseGPU(bool keepMesh=false){'))]
-resetFn=method('    void reset(bool preserveCaptureSources=false){');recoverFn=method('    void recover(){');resources=method('    bool createResources(UINT w,UINT h,D3DFORMAT fmt){')
+resetFn=method('    void reset(bool preserveCaptureSources=false){');recoverFn=method('    void recover(){');resources=fp.src('world_screen_resources.inl').read_text()
 checks={
  'Reset (failed or not) and resolution change keep the uploaded MANAGED mesh':
   resetFn.index('failed=false;') < resetFn.index('releaseGPU(true);') and 'releaseGPU(true);width=w;height=h;' in resources,
@@ -84,15 +84,15 @@ checks={
   and 'staticOwnerGeneration=UINT64_MAX;staticCasters.reset();' in release,
  'DEFAULT-pool state is still released on a keepMesh Reset (targets, live terrain, index ring, queries, caches)':
   all(x in release for x in ('liveTerrainGPU.clear();','drop(liveIndicesGPU);','queries.drop();','stateBlocks.clear();','uploadedTerrain.clear();','drop(color);','invalidateShadowCache();','retiredMaterials.clear();')),
- 'normal pages are MANAGED; pressure DEFAULT pages retain replay payload and release before Reset':
-  'D3DPOOL pool=D3DPOOL_MANAGED' in w and 'payload.pages->temporary?D3DPOOL_DEFAULT:D3DPOOL_MANAGED' in upload
-  and w.count('D3DPOOL_MANAGED,&next.partialTexture')==1
+ 'DEFAULT pages release before Reset; resident staging is freed, pressure staging retained':
+  'pagingOptions.deviceLocal=true;' in builder and 'payload.pages->defaultPool()?D3DPOOL_DEFAULT:D3DPOOL_MANAGED' in upload
+  and w.count('D3DPOOL_DEFAULT:D3DPOOL_MANAGED,&next.partialTexture')==1 and 'D3DPOOL_SYSTEMMEM,&next.partialStaging' in w
   and resetFn.index('releaseDefaultMesh();')<resetFn.index('releaseGPU(true);')
   and 'payload.pages->temporary?0:plan.payload.discard()' in commit,
  'the rebuild request has one caller: the upload() missing-payload fallback':w.count('requestPayloadRebuild()')==2 and upload.count('requestPayloadRebuild()')==1,
  'the plan holds the payload through the handle; no pages/materials read after commit':
   'UploadPayloadHandle payload;' in plan and 'std::shared_ptr<const NorthlightWorldMeshPages::Plan> pages;\n    // Sealed' not in plan
-  and 'plan.pages->' not in w and 'plan->pages->' not in w and 'plan.materials' not in w and 'plan->materials' not in w,
+  and 'plan.pages->' not in w and 'plan->pages->' not in w and 'plan.materials' not in upload and 'plan->materials' not in upload,
  'cpuBytes counts the payload through one atomic, never its vectors':'uint64_t bytes=payload.bytes()+sizeof(*this)' in plan and 'std::atomic_load' not in plan[plan.index('uint64_t cpuBytes()'):],
  'seal moves pages and materials into the payload before clearing the source':'payload->materials.swap(input.materials)' in pagesH and 'input.payload.set(std::move(payload))' in pagesH,
  'upload() shares the payload once, asks for a rebuild when it is gone':
@@ -112,9 +112,14 @@ checks={
 bad=[k for k,v in checks.items() if not v]
 for k,v in checks.items():print(('PASS ' if v else 'FAIL ')+k)
 if bad:sys.exit(1)
-with tempfile.TemporaryDirectory() as tmp:
-    d=Path(tmp);(d/'test.cpp').write_text(cpp)
-    for label,flags in (('O1 ASan/UBSan',['-O1','-g','-fsanitize=address,undefined']),('O1 TSan',['-O1','-g','-fsanitize=thread'])):
-        exe=d/'test'
-        subprocess.run(['clang++','-std=c++17','-Wall','-Wextra','-Werror','-pthread',*flags,*fp.test_include_flags(),str(d/'test.cpp'),str(fp.src('world_gi.cpp')),str(fp.src('world_mesh_plan.cpp')),'-o',str(exe)],check=True)
-        out=subprocess.run([str(exe)],capture_output=True,text=True,timeout=300);print(label+': '+out.stdout+out.stderr,end='');out.check_returncode()
+if sys.platform == 'win32':
+    d=fp.output_dir();d.mkdir(parents=True,exist_ok=True);(d/'payload-test.cpp').write_bytes(cpp.encode());exe=d/'payload-test.exe'
+    subprocess.run([str(fp.zig()),'c++','-target','x86-windows-gnu','-std=c++17','-O2','-UNDEBUG',*fp.test_include_flags(),str(d/'payload-test.cpp'),str(fp.src('world_gi.cpp')),str(fp.src('world_mesh_plan.cpp')),'-o',str(exe)],env=fp.zig_env(),check=True)
+    subprocess.run([str(exe)],check=True)
+else:
+    with tempfile.TemporaryDirectory() as tmp:
+        d=Path(tmp);(d/'test.cpp').write_text(cpp)
+        for label,flags in (('O1 ASan/UBSan',['-O1','-g','-fsanitize=address,undefined']),('O1 TSan',['-O1','-g','-fsanitize=thread'])):
+            exe=d/'test'
+            subprocess.run(['clang++','-std=c++17','-Wall','-Wextra','-Werror','-pthread',*flags,*fp.test_include_flags(),str(d/'test.cpp'),str(fp.src('world_gi.cpp')),str(fp.src('world_mesh_plan.cpp')),'-o',str(exe)],check=True)
+            out=subprocess.run([str(exe)],capture_output=True,text=True,timeout=300);print(label+': '+out.stdout+out.stderr,end='');out.check_returncode()

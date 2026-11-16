@@ -5,6 +5,7 @@
 #include <d3d9.h>
 #endif
 #include "static_shadow_draw_state.h"
+#include "shadow_alpha_texture.h"
 #include "shadow_bounds.h"
 #include "streaming_budget.h"
 #include "cpu_retirement.h"
@@ -49,9 +50,9 @@ public:
 private:
     template<class T> static void release(T*& p){if(p){p->Release();p=nullptr;}}
     struct Texture {
-        IDirect3DTexture9* gpu=nullptr;uint64_t key=0;size_t bytes=0;unsigned nextRow=0;
+        IDirect3DTexture9* gpu=nullptr,*staging=nullptr;uint64_t key=0;size_t bytes=0;unsigned nextRow=0;
         unsigned width=0,height=0;bool ready=false;std::shared_ptr<const Model> owner;size_t material=0;std::vector<uint8_t> alpha;std::shared_ptr<const std::vector<uint8_t>> preparedAlpha;
-        ~Texture(){release(gpu);if(preparedAlpha)NorthlightStreaming::cpuRetirement().retire(preparedAlpha,preparedAlpha->capacity());if(accounted)*accounted-=bytes;}size_t* accounted=nullptr;
+        ~Texture(){release(staging);release(gpu);if(preparedAlpha)NorthlightStreaming::cpuRetirement().retire(preparedAlpha,preparedAlpha->capacity());if(accounted)*accounted-=bytes;}size_t* accounted=nullptr;
     };
     struct Resource {
         IDirect3DVertexBuffer9* vb=nullptr;IDirect3DIndexBuffer9* ib=nullptr;
@@ -61,6 +62,7 @@ private:
         ~Resource(){release(vb);release(ib);if(accounted)*accounted-=bytes;}size_t* accounted=nullptr;
     };
     struct Instance { float row[12]; };
+    NorthlightShadowAlphaTexture::Format alphaFormat_;
     Limits limits_;mutable Statistics stats_;size_t geometryBytes_=0,textureBytes_=0;
     std::function<bool(size_t)> admit_;
     std::map<std::string,std::unique_ptr<Resource>> resources_;
@@ -512,6 +514,7 @@ private:
         if(!canInstance_){release(instancedVS_);release(instancedDecl_);release(instances_);}return true;
     }
     bool begin(IDirect3DDevice9* d,const std::shared_ptr<const Model>& model,uint64_t frame){
+        if(!alphaFormat_.probe(d))return false;
         const size_t vb=model->vertices.size()*sizeof(Vertex),ib=model->indexCount()*(model->index16?2:4);
         makeRoom(vb+ib);if((sharedBudget_&&!sharedBudget_->available())||!vb||!ib||vb>UINT_MAX||ib>UINT_MAX||!admission(vb+ib))return false;
         auto r=std::make_unique<Resource>();r->model=model;r->vertexCount=UINT(model->vertices.size());r->bytes=vb+ib;r->lastUsed=frame;r->wanted=true;
@@ -522,7 +525,7 @@ private:
             r->low={std::min(r->low.x,b.low.x),std::min(r->low.y,b.low.y),std::min(r->low.z,b.low.z)};
             r->high={std::max(r->high.x,b.high.x),std::max(r->high.y,b.high.y),std::max(r->high.z,b.high.z)};
         }
-        if(FAILED(d->CreateVertexBuffer(UINT(vb),D3DUSAGE_WRITEONLY,0,D3DPOOL_MANAGED,&r->vb,nullptr))||FAILED(d->CreateIndexBuffer(UINT(ib),D3DUSAGE_WRITEONLY,model->index16?D3DFMT_INDEX16:D3DFMT_INDEX32,D3DPOOL_MANAGED,&r->ib,nullptr)))return false;
+        if(FAILED(d->CreateVertexBuffer(UINT(vb),D3DUSAGE_WRITEONLY,0,D3DPOOL_DEFAULT,&r->vb,nullptr))||FAILED(d->CreateIndexBuffer(UINT(ib),D3DUSAGE_WRITEONLY,model->index16?D3DFMT_INDEX16:D3DFMT_INDEX32,D3DPOOL_DEFAULT,&r->ib,nullptr)))return false;
         r->accounted=&geometryBytes_;geometryBytes_+=r->bytes;
         // Add resource before material admission so all allocated bytes count.
         const std::string identity=resourceKey(*model);resources_[identity]=std::move(r);Resource& dest=*resources_.at(identity);
@@ -542,20 +545,21 @@ private:
             for(size_t i=0;i<r.textures.size();++i){
                 if(timedOut()){all=false;break;}
                 if(!r.textures[i]){const auto& mat=m.materials[i];uint64_t key=m.materialKeys[i];auto range=textures_.equal_range(key);for(auto it=range.first;it!=range.second;++it){auto candidate=it->second.lock();if(candidate&&sameAlpha(*candidate,m,i)){r.textures[i]=std::move(candidate);break;}}
-                    if(!r.textures[i]){auto texture=std::make_shared<Texture>();texture->key=key;texture->owner=r.model;texture->material=i;texture->width=std::max(1u,mat.width);texture->height=std::max(1u,mat.height);texture->bytes=size_t(texture->width)*texture->height*4;makeRoom(texture->bytes);
+                    if(!r.textures[i]){auto texture=std::make_shared<Texture>();texture->key=key;texture->owner=r.model;texture->material=i;texture->width=std::max(1u,mat.width);texture->height=std::max(1u,mat.height);texture->bytes=size_t(texture->width)*texture->height*alphaFormat_.stride;makeRoom(texture->bytes);
                         if(sharedBudget_&&!sharedBudget_->available())return true;
                         const bool admitted=admission(texture->bytes);
                         if(!admitted&&sharedBudget_&&!maintenanceLeft_)return true;
-                        if(!admitted||FAILED(d->CreateTexture(texture->width,texture->height,1,0,D3DFMT_A8R8G8B8,D3DPOOL_MANAGED,&texture->gpu,nullptr)))return false;
+                        if(!admitted||FAILED(d->CreateTexture(texture->width,texture->height,1,0,alphaFormat_.value,D3DPOOL_DEFAULT,&texture->gpu,nullptr)))return false;
+                        if(FAILED(d->CreateTexture(texture->width,texture->height,1,0,alphaFormat_.value,D3DPOOL_SYSTEMMEM,&texture->staging,nullptr)))return false;
                         texture->accounted=&textureBytes_;textureBytes_+=texture->bytes;if(m.uploadPrepared){texture->preparedAlpha=m.uploadAlpha[i];texture->owner.reset();}else texture->alpha.resize(size_t(texture->width)*texture->height);textures_.emplace(key,texture);r.textures[i]=std::move(texture);
                     }
                 }
-                auto& t=*r.textures[i];if(t.ready)continue;all=false;const size_t rowBytes=size_t(t.width)*4;if(rowBytes>budget)break;const unsigned rows=unsigned(std::min({size_t(t.height-t.nextRow),budget/rowBytes,size_t(64)}));
-                RECT rect{0,LONG(t.nextRow),LONG(t.width),LONG(t.nextRow+rows)};D3DLOCKED_RECT lock{};if(FAILED(t.gpu->LockRect(0,&lock,&rect,0))||!lock.pBits)return false;const auto& mat=m.materials[i];
-                for(unsigned y=0;y<rows;++y){auto* dst=reinterpret_cast<uint32_t*>(static_cast<char*>(lock.pBits)+y*lock.Pitch);const size_t offset=size_t(t.nextRow+y)*rowBytes;
-                    if(m.uploadPrepared){const auto& alpha=*m.uploadAlpha[i];const size_t first=size_t(t.nextRow+y)*t.width;for(unsigned x=0;x<t.width;++x)dst[x]=(uint32_t(alpha[first+x])<<24)|0x00ffffffu;}
-                    else for(unsigned x=0;x<t.width;++x){const size_t j=offset+x*4;const unsigned a=j+3<mat.texels().size()?mat.texels()[j+3]:255;dst[x]=(a<<24)|0x00ffffff;t.alpha[size_t(t.nextRow+y)*t.width+x]=uint8_t(a);}}
-                if(FAILED(t.gpu->UnlockRect(0)))return false;t.nextRow+=rows;t.ready=t.nextRow==t.height;if(t.ready)t.owner.reset();budget-=rows*rowBytes;if(sharedBudget_)sharedBudget_->consume(rows*rowBytes);break;
+                auto& t=*r.textures[i];if(t.ready)continue;all=false;const size_t rowBytes=size_t(t.width)*alphaFormat_.stride;if(rowBytes>budget)break;const unsigned rows=unsigned(std::min({size_t(t.height-t.nextRow),budget/rowBytes,size_t(64)}));
+                RECT rect{0,LONG(t.nextRow),LONG(t.width),LONG(t.nextRow+rows)};D3DLOCKED_RECT lock{};if(FAILED(t.staging->LockRect(0,&lock,&rect,0))||!lock.pBits)return false;const auto& mat=m.materials[i];
+                for(unsigned y=0;y<rows;++y){auto* dst=static_cast<char*>(lock.pBits)+y*lock.Pitch;const size_t offset=size_t(t.nextRow+y)*t.width*4;
+                    if(m.uploadPrepared){const auto& alpha=*m.uploadAlpha[i];const size_t first=size_t(t.nextRow+y)*t.width;for(unsigned x=0;x<t.width;++x)NorthlightShadowAlphaTexture::write(dst,x,alphaFormat_.stride,alpha[first+x]);}
+                    else for(unsigned x=0;x<t.width;++x){const size_t j=offset+x*4;const unsigned a=j+3<mat.texels().size()?mat.texels()[j+3]:255;NorthlightShadowAlphaTexture::write(dst,x,alphaFormat_.stride,uint8_t(a));t.alpha[size_t(t.nextRow+y)*t.width+x]=uint8_t(a);}}
+                if(FAILED(t.staging->UnlockRect(0)))return false;t.nextRow+=rows;t.ready=t.nextRow==t.height;if(t.ready){if(FAILED(d->UpdateTexture(t.staging,t.gpu)))return false;release(t.staging);t.owner.reset();}budget-=rows*rowBytes;if(sharedBudget_)sharedBudget_->consume(rows*rowBytes);break;
             }
             if(all){
                 if(m.drawModel){auto owner=r.model;r.model=m.drawModel;retireCpu(owner);r.ready=true;break;}

@@ -7,8 +7,8 @@
 // The immutable replay queue remains the rollback journal until commit.
 class NorthlightNativeModelNormals {
     template<class T> static void drop(T*& p){if(p)p->Release();p=nullptr;}
-    struct Vertex {IDirect3DVertexShader9* source=nullptr;IDirect3DVertexShader9* shader[8]={};unsigned tried=0,semantics=0;bool valid=false;};
-    struct Pixel {IDirect3DPixelShader9* source=nullptr;IDirect3DPixelShader9* normal[8][3]={},*zero[3]={};unsigned tried[8]={},zeroTried=0,semantics=0,outputs=0;bool valid=false;};
+    struct Vertex {IDirect3DVertexShader9* source=nullptr;IDirect3DVertexShader9* shader[16]={};unsigned tried=0,semantics=0;bool valid=false;};
+    struct Pixel {IDirect3DPixelShader9* source=nullptr;IDirect3DPixelShader9* normal[16][3]={},*zero[3]={};unsigned tried[16]={},zeroTried=0,semantics=0,outputs=0;bool valid=false;};
     IDirect3DDevice9* d;
     void* rasterContext=nullptr;bool(*rasterReader)(void*,const D3DRENDERSTATETYPE*,unsigned,DWORD*)=nullptr;
     void* targetContext=nullptr;bool(*emptyTargets)(void*)=nullptr;
@@ -43,19 +43,19 @@ class NorthlightNativeModelNormals {
         entry.valid=code(source,words)&&NorthlightTerrainCoverage::analyse(words.data(),words.size(),p,true)&&p.vertex;
         if(entry.valid)entry.semantics=semantics(words.data(),p);auto* added=&vertices.emplace(source,entry).first->second;source->AddRef();return recentVertex=added;
     }
-    bool programs(Vertex* v,Pixel& p,unsigned slot,unsigned semantic,IDirect3DVertexShader9*& vs,IDirect3DPixelShader9*& ps){
-        std::vector<std::uint32_t> words,patched;
+    bool programs(Vertex* v,Pixel& p,unsigned slot,unsigned semantic,IDirect3DVertexShader9*& vs,IDirect3DPixelShader9*& ps,bool terrain=false){
+        std::vector<std::uint32_t> words,patched;const unsigned variant=semantic+(terrain?8:0);
         if(v){
-            if(!(v->tried&(1u<<semantic))){std::vector<std::uint32_t> pixelWords;unsigned actual=8;
-                if(code(v->source,words)&&code(p.source,pixelWords)&&NorthlightModelNormalMrt::vertex(words.data(),words.size(),pixelWords.data(),pixelWords.size(),patched,actual)&&actual==semantic){
-                    if(SUCCEEDED(d->CreateVertexShader(reinterpret_cast<const DWORD*>(patched.data()),v->shader+semantic)))++builds;else drop(v->shader[semantic]);}
-                v->tried|=1u<<semantic;
+            if(!(v->tried&(1u<<variant))){std::vector<std::uint32_t> pixelWords;unsigned actual=8;
+                if(code(v->source,words)&&code(p.source,pixelWords)&&NorthlightModelNormalMrt::vertex(words.data(),words.size(),pixelWords.data(),pixelWords.size(),patched,actual,terrain)&&actual==semantic){
+                    if(SUCCEEDED(d->CreateVertexShader(reinterpret_cast<const DWORD*>(patched.data()),v->shader+variant)))++builds;else drop(v->shader[variant]);}
+                v->tried|=1u<<variant;
             }
-            vs=v->shader[semantic];if(!vs)return false;
+            vs=v->shader[variant];if(!vs)return false;
         }
-        auto& tried=v?p.tried[semantic]:p.zeroTried;auto& shader=v?p.normal[semantic][slot-1]:p.zero[slot-1];
+        auto& tried=v?p.tried[variant]:p.zeroTried;auto& shader=v?p.normal[variant][slot-1]:p.zero[slot-1];
         if(!(tried&(1u<<slot))){
-            if(code(p.source,words)&&NorthlightModelNormalMrt::pixel(words.data(),words.size(),slot,v!=nullptr,semantic,patched)){
+            if(code(p.source,words)&&NorthlightModelNormalMrt::pixel(words.data(),words.size(),slot,v!=nullptr,semantic,patched,terrain)){
                 if(SUCCEEDED(d->CreatePixelShader(reinterpret_cast<const DWORD*>(patched.data()),&shader)))++builds;else drop(shader);}
             tried|=1u<<slot;
         }
@@ -120,7 +120,7 @@ public:
         log("MODEL_NORMALS MRT frame=%u enabled=%u allowed=%u complete=%u committed=%u probes=%u modelDraws=%u occluderDraws=%u shaderBuilds=%u fallbacks=%u reason=%s vertices=%zu pixels=%zu retryFrames=%u",frame,unsigned(enabled),unsigned(allowed),unsigned(lastComplete),committed,probes,modelDraws,zeroDraws,builds,fallbacks,reason,vertices.size(),pixels.size(),retryFrames);
     }
     template<class Draw,class Prove> Result draw(Draw submit,IDirect3DSurface9* target,IDirect3DSurface9* color,UINT width,UINT height,
-                                              IDirect3DVertexShader9* original,bool receiver,Prove prove){
+                                              IDirect3DVertexShader9* original,bool receiver,Prove prove,bool terrain=false){
         auto fallback=[&](const char* cause){cancel(cause);return Result{submit(),false,false};};
         if(!enabled||!capable||refused||!complete)return {submit(),false,false};
         // Receivers are opaque. Blended depth writers clear auxiliary RGB with
@@ -169,10 +169,11 @@ public:
             try{v=vertex(oldVS.p);}catch(const std::bad_alloc&){return fallback("allocation");}if(!v||!v->valid)return fallback("vertex-program");
             while(semantic<8&&((v->semantics|p->semantics)&(1u<<semantic)))++semantic;if(semantic==8)return fallback("varyings");}
         IDirect3DVertexShader9* vs=nullptr;IDirect3DPixelShader9* ps=nullptr;
-        const bool cold=(v&&!(v->tried&(1u<<semantic)))||!((v?p->tried[semantic]:p->zeroTried)&(1u<<slot));
+        const unsigned variant=semantic+(terrain?8:0);
+        const bool cold=(v&&!(v->tried&(1u<<variant)))||!((v?p->tried[variant]:p->zeroTried)&(1u<<slot));
         if(cold){if(coldPairs)return fallback("shader-warmup");++coldPairs;}
         const auto beforeBuilds=builds;
-        try{if(!programs(v,*p,slot,semantic,vs,ps))return fallback("shader-factory");}catch(const std::bad_alloc&){return fallback("allocation");}
+        try{if(!programs(v,*p,slot,semantic,vs,ps,terrain))return fallback("shader-factory");}catch(const std::bad_alloc&){return fallback("allocation");}
         // A newly encountered pair is prepared on an ordinary replay frame.
         // Never pay a partial MRT plus its full rollback every steady frame.
         if(builds!=beforeBuilds)allowed=false;

@@ -307,6 +307,7 @@ test_material_private_depth.py
 test_material_profile.py
 test_material_raster_batch.py
 test_material_ray_work.py
+test_material_receiver_stencil_gpu.py
 test_material_replay_content.py
 test_material_replay_state.py
 test_material_rigid_range_cpu.py
@@ -663,6 +664,7 @@ test_world_light_placements.py
 test_world_lighting_capture.py
 test_world_lighting_gi_gpu.py
 test_world_local_lights.py
+test_world_material_texels.py
 test_world_mesh_pages.py
 test_world_mesh_pages_real.py
 test_world_mesh_plan.py
@@ -675,6 +677,7 @@ test_world_shader_manifest.py
 test_world_snapshot_domain.py
 test_world_temporal_merge_gpu.py
 test_world_unshadowed_lighting_gpu.py
+test_world_upload_pixels.py
 test_zone_tuner.py
 test_zone_tuning.py
 test_zone_tuning_wiring.py

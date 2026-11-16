@@ -33,10 +33,9 @@ def inputs():
     return {p.relative_to(fp.REPO).as_posix(): sha(p) for p in sorted(set(paths))}
 
 
-def cache_inputs(root):
+def cache_inputs(root, center=(5139.84, -56.93, 380.31)):
     # Conservative superset: every source referenced by the 5x5 screenshot tile
     # neighborhood, including records rejected by production crop predicates.
-    center = (5139.84, -56.93)
     zero, tile = 17066.666666666666, 533.3333333333333
     import math
     tx, ty = math.floor((zero - center[1]) / tile), math.floor((zero - center[0]) / tile)
@@ -83,8 +82,9 @@ def main():
     parser.add_argument('--backend', type=Path)
     parser.add_argument('--prebuilt', type=Path)
     parser.add_argument('--host-exe', type=Path, help='Read x86 stack reserve/commit from this game executable; never execute or modify it')
-    parser.add_argument('--storage', choices=['spooled', 'resident', 'transitions', 'actual', 'fence-faults', 'probe-reuse', 'recovery-policy'], default='spooled')
+    parser.add_argument('--storage', choices=['spooled', 'resident', 'transitions', 'actual', 'fence-faults', 'probe-reuse', 'recovery-policy', 'texture-aliases', 'actual-device-local', 'actual-default', 'actual-worker-reset', 'actual-worker-move'], default='spooled')
     parser.add_argument('--available', nargs='+', type=int)
+    parser.add_argument('--center', nargs=3, type=float, default=[5139.84, -56.93, 380.31], help='Actual world-cache fixture camera')
     args = parser.parse_args()
     out = fp.output_dir() / 'cold-upload'
     out.mkdir(parents=True, exist_ok=True)
@@ -134,29 +134,32 @@ def main():
     assert args.backend and args.backend.is_file()
     import windows_gpu_guard
     backend_hash = sha(args.backend)
-    root = fp.world_cache() if args.storage == 'actual' else None
-    cache = cache_inputs(root) if root else {}
+    root = fp.world_cache() if args.storage in ('actual', 'actual-device-local', 'actual-default', 'actual-worker-reset', 'actual-worker-move') else None
+    cache = cache_inputs(root, args.center) if root else {}
     client = out / 'client'
     client.mkdir(exist_ok=True)
+    if args.storage in ('actual-worker-reset', 'actual-worker-move') and not (client / 'world-cache').exists():
+        import _winapi
+        _winapi.CreateJunction(str(root), str(client / 'world-cache'))
     reports = []
     for key, name in [('DXVK_LOG_PATH', 'logs'), ('DXVK_SHADER_CACHE_PATH', 'shaders'), ('DXVK_STATE_CACHE_PATH', 'state')]:
         folder = out / name
         folder.mkdir(exist_ok=True)
         env[key] = str(folder)
-    for available in (args.available or ([1024] if args.storage in ('resident', 'transitions', 'fence-faults', 'probe-reuse', 'recovery-policy') else [1024, 434, 395, 307])):
+    for available in (args.available or ([1024] if args.storage in ('resident', 'transitions', 'fence-faults', 'probe-reuse', 'recovery-policy', 'texture-aliases', 'actual-device-local') else [1024, 434, 395, 307])):
         windows_gpu_guard.processes()
         start = time.perf_counter()
-        command = [str(exe), str(args.backend), str(client), str(available), args.storage, *([str(root)] if root else [])]
+        command = [str(exe), str(args.backend), str(client), str(available), args.storage, *([str(root), *map(str, args.center)] if root else [])]
         run = subprocess.run(command, env=env, capture_output=True, text=True, timeout=180, **flags)
         (out / f'{available}.log').write_text(run.stdout + run.stderr, encoding='utf-8')
         print(run.stdout, flush=True)
-        marker = 'COLD_RECOVERY_POLICY_PASS' if args.storage == 'recovery-policy' else 'COLD_PROBE_REUSE_PASS' if args.storage == 'probe-reuse' else 'COLD_FENCE_FAILURE_PASS' if args.storage == 'fence-faults' else 'ACTUAL_SCENE_PASS' if args.storage == 'actual' else 'COLD_TRANSITION_PASS' if args.storage == 'transitions' else 'COLD_UPLOAD_PASS'
-        ok = run.returncode == 0 and run.stdout.count(marker) == (1 if args.storage in ('fence-faults', 'probe-reuse', 'recovery-policy') else 2)
+        marker = 'ACTUAL_WORKER_MOVE_PASS' if args.storage == 'actual-worker-move' else 'ACTUAL_WORKER_RESET_PASS' if args.storage == 'actual-worker-reset' else 'DEVICE_LOCAL_ACTUAL_PASS' if args.storage in ('actual-device-local', 'actual-default') else 'CUTOUT_ALIASES_PASS' if args.storage == 'texture-aliases' else 'COLD_RECOVERY_POLICY_PASS' if args.storage == 'recovery-policy' else 'COLD_PROBE_REUSE_PASS' if args.storage == 'probe-reuse' else 'COLD_FENCE_FAILURE_PASS' if args.storage == 'fence-faults' else 'ACTUAL_SCENE_PASS' if args.storage == 'actual' else 'COLD_TRANSITION_PASS' if args.storage == 'transitions' else 'COLD_UPLOAD_PASS'
+        ok = run.returncode == 0 and run.stdout.count(marker) == (1 if args.storage in ('fence-faults', 'probe-reuse', 'recovery-policy', 'actual-default', 'actual-worker-reset', 'actual-worker-move') else 2)
         reports.append({'available_mib': available, 'storage': args.storage, 'wall_seconds': time.perf_counter() - start,
                         'command': command, 'exit_code': run.returncode, 'stdout': run.stdout, 'pass': ok})
         assert ok, run.stderr or run.stdout
     unchanged = inputs() == initial and sha(Path(__file__)) == runner_hash and sha(args.backend) == backend_hash
-    cache_unchanged = not root or cache_inputs(root) == cache
+    cache_unchanged = not root or cache_inputs(root, args.center) == cache
     assert unchanged and cache_unchanged, 'Source/backend/cache changed during validation'
     host_unchanged=not stack['path'] or sha(Path(stack['path']))==stack['sha256']
     assert host_unchanged,'Host executable changed during validation'

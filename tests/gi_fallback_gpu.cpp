@@ -65,7 +65,7 @@ int main(int argc,char** argv){
     }
     // Signed brightness and the extended influence range, including partial residency.
     unsigned tuningCases=0;float tuningError=0;
-    for(float coverage:{0.f,.25f,1.f})for(float gain:{0.f,.5f,1.f,2.f})
+    for(float coverage:{0.f,.25f,1.f})for(float gain:{0.f,.5f,1.f,2.f,2.4f})
     for(float brightness:{-1.f,-.5f,0.f,1.f,2.f})for(float irradiance:{0.f,.1f,.7f})for(float confidence:{0.f,1.f}){
         c[20][1]=gain;c[20][3]=1;c[66][1]=brightness;ok(d->SetPixelShaderConstantF(0,c[0],79));
         bind(10,metadata(coverage));bind(14,solid(0,0,1,confidence));
@@ -75,11 +75,30 @@ int main(int argc,char** argv){
             const float correction=std::max((irradiance*(1+brightness)-c[18][k])*gain,-c[18][k])*coverage;
             const float expected=std::min(correction,0.f)+std::max(correction,0.f)*confidence;
             tuningError=std::max(tuningError,std::fabs(actual[k]-expected));
-            assert(std::isfinite(actual[k])&&std::fabs(actual[k]-expected)<.003f);
+            // At 240% influence, bright values exceed 4: allow one FP16 ULP.
+            const float tolerance=std::max(.003f,std::fabs(expected)*.001f);
+            if(std::fabs(actual[k]-expected)>=tolerance)std::fprintf(stderr,"GI_TUNING coverage=%g gain=%g brightness=%g irradiance=%g confidence=%g channel=%u actual=%g expected=%g\n",coverage,gain,brightness,irradiance,confidence,k,actual[k],expected);
+            assert(std::isfinite(actual[k])&&std::fabs(actual[k]-expected)<tolerance);
             assert(actual[k]>=-c[18][k]-.001f);if(coverage==0)assert(actual[k]==0);
         }
         assert(actual[3]==0);++tuningCases;
     }
+    // Read the separate baked-GI MRT. Brightness changes added indirect
+    // energy, never the visibility used to mix authored/baked illumination.
+    ok(d->SetRenderTarget(1,baseline));c[66][0]=1;c[20][1]=1;c[20][3]=1;
+    bind(10,metadata(1));bind(14,solid(0,0,1,1));
+    for(float irradiance:{0.f,.1f,.7f}){
+        for(unsigned slot:{4u,5u,6u})bind(slot,solid(irradiance/.28209479f));
+        const float ambientLuma=.2126f*.2f+.7152f*.3f+.0722f*.4f;
+        const float expected=std::clamp(1-irradiance/ambientLuma,0.f,1.f);
+        for(float brightness:{-1.f,-.5f,0.f,1.f,2.f}){
+            c[66][1]=brightness;ok(d->SetPixelShaderConstantF(0,c[0],79));draw(gi);
+            const auto value=sample(baseline);assert(std::fabs(value[3]-expected)<.002f);
+            if(brightness==-1)assert(value[0]==0&&value[1]==0&&value[2]==0);
+        }
+    }
+    ok(d->SetRenderTarget(1,nullptr));c[66][0]=0;
+    std::puts("GI_BAKED_VISIBILITY_PASS brightnessIndependent=1 negative100NoAddedBounce=1 blackProbe=occluded brightProbe=visible");
     // Sky/water must stay neutral even with resident bright probes and maximum settings.
     c[20][1]=2;c[66][1]=2;bind(10,metadata(1));bind(14,solid(0,0,1,1));
     for(unsigned slot:{4u,5u,6u})bind(slot,solid(.7f/.28209479f));
@@ -94,8 +113,9 @@ int main(int argc,char** argv){
     // Sky and water cannot acquire the missing-probe correction.
     bind(10,metadata(0));bind(1,solid(1));draw(gi);assert(sample(target)==(std::array<float,4>{}));bind(1,solid(depth));c[30][0]=1;ok(d->SetPixelShaderConstantF(0,c[0],79));bind(11,solid(5,1));draw(gi);assert(sample(target)==(std::array<float,4>{}));c[30][0]=0;bind(11,solid(0));
     // Producer contract: distinguish unknown coverage from fully occluded moon.
+    // The current producer requires explicit directional coverage (c17.w).
     c[7][0]=c[8][1]=1.f/48;c[10][2]=.5f;c[11][0]=c[12][1]=1.f/192;c[14][2]=.5f;c[2][1]=48;c[2][2]=192;c[2][3]=1.f/1024;c[35][0]=1.f/1280;
-    c[16][2]=c[28][2]=1;c[27][1]=1;c[73][2]=1;c[6][0]=4;
+    c[16][2]=c[28][2]=1;c[17][3]=1;c[27][1]=1;c[73][2]=1;c[6][0]=4;
     bind(2,solid(0));bind(3,solid(0));bind(12,solid(1,1,1,1));bind(15,solid(0));
     ok(d->SetRenderTarget(1,baseline));
     for(auto ps:lighting)for(float moon:{0.f,1.f})for(float outside:{0.f,1.f})for(float active:{0.f,1.f}){
@@ -120,7 +140,7 @@ int main(int argc,char** argv){
         std::memset(c,0,sizeof c);c[0][0]=1.f/(W*2);c[0][1]=1.f/(H*2);c[0][2]=.2f;c[0][3]=1000;
         c[1][0]=c[1][1]=c[1][2]=c[2][0]=1;c[2][1]=48;c[2][2]=192;c[2][3]=1.f/1024;
         c[6][0]=c[6][1]=4;c[6][2]=3.75f;c[6][3]=1;c[10][2]=c[14][2]=.5f;c[16][2]=c[28][2]=1;
-        c[19][3]=8;c[20][0]=4;c[20][1]=.5f;c[20][2]=.85f;c[20][3]=1;c[24][3]=1;c[27][1]=1;c[35][0]=1.f/1280;c[73][2]=1;
+        c[17][3]=1;c[19][3]=8;c[20][0]=4;c[20][1]=.5f;c[20][2]=.85f;c[20][3]=1;c[24][3]=1;c[27][1]=1;c[35][0]=1.f/1280;c[73][2]=1;
         c[33][0]=float(W*2);c[33][1]=float(H*2);c[33][2]=float(W);c[33][3]=float(H);
         for(unsigned k=0;k<3;++k){c[17][k]=c[29][k]=.4f;c[18][k]=ambient[k];}
         bind(1,solid(depth));bind(2,solid(shadowed?0.f:1.f));bind(3,solid(shadowed?0.f:1.f));
@@ -140,13 +160,24 @@ int main(int argc,char** argv){
         c[78][2]=1;ok(d->SetPixelShaderConstantF(78,c[78],1));
         for(unsigned hdr=0;hdr<2;++hdr){
             draw(composites[hdr]);const auto actual=sample(target);
+            // Bound the material as RGB: a bright red channel also scales its
+            // green/blue partners, preserving hue instead of clipping each.
+            float materialPeak=1;
+            for(unsigned j=0;j<3;++j){
+                const float encoded=value*(j==0?1.f:j==1?.7f:.2f);
+                const float native=hdr?(encoded<=.04045f?encoded/12.92f:std::pow((encoded+.055f)/1.055f,2.4f)):encoded;
+                materialPeak=std::max(materialPeak,native*ao/(ambient[j]+.4f));
+            }
             for(unsigned k=0;k<3;++k){
                 const float encoded=value*(k==0?1.f:k==1?.7f:.2f);
                 const float native=hdr?(encoded<=.04045f?encoded/12.92f:std::pow((encoded+.055f)/1.055f,2.4f)):encoded;
                 const float transported=native*ao,delta=.4f*(visibility-1)+std::max((.1f*(1+brightness)-ambient[k])*influence,-ambient[k])*coverage;
-                const float composed=std::max(transported+std::min(transported/(ambient[k]+.4f),1.f)*delta,transported*.55f);
+                const float retained=1-std::max(.45f,std::clamp(influence,0.f,1.f));
+                const float composed=std::max(transported+transported/(ambient[k]+.4f)/materialPeak*delta,transported*retained);
                 const float expected=composed;
-                const float error=std::fabs(actual[k]-expected);chainError=std::max(chainError,error);assert(std::isfinite(actual[k])&&error<.0015f);
+                const float error=std::fabs(actual[k]-expected);chainError=std::max(chainError,error);
+                if(error>=.0015f)std::fprintf(stderr,"GI_CHAIN hdr=%u coverage=%g shadowed=%u ao=%g value=%g influence=%g brightness=%g channel=%u actual=%g expected=%g\n",hdr,coverage,unsigned(shadowed),ao,value,influence,brightness,k,actual[k],expected);
+                assert(std::isfinite(actual[k])&&error<.0015f);
                 if(coverage==0&&!shadowed&&ao==1){assert(std::fabs(actual[k]-native)<.0015f);++chainNative;}
                 if(value>0&&shadowed&&actual[k]<transported-.00001f)++chainShadow;
                 if(value>0&&coverage==1&&!shadowed&&actual[k]<transported-.00001f)++chainResident;

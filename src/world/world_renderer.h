@@ -905,7 +905,7 @@ private:
     std::shared_ptr<const NorthlightMeshPageKey::KeySet> residentPages;std::string residentMap;unsigned elidedFallbacks=0;
     void publishResidentPages(const std::string& map){
         std::shared_ptr<const NorthlightMeshPageKey::KeySet> keys;
-        if(!map.empty()&&!meshStore.table().empty()){try{keys=std::make_shared<const NorthlightMeshPageKey::KeySet>(meshStore.activeKeys([&](uint32_t id){return id<meshBuffers.size()&&meshBuffers[id].vb&&meshBuffers[id].ib&&meshBuffers[id].vbPool==D3DPOOL_MANAGED&&meshBuffers[id].ibPool==D3DPOOL_MANAGED;}));}catch(...){keys.reset();}}
+        if(!map.empty()&&!meshStore.table().empty()){try{keys=std::make_shared<const NorthlightMeshPageKey::KeySet>(meshStore.activeKeys([&](uint32_t id){return id<meshBuffers.size()&&meshBuffers[id].vb&&meshBuffers[id].ib;}));}catch(...){keys.reset();}}
         std::lock_guard<std::mutex> lock(mutex);residentPages=std::move(keys);residentMap=residentPages?map:std::string();
     }
     DWORD memoryPressureLogAt=0,memoryPressureUntil=0;
@@ -977,6 +977,7 @@ private:
     }
     std::vector<IDirect3DTexture9*> materials;
     NorthlightStreaming::DeferredRelease<IDirect3DTexture9> retiredMaterials;
+    NorthlightShadowAlphaTexture::Format shadowTextureFormat;
     size_t uploadedTextureBytes=0;
     using MaterialPixels=std::vector<NorthlightWorldMesh::MaterialUpload>;
     std::shared_ptr<MaterialPixels> uploadedMaterialPixels;
@@ -989,13 +990,13 @@ private:
             auto payload=active->meshPlan->payload.share();D3DSURFACE_DESC desc{};
             auto* texture=materials[materialIndex];
             if(payload&&materialIndex<payload->materials.size()&& &payload->materials[materialIndex]==&material&&texture->GetLevelCount()==1&&
-               SUCCEEDED(texture->GetLevelDesc(0,&desc))&&desc.Pool==D3DPOOL_MANAGED&&desc.Format==D3DFMT_A8R8G8B8&&desc.Width==material.width&&desc.Height==material.height)return texture;
+               SUCCEEDED(texture->GetLevelDesc(0,&desc))&&desc.Pool==D3DPOOL_MANAGED&&desc.Format==shadowTextureFormat.value&&desc.Width==material.width&&desc.Height==material.height)return texture;
         }
         if(!uploadedMaterialPixels)return nullptr;
         for(size_t i=0;i<uploadedMaterialPixels->size()&&i<materials.size();++i){
             const auto& old=(*uploadedMaterialPixels)[i];
-            if(!material.spooled&&!old.bgra.empty()&&old.textureIdentity==material.textureIdentity&&
-               old.width==material.width&&old.height==material.height&&old.bgra==material.bgra)return materials[i];
+            if(!material.spooled&&!old.pixels().empty()&&old.textureIdentity==material.textureIdentity&&
+               old.width==material.width&&old.height==material.height&&old.pixels()==material.pixels())return materials[i];
         }
         return nullptr;
     }
@@ -1045,13 +1046,14 @@ private:
         IDirect3DTexture9* white=nullptr;
         std::vector<IDirect3DTexture9*> textures;
         size_t material=0,materialRow=0;
-        IDirect3DTexture9* partialTexture=nullptr;
+        IDirect3DTexture9* partialTexture=nullptr,*partialStaging=nullptr;
         DWORD started=GetTickCount();unsigned frames=0,textureUploads=0,textureReuses=0;
         // The upload cursor owns no GPU data; only textures are owned here.
-        ~PendingMesh(){drop(partialTexture);drop(white);for(auto& t:textures)drop(t);}
+        ~PendingMesh(){drop(partialStaging);drop(partialTexture);drop(white);for(auto& t:textures)drop(t);}
     };
     std::unique_ptr<PendingMesh> pendingMesh;
     NorthlightWorldStreaming::Retry meshRetry;
+    std::shared_ptr<const Snapshot> payloadRebuildSource; // mutex: reuse the immutable local scene after device loss
     bool geometryRebuild=false; /* guarded by mutex: render thread asks the worker to rebuild the active generation */
     std::weak_ptr<NorthlightGI::BVH> payloadRebuildAsked;DWORD payloadRebuildTick=0;unsigned payloadRebuilds=0;
     unsigned streamingReports=0,preparedOwnerCommits=0;
@@ -1433,7 +1435,7 @@ private:
     }
     void requestStaticCasters(const char* map){
         if(!staticStream||!directionalShadowWork())return;
-        if(staticRecoveryPaused&&!(active&&active->bvh))return;
+        if(staticRecoveryPaused&&!worldMeshDrawable())return;
         staticFramePivot=shadowPivot();staticPivotReady=true;
         const DWORD now=GetTickCount();
         if(!staticMemoryTick||DWORD(now-staticMemoryTick)>=1000){
@@ -1591,9 +1593,14 @@ private:
           std::string builtMap;V builtCenter;bool builtValid=false,wanted=false,retry=false;uint64_t seen=0;unsigned superseded=0;
           std::string cacheCheckedMap;bool cacheMapHasTiles=true,uncachedPublished=false;unsigned uncachedSkips=0;uint64_t uncachedSkippedId=0;
           for(;;){
-            Request r;
+            Request r;std::shared_ptr<const Snapshot> restore;
             {std::unique_lock<std::mutex> lock(mutex);buildWake.wait(lock,[&]{return stopping||builderExit||retry||geometryWanted||request.id!=seen;});
-             if(stopping||builderExit)return;r=request;seen=r.id;retry=false;wanted=wanted||geometryWanted;geometryWanted=false;}
+             if(stopping||builderExit)return;r=request;seen=r.id;retry=false;wanted=wanted||geometryWanted;geometryWanted=false;
+             if(payloadRebuildSource){
+                 if(r.enabled&&!r.menu&&payloadRebuildSource->bvh&&NorthlightWorldStreaming::applicable(payloadRebuildSource->map,payloadRebuildSource->center,r.map,r.camera)){
+                     restore=payloadRebuildSource;r.geometryCenter=restore->center;wanted=true;
+                 }else payloadRebuildSource.reset();
+             }}
             if(!r.enabled||r.menu)continue;
             profileBuildActive=false;
             if(workerMemoryTrim.exchange(false,std::memory_order_relaxed))resetPreparation(); /* the entry lift stays: it is a floor on measured free memory, so what a trim freed already counts */
@@ -1660,7 +1667,7 @@ private:
             const bool profileThisBuild=NorthlightDiagnostics::enabled()&&(!memoryFootprintReportAt||started-memoryFootprintReportAt>=10000);
             profileBuildActive=profileThisBuild;
             if(profileThisBuild)memoryFootprintReportAt=started;
-            bool chunkedLocal=false,coldRecovery=false;
+            bool chunkedLocal=bool(restore),coldRecovery=bool(restore);
             auto profileMemory=[&](const char* stage,const NorthlightWorldMesh::WorldMeshUploadPlan* plan=nullptr,const NorthlightGI::WorldScene* scratch=nullptr,const NorthlightWorldMeshPages::Plan* pages=nullptr){
                 if(!profileThisBuild)return;
                 const auto profileStart=std::chrono::steady_clock::now();
@@ -1701,6 +1708,7 @@ private:
                 if(published&&published->bvh&&NorthlightWorldStreaming::retained(published->map,published->center,request.map,request.camera)){
                     logf("WORLD replacement deferred; previous region retained: %s",result->message.c_str());return false;
                 }
+                logf("WORLD geometry unavailable: %s",result->message.c_str());
                 published=result;return true;
             };
             // Geometry validity is spatial, independent of the latest GI
@@ -1747,7 +1755,7 @@ private:
                 auto phaseElapsed=[&](){const auto now=std::chrono::steady_clock::now();const double ms=std::chrono::duration<double,std::milli>(now-phaseStart).count()-(memoryProfileMs-previousProfileMs);phaseStart=now;previousProfileMs=memoryProfileMs;return std::max(0.,ms);};
                 // Probe with the lifted budget: a witness block below its contiguous floor falls back to a full walk.
                 auto memory=workerMemory(entryLift.apply(NorthlightGeometryMemory::buildBudget(64*NorthlightGeometryMemory::MiB),GetTickCount()));
-                if(!generations.canAdmit()&&NorthlightStreaming::RetireOversizedWhenIdle){
+                if(!restore&&!generations.canAdmit()&&NorthlightStreaming::RetireOversizedWhenIdle){
                     // An old generation may be in the reaper queue instead of
                     // having been freed on the render thread (0.3.137). Wait
                     // for that destruction (bounded) rather than 100 ms steps.
@@ -1756,13 +1764,13 @@ private:
                     const unsigned us=unsigned(std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-waitStart).count());
                     unsigned peak=generationWaitPeakUs.load();while(us>peak&&!generationWaitPeakUs.compare_exchange_weak(peak,us)){}
                 }
-                if(!generations.canAdmit()){++generationDeferrals;{std::lock_guard<std::mutex> lock(mutex);generationStall.deferred(GetTickCount());}deferBuild("generation-deferred",memory,100);continue;}
+                if(!restore&&!generations.canAdmit()){++generationDeferrals;{std::lock_guard<std::mutex> lock(mutex);generationStall.deferred(GetTickCount());}deferBuild("generation-deferred",memory,100);continue;}
                 {std::lock_guard<std::mutex> lock(mutex);generationStall.admitted();}
                 // Reclaim optional caches against the same budget used to admit the build,
                 // including any temporary increase after a previous allocation refusal.
-                const auto plainEntry=NorthlightGeometryMemory::buildBudget(64*NorthlightGeometryMemory::MiB);
+                const auto plainEntry=restore?NorthlightGeometryMemory::coldInBuildBudget():NorthlightGeometryMemory::buildBudget(64*NorthlightGeometryMemory::MiB);
                 profileMemory("before-entry-reclaim");
-                auto entryBudget=entryLift.apply(plainEntry,GetTickCount());
+                auto entryBudget=restore?plainEntry:entryLift.apply(plainEntry,GetTickCount());
                 // BEGIN STAGED ENTRY RECLAIM: the offline MPQ episode test uses this exact block.
                 if(!NorthlightGeometryMemory::admits(memory,entryBudget)){
                     const auto before=memory;const auto sourceBefore=sceneSources.liveBytes(),preparationBefore=meshPreparation.stats().bytes;
@@ -1824,11 +1832,13 @@ private:
                     if(NorthlightGeometryMemory::admits(sample,budget))return true;
                     localDeferred=true;localSample=sample;localRequired=budget.available;localLargest=budget.largest;logGeometryMemory("local-geometry-allocation-deferred",sample,generations.live(),workerMemoryExact,&budget);return false;
                 };
-                auto replacement=std::make_shared<NorthlightGI::BVH>();
-                if(!generations.track(replacement))throw std::runtime_error("Geometry generation admission invariant");
+                auto replacement=restore?restore->bvh:std::make_shared<NorthlightGI::BVH>();
+                if(!restore&&!generations.track(replacement))throw std::runtime_error("Geometry generation admission invariant");
                 const auto sourceBefore=sceneSources.stats();const auto preparationBefore=meshPreparation.stats();
-                auto buildLocal=[&]{return !tiles.empty()&&(coldRecovery?pressureGeometry:localGeometry).build(tiles,root+"world-cache/models",r.map,center-V(giGeometryRadius,giGeometryRadius,320),center+V(giGeometryRadius,giGeometryRadius,320),*replacement,error,localAdmission,quality.giFastBVH!=0,coldRecovery?NorthlightGI::SceneSourceProvider{}:sceneSource,coldRecovery?NorthlightGI::SceneSourceRevision{}:sceneRevision,chunkedLocal);};
-                bool localBuilt=buildLocal();
+                std::shared_ptr<const NorthlightGI::BVH> texelReuse;
+                {std::lock_guard<std::mutex> lock(mutex);if(published&&published->map==r.map)texelReuse=published->bvh;}
+                auto buildLocal=[&]{return !tiles.empty()&&(coldRecovery?pressureGeometry:localGeometry).build(tiles,root+"world-cache/models",r.map,center-V(giGeometryRadius,giGeometryRadius,320),center+V(giGeometryRadius,giGeometryRadius,320),*replacement,error,localAdmission,quality.giFastBVH!=0,coldRecovery?NorthlightGI::SceneSourceProvider{}:sceneSource,coldRecovery?NorthlightGI::SceneSourceRevision{}:sceneRevision,chunkedLocal,texelReuse.get());};
+                bool localBuilt=restore||buildLocal();
                 auto noteLocalAllocationFailure=[&]{if(!localBuilt&&!localDeferred&&(error.find("Geometry allocation deferred")!=std::string::npos||error.find("Cannot allocate")!=std::string::npos)){const auto budget=geometryBudget();localSample=workerMemory(budget);localRequired=budget.available;localLargest=budget.largest;localDeferred=true;}};
                 noteLocalAllocationFailure();
                 if(!localBuilt&&localDeferred&&!chunkedLocal){
@@ -1843,7 +1853,8 @@ private:
                     if(localDeferred){resetPreparation();liftEntry("local-geometry",localRequired,localSample.available,localLargest);stallBegin("local-geometry",localSample,localRequired,localLargest);deferBuild("local-geometry-retry",workerMemory(),1000);continue;}
                     result->message=error.empty()?"No cached geometry for "+r.map:error;publishError();continue;
                 }
-                if(coldRecovery)replacement->shareMaterialTexels();
+                if(coldRecovery&&!restore)replacement->shareMaterialTexels();
+                if(restore)logf("WORLD reset rebuild reused local BVH triangles=%zu cpuMiB=%.2f",replacement->triangleCount(),double(replacement->retainedBytes())/1048576);
                 const auto localStats=(coldRecovery?pressureGeometry:localGeometry).stats();
                 if(NorthlightDiagnostics::enabled())logf("WORLD local incremental: reads=%llu built=%llu reused=%llu reusedTriangles=%llu builtTriangles=%llu retainedMiB=%.2f flatMiB=%.2f bvhMiB=%.2f loadMs=%.3f pieceMs=%.3f assembleMs=%.3f bvhMs=%.3f totalMs=%.3f",
                     (unsigned long long)localStats.modelReads,(unsigned long long)localStats.pieceBuilds,(unsigned long long)localStats.pieceReuses,
@@ -1999,7 +2010,22 @@ private:
                 // build() the moment they are finished, so the worker's peak holds only the pages that must be uploaded.
                 std::shared_ptr<const NorthlightMeshPageKey::KeySet> resident;
                 {std::lock_guard<std::mutex> lock(mutex);if(residentPages&&residentMap==r.map)resident=residentPages;}
-                NorthlightWorldMeshPages::Options pagingOptions;pagingOptions.resident=coldRecovery?nullptr:resident.get();pagingOptions.preparation=coldRecovery?nullptr:&meshPreparation;pagingOptions.spooled=coldRecovery;
+                // CPU construction can fit while a second managed GPU copy
+                // cannot. Select bounded DEFAULT pages before publishing an
+                // upload plan that would otherwise retry forever. DEFAULT geometry
+                // and cutout textures have bounded upload staging; normal staging
+                // stays entirely in RAM until the atomic GPU commit.
+                bool spoolUpload=coldRecovery;
+                if(!spoolUpload){
+                    uint64_t largestTexture=0;for(const auto& material:plan->materials)largestTexture=std::max(largestTexture,material.pixelBytes());
+                    auto uploadBudget=NorthlightGeometryMemory::uploadBudget(0,0,0,0);
+                    uploadBudget.largest=2*std::max<uint64_t>(NorthlightWorldMeshPages::PageVertexByteLimit,largestTexture)+NorthlightGeometryMemory::ChunkMargin;
+                    const auto uploadMemory=workerMemory(uploadBudget);
+                    spoolUpload=!NorthlightGeometryMemory::admits(uploadMemory,uploadBudget);
+                    if(spoolUpload)logf("WORLD upload staging uses temporary storage availableMiB=%llu requiredMiB=%llu uniqueTextureMiB=%.3f",
+                        (unsigned long long)(uploadMemory.available>>20),(unsigned long long)(uploadBudget.available>>20),double(plan->textureBytes)/1048576);
+                }
+                NorthlightWorldMeshPages::Options pagingOptions;pagingOptions.resident=spoolUpload?nullptr:resident.get();pagingOptions.preparation=spoolUpload?nullptr:&meshPreparation;pagingOptions.spooled=spoolUpload;pagingOptions.deviceLocal=true;
                 if(!NorthlightWorldMeshPages::build(*plan,*pages,error,terrainAdmission,pagingOptions)){
                     if(!terrainDeferred&&error=="Paged mesh worker allocation failed"){
                         const auto budget=geometryBudget();terrainSample=workerMemory(budget);
@@ -2083,7 +2109,7 @@ private:
             // The replaced build (tens of MB) is freed after unlocking, never under the mutex.
             {std::lock_guard<std::mutex> lock(mutex);if(stopping||builderExit)return;
              if(!request.enabled){++superseded;continue;}
-             std::swap(builtGeometry,built);geometryWanted=false;}
+             std::swap(builtGeometry,built);geometryWanted=false;if(restore&&payloadRebuildSource==restore)payloadRebuildSource.reset();}
 #if NORTHLIGHT_DEV_TUNING
             {std::lock_guard<std::mutex> lock(devMutex);devBuilt=tuning;} // what the last published build used
             devBuilds.fetch_add(1,std::memory_order_relaxed);
@@ -2209,7 +2235,7 @@ private:
              if(!NorthlightWorldStreaming::applicable(sceneMap,sceneCenter,request.map,request.camera)){
                  ++superseded;pending=true;continue;
              }
-             if(!published||published->bvh!=bvh){
+             if(!published||published->bvh!=bvh||published->meshPlan!=scenePlan){
                  auto geometry=std::make_shared<Snapshot>();
                  if(published&&published->map==sceneMap)*geometry=*published;
                  else if(previousLighting&&previousLighting->map==sceneMap)*geometry=*previousLighting;
@@ -2502,8 +2528,8 @@ private:
         const auto& w=payloadRebuildAsked;const DWORD now=GetTickCount();
         if(!w.owner_before(active->bvh)&&!active->bvh.owner_before(w)&&DWORD(now-payloadRebuildTick)<15000u)return;
         payloadRebuildAsked=active->bvh;payloadRebuildTick=now;++payloadRebuilds;
-        deferLogf("WORLD mesh upload payload was released after commit; GPU mesh lost, rebuilding the generation map=\"%s\" count=%u",active->map.c_str(),payloadRebuilds);
-        {std::lock_guard<std::mutex> lock(mutex);geometryRebuild=true;pending=true;}
+        deferLogf("WORLD mesh upload payload was released after commit; GPU mesh lost, rebuilding upload from retained local scene map=\"%s\" count=%u",active->map.c_str(),payloadRebuilds);
+        {std::lock_guard<std::mutex> lock(mutex);payloadRebuildSource=active;geometryRebuild=true;pending=true;}
         wake.notify_one();
     }
     bool streamingFailure(HRESULT hr,const char* stage,const char* detail=""){
@@ -2651,6 +2677,7 @@ private:
         drop(resetReplayQuery);resetReplayPending=false;return true;
     }
     bool upload(NorthlightStreaming::Budget& streamBudget){
+        if(!shadowTextureFormat.probe(d))return streamingFailure(E_OUTOFMEMORY,"shadow texture format");
         retiredMaterials.drain(streamBudget);
         static_assert(sizeof(NorthlightGI::WorldVertex)==32,"FGS vertex layout");
         releaseOrphanedPending("upload");pressureReplayAllocation();
@@ -2663,7 +2690,7 @@ private:
             const auto& plan=*active->meshPlan;
             auto payload=plan.payload.share();
             if(!payload){requestPayloadRebuild();return uploadedMap==active->map&&vertices&&indices;} /* 0.3.214 (task 42) */
-            uint64_t largestTexture=0;for(const auto& material:payload->materials)largestTexture=std::max(largestTexture,material.pixelBytes());
+            uint64_t largestTexture=0;for(const auto& material:payload->materials)largestTexture=std::max(largestTexture,shadowTextureFormat.bytes(material.pixelBytes()));
             const char* invalid=NorthlightWorldMeshPages::validateSealed(plan);
             if(invalid||!payload->pages||payload->pages->pages.empty())return streamingFailure(D3DERR_INVALIDCALL,"validate pages",invalid?invalid:"missing pages");
             // Admit all full-effect targets while the bounded candidate still
@@ -2676,7 +2703,7 @@ private:
             std::vector<NorthlightMeshPageKey::Key> pageKeys;pageKeys.reserve(payload->pages->pages.size());
             std::vector<uint8_t> elidedPages;bool anyElided=false;elidedPages.reserve(payload->pages->pages.size());
             for(const auto& page:payload->pages->pages){pageKeys.push_back(page.key);elidedPages.push_back(page.elided);anyElided|=page.elided;}
-            const auto compatiblePage=[&](uint32_t id){return id<meshBuffers.size()&&meshBuffers[id].vb&&meshBuffers[id].ib&&(payload->pages->temporary||(meshBuffers[id].vbPool==D3DPOOL_MANAGED&&meshBuffers[id].ibPool==D3DPOOL_MANAGED));};
+            const auto compatiblePage=[&](uint32_t id){return id<meshBuffers.size()&&meshBuffers[id].vb&&meshBuffers[id].ib&&(payload->pages->defaultPool()||(meshBuffers[id].vbPool==D3DPOOL_MANAGED&&meshBuffers[id].ibPool==D3DPOOL_MANAGED));};
             if(!meshStore.beginStaging(pageKeys,anyElided?elidedPages:std::vector<uint8_t>(),compatiblePage)){
                 if(!meshStore.elidedMisses())return streamingFailure(D3DERR_INVALIDCALL,"page staging","staging already open");
                 // An elided page has no CPU data and its buffer is gone (trimmed, replaced, device reset): this plan cannot be
@@ -2690,9 +2717,9 @@ private:
             syncMeshBuffers();
             const auto& staged=meshStore.staging();
             uint64_t missVertexBytes=0,missIndexBytes=0;
-            if(!meshStore.stagingGrowth([&](uint32_t id,bool vertex){return id<meshBuffers.size()&&(vertex?meshBuffers[id].vb&&meshBuffers[id].vbPool==(payload->pages->temporary?D3DPOOL_DEFAULT:D3DPOOL_MANAGED):meshBuffers[id].ib&&meshBuffers[id].ibPool==(payload->pages->temporary?D3DPOOL_DEFAULT:D3DPOOL_MANAGED));},missVertexBytes,missIndexBytes))
+            if(!meshStore.stagingGrowth([&](uint32_t id,bool vertex){return id<meshBuffers.size()&&(vertex?meshBuffers[id].vb&&meshBuffers[id].vbPool==(payload->pages->defaultPool()?D3DPOOL_DEFAULT:D3DPOOL_MANAGED):meshBuffers[id].ib&&meshBuffers[id].ibPool==(payload->pages->defaultPool()?D3DPOOL_DEFAULT:D3DPOOL_MANAGED));},missVertexBytes,missIndexBytes))
                 return streamingFailure(D3DERR_INVALIDCALL,"page staging","invalid growth accounting");
-            auto budget=payload->pages->temporary?NorthlightGeometryMemory::coldUploadBudget(largestTexture):NorthlightGeometryMemory::uploadBudget(missVertexBytes,missIndexBytes,plan.textureBytes,largestTexture);
+            auto budget=payload->pages->temporary?NorthlightGeometryMemory::coldUploadBudget(largestTexture):NorthlightGeometryMemory::uploadBudget(payload->pages->defaultPool()?0:missVertexBytes,payload->pages->defaultPool()?0:missIndexBytes,payload->pages->defaultPool()?0:shadowTextureFormat.bytes(active->meshPlan->textureBytes),payload->pages->defaultPool()?0:largestTexture);
             if(payload->pages->temporary)budget=NorthlightGeometryMemory::replayBudget(budget,pressureReplayAllocation());
             if(!payload->pages->temporary)budget.largest=2*std::max<uint64_t>(missVertexBytes||missIndexBytes?NorthlightWorldMeshPages::PageVertexByteLimit:0,largestTexture)+NorthlightGeometryMemory::ChunkMargin;
             NorthlightGeometryMemory::Sample memory;bool exact=true;
@@ -2704,7 +2731,7 @@ private:
             auto& next=*pendingMesh;next.textures.reserve(payload->materials.size());
             // The upload cursor runs over the miss list only; its page index maps to a payload page and a claimed buffer in perform().
             std::vector<NorthlightWorldMeshPages::PageBytes> sizes;sizes.reserve(staged.upload.size());
-            for(uint32_t pageIndex:staged.upload){const auto& page=payload->pages->pages[pageIndex];sizes.push_back({page.key.vertexBytes,page.key.indexBytes,payload->pages->temporary?sizeof(NorthlightGI::WorldVertex):0});}
+            for(uint32_t pageIndex:staged.upload){const auto& page=payload->pages->pages[pageIndex];sizes.push_back({page.key.vertexBytes,page.key.indexBytes,payload->pages->defaultPool()?sizeof(NorthlightGI::WorldVertex):0});}
             if(!next.upload.begin(std::move(sizes)))return streamingFailure(D3DERR_INVALIDCALL,"page sizes");
         }
         if(pendingMesh){frameStaging=true; /* 0.3.176 (D3) */
@@ -2728,7 +2755,7 @@ private:
                 const auto& entry=meshStore.entries()[id];
                 if(step==S::CreateVertices||step==S::CreateIndices){
                     const bool vb=step==S::CreateVertices;
-                    const D3DPOOL pool=payload.pages->temporary?D3DPOOL_DEFAULT:D3DPOOL_MANAGED;
+                    const D3DPOOL pool=payload.pages->defaultPool()?D3DPOOL_DEFAULT:D3DPOOL_MANAGED;
                     const size_t gpuBytes=vb&&pool==D3DPOOL_DEFAULT?bytes/sizeof(NorthlightGI::WorldVertex)*sizeof(StaticShadow::Vertex):bytes;
                     const bool reuse=vb?page.vb&&page.vbPool==pool&&entry.vbCapacity>=gpuBytes:page.ib&&page.ibPool==pool&&entry.ibCapacity>=gpuBytes;
                     if(reuse)return true;
@@ -2773,8 +2800,14 @@ private:
             unsigned count=0;
             while(canStage()&&budget&&next.material<payload.materials.size()&&count<16){
                 const auto& m=payload.materials[next.material];
-                const bool white=m.width==1&&m.height==1&&m.bgra.size()==4&&
-                    m.bgra[0]==255&&m.bgra[1]==255&&m.bgra[2]==255&&m.bgra[3]==255;
+                if(m.textureOwner!=UINT32_MAX){
+                    if(m.textureOwner>=next.textures.size()||!next.textures[m.textureOwner])return streamingFailure(E_FAIL,"staged material owner");
+                    auto* texture=next.textures[m.textureOwner];texture->AddRef();next.textures.push_back(texture);
+                    ++next.material;++count;++next.textureReuses;continue;
+                }
+                const auto& pixels=m.pixels();
+                const bool white=m.width==1&&m.height==1&&pixels.size()==4&&
+                    pixels[0]==255&&pixels[1]==255&&pixels[2]==255&&pixels[3]==255;
                 if(white&&next.white){next.white->AddRef();next.textures.push_back(next.white);++next.material;++count;continue;}
                 if(!next.partialTexture){
                     if(auto* reused=reusableMaterial(m,next.material)){
@@ -2783,25 +2816,35 @@ private:
                         if(white){next.white=reused;reused->AddRef();}
                         continue;
                     }
-                    if(payload.pages->temporary&&!admitsGrowth("pressure-material",m.pixelBytes(),nullptr,true))return streamingFailure(E_OUTOFMEMORY,"pressure-material-admission");
-                    HRESULT hr=d->CreateTexture(m.width,m.height,1,0,D3DFMT_A8R8G8B8,D3DPOOL_MANAGED,&next.partialTexture,nullptr);
+                    if(payload.pages->temporary&&!admitsGrowth("pressure-material",shadowTextureFormat.bytes(m.pixelBytes()),nullptr,true))return streamingFailure(E_OUTOFMEMORY,"pressure-material-admission");
+                    HRESULT hr=d->CreateTexture(m.width,m.height,1,0,shadowTextureFormat.value,payload.pages->defaultPool()?D3DPOOL_DEFAULT:D3DPOOL_MANAGED,&next.partialTexture,nullptr);
                     if(FAILED(hr)||!next.partialTexture)return streamingFailure(FAILED(hr)?hr:E_FAIL,"staged material");
+                    if(payload.pages->defaultPool())hr=d->CreateTexture(m.width,m.height,1,0,shadowTextureFormat.value,D3DPOOL_SYSTEMMEM,&next.partialStaging,nullptr);
+                    else{next.partialStaging=next.partialTexture;next.partialStaging->AddRef();}
+                    if(FAILED(hr)||!next.partialStaging)return streamingFailure(FAILED(hr)?hr:E_FAIL,"material staging");
                     next.materialRow=0;
                 }
                 if(!canStage())break;
-                const size_t rowBytes=size_t(m.width)*4;
+                const size_t sourceRowBytes=size_t(m.width)*4,rowBytes=size_t(m.width)*shadowTextureFormat.stride;
                 if(rowBytes>budget)break;
                 const UINT rows=UINT(std::min({size_t(m.height)-next.materialRow,budget/rowBytes,size_t(64)}));
                 RECT rect={0,LONG(next.materialRow),LONG(m.width),LONG(next.materialRow+rows)};
-                D3DLOCKED_RECT lock={};HRESULT hr=next.partialTexture->LockRect(0,&lock,&rect,0);
+                D3DLOCKED_RECT lock={};HRESULT hr=next.partialStaging->LockRect(0,&lock,&rect,0);
                 if(FAILED(hr))return streamingFailure(hr,"staged material lock");
-                if(!lock.pBits||lock.Pitch<INT(rowBytes)){next.partialTexture->UnlockRect(0);return streamingFailure(E_FAIL,"staged material layout");}
+                if(!lock.pBits||lock.Pitch<INT(rowBytes)){next.partialStaging->UnlockRect(0);return streamingFailure(E_FAIL,"staged material layout");}
                 bool copied=true;
-                for(UINT y=0;y<rows&&copied;++y)copied=payload.pages->copyMaterial(m,(next.materialRow+y)*rowBytes,rowBytes,(char*)lock.pBits+y*lock.Pitch);
-                hr=next.partialTexture->UnlockRect(0);if(!copied)return streamingFailure(E_FAIL,"staged material temporary copy");if(FAILED(hr))return streamingFailure(hr,"staged material unlock");
+                std::array<uint8_t,4096*4> sourceRow;
+                if(sourceRowBytes>sourceRow.size()){next.partialStaging->UnlockRect(0);return streamingFailure(E_FAIL,"material width");}
+                for(UINT y=0;y<rows&&copied;++y){
+                    copied=payload.pages->copyMaterial(m,(next.materialRow+y)*sourceRowBytes,sourceRowBytes,sourceRow.data());
+                    if(copied)for(UINT x=0;x<m.width;++x)NorthlightShadowAlphaTexture::write((char*)lock.pBits+y*lock.Pitch,x,shadowTextureFormat.stride,sourceRow[x*4+3]);
+                }
+                hr=next.partialStaging->UnlockRect(0);if(!copied)return streamingFailure(E_FAIL,"staged material temporary copy");if(FAILED(hr))return streamingFailure(hr,"staged material unlock");
                 next.materialRow+=rows;budget-=rows*rowBytes;streamBudget.consume(rows*rowBytes);
                 if(next.materialRow==m.height){
-                    auto* t=next.partialTexture;t->PreLoad();next.partialTexture=nullptr;next.textures.push_back(t);++next.material;++count;++next.textureUploads;
+                    if(next.partialStaging!=next.partialTexture&&FAILED(hr=d->UpdateTexture(next.partialStaging,next.partialTexture)))return streamingFailure(hr,"material upload");
+                    if(next.partialStaging==next.partialTexture)next.partialTexture->PreLoad();
+                    drop(next.partialStaging);auto* t=next.partialTexture;next.partialTexture=nullptr;next.textures.push_back(t);++next.material;++count;++next.textureUploads;
                     if(white){next.white=t;t->AddRef();}
                 }
             }
@@ -2828,15 +2871,15 @@ private:
                 size_t elidedAtCommit=0;for(const auto& page:payload.pages->pages)elidedAtCommit+=page.elided;
                 for(size_t i=0;i<next.payload->materials.size();++i){
                     auto& material=next.payload->materials[i];
-                    if(payload.pages->temporary||material.bgra.capacity()>MaterialReuseBytes-retainedPixels)continue;
-                    retainedPixels+=material.bgra.capacity();(*committedPixels)[i]=std::move(material);
+                    if(payload.pages->temporary||material.textureOwner!=UINT32_MAX||material.retainedPixelBytes()>MaterialReuseBytes-retainedPixels)continue;
+                    retainedPixels+=size_t(material.retainedPixelBytes());(*committedPixels)[i]=std::move(material);
                 }
                 auto previousPixels=std::move(uploadedMaterialPixels);
                 const size_t previousPixelBytes=materialReuseBytes;
                 const bool coldStart=meshStore.table().empty();clearMesh();const auto stagedPages=meshStore.commit(); /* 0.3.216: atomic switch of the active page table; replaced buffers go idle */
                 for(auto id:meshStore.table())if(id<meshBuffers.size())meshBuffers[id].vbFresh=meshBuffers[id].ibFresh=false;
                 {const uint32_t first=meshStore.bufferOf(0);vertices=first<meshBuffers.size()?meshBuffers[first].vb:nullptr;indices=first<meshBuffers.size()?meshBuffers[first].ib:nullptr;}
-                materials=std::move(next.textures);uploadedTextureBytes=size_t(plan.textureBytes);vertexCount=plan.vertexCount;
+                materials=std::move(next.textures);uploadedTextureBytes=size_t(shadowTextureFormat.bytes(plan.textureBytes));vertexCount=plan.vertexCount;
                 uploadedMaterialPixels=std::move(committedPixels);materialReuseBytes=retainedPixels;
                 if(previousPixels&&!NorthlightStreaming::cpuRetirement().retire(previousPixels,previousPixelBytes+previousPixels->capacity()*sizeof(NorthlightWorldMesh::MaterialUpload)))previousPixels.reset();
                 uploadedLocalShadowRecords=plan.localShadowRecords;
@@ -2849,12 +2892,12 @@ private:
                 uploaded=next.bvh;uploadedMeshPlan=next.plan;uploadedMap=std::move(committedMap);
                 publishResidentPages(uploadedMap);
                 ++meshGeneration;rebuildTerrainLists();
-                // MANAGED generations release the CPU payload. DEFAULT pressure pages
-                // retain their small file-backed payload and texels for Reset recovery.
+                // Resident staging is freed after publication for both pools.
+                // File-backed pressure generations retain their small Reset source.
                 const uint64_t payloadBytes=payload.pages->temporary?0:plan.payload.discard();const uint64_t releasedBytes=payloadBytes>retainedPixels?payloadBytes-retainedPixels:0;
-                if(NorthlightDiagnostics::enabled())logf("WORLD staged mesh committed: vertices=%u triangles=%zu materials=%zu textureUploads=%u textureReuses=%u retainedMaterialMiB=%.2f stagingFrames=%u stagingMs=%lu releasedPayloadMiB=%.2f pages=%zu reusedPages=%zu uploadedPages=%zu reusedMiB=%.2f uploadedMiB=%.2f elidedPages=%zu",vertexCount,size_t(plan.triangleCount),materials.size(),next.textureUploads,next.textureReuses,double(materialReuseBytes)/1048576,next.frames,(unsigned long)(GetTickCount()-next.started),double(releasedBytes)/1048576,
-                    stagedPages.pages,stagedPages.reusedPages,stagedPages.uploadedPages,double(stagedPages.reusedBytes)/1048576,double(stagedPages.uploadedBytes)/1048576,elidedAtCommit);
-                retirePendingCpu();pendingMesh.reset();meshRetry.clear();resetReplaySource.reset();resetReplayPlan.reset();resetReplayScoped=false;
+                if(NorthlightDiagnostics::enabled())logf("WORLD staged mesh committed: vertices=%u triangles=%zu materials=%zu textureUploads=%u textureReuses=%u retainedMaterialMiB=%.2f stagingFrames=%u stagingMs=%lu releasedPayloadMiB=%.2f pages=%zu reusedPages=%zu uploadedPages=%zu reusedMiB=%.2f uploadedMiB=%.2f elidedPages=%zu deviceLocal=%u fileStaging=%u",vertexCount,size_t(plan.triangleCount),materials.size(),next.textureUploads,next.textureReuses,double(materialReuseBytes)/1048576,next.frames,(unsigned long)(GetTickCount()-next.started),double(releasedBytes)/1048576,
+                    stagedPages.pages,stagedPages.reusedPages,stagedPages.uploadedPages,double(stagedPages.reusedBytes)/1048576,double(stagedPages.uploadedBytes)/1048576,elidedAtCommit,unsigned(payload.pages->defaultPool()),unsigned(bool(payload.pages->temporary)));
+                retirePendingCpu();pendingMesh.reset();meshRetry.clear();payloadRebuildAsked.reset();payloadRebuildTick=0;resetReplaySource.reset();resetReplayPlan.reset();resetReplayScoped=false;
                 trimMeshPoolAfterCommit(coldStart?0:stagedPages.uploadedCapacity); /* a cold start held no buffer idle */
                 traceUpload("commit-complete");
             }
@@ -3160,16 +3203,20 @@ public:
         const bool activeLost=std::any_of(meshStore.table().begin(),meshStore.table().end(),hasDefault);
         // Cancel claims before releasing DEFAULT resources. An active MANAGED
         // generation survives idle DEFAULT cleanup; active DEFAULT pages replay
-        // from the complete file-backed payload retained by their plan.
+        // from a retained pressure payload, or rebuild on the worker after Reset.
         meshStore.cancel();retirePendingCpu();pendingMesh.reset();
         if(activeLost){
-            resetReplayScoped=active&&active->bvh==uploaded.lock()&&active->meshPlan==uploadedMeshPlan.lock();
+            resetReplayScoped=active&&active->bvh==uploaded.lock()&&active->meshPlan==uploadedMeshPlan.lock()&&active->meshPlan->payload.live();
             if(resetReplayScoped){resetReplaySource=active->bvh;resetReplayPlan=active->meshPlan;}else{resetReplaySource.reset();resetReplayPlan.reset();}
-            keepPressureProbes=true;resetReplayPending=true;clearMesh(resetReplayScoped);releaseMeshPool();uploadedMap.clear();
+            resetReplayPending=resetReplayScoped;clearMesh();releaseMeshPool();uploadedMap.clear();
         }
         else trimMeshPools();
     }
-    void reset(bool preserveCaptureSources=false){auroraSource.reset();auroraSourceMap.clear();drop(resetReplayQuery);resetReplayFence.drop();releaseDefaultMesh();weatherShelter.reset();weatherShelterUnavailable=false;lightAttachments.reset();smallShadowBones.clear();equipmentLights.reset();equipmentMap.clear();particleLights.reset();particleMap.clear();shadowsComposited=false;pivotValid=false;pivotDistance=12.f;pivotCorrection.reset();pivotSelfCaptured=false;cascadeAnchor.reset();endFrame();replaySnapshots.clearIndexCache(nullptr,nullptr,preserveCaptureSources);actorJobComplete.reset();actorJobSerial_=0;actorSceneMap_.clear();lastActorCapture=0;terrainBoundsCache.clearPersistent();previousCacheHits=0;freeReplays.clear();pooledSnapshotBytes=0;valid=false;failed=false;releaseGPU(true); /* task 42: the committed MANAGED mesh survives any Reset, failed or not */}
+    // MANAGED probe atlases survive Reset even after resident upload pages
+    // were discarded, or a second Reset interrupts their reconstruction.
+    // Reuse storage, invalidate history/serial and rewrite current probe data.
+    // The new mesh plan still uses the normal 256 MiB admission reserve.
+    void reset(bool preserveCaptureSources=false){keepPressureProbes=true;auroraSource.reset();auroraSourceMap.clear();drop(resetReplayQuery);resetReplayFence.drop();releaseDefaultMesh();weatherShelter.reset();weatherShelterUnavailable=false;lightAttachments.reset();smallShadowBones.clear();equipmentLights.reset();equipmentMap.clear();particleLights.reset();particleMap.clear();shadowsComposited=false;pivotValid=false;pivotDistance=12.f;pivotCorrection.reset();pivotSelfCaptured=false;cascadeAnchor.reset();endFrame();replaySnapshots.clearIndexCache(nullptr,nullptr,preserveCaptureSources);actorJobComplete.reset();actorJobSerial_=0;actorSceneMap_.clear();lastActorCapture=0;terrainBoundsCache.clearPersistent();previousCacheHits=0;freeReplays.clear();pooledSnapshotBytes=0;valid=false;failed=false;releaseGPU(true); /* task 42: the committed MANAGED mesh survives any Reset, failed or not */}
     // 0.3.176 (U0/S0): the sample-frame lines of the selection and upload spans (and the RIGID event
     // lines) are formatted where they are today and written here, from endFrame, so no log write (a
     // vfprintf and fflush under the log lock) is inside a bucketed span. The text is the same.
@@ -3374,10 +3421,10 @@ public:
         sample.managed=inventory.pools[D3DPOOL_MANAGED];sample.defaults=inventory.pools[D3DPOOL_DEFAULT];sample.system=inventory.pools[D3DPOOL_SYSTEMMEM];
         sample.geometry=inventory.groups[Geometry];sample.probes=inventory.groups[ProbeTextures];sample.shadows=inventory.groups[ShadowMaps];sample.post=inventory.groups[PostTargets];sample.noise=inventory.groups[Noise];sample.dynamic=inventory.groups[Dynamic];
         sample.retiredMaterials=retiredMaterials.bytes();sample.materialReuseCpu=materialReuseBytes;sample.unknown=inventory.unknown;sample.complete=inventory.complete();
-        sample.staticManagedLedger=staticCasters.stats().residentBytes;sample.replayDefaultLedger=gpuScene->native.bytes();sample.liveTerrainDefault=liveTerrainGPU.bytes();
+        sample.staticDefaultLedger=staticCasters.stats().residentBytes;sample.replayDefaultLedger=gpuScene->native.bytes();sample.liveTerrainDefault=liveTerrainGPU.bytes();
         sample.captureCpu=NorthlightSourceIdentity::cpuLiveBytes.load(std::memory_order_relaxed);sample.captureIdentity=NorthlightSourceIdentity::identityLiveBytes.load(std::memory_order_relaxed);NorthlightMemoryProfile::store().gpu(sample);
-        logf("WORLD MEMORY cache-ledgers staticManagedMiB=%.3f replayDefaultMiB=%.3f liveTerrainDefaultMiB=%.3f captureCpuUniqueMiB=%.3f captureIdentityUniqueMiB=%.3f extraGpuPoolsExcludedFromWorldInventory=1 backingAndResidencyNotMeasured=1",
-             double(sample.staticManagedLedger)/1048576,double(sample.replayDefaultLedger)/1048576,double(sample.liveTerrainDefault)/1048576,double(sample.captureCpu)/1048576,double(sample.captureIdentity)/1048576);
+        logf("WORLD MEMORY cache-ledgers staticDefaultMiB=%.3f replayDefaultMiB=%.3f liveTerrainDefaultMiB=%.3f captureCpuUniqueMiB=%.3f captureIdentityUniqueMiB=%.3f extraGpuPoolsExcludedFromWorldInventory=1 backingAndResidencyNotMeasured=1",
+             double(sample.staticDefaultLedger)/1048576,double(sample.replayDefaultLedger)/1048576,double(sample.liveTerrainDefault)/1048576,double(sample.captureCpu)/1048576,double(sample.captureIdentity)/1048576);
         float layer=0,aboveGround=0;bool inside=false;
         if(uploadedFogField){const auto& field=*uploadedFogField;const float x=(context.camera[0]-field.originX)/NorthlightRegionalFog::Spacing,y=(context.camera[1]-field.originY)/NorthlightRegionalFog::Spacing;
             inside=x>=0&&y>=0&&x<NorthlightRegionalFog::N-1&&y<NorthlightRegionalFog::N-1;

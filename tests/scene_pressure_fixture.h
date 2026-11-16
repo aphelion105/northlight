@@ -18,7 +18,7 @@ struct Result {
     std::shared_ptr<NorthlightWorldMesh::WorldMeshUploadPlan> plan;
 };
 inline Result build(const std::string& root,const NorthlightGI::AllocationAdmission& admit={},
-                    NorthlightGI::Vec3 center={5139.84f,-56.93f,380.31f},const std::function<void(const char*)>& profile={},const std::string& map="Northrend"){
+                    NorthlightGI::Vec3 center={5139.84f,-56.93f,380.31f},const std::function<void(const char*)>& profile={},const std::string& map="Northrend",bool spooled=true,bool deviceLocal=false){
     using NorthlightGI::Vec3;
     constexpr double zero=17066.666666666666,tile=533.3333333333333;
     constexpr float radius=928;
@@ -44,9 +44,9 @@ inline Result build(const std::string& root,const NorthlightGI::AllocationAdmiss
     const auto instance=[center](Vec3 low,Vec3 high){return NorthlightRegionalShadow::selected(center,low,high);};
     const auto chunk=[center](Vec3 low,Vec3 high){return NorthlightRegionalShadow::selectedChunk(center,low,high);};
     check(NorthlightGI::loadInstancedScenes(farFiles,models,center-Vec3(radius,radius,radius),center+Vec3(radius,radius,radius),
-          terrain,error,1,admit,instance,chunk,&hint,{},true,true,true),"terrain");
-    check(NorthlightShadowTerrain::buildConsuming(result.bvh->scene(),terrain,center,*result.plan,error,admit,radius,{},result.bvh.get(),true),"shadow plan");
-    auto pages=std::make_shared<NorthlightWorldMeshPages::Plan>();NorthlightWorldMeshPages::Options options;options.spooled=true;
+          terrain,error,1,admit,instance,chunk,&hint,{},true,true,spooled),"terrain");
+    check(NorthlightShadowTerrain::buildConsuming(result.bvh->scene(),terrain,center,*result.plan,error,admit,radius,{},result.bvh.get(),spooled),"shadow plan");
+    auto pages=std::make_shared<NorthlightWorldMeshPages::Plan>();NorthlightWorldMeshPages::Options options;options.spooled=spooled;options.deviceLocal=deviceLocal;
     check(NorthlightWorldMeshPages::build(*result.plan,*pages,error,admit,options),"pages");
     check(NorthlightWorldMeshPages::seal(*result.plan,pages,error,admit),"seal");
     if(const char* invalid=NorthlightWorldMeshPages::validateSealed(*result.plan))throw std::runtime_error(invalid);

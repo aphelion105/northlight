@@ -24,6 +24,28 @@ static void chunkTriangle(WorldScene& s,int x,int y,uint32_t material){
     float mx=float(origin-y*step),my=float(origin-x*step);
     triangle(s,{mx-4,my-4,0},{mx-8,my-4,0},{mx-4,my-8,0},material);
 }
+static void testSharedCutoutPixels(){
+    WorldScene scene;auto pixels=std::make_shared<const std::vector<uint8_t>>(512*512*4,127);
+    for(unsigned i=0;i<900;++i){WorldMaterial m;m.width=m.height=512;m.sharedTexels={pixels,pixels->data()};m.sharedTexelBytes=pixels->size();
+        m.alphaCutoff=.1f+.001f*i;m.lampSourceId=i+1;
+        if(i==899){m.width=256;m.height=1024;} // Same bytes, different sampling shape.
+        scene.materials.push_back(m);triangle(scene,{0,0,0},{1,0,0},{0,1,0},i);
+    }
+    uint64_t prepared=0;WorldMeshUploadPlan plan;std::string error;
+    auto admission=[&](uint64_t bytes){if(bytes==pixels->size()){prepared+=bytes;return prepared<=2*pixels->size();}return true;};
+    assert(buildUploadPlan(scene,plan,error,admission));
+    assert(prepared==2*pixels->size()&&plan.textureBytes==prepared);
+    assert(plan.materials[0].textureOwner==UINT32_MAX&&plan.materials[899].textureOwner==UINT32_MAX);
+    for(unsigned i=0;i<899;++i){const auto& m=plan.materials[i];
+        assert(m.pixels()==*pixels&&m.alphaCutoff==scene.materials[i].alphaCutoff);
+        assert(m.sharedBgra==plan.materials[0].sharedBgra);
+        if(i)assert(m.textureOwner==0&&m.retainedPixelBytes()==0);
+    }
+    for(const auto& batch:plan.batches)assert(batch.lampSourceId==batch.material+1);
+    assert(plan.cpuBytes()<3*1024*1024);
+    auto held=plan.materials[1].sharedBgra;plan={};scene={};assert(*held==*pixels);
+    std::puts("PASS 900 cutout materials: 2 MiB upload storage, exact dimensions, independent cutoffs/owners and shared lifetime");
+}
 static void coherence(const WorldScene& s,const WorldMeshUploadPlan& p){
     assert(p.source==&s&&p.vertexCount==s.vertices.size()&&p.triangleCount==s.triangles.size());
     assert(p.vertexBytes==s.vertices.size()*sizeof(WorldVertex));assert(p.indexBytes==p.indices.size()*4);
@@ -47,7 +69,7 @@ static void coherence(const WorldScene& s,const WorldMeshUploadPlan& p){
         next+=size_t(b.count)*3;
     }
     assert(next==p.indices.size()&&original==repacked);
-    uint64_t bytes=0;for(const auto&m:p.materials){assert(uint64_t(m.width)*m.height*4==m.bgra.size());bytes+=m.bgra.size();}
+    uint64_t bytes=0;for(const auto&m:p.materials){assert(uint64_t(m.width)*m.height*4==m.pixels().size());if(m.textureOwner==UINT32_MAX)bytes+=m.pixelBytes();}
     assert(bytes==p.textureBytes);
 }
 static void testShadowBounds(){
@@ -105,10 +127,10 @@ static void testGrouping(){
         if(b.terrain&&b.chunkX==-1){assert(b.chunkY==-1&&b.count==1);++crossing;}
     }
     assert(repeated==1&&crossing==1&&p.unmaskableTerrainTriangles==1);
-    assert((p.materials[1].bgra==std::vector<uint8_t>{3,2,1,4,7,6,5,8}));
+    assert((p.materials[1].pixels()==std::vector<uint8_t>{3,2,1,4,7,6,5,8}));
     assert(p.materials[1].width==2&&p.materials[1].height==1);
     assert(p.materials[3].width==1&&p.materials[3].height==1);
-    assert((p.materials[3].bgra==std::vector<uint8_t>{255,255,255,255}));
+    assert((p.materials[3].pixels()==std::vector<uint8_t>{255,255,255,255}));
     assert(p.materials[0].terrain&&!p.materials[1].terrain);
     auto first=p.indices;WorldMeshUploadPlan again;assert(buildUploadPlan(s,again,error));assert(first==again.indices);
     std::puts("PASS exact terrain chunk batches, unmaskable crossings, material-preserving index packing and opaque/cutout texture preparation");
@@ -139,11 +161,11 @@ static void testTextureSource(){
     assert(buildUploadPlan(full,a,error));assert(buildUploadPlan(meta,b,error,{},&textures));
     assert(a.indices==b.indices&&a.batches.size()==b.batches.size()&&a.materials.size()==b.materials.size());
     for(size_t i=0;i<a.materials.size();++i)
-        assert(a.materials[i].bgra==b.materials[i].bgra&&a.materials[i].width==b.materials[i].width&&a.materials[i].height==b.materials[i].height&&a.materials[i].alphaCutoff==b.materials[i].alphaCutoff&&a.materials[i].terrain==b.materials[i].terrain);
+        assert(a.materials[i].pixels()==b.materials[i].pixels()&&a.materials[i].width==b.materials[i].width&&a.materials[i].height==b.materials[i].height&&a.materials[i].alphaCutoff==b.materials[i].alphaCutoff&&a.materials[i].terrain==b.materials[i].terrain);
     assert(a.localShadowRecords->size()==b.localShadowRecords->size());
     for(size_t i=0;i<a.localShadowRecords->size();++i)assert((*a.localShadowRecords)[i].content==(*b.localShadowRecords)[i].content);
     // Without the source the metadata-only scene has a cutout material with no texels: width 0, so it is an opaque 1x1.
-    WorldMeshUploadPlan c;assert(buildUploadPlan(meta,c,error));assert((c.materials[0].bgra==std::vector<uint8_t>{255,255,255,255}));
+    WorldMeshUploadPlan c;assert(buildUploadPlan(meta,c,error));assert((c.materials[0].pixels()==std::vector<uint8_t>{255,255,255,255}));
     // A source longer than the scene's materials, or with inconsistent dimensions, is rejected.
     std::vector<WorldMaterial> longer(4);assert(!buildUploadPlan(meta,c,error,{},&longer));
     textures[0].width=3;assert(!buildUploadPlan(meta,c,error,{},&textures));
@@ -219,4 +241,4 @@ static void testSpatialOrder(){
     assert(equalBatches+1>=spatial.batches.size()-1);
     std::printf("PASS spatial batch order: %zu -> %zu batches (terrain %zu unchanged), cell-major, one extra triangle changes one batch\n",old.batches.size(),spatial.batches.size(),spatialTerrain);
 }
-int main(int argc,char**argv){testGrouping();testFailure();testTextureSource();testSharedBatchFlags();testShadowBounds();testSpatialOrder();if(argc>2)testActual(argv[1],argv[2]);std::puts("All world mesh upload plan tests passed");}
+int main(int argc,char**argv){testSharedCutoutPixels();testGrouping();testFailure();testTextureSource();testSharedBatchFlags();testShadowBounds();testSpatialOrder();if(argc>2)testActual(argv[1],argv[2]);std::puts("All world mesh upload plan tests passed");}

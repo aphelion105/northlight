@@ -2,6 +2,7 @@
 #include "auto_parallax_patch.h"
 #include "shared_pom.h"
 #include "native_local_pom.h"
+#include "material_stencil.h"
 
 class NorthlightAutoParallax {
     IDirect3DDevice9* d;NorthlightAutoNormalCache& normals;
@@ -64,7 +65,7 @@ public:
         NorthlightMaterialProfile::Scope timing(profile,NorthlightMaterialProfile::PomSetup);
         const bool dual=material==6;State saved(d);if(!saved.saveShaders(boundVertex,boundPixel))return nativeDraw();
         DWORD z=0,zwrite=0,zfunc=0,stencil=0;
-        if(FAILED(d->GetRenderState(D3DRS_ZENABLE,&z))||FAILED(d->GetRenderState(D3DRS_ZWRITEENABLE,&zwrite))||FAILED(d->GetRenderState(D3DRS_ZFUNC,&zfunc))||FAILED(d->GetRenderState(D3DRS_STENCILENABLE,&stencil))||!z||zfunc==D3DCMP_ALWAYS||zfunc==D3DCMP_NEVER||stencil||(!zwrite&&material>2))return nativeDraw();
+        if(FAILED(d->GetRenderState(D3DRS_ZENABLE,&z))||FAILED(d->GetRenderState(D3DRS_ZWRITEENABLE,&zwrite))||FAILED(d->GetRenderState(D3DRS_ZFUNC,&zfunc))||FAILED(d->GetRenderState(D3DRS_STENCILENABLE,&stencil))||!z||zfunc==D3DCMP_ALWAYS||zfunc==D3DCMP_NEVER||!northlightMaterialStencilAllows(d,stencil)||(!zwrite&&material>2))return nativeDraw();
         IDirect3DVertexShader9* vertex=forwarded;
         if(saved.vertex!=knownVertex){auto it=vertices.find(saved.vertex);if(it==vertices.end()){
             if(vertices.size()>=256)return nativeDraw();UINT size=0;std::vector<DWORD> code;std::vector<std::uint32_t> patched;

@@ -41,6 +41,56 @@ NorthlightLocalShadowSignature::Digest materialIdentity(const NorthlightGI::Worl
     return hash.finish();
 }
 
+// Material slots encode independent cutoffs/owners, not independent images.
+// Share exact cutout pixels through preparation, spooling and GPU upload.
+template<class Texel,class Allowed>
+bool prepareMaterials(const std::vector<NorthlightGI::WorldMaterial>& materials,Texel texel,
+                      bool spooled,WorldMeshUploadPlan& next,Allowed allowed){
+    next.materials.resize(materials.size());
+    std::unordered_map<NorthlightMeshPageKey::Key,std::vector<uint32_t>,NorthlightMeshPageKey::KeyHash> owners;
+    for(size_t i=0;i<materials.size();++i){
+        const auto& meta=materials[i];const auto& source=texel(i);auto& dest=next.materials[i];
+        dest.alphaCutoff=meta.alphaCutoff;dest.terrain=meta.terrain;
+        if(meta.alphaCutoff<=0||source.texels().empty())dest.bgra={255,255,255,255};
+        else{
+            dest.width=source.width;dest.height=source.height;
+            NorthlightMeshPageKey::Hasher identity;identity.bytes(source.texels().data(),source.texels().size());
+            auto& candidates=owners[identity.finish(dest.width,dest.height)];
+            for(uint32_t index:candidates)if(texel(index).texels()==source.texels()){
+                auto& owner=next.materials[index];dest.textureOwner=index;dest.textureIdentity=owner.textureIdentity;
+                dest.spooled=owner.spooled;dest.fileOffset=owner.fileOffset;
+                if(!owner.spooled){
+                    if(!owner.sharedBgra)owner.sharedBgra=std::make_shared<const std::vector<uint8_t>>(std::move(owner.bgra));
+                    dest.sharedBgra=owner.sharedBgra;
+                }
+                break;
+            }
+            if(dest.textureOwner!=UINT32_MAX)continue;
+            candidates.push_back(uint32_t(i));
+            if(spooled){
+                if(!next.temporary)next.temporary=std::make_shared<NorthlightGI::TemporaryGeometryFile>();
+                dest.spooled=true;dest.fileOffset=next.temporary->size();
+                NorthlightLocalShadowSignature::Hasher hash;hash.word(dest.width);hash.word(dest.height);
+                std::array<uint8_t,65536> converted;
+                for(size_t offset=0;offset<source.texels().size();){
+                    const auto bytes=std::min(converted.size(),source.texels().size()-offset);
+                    NorthlightMaterialBytes::swapRedBlue(source.texels().data()+offset,converted.data(),bytes);
+                    for(size_t p=0;p<bytes;p+=4){uint32_t pixel;std::memcpy(&pixel,converted.data()+p,4);hash.word(pixel);}
+                    next.temporary->append(converted.data(),bytes);offset+=bytes;
+                }
+                dest.textureIdentity=hash.finish();next.textureBytes+=dest.pixelBytes();continue;
+            }
+            if(!allowed(source.texels().size()))return false;
+            dest.bgra.resize(source.texels().size());
+            NorthlightMaterialBytes::swapRedBlue(source.texels().data(),dest.bgra.data(),source.texels().size());
+        }
+        NorthlightLocalShadowSignature::Hasher hash;hash.word(dest.width);hash.word(dest.height);
+        for(size_t p=0;p<dest.bgra.size();p+=4){uint32_t pixel;std::memcpy(&pixel,dest.bgra.data()+p,4);hash.word(pixel);}
+        dest.textureIdentity=hash.finish();next.textureBytes+=dest.pixelBytes();
+    }
+    return true;
+}
+
 bool terrainChunk(Vec3 a,Vec3 b,Vec3 c,int& x,int& y){
     // Identical grid origin, step and tolerance to terrain_capture_bounds.h.
     constexpr double origin=17066.666666666666,step=100.0/3.0,tolerance=.03;
@@ -199,34 +249,7 @@ template<class Scene> static bool buildCore(const Scene& scene,WorldMeshUploadPl
         // Per-triangle sort keys are dead after scatter. In a city they can
         // otherwise overlap another ~16 MiB of cutout upload textures.
         if constexpr(std::is_same_v<Scene,NorthlightGI::WorldScene>)std::vector<uint32_t>().swap(keys);else keys=ChunkedBuffer<uint32_t>{};
-        if(!geometryOnly){next.materials.resize(scene.materials.size());
-        for(size_t i=0;i<scene.materials.size();++i){
-            const auto& meta=scene.materials[i];const auto& source=texel(i);auto& dest=next.materials[i];
-            dest.alphaCutoff=meta.alphaCutoff;dest.terrain=meta.terrain;
-            if(meta.alphaCutoff<=0||source.texels().empty())dest.bgra={255,255,255,255};
-            else{
-                dest.width=source.width;dest.height=source.height;
-                if(scene.vertices.spooled()){
-                    if(!next.temporary)next.temporary=std::make_shared<NorthlightGI::TemporaryGeometryFile>();
-                    dest.spooled=true;dest.fileOffset=next.temporary->size();
-                    NorthlightLocalShadowSignature::Hasher hash;hash.word(dest.width);hash.word(dest.height);
-                    std::array<uint8_t,65536> converted;
-                    for(size_t offset=0;offset<source.texels().size();){const auto bytes=std::min(converted.size(),source.texels().size()-offset);
-                        NorthlightMaterialBytes::swapRedBlue(source.texels().data()+offset,converted.data(),bytes);
-                        for(size_t p=0;p<bytes;p+=4){uint32_t pixel;std::memcpy(&pixel,converted.data()+p,4);hash.word(pixel);}
-                        next.temporary->append(converted.data(),bytes);offset+=bytes;
-                    }
-                    dest.textureIdentity=hash.finish();next.textureBytes+=dest.pixelBytes();continue;
-                }
-                if(!allowed(source.texels().size()))return false;dest.bgra.resize(source.texels().size());
-                NorthlightMaterialBytes::swapRedBlue(source.texels().data(),dest.bgra.data(),source.texels().size());
-            }
-            NorthlightLocalShadowSignature::Hasher textureHash;
-            textureHash.word(dest.width);textureHash.word(dest.height);
-            for(size_t p=0;p<dest.bgra.size();p+=4){uint32_t pixel;std::memcpy(&pixel,dest.bgra.data()+p,4);textureHash.word(pixel);}
-            dest.textureIdentity=textureHash.finish();
-            next.textureBytes+=dest.bgra.size();
-        }}
+        if(!geometryOnly&&!prepareMaterials(scene.materials,texel,scene.vertices.spooled(),next,allowed))return false;
         if(next.temporary)next.temporary->flush();
         if(chunkIndices){chunkIndices->detachAdmission();next.pagingIndices=std::move(chunkIndices);}
     }catch(const std::bad_alloc&){error="Geometry allocation deferred";return false;}
@@ -276,7 +299,7 @@ void WorldMeshUploadPlan::accountMemory(NorthlightMemoryFootprint::Counter& memo
     using namespace NorthlightMemoryFootprint;
     if(includeObject){if(!memory.visit(this))return;memory.add(Metadata,sizeof(*this));}
     memory.vector(Upload,indices);memory.vector(Metadata,batches);memory.vector(Metadata,materials);
-    for(const auto& material:materials)memory.vector(Texels,material.bgra);
+    for(const auto& material:materials){memory.vector(Texels,material.bgra);if(material.sharedBgra&&memory.visit(material.sharedBgra.get())){memory.add(Metadata,sizeof(*material.sharedBgra)+64);memory.vector(Texels,*material.sharedBgra);}}
     memory.vector(Metadata,completePlacements);for(const auto& p:completePlacements)memory.string(p.modelKey);
     for(const auto& chunk:fixedTerrainChunks)memory.allocation(Metadata,&chunk,sizeof(chunk));
     if(localShadowRecords){memory.allocation(Metadata,localShadowRecords.get(),sizeof(*localShadowRecords));memory.vector(Metadata,*localShadowRecords);}
@@ -432,10 +455,8 @@ bool buildUploadPlan(const NorthlightGI::WorldScene& scene,WorldMeshUploadPlan& 
         }
         next.localShadowRecords=std::move(records);
         // Texture upload remains one global operation; range caches retain no RGBA/BGRA.
-        next.materials.resize(scene.materials.size());
-        for(size_t i=0;i<scene.materials.size();++i){const auto& meta=scene.materials[i];const auto& source=textures&&i<textures->size()?(*textures)[i]:meta;auto& dest=next.materials[i];dest.alphaCutoff=meta.alphaCutoff;dest.terrain=meta.terrain;
-            if(meta.alphaCutoff<=0||source.texels().empty())dest.bgra={255,255,255,255};else{dest.width=source.width;dest.height=source.height;if(!allowed(source.texels().size()))return false;dest.bgra.resize(source.texels().size());NorthlightMaterialBytes::swapRedBlue(source.texels().data(),dest.bgra.data(),source.texels().size());}
-            NorthlightLocalShadowSignature::Hasher textureHash;textureHash.word(dest.width);textureHash.word(dest.height);for(size_t p=0;p<dest.bgra.size();p+=4){uint32_t pixel;std::memcpy(&pixel,dest.bgra.data()+p,4);textureHash.word(pixel);}dest.textureIdentity=textureHash.finish();next.textureBytes+=dest.bgra.size();}
+        auto texel=[&](size_t i)->const NorthlightGI::WorldMaterial&{return textures&&i<textures->size()?(*textures)[i]:scene.materials[i];};
+        if(!prepareMaterials(scene.materials,texel,false,next,allowed))return false;
         if(allProven){auto layout=std::make_shared<PreparationLayout>();for(const auto& p:parts)layout->push_back({p.data,p.first,p.data->plan.triangleCount,p.data->charge->bytes,p.materials});next.preparationLayout=std::move(layout);}
         next.source=&scene;next.vertexCount=uint32_t(scene.vertices.size());next.triangleCount=uint32_t(scene.triangles.size());next.vertexBytes=scene.vertices.size()*sizeof(NorthlightGI::WorldVertex);next.indexBytes=scene.triangles.size()*12;
         cache.stats.bytes=cache.budget->used.load(std::memory_order_relaxed);cache.stats.entries=cache.pieces.size();output=std::move(next);error.clear();return true;

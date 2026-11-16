@@ -71,7 +71,7 @@ int main(int argc,char** argv){
         NorthlightMemoryFootprint::Counter builder,solver;builder.add(NorthlightMemoryFootprint::Vertices,8*MiB);builder.add(NorthlightMemoryFootprint::Acceleration,2*MiB);solver.add(NorthlightMemoryFootprint::Probes,4*MiB);
         store().cpu(true,"offline fixture",123,builder);store().cpu(false,"offline fixture",123,solver);
         Admission admission;admission.valid=true;admission.available=740*MiB;admission.largest=615*MiB;admission.entryRequired=768*MiB;admission.reserve=512*MiB;admission.entryHeadroom=256*MiB;admission.minimumAvailable=738*MiB;admission.maximumKnownCapacity=10*MiB;std::strcpy(admission.stage,"build-deferred (offline fixture)");store().admission(admission);
-        Gpu gpu;gpu.managed=64*MiB;gpu.defaults=128*MiB;gpu.system=2*MiB;gpu.complete=true;gpu.staticManagedLedger=32*MiB;gpu.replayDefaultLedger=16*MiB;store().gpu(gpu);
+        Gpu gpu;gpu.managed=64*MiB;gpu.defaults=128*MiB;gpu.system=2*MiB;gpu.complete=true;gpu.staticDefaultLedger=32*MiB;gpu.replayDefaultLedger=16*MiB;store().gpu(gpu);
         Sleep(1100); // the menu reads cached snapshots at most once per second
       }
       ImGui::ActivateItemByID(nav->GetID(pages[page]));draw(0);draw(0);

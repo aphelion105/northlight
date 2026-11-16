@@ -3,6 +3,7 @@
 #include <unordered_map>
 #include <array>
 #include "model_normal_patch.h"
+#include "auto_bump_vertex_patch.h"
 #include "model_normal_slice.h"
 #include "model_normal_native.h"
 #include "native_material_capture_patch.h"
@@ -29,7 +30,7 @@ class NorthlightModelNormals {
         std::vector<DWORD> exact(program.size());const UINT bytes=UINT(program.size()*sizeof(std::uint32_t));UINT actual=bytes;
         return SUCCEEDED(shader->GetFunction(exact.data(),&actual))&&actual==bytes&&!std::memcmp(exact.data(),program.data(),bytes);
     }
-    struct Vertex {IDirect3DVertexShader9 *source=nullptr,*shader=nullptr;NorthlightShaderReads::ReadSet reads;unsigned first=0,count=256;NorthlightModelNormalRange::Kind rangeKind=NorthlightModelNormalRange::None;bool compact=false;std::uint64_t programHash=0;UINT programBytes=0;};
+    struct Vertex {IDirect3DVertexShader9 *source=nullptr,*shader=nullptr;NorthlightShaderReads::ReadSet reads;unsigned first=0,count=256;NorthlightModelNormalRange::Kind rangeKind=NorthlightModelNormalRange::None;bool compact=false,terrain=false;std::uint64_t programHash=0;UINT programBytes=0;};
     struct Pixel {IDirect3DPixelShader9 *source=nullptr,*shader=nullptr;unsigned control=0,first=0,count=0;NorthlightShaderReads::ReadSet reads;bool compactVertex=false;Pixel* equivalent=nullptr;std::uint64_t programHash=0;UINT programBytes=0;};
     IDirect3DDevice9* d;
     NorthlightNativeModelNormals nativeMrt;
@@ -405,18 +406,21 @@ class NorthlightModelNormals {
         }
         ~State(){restore();release(vs);release(ps);for(auto*& p:rt)release(p);release(ds);release(stream);release(index);}
     };
-    Vertex* vertex(IDirect3DVertexShader9* source,bool compact=false){
+    Vertex* vertex(IDirect3DVertexShader9* source,bool compact=false,bool terrain=false){
         auto& cache=compact?compactVertices:vertices;
-        auto it=cache.find(source);if(it!=cache.end())return compact&&!it->second.shader?vertex(source):&it->second;
-        if(cache.size()>=(compact?64u:512u))return compact?vertex(source):nullptr;
-        Vertex v;v.source=source;source->AddRef();UINT bytes=0;
+        auto it=cache.find(source);if(it!=cache.end())return compact&&!it->second.shader?vertex(source,false,terrain):&it->second;
+        if(cache.size()>=(compact?64u:512u))return compact?vertex(source,false,terrain):nullptr;
+        Vertex v;v.source=source;v.terrain=terrain;source->AddRef();UINT bytes=0;
         if(SUCCEEDED(source->GetFunction(nullptr,&bytes))&&bytes>=8&&bytes<=65536&&bytes%4==0){
             std::vector<DWORD> code(bytes/4);std::vector<std::uint32_t> patched;
-            if(SUCCEEDED(source->GetFunction(code.data(),&bytes))&&NorthlightModelNormal::vertex(reinterpret_cast<const uint32_t*>(code.data()),code.size(),patched)){
-                v.rangeKind=NorthlightModelNormalRange::classify(reinterpret_cast<const uint32_t*>(code.data()),code.size(),true);
+            const auto* words=reinterpret_cast<const uint32_t*>(code.data());
+            if(SUCCEEDED(source->GetFunction(code.data(),&bytes))&&(terrain?
+                !NorthlightWaterShaderPatch::patch(words,code.size(),patched)&&NorthlightAutoBumpVertex::terrainNormal(words,code.size(),patched):
+                NorthlightModelNormal::vertex(words,code.size(),patched))){
+                if(!terrain)v.rangeKind=NorthlightModelNormalRange::classify(reinterpret_cast<const uint32_t*>(code.data()),code.size(),true);
                 if(compact){std::vector<std::uint32_t> sliced;
                     if(!NorthlightModelNormalSlice::vertex(patched.data(),patched.size(),sliced)||sliced.size()>=patched.size()){
-                        cache.emplace(source,v);return vertex(source);
+                        cache.emplace(source,v);return vertex(source,false,terrain);
                     }
                     std::vector<std::uint32_t> canonical;
                     if(NorthlightModelNormalSlice::canonicalVertex(sliced.data(),sliced.size(),canonical))sliced.swap(canonical);
@@ -438,7 +442,7 @@ class NorthlightModelNormals {
             }
         }
         auto* result=&cache.emplace(source,v).first->second;
-        return compact&&!result->shader?vertex(source):result;
+        return compact&&!result->shader?vertex(source,false,terrain):result;
     }
     Pixel* pixel(IDirect3DPixelShader9* source,bool alpha){
         auto& map=pixels[alpha];auto it=map.find(source);if(it!=map.end())return it->second.equivalent?it->second.equivalent:&it->second;if(map.size()>=512)return nullptr;
@@ -526,6 +530,7 @@ public:
     void testConstantReuse(bool enabled){constantReuseEnabled=enabled;for(auto& p:pending)p->constantStamp={};}
     const NorthlightReplayCaptureConstants::Stats& testConstantStats()const{return constantStats;}
     unsigned testConstantReadRegisters()const{return constantReadRegisters;}
+    unsigned testNativeCommittedPackets()const{return nativeCommittedPackets;}
 #endif
     void enableNativeMrt(bool on){nativeMrt.configure(on);}
     void beginNativeDraw(){nativeCandidate=nullptr;}
@@ -554,7 +559,7 @@ public:
             return nativeMrt.draw(submit,surface,frameTarget,width,height,nullptr,false,prove).hr;
         }
         auto* packet=nativeCandidate;
-        auto result=nativeMrt.draw(submit,surface,frameTarget,width,height,packet?packet->vertex->source:nullptr,packet!=nullptr,prove);
+        auto result=nativeMrt.draw(submit,surface,frameTarget,width,height,packet?packet->vertex->source:nullptr,packet!=nullptr,prove,packet&&packet->vertex->terrain);
         if(packet){packet->nativeProbed=result.probed;packet->nativeWritten=result.written;}
         return result.hr;
     }
@@ -727,7 +732,7 @@ public:
     template<class Draw> void capture(IDirect3DVertexShader9* source,Draw draw,bool userMemory=false,
             const NorthlightDrawSnapshot::Draw* geometry=nullptr,const void* indices=nullptr,D3DFORMAT format=D3DFMT_UNKNOWN,const void* vertices=nullptr,UINT stride=0,
             const std::shared_ptr<const NorthlightDrawSnapshot::Mesh>* captured=nullptr,IDirect3DVertexDeclaration9* capturedDeclaration=nullptr,const NorthlightPoseBounds::Handoff* pose=nullptr,
-            std::shared_ptr<const NorthlightDrawSnapshot::Mesh>* published=nullptr,IDirect3DVertexDeclaration9** publishedDeclaration=nullptr){
+            std::shared_ptr<const NorthlightDrawSnapshot::Mesh>* published=nullptr,IDirect3DVertexDeclaration9** publishedDeclaration=nullptr,bool terrain=false){
         if(bad||!source)return;
         // Reuse the current pose's receiver range/clip proof before admission.
         // Solid triangles only; caster capture remains independent of the camera.
@@ -754,7 +759,7 @@ public:
         if((alpha&&func!=D3DCMP_GREATER&&func!=D3DCMP_GREATEREQUAL)||(comparison!=D3DCMP_LESS&&comparison!=D3DCMP_LESSEQUAL&&comparison!=D3DCMP_EQUAL))return;
         IDirect3DPixelShader9* native=nullptr;if(FAILED(d->GetPixelShader(&native))||!native)return;
         auto* ps=pixel(native,alpha!=0);release(native);if(!ps||!ps->shader)return;
-        auto* vs=vertex(source,ps->compactVertex);if(!vs||!vs->shader)return;
+        auto* vs=vertex(source,ps->compactVertex,terrain);if(!vs||!vs->shader)return;
         State saved(d,ps->control,userMemory);bool admissionTried=false,admissionOK=false;
         auto admit=[&]{
             if(admissionTried)return admissionOK;admissionTried=true;
@@ -773,7 +778,7 @@ public:
         // Establish a frame target before preparing packets: a resize resets
         // source caches/counters. Later far draws can avoid target reads entirely.
         if(!frameTarget&&!admit())return;
-        const float control[]={0,48.f,alpha?(float(ref)+(func==D3DCMP_GREATER?.5f:0.f))/255.f:.001f,alpha?1.f:0.f};
+        const float control[]={0,terrain?65504.f:48.f,alpha?(float(ref)+(func==D3DCMP_GREATER?.5f:0.f))/255.f:.001f,alpha?1.f:0.f};
         if(record(vs,ps,control,saved.viewport,admit,geometry,indices,format,vertices,stride,captured,capturedDeclaration,pose,published,publishedDeclaration))return;
         if(!admit())return;
         if(deferred&&!pending.empty()){

@@ -32,6 +32,8 @@ struct CaptureSource {int mesh=0,pose=0;void* declaration=nullptr;};
 struct Normals {unsigned captures=0;template<class... A> void capture(A&&...){++captures;}};
 struct Materials {bool enabled=false;bool active()const{return enabled;}};
 struct Hook {
+    struct World {bool ground=false;bool terrainShader(IDirect3DVertexShader9*)const{return ground;}} scene;
+    World* world=&scene;
     Normals normals;Normals* modelNormals=&normals;
     Materials materials;Materials* autoBump=nullptr;
     bool modelNormalsNeeded=true,enabled=true,applied=false,failed=false;
@@ -48,15 +50,15 @@ struct Backend {
     HRESULT GetDepthStencilSurface(IDirect3DSurface9** v){++reads;static int depth;*v=&depth;return 0;}
 };
 struct Native {
-    bool enabled=true,capable=true,refused=false,complete=true;unsigned calls=0;
+    bool enabled=true,capable=true,refused=false,complete=true,lastTerrain=false;unsigned calls=0;
     @ACCEPTING@
     void cancel(const char*){complete=false;}
     bool usesDepth(IDirect3DSurface9*)const{return true;}
     struct Result {HRESULT hr;bool probed,written;};
-    template<class Draw,class... Args> Result draw(Draw submit,Args...){++calls;return {submit(),true,true};}
+    template<class Draw,class Prove> Result draw(Draw submit,IDirect3DSurface9*,IDirect3DSurface9*,unsigned,unsigned,void*,bool,Prove,bool terrain=false){++calls;lastTerrain=terrain;return {submit(),true,true};}
 };
 struct NativeHook {
-    struct Vertex {void* source=nullptr;} vertex;
+    struct Vertex {void* source=nullptr;bool terrain=false;} vertex;
     struct Packet {Vertex* vertex;bool nativeProbed=false,nativeWritten=false;} packet{&vertex};
     Backend backend;Backend* d=&backend;Native nativeMrt;
     void* rasterContext=nullptr;bool(*rasterReader)(void*,const D3DRENDERSTATETYPE*,unsigned,DWORD*)=nullptr;
@@ -73,13 +75,15 @@ int main(){
         if(mode)h.autoBump=&h.materials;h.materials.enabled=mode==2;
         h.captureModelNormals(&shader,[]{return 0;},false,geometry);
         assert(h.normals.captures==1);
+        h.vsHashes.clear();h.scene.ground=true;h.captureModelNormals(&shader,[]{return 0;},false,geometry);
+        assert(h.normals.captures==2);h.scene.ground=false;h.vsHashes[&shader]=3;
         h.modelNormalsNeeded=false;h.captureModelNormals(&shader,[]{return 0;},false,geometry);h.modelNormalsNeeded=true;
         h.enabled=false;h.captureModelNormals(&shader,[]{return 0;},false,geometry);
         h.enabled=true;h.applied=true;h.captureModelNormals(&shader,[]{return 0;},false,geometry);
         h.applied=false;h.failed=true;h.captureModelNormals(&shader,[]{return 0;},false,geometry);
         h.failed=false;h.vsHashes[&shader]=1;h.captureModelNormals(&shader,[]{return 0;},false,geometry);
         h.vsHashes.clear();h.captureModelNormals(&shader,[]{return 0;},false,geometry);
-        assert(h.normals.captures==1);
+        assert(h.normals.captures==2);
     }
     for(unsigned mode=0;mode<4;++mode)for(bool domain:{false,true}){
         NativeHook h;
@@ -99,7 +103,9 @@ int main(){
     assert(submits==1001&&h.backend.reads==3&&h.nativeMrt.calls==1);
     h.nativeMrt.complete=true;
     assert(h.nativeDraw(draw,true,0)==0&&submits==1002&&h.nativeMrt.calls==2);
-    assert(h.packet.nativeProbed&&h.packet.nativeWritten);
+    assert(h.packet.nativeProbed&&h.packet.nativeWritten&&!h.nativeMrt.lastTerrain);
+    h.vertex.terrain=true;
+    assert(h.nativeDraw(draw,true,0)==0&&submits==1003&&h.nativeMrt.calls==3&&h.nativeMrt.lastTerrain);
 }
 '''.replace('@METHOD@', method('renderer.cpp', 'template<class Draw> void captureModelNormals('))
 fixture = fixture.replace('@ACCEPTING@', method('model_normal_native.h', 'bool accepting()const'))

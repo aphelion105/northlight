@@ -658,7 +658,8 @@ float3 worldGIValue(float3 p,float4 smoothNormal,uniform bool localOnly,out floa
     float3 n=smoothNormal.xyz;
     float4 probe=probeIrradiance(p+n*.25,n,localOnly);
     float3 ambient=max(AmbientLight.rgb,0);
-    float3 radiance=probe.rgb/3.14159265*max(1+GIResponse.y,0);
+    float3 measured=probe.rgb/3.14159265;
+    float3 radiance=measured*max(1+GIResponse.y,0);
     // Clamp before residency fade: strong GI cannot remove more than ambient,
     // and a missing/arriving probe never changes the native fallback.
     // The CPU environment emits from the upper world hemisphere only. Outside
@@ -668,8 +669,9 @@ float3 worldGIValue(float3 p,float4 smoothNormal,uniform bool localOnly,out floa
     // A one-sided normal still describes a receiver. Confidence may suppress
     // added bounce, but must not restore full ambient along every facet seam.
     float skyView=saturate(.5+.5*n.z);
-    float3 indirect=lerp(ambient*skyView,radiance,probe.a);
-    float3 correction=max((indirect-ambient)*GridInfo.y,-ambient);
+    float3 fallback=max(ambient*(skyView-1)*GridInfo.y,-ambient);
+    float3 measuredCorrection=max((radiance-ambient)*GridInfo.y,-ambient);
+    float3 correction=lerp(fallback,measuredCorrection,probe.a);
     // Confidence describes the depth-derived NORMAL, not probe coverage.
     // At a wall/ground seam a valid dark probe must still remove native ambient.
     // Only uncertain added bounce is suppressed; ambient removal also applies
@@ -681,7 +683,9 @@ float3 worldGIValue(float3 p,float4 smoothNormal,uniform bool localOnly,out floa
     correction+=max(AmbientLight.rgb+correction,0)*AmbientLight.w;
     // Resident probes also constrain authored WMO illumination. Missing probes
     // retain it; a measured dark room must not inherit the outdoor ambient.
-    float occlusion=saturate(-dot(correction,float3(.2126,.7152,.0722))/max(dot(ambient,float3(.2126,.7152,.0722)),.0001));
+    // Brightness adjusts added indirect light, not geometric occlusion.
+    // In particular -100% must not turn every resident room probe opaque.
+    float occlusion=saturate(1-dot(measured,float3(.2126,.7152,.0722))/max(dot(ambient,float3(.2126,.7152,.0722)),.0001));
     prelitGI=float4(max(correction,0),occlusion)*(probe.a*GIResponse.x);
     return correction;
 }
@@ -1826,8 +1830,10 @@ float4 worldCompositeInputs(float2 uv,float2 pixel,bool surfaceLighting,bool hdr
         // As for local lamps, native transported RGB supplies a bounded material
         // estimate; this is not an extraction of the original diffuse texture.
         color=mad(albedoT,bounce,original.rgb);
-        // A room's explicit native lighting is not the outdoor ambient that
-        // the GI correction replaces. Keep that authored term independently.
+        // A proven room light bank includes authored fill, not just outdoor
+        // ambient. Preserve it: probe occlusion cannot identify its components.
+        // Baked receivers can blend measured occlusion; current shadowed lamps
+        // and incoming daylight remain independent of that ambient correction.
         if(prelit)color=mad(-saturate(shadow)*PrelitDaylightInfo.x*(1-PrelitDaylightInfo.y),transported,color);
         // Bound combined GI/shadow darkening relative to the existing surface;
         // this preserves black and does not introduce an absolute exposure floor.

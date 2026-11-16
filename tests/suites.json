@@ -61,7 +61,9 @@
       "test_prelit_wmo_client.py",
       "test_progressive_gi_worker.py",
       "test_probe_cascade.py",
-      "test_diagnostic_files.py"
+      "test_diagnostic_files.py",
+      "test_world_material_texels.py",
+      "test_world_upload_pixels.py"
     ]
   },
   "gpu": {
@@ -71,6 +73,7 @@
       "test_draw_orchestration_gpu.py",
       "test_world_lighting_capture.py",
       "test_world_lighting_gi_gpu.py",
+      "test_gi_fallback_gpu.py",
       "test_local_fog_gpu.py",
       "test_model_normal_native_gpu.py",
       "test_m2_material_admission.py",
@@ -79,6 +82,7 @@
       "test_material_admission_source_gpu.py",
       "test_world_screen_effects_gpu.py",
       "test_prelit_receiver_gpu.py",
+      "test_material_receiver_stencil_gpu.py",
       "test_local_shadow_continuity_gpu.py",
       "test_shared_directional_gpu.py",
       "test_luxvelum_optimizations_gpu.py",
