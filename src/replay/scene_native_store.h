@@ -2,6 +2,7 @@
 #include "replay_gpu_binding.h"
 #include "replay_gpu_policy.h"
 #include "lock_meter.h"
+#include "intrusive_lru.h"
 #include <array>
 #include <cassert>
 #include <tuple>
@@ -32,6 +33,7 @@ private:
   size_t metadata=0,bytes=0,reserved=0;Batch* batch=nullptr;bool pending=false;
   IDirect3DVertexBuffer9* vb[4]={};IDirect3DIndexBuffer9* ib=nullptr;Placement at;
   Entry* previous=nullptr;Entry* next=nullptr;Entry* batchNext=nullptr;
+  NorthlightIntrusiveLRU::Links<Entry> lru; // Nonresident entries, in the same order as the full LRU.
   Entry()=default;Entry(const Entry&)=delete;Entry& operator=(const Entry&)=delete;
   ~Entry(){for(auto p:vb)if(p)p->Release();if(ib)ib->Release();}
  };
@@ -45,6 +47,7 @@ private:
  // addresses without a second allocation for each entry.
  using Table=std::unordered_multimap<std::uint64_t,Entry,Prehashed>;
  Table entries_;std::vector<std::unique_ptr<Batch>> batches_;
+ NorthlightIntrusiveLRU::List<Entry> probation_;
  std::array<std::vector<Entry*>,2> pending_;
  Entry* oldest_=nullptr;Entry* newest_=nullptr;IDirect3DDevice9* device_=nullptr;UINT maxVertexIndex_=0;
  Entry** removalCursor_=nullptr; // Stack-owned during eviction/trim; removals skip erased siblings.
@@ -74,7 +77,7 @@ private:
  }
  void unlink(Entry& e){if(e.previous)e.previous->next=e.next;else oldest_=e.next;if(e.next)e.next->previous=e.previous;else newest_=e.previous;e.previous=e.next=nullptr;}
  void append(Entry& e){e.previous=newest_;e.next=nullptr;if(newest_)newest_->next=&e;else oldest_=&e;newest_=&e;}
- void touch(Entry& e){if(e.touched==frame_)return;e.touched=frame_;if(newest_!=&e){unlink(e);append(e);++stats_[e.owner].lruMoves;}}
+ void touch(Entry& e){if(e.touched==frame_)return;e.touched=frame_;if(!e.bytes)probation_.touch(e);if(newest_!=&e){unlink(e);append(e);++stats_[e.owner].lruMoves;}}
  size_t charged(unsigned lane)const{return gpu_[lane]+metadata_[lane]+reserved_[lane];}
  void dropBatch(Batch* batch){
   const auto slot=batch->slot;assert(slot<batches_.size()&&batches_[slot].get()==batch);gpu_[batch->owner]-=batch->capacity;
@@ -93,6 +96,7 @@ private:
  }
  void erase(Entry& e){
   if(removalCursor_&&*removalCursor_==&e)*removalCursor_=e.next;
+  if(!e.bytes)probation_.remove(e);
   release(e);metadata_[e.owner]-=e.metadata;unlink(e);auto range=entries_.equal_range(e.hash);
   for(auto it=range.first;it!=range.second;++it)if(&it->second==&e){untrackedEntries_-=!e.identity;entries_.erase(it);return;}assert(false);
  }
@@ -126,9 +130,13 @@ private:
     while(scan.next){auto* e=scan.next;scan.next=e->next;
      if((current||e->touched!=frame_)&&(!ownerPressure||e->owner==lane)){victim=e;break;}}
    }else{
-    // Count pressure still prefers probation over resident entries globally.
-    for(auto* e=oldest_;e;e=e->next){if(!current&&e->touched==frame_)continue;
-     if(!victim)victim=e;if(!e->bytes&&!e->pending){victim=e;break;}}
+    // Skip resident GPU meshes when looking for metadata-only victims. Pending
+    // uploads stay in this ordered subset until commit succeeds, so a failed
+    // upload keeps its original eviction position without rebuilding a list.
+    for(auto* e=probation_.oldest();e;e=e->lru.newer){
+     if(!current&&e->touched==frame_){if(orderedFrames_)break;continue;}
+     if(!e->pending){victim=e;break;}}
+    if(!victim)for(auto* e=oldest_;e;e=e->next)if(current||e->touched!=frame_){victim=e;break;}
    }
    if(!victim){++stats_[lane].roomRejected;return false;}
    // Keep shared immutable data when the other pass has unused capacity.
@@ -155,7 +163,7 @@ private:
   for(unsigned s=0;s<4;++s){auto& bytes=m.streams[s].bytes;if(bytes.empty())continue;
    if(FAILED(device_->CreateVertexBuffer(UINT(bytes.size()),D3DUSAGE_WRITEONLY,0,D3DPOOL_DEFAULT,&built.vb[s],nullptr))||!built.vb[s]||!write(built.vb[s],0,bytes.data(),bytes.size()))return false;}
   if(!m.indices.empty()){const UINT size=UINT(m.indices.size()*4);if(FAILED(device_->CreateIndexBuffer(size,D3DUSAGE_WRITEONLY,D3DFMT_INDEX32,D3DPOOL_DEFAULT,&built.ib,nullptr))||!built.ib||!write(built.ib,0,m.indices.data(),size))return false;}
-  for(unsigned s=0;s<4;++s)std::swap(e.vb[s],built.vb[s]);std::swap(e.ib,built.ib);e.bytes=m.byteSize();gpu_[e.owner]+=e.bytes;++batchStats_[e.owner].separateUploads;return true;
+  for(unsigned s=0;s<4;++s)std::swap(e.vb[s],built.vb[s]);std::swap(e.ib,built.ib);probation_.remove(e);e.bytes=m.byteSize();gpu_[e.owner]+=e.bytes;++batchStats_[e.owner].separateUploads;return true;
  }
  void commitPrepared(unsigned lane){
   auto& list=pending_[lane];if(list.empty())return;
@@ -195,7 +203,7 @@ private:
    }
    NorthlightLockMeter::staging(indices);hr=batch->ib->Unlock();if(!out||FAILED(hr)){fail();return;}}
   auto* b=batch.get();b->slot=batches_.size();batches_.push_back(std::move(batch));gpu_[lane]+=b->capacity;committed_[lane]=true;
-  for(size_t i=0;i<memberCount;++i){auto& e=*members[i];e.batch=b;e.batchNext=b->first;b->first=&e;e.bytes=meshes[i]->byteSize()-meshes[i]->indices.size()*(4-indexWidth);++b->live;b->liveBytes+=e.bytes;counters_[lane].uploaded+=e.bytes;++stats_[lane].created;++batchStats_[lane].batchedUploads;}
+  for(size_t i=0;i<memberCount;++i){auto& e=*members[i];e.batch=b;e.batchNext=b->first;b->first=&e;probation_.remove(e);e.bytes=meshes[i]->byteSize()-meshes[i]->indices.size()*(4-indexWidth);++b->live;b->liveBytes+=e.bytes;counters_[lane].uploaded+=e.bytes;++stats_[lane].created;++batchStats_[lane].batchedUploads;}
  }
  void commit(unsigned lane)noexcept{
   try{commitPrepared(lane);}catch(...){++batchStats_[lane].batchFailures;while(!pending_[lane].empty())release(*pending_[lane].back());for(auto& item:entries_)if(!item.second.bytes)item.second.at={};}
@@ -255,7 +263,7 @@ public:
     if(metadata>limit_[lane]||!room(lane,metadata,false))return false;
     const auto key=hash(mesh);auto inserted=entries_.emplace(std::piecewise_construct,std::forward_as_tuple(key),std::forward_as_tuple());auto& e=inserted->second;
     e.source=mesh;e.sourceAddress=mesh.get();e.identity=id;e.hash=key;e.first=e.touched=frame_;e.owner=lane;e.users=1u<<lane;e.metadata=metadata;
-    untrackedEntries_+=!e.identity;metadata_[lane]+=metadata;append(e);++stats_[lane].warmup;return false;
+    untrackedEntries_+=!e.identity;metadata_[lane]+=metadata;append(e);probation_.append(e);++stats_[lane].warmup;return false;
    }
    auto& e=it->second;const bool wasResident=e.bytes!=0;e.users|=1u<<lane;touch(e);
    if(e.identity){++stats_[lane].identityHits;if(!sameSource(e,mesh)){
@@ -303,7 +311,7 @@ public:
  template<class Visit>void buffers(Visit visit)const{for(const auto& batch:batches_){visit(batch->vb);visit(batch->ib);}for(const auto& item:entries_)if(!item.second.batch){for(auto* vb:item.second.vb)visit(vb);visit(item.second.ib);}}
  size_t bytes()const{return gpu_[0]+gpu_[1];}size_t chargedBytes()const{return charged(0)+charged(1);}
  static constexpr size_t entryLimit(){return EntryLimit;}
- void clearAll(){oldest_=newest_=nullptr;for(auto& p:pending_)p.clear();entries_.clear();untrackedEntries_=0;orderedFrames_=true;batches_.clear();device_=nullptr;for(unsigned i=0;i<2;++i){gpu_[i]=metadata_[i]=reserved_[i]=0;committed_[i]=false;}}
+ void clearAll(){oldest_=newest_=nullptr;probation_.clear();for(auto& p:pending_)p.clear();entries_.clear();untrackedEntries_=0;orderedFrames_=true;batches_.clear();device_=nullptr;for(unsigned i=0;i<2;++i){gpu_[i]=metadata_[i]=reserved_[i]=0;committed_[i]=false;}}
  void trim(Consumer consumer,size_t bytes){
   const auto lane=index(consumer);retain_[lane]=std::min(limit_[lane],bytes);if(charged(lane)<=bytes)return;
   // Preserve only transfers OUT of this lane. A forward scan therefore keeps

@@ -26,6 +26,7 @@
     "description": "Compiled production contracts for frame demand, four Draw adapters, capture ownership and model-normal consumers. No game or GPU timings.",
     "tests": [
       "test_frame_requirements.py",
+      "test_canonical_gpu_scene.py",
       "test_backend_work_policy.py",
       "test_point_replay_admission.py",
       "test_prepare_worker_windows.py",

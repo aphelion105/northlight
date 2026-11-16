@@ -298,6 +298,39 @@ static void entryRehashLifetime(){
  }
  assert(!alive);std::puts("CANONICAL_SCENE_ENTRY_REHASH_PASS both_consumers tracked_untracked pending_links batch_links LRU_links sparse_transfer refill held_views exact_bytes");
 }
+static void countPressureControls(){
+ using namespace NorthlightGpuScene;
+ for(unsigned lane=0;lane<2;++lane){
+  NativeStore scene;NativeClient client(scene,Consumer(lane));Device device;Binding binding;
+  std::vector<Owner> residents,cold;
+  const auto tiny=[](unsigned id){auto m=std::const_pointer_cast<Mesh>(authored(id));m->vertexCount=3;m->primitiveCount=1;m->streams[0].bytes.resize(144);m->indices={0,1,2};return Owner(m);};
+  scene.setFrame(1);
+  for(unsigned i=0;i<4096;++i){auto m=tiny(500000+i);residents.push_back(m);assert(!client.bind(&device,m,binding.vb,binding.ib,admit,binding.at));}
+  for(unsigned at=0;at<4096;at+=256){scene.setFrame(2+at/256);
+   for(unsigned i=at;i<at+256;++i)client.bind(&device,residents[i],binding.vb,binding.ib,admit,binding.at);
+   client.commitPending();
+  }
+  for(auto& m:residents)assert(scene.resident(m));
+  for(unsigned i=0;i<4096;++i){auto m=tiny(600000+i);cold.push_back(m);assert(!client.bind(&device,m,binding.vb,binding.ib,admit,binding.at));}
+  const auto creates=device.calls;const auto begin=std::chrono::steady_clock::now();
+  for(unsigned frame=0;frame<64;++frame){scene.setFrame(100+frame);
+   for(unsigned i=0;i<64;++i){auto m=tiny(700000+frame*64+i);cold.push_back(m);assert(!client.bind(&device,m,binding.vb,binding.ib,admit,binding.at));}
+   assert(client.stats().probationEvictions==64&&!client.stats().residentEvictions&&!client.stats().roomRejected);
+  }
+  const auto elapsed=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count();
+  assert(client.population().entries==8192&&client.population().resident==4096&&device.calls==creates);
+  for(auto& m:residents)assert(scene.resident(m));
+  // Every surviving probation identity must be reused; the evicted prefix must
+  // miss. Refuse uploads so these membership probes cannot change residency.
+  uint64_t digest=0;const auto deny=[](size_t){return false;};
+  for(size_t i=cold.size();i--;){const auto hits=client.stats().identityHits;
+   assert(!client.bind(&device,cold[i],binding.vb,binding.ib,deny,binding.at));
+   const bool hit=client.stats().identityHits!=hits;assert(hit==(i>=4096));digest=digest*33+hit;
+  }
+  std::printf("CANONICAL_COUNT_PRESSURE_PASS lane=%u cpuMs=%.6f inserts=4096 residents=4096 creates=%u digest=%llu\n",lane,elapsed,creates,(unsigned long long)digest);
+ }
+ assert(!alive);
+}
 static Result unified(const std::vector<Owner>& meshes,bool audit,unsigned overlap,unsigned frames=96,bool reconstruct=false){
  using namespace NorthlightGpuScene;NativeStore scene;NativeClient mat(scene,Consumer::Material),world(scene,Consumer::Shadow);Device device;Result result;
  std::vector<Owner> material,actors;
@@ -325,11 +358,12 @@ static Result unified(const std::vector<Owner>& meshes,bool audit,unsigned overl
  result.ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count();result.creates=device.calls;scene.clearAll();materials.clear();shadows.clear();assert(!alive);return result;
 }
 int main(int argc,char** argv){
- std::setvbuf(stdout,nullptr,_IONBF,0);assert(argc>=2);NorthlightReplayGPU::createBudgetMs()=1e6;auto meshes=load(argv[1]);
+ std::setvbuf(stdout,nullptr,_IONBF,0);assert(argc>=2);NorthlightReplayGPU::createBudgetMs()=1e6;
+ if(std::string(argv[1])=="pressure"){countPressureControls();return 0;}auto meshes=load(argv[1]);
  if(argc>2){const auto overlap=argc>3?unsigned(std::stoul(argv[3])):100;const bool canonical=std::string(argv[2])=="canonical";
   auto r=canonical?unified(meshes,false,overlap):run(meshes,true,false,96,overlap);
   std::printf("CANONICAL_SCENE_TIMING canonical=%u overlap=%u cpuMs=%.6f uploads=%zu fallbackBytes=%zu peak=%zu creates=%u digest=%llu\n",canonical,overlap,r.ms,r.uploaded,r.up,r.peak,r.creates,(unsigned long long)r.digest);return 0;}
- indexWidthControls();indexPlacementControls();sceneControls();assert(!alive);faultsAndCollisions();assert(!alive);limitsAndClock();assert(!alive);boundedCommits();reentrantAdmission();reentrantTimeBudget();batchPreservation();retiredBatchMembers();partialTrimOrder();fragmentedBatches();automaticPressure();protectedClock();entryRehashLifetime();
+ indexWidthControls();indexPlacementControls();sceneControls();assert(!alive);faultsAndCollisions();assert(!alive);limitsAndClock();assert(!alive);boundedCommits();reentrantAdmission();reentrantTimeBudget();batchPreservation();retiredBatchMembers();partialTrimOrder();fragmentedBatches();automaticPressure();protectedClock();entryRehashLifetime();countPressureControls();
  for(unsigned overlap:{0u,50u,100u}){auto reference=run(meshes,true,true,96,overlap),current=unified(meshes,true,overlap),rebuilt=unified(meshes,true,overlap,96,true);
   std::printf("CANONICAL_SCENE_CHECK overlap=%u reference=%llu current=%llu reconstructed=%llu uploads=%zu/%zu fallback=%zu/%zu\n",overlap,(unsigned long long)reference.digest,(unsigned long long)current.digest,(unsigned long long)rebuilt.digest,reference.uploaded,current.uploaded,reference.up,current.up);
   // Earlier residency replaces repeated UP transfers: compare all transferred
