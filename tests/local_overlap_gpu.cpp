@@ -33,6 +33,7 @@ int main(int argc,char** argv){
         c[2][1]=48;c[2][2]=192;c[2][3]=1.f/1024;c[35][0]=1.f/256;
         c[3][0]=c[4][1]=c[5][2]=c[6][3]=1;c[10][2]=c[14][2]=.5f;
         c[16][2]=c[28][2]=-1;for(unsigned k=0;k<3;++k){c[17][k]=c[18][k]=c[29][k]=.5f;}
+        c[17][3]=1; // Production admission: directional maps cover this receiver.
         c[20][2]=1;c[27][1]=1;c[30][1]=c[30][2]=1;c[30][3]=30;c[33][0]=c[33][1]=c[33][2]=c[33][3]=N;
         c[52][1]=1;c[53][0]=c[54][1]=c[55][2]=c[56][3]=1;c[57][0]=temporal;
         auto inputs=[&]{for(unsigned s=0;s<16;++s)ok(d->SetTexture(s,nullptr));ok(d->SetTexture(0,scene));ok(d->SetTexture(1,depth));ok(d->SetTexture(2,white));ok(d->SetTexture(3,white));ok(d->SetTexture(10,ao));ok(d->SetTexture(11,zero));ok(d->SetTexture(14,normal));ok(d->SetTexture(15,dist));ok(d->SetPixelShaderConstantF(0,c[0],116));};
