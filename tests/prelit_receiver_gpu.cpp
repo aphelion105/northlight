@@ -5,6 +5,48 @@
 #include "lighting_pair_timing.h"
 
 struct PipelineOffTest {
+    static void layeredRoom(Device& device,const std::vector<DWORD>& words,unsigned width,unsigned height){
+        IDirect3DVertexShader9* shader=nullptr;IDirect3DSurface9* depth=nullptr;
+        screenOk(device.CreateVertexShader(words.data(),&shader));
+        screenOk(device.CreateDepthStencilSurface(width,height,D3DFMT_D24S8,D3DMULTISAMPLE_NONE,0,FALSE,&depth,nullptr));
+        screenOk(device.SetDepthStencilSurface(depth));screenOk(device.SetVertexShader(shader));
+        drop(device.worldDepth);device.worldDepth=device.mirrorResources.unwrap(depth);device.worldDepth->AddRef();
+        screenOk(device.worldDepth->GetDesc(&device.worldDepthDesc));device.worldDepthDescKnown=true;
+        device.width=width;device.height=height;device.worldMinDepth=0;device.worldMaxDepth=.94f;
+        device.terrain=device.projectionValid=true;device.applied=false;device.menuScene=false;
+        device.nameMask.cleared=true;device.aoActorOn=false;
+        auto& world=*device.world;lighting(world,true);world.legacyFogKnown=true;
+        const float room[]={.43921572f,.41960788f,.47450984f,0,0,0,0,0};
+        float outdoor[8]{};std::copy_n(world.context.ambient,3,outdoor);std::copy_n(world.context.direct,3,outdoor+4);
+        D3DVIEWPORT9 vp{0,0,width,height,0,.94f};screenOk(device.SetViewport(&vp));
+        screenOk(device.SetRenderState(D3DRS_ZENABLE,TRUE));screenOk(device.SetRenderState(D3DRS_ZFUNC,D3DCMP_LESSEQUAL));
+        screenOk(device.SetRenderState(D3DRS_STENCILENABLE,FALSE));
+        // Captured WMO pairs use SRCALPHA/ZERO, then INVSRCALPHA/ONE.
+        // The authored room bank can be on either layer. Exercise the real
+        // draw admission and scoped stencil states, not a prefilled mask.
+        for(unsigned variant=0;variant<7;++variant){
+            screenOk(device.SetVertexShaderConstantF(10,variant==6?outdoor:room,2));
+            screenOk(device.SetRenderState(D3DRS_ZWRITEENABLE,variant==3?FALSE:TRUE));
+            screenOk(device.SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE));
+            screenOk(device.SetRenderState(D3DRS_SRCBLEND,variant==0?D3DBLEND_SRCALPHA:variant==4?D3DBLEND_SRCCOLOR:D3DBLEND_INVSRCALPHA));
+            screenOk(device.SetRenderState(D3DRS_DESTBLEND,variant==0?D3DBLEND_ZERO:D3DBLEND_ONE));
+            screenOk(device.SetRenderState(D3DRS_BLENDOP,variant==2?D3DBLENDOP_REVSUBTRACT:D3DBLENDOP_ADD));
+            screenOk(device.SetRenderState(D3DRS_COLORWRITEENABLE,variant==5?0:15));
+            device.prepareDrawImpl([](IDirect3DVertexShader9*){},1);
+            std::printf("ROOM_LAYER_ADMISSION variant=%u mask=%d\n",variant,device.maskKind);
+            const bool accepted=variant<2;assert((device.maskKind==5)==accepted);
+            DWORD previous=0;screenOk(device.GetRenderState(D3DRS_STENCILENABLE,&previous));
+            bool called=false;screenOk(device.nameMaskDraw(false,false,[&]{
+                called=true;DWORD on=0,ref=0;screenOk(device.ext->GetRenderState(D3DRS_STENCILENABLE,&on));
+                screenOk(device.ext->GetRenderState(D3DRS_STENCILREF,&ref));
+                if(accepted)assert(on&&ref==NorthlightUnlitReceiver::AuthoredBit);return S_OK;
+            }));assert(called);
+            DWORD restored=0;screenOk(device.GetRenderState(D3DRS_STENCILENABLE,&restored));assert(restored==previous);
+        }
+        screenOk(device.SetVertexShader(nullptr));screenOk(device.SetDepthStencilSurface(nullptr));
+        drop(device.worldDepth);depth->Release();shader->Release();
+        std::puts("ROOM_LAYER_ADMISSION_PASS capturedBlendPair=1 scopedStates=1 negativeControls=5");
+    }
     static __attribute__((noinline)) bool receiver(WorldRenderer& world,IDirect3DVertexShader9* shader,bool model){return world.authoredReceiver(shader,model);}
     static bool prelit(Device& device,const std::vector<DWORD>& words){
         IDirect3DVertexShader9* shader=nullptr;
@@ -78,6 +120,7 @@ int main(int argc,char** argv){
         auto editedLit=lit;editedLit.insert(editedLit.end()-1,{0x0001fffeu,0x87654321u});
         assert(!NorthlightShaderTags::inWmoSignatures(identity(editedLit)));
         PipelineOffTest::overrideRegistration(*device,editedLit);
+        PipelineOffTest::layeredRoom(*device,editedLit,W,H);
         PipelineOffTest::overrideRegistration(*device,readShader(std::string(argv[3])+"/model.bin"),true);
         if(std::ifstream(std::string(argv[3])+"/captured-model.bin").good()){
             PipelineOffTest::overrideRegistration(*device,readShader(std::string(argv[3])+"/captured-model.bin"),true);
@@ -87,6 +130,7 @@ int main(int argc,char** argv){
             const auto foreign=readShader(std::string(argv[3])+"/foreign.bin");
             assert(!NorthlightShaderTags::inWmoSignatures(identity(foreign)));
             PipelineOffTest::overrideRegistration(*device,foreign);
+            PipelineOffTest::layeredRoom(*device,foreign,W,H);
             std::puts("CAPTURED_FOREIGN_WMO_REGISTRATION_PASS");
         }
         device->Release();

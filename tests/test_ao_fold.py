@@ -144,7 +144,7 @@ def function_text(text, signature):
 
 # 4. wiring
 effects_cpp = function_text(renderer, '    void renderEffects() {')
-fold_line = 'const bool fold=world&&debugMode==0&&world->screenReady();'
+fold_line = 'const bool fold=!menuScene&&world&&debugMode==0&&world->screenReady();'
 legacy_before = 'if(!fold&&!legacyComposite())return;'
 render_call = 'world->render(outputTarget,depthTex,width,height,sceneFormat,nearZ,farZ,worldMinDepth,worldMaxDepth,worldDebug,gpuProfile.get(),waterMask,fold?scene:nullptr,fold&&!neutralAOPending?ao:nullptr,frame,'
 legacy_after = 'if(fold&&!world->composited){'
@@ -155,6 +155,10 @@ checks['proxy: FOLD condition, legacy composite before render only when not fold
     < effects_cpp.index(render_call) < effects_cpp.index(legacy_after) < effects_cpp.index('celestialDiscs->renderVeil(')
     and 'contactShader=aoActorUsed?(alphaOnly?aoActorAlphaPS:aoActorPS):(alphaOnly?aoOnlyPS:aoContactBloomPS);' in effects_cpp
     and 'ext->SetPixelShader(linearHdr||constants[7]==0.f?contactShader:aoPS);' in effects_cpp)
+checks['menu: native lighting uses the legacy AO/bloom composite without world relighting or colour bounce'] = (
+    'if(world&&!menuScene&&debugMode==0)' in effects_cpp and
+    '(menuScene||(world&&world->screenReady())?0.f:.12f)' in effects_cpp and
+    'const bool celestial=!menuScene&&' in effects_cpp)
 checks['proxy: one shared effect-state setup, used before the AO pass and before the late legacy composite'] = (
     renderer.count('    void effectState() {') == 1 and effects_cpp.count('effectState();') == 2
     and effects_cpp.index('effectState();') < effects_cpp.index('bindEffects(nullptr);')

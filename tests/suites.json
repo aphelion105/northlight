@@ -46,6 +46,7 @@
       "test_native_direct_ownership.py",
       "test_world_shader_contract.py",
       "test_world_snapshot_domain.py",
+      "test_model_world_context.py",
       "test_native_shadow_control.py",
       "test_world_environment.py",
       "test_weather_shelter.py",

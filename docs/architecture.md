@@ -23,6 +23,14 @@ ordered device Get path; a failed read cannot grant world admission.
 The renderer repeats this admission before reading WMO camera context, alongside
 its full-viewport and projection checks. Camera matrix validation remains strict.
 
+Full-screen menu models have a separate screen-effects domain: a proven model
+shader, perspective projection, depth test, 0..1 viewport and actual backbuffer.
+It enables AO and bloom before the UI while preserving native scene lighting.
+It neither consumes the World snapshot nor collects world casters, substitutes
+native lights, or runs the world's sun/fog/GI composite. Offscreen ModelFFX glow
+passes and partial UI previews are excluded. The menu flag clears every frame;
+main-world draws retain their 0..0.94 admission and independent camera proof.
+
 Native point sources retain their original position for draw-slot ownership.
 Optional eight-light compatibility retains public shader identity and uses
 scoped private variants. Proven no-extra-light draws keep the original shader;

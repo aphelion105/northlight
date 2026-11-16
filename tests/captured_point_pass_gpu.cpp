@@ -21,7 +21,7 @@ static IDirect3DCubeTexture9* cube(IDirect3DDevice9* d,const std::string& prefix
    if(mode)std::fill_n(row,h[1],mode==1?1.f:0.f);else std::memcpy(row,b.data()+20+size_t(y)*h[1]*4,h[1]*4);}ok(t->UnlockRect(D3DCUBEMAP_FACES(face),0));}
  return t;
 }
-int main(int argc,char** argv){assert(argc==4||argc==7);const bool cubes=argc==7;const unsigned firstPass=cubes?std::atoi(argv[4]):7,count=cubes?std::atoi(argv[5]):7,shaderIndex=cubes?std::atoi(argv[6]):2;assert(count&&count<=128);
+int main(int argc,char** argv){assert(argc==4||argc>=7);const bool cubes=argc>=7;const unsigned firstPass=cubes?std::atoi(argv[4]):7,count=cubes?std::atoi(argv[5]):7,shaderIndex=cubes?std::atoi(argv[6]):2;assert(count&&count<=128);assert(argc<=7||argc==7+int(count));
  const std::string prefix=argv[2],out=argv[3];auto dimensions=read(prefix+(cubes?"lighting-input-g4-s3.fgr":"point-0-resolved.fgr"));unsigned h[5];std::memcpy(h,dimensions.data(),20);const UINT w=h[1],height=h[2];
  WNDCLASSW wc{};wc.lpfnWndProc=DefWindowProcW;wc.hInstance=GetModuleHandleW(nullptr);wc.lpszClassName=L"CapturedPoint";assert(RegisterClassW(&wc));auto hwnd=CreateWindowW(wc.lpszClassName,L"",WS_OVERLAPPED,0,0,64,64,nullptr,nullptr,wc.hInstance,nullptr);
  auto module=LoadLibraryA(argv[1]);assert(module);auto create=(IDirect3D9*(WINAPI*)(UINT))GetProcAddress(module,"Direct3DCreate9");auto api=create(D3D_SDK_VERSION);D3DPRESENT_PARAMETERS pp{};pp.Windowed=TRUE;pp.hDeviceWindow=hwnd;pp.BackBufferWidth=pp.BackBufferHeight=64;pp.BackBufferFormat=D3DFMT_X8R8G8B8;pp.SwapEffect=D3DSWAPEFFECT_DISCARD;
@@ -44,7 +44,7 @@ int main(int argc,char** argv){assert(argc==4||argc==7);const bool cubes=argc==7
   // A near-plane cube is not: PCSS changes its footprint with blocker distance.
   ok(d->SetPixelShader(mode==2?blockedPS:ps));
   if(cubes&&mode==2)ok(d->SetTexture(1,blockedVisibility));
-  else if(cubes){auto* t=cube(d,prefix+"point-"+std::to_string(source),mode);ok(d->SetTexture(1,t));t->Release();}
+  else if(cubes){const unsigned slot=argc>7?std::atoi(argv[7+source]):source;assert(slot<128);auto* t=cube(d,prefix+"point-"+std::to_string(slot),mode);ok(d->SetTexture(1,t));t->Release();}
   else bind(1,"point-"+std::to_string(source)+"-resolved");
   auto bank=read(prefix+"lighting-pass-"+std::to_string(firstPass+source)+"-constants.f32");assert(bank.size()==116*16);ok(d->SetPixelShaderConstantF(0,(float*)bank.data(),116));ok(d->BeginScene());ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,q,sizeof(V)));ok(d->EndScene());ok(d->GetRenderTargetData(target,copy));D3DLOCKED_RECT l;ok(copy->LockRect(&l,nullptr,D3DLOCK_READONLY));std::ofstream f(out+"/point-"+std::to_string(source)+(cubes?mode==1?"-clear":mode==2?"-blocked":"-captured":"")+".fgr",std::ios::binary);unsigned header[]={0x31524746,w,height,D3DFMT_A16B16G16R16F,8};f.write((char*)header,20);for(unsigned y=0;y<height;++y)f.write((char*)l.pBits+y*l.Pitch,w*8);ok(copy->UnlockRect());}
  std::puts("CAPTURED_POINT_PASS_OK");return 0;

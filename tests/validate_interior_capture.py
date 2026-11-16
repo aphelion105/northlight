@@ -42,7 +42,10 @@ def main():
             rows = [json.loads(s) for s in journal.read_text(encoding='utf-8').splitlines()]
             plan = capture_plan(rows); replay_contract(rows, prefix, plan)
             points = [r for r in rows if r['event']=='pass' and r['entry']=='LocalLightingPcss']
-            assert points and all(p['first']==i and p['index']==points[0]['index']+i and p['submitted'] for i,p in enumerate(points))
+            assert points and all(p['index']==points[0]['index']+i and p['submitted'] for i,p in enumerate(points))
+            # Only usable shadow slots submit a pass; their cube IDs can have gaps.
+            slots = [p['first'] for p in points]
+            assert len(set(slots))==len(slots) and all(isinstance(s,int) and 0<=s<128 for s in slots)
             for slot in (0,2,3,4,5):
                 bindings=[r for r in rows if r['event']=='input-binding' and r['group']==4 and r['slot']==slot]
                 assert bindings and len({r['null'] for r in bindings})==1
@@ -59,7 +62,7 @@ def main():
                     result = subprocess.run(list(map(str,command)), cwd=folder, env=environment, capture_output=True, text=True, timeout=180)
                     (folder/(name+'.log')).write_text(result.stdout+result.stderr,encoding='utf-8')
                     result.check_returncode(); return result.stdout
-                run('points',[executables['captured_point_pass_gpu'],backend,prefix,folder,points[0]['index'],len(points),shader])
+                run('points',[executables['captured_point_pass_gpu'],backend,prefix,folder,points[0]['index'],len(points),shader,*slots])
                 point_results=[]
                 for i in range(len(points)):
                     actual,clear,blocked=[load(folder/f'point-{i}-{mode}.fgr')[...,:3] for mode in ('captured','clear','blocked')]
@@ -69,7 +72,7 @@ def main():
                     energy=-blocked.min(axis=2)
                     signal=energy>.01
                     occlusion=np.divide(-actual.min(axis=2),energy,out=np.zeros_like(energy),where=signal)
-                    point_results.append(dict(slot=i,signal_pixels=int(signal.sum()),
+                    point_results.append(dict(slot=slots[i],signal_pixels=int(signal.sum()),
                         fully_occluded_pixels=int(((occlusion>.99)&signal).sum()),
                         partial_pixels=int(((occlusion>.01)&(occlusion<.99)&signal).sum()),
                         correction_min=float(actual.min())))

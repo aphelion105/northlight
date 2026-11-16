@@ -15,7 +15,7 @@ static BOOL WINAPI moreFailPublishFlushOnce(HANDLE p,LPCVOID a,SIZE_T n){return 
 static BOOL WINAPI lightStayFailFlushOnce(HANDLE p,LPCVOID a,SIZE_T n){return ++lightStayFlushes==1?FALSE:FlushInstructionCache(p,a,n);}
 static BOOL WINAPI lightStayFailRestoreOnce(LPVOID p,SIZE_T n,DWORD value,PDWORD old){return ++lightStayProtects==2?FALSE:VirtualProtect(p,n,value,old);}
 static BOOL WINAPI lightStayFailProtect(LPVOID,SIZE_T,DWORD,PDWORD){return FALSE;}
-alignas(4096) static unsigned char clientReserve[0x700000];
+alignas(4096) static unsigned char clientReserve[0xa00000];
 extern "C" __attribute__((naked)) void invoke(void*,void*,void*,void*){
     __asm__ volatile("push %ebp; mov %esp,%ebp; push %esi; mov 8(%ebp),%esi; mov 12(%ebp),%ecx; push 16(%ebp); call *20(%ebp); pop %esi; pop %ebp; ret");
 }
@@ -34,8 +34,9 @@ int main(int argc,char** argv){
         assert(false);
     };
     const auto begin=reinterpret_cast<uintptr_t>(clientReserve);
-    assert(begin<=0x810000&&begin+sizeof clientReserve>=0xa50000);
+    assert(begin<=0x810000&&begin+sizeof clientReserve>=0xcd7550);
     DWORD old;assert(VirtualProtect(reinterpret_cast<void*>(0x810000),0x30000,PAGE_EXECUTE_READWRITE,&old));
+    copy(0x79abdf,6);copy(0x834550,14);
     copy(0x831af0,NorthlightGlueLighting::SetupSize);copy(0x81e400,400);copy(0x8333d0,166);copy(0x834dc0,0x2e0);copy(0xa45634,12);
     assert(FlushInstructionCache(GetCurrentProcess(),reinterpret_cast<void*>(0x810000),0x30000));
     const char* status=NorthlightGlueLighting::install(reinterpret_cast<HMODULE>(0x400000));
@@ -46,12 +47,13 @@ int main(int argc,char** argv){
     assert(!std::memcmp(thunk,NorthlightGlueLighting::Selection,sizeof NorthlightGlueLighting::Selection));
     Block scene{},model{},shared{},data{},lighting{};
     std::array<unsigned char,3*212> own{};
-    std::array<std::array<unsigned char,108>,6> equipment{};
+    std::array<std::array<unsigned char,108>,10> equipment{};
     char name[]="UI_Scourge";
     at<void*>(model.data(),0x2c)=shared.data();at<void*>(shared.data(),0x150)=data.data();
     at<unsigned>(model.data(),0x10)=1; // Native M2 data is available only after this bit is set.
     at<unsigned>(data.data(),8)=sizeof name;at<void*>(data.data(),12)=name;at<unsigned>(data.data(),264)=3;
     at<void*>(model.data(),0x1d0)=own.data();
+    at<void*>(scene.data(),8)=model.data();at<void*>(model.data(),0x28)=scene.data();
     std::vector<void*> lights;
     for(unsigned i=0;i<3;++i){auto* light=own.data()+i*212+104;
         at<unsigned>(light,8)=i==1?0:1;at<unsigned>(light,96)=1;
@@ -73,6 +75,15 @@ int main(int argc,char** argv){
     assert(own==ownBefore&&equipment==equipmentBefore);
     // Ambient/directional output remains the real native selector's output.
     assert(!std::memcmp(lighting.data()+20,native.data()+20,112));
+    // The receiver may be the character, an attachment or a pet, not UI_.
+    Block character{};
+    lighting={};invoke(character.data(),scene.data(),lighting.data(),thunk);
+    assert(contains(lights[0])&&contains(lights[2]));
+    // A world scene must never walk its model list or change native selection.
+    *reinterpret_cast<void**>(0xcd754c)=scene.data();
+    at<void*>(scene.data(),8)=reinterpret_cast<void*>(0x02000a01);
+    select(thunk);assert(lighting==native);
+    *reinterpret_cast<void**>(0xcd754c)=nullptr;at<void*>(scene.data(),8)=model.data();
     std::memcpy(name,"Creature",9);select(thunk);assert(lighting==native);
     // Both real Dalaran dumps had m_fFlags=0x8340 (not loaded), so
     // shared->data was not a usable M2. Even a plausible in-range name
@@ -96,6 +107,9 @@ int main(int argc,char** argv){
         select(thunk);assert(lighting==native);
     }
     at<void*>(data.data(),12)=name;
+    // A malformed/cyclic non-glue list is bounded and keeps native lighting.
+    at<void*>(model.data(),12)=model.data();select(thunk);assert(lighting==native);
+    at<void*>(model.data(),12)=nullptr;
     std::memcpy(name,"ui_Test",8);select(thunk);assert(contains(lights[2]));
     at<unsigned>(lights[2],96)=0;select(thunk);assert(!contains(lights[2])&&contains(lights[0]));
     at<unsigned>(lights[2],96)=1;for(unsigned k=0;k<3;++k)at<float>(lights[2],60+k*4)=0;
@@ -141,6 +155,34 @@ int main(int argc,char** argv){
     uintptr_t code=0;assert(More::existing(code));
     using GetEntry=void*(__thiscall*)(void*);using AddLight=void(__thiscall*)(void*,void*);
     auto getEntry=reinterpret_cast<GetEntry>(code);auto addLight=reinterpret_cast<AddLight>(0x834f60);
+    // Reinstall with the now-present, validated native eight-light getter.
+    // Production installs MoreLights before the glue selector from the start.
+    call[0]=0xe8;const auto nativeDelta=std::int32_t(0x81e400-(reinterpret_cast<std::uintptr_t>(call)+5));
+    std::memcpy(call+1,&nativeDelta,4);
+    statusIs(NorthlightGlueLighting::install(),"active");
+    statusIs(NorthlightGlueLighting::install(),"already-active");
+    std::memcpy(&relative,call+1,4);thunk=call+5+relative;
+    own=ownBefore;at<unsigned>(data.data(),264)=3;std::memcpy(name,"UI_Test",8);
+    select(reinterpret_cast<void*>(0x81e400));
+    auto nativeEight=lighting;auto* ring=getEntry(lighting.data());assert(ring);
+    std::array<unsigned char,40> ringBefore{};std::memcpy(ringBefore.data(),ring,40);
+    lighting={};invoke(character.data(),scene.data(),lighting.data(),thunk);
+    assert(contains(lights[0])&&contains(lights[2]));
+    // Bytes 22..23 are MoreLights' ring handle, not an ambient/directional field.
+    assert(!std::memcmp(lighting.data()+20,nativeEight.data()+20,2));
+    assert(!std::memcmp(lighting.data()+24,nativeEight.data()+24,108));
+    ring=getEntry(lighting.data());assert(ring&&at<unsigned>(ring,4)==4);
+    std::vector<void*> selected;
+    for(unsigned i=0;i<4;++i)selected.push_back(at<void*>(lighting.data(),132+4*i));
+    for(unsigned i=0;i<4;++i)selected.push_back(at<void*>(ring,8+4*i));
+    for(unsigned i=0;i<selected.size();++i)for(unsigned j=0;j<i;++j)assert(selected[i]!=selected[j]);
+    for(unsigned i=0;i<6;++i)assert(std::find(selected.begin(),selected.end(),equipment[i].data())!=selected.end());
+    assert(own==ownBefore&&equipment==equipmentBefore);
+    *reinterpret_cast<void**>(0xcd754c)=scene.data();select(thunk);
+    at<unsigned short>(nativeEight.data(),22)=at<unsigned short>(lighting.data(),22);
+    ring=getEntry(lighting.data());assert(ring);
+    assert(lighting==nativeEight);assert(!std::memcmp(ring,ringBefore.data(),40));
+    *reinterpret_cast<void**>(0xcd754c)=nullptr;
     std::array<std::array<unsigned char,108>,12> sources{};Block receiver{};
     for(unsigned i=0;i<sources.size();++i){at<unsigned>(sources[i].data(),8)=1;at<unsigned>(sources[i].data(),96)=1;at<float>(sources[i].data(),12)=float(i+1);}
     for(bool reverse:{false,true}){
@@ -150,5 +192,5 @@ int main(int argc,char** argv){
         for(unsigned i=0;i<4;++i)assert(at<void*>(extra,8+4*i)==sources[i+4].data());
     }
     puts("NATIVE_MORE_LIGHTS_PASS nativeAddLight=1 closest8=1 originalSlots=unchanged rejectAndEvict=1 idempotent=1 unknownCode=skip publicationFailure=rollback fileWrites=0");
-    puts("GLUE_LIGHTING_PASS native-12340-selector=1 eviction-control=1 own-sources=2 slots=4 positions-unchanged=1 non-glue-unchanged=1");
+    puts("GLUE_LIGHTING_PASS native-12340-selector=1 eviction-control=1 scene-sources=2 receivers=character+backdrop slots=4+4 duplicates=0 positions-unchanged=1 world-unchanged=1");
 }

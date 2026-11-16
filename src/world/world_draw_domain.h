@@ -25,6 +25,13 @@ inline Band classify(float worldMin,float worldMax,float drawMin,float drawMax){
 inline bool mainWorldDraw(unsigned long zEnable,unsigned long zFunc,float minZ,float maxZ){
     return depthTested(zEnable,zFunc)&&classify(0.f,kWorldMaxZ,minZ,maxZ)==Band::World;
 }
+// Full-screen ModelFFX uses 0..1. This is a screen-effects domain only: it must
+// not establish a CWorld camera, collect world casters or consume its snapshot.
+// The caller additionally proves a model shader and a perspective projection.
+inline bool menuModelDraw(unsigned long zEnable,unsigned long zFunc,float minZ,float maxZ,bool mainTarget){
+    return mainTarget&&depthTested(zEnable,zFunc)&&std::isfinite(minZ)&&std::isfinite(maxZ)&&
+        std::fabs(minZ)<=1e-6f&&std::fabs(maxZ-1.f)<=1e-6f;
+}
 // Sun/moon/glare pre-filter: with a client-shaped world band only a sky-band draw can be one; on an unusual client the answer is "maybe" so the identity test stays the only gate.
 inline bool skyClaimPossible(float worldMin,float worldMax,float drawMin,float drawMax){
     const Band b=classify(worldMin,worldMax,drawMin,drawMax);

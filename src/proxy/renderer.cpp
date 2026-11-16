@@ -574,6 +574,7 @@ class Device final : public GuardedMirrorDevice {
     D3DFORMAT sceneFormat = D3DFMT_UNKNOWN, depthSnapshotFormat = D3DFMT_UNKNOWN;
     bool df24Refused = false; // the device refused a DF24 depth snapshot: INTZ for the session
     bool terrain = false, captured = false, applied = false, enabled = true,masterEnabled=true;
+    bool menuScene=false;
     // 0.3.202 (rain): the rain streak alpha mask (RainMask, s13 of WorldComposite): created on the first mask draw at the effect resources' size; the
     // flags and the cached eligibility are per frame (clearFrame), the counters are read and zeroed by the WEATHER line.
     // 0.3.202 (rain mask MRT): the mask is written by the rain draws themselves through render target 1 (rainMrtPS); rainMrtBound: RT1 holds the mask target
@@ -1104,7 +1105,7 @@ private:
         if(!applied||failed)stateBlocks.clear();
         if(!enabled||extensionFault){stateBlocks.clear();if(world)world->releaseStateCache(!failed&&!extensionFault);if(water)water->releaseStateCache();}
         if(world)world->endFrame(!extensionFault,frame);if(water)water->endFrame();if(surface)surface->endFrame();if(autoBump)autoBump->endFrame();if(modelNormals)modelNormals->endFrame();if(celestialDiscs)celestialDiscs->endFrame();if(shadowBlobs)shadowBlobs->endFrame();
-        effectCoverage.endFrame();drop(worldDepth);worldDepthDescKnown=false; rainMrtUnbind();terrain = captured = applied = projectionValid = skySeen = false;rainMaskCleared=rainMaskDrawn=rainMaskFrame=rainMaskOk=rainDepthOk=false; /* 0.3.202 (rain mask MRT): RT1 never outlives a frame */earlyDepth.reset();resetTranslucentCensus(); /* the TRANSLUCENT line is logged before clearFrame */
+        effectCoverage.endFrame();drop(worldDepth);worldDepthDescKnown=false; rainMrtUnbind();terrain = captured = applied = projectionValid = skySeen = menuScene = false;rainMaskCleared=rainMaskDrawn=rainMaskFrame=rainMaskOk=rainDepthOk=false; /* 0.3.202 (rain mask MRT): RT1 never outlives a frame */earlyDepth.reset();resetTranslucentCensus(); /* the TRANSLUCENT line is logged before clearFrame */
     }
     void captureWeatherDiagnostics(const NorthlightSurfaceFrame* constants,IDirect3DSurface9* target,IDirect3DSurface9* nameDepth,const char* unavailable,
                                    const std::string& directory={},bool consumeRequest=true){
@@ -1513,7 +1514,7 @@ private:
         gpuProfile->mark("PreCelestial"); /* task 45: the rain and water mask preparation (and GPU work still pending from the game's scene) end here, so CelestialDiscs bills the discs and the terrain mask alone */
         // discs and glare, then the wrap-ring visibility in the same group of
         // 1x1 passes before the scene copy; the veil follows water (below).
-        const bool celestial=celestialDiscs&&celestialEnabled()&&!skyLayers.native(frame)&&debugMode==0&&worldDebug==0;float sunElevation=0;
+        const bool celestial=!menuScene&&celestialDiscs&&celestialEnabled()&&!skyLayers.native(frame)&&debugMode==0&&worldDebug==0;float sunElevation=0;
         auto renderCelestial=[&](IDirect3DSurface9* target){
             NorthlightCelestial::Context sky;float inverseView[16],projection[3];
             if(world->celestialContext(sky,inverseView,projection)){sunElevation=sky.sun.direction[2]-sky.horizonSine; /* over the camera's far edge, as the composite's haze band */
@@ -1528,14 +1529,14 @@ private:
         if (error(ext->StretchRect(saved.targets[0], nullptr, sceneSurface, nullptr, D3DTEXF_NONE), "copy scene")) return;
         effectState();
         const bool linearHdr=hdr.active&&debugMode==0&&worldDebug==0;
-        const bool fold=world&&debugMode==0&&world->screenReady();
+        const bool fold=!menuScene&&world&&debugMode==0&&world->screenReady();
         bool neutralAOPending=false;
         auto clearNeutralAO=[&]{
             if(error(ext->SetRenderTarget(0,aoSurface),"neutral AO render target"))return false;
             if(error(ext->Clear(0,nullptr,D3DCLEAR_TARGET,D3DCOLOR_ARGB(255,0,0,0),1.f,0),"neutral AO clear"))return false;
             gpuProfile->mark("AOClear");neutralAOPending=false;return true;
         };
-        float constants[]={1.f/width,1.f/height,nearZ,farZ,scaleX,scaleY,aoStrength,(world&&world->screenReady()?0.f:.12f),.08f,aoRadius,float(debugMode),0,worldMinDepth,1.f/(worldMaxDepth-worldMinDepth),worldMaxDepth,0};
+        float constants[]={1.f/width,1.f/height,nearZ,farZ,scaleX,scaleY,aoStrength,(menuScene||(world&&world->screenReady())?0.f:.12f),.08f,aoRadius,float(debugMode),0,worldMinDepth,1.f/(worldMaxDepth-worldMinDepth),worldMaxDepth,0};
 
         float waterFlags[]={waterMask?1.f:0.f,0,0,0};
         auto bindLegacyFog=[&]{
@@ -1644,7 +1645,7 @@ private:
             gpuProfile->mark("AOComposite");effectsBuckets.mark(Bucket::Composite);return true;
         };
         if(!fold&&!legacyComposite())return;
-        if(world&&debugMode==0){
+        if(world&&!menuScene&&debugMode==0){
             auroraSources.end();
             traceWorld=0;
             world->setMaterialDetail(autoBump?autoBump->texture():nullptr,autoBump?autoBump->gain():0.f,autoBump?autoBump->distance():48.f,autoBump?autoBump->occlusionTexture():nullptr,autoBump?autoBump->occlusionDistance():8.f,autoBump&&autoBump->active()&&autoBump->hasCaptureResources());
@@ -1905,7 +1906,7 @@ private:
         if(spellOn)spellVs=vs; /* identity only */
         if(sampled())observeGrassReceiver(vs,false);
         beforeDraw(vs);planTerrainShadowSwap(vs);
-        if(world&&!applied&&enabled&&!failed&&projectionValid){
+        if(world&&!menuScene&&!applied&&enabled&&!failed&&projectionValid){
             D3DVIEWPORT9 viewport={};DWORD depthEnabled=FALSE;
             const bool statesRead=SUCCEEDED(ext->GetViewport(&viewport))&&SUCCEEDED(ext->GetRenderState(D3DRS_ZENABLE,&depthEnabled));
             const bool worldDomain=statesRead&&NorthlightWorldDrawDomain::accepts(projectionValid,depthEnabled!=FALSE,
@@ -1922,7 +1923,11 @@ private:
                 if(terrain&&!nameMask.disabled&&worldDebug==0&&((nameMask.armed()&&drawUiHashVS)||nameMask.hasMarks()||unlitMarks||prelitMarks||authoredMarks||authoredReceiver||(classifyVs(vs).entry&(kUnlitTag|kPrelitTag)))){ /* 0.3.212 (task 32): only a UI-hash draw can be a name, only a frame with marks can unmark */
                     const bool sampledTimed=sampledDrawTimers()&&(++nameDecideCalls&7)==1;if(sampledTimed)++nameDecideTimed;
                     CpuScope decision(sampledTimed?&cpuNameDecide:nullptr);nameMaskDecide(drawWaterVS,zw,ab,sb,db,cw,viewport);
-                    if(((classifyVs(vs).entry&(kUnlitTag|kPrelitTag))||authoredReceiver)&&zw()&&(cw()&7)&&(!ab()||db()==D3DBLEND_ZERO)&&
+                    // A WMO's room-light layer can follow its outdoor layer
+                    // with INVSRCALPHA/ONE. It still owns authored RGB at this
+                    // depth; outdoor subtraction would erase that contribution.
+                    if(((classifyVs(vs).entry&(kUnlitTag|kPrelitTag))||authoredReceiver)&&zw()&&(cw()&7)&&
+                       (!ab()||db()==D3DBLEND_ZERO||(authoredReceiver&&classifyVs(vs).wmo&&NorthlightNativeDirect::independentBlend(sb(),db(),drawRenderState(D3DRS_BLENDOP))))&&
                        nameMaskReady()&&NorthlightUnlitReceiver::stencilFormat(worldDepthDesc.Format,MAKEFOURCC('I','N','T','Z'))&&nameMaskFullViewport(viewport)&&worldDepthBound())maskKind=authoredReceiver?5:(classifyVs(vs).entry&kPrelitTag)?4:3;
                     if(maskKind==1&&!nameMask.armed())maskKind=0;}
                 if(captured&&earlyDepth.earlyCaptured&&NorthlightTranslucentDepth::isUndo(drawWaterVS,zw,ab,sb,db,cw)){captured=false;if(aoActorOn)aoActorMask->resume();earlyDepth.undo();++earlyResolveUndone;++earlyResolveUndoneTotal;} /* undo: later opaque or water Z draw after the early resolve */
@@ -3249,10 +3254,14 @@ private:
             if(tag==1)++terrainDraws;
             D3DSURFACE_DESC desc={};D3DVIEWPORT9 viewport={};
             if (!fullViewport(desc,&viewport)) return;
+            bool screenModel=false;
             if(model||wmo){
                 DWORD z=FALSE,zf=D3DCMP_ALWAYS;
-                if(FAILED(ext->GetRenderState(D3DRS_ZENABLE,&z))||FAILED(ext->GetRenderState(D3DRS_ZFUNC,&zf))||
-                   !NorthlightWorldDrawDomain::mainWorldDraw(z,zf,viewport.MinZ,viewport.MaxZ))return;
+                if(FAILED(ext->GetRenderState(D3DRS_ZENABLE,&z))||FAILED(ext->GetRenderState(D3DRS_ZFUNC,&zf)))return;
+                const bool mainWorld=NorthlightWorldDrawDomain::mainWorldDraw(z,zf,viewport.MinZ,viewport.MaxZ);
+                screenModel=!mainWorld&&model&&!world->hasContext()&&NorthlightWorldDrawDomain::menuModelDraw(z,zf,viewport.MinZ,viewport.MaxZ,hdrBackTarget());
+                if(!mainWorld&&!screenModel)return;
+                if(screenModel&&menuScene&&projectionValid)return;
             }
             if (!readProjection(wmo||model)) {
                 if (++projectionRejects==1) {
@@ -3262,10 +3271,12 @@ private:
                 return;
             }
             if(wmo&&!world->wmoContext(vs))return;
-            if(model&&!world->modelContext(vs))return;
+            if(model&&!screenModel&&!world->modelContext(vs))return;
             if(tag==1&&world)world->terrainContext();
             projectionValid=true;
             if(!bindWorldDepth(desc))return;
+            menuScene=screenModel;
+            if(menuScene&&sampled())logf("MENU scene admitted frame=%u effects=AO+bloom nativeLighting=preserved depthRange=%.9g..%.9g",frame,worldMinDepth,worldMaxDepth);
             if(captured&&earlyDepth.earlyCaptured){earlyDepth.undo();++earlyResolveUndone;++earlyResolveUndoneTotal;} /* 0.3.188 (2A): a terrain draw after the early resolve: the UI-time resolve redoes it */
             if(captured&&aoActorOn)aoActorMask->resume();
             terrain=true; captured=false;
@@ -4622,11 +4633,11 @@ static HMODULE backend() {
     const bool blpGuard=GetPrivateProfileIntW(L"Renderer",L"BlpMipGuard",1,config)!=0;
     const char* blpStatus=blpGuard?NorthlightBlpMipGuard::install():"disabled";
     logf("BLP mip guard status=%s runtime-only=1 limit=allocated-dimensions/16 files-written=0",blpStatus);
-    logf("GLUE lighting selection status=%s own-source-priority=1 slot-limit=4 runtime-only=1",NorthlightGlueLighting::install());
     const bool lightStay=GetPrivateProfileIntW(L"Renderer",L"NativeLightStay",1,config)!=0;
     logf("NATIVE light stay status=%s requested=%u runtime-only=1 files-written=0 restart-required=1",NorthlightNativeLightStay::install(lightStay),unsigned(lightStay));
     const bool moreLights=GetPrivateProfileIntW(L"Renderer",L"NativeMoreLights",1,config)!=0;
     logf("NATIVE more lights status=%s requested=%u max=8 runtime-only=1 files-written=0 shader-path=1",NorthlightNativeMoreLights::install(moreLights),unsigned(moreLights));
+    logf("GLUE lighting selection status=%s scene-source-priority=1 receivers=background+character+pet slots=4+4 deduplicated=1 runtime-only=1",NorthlightGlueLighting::install());
 #else
     logf("BLP mip guard status=disabled-imported-replay runtime-only=1 files-written=0");
 #endif

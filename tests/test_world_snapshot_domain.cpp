@@ -39,6 +39,13 @@ int main(){
     assert(policy.onDraw(tags,mainWorldDraw(1,4,kSkyMinZ,1))==Trigger::FrameStart);
     record(*sky);assert(!policy.world);
     assert(policy.onDraw(tags,mainWorldDraw(1,4,0,1))==Trigger::None); // shadow / auxiliary target
+    assert(menuModelDraw(1,4,0,1,true));
+    assert(!menuModelDraw(1,4,0,1,false)); // offscreen ModelFFX glow/auxiliary pass
+    assert(!menuModelDraw(0,4,0,1,true)&&!menuModelDraw(1,8,0,1,true));
+    assert(!menuModelDraw(1,4,0,kWorldMaxZ,true));
+    assert(!menuModelDraw(1,4,kSkyMinZ,1,true));
+    assert(!menuModelDraw(1,4,kHorizonMinZ,kHorizonMaxZ,true));
+    assert(!menuModelDraw(1,4,NAN,1,true)&&!menuModelDraw(1,4,0,INFINITY,true));
     assert(policy.onDraw(tags,mainWorldDraw(1,4,kHorizonMinZ,kHorizonMaxZ))==Trigger::None);
     assert(policy.onDraw(tags,mainWorldDraw(0,4,0,kWorldMaxZ))==Trigger::None);
     assert(policy.onDraw(tags,mainWorldDraw(1,8,0,kWorldMaxZ))==Trigger::None);

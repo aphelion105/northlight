@@ -15,6 +15,18 @@ and page protection before paused threads resume. There are no file writes or
 callbacks into the DLL. Imported replay hosts skip native installation.
 The glue selector accepts either validated QueryLights variant.
 
+The menu selector reserves the backdrop's visible native point sources for
+characters, pets and attachments in the same scene as well as the backdrop.
+Previously only the backdrop retained these lights: nearby equipment emitters
+could fill the character's slots and remove its authored key light. The native
+world scene bypasses this selection. Other scenes require a loaded `UI_` model
+in the verified scene list; discovery is bounded to 256 models per selection.
+Ambient and directional inputs, light positions and animation stay native.
+When MoreLights is present, both banks are merged without duplicate sources;
+equipment fills the remaining slots. MoreLights installs first so the selector
+can use its validated native ring getter without callbacks into the DLL.
+The checked assembly source is `scripts/glue_lighting_selection.S`.
+
 The log reports `NATIVE light stay status=active`, `already-active`, `disabled`
 or the precise validation/publication failure. This fixes the native draw-stamp
 gate; it does not remove the native four-light limit, add shadows or prove that

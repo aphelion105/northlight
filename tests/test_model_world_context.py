@@ -86,6 +86,7 @@ struct World {
     float projection[3]={};bool hasContext()const{return valid&&!failed;}
     void readOriginalFog(unsigned reg,bool proof){assert(reg==30);fogProof=proof;legacyFogKnown=proof;}
     void updateWorldContext(const char* map,const float* eye,const NorthlightWmoContext::Lighting*){assert(!std::strcmp(map,"Northrend"));assert(eye[2]==1041);++updates;}
+    bool readWorldLighting(const char*,const float* eye,NorthlightWmoContext::Lighting& light){return TestLight::readGlobalLighting(eye,light);}
     bool wmoContext(IDirect3DVertexShader9*){valid=true;return true;}
     void terrainContext(){valid=true;}
 #define NorthlightWorldCamera TestCamera
@@ -105,7 +106,7 @@ struct Device {
     struct Counts{unsigned wmo=0,fullPasses=0;} gateCounts;
     bool gateFrame=false,projectionValid=false,terrain=false,captured=false,drawWaterVS=false,drawUiHashVS=false;
     bool viewportOK=true,depthOK=true,hashBoundaryThisFrame=false,zFuncAware=true;
-    bool skySeen=false,applied=false,hdrAtUiBoundary=false;
+    bool skySeen=false,applied=false,hdrAtUiBoundary=false,menuScene=false;
     bool ortho=false,uiInputs=false,backTarget=true;struct {bool active=false;} hdr;
     bool orthographicUiGeometry(){return ortho;}bool hdrUiInputs(){return uiInputs;}
     bool hdrBackTarget(){return backTarget;}
@@ -144,7 +145,7 @@ int main(){
         case 0:p.vc.skinned=false;break;
         case 1:p.state.vp.MinZ=.9990234375f;p.state.vp.MaxZ=1;break;
         case 2:p.state.vp.MinZ=.998046875f;p.state.vp.MaxZ=.9990234375f;break;
-        case 3:p.state.vp.MaxZ=1;break;
+        case 3:p.state.vp.MaxZ=1;p.backTarget=false;break;
         case 4:p.state.z=0;break;
         case 5:p.state.zf=D3DCMP_ALWAYS;break;
         case 6:p.viewportOK=false;break;
@@ -162,6 +163,35 @@ int main(){
         p.beforeDraw(shader);assert(!p.terrain&&!p.projectionValid&&p.binds==0&&p.allocations==0);++cases;
     }
     cameraOK=lightOK=contextOK=true;
+    // A menu uses its own model camera and native light. No map/light read is
+    // required and no world context is published for a 0..1 backbuffer scene.
+    {Device p;p.state.vp.MaxZ=1;cameraOK=lightOK=contextOK=false;
+        p.beforeDraw(shader);
+        assert(p.menuScene&&p.projectionValid&&p.terrain&&p.binds==1&&p.allocations==1);
+        assert(!p.world->hasContext()&&p.world->updates==0);
+        p.beforeDraw(shader);assert(p.binds==1&&p.allocations==1);
+        p.vc.entry=2;p.vc.skinned=false;p.state.rows[11]=0;p.state.rows[14]=0;p.state.rows[15]=1;p.state.zf=D3DCMP_ALWAYS;
+        p.beforeDraw(shader);assert(p.applied&&p.effects==1);++cases;
+    }
+    cameraOK=lightOK=contextOK=true;
+    for(unsigned reject=0;reject<8;++reject){
+        Device p;p.state.vp.MaxZ=1;
+        switch(reject){
+        case 0:p.backTarget=false;break;
+        case 1:p.viewportOK=false;break;
+        case 2:p.state.z=0;break;
+        case 3:p.state.zf=D3DCMP_ALWAYS;break;
+        case 4:p.state.constants=false;break;
+        case 5:p.state.rows[15]=1;break;
+        case 6:p.vc.skinned=false;break;
+        case 7:p.depthOK=false;break;
+        }
+        p.beforeDraw(shader);assert(!p.menuScene&&!p.terrain&&p.allocations==0);++cases;
+    }
+    {Device p;p.state.vp.MaxZ=1;p.beforeDraw(shader);assert(p.menuScene);
+        p.state.vp.MaxZ=.94f;p.world->captureShaders[shader]={};p.beforeDraw(shader);
+        assert(!p.menuScene&&p.world->hasContext()&&p.world->updates==1&&p.binds==2);++cases;
+    }
     {Device p;p.world->captureShaders[shader].fog=false;p.beforeDraw(shader);assert(p.terrain&&!p.world->fogProof&&p.world->traceFog==0);++cases;}
     {Device p;p.depthOK=false;p.world->captureShaders[shader]={};p.beforeDraw(shader);assert(!p.terrain&&p.allocations==0);++cases;}
     for(int tag:{1,0}){Device p;p.vc.entry=tag;p.vc.wmo=tag==0;p.vc.skinned=false;p.beforeDraw(shader);assert(p.terrain&&p.projectionValid);++cases;}
@@ -175,7 +205,7 @@ if __name__ == '__main__':
     includes = [v for p in sorted((ROOT / 'src').iterdir()) if p.is_dir() for v in ('-I', str(p))]
     zig = os.environ.get('NORTHLIGHT_ZIG') or str(fp.zig())
     compiler = [zig, 'c++', '-target', 'x86-windows-gnu'] if zig else shlex.split(os.environ.get('CXX', 'c++'))
-    with tempfile.TemporaryDirectory(prefix='model-context-') as tmp:
+    with tempfile.TemporaryDirectory(prefix='model-context-', dir=fp.output_dir()) as tmp:
         source = Path(tmp) / 'test.cpp'
         source.write_text(HARNESS.replace('__MODEL__', MODEL).replace('__BEFORE__', BEFORE).replace('__PROJECTION__', PROJECTION))
         binary = Path(tmp) / ('test.exe' if os.name == 'nt' else 'test')

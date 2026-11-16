@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
 
 client = fp.client_root() / 'Wow.exe'
+subprocess.run([sys.executable, str(fp.REPO / 'scripts/generate_glue_lighting_selection.py'), '--check'], check=True)
 original_hash = hashlib.sha256(client.read_bytes()).hexdigest()
 for mode in ('-O0', '-O2'):
     exe = fp.output_dir() / ('glue-lighting' + mode + '.exe')
