@@ -66,7 +66,8 @@
       "test_probe_cascade.py",
       "test_diagnostic_files.py",
       "test_world_material_texels.py",
-      "test_world_upload_pixels.py"
+      "test_world_upload_pixels.py",
+      "test_cpu_capture_stages.py"
     ]
   },
   "gpu": {

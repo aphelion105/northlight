@@ -33,6 +33,7 @@ private:
   size_t metadata=0,bytes=0,reserved=0;Batch* batch=nullptr;bool pending=false;
   IDirect3DVertexBuffer9* vb[4]={};IDirect3DIndexBuffer9* ib=nullptr;Placement at;
   Entry* previous=nullptr;Entry* next=nullptr;Entry* batchNext=nullptr;
+  Entry* untrackedPrevious=nullptr;Entry* untrackedNext=nullptr;
   NorthlightIntrusiveLRU::Links<Entry> lru; // Nonresident entries, in the same order as the full LRU.
   Entry()=default;Entry(const Entry&)=delete;Entry& operator=(const Entry&)=delete;
   ~Entry(){for(auto p:vb)if(p)p->Release();if(ib)ib->Release();}
@@ -51,7 +52,7 @@ private:
  std::array<std::vector<Entry*>,2> pending_;
  Entry* oldest_=nullptr;Entry* newest_=nullptr;IDirect3DDevice9* device_=nullptr;UINT maxVertexIndex_=0;
  Entry** removalCursor_=nullptr; // Stack-owned during eviction/trim; removals skip erased siblings.
- std::uint64_t frame_=0;bool explicitClock_=false,orderedFrames_=true;std::uint16_t untrackedEntries_=0;
+ std::uint64_t frame_=0;bool explicitClock_=false,orderedFrames_=true;Entry* untrackedFirst_=nullptr;
  size_t limit_[2]={32u<<20,64u<<20},gpu_[2]={},metadata_[2]={},reserved_[2]={},attempted_[2]={};
  size_t retain_[2]={32u<<20,64u<<20};size_t totalLimit_=SIZE_MAX;
  unsigned attempts_[2]={},groups_[2]={};bool committed_[2]={},ignoreTime_[2]={},timeDeferred_[2]={};
@@ -96,9 +97,13 @@ private:
  }
  void erase(Entry& e){
   if(removalCursor_&&*removalCursor_==&e)*removalCursor_=e.next;
+  if(!e.identity){
+   if(e.untrackedPrevious)e.untrackedPrevious->untrackedNext=e.untrackedNext;else untrackedFirst_=e.untrackedNext;
+   if(e.untrackedNext)e.untrackedNext->untrackedPrevious=e.untrackedPrevious;
+  }
   if(!e.bytes)probation_.remove(e);
   release(e);metadata_[e.owner]-=e.metadata;unlink(e);auto range=entries_.equal_range(e.hash);
-  for(auto it=range.first;it!=range.second;++it)if(&it->second==&e){untrackedEntries_-=!e.identity;entries_.erase(it);return;}assert(false);
+  for(auto it=range.first;it!=range.second;++it)if(&it->second==&e){entries_.erase(it);return;}assert(false);
  }
  void evict(Entry& e,unsigned cause,bool current=false){
   auto* batch=e.batch;const unsigned siblings=batch?batch->live-1:0;
@@ -244,7 +249,8 @@ public:
  ~NativeStore(){clearAll();}
  void advance(std::uint64_t frame){
   if(frame_==frame)return;orderedFrames_=entries_.empty()||(orderedFrames_&&frame>frame_);frame_=frame;for(unsigned i=0;i<2;++i){stats_[i]={};counters_[i]={};attempted_[i]=attempts_[i]=groups_[i]=0;timeDeferred_[i]=false;}
-  if(untrackedEntries_)for(auto it=entries_.begin();it!=entries_.end();){auto& e=it->second;++it;if(!e.identity&&e.source.expired()){++stats_[e.owner].expiredEntries;stats_[e.owner].expiredBytes+=e.bytes;erase(e);}}
+  // Only entries without a source certificate expire with their CPU owner.
+  for(auto* e=untrackedFirst_;e;){auto* next=e->untrackedNext;if(e->source.expired()){++stats_[e->owner].expiredEntries;stats_[e->owner].expiredBytes+=e->bytes;erase(*e);}e=next;}
   commit(0);commit(1);
  }
  void setFrame(std::uint64_t frame){explicitClock_=true;advance(frame);}
@@ -263,7 +269,8 @@ public:
     if(metadata>limit_[lane]||!room(lane,metadata,false))return false;
     const auto key=hash(mesh);auto inserted=entries_.emplace(std::piecewise_construct,std::forward_as_tuple(key),std::forward_as_tuple());auto& e=inserted->second;
     e.source=mesh;e.sourceAddress=mesh.get();e.identity=id;e.hash=key;e.first=e.touched=frame_;e.owner=lane;e.users=1u<<lane;e.metadata=metadata;
-    untrackedEntries_+=!e.identity;metadata_[lane]+=metadata;append(e);probation_.append(e);++stats_[lane].warmup;return false;
+    if(!e.identity){e.untrackedNext=untrackedFirst_;if(untrackedFirst_)untrackedFirst_->untrackedPrevious=&e;untrackedFirst_=&e;}
+    metadata_[lane]+=metadata;append(e);probation_.append(e);++stats_[lane].warmup;return false;
    }
    auto& e=it->second;const bool wasResident=e.bytes!=0;e.users|=1u<<lane;touch(e);
    if(e.identity){++stats_[lane].identityHits;if(!sameSource(e,mesh)){
@@ -311,7 +318,7 @@ public:
  template<class Visit>void buffers(Visit visit)const{for(const auto& batch:batches_){visit(batch->vb);visit(batch->ib);}for(const auto& item:entries_)if(!item.second.batch){for(auto* vb:item.second.vb)visit(vb);visit(item.second.ib);}}
  size_t bytes()const{return gpu_[0]+gpu_[1];}size_t chargedBytes()const{return charged(0)+charged(1);}
  static constexpr size_t entryLimit(){return EntryLimit;}
- void clearAll(){oldest_=newest_=nullptr;probation_.clear();for(auto& p:pending_)p.clear();entries_.clear();untrackedEntries_=0;orderedFrames_=true;batches_.clear();device_=nullptr;for(unsigned i=0;i<2;++i){gpu_[i]=metadata_[i]=reserved_[i]=0;committed_[i]=false;}}
+ void clearAll(){oldest_=newest_=untrackedFirst_=nullptr;probation_.clear();for(auto& p:pending_)p.clear();entries_.clear();orderedFrames_=true;batches_.clear();device_=nullptr;for(unsigned i=0;i<2;++i){gpu_[i]=metadata_[i]=reserved_[i]=0;committed_[i]=false;}}
  void trim(Consumer consumer,size_t bytes){
   const auto lane=index(consumer);retain_[lane]=std::min(limit_[lane],bytes);if(charged(lane)<=bytes)return;
   // Preserve only transfers OUT of this lane. A forward scan therefore keeps

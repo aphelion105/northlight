@@ -664,6 +664,7 @@ private:
     IDirect3DSurface9* maskFormatFor=nullptr;unsigned long maskFormatValue=0;unsigned maskFormatLogs=0;bool maskStencil=false;const void* maskDsId=nullptr; /* identities only: the world depth the format verdict is for, and the one whose Clear(Z) also clears stencil */
     void resetTranslucentCensus(){censusDraws=lastOpaqueZAt=clearResolveAt=earlyResolves=earlyResolveAt=earlyResolveUndone=0;}
     LONGLONG cpuPrep=0,cpuCapture=0,cpuWaterCapture=0,cpuEffects=0,cpuMirrorAudit=0;
+    LONGLONG cpuCleanupOwners[5]={};
     LONGLONG cpuHdrAdmission=0,cpuHdrBoundary=0,cpuHdrTransfer=0,cpuHdrFinish=0;
     unsigned hdrAdmissionCalls=0,hdrTransferCalls=0;
     LONGLONG cpuAOBlurSetup=0,cpuAOBlurSubmit=0;std::uint64_t cpuAOBlurFrame=0;
@@ -1104,7 +1105,14 @@ private:
         gpuFrameStarted=gpuSceneSplit=gpuEffectsSplit=false;
         if(!applied||failed)stateBlocks.clear();
         if(!enabled||extensionFault){stateBlocks.clear();if(world)world->releaseStateCache(!failed&&!extensionFault);if(water)water->releaseStateCache();}
-        if(world)world->endFrame(!extensionFault,frame);if(water)water->endFrame();if(surface)surface->endFrame();if(autoBump)autoBump->endFrame();if(modelNormals)modelNormals->endFrame();if(celestialDiscs)celestialDiscs->endFrame();if(shadowBlobs)shadowBlobs->endFrame();
+        std::fill(std::begin(cpuCleanupOwners),std::end(cpuCleanupOwners),0);
+        const bool cleanupSample=sampled()&&NorthlightRenderThreadProbe::profiling();
+        {CpuScope cost(cleanupSample?cpuCleanupOwners:nullptr);if(world)world->endFrame(!extensionFault,frame);}
+        {CpuScope cost(cleanupSample?cpuCleanupOwners+1:nullptr);if(water)water->endFrame();}
+        {CpuScope cost(cleanupSample?cpuCleanupOwners+2:nullptr);if(surface)surface->endFrame();}
+        {CpuScope cost(cleanupSample?cpuCleanupOwners+3:nullptr);if(autoBump)autoBump->endFrame();}
+        {CpuScope cost(cleanupSample?cpuCleanupOwners+4:nullptr);if(modelNormals)modelNormals->endFrame();}
+        if(celestialDiscs)celestialDiscs->endFrame();if(shadowBlobs)shadowBlobs->endFrame();
         effectCoverage.endFrame();drop(worldDepth);worldDepthDescKnown=false; rainMrtUnbind();terrain = captured = applied = projectionValid = skySeen = menuScene = false;rainMaskCleared=rainMaskDrawn=rainMaskFrame=rainMaskOk=rainDepthOk=false; /* 0.3.202 (rain mask MRT): RT1 never outlives a frame */earlyDepth.reset();resetTranslucentCensus(); /* the TRANSLUCENT line is logged before clearFrame */
     }
     void captureWeatherDiagnostics(const NorthlightSurfaceFrame* constants,IDirect3DSurface9* target,IDirect3DSurface9* nameDepth,const char* unavailable,
@@ -4095,6 +4103,9 @@ public:
             // 0.3.154: U frames have no per-draw timers; their numbers are on the DRAWGATE ab line.
             logf("CPU profile frame=%u drawGate=%.3fms capture=%.3fms effects=%.3fms cleanup=%.3fms total=%.3fms enabled=%d gi=%u shadows=%u fog=%u captureSkipped=%u drawHooks=%.3fms frameDrawGates=%u totalIncludesHooks=1 cpuGpuAdditive=0",sampleFrame,drawTimed?std::max(0.0,double(cpuPrep-cpuCapture-cpuEffects)*ms):-1.0,drawTimed?cpuCapture*ms:-1.0,cpuEffects*ms,cleanup*ms,drawTimed?(cpuPrep+cpuDrawHooks+cleanup)*ms:-1.0,frameEnabled,unsigned(frameEffects.gi),unsigned(frameEffects.shadows),unsigned(frameEffects.fog),unsigned(world&&world->captureSkippedLastFrame()),
                 NorthlightRenderThreadProbe::profiling()?cpuDrawHooks*ms:-1.0,unsigned(frameDrawGates)); /* 0.3.187: drawHooks -1 = not measured (RenderProfile=0) */
+            if(drawTimed){const auto measured=cpuCleanupOwners[0]+cpuCleanupOwners[1]+cpuCleanupOwners[2]+cpuCleanupOwners[3]+cpuCleanupOwners[4];
+                logf("CPU cleanup split frame=%u worldMs=%.6f waterMs=%.6f surfaceMs=%.6f materialsMs=%.6f normalsMs=%.6f remainderMs=%.6f scope=inside-clearFrame includesOwnerDiagnostics=1",
+                    sampleFrame,cpuCleanupOwners[0]*ms,cpuCleanupOwners[1]*ms,cpuCleanupOwners[2]*ms,cpuCleanupOwners[3]*ms,cpuCleanupOwners[4]*ms,std::max(0.0,double(cleanup-measured)*ms));}
             // captureWorld+captureWater=capture. qpcNs: one QueryPerformanceCounter call,
             // so a profile can subtract timer overhead (2 calls per CpuScope).
             LARGE_INTEGER a={},b={},t={};QueryPerformanceCounter(&a);for(unsigned i=0;i<32;++i)QueryPerformanceCounter(&t);QueryPerformanceCounter(&b);

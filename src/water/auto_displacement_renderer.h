@@ -248,7 +248,14 @@ class NorthlightAutoDisplacement {
             poseEnvelopes.chargeCheapPreparation(uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(NorthlightReplayBounds::BoundsClock::now()-start).count()));
             return value;}):std::shared_ptr<const NorthlightReplayBounds::Prepared>{};
         if(!basis)basis=identity;
-        return prepared?poseEnvelopes.calculatePrepared(*prepared,*source,source,bank,basis,envelopeBudget,result,NorthlightReplayBounds::EnvelopeCache::Stage::All,info):
+        NorthlightConstantEpoch::Stamp current;const NorthlightConstantEpoch::Stamp* certificate=nullptr;
+        // The current complete CPU bank must be certified under this draw's
+        // mirror gate. A stamp alone cannot certify an arbitrary float array.
+        const auto* captured=bank==constants&&constantFirst==0&&constantCount==256?&constantStamp:
+            bank==rangeConstants&&rangeConstantFirst==0&&rangeConstantCount==256?&rangeConstantStamp:nullptr;
+        current.requestHeld=true;
+        if(prepared&&trustedConstants&&captured&&constantReader&&constantReader(constantContext,current)&&current.held&&NorthlightConstantEpoch::exact(*captured,current))certificate=&current;
+        return prepared?poseEnvelopes.calculatePrepared(*prepared,*source,source,bank,basis,envelopeBudget,result,NorthlightReplayBounds::EnvelopeCache::Stage::All,info,certificate):
                         poseEnvelopes.calculate(program,*source,source,elements,count,bank,basis,envelopeBudget,result,NorthlightReplayBounds::EnvelopeCache::Stage::All,info);
     }
     bool chargePoseVertices(unsigned vertices){
@@ -359,11 +366,20 @@ class NorthlightAutoDisplacement {
         Entry* first=nullptr;auto visit=[&](Entry& e){if((!first||e.order<first->order)&&match(e))first=&e;};
         if(!indexedEntries){for(auto& e:entries)visit(*e);}else{const auto range=materialLookup.equal_range(fingerprint);for(auto it=range.first;it!=range.second;++it)visit(*it->second);}return first;
     }
+    struct GeometryAlias {
+        const Mesh* address=nullptr;std::weak_ptr<const Mesh> source,canonical;
+        IDirect3DVertexDeclaration9* declaration=nullptr;uint64_t program=0;unsigned domain=0;
+    };
+    std::array<GeometryAlias,64> geometryAliases{};unsigned nextGeometryAlias=0,geometryAliasHits=0;
     std::shared_ptr<const Mesh> geometrySource(const std::shared_ptr<const Mesh>& source,IDirect3DVertexDeclaration9* declaration,uint64_t program,unsigned domain){
         // A tracked buffer rewrite can preserve every vertex/index. Keep the
         // current snapshot's write identity intact; only reuse private geometry
         // after checking the full contents and layout again.
         if(!source->replayIdentity)return source;
+        for(unsigned i=0;i<std::min(nextGeometryAlias,unsigned(geometryAliases.size()));++i){const auto& alias=geometryAliases[i];if(alias.address==source.get()&&alias.declaration==declaration&&alias.program==program&&alias.domain==domain&&
+            NorthlightSourceIdentity::sameOwner(alias.source,source))if(auto canonical=alias.canonical.lock()){++geometryAliasHits;++sourceAliases;return canonical;}
+        }
+
         auto* hit=firstCandidate(source,sourceFingerprint(*source),true,[&](const Entry& e){
             if(e.sourceDecl!=declaration||e.program!=program||e.domain!=domain||!sameSource(e,source,true))return false;
             // sameSource already compared stream zero bytes; only its stride
@@ -373,6 +389,10 @@ class NorthlightAutoDisplacement {
             return true;
         });
         if(!hit||hit->source==source)return source;
+        // Memoize only the full byte/layout proof for these immutable owners.
+        // A copied identity, pointer ABA or independently changed mesh must
+        // repeat the original comparison before it can enter this table.
+        geometryAliases[nextGeometryAlias++%geometryAliases.size()]={source.get(),source,hit->source,declaration,program,domain};
         ++sourceAliases;return hit->source;
     }
     Entry* findOverlay(const std::shared_ptr<const Mesh>& source,uint64_t fingerprint,IDirect3DVertexDeclaration9* declaration){
@@ -381,6 +401,7 @@ class NorthlightAutoDisplacement {
     bool retains(const Mesh* source,const Entry* except=nullptr)const{for(const auto& e:entries)if(e.get()!=except&&e->source.get()==source)return true;return false;}
     uint64_t retainedFingerprint(const std::shared_ptr<const Mesh>& source)const{const auto it=sourceLookup.find(source.get());return it!=sourceLookup.end()?it->second->fingerprint:sourceFingerprint(*source);}
     void evictOldest(){
+        geometryAliases={};nextGeometryAlias=0; // Eviction ends the retained declaration-lifetime proof.
         auto old=std::min_element(entries.begin(),entries.end(),[](const auto& a,const auto& b){return a->used<b->used;});Entry* e=old->get();
         resident-=e->bytes;if(!retains(e->source.get(),e))resident-=e->source->byteSize();
         auto erase=[&](auto& lookup,const auto& key){auto range=lookup.equal_range(key);for(auto it=range.first;it!=range.second;)if(it->second==e)it=lookup.erase(it);else ++it;};
@@ -489,7 +510,7 @@ public:
             return found;});}
     ~NorthlightAutoDisplacement(){reset();for(auto& s:shaders){drop(s.second.patched);drop(s.second.gpu);drop(s.second.source);}}
     void tracking(uint64_t(*identity)(void*,bool),uint64_t(*version)(void*,bool),NorthlightCaptureMetadata::Read metadata){positionBounds.tracking(identity,version,metadata);for(auto* frame:{&snapshots,&rangeSnapshots,&skinRangeSnapshots}){frame->setIdentityProvider(identity);frame->setVersionProvider(version);frame->setMetadataProvider(metadata);}}
-    void setConstantEpochSource(void* context,NorthlightConstantEpoch::Reader reader){constantStamp={};rangeConstantStamp={};constantContext=context;constantReader=reader;constantSpan=nullptr;trustedConstants=false;}
+    void setConstantEpochSource(void* context,NorthlightConstantEpoch::Reader reader){poseEnvelopes.clearPoseCertificates();constantStamp={};rangeConstantStamp={};constantContext=context;constantReader=reader;constantSpan=nullptr;trustedConstants=false;}
     void setDistanceView(const float* rows){
         // Draws in the same view share the already validated rotation and inverse.
         if(rows&&distanceViewKnown&&!NorthlightMem::compare(rows,distanceInverseView,12)&&
@@ -505,7 +526,7 @@ public:
         for(unsigned r=0;r<3;++r)for(unsigned k=0;k<3;++k)distanceView[r*3+k]=(double(rows[((r+1)%3)*4+(k+1)%3])*rows[((r+2)%3)*4+(k+2)%3]-double(rows[((r+1)%3)*4+(k+2)%3])*rows[((r+2)%3)*4+(k+1)%3])/determinant;
         for(unsigned r=0;r<3;++r)std::copy_n(rows+r*4,3,distanceInverseView+r*4);distanceViewKnown=true;
     }
-    void setTrustedConstantEpochSource(NorthlightConstantEpoch::TrustedSource source){constantStamp={};rangeConstantStamp={};trustedConstants=bool(source)&&source.context()==d;constantContext=trustedConstants?source.context():nullptr;constantReader=trustedConstants?source.reader():nullptr;constantSpan=trustedConstants?source.span():nullptr;}
+    void setTrustedConstantEpochSource(NorthlightConstantEpoch::TrustedSource source){poseEnvelopes.clearPoseCertificates();constantStamp={};rangeConstantStamp={};trustedConstants=bool(source)&&source.context()==d;constantContext=trustedConstants?source.context():nullptr;constantReader=trustedConstants?source.reader():nullptr;constantSpan=trustedConstants?source.span():nullptr;}
     void shareCaptureSources(NorthlightDrawSnapshot::Frame& capture){snapshots.shareSnapshotPool(capture);snapshots.setReplayContentReuse(true);snapshots.setResidentPeer(&capture);capture.setResidentPeer(&snapshots);skinRangeSnapshots.setResidentPeer(&capture);}
     void reportSources(uint64_t frame)const{
         logf("MATERIAL_RANGE_PROOF frame=%llu tested=%u culled=%u mixed=%u deferred=%u cacheBytes=%zu",(unsigned long long)frame,modelRangeProof.tested,modelRangeProof.culled,modelRangeProof.singleMixed,modelRangeProof.deferred,sizeof(modelRangeProof));
@@ -518,7 +539,7 @@ public:
         logf("MATERIAL_REPLAY_CONTENT frame=%llu geometryTests=%u geometryHits=%u geometryComparedBytes=%zu",(unsigned long long)frame,snapshots.replayContentTests(),snapshots.replayContentHits(),snapshots.replayContentComparedBytes());
         logf("MATERIAL_ADMISSION_SOURCE frame=%llu reused=%u",(unsigned long long)frame,admissionSnapshotReuses);
         logf("MATERIAL_GEOMETRY_LIFETIME frame=%llu participants=%zu sharedHits=%u uniqueBytes=%zu liveBytes=%zu liveObjects=%zu",(unsigned long long)frame,snapshots.sharedSourceParticipants(),snapshots.sharedSourceHits(),snapshots.uniqueSourceBytes(),snapshots.sourceLiveBytes(),snapshots.sourceLiveObjects());
-        logf("MATERIAL_GEOMETRY_SOURCE frame=%llu residentHits=%u peerHits=%u misses=%u readBytes=%zu entries=%zu bytes=%zu limitMiB=%zu skinPeerHits=%u skinReadBytes=%zu rangeReadBytes=%zu poseVertices=%u envelopeEntries=%zu envelopeReady=%zu envelopeCold=%zu envelopeBuilt=%zu envelopeBuildVertices=%zu envelopeTimeDeferred=%zu envelopeOperationDeferred=%zu envelopeUnsupported=%zu poseGenericVertices=%u poseSingleBoneVertices=%u poseCommutedVertices=%u poseTemplateVertices=%u poseByteIndexVertices=%u poseSharedKeyHits=%zu poseKeyComparedBytes=%zu",(unsigned long long)frame,snapshots.snapshotCacheHits(),snapshots.residentPeerHits(),snapshots.snapshotCacheMisses(),snapshots.bytesRead(),snapshots.snapshotCacheEntries(),snapshots.snapshotCacheBytes(),snapshots.snapshotCacheLimit()>>20,skinRangeSnapshots.residentPeerHits(),skinRangeSnapshots.bytesRead(),rangeSnapshots.bytesRead(),poseVerticesThisFrame,poseEnvelopes.entries(),e.ready,e.cold,e.completed,e.buildVertices,e.timeDeferred,e.operationDeferred,e.unsupported,poseKernelVertices[0],poseKernelVertices[1],poseKernelVertices[2],poseKernelVertices[3],poseByteIndexVertices,e.sharedKeyHits,e.keyComparedBytes);
+        logf("MATERIAL_GEOMETRY_SOURCE frame=%llu residentHits=%u peerHits=%u misses=%u readBytes=%zu entries=%zu bytes=%zu limitMiB=%zu skinPeerHits=%u skinReadBytes=%zu rangeReadBytes=%zu poseVertices=%u envelopeEntries=%zu envelopeReady=%zu envelopeCold=%zu envelopeBuilt=%zu envelopeBuildVertices=%zu envelopeTimeDeferred=%zu envelopeOperationDeferred=%zu envelopeUnsupported=%zu poseGenericVertices=%u poseSingleBoneVertices=%u poseCommutedVertices=%u poseTemplateVertices=%u poseByteIndexVertices=%u poseSharedKeyHits=%zu poseKeyComparedBytes=%zu poseCertifiedHits=%zu geometryAliasMemoHits=%u",(unsigned long long)frame,snapshots.snapshotCacheHits(),snapshots.residentPeerHits(),snapshots.snapshotCacheMisses(),snapshots.bytesRead(),snapshots.snapshotCacheEntries(),snapshots.snapshotCacheBytes(),snapshots.snapshotCacheLimit()>>20,skinRangeSnapshots.residentPeerHits(),skinRangeSnapshots.bytesRead(),rangeSnapshots.bytesRead(),poseVerticesThisFrame,poseEnvelopes.entries(),e.ready,e.cold,e.completed,e.buildVertices,e.timeDeferred,e.operationDeferred,e.unsupported,poseKernelVertices[0],poseKernelVertices[1],poseKernelVertices[2],poseKernelVertices[3],poseByteIndexVertices,e.sharedKeyHits,e.keyComparedBytes,e.certifiedPoseHits,geometryAliasHits);
     }
     void configure(const NorthlightQuality::Settings& s,NorthlightStreaming::CpuRetirementBatch* batch=nullptr){
         current=nullptr;if(worldDetail!=s.autoDisplacementDetail||modelDetail!=s.autoModelDisplacementDetail||polarity!=s.autoHeightPolarity||heightDetails!=s.autoHeightDetails||heightBalance!=s.autoHeightBalance)reset(batch);
@@ -646,8 +667,8 @@ public:
         logf("DISPLACEMENT_MEMORY pressure=%u profiled=%u sourcesMs=%.3f capsMs=%.3f geometryMs=%.3f boundsMs=%.3f deferredMiB=%.3f batched=%u",unsigned(on),unsigned(timed),sourcesMs,capsMs,geometryMs,boundsMs,double(deferred)/(1u<<20),unsigned(batch!=nullptr));
     }
     void trimMemory(NorthlightStreaming::CpuRetirement* retirement=nullptr,NorthlightStreaming::CpuRetirementBatch* batch=nullptr){setMemoryPressure(memoryPressure,retirement,batch);}
-    void reset(NorthlightStreaming::CpuRetirementBatch* batch=nullptr,bool preserveCaptureSources=false){setDistanceView(nullptr);modelRangeProof.clear();snapshots.clearIndexCache(nullptr,batch,preserveCaptureSources);rangeSnapshots.clearIndexCache(nullptr,batch,preserveCaptureSources);skinRangeSnapshots.clearIndexCache(nullptr,batch,preserveCaptureSources);positionBounds.clear();current=nullptr;clearModelOverlays();constantStamp={};rangeConstantStamp={};sourceLookup.clear();contentLookup.clear();materialLookup.clear();indexedEntries=true;entries.clear();boundsLRU.clear();bounds.clear();poseEnvelopes.clear();poseMetadata.clear();poseBindings={};envelopeBudget.reset();envelopeBuildContinued=false;boundsBytes=resident=0;for(auto& t:textures){drop(t.gpu);drop(t.source);}textures.clear();declarations.clear();}
-    void endFrame(){setDistanceView(nullptr);modelRangeProof.beginFrame();current=nullptr;clearModelOverlays();if(variantSources)logf("MATERIAL_VARIANT_COLD frame=%u sources=%u cpuBuilt=%u gpuBuilt=%u readFailed=%u sourceBytes=%zu cpuMs=%.6f",frames,variantSources,variantCPU,variantGPU,variantReadFailed,variantBytes,variantMs);variantSources=variantCPU=variantGPU=variantReadFailed=0;variantBytes=0;variantMs=0;if(frames%60==0){MEMORYSTATUSEX memory{};memory.dwLength=sizeof memory;if(GlobalMemoryStatusEx(&memory))refreshBudget(memory);}buildsThisFrame=readsThisFrame=poseVerticesThisFrame=0;for(auto& vertices:poseKernelVertices)vertices=0;poseByteIndexVertices=0;poseEnvelopes.beginFrame(false);poseMetadata.beginFrame();envelopeBudget.reset();envelopeBuildContinued=false;snapshots.clearFrame();rangeSnapshots.clearFrame();skinRangeSnapshots.clearFrame();positionBounds.beginFrame();capturedBoundsHits=admissionSnapshotReuses=0;if((draws||snapshotRejected)&&frames%600==0){logf("DISPLACEMENT cached=%zu bytes=%zu builds=%llu hits=%llu draws=%llu triangles=%llu refused=%llu terrain=%u walls=%u grass=%u models=%u stateRejected=%u heightRejected=%u shaderRejected=%u snapshotRejected=%u meshRejected=%u budgetMiB=%zu",entries.size(),resident,(unsigned long long)builds,(unsigned long long)hits,(unsigned long long)draws,(unsigned long long)triangles,(unsigned long long)refused,domainDraws[0],domainDraws[1],domainDraws[2],domainDraws[3],stateRejected,heightRejected,shaderRejected,snapshotRejected,meshRejected,cacheBudget>>20);
+    void reset(NorthlightStreaming::CpuRetirementBatch* batch=nullptr,bool preserveCaptureSources=false){geometryAliases={};nextGeometryAlias=geometryAliasHits=0;setDistanceView(nullptr);modelRangeProof.clear();snapshots.clearIndexCache(nullptr,batch,preserveCaptureSources);rangeSnapshots.clearIndexCache(nullptr,batch,preserveCaptureSources);skinRangeSnapshots.clearIndexCache(nullptr,batch,preserveCaptureSources);positionBounds.clear();current=nullptr;clearModelOverlays();constantStamp={};rangeConstantStamp={};sourceLookup.clear();contentLookup.clear();materialLookup.clear();indexedEntries=true;entries.clear();boundsLRU.clear();bounds.clear();poseEnvelopes.clear();poseMetadata.clear();poseBindings={};envelopeBudget.reset();envelopeBuildContinued=false;boundsBytes=resident=0;for(auto& t:textures){drop(t.gpu);drop(t.source);}textures.clear();declarations.clear();}
+    void endFrame(){setDistanceView(nullptr);modelRangeProof.beginFrame();current=nullptr;clearModelOverlays();if(variantSources)logf("MATERIAL_VARIANT_COLD frame=%u sources=%u cpuBuilt=%u gpuBuilt=%u readFailed=%u sourceBytes=%zu cpuMs=%.6f",frames,variantSources,variantCPU,variantGPU,variantReadFailed,variantBytes,variantMs);variantSources=variantCPU=variantGPU=variantReadFailed=0;variantBytes=0;variantMs=0;if(frames%60==0){MEMORYSTATUSEX memory{};memory.dwLength=sizeof memory;if(GlobalMemoryStatusEx(&memory))refreshBudget(memory);}buildsThisFrame=readsThisFrame=poseVerticesThisFrame=0;for(auto& vertices:poseKernelVertices)vertices=0;poseByteIndexVertices=0;poseEnvelopes.beginFrame(false);poseMetadata.beginFrame();envelopeBudget.reset();envelopeBuildContinued=false;snapshots.clearFrame();rangeSnapshots.clearFrame();skinRangeSnapshots.clearFrame();positionBounds.beginFrame();capturedBoundsHits=admissionSnapshotReuses=geometryAliasHits=0;if((draws||snapshotRejected)&&frames%600==0){logf("DISPLACEMENT cached=%zu bytes=%zu builds=%llu hits=%llu draws=%llu triangles=%llu refused=%llu terrain=%u walls=%u grass=%u models=%u stateRejected=%u heightRejected=%u shaderRejected=%u snapshotRejected=%u meshRejected=%u budgetMiB=%zu",entries.size(),resident,(unsigned long long)builds,(unsigned long long)hits,(unsigned long long)draws,(unsigned long long)triangles,(unsigned long long)refused,domainDraws[0],domainDraws[1],domainDraws[2],domainDraws[3],stateRejected,heightRejected,shaderRejected,snapshotRejected,meshRejected,cacheBudget>>20);
         logf("DISPLACEMENT snapshots attempts=%llu up=%llu buffered=%llu unknown=%llu arguments=%llu declaration=%llu stream=%llu instancing=%llu indexBuffer=%llu indexRange=%llu vertexRange=%llu budget=%llu lock=%llu unlock=%llu",(unsigned long long)snapshotAttempts,(unsigned long long)snapshotUP,(unsigned long long)(snapshotAttempts-snapshotUP),(unsigned long long)snapshotReasons[0],(unsigned long long)snapshotReasons[1],(unsigned long long)snapshotReasons[2],(unsigned long long)snapshotReasons[3],(unsigned long long)snapshotReasons[4],(unsigned long long)snapshotReasons[5],(unsigned long long)snapshotReasons[6],(unsigned long long)snapshotReasons[7],(unsigned long long)snapshotReasons[8],(unsigned long long)snapshotReasons[9],(unsigned long long)snapshotReasons[10]);}++frames;}
     void registerVariant(IDirect3DVertexShader9* original,const DWORD* code,size_t count,bool skinned=false,bool wmo=false){
         auto old=shaders.find(original);if(old!=shaders.end()){drop(old->second.patched);drop(old->second.gpu);drop(old->second.source);shaders.erase(old);}Shader shader;

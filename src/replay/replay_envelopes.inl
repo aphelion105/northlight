@@ -44,6 +44,7 @@ public:
         size_t effectiveCopiedBytes=0,fastValid=0;
         size_t sourceIdentityHits=0,sourceReconstructedHits=0,sharedKeyHits=0,keyComparedBytes=0;
         size_t rigidPeerHits=0;
+        size_t certifiedPoseHits=0;
         size_t coarseAttempts=0,coarseValid=0,coarseCulled=0;
         std::uint64_t coarseNanoseconds=0;
     };
@@ -68,7 +69,7 @@ private:
         std::unique_ptr<SkinEnvelope> skin;
         size_t vertex=0,index=0,indexCount=0;bool unsupported=false,ready=false;
         std::uint64_t touched=0,programHash=0,lastEvaluationNs=0,serial=0;size_t bytes=0,baseBytes=0;
-        unsigned constantFirst=0,constantCount=256,memoSlot=64;
+        unsigned constantFirst=0,constantCount=256,memoSlot=64,poseSlot=16;
         bool copyDefinitions=true,singleBone=false,rigidPositions=false; /* singleBone resolves its control DEF directly */
         unsigned rigidStride=0,paletteSpan=0;bool rigidPeerTried=false;
     };
@@ -83,6 +84,24 @@ private:
     bool memoProtect_=true;
     size_t memoBytes_=0,memoTableBytes_=0,memoNext_=0,memoEntries_=0;
     std::uint64_t entrySerial_=0;
+    // Fixed storage, no geometry/COM owners. The serial belongs to one immutable
+    // envelope; current register epochs and the exact basis certify its pose.
+    struct PoseCertificate {std::uint64_t serial=0;NorthlightConstantEpoch::Stamp stamp;float basis[16];Bounds bounds;};
+    std::array<PoseCertificate,16> poses_{};unsigned nextPose_=0;
+    bool certifiedPose(Entry& e,const NorthlightConstantEpoch::Stamp* stamp,const float* basis,Bounds& output){
+        if(!stamp||!stamp->valid||!stamp->held||e.poseSlot>=poses_.size())return false;
+        const auto& pose=poses_[e.poseSlot];
+        if(!e.serial||pose.serial!=e.serial||!NorthlightConstantEpoch::banks(pose.stamp,*stamp,true,true)||
+           std::memcmp(pose.basis,basis,sizeof pose.basis))return false;
+        unsigned first,last;NorthlightConstantEpoch::dirtySpan(pose.stamp,*stamp,e.constantFirst,e.constantFirst+e.constantCount,first,last);
+        if(first!=last)return false;
+        output=pose.bounds;return true;
+    }
+    void certifyPose(Entry& e,const NorthlightConstantEpoch::Stamp* stamp,const float* basis,const Bounds& output){
+        if(!stamp||!stamp->valid||!stamp->held||!e.serial||!output.valid)return;
+        if(e.poseSlot>=poses_.size()||poses_[e.poseSlot].serial!=e.serial)e.poseSlot=nextPose_++%poses_.size();
+        auto& pose=poses_[e.poseSlot];pose.serial=e.serial;pose.stamp=*stamp;pose.bounds=output;std::memcpy(pose.basis,basis,sizeof pose.basis);
+    }
     static constexpr std::uint64_t HeavyNanoseconds=AdaptiveTimeBudget::Heavy,CheapSliceNanoseconds=40000;
     AdaptiveTimeBudget timeBudget_;bool diagnostics_=true,terminalBuild_=false;
     size_t bytes_=0;
@@ -119,7 +138,8 @@ private:
             if(id){++stats_.sourceIdentityHits;if(!same){++stats_.sourceReconstructedHits;
                 // Only immutable source envelopes survive reconstruction. Pose/
                 // camera results must be evaluated again for this live draw.
-                releaseMemo(e);e.owner=owner;e.sourceAddress=owner.get();}}
+                releaseMemo(e);if(e.poseSlot<poses_.size()&&poses_[e.poseSlot].serial==e.serial)poses_[e.poseSlot].serial=0;
+                e.owner=owner;e.sourceAddress=owner.get();}}
             return it;
         }return entries_.end();
     }
@@ -499,7 +519,8 @@ public:
     explicit EnvelopeCache(bool alignedSkin=false):alignedSkin_(alignedSkin){}
     EnvelopeCache(const EnvelopeCache&)=delete;EnvelopeCache& operator=(const EnvelopeCache&)=delete;
     EnvelopeCache(EnvelopeCache&&)=delete;EnvelopeCache& operator=(EnvelopeCache&&)=delete;
-    void clear(){pending_=nullptr;pendingProgressFrame_=0;std::vector<Memo>().swap(memo_);memoBytes_=memoTableBytes_=memoNext_=memoEntries_=0;memoPolicy_={};memoTotals_={};entrySerial_=0;entries_.clear();scratch_.clear();bytes_=0;clock_=frame_=0;expensive_={};stats_={};beginFrame();}
+    void clearPoseCertificates(){for(auto& p:poses_)p.serial=0;nextPose_=0;}
+    void clear(){clearPoseCertificates();pending_=nullptr;pendingProgressFrame_=0;std::vector<Memo>().swap(memo_);memoBytes_=memoTableBytes_=memoNext_=memoEntries_=0;memoPolicy_={};memoTotals_={};entrySerial_=0;entries_.clear();scratch_.clear();bytes_=0;clock_=frame_=0;expensive_={};stats_={};beginFrame();}
     void beginFrame(bool diagnostics=true,size_t packets=0){
         fastOpen_=false;fastCount_=0;
         memoTotals_.add(stats_);
@@ -596,8 +617,8 @@ public:
     }
     Status calculatePrepared(const Prepared& prepared,const NorthlightDrawSnapshot::Mesh& mesh,
         const std::shared_ptr<const NorthlightDrawSnapshot::Mesh>& owner,const float* constants,const float* inverse,
-        Budget& budget,Bounds& output,Stage stage=Stage::All,WorkInfo* info=nullptr){
-        return calculateImpl(prepared.program_,mesh,owner,prepared.declaration_.data(),prepared.declaration_.size(),constants,inverse,budget,output,stage,info,&prepared);
+        Budget& budget,Bounds& output,Stage stage=Stage::All,WorkInfo* info=nullptr,const NorthlightConstantEpoch::Stamp* poseStamp=nullptr){
+        return calculateImpl(prepared.program_,mesh,owner,prepared.declaration_.data(),prepared.declaration_.size(),constants,inverse,budget,output,stage,info,&prepared,poseStamp);
     }
     // Optional material broad phase. Only completed immutable sources and this
     // draw's palette participate; survivors still need the exact aligned bounds.
@@ -677,7 +698,7 @@ private:
     // Warm cheap skins and small generic envelopes share the batched clock.
     // Cold/heavy work retains its interruptible Timer path and reserved budget.
     bool fastReady(const Prepared& prepared,const std::shared_ptr<const NorthlightDrawSnapshot::Mesh>& owner,const float* constants,const float* inverse,
-        Budget& budget,Bounds& output,WorkInfo* info,Status& status,Entry*& source,Timer* individual=nullptr){
+        Budget& budget,Bounds& output,WorkInfo* info,Status& status,Entry*& source,Timer* individual=nullptr,const NorthlightConstantEpoch::Stamp* poseStamp=nullptr){
         const bool batched=!individual;
         auto found=findSource(owner,*prepared.key_,prepared.key_.get());Entry* e=found==entries_.end()?nullptr:&found->second;
         source=e;
@@ -693,18 +714,22 @@ private:
         e->touched=++clock_;++stats_.memoBypassed;
         if(info){info->kind=Kind::Cheap;info->programHash=e->programHash;info->groups=groups;info->operations=operations;info->skin=bool(e->skin);info->paletteSpan=e->paletteSpan;}
         if(individual)individual->evaluation(*e,info,Stage::All,status,groups,operations);
+        if(certifiedPose(*e,poseStamp,inverse,output)){
+            ++stats_.certifiedPoseHits;budget.operations+=operations;status=Status::Valid;++stats_.ready;stats_.skinValid+=bool(e->skin);stats_.cheapValid+=batched;++stats_.fastValid;
+            return true;
+        }
         float storage[1024];const float* effective=effectiveConstants(p,*e,constants,storage);
         if(!effective){++stats_.invalid;status=Status::Invalid;}
         else if(e->skin){budget.operations+=operations;status=e->skin->evaluate(effective,inverse,output,nullptr,nullptr,alignedSkin_)?Status::Valid:Status::Unsupported;}
         else status=evaluateGroups(p,*e,effective,inverse,budget,output,[]{return false;});
-        if(status==Status::Valid){++stats_.ready;stats_.skinValid+=bool(e->skin);stats_.cheapValid+=batched;++stats_.memoStoreBypassed;++stats_.fastValid;}
+        if(status==Status::Valid){certifyPose(*e,poseStamp,inverse,output);++stats_.ready;stats_.skinValid+=bool(e->skin);stats_.cheapValid+=batched;++stats_.memoStoreBypassed;++stats_.fastValid;}
         else {output={};if(status==Status::Unsupported)++stats_.unsupported;}
         if(batched&&++fastCount_>=ReadyClockStride){const auto now=BoundsClock::now();readyNanoseconds_+=elapsedNs(now,fastMark_);fastMark_=now;fastCount_=0;}
         return true;
     }
     Status calculateImpl(const NorthlightActorDeformation::Program& p,const NorthlightDrawSnapshot::Mesh& mesh,
         const std::shared_ptr<const NorthlightDrawSnapshot::Mesh>& owner,const D3DVERTEXELEMENT9* elements,size_t count,
-        const float* constants,const float* inverse,Budget& budget,Bounds& output,Stage stage,WorkInfo* info,const Prepared* prepared){
+        const float* constants,const float* inverse,Budget& budget,Bounds& output,Stage stage,WorkInfo* info,const Prepared* prepared,const NorthlightConstantEpoch::Stamp* poseStamp=nullptr){
         output={};if(info)*info={};
         if(!owner||owner.get()!=&mesh||!constants||!inverse){if(info)info->kind=Kind::Unsupported;return Status::Unsupported;}
         if(stage==Stage::Build?!canBuild():stage==Stage::Heavy?!canHeavy():!canReady())return timeBudget();
@@ -718,7 +743,7 @@ private:
         Status evaluationStatus=Status::Budget;
         Timer timer{*this,stage==Stage::Build,stage==Stage::Heavy};
         if(FastReady&&!ResultMemo&&stage==Stage::All&&prepared){
-            if(fastReady(*prepared,owner,constants,inverse,budget,output,info,evaluationStatus,source,&timer))return evaluationStatus;
+            if(fastReady(*prepared,owner,constants,inverse,budget,output,info,evaluationStatus,source,&timer,poseStamp))return evaluationStatus;
             if((!source||!source->ready)&&timer.expired())return timeBudget();
         }
         const auto lookupStart=timer.start;bool classified=false;
@@ -768,6 +793,13 @@ private:
             // existing operation/slice caps suffice even above eight bones.
             const bool cheap=(e.skin||((e.singleBone||e.groups.size()<=8)&&operations<=128))&&e.lastEvaluationNs<CheapSliceNanoseconds;
             if(info){info->kind=cheap?Kind::Cheap:Kind::Heavy;info->programHash=e.programHash;info->groups=groups;info->operations=operations;info->skin=bool(e.skin);info->paletteSpan=e.paletteSpan;}
+            if(budget.operations<=budget.maxOperations&&operations<=budget.maxOperations-budget.operations&&certifiedPose(e,poseStamp,inverse,output)){
+                if(timer.expired()){output={};++stats_.memoBudgetDeferred;return timeBudget();}
+                ++stats_.certifiedPoseHits;budget.operations+=operations;++stats_.ready;stats_.skinValid+=bool(e.skin);
+                if(info)info->kind=Kind::Cheap;
+                if(stage==Stage::Cheap)++stats_.cheapValid;if(stage==Stage::Heavy)++stats_.heavyValid;
+                return Status::Valid;
+            }
             if(memoHit(e,constants,inverse,output)){
                 if(timer.expired()){output={};++stats_.memoBudgetDeferred;return timeBudget();}
                 ++stats_.memoHits;stats_.memoAvoidedOperations+=operations;
@@ -798,12 +830,12 @@ private:
                     if(interrupted){if(stage==Stage::Cheap&&timer.sliceExpired()){++stats_.cheapSliceDeferred;if(info)info->kind=Kind::Heavy;}return timeBudget();}
                     ++stats_.unsupported;evaluationStatus=Status::Unsupported;return evaluationStatus;}
                 ++stats_.ready;++stats_.skinValid;if(stage==Stage::Cheap)++stats_.cheapValid;if(stage==Stage::Heavy)++stats_.heavyValid;
-                remember(e,constants,inverse,output);evaluationStatus=Status::Valid;return evaluationStatus;
+                certifyPose(e,poseStamp,inverse,output);remember(e,constants,inverse,output);evaluationStatus=Status::Valid;return evaluationStatus;
             }
             evaluationStatus=evaluateGroups(p,e,effective,inverse,budget,output,[&]{return timer.expired();});
             if(evaluationStatus==Status::Budget){if(stage==Stage::Cheap&&timer.sliceExpired()){++stats_.cheapSliceDeferred;if(info)info->kind=Kind::Heavy;}return timeBudget();}
             if(evaluationStatus!=Status::Valid){++stats_.unsupported;return evaluationStatus;}
-            ++stats_.ready;if(stage==Stage::Cheap)++stats_.cheapValid;if(stage==Stage::Heavy)++stats_.heavyValid;remember(e,constants,inverse,output);return evaluationStatus;
+            ++stats_.ready;if(stage==Stage::Cheap)++stats_.cheapValid;if(stage==Stage::Heavy)++stats_.heavyValid;certifyPose(e,poseStamp,inverse,output);remember(e,constants,inverse,output);return evaluationStatus;
         }catch(...){evaluationStatus=Status::Unsupported;accountClassify();if(info)info->kind=Kind::Unsupported;++stats_.unsupported;return Status::Unsupported;}
     }
 };

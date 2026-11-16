@@ -2,6 +2,7 @@
 #include "actor_deformation.h"
 #include "replay_bounds_budget.h"
 #include "replay_memo_policy.h"
+#include "captured_constant_epoch.h"
 #include "position_bounds_scan.h"
 #include <limits>
 #include <memory>

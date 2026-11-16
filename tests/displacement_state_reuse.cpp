@@ -444,6 +444,7 @@ void DisplacementStateTestAccess::poseHandoff(const char* path,const std::vector
     NorthlightConstantEpoch::Stamp current;current.requestHeld=true;assert(extension.constantStamp(current)&&source.pose.outside(source.mesh.get(),&device.vs,&layout,current));
     g.endFrame();const auto before=g.poseEnvelopes.stats().ready;assert(!g.prepare(&device.vs,4,1,args));assert(!g.poseVerticesThisFrame&&!g.buildsThisFrame&&g.poseEnvelopes.stats().ready==before+1);
     assert(!g.prepare(&device.vs,4,1,args,nullptr,&source)&&source.pose.bounds.valid&&!g.poseVerticesThisFrame&&!g.buildsThisFrame);
+    assert(g.poseEnvelopes.stats().certifiedPoseHits); // Actual mirror-backed producer, not a synthetic epoch.
     {NorthlightAutoDisplacement::CaptureSource denied;const auto ready=g.poseEnvelopes.stats().ready;g.buildsThisFrame=2;
      assert(!g.prepare(&device.vs,4,1,args,nullptr,&denied)&&!denied.pose.bounds.valid&&!g.poseVerticesThisFrame&&g.buildsThisFrame==2&&g.poseEnvelopes.stats().ready==ready);g.buildsThisFrame=0;}
     for(float z:{20.f,48.f,80.f}){
