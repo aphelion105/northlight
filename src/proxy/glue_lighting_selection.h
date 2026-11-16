@@ -4,9 +4,11 @@
 
 #include "native_more_lights.h"
 #include "glue_lighting_selection_code.h"
+#include "menu_scene.h"
 
 // Keep the menu backdrop's authored sources on every receiver in that scene.
-// The native world scene is untouched. No callbacks or retained model pointers.
+// The native world selection is untouched. The producer validates the published
+// menu identity before copying scene values into the command stream.
 namespace NorthlightGlueLighting {
 inline constexpr uintptr_t SetupRva=0x431af0,CallOffset=0x68;
 inline constexpr size_t SetupSize=0xb3;
@@ -23,7 +25,14 @@ inline const char* install(HMODULE image=GetModuleHandleW(nullptr)){
     unsigned char worldBytes[sizeof worldProof],listBytes[sizeof listProof];
     if(!read(0x79abdf,worldBytes,sizeof worldBytes)||std::memcmp(worldBytes,worldProof,sizeof worldBytes)||
        !read(0x834550,listBytes,sizeof listBytes)||std::memcmp(listBytes,listProof,sizeof listBytes))return "scene-layout-mismatch";
+    // M2 retains its camera at scene+0x84/+0xc4 but submits identity to Gx while
+    // drawing. The menu snapshot must not confuse that temporary view with UI.
+    unsigned char cameraSetup[115],drawView[130];
+    if(!read(0x821a4d,cameraSetup,sizeof cameraSetup)||!digest(cameraSetup,sizeof cameraSetup,"94b3c1517468fef88745efe33cd49e077a8d6d9d334ce7ae45d85956ee65dca6")||
+       !read(0x8236c1,drawView,sizeof drawView)||!digest(drawView,sizeof drawView,"54592adeacd233ad42abd05e49684c92ac33d1464cfff4fec9f0621f90f6ef03"))return "menu-camera-layout-mismatch";
     unsigned char program[sizeof Selection];std::memcpy(program,Selection,sizeof program);
+    const auto observer=std::uint32_t(reinterpret_cast<std::uintptr_t>(&NorthlightMenu::observation));
+    std::memcpy(program+ObserverEntryOffset,&observer,4);std::memcpy(program+ObserverClearOffset,&observer,4);
     std::uintptr_t extra=0;
     if(NorthlightNativeMoreLights::existing(extra)){
         if(!NorthlightNativeMoreLights::verified(true))return "extra-light-layout-mismatch";

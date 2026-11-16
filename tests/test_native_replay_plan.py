@@ -110,6 +110,10 @@ def main():
                        'presents': 1, 'resets': 0, 'final_release': 5, 'trace_thread': 2, 'os_thread': 99}
     assert records[0][:5] == (2, 3, 0x20000, 1, 0)
     checks.append('nested-dispatch-preserves-marker-before-parent')
+    menu_rows = copy.deepcopy(rows); menu_journal = copy.deepcopy(journal)
+    menu_rows[2]['text'] = menu_rows[2]['text'].replace('trigger=1;', 'trigger=4;')
+    menu_journal[0]['trigger'] = 4
+    check('menu-trigger-join', lambda: plan.join(menu_rows, 'fixture', menu_journal))
     check('numeric-sort-is-invalid', lambda: plan.join(sorted(rows, key=lambda r: r['call']), 'fixture', journal), True)
     check('missing-final-release', lambda: plan.join(rows[:-1], 'fixture', journal), True)
     check('missing-first-marker', lambda: plan.join(rows[:2] + rows[3:], 'fixture', journal), True)

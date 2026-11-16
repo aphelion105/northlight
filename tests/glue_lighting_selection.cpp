@@ -8,7 +8,7 @@
 #include "native_more_lights.h"
 
 template<class T> T& at(void* p,unsigned offset){return *reinterpret_cast<T*>(static_cast<unsigned char*>(p)+offset);}
-using Block=std::array<unsigned char,1024>;
+struct alignas(4) Block:std::array<unsigned char,1024>{};
 static unsigned lightStayFlushes=0,lightStayProtects=0;
 static unsigned moreFlushes=0;
 static BOOL WINAPI moreFailPublishFlushOnce(HANDLE p,LPCVOID a,SIZE_T n){return ++moreFlushes==2?FALSE:FlushInstructionCache(p,a,n);}
@@ -37,6 +37,7 @@ int main(int argc,char** argv){
     assert(begin<=0x810000&&begin+sizeof clientReserve>=0xcd7550);
     DWORD old;assert(VirtualProtect(reinterpret_cast<void*>(0x810000),0x30000,PAGE_EXECUTE_READWRITE,&old));
     copy(0x79abdf,6);copy(0x834550,14);
+    copy(0x821a4d,115);copy(0x8236c1,130);
     copy(0x831af0,NorthlightGlueLighting::SetupSize);copy(0x81e400,400);copy(0x8333d0,166);copy(0x834dc0,0x2e0);copy(0xa45634,12);
     assert(FlushInstructionCache(GetCurrentProcess(),reinterpret_cast<void*>(0x810000),0x30000));
     const char* status=NorthlightGlueLighting::install(reinterpret_cast<HMODULE>(0x400000));
@@ -44,10 +45,13 @@ int main(int argc,char** argv){
     assert(std::strcmp(NorthlightGlueLighting::install(reinterpret_cast<HMODULE>(0x400000)),"already-active")==0);
     auto* call=reinterpret_cast<unsigned char*>(0x831b58);
     int32_t relative;std::memcpy(&relative,call+1,4);auto* thunk=call+5+relative;
-    assert(!std::memcmp(thunk,NorthlightGlueLighting::Selection,sizeof NorthlightGlueLighting::Selection));
+    std::array<unsigned char,sizeof NorthlightGlueLighting::Selection> expected;std::memcpy(expected.data(),NorthlightGlueLighting::Selection,expected.size());
+    const auto observer=std::uint32_t(reinterpret_cast<std::uintptr_t>(&NorthlightMenu::observation));
+    std::memcpy(expected.data()+NorthlightGlueLighting::ObserverEntryOffset,&observer,4);std::memcpy(expected.data()+NorthlightGlueLighting::ObserverClearOffset,&observer,4);
+    assert(!std::memcmp(thunk,expected.data(),expected.size()));
     Block scene{},model{},shared{},data{},lighting{};
-    std::array<unsigned char,3*212> own{};
-    std::array<std::array<unsigned char,108>,10> equipment{};
+    alignas(4) std::array<unsigned char,3*212> own{};
+    alignas(4) std::array<std::array<unsigned char,108>,10> equipment{};
     char name[]="UI_Scourge";
     at<void*>(model.data(),0x2c)=shared.data();at<void*>(shared.data(),0x150)=data.data();
     at<unsigned>(model.data(),0x10)=1; // Native M2 data is available only after this bit is set.
@@ -72,6 +76,11 @@ int main(int argc,char** argv){
     select(reinterpret_cast<void*>(0x81e400));assert(at<unsigned>(lighting.data(),164)==4);
     assert(!contains(lights[0])&&!contains(lights[2]));const auto native=lighting;
     select(thunk);assert(at<unsigned>(lighting.data(),164)==4&&contains(lights[0])&&contains(lights[2]));
+    assert(NorthlightMenu::observation.scene==reinterpret_cast<std::uintptr_t>(scene.data()));
+    assert(NorthlightMenu::observation.model==reinterpret_cast<std::uintptr_t>(model.data())&&!(NorthlightMenu::observation.sequence&1));
+    at<unsigned>(data.data(),264)=0;select(thunk);
+    assert(NorthlightMenu::observation.model==reinterpret_cast<std::uintptr_t>(model.data()));
+    at<unsigned>(data.data(),264)=3;select(thunk);
     assert(own==ownBefore&&equipment==equipmentBefore);
     // Ambient/directional output remains the real native selector's output.
     assert(!std::memcmp(lighting.data()+20,native.data()+20,112));
@@ -83,6 +92,7 @@ int main(int argc,char** argv){
     *reinterpret_cast<void**>(0xcd754c)=scene.data();
     at<void*>(scene.data(),8)=reinterpret_cast<void*>(0x02000a01);
     select(thunk);assert(lighting==native);
+    assert(!NorthlightMenu::observation.scene&&!NorthlightMenu::observation.model&&!(NorthlightMenu::observation.sequence&1));
     *reinterpret_cast<void**>(0xcd754c)=nullptr;at<void*>(scene.data(),8)=model.data();
     std::memcpy(name,"Creature",9);select(thunk);assert(lighting==native);
     // Both real Dalaran dumps had m_fFlags=0x8340 (not loaded), so

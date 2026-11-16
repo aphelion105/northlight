@@ -6,6 +6,36 @@
 #include <fstream>
 #include "capture_file_reader.h"
 struct WorldScreenEffectsTest {
+    static void menuContext(WorldRenderer& w,IDirect3DDevice9* d){
+        w.pipelineActive=true;w.quality.gi=0;w.effects={false,true,true};
+        w.nativeShadowOwned=w.nativeShadowAvailable=false;
+        auto snapshot=std::make_unique<NorthlightStream::GameSnapshot>();auto& menu=snapshot->menu;
+        menu.valid=1;menu.scene=0x20000;menu.model=0x30000;menu.data=0x40000;menu.created=17;std::strcpy(menu.name,"UI_Dwarf");
+        for(unsigned i=0;i<4;++i)menu.view[i*5]=menu.inverseView[i*5]=1;menu.view[14]=-6;menu.inverseView[14]=6;
+        auto* shader=reinterpret_cast<IDirect3DVertexShader9*>(1);
+        w.captureShaders[shader].skinned=true;w.captureShaders[shader].projectionKind=2;w.nativeLightingShaders.insert(shader);
+        const float p[16]={1.2f,0,0,0,0,1.7f,0,0,0,0,1000.f/999.f,-1000.f/999.f,0,0,1,0};
+        const float light[12]={.6f,.5f,.4f,0,.1f,.2f,.3f,0,0,0,-1,0};
+        assert(SUCCEEDED(d->SetVertexShaderConstantF(2,p,4))&&SUCCEEDED(d->SetVertexShaderConstantF(10,light,3)));
+        NorthlightStream::ScopedPlayback playback(*snapshot);
+        assert(w.menuContext(shader)&&w.isMenu()&&w.ready());
+        assert(w.context.camera[2]==6&&w.context.ambient[0]==.1f&&w.context.direct[0]==.6f);
+        assert(w.sourceDirections[0].z==1&&w.sourceDirections[0].x==0&&w.sourceDirections[0].y==0);
+        assert(w.sourceColors[0].x==.6f&&w.sourceColors[0].y==.5f&&w.sourceColors[0].z==.4f&&w.sourceWeights[0]==1&&w.sourceWeights[1]==0);
+        assert(w.skyEnvironment.skyValid&&w.celestialValid&&w.weather().kind==NorthlightWeather::Kind::Snow);
+        assert(w.frameRequirements().geometry&&w.directionalShadowWork()&&!w.nativeShadowReplacementReady());
+        NorthlightStreaming::Budget budget;assert(w.upload(budget)&&!w.vertices&&!w.indices);
+        const auto first=w.active;char map[64];menu.identity(map);
+        w.beginSceneDomain(map,w.context.camera,&menu);assert(w.active==first);
+        menu.created++;menu.identity(map);w.beginSceneDomain(map,w.context.camera,&menu);
+        assert(w.active!=first&&w.active->map==map&&!w.actorJobComplete);
+        NorthlightWeather::State rain;rain.kind=NorthlightWeather::Kind::Rain;rain.intensity=rain.blend=1;w.setWeather(rain);
+        assert(w.weather().kind==NorthlightWeather::Kind::Snow);
+        w.beginSceneDomain("Northrend",w.context.camera,nullptr);
+        assert(!w.isMenu()&&!w.active&&w.weather().kind==NorthlightWeather::Kind::Rain);
+        w.captureShaders.erase(shader);w.nativeLightingShaders.erase(shader);
+        std::puts("MENU_SCENE_GPU_PASS actual-context=1 isolated-weather=1 menu-switch-reset=1 world-return=1 replay-only-geometry=1");
+    }
 #ifdef NORTHLIGHT_TEMPORAL_MERGE_TEST
     template<class Meter> static void temporalMergeResources(WorldRenderer& w,Meter& meter){
         meter.refuseMerge=false;meter.failShaderAt=meter.shaderCreates+1;
@@ -519,6 +549,13 @@ struct WorldScreenEffectsTest {
         w.captureProducts(directory,2,901,width,height,false);pixels(directory,"fog",2,true);pixels(directory,"normals",2,true);
         w.composited=false;assert(w.requestNormalGpuDiagnosticCapture());assert(w.captureSkippedDiagnostic(902,width,height));
         assert(w.diagnosticCaptureInLastRender()&&!w.gpuNormalDiagnosticRequested);pixels(w.gpuDiagnosticDirectory,"fog",1,true);pixels(w.gpuDiagnosticDirectory,"scene",1,true);
+        for(unsigned capture=2;capture<=6;++capture){
+            w.gpuDiagnosticFrame=false;
+            assert(w.requestNormalGpuDiagnosticCapture()&&!w.requestNormalGpuDiagnosticCapture());
+            assert(w.captureSkippedDiagnostic(901+capture,width,height));
+            assert(w.gpuDiagnosticCaptures==capture&&!w.gpuNormalDiagnosticRequested);
+            pixels(w.gpuDiagnosticDirectory,"scene",capture,true);
+        }
         NorthlightDiagnosticCapture::request(NorthlightDiagnosticCapture::AO);NorthlightDiagnosticCapture::request(NorthlightDiagnosticCapture::Materials);
         assert(NorthlightDiagnosticCapture::take()==(NorthlightDiagnosticCapture::AO|NorthlightDiagnosticCapture::Materials)&&!NorthlightDiagnosticCapture::take());
         std::puts("DIAGNOSTIC_FRAME_PASS staleTargetsRetained=1 skippedImagesZero=1 noDeviceAccessForEmpty=1 worldSkippedCapture=1 scopeQueue=1");
@@ -669,6 +706,7 @@ int main(int argc,char** argv){
     // Capture stores positive-hemisphere normal detail relative to its reference.
     const float rgb[]={.4f,.4f,.4f,1},ambient[]={0,0,0,1},normal[]={.7f,.6f,20,1},z[]={1000.f/999.f-1000.f/(999.f*20)};
     auto* scene=screenTexture(d,W,H,rgb);auto* ao=screenTexture(d,W/2,H/2,ambient);auto* detail=screenTexture(d,W,H,normal);auto* depth=screenTexture(d,W,H,z,1);
+    {auto menu=std::make_unique<WorldRenderer>(d);WorldScreenEffectsTest::menuContext(*menu,d);}
 #ifdef NORTHLIGHT_SHARED_SHADOW_TEST
     {
         IDirect3DVertexBuffer9* vb=nullptr;IDirect3DIndexBuffer9* ib=nullptr;

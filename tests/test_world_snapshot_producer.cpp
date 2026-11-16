@@ -7,8 +7,14 @@
 using namespace NorthlightStream;
 struct StreamVertexShader {unsigned tags=NorthlightShaderTags::kWorld|NorthlightShaderTags::kWmo;std::uint64_t hash=1;};
 template<class T> struct Slot {T v{};bool known=false;void learn(T value){v=value;known=true;}};
+struct ProxyBase {struct {UINT w=3840,h=2160;}info;static ProxyBase* of(IDirect3DSurface9*){return nullptr;}};
+namespace StreamState {inline void bind(ProxyBase*& dst,ProxyBase* src){dst=src;}}
 struct Device {
-    struct State {StreamVertexShader* vs=nullptr;Slot<D3DVIEWPORT9> viewport;Slot<DWORD> rs[256];} st;
+    ProxyBase target;
+    struct State {StreamVertexShader* vs=nullptr;Slot<D3DVIEWPORT9> viewport;Slot<DWORD> rs[256];ProxyBase* rt[1]{};bool rtKnown[1]{true};} st;
+    Device(){st.rt[0]=&target;}
+    bool backBuffer(ProxyBase* p){return p==&target;}
+    HRESULT GetRenderTarget(unsigned,IDirect3DSurface9**){return E_FAIL;}
     TriggerPolicy policy;bool capture=true;std::uint64_t drawOrdinal=0;
     D3DVIEWPORT9 actualViewport{};DWORD actualZ=1,actualFunc=4;
     bool viewportFails=false,depthFails=false;unsigned viewportGets=0,depthGets=0;
@@ -37,5 +43,14 @@ int main(){
     d.policy.onPresent();d.st.viewport.known=false;d.viewportFails=true;
     d.onDraw(4);assert(!d.policy.world&&d.snapshots.back()==Trigger::FrameStart);
     d.viewportFails=false;d.onDraw(4);assert(d.policy.world&&d.snapshots.back()==Trigger::World);
+    for(unsigned reject=0;reject<8;++reject){Device menu;StreamVertexShader model;model.tags=NorthlightShaderTags::kWorld;menu.st.vs=&model;
+        menu.actualViewport={0,0,3840,2160,0,1};
+        switch(reject){case 1:menu.st.rt[0]=nullptr;break;case 2:menu.actualViewport.Width=128;break;
+            case 3:menu.actualViewport.MinZ=.94f;break;case 4:menu.actualZ=0;break;case 5:menu.actualFunc=8;break;
+            case 6:menu.st.rtKnown[0]=false;break;case 7:menu.viewportFails=true;break;}
+        menu.onDraw(4);assert(menu.policy.menu==(reject==0)&&!menu.policy.world);
+        assert(menu.snapshots.back()==(reject==0?Trigger::Menu:Trigger::FrameStart));
+        if(!reject){menu.onDraw(4);assert(menu.snapshots.size()==1);menu.policy.onPresent();menu.onDraw(4);assert(menu.snapshots.size()==2);}
+    }
     std::puts("PASS production onDraw: sky skipped, invalidated state recovered, failed Gets retain World trigger, known state avoids device reads");
 }

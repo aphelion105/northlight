@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # northlight-test: requires=zig,windows-exe
-"""Compile the real weather dispatch: native scene particles, sheltered camera optics only."""
+"""Compile weather dispatch: native world particles, menu precipitation and sheltered optics."""
 from pathlib import Path
 import subprocess
 import sys
@@ -29,7 +29,8 @@ struct SavedState {static inline unsigned saves=0;bool ok=true;IDirect3DSurface9
 struct World {
     NorthlightQuality::Settings q;
     NorthlightWeather::State state{NorthlightWeather::Kind::Rain,1,1,0,0};
-    bool exposed=false;float underwater=1;unsigned shelterQueries=0;
+    bool exposed=false,menu=false;float underwater=1;unsigned shelterQueries=0;
+    bool isMenu()const{return menu;}
     unsigned weatherSetting()const{return q.weather;}
     float underwaterScale()const{return underwater;}
     const NorthlightWeather::State& weather()const{return state;}
@@ -41,12 +42,13 @@ struct World {
 struct Surface {
     unsigned particles=0,lenses=0,sand=0;bool snow=false,rivulets=false;float particleAmount=0,particleSize=0,lensSize=0,frost=0,lensVisibility=0;
     void setMotion(const NorthlightSurfaceFrame&,unsigned,const NorthlightQuality::Settings&,double){}
+    void precipitation(IDirect3DSurface9*,Texture*,unsigned,unsigned,const NorthlightSurfaceFrame& context,NorthlightQuality::Preset,IDirect3DSurface9*,const SavedState* saved){assert(saved&&saved->ok);++particles;particleAmount=context.c[3][0];snow=context.c[3][1]>0;particleSize=context.c[3][2];}
     void lens(IDirect3DSurface9*,Texture*,IDirect3DSurface9*,unsigned,unsigned,bool,double,float visibility,IDirect3DSurface9*,float,float,float size,bool streams,float edge,const SavedState* saved){assert(saved&&saved->ok);++lenses;lensSize=size;rivulets=streams;frost=edge;lensVisibility=visibility;}
     void sandLens(IDirect3DSurface9*,unsigned,unsigned,double,float visibility,IDirect3DSurface9*,float,float,const SavedState* saved){assert(saved&&saved->ok&&visibility>0);++sand;}
 };
 struct Host {
     World instance;World* world=&instance;Surface draw;Surface* surface=&draw;
-    bool applied=true,enabled=true,failed=false,debugMode=false,worldDebug=false,skyBandSeen=true,hdrSceneReady=false,maskStencil=false;
+    bool applied=true,enabled=true,failed=false,debugMode=false,worldDebug=false,skyBandSeen=true,hdrSceneReady=false,maskStencil=false,menuScene=false;
     struct Guard {bool capsHalved()const{return false;}} memoryGuard;
     struct Mask {bool armed()const{return false;}bool hasMarks()const{return false;}} nameMask;
     struct Profile {void mark(const char*){}} profiler;Profile* gpuProfile=&profiler;
@@ -63,6 +65,16 @@ __METHOD__
 };
 int main(){
     Host missing;missing.surfaceWeather();assert(missing.draw.particles==0);
+    for(auto kind:{NorthlightWeather::Kind::Rain,NorthlightWeather::Kind::Snow}){
+        Host menu;menu.menuScene=menu.instance.menu=true;menu.instance.state.kind=kind;
+        menu.instance.q.rainLens=menu.instance.q.snowLens=menu.instance.q.snowFrost=0;
+        menu.instance.q.rainDropSize=125;menu.instance.q.snowFlakeSize=150;
+        menu.surfaceWeather();assert(menu.draw.particles==0&&menu.draw.lenses==0);
+        menu.instance.exposed=true;menu.surfaceWeather();assert(menu.draw.particles==1&&menu.draw.lenses==0&&menu.draw.particleAmount>0);
+        assert(menu.draw.snow==(kind==NorthlightWeather::Kind::Snow)&&menu.draw.particleSize==(menu.draw.snow?1.5f:1.25f));
+        menu.menuScene=false;menu.surfaceWeather();assert(menu.draw.particles==1);
+        menu.menuScene=true;menu.instance.q.weather=0;menu.surfaceWeather();assert(menu.draw.particles==1);
+    }
     // The eye is sheltered by a mushroom/roof, with open exterior still visible.
     for(auto kind:{NorthlightWeather::Kind::Rain,NorthlightWeather::Kind::Snow}){
         Host h;h.instance.state.kind=kind;h.surfaceWeather();

@@ -35,7 +35,7 @@ print('PASS disjoint PE sections preserve shadow state; old envelope rejected')
 renderer=fp.src('renderer.cpp').read_text()
 assert 'st.viewport.known&&st.rs[D3DRS_ZENABLE].known&&st.rs[D3DRS_ZFUNC].known' in stream
 assert 'mainWorldDraw(st.rs[D3DRS_ZENABLE].v,st.rs[D3DRS_ZFUNC].v,st.viewport.v.MinZ,st.viewport.v.MaxZ)' in stream
-assert 'takeSnapshot(policy.onDraw(tags,mainWorld))' in stream
+assert 'takeSnapshot(policy.onDraw(tags,mainWorld,mainMenu))' in stream
 before=renderer.split('void beforeDraw(IDirect3DVertexShader9* vs)',1)[1].split('void uiFallbackDraw',1)[0]
 assert 'if(model||wmo)' in before and 'mainWorldDraw(z,zf,viewport.MinZ,viewport.MaxZ)' in before
 assert before.index('mainWorldDraw(')<before.index('readProjection(')<before.index('world->wmoContext(vs)')

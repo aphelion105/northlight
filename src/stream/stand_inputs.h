@@ -80,7 +80,7 @@ public:
     // The caller must separately prove device/epoch/trace-call identity. A draw
     // number in an index is not sufficient evidence of that join.
     bool bind(GameSnapshot& snapshot,std::uint64_t draw,unsigned trigger){
-        if(!valid()||capturing_||!snapshot.usable()||trigger<1||trigger>3||snapshot.triggerKind!=trigger||snapshot.triggerDraw!=draw||
+        if(!valid()||capturing_||!snapshot.usable()||trigger<1||trigger>4||snapshot.triggerKind!=trigger||snapshot.triggerDraw!=draw||
            (bound_&&draw<=previousDraw_)){reject();return false;}
         snapshot_=&snapshot;snapshot_->rewind();previousDraw_=draw;bound_=true;captured_=false;aliases_={};return true;
     }
@@ -107,7 +107,7 @@ public:
     bool commitCapture(GameSnapshot& destination){
         if(!valid()||!capturing_||!aliases_.sealed||snapshot_==&destination||!destination.usable()||
            destination.mode!=GameSnapshot::Mode::Idle||destination.triggerKind!=snapshot_->triggerKind||destination.triggerDraw!=snapshot_->triggerDraw){reject();return false;}
-        destination.aliases_=aliases_;destination.nativeLights=snapshot_->nativeLights;return true;
+        destination.aliases_=aliases_;destination.nativeLights=snapshot_->nativeLights;destination.menu=snapshot_->menu;return true;
     }
     bool read(std::uintptr_t address,void* output,std::size_t bytes){
         return context_->read(snapshot_,address,output,bytes);

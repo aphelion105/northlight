@@ -23,7 +23,7 @@ HEADER_BYTES, RECORD_BYTES, MAX_RECORDS = 256, 80, 20000
 MAX_TOTAL = 256 << 20
 MAX_DUMP_BYTES, MAX_TRACE_CALLS = 512 << 20, 2000000
 CALL = re.compile(r'^(\d+)\s+@([0-9a-fA-F]+)\s+(\w+(?:::\w+)?)\((.*)$')
-MARKER = re.compile(r'NLSNAP1;session=([A-Za-z0-9-]{1,64});record=(\d+);device=([0-9a-f]+);frame=(\d+);epoch=(\d+);thread=(\d+);trigger=([123]);draw=(\d+);bytes=(\d+);crc=([0-9a-f]{8})')
+MARKER = re.compile(r'NLSNAP1;session=([A-Za-z0-9-]{1,64});record=(\d+);device=([0-9a-f]+);frame=(\d+);epoch=(\d+);thread=(\d+);trigger=([1234]);draw=(\d+);bytes=(\d+);crc=([0-9a-f]{8})')
 DRAW_APIS = {name: number for number, name in enumerate(('DrawPrimitive', 'DrawIndexedPrimitive', 'DrawPrimitiveUP', 'DrawIndexedPrimitiveUP'), 1)}
 
 

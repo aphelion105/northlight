@@ -20,6 +20,17 @@ retain the old raw-file output, including independent legacy fixtures.
 
 ## Existing captures and analysis tools
 
+Manual captures can be repeated throughout a session; only automatic shadow
+debug captures retain the four-capture limit. Each manual capture still exports
+the effect inputs, outputs, shaders, constants and native draw order.
+
+Per-draw before/after thumbnails are disabled by default. They require a full
+MSAA resolve and synchronous GPU readback twice per draw, even though the saved
+thumbnail is small. For a requested draw-by-draw investigation, start the client
+with `NORTHLIGHT_CAPTURE_DRAW_IMAGES=1`. The native journal records `draw_images`
+for each draw. Focused native-light crops and final effect images remain enabled
+without that environment variable.
+
 From the repository root, compact either a legacy session folder or a ZIP:
 
 ```sh

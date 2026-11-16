@@ -1,9 +1,11 @@
 // Build 12340 SetupLighting: ESI=model, ECX=scene, [ESP+4]=lighting.
-// Standalone native thunk: no DLL calls, state, allocations or cached pointers.
+// Standalone native thunk: no DLL calls or allocations. Publishes only identity.
 .intel_syntax noprefix
 .text
 .globl _selection
 .globl _extra_entry
+.globl _observer_entry
+.globl _observer_clear
 _selection:
     push ebp
     mov ebp, esp
@@ -20,7 +22,7 @@ _selection:
     // World models keep the original selection, including the eight-light ring.
     mov edx, [ebp-8]
     cmp edx, [0xcd754c]
-    je done
+    je world_scene
     mov esi, [edx+8]
     mov ecx, 256
 find_backdrop:
@@ -54,6 +56,20 @@ next_model:
     jnz find_backdrop
     jmp done
 backdrop:
+    // Preserve the loaded backdrop identity independently of its light count.
+    // The producer validates camera, model generation and current draw domain.
+    push eax
+    .byte 0xb8
+_observer_entry:
+    .long 0
+    test eax, eax
+    jz observation_done
+    inc dword ptr [eax]
+    mov [eax+4], edx
+    mov [eax+8], esi
+    inc dword ptr [eax]
+observation_done:
+    pop eax
     mov ebx, [eax+264]
     test ebx, ebx
     jz done
@@ -173,6 +189,16 @@ append_extra:
 next_saved:
     inc ebx
     jmp fill_loop
+world_scene:
+    .byte 0xb8
+_observer_clear:
+    .long 0
+    test eax, eax
+    jz done
+    inc dword ptr [eax]
+    mov dword ptr [eax+4], 0
+    mov dword ptr [eax+8], 0
+    inc dword ptr [eax]
 done:
     pop edi
     pop esi

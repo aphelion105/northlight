@@ -6,7 +6,7 @@
 
 namespace NorthlightNativeLights {
 inline constexpr unsigned Capacity=128;
-inline constexpr std::uint32_t RootAnchor=1,WorldFixture=2,ResolvedEmitter=4;
+inline constexpr std::uint32_t RootAnchor=1,WorldFixture=2,ResolvedEmitter=4,MenuFixture=8;
 struct Point {
     std::uint64_t id=0;
     float position[3]{},color[3]{},attenuation[3]{};
@@ -33,7 +33,8 @@ inline bool wellFormed(const Snapshot& s){
     if(!s.valid)return s.count==0;
     if(!s.scene)return false;
     for(unsigned i=0;i<s.count;++i){const auto& p=s.lights[i];
-        if(!p.id||(p.flags&~(RootAnchor|WorldFixture|ResolvedEmitter))||((p.flags&WorldFixture)?(!(p.flags&RootAnchor)||(p.id>>52)!=0xfea||!p.reserved||p.reserved>4096):p.reserved!=0)||p.resolutionReserved||((p.flags&ResolvedEmitter)&&!(p.flags&WorldFixture)))return false;
+        if(!p.id||(p.flags&~(RootAnchor|WorldFixture|ResolvedEmitter|MenuFixture))||((p.flags&WorldFixture)?(!(p.flags&RootAnchor)||(p.id>>52)!=0xfea||!p.reserved||p.reserved>4096):p.reserved!=0)||p.resolutionReserved||((p.flags&ResolvedEmitter)&&!(p.flags&WorldFixture)))return false;
+        if((p.flags&MenuFixture)&&(!(p.flags&RootAnchor)||(p.flags&(WorldFixture|ResolvedEmitter))||std::strncmp(s.map,"Menu:",5)))return false;
         for(unsigned k=0;k<3;++k)if(!std::isfinite(p.emitterOffset[k])||std::fabs(p.emitterOffset[k])>100||(!(p.flags&ResolvedEmitter)&&p.emitterOffset[k]!=0)||std::fabs(p.position[k]+p.emitterOffset[k])>=100000)return false;
         for(float value:p.anchor)if(!std::isfinite(value)||std::fabs(value)>=100000)return false;
         for(unsigned k=0;k<3;++k)

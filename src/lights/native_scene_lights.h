@@ -288,7 +288,7 @@ public:
         const Proof proofs[]={{0x79abdf,world,sizeof world},{0x834550,attach,sizeof attach},{0x834575,data,sizeof data},{0x834593,light,sizeof light},{0x8316b0,parent,sizeof parent},{0x82e625,attachment,sizeof attachment},{0x8286d2,packed,sizeof packed},{0x82738a,procedure,sizeof procedure},{0x821ab5,inverse,sizeof inverse}};
         for(const auto& p:proofs){unsigned char bytes[32];if(!read(p.address,bytes,p.size)||std::memcmp(bytes,p.bytes,p.size))return false;}return true;
     }
-    template<class Read> void update(Read input,const float* camera,Snapshot& output){
+    template<class Read> void update(Read input,const float* camera,Snapshot& output,std::uint32_t menuScene=0,std::uint32_t menuBackdrop=0){
         using namespace SceneDetail;output.clear();loads_=0;readBytes_=0;readCalls_=0;viewsRead_=viewsValid_=false;nextWorld_=0;++frame_;
         if(!camera)return;for(unsigned k=0;k<3;++k)if(!std::isfinite(camera[k])||std::fabs(camera[k])>=100000)return;
         if(!checked_){checked_=true;proven_=verify(input);}if(!proven_)return;
@@ -296,7 +296,7 @@ public:
             if(!pointer(address)||bytes>std::uint64_t(0xffff0000u)-address){++failures;++malformed;return false;}
             if(bytes>1024*1024-28-readBytes_||readCalls_>=4094){++budgetLimited;return false;}
             ++readCalls_;readBytes_+=bytes;if(input(address,dst,bytes))return true;++failures;return false;};
-        std::uint32_t scene=0;if(!read(ScenePointer,&scene,4)||!pointer(scene)){reset();return;}
+        std::uint32_t scene=menuScene;if((!menuScene&&!read(ScenePointer,&scene,4))||!pointer(scene)){reset();return;}
         std::array<std::uint32_t,6> header{};if(!read(scene,header.data(),sizeof header))return;
         if(scene_!=scene){reset();scene_=scene;}
         std::array<float,Capacity> distances{};
@@ -310,6 +310,7 @@ public:
             for(auto& l:a->lights){Point p;p.id=0xfea0000000000000ull|(model.firstId+l.index);
                 if(!at<std::uint32_t>(m,0x48)){const auto anchor=transform(l.point,matrix);bool finite=true;for(unsigned k=0;k<3;++k)finite=finite&&std::isfinite(anchor[k])&&std::fabs(anchor[k])<100000;if(finite){p.flags=RootAnchor|((a->fixtureSources>>l.index)&1?WorldFixture:0);if(p.flags&WorldFixture)p.reserved=a->fixtureTag;std::copy(anchor.begin(),anchor.begin()+3,p.anchor);}}
                 if(!runtime.position(l,p.position)){++unsupported;continue;}
+                if(menuScene&&address==menuBackdrop&&(p.flags&RootAnchor)){p.flags=RootAnchor|MenuFixture;p.reserved=0;}
                 if((p.flags&WorldFixture)&&l.fixed)if(const auto* profile=fixtures_->resolution(p.reserved,l.index)){
                     bool finite=true;float offset[3]{};
                     for(unsigned k=0;k<3;++k){for(unsigned j=0;j<3;++j)offset[k]+=profile->offset[j]*matrix[j*4+k];finite=finite&&std::isfinite(offset[k])&&std::fabs(offset[k])<=100&&std::fabs(p.position[k]+offset[k])<100000;}
@@ -362,7 +363,7 @@ public:
         discover();evaluate();
         std::uint32_t again=0;std::array<std::uint32_t,6> end{};
         readCalls_+=2;readBytes_+=28; // Reserved independently of the work budget.
-        if(!input(ScenePointer,&again,4)||again!=scene||!input(scene,end.data(),sizeof end)||end!=header){output.clear();return;}
+        if((!menuScene&&(!input(ScenePointer,&again,4)||again!=scene))||!input(scene,end.data(),sizeof end)||end!=header){output.clear();return;}
         output.scene=scene;output.time=header[3];output.valid=1;
     }
 };

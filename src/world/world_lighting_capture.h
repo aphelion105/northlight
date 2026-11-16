@@ -39,7 +39,7 @@ class Capture {
     std::array<IDirect3DPixelShader9*,8> shaders_{};unsigned shaderCount_=0;
     Ref<IDirect3DSurface9> nativeResolve_;D3DSURFACE_DESC nativeResolveDesc_{};
     Ref<IDirect3DSurface9> traceTarget_;D3DSURFACE_DESC traceDesc_{};
-    unsigned traceDraws_=0,traceSkipped_=0;
+    unsigned traceDraws_=0,traceSkipped_=0;bool traceImages_=false;
     static unsigned pixelBytes(D3DFORMAT format){
         return format==D3DFMT_A16B16G16R16F||format==D3DFMT_G32R32F?8:
             format==D3DFMT_R32F||format==D3DFMT_A8R8G8B8||format==D3DFMT_X8R8G8B8?4:0;
@@ -173,6 +173,8 @@ class Capture {
 public:
     Capture(IDirect3DDevice9* device,const std::string& directory,unsigned capture,unsigned frame,unsigned rendererFrame,unsigned width,unsigned height,const char* journalName="lighting-inputs")noexcept
         :device_(device),directory_(&directory),journalName_(journalName),capture_(capture),frame_(frame),rendererFrame_(rendererFrame){
+        char drawImages[2]{};
+        traceImages_=GetEnvironmentVariableA("NORTHLIGHT_CAPTURE_DRAW_IMAGES",drawImages,sizeof drawImages)==1&&drawImages[0]=='1';
         char output[2048];if(device_&&!directory.empty()&&path(journalName_,"jsonl.tmp",output))journal_=NorthlightFiles::open(output,"wb");
         logf("WORLD LIGHT_CAPTURE begin capture=%u worldFrame=%u rendererFrame=%u rendererFrameKnown=%u normalView=1 diagnostic=1 fpsEligible=0 saved=%u",capture_,frame_,rendererFrame_,unsigned(rendererFrame_!=0),unsigned(journal_!=nullptr));
         if(journal_)std::fprintf(journal_,"{\"event\":\"begin\",\"schema\":1,\"capture\":%u,\"world_frame\":%u,\"renderer_frame\":%u,\"renderer_frame_known\":%s,\"width\":%u,\"height\":%u,\"normal_view\":true,\"scope\":\"%s\",\"constant_register_count\":%u,\"per_source_bank_missing\":false,\"depth_reconstructed\":false,\"source_physical_ownership_proven\":false,\"material_replay_complete\":false,\"whole_scene_replay\":false,\"replay_execution_verified\":false,\"per_sample_color_exported\":false,\"stencil_image_exported\":false,\"scene_boundary_changed\":false,\"fps_eligible\":false}\n",capture_,frame_,rendererFrame_,rendererFrame_?"true":"false",width,height,std::strcmp(journalName_,"weather-inputs")==0?"weather-inputs":std::strcmp(journalName_,"native-inputs")==0?"native-receiver-inputs":"local-light-contribution-inputs",std::strcmp(journalName_,"weather-inputs")==0?10u:116u);
@@ -245,7 +247,7 @@ public:
         if(!active())return 0;
         if(traceDraws_>=2048){if(!traceSkipped_++)unavailable("native-trace","draw-limit");return 0;}
         const unsigned draw=++traceDraws_;char name[96];
-        std::fprintf(journal_,"{\"event\":\"native-trace\",\"draw\":%u,\"renderer_frame\":%u,\"primitives\":%u,\"receiver_classification_required\":false}\n",draw,rendererFrame,primitives);
+        std::fprintf(journal_,"{\"event\":\"native-trace\",\"draw\":%u,\"renderer_frame\":%u,\"primitives\":%u,\"receiver_classification_required\":false,\"draw_images\":%s}\n",draw,rendererFrame,primitives,traceImages_?"true":"false");
         try{
             Ref<IDirect3DVertexShader9> vs;Ref<IDirect3DPixelShader9> ps;
             call("GetVertexShader-trace",device_->GetVertexShader(&vs.p));call("GetPixelShader-trace",device_->GetPixelShader(&ps.p));
@@ -275,14 +277,14 @@ public:
             if(call("GetPixelShaderConstantF-trace",device_->GetPixelShaderConstantF(0,pixel[0],224))){std::snprintf(name,sizeof name,"native-trace-%u-ps-constants",draw);bytes(name,"f32",pixel,sizeof pixel);}
             for(auto key:{D3DRS_ZENABLE,D3DRS_ZWRITEENABLE,D3DRS_ZFUNC,D3DRS_ALPHABLENDENABLE,D3DRS_SRCBLEND,D3DRS_DESTBLEND,D3DRS_BLENDOP,D3DRS_ALPHATESTENABLE,D3DRS_ALPHAFUNC,D3DRS_ALPHAREF,D3DRS_COLORWRITEENABLE,D3DRS_STENCILENABLE,D3DRS_STENCILFUNC,D3DRS_STENCILREF,D3DRS_CULLMODE,D3DRS_DEPTHBIAS,D3DRS_SLOPESCALEDEPTHBIAS,D3DRS_LIGHTING,D3DRS_COLORVERTEX,D3DRS_AMBIENT,D3DRS_DIFFUSEMATERIALSOURCE,D3DRS_EMISSIVEMATERIALSOURCE,D3DRS_AMBIENTMATERIALSOURCE}){
                 DWORD value=0;if(call("GetRenderState-trace",device_->GetRenderState(key,&value)))std::fprintf(journal_,"{\"event\":\"native-trace-state\",\"draw\":%u,\"state\":%u,\"value\":%lu}\n",draw,unsigned(key),(unsigned long)value);}
-            traceImage(draw,"before");
+            if(traceImages_)traceImage(draw,"before");
         }catch(...){unavailable("native-trace","allocation-failed");}
         return draw;
     }
     void traceAfter(unsigned token,HRESULT result)noexcept{
         if(!active()||!token)return;
         std::fprintf(journal_,"{\"event\":\"native-trace-result\",\"draw\":%u,\"HRESULT\":\"%08lx\"}\n",token,(unsigned long)result);
-        if(FAILED(result))complete_=false;traceImage(token,"after");
+        if(FAILED(result))complete_=false;if(traceImages_)traceImage(token,"after");
     }
     unsigned nativeBefore(unsigned rendererFrame,uint64_t source,unsigned slot,bool prepared,bool focus,IDirect3DVertexShader9* originalVS,IDirect3DPixelShader9* originalPS,const uint64_t (&sources)[4],bool allowImages=true)noexcept{
         if(!active())return 0;

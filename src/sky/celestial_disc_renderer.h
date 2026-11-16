@@ -204,8 +204,8 @@ public:
         ownFrame=frames;suppressed|=3;return true;
     }
     bool renderSkyBackground(IDirect3DSurface9* target,IDirect3DTexture9* scene,IDirect3DTexture9* depth,
-        IDirect3DTexture9* layers,UINT width,UINT height,const float* projection,const float* inverseView,const float colors[8][3]){
-        if(!target||!scene||!layers)return false;
+        IDirect3DTexture9* layers,UINT width,UINT height,const float* projection,const float* inverseView,const float colors[8][3],bool menu=false){
+        if(!target||!scene||(!layers&&!menu))return false;
         SavedState saved(d);if(!saved.ok||!saved.depth)return false;
         D3DSURFACE_DESC desc{},depthDesc{};
         if(FAILED(target->GetDesc(&desc))||FAILED(saved.depth->GetDesc(&depthDesc))||
@@ -221,7 +221,7 @@ public:
             // Native terrain/WMO can precede the sky boundary. Test the live
             // depth at the clear plane, including individual MSAA samples.
             {D3DRS_ZENABLE,TRUE},{D3DRS_ZFUNC,D3DCMP_LESSEQUAL},{D3DRS_ZWRITEENABLE,FALSE},{D3DRS_ALPHATESTENABLE,FALSE},
-            {D3DRS_ALPHABLENDENABLE,DWORD(hdr)},{D3DRS_SRCBLEND,D3DBLEND_ONE},{D3DRS_DESTBLEND,D3DBLEND_ONE},
+            {D3DRS_ALPHABLENDENABLE,DWORD(hdr&&!menu)},{D3DRS_SRCBLEND,D3DBLEND_ONE},{D3DRS_DESTBLEND,D3DBLEND_ONE},
             {D3DRS_BLENDOP,D3DBLENDOP_ADD},{D3DRS_SEPARATEALPHABLENDENABLE,FALSE},
             {D3DRS_CULLMODE,D3DCULL_NONE},{D3DRS_COLORWRITEENABLE,7},{D3DRS_SRGBWRITEENABLE,FALSE},
             {D3DRS_FOGENABLE,FALSE},{D3DRS_STENCILENABLE,FALSE},{D3DRS_SCISSORTESTENABLE,FALSE},
@@ -233,8 +233,8 @@ public:
             d->SetSamplerState(k,D3DSAMP_MINFILTER,D3DTEXF_POINT);d->SetSamplerState(k,D3DSAMP_MAGFILTER,D3DTEXF_POINT);
             d->SetSamplerState(k,D3DSAMP_MIPFILTER,D3DTEXF_NONE);d->SetSamplerState(k,D3DSAMP_SRGBTEXTURE,FALSE);
         }
-        d->SetTexture(0,depth);d->SetTexture(1,scene);d->SetTexture(6,layers);
-        float c[57][4]={};c[0][0]=1.f/width;c[0][1]=1.f/height;c[10][0]=hdr?2.f:0.f;c[10][3]=depth?1.f:0.f;
+        d->SetTexture(0,depth);d->SetTexture(1,scene);d->SetTexture(6,layers?layers:scene);
+        float c[57][4]={};c[0][0]=1.f/width;c[0][1]=1.f/height;c[10][0]=hdr?2.f:0.f;c[10][2]=menu?1.f:0.f;c[10][3]=depth?1.f:0.f;
         std::copy_n(projection,3,c[1]);std::memcpy(c[2],inverseView,64);
         for(unsigned k=0;k<6;++k)std::copy_n(colors[k],3,c[51+k]);
         d->SetPixelShaderConstantF(0,c[0],57);

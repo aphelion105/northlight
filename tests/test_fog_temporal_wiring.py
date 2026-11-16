@@ -80,7 +80,7 @@ checks['host: composite and current-frame diagnostic product read the final buff
     'SetTexture(9,fogResolved?fogBlurred:fog?fog:neutralAO);d->SetPixelShader(aoBaseComposite?hdrAOBasePS:baseComposite?hdrBasePS:hdrMode?hdrFinalPS:finalPS)' in g
     and 'diagnosticFogResolved=fogResolved;' in g and 'captureProducts(directory,capture,rendererFrame,w,h,true);' in g
     and 'ready=current&&composited&&lastRenderDebug==0;' in products
-    and 'image("fog",diagnosticFogResolved?fogBlurredSurface:fogSurface,ready&&effects.fog&&uploadedFogField,w/2,h/2,D3DFMT_A16B16G16R16F);' in products
+    and 'image("fog",diagnosticFogResolved?fogBlurredSurface:fogSurface,ready&&effects.fog&&(menuDomain||uploadedFogField),w/2,h/2,D3DFMT_A16B16G16R16F);' in products
     and 'NorthlightWorldDiagnostics::product(' in products)
 checks['host: history target created with the others, dropped and invalidated in releaseGPU; shader optional']=(
     'image(D3DFMT_A16B16G16R16F,fogHistory,fogHistorySurface)' in resources and 'drop(fogHistorySurface);drop(fogHistory);drop(fogTemporalPS);fogHistoryValid=fogNeutral=fogHistoryNeutral=false;' in w and 'if(!fogTemporalPS&&FAILED(d->CreatePixelShader(kFogTemporalShader,&fogTemporalPS)))fogTemporalPS=nullptr;' in resources)

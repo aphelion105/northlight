@@ -38,6 +38,8 @@ int main(){ActorJob job;job.center={102,13,4};Packet p;auto words=code(3);assert
  changed=job;changed.packets[0].material.rgba[3]=0;auto transparent=changed.resolve();NorthlightGI::BVH cutout;scene=*transparent.scene;assert(cutout.build(std::move(scene),error));assert(!cutout.occluded({102.2f,13.2f,5},{0,0,-1}));
  changed=job;changed.packets[0].material.rgba.clear();assert(changed.resolve().scene->triangles.empty());changed=job;changed.packets[0].hasUV=false;assert(changed.resolve().scene->triangles.empty());
  changed=job;changed.packets[0].mesh.indices.clear();assert(changed.resolve().scene->triangles.empty());changed=job;changed.center={500,500,500};assert(changed.resolve().scene->triangles.empty());
+ changed.menu=true;assert(changed.resolve().scene->triangles.size()==1); // Menu backdrops exceed the actor-only world radius.
+ changed.center={5000,5000,5000};assert(changed.resolve().scene->triangles.empty()); // The expanded scene remains bounded.
  changed=job;changed.packets[0].mesh.primitiveCount=0xffffffff;assert(changed.resolve().scene->triangles.empty());
  // Immutable mesh sharing removes capture copies without retaining live buffers.
  ActorJob sharedJob=job;auto immutable=std::make_shared<const NorthlightDrawSnapshot::Mesh>(std::move(sharedJob.packets[0].mesh));

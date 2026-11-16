@@ -22,13 +22,13 @@ struct Capture {
     char boundMap[64]{};
     std::uint32_t sampledAt=0;
     unsigned fixtureVersion=~0u;
-    void sample(const char* map,const float* camera){
+    void sample(const char* map,const float* camera,std::uint32_t menuScene=0,std::uint32_t menuBackdrop=0){
         if(!requested.load(std::memory_order_relaxed)||!map||!*map){latest.clear();return;}
         static const bool supported=NorthlightWorldContext::supportedClient()&&Reader::verify(NorthlightWorldContext::readSelfLive);
         if(!supported){latest.clear();return;}
         const auto version=fixtureRevision.load(std::memory_order_acquire);if(version!=fixtureVersion){reader.fixtures(std::atomic_load(&fixtureCatalog));fixtureVersion=version;}
         if(std::strcmp(boundMap,map)){reader.reset();std::strncpy(boundMap,map,sizeof boundMap-1);boundMap[sizeof boundMap-1]=0;}
-        try{reader.update(NorthlightWorldContext::readSelfLive,camera,latest);}
+        try{reader.update(NorthlightWorldContext::readSelfLive,camera,latest,menuScene,menuBackdrop);}
         catch(...){latest.clear();reader.reset();}
         if(latest.valid){std::strncpy(latest.map,map,sizeof latest.map-1);latest.map[sizeof latest.map-1]=0;}
         sampledAt=GetTickCount();

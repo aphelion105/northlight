@@ -29,6 +29,7 @@ def method(file, signature):
 
 
 MODEL = method('src/world/world_renderer.h', 'bool modelContext(')
+MENU = method('src/world/world_renderer.h', 'bool menuContext(')
 BEFORE = method('src/proxy/renderer.cpp', 'void beforeDraw(')
 PROJECTION = method('src/proxy/renderer.cpp', 'bool readProjection(')
 assert 'metadata.fog=NorthlightSpellFog::vsFogProven' in (ROOT / 'src/world/world_renderer.h').read_text()
@@ -39,6 +40,8 @@ HARNESS = r'''
 #include <cassert>
 #include <cstdio>
 #include <map>
+#include <set>
+#define NORTHLIGHT_REPLAY_STAND 1
 #include "projection.h"
 #include "world_camera.h"
 #include "wmo_context.h"
@@ -69,6 +72,7 @@ struct Ext {
     Ext(){rows[0]=1.2f;rows[5]=1.7f;rows[10]=1000.f/999.f;rows[11]=1;rows[14]=-1000.f/999.f;}
     HRESULT GetVertexShaderConstantF(UINT reg,float* p,UINT n){
         if(!constants)return E_FAIL;
+        if(reg==10){assert(n==3);const float bank[12]={.6f,.5f,.4f,0,.1f,.2f,.3f,0,0,0,-1,0};std::copy_n(bank,12,p);return S_OK;}
         for(unsigned r=0;r<n;++r)for(unsigned c=0;c<4;++c)p[r*4+c]=reg==2?rows[c*4+r]:rows[r*4+c];return S_OK;}
     HRESULT GetViewport(D3DVIEWPORT9* p){*p=vp;return S_OK;}
     HRESULT GetRenderState(D3DRENDERSTATETYPE t,DWORD* p){*p=t==D3DRS_ZENABLE?z:t==D3DRS_ZFUNC?zf:0;return states?S_OK:E_FAIL;}
@@ -80,15 +84,20 @@ struct World {
     Ext* d;bool failed=false,valid=false,legacyFogKnown=false,fogProof=false;
     struct Capture {bool skinned=true;unsigned projectionKind=2;bool fog=true;};
     std::map<IDirect3DVertexShader9*,Capture> captureShaders;
+    std::set<IDirect3DVertexShader9*> nativeLightingShaders;
+    NorthlightNativeLights::Snapshot menuLights;
     NorthlightWorldContext::TerrainContext context;
     NorthlightWmoContext::LightingHold globalLightHold;
     unsigned traceContext=0,traceFog=0,modelContexts=0,updates=0;
     float projection[3]={};bool hasContext()const{return valid&&!failed;}
     void readOriginalFog(unsigned reg,bool proof){assert(reg==30);fogProof=proof;legacyFogKnown=proof;}
-    void updateWorldContext(const char* map,const float* eye,const NorthlightWmoContext::Lighting*){assert(!std::strcmp(map,"Northrend"));assert(eye[2]==1041);++updates;}
+    void updateWorldContext(const char* map,const float* eye,const NorthlightWmoContext::Lighting*,const NorthlightMenu::Snapshot* menu=nullptr){
+        if(menu){assert(!std::strncmp(map,"Menu:",5));assert(eye[2]==6);}
+        else {assert(!std::strcmp(map,"Northrend"));assert(eye[2]==1041);}++updates;}
     bool readWorldLighting(const char*,const float* eye,NorthlightWmoContext::Lighting& light){return TestLight::readGlobalLighting(eye,light);}
     bool wmoContext(IDirect3DVertexShader9*){valid=true;return true;}
     void terrainContext(){valid=true;}
+__MENU__
 #define NorthlightWorldCamera TestCamera
 #define NorthlightWmoContext TestLight
 __MODEL__
@@ -163,6 +172,20 @@ int main(){
         p.beforeDraw(shader);assert(!p.terrain&&!p.projectionValid&&p.binds==0&&p.allocations==0);++cases;
     }
     cameraOK=lightOK=contextOK=true;
+    // Execute the production menu reader with an owned snapshot and the real
+    // M2 direct/ambient constant order, independently of CWorld availability.
+    {auto snapshot=std::make_unique<NorthlightStream::GameSnapshot>();auto& menu=snapshot->menu;
+        menu.valid=1;menu.scene=0x20000;menu.model=0x30000;menu.data=0x40000;std::strcpy(menu.name,"UI_Scourge");
+        for(unsigned i=0;i<4;++i)menu.view[i*5]=menu.inverseView[i*5]=1;
+        menu.view[14]=-6;menu.inverseView[14]=6;
+        NorthlightStream::ScopedPlayback playback(*snapshot);cameraOK=lightOK=contextOK=false;
+        Device p;p.state.vp.MaxZ=1;p.world->captureShaders[shader]={};p.world->nativeLightingShaders.insert(shader);
+        p.beforeDraw(shader);assert(p.menuScene&&p.world->hasContext()&&p.world->updates==1);
+        assert(p.world->context.camera[2]==6&&p.world->context.ambient[0]==.1f&&p.world->context.direct[0]==.6f);
+        p.beforeDraw(shader);assert(p.world->updates==1&&p.binds==1);
+        menu.inverseView[0]=2;p.world->valid=false;assert(!p.world->menuContext(shader));++cases;
+    }
+    cameraOK=lightOK=contextOK=true;
     // A menu uses its own model camera and native light. No map/light read is
     // required and no world context is published for a 0..1 backbuffer scene.
     {Device p;p.state.vp.MaxZ=1;cameraOK=lightOK=contextOK=false;
@@ -207,7 +230,7 @@ if __name__ == '__main__':
     compiler = [zig, 'c++', '-target', 'x86-windows-gnu'] if zig else shlex.split(os.environ.get('CXX', 'c++'))
     with tempfile.TemporaryDirectory(prefix='model-context-', dir=fp.output_dir()) as tmp:
         source = Path(tmp) / 'test.cpp'
-        source.write_text(HARNESS.replace('__MODEL__', MODEL).replace('__BEFORE__', BEFORE).replace('__PROJECTION__', PROJECTION))
+        source.write_text(HARNESS.replace('__MODEL__', MODEL).replace('__MENU__', MENU).replace('__BEFORE__', BEFORE).replace('__PROJECTION__', PROJECTION))
         binary = Path(tmp) / ('test.exe' if os.name == 'nt' else 'test')
         subprocess.run([*compiler, '-std=c++17', '-O2', '-UNDEBUG', *includes, str(source), '-luser32', '-o', str(binary)], check=True)
         subprocess.run([str(binary)], check=True)

@@ -35,7 +35,7 @@ public:
         if(!self.enabled_.load(std::memory_order_acquire))return;
         Guard guard(self);if(!guard.entered||!self.enabled_.load(std::memory_order_acquire))return;
         if(self.pending_.accepted){self.reject(ObserverOrder);return;}
-        if(snapshot.triggerKind<1||snapshot.triggerKind>3){self.reject(Provenance);return;}
+        if(snapshot.triggerKind<1||snapshot.triggerKind>4){self.reject(Provenance);return;}
         if(!self.sink_.submit(snapshot,device,frame,epoch,thread,&self.pending_))self.reject(Sink);
     }
     // A separate opt-in trace observer. The injected marker implementation may
@@ -56,7 +56,7 @@ public:
     // lower-case unprefixed hex device/8-digit CRC; all other numbers decimal.
     // The synchronous callback must copy the text if it retains it after return.
     static unsigned formatMarker(const char* session,const SnapshotCaptureSink::Receipt& receipt,wchar_t (&output)[MarkerChars]) noexcept {
-        output[0]=0;if(!session||!receipt.accepted||!receipt.device||!receipt.thread||receipt.trigger<1||receipt.trigger>3||
+        output[0]=0;if(!session||!receipt.accepted||!receipt.device||!receipt.thread||receipt.trigger<1||receipt.trigger>4||
             receipt.record>=SnapshotCaptureSink::MaxRecords||receipt.bytes<SnapshotArchive::HeaderBytes+SnapshotArchive::RecordBytes+SnapshotArchive::ChecksumBytes||receipt.bytes>SnapshotArchive::MaxBytes)return 0;
         unsigned size=0;for(;size<=64&&session[size];++size){const char c=session[size];if(!((c>='a'&&c<='z')||(c>='A'&&c<='Z')||(c>='0'&&c<='9')||c=='-'))return 0;}
         if(!size||size>64)return 0;

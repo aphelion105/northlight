@@ -11,7 +11,8 @@
 namespace NorthlightStream::SnapshotArchive {
 constexpr std::size_t HeaderBytes=40,RecordBytes=16,ChecksumBytes=4;
 constexpr std::size_t LightHeaderBytes=80,LightBytes=80;
-constexpr std::size_t MaxBytes=HeaderBytes+GameSnapshot::MaxCopies*RecordBytes+GameSnapshot::ArenaBytes+ChecksumBytes+LightHeaderBytes+NorthlightNativeLights::Capacity*LightBytes;
+constexpr std::size_t MenuBytes=sizeof(NorthlightMenu::Snapshot);
+constexpr std::size_t MaxBytes=HeaderBytes+GameSnapshot::MaxCopies*RecordBytes+GameSnapshot::ArenaBytes+ChecksumBytes+LightHeaderBytes+NorthlightNativeLights::Capacity*LightBytes+MenuBytes;
 constexpr unsigned Version=1;
 enum class Error {None,Unusable,Buffer,Magic,Version,Bounds,Checksum,Record,Counts,Address};
 inline const char* name(Error error){
@@ -30,12 +31,14 @@ inline std::uint32_t checksum(const unsigned char* p,std::size_t size){
 }
 inline bool encode(const GameSnapshot& snapshot,unsigned char* output,std::size_t capacity,std::size_t& written,Error& error){
     written=0;error=Error::None;
-    if(!snapshot.usable()||snapshot.triggerKind>3||!NorthlightNativeLights::wellFormed(snapshot.nativeLights)){error=Error::Unusable;return false;}
+    if(!snapshot.usable()||snapshot.triggerKind>4||!NorthlightNativeLights::wellFormed(snapshot.nativeLights)||!NorthlightMenu::wellFormed(snapshot.menu)){error=Error::Unusable;return false;}
     const auto& lights=snapshot.nativeLights;
-    const auto size=HeaderBytes+snapshot.copies()*RecordBytes+snapshot.bytes()+ChecksumBytes+(lights.valid?LightHeaderBytes+lights.count*LightBytes:0);
+    const bool menu=snapshot.menu.valid!=0;
+    if(!menu)for(unsigned i=0;i<lights.count;++i)if(lights.lights[i].flags&NorthlightNativeLights::MenuFixture){error=Error::Unusable;return false;}
+    const auto size=HeaderBytes+snapshot.copies()*RecordBytes+snapshot.bytes()+ChecksumBytes+((lights.valid||menu)?LightHeaderBytes+lights.count*LightBytes:0)+(menu?MenuBytes:0);
     if(!output||size>capacity||size>MaxBytes){error=Error::Buffer;return false;}
     const unsigned char magic[8]={'N','L','S','N','A','P','1',0};std::memcpy(output,magic,sizeof magic);
-    put32(output+8,lights.valid?4:Version);put32(output+12,std::uint32_t(size));put32(output+16,snapshot.triggerKind);
+    put32(output+8,menu?5:lights.valid?4:Version);put32(output+12,std::uint32_t(size));put32(output+16,snapshot.triggerKind);
     put32(output+20,std::uint32_t(snapshot.keys()));put32(output+24,std::uint32_t(snapshot.copies()));put32(output+28,std::uint32_t(snapshot.bytes()));put64(output+32,snapshot.triggerDraw);
     std::size_t offset=HeaderBytes;
     const bool ok=snapshot.visitRecorded([&](std::uintptr_t address,std::uint32_t count,bool success,const void* data){
@@ -43,14 +46,15 @@ inline bool encode(const GameSnapshot& snapshot,unsigned char* output,std::size_
         if(offset>size-ChecksumBytes||RecordBytes+payload>size-ChecksumBytes-offset)return false;
         put64(output+offset,std::uint64_t(address));put32(output+offset+8,count);put32(output+offset+12,success?1u:0u);offset+=RecordBytes;
         if(payload){std::memcpy(output+offset,data,payload);offset+=payload;}return true;});
-    if(lights.valid){
-        put32(output+offset,lights.scene);put32(output+offset+4,lights.time);put32(output+offset+8,lights.count);put32(output+offset+12,1);
+    if(lights.valid||menu){
+        put32(output+offset,lights.scene);put32(output+offset+4,lights.time);put32(output+offset+8,lights.count);put32(output+offset+12,lights.valid);
         std::memcpy(output+offset+16,lights.map,64);offset+=LightHeaderBytes;
         for(unsigned i=0;i<lights.count;++i){const auto& p=lights.lights[i];put64(output+offset,p.id);
             std::memcpy(output+offset+8,p.position,36);put32(output+offset+44,p.reserved);
             std::memcpy(output+offset+48,p.anchor,12);put32(output+offset+60,p.flags);
             std::memcpy(output+offset+64,p.emitterOffset,12);put32(output+offset+76,p.resolutionReserved);offset+=LightBytes;}
     }
+    if(menu){std::memcpy(output+offset,&snapshot.menu,MenuBytes);offset+=MenuBytes;}
     if(!ok||offset!=size-ChecksumBytes){error=Error::Counts;return false;}
     put32(output+offset,checksum(output,offset));written=size;return true;
 }
@@ -59,10 +63,10 @@ inline bool decode(const unsigned char* input,std::size_t size,GameSnapshot& sna
     auto fail=[&](Error why){snapshot.clear();error=why;return false;};
     if(!input||size<HeaderBytes+ChecksumBytes||size>MaxBytes)return fail(Error::Bounds);
     const unsigned char magic[8]={'N','L','S','N','A','P','1',0};if(std::memcmp(input,magic,sizeof magic))return fail(Error::Magic);
-    const auto version=u32(input+8);if(version!=Version&&version!=2&&version!=3&&version!=4)return fail(Error::Version);
+    const auto version=u32(input+8);if(version<1||version>5)return fail(Error::Version);
     const auto trigger=u32(input+16),keys=u32(input+20),copies=u32(input+24),payload=u32(input+28);
     const auto baseSize=HeaderBytes+std::size_t(copies)*RecordBytes+payload+ChecksumBytes;
-    if(u32(input+12)!=size||trigger>3||!keys||keys>GameSnapshot::MaxKeys||!copies||copies>GameSnapshot::MaxCopies||keys>copies||payload>GameSnapshot::ArenaBytes||baseSize>size||(version==1&&baseSize!=size)||(version>=2&&size-baseSize<LightHeaderBytes))return fail(Error::Bounds);
+    if(u32(input+12)!=size||trigger>4||!keys||keys>GameSnapshot::MaxKeys||!copies||copies>GameSnapshot::MaxCopies||keys>copies||payload>GameSnapshot::ArenaBytes||baseSize>size||(version==1&&baseSize!=size)||(version>=2&&size-baseSize<LightHeaderBytes))return fail(Error::Bounds);
     if(u32(input+size-ChecksumBytes)!=checksum(input,size-ChecksumBytes))return fail(Error::Checksum);
     std::size_t offset=HeaderBytes;
     for(std::uint32_t i=0;i<copies;++i){
@@ -76,15 +80,17 @@ inline bool decode(const unsigned char* input,std::size_t size,GameSnapshot& sna
     if(offset!=baseSize-ChecksumBytes||snapshot.keys()!=keys||snapshot.bytes()!=payload||snapshot.copies()!=copies||!snapshot.usable())return fail(Error::Counts);
     if(version>=2){auto& lights=snapshot.nativeLights;const std::size_t lightBytes=version==2?48:version==3?64:LightBytes;
         lights.scene=u32(input+offset);lights.time=u32(input+offset+4);lights.count=u32(input+offset+8);lights.valid=u32(input+offset+12);
-        if(lights.valid!=1||lights.count>NorthlightNativeLights::Capacity||size-baseSize!=LightHeaderBytes+lights.count*lightBytes)return fail(Error::Bounds);
+        if((version<5&&lights.valid!=1)||lights.valid>1||lights.count>NorthlightNativeLights::Capacity||size-baseSize!=LightHeaderBytes+lights.count*lightBytes+(version==5?MenuBytes:0))return fail(Error::Bounds);
         std::memcpy(lights.map,input+offset+16,64);offset+=LightHeaderBytes;
         for(unsigned i=0;i<lights.count;++i){auto& p=lights.lights[i];p={};p.id=u64(input+offset);
             std::memcpy(p.position,input+offset+8,36);p.reserved=u32(input+offset+44);
             if(version>=3){std::memcpy(p.anchor,input+offset+48,12);p.flags=u32(input+offset+60);}
             if(version<4&&(p.flags&NorthlightNativeLights::ResolvedEmitter))return fail(Error::Record);
+            if(version<5&&(p.flags&NorthlightNativeLights::MenuFixture))return fail(Error::Record);
             if(version>=4){std::memcpy(p.emitterOffset,input+offset+64,12);p.resolutionReserved=u32(input+offset+76);}offset+=lightBytes;}
         if(!NorthlightNativeLights::wellFormed(lights))return fail(Error::Record);
     }
+    if(version==5){std::memcpy(&snapshot.menu,input+offset,MenuBytes);if(!snapshot.menu.valid||!NorthlightMenu::wellFormed(snapshot.menu))return fail(Error::Record);}
     snapshot.triggerKind=trigger;snapshot.triggerDraw=u64(input+32);snapshot.mode=GameSnapshot::Mode::Playing;snapshot.rewind();return true;
 }
 

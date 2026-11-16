@@ -45,7 +45,8 @@ bool readSkyPhase(char (&map)[64],float sign,Camera& out){
 template<class... Args> void logf(const char*,Args...){}
 struct World {
     struct Environment {bool skyValid=true;struct {float color[8][3]{};} sky;} skyEnvironment;
-    bool valid=true,pipelineActive=true,failed=false;unsigned fault=0;
+    bool valid=true,pipelineActive=true,failed=false,menu=false;unsigned fault=0;
+    bool isMenu()const{return menu;}
     struct {float inverseView[16]={1};} context;
     float projection[3]={2,3,-1};struct {std::string map="Northrend";} lastRequest;
     bool hasContext()const{return valid&&!failed&&!workerFault();}
@@ -62,16 +63,16 @@ struct ExtensionDevice {struct RawScope {explicit RawScope(Device&) {}};};
 struct SavedState {bool ok=true;Surface* targets[1];SavedState(Device* d,int*):targets{&d->target}{}};
 struct Fixture {
     unsigned frame=1,skyBackgroundFrame=~0u,width=8,height=8,debugMode=0,worldDebug=0,drawCalls=0;
-    bool enabled=true,failed=false,applied=false,full=true,back=true,resourceOk=true;
+    bool enabled=true,failed=false,applied=false,full=true,back=true,resourceOk=true,menuScene=false;
     float worldMinDepth=0,worldMaxDepth=.94f;D3DVIEWPORT9 vp;
     Device device;Device* ext=&device;int stateBlocks=0;
     Surface* sceneSurface=&device.copy;Texture* scene=&texture;Texture texture;
     struct Layers {bool available=true;Texture image;Texture* textureAt(){return available?&image:nullptr;}Texture* texture(unsigned){return textureAt();}} skyLayers;
     World worldStorage;World* world=&worldStorage;
     struct Celestial {
-        unsigned draws=0;
-        bool renderSkyBackground(Surface* target,Texture*,Texture* depth,Texture*,unsigned,unsigned,const float*,const float*,const float[8][3]){
-            assert(!depth);target->color=20;++draws;return true;
+        unsigned draws=0;bool menuDraw=false;
+        bool renderSkyBackground(Surface* target,Texture*,Texture* depth,Texture*,unsigned,unsigned,const float*,const float*,const float[8][3],bool menu=false){
+            assert(!depth);target->color=20;++draws;menuDraw=menu;return true;
         }
     } celestialStorage;Celestial* celestialDiscs=&celestialStorage;
     bool fullViewport(D3DSURFACE_DESC&,D3DVIEWPORT9* out,bool){*out=vp;return full;}
@@ -123,6 +124,17 @@ int main(){
         g.composeSkyBackground();assert(!g.celestialStorage.draws&&g.device.target.color==10);
         if(kind==1){NorthlightWorldCamera::available=true;g.worldStorage.valid=true;g.device.target.color=70;g.composeSkyBackground();assert(g.device.target.color==70);}
     }
+    // Menu has no world sky-layer capture. Its native luminous backdrop is
+    // drawn after opaque models and does not write depth; it must survive.
+    Fixture menu;menu.skyLayers.available=false;menu.menuScene=true;menu.vp={0,1};
+    menu.composeSkyBackground();assert(!menu.celestialStorage.draws);
+    menu.worldStorage.menu=true;menu.worldStorage.valid=false;
+    menu.composeSkyBackground();assert(!menu.celestialStorage.draws);
+    menu.worldStorage.valid=true;menu.composeSkyBackground();
+    assert(menu.celestialStorage.draws==1&&menu.celestialStorage.menuDraw);
+    menu.device.target.color=90; // Late native ice/glow, depth unchanged.
+    menu.composeSkyBackground();assert(menu.device.target.color==90);
+    menu.applied=true;menu.composeSkyBackground();assert(menu.device.target.color==90);
     ++f.frame;f.applied=false;f.composeSkyBackground();assert(f.celestialStorage.draws==2);
     std::puts("PASS sky camera independent of draw order; current camera, map guard, world ownership, foreground latch and native fallback");
 }

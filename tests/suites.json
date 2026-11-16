@@ -47,6 +47,7 @@
       "test_world_shader_contract.py",
       "test_world_snapshot_domain.py",
       "test_model_world_context.py",
+      "test_menu_scene.py",
       "test_native_shadow_control.py",
       "test_world_environment.py",
       "test_weather_shelter.py",
@@ -108,7 +109,8 @@
       "test_removal_zero_weight_gpu.py",
       "test_world_temporal_merge_gpu.py",
       "test_gi_residency_gpu.py",
-      "test_shadow_receiver_gpu.py"
+      "test_shadow_receiver_gpu.py",
+      "test_relighting_color_edges_gpu.py"
     ]
   },
   "shadow-experiments": {

@@ -279,6 +279,12 @@ float4 CelestialSkyPS(float2 uv:TEXCOORD0):COLOR0 {
     sky=lerp(sky,SkyGradient[0].rgb,saturate((h-.5)/.366025));
     float3 native=tex2Dlod(DiscTexture,float4(uv,0,0)).rgb;
     float4 layers=tex2Dlod(DiscSkyLayers,float4(uv,0,0));
+    // Seed menus before their native backdrop draws; hardware depth protects
+    // earlier geometry, including individual MSAA samples at its silhouette.
+    if(DiscPolicy.z>.5)layers=float4(native,1);
     float3 replacement=max(native-layers.rgb,0)+sky*saturate(layers.a);
-    return float4(DiscPolicy.x>1.5?discDecode(replacement)-discDecode(native):replacement,0);
+    // A menu sky is an early background fill. Write absolute linear colour in
+    // HDR: subtracting resolved native colour would mix covered MSAA samples
+    // into the uncovered samples at an existing silhouette.
+    return float4(DiscPolicy.x>1.5?discDecode(replacement)-(DiscPolicy.z>.5?0:discDecode(native)):replacement,0);
 }

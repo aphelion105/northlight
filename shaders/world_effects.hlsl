@@ -1694,6 +1694,12 @@ float3 effectWeight(float2 uv,float3 source,bool hdrMode,out float coverageTrans
     return saturate(mad(remaining-source,rcp(max(source,.000001)),1))*coverageTransmission;
 }
 // SDR and HDR are separate compiled variants; validate the actual slot counts.
+// A single bound preserves the inferred material's channel ratios. Clipping
+// channels independently makes neutral shadow/GI removal saturate pastel colors.
+float3 boundedAlbedo(float3 surface,float3 lighting,float transmission) {
+    float3 albedo=surface/max(lighting,.15);
+    return albedo*(transmission/max(max(albedo.r,max(albedo.g,albedo.b)),max(transmission,.00001)));
+}
 float4 worldCompositeInputs(float2 uv,float2 pixel,bool surfaceLighting,bool hdrMode,sampler2D fogInput,out float3 effect,out float4 receiver,out float3 sourceColor,bool prelit=false,bool baseLighting=false,bool depthFromScene=true,bool noLighting=false) {
     // Fetches before any flow control use texld (1 slot; tex2Dlod costs 3-4): Scene and Depth have one level and no mip filter, so texld reads what tex2Dlod(.,0) does.
     float4 original=tex2D(Scene,uv);sourceColor=original.rgb;
@@ -1814,7 +1820,7 @@ float4 worldCompositeInputs(float2 uv,float2 pixel,bool surfaceLighting,bool hdr
         // transported surface term: do not infer material albedo from fog RGB.
         float3 oldLight=max(baseline*inverseWeight,.15);
         float3 transported=max(original.rgb-fogPart,0);
-        float3 albedoT=min((hdrMode?hdrSurface:transported)/oldLight,legacyT);
+        float3 albedoT=boundedAlbedo(hdrMode?hdrSurface:transported,oldLight,legacyT);
         // Prelit RGB retains authored illumination at zero GI blend. Resident
         // probes attenuate that layer and add bounce independently of daylight.
         // As for local lamps, native transported RGB supplies a bounded material
@@ -1907,7 +1913,23 @@ float4 materialComposite(float2 uv,bool hdrMode,float4 color,float3 effect,bool 
     float3 v=viewPositionDistance(q,z);
     // Camera-relative derivatives avoid losing sub-centimetre detail at large map coordinates.
     float3 relative=v.x*InverseView[0].xyz+v.y*InverseView[1].xyz+v.z*InverseView[2].xyz;
-    float3 normal=tex2Dlod(NormalBuffer,float4(uv,0,0)).xyz;
+    // A half-resolution normal may belong to the facade behind this pixel.
+    // Keep normal, baseline and visibility on a depth-compatible receiver.
+    float2 materialUV=uv;
+    float2 normalUV=uv,base=floor(uv*ScreenSize.zw-.5);float normalScore=1e20;
+    [loop]for(int tap=0;tap<4;++tap){
+        float row=floor(tap*.5);
+        float2 candidate=(clamp(base+float2(tap-row*2,row),0,ScreenSize.zw-1)+.5)/ScreenSize.zw;
+        float gap=abs(viewDistance(normalizedDepth(depthUV(candidate)))-z);
+        // Among compatible receivers retain the nearest pixel, not a depth
+        // minimum that would pull a grazing plane toward the camera.
+        float2 offset=(candidate-uv)*ScreenSize.zw;
+        float score=dot(offset,offset)+(gap>max(.025,z*.0015)?100:0);
+        if(score<normalScore){normalScore=score;normalUV=candidate;}
+    }
+    if(normalScore>=100)return color;
+    if(any(floor(normalUV*ScreenSize.zw)!=floor(uv*ScreenSize.zw)))materialUV=normalUV;
+    float3 normal=tex2Dlod(NormalBuffer,float4(normalUV,0,0)).xyz;
     float3 detail=autoBumpNormal(q,relative,normal,z,InverseView[0].xyz,InverseView[1].xyz,InverseView[2].xyz);
     float3 occlusion=1;
     [branch]if(MaterialOcclusionInfo.x>0&&z<occlusionRange){
@@ -1920,13 +1942,13 @@ float4 materialComposite(float2 uv,bool hdrMode,float4 color,float3 effect,bool 
     float3 delta=0;
     [unroll]for(int i=0;i<2;++i)
         delta+=MaterialColor[i].rgb*(saturate(dot(detail,MaterialDirection[i].xyz))*occlusion[i]-saturate(dot(normal,MaterialDirection[i].xyz)));
-    float visibility=saturate((tex2Dlod(LightingBuffer,float4(uv,0,0)).a*WaterInfo.z-(1-GridInfo.z))/max(GridInfo.z,.001));
+    float visibility=saturate((tex2Dlod(LightingBuffer,float4(materialUV,0,0)).a*WaterInfo.z-(1-GridInfo.z))/max(GridInfo.z,.001));
     float legacyT=reuseInputs?receiver.w:mad(LegacyFog.w,saturate(pow(max(mad(z*Projection.z,LegacyFog.x,LegacyFog.y),0),LegacyFog.z))-1,1);
     float3 source=reuseInputs?sharedSource:tex2D(MaterialSource,uv).rgb;
     float3 surface=max(source-min((1-legacyT)*LegacyFogColor.rgb,source),0);
     if(hdrMode)surface=worldHdrDecode(surface);
     surface*=tex2D(AmbientOcclusion,uv).a;
-    float3 albedoT=min(surface/max(tex2D(BaselineLighting,uv).rgb,.15),legacyT);
+    float3 albedoT=boundedAlbedo(surface,tex2D(BaselineLighting,materialUV).rgb,legacyT);
     float3 cavity=max(AmbientLight.rgb*AmbientLight.w+GridOrigin.rgb,0)*(occlusion.b-1);
     float3 transmission=1-effect;
     color.rgb=max(color.rgb+albedoT*(delta*visibility+cavity)*tex2D(MaterialFog,uv).a*transmission,0);

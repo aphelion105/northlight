@@ -16,7 +16,8 @@ import zlib
 
 HEADER_BYTES = 40
 MAX_KEYS, MAX_COPIES, ARENA_BYTES = 64, 256, 64 * 1024
-MAX_ARCHIVE_BYTES = HEADER_BYTES + MAX_COPIES * 16 + ARENA_BYTES + 4 + 80 + 128 * 80
+MENU_BYTES = 280
+MAX_ARCHIVE_BYTES = HEADER_BYTES + MAX_COPIES * 16 + ARENA_BYTES + 4 + 80 + 128 * 80 + MENU_BYTES
 
 
 def digest(path):
@@ -92,10 +93,10 @@ def inspect_snapshot(path):
         raise ValueError('Snapshot archive size is outside the fixed capacity')
     data = path.read_bytes()
     magic, version, size, trigger, keys, copies, payload, draw = struct.unpack_from('<8s6IQ', data)
-    if magic != b'NLSNAP1\0' or version not in (1, 2, 3, 4):
+    if magic != b'NLSNAP1\0' or version not in (1, 2, 3, 4, 5):
         raise ValueError('Unsupported snapshot archive magic/version')
     base_size = HEADER_BYTES + copies * 16 + payload + 4
-    if (size != len(data) or trigger > 3 or not 0 < keys <= MAX_KEYS
+    if (size != len(data) or trigger > 4 or not 0 < keys <= MAX_KEYS
             or not keys <= copies <= MAX_COPIES or payload > ARENA_BYTES
             or base_size > size or (version == 1 and base_size != size)
             or (version >= 2 and size - base_size < 80)):
@@ -123,9 +124,11 @@ def inspect_snapshot(path):
     if version >= 2:
         light_bytes = 48 if version == 2 else 64 if version == 3 else 80
         scene, _, count, valid = struct.unpack_from('<4I', data, offset)
-        if (not scene or valid != 1 or count > 128 or size - base_size != 80 + count * light_bytes
+        if ((valid != 1 if version < 5 else valid not in (0, 1)) or (valid and not scene) or (not valid and count)
+                or count > 128 or size - base_size != 80 + count * light_bytes + (MENU_BYTES if version == 5 else 0)
                 or b'\0' not in data[offset + 16:offset + 80]):
             raise ValueError('Invalid native light snapshot header')
+        light_map = data[offset + 16:offset + 80].split(b'\0', 1)[0]
         offset += 80
         for _ in range(count):
             identity, *values, reserved = struct.unpack_from('<Q9fI', data, offset)
@@ -136,8 +139,10 @@ def inspect_snapshot(path):
             flags = 0
             if version >= 3:
                 *anchor, flags = struct.unpack_from('<3fI', data, offset + 48)
-                if flags & ~(7 if version >= 4 else 3) or any(not math.isfinite(v) or abs(v) >= 100000 for v in anchor):
+                if flags & ~(15 if version == 5 else 7 if version == 4 else 3) or any(not math.isfinite(v) or abs(v) >= 100000 for v in anchor):
                     raise ValueError('Invalid native light source anchor')
+                if flags & 8 and (not flags & 1 or flags & 6 or not light_map.startswith(b'Menu:')):
+                    raise ValueError('Invalid menu fixture proof tag')
             if ((flags & 2 and (not flags & 1 or identity >> 52 != 0xfea or not 1 <= reserved <= 4096))
                     or (not flags & 2 and reserved)):
                 raise ValueError('Invalid native fixture proof tag')
@@ -149,6 +154,23 @@ def inspect_snapshot(path):
                         or any(abs(values[k]+shift[k]) >= 100000 for k in range(3))):
                     raise ValueError('Invalid resolved emitter offset')
             offset += light_bytes
+    if version == 5:
+        scene, model, asset, _, _, valid = struct.unpack_from('<6I', data, offset)
+        name = data[offset + 24:offset + 152]
+        matrices = struct.unpack_from('<32f', data, offset + 152)
+        view, inverse = matrices[:16], matrices[16:]
+        if (valid != 1 or any(p < 0x10000 or p >= 0xffff0000 or p % 4 for p in (scene, model, asset))
+                or b'\0' not in name or not name.lower().startswith(b'ui_')
+                or not all(math.isfinite(v) for v in matrices) or any(abs(v) > 100000 for v in inverse[12:15])):
+            raise ValueError('Invalid menu snapshot identity/camera')
+        for i in range(4):
+            if any(abs(m[i*4+3] - (1 if i == 3 else 0)) > .001 for m in (view, inverse)):
+                raise ValueError('Non-affine menu camera')
+            if i < 3 and abs(sum(view[i*4+j]**2 for j in range(3)) - 1) > .004:
+                raise ValueError('Non-rigid menu camera')
+            for j in range(4):
+                if abs(sum(view[i*4+k]*inverse[k*4+j] for k in range(4)) - (1 if i == j else 0)) > .01:
+                    raise ValueError('Incoherent menu camera')
     return {'sha256': hashlib.sha256(data).hexdigest(), 'bytes': size,
             'keys': keys, 'copies': copies, 'payload_bytes': payload,
             'recorded_failures': failed, 'trigger_kind': trigger, 'draw_ordinal': draw}

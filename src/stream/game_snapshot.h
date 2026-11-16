@@ -18,29 +18,31 @@
 #include "native_shadow_control.h"
 
 namespace NorthlightStream {
-enum class Trigger:std::uint8_t{None=0,FrameStart=1,World=2,Ui=3};
-inline const char* triggerName(Trigger t){return t==Trigger::FrameStart?"frame":t==Trigger::World?"world":t==Trigger::Ui?"ui":"none";}
+enum class Trigger:std::uint8_t{None=0,FrameStart=1,World=2,Ui=3,Menu=4};
+inline const char* triggerName(Trigger t){return t==Trigger::FrameStart?"frame":t==Trigger::World?"world":t==Trigger::Ui?"ui":t==Trigger::Menu?"menu":"none";}
 
 // Per-frame decision of whether a draw takes a snapshot, called by the StreamDevice once per draw on the game thread
 // with the draw's vertex-shader tags (shader_tags.h triggerTags). Pure state: no memory reads, no allocation. A capture
-// is about 45 reads of game memory, so a frame takes at most three, and the replay keeps the latest one active until the
+// is about 45 reads of game memory. A frame normally takes three snapshots (four on a menu/world transition); replay keeps the latest active until the
 // next (the sky and glare draws of a frame replay under the FrameStart or World snapshot of that same frame):
 //   FrameStart: the first draw after Present, so the draws of frame N see frame N's game memory, not N-1's.
 //   World:      the first depth-tested main-world draw whose VS is terrain or rigid world.
 //               Coordinate-compatible sky/shadow draws must not consume this trigger:
 //               their current view stack is not the main camera.
+//   Menu:       the first depth-tested model on the full backbuffer at 0..1 depth, with an owned menu camera and lights.
 //   Ui:         the first UI-tagged draw (renderEffects runs there). 0.3.203 (task 17): the tag can also come from the learned
 //               VS (the UI boundary fallback of renderer.cpp, see drawTags); as before it may fire before World, and the
 //               later World snapshot covers the world draws. The learned hash reaches the game thread a few frames after
 //               the renderer arms; in those frames renderEffects replays under that same frame's World snapshot.
-// A draw that is both first and World/Ui takes that one trigger (it also is the frame's start).
+// A draw that is both first and World/Menu/Ui takes that one trigger (it also is the frame's start).
 /* 0.3.203 (task 17): the draw's trigger tags, plus kUi when its VS is the one the UI boundary fallback learned (0 = none learned). */
 inline unsigned drawTags(unsigned tags,std::uint64_t hash,std::uint64_t learned){return learned&&hash==learned?tags|unsigned(NorthlightShaderTags::kUi):tags;}
 struct TriggerPolicy {
-    bool frame=false,world=false,ui=false;
-    void beginFrame(){frame=false;world=false;ui=false;}
-    Trigger onDraw(unsigned vsTags,bool mainWorld){
+    bool frame=false,world=false,ui=false,menu=false;
+    void beginFrame(){frame=false;world=false;ui=false;menu=false;}
+    Trigger onDraw(unsigned vsTags,bool mainWorld,bool mainMenu=false){
         if(vsTags&unsigned(NorthlightShaderTags::kUi)){if(ui)return Trigger::None;ui=true;frame=true;return Trigger::Ui;}
+        if(mainMenu&&!menu){menu=true;frame=true;return Trigger::Menu;}
         if(mainWorld&&(vsTags&NorthlightShaderTags::kTriggerWorld)&&!world){world=true;frame=true;return Trigger::World;}
         if(!frame){frame=true;return Trigger::FrameStart;}
         return Trigger::None;
@@ -81,6 +83,12 @@ inline bool capture(GameSnapshot& s,Trigger trigger,std::uint64_t drawOrdinal){
         captureReaders(NorthlightWorldContext::readSelf);
         s.triggerKind=std::uint32_t(trigger);s.triggerDraw=drawOrdinal;
     }
+#ifndef NORTHLIGHT_REPLAY_STAND
+    if(trigger==Trigger::Menu&&NorthlightMenu::capture(NorthlightWorldContext::readSelfLive,s.menu,&s.menuCaptureReject)){
+        s.menu.identity(map);std::copy_n(s.menu.inverseView+12,3,camera);
+        auto& lights=NorthlightNativeLights::producer();lights.sample(map,camera,s.menu.scene,s.menu.model);lights.copy(map,s.nativeLights);
+    }else
+#endif
     NorthlightNativeLights::captureFrame(trigger==Trigger::World,mapped?map:nullptr,camera,s.nativeLights);
     SnapshotStats::triggers.fetch_add(1,std::memory_order_relaxed);
 #ifdef NORTHLIGHT_REPLAY_STAND

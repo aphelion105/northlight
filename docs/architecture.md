@@ -23,13 +23,33 @@ ordered device Get path; a failed read cannot grant world admission.
 The renderer repeats this admission before reading WMO camera context, alongside
 its full-viewport and projection checks. Camera matrix validation remains strict.
 
-Full-screen menu models have a separate screen-effects domain: a proven model
-shader, perspective projection, depth test, 0..1 viewport and actual backbuffer.
-It enables AO and bloom before the UI while preserving native scene lighting.
-It neither consumes the World snapshot nor collects world casters, substitutes
-native lights, or runs the world's sun/fog/GI composite. Offscreen ModelFFX glow
-passes and partial UI previews are excluded. The menu flag clears every frame;
-main-world draws retain their 0..0.94 admission and independent camera proof.
+Full-screen menu models have a separate scene domain: a proven lit model shader,
+perspective projection, depth test, 0..1 viewport and actual backbuffer. The audited
+native lighting hook publishes the UI backdrop identity; the producer validates
+its loaded model, scene generation and inverse camera pair. The current Gx view
+must be identity during M2 drawing: native M2 Update stores the scene camera at
+`scene+0x84/+0xc4`, then M2 Render temporarily replaces the device view because
+the model vertices/bones already carry the camera transform. The hook verifies
+both native code paths; scene and device matrices must not be compared for equality.
+The Menu trigger owns camera matrices and local lights in the queued snapshot
+(archive version 5), independently of the World trigger and CWorld globals.
+Offscreen ModelFFX glow passes and partial UI previews are excluded.
+
+An admitted menu runs the material, GI, directional/local shadow, AO, bloom and HDR
+passes before the UI. Current model replays provide GPU casters; bounded posed
+geometry supplies the CPU BVH for probes and weather shelter. No terrain or WMO
+cache is loaded for a menu identity, and menu shadows do not acquire the native
+world shadow provider. Native backdrop ambient/direct light remains the baseline;
+its measured key-light direction and energy also drive menu shadows and GI.
+The decorative celestial orbit cannot rotate that authored lighting rig.
+Backdrop-specific atmosphere profiles supply sky, fog, celestial bodies and weather
+without inheriting the last map's clock, underwater state or weather. Menu sky
+fill runs before native scene draws, using live per-sample depth. Late backdrop
+artwork without depth writes remains intact. HDR menu fill writes absolute linear
+colour rather than subtracting a resolved scene at MSAA edges. World precipitation
+remains native.
+Changing the backdrop or returning to the world clears scene-dependent captures,
+probes, lighting and atmosphere history. Main-world admission stays at 0..0.94.
 
 Native point sources retain their original position for draw-slot ownership.
 Optional eight-light compatibility retains public shader identity and uses

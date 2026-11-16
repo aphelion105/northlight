@@ -321,6 +321,7 @@ test_memmap_diagnostics.py
 test_memory_admission_probe.py
 test_memory_footprint.py
 test_memory_guard.py
+test_menu_scene.py
 test_mesh_buffer_store.py
 test_mesh_pool_trim.py
 test_migrate_mac_proxy.py
@@ -441,6 +442,7 @@ test_raster_reconstruction.py
 test_regional_fog_runner_guards.py
 test_regional_fog_water_mask.py
 test_regional_surface_shadow.py
+test_relighting_color_edges_gpu.py
 test_removal_confidence_gpu.py
 test_removal_temporal_merge_gpu.py
 test_removal_zero_weight_gpu.py

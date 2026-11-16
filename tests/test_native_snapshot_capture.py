@@ -31,7 +31,7 @@ def main():
     root = fp.output_dir()
     root.mkdir(parents=True, exist_ok=True)
     folder = Path(tempfile.mkdtemp(prefix='native-snapshot-capture-', dir=root))
-    grammar = re.compile(r'NLSNAP1;session=([A-Za-z0-9-]{1,64});record=([0-9]+);device=([0-9a-f]+);frame=([0-9]+);epoch=([0-9]+);thread=([0-9]+);trigger=([1-3]);draw=([0-9]+);bytes=([0-9]+);crc=([0-9a-f]{8})')
+    grammar = re.compile(r'NLSNAP1;session=([A-Za-z0-9-]{1,64});record=([0-9]+);device=([0-9a-f]+);frame=([0-9]+);epoch=([0-9]+);thread=([0-9]+);trigger=([1-4]);draw=([0-9]+);bytes=([0-9]+);crc=([0-9a-f]{8})')
     records = []
     variants = [('O2', ['-O2']), ('O0', ['-O0']), ('asan', ['-O1', '-g', '-fsanitize=address,undefined', '-fno-omit-frame-pointer'])]
     if args.tsan:

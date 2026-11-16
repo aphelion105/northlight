@@ -23,8 +23,9 @@ int main(int argc,char** argv){
     assert(argc==2);std::ifstream input(argv[1],std::ios::binary);assert(input);
     const std::vector<unsigned char> bytes{std::istreambuf_iterator<char>(input),{}};
     ClientImage::View image;ClientImage::Error error;assert(image.open(bytes.data(),bytes.size(),error));
-    GameSnapshot snapshot;fill(snapshot,100,10);
-    StandInputs::Session session(bytes.data(),bytes.size());assert(session.bind(snapshot,100,2));
+    GameSnapshot snapshot;fill(snapshot,100,10);snapshot.triggerKind=4;
+    snapshot.menu.valid=1;snapshot.menu.scene=0x18040000;std::strcpy(snapshot.menu.name,"UI_Scourge");
+    StandInputs::Session session(bytes.data(),bytes.size());assert(session.bind(snapshot,100,4));
     const auto& counters=*session.context();
     float camera[3]={};char map[64]={};std::uint32_t untouched=0x12345678,host=0;
     assert(!NorthlightWorldContext::readSelfLive(reinterpret_cast<std::uintptr_t>(&untouched),&host,4)&&host==0);
@@ -43,15 +44,16 @@ int main(int argc,char** argv){
         StandInputs::Scope nested(session);assert(!nested.entered()&&StandInputs::active==&session);
         // This reader-only unit has no StreamDevice; no nonzero alias is admitted.
         StandInputs::textureAliasGeneration=[](std::uintptr_t,std::uint64_t&){return false;};
-        assert(session.bindAliases(nullptr,0,100,2));
+        assert(session.bindAliases(nullptr,0,100,4));
         GameSnapshot queued;
-        {StandInputs::CaptureScope admission(2,100);assert(admission.entered());
+        {StandInputs::CaptureScope admission(4,100);assert(admission.entered());
             {ScopedRecording recording(queued);
                 assert(NorthlightWorldContext::readMapAndCamera(map,camera)&&camera[0]==10);
-                assert(!NorthlightWorldContext::readSelf(0x18020000,&host,4));queued.triggerKind=2;queued.triggerDraw=100;}
+                assert(!NorthlightWorldContext::readSelf(0x18020000,&host,4));queued.triggerKind=4;queued.triggerDraw=100;}
             assert(admission.commit(queued));}
         assert(queued.keys()==5&&queued.copies()==5&&queued.usable());
         assert(queued.nativeLights.valid&&queued.nativeLights.lights[0].id==100);
+        assert(queued.menu.valid&&queued.menu.scene==0x18040000);
         const auto pin=StandInputs::shareForPlayback();assert(pin);
         fill(snapshot,101,11);assert(session.bind(snapshot,101,2));
         std::thread worker([pin,&queued]{
@@ -60,6 +62,7 @@ int main(int argc,char** argv){
             assert(NorthlightWorldContext::supportedClient());
             {ScopedPlayback playback(queued);
                 assert(activeSnapshot->nativeLights.lights[0].position[0]==10);
+                assert(activeSnapshot->menu.valid&&!std::strcmp(activeSnapshot->menu.name,"UI_Scourge"));
                 float camera[3]{};char map[64]{};unsigned value=77;
                 for(unsigned i=0;i<8;++i)assert(NorthlightWorldContext::readMapAndCamera(map,camera)&&camera[0]==10);
                 assert(!NorthlightWorldContext::readSelf(0x18020000,&value,4)&&value==77);

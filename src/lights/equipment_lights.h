@@ -166,7 +166,7 @@ struct Tracker {
             if(owned(p.id))continue;
             if(std::max({p.color[0],p.color[1],p.color[2]})<.01f||p.attenuation[0]+p.attenuation[1]+p.attenuation[2]<.001f||distance2(p.position,camera)>MaxDistance*MaxDistance)continue;
             Native n;std::copy_n(p.position,3,n.position);std::copy_n(p.color,3,n.color);std::copy_n(p.attenuation,3,n.attenuation);
-            observe(n,now,fixed,camera,p.id,(p.flags&NorthlightNativeLights::WorldFixture)?NorthlightLocalLights::CastShadow:0,p.reserved);
+            observe(n,now,fixed,camera,p.id,(p.flags&(NorthlightNativeLights::WorldFixture|NorthlightNativeLights::MenuFixture))?NorthlightLocalLights::CastShadow:0,p.reserved);
             for(unsigned j=0;j<count;++j)if(entries[j].nativeId==p.id){std::copy_n(p.emitterOffset,3,entries[j].emitterOffset.begin());break;}
         }
         // A draw can have reported the new hue before the scene snapshot

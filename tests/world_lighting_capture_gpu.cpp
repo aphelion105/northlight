@@ -44,7 +44,8 @@ struct Meter:ForwardIDirect3DDevice9{
     HRESULT STDMETHODCALLTYPE SetViewport(const D3DVIEWPORT9* v)override{if(fail("SetViewport"))return E_FAIL;return real->SetViewport(v);}
     HRESULT STDMETHODCALLTYPE DrawPrimitiveUP(D3DPRIMITIVETYPE t,UINT n,const void* p,UINT s)override{if(fail("DrawPrimitiveUP"))return E_FAIL;return real->DrawPrimitiveUP(t,n,p,s);}
     HRESULT STDMETHODCALLTYPE CreateOffscreenPlainSurface(UINT w,UINT h,D3DFORMAT f,D3DPOOL q,IDirect3DSurface9** p,HANDLE* x)override{if(fail("CreateOffscreenPlainSurface")){*p=nullptr;return E_FAIL;}return real->CreateOffscreenPlainSurface(w,h,f,q,p,x);}
-    HRESULT STDMETHODCALLTYPE GetRenderTargetData(IDirect3DSurface9* a,IDirect3DSurface9* b)override{if(fail("GetRenderTargetData"))return E_FAIL;return real->GetRenderTargetData(a,b);}
+    unsigned readbacks=0;
+    HRESULT STDMETHODCALLTYPE GetRenderTargetData(IDirect3DSurface9* a,IDirect3DSurface9* b)override{++readbacks;if(fail("GetRenderTargetData"))return E_FAIL;return real->GetRenderTargetData(a,b);}
     HRESULT STDMETHODCALLTYPE StretchRect(IDirect3DSurface9* a,const RECT* b,IDirect3DSurface9* c,const RECT* e,D3DTEXTUREFILTERTYPE f)override{if(fail("StretchRect"))return E_FAIL;return real->StretchRect(a,b,c,e,f);}
 };
 static const D3DRENDERSTATETYPE states[]={D3DRS_ZENABLE,D3DRS_ZWRITEENABLE,D3DRS_ALPHABLENDENABLE,D3DRS_ALPHATESTENABLE,D3DRS_STENCILENABLE,D3DRS_FOGENABLE,D3DRS_SRGBWRITEENABLE,D3DRS_SCISSORTESTENABLE,D3DRS_CLIPPLANEENABLE,D3DRS_DITHERENABLE,D3DRS_WRAP0,D3DRS_COLORWRITEENABLE,D3DRS_CULLMODE,D3DRS_FILLMODE,D3DRS_MULTISAMPLEMASK};
@@ -147,8 +148,9 @@ int main(int argc,char** argv){
     const DWORD vertexCode[]={0xfffe0300,0x0200001f,0x80000000,0x900f0000,0x0200001f,0x80000000,0xe00f0000,0x02000001,0xe00f0000,0x90e40000,0x0000ffff};
     Ref<IDirect3DVertexShader9> nativeVS;ok(d->CreateVertexShader(vertexCode,&nativeVS.p));ok(d->SetVertexShader(nativeVS.p));
     const unsigned nativeId=++capture;State nativeState(d);const uint64_t sources[4]={42,55,0,0},emptySources[4]={};
+    SetEnvironmentVariableA("NORTHLIGHT_CAPTURE_DRAW_IMAGES",nullptr);
     ok(d->BeginScene());{NorthlightLightingCapture::Capture output(d,folder,nativeId,21,35,W,H,"native-inputs");
-        {State before(d);const unsigned token=output.traceBefore(35,2);assert(token==1);before.same(d);output.traceAfter(token,S_OK);before.same(d);}
+        {State before(d);const unsigned reads=meter.readbacks;const unsigned token=output.traceBefore(35,2);assert(token==1);before.same(d);output.traceAfter(token,S_OK);before.same(d);assert(meter.readbacks==reads);}
         for(unsigned i=0;i<130;++i){const unsigned token=output.nativeBefore(35,i?42:0,0,i%2,true,nativeVS.p,ps.p,i?sources:emptySources,i<4||i>=124);assert((token&0x7fffffffu)==(i<128?i+1:0));assert(bool(token&0x80000000u)==(i<4||(i>=124&&i<128)));const float position[3]={1,2,3},rgb[3]={.5f,.6f,.7f},attenuation[3]={1,0,.01f};for(unsigned slot=0;slot<4;++slot)output.nativeSlot(token,4,slot,slot!=3,position,rgb,attenuation,!i?"no-binding":slot==0?"matched-ready":slot==1?"not-ready":slot==2?"no-binding":"decode-rejected",i&&slot<2?42:0,i&&slot<2?0:-1);output.nativeAfter(token,i%2,S_OK,nullptr,i%3,i%5,i%7,i!=0);}
         output.finish(true);const float zero[3]={};output.nativeSlot(1,4,0,false,nullptr,nullptr,nullptr,"disabled");output.directional(0,false,'-',nullptr,nullptr,0,false,0,0,0);output.pointSources(points,130,true);assert(!output.nativeBefore(35,0,0,false,false,nullptr,nullptr,emptySources));}ok(d->EndScene());nativeState.same(d);
     assert(read(file(folder,nativeId,"native-draw-1-vs.bin"))==std::vector<unsigned char>(reinterpret_cast<const unsigned char*>(vertexCode),reinterpret_cast<const unsigned char*>(vertexCode)+sizeof vertexCode));
@@ -157,6 +159,9 @@ int main(int argc,char** argv){
     assert(read(file(folder,nativeId,"native-trace-1-vs-constants.f32"))==nativeBank);
     for(unsigned i:{1u,2u,3u,4u,125u,126u,127u,128u})assert(read(file(folder,nativeId,("native-draw-"+std::to_string(i)+"-before.fgr").c_str()))==read(file(folder,nativeId,("native-draw-"+std::to_string(i)+"-after.fgr").c_str())));
     logf("NATIVE_CAPTURE_PASS draws=128 imagePairs=8 exactShaders=1 exactConstants=1 stateUnchanged=1");
+    assert(GetFileAttributesA(file(folder,nativeId,"native-trace-1-before.fgr").c_str())==INVALID_FILE_ATTRIBUTES);
+    logf("NATIVE_TRACE_METADATA_PASS readbacks=0 drawOrderRetained=1");
+    SetEnvironmentVariableA("NORTHLIGHT_CAPTURE_DRAW_IMAGES","1");
     {
         constexpr unsigned mw=800,mh=790;Ref<IDirect3DSurface9> multisample[4];ok(d->SetDepthStencilSurface(nullptr));
         for(unsigned i=1;i<4;++i)ok(d->SetRenderTarget(i,nullptr));

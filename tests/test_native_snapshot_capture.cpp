@@ -75,11 +75,11 @@ int main(int argc,char** argv){
      assert(receipt.bytes==raw.size()&&receipt.crc32==A::u32(raw.data()+raw.size()-4)&&receipt.crc32==A::checksum(raw.data(),raw.size()-4));++groups;}
     {MarkerContext context(root/"roundtrip.markers.txt");auto capture=std::make_unique<C>();assert(Probe::open(*capture,root/"roundtrip",marker,&context));
      const auto before=fs::file_size(root/"roundtrip/capture.journal.jsonl");
-     for(unsigned i=0;i<2;++i){complete(capture.get(),*packet,7+i);assert(context.calls==i);
+     for(unsigned i=0;i<2;++i){packet->triggerKind=i?4:2;complete(capture.get(),*packet,7+i);assert(context.calls==i);
          const auto receipt=Probe::receipt(*capture);assert(receipt.accepted&&receipt.record==i);
          assert(fs::file_size(root/"roundtrip/capture.journal.jsonl")==before&&!fs::exists(root/"roundtrip/000000.nlsnap")&&!fs::exists(root/"roundtrip/native-capture-status.json"));
          observe(capture.get(),*packet,7+i);assert(context.calls==i+1&&!capture->status().pending);}
-     assert(finish(*capture));const auto status=capture->status();assert(status.complete&&status.marked==2&&status.sink.accepted==2&&status.sink.retired==2&&!status.sink.failures&&!status.observerFailures);
+     packet->triggerKind=2;assert(finish(*capture));const auto status=capture->status();assert(status.complete&&status.marked==2&&status.sink.accepted==2&&status.sink.retired==2&&!status.sink.failures&&!status.observerFailures);
      assert(status.sink.budgetBytes+C::StatusBytes<=S::MaxSessionBytes&&capture->finish()&&!fs::exists(root/"roundtrip/native-capture-status.pending"));++groups;}
     {MarkerContext context(root/"unobserved.markers.txt");auto capture=std::make_unique<C>();assert(Probe::open(*capture,root/"unobserved",marker,&context));
      complete(capture.get(),*packet);complete(capture.get(),*packet);observe(capture.get(),*packet);

@@ -14,6 +14,7 @@
 #include <mutex>
 #include <vector>
 #include "native_light_snapshot.h"
+#include "menu_scene.h"
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -101,11 +102,13 @@ public:
     // Which trigger took it and the draw ordinal of that draw; the consumer's age is its own draw ordinal minus this.
     std::uint32_t triggerKind=0;std::uint64_t triggerDraw=0;
     NorthlightNativeLights::Snapshot nativeLights;
+    NorthlightMenu::Snapshot menu;
+    unsigned menuCaptureReject=0;
     unsigned long hits=0,misses=0; // this activation, flushed by ScopedPlayback
     // Only record() writes payloads; reads require a fully initialized FIFO.
     GameSnapshot()noexcept{}
     void clear(){keyCount_=copyCount_=0;used_=0;overflowed_=false;mode=Mode::Idle;triggerKind=0;triggerDraw=0;hits=misses=0;
-        nativeLights.clear();
+        nativeLights.clear();menu.clear();menuCaptureReject=0;
 #ifdef NORTHLIGHT_REPLAY_STAND
         aliases_={};
 #endif
@@ -211,11 +214,12 @@ public:
 // reads live, so a slow replay costs coherence, never memory.
 class SnapshotPool {
 public:
-    // At most 3 triggers a frame (FrameStart, World, Ui) and the game runs at most one frame ahead of the replay: 2 frames x 3 = 6, plus slack.
+    // Normally FrameStart, World or Menu, and Ui. A transition may admit both scene domains;
+    // spare slots cover isolated transitions, with the same bounded fallback if exhausted.
     // Bound the pool by bytes as snapshot payloads grow (native lights, attachments).
     static constexpr std::size_t DefaultCap=8;
     static constexpr std::size_t MaxBytes=1u<<20,MaxCap=MaxBytes/sizeof(GameSnapshot);
-    static_assert(MaxCap>=12,"Snapshot budget must hold all three triggers in four in-flight frames");
+    static_assert(MaxCap>=12,"Snapshot budget must hold three normal triggers in four in-flight frames");
     // StreamFramesAhead n needs (n+1) x 3 snapshots; use up to two spare slots within the byte budget.
     static constexpr std::size_t capFor(unsigned framesAhead){return std::min(std::size_t(framesAhead<1?1:framesAhead>3?3:framesAhead)*3+5,MaxCap);}
     explicit SnapshotPool(std::size_t cap=DefaultCap):cap_(cap){}

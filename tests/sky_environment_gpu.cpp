@@ -27,7 +27,7 @@ static unsigned productionDepthCases(IDirect3D9* api,IDirect3DDevice9* d){
         };
         // Geometry may precede the sky boundary. Include the native world,
         // horizon and sky depth intervals, plus independent texture colours.
-        for(float z:{.5f,.94f,.9985f,.9999f}){
+        for(bool menu:{false,true})for(float z:{.5f,.94f,.9985f,.9999f}){
             ok(d->SetRenderTarget(0,target));ok(d->SetDepthStencilSurface(depth));
             D3DVIEWPORT9 vp={0,0,n,n,0,.94f};ok(d->SetViewport(&vp));
             ok(d->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,D3DCOLOR_XRGB(80,110,140),1,0));
@@ -38,7 +38,7 @@ static unsigned productionDepthCases(IDirect3D9* api,IDirect3DDevice9* d){
             ok(d->SetRenderState(D3DRS_ZENABLE,TRUE));ok(d->SetRenderState(D3DRS_ZWRITEENABLE,TRUE));ok(d->SetRenderState(D3DRS_ZFUNC,D3DCMP_LESS));
             float projection[]={1,1,1},view[16]{},colors[8][3];for(unsigned i=0;i<4;++i)view[i*5]=1;
             for(auto& color:colors)for(float& c:color)c=.8f;
-            ok(d->BeginScene());assert(renderer.renderSkyBackground(target,scene,nullptr,layers,n,n,projection,view,colors));ok(d->EndScene());
+            ok(d->BeginScene());assert(renderer.renderSkyBackground(target,scene,nullptr,menu?nullptr:layers,n,n,projection,view,colors,menu));ok(d->EndScene());
             const auto after=pixels();
             for(unsigned y=0;y<n;++y)for(unsigned x=0;x<n;++x){
                 const auto offset=(y*n+x)*stride;
@@ -51,6 +51,30 @@ static unsigned productionDepthCases(IDirect3D9* api,IDirect3DDevice9* d){
             D3DVIEWPORT9 restoredVP{};ok(d->GetViewport(&restoredVP));assert(!std::memcmp(&vp,&restoredVP,sizeof vp));
             ++cases;
         }
+        // Compare sky/diagonal geometry order on the actual MSAA target. An
+        // HDR delta made from resolved scene colour corrupts partial coverage.
+        const DWORD colorCode[]={0xffff0300u,0x0200001fu,0x8000000au,0x900f0000u,0x02000001u,0x800f0800u,0x90e40000u,0xffffu};
+        IDirect3DPixelShader9* flat=nullptr;ok(d->CreatePixelShader(colorCode,&flat));
+        float pMenu[]={1,1,1},vMenu[16]{},cMenu[8][3];for(unsigned i=0;i<4;++i)vMenu[i*5]=1;
+        for(auto& color:cMenu)for(float& c:color)c=.65f;
+        auto geometry=[&]{
+            ok(d->SetVertexShader(nullptr));ok(d->SetPixelShader(flat));ok(d->SetFVF(D3DFVF_XYZRHW|D3DFVF_DIFFUSE));
+            for(auto state:{D3DRS_ALPHABLENDENABLE,D3DRS_ALPHATESTENABLE,D3DRS_STENCILENABLE,D3DRS_FOGENABLE,D3DRS_SCISSORTESTENABLE,D3DRS_SRGBWRITEENABLE,D3DRS_DITHERENABLE})ok(d->SetRenderState(state,FALSE));
+            ok(d->SetRenderState(D3DRS_ZENABLE,TRUE));ok(d->SetRenderState(D3DRS_ZWRITEENABLE,TRUE));ok(d->SetRenderState(D3DRS_ZFUNC,D3DCMP_LESS));
+            ok(d->SetRenderState(D3DRS_CULLMODE,D3DCULL_NONE));ok(d->SetRenderState(D3DRS_COLORWRITEENABLE,7));ok(d->SetRenderState(D3DRS_MULTISAMPLEANTIALIAS,TRUE));
+            struct V{float x,y,z,w;DWORD color;};const V triangle[]={{-.5f,-.5f,.5f,1,0xff2030a0},{n-.2f,-.5f,.5f,1,0xff2030a0},{-.5f,n-.1f,.5f,1,0xff2030a0}};
+            ok(d->DrawPrimitiveUP(D3DPT_TRIANGLELIST,1,triangle,sizeof(V)));
+        };
+        std::vector<unsigned char> reference;
+        for(bool first:{true,false}){
+            ok(d->SetRenderTarget(0,target));ok(d->SetDepthStencilSurface(depth));D3DVIEWPORT9 full{0,0,n,n,0,1};ok(d->SetViewport(&full));
+            ok(d->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0xff508cb0,1,0));
+            ok(d->BeginScene());if(!first)geometry();ok(d->StretchRect(target,nullptr,copy,nullptr,D3DTEXF_NONE));
+            assert(renderer.renderSkyBackground(target,scene,nullptr,nullptr,n,n,pMenu,vMenu,cMenu,true));
+            if(first)geometry();ok(d->EndScene());
+            const auto result=pixels();if(first)reference=result;else assert(reference==result);
+        }
+        flat->Release();++cases;
         // No depth surface means no proof of clear sky: leave the native image.
         const auto before=pixels();ok(d->SetDepthStencilSurface(nullptr));
         float p[]={1,1,1},v[16]{},c[8][3]{};

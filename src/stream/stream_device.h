@@ -756,7 +756,7 @@ private:
         ++drawOrdinal;if(!capture)return;
         const StreamVertexShader* v=st.vs?static_cast<StreamVertexShader*>(st.vs):nullptr;
         const unsigned tags=v?drawTags(v->tags,v->hash,learnedUiVsHash.load(std::memory_order_relaxed)):0;
-        bool mainWorld=false;
+        bool mainWorld=false,mainMenu=false;
         if(!policy.world&&(tags&NorthlightShaderTags::kTriggerWorld)){
             // SetRenderTarget and StateBlock::Apply can invalidate cached state.
             // Recover it through the ordered device Get path, never infer defaults.
@@ -767,7 +767,16 @@ private:
                     NorthlightWorldDrawDomain::mainWorldDraw(st.rs[D3DRS_ZENABLE].v,st.rs[D3DRS_ZFUNC].v,st.viewport.v.MinZ,st.viewport.v.MaxZ);
             }
         }
-        takeSnapshot(policy.onDraw(tags,mainWorld));
+        if(!policy.menu&&(tags&NorthlightShaderTags::kWorld)&&!(tags&(NorthlightShaderTags::kTriggerWorld|NorthlightShaderTags::kUi))){
+            if(!st.rtKnown[0]){IDirect3DSurface9* target=nullptr;if(SUCCEEDED(GetRenderTarget(0,&target))){StreamState::bind(st.rt[0],ProxyBase::of(target));st.rtKnown[0]=true;if(target)target->Release();}}
+            if(!st.viewport.known){D3DVIEWPORT9 vp{};if(SUCCEEDED(GetViewport(&vp)))st.viewport.learn(vp);}
+            for(auto state:{D3DRS_ZENABLE,D3DRS_ZFUNC})if(!st.rs[state].known){DWORD value=0;if(SUCCEEDED(GetRenderState(state,&value)))st.rs[state].learn(value);}
+            mainMenu=st.viewport.known&&st.rs[D3DRS_ZENABLE].known&&st.rs[D3DRS_ZFUNC].known&&
+                st.rtKnown[0]&&backBuffer(st.rt[0])&&st.viewport.v.X==0&&st.viewport.v.Y==0&&
+                st.viewport.v.Width==st.rt[0]->info.w&&st.viewport.v.Height==st.rt[0]->info.h&&
+                NorthlightWorldDrawDomain::menuModelDraw(st.rs[D3DRS_ZENABLE].v,st.rs[D3DRS_ZFUNC].v,st.viewport.v.MinZ,st.viewport.v.MaxZ,true);
+        }
+        takeSnapshot(policy.onDraw(tags,mainWorld,mainMenu));
     }
     void takeSnapshot(Trigger t){
         if(t==Trigger::None||!capture)return;

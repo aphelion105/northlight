@@ -63,6 +63,7 @@ run = subprocess.run([str(binary), str(private_backend), str(folder), str(adapte
 (folder / 'gpu.log').write_text(run.stdout + run.stderr, encoding='utf-8')
 assert run.returncode == 0, run.stdout + run.stderr
 assert 'NATIVE_CAPTURE_PASS draws=128 imagePairs=8 exactShaders=1 exactConstants=1 stateUnchanged=1' in run.stdout
+assert 'NATIVE_TRACE_METADATA_PASS readbacks=0 drawOrderRetained=1' in run.stdout
 if compact:
     from capture_files import read_bytes, reference, BLOBS
     refs = [p for p in folder.glob('capture-*') if p.suffix in ('.fgr', '.bin', '.f32')]
@@ -105,6 +106,7 @@ assert len(complete) == depth_formats + 2 and len(incomplete) == 30
 assert 'NATIVE_TRACE_PASS unknownProgram=1 fixedVertex=1 msaaColorsExact=1 stateUnchanged=1 failureCases=4' in run.stdout
 traces = [e for e in native_events if e['event'] == 'native-trace']
 assert len(traces) == 1 and not traces[0]['receiver_classification_required']
+assert not traces[0]['draw_images']
 assert next(e for e in native_events if e['event'] == 'native-trace-summary')['skipped'] == 0
 assert 'NATIVE_CAPTURE_MSAA_PASS samples=2 imagePairs=1 roi=768x768 gpuResolveReused=1 stateUnchanged=1 failureCases=4' in run.stdout
 for path in complete + incomplete:

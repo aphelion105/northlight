@@ -45,6 +45,7 @@ struct Packet {
 struct ActorJob {
     NorthlightGI::Vec3 center;
     std::vector<Packet> packets;
+    bool menu=false;
     Result resolve()const{
         using namespace NorthlightGI;
         const auto resolveStart=std::chrono::steady_clock::now();double decodeMs=0;
@@ -52,12 +53,13 @@ struct ActorJob {
         // One bounded, metadata-only cache per worker; it keeps no jobs or
         // mutable resources alive and does not memoize any evaluated pose.
         thread_local NorthlightActorDeformation::PreparedBindingCache bindingCache;
+        const unsigned vertexLimit=menu?262144u:16384u;const float radius=menu?1024.f:48.f;
         unsigned evaluated=0,texturesDecoded=0;std::size_t textureEncodedBytes=0;
         std::vector<NorthlightActorDeformation::Position> positions;
         std::vector<std::array<float,2>> uvs;
         std::vector<WorldTriangle> triangles;
         for(auto& packet:packets){
-            const auto& mesh=packet.meshView();if(mesh.primitiveCount==0||mesh.primitiveCount>87380||mesh.vertexCount>16384-evaluated)continue;
+            const auto& mesh=packet.meshView();if(mesh.primitiveCount==0||mesh.primitiveCount>87380||mesh.vertexCount>vertexLimit-evaluated)continue;
             if(mesh.topology!=D3DPT_TRIANGLELIST&&mesh.topology!=D3DPT_TRIANGLESTRIP)continue;
             unsigned required=mesh.topology==D3DPT_TRIANGLELIST?mesh.primitiveCount*3:mesh.primitiveCount+2;
             if(mesh.indexed?mesh.indices.size()<required:mesh.vertexCount<required)continue;
@@ -75,7 +77,7 @@ struct ActorJob {
                 else if(mesh.topology==D3DPT_TRIANGLESTRIP){a=index(triangle);b=index(triangle+1);c=index(triangle+2);if(triangle&1)std::swap(a,b);}else continue;
                 if(a>=positions.size()||b>=positions.size()||c>=positions.size()||a==b||b==c||c==a)continue;
                 auto& pa=positions[a];auto& pb=positions[b];auto& pc=positions[c];
-                if(std::max({pa.x,pb.x,pc.x})<center.x-48||std::min({pa.x,pb.x,pc.x})>center.x+48||std::max({pa.y,pb.y,pc.y})<center.y-48||std::min({pa.y,pb.y,pc.y})>center.y+48||std::max({pa.z,pb.z,pc.z})<center.z-48||std::min({pa.z,pb.z,pc.z})>center.z+48)continue;
+                if(std::max({pa.x,pb.x,pc.x})<center.x-radius||std::min({pa.x,pb.x,pc.x})>center.x+radius||std::max({pa.y,pb.y,pc.y})<center.y-radius||std::min({pa.y,pb.y,pc.y})>center.y+radius||std::max({pa.z,pb.z,pc.z})<center.z-radius||std::min({pa.z,pb.z,pc.z})>center.z+radius)continue;
                 triangles.push_back({a,b,c,0});}
             if(triangles.empty())continue;
             unsigned offset=unsigned(scene->vertices.size()),material=unsigned(scene->materials.size());WorldMaterial m=packet.material;
@@ -93,7 +95,7 @@ struct ActorJob {
             if(!exactUV){m.rgba.clear();m.width=m.height=0;m.albedo=Vec3(.35f,.35f,.35f);}
             scene->materials.push_back(std::move(m));
             const size_t vertexCount=offset+positions.size();
-            if(vertexCount>scene->vertices.capacity())scene->vertices.reserve(std::min<size_t>(16384,std::max(vertexCount,scene->vertices.capacity()*2)));
+            if(vertexCount>scene->vertices.capacity())scene->vertices.reserve(std::min<size_t>(vertexLimit,std::max(vertexCount,scene->vertices.capacity()*2)));
             scene->vertices.resize(vertexCount);
             for(unsigned j=0;j<positions.size();++j){auto& p=positions[j];auto& v=scene->vertices[offset+j];v.position=Vec3(p.x,p.y,p.z);if(exactUV){v.u=uvs[j][0];v.v=uvs[j][1];}}
             const size_t triangleCount=scene->triangles.size()+triangles.size();
