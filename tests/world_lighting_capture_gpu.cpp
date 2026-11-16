@@ -17,7 +17,8 @@ static void checked(HRESULT hr,const char* operation,unsigned line){if(FAILED(hr
 #include "forwarders.h"
 #include "world_lighting_capture.h"
 template<class T>struct Ref{T* p=nullptr;~Ref(){if(p)p->Release();}Ref()=default;Ref(const Ref&)=delete;};
-static std::vector<unsigned char> read(const std::string& path){std::ifstream f(path,std::ios::binary);assert(f);return {std::istreambuf_iterator<char>(f),{}};}
+#include "capture_file_reader.h"
+static std::vector<unsigned char> read(const std::string& path){return captureFileBytes(path);}
 struct Meter:ForwardIDirect3DDevice9{
     const char* fault=nullptr;unsigned occurrence=1,seen=0;bool triggered=false;
     explicit Meter(IDirect3DDevice9* d):ForwardIDirect3DDevice9(d){}
@@ -75,7 +76,7 @@ struct State{
 };
 static std::string file(const std::string& folder,unsigned id,const char* name){return folder+"/capture-"+std::to_string(id)+"-"+name;}
 int main(int argc,char** argv){
-    assert(argc==4);const std::string folder=argv[2];const unsigned adapter=unsigned(std::stoul(argv[3]));constexpr unsigned W=37,H=23;
+    assert(argc==4||argc==5);const std::string folder=argv[2];if(argc==5)assert(NorthlightDiagnosticFiles::enable(folder));const unsigned adapter=unsigned(std::stoul(argv[3]));constexpr unsigned W=37,H=23;
     WNDCLASSW wc{};wc.lpfnWndProc=DefWindowProcW;wc.lpszClassName=L"NorthlightLightingCapture";wc.hInstance=GetModuleHandleW(nullptr);assert(RegisterClassW(&wc));
     HWND window=CreateWindowExW(0,wc.lpszClassName,L"",WS_OVERLAPPED,0,0,64,64,nullptr,nullptr,wc.hInstance,nullptr);assert(window);
     auto module=LoadLibraryA(argv[1]);assert(module);auto create=(IDirect3D9*(WINAPI*)(UINT))GetProcAddress(module,"Direct3DCreate9");assert(create);

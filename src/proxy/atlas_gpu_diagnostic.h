@@ -3,6 +3,7 @@
 // Explicit F12 only: compare uploaded tile hashes, raw managed BC and actual
 // point-sampled GPU pixels. Errors restore state and never disable the renderer.
 #include "utf8_path.h"
+#include "diagnostic_files.h"
 #include "atlas_upload_proof.h"
 #include "actor_texture.h"
 #include "bc_decode_comparison.h"
@@ -17,7 +18,7 @@
 namespace NorthlightAtlasDiagnostic {
 struct Result {unsigned captured=0,failed=0,knownTiles=0,rawMismatches=0,pixelMismatches=0;};
 struct Surfaces {IDirect3DSurface9* target=nullptr;IDirect3DSurface9* staging=nullptr;~Surfaces(){if(target)target->Release();if(staging)staging->Release();}};
-inline bool save(const std::string& path,const void* bytes,std::size_t size){FILE* f=NorthlightFiles::open(path.c_str(),"wb");if(!f)return false;const bool ok=std::fwrite(bytes,1,size,f)==size;return std::fclose(f)==0&&ok;}
+inline bool save(const std::string& path,const void* bytes,std::size_t size){return NorthlightDiagnosticFiles::bytes(path,bytes,size);}
 inline bool capture(IDirect3DDevice9* d,const NorthlightAtlasProof::Entry& entry,const std::string& prefix,Result& result){
     using namespace NorthlightAtlasProof;
     auto* texture=static_cast<IDirect3DTexture9*>(const_cast<void*>(entry.raw));D3DSURFACE_DESC desc{};
@@ -76,8 +77,7 @@ inline bool capture(IDirect3DDevice9* d,const NorthlightAtlasProof::Entry& entry
     std::fprintf(report,"],\"pixel_comparison\":\"BC1/2/3 per-block D3D11.3 19.5.2 precision envelope plus half a UNORM8 render-target step; bad_pixels counts only outside this envelope. gt1_pixels and max_abs_rgba_error retain ideal CPU decoder differences.\",\"note\":\"Known source hashes prove submitted upload bytes; raw BC and independent point-sampled GPU rendering distinguish managed content from draw state/UV. Original sampler states are recorded, not used for this diagnostic render.\"}\n");
     const bool reportOk=std::fclose(report)==0;
     const bool rawOk=save(prefix+".bc",raw.data(),raw.size());
-    const std::uint32_t header[]={0x31524746,Size,Size,unsigned(D3DFMT_A8R8G8B8),4};
-    FILE* f=NorthlightFiles::open((prefix+".fgr").c_str(),"wb");bool pixelsOk=false;if(f){pixelsOk=std::fwrite(header,sizeof header,1,f)==1&&std::fwrite(pixels.data(),1,pixels.size(),f)==pixels.size();if(std::fclose(f))pixelsOk=false;}
+    const bool pixelsOk=NorthlightDiagnosticFiles::image(prefix+".fgr",Size,Size,unsigned(D3DFMT_A8R8G8B8),4,pixels.data(),Size*4);
     return reportOk&&rawOk&&pixelsOk;
 }
 inline Result dump(IDirect3DDevice9* device,const std::string& prefix,unsigned frame)noexcept{

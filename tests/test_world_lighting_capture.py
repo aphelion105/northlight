@@ -13,6 +13,7 @@ import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
+fp.use_source_modules()
 
 out = fp.output_dir()
 out.mkdir(parents=True, exist_ok=True)
@@ -20,10 +21,11 @@ folder = Path(tempfile.mkdtemp(prefix='world-lighting-capture-', dir=out))
 backend = Path(os.environ['NORTHLIGHT_TEST_D3D9']) if os.environ.get('NORTHLIGHT_TEST_D3D9') else fp.client_root() / 'renderer-backends/dxvk/dxvk_d3d9.dll'
 assert backend.is_file(), backend
 inputs = [fp.REPO / name for name in (
-    'src/world/world_lighting_capture.h', 'src/lights/local_light_selection.h',
+    'src/world/world_lighting_capture.h', 'src/core/diagnostic_files.h', 'src/proxy/backend_loader.h',
+    'scripts/capture_files.py', 'src/lights/local_light_selection.h',
     'src/lights/world_local_lights.h', 'src/lights/local_light_scissor.h',
     'src/generated/forwarders.h', 'tests/world_lighting_capture_gpu.cpp',
-    'tests/test_world_lighting_capture.py', 'northlight_paths.py')]
+    'tests/test_world_lighting_capture.py', 'tests/capture_file_reader.h', 'northlight_paths.py')]
 guard = {str(p.relative_to(fp.REPO)): hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(inputs)}
 backend_hash = hashlib.sha256(backend.read_bytes()).hexdigest()
 adapter = int(os.environ.get('NORTHLIGHT_TEST_D3D9_ADAPTER', '0'))
@@ -55,11 +57,21 @@ command = [str(fp.zig()), 'c++', '-target', 'x86-windows-gnu', '-O2', '-UNDEBUG'
 compiled = subprocess.run(command, env=environment, capture_output=True, text=True)
 (folder / 'compile.log').write_text(compiled.stdout + compiled.stderr, encoding='utf-8')
 assert compiled.returncode == 0, compiled.stdout + compiled.stderr
-run = subprocess.run([str(binary), str(private_backend), str(folder), str(adapter)], cwd=folder, env=environment,
+compact = os.environ.get('NORTHLIGHT_CAPTURE_RAW') != '1'
+run = subprocess.run([str(binary), str(private_backend), str(folder), str(adapter), *(['compact'] if compact else [])], cwd=folder, env=environment,
                      capture_output=True, text=True, timeout=180)
 (folder / 'gpu.log').write_text(run.stdout + run.stderr, encoding='utf-8')
 assert run.returncode == 0, run.stdout + run.stderr
 assert 'NATIVE_CAPTURE_PASS draws=128 imagePairs=8 exactShaders=1 exactConstants=1 stateUnchanged=1' in run.stdout
+if compact:
+    from capture_files import read_bytes, reference, BLOBS
+    refs = [p for p in folder.glob('capture-*') if p.suffix in ('.fgr', '.bin', '.f32')]
+    assert refs and all(reference(p.read_bytes()) is not None for p in refs)
+    logical = sum(len(read_bytes(p)) for p in refs)
+    blob_files = list((folder / BLOBS).iterdir())
+    assert len(blob_files) < len(refs) and sum(p.stat().st_size for p in blob_files) < logical
+    print(f'COMPACT_CAPTURE_PASS logical={logical} blobs={len(blob_files)} references={len(refs)}')
+
 native_journals=list(folder.glob('capture-*-native-inputs.jsonl'));assert len(native_journals)==1
 native_events=[json.loads(line) for line in native_journals[0].read_text().splitlines()]
 assert sum(e['event']=='native-draw' for e in native_events)==128

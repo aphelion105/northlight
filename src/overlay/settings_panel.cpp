@@ -728,7 +728,7 @@ struct SettingsPanel::State {
         if(ImGui::Button("Capture materials"))request(Materials);
         ImGui::SameLine();if(ImGui::Button("Capture fog"))request(Fog);
         if(ImGui::Button("Capture weather"))request(Weather);
-        ImGui::TextWrapped("Saves the current frame in northlight-diagnostics. Skipped passes produce empty images. Capture frames are excluded from FPS statistics.");
+        ImGui::TextWrapped("Saves a compact capture in northlight-diagnostics. ZIP the entire session folder, including .capture-blobs. Repeated data is stored once. Capture frames are excluded from FPS statistics.");
     }
     void frameGraph(bool compact){
         const auto& t=timing;const float font=ImGui::GetFontSize(),height=(compact?76.f:112.f)*scale;

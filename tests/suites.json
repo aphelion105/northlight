@@ -18,7 +18,8 @@
       "test_fog_volume_build.py",
       "test_fixture_light_resolution.py",
       "test_forever_shader_evidence.py",
-      "test_weather_lab_capture.py"
+      "test_weather_lab_capture.py",
+      "test_capture_files.py"
     ]
   },
   "architecture": {
@@ -57,7 +58,8 @@
       "test_world_shader_contract_client.py",
       "test_prelit_wmo_client.py",
       "test_progressive_gi_worker.py",
-      "test_probe_cascade.py"
+      "test_probe_cascade.py",
+      "test_diagnostic_files.py"
     ]
   },
   "gpu": {

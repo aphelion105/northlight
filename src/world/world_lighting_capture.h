@@ -1,5 +1,6 @@
 #pragma once
 #include "utf8_path.h"
+#include "diagnostic_files.h"
 #include <d3d9.h>
 #include "local_light_selection.h"
 #include <algorithm>
@@ -57,9 +58,7 @@ class Capture {
     }
     bool bytes(const char* name,const char* extension,const void* data,size_t size)noexcept{
         char output[2048];bool ok=false;
-        if(path(name,extension,output))if(FILE* f=NorthlightFiles::open(output,"wb")){
-            ok=std::fwrite(data,1,size,f)==size;if(std::fclose(f))ok=false;
-        }
+        if(path(name,extension,output))ok=NorthlightDiagnosticFiles::bytes(output,data,size);
         if(journal_)std::fprintf(journal_,"{\"event\":\"file\",\"name\":\"%s.%s\",\"bytes\":%zu,\"saved\":%s}\n",name,extension,size,ok?"true":"false");
         if(!ok)complete_=false;return ok;
     }
@@ -89,12 +88,7 @@ class Capture {
         D3DLOCKED_RECT lock{};if(!call("LockRect-readonly",staging.p->LockRect(&lock,nullptr,D3DLOCK_READONLY)))return false;
         bool ok=false;char output[2048];
         if(lock.pBits&&lock.Pitch>=INT(desc.Width*stride)&&path(name,"fgr",output)){
-            if(FILE* f=NorthlightFiles::open(output,"wb")){
-                const uint32_t header[]={0x31524746,desc.Width,desc.Height,unsigned(desc.Format),stride};
-                ok=std::fwrite(header,sizeof header,1,f)==1;
-                for(unsigned y=0;y<desc.Height&&ok;++y)ok=std::fwrite(static_cast<const char*>(lock.pBits)+size_t(y)*lock.Pitch,stride,desc.Width,f)==desc.Width;
-                if(std::fclose(f))ok=false;
-            }
+            ok=NorthlightDiagnosticFiles::image(output,desc.Width,desc.Height,unsigned(desc.Format),stride,lock.pBits,size_t(lock.Pitch));
         }
         const bool unlocked=call("UnlockRect-readonly",staging.p->UnlockRect());
         std::fprintf(journal_,"{\"event\":\"file\",\"name\":\"%s.fgr\",\"bytes\":%llu,\"saved\":%s}\n",name,(unsigned long long)(20+uint64_t(desc.Width)*desc.Height*stride),ok?"true":"false");

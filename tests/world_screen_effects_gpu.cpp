@@ -4,6 +4,7 @@
 #include "renderer.cpp"
 #include <cassert>
 #include <fstream>
+#include "capture_file_reader.h"
 struct WorldScreenEffectsTest {
 #ifdef NORTHLIGHT_TEMPORAL_MERGE_TEST
     template<class Meter> static void temporalMergeResources(WorldRenderer& w,Meter& meter){
@@ -503,10 +504,10 @@ struct WorldScreenEffectsTest {
     static void diagnosticFrames(WorldRenderer& w,unsigned width,unsigned height){
         const auto directory=NorthlightWorldDiagnostics::directory(w.root);assert(!directory.empty());
         auto pixels=[&](const std::string& folder,const char* name,unsigned capture,bool zero){
-            std::ifstream f(folder+"/capture-"+std::to_string(capture)+"-"+name+".fgr",std::ios::binary);assert(f);
-            uint32_t header[5];f.read(reinterpret_cast<char*>(header),sizeof header);assert(header[0]==0x31524746&&header[1]&&header[2]);
-            std::vector<unsigned char> bytes(size_t(header[1])*header[2]*header[4]);f.read(reinterpret_cast<char*>(bytes.data()),bytes.size());assert(f&&f.peek()==EOF);
-            const bool empty=std::all_of(bytes.begin(),bytes.end(),[](auto byte){return byte==0;});assert(empty==zero);
+            const auto bytes=captureFileBytes(folder+"/capture-"+std::to_string(capture)+"-"+name+".fgr");
+            uint32_t header[5];assert(bytes.size()>=sizeof header);std::memcpy(header,bytes.data(),sizeof header);
+            assert(header[0]==0x31524746&&header[1]&&header[2]&&bytes.size()==sizeof header+size_t(header[1])*header[2]*header[4]);
+            const bool empty=std::all_of(bytes.begin()+sizeof header,bytes.end(),[](auto byte){return byte==0;});assert(empty==zero);
         };
         w.captureProducts(directory,1,900,width,height,true,true);pixels(directory,"fog",1,false);
         const auto before=fogImage(w);

@@ -1,5 +1,6 @@
 #pragma once
 #include "utf8_path.h"
+#include "diagnostic_files.h"
 #include <d3d9.h>
 #include <algorithm>
 #include <cstdio>
@@ -10,7 +11,7 @@ namespace NorthlightWorldDiagnostics {
 inline std::string directory(const std::string& root){
     const std::string parent=root+"northlight-diagnostics";CreateDirectoryW(std::filesystem::u8path(parent).c_str(),nullptr);
     const std::string prefix=parent+"/session-"+std::to_string(GetCurrentProcessId())+"-"+std::to_string(GetTickCount());
-    for(unsigned i=0;i<64;++i){const auto path=prefix+"-"+std::to_string(i);if(CreateDirectoryW(std::filesystem::u8path(path).c_str(),nullptr))return path;if(GetLastError()!=ERROR_ALREADY_EXISTS)break;}
+    for(unsigned i=0;i<64;++i){const auto path=prefix+"-"+std::to_string(i);if(CreateDirectoryW(std::filesystem::u8path(path).c_str(),nullptr))return NorthlightDiagnosticFiles::enable(path)?path:std::string{};if(GetLastError()!=ERROR_ALREADY_EXISTS)break;}
     return {};
 }
 // An absent pass has a real zero-filled image, without reading or clearing an
@@ -19,11 +20,7 @@ inline bool empty(const std::string& directory,const char* name,unsigned capture
     const unsigned stride=format==D3DFMT_A16B16G16R16F?8:4;
     if(!width||!height||uint64_t(width)*height*stride>64*1024*1024)return false;
     const auto path=directory+"/capture-"+std::to_string(capture)+"-"+name+".fgr";
-    FILE* f=NorthlightFiles::open(path.c_str(),"wb");if(!f)return false;
-    const uint32_t header[]={0x31524746,width,height,unsigned(format),stride};
-    bool ok=std::fwrite(header,sizeof header,1,f)==1;const unsigned char zero[4096]={};
-    for(uint64_t remaining=uint64_t(width)*height*stride;remaining&&ok;){const auto n=size_t(std::min<uint64_t>(remaining,sizeof zero));ok=std::fwrite(zero,1,n,f)==n;remaining-=n;}
-    return std::fclose(f)==0&&ok;
+    return NorthlightDiagnosticFiles::image(path,width,height,unsigned(format),stride,nullptr,0);
 }
 // Paired camera captures need the original cached projection too: its depth
 // origin and XY margin can differ from the current working shadow map.
@@ -52,13 +49,7 @@ inline bool dump(IDirect3DDevice9* device,IDirect3DSurface9* source,
     bool ok=false;
     if(locked&&lock.pBits&&lock.Pitch>=INT(desc.Width*bytes)){
         char suffix[128];std::snprintf(suffix,sizeof suffix,"/capture-%u-%s.fgr",capture,name);
-        FILE* f=NorthlightFiles::open((directory+suffix).c_str(),"wb");
-        if(f){uint32_t header[]={0x31524746,desc.Width,desc.Height,unsigned(desc.Format),bytes};
-            ok=std::fwrite(header,sizeof header,1,f)==1;
-            for(unsigned y=0;y<desc.Height&&ok;++y)
-                ok=std::fwrite(static_cast<const char*>(lock.pBits)+y*lock.Pitch,bytes,desc.Width,f)==desc.Width;
-            if(std::fclose(f))ok=false;
-        }
+        ok=NorthlightDiagnosticFiles::image(directory+suffix,desc.Width,desc.Height,unsigned(desc.Format),bytes,lock.pBits,size_t(lock.Pitch));
     }
     if(locked)staging->UnlockRect();if(staging)staging->Release();
     logf("WORLD GPU diagnostic capture=%u buffer=%s size=%ux%u format=%u saved=%d HRESULT=%08lx",capture,name,desc.Width,desc.Height,unsigned(desc.Format),ok,(unsigned long)hr);

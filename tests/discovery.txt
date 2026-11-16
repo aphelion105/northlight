@@ -60,6 +60,7 @@ test_canonical_gpu_scene.py
 test_canonical_gpu_scene_gpu.py
 test_capture_admission.py
 test_capture_batch_policy.py
+test_capture_files.py
 test_capture_handoff.py
 test_capture_reset_cpu.py
 test_capture_reset_gpu.py
@@ -107,6 +108,7 @@ test_dalaran_candle_geometry.py
 test_detail_doodad_shadow.py
 test_dev_tuning_build.py
 test_device_mirror.py
+test_diagnostic_files.py
 test_diagnostics_switch.py
 test_displacement_bounds_rotation.py
 test_displacement_sampler_reuse.py

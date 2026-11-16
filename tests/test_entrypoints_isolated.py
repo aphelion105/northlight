@@ -10,7 +10,7 @@ import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).reso
 import northlight_paths as fp
 import os, shutil, subprocess
 
-ENTRY_POINTS = ['scripts/install_world_cache.py', 'renderer/world_scene_builder.py', 'renderer/world_lights_builder.py',
+ENTRY_POINTS = ['scripts/capture_files.py', 'scripts/install_world_cache.py', 'renderer/world_scene_builder.py', 'renderer/world_lights_builder.py',
                 'renderer/regional_fog_builder.py', 'renderer/build_celestial_disc_assets.py',
                 'tests/validate_world_cache.py', 'build_art_layer.py', 'scripts/client_identity.py',
                 'scripts/build_cache_variant.py']
