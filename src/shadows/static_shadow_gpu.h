@@ -3,6 +3,7 @@
 #ifndef STATIC_SHADOW_GPU_TEST
 #include "static_shadow_compiled_shaders.h"
 #include <d3d9.h>
+#include "upload_lock.h"
 #endif
 #include "static_shadow_draw_state.h"
 #include "shadow_alpha_texture.h"
@@ -536,11 +537,12 @@ private:
     bool advance(IDirect3DDevice9* d,Resource& r,size_t& budget,const std::chrono::steady_clock::time_point& start){
         auto timedOut=[&](){return std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count()>=limits_.uploadMs||(sharedBudget_&&!sharedBudget_->available());};
         const Model& m=*r.model;
+        // Publication waits for all chunks: these ranges have never been drawn.
         while(budget&&!timedOut()){
             size_t total=m.vertices.size()*sizeof(Vertex);
-            if(r.vertexDone<total){size_t n=std::min({budget,total-r.vertexDone,size_t(64u<<10)});void* out=nullptr;if(FAILED(r.vb->Lock(UINT(r.vertexDone),UINT(n),&out,0))||!out)return false;std::memcpy(out,reinterpret_cast<const char*>(m.vertices.data())+r.vertexDone,n);if(FAILED(r.vb->Unlock()))return false;r.vertexDone+=n;budget-=n;if(sharedBudget_)sharedBudget_->consume(n);continue;}
+            if(r.vertexDone<total){size_t n=std::min({budget,total-r.vertexDone,size_t(64u<<10)});void* out=nullptr;if(FAILED(r.vb->Lock(UINT(r.vertexDone),UINT(n),&out,NorthlightUpload::FreshBufferLock))||!out)return false;std::memcpy(out,reinterpret_cast<const char*>(m.vertices.data())+r.vertexDone,n);if(FAILED(r.vb->Unlock()))return false;r.vertexDone+=n;budget-=n;if(sharedBudget_)sharedBudget_->consume(n);continue;}
             total=m.indexCount()*(m.index16?2:4);
-            if(r.indexDone<total){const size_t stride=m.index16?2:4;size_t n=std::min({budget,total-r.indexDone,size_t(64u<<10)})/stride*stride;if(!n)break;void* out=nullptr;if(FAILED(r.ib->Lock(UINT(r.indexDone),UINT(n),&out,0))||!out)return false;if(m.uploadPrepared&&m.index16)std::memcpy(out,reinterpret_cast<const char*>(m.uploadIndices16.data())+r.indexDone,n);else if(m.index16){auto* dst=static_cast<uint16_t*>(out);for(size_t i=0;i<n/2;++i)dst[i]=uint16_t(m.indices[r.indexDone/2+i]);}else std::memcpy(out,m.indices.data()+r.indexDone/4,n);if(FAILED(r.ib->Unlock()))return false;r.indexDone+=n;budget-=n;if(sharedBudget_)sharedBudget_->consume(n);continue;}
+            if(r.indexDone<total){const size_t stride=m.index16?2:4;size_t n=std::min({budget,total-r.indexDone,size_t(64u<<10)})/stride*stride;if(!n)break;void* out=nullptr;if(FAILED(r.ib->Lock(UINT(r.indexDone),UINT(n),&out,NorthlightUpload::FreshBufferLock))||!out)return false;if(m.uploadPrepared&&m.index16)std::memcpy(out,reinterpret_cast<const char*>(m.uploadIndices16.data())+r.indexDone,n);else if(m.index16){auto* dst=static_cast<uint16_t*>(out);for(size_t i=0;i<n/2;++i)dst[i]=uint16_t(m.indices[r.indexDone/2+i]);}else std::memcpy(out,m.indices.data()+r.indexDone/4,n);if(FAILED(r.ib->Unlock()))return false;r.indexDone+=n;budget-=n;if(sharedBudget_)sharedBudget_->consume(n);continue;}
             bool all=true;
             for(size_t i=0;i<r.textures.size();++i){
                 if(timedOut()){all=false;break;}

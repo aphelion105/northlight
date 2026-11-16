@@ -39,13 +39,14 @@ expected={
  ('replay_gpu_batches.h','batch->indices'):(F,Fresh,'D3DUSAGE_WRITEONLY,D3DFMT_INDEX32,D3DPOOL_DEFAULT,&batch->indices'),
  ('replay_gpu_cache.h','built->vertices[s]'):(F,Fresh,'D3DUSAGE_WRITEONLY,0,D3DPOOL_DEFAULT,&built->vertices[s]'),
  ('replay_gpu_cache.h','built->indices'):(F,Fresh,'D3DUSAGE_WRITEONLY,D3DFMT_INDEX32,D3DPOOL_DEFAULT,&built->indices'),
- ('static_shadow_gpu.h','r.vb'):('0',Managed,'D3DUSAGE_WRITEONLY,0,D3DPOOL_MANAGED,&r->vb'),
- ('static_shadow_gpu.h','r.ib'):('0',Managed,'D3DFMT_INDEX16:D3DFMT_INDEX32,D3DPOOL_MANAGED,&r->ib'),
+ ('static_shadow_gpu.h','r.vb'):(F,Fresh,'D3DUSAGE_WRITEONLY,0,D3DPOOL_DEFAULT,&r->vb'),
+ ('static_shadow_gpu.h','r.ib'):(F,Fresh,'D3DFMT_INDEX16:D3DFMT_INDEX32,D3DPOOL_DEFAULT,&r->ib'),
  ('world_renderer.h','page.vb'):('copyFlags',Pooled,'CreateVertexBuffer(capacity,usage,0,pool,&slot.vb'),
  ('world_renderer.h','page.ib'):('copyFlags',Pooled,'CreateIndexBuffer(capacity,usage,D3DFMT_INDEX16,pool,&slot.ib'),
  ('live_terrain_gpu.h','vertices_'):('discarding?D3DLOCK_DISCARD:D3DLOCK_NOOVERWRITE',Dynamic,'D3DUSAGE_DYNAMIC|D3DUSAGE_WRITEONLY,0,D3DPOOL_DEFAULT,&vertices_'),
  ('static_shadow_gpu.h','instances_'):('flags',Dynamic,'D3DUSAGE_DYNAMIC|D3DUSAGE_WRITEONLY,0,D3DPOOL_DEFAULT,&instances_'),
  ('world_renderer.h','liveIndicesGPU'):('slot.flags',Dynamic,'D3DUSAGE_DYNAMIC|D3DUSAGE_WRITEONLY,D3DFMT_INDEX32,D3DPOOL_DEFAULT,&liveIndicesGPU'),
+ ('world_point_rendering.inl','ids'):(F,Fresh,'D3DUSAGE_WRITEONLY,0,D3DPOOL_DEFAULT,ids.out()'),
  ('world_renderer.h','replayVerticesGPU[s]'):('slot.flags',Dynamic,'D3DUSAGE_DYNAMIC|D3DUSAGE_WRITEONLY,0,D3DPOOL_DEFAULT,&replayVerticesGPU[s]'),
  ('world_renderer.h','replayIndicesGPU'):('slot.flags',Dynamic,'D3DUSAGE_DYNAMIC|D3DUSAGE_WRITEONLY,D3DFMT_INDEX32,D3DPOOL_DEFAULT,&replayIndicesGPU'),
  ('replay_copy_reader.h','b'):('NorthlightUpload::readBackLock()',Read,None), # 0.3.192 (CS): the 8 capture read-backs go through NorthlightReplayCopies::Reader (CPU copy first, this lock otherwise)
@@ -69,7 +70,7 @@ for name,text in sources.items():
 assert seen==set(expected),f'stale entries: {sorted(set(expected)-seen)}'
 if 'ui_draw_diagnostic.h' in sources:
     assert 'out.flags=NorthlightUpload::readBackLock();' in sources['ui_draw_diagnostic.h']
-assert fresh==11
+assert fresh==14
 # spell_layer.h upload(): DISCARD only while *Fresh_ (first of the frame, or after a wrap), NOOVERWRITE otherwise; beginFrame and the wrap re-arm Fresh_, so an append never overlaps submitted draws' bytes
 sl=sources['spell_layer.h']
 assert 'const DWORD flags=fresh?D3DLOCK_DISCARD:D3DLOCK_NOOVERWRITE;' in sl and 'cursor-=base;base=0;fresh=true;' in sl
@@ -90,13 +91,13 @@ for name,text in sources.items():
         if 'D3DPOOL_DEFAULT' in pool and 'D3DUSAGE_DYNAMIC' not in usage:creates.append((name,a[4]))
         else:assert 'D3DPOOL_MANAGED' in pool or 'D3DUSAGE_DYNAMIC' in usage,(name,a)
 assert sorted(creates)==sorted([('scene_native_store.h','&built.vb[s]'),('scene_native_store.h','&built.ib'),('scene_native_store.h','&batch->vb'),('scene_native_store.h','&batch->ib'),('replay_gpu_batches.h','&built->vertices[s]'),('replay_gpu_batches.h','&built->indices'),('replay_gpu_batches.h','&batch->vertices'),
-    ('replay_gpu_batches.h','&batch->indices'),('replay_gpu_cache.h','&built->vertices[s]'),('replay_gpu_cache.h','&built->indices'),('auto_displacement_renderer.h','&entry->vb'),('auto_displacement_renderer.h','&entry->ib'),('shared_pom.h','&e->vb')]),creates
+    ('replay_gpu_batches.h','&batch->indices'),('replay_gpu_cache.h','&built->vertices[s]'),('replay_gpu_cache.h','&built->indices'),('auto_displacement_renderer.h','&entry->vb'),('auto_displacement_renderer.h','&entry->ib'),('shared_pom.h','&e->vb'),('static_shadow_gpu.h','&r->vb'),('static_shadow_gpu.h','&r->ib'),('world_point_rendering.inl','ids.out()')]),creates
 print(f'PASS DEFAULT|WRITEONLY creations: {len(creates)}, all fresh write-once sites')
 # The constant and its kill switch; FreshBufferLock appears nowhere else.
 upload=fp.src('upload_lock.h').read_text()
 assert 'inline constexpr bool NoOverwriteFreshBuffers=true;' in upload
 assert 'inline constexpr DWORD FreshBufferLock=NoOverwriteFreshBuffers?DWORD(D3DLOCK_NOOVERWRITE):DWORD(0);' in upload
-assert {n for n,t in sources.items() if 'FreshBufferLock' in t}=={'upload_lock.h','replay_gpu_batches.h','replay_gpu_cache.h','scene_native_store.h','auto_displacement_renderer.h','shared_pom.h','world_renderer.h'}
+assert {n for n,t in sources.items() if 'FreshBufferLock' in t}=={'upload_lock.h','replay_gpu_batches.h','replay_gpu_cache.h','scene_native_store.h','auto_displacement_renderer.h','shared_pom.h','world_renderer.h','static_shadow_gpu.h','world_point_rendering.inl'}
 assert '#include "upload_lock.h"' in sources['replay_gpu_cache.h'] # world_renderer.h (and its .inl) include replay_gpu_cache.h
 # Publication strictly after the last Unlock of each fresh buffer; nothing else reaches an unpublished one.
 def body(text,start,end):i=text.index(start);return text[i:text.index(end,i)]
@@ -180,7 +181,7 @@ page_world=sources['world_renderer.h']
 page_create=body(page_world,'    bool acquireMeshPage(', '    void releaseMeshPool()')
 assert 'pool==D3DPOOL_DEFAULT?D3DUSAGE_DYNAMIC:0' in page_create
 assert 'meshStore.writable(id)' in page_create
-assert 'payload.pages->temporary?D3DPOOL_DEFAULT:D3DPOOL_MANAGED' in page_world
+assert 'payload.pages->defaultPool()?D3DPOOL_DEFAULT:D3DPOOL_MANAGED' in page_world
 assert 'slot.vbFresh=true;' in page_create and 'slot.ibFresh=true;' in page_create
 assert '(vb?page.vbFresh:page.ibFresh)&&(vb?page.vbPool:page.ibPool)==D3DPOOL_DEFAULT?NorthlightUpload::FreshBufferLock:DWORD(0)' in page_world
 page_commit=page_world[page_world.index('const auto stagedPages=meshStore.commit();'):]

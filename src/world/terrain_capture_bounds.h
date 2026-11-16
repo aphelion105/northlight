@@ -215,14 +215,14 @@ private:
         if(declarations_)return declarations_->get(declaration,elements,count)?D3D_OK:D3DERR_INVALIDCALL;
         return declaration->GetDeclaration(storage,&count);
     }
-    void metadata(IDirect3DVertexBuffer9* vb,IDirect3DIndexBuffer9* ib,NorthlightCaptureMetadata::Info* info){
+    void metadata(IDirect3DVertexBuffer9* vb,IDirect3DIndexBuffer9* ib,NorthlightCaptureMetadata::Info* info,const NorthlightCaptureMetadata::Request* ranges=nullptr){
         if(!metadata_||!identity_||!version_)return;
         const NorthlightCaptureMetadata::Request requests[]={{vb,false},{ib,true}};
-        metadata_(requests,info,2);++maintenance_.metadataBatches;
+        metadata_(ranges?ranges:requests,info,2);++maintenance_.metadataBatches;
     }
-    Stamp stamp(IDirect3DVertexBuffer9* vb,IDirect3DIndexBuffer9* ib,const NorthlightCaptureMetadata::Info* info=nullptr){
+    Stamp stamp(IDirect3DVertexBuffer9* vb,IDirect3DIndexBuffer9* ib,const NorthlightCaptureMetadata::Info* info=nullptr,const NorthlightCaptureMetadata::Request* ranges=nullptr){
         if(!identity_||!version_)return {};
-        NorthlightCaptureMetadata::Info fresh[2];if(!info){metadata(vb,ib,fresh);info=fresh;}
+        NorthlightCaptureMetadata::Info fresh[2];if(!info){metadata(vb,ib,fresh,ranges);info=fresh;}
         const bool v=info[0].known&&info[0].identity,i=info[1].known&&info[1].identity;
         Stamp s;s.vb=v?info[0].identity:identity_(vb,false);s.ib=i?info[1].identity:identity_(ib,true);
         s.vertexVersion=v?info[0].revision:version_(vb,false);s.indexVersion=i?info[1].revision:version_(ib,true);return s;
@@ -738,7 +738,11 @@ public:
         const unsigned componentBytes=position->Type==D3DDECLTYPE_FLOAT4?16:12;
         if(!detail.stride||unsigned(position->Offset)+componentBytes>detail.stride)return reject(RejectReason::Stride);
         D3DVERTEXBUFFER_DESC vd={};D3DINDEXBUFFER_DESC id={};
-        NorthlightCaptureMetadata::Info info[2];metadata(vb.p,ib.p,info);
+        const std::uint64_t indexCount=topology==D3DPT_TRIANGLELIST?std::uint64_t(primitiveCount)*3:std::uint64_t(primitiveCount)+2;
+        NorthlightCaptureMetadata::Request ranges[]={{vb.p,false},{ib.p,true,start,indexCount,true}};
+        const int64_t first=int64_t(base)+minimum;
+        if(first>=0&&vertexCount){ranges[0].begin=uint64_t(streamOffset)+uint64_t(first)*detail.stride+position->Offset;ranges[0].bytes=uint64_t(vertexCount-1)*detail.stride+componentBytes;}
+        NorthlightCaptureMetadata::Info info[2];metadata(vb.p,ib.p,info,ranges);
         if(info[0].known&&info[0].identity){vd.Size=info[0].size;vd.Usage=info[0].usage;++maintenance_.metadataHits;}
         else{++maintenance_.metadataFallbacks;hr=vb.p->GetDesc(&vd);if(FAILED(hr))return reject(RejectReason::VertexDescription,hr);}
         if(info[1].known&&info[1].identity){id.Size=info[1].size;id.Usage=info[1].usage;id.Format=info[1].format;++maintenance_.metadataHits;}
@@ -747,13 +751,12 @@ public:
         detail.dynamicSnapshot=((vd.Usage|id.Usage)&D3DUSAGE_DYNAMIC)!=0;
         if(id.Format!=D3DFMT_INDEX16&&id.Format!=D3DFMT_INDEX32)return reject(RejectReason::IndexFormat);
         const UINT indexSize=id.Format==D3DFMT_INDEX16?2:4;
-        const std::uint64_t indexCount=topology==D3DPT_TRIANGLELIST?std::uint64_t(primitiveCount)*3:std::uint64_t(primitiveCount)+2;
         const std::uint64_t indexOffset=std::uint64_t(start)*indexSize,indexBytes=indexCount*indexSize;
         if(indexOffset+indexBytes>id.Size)return reject(RejectReason::IndexRange);
         ContentKey contentKey{{vb.p,ib.p,streamOffset,detail.stride,position->Offset,position->Type,base,minimum,vertexCount,start,primitiveCount,topology},position->Stream,id.Format,vd.Size,id.Size};
         phase.next(LookupPhase);
         const auto hash=contentHash(contentKey);ContentEntry* cached=findContent(contentKey,hash);
-        const Stamp before=stamp(vb.p,ib.p,info);
+        const Stamp before=stamp(vb.p,ib.p,info,ranges);
         if(cached){
             if(!before.valid()||!cached->stamp.valid())++maintenance_.unproven;
             else if(before.vb!=cached->stamp.vb||before.ib!=cached->stamp.ib)++maintenance_.lifetimeChanged;
@@ -768,7 +771,7 @@ public:
             // No Lock, memcpy or memcmp: the intercepted buffer lifetime/write
             // tokens are proof that both exact live byte ranges are unchanged.
             // A pending/failed lock yields version 0 and must take slow fallback.
-            if(stamp(vb.p,ib.p)==before){
+            if(stamp(vb.p,ib.p,nullptr,ranges)==before){
                 output=cached->snapshot;detail.contentCacheHit=detail.trackedCacheHit=true;
                 detail.firstIndex=cached->smallest;detail.lastIndex=cached->largest;
                 std::memcpy(detail.low,cached->low,sizeof detail.low);std::memcpy(detail.high,cached->high,sizeof detail.high);
@@ -908,7 +911,7 @@ public:
             // Only const ownership escapes; eviction or later buffer mutation
             // cannot invalidate a previously returned snapshot.
             output=cached->snapshot;detail.contentCacheHit=true;++maintenance_.exactReuses;
-            const Stamp after=stamp(vb.p,ib.p);cached->stamp=before.valid()&&after==before?before:Stamp{};
+            const Stamp after=stamp(vb.p,ib.p,nullptr,ranges);cached->stamp=before.valid()&&after==before?before:Stamp{};
             std::memcpy(detail.low,cached->low,sizeof detail.low);std::memcpy(detail.high,cached->high,sizeof detail.high);
             contentLRU.touch(*cached);++contentHits;++snapshots;
             if(diagnostics)*diagnostics=detail;return true;
@@ -927,7 +930,7 @@ public:
         }
         // The remap above already validates every source index and finite XYZ.
         if(!result.indices.visit([&](const auto* data,std::size_t count){return classifyTriangleSequence<true>([&](std::size_t i){return result.positions[data[i]];},count,D3DPT_TRIANGLELIST,result.bounds);}))return reject(RejectReason::ChunkCoverage);
-        const Stamp after=stamp(vb.p,ib.p);
+        const Stamp after=stamp(vb.p,ib.p,nullptr,ranges);
         const bool verified=before.valid()&&after==before;
         phase.next(RetainPhase);
         if(verified)result.sourceIdentity=sourceIdentity(contentKey,before);

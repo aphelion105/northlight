@@ -61,6 +61,8 @@ For the subsequent snow/tavern captures, missing material admission, smooth
 ground normals and rejected shadow geometry, see [materials and local shadows](materials-and-local-shadows-20261116.md).
 For the latest effect/capture profile, RAM/GPU ownership and count-pressure
 optimization, see [effects and capture cost](effects-and-capture-cost-20261117.md).
+For range-based VB/IB invalidation, model/terrain capture and the controlled
+capture comparison, see [range capture](range-capture-20261117.md).
 For the later disappearing effects and overdarkened interiors, see
 [effect continuity and room fill](effect-continuity-and-room-fill-20261116.md).
 For compact diagnostic sessions, lossless archive conversion and the current

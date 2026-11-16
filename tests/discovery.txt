@@ -439,6 +439,7 @@ test_query_backend_threads.py
 test_query_gpu_wait.py
 test_query_poll_latency.py
 test_rain_mask.py
+test_range_capture_gpu.py
 test_raster_reconstruction.py
 test_regional_fog_runner_guards.py
 test_regional_fog_water_mask.py

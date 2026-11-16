@@ -547,6 +547,53 @@ template<class T> static void managedResetTests(){
   void* data=nullptr;assert(buffer->Lock(0,4,&data,0)==S_OK);*static_cast<int*>(data)+=1;invalidateAll(true);assert(!version(raw,index));assert(buffer->Unlock()==S_OK&&version(raw,index));buffer->Release();}
  std::puts("PASS Reset buffer generations: only proven unlocked managed bytes persist; default/unknown/locked and ordinary invalidation remain conservative");
 }
+template<class T> static void rangeRevisionTests(){
+ using namespace NorthlightTrackedBuffers;Device owner;constexpr bool index=std::is_same<T,IDirect3DIndexBuffer9>::value;
+ const auto charged=NorthlightBufferRanges::residentBytes.load();
+ auto* raw=new Raw<T>;raw->desc.Size=5*4096;raw->mem.resize(raw->desc.Size);T* buffer=raw;wrap<T,Forward<T>>(&buffer,&owner,index);
+ auto range=[&](uint64_t begin,uint64_t bytes){const NorthlightCaptureMetadata::Request request{raw,index,begin,bytes};NorthlightCaptureMetadata::Info result;captureMetadata(&request,&result,1);return result.revision;};
+ unsigned serial=0;
+ auto write=[&](UINT offset,UINT size,DWORD flags){void* ptr=nullptr;assert(buffer->Lock(offset,size,&ptr,flags)==S_OK);assert(!range(128,512));std::memset(ptr,int(++serial*97),size?size:raw->desc.Size-offset);assert(buffer->Unlock()==S_OK);};
+ const auto first=range(128,512);assert(first);
+ write(3*4096,128,D3DLOCK_NOOVERWRITE);assert(range(128,512)==first&&version(raw,index)!=first);
+ write(0,4,0);const auto samePage=range(128,512);assert(samePage!=first); // Conservative even outside the exact bytes.
+ const auto across=range(4096-4,8);write(4096,4,0);assert(range(4096-4,8)!=across&&range(128,512)==samePage);
+ if constexpr(index){
+  const NorthlightCaptureMetadata::Request elements{raw,true,2048,2,true};NorthlightCaptureMetadata::Info info;
+  captureMetadata(&elements,&info,1);assert(info.revision==range(4096,4));const auto before=info.revision;
+  write(4096,4,0);captureMetadata(&elements,&info,1);assert(info.revision!=before&&info.revision==range(4096,4));
+  auto invalid=elements;invalid.begin=UINT64_MAX;captureMetadata(&invalid,&info,1);assert(!info.revision);
+ }
+ void* ptr=nullptr;assert(buffer->Lock(0,4,&ptr,D3DLOCK_READONLY)==S_OK&&buffer->Unlock()==S_OK&&range(128,512)==samePage);
+ write(3*4096,128,D3DLOCK_DISCARD);assert(range(128,512)!=samePage);
+ const auto tail=range(4*4096,512);write(3*4096,0,0);assert(range(4*4096,512)!=tail);
+ const auto nested=range(128,512);assert(buffer->Lock(3*4096,4,&ptr,0)==S_OK);assert(buffer->Lock(4*4096,4,&ptr,D3DLOCK_READONLY)==S_OK);
+ assert(buffer->Unlock()==S_OK&&buffer->Unlock()==S_OK&&range(128,512)!=nested);
+ const auto failed=range(128,512);raw->failLock=true;assert(FAILED(buffer->Lock(3*4096,4,&ptr,0)));raw->failLock=false;assert(range(128,512)&&range(128,512)!=failed);
+ raw->failUnlock=true;assert(buffer->Lock(0,4,&ptr,0)==S_OK&&FAILED(buffer->Unlock())&&!range(128,512));raw->failUnlock=false;
+ assert(buffer->Unlock()==S_OK);write(3*4096,4,0);assert(range(128,512));
+ const auto gpu=range(128,512);written(buffer);assert(range(128,512)!=gpu);
+ const auto reset=range(128,512);invalidateAll();assert(range(128,512)!=reset);
+ assert(!range(UINT64_MAX,4)&&!range(0,UINT64_MAX)&&!range(raw->desc.Size,1));
+ // A retained token must never grant stale bytes. Writes cover partial, tail,
+ // DISCARD, overlapping-page and disjoint-page cases with an independent copy.
+ std::mt19937 rng(7291);uint64_t stamps[8]={};std::vector<unsigned char> saved[8];
+ for(unsigned step=0;step<1000;++step){const UINT offset=rng()%raw->desc.Size,size=1+rng()%std::min<UINT>(1024,raw->desc.Size-offset);write(offset,size,step%37?D3DLOCK_NOOVERWRITE:D3DLOCK_DISCARD);
+  for(unsigned i=0;i<8;++i){const UINT begin=i*2309;const auto stamp=range(begin,333);const std::vector<unsigned char> actual(raw->mem.begin()+begin,raw->mem.begin()+begin+333);
+   assert(stamp);if(stamps[i]==stamp)assert(actual==saved[i]);stamps[i]=stamp;saved[i]=actual;}}
+ buffer->Release();assert(owner.refs==1&&NorthlightBufferRanges::residentBytes.load()==charged);
+ // Allocation is optional and globally bounded; refusal keeps whole-resource
+ // generations. Clock rewind clears stamps from the previous epoch.
+ std::vector<std::unique_ptr<NorthlightBufferRanges::Revisions>> held;
+ while(auto pages=NorthlightBufferRanges::Revisions::create(16u<<20,101))held.push_back(std::move(pages));
+ assert(!NorthlightBufferRanges::Revisions::create(16u<<20,101)&&NorthlightBufferRanges::residentBytes.load()<=NorthlightBufferRanges::Budget);
+ auto* fallbackRaw=new Raw<T>;fallbackRaw->desc.Size=16u<<20;T* fallback=fallbackRaw;wrap<T,Forward<T>>(&fallback,&owner,index);
+ const NorthlightCaptureMetadata::Request request{fallbackRaw,index,0,64};NorthlightCaptureMetadata::Info info;captureMetadata(&request,&info,1);assert(info.revision==version(fallbackRaw,index));fallback->Release();
+ held.clear();assert(NorthlightBufferRanges::residentBytes.load()==charged);
+ auto pages=NorthlightBufferRanges::Revisions::create(8192,100);assert(pages);pages->publish(100,200,0,1,false);assert(pages->revision(200,4096,1)==100);
+ pages->invalidate(1);assert(pages->revision(1,0,1)==1);pages.reset();assert(NorthlightBufferRanges::residentBytes.load()==charged);
+ std::printf("PASS range generations index=%u disjoint overlap page_edges tail readonly discard nested failures GPU Reset budget rewind randomized=1000\n",unsigned(index));
+}
 int main(){using namespace NorthlightTrackedBuffers;Device owner;
  auto* raw=new Raw<IDirect3DVertexBuffer9>;IDirect3DVertexBuffer9* vb=raw;wrap<IDirect3DVertexBuffer9,ForwardIDirect3DVertexBuffer9>(&vb,&owner,false);
  assert(vb!=raw&&unwrap(vb)==raw&&unwrap(raw)==raw&&owner.refs==2);uint64_t start=version(raw,false);assert(start&&version(raw,true)==0);
@@ -564,4 +611,8 @@ int main(){using namespace NorthlightTrackedBuffers;Device owner;
  puts("PASS buffer COM ownership, VB/IB identity, normal/DISCARD/NOOVERWRITE writes, READONLY, nested failed lock, failed unlock, ProcessVertices invalidation and reset");
  metadataTests();mirrorExposure();discardMeterTests();copiesTests();unchangedWriteTests<IDirect3DVertexBuffer9>();unchangedWriteTests<IDirect3DIndexBuffer9>();skippedUploadTests<IDirect3DVertexBuffer9>();skippedUploadTests<IDirect3DIndexBuffer9>();spellHookTests();
  managedResetTests<IDirect3DVertexBuffer9>();managedResetTests<IDirect3DIndexBuffer9>();
+ rangeRevisionTests<IDirect3DVertexBuffer9>();rangeRevisionTests<IDirect3DIndexBuffer9>();
+ {Device device;auto* raw=new Raw<IDirect3DIndexBuffer9>;raw->desc.Format=D3DFMT_INDEX32;raw->desc.Size=8192;IDirect3DIndexBuffer9* buffer=raw;wrap<IDirect3DIndexBuffer9,ForwardIDirect3DIndexBuffer9>(&buffer,&device,true);
+  NorthlightCaptureMetadata::Request queries[]={{raw,true,1024,1,true},{raw,true,4096,4}};NorthlightCaptureMetadata::Info result[2];captureMetadata(queries,result,2);assert(result[0].revision==result[1].revision&&result[0].revision);
+  void* ptr=nullptr;assert(buffer->Lock(4096,4,&ptr,0)==S_OK&&buffer->Unlock()==S_OK);captureMetadata(queries,result,2);assert(result[0].revision==result[1].revision&&result[0].revision);buffer->Release();}
 }

@@ -104,6 +104,9 @@ of the entire geometry capture or game FPS.
 
 ## How to pursue a multiple-fold capture improvement
 
+The range-generation step below is now implemented and measured in
+[range capture](range-capture-20261117.md). The MSAA normal-MRT work remains separate.
+
 1. **Track writes by source range.** Snapshot keys currently use one revision
    per entire VB/IB. Position bounds at frame 37084 show 112 revision scans,
    zero revision hits and 1,183,032 position bytes read; snapshot replay-content

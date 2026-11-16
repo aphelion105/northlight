@@ -3,7 +3,15 @@
 #include <cstdint>
 
 namespace NorthlightCaptureMetadata {
-struct Request {void* buffer=nullptr;bool index=false;};
+struct Request {
+    void* buffer=nullptr;bool index=false;
+    // Zero bytes requests the whole resource generation. A range token covers
+    // every intersected page, including padding between declared vertices.
+    uint64_t begin=0,bytes=0;
+    // An index request can supply element coordinates before GetDesc. The
+    // metadata owner resolves its immutable INDEX16/INDEX32 width in one batch.
+    bool indexElements=false;
+};
 struct Info {
     std::uint64_t identity=0,revision=0;
     UINT size=0;DWORD usage=0;D3DFORMAT format={};bool known=false;

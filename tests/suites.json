@@ -27,6 +27,8 @@
     "tests": [
       "test_frame_requirements.py",
       "test_canonical_gpu_scene.py",
+      "test_tracked_uploads.py",
+      "test_position_bounds.py",
       "test_backend_work_policy.py",
       "test_point_replay_admission.py",
       "test_prepare_worker_windows.py",
@@ -70,6 +72,7 @@
   "gpu": {
     "description": "Hidden-device image/state oracles for optional effect layers, capture orchestration and shadows. Requires a configured Windows GPU toolchain and client; does not establish game FPS.",
     "tests": [
+      "test_range_capture_gpu.py",
       "test_ao_optional_layers_gpu.py",
       "test_draw_orchestration_gpu.py",
       "test_world_lighting_capture.py",

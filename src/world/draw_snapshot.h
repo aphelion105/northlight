@@ -389,9 +389,19 @@ private:
         k.topology=unsigned(draw.topology);k.format=format;k.indexed=draw.indexed?1u:0u;k.declaration=declaration;
         k.tracking[0]=reinterpret_cast<std::uintptr_t>(identity_);k.tracking[1]=reinterpret_cast<std::uintptr_t>(version_);k.tracking[2]=reinterpret_cast<std::uintptr_t>(metadata_);return k;
     }
+    static NorthlightCaptureMetadata::Request vertexRequest(void* buffer,const Draw& draw,UINT n,UINT offset,UINT stride,UINT extent){
+        NorthlightCaptureMetadata::Request request{buffer,false};
+        const int64_t first=draw.indexed?int64_t(draw.base)+draw.minimum:draw.start;
+        const uint64_t count=draw.indexed?draw.vertices:n;
+        if(first>=0&&count){request.begin=uint64_t(offset)+uint64_t(first)*stride;request.bytes=(count-1)*stride+extent;}
+        return request;
+    }
     bool stable(const CacheKey& key,Ref<IDirect3DVertexBuffer9>* vertices,IDirect3DIndexBuffer9* ib){
         if(!key.tracked)return false;NorthlightCaptureMetadata::Info info[5];NorthlightCaptureMetadata::Request requests[5];unsigned count=0;
-        for(unsigned s=0;s<4;++s)if(key.extent[s])requests[count++]={vertices[s].p,false};if(key.indexed)requests[count++]={ib,true};
+        const Draw draw{D3DPRIMITIVETYPE(key.topology),key.base,key.minimum,key.vertices,key.start,key.primitives,key.indexed!=0};UINT n=0;
+        if(!indexCount(draw,n,nullptr))return false;
+        for(unsigned s=0;s<4;++s)if(key.extent[s])requests[count++]=vertexRequest(vertices[s].p,draw,n,key.offset[s],key.stride[s],key.extent[s]);
+        if(key.indexed)requests[count++]={ib,true,key.start,n,true};
         if(metadata_){metadata_(requests,info,count);++metadataBatches_;}unsigned at=0;
         for(unsigned s=0;s<5;++s){if(s<4?!key.extent[s]:!key.indexed)continue;const auto& m=info[at++];void* resource=s<4?static_cast<void*>(vertices[s].p):static_cast<void*>(ib);
             const auto identity=m.known&&m.identity?m.identity:identity_(resource,s==4),revision=m.known&&m.identity?m.revision:version_(resource,s==4);
@@ -892,11 +902,11 @@ public:
             HRESULT hr=device->GetStreamSource(stream,vertices[stream].out(),&offsets[stream],&strides[stream]);
             if(FAILED(hr)||!vertices[stream].p||strides[stream]<extent[stream]||strides[stream]>4096)return fail(why,Error::Stream,hr);
             if(FAILED(hr=device->GetStreamSourceFreq(stream,&frequency))||frequency!=1)return fail(why,Error::Instancing,hr);
-            requests[stream]={vertices[stream].p,false};
+            requests[stream]=vertexRequest(vertices[stream].p,draw,n,offsets[stream],strides[stream],extent[stream]);
             if(!batch){if(FAILED(hr=vertices[stream]->GetDesc(&descriptions[stream])))return fail(why,Error::Stream,hr);}
         }
         if(batch){
-            if(draw.indexed){HRESULT hr=device->GetIndices(boundIndices.out());if(FAILED(hr)||!boundIndices.p)return fail(why,Error::IndexBuffer,hr);requests[4]={boundIndices.p,true};}
+            if(draw.indexed){HRESULT hr=device->GetIndices(boundIndices.out());if(FAILED(hr)||!boundIndices.p)return fail(why,Error::IndexBuffer,hr);requests[4]={boundIndices.p,true,draw.start,n,true};}
             metadata_(requests,metadata,5);++metadataBatches_;
             for(UINT s=0;s<4;++s){if(!extent[s])continue;if(why)why->stream=s;
                 if(metadata[s].known&&metadata[s].identity){descriptions[s].Size=metadata[s].size;descriptions[s].Usage=metadata[s].usage;++metadataHits_;}

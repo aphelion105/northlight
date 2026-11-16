@@ -671,7 +671,7 @@
         NorthlightDrawSnapshot::Ref<IDirect3DVertexBuffer9> ids;
         if(FAILED(pointAllocate(pointCold.shared,[&]{return d->CreateVertexBuffer(84*sizeof(float),D3DUSAGE_WRITEONLY,0,D3DPOOL_DEFAULT,ids.out(),nullptr);})))return false;
         void* data=nullptr;if(!ids.p)return false;
-        if(FAILED(ids->Lock(0,84*sizeof(float),&data,0))){if(data)ids->Unlock();return false;}
+        if(FAILED(ids->Lock(0,84*sizeof(float),&data,NorthlightUpload::FreshBufferLock))){if(data)ids->Unlock();return false;}
         if(!data){ids->Unlock();return false;}for(unsigned i=0;i<84;++i)static_cast<float*>(data)[i]=float(3*i);
         if(FAILED(ids->Unlock())){ids->Unlock();return false;}pointPaletteIds=ids.p;ids.p=nullptr;pointPaletteRetryFrame=0;return true;
     }

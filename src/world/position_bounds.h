@@ -25,9 +25,9 @@ private:
     NorthlightCaptureMetadata::Read metadata=nullptr;
     size_t bytes=0;unsigned hits=0,reads=0,unknown=0;
     Maintenance maintenance_;
-    NorthlightCaptureMetadata::Info stamp(IDirect3DVertexBuffer9* vb)const{
+    NorthlightCaptureMetadata::Info stamp(IDirect3DVertexBuffer9* vb,uint64_t begin,uint64_t span)const{
         NorthlightCaptureMetadata::Info info;
-        if(metadata){const NorthlightCaptureMetadata::Request request{vb,false};metadata(&request,&info,1);return info;}
+        if(metadata){const NorthlightCaptureMetadata::Request request{vb,false,begin,span};metadata(&request,&info,1);return info;}
         if(!identity||!version)return info;
         D3DVERTEXBUFFER_DESC desc{};if(FAILED(vb->GetDesc(&desc)))return info;
         info.identity=identity(vb,false);info.revision=version(vb,false);info.size=desc.Size;info.known=true;return info;
@@ -52,10 +52,11 @@ public:
         if(FAILED(device->GetStreamSource(0,vb.out(),&offset,&stride))||!vb.p||
            FAILED(device->GetStreamSourceFreq(0,&frequency))||frequency!=1||stride>4096||
            positionOffset>stride||stride-positionOffset<12)return false;
-        const auto before=stamp(vb.p);
-        if(!before.known||!before.identity||!before.revision){++unknown;return false;}
         const uint64_t begin=uint64_t(offset)+uint64_t(first)*stride+positionOffset,span=(count-1)*stride+12;
-        if(begin+span>before.size||begin>UINT(-1)||span>(4u<<20))return false;
+        if(begin>UINT(-1)||span>(4u<<20))return false;
+        const auto before=stamp(vb.p,begin,span);
+        if(!before.known||!before.identity||!before.revision){++unknown;return false;}
+        if(begin+span>before.size)return false;
         const Key key{before.identity,UINT(begin),stride,UINT(count)};
         auto found=entries.find(key);
         if(found!=entries.end()&&found->second.revision==before.revision&&found->second.size==before.size){
@@ -70,7 +71,7 @@ public:
         if(FAILED(reader.lock(UINT(begin),UINT(span),&data)))return false;
         const bool valid=data&&scanPositions(data,size_t(count),stride,value.low,value.high);
         if(FAILED(reader.unlock())||!valid)return false;
-        const auto after=stamp(vb.p);
+        const auto after=stamp(vb.p,begin,span);
         if(!after.known||after.identity!=before.identity||after.revision!=before.revision||after.size!=before.size){++unknown;return false;}
         if(found==entries.end()){
             if(entries.size()>=4096){auto* old=lru.oldest();const auto oldKey=old->key;lru.remove(*old);entries.erase(oldKey);++maintenance_.evictions;}

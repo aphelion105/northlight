@@ -9,6 +9,7 @@
 #include "lock_meter.h"
 #include "replay_copies.h"
 #include "particle_uploads.h"
+#include "buffer_range_revisions.h"
 
 // Only client-created buffers are wrapped. The real device always receives
 // real resources. Unknown/unwrapped resources return revision 0 (no fast cache).
@@ -36,6 +37,7 @@ inline std::uint64_t identity(void* buffer,bool index){
 inline std::atomic<uint64_t> clock{1};
 inline std::atomic<uint64_t> noChangeWrites{0},noChangeBytes{0};
 inline std::atomic<uint64_t> skippedWrites{0},skippedBytes{0};
+inline std::atomic<uint64_t> rangeQueries{0},rangePreserved{0},rangeFallbacks{0};
 inline std::mutex mutex;
 struct Record {
     void* raw=nullptr;void* exposed=nullptr;
@@ -45,6 +47,7 @@ struct Record {
     bool index=false;
     D3DPOOL pool=D3DPOOL_DEFAULT;bool poolKnown=false;
     NorthlightCaptureMetadata::Info metadata;
+    std::unique_ptr<NorthlightBufferRanges::Revisions> ranges;
     std::atomic<bool> spellGuard{false}; // task 34: the spell layer guards bytes of this buffer; set/cleared through markSpellGuard, tested (relaxed) by Buffer::Lock
     NorthlightReplayCopies::Slot copy; // 0.3.192 (CS): the replay-side CPU copy (replay_copies.h); attached only while the stream is active
 };
@@ -84,10 +87,25 @@ inline void captureMetadata(const NorthlightCaptureMetadata::Request* requests,N
         if(!requests[i].buffer)continue;
         auto found=records.find(requests[i].buffer);
         if(found==records.end())continue;
-        const auto& record=*found->second;
+        auto& record=*found->second;
         if(record.index!=requests[i].index||!record.metadata.known)continue;
         output[i]=record.metadata;
         output[i].revision=record.locks.load(std::memory_order_acquire)?0:record.revision.load(std::memory_order_relaxed);   // 0.3.196 (task 12): acquire pairs with the unlock's release
+        const auto& request=requests[i];
+        if(output[i].revision&&request.bytes){
+            rangeQueries.fetch_add(1,std::memory_order_relaxed);
+            uint64_t begin=request.begin,bytes=request.bytes;
+            if(request.indexElements){
+                const uint64_t width=record.metadata.format==D3DFMT_INDEX16?2:record.metadata.format==D3DFMT_INDEX32?4:0;
+                if(!request.index||!width||begin>UINT64_MAX/width||bytes>UINT64_MAX/width){output[i].revision=0;continue;}
+                begin*=width;bytes*=width;
+            }
+            if(begin>=record.metadata.size||bytes>record.metadata.size-begin){output[i].revision=0;continue;}
+            if(!record.ranges)record.ranges=NorthlightBufferRanges::Revisions::create(record.metadata.size,output[i].revision);
+            if(record.ranges){const auto whole=output[i].revision;output[i].revision=record.ranges->revision(whole,begin,bytes);
+                if(output[i].revision!=whole)rangePreserved.fetch_add(1,std::memory_order_relaxed);}
+            else rangeFallbacks.fetch_add(1,std::memory_order_relaxed);
+        }
     }
 }
 inline uint64_t version(void* raw,bool index){
@@ -145,6 +163,8 @@ template<class T,class Forward> class Buffer final:public Forward {
     UINT discardBytes=0;
     NorthlightReplayCopies::PendingWrite pendingWrite; // 0.3.196 (task 12): this wrapper's outstanding write lock (Lock records, Unlock consumes; touched by the locking thread only)
     uint64_t previousWriteRevision=0,pendingWriteRevision=0;
+    uint64_t rangePrevious=0,rangeBegin=0,rangeBytes=0;
+    bool rangeWrite=false,rangeWhole=false;
     NorthlightParticleUploads::Pending particleWrite;
 public:
     bool hasCopySlotForTest()const{return record.copy.attached;} // the CPU copy slot exists only for buffers created while the stream is active
@@ -224,13 +244,24 @@ public:
         // Task 34: first of all, before the revision or the lock count move: a deferred draw may read the bytes this write replaces (spell_layer.h onBufferWrite).
         if(record.spellGuard.load(std::memory_order_relaxed)&&!(flags&D3DLOCK_READONLY)&&spellHook.write)
             spellHook.write(spellHook.context,record.raw,offset,size,flags,record.metadata.usage,record.locks.load(std::memory_order_relaxed));
-        // 0.3.196 (task 12): revision is relaxed: Lock/Unlock and the copy hooks run on one thread per mode (the replay thread with the stream on, else the game thread, see replay_copies.h
-        // "Threads"); the readers (version/captureMetadata) take the registry mutex and check `locks` (acquire) first, which pairs with the release of locks.fetch_sub below.
-        const uint64_t previousRevision=record.revision.load(std::memory_order_relaxed);
+        // Publish lock admission and its generation together with metadata reads.
+        // Driver calls and capture callbacks stay outside the registry lock.
+        uint64_t previousRevision;unsigned lockedBefore;
+        {
+            std::lock_guard<std::mutex> guard(mutex);
+            previousRevision=record.revision.load(std::memory_order_relaxed);
+            lockedBefore=record.locks.fetch_add(1);
+            if(!lockedBefore){rangePrevious=previousRevision;rangeWrite=rangeWhole=false;}
+            if(!(flags&D3DLOCK_READONLY)){
+                record.revision.store(clock.fetch_add(1),std::memory_order_relaxed);
+                rangeWrite=true;rangeBegin=offset;
+                rangeBytes=size?size:offset<=record.metadata.size?record.metadata.size-offset:0;
+                rangeWhole|=(flags&D3DLOCK_DISCARD)||!record.metadata.known||offset>=record.metadata.size||!rangeBytes||rangeBytes>record.metadata.size-offset;
+            }
+            rangeWhole|=lockedBefore!=0;
+        }
         const bool wasUnsafe=previousRevision==0;
-        if(!(flags&D3DLOCK_READONLY))record.revision.store(clock.fetch_add(1),std::memory_order_relaxed);
         if((flags&D3DLOCK_DISCARD)&&discardBytes)NorthlightLockMeter::discard(NorthlightLockMeter::Game,discardBytes);
-        const unsigned lockedBefore=record.locks.fetch_add(1);
         // Reuse a content token only for a complete, successful, isolated write
         // whose live replay-side bytes prove unchanged. Partial DISCARD remains
         // invalidating: the driver may replace every byte outside that range.
@@ -256,7 +287,9 @@ public:
             particleWrite={};
             // A rejected write cannot repair tracking after an earlier failed
             // unlock. Keep the legacy exact-read path until a write succeeds.
+            std::lock_guard<std::mutex> guard(mutex);
             if(wasUnsafe)record.revision.store(0,std::memory_order_relaxed);
+            if(record.ranges)record.ranges->invalidate(record.revision.load(std::memory_order_relaxed));
             record.locks.fetch_sub(1,std::memory_order_release);
         }
         return hr;
@@ -280,10 +313,15 @@ public:
         }else if(FAILED(hr))NorthlightParticleUploads::cache().forget(record.raw);
         particleWrite={};
         if(copies&&FAILED(hr))NorthlightReplayCopies::invalidate(record.copy);
+        std::lock_guard<std::mutex> guard(mutex);
         if(SUCCEEDED(hr)&&record.locks.load(std::memory_order_relaxed)){
             uint64_t expected=pendingWriteRevision;
             if(same&&record.revision.compare_exchange_strong(expected,previousWriteRevision,std::memory_order_relaxed)){
                 noChangeWrites.fetch_add(1,std::memory_order_relaxed);noChangeBytes.fetch_add(bytes,std::memory_order_relaxed);
+            }
+            if(record.ranges&&record.locks.load(std::memory_order_relaxed)==1&&rangeWrite){
+                const auto current=record.revision.load(std::memory_order_relaxed);
+                if(current!=rangePrevious)record.ranges->publish(rangePrevious,current,rangeBegin,rangeBytes,rangeWhole);
             }
             record.locks.fetch_sub(1,std::memory_order_release);
         }
