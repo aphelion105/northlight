@@ -40,13 +40,13 @@ int main() {
     assert(gi.probes&&gi.geometry&&gi.modelNormals&&gi.geometryGroups()==2);
     q.giStrength=0;
     auto zeroGI=make(q,effects,false);
-    assert(!zeroGI.probes&&!zeroGI.lighting&&zeroGI.geometryGroups()==0);
+    assert(!zeroGI.geometry&&!zeroGI.probes&&!zeroGI.lighting&&zeroGI.geometryGroups()==0);
     effects.gi=false;
 
     // Fog owns distance/history without acquiring surface lighting or model normals.
     effects.fog=true;
     auto fog=make(q,effects,false);
-    assert(fog.fog&&fog.geometry&&fog.distance&&!fog.lighting&&!fog.modelNormals);
+    assert(fog.fog&&!fog.geometry&&fog.distance&&!fog.lighting&&!fog.modelNormals);
     assert((fog.screenGroups()&518)==516&&fog.geometryGroups()==0);
     effects.fog=false;
 

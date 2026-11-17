@@ -10,9 +10,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
 
 source = fp.src('world_point_rendering.inl').read_text(encoding='utf-8')
-start = source.index('            if(withReplays)pointOrderReplays();')
+start = source.index('            if(withReplays){', source.index('const int64_t candidatesStart='))
 current = source[start:source.index('\n            if(pointTimed)', start)]
 harness = r'''
+#include "point_light_shadow.h"
 #include <array>
 #include <algorithm>
 #include <cassert>
@@ -22,6 +23,8 @@ harness = r'''
 using UINT=unsigned;
 struct Bounds{float low[3]={},high[3]={};bool valid=true;};
 struct Fixture{
+    using PointReplayGroup=NorthlightPointShadow::ReplayGroup;
+    std::vector<PointReplayGroup> pointReplayGroups;bool pointReplayGroupsReady=false;
     struct Replay{Bounds pointBounds;bool shadowSkinned=false;};
     struct Clip{unsigned mask(const float* low,const float* high,bool valid,unsigned requested=63)const{return (valid?(high[0]?0:unsigned(low[0])):63)&requested;}} clip;
     struct Work{unsigned unboundedSkinned=0,unboundedRigid=0;} pointWork;
@@ -68,6 +71,6 @@ cpp.write_text(harness, encoding='utf-8', newline='\n')
 exe = out/('admission.exe' if os.name == 'nt' else 'admission')
 compiler = [str(fp.zig()), 'c++', '-target', 'x86-windows-gnu'] if os.name == 'nt' else ['clang++']
 subprocess.run([*compiler, '-std=c++17',
-                '-O2', '-UNDEBUG', '-Wall', '-Wextra', '-Werror', str(cpp), '-o', str(exe)],
+                '-O2', '-UNDEBUG', '-Wall', '-Wextra', '-Werror', *fp.test_include_flags(), str(cpp), '-o', str(exe)],
                env=fp.zig_env(), check=True)
 print(subprocess.check_output([str(exe)], text=True), end='')

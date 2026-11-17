@@ -31,19 +31,31 @@ struct PointTerrainCoverageTest {
    for(unsigned f=0;f<6;++f)if(faces&(1u<<f))assert(NorthlightPointShadow::faceMatrix(light.position,.1f,light.attenuationEnd,f,matrices[f],WorldRenderer::PointResolution));
    const NorthlightPointShadow::FaceClip clip(matrices,light,faces);
    clear();reference(clip,faces);const auto masks=w.pointBatchMasks;const auto lists=w.pointTerrainCandidates;const unsigned culled=w.pointCulled;
-   clear();w.preparePointTerrain(clip,faces);assert(w.pointBatchMasks==masks&&w.pointTerrainCandidates==lists&&w.pointCulled==culled);
+   clear();w.preparePointTerrain(clip,faces);
+   if(w.pointBatchMasks!=masks||w.pointTerrainCandidates!=lists||w.pointCulled!=culled)std::fprintf(stderr,"terrain count=%zu faces=%u maskMatch=%u listMatch=%u rejected=%u expected=%u\n",w.batches.size(),faces,unsigned(w.pointBatchMasks==masks),unsigned(w.pointTerrainCandidates==lists),w.pointCulled,culled);
+   assert(w.pointBatchMasks==masks&&w.pointTerrainCandidates==lists&&w.pointCulled==culled);
   };
   for(size_t count:{size_t(0),size_t(128),size_t(4096),size_t(65536),size_t(65537)}){
-   fill(count);check(63);assert(w.pointSlot().terrainMemo.valid==(count<=WorldRenderer::PointTerrainMemo::Limit));
+   fill(count);
+#ifdef NORTHLIGHT_POINT_OVERLAP_TEST
+   w.pointTree=NorthlightWorldMeshPages::PointTree::build(w.batches,w.pointSubBatches);
+#endif
+   check(63);assert(w.pointSlot().terrainMemo.valid==(count<=WorldRenderer::PointTerrainMemo::Limit));
    check(63);for(unsigned faces:{1u,2u,4u,8u,16u,32u,21u,42u})check(faces);
    w.terrainBatchListGeneration=UINT64_MAX;check(63); // list fallback is equivalent
    light.position[0]+=.25f;check(1);assert(!w.pointSlot().terrainMemo.valid);check(63);
    light.attenuationEnd+=.25f;check(63);
    if(count){w.batches[0].terrain=true;w.batches[0].boundsLow={-1,-1,0};w.batches[0].boundsHigh={1,1,8};}
+#ifdef NORTHLIGHT_POINT_OVERLAP_TEST
+   w.pointTree.reset();
+#endif
    ++w.meshGeneration;check(63);
    assert(w.pointSlot().terrainMemo.masks.capacity()<=WorldRenderer::PointTerrainMemo::Limit);
   }
   fill(2048);float matrices[14][6][16]={};
+#ifdef NORTHLIGHT_POINT_OVERLAP_TEST
+  w.pointTree.reset();
+#endif
   for(unsigned l=0;l<14;++l){w.pointIndex=l;light.position[0]=float(l)*.2f;w.pointSlot().selected=light;
    for(unsigned f=0;f<6;++f)assert(NorthlightPointShadow::faceMatrix(light.position,.1f,light.attenuationEnd,f,matrices[l][f],WorldRenderer::PointResolution));
    const NorthlightPointShadow::FaceClip clip(matrices[l],light);clear();w.preparePointTerrain(clip,63);}
@@ -58,9 +70,14 @@ struct PointTerrainCoverageTest {
   // each interior lamp. Compare with the former warm memo expansion exactly.
   fill(12854);for(auto& b:w.batches){b.boundsLow.z=-100;b.boundsHigh.z=-99;}
   ++w.meshGeneration;w.rebuildTerrainLists();
+  std::vector<unsigned char> previousEmptyMasks(w.batches.size(),63);
+  for(auto i:w.terrainBatchList)previousEmptyMasks[i]=0;
   for(unsigned l=0;l<14;++l){w.pointIndex=l;w.pointSlot().terrainMemo.valid=false;
    const NorthlightPointShadow::FaceClip clip(matrices[l],w.pointSlot().selected);clear();w.preparePointTerrain(clip,63);
    assert(w.pointSlot().terrainMemo.valid&&!w.pointSlot().terrainMemo.occupiedFaces);
+#ifdef NORTHLIGHT_POINT_OVERLAP_TEST
+   assert(w.pointSlot().terrainMemo.masks.capacity()==0);
+#endif
    const auto masks=w.pointBatchMasks;const auto lists=w.pointTerrainCandidates;const unsigned culled=w.pointCulled;
    for(unsigned faces:{63u,1u,21u,42u}){clear();reference(clip,faces);const auto expected=w.pointBatchMasks;const auto candidates=w.pointTerrainCandidates;const auto rejected=w.pointCulled;
     clear();w.preparePointTerrain(clip,faces);assert(w.pointBatchMasks==expected&&w.pointTerrainCandidates==candidates&&w.pointCulled==rejected);}
@@ -69,7 +86,7 @@ struct PointTerrainCoverageTest {
   for(unsigned block=0;block<16;++block){const bool cached=block%4==1||block%4==2;const auto start=std::chrono::steady_clock::now();
    for(unsigned frame=0;frame<32;++frame)for(unsigned l=0;l<14;++l){w.pointIndex=l;clear();
     if(cached){const NorthlightPointShadow::FaceClip clip(matrices[l],w.pointSlot().selected);w.preparePointTerrain(clip,63);}
-    else{w.pointBatchMasks=w.pointSlot().terrainMemo.masks;
+    else{w.pointBatchMasks=previousEmptyMasks;
      for(size_t i:w.terrainBatchList)w.pointAppendCandidates(w.pointTerrainCandidates,i,w.pointBatchMasks[i],63);}
    }
    const double ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count()/32;
@@ -483,6 +500,25 @@ struct PointTerrainCoverageTest {
     else{assert(image()==reference);replayAfter=w.pointWork.replay;assert(replayAfter<replayBefore/16&&w.pointWork.replayMerged>0);assert(std::equal(weights.begin(),weights.end(),w.pointSlot().faceWeights));}
    }
   }
+#ifdef NORTHLIGHT_POINT_OVERLAP_TEST
+  for(unsigned step:{0u,32u}){
+   for(unsigned i=0;i<w.replays.size();++i)w.replays[i]->start=3*i*step;
+   unsigned draws[2]{};uint64_t tris[2]{};std::vector<float> expected;std::array<unsigned,6> logicalWeights{};
+   for(unsigned merge=0;merge<2;++merge){
+    w.pointPrimitiveLimit=merge?caps.MaxPrimitiveCount:1;
+    w.replayBoundsBegin();w.replayBoundsResolved=true;w.pointSlot().cacheValid=false;w.pointSlot().schedule.invalidate();w.pointWork={};
+    must(d->BeginScene());assert(w.renderPointShadow(light,true,true));must(d->EndScene());drain();
+    draws[merge]=w.pointWork.replay;tris[merge]=w.pointWork.triangles;
+    if(!merge){expected=image();assert(std::any_of(expected.begin(),expected.end(),[](float depth){return depth<1.f;}));std::copy_n(w.pointSlot().faceWeights,6,logicalWeights.begin());}
+    else{assert(image()==expected&&std::equal(logicalWeights.begin(),logicalWeights.end(),w.pointSlot().faceWeights));}
+   }
+   assert(draws[1]*32==draws[0]&&tris[1]<tris[0]);
+   std::printf("POINT_OVERLAP_PASS step=%u beforeDraws=%u afterDraws=%u beforeTriangles=%llu afterTriangles=%llu exactFaces=6\n",step,draws[0],draws[1],(unsigned long long)tris[0],(unsigned long long)tris[1]);
+  }
+  for(unsigned i=0;i<w.replays.size();++i)w.replays[i]->start=3*i*64;
+  w.replayBoundsBegin();w.replayBoundsResolved=true;w.pointSlot().cacheValid=false;w.pointSlot().schedule.invalidate();
+  must(d->BeginScene());assert(w.renderPointShadow(light,true,true));must(d->EndScene());drain();
+#endif
   // A shadow toggle retains only static coverage: changed dynamic geometry
   // must produce the same six faces as full invalidation, never the old cube.
   const auto oldDynamic=image();toggle();

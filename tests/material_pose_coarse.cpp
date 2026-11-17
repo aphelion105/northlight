@@ -34,6 +34,16 @@ int main(){
     unsigned checks=0;
     for(unsigned groups:{1u,4u,16u,75u}){
         auto m=weighted(groups,true);E cache(true);warm(cache,*prepared,m,c,inverse);
+        B::SkinEnvelope reference,batched;
+        for(unsigned v=0;v<m->vertexCount;++v){NorthlightActorDeformation::Four input[16];
+            assert(NorthlightActorDeformation::sampledVertexInputsAt(p,*m,decl,4,v,input)&&reference.add(input));}
+        assert(batched.addMesh(p,*m,decl,4));
+        assert(reference.usedBones==batched.usedBones&&reference.sumLow==batched.sumLow&&reference.sumHigh==batched.sumHigh);
+        assert(std::equal(reference.order,reference.order+reference.usedBones,batched.order));
+        for(unsigned b=0;b<75;++b){assert(reference.bones[b].used==batched.bones[b].used);
+            assert(!std::memcmp(reference.bones[b].low,batched.bones[b].low,12)&&!std::memcmp(reference.bones[b].high,batched.bones[b].high,12));}
+        auto shortMesh=*m;shortMesh.streams[0].bytes.pop_back();B::SkinEnvelope invalid;
+        assert(!invalid.addMesh(p,shortMesh,decl,4));
         std::mt19937 random(713);
         for(unsigned frame=0;frame<128;++frame)for(int mode:{FE_TONEAREST,FE_DOWNWARD,FE_UPWARD,FE_TOWARDZERO}){
             const int saved=std::fegetround();assert(std::fesetround(mode)==0);

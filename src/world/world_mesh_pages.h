@@ -51,6 +51,13 @@ struct PointRange {uint32_t first=0,count=0;};
 // and batch order. Unknown bounds always reach those tests.
 class PointTree {
     struct Node {NorthlightGI::Vec3 low,high;uint32_t end=0,first=0,count=0;};
+    static constexpr unsigned LeafSize=8;
+    static size_t nodeLimit(size_t count){
+        if(!count)return 0;
+        size_t leaves=1;
+        while(leaves*LeafSize<count)leaves*=2;
+        return 2*leaves-1;
+    }
     std::vector<Node> nodes;
     std::vector<uint32_t> order;
     uint32_t validCount=0;
@@ -61,7 +68,7 @@ class PointTree {
             low.x=std::min(low.x,b.boundsLow.x);low.y=std::min(low.y,b.boundsLow.y);low.z=std::min(low.z,b.boundsLow.z);
             high.x=std::max(high.x,b.boundsHigh.x);high.y=std::max(high.y,b.boundsHigh.y);high.z=std::max(high.z,b.boundsHigh.z);}
         nodes[index].low=low;nodes[index].high=high;
-        if(count<=8){nodes[index].first=first;nodes[index].count=count;}
+        if(count<=LeafSize){nodes[index].first=first;nodes[index].count=count;}
         else{
             const double extent[]={double(high.x)-low.x,double(high.y)-low.y,double(high.z)-low.z};
             const unsigned axis=extent[1]>extent[0]?(extent[2]>extent[1]?2:1):(extent[2]>extent[0]?2:0);
@@ -86,16 +93,19 @@ public:
     }
     template<class Batches> static std::shared_ptr<const PointTree> build(const Batches& batches,const NorthlightGI::AllocationAdmission& admit={}){
         if(batches.size()<16||batches.size()>65536)return {};
-        if(admit&&!admit(sizeof(PointTree)+batches.size()*(sizeof(Node)+sizeof(uint32_t))+64))return {};
+        if(admit&&!admit(sizeof(PointTree)+nodeLimit(batches.size())*sizeof(Node)+batches.size()*sizeof(uint32_t)+64))return {};
         try{
-            auto tree=std::make_shared<PointTree>();tree->order.reserve(batches.size());tree->nodes.reserve(batches.size());
+            auto tree=std::make_shared<PointTree>();tree->order.resize(batches.size());
             const auto valid=[](const auto& b){return std::isfinite(b.boundsLow.x)&&std::isfinite(b.boundsLow.y)&&std::isfinite(b.boundsLow.z)&&
                 std::isfinite(b.boundsHigh.x)&&std::isfinite(b.boundsHigh.y)&&std::isfinite(b.boundsHigh.z)&&
                 b.boundsLow.x<=b.boundsHigh.x&&b.boundsLow.y<=b.boundsHigh.y&&b.boundsLow.z<=b.boundsHigh.z;};
-            for(uint32_t i=0;i<batches.size();++i)if(valid(batches[i]))tree->order.push_back(i);
-            tree->validCount=uint32_t(tree->order.size());
+            size_t unknown=batches.size();
+            for(uint32_t i=0;i<batches.size();++i){
+                if(valid(batches[i]))tree->order[tree->validCount++]=i;
+                else tree->order[--unknown]=i;
+            }
+            tree->nodes.reserve(nodeLimit(tree->validCount));
             if(tree->validCount)tree->split(0,tree->validCount,batches);
-            for(uint32_t i=0;i<batches.size();++i)if(!valid(batches[i]))tree->order.push_back(i);
             return tree;
         }catch(const std::bad_alloc&){return {};}
     }

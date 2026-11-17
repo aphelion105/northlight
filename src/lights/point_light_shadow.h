@@ -215,6 +215,38 @@ public:
         return mask;
     }
 };
+// Consecutive packets retain their submission order. Unknown or malformed
+// bounds disable group rejection, so their original per-packet mask survives.
+struct ReplayGroup {
+    static constexpr unsigned Width=16;
+    float low[3]={},high[3]={};bool valid=true;
+    void include(const float* lo,const float* hi,bool known,bool first){
+        if(!valid)return;
+        if(!known){valid=false;return;}
+        for(unsigned axis=0;axis<3;++axis){
+            if(!std::isfinite(lo[axis])||!std::isfinite(hi[axis])||lo[axis]>hi[axis]){valid=false;return;}
+            low[axis]=first?lo[axis]:std::min(low[axis],lo[axis]);high[axis]=first?hi[axis]:std::max(high[axis],hi[axis]);
+        }
+    }
+    template<class Read> static bool useful(size_t count,Read read){
+        // Sample four disjoint groups before indexing a whole frame. Material
+        // order can scatter actors across the map, making a group test pure overhead.
+        if(count<4*Width)return false;
+        ReplayGroup scene;
+        double sum=0;
+        for(unsigned sample=0;sample<4;++sample){
+            const size_t first=((count/Width-1)*sample/3)*Width;
+            ReplayGroup group;
+            for(size_t i=0;i<Width;++i){const auto& b=read(first+i);group.include(b.low,b.high,b.valid,i==0);}
+            if(!group.valid)return false;
+            scene.include(group.low,group.high,true,sample==0);
+            sum+=group.extent();
+        }
+        return sum<=2*scene.extent();
+    }
+    double extent()const{return std::max({double(high[0])-low[0],double(high[1])-low[1],double(high[2])-low[2]});}
+
+};
 // 0.3.151 static cube faces keyed on content (world_mesh_plan.cpp records), not
 // on the mesh generation. LocalShadowPS stores no fragment beyond attenuationEnd
 // (a caster out of range can never shadow a lit surface: the attenuation there is

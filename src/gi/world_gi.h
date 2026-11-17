@@ -142,6 +142,17 @@ struct SceneSizeHint {
     uint64_t key=0,sizedKey=0;bool sized=false,hinted=false;
     uint64_t vertices=0,triangles=0;Vec3 low,high;
 };
+// Optional point-caster assembly. Charge overlapping allocations within a
+// model/instance and release scratch charges at the next lifetime boundary.
+struct PointTransmissionBudget {
+    uint64_t limit=8ull<<20, live=0, peak=0, refusedBytes=0;
+    bool systemRefused=false,lastQuotaRefusal=false;
+    bool reserve(uint64_t bytes){
+        lastQuotaRefusal=live>limit||bytes>limit-live;
+        if(lastQuotaRefusal){refusedBytes=bytes;return false;}
+        live+=bytes;peak=std::max(peak,live);return true;
+    }
+};
 bool loadInstancedScenes(const std::vector<std::string>& tileFiles,
                          const std::string& modelDirectory,
                          Vec3 low, Vec3 high, WorldScene& output,
@@ -152,6 +163,8 @@ bool loadInstancedScenes(const std::vector<std::string>& tileFiles,
                          SceneSizeHint* sizeHint = nullptr,
                          const SceneSourceProvider& sourceProvider = {},
                          bool terrainChunkProvenance = false, bool chunkedTerrain = false, bool spooledTerrain = false);
+bool loadPointTransmission(const std::vector<std::string>& tiles,const std::string& models,Vec3 low,Vec3 high,
+                           WorldScene& output,std::string& error,const AllocationAdmission& admission,PointTransmissionBudget& budget);
 
 // Counts actual live optional acceleration storage, including published regions
 // after a cache reset. A refused reservation selects the legacy full-scene path.

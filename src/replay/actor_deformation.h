@@ -551,25 +551,29 @@ inline bool textureUVs(const Program& program,const NorthlightDrawSnapshot::Mesh
         Four v;if(!evaluateFast(program,inputs,constants,v))return false;positions.push_back({v[0],v[1]});}
     output=std::move(positions);return true;
 }
-// One currently referenced vertex, used ONLY for experimental distance ranking.
-// No allocations, stale poses, model-origin assumptions, or buffer readbacks.
+inline const D3DVERTEXELEMENT9* sampledInput(const Input& input,const NorthlightDrawSnapshot::Mesh& mesh,
+        const D3DVERTEXELEMENT9* elements,size_t count,unsigned lastVertex){
+    const D3DVERTEXELEMENT9* result=nullptr;
+    for(size_t j=0;j<count&&elements[j].Stream!=0xff;++j){
+        const auto& e=elements[j];if(e.Usage!=input.usage||e.UsageIndex!=input.index)continue;
+        if(result||e.Stream>=4||e.Method!=D3DDECLMETHOD_DEFAULT)return nullptr;
+        const auto& stream=mesh.streams[e.Stream];const unsigned size=NorthlightDrawSnapshot::declarationBytes(e.Type);
+        const unsigned end=unsigned(e.Offset)+size;
+        if(!size||end>stream.stride||uint64_t(lastVertex)*stream.stride+end>stream.bytes.size())return nullptr;
+        result=&e;
+    }
+    return result;
+}
 inline bool sampledVertexInputsAt(const Program& program,const NorthlightDrawSnapshot::Mesh& mesh,
     const D3DVERTEXELEMENT9* elements,size_t count,unsigned vertex,Four (&inputs)[16],bool textureInputs=false){
     if((program.textureCoordinates&&!textureInputs)||!elements||!count||count>MAXD3DDECLLENGTH+1||!mesh.vertexCount)return false;
     if(vertex>=mesh.vertexCount)return false;
     for(auto& input:inputs)input={};
     for(const auto& input:program.inputs){
-        if(input.reg>=16)return false;bool found=false;
-        for(size_t j=0;j<count;++j){const auto& e=elements[j];if(e.Stream==0xff)break;
-            if(e.Usage!=input.usage||e.UsageIndex!=input.index)continue;
-            if(found||e.Stream>=4||e.Method!=D3DDECLMETHOD_DEFAULT)return false;
-            const auto& stream=mesh.streams[e.Stream];const unsigned size=NorthlightDrawSnapshot::declarationBytes(e.Type);
-            const std::uint64_t offset=std::uint64_t(vertex)*stream.stride+e.Offset;
-            if(!size||unsigned(e.Offset)+size>stream.stride||offset+size>stream.bytes.size()||
-               !decodeElement(stream.bytes.data()+size_t(offset),e.Type,inputs[input.reg]))return false;
-            found=true;
-        }
-        if(!found)return false;
+        const auto* e=sampledInput(input,mesh,elements,count,vertex);
+        if(input.reg>=16||!e)return false;
+        const auto& stream=mesh.streams[e->Stream];
+        if(!decodeElement(stream.bytes.data()+size_t(vertex)*stream.stride+e->Offset,e->Type,inputs[input.reg]))return false;
     }
     return true;
 }

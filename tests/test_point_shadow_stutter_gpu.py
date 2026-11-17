@@ -31,7 +31,7 @@ sha=lambda path:hashlib.sha256(path.read_bytes()).hexdigest()
 inputs={str(path):sha(path) for folder in (fp.SRC,fp.SHADERS) for path in folder.rglob('*') if path.is_file()}
 inputs.update({str(path):sha(path) for path in (Path(__file__),fp.TESTS/'point_shadow_stutter_gpu.cpp')})
 client_fixtures.actor_client_programs(out);inputs[str(out/'actor_client_programs.h')]=sha(out/'actor_client_programs.h')
-reference=[]
+reference=[] if a.reference_point_from else ['-DNORTHLIGHT_POINT_OVERLAP_TEST=1']
 assert not (a.reference_point_from and a.benchmark_preparation_from)
 if a.benchmark_preparation_from:
  overlay=out/'preparation-reference';overlay.mkdir()

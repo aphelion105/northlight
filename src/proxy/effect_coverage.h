@@ -126,8 +126,9 @@ public:
         const bool already=boundDevice==d&&boundSlot==slot&&aux==(msaa?msaa:surface);
         if(already)drop(aux);
         if(slot>=targets||(FAILED(got)&&got!=D3DERR_NOTFOUND)||aux||FAILED(d->GetRenderTarget(0,&rt))||!rt||
-           FAILED(rt->GetDesc(&current))||FAILED(d->GetPixelShader(&ps))||FAILED(d->GetRenderState(colorState,&color))){if(erases)valid=false;return fallback();}
-        if((current.MultiSampleType&&!multisample)||(target&&rt!=target))return fallback();
+           (!target&&FAILED(rt->GetDesc(&current)))||FAILED(d->GetPixelShader(&ps))||FAILED(d->GetRenderState(colorState,&color))){if(erases)valid=false;return fallback();}
+        if(target&&rt!=target)return fallback();
+        if((target?desc:current).MultiSampleType&&!multisample)return fallback();
         auto* source=ps?ps:NorthlightHdr::fixedModulateSource(d,fixedModulate);
         auto* patched=source?replacement(d,source,write,slot):nullptr;if(!patched){if(erases)valid=false;return fallback();}
         if(!target){

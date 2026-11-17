@@ -771,7 +771,7 @@ public:
             }else{
                 D3DSURFACE_DESC desc{};if(FAILED(saved.rt[0]->GetDesc(&desc))||desc.Width!=saved.viewport.Width||desc.Height!=saved.viewport.Height)return false;
                 if(!targets(desc.Width,desc.Height)){bad=true;return false;}
-                frameTarget=saved.rt[0];frameTarget->AddRef();
+                frameTarget=saved.rt[0];frameTarget->AddRef();nativeMrt.frameTarget(frameTarget,desc);
             }
             return admissionOK=true;
         };

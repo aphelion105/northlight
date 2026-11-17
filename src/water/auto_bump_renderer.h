@@ -229,6 +229,15 @@ class NorthlightAutoBump {
     // of the full-screen normal/occlusion targets or a resolve after every draw.
     IDirect3DSurface9*& captureDepth=gpuScene->materialTargets.depth;
     IDirect3DTexture9*& occlusionMap=gpuScene->materialTargets.occlusion;IDirect3DSurface9*& occlusionTarget=gpuScene->materialTargets.occlusionTarget;
+    struct SurfaceDescription {
+        IDirect3DSurface9* owner=nullptr;D3DSURFACE_DESC desc{};
+        bool read(IDirect3DSurface9* surface){
+            if(owner==surface)return true;
+            D3DSURFACE_DESC next{};
+            if(!surface||FAILED(surface->GetDesc(&next)))return false;
+            drop(owner);surface->AddRef();owner=surface;desc=next;return true;
+        }
+    } sceneColor,sceneDepth;
     bool independentCaptureWrites=false;
     static bool privateDepthSupported(DWORD op){return op==D3DCMP_LESS||op==D3DCMP_LESSEQUAL||op==D3DCMP_EQUAL;}
     bool occlusionUnavailable=false;unsigned occlusionRetry=0;
@@ -607,8 +616,9 @@ public:
         if(batch){retirement.finish();logf("MATERIAL_RESET queuedCpuMiB=%.3f ownerThreadGpuRelease=1",double(retirement.queuedBytes())/1048576);}
     }
     ~NorthlightAutoBump(){reset();for(auto& v:vertices){drop(v.second.patched);drop(v.second.shared);drop(v.second.pending);}for(auto*& p:shaders)drop(p);for(auto*& p:sharedShaders)drop(p);for(auto*& p:normalShaders)drop(p);for(auto& groups:nativeCaptures)for(auto& variants:groups)for(auto& n:variants){drop(n.second.shader);drop(n.second.source);}}
-    void reset(NorthlightStreaming::CpuRetirementBatch* batch=nullptr,bool preserveCaptureSources=false){drop(singleDepthSurface);drop(singleDepth);captureStates.clear();clearDeferred();sparePackets.clear();deferredSnapshots.clearIndexCache(nullptr,batch,preserveCaptureSources);deferredDeclarations.clear();deferredGPU.clear();sharedMaps[0]={};sharedMaps[1]={};sharedPOM.reset(batch);displacement.reset(batch,preserveCaptureSources);normals.reset();drop(captureDepth);drop(target);drop(height);drop(occlusionTarget);drop(occlusionMap);occlusionUnavailable=false;occlusionRetry=0;singleDepthRetry=0;width=heightPixels=0;cleared=privateDepthCleared=drawn=failed=occlusionCleared=occlusionDrawn=false;}
+    void reset(NorthlightStreaming::CpuRetirementBatch* batch=nullptr,bool preserveCaptureSources=false){drop(sceneColor.owner);drop(sceneDepth.owner);drop(singleDepthSurface);drop(singleDepth);captureStates.clear();clearDeferred();sparePackets.clear();deferredSnapshots.clearIndexCache(nullptr,batch,preserveCaptureSources);deferredDeclarations.clear();deferredGPU.clear();sharedMaps[0]={};sharedMaps[1]={};sharedPOM.reset(batch);displacement.reset(batch,preserveCaptureSources);normals.reset();drop(captureDepth);drop(target);drop(height);drop(occlusionTarget);drop(occlusionMap);occlusionUnavailable=false;occlusionRetry=0;singleDepthRetry=0;width=heightPixels=0;cleared=privateDepthCleared=drawn=failed=occlusionCleared=occlusionDrawn=false;}
     void endFrame(){
+        drop(sceneColor.owner);drop(sceneDepth.owner);
         deferredDiscarded+=unsigned(deferred.size());clearDeferred();
         // Reuse within a frame, without retaining captured game resources
         // across frame boundaries or device resets.
@@ -717,7 +727,9 @@ public:
         // Reject them before reading geometry or evaluating a skin envelope.
         NorthlightDrawSnapshot::Ref<IDirect3DPixelShader9> nativeSource;
         unsigned material=0;
-        if(captureNeeded(domain)||geometryMode){
+        const float materialRange=captureRange(domain);
+        const bool needsCapture=materialRange>0;
+        if(needsCapture||geometryMode){
             const auto rejected=[&]{cold.pendingMaterialRejected+=v->second.pending!=nullptr;};
             if(FAILED(d->GetPixelShader(nativeSource.out()))||!nativeSource.p){rejected();return;}
             const auto p=pixels.find(nativeSource.p);if(p==pixels.end()){rejected();return;}
@@ -735,10 +747,9 @@ public:
                 nearestDepth=nearest;
                 if(nearest>=pomControl[1]){pomInRange=false;++pomRangeRejected;}
                 skipGeometry=geometryMode&&nearest>displacement.geometryRange(domain);
-                const float needed=std::max(captureRange(domain),geometryMode?displacement.geometryRange(domain):0.f);
+                const float needed=std::max(materialRange,geometryMode?displacement.geometryRange(domain):0.f);
                 if(needed>0&&nearest>needed){++rangeRejected;++earlyRangeRejected;if(profile)profile->count(P::RangeRejected);return;}}
         }
-        const bool needsCapture=captureNeeded(domain);
         if(!needsCapture&&modes[domain-1]!=3){++noCaptureRequired;if(profile)profile->count(P::NoContribution);return;}
         timing.next(P::CaptureSetup);
         ReplayState saved(d,original,D3DVIEWPORT9{},profile);saved.pixel=nativeSource.p;nativeSource.p=nullptr;auto* native=saved.pixel;NorthlightSharedPOM::Binding sharedBinding(d);
@@ -767,7 +778,8 @@ public:
            (s[5].value&&(s[7].value!=D3DBLEND_SRCALPHA||s[8].value!=D3DBLEND_INVSRCALPHA))||
            (alpha&&alphaFunc!=D3DCMP_GREATER&&alphaFunc!=D3DCMP_GREATEREQUAL))return;
         if(FAILED(d->GetRenderTarget(0,&saved.target))||!saved.target)return;
-        D3DSURFACE_DESC desc{};if(FAILED(saved.target->GetDesc(&desc)))return;
+        if(!sceneColor.read(saved.target))return;
+        const auto desc=sceneColor.desc;
         if(desc.Width!=viewport.Width||desc.Height!=viewport.Height){++rejected;return;}
         const bool multisampled=desc.MultiSampleType!=D3DMULTISAMPLE_NONE;
         // The private depth starts at 1 and represents nearest visible material.
@@ -779,10 +791,10 @@ public:
         const NorthlightAutoDisplacement::Admission geometryAdmission{z,depthWrite,s[5].value,s[1].value,s[7].value,s[8].value,alphaFunc};
         // Only getters separate the same draw's full skin snapshot from prepare.
         // UP/rigid/cold preflights leave it empty and retain ordinary capture.
-        if(domain<=4&&geometryMode&&geometry&&!skipGeometry){displacement.prepare(original,domain,material,*geometry,&geometryAdmission,&geometrySource,std::max(captureRange(domain),displacement.geometryRange(domain)),&geometrySource,domain==2?v->second.patched:nullptr);
+        if(domain<=4&&geometryMode&&geometry&&!skipGeometry){displacement.prepare(original,domain,material,*geometry,&geometryAdmission,&geometrySource,std::max(materialRange,displacement.geometryRange(domain)),&geometrySource,domain==2?v->second.patched:nullptr);
             handoff();
             nearestDepth=displacement.nearestPreparedDepth();farthestDepth=std::min(farthestDepth,displacement.farthestPreparedDepth());
-            if(needsCapture&&displacement.nearestPreparedDepth()>captureRange(domain)){++rangeTests;++rangeRejected;if(profile)profile->count(P::RangeRejected);return;}}
+            if(needsCapture&&displacement.nearestPreparedDepth()>materialRange){++rangeTests;++rangeRejected;if(profile)profile->count(P::RangeRejected);return;}}
         if(!needsCapture){++noCaptureRequired;if(profile)profile->count(P::NoContribution);return;}
         const bool occlusionInRange=nearestDepth<occlusionDistance();
         const bool needsOcclusion=occlusionInRange&&(occlusionControl[2]>0||
@@ -830,8 +842,7 @@ public:
             // A failed current-pose proof stays unknown for this draw. Retrying
             // it repeats snapshot/constant work and spends the same budgets.
             if(!equalDepth&&!rangeAttempted&&!std::isfinite(farthestDepth))displacement.nearestMaterialDepth(original,*geometry,nearest,false,positions,&farthestDepth,&geometrySource);
-            D3DSURFACE_DESC depthDesc{};
-            singleSample=(equalDepth||farthestDepth<captureRange(domain))&&SUCCEEDED(saved.depth->GetDesc(&depthDesc))&&depthDesc.Format==D3DFMT_D24S8;
+            singleSample=(equalDepth||farthestDepth<materialRange)&&sceneDepth.read(saved.depth)&&sceneDepth.desc.Format==D3DFMT_D24S8;
         }
         const bool canDefer=deferredSafe&&(multisampled||singleSample);
         if(!deferred.empty()&&singleSampleBatch!=singleSample)if(!finishCaptures())return;
@@ -869,7 +880,7 @@ public:
         }
         DWORD addressU=D3DTADDRESS_WRAP,addressV=D3DTADDRESS_WRAP;d->GetSamplerState(0,D3DSAMP_ADDRESSU,&addressU);d->GetSamplerState(0,D3DSAMP_ADDRESSV,&addressV);
         if(domain==2&&!coverageAlpha)++opaqueCoverage;
-        const float constants[]={domain==1?.18f:domain==2?.14f:.06f,captureRange(domain),alpha?(float(ref)+(alphaFunc==D3DCMP_GREATER?.5f:0.f))/255.f:.001f,domain==4?(alpha?1.f:0.f):(coverageAlpha?0.f:1.f)};
+        const float constants[]={domain==1?.18f:domain==2?.14f:.06f,materialRange,alpha?(float(ref)+(alphaFunc==D3DCMP_GREATER?.5f:0.f))/255.f:.001f,domain==4?(alpha?1.f:0.f):(coverageAlpha?0.f:1.f)};
         float pom[4];std::copy(pomControl,pomControl+4,pom);if(!parallaxMode(domain)||!parallax.supports(saved.pixel,material))pom[0]=0;
         float occult[4];std::copy(occlusionControl,occlusionControl+4,occult);occult[3]=needsOcclusion&&occlusionTarget?occlusionDistance():0.f;if(pom[0]<=0||occlusionLight[3]<=0)occult[0]=0;
         float bank[36]={};for(unsigned i=0;i<4;++i){bank[i]=constants[i];bank[4+i]=projection[i];bank[8+i]=pom[i];bank[12+i]=occult[i];bank[16+i]=occlusionLight[i];bank[20+i]=sharedPOM.control[i];}

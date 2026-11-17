@@ -71,6 +71,27 @@ struct SkinEnvelope {
             for(unsigned axis=0;axis<3;++axis){if(!b.used)b.low[axis]=b.high[axis]=position[axis];else{b.low[axis]=std::min(b.low[axis],position[axis]);b.high[axis]=std::max(b.high[axis],position[axis]);}}if(!b.used)order[usedBones++]=(unsigned char)(unsigned(indices[slot]));b.used=true;
         }return true;
     }
+    // supports() proves this kernel reads POSITION0, BLENDWEIGHT0 and
+    // BLENDINDICES0 in v0..v2. Resolve each input once for the entire mesh.
+    bool addMesh(const NorthlightActorDeformation::Program& program,const NorthlightDrawSnapshot::Mesh& mesh,
+                 const D3DVERTEXELEMENT9* elements,size_t count){
+        if(!elements||!count||count>MAXD3DDECLLENGTH+1||!mesh.vertexCount)return false;
+        const D3DVERTEXELEMENT9* inputs[3]{};
+        for(const auto& input:program.inputs){
+            if(input.reg>=3)return false;
+            inputs[input.reg]=NorthlightActorDeformation::sampledInput(input,mesh,elements,count,mesh.vertexCount-1);
+        }
+        if(!inputs[0]||!inputs[1]||!inputs[2])return false;
+        for(unsigned vertex=0;vertex<mesh.vertexCount;++vertex){
+            NorthlightActorDeformation::Four values[3];
+            for(unsigned r=0;r<3;++r){
+                const auto& e=*inputs[r];const auto& stream=mesh.streams[e.Stream];
+                if(!NorthlightActorDeformation::decodeElement(stream.bytes.data()+size_t(vertex)*stream.stride+e.Offset,e.Type,values[r]))return false;
+            }
+            if(!add(values))return false;
+        }
+        return true;
+    }
     bool evaluate(const float* constants,const float* inverse,Bounds& output,bool(*shouldStop)(void*)=nullptr,void* stopContext=nullptr,bool aligned=false)const{
         return aligned?evaluateImpl<true>(constants,inverse,output,shouldStop,stopContext):evaluateImpl<false>(constants,inverse,output,shouldStop,stopContext);
     }

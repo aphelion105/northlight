@@ -15,7 +15,7 @@ inline Plan make(const NorthlightQuality::Settings& q,const NorthlightEffectSwit
     Plan p;
     p.shadows=effects.shadows&&q.shadowProvider&&directionalAvailable;p.probes=effects.gi&&q.giStrength;p.local=q.localLights&&q.localLightLimit;
     p.fog=effects.fog;p.materials=materials;p.ao=q.contactAO;p.weather=q.weather;
-    p.geometry=effects.gi||p.shadows||p.fog||p.local;
+    p.geometry=p.probes||p.shadows||p.local;
     p.lighting=p.probes||p.shadows||p.local||materials||diagnostic;
     p.distance=p.lighting||p.fog;
     p.modelNormals=p.lighting;

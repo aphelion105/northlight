@@ -911,8 +911,8 @@ private:
         return hr;
     }
     template<class Draw> HRESULT projectedDraw(unsigned count,unsigned phase,Draw draw){
-        if(count>256||!diagnostics()||!world||!NorthlightQuality::renderProfile(world->surfaceSettings())||
-           !NorthlightRenderThreadProbe::sampleFrame(frame)||!projectedAudit.canSample(frame)||
+        if(count>256||!spellTraceFrame||!diagnostics()||!world||!NorthlightQuality::renderProfile(world->surfaceSettings())||
+           !projectedAudit.canSample(frame)||
            !spellOn||spellQueryN||spellQueryUnknown||
            (enabled&&(!terrain||!projectionValid||!worldDepthBound())))return draw();
         // phase: 0 native scene, 1 native after composition, 2 early spell drain,
@@ -945,7 +945,7 @@ private:
             logf("PROJECTED_VISIBILITY frame=%u phase=%u effects=%u primitives=%u visibleSamples=%lu potentialSamples=%lu src=%lu dst=%lu zfunc=%lu depthBias=%08lx slopeBias=%08lx alphaTest=%lu fvf=%08lx vs=%p ps=%p texture=%p status=%08lx queryFlush=0 colourWritesInProbe=0",
                 r.frame,r.phase&3,unsigned(!(r.phase&4)),r.primitives,(unsigned long)r.visible,(unsigned long)r.potential,(unsigned long)r.source,(unsigned long)r.destination,(unsigned long)r.depthFunction,(unsigned long)r.depthBias,(unsigned long)r.slopeBias,(unsigned long)r.alphaTest,(unsigned long)r.fvf,reinterpret_cast<void*>(r.vertex),reinterpret_cast<void*>(r.pixel),reinterpret_cast<void*>(r.texture),(unsigned long)r.status);
         });
-        if(diagnostics()&&world&&NorthlightQuality::renderProfile(world->surfaceSettings())&&NorthlightRenderThreadProbe::sampleFrame(frame))
+        if(spellTraceFrame&&diagnostics()&&world&&NorthlightQuality::renderProfile(world->surfaceSettings()))
             logf("PROJECTED_AUDIT frame=%u probes=%u pending=%u disabled=%u maxPerFrame=16 maxPending=32 queryFlush=0",frame,projectedAudit.probes(frame),projectedAudit.pending(),unsigned(projectedAudit.disabled()));
     }
     void hdrLayerDiagnostic(const char* path="ui"){

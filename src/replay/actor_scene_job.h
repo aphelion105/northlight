@@ -67,9 +67,6 @@ struct ActorJob {
             const auto& position=packet.positionView();const auto& uv=packet.uvView();
             auto positionBindings=bindingCache.acquire(position,mesh,packet.elements.data(),packet.elements.size());
             if(!positionBindings||!NorthlightActorDeformation::worldPositionsPrepared(position,mesh,*positionBindings,packet.constants.data(),packet.inverseView.data(),positions))continue;
-            auto uvBindings=packet.hasUV?bindingCache.acquire(uv,mesh,packet.elements.data(),packet.elements.size()):nullptr;
-            bool exactUV=uvBindings&&NorthlightActorDeformation::textureUVsPrepared(uv,mesh,*uvBindings,packet.constants.data(),uvs);
-            if(packet.alphaTest&&!exactUV)continue;
             triangles.clear();triangles.reserve(mesh.primitiveCount);
             auto index=[&](UINT i){return mesh.indexed?mesh.indices[i]:i;};
             for(UINT triangle=0;triangle<mesh.primitiveCount;++triangle){UINT a,b,c;
@@ -80,6 +77,9 @@ struct ActorJob {
                 if(std::max({pa.x,pb.x,pc.x})<center.x-radius||std::min({pa.x,pb.x,pc.x})>center.x+radius||std::max({pa.y,pb.y,pc.y})<center.y-radius||std::min({pa.y,pb.y,pc.y})>center.y+radius||std::max({pa.z,pb.z,pc.z})<center.z-radius||std::min({pa.z,pb.z,pc.z})>center.z+radius)continue;
                 triangles.push_back({a,b,c,0});}
             if(triangles.empty())continue;
+            auto uvBindings=packet.hasUV?bindingCache.acquire(uv,mesh,packet.elements.data(),packet.elements.size()):nullptr;
+            bool exactUV=uvBindings&&NorthlightActorDeformation::textureUVsPrepared(uv,mesh,*uvBindings,packet.constants.data(),uvs);
+            if(packet.alphaTest&&!exactUV)continue;
             unsigned offset=unsigned(scene->vertices.size()),material=unsigned(scene->materials.size());WorldMaterial m=packet.material;
             if(exactUV&&!packet.texture.bytes.empty()){
                 const auto& texture=packet.texture;

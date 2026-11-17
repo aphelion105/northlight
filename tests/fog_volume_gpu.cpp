@@ -21,6 +21,11 @@ static uint64_t freeAddressSpace(){
 static void globalMediumOracle(IDirect3DDevice9* d){
     const unsigned w=128,h=64,ow=w/2,oh=h/2;
     NorthlightFogVolume volume;assert(volume.resources(d,w,h));
+    for(auto* shader:volume.inject)assert(!shader);
+    const auto slots=volume.shaderSlots;volume.shaderSlots=kVolumeInjectQuietShaderSlots;
+    assert(!volume.injectShader(d,6)&&(volume.unsupported&(1u<<6)));
+    auto* quiet=volume.injectShader(d,1);assert(quiet&&quiet==volume.injectShader(d,1));
+    volume.reset();assert(!volume.unsupported&&volume.resources(d,w,h)&&volume.shaderSlots==slots);
     const DWORD* code[]={kForeverFogShader,kForeverFogNoNoiseShader,kForeverFogActorShader,kForeverFogActorNoNoiseShader,kForeverFogTransitionShader,kForeverFogNoNoiseTransitionShader,kForeverFogActorTransitionShader,kForeverFogActorNoNoiseTransitionShader};
     IDirect3DPixelShader9* fallback[8]={};for(unsigned i=0;i<8;++i)ok(d->CreatePixelShader(code[i],&fallback[i]));
     IDirect3DSurface9 *output=nullptr,*staging=nullptr;
@@ -57,7 +62,7 @@ static void globalMediumOracle(IDirect3DDevice9* d){
                 ok(d->SetTexture(1,depth));ok(d->SetTexture(3,shadow[blocked]));ok(d->SetTexture(4,shadow[0]));
                 ok(d->SetTexture(7,shadow[blocked]));ok(d->SetTexture(9,shadow[0]));ok(d->SetTexture(13,field));
                 ok(d->BeginScene());
-                if(mode){assert(volume.target(d,volume.raw()));assert(volume.injection(d,volume.inject[variant],100,(variant&1)==0,true));assert(volume.integrate(d,100,c[1],false));assert(volume.composite(d,output,ow,oh));}
+                if(mode){assert(volume.target(d,volume.raw()));assert(volume.injection(d,volume.injectShader(d,variant),100,(variant&1)==0,true));assert(volume.integrate(d,100,c[1],false));assert(volume.composite(d,output,ow,oh));}
                 else{ok(d->SetTexture(0,nullptr));ok(d->SetRenderTarget(0,output));ok(d->SetPixelShader(fallback[variant]));D3DVIEWPORT9 vp={0,0,ow,oh,0,1};ok(d->SetViewport(&vp));ok(NorthlightScreen::drawQuad(d,ow,oh));}
                 ok(d->EndScene());ok(d->GetRenderTargetData(output,staging));D3DLOCKED_RECT lock{};ok(staging->LockRect(&lock,nullptr,D3DLOCK_READONLY));
                 std::vector<float> values(size_t(ow)*oh*4);for(unsigned y=0;y<oh;++y)std::memcpy(values.data()+size_t(y)*ow*4,static_cast<char*>(lock.pBits)+y*lock.Pitch,ow*16);ok(staging->UnlockRect());
@@ -118,7 +123,7 @@ int main(int argc,char** argv){
             const float dv=1000.f/999.5f*(1-.5f/z);for(size_t i=0;i<depthImage.pixels.size();i+=4)std::memcpy(depthImage.pixels.data()+i,&dv,4);
             ok(d->SetTexture(1,nullptr));if(depth)depth->Release();depth=texture(d,depthImage);ok(d->SetTexture(1,depth));
             ok(d->SetTexture(11,nullptr));if(water)water->Release();Image wi{1,1,D3DFMT_G32R32F,8,std::vector<unsigned char>(8)};const float endpoint[]={z*.5f,1};std::memcpy(wi.pixels.data(),endpoint,8);water=texture(d,wi);ok(d->SetTexture(11,water));
-            assert(volume.target(d,volume.raw()));ok(d->SetPixelShader(volume.inject[1]));ok(d->BeginScene());ok(volume.draw(d));
+            assert(volume.target(d,volume.raw()));ok(d->SetPixelShader(volume.injectShader(d,1)));ok(d->BeginScene());ok(volume.draw(d));
             assert(volume.integrate(d,100,c[1],frame>0));assert(volume.composite(d,output,ow,oh));ok(d->EndScene());
             ok(d->GetRenderTargetData(output,staging));D3DLOCKED_RECT lock{};ok(staging->LockRect(&lock,nullptr,D3DLOCK_READONLY));
             for(unsigned y=0;y<oh;++y)for(unsigned x=0;x<ow;++x){
@@ -203,7 +208,7 @@ int main(int argc,char** argv){
             float bank[38][4];NorthlightForever::constants(frame,bank,range,1);
             auto constants=[&](){ok(d->SetPixelShaderConstantF(0,c[0],116));ok(d->SetPixelShaderConstantF(116,bank[0],38));volume.grid(d,range);ok(d->SetTexture(1,depthTexture));ok(d->SetTexture(3,litShadow));ok(d->SetTexture(4,blockedShadow));ok(d->SetTexture(5,blockedShadow));ok(d->SetTexture(7,blockedShadow));ok(d->SetTexture(9,litShadow));ok(d->SetTexture(13,field));ok(d->SetTexture(14,noise));NorthlightFogVolume::sampler(d,14);for(auto state:{D3DSAMP_ADDRESSU,D3DSAMP_ADDRESSV,D3DSAMP_ADDRESSW})ok(d->SetSamplerState(14,state,D3DTADDRESS_WRAP));};
             auto draw=[&](unsigned mode){constants();if(mode==0){ok(d->SetTexture(0,nullptr));ok(d->SetRenderTarget(0,output));ok(d->SetPixelShader(old[variant]));D3DVIEWPORT9 vp={0,0,ow,oh,0,1};ok(d->SetViewport(&vp));ok(NorthlightScreen::drawQuad(d,ow,oh));}
-                else{if(mode==1){assert(volume.target(d,volume.raw()));assert(volume.injection(d,volume.inject[variant],range,noisy,true));assert(volume.integrate(d,range,c[1],false));}assert(volume.composite(d,output,ow,oh));}};
+                else{if(mode==1){assert(volume.target(d,volume.raw()));assert(volume.injection(d,volume.injectShader(d,variant),range,noisy,true));assert(volume.integrate(d,range,c[1],false));}assert(volume.composite(d,output,ow,oh));}};
             std::vector<float> images[2];for(unsigned mode=0;mode<2;++mode){ok(d->BeginScene());draw(mode);ok(d->EndScene());images[mode]=download();}
             double sum=0;float peak=0;for(size_t i=0;i<images[0].size();++i){assert(std::isfinite(images[0][i])&&std::isfinite(images[1][i]));float error=std::abs(images[0][i]-images[1][i]);sum+=error*error;peak=std::max(peak,error);}
             const double rms=std::sqrt(sum/images[0].size());std::printf("FOG_VOLUME_REFERENCE shadows=%u noise=%u range=%g shape=%u rms=%g max=%g\n",shadows,noisy,range,shape,rms,peak);assert(rms<.008&&peak<.04f);++cases;

@@ -310,7 +310,7 @@ bool appendInstance(const WorldScene& model,const Instance& instance,Vec3 low,Ve
 
 namespace {
 using InstanceGroups=std::map<std::string,std::vector<Instance>>;
-bool selectInstances(const std::vector<std::string>& files,Vec3 low,Vec3 high,uint32_t categoryMask,InstanceGroups& groups,std::string& error,const std::function<bool(Vec3,Vec3)>& instanceFilter = {}){
+bool selectInstances(const std::vector<std::string>& files,Vec3 low,Vec3 high,uint32_t categoryMask,InstanceGroups& groups,std::string& error,const std::function<bool(Vec3,Vec3)>& instanceFilter = {},PointTransmissionBudget* pointBudget=nullptr){
     std::set<std::pair<uint32_t,uint64_t>> seen;size_t selected=0;
         for(const auto& path:files){
             Reader r;r.file=NorthlightFiles::open(path.c_str(),"rb");if(!r.file){error="Cannot open FGS3 tile: "+path;return false;}
@@ -334,30 +334,62 @@ bool selectInstances(const std::vector<std::string>& files,Vec3 low,Vec3 high,ui
                 if(!(categoryMask&(1u<<category))||!boundsOverlap(instance.low,instance.high,low,high))continue;
                 if(instanceFilter&&!instanceFilter(instance.low,instance.high))continue;
                 if(!seen.emplace(category,uid).second)continue;
+                if(pointBudget&&!pointBudget->reserve(sizeof(decltype(seen)::value_type)+4*sizeof(void*))){error="Point transmission descriptor budget exceeded";return false;}
                 if(++selected>100000){error="FGS3 local instance count limit exceeded";return false;}
                 char key[65];const char hex[]="0123456789abcdef";
                 for(unsigned j=0;j<32;++j){key[2*j]=hex[hash[j]>>4];key[2*j+1]=hex[hash[j]&15];}key[64]=0;
-                groups[std::string(key)].push_back(instance);
+                auto& instances=groups[std::string(key)];
+                if(pointBudget&&instances.size()==instances.capacity()){
+                    const size_t old=instances.capacity(),next=std::max<size_t>(1,old*2);
+                    if((!old&&!pointBudget->reserve(sizeof(InstanceGroups::value_type)+4*sizeof(void*)+65))||
+                       !pointBudget->reserve(next*sizeof(Instance))){error="Point transmission descriptor budget exceeded";return false;}
+                    instances.reserve(next);pointBudget->live-=old*sizeof(Instance);
+                }
+                instances.push_back(instance);
             }
         }
     return true;
 }
 }
 
-bool loadInstancedScenes(const std::vector<std::string>& files,const std::string& modelDirectory,
-                         Vec3 low,Vec3 high,WorldScene& output,std::string& error,uint32_t categoryMask,const AllocationAdmission& admit,const std::function<bool(Vec3,Vec3)>& instanceFilter,const std::function<bool(Vec3,Vec3)>& terrainChunkFilter,SceneSizeHint* sizeHint,const SceneSourceProvider& sourceProvider,bool terrainChunkProvenance,bool chunkedTerrain,bool spooledTerrain){
+static bool loadInstances(const std::vector<std::string>& files,const std::string& modelDirectory,
+                         Vec3 low,Vec3 high,WorldScene& output,std::string& error,uint32_t categoryMask,const AllocationAdmission& admission,const std::function<bool(Vec3,Vec3)>& instanceFilter,const std::function<bool(Vec3,Vec3)>& terrainChunkFilter,SceneSizeHint* sizeHint,const SceneSourceProvider& sourceProvider,bool terrainChunkProvenance,bool chunkedTerrain,bool spooledTerrain,PointTransmissionBudget* pointBudget){
+    AllocationAdmission bounded;
+    if(pointBudget){
+        *pointBudget=PointTransmissionBudget{pointBudget->limit};
+        bounded=[&](uint64_t bytes){
+            if(!pointBudget->reserve(bytes))return false;
+            if(!admission||admission(bytes))return true;
+            pointBudget->live-=bytes;pointBudget->systemRefused=true;return false;
+        };
+    }
+    const auto& admit=pointBudget?bounded:admission;
     error.clear();if(sizeHint)sizeHint->hinted=false;
     if(files.size()>((categoryMask==1&&instanceFilter)?256u:64u)||!finite(low)||!finite(high)||low.x>high.x||low.y>high.y||low.z>high.z){error="Invalid FGS3 region or tile count";return false;}
     std::map<std::string,std::vector<Instance>> groups;
     WorldScene result;uint64_t textureBytes=0;bool hinted=false;size_t hintV=0,hintT=0;
     try{
         if(spooledTerrain){result.vertices.spool(&admit);result.triangles.spool(&admit);}else if(chunkedTerrain){result.vertices.chunks(&admit);result.triangles.chunks(&admit);}
-        if(!selectInstances(files,low,high,categoryMask,groups,error,instanceFilter))return false;
+        if(!selectInstances(files,low,high,categoryMask,groups,error,instanceFilter,pointBudget))return false;
+        uint64_t descriptors=0;
+        if(pointBudget)for(const auto& group:groups)
+            descriptors+=group.second.capacity()*sizeof(Instance)+group.first.capacity()+1+sizeof(group)+4*sizeof(void*);
+        const auto checkpoint=[&](uint64_t scratch){
+            if(!pointBudget)return true;
+            // Point transmission consumes geometry and material pixels only.
+            pointBudget->live=descriptors+sizeof(result)+textureBytes+result.materials.capacity()*sizeof(WorldMaterial)
+                +result.vertices.capacity()*sizeof(WorldVertex)+result.vertices.overhead()
+                +result.triangles.capacity()*sizeof(WorldTriangle)+result.triangles.overhead()+scratch;
+            if(pointBudget->reserve(0))return true;
+            error="Point transmission working set exceeds budget";return false;
+        };
+        if(!checkpoint(0))return false;
         if(sizeHint&&sizeHint->sized&&sizeHint->sizedKey==sizeHint->key&&regionsOverlapHalf(low,high,sizeHint->low,sizeHint->high)){
             const uint64_t v=std::min<uint64_t>(4000000,sizeHint->vertices+sizeHint->vertices/16),t=std::min<uint64_t>(6000000,sizeHint->triangles+sizeHint->triangles/16);
             if(v&&t&&(!admit||(admit(v*sizeof(WorldVertex))&&admit(t*sizeof(WorldTriangle))))){result.vertices.reserve(v);result.triangles.reserve(t);hinted=true;hintV=size_t(v);hintT=size_t(t);}
         }
         for(const auto& group:groups){
+            if(!checkpoint(0))return false;
             std::string path=modelDirectory;
             if(!path.empty()&&path.back()!='/'&&path.back()!='\\')path+='/';
             path+=group.first+".fgs";WorldScene loaded;std::shared_ptr<const WorldScene> shared;
@@ -368,8 +400,12 @@ bool loadInstancedScenes(const std::vector<std::string>& files,const std::string
             // category. Keep terrain, WMO and other metadata distinct;
             // one descriptor must not relabel earlier materials.
             std::vector<uint32_t> materialRemap[3];
+            const uint64_t modelBytes=pointBudget?model.retainedBytes():0;
+            const uint64_t remapBytes=uint64_t(model.materials.size())*sizeof(uint32_t)*3;
+            if(pointBudget&&(!checkpoint(modelBytes)||!admit(remapBytes))){error="Point transmission material remap deferred";return false;}
             for(auto& remap:materialRemap)remap.resize(model.materials.size(),UINT32_MAX);
             for(const auto& instance:group.second){
+                if(!checkpoint(modelBytes+remapBytes))return false;
                 const size_t before=result.triangles.size(),vertexBefore=result.vertices.size();uint64_t membership[2]={};
                 std::vector<TerrainRun> terrainRuns;
                 // One preparation entry per contiguous 4x4-cell run avoids per-MCNK metadata dominating the existing 8 MiB memo.
@@ -416,7 +452,7 @@ bool loadInstancedScenes(const std::vector<std::string>& files,const std::string
                 }
                 // Count accepted triangles rather than trust descriptor bounds:
                 // partial crops must never suppress the complete shadow model.
-                if(!instance.terrain&&!model.triangles.empty()&&result.triangles.size()-before==model.triangles.size()){
+                if(!pointBudget&&!instance.terrain&&!model.triangles.empty()&&result.triangles.size()-before==model.triangles.size()){
                     WorldPlacementCoverage owner;owner.uid=instance.uid;owner.category=instance.category;owner.modelKey=group.first;
                     std::copy(instance.matrix,instance.matrix+9,owner.matrix);owner.translation=instance.translation;owner.low=instance.low;owner.high=instance.high;
                     result.completePlacements.push_back(std::move(owner));
@@ -427,12 +463,22 @@ bool loadInstancedScenes(const std::vector<std::string>& files,const std::string
     // Cold terrain assembly can leave both geometry vectors oversized while
     // later page preparation holds them. Compaction is optional under pressure.
     const uint64_t slack=uint64_t(result.vertices.capacity()-result.vertices.size())*sizeof(WorldVertex)+uint64_t(result.triangles.capacity()-result.triangles.size())*sizeof(WorldTriangle);
-    if(slack>=4u*1024u*1024u){
+    if(!pointBudget&&slack>=4u*1024u*1024u){
         auto compact=[&](auto& values){using Buffer=std::decay_t<decltype(values)>;using T=typename Buffer::value_type;const uint64_t bytes=uint64_t(values.size())*sizeof(T);try{if(values.chunked()||values.capacity()==values.size()||(admit&&!admit(bytes)))return;Buffer exact(values.begin(),values.end());values.swap(exact);}catch(...) {}};
         compact(result.triangles);compact(result.vertices);
     }
     if(sizeHint){sizeHint->hinted=hinted;sizeHint->sized=true;sizeHint->sizedKey=sizeHint->key;sizeHint->vertices=result.vertices.size();sizeHint->triangles=result.triangles.size();sizeHint->low=low;sizeHint->high=high;}
     result.vertices.detachAdmission();result.triangles.detachAdmission();output=std::move(result);return true;
+}
+
+bool loadInstancedScenes(const std::vector<std::string>& files,const std::string& modelDirectory,
+                         Vec3 low,Vec3 high,WorldScene& output,std::string& error,uint32_t categoryMask,const AllocationAdmission& admission,const std::function<bool(Vec3,Vec3)>& instanceFilter,const std::function<bool(Vec3,Vec3)>& terrainChunkFilter,SceneSizeHint* sizeHint,const SceneSourceProvider& sourceProvider,bool terrainChunkProvenance,bool chunkedTerrain,bool spooledTerrain){
+    return loadInstances(files,modelDirectory,low,high,output,error,categoryMask,admission,instanceFilter,terrainChunkFilter,sizeHint,sourceProvider,terrainChunkProvenance,chunkedTerrain,spooledTerrain,nullptr);
+}
+
+bool loadPointTransmission(const std::vector<std::string>& tiles,const std::string& models,Vec3 low,Vec3 high,
+                           WorldScene& output,std::string& error,const AllocationAdmission& admission,PointTransmissionBudget& budget){
+    return loadInstances(tiles,models,low,high,output,error,10,admission,{},{},nullptr,{},false,false,false,&budget);
 }
 
 // Bilinear alpha is sum(texel/255*weight) over four texels whose float weights

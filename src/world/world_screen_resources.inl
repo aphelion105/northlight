@@ -5,6 +5,20 @@ unsigned screenGroups=0;
 // after a device refusal. Reset/resize releases the shader and permits a retry.
 IDirect3DPixelShader9* temporalMergedPS=nullptr;
 bool temporalMergeTried=false,temporalZeroWeightAllowed=false,temporalZeroWeightActive=false;
+bool foreverRaymarchTried=false;
+void foreverRaymarchResources(){
+    if(foreverRaymarchTried||!foreverFogPS)return;
+    foreverRaymarchTried=true;
+    D3DCAPS9 caps={};if(SUCCEEDED(d->GetDeviceCaps(&caps))&&caps.MaxPixelShader30InstructionSlots>=kForeverFogActorShaderSlots)d->CreatePixelShader(kForeverFogActorShader,&foreverFogActorPS);
+    if(caps.MaxPixelShader30InstructionSlots>=kForeverFogTransitionShaderSlots)d->CreatePixelShader(kForeverFogTransitionShader,&foreverFogFadePS);
+    if(caps.MaxPixelShader30InstructionSlots>=kForeverFogActorTransitionShaderSlots)d->CreatePixelShader(kForeverFogActorTransitionShader,&foreverFogActorFadePS);
+    if(caps.MaxPixelShader30InstructionSlots>=kForeverFogActorTiledShaderSlots)d->CreatePixelShader(kForeverFogActorTiledShader,&foreverFogActorTiledPS);
+    if(caps.MaxPixelShader30InstructionSlots>=kForeverFogActorTiledNoNoiseShaderSlots)d->CreatePixelShader(kForeverFogActorTiledNoNoiseShader,&foreverFogActorTiledNoNoisePS);
+    d->CreatePixelShader(kForeverFogNoNoiseShader,&foreverFogNoNoisePS);
+    if(caps.MaxPixelShader30InstructionSlots>=kForeverFogActorNoNoiseShaderSlots)d->CreatePixelShader(kForeverFogActorNoNoiseShader,&foreverFogActorNoNoisePS);
+    if(caps.MaxPixelShader30InstructionSlots>=kForeverFogNoNoiseTransitionShaderSlots)d->CreatePixelShader(kForeverFogNoNoiseTransitionShader,&foreverFogNoNoiseFadePS);
+    if(caps.MaxPixelShader30InstructionSlots>=kForeverFogActorNoNoiseTransitionShaderSlots)d->CreatePixelShader(kForeverFogActorNoNoiseTransitionShader,&foreverFogActorNoNoiseFadePS);
+}
 bool temporalMergeResources(){
     if(!temporalMergeTried){
         temporalMergeTried=true;
@@ -48,15 +62,6 @@ bool createResources(UINT w,UINT h,D3DFORMAT fmt,const NorthlightFrameRequiremen
     if(needs.fog){
         if(!foreverFogPS){
             if(FAILED(d->CreatePixelShader(kForeverFogShader,&foreverFogPS)))logf("FOREVER atmosphere shader unavailable; regional fallback retained");
-            D3DCAPS9 caps={};if(SUCCEEDED(d->GetDeviceCaps(&caps))&&caps.MaxPixelShader30InstructionSlots>=kForeverFogActorShaderSlots)d->CreatePixelShader(kForeverFogActorShader,&foreverFogActorPS);
-            if(caps.MaxPixelShader30InstructionSlots>=kForeverFogTransitionShaderSlots)d->CreatePixelShader(kForeverFogTransitionShader,&foreverFogFadePS);
-            if(caps.MaxPixelShader30InstructionSlots>=kForeverFogActorTransitionShaderSlots)d->CreatePixelShader(kForeverFogActorTransitionShader,&foreverFogActorFadePS);
-            if(caps.MaxPixelShader30InstructionSlots>=kForeverFogActorTiledShaderSlots)d->CreatePixelShader(kForeverFogActorTiledShader,&foreverFogActorTiledPS);
-            if(caps.MaxPixelShader30InstructionSlots>=kForeverFogActorTiledNoNoiseShaderSlots)d->CreatePixelShader(kForeverFogActorTiledNoNoiseShader,&foreverFogActorTiledNoNoisePS);
-            d->CreatePixelShader(kForeverFogNoNoiseShader,&foreverFogNoNoisePS);
-            if(caps.MaxPixelShader30InstructionSlots>=kForeverFogActorNoNoiseShaderSlots)d->CreatePixelShader(kForeverFogActorNoNoiseShader,&foreverFogActorNoNoisePS);
-            if(caps.MaxPixelShader30InstructionSlots>=kForeverFogNoNoiseTransitionShaderSlots)d->CreatePixelShader(kForeverFogNoNoiseTransitionShader,&foreverFogNoNoiseFadePS);
-            if(caps.MaxPixelShader30InstructionSlots>=kForeverFogActorNoNoiseTransitionShaderSlots)d->CreatePixelShader(kForeverFogActorNoNoiseTransitionShader,&foreverFogActorNoNoiseFadePS);
         }
         if(!pixel(kWorldFogShader,fogPS,"volume shader")||!pixel(kFogBlurShader,fogBlurPS,"volume blur shader")||
            !image(D3DFMT_A16B16G16R16F,fog,fogSurface)||!image(D3DFMT_A16B16G16R16F,fogBlurred,fogBlurredSurface)||!image(D3DFMT_A16B16G16R16F,fogHistory,fogHistorySurface))return false;

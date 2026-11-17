@@ -105,6 +105,11 @@ public:
             if(!std::strcmp(cause,"depth-only-before-rgb")||!std::strcmp(cause,"occupied-mrt")||!std::strcmp(cause,"fixed-pixel")||
                (!std::strcmp(cause,"capture-hazard")&&probes&&!allowed))retryFrames=3;
         }complete=false;lastComplete=false;}
+    void frameTarget(IDirect3DSurface9* color,const D3DSURFACE_DESC& desc){
+        describedColor=color;colorDescription=desc;
+        if(desc.MultiSampleType!=D3DMULTISAMPLE_NONE||
+           (desc.Format!=D3DFMT_A16B16G16R16F&&!(caps.PrimitiveMiscCaps&D3DPMISCCAPS_MRTINDEPENDENTBITDEPTHS)))cancel("target-msaa");
+    }
     void beginFrame(){drop(sceneDepth);describedColor=nullptr;allowed=enabled&&lastComplete;complete=retryFrames==0;if(retryFrames)--retryFrames;started=depthOnlySeen=false;reason=complete?"none":"structural-retry";probes=modelDraws=zeroDraws=builds=committed=fallbacks=coldPairs=0;}
     void reset(){retryFrames=0;beginFrame();lastComplete=allowed=false;refused=false;
         recentVertex=nullptr;recentPixel=nullptr;

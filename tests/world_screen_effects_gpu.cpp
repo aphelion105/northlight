@@ -204,6 +204,7 @@ struct WorldScreenEffectsTest {
     static void fogStreamingSetup(WorldRenderer& w,IDirect3DVertexBuffer9* vb,IDirect3DIndexBuffer9* ib,unsigned mode,unsigned medium){
         giFallbackSetup(w,vb,ib,mode==1?1:0,true);w.effects={false,true,true};
         w.nativeShadowOwned=w.nativeShadowAvailable=mode==2;
+        if(mode==4){w.quality.localLights=1;w.quality.localLightLimit=1;} // Resident mesh consumer, empty light selection.
         if(mode==3){for(unsigned source=0;source<2;++source){w.sourceColors[source]=w.sourceGlowColors[source]={};w.sourceWeights[source]=0;}}
         auto field=std::make_shared<NorthlightRegionalFog::Field>();field->originX=field->originY=-256;field->fogCells=field->airCells=4096;
         for(auto& t:field->texels){t.ground=-2;t.day=.015f;t.height=2.5f;}
@@ -408,26 +409,28 @@ struct WorldScreenEffectsTest {
         w.quality.gi=w.quality.worldShadows=w.quality.worldFog=w.quality.localLights=w.quality.contactAO=w.quality.autoBump=0;
         w.quality.weather=1;w.effects={false,false,false};w.materialDetail=nullptr;
         std::vector<unsigned char> reference;
-        for(unsigned mode=0;mode<4;++mode){
+        for(unsigned mode=0;mode<6;++mode){
             w.quality.contactAO=mode==1;w.quality.autoBump=mode==2;
             if(mode==3){w.quality.gi=1;w.quality.giStrength=0;w.effects.gi=true;}
+            if(mode==4){w.quality.worldFog=1;w.effects.fog=true;}
+            if(mode==5){w.quality.worldFog=0;w.effects.fog=false;w.quality.giStrength=100;}
             w.temporalValid=w.fogHistoryValid=false;
             for(unsigned attempt=0;attempt<32;++attempt){
                 w.temporalValid=w.fogHistoryValid=false;
                 assert(SUCCEEDED(d->SetRenderTarget(0,out))&&SUCCEEDED(d->SetDepthStencilSurface(nullptr))&&SUCCEEDED(d->BeginScene()));
                 assert(w.render(out,depth,width,height,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao));assert(SUCCEEDED(d->EndScene()));
-                if(mode<3||!w.meshStore.table().empty())break;
+                if(mode<5||!w.meshStore.table().empty())break;
             }
-            if(mode<3)assert(w.meshStore.table().empty()&&!w.pendingMesh&&!w.geometryTargetsReady&&plan->payload.live());
+            if(mode<5)assert(w.meshStore.table().empty()&&!w.pendingMesh&&!w.geometryTargetsReady&&plan->payload.live());
             else assert(w.meshStore.table().size()==1&&w.geometryTargetsReady&&!plan->payload.live());
             assert(w.active==cpuScene); // CPU scene remains available to weather shelter.
             if(resolved)assert(SUCCEEDED(d->StretchRect(out,nullptr,resolved,nullptr,D3DTEXF_NONE)));
             assert(SUCCEEDED(d->GetRenderTargetData(resolved?resolved:out,read)));D3DLOCKED_RECT lock{};assert(SUCCEEDED(read->LockRect(&lock,nullptr,D3DLOCK_READONLY)));
             std::vector<unsigned char> pixels(width*height*8);for(unsigned y=0;y<height;++y)std::memcpy(pixels.data()+y*width*8,static_cast<const char*>(lock.pBits)+y*lock.Pitch,width*8);assert(SUCCEEDED(read->UnlockRect()));
-            if(!mode)reference=std::move(pixels);else{if(pixels!=reference)std::fprintf(stderr,"Screen-only equality failed in mode %u\n",mode);assert(pixels==reference);}
+            if(!mode)reference=std::move(pixels);else if(mode<4){if(pixels!=reference)std::fprintf(stderr,"Screen-only equality failed in mode %u\n",mode);assert(pixels==reference);}
         }
         w.active.reset();w.clearMesh();w.releaseMeshPool();w.releaseGeometryTargets();w.quality=quality;w.effects=effects;w.temporalValid=w.fogHistoryValid=false;
-        std::puts("WORLD_SCREEN_GPU_DEMAND_PASS weatherAOmaterials=0Uploads cpuSceneRetained=1 reactivation=1 exactPixels=1");
+        std::puts("WORLD_SCREEN_GPU_DEMAND_PASS weatherAOmaterialsZeroGIFog=0Uploads cpuSceneRetained=1 reactivation=1 exactPixels=1");
     }
     static void screenRetry(WorldRenderer& w){assert(w.screenResourceRetry&&!w.failed&&!w.width&&!w.height&&!w.fogPS&&!w.fog&&!w.liveTerrainDecl);w.screenResourceRetryAt-=1000;}
     static bool uploadFog(WorldRenderer& w){return w.uploadRegionalFog(w.publishedFogRegion->field,w.lastRequest.map);}
@@ -652,7 +655,7 @@ struct WorldScratchMeter:ForwardIDirect3DDevice9 {
         if(code==kUnifiedDirectionalShadowShader&&refuseSharedShadow){*shader=nullptr;return D3DERR_NOTAVAILABLE;}
 #endif
 #ifdef NORTHLIGHT_FOG_VOLUME_TEST
-        if(refuseVolume&&code==kVolumeInjectShader){if(shader)*shader=nullptr;return D3DERR_NOTAVAILABLE;}
+        if(refuseVolume&&(code==kVolumeInjectQuietShader||code==kVolumeInjectAmbientQuietShader)){if(shader)*shader=nullptr;return D3DERR_NOTAVAILABLE;}
 #endif
 #ifdef NORTHLIGHT_GI_MERGE_TEST
         if(code==kWorldLightingUnshadowedGIShader){++giCreates;if(refuseGI){*shader=nullptr;return D3DERR_NOTAVAILABLE;}}
@@ -833,7 +836,7 @@ int main(int argc,char** argv){
             for(unsigned mode=0;mode<4;++mode){
                 WorldRenderer fallback(d);WorldScreenEffectsTest::giFallbackSetup(fallback,vb,ib,mode,merged);
                 assert(renderChecked(fallback,d,out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao,7,hdr?scene:nullptr));
-                assert(WorldScreenEffectsTest::sceneDrawn(fallback)==(mode==0||mode==3));
+                assert(WorldScreenEffectsTest::sceneDrawn(fallback)==(mode==0));
                 images[mode]=composedImage();
                 WorldScreenEffectsTest::removeFakeScene(fallback); // vb/ib belong to this fixture.
             }
@@ -846,14 +849,15 @@ int main(int argc,char** argv){
             assert(delta==0&&control>.001f&&images[2]==images[3]);
         }
         for(unsigned medium=0;medium<3;++medium){
-            std::vector<unsigned char> images[4];
-            for(unsigned mode=0;mode<4;++mode){
+            std::vector<unsigned char> images[5];
+            for(unsigned mode=0;mode<5;++mode){
                 WorldRenderer fallback(d);WorldScreenEffectsTest::fogStreamingSetup(fallback,vb,ib,mode,medium);
                 assert(renderChecked(fallback,d,out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao));
-                assert(WorldScreenEffectsTest::sceneDrawn(fallback)==(mode!=1));
-                images[mode]=WorldScreenEffectsTest::fogImage(fallback,false,false,mode!=1);
+                assert(WorldScreenEffectsTest::sceneDrawn(fallback)==((mode==2||mode==4)));
+                images[mode]=WorldScreenEffectsTest::fogImage(fallback,false,false,(mode==2||mode==4));
                 WorldScreenEffectsTest::removeFakeScene(fallback);
             }
+            assert(images[0]==images[4]);
             float delta=0,control=0;for(size_t i=0;i<images[0].size();i+=2){
                 unsigned short a,b,c;std::memcpy(&a,&images[0][i],2);std::memcpy(&b,&images[1][i],2);std::memcpy(&c,&images[3][i],2);
                 assert(std::isfinite(screenHalf(a))&&std::isfinite(screenHalf(b)));
@@ -1064,7 +1068,7 @@ int main(int argc,char** argv){
         std::vector<unsigned char> pressureReference;
         for(unsigned frame=0;frame<27;++frame){
             WorldScreenEffectsTest::volumeFixture(*world,frame);
-            meter.refuseVolume=frame==8;meter.shaderSlotLimit=frame==10?512:0;
+            meter.refuseVolume=frame==8;meter.shaderSlotLimit=frame==9?160:frame==10?512:0;
             meter.failScreenAt=frame==12?meter.screenCreates+2:0;
             auto before=WorldScreenEffectsTest::volumeCounts(*world);
             const float sentinel[12]={31,32,33,34,35,36,37,38,39,40,41,42};screenOk(d->SetPixelShaderConstantF(154,sentinel,3));
@@ -1075,7 +1079,7 @@ int main(int argc,char** argv){
             assert(!std::memcmp(sentinel,restored,sizeof sentinel));
             auto after=WorldScreenEffectsTest::volumeCounts(*world);
             if(frame==1||frame==2||frame==16||frame==17||frame==20||frame==25||frame==6||frame==7)assert(after.first==before.first&&after.second==before.second+1);
-            else if(frame==4||frame==8||frame==10||frame==12)assert(!WorldScreenEffectsTest::volumeValid(*world));
+            else if(frame==4||frame==8||frame==9||frame==12)assert(!WorldScreenEffectsTest::volumeValid(*world));
             else assert(WorldScreenEffectsTest::volumeValid(*world)&&after.first==before.first+1);
             if(frame!=4){auto image=WorldScreenEffectsTest::fogImage(*world,false,true);bool scattering=false;
                 if(frame==5)pressureReference=image;
@@ -1083,7 +1087,7 @@ int main(int argc,char** argv){
                 for(size_t i=0;i<image.size();i+=2){unsigned short bits;std::memcpy(&bits,image.data()+i,2);const float value=screenHalf(bits);assert(std::isfinite(value)&&value>=0);if(i%8!=6)scattering|=value>.001f;else assert(value<=1);}
                 assert(scattering);}
         }
-        std::printf("WORLD_FOG_VOLUME_PASS frames=27 cached=8 cameraReprojection=1 settledCache=1 staticNoiseCache=1 windUpdates=1 offOn=1 pressureRetained=1 creationFallback=1 capsFallback=1 partialOomFallback=1 failedPassRecovery=1 stateRestored=1 msaa=%u\n",msaa);
+        std::printf("WORLD_FOG_VOLUME_PASS frames=27 cached=8 cameraReprojection=1 settledCache=1 staticNoiseCache=1 windUpdates=1 offOn=1 pressureRetained=1 creationFallback=1 capsFallback=1 quietAtlasAt512Slots=1 partialOomFallback=1 failedPassRecovery=1 stateRestored=1 msaa=%u\n",msaa);
     }
 #endif
     {

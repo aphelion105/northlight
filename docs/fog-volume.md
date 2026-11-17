@@ -82,10 +82,13 @@ The extra GPU allocation is
 `24 × 64 × ceil(width/16) × ceil(height/16)` bytes: approximately 12 MiB at
 1920×1080 and 47.5 MiB at 3840×2160. These values exclude driver overhead.
 
-Unsupported shader/texture caps, shader creation failure, partial allocation
-failure and refused cold admission retain the original raymarch path. The separate
-regional artistic atmosphere also retains its existing path. No new resource
-is required by fog-off or other effect-only frames.
+Before allocating the atlases, the renderer checks the injection shaders needed
+by both celestial sources against the device instruction limit. Ambient, noisy,
+quiet, actor and transition variants are created on first use. A device refusal
+is recorded for that variant until reset. A transient memory or device failure
+allows another attempt after one second. Frames that need an unavailable
+variant use the imported raymarch. Its optional shader family is created on
+first use. The separate regional atmosphere keeps its own rendering path.
 
 ## Verification
 

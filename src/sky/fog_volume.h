@@ -10,23 +10,50 @@ struct NorthlightFogVolume {
     unsigned cellWidth=0,cellHeight=0,history=2,result=1;
     bool valid=false,refused=false,cacheReady=false;
     float previous[4]={};
-    unsigned updates=0,reuses=0;
+    unsigned updates=0,reuses=0,unsupported=0;
+    DWORD shaderSlots=0,maxWidth=0,maxHeight=0,retryAt=0;
+    static bool temporary(HRESULT hr){return hr==D3DERR_OUTOFVIDEOMEMORY||hr==E_OUTOFMEMORY||hr==D3DERR_DEVICELOST||hr==D3DERR_DEVICENOTRESET;}
+    bool waiting()const{return retryAt&&LONG(GetTickCount()-retryAt)<0;}
     template<class T>static void drop(T*& p){if(p)p->Release();p=nullptr;}
     void reset(){
         for(auto*& p:surface)drop(p);for(auto*& p:texture)drop(p);for(auto*& p:inject)drop(p);
-        drop(temporal);drop(prefix);drop(resolve);cellWidth=cellHeight=0;valid=refused=cacheReady=false;
+        drop(temporal);drop(prefix);drop(resolve);cellWidth=cellHeight=unsupported=shaderSlots=maxWidth=maxHeight=retryAt=0;valid=refused=cacheReady=false;
+    }
+    bool capabilities(IDirect3DDevice9* d){
+        if(refused||waiting())return false;
+        if(shaderSlots)return true;
+        D3DCAPS9 caps{};const HRESULT hr=d->GetDeviceCaps(&caps);
+        if(FAILED(hr)){if(temporary(hr))retryAt=GetTickCount()+1000;else refused=true;return false;}
+        shaderSlots=caps.MaxPixelShader30InstructionSlots;maxWidth=caps.MaxTextureWidth;maxHeight=caps.MaxTextureHeight;
+        refused=shaderSlots<std::max({kVolumeTemporalShaderSlots,kVolumePrefixShaderSlots,kVolumeResolveShaderSlots});
+        return !refused;
+    }
+    IDirect3DPixelShader9* injectShader(IDirect3DDevice9* d,unsigned variant){
+        if(variant>=10)return nullptr;
+        if(inject[variant]||(unsupported&(1u<<variant)))return inject[variant];
+        if(!capabilities(d))return nullptr;
+        static const DWORD* const code[]={kVolumeInjectShader,kVolumeInjectQuietShader,kVolumeInjectActorShader,kVolumeInjectActorQuietShader,
+            kVolumeInjectTransitionShader,kVolumeInjectQuietTransitionShader,kVolumeInjectActorTransitionShader,kVolumeInjectActorQuietTransitionShader,kVolumeInjectAmbientShader,kVolumeInjectAmbientQuietShader};
+        static const unsigned slots[]={kVolumeInjectShaderSlots,kVolumeInjectQuietShaderSlots,kVolumeInjectActorShaderSlots,kVolumeInjectActorQuietShaderSlots,
+            kVolumeInjectTransitionShaderSlots,kVolumeInjectQuietTransitionShaderSlots,kVolumeInjectActorTransitionShaderSlots,kVolumeInjectActorQuietTransitionShaderSlots,kVolumeInjectAmbientShaderSlots,kVolumeInjectAmbientQuietShaderSlots};
+        const HRESULT hr=slots[variant]>shaderSlots?D3DERR_NOTAVAILABLE:d->CreatePixelShader(code[variant],&inject[variant]);
+        if(FAILED(hr)){drop(inject[variant]);if(temporary(hr))retryAt=GetTickCount()+1000;else unsupported|=1u<<variant;}
+        return inject[variant];
     }
     bool resources(IDirect3DDevice9* d,unsigned w,unsigned h){
-        if(refused)return false;if(texture[0])return true;
+        if(texture[0])return true;if(refused||waiting())return false;
         cellWidth=std::max(1u,(w+15)/16);cellHeight=std::max(1u,(h+15)/16);
-        D3DCAPS9 caps={};
-        bool ok=SUCCEEDED(d->GetDeviceCaps(&caps))&&cellWidth*8<=caps.MaxTextureWidth&&cellHeight*8<=caps.MaxTextureHeight&&caps.MaxPixelShader30InstructionSlots>=kVolumeInjectActorTransitionShaderSlots;
-        const DWORD* code[]={kVolumeInjectShader,kVolumeInjectQuietShader,kVolumeInjectActorShader,kVolumeInjectActorQuietShader,
-            kVolumeInjectTransitionShader,kVolumeInjectQuietTransitionShader,kVolumeInjectActorTransitionShader,kVolumeInjectActorQuietTransitionShader,kVolumeInjectAmbientShader,kVolumeInjectAmbientQuietShader};
-        for(unsigned i=0;i<10&&ok;++i)ok=SUCCEEDED(d->CreatePixelShader(code[i],&inject[i]));
-        if(ok)ok=SUCCEEDED(d->CreatePixelShader(kVolumeTemporalShader,&temporal))&&SUCCEEDED(d->CreatePixelShader(kVolumePrefixShader,&prefix))&&SUCCEEDED(d->CreatePixelShader(kVolumeResolveShader,&resolve));
-        for(unsigned i=0;i<3&&ok;++i)ok=SUCCEEDED(d->CreateTexture(cellWidth*8,cellHeight*8,1,D3DUSAGE_RENDERTARGET,D3DFMT_A16B16G16R16F,D3DPOOL_DEFAULT,&texture[i],nullptr))&&SUCCEEDED(texture[i]->GetSurfaceLevel(0,&surface[i]));
-        if(!ok){reset();refused=true;}return ok;
+        if(!capabilities(d))return false;
+        if(cellWidth*8>maxWidth||cellHeight*8>maxHeight){refused=true;return false;}
+        HRESULT hr=d->CreatePixelShader(kVolumeTemporalShader,&temporal);
+        if(SUCCEEDED(hr))hr=d->CreatePixelShader(kVolumePrefixShader,&prefix);
+        if(SUCCEEDED(hr))hr=d->CreatePixelShader(kVolumeResolveShader,&resolve);
+        for(unsigned i=0;i<3&&SUCCEEDED(hr);++i){
+            hr=d->CreateTexture(cellWidth*8,cellHeight*8,1,D3DUSAGE_RENDERTARGET,D3DFMT_A16B16G16R16F,D3DPOOL_DEFAULT,&texture[i],nullptr);
+            if(SUCCEEDED(hr))hr=texture[i]->GetSurfaceLevel(0,&surface[i]);
+        }
+        if(FAILED(hr)){reset();if(temporary(hr))retryAt=GetTickCount()+1000;else refused=true;return false;}
+        return true;
     }
     void grid(IDirect3DDevice9* d,float range){
         const float size[]={float(cellWidth),float(cellHeight),1.f/(cellWidth*8),1.f/(cellHeight*8)};
@@ -44,6 +71,7 @@ struct NorthlightFogVolume {
     HRESULT draw(IDirect3DDevice9* d){D3DVIEWPORT9 vp={0,0,cellWidth*8,cellHeight*8,0,1};d->SetViewport(&vp);return NorthlightScreen::drawQuad(d,vp.Width,vp.Height);}
     unsigned raw()const{return (history+1)%3;}
     bool injection(IDirect3DDevice9* d,IDirect3DPixelShader9* shader,float range,bool noisy,bool first){
+        if(!shader)return false;
         d->SetPixelShader(shader);d->SetRenderState(D3DRS_COLORWRITEENABLE,first?15:7);
         d->SetRenderState(D3DRS_ALPHABLENDENABLE,!first);d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_ONE);d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_ONE);d->SetRenderState(D3DRS_BLENDOP,D3DBLENDOP_ADD);d->SetRenderState(D3DRS_SEPARATEALPHABLENDENABLE,FALSE);
         float pass[]={range,0,0,.211324865f};d->SetPixelShaderConstantF(155,pass,1);

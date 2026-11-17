@@ -15,6 +15,12 @@ int main(int argc,char** argv){
     assert(!wrongLoaded||wrong.triangles.empty());error.clear();
     assert(loadInstancedScenes(tiles,argv[2],{-80,-80,-80},{80,80,80},point,error,10));
     assert(point.triangles.size()==2&&point.vertices.size()==4&&point.materials.size()==1);
+    PointTransmissionBudget stage;
+    assert(loadPointTransmission(tiles,argv[2],{-80,-80,-80},{80,80,80},point,error,{},stage));
+    assert(stage.peak>0&&stage.peak<=stage.limit&&point.completePlacements.empty());
+    stage.limit=64;
+    assert(!loadPointTransmission(tiles,argv[2],{-80,-80,-80},{80,80,80},point,error,{},stage));
+    assert(point.triangles.size()==2);
     unsigned covered=0;for(size_t i=3;i<point.materials[0].rgba.size();i+=4)covered+=point.materials[0].rgba[i]>=128;
     assert(covered==20&&point.materials[0].rgba.size()==256);
     assert(!point.materials[0].pointOnly); // FGS2 is unchanged; routing is an explicit runtime decision.

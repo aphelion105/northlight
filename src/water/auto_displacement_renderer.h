@@ -865,8 +865,10 @@ public:
             objectBoundsVertices+=source->vertexCount;
             if(profile)profile->count(P::BoundsVertices,source->vertexCount);
             for(unsigned i=0;i<source->vertexCount;++i){if(size_t(i)*stream.stride+position->Offset+12>stream.bytes.size())return false;float p[3];std::memcpy(p,stream.bytes.data()+size_t(i)*stream.stride+position->Offset,12);for(unsigned k=0;k<3;++k){if(!std::isfinite(p[k]))return false;b.low[k]=std::min(b.low[k],p[k]);b.high[k]=std::max(b.high[k],p[k]);}}
-            if(exactSkin){auto envelope=std::make_unique<NorthlightReplayBounds::SkinEnvelope>();bool valid=true;
-                for(unsigned i=0;i<source->vertexCount&&valid;++i){NorthlightActorDeformation::Four input[16];valid=NorthlightActorDeformation::sampledVertexInputsAt(shader->second.view,*source,elements,count,i,input)&&envelope->add(input);}if(valid)b.skin=std::move(envelope);}
+            if(exactSkin){
+                auto envelope=std::make_unique<NorthlightReplayBounds::SkinEnvelope>();
+                if(envelope->addMesh(shader->second.view,*source,elements,count))b.skin=std::move(envelope);
+            }
             foundBounds=retainBounds(source,std::move(b));
         }
         NorthlightReplayBounds::Bounds skinBounds;

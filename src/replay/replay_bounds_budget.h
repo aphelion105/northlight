@@ -17,9 +17,8 @@ using BoundsClock=NORTHLIGHT_REPLAY_BOUNDS_CLOCK;
    draws instead of ~8 times per draw (the dominant evaluation cost measured),
    so the same cheap allowance covers roughly the whole crowd.
    BuildClockStride: cold source builds read the clock per N vertices, not per
-   vertex. ResultMemo=false: the exact result memo hit ~6% (0.3.136 log) and
-   copied 3.6 KiB keys on every store; never allocate or consult it. */
-constexpr bool FastReady=true,ResultMemo=false;
+   vertex. */
+constexpr bool FastReady=true;
 constexpr unsigned ReadyClockStride=8,BuildClockStride=32;
 // Lending is allowed only after both reserved passes have had their turn.
 // Closing those passes prevents spending the same unused allowance twice.

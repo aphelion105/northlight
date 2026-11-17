@@ -1,7 +1,6 @@
 #pragma once
 #include "actor_deformation.h"
 #include "replay_bounds_budget.h"
-#include "replay_memo_policy.h"
 #include "captured_constant_epoch.h"
 #include "position_bounds_scan.h"
 #include <limits>
@@ -261,10 +260,6 @@ public:
     unsigned deferred()const{return deferred_;}
     size_t envelopeBytes()const{return envelopes_.reservedBytes();}
     size_t envelopeEntries()const{return envelopes_.entries();}
-    size_t memoBytes()const{return envelopes_.memoBytes();}
-    size_t memoEntries()const{return envelopes_.memoEntries();}
-    const NorthlightReplayMemo::Policy& memoPolicy()const{return envelopes_.memoPolicy();}
-    EnvelopeCache::MemoTotals memoTotals()const{return envelopes_.memoTotals();}
     double envelopeMilliseconds()const{return envelopes_.workMilliseconds();}
     size_t replayStart(size_t count)const{return count?replayCursor_%count:0;}
     void replayResume(size_t index){replayCursor_=index;}

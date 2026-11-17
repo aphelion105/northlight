@@ -38,24 +38,12 @@ public:
         size_t evictions=0,readyEvictions=0,expiredEvictions=0,releasedGroupBytes=0;
         size_t cheapValid=0,heavyCandidates=0,heavyAttempts=0,heavyValid=0,cheapSliceDeferred=0;
         size_t pendingResumes=0,pendingDeferred=0,pendingOwnerExpired=0,pendingAbandoned=0;
-        size_t memoTests=0,memoHits=0,memoMisses=0,memoStored=0,memoEvictions=0,memoRejected=0,memoComparedBytes=0,memoAvoidedOperations=0,memoBudgetDeferred=0;
-        size_t memoColdMisses=0,memoReplacedMisses=0,memoCameraMisses=0,memoConstantMisses=0;
-        size_t memoBypassed=0,memoStoreBypassed=0,memoProtected=0,memoCopiedBytes=0;
         size_t effectiveCopiedBytes=0,fastValid=0;
         size_t sourceIdentityHits=0,sourceReconstructedHits=0,sharedKeyHits=0,keyComparedBytes=0;
         size_t rigidPeerHits=0;
         size_t certifiedPoseHits=0,poseBasisMisses=0,poseStampMisses=0;
         size_t coarseAttempts=0,coarseValid=0,coarseCulled=0;
         std::uint64_t coarseNanoseconds=0;
-    };
-    struct MemoTotals {
-        std::uint64_t tests=0,hits=0,cold=0,replaced=0,camera=0,constants=0;
-        std::uint64_t bypassed=0,storeBypassed=0,protectedStores=0,copiedBytes=0;
-        void add(const Stats& s){
-            tests+=s.memoTests;hits+=s.memoHits;cold+=s.memoColdMisses;replaced+=s.memoReplacedMisses;
-            camera+=s.memoCameraMisses;constants+=s.memoConstantMisses;bypassed+=s.memoBypassed;
-            storeBypassed+=s.memoStoreBypassed;protectedStores+=s.memoProtected;copiedBytes+=s.memoCopiedBytes;
-        }
     };
 private:
     struct Group {std::vector<float> limits;}; // low/high for USED input registers only
@@ -69,20 +57,13 @@ private:
         std::unique_ptr<SkinEnvelope> skin;
         size_t vertex=0,index=0,indexCount=0;bool unsupported=false,ready=false;
         std::uint64_t touched=0,programHash=0,lastEvaluationNs=0,serial=0;size_t bytes=0,baseBytes=0;
-        unsigned constantFirst=0,constantCount=256,memoSlot=64,poseSlot[2]={16,16};
+        unsigned constantFirst=0,constantCount=256,poseSlot[2]={16,16};
         bool copyDefinitions=true,singleBone=false,rigidPositions=false; /* singleBone resolves its control DEF directly */
         unsigned rigidStride=0,paletteSpan=0,paletteFirst=256;bool rigidPeerTried=false;
     };
     // Rotation filled 2048 entries at only 3.3 MiB. Keep more small immutable
     // sources instead of rebuilding them on return; the byte cap still wins.
     static constexpr size_t MaxGroups=512,Limit=8u*1024u*1024u,MaxEntries=4096;
-    static constexpr size_t MemoSlots=64,MemoLimit=256u*1024u;
-    struct Memo {std::uint64_t serial=0,lastUsedFrame=0;std::vector<float> key;Bounds bounds;size_t bytes=0;};
-    std::vector<Memo> memo_;
-    NorthlightReplayMemo::Policy memoPolicy_;
-    MemoTotals memoTotals_;
-    bool memoProtect_=true;
-    size_t memoBytes_=0,memoTableBytes_=0,memoNext_=0,memoEntries_=0;
     std::uint64_t entrySerial_=0;
     // Fixed storage, no geometry/COM owners. The serial belongs to one immutable
     // envelope; current register epochs and the exact basis certify its pose.
@@ -145,7 +126,7 @@ private:
             if(id){++stats_.sourceIdentityHits;if(!same){++stats_.sourceReconstructedHits;
                 // Only immutable source envelopes survive reconstruction. Pose/
                 // camera results must be evaluated again for this live draw.
-                releaseMemo(e);for(unsigned slot:e.poseSlot)if(slot<poses_.size()&&poses_[slot].serial==e.serial)poses_[slot].serial=0;
+                for(unsigned slot:e.poseSlot)if(slot<poses_.size()&&poses_[slot].serial==e.serial)poses_[slot].serial=0;
                 e.owner=owner;e.sourceAddress=owner.get();}}
             return it;
         }return entries_.end();
@@ -225,87 +206,8 @@ private:
         }
         return true;
     }
-    void releaseMemo(size_t slot){
-        auto& memo=memo_[slot];if(!memo.serial)return;
-        bytes_-=memo.bytes;memoBytes_-=memo.bytes;--memoEntries_;++stats_.memoEvictions;
-        memo.serial=0;memo.lastUsedFrame=0;memo.bytes=0;memo.bounds={};std::vector<float>().swap(memo.key);
-    }
-    void releaseMemo(const Entry& entry){
-        if(entry.memoSlot<memo_.size()&&memo_[entry.memoSlot].serial==entry.serial)releaseMemo(entry.memoSlot);
-    }
-    void trimMemos(size_t totalExtra,size_t memoExtra=0){
-        for(size_t n=0;n<memo_.size()&&(totalExtra>Limit-bytes_||memoExtra>MemoLimit-memoBytes_);++n)
-            releaseMemo((memoNext_+n)%memo_.size());
-        // Empty optional tables must not displace a source envelope either.
-        if(!memoEntries_&&memoTableBytes_&&(totalExtra>Limit-bytes_||memoExtra>MemoLimit-memoBytes_)){
-            bytes_-=memoTableBytes_;memoBytes_-=memoTableBytes_;memoTableBytes_=0;std::vector<Memo>().swap(memo_);memoNext_=0;
-        }
-    }
-    bool memoHit(const Entry& entry,const float* constants,const float* inverse,Bounds& output){
-        if(!ResultMemo||!memoPolicy_.enabled()){++stats_.memoBypassed;return false;}
-        ++stats_.memoTests;
-        if(entry.memoSlot<memo_.size()){
-            auto& memo=memo_[entry.memoSlot];const size_t values=size_t(entry.constantCount)*4;
-            if(memo.serial==entry.serial&&memo.key.size()==values+16){
-                memo.lastUsedFrame=frame_;
-                // Reject a moving camera before comparing up to 4 KiB of pose.
-                // Report the first failed proof; equality still requires BOTH.
-                stats_.memoComparedBytes+=16*sizeof(float);
-                if(std::memcmp(memo.key.data()+values,inverse,16*sizeof(float)))++stats_.memoCameraMisses;
-                else {
-                    stats_.memoComparedBytes+=values*sizeof(float);
-                    if(std::memcmp(memo.key.data(),constants+4*entry.constantFirst,values*sizeof(float)))++stats_.memoConstantMisses;
-                    else {output=memo.bounds;return true;}
-                }
-            }else ++stats_.memoReplacedMisses;
-        }else ++stats_.memoColdMisses;
-        ++stats_.memoMisses;return false;
-    }
-    void remember(Entry& entry,const float* constants,const float* inverse,const Bounds& output){
-        if(!output.valid||!entry.serial)return;
-        if(!ResultMemo||!memoPolicy_.enabled()){++stats_.memoStoreBypassed;return;}
-        // Optional memo failure cannot discard a successfully computed bound.
-        try {
-            if(memo_.empty()){
-                const size_t table=MemoSlots*sizeof(Memo)+32;
-                if(table>Limit-bytes_){++stats_.memoRejected;return;}
-                memo_.resize(MemoSlots);memoTableBytes_=memo_.capacity()*sizeof(Memo)+32;
-                bytes_+=memoTableBytes_;memoBytes_+=memoTableBytes_;
-            }
-            const size_t values=size_t(entry.constantCount)*4,keyBytes=(values+16)*sizeof(float)+32;
-            size_t slot=entry.memoSlot<memo_.size()&&memo_[entry.memoSlot].serial==entry.serial?entry.memoSlot:memoNext_++%memo_.size();
-            // A long sequential scan must not evict the useful working set on
-            // every frame. Probe ONE rotating victim, in constant time. A new
-            // source may replace it only after an entire frame without use.
-            // Capacity trimming may still reclaim any optional memo first.
-            if(memoProtect_&&memo_[slot].serial&&memo_[slot].serial!=entry.serial&&frame_-memo_[slot].lastUsedFrame<=1){
-                ++stats_.memoProtected;return;
-            }
-            // A miss usually changes the pose, not key size. Reuse the bounded
-            // slot allocation instead of allocating/freeing a bank per draw.
-            if(memo_[slot].serial&&memo_[slot].key.capacity()>=values+16){
-                auto& memo=memo_[slot];if(memo.serial!=entry.serial)++stats_.memoEvictions;
-                memo.key.resize(values+16);
-                if(values)std::memcpy(memo.key.data(),constants+4*entry.constantFirst,values*sizeof(float));
-                std::memcpy(memo.key.data()+values,inverse,16*sizeof(float));
-                memo.bounds=output;memo.serial=entry.serial;memo.lastUsedFrame=frame_;entry.memoSlot=unsigned(slot);
-                ++stats_.memoStored;stats_.memoCopiedBytes+=(values+16)*sizeof(float);return;
-            }
-            releaseMemo(slot);trimMemos(keyBytes,keyBytes);
-            // trimMemos may free an empty table under severe source pressure.
-            if(memo_.empty()||keyBytes>Limit-bytes_||keyBytes>MemoLimit-memoBytes_){++stats_.memoRejected;return;}
-            std::vector<float> key(values+16);
-            if(values)std::memcpy(key.data(),constants+4*entry.constantFirst,values*sizeof(float));
-            std::memcpy(key.data()+values,inverse,16*sizeof(float));
-            const size_t actual=key.capacity()*sizeof(float)+32;
-            if(actual>Limit-bytes_||actual>MemoLimit-memoBytes_){++stats_.memoRejected;return;}
-            auto& memo=memo_[slot];memo.key=std::move(key);memo.bounds=output;memo.serial=entry.serial;memo.bytes=actual;
-            memo.lastUsedFrame=frame_;stats_.memoCopiedBytes+=(values+16)*sizeof(float);
-            bytes_+=actual;memoBytes_+=actual;++memoEntries_;entry.memoSlot=unsigned(slot);++stats_.memoStored;
-        }catch(...){++stats_.memoRejected;}
-    }
     void discardGroups(Entry& e){
-        if(pending_==&e)pending_=nullptr;releaseMemo(e);
+        if(pending_==&e)pending_=nullptr;
         const size_t released=e.bytes-e.baseBytes;std::unordered_map<std::string,Group>().swap(e.groups);e.skin.reset();
         e.bytes=e.baseBytes;bytes_-=released;stats_.releasedGroupBytes+=released;e.unsupported=true;e.ready=false;
     }
@@ -315,7 +217,7 @@ private:
             const int priority=!e.identity&&e.owner.expired()?0:e.unsupported?1:!e.ready?2:3;
             if(oldest==entries_.end()||priority<best||(priority==best&&e.touched<oldest->second.touched)){oldest=it;best=priority;if(priority==0)break;}
         }
-        if(oldest!=entries_.end()){++stats_.evictions;stats_.readyEvictions+=oldest->second.ready;stats_.expiredEvictions+=oldest->second.owner.expired();releaseMemo(oldest->second);bytes_-=oldest->second.bytes;entries_.erase(oldest);return true;}
+        if(oldest!=entries_.end()){++stats_.evictions;stats_.readyEvictions+=oldest->second.ready;stats_.expiredEvictions+=oldest->second.owner.expired();bytes_-=oldest->second.bytes;entries_.erase(oldest);return true;}
         return false;
     }
     struct Timer {
@@ -366,7 +268,7 @@ private:
             // its own position program with its current constants and camera.
             Group group;group.limits=peer.groups.begin()->second.limits;const std::string key;
             const size_t added=sizeof(Group)+group.limits.capacity()*4+key.capacity()+1+192;
-            trimMemos(added);while(entries_.size()>1&&bytes_+added>Limit){if(!evict(&e))break;}if(bytes_+added>Limit)return false;
+            while(entries_.size()>1&&bytes_+added>Limit){if(!evict(&e))break;}if(bytes_+added>Limit)return false;
             e.groups.emplace(key,std::move(group));e.bytes+=added;bytes_+=added;budget.operations+=8;
             e.vertex=mesh.vertexCount;e.index=e.indexCount;e.ready=true;pending_=nullptr;++stats_.completed;++stats_.rigidPeerHits;return true;
         }
@@ -418,7 +320,7 @@ private:
                 if(e.groups.empty()){
                     Group g;g.limits.resize(8);const std::string key;
                     const size_t added=sizeof(Group)+g.limits.capacity()*4+key.capacity()+1+192;
-                    trimMemos(added);while(entries_.size()>1&&bytes_+added>Limit){if(!evict(&e))break;}if(bytes_+added>Limit)return Status::Budget;
+                    while(entries_.size()>1&&bytes_+added>Limit){if(!evict(&e))break;}if(bytes_+added>Limit)return Status::Budget;
                     for(unsigned j=0;j<3;++j){g.limits[j]=low[j];g.limits[4+j]=high[j];}g.limits[3]=g.limits[7]=1;
                     e.groups.emplace(key,std::move(g));e.bytes+=added;bytes_+=added;
                 }else{auto& limits=e.groups.begin()->second.limits;
@@ -497,7 +399,7 @@ private:
                     if(found==e.groups.end()){
                         if(e.groups.size()>=MaxGroups){discardGroups(e);++stats_.tupleLimit;++stats_.unsupported;return Status::Unsupported;}
                         Group g;g.limits.resize(e.bindings->size()*8);const size_t added=sizeof(Group)+g.limits.capacity()*4+groupKey.capacity()+1+192;
-                        trimMemos(added);while(entries_.size()>1&&bytes_+added>Limit){if(!evict(&e))break;}if(bytes_+added>Limit)return Status::Budget;
+                        while(entries_.size()>1&&bytes_+added>Limit){if(!evict(&e))break;}if(bytes_+added>Limit)return Status::Budget;
                         for(size_t i=0;i<e.bindings->size();++i)for(unsigned j=0;j<4;++j)g.limits[i*8+j]=g.limits[i*8+4+j]=inputs[(*e.bindings)[i].reg][j];
                         found=e.groups.emplace(std::move(groupKey),std::move(g)).first;e.bytes+=added;bytes_+=added;addedGroup=true;
                     }
@@ -527,12 +429,9 @@ public:
     EnvelopeCache(const EnvelopeCache&)=delete;EnvelopeCache& operator=(const EnvelopeCache&)=delete;
     EnvelopeCache(EnvelopeCache&&)=delete;EnvelopeCache& operator=(EnvelopeCache&&)=delete;
     void clearPoseCertificates(){for(auto& p:poses_)p.serial=0;nextPose_=0;}
-    void clear(){clearPoseCertificates();pending_=nullptr;pendingProgressFrame_=0;std::vector<Memo>().swap(memo_);memoBytes_=memoTableBytes_=memoNext_=memoEntries_=0;memoPolicy_={};memoTotals_={};entrySerial_=0;entries_.clear();scratch_.clear();bytes_=0;clock_=frame_=0;expensive_={};stats_={};beginFrame();}
+    void clear(){clearPoseCertificates();pending_=nullptr;pendingProgressFrame_=0;entrySerial_=0;entries_.clear();scratch_.clear();bytes_=0;clock_=frame_=0;expensive_={};stats_={};beginFrame();}
     void beginFrame(bool diagnostics=true,size_t packets=0){
         fastOpen_=false;fastCount_=0;
-        memoTotals_.add(stats_);
-        memoPolicy_.beginFrame(stats_.memoTests,stats_.memoHits);
-        memoProtect_=true;
         diagnostics_=diagnostics;terminalBuild_=false;timeBudget_.reset(packets);++frame_;readyNanoseconds_=heavyNanoseconds_=buildNanoseconds_=classifyNanoseconds_=0;readyCalls_=heavyCalls_=buildCalls_=0;stats_={};
         if(pending_&&pending_->owner.expired()){pending_=nullptr;++stats_.pendingOwnerExpired;}
         else if(pending_&&frame_-pendingProgressFrame_>MaxIdleBuildFrames){pending_=nullptr;++stats_.pendingAbandoned;}
@@ -588,7 +487,6 @@ public:
         // The completion pass skips packets whose bounds are already valid.
         // Let its remaining sources replace earlier results: retaining them
         // would pin slots for packets that this pass no longer visits.
-        memoProtect_=false;
     }
     void chargeCheapPreparation(std::uint64_t ns)noexcept{readyNanoseconds_+=std::min(ns,std::numeric_limits<std::uint64_t>::max()-readyNanoseconds_);}
     double borrowedMicroseconds()const{return double(timeBudget_.lent())/1000.;}
@@ -608,10 +506,6 @@ public:
     const Stats& stats()const{return stats_;}
     size_t entries()const{return entries_.size();}
     size_t reservedBytes()const{return bytes_;}
-    size_t memoBytes()const{return memoBytes_;}
-    size_t memoEntries()const{return memoEntries_;}
-    const NorthlightReplayMemo::Policy& memoPolicy()const{return memoPolicy_;}
-    MemoTotals memoTotals()const{auto total=memoTotals_;total.add(stats_);return total;}
     static std::shared_ptr<const Prepared> prepareProgram(const NorthlightActorDeformation::Program& program,const D3DVERTEXELEMENT9* elements,size_t count){
         try {std::shared_ptr<Prepared> prepared(new Prepared);
             std::vector<std::uint32_t> key;if(!makeKey(program,elements,count,key))return {};
@@ -718,7 +612,7 @@ private:
         for(unsigned j=0;j<16;++j)if(!std::isfinite(inverse[j]))return false;
         if(inverse[3]!=0||inverse[7]!=0||inverse[11]!=0||inverse[15]!=1)return false;
         if(batched&&!fastOpen_){fastMark_=BoundsClock::now();fastOpen_=true;fastCount_=0;}
-        e->touched=++clock_;++stats_.memoBypassed;
+        e->touched=++clock_;
         if(info){info->kind=Kind::Cheap;info->programHash=e->programHash;info->groups=groups;info->operations=operations;info->skin=bool(e->skin);info->paletteSpan=e->paletteSpan;info->paletteFirst=e->paletteSpan?e->paletteFirst:0;}
         if(individual)individual->evaluation(*e,info,Stage::All,status,groups,operations);
         if(certifiedPose(*e,poseStamp,inverse,output)){
@@ -729,7 +623,7 @@ private:
         if(!effective){++stats_.invalid;status=Status::Invalid;}
         else if(e->skin){budget.operations+=operations;status=e->skin->evaluate(effective,inverse,output,nullptr,nullptr,alignedSkin_)?Status::Valid:Status::Unsupported;}
         else status=evaluateGroups(p,*e,effective,inverse,budget,output,[]{return false;});
-        if(status==Status::Valid){certifyPose(*e,poseStamp,inverse,output);++stats_.ready;stats_.skinValid+=bool(e->skin);stats_.cheapValid+=batched;++stats_.memoStoreBypassed;++stats_.fastValid;}
+        if(status==Status::Valid){certifyPose(*e,poseStamp,inverse,output);++stats_.ready;stats_.skinValid+=bool(e->skin);stats_.cheapValid+=batched;++stats_.fastValid;}
         else {output={};if(status==Status::Unsupported)++stats_.unsupported;}
         if(batched&&++fastCount_>=ReadyClockStride){const auto now=BoundsClock::now();readyNanoseconds_+=elapsedNs(now,fastMark_);fastMark_=now;fastCount_=0;}
         return true;
@@ -742,14 +636,14 @@ private:
         if(stage==Stage::Build?!canBuild():stage==Stage::Heavy?!canHeavy():!canReady())return timeBudget();
         if(stage==Stage::Build)++buildCalls_;else if(stage==Stage::Heavy)++heavyCalls_;else ++readyCalls_;
         Entry* source=nullptr;
-        const bool sourceLookedUp=FastReady&&!ResultMemo&&prepared&&(stage==Stage::Cheap||stage==Stage::All);
-        if(FastReady&&!ResultMemo&&stage==Stage::Cheap&&prepared){Status fast;if(fastReady(*prepared,owner,constants,inverse,budget,output,info,fast,source))return fast;}
+        const bool sourceLookedUp=FastReady&&prepared&&(stage==Stage::Cheap||stage==Stage::All);
+        if(FastReady&&stage==Stage::Cheap&&prepared){Status fast;if(fastReady(*prepared,owner,constants,inverse,budget,output,info,fast,source))return fast;}
         // Material draws interleave unrelated game work. Time each bounded
         // warm evaluation separately; the shadow pass's batched clock would
         // charge those gaps and exhaust the material budget prematurely.
         Status evaluationStatus=Status::Budget;
         Timer timer{*this,stage==Stage::Build,stage==Stage::Heavy};
-        if(FastReady&&!ResultMemo&&stage==Stage::All&&prepared){
+        if(FastReady&&stage==Stage::All&&prepared){
             if(fastReady(*prepared,owner,constants,inverse,budget,output,info,evaluationStatus,source,&timer,poseStamp))return evaluationStatus;
             if((!source||!source->ready)&&timer.expired())return timeBudget();
         }
@@ -775,7 +669,6 @@ private:
                 Entry e;e.owner=owner;e.sourceAddress=owner.get();e.identity=identity(mesh);e.key=prepared?prepared->key_:std::make_shared<const std::vector<std::uint32_t>>(exactKey);e.programHash=prepared?prepared->hash_:programHash(p);if(!prepare(p,mesh,elements,count,e,prepared)){++stats_.invalid;return Status::Invalid;}
                 e.baseBytes=sizeof(Entry)+sizeof(*e.key)+e.key->capacity()*4+32+sizeof(*e.bindings)+e.bindings->capacity()*sizeof(Binding)+32+256+(e.identity?e.identity->bytes():0);
                 e.bytes=e.baseBytes+(e.skin?sizeof(SkinEnvelope)+32:0);if(e.bytes>Limit)return Status::Unsupported;
-                trimMemos(e.bytes);
                 while(!entries_.empty()&&(bytes_+e.bytes>Limit||entries_.size()>=MaxEntries)){if(!evict())return Status::Budget;}
                 if(entrySerial_!=std::numeric_limits<std::uint64_t>::max())e.serial=++entrySerial_;
                 const auto added=e.bytes;source=&entries_.emplace(sourceHash(mesh),std::move(e))->second;bytes_+=added;
@@ -801,17 +694,9 @@ private:
             const bool cheap=(e.skin||((e.singleBone||e.groups.size()<=8)&&operations<=128))&&e.lastEvaluationNs<CheapSliceNanoseconds;
             if(info){info->kind=cheap?Kind::Cheap:Kind::Heavy;info->programHash=e.programHash;info->groups=groups;info->operations=operations;info->skin=bool(e.skin);info->paletteSpan=e.paletteSpan;info->paletteFirst=e.paletteSpan?e.paletteFirst:0;}
             if(budget.operations<=budget.maxOperations&&operations<=budget.maxOperations-budget.operations&&certifiedPose(e,poseStamp,inverse,output)){
-                if(timer.expired()){output={};++stats_.memoBudgetDeferred;return timeBudget();}
+                if(timer.expired()){output={};return timeBudget();}
                 ++stats_.certifiedPoseHits;budget.operations+=operations;++stats_.ready;stats_.skinValid+=bool(e.skin);
                 if(info)info->kind=Kind::Cheap;
-                if(stage==Stage::Cheap)++stats_.cheapValid;if(stage==Stage::Heavy)++stats_.heavyValid;
-                return Status::Valid;
-            }
-            if(memoHit(e,constants,inverse,output)){
-                if(timer.expired()){output={};++stats_.memoBudgetDeferred;return timeBudget();}
-                ++stats_.memoHits;stats_.memoAvoidedOperations+=operations;
-                if(info)info->kind=Kind::Cheap;
-                ++stats_.ready;stats_.skinValid+=bool(e.skin);
                 if(stage==Stage::Cheap)++stats_.cheapValid;if(stage==Stage::Heavy)++stats_.heavyValid;
                 return Status::Valid;
             }
@@ -837,12 +722,12 @@ private:
                     if(interrupted){if(stage==Stage::Cheap&&timer.sliceExpired()){++stats_.cheapSliceDeferred;if(info)info->kind=Kind::Heavy;}return timeBudget();}
                     ++stats_.unsupported;evaluationStatus=Status::Unsupported;return evaluationStatus;}
                 ++stats_.ready;++stats_.skinValid;if(stage==Stage::Cheap)++stats_.cheapValid;if(stage==Stage::Heavy)++stats_.heavyValid;
-                certifyPose(e,poseStamp,inverse,output);remember(e,constants,inverse,output);evaluationStatus=Status::Valid;return evaluationStatus;
+                certifyPose(e,poseStamp,inverse,output);evaluationStatus=Status::Valid;return evaluationStatus;
             }
             evaluationStatus=evaluateGroups(p,e,effective,inverse,budget,output,[&]{return timer.expired();});
             if(evaluationStatus==Status::Budget){if(stage==Stage::Cheap&&timer.sliceExpired()){++stats_.cheapSliceDeferred;if(info)info->kind=Kind::Heavy;}return timeBudget();}
             if(evaluationStatus!=Status::Valid){++stats_.unsupported;return evaluationStatus;}
-            ++stats_.ready;if(stage==Stage::Cheap)++stats_.cheapValid;if(stage==Stage::Heavy)++stats_.heavyValid;certifyPose(e,poseStamp,inverse,output);remember(e,constants,inverse,output);return evaluationStatus;
+            ++stats_.ready;if(stage==Stage::Cheap)++stats_.cheapValid;if(stage==Stage::Heavy)++stats_.heavyValid;certifyPose(e,poseStamp,inverse,output);return evaluationStatus;
         }catch(...){evaluationStatus=Status::Unsupported;accountClassify();if(info)info->kind=Kind::Unsupported;++stats_.unsupported;return Status::Unsupported;}
     }
 };
