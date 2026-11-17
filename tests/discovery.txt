@@ -395,6 +395,7 @@ test_performance_hardware.py
 test_performance_monitor.py
 test_pipeline_all_off_gpu.py
 test_pipeline_bindings_cpu.py
+test_pipeline_capture_buffers.py
 test_pipeline_wave_cpu.py
 test_point_clip_prepared.py
 test_point_light_shadow.py

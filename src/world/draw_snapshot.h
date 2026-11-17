@@ -143,6 +143,11 @@ class Frame {
     friend struct SnapshotTestAccess;
     std::size_t used_=0,regularUsed_=0,limit_,reserved_,nearReserve_=0;unsigned draws_=0,regularDraws_=0;bool priority_=false,near_=false;
     std::vector<std::uint8_t> rawIndexScratch_;
+    static void prepareCopy(std::vector<std::uint8_t>& bytes,size_t size){
+        // Keep vector's amortized growth for reused storage. Only the first
+        // allocation can skip value initialization without changing that policy.
+        if(size>bytes.capacity()&&!bytes.empty())bytes.resize(size);else bytes.reserve(size);
+    }
     std::vector<std::uint64_t> indexMaskScratch_;
     std::vector<UINT> remapScratch_,uniqueSourceScratch_;
     size_t sourceSpanVertices_=0,uniqueVertices_=0,savedVertexBytes_=0;unsigned compactedDraws_=0;
@@ -935,10 +940,10 @@ public:
             cacheIbBegin=begin;cacheIbBytes=bytes;
             if(!admit(why))return false;
             if(!reserve(std::size_t(bytes),why))return false;
-            rawIndexScratch_.resize(static_cast<std::size_t>(bytes));auto& raw=rawIndexScratch_;void* ptr=nullptr;
+            auto& raw=rawIndexScratch_;prepareCopy(raw,static_cast<std::size_t>(bytes));void* ptr=nullptr;
             NorthlightReplayCopies::Reader<IDirect3DIndexBuffer9> read(ib.p);
             if(FAILED(hr=read.lock(UINT(begin),UINT(bytes),&ptr)))return fail(why,Error::Lock,hr);
-            if(ptr)std::memcpy(raw.data(),ptr,raw.size());HRESULT unlocked=read.unlock();
+            if(ptr){const auto* source=static_cast<const std::uint8_t*>(ptr);raw.assign(source,source+size_t(bytes));}HRESULT unlocked=read.unlock();
             if(FAILED(unlocked))return fail(why,Error::Unlock,unlocked);if(!ptr)return fail(why,Error::Lock);
             if(!decode(raw.data(),n,desc.Format,draw,mesh,low,high,why))return false;
         }else{
@@ -967,13 +972,14 @@ public:
         for(UINT s=0;s<4;++s){if(!extent[s])continue;if(why)why->stream=s;
             auto& vb=vertices[s];auto& target=mesh.streams[s];UINT stride=strides[s];HRESULT hr=D3D_OK;
             target.stride=stride;const size_t size=size_t(mesh.vertexCount)*stride;
-            const bool retainedCopy=!compacted_&&target.bytes.capacity()>=size;
-            if(!retainedCopy)target.bytes.resize(size);
+            // Prepare capacity before Lock: trivial byte assignment cannot allocate
+            // while a backend lock is held. Fresh spans need no zero-fill pass.
+            if(!compacted_)prepareCopy(target.bytes,size);else target.bytes.resize(size);
             if(!reserve(size_t(readBytes[s]),why))return false;void* ptr=nullptr;
             NorthlightReplayCopies::Reader<IDirect3DVertexBuffer9> read(vb.p);
             if(FAILED(hr=read.lock(UINT(begins[s]),UINT(lockBytes[s]),&ptr)))return fail(why,Error::Lock,hr);
             if(ptr){
-                if(retainedCopy){const auto* source=static_cast<const std::uint8_t*>(ptr);target.bytes.assign(source,source+size_t(readBytes[s]));target.bytes.resize(size);}
+                if(!compacted_){const auto* source=static_cast<const std::uint8_t*>(ptr);target.bytes.assign(source,source+size_t(readBytes[s]));target.bytes.resize(size);}
                 else copyVertices(target.bytes.data(),static_cast<const std::uint8_t*>(ptr),stride,extent[s],low,mesh.vertexCount);
             }
             HRESULT unlocked=read.unlock();
@@ -1000,7 +1006,8 @@ public:
         if(offset+lockBytes>std::numeric_limits<size_t>::max()||bytes>UINT(-1))return fail(why,Error::VertexRange);
         if(!reserve(size_t(readBytes),why))return false;
         auto& target=mesh.streams[0];target.stride=stride;
-        if(!compacted_&&target.bytes.capacity()>=size_t(bytes)){
+        if(!compacted_){
+            prepareCopy(target.bytes,size_t(bytes));
             const auto* source=static_cast<const std::uint8_t*>(vertices)+size_t(offset);
             target.bytes.assign(source,source+size_t(readBytes));target.bytes.resize(size_t(bytes));
         }else{target.bytes.resize(size_t(bytes));copyVertices(target.bytes.data(),static_cast<const std::uint8_t*>(vertices)+size_t(offset),stride,extent[0],low,mesh.vertexCount);}

@@ -68,7 +68,8 @@
       "test_world_material_texels.py",
       "test_world_upload_pixels.py",
       "test_cpu_capture_stages.py",
-      "test_height_gpu_ownership.py"
+      "test_height_gpu_ownership.py",
+      "test_pipeline_capture_buffers.py"
     ]
   },
   "gpu": {
