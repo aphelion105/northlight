@@ -14,6 +14,14 @@ inline void copyIndices(const Mesh& mesh,void* destination){
 }
 struct Height {
     unsigned width=0,height=0;std::vector<float> values;
+    float gpuPeak=-1; // Only set after the complete height field reaches its GPU owner.
+    bool gpuOnly()const{return values.empty()&&gpuPeak>=0;}
+    float peak()const{
+        if(gpuOnly())return gpuPeak;
+        float result=0;for(float h:values){if(!std::isfinite(h))return NAN;result=std::max(result,std::fabs(h-.5f));}return result;
+    }
+    void discardCPU(float peak){gpuPeak=peak;std::vector<float>().swap(values);}
+    void discardCPU(){discardCPU(peak());}
     float sample(float u,float v,bool clampU=false,bool clampV=false)const{
         if(!width||!height||values.size()!=size_t(width)*height||!std::isfinite(u)||!std::isfinite(v))return .5f;
         const float x=(clampU?std::clamp(u,0.f,1.f):u-std::floor(u))*width-.5f;
@@ -55,6 +63,7 @@ inline bool build(const Mesh& in,const D3DVERTEXELEMENT9* elements,UINT elementC
     const std::vector<std::array<float,2>>* uv1=nullptr,const std::vector<float>* blend=nullptr,unsigned influences=4,bool gpuHeight=false,
     const NorthlightWmoVertexColor::Layout* color=nullptr){
     out={};if(influences>4)return false;const auto stride=in.streams[0].stride;
+    if(!gpuHeight&&(first.gpuOnly()||(second&&second->gpuOnly())))return false;
     if(gpuHeight&&(second||stride>232||elementCount+2>MAXD3DDECLLENGTH))return false;
     if(!in.vertexCount||in.vertexCount>32768||stride>240||uv.size()!=in.vertexCount||factor<2||factor>128||!elements||elementCount>MAXD3DDECLLENGTH)return false;
     if(in.streams[0].bytes.size()<size_t(in.vertexCount)*stride)return false;
@@ -132,7 +141,7 @@ inline bool build(const Mesh& in,const D3DVERTEXELEMENT9* elements,UINT elementC
         for(const auto& e:edges){const unsigned a=unsigned(e.first>>32),b=unsigned(e.first);float squared=0;
             for(unsigned k=0;k<3;++k){const float x=positions[a][k]-positions[b][k];squared+=x*x;}
             if(!std::isfinite(squared))return false;skinRelief[a]=std::min(skinRelief[a],squared);skinRelief[b]=std::min(skinRelief[b],squared);}
-        float peak=0;for(float h:first.values){if(!std::isfinite(h))return false;peak=std::max(peak,std::fabs(h-.5f));}
+        const float peak=first.peak();if(!std::isfinite(peak))return false;
         for(auto& scale:skinRelief)scale=peak>0?std::min(1.f,.05f*std::sqrt(scale)/(.12f*peak)):1.f;
     }
     std::pmr::unordered_map<Key,unsigned,Hash> vertices(&scratch);vertices.reserve(capacity);

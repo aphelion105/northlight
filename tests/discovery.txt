@@ -214,6 +214,8 @@ test_hdr_sky_storage_gpu.py
 test_hdr_sun_gpu.py
 test_hdr_ui_patch.py
 test_hdr_water_transfer_gpu.py
+test_height_gpu_ownership.py
+test_height_gpu_ownership_gpu.py
 test_horizon_haze.py
 test_hotpath_equivalence.py
 test_independent_fog.py

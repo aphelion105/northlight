@@ -67,7 +67,8 @@
       "test_diagnostic_files.py",
       "test_world_material_texels.py",
       "test_world_upload_pixels.py",
-      "test_cpu_capture_stages.py"
+      "test_cpu_capture_stages.py",
+      "test_height_gpu_ownership.py"
     ]
   },
   "gpu": {
@@ -119,7 +120,8 @@
       "test_world_temporal_merge_gpu.py",
       "test_gi_residency_gpu.py",
       "test_shadow_receiver_gpu.py",
-      "test_relighting_color_edges_gpu.py"
+      "test_relighting_color_edges_gpu.py",
+      "test_height_gpu_ownership_gpu.py"
     ]
   },
   "shadow-experiments": {

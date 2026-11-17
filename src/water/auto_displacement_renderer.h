@@ -24,7 +24,7 @@
 
 struct NorthlightDisplacementStorage {
     using Mesh=NorthlightDrawSnapshot::Mesh;using Height=NorthlightDisplacementGeometry::Height;
-    struct Texture {IDirect3DTexture9* source=nullptr,*gpu=nullptr;Height height;uint64_t used=0,version=0;bool model=false;};
+    struct Texture {IDirect3DTexture9* source=nullptr,*gpu=nullptr;Height height;uint64_t used=0,version=0;bool model=false,cpuNeeded=false;};
     struct Entry {
         std::shared_ptr<const Mesh> source;IDirect3DTexture9* texture=nullptr,*texture1=nullptr,*height=nullptr;
         IDirect3DVertexBuffer9* vb=nullptr;IDirect3DIndexBuffer9* ib=nullptr;IDirect3DVertexDeclaration9* decl=nullptr,*sourceDecl=nullptr;
@@ -429,10 +429,29 @@ class NorthlightAutoDisplacement {
         else if(memory.ullAvailVirtual>=(1024ull<<20))cacheBudget=128u<<20;
         while(resident>cacheBudget&&!entries.empty())evictOldest();
     }
-    const Height* height(IDirect3DTexture9* source,bool model=false){
+    unsigned heightReadbacks=0,heightReadbackFailures=0;
+    bool restoreHeightCPU(Texture& texture){
+        if(!texture.gpu||readsThisFrame>=2)return false;++readsThisFrame;
+        const auto failed=[&]{++heightReadbackFailures;return false;};
+        const auto& h=texture.height;NorthlightDrawSnapshot::Ref<IDirect3DSurface9> source,staging;
+        if(FAILED(texture.gpu->GetSurfaceLevel(0,source.out()))||!source.p||
+           FAILED(d->CreateOffscreenPlainSurface(h.width,h.height,D3DFMT_R32F,D3DPOOL_SYSTEMMEM,staging.out(),nullptr))||!staging.p||
+           FAILED(d->GetRenderTargetData(source.p,staging.p)))return failed();
+        Height restored;restored.width=h.width;restored.height=h.height;restored.values.resize(size_t(h.width)*h.height);
+        D3DLOCKED_RECT lock{};if(FAILED(staging->LockRect(&lock,nullptr,D3DLOCK_READONLY)))return failed();
+        const bool valid=lock.pBits&&lock.Pitch>=INT(h.width*sizeof(float));
+        if(valid)for(unsigned y=0;y<h.height;++y)std::memcpy(restored.values.data()+size_t(y)*h.width,static_cast<const char*>(lock.pBits)+size_t(y)*lock.Pitch,h.width*sizeof(float));
+        const auto hr=staging->UnlockRect();if(!valid||FAILED(hr)||restored.peak()!=h.gpuPeak)return failed();
+        texture.height=std::move(restored);texture.cpuNeeded=true;++heightReadbacks;return true;
+    }
+    const Height* height(IDirect3DTexture9* source,bool model=false,bool cpuNeeded=true){
         NorthlightMaterialProfile::Scope timing(profile,NorthlightMaterialProfile::HeightRead);
         const auto revision=NorthlightMaterialHeight::version(source);
-        for(auto it=textures.begin();it!=textures.end();++it)if(it->source==source&&it->model==model){if(it->version!=revision){drop(it->gpu);drop(it->source);textures.erase(it);break;}it->used=++clock;return it->height.width?&it->height:nullptr;}
+        for(auto it=textures.begin();it!=textures.end();++it)if(it->source==source&&it->model==model){if(it->version!=revision){drop(it->gpu);drop(it->source);textures.erase(it);break;}
+            it->used=++clock;
+            if(it->height.gpuOnly()&&cpuNeeded)return restoreHeightCPU(*it)?&it->height:nullptr;
+            if(it->height.gpuOnly()&&!it->gpu)return nullptr;
+            it->cpuNeeded|=cpuNeeded;return it->height.width?&it->height:nullptr;}
         if(readsThisFrame>=2)return nullptr;++readsThisFrame;
         auto reject=[&]()->const Height*{if(textures.size()>=32){auto old=std::min_element(textures.begin(),textures.end(),[](const Texture& a,const Texture& b){return a.used<b.used;});drop(old->gpu);drop(old->source);textures.erase(old);}Texture failed;failed.source=source;source->AddRef();failed.used=++clock;failed.version=revision;failed.model=model;textures.push_back(std::move(failed));return nullptr;};
         NorthlightMaterialHeight::Image image;NorthlightParticleTextures::View uploaded;const unsigned char* rgba=nullptr;
@@ -444,24 +463,29 @@ class NorthlightAutoDisplacement {
             rgba=image.rgba.data();
         }
         if(textures.size()>=32){auto oldest=std::min_element(textures.begin(),textures.end(),[](const Texture& a,const Texture& b){return a.used<b.used;});drop(oldest->gpu);drop(oldest->source);textures.erase(oldest);}
-        Texture item;item.source=source;source->AddRef();item.used=++clock;item.version=revision;item.model=model;item.height.width=image.width;item.height.height=image.height;item.height.values.resize(size_t(image.width)*image.height);
+        Texture item;item.used=++clock;item.version=revision;item.model=model;item.cpuNeeded=cpuNeeded;item.height.width=image.width;item.height.height=image.height;item.height.values.resize(size_t(image.width)*image.height);
         const auto profile=NorthlightMaterialHeight::profile(image,polarity,heightDetails,heightBalance);
         if(model)NorthlightMaterialHeight::modelValues(image,polarity,item.height.values,rgba);
         else if(profile[1]==0)for(size_t i=0;i<item.height.values.size();++i)item.height.values[i]=NorthlightMaterialHeight::valueWithoutAccent(rgba[i*4]/255.f,rgba[i*4+1]/255.f,rgba[i*4+2]/255.f,profile);
         else for(size_t i=0;i<item.height.values.size();++i)item.height.values[i]=NorthlightMaterialHeight::value(rgba[i*4]/255.f,rgba[i*4+1]/255.f,rgba[i*4+2]/255.f,profile);
-        textures.push_back(std::move(item));return &textures.back().height;
+        item.source=source;source->AddRef();textures.push_back(std::move(item));return &textures.back().height;
     }
     IDirect3DTexture9* heightTexture(IDirect3DTexture9* source,bool model){
         NorthlightMaterialProfile::Scope timing(profile,NorthlightMaterialProfile::GeometryUpload);
         for(auto& t:textures)if(t.source==source&&t.model==model&&t.height.width){
             if(t.gpu)return t.gpu;
-            const auto& h=t.height;IDirect3DTexture9* map=nullptr;
-            if(FAILED(d->CreateTexture(h.width,h.height,1,0,D3DFMT_R32F,D3DPOOL_MANAGED,&map,nullptr)))return nullptr;
-            D3DLOCKED_RECT lock{};if(FAILED(map->LockRect(0,&lock,nullptr,0))){drop(map);return nullptr;}
+            const auto& h=t.height;if(h.values.size()!=size_t(h.width)*h.height)return nullptr;
+            const float peak=h.peak();if(!std::isfinite(peak))return nullptr;
+            NorthlightDrawSnapshot::Ref<IDirect3DTexture9> map,staging;
+            if(FAILED(d->CreateTexture(h.width,h.height,1,D3DUSAGE_RENDERTARGET,D3DFMT_R32F,D3DPOOL_DEFAULT,map.out(),nullptr))||!map.p||
+               FAILED(d->CreateTexture(h.width,h.height,1,0,D3DFMT_R32F,D3DPOOL_SYSTEMMEM,staging.out(),nullptr))||!staging.p)return nullptr;
+            D3DLOCKED_RECT lock{};if(FAILED(staging->LockRect(0,&lock,nullptr,0)))return nullptr;
             const bool valid=lock.pBits&&lock.Pitch>=INT(h.width*sizeof(float));
             if(valid)for(unsigned y=0;y<h.height;++y)std::memcpy(static_cast<char*>(lock.pBits)+size_t(y)*lock.Pitch,h.values.data()+size_t(y)*h.width,h.width*sizeof(float));
-            const auto hr=map->UnlockRect(0);if(!valid||FAILED(hr)){drop(map);return nullptr;}
-            t.gpu=map;return map;
+            const auto hr=staging->UnlockRect(0);if(!valid||FAILED(hr)||FAILED(d->UpdateTexture(staging.p,map.p)))return nullptr;
+            t.gpu=map.p;map.p=nullptr;
+            if(!t.cpuNeeded)t.height.discardCPU(peak);
+            return t.gpu;
         }return nullptr;
     }
     bool viewRows(const Program& program,const float* constants){
@@ -529,6 +553,9 @@ public:
     void setTrustedConstantEpochSource(NorthlightConstantEpoch::TrustedSource source){poseEnvelopes.clearPoseCertificates();constantStamp={};rangeConstantStamp={};trustedConstants=bool(source)&&source.context()==d;constantContext=trustedConstants?source.context():nullptr;constantReader=trustedConstants?source.reader():nullptr;constantSpan=trustedConstants?source.span():nullptr;}
     void shareCaptureSources(NorthlightDrawSnapshot::Frame& capture){snapshots.shareSnapshotPool(capture);snapshots.setReplayContentReuse(true);snapshots.setResidentPeer(&capture);capture.setResidentPeer(&snapshots);skinRangeSnapshots.setResidentPeer(&capture);}
     void reportSources(uint64_t frame)const{
+        size_t cpuHeightBytes=0,gpuHeightBytes=0;unsigned gpuOnlyHeights=0,cpuHeights=0;
+        for(const auto& t:textures){cpuHeightBytes+=t.height.values.capacity()*sizeof(float);if(t.gpu)gpuHeightBytes+=size_t(t.height.width)*t.height.height*sizeof(float);gpuOnlyHeights+=t.height.gpuOnly();cpuHeights+=t.cpuNeeded;}
+        logf("DISPLACEMENT_HEIGHT_MEMORY frame=%llu cpuCapacityBytes=%zu cachedGpuLogicalBytes=%zu gpuOnly=%u cpuRequired=%u readbacks=%u readbackFailures=%u stagingRetainedBytes=0 driverBackingAndResidencyUnmeasured=1",(unsigned long long)frame,cpuHeightBytes,gpuHeightBytes,gpuOnlyHeights,cpuHeights,heightReadbacks,heightReadbackFailures);
         logf("MATERIAL_RANGE_PROOF frame=%llu tested=%u culled=%u mixed=%u deferred=%u cacheBytes=%zu",(unsigned long long)frame,modelRangeProof.tested,modelRangeProof.culled,modelRangeProof.singleMixed,modelRangeProof.deferred,sizeof(modelRangeProof));
         const auto& boundsWork=positionBounds.maintenance();
         logf("MATERIAL_POSITION_BOUNDS frame=%llu hits=%u scans=%u positionBytes=%zu entries=%zu unknown=%u coldScans=%u revisionScans=%u evictions=%u budgetRejected=%u capturedBoundsHits=%u",(unsigned long long)frame,positionBounds.cacheHits(),positionBounds.scans(),positionBounds.bytesRead(),positionBounds.count(),positionBounds.failures(),boundsWork.coldScans,boundsWork.revisionScans,boundsWork.evictions,boundsWork.budgetRejected,capturedBoundsHits);
@@ -864,27 +891,29 @@ public:
         // Preserve existing entries and the distance proof, but do not decode
         // height/UV data for a mesh the existing build limit always rejects.
         if(source->primitiveCount>8192){++primitiveRejected;return false;}
-        const auto* firstHeight=height(static_cast<IDirect3DTexture9*>(tex.p),domain==4);if(!firstHeight){++heightRejected;return false;}Height retainedFirst;const Height* second=nullptr;
+        const bool layoutFree=std::none_of(elements,elements+count,[](const D3DVERTEXELEMENT9& e){return e.Usage==D3DDECLUSAGE_TEXCOORD&&e.UsageIndex==6;});
+        const bool wantGPUHeight=!tex1.p&&gpuVariant&&stream.stride<=232&&count+2<=MAXD3DDECLLENGTH&&layoutFree;
+        const auto* firstHeight=height(static_cast<IDirect3DTexture9*>(tex.p),domain==4,!wantGPUHeight);if(!firstHeight){++heightRejected;return false;}Height retainedFirst;const Height* second=nullptr;
         if(tex1.p){retainedFirst=*firstHeight;firstHeight=&retainedFirst;second=height(static_cast<IDirect3DTexture9*>(tex1.p));if(!second)return false;}
-        const Height& first=*firstHeight;
         timing.next(P::UV);
         std::vector<std::array<float,2>> uv,uv1;std::vector<float> weights;
         if(!NorthlightActorDeformation::textureUVs(shader->second.uv,*source,elements,count,constants,uv))return false;
         if(second){if(!NorthlightActorDeformation::textureUVs(shader->second.uv1,*source,elements,count,constants,uv1))return false;
             weights.resize(source->vertexCount);for(unsigned i=0;i<source->vertexCount;++i){NorthlightActorDeformation::Four inputs[16],value;if(!NorthlightActorDeformation::sampledVertexInputsAt(shader->second.blend,*source,elements,count,i,inputs,true)||!NorthlightActorDeformation::evaluateFast(shader->second.blend,inputs,constants,value))return false;if(!std::isfinite(value[3]))return false;weights[i]=value[3];}}
-        unsigned factor=domain==4?1u<<detail:NorthlightDisplacementGeometry::textureFactor(uv,first,detail);
+        unsigned factor=domain==4?1u<<detail:NorthlightDisplacementGeometry::textureFactor(uv,*firstHeight,detail);
         if(second)factor=std::max(factor,NorthlightDisplacementGeometry::textureFactor(uv1,*second,detail));
         if(domain==3)factor=std::min(factor,16u);
         IDirect3DTexture9* gpuHeight=nullptr;
-        const bool layoutFree=std::none_of(elements,elements+count,[](const D3DVERTEXELEMENT9& e){return e.Usage==D3DDECLUSAGE_TEXCOORD&&e.UsageIndex==6;});
-        if(!second&&gpuVariant&&stream.stride<=232&&count+2<=MAXD3DDECLLENGTH&&layoutFree)gpuHeight=heightTexture(static_cast<IDirect3DTexture9*>(tex.p),domain==4);
+        if(wantGPUHeight)gpuHeight=heightTexture(static_cast<IDirect3DTexture9*>(tex.p),domain==4);
+        if(wantGPUHeight&&!gpuHeight){firstHeight=height(static_cast<IDirect3DTexture9*>(tex.p),domain==4,true);if(!firstHeight){++heightRejected;return false;}}
+        const Height& first=*firstHeight;
         timing.next(P::Subdivide);
         const auto* color=domain==2?&patched->second.color:nullptr;
         ++buildsThisFrame;Mesh output;if(!NorthlightDisplacementGeometry::build(*source,elements,count,uv,first,factor,domain==1,u==D3DTADDRESS_CLAMP,v==D3DTADDRESS_CLAMP,output,second,second?&uv1:nullptr,second?&weights:nullptr,shader->second.influences,gpuHeight!=nullptr,color)){++meshRejected;return false;}
         timing.work(output.primitiveCount,output.byteSize());if(profile)profile->count(P::GeometryBuilt);timing.next(P::GeometryUpload);
         if(builds<8){float peak=0;for(unsigned i=0;i<output.vertexCount;++i){float delta[3];std::memcpy(delta,output.streams[0].bytes.data()+size_t(i)*output.streams[0].stride+stream.stride,12);peak=std::max(peak,std::sqrt(delta[0]*delta[0]+delta[1]*delta[1]+delta[2]*delta[2])*strength);}logf("DISPLACEMENT build domain=%u vertices=%u triangles=%u maxOffset=%.5f VScontrol=%u",domain,output.vertexCount,output.primitiveCount,peak,shaders.find(original)->second.binding.constant);}
         const auto indexBytes=NorthlightDisplacementGeometry::indexElementBytes(output);
-        auto entry=std::make_unique<Entry>();entry->bytes=output.byteSize()-output.indices.size()*(sizeof(uint32_t)-indexBytes)+(gpuHeight?first.values.size()*sizeof(float):0);
+        auto entry=std::make_unique<Entry>();entry->bytes=output.byteSize()-output.indices.size()*(sizeof(uint32_t)-indexBytes)+(gpuHeight?size_t(first.width)*first.height*sizeof(float):0);
         MEMORYSTATUSEX memory{};memory.dwLength=sizeof memory;if(!GlobalMemoryStatusEx(&memory)||memory.ullAvailVirtual<entry->bytes+source->byteSize()+(160u<<20)){++refused;return false;}
         refreshBudget(memory);if(entry->bytes+source->byteSize()>cacheBudget){++refused;return false;}
         makeRoom(source,entry->bytes);
