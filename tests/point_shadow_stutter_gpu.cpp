@@ -53,6 +53,30 @@ struct PointTerrainCoverageTest {
    const double ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count()/32;
    std::printf("POINT_TERRAIN_CANDIDATES_TIMING block=%u warm=%u cached=%u lights=14 batches=2048 cpuMs=%.6f\n",block,unsigned(block<4),unsigned(cached),ms);
   }
+#ifndef NORTHLIGHT_POINT_EMPTY_TERRAIN_REFERENCE
+  // Match the last gameplay log: thousands of terrain batches, all outside
+  // each interior lamp. Compare with the former warm memo expansion exactly.
+  fill(12854);for(auto& b:w.batches){b.boundsLow.z=-100;b.boundsHigh.z=-99;}
+  ++w.meshGeneration;w.rebuildTerrainLists();
+  for(unsigned l=0;l<14;++l){w.pointIndex=l;w.pointSlot().terrainMemo.valid=false;
+   const NorthlightPointShadow::FaceClip clip(matrices[l],w.pointSlot().selected);clear();w.preparePointTerrain(clip,63);
+   assert(w.pointSlot().terrainMemo.valid&&!w.pointSlot().terrainMemo.occupiedFaces);
+   const auto masks=w.pointBatchMasks;const auto lists=w.pointTerrainCandidates;const unsigned culled=w.pointCulled;
+   for(unsigned faces:{63u,1u,21u,42u}){clear();reference(clip,faces);const auto expected=w.pointBatchMasks;const auto candidates=w.pointTerrainCandidates;const auto rejected=w.pointCulled;
+    clear();w.preparePointTerrain(clip,faces);assert(w.pointBatchMasks==expected&&w.pointTerrainCandidates==candidates&&w.pointCulled==rejected);}
+   clear();w.preparePointTerrain(clip,63);assert(w.pointBatchMasks==masks&&w.pointTerrainCandidates==lists&&w.pointCulled==culled);
+  }
+  for(unsigned block=0;block<16;++block){const bool cached=block%4==1||block%4==2;const auto start=std::chrono::steady_clock::now();
+   for(unsigned frame=0;frame<32;++frame)for(unsigned l=0;l<14;++l){w.pointIndex=l;clear();
+    if(cached){const NorthlightPointShadow::FaceClip clip(matrices[l],w.pointSlot().selected);w.preparePointTerrain(clip,63);}
+    else{w.pointBatchMasks=w.pointSlot().terrainMemo.masks;
+     for(size_t i:w.terrainBatchList)w.pointAppendCandidates(w.pointTerrainCandidates,i,w.pointBatchMasks[i],63);}
+   }
+   const double ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count()/32;
+   std::printf("POINT_EMPTY_TERRAIN_TIMING block=%u warm=%u cached=%u lights=14 batches=12854 cpuMs=%.6f\n",block,unsigned(block<4),unsigned(cached),ms);
+  }
+  std::puts("POINT_EMPTY_TERRAIN_PASS warmMemo=exact partialFaces=exact rejectionCounts=exact");
+#endif
   w.pointIndex=0;w.active=std::make_shared<WorldRenderer::Snapshot>();w.active->map="terrain-memo";
   auto& slot=w.pointSlot();slot.map=w.active->map;slot.cacheValid=true;slot.cacheSource=slot.selected.sourceId;
   w.keepPointSlot(slot,1);assert(w.pointKeeps[0].slot.terrainMemo.masks.empty());
@@ -248,7 +272,13 @@ struct PointTerrainCoverageTest {
    std::puts("POINT_TERRAIN_CANDIDATES_GPU_PASS sixFaces=exact warmCold=exact draws=unchanged");
 #endif
    const auto weights=std::array<unsigned,6>{w.pointSlot().faceWeights[0],w.pointSlot().faceWeights[1],w.pointSlot().faceWeights[2],w.pointSlot().faceWeights[3],w.pointSlot().faceWeights[4],w.pointSlot().faceWeights[5]};
+#ifndef NORTHLIGHT_POINT_EMPTY_TERRAIN_REFERENCE
+   const auto memoHits=w.pointCold.terrainMemoHits,memoMisses=w.pointCold.terrainMemoMisses;
+#endif
    refresh(true);assert(!w.pointDraws&&w.pointFacesReused==6&&image()==ground);
+#ifndef NORTHLIGHT_POINT_EMPTY_TERRAIN_REFERENCE
+   assert(w.pointCold.terrainMemoHits==memoHits&&w.pointCold.terrainMemoMisses==memoMisses);
+#endif
    assert(std::equal(weights.begin(),weights.end(),w.pointSlot().faceWeights));
    NorthlightGpuFrameTimer timer(d);
    for(unsigned block=0;block<16;++block){const bool retain=block%4==1||block%4==2;
@@ -334,7 +364,9 @@ struct PointTerrainCoverageTest {
   w.quality.pointShadowLimit=3;w.quality.pointShadowFacesPerFrame=1;w.quality.pointShadowRefreshMs=10000;
   selection.count=1;selection.sources[0]=light;selection.sources[0].sourceId=200;selection.sources[0].position[0]=-2;
   pool();auto* recycledCube=w.pointSlot().cube;const unsigned cubeStart=meter.cubes;
-  w.pointSlot().schedule.updatedAt=GetTickCount()-10001;pool();assert(w.pointSlot().faceCycle.active()&&!w.pointSlot().schedule.complete);
+  // Changed live geometry must still start a partial refresh; an unchanged
+  // complete cube now skips even that cycle.
+  ++w.liveTerrainRevision;w.pointSlot().schedule.updatedAt=GetTickCount()-10001;pool();assert(w.pointSlot().faceCycle.active()&&!w.pointSlot().schedule.complete);
   std::vector<std::vector<float>> switched;
   for(unsigned i=0;i<8;++i){selection.sources[0].sourceId=201-i%2;selection.sources[0].position[0]=i%2?-2.f:2.f;w.pointSelection.reset();pool();
 #ifndef NORTHLIGHT_POINT_RECYCLE_REFERENCE

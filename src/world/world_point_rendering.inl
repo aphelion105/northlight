@@ -6,6 +6,7 @@
         static constexpr size_t Limit=65536;
         std::vector<unsigned char> masks;
         uint64_t generation=0;float position[3]={},range=0;bool valid=false;
+        size_t terrainCount=0;unsigned occupiedFaces=0;
     };
     struct PointSlot {
         IDirect3DCubeTexture9* cube=nullptr;
@@ -329,10 +330,15 @@
         if(reuse)++pointCold.terrainMemoHits;else ++pointCold.terrainMemoMisses;
         if(reuse)pointBatchMasks=memo.masks;
         else{memo.valid=false;pointBatchMasks.assign(batches.size(),63);}
+        // Interior lights often have no terrain in any face. Their cached
+        // zero masks already prove every rejection, including partial cycles.
+        if(reuse&&!memo.occupiedFaces){pointCulled+=unsigned(memo.terrainCount)*unsigned(__builtin_popcount(faces));return;}
         // Immutable bounds belong to meshGeneration. Live terrain and animated
         // casters are classified separately on every refresh, as before.
+        size_t terrainCount=0;unsigned occupiedFaces=0;
         const auto append=[&](size_t i){const auto& batch=batches[i];
             const unsigned mask=reuse?(pointBatchMasks[i]&faces):pointMask(batch.boundsLow,batch.boundsHigh,clip,faces);
+            if(!reuse){++terrainCount;occupiedFaces|=mask;}
             pointBatchMasks[i]=static_cast<unsigned char>(mask);
             pointAppendCandidates(pointTerrainCandidates,i,mask,faces);};
         if(terrainBatchListGeneration==meshGeneration&&terrainBatchListSize==batches.size()){
@@ -343,6 +349,7 @@
         if(!reuse&&faces==63&&batches.size()<=PointTerrainMemo::Limit){
             try{if(memo.masks.capacity()<pointBatchMasks.size())std::vector<unsigned char>(pointBatchMasks).swap(memo.masks);
                 else memo.masks=pointBatchMasks;
+                memo.terrainCount=terrainCount;memo.occupiedFaces=occupiedFaces;
                 memo.generation=meshGeneration;memo.range=light.attenuationEnd;
                 std::copy(light.position,light.position+3,memo.position);memo.valid=true;
             }catch(...){memo=PointTerrainMemo{};}
@@ -766,6 +773,17 @@
             if(!pointSlot().schedule.usable||lightChanged)return false;
             pointSlot().ready=true;++pointReuses;return true;
         }
+        // All six faces already contain this exact committed geometry, and
+        // there are no current actor replays to add. Do not classify thousands
+        // of terrain batches just to rediscover the same six reuse decisions.
+        bool geometryUnchanged=!rebuild&&!lightChanged&&pointSlot().schedule.complete&&
+            pointSlot().geometryOnlyFaces==63&&(!withReplays||replays.empty());
+        for(unsigned face=0;face<6&&geometryUnchanged;++face)
+            geometryUnchanged=pointSlot().geometrySerial[face]==meshGeneration&&pointSlot().terrainSerial[face]==liveTerrainRevision;
+        if(geometryUnchanged){
+            pointSlot().schedule.commit(updateAt,pointSlot().selected,meshGeneration);
+            pointFacesReused=6;pointSlot().ready=true;++pointReuses;return true;
+        }
         // Only an actual dynamic cube refresh consumes replay bounds. Start
         // before candidate preparation; the first reader below joins the job.
         if(withReplays)replayBoundsRequest();
@@ -821,6 +839,7 @@
             if(!(rebuildMask&bit)){
                 if(pointSlot().faceKnown[face]&&pointSlot().faceSerial[face]!=meshGeneration){pointSlot().faceSerial[face]=meshGeneration;++pointFacesKept;}
                 if(staticOnly&&(pointSlot().staticOnlyFaces&bit)){
+                    pointSlot().geometryOnlyFaces|=bit;pointSlot().geometrySerial[face]=meshGeneration;pointSlot().terrainSerial[face]=liveTerrainRevision;
                     pointSlot().faceWeights[face]=0;++pointFacesReused;continue;
                 }
                 if(geometryOnly&&(pointSlot().geometryOnlyFaces&bit)&&

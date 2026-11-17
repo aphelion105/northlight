@@ -8,6 +8,8 @@ For native-versus-Northlight work ownership, current pass dependencies and
 measured optimization priorities, see the [2026-11-14 pipeline audit](pipeline-audit-20261114.md).
 For the next gameplay log, zero-weight lighting-filter optimization and separate
 HDR stage timings, see the [2026-11-15 follow-up](pipeline-20261115.md).
+For local-light shadow costs and exact reuse of unchanged cube preparation, see
+the [2026-11-17 investigation](local-light-performance-20261117.md).
 
 Independent sky/fog controls, the AO-only HDR specialization and current native
 precipitation ownership are documented in
