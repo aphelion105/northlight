@@ -69,7 +69,8 @@
       "test_world_upload_pixels.py",
       "test_cpu_capture_stages.py",
       "test_height_gpu_ownership.py",
-      "test_pipeline_capture_buffers.py"
+      "test_pipeline_capture_buffers.py",
+      "test_material_refusal_cache.py"
     ]
   },
   "gpu": {
@@ -180,6 +181,7 @@
     "tests": [
       "test_auto_normal_memory.py",
       "test_auto_normal_index_windows.py",
+      "test_material_refusal_cache.py",
       "test_material_disk_cache.py",
       "test_auto_normal_reuse_gpu.py",
       "test_material_upload_reuse_gpu.py",

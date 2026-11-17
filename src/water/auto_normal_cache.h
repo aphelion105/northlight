@@ -114,9 +114,11 @@ public:
         if(generated>=2){++generationDeferred;return nullptr;}
         // Bound failed work too. Retaining this small frame-local source set
         // prevents pointer reuse; a write revision still retries immediately.
-        auto& refusal=refusals[((reinterpret_cast<std::uintptr_t>(source)>>4)^unsigned(model))%16];
-        if(refusal.source==source&&refusal.version==revision&&refusal.model==model){++refusalHits;return nullptr;}
-        if(attempts>=8){++attemptDeferred;return nullptr;}++attempts;
+        // At most eight attempts exist per frame. Keep every attempted key;
+        // pointer-bit collisions must not spend another cold turn on a repeat.
+        for(unsigned i=0;i<attempts;++i){const auto& refusal=refusals[i];
+            if(refusal.source==source&&refusal.version==revision&&refusal.model==model){++refusalHits;return nullptr;}}
+        if(attempts>=8){++attemptDeferred;return nullptr;}auto& refusal=refusals[attempts++];
         drop(refusal.source);source->AddRef();refusal={source,revision,model};
         timing.next(P::NormalBuild);
         D3DSURFACE_DESC desc{};if(FAILED(source->GetLevelDesc(0,&desc))||!desc.Width||!desc.Height||(desc.Usage&D3DUSAGE_DEPTHSTENCIL)){++descriptionRejected;return nullptr;}
