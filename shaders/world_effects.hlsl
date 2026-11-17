@@ -1634,16 +1634,23 @@ float4 FogTemporal(float2 uv:TEXCOORD0):COLOR0 {
     if(any(puv<0)||any(puv>1))return current;
     float2 pq=(clamp(floor(puv*half),0,half-1)+.5)/half;
     float2 texel=1/half,corner=(floor(puv*half-.5)+.5)*texel;
-    float tol=max(.25,w*.03);bool agree=true;
-    if(!sky){
-        if(abs(tex2Dlod(DepthHistory,float4(pq,0,0)).r-w)>tol)return current;
+    // Sky reprojection has no finite surface: use a validated point history
+    // sample so a former foreground neighbour cannot enter through bilinear fog.
+    float4 history=tex2Dlod(FogHistory,float4(sky?pq:puv,0,0));
+    [branch]if(all(history==current)&&all(current!=0)&&all(abs(current)<1e20))return current;
+    if(sky){
+        if(tex2Dlod(DepthHistory,float4(pq,0,0)).r<viewDistance(.99999))return current;
+    }else{
         float4 footprint=float4(tex2Dlod(DepthHistory,float4(corner,0,0)).r,
             tex2Dlod(DepthHistory,float4(corner+float2(texel.x,0),0,0)).r,
             tex2Dlod(DepthHistory,float4(corner+float2(0,texel.y),0,0)).r,
             tex2Dlod(DepthHistory,float4(corner+texel,0,0)).r);
-        agree=all(abs(footprint-w)<=tol);
+        float4 error=abs(footprint-w)-max(.25,w*.03);
+        float2 nearest=floor(puv*half)-floor(puv*half-.5);
+        float pointError=lerp(lerp(error.x,error.y,nearest.x),lerp(error.z,error.w,nearest.x),nearest.y);
+        if(pointError>0)return current;
+        [branch]if(any(error>0))history=tex2Dlod(FogHistory,float4(pq,0,0));
     }
-    float4 history=tex2Dlod(FogHistory,float4(agree?puv:pq,0,0));
     // Current is inside its own clamp window. Keep lerp's exact arithmetic,
     // including signed zero/nonfinite behavior, when the samples already agree.
     [branch]if(all(history==current))return lerp(current,history,FogTemporalInfo.y);

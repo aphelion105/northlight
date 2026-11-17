@@ -111,6 +111,7 @@
       "test_sky_planets_gpu.py",
       "test_celestial_composition_gpu.py",
       "test_fog_volume_gpu.py",
+      "test_fog_temporal_disocclusion_gpu.py",
       "test_probe_local_visibility_gpu.py",
       "test_gi_zero_weight_gpu.py",
       "test_celestial_controls_gpu.py",
