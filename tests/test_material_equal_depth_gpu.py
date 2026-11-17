@@ -17,6 +17,7 @@ p.add_argument('--output',type=Path,required=True);p.add_argument('--backend',ty
 p.add_argument('--headers',type=Path)
 p.add_argument('--m2-preflight',action='store_true',help='Pair M2 pose/range admission across Normal, POM and Displacement with near/mixed/far poses')
 p.add_argument('--preflight-source',action='store_true',help='Keep current admission in both policies; compare only same-draw snapshot reuse')
+p.add_argument('--subdivision-sharing',action='store_true',help='Compare exact GPU-height VB/IB reuse across two texture owners')
 p.add_argument('--m2-admission',action='store_true',help='Pair original and reused M2 range work on buffered rigid, skin and unknown-pose draws')
 p.add_argument('--texture-intern',action='store_true',help='Compare duplicate texture insertion, keeping EQUAL batching enabled in both policies')
 p.add_argument('--draws',type=int,action='append',help='Packet benchmark draw counts; repeat for a matrix')
@@ -24,6 +25,7 @@ p.add_argument('--rounds',type=int,default=20,help='Paired rounds for the textur
 a=p.parse_args();out=a.output.resolve();out.mkdir(parents=True,exist_ok=True);overlay=out/'overlay';overlay.mkdir(exist_ok=True)
 allocation_test=a.texture_intern
 assert not a.preflight_source or a.m2_preflight
+assert not a.subdivision_sharing or a.preflight_source
 assert not a.m2_preflight or (a.benchmark and not a.m2_admission and not allocation_test and not a.negative_control and not a.headers)
 assert not a.m2_admission or (a.benchmark and not allocation_test and not a.negative_control and not a.headers)
 assert not allocation_test or not a.negative_control
@@ -103,8 +105,8 @@ if a.m2_preflight:
  cpp=cpp.replace('r.normal.insert(r.normal.end(),normal.begin(),normal.end());','auto receiverImage=capturedPixels(receiver.texture(),Fixture::W,Fixture::H);r.normal.insert(r.normal.end(),receiverImage.begin(),receiverImage.end());r.normal.insert(r.normal.end(),normal.begin(),normal.end());',1)
  if a.preflight_source:
   source=header.read_text(encoding='utf-8').replace('class NorthlightAutoBump {','extern unsigned northlightReadOnlyPolicy;\nclass NorthlightAutoBump {',1)
-  marker='displacement.geometryRange(domain)),&geometrySource);';assert source.count(marker)==1
-  source=source.replace(marker,'displacement.geometryRange(domain)),northlightReadOnlyPolicy==2?&geometrySource:nullptr);',1)
+  marker='displacement.geometryRange(domain)),&geometrySource';assert source.count(marker)==1
+  source=source.replace(marker,'displacement.geometryRange(domain)),northlightReadOnlyPolicy==2?&geometrySource:nullptr',1)
   (overlay/'auto_displacement_renderer.h').write_text(fp.src('auto_displacement_renderer.h').read_text(encoding='utf-8'),encoding='utf-8',newline='\n')
   # Bone 0 triggers the far scheduling hint while other bones cross the range.
   # The preflight must retain this draw and its full, current source snapshot.
@@ -116,6 +118,23 @@ if a.m2_preflight:
   cpp=cpp.replace('struct Result {','struct Result {unsigned reuses=0,snapshots=0;',1)
   cpp=cpp.replace('        r.cpu=','        r.reuses=MaterialCaptureStateTestAccess::reuses(bump);r.snapshots=MaterialCaptureStateTestAccess::snapshots(bump);r.cpu=',1)
   cpp=cpp.replace('vertexReads=%u cpuMs=','vertexReads=%u reuses=%u snapshots=%u cpuMs=',1).replace('r.vertexReads,r.cpu,r.gpu','r.vertexReads,r.reuses,r.snapshots,r.cpu,r.gpu',1)
+ if a.subdivision_sharing:
+  source=source.replace('northlightReadOnlyPolicy==2?&geometrySource:nullptr','&geometrySource')
+  displacement=fp.src('auto_displacement_renderer.h').read_text(encoding='utf-8')
+  displacement=displacement.replace('class NorthlightAutoDisplacement {','extern unsigned northlightReadOnlyPolicy;\nclass NorthlightAutoDisplacement {',1)
+  marker='Entry* shared=gpuHeight?subdivisionCandidate';assert displacement.count(marker)==1
+  displacement=displacement.replace(marker,'Entry* shared=(northlightReadOnlyPolicy==2&&gpuHeight)?subdivisionCandidate',1)
+  (overlay/'auto_displacement_renderer.h').write_text(displacement,encoding='utf-8',newline='\n')
+  cpp=cpp.replace('IDirect3DTexture9 *texture=nullptr,*unrelated=nullptr;','IDirect3DTexture9 *texture=nullptr,*unrelated=nullptr,*twin=nullptr;',1)
+  marker='D3DPOOL_MANAGED,&unrelated,nullptr));writeTexture(false);';assert cpp.count(marker)==1
+  cpp=cpp.replace(marker,marker+'ok(d->CreateTexture(32,32,1,0,D3DFMT_A8R8G8B8,D3DPOOL_MANAGED,&twin,nullptr));std::swap(texture,twin);writeTexture(false);std::swap(texture,twin);',1)
+  cpp=cpp.replace('f.pose(i);','f.pose(i);::bind(0,i%2?f.twin:f.texture);',1)
+  cpp=cpp.replace('static void noRangeBudget(NorthlightAutoBump& b);','static void noRangeBudget(NorthlightAutoBump& b);\n    static unsigned sharing(const NorthlightAutoBump& b);',1)
+  cpp=cpp.replace('struct DisplacementStateTestAccess {','struct DisplacementStateTestAccess {\n    static unsigned sharing(const NorthlightAutoDisplacement& g){return unsigned(g.subdivisionReuses);}',1)
+  cpp=cpp.replace('struct Calls:ForwardIDirect3DDevice9 {','unsigned MaterialCaptureStateTestAccess::sharing(const NorthlightAutoBump& b){return DisplacementStateTestAccess::sharing(b.displacement);}\nstruct Calls:ForwardIDirect3DDevice9 {',1)
+  cpp=cpp.replace('return r;','std::printf("SUBDIVISION_GPU policy=%u scenario=%u phase=%u shares=%u\\n",northlightReadOnlyPolicy,f.scenario,phase,MaterialCaptureStateTestAccess::sharing(bump));return r;',1)
+  # The fixture is short lived; release the second texture with its other owners.
+  cpp=cpp.replace('drop(texture);','NorthlightMaterialTextures::cache().erase(twin,twin);drop(twin);drop(texture);')
  test_cpp=out/'m2-preflight-gpu.cpp';test_cpp.write_text(cpp,encoding='utf-8',newline='\n')
 
 (overlay/'auto_bump_renderer.h').write_bytes(source.encode())
@@ -178,7 +197,7 @@ if a.m2_preflight:
    for scenario,phase,round_index in product(range(25,34),range(3),range(20)):
     pair=[next(r for r in rows if (int(r['scenario']),int(r['phase']),int(r['round']),int(r['current']))==(scenario,phase,round_index,current)) for current in range(2)]
     assert pair[0]['draws']==pair[1]['draws'] and pair[0]['targets']==pair[1]['targets']
-    assert int(pair[0]['reuses'])==0
+    if not a.subdivision_sharing:assert int(pair[0]['reuses'])==0
     assert int(pair[1]['snapshots'])<=int(pair[0]['snapshots'])
   for scenario,phase in product(range(25,34),range(3)):
    pair=[[r for r in rows if int(r['scenario'])==scenario and int(r['phase'])==phase and int(r['current'])==current] for current in range(2)]
@@ -189,4 +208,12 @@ if a.m2_preflight:
    timings.append(row);print('M2_PREFLIGHT_TIMING',json.dumps(row),flush=True)
  (out/'m2-preflight-timings.json').write_text(json.dumps(timings,indent=2)+'\n')
 assert all(sha(Path(f))==h for f,h in inputs.items()),'Source changed during validation'
-(out/'validation.json').write_text(json.dumps(dict(pass_=True,benchmark=a.benchmark,texture_intern=a.texture_intern,preflight_source=a.preflight_source,rounds=a.rounds,consumer_shader=consumer_stats,compiler=compiler.provenance,inputs=inputs,results=results,concurrent_games=games,scope='Actual capture/native/flush, fixed stock M2 workload with identical normal maps, pressure/recovery. Allocation-test CPU timing also includes endFrame cleanup. Whole timeline includes CPU supply and shared GPU. Not gameplay FPS.',command=list(map(str,cmd))),indent=2)+'\n',encoding='utf-8',newline='\n')
+if a.subdivision_sharing:
+ for result in results:
+  if result['unsupported_df24']:continue
+  text=(out/result['log']).read_text()
+  shares=[tuple(map(int,m)) for m in re.findall(r'SUBDIVISION_GPU policy=(\d+) scenario=(\d+) phase=(\d+) shares=(\d+)',text)]
+  assert any(policy!=2 for policy,scenario,phase,n in shares)
+  assert all(n==0 for policy,scenario,phase,n in shares if policy!=2)
+  assert any(policy==2 and scenario==31 and n>0 for policy,scenario,phase,n in shares),'GPU subdivision reuse was not exercised'
+(out/'validation.json').write_text(json.dumps(dict(pass_=True,benchmark=a.benchmark,texture_intern=a.texture_intern,preflight_source=a.preflight_source,subdivision_sharing=a.subdivision_sharing,rounds=a.rounds,consumer_shader=consumer_stats,compiler=compiler.provenance,inputs=inputs,results=results,concurrent_games=games,scope='Actual capture/native/flush, fixed stock M2 workload with identical normal maps, pressure/recovery. Allocation-test CPU timing also includes endFrame cleanup. Whole timeline includes CPU supply and shared GPU. Not gameplay FPS.',command=list(map(str,cmd))),indent=2)+'\n',encoding='utf-8',newline='\n')

@@ -695,7 +695,7 @@ public:
         float nearestDepth=0,farthestDepth=INFINITY;bool rangeAttempted=false;
         NorthlightAutoDisplacement::CaptureSource geometrySource;
         const auto handoff=[&]{
-            if(source&&geometrySource.mesh&&geometrySource.declaration){source->clear();source->mesh=geometrySource.mesh;source->pose=geometrySource.pose;source->declaration=geometrySource.declaration;source->declaration->AddRef();}
+            if(source&&geometrySource.mesh&&geometrySource.declaration){source->clear();source->mesh=geometrySource.mesh;source->pose=geometrySource.pose;source->bank=geometrySource.bank;source->declaration=geometrySource.declaration;source->declaration->AddRef();}
         };
         if((domain==1&&!terrain)||(domain==2&&!walls)||(domain==3&&!grass)||(domain==4&&!modes[3]))return;
         const D3DRENDERSTATETYPE visibilityKeys[]={D3DRS_COLORWRITEENABLE,D3DRS_ZWRITEENABLE};DWORD visibility[2];

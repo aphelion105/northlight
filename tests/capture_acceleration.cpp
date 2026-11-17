@@ -1,0 +1,130 @@
+#define main displacement_state_reference_main
+#include "displacement_state_reuse.cpp"
+#undef main
+#define main subdivision_reference_main
+#include "displacement_subdivision.cpp"
+#undef main
+
+template<class Base,class Description,D3DRESOURCETYPE Type> struct CaptureBuffer:Base {
+    unsigned refs=1;std::vector<unsigned char> data;
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID,void**)override{return E_NOINTERFACE;}
+    ULONG STDMETHODCALLTYPE AddRef()override{return ++refs;}
+    ULONG STDMETHODCALLTYPE Release()override{const auto n=--refs;if(!n)delete this;return n;}
+    HRESULT STDMETHODCALLTYPE GetDevice(IDirect3DDevice9**)override{return E_FAIL;}
+    HRESULT STDMETHODCALLTYPE SetPrivateData(REFGUID,const void*,DWORD,DWORD)override{return E_FAIL;}
+    HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID,void*,DWORD*)override{return E_FAIL;}
+    HRESULT STDMETHODCALLTYPE FreePrivateData(REFGUID)override{return E_FAIL;}
+    DWORD STDMETHODCALLTYPE SetPriority(DWORD)override{return 0;}
+    DWORD STDMETHODCALLTYPE GetPriority()override{return 0;}
+    void STDMETHODCALLTYPE PreLoad()override{}
+    D3DRESOURCETYPE STDMETHODCALLTYPE GetType()override{return Type;}
+    HRESULT STDMETHODCALLTYPE Lock(UINT,UINT,void**,DWORD)override{return E_FAIL;}
+    HRESULT STDMETHODCALLTYPE Unlock()override{return E_FAIL;}
+    HRESULT STDMETHODCALLTYPE GetDesc(Description*)override{return E_FAIL;}
+};
+using CaptureVB=CaptureBuffer<IDirect3DVertexBuffer9,D3DVERTEXBUFFER_DESC,D3DRTYPE_VERTEXBUFFER>;
+using CaptureIB=CaptureBuffer<IDirect3DIndexBuffer9,D3DINDEXBUFFER_DESC,D3DRTYPE_INDEXBUFFER>;
+static volatile uint64_t accelerationSink=0;
+
+void DisplacementStateTestAccess::acceleration(bool benchmark){
+    Fixture fixture(16,false);G::Mesh reference;assert(fixture.build(false,reference,4,false,true,false,4));
+    auto changed=fixture;for(float& value:changed.height.values)value=1-value;
+    G::Mesh independent;assert(changed.build(false,independent,4,false,true,false,4));equal(reference,independent);
+    // Equal height peaks permit exact GPU-height geometry reuse, with each
+    // material retaining its own height texture. Different peaks cannot reuse.
+    NorthlightAutoDisplacement g(nullptr);auto source=std::make_shared<const Mesh>(fixture.mesh);
+    Declaration sourceDecl,gpuDecl;LimitTexture height;
+    auto upload=[&](const Mesh& mesh){
+        auto e=std::make_unique<NorthlightAutoDisplacement::Entry>();
+        auto* vb=new CaptureVB;vb->data=mesh.streams[0].bytes;e->vb=vb;
+        auto* ib=new CaptureIB;ib->data.resize(mesh.indices.size()*G::indexElementBytes(mesh));G::copyIndices(mesh,ib->data.data());e->ib=ib;
+        e->decl=&gpuDecl;gpuDecl.AddRef();e->sourceDecl=&sourceDecl;sourceDecl.AddRef();e->source=source;e->height=&height;height.AddRef();
+        e->vertices=mesh.vertexCount;e->primitives=mesh.primitiveCount;e->stride=mesh.streams[0].stride;e->program=7;e->domain=4;e->detail=2;e->address=3;e->uvConstants={1,2,3};
+        e->bytes=vb->data.size()+ib->data.size()+4096;
+#ifdef NORTHLIGHT_CAPTURE_ACCELERATION
+        e->geometryBytes=vb->data.size()+ib->data.size();e->subdivisionFactor=4;e->heightPeak=fixture.height.peak();
+#endif
+        return e;
+    };
+    g.retain(upload(reference));auto* original=g.entries.front().get();
+#ifdef NORTHLIGHT_CAPTURE_ACCELERATION
+    auto find=[&](const std::shared_ptr<const Mesh>& mesh=std::shared_ptr<const Mesh>{},unsigned factor=4,float peak=-1){return g.subdivisionCandidate(mesh?mesh:source,0,false,&sourceDecl,7,4,2,3,{1,2,3},factor,peak<0?fixture.height.peak():peak);};
+    assert(find()==original);assert(!find({},8));assert(!find({},4,.125f));
+    assert(!g.subdivisionCandidate(source,0,false,&gpuDecl,7,4,2,3,{1,2,3},4,fixture.height.peak()));
+    assert(!g.subdivisionCandidate(source,0,false,&sourceDecl,8,4,2,3,{1,2,3},4,fixture.height.peak()));
+    assert(!g.subdivisionCandidate(source,0,false,&sourceDecl,7,2,2,3,{1,2,3},4,fixture.height.peak()));
+    assert(!g.subdivisionCandidate(source,0,false,&sourceDecl,7,4,3,3,{1,2,3},4,fixture.height.peak()));
+    assert(!g.subdivisionCandidate(source,0,false,&sourceDecl,7,4,2,4,{1,2,3},4,fixture.height.peak()));
+    assert(!g.subdivisionCandidate(source,0,false,&sourceDecl,7,4,2,3,{1,2,4},4,fixture.height.peak()));
+    auto revised=std::make_shared<Mesh>(*source);revised->streams[0].bytes[0]^=1;assert(!find(revised));
+    const auto initial=g.resident;auto shared=std::make_unique<NorthlightAutoDisplacement::Entry>();
+    g.shareSubdivision(*shared,*original);shared->source=source;shared->geometryBytes=original->geometryBytes;shared->bytes=original->bytes;
+    g.retain(std::move(shared));assert(g.resident==initial+4096);
+    g.evictOldest();assert(g.entries.size()==1&&g.resident==initial);
+    g.evictOldest();assert(g.entries.empty()&&!g.resident);g.retain(upload(reference));original=g.entries.front().get();
+#endif
+    double ms=0;uint64_t digest=0;const unsigned draws=benchmark?64:4;
+    for(unsigned i=0;i<draws;++i){
+        const auto start=std::chrono::steady_clock::now();std::unique_ptr<NorthlightAutoDisplacement::Entry> next;
+#ifdef NORTHLIGHT_CAPTURE_ACCELERATION
+        auto* candidate=find();assert(candidate);next=std::make_unique<NorthlightAutoDisplacement::Entry>();g.shareSubdivision(*next,*candidate);
+#else
+        G::Mesh mesh;assert(changed.build(false,mesh,4,false,true,false,4));next=upload(mesh);
+#endif
+        ms+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
+        assert(next->vertices==reference.vertexCount&&next->primitives==reference.primitiveCount);
+        assert(static_cast<CaptureVB*>(next->vb)->data==reference.streams[0].bytes);
+        assert(static_cast<CaptureIB*>(next->ib)->data==static_cast<CaptureIB*>(original->ib)->data);
+        digest=digest*33+next->vertices+next->primitives;
+    }
+    std::printf("CAPTURE_ACCEL stage=subdivision cpuMs=%.6f operations=%u digest=%llu\n",ms,draws,(unsigned long long)digest);
+    g.reset();assert(sourceDecl.refs==1&&gpuDecl.refs==1&&height.refs==1);
+
+    CaptureBackend backend;DeviceMirror mirror;ExtensionDevice extension(&backend,&mirror);
+    NorthlightAutoDisplacement capture(&extension);capture.setTrustedConstantEpochSource(extension.trustedConstantSource());
+    float bank[1024];for(unsigned i=0;i<1024;++i)bank[i]=float(i)*.03125f;
+    const unsigned reads=benchmark?2048:64;double elapsed=0;
+#ifdef NORTHLIGHT_CAPTURE_ACCELERATION
+    NorthlightAutoDisplacement::CaptureSource facts;
+#endif
+    {MirrorGuard held(mirror.gate);assert(SUCCEEDED(extension.SetVertexShaderConstantF(0,bank,256)));
+        for(unsigned i=0;i<reads;++i){
+            bank[124+i%900]=float(i);assert(SUCCEEDED(extension.SetVertexShaderConstantF(31,bank+124,225)));
+            assert(capture.readConstantBank(0,256,true,capture.rangeConstants,capture.rangeConstantStamp,capture.rangeConstantFirst,capture.rangeConstantCount));
+#ifdef NORTHLIGHT_CAPTURE_ACCELERATION
+            capture.publishConstants(facts,capture.rangeConstants,capture.rangeConstantStamp);
+            const auto* previousRange=capture.rangeConstants;
+#endif
+            const auto start=std::chrono::steady_clock::now();
+#ifdef NORTHLIGHT_CAPTURE_ACCELERATION
+            assert(capture.readConstants(0,256,true,&facts.bank));
+#else
+            assert(capture.readConstants(0,256,true));
+#endif
+            elapsed+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
+            assert(!std::memcmp(capture.constants,bank,sizeof bank));
+#ifdef NORTHLIGHT_CAPTURE_ACCELERATION
+            assert(capture.constants==previousRange&&capture.constantBankTransfers==i+1);
+#endif
+            accelerationSink+=unsigned(capture.constants[i%1024]);
+        }
+        std::printf("CAPTURE_ACCEL stage=constants cpuMs=%.6f operations=%u digest=%llu\n",elapsed,reads,(unsigned long long)accelerationSink);
+#ifdef NORTHLIGHT_CAPTURE_ACCELERATION
+        // A changed bank between admission and prepare must fetch the new pose.
+        const auto transfers=capture.constantBankTransfers;
+        assert(capture.readConstantBank(0,256,true,capture.rangeConstants,capture.rangeConstantStamp,capture.rangeConstantFirst,capture.rangeConstantCount));
+        capture.publishConstants(facts,capture.rangeConstants,capture.rangeConstantStamp);
+        bank[124]=1234;assert(SUCCEEDED(extension.SetVertexShaderConstantF(31,bank+124,1)));
+        assert(capture.readConstants(0,256,true,&facts.bank)&&capture.constantBankTransfers==transfers&&!std::memcmp(capture.constants,bank,sizeof bank));
+        capture.publishConstants(facts,capture.rangeConstants,capture.rangeConstantStamp);
+#endif
+    }
+#ifdef NORTHLIGHT_CAPTURE_ACCELERATION
+    const auto transfers=capture.constantBankTransfers;
+    assert(capture.readConstants(0,256,true,&facts.bank)&&capture.constantBankTransfers==transfers);
+    capture.reset();assert(capture.readConstants(0,256,true,&facts.bank)&&capture.constantBankTransfers==transfers);
+#endif
+
+    std::puts("CAPTURE_ACCELERATION_PASS exact_geometry shared_lifetime byte_ledger complete_keys range_bank_transfer changed_pose gate reset");
+}
+int main(int argc,char** argv){DisplacementStateTestAccess::acceleration(argc==2&&std::string(argv[1])=="--benchmark");}

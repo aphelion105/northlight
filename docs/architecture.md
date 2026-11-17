@@ -10,6 +10,8 @@ For the next gameplay log, zero-weight lighting-filter optimization and separate
 HDR stage timings, see the [2026-11-15 follow-up](pipeline-20261115.md).
 For local-light shadow costs and exact reuse of unchanged cube preparation, see
 the [2026-11-17 investigation](local-light-performance-20261117.md).
+For geometry capture reuse, pose certificates and range-bank transfer, see
+the [capture acceleration investigation](capture-acceleration-20261117.md).
 
 Independent sky/fog controls, the AO-only HDR specialization and current native
 precipitation ownership are documented in

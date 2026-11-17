@@ -44,7 +44,7 @@ public:
         size_t effectiveCopiedBytes=0,fastValid=0;
         size_t sourceIdentityHits=0,sourceReconstructedHits=0,sharedKeyHits=0,keyComparedBytes=0;
         size_t rigidPeerHits=0;
-        size_t certifiedPoseHits=0;
+        size_t certifiedPoseHits=0,poseBasisMisses=0,poseStampMisses=0;
         size_t coarseAttempts=0,coarseValid=0,coarseCulled=0;
         std::uint64_t coarseNanoseconds=0;
     };
@@ -69,7 +69,7 @@ private:
         std::unique_ptr<SkinEnvelope> skin;
         size_t vertex=0,index=0,indexCount=0;bool unsupported=false,ready=false;
         std::uint64_t touched=0,programHash=0,lastEvaluationNs=0,serial=0;size_t bytes=0,baseBytes=0;
-        unsigned constantFirst=0,constantCount=256,memoSlot=64,poseSlot=16;
+        unsigned constantFirst=0,constantCount=256,memoSlot=64,poseSlot[2]={16,16};
         bool copyDefinitions=true,singleBone=false,rigidPositions=false; /* singleBone resolves its control DEF directly */
         unsigned rigidStride=0,paletteSpan=0;bool rigidPeerTried=false;
     };
@@ -89,18 +89,25 @@ private:
     struct PoseCertificate {std::uint64_t serial=0;NorthlightConstantEpoch::Stamp stamp;float basis[16];Bounds bounds;};
     std::array<PoseCertificate,16> poses_{};unsigned nextPose_=0;
     bool certifiedPose(Entry& e,const NorthlightConstantEpoch::Stamp* stamp,const float* basis,Bounds& output){
-        if(!stamp||!stamp->valid||!stamp->held||e.poseSlot>=poses_.size())return false;
-        const auto& pose=poses_[e.poseSlot];
-        if(!e.serial||pose.serial!=e.serial||!NorthlightConstantEpoch::banks(pose.stamp,*stamp,true,true)||
-           std::memcmp(pose.basis,basis,sizeof pose.basis))return false;
-        unsigned first,last;NorthlightConstantEpoch::dirtySpan(pose.stamp,*stamp,e.constantFirst,e.constantFirst+e.constantCount,first,last);
-        if(first!=last)return false;
-        output=pose.bounds;return true;
+        if(!stamp||!stamp->valid||!stamp->held||!e.serial)return false;
+        for(unsigned slot:e.poseSlot){
+            if(slot>=poses_.size())continue;auto& pose=poses_[slot];
+            if(pose.serial!=e.serial||std::memcmp(pose.basis,basis,sizeof pose.basis))continue;
+            if(!NorthlightConstantEpoch::banks(pose.stamp,*stamp,true,true)){++stats_.poseStampMisses;return false;}
+            unsigned first,last;NorthlightConstantEpoch::dirtySpan(pose.stamp,*stamp,e.constantFirst,e.constantFirst+e.constantCount,first,last);
+            if(first!=last){++stats_.poseStampMisses;return false;}
+            output=pose.bounds;return true;
+        }
+        ++stats_.poseBasisMisses;return false;
     }
     void certifyPose(Entry& e,const NorthlightConstantEpoch::Stamp* stamp,const float* basis,const Bounds& output){
         if(!stamp||!stamp->valid||!stamp->held||!e.serial||!output.valid)return;
-        if(e.poseSlot>=poses_.size()||poses_[e.poseSlot].serial!=e.serial)e.poseSlot=nextPose_++%poses_.size();
-        auto& pose=poses_[e.poseSlot];pose.serial=e.serial;pose.stamp=*stamp;pose.bounds=output;std::memcpy(pose.basis,basis,sizeof pose.basis);
+        unsigned* selected=nullptr;
+        for(auto& slot:e.poseSlot)if(slot<poses_.size()&&poses_[slot].serial==e.serial&&!std::memcmp(poses_[slot].basis,basis,sizeof poses_[slot].basis)){selected=&slot;break;}
+        if(!selected)for(auto& slot:e.poseSlot)if(slot>=poses_.size()||poses_[slot].serial!=e.serial){selected=&slot;break;}
+        if(!selected)selected=&e.poseSlot[1];
+        if(*selected>=poses_.size()||poses_[*selected].serial!=e.serial||std::memcmp(poses_[*selected].basis,basis,sizeof poses_[*selected].basis))*selected=nextPose_++%poses_.size();
+        auto& pose=poses_[*selected];pose.serial=e.serial;pose.stamp=*stamp;pose.bounds=output;std::memcpy(pose.basis,basis,sizeof pose.basis);
     }
     static constexpr std::uint64_t HeavyNanoseconds=AdaptiveTimeBudget::Heavy,CheapSliceNanoseconds=40000;
     AdaptiveTimeBudget timeBudget_;bool diagnostics_=true,terminalBuild_=false;
@@ -138,7 +145,7 @@ private:
             if(id){++stats_.sourceIdentityHits;if(!same){++stats_.sourceReconstructedHits;
                 // Only immutable source envelopes survive reconstruction. Pose/
                 // camera results must be evaluated again for this live draw.
-                releaseMemo(e);if(e.poseSlot<poses_.size()&&poses_[e.poseSlot].serial==e.serial)poses_[e.poseSlot].serial=0;
+                releaseMemo(e);for(unsigned slot:e.poseSlot)if(slot<poses_.size()&&poses_[slot].serial==e.serial)poses_[slot].serial=0;
                 e.owner=owner;e.sourceAddress=owner.get();}}
             return it;
         }return entries_.end();

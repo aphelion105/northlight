@@ -92,4 +92,49 @@ static void poses(const char* path){
 #endif
     std::printf("CPU_STAGE stage=poses cpuMs=%.6f operations=1024 digest=%llu cacheObjectBytes=%zu\n",elapsed,(unsigned long long)digest,sizeof(EnvelopeCache));
 }
-int main(int argc,char** argv){assert(argc==3);if(std::string(argv[1])=="aliases")DisplacementStateTestAccess::aliases();else poses(argv[2]);}
+static void posePatterns(const char* path,bool rewrite){
+    auto program=load(path);auto input=geometry(1200);
+    if(rewrite)for(unsigned i=0;i<input.vertexCount;++i)for(unsigned k=0;k<4;++k)input.streams[0].bytes[i*32+28+k]%=8;
+    auto mesh=std::make_shared<const Mesh>(std::move(input));
+    auto prepared=EnvelopeCache::prepareProgram(program,declaration,4);assert(prepared);
+    float bank[1024],basis[2][16]={};for(unsigned i=0;i<4;++i)basis[0][i*5]=basis[1][i*5]=1;
+    const float a=.37f;basis[1][0]=basis[1][10]=std::cos(a);basis[1][2]=-std::sin(a);basis[1][8]=std::sin(a);
+    EnvelopeCache cache(true),oracle(true);palette(bank,0);Bounds warm;
+    assert(finish(cache,program,mesh,bank,basis[0],warm)==Status::Valid);
+    assert(finish(oracle,program,mesh,bank,basis[0],warm)==Status::Valid);
+    NorthlightConstantEpoch::Clock clock;uint64_t digest=0;double elapsed=0;
+    for(unsigned frame=0;frame<128;++frame){
+        palette(bank,frame);clock.writeFloat(31,225);cache.beginFrame(false,8);oracle.beginFrame(false,8);
+        Budget budget,plain;budget.maxOperations=plain.maxOperations=1000000;Bounds outputs[8],reference;
+        const auto start=std::chrono::steady_clock::now();
+        for(unsigned pass=0;pass<8;++pass){
+            if(rewrite)clock.writeFloat(31,225);auto stamp=clock.stamp(true);stamp.held=true;
+            assert(captured(cache,prepared,mesh,bank,basis[rewrite?0:pass%2],budget,outputs[pass],stamp)==Status::Valid);
+        }
+        elapsed+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
+        for(unsigned pass=0;pass<8;++pass){
+            oracle.beginFrame(false);
+            assert(oracle.calculatePrepared(*prepared,*mesh,mesh,bank,basis[rewrite?0:pass%2],plain,reference)==Status::Valid);
+            assert(!std::memcmp(outputs[pass].low,reference.low,sizeof reference.low)&&!std::memcmp(outputs[pass].high,reference.high,sizeof reference.high));
+            uint32_t bits;std::memcpy(&bits,outputs[pass].low,4);digest=digest*33+bits;
+        }
+#ifdef NORTHLIGHT_CAPTURE_ACCELERATION
+        assert(rewrite?cache.stats().certifiedPoseHits==0:cache.stats().certifiedPoseHits>=6);
+#endif
+    }
+#ifdef NORTHLIGHT_CAPTURE_ACCELERATION
+    if(rewrite){
+        for(unsigned change=0;change<2;++change){
+            const unsigned reg=change?31:255;bank[4*reg+3]+=1;clock.writeFloat(reg,1);
+            auto stamp=clock.stamp(true);stamp.held=true;cache.beginFrame(false);oracle.beginFrame(false);
+            Budget budget,plain;budget.maxOperations=plain.maxOperations=1000000;Bounds got,reference;
+            assert(captured(cache,prepared,mesh,bank,basis[0],budget,got,stamp)==Status::Valid);
+            assert(oracle.calculatePrepared(*prepared,*mesh,mesh,bank,basis[0],plain,reference)==Status::Valid);
+            assert(!std::memcmp(got.low,reference.low,sizeof got.low)&&!std::memcmp(got.high,reference.high,sizeof got.high));
+            assert(cache.stats().certifiedPoseHits==0);
+        }
+    }
+#endif
+    std::printf("CPU_STAGE stage=%s cpuMs=%.6f operations=1024 digest=%llu cacheObjectBytes=%zu\n",rewrite?"pose-rewrites":"pose-bases",elapsed,(unsigned long long)digest,sizeof(EnvelopeCache));
+}
+int main(int argc,char** argv){assert(argc==3);const std::string stage=argv[1];if(stage=="aliases")DisplacementStateTestAccess::aliases();else if(stage=="pose-bases"||stage=="pose-rewrites")posePatterns(argv[2],stage=="pose-rewrites");else poses(argv[2]);}

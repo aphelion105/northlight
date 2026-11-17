@@ -150,6 +150,7 @@ struct DisplacementStateTestAccess {
         std::puts("DISPLACEMENT_BOUNDS_WORKING_SET_PASS entries=1536 warmHits=6144 misses=0 entryCap=4096 byteCapMiB=8");
         std::puts("DISPLACEMENT_BOUNDS_CACHE_PASS workingSetMiB=32 boundsKiB_under=64 warmHits=640 weak_lifetime address_reuse reset");
     }
+    static void acceleration(bool benchmark);
     static void capture();
     static void kernels();
     static void primitiveLimit();

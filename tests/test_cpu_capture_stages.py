@@ -38,18 +38,19 @@ for name,folder in variants:
             exe=out/(name+'-'+kind+'-'+opt+'.exe')
             cmd=[str(fp.zig()),'c++','-target','x86-windows-gnu','-'+opt,'-UNDEBUG','-std=c++17','-Wno-microsoft-exception-spec']
             if folder:cmd+=['-I',str(folder)]
-            if name=='current':cmd+=['-DNORTHLIGHT_CPU_CERTIFICATES=1']
+            if name=='current' or 'certifiedPoseHits' in (folder/'replay_envelopes.inl').read_text():cmd+=['-DNORTHLIGHT_CPU_CERTIFICATES=1']
+            if name=='current':cmd+=['-DNORTHLIGHT_CAPTURE_ACCELERATION=1']
             cmd+=['-I',str(native if kind=='boundary' else out),*fp.test_include_flags(),str(fp.TESTS/('cpu_capture_'+kind+'.cpp')),'-luser32','-luuid','-o',str(exe)]
             with (out/(exe.stem+'-build.log')).open('w') as log:subprocess.run(cmd,env=fp.zig_env(),stdout=log,stderr=subprocess.STDOUT,check=True,timeout=300)
             executables[name,kind,opt]=exe
-        for stage,kind in [('aliases','material'),('poses','material'),('boundary','boundary')]:
+        for stage,kind in [('aliases','material'),('poses','material'),('pose-bases','material'),('pose-rewrites','material'),('boundary','boundary')]:
             command=[str(executables[name,kind,opt])]+([stage,str(program)] if kind=='material' else [])
             run=subprocess.run(command,capture_output=True,text=True,timeout=180)
             (out/(name+'-'+stage+'-'+opt+'.log')).write_text(run.stdout+run.stderr)
             print(name,opt,(run.stdout+run.stderr).strip(),flush=True);run.check_returncode()
 summary={}
 if args.baseline_ref:
-    for stage,kind in [('aliases','material'),('poses','material'),('boundary','boundary')]:
+    for stage,kind in [('aliases','material'),('poses','material'),('pose-bases','material'),('pose-rewrites','material'),('boundary','boundary')]:
         for pair in range(args.pairs+1):
             for name in (['baseline','current'] if pair%2==0 else ['current','baseline']):
                 command=[str(executables[name,kind,'O2'])]+([stage,str(program)] if kind=='material' else [])
