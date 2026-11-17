@@ -71,9 +71,14 @@
       "test_world_upload_pixels.py",
       "test_cpu_capture_stages.py",
       "test_capture_acceleration.py",
+      "test_single_skin_bounds.py",
       "test_height_gpu_ownership.py",
       "test_pipeline_capture_buffers.py",
-      "test_material_refusal_cache.py"
+      "test_material_refusal_cache.py",
+      "test_displacement_subdivision.py",
+      "test_point_batch_tree.py",
+      "test_fog_volume_admission.py",
+      "test_saved_state.py"
     ]
   },
   "gpu": {
@@ -114,6 +119,9 @@
       "test_sky_planets_gpu.py",
       "test_celestial_composition_gpu.py",
       "test_fog_volume_gpu.py",
+      "test_imported_fog_sparse_gpu.py",
+      "test_point_shadow_spatial_gpu.py",
+      "test_point_palette_gpu.py",
       "test_fog_temporal_disocclusion_gpu.py",
       "test_probe_local_visibility_gpu.py",
       "test_gi_zero_weight_gpu.py",

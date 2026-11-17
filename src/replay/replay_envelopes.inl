@@ -24,7 +24,7 @@ public:
     enum class Kind {Unknown,Cold,Cheap,Heavy,Unsupported};
     struct WorkInfo {
         Kind kind=Kind::Unknown;std::uint64_t programHash=0;size_t groups=0,operations=0;double elapsedUs=0;bool skin=false;
-        unsigned paletteSpan=0; // Ready FLOAT3/UBYTE4 source at stream-0 offsets 0/16; no new vertex scan.
+        unsigned paletteSpan=0,paletteFirst=0; // Ready FLOAT3/UBYTE4 source at stream-0 offsets 0/16; no new vertex scan.
     };
     struct Expensive {
         bool valid=false;std::uint64_t frame=0,programHash=0;size_t groups=0,operations=0;double elapsedUs=0;
@@ -71,7 +71,7 @@ private:
         std::uint64_t touched=0,programHash=0,lastEvaluationNs=0,serial=0;size_t bytes=0,baseBytes=0;
         unsigned constantFirst=0,constantCount=256,memoSlot=64,poseSlot[2]={16,16};
         bool copyDefinitions=true,singleBone=false,rigidPositions=false; /* singleBone resolves its control DEF directly */
-        unsigned rigidStride=0,paletteSpan=0;bool rigidPeerTried=false;
+        unsigned rigidStride=0,paletteSpan=0,paletteFirst=256;bool rigidPeerTried=false;
     };
     // Rotation filled 2048 entries at only 3.3 MiB. Keep more small immutable
     // sources instead of rebuilding them on return; the byte cap still wins.
@@ -476,7 +476,7 @@ private:
                 singleIndex=indices[0];
                 if(singleBindings[0]->element.Stream==0&&singleBindings[0]->element.Offset==0&&
                    singleBindings[1]->element.Stream==0&&singleBindings[1]->element.Offset==16)
-                    e.paletteSpan=std::max(e.paletteSpan,singleIndex+1);
+                {e.paletteSpan=std::max(e.paletteSpan,singleIndex+1);e.paletteFirst=std::min(e.paletteFirst,singleIndex);}
             }else for(const auto& binding:*e.bindings){const auto& s=mesh.streams[binding.element.Stream];auto& input=inputs[binding.reg];
                 if(!NorthlightActorDeformation::decodeElement(s.bytes.data()+e.vertex*s.stride+binding.element.Offset,binding.element.Type,input)){discardGroups(e);++stats_.invalid;return Status::Invalid;}
                 for(float f:input)if(!std::isfinite(f)){discardGroups(e);++stats_.invalid;return Status::Invalid;}
@@ -719,7 +719,7 @@ private:
         if(inverse[3]!=0||inverse[7]!=0||inverse[11]!=0||inverse[15]!=1)return false;
         if(batched&&!fastOpen_){fastMark_=BoundsClock::now();fastOpen_=true;fastCount_=0;}
         e->touched=++clock_;++stats_.memoBypassed;
-        if(info){info->kind=Kind::Cheap;info->programHash=e->programHash;info->groups=groups;info->operations=operations;info->skin=bool(e->skin);info->paletteSpan=e->paletteSpan;}
+        if(info){info->kind=Kind::Cheap;info->programHash=e->programHash;info->groups=groups;info->operations=operations;info->skin=bool(e->skin);info->paletteSpan=e->paletteSpan;info->paletteFirst=e->paletteSpan?e->paletteFirst:0;}
         if(individual)individual->evaluation(*e,info,Stage::All,status,groups,operations);
         if(certifiedPose(*e,poseStamp,inverse,output)){
             ++stats_.certifiedPoseHits;budget.operations+=operations;status=Status::Valid;++stats_.ready;stats_.skinValid+=bool(e->skin);stats_.cheapValid+=batched;++stats_.fastValid;
@@ -799,7 +799,7 @@ private:
             // Audited single-bone groups have a fixed small evaluator. Their
             // existing operation/slice caps suffice even above eight bones.
             const bool cheap=(e.skin||((e.singleBone||e.groups.size()<=8)&&operations<=128))&&e.lastEvaluationNs<CheapSliceNanoseconds;
-            if(info){info->kind=cheap?Kind::Cheap:Kind::Heavy;info->programHash=e.programHash;info->groups=groups;info->operations=operations;info->skin=bool(e.skin);info->paletteSpan=e.paletteSpan;}
+            if(info){info->kind=cheap?Kind::Cheap:Kind::Heavy;info->programHash=e.programHash;info->groups=groups;info->operations=operations;info->skin=bool(e.skin);info->paletteSpan=e.paletteSpan;info->paletteFirst=e.paletteSpan?e.paletteFirst:0;}
             if(budget.operations<=budget.maxOperations&&operations<=budget.maxOperations-budget.operations&&certifiedPose(e,poseStamp,inverse,output)){
                 if(timer.expired()){output={};++stats_.memoBudgetDeferred;return timeBudget();}
                 ++stats_.certifiedPoseHits;budget.operations+=operations;++stats_.ready;stats_.skinValid+=bool(e.skin);

@@ -30,7 +30,7 @@ constexpr uint32_t AnchorModulus=6144;
 // whose key is in it is freed the moment it is finished (key computed first), so the worker never holds more than the pages
 // that must be uploaded plus the one being filled. Anchors and page boundaries never depend on it. peakLiveBytes (optional)
 // receives the largest live page capacity during the build (kept pages + the page just finished), for measurements.
-struct Options {uint32_t anchorModulus=AnchorModulus,minFillVertices=MinFillVertices;const NorthlightMeshPageKey::KeySet* resident=nullptr;uint64_t* peakLiveBytes=nullptr;NorthlightWorldMesh::PreparationCache* preparation=nullptr;bool spooled=false,deviceLocal=false;};
+struct Options {uint32_t anchorModulus=AnchorModulus,minFillVertices=MinFillVertices;const NorthlightMeshPageKey::KeySet* resident=nullptr;uint64_t* peakLiveBytes=nullptr;NorthlightWorldMesh::PreparationCache* preparation=nullptr;bool spooled=false,deviceLocal=false,pointCells=true;};
 struct Page {
     std::vector<NorthlightGI::WorldVertex> vertices;
     // Page-local indices fit losslessly in 16 bits; source indices stay 32-bit.
@@ -45,12 +45,126 @@ struct Page {
 struct Batch : NorthlightWorldMesh::Batch {
     uint32_t page=0,minVertex=0,vertexCount=0;
 };
+struct PointRange {uint32_t first=0,count=0;};
+// Immutable broad phase, built with the upload pages on the worker. Queries
+// only reject whole distant subtrees; callers keep their original face tests
+// and batch order. Unknown bounds always reach those tests.
+class PointTree {
+    struct Node {NorthlightGI::Vec3 low,high;uint32_t end=0,first=0,count=0;};
+    std::vector<Node> nodes;
+    std::vector<uint32_t> order;
+    uint32_t validCount=0;
+    template<class Batches> void split(uint32_t first,uint32_t count,const Batches& batches){
+        const uint32_t index=uint32_t(nodes.size());nodes.emplace_back();
+        auto low=batches[order[first]].boundsLow,high=batches[order[first]].boundsHigh;
+        for(uint32_t n=first+1;n<first+count;++n){const auto& b=batches[order[n]];
+            low.x=std::min(low.x,b.boundsLow.x);low.y=std::min(low.y,b.boundsLow.y);low.z=std::min(low.z,b.boundsLow.z);
+            high.x=std::max(high.x,b.boundsHigh.x);high.y=std::max(high.y,b.boundsHigh.y);high.z=std::max(high.z,b.boundsHigh.z);}
+        nodes[index].low=low;nodes[index].high=high;
+        if(count<=8){nodes[index].first=first;nodes[index].count=count;}
+        else{
+            const double extent[]={double(high.x)-low.x,double(high.y)-low.y,double(high.z)-low.z};
+            const unsigned axis=extent[1]>extent[0]?(extent[2]>extent[1]?2:1):(extent[2]>extent[0]?2:0);
+            const auto center=[&](uint32_t id){const auto& b=batches[id];
+                return axis==0?double(b.boundsLow.x)+b.boundsHigh.x:axis==1?double(b.boundsLow.y)+b.boundsHigh.y:double(b.boundsLow.z)+b.boundsHigh.z;};
+            const uint32_t half=count/2;
+            std::nth_element(order.begin()+first,order.begin()+first+half,order.begin()+first+count,
+                [&](uint32_t a,uint32_t b){const double x=center(a),y=center(b);return x<y||(x==y&&a<b);});
+            split(first,half,batches);split(first+half,count-half,batches);
+        }
+        nodes[index].end=uint32_t(nodes.size());
+    }
+public:
+    size_t bytes()const{return sizeof(*this)+nodes.capacity()*sizeof(Node)+order.capacity()*sizeof(uint32_t);}
+    static std::shared_ptr<const PointTree> build(const std::vector<Batch>& batches,const std::vector<Batch>& subBatches,const NorthlightGI::AllocationAdmission& admit={}){
+        struct View {
+            const std::vector<Batch>& coarse;const std::vector<Batch>& fine;
+            size_t size()const{return coarse.size()+fine.size();}
+            const Batch& operator[](size_t i)const{return i<coarse.size()?coarse[i]:fine[i-coarse.size()];}
+        };
+        return build(View{batches,subBatches},admit);
+    }
+    template<class Batches> static std::shared_ptr<const PointTree> build(const Batches& batches,const NorthlightGI::AllocationAdmission& admit={}){
+        if(batches.size()<16||batches.size()>65536)return {};
+        if(admit&&!admit(sizeof(PointTree)+batches.size()*(sizeof(Node)+sizeof(uint32_t))+64))return {};
+        try{
+            auto tree=std::make_shared<PointTree>();tree->order.reserve(batches.size());tree->nodes.reserve(batches.size());
+            const auto valid=[](const auto& b){return std::isfinite(b.boundsLow.x)&&std::isfinite(b.boundsLow.y)&&std::isfinite(b.boundsLow.z)&&
+                std::isfinite(b.boundsHigh.x)&&std::isfinite(b.boundsHigh.y)&&std::isfinite(b.boundsHigh.z)&&
+                b.boundsLow.x<=b.boundsHigh.x&&b.boundsLow.y<=b.boundsHigh.y&&b.boundsLow.z<=b.boundsHigh.z;};
+            for(uint32_t i=0;i<batches.size();++i)if(valid(batches[i]))tree->order.push_back(i);
+            tree->validCount=uint32_t(tree->order.size());
+            if(tree->validCount)tree->split(0,tree->validCount,batches);
+            for(uint32_t i=0;i<batches.size();++i)if(!valid(batches[i]))tree->order.push_back(i);
+            return tree;
+        }catch(const std::bad_alloc&){return {};}
+    }
+    template<class Reject> bool nearby(size_t batches,Reject reject,std::vector<unsigned char>& hits)const{
+        if(order.size()!=batches)return false;
+        try{hits.assign(batches,0);}catch(const std::bad_alloc&){return false;}
+        for(size_t at=0;at<nodes.size();){const auto& node=nodes[at];
+            if(reject(node.low,node.high)){at=node.end;continue;}
+            for(uint32_t i=node.first;i<node.first+node.count;++i)hits[order[i]]=1;
+            ++at;
+        }
+        for(size_t at=validCount;at<order.size();++at)hits[order[at]]=1;
+        return true;
+    }
+};
+// Worker-only partition inside one material/page. Triangle corners, attributes,
+// coarse bounds and page boundaries stay identical. Lamp enclosures stay whole.
+inline bool partitionPointBatch(Page& page,const Batch& original,std::vector<Batch>& output,PointRange& range,
+                                const NorthlightGI::AllocationAdmission& admit={}){
+    try {
+    constexpr size_t Limit=65536;
+    if(original.terrain||original.lampSourceId||original.count<=96||output.size()>=Limit)return true;
+    const auto extent=original.boundsHigh-original.boundsLow;
+    if(std::max({extent.x,extent.y,extent.z})<=16)return true;
+    struct Triangle {uint64_t cell=0;uint32_t order=0;uint16_t ids[3]{};};
+    if(admit&&!admit(uint64_t(original.count)*sizeof(Triangle)))return true;
+    std::vector<Triangle> triangles;triangles.reserve(original.count);
+    for(uint32_t at=0;at<original.count;++at){
+        Triangle t;t.order=at;double center[3]{};
+        for(unsigned k=0;k<3;++k){t.ids[k]=page.indices[original.start+at*3+k];const auto& p=page.vertices[t.ids[k]].position;
+            center[0]+=double(p.x)/3;center[1]+=double(p.y)/3;center[2]+=double(p.z)/3;}
+        for(unsigned axis=0;axis<3;++axis){const double cell=std::floor(center[axis]/16);
+            if(cell< -1048576||cell>=1048576)return true; // Unrepresentable coordinates keep the original range.
+            t.cell|=uint64_t(int64_t(cell)+1048576)<<(axis*21);}
+        triangles.push_back(t);
+    }
+    std::sort(triangles.begin(),triangles.end(),[](const Triangle& a,const Triangle& b){return a.cell<b.cell||(a.cell==b.cell&&a.order<b.order);});
+    size_t groups=1;for(size_t i=1;i<triangles.size();++i)groups+=triangles[i].cell!=triangles[i-1].cell;
+    if(groups==1||groups>Limit-output.size())return true;
+    if(output.size()+groups>output.capacity()){
+        const size_t capacity=std::max(output.size()+groups,std::min(Limit,std::max<size_t>(1,output.capacity()*2)));
+        if(admit&&!admit(capacity*sizeof(Batch)))return true;
+        output.reserve(capacity);
+    }
+    range.first=uint32_t(output.size());range.count=uint32_t(groups);
+    uint32_t at=original.start;
+    for(size_t first=0;first<triangles.size();){
+        size_t end=first+1;while(end<triangles.size()&&triangles[end].cell==triangles[first].cell)++end;
+        Batch b=original;b.start=at;b.count=uint32_t(end-first);b.minVertex=UINT32_MAX;uint32_t high=0;
+        const float inf=std::numeric_limits<float>::infinity();b.boundsLow={inf,inf,inf};b.boundsHigh={-inf,-inf,-inf};
+        for(size_t i=first;i<end;++i)for(auto id:triangles[i].ids){
+            page.indices[at++]=id;b.minVertex=std::min(b.minVertex,uint32_t(id));high=std::max(high,uint32_t(id));
+            const auto& p=page.vertices[id].position;
+            b.boundsLow.x=std::min(b.boundsLow.x,p.x);b.boundsLow.y=std::min(b.boundsLow.y,p.y);b.boundsLow.z=std::min(b.boundsLow.z,p.z);
+            b.boundsHigh.x=std::max(b.boundsHigh.x,p.x);b.boundsHigh.y=std::max(b.boundsHigh.y,p.y);b.boundsHigh.z=std::max(b.boundsHigh.z,p.z);
+        }
+        b.vertexCount=high-b.minVertex+1;output.push_back(b);first=end;
+    }
+    return true;
+    }catch(const std::bad_alloc&){return true;} // Optional metadata: preserve the coarse draw.
+}
 struct Plan {
     bool deviceLocal=false;
     std::shared_ptr<NorthlightGI::TemporaryGeometryFile> temporary;
     bool defaultPool()const{return deviceLocal||bool(temporary);}
     std::vector<Page> pages;
-    std::vector<Batch> batches;
+    std::vector<Batch> batches,pointSubBatches;
+    std::vector<PointRange> pointSubRanges;
+    std::shared_ptr<const PointTree> pointTree;
     uint64_t vertexBytes=0,indexBytes=0;
     bool copy(const Page& page,bool vertices,size_t offset,size_t bytes,void* target)const{
         const uint64_t size=vertices?page.key.vertexBytes:page.key.indexBytes;
@@ -68,11 +182,13 @@ struct Plan {
     void accountMemory(NorthlightMemoryFootprint::Counter& memory,bool includeObject=true)const{
         using namespace NorthlightMemoryFootprint;
         if(includeObject){if(!memory.visit(this))return;memory.add(Metadata,sizeof(*this));}
-        memory.vector(Metadata,pages);memory.vector(Metadata,batches);
+        memory.vector(Metadata,pages);memory.vector(Metadata,batches);memory.vector(Metadata,pointSubBatches);memory.vector(Metadata,pointSubRanges);
+        if(pointTree&&memory.visit(pointTree.get()))memory.add(Metadata,pointTree->bytes());
         for(const auto& page:pages){memory.vector(Upload,page.vertices);memory.vector(Upload,page.indices);}
     }
     uint64_t cpuBytes() const {
-        uint64_t bytes=sizeof(*this)+pages.capacity()*sizeof(Page)+batches.capacity()*sizeof(Batch);
+        uint64_t bytes=sizeof(*this)+pages.capacity()*sizeof(Page)+batches.capacity()*sizeof(Batch)+pointSubBatches.capacity()*sizeof(Batch)+pointSubRanges.capacity()*sizeof(PointRange);
+        if(pointTree)bytes+=pointTree->bytes();
         for(const auto& p:pages)bytes+=p.vertices.capacity()*sizeof(NorthlightGI::WorldVertex)+p.indices.capacity()*sizeof(uint16_t);
         return bytes;
     }
@@ -131,7 +247,7 @@ template<bool Segmented> inline bool buildImpl(const NorthlightWorldMesh::WorldM
         const auto indexAt=[&](size_t i)->uint32_t{if constexpr(Segmented)return (*indexChunks)[i];else return indexData[i];};
         // Immutable layout memo has no CPU geometry. Require every page still
         // resident and the exact production partition options before reuse.
-        if(options.preparation&&options.resident&&options.anchorModulus==AnchorModulus&&options.minFillVertices==MinFillVertices&&
+        if(options.pointCells&&options.preparation&&options.resident&&options.anchorModulus==AnchorModulus&&options.minFillVertices==MinFillVertices&&
            options.preparation->reuseResident(input,output,*options.resident,admit)){output.deviceLocal=options.deviceLocal;if(options.peakLiveBytes)*options.peakLiveBytes=0;error.clear();return true;}
         auto allowed=[&](uint64_t bytes){return !admit||admit(bytes);};
         // Reserve admission for both bounded index tables.
@@ -142,7 +258,17 @@ template<bool Segmented> inline bool buildImpl(const NorthlightWorldMesh::WorldM
         uint64_t liveKept=0,peakLive=0;
         std::vector<NorthlightGI::WorldVertex> reusableVertices;std::vector<uint16_t> reusableIndices;
         // A finished page gets its content key; a resident one is freed right here (elided), keeping key and sizes.
+        size_t pageBatchFirst=0;bool pointCells=options.pointCells;
         auto finishPage=[&](Page& p){
+            if(pointCells){
+                try{if(!allowed(next.batches.size()*sizeof(PointRange)))pointCells=false;
+                    else next.pointSubRanges.resize(next.batches.size());
+                }catch(const std::bad_alloc&){pointCells=false;}
+                if(pointCells)for(size_t i=pageBatchFirst;i<next.batches.size();++i)
+                    partitionPointBatch(p,next.batches[i],next.pointSubBatches,next.pointSubRanges[i],admit);
+                else{std::vector<Batch>().swap(next.pointSubBatches);std::vector<PointRange>().swap(next.pointSubRanges);}
+            }
+            pageBatchFirst=next.batches.size();
             p.key=NorthlightMeshPageKey::keyOf(p.vertices.data(),p.vertices.size()*sizeof(NorthlightGI::WorldVertex),p.indices.data(),p.indices.size()*sizeof(uint16_t));
             next.vertexBytes+=p.key.vertexBytes;next.indexBytes+=p.key.indexBytes;
             uint64_t capacity=p.vertices.capacity()*sizeof(NorthlightGI::WorldVertex)+p.indices.capacity()*sizeof(uint16_t);
@@ -276,10 +402,11 @@ template<bool Segmented> inline bool buildImpl(const NorthlightWorldMesh::WorldM
             if(anchored)closeAfter=true;
         }
         if(expectedStart!=input.pagingIndexCount())return fail("Paged mesh batches do not cover all indices");
-        if(!next.pages.empty())finishPage(next.pages.back()); // never fails: compaction is optional
+        if(!next.pages.empty()&&!finishPage(next.pages.back()))return fail("Point shadow range allocation deferred");
+        next.pointTree=PointTree::build(next.batches,next.pointSubBatches,admit);
         if(next.temporary)next.temporary->flush();
         if(options.peakLiveBytes)*options.peakLiveBytes=peakLive;
-        if(options.preparation&&options.anchorModulus==AnchorModulus&&options.minFillVertices==MinFillVertices)options.preparation->rememberPages(input,next);
+        if(options.pointCells&&options.preparation&&options.anchorModulus==AnchorModulus&&options.minFillVertices==MinFillVertices)options.preparation->rememberPages(input,next);
         output=std::move(next);error.clear();return true;
     } catch(const std::bad_alloc&) {return fail("Paged mesh worker allocation failed");}
       catch(const std::length_error&) {return fail("Paged mesh worker allocation size overflow");}
@@ -332,6 +459,22 @@ inline const char* validatePages(const NorthlightWorldMesh::WorldMeshUploadPlan&
         if(nextIndex==page.indexCount()){++pageIndex;nextIndex=0;}
     }
     if(pageIndex!=pages.pages.size()||nextIndex)return "incomplete paged batch coverage";
+    if(!pages.pointSubRanges.empty()&&pages.pointSubRanges.size()!=pages.batches.size())return "point range parent count mismatch";
+    size_t nextPoint=0;
+    for(size_t i=0;i<pages.pointSubRanges.size();++i){const auto& range=pages.pointSubRanges[i];const auto& parent=pages.batches[i];
+        if(!range.count)continue;
+        if(parent.terrain||parent.lampSourceId||range.count<2||range.first!=nextPoint||range.count>pages.pointSubBatches.size()-nextPoint)return "invalid point range parent";
+        uint64_t start=parent.start;
+        for(size_t n=0;n<range.count;++n){const auto& b=pages.pointSubBatches[nextPoint++];
+            if(b.page!=parent.page||b.start!=start||!b.count||b.material!=parent.material||b.terrain||b.lampSourceId||b.pointOnly!=parent.pointOnly||
+               b.chunkX!=parent.chunkX||b.chunkY!=parent.chunkY||!b.vertexCount||b.minVertex<parent.minVertex||uint64_t(b.minVertex)+b.vertexCount>uint64_t(parent.minVertex)+parent.vertexCount)return "invalid point sub-batch";
+            for(unsigned axis=0;axis<3;++axis)if(!std::isfinite((&b.boundsLow.x)[axis])||!std::isfinite((&b.boundsHigh.x)[axis])||(&b.boundsLow.x)[axis]>(&b.boundsHigh.x)[axis]||
+                (&b.boundsLow.x)[axis]<(&parent.boundsLow.x)[axis]||(&b.boundsHigh.x)[axis]>(&parent.boundsHigh.x)[axis])return "invalid point sub-batch bounds";
+            start+=uint64_t(b.count)*3;
+        }
+        if(start!=uint64_t(parent.start)+uint64_t(parent.count)*3)return "incomplete point sub-batch coverage";
+    }
+    if(nextPoint!=pages.pointSubBatches.size()||nextPoint>65536)return "incomplete point range coverage";
     for(size_t i=0;i<materials.size();++i){const auto& material=materials[i];
         if(!material.width||!material.height||material.width>4096||material.height>4096||uint64_t(material.width)*material.height*4!=material.pixelBytes())return "invalid paged texture size";
         if(material.spooled&&(!material.pixels().empty()||!pages.temporary||material.fileOffset>pages.temporary->size()||material.pixelBytes()>pages.temporary->size()-material.fileOffset))return "invalid paged texture temporary range";
@@ -384,7 +527,8 @@ inline bool seal(NorthlightWorldMesh::WorldMeshUploadPlan& input,std::shared_ptr
         }
         // 0.3.214 (task 42): pages and cutout textures move into the separately owned payload.
         auto payload=std::make_shared<NorthlightWorldMesh::UploadPayload>();
-        payload->pageMetadataBytes=sizeof(*pages)+pages->pages.capacity()*sizeof(Page)+pages->batches.capacity()*sizeof(Batch);
+        payload->pageMetadataBytes=sizeof(*pages)+pages->pages.capacity()*sizeof(Page)+pages->batches.capacity()*sizeof(Batch)+pages->pointSubBatches.capacity()*sizeof(Batch)+pages->pointSubRanges.capacity()*sizeof(PointRange);
+        if(pages->pointTree)payload->pageMetadataBytes+=pages->pointTree->bytes();
         for(const auto& page:pages->pages)payload->pageStorageBytes+=page.vertices.capacity()*sizeof(NorthlightGI::WorldVertex)+page.indices.capacity()*sizeof(uint16_t);
         payload->materialMetadataBytes=input.materials.capacity()*sizeof(NorthlightWorldMesh::MaterialUpload);
         for(const auto& material:input.materials)if(!pages->temporary||material.pixels().size()<=4)payload->materialPixelBytes+=material.retainedPixelBytes();

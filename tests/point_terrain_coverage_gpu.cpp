@@ -10,6 +10,30 @@ struct PointCopyFaults:ForwardIDirect3DDevice9 {
  }
 };
 struct PointTerrainCoverageTest {
+ static void staticContentDemand(IDirect3DDevice9* d){
+  WorldRenderer w(d);auto records=std::make_shared<NorthlightLocalShadowSignature::Records>();
+  NorthlightLocalShadowSignature::Record record;record.low={-1,-1,0};record.high={1,1,0};record.content.words={123,456};record.content.triangles=2;records->push_back(record);
+  w.uploadedLocalShadowRecords=records;w.meshGeneration=1;
+  auto& slot=w.pointSlot();slot.selected={ {0,0,4},{1,1,1},1,12,42,3,NorthlightLocalLights::CastShadow};slot.cacheSource=42;
+  for(unsigned n=0;n<10000;++n){slot.selected.position[0]=float(n%100)*.001f;
+   assert(w.pointStaticRebuild(slot.selected,true)==63);
+   for(unsigned face=0;face<6;++face)w.pointRememberStaticFace(face,true);
+   slot.cacheValid=true;assert(w.pointStaticRebuild(slot.selected,false)==0);
+  }
+  assert(!w.pointCold.contentPasses&&!w.pointCold.contentRecords);
+  ++w.meshGeneration;assert(w.pointStaticRebuild(slot.selected,false)==63);assert(w.pointCold.contentPasses==1);
+  for(unsigned face=0;face<6;++face)w.pointRememberStaticFace(face,false);
+  ++w.meshGeneration;assert(w.pointStaticRebuild(slot.selected,false)==0);assert(w.pointCold.contentPasses==2);
+  auto changed=std::make_shared<NorthlightLocalShadowSignature::Records>(*records);(*changed)[0].content.words[0]++;
+  w.uploadedLocalShadowRecords=changed;++w.meshGeneration;
+  const auto expected=NorthlightPointShadow::staleFaces(slot.faceContent,slot.faceKnown,slot.faceSerial,w.pointFaceDigests(slot.selected),w.meshGeneration);
+  assert(expected&&w.pointStaticRebuild(slot.selected,false)==expected);
+  for(unsigned face=0;face<6;++face)if(expected&(1u<<face))w.pointRememberStaticFace(face,false);
+  for(unsigned face=0;face<6;++face)slot.faceSerial[face]=w.meshGeneration;
+  assert(!w.pointStaticRebuild(slot.selected,false));
+  w.uploadedLocalShadowRecords.reset();++w.meshGeneration;assert(w.pointStaticRebuild(slot.selected,false)==63);
+  std::puts("POINT_CONTENT_DEMAND_PASS movingPositions=10000 repeatedContentWalks=0 generations=exact changedContent=exact unknown=refresh");
+ }
  static void directionalProofDemand(IDirect3DDevice9* d){
   WorldRenderer w(d);auto scene=std::make_shared<StaticShadow::Snapshot>();scene->map="proof-demand";scene->mapGeneration=1;
   auto model=std::make_shared<StaticShadow::Model>();model->key="opaque";model->contentRevision=1;
@@ -81,6 +105,7 @@ struct PointTerrainCoverageTest {
   original->Release();declaration->Release();std::puts("POINT_MOVING_LIGHT_CAPTURE_PASS triangles=99 minimum=100 poses=2 sameSource=1");
  }
  static void run(IDirect3DDevice9* d){
+  staticContentDemand(d);
   directionalProofDemand(d);
   movingLightCapture(d);
   // One cached terrain blocker. The camera may see a different native portion
@@ -138,6 +163,24 @@ struct PointTerrainCoverageTest {
    if(referenceCube.empty())referenceCube=std::move(cube);else assert(cube==referenceCube);
   }
   std::puts("POINT_BATCH_COALESCING_GPU_PASS cases=8 faces=6 pixels=exact pageMaterialFilterGapOverflow=separate triangleOrder=preserved");
+  // The production candidate path must address appended subranges while the
+  // coarse directional/terrain indices keep their original meaning.
+  for(unsigned mode=0;mode<4;++mode){auto parent=batch;parent.terrain=false;w.batches={parent};
+   auto left=first,right=second;left.terrain=right.terrain=false;
+   w.pointSubBatches={left,right};w.pointSubRanges={{0,2}};
+   if(mode==1){w.pointSubBatches.clear();w.pointSubRanges.clear();}
+   if(mode>=2){auto distantBatch=parent;distantBatch.boundsLow={500,500,500};distantBatch.boundsHigh={501,501,501};
+    while(w.batches.size()<16){distantBatch.terrain=w.batches.size()%2;w.batches.push_back(distantBatch);w.pointSubRanges.push_back({});}
+    w.pointTree=NorthlightWorldMeshPages::PointTree::build(w.batches,w.pointSubBatches);assert(w.pointTree);
+    if(mode==3){w.batches.push_back(distantBatch);w.pointSubRanges.push_back({});}
+   }
+   w.pointSlot().cacheValid=false;w.terrainBatchListGeneration=UINT64_MAX;
+   must(d->BeginScene());assert(w.renderPointShadow(light,true,false));must(d->EndScene());
+   for(unsigned face=0;face<6;++face){must(d->GetRenderTargetData(w.pointSlot().faces[face],readback));D3DLOCKED_RECT lock{};must(readback->LockRect(&lock,nullptr,D3DLOCK_READONLY));
+    for(unsigned y=0;y<256;++y)assert(!std::memcmp(referenceCube.data()+face*256*256+y*256,static_cast<char*>(lock.pBits)+y*lock.Pitch,256*4));must(readback->UnlockRect());}
+  }
+  w.pointSubBatches.clear();w.pointSubRanges.clear();w.pointTree.reset();
+  std::puts("POINT_SUBRANGE_CANDIDATES_PASS faces=6 pixels=exact coarseFallback=1");
   const bool minSupported=w.pointMinBlend;
   if(minSupported)for(unsigned path=0;path<4;++path){
    auto cached=batch;cached.terrain=false;w.batches={batch,cached};w.terrainBatchListGeneration=UINT64_MAX;w.pointSlot().cacheValid=false;

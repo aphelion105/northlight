@@ -16,7 +16,7 @@ assert manifest['bump_include_sha256']==hashlib.sha256((fp.SHADERS/'auto_bump_no
 assert set(manifest['shaders'])=={entry for entry,_ in ENTRIES}
 extended={'ForeverFogActor','ForeverFogActorNoNoise','WorldFogActor','FogCloudsActor'}
 tiled={'WorldFogActorTiled','FogCloudsActorTiled','WorldMaterialCompositeHdr'}
-tiled.update(entry for entry,_ in ENTRIES if entry.startswith('MoonFloorFog'))
+tiled.update(entry for entry,_ in ENTRIES if entry.startswith(('MoonFloorFog','ForeverFogActorTiled')))
 
 def verify(entry,target,info,data,words):
     assert info['target']==target and info['bytes']==len(data)
@@ -51,6 +51,11 @@ assert 'caps.MaxPixelShader30InstructionSlots>=kUnifiedDirectionalShadowShaderSl
 if 'ForeverFogActor' in manifest['shaders']:
     assert 'caps.MaxPixelShader30InstructionSlots>=kForeverFogActorShaderSlots' in world
     assert 'd->CreatePixelShader(kForeverFogActorShader,&foreverFogActorPS)' in world
+for entry,resource in [('ForeverFogActorTiled','foreverFogActorTiledPS'),('ForeverFogActorTiledNoNoise','foreverFogActorTiledNoNoisePS')]:
+    assert 'caps.MaxPixelShader30InstructionSlots>=k'+entry+'ShaderSlots' in world
+    assert 'd->CreatePixelShader(k'+entry+'Shader,&'+resource+')' in world
+    assert 'drop('+resource+');' in world
+assert '!fading&&actor&&fogActorTiledCurrent&&foreverFogActorTiledPS' in world
 actor=world[world.index('    void actorShaderResources('):world.index('bool createResources(')]
 assert 'caps.MaxPixelShader30InstructionSlots>=std::max(kWorldFogActorTiledShaderSlots,kFogCloudsActorTiledShaderSlots)' in actor
 assert world.count('d->GetDeviceCaps(&caps);actorShaderResources(caps);')==2

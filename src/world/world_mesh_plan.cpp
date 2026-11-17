@@ -355,7 +355,7 @@ bool PreparationCache::reuseResident(const WorldMeshUploadPlan& input,Northlight
     for(const auto& page:memo->pages.pages)if(!resident.count(page.key))return false;
     // Memo pages have no CPU vertex/index payload. Active GPU residency is
     // checked on every use; a lost/evicted page falls back to ordinary packing.
-    if(admit&&!admit(memo->pages.pages.size()*sizeof(NorthlightWorldMeshPages::Page)+memo->pages.batches.size()*sizeof(NorthlightWorldMeshPages::Batch)))return false;
+    if(admit&&!admit(memo->pages.pages.size()*sizeof(NorthlightWorldMeshPages::Page)+(memo->pages.batches.size()+memo->pages.pointSubBatches.size())*sizeof(NorthlightWorldMeshPages::Batch)+memo->pages.pointSubRanges.size()*sizeof(NorthlightWorldMeshPages::PointRange)))return false;
     try{auto next=memo->pages;
     if(NorthlightWorldMeshPages::validatePages(input,next))return false;
     ++impl_->stats.pageHits;impl_->stats.reusedPages+=next.pages.size();impl_->stats.reusedPageBytes+=next.vertexBytes+next.indexBytes;
@@ -364,11 +364,13 @@ bool PreparationCache::reuseResident(const WorldMeshUploadPlan& input,Northlight
 void PreparationCache::rememberPages(const WorldMeshUploadPlan& input,const NorthlightWorldMeshPages::Plan& pages){
     if(!input.preparationLayout||NorthlightWorldMeshPages::validatePages(input,pages))return;
     try{
-        uint64_t bytes=sizeof(Impl::PageMemo)+pages.pages.size()*sizeof(NorthlightWorldMeshPages::Page)+pages.batches.size()*sizeof(NorthlightWorldMeshPages::Batch)+64;
+        uint64_t bytes=sizeof(Impl::PageMemo)+pages.pages.size()*sizeof(NorthlightWorldMeshPages::Page)+(pages.batches.size()+pages.pointSubBatches.size())*sizeof(NorthlightWorldMeshPages::Batch)+pages.pointSubRanges.size()*sizeof(NorthlightWorldMeshPages::PointRange)+64;
+        if(pages.pointTree)bytes+=pages.pointTree->bytes();
         bytes+=sizeof(PreparationLayout)+input.preparationLayout->capacity()*sizeof(PreparationIdentity)+64;for(const auto& part:*input.preparationLayout)bytes+=part.materials.capacity()*4;
         auto charge=impl_->charge(bytes);if(!charge)return;
         auto memo=std::make_shared<Impl::PageMemo>();memo->charge=std::move(charge);memo->layout=input.preparationLayout;
-        memo->pages.vertexBytes=pages.vertexBytes;memo->pages.indexBytes=pages.indexBytes;memo->pages.batches=pages.batches;memo->pages.pages.reserve(pages.pages.size());
+        memo->pages.vertexBytes=pages.vertexBytes;memo->pages.indexBytes=pages.indexBytes;memo->pages.batches=pages.batches;memo->pages.pointSubBatches=pages.pointSubBatches;memo->pages.pointSubRanges=pages.pointSubRanges;memo->pages.pages.reserve(pages.pages.size());
+        memo->pages.pointTree=pages.pointTree;
         for(const auto& page:pages.pages){memo->pages.pages.emplace_back();auto& p=memo->pages.pages.back();p.key=page.key;p.elided=true;}
         impl_->pageMemo=std::move(memo);impl_->stats.bytes=impl_->budget->used.load();
     }catch(const std::bad_alloc&){/* Optional acceleration never refuses a prepared upload. */}

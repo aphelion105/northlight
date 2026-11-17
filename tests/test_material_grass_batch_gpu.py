@@ -32,7 +32,14 @@ while True:
 Compiler(allow_compatible_binary=True).compile(fp.SHADERS/'auto_normal_preview.hlsl','PreviewBase','ps_3_0',source/'PreviewBase.bin')
 control=out/'control';control.mkdir(exist_ok=True)
 for name in ('auto_bump_renderer.h','auto_displacement_renderer.h'):
- (control/name).write_bytes(subprocess.check_output(['git','show','af4a7c1c:src/water/'+name]))
+ data=subprocess.check_output(['git','show','af4a7c1c:src/water/'+name])
+ if name=='auto_bump_renderer.h':
+  # The current fixture supplies WMO provenance; this frozen grass control
+  # predates that argument. Accept it without changing the control's behavior.
+  signature=b'size_t count,unsigned modelFamily=0){'
+  assert data.count(signature)==1
+  data=data.replace(signature,b'size_t count,unsigned modelFamily=0,bool=false){',1)
+ (control/name).write_bytes(data)
 executables={}
 for name in ('control','current'):
  exe=out/(name+'.exe');executables[name]=exe

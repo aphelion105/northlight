@@ -16,15 +16,16 @@ public:
     IDirect3DStateBlock9* acquire(){
         if(!device)return nullptr;
         for(auto& slot:slots)if(!slot.busy){
-            if(slot.block){
-                if(FAILED(slot.block->Capture())){
-                    slot.block->Release();slot.block=nullptr;return nullptr;
-                }
-            }else{
-                // CreateStateBlock(D3DSBT_ALL) captures the initial state itself.
+            if(!slot.block){
                 if(FAILED(device->CreateStateBlock(D3DSBT_ALL,&slot.block))){
                     if(slot.block)slot.block->Release();slot.block=nullptr;return nullptr;
                 }
+            }
+            // Native D3D9 can leave high PS constants zero in a new ALL block.
+            // Capture explicitly on first use as well as on pooled reuse.
+            if(!slot.block)return nullptr;
+            if(FAILED(slot.block->Capture())){
+                slot.block->Release();slot.block=nullptr;return nullptr;
             }
             slot.busy=slot.block!=nullptr;return slot.block;
         }
@@ -33,6 +34,7 @@ public:
         if(FAILED(device->CreateStateBlock(D3DSBT_ALL,&overflow))){
             if(overflow)overflow->Release();return nullptr;
         }
+        if(overflow&&FAILED(overflow->Capture())){overflow->Release();return nullptr;}
         return overflow;
     }
     void release(IDirect3DStateBlock9* block){
@@ -64,7 +66,10 @@ struct SavedState {
         :d(device),pool(cache&&cache->ownsDevice(device)?cache:nullptr){
         if(!d)return;
         if(pool)block=pool->acquire();
-        else if(FAILED(d->CreateStateBlock(D3DSBT_ALL,&block)))return;
+        else{
+            if(FAILED(d->CreateStateBlock(D3DSBT_ALL,&block)))return;
+            if(block&&FAILED(block->Capture())){block->Release();block=nullptr;return;}
+        }
         if(!block)return;
         for(int i=0;i<4;++i){const auto hr=d->GetRenderTarget(i,&targets[i]);if(FAILED(hr)&&hr!=D3DERR_NOTFOUND)return;}
         const auto hr=d->GetDepthStencilSurface(&depth);if(FAILED(hr)&&hr!=D3DERR_NOTFOUND)return;

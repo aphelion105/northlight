@@ -395,7 +395,7 @@ float fogActorShadow(float3 q,float3 delta){
 
 // Wide tile minima include eight fine texels around each block. Reject only
 // intervals proved empty; possible casters keep the original fine integral.
-float fogActorShadowTiled(float3 q,float3 delta){
+float fogActorShadowTiled(float3 q,float3 delta,bool checkRange=false){
     float3 inverse=(delta<0?-1:1)/max(abs(delta),1e-12);
     float3 a=(float3(FogActorBounds.xy,0)-q)*inverse;
     float3 b=(float3(FogActorBounds.zw,1)-q)*inverse;
@@ -408,7 +408,8 @@ float fogActorShadowTiled(float3 q,float3 delta){
     float2 inv=(direction<0?-1:1)/max(abs(direction),1e-12);
     float2 cell=floor((origin+direction*t)/16);
     float2 next=((cell+(direction>0?1:0))*16-origin)*inv;
-    bool possible=false;
+    // Long imported intervals outside the proven coordinate domain use fine DDA.
+    bool possible=checkRange&&(any(abs(q.xy)>32)||any(abs(q.xy+delta.xy)>32));
     [loop]for(int i=0;i<132&&!possible&&t<end;++i){
         float last=max(t,min(end,min(next.x,next.y)));
         float z=tex2Dlod(FogActorTiles,float4((cell+.5)/64,0,0)).r+PassInfo.x*4;
@@ -1328,15 +1329,15 @@ float3 foreverNoise(float3 p) {
     }
     return noise;
 }
-float foreverVisibility(float3 ray,float a,float b,float t,bool actorIntegration,bool cullUnneeded){
+float foreverVisibility(float3 ray,float a,float b,float t,bool actorIntegration,bool cullUnneeded,bool skipEmpty=false){
     float visible=1;
     [branch]if(!cullUnneeded||any(Forever[9].xyz!=0)){
         visible=fogShadowProjected(affinePoint(Camera.xyz+ray*t,FarMatrix));
-        if(actorIntegration&&FogActorInfo.x>0&&visible>0)visible=fogCombineActor(visible,fogActorShadow(affinePoint(Camera.xyz+ray*a,FogActorMatrix),(ray.x*FogActorMatrix[0].xyz+ray.y*FogActorMatrix[1].xyz+ray.z*FogActorMatrix[2].xyz)*(b-a)));
+        if(actorIntegration&&FogActorInfo.x>0&&visible>0)visible=fogCombineActor(visible,(skipEmpty?fogActorShadowTiled(affinePoint(Camera.xyz+ray*a,FogActorMatrix),(ray.x*FogActorMatrix[0].xyz+ray.y*FogActorMatrix[1].xyz+ray.z*FogActorMatrix[2].xyz)*(b-a),true):fogActorShadow(affinePoint(Camera.xyz+ray*a,FogActorMatrix),(ray.x*FogActorMatrix[0].xyz+ray.y*FogActorMatrix[1].xyz+ray.z*FogActorMatrix[2].xyz)*(b-a))));
     }
     return visible;
 }
-float4 foreverFog(float2 uv,bool actorIntegration,bool samplesNoise=true) {
+float4 foreverFog(float2 uv,bool actorIntegration,bool samplesNoise=true,bool skipEmpty=false) {
     // The noisy actor and transition variants exhaust SM3 temporaries with early culling.
 #if NORTHLIGHT_SHADOW_TRANSITION
     const bool earlyCull=!samplesNoise;
@@ -1361,18 +1362,26 @@ float4 foreverFog(float2 uv,bool actorIntegration,bool samplesNoise=true) {
         if(samplesNoise&&t<Forever[34].w)continue;
         [branch]if(samplesNoise||t>=Forever[34].w){
         float visible=1;
-        if(!earlyCull)visible=foreverVisibility(ray,a,b,t,actorIntegration,false);
+        if(!earlyCull)visible=foreverVisibility(ray,a,b,t,actorIntegration,false,skipEmpty);
+#if NORTHLIGHT_SHADOW_TRANSITION
         float3 p=Camera.xyz+ray*t;float coverage;
         float4 field=regionalFogAt((p.xy-RegionalFogInfo.xy)*RegionalFogInfo.z+.5/64,coverage);
         float fieldGround=field.x;
         float inside=all(p.xy>=RegionalFogInfo.xy)&&all(p.xy<=RegionalFogInfo.xy+63.0/(64*max(RegionalFogInfo.z,1e-8)));
+#else
+        // This ordering keeps the sparse actor variant within 32 SM3 temporaries.
+        float3 p=Camera.xyz+ray*t;
+        float inside=all(p.xy>=RegionalFogInfo.xy)&&all(p.xy<=RegionalFogInfo.xy+63.0/(64*max(RegionalFogInfo.z,1e-8)));
+        float coverage=0,fieldGround=Forever[0].w;
+        [branch]if(inside){float4 field=regionalFogAt((p.xy-RegionalFogInfo.xy)*RegionalFogInfo.z+.5/64,coverage);fieldGround=field.x;}
+#endif
         // The regional height is the top WMO/terrain envelope, not a solid
         // column: a roof must not erase global fog in the air below it.
         // Coverage still excludes masked regions; authored profiles own Z.
         float valid=inside?coverage:1;
         [branch]if(!earlyCull||valid>0){
         float ground=coverage>0?fieldGround:Forever[0].w;
-        if(earlyCull)visible=foreverVisibility(ray,a,b,t,actorIntegration,true);
+        if(earlyCull)visible=foreverVisibility(ray,a,b,t,actorIntegration,true,skipEmpty);
         float3 height=p.z-ground*Forever[10].xyz;
         float3 shape=exp(min(0,(Forever[2].xyz-height)*Forever[3].xyz)+min(0,(height-Forever[4].xyz)*Forever[5].xyz));
         float3 curve=1+Forever[7].xyz*pow(max(saturate((t-Forever[1].xyz)*.001),1e-8),Forever[8].xyz);
@@ -1400,6 +1409,8 @@ float4 ForeverFog(float2 uv:TEXCOORD0):COLOR0{return foreverFog(uv,false);}
 float4 ForeverFogActor(float2 uv:TEXCOORD0):COLOR0{return foreverFog(uv,true);}
 float4 ForeverFogNoNoise(float2 uv:TEXCOORD0):COLOR0{return foreverFog(uv,false,false);}
 float4 ForeverFogActorNoNoise(float2 uv:TEXCOORD0):COLOR0{return foreverFog(uv,true,false);}
+float4 ForeverFogActorTiled(float2 uv:TEXCOORD0):COLOR0{return foreverFog(uv,true,true,true);}
+float4 ForeverFogActorTiledNoNoise(float2 uv:TEXCOORD0):COLOR0{return foreverFog(uv,true,false,true);}
 
 // Glow of the nearest authored local lights inside the fog (lanterns, fires):
 // in-scattering of an isotropic point source along the view ray in closed form,

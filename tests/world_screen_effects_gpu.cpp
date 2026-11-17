@@ -91,7 +91,7 @@ struct WorldScreenEffectsTest {
         }
         if(frame==3||frame>=14){const float x=frame>=14?.5f:.25f;w.context.camera[0]=w.context.inverseView[12]=x;w.context.view[12]=-x;}
         if(frame==26){w.context.camera[0]=w.context.inverseView[12]=.75f;w.context.view[12]=-.75f;}
-        w.memoryPressure=frame==6;
+        w.memoryPressure=frame==6||frame==13||frame==21||frame==22;
         if(frame>=8&&frame<=13)w.fogVolume.reset();
     }
     static std::pair<unsigned,unsigned> volumeCounts(const WorldRenderer& w){return {w.fogVolume.updates,w.fogVolume.reuses};}
@@ -211,7 +211,7 @@ struct WorldScreenEffectsTest {
         if(medium){
             w.skyEnvironment.valid=true;auto& l=w.skyEnvironment.layer[0];l.flag[3]=l.flag[0]=1;l.p[1]=.3f;l.p[9]=1;l.p[10]=.5f;
             for(unsigned c=0;c<3;++c){l.color[0][c]=.7f-.15f*c;l.color[1][c]=.4f-.1f*c;l.color[3][c]=.2f;}
-            w.memoryPressure=medium==1; // Exercise both the raymarch fallback and volume atlas.
+            w.memoryPressure=medium==1;if(medium==1)w.fogVolume.reset();w.fogVolume.refused=medium==1; // Explicit unavailable-volume control.
         }
     }
 #ifdef NORTHLIGHT_GI_MERGE_TEST
@@ -1061,6 +1061,7 @@ int main(int argc,char** argv){
     {
         WorldScratchMeter meter(d,W,H);auto world=std::make_unique<WorldRenderer>(&meter);
         WorldScreenEffectsTest::setup(*world,W,H);
+        std::vector<unsigned char> pressureReference;
         for(unsigned frame=0;frame<27;++frame){
             WorldScreenEffectsTest::volumeFixture(*world,frame);
             meter.refuseVolume=frame==8;meter.shaderSlotLimit=frame==10?512:0;
@@ -1069,16 +1070,20 @@ int main(int argc,char** argv){
             const float sentinel[12]={31,32,33,34,35,36,37,38,39,40,41,42};screenOk(d->SetPixelShaderConstantF(154,sentinel,3));
             if(frame==26){meter.failVolumeDraw=true;assert(!renderChecked(*world,d,out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao,frame));assert(!meter.failVolumeDraw&&!WorldScreenEffectsTest::volumeValid(*world));}
             assert(renderChecked(*world,d,out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,ao,frame));
-            float restored[12]={};screenOk(d->GetPixelShaderConstantF(154,restored,3));assert(!std::memcmp(sentinel,restored,sizeof sentinel));
+            float restored[12]={};screenOk(d->GetPixelShaderConstantF(154,restored,3));
+            if(std::memcmp(sentinel,restored,sizeof sentinel)){std::fprintf(stderr,"FOG_VOLUME_STATE_DIFF frame=%u",frame);for(float value:restored)std::fprintf(stderr," %.9g",value);std::fputc('\n',stderr);}
+            assert(!std::memcmp(sentinel,restored,sizeof sentinel));
             auto after=WorldScreenEffectsTest::volumeCounts(*world);
-            if(frame==1||frame==2||frame==16||frame==17||frame==20||frame==25)assert(after.first==before.first&&after.second==before.second+1);
-            else if(frame==4||frame==6||frame==8||frame==10||frame==12)assert(!WorldScreenEffectsTest::volumeValid(*world));
+            if(frame==1||frame==2||frame==16||frame==17||frame==20||frame==25||frame==6||frame==7)assert(after.first==before.first&&after.second==before.second+1);
+            else if(frame==4||frame==8||frame==10||frame==12)assert(!WorldScreenEffectsTest::volumeValid(*world));
             else assert(WorldScreenEffectsTest::volumeValid(*world)&&after.first==before.first+1);
             if(frame!=4){auto image=WorldScreenEffectsTest::fogImage(*world,false,true);bool scattering=false;
+                if(frame==5)pressureReference=image;
+                if(frame==6)assert(image==pressureReference);
                 for(size_t i=0;i<image.size();i+=2){unsigned short bits;std::memcpy(&bits,image.data()+i,2);const float value=screenHalf(bits);assert(std::isfinite(value)&&value>=0);if(i%8!=6)scattering|=value>.001f;else assert(value<=1);}
                 assert(scattering);}
         }
-        std::printf("WORLD_FOG_VOLUME_PASS frames=27 cached=6 cameraReprojection=1 settledCache=1 staticNoiseCache=1 windUpdates=1 offOn=1 pressureFallback=1 creationFallback=1 capsFallback=1 partialOomFallback=1 failedPassRecovery=1 stateRestored=1 msaa=%u\n",msaa);
+        std::printf("WORLD_FOG_VOLUME_PASS frames=27 cached=8 cameraReprojection=1 settledCache=1 staticNoiseCache=1 windUpdates=1 offOn=1 pressureRetained=1 creationFallback=1 capsFallback=1 partialOomFallback=1 failedPassRecovery=1 stateRestored=1 msaa=%u\n",msaa);
     }
 #endif
     {

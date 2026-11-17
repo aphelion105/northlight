@@ -52,9 +52,11 @@
     using PointCandidates=std::array<std::vector<size_t>,6>;
     PointCandidates pointStaticCandidates,pointTerrainCandidates,pointLiveCandidates,pointReplayCandidates;
     std::vector<unsigned char> pointBatchMasks;
+    std::vector<unsigned char> pointNearbyBatches;bool pointNearbyReady=false;
+    std::vector<size_t> pointReplayOrder;std::vector<unsigned char> pointReplayPaletteSpans;bool pointReplayOrderReady=false;
     UINT pointPrimitiveLimit=0;bool pointMinBlend=false;
-    struct PointWork {unsigned selected=0,statics=0,terrain=0,live=0,replay=0,replayMerged=0,unions=0,rebuilt=0,restored=0,unboundedRigid=0,unboundedSkinned=0,whiteLightingSkipped=0,paletteDraws=0,palettePackets=0,paletteRegisters=0;uint64_t triangles=0,bridged=0;} pointWork;
-    struct PointCold {unsigned cubes=0,statics=0,shared=0,shaders=0,terrainMemoHits=0,terrainMemoMisses=0;int64_t ticks=0,prepare=0,boundsWait=0,candidates=0,submit=0;} pointCold;
+    struct PointWork {unsigned selected=0,statics=0,terrain=0,live=0,replay=0,replayMerged=0,unions=0,rebuilt=0,restored=0,unboundedRigid=0,unboundedSkinned=0,whiteLightingSkipped=0,paletteDraws=0,palettePackets=0,paletteRegisters=0,paletteRebased=0,paletteSavedRegisters=0;uint64_t triangles=0,bridged=0;} pointWork;
+    struct PointCold {unsigned cubes=0,statics=0,shared=0,shaders=0,terrainMemoHits=0,terrainMemoMisses=0,orderPackets=0,orderEligible=0,contentPasses=0;size_t contentRecords=0;int64_t ticks=0,order=0,prepare=0,boundsWait=0,candidates=0,submit=0;} pointCold;
     template<class Call> HRESULT pointAllocate(unsigned& attempts,Call call){
         ++attempts;const bool timed=NorthlightQuality::renderProfile(quality);const int64_t start=timed?QpcClock::now():0;
         const HRESULT hr=call();if(timed)pointCold.ticks+=QpcClock::now()-start;return hr;
@@ -114,6 +116,8 @@
         for(auto* lists:{&pointStaticCandidates,&pointTerrainCandidates,&pointLiveCandidates,&pointReplayCandidates})
             for(auto& list:*lists)std::vector<size_t>().swap(list);
         std::vector<unsigned char>().swap(pointBatchMasks);
+        std::vector<unsigned char>().swap(pointNearbyBatches);pointNearbyReady=false;
+        std::vector<size_t>().swap(pointReplayOrder);std::vector<unsigned char>().swap(pointReplayPaletteSpans);pointReplayOrderReady=false;
     }
     bool pointCheck(HRESULT hr,const char* operation){
         if(SUCCEEDED(hr))return true;
@@ -325,11 +329,11 @@
     }
     void preparePointTerrain(const NorthlightPointShadow::FaceClip& clip,unsigned faces){
         auto& memo=pointSlot().terrainMemo;const auto& light=pointSlot().selected;
-        bool reuse=memo.valid&&memo.generation==meshGeneration&&memo.masks.size()==batches.size()&&memo.range==light.attenuationEnd;
+        bool reuse=memo.valid&&memo.generation==meshGeneration&&memo.masks.size()==pointMeshBatchCount()&&memo.range==light.attenuationEnd;
         for(unsigned i=0;i<3;++i)reuse=reuse&&memo.position[i]==light.position[i];
         if(reuse)++pointCold.terrainMemoHits;else ++pointCold.terrainMemoMisses;
         if(reuse)pointBatchMasks=memo.masks;
-        else{memo.valid=false;pointBatchMasks.assign(batches.size(),63);}
+        else{memo.valid=false;pointBatchMasks.assign(pointMeshBatchCount(),63);}
         // Interior lights often have no terrain in any face. Their cached
         // zero masks already prove every rejection, including partial cycles.
         if(reuse&&!memo.occupiedFaces){pointCulled+=unsigned(memo.terrainCount)*unsigned(__builtin_popcount(faces));return;}
@@ -337,7 +341,7 @@
         // casters are classified separately on every refresh, as before.
         size_t terrainCount=0;unsigned occupiedFaces=0;
         const auto append=[&](size_t i){const auto& batch=batches[i];
-            const unsigned mask=reuse?(pointBatchMasks[i]&faces):pointMask(batch.boundsLow,batch.boundsHigh,clip,faces);
+            const unsigned mask=reuse?(pointBatchMasks[i]&faces):pointNearbyReady&&!pointNearbyBatches[i]?0:pointMask(batch.boundsLow,batch.boundsHigh,clip,faces);
             if(!reuse){++terrainCount;occupiedFaces|=mask;}
             pointBatchMasks[i]=static_cast<unsigned char>(mask);
             pointAppendCandidates(pointTerrainCandidates,i,mask,faces);};
@@ -346,7 +350,7 @@
         }else for(size_t i=0;i<batches.size();++i)if(batches[i].terrain)append(i);
         // Partial refreshes cannot publish masks for faces they did not test.
         // Cache allocation is optional: failure leaves the exact current lists.
-        if(!reuse&&faces==63&&batches.size()<=PointTerrainMemo::Limit){
+        if(!reuse&&faces==63&&pointMeshBatchCount()<=PointTerrainMemo::Limit){
             try{if(memo.masks.capacity()<pointBatchMasks.size())std::vector<unsigned char>(pointBatchMasks).swap(memo.masks);
                 else memo.masks=pointBatchMasks;
                 memo.terrainCount=terrainCount;memo.occupiedFaces=occupiedFaces;
@@ -356,7 +360,7 @@
         }
     }
     Batch pointBatchRun(const std::vector<size_t>& candidates,size_t& at,unsigned face=6){
-        size_t last=candidates[at++];Batch run=batches[last];uint64_t selected=run.count,bridged=0;
+        size_t last=candidates[at++];Batch run=pointMeshBatch(last);uint64_t selected=run.count,bridged=0;
         const auto opaque=[&](unsigned material){return material<materials.size()&&material<uploadedAlphaCutoffs.size()&&uploadedAlphaCutoffs[material]<=0;};
         const auto append=[&](Batch& sum,const Batch& next){
             if(next.page!=sum.page||uint64_t(sum.start)+uint64_t(sum.count)*3!=next.start)return false;
@@ -369,15 +373,15 @@
         // Preserve index order and coverage. A gap may bridge only batches
         // proven outside this light/face; excluded or unknown batches stay barriers.
         while(at<candidates.size()){
-            const size_t index=candidates[at];const auto& next=batches[index];
+            const size_t index=candidates[at];const auto& next=pointMeshBatch(index);
             if(index<=last)break;
             // Cached world materials are UNORM: cutoff zero cannot reject any
             // alpha. The draw below canonicalizes these to no alpha sampling.
             if((next.material!=run.material||next.pointOnly!=run.pointOnly)&&!(opaque(run.material)&&opaque(next.material)))break;
             Batch combined=run;uint64_t extra=0;size_t gap=last+1;
             for(;gap<index;++gap){
-                if(face>=6||pointBatchMasks.size()!=batches.size()||(pointBatchMasks[gap]&(1u<<face))||!append(combined,batches[gap]))break;
-                extra+=batches[gap].count;
+                if(face>=6||pointBatchMasks.size()!=pointMeshBatchCount()||(pointBatchMasks[gap]&(1u<<face))||!append(combined,pointMeshBatch(gap)))break;
+                extra+=pointMeshBatch(gap).count;
             }
             // ponytail: at most twice the selected triangle work; compact indices
             // are the next step only if sparse, large gaps dominate a real capture.
@@ -389,12 +393,13 @@
     }
     // Content digests of the six faces for `light`; null when the records are unknown.
     // Recomputed only when the records, the mesh generation or the light's cube change.
-    const NorthlightLocalShadowSignature::Digest* pointFaceDigests(const NorthlightLocalLights::Light& light)const{
+    const NorthlightLocalShadowSignature::Digest* pointFaceDigests(const NorthlightLocalLights::Light& light){
         const auto* records=uploadedLocalShadowRecords.get();if(!records)return nullptr;
         auto& memo=pointSlot().contentMemo;
         if(!memo.valid||memo.records!=records||memo.generation!=meshGeneration||memo.range!=light.attenuationEnd||std::memcmp(memo.position,light.position,sizeof memo.position)){
             float matrices[6][16];memo.valid=false;
             for(unsigned face=0;face<6;++face)if(!NorthlightPointShadow::faceMatrix(light.position,.1f,light.attenuationEnd,face,matrices[face],PointResolution))return nullptr;
+            ++pointCold.contentPasses;pointCold.contentRecords+=records->size();
             NorthlightPointShadow::faceContent(*records,light,matrices,memo.faces);
             memo.records=records;memo.generation=meshGeneration;memo.range=light.attenuationEnd;std::memcpy(memo.position,light.position,sizeof memo.position);memo.valid=true;
         }
@@ -402,9 +407,22 @@
     }
     // Static cache faces to redraw for `light`: all six for a new/changed light or an invalid
     // cache, else each face whose content changed (unknown records: the generation rule).
-    unsigned pointStaticRebuild(const NorthlightLocalLights::Light& light,bool lightChanged)const{
+    unsigned pointStaticRebuild(const NorthlightLocalLights::Light& light,bool lightChanged){
         if(!pointSlot().cacheValid||lightChanged||pointSlot().cacheSource!=light.sourceId)return 63;
+        // The committed records cannot change inside one mesh generation.
+        // Defer their content walk until a publication actually changes it.
+        bool sameGeneration=true;for(auto serial:pointSlot().faceSerial)sameGeneration&=serial==meshGeneration;
+        if(sameGeneration)return 0;
         return NorthlightPointShadow::staleFaces(pointSlot().faceContent,pointSlot().faceKnown,pointSlot().faceSerial,pointFaceDigests(light),meshGeneration);
+    }
+    void pointRememberStaticFace(unsigned face,bool lightChanged){
+        // Moving lamps redraw all six static faces anyway. Hashing the
+        // whole scene for each intermediate position has no consumer.
+        // Unknown content remains reusable within this generation; its
+        // first generation change conservatively redraws it once.
+        const auto* digests=lightChanged?nullptr:pointFaceDigests(pointSlot().selected);
+        pointSlot().faceContent[face]=digests?digests[face]:NorthlightLocalShadowSignature::Digest{};
+        pointSlot().faceKnown[face]=digests!=nullptr;pointSlot().faceSerial[face]=meshGeneration;
     }
     void pointLogSchedule(bool reused){
         if(NorthlightDiagnostics::enabled()&&(frames==0||frames%120==0)){
@@ -429,6 +447,7 @@
         replayBoundsLogSeen=true;replayBoundsLogFrame=frames;return true;
     }
     void replayBoundsBegin(){
+        pointReplayOrderReady=false;
         replayBoundsAbandon();replayBoundsRuns=0;pointBoundsValid=0;pointBoundVertices=pointBoundOperations=0;
     }
     // A metadata fallback (per-frame preparation cap) keeps the synchronous
@@ -650,11 +669,13 @@
     }
     struct PointReplayRun {UINT start,count,min,vertices;};
     unsigned pointPaletteSpan(const Replay& p)const{
-        const auto span=p.boundsWork.paletteSpan;
-        if(!span||span>41||!p.pointBounds.valid||!p.indexed||p.type!=D3DPT_TRIANGLELIST||!p.count||!p.index||!p.stream[0]||
+        const auto end=p.boundsWork.paletteSpan,first=p.boundsWork.paletteFirst;
+        if(end<=first||end>75)return 0;
+        const auto span=end-first;
+        if(span>41||!p.pointBounds.valid||!p.indexed||p.type!=D3DPT_TRIANGLELIST||!p.count||!p.index||!p.stream[0]||
            p.projectionKind!=2||!(p.cutoff<0)||p.alphaMode||!p.program||!p.program->kernel.singleSkin())return 0;
         const auto& usage=p.constantUsage;
-        if(usage.floats.first||usage.floats.count<31+3*span||usage.floats.count>256||usage.booleans.count||usage.integers.count)return 0;
+        if(usage.floats.first||usage.floats.count<31+3*end||usage.floats.count>256||usage.booleans.count||usage.integers.count)return 0;
         const auto& definitions=p.program->definitions;
         if(definitions.size()>1||(!definitions.empty()&&definitions[0].reg))return 0;
         const auto control=NorthlightActorDeformation::singleSkinControl(*p.program,p.constants);
@@ -663,7 +684,33 @@
     static bool pointPaletteSame(const Replay& a,const Replay& b){
         return a.count==b.count&&a.index==b.index&&a.start==b.start&&a.base==b.base&&a.min==b.min&&a.vertices==b.vertices&&
             a.stream[0]==b.stream[0]&&a.offset[0]==b.offset[0]&&a.stride[0]==b.stride[0]&&a.decl==b.decl&&
-            a.originalShader==b.originalShader&&a.boundsWork.paletteSpan==b.boundsWork.paletteSpan;
+            a.originalShader==b.originalShader&&a.boundsWork.paletteSpan==b.boundsWork.paletteSpan&&a.boundsWork.paletteFirst==b.boundsWork.paletteFirst;
+    }
+    // Depth-only opaque casters commute. Keep cutouts and unknown bounds as
+    // barriers; group compatible geometry once for all lights and cube faces.
+    void pointOrderReplays(){
+        if(pointReplayOrderReady||pointPaletteUnavailable)return;
+        const bool timed=NorthlightQuality::renderProfile(quality);const auto started=timed?QpcClock::now():0;
+        pointReplayOrder.resize(replays.size());pointReplayPaletteSpans.resize(replays.size());
+        for(size_t i=0;i<replays.size();++i){pointReplayOrder[i]=i;pointReplayPaletteSpans[i]=static_cast<unsigned char>(pointPaletteSpan(*replays[i]));pointCold.orderEligible+=pointReplayPaletteSpans[i]!=0;}
+        pointCold.orderPackets+=unsigned(replays.size());
+        const auto opaque=[&](size_t i){const auto& p=*replays[i];return p.pointBounds.valid&&p.cutoff<=-1.f&&!p.alphaMode;};
+        const auto key=[&](size_t i){const auto& p=*replays[i];const auto span=pointReplayPaletteSpans[i];
+            return std::make_tuple(span?0u:1u,reinterpret_cast<uintptr_t>(p.originalShader),reinterpret_cast<uintptr_t>(p.shader),
+                reinterpret_cast<uintptr_t>(p.decl),reinterpret_cast<uintptr_t>(p.index),
+                reinterpret_cast<uintptr_t>(p.stream[0]),p.offset[0],p.stride[0],
+                reinterpret_cast<uintptr_t>(p.stream[1]),p.offset[1],p.stride[1],
+                reinterpret_cast<uintptr_t>(p.stream[2]),p.offset[2],p.stride[2],
+                reinterpret_cast<uintptr_t>(p.stream[3]),p.offset[3],p.stride[3],
+                p.type,p.indexed,p.base,span,p.boundsWork.paletteFirst,span?p.count:0u,span?p.start:0u,span?p.min:0u,span?p.vertices:0u,
+                span?0u:p.constantGroup,p.start,i);
+        };
+        for(size_t first=0;first<pointReplayOrder.size();){
+            if(!opaque(first)){++first;continue;}
+            size_t end=first+1;while(end<pointReplayOrder.size()&&opaque(end))++end;
+            std::sort(pointReplayOrder.begin()+first,pointReplayOrder.begin()+end,[&](size_t a,size_t b){return key(a)<key(b);});first=end;
+        }
+        pointReplayOrderReady=true;if(timed)pointCold.order+=QpcClock::now()-started;
     }
     bool pointPaletteResources(){
         if(pointPaletteIds)return true;if(pointPaletteUnavailable||frames<pointPaletteRetryFrame)return false;
@@ -697,6 +744,8 @@
         const float opaque[]={0,0,0,-1};HRESULT result=d->SetVertexDeclaration(pointPaletteDecl);
         if(SUCCEEDED(result))result=d->SetVertexShader(pointPaletteVS);
         if(SUCCEEDED(result))result=d->SetVertexShaderConstantF(0,rows,4);
+        const float paletteInfo[]={float(3*p.boundsWork.paletteFirst),0,0,0};
+        if(SUCCEEDED(result))result=d->SetVertexShaderConstantF(252,paletteInfo,1);
         if(SUCCEEDED(result))result=d->SetTexture(0,nullptr);
         if(SUCCEEDED(result))result=d->SetPixelShaderConstantF(0,opaque,1);
         if(SUCCEEDED(result))result=d->SetStreamSource(0,p.stream[0],p.offset[0],p.stride[0]);
@@ -706,11 +755,11 @@
         const UINT capacity=82/span;
         while(at<end&&SUCCEEDED(result)){
             const UINT count=UINT(std::min<size_t>(capacity,end-at));float palette[248*4];
-            for(unsigned i=0;i<count;++i)std::memcpy(palette+i*span*12,replays[candidates[at+i]]->constants+31*4,span*48);
+            for(unsigned i=0;i<count;++i)std::memcpy(palette+i*span*12,replays[candidates[at+i]]->constants+(31+3*p.boundsWork.paletteFirst)*4,span*48);
             result=d->SetVertexShaderConstantF(4,palette,count*span*3);
             if(SUCCEEDED(result))result=d->SetStreamSourceFreq(0,D3DSTREAMSOURCE_INDEXEDDATA|count);
             if(SUCCEEDED(result))result=d->DrawIndexedPrimitive(p.type,p.base,p.min,p.vertices,p.start,p.count);
-            if(SUCCEEDED(result)){++pointDraws;++pointWork.replay;++pointWork.paletteDraws;pointWork.palettePackets+=count;pointWork.paletteRegisters+=count*span*3;
+            if(SUCCEEDED(result)){++pointDraws;++pointWork.replay;++pointWork.paletteDraws;pointWork.palettePackets+=count;pointWork.paletteRegisters+=count*span*3;pointWork.paletteRebased+=p.boundsWork.paletteFirst?count:0;pointWork.paletteSavedRegisters+=count*p.boundsWork.paletteFirst*3;
                 pointWork.triangles+=uint64_t(p.count)*count;pointBatchesMerged+=count-1;pointWork.replayMerged+=count-1;}
             at+=count;
         }
@@ -805,12 +854,23 @@
         const int64_t prepareStart=pointTimed?QpcClock::now():0;
         try {
             for(auto* lists:{&pointStaticCandidates,&pointTerrainCandidates,&pointLiveCandidates,&pointReplayCandidates})for(auto& list:*lists)list.clear();
+            pointNearbyReady=pointTree&&pointTree->nearby(pointMeshBatchCount(),[&](V low,V high){
+                return NorthlightPointShadow::recordOutsideSphere(low,high,pointSlot().selected);},pointNearbyBatches);
             preparePointTerrain(clip,faces);
             if(rebuildMask&faces){
                 for(size_t i=0;i<batches.size();++i){const auto& batch=batches[i];
-                    if(!batch.terrain){
-                        const unsigned mask=pointMask(batch.boundsLow,batch.boundsHigh,clip,rebuildMask&faces);pointBatchMasks[i]=static_cast<unsigned char>(mask);
-                        pointAppendCandidates(pointStaticCandidates,i,mask,rebuildMask&faces);}
+                    if(batch.terrain)continue;
+                    const unsigned mask=pointNearbyReady&&!pointNearbyBatches[i]?0:pointMask(batch.boundsLow,batch.boundsHigh,clip,rebuildMask&faces);
+                    pointBatchMasks[i]=static_cast<unsigned char>(mask);
+                    const auto range=pointSubRanges.size()==batches.size()?pointSubRanges[i]:NorthlightWorldMeshPages::PointRange{};
+                    if(!range.count){pointAppendCandidates(pointStaticCandidates,i,mask,rebuildMask&faces);continue;}
+                    const size_t first=batches.size()+range.first;
+                    if(!mask){std::fill(pointBatchMasks.begin()+first,pointBatchMasks.begin()+first+range.count,0);continue;}
+                    for(size_t n=first;n<first+range.count;++n){const auto& sub=pointMeshBatch(n);
+                        const unsigned subMask=pointNearbyReady&&!pointNearbyBatches[n]?0:pointMask(sub.boundsLow,sub.boundsHigh,clip,mask);
+                        pointBatchMasks[n]=static_cast<unsigned char>(subMask);
+                        pointAppendCandidates(pointStaticCandidates,n,subMask,rebuildMask&faces);
+                    }
                 }
             }
             for(size_t i=0;i<pointLiveBatches.size();++i){const auto& batch=pointLiveBatches[i];
@@ -819,7 +879,8 @@
             replayBoundsJoin();
             const int64_t candidatesStart=pointTimed?QpcClock::now():0;
             if(pointTimed)pointCold.boundsWait+=candidatesStart-boundsStart;
-            if(withReplays)for(size_t i=0;i<replays.size();++i){const auto& bounds=replays[i]->pointBounds;
+            if(withReplays)pointOrderReplays();
+            if(withReplays)for(size_t n=0;n<replays.size();++n){const size_t i=pointReplayOrderReady&&pointReplayOrder.size()==replays.size()?pointReplayOrder[n]:n;const auto& bounds=replays[i]->pointBounds;
                 const unsigned mask=clip.mask(bounds.low,bounds.high,bounds.valid,faces);
                 if(!(mask&faces)){pointCulled+=unsigned(__builtin_popcount(faces));continue;}
                 if(!bounds.valid)(replays[i]->shadowSkinned?pointWork.unboundedSkinned:pointWork.unboundedRigid)+=unsigned(__builtin_popcount(mask&faces));
@@ -896,8 +957,7 @@
                 ++pointDraws;++pointWork.statics;pointWork.triangles+=batch.count;
             }
             }
-            const auto* digests=pointFaceDigests(pointSlot().selected);
-            pointSlot().faceContent[face]=digests?digests[face]:NorthlightLocalShadowSignature::Digest{};pointSlot().faceKnown[face]=digests!=nullptr;pointSlot().faceSerial[face]=meshGeneration;}
+            pointRememberStaticFace(face,lightChanged);}
             if(rebuildMask&(1u<<face)){++pointFacesRebuilt;++pointWork.rebuilt;}
             pointSlot().staticOnlyFaces&=~bit;
             const unsigned faceDraws=pointDraws,faceMerged=pointBatchesMerged;
@@ -1053,7 +1113,8 @@
         }
         if(coldTimed&&captureFrequency.QuadPart>0){const double scale=1000.0/double(captureFrequency.QuadPart),cpuMs=double(QpcClock::now()-coldStarted)*scale;
             if(cpuMs>=8||profileSampled()){
-                logf("POINT_PHASE rendererFrame=%u prepareMs=%.3f boundsWaitMs=%.3f candidatesMs=%.3f submitMs=%.3f prepareIncludesBoundsAndCandidates=1 terrainMemoHits=%u terrainMemoMisses=%u terrainListSize=%zu totalBatches=%zu",rendererFrame,double(pointCold.prepare)*scale,double(pointCold.boundsWait)*scale,double(pointCold.candidates)*scale,double(pointCold.submit)*scale,pointCold.terrainMemoHits,pointCold.terrainMemoMisses,terrainBatchList.size(),batches.size());
+                logf("POINT_PHASE rendererFrame=%u prepareMs=%.3f boundsWaitMs=%.3f candidatesMs=%.3f submitMs=%.3f prepareIncludesBoundsAndCandidates=1 terrainMemoHits=%u terrainMemoMisses=%u terrainListSize=%zu totalBatches=%zu contentPasses=%u contentRecords=%zu spatialIndex=%u",rendererFrame,double(pointCold.prepare)*scale,double(pointCold.boundsWait)*scale,double(pointCold.candidates)*scale,double(pointCold.submit)*scale,pointCold.terrainMemoHits,pointCold.terrainMemoMisses,terrainBatchList.size(),batches.size(),pointCold.contentPasses,pointCold.contentRecords,unsigned(bool(pointTree)));
+                logf("POINT_ORDER rendererFrame=%u cpuMs=%.3f packets=%u eligible=%u oncePerFrame=1 alphaBarriers=1",rendererFrame,double(pointCold.order)*scale,pointCold.orderPackets,pointCold.orderEligible);
                 // A reused cube may leave the bounds job running. Its mutable
                 // counters are readable only after that job has been joined.
                 const auto* stats=replayBoundsWorker.pending()?nullptr:&replayBoundsCache.envelopeStats();

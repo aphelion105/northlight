@@ -2,6 +2,7 @@
 """Compare actual WorldRenderer history, fog and final images with/without fusion."""
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import struct
@@ -21,6 +22,40 @@ backends = [('dxvk', fp.client_root() / 'renderer-backends/dxvk/dxvk_d3d9.dll'),
             ('dxvk2', fp.client_root() / 'renderer-backends/dxvk2/dxvk2_d3d9.dll'),
             ('native', Path(os.environ['WINDIR']) / 'SysWOW64/d3d9.dll')]
 sha = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def zero_weight_difference(a, b):
+    """Permit one small FP16 RGB rounding step; retain exact alpha/depth."""
+    assert a[:20] == b[:20] and len(a) == len(b), 'zero-weight image layout drift'
+    if a == b:
+        return {'channels': 0, 'max_abs': 0.}
+    assert struct.unpack('<5I', a[:20])[3:] == (113, 8), 'zero-weight non-FP16 drift'
+    changed, maximum = 0, 0.
+    for i, ((x,), (y,)) in enumerate(zip(struct.iter_unpack('<H', a[20:]), struct.iter_unpack('<H', b[20:]))):
+        if x == y:
+            continue
+        assert i % 4 != 3, 'zero-weight alpha drift'
+        old, new = (struct.unpack('<e', struct.pack('<H', bits))[0] for bits in (x, y))
+        assert math.isfinite(old) and math.isfinite(new), 'zero-weight nonfinite RGB'
+        ordered = lambda bits: 0x8000 - (bits & 0x7fff) if bits & 0x8000 else 0x8000 + bits
+        delta = abs(old - new)
+        assert abs(ordered(x) - ordered(y)) <= 1 and delta <= 2**-12, 'zero-weight RGB exceeds one small FP16 step'
+        changed += 1
+        maximum = max(maximum, delta)
+    return {'channels': changed, 'max_abs': maximum}
+
+
+# The numeric allowance must reject a second ULP, alpha changes and NaNs.
+header = struct.pack('<5I', 0x31524746, 1, 1, 113, 8)
+sample = header + struct.pack('<4e', .125, .25, .5, 1)
+assert zero_weight_difference(sample, header + struct.pack('<4e', .125 + 2**-13, .25, .5, 1))['channels'] == 1
+for rgba in ((.125 + 2**-12, .25, .5, 1), (.125, .25, .5, 1 + 2**-10), (math.nan, .25, .5, 1)):
+    try:
+        zero_weight_difference(sample, header + struct.pack('<4e', *rgba))
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError('zero-weight comparison accepted an invalid control')
 inputs = {str(p): sha(p) for p in [Path(__file__), fp.TESTS / 'world_temporal_merge_gpu.cpp',
           fp.TESTS / 'world_removal_alias_gpu.cpp', fp.TESTS / 'world_screen_effects_gpu.cpp',
           *(p for p in (fp.REPO / 'src').rglob('*') if p.suffix in ('.cpp', '.h', '.inl')),
@@ -63,7 +98,11 @@ try:
 
         merged_images, optimized_images = images('merged'), images('zero-weight')
         assert merged_images.keys() == optimized_images.keys()
-        assert all(path.read_bytes() == optimized_images[key].read_bytes() for key, path in merged_images.items()), 'zero-weight image drift'
+        zero_differences = []
+        for key, path in merged_images.items():
+            difference = zero_weight_difference(path.read_bytes(), optimized_images[key].read_bytes())
+            if difference['channels']:
+                zero_differences.append({'image': key, **difference})
         before, after = images('reference'), images('merged')
         assert before.keys() == after.keys() and len(before) >= 180
         differences = []
@@ -82,7 +121,8 @@ try:
                     assert a[20 + i*2:22 + i*2] == b[20 + i*2:22 + i*2], (key, 'alpha')
                 maximum = max(maximum, delta)
             differences.append({'image': key, 'max_abs': maximum})
-        report['comparisons'].append({'backend': name, 'images': len(before), 'rgb_differences': differences})
+        report['comparisons'].append({'backend': name, 'images': len(before), 'rgb_differences': differences,
+                                      'zero_weight_rgb_rounding': zero_differences})
     assert all(sha(Path(p)) == digest for p, digest in inputs.items()), 'source drift'
     report['pass'] = True
 finally:

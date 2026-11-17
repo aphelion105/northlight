@@ -36,7 +36,8 @@ struct IDirect3DDevice9 {
 };
 struct IDirect3DStateBlock9 {
     IDirect3DDevice9* d;int value;IDirect3DSurface9* retained;
-    explicit IDirect3DStateBlock9(IDirect3DDevice9* p):d(p),value(p->state),retained(p->boundResource){++d->refs;++d->alive;if(retained)retained->AddRef();}
+    // Model native D3D9's incomplete initial constant capture.
+    explicit IDirect3DStateBlock9(IDirect3DDevice9* p):d(p),value(0),retained(p->boundResource){++d->refs;++d->alive;if(retained)retained->AddRef();}
     HRESULT Capture(){++d->captures;if(d->failCapture)return -1;value=d->state;if(retained)retained->Release();retained=d->boundResource;if(retained)retained->AddRef();return 0;}
     HRESULT Apply(){++d->applies;d->changes.push_back(40);if(d->failApplyOnce){d->failApplyOnce=false;return -1;}if(d->failApply)return -1;d->state=value;d->boundResource=retained;return 0;}
     void Release(){if(retained)retained->Release();--d->refs;--d->alive;delete this;}
@@ -66,18 +67,18 @@ int main(){
         assert(!f.d.targets[2]);
         const std::vector<int> expected={20,11,12,12,13,10,11,13,21,40,30};assert(f.d.changes==expected);
     }
-    {Fixture f;{SavedState s(&f.d);assert(s.ok);mutate(f,99);}assert(f.d.state==17&&f.d.targets[3]==f.surface+3&&f.d.depth==f.surface+4);assert(f.d.viewport.X==3&&f.d.viewport.Width==800);assert(f.d.creates==1&&f.d.captures==0&&f.d.alive==0);
+    {Fixture f;{SavedState s(&f.d);assert(s.ok);mutate(f,99);}assert(f.d.state==17&&f.d.targets[3]==f.surface+3&&f.d.depth==f.surface+4);assert(f.d.viewport.X==3&&f.d.viewport.Width==800);assert(f.d.creates==1&&f.d.captures==1&&f.d.alive==0);
         const std::vector<int> expected={20,11,12,13,10,11,12,13,21,40,30};assert(f.d.changes==expected);}
     {Fixture f;NorthlightStateBlockPool pool(&f.d);
         for(int i=0;i<10000;++i){f.d.state=i;{SavedState s(&f.d,&pool);assert(s.ok);f.d.state=-7;}assert(f.d.state==i);}
-        assert(f.d.creates==1&&f.d.captures==9999&&f.d.alive==1&&f.d.refs==2);pool.clear();assert(f.d.alive==0&&f.d.refs==1);}
+        assert(f.d.creates==1&&f.d.captures==10000&&f.d.alive==1&&f.d.refs==2);pool.clear();assert(f.d.alive==0&&f.d.refs==1);}
     {Fixture f;NorthlightStateBlockPool pool(&f.d);std::vector<SavedState*> nesting;
         for(int i=0;i<7;++i){f.d.state=i;nesting.push_back(new SavedState(&f.d,&pool));assert(nesting.back()->ok);for(size_t j=0;j+1<nesting.size();++j)assert(nesting[j]->block!=nesting.back()->block);}
         for(int i=6;i>=0;--i){f.d.state=-1;delete nesting[i];assert(f.d.state==i);}
-        assert(f.d.creates==7&&f.d.captures==0&&f.d.alive==4);pool.clear();assert(f.d.alive==0);}
+        assert(f.d.creates==7&&f.d.captures==7&&f.d.alive==4);pool.clear();assert(f.d.alive==0);}
     {Fixture f;NorthlightStateBlockPool pool(&f.d);{SavedState outer(&f.d,&pool);f.d.state=31;pool.clear();assert(f.d.alive==1);{SavedState inner(&f.d,&pool);f.d.state=91;}assert(f.d.state==31);assert(f.d.alive==2);}assert(f.d.state==17&&f.d.alive==1);pool.clear();assert(f.d.alive==0);}
-    {Fixture f;NorthlightStateBlockPool pool(&f.d);{SavedState s(&f.d,&pool);assert(s.ok);}f.d.failCapture=true;{SavedState s(&f.d,&pool);assert(!s.ok&&s.block==nullptr);}assert(f.d.alive==0);f.d.failCapture=false;{SavedState s(&f.d,&pool);assert(s.ok);}assert(f.d.creates==2&&f.d.captures==1);}
-    {Fixture f;NorthlightStateBlockPool pool(&f.d);f.d.failCreate=true;{SavedState s(&f.d,&pool);assert(!s.ok);}assert(f.d.applies==0&&f.d.alive==0);f.d.failCreate=false;f.d.failViewport=true;{SavedState s(&f.d,&pool);assert(!s.ok);}assert(f.d.applies==0&&f.d.changes.empty());f.d.failViewport=false;{SavedState s(&f.d,&pool);assert(s.ok);}assert(f.d.creates==2&&f.d.captures==1);}
+    {Fixture f;NorthlightStateBlockPool pool(&f.d);{SavedState s(&f.d,&pool);assert(s.ok);}f.d.failCapture=true;{SavedState s(&f.d,&pool);assert(!s.ok&&s.block==nullptr);}assert(f.d.alive==0);f.d.failCapture=false;{SavedState s(&f.d,&pool);assert(s.ok);}assert(f.d.creates==2&&f.d.captures==3);}
+    {Fixture f;NorthlightStateBlockPool pool(&f.d);f.d.failCreate=true;{SavedState s(&f.d,&pool);assert(!s.ok);}assert(f.d.applies==0&&f.d.alive==0);f.d.failCreate=false;f.d.failViewport=true;{SavedState s(&f.d,&pool);assert(!s.ok);}assert(f.d.applies==0&&f.d.changes.empty());f.d.failViewport=false;{SavedState s(&f.d,&pool);assert(s.ok);}assert(f.d.creates==2&&f.d.captures==2);}
     {Fixture f;f.d.targets[0]=nullptr;{SavedState s(&f.d);assert(!s.ok);}assert(f.d.changes.empty());}
     {Fixture f;NorthlightStateBlockPool pool(&f.d);Fixture other;{SavedState s(&other.d,&pool);assert(s.ok);other.d.state=8;}assert(other.d.state==17&&f.d.creates==0&&other.d.alive==0);}
     {Fixture f;NorthlightStateBlockPool pool(&f.d);{SavedState s(&f.d,&pool);assert(s.ok);}assert(f.surface[5].refs==2);f.d.boundResource=f.surface+2;{SavedState s(&f.d,&pool);assert(s.ok);assert(f.surface[5].refs==1);}assert(f.surface[2].refs==2);pool.clear();assert(f.surface[2].refs==1&&f.d.refs==1);}
@@ -87,5 +88,6 @@ int main(){
     {Fixture f;{SavedState s(&f.d);mutate(f,99);f.d.failApplyOnce=true;assert(s.restore()&&s.restore()&&f.d.state==17);}assert(f.d.applies==2);}
     {Fixture f;{SavedState s(&f.d);mutate(f,99);assert(s.restore());f.d.state=74;assert(s.restore());}assert(f.d.state==74&&f.d.applies==1);}
     for(int target=0;target<4;++target){Fixture f;f.d.failTargetRead=target;{SavedState s(&f.d);assert(!s.ok&&!s.restore());}assert(f.d.applies==0&&f.d.changes.empty());}
-    std::cout<<"SavedState: restoration order, 10000 reuses (1 create / 9999 captures), 7 nested leases, active clear, failures, device identity, null depth, resource release passed\n";
+    for(bool pooled:{false,true}){Fixture f;NorthlightStateBlockPool pool(&f.d);f.d.failCapture=true;{SavedState s(&f.d,pooled?&pool:nullptr);assert(!s.ok&&s.block==nullptr);}assert(f.d.alive==0&&!f.d.applies&&f.d.captures==1);}
+    std::cout<<"SavedState: explicit initial capture, restoration order, 10000 reuses (1 create / 10000 captures), 7 nested leases, active clear, failures, device identity, null depth, resource release passed\n";
 }

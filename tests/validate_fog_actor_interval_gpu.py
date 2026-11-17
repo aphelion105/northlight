@@ -6,7 +6,7 @@ from pathlib import Path
 sys.path[:0]=[str(Path(__file__).resolve().parents[1]),str(Path(__file__).resolve().parents[1]/'scripts/shaders')]
 import northlight_paths as fp
 from shader_compiler import Compiler
-p=argparse.ArgumentParser(description=__doc__);p.add_argument('--prefix',required=True);p.add_argument('--output',type=Path,required=True);a=p.parse_args();a.output.mkdir(parents=True,exist_ok=True)
+p=argparse.ArgumentParser(description=__doc__);p.add_argument('--prefix',required=True);p.add_argument('--output',type=Path,required=True);p.add_argument('--sparse',action='store_true');a=p.parse_args();a.output.mkdir(parents=True,exist_ok=True)
 spec=importlib.util.spec_from_file_location('guard',fp.TESTS/'validate_native_scene_trace.py');guard=importlib.util.module_from_spec(spec);spec.loader.exec_module(guard);guard.processes()
 os.environ['NORTHLIGHT_OUT']=str(a.output/'compiler');compiler=Compiler(allow_compatible_binary=True)
 tree=ast.parse((fp.TESTS/'validate_fog_casters_gpu.py').read_text())
@@ -17,7 +17,9 @@ code=code.replace('  ok(d->EndScene());',r'''  ok(d->EndScene());
   if(actor){IDirect3DSurface9* staging=nullptr;ok(d->CreateOffscreenPlainSurface(mapSize,mapSize,D3DFMT_R32F,D3DPOOL_SYSTEMMEM,&staging,nullptr));ok(d->GetRenderTargetData(surface,staging));D3DLOCKED_RECT lock={};ok(staging->LockRect(&lock,nullptr,D3DLOCK_READONLY));for(unsigned row=0;row<mapSize;++row)std::memcpy(actorPixels.data()+row*mapSize,(char*)lock.pBits+row*lock.Pitch,mapSize*4);ok(staging->UnlockRect());staging->Release();}
 ''')
 code+='\n c[66][0]=c[66][1]=-1;c[66][2]=c[66][3]=1;\n'
-fixture=a.output/'caster.hlsl';fixture.write_text('''row_major float4x4 Matrix:register(c0);
+if a.sparse:
+ code+='\n Image actorImage{1024,1024,D3DFMT_R32F,4,std::vector<unsigned char>(1024*1024*4)};std::memcpy(actorImage.pixels.data(),actorPixels.data(),actorImage.pixels.size());auto* sparseTiles=fogActorTilesFixture(d,actorImage,true);owned.push_back(sparseTiles);ok(d->SetTexture(5,sparseTiles));for(auto key:{D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER})ok(d->SetSamplerState(5,key,D3DTEXF_POINT));for(auto key:{D3DSAMP_ADDRESSU,D3DSAMP_ADDRESSV})ok(d->SetSamplerState(5,key,D3DTADDRESS_CLAMP));\n'
+fixture=a.output/'caster.hlsl' ;fixture.write_text('''row_major float4x4 Matrix:register(c0);
 struct Out{float4 position:POSITION0;float depth:TEXCOORD0;};
 Out CasterVS(float3 p:POSITION0){Out o;o.position=mul(float4(p,1),Matrix);o.depth=o.position.z;return o;}
 float4 CasterPS(float z:TEXCOORD0):COLOR0{return z.xxxx;}
@@ -32,8 +34,10 @@ ray_hlsl='''void rays(float2 uv,out float3 q,out float3 delta){
 }
 float4 WorldFog(float2 uv:TEXCOORD0):COLOR0{float3 q,d;rays(uv,q,d);float v=fogActorShadow(q,d);return float4(v,fogCombineActor(.5,v),fogCombineActor(1.00000011920928955078125,v),1);}
 '''
-for label,body in [('old',helper[:helper.index('float fogActorShadow(')]+point+'\n'+combiner),('new',helper)]:
- source=a.output/(label+'.hlsl');source.write_text('float4 PassInfo:register(c24);\n'+body+'\n'+ray_hlsl);compiler.compile(source,'WorldFog','ps_3_0',a.output/(label+'.bin'))
+if a.sparse:
+ ray_hlsl=ray_hlsl.replace('float3(2.2,2.2,0)','float3(64,64,0)').replace('float3(-2.2,-2.2,.004)','float3(-64,-64,.004)')
+for label,body in [('old',helper if a.sparse else helper[:helper.index('float fogActorShadow(')]+point+'\n'+combiner),('new',helper)]:
+ source=a.output/(label+'.hlsl');source.write_text('float4 PassInfo:register(c24);\n'+body+'\n'+(ray_hlsl.replace('fogActorShadow(q,d)','fogActorShadowTiled(q,d,true)') if a.sparse and label=='new' else ray_hlsl));compiler.compile(source,'WorldFog','ps_3_0',a.output/(label+'.bin'))
 reference=r'''
  double sumOld=0,sumNew=0,maxOld=0,maxNew=0;unsigned measured=0;double modeMax[8]={};unsigned worstX=0,worstY=0;float worstActual=0;double worstExpected=0;
  for(unsigned y=0;y<H;++y)for(unsigned x=0;x<W;++x){
@@ -60,17 +64,19 @@ reference=r'''
  const double newRms=std::sqrt(sumNew/measured),oldRms=std::sqrt(sumOld/measured);
  std::printf("INTERVAL_REFERENCE case=%d bits=%u pixels=%u oldMax=%.9g newMax=%.9g oldRms=%.9g newRms=%.9g\n",casterCase,bits,measured,maxOld,maxNew,oldRms,newRms);std::fflush(stdout);
  for(unsigned n=0;n<8;++n)std::printf("MODE_ERROR %u %.9g\n",n,modeMax[n]);std::printf("WORST x=%u y=%u actual=%.9g expected=%.9g\n",worstX,worstY,worstActual,worstExpected);std::fflush(stdout);
- assert(maxNew<(bits==16?.0006:.00015));if(casterCase==4){assert(maxOld>.01&&oldRms>newRms*10);}
+ assert(maxNew<(bits==16?.0006:.00015));if(casterCase==4&&(!std::getenv("NORTHLIGHT_FOG_SPARSE")||!*std::getenv("NORTHLIGHT_FOG_SPARSE"))){assert(maxOld>.01&&oldRms>newRms*10);}
 '''
+if a.sparse:reference=reference.replace('{2.2f,2.2f,0}','{64.f,64.f,0}').replace('{-2.2f,-2.2f,.004f}','{-64.f,-64.f,.004f}')
 source=(fp.TESTS/'regional_fog_cache_gpu.cpp').read_text().replace('#include "regional_fog.h"','#include "regional_fog.h"\n#include "actor_shadow_map.h"')
+if a.sparse:source=source.replace('int main(', '#include \"fog_actor_tiles_fixture.h\"\nint main(',1)
 needle=' IDirect3DVolumeTexture9* noise=nullptr;';assert source.count(needle)==1;source=source.replace(needle,code+needle)
 needle='std::fflush(stdout);assert(!changed&&!nonfinite&&maximum==0);';assert source.count(needle)==1;source=source.replace(needle,'std::fflush(stdout);assert(!nonfinite&&!alpha);'+reference)
 cpp=a.output/'interval.cpp';cpp.write_text(source);exe=a.output/'interval.exe'
-with (a.output/'compile.log').open('w') as log:subprocess.run([str(fp.zig()),'c++','-target','x86-windows-gnu','-O2','-UNDEBUG','-std=c++17',*fp.test_include_flags(),str(cpp),str(fp.src('world_gi.cpp')),'-luser32','-o',str(exe)],env=fp.zig_env(),stdout=log,stderr=subprocess.STDOUT,check=True)
+with (a.output/'compile.log').open('w') as log:subprocess.run([str(fp.zig()),'c++','-target','x86-windows-gnu','-O2','-UNDEBUG','-std=c++17','-I',str(fp.TESTS),*fp.test_include_flags(),str(cpp),str(fp.src('world_gi.cpp')),'-luser32','-o',str(exe)],env=fp.zig_env(),stdout=log,stderr=subprocess.STDOUT,check=True)
 rows=[]
 for backend in [Path(os.environ['SystemRoot'])/'SysWOW64/d3d9.dll',fp.client_root()/'renderer-backends/dxvk/dxvk_d3d9.dll']:
  for bits in [16,32]:
   for case in [1,2,4,8,9]:
-   guard.processes();folder=a.output/(('native' if 'SysWOW64' in str(backend) else 'dxvk')+f'-{bits}-{case}');folder.mkdir(exist_ok=True);env=fp.zig_env();env.update(NORTHLIGHT_FOG_CASTER_CASE=str(case),NORTHLIGHT_FOG_CASTER_SHADER=str(a.output)+'/')
+   guard.processes();folder=a.output/(('native' if 'SysWOW64' in str(backend) else 'dxvk')+f'-{bits}-{case}');folder.mkdir(exist_ok=True);env=fp.zig_env();env.update(NORTHLIGHT_FOG_SPARSE='1' if a.sparse else '',NORTHLIGHT_FOG_CASTER_CASE=str(case),NORTHLIGHT_FOG_CASTER_SHADER=str(a.output)+'/')
    run=subprocess.run([str(exe),a.prefix,str(a.output/'old.bin'),str(a.output/'new.bin'),'WorldFog',str(backend),'7',str(bits),'128','64','1'],cwd=folder,env=env,capture_output=True,text=True,timeout=120);(folder/'gpu.log').write_text(run.stdout+run.stderr);assert run.returncode==0,(folder,run.stdout[-1000:],run.stderr[-600:]);result=next(s for s in run.stdout.splitlines() if s.startswith('INTERVAL_REFERENCE'));print(str(backend),result,flush=True);rows.append(result)
 (a.output/'validation.json').write_text(json.dumps({'pass':True,'cases':rows,'reference':'Independent CPU sorted grid-plane intersections over the actual rasterized R32 actor depth; midpoint destructive control'},indent=2)+'\n');print('INTERVAL_ORACLE_PASS cases='+str(len(rows)),flush=True)

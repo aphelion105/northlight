@@ -36,6 +36,10 @@ struct PaletteFaults:ForwardIDirect3DDevice9 {
         const auto hr=real->CreateVertexBuffer(size,usage,fvf,pool,out,handle);if(target&&SUCCEEDED(hr)){wrappedRaw=*out;wrapped=new Buffer(*out,*this);*out=wrapped;}return hr;
     }
     HRESULT STDMETHODCALLTYPE SetStreamSource(UINT stream,IDirect3DVertexBuffer9* value,UINT offset,UINT stride)override{return real->SetStreamSource(stream,value==wrapped?wrappedRaw:value,offset,stride);}
+    HRESULT STDMETHODCALLTYPE SetVertexShaderConstantF(UINT first,const float* data,UINT count)override{
+        if(fault!=7||first!=252)return real->SetVertexShaderConstantF(first,data,count);fault=0;++hits;
+        if(after)must(real->SetVertexShaderConstantF(first,data,count));return E_FAIL;
+    }
     HRESULT STDMETHODCALLTYPE SetStreamSourceFreq(UINT stream,UINT value)override{
         if(fault!=6||!(value&D3DSTREAMSOURCE_INSTANCEDATA))return real->SetStreamSourceFreq(stream,value);fault=0;++hits;
         if(after)must(real->SetStreamSourceFreq(stream,value));return E_FAIL;
@@ -88,15 +92,16 @@ struct PointTerrainCoverageTest {
                 for(auto& p:w.replays)for(unsigned bone=0;bone<21;++bone)p->constantStorage[4*(31+3*bone)+3]+=.05f;bounds(21);}
             assert(render(false));const auto reference=image();const auto oldDraws=w.pointDraws;unsigned weights[6];std::copy_n(w.pointSlot().faceWeights,6,weights);
             assert(render(true));compare(reference,image());assert(std::equal(weights,weights+6,w.pointSlot().faceWeights));assert(w.pointWork.palettePackets>0&&w.pointDraws<oldDraws/2);++comparisons;}
-        // Sparse bone IDs must use their span, not the number of groups.
+        // Rebase a nonzero range without changing the original vertex bone IDs.
         auto sparse=std::make_shared<NorthlightDrawSnapshot::Mesh>(*source);auto sparseVertices=vertices;for(auto& v:sparseVertices)v.bones[0]=BYTE(v.bones[0]+50);std::memcpy(sparse->streams[0].bytes.data(),sparseVertices.data(),sparse->streams[0].bytes.size());
         must(vb->Lock(8*sizeof(Vertex),UINT(source->streams[0].bytes.size()),&data,0));std::memcpy(data,sparseVertices.data(),sparse->streams[0].bytes.size());must(vb->Unlock());for(auto& p:w.replays)p->shared=sparse;bounds(71);
-        assert(render(false));const auto sparseImage=image();assert(render(true));compare(sparseImage,image());assert(!w.pointWork.paletteDraws);++comparisons;
+        for(const auto& p:w.replays)assert(p->boundsWork.paletteFirst==50);
+        assert(render(false));const auto sparseImage=image();assert(render(true));compare(sparseImage,image());assert(w.pointWork.paletteDraws);++comparisons;
         must(vb->Lock(8*sizeof(Vertex),UINT(source->streams[0].bytes.size()),&data,0));std::memcpy(data,vertices.data(),source->streams[0].bytes.size());must(vb->Unlock());for(auto& p:w.replays)p->shared=source;bounds(21);
         std::vector<std::unique_ptr<WorldRenderer::Replay>> tail;while(w.replays.size()>12){tail.push_back(std::move(w.replays.back()));w.replays.pop_back();}
-        for(unsigned span:{1u,16u,41u,42u}){auto changed=std::make_shared<NorthlightDrawSnapshot::Mesh>(*source);auto v=vertices;
-            for(unsigned i=0;i<v.size();++i)v[i].bones[0]=BYTE(i%span);std::memcpy(changed->streams[0].bytes.data(),v.data(),changed->streams[0].bytes.size());
-            must(vb->Lock(8*sizeof(Vertex),UINT(source->streams[0].bytes.size()),&data,0));std::memcpy(data,v.data(),changed->streams[0].bytes.size());must(vb->Unlock());for(auto& p:w.replays)p->shared=changed;bounds(span);
+        for(const auto spec:std::array<std::array<unsigned,2>,8>{{{0,1},{0,16},{0,41},{0,42},{1,41},{33,41},{50,21},{74,1}}}){const auto first=spec[0],span=spec[1];auto changed=std::make_shared<NorthlightDrawSnapshot::Mesh>(*source);auto v=vertices;
+            for(unsigned i=0;i<v.size();++i)v[i].bones[0]=BYTE(first+i%span);std::memcpy(changed->streams[0].bytes.data(),v.data(),changed->streams[0].bytes.size());
+            must(vb->Lock(8*sizeof(Vertex),UINT(source->streams[0].bytes.size()),&data,0));std::memcpy(data,v.data(),changed->streams[0].bytes.size());must(vb->Unlock());for(auto& p:w.replays)p->shared=changed;bounds(first+span);for(const auto& p:w.replays)assert(p->boundsWork.paletteFirst==first);
             assert(render(false));const auto expected=image();assert(render(true));compare(expected,image());assert(bool(w.pointWork.paletteDraws)==(span<=41));++comparisons;}
         must(vb->Lock(8*sizeof(Vertex),UINT(source->streams[0].bytes.size()),&data,0));std::memcpy(data,vertices.data(),source->streams[0].bytes.size());must(vb->Unlock());for(auto& p:w.replays)p->shared=source;bounds(21);
         while(!tail.empty()){w.replays.push_back(std::move(tail.back()));tail.pop_back();}bounds(21);
@@ -107,15 +112,31 @@ struct PointTerrainCoverageTest {
         assert(render(false));const auto mixed=image();assert(render(true));compare(mixed,image());assert(w.pointWork.paletteDraws&&w.pointWork.palettePackets);++comparisons;
         for(auto& p:w.replays){p->cutoff=-1;p->texture->Release();p->texture=nullptr;}white->Release();
         assert(render(false));const auto reference=image();
-        for(unsigned fault=1;fault<=6;++fault)for(bool after:{false,true}){w.releasePointGPU();calls.fault=fault;calls.after=after;const auto hits=calls.hits;
+        for(unsigned fault=1;fault<=7;++fault)for(bool after:{false,true}){w.releasePointGPU();calls.fault=fault;calls.after=after;const auto hits=calls.hits;
             const bool result=render(true);assert(calls.hits==hits+1&&!calls.fault);if(fault<=5){assert(result&&!w.pointWork.paletteDraws);compare(reference,image());}
             else assert(!result&&!w.pointSlot().ready);w.frames+=121;assert(render(true));compare(reference,image());assert(w.pointWork.paletteDraws);++comparisons;}
         w.releasePointGPU(true);assert(render(true));compare(reference,image());++comparisons;
-        std::printf("POINT_PALETTE_GPU_PASS comparisons=%u actors=100 faces=6 spans=1,16,21,41,42,71 coldResume=1 alphaFallback=1 faults=12 recoveryWithoutRestart=1 reset=1 depthTolerance=2e-6\n",comparisons);
+        // Interleaved compatible meshes could not use the old adjacent-run
+        // palette path. Compare with that path still enabled in native order.
+        for(unsigned a=0;a<w.replays.size();++a)w.replays[a]->count=source->primitiveCount-2*(a%3);
+        const auto order=[&](bool sorted){w.pointPaletteUnavailable=false;w.pointReplayOrderReady=!sorted;
+            if(!sorted){w.pointReplayOrder.resize(w.replays.size());for(size_t i=0;i<w.replays.size();++i)w.pointReplayOrder[i]=i;}};
+        const auto renderOrder=[&](bool sorted){order(sorted);w.pointSlot().schedule.invalidate();w.pointWork={};must(d->BeginScene());assert(w.renderPointShadow(light,true,true));must(d->EndScene());drain();};
+        renderOrder(false);const auto unordered=image();const auto unorderedDraws=w.pointDraws;unsigned orderWeights[6];std::copy_n(w.pointSlot().faceWeights,6,orderWeights);
+        renderOrder(true);compare(unordered,image());assert(std::equal(orderWeights,orderWeights+6,w.pointSlot().faceWeights));assert(w.pointDraws*3<unorderedDraws*2);++comparisons;
+        std::printf("POINT_ORDER_GPU_PASS originalDraws=%u groupedDraws=%u triangles=%llu barriers=opaque-only depthTolerance=2e-6\n",unorderedDraws,w.pointDraws,(unsigned long long)w.pointWork.triangles);
+        if(timing)for(unsigned block=0;block<12;++block)for(unsigned turn=0;turn<2;++turn){const bool sorted=(block+turn)&1;order(sorted);const auto start=std::chrono::steady_clock::now();unsigned draws=0;
+            must(d->BeginScene());for(unsigned l=0;l<10;++l){light.sourceId=100+l;light.position[0]=float(l)*.07f;w.pointSlot().schedule.invalidate();assert(w.renderPointShadow(light,true,true));draws+=w.pointDraws;}must(d->EndScene());
+            const auto submitted=std::chrono::steady_clock::now();drain();const auto done=std::chrono::steady_clock::now();
+            std::printf("POINT_ORDER_TIMING block=%u sorted=%u cpuMs=%.6f completeMs=%.6f draws=%u\n",block,unsigned(sorted),std::chrono::duration<double,std::milli>(submitted-start).count(),std::chrono::duration<double,std::milli>(done-start).count(),draws);must(d->Present(nullptr,nullptr,nullptr,nullptr));}
+        std::printf("POINT_PALETTE_GPU_PASS comparisons=%u actors=100 faces=6 spans=1,16,21,41,42,71 rebasedFirst=50 coldResume=1 alphaFallback=1 faults=14 recoveryWithoutRestart=1 reset=1 depthTolerance=2e-6\n",comparisons);
         if(timing){IDirect3DQuery9 *begin=nullptr,*end=nullptr,*hz=nullptr,*disjoint=nullptr;must(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&begin));must(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&end));must(d->CreateQuery(D3DQUERYTYPE_TIMESTAMPFREQ,&hz));must(d->CreateQuery(D3DQUERYTYPE_TIMESTAMPDISJOINT,&disjoint));
-            for(unsigned unique=0;unique<2;++unique){for(unsigned a=0;a<w.replays.size();++a)w.replays[a]->count=source->primitiveCount-(unique?a:0);
+            for(unsigned unique=0;unique<3;++unique){
+            if(unique==2){auto shifted=std::make_shared<NorthlightDrawSnapshot::Mesh>(*source);auto v=vertices;for(auto& item:v)item.bones[0]=74;
+                std::memcpy(shifted->streams[0].bytes.data(),v.data(),shifted->streams[0].bytes.size());must(vb->Lock(8*sizeof(Vertex),UINT(shifted->streams[0].bytes.size()),&data,0));std::memcpy(data,v.data(),shifted->streams[0].bytes.size());must(vb->Unlock());for(auto& p:w.replays)p->shared=shifted;bounds(75);for(const auto& p:w.replays)assert(p->boundsWork.paletteFirst==74);}
+            for(unsigned a=0;a<w.replays.size();++a)w.replays[a]->count=source->primitiveCount-(unique==1?a:0);
             for(unsigned block=0;block<8;++block)for(unsigned mode=0;mode<2;++mode){const bool optimized=(block&1)?!mode:mode;double cpu=0,gpu=0,complete=0;unsigned draws=0,packets=0;
-                for(unsigned round=0;round<8;++round){const auto start=std::chrono::steady_clock::now();w.pointPaletteUnavailable=!optimized;w.pointWork={};must(d->BeginScene());must(disjoint->Issue(D3DISSUE_BEGIN));must(hz->Issue(D3DISSUE_END));must(begin->Issue(D3DISSUE_END));
+                for(unsigned round=0;round<8;++round){const auto start=std::chrono::steady_clock::now();w.pointPaletteUnavailable=!optimized;w.pointReplayOrderReady=false;w.pointWork={};must(d->BeginScene());must(disjoint->Issue(D3DISSUE_BEGIN));must(hz->Issue(D3DISSUE_END));must(begin->Issue(D3DISSUE_END));
                     for(unsigned l=0;l<10;++l){light.sourceId=100+l;light.position[0]=float(l)*.07f;w.pointSlot().schedule.invalidate();assert(w.renderPointShadow(light,true,true));draws+=w.pointDraws;}
                     must(end->Issue(D3DISSUE_END));must(disjoint->Issue(D3DISSUE_END));must(d->EndScene());const auto submitted=std::chrono::steady_clock::now();drain();const auto done=std::chrono::steady_clock::now();UINT64 a=0,b=0,h=0;BOOL invalid=TRUE;must(begin->GetData(&a,sizeof a,0));must(end->GetData(&b,sizeof b,0));must(hz->GetData(&h,sizeof h,0));must(disjoint->GetData(&invalid,sizeof invalid,0));assert(!invalid&&h&&b>=a);
                     if(round){cpu+=std::chrono::duration<double,std::milli>(submitted-start).count();complete+=std::chrono::duration<double,std::milli>(done-start).count();gpu+=double(b-a)*1000/h;packets+=w.pointWork.palettePackets;}must(d->Present(nullptr,nullptr,nullptr,nullptr));}

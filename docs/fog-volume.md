@@ -74,12 +74,16 @@ history and both blur passes. It never enters either atmospheric history.
 
 `WorldRenderer` owns `NorthlightFogVolume`. It creates the atlases lazily for an
 active imported atmosphere, counts them as post targets and releases them on
-reset, resize and memory pressure. The extra allocation is
+reset and resize. CPU/address-space cache pressure retains resident atlases and
+their history. A cold allocation under pressure uses the existing DEFAULT-target
+admission: known free address space, a 256 MiB reserve, 2 MiB of metadata allowance
+and a 1 MiB largest free block. These GPU targets request no CPU shadow copy.
+The extra GPU allocation is
 `24 × 64 × ceil(width/16) × ceil(height/16)` bytes: approximately 12 MiB at
 1920×1080 and 47.5 MiB at 3840×2160. These values exclude driver overhead.
 
 Unsupported shader/texture caps, shader creation failure, partial allocation
-failure and memory pressure retain the original raymarch path. The separate
+failure and refused cold admission retain the original raymarch path. The separate
 regional artistic atmosphere also retains its existing path. No new resource
 is required by fog-off or other effect-only frames.
 
@@ -102,8 +106,16 @@ and DXVK environment instead of implying native D3D9 coverage.
 `test_world_screen_effects_gpu.py` exercises the production executor, cache
 settling, on/off, partial allocation failure, shader/capability fallback,
 state restoration and local-light retirement with MSAA off/on.
+It also checks resident and cold allocation under pressure, moving noisy fog,
+and byte-identical output when a settled volume enters pressure.
+`test_fog_volume_admission.py` checks the address reserve, unknown samples,
+retained-resource admission, failed allocation and reset recovery.
 
 Optional component GPU timings are enabled with
 `NORTHLIGHT_FOG_VOLUME_BENCHMARK=1` for `test_fog_volume_gpu.py`. The process guard
 requires the game to be closed for timings. Timestamp results cover the fog
 component, not whole-game FPS or representative live-route acceptance.
+`--benchmark-size 3840 2160` selects an explicit 4K component comparison and
+records free process address space before and after atlas creation. See the
+[pressure-path investigation](fog-capture-pipeline-20261117.md) for the measured
+cause, matched variant and limits.

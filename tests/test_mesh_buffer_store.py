@@ -31,7 +31,7 @@ assert '#include "mesh_buffer_store.h"' in w and 'NorthlightMeshBufferStore::Sto
 assert 'NorthlightMeshBufferStore::Store meshStore;' in fp.src('gpu_scene.h').read_text()
 acquire = w[w.index('bool acquireMeshPage(uint32_t id'):w.index('void releaseMeshPool()')]
 assert 'if(!meshStore.writable(id)||id>=meshBuffers.size())return false;' in acquire and acquire.index('writable(id)') < acquire.index('Create')
-bind = w[w.index('bool bindMeshPage('):w.index('std::vector<Batch> batches;')]
+bind = w[w.index('bool bindMeshPage('):w.index('std::vector<Batch> batches')]
 assert 'meshStore.bufferOf(batch.page)' in bind and 'meshBuffers[id]' in bind
 upload = w[w.index('bool upload(NorthlightStreaming::Budget& streamBudget){'):w.index('if((!menuDomain&&(!vertices||!indices))||uploadedMap!=active->map)return false;')]
 perform = upload[upload.index('auto perform=['):upload.index('while(pageBudget.available()')]

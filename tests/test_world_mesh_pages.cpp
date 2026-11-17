@@ -1,6 +1,7 @@
 #include "world_mesh_pages.h"
 #include "shadow_terrain.h"
 #include <cassert>
+#include <array>
 #include <cstdio>
 #include <cstring>
 #include <limits>
@@ -42,17 +43,22 @@ static void verify(const WorldMeshUploadPlan& input,const P::Plan& output) {
         assert(originalTriangle+b.count<=before.count);
         const float inf=std::numeric_limits<float>::infinity();Vec3 lo(inf,inf,inf),hi(-inf,-inf,-inf);
         uint32_t min=UINT32_MAX,max=0;
+        std::vector<std::array<unsigned char,3*sizeof(WorldVertex)>> expected,actual;
         for(uint32_t t=0;t<b.count;++t){
+            std::array<unsigned char,3*sizeof(WorldVertex)> want{},got{};
             for(unsigned k=0;k<3;++k){
                 uint32_t originalIndex=input.indices[before.start+(originalTriangle+t)*3+k];
                 uint32_t actualIndex=page.indices[b.start+t*3+k];assert(actualIndex<page.vertices.size());
-                assert(std::memcmp(&input.source->vertices[originalIndex],&page.vertices[actualIndex],sizeof(WorldVertex))==0);
+                std::memcpy(want.data()+k*sizeof(WorldVertex),&input.source->vertices[originalIndex],sizeof(WorldVertex));
+                std::memcpy(got.data()+k*sizeof(WorldVertex),&page.vertices[actualIndex],sizeof(WorldVertex));
                 const auto& v=page.vertices[actualIndex].position;
                 lo.x=std::min(lo.x,v.x);lo.y=std::min(lo.y,v.y);lo.z=std::min(lo.z,v.z);
                 hi.x=std::max(hi.x,v.x);hi.y=std::max(hi.y,v.y);hi.z=std::max(hi.z,v.z);
                 min=std::min(min,actualIndex);max=std::max(max,actualIndex);
             }
+            expected.push_back(want);actual.push_back(got);
         }
+        std::sort(expected.begin(),expected.end());std::sort(actual.begin(),actual.end());assert(expected==actual);
         assert(b.minVertex==min&&b.vertexCount==max-min+1);
         assert(b.boundsLow.x==lo.x&&b.boundsLow.y==lo.y&&b.boundsLow.z==lo.z);
         assert(b.boundsHigh.x==hi.x&&b.boundsHigh.y==hi.y&&b.boundsHigh.z==hi.z);
@@ -361,4 +367,32 @@ static void testSpooledPointTransmission(){
     }
     std::puts("PASS spooled point transmission: exact geometry, UVs, cutout texels, packed order, page bytes and retained recovery ownership");
 }
-int main(){testSpooledPointTransmission();testIndexMap();testVertexLimits();testIndexLimits();testKeepBatches();testDegenerateAndExactBoundary();testAnchors();testElision();testTransactionalFailure();testSeal();testCompactSource();std::puts("All world mesh page tests passed");}
+static void testPointRanges(){
+    WorldScene scene;WorldMeshUploadPlan input;makePlan(scene,input,{1,2});
+    input.batches[1].pointOnly=true;
+    P::Plan plain,fine;P::Options off;off.pointCells=false;std::string error;
+    assert(P::build(input,plain,error,{},off)&&P::build(input,fine,error));verify(input,fine);
+    assert(!P::validatePages(input,fine)&&fine.pointSubRanges.size()==fine.batches.size()&&!fine.pointSubBatches.empty());
+    assert(fine.pages.size()==plain.pages.size()&&fine.batches.size()==plain.batches.size()&&fine.vertexBytes==plain.vertexBytes&&fine.indexBytes==plain.indexBytes);
+    for(size_t i=0;i<fine.pages.size();++i)assert(fine.pages[i].vertices.size()==plain.pages[i].vertices.size()&&!std::memcmp(fine.pages[i].vertices.data(),plain.pages[i].vertices.data(),fine.pages[i].vertices.size()*sizeof(WorldVertex)));
+    for(const auto& b:fine.pointSubBatches){const auto& page=fine.pages[b.page];uint32_t low=UINT32_MAX,high=0;Vec3 lo(INFINITY,INFINITY,INFINITY),hi(-INFINITY,-INFINITY,-INFINITY);
+        for(uint32_t i=b.start;i<b.start+b.count*3;++i){const auto index=page.indices[i];const auto p=page.vertices[index].position;low=std::min(low,uint32_t(index));high=std::max(high,uint32_t(index));lo.x=std::min(lo.x,p.x);lo.y=std::min(lo.y,p.y);lo.z=std::min(lo.z,p.z);hi.x=std::max(hi.x,p.x);hi.y=std::max(hi.y,p.y);hi.z=std::max(hi.z,p.z);}
+        assert(low==b.minVertex&&high-low+1==b.vertexCount&&!std::memcmp(&lo,&b.boundsLow,sizeof lo)&&!std::memcmp(&hi,&b.boundsHigh,sizeof hi));}
+    for(unsigned fault=0;fault<6;++fault){auto broken=fine;
+        if(fault==0)++broken.pointSubRanges[0].first;if(fault==1)broken.pointSubBatches.pop_back();
+        if(fault==2)++broken.pointSubBatches[0].start;if(fault==3)broken.pointSubBatches[0].boundsLow.x=NAN;
+        if(fault==4)++broken.pointSubBatches[0].material;if(fault==5)broken.pointSubBatches[0].terrain=true;
+        assert(P::validatePages(input,broken));}
+    NorthlightMeshPageKey::KeySet resident;for(const auto& page:fine.pages)resident.insert(page.key);
+    P::Plan elided,spooled;P::Options reuse;reuse.resident=&resident;P::Options file;file.spooled=true;
+    assert(P::build(input,elided,error,{},reuse)&&P::build(input,spooled,error,{},file));
+    for(const auto* plan:{&elided,&spooled}){assert(!P::validatePages(input,*plan)&&plan->pointSubBatches.size()==fine.pointSubBatches.size());
+        for(size_t i=0;i<fine.pages.size();++i)assert(plan->pages[i].key==fine.pages[i].key);
+        for(size_t i=0;i<fine.pointSubRanges.size();++i)assert(plan->pointSubRanges[i].first==fine.pointSubRanges[i].first&&plan->pointSubRanges[i].count==fine.pointSubRanges[i].count);}
+    for(unsigned denied:{1u,2u}){auto page=plain.pages[0];std::vector<P::Batch> ranges;P::PointRange range;unsigned requests=0;
+        assert(P::partitionPointBatch(page,plain.batches[0],ranges,range,[&](uint64_t){return ++requests!=denied;}));
+        assert(requests==denied&&ranges.empty()&&!range.count&&page.indices==plain.pages[0].indices);}
+    input.batches[0].lampSourceId=93;P::Plan lamp;assert(P::build(input,lamp,error));assert(!lamp.pointSubRanges[0].count&&std::equal(plain.pages[0].indices.begin(),plain.pages[0].indices.begin()+plain.batches[0].count*3,lamp.pages[0].indices.begin()));
+    std::puts("PASS point ranges: exact triangles/bounds, unchanged coarse pages, cutouts, lamp ownership, elision, file recovery and malformed metadata");
+}
+int main(){testPointRanges();testSpooledPointTransmission();testIndexMap();testVertexLimits();testIndexLimits();testKeepBatches();testDegenerateAndExactBoundary();testAnchors();testElision();testTransactionalFailure();testSeal();testCompactSource();std::puts("All world mesh page tests passed");}

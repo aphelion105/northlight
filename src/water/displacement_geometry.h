@@ -144,70 +144,116 @@ inline bool build(const Mesh& in,const D3DVERTEXELEMENT9* elements,UINT elementC
         const float peak=first.peak();if(!std::isfinite(peak))return false;
         for(auto& scale:skinRelief)scale=peak>0?std::min(1.f,.05f*std::sqrt(scale)/(.12f*peak)):1.f;
     }
+    // Interior barycentric keys are private to a unique source face. Only
+    // shared edges and duplicate faces need the per-sample hash lookup.
+    bool uniqueFaces=false;
+    for(size_t i=0;i<triangles.size();++i)if(rigid[i]&&!(influences&&bones&&boundary[triangles[i][0]]&&boundary[triangles[i][1]]&&boundary[triangles[i][2]])){
+        auto faces=triangles;for(auto& face:faces)std::sort(face.begin(),face.end());std::sort(faces.begin(),faces.end());
+        uniqueFaces=std::adjacent_find(faces.begin(),faces.end())==faces.end();break;
+    }
     std::pmr::unordered_map<Key,unsigned,Hash> vertices(&scratch);vertices.reserve(capacity);
     // An original corner has one barycentric key per source vertex.
     std::vector<unsigned> originalVertices(in.vertexCount,UINT_MAX);
+    // Original skinned corners are pinned and retain the complete native
+    // stride. Validate their consumed inputs once, then bypass interpolation,
+    // quantization and skin merging that the native-byte copy would overwrite.
+    const bool byteCorners=influences&&weights&&bones&&normal&&weights->Type==D3DDECLTYPE_UBYTE4N&&bones->Type==D3DDECLTYPE_UBYTE4&&normal->Type==D3DDECLTYPE_FLOAT3;
+    std::vector<uint8_t> cornerChecked(byteCorners?in.vertexCount:0);
+    auto validCorner=[&](unsigned vertex){
+        if(cornerChecked[vertex])return true;
+        for(unsigned e=0;e<elementCount&&elements[e].Stream!=0xff;++e){if(&elements[e]==weights||&elements[e]==bones)continue;
+            if(!NorthlightFloatChecks::bounded<4>(decoded[size_t(e)*in.vertexCount+vertex].data()))return false;}
+        const auto* p=in.streams[0].bytes.data()+size_t(vertex)*stride+weights->Offset;
+        unsigned sum=0;for(unsigned k=0;k<influences;++k)sum+=p[k];if(!sum)return false;
+        cornerChecked[vertex]=1;return true;
+    };
     std::array<unsigned char,84> cornerPayload{};
     std::array<bool,3> triangleBoundary{};
     const unsigned cornerBytes=color?color->cornerBytes()*3:0;
+    bool singleByteSkin=false;
     auto vertex=[&](const std::array<unsigned,3>& t,unsigned i,unsigned j)->unsigned{
         const unsigned w[3]={factor-i-j,i,j};
         const unsigned original=w[0]==factor?t[0]:w[1]==factor?t[1]:w[2]==factor?t[2]:UINT_MAX;
         if(original!=UINT_MAX){
             auto& known=originalVertices[original];if(known!=UINT_MAX)return known;
             if(out.vertexCount>=32768)return UINT_MAX;known=out.vertexCount;
-        }else{
+        }else if(!uniqueFaces||!w[0]||!w[1]||!w[2]){
             std::array<std::pair<unsigned,unsigned>,3> sorted;
             for(unsigned k=0;k<3;++k)sorted[k]={w[k]?t[k]:UINT_MAX,w[k]};std::sort(sorted.begin(),sorted.end());
             Key key;for(unsigned k=0;k<3;++k){key.v[k*2]=sorted[k].first;key.v[k*2+1]=sorted[k].second;}
             if(out.vertexCount>=32768){auto found=vertices.find(key);return found!=vertices.end()?found->second:UINT_MAX;}
             const auto inserted=vertices.try_emplace(key,out.vertexCount);if(!inserted.second)return inserted.first->second;
         }
+        if(out.vertexCount>=32768)return UINT_MAX;
+        const float bary[3]={float(w[0])/factor,float(w[1])/factor,float(w[2])/factor};
         const unsigned n=out.vertexCount++;auto& bytes=out.streams[0].bytes;bytes.resize(size_t(out.vertexCount)*outputStride);auto* dst=bytes.data()+size_t(n)*outputStride;
         if(color){
             std::memcpy(dst+colorOffset,cornerPayload.data(),cornerBytes);
-            const float barycentric[]={float(w[0])/factor,float(w[1])/factor,float(w[2])/factor};
+            const float barycentric[]={bary[0],bary[1],bary[2]};
             std::memcpy(dst+colorOffset+cornerBytes,barycentric,sizeof barycentric);
+        }
+        if(byteCorners&&original!=UINT_MAX){
+            for(auto v:t)if(!validCorner(v))return UINT_MAX;
+            const auto& normalValue=decoded[size_t(normal-elements)*in.vertexCount+original];
+            const float length=terrain?1.f:std::sqrt(normalValue[0]*normalValue[0]+normalValue[1]*normalValue[1]+normalValue[2]*normalValue[2]);
+            if(!std::isfinite(length)||length<1e-5f)return UINT_MAX;
+            std::memcpy(dst,in.streams[0].bytes.data()+size_t(original)*stride,stride);
+            const float zero[3]={};std::memcpy(dst+stride,zero,12);
+            if(gpuHeight){float coordinates[2]={};for(unsigned k=0;k<3;++k)for(unsigned c=0;c<2;++c)coordinates[c]+=uv[t[k]][c]*(bary[k]);std::memcpy(dst+stride+12,coordinates,8);}
+            return n;
         }
         Four direction={0,0,1,0};
         for(UINT e=0;e<elementCount&&elements[e].Stream!=0xff;++e){const auto& element=elements[e];if(&element==weights||&element==bones)continue;Four value={};
-            for(unsigned k=0;k<3;++k){const auto& a=decoded[size_t(e)*in.vertexCount+t[k]];for(unsigned c=0;c<4;++c)value[c]+=a[c]*(float(w[k])/factor);}
+            for(unsigned k=0;k<3;++k){const auto& a=decoded[size_t(e)*in.vertexCount+t[k]];for(unsigned c=0;c<4;++c)value[c]+=a[c]*(bary[k]);}
             for(float v:value)if(!std::isfinite(v))return UINT_MAX;
             if(!encode(dst+element.Offset,element.Type,value))return UINT_MAX;
             if(&element==normal&&!terrain)direction=value;
         }
-        if(!normal&&!terrain){direction={};for(unsigned k=0;k<3;++k)for(unsigned c=0;c<3;++c)direction[c]+=faceNormals[t[k]][c]*(float(w[k])/factor);}
+        if(!normal&&!terrain){direction={};for(unsigned k=0;k<3;++k)for(unsigned c=0;c<3;++c)direction[c]+=faceNormals[t[k]][c]*(bary[k]);}
         if(bones&&!weights){unsigned k=w[1]>w[0]?1:0;if(w[2]>w[k])k=2;Four ids;if(!NorthlightActorDeformation::decodeElement(in.streams[0].bytes.data()+size_t(t[k])*stride+bones->Offset,bones->Type,ids)||!encode(dst+bones->Offset,bones->Type,ids))return UINT_MAX;}
         if(!influences){unsigned k=w[1]>w[0]?1:0;if(w[2]>w[k])k=2;for(auto* e:{weights,bones})if(e)std::memcpy(dst+e->Offset,in.streams[0].bytes.data()+size_t(t[k])*stride+e->Offset,NorthlightDrawSnapshot::declarationBytes(e->Type));}
-        if(influences&&weights&&bones){unsigned ids[12]={},used=0;float merged[12]={};
+        if(influences&&weights&&bones){
+        if(singleByteSkin){
+            // Identical one-bone corners normalize to unit weight for every
+            // barycentric sample, including the factor-three centroid fan.
+            const unsigned char unit[]={255,0,0,0};std::memcpy(dst+weights->Offset,unit,4);
+            std::memcpy(dst+bones->Offset,in.streams[0].bytes.data()+size_t(t[0])*stride+bones->Offset,4);
+        }else{unsigned ids[12]={},used=0;float merged[12]={};
             for(unsigned k=0;k<3;++k){if(!skin(t[k]))return UINT_MAX;
                 const auto& ws=decoded[size_t(weights-elements)*in.vertexCount+t[k]];const auto& bs=decoded[size_t(bones-elements)*in.vertexCount+t[k]];
-                for(unsigned c=0;c<influences;++c){const unsigned id=unsigned(bs[c]);unsigned j=0;while(j<used&&ids[j]!=id)++j;if(j==used)ids[used++]=id;merged[j]+=ws[c]*(float(w[k])/factor);}}
+                for(unsigned c=0;c<influences;++c){const unsigned id=unsigned(bs[c]);unsigned j=0;while(j<used&&ids[j]!=id)++j;if(j==used)ids[used++]=id;merged[j]+=ws[c]*(bary[k]);}}
             for(unsigned a=0;a<std::min(used,influences);++a)for(unsigned b=a+1;b<used;++b)if(merged[b]>merged[a]){std::swap(merged[a],merged[b]);std::swap(ids[a],ids[b]);}
             Four ws={},bs={};float total=0;for(unsigned a=0;a<std::min(used,influences);++a)total+=merged[a];if(total<=1e-8f)return UINT_MAX;
             for(unsigned a=0;a<std::min(used,influences);++a){ws[a]=merged[a]/total;bs[a]=float(ids[a]);}if(!encode(dst+weights->Offset,weights->Type,ws)||!encode(dst+bones->Offset,bones->Type,bs))return UINT_MAX;
             if(weights->Type==D3DDECLTYPE_UBYTE4N){unsigned sum=0;float fraction[4];for(unsigned a=0;a<4;++a){unsigned n=unsigned(std::floor(ws[a]*255));dst[weights->Offset+a]=uint8_t(n);sum+=n;fraction[a]=ws[a]*255-n;}
                 while(sum<255){unsigned a=unsigned(std::max_element(fraction,fraction+4)-fraction);++dst[weights->Offset+a];fraction[a]=-1;++sum;}}
         }
+        }
         bool pinned=false;for(unsigned k=0;k<3;++k){if(w[k]==factor&&(boundary[t[k]]||influences))pinned=true;if(!w[k]&&triangleBoundary[k])pinned=true;
             if(w[k]==factor)std::memcpy(dst,in.streams[0].bytes.data()+size_t(t[k])*stride,stride);}
-        float u=0,v=0,u1=0,v1=0,b=0;for(unsigned k=0;k<3;++k){float weight=float(w[k])/factor;u+=uv[t[k]][0]*weight;v+=uv[t[k]][1]*weight;if(uv1){u1+=(*uv1)[t[k]][0]*weight;v1+=(*uv1)[t[k]][1]*weight;}if(blend)b+=(*blend)[t[k]]*weight;}
+        float u=0,v=0,u1=0,v1=0,b=0;for(unsigned k=0;k<3;++k){float weight=bary[k];u+=uv[t[k]][0]*weight;v+=uv[t[k]][1]*weight;if(uv1){u1+=(*uv1)[t[k]][0]*weight;v1+=(*uv1)[t[k]][1]*weight;}if(blend)b+=(*blend)[t[k]]*weight;}
         float h=.5f;if(!gpuHeight&&!pinned){h=first.sample(u,v,clampU,clampV);if(second&&uv1&&blend)h=second->sample(u1,v1,clampU,clampV)*(1-std::clamp(b,0.f,1.f))+h*std::clamp(b,0.f,1.f);}
         const float length=std::sqrt(direction[0]*direction[0]+direction[1]*direction[1]+direction[2]*direction[2]);if(!std::isfinite(length)||length<1e-5f)return UINT_MAX;
         // Skinned eye shells and facial UV seams must keep their native shape.
         // Taper through the first triangle ring; an all-boundary triangle has
         // no safe interior to inflate. Normal-map detail remains independent.
-        float relief=1;if(influences&&bones){relief=0;for(unsigned k=0;k<3;++k)if(!boundary[t[k]])relief+=float(w[k])/factor*skinRelief[t[k]];}
+        float relief=1;if(influences&&bones){relief=0;for(unsigned k=0;k<3;++k)if(!boundary[t[k]])relief+=bary[k]*skinRelief[t[k]];}
         // Original skinned vertices are pinned too. Approach every pin
         // continuously; an isolated zero otherwise makes sharper dimples as
         // subdivision increases. This mask agrees across shared edges and
         // reaches one at the triangle center, independently of subdivision.
-        if(influences&&bones){const float a=float(w[0])/factor,b=float(w[1])/factor,c=float(w[2])/factor;relief*=3*(a*b+b*c+c*a);}
+        if(influences&&bones){const float a=bary[0],b=bary[1],c=bary[2];relief*=3*(a*b+b*c+c*a);}
         float delta[3];for(unsigned k=0;k<3;++k)delta[k]=pinned?0:relief*(gpuHeight?1.f:h-.5f)*direction[k]/length;std::memcpy(dst+stride,delta,12);
         if(gpuHeight){const float coordinates[]={u,v};std::memcpy(dst+stride+12,coordinates,8);}return n;
     };
     std::array<std::array<unsigned,129>,129> rows;
     for(size_t ti=0;ti<triangles.size();++ti){auto t=triangles[ti];
+        singleByteSkin=false;
+        if(byteCorners&&rigid[ti]&&(weights->Offset+4<=bones->Offset||bones->Offset+4<=weights->Offset)){
+            const auto* p=in.streams[0].bytes.data()+size_t(t[0])*stride;
+            singleByteSkin=p[weights->Offset]&&!p[weights->Offset+1]&&!p[weights->Offset+2]&&!p[weights->Offset+3]&&
+                !p[bones->Offset+1]&&!p[bones->Offset+2]&&!p[bones->Offset+3];
+        }
         for(unsigned k=0;k<3;++k)triangleBoundary[k]=edges[edge(t[(k+1)%3],t[(k+2)%3])]!=2;
         if(color)for(unsigned corner=0;corner<3;++corner)for(unsigned input=0;input<color->count;++input)
             std::memcpy(cornerPayload.data()+color->offset(corner*color->count+input),in.streams[0].bytes.data()+size_t(t[corner])*stride+elements[colorElements[input]].Offset,color->inputBytes(input));

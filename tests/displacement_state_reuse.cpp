@@ -552,6 +552,44 @@ void DisplacementStateTestAccess::poseHandoff(const char* path,const std::vector
     for(auto& values:depthCosts)std::sort(values.begin(),values.end());
     std::printf("M2_NORMAL_RANGE_PASS buffered_draws=64 cpuBeforeMs=%.6f cpuAfterMs=%.6f current_pose positive_negative_depth boundary48 full_stream_handoff no_envelope_on_proven_far\n",depthCosts[0][12],depthCosts[1][12]);
     single.rangeKind=NorthlightModelNormalRange::Single;
+    single.envelopeSkin=false; // Stock single-bone programs have no SkinEnvelope.
+    g.endFrame();
+    {const auto captured=g.snapshots.snapshotCacheHits(),skipped=g.coarseProgramSkipped;single.rangeKind=NorthlightModelNormalRange::None;
+     NorthlightAutoDisplacement::CaptureSource optional;float depth=0,upper=0;
+     assert(!g.nearestMaterialDepth(&device.vs,args,depth,true,nullptr,&upper,&optional,true));
+     assert(!optional.mesh&&!optional.declaration&&!optional.bank.bank&&g.coarseProgramSkipped==skipped+1&&g.snapshots.snapshotCacheHits()==captured);
+     // Mandatory preparation still owns the same current-pose far proof.
+     single.rangeKind=NorthlightModelNormalRange::Single;
+     assert(!g.prepare(&device.vs,4,1,args,nullptr,&optional,48)&&optional.mesh&&optional.pose.outsideRange&&g.nearestPreparedDepth()>48);
+     g.endFrame();optional.clear();
+     assert(g.nearestMaterialDepth(&device.vs,args,depth,true,nullptr,&upper,&optional,true)&&optional.mesh&&optional.pose.outsideRange&&depth>48&&!g.coarseProgramSkipped);
+     std::puts("MATERIAL_COARSE_DEMAND_PASS unsupported_preflight_reads=0 mandatory_range_proof=retained source=retained");}
+#ifdef NORTHLIGHT_COARSE_PAIR_TEST
+    for(bool classified:{false,true})for(float distance:{3.f,20.f,80.f}){
+        single.rangeKind=classified?NorthlightModelNormalRange::Single:NorthlightModelNormalRange::None;
+        std::vector<double> samples[2];uint64_t result[2]={};
+        for(unsigned round=0;round<16;++round)for(unsigned variant:{0u,1u,1u,0u}){
+            g.endFrame();float bank[1024];std::memcpy(bank,device.bank,sizeof bank);bank[22]=1;
+            for(unsigned bone=0;bone<4;++bone)bank[4*(33+3*bone)+3]=distance;
+            assert(SUCCEEDED(extension.SetVertexShaderConstantF(0,bank,256)));
+            uint64_t hash=0;const auto start=std::chrono::steady_clock::now();
+            for(unsigned draw=0;draw<64;++draw){NorthlightAutoDisplacement::CaptureSource admitted,output;float nearest=0,upper=0;
+                const bool known=variant?g.nearestMaterialDepth(&device.vs,args,nearest,true,nullptr,&upper,&admitted,true):
+                    g.nearestMaterialDepthLegacy(&device.vs,args,nearest,true,nullptr,&upper,&admitted,true);
+                bool prepared=false;
+                const bool outside=known&&nearest>48;
+                if(!outside)prepared=g.prepare(&device.vs,4,1,args,nullptr,&output,48,&admitted);
+                const auto& selected=outside?admitted:output;
+                hash=hash*131+unsigned(prepared)+2*unsigned(selected.mesh!=nullptr)+4*unsigned(selected.pose.outsideRange);
+            }
+            const double ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
+            if(round>=4)samples[variant].push_back(ms);result[variant]=hash;
+        }
+        assert(result[0]==result[1]);for(auto& values:samples)std::sort(values.begin(),values.end());
+        std::printf("MATERIAL_COARSE_PAIR classified=%u distance=%g draws=64 beforeMs=%.6f afterMs=%.6f digest=%llu\n",unsigned(classified),distance,(samples[0][11]+samples[0][12])*.5,(samples[1][11]+samples[1][12])*.5,(unsigned long long)result[0]);
+    }
+#endif
+    single.rangeKind=NorthlightModelNormalRange::Single;
     constexpr unsigned N=400;
     std::vector<double> costs[2];unsigned envelopes[2]={};
     LARGE_INTEGER frequency{};assert(QueryPerformanceFrequency(&frequency));

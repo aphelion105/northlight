@@ -6,6 +6,15 @@
 #include "world_compiled_shaders.h"
 #include "shadow_transition_compiled_shaders.h"
 #include "forever_atmosphere.h"
+static uint64_t freeAddressSpace(){
+    uint64_t total=0;uintptr_t address=0;MEMORY_BASIC_INFORMATION region{};
+    while(VirtualQuery(reinterpret_cast<const void*>(address),&region,sizeof region)==sizeof region){
+        if(region.State==MEM_FREE)total+=region.RegionSize;
+        const uint64_t next=uint64_t(reinterpret_cast<uintptr_t>(region.BaseAddress))+region.RegionSize;
+        if(next<=address||next>std::numeric_limits<uintptr_t>::max())break;address=uintptr_t(next);
+    }
+    return total;
+}
 
 // A regional field stores the TOP surface of a whole WMO column. A roof at
 // z=64 must not remove the authored global medium around a street at z=8.
@@ -80,7 +89,7 @@ static void globalMediumOracle(IDirect3DDevice9* d){
 
 int main(int argc,char** argv){
     std::setvbuf(stdout,nullptr,_IONBF,0);
-    assert(argc==2);
+    assert(argc==2||argc==4);
     WNDCLASSW wc{};wc.lpfnWndProc=DefWindowProcW;wc.lpszClassName=L"NorthlightVolumeOracle";wc.hInstance=GetModuleHandleW(nullptr);assert(RegisterClassW(&wc));
     HWND window=CreateWindowExW(0,wc.lpszClassName,L"",WS_OVERLAPPED,0,0,64,64,nullptr,nullptr,wc.hInstance,nullptr);assert(window);
     HMODULE module=LoadLibraryA(argv[1]);assert(module);auto create=reinterpret_cast<IDirect3D9*(WINAPI*)(UINT)>(reinterpret_cast<void*>(GetProcAddress(module,"Direct3DCreate9")));assert(create);auto api=create(D3D_SDK_VERSION);assert(api);
@@ -164,10 +173,12 @@ int main(int argc,char** argv){
     // 3D noise and nonuniform height/distance layers. Optional timings use GPU
     // timestamps, never CPU submission duration.
     {
-        const bool benchmark=std::getenv("NORTHLIGHT_FOG_VOLUME_BENCHMARK")!=nullptr;
-        const unsigned w=benchmark?1920:640,h=benchmark?1080:360,ow=w/2,oh=h/2;
-        NorthlightFogVolume volume;assert(volume.resources(d,w,h));
-        IDirect3DPixelShader9* old[8]={};const DWORD* oldCode[]={kForeverFogShader,kForeverFogNoNoiseShader,kForeverFogActorShader,kForeverFogActorNoNoiseShader,kForeverFogTransitionShader,kForeverFogNoNoiseTransitionShader,kForeverFogActorTransitionShader,kForeverFogActorNoNoiseTransitionShader};for(unsigned i=0;i<8;++i)ok(d->CreatePixelShader(oldCode[i],&old[i]));
+        const bool benchmark=argc==4||std::getenv("NORTHLIGHT_FOG_VOLUME_BENCHMARK")!=nullptr;
+        const unsigned w=argc==4?unsigned(std::atoi(argv[2])):benchmark?1920:640,h=argc==4?unsigned(std::atoi(argv[3])):benchmark?1080:360,ow=w/2,oh=h/2;
+        assert(w>=64&&w<=4096&&h>=64&&h<=4096);
+        const auto before=freeAddressSpace();NorthlightFogVolume volume;assert(volume.resources(d,w,h));const auto after=freeAddressSpace();
+        std::printf("FOG_VOLUME_MEMORY width=%u height=%u logicalBytes=%llu freeBefore=%llu freeAfter=%llu vaDelta=%lld cpuShadowRequested=0\n",w,h,(unsigned long long)(uint64_t(volume.cellWidth)*volume.cellHeight*64*24),(unsigned long long)before,(unsigned long long)after,(long long)before-(long long)after);
+        IDirect3DPixelShader9* old[8]={};const DWORD* oldCode[]={kForeverFogShader,kForeverFogNoNoiseShader,kForeverFogActorTiledShader,kForeverFogActorTiledNoNoiseShader,kForeverFogTransitionShader,kForeverFogNoNoiseTransitionShader,kForeverFogActorTransitionShader,kForeverFogActorNoNoiseTransitionShader};for(unsigned i=0;i<8;++i)ok(d->CreatePixelShader(oldCode[i],&old[i]));
         IDirect3DSurface9 *output=nullptr,*staging=nullptr;ok(d->CreateRenderTarget(ow,oh,D3DFMT_A32B32G32R32F,D3DMULTISAMPLE_NONE,0,FALSE,&output,nullptr));ok(d->CreateOffscreenPlainSurface(ow,oh,D3DFMT_A32B32G32R32F,D3DPOOL_SYSTEMMEM,&staging,nullptr));
         auto download=[&](){ok(d->GetRenderTargetData(output,staging));D3DLOCKED_RECT lock{};ok(staging->LockRect(&lock,nullptr,D3DLOCK_READONLY));std::vector<float> result(size_t(ow)*oh*4);for(unsigned y=0;y<oh;++y)std::memcpy(result.data()+size_t(y)*ow*4,static_cast<char*>(lock.pBits)+y*lock.Pitch,ow*16);ok(staging->UnlockRect());return result;};
         Image im{1,1,D3DFMT_A32B32G32R32F,16,std::vector<unsigned char>(16)};
@@ -190,13 +201,13 @@ int main(int argc,char** argv){
                 if(shape==1){l.p[6]=10;l.p[7]=30;}if(shape==2){l.p[0]=float(i*15);l.p[6]=20;l.p[7]=40;l.p[18]=.5f;l.p[19]=.5f;}
                 for(unsigned k=0;k<3;++k){l.color[0][k]=.7f-.15f*k;l.color[1][k]=.4f-.1f*k;l.color[3][k]=.2f;}}
             float bank[38][4];NorthlightForever::constants(frame,bank,range,1);
-            auto constants=[&](){ok(d->SetPixelShaderConstantF(0,c[0],116));ok(d->SetPixelShaderConstantF(116,bank[0],38));volume.grid(d,range);ok(d->SetTexture(1,depthTexture));ok(d->SetTexture(3,litShadow));ok(d->SetTexture(4,blockedShadow));ok(d->SetTexture(7,blockedShadow));ok(d->SetTexture(9,litShadow));ok(d->SetTexture(13,field));ok(d->SetTexture(14,noise));NorthlightFogVolume::sampler(d,14);for(auto state:{D3DSAMP_ADDRESSU,D3DSAMP_ADDRESSV,D3DSAMP_ADDRESSW})ok(d->SetSamplerState(14,state,D3DTADDRESS_WRAP));};
+            auto constants=[&](){ok(d->SetPixelShaderConstantF(0,c[0],116));ok(d->SetPixelShaderConstantF(116,bank[0],38));volume.grid(d,range);ok(d->SetTexture(1,depthTexture));ok(d->SetTexture(3,litShadow));ok(d->SetTexture(4,blockedShadow));ok(d->SetTexture(5,blockedShadow));ok(d->SetTexture(7,blockedShadow));ok(d->SetTexture(9,litShadow));ok(d->SetTexture(13,field));ok(d->SetTexture(14,noise));NorthlightFogVolume::sampler(d,14);for(auto state:{D3DSAMP_ADDRESSU,D3DSAMP_ADDRESSV,D3DSAMP_ADDRESSW})ok(d->SetSamplerState(14,state,D3DTADDRESS_WRAP));};
             auto draw=[&](unsigned mode){constants();if(mode==0){ok(d->SetTexture(0,nullptr));ok(d->SetRenderTarget(0,output));ok(d->SetPixelShader(old[variant]));D3DVIEWPORT9 vp={0,0,ow,oh,0,1};ok(d->SetViewport(&vp));ok(NorthlightScreen::drawQuad(d,ow,oh));}
                 else{if(mode==1){assert(volume.target(d,volume.raw()));assert(volume.injection(d,volume.inject[variant],range,noisy,true));assert(volume.integrate(d,range,c[1],false));}assert(volume.composite(d,output,ow,oh));}};
             std::vector<float> images[2];for(unsigned mode=0;mode<2;++mode){ok(d->BeginScene());draw(mode);ok(d->EndScene());images[mode]=download();}
             double sum=0;float peak=0;for(size_t i=0;i<images[0].size();++i){assert(std::isfinite(images[0][i])&&std::isfinite(images[1][i]));float error=std::abs(images[0][i]-images[1][i]);sum+=error*error;peak=std::max(peak,error);}
             const double rms=std::sqrt(sum/images[0].size());std::printf("FOG_VOLUME_REFERENCE shadows=%u noise=%u range=%g shape=%u rms=%g max=%g\n",shadows,noisy,range,shape,rms,peak);assert(rms<.008&&peak<.04f);++cases;
-            if(benchmark&&shape==1&&range==1000&&(shadows==0||shadows==3)){std::vector<double> times[3];
+            if(benchmark&&shape==1&&range==1000&&(shadows==0||shadows==1||shadows==3)){std::vector<double> times[3];
                 for(unsigned block=0;block<6;++block)for(unsigned mode:{0u,1u,2u,2u,1u,0u}){
                     ok(d->BeginScene());draw(mode);ok(disjoint->Issue(D3DISSUE_BEGIN));ok(frequency->Issue(D3DISSUE_END));ok(begin->Issue(D3DISSUE_END));for(unsigned n=0;n<4;++n)draw(mode);ok(end->Issue(D3DISSUE_END));ok(disjoint->Issue(D3DISSUE_END));ok(d->EndScene());
                     UINT64 a=0,b=0,hz=0;BOOL invalid=TRUE;collect(end,&b,sizeof b);collect(begin,&a,sizeof a);collect(frequency,&hz,sizeof hz);collect(disjoint,&invalid,sizeof invalid);assert(!invalid&&hz&&b>=a);times[mode].push_back(1000.*double(b-a)/double(hz)/4);}

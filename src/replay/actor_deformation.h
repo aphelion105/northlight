@@ -449,6 +449,38 @@ template<bool Validated=false> inline bool singleSkinBoundsPrepared(const Progra
     // This audited kernel consumes only the first blend-index lane.
     if(position.element.Type==D3DDECLTYPE_FLOAT3&&index.element.Type==D3DDECLTYPE_UBYTE4){
         const auto& positions=mesh.streams[position.element.Stream];const auto& indices=mesh.streams[index.element.Stream];inputs[0][3]=1;
+#if defined(__SSE2__)
+        if(control[0]==3.f&&control[1]==1.f&&std::all_of(program.definitions.begin(),program.definitions.end(),[](const Definition& d){return d.reg==0;})){
+            // Transpose each used bone once per draw. SIMD lanes are X/Y/Z;
+            // every DP4 retains its four separate MUL/ADDs and initial zero.
+            __m128 palette[75][4];bool ready[75]={};
+            auto lo=_mm_set_ps(0,low[2],low[1],low[0]),hi=_mm_set_ps(0,high[2],high[1],high[0]);
+            const auto sign=_mm_set1_epi32(0x7fffffff),finite=_mm_set1_epi32(0x7f7fffff);
+            const auto valid=[&](__m128 v){return _mm_movemask_epi8(_mm_cmpgt_epi32(_mm_and_si128(_mm_castps_si128(v),sign),finite))==0;};
+            const auto store=[&]{float a[4],b[4];_mm_storeu_ps(a,lo);_mm_storeu_ps(b,hi);std::memcpy(low,a,12);std::memcpy(high,b,12);};
+            __m128 axes[3];if(basis)for(unsigned k=0;k<3;++k)axes[k]=_mm_set_ps(0,basis[4*k+2],basis[4*k+1],basis[4*k]);
+            for(UINT vertex=0;vertex<mesh.vertexCount;++vertex){
+                const unsigned bone=indices.bytes[size_t(vertex)*indices.stride+index.element.Offset];
+                if(bone>=75){store();return false;}
+                if(!ready[bone]){const float* rows=constants+4*(31+3*bone);
+                    auto x=_mm_loadu_ps(rows),y=_mm_loadu_ps(rows+4),z=_mm_loadu_ps(rows+8),w=_mm_setzero_ps();
+                    _MM_TRANSPOSE4_PS(x,y,z,w);palette[bone][0]=x;palette[bone][1]=y;palette[bone][2]=z;palette[bone][3]=w;ready[bone]=true;}
+                float positionValue[3];std::memcpy(positionValue,positions.bytes.data()+size_t(vertex)*positions.stride+position.element.Offset,12);
+                auto value=_mm_setzero_ps();
+                for(unsigned k=0;k<3;++k)value=_mm_add_ps(value,_mm_mul_ps(palette[bone][k],_mm_set1_ps(positionValue[k])));
+                value=_mm_add_ps(value,_mm_mul_ps(palette[bone][3],_mm_set1_ps(1.f)));
+                if(!valid(value)){store();return false;}
+                if(basis){
+                    const auto x=_mm_shuffle_ps(value,value,_MM_SHUFFLE(0,0,0,0)),y=_mm_shuffle_ps(value,value,_MM_SHUFFLE(1,1,1,1)),z=_mm_shuffle_ps(value,value,_MM_SHUFFLE(2,2,2,2));
+                    value=_mm_add_ps(_mm_add_ps(_mm_mul_ps(x,axes[0]),_mm_mul_ps(y,axes[1])),_mm_mul_ps(z,axes[2]));
+                    if(!valid(value)){store();float result[4];_mm_storeu_ps(result,value);
+                        for(unsigned k=0;k<3;++k){if(!std::isfinite(result[k]))return false;low[k]=std::min(low[k],result[k]);high[k]=std::max(high[k],result[k]);}return false;}
+                }
+                lo=_mm_min_ps(value,lo);hi=_mm_max_ps(value,hi);
+            }
+            store();return true;
+        }
+#endif
         for(UINT vertex=0;vertex<mesh.vertexCount;++vertex){
             std::memcpy(inputs[0].data(),positions.bytes.data()+size_t(vertex)*positions.stride+position.element.Offset,12);
             inputs[1][0]=float(indices.bytes[size_t(vertex)*indices.stride+index.element.Offset]);

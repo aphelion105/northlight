@@ -10,10 +10,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
 
 source = fp.src('world_point_rendering.inl').read_text(encoding='utf-8')
-start = source.index('            if(withReplays)for(size_t i=0;i<replays.size();++i)')
+start = source.index('            if(withReplays)pointOrderReplays();')
 current = source[start:source.index('\n            if(pointTimed)', start)]
 harness = r'''
 #include <array>
+#include <algorithm>
 #include <cassert>
 #include <cstdio>
 #include <memory>
@@ -26,7 +27,12 @@ struct Fixture{
     struct Work{unsigned unboundedSkinned=0,unboundedRigid=0;} pointWork;
     std::vector<std::unique_ptr<Replay>> replays;
     std::array<std::vector<size_t>,6> pointReplayCandidates;
-    unsigned pointCulled=0;
+    unsigned pointCulled=0,policy=0,pointOrderCalls=0;
+    std::vector<size_t> pointReplayOrder;bool pointReplayOrderReady=false;
+    void pointOrderReplays(){++pointOrderCalls;pointReplayOrderReady=policy!=0;
+        pointReplayOrder.resize(replays.size()-(policy==2));
+        for(size_t i=0;i<pointReplayOrder.size();++i)pointReplayOrder[i]=policy==1?replays.size()-i-1:i;}
+
     void pointAppendCandidates(std::array<std::vector<size_t>,6>& lists,size_t index,unsigned mask,unsigned faces){
         for(unsigned face=0;face<6;++face)if(faces&(1u<<face)){if(mask&(1u<<face))lists[face].push_back(index);else ++pointCulled;}}
     void add(unsigned mask,bool valid,bool outside,bool skin=false){
@@ -36,21 +42,23 @@ struct Fixture{
 };
 int main(){
     unsigned cases=0;
-    for(unsigned faces=1;faces<64;++faces)for(unsigned mask=0;mask<64;++mask)for(bool replay:{false,true}){
-        Fixture now;now.add(mask,true,false);now.add(63,true,true);
+    for(unsigned faces=1;faces<64;++faces)for(unsigned mask=0;mask<64;++mask)for(bool replay:{false,true})for(unsigned policy=0;policy<3;++policy){
+        Fixture now;now.policy=policy;now.add(mask,true,false);now.add(63,true,true);
         now.add(0,false,true);now.add(0,false,false,true);now.newLoop(faces,replay);
         unsigned expectedCulled=0;
         for(unsigned face=0;face<6;++face){std::vector<size_t> expected;
             if(replay&&(faces&(1u<<face))){if(mask&(1u<<face))expected.push_back(0);else ++expectedCulled;
                 ++expectedCulled;expected.push_back(2);expected.push_back(3);}
+            if(policy==1)std::reverse(expected.begin(),expected.end());
             assert(now.pointReplayCandidates[face]==expected);
         }
         const unsigned unbounded=replay?unsigned(__builtin_popcount(faces)):0;
         assert(now.pointWork.unboundedRigid==unbounded&&now.pointWork.unboundedSkinned==unbounded);
+        assert(now.pointOrderCalls==unsigned(replay));
         assert(now.pointCulled==expectedCulled);++cases;
     }
-    Fixture disabled;disabled.replays.push_back(nullptr);disabled.newLoop(63,false);
-    std::printf("POINT_REPLAY_ADMISSION_PASS cases=%u allGeometry=1 invalidBounds=failOpen actorOffNoReads=1\n",cases);
+    Fixture disabled;disabled.policy=1;disabled.replays.push_back(nullptr);disabled.newLoop(63,false);assert(!disabled.pointOrderCalls);
+    std::printf("POINT_REPLAY_ADMISSION_PASS cases=%u allGeometry=1 invalidBounds=failOpen actorOffNoReads=1 permutedOrder=1 staleOrderFallback=1\n",cases);
 }
 '''.replace('@NEW@', current)
 out=fp.output_dir()/'point-replay-admission'

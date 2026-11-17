@@ -1,4 +1,4 @@
-# northlight-test: requires=windows-gpu,zig,client manual timing
+# northlight-test: requires=windows-gpu,zig,client timing
 """Production point-cube palette instancing against individual shader replay."""
 import argparse
 import hashlib
@@ -12,8 +12,8 @@ ROOT=Path(__file__).resolve().parents[1];sys.path[:0]=[str(ROOT),str(ROOT/'tests
 import northlight_paths as fp
 import client_fixtures
 from windows_gpu_guard import processes
-p=argparse.ArgumentParser(__doc__);p.add_argument('--output',type=Path,required=True);p.add_argument('--backend',type=Path,action='append',required=True);p.add_argument('--timing',action='store_true');a=p.parse_args()
-out=a.output.resolve();out.mkdir(parents=True,exist_ok=False);client_fixtures.actor_client_programs(out)
+p=argparse.ArgumentParser(__doc__);p.add_argument('--output',type=Path);p.add_argument('--backend',type=Path,action='append');p.add_argument('--timing',action='store_true');a=p.parse_args()
+a.backend=a.backend or [Path(os.environ['WINDIR'])/'SysWOW64/d3d9.dll',fp.client_root()/'renderer-backends/dxvk/dxvk_d3d9.dll'];out=(a.output or fp.output_dir()/'point-palette').resolve();out.mkdir(parents=True,exist_ok=False);client_fixtures.actor_client_programs(out)
 sha=lambda f:hashlib.sha256(f.read_bytes()).hexdigest()
 inputs={str(f):sha(f) for f in [*fp.SRC.rglob('*.h'),*fp.SRC.rglob('*.cpp'),*fp.SRC.rglob('*.inl'),ROOT/'tests/point_palette_gpu.cpp',Path(__file__),out/'actor_client_programs.h',*a.backend]}
 env={**fp.zig_env(),'DXVK_LOG_PATH':str(out),'DISABLE_VULKAN_OBS_CAPTURE':'1'}
@@ -26,6 +26,8 @@ for index,backend in enumerate(a.backend):
     r=subprocess.run([str(exe),str(backend.resolve()),str(settings)+os.sep,*(['timing'] if a.timing else [])],env=env,capture_output=True,timeout=240)
     log=out/f'gpu-{index}.log';log.write_bytes(r.stdout+r.stderr);print(index,(r.stdout+r.stderr).decode(errors='replace')[-2400:],flush=True);r.check_returncode();assert b'POINT_PALETTE_GPU_PASS' in r.stdout
     rows=[dict(re.findall(r'(\w+)=([\d.]+)',line)) for line in r.stdout.decode().splitlines() if line.startswith('POINT_PALETTE_TIMING ')]
-    results.append(dict(backend=str(backend.resolve()),sha256=sha(backend),concurrent_games=games,log=log.name,timing=rows))
+    order_rows=[dict(re.findall(r'(\w+)=([\d.]+)',line)) for line in r.stdout.decode().splitlines() if line.startswith('POINT_ORDER_TIMING ')]
+    assert b'POINT_ORDER_GPU_PASS' in r.stdout
+    results.append(dict(order_timing=order_rows,backend=str(backend.resolve()),sha256=sha(backend),concurrent_games=games,log=log.name,timing=rows))
 assert all(sha(Path(f))==h for f,h in inputs.items()),'Source changed during oracle'
-(out/'validation.json').write_bytes(json.dumps(dict(pass_=True,inputs=inputs,results=results,scope='Actual production renderPointShadow, including adjacent-run admission and palette packing, original capture packets and source-envelope proof. Component CPU submission/GPU timestamps/serialized completion only; no gameplay FPS or whole-renderer budget claim.'),indent=2).encode())
+(out/'validation.json').write_bytes(json.dumps(dict(pass_=True,inputs=inputs,results=results,scope='Actual production renderPointShadow, including frame-local opaque grouping, adjacent-run admission and palette packing, original capture packets and source-envelope proof. Component CPU submission/GPU timestamps/serialized completion only; no gameplay FPS or whole-renderer budget claim.'),indent=2).encode())

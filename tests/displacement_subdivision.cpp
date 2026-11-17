@@ -143,6 +143,27 @@ int main(int argc,char** argv){
         {0,0,D3DDECLTYPE_FLOAT3,0,D3DDECLUSAGE_POSITION,0},{0,12,D3DDECLTYPE_UBYTE4N,0,D3DDECLUSAGE_BLENDWEIGHT,0},
         {0,16,D3DDECLTYPE_UBYTE4,0,D3DDECLUSAGE_BLENDINDICES,0},{0,20,D3DDECLTYPE_FLOAT3,0,D3DDECLUSAGE_NORMAL,0},
         {0,32,D3DDECLTYPE_FLOAT2,0,D3DDECLUSAGE_TEXCOORD,0},D3DDECL_END()};
+    const auto stock=[](Fixture& f){
+        auto& stream=f.mesh.streams[0];std::vector<unsigned char> bytes(size_t(f.mesh.vertexCount)*48);
+        for(unsigned i=0;i<f.mesh.vertexCount;++i){const auto* src=stream.bytes.data()+size_t(i)*stream.stride;auto* dst=bytes.data()+size_t(i)*48;
+            std::memcpy(dst,src,12);const unsigned char weights[]={128,64,63,0};std::memcpy(dst+12,weights,4);std::memcpy(dst+16,src+48,4);
+            std::memcpy(dst+20,src+12,12);std::memcpy(dst+32,src+24,8);}
+        stream.stride=48;stream.bytes=std::move(bytes);
+    };
+    for(unsigned side:{1u,8u,32u})for(bool seams:{false,true})for(bool duplicate:{false,true}){
+        Fixture f(side,seams,duplicate);stock(f);
+        for(unsigned factor:{2u,4u,8u,128u})for(unsigned influences:{0u,1u,4u})for(bool gpu:{false,true})compare(f,factor,false,gpu,false,influences,native,6);
+        if(timing&&side==32&&!duplicate)benchmark(seams?"stock-m2-seams":"stock-m2-grid",f,4,4,true,native,6);
+        for(unsigned i=0;i<f.mesh.vertexCount;++i)f.mesh.streams[0].bytes[size_t(i)*48+16]=static_cast<unsigned char>(i%31);
+        compare(f,4,false,true,false,4,native,6);
+        if(timing&&side==32&&!duplicate)benchmark(seams?"stock-m2-seams-variable":"stock-m2-variable",f,4,4,true,native,6);
+        for(unsigned i=0;i<f.mesh.vertexCount;++i){auto* p=f.mesh.streams[0].bytes.data()+size_t(i)*48;const unsigned char weights[]={127,0,0,0},bones[]={7,0,0,0};std::memcpy(p+12,weights,4);std::memcpy(p+16,bones,4);}
+        for(unsigned factor:{2u,4u,8u,128u})for(unsigned influences:{1u,2u,3u,4u})for(bool gpu:{false,true})compare(f,factor,false,gpu,false,influences,native,6);
+        if(timing&&side==32&&!duplicate)benchmark(seams?"stock-m2-single-seams":"stock-m2-single",f,4,4,true,native,6);
+        f.mesh.streams[0].bytes[12]=f.mesh.streams[0].bytes[13]=f.mesh.streams[0].bytes[14]=0;compare(f,4,false,true,false,4,native,6);
+    }
+    for(float invalid:{NAN,INFINITY,std::numeric_limits<float>::max()}){Fixture f(1,false);stock(f);std::memcpy(f.mesh.streams[0].bytes.data()+20,&invalid,4);compare(f,4,false,true,false,4,native,6);}
+    {Fixture f(1,false);stock(f);const float negativeZero=-0.f;std::memcpy(f.mesh.streams[0].bytes.data(),&negativeZero,4);f.uv[0][0]=negativeZero;compare(f,4,false,true,false,4,native,6);}
     for(const auto* path:fixtures){
         std::ifstream file(path,std::ios::binary|std::ios::ate);assert(file);const auto bytes=file.tellg();file.seekg(0);
         uint32_t header[3];file.read(reinterpret_cast<char*>(header),sizeof header);

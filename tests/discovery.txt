@@ -170,6 +170,7 @@ test_fog_simd_preparation.py
 test_fog_source_visibility.py
 test_fog_temporal_disocclusion_gpu.py
 test_fog_temporal_wiring.py
+test_fog_volume_admission.py
 test_fog_volume_build.py
 test_fog_volume_gpu.py
 test_forever_atmosphere.py
@@ -221,6 +222,7 @@ test_height_gpu_ownership.py
 test_height_gpu_ownership_gpu.py
 test_horizon_haze.py
 test_hotpath_equivalence.py
+test_imported_fog_sparse_gpu.py
 test_independent_fog.py
 test_index_working_set.py
 test_install_delivery.py
@@ -401,6 +403,7 @@ test_pipeline_all_off_gpu.py
 test_pipeline_bindings_cpu.py
 test_pipeline_capture_buffers.py
 test_pipeline_wave_cpu.py
+test_point_batch_tree.py
 test_point_clip_prepared.py
 test_point_light_shadow.py
 test_point_palette_gpu.py
@@ -408,6 +411,7 @@ test_point_pipeline_init_gpu.py
 test_point_replay_admission.py
 test_point_shadow_schedule.py
 test_point_shadow_selection.py
+test_point_shadow_spatial_gpu.py
 test_point_shadow_stutter_gpu.py
 test_point_shadow_visibility_gpu.py
 test_point_terrain_coverage_gpu.py
@@ -494,6 +498,7 @@ test_rigid_peer_bounds.py
 test_rigid_peer_point_gpu.py
 test_rigid_static_coverage.py
 test_rotation_wake.py
+test_saved_state.py
 test_scene_assembly.py
 test_scene_entry_reclaim.py
 test_scene_entry_reclaim_inputs.py
@@ -540,6 +545,7 @@ test_shared_source_lifecycle.py
 test_shared_static_preparation.py
 test_shared_terrain_bounds.py
 test_shared_terrain_bounds_gpu.py
+test_single_skin_bounds.py
 test_single_skin_intervals.py
 test_sky_background_order.py
 test_sky_environment_gpu.py

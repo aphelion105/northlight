@@ -1,7 +1,7 @@
 {
   "sources": {
     "fog_volume.hlsl": "189ec962e2105943f20e7e096b4b738d822660e1d901e8cd75c3f85245f01212",
-    "world_effects.hlsl": "36d7defc4ae49a42598a14bba44a8cc54fd34266156d4e02fa45b2562e113c7d",
+    "world_effects.hlsl": "05481a26c163274f858ac7be94e0a238378143e7cc893b0d1c8d7f0b15186009",
     "shadow_transition.hlsl": "571ba1c03b3e6c0e36965f2a5107526f16d29b07c23d934982030c0f45de96d1",
     "auto_bump_normal.hlsl": "b5523a51dc6715f11ac2e7ba9ecb46a4973ba6aa23de159e308a8fd24d4e9ebc"
   },
@@ -73,7 +73,7 @@
     },
     "VolumeInjectActor": {
       "target": "ps_3_0",
-      "sha256": "e81d25e6d8263e3d8981843b79b111d9053ef506910b50dd45d07ec9fb0bf685",
+      "sha256": "d0acb9fd94d63bfbe20f8a3fe09225b33b192b141582ee0549100e2c5ec0738d",
       "static_instruction_slots": 503,
       "temporary_registers": 12,
       "samplers": [
@@ -109,7 +109,7 @@
     },
     "VolumeInjectActorQuiet": {
       "target": "ps_3_0",
-      "sha256": "04df977e93b661c00825ab4a7e1b38237e25a02134ea831ce8a96d19fa512d32",
+      "sha256": "d9417d161167594b7f12c61d804adf40b4b60f9c1ca83e0e00c3ccacfc0a35ed",
       "static_instruction_slots": 408,
       "temporary_registers": 12,
       "samplers": [

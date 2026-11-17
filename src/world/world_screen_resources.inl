@@ -51,6 +51,8 @@ bool createResources(UINT w,UINT h,D3DFORMAT fmt,const NorthlightFrameRequiremen
             D3DCAPS9 caps={};if(SUCCEEDED(d->GetDeviceCaps(&caps))&&caps.MaxPixelShader30InstructionSlots>=kForeverFogActorShaderSlots)d->CreatePixelShader(kForeverFogActorShader,&foreverFogActorPS);
             if(caps.MaxPixelShader30InstructionSlots>=kForeverFogTransitionShaderSlots)d->CreatePixelShader(kForeverFogTransitionShader,&foreverFogFadePS);
             if(caps.MaxPixelShader30InstructionSlots>=kForeverFogActorTransitionShaderSlots)d->CreatePixelShader(kForeverFogActorTransitionShader,&foreverFogActorFadePS);
+            if(caps.MaxPixelShader30InstructionSlots>=kForeverFogActorTiledShaderSlots)d->CreatePixelShader(kForeverFogActorTiledShader,&foreverFogActorTiledPS);
+            if(caps.MaxPixelShader30InstructionSlots>=kForeverFogActorTiledNoNoiseShaderSlots)d->CreatePixelShader(kForeverFogActorTiledNoNoiseShader,&foreverFogActorTiledNoNoisePS);
             d->CreatePixelShader(kForeverFogNoNoiseShader,&foreverFogNoNoisePS);
             if(caps.MaxPixelShader30InstructionSlots>=kForeverFogActorNoNoiseShaderSlots)d->CreatePixelShader(kForeverFogActorNoNoiseShader,&foreverFogActorNoNoisePS);
             if(caps.MaxPixelShader30InstructionSlots>=kForeverFogNoNoiseTransitionShaderSlots)d->CreatePixelShader(kForeverFogNoNoiseTransitionShader,&foreverFogNoNoiseFadePS);
