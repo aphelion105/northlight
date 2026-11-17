@@ -95,6 +95,7 @@ test_command_stream_wiring.py
 test_command_wait_windows.py
 test_common_shadow_cascade_gpu.py
 test_common_shadow_pipeline_gpu.py
+test_compute_bvh_prototype.py
 test_concurrent_geometry_build.py
 test_contact_fog.py
 test_contact_lighting.py

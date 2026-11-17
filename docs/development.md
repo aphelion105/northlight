@@ -71,6 +71,8 @@ For cold snapshot copies and shared declaration lookup,
 see [pipeline buffers and lookup](pipeline-buffers-20261117.md).
 For repeated failed-material work and exact negative-cache keys,
 see [material refusal cache](cache-refusals-20261117.md).
+For hardware GPU BVH/GI experiments, visible differences and device lifetime,
+see [GPU BVH feasibility](gpu-bvh-prototype-20261117.md).
 For the later disappearing effects and overdarkened interiors, see
 [effect continuity and room fill](effect-continuity-and-room-fill-20261116.md).
 For compact diagnostic sessions, lossless archive conversion and the current

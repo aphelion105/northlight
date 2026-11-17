@@ -208,5 +208,11 @@
       "test_world_lighting_capture.py",
       "test_renderer_assets_gpu.py"
     ]
+  },
+  "gpu-bvh-prototype": {
+    "description": "Experimental hardware D3D11 CS5 builders, tree/refit oracle and limited sun/sky GI; not production migration or game FPS acceptance.",
+    "tests": [
+      "test_compute_bvh_prototype.py"
+    ]
   }
 }
