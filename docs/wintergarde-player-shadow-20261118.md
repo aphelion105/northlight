@@ -37,9 +37,24 @@ direct light, while (725, 630) matches its fully blocked control.
 The nearby skinned draws use native directional RGB `(0.506, 0.533, 0.659)`
 and ambient RGB `(0.282, 0.298, 0.369)` in VS c10 and c11. Their point-bank
 journal marks all four native slots as `renderer-owned-direct`, including the
-slot for the source in pass 10. The existing receiver contract preserves the
-independent native room lighting when it applies local-light visibility. See
-[interior lighting and local-light ownership](interior-lighting-20261116.md).
+slot for the source in pass 10. The old receiver marked the model as authored
+room geometry. That mode preserves native room fill, so it excluded the model
+from probe occlusion. The frame already had resident probe data reporting
+0.749–0.950 occlusion at the five receiver samples above.
+
+In the world scene, opaque posed M2 receivers with a proven room override
+now use the existing probe-aware composite. They keep their native color as
+the base and receive the shadowed local-light sum afterward. GIPrelitMix and
+probe residency control the attenuation. The authored room mode still applies
+to WMO geometry and menu models. The fix reuses the existing stencil bits,
+render targets and shaders.
+
+Paired SDR composite replays with the captured inputs switched only the
+receiver mode. On D3D9 and DXVK the helmet's peak RGB fell from 0.183 to 0.011
+and the shoulder's from 0.344 to 0.059. These are intermediate composite
+values at sampled pixels. The capture omits stencil, so the replay selects
+each shader mode explicitly. The native GPU test separately checks production
+stencil admission with the matching player vertex program from the client.
 
 ## Reproduction
 

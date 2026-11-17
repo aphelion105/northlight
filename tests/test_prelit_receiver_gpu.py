@@ -24,7 +24,9 @@ finally:
     assets.close()
 for name, index in [('prelit', 0), ('lit', 1)]:
     (out/(name+'.bin')).write_bytes(programs[index])
-(out/'model.bin').write_bytes(collect(fp.client_root())[0][0xe8d455338d8ae2ff][1])
+models = collect(fp.client_root())[0]
+(out/'model.bin').write_bytes(models[0xe8d455338d8ae2ff][1])
+(out/'tower-player.bin').write_bytes(models[0xd26558bb3994fc81][1])
 if os.environ.get('NORTHLIGHT_CAPTURE_MODEL_VERTEX'):
     (out/'captured-model.bin').write_bytes(Path(os.environ['NORTHLIGHT_CAPTURE_MODEL_VERTEX']).read_bytes())
 else:

@@ -1940,9 +1940,16 @@ private:
                     // A WMO's room-light layer can follow its outdoor layer
                     // with INVSRCALPHA/ONE. It still owns authored RGB at this
                     // depth; outdoor subtraction would erase that contribution.
-                    if(((classifyVs(vs).entry&(kUnlitTag|kPrelitTag))||authoredReceiver)&&zw()&&(cw()&7)&&
-                       (!ab()||db()==D3DBLEND_ZERO||(authoredReceiver&&classifyVs(vs).wmo&&NorthlightNativeDirect::independentBlend(sb(),db(),drawRenderState(D3DRS_BLENDOP))))&&
-                       nameMaskReady()&&NorthlightUnlitReceiver::stencilFormat(worldDepthDesc.Format,MAKEFOURCC('I','N','T','Z'))&&nameMaskFullViewport(viewport)&&worldDepthBound())maskKind=authoredReceiver?5:(classifyVs(vs).entry&kPrelitTag)?4:3;
+                    const auto& receiver=classifyVs(vs);
+                    if(((receiver.entry&(kUnlitTag|kPrelitTag))||authoredReceiver)&&zw()&&(cw()&7)&&
+                       (!ab()||db()==D3DBLEND_ZERO||(authoredReceiver&&receiver.wmo&&NorthlightNativeDirect::independentBlend(sb(),db(),drawRenderState(D3DRS_BLENDOP))))&&
+                       nameMaskReady()&&NorthlightUnlitReceiver::stencilFormat(worldDepthDesc.Format,MAKEFOURCC('I','N','T','Z'))&&nameMaskFullViewport(viewport)&&worldDepthBound()){
+                        // A posed M2's room override moves with the model. Let resident
+                        // probes attenuate it, as for a baked receiver. Preserve the
+                        // separate authored fill path for room geometry and menus.
+                        const bool posedRoomModel=authoredReceiver&&!menuScene&&receiver.family==3&&receiver.skinned;
+                        maskKind=(posedRoomModel||(receiver.entry&kPrelitTag))?4:authoredReceiver?5:3;
+                    }
                     if(maskKind==1&&!nameMask.armed())maskKind=0;}
                 if(captured&&earlyDepth.earlyCaptured&&NorthlightTranslucentDepth::isUndo(drawWaterVS,zw,ab,sb,db,cw)){captured=false;if(aoActorOn)aoActorMask->resume();earlyDepth.undo();++earlyResolveUndone;++earlyResolveUndoneTotal;} /* undo: later opaque or water Z draw after the early resolve */
                 if(terrain&&!captured&&earlyDepth.armed()&&NorthlightTranslucentDepth::shouldResolve(drawWaterVS,zw,ab,sb,db,cw,[&]{return classifyVs(vs).skinned;})&&earlyDepth.attempt()){ /* 0.3.188 (2A): early depth for translucent actors, every frame, minimum state reads */

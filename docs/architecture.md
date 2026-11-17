@@ -217,7 +217,9 @@ lighting. GI replaces outdoor ambient on ordinary lit receivers, clamping its
 correction before the probe residency fade. Measured probe occlusion can also
 attenuate transported baked RGB without subtracting the outdoor light bank.
 Explicit room banks keep their authored fill: their baked, ambient and emissive
-components cannot be separated by the outdoor GI estimate. GI brightness controls
+components cannot be separated by the outdoor GI estimate. In the world scene,
+posed M2 receivers with a proven room override use the existing baked-receiver
+path so their carried light responds to resident probe occlusion. GI brightness controls
 added indirect radiance independently of measured occlusion; current local and
 directional light remain separate. Missing probes and zero prelit mix preserve
 authored illumination.
