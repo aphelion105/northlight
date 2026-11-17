@@ -182,11 +182,11 @@
     "tests": [
       "test_auto_normal_memory.py",
       "test_auto_normal_index_windows.py",
-      "test_material_refusal_cache.py",
       "test_material_disk_cache.py",
       "test_auto_normal_reuse_gpu.py",
       "test_material_upload_reuse_gpu.py",
-      "test_material_staging_sizes_gpu.py"
+      "test_material_staging_sizes_gpu.py",
+      "test_material_refusal_cache.py"
     ]
   },
   "stream-buffers": {
