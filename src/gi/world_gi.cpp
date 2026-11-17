@@ -30,6 +30,7 @@ static constexpr bool TraceCarryEntry=true;   /* reuse the child slab entry inst
 static constexpr bool TraceDeferShading=true; /* texture color and normals only for the final closest hit */
 static constexpr bool TraceOpaqueSkip=true;   /* no alpha fetch where no bilinear sample can fall below the cutoff */
 static constexpr bool TracePairNodes=true;    /* both child boxes in one record, two-box SSE2 slab test */
+static constexpr bool ProbeRejectBeforeTransport=true; // reject invalid probes before indirect transport
 // Faster tree (BVH::build fast=true, northlight-quality GIFastBVH=1), NOT
 // bit-identical: binned SAH split, reciprocal-direction slab
 // test on boxes inflated by 2^-20 relative (+2^-20 absolute), and the closest
@@ -727,13 +728,15 @@ template<bool Color=true> Sample materialSample(const WorldMaterial& m,float u,f
 }
 }
 
-void BVH::shadeHit(RayHit& hit,Vec3 origin,Vec3 direction,uint32_t ti,float u,float v,float distance)const{
+template<bool PlaneOnly> void BVH::shadeHit(RayHit& hit,Vec3 origin,Vec3 direction,uint32_t ti,float u,float v,float distance)const{
         const auto&t=scene_.triangles[ti];
         const auto&a=scene_.vertices[t.v0];const auto&b=scene_.vertices[t.v1];const auto&c=scene_.vertices[t.v2];
         Vec3 ab=b.position-a.position,ac=c.position-a.position;
+        Vec3 gn=normalized(cross(ab,ac));
+        hit.position=origin+direction*distance;hit.triangle=ti;
+        if constexpr(!PlaneOnly){
         float w=1-u-v;const auto&m=material(t.material);
         Sample sample=materialSample<true>(m,w*a.u+u*b.u+v*c.u,w*a.v+u*b.v+v*c.v);
-        Vec3 gn=normalized(cross(ab,ac));
         Vec3 normal=normalized(a.normal*w+b.normal*u+c.normal*v);
         Vec3 outward=dot(normal,normal)>.5f?normal:gn;
         bool backFace=dot(outward,direction)>0;
@@ -743,11 +746,12 @@ void BVH::shadeHit(RayHit& hit,Vec3 origin,Vec3 direction,uint32_t ti,float u,fl
         // Smooth normals that face the incoming ray can produce negative
         // hemispheres. Use the valid geometric normal at such silhouettes.
         if(dot(normal,direction)>-.001f)normal=gn;
-        hit.backFace=backFace;hit.position=origin+direction*distance;
-        hit.normal=normal;hit.geometricNormal=gn;hit.albedo=sample.color;hit.triangle=ti;
+        hit.backFace=backFace;hit.normal=normal;hit.albedo=sample.color;
+        }else if(dot(gn,direction)>0)gn=-gn;
+        hit.geometricNormal=gn;
     }
 
-template<bool AnyHit,bool Sah>
+template<bool AnyHit,bool Sah,bool PlaneOnly>
 RayHit BVH::traceImpl(Vec3 origin,Vec3 direction,float minT,float maxT,bool normalizedRay,float checkedEntry,float* barycentricOut,const detail::PairRay<Sah>* preparedRay) const {
     RayHit hit;hit.distance=maxT;
     // An empty tree cannot hit, so it needs no ray normalization.
@@ -778,7 +782,7 @@ RayHit BVH::traceImpl(Vec3 origin,Vec3 direction,float minT,float maxT,bool norm
             // Shading depends only on the accepted triangle and barycentrics;
             // evaluate it once for the final closest candidate below.
             if constexpr(Sah)if(distance!=hit.distance)boxUpper=traversalUpper(distance);hit.distance=distance;
-            best=ti;if constexpr(TraceDeferShading){bestU=u;bestV=v;}else shadeHit(hit,origin,direction,ti,u,v,distance);
+            best=ti;if constexpr(TraceDeferShading){bestU=u;bestV=v;}else shadeHit<PlaneOnly>(hit,origin,direction,ti,u,v,distance);
         }
         return false;
     };
@@ -822,7 +826,7 @@ RayHit BVH::traceImpl(Vec3 origin,Vec3 direction,float minT,float maxT,bool norm
             if(leaf(node.start,node.count))return hit;
         }
     }
-    if constexpr(!AnyHit)if(TraceDeferShading&&best!=UINT32_MAX){if(barycentricOut){barycentricOut[0]=bestU;barycentricOut[1]=bestV;hit.triangle=best;}else shadeHit(hit,origin,direction,best,bestU,bestV,hit.distance);}
+    if constexpr(!AnyHit)if(TraceDeferShading&&best!=UINT32_MAX){if(barycentricOut){barycentricOut[0]=bestU;barycentricOut[1]=bestV;hit.triangle=best;}else shadeHit<PlaneOnly>(hit,origin,direction,best,bestU,bestV,hit.distance);}
     return hit;
 }
 const WorldMaterial& BVH::material(size_t index)const{return materialBank_?materialBank_->values[materialSources_[index]]:scene_.materials[index];}
@@ -941,13 +945,13 @@ bool BVH::buildRegion(WorldScene&& scene,std::vector<PieceReference>&& pieces,st
     }catch(...){error="Cannot allocate shared region TLAS";return false;}
     next.scene_.vertices.detachAdmission();next.scene_.triangles.detachAdmission();next.order_.detachAdmission();next.pairs_.detachAdmission();next.nodes_.detachAdmission();next.regionPairs_.detachAdmission();next.centers_.detachAdmission();*this=std::move(next);return true;
 }
-template<bool AnyHit> RayHit BVH::traceRegion(Vec3 origin,Vec3 direction,float minT,float maxT)const{
+template<bool AnyHit,bool PlaneOnly> RayHit BVH::traceRegion(Vec3 origin,Vec3 direction,float minT,float maxT)const{
     RayHit best;best.distance=maxT;direction=normalized(direction);
     if((regionOrder_.empty()&&order_.empty())||!finite(origin)||dot(direction,direction)<.5f||!std::isfinite(minT)||!std::isfinite(maxT)||minT<0||maxT<=minT)return best;
-    if(regionOrder_.empty())return traceImpl<AnyHit,true>(origin,direction,minT,maxT,true);
+    if(regionOrder_.empty())return traceImpl<AnyHit,true,PlaneOnly>(origin,direction,minT,maxT,true);
     const PairRay<true> ray(origin,direction);
-    float bestBarycentric[2]={};const auto finish=[&](){if constexpr(!AnyHit)if(best.hit)shadeHit(best,origin,direction,best.triangle,bestBarycentric[0],bestBarycentric[1],best.distance);return best;};
-    if(!order_.empty())best=traceImpl<AnyHit,true>(origin,direction,minT,maxT,true,-1,bestBarycentric,&ray);
+    float bestBarycentric[2]={};const auto finish=[&](){if constexpr(!AnyHit)if(best.hit)shadeHit<PlaneOnly>(best,origin,direction,best.triangle,bestBarycentric[0],bestBarycentric[1],best.distance);return best;};
+    if(!order_.empty())best=traceImpl<AnyHit,true,PlaneOnly>(origin,direction,minT,maxT,true,-1,bestBarycentric,&ray);
     if constexpr(AnyHit){if(best.hit)return best;}
     float boxUpper=traversalUpper(best.distance);
     struct Item{uint32_t node;float entry;};Item stack[128];unsigned size=0;float entry;
@@ -957,7 +961,7 @@ template<bool AnyHit> RayHit BVH::traceRegion(Vec3 origin,Vec3 direction,float m
             for(uint32_t i=start;i<start+count;++i){const auto& p=pieces_[regionOrder_[i]];
                 // Normalize once; one ulp keeps exact-distance global-ID ties.
                 const float bound=best.hit?std::min(maxT,std::nextafter(best.distance,std::numeric_limits<float>::infinity())):maxT;
-                float barycentric[2];auto hit=p.geometry->traceImpl<AnyHit,true>(origin,direction,minT,bound,true,item.entry,barycentric,&ray);if(!hit.hit)continue;hit.triangle+=p.triangleBase;
+                float barycentric[2];auto hit=p.geometry->traceImpl<AnyHit,true,PlaneOnly>(origin,direction,minT,bound,true,item.entry,barycentric,&ray);if(!hit.hit)continue;hit.triangle+=p.triangleBase;
                 if constexpr(AnyHit)return hit;
                 if(!best.hit||hit.distance<best.distance||(hit.distance==best.distance&&hit.triangle<best.triangle)){if(hit.distance!=best.distance)boxUpper=traversalUpper(hit.distance);best=hit;bestBarycentric[0]=barycentric[0];bestBarycentric[1]=barycentric[1];}
             }
@@ -969,6 +973,7 @@ template<bool AnyHit> RayHit BVH::traceRegion(Vec3 origin,Vec3 direction,float m
 }
 // Both queries share one kernel per tree, so occluded(o,d,t,m)==trace(o,d,m,t).hit.
 RayHit BVH::trace(Vec3 origin,Vec3 direction,float minT,float maxT)const {if(region_)return traceRegion<false>(origin,direction,minT,maxT);return sah_?traceImpl<false,true>(origin,direction,minT,maxT):traceImpl<false,false>(origin,direction,minT,maxT);}
+RayHit BVH::tracePlane(Vec3 origin,Vec3 direction,float minT,float maxT)const {if(region_)return traceRegion<false,true>(origin,direction,minT,maxT);return sah_?traceImpl<false,true,true>(origin,direction,minT,maxT):traceImpl<false,false,true>(origin,direction,minT,maxT);}
 bool BVH::occluded(Vec3 origin,Vec3 direction,float maxT,float minT) const {if(region_)return traceRegion<true>(origin,direction,minT,maxT).hit;return (sah_?traceImpl<true,true>(origin,direction,minT,maxT):traceImpl<true,false>(origin,direction,minT,maxT)).hit;}
 
 namespace {
@@ -1284,11 +1289,11 @@ struct SkyEscape { int sector=-1; Vec3 weight; };
 // query a moving solve would issue along this unchanged path, in order.
 template<bool Record=false,bool Response=false>
 Vec3 transport(const BVH& bvh,Vec3 origin,Vec3 direction,const Lighting& l,const BVH* movingGeometry,RNG& rng,float& firstDistance,bool& firstBackFace,
-               std::vector<StaticPathRecord::Query>* record=nullptr,Vec3* response=nullptr,SkyEscape* escape=nullptr){
+               std::vector<StaticPathRecord::Query>* record=nullptr,Vec3* response=nullptr,SkyEscape* escape=nullptr,const RayHit* firstHit=nullptr){
     Vec3 throughput(1,1,1),radiance;const Vec3 sun=l.sunDirection,up=l.worldUp;
     firstDistance=l.maxDistance;firstBackFace=false;
     for(unsigned bounce=0;bounce<=l.maxBounces;++bounce){
-        RayHit h=bvh.trace(origin,direction,.0005f,l.maxDistance);
+        RayHit h=bounce==0&&firstHit?*firstHit:bvh.trace(origin,direction,.0005f,l.maxDistance);
         if constexpr(Record)record->push_back({origin,direction,h.hit?h.distance:l.maxDistance});
         if(movingGeometry){auto actor=movingGeometry->trace(origin,direction,.0005f,h.hit?h.distance:l.maxDistance);if(actor.hit)h=actor;}
         if(bounce==0){firstDistance=h.hit?h.distance:l.maxDistance;firstBackFace=h.hit&&h.backFace;}
@@ -1420,8 +1425,15 @@ Probe accumulateProbe(Vec3 position,const Lighting& l,unsigned rays,uint32_t see
 Probe solveProbePrepared(const BVH& bvh,Vec3 position,const PreparedLighting& prepared,unsigned rays,uint32_t seed,const BVH* movingGeometry){
     if(!prepared.valid()||!finite(position)||rays<6||rays>1048576){Probe out;out.position=position;return out;}
     const Lighting& l=prepared.values();
-    return accumulateProbe(position,l,rays,seed,[&](unsigned,Vec3 direction,RNG& rng,float& distance,bool& backFace){
-        return transport(bvh,position,direction,l,movingGeometry,rng,distance,backFace);});
+    std::array<RayHit,64> firstHits;
+    const bool preflight=ProbeRejectBeforeTransport&&!movingGeometry&&rays<=firstHits.size();
+    if(preflight){
+        const auto geometry=accumulateProbe(position,l,rays,seed,[&](unsigned i,Vec3 direction,RNG&,float& distance,bool& backFace){
+            auto& h=firstHits[i];h=bvh.trace(position,direction,.0005f,l.maxDistance);distance=h.hit?h.distance:l.maxDistance;backFace=h.hit&&h.backFace;return Vec3{};});
+        if(!geometry.valid)return geometry;
+    }
+    return accumulateProbe(position,l,rays,seed,[&](unsigned i,Vec3 direction,RNG& rng,float& distance,bool& backFace){
+        return transport(bvh,position,direction,l,movingGeometry,rng,distance,backFace,nullptr,nullptr,nullptr,preflight?&firstHits[i]:nullptr);});
 }
 Probe solveProbeResponse(const BVH& bvh,Vec3 position,const PreparedLighting& prepared,unsigned rays,uint32_t seed,ProbeResponse& response,AngularSkyResponse* angular){
     response={};
@@ -1429,9 +1441,16 @@ Probe solveProbeResponse(const BVH& bvh,Vec3 position,const PreparedLighting& pr
     if(!prepared.valid()||prepared.values().additionalDirections.size()>1||!finite(position)||rays<6||rays>1048576)
         return solveProbePrepared(bvh,position,prepared,rays,seed);
     Vec3 fixed[4];const auto& l=prepared.values();
-    Probe out=accumulateProbe(position,l,rays,seed,[&](unsigned,Vec3 direction,RNG& rng,float& distance,bool& backFace){
+    std::array<RayHit,64> firstHits;
+    const bool preflight=ProbeRejectBeforeTransport&&rays<=firstHits.size();
+    if(preflight){
+        const auto geometry=accumulateProbe(position,l,rays,seed,[&](unsigned i,Vec3 direction,RNG&,float& distance,bool& backFace){
+            auto& h=firstHits[i];h=bvh.trace(position,direction,.0005f,l.maxDistance);distance=h.hit?h.distance:l.maxDistance;backFace=h.hit&&h.backFace;return Vec3{};});
+        if(!geometry.valid){response.fixed=geometry;return geometry;}
+    }
+    Probe out=accumulateProbe(position,l,rays,seed,[&](unsigned i,Vec3 direction,RNG& rng,float& distance,bool& backFace){
         Vec3 terms[4];SkyEscape escape;
-        const Vec3 color=transport<false,true>(bvh,position,direction,l,nullptr,rng,distance,backFace,nullptr,terms,angular?&escape:nullptr);
+        const Vec3 color=transport<false,true>(bvh,position,direction,l,nullptr,rng,distance,backFace,nullptr,terms,angular?&escape:nullptr,preflight?&firstHits[i]:nullptr);
         const float sh[4]={.2820947918f,.4886025119f*direction.x,.4886025119f*direction.y,.4886025119f*direction.z};
         for(unsigned j=0;j<4;++j){
             const float weight=sh[j]*(4*PI/float(rays));

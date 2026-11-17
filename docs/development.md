@@ -84,6 +84,9 @@ CPU/GPU comparison, see [the common-cascade experiment](common-near-cascade-expe
 
 ## Requirements
 
+For the rejected-probe, relight-cache and visibility-plane changes, see
+[CPU GI optimization](cpu-gi-optimization-20261117.md).
+
 - macOS on Apple Silicon is the primary development host. Windows can build the DLL with Zig
   and run Windows-native/GPU checks; other tests still need their declared host toolchains.
   Linux may work with zig, clang and Wine on `PATH`, but it is untested.

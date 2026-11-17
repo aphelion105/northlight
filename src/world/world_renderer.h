@@ -7025,7 +7025,7 @@ public:
             if(frames>1&&NorthlightDiagnostics::enabled())logf("GI probe blend publishes=%u blendedSlots=%u texture=%d",probeBlendPublishes,probeBlendSlots,int(probePrev!=nullptr));
             if(active&&frames>1&&NorthlightDiagnostics::enabled()){
                 const auto& r=active->relightStats;
-                logf("GI relight hits=%llu tracedProbes=%llu shapeResets=%llu cacheKiB=%.1f",(unsigned long long)r.hits,(unsigned long long)r.misses,(unsigned long long)r.resets,double(r.bytes)/1024);
+                logf("GI relight hits=%llu tracedProbes=%llu shapeResets=%llu cacheKiB=%.1f invalidAcrossLight=%llu",(unsigned long long)r.hits,(unsigned long long)r.misses,(unsigned long long)r.resets,double(r.bytes)/1024,(unsigned long long)r.invalidHits);
                 const auto& v=active->visibilityStats;
                 const auto coarseSlots=active->coarseAtlas?std::count_if(active->coarseAtlas->begin(),active->coarseAtlas->end(),[](const auto& e){return e.occupied;}):0;
                 logf("GI cascades layers=2 spacing=8,32 coarseResident=%zu coarseRays=%u coarseStaticOnly=1 priority=near-first",size_t(coarseSlots),std::max(8u,quality.giRays/4));

@@ -67,6 +67,18 @@ int main(){
     assert(V::facing({1,0,0},{1,0,0})==0&&V::facing({1,0,0},{-1,0,0})==1);
     for(unsigned n:{16u,22u,42u}){const auto atlas=V::atlas(n);assert(atlas.width<=4096&&atlas.height<=4096&&atlas.columns*(atlas.height/9)>=n*n*n);}
     assert(V::atlas(0).columns==0&&V::atlas(43).columns==0);
+    // Exact reference: all 81 original full/shaded rays, including octahedral
+    // seams. Optimized plane queries must preserve every uploaded FP16 bit.
+    for(const BVH* source:{&wall,&floor,&ceiling,&corner,&slant,&door,&cutout})
+    for(Vec3 position:{Vec3{},Vec3{4,0,0},Vec3{-.125f,.25f,.001f},Vec3{40,40,40}}){
+        ProbeLocalVisibility reference;
+        for(unsigned y=0;y<V::Side;++y)for(unsigned x=0;x<V::Side;++x){const auto d=V::direction(x,y);
+            auto full=source->trace(position,d,.0005f,V::Reach),plane=source->tracePlane(position,d,.0005f,V::Reach);
+            assert(full.hit==plane.hit&&full.distance==plane.distance&&full.triangle==plane.triangle);
+            if(full.hit){assert(!std::memcmp(&full.position,&plane.position,sizeof(Vec3)));assert(!std::memcmp(&full.geometricNormal,&plane.geometricNormal,sizeof(Vec3)));}
+            reference.texels[y*V::Side+x]=V::pack(full,position,d);}
+        V::uniformTiles(reference);assert(reference.texels==V::build(*source,position)->texels);
+    }
     // Production uploader: padded pitch, initial missing tiles, no colour-only
     // writes, one dirty tile on replacement, and reset/retry after a GPU failure.
     const auto layout=V::atlas(4);const size_t pitch=layout.width*8+24;

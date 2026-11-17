@@ -203,6 +203,10 @@ public:
     // Surfaces are double-sided; texture alpha cutouts apply to every ray type.
     RayHit trace(Vec3 origin, Vec3 direction, float minDistance = .001f,
                  float maxDistance = 256.f) const;
+    // Closest alpha-tested surface for visibility. Only hit, distance,
+    // position, geometricNormal and triangle are populated; no material colour.
+    RayHit tracePlane(Vec3 origin, Vec3 direction, float minDistance = .001f,
+                      float maxDistance = 256.f) const;
     bool occluded(Vec3 origin, Vec3 direction, float maxDistance = 256.f,
                   float minDistance = .001f) const;
     const WorldScene& scene() const { return scene_; }
@@ -218,9 +222,9 @@ public:
     static uint64_t buildScratchBytes(size_t triangles);
 private:
     friend class LocalSceneCache;
-    template<bool AnyHit,bool Sah>
+    template<bool AnyHit,bool Sah,bool PlaneOnly=false>
     RayHit traceImpl(Vec3 origin,Vec3 direction,float minDistance,float maxDistance,bool normalizedRay=false,float checkedEntry=-1,float* barycentricOut=nullptr,const detail::PairRay<Sah>* preparedRay=nullptr)const;
-    template<bool AnyHit> RayHit traceRegion(Vec3 origin,Vec3 direction,float minDistance,float maxDistance)const;
+    template<bool AnyHit,bool PlaneOnly=false> RayHit traceRegion(Vec3 origin,Vec3 direction,float minDistance,float maxDistance)const;
     struct MaterialBank {std::vector<WorldMaterial> values;std::shared_ptr<const SceneMemoryCharge> charge;};
     std::shared_ptr<const MaterialBank> materialBank_;
     std::vector<uint32_t> materialSources_;
@@ -231,7 +235,7 @@ private:
     bool buildImpl(WorldScene&&,std::string&,bool,std::shared_ptr<const MaterialBank>,std::vector<uint32_t>,const AllocationAdmission& admit={});
     bool buildRegion(WorldScene&&,std::vector<PieceReference>&&,std::string&,const AllocationAdmission&,const std::shared_ptr<SceneMemoryBudget>&);
     void buildSahTree(const AllocationAdmission&);
-    void shadeHit(RayHit&,Vec3 origin,Vec3 direction,uint32_t triangle,float u,float v,float distance)const;
+    template<bool PlaneOnly=false> void shadeHit(RayHit&,Vec3 origin,Vec3 direction,uint32_t triangle,float u,float v,float distance)const;
     uint32_t makeRegionNode(uint32_t start,uint32_t count,uint32_t depth=0);
     struct Node { Vec3 low, high; uint32_t start = 0, count = 0, left = 0, right = 0; };
     // Interior node holding both child boxes (lanes per axis: left low, right

@@ -29,7 +29,10 @@ static void hitEqual(const RayHit& a,const RayHit& b){
 }
 static void compareRays(const BVH& a,const BVH& b,Vec3 center,unsigned n){
     std::mt19937 random(917);std::uniform_real_distribution<float> d(-1,1);unsigned hits=0;auto start=Clock::now();
-    for(unsigned i=0;i<n;++i){Vec3 origin=center+Vec3(d(random)*280,d(random)*280,d(random)*100+80);Vec3 direction=i%3?Vec3(d(random),d(random),d(random)):Vec3(0,0,-1);auto x=a.trace(origin,direction,0,700),y=b.trace(origin,direction,0,700);hitEqual(x,y);hits+=x.hit;assert(a.occluded(origin,direction,700,0)==b.occluded(origin,direction,700,0));}
+    for(unsigned i=0;i<n;++i){Vec3 origin=center+Vec3(d(random)*280,d(random)*280,d(random)*100+80);Vec3 direction=i%3?Vec3(d(random),d(random),d(random)):Vec3(0,0,-1);auto x=a.trace(origin,direction,0,700),y=b.trace(origin,direction,0,700);hitEqual(x,y);hits+=x.hit;assert(a.occluded(origin,direction,700,0)==b.occluded(origin,direction,700,0));
+        for(const BVH* source:{&a,&b}){const auto full=source->trace(origin,direction,0,700),plane=source->tracePlane(origin,direction,0,700);
+            assert(full.hit==plane.hit&&full.distance==plane.distance&&full.triangle==plane.triangle);
+            if(full.hit)assert(exact(full.position,plane.position)&&exact(full.geometricNormal,plane.geometricNormal));}}
     Lighting light;light.maxDistance=220;light.maxBounces=2;
     for(unsigned i=0;i<24;++i){Vec3 p=center+Vec3(d(random)*120,d(random)*120,10+d(random)*40);auto x=solveProbe(a,p,light,32,i+1),y=solveProbe(b,p,light,32,i+1);assert(x.valid==y.valid);for(Vec3 normal:{Vec3(0,0,1),Vec3(1,0,0),Vec3(0,-1,0)})assert(exact(evaluateIrradiance(x,normal),evaluateIrradiance(y,normal)));}
     double differential=ms(start);std::vector<std::pair<Vec3,Vec3>> queries;queries.reserve(n);for(unsigned i=0;i<n;++i)queries.push_back({center+Vec3(d(random)*280,d(random)*280,d(random)*100+80),Vec3(d(random),d(random),d(random))});

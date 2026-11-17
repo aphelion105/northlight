@@ -432,6 +432,7 @@ test_probe_local_visibility.py
 test_probe_local_visibility_gpu.py
 test_probe_moment_pack.py
 test_probe_pool_dispatch.py
+test_probe_preflight.py
 test_probe_relight_cache.py
 test_probe_solve_axes.py
 test_probe_sphere.py

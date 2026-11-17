@@ -196,10 +196,10 @@ public:
 // direction / light-layout changes invalidate them; there is no brightness
 // quantization. Bounded storage and per-access locking also cover GIThreads>1.
 class ProbeRelightCache {
-    struct Entry {ProbeGridKey key;ProbeResponse response;uint64_t epoch=0;uint32_t seed=0;};
+    struct Entry {ProbeGridKey key;ProbeResponse response;uint64_t epoch=0,geometryEpoch=0;uint32_t seed=0;};
     std::vector<Entry> entries_;
     std::vector<AngularSkyResponse> angular_;
-    Lighting shape_;unsigned rays_=0,mask_=0;uint64_t epoch_=1;
+    Lighting shape_;unsigned rays_=0,mask_=0;uint64_t epoch_=1,geometryEpoch_=1;
     bool ready_=false,allocationTried_=false,angularStorage_=false;
     mutable std::mutex mutex_;
     static bool same(Vec3 a,Vec3 b){return a.x==b.x&&a.y==b.y&&a.z==b.z;}
@@ -214,7 +214,7 @@ class ProbeRelightCache {
     }
 public:
     static constexpr size_t BudgetBytes=4u*1024u*1024u;
-    struct Stats {uint64_t hits=0,misses=0,resets=0;size_t bytes=0;};
+    struct Stats {uint64_t hits=0,misses=0,resets=0,invalidHits=0;size_t bytes=0;};
 private:
     Stats stats_;
     size_t slotIndex(ProbeGridKey key)const{
@@ -227,9 +227,9 @@ private:
         return index%size;
     }
 public:
-    void reset(){std::lock_guard<std::mutex> lock(mutex_);ready_=false;++epoch_;}
+    void reset(){std::lock_guard<std::mutex> lock(mutex_);ready_=false;++epoch_;++geometryEpoch_;}
     // Frees the slots (memory trim, map change); the next configure() allocates them again.
-    void release(){std::lock_guard<std::mutex> lock(mutex_);std::vector<Entry>().swap(entries_);std::vector<AngularSkyResponse>().swap(angular_);ready_=allocationTried_=false;angularStorage_=false;++epoch_;stats_.bytes=0;}
+    void release(){std::lock_guard<std::mutex> lock(mutex_);std::vector<Entry>().swap(entries_);std::vector<AngularSkyResponse>().swap(angular_);ready_=allocationTried_=false;angularStorage_=false;++epoch_;++geometryEpoch_;stats_.bytes=0;}
     // Called between solve groups, never while a pool job is running.
     void configure(const PreparedLighting& prepared,unsigned rays){
         std::lock_guard<std::mutex> lock(mutex_);
@@ -258,15 +258,20 @@ public:
         bool cached=false;
         {std::lock_guard<std::mutex> lock(mutex_);cached=ready_;
          if(cached){const auto& e=entries_[slotIndex(key)];
-             if(e.epoch==epoch_&&e.key==key&&e.seed==seed&&same(e.response.fixed.position,position)){
-                 ++stats_.hits;return relightProbe(e.response,prepared,angularStorage_?&angular_[slotIndex(key)]:nullptr);
+             if(e.key==key&&e.seed==seed&&same(e.response.fixed.position,position)){
+                 if(e.epoch==epoch_){++stats_.hits;return relightProbe(e.response,prepared,angularStorage_?&angular_[slotIndex(key)]:nullptr);}
+                 // Rejection depends only on first-hit geometry, ray lattice
+                 // and reach. Sun/lamps/sky changes cannot make a buried probe
+                 // valid. Keep its exact moments without tracing it again.
+                 if(e.geometryEpoch==geometryEpoch_&&!e.response.fixed.valid&&e.response.fixed.samples==rays&&
+                    e.response.fixed.maxDistance==prepared.values().maxDistance){++stats_.hits;++stats_.invalidHits;return e.response.fixed;}
              }}++stats_.misses;}
         if(!cached)return solveProbePrepared(bvh,position,prepared,rays,seed);
         ProbeResponse response;std::optional<AngularSkyResponse> angular;
         if(angularStorage_)angular.emplace();
         Probe result=solveProbeResponse(bvh,position,prepared,rays,seed,response,angular?&*angular:nullptr);
         {std::lock_guard<std::mutex> lock(mutex_);
-         const auto slot=slotIndex(key);auto& e=entries_[slot];e.key=key;e.seed=seed;e.response=response;e.epoch=epoch_;if(angular)angular_[slot]=*angular;}
+         const auto slot=slotIndex(key);auto& e=entries_[slot];e.key=key;e.seed=seed;e.response=response;e.epoch=epoch_;e.geometryEpoch=geometryEpoch_;if(angular)angular_[slot]=*angular;}
         return result;
     }
     void accountMemory(NorthlightMemoryFootprint::Counter& memory)const{

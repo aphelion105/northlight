@@ -27,6 +27,17 @@ inline Vec3 direction(unsigned x,unsigned y){
     Vec3 d(2.f*x/(Side-1)-1,2.f*y/(Side-1)-1,0);d.z=1-std::fabs(d.x)-std::fabs(d.y);
     const float t=std::max(-d.z,0.f);d.x+=d.x>=0?-t:t;d.y+=d.y>=0?-t:t;return normalized(d);
 }
+struct Directions {
+    std::array<Vec3,Side*Side> rays;
+    std::array<unsigned,Side*Side> first;
+    Directions(){
+        for(unsigned i=0;i<rays.size();++i){rays[i]=direction(i%Side,i/Side);first[i]=i;
+            // The octahedral boundary repeats directions. Reuse only exact
+            // float bits, including signed zero, so ray and plane math agree.
+            for(unsigned j=0;j<i;++j)if(!std::memcmp(&rays[i],&rays[j],sizeof(Vec3))){first[i]=j;break;}}
+    }
+};
+inline const Directions& directions(){static const Directions value;return value;}
 inline std::array<uint16_t,4> pack(const RayHit& hit,Vec3 origin,Vec3 ray){
     if(!hit.hit)return {};
     const float d=dot(hit.geometricNormal,hit.position-origin);
@@ -42,16 +53,17 @@ inline void uniformTiles(ProbeLocalVisibility& value){
 }
 inline std::shared_ptr<const ProbeLocalVisibility> build(const BVH& bvh,Vec3 position,float reach=Reach){
     auto value=std::make_shared<ProbeLocalVisibility>();
-    for(unsigned y=0;y<Side;++y)for(unsigned x=0;x<Side;++x){const Vec3 ray=direction(x,y);
-        value->texels[y*Side+x]=pack(bvh.trace(position,ray,.0005f,reach),position,ray);}
+    const auto& table=directions();
+    for(unsigned i=0;i<table.rays.size();++i){if(table.first[i]!=i){value->texels[i]=value->texels[table.first[i]];continue;}
+        const Vec3 ray=table.rays[i];value->texels[i]=pack(bvh.tracePlane(position,ray,.0005f,reach),position,ray);}
     uniformTiles(*value);return value;
 }
 inline std::shared_ptr<const ProbeLocalVisibility> overlay(const std::shared_ptr<const ProbeLocalVisibility>& base,const BVH* moving,Vec3 position){
     if(!base||!moving)return base;
     ProbeLocalVisibility value=*base;bool changed=false;
-    for(unsigned y=0;y<Side;++y)for(unsigned x=0;x<Side;++x){const Vec3 ray=direction(x,y),p=plane(base->texels[y*Side+x]);
+    for(unsigned y=0;y<Side;++y)for(unsigned x=0;x<Side;++x){const Vec3 ray=directions().rays[y*Side+x],p=plane(base->texels[y*Side+x]);
         const float denominator=dot(p,ray),limit=denominator>1e-6f?std::min(Reach,1/denominator):Reach;
-        const auto hit=moving->trace(position,ray,.0005f,limit);
+        const auto hit=moving->tracePlane(position,ray,.0005f,limit);
         if(hit.hit){value.texels[y*Side+x]=pack(hit,position,ray);changed=true;}}
     if(!changed)return base;
     uniformTiles(value);return std::make_shared<const ProbeLocalVisibility>(value);
