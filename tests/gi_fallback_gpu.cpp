@@ -136,6 +136,11 @@ int main(int argc,char** argv){
     const float palettes[][3]={{.2f,.3f,.4f},{.31373f,.35686f,.4f}};
     unsigned chainCases=0,chainNative=0,chainShadow=0,chainResident=0,chainAO=0;float chainError=0;
     for(const auto& ambient:palettes)for(float coverage:{0.f,.25f,1.f})for(bool shadowed:{false,true})for(float ao:{.6f,1.f})for(float value:{0.f,.01f,.18f,.7f,1.f})for(float influence:{.5f,1.f,2.f})for(float brightness:{-1.f,0.f,2.f}){
+        // The fixture mixes the regional ambient with a neutral 0.4 directional light.
+        // GI can remove its ambient share, while directional removal stays capped at 45%.
+        const float ambientLuma=.2126f*ambient[0]+.7152f*ambient[1]+.0722f*ambient[2];
+        const float ambientShare=ambientLuma/(ambientLuma+.4f);
+        const float retained=(1-ambientShare)*.55f+ambientShare*(1-std::clamp(influence,.45f,1.f));
         ok(d->SetTexture(8,nullptr));ok(d->SetRenderTarget(0,chainSurface));ok(d->SetRenderTarget(1,baseline));
         std::memset(c,0,sizeof c);c[0][0]=1.f/(W*2);c[0][1]=1.f/(H*2);c[0][2]=.2f;c[0][3]=1000;
         c[1][0]=c[1][1]=c[1][2]=c[2][0]=1;c[2][1]=48;c[2][2]=192;c[2][3]=1.f/1024;
@@ -172,7 +177,6 @@ int main(int argc,char** argv){
                 const float encoded=value*(k==0?1.f:k==1?.7f:.2f);
                 const float native=hdr?(encoded<=.04045f?encoded/12.92f:std::pow((encoded+.055f)/1.055f,2.4f)):encoded;
                 const float transported=native*ao,delta=.4f*(visibility-1)+std::max((.1f*(1+brightness)-ambient[k])*influence,-ambient[k])*coverage;
-                const float retained=1-std::max(.45f,std::clamp(influence,0.f,1.f));
                 const float composed=std::max(transported+transported/(ambient[k]+.4f)/materialPeak*delta,transported*retained);
                 const float expected=composed;
                 const float error=std::fabs(actual[k]-expected);chainError=std::max(chainError,error);
