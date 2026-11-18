@@ -1007,7 +1007,7 @@ private:
         if(!uploadedMaterialPixels)return nullptr;
         for(size_t i=0;i<uploadedMaterialPixels->size()&&i<materials.size();++i){
             const auto& old=(*uploadedMaterialPixels)[i];
-            if(!material.spooled&&!old.pixels().empty()&&old.textureIdentity==material.textureIdentity&&
+            if(!material.spooled&&!old.pixels().empty()&&old.alphaOnly==material.alphaOnly&&old.textureIdentity==material.textureIdentity&&
                old.width==material.width&&old.height==material.height&&old.pixels()==material.pixels())return materials[i];
         }
         return nullptr;
@@ -2015,13 +2015,14 @@ private:
                 // In the bounded path, release scratch terrain as its last triangle is read.
                 // Point transmission retains the existing retryable path.
                 const bool consumeTerrain=(chunkedLocal||spoolTerrain)&&pointTransmission.triangles.empty();
+                NorthlightWorldMesh::PlanOptions shadowOptions;shadowOptions.alphaOnly=true;
                 bool shadowPlanBuilt=terrainLoaded&&(consumeTerrain
-                    ?NorthlightShadowTerrain::buildConsuming(replacement->scene(),shadowTerrain,center,*plan,error,terrainAdmission,reach,{},replacement.get(),spoolTerrain,giGeometryRadius)
-                    :NorthlightShadowTerrain::build(replacement->scene(),shadowTerrain,center,*plan,error,terrainAdmission,reach,{},true,replacement.get(),&meshPreparation,&pointTransmission,spoolTerrain,giGeometryRadius));
+                    ?NorthlightShadowTerrain::buildConsuming(replacement->scene(),shadowTerrain,center,*plan,error,terrainAdmission,reach,shadowOptions,replacement.get(),spoolTerrain,giGeometryRadius)
+                    :NorthlightShadowTerrain::build(replacement->scene(),shadowTerrain,center,*plan,error,terrainAdmission,reach,shadowOptions,true,replacement.get(),&meshPreparation,&pointTransmission,spoolTerrain,giGeometryRadius));
                 if(!shadowPlanBuilt&&!pointTransmission.triangles.empty()){
                     if(NorthlightDiagnostics::enabled())logf("POINT_TRANSMISSION assembly refused; retaining base geometry: %s",error.c_str());
                     pointTransmission=NorthlightGI::WorldScene{};terrainDeferred=false;error.clear();
-                    shadowPlanBuilt=NorthlightShadowTerrain::build(replacement->scene(),shadowTerrain,center,*plan,error,terrainAdmission,reach,{},true,replacement.get(),&meshPreparation,nullptr,spoolTerrain,giGeometryRadius);
+                    shadowPlanBuilt=NorthlightShadowTerrain::build(replacement->scene(),shadowTerrain,center,*plan,error,terrainAdmission,reach,shadowOptions,true,replacement.get(),&meshPreparation,nullptr,spoolTerrain,giGeometryRadius);
                 }
                 if(shadowPlanBuilt){terrainDeferred=false; // an oversized reservation may have been refused before a successful fallback
                     if(plan->pagingChunks&&NorthlightDiagnostics::enabled())logf("WORLD shadow geometry prepared in bounded chunks");
@@ -2064,7 +2065,7 @@ private:
                 // needs a self-contained plan, independent of pre-Reset keys.
                 bool spoolUpload=spoolTerrain||!resident||resident->empty();
                 if(!spoolUpload){
-                    uint64_t largestTexture=0;for(const auto& material:plan->materials)largestTexture=std::max(largestTexture,material.pixelBytes());
+                    uint64_t largestTexture=0;for(const auto& material:plan->materials)largestTexture=std::max(largestTexture,material.bgraBytes());
                     auto uploadBudget=NorthlightGeometryMemory::uploadBudget(0,0,0,0);
                     uploadBudget.largest=2*std::max<uint64_t>(NorthlightWorldMeshPages::PageVertexByteLimit,largestTexture)+NorthlightGeometryMemory::ChunkMargin;
                     const auto uploadMemory=workerMemory(uploadBudget);
@@ -2743,7 +2744,7 @@ private:
             const auto& plan=*active->meshPlan;
             auto payload=plan.payload.share();
             if(!payload){requestPayloadRebuild();return uploadedMap==active->map&&vertices&&indices;} /* 0.3.214 (task 42) */
-            uint64_t largestTexture=0;for(const auto& material:payload->materials)largestTexture=std::max(largestTexture,shadowTextureFormat.bytes(material.pixelBytes()));
+            uint64_t largestTexture=0;for(const auto& material:payload->materials)largestTexture=std::max(largestTexture,shadowTextureFormat.bytes(material.bgraBytes()));
             const char* invalid=NorthlightWorldMeshPages::validateSealed(plan);
             if(invalid||!payload->pages||payload->pages->pages.empty())return streamingFailure(D3DERR_INVALIDCALL,"validate pages",invalid?invalid:"missing pages");
             // Admit all full-effect targets while the bounded candidate still
@@ -2858,9 +2859,7 @@ private:
                     auto* texture=next.textures[m.textureOwner];texture->AddRef();next.textures.push_back(texture);
                     ++next.material;++next.textureReuses;continue;
                 }
-                const auto& pixels=m.pixels();
-                const bool white=m.width==1&&m.height==1&&pixels.size()==4&&
-                    pixels[0]==255&&pixels[1]==255&&pixels[2]==255&&pixels[3]==255;
+                const bool white=m.whiteMask();
                 if(white&&next.white){next.white->AddRef();next.textures.push_back(next.white);++next.material;continue;}
                 if(!next.partialTexture){
                     if(auto* reused=reusableMaterial(m,next.material)){
@@ -2870,7 +2869,7 @@ private:
                         continue;
                     }
                     if(uploads>=16)break;
-                    if(payload.pages->temporary&&!admitsGrowth("pressure-material",shadowTextureFormat.bytes(m.pixelBytes()),nullptr,true))return streamingFailure(E_OUTOFMEMORY,"pressure-material-admission");
+                    if(payload.pages->temporary&&!admitsGrowth("pressure-material",shadowTextureFormat.bytes(m.bgraBytes()),nullptr,true))return streamingFailure(E_OUTOFMEMORY,"pressure-material-admission");
                     HRESULT hr=d->CreateTexture(m.width,m.height,1,0,shadowTextureFormat.value,payload.pages->defaultPool()?D3DPOOL_DEFAULT:D3DPOOL_MANAGED,&next.partialTexture,nullptr);
                     if(FAILED(hr)||!next.partialTexture)return streamingFailure(FAILED(hr)?hr:E_FAIL,"staged material");
                     if(payload.pages->defaultPool())hr=d->CreateTexture(m.width,m.height,1,0,shadowTextureFormat.value,D3DPOOL_SYSTEMMEM,&next.partialStaging,nullptr);
@@ -2879,7 +2878,7 @@ private:
                     next.materialRow=0;
                 }
                 if(!canStage())break;
-                const size_t sourceRowBytes=size_t(m.width)*4,rowBytes=size_t(m.width)*shadowTextureFormat.stride;
+                const size_t sourceRowBytes=size_t(m.width)*m.stride(),rowBytes=size_t(m.width)*shadowTextureFormat.stride;
                 if(rowBytes>budget)break;
                 const UINT rows=UINT(std::min({size_t(m.height)-next.materialRow,budget/rowBytes,size_t(64)}));
                 RECT rect={0,LONG(next.materialRow),LONG(m.width),LONG(next.materialRow+rows)};
@@ -2889,11 +2888,16 @@ private:
                 bool copied=true;
                 std::array<uint8_t,4096*4> scratch;
                 if(sourceRowBytes>scratch.size()||!sourceRowBytes){next.partialStaging->UnlockRect(0);return streamingFailure(E_FAIL,"material width");}
-                for(UINT y=0;y<rows&&copied;){
+                if(m.alphaOnly&&shadowTextureFormat.stride==1){
+                    if(size_t(lock.Pitch)==rowBytes)
+                        copied=payload.pages->copyMaterial(m,next.materialRow*rowBytes,rows*rowBytes,lock.pBits);
+                    else for(UINT y=0;y<rows&&copied;++y)
+                        copied=payload.pages->copyMaterial(m,(next.materialRow+y)*rowBytes,rowBytes,static_cast<char*>(lock.pBits)+y*lock.Pitch);
+                }else for(UINT y=0;y<rows&&copied;){
                     const UINT n=std::min(rows-y,UINT(scratch.size()/sourceRowBytes));
                     copied=payload.pages->copyMaterial(m,(next.materialRow+y)*sourceRowBytes,n*sourceRowBytes,scratch.data());
                     for(UINT j=0;copied&&j<n;++j)for(UINT x=0;x<m.width;++x)
-                        NorthlightShadowAlphaTexture::write((char*)lock.pBits+(y+j)*lock.Pitch,x,shadowTextureFormat.stride,scratch[j*sourceRowBytes+x*4+3]);
+                        NorthlightShadowAlphaTexture::write((char*)lock.pBits+(y+j)*lock.Pitch,x,shadowTextureFormat.stride,scratch[j*sourceRowBytes+(x+1)*m.stride()-1]);
                     y+=n;
                 }
                 hr=next.partialStaging->UnlockRect(0);if(!copied)return streamingFailure(E_FAIL,"staged material temporary copy");if(FAILED(hr))return streamingFailure(hr,"staged material unlock");
@@ -2911,7 +2915,10 @@ private:
                 traceUpload("commit-enter");
                 // Allocate small commit metadata before releasing the previous GPU set.
                 std::vector<float> cutoffs;cutoffs.reserve(payload.materials.size());
-                for(const auto& material:payload.materials)cutoffs.push_back(material.alphaCutoff);
+                // Constant white passes every validated cutoff, including 1. Point and
+                // directional casters can use their existing opaque shader/batching path.
+                for(const auto& material:payload.materials)
+                    cutoffs.push_back(material.alphaOnly&&material.whiteMask()?0.f:material.alphaCutoff);
                 std::vector<Batch> committedBatches=payload.pages->batches,committedPointBatches=payload.pages->pointSubBatches;
                 auto committedPointRanges=payload.pages->pointSubRanges;
                 auto committedPointTree=payload.pages->pointTree;

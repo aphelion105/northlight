@@ -78,7 +78,7 @@ template<class Snapshot> void appendLiveDirectional(const Snapshot& snapshot,
 template<class Scene> inline bool buildImpl(const NorthlightGI::WorldScene& local,const NorthlightGI::WorldScene& terrain,
                   Vec3 center,NorthlightWorldMesh::WorldMeshUploadPlan& output,std::string& error,
                   const NorthlightGI::AllocationAdmission& admit,float radius,
-                  const NorthlightWorldMesh::PlanOrder& order,bool pagingOnly,
+                  const NorthlightWorldMesh::PlanOptions& order,bool pagingOnly,
                   const NorthlightGI::BVH* sharedLocal,NorthlightWorldMesh::PreparationCache* preparation,const NorthlightGI::WorldScene* pointOnly,bool& reserveRefused,NorthlightGI::WorldScene* consume=nullptr,bool spooled=false,float localHorizontal=LocalHorizontal){
     try {
     const Vec3 low=center-Vec3(localHorizontal,localHorizontal,LocalVertical),high=center+Vec3(localHorizontal,localHorizontal,LocalVertical);
@@ -222,7 +222,7 @@ template<class Scene> inline bool buildImpl(const NorthlightGI::WorldScene& loca
 inline bool build(const NorthlightGI::WorldScene& local,const NorthlightGI::WorldScene& terrain,
                   Vec3 center,NorthlightWorldMesh::WorldMeshUploadPlan& output,std::string& error,
                   const NorthlightGI::AllocationAdmission& admit = {},float radius=Radius,
-                  const NorthlightWorldMesh::PlanOrder& order = {},bool pagingOnly=false,
+                  const NorthlightWorldMesh::PlanOptions& order = {},bool pagingOnly=false,
                   const NorthlightGI::BVH* sharedLocal=nullptr,NorthlightWorldMesh::PreparationCache* preparation=nullptr,const NorthlightGI::WorldScene* pointOnly=nullptr,bool spooled=false,float localHorizontal=LocalHorizontal){
     bool refused=false;
     if(spooled)return buildImpl<NorthlightWorldMesh::ChunkedShadowScene>(local,terrain,center,output,error,admit,radius,order,pagingOnly,sharedLocal,nullptr,pointOnly,refused,nullptr,true,localHorizontal);
@@ -234,7 +234,7 @@ inline bool build(const NorthlightGI::WorldScene& local,const NorthlightGI::Worl
 inline bool buildConsuming(const NorthlightGI::WorldScene& local,NorthlightGI::WorldScene& terrain,
                   Vec3 center,NorthlightWorldMesh::WorldMeshUploadPlan& output,std::string& error,
                   const NorthlightGI::AllocationAdmission& admit,float radius,
-                  const NorthlightWorldMesh::PlanOrder& order,const NorthlightGI::BVH* sharedLocal,bool spooled=false,float localHorizontal=LocalHorizontal){
+                  const NorthlightWorldMesh::PlanOptions& order,const NorthlightGI::BVH* sharedLocal,bool spooled=false,float localHorizontal=LocalHorizontal){
     if(!terrain.vertices.chunked()||!terrain.triangles.chunked()){error="Consuming shadow terrain requires chunked geometry";return false;}
     bool refused=false;
     return buildImpl<NorthlightWorldMesh::ChunkedShadowScene>(local,terrain,center,output,error,admit,radius,order,true,sharedLocal,nullptr,nullptr,refused,&terrain,spooled,localHorizontal);

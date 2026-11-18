@@ -486,13 +486,13 @@ inline const char* validatePages(const NorthlightWorldMesh::WorldMeshUploadPlan&
     }
     if(nextPoint!=pages.pointSubBatches.size()||nextPoint>65536)return "incomplete point range coverage";
     for(size_t i=0;i<materials.size();++i){const auto& material=materials[i];
-        if(!material.width||!material.height||material.width>4096||material.height>4096||uint64_t(material.width)*material.height*4!=material.pixelBytes())return "invalid paged texture size";
+        if(!material.width||!material.height||material.width>4096||material.height>4096||uint64_t(material.width)*material.height*material.stride()!=material.pixelBytes())return "invalid paged texture size";
         if(material.spooled&&(!material.pixels().empty()||!pages.temporary||material.fileOffset>pages.temporary->size()||material.pixelBytes()>pages.temporary->size()-material.fileOffset))return "invalid paged texture temporary range";
         if(material.textureOwner!=UINT32_MAX){
             if(material.textureOwner>=i)return "invalid paged texture owner";
             const auto& owner=materials[material.textureOwner];
             if(owner.textureOwner!=UINT32_MAX||owner.width!=material.width||owner.height!=material.height||
-               !(owner.textureIdentity==material.textureIdentity)||owner.spooled!=material.spooled||
+               !(owner.textureIdentity==material.textureIdentity)||owner.spooled!=material.spooled||owner.alphaOnly!=material.alphaOnly||
                (material.spooled?owner.fileOffset!=material.fileOffset:!owner.sharedBgra||owner.sharedBgra!=material.sharedBgra))return "invalid paged texture alias";
         }
     }

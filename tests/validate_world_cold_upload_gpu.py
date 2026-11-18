@@ -85,7 +85,10 @@ def main():
     parser.add_argument('--storage', choices=['spooled', 'resident', 'transitions', 'actual', 'fence-faults', 'probe-reuse', 'recovery-policy', 'texture-aliases', 'actual-device-local', 'actual-default', 'actual-worker-entry', 'actual-worker-reset', 'actual-worker-move'], default='spooled')
     parser.add_argument('--available', nargs='+', type=int)
     parser.add_argument('--center', nargs=3, type=float, default=[5139.84, -56.93, 380.31], help='Actual world-cache fixture camera')
+    parser.add_argument('--natural-entry-layout', action='store_true', help='Limit total entry VA without splitting the remaining free spans')
     args = parser.parse_args()
+    if args.natural_entry_layout and args.storage != 'actual-worker-entry':
+        parser.error('--natural-entry-layout requires --storage actual-worker-entry')
     out = fp.output_dir() / 'cold-upload'
     out.mkdir(parents=True, exist_ok=True)
     env = fp.zig_env()
@@ -157,8 +160,10 @@ def main():
         windows_gpu_guard.processes()
         start = time.perf_counter()
         command = [str(exe), str(args.backend), str(client), str(available), args.storage, *([str(root), *map(str, args.center)] if root else [])]
+        if args.natural_entry_layout:
+            command.append('natural')
         run = subprocess.run(command, env=env, capture_output=True, text=True, timeout=180, **flags)
-        if args.storage == 'actual-worker-entry':
+        if args.storage == 'actual-worker-entry' and (run.returncode == 0 or (client / 'northlight-renderer.log').is_file()):
             shutil.copy2(client / 'northlight-renderer.log', out / f'{available}-worker.log')
         (out / f'{available}.log').write_text(run.stdout + run.stderr, encoding='utf-8')
         print(run.stdout, flush=True)

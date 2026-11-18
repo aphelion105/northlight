@@ -45,18 +45,40 @@ NorthlightLocalShadowSignature::Digest materialIdentity(const NorthlightGI::Worl
 // Share exact cutout pixels through preparation, spooling and GPU upload.
 template<class Texel,class Allowed>
 bool prepareMaterials(const std::vector<NorthlightGI::WorldMaterial>& materials,Texel texel,
-                      bool spooled,WorldMeshUploadPlan& next,Allowed allowed){
+                      bool spooled,bool alphaOnly,WorldMeshUploadPlan& next,Allowed allowed){
     next.materials.resize(materials.size());
     std::unordered_map<NorthlightMeshPageKey::Key,std::vector<uint32_t>,NorthlightMeshPageKey::KeyHash> owners;
     for(size_t i=0;i<materials.size();++i){
         const auto& meta=materials[i];const auto& source=texel(i);auto& dest=next.materials[i];
-        dest.alphaCutoff=meta.alphaCutoff;dest.terrain=meta.terrain;
-        if(meta.alphaCutoff<=0||source.texels().empty())dest.bgra={255,255,255,255};
+        dest.alphaCutoff=meta.alphaCutoff;dest.terrain=meta.terrain;dest.alphaOnly=alphaOnly;
+        const auto pixels=source.texels();
+        if(meta.alphaCutoff<=0||pixels.empty()||(alphaOnly&&NorthlightMaterialBytes::minimumAlpha(pixels.data(),pixels.size())==255))
+            dest.bgra.assign(dest.stride(),255);
         else{
             dest.width=source.width;dest.height=source.height;
-            NorthlightMeshPageKey::Hasher identity;identity.bytes(source.texels().data(),source.texels().size());
-            auto& candidates=owners[identity.finish(dest.width,dest.height)];
-            for(uint32_t index:candidates)if(texel(index).texels()==source.texels()){
+            // Hash the shader input. For coverage-only plans, RGB can differ even
+            // when the same texture can be bound for both material slots.
+            const size_t count=pixels.size()/4;
+            std::array<uint8_t,4096> alpha;
+            auto coverageBlocks=[&](auto consume){
+                for(size_t pos=0;pos<count;pos+=alpha.size()){
+                    const auto n=std::min(alpha.size(),count-pos);
+                    for(size_t j=0;j<n;++j)alpha[j]=pixels[(pos+j)*4+3];
+                    consume(alpha.data(),n);
+                }
+            };
+            NorthlightMeshPageKey::Hasher identity;
+            if(alphaOnly)coverageBlocks([&](const uint8_t* p,size_t n){identity.bytes(p,n);});
+            else identity.bytes(pixels.data(),pixels.size());
+            const auto key=identity.finish(dest.width,dest.height);
+            auto& candidates=owners[key];
+            auto identical=[&](uint32_t index){
+                const auto other=texel(index).texels();
+                if(!alphaOnly||other.data()==pixels.data())return other==pixels;
+                for(size_t p=3;p<pixels.size();p+=4)if(other[p]!=pixels[p])return false;
+                return true;
+            };
+            for(uint32_t index:candidates)if(identical(index)){
                 auto& owner=next.materials[index];dest.textureOwner=index;dest.textureIdentity=owner.textureIdentity;
                 dest.spooled=owner.spooled;dest.fileOffset=owner.fileOffset;
                 if(!owner.spooled){
@@ -67,6 +89,18 @@ bool prepareMaterials(const std::vector<NorthlightGI::WorldMaterial>& materials,
             }
             if(dest.textureOwner!=UINT32_MAX)continue;
             candidates.push_back(uint32_t(i));
+            if(alphaOnly){
+                if(spooled){
+                    if(!next.temporary)next.temporary=std::make_shared<NorthlightGI::TemporaryGeometryFile>();
+                    dest.spooled=true;dest.fileOffset=next.temporary->size();
+                    coverageBlocks([&](const uint8_t* p,size_t n){next.temporary->append(p,n);});
+                }else{
+                    if(!allowed(count))return false;
+                    dest.bgra.resize(count);
+                    for(size_t j=0;j<count;++j)dest.bgra[j]=pixels[j*4+3];
+                }
+                dest.textureIdentity.words={key.lo,key.hi};next.textureBytes+=dest.bgraBytes();continue;
+            }
             if(spooled){
                 if(!next.temporary)next.temporary=std::make_shared<NorthlightGI::TemporaryGeometryFile>();
                 dest.spooled=true;dest.fileOffset=next.temporary->size();
@@ -85,8 +119,9 @@ bool prepareMaterials(const std::vector<NorthlightGI::WorldMaterial>& materials,
             NorthlightMaterialBytes::swapRedBlue(source.texels().data(),dest.bgra.data(),source.texels().size());
         }
         NorthlightLocalShadowSignature::Hasher hash;hash.word(dest.width);hash.word(dest.height);
-        for(size_t p=0;p<dest.bgra.size();p+=4){uint32_t pixel;std::memcpy(&pixel,dest.bgra.data()+p,4);hash.word(pixel);}
-        dest.textureIdentity=hash.finish();next.textureBytes+=dest.pixelBytes();
+        if(alphaOnly)hash.word(255);
+        else for(size_t p=0;p<dest.bgra.size();p+=4){uint32_t pixel;std::memcpy(&pixel,dest.bgra.data()+p,4);hash.word(pixel);}
+        dest.textureIdentity=hash.finish();next.textureBytes+=dest.bgraBytes();
     }
     return true;
 }
@@ -119,7 +154,7 @@ uint32_t spatialCell(Vec3 a,Vec3 b,Vec3 c,unsigned cellChunks){
 }
 }
 
-template<class Scene> static bool buildCore(const Scene& scene,WorldMeshUploadPlan& output,std::string& error,const NorthlightGI::AllocationAdmission& admit,const std::vector<NorthlightGI::WorldMaterial>* textures,const PlanOrder& order,
+template<class Scene> static bool buildCore(const Scene& scene,WorldMeshUploadPlan& output,std::string& error,const NorthlightGI::AllocationAdmission& admit,const std::vector<NorthlightGI::WorldMaterial>* textures,const PlanOptions& order,
     size_t first=0,size_t count=SIZE_MAX,bool geometryOnly=false,const std::vector<uint32_t>* textureMap=nullptr,
     const std::vector<NorthlightLocalShadowSignature::Digest>* preparedIdentities=nullptr,std::vector<uint32_t>* batchCells=nullptr,std::vector<ContentCell>* recordCells=nullptr,std::vector<uint32_t>* triangleOrder=nullptr,bool validateVertices=true){
     const size_t triangleCount=count==SIZE_MAX?scene.triangles.size():count;
@@ -249,7 +284,7 @@ template<class Scene> static bool buildCore(const Scene& scene,WorldMeshUploadPl
         // Per-triangle sort keys are dead after scatter. In a city they can
         // otherwise overlap another ~16 MiB of cutout upload textures.
         if constexpr(std::is_same_v<Scene,NorthlightGI::WorldScene>)std::vector<uint32_t>().swap(keys);else keys=ChunkedBuffer<uint32_t>{};
-        if(!geometryOnly&&!prepareMaterials(scene.materials,texel,scene.vertices.spooled(),next,allowed))return false;
+        if(!geometryOnly&&!prepareMaterials(scene.materials,texel,scene.vertices.spooled(),order.alphaOnly,next,allowed))return false;
         if(next.temporary)next.temporary->flush();
         if(chunkIndices){chunkIndices->detachAdmission();next.pagingIndices=std::move(chunkIndices);}
     }catch(const std::bad_alloc&){error="Geometry allocation deferred";return false;}
@@ -376,8 +411,8 @@ void PreparationCache::rememberPages(const WorldMeshUploadPlan& input,const Nort
     }catch(const std::bad_alloc&){/* Optional acceleration never refuses a prepared upload. */}
 }
 
-bool buildChunkedUploadPlan(const ChunkedShadowScene& scene,WorldMeshUploadPlan& output,std::string& error,const NorthlightGI::AllocationAdmission& admit,const std::vector<NorthlightGI::WorldMaterial>* textures,const PlanOrder& order){return buildCore(scene,output,error,admit,textures,order);}
-bool buildUploadPlan(const NorthlightGI::WorldScene& scene,WorldMeshUploadPlan& output,std::string& error,const NorthlightGI::AllocationAdmission& admit,const std::vector<NorthlightGI::WorldMaterial>* textures,const PlanOrder& order,const std::vector<PreparationPiece>* sources,PreparationCache* preparation){
+bool buildChunkedUploadPlan(const ChunkedShadowScene& scene,WorldMeshUploadPlan& output,std::string& error,const NorthlightGI::AllocationAdmission& admit,const std::vector<NorthlightGI::WorldMaterial>* textures,const PlanOptions& order){return buildCore(scene,output,error,admit,textures,order);}
+bool buildUploadPlan(const NorthlightGI::WorldScene& scene,WorldMeshUploadPlan& output,std::string& error,const NorthlightGI::AllocationAdmission& admit,const std::vector<NorthlightGI::WorldMaterial>* textures,const PlanOptions& order,const std::vector<PreparationPiece>* sources,PreparationCache* preparation){
     if(!preparation||!sources||sources->empty()||!preparation->impl_->limit)return buildCore(scene,output,error,admit,textures,order);
     const auto buildShared=[&]()->bool {
     auto& cache=*preparation->impl_;cache.clean();
@@ -458,7 +493,7 @@ bool buildUploadPlan(const NorthlightGI::WorldScene& scene,WorldMeshUploadPlan& 
         next.localShadowRecords=std::move(records);
         // Texture upload remains one global operation; range caches retain no RGBA/BGRA.
         auto texel=[&](size_t i)->const NorthlightGI::WorldMaterial&{return textures&&i<textures->size()?(*textures)[i]:scene.materials[i];};
-        if(!prepareMaterials(scene.materials,texel,false,next,allowed))return false;
+        if(!prepareMaterials(scene.materials,texel,false,order.alphaOnly,next,allowed))return false;
         if(allProven){auto layout=std::make_shared<PreparationLayout>();for(const auto& p:parts)layout->push_back({p.data,p.first,p.data->plan.triangleCount,p.data->charge->bytes,p.materials});next.preparationLayout=std::move(layout);}
         next.source=&scene;next.vertexCount=uint32_t(scene.vertices.size());next.triangleCount=uint32_t(scene.triangles.size());next.vertexBytes=scene.vertices.size()*sizeof(NorthlightGI::WorldVertex);next.indexBytes=scene.triangles.size()*12;
         cache.stats.bytes=cache.budget->used.load(std::memory_order_relaxed);cache.stats.entries=cache.pieces.size();output=std::move(next);error.clear();return true;

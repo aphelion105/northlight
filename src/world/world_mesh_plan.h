@@ -67,7 +67,8 @@ struct Batch {
 };
 struct MaterialUpload {
     uint32_t width=1,height=1;
-    // Tightly packed D3DFMT_A8R8G8B8 memory bytes: B,G,R,A.
+    // Legacy plans carry BGRA. Shadow-only plans carry one coverage byte per texel.
+    bool alphaOnly=false;
     std::vector<uint8_t> bgra;
     std::shared_ptr<const std::vector<uint8_t>> sharedBgra;
     // Earlier canonical material with identical pixels; draw metadata stays local.
@@ -75,8 +76,11 @@ struct MaterialUpload {
     const std::vector<uint8_t>& pixels()const{return sharedBgra?*sharedBgra:bgra;}
     uint64_t retainedPixelBytes()const{return textureOwner==UINT32_MAX?pixels().capacity()+(sharedBgra?sizeof(*sharedBgra)+64:0):0;}
     bool spooled=false;uint64_t fileOffset=0;
-    uint64_t pixelBytes()const{return spooled?uint64_t(width)*height*4:pixels().size();}
-    // Full BGRA identity, prepared on the worker. A hash match is only a
+    unsigned stride()const{return alphaOnly?1:4;}
+    uint64_t bgraBytes()const{return uint64_t(width)*height*4;}
+    uint64_t pixelBytes()const{return spooled?uint64_t(width)*height*stride():pixels().size();}
+    bool whiteMask()const{return width==1&&height==1&&pixels().size()==stride()&&pixels().back()==255;}
+    // Packed image identity, prepared on the worker. A hash match is only a
     // lookup shortcut; reuse also requires equal dimensions and exact bytes.
     NorthlightLocalShadowSignature::Digest textureIdentity;
     float alphaCutoff=0;
@@ -162,6 +166,8 @@ struct WorldMeshUploadPlan {
     // Compact worker-prepared spatial content identities. Commit this pointer
     // with the corresponding batches/fixedTerrainChunks, never before upload.
     std::shared_ptr<const NorthlightLocalShadowSignature::Records> localShadowRecords;
+    // Texture budget is expressed in BGRA-equivalent bytes until the render
+    // device selects A8 or its four-channel fallback. pixelBytes() is physical storage.
     uint64_t vertexBytes=0,indexBytes=0,textureBytes=0;
     // Sealed plans: pages + materials moved here by seal(); empty after the mesh commit.
     UploadPayloadHandle payload;
@@ -198,7 +204,8 @@ struct WorldMeshUploadPlan {
 // chunkMajor orders (chunk, material) inside a cell instead; it measured no better. chunkX/chunkY keep their meaning
 // (terrain confined to one chunk, else -1); the cell only orders and splits batches. The order is a
 // parameter of buildUploadPlan (default: production); only tests and measurements pass another one.
-struct PlanOrder {unsigned cellChunks=4;bool chunkMajor=false;};
+struct PlanOptions {unsigned cellChunks=4;bool chunkMajor=false;bool alphaOnly=false;};
+using PlanOrder=PlanOptions; // Compatibility with existing standalone planners.
 
 // A proven immutable contiguous source range. Tokens are small content/revision
 // identities; they never own source vertices or textures. Borrowed local BLAS
@@ -224,7 +231,7 @@ public:
 
 private:
     struct Impl;std::unique_ptr<Impl> impl_;
-    friend bool buildUploadPlan(const NorthlightGI::WorldScene&,WorldMeshUploadPlan&,std::string&,const NorthlightGI::AllocationAdmission&,const std::vector<NorthlightGI::WorldMaterial>*,const PlanOrder&,const std::vector<PreparationPiece>*,PreparationCache*);
+    friend bool buildUploadPlan(const NorthlightGI::WorldScene&,WorldMeshUploadPlan&,std::string&,const NorthlightGI::AllocationAdmission&,const std::vector<NorthlightGI::WorldMaterial>*,const PlanOptions&,const std::vector<PreparationPiece>*,PreparationCache*);
 };
 
 // Builds immutable packed indices, exact terrain-chunk batches and upload-ready
@@ -240,9 +247,9 @@ bool buildUploadPlan(const NorthlightGI::WorldScene& source,
                      WorldMeshUploadPlan& output,std::string& error,
                      const NorthlightGI::AllocationAdmission& admit = {},
                      const std::vector<NorthlightGI::WorldMaterial>* textures = nullptr,
-                     const PlanOrder& order = {},
+                     const PlanOptions& order = {},
                      const std::vector<PreparationPiece>* sharedPieces = nullptr,
                      PreparationCache* preparation = nullptr);
 bool buildChunkedUploadPlan(const ChunkedShadowScene& source,WorldMeshUploadPlan& output,std::string& error,
-                            const NorthlightGI::AllocationAdmission& admit,const std::vector<NorthlightGI::WorldMaterial>* textures,const PlanOrder& order);
+                            const NorthlightGI::AllocationAdmission& admit,const std::vector<NorthlightGI::WorldMaterial>* textures,const PlanOptions& order);
 } // namespace NorthlightWorldMesh
