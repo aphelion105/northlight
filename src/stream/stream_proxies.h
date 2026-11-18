@@ -132,17 +132,11 @@ struct ProxyBase {
     // is its parent's public reference; a child in use keeps its parent in use.
     LONG baseline=0;   // refs the proxy holds itself without pinning (the swap chain's own)
     void pinDevice();
-    void unpinDevice();
     ULONG comAddRef(){
         const LONG n=refs.fetch_add(1)+1;const bool pin=!parent&&n==baseline+1;
         if(n==1&&parent)parent->comAddRef();
         useInc();if(pin)pinDevice();return ULONG(n);}
-    ULONG comRelease(){
-        const LONG n=refs.fetch_sub(1)-1;const bool unpin=!parent&&n==baseline,up=n==0&&parent!=nullptr;
-        useDec();   // may record the Destroy: while the queue still exists
-        if(up)parent->comRelease();
-        if(unpin)unpinDevice();   // last: this may be the device's final release
-        return n<0?0:ULONG(n);}
+    ULONG comRelease();
     void adoptKid(){comAddRef();useInc();}   // a new child starts with one public reference and one use: the same on this parent
     void useInc(){if(use.fetch_add(1)==0&&binds.load(std::memory_order_relaxed)==0&&parent)parent->useInc();}
     void useDec();                                                        // game thread: use 1->0 with no binds records Destroy (or releases the container)
@@ -399,7 +393,16 @@ struct LockScope {   // every buffer/image Lock or Unlock: elapsed minus the wai
 };
 inline CallScope ProxyBase::callScope(std::uint16_t id){return CallScope(*core,id);}
 inline void ProxyBase::pinDevice(){if(core->game)core->game->AddRef();}
-inline void ProxyBase::unpinDevice(){if(core->game)core->game->Release();}
+inline ULONG ProxyBase::comRelease(){
+    const LONG n=refs.fetch_sub(1)-1;
+    auto* parentToRelease=n==0?parent:nullptr;
+    auto* deviceToRelease=!parent&&n==baseline?core->game:nullptr;
+    // Publishing Destroy allows the replay thread to delete this proxy immediately.
+    useDec();
+    if(parentToRelease)parentToRelease->comRelease();
+    if(deviceToRelease)deviceToRelease->Release();
+    return n<0?0:ULONG(n);
+}
 inline ProxyBase::~ProxyBase(){dropPrivate();}
 inline void ProxyBase::useDec(){
     if(use.fetch_sub(1)!=1||binds.load(std::memory_order_relaxed)!=0)return;
