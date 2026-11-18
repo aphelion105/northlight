@@ -278,6 +278,32 @@ struct PointTerrainCoverageTest {
    const auto actual=image();if(!mode){expected=actual;referenceDraws=w.pointDraws;}else{assert(actual==expected);mergedDraws=w.pointDraws;assert(w.pointWork.bridged>0&&w.pointWork.bridged<=w.pointWork.triangles/2);}}
   assert(referenceDraws>=triangles&&mergedDraws<referenceDraws/16);
   std::printf("POINT_GAP_GPU_PASS faces=6 exact=1 referenceDraws=%u mergedDraws=%u\n",referenceDraws,mergedDraws);
+#ifdef NORTHLIGHT_POINT_MATERIAL_BOUNDS_TEST
+  {
+   auto shaded=light;shaded.attenuationStart+=.5f;
+   const auto savedQuality=w.quality;w.quality.pointShadowRefreshMs=10000;
+   w.quality.diagnostics=w.quality.renderProfile=1;
+   for(bool force:{false,true}){
+    w.pointWork={};w.pointCold={};if(force)w.pointSlot().cacheValid=false;
+    must(d->BeginScene());assert(w.renderPointShadow(shaded,true,false));must(d->EndScene());drain();
+    assert(w.pointSlot().selected.attenuationStart==shaded.attenuationStart&&image()==expected);
+    assert(w.pointWork.rebuilt==(force?6u:0u)&&(force?w.pointWork.statics>0:w.pointDraws==0));
+    assert(w.pointCold.facesWithoutCache==w.pointWork.rebuilt);
+   }
+   auto changed=shaded;
+   for(unsigned step=0;step<3;++step){
+    if(step==0)changed.position[0]+=.25f;
+    if(step==1)changed.attenuationEnd+=1;
+    if(step==2){++w.meshGeneration;for(auto& known:w.pointSlot().faceKnown)known=false;}
+    w.pointWork={};w.pointCold={};
+    must(d->BeginScene());assert(w.renderPointShadow(changed,true,false));must(d->EndScene());drain();
+    assert(w.pointWork.rebuilt==6&&w.pointCold.facesWithoutCache==0&&w.pointCold.facesMoved==(step==0?6u:0u)&&
+           w.pointCold.facesResized==(step==1?6u:0u)&&w.pointCold.facesMeshInvalidated==(step==2?6u:0u));
+   }
+   w.quality=savedQuality;
+   std::puts("POINT_SHADING_ONLY_PASS retainedFaces=6 forcedRebuildFaces=6 identical=1");
+  }
+#endif
   w.releasePointGPU();w.quality.pointShadows=w.quality.localLights=1;w.quality.localLightLimit=64;w.effects.shadows=true;
   NorthlightLocalLightSelection::Selection warmLights;warmLights.count=1;warmLights.sources[0]=light;
   for(unsigned i=0;!w.pointSlot().cube;++i){assert(i<10);NorthlightStreaming::Budget budget(4u<<20,1000);w.prewarmPointResources(warmLights,w.active->map,budget);}
@@ -486,6 +512,55 @@ struct PointTerrainCoverageTest {
    p->type=D3DPT_TRIANGLELIST;p->indexed=true;p->base=0;p->min=0;p->vertices=6;p->start=3*i*64;p->count=64;p->projectionKind=2;p->constantUsage.floats={2,4};p->pointBounds.valid=true;
    const float low[]={-1,-1,0},high[]={1,1,9};std::memcpy(p->pointBounds.low,low,12);std::memcpy(p->pointBounds.high,high,12);w.replays.push_back(std::move(p));}
   shader->Release();
+#ifdef NORTHLIGHT_POINT_MATERIAL_BOUNDS_TEST
+  {
+   std::vector<float> reference;unsigned draws[2]{};
+   const auto savedBounds=w.replays.front()->pointBounds;
+   for(unsigned i=0;i<w.replays.size();++i){
+    auto& p=*w.replays[i];p.start=3*(64*i+i%2);p.count=1;
+    auto& box=p.materialViewBounds;
+    for(unsigned j=0;j<3;++j){
+     const auto& pos=vertices[indices[p.start+j]].position;const float xyz[]={pos.x,pos.y,pos.z};
+     for(unsigned axis=0;axis<3;++axis){
+      box.low[axis]=j?std::min(box.low[axis],xyz[axis]):xyz[axis];
+      box.high[axis]=j?std::max(box.high[axis],xyz[axis]):xyz[axis];
+     }
+    }
+    box.valid=true;
+   }
+   auto renderCold=[&](bool borrow){
+    w.replayBoundsBegin();w.replayBoundsResolved=true;w.pointSlot().schedule.invalidate();w.pointWork={};
+    for(auto& p:w.replays)p->pointBounds={};
+    if(borrow)w.completeMaterialBounds();
+    assert(w.pointMaterialBoundsUsed==(borrow?w.replays.size():0));
+    assert(w.renderPointShadow(light,true,true));
+    return w.pointWork.replay;
+   };
+   for(unsigned mode=0;mode<2;++mode){
+    must(d->BeginScene());draws[mode]=renderCold(mode);must(d->EndScene());drain();
+    if(!mode){reference=image();assert(std::any_of(reference.begin(),reference.end(),[](float z){return z<1.f;}));}
+    else assert(image()==reference&&draws[1]*6==draws[0]);
+   }
+   std::printf("POINT_MATERIAL_BOUNDS_PASS faces=6 identical=1 unboundedDraws=%u boundedDraws=%u\n",draws[0],draws[1]);
+   NorthlightGpuFrameTimer timer(d);
+   constexpr unsigned frames=24;
+   for(unsigned block=0;block<16;++block){
+    const bool borrow=block%4==1||block%4==2;unsigned submitted=0;
+    drain();const auto start=std::chrono::steady_clock::now();
+    must(d->BeginScene());const bool timed=timer.begin(block);
+    for(unsigned frame=0;frame<frames;++frame)submitted+=renderCold(borrow);
+    timer.end();must(d->EndScene());
+    const auto elapsed=[&]{return std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count()/frames;};
+    const double cpu=elapsed();drain();const double complete=elapsed();double gpu=-1;
+    if(timed)timer.poll(gpu);
+    assert(submitted==frames*draws[borrow]&&image()==reference);
+    std::printf("POINT_MATERIAL_BOUNDS_TIMING block=%u warm=%u borrow=%u cpuMs=%.6f completeMs=%.6f gpuMs=%.6f draws=%u\n",
+                block,unsigned(block<4),unsigned(borrow),cpu,complete,gpu<0?-1:gpu/frames,submitted/frames);
+   }
+   for(unsigned i=0;i<w.replays.size();++i){auto& p=*w.replays[i];p.start=3*i*64;p.count=64;p.pointBounds=savedBounds;p.materialViewBounds={};}
+   w.replayBoundsBegin();w.replayBoundsResolved=true;
+  }
+#endif
   IDirect3DTexture9* cutout=nullptr;must(d->CreateTexture(2,2,1,0,D3DFMT_A8R8G8B8,D3DPOOL_MANAGED,&cutout,nullptr));D3DLOCKED_RECT lock{};must(cutout->LockRect(0,&lock,nullptr,0));
   for(unsigned y=0;y<2;++y)for(unsigned x=0;x<2;++x)reinterpret_cast<DWORD*>(static_cast<char*>(lock.pBits)+y*lock.Pitch)[x]=(x==y)?0xffffffffu:0x00ffffffu;must(cutout->UnlockRect(0));
 #ifndef NORTHLIGHT_POINT_TERRAIN_REFERENCE

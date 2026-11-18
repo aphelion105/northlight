@@ -55,6 +55,17 @@ int main(int argc,char** argv){assert(argc==4||argc==5);const bool timing=argc==
                     ok(d->SetVertexShaderConstantF(0,bank[0],256));NorthlightAutoDisplacement::CaptureSource source;producer.prepare(shader,4,1,args,nullptr,&source);assert(source.mesh&&source.declaration);
                     proofs+=source.pose.outsideRange||source.pose.outsideViewport;
                     if(shape==4&&!anchor){for(unsigned b=0;b<75;++b)bank[33+3*b][3]=20;ok(d->SetVertexShaderConstantF(0,bank[0],256));}
+                    if(!timing&&round==1&&current&&!anchor&&(shape==1||shape==4)){
+                        const auto clock=extension.trustedConstantSource();
+                        NorthlightConstantEpoch::Stamp stamp;stamp.requestHeld=true;
+                        assert(clock.reader()(clock.context(),stamp)&&stamp.held&&source.pose.bounds.valid);
+                        assert(source.pose.matches(source.mesh.get(),shader,source.declaration,stamp)==(shape==1));
+                        if(shape==1){
+                            const float inverse[]={1,0,0,0,0,1,0,0,0,0,1,0,-16,4,123,1};
+                            const auto world=NorthlightPoseBounds::inWorld(source.pose.bounds,inverse);
+                            assert(world.valid&&world.low[2]<=z+123&&world.high[2]>=z+123);
+                        }
+                    }
                     normals.capture(shader,[&]{return d->DrawPrimitive(D3DPT_TRIANGLELIST,0,Vertices/3);},false,&args.draw,nullptr,D3DFMT_UNKNOWN,nullptr,0,&source.mesh,source.declaration,&source.pose);
                     expected+=current&&!anchor&&(shape==1||shape==2&&i%2==0||shape==6);
                 }

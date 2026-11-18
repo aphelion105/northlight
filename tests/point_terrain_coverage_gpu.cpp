@@ -262,7 +262,15 @@ struct PointTerrainCoverageTest {
    for(unsigned change=0;change<5;++change){auto changed=lamp;
     if(change==0)++changed.sourceId;else if(change==1)changed.position[2]+=.1f;else if(change==2)changed.attenuationEnd+=1;
     else if(change==3)changed.attenuationStart+=.1f;else changed.flags^=NorthlightLocalLights::CastShadow;
-    w.captureDemand=false;assert(!render(changed,false,true)&&!w.pointSlot().ready&&w.captureDemand);assert(image()==expected);++transitions;
+    if(change==4){
+     NorthlightPointShadow::SelectionTracker selection;const float camera[3]={};
+     assert(selection.update(&lamp,1,camera,1,1)[0].index==0);
+     assert(selection.update(&changed,1,camera,1,2)[0].index<0);
+    }else{
+     w.captureDemand=false;const bool compatible=change==3;
+     assert(render(changed,false,true)==compatible&&w.pointSlot().ready==compatible&&w.captureDemand);
+    }
+    assert(image()==expected);++transitions;
    }
    // Invalidation cannot turn the previous character shadow into an empty
    // static-only cube, nor publish it as ready. The next capture recovers it.

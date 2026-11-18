@@ -2053,7 +2053,7 @@ private:
         NorthlightCaptureMetadata::PositionBounds positions;positions.owner=&geometry;positions.shader=vs;
         auto captureWorld=[&](NorthlightCaptureMetadata::PositionBounds* bounds=nullptr){
             if constexpr(userMemory)world->captureUP(args.topology,args.minimum,args.vertices,args.primitives,geometry.indices,geometry.format,geometry.vertices,geometry.stride,args.indexed,vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame(frame));
-            else world->capture(args.topology,args.base,args.minimum,args.vertices,args.start,args.primitives,args.indexed,vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame(frame),bounds,&source.mesh,source.declaration);
+            else world->capture(args.topology,args.base,args.minimum,args.vertices,args.start,args.primitives,args.indexed,vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame(frame),bounds,&source.mesh,source.declaration,&source.pose);
         };
         // Only buffered indexed terrain publishes bounds before material work.
         const bool sharedTerrain=!userMemory&&args.indexed&&autoBump&&autoBump->active()&&enabled&&!applied&&!failed&&world->terrainShader(vs);

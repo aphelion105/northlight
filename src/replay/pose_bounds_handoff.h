@@ -42,9 +42,12 @@ struct Handoff {
         }
         outsideViewport=upper[0]+upper[3]<0||lower[0]>upper[3]||upper[1]+upper[3]<0||lower[1]>upper[3]||upper[2]<0||lower[2]>upper[3];
     }
+    bool matches(const void* mesh,const void* vs,const void* decl,const NorthlightConstantEpoch::Stamp& current)const{
+        return source&&source==mesh&&shader==vs&&declaration==decl&&current.valid&&
+               reset==current.reset&&floats==current.floats&&booleans==current.booleans&&integers==current.integers;
+    }
     bool outside(const void* mesh,const void* vs,const void* decl,const NorthlightConstantEpoch::Stamp& current,bool clip=false)const{
-        if(!current.valid||!current.held||source!=mesh||shader!=vs||declaration!=decl||
-           reset!=current.reset||floats!=current.floats||booleans!=current.booleans||integers!=current.integers)return false;
+        if(!current.held||!matches(mesh,vs,decl,current))return false;
         if(outsideRange)return true;
         if(clip&&outsideViewport)return true;
         if(!bounds.valid)return false;
@@ -54,4 +57,26 @@ struct Handoff {
         return lower>48.01;
     }
 };
+
+// The immutable capture owns a view-space box. Use the same inverse view
+// as the replay projection, including when a held packet is replayed later.
+inline NorthlightReplayBounds::Bounds inWorld(const NorthlightReplayBounds::Bounds& box,const float* inverse){
+    NorthlightReplayBounds::Bounds result{};
+    if(!box.valid||!inverse||inverse[3]!=0||inverse[7]!=0||inverse[11]!=0||inverse[15]!=1)return {};
+    for(unsigned i=0;i<3;++i)
+        if(!std::isfinite(box.low[i])||!std::isfinite(box.high[i])||box.low[i]>box.high[i])return {};
+    for(unsigned axis=0;axis<3;++axis){
+        double low=inverse[12+axis],high=low,magnitude=std::fabs(low);
+        for(unsigned i=0;i<3;++i){
+            const double k=inverse[4*i+axis],a=k*box.low[i],b=k*box.high[i];
+            low+=std::min(a,b);high+=std::max(a,b);magnitude+=std::max(std::fabs(a),std::fabs(b));
+        }
+        const double margin=32*std::numeric_limits<float>::epsilon()*(magnitude+1);
+        if(!std::isfinite(magnitude)||magnitude+margin>=std::numeric_limits<float>::max())return {};
+        result.low[axis]=std::nextafter(float(low-margin),-INFINITY);
+        result.high[axis]=std::nextafter(float(high+margin),INFINITY);
+        if(!std::isfinite(result.low[axis])||!std::isfinite(result.high[axis]))return {};
+    }
+    result.valid=true;return result;
+}
 }

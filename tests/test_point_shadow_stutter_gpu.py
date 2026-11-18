@@ -31,7 +31,7 @@ sha=lambda path:hashlib.sha256(path.read_bytes()).hexdigest()
 inputs={str(path):sha(path) for folder in (fp.SRC,fp.SHADERS) for path in folder.rglob('*') if path.is_file()}
 inputs.update({str(path):sha(path) for path in (Path(__file__),fp.TESTS/'point_shadow_stutter_gpu.cpp')})
 client_fixtures.actor_client_programs(out);inputs[str(out/'actor_client_programs.h')]=sha(out/'actor_client_programs.h')
-reference=[] if a.reference_point_from else ['-DNORTHLIGHT_POINT_OVERLAP_TEST=1']
+reference=[] if a.reference_point_from else ['-DNORTHLIGHT_POINT_OVERLAP_TEST=1','-DNORTHLIGHT_POINT_MATERIAL_BOUNDS_TEST=1']
 assert not (a.reference_point_from and a.benchmark_preparation_from)
 if a.benchmark_preparation_from:
  overlay=out/'preparation-reference';overlay.mkdir()
@@ -69,6 +69,13 @@ for i,backend in enumerate(backends):
  assert 'POINT_WHITE_CUBE_GPU_PASS ' in text
  assert text.count('POINT_DIRECT_GPU_PASS ')==10
  assert 'POINT_RECYCLE_GPU_PASS ' in text
+ material_bounds=[]
+ if '-DNORTHLIGHT_POINT_MATERIAL_BOUNDS_TEST=1' in reference:
+  assert 'POINT_SHADING_ONLY_PASS ' in text and 'POINT_MATERIAL_BOUNDS_PASS ' in text
+  rows=[dict(re.findall(r'(\w+)=([^ ]+)',line)) for line in text.splitlines() if line.startswith('POINT_MATERIAL_BOUNDS_TIMING ') and 'warm=0 ' in line]
+  for borrow in (0,1):
+   samples=[r for r in rows if int(r['borrow'])==borrow];assert len(samples)==6
+   material_bounds.append({'borrow':bool(borrow),**{key:statistics.median(float(r[key]) for r in samples) for key in ('cpuMs','completeMs','gpuMs','draws')}})
  candidates=[];empty_terrain=[];sparse_terrain=[]
  if not a.reference_point_from or 'preparePointTerrain(' in point:
   assert 'POINT_TERRAIN_CANDIDATES_PASS ' in text and 'POINT_TERRAIN_CANDIDATES_GPU_PASS ' in text
@@ -106,7 +113,7 @@ for i,backend in enumerate(backends):
    preparation.append(entry)
  samples=[dict(re.findall(r'(\w+)=([^ ]+)',line)) for line in text.splitlines() if line.startswith('POINT_GAP_TIMING ')]
  timing={str(mode):{key:statistics.median(float(s[key]) for s in samples if s['optimized']==str(mode)) for key in ('submitMs','completeMs','draws')} for mode in (0,1)}
- report['cases'].append({'backend':str(backend.resolve()),'sha256':sha(backend),'log':str(run/'gpu.log'),'timing':timing if timing_valid else None,'preparation':preparation if timing_valid else None,'terrain':terrain if timing_valid else None,'terrain_candidates':candidates if timing_valid else None,'empty_terrain':empty_terrain if timing_valid else None,'sparse_terrain':sparse_terrain if timing_valid else None})
+ report['cases'].append({'backend':str(backend.resolve()),'sha256':sha(backend),'log':str(run/'gpu.log'),'timing':timing if timing_valid else None,'material_bounds':material_bounds if timing_valid else None,'preparation':preparation if timing_valid else None,'terrain':terrain if timing_valid else None,'terrain_candidates':candidates if timing_valid else None,'empty_terrain':empty_terrain if timing_valid else None,'sparse_terrain':sparse_terrain if timing_valid else None})
 assert all(sha(Path(path))==digest for path,digest in inputs.items()),'Source changed during the oracle'
 report['pass']=True;report['timing_valid']=timing_valid;report['scope']='Authored static workload; no gameplay FPS claim. Concurrent game invalidates timing; pixel/state assertions remain valid.'
 (out/'validation.json').write_text(json.dumps(report,indent=2)+'\n');print('PASS',out)

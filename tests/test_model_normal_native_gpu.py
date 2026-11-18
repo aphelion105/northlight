@@ -26,7 +26,7 @@ parser.add_argument('--output',type=Path,required=True)
 parser.add_argument('--timing-draws',type=int,action='append',default=[],help='Additionally measure complete 4K capture/submission paths (resident geometry)')
 parser.add_argument('--timing-copies',type=int,default=1,help='Repeat stock geometry within each timing draw (1..32)')
 parser.add_argument('--timing-local',action='store_true',help='Measure the actual three-local-light factory with MRT')
-parser.add_argument('--reference-packet-layout',help='Replace only Pending with its layout at this git revision; retain current capture/render methods')
+parser.add_argument('--reference-packet-layout',help='Use this revision’s Pending layout. If its sampler representation differs, use its matching normal renderer and record the wider comparison scope.')
 parser.add_argument('--reference-native',help='Use native MRT admission from this git revision for a paired comparison')
 parser.add_argument('--capture-source',action='store_true',help='Read immutable buffered geometry in normals and hand it to the shadow consumer')
 parser.add_argument('--source-lookup-reference',action='store_true',help='Repeat the consumer lookup instead of accepting the same-draw handoff (stand only)')
@@ -63,6 +63,7 @@ def run(tag,command):
 
 exe=out/'native-models.exe'
 includes=[]
+packet_reference_scope=None
 if args.reference_native:
     overlay=out/'native-reference';overlay.mkdir();(overlay/'model_normal_renderer.h').write_bytes(fp.src('model_normal_renderer.h').read_bytes())
     (overlay/'model_normal_native.h').write_bytes(subprocess.check_output(['git','show',args.reference_native+':src/proxy/model_normal_native.h']))
@@ -73,7 +74,13 @@ if args.reference_packet_layout:
     previous=subprocess.check_output(['git','show',args.reference_packet_layout+':src/proxy/model_normal_renderer.h'],text=True)
     start='    struct Pending {';end='    Pending* nativeCandidate='
     frozen=previous[previous.index(start):previous.index(end)]
-    current=current[:current.index(start)]+frozen+current[current.index(end):]
+    active=current[current.index(start):current.index(end)]
+    if ('std::vector<SampledStage> sampled;' in frozen)==('std::vector<SampledStage> sampled;' in active):
+        current=current.replace(active,frozen,1)
+        packet_reference_scope='Pending layout only'
+    else:
+        current=previous
+        packet_reference_scope='model_normal_renderer.h including sampler capture and replay'
     overlay=out/'layout-reference';overlay.mkdir();(overlay/'model_normal_renderer.h').write_text(current,encoding='utf-8')
     includes=['-I'+str(overlay)]
 run('compile',[fp.zig(),'c++','-target','x86-windows-gnu','-std=c++17','-O2','-UNDEBUG','-Wno-microsoft-exception-spec','-Wno-return-type',*includes,*fp.test_include_flags(),ROOT/'tests/model_normal_native_gpu.cpp',fp.src('world_gi.cpp'),'-luser32','-o',exe])
@@ -101,6 +108,7 @@ report['timing']['local']=args.timing_local
 report['timing']['blended_depth']=args.timing_blend
 report['timing']['srgb']=args.timing_srgb
 report['reference_packet_layout']=args.reference_packet_layout
+report['packet_reference_scope']=packet_reference_scope
 report['reference_native']=args.reference_native
 report['source_handoff']=env.get('NORTHLIGHT_TEST_NORMAL_SOURCE')=='1'
 report['source_lookup_reference']=env.get('NORTHLIGHT_TEST_NORMAL_SOURCE_LOOKUP')=='1'

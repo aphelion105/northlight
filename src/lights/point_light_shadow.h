@@ -12,6 +12,10 @@ namespace NorthlightPointShadow {
 // except by the explicit PointShadowFacesPerFrame<6 opt-in (FaceCycle below).
 // Resource/map invalidation is supplied by the owner. Failed partial updates
 // must invalidate before drawing the first face, and commit only after all six.
+inline bool sameCube(const NorthlightLocalLights::Light& a,const NorthlightLocalLights::Light& b){
+    return a.sourceId==b.sourceId&&a.attenuationEnd==b.attenuationEnd&&
+           a.position[0]==b.position[0]&&a.position[1]==b.position[1]&&a.position[2]==b.position[2];
+}
 struct RefreshSchedule {
     bool complete=false;
     bool usable=false; /* every face holds a complete draw of `light` (complete implies usable) */
@@ -27,9 +31,7 @@ struct RefreshSchedule {
     }
     bool due(uint32_t now,const NorthlightLocalLights::Light& current,uint64_t meshGeneration,
              size_t replayCount,bool invalidated,uint32_t minimumMs=0)const{
-        if(invalidated||!complete||generation!=meshGeneration||light.sourceId!=current.sourceId||
-           light.attenuationEnd!=current.attenuationEnd||light.attenuationStart!=current.attenuationStart||light.flags!=current.flags)return true;
-        for(unsigned i=0;i<3;++i)if(light.position[i]!=current.position[i])return true;
+        if(invalidated||!complete||generation!=meshGeneration||!sameCube(light,current))return true;
         return uint32_t(now-updatedAt)>=period(replayCount,minimumMs);
     }
     void commit(uint32_t now,const NorthlightLocalLights::Light& current,uint64_t meshGeneration){

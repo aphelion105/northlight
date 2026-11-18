@@ -50,6 +50,7 @@
         return true;
     }
     unsigned pointFacesRebuilt=0,pointFacesKept=0,pointFacesReused=0,pointFailures=0,pointDraws=0,pointCulled=0,pointBoundsValid=0;
+    unsigned pointMaterialBoundsUsed=0;
     unsigned pointUpdates=0,pointReuses=0,pointReportedLimit=0,pointBatchesMerged=0;
     using PointCandidates=std::array<std::vector<size_t>,6>;
     PointCandidates pointStaticCandidates,pointTerrainCandidates,pointLiveCandidates,pointReplayCandidates;
@@ -62,7 +63,9 @@
     using PointReplayGroup=NorthlightPointShadow::ReplayGroup;
     std::vector<PointReplayGroup> pointReplayGroups;
     bool pointReplayGroupsReady=false;
-    struct PointCold {unsigned cubes=0,statics=0,shared=0,shaders=0,terrainMemoHits=0,terrainMemoMisses=0,orderPackets=0,orderEligible=0,contentPasses=0,alphaScopes=0,fixedDraws=0;size_t contentRecords=0;int64_t ticks=0,order=0,prepare=0,boundsWait=0,candidates=0,submit=0;} pointCold;
+    struct PointCold {unsigned cubes=0,statics=0,shared=0,shaders=0,terrainMemoHits=0,terrainMemoMisses=0,orderPackets=0,orderEligible=0,contentPasses=0,alphaScopes=0,fixedDraws=0;
+        unsigned facesWithoutCache=0,facesResized=0,facesMoved=0,facesMeshInvalidated=0;
+        size_t contentRecords=0;int64_t ticks=0,order=0,prepare=0,boundsWait=0,candidates=0,submit=0;} pointCold;
     template<class Call> HRESULT pointAllocate(unsigned& attempts,Call call){
         ++attempts;const bool timed=NorthlightQuality::renderProfile(quality);const int64_t start=timed?QpcClock::now():0;
         const HRESULT hr=call();if(timed)pointCold.ticks+=QpcClock::now()-start;return hr;
@@ -510,7 +513,7 @@
     }
     void replayBoundsBegin(){
         pointReplayOrderReady=pointReplayGroupsReady=false;
-        replayBoundsAbandon();replayBoundsRuns=0;pointBoundsValid=0;pointBoundVertices=pointBoundOperations=0;
+        replayBoundsAbandon();replayBoundsRuns=0;pointBoundsValid=pointMaterialBoundsUsed=0;pointBoundVertices=pointBoundOperations=0;
     }
     // A metadata fallback (per-frame preparation cap) keeps the synchronous
     // pass' full-key evaluation as an unshared snapshot of the same program,
@@ -556,6 +559,14 @@
         replayBoundsKickMs=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
     }
     // First pointBounds reader; also when render() returns.
+    void completeMaterialBounds(){
+        if(pointBoundsValid==replays.size())return;
+        for(auto& p:replays){
+            if(p->pointBounds.valid||!p->materialViewBounds.valid)continue;
+            p->pointBounds=NorthlightPoseBounds::inWorld(p->materialViewBounds,context.inverseView);
+            if(p->pointBounds.valid){++pointBoundsValid;++pointMaterialBoundsUsed;}
+        }
+    }
     void replayBoundsJoin(){
         if(!replayBoundsWorker.pending())return;
         const auto start=std::chrono::steady_clock::now();
@@ -564,6 +575,7 @@
         NorthlightReplayBoundsJob::apply(replayBoundsWorker.items(),replays,!result.failed);
         replayBoundsResolved=true;
         pointBoundsValid=result.failed?0:result.totals.valid;pointBoundVertices=result.totals.boundVertices;pointBoundOperations=result.totals.boundOperations;
+        if(!result.failed)completeMaterialBounds();
         if(NorthlightDiagnostics::enabled()){replayNearSize=unsigned(replayBoundsWorker.nearList().size());replayNearStops+=result.totals.nearStops;}
         if(replayBoundsDiagnostics){
             const double mainMs=replayBoundsKickMs+std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
@@ -663,6 +675,7 @@
         const auto live=[] {return true;};const auto cold=[&](size_t index){return !replays[index]->pointBounds.valid&&replays[index]->boundsWork.kind==WorkKind::Cold;};
         if(buildVisited||replayBoundsCache.hasPendingBuild())NorthlightReplaySchedule::finishCold(replays.size(),replayBoundsCache.buildStart(replays.size()),replayBoundsCache,cheapBudget,heavyBudget,buildBudget,live,visit,cold);
         pointBoundVertices=buildBudget.vertices;pointBoundOperations=cheapBudget.operations+heavyBudget.operations+buildBudget.operations;
+        completeMaterialBounds();
         replayBoundsResolved=true;
         const double wallMs=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
         if(diagnostics)pointLogReplayBounds({cheapVisited,heavyVisited,buildVisited,reservedCheapVisited,pointBoundVertices,pointBoundOperations,pointBoundsValid},wallMs,wallMs,0,0,0,false);
@@ -872,8 +885,7 @@
         if(!pointResources())return false;
         // Static-cache keys exclude terrain. Complete cube faces additionally
         // retain its exact committed mesh/live revisions when no replay enters.
-        bool lightChanged=pointSlot().schedule.light.sourceId!=pointSlot().selected.sourceId||pointSlot().schedule.light.attenuationEnd!=pointSlot().selected.attenuationEnd||pointSlot().schedule.light.attenuationStart!=pointSlot().selected.attenuationStart||pointSlot().schedule.light.flags!=pointSlot().selected.flags;
-        for(unsigned i=0;i<3;++i)lightChanged=lightChanged||pointSlot().schedule.light.position[i]!=pointSlot().selected.position[i];
+        const bool lightChanged=!NorthlightPointShadow::sameCube(pointSlot().schedule.light,light);
         const unsigned rebuildMask=pointStaticRebuild(pointSlot().selected,lightChanged);const bool rebuild=rebuildMask!=0;
         const DWORD updateAt=GetTickCount();if(fresh)pointReplayCount=withReplays?replays.size():0;
         if(!pointSlot().schedule.due(updateAt,pointSlot().selected,meshGeneration,pointReplayCount,rebuild,quality.pointShadowRefreshMs)){
@@ -1149,6 +1161,13 @@
             d->SetSamplerState(0,D3DSAMP_MINFILTER,D3DTEXF_LINEAR);d->SetSamplerState(0,D3DSAMP_MAGFILTER,D3DTEXF_LINEAR);
         }
         if(pointTimed)pointCold.submit+=QpcClock::now()-submitStart;
+        if(pointTimed&&rebuild){
+            const unsigned written=__builtin_popcount(rebuildMask&faces);
+            if(!pointSlot().cacheValid||pointSlot().cacheSource!=light.sourceId)pointCold.facesWithoutCache+=written;
+            else if(pointSlot().schedule.light.attenuationEnd!=light.attenuationEnd)pointCold.facesResized+=written;
+            else if(lightChanged)pointCold.facesMoved+=written;
+            else pointCold.facesMeshInvalidated+=written;
+        }
         if(rebuild){pointSlot().cacheValid=true;pointSlot().cacheSource=pointSlot().selected.sourceId;} /* cycling: already valid, its remaining faces wait for their frame */
         if(cycling&&!pointSlot().faceCycle.advance()){pointSlot().ready=true;++pointUpdates;return true;} /* stale until the last group */
         if(cycling)pointSlot().schedule.commit(pointSlot().faceCycle.startedAt,pointSlot().selected,pointSlot().faceCycle.generation);
@@ -1205,7 +1224,7 @@
         }
         if(coldTimed&&captureFrequency.QuadPart>0){const double scale=1000.0/double(captureFrequency.QuadPart),cpuMs=double(QpcClock::now()-coldStarted)*scale;
             if(cpuMs>=8||profileSampled()){
-                logf("POINT_PHASE rendererFrame=%u prepareMs=%.3f boundsWaitMs=%.3f candidatesMs=%.3f submitMs=%.3f prepareIncludesBoundsAndCandidates=1 terrainMemoHits=%u terrainMemoMisses=%u terrainListSize=%zu totalBatches=%zu contentPasses=%u contentRecords=%zu spatialIndex=%u",rendererFrame,double(pointCold.prepare)*scale,double(pointCold.boundsWait)*scale,double(pointCold.candidates)*scale,double(pointCold.submit)*scale,pointCold.terrainMemoHits,pointCold.terrainMemoMisses,terrainBatchList.size(),batches.size(),pointCold.contentPasses,pointCold.contentRecords,unsigned(bool(pointTree)));
+                logf("POINT_PHASE rendererFrame=%u prepareMs=%.3f boundsWaitMs=%.3f candidatesMs=%.3f submitMs=%.3f prepareIncludesBoundsAndCandidates=1 terrainMemoHits=%u terrainMemoMisses=%u terrainListSize=%zu totalBatches=%zu contentPasses=%u contentRecords=%zu spatialIndex=%u facesWithoutCache=%u facesResized=%u facesMoved=%u facesMeshInvalidated=%u",rendererFrame,double(pointCold.prepare)*scale,double(pointCold.boundsWait)*scale,double(pointCold.candidates)*scale,double(pointCold.submit)*scale,pointCold.terrainMemoHits,pointCold.terrainMemoMisses,terrainBatchList.size(),batches.size(),pointCold.contentPasses,pointCold.contentRecords,unsigned(bool(pointTree)),pointCold.facesWithoutCache,pointCold.facesResized,pointCold.facesMoved,pointCold.facesMeshInvalidated);
                 logf("POINT_ORDER rendererFrame=%u cpuMs=%.3f packets=%u eligible=%u oncePerFrame=1 alphaBarriers=1 fixedDraws=%u alphaScopes=%u",rendererFrame,double(pointCold.order)*scale,pointCold.orderPackets,pointCold.orderEligible,pointCold.fixedDraws,pointCold.alphaScopes);
                 // A reused cube may leave the bounds job running. Its mutable
                 // counters are readable only after that job has been joined.
@@ -1221,7 +1240,7 @@
                         (unsigned long long)replayBoundsCache.phaseLimit(0),(unsigned long long)replayBoundsCache.phaseLimit(1),(unsigned long long)replayBoundsCache.phaseLimit(2),
                         unfinished[0],unfinished[1],unfinished[2],unfinished[3],unfinished[4],replayBoundsCache.pendingBuildVertices(),replayBoundsCache.pendingBuildIndices(),stats->skinBuildVertices,stats->typedSkinBuildVertices,stats->terminalBuildVertices,(unsigned long long)stats->terminalBuildNanoseconds);
                 }
-                logf("POINT_COLD rendererFrame=%u worldFrame=%llu cpuMs=%.3f allocationMs=%.3f cubeAttempts=%u staticTextureAttempts=%u sharedAttempts=%u shaderAttempts=%u selected=%u staticDraws=%u terrainDraws=%u liveDraws=%u replayDraws=%u unionDraws=%u staticRebuiltFaces=%u staticRestores=%u casterTriangles=%llu boundsTotal=%zu boundsValid=%u unboundedRigidFacePackets=%u unboundedSkinnedFacePackets=%u boundsStatsReady=%u boundsBuildVertices=%zu boundsBuildIndices=%zu boundsCompleted=%zu boundsTimeDeferred=%zu boundsVertexDeferred=%zu boundsOperationDeferred=%zu boundsPendingDeferred=%zu",rendererFrame,(unsigned long long)frames,cpuMs,double(pointCold.ticks)*scale,pointCold.cubes,pointCold.statics,pointCold.shared,pointCold.shaders,pointWork.selected,pointWork.statics,pointWork.terrain,pointWork.live,pointWork.replay,pointWork.unions,pointWork.rebuilt,pointWork.restored,(unsigned long long)pointWork.triangles,replays.size(),pointBoundsValid,pointWork.unboundedRigid,pointWork.unboundedSkinned,unsigned(stats!=nullptr),stats?stats->buildVertices:0,stats?stats->buildIndices:0,stats?stats->completed:0,stats?stats->timeDeferred:0,stats?stats->vertexDeferred:0,stats?stats->operationDeferred:0,stats?stats->pendingDeferred:0);
+                logf("POINT_COLD rendererFrame=%u worldFrame=%llu cpuMs=%.3f allocationMs=%.3f cubeAttempts=%u staticTextureAttempts=%u sharedAttempts=%u shaderAttempts=%u selected=%u staticDraws=%u terrainDraws=%u liveDraws=%u replayDraws=%u unionDraws=%u staticRebuiltFaces=%u staticRestores=%u casterTriangles=%llu boundsTotal=%zu boundsValid=%u unboundedRigidFacePackets=%u unboundedSkinnedFacePackets=%u boundsStatsReady=%u boundsBuildVertices=%zu boundsBuildIndices=%zu boundsCompleted=%zu boundsTimeDeferred=%zu boundsVertexDeferred=%zu boundsOperationDeferred=%zu boundsPendingDeferred=%zu materialBoundsUsed=%u",rendererFrame,(unsigned long long)frames,cpuMs,double(pointCold.ticks)*scale,pointCold.cubes,pointCold.statics,pointCold.shared,pointCold.shaders,pointWork.selected,pointWork.statics,pointWork.terrain,pointWork.live,pointWork.replay,pointWork.unions,pointWork.rebuilt,pointWork.restored,(unsigned long long)pointWork.triangles,replays.size(),pointBoundsValid,pointWork.unboundedRigid,pointWork.unboundedSkinned,unsigned(stats!=nullptr),stats?stats->buildVertices:0,stats?stats->buildIndices:0,stats?stats->completed:0,stats?stats->timeDeferred:0,stats?stats->vertexDeferred:0,stats?stats->operationDeferred:0,stats?stats->pendingDeferred:0,pointMaterialBoundsUsed);
             }
         }
     }

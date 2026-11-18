@@ -54,6 +54,7 @@
 #include "fog_ambient.h"
 #include "local_light_compiled_shaders.h"
 #include "replay_bounds.h"
+#include "pose_bounds_handoff.h"
 #include "replay_bounds_schedule.h"
 #include "replay_bounds_metadata.h"
 #include "replay_bounds_job.h"
@@ -1103,7 +1104,7 @@ private:
     UINT width=0,height=0,vertexCount=0;
     struct Replay {
         IDirect3DVertexShader9* shader=nullptr,*originalShader=nullptr;
-        NorthlightReplayBounds::Bounds pointBounds;
+        NorthlightReplayBounds::Bounds pointBounds,materialViewBounds;
         NorthlightReplayBounds::WorkInfo boundsWork; // scheduling hint; cleared every frame, never an identity proof
         std::shared_ptr<const NorthlightReplayBounds::Prepared> boundsPrepared;
         IDirect3DVertexDeclaration9* decl=nullptr;
@@ -4544,7 +4545,7 @@ public:
         appendTerrain(std::make_shared<const NorthlightTerrainCapture::MeshSnapshot>(std::move(snapshot)));
     }
     bool terrainShader(IDirect3DVertexShader9* shader){return lookupShader(shader).terrain;}
-    void capture(D3DPRIMITIVETYPE type,INT base,UINT min,UINT vertexTotal,UINT start,UINT count,bool indexed,IDirect3DVertexShader9* current,bool selfCheck,bool sample,NorthlightCaptureMetadata::PositionBounds* positions=nullptr,const std::shared_ptr<const NorthlightDrawSnapshot::Mesh>* captured=nullptr,IDirect3DVertexDeclaration9* capturedDeclaration=nullptr){
+    void capture(D3DPRIMITIVETYPE type,INT base,UINT min,UINT vertexTotal,UINT start,UINT count,bool indexed,IDirect3DVertexShader9* current,bool selfCheck,bool sample,NorthlightCaptureMetadata::PositionBounds* positions=nullptr,const std::shared_ptr<const NorthlightDrawSnapshot::Mesh>* captured=nullptr,IDirect3DVertexDeclaration9* capturedDeclaration=nullptr,const NorthlightPoseBounds::Handoff* pose=nullptr){
         if(positions)positions->known=false;
         constantSelfCheck=selfCheck;sample=sample&&NorthlightDiagnostics::enabled();
         if(!ready()||replays.size()>=4096||(type!=D3DPT_TRIANGLELIST&&type!=D3DPT_TRIANGLESTRIP))return;
@@ -4563,7 +4564,7 @@ public:
             if(positions){std::copy(why.low,why.low+3,positions->low);std::copy(why.high,why.high+3,positions->high);positions->known=true;}
             appendTerrain(snapshot);return;
         }
-        captureModel(type,base,min,vertexTotal,start,count,indexed,current,sample,nullptr,D3DFMT_INDEX16,nullptr,0,captured,capturedDeclaration);
+        captureModel(type,base,min,vertexTotal,start,count,indexed,current,sample,nullptr,D3DFMT_INDEX16,nullptr,0,captured,capturedDeclaration,pose);
     }
     void releaseReplayGPU(){replayGpuCache.clear();auto& queries=fence();for(auto& ring:replayVertexRing)NorthlightDynamicRing::reset(ring,0,queries);NorthlightDynamicRing::reset(replayIndexRing,0,queries);queries.drop();for(auto& buffer:replayVerticesGPU)drop(buffer);drop(replayIndicesGPU);for(auto& bytes:replayVertexBytes)bytes=0;replayIndexBytes=0;}
     bool uploadReplay(bool allowCache=true){
@@ -4937,7 +4938,7 @@ public:
     bool nearDraw(const float* root){return root&&NorthlightNearReserve::test(nearAnchor,root)!=NorthlightNearReserve::None;}
     bool nearCandidate(bool priority,const float* root){
         return priority&&replaySnapshots.nearReserve()&&!replaySnapshots.countExhausted(priority)&&nearDraw(root);}
-    void captureModel(D3DPRIMITIVETYPE type,INT base,UINT minimum,UINT vertexTotal,UINT start,UINT count,bool indexed,IDirect3DVertexShader9* current,bool sample,const void* userIndices,D3DFORMAT userFormat,const void* userVertices,UINT userStride,const std::shared_ptr<const NorthlightDrawSnapshot::Mesh>* capturedSource=nullptr,IDirect3DVertexDeclaration9* capturedDeclaration=nullptr){
+    void captureModel(D3DPRIMITIVETYPE type,INT base,UINT minimum,UINT vertexTotal,UINT start,UINT count,bool indexed,IDirect3DVertexShader9* current,bool sample,const void* userIndices,D3DFORMAT userFormat,const void* userVertices,UINT userStride,const std::shared_ptr<const NorthlightDrawSnapshot::Mesh>* capturedSource=nullptr,IDirect3DVertexDeclaration9* capturedDeclaration=nullptr,const NorthlightPoseBounds::Handoff* pose=nullptr){
         if(modelCaptureSkipped())return; /* previous replays/actor packets are not needed this frame */
         const CaptureShader* found=lookupShader(current).capture;if(!found){if(sample)++unknownCaptureCalls;return;}
         const auto& metadata=*found;
@@ -5132,6 +5133,11 @@ public:
             if(sample){capturedConstantBytes+=16*count;++capturedConstantCalls;}
             return true;
         },sample?&constantEpochProfile:nullptr,constantSelfCheck,constantSelfCheckState))return;
+        p->materialViewBounds={};
+        if(kind==2&&pose&&pose->bounds.valid&&borrowSource&&p->shared&&p->shared==*capturedSource&&
+           constantEpochSource.attached()&&constantEpochSource.mirror->heldByThisThread()&&
+           pose->matches(p->shared.get(),current,p->decl,p->constantStamp)&&d->GetNPatchMode()==0)
+            p->materialViewBounds=pose->bounds;
         if(sample){capturedSM1Draws+=metadata.sm1;capturedRelativeDraws+=usage.relativeFloat;}
         phase.next(CaptureMaterial);fate.reason=NorthlightShadowFate::Material;
         observeLightAttachments(*p,metadata);

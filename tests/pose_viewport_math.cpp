@@ -65,6 +65,21 @@ template<class Proof> static double timing(const std::vector<Sample>& samples){
 }
 int main(int argc,char**){
     unsigned cases=0;const int original=std::fegetround();
+    for(unsigned i=0;i<10000;++i){
+        const auto s=sample(0,i);float inverse[16]={};
+        for(unsigned axis=0;axis<3;++axis){
+            for(unsigned k=0;k<3;++k)inverse[k*4+axis]=random(-2,2);
+            inverse[12+axis]=random(-16000,16000);
+        }
+        inverse[15]=1;const auto box=NorthlightPoseBounds::inWorld(s.box,inverse);assert(box.valid);
+        for(unsigned corner=0;corner<8;++corner)for(unsigned axis=0;axis<3;++axis){
+            float value=inverse[12+axis];for(unsigned k=0;k<3;++k)
+                value+=inverse[k*4+axis]*((corner>>k)&1?s.box.high[k]:s.box.low[k]);
+            assert(box.low[axis]<=value&&box.high[axis]>=value);
+        }
+        inverse[3]=1;assert(!NorthlightPoseBounds::inWorld(s.box,inverse).valid);
+        inverse[3]=0;inverse[5]=NAN;assert(!NorthlightPoseBounds::inWorld(s.box,inverse).valid);
+    }
     for(int mode:{FE_TONEAREST,FE_DOWNWARD,FE_UPWARD,FE_TOWARDZERO}){
         assert(std::fesetround(mode)==0);
         for(unsigned kind=0;kind<5;++kind)for(unsigned i=0;i<24000;++i){compare(sample(kind,i),i%47<4?i%47:0);++cases;}

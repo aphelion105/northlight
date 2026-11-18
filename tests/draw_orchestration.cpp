@@ -58,8 +58,9 @@ struct Ext {
 };
 struct World {
  Env* e;bool terrainShader(IDirect3DVertexShader9*)const{return e->cfg.terrain;}bool rainBlendSetting()const{return true;}
- void capture(D3DPRIMITIVETYPE t,INT base,UINT minimum,UINT vertices,UINT start,UINT count,bool indexed,IDirect3DVertexShader9* vs,bool report,bool sample,NorthlightCaptureMetadata::PositionBounds* out=nullptr,const unsigned* mesh=nullptr,IDirect3DVertexDeclaration9* decl=nullptr){
+ void capture(D3DPRIMITIVETYPE t,INT base,UINT minimum,UINT vertices,UINT start,UINT count,bool indexed,IDirect3DVertexShader9* vs,bool report,bool sample,NorthlightCaptureMetadata::PositionBounds* out=nullptr,const unsigned* mesh=nullptr,IDirect3DVertexDeclaration9* decl=nullptr,const unsigned* pose=nullptr){
   assert(vs==shader());if(out){assert(out->owner&&out->shader==vs);e->owner=out->owner;out->known=true;}
+  if(pose)assert(mesh&&(*mesh?(*pose==23&&decl):*pose==0));
   e->action(WorldCapture,{t,base,minimum,vertices,start,count,indexed,report,sample,bool(out),mesh?*mesh:0});assert(!decl||mesh&&*mesh==17);
  }
  void captureUP(D3DPRIMITIVETYPE t,UINT minimum,UINT vertices,UINT count,const void* indices,D3DFORMAT format,const void* data,UINT stride,bool indexed,IDirect3DVertexShader9* vs,bool report,bool sample){assert(vs==shader());e->action(WorldUP,{t,minimum,vertices,count,int64_t(uintptr_t(indices)),format,int64_t(uintptr_t(data)),stride,indexed,report,sample});}

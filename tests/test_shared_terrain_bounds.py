@@ -36,6 +36,7 @@ source = values['harness'].split('int main(){')[0] + r'''
 #include <string>
 struct IDirect3DVertexShader9 {};
 namespace NorthlightDrawSnapshot {struct Mesh;}
+namespace NorthlightPoseBounds {struct Handoff {};}
 static void logf(const char*,...){}
 struct CpuScope {explicit CpuScope(long long*){}};
 namespace NorthlightRenderThreadProbe {static bool sampleFrame(unsigned){return true;}}
@@ -64,7 +65,7 @@ struct World {
  PUBLISHER
 };
 struct Geometry {struct {D3DPRIMITIVETYPE topology;INT base;UINT minimum,vertices,start,primitives;bool indexed;} draw;const void* indices=nullptr;D3DFORMAT format=D3DFMT_UNKNOWN;const void* vertices=nullptr;UINT stride=0;};
-struct NormalSource {bool captured=false;std::shared_ptr<const NorthlightDrawSnapshot::Mesh> mesh;IDirect3DVertexDeclaration9* declaration=nullptr;};
+struct NormalSource {bool captured=false;std::shared_ptr<const NorthlightDrawSnapshot::Mesh> mesh;IDirect3DVertexDeclaration9* declaration=nullptr;NorthlightPoseBounds::Handoff pose;};
 namespace NorthlightAutoDisplacement {using Args=Geometry;using CaptureSource=NormalSource;}
 struct Bump {
  std::vector<std::string>* events;unsigned calls=0;bool hint=false,activeValue=true;

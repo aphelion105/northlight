@@ -72,6 +72,10 @@ class NorthlightModelNormals {
         D3DRS_FILLMODE,D3DRS_LASTPIXEL,D3DRS_ANTIALIASEDLINEENABLE,D3DRS_WRAP0,D3DRS_WRAP1,D3DRS_WRAP2,
         D3DRS_WRAP3,D3DRS_WRAP4,D3DRS_WRAP6,D3DRS_WRAP8,D3DRS_WRAP9,D3DRS_WRAP10,D3DRS_WRAP11,
         D3DRS_WRAP12,D3DRS_WRAP13,D3DRS_WRAP14,D3DRS_WRAP15};
+    struct SampledStage {
+        IDirect3DBaseTexture9* texture=nullptr;
+        std::array<DWORD,13> states{};
+    };
     struct Pending {
         Vertex* vertex=nullptr;Pixel* pixel=nullptr;
         IDirect3DVertexDeclaration9* declaration=nullptr;
@@ -86,8 +90,9 @@ class NorthlightModelNormals {
         IDirect3DVertexBuffer9* gpuVertex[4]={};IDirect3DIndexBuffer9* gpuIndex=nullptr;
         NorthlightReplayGPU::Placement placement;bool resident=false,streamed=false,redundant=false,nativeProbed=false,nativeWritten=false;
         const NorthlightDrawSnapshot::Mesh& geometry()const{return sharedMesh?*sharedMesh:mesh;}
-        IDirect3DBaseTexture9* textures[16]={};DWORD samplers[16][13]={};
-        void recycle(){constantStorage=nullptr;constants=nullptr;resident=streamed=redundant=nativeProbed=nativeWritten=false;for(auto*& b:gpuVertex)release(b);release(gpuIndex);sharedMesh.reset();release(declaration);for(auto*& t:textures)release(t);}
+        // Entries follow the set bits in the patched pixel shader's sampler mask.
+        std::vector<SampledStage> sampled;
+        void recycle(){constantStorage=nullptr;constants=nullptr;resident=streamed=redundant=nativeProbed=nativeWritten=false;for(auto*& b:gpuVertex)release(b);release(gpuIndex);sharedMesh.reset();release(declaration);for(auto& stage:sampled)release(stage.texture);sampled.clear();}
         ~Pending(){recycle();}
     };
     Pending* nativeCandidate=nullptr;unsigned nativeCommittedPackets=0;
@@ -107,8 +112,8 @@ class NorthlightModelNormals {
            (a.vertex->reads.b&&std::memcmp(a.bools,b.bools,sizeof a.boolStorage))||
            (a.pixel->reads.i&&std::memcmp(a.pi,b.pi,sizeof a.pi))||
            (a.pixel->reads.b&&std::memcmp(a.pb,b.pb,sizeof a.pb)))return false;
-        for(unsigned i=0;i<16;++i)if(a.pixel->reads.samplers&(1u<<i))
-            if(a.textures[i]!=b.textures[i]||std::memcmp(a.samplers[i],b.samplers[i],sizeof a.samplers[i]))return false;
+        for(size_t i=0;i<a.sampled.size();++i)
+            if(a.sampled[i].texture!=b.sampled[i].texture||a.sampled[i].states!=b.sampled[i].states)return false;
         return true;
     }
     void findRedundant(){
@@ -191,7 +196,7 @@ class NorthlightModelNormals {
     }
     // Recycled buffers and queued geometry share the same 8 MiB allowance.
     size_t pendingBytes=0,spareBytes=0;unsigned pendingTextureSlots=0;bool deferred=false,sourceSharing=false;
-    static size_t packetBytes(const Pending& p){return sizeof(Pending)+p.ps.capacity()*sizeof(float)+p.mesh.capacityBytes()+(p.sharedMesh?p.sharedMesh->capacityBytes():0);}
+    static size_t packetBytes(const Pending& p){return sizeof(Pending)+p.ps.capacity()*sizeof(float)+p.sampled.capacity()*sizeof(SampledStage)+p.mesh.capacityBytes()+(p.sharedMesh?p.sharedMesh->capacityBytes():0);}
     // A miss uploads into a bounded append ring instead of one UP allocation
     // per packet. Reuse only completed spans; DISCARD preserves in-flight draws.
     static constexpr UINT StreamVertexBytes=3u<<20,StreamIndexBytes=1u<<20;
@@ -321,17 +326,21 @@ class NorthlightModelNormals {
             // Proven out-of-range draws need no target/texture/sampler capture.
             // Render-target inputs otherwise retain the immediate path;
             // ordinary inputs use the serialized texture-write guard.
-            for(unsigned i=0;i<16;++i)if(ps->reads.samplers&(1u<<i)){
+            unsigned textureSlots=0;
+            packet->sampled.reserve(__builtin_popcount(ps->reads.samplers));
+            for(unsigned mask=ps->reads.samplers;mask;mask&=mask-1){
+                const unsigned i=__builtin_ctz(mask);
+                auto& stage=packet->sampled.emplace_back();
                 NorthlightDrawSnapshot::Ref<IDirect3DBaseTexture9> texture;
                 if(FAILED(d->GetTexture(i,texture.out())))return false;
-                if(!samplerReader||!samplerReader(samplerContext,i,(1u<<13)-1,packet->samplers[i]))
-                    for(unsigned s=0;s<13;++s)if(FAILED(d->GetSamplerState(i,D3DSAMPLERSTATETYPE(s+1),packet->samplers[i]+s)))return false;
+                if(!samplerReader||!samplerReader(samplerContext,i,(1u<<13)-1,stage.states.data()))
+                    for(unsigned s=0;s<13;++s)if(FAILED(d->GetSamplerState(i,D3DSAMPLERSTATETYPE(s+1),&stage.states[s])))return false;
                 if(!texture.p)continue;
                 D3DSURFACE_DESC desc{};
                 if(texture->GetType()!=D3DRTYPE_TEXTURE||
                    FAILED(static_cast<IDirect3DTexture9*>(texture.p)->GetLevelDesc(0,&desc))||
                    (desc.Usage&(D3DUSAGE_RENDERTARGET|D3DUSAGE_DEPTHSTENCIL)))return false;
-                packet->textures[i]=texture.p;texture.p=nullptr;
+                stage.texture=texture.p;texture.p=nullptr;textureSlots|=1u<<i;
             }
             // A resident GPU lease already owns immutable source bytes. Keep
             // only draw metadata, so the CPU budget does not split warm scenes.
@@ -388,7 +397,6 @@ class NorthlightModelNormals {
             packet->viewport=viewport;packet->declaration=declaration.p;declaration.p=nullptr;
             packet->vertex=vs;packet->pixel=ps;
             std::copy(control,control+4,packet->ps.data()+(ps->control-ps->first)*4);
-            unsigned textureSlots=0;for(unsigned i=0;i<16;++i)if(packet->textures[i])textureSlots|=1u<<i;
             const size_t neededBanks=ownedBanks+(packet->constants==packet->constantStorage);
             packet->constantStorage=nullptr;
             constexpr size_t batchLimit=8u<<20;
@@ -598,7 +606,7 @@ public:
         return result.hr;
     }
     bool pendingTextures()const{return pendingTextureSlots!=0;}
-    bool samplesTexture(void* texture)const{if(!texture||!pendingTextureSlots)return false;for(const auto& p:pending)for(unsigned i=0;i<16;++i)if((pendingTextureSlots&(1u<<i))&&p->textures[i]==texture)return true;return false;}
+    bool samplesTexture(void* texture)const{if(!texture||!pendingTextureSlots)return false;for(const auto& p:pending)for(const auto& stage:p->sampled)if(stage.texture==texture)return true;return false;}
     void beforeTextureWrite(void* texture){if(samplesTexture(texture))finishCaptures();}
     void setDeferredCapture(bool on,void(*changed)(void*)=nullptr,void* context=nullptr){
         if(!on)finishCaptures();deferred=on;pendingChanged=changed;pendingContext=context;
@@ -716,10 +724,14 @@ public:
                     if(!previous||std::memcmp(&previous->viewport,&p->viewport,sizeof p->viewport))ok=SUCCEEDED(d->SetViewport(&p->viewport))&&ok;
                     if(!previous||previous->declaration!=p->declaration)ok=SUCCEEDED(d->SetVertexDeclaration(p->declaration))&&ok;
                     for(unsigned i=0;i<sizeof(rasterKeys)/sizeof(*rasterKeys);++i)if(!previous||previous->raster[i]!=p->raster[i])ok=SUCCEEDED(d->SetRenderState(rasterKeys[i],p->raster[i]))&&ok;
-                    for(unsigned i=0;i<16;++i)if(p->pixel->reads.samplers&(1u<<i)){
-                        const bool known=previous&&(previous->pixel->reads.samplers&(1u<<i));
-                        if(!known||previous->textures[i]!=p->textures[i])ok=SUCCEEDED(d->SetTexture(i,p->textures[i]))&&ok;
-                        for(unsigned s=0;s<13;++s)if(!known||previous->samplers[i][s]!=p->samplers[i][s])ok=SUCCEEDED(d->SetSamplerState(i,D3DSAMPLERSTATETYPE(s+1),p->samplers[i][s]))&&ok;
+                    const unsigned previousMask=previous?previous->pixel->reads.samplers:0;
+                    size_t sampled=0;
+                    for(unsigned mask=p->pixel->reads.samplers;mask;mask&=mask-1){
+                        const unsigned i=__builtin_ctz(mask),bit=1u<<i;
+                        const auto& stage=p->sampled[sampled++];
+                        const auto* prior=(previousMask&bit)?&previous->sampled[__builtin_popcount(previousMask&(bit-1))]:nullptr;
+                        if(!prior||prior->texture!=stage.texture)ok=SUCCEEDED(d->SetTexture(i,stage.texture))&&ok;
+                        for(unsigned s=0;s<13;++s)if(!prior||prior->states[s]!=stage.states[s])ok=SUCCEEDED(d->SetSamplerState(i,D3DSAMPLERSTATETYPE(s+1),stage.states[s]))&&ok;
                     }
                     // Both packets must have captured the whole compared range;
                     // a shader switch may expose previously uninitialized lanes.

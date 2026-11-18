@@ -29,6 +29,8 @@ int main(){
     changed=light;changed.position[0]+=.01f;assert(schedule.due(101,changed,7,1000,false));
     changed=light;changed.attenuationEnd+=.1f;assert(schedule.due(101,changed,7,1000,false));
     changed=light;changed.diffuse[0]=.5f;assert(!schedule.due(101,changed,7,1000,false));
+    changed=light;changed.attenuationStart+=.5f;changed.flags^=NorthlightLocalLights::CastShadow;
+    assert(!schedule.due(101,changed,7,1000,false)&&schedule.due(133,changed,7,1000,false));
     // A failed partial update must never expose/reuse a half-old cube.
     schedule.invalidate();assert(schedule.due(101,light,7,1000,false));
     schedule.commit(UINT32_MAX-10,light,7);

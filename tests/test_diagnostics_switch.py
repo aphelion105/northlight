@@ -18,6 +18,12 @@ FILES=['renderer.cpp','world_renderer.h','world_shadow_experiment.inl','world_po
 GATES=('NorthlightDiagnostics::enabled()','diagnostics()','sampled()','captureSampled','if(diagnostics)','shadowFate.active()','sampledFrame','profiling()','profileSampled()','if(lightingClock)','profile->recording()','materialProfile->recording()','if(profileThisBuild)','if(resetProfile)')
 # Ungated lines that stay with Diagnostics=0: format prefix -> label.
 KEEP={
+ 'NATIVE_M2 client12340=':'start-up: one build signature verdict',
+ 'WORLD geometry unavailable:':'worker error: a geometry build failed to publish',
+ 'WORLD reset rebuild reused local BVH':'reset recovery: the worker restored a previous local BVH',
+ 'WORLD upload staging uses temporary storage':'worker admission: a new mesh plan requires file-backed staging',
+ 'MENU context rejected reason=':'capped: one report per reason and trigger/reject pair',
+ 'WORLD AO HDR compositor unavailable':'one-off per resource lifetime: hdrAOBaseTried latches the creation attempt',
  'NATIVE light stay status=':'start-up: one native lighting hook verdict',
  'NATIVE more lights status=':'start-up: one native light count hook verdict',
  'NORTHLIGHT PROFILING BUILD ':'start-up: profiling build identity',
@@ -201,8 +207,8 @@ checks={
     'effect captures require an explicit request and exclude the captured frame':'if(!scopes&&!fallback)return;' in r[r.index('void captureEffectDiagnostics()'):r.index('void releaseResources(bool preserveCaptureSources=false)')]
    and 'captureEffectDiagnostics();' in r[r.index('void finishFrameImpl()'):r.index('const bool diagnosticFrame=')],
  'reset clock and stage lines require Diagnostics':'const bool resetProfile=diagnostics()&&cpuFrequency.QuadPart>0;' in r,
- 'projected visibility queries require Diagnostics and sampled RenderProfile':'if(count>256||!diagnostics()||!world||!NorthlightQuality::renderProfile(world->surfaceSettings())||' in r
-   and '!NorthlightRenderThreadProbe::sampleFrame(frame)||!projectedAudit.canSample(frame)||' in r,
+ 'projected visibility queries require a trace window, Diagnostics and RenderProfile':'if(count>256||!spellTraceFrame||!diagnostics()||!world||!NorthlightQuality::renderProfile(world->surfaceSettings())||' in r
+   and '!projectedAudit.canSample(frame)||' in r and 'spellTraceWindow=spellTraceLeft&&diagnostics()&&frame+1>=300;' in r,
  'footprint log helper has only the three gated callers':w.count('logCpuFootprint(')==4
    and 'if(!NorthlightDiagnostics::enabled())return;' in w[w.index('void profileResourceMemory()'):w.index('logCpuFootprint("probe-upload-mirror"')]
    and 'const bool profileThisBuild=NorthlightDiagnostics::enabled()&&(!memoryFootprintReportAt||started-memoryFootprintReportAt>=10000);' in w
@@ -215,7 +221,7 @@ checks={
  'partial interval helper exits with diagnostics disabled':'if(!diagnostics()||!have)return;' in r[r.index('void flushFrameIntervals('):r.index('void finishFrameImpl()')],
  'native shadow observations require the diagnostic/profiling limiter':'if(!vc.nativeShadow||!nativeShadowLimiter.take(diagnostics(),NorthlightRenderThreadProbe::profiling(),frame,*vc.nativeShadow))return;' in r,
  'source logs require admission and a bounded budget':'if(!trace.enabled)return;' in w[w.index('void reportLocalSources('):w.index('void profileSplit(')] and 'localSourceTraces<32&&frames%127==0' in w and 'sourceTrace.begin(NorthlightDiagnostics::enabled()&&NorthlightQuality::renderProfile(quality)&&' in w,
- 'GPU diagnostics remain user requested and capped at four':'gpuDiagnosticCaptures>=4||gpuNormalDiagnosticRequested' in w and 'debug==0&&gpuNormalDiagnosticRequested&&gpuDiagnosticCaptures<4' in w and 'if(world->diagnosticCaptureInLastRender()){' in r,
+ 'normal GPU diagnostics consume explicit requests and automatic shadow captures stop at four':'gpuDiagnosticCaptures==~0u||gpuNormalDiagnosticRequested' in w and 'normalDiagnosticCapture=debug==0&&gpuNormalDiagnosticRequested;' in w and 'if(normalDiagnosticCapture)gpuNormalDiagnosticRequested=false;' in w and 'debug==1&&gpuDiagnosticArmed&&gpuDiagnosticCaptures<4' in w and 'if(world->diagnosticCaptureInLastRender()){' in r,
  'capture activation is creation-only':r.count('logf("NATIVE capture active=')==1 and 'if(captureReason){\n            target->setNativeCaptureDiagnostic(true);' in r,
  'canonical source membership is established at construction, with no silent private fallback':
    'world=std::make_unique<WorldRenderer>(ext,gpuScene);' in constructor and 'autoBump=std::make_unique<NorthlightAutoBump>(ext,gpuScene);' in constructor
@@ -226,7 +232,7 @@ checks={
    and 'if(materialProfile)materialProfile->beginFrame(frame,world&&NorthlightQuality::renderProfile(world->surfaceSettings())&&NorthlightRenderThreadProbe::sampleFrame(frame));' in r
    and 'bool recording()const{return active;}' in mp and 'endFrame();if(!sample)return;active=true;' in mp and 'active=false;parent=nullptr;' in mp,
  'lighting clock only samples with diagnostics':'int64_t lightingClock=profileSampled()&&captureFrequency.QuadPart>0?QpcClock::now():0;' in w,
- 'CpuScope timings use sampled()':all('CpuScope' not in l or 'sampled' in l or 'diagnostics()' in l
+ 'CpuScope timings use sampled()':'const bool cleanupSample=sampled()&&NorthlightRenderThreadProbe::profiling();' in r and all('CpuScope' not in l or 'sampled' in l or 'diagnostics()' in l or 'CpuScope cost(cleanupSample?' in l
    or any(scope in l for scope in ('CpuScope timing(timeAOBlur?&aoBlurSetup:nullptr)','CpuScope timing(timeAOBlur?&aoBlurSubmit:nullptr)'))
    for l in r.splitlines() if 'CpuScope ' in l and '(' in l and 'struct' not in l),
  'AO blur scope predicate requires an active sampled GPU profile':r.count('const bool timeAOBlur=')==1
@@ -234,8 +240,8 @@ checks={
    and 'bool recording()const {return active_>=0&&!disabled_;}' in fp.src('gpu_profile.h').read_text(),
  'world capture: raw sample frame in, diagnostics gated inside':
    len(re.findall(r'world->capture(?:UP)?\([^;]+;',r))==2
-   and all(re.search(r',vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame\(frame\)(?:,bounds,&source\.mesh,source\.declaration)?\);$',call) for call in re.findall(r'world->capture(?:UP)?\([^;]+;',r))
-   and r.count(',vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame(frame),bounds,&source.mesh,source.declaration);')==1
+   and all(re.search(r',vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame\(frame\)(?:,bounds,&source\.mesh,source\.declaration,&source\.pose)?\);$',call) for call in re.findall(r'world->capture(?:UP)?\([^;]+;',r))
+   and r.count(',vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame(frame),bounds,&source.mesh,source.declaration,&source.pose);')==1
    and w.count('constantSelfCheck=selfCheck;sample=sample&&NorthlightDiagnostics::enabled();')==2,
  'constant self-check keeps its 0.3.140 cadence (0.3.180 C0: its own flag and serial; the profile Stats only on diagnostic samples)':'},sample?&constantEpochProfile:nullptr,constantSelfCheck,constantSelfCheckState))return;' in w,
  'GPU timestamp queries only when on':'if(diagnostics())gpuProfile->beginFrame(frame,NorthlightRenderThreadProbe::sampleFrame(frame))' in r and 'if(diagnostics()){gpuProfile->poll();if(gpuSceneProfile)gpuSceneProfile->poll();}' in r and 'if(gpuSceneProfile&&diagnostics())gpuSceneProfile->beginFrame(frame,' in r,

@@ -39,7 +39,7 @@ public:
     size_t testSourceCharge()const{return pendingBytes;}
     size_t testSourceBudget()const{
         size_t actual=0,spareActual=0;std::vector<const NorthlightDrawSnapshot::Mesh*> sources;
-        for(const auto& p:pending){actual+=sizeof(Pending)+p->ps.capacity()*sizeof(float)+p->mesh.capacityBytes();
+        for(const auto& p:pending){actual+=sizeof(Pending)+p->ps.capacity()*sizeof(float)+p->sampled.capacity()*sizeof(SampledStage)+p->mesh.capacityBytes();
             if(p->sharedMesh&&std::find(sources.begin(),sources.end(),p->sharedMesh.get())==sources.end()){sources.push_back(p->sharedMesh.get());actual+=p->sharedMesh->capacityBytes();}}
         for(const auto& p:spare){assert(!p->sharedMesh);spareActual+=packetBytes(*p);}
         assert(spareActual==spareBytes&&actual<=pendingBytes&&pendingBytes+spareBytes<=(8u<<20));return sources.size();

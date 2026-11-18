@@ -1,6 +1,19 @@
 // Real capture and replay, partitioning a stock M2 into adjacent indexed draws.
 struct ModelNormalMergeTest {
     using Normals=NorthlightModelNormals;
+    // The same image oracle also compiles against frozen renderer headers.
+    template<class P,class=void>struct CompactSamplers:std::false_type{};
+    template<class P>struct CompactSamplers<P,std::void_t<decltype(std::declval<P&>().sampled)>>:std::true_type{};
+    template<class P>static void samplerControlStorage(P& p,unsigned slot,bool add){
+        if constexpr(CompactSamplers<P>::value)p.sampled.resize(add?1:0);
+        else if(add)std::fill_n(p.samplers[slot],13,0);
+    }
+    template<class P>static auto& firstState(P& p,unsigned slot){
+        if constexpr(CompactSamplers<P>::value)return p.sampled.front().states[0];else return p.samplers[slot][0];
+    }
+    template<class P>static auto& firstTexture(P& p,unsigned slot){
+        if constexpr(CompactSamplers<P>::value)return p.sampled.front().texture;else return p.textures[slot];
+    }
     static void controls(Normals& n){
         assert(n.pending.size()==16);auto& p=*n.pending[1];
         auto packets=[&]{size_t at=0;return n.drawRun(at).packets;};
@@ -37,9 +50,10 @@ struct ModelNormalMergeTest {
         change(p.intStorage[0],1);change(p.boolStorage[0],BOOL(TRUE));change(p.pi[0],1);change(p.pb[0],BOOL(TRUE));
         p.vertex->reads=vr;p.pixel->reads=pr;
         const unsigned slot=pr.samplers?unsigned(__builtin_ctz(pr.samplers)):0;
-        if(!pr.samplers){for(auto& q:n.pending)std::fill_n(q->samplers[slot],13,0);p.pixel->reads.samplers=1u<<slot;}
-        change(p.samplers[slot][0],p.samplers[slot][0]^1u);
-        const auto texture=p.textures[slot];p.textures[slot]=reinterpret_cast<IDirect3DBaseTexture9*>(uintptr_t(1));assert(packets()==1);++breaks;p.textures[slot]=texture;
+        if(!pr.samplers){for(auto& q:n.pending)samplerControlStorage(*q,slot,true);p.pixel->reads.samplers=1u<<slot;}
+        auto& state=firstState(p,slot);change(state,state^1u);
+        auto& binding=firstTexture(p,slot);const auto texture=binding;binding=reinterpret_cast<IDirect3DBaseTexture9*>(uintptr_t(1));assert(packets()==1);++breaks;binding=texture;
+        if(!pr.samplers)for(auto& q:n.pending)samplerControlStorage(*q,slot,false);
         p.pixel->reads=pr;assert(packets()==16);
         std::printf("MODEL_NORMALS_MERGE_CONTROLS_PASS breaks=%u\n",breaks);
     }
