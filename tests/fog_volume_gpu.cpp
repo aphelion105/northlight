@@ -123,8 +123,11 @@ int main(int argc,char** argv){
             const float dv=1000.f/999.5f*(1-.5f/z);for(size_t i=0;i<depthImage.pixels.size();i+=4)std::memcpy(depthImage.pixels.data()+i,&dv,4);
             ok(d->SetTexture(1,nullptr));if(depth)depth->Release();depth=texture(d,depthImage);ok(d->SetTexture(1,depth));
             ok(d->SetTexture(11,nullptr));if(water)water->Release();Image wi{1,1,D3DFMT_G32R32F,8,std::vector<unsigned char>(8)};const float endpoint[]={z*.5f,1};std::memcpy(wi.pixels.data(),endpoint,8);water=texture(d,wi);ok(d->SetTexture(11,water));
-            assert(volume.target(d,volume.raw()));ok(d->SetPixelShader(volume.injectShader(d,1)));ok(d->BeginScene());ok(volume.draw(d));
-            assert(volume.integrate(d,100,c[1],frame>0));assert(volume.composite(d,output,ow,oh));ok(d->EndScene());
+            const unsigned raw=volume.raw();
+            assert(volume.target(d,raw));ok(d->SetPixelShader(volume.injectShader(d,1)));ok(d->BeginScene());ok(volume.draw(d));
+            assert(volume.integrate(d,100,c[1],frame>0));
+            assert((volume.history==raw)==(frame==0)&&volume.result!=volume.history);
+            assert(volume.composite(d,output,ow,oh));ok(d->EndScene());
             ok(d->GetRenderTargetData(output,staging));D3DLOCKED_RECT lock{};ok(staging->LockRect(&lock,nullptr,D3DLOCK_READONLY));
             for(unsigned y=0;y<oh;++y)for(unsigned x=0;x<ow;++x){
                 float value[4];std::memcpy(value,static_cast<char*>(lock.pBits)+y*lock.Pitch+x*16,16);

@@ -1,6 +1,6 @@
 {
   "sources": {
-    "fog_volume.hlsl": "189ec962e2105943f20e7e096b4b738d822660e1d901e8cd75c3f85245f01212",
+    "fog_volume.hlsl": "6ec1944eb348fd6ffb85c211b48cebf0d19b239f7bb016fc45d0e930346910b5",
     "world_effects.hlsl": "05481a26c163274f858ac7be94e0a238378143e7cc893b0d1c8d7f0b15186009",
     "shadow_transition.hlsl": "571ba1c03b3e6c0e36965f2a5107526f16d29b07c23d934982030c0f45de96d1",
     "auto_bump_normal.hlsl": "b5523a51dc6715f11ac2e7ba9ecb46a4973ba6aa23de159e308a8fd24d4e9ebc"
@@ -173,24 +173,22 @@
     },
     "VolumePrefix": {
       "target": "ps_3_0",
-      "sha256": "31eed64e64e8e102508c7f12d31246eba1a3788ec3c941640f5a5aad5729a235",
-      "static_instruction_slots": 74,
-      "temporary_registers": 4,
+      "sha256": "b75fa42fa3a1269330fb60300092ab7c752a4a74965ccfa9374281e8510238e2",
+      "static_instruction_slots": 54,
+      "temporary_registers": 3,
       "samplers": [
         0
       ],
       "instructions": {
-        "rcp": 5,
-        "mul": 24,
-        "frc": 4,
-        "add": 19,
-        "max": 3,
-        "min": 3,
-        "mov": 4,
+        "mul": 19,
+        "frc": 2,
+        "add": 15,
         "texldl": 2,
+        "mov": 4,
         "if": 1,
         "exp": 1,
-        "cmp": 2,
+        "rcp": 1,
+        "cmp": 3,
         "else": 1,
         "endif": 1
       }

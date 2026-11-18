@@ -96,9 +96,15 @@ float4 volumeSegment(float4 coefficients,float distance) {
     return float4(coefficients.rgb*((1-T)/max(coefficients.a,1e-8)),1-T);
 }
 float4 VolumePrefix(float2 uv:TEXCOORD0):COLOR0 {
-    float3 cell=volumeCell(uv);float4 far=volumeAt(VolumeInput,cell.xy,cell.z);
-    if(VolumePass.y==0)return volumeSegment(far,volumeDistance(cell.z+1)-volumeDistance(cell.z));
-    float4 near=cell.z>=VolumePass.y?volumeAt(VolumeInput,cell.xy,cell.z-VolumePass.y):0;
+    // Every prefix operand is an atlas texel on the same camera ray.
+    float2 tile=floor(uv*8);float slice=tile.x+8*tile.y;
+    float4 far=tex2Dlod(VolumeInput,float4(uv,0,0));
+    float stride=VolumePass.y;
+    if(stride==0)return volumeSegment(far,volumeDistance(slice+1)-volumeDistance(slice));
+    float dy=floor(stride/8),dx=stride-8*dy;
+    float wrap=tile.x<dx?1:0;
+    float2 nearUV=uv+float2(wrap-dx/8,-(dy+wrap)/8);
+    float4 near=slice>=stride?tex2Dlod(VolumeInput,float4(nearUV,0,0)):0;
     return float4(near.rgb+(1-near.a)*far.rgb,near.a+(1-near.a)*far.a);
 }
 float4 VolumeResolve(float2 uv:TEXCOORD0):COLOR0 {

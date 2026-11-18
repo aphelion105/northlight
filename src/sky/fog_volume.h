@@ -86,14 +86,22 @@ struct NorthlightFogVolume {
         float pass[]={range,0,valid&&useHistory?.85f:0.f,0};
         valid=false; // Never cache a partially written temporal/prefix sequence.
         cacheReady=pass[2]==0;
-        if(!target(d,next))return false;
-        sampler(d,0);sampler(d,2);d->SetTexture(0,texture[input]);d->SetTexture(2,texture[history]);
-        d->SetPixelShaderConstantF(155,pass,1);d->SetPixelShaderConstantF(156,previous,1);d->SetPixelShader(temporal);
-        if(FAILED(draw(d)))return false;
-        history=next;previous[0]=projection[0];previous[1]=projection[1];previous[2]=projection[2];previous[3]=range;
+        sampler(d,0);
+        if(cacheReady){
+            // With zero history weight the coefficient atlas is already the new history.
+            history=input;
+        }else{
+            if(!target(d,next))return false;
+            sampler(d,2);d->SetTexture(0,texture[input]);d->SetTexture(2,texture[history]);
+            d->SetPixelShaderConstantF(155,pass,1);d->SetPixelShaderConstantF(156,previous,1);d->SetPixelShader(temporal);
+            if(FAILED(draw(d)))return false;
+            history=next;
+        }
+        previous[0]=projection[0];previous[1]=projection[1];previous[2]=projection[2];previous[3]=range;
         unsigned source=history;
+        const unsigned scratch[2]={(history+2)%3,(history+1)%3};
         for(unsigned step=0;step<7;++step){
-            const unsigned dest=source==input?(history+1)%3:input;
+            const unsigned dest=scratch[step&1];
             if(!target(d,dest))return false;
             d->SetTexture(0,texture[source]);pass[1]=step?float(1u<<(step-1)):0;pass[2]=0;
             d->SetPixelShaderConstantF(155,pass,1);d->SetPixelShader(prefix);
