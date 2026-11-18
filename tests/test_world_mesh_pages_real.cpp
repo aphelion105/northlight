@@ -4,9 +4,12 @@
 #include "world_math.h"
 #include "mesh_buffer_store.h"
 #include "mesh_pool_trim.h"
+#include <algorithm>
+#include <array>
 #include <cassert>
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <memory>
 #include <unordered_set>
@@ -150,18 +153,40 @@ int main(int argc,char** argv) {
         // Identity transform, normals and UVs are copied bit-for-bit. Therefore
         // identical VS/matrices produce identical vertex outputs, irrespective
         // of source index numbering or page. This does not execute a GPU shader.
-        for(const auto& batch:pages.batches) {
+        for(size_t batchIndex=0;batchIndex<pages.batches.size();++batchIndex) {
+            const auto& batch=pages.batches[batchIndex];
             const auto& before=input.batches.at(originalBatch);const auto& page=pages.pages.at(batch.page);
             assert(batch.material==before.material&&batch.terrain==before.terrain&&batch.chunkX==before.chunkX&&batch.chunkY==before.chunkY);
             assert(originalTriangle+batch.count<=before.count);
+            // Fine point-light cells can permute whole triangles within this parent.
+            // Check exact vertex bytes, winding and multiplicity for those ranges.
+            const bool partitioned=!pages.pointSubRanges.empty()&&pages.pointSubRanges.at(batchIndex).count!=0;
+            using TriangleBytes=std::array<uint8_t,3*sizeof(WorldVertex)>;
+            std::vector<TriangleBytes> expected,actual;
+            if(partitioned) {
+                expected.resize(batch.count);
+                actual.resize(batch.count);
+            }
             for(uint32_t t=0;t<batch.count;++t)for(unsigned k=0;k<3;++k) {
                 const uint32_t prior=input.indices.at(before.start+(originalTriangle+t)*3+k);
                 const uint32_t index=page.indices.at(batch.start+t*3+k);
                 const auto& vertex=page.vertices.at(index);
                 assert(index>=batch.minVertex&&index<batch.minVertex+batch.vertexCount);
-                assert(prior<input.source->vertices.size()&&std::memcmp(&vertex,&input.source->vertices[prior],sizeof(WorldVertex))==0);
+                assert(prior<input.source->vertices.size());
+                const auto& original=input.source->vertices[prior];
+                if(partitioned) {
+                    std::memcpy(expected[t].data()+k*sizeof(WorldVertex),&original,sizeof(WorldVertex));
+                    std::memcpy(actual[t].data()+k*sizeof(WorldVertex),&vertex,sizeof(WorldVertex));
+                } else {
+                    assert(std::memcmp(&vertex,&original,sizeof(WorldVertex))==0);
+                }
                 const auto v=vertex.position;
                 assert(v.x>=batch.boundsLow.x&&v.x<=batch.boundsHigh.x&&v.y>=batch.boundsLow.y&&v.y<=batch.boundsHigh.y&&v.z>=batch.boundsLow.z&&v.z<=batch.boundsHigh.z);
+            }
+            if(partitioned) {
+                std::sort(expected.begin(),expected.end());
+                std::sort(actual.begin(),actual.end());
+                assert(actual==expected);
             }
             originalTriangle+=batch.count;triangles+=batch.count;
             if(originalTriangle==before.count){++originalBatch;originalTriangle=0;}
