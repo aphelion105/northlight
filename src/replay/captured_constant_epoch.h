@@ -24,6 +24,12 @@ struct Stamp {
 using Reader=bool(*)(void*,Stamp&);
 using KnownSpan=bool(*)(void*,unsigned,unsigned,float*,Stamp&);
 using HeldMatch=bool(*)(void*,const Stamp&);
+// A same-draw loan. Queued draws copy the requested rows into their owned bank.
+struct BankHandoff {
+    const float* bank=nullptr;
+    std::uint64_t reset=0,floats=0,booleans=0,integers=0;
+    unsigned first=0,count=0;
+};
 // Only ExtensionDevice can construct a source certified to read its mirror.
 class TrustedSource {
     friend class ::ExtensionDevice;

@@ -2043,7 +2043,8 @@ private:
         const bool terrain=world&&world->terrainShader(vs);
         if(terrain||(found!=vsHashes.end()&&m2ShaderFamily(found->second)==3))
             modelNormals->capture(vs,draw,userMemory,&geometry.draw,geometry.indices,geometry.format,geometry.vertices,geometry.stride,source?&source->mesh:nullptr,source?source->declaration:nullptr,source?&source->pose:nullptr,
-                source&&!userMemory?&source->mesh:nullptr,source&&!userMemory?&source->declaration:nullptr,terrain);
+                source&&!userMemory?&source->mesh:nullptr,source&&!userMemory?&source->declaration:nullptr,terrain,
+                NorthlightM2Draw::current&&source&&!userMemory?&source->bank:nullptr);
     }
     template<NorthlightWaterRenderer::UserPointer UserPointer,class Raw,class Draw> void captureGameDraw(IDirect3DVertexShader9* vs,const NorthlightAutoDisplacement::Args& geometry,Raw raw,Draw draw){
         constexpr bool userMemory=UserPointer!=NorthlightWaterRenderer::NoUserPointer;
@@ -2211,6 +2212,7 @@ private:
     LONGLONG* hookTimer=nullptr; /* &cpuDrawHooks on a timed RenderProfile sample frame (frame: set before the latch) */
     void latchDrawGates(){
         modelNormalsNeeded=world&&(worldDebug!=0||world->surfaceLightingEnabled()||world->needsDiagnosticFallback());
+        NorthlightM2Draw::requested.store(enabled&&!failed&&(modelNormalsNeeded||(autoBump&&autoBump->active())),std::memory_order_relaxed);
         NorthlightDrawGates::Inputs in;
         in.sky=celestialDiscs!=nullptr&&celestialEnabled();in.blobs=shadowBlobs!=nullptr&&shadowBlobs->active();in.world=world!=nullptr;in.enabled=enabled;in.failed=failed;
         in.shadowsKey=effectKeys.settings.shadows;in.actorShadows=world&&world->actorShadowsEnabled();
@@ -4659,6 +4661,21 @@ static HMODULE backend() {
         MessageBoxW(nullptr,text.c_str(),russian?L"Northlight РІР‚вЂќ Р Р…РЎС“Р В¶Р Р…Р В° Р С—Р ВµРЎР‚Р ВµРЎРѓР В±Р С•РЎР‚Р С”Р В°":L"Northlight РІР‚вЂќ rebuild required",MB_OK|MB_ICONWARNING|MB_SETFOREGROUND);
         ExitProcess(ERROR_BAD_ENVIRONMENT);
     }
+    // The Win32 producer can read ordinary M2 batch arguments only for this
+    // fixed Gx ABI. Stand playback and other clients use ordinary D3D capture.
+#if defined(__i386__)
+    if(GetModuleHandleW(nullptr)==reinterpret_cast<HMODULE>(0x400000)){
+        unsigned char code[0x266];
+        const auto matches=[&](uintptr_t at,size_t n,const char* hash){
+            return NorthlightBlpMipGuard::read(at,code,n)&&NorthlightBlpMipGuard::digest(code,n,hash);
+        };
+        NorthlightM2Draw::verifiedClient=
+            matches(0x6a3620,0xb8,"c293ff9e4d0288696e1f8fe025cc4277d48b9d1ad72dd6a216567a8210d4c953")&&
+            matches(0x8203b0,0x266,"490ca58b8f6fd5811d957dea517e69477308067e06b77c84e63d8dee23299658")&&
+            matches(0x823a5a,0x30,"24ff37d906e2f5cdef5f90fa35c123ce1ac42f7c2e6a8120e160fb0712eba277");
+    }
+    logf("NATIVE_M2 client12340=%u",unsigned(NorthlightM2Draw::verifiedClient));
+#endif
     // Install before loading the backend (and its worker threads), outside
     // DllMain. This one-shot guard has no callbacks into the proxy after unload.
     const bool blpGuard=GetPrivateProfileIntW(L"Renderer",L"BlpMipGuard",1,config)!=0;

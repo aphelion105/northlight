@@ -24,6 +24,10 @@ extern "C" __attribute__((no_builtin("memcmp"),no_builtin("bcmp"))) int memcmp(c
 #endif
 #ifdef NORTHLIGHT_MODEL_NORMALS_SLICE_TEST
 struct ModelNormalPacketTestAccess {static unsigned compactReady(const NorthlightModelNormals& n){return n.compactBuilt;}
+#ifdef NORTHLIGHT_TEST_M2_BANK
+    static unsigned materialReads(const NorthlightModelNormals& n){return n.materialBankReads;}
+    static unsigned materialMismatches(const NorthlightModelNormals& n){return n.materialBankMismatches;}
+#endif
 #ifdef NORTHLIGHT_MODEL_NORMALS_CONSTANT_TEST
     static void exactBank(const NorthlightModelNormals& n,const float* bank){assert(!n.pending.empty());const auto& p=*n.pending.back();const auto range=p.constantUsage.floats;assert(!std::memcmp(p.constants+range.first*4,bank+range.first*4,range.count*16));}
 #endif

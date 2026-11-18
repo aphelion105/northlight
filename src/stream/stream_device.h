@@ -13,6 +13,7 @@
 #include "game_snapshot.h"
 #include "shader_tags.h"
 #include "native_shadow_control_windows.h"
+#include "m2_draw_12340.h"
 
 // Redundant-state filtering (a repeated Set of the value the game last set is not recorded) can be compiled out for the tests that need
 // the exact backend trace: -DNORTHLIGHT_STREAM_FILTER=0.
@@ -277,7 +278,22 @@ public:
     void observe(CmdTag<Cmd::Device_SetStreamSourceFreq>,UINT i,UINT f){if(!recording&&i<StreamState::kStreams)st.streams[i].freq.set(f);}
     void observe(CmdTag<Cmd::Device_SetIndices>,IDirect3DIndexBuffer9* ib){if(recording)return;StreamState::bind(st.indices,ProxyBase::of(ib));st.indicesKnown=true;st.indicesSet=true;}
     void observe(CmdTag<Cmd::Device_DrawPrimitive>,D3DPRIMITIVETYPE,UINT,UINT n){onDraw(n);}
-    void observe(CmdTag<Cmd::Device_DrawIndexedPrimitive>,D3DPRIMITIVETYPE,INT,UINT,UINT,UINT,UINT n){onDraw(n);}
+    HRESULT STDMETHODCALLTYPE DrawIndexedPrimitive(D3DPRIMITIVETYPE type,INT base,UINT minimum,UINT vertices,UINT start,UINT primitives) override {
+        [[maybe_unused]] auto timing=callScope((std::uint16_t)Cmd::Device_DrawIndexedPrimitive);
+        onDraw(primitives);
+        NorthlightM2Draw::Section section;
+        const NorthlightM2Draw::Section* matched=nullptr;
+        if(nativeM2Requested&&!recording&&type==D3DPT_TRIANGLELIST&&
+           st.vsKnown&&st.vs&&st.streams[0].known&&st.streams[0].vb&&st.indicesKnown&&st.indices&&
+           st.rs[D3DRS_ALPHABLENDENABLE].known&&!st.rs[D3DRS_ALPHABLENDENABLE].v&&
+           st.rs[D3DRS_ALPHATESTENABLE].known&&!st.rs[D3DRS_ALPHATESTENABLE].v){
+            const bool audit=core.timing&&core.frameNo%127==0&&m2Sections.ordinary%16==0;
+            if(NorthlightM2Draw::readSection(__builtin_frame_address(0),base,minimum,vertices,start,primitives,st.vsF,audit,section,m2Sections))
+                matched=&section;
+        }
+        record_Device_DrawIndexedPrimitive(streamQueue(),type,base,minimum,vertices,start,primitives,matched);
+        return D3D_OK;
+    }
     // GPU-side writes: the destination's CPU-side lock knowledge no longer holds
     void observe(CmdTag<Cmd::Device_UpdateSurface>,IDirect3DSurface9*,const RECT*,IDirect3DSurface9* dst,const POINT*){written(ProxyBase::of(dst));}
     void observe(CmdTag<Cmd::Device_UpdateTexture>,IDirect3DBaseTexture9*,IDirect3DBaseTexture9* dst){written(ProxyBase::of(dst));}
@@ -428,6 +444,14 @@ public:
             nowAtPresent=nowNs();const std::uint64_t now=nowAtPresent;auto& st2=q.stats;
             if(frameEnd){own(st2.gameNs,now-frameEnd);own(st2.gameWaitNs,get(st2.syncNs)+get(st2.backpressureNs)-waitsAtFrameEnd);own(st2.gameFrames);}
         }
+        if(core.timing&&callerLog&&core.frameNo%127==0){
+            char msg[256];
+            std::snprintf(msg,sizeof msg,"NATIVE_M2 producerFrame=%llu gxDraws=%u ordinary=%u matched=%u rangeMismatch=%u paletteChecks=%u paletteMismatch=%u",
+                (unsigned long long)core.frameNo,m2Sections.candidates,m2Sections.ordinary,m2Sections.matched,m2Sections.mismatch,m2Sections.paletteChecks,m2Sections.paletteMismatch);
+            callerLog(msg);
+        }
+        m2Sections={};
+        nativeM2Requested=NorthlightM2Draw::verifiedClient&&NorthlightM2Draw::requested.load(std::memory_order_relaxed);
         policy.onPresent();takeReplayFailure();
         UINT dirtyBytes=0;
         if(dirty){dirtyBytes=dirty->rdh.dwSize+dirty->rdh.nCount*UINT(sizeof(RECT));if(sizeof(PresentArgs)+dirtyBytes>MaxInlinePayload)dirtyBytes=0;}
@@ -752,6 +776,8 @@ private:
         delete this;
         if(p)p->Release();
     }
+    NorthlightM2Draw::ProducerStats m2Sections;
+    bool nativeM2Requested=false;
     void onDraw(unsigned){
         ++drawOrdinal;if(!capture)return;
         const StreamVertexShader* v=st.vs?static_cast<StreamVertexShader*>(st.vs):nullptr;

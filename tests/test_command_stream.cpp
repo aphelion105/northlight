@@ -57,7 +57,12 @@ struct TestTr {
         return reinterpret_cast<T*>((std::uintptr_t)p+0x10000);
     }
     template<class T> T* toProxy(T* p){return p?reinterpret_cast<T*>((std::uintptr_t)p+0x20000):nullptr;}
-    void result(Cmd,HRESULT hr){results.push_back(hr);}
+    std::vector<unsigned>* nativeModels=nullptr;
+    void result(Cmd cmd,HRESULT hr){
+        if(nativeModels&&cmd==Cmd::Device_DrawIndexedPrimitive)
+            nativeModels->push_back(NorthlightM2Draw::current?NorthlightM2Draw::current->model:0);
+        results.push_back(hr);
+    }
     void skipped(Cmd){++skips;}
     IDirect3DDevice9* ext(){return nullptr;}   // the generated cases run through the Device path; direct replay is covered by the stream tests
     template<class T> T* raw(T* p,bool& ok){ok=false;(void)p;return nullptr;}
@@ -435,12 +440,29 @@ static void nestedSync(){
     rp.stop();
 }
 
+static void nativeM2Packets(){
+    Queue queue;TestTr tr;std::vector<unsigned> models;tr.nativeModels=&models;
+    NorthlightM2Draw::Section section{11,12,13,4,5};
+    record_Device_DrawIndexedPrimitive(queue,4,0,0,3,0,1,&section);
+    section.model=22;
+    record_Device_DrawIndexedPrimitive(queue,4,0,0,3,0,1);
+    record_Device_DrawIndexedPrimitive(queue,4,0,0,3,0,1,&section);
+    section.model=99;queue.publish();
+    NorthlightM2Draw::Scope outer(&section);
+    for(unsigned i=0;i<3;++i){
+        auto* h=queue.next(false);CHECK(h&&dispatchGenerated(h,tr));queue.retire(h);
+        CHECK(NorthlightM2Draw::current==&section);
+    }
+    CHECK((models==std::vector<unsigned>{11,0,22}));
+}
+
 #include "command_stream_targets.h"
 #include "command_stream_scenarios.h"
 #include "particle_texture_stream_scenarios.h"
 #include "buffer_range_shadow_scenarios.h"
 
 int main(int argc,char** argv){
+    nativeM2Packets();
     if(argc>1&&std::string(argv[1])=="rangeshadow"){bufferRangeShadowModel();oversizedBufferRangeShadows();oversizedBufferPumpedWrite();return 0;}
     if(argc>1&&std::string(argv[1])=="memorypressure"){pressureKeepsShadows();syncStormDetector();std::puts("PASS pressure shadows and sync-storm attribution");return 0;}
     if(argc>1&&std::string(argv[1])=="effecthooks"){effectHookReplay();return 0;}

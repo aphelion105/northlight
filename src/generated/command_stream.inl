@@ -19,6 +19,7 @@
 // syncGet(tag,[proxy,]args...), local(tag,args...), syncCall(tag,[proxy,]args...); the proxy argument is passed for non-device interfaces.
 // Every generated body starts with `auto _scope=this->callScope(id);` (0.3.204: the sampled game-thread recording timer, per command id; the host returns a scope object).
 // The device class also provides bool redundant(tag,args...) (true: a repeated Set the game side does not record; see REDUNDANT).
+#include "m2_draw_section.h"
 #ifndef NORTHLIGHT_STREAM_DIRECT
 #define NORTHLIGHT_STREAM_DIRECT 1
 #endif
@@ -804,9 +805,9 @@ struct Args_Device_DrawIndexedPrimitive {
     UINT startIndex;
     UINT primCount;
 };
-inline void record_Device_DrawIndexedPrimitive(Queue& q, D3DPRIMITIVETYPE arg0, INT BaseVertexIndex, UINT MinVertexIndex, UINT NumVertices, UINT startIndex, UINT primCount) {
+inline void record_Device_DrawIndexedPrimitive(Queue& q, D3DPRIMITIVETYPE arg0, INT BaseVertexIndex, UINT MinVertexIndex, UINT NumVertices, UINT startIndex, UINT primCount, const NorthlightM2Draw::Section* section=nullptr) {
     constexpr std::size_t _base=((sizeof(Args_Device_DrawIndexedPrimitive)+7u)&~7u);
-    const std::size_t _total=_base;
+    const std::size_t _total=_base+(section?sizeof(*section):0);
     if(_total>MaxInlinePayload){own(q.stats.oversizeDrops);return;}   // a garbage count: D3D would fail the call; drop it and count
     auto* _a=static_cast<Args_Device_DrawIndexedPrimitive*>(q.reserve((std::uint16_t)Cmd::Device_DrawIndexedPrimitive,(std::uint32_t)_total));
     std::uint32_t _o=(std::uint32_t)_base;(void)_o;
@@ -816,6 +817,7 @@ inline void record_Device_DrawIndexedPrimitive(Queue& q, D3DPRIMITIVETYPE arg0, 
     _a->NumVertices=NumVertices;
     _a->startIndex=startIndex;
     _a->primCount=primCount;
+    if(section)std::memcpy(reinterpret_cast<unsigned char*>(_a)+_base,section,sizeof(*section));
     q.commit();
 }
 struct Args_Device_ProcessVertices {
@@ -1571,6 +1573,8 @@ template<class Tr> inline bool dispatchGenerated(const CommandHeader* h, Tr& tr)
     }
     case Cmd::Device_DrawIndexedPrimitive: {
         const auto* _a=reinterpret_cast<const Args_Device_DrawIndexedPrimitive*>(h+1);const auto* _b=reinterpret_cast<const unsigned char*>(_a);(void)_b;
+        constexpr auto base=(sizeof(*_a)+7u)&~7u;
+        NorthlightM2Draw::Scope native(h->size==sizeof(*h)+base+sizeof(NorthlightM2Draw::Section)?reinterpret_cast<const NorthlightM2Draw::Section*>(_b+base):nullptr);
         tr.result(Cmd::Device_DrawIndexedPrimitive,tr.device()->DrawIndexedPrimitive(_a->arg0, _a->BaseVertexIndex, _a->MinVertexIndex, _a->NumVertices, _a->startIndex, _a->primCount));
         return true;
     }
@@ -2340,7 +2344,6 @@ template<class Tr> inline bool executeSync(SyncCall& sc, Tr& tr) {
     HRESULT STDMETHODCALLTYPE SetNPatchMode(float nSegments) override { [[maybe_unused]] auto _scope=this->callScope((std::uint16_t)::NorthlightStream::Cmd::Device_SetNPatchMode);if(this->redundant(NORTHLIGHT_STREAM_TAG(Device_SetNPatchMode), nSegments))return D3D_OK;this->observe(NORTHLIGHT_STREAM_TAG(Device_SetNPatchMode), nSegments);::NorthlightStream::record_Device_SetNPatchMode(this->streamQueue(), nSegments);return D3D_OK; } \
     float STDMETHODCALLTYPE GetNPatchMode() override { [[maybe_unused]] auto _scope=this->callScope((std::uint16_t)::NorthlightStream::Cmd::Device_GetNPatchMode);float _r{};if(this->answer(NORTHLIGHT_STREAM_TAG(Device_GetNPatchMode), _r))return _r;return this->syncGet(NORTHLIGHT_STREAM_TAG(Device_GetNPatchMode)); } \
     HRESULT STDMETHODCALLTYPE DrawPrimitive(D3DPRIMITIVETYPE PrimitiveType, UINT StartVertex, UINT PrimitiveCount) override { [[maybe_unused]] auto _scope=this->callScope((std::uint16_t)::NorthlightStream::Cmd::Device_DrawPrimitive);this->observe(NORTHLIGHT_STREAM_TAG(Device_DrawPrimitive), PrimitiveType, StartVertex, PrimitiveCount);::NorthlightStream::record_Device_DrawPrimitive(this->streamQueue(), PrimitiveType, StartVertex, PrimitiveCount);return D3D_OK; } \
-    HRESULT STDMETHODCALLTYPE DrawIndexedPrimitive(D3DPRIMITIVETYPE arg0, INT BaseVertexIndex, UINT MinVertexIndex, UINT NumVertices, UINT startIndex, UINT primCount) override { [[maybe_unused]] auto _scope=this->callScope((std::uint16_t)::NorthlightStream::Cmd::Device_DrawIndexedPrimitive);this->observe(NORTHLIGHT_STREAM_TAG(Device_DrawIndexedPrimitive), arg0, BaseVertexIndex, MinVertexIndex, NumVertices, startIndex, primCount);::NorthlightStream::record_Device_DrawIndexedPrimitive(this->streamQueue(), arg0, BaseVertexIndex, MinVertexIndex, NumVertices, startIndex, primCount);return D3D_OK; } \
     HRESULT STDMETHODCALLTYPE ProcessVertices(UINT SrcStartIndex, UINT DestIndex, UINT VertexCount, IDirect3DVertexBuffer9* pDestBuffer, IDirect3DVertexDeclaration9* pVertexDecl, DWORD Flags) override { [[maybe_unused]] auto _scope=this->callScope((std::uint16_t)::NorthlightStream::Cmd::Device_ProcessVertices);this->observe(NORTHLIGHT_STREAM_TAG(Device_ProcessVertices), SrcStartIndex, DestIndex, VertexCount, pDestBuffer, pVertexDecl, Flags);::NorthlightStream::record_Device_ProcessVertices(this->streamQueue(), SrcStartIndex, DestIndex, VertexCount, pDestBuffer, pVertexDecl, Flags);return D3D_OK; } \
     HRESULT STDMETHODCALLTYPE SetVertexDeclaration(IDirect3DVertexDeclaration9* pDecl) override { [[maybe_unused]] auto _scope=this->callScope((std::uint16_t)::NorthlightStream::Cmd::Device_SetVertexDeclaration);if(this->redundant(NORTHLIGHT_STREAM_TAG(Device_SetVertexDeclaration), pDecl))return D3D_OK;this->observe(NORTHLIGHT_STREAM_TAG(Device_SetVertexDeclaration), pDecl);::NorthlightStream::record_Device_SetVertexDeclaration(this->streamQueue(), pDecl);return D3D_OK; } \
     HRESULT STDMETHODCALLTYPE GetVertexDeclaration(IDirect3DVertexDeclaration9** ppDecl) override { [[maybe_unused]] auto _scope=this->callScope((std::uint16_t)::NorthlightStream::Cmd::Device_GetVertexDeclaration);HRESULT _r{};if(this->answer(NORTHLIGHT_STREAM_TAG(Device_GetVertexDeclaration), ppDecl, _r))return _r;return this->syncGet(NORTHLIGHT_STREAM_TAG(Device_GetVertexDeclaration), ppDecl); } \

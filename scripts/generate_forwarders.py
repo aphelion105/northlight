@@ -43,14 +43,14 @@ STREAM = {
                   'CreateVertexBuffer CreateIndexBuffer CreateRenderTarget CreateDepthStencilSurface CreateOffscreenPlainSurface '
                   'CreateStateBlock BeginStateBlock EndStateBlock DrawPrimitiveUP DrawIndexedPrimitiveUP CreateVertexDeclaration '
                   'CreateVertexShader CreatePixelShader CreateQuery ShowCursor SetCursorPosition',   # the cursor is Win32 state: the StreamDevice does it on the calling thread, nothing is recorded
-        'customrec': 'SetCursorProperties',   # a hardware cursor is built on the game thread; only the software-cursor case is forwarded (the encoder is generated)
+        'customrec': 'SetCursorProperties DrawIndexedPrimitive',
         'record': 'EvictManagedResources SetDialogBoxMode SetGammaRamp BeginScene EndScene Clear SetClipStatus '
                   'DrawRectPatch DrawTriPatch DeletePatch',
         # UpdateSurface/UpdateTexture/StretchRect/ColorFill/ProcessVertices write a resource on the GPU side: observed so the
         # destination's CPU-side lock/shadow knowledge is dropped.
         'state': 'UpdateSurface UpdateTexture StretchRect ColorFill ProcessVertices SetRenderTarget SetDepthStencilSurface SetTransform MultiplyTransform SetViewport SetMaterial SetLight LightEnable '
                  'SetClipPlane SetRenderState SetTexture SetTextureStageState SetSamplerState SetPaletteEntries SetCurrentTexturePalette '
-                 'SetScissorRect SetSoftwareVertexProcessing SetNPatchMode DrawPrimitive DrawIndexedPrimitive SetVertexDeclaration SetFVF '
+                 'SetScissorRect SetSoftwareVertexProcessing SetNPatchMode DrawPrimitive SetVertexDeclaration SetFVF '
                  'SetVertexShader SetVertexShaderConstantF SetVertexShaderConstantI SetVertexShaderConstantB SetStreamSource '
                  'SetStreamSourceFreq SetIndices SetPixelShader SetPixelShaderConstantF SetPixelShaderConstantI SetPixelShaderConstantB',
         'get': 'GetRenderTarget GetDepthStencilSurface GetTransform GetViewport GetMaterial GetLight GetLightEnable GetClipPlane '
@@ -251,6 +251,9 @@ def encoder(m):
     fields = m.self_arg + m.params
     out = [f'struct Args_{m.enum} {{'] + [f'    {"std::uint32_t" if p.name in m.spec else p.type} {p.name};' for p in fields] + ['};']
     params = ', '.join(['Queue& q'] + [p.decl for p in fields])
+    section = m.enum == 'Device_DrawIndexedPrimitive'
+    if section:
+        params += ', const NorthlightM2Draw::Section* section=nullptr'
     out.append(f'inline void record_{m.enum}({params}) {{')
     out.append(f'    constexpr std::size_t _base={"((sizeof(Args_%s)+7u)&~7u)" % m.enum if fields else "0u"};')
     terms = []
@@ -258,6 +261,8 @@ def encoder(m):
         if p.name in m.spec:
             out.append(f'    const std::size_t _n_{p.name}={p.name}?(std::size_t)({m.spec[p.name]}):0;')
             terms.append(f'((_n_{p.name}+7u)&~7u)')
+    if section:
+        terms.append('(section?sizeof(*section):0)')
     out.append('    const std::size_t _total=' + '+'.join(['_base'] + terms) + ';')
     out.append('    if(_total>MaxInlinePayload){own(q.stats.oversizeDrops);return;}   // a garbage count: D3D would fail the call; drop it and count')
     if fields:
@@ -270,6 +275,8 @@ def encoder(m):
                 out.append(f'    _a->{p.name}={p.name};')
     else:
         out.append(f'    q.reserve((std::uint16_t)Cmd::{m.enum},0);')
+    if section:
+        out.append('    if(section)std::memcpy(reinterpret_cast<unsigned char*>(_a)+_base,section,sizeof(*section));')
     out += ['    q.commit();', '}']
     return out
 
@@ -290,6 +297,9 @@ def dispatch_case(m):
     out = [f'    case Cmd::{m.enum}: {{']
     if m.self_arg + m.params:
         out.append(f'        const auto* _a=reinterpret_cast<const Args_{m.enum}*>(h+1);const auto* _b=reinterpret_cast<const unsigned char*>(_a);(void)_b;')
+    if m.enum == 'Device_DrawIndexedPrimitive':
+        out.append('        constexpr auto base=(sizeof(*_a)+7u)&~7u;')
+        out.append('        NorthlightM2Draw::Scope native(h->size==sizeof(*h)+base+sizeof(NorthlightM2Draw::Section)?reinterpret_cast<const NorthlightM2Draw::Section*>(_b+base):nullptr);')
     if m.iface == DEVICE:
         target = 'tr.device()'
     else:
@@ -419,6 +429,7 @@ def stream_text(text):
            '// syncGet(tag,[proxy,]args...), local(tag,args...), syncCall(tag,[proxy,]args...); the proxy argument is passed for non-device interfaces.',
            '// Every generated body starts with `auto _scope=this->callScope(id);` (0.3.204: the sampled game-thread recording timer, per command id; the host returns a scope object).',
            '// The device class also provides bool redundant(tag,args...) (true: a repeated Set the game side does not record; see REDUNDANT).',
+           '#include "m2_draw_section.h"',
            '#ifndef NORTHLIGHT_STREAM_DIRECT', '#define NORTHLIGHT_STREAM_DIRECT 1', '#endif',
            '#define NORTHLIGHT_STREAM_TAG(X) ::NorthlightStream::CmdTag<::NorthlightStream::Cmd::X>{}',
            'namespace NorthlightStream {']

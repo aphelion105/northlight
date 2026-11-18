@@ -13,6 +13,7 @@
 #include "upload_lock.h"
 #include "captured_constant_epoch.h"
 #include "pose_bounds_handoff.h"
+#include "m2_draw_section.h"
 #include "model_normal_range.h"
 #include "vertex_declaration_cache.h"
 #include "intrusive_lru.h"
@@ -53,6 +54,10 @@ class NorthlightAutoDisplacement {
     struct LocalSkin : NorthlightReplayBounds::SkinEnvelope {
         uint64_t program=0;
         NorthlightDrawSnapshot::Ref<IDirect3DVertexDeclaration9> declaration;
+        unsigned paletteBones=0;
+        std::unique_ptr<float[]> previousRows;
+        float previousBasis[16];
+        NorthlightReplayBounds::Bounds previousBounds;
     };
     struct Bounds {std::weak_ptr<const Mesh> source;float low[3],high[3];uint64_t used=0;size_t bytes=0;std::unique_ptr<LocalSkin> skin;
         const Mesh* key=nullptr;NorthlightIntrusiveLRU::Links<Bounds> lru;};
@@ -64,10 +69,11 @@ class NorthlightAutoDisplacement {
     NorthlightDrawSnapshot::Frame rangeSnapshots{512u<<10,0},skinRangeSnapshots{256u<<10,0};
     NorthlightPositionBounds::Cache positionBounds;
     unsigned capturedBoundsHits=0,admissionSnapshotReuses=0,constantBankTransfers=0;
+    unsigned nativePoseTests=0,nativePoseHits=0,nativeEarlyRange=0;
     NorthlightVertexDeclarations::Cache declarations;
     // Only the owner and the four exact epoch words cross the draw handoff.
     // Per-block write history belongs to the bank that uses it for partial reads.
-    struct ConstantHandoff {const float* bank=nullptr;uint64_t reset=0,floats=0,booleans=0,integers=0;};
+    using ConstantHandoff=NorthlightConstantEpoch::BankHandoff;
     NorthlightConstantEpoch::HeldMatch heldConstantMatch=nullptr;
     void* constantContext=nullptr;NorthlightConstantEpoch::Reader constantReader=nullptr;NorthlightConstantEpoch::KnownSpan constantSpan=nullptr;bool trustedConstants=false;
     NorthlightConstantEpoch::Stamp constantStamp,rangeConstantStamp;float constantStorage[2][256*4]={};float* constants=constantStorage[0];
@@ -308,6 +314,36 @@ class NorthlightAutoDisplacement {
         for(const auto& definition:program.definitions)if(definition.reg>=31&&definition.reg<256)return evaluateSkinWithDefinitions(skin,program,constants,inverse,result,aligned);
         return skin.evaluate(constants,inverse,result,nullptr,nullptr,aligned);
     }
+    static bool nativePaletteCovers(const LocalSkin& skin,const Material& material,IDirect3DVertexDeclaration9* decl){
+        const auto* native=NorthlightM2Draw::current;
+        return native&&skin.paletteBones&&native->bones>=skin.paletteBones&&skin.program==material.id&&skin.declaration.p==decl;
+    }
+    bool sameMaterialPose(const LocalSkin& skin,const float* bank)const{
+        return skin.previousRows&&skin.previousBounds.valid&&
+               !std::memcmp(skin.previousBasis,distanceInverseView,sizeof skin.previousBasis)&&
+               !std::memcmp(skin.previousRows.get(),bank+31*4,size_t(skin.paletteBones)*12*sizeof(float));
+    }
+    bool evaluateMaterialPose(Bounds& entry,const Material& material,IDirect3DVertexDeclaration9* decl,NorthlightReplayBounds::Bounds& result){
+        auto& skin=*entry.skin;
+        if(!nativePaletteCovers(skin,material,decl))
+            return evaluateLocalSkin(skin,material.view,constants,distanceInverseView,result,true);
+        ++nativePoseTests;
+        if(sameMaterialPose(skin,constants)){
+            result=skin.previousBounds;++nativePoseHits;return true;
+        }
+        if(!evaluateLocalSkin(skin,material.view,constants,distanceInverseView,result,true))return false;
+        const size_t bytes=size_t(skin.paletteBones)*12*sizeof(float);
+        if(!skin.previousRows){
+            if(boundsBytes+bytes>(8u<<20))return true;
+            skin.previousRows.reset(new(std::nothrow) float[bytes/sizeof(float)]);
+            if(!skin.previousRows)return true;
+            boundsBytes+=bytes;entry.bytes+=bytes;
+        }
+        std::memcpy(skin.previousRows.get(),constants+31*4,bytes);
+        std::memcpy(skin.previousBasis,distanceInverseView,sizeof skin.previousBasis);
+        skin.previousBounds=result;
+        return true;
+    }
     static unsigned rangeInput(const Program& program){
         unsigned input=16;for(const auto& i:program.inputs){if(i.usage!=D3DDECLUSAGE_POSITION||i.index||i.reg>=16)return 16;input=i.reg;}
         if(!NorthlightReplayBounds::detail::linear(program))return 16;
@@ -543,7 +579,8 @@ public:
         void clear(){mesh.reset();drop(declaration);pose={};bank={};}
     };
     void publishConstants(CaptureSource& source,const float* bank,const NorthlightConstantEpoch::Stamp& stamp){
-        if(trustedConstants&&stamp.valid)source.bank={bank,stamp.reset,stamp.floats,stamp.booleans,stamp.integers};
+        if(trustedConstants&&stamp.valid)source.bank={bank,stamp.reset,stamp.floats,stamp.booleans,stamp.integers,
+            bank==rangeConstants?rangeConstantFirst:constantFirst,bank==rangeConstants?rangeConstantCount:constantCount};
     }
     struct Admission {
         DWORD z=0,write=0,blend=0,alpha=0,src=0,dst=0,func=0;
@@ -594,6 +631,7 @@ public:
         logf("MATERIAL_POSITION_BOUNDS frame=%llu hits=%u scans=%u positionBytes=%zu entries=%zu unknown=%u coldScans=%u revisionScans=%u evictions=%u budgetRejected=%u capturedBoundsHits=%u",(unsigned long long)frame,positionBounds.cacheHits(),positionBounds.scans(),positionBounds.bytesRead(),positionBounds.count(),positionBounds.failures(),boundsWork.coldScans,boundsWork.revisionScans,boundsWork.evictions,boundsWork.budgetRejected,capturedBoundsHits);
         const auto& e=poseEnvelopes.stats();
         logf("MATERIAL_POSE_COARSE frame=%llu attempts=%zu valid=%zu culled=%zu cpuMs=%.6f unsupportedSkipped=%u budgetPreflightSkipped=%u localValid=%u",(unsigned long long)frame,e.coarseAttempts,e.coarseValid,e.coarseCulled,double(e.coarseNanoseconds)/1000000.,coarseProgramSkipped,coarseBudgetSkipped,coarseLocalValid);
+        logf("NATIVE_M2_MATERIAL frame=%llu localTests=%u localReused=%u earlyRange=%u",(unsigned long long)frame,nativePoseTests,nativePoseHits,nativeEarlyRange);
         const auto& p=poseMetadata.stats();
         logf("MATERIAL_POSE_METADATA frame=%llu hits=%zu misses=%zu prepared=%zu fallbacks=%zu evictions=%zu entries=%zu bytes=%zu",(unsigned long long)frame,p.hits,p.misses,p.prepared,p.fallbacks,p.evictions,poseMetadata.entries(),poseMetadata.bytes());
         logf("MATERIAL_REPLAY_CONTENT frame=%llu geometryTests=%u geometryHits=%u geometryComparedBytes=%zu",(unsigned long long)frame,snapshots.replayContentTests(),snapshots.replayContentHits(),snapshots.replayContentComparedBytes());
@@ -704,8 +742,13 @@ public:
                 }
                 const auto prepared=local?nullptr:poseMetadata.find(original,decl.p);
                 const float identity[16]={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};
-                if(!poseEnvelopes.coarseMaterial(prepared.get(),source,rangeConstants,identity,modelRange,result,local))return false;
-                coarseLocalValid+=local!=nullptr;
+                if(local&&nativePaletteCovers(*local,shader->second,decl.p)&&sameMaterialPose(*local,rangeConstants)){
+                    result=distanceBoundsInView(local->previousBounds);
+                    ++nativeEarlyRange;
+                }else{
+                    if(!poseEnvelopes.coarseMaterial(prepared.get(),source,rangeConstants,identity,modelRange,result,local))return false;
+                    coarseLocalValid+=local!=nullptr;
+                }
             }else if(poseEnvelope(program,source,elements,count,rangeConstants,result,original,decl.p)!=NorthlightReplayBounds::Status::Valid)return false;
             publish(&result);
             const float lo=result.low[2],hi=result.high[2];if(farthest)*farthest=std::nextafter(std::max(std::fabs(lo),std::fabs(hi)),INFINITY)+.001f;nearest=std::max(0.f,std::nextafter(lo>0?lo:hi<0?-hi:0,-INFINITY)-.001f);
@@ -746,7 +789,7 @@ public:
     }
     void trimMemory(NorthlightStreaming::CpuRetirement* retirement=nullptr,NorthlightStreaming::CpuRetirementBatch* batch=nullptr){setMemoryPressure(memoryPressure,retirement,batch);}
     void reset(NorthlightStreaming::CpuRetirementBatch* batch=nullptr,bool preserveCaptureSources=false){coarseLocalValid=coarseBudgetSkipped=coarseProgramSkipped=0;geometryAliases={};nextGeometryAlias=geometryAliasHits=0;setDistanceView(nullptr);modelRangeProof.clear();snapshots.clearIndexCache(nullptr,batch,preserveCaptureSources);rangeSnapshots.clearIndexCache(nullptr,batch,preserveCaptureSources);skinRangeSnapshots.clearIndexCache(nullptr,batch,preserveCaptureSources);positionBounds.clear();current=nullptr;clearModelOverlays();constantStamp={};rangeConstantStamp={};sourceLookup.clear();contentLookup.clear();materialLookup.clear();indexedEntries=true;entries.clear();boundsLRU.clear();bounds.clear();poseEnvelopes.clear();poseMetadata.clear();poseBindings={};envelopeBudget.reset();envelopeBuildContinued=false;boundsBytes=resident=0;for(auto& t:textures){drop(t.gpu);drop(t.source);}textures.clear();declarations.clear();}
-    void endFrame(){setDistanceView(nullptr);modelRangeProof.beginFrame();current=nullptr;clearModelOverlays();if(variantSources)logf("MATERIAL_VARIANT_COLD frame=%u sources=%u cpuBuilt=%u gpuBuilt=%u readFailed=%u sourceBytes=%zu cpuMs=%.6f",frames,variantSources,variantCPU,variantGPU,variantReadFailed,variantBytes,variantMs);variantSources=variantCPU=variantGPU=variantReadFailed=0;variantBytes=0;variantMs=0;if(frames%60==0){MEMORYSTATUSEX memory{};memory.dwLength=sizeof memory;if(GlobalMemoryStatusEx(&memory))refreshBudget(memory);}buildsThisFrame=readsThisFrame=poseVerticesThisFrame=0;for(auto& vertices:poseKernelVertices)vertices=0;poseByteIndexVertices=0;poseEnvelopes.beginFrame(false);poseMetadata.beginFrame();envelopeBudget.reset();envelopeBuildContinued=false;snapshots.clearFrame();rangeSnapshots.clearFrame();skinRangeSnapshots.clearFrame();positionBounds.beginFrame();capturedBoundsHits=admissionSnapshotReuses=geometryAliasHits=constantBankTransfers=coarseLocalValid=coarseBudgetSkipped=coarseProgramSkipped=0;if((draws||snapshotRejected)&&frames%600==0){logf("DISPLACEMENT cached=%zu bytes=%zu builds=%llu hits=%llu draws=%llu triangles=%llu refused=%llu terrain=%u walls=%u grass=%u models=%u stateRejected=%u heightRejected=%u shaderRejected=%u snapshotRejected=%u meshRejected=%u budgetMiB=%zu",entries.size(),resident,(unsigned long long)builds,(unsigned long long)hits,(unsigned long long)draws,(unsigned long long)triangles,(unsigned long long)refused,domainDraws[0],domainDraws[1],domainDraws[2],domainDraws[3],stateRejected,heightRejected,shaderRejected,snapshotRejected,meshRejected,cacheBudget>>20);
+    void endFrame(){setDistanceView(nullptr);modelRangeProof.beginFrame();current=nullptr;clearModelOverlays();if(variantSources)logf("MATERIAL_VARIANT_COLD frame=%u sources=%u cpuBuilt=%u gpuBuilt=%u readFailed=%u sourceBytes=%zu cpuMs=%.6f",frames,variantSources,variantCPU,variantGPU,variantReadFailed,variantBytes,variantMs);variantSources=variantCPU=variantGPU=variantReadFailed=0;variantBytes=0;variantMs=0;if(frames%60==0){MEMORYSTATUSEX memory{};memory.dwLength=sizeof memory;if(GlobalMemoryStatusEx(&memory))refreshBudget(memory);}buildsThisFrame=readsThisFrame=poseVerticesThisFrame=0;for(auto& vertices:poseKernelVertices)vertices=0;poseByteIndexVertices=0;poseEnvelopes.beginFrame(false);poseMetadata.beginFrame();envelopeBudget.reset();envelopeBuildContinued=false;snapshots.clearFrame();rangeSnapshots.clearFrame();skinRangeSnapshots.clearFrame();positionBounds.beginFrame();nativePoseTests=nativePoseHits=nativeEarlyRange=capturedBoundsHits=admissionSnapshotReuses=geometryAliasHits=constantBankTransfers=coarseLocalValid=coarseBudgetSkipped=coarseProgramSkipped=0;if((draws||snapshotRejected)&&frames%600==0){logf("DISPLACEMENT cached=%zu bytes=%zu builds=%llu hits=%llu draws=%llu triangles=%llu refused=%llu terrain=%u walls=%u grass=%u models=%u stateRejected=%u heightRejected=%u shaderRejected=%u snapshotRejected=%u meshRejected=%u budgetMiB=%zu",entries.size(),resident,(unsigned long long)builds,(unsigned long long)hits,(unsigned long long)draws,(unsigned long long)triangles,(unsigned long long)refused,domainDraws[0],domainDraws[1],domainDraws[2],domainDraws[3],stateRejected,heightRejected,shaderRejected,snapshotRejected,meshRejected,cacheBudget>>20);
         logf("DISPLACEMENT snapshots attempts=%llu up=%llu buffered=%llu unknown=%llu arguments=%llu declaration=%llu stream=%llu instancing=%llu indexBuffer=%llu indexRange=%llu vertexRange=%llu budget=%llu lock=%llu unlock=%llu",(unsigned long long)snapshotAttempts,(unsigned long long)snapshotUP,(unsigned long long)(snapshotAttempts-snapshotUP),(unsigned long long)snapshotReasons[0],(unsigned long long)snapshotReasons[1],(unsigned long long)snapshotReasons[2],(unsigned long long)snapshotReasons[3],(unsigned long long)snapshotReasons[4],(unsigned long long)snapshotReasons[5],(unsigned long long)snapshotReasons[6],(unsigned long long)snapshotReasons[7],(unsigned long long)snapshotReasons[8],(unsigned long long)snapshotReasons[9],(unsigned long long)snapshotReasons[10]);}++frames;}
     void registerVariant(IDirect3DVertexShader9* original,const DWORD* code,size_t count,bool skinned=false,bool wmo=false){
         auto old=shaders.find(original);if(old!=shaders.end()){drop(old->second.patched);drop(old->second.gpu);drop(old->second.source);shaders.erase(old);}Shader shader;
@@ -886,13 +929,15 @@ public:
             if(exactSkin){
                 auto envelope=std::make_unique<LocalSkin>();
                 if(envelope->addMesh(shader->second.view,*source,elements,count)){
+                    for(unsigned i=0;i<envelope->usedBones;++i)
+                        envelope->paletteBones=std::max(envelope->paletteBones,unsigned(envelope->order[i])+1);
                     envelope->program=shader->second.id;envelope->declaration.p=decl.p;decl->AddRef();b.skin=std::move(envelope);
                 }
             }
             foundBounds=retainBounds(source,std::move(b));
         }
         NorthlightReplayBounds::Bounds skinBounds;
-        const auto exactEnvelope=[&]{if(reusePose){skinBounds=poseBounds;return true;}if(!exactSkin||!foundBounds->second.skin)return false;P::Scope envelope(profile,P::PoseLocal);return evaluateLocalSkin(*foundBounds->second.skin,shader->second.view,constants,distanceInverseView,skinBounds,true);};
+        const auto exactEnvelope=[&]{if(reusePose){skinBounds=poseBounds;return true;}if(!exactSkin||!foundBounds->second.skin)return false;P::Scope envelope(profile,P::PoseLocal);return evaluateMaterialPose(foundBounds->second,shader->second,decl.p,skinBounds);};
         if(exactEnvelope()){if(!reusePose)touchBounds(foundBounds->second);std::copy(skinBounds.low,skinBounds.low+3,low);std::copy(skinBounds.high,skinBounds.high+3,high);
             // Reuse the audited, outward-rounded skin envelope for normal capture.
             const auto view=reusePose?poseViewBounds:distanceBoundsInView(skinBounds);

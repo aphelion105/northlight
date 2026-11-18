@@ -21,6 +21,7 @@ static void logf(const char* format,...){if(!std::strstr(format,"MATERIAL_CONFIG
 #include "auto_bump_renderer.h"
 #include "device_mirror.h"
 #include "mirror_resource_forwarders.h"
+#include "native_m2_section_fixture.h"
 
 struct DisplacementStateTestAccess {
     using Mesh=NorthlightDrawSnapshot::Mesh;
@@ -84,10 +85,27 @@ struct DisplacementStateTestAccess {
         auto mesh=std::make_shared<Mesh>();mesh->vertexCount=24;mesh->primitiveCount=8;mesh->streams[0].stride=32;mesh->streams[0].bytes.resize(24*32);
         for(unsigned i=0;i<24;++i){float data[]={(i&1)?2.f:-2.f,(i&2)?.5f:-.5f,(i&4)?6.7f:6.3f,.25f,.25f,.25f,.25f};std::memcpy(mesh->streams[0].bytes.data()+i*32,data,28);for(unsigned k=0;k<4;++k)mesh->streams[0].bytes[i*32+28+k]=k;}
         std::shared_ptr<const Mesh> source=mesh;NorthlightAutoDisplacement r(nullptr);r.range=8;float minimum=1,maximum=0,oldMinimum=1,oldMaximum=0;
+        NorthlightAutoDisplacement::Bounds entry;
+        entry.skin=std::make_unique<NorthlightAutoDisplacement::LocalSkin>();
+        assert(entry.skin->addMesh(p,*mesh,layout,4));
+        entry.skin->paletteBones=4;
+        NorthlightAutoDisplacement::Material material;material.view=p;
+        NorthlightM2Draw::Section section{1,2,3,4,0};
         auto gain=[](const NorthlightReplayBounds::Bounds& b){float d=0;for(unsigned k=0;k<3;++k){float v=b.low[k]>0?b.low[k]:b.high[k]<0?-b.high[k]:0;d+=v*v;}return std::clamp((64-d)/28,0.f,1.f);};
         for(unsigned frame=0;frame<360;++frame){
             r.endFrame();assert(!r.distanceViewKnown);const float angle=frame*.01745329252f,c=std::cos(angle),s=std::sin(angle);const float inverse[]={c,0,s,0,0,1,0,0,-s,0,c,0};r.setDistanceView(inverse);assert(r.distanceViewKnown);
             for(unsigned bone=0;bone<4;++bone){float rows[]={c,0,s,0,0,1,0,0,-s,0,c,0};std::copy_n(rows,12,r.constants+4*(31+bone*3));}
+            {
+                NorthlightM2Draw::Scope active(&section);
+                NorthlightReplayBounds::Bounds reference,current;
+                assert(r.evaluateLocalSkin(*entry.skin,p,r.constants,r.distanceInverseView,reference,true));
+                const auto compare=[&]{assert(r.evaluateMaterialPose(entry,material,nullptr,current));
+                    assert(current.valid&&std::equal(reference.low,reference.low+3,current.low)&&std::equal(reference.high,reference.high+3,current.high));};
+                compare();assert(!r.nativePoseHits);compare();assert(r.nativePoseHits==1);
+                section.bones=3;compare();assert(r.nativePoseHits==1);section.bones=4;
+                r.constants[(31+3*3)*4+3]+=1;
+                assert(!r.sameMaterialPose(*entry.skin,r.constants));r.constants[(31+3*3)*4+3]-=1;
+            }
             NorthlightReplayBounds::Bounds b;float low[3],high[3];
             for(unsigned retry=0;retry<100&&!b.valid;++retry){r.poseEnvelopes.beginFrame(false);r.envelopeBudget.reset();r.distantPoseBounds(p,source,layout,4,low,high,nullptr,nullptr,&b,true);}assert(b.valid);
             const float value=gain(b);minimum=std::min(minimum,value);maximum=std::max(maximum,value);
@@ -97,6 +115,25 @@ struct DisplacementStateTestAccess {
             r.poseVerticesThisFrame=8192;NorthlightReplayBounds::Bounds warm;r.distantPoseBounds(p,source,layout,4,low,high,nullptr,nullptr,&warm,true);assert(warm.valid&&r.poseVerticesThisFrame==8192);
         }
         std::fprintf(stderr,"camera gain min=%g max=%g oldMin=%g oldMax=%g\n",minimum,maximum,oldMinimum,oldMaximum);assert(maximum-minimum<.0001f&&oldMaximum-oldMinimum>.1f);
+        for(bool moving:{false,true}){
+            double times[2][9]={};
+            for(unsigned round=0;round<9;++round)for(unsigned order=0;order<2;++order){
+                const bool native=(round+order)%2;
+                NorthlightM2Draw::Scope scope(native?&section:nullptr);
+                volatile float sink=0;
+                const auto start=std::chrono::steady_clock::now();
+                for(unsigned draw=0;draw<4096;++draw){
+                    r.constants[31*4+3]=moving?float(draw&63):1.f;
+                    NorthlightReplayBounds::Bounds b;assert(r.evaluateMaterialPose(entry,material,nullptr,b));
+                    sink=b.low[draw%3];
+                }
+                (void)sink;
+                times[native][round]=std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-start).count()/4096;
+            }
+            for(auto& runs:times)std::sort(std::begin(runs),std::end(runs));
+            std::printf("NATIVE_M2_LOCAL_POSE moving=%u bones=4 sectionsPerRound=4096 baselineUs=%.4f nativeUs=%.4f\n",
+                        unsigned(moving),times[0][4],times[1][4]);
+        }
         r.setDistanceView(nullptr);assert(!r.distanceViewKnown);for(unsigned i=0;i<16;++i)assert(r.distanceInverseView[i]==float(i%5==0));
         float invalid[12]={};r.setDistanceView(invalid);assert(!r.distanceViewKnown);r.reset();assert(!r.distanceViewKnown);
         std::printf("DISPLACEMENT_CAMERA_BOUNDS_PASS rotations=360 oldGainSpan=%g worldGainSpan=%g enclosedVertices=8640 warmEnvelopeAfterScanBudget=1 unknownViewCleared=1\n",oldMaximum-oldMinimum,maximum-minimum);
@@ -980,6 +1017,7 @@ static void sharedGeometry(){
     std::puts("SHARED_POM_GEOMETRY_PASS exact_attributes multistream strip_winding triangle_ids invalid_indices occupied_semantic");
 }
 int main(int argc,char** argv){
+    nativeM2Section();
     std::setvbuf(stdout,nullptr,_IONBF,0);
     assert(argc==4);DisplacementStateTestAccess::distanceViewReuse();DisplacementStateTestAccess::conservativeBody(argv[1]);DisplacementStateTestAccess::cameraBounds(argv[1]);
     FILE* file=std::fopen(argv[3],"rb");assert(file);std::fseek(file,0,SEEK_END);const long size=std::ftell(file);std::rewind(file);std::vector<uint32_t> singleCode(size/4);assert(std::fread(singleCode.data(),1,size,file)==size_t(size));std::fclose(file);

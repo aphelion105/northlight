@@ -90,6 +90,7 @@ if args.shadow_only:slice_flags.append('-DNORTHLIGHT_SHADOW_SLICE_ONLY')
 if args.constants_only and args.reference_header and 'testPeakFloatBanks' not in args.reference_header.read_text():
     slice_flags.append('-DNORTHLIGHT_LEGACY_NORMAL_BANKS')
 if args.constants_only:slice_flags.append('-DNORTHLIGHT_MODEL_NORMALS_CONSTANT_TEST')
+if args.constants_only and not args.reference_header:slice_flags.append('-DNORTHLIGHT_TEST_M2_BANK')
 if args.palette_validate:slice_flags.append('-DNORTHLIGHT_PALETTE_VALIDATE=1')
 if args.reference_header:
     reference = out/'reference-header';reference.mkdir(exist_ok=True)
@@ -104,7 +105,8 @@ struct.pack_into('<H',data,flags,struct.unpack_from('<H',data,flags)[0]|0x20);ex
 if args.constants_only:
     run=subprocess.run([str(exe),str(args.backend.resolve()),str(out)+os.sep,'3-skinned','model-vs3-skinned.bin','--no-timing'],cwd=out,env=env,capture_output=True,text=True,timeout=120)
     (out/'constants-only.log').write_text(run.stdout+run.stderr)
-    assert run.returncode==0 and 'MODEL_NORMALS_CONSTANT_REUSE_PASS cases=32 packets=4536' in run.stdout,run.stdout+run.stderr
+    expected='cases=32 packets=4536' if args.reference_header else 'cases=40 packets=4632'
+    assert run.returncode==0 and 'MODEL_NORMALS_CONSTANT_REUSE_PASS '+expected in run.stdout,run.stdout+run.stderr
     files=[args.reference_header or fp.src('model_normal_renderer.h'),fp.src('replay_capture_constants.h'),fp.src('device_mirror.h'),fp.src('captured_constant_epoch.h'),fp.src('mirror_guard.h'),fp.TESTS/'model_normal_constants.inc',fp.TESTS/'model_normals_gpu.cpp',Path(__file__)]
     (out/'validation.json').write_text(json.dumps({'status':'PASS','backend':str(args.backend),'scope':'ModelNormals constant bank and GPU output correctness; no timing claim','palette_validate':args.palette_validate,'game_running':game_running,'inputs':{str(p):hashlib.sha256(p.read_bytes()).hexdigest() for p in files},'stdout':run.stdout},indent=2)+'\n')
     print(run.stdout,flush=True);sys.exit(0)

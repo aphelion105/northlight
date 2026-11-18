@@ -114,6 +114,7 @@ def stub():
            'constexpr unsigned D3DRTYPE_SURFACE=1,D3DRTYPE_VOLUME=2,D3DRTYPE_TEXTURE=3,D3DRTYPE_VOLUMETEXTURE=4,D3DRTYPE_CUBETEXTURE=5,D3DRTYPE_VERTEXBUFFER=6,D3DRTYPE_INDEXBUFFER=7;']
     out += [f'using {k}={v};' for k, v in SCALARS.items() if k != 'float']
     out.append('using D3DDEVTYPE=unsigned;')
+    out.append('constexpr unsigned D3DPT_TRIANGLELIST=4,D3DRS_ALPHATESTENABLE=15,D3DRS_ALPHABLENDENABLE=27;')
     out += [f'using {e}=unsigned;' for e in ENUMS]
     known = set(SCALARS) | set(ENUMS) | KEYWORDS | {'REFIID', 'REFGUID', 'IUnknown'}
     ifaces = set(EXTRA_IFACES + gf.STREAM_IFACES) | {'IDirect3D9'}
@@ -255,6 +256,9 @@ def generated_cpp():
 
 
 def compile_run(tmp, name, flags, args=(), expect_fail=False, source="test_command_stream.cpp"):
+    # The process-local Windows shadow setting has no host SDK implementation.
+    (Path(tmp) / 'native_shadow_control_windows.h').write_text(
+        '#pragma once\nnamespace NorthlightNativeShadowControl { inline void producerPresent(){} }\n')
     exe = Path(tmp) / name
     command = ['clang++', '-std=c++17', '-Wall', '-Wextra', '-Werror', '-pthread', '-DNL_STUB', *flags, '-I', str(tmp), *fp.test_include_flags(),
                str(HERE / source), '-o', str(exe)]

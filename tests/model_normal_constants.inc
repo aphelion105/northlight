@@ -8,7 +8,11 @@ static void normalConstants(const std::string& dir,IDirect3DVertexDeclaration9* 
     std::shared_ptr<const NorthlightDrawSnapshot::Mesh> immutable=mesh;
     const NorthlightDrawSnapshot::Draw geometry{D3DPT_TRIANGLELIST,0,0,vertices,0,indices/3,true};
     unsigned beforeReads=0,afterReads=0,nonempty=0,packets=0;uint64_t epochHits=0,blockHits=0;unsigned cases=0;
-    for(unsigned scenario=0;scenario<16;++scenario){std::vector<unsigned char> reference,nextReference;unsigned baselineReads=0;
+    unsigned scenarioCount=16;
+#ifdef NORTHLIGHT_TEST_M2_BANK
+    scenarioCount+=4; // current, stale, incomplete, and deliberately incorrect material loans
+#endif
+    for(unsigned scenario=0;scenario<scenarioCount;++scenario){std::vector<unsigned char> reference,nextReference;unsigned baselineReads=0;
         for(bool reuse:{false,true}){
             CaptureCalls calls(d);DeviceMirror mirror,foreignMirror;ExtensionDevice extension(&calls,&mirror),foreign(&calls,&foreignMirror);std::unique_ptr<MirrorGuard> held;if(scenario!=12)held=std::make_unique<MirrorGuard>(mirror.gate);
             NorthlightModelNormals normals(&extension);normals.setDeferredCapture(true);normals.testRange(false);normals.testConstantReuse(reuse);normals.setTrustedPoseSource(extension.trustedConstantSource());
@@ -39,7 +43,24 @@ static void normalConstants(const std::string& dir,IDirect3DVertexDeclaration9* 
                 if(scenario==9&&draw==3)normals.setTrustedPoseSource(foreign.trustedConstantSource());
                 if(scenario==11){int ints[4]={int(draw),0,0,0};BOOL boolean=draw&1;ok(extension.SetVertexShaderConstantI(0,ints,1));ok(extension.SetVertexShaderConstantB(0,&boolean,1));}
                 auto* vertex=scenario==10&&(draw&1)?rigid:single;ok(extension.SetVertexShader(vertex));
-                normals.capture(vertex,[&]{return extension.DrawIndexedPrimitiveUP(D3DPT_TRIANGLELIST,0,vertices,indices/3,mesh->indices.data(),D3DFMT_INDEX32,mesh->streams[0].bytes.data(),48);},true,&geometry,nullptr,D3DFMT_UNKNOWN,nullptr,0,&immutable,declaration);
+                const auto submit=[&]{return extension.DrawIndexedPrimitiveUP(D3DPT_TRIANGLELIST,0,vertices,indices/3,mesh->indices.data(),D3DFMT_INDEX32,mesh->streams[0].bytes.data(),48);};
+#ifdef NORTHLIGHT_TEST_M2_BANK
+                if(scenario>=16&&reuse){
+                    bank[31*4+3]+=.0001f*draw;
+                    ok(extension.SetVertexShaderConstantF(31,bank+31*4,1));
+                    auto stamp=mirror.constantEpoch.live();
+                    NorthlightConstantEpoch::BankHandoff loan{bank,stamp.reset,stamp.floats,stamp.booleans,stamp.integers,0,256};
+                    if(scenario==17)++loan.reset;
+                    if(scenario==18)loan.count=1;
+                    if(scenario==19)bank[31*4+3]+=1;
+                    normals.capture(vertex,submit,true,&geometry,nullptr,D3DFMT_UNKNOWN,nullptr,0,&immutable,declaration,nullptr,nullptr,nullptr,false,&loan);
+                    std::fill_n(bank,1024,-42.f);
+                }else
+#endif
+                {
+                    if(scenario>=16){bank[31*4+3]+=.0001f*draw;ok(extension.SetVertexShaderConstantF(31,bank+31*4,1));}
+                    normals.capture(vertex,submit,true,&geometry,nullptr,D3DFMT_UNKNOWN,nullptr,0,&immutable,declaration);
+                }
                 peakPackets=std::max(peakPackets,normals.testPendingPackets());
                 if(scenario!=15)assert(normals.testPendingPackets()==(scenario==14?draw%64:draw)+1);
                 float expected[1024];ok(d->GetVertexShaderConstantF(0,expected,256));ModelNormalPacketTestAccess::exactBank(normals,expected);
@@ -55,6 +76,12 @@ static void normalConstants(const std::string& dir,IDirect3DVertexDeclaration9* 
                 std::printf("MODEL_NORMALS_CROWD reuse=%u packets=%u peakBanks=%zu peakPackets=%zu pendingBeforeFinal=%zu floatBankBytes=%zu\n",unsigned(reuse),drawCount,banks,peakPackets,normals.testPendingPackets(),banks*size_t(4096));
             }
             const auto stats=normals.testConstantStats();const auto fetched=normals.testConstantReadRegisters();
+#ifdef NORTHLIGHT_TEST_M2_BANK
+            if(scenario>=16&&reuse){
+                assert((ModelNormalPacketTestAccess::materialReads(normals)>0)==(scenario==16));
+                assert(ModelNormalPacketTestAccess::materialMismatches(normals)==unsigned(scenario==19));
+            }
+#endif
             assert(normals.finishCaptures());ok(extension.EndScene());auto image=capturedPixels(normals.texture(),128,128);
             for(size_t at=6;at<image.size();at+=8){uint16_t distance;std::memcpy(&distance,image.data()+at,2);nonempty+=distance!=0;}
             if(!reuse){reference=image;baselineReads=fetched;beforeReads+=fetched;}else{assert(image==reference);afterReads+=fetched;epochHits+=stats.hits;blockHits+=stats.blockTests;
