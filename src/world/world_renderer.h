@@ -2152,6 +2152,7 @@ private:
         std::vector<NorthlightLocalLights::Light> rawSceneLights;
         std::shared_ptr<const NorthlightLightAttachments::Records> sceneLightAttachments;
         std::shared_ptr<NorthlightGI::BVH> actors;
+        NorthlightActorGeometry::TexelKeys actorTexelKeys;
         NorthlightWorkerActorMemo<NorthlightActorGeometry::ActorJob> actorMemo,menuActorMemo;
         uint64_t solvedActorHash=0,completedActorHash=0,completedBaseId=0,menuGeometryHash=0;
         std::shared_ptr<NorthlightGI::BVH> probeCacheGeometry;
@@ -2169,7 +2170,7 @@ private:
             if(bvh)bvh->accountMemory(memory);if(actors)actors->accountMemory(memory);if(probeCacheGeometry)probeCacheGeometry->accountMemory(memory);
             if(scenePlan)scenePlan->accountMemory(memory);
             coarseProbes.accountMemory(memory);probeCache.accountMemory(memory);relightCache.accountMemory(memory);dynamicProbes.accountMemory(memory);visibilityCache.accountMemory(memory);
-            NorthlightGI::accountProbeAtlas(memory,displayFallback);memory.vector(Metadata,sceneLights);memory.vector(Metadata,rawSceneLights);
+            NorthlightGI::accountProbeAtlas(memory,displayFallback);memory.vector(Metadata,sceneLights);memory.vector(Metadata,rawSceneLights);memory.vector(Metadata,actorTexelKeys);
             if(sceneFog)memory.allocation(Fog,sceneFog.get(),sizeof(*sceneFog));
             if(previousLighting){NorthlightGI::accountProbeAtlas(memory,previousLighting->atlas);if(previousLighting->coarseAtlas)NorthlightGI::accountProbeAtlas(memory,*previousLighting->coarseAtlas);if(previousLighting->bvh)previousLighting->bvh->accountMemory(memory);if(previousLighting->meshPlan)previousLighting->meshPlan->accountMemory(memory);}
             logCpuFootprint("gi-worker-reachable",stage,id,memory);
@@ -2200,7 +2201,7 @@ private:
                         if(geometry.scene&&!geometry.scene->triangles.empty()&&!next->build(std::move(*geometry.scene),error,quality.giFastBVH!=0))continue;
                         bvh=std::move(next);menuGeometryHash=geometry.hash;sceneMap=r.map;sceneCenter=r.camera;
                         scenePlan=std::make_shared<NorthlightWorldMesh::WorldMeshUploadPlan>();scenePrepared.reset();sceneFog.reset();rawSceneLights.clear();sceneLightAttachments.reset();
-                        actors.reset();actorMemo={};solvedActorHash=0;dynamicProbes.reset(nullptr);
+                        actors.reset();actorTexelKeys.clear();actorMemo={};solvedActorHash=0;dynamicProbes.reset(nullptr);
                     }
                     menuActorMemo.remember(r.actorJob);
                 }
@@ -2292,7 +2293,7 @@ private:
             bool actorsChanged=false;
             if(!r.menu&&!actorMemo.matches(r.actorJob)){
               NorthlightActorGeometry::Result resolvedActors;
-              if(r.actorJob)resolvedActors=r.actorJob->resolve();
+              if(r.actorJob)resolvedActors=r.actorJob->resolve(actors?&actors->scene():nullptr,&actorTexelKeys);
               result->actorTexturesDecoded=resolvedActors.texturesDecoded;result->actorTextureEncodedBytes=resolvedActors.textureEncodedBytes;
               result->actorDecodeMs=resolvedActors.decodeMs;result->actorPoseMs=resolvedActors.geometryMs;result->actorHashMs=resolvedActors.hashMs;
               actorsChanged=resolvedActors.hash!=solvedActorHash;
@@ -2304,6 +2305,7 @@ private:
                     if(next->build(std::move(scene),actorError,quality.giFastBVH!=0))actors=next; /* GIFastBVH=0: 0.3.137 tracer */
                     else logf("GI actor BVH rejected: %s",actorError.c_str());
                 }
+                actorTexelKeys=std::move(resolvedActors.texelKeys);
                 solvedActorHash=resolvedActors.hash;
                 // Pose/packet change only: keep corrections whose nearby actor
                 // bounds are unchanged (0.3.35); the static generation is intact.

@@ -8,6 +8,7 @@ void operator delete(void* p,size_t)noexcept{std::free(p);}
 #include "actor_scene_job.h"
 #include "actor_job_reference.h"
 #include "actor_hash_reference.h"
+#include "actor_previous_capture.h"
 #include <cassert>
 #include <chrono>
 using namespace NorthlightActorDeformation;
@@ -32,6 +33,13 @@ static NorthlightActorGeometry::Packet packet(){
 static void hashSemantics(){
     using namespace NorthlightActorGeometry;using NorthlightGI::WorldScene;
     const auto scene=ActorJob{{102,13,4},{packet()}}.resolve().scene;
+    for(float scale:{.5f,1.5f,127.5f,5900.5f,524287.5f,16777216.f,2147483648.f,4294967296.f}){
+        float x=scale/32;
+        for(float y:{std::nextafter(x,0.f),x,std::nextafter(x,INFINITY)}){
+            auto cells=poseCells({y,-y,-0.f});
+            assert(cells[0]==std::uint32_t(std::int32_t(std::llround(y*32)))&&cells[1]==std::uint32_t(std::int32_t(std::llround(-y*32)))&&!cells[2]);
+        }
+    }
     auto check=[&](const WorldScene& a,const WorldScene& b,bool same){
         assert((sceneHash(a)==sceneHash(b))==same);
         assert((ActorHashReference::sceneHash(a)==ActorHashReference::sceneHash(b))==same);
@@ -72,6 +80,27 @@ static void hashBenchmark(){
         previous.packets.push_back(std::move(q));current.packets.push_back(std::move(p));
     }
     auto old=previous.resolve();auto now=current.resolve();equal(*old.scene,*now.scene);assert(now.scene->materials.size()==53&&now.scene->vertices.size()==15900);
+    using namespace NorthlightActorGeometry;
+    TexelKeys oldKeys,keys;
+    const auto& before=*now.scene;
+    const auto cold=sceneHash(before,nullptr,nullptr,&oldKeys);
+    auto changed=before; // independent storage, as for a new animation capture
+    assert(sceneHash(changed,&before,&oldKeys,&keys)==cold&&keys==oldKeys);
+    changed.materials[2].rgba.back()^=1;
+    std::swap(changed.materials[0],changed.materials[1]);
+    changed.materials[3].rgba.clear();changed.materials.pop_back();
+    assert(sceneHash(changed,&before,&oldKeys,&keys)==sceneHash(changed)&&sceneHash(changed)!=cold);
+    changed.materials.push_back(before.materials.back());
+    assert(sceneHash(changed,&before,&oldKeys,&keys)==sceneHash(changed));
+    double sample[2][32]={};volatile std::uint64_t consumed=0;
+    for(unsigned i=0;i<32;++i)for(unsigned j=0;j<2;++j){
+        const unsigned mode=(i+j)&1;const auto start=std::chrono::steady_clock::now();
+        const auto key=mode?sceneHash(changed,&before,&oldKeys,&keys):ActorPreviousCapture::sceneHash(changed);
+        sample[mode][i]=std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-start).count();consumed^=key;
+    }
+    for(auto& values:sample)std::sort(values+2,values+32);
+    std::printf("PASS preceding capture hash: 50/53 matching or empty materials incl reorder and changed last byte, previousUs=%.3f verifiedReuseUs=%.3f checksum=%llu\n",
+        (sample[0][16]+sample[0][17])*.5,(sample[1][16]+sample[1][17])*.5,(unsigned long long)consumed);
     double hashUs[2]={},resolveUs[2]={};volatile std::uint64_t checksum=0;unsigned hashAllocations=0;
     constexpr unsigned Rounds=8;
     for(unsigned round=0;round<Rounds;++round)for(unsigned turn=0;turn<2;++turn){const unsigned mode=(round+turn)&1;auto count=allocations;

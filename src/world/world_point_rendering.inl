@@ -762,12 +762,12 @@
     HRESULT pointPaletteDraw(const std::vector<size_t>& candidates,size_t& at,const float* rows,bool& drawn){
         drawn=false;if(pointPaletteUnavailable||frames<pointPaletteRetryFrame||at+1>=candidates.size())return D3D_OK;
         const auto index=candidates[at];const auto& p=*replays[index];
-        if(!pointPaletteSame(p,*replays[candidates[at+1]]))return D3D_OK;
-        const UINT span=pointPaletteSpan(p);
+        // The order builder certifies each immutable packet after replayBoundsJoin().
+        const UINT span=pointReplayPaletteSpans[index];
         if(!span)return D3D_OK;
         size_t end=at+1;
         while(end<candidates.size()){const auto next=candidates[end];
-            if(!pointPaletteSame(p,*replays[next])||!pointPaletteSpan(*replays[next]))break;++end;}
+            if(pointReplayPaletteSpans[next]!=span||!pointPaletteSame(p,*replays[next]))break;++end;}
         if(end-at<2||!pointPaletteResources())return D3D_OK;
         const float opaque[]={0,0,0,-1};HRESULT result=d->SetVertexDeclaration(pointPaletteDecl);
         if(SUCCEEDED(result))result=d->SetVertexShader(pointPaletteVS);

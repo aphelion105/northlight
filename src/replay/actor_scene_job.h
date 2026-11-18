@@ -5,6 +5,9 @@
 #include "mesh_page_key.h"
 #include <chrono>
 #include <memory>
+#if defined(__SSE2__)
+#include <emmintrin.h>
+#endif
 
 // Immutable, CPU-only packets. Texture readback and stream snapshots are complete
 // before queueing. Texture decoding and resolve() run on the existing GI worker,
@@ -12,20 +15,57 @@
 namespace NorthlightActorGeometry {
 // The worker consumes this scene into its BVH. Exclusive ownership avoids a
 // second copy of every posed vertex and decoded texture at that handoff.
-struct Result {std::unique_ptr<NorthlightGI::WorldScene> scene;std::uint64_t hash=0;unsigned texturesDecoded=0;std::size_t textureEncodedBytes=0;double decodeMs=0,geometryMs=0,hashMs=0;};
-inline std::uint64_t sceneHash(const NorthlightGI::WorldScene& scene){
-    std::uint64_t hash=0xcbf29ce484222325ull;
-    auto mix=[&](std::uint32_t value){for(unsigned j=0;j<4;++j){hash^=(value>>(j*8))&255;hash*=0x100000001b3ull;}};
-    auto scalar=[&](float value){std::uint32_t bits;std::memcpy(&bits,&value,4);mix(bits);};
+using TexelKeys=std::vector<NorthlightMeshPageKey::Key>;
+struct Result {std::unique_ptr<NorthlightGI::WorldScene> scene;std::uint64_t hash=0;unsigned texturesDecoded=0;std::size_t textureEncodedBytes=0;double decodeMs=0,geometryMs=0,hashMs=0;TexelKeys texelKeys;};
+inline std::array<std::uint32_t,3> poseCells(NorthlightGI::Vec3 p){
+#if defined(__SSE2__)
+    const __m128 scaled=_mm_mul_ps(_mm_set_ps(0,p.z,p.y,p.x),_mm_set1_ps(32));
+    const __m128 sign=_mm_set1_ps(-0.f);
+    if(_mm_movemask_ps(_mm_cmplt_ps(_mm_andnot_ps(sign,scaled),_mm_set1_ps(2147483648.f)))==15){
+        const __m128i whole=_mm_cvttps_epi32(scaled);
+        const __m128 fraction=_mm_sub_ps(scaled,_mm_cvtepi32_ps(whole));
+        // Round ties away from zero exactly as llround. Adding 0.5 before
+        // truncation would incorrectly round the float immediately below a tie.
+        const __m128i adjust=_mm_castps_si128(_mm_cmpge_ps(_mm_andnot_ps(sign,fraction),_mm_set1_ps(.5f)));
+        const __m128i direction=_mm_or_si128(_mm_srai_epi32(_mm_castps_si128(scaled),31),_mm_set1_epi32(1));
+        std::uint32_t cells[4];_mm_storeu_si128(reinterpret_cast<__m128i*>(cells),_mm_add_epi32(whole,_mm_and_si128(adjust,direction)));
+        return {cells[0],cells[1],cells[2]};
+    }
+#endif
+    auto cell=[](float v){return std::uint32_t(std::int32_t(std::llround(v*32)));};
+    return {cell(p.x),cell(p.y),cell(p.z)};
+}
+inline std::uint64_t sceneHash(const NorthlightGI::WorldScene& scene,const NorthlightGI::WorldScene* previous=nullptr,
+                               const TexelKeys* previousKeys=nullptr,TexelKeys* keys=nullptr){
+    NorthlightMeshPageKey::Hasher hash;
+    auto bits=[](float value){std::uint32_t word;std::memcpy(&word,&value,sizeof word);return word;};
+    auto pair=[&](std::uint32_t a,std::uint32_t b){hash.word((std::uint64_t(a)<<32)|b);};
     // Pose data stays full precision. Quantization affects only generation keys
     // so inverse-camera roundoff does not continuously invalidate probe lighting.
-    for(auto& v:scene.vertices){mix(std::uint32_t(std::int32_t(std::llround(v.position.x*32))));mix(std::uint32_t(std::int32_t(std::llround(v.position.y*32))));mix(std::uint32_t(std::int32_t(std::llround(v.position.z*32))));scalar(v.u);scalar(v.v);}
-    for(auto& t:scene.triangles){mix(t.v0);mix(t.v1);mix(t.v2);mix(t.material);}
-    for(auto& m:scene.materials){scalar(m.albedo.x);scalar(m.albedo.y);scalar(m.albedo.z);scalar(m.alphaCutoff);mix(m.width);mix(m.height);mix(m.addressU);mix(m.addressV);
-        // Reuse the mesh/texel content key; no retained cache or extra scan.
-        const auto bytes=m.texels();if(!bytes.empty()){const auto key=NorthlightMeshPageKey::keyOf(bytes.data(),bytes.size(),nullptr,0);
-            mix(key.vertexBytes);mix(std::uint32_t(key.lo));mix(std::uint32_t(key.lo>>32));mix(std::uint32_t(key.hi));mix(std::uint32_t(key.hi>>32));}}
-    return hash;
+    for(const auto& v:scene.vertices){
+        const auto cells=poseCells(v.position);
+        pair(cells[0],cells[1]);hash.word(cells[2]);pair(bits(v.u),bits(v.v));
+    }
+    for(const auto& t:scene.triangles){pair(t.v0,t.v1);pair(t.v2,t.material);}
+    hash.word(scene.materials.size());
+    if(keys)keys->resize(scene.materials.size());
+    for(size_t i=0;i<scene.materials.size();++i){
+        const auto& m=scene.materials[i];
+        pair(bits(m.albedo.x),bits(m.albedo.y));pair(bits(m.albedo.z),bits(m.alphaCutoff));
+        pair(m.width,m.height);pair(m.addressU,m.addressV);
+        const auto texels=m.texels();hash.word(texels.size());
+        if(texels.empty())continue;
+        // The previous BVH owns its pixels. A material slot is only a lookup hint:
+        // even a reordered draw can reuse a digest only after exact byte equality.
+        NorthlightMeshPageKey::Key key;
+        if(previous&&previousKeys&&i<previous->materials.size()&&i<previousKeys->size()){
+            const auto old=previous->materials[i].texels();
+            if(old.size()==texels.size()&&!std::memcmp(old.data(),texels.data(),texels.size()))key=(*previousKeys)[i];
+        }
+        if(key.vertexBytes!=texels.size())key=NorthlightMeshPageKey::keyOf(texels.data(),texels.size(),nullptr,0);
+        hash.word(key.lo);hash.word(key.hi);if(keys)(*keys)[i]=key;
+    }
+    return hash.finish(std::uint32_t(scene.vertices.size()),std::uint32_t(scene.triangles.size())).lo;
 }
 struct Packet {
     NorthlightDrawSnapshot::Mesh mesh; // owned fallback for transient UP/dynamic captures
@@ -46,7 +86,7 @@ struct ActorJob {
     NorthlightGI::Vec3 center;
     std::vector<Packet> packets;
     bool menu=false;
-    Result resolve()const{
+    Result resolve(const NorthlightGI::WorldScene* previous=nullptr,const TexelKeys* previousKeys=nullptr)const{
         using namespace NorthlightGI;
         const auto resolveStart=std::chrono::steady_clock::now();double decodeMs=0;
         auto scene=std::make_unique<WorldScene>();
@@ -106,8 +146,9 @@ struct ActorJob {
             for(unsigned i=offset;i<scene->vertices.size();++i)scene->vertices[i].normal=normalized(scene->vertices[i].normal);
         }
         const auto hashStart=std::chrono::steady_clock::now();const double geometryMs=std::chrono::duration<double,std::milli>(hashStart-resolveStart).count()-decodeMs;
-        std::uint64_t hash=sceneHash(*scene);const double hashMs=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-hashStart).count();
-        return {std::move(scene),hash,texturesDecoded,textureEncodedBytes,decodeMs,geometryMs,hashMs};
+        TexelKeys keys;
+        std::uint64_t hash=sceneHash(*scene,previous,previousKeys,previousKeys?&keys:nullptr);const double hashMs=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-hashStart).count();
+        return {std::move(scene),hash,texturesDecoded,textureEncodedBytes,decodeMs,geometryMs,hashMs,std::move(keys)};
     }
 };
 } // namespace NorthlightActorGeometry

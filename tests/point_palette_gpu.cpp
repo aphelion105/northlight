@@ -86,7 +86,7 @@ struct PointTerrainCoverageTest {
         auto image=[&]{std::vector<float> out(6*256*256);for(unsigned f=0;f<6;++f){must(d->GetRenderTargetData(w.pointSlot().faces[f],read));D3DLOCKED_RECT lock{};must(read->LockRect(&lock,nullptr,D3DLOCK_READONLY));for(unsigned y=0;y<256;++y)std::memcpy(out.data()+f*256*256+y*256,static_cast<char*>(lock.pBits)+y*lock.Pitch,256*4);must(read->UnlockRect());}return out;};
         auto compare=[&](const std::vector<float>& a,const std::vector<float>& b){assert(a.size()==b.size());size_t covered=0;for(size_t i=0;i<a.size();++i){assert(std::isfinite(a[i])&&std::isfinite(b[i])&&std::fabs(a[i]-b[i])<=2e-6f);covered+=a[i]<.999f;}assert(covered>1000);};
         NorthlightLocalLights::Light light{{0,0,4},{1,.4f,.1f},1,12,17,3,NorthlightLocalLights::CastShadow};
-        auto render=[&](bool optimized){w.pointPaletteUnavailable=!optimized;w.pointSlot().schedule.invalidate();w.pointSlot().retryAt=0;w.pointWork={};must(d->BeginScene());const auto result=w.renderPointShadow(light,true,true);must(d->EndScene());drain();for(unsigned stream=0;stream<2;++stream){UINT freq=0;must(d->GetStreamSourceFreq(stream,&freq));assert(freq==1);}return result;};
+        auto render=[&](bool optimized){w.pointPaletteUnavailable=!optimized;w.pointReplayOrderReady=w.pointReplayGroupsReady=false;w.pointSlot().schedule.invalidate();w.pointSlot().retryAt=0;w.pointWork={};must(d->BeginScene());const auto result=w.renderPointShadow(light,true,true);must(d->EndScene());drain();for(unsigned stream=0;stream<2;++stream){UINT freq=0;must(d->GetStreamSourceFreq(stream,&freq));assert(freq==1);}return result;};
         unsigned comparisons=0;
         for(unsigned pose=0;pose<3;++pose){if(pose){const float angle=float(pose)*.3f;w.context.inverseView[0]=w.context.inverseView[5]=std::cos(angle);w.context.inverseView[1]=std::sin(angle);w.context.inverseView[4]=-std::sin(angle);
                 for(auto& p:w.replays)for(unsigned bone=0;bone<21;++bone)p->constantStorage[4*(31+3*bone)+3]+=.05f;bounds(21);}
@@ -125,8 +125,8 @@ struct PointTerrainCoverageTest {
         // Interleaved compatible meshes could not use the old adjacent-run
         // palette path. Compare with that path still enabled in native order.
         for(unsigned a=0;a<w.replays.size();++a)w.replays[a]->count=source->primitiveCount-2*(a%3);
-        const auto order=[&](bool sorted){w.pointPaletteUnavailable=false;w.pointReplayOrderReady=!sorted;
-            if(!sorted){w.pointReplayOrder.resize(w.replays.size());for(size_t i=0;i<w.replays.size();++i)w.pointReplayOrder[i]=i;}};
+        const auto order=[&](bool sorted){w.pointPaletteUnavailable=false;w.pointReplayOrderReady=w.pointReplayGroupsReady=false;
+            if(!sorted){w.pointOrderReplays();for(size_t i=0;i<w.replays.size();++i)w.pointReplayOrder[i]=i;}};
         const auto renderOrder=[&](bool sorted){order(sorted);w.pointSlot().schedule.invalidate();w.pointWork={};must(d->BeginScene());assert(w.renderPointShadow(light,true,true));must(d->EndScene());drain();};
         renderOrder(false);const auto unordered=image();const auto unorderedDraws=w.pointDraws;unsigned orderWeights[6];std::copy_n(w.pointSlot().faceWeights,6,orderWeights);
         renderOrder(true);compare(unordered,image());assert(std::equal(orderWeights,orderWeights+6,w.pointSlot().faceWeights));assert(w.pointDraws*3<unorderedDraws*2);++comparisons;

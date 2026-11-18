@@ -98,8 +98,9 @@ namespace NorthlightRegionalFog {struct Field {unsigned groundCells=0,airCells=0
  inline bool buildCachedField(const std::string&,const std::string&,V,const Region&,Field&,std::string&,const NorthlightGI::AllocationAdmission&,const NorthlightGI::SceneSourceProvider&,const ZoneScale*){return false;}}
 namespace NorthlightMemMap {inline std::atomic<bool> deferredRequest{false};}
 namespace NorthlightLightAttachments {struct Records {};struct Cache {explicit Cache(const std::string&){}};}
-namespace NorthlightActorGeometry {struct Result {std::shared_ptr<NorthlightGI::WorldScene> scene;uint64_t hash=0;unsigned texturesDecoded=0;size_t textureEncodedBytes=0;double decodeMs=0,geometryMs=0,hashMs=0;};
- struct ActorJob {Result resolve()const{throw std::runtime_error("fixture actor failure");}};}
+namespace NorthlightActorGeometry {using TexelKeys=std::vector<int>;
+ struct Result {std::shared_ptr<NorthlightGI::WorldScene> scene;uint64_t hash=0;unsigned texturesDecoded=0;size_t textureEncodedBytes=0;double decodeMs=0,geometryMs=0,hashMs=0;TexelKeys texelKeys;};
+ struct ActorJob {Result resolve(const NorthlightGI::WorldScene* = nullptr,const TexelKeys* = nullptr)const{throw std::runtime_error("fixture actor failure");}};}
 static NorthlightGI::WorldScene fixtureScene(V c){
  // Ground under the whole build box and a roof over the build centre whose
  // height changes every 32 units: generations differ near every window.
