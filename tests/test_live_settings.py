@@ -39,6 +39,7 @@ struct World {
     NorthlightQuality::Settings quality;
     NorthlightCelestialProfiles::Table celestialProfiles;
     bool settingsRequestDirty=false,paletteFrameValid=true,temporalValid=true,fogHistoryValid=true,shadowsComposited=true,shadowFrameReady=true;
+    struct {bool valid=true;} fogVolume;
     unsigned minSkinnedShadowTriangles=0,captureBudgetMiB=0,actorShadowBudgetMiB=0;
     bool shadowFateDiagnostics=false;
     struct Fx{bool gi=true,shadows=true,fog=true;};Fx effects,requestedEffects;unsigned effectResets=0;
@@ -56,6 +57,11 @@ struct World {
 __METHOD__
 };
 int main(){
+    {
+        World world;NorthlightSettings::Config config;config.quality=world.quality;
+        config.quality.shadowRefreshCpuMs=7;world.applyLiveSettings(config);
+        assert(world.quality.shadowRefreshCpuMs==7&&!world.invalidates&&!world.actorChanges&&!world.resets);
+    }
     for(unsigned pass=0;pass<1000;++pass){
         World w;NorthlightSettings::Config next;
         for(const auto& k:NorthlightQuality::Keys)k.set(next.quality,pass&1?k.low:k.high);

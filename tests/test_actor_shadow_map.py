@@ -10,8 +10,10 @@ import northlight_paths as fp
 import re,subprocess,tempfile
 HERE=Path(__file__).resolve().parent
 w=fp.src('world_renderer.h').read_text();q=fp.src('quality_settings.h').read_text()
+geometry=fp.src('world_geometry_resources.inl').read_text()
+screen=fp.src('world_screen_resources.inl').read_text()
 h=fp.src('actor_shadow_map.h').read_text()
-actor_shaders=w[w.index('    void actorShaderResources('):w.index('    bool createResources(')]
+actor_shaders=w[w.index('    void actorShaderResources('):w.index('#include "world_screen_resources.inl"')]
 render=w[w.index('    bool render(IDirect3DSurface9* targetSurface'):]
 checks={}
 checks['constants: Radius 12, Inset .80, Size 1024; unsnapped centre (XY from the leashed centre, depth from the pivot); matrix rows from shadowMatrixFrom']=('inline constexpr float Radius=12.f;' in h and 'inline constexpr float Inset=.80f;' in h and 'inline constexpr unsigned Size=1024;' in h
@@ -20,11 +22,11 @@ checks['constants: Radius 12, Inset .80, Size 1024; unsnapped centre (XY from th
     and 'dot(delta,delta)>JumpDistance' not in h) # the jump test is light-space XY (a 3D one re-centred while flying under a high sun)
 # Own Keys entry only; its position in Keys[] is test_quality_docs.py's business.
 checks['quality: ActorShadowDetail 0..1, presets 1/1/0, actorShadowMap needs ActorShadows']=(re.search(r'\{\s*"ActorShadowDetail"\s*,\s*&Settings::actorShadowDetail\s*,\s*0\s*,\s*1\s*,\s*\{\s*1\s*,\s*1\s*,\s*0\s*\}\s*\}',q) is not None
-    and 'inline bool actorShadowMap(const Settings& s,bool shadows){return actorShadowWork(s,shadows)&&s.actorShadowDetail;}' in q and 'unsigned actorShadowDetail=1;' in q)
+    and 'inline bool actorShadowMap(const Settings& s,bool shadows){return s.shadowProvider&&actorShadowWork(s,shadows)&&s.actorShadowDetail;}' in q and 'unsigned actorShadowDetail=1;' in q)
 # Frame matrices from the raw pivot, before the cascade anchor (the anchor test keeps every later `pivot` out).
 raw=render.index('NorthlightActorShadowMap::leash(actorCenter[source],actorCenterValid[source],pivot,rawSourceDirections[source])')
 checks['matrix from the raw pivot, before the anchored cascade pivot; off = nothing computed']=(raw<render.index('cascadeAnchor.update(')
-    and 'const bool actorMapOn=NorthlightQuality::actorShadowMap(quality,effects.shadows)&&actorShadowPS&&actorTilesPS&&actorShadow[0]&&actorShadow[1]&&actorTiles[0]&&actorTiles[1]&&actorTilesMid&&actorVisibility;' in render
+    and 'const bool actorMapOn=NorthlightQuality::actorShadowMap(quality,directionalShadows)&&actorShadowPS&&actorTilesPS&&actorShadow[0]&&actorShadow[1]&&actorTiles[0]&&actorTiles[1]&&actorTilesMid&&actorVisibility;' in render
     and 'actorFrameOn[source]=NorthlightActorShadowMap::finiteMatrix(actorFrameMatrix[source]);if(!actorFrameOn[source])actorCenterValid[source]=false;' in render
     and 'NorthlightActorShadowMap::matrix(actorCenter[source],pivot,rawSourceDirections[source],actorFrameMatrix[source]);' in render
     and 'if(anchorNewMap)actorCenterValid[source]=false;' in render and render.index('if(anchorNewMap)actorCenterValid[source]=false;')<raw
@@ -33,7 +35,7 @@ checks['leash: 1.5 yd, 40 yd jump re-centre; diagnostic dump s%d-actor']=('inlin
     and 'std::snprintf(name,sizeof name,"s%d-actor",source);NorthlightWorldDiagnostics::dump(d,actorShadowSurface[source]' in w)
 checks['a source without a near map keeps no actor map']='if(!actorMapOn||!sourceActive[source]){actorValid[source]=false;actorHold[source].invalidate();}' in render
 # Pairing: invalid when the near map is redrawn, valid only after the actor draw; a reused/deferred near map continues before any of it.
-loop=render[render.index('        for(int source=0;source<2;++source){\n          if(!effects.shadows||!sourceActive[source])continue;'):]
+loop=render[render.index('        for(int source=0;source<2;++source){\n          if(!directionalShadows||!sourceActive[source])continue;'):]
 reuse=loop.index('if(action!=NorthlightQuality::CascadeAction::Render){')
 begin=loop.index('reuse.begin(interval);')
 invalid=loop.index('if(cascade==0)actorValid[source]=nearActorSkip[source]=false;')
@@ -65,11 +67,12 @@ checks['near map with skipped casters is redrawn, not reused, once its actor map
     and 'nearShadow[s].invalidate();actorValid[s]=false;nearActorSkip[s]=false;' in w)
 checks['profile marks: the near replays before the actor map have their own name (SunNear/MoonNear stay unique)']=(
     'profile->mark(source==0?"SunNearReplays":"MoonNearReplays")' in loop and loop.count('"SunNear"')==2)
-# ActorShadowDetail=0 / ActorShadows=0: the pass is never drawn; the visibility is still cleared white every frame.
-light=render[render.index('actor visibility (half res, r sun, g moon)'):render.index('if(profile)profile->mark(mergedGI?"WorldLightingGI":"WorldLighting");')]
+# Shared soft shadows resolve both maps together. Hard shadows and failed resolves use the separate visibility target.
+light=render[render.index('bool actorPass[2]'):render.index('if(profile)profile->mark(mergedGI?"WorldLightingGI":"WorldLighting");')]
 checks['visibility target and clear only on a frame with an ActorShadow pass (a valid actor map of a drawn, active source); otherwise neutralWhite']=(
-    light.index('actorPass[source]=!(')<light.index('if(anyActorPass){')<light.index('if(!check(d->SetRenderTarget(0,actorVisibilitySurface),"actor visibility target")||!check(d->Clear(0,nullptr,D3DCLEAR_TARGET,0xffffffff,1,0),"clear actor visibility"))return false;\n        }')
-    and '||!effects.shadows||!sourceActive[source]||!actorValid[source]||!actorShadow[source]||!actorShadowPS||!actorTilesPS||!actorTiles[source]||!actorTilesMid||!actorVisibility);' in light
+    light.index('actorPass[source]=!(')<light.index('if(anyActorPass){')<light.index('if(!anyActorPass)return true;')
+    and '||!applyDirectionalShadows||!sourceActive[source]||!actorValid[source]||!actorShadow[source]||!actorShadowPS||!actorTilesPS||!actorTiles[source]||!actorTilesMid||!actorVisibility);' in light
+    and 'if(!sharedResolveRequested&&!resolveActorVisibility())return false;' in light and 'if(!softResolved&&!resolveActorVisibility())return false;' in light
     and 'if(!actorPass[source])continue;' in light and light[:light.index('bool softResolved=')].count('0xffffffff')==1)
 checks['every ActorTiles pass (own 64x64 target per source, own mark) before the visibility clear, so the visibility target is cleared and drawn without a switch; tiles on s10 (restored after)']=(
     light.index('d->SetPixelShader(actorTilesPS);')<light.index('if(!check(quad(tiles,tiles),"actor shadow tile pass"))return false;')<light.index('if(profile)profile->mark("ActorTiles");')
@@ -77,29 +80,29 @@ checks['every ActorTiles pass (own 64x64 target per source, own mark) before the
     and light.index('d->SetRenderTarget(0,actorTilesMidSurface)')<light.index('if(!check(quad(mid,mid),"actor shadow tile pass"))return false;')<light.index('d->SetRenderTarget(0,actorTilesSurface[source])')
     <light.index('d->SetTexture(12,actorTilesMid);d->SetPixelShaderConstantF(72,midInfo,1);')<light.index('if(!check(quad(tiles,tiles),"actor shadow tile pass"))return false;') # two 4x4 steps: 1024 -> 256 -> 64
     and light.count('SetRenderTarget(0,actorVisibilitySurface)')==1
-    and '!makeTarget(count,count,D3DFMT_R32F,&actorTiles[0],&actorTilesSurface[0])||!makeTarget(count,count,D3DFMT_R32F,&actorTiles[1],&actorTilesSurface[1])' in w
-    and 'if(anyActorPass)d->SetTexture(10,textures[10]);' in light and light.index('d->SetPixelShader(quality.softShadows?actorShadowPS:actorUniformPS);')<light.index('if(anyActorPass)d->SetTexture(10,textures[10]);'))
+    and '!makeTarget(count,count,D3DFMT_R32F,&actorTiles[0],&actorTilesSurface[0])||!makeTarget(count,count,D3DFMT_R32F,&actorTiles[1],&actorTilesSurface[1])' in geometry
+    and 'd->SetTexture(10,textures[10]);' in light and light.index('d->SetPixelShader(quality.softShadows?actorShadowPS:actorUniformPS);')<light.index('d->SetTexture(10,textures[10]);'))
 checks['ActorShadow pass: c68..c71 matrix, c72 info, actor map on s12, RED sun / GREEN moon, mask restored']=(
     'SetPixelShaderConstantF(68,actorMatrices[source],4)' in light and 'SetPixelShaderConstantF(72,actorInfo,1)' in light and 'const float actorInfo[4]={1.f,1.f/float(NorthlightActorShadowMap::Size),NorthlightActorShadowMap::Radius,0.f};' in light
     and 'd->SetTexture(12,actorShadow[source]);d->SetTexture(10,actorTiles[source]);' in light and 'source?D3DCOLORWRITEENABLE_GREEN:D3DCOLORWRITEENABLE_RED' in light and 'D3DRS_COLORWRITEENABLE,15' in light)
 checks['s12: actor visibility for WorldLighting, then baseline visibility for later lighting readers']=(
-    light.index('d->SetTexture(12,anyActorPass?actorVisibility:neutralWhite);')<light.index('d->SetPixelShader(unshadowedLighting?lightingUnshadowedPS:softResolved?lightingSoftPS:lightingPS);')
+    light.index('d->SetTexture(12,!sharedResolved&&anyActorPass?actorVisibility:neutralWhite);')<light.index('d->SetPixelShader(unshadowedLighting?lightingUnshadowedPS:sharedResolved?lightingSharedPS:softResolved?lightingSoftPS:lightingPS);')
     and 'd->SetTexture(12,baselineLight); // The following lighting consumers use this frame\'s baseline and visibility.' in light and light.rstrip().endswith('d->SetTexture(15,nullptr);')
     and 'textures[]={foldScene?foldScene:color,depth,shadow[0],shadow[1],probe[0],probe[1],probe[2],probe[3],nullptr,nullptr,probe[4],waterMask,nullptr,' in render
-    # GI, removal, temporal and local-direct passes inherit the one baseline
-    # binding; counting the removed redundant binds does not test ownership.
-    and 'SetTexture(12,' not in render[render.index('if(profile)profile->mark(mergedGI?"WorldLightingGI":"WorldLighting");'):render.index('        if(positionalLighting){')]
-    and render.index('d->SetTexture(12,baselineLight);',render.index('"fog clouds raymarch"'))<render.index('        if(localFogActive){'))
+    # The no-lighting branch substitutes zero. No subsequent pass may inherit
+    # the actor mask as a lighting baseline.
+    and re.findall(r'SetTexture\(12,([^)]*)\)', render[render.index('if(profile)profile->mark(mergedGI?"WorldLightingGI":"WorldLighting");'):render.index('        if(positionalLighting){')]) == ['neutralZero']
+    and render.index('d->SetTexture(12,baselineLight);',render.index('"fog clouds raymarch"'))<render.index('        if(effects.fog&&localFogActive){'))
 checks['resources: maps, tiles and visibility only with the shaders (ActorShadowDetail=1) and optional (a failure turns the map off, not the renderer); neutral white mandatory 1x1; released with the rest']=(
-    "releaseActorTargets();logf(\"WORLD actor shadow map disabled: render targets unavailable\");" in w and 'actorVisibility,&actorVisibilitySurface))return false;' not in w
-    and '||!makeTarget(w/2,h/2,D3DFMT_A8R8G8B8,&actorVisibility,&actorVisibilitySurface)' in w
-    and 'if(!quality.actorShadows||!quality.actorShadowDetail||actorShadowPS)return;' in actor_shaders
-    and 'if(FAILED(d->CreatePixelShader(kActorShadowShader,&actorShadowPS))||FAILED(d->CreatePixelShader(kActorTilesShader,&actorTilesPS))||FAILED(d->CreatePixelShader(kActorShadowUniformShader,&actorUniformPS)))' in actor_shaders
+    "releaseActorTargets();logf(\"WORLD actor shadow map disabled: render targets unavailable\");" in geometry and 'actorVisibility,&actorVisibilitySurface))return false;' not in geometry
+    and '||!makeTarget(w/2,h/2,D3DFMT_A8R8G8B8,&actorVisibility,&actorVisibilitySurface)' in geometry
+    and 'if(!quality.actorShadows||!quality.actorShadowDetail)return;' in actor_shaders
+    and 'if(!actorShadowPS&&(FAILED(d->CreatePixelShader(kActorShadowShader,&actorShadowPS))||FAILED(d->CreatePixelShader(kActorTilesShader,&actorTilesPS))||FAILED(d->CreatePixelShader(kActorShadowUniformShader,&actorUniformPS))))' in actor_shaders
     and 'drop(actorShadowPS);drop(actorUniformPS);drop(actorTilesPS);logf("WORLD actor shadow map disabled: shader creation failed");return;' in actor_shaders
-    and 'actorShaderResources(fogCaps);' in w and 'if(actorTargetsPending){D3DCAPS9 caps={};d->GetDeviceCaps(&caps);actorShaderResources(caps);}' in w
+    and 'actorShaderResources(caps);' in screen and 'if(actorTargetsPending){D3DCAPS9 caps={};d->GetDeviceCaps(&caps);actorShaderResources(caps);}' in geometry
     and 'void releaseActorTargetTextures(){for(auto& t:actorShadow)drop(t);for(auto& t:actorShadowSurface)drop(t);for(auto& t:actorTiles)drop(t);for(auto& t:actorTilesSurface)drop(t);drop(actorTilesMid);drop(actorTilesMidSurface);drop(actorVisibility);drop(actorVisibilitySurface);}' in w
     and 'void releaseActorTargets(){releaseActorTargetTextures();drop(actorShadowPS);drop(actorUniformPS);drop(actorTilesPS);drop(actorTilesWidePS);drop(fogActorTiledPS);drop(fogCloudsActorTiledPS);}' in w
-    and 'releaseActorTargets();drop(neutralWhite);' in w and '*static_cast<DWORD*>(lock.pBits)=0xffffffffu;neutralWhite->UnlockRect(0);' in w
+    and 'releaseActorTargets();drop(neutralWhite);' in w and '*static_cast<DWORD*>(lock.pBits)=0xffffffffu;neutralWhite->UnlockRect(0);' in screen
     and 'nearShadow[s].invalidate();actorValid[s]=false;' in w)
 # Hysteresis hold and the near-first bounds order: wired once, gated diagnostics, shown on the actor map log line.
 hold=fp.src('actor_side_hold.h').read_text();job=fp.src('replay_bounds_job.h').read_text();near=fp.src('replay_bounds_near.h').read_text();point=fp.src('world_point_rendering.inl').read_text()

@@ -6,7 +6,8 @@ import northlight_paths as fp
 import os,re,subprocess,tempfile
 HERE=Path(__file__).resolve().parent
 r=fp.src('renderer.cpp').read_text(encoding='utf-8');w=fp.src('world_renderer.h').read_text(encoding='utf-8');h=fp.src('effects_buckets.h').read_text(encoding='utf-8')
-effects=r[r.index('    void renderEffects() {'):r.index('    // One shader query/reference per original draw')]
+effects_start=r.index('    void renderEffects() {')
+effects=r[effects_start:r.index('\n    }\n',effects_start)]
 render=w[w.index('    bool render(IDirect3DSurface9* targetSurface'):]
 world_marks=len(re.findall(r'\bbucket\(NorthlightEffectsBuckets::',render));outer_marks=effects.count('effectsBuckets.mark(')
 checks={
