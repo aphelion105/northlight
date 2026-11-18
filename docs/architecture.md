@@ -24,6 +24,17 @@ directional submission time and the number of cubes held on sampled frames.
 The static directional cache batches consecutive index ranges within a mesh
 page. The pixel shader, alpha coverage and scissor govern when a draw closes.
 Lamp cube faces use the same page-range and device primitive-limit checks.
+
+For dynamic lamp shadows, `point_shadow_clip.h` classifies world-space caster
+bounds against the six cube faces. Sparse planes use precomputed support
+corners. Cases close to a clip boundary use the full floating-point margin.
+`world_point_replays.inl` owns point-caster ordering, palette instancing and
+indexed draw coalescing. Compatible ranges from different capture groups can
+share a draw after comparing the captured pose. Within a run of identical
+opaque instanced geometry, equal consecutive bone palettes draw once. Logical
+packet counts still drive the partial-face scheduler. `POINT workload` reports
+the two reductions in `crossGroupMerged` and `duplicateInstances`.
+
 For geometry capture reuse, pose certificates and range-bank transfer, see
 the [capture acceleration investigation](capture-acceleration-20261117.md).
 For the current cost of M2 capture and the data the installed game has before

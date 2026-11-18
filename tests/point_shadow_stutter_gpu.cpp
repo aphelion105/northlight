@@ -623,6 +623,7 @@ struct PointTerrainCoverageTest {
    }
   }
 #ifdef NORTHLIGHT_POINT_OVERLAP_TEST
+  for(unsigned i=0;i<w.replays.size();++i)w.replays[i]->constantGroup=i;
   for(unsigned step:{0u,32u}){
    for(unsigned i=0;i<w.replays.size();++i)w.replays[i]->start=3*i*step;
    unsigned draws[2]{};uint64_t tris[2]{};std::vector<float> expected;std::array<unsigned,6> logicalWeights{};
@@ -634,10 +635,26 @@ struct PointTerrainCoverageTest {
     if(!merge){expected=image();assert(std::any_of(expected.begin(),expected.end(),[](float depth){return depth<1.f;}));std::copy_n(w.pointSlot().faceWeights,6,logicalWeights.begin());}
     else{assert(image()==expected&&std::equal(logicalWeights.begin(),logicalWeights.end(),w.pointSlot().faceWeights));}
    }
-   assert(draws[1]*32==draws[0]&&tris[1]<tris[0]);
+   assert(draws[1]*32==draws[0]&&tris[1]<tris[0]&&w.pointWork.crossGroupMerged>0);
    std::printf("POINT_OVERLAP_PASS step=%u beforeDraws=%u afterDraws=%u beforeTriangles=%llu afterTriangles=%llu exactFaces=6\n",step,draws[0],draws[1],(unsigned long long)tris[0],(unsigned long long)tris[1]);
+   if(!step){
+    NorthlightGpuFrameTimer timer(d);
+    for(unsigned block=0;block<16;++block){
+     const bool merge=block%4==1||block%4==2;
+     w.pointPrimitiveLimit=merge?caps.MaxPrimitiveCount:1;
+     w.pointWork={};drain();must(d->BeginScene());const bool timed=timer.begin(block);
+     const auto start=std::chrono::steady_clock::now();
+     for(unsigned i=0;i<8;++i){
+      auto moving=light;moving.position[0]+=.07f*i;
+      w.pointSlot().schedule.invalidate();assert(w.renderPointShadow(moving,true,true));
+     }
+     const double cpu=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
+     timer.end();must(d->EndScene());drain();double gpu=-1;if(timed)timer.poll(gpu);
+     std::printf("POINT_POSE_RANGE_TIMING block=%u merge=%u cpuMs=%.6f gpuMs=%.6f draws=%u\n",block,unsigned(merge),cpu,gpu,w.pointWork.replay);
+    }
+   }
   }
-  for(unsigned i=0;i<w.replays.size();++i)w.replays[i]->start=3*i*64;
+  for(unsigned i=0;i<w.replays.size();++i){w.replays[i]->start=3*i*64;w.replays[i]->constantGroup=0;}
   w.replayBoundsBegin();w.replayBoundsResolved=true;w.pointSlot().cacheValid=false;w.pointSlot().schedule.invalidate();
   must(d->BeginScene());assert(w.renderPointShadow(light,true,true));must(d->EndScene());drain();
 #endif
@@ -653,12 +670,21 @@ struct PointTerrainCoverageTest {
   std::puts("POINT_TOGGLE_GPU_PASS staticRetained=1 keepsRetained=1 staleCaptureDeferred=1 changedDynamic=exact fullInvalidation=exact");
   const std::vector<size_t> adjacent={0,1};
   auto& next=*w.replays[1];const auto& firstReplay=*w.replays[0];
-  for(unsigned reason=0;reason<9;++reason){
-   if(reason==1)++next.constantGroup;if(reason==2)++next.stride[0];if(reason==3)++next.start;if(reason==4)next.type=D3DPT_TRIANGLESTRIP;
+  for(unsigned reason=0;reason<10;++reason){
+   if(reason==1||reason==9)++next.constantGroup;
+   if(reason==9){w.replays[0]->constantUsage.floats={2,5};next.constantUsage.floats={2,5};next.constantStorage[24]=1.f;}
+   if(reason==2)++next.stride[0];if(reason==3)++next.start;if(reason==4)next.type=D3DPT_TRIANGLESTRIP;
    if(reason==5)next.cutoff=-1;if(reason==6)next.constantUsage.booleans={0,1};if(reason==7)next.offset[0]=4;
    if(reason==8){next.min=UINT_MAX;next.vertices=2;}
-   size_t at=0;w.pointPrimitiveLimit=caps.MaxPrimitiveCount;const auto run=w.pointReplayRun(adjacent,at,false);assert(at==(reason?1u:2u)&&run.count==(reason?64u:128u));
-   next.constantGroup=firstReplay.constantGroup;next.stride[0]=firstReplay.stride[0];next.start=192;next.type=firstReplay.type;next.cutoff=firstReplay.cutoff;next.constantUsage.booleans={};next.offset[0]=0;next.min=0;next.vertices=6;
+   size_t at=0;w.pointPrimitiveLimit=caps.MaxPrimitiveCount;const auto run=w.pointReplayRun(adjacent,at,false);
+#ifdef NORTHLIGHT_POINT_GROUP_REFERENCE
+   const bool merged=reason==0;
+#else
+   const bool merged=reason<=1;
+#endif
+   assert(at==(merged?2u:1u)&&run.count==(merged?128u:64u));
+   if(reason==9){w.replays[0]->constantUsage.floats={2,4};next.constantUsage.floats={2,4};next.constantStorage[24]=0.f;}
+   next.constantGroup=firstReplay.constantGroup;next.stride[0]=firstReplay.stride[0];next.start=192;next.type=firstReplay.type;next.cutoff=firstReplay.cutoff;next.constantUsage=firstReplay.constantUsage;next.offset[0]=0;next.min=0;next.vertices=6;
   }
   w.replays.clear();cutout->Release();
   std::printf("POINT_REPLAY_COALESCE_GPU_PASS opaqueCutout=exact faces=6 beforeDraws=%u afterDraws=%u poseStateStripOverflow=barriers faceWeights=unchanged\n",replayBefore,replayAfter);

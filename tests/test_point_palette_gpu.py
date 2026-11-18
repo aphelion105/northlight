@@ -27,7 +27,9 @@ for index,backend in enumerate(a.backend):
     log=out/f'gpu-{index}.log';log.write_bytes(r.stdout+r.stderr);print(index,(r.stdout+r.stderr).decode(errors='replace')[-2400:],flush=True);r.check_returncode();assert b'POINT_PALETTE_GPU_PASS' in r.stdout
     rows=[dict(re.findall(r'(\w+)=([\d.]+)',line)) for line in r.stdout.decode().splitlines() if line.startswith('POINT_PALETTE_TIMING ')]
     order_rows=[dict(re.findall(r'(\w+)=([\d.]+)',line)) for line in r.stdout.decode().splitlines() if line.startswith('POINT_ORDER_TIMING ')]
+    repeat_rows=[dict(re.findall(r'(\w+)=([\d.]+)',line)) for line in r.stdout.decode().splitlines() if line.startswith('POINT_REPEAT_POSE_TIMING ')]
+    assert r.stdout.count(b'POINT_REPEAT_POSE_GPU_PASS')==2 and (not a.timing or len(repeat_rows)==16)
     assert b'POINT_ORDER_GPU_PASS' in r.stdout
-    results.append(dict(order_timing=order_rows,backend=str(backend.resolve()),sha256=sha(backend),concurrent_games=games,log=log.name,timing=rows))
+    results.append(dict(repeat_pose_timing=repeat_rows,order_timing=order_rows,backend=str(backend.resolve()),sha256=sha(backend),concurrent_games=games,log=log.name,timing=rows))
 assert all(sha(Path(f))==h for f,h in inputs.items()),'Source changed during oracle'
 (out/'validation.json').write_bytes(json.dumps(dict(pass_=True,inputs=inputs,results=results,scope='Actual production renderPointShadow, including frame-local opaque grouping, adjacent-run admission and palette packing, original capture packets and source-envelope proof. Component CPU submission/GPU timestamps/serialized completion only; no gameplay FPS or whole-renderer budget claim.'),indent=2).encode())

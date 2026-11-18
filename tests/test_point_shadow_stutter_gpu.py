@@ -49,6 +49,9 @@ if a.reference_point_from:
   target=overlay/name;target.write_bytes(subprocess.check_output(['git','show',a.reference_point_from+':'+path],cwd=fp.REPO));inputs[str(target)]=sha(target)
  point=(overlay/'world_point_rendering.inl').read_text()
  reference=['-I',overlay]
+ if '#include "world_point_replays.inl"' in point:
+  target=overlay/'world_point_replays.inl';target.write_bytes(subprocess.check_output(['git','show',a.reference_point_from+':src/world/world_point_replays.inl'],cwd=fp.REPO));inputs[str(target)]=sha(target)
+ if 'crossGroupMerged' not in point:reference+=['-DNORTHLIGHT_POINT_GROUP_REFERENCE=1']
  if 'const bool direct=!pointSlot().cacheFace[face];' not in point:reference+=['-DNORTHLIGHT_POINT_UNION_REFERENCE=1']
  if 'PointSlot recycled;' not in point:reference+=['-DNORTHLIGHT_POINT_RECYCLE_REFERENCE=1']
  if 'geometryOnlyFaces' not in point:reference+=['-DNORTHLIGHT_POINT_TERRAIN_REFERENCE=1']

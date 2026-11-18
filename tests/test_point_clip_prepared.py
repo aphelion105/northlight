@@ -17,6 +17,6 @@ assert 'if((faces&(1u<<face))&&!NorthlightPointShadow::faceMatrix(' in renderer
 assert 'pointMask(batch.boundsLow,batch.boundsHigh,clip,faces)' in renderer
 assert 'pointMask(batch.boundsLow,batch.boundsHigh,clip,rebuildMask&faces)' in renderer
 assert 'pointMask(batch.low,batch.high,clip,faces)' in renderer
-assert 'clip.mask(bounds.low,bounds.high,bounds.valid,faces)' in renderer
+assert 'clip.mask(bounds.low,bounds.high,bounds.valid,groupFaces)' in renderer
 assert 'const FaceClip clip(matrices);' in fp.src('point_light_shadow.h').read_text()
 print('PASS prepared clipping is shared by static, terrain, live, replay, and content paths')

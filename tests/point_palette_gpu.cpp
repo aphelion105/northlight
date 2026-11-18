@@ -92,6 +92,46 @@ struct PointTerrainCoverageTest {
                 for(auto& p:w.replays)for(unsigned bone=0;bone<21;++bone)p->constantStorage[4*(31+3*bone)+3]+=.05f;bounds(21);}
             assert(render(false));const auto reference=image();const auto oldDraws=w.pointDraws;unsigned weights[6];std::copy_n(w.pointSlot().faceWeights,6,weights);
             assert(render(true));compare(reference,image());assert(std::equal(weights,weights+6,w.pointSlot().faceWeights));assert(w.pointWork.palettePackets>0&&w.pointDraws<oldDraws/2);++comparisons;}
+        // Material layers can submit an identical opaque pose repeatedly while
+        // unrelated native registers and capture groups change between packets.
+        const auto originalLight=light;
+        std::vector<std::array<float,1024>> originalBanks(w.replays.size());
+        for(size_t i=0;i<w.replays.size();++i){
+            auto& packet=*w.replays[i];
+            std::copy_n(packet.constants,1024,originalBanks[i].begin());
+            std::copy_n(originalBanks[i-i%4].data(),1024,packet.constantStorage);
+            packet.constantStorage[4*(31+3*74)]=float(i);
+        }
+        bounds(21);
+        for(unsigned shift=0;shift<2;++shift){
+            light.position[0]=originalLight.position[0]+float(shift)*.75f;
+            const auto signedZeros=[&](bool alternate){
+                for(size_t i=0;i<w.replays.size();++i)
+                    w.replays[i]->constantStorage[4*31+1]=alternate&&(i%2)?-0.f:0.f;
+            };
+            // Both controls use palette instancing. A different zero sign
+            // preserves the image while forcing a distinct bytewise pose.
+            signedZeros(true);assert(render(true));const auto before=image();
+            const auto triangles=w.pointWork.triangles;
+            const auto draws=w.pointWork.replay;
+            assert(!w.pointWork.duplicateInstances);
+            unsigned weights[6];std::copy_n(w.pointSlot().faceWeights,6,weights);
+            signedZeros(false);assert(render(true));assert(image()==before);
+            assert(w.pointWork.duplicateInstances&&w.pointWork.triangles*3<triangles&&w.pointWork.replay<draws);
+            assert(std::equal(weights,weights+6,w.pointSlot().faceWeights));
+            std::printf("POINT_REPEAT_POSE_GPU_PASS moved=%u beforeDraws=%u afterDraws=%u beforeTriangles=%llu afterTriangles=%llu duplicateInstances=%u exactFaces=6\n",
+                shift,draws,w.pointWork.replay,(unsigned long long)triangles,(unsigned long long)w.pointWork.triangles,w.pointWork.duplicateInstances);
+            if(shift==1){
+                for(unsigned bone=0;bone<21;++bone)w.replays[1]->constantStorage[4*(31+3*bone)+3]+=1.5f;
+                bounds(21);
+                signedZeros(true);assert(render(true));const auto animated=image();
+                assert(animated!=before);
+                signedZeros(false);assert(render(true));assert(image()==animated&&w.pointWork.duplicateInstances);
+            }
+        }
+        light=originalLight;
+        for(size_t i=0;i<w.replays.size();++i)std::copy_n(originalBanks[i].data(),1024,w.replays[i]->constantStorage);
+        bounds(21);assert(render(true));
         // Material-only layout variants keep the same POSITION and BLENDINDICES.
         // Every variant is a real device declaration, and the scalar reference
         // uses that native declaration for the draw.
@@ -161,16 +201,26 @@ struct PointTerrainCoverageTest {
             std::printf("POINT_ORDER_TIMING block=%u sorted=%u cpuMs=%.6f completeMs=%.6f draws=%u\n",block,unsigned(sorted),std::chrono::duration<double,std::milli>(submitted-start).count(),std::chrono::duration<double,std::milli>(done-start).count(),draws);must(d->Present(nullptr,nullptr,nullptr,nullptr));}
         std::printf("POINT_PALETTE_GPU_PASS comparisons=%u actors=100 faces=6 spans=1,16,21,41,42,71 rebasedFirst=50 coldResume=1 alphaFallback=1 faults=14 recoveryWithoutRestart=1 reset=1 depthTolerance=2e-6\n",comparisons);
         if(timing){IDirect3DQuery9 *begin=nullptr,*end=nullptr,*hz=nullptr,*disjoint=nullptr;must(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&begin));must(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&end));must(d->CreateQuery(D3DQUERYTYPE_TIMESTAMPFREQ,&hz));must(d->CreateQuery(D3DQUERYTYPE_TIMESTAMPDISJOINT,&disjoint));
-            for(unsigned unique=0;unique<3;++unique){
+            for(unsigned unique=0;unique<4;++unique){
             if(unique==2){auto shifted=std::make_shared<NorthlightDrawSnapshot::Mesh>(*source);auto v=vertices;for(auto& item:v)item.bones[0]=74;
                 std::memcpy(shifted->streams[0].bytes.data(),v.data(),shifted->streams[0].bytes.size());must(vb->Lock(8*sizeof(Vertex),UINT(shifted->streams[0].bytes.size()),&data,0));std::memcpy(data,v.data(),shifted->streams[0].bytes.size());must(vb->Unlock());for(auto& p:w.replays)p->shared=shifted;bounds(75);for(const auto& p:w.replays)assert(p->boundsWork.paletteFirst==74);}
+            if(unique==3){
+                must(vb->Lock(8*sizeof(Vertex),UINT(source->streams[0].bytes.size()),&data,0));
+                std::memcpy(data,source->streams[0].bytes.data(),source->streams[0].bytes.size());must(vb->Unlock());
+                for(size_t i=0;i<w.replays.size();++i){
+                    w.replays[i]->shared=source;
+                    std::copy_n(originalBanks[i-i%4].data(),1024,w.replays[i]->constantStorage);
+                }
+                bounds(21);
+            }
             for(unsigned a=0;a<w.replays.size();++a)w.replays[a]->count=source->primitiveCount-(unique==1?a:0);
             for(unsigned block=0;block<8;++block)for(unsigned mode=0;mode<2;++mode){const bool optimized=(block&1)?!mode:mode;double cpu=0,gpu=0,complete=0;unsigned draws=0,packets=0;
-                for(unsigned round=0;round<8;++round){const auto start=std::chrono::steady_clock::now();w.pointPaletteUnavailable=!optimized;w.pointReplayOrderReady=false;w.pointWork={};must(d->BeginScene());must(disjoint->Issue(D3DISSUE_BEGIN));must(hz->Issue(D3DISSUE_END));must(begin->Issue(D3DISSUE_END));
+                if(unique==3)for(size_t i=0;i<w.replays.size();++i)w.replays[i]->constantStorage[4*31+1]=(!optimized&&i%2)?-0.f:0.f;
+                for(unsigned round=0;round<8;++round){const auto start=std::chrono::steady_clock::now();w.pointPaletteUnavailable=unique!=3&&!optimized;w.pointReplayOrderReady=false;w.pointWork={};must(d->BeginScene());must(disjoint->Issue(D3DISSUE_BEGIN));must(hz->Issue(D3DISSUE_END));must(begin->Issue(D3DISSUE_END));
                     for(unsigned l=0;l<10;++l){light.sourceId=100+l;light.position[0]=float(l)*.07f;w.pointSlot().schedule.invalidate();assert(w.renderPointShadow(light,true,true));draws+=w.pointDraws;}
                     must(end->Issue(D3DISSUE_END));must(disjoint->Issue(D3DISSUE_END));must(d->EndScene());const auto submitted=std::chrono::steady_clock::now();drain();const auto done=std::chrono::steady_clock::now();UINT64 a=0,b=0,h=0;BOOL invalid=TRUE;must(begin->GetData(&a,sizeof a,0));must(end->GetData(&b,sizeof b,0));must(hz->GetData(&h,sizeof h,0));must(disjoint->GetData(&invalid,sizeof invalid,0));assert(!invalid&&h&&b>=a);
                     if(round){cpu+=std::chrono::duration<double,std::milli>(submitted-start).count();complete+=std::chrono::duration<double,std::milli>(done-start).count();gpu+=double(b-a)*1000/h;packets+=w.pointWork.palettePackets;}must(d->Present(nullptr,nullptr,nullptr,nullptr));}
-                std::printf("POINT_PALETTE_TIMING unique=%u block=%u optimized=%u cpuMs=%.6f gpuMs=%.6f completeMs=%.6f draws=%u packets=%u\n",unique,block,unsigned(optimized),cpu/7,gpu/7,complete/7,draws/8,packets/7);
+                std::printf("%s unique=%u block=%u optimized=%u cpuMs=%.6f gpuMs=%.6f completeMs=%.6f draws=%u packets=%u\n",unique==3?"POINT_REPEAT_POSE_TIMING":"POINT_PALETTE_TIMING",unique,block,unsigned(optimized),cpu/7,gpu/7,complete/7,draws/8,packets/7);
             }}begin->Release();end->Release();hz->Release();disjoint->Release();}
         read->Release();event->Release();original->Release();shader->Release();decl->Release();
     }

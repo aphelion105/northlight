@@ -92,5 +92,5 @@ if __name__=='__main__':
         subprocess.run(['c++','-std=c++17','-O1','-g','-fsanitize=address,undefined','-fno-omit-frame-pointer',*fp.test_include_flags(),str(HERE/'test_point_light_shadow.cpp'),'-o',binary],check=True)
         native=subprocess.check_output([binary],text=True).strip();print(native)
     report={'status':'pass','python_tests':result.testsRun,'native_sanitizers':['address','undefined'],'native_result':native,'gpu_test':False,
-            'source_sha256':{name:hashlib.sha256(fp.tracked(name).read_bytes()).hexdigest() for name in ['point_light_shadow.h','local_light_effects.hlsl','local_light_compiled_shaders.h','compile_local_light_shaders.py','test_point_light_shadow.cpp','test_point_light_shadow.py']}}
+            'source_sha256':{name:hashlib.sha256(fp.tracked(name).read_bytes()).hexdigest() for name in ['point_light_shadow.h','point_shadow_clip.h','local_light_effects.hlsl','local_light_compiled_shaders.h','compile_local_light_shaders.py','test_point_light_shadow.cpp','test_point_light_shadow.py']}}
     (fp.output_dir()/'point-light-shadow-validation.json').write_text(json.dumps(report,indent=2)+'\n')
