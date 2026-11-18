@@ -89,6 +89,8 @@ backends=[]
 for i,path in enumerate(args.backend):
     windows_gpu_guard.processes();path=path.resolve();text=run('gpu-'+str(i),[exe,path,str(fixture)+'/'])
     assert 'MODEL_NORMAL_NATIVE_GPU_PASS' in text
+    if args.capture_source and not args.reference_packet_layout:
+        assert 'NORMAL_RESIDENT_SOURCE_PASS' in text
     retry=[line for line in text.splitlines() if line.startswith('MODEL_NORMAL_HAZARD_RETRY_PASS ')]
     assert retry
     if not args.reference_native:assert all(' pause=3 ' in line for line in retry)

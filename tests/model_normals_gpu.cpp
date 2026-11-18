@@ -23,7 +23,10 @@ extern "C" __attribute__((no_builtin("memcmp"),no_builtin("bcmp"))) int memcmp(c
 #undef NorthlightGpuScene
 #endif
 #ifdef NORTHLIGHT_MODEL_NORMALS_SLICE_TEST
-struct ModelNormalPacketTestAccess {static unsigned compactReady(const NorthlightModelNormals& n){return n.compactBuilt;}
+struct ModelNormalPacketTestAccess {
+    template<class T> static auto programCache(T& n,int)->decltype((n.programs)){return n.programs;}
+    template<class T> static T& programCache(T& n,long){return n;}
+    static unsigned compactReady(const NorthlightModelNormals& n){return programCache(n,0).compactBuilt;}
 #ifdef NORTHLIGHT_TEST_M2_BANK
     static unsigned materialReads(const NorthlightModelNormals& n){return n.materialBankReads;}
     static unsigned materialMismatches(const NorthlightModelNormals& n){return n.materialBankMismatches;}

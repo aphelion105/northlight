@@ -1,6 +1,8 @@
 // Real capture and replay, partitioning a stock M2 into adjacent indexed draws.
 struct ModelNormalMergeTest {
     using Normals=NorthlightModelNormals;
+    template<class T> static auto programCache(T& n,int)->decltype((n.programs)){return n.programs;}
+    template<class T> static T& programCache(T& n,long){return n;}
     // The same image oracle also compiles against frozen renderer headers.
     template<class P,class=void>struct CompactSamplers:std::false_type{};
     template<class P>struct CompactSamplers<P,std::void_t<decltype(std::declval<P&>().sampled)>>:std::true_type{};
@@ -57,10 +59,10 @@ struct ModelNormalMergeTest {
         p.pixel->reads=pr;assert(packets()==16);
         std::printf("MODEL_NORMALS_MERGE_CONTROLS_PASS breaks=%u\n",breaks);
     }
-    static void sharing(Normals& n,bool value){n.pixelSharingEnabled=value;n.pixelCanonicalEnabled=value;}
-    static void programs(const Normals& n,unsigned built,unsigned reused){assert(n.pixelBuilt==built&&n.pixelReused==reused);}
+    static void sharing(Normals& n,bool value){programCache(n,0).pixelSharingEnabled=value;programCache(n,0).pixelCanonicalEnabled=value;}
+    static void programs(const Normals& n,unsigned built,unsigned reused){assert(programCache(n,0).pixelBuilt==built&&programCache(n,0).pixelReused==reused);}
     static void programControls(IDirect3DDevice9* d,IDirect3DPixelShader9* source,const std::vector<std::uint32_t>& native){
-        Normals n(d);auto* owner=n.pixel(source,false);assert(owner&&owner->shader);
+        Normals n(d);auto* owner=programCache(n,0).pixel(source,false);assert(owner&&owner->shader);
         auto different=native;different.insert(different.end()-1,{0x01000041u,NorthlightWaterShaderPatch::dst(0,0)});
         IDirect3DPixelShader9* distinct=nullptr;ok(d->CreatePixelShader(reinterpret_cast<const DWORD*>(different.data()),&distinct));
         std::vector<std::uint32_t> full,slice;unsigned control=0;
@@ -69,7 +71,7 @@ struct ModelNormalMergeTest {
             if(NorthlightModelNormalSlice::canonicalPixel(full.data(),full.size(),control,slice)){full.swap(slice);control=0;}}
         const auto saved=*owner;owner->control=control;owner->compactVertex=compact;
         owner->programBytes=UINT(full.size()*4);owner->programHash=NorthlightShaderTags::fnv1a(full.data(),full.size()*4);
-        auto* collision=n.pixel(distinct,false);assert(collision&&collision->shader&&collision!=owner&&!collision->equivalent);
+        auto* collision=programCache(n,0).pixel(distinct,false);assert(collision&&collision->shader&&collision!=owner&&!collision->equivalent);
         *owner=saved;distinct->Release();
         // Identical bytecode with a different control binding or VS contract
         // cannot alias even if its prefilter and exact bytes match.
@@ -77,7 +79,7 @@ struct ModelNormalMergeTest {
             aliasNative.insert(aliasNative.end()-1,{0x02000001u,NorthlightWaterShaderPatch::dst(8,0,7),NorthlightWaterShaderPatch::src(2,20+contract)});
             IDirect3DPixelShader9* alias=nullptr;ok(d->CreatePixelShader(reinterpret_cast<const DWORD*>(aliasNative.data()),&alias));
             if(contract)owner->compactVertex=!owner->compactVertex;else ++owner->control;
-            auto* isolated=n.pixel(alias,false);assert(isolated&&isolated->shader&&isolated!=owner);
+            auto* isolated=programCache(n,0).pixel(alias,false);assert(isolated&&isolated->shader&&isolated!=owner);
             *owner=saved;alias->Release();
         }
         std::puts("MODEL_NORMALS_PROGRAM_CONTROLS_PASS hashCollision=exact_bytes controlBinding=isolated vertexContract=isolated");

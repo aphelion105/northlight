@@ -122,6 +122,11 @@ def main(argv=None):
     world_manifest = json.loads((SHADERS/'world-shader-build.json').read_text())
     if hashlib.sha256((SHADERS/'world_effects.hlsl').read_bytes()).hexdigest() not in json.dumps(world_manifest):
         raise SystemExit('World shader source differs from offline build.')
+    from shaders.compile_world_shaders import NORMAL_ENTRIES, normal_sources
+    normal_inputs=normal_sources()
+    if (world_manifest.get('normal_sources')!=normal_inputs or
+        any(world_manifest['shaders'][entry]['source_sha256']!=normal_inputs['world_normals.hlsl'] for entry in NORMAL_ENTRIES)):
+        raise SystemExit('World normal inputs differ from the offline build. Recompile both normal entries.')
     transition_manifest = json.loads((SHADERS/'shadow-transition-shader-build.json').read_text())
     for name, digest in transition_manifest['sources'].items():
         if hashlib.sha256((SHADERS/name).read_bytes()).hexdigest() != digest:

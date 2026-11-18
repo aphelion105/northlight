@@ -6,10 +6,12 @@ import hashlib,json,re,struct,sys
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
 fp.use_source_modules()
-from compile_world_shaders import ENTRIES
+from compile_world_shaders import ENTRIES, NORMAL_ENTRIES, normal_sources
 from shader_compiler import bytecode,validate_assembly,DLL_SHA256,COMPATIBLE_DLL_SHA256
 
 manifest=json.loads((fp.SHADERS/'world-shader-build.json').read_text())
+assert manifest['normal_sources']==normal_sources()
+assert all(manifest['shaders'][entry]['source_sha256']==manifest['normal_sources']['world_normals.hlsl'] for entry in NORMAL_ENTRIES)
 header=fp.src('world_compiled_shaders.h').read_text()
 assert manifest['source_sha256']==hashlib.sha256((fp.SHADERS/'world_effects.hlsl').read_bytes()).hexdigest()
 assert manifest['bump_include_sha256']==hashlib.sha256((fp.SHADERS/'auto_bump_normal.hlsl').read_bytes()).hexdigest()

@@ -9,7 +9,7 @@ import northlight_paths as fp
 from shader_compiler import Compiler, rows, validate_assembly
 
 ENTRIES = ("ForeverFogNoNoiseTransition", "ForeverFogActorNoNoiseTransition", "ForeverFogTransition", "ForeverFogActorTransition", 'DirectionalShadowTransitionCurrent', 'DirectionalShadowTransitionPrevious', 'WorldFogTransition', 'WorldFogActorTransition', 'WorldFogActorTiledTransition', 'FogCloudsTransition', 'FogCloudsActorTransition', 'FogCloudsActorTiledTransition', 'MoonFloorFogTransition', 'MoonFloorFogActorTransition', 'MoonFloorFogActorTiledTransition')
-SOURCES = ("world_effects.hlsl", "shadow_transition.hlsl")
+SOURCES = ("world_effects.hlsl", "shadow_transition.hlsl", "world_view.hlsl", "auto_bump_normal.hlsl")
 
 
 def source_hashes():

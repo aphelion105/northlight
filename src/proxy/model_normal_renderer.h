@@ -1,18 +1,11 @@
 #pragma once
 #include <d3d9.h>
-#include <unordered_map>
+#include "model_normal_programs.h"
 #include <array>
-#include "model_normal_patch.h"
-#include "auto_bump_vertex_patch.h"
-#include "model_normal_slice.h"
 #include "model_normal_native.h"
-#include "native_material_capture_patch.h"
 #include "draw_snapshot.h"
-#include "shader_read_set.h"
-#include "shader_tags.h"
 #include "scene_native_store.h"
 #include "vertex_declaration_cache.h"
-#include "model_normal_range.h"
 #include "pose_bounds_handoff.h"
 #include "replay_constants.h"
 #include "shader_constant_usage.h"
@@ -26,12 +19,9 @@
 // native depth writers; the consumer rejects captures hidden by final depth.
 class NorthlightModelNormals {
     template<class T> static void release(T*& p){if(p)p->Release();p=nullptr;}
-    template<class Shader> static bool exactCode(Shader* shader,const std::vector<std::uint32_t>& program){
-        std::vector<DWORD> exact(program.size());const UINT bytes=UINT(program.size()*sizeof(std::uint32_t));UINT actual=bytes;
-        return SUCCEEDED(shader->GetFunction(exact.data(),&actual))&&actual==bytes&&!std::memcmp(exact.data(),program.data(),bytes);
-    }
-    struct Vertex {IDirect3DVertexShader9 *source=nullptr,*shader=nullptr;NorthlightShaderReads::ReadSet reads;unsigned first=0,count=256;NorthlightModelNormalRange::Kind rangeKind=NorthlightModelNormalRange::None;bool compact=false,terrain=false;std::uint64_t programHash=0;UINT programBytes=0;};
-    struct Pixel {IDirect3DPixelShader9 *source=nullptr,*shader=nullptr;unsigned control=0,first=0,count=0;NorthlightShaderReads::ReadSet reads;bool compactVertex=false;Pixel* equivalent=nullptr;std::uint64_t programHash=0;UINT programBytes=0;};
+    using Vertex=NorthlightModelNormalPrograms::Vertex;
+    using Pixel=NorthlightModelNormalPrograms::Pixel;
+    NorthlightModelNormalPrograms programs;
     IDirect3DDevice9* d;
     NorthlightNativeModelNormals nativeMrt;
     NorthlightModelNormalRange::Cache rangeCache;
@@ -41,12 +31,11 @@ class NorthlightModelNormals {
     friend struct ModelNormalMergeTest;
     friend struct ModelNormalStreamTest;
     bool rangeEnabled=true;
+    bool residentSourceEnabled=true;
     bool constantReuseEnabled=true;
     bool mergeEnabled=true;
     bool deduplicateEnabled=true;
     bool streamEnabled=true;
-    bool pixelSharingEnabled=true;
-    bool pixelCanonicalEnabled=true;
     bool depthSeedEnabled=true;
 #endif
     void* rasterContext=nullptr;bool(*rasterReader)(void*,const D3DRENDERSTATETYPE*,unsigned,DWORD*)=nullptr;
@@ -56,15 +45,11 @@ class NorthlightModelNormals {
         for(unsigned i=0;i<N;++i)if(FAILED(d->GetRenderState(keys[i],out+i)))return false;
         return true;
     }
-    std::unordered_map<IDirect3DVertexShader9*,Vertex> vertices;
-    // Optional slices never consume the original shader cache's admission.
-    std::unordered_map<IDirect3DVertexShader9*,Vertex> compactVertices;
-    std::unordered_map<IDirect3DPixelShader9*,Pixel> pixels[2];
     IDirect3DTexture9* normal=nullptr;
     IDirect3DPixelShader9* depthSeedPS=nullptr;unsigned depthSeeded=0;
     IDirect3DSurface9 *surface=nullptr,*depth=nullptr,*frameTarget=nullptr;
     NorthlightStateBlockPool batchStates;
-    UINT width=0,height=0;unsigned draws=0,compactDraws=0,compactBuilt=0,vertexBuilt=0,vertexReused=0,pixelBuilt=0,pixelReused=0,mergedDraws=0,duplicateDraws=0,primitiveLimit=0,maxVertexIndex=0;bool cleared=false,bad=false;
+    UINT width=0,height=0;unsigned draws=0,compactDraws=0,mergedDraws=0,duplicateDraws=0,primitiveLimit=0,maxVertexIndex=0;bool cleared=false,bad=false;
     // Private immutable geometry permits one normal/depth pass instead of
     // interrupting the full-resolution MSAA scene for every opaque model.
     inline static constexpr D3DRENDERSTATETYPE rasterKeys[]={D3DRS_CULLMODE,D3DRS_DEPTHBIAS,D3DRS_SLOPESCALEDEPTHBIAS,
@@ -255,7 +240,7 @@ class NorthlightModelNormals {
         }catch(...){return failed();}
     }
     void(*pendingChanged)(void*)=nullptr;void* pendingContext=nullptr;
-    unsigned queued=0,flushes=0,immediate=0,sourceReused=0,residentDraws=0,handoffs=0,rangeNarrow=0,rangeFull=0,rangeRegisters=0,packetPixelReadsSkipped=0;size_t sourceReadBytes=0,upBytes=0;
+    unsigned queued=0,flushes=0,immediate=0,sourceReused=0,residentSourceHits=0,residentDraws=0,handoffs=0,rangeNarrow=0,rangeFull=0,rangeRegisters=0,packetPixelReadsSkipped=0;size_t sourceReadBytes=0,upBytes=0;
     NorthlightReplayCaptureConstants::Stats constantStats;
     NorthlightReplayCaptureConstants::ClockSource<DeviceMirror> constantSource;
     unsigned constantReadRegisters=0,materialBankReads=0,materialBankRegisters=0,materialBankChecks=0,materialBankMismatches=0;
@@ -283,7 +268,18 @@ class NorthlightModelNormals {
                 // Use the existing bounded source pool even when AutoBump did
                 // not capture this draw. Current write revisions validate hits.
                 const auto hits=snapshots.snapshotCacheHits();const auto read=snapshots.bytesRead();
-                const bool captured=snapshots.read(d,declaration.p,*geometry,packet->mesh,nullptr,false,sourceSharing?&packet->sharedMesh:nullptr);
+                const bool needsVertices=vs->rangeKind==NorthlightModelNormalRange::Rigid||vs->rangeKind==NorthlightModelNormalRange::Single||
+                    (vs->rangeKind==NorthlightModelNormalRange::Envelope&&pose&&pose->bounds.valid&&poseReader);
+                auto lease=[&](const auto& words,UINT& vertexCount){
+                    packet->resident=geometryCache->bindSource(d,words,vertexCount,packet->gpuVertex,packet->gpuIndex,packet->placement);
+                    residentSourceHits+=packet->resident;return packet->resident;
+                };
+                bool canLease=geometryCache&&!needsVertices;
+#ifdef NORTHLIGHT_MODEL_NORMALS_TEST
+                canLease=canLease&&residentSourceEnabled;
+#endif
+                const bool captured=snapshots.read(d,declaration.p,*geometry,packet->mesh,nullptr,false,sourceSharing?&packet->sharedMesh:nullptr,
+                    false,false,canLease?&lease:nullptr);
                 sourceReadBytes+=snapshots.bytesRead()-read;sourceReused+=snapshots.snapshotCacheHits()-hits;
                 if(!captured)return false;
             }
@@ -294,7 +290,7 @@ class NorthlightModelNormals {
                 *published=packet->sharedMesh;declaration.p->AddRef();*publishedDeclaration=declaration.p;
             }
             const auto& mesh=packet->geometry();
-            if(mesh.streams[0].bytes.empty())return false;
+            if(!packet->resident&&mesh.streams[0].bytes.empty())return false;
             for(unsigned i=1;i<4;++i)if(!mesh.streams[i].bytes.empty())return false;
             if(vs->rangeKind==NorthlightModelNormalRange::Envelope&&pose&&pose->bounds.valid&&poseReader&&packet->sharedMesh
 #ifdef NORTHLIGHT_MODEL_NORMALS_TEST
@@ -447,86 +443,6 @@ class NorthlightModelNormals {
         }
         ~State(){restore();release(vs);release(ps);for(auto*& p:rt)release(p);release(ds);release(stream);release(index);}
     };
-    Vertex* vertex(IDirect3DVertexShader9* source,bool compact=false,bool terrain=false){
-        auto& cache=compact?compactVertices:vertices;
-        auto it=cache.find(source);if(it!=cache.end())return compact&&!it->second.shader?vertex(source,false,terrain):&it->second;
-        if(cache.size()>=(compact?64u:512u))return compact?vertex(source,false,terrain):nullptr;
-        Vertex v;v.source=source;v.terrain=terrain;source->AddRef();UINT bytes=0;
-        if(SUCCEEDED(source->GetFunction(nullptr,&bytes))&&bytes>=8&&bytes<=65536&&bytes%4==0){
-            std::vector<DWORD> code(bytes/4);std::vector<std::uint32_t> patched;
-            const auto* words=reinterpret_cast<const uint32_t*>(code.data());
-            if(SUCCEEDED(source->GetFunction(code.data(),&bytes))&&(terrain?
-                !NorthlightWaterShaderPatch::patch(words,code.size(),patched)&&NorthlightAutoBumpVertex::terrainNormal(words,code.size(),patched):
-                NorthlightModelNormal::vertex(words,code.size(),patched))){
-                if(!terrain)v.rangeKind=NorthlightModelNormalRange::classify(reinterpret_cast<const uint32_t*>(code.data()),code.size(),true);
-                if(compact){std::vector<std::uint32_t> sliced;
-                    if(!NorthlightModelNormalSlice::vertex(patched.data(),patched.size(),sliced)||sliced.size()>=patched.size()){
-                        cache.emplace(source,v);return vertex(source,false,terrain);
-                    }
-                    std::vector<std::uint32_t> canonical;
-                    if(NorthlightModelNormalSlice::canonicalVertex(sliced.data(),sliced.size(),canonical))sliced.swap(canonical);
-                    patched.swap(sliced);v.compact=true;
-                }
-                v.reads=NorthlightShaderReads::scan(patched.data(),patched.size());
-                if(v.reads.exact){
-                    unsigned first=256,last=0;
-                    for(unsigned c=0;c<256;++c)if(v.reads.f[c>>6]&(1ull<<(c&63))){first=std::min(first,c);last=c+1;}
-                    v.first=last?first:0;v.count=last-v.first;
-                }
-                v.programBytes=UINT(patched.size()*sizeof(std::uint32_t));v.programHash=NorthlightShaderTags::fnv1a(patched.data(),v.programBytes);
-                for(auto& item:cache){const auto& existing=item.second;
-                    if(existing.shader&&existing.compact==v.compact&&existing.programBytes==v.programBytes&&existing.programHash==v.programHash&&exactCode(existing.shader,patched)){
-                        v.shader=existing.shader;v.shader->AddRef();++vertexReused;break;}}
-                if(!v.shader){const HRESULT hr=d->CreateVertexShader(reinterpret_cast<const DWORD*>(patched.data()),&v.shader);
-                    if(compact&&FAILED(hr))release(v.shader);
-                    if(v.shader){++vertexBuilt;compactBuilt+=v.compact;}}
-            }
-        }
-        auto* result=&cache.emplace(source,v).first->second;
-        return compact&&!result->shader?vertex(source,false,terrain):result;
-    }
-    Pixel* pixel(IDirect3DPixelShader9* source,bool alpha){
-        auto& map=pixels[alpha];auto it=map.find(source);if(it!=map.end())return it->second.equivalent?it->second.equivalent:&it->second;if(map.size()>=512)return nullptr;
-        Pixel v;v.source=source;source->AddRef();UINT bytes=0;
-        if(SUCCEEDED(source->GetFunction(nullptr,&bytes))&&bytes>=8&&bytes<=65536&&bytes%4==0){
-            std::vector<DWORD> code(bytes/4);std::vector<std::uint32_t> patched;
-            if(SUCCEEDED(source->GetFunction(code.data(),&bytes))&&NorthlightNativeMaterialCapture::patch(reinterpret_cast<const uint32_t*>(code.data()),code.size(),patched,v.control,alpha,false,true)){
-                // The original lighting can differ while receiver bytecode is
-                // identical. Share an existing cache node before asking D3D to
-                // create another program; no extra lookup on a warm source hit.
-                const auto create=[&](const std::vector<std::uint32_t>& program,bool compact){
-                    const UINT bytes=UINT(program.size()*sizeof(std::uint32_t));const auto hash=NorthlightShaderTags::fnv1a(program.data(),bytes);
-#ifdef NORTHLIGHT_MODEL_NORMALS_TEST
-                    if(pixelSharingEnabled)
-#endif
-                    for(auto& cache:pixels)for(auto& item:cache){auto& existing=item.second;
-                        if(!existing.shader||existing.control!=v.control||existing.compactVertex!=compact||existing.programBytes!=bytes||existing.programHash!=hash)continue;
-                        // Hashes only shortlist candidates. Ask the retained
-                        // shader for exact bytes, without another bytecode cache.
-                        if(exactCode(existing.shader,program)){
-                            v.equivalent=&existing;++pixelReused;return true;}}
-                    if(FAILED(d->CreatePixelShader(reinterpret_cast<const DWORD*>(program.data()),&v.shader))||!v.shader){release(v.shader);return false;}
-                    v.programHash=hash;v.programBytes=bytes;v.compactVertex=compact;++pixelBuilt;return true;
-                };
-                std::vector<std::uint32_t> sliced,canonical;const auto originalControl=v.control;
-                const bool compact=NorthlightModelNormalSlice::pixel(patched.data(),patched.size(),sliced);
-                if(compact
-#ifdef NORTHLIGHT_MODEL_NORMALS_TEST
-                    &&pixelCanonicalEnabled
-#endif
-                    &&NorthlightModelNormalSlice::canonicalPixel(sliced.data(),sliced.size(),v.control,canonical)){sliced.swap(canonical);v.control=0;}
-                if(compact&&create(sliced,true))patched.swap(sliced);
-                else {v.control=originalControl;create(patched,false);}
-                if(v.equivalent){auto* result=v.equivalent;map.emplace(source,std::move(v));return result;}
-                v.reads=NorthlightShaderReads::scan(patched.data(),patched.size());
-                v.reads.samplers=v.reads.sampledSamplers;
-                unsigned last=v.control+1;v.first=v.control;
-                for(unsigned c=0;c<224;++c)if(v.reads.f[c>>6]&(1ull<<(c&63))){v.first=std::min(v.first,c);last=std::max(last,c+1);}
-                v.count=last-v.first;
-            }
-        }
-        return &map.emplace(source,std::move(v)).first->second;
-    }
     bool targets(UINT w,UINT h){
         if(w!=width||h!=height){reset(true);width=w;height=h;}
         if(normal&&surface&&depth)return true;
@@ -537,13 +453,13 @@ class NorthlightModelNormals {
         return true;
     }
 public:
-    explicit NorthlightModelNormals(IDirect3DDevice9* device):d(device),nativeMrt(device),batchStates(device){snapshots.setSnapshotCacheLimit(0);pending.reserve(128);spare.reserve(128);
+    explicit NorthlightModelNormals(IDirect3DDevice9* device):programs(device),d(device),nativeMrt(device),batchStates(device){snapshots.setSnapshotCacheLimit(0);pending.reserve(128);spare.reserve(128);
         D3DCAPS9 caps{};if(d&&SUCCEEDED(d->GetDeviceCaps(&caps))){primitiveLimit=caps.MaxPrimitiveCount;maxVertexIndex=caps.MaxVertexIndex;}
         snapshots.setDeclarationProvider(&declarations,[](void* c,IDirect3DVertexDeclaration9* decl,const D3DVERTEXELEMENT9*& elements,UINT& count){return static_cast<NorthlightVertexDeclarations::Cache*>(c)->get(decl,elements,count);});
         snapshots.setLayoutProvider(&declarations,[](void* c,IDirect3DVertexDeclaration9* decl,UINT* extent){return static_cast<NorthlightVertexDeclarations::Cache*>(c)->captureLayout(decl,extent);});
     }
-    ~NorthlightModelNormals(){pendingChanged=nullptr;reset();for(auto* map:{&vertices,&compactVertices})for(auto& v:*map){release(v.second.source);release(v.second.shader);}for(auto& map:pixels)for(auto& v:map){release(v.second.source);release(v.second.shader);}}
-    void endFrame(){peakFloatBanks=peakPackets=0;depthSeeded=0;clearPending();nativeMrt.beginFrame();nativeCommittedPackets=0;streamFence.endFrame();streamedDraws=streamedBatches=streamedDiscards=streamFailures=0;streamedBytes=streamSavedBytes=0;streamBlocked=false;rangeCache.beginFrame();constantStats={};constantReadRegisters=materialBankReads=materialBankRegisters=materialBankChecks=materialBankMismatches=0;poseBoundsTests=poseBoundsCulled=poseViewportTests=poseViewportCulled=0;compactDraws=draws=queued=flushes=immediate=sourceReused=residentDraws=handoffs=rangeNarrow=rangeFull=rangeRegisters=packetPixelReadsSkipped=mergedDraws=duplicateDraws=0;sourceReadBytes=upBytes=0;cleared=bad=false;release(frameTarget);}
+    ~NorthlightModelNormals(){pendingChanged=nullptr;reset();}
+    void endFrame(){peakFloatBanks=peakPackets=0;depthSeeded=0;clearPending();nativeMrt.beginFrame();nativeCommittedPackets=0;streamFence.endFrame();streamedDraws=streamedBatches=streamedDiscards=streamFailures=0;streamedBytes=streamSavedBytes=0;streamBlocked=false;rangeCache.beginFrame();constantStats={};constantReadRegisters=materialBankReads=materialBankRegisters=materialBankChecks=materialBankMismatches=0;poseBoundsTests=poseBoundsCulled=poseViewportTests=poseViewportCulled=0;compactDraws=draws=queued=flushes=immediate=sourceReused=residentSourceHits=residentDraws=handoffs=rangeNarrow=rangeFull=rangeRegisters=packetPixelReadsSkipped=mergedDraws=duplicateDraws=0;sourceReadBytes=upBytes=0;cleared=bad=false;release(frameTarget);}
     void reset(bool preserveCaptureSources=false){endFrame();nativeMrt.reset();releaseStream();rangeCache.clear();if(!preserveCaptureSources)snapshots.clearSnapshotCache();declarations.clear();spare.clear();floatBanks.clear();spareBytes=0;batchStates.clear();release(surface);release(normal);release(depth);release(depthSeedPS);width=height=0;}
     IDirect3DTexture9* texture()const{return draws&&!bad?normal:nullptr;}
     bool shareCaptureSources(NorthlightDrawSnapshot::Frame& source,NorthlightDrawSnapshot::Frame::IdentityFn identity,
@@ -611,7 +527,7 @@ public:
     void setDeferredCapture(bool on,void(*changed)(void*)=nullptr,void* context=nullptr){
         if(!on)finishCaptures();deferred=on;pendingChanged=changed;pendingContext=context;
     }
-    template<class Log> void report(unsigned frame,Log log)const{log("MODEL_NORMALS frame=%u draws=%u queued=%u flushes=%u immediate=%u pending=%zu failed=%u sourceReused=%u sourceReadBytes=%zu sourcePoolBytes=%zu sourcePoolLimitMiB=%zu residentDraws=%u upBytes=%zu handoffs=%u rangeTests=%u rangeCulled=%u rangeSingleTests=%u rangeSingleUniform=%u rangeSingleMixed=%u rangeDeferred=%u poseBoundsTests=%u poseBoundsCulled=%u poseViewportTests=%u poseViewportCulled=%u rangeNarrow=%u rangeFull=%u rangeRegisters=%u packetPixelReadsSkipped=%u compactDraws=%u compactShaders=%u mergedDraws=%u depthSeeded=%u submittedDraws=%u streamedDraws=%u streamedBatches=%u streamedBytes=%zu streamedDiscards=%u streamFailures=%u streamCapacityBytes=%u streamSavedBytes=%zu duplicateDraws=%u pixelShaders=%u sharedPixelShaders=%u vertexShaders=%u sharedVertexShaders=%u rangeMixedCulled=%u",frame,draws,queued,flushes,immediate,pending.size(),unsigned(bad),sourceReused,sourceReadBytes,snapshots.sharedSourceBytes(),snapshots.sharedSourceLimit()>>20,residentDraws,upBytes,handoffs,rangeCache.tested,rangeCache.culled,rangeCache.singleTests,rangeCache.singleUniform,rangeCache.singleMixed,rangeCache.deferred,poseBoundsTests,poseBoundsCulled,poseViewportTests,poseViewportCulled,rangeNarrow,rangeFull,rangeRegisters,packetPixelReadsSkipped,compactDraws,compactBuilt,mergedDraws,depthSeeded,draws-mergedDraws-nativeCommittedPackets,streamedDraws,streamedBatches,streamedBytes,streamedDiscards,streamFailures,streamVB?StreamVertexBytes+StreamIndexBytes:0,streamSavedBytes,duplicateDraws,pixelBuilt,pixelReused,vertexBuilt,vertexReused,rangeCache.mixedCulled);log("MODEL_NORMALS constants frame=%u fetchedRegisters=%u peakFloatBanks=%zu peakPackets=%zu epochHits=%llu blockHits=%llu registersReused=%llu avoidedBytes=%llu selfChecks=%llu mismatches=%llu",frame,constantReadRegisters,peakFloatBanks,peakPackets,(unsigned long long)constantStats.hits,(unsigned long long)constantStats.blockTests,(unsigned long long)constantStats.registersReused,(unsigned long long)constantStats.bytesAvoided,(unsigned long long)constantStats.selfChecks,(unsigned long long)constantStats.selfCheckMismatches);log("MODEL_NORMALS handoff frame=%u bankReads=%u bankRegisters=%u bankChecks=%u bankMismatch=%u",frame,materialBankReads,materialBankRegisters,materialBankChecks,materialBankMismatches);nativeMrt.report(frame,log);}
+    template<class Log> void report(unsigned frame,Log log)const{log("MODEL_NORMALS frame=%u draws=%u queued=%u flushes=%u immediate=%u pending=%zu failed=%u sourceReused=%u sourceReadBytes=%zu sourcePoolBytes=%zu sourcePoolLimitMiB=%zu residentDraws=%u upBytes=%zu handoffs=%u rangeTests=%u rangeCulled=%u rangeSingleTests=%u rangeSingleUniform=%u rangeSingleMixed=%u rangeDeferred=%u poseBoundsTests=%u poseBoundsCulled=%u poseViewportTests=%u poseViewportCulled=%u rangeNarrow=%u rangeFull=%u rangeRegisters=%u packetPixelReadsSkipped=%u compactDraws=%u compactShaders=%u mergedDraws=%u depthSeeded=%u submittedDraws=%u streamedDraws=%u streamedBatches=%u streamedBytes=%zu streamedDiscards=%u streamFailures=%u streamCapacityBytes=%u streamSavedBytes=%zu duplicateDraws=%u pixelShaders=%u sharedPixelShaders=%u vertexShaders=%u sharedVertexShaders=%u rangeMixedCulled=%u residentSourceHits=%u",frame,draws,queued,flushes,immediate,pending.size(),unsigned(bad),sourceReused,sourceReadBytes,snapshots.sharedSourceBytes(),snapshots.sharedSourceLimit()>>20,residentDraws,upBytes,handoffs,rangeCache.tested,rangeCache.culled,rangeCache.singleTests,rangeCache.singleUniform,rangeCache.singleMixed,rangeCache.deferred,poseBoundsTests,poseBoundsCulled,poseViewportTests,poseViewportCulled,rangeNarrow,rangeFull,rangeRegisters,packetPixelReadsSkipped,compactDraws,programs.compactBuilt,mergedDraws,depthSeeded,draws-mergedDraws-nativeCommittedPackets,streamedDraws,streamedBatches,streamedBytes,streamedDiscards,streamFailures,streamVB?StreamVertexBytes+StreamIndexBytes:0,streamSavedBytes,duplicateDraws,programs.pixelBuilt,programs.pixelReused,programs.vertexBuilt,programs.vertexReused,rangeCache.mixedCulled,residentSourceHits);log("MODEL_NORMALS constants frame=%u fetchedRegisters=%u peakFloatBanks=%zu peakPackets=%zu epochHits=%llu blockHits=%llu registersReused=%llu avoidedBytes=%llu selfChecks=%llu mismatches=%llu",frame,constantReadRegisters,peakFloatBanks,peakPackets,(unsigned long long)constantStats.hits,(unsigned long long)constantStats.blockTests,(unsigned long long)constantStats.registersReused,(unsigned long long)constantStats.bytesAvoided,(unsigned long long)constantStats.selfChecks,(unsigned long long)constantStats.selfCheckMismatches);log("MODEL_NORMALS handoff frame=%u bankReads=%u bankRegisters=%u bankChecks=%u bankMismatch=%u",frame,materialBankReads,materialBankRegisters,materialBankChecks,materialBankMismatches);nativeMrt.report(frame,log);}
     struct DepthSeed {IDirect3DTexture9* texture;float nearZ,farZ,minZ,maxZ;};
 private:
     bool seedProjection(const DepthSeed* seed,float (&projection)[4])const{
@@ -805,8 +721,8 @@ public:
         const DWORD alpha=states[4],ref=states[5],func=states[6],comparison=states[7];
         if((alpha&&func!=D3DCMP_GREATER&&func!=D3DCMP_GREATEREQUAL)||(comparison!=D3DCMP_LESS&&comparison!=D3DCMP_LESSEQUAL&&comparison!=D3DCMP_EQUAL))return;
         IDirect3DPixelShader9* native=nullptr;if(FAILED(d->GetPixelShader(&native))||!native)return;
-        auto* ps=pixel(native,alpha!=0);release(native);if(!ps||!ps->shader)return;
-        auto* vs=vertex(source,ps->compactVertex,terrain);if(!vs||!vs->shader)return;
+        auto* ps=programs.pixel(native,alpha!=0);release(native);if(!ps||!ps->shader)return;
+        auto* vs=programs.vertex(source,ps->compactVertex,terrain);if(!vs||!vs->shader)return;
         State saved(d,ps->control,userMemory);bool admissionTried=false,admissionOK=false;
         auto admit=[&]{
             if(admissionTried)return admissionOK;admissionTried=true;

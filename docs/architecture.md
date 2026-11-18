@@ -134,6 +134,14 @@ oracles, including byte equality and malformed-input controls.
    groups; `world_geometry_resources.inl` owns geometry targets. Groups remain
    warm until reset, resize or pressure. Frame-local/transient sharing requires
    compatible formats and disjoint lifetimes, with one owner and safe fallback.
+   Model-normal capture accepts the material pass's raw mesh or looks in the shared
+   snapshot pool. On a CPU miss, single-stream draws that need no vertex data for
+   culling may lease a resident upload from `scene_native_store.h`. The full tracked
+   draw identity includes buffer revisions and layout. Packets hold the buffers
+   through replay. A later CPU consumer can acquire its own snapshot.
+   `model_normal_programs.h` owns the native shader variants used by replay.
+   `world_normals.hlsl` combines captured model normals with depth-derived normals.
+   World passes share raster, depth and camera reconstruction in `world_view.hlsl`.
 4. **Worker inputs are immutable.** CPU jobs consume held source generations and
    publish complete results. The D3D owner performs device calls. Reset, pressure,
    resource mutation and pointer reuse cannot retain stale poses or identities.

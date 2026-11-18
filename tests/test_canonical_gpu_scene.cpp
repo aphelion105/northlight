@@ -70,7 +70,21 @@ static void faultsAndCollisions(){
  Binding x,y;scene.setFrame(1);assert(!c.bind(&d,a,x.vb,x.ib,admit,x.at)&&!c.bind(&d,b,y.vb,y.ib,admit,y.at)&&c.population().entries==2);
  scene.setFrame(2);c.bind(&d,a,x.vb,x.ib,admit,x.at);c.bind(&d,b,y.vb,y.ib,admit,y.at);c.commitPending();
  assert(c.bind(&d,a,x.vb,x.ib,admit,x.at)&&c.bind(&d,b,y.vb,y.ib,admit,y.at)&&exact(*a,x)&&exact(*b,y));
+ UINT vertices=0;
+ assert(c.bindSource(&d,a->sourceIdentity->words,vertices,y.vb,y.ib,y.at)&&vertices==a->vertexCount&&exact(*a,y));
+ assert(c.bindSource(&d,b->sourceIdentity->words,vertices,x.vb,x.ib,x.at)&&exact(*b,x));
  std::puts("CANONICAL_SCENE_FAULTS_PASS partial_create lock unlock retry full_64bit_hash_collision exact_words");
+}
+static void rawLeaseControls(){
+ using namespace NorthlightGpuScene;NativeStore store;NativeClient cache(store,Consumer::Material);
+ Device device,other;Binding held;UINT vertices=0;
+ auto source=authored(101,false,false);const auto words=source->sourceIdentity->words;
+ auto lease=[&](Device& d,const auto& key){return cache.bindSource(&d,key,vertices,held.vb,held.ib,held.at);};
+ store.setFrame(1);assert(!lease(device,words));assert(!cache.bind(&device,source,held.vb,held.ib,admit,held.at));
+ store.setFrame(2);assert(!cache.bind(&device,source,held.vb,held.ib,admit,held.at));assert(cache.commitPending());
+ auto expected=*source;source.reset();assert(lease(device,words)&&vertices==expected.vertexCount&&exact(expected,held));
+ auto stale=words;++stale.back();assert(!lease(device,stale)&&!lease(other,words));store.clearAll();
+ assert(!lease(device,words)&&exact(expected,held));std::puts("RAW_GPU_LEASE_PASS nonindexed expired_owner revision reset device");
 }
 static void limitsAndClock(){
  using namespace NorthlightGpuScene;Device d;Binding b;
@@ -358,6 +372,7 @@ static Result unified(const std::vector<Owner>& meshes,bool audit,unsigned overl
  result.ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count();result.creates=device.calls;scene.clearAll();materials.clear();shadows.clear();assert(!alive);return result;
 }
 int main(int argc,char** argv){
+ rawLeaseControls();
  std::setvbuf(stdout,nullptr,_IONBF,0);assert(argc>=2);NorthlightReplayGPU::createBudgetMs()=1e6;
  if(std::string(argv[1])=="pressure"){countPressureControls();return 0;}auto meshes=load(argv[1]);
  if(argc>2){const auto overlap=argc>3?unsigned(std::stoul(argv[3])):100;const bool canonical=std::string(argv[2])=="canonical";

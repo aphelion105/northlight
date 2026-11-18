@@ -1,7 +1,6 @@
 // Geometry-backed directional shadows, world-space probe GI and volumetric scattering.
 // Inputs are independent of the currently visible screen geometry except receiver depth.
-sampler2D Scene : register(s0);
-sampler2D Depth : register(s1);
+#include "world_view.hlsl"
 sampler2D ShadowNear : register(s2);
 sampler2D ShadowFar : register(s3);
 sampler2D CurrentLocalLighting : register(s3); // WorldComposite: current local radiance after directional/GI filtering.
@@ -37,10 +36,6 @@ sampler2D ProbeMetadata : register(s10); // exact world-cell xyz; w: born time, 
 sampler2D ActorTileMap : register(s10);
 sampler2D AmbientOcclusion : register(s10); // 0.3.174 TemporalLight/WorldComposite: half-res contact AO (a), pre-weighted bloom (rgb), LINEAR; neutral (0,0,0,1) unless the world composites
 
-float4 ImageClip : register(c0); // invWidth, invHeight, near, far
-float4 Projection : register(c1); // signed projection X,Y,Zsign,worldMinZ
-float4 DepthParams : register(c2); // inverse world depth range,near radius,far radius,shadow texel
-row_major float4x4 InverseView : register(c3);
 row_major float4x4 NearMatrix : register(c7);
 row_major float4x4 FarMatrix : register(c11);
 float4 Camera : register(c15);
@@ -61,7 +56,6 @@ float4 LegacyDirection : register(c28);
 float4 LegacyDirect : register(c29);
 float4 LegacyFogColor : register(c26); // proven terrain PS3 c2/c6.rgb or fixed fog RGB
 float4 VolumeAir : register(c32); // Dusk/STV extinction, Dusk/STV finite layer height
-float4 ScreenSize : register(c33); // full width,height; half-resolution width,height
 float4 BlurInfo : register(c34); // half-resolution texel step for the fog blur (x,y), unused
 // Final composite only: c34 is rebound AFTER both blur passes (and on fog-off
 // frames). Reuse the bank without changing other passes or the 68-register
@@ -110,29 +104,6 @@ float4 FogStepInfo : register(c64);
 float4 HorizonEdge : register(c64); // w: the camera's far edge, sine of its elevation (WorldComposite only; apparent_horizon.h)
 sampler3D CloudNoise : register(s14); // tileable N^3 L8 volume (LINEAR, WRAP); s14 is NormalBuffer/LightHistory in other passes, never bound together with this one
 
-float2 depthUV(float2 uv) {
-    // D3D9 raster centers are integer pixels; texture centers are pixel+.5.
-    // Choose the exact depth texel first, including in odd-sized half-res passes.
-    float2 dimensions=ScreenSize.xy;
-    return (clamp(floor(uv*dimensions),0,dimensions-1)+.5)*ImageClip.xy;
-}
-float normalizedDepth(float2 uv) {
-    // Callers pass an explicit depth texel center, never a half-res boundary.
-    return saturate((tex2Dlod(Depth,float4(uv,0,0)).r-Projection.w)*DepthParams.x);
-}
-// normalizedDepth through texld (1 slot; tex2Dlod costs 3-4), only before any flow control: Depth has one level.
-float normalizedDepthFlat(float2 uv) {
-    return saturate((tex2D(Depth,uv).r-Projection.w)*DepthParams.x);
-}
-float viewDistance(float d) {
-    return ImageClip.z*ImageClip.w/max(ImageClip.w-d*(ImageClip.w-ImageClip.z),.00001);
-}
-float3 viewPositionDistance(float2 uv,float z) {
-    float2 raster=uv-.5*ImageClip.xy;
-    float2 xy=(raster*float2(2,-2)+float2(-1,1))/Projection.xy;
-    return float3(xy,Projection.z)*z;
-}
-float3 viewPosition(float2 uv,float d) {return viewPositionDistance(uv,viewDistance(d));}
 float waterDistance(float2 uv,float d) {
     if(WaterInfo.x<.5)return 0;
     float2 m=tex2Dlod(WaterMask,float4(uv,0,0)).rg;
@@ -542,121 +513,6 @@ float4 probeIrradiance(float3 p,float3 n,uniform bool localOnly){
     }
     return accumulated;
 }
-
-// Half-resolution smoothed surface normal. Depth-derived normals are constant
-// per triangle, while the game painted its lighting with interpolated vertex
-// normals; a wide baseline in WORLD units (about 1.5 u each side, clamped in
-// pixels) averages neighbouring facets the way vertex normals do, so shadow
-// and GI corrections no longer draw triangle edges on low-poly hills. Depth
-// discontinuities fall back to the one-pixel neighbour so silhouettes stay crisp.
-// A depth test alone is not enough: a character's legs or a post's base sit
-// at nearly the ground's depth, and a wide sample landing on them tilted the
-// ground normal in a box around every actor (light patches under feet).
-// The wide sample must also continue the one-pixel surface direction: on a
-// hill the direction bends by half the facet angle at most (accepted), while
-// a sample on another object leaves the local plane (rejected, 1-px fallback).
-float3 wideNeighbour(float2 uv,float2 dir,float pixels,float3 center,float centerZ,float3 nearPos) { // the valid texel centre range (.5 px, 1-.5 px) is written out: fewer live registers
-    float2 q=depthUV(clamp(uv+dir*pixels,.5*ImageClip.xy,1-.5*ImageClip.xy));
-    float z=viewDistance(normalizedDepth(q));
-    float3 wide=viewPositionDistance(q,z);
-    float3 a=nearPos-center,b=wide-center;
-    float planar=dot(a,b)*rsqrt(max(dot(a,a)*dot(b,b),1e-12));
-    // A shallow secant can end on a WALL while still agreeing with the ground
-    // direction. Compare the local tangent at that endpoint as well: crossing
-    // the corner must not bend a ground normal toward the wall. This retains
-    // smoothing across gentle terrain facets without an offset bright ring.
-    float2 inner=clamp(q-dir,.5*ImageClip.xy,1-.5*ImageClip.xy);
-    b=wide-viewPosition(inner,normalizedDepth(inner)); // b now the tangent at the wide end (reused: the pass is at its 32-register limit)
-    float continuation=dot(a,b)*rsqrt(max(dot(a,a)*dot(b,b),1e-12));
-    // r76: .95 (about 18 degrees; was .85, 31): a base up to about .9 u high at the 1.5 u
-    // baseline passed .85 and tilted the ground normal about 15 degrees, a bright fin of
-    // under-removed native light along the screen axis from every rock, cart and post base.
-    return abs(z-centerZ)>max(.35,centerZ*.04)||min(planar,continuation)<.95?nearPos:wide;
-}
-// One axis of the surface tangent frame. A pair of neighbours is only
-// trusted when it continues through the centre (cosine >= .85): at the foot
-// of a wall the sample toward the wall climbs while the other runs along the
-// ground, and averaging them tilted the ground normal into the wall's,
-// painting a bright GI/shadow-bias strip along every cliff base. Fall back
-// from the wide pair to the one-pixel pair, then to the one-sided difference
-// on the side that looks like the centre in the scene copy, the closer side in depth when the colours do not tell (the receiver's own surface).
-// A silhouette pixel (no consistent pair even at one pixel) reports
-// confidence 0 in the normal buffer's w: its one-sided normal may belong to
-// the neighbouring surface. Suppress uncertain positive bounce there; shadow
-// receivers validate their geometry separately. Retain ambient occlusion:
-// skipping negative GI exposed
-// a bright native-ambient seam where the ground touches a wall.
-// c, step: the centre texel and the one-pixel step of this axis. The one-sided tangent follows the side whose colour looks
-// more like the centre (sand next to a dark face turned away at a wall foot), not the closer side in depth: at a wall foot
-// the closer side is the wall for a ground pixel and the ground for a wall pixel alike. When the two sides' relative
-// colour differences (the composite tent's metric) differ by less than .05, the closer side in depth decides.
-float3 tangentAxis(float3 p,float3 a,float3 b,float3 a1,float3 b1,float2 c,float2 step,inout float confidence) {
-    float3 da=p-a,db=b-p;
-    if(dot(da,db)*rsqrt(max(dot(da,da)*dot(db,db),1e-12))>=.85)return b-a;
-    da=p-a1;db=b1-p;
-    if(dot(da,db)*rsqrt(max(dot(da,da)*dot(db,db),1e-12))>=.85)return b1-a1;
-    confidence=0;
-    // Scene luminance of the centre, b1 and a1 pixels through one fetch site (each tex2Dlod call site costs registers, this pass has 32).
-    // Unrolled: lumas=(L(c),L(c+step),L(c-step)); the lane mask float3(k==0,k==1,k==2) adds each into its own component.
-    float3 lumas=0;
-    [loop]for(int k=0;k<3;++k)lumas+=dot(tex2Dlod(Scene,float4(k==0?c:(k==1?min(c+step,1-.5*ImageClip.xy):max(c-step,.5*ImageClip.xy)),0,0)).rgb,float3(.299,.587,.114))*float3(k==0,k==1,k==2);
-    float2 colourGap=abs(lumas.x-lumas.yz)/(lumas.x+lumas.yz+.02); // the composite tent's relative luminance difference, per side
-    float gap=colourGap.x-colourGap.y;
-    return (abs(gap)>.05?gap<0:abs(b1.z-p.z)<abs(a1.z-p.z))?db:da;
-}
-sampler2D ModelNormals : register(s13); // skinned view normal.xyz and linear depth.w; WorldNormals only
-float4 ModelNormalInfo : register(c79);
-float4 worldNormalValue(float2 uv) {
-    float2 c=depthUV(uv);float d=normalizedDepth(c);float z=viewDistance(d);
-    if(d>=.99999)return float4(0,0,1,z);
-    [branch]if(ModelNormalInfo.x>.5){
-        float4 model=tex2Dlod(ModelNormals,float4(c,0,0));
-        float length2=dot(model.xyz,model.xyz);
-        [branch]if(model.w>0&&abs(model.w-z)<max(.006,z*.0015)&&length2>.5&&length2<1.5){
-            float3 n=normalize(model.xyz);
-            return float4(n.x*InverseView[0].xyz+n.y*InverseView[1].xyz+n.z*InverseView[2].xyz,1);
-        }
-    }
-    float3 p=viewPositionDistance(c,z);
-    // lo/hi (the valid depth texel centre range) are recomputed where used: the pass is at its 32-register limit.
-    // Baseline: 1.5 world units projected to pixels at this distance, 2..40 px.
-    float pixels=clamp(1.5*Projection.x*ScreenSize.x*.5/z,2,40);
-    float confidence=1;
-    float3 tx=0; // the x tangent, then cross(x tangent, y tangent): one register triple less (32-register limit)
-    // Share the two-axis body to stay within the SM3 static instruction budget.
-    [loop]for(int axis=0;axis<2;++axis){
-        float2 step=axis==0?float2(ImageClip.x,0):float2(0,ImageClip.y);
-        float2 left=max(c-step,.5*ImageClip.xy),right=min(c+step,1-.5*ImageClip.xy);
-        float3 a1=viewPosition(left,normalizedDepth(left));
-        float3 b1=viewPosition(right,normalizedDepth(right));
-        float3 a=a1,b=b1;
-        [loop]for(int side=0;side<2;++side){ // one inlined copy of wideNeighbour for both sides (the pass is at its 32-register limit)
-            float3 wide=wideNeighbour(c,side==0?-step:step,pixels,p,z,side==0?a1:b1);
-            if(side==0)a=wide;else b=wide;
-        }
-        // r77: the wide pair only when BOTH wide samples pass. One wide sample on a low object's
-        // top against the other side's 1-px neighbour spans the whole secant (a tilt of up to
-        // 18 degrees) beside the object; the 1-px pair keeps flat ground flat.
-        if(all(a==a1)||all(b==b1)){a=a1;b=b1;}
-        a=tangentAxis(p,a,b,a1,b1,c,step,confidence); // a reused for the tangent
-        tx=axis==0?a:cross(tx,a);
-    }
-    float3 n=tx*rsqrt(max(dot(tx,tx),1e-12));
-    n=dot(n,-p)<0?-n:n;
-    float3 world=n.x*InverseView[0].xyz+n.y*InverseView[1].xyz+n.z*InverseView[2].xyz;
-    return float4(world,confidence);
-}
-struct NormalDistanceOutput {float4 normal:COLOR0;float4 distance:COLOR1;};
-NormalDistanceOutput WorldNormals(float2 uv:TEXCOORD0) {
-    NormalDistanceOutput o;o.normal=worldNormalValue(uv);
-    // Match RemovalSmooth's half-res centre exactly, including raster interpolation and odd sizes.
-    float2 q=(floor(uv*ScreenSize.zw)+.5)/ScreenSize.zw;
-    o.distance=viewDistance(normalizedDepth(depthUV(q))).xxxx;
-    return o;
-}
-
-// No distance MRT is bound when no light source is drawn.
-float4 WorldNormalsNoDistance(float2 uv:TEXCOORD0):COLOR0 { return worldNormalValue(uv); }
 
 struct LightingOutput {float4 correction:COLOR0;float4 baseline:COLOR1;float4 daylight:COLOR2;};
 float3 worldGIValue(float3 p,float4 smoothNormal,uniform bool localOnly,out float4 prelitGI) {

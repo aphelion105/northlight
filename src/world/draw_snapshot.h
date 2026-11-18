@@ -13,6 +13,7 @@
 #include <cstring>
 #include <limits>
 #include <unordered_map>
+#include <type_traits>
 #include <utility>
 #include <vector>
 #if defined(__SSE2__)
@@ -887,7 +888,8 @@ public:
     // admission and the read budget exactly like the equivalent miss.
     // Optional admission probes may reuse tracked resident data without reads,
     // revalidation locks or cache population. A miss leaves the normal path intact.
-    bool read(IDirect3DDevice9* device,IDirect3DVertexDeclaration9* declaration,const Draw& draw,Mesh& output,Diagnostics* why=nullptr,bool priority=false,std::shared_ptr<const Mesh>* shared=nullptr,bool nearby=false,bool residentOnly=false) {
+    template<class GpuLookup=std::nullptr_t>
+    bool read(IDirect3DDevice9* device,IDirect3DVertexDeclaration9* declaration,const Draw& draw,Mesh& output,Diagnostics* why=nullptr,bool priority=false,std::shared_ptr<const Mesh>* shared=nullptr,bool nearby=false,bool residentOnly=false,GpuLookup* gpuLookup=nullptr) {
         if(shared)shared->reset();
         Mesh mesh=std::move(output);mesh.prepare();output=Mesh{};if(why)*why={};if(!device)return fail(why,Error::Arguments);
         UINT extent[4]={},n=0;if(!layout(declaration,extent,why)||!indexCount(draw,n,why))return false;
@@ -896,6 +898,24 @@ public:
         Ref<IDirect3DVertexBuffer9> vertices[4];D3DVERTEXBUFFER_DESC descriptions[4]={};UINT offsets[4]={},strides[4]={};
         priority_=priority;near_=nearby;compacted_=false;
         bool cacheable=shared&&identity_;CacheKey key;std::uint64_t cacheIbBegin=0,cacheIbBytes=0;
+        // A CPU owner can be handed to subsequent consumers. On its miss a
+        // GPU-only consumer can still lease this exact revision before any locks.
+        const auto serveBound=[&](IDirect3DIndexBuffer9* ib,bool metadataKnown,bool& served){
+            if(!serve(key,vertices,ib,extent,shared,why,served))return false;
+            if(served){fastCacheHits_+=metadataKnown&&key.tracked;return true;}
+            if constexpr(!std::is_same_v<GpuLookup,std::nullptr_t>){
+                if(gpuLookup&&key.tracked&&extent[0]&&!extent[1]&&!extent[2]&&!extent[3]){
+                    IdentityWords words;auto canonical=key;
+                    UINT vertexCount=0;
+                    if(sourceIdentityWords(canonical,declaration,words)&&(*gpuLookup)(words,vertexCount)){
+                        Mesh resident;resident.vertexCount=vertexCount;resident.topology=mesh.topology;resident.primitiveCount=mesh.primitiveCount;
+                        resident.indexed=mesh.indexed;resident.dynamic=mesh.dynamic;resident.streams[0].stride=strides[0];
+                        mesh=std::move(resident);served=true;
+                    }
+                }
+            }
+            return true;
+        };
         // Hold the actual bound resources alive while one registry lookup reads
         // immutable descriptions/identities and CURRENT write generations. An
         // unknown member alone takes its original GetDesc/identity/version path.
@@ -935,7 +955,7 @@ public:
                 key=makeKey(vertices,extent,draw,declaration,strides,offsets,descriptions,token,desc.Size,unsigned(desc.Format),ok,batch?metadata:nullptr);
                 key.version[4]=known?metadata[4].revision:(version_?version_(ib.p,true):0);if(!key.version[4])key.tracked=0;cacheable=ok&&token!=0&&(!mesh.dynamic||key.tracked);
                 key.privateDomain=!key.tracked&&sources_->members.size()>1?this:nullptr;if(residentOnly&&!key.tracked)return false;
-                if(cacheable){bool served=false;if(!serve(key,vertices,ib.p,extent,shared,why,served))return false;if(served){fastCacheHits_+=metadataKnown&&key.tracked;output=std::move(mesh);return true;}}}
+                if(cacheable){bool served=false;if(!serveBound(ib.p,metadataKnown,served))return false;if(served){output=std::move(mesh);return true;}}}
             if(residentOnly)return false;
             cacheIbBegin=begin;cacheIbBytes=bytes;
             if(!admit(why))return false;
@@ -950,7 +970,7 @@ public:
             // DYNAMIC resources may be cached only with complete write tracking.
             if(cacheable){bool ok=true;key=makeKey(vertices,extent,draw,declaration,strides,offsets,descriptions,0,0,0,ok,batch?metadata:nullptr);cacheable=ok&&(!mesh.dynamic||key.tracked);
                 key.privateDomain=!key.tracked&&sources_->members.size()>1?this:nullptr;if(residentOnly&&!key.tracked)return false;
-                if(cacheable){bool served=false;if(!serve(key,vertices,nullptr,extent,shared,why,served))return false;if(served){fastCacheHits_+=metadataKnown&&key.tracked;output=std::move(mesh);return true;}}}
+                if(cacheable){bool served=false;if(!serveBound(nullptr,metadataKnown,served))return false;if(served){output=std::move(mesh);return true;}}}
             if(residentOnly)return false;
             if(!admit(why))return false;if(std::uint64_t(low)+n>std::uint64_t(UINT(-1))+1)return fail(why,Error::VertexRange);high=low+n-1;}
         std::int64_t first=std::int64_t(low)+(draw.indexed?draw.base:0),last=std::int64_t(high)+(draw.indexed?draw.base:0);

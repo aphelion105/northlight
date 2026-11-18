@@ -8,6 +8,11 @@
 #include "hdr_sky_foreground.h"
 
 struct ModelNormalPacketTestAccess {
+    // A frozen reference renderer can still run the pre-existing MRT cases.
+    template<class T> static auto sourcePolicy(T& n,bool on,int)->decltype(n.residentSourceEnabled,true){n.residentSourceEnabled=on;return true;}
+    template<class T> static bool sourcePolicy(T&,bool,long){return false;}
+    template<class T> static auto sourceHits(const T& n,int)->decltype(n.residentSourceHits){return n.residentSourceHits;}
+    template<class T> static unsigned sourceHits(const T&,long){return 0;}
     static unsigned committed(const NorthlightModelNormals& n){return n.nativeCommittedPackets;}
     static std::string stats(const NorthlightModelNormals& n){std::string text;n.nativeMrt.report(0,[&](const char* format,auto... args){char line[1024];std::snprintf(line,sizeof line,format,args...);text+=line;});return text;}
     static unsigned stat(const NorthlightModelNormals& n,const char* name){const auto text=stats(n);const std::string key=std::string(name)+"=";const auto at=text.find(key);assert(at!=std::string::npos);return unsigned(std::strtoul(text.c_str()+at+key.size(),nullptr,10));}
@@ -90,7 +95,8 @@ int main(int argc,char** argv){
         auto n=std::make_unique<NorthlightModelNormals>(d);n->setDeferredCapture(true);n->setRasterStateSource(&extension,[](void* e,const D3DRENDERSTATETYPE* keys,unsigned count,DWORD* values){return static_cast<ExtensionDevice*>(e)->knownRenderStates(keys,count,values);});
         NorthlightDrawSnapshot::Frame sourcePool,worldConsumer;
         auto identity=[](void* p,bool)->uint64_t{return uint64_t(reinterpret_cast<uintptr_t>(p));};
-        auto version=[](void*,bool)->uint64_t{return 1;}; // Immutable fixture buffers.
+        static uint64_t revision[2]={1,1};
+        auto version=[](void*,bool index)->uint64_t{return revision[index];};
         if(captureSource){sourcePool.setIdentityProvider(identity);sourcePool.setVersionProvider(version);sourcePool.setSnapshotCacheLimit(24u<<20);
             assert(n->shareCaptureSources(sourcePool,identity,version,nullptr));worldConsumer.setIdentityProvider(identity);worldConsumer.setVersionProvider(version);assert(worldConsumer.shareSnapshotPool(sourcePool));}
         n->setEmptyTargetSource(&extension,[](void* e){return static_cast<ExtensionDevice*>(e)->emptyAuxiliaryTargets();});
@@ -115,6 +121,7 @@ int main(int argc,char** argv){
         unsigned frameNumber=0;
         auto sky=target(W,H,D3DFMT_A16B16G16R16F,8);NorthlightHdr::SkyForeground skyCapture;
         std::vector<unsigned char> referenceColor,referenceNormals,referenceSky;
+        bool evictSource=false,downstreamRead=false;double captureUs=0;
         auto frame=[&](bool mrt,unsigned scenario=0,unsigned fault=0){
             if(captureSource)worldConsumer.clearFrame();
             n->endFrame();n->enableNativeMrt(mrt);state(color);
@@ -151,7 +158,16 @@ int main(int argc,char** argv){
                 if(timing)pose(10.f+(i%7)*.1f,(int(i%17)-8)*.025f);
                 if(timing||captureSource){ok(d->SetStreamSource(0,vb,0,Stride));ok(d->SetIndices(ib));}
                 std::shared_ptr<const NorthlightDrawSnapshot::Mesh> published;IDirect3DVertexDeclaration9* publishedDecl=nullptr;
+                if(evictSource)sourcePool.clearSnapshotCache();
+                const auto start=evictSource?std::chrono::steady_clock::now():std::chrono::steady_clock::time_point{};
                 n->capture(receiver,nativeGeometry,!timing&&!captureSource,&geometry,nullptr,D3DFMT_UNKNOWN,nullptr,0,captureSource?nullptr:&mesh,captureSource?nullptr:decl,nullptr,captureSource?&published:nullptr,captureSource?&publishedDecl:nullptr);
+                if(evictSource)captureUs+=std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-start).count();
+                if(downstreamRead){
+                    assert(!published&&!publishedDecl);
+                    NorthlightDrawSnapshot::Mesh scratch;std::shared_ptr<const NorthlightDrawSnapshot::Mesh> admitted;
+                    const auto before=worldConsumer.bytesRead();assert(worldConsumer.read(d,decl,geometry,scratch,nullptr,false,&admitted));
+                    assert(admitted&&admitted->sourceIdentity&&admitted->byteSize()&&worldConsumer.bytesRead()>before);
+                }
                 if(published){assert(publishedDecl==decl&&published->sourceIdentity);++publishedSources;
                     bool served=false;NorthlightDrawSnapshot::Mesh scratch;std::shared_ptr<const NorthlightDrawSnapshot::Mesh> admitted;
                     if(lookupReference)assert(worldConsumer.read(d,decl,geometry,scratch,nullptr,false,&admitted));
@@ -211,6 +227,27 @@ int main(int argc,char** argv){
         // The local-light factory deliberately admits one cold pair/frame:
         // single, then dual, then triple. Compare identical warmed recipes.
         assert(!frame(false));assert(!frame(false));const auto warmColor=referenceColor;assert(!frame(false));assert(warmColor==referenceColor);
+        if(captureSource&&!material&&!hdr&&!alpha&&filename=="model-vs3-weighted4.bin"&&ModelNormalPacketTestAccess::sourcePolicy(*n,false,0)){
+            n->setGeometryCache(&cache);cache.ignoreTimeBudget(true);
+            store.setFrame(1);frame(false);store.setFrame(2);frame(false);assert(cache.bytes());
+            evictSource=true;const auto expected=referenceNormals,sceneColor=referenceColor;
+            double microseconds[2]={};size_t readBytes[2]={};unsigned hits=0;
+            for(unsigned pair=0;pair<12;++pair)for(unsigned turn=0;turn<2;++turn){
+                const bool early=(pair+turn)%2;ModelNormalPacketTestAccess::sourcePolicy(*n,early,0);
+                captureUs=0;frame(false);microseconds[early]+=captureUs;readBytes[early]+=n->readSourceBytes();
+                const auto leased=ModelNormalPacketTestAccess::sourceHits(*n,0);assert(leased==(early?N:0));hits+=leased;
+                assert(referenceNormals==expected&&referenceColor==sceneColor);
+            }
+            assert(readBytes[0]&&!readBytes[1]);
+            ModelNormalPacketTestAccess::sourcePolicy(*n,true,0);
+            downstreamRead=true;frame(false);downstreamRead=false;assert(referenceNormals==expected&&!n->readSourceBytes());
+            // A changed VB or IB generation must reacquire CPU bytes. A real
+            // downstream reader can still acquire and publish that source.
+            for(auto& generation:revision){++generation;frame(false);assert(n->readSourceBytes()>0&&!ModelNormalPacketTestAccess::sourceHits(*n,0));assert(referenceNormals==expected);}
+            std::printf("NORMAL_RESIDENT_SOURCE_PASS draws=%u earlyHits=%u beforeBytes=%zu afterBytes=%zu beforeCaptureUs=%.3f afterCaptureUs=%.3f exactPixels=1\n",
+                        12*N,hits,readBytes[0],readBytes[1],microseconds[0],microseconds[1]);
+            evictSource=false;n->setGeometryCache(nullptr);frame(false);
+        }
         assert(!frame(true));ready();
         frame(false,33);const auto hazardColor=referenceColor,hazardNormals=referenceNormals;
         frame(false);ready();referenceColor=hazardColor;referenceNormals=hazardNormals;

@@ -9,7 +9,7 @@ sys.path[:0] = [str(Path(__file__).resolve().parents[2]), str(Path(__file__).res
 import northlight_paths as fp
 from shader_compiler import Compiler, rows, validate_assembly
 
-SOURCES = ('fog_volume.hlsl', 'world_effects.hlsl', 'shadow_transition.hlsl', 'auto_bump_normal.hlsl')
+SOURCES = ('fog_volume.hlsl', 'world_effects.hlsl', 'shadow_transition.hlsl', 'auto_bump_normal.hlsl', 'world_view.hlsl')
 ENTRIES = ('VolumeInject', 'VolumeInjectQuiet', 'VolumeInjectActor', 'VolumeInjectActorQuiet', 'VolumeTemporal', 'VolumePrefix', 'VolumeResolve', 'VolumeInjectAmbient', 'VolumeInjectAmbientQuiet')
 
 

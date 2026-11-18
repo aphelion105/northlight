@@ -30,7 +30,8 @@ private:
  struct Entry {
   std::weak_ptr<const Mesh> source;NorthlightSourceIdentity::Handle identity;const Mesh* sourceAddress=nullptr;
   std::uint64_t hash=0,first=0,touched=0;unsigned owner=0,users=0;
-  size_t metadata=0,bytes=0,reserved=0;Batch* batch=nullptr;bool pending=false;
+  size_t metadata=0,bytes=0,reserved=0;Batch* batch=nullptr;bool pending=false,sourceIndexed=false;
+  UINT sourceVertices=0; // Decoded count for leases obtained without the CPU mesh.
   IDirect3DVertexBuffer9* vb[4]={};IDirect3DIndexBuffer9* ib=nullptr;Placement at;
   Entry* previous=nullptr;Entry* next=nullptr;Entry* batchNext=nullptr;
   Entry* untrackedPrevious=nullptr;Entry* untrackedNext=nullptr;
@@ -213,10 +214,10 @@ private:
  void commit(unsigned lane)noexcept{
   try{commitPrepared(lane);}catch(...){++batchStats_[lane].batchFailures;while(!pending_[lane].empty())release(*pending_[lane].back());for(auto& item:entries_)if(!item.second.bytes)item.second.at={};}
  }
- void bindReady(const Entry& e,const Mesh& mesh,IDirect3DVertexBuffer9* (&vb)[4],IDirect3DIndexBuffer9*& ib,Placement& at){
+ void bindReady(const Entry& e,bool indexed,IDirect3DVertexBuffer9* (&vb)[4],IDirect3DIndexBuffer9*& ib,Placement& at){
   IDirect3DVertexBuffer9* streams[4]={e.batch?e.batch->vb:e.vb[0],e.vb[1],e.vb[2],e.vb[3]};
   for(unsigned s=0;s<4;++s)if(vb[s]!=streams[s]){if(vb[s])vb[s]->Release();vb[s]=streams[s];if(vb[s])vb[s]->AddRef();}
-  auto* index=e.batch?(mesh.indices.empty()?nullptr:e.batch->ib):e.ib;
+  auto* index=e.batch?(indexed?e.batch->ib:nullptr):e.ib;
   if(ib!=index){if(ib)ib->Release();ib=index;if(ib)ib->AddRef();}at=e.at;
  }
  bool preserve(Entry& entry,unsigned other,bool spareOnly=false){
@@ -260,6 +261,21 @@ public:
  bool currentFrame(std::uint64_t frame)const{return explicitClock_&&frame_==frame;}
  void boundary(Consumer consumer){if(!explicitClock_)advance(frame_+1);auto lane=index(consumer);stats_[lane]={};counters_[lane]={};}
  std::uint64_t frame()const{return frame_;}
+ // Borrow an immutable upload by the current raw draw certificate. Content
+ // aliases alone cannot establish that this draw still references those bytes.
+ template<class Words>bool bindSource(Consumer consumer,IDirect3DDevice9* device,const Words& words,UINT& vertexCount,
+                                      IDirect3DVertexBuffer9* (&vb)[4],IDirect3DIndexBuffer9*& ib,Placement& at){
+  if(device!=device_)return false;
+  auto range=entries_.equal_range(NorthlightSourceIdentity::Key::fingerprint(words));
+  for(auto it=range.first;it!=range.second;++it){
+   auto& e=it->second;
+   if(!e.bytes||!e.sourceVertices||!std::equal(words.begin(),words.end(),e.identity->words.begin(),e.identity->words.end()))continue;
+   const auto lane=index(consumer);e.users|=1u<<lane;touch(e);retain_[lane]=limit_[lane];timeDeferred_[lane]=false;
+   ++stats_[lane].identityHits;++counters_[lane].hits;counters_[lane].reused+=e.bytes;counters_[lane].crossOwner+=e.owner!=lane;
+   vertexCount=e.sourceVertices;bindReady(e,e.sourceIndexed,vb,ib,at);return true;
+  }
+  return false;
+ }
  template<class Admission>bool bind(Consumer consumer,IDirect3DDevice9* device,const Owner& mesh,IDirect3DVertexBuffer9* (&vb)[4],IDirect3DIndexBuffer9*& ib,Admission admit,Placement& at,bool residentOnly=false){
   const auto lane=index(consumer);at={};timeDeferred_[lane]=false;if(!mesh||!mesh->byteSize())return false;if(device_&&device_!=device)return false;
   if(!device_){D3DCAPS9 caps{};maxVertexIndex_=SUCCEEDED(device->GetDeviceCaps(&caps))?caps.MaxVertexIndex:0;device_=device;}retain_[lane]=limit_[lane];
@@ -269,6 +285,10 @@ public:
     if(metadata>limit_[lane]||!room(lane,metadata,false))return false;
     const auto key=hash(mesh);auto inserted=entries_.emplace(std::piecewise_construct,std::forward_as_tuple(key),std::forward_as_tuple());auto& e=inserted->second;
     e.source=mesh;e.sourceAddress=mesh.get();e.identity=id;e.hash=key;e.first=e.touched=frame_;e.owner=lane;e.users=1u<<lane;e.metadata=metadata;
+    if(id&&id==mesh->sourceIdentity&&mesh->indexed==!mesh->indices.empty()&&!mesh->streams[0].bytes.empty()&&
+       mesh->streams[1].bytes.empty()&&mesh->streams[2].bytes.empty()&&mesh->streams[3].bytes.empty()){
+     e.sourceVertices=mesh->vertexCount;e.sourceIndexed=mesh->indexed;
+    }
     if(!e.identity){e.untrackedNext=untrackedFirst_;if(untrackedFirst_)untrackedFirst_->untrackedPrevious=&e;untrackedFirst_=&e;}
     metadata_[lane]+=metadata;append(e);probation_.append(e);++stats_[lane].warmup;return false;
    }
@@ -299,7 +319,7 @@ public:
     if(batched){pending_[lane].push_back(&e);e.pending=true;e.reserved=reserve;reserved_[lane]+=reserve;if(!ignoreTime_[lane])return false;commit(lane);if(!e.bytes)return false;}
     else{const auto start=std::chrono::steady_clock::now();bool ready=separate(e,*mesh);stats_[lane].createMs+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();if(!ready)return false;counters_[lane].uploaded+=e.bytes;++stats_[lane].created;}
    }
-   if(wasResident){++counters_[lane].hits;counters_[lane].reused+=e.bytes;}counters_[lane].crossOwner+=e.owner!=lane;bindReady(e,*mesh,vb,ib,at);return true;
+   if(wasResident){++counters_[lane].hits;counters_[lane].reused+=e.bytes;}counters_[lane].crossOwner+=e.owner!=lane;bindReady(e,!mesh->indices.empty(),vb,ib,at);return true;
   }catch(...){return false;}
  }
  bool commitPending(Consumer consumer){const auto lane=index(consumer);commit(lane);return std::exchange(committed_[lane],false);}
@@ -346,6 +366,7 @@ public:
  static constexpr size_t entryLimit(){return NativeStore::entryLimit();}bool timeDeferredLast()const{return store_.timeDeferred(consumer_);}void ignoreTimeBudget(bool on){store_.ignoreTime(consumer_,on);}
  const auto& counters()const{return store_.counters(consumer_);}
  auto batchStats()const{return store_.batchStats(consumer_);}bool commitPending(){return store_.commitPending(consumer_);}bool resident(const Owner& mesh){return store_.resident(mesh);}
+ template<class Words>bool bindSource(IDirect3DDevice9* device,const Words& words,UINT& vertices,IDirect3DVertexBuffer9* (&vb)[4],IDirect3DIndexBuffer9*& ib,Placement& at){return store_.bindSource(consumer_,device,words,vertices,vb,ib,at);}
  template<class Admission>bool bind(IDirect3DDevice9* device,const Owner& mesh,IDirect3DVertexBuffer9* (&vb)[4],IDirect3DIndexBuffer9*& ib,Admission admit,Placement& at,bool residentOnly=false){return store_.bind(consumer_,device,mesh,vb,ib,admit,at,residentOnly);}
 };
 }
