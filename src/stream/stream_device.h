@@ -287,7 +287,7 @@ public:
            st.vsKnown&&st.vs&&st.streams[0].known&&st.streams[0].vb&&st.indicesKnown&&st.indices&&
            st.rs[D3DRS_ALPHABLENDENABLE].known&&!st.rs[D3DRS_ALPHABLENDENABLE].v&&
            st.rs[D3DRS_ALPHATESTENABLE].known&&!st.rs[D3DRS_ALPHATESTENABLE].v){
-            const bool audit=core.timing&&core.frameNo%127==0&&m2Sections.ordinary%16==0;
+            const bool audit=m2Sections.ordinary%16==0;
             if(NorthlightM2Draw::readSection(__builtin_frame_address(0),base,minimum,vertices,start,primitives,st.vsF,audit,section,m2Sections))
                 matched=&section;
         }
@@ -451,7 +451,6 @@ public:
             callerLog(msg);
         }
         m2Sections={};
-        nativeM2Requested=NorthlightM2Draw::verifiedClient&&NorthlightM2Draw::requested.load(std::memory_order_relaxed);
         policy.onPresent();takeReplayFailure();
         UINT dirtyBytes=0;
         if(dirty){dirtyBytes=dirty->rdh.dwSize+dirty->rdh.nCount*UINT(sizeof(RECT));if(sizeof(PresentArgs)+dirtyBytes>MaxInlinePayload)dirtyBytes=0;}
@@ -476,6 +475,9 @@ public:
         if(core.timing){const std::uint64_t e=frameEnd-nowAtPresent,w=gameWaitsNs(q.stats)-waits0;own(q.stats.presentBookNs,e>w?e-w:0);}   // 0.3.204 (task 21): Present bookkeeping, waits excluded (no extra clock reads)
         waitsAtFrameEnd=get(q.stats.syncNs)+get(q.stats.backpressureNs);
         ++core.frameNo;
+        // Section provenance is sampled for the diagnostic report. A same-draw
+        // constant handoff is independently certified by the device mirror.
+        nativeM2Requested=core.timing&&callerLog&&core.frameNo%127==0&&NorthlightM2Draw::verifiedClient&&NorthlightM2Draw::requested.load(std::memory_order_relaxed);
         if(core.timing)core.reportQueryFrame(callerLog);
         if(core.timing){++core.queryWaitFrames;if(core.frameNo%600==0)core.reportQueryWait(callerLog);}
         if(core.timing&&core.frameNo%600==0){if(callerLog)core.texDiag.report(callerLog,core.callerModule,core.frameNo,[](unsigned c){return cmdName((Cmd)c);});else core.texDiag.restart(core.frameNo);}   // 0.3.206 (task 31): the texture readback report, one window per 600 Presents (Diagnostics only); without a log sink the window still restarts (tables and old histories must not grow)

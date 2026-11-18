@@ -21,27 +21,28 @@ t=(HERE/'test_concurrent_geometry_build.py').read_text()
 def method(signature,text=w):
     start=text.index(signature);end=text.index('\n    }\n',start);return text[start:end]
 render=method('    bool render(IDirect3DSurface9* targetSurface');upload=method('    bool upload(NorthlightStreaming::Budget& streamBudget){')
-context=method('    void updateWorldContext(const char* map,const float* camera,const NorthlightWmoContext::Lighting* global=nullptr){');helper=method('    void releaseOrphanedPending(const char* site){')
-gate='const bool screenResourcesReady=screenReady()&&resources(w,h,fmt);'
+context=method('    void updateWorldContext(');helper=method('    void releaseOrphanedPending(const char* site){')
+gate='const bool screenResourcesReady=screenReady()&&resources(w,h,fmt,requirements);'
 upload_gate='const bool geometryReady=sceneTargetsReady&&(hadTargets||upload(streamBudget));'
 reset='active.reset();expiredMeshPending|=heldDrawable;}'
 retire='const char* retired=active&&!NorthlightWorldStreaming::retained(active->map,active->center,r.map,r.camera)?(active->map!=r.map?"map":"retired"):nullptr;'
 adopt='if(published&&published!=active&&NorthlightWorldStreaming::adopts(published->map,published->center,bool(published->bvh),active&&active->bvh,r.map,r.camera)){'
 builder=w[w.index('    void work() {'):w.index('\n    bool check(HRESULT h,const char* s)')]
 error=builder[builder.index('auto publishError='):builder.index('// Geometry validity is spatial')]
-admission='if(!generations.canAdmit()){++generationDeferrals;'
+admission='if(!restore&&!generations.canAdmit()){++generationDeferrals;'
 # Each fault/reset cancellation retires CPU ownership before dropping its staged
 # owner. A successful commit publishes the complete table before that retirement.
 # Count-free checks permit additional legitimate lifecycle cancellation sites.
 cancel_paths=(helper,method('    bool streamingFailure('),method('    void releaseDefaultMesh(){'))
 retire_pending='retirePendingCpu();';clear_pending='pendingMesh.reset();'
 retirement_order=all(body.index('meshStore.cancel();')<body.index(retire_pending)<body.index(clear_pending) for body in cancel_paths)
-commit_order=upload.index('meshStore.commit()')<upload.index(retire_pending)<upload.index(clear_pending)
+commit=upload[upload.index('meshStore.commit()'):]
+commit_order=commit.index(retire_pending)<commit.index(clear_pending)
 
 checks={
  'bounded replacement can retain a live geometry generation under the same hard limit':
-  'if(!NorthlightGeometryMemory::admits(memory,entryBudget))' in builder and 'if(!generations.canAdmit())' in builder
-  and 'coldRecovery?NorthlightGeometryMemory::coldInBuildBudget(bytes):NorthlightGeometryMemory::inBuildBudget(bytes)' in builder,
+  'if(!NorthlightGeometryMemory::admits(memory,entryBudget))' in builder and 'if(!restore&&!generations.canAdmit())' in builder
+  and '(coldRecovery||spoolTerrain)?NorthlightGeometryMemory::coldInBuildBudget(bytes):NorthlightGeometryMemory::inBuildBudget(bytes)' in builder,
  'one release rule: the upload() predicate as a static helper, shared by the fixture':
   w.count('static bool pendingOrphaned(')==1 and 'return pending&&(!active||pending->map!=active->map||pending->bvh!=active->bvh);' in w
   and 'pendingMesh->map!=active->map||pendingMesh->bvh!=active->bvh' not in w and 'Fixture::pendingOrphaned(' in t and "static bool pendingOrphaned('" in t,
@@ -75,11 +76,11 @@ checks={
   and 'GeometryLeadMoveStep)?128u' not in context
   and builder.count('static_assert(64-NorthlightWorldStreaming::GeometryRefreshDistance>NorthlightWorldStreaming::GeometryLeadMoveStep,')==1,
  'staged ownership retires after cancellation or complete publication':retirement_order and commit_order,
- 'updateWorldContext runs only from terrain, WMO, model and validated sky context readers (D3D thread, like render())':
-  w.count('updateWorldContext(map,')==4 and 'traceContext=5' in method('    bool skyContext(') and 'updateWorldContext(map,camera.camera,globalRead?&light:nullptr);' in method('    bool wmoContext(IDirect3DVertexShader9* shader){') and 'updateWorldContext(map,camera,globalRead?&global:nullptr);' in method('    void terrainContext(){')
+ 'updateWorldContext runs only from terrain, WMO, model, menu and validated sky context readers (D3D thread, like render())':
+  w.count('updateWorldContext(map,')==5 and 'updateWorldContext(map,context.camera,nullptr,&menu);' in w and 'traceContext=5' in method('    bool skyContext(') and 'updateWorldContext(map,camera.camera,globalRead?&light:nullptr);' in method('    bool wmoContext(IDirect3DVertexShader9* shader){') and 'updateWorldContext(map,camera,globalRead?&global:nullptr);' in method('    void terrainContext(){')
   and 'world->wmoContext(vs)' in r and 'world->terrainContext();' in r,
  'builder marks each generation deferral and clears on admission, under the mutex':
-  w.count(admission)==1 and re.search(r'if\(!generations\.canAdmit\(\)\)\{\+\+generationDeferrals;\{std::lock_guard<std::mutex> lock\(mutex\);generationStall\.deferred\(GetTickCount\(\)\);\}deferBuild\("generation-deferred",memory,100\);continue;\}\n\s*\{std::lock_guard<std::mutex> lock\(mutex\);generationStall\.admitted\(\);\}',w) is not None,
+  w.count(admission)==1 and re.search(r'if\(!restore&&!generations\.canAdmit\(\)\)\{\+\+generationDeferrals;\{std::lock_guard<std::mutex> lock\(mutex\);generationStall\.deferred\(GetTickCount\(\)\);\}deferBuild\("generation-deferred",memory,100\);continue;\}\n\s*\{std::lock_guard<std::mutex> lock\(mutex\);generationStall\.admitted\(\);\}',w) is not None,
  'fixture region mirrors the production admission marks':'generationStall.deferred(GetTickCount());}deferBuild("generation-deferred"' in t and 'generationStall.admitted();}' in t,
  'watchdog: render thread, inside the request mutex block, once per episode, log only':
   context.count('generationStall.due(GetTickCount(),GenerationStallLogMs)')==1 and context.count('logf("WORLD geometry stalled ')==1

@@ -23,6 +23,7 @@ fixture = r'''
 #include <cassert>
 #include "m2_draw_section.h"
 #include <map>
+#include <tuple>
 #include <vector>
 using IDirect3DVertexShader9=int;
 using D3DFORMAT=int;
@@ -30,7 +31,10 @@ namespace NorthlightAutoDisplacement {
 struct Args {int draw=0,indices=0,format=0,vertices=0,stride=0;};
 struct CaptureSource {int mesh=0,pose=0,bank=0;void* declaration=nullptr;};
 }
-struct Normals {unsigned captures=0;template<class... A> void capture(A&&...){++captures;}};
+struct Normals {
+    unsigned captures=0;const int* bank=nullptr;
+    template<class... A> void capture(A&&... args){++captures;bank=std::get<sizeof...(A)-1>(std::forward_as_tuple(args...));}
+};
 struct Materials {bool enabled=false;bool active()const{return enabled;}};
 struct Hook {
     struct World {bool ground=false;bool terrainShader(IDirect3DVertexShader9*)const{return ground;}} scene;
@@ -71,6 +75,11 @@ struct NativeHook {
 };
 int main(){
     int shader=0;NorthlightAutoDisplacement::Args geometry;
+    {
+        Hook h;h.vsHashes[&shader]=3;NorthlightAutoDisplacement::CaptureSource source;
+        h.captureModelNormals(&shader,[]{return 0;},false,geometry,&source);assert(h.normals.bank==&source.bank);
+        h.captureModelNormals(&shader,[]{return 0;},true,geometry,&source);assert(!h.normals.bank);
+    }
     for(unsigned mode=0;mode<3;++mode){
         Hook h;h.vsHashes[&shader]=3;
         if(mode)h.autoBump=&h.materials;h.materials.enabled=mode==2;

@@ -2044,7 +2044,7 @@ private:
         if(terrain||(found!=vsHashes.end()&&m2ShaderFamily(found->second)==3))
             modelNormals->capture(vs,draw,userMemory,&geometry.draw,geometry.indices,geometry.format,geometry.vertices,geometry.stride,source?&source->mesh:nullptr,source?source->declaration:nullptr,source?&source->pose:nullptr,
                 source&&!userMemory?&source->mesh:nullptr,source&&!userMemory?&source->declaration:nullptr,terrain,
-                NorthlightM2Draw::current&&source&&!userMemory?&source->bank:nullptr);
+                source&&!userMemory?&source->bank:nullptr);
     }
     template<NorthlightWaterRenderer::UserPointer UserPointer,class Raw,class Draw> void captureGameDraw(IDirect3DVertexShader9* vs,const NorthlightAutoDisplacement::Args& geometry,Raw raw,Draw draw){
         constexpr bool userMemory=UserPointer!=NorthlightWaterRenderer::NoUserPointer;

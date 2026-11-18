@@ -82,7 +82,7 @@ def main():
     parser.add_argument('--backend', type=Path)
     parser.add_argument('--prebuilt', type=Path)
     parser.add_argument('--host-exe', type=Path, help='Read x86 stack reserve/commit from this game executable; never execute or modify it')
-    parser.add_argument('--storage', choices=['spooled', 'resident', 'transitions', 'actual', 'fence-faults', 'probe-reuse', 'recovery-policy', 'texture-aliases', 'actual-device-local', 'actual-default', 'actual-worker-reset', 'actual-worker-move'], default='spooled')
+    parser.add_argument('--storage', choices=['spooled', 'resident', 'transitions', 'actual', 'fence-faults', 'probe-reuse', 'recovery-policy', 'texture-aliases', 'actual-device-local', 'actual-default', 'actual-worker-entry', 'actual-worker-reset', 'actual-worker-move'], default='spooled')
     parser.add_argument('--available', nargs='+', type=int)
     parser.add_argument('--center', nargs=3, type=float, default=[5139.84, -56.93, 380.31], help='Actual world-cache fixture camera')
     args = parser.parse_args()
@@ -134,11 +134,18 @@ def main():
     assert args.backend and args.backend.is_file()
     import windows_gpu_guard
     backend_hash = sha(args.backend)
-    root = fp.world_cache() if args.storage in ('actual', 'actual-device-local', 'actual-default', 'actual-worker-reset', 'actual-worker-move') else None
+    root = fp.world_cache() if args.storage in ('actual', 'actual-device-local', 'actual-default', 'actual-worker-entry', 'actual-worker-reset', 'actual-worker-move') else None
     cache = cache_inputs(root, args.center) if root else {}
     client = out / 'client'
     client.mkdir(exist_ok=True)
-    if args.storage in ('actual-worker-reset', 'actual-worker-move') and not (client / 'world-cache').exists():
+    entry_config = {}
+    if args.storage == 'actual-worker-entry' and args.host_exe:
+        for name in ('northlight-quality.ini', 'shadow-range-profiles.ini'):
+            path = args.host_exe.parent / name
+            if path.is_file():
+                shutil.copy2(path, client / name)
+                entry_config[name] = sha(client / name)
+    if args.storage in ('actual-worker-entry', 'actual-worker-reset', 'actual-worker-move') and not (client / 'world-cache').exists():
         import _winapi
         _winapi.CreateJunction(str(root), str(client / 'world-cache'))
     reports = []
@@ -151,10 +158,12 @@ def main():
         start = time.perf_counter()
         command = [str(exe), str(args.backend), str(client), str(available), args.storage, *([str(root), *map(str, args.center)] if root else [])]
         run = subprocess.run(command, env=env, capture_output=True, text=True, timeout=180, **flags)
+        if args.storage == 'actual-worker-entry':
+            shutil.copy2(client / 'northlight-renderer.log', out / f'{available}-worker.log')
         (out / f'{available}.log').write_text(run.stdout + run.stderr, encoding='utf-8')
         print(run.stdout, flush=True)
-        marker = 'ACTUAL_WORKER_MOVE_PASS' if args.storage == 'actual-worker-move' else 'ACTUAL_WORKER_RESET_PASS' if args.storage == 'actual-worker-reset' else 'DEVICE_LOCAL_ACTUAL_PASS' if args.storage in ('actual-device-local', 'actual-default') else 'CUTOUT_ALIASES_PASS' if args.storage == 'texture-aliases' else 'COLD_RECOVERY_POLICY_PASS' if args.storage == 'recovery-policy' else 'COLD_PROBE_REUSE_PASS' if args.storage == 'probe-reuse' else 'COLD_FENCE_FAILURE_PASS' if args.storage == 'fence-faults' else 'ACTUAL_SCENE_PASS' if args.storage == 'actual' else 'COLD_TRANSITION_PASS' if args.storage == 'transitions' else 'COLD_UPLOAD_PASS'
-        ok = run.returncode == 0 and run.stdout.count(marker) == (1 if args.storage in ('fence-faults', 'probe-reuse', 'recovery-policy', 'actual-default', 'actual-worker-reset', 'actual-worker-move') else 2)
+        marker = 'ACTUAL_WORKER_ENTRY_PASS' if args.storage == 'actual-worker-entry' else 'ACTUAL_WORKER_MOVE_PASS' if args.storage == 'actual-worker-move' else 'ACTUAL_WORKER_RESET_PASS' if args.storage == 'actual-worker-reset' else 'DEVICE_LOCAL_ACTUAL_PASS' if args.storage in ('actual-device-local', 'actual-default') else 'CUTOUT_ALIASES_PASS' if args.storage == 'texture-aliases' else 'COLD_RECOVERY_POLICY_PASS' if args.storage == 'recovery-policy' else 'COLD_PROBE_REUSE_PASS' if args.storage == 'probe-reuse' else 'COLD_FENCE_FAILURE_PASS' if args.storage == 'fence-faults' else 'ACTUAL_SCENE_PASS' if args.storage == 'actual' else 'COLD_TRANSITION_PASS' if args.storage == 'transitions' else 'COLD_UPLOAD_PASS'
+        ok = run.returncode == 0 and run.stdout.count(marker) == (1 if args.storage in ('fence-faults', 'probe-reuse', 'recovery-policy', 'actual-default', 'actual-worker-entry', 'actual-worker-reset', 'actual-worker-move') else 2)
         reports.append({'available_mib': available, 'storage': args.storage, 'wall_seconds': time.perf_counter() - start,
                         'command': command, 'exit_code': run.returncode, 'stdout': run.stdout, 'pass': ok})
         assert ok, run.stderr or run.stdout
@@ -166,6 +175,7 @@ def main():
     (out / 'validation.json').write_text(json.dumps({'pass': True, 'game_launched': False, 'actual_x86_va_pressure': True,
         'backend': str(args.backend), 'backend_sha256': backend_hash, 'runner_sha256': runner_hash,
         'binary': provenance, 'inputs_unchanged': unchanged, 'host_stack_unchanged':host_unchanged, 'cache_root': str(root) if root else None,
+        'entry_config': entry_config,
         'cache_inputs': cache, 'cache_unchanged': cache_unchanged, 'storage': args.storage, 'cases': reports}, indent=2) + '\n', encoding='utf-8')
 
 

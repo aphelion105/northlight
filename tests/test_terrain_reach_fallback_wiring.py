@@ -18,14 +18,14 @@ assert 'constexpr uint64_t EntryHeadroom=256*MiB;' in g and 'budgetWith(EntryHea
 assert 'constexpr uint64_t InBuildHeadroom=128*MiB;' in g and 'budgetWith(largestAllocation>InBuildHeadroom?largestAllocation:InBuildHeadroom,largestAllocation)' in g
 def body(start, end='};'):
     i = w.index(start); return w[i:w.index(end, i)]
-assert 'const auto geometryBudget=[&](uint64_t bytes=0){return coldRecovery?NorthlightGeometryMemory::coldInBuildBudget(bytes):NorthlightGeometryMemory::inBuildBudget(bytes);};' in w
+assert 'const auto geometryBudget=[&](uint64_t bytes=0){return (coldRecovery||spoolTerrain)?NorthlightGeometryMemory::coldInBuildBudget(bytes):NorthlightGeometryMemory::inBuildBudget(bytes);};' in w
 assert 'constexpr uint64_t ColdInBuildHeadroom=2*MiB,ColdEntryHeadroom=48*MiB;' in g
 for lam in ('NorthlightGI::AllocationAdmission localAdmission=', 'NorthlightGI::AllocationAdmission terrainAdmission='):
     assert 'const auto budget=geometryBudget(bytes);auto sample=workerMemory(budget);' in body(lam), lam
     assert 'NorthlightGeometryMemory::buildBudget(' not in body(lam), lam
 # The after-bvh gate keeps the in-build floor (the build's own BVH and cache are live there); with the
 # entry floor every attempt that entered within one BVH of 768 MiB was refused and rebuilt each second.
-plan = body('const auto planBudget=', 'continue;')
+plan = body('auto planBudget=', 'continue;')
 assert 'planBudget=geometryBudget();' in plan and 'NorthlightGeometryMemory::buildBudget(' not in plan
 assert 'logGeometryMemory("after-bvh"' in plan and 'liftEntry("plan",planBudget.available,memory.available,planBudget.largest)' in plan
 # Stage entry keeps the full entry budget, raised by entryLift after a refusal that followed entry.
@@ -33,7 +33,7 @@ entry = body('auto memory=workerMemory(entryLift.apply(NorthlightGeometryMemory:
 assert entry.count('NorthlightGeometryMemory::buildBudget(') >= 2 and 'inBuildBudget(' not in entry
 assert 'entryBudget=chunkBudget;chunkedLocal=true;' in entry and 'entryBudget=cold;coldRecovery=true;' in entry
 assert 'coldLift.apply(NorthlightGeometryMemory::coldChunkBuildBudget(),GetTickCount())' in entry
-assert 'auto entryBudget=entryLift.apply(plainEntry,GetTickCount());' in entry
+assert 'auto entryBudget=restore?plainEntry:entryLift.apply(plainEntry,GetTickCount());' in entry
 # Small shortfalls may reclaim raw payloads first. Every step resamples the same
 # admission floor, including any lift; complete reset remains the final fallback.
 assert 'if(!NorthlightGeometryMemory::admits(memory,entryBudget)){' in entry
@@ -71,7 +71,8 @@ st = fp.src('shadow_terrain.h').read_text()
 assert 'constexpr float Radius=NorthlightShadowCascades::TerrainRadius;' in st
 assert '#include "terrain_reach_fallback.h"' in w
 for stage in ('shadow-terrain', 'mesh-page"', 'mesh-page-seal'):
-    assert re.search(r'stallBegin\("%s,?[^;]*,terrainRequired(?:,terrainRequiredLargest)?\);\s*if\(reduceReach\(\)\)goto terrainStage;' % re.escape(stage.rstrip('"')), w.replace('\n', ' ')), stage
+    assert re.search(r'stallBegin\("%s,?[^;]*,terrainRequired(?:,terrainRequiredLargest)?\);\s*if\(retryShadowStage\(\)\)goto terrainStage;' % re.escape(stage.rstrip('"')), w.replace('\n', ' ')), stage
+assert 'return spillShadow()||reduced;' in w and 'spoolTerrain=true;resetPreparation();' in w
 assert w.count('goto terrainStage') == 4 and w.count('terrainStage:') == 1
 assert 'NorthlightTerrainReach::choose(reachState,std::max(profileReach,flightReach)' in w
 assert 'reach=reachChoice.reach;' in w and 'const bool extended=reach>NorthlightShadowTerrain::Radius;' in w

@@ -1683,7 +1683,7 @@ private:
             const bool profileThisBuild=NorthlightDiagnostics::enabled()&&(!memoryFootprintReportAt||started-memoryFootprintReportAt>=10000);
             profileBuildActive=profileThisBuild;
             if(profileThisBuild)memoryFootprintReportAt=started;
-            bool chunkedLocal=bool(restore),coldRecovery=bool(restore);
+            bool chunkedLocal=bool(restore),coldRecovery=bool(restore),spoolTerrain=false;
             auto profileMemory=[&](const char* stage,const NorthlightWorldMesh::WorldMeshUploadPlan* plan=nullptr,const NorthlightGI::WorldScene* scratch=nullptr,const NorthlightWorldMeshPages::Plan* pages=nullptr){
                 if(!profileThisBuild)return;
                 const auto profileStart=std::chrono::steady_clock::now();
@@ -1706,7 +1706,7 @@ private:
                 NorthlightMemoryProfile::Admission admission;
                 admission.available=lastWorkerMemory.available;admission.largest=lastWorkerMemory.largest;admission.valid=lastWorkerMemory.valid;admission.largestExact=workerMemoryExact;
                 admission.entryRequired=entryBudget.available;admission.largestRequired=entryBudget.largest;
-                admission.reserve=NorthlightGeometryMemory::ProcessReserve;admission.entryHeadroom=coldRecovery?NorthlightGeometryMemory::ColdEntryHeadroom:chunkedLocal?NorthlightGeometryMemory::EntryHeadroom-32*NorthlightGeometryMemory::MiB:NorthlightGeometryMemory::EntryHeadroom;admission.interiorHeadroom=coldRecovery?NorthlightGeometryMemory::ColdInBuildHeadroom:NorthlightGeometryMemory::InBuildHeadroom;
+                admission.reserve=NorthlightGeometryMemory::ProcessReserve;admission.entryHeadroom=coldRecovery?NorthlightGeometryMemory::ColdEntryHeadroom:chunkedLocal?NorthlightGeometryMemory::EntryHeadroom-32*NorthlightGeometryMemory::MiB:NorthlightGeometryMemory::EntryHeadroom;admission.interiorHeadroom=(coldRecovery||spoolTerrain)?NorthlightGeometryMemory::ColdInBuildHeadroom:NorthlightGeometryMemory::InBuildHeadroom;
                 admission.minimumAvailable=minimumBuildAvailable==UINT64_MAX?0:minimumBuildAvailable;admission.maximumKnownCapacity=maximumObservedCapacity;
                 std::strncpy(admission.stage,stage,sizeof(admission.stage)-1);NorthlightMemoryProfile::store().admission(admission);
                 logf("WORLD MEMORY admission stage=%s buildId=%llu processReserveMiB=%llu entryHeadroomMiB=%llu interiorHeadroomMiB=%llu entryRequiredMiB=%llu availableMiB=%llu minObservedAvailableMiB=%llu maxObservedCapacityMiB=%.3f sampleAgeMs=%lu sampleValid=%u sourceChargedInclusiveMiB=%.3f sourceDecodedInclusiveMiB=%.3f sourceUncachedLeaseMiB=%.3f preparationChargedInclusiveMiB=%.3f ledgersNotAdditive=1 peaksAreSampled=1",
@@ -1816,7 +1816,7 @@ private:
                 }
                 // END CHUNKED ENTRY SELECTION
                 if(!NorthlightGeometryMemory::admits(memory,entryBudget)){stallBegin("build-deferred",memory,entryBudget.available,entryBudget.largest);deferBuild("build-deferred",memory,1000,&entryBudget);continue;}
-                const auto geometryBudget=[&](uint64_t bytes=0){return coldRecovery?NorthlightGeometryMemory::coldInBuildBudget(bytes):NorthlightGeometryMemory::inBuildBudget(bytes);};
+                const auto geometryBudget=[&](uint64_t bytes=0){return (coldRecovery||spoolTerrain)?NorthlightGeometryMemory::coldInBuildBudget(bytes):NorthlightGeometryMemory::inBuildBudget(bytes);};
                 const uint64_t entryAvailable=memory.available,entryLargest=memory.largest;
                 geometryMemoryDemand.store(0,std::memory_order_relaxed); // admitted: the build's own use is not a demand (the episode stays open)
                 // A memory refusal after entry: the next entry waits for what this attempt lacked.
@@ -1863,6 +1863,14 @@ private:
                     else{localDeferred=true;localSample=retryMemory;localRequired=budget.available;localLargest=budget.largest;}
                 }
                 noteLocalAllocationFailure();
+                if(!localBuilt&&localDeferred&&!coldRecovery&&currentGeometry()){
+                    resetPreparation();
+                    const auto budget=coldLift.apply(NorthlightGeometryMemory::coldChunkBuildBudget(),GetTickCount());
+                    if(NorthlightGeometryMemory::admits(workerMemory(budget),budget)){
+                        coldRecovery=chunkedLocal=true;localDeferred=false;
+                        localBuilt=buildLocal();noteLocalAllocationFailure();
+                    }
+                }
                 if(localBuilt)localDeferred=false;
                 if(!localBuilt){
                     replacement.reset();
@@ -1880,22 +1888,34 @@ private:
                 // The local BVH and its cache are this build's own memory: entry reserved their headroom,
                 // so this gate keeps the in-build floor. The entry floor here refused every attempt that
                 // entered within one BVH of the configured entry floor and rebuilt it each second (0.3.212 player log).
-                const auto planBudget=geometryBudget();
+                spoolTerrain=coldRecovery;
+                // A scratch allocation failure belongs to the shadow plan. Keep the
+                // completed local BVH and retry only the remaining stages on disk.
+                auto spillShadow=[&]{
+                    if(spoolTerrain)return false;
+                    spoolTerrain=true;resetPreparation();
+                    if(NorthlightDiagnostics::enabled())logf("WORLD shadow build switched to temporary storage buildId=%llu retainedLocalTriangles=%zu",(unsigned long long)r.id,replacement->triangleCount());
+                    return true;
+                };
+                auto planBudget=geometryBudget();
                 memory=workerMemory(planBudget);if(NorthlightDiagnostics::enabled())logGeometryMemory("after-bvh",memory,generations.live(),workerMemoryExact,&planBudget);
                 profileMemory("after-bvh");
+                if(!NorthlightGeometryMemory::admits(memory,planBudget)&&spillShadow()){
+                    planBudget=geometryBudget();memory=workerMemory(planBudget);
+                }
                 if(!NorthlightGeometryMemory::admits(memory,planBudget)){
                     replacement.reset();liftEntry("plan",planBudget.available,memory.available,planBudget.largest);stallBegin("plan",memory,planBudget.available,planBudget.largest);deferBuild("plan-deferred",memory,1000,&planBudget);continue;
                 }
                 // Reduced-reach retry re-enters here with the local BVH (`replacement`, still tracked in
                 // `generations`) kept: it does not depend on the terrain stages.
                 float reach=0,flightReach=0;
+                const double localPhaseMs=phaseElapsed();
                 // The point crop and cache revision are fixed for this build request.
                 bool pointBudgetExceeded=false;
                 terrainStage:
                 auto plan=std::make_shared<NorthlightWorldMesh::WorldMeshUploadPlan>();
                 // GI stays local. Load only authored terrain over the complete
                 // directional caster volume into a separate GPU shadow source.
-                const double localPhaseMs=phaseElapsed();
                 bool terrainDeferred=false;NorthlightGeometryMemory::Sample terrainSample;uint64_t terrainLargest=0,terrainRequired=0,terrainRequiredLargest=0;unsigned terrainChecks=0;
                 NorthlightGI::AllocationAdmission terrainAdmission=[&](uint64_t bytes){
                     terrainLargest=std::max(terrainLargest,bytes);
@@ -1935,13 +1955,16 @@ private:
                 // Interior allocations use the applicable working guard, so the extended
                 // build falls back only when an interior allocation is refused under that floor. terrainAdmission
                 // re-samples on every call and the refused attempt's allocations are freed (goto destroys them) first.
-                auto reduceReach=[&]{
+                auto retryShadowStage=[&]{
                     // Restore only once an entry sample covers what this extended attempt lacked.
                     uint64_t restore=0;
                     if(!NorthlightGeometryMemory::add(entryAvailable,terrainRequired>terrainSample.available?terrainRequired-terrainSample.available:0,restore))restore=UINT64_MAX;
-                    if(!NorthlightTerrainReach::memoryRefused(reachState,reach,GetTickCount(),restore,terrainRequiredLargest))return false;
-                    memoryStall.markReduced();
-                    logf("WORLD shadow terrain reach reduced from=%.0f to=%.0f reason=memory",reach,NorthlightTerrainReach::BaseReach);return true;
+                    const bool reduced=NorthlightTerrainReach::memoryRefused(reachState,reach,GetTickCount(),restore,terrainRequiredLargest);
+                    if(reduced){
+                        memoryStall.markReduced();
+                        logf("WORLD shadow terrain reach reduced from=%.0f to=%.0f reason=memory",reach,NorthlightTerrainReach::BaseReach);
+                    }
+                    return spillShadow()||reduced;
                 };
                 const bool extended=reach>NorthlightShadowTerrain::Radius;
                 const int tileReach=int(std::ceil(reach/NorthlightRegionalFog::TileSize));
@@ -1957,7 +1980,7 @@ private:
                 }
                 NorthlightGI::WorldScene shadowTerrain;
                 { uint32_t reachBits;std::memcpy(&reachBits,&reach,sizeof reachBits);terrainSizeHint.key=reachBits; } // same map (reset above) and same reach only
-                const bool terrainLoaded=NorthlightGI::loadInstancedScenes(shadowTiles,root+"world-cache/models",V(center.x-reach,center.y-reach,-100000),V(center.x+reach,center.y+reach,center.z+reach),shadowTerrain,error,1,terrainAdmission,terrainFilter,terrainChunkFilter,&terrainSizeHint,coldRecovery?NorthlightGI::SceneSourceProvider{}:sceneSource,true,chunkedLocal,coldRecovery);
+                const bool terrainLoaded=NorthlightGI::loadInstancedScenes(shadowTiles,root+"world-cache/models",V(center.x-reach,center.y-reach,-100000),V(center.x+reach,center.y+reach,center.z+reach),shadowTerrain,error,1,terrainAdmission,terrainFilter,terrainChunkFilter,&terrainSizeHint,spoolTerrain?NorthlightGI::SceneSourceProvider{}:sceneSource,true,chunkedLocal||spoolTerrain,spoolTerrain);
                 if(terrainLoaded)terrainDeferred=false; // Optional reserve/provenance refusals preserve all accepted geometry.
                 const float shadowGround=terrainLoaded?NorthlightFlightShadow::ground(shadowTerrain,center):std::numeric_limits<float>::quiet_NaN();
                 if(!flightReach&&std::isfinite(shadowGround)&&center.z-shadowGround>128){
@@ -1991,14 +2014,14 @@ private:
                 profileMemory("after-terrain-load",plan.get(),&shadowTerrain);
                 // In the bounded path, release scratch terrain as its last triangle is read.
                 // Point transmission retains the existing retryable path.
-                const bool consumeTerrain=chunkedLocal&&pointTransmission.triangles.empty();
+                const bool consumeTerrain=(chunkedLocal||spoolTerrain)&&pointTransmission.triangles.empty();
                 bool shadowPlanBuilt=terrainLoaded&&(consumeTerrain
-                    ?NorthlightShadowTerrain::buildConsuming(replacement->scene(),shadowTerrain,center,*plan,error,terrainAdmission,reach,{},replacement.get(),coldRecovery,giGeometryRadius)
-                    :NorthlightShadowTerrain::build(replacement->scene(),shadowTerrain,center,*plan,error,terrainAdmission,reach,{},true,replacement.get(),&meshPreparation,&pointTransmission,coldRecovery,giGeometryRadius));
+                    ?NorthlightShadowTerrain::buildConsuming(replacement->scene(),shadowTerrain,center,*plan,error,terrainAdmission,reach,{},replacement.get(),spoolTerrain,giGeometryRadius)
+                    :NorthlightShadowTerrain::build(replacement->scene(),shadowTerrain,center,*plan,error,terrainAdmission,reach,{},true,replacement.get(),&meshPreparation,&pointTransmission,spoolTerrain,giGeometryRadius));
                 if(!shadowPlanBuilt&&!pointTransmission.triangles.empty()){
                     if(NorthlightDiagnostics::enabled())logf("POINT_TRANSMISSION assembly refused; retaining base geometry: %s",error.c_str());
                     pointTransmission=NorthlightGI::WorldScene{};terrainDeferred=false;error.clear();
-                    shadowPlanBuilt=NorthlightShadowTerrain::build(replacement->scene(),shadowTerrain,center,*plan,error,terrainAdmission,reach,{},true,replacement.get(),&meshPreparation,nullptr,coldRecovery,giGeometryRadius);
+                    shadowPlanBuilt=NorthlightShadowTerrain::build(replacement->scene(),shadowTerrain,center,*plan,error,terrainAdmission,reach,{},true,replacement.get(),&meshPreparation,nullptr,spoolTerrain,giGeometryRadius);
                 }
                 if(shadowPlanBuilt){terrainDeferred=false; // an oversized reservation may have been refused before a successful fallback
                     if(plan->pagingChunks&&NorthlightDiagnostics::enabled())logf("WORLD shadow geometry prepared in bounded chunks");
@@ -2010,7 +2033,7 @@ private:
                     if(terrainDeferred){
                         meshPreparation.reset();
                         stallBegin("shadow-terrain",terrainSample,terrainRequired,terrainRequiredLargest);
-                        if(reduceReach())goto terrainStage;
+                        if(retryShadowStage())goto terrainStage;
                         shadowTerrain=NorthlightGI::WorldScene{};plan.reset();replacement.reset();liftEntry("shadow-terrain",terrainRequired,terrainSample.available,terrainRequiredLargest);deferBuild("shadow-terrain-retry",workerMemory(),1000);continue;}
                     if(error.rfind("Temporary geometry",0)==0||error=="Paged mesh temporary storage failed"){
                         shadowTerrain=NorthlightGI::WorldScene{};plan.reset();replacement.reset();
@@ -2039,7 +2062,7 @@ private:
                 // Reset. The complete file-backed plan can replay immediately and
                 // releases its construction memory at commit. A reset rebuild also
                 // needs a self-contained plan, independent of pre-Reset keys.
-                bool spoolUpload=coldRecovery||restore||!resident||resident->empty();
+                bool spoolUpload=spoolTerrain||!resident||resident->empty();
                 if(!spoolUpload){
                     uint64_t largestTexture=0;for(const auto& material:plan->materials)largestTexture=std::max(largestTexture,material.pixelBytes());
                     auto uploadBudget=NorthlightGeometryMemory::uploadBudget(0,0,0,0);
@@ -2058,7 +2081,7 @@ private:
                     if(terrainDeferred){
                         meshPreparation.reset();
                         stallBegin("mesh-page",terrainSample,terrainRequired,terrainRequiredLargest);
-                        if(reduceReach())goto terrainStage;
+                        if(retryShadowStage())goto terrainStage;
                         pages.reset();plan.reset();replacement.reset();liftEntry("mesh-page",terrainRequired,terrainSample.available,terrainRequiredLargest);deferBuild("mesh-page-retry",workerMemory(),1000);continue;}
                     if(error.rfind("Temporary geometry",0)==0||error=="Paged mesh temporary storage failed"){
                         shadowTerrain=NorthlightGI::WorldScene{};plan.reset();replacement.reset();
@@ -2081,7 +2104,7 @@ private:
                     if(terrainDeferred){
                         meshPreparation.reset();
                         stallBegin("mesh-page-seal",terrainSample,terrainRequired,terrainRequiredLargest);
-                        if(reduceReach())goto terrainStage;
+                        if(retryShadowStage())goto terrainStage;
                         pages.reset();plan.reset();replacement.reset();liftEntry("mesh-page-seal",terrainRequired,terrainSample.available,terrainRequiredLargest);deferBuild("mesh-page-seal-retry",workerMemory(),1000);continue;}
                     result->message=error;publishError();continue;
                 }
