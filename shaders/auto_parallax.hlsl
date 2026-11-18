@@ -15,40 +15,44 @@ MaterialFrame materialFrame(float2 uv,float4 clipPosition,float4 projection) {
 float parallaxFade(float distance,float2 tx,float2 ty,float range){return saturate((range-distance)/max(range*.4,1))*saturate(2-sqrt(max(dot(tx,tx),dot(ty,ty)))*128);}
 float2 parallaxUVFrame(sampler2D heightMap,float2 uv,float distance,float4 control,MaterialFrame f) {
     float2 tx=f.tx,ty=f.ty;float3 p=f.p,tangent=f.tangent,bitangent=f.bitangent,normal=f.normal;
-    float fade=parallaxFade(distance,tx,ty,control.y);
-    if(control.x<=0||fade<=0)return uv;
+    float amplitude=control.x*parallaxFade(distance,tx,ty,control.y);
+    if(amplitude<=0)return uv;
     float3 view=float3(dot(-p,tangent),dot(-p,bitangent),abs(dot(-p,normal)));
-    float steps=clamp(control.z,8,32),stepDepth=1/steps;
-    float2 rayUV=clamp(view.xy/max(view.z,.15*length(p)),-4,4)*control.x*fade;
-    float2 stepUV=rayUV*stepDepth;
-    // The authored surface is height .5, rather than the top of the volume.
-    // March from above it: values above/below .5 protrude/recede respectively.
-    float depth=0;float2 sampleUV=uv+rayUV*.5;
-    float sampled=1-tex2Dgrad(heightMap,sampleUV,tx,ty).b;
-    // Reuse only identical coordinates; subtraction/addition may round.
-    float previous=sampled;float2 priorUV=sampleUV;
-    [loop]for(int i=0;i<32&&i<steps&&depth<sampled;++i){previous=sampled;priorUV=sampleUV;sampleUV-=stepUV;depth+=stepDepth;sampled=1-tex2Dgrad(heightMap,sampleUV,tx,ty).b;}
-#ifdef NORTHLIGHT_MATERIAL_CAPTURE
-    // The explicit fetch keeps two-layer world-frame capture within SM3's
-    // instruction limit; it is also the reference result for the reuse path.
-    previous=1-tex2Dgrad(heightMap,sampleUV+stepUV,tx,ty).b;
-#else
-    [branch]if(any(priorUV!=sampleUV+stepUV))previous=1-tex2Dgrad(heightMap,sampleUV+stepUV,tx,ty).b;
-#endif
-    previous-=depth-stepDepth;
-    float after=sampled-depth;
-    sampleUV+=stepUV*saturate(after/min(after-previous,-.00001));
-    return sampleUV;
+    // Limit the lateral footprint smoothly at grazing incidence. Independent
+    // axis clamps rotate diagonal rays and stretch narrow painted grooves.
+    float2 rayUV=view.xy*rsqrt(max(view.z*view.z+.25*dot(view.xy,view.xy),1e-20))*amplitude;
+    // Generated height maps are at most 512 texels on either axis. Short rays
+    // need fewer layers; grazing rays retain the configured search budget.
+    float travel=max(abs(rayUV.x),abs(rayUV.y))*512;
+    float stride=rcp(min(max(ceil(travel),4),control.z));
+    float2 bottom=uv-.5*rayUV;
+    float level=1;
+    float gap=1-tex2Dgrad(heightMap,uv+.5*rayUV,tx,ty).b;
+    float above=gap;
+    // A level of zero is the bottom of the volume, so a crossing is guaranteed.
+    [loop]for(int i=0;i<32 && gap>0;++i){
+        above=gap;
+        level-=stride;
+        gap=level-tex2Dgrad(heightMap,bottom+level*rayUV,tx,ty).b;
+    }
+    // Split the contact interval once before interpolating. Both endpoints
+    // come from actual samples; reconstruct positions from the original UV.
+    float halfStride=stride*.5;
+    float middle=level+halfStride;
+    float midGap=middle-tex2Dgrad(heightMap,bottom+middle*rayUV,tx,ty).b;
+    if(midGap<=0){level=middle;gap=midGap;}else above=midGap;
+    level+=halfStride*saturate(-gap/max(above-gap,1e-6));
+    return uv+(level-.5)*rayUV;
 }
 float2 parallaxUV(sampler2D heightMap,float2 uv,float4 clipPosition,float4 projection,float4 control) {
     return parallaxUVFrame(heightMap,uv,clipPosition.w,control,materialFrame(uv,clipPosition,projection));
 }
 float parallaxShadow(sampler2D heightMap,float2 uv,float height,float distance,MaterialFrame f,float4 control,float4 light,float steps) {
     float3 ray=float3(dot(light.xyz,f.tangent),dot(light.xyz,f.bitangent),dot(light.xyz,f.normal));
-    float fade=parallaxFade(distance,f.tx,f.ty,control.y);
-    if(control.x<=0||light.w<=0||ray.z<=.04||fade<=0)return 1;
+    float amplitude=control.x*parallaxFade(distance,f.tx,f.ty,control.y);
+    if(amplitude<=0||light.w<=0||ray.z<=.04)return 1;
     float span=1-height;
-    float2 extent=clamp(ray.xy/max(ray.z,.08),-6,6)*control.x*span*fade;
+    float2 extent=clamp(ray.xy/max(ray.z,.08),-6,6)*amplitude*span;
     float blocked=0;
     [loop]for(int i=1;i<=16&&i<=steps&&blocked<1;++i){
         float part=i/steps;

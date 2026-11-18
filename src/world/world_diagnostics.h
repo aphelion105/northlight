@@ -1,6 +1,7 @@
 #pragma once
 #include "utf8_path.h"
 #include "diagnostic_files.h"
+#include "diagnostic_readback.h"
 #include <d3d9.h>
 #include <algorithm>
 #include <cstdio>
@@ -41,6 +42,11 @@ inline bool dump(IDirect3DDevice9* device,IDirect3DSurface9* source,
     unsigned bytes=desc.Format==D3DFMT_A16B16G16R16F||desc.Format==D3DFMT_G32R32F?8:
         (desc.Format==D3DFMT_R32F||desc.Format==D3DFMT_A8R8G8B8||desc.Format==D3DFMT_X8R8G8B8?4:0);
     if(FAILED(hr)||!bytes||!desc.Width||!desc.Height||uint64_t(desc.Width)*desc.Height*bytes>64*1024*1024)return false;
+    if(uint64_t(desc.Width)*desc.Height*bytes>NorthlightDiagnosticReadback::DirectLimit&&desc.MultiSampleType==D3DMULTISAMPLE_NONE){
+        hr=NorthlightDiagnosticReadback::strips(device,source,desc,bytes,directory+"/capture-"+std::to_string(capture)+"-"+name+".fgr");
+        logf("WORLD GPU diagnostic capture=%u buffer=%s size=%ux%u format=%u saved=%d HRESULT=%08lx",capture,name,desc.Width,desc.Height,unsigned(desc.Format),SUCCEEDED(hr),(unsigned long)hr);
+        return SUCCEEDED(hr);
+    }
     IDirect3DSurface9* staging=nullptr;
     hr=device->CreateOffscreenPlainSurface(desc.Width,desc.Height,desc.Format,D3DPOOL_SYSTEMMEM,&staging,nullptr);
     if(SUCCEEDED(hr))hr=device->GetRenderTargetData(source,staging);

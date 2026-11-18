@@ -1,7 +1,7 @@
 {
   "sources": {
     "fog_volume.hlsl": "6ec1944eb348fd6ffb85c211b48cebf0d19b239f7bb016fc45d0e930346910b5",
-    "world_effects.hlsl": "05481a26c163274f858ac7be94e0a238378143e7cc893b0d1c8d7f0b15186009",
+    "world_effects.hlsl": "d569884fd8074ec370163a6010b133100a2b5dbbb7c87e82047ad54d95f19766",
     "shadow_transition.hlsl": "571ba1c03b3e6c0e36965f2a5107526f16d29b07c23d934982030c0f45de96d1",
     "auto_bump_normal.hlsl": "b5523a51dc6715f11ac2e7ba9ecb46a4973ba6aa23de159e308a8fd24d4e9ebc"
   },

@@ -29,7 +29,7 @@ inputs = [Path(__file__), fp.TESTS / 'lighting_gpu_support.h', fp.TESTS / 'world
 inputs += [fp.COMPILED / (name + suffix + '.bin') for name in
            ('WorldPrelitComposite', 'WorldComposite', 'WorldUnlitComposite') for suffix in ('', 'Hdr')]
 inputs += [fp.COMPILED / (name + '.bin') for name in
-           ('RemovalSmooth', 'TemporalLightMerged', 'TemporalLightMergedZeroWeight')]
+           ('RemovalSmooth', 'TemporalLight', 'TemporalLightMerged', 'TemporalLightMergedZeroWeight')]
 hashes = {str(p): sha(p) for p in inputs}
 exe = out / 'lighting-gi.exe'
 command = [fp.zig(), 'c++', '-target', 'x86-windows-gnu', '-O2', '-UNDEBUG', '-std=c++17',

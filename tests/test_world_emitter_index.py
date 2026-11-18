@@ -61,6 +61,21 @@ class WorldEmitterIndex(unittest.TestCase):
         for emission, expected in (('fire', index.CAST_SHADOW|index.FIRE), ('candle', index.CANDLE), ('energy', 0)):
             self.assertEqual(index.flags({'emission': emission}), expected)
 
+    def test_reviewed_fixture_replaces_old_measured_index_without_a_second_source(self):
+        value = self.read()
+        measured = index.records(self.document['models'][PATH])[0]
+        value.catalog[PATH] = dict(source(), family='wotlk_compact_source',
+                                   asset_sha256=hashlib.sha256(self.blob).hexdigest(),
+                                   intensity=1.15, end=10., casts_shadows=True)
+        result = value.get(PATH, self.blob)
+        records = index.records(result)
+        self.assertEqual(result['basis'], 'reviewed')
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0][4:6], measured[4:6])
+        self.assertEqual(records[0][6], index.CAST_SHADOW)
+        self.assertEqual((records[0][1][2], records[0][3]), (1.15, 10.))
+        self.assertEqual(json.loads(value.payload())['models'][PATH]['basis'], 'reviewed')
+
     def test_explicit_shadow_intent_survives_compact_build_and_roundtrip(self):
         for emission in ('energy','fire','candle'):
             for shadow in (False,True):

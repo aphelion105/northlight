@@ -44,7 +44,7 @@ int main(int argc,char** argv){
         auto* ps=shader(gpu.d,dir+"/"+name+".bin");bool hdr=std::string(name).find("Hdr")!=std::string::npos,prelit=std::string(name).find("Prelit")!=std::string::npos;
         for(Pixel native:{Pixel{.8f,.6f,.5f,1},Pixel{.12f,.08f,.04f,1},Pixel{.15f,.75f,.25f,1},Pixel{0,0,.8f,1},Pixel{0,0,0,1}})
         for(float base:{.2f,.7f})for(float correction:{-.1f,0.f,.1f}){
-            Bank c=constants(8,8);c[81][0]=prelit?1.f:0.f;Pixel source=native;if(hdr)for(unsigned k=0;k<3;++k)source[k]=linear(source[k]);
+            Bank c=constants(8,8);c[18]={base,base,base,0};c[81][0]=prelit?1.f:0.f;Pixel source=native;if(hdr)for(unsigned k=0;k<3;++k)source[k]=linear(source[k]);
             gpu.solid(0,native);gpu.solid(2,hdr?source:Pixel{});gpu.solid(8,{correction,correction,correction,0});gpu.solid(14,{correction,correction,correction,0});gpu.solid(12,{base,base,base,1});
             const auto result=gpu.run(ps,c,8,8);float peak=std::max({source[0],source[1],source[2]});
             for(unsigned k=0;k<3;++k){const float expected=source[k]+source[k]/std::max(base,peak)*correction;const float error=std::fabs(result[k]-expected);hueError=std::max(hueError,error);failures+=error>3e-5f;}
@@ -56,15 +56,16 @@ int main(int argc,char** argv){
     // incoming lamp radiance is added after attenuation, with its own hue.
     for(const char* name:{"WorldPrelitComposite","WorldPrelitCompositeHdr"}){
         auto* ps=shader(gpu.d,dir+"/"+name+".bin");const bool hdr=std::string(name).find("Hdr")!=std::string::npos;
-        for(float authored:{0.f,1.f})for(float resident:{0.f,1.f})for(float occlusion:{0.f,.5f,1.f})for(float lamp:{0.f,.08f}){
-            Bank c=constants(8,8);c[81]={resident,authored,0,0};c[80][1]=0;
+        for(float authored:{0.f,1.f})for(float ambient:{.25f,.5f})for(float resident:{0.f,1.f})for(float occlusion:{0.f,.5f,1.f})for(float lamp:{0.f,.08f}){
+            Bank c=constants(8,8);c[81]={resident,authored,0,0};c[80][1]=0;c[18]={ambient,ambient,ambient,0};
             Pixel native{.4f,.3f,.2f,1},source=native;if(hdr)for(unsigned k=0;k<3;++k)source[k]=linear(source[k]);
             gpu.solid(0,native);gpu.solid(2,hdr?source:Pixel{});gpu.solid(8,{});
             gpu.solid(14,{0,0,0,occlusion});gpu.solid(12,{.5f,.5f,.5f,1});gpu.solid(3,{0,lamp,0,0});
-            const auto result=gpu.run(ps,c,8,8);float expectedGreen=source[1]*(1-resident*occlusion*(1-authored));
-            const float incoming=source[1]/.5f*lamp;
+            const auto result=gpu.run(ps,c,8,8);float kept=1-resident*occlusion*(1-authored)*(ambient/.5f);
+            float expectedGreen=source[1]*kept;
+            const float incoming=source[1]/std::max(authored?ambient:.5f,source[0])*lamp;
             expectedGreen+=hdr?incoming:incoming/(1+incoming/(1-expectedGreen));
-            for(unsigned k=0;k<3;++k){const float expected=k==1?expectedGreen:source[k]*(1-resident*occlusion*(1-authored));
+            for(unsigned k=0;k<3;++k){const float expected=k==1?expectedGreen:source[k]*kept;
                 if(std::fabs(result[k]-expected)>3e-5f){++failures;std::printf("ROOM_GI_FAIL hdr=%u authored=%.0f resident=%.0f occ=%.1f lamp=%.2f channel=%u got=%g expected=%g\n",unsigned(hdr),authored,resident,occlusion,lamp,k,result[k],expected);}}
             ++cases;
         }ps->Release();

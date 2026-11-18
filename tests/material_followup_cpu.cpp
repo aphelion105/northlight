@@ -1,5 +1,23 @@
 #include "material_followup_fixture.h"
 #include "fixtures/material_height_reference.h"
+static void worldHeightKernel(){
+    using namespace NorthlightMaterialHeight;
+    // Linear luminance makes the independent nine-tap reference exact.
+    // Impulses at a corner exercise the wrap and degenerate texture axes.
+    for(unsigned w:{1u,2u,7u})for(unsigned h:{1u,2u,5u}){
+        Image im;im.width=w;im.height=h;im.rgba.resize(size_t(w)*h*4,0);
+        im.rgba[0]=im.rgba[1]=im.rgba[2]=255;
+        const std::array<float,4> profile{.5f,0,1,0};
+        std::vector<float> actual;worldValues(im,im.rgba.data(),profile,actual);
+        for(unsigned y=0;y<h;++y)for(unsigned x=0;x<w;++x){
+            float impulse=0;
+            for(int dy=-1;dy<=1;++dy)for(int dx=-1;dx<=1;++dx)
+                if((int(x+w)+dx)%int(w)==0&&(int(y+h)+dy)%int(h)==0)
+                    impulse+=(dx==0?2:1)*(dy==0?2:1)/16.f;
+            assert(std::fabs(actual[y*w+x]-(.15f+.7f*impulse))<2e-6f);
+        }
+    }
+}
 void MaterialCaptureStateTestAccess::textureStorage(){
  struct Frozen{IDirect3DBaseTexture9* texture=nullptr;unsigned stage=0;DWORD sampler[13]={};uint64_t bytes=0;~Frozen(){drop(texture);}};
  LimitTexture source;unsigned cases=0;
@@ -43,4 +61,4 @@ static void lockedHeight(){using namespace NorthlightMaterialHeight;NorthlightMa
  for(auto& v:times)std::sort(v.begin(),v.end());printf("LOCKED_HEIGHT_PASS cases=%u old=%.9f new=%.9f ratio=%.5f unlockOnException=1 stagingAllocationBefore=1 after=0\n",cases,times[0][5],times[1][5],times[1][5]/times[0][5]);(void)sink;
 }
 
-int main(){MaterialCaptureStateTestAccess::textureStorage();DisplacementStateTestAccess::borrowedHeight();profileStatistics();lockedHeight();puts("MATERIAL_FOLLOWUP_CPU_PASS");}
+int main(){worldHeightKernel();MaterialCaptureStateTestAccess::textureStorage();DisplacementStateTestAccess::borrowedHeight();profileStatistics();lockedHeight();puts("MATERIAL_FOLLOWUP_CPU_PASS");}

@@ -181,7 +181,8 @@ float3 shadowParameters(){return ShadowTuning.w>.5?ShadowTuning.xyz:float3(1,.5,
 // The shared lighting buffer includes ambient replacement. A direct-shadow
 // art limit must not restore native ambient inside a measured dark room.
 // GridInfo.y is zero when the GI pass is disabled, including the live toggle.
-float shadowRemovalLimit(){return max(.45+.4*saturate(shadowParameters().x-1),saturate(GridInfo.y));}
+float directRemovalLimit(){return .45+.4*saturate(shadowParameters().x-1);}
+float shadowRemovalLimit(){return max(directRemovalLimit(),saturate(GridInfo.y));}
 
 // Shading confidence is not geometric validity: a selected one-sided normal
 // still needs a receiver plane. Removing its plane/lift creates acne at joins.
@@ -469,7 +470,7 @@ float4 probeCascadeIrradiance(float3 p,float3 n,uniform bool localOnly,float lev
     float4 basis=float4(.28209479,.48860251*n.x,.48860251*n.y,.48860251*n.z);
     // SH radiance -> cosine-convolved diffuse irradiance.
     basis*=float4(3.14159265,2.0943951,2.0943951,2.0943951);
-    float3 result=0;float total=0,coverage=0;
+    float3 result=0;float total=0,coverage=0,validSupport=0;
     [loop]for(int i=0;i<8;++i){
         float3 bit=float3(i-floor(i/2.0)*2,floor(i/2.0)-floor(i/4.0)*2,floor(i/4.0));
         float3 cell=base+bit;
@@ -505,7 +506,9 @@ float4 probeCascadeIrradiance(float3 p,float3 n,uniform bool localOnly,float lev
         float excess=max(distance-moment.x,0);
         visibility=variance/(variance+excess*excess);visibility*=visibility;
         }
-        weight*=visibility*moment.z;
+        weight*=moment.z;
+        validSupport+=weight;
+        weight*=visibility;
         // Coverage above describes residency even for occluded probes. Only
         // their zero-weight radiance/history reads can be omitted. The fused
         // localOnly entry stays unchanged to fit its 510-slot SM3 budget.
@@ -520,9 +523,10 @@ float4 probeCascadeIrradiance(float3 p,float3 n,uniform bool localOnly,float lev
         }
         }
     }
-    // Residency is independent of moment visibility. A covered, fully blocked
-    // receiver must not fall back to unoccluded native ambient.
-    return float4(result/max(total,.00001),saturate(coverage));
+    // Occluded valid probes still own darkness. When every neighbour is inside
+    // solid geometry, give the coarser cascade or sky estimate the receiver.
+    // Reach ordinary residency with 1/32 valid support to avoid grid seams.
+    return float4(result/max(total,.00001),saturate(min(coverage,32*validSupport)));
 }
 float4 probeIrradiance(float3 p,float3 n,uniform bool localOnly){
     if(localOnly)return probeCascadeIrradiance(p,n,true,0,1);
@@ -723,7 +727,7 @@ LightingOutput worldLightingValue(float2 uv,bool soft,bool shadows,bool gi=false
     // 0.3.198 (rain): rain softens the DIRECT shadowing only (z = the share removed; 0 = exactly as before: the branch is not taken). The alpha
     // below, the baseline alpha and GridInfo.z (a divisor elsewhere) keep the true visibility, so the removal and the lamps see the real shadow.
     float moonShadow=shadow,sunVisibility=visibility;
-    if(WeatherInfo.z>0){moonShadow=lerp(1,shadow,1-WeatherInfo.z);sunVisibility=lerp(1,shadow,GridInfo.z*(1-WeatherInfo.z));}
+    if(shadows&&WeatherInfo.z>0){moonShadow=lerp(1,shadow,1-WeatherInfo.z);sunVisibility=lerp(1,shadow,GridInfo.z*(1-WeatherInfo.z));}
     float3 moon=DirectLight.rgb*saturate(dot(detailNormal,SunDirection.xyz))*moonShadow;
     float3 sun=DirectLight.rgb*saturate(dot(detailNormal,LegacyDirection.xyz))*sunVisibility;
     float3 replacement=lerp(sun,moon,SunDirection.w);
@@ -1030,8 +1034,15 @@ float4 FlashShadow(float2 uv:TEXCOORD0):COLOR0 {
 float3 removalScale(float3 baseline,float3 scene,float3 fog,float legacyT){
     return max(legacyT*max(baseline,.15),scene-min(fog,scene));
 }
+// The probe atlas already blends its publications in world space. In a full
+// directional shadow its correction belongs to this receiver's native baseline.
+// Borrowing another receiver's signed RGB there creates coloured bands even
+// with identical shadow visibility. Ease the filter back in across a penumbra.
+float directionalFilterWeight(float visibility){
+    return GridInfo.y>0&&RemovalInfo.y>0?saturate(32*visibility*RemovalInfo.z):1;
+}
 float3 smoothRemoval(float4 current,float2 q,float2 base,float2 size,float z,bool skipZeroTaps=false){
-    float amount=saturate((1-current.a*RemovalInfo.z)/GridInfo.z);
+    float amount=saturate((1-current.a*RemovalInfo.z)/GridInfo.z)*directionalFilterWeight(current.a);
     float3 result=current.rgb;
     // Fractional source weights leave fp16 alpha a hair below 1/RemovalInfo.z in sunlight: skip
     // the taps below 1/256, which also keeps those lit pixels exactly unchanged.
@@ -1099,7 +1110,8 @@ TemporalOutput temporalLight(float2 uv,bool merged,sampler2D historyDepth,sample
     float2 duv=depthUV(q);float d=normalizedDepth(duv);float z=viewDistance(d);
     [branch]if(merged&&RemovalInfo.y>0&&d<.99999)current.rgb=smoothRemoval(current,q,base,half,z,skipZeroTaps);
     o.light=current;o.depth=float4(z,0,0,1);
-    if(TemporalInfo.x<=0||d>=.99999)return o;
+    float historyWeight=TemporalInfo.x*directionalFilterWeight(current.a);
+    if(historyWeight<=0||d>=.99999)return o;
     float3 p=worldPosition(duv,d);
     float3 v=affinePoint(p,PreviousView);float w=v.z*Projection.z;
     if(w<=ImageClip.z)return o;
@@ -1140,7 +1152,7 @@ TemporalOutput temporalLight(float2 uv,bool merged,sampler2D historyDepth,sample
     float margin=.15/max(RemovalInfo.z,1e-4)*RemovalInfo.y*still;
     float loose=clamp(history.a,lo.a-margin,hi.a+margin);
     float3 reach=abs(loose-tight.a)*RemovalInfo.z*TemporalReach.w;
-    o.light=lerp(current,float4(clamp(history.rgb,lo.rgb-reach,hi.rgb+reach),loose),TemporalInfo.x);
+    o.light=lerp(current,float4(clamp(history.rgb,lo.rgb-reach,hi.rgb+reach),loose),historyWeight);
     return o;
 }
 // Keep current normals/distance at s14/s15 for smoothing; histories use idle slots.
@@ -1835,14 +1847,18 @@ float4 worldCompositeInputs(float2 uv,float2 pixel,bool surfaceLighting,bool hdr
         // Thin receivers whose depth matches none of the four texels keep the
         // nearest-depth texel instead of losing their shadow and GI entirely.
         if(total<.02){bounce=fallbackLight.rgb;[branch]if(!baseLighting&&CompositeWork.y<.5)local=tex2Dlod(CurrentLocalLighting,float4(fallbackUV,0,0)).rgb;shadow=fallbackLight.a;baseline=fallbackBase;total=1;}
-        float inverseWeight=1/max(total,.0001);
+        float inverseWeight=1/total; // The fallback above sets total to one when it is below .02.
         bounce*=inverseWeight*(prelit?PrelitDaylightInfo.x:1);shadow*=inverseWeight;
 
         // The framebuffer already contains atmospheric fog. Relight only the
         // transported surface term: do not infer material albedo from fog RGB.
         float3 oldLight=max(baseline*inverseWeight,.15);
         float3 transported=max(original.rgb-fogPart,0);
-        float3 albedoT=boundedAlbedo(hdrMode?hdrSurface:transported,oldLight,legacyT);
+        // A room-bank receiver has no regional directional light in its native
+        // base. Including that light in the divisor suppresses lamp contrast.
+        float3 ambientBase=min(oldLight,max(AmbientLight.rgb,.15));
+        float3 materialLight=prelit&&PrelitDaylightInfo.y>.5?ambientBase:oldLight;
+        float3 albedoT=boundedAlbedo(hdrMode?hdrSurface:transported,materialLight,legacyT);
         // Prelit RGB retains authored illumination at zero GI blend. Resident
         // probes attenuate that layer and add bounce independently of daylight.
         // As for local lamps, native transported RGB supplies a bounded material
@@ -1852,11 +1868,23 @@ float4 worldCompositeInputs(float2 uv,float2 pixel,bool surfaceLighting,bool hdr
         // ambient. Preserve it: probe occlusion cannot identify its components.
         // Baked receivers can blend measured occlusion; current shadowed lamps
         // and incoming daylight remain independent of that ambient correction.
-        if(prelit)color=mad(-saturate(shadow)*PrelitDaylightInfo.x*(1-PrelitDaylightInfo.y),transported,color);
+        float3 luma=float3(.2126,.7152,.0722);
+        float ambientShare=saturate(dot(AmbientLight.rgb,luma)/dot(oldLight,luma));
+        if(prelit){
+            // The probe measures ambient occlusion. The native baked surface
+            // also contains directional lighting; remove only its ambient share.
+            color=mad(-saturate(shadow)*PrelitDaylightInfo.x*(1-PrelitDaylightInfo.y)*ambientShare,transported,color);
+        }
         // Bound combined GI/shadow darkening relative to the existing surface;
         // this preserves black and does not introduce an absolute exposure floor.
-        float removalLimit=prelit?max(shadowRemovalLimit(),saturate(shadow)*PrelitDaylightInfo.x):shadowRemovalLimit();
-        color=max(color,mad(-removalLimit,transported,original.rgb));
+        // Prelit daylight and bounce are additive and its ambient subtraction
+        // is already bounded above. Only signed outdoor correction needs this.
+        if(!prelit){
+            // GI can replace the entire ambient share. The native directional
+            // share keeps its own removal limit, including when GI is enabled.
+            float limit=lerp(directRemovalLimit(),shadowRemovalLimit(),ambientShare);
+            color=max(color,mad(-limit,transported,original.rgb));
+        }
         // Bound shadow/GI removal before adding current local radiance, so a
         // darkening floor cannot swallow a weaker overlapping lamp channel.
         // Compress the final, shadowed lamp sum once in SDR, preserving hue.
@@ -1944,7 +1972,9 @@ float4 materialComposite(float2 uv,bool hdrMode,float4 color,float3 effect,bool 
     [loop]for(int tap=0;tap<4;++tap){
         float row=floor(tap*.5);
         float2 candidate=(clamp(base+float2(tap-row*2,row),0,ScreenSize.zw-1)+.5)/ScreenSize.zw;
-        float gap=abs(viewDistance(normalizedDepth(depthUV(candidate)))-z);
+        // The combined pass already binds this half-grid's canonical distance.
+        float candidateZ=reuseInputs?tex2Dlod(CurrentDistance,float4(candidate,0,0)).r:viewDistance(normalizedDepth(depthUV(candidate)));
+        float gap=abs(candidateZ-z);
         // Among compatible receivers retain the nearest pixel, not a depth
         // minimum that would pull a grazing plane toward the camera.
         float2 offset=(candidate-uv)*ScreenSize.zw;

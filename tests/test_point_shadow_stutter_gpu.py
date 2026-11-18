@@ -69,7 +69,7 @@ for i,backend in enumerate(backends):
  assert 'POINT_WHITE_CUBE_GPU_PASS ' in text
  assert text.count('POINT_DIRECT_GPU_PASS ')==10
  assert 'POINT_RECYCLE_GPU_PASS ' in text
- candidates=[];empty_terrain=[]
+ candidates=[];empty_terrain=[];sparse_terrain=[]
  if not a.reference_point_from or 'preparePointTerrain(' in point:
   assert 'POINT_TERRAIN_CANDIDATES_PASS ' in text and 'POINT_TERRAIN_CANDIDATES_GPU_PASS ' in text
   rows=[dict(re.findall(r'(\w+)=([^ ]+)',line)) for line in text.splitlines() if line.startswith('POINT_TERRAIN_CANDIDATES_TIMING ') and 'warm=0 ' in line]
@@ -82,6 +82,11 @@ for i,backend in enumerate(backends):
    for cached in (0,1):
     values=[float(r['cpuMs']) for r in rows if int(r['cached'])==cached];assert len(values)==6
     empty_terrain.append({'cached':bool(cached),'cpu_ms':statistics.median(values),'lights':14,'batches':12854})
+   if not a.benchmark_preparation_from:
+    rows=[dict(re.findall(r'(\w+)=([^ ]+)',line)) for line in text.splitlines() if line.startswith('POINT_SPARSE_TERRAIN_TIMING ') and 'warm=0 ' in line]
+    for compact in (0,1):
+     values=[float(r['cpuMs']) for r in rows if int(r['compact'])==compact];assert len(values)==6
+     sparse_terrain.append({'compact':bool(compact),'cpu_ms':statistics.median(values),'lights':14,'batches':12854})
  terrain=[]
  if not a.reference_point_from or 'geometryOnlyFaces' in point:
   assert 'POINT_TERRAIN_REUSE_PASS ' in text and 'POINT_TERRAIN_ACTORS_PASS ' in text
@@ -101,7 +106,7 @@ for i,backend in enumerate(backends):
    preparation.append(entry)
  samples=[dict(re.findall(r'(\w+)=([^ ]+)',line)) for line in text.splitlines() if line.startswith('POINT_GAP_TIMING ')]
  timing={str(mode):{key:statistics.median(float(s[key]) for s in samples if s['optimized']==str(mode)) for key in ('submitMs','completeMs','draws')} for mode in (0,1)}
- report['cases'].append({'backend':str(backend.resolve()),'sha256':sha(backend),'log':str(run/'gpu.log'),'timing':timing if timing_valid else None,'preparation':preparation if timing_valid else None,'terrain':terrain if timing_valid else None,'terrain_candidates':candidates if timing_valid else None,'empty_terrain':empty_terrain if timing_valid else None})
+ report['cases'].append({'backend':str(backend.resolve()),'sha256':sha(backend),'log':str(run/'gpu.log'),'timing':timing if timing_valid else None,'preparation':preparation if timing_valid else None,'terrain':terrain if timing_valid else None,'terrain_candidates':candidates if timing_valid else None,'empty_terrain':empty_terrain if timing_valid else None,'sparse_terrain':sparse_terrain if timing_valid else None})
 assert all(sha(Path(path))==digest for path,digest in inputs.items()),'Source changed during the oracle'
 report['pass']=True;report['timing_valid']=timing_valid;report['scope']='Authored static workload; no gameplay FPS claim. Concurrent game invalidates timing; pixel/state assertions remain valid.'
 (out/'validation.json').write_text(json.dumps(report,indent=2)+'\n');print('PASS',out)

@@ -43,16 +43,28 @@ inline bool encode(unsigned char* p,unsigned type,const Four& v){
 struct Key {std::array<uint32_t,6> v;bool operator==(const Key& b)const{return v==b.v;}};
 struct Hash {size_t operator()(const Key& k)const{size_t h=2166136261u;for(auto x:k.v)h=(h^x)*16777619u;return h;}};
 inline uint64_t edge(unsigned a,unsigned b){return (uint64_t(std::min(a,b))<<32)|std::max(a,b);}
-// Resolve the height texture rather than stretching one fixed grid across any
-// UV scale. The existing triangle/vertex budgets still bound the final mesh.
-inline unsigned textureFactor(const std::vector<std::array<float,2>>& uv,const Height& height,unsigned detail){
-    if(detail==1)return 2;
-    if(uv.empty()||!height.width||!height.height)return 1u<<detail;
-    float low[2]={uv[0][0],uv[0][1]},high[2]={low[0],low[1]};
-    for(auto p:uv)for(unsigned c=0;c<2;++c){if(!std::isfinite(p[c]))return 1u<<detail;low[c]=std::min(low[c],p[c]);high[c]=std::max(high[c],p[c]);}
-    const float pixels=std::max((high[0]-low[0])*height.width,(high[1]-low[1])*height.height);
-    const unsigned texels=1u<<(6-std::clamp(detail,1u,5u));unsigned factor=1u<<detail;
-    while(factor<128&&factor*texels<pixels)factor*=2;
+// All triangles use the same factor to keep shared edges conforming. Measure
+// the longest UV span within a face, excluding gaps between tiles and islands.
+inline unsigned textureFactor(const Mesh& mesh,const std::vector<std::array<float,2>>& uv,const Height& height,unsigned detail,unsigned limit=128){
+    if(detail<=1)return 2;
+    const bool list=mesh.topology==D3DPT_TRIANGLELIST;
+    if(!list&&mesh.topology!=D3DPT_TRIANGLESTRIP)return 0;
+    const size_t count=mesh.indexed?mesh.indices.size():mesh.vertexCount;
+    if(mesh.primitiveCount>(list?count/3:count>=2?count-2:0)||uv.size()!=mesh.vertexCount)return 0;
+    const unsigned texels=1u<<(6-std::min(detail,5u));
+    unsigned factor=2;
+    for(unsigned face=0;face<mesh.primitiveCount&&factor<limit;++face){
+        const unsigned at=list?3*face:face;
+        const unsigned a=mesh.indexed?mesh.indices[at]:at,b=mesh.indexed?mesh.indices[at+1]:at+1,c=mesh.indexed?mesh.indices[at+2]:at+2;
+        if(a>=uv.size()||b>=uv.size()||c>=uv.size())return 0;
+        if(a==b||b==c||c==a)continue;
+        for(unsigned axis=0;axis<2;++axis){
+            const float x=uv[a][axis],y=uv[b][axis],z=uv[c][axis];
+            const float span=(std::max({x,y,z})-std::min({x,y,z}))*(axis?height.height:height.width);
+            // Translated float UVs can straddle an exact power-of-two boundary by a few ulps.
+            while(factor<limit&&span>float(factor*texels)*1.00001f)factor*=2;
+        }
+    }
     return factor;
 }
 // One subdivision factor per draw makes shared edges conform. Boundary vertices
@@ -61,7 +73,7 @@ inline bool build(const Mesh& in,const D3DVERTEXELEMENT9* elements,UINT elementC
     const std::vector<std::array<float,2>>& uv,const Height& first,unsigned factor,bool terrain,
     bool clampU,bool clampV,Mesh& out,const Height* second=nullptr,
     const std::vector<std::array<float,2>>* uv1=nullptr,const std::vector<float>* blend=nullptr,unsigned influences=4,bool gpuHeight=false,
-    const NorthlightWmoVertexColor::Layout* color=nullptr){
+    const NorthlightWmoVertexColor::Layout* color=nullptr,bool preferMidpoints=false){
     out={};if(influences>4)return false;const auto stride=in.streams[0].stride;
     if(!gpuHeight&&(first.gpuOnly()||(second&&second->gpuOnly())))return false;
     if(gpuHeight&&(second||stride>232||elementCount+2>MAXD3DDECLLENGTH))return false;
@@ -91,9 +103,6 @@ inline bool build(const Mesh& in,const D3DVERTEXELEMENT9* elements,UINT elementC
 
     while(factor>2&&triangles.size()*factor*factor>32768)factor/=2;
     if(triangles.size()*factor*factor>32768)return false;
-    // At the minimum budget, edge-only subdivision leaves isolated UV-seam
-    // triangles completely flat. A centroid fan has a real interior sample.
-    const bool centroid=factor==2;if(centroid)factor=3;
     // Both maps are scratch data for this build. Free their nodes together.
     std::pmr::monotonic_buffer_resource scratch;
     std::pmr::unordered_map<uint64_t,unsigned> edges(&scratch);edges.reserve(triangles.size()*3);for(auto t:triangles)for(unsigned i=0;i<3;++i)++edges[edge(t[i],t[(i+1)%3])];
@@ -105,6 +114,11 @@ inline bool build(const Mesh& in,const D3DVERTEXELEMENT9* elements,UINT elementC
         if(!rigid[i])for(unsigned k=0;k<3;++k)edges[edge(t[k],t[(k+1)%3])]=1;
     }
     std::vector<bool> boundary(in.vertexCount,false);for(auto e:edges)if(e.second!=2){boundary[unsigned(e.first>>32)]=true;boundary[unsigned(e.first)]=true;}
+    // At two segments a regular grid preserves the sample positions of an
+    // already tessellated surface. An isolated face has no movable midpoint.
+    const bool centroid=factor==2&&(!preferMidpoints||std::any_of(triangles.begin(),triangles.end(),[&](const auto& t){
+        return edges.at(edge(t[0],t[1]))!=2&&edges.at(edge(t[1],t[2]))!=2&&edges.at(edge(t[2],t[0]))!=2;}));
+    if(centroid)factor=3;
     const unsigned colorOffset=stride+(gpuHeight?20:12),outputStride=colorOffset+(color?color->bytes():0);
     if(color&&(!color->count||color->count>3||color->cornerBytes()>28||outputStride>240||elementCount+color->attributes()+2>MAXD3DDECLLENGTH))return false;
     std::array<unsigned,3> colorElements{};
@@ -114,8 +128,14 @@ inline bool build(const Mesh& in,const D3DVERTEXELEMENT9* elements,UINT elementC
     if(color)for(unsigned i=0;i<color->attributes();++i)for(unsigned e=0;e<elementCount&&elements[e].Stream!=0xff;++e)
         if(elements[e].Usage==D3DDECLUSAGE_TEXCOORD&&elements[e].UsageIndex==color->semantic[i])return false;
     out.streams[0].stride=outputStride;out.topology=D3DPT_TRIANGLELIST;out.indexed=true;
-    const auto capacity=std::min(size_t(32768),triangles.size()*(factor+1)*(factor+2)/2);
-    out.streams[0].bytes.reserve(capacity*outputStride);out.indices.reserve(triangles.size()*factor*factor*3);
+    const auto refines=[&](size_t i){const auto& t=triangles[i];
+        return rigid[i]&&!(influences&&bones&&boundary[t[0]]&&boundary[t[1]]&&boundary[t[2]]);};
+    size_t refined=triangles.size();
+    if(influences&&bones){refined=0;for(size_t i=0;i<triangles.size();++i)refined+=refines(i);}
+    const size_t extraVertices=refined*(centroid?1:(factor+1)*(factor+2)/2-3);
+    const size_t capacity=std::min(size_t(32768),std::min(size_t(in.vertexCount),3*triangles.size())+extraVertices);
+    out.streams[0].bytes.reserve(capacity*outputStride);
+    out.indices.reserve(3*(triangles.size()+refined*(centroid?2:factor*factor-1)));
     std::vector<Four> decoded(size_t(elementCount)*in.vertexCount);
     for(UINT e=0;e<elementCount&&elements[e].Stream!=0xff;++e){if(&elements[e]==weights||&elements[e]==bones)continue;
         for(unsigned i=0;i<in.vertexCount;++i)if(!NorthlightActorDeformation::decodeElement(in.streams[0].bytes.data()+size_t(i)*stride+elements[e].Offset,elements[e].Type,decoded[size_t(e)*in.vertexCount+i]))return false;}
@@ -147,11 +167,11 @@ inline bool build(const Mesh& in,const D3DVERTEXELEMENT9* elements,UINT elementC
     // Interior barycentric keys are private to a unique source face. Only
     // shared edges and duplicate faces need the per-sample hash lookup.
     bool uniqueFaces=false;
-    for(size_t i=0;i<triangles.size();++i)if(rigid[i]&&!(influences&&bones&&boundary[triangles[i][0]]&&boundary[triangles[i][1]]&&boundary[triangles[i][2]])){
+    if(refined){
         auto faces=triangles;for(auto& face:faces)std::sort(face.begin(),face.end());std::sort(faces.begin(),faces.end());
-        uniqueFaces=std::adjacent_find(faces.begin(),faces.end())==faces.end();break;
+        uniqueFaces=std::adjacent_find(faces.begin(),faces.end())==faces.end();
     }
-    std::pmr::unordered_map<Key,unsigned,Hash> vertices(&scratch);vertices.reserve(capacity);
+    std::pmr::unordered_map<Key,unsigned,Hash> vertices(&scratch);vertices.reserve(std::min(capacity,extraVertices));
     // An original corner has one barycentric key per source vertex.
     std::vector<unsigned> originalVertices(in.vertexCount,UINT_MAX);
     // Original skinned corners are pinned and retain the complete native
@@ -257,9 +277,9 @@ inline bool build(const Mesh& in,const D3DVERTEXELEMENT9* elements,UINT elementC
         for(unsigned k=0;k<3;++k)triangleBoundary[k]=edges[edge(t[(k+1)%3],t[(k+2)%3])]!=2;
         if(color)for(unsigned corner=0;corner<3;++corner)for(unsigned input=0;input<color->count;++input)
             std::memcpy(cornerPayload.data()+color->offset(corner*color->count+input),in.streams[0].bytes.data()+size_t(t[corner])*stride+elements[colorElements[input]].Offset,color->inputBytes(input));
-        const bool seamTriangle=influences&&bones&&boundary[t[0]]&&boundary[t[1]]&&boundary[t[2]];
-        if(centroid||!rigid[ti]||seamTriangle){unsigned a=vertex(t,0,0),b=vertex(t,factor,0),c=vertex(t,0,factor);if(a==UINT_MAX||b==UINT_MAX||c==UINT_MAX){out={};return false;}
-            if(!rigid[ti]||seamTriangle)out.indices.insert(out.indices.end(),{a,b,c});
+        const bool subdivide=refines(ti);
+        if(centroid||!subdivide){unsigned a=vertex(t,0,0),b=vertex(t,factor,0),c=vertex(t,0,factor);if(a==UINT_MAX||b==UINT_MAX||c==UINT_MAX){out={};return false;}
+            if(!subdivide)out.indices.insert(out.indices.end(),{a,b,c});
             else{unsigned center=vertex(t,1,1);if(center==UINT_MAX){out={};return false;}out.indices.insert(out.indices.end(),{a,b,center,b,c,center,c,a,center});}continue;}
         for(unsigned i=0;i<=factor;++i)for(unsigned j=0;j<=factor-i;++j){unsigned v=vertex(t,i,j);if(v==UINT_MAX){out={};return false;}rows[i][j]=v;}
         for(unsigned i=0;i<factor;++i)for(unsigned j=0;j<factor-i;++j){out.indices.insert(out.indices.end(),{rows[i][j],rows[i+1][j],rows[i][j+1]});if(j+1<factor-i)out.indices.insert(out.indices.end(),{rows[i+1][j],rows[i+1][j+1],rows[i][j+1]});}}

@@ -4,11 +4,14 @@ float4 HeightProfile:register(c1);
 #include "auto_material_height.hlsl"
 float luminance(float2 uv){return inferredHeight(tex2Dlod(Diffuse,float4(uv,0,0)).rgb,HeightProfile);}
 float4 AutoNormal(float2 uv:TEXCOORD0):COLOR0 {
-    // Central differences in texture space, independent of the screen footprint.
-    float x=luminance(uv+float2(Texel.x,0))-luminance(uv-float2(Texel.x,0));
-    float y=luminance(uv+float2(0,Texel.y))-luminance(uv-float2(0,Texel.y));
+    // Binomial height and Sobel slope suppress one-texel steps in painted stone.
+    // This filter runs once when the world material enters the normal cache.
+    float2 halfTexel=.5*Texel.xy;
+    float se=luminance(uv+halfTexel),sw=luminance(uv+float2(-halfTexel.x,halfTexel.y));
+    float nw=luminance(uv-halfTexel),ne=luminance(uv+float2(halfTexel.x,-halfTexel.y));
+    float x=(se-sw)+(ne-nw),y=(se-ne)+(sw-nw);
     float3 normal=normalize(float3(-x*Texel.z,-y*Texel.z,1));
-    float center=luminance(uv);
+    float center=(se+sw+ne+nw)*.25;
     float2 radius=Texel.xy*4;
     float around=(luminance(uv+float2(radius.x,0))+luminance(uv-float2(radius.x,0))+luminance(uv+float2(0,radius.y))+luminance(uv-float2(0,radius.y)))*.25;
     float cavity=1-saturate((around-center-.01)*3);

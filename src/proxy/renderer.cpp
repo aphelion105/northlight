@@ -1164,10 +1164,12 @@ private:
             if(scopes&World){
                 auroraDiagnostic.arm(directory);
                 if(world){world->captureProducts(directory,1,frame,w,h,diagnosticWorld);world->requestNormalGpuDiagnosticCapture();}
+            }
+            if(scopes&(World|Materials)){
                 NorthlightWorldDiagnostics::textureProduct(ext,scene,directory,"native-scene",1,applied,w,h,sceneFormat,frame);
                 const bool linearCurrent=hdr.active&&hdrSceneReady&&hdrUiPhase;
                 NorthlightWorldDiagnostics::textureProduct(ext,hdrFrame.texture(),directory,"hdr-linear-scene",1,linearCurrent,w,h,D3DFMT_A16B16G16R16F,frame);
-                NorthlightWorldDiagnostics::product(ext,hdrFrame.exposureSurface(),directory,"hdr-exposure",1,linearCurrent,1,1,D3DFMT_A16B16G16R16F,frame);
+                if(scopes&World)NorthlightWorldDiagnostics::product(ext,hdrFrame.exposureSurface(),directory,"hdr-exposure",1,linearCurrent,1,1,D3DFMT_A16B16G16R16F,frame);
             }
             if((scopes&Fog)&&!(scopes&World)&&world)world->captureProducts(directory,1,frame,w,h,diagnosticWorld,true);
             if(scopes&AO){
@@ -1178,7 +1180,7 @@ private:
                 auto* normal=enabled&&autoBump&&autoBump->capturedThisFrame()?autoBump->texture():nullptr;
                 auto* occlusion=normal?autoBump->occlusionTexture():nullptr;
                 NorthlightWorldDiagnostics::textureProduct(ext,normal,directory,"materials-normal-height",1,normal!=nullptr,w,h,D3DFMT_A16B16G16R16F,frame);
-                NorthlightWorldDiagnostics::textureProduct(ext,occlusion,directory,"materials-cavity-self-shadow",1,occlusion!=nullptr,w,h,D3DFMT_A16B16G16R16F,frame);
+                NorthlightWorldDiagnostics::textureProduct(ext,occlusion,directory,"materials-cavity-self-shadow",1,occlusion!=nullptr,w,h,D3DFMT_A8R8G8B8,frame);
             }
             logf("EFFECT_GPU_CAPTURE rendererFrame=%u scopes=%u directory=%s aoRaw=%u aoDenoised=%u world=%u diagnostic=1 fpsEligible=0",frame,scopes,directory.c_str(),unsigned(diagnosticAoRaw),unsigned(diagnosticAo),unsigned(diagnosticWorld));
         }catch(...){logf("EFFECT_GPU_CAPTURE failed rendererFrame=%u diagnostic=1 fpsEligible=0",frame);}

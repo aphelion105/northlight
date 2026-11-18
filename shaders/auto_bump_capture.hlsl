@@ -37,7 +37,6 @@ float4 SharedPomControl:register(c25);
 #define POM_ID_PARAMETER
 #define POM_ID_ARGUMENT
 #endif
-#define NORTHLIGHT_MATERIAL_CAPTURE
 #include "auto_parallax.hlsl"
 struct MaterialValue {float3 normal,reference,occlusion;float2 uv,uv1;};
 struct CaptureResult {float4 normal:COLOR0;float4 occlusion:COLOR1;

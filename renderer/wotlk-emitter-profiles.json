@@ -1,6 +1,39 @@
 {
   "version": 1,
   "profiles": {
+    "world\\expansion02\\doodads\\dalaran\\dalaran_sconce_indoor_01.m2": {
+      "asset_sha256": "b0714c55c58c08cbd8112241a0de1f8a9ba53e754c16a0cb2a0109258a1ea811",
+      "family": "wotlk_compact_source",
+      "position": [0.403, 0.0042072204986494865, 0.7349802718003569],
+      "position_basis": "Fixed glowball centroid in Y/Z. Local +X faces away from the wall bracket. Place the point 0.04 beyond the housing at X=0.363 to let light leave the opaque render mesh.",
+      "rgb": [1,0.33271769392104744,0.00807352913365633],
+      "intensity": 1.15,
+      "start": 1.0,
+      "end": 10.0,
+      "casts_shadows": true
+    },
+    "world\\expansion02\\doodads\\dalaran\\dalaran_sconce_indoor_02.m2": {
+      "asset_sha256": "fdf95ede4e5f6213853d55054f5ef27b87f2066bf31683df668e57fb208ddb49",
+      "family": "wotlk_compact_source",
+      "position": [0.586, 0.0036446588956425773, 1.0865369259442281],
+      "position_basis": "Fixed glowball centroid in Y/Z. Local +X faces away from the wall bracket. Place the point 0.04 beyond the housing at X=0.546 to let light leave the opaque render mesh.",
+      "rgb": [1,0.33271769392104744,0.00807352913365633],
+      "intensity": 1.15,
+      "start": 1.0,
+      "end": 10.0,
+      "casts_shadows": true
+    },
+    "world\\expansion02\\doodads\\dalaran\\dalaran_sconce_indoor_03.m2": {
+      "asset_sha256": "580155dbedf0c1d3e31ce45afb8ea3a60200d5f7a8fae86a2d06af4ff523fe44",
+      "family": "wotlk_compact_source",
+      "position": [0.271, -0.0016553622209818154, 0.5419607300240626],
+      "position_basis": "Fixed glowball centroid in Y/Z. Local +X faces away from the wall bracket. Place the point 0.04 beyond the housing at X=0.231 to let light leave the opaque render mesh.",
+      "rgb": [1,0.33271769392104744,0.00807352913365633],
+      "intensity": 1.15,
+      "start": 1.0,
+      "end": 10.0,
+      "casts_shadows": true
+    },
     "world\\azeroth\\elwynn\\passivedoodads\\lamppost\\lamppost.m2": {
       "injected_sha256": "3cee6ac01d40559d37dae5f5421793d4447da8c4765a33e84d140e5c650a96f4",
       "variants": {

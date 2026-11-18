@@ -46,6 +46,7 @@ int main(int argc,char** argv){
   std::memset(c,0,sizeof c);c[0][0]=1.f/W;c[0][1]=1.f/H;c[0][2]=.2f;c[0][3]=1000;
   c[1][0]=c[1][1]=c[1][2]=1;c[2][0]=1;c[25][1]=c[25][2]=1;
   c[33][0]=c[33][2]=W;c[33][1]=c[33][3]=H;c[81][0]=1;c[115][0]=c[115][3]=1;
+  c[18][0]=.4f;c[18][1]=.3f;c[18][2]=.2f;
   auto solid=[&](unsigned slot,std::array<float,4> v){bind(slot,1,1,[&](unsigned,unsigned){return v;});};
   solid(0,{.4f,.3f,.2f,.7f});solid(7,{0,0,0,0});solid(8,{0,0,0,0});solid(9,{0,0,0,1});
   solid(10,{0,0,0,1});solid(11,{0,0,0,0});solid(12,{.4f,.3f,.2f,1});solid(13,{0,0,0,0});
@@ -112,7 +113,38 @@ int main(int argc,char** argv){
     ps->Release();++darkRoomCases;
    }
   }
-  printf("GI_DARK_ROOM_PASS cases=%u fullAmbientRemoval=1 smoothingPreserved=1 lampsPreserved=1\n",darkRoomCases);
+  // Half ambient, half directional. Turning GI up can remove the ambient
+  // completely, while the existing directional art limit still owns its half.
+  c[20][1]=1;c[115][0]=1;
+  solid(8,{-.8f,-.6f,-.4f,0});solid(12,{.8f,.6f,.4f,0});solid(3,{0,0,0,0});
+  for(bool hdr:{false,true}){
+   auto ps=shader(d,proto+std::string("/WorldComposite")+(hdr?"Hdr":"")+".bin");
+   solid(2,hdr?std::array<float,4>{.132868f,.073239f,.033105f,1}:std::array<float,4>{0,0,0,0});
+   ok(d->SetPixelShaderConstantF(0,c[0],128));ok(d->SetPixelShader(ps));ok(d->BeginScene());quad();ok(d->EndScene());
+   auto values=image(light);
+   for(unsigned k=0;k<3;++k){
+    const float native=hdr?(k==0?.132868f:k==1?.073239f:.033105f):c[18][k];
+    assert(std::fabs(half(values[(W*H/2)*4+k])-native*.5f*.55f)<.001f);
+   }
+   ps->Release();++darkRoomCases;
+  }
+  // Different receiver baselines can carry very different corrections for
+  // the same fully shadowed surface. Neither spatial nor history RGB may
+  // cross that boundary. The standalone temporal pass reads s9 as its input.
+  auto raw=[&](unsigned x,unsigned){return std::array<float,4>{x%2?-.4f:-.2f,-.3f,-.2f,0};};
+  bind(8,W,H,raw);solid(12,{.4f,.3f,.2f,0});c[57][0]=.9f;
+  c[3][0]=c[4][1]=c[5][2]=c[53][0]=c[54][1]=c[55][2]=1;
+  solid(1,{1000.f/999.8f*(1-.2f/8),0,0,0});solid(13,{8,0,0,0});solid(15,{8,0,0,0});
+  for(const char* name:{"RemovalSmooth","TemporalLight","TemporalLightMerged","TemporalLightMergedZeroWeight"}){
+   if(!std::strcmp(name,"TemporalLight")){bind(9,W,H,raw);solid(14,{-.25f,-.3f,-.2f,0});}
+   else {solid(9,{-.25f,-.3f,-.2f,0});solid(14,{0,0,1,1});}
+   auto ps=shader(d,proto+"/"+name+".bin");
+   ok(d->SetPixelShaderConstantF(0,c[0],128));ok(d->SetPixelShader(ps));ok(d->BeginScene());quad();ok(d->EndScene());
+   auto values=image(light);
+   for(unsigned x=2;x<W-2;++x)assert(std::fabs(half(values[((H/2)*W+x)*4])-raw(x,0)[0])<.001f);
+   ps->Release();++darkRoomCases;
+  }
+  printf("GI_DARK_ROOM_PASS cases=%u fullAmbientRemoval=1 mixedDirectional=1 receiverHistory=1 lampsPreserved=1\n",darkRoomCases);
  }
  assert(timing||darkPixels);printf("FUSED_GI_PASS cases=%u maxAbs=%.9f baselineAlphaExact=1 prelitCases=%u darkPixels=%u mix0_50_100=1 ordinaryUnaffected=1\n",cases,maximum,prelitCases,darkPixels);return 0;
 }

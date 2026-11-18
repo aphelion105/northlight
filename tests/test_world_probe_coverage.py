@@ -36,15 +36,18 @@ def sample(atlas,position,grid_origin=(0,0,0),mean=32):
     grid=tuple(v/SPACING for v in position)
     base=tuple(math.floor(v) for v in grid)
     fraction=tuple(v-b for v,b in zip(grid,base))
-    total=coverage=0.0
+    total=coverage=valid_support=0.0
     irradiance=[0.0]*3
     for bit in BITS:
         key=tuple(v+b for v,b in zip(base,bit))
         record=atlas.get(wrapped(key))
-        if record is None or record[0]!=key or not record[1]:
+        if record is None or record[0]!=key:
             continue
         weight=math.prod(f if b else 1-f for f,b in zip(fraction,bit))
         coverage+=weight
+        if not record[1]:
+            continue
+        valid_support+=weight
         # Spatial visibility may change normalized interpolation weights, but
         # it must not act as the residency/ambient replacement coverage mask.
         distance=math.sqrt(sum((p-k*SPACING)**2 for p,k in zip(position,key)))
@@ -55,17 +58,17 @@ def sample(atlas,position,grid_origin=(0,0,0),mean=32):
         for channel in range(3):
             irradiance[channel]+=math.pi*record[2][channel]*weight
         total+=weight
-    return tuple(v/max(total,.00001) for v in irradiance),min(1.,max(0.,coverage))
+    return tuple(v/max(total,.00001) for v in irradiance),min(1.,coverage,32*valid_support)
 
 
 def main():
     shader=fp.src('world_effects.hlsl')
     source=shader.read_text()
     assert 'sampler2D ProbeMetadata : register(s10)' in source
-    assert 'float3 grid=p/GridOrigin.w;' in source
+    assert 'float3 grid=p/spacing;' in source
     assert 'cell-GridInfo.x*floor(cell/GridInfo.x)' in source
-    assert 'if(all(metadata.xyz==cell)&&metadata.w>=0){' in source
-    body=source.split('float4 probeIrradiance(',1)[1].split('float4 WorldLighting(',1)[0]
+    assert 'if(all(metadata.xyz==cell)&&metadata.w!=-1){' in source
+    body=source.split('float4 probeCascadeIrradiance(',1)[1].split('// Half-resolution smoothed surface normal.',1)[0]
     assert 'GridOrigin.xyz' not in body and 'float3 edge=' not in body
 
     # 0.3.197: same-key re-publication blends on the GPU from the previous SH (task 13); born's fade stays as is.
@@ -123,6 +126,13 @@ def main():
     assert sample(alias,(0,0,0))==((0.,0.,0.),0.)
     insert(alias,(0,0,0),True)
     assert sample(alias,(0,0,0))[1]==1
+
+    # No abrupt dark boundary when the only usable neighbour enters the tent.
+    mixed={}
+    for key in BITS:insert(mixed,key,valid=bool(key[0]))
+    for n in range(33):
+        x=SPACING*n/1024
+        assert abs(sample(mixed,(x,4,4))[1]-n/32)<1e-12
 
     # Crossing negative world-cell and atlas-wrap boundaries has no coverage
     # seam when both adjacent cells' probes are resident.

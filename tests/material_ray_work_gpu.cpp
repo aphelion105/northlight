@@ -31,8 +31,8 @@ int main(int argc,char** argv){
     for(unsigned y=0;y<64;++y)for(unsigned x=0;x<64;++x){auto* p=(unsigned char*)lock.pBits+y*lock.Pitch+x*4;p[0]=static_cast<unsigned char>((x/4+y/4)%2?230:26);p[1]=p[2]=128;p[3]=255;}
     ok(height->UnlockRect(0));ok(d->SetTexture(0,height));for(auto key:{D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER})ok(d->SetSamplerState(0,key,D3DTEXF_LINEAR));
     ok(d->SetSamplerState(0,D3DSAMP_ADDRESSU,D3DTADDRESS_WRAP));ok(d->SetSamplerState(0,D3DSAMP_ADDRESSV,D3DTADDRESS_WRAP));
-    IDirect3DPixelShader9* shaders[6]={};const char* names[]={"ReferenceRay","Ray","ReferenceShadow","Shadow","ReferenceZeroRay","ZeroRay"};
-    for(unsigned i=0;i<6;++i){auto bytes=read(folder+names[i]+".bin");ok(d->CreatePixelShader((DWORD*)bytes.data(),&shaders[i]));}
+    IDirect3DPixelShader9* shaders[7]={};const char* names[]={"ReferenceRay","Ray","ReferenceShadow","Shadow","ReferenceZeroRay","ZeroRay","DenseRay"};
+    for(unsigned i=0;i<7;++i){auto bytes=read(folder+names[i]+".bin");ok(d->CreatePixelShader((DWORD*)bytes.data(),&shaders[i]));}
     struct Vertex{float x,y,z,w,u,v,px,py,pz,pw;};
     Vertex quad[]={{-.5f,-.5f,0,1,0,0},{W-.5f,-.5f,0,1,1,0},{-.5f,H-.5f,0,1,0,1},{W-.5f,H-.5f,0,1,1,1}};
     ok(d->SetVertexShader(nullptr));ok(d->SetFVF(D3DFVF_XYZRHW|D3DFVF_TEX2|D3DFVF_TEXCOORDSIZE4(1)));
@@ -56,10 +56,23 @@ int main(int argc,char** argv){
         if((!kind&&test>=17)||kind==2)c[0][2]=-.1f;
         if(kind==2)c[1][0]=.036f;
         for(unsigned i=0;i<4;++i){const float u=i&1?1.f:0.f,v=i&2?1.f:0.f;quad[i].u=u*scale+(!kind&&test==41?67*.013579f:!kind&&test>=9?.99999f:0);quad[i].v=v*scale+(!kind&&test==41?67*.019137f:-.00001f);quad[i].px=u*2-1+((!kind&&test>=17)||kind==2?4.f:0);quad[i].py=v*2-1;quad[i].pw=distance+(u-.5f)*.004f;}
-        ok(d->SetPixelShaderConstantF(0,c[0],3));std::vector<float> reference;float error=0;
-        for(unsigned mode=0;mode<2;++mode){ok(d->SetPixelShader(shaders[kind*2+mode]));ok(d->Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0));ok(d->BeginScene());ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(Vertex)));ok(d->EndScene());auto values=readPixels(d,target);
-            if(!mode)reference=std::move(values);else for(unsigned i=0;i<values.size();++i){assert(std::isfinite(values[i])&&std::isfinite(reference[i]));error=std::max(error,std::fabs(values[i]-reference[i]));}}
-        assert(error<=.00001f);
+        ok(d->SetPixelShaderConstantF(0,c[0],3));std::vector<float> reference,dense;
+        float error=0;double meanError[2]={};
+        auto render=[&](IDirect3DPixelShader9* shader){
+            ok(d->SetPixelShader(shader));ok(d->Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0));ok(d->BeginScene());
+            ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(Vertex)));ok(d->EndScene());return readPixels(d,target);
+        };
+        if(!kind)dense=render(shaders[6]);
+        for(unsigned mode=0;mode<2;++mode){
+            auto values=render(shaders[kind*2+mode]);
+            for(size_t i=0;i<values.size();++i){
+                assert(std::isfinite(values[i]));
+                if(!kind&&i%4<2)meanError[mode]+=std::abs(values[i]-dense[i])/(2.*W*H);
+                if(mode)error=std::max(error,std::fabs(values[i]-reference[i]));
+            }
+            if(!mode)reference=std::move(values);
+        }
+        if(kind||(!kind&&test>=33&&test<41))assert(error<=.00001f);
         if(kind==1&&test<3)assert(*std::min_element(reference.begin(),reference.end())<.01f);
         if(kind==1&&test>=6)assert(*std::min_element(reference.begin(),reference.end())>.99f);
         if(kind==2){unsigned selected=0;for(unsigned i=3;i<reference.size();i+=4)selected+=reference[i]>.5f;assert(selected>0);}
@@ -73,7 +86,7 @@ int main(int argc,char** argv){
             if(block>=3)timings[mode].push_back(double(b-a)/f*1000/8);
         }
         for(auto& times:timings)std::sort(times.begin(),times.end());const double before=timings[0][timings[0].size()/2],after=timings[1][timings[1].size()/2];
-        if(cases++)report<<",\n";report<<"{\"kind\":\""<<(kind==2?"zero":kind?"shadow":"fade")<<"\",\"case\":"<<test<<",\"max_error\":"<<error<<",\"reference_ms\":"<<before<<",\"optimized_ms\":"<<after<<"}";
+        if(cases++)report<<",\n";report<<"{\"kind\":\""<<(kind==2?"zero":kind?"shadow":"fade")<<"\",\"case\":"<<test<<",\"max_error\":"<<error<<",\"mean_uv_error\":"<<meanError[1]<<",\"previous_mean_uv_error\":"<<meanError[0]<<",\"reference_ms\":"<<before<<",\"optimized_ms\":"<<after<<"}";
         std::printf("MATERIAL_RAY_WORK kind=%u case=%u maxError=%.9g referenceMs=%.6f optimizedMs=%.6f\n",kind,test,error,before,after);std::fflush(stdout);
     }
     report<<"\n]\n";report.close();

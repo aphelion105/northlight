@@ -21,7 +21,7 @@ folder = Path(tempfile.mkdtemp(prefix='world-lighting-capture-', dir=out))
 backend = Path(os.environ['NORTHLIGHT_TEST_D3D9']) if os.environ.get('NORTHLIGHT_TEST_D3D9') else fp.client_root() / 'renderer-backends/dxvk/dxvk_d3d9.dll'
 assert backend.is_file(), backend
 inputs = [fp.REPO / name for name in (
-    'src/world/world_lighting_capture.h', 'src/core/diagnostic_files.h', 'src/proxy/backend_loader.h',
+    'src/world/world_lighting_capture.h', 'src/world/diagnostic_readback.h', 'src/core/diagnostic_files.h', 'src/proxy/backend_loader.h',
     'scripts/capture_files.py', 'src/lights/local_light_selection.h',
     'src/lights/world_local_lights.h', 'src/lights/local_light_scissor.h',
     'src/generated/forwarders.h', 'tests/world_lighting_capture_gpu.cpp',

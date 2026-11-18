@@ -87,6 +87,24 @@ int main(int argc,char** argv){
     D3DPRESENT_PARAMETERS pp{};pp.Windowed=TRUE;pp.hDeviceWindow=window;pp.BackBufferWidth=800;pp.BackBufferHeight=790;pp.BackBufferFormat=D3DFMT_X8R8G8B8;pp.SwapEffect=D3DSWAPEFFECT_DISCARD;pp.PresentationInterval=D3DPRESENT_INTERVAL_IMMEDIATE;
     ok(api.p->CreateDevice(adapter,D3DDEVTYPE_HAL,window,D3DCREATE_HARDWARE_VERTEXPROCESSING|D3DCREATE_FPU_PRESERVE,&pp,&device.p));Meter meter(device.p);auto* d=&meter;
     D3DCAPS9 caps{};ok(d->GetDeviceCaps(&caps));assert(caps.MaxVertexShaderConst>=256&&caps.NumSimultaneousRTs>=4);
+    {
+        constexpr unsigned width=3840,height=2160;
+        Ref<IDirect3DSurface9> color;ok(d->CreateRenderTarget(width,height,D3DFMT_A8R8G8B8,D3DMULTISAMPLE_NONE,0,FALSE,&color.p,nullptr));
+        ok(d->ColorFill(color.p,nullptr,0xff214365));
+        RECT last{0,height-1,width,height};ok(d->ColorFill(color.p,&last,0xffacbdce));
+        D3DSURFACE_DESC desc{};ok(color.p->GetDesc(&desc));
+        const std::string path=folder+"/capture-strips.fgr";
+        ok(d->BeginScene());
+        meter.arm("GetRenderTargetData",2);
+        assert(FAILED(NorthlightDiagnosticReadback::strips(d,color.p,desc,4,path))&&meter.triggered);
+        assert(!std::filesystem::exists(path)&&!std::filesystem::exists(path+".part"));
+        ok(NorthlightDiagnosticReadback::strips(d,color.p,desc,4,path));ok(d->EndScene());
+        auto data=read(path);assert(data.size()==20+width*height*4);
+        for(unsigned y=0;y<height;++y)for(unsigned x=0;x<width;++x){
+            DWORD value;std::memcpy(&value,data.data()+20+4*(y*width+x),4);
+            assert(value==(y+1==height?0xffacbdceu:0xff214365u));
+        }
+    }
     Ref<IDirect3DSurface9> rt[4],ds;for(auto& target:rt)ok(d->CreateRenderTarget(W,H,D3DFMT_A8R8G8B8,D3DMULTISAMPLE_NONE,0,FALSE,&target.p,nullptr));
     ok(d->CreateDepthStencilSurface(W,H,D3DFMT_D24S8,D3DMULTISAMPLE_NONE,0,FALSE,&ds.p,nullptr));
     Ref<IDirect3DTexture9> neutral;ok(d->CreateTexture(1,1,1,0,D3DFMT_A8R8G8B8,D3DPOOL_MANAGED,&neutral.p,nullptr));D3DLOCKED_RECT lock{};ok(neutral.p->LockRect(0,&lock,nullptr,0));*(DWORD*)lock.pBits=0xff335577;ok(neutral.p->UnlockRect(0));
@@ -136,13 +154,29 @@ int main(int argc,char** argv){
     Ref<IDirect3DCubeTexture9> cube;ok(d->CreateCubeTexture(16,1,D3DUSAGE_RENDERTARGET,D3DFMT_R32F,D3DPOOL_DEFAULT,&cube.p,nullptr));
     ok(d->SetDepthStencilSurface(nullptr));for(unsigned i=1;i<4;++i)ok(d->SetRenderTarget(i,nullptr));
     for(unsigned face=0;face<6;++face){Ref<IDirect3DSurface9> target;ok(cube.p->GetCubeMapSurface(D3DCUBEMAP_FACES(face),0,&target.p));ok(d->SetRenderTarget(0,target.p));ok(d->Clear(0,nullptr,D3DCLEAR_TARGET,face%2?0xffffffff:0xff000000,1,0));}
-    setup(nullptr);ok(d->SetTexture(1,cube.p));State pointState(d);
+    setup(nullptr);ok(d->SetTexture(1,cube.p));
+    Ref<IDirect3DTexture9> probe;
+    ok(d->CreateTexture(2,2,1,0,D3DFMT_A32B32G32R32F,D3DPOOL_MANAGED,&probe.p,nullptr));
+    const float probeData[2][8]={{-0.75f,0.125f,4359.f,-1000.f,1,2,3,4},{-5123.f,5,6,7,8,9,10,11}};
+    D3DLOCKED_RECT probeLock{};ok(probe.p->LockRect(0,&probeLock,nullptr,0));
+    for(unsigned y=0;y<2;++y)std::memcpy(static_cast<char*>(probeLock.pBits)+y*probeLock.Pitch,probeData[y],sizeof probeData[y]);
+    ok(probe.p->UnlockRect(0));
+    for(unsigned slot:{4u,5u,6u,7u,8u,10u})ok(d->SetTexture(slot,probe.p));
+    State pointState(d);
     struct PointFixture {IDirect3DCubeTexture9* cube=nullptr;NorthlightLocalLights::Light selected{};bool ready=true,cacheValid=false;float selectionGain=1;struct {bool usable=true,complete=true;uint32_t updatedAt=123;uint64_t generation=17;NorthlightLocalLights::Light light{};} schedule;uint64_t cacheSource=42;unsigned staticOnlyFaces=3;std::string map="Azeroth";bool faceKnown[6]={true};uint64_t faceSerial[6]={17};struct {uint64_t words[2]={11,22},triangles=33;} faceContent[6];IDirect3DSurface9* cacheSurface[6]{};};
     std::array<PointFixture,128> points{};points[0].cube=cube.p;points[0].selected.sourceId=42;points[0].schedule.light.sourceId=42;
-    const unsigned id=++capture;{NorthlightLightingCapture::Capture output(d,folder,id,20,34,W,H);float matrix[16]={};for(unsigned i=0;i<4;++i)matrix[i*5]=1;for(unsigned slot=0;slot<4;++slot)output.directional(slot,slot>=2,slot<2?'-':slot==2?'R':'U',matrix,cube.p,1,slot==3,91,17,23);output.inputs(0,1u);output.pass("FixtureTransport",0,1u,0,0,false,S_OK);output.pointSources(points,130,true,true);output.pointSources(points,130,true);output.pointPass(0,false,nullptr,S_OK);output.pointPass(0,true,nullptr,S_OK);output.finish(true);}
+const unsigned id=++capture;{NorthlightLightingCapture::Capture output(d,folder,id,20,34,W,H);float matrix[16]={};for(unsigned i=0;i<4;++i)matrix[i*5]=1;for(unsigned slot=0;slot<4;++slot)output.directional(slot,slot>=2,slot<2?'-':slot==2?'R':'U',matrix,cube.p,1,slot==3,91,17,23);output.giProbeInputs();output.inputs(0,1u);output.pass("FixtureTransport",0,1u,0,0,false,S_OK);output.pointSources(points,130,true,true);output.pointSources(points,130,true);output.pointPass(0,false,nullptr,S_OK);output.pointPass(0,true,nullptr,S_OK);output.finish(true);}
     pointState.same(d);
     for(unsigned face=0;face<6;++face){auto image=read(file(folder,id,("point-0-face-"+std::to_string(face)+".fgr").c_str()));assert(image==read(file(folder,id,("native-point-0-face-"+std::to_string(face)+".fgr").c_str())));assert(image.size()==20+16*16*4);for(unsigned i=0;i<16*16;++i){float value;std::memcpy(&value,image.data()+20+i*4,4);assert(value==float(face%2));}}
     auto bank=read(file(folder,id,"lighting-pass-1-constants.f32"));assert(bank.size()==116*16&&!std::memcmp(bank.data(),pixel,bank.size()));
+    assert(read(file(folder,id,"gi-constants.f32"))==bank);
+    for(unsigned slot:{4u,5u,6u,7u,8u,10u}){
+        auto image=read(file(folder,id,("lighting-input-g5-s"+std::to_string(slot)+".fgr").c_str()));
+        const uint32_t expectedHeader[]={0x31524746,2,2,D3DFMT_A32B32G32R32F,16};
+        assert(image.size()==sizeof expectedHeader+sizeof probeData&&!std::memcmp(image.data(),expectedHeader,sizeof expectedHeader));
+        assert(!std::memcmp(image.data()+sizeof expectedHeader,probeData,sizeof probeData));
+    }
+    assert(read(file(folder,id,"lighting-input-g5-s13.fgr"))==read(file(folder,id,"lighting-input-g0-s0.fgr")));
     auto journal=read(file(folder,id,"lighting-inputs.jsonl"));assert(std::string(journal.begin(),journal.end()).find("\"export_complete\":true")!=std::string::npos);
     {const std::string text(journal.begin(),journal.end());assert(text.find("\"texture_type\":\"cube\",\"file_base\":\"point-0\",\"faces\":6")!=std::string::npos&&text.find("\"entry\":\"LocalLightingPcss\"")!=std::string::npos);}
     const DWORD vertexCode[]={0xfffe0300,0x0200001f,0x80000000,0x900f0000,0x0200001f,0x80000000,0xe00f0000,0x02000001,0xe00f0000,0x90e40000,0x0000ffff};

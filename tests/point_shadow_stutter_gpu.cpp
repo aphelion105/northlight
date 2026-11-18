@@ -94,6 +94,31 @@ struct PointTerrainCoverageTest {
   }
   std::puts("POINT_EMPTY_TERRAIN_PASS warmMemo=exact partialFaces=exact rejectionCounts=exact");
 #endif
+#ifdef NORTHLIGHT_POINT_OVERLAP_TEST
+  // A few nearby chunks amid distant terrain. Compare compact reuse to the
+  // former warm dense expansion, including partial cube refreshes.
+  fill(12854);for(size_t i=0;i<w.batches.size();++i)if(i%32)w.batches[i].boundsLow.z=w.batches[i].boundsHigh.z=-100;
+  ++w.meshGeneration;w.rebuildTerrainLists();
+  std::vector<unsigned char> previous[14];
+  for(unsigned l=0;l<14;++l){w.pointIndex=l;const NorthlightPointShadow::FaceClip clip(matrices[l],w.pointSlot().selected);
+   clear();w.preparePointTerrain(clip,63);previous[l]=w.pointBatchMasks;
+   assert(!w.pointSlot().terrainMemo.visible.empty()&&w.pointSlot().terrainMemo.masks.capacity()==0);
+   for(unsigned faces:{63u,1u,21u,42u}){
+    clear();reference(clip,faces);const auto masks=w.pointBatchMasks;const auto lists=w.pointTerrainCandidates;const auto rejected=w.pointCulled;
+    for(unsigned staticFaces:{0u,faces}){clear();w.preparePointTerrain(clip,faces,staticFaces);
+     assert(w.pointBatchMasks==masks&&w.pointTerrainCandidates==lists&&w.pointCulled==rejected);}
+   }
+  }
+  for(unsigned block=0;block<16;++block){const bool compact=block%4==1||block%4==2;const auto start=std::chrono::steady_clock::now();
+   for(unsigned frame=0;frame<32;++frame)for(unsigned l=0;l<14;++l){w.pointIndex=l;clear();
+    const NorthlightPointShadow::FaceClip clip(matrices[l],w.pointSlot().selected);
+    if(compact)w.preparePointTerrain(clip,63,0);
+    else{w.pointBatchMasks=previous[l];for(size_t i:w.terrainBatchList)w.pointAppendCandidates(w.pointTerrainCandidates,i,w.pointBatchMasks[i],63);}
+   }
+   const double ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count()/32;
+   std::printf("POINT_SPARSE_TERRAIN_TIMING warm=%u compact=%u lights=14 batches=12854 cpuMs=%.6f\n",unsigned(block<4),unsigned(compact),ms);
+  }
+#endif
   w.pointIndex=0;w.active=std::make_shared<WorldRenderer::Snapshot>();w.active->map="terrain-memo";
   auto& slot=w.pointSlot();slot.map=w.active->map;slot.cacheValid=true;slot.cacheSource=slot.selected.sourceId;
   w.keepPointSlot(slot,1);assert(w.pointKeeps[0].slot.terrainMemo.masks.empty());

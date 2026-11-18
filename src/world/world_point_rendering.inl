@@ -2,8 +2,10 @@
     static constexpr UINT PointResolution=256;
     struct PointContentMemo {const NorthlightLocalShadowSignature::Records* records=nullptr;uint64_t generation=0;float position[3]={},range=0;bool valid=false;NorthlightLocalShadowSignature::Digest faces[6];};
     struct PointTerrainMemo {
-        // One byte per committed batch, at most 64 KiB per active light.
+        // Use one dense byte per batch or a shorter list of visible terrain.
         static constexpr size_t Limit=65536;
+        struct Visible {uint16_t index;unsigned char mask;};
+        std::vector<Visible> visible;
         std::vector<unsigned char> masks;
         uint64_t generation=0;float position[3]={},range=0;bool valid=false;
         size_t batchCount=0,terrainCount=0;unsigned occupiedFaces=0;
@@ -354,19 +356,29 @@
         if(emptyTerrain&&!staticFaces){pointCulled+=unsigned(memo.terrainCount)*unsigned(__builtin_popcount(faces));return;}
         const bool listed=terrainBatchListGeneration==meshGeneration&&terrainBatchListSize==batches.size();
         const bool sparse=!reuse&&pointNearbyReady&&listed;
-        if(sparse||emptyTerrain)pointBatchMasks=emptyTerrainMasks();
+        const bool compact=reuse&&!memo.visible.empty();
+        if(sparse||emptyTerrain||compact)pointBatchMasks=emptyTerrainMasks();
         else if(reuse)pointBatchMasks=memo.masks;
         else pointBatchMasks.assign(pointMeshBatchCount(),63);
         if(!reuse)memo.valid=false;
         // Interior lights often have no terrain in any face. Their cached
         // zero masks already prove every rejection, including partial cycles.
         if(emptyTerrain){pointCulled+=unsigned(memo.terrainCount)*unsigned(__builtin_popcount(faces));return;}
+        if(compact){
+            pointCulled+=unsigned(memo.terrainCount-memo.visible.size())*unsigned(__builtin_popcount(faces));
+            for(const auto entry:memo.visible){
+                const unsigned mask=entry.mask&faces;
+                pointBatchMasks[entry.index]=static_cast<unsigned char>(mask);
+                pointAppendCandidates(pointTerrainCandidates,entry.index,mask,faces);
+            }
+            return;
+        }
         // Immutable bounds belong to meshGeneration. Live terrain and animated
         // casters are classified separately on every refresh, as before.
-        size_t terrainCount=0;unsigned occupiedFaces=0;
+        size_t terrainCount=0,visibleCount=0;unsigned occupiedFaces=0;
         const auto append=[&](size_t i){const auto& batch=batches[i];
             const unsigned mask=reuse?(pointBatchMasks[i]&faces):pointNearbyReady&&!pointNearbyBatches[i]?0:pointMask(batch.boundsLow,batch.boundsHigh,clip,faces);
-            if(!reuse){++terrainCount;occupiedFaces|=mask;}
+            if(!reuse){++terrainCount;visibleCount+=mask!=0;occupiedFaces|=mask;}
             pointBatchMasks[i]=static_cast<unsigned char>(mask);
             pointAppendCandidates(pointTerrainCandidates,i,mask,faces);};
         if(sparse){
@@ -390,9 +402,18 @@
         // Partial refreshes cannot publish masks for faces they did not test.
         // Cache allocation is optional: failure leaves the exact current lists.
         if(!reuse&&faces==63&&pointMeshBatchCount()<=PointTerrainMemo::Limit){
-            try{if(!occupiedFaces)std::vector<unsigned char>().swap(memo.masks);
-                else if(memo.masks.capacity()<pointBatchMasks.size())std::vector<unsigned char>(pointBatchMasks).swap(memo.masks);
-                else memo.masks=pointBatchMasks;
+            try{
+                // Only compress when both lookup work and retained bytes shrink.
+                if(listed&&visibleCount&&visibleCount*sizeof(PointTerrainMemo::Visible)<terrainCount){
+                    std::vector<PointTerrainMemo::Visible> visible;visible.reserve(visibleCount);
+                    for(size_t i:terrainBatchList)if(pointBatchMasks[i])visible.push_back({uint16_t(i),pointBatchMasks[i]});
+                    memo.visible.swap(visible);std::vector<unsigned char>().swap(memo.masks);
+                }else{
+                    std::vector<PointTerrainMemo::Visible>().swap(memo.visible);
+                    if(!occupiedFaces)std::vector<unsigned char>().swap(memo.masks);
+                    else if(memo.masks.capacity()<pointBatchMasks.size())std::vector<unsigned char>(pointBatchMasks).swap(memo.masks);
+                    else memo.masks=pointBatchMasks;
+                }
                 memo.batchCount=pointMeshBatchCount();memo.terrainCount=terrainCount;memo.occupiedFaces=occupiedFaces;
                 memo.generation=meshGeneration;memo.range=light.attenuationEnd;
                 std::copy(light.position,light.position+3,memo.position);memo.valid=true;

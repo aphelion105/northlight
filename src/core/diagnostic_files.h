@@ -61,6 +61,37 @@ template<class Visit> bool write(const std::string& path,Visit visit)noexcept{
 inline bool bytes(const std::string& path,const void* data,size_t size)noexcept{
     return write(path,[&](auto put){return put(data,size);});
 }
+// GPU strips are borrowed once. Publish a complete image (or compact blob
+// reference) only after the final strip has reached disk.
+template<class Rows> bool streamImage(const std::string& path,unsigned width,unsigned height,unsigned format,unsigned stride,Rows rows)noexcept{
+    try{
+        namespace fs=std::filesystem;
+        const auto dest=fs::u8path(path),blobs=dest.parent_path()/BlobDirectory;
+        const bool compact=fs::is_directory(blobs);
+        struct Temporary {
+            fs::path path;FILE* file=nullptr;
+            ~Temporary(){if(file)std::fclose(file);std::error_code ec;fs::remove(path,ec);}
+            bool close(){FILE* f=file;file=nullptr;return std::fclose(f)==0;}
+        } tmp{fs::u8path(path+".part")};
+        tmp.file=NorthlightFiles::open(tmp.path.u8string().c_str(),"wb");if(!tmp.file)return false;
+        NorthlightBackendLoader::Sha256 hash;uint64_t size=0;
+        auto put=[&](const void* p,size_t n){
+            if(std::fwrite(p,1,n,tmp.file)!=n)return false;
+            if(compact)hash.update(p,n);
+            size+=n;return true;
+        };
+        const uint32_t header[]={0x31524746,width,height,format,stride};
+        if(!put(header,sizeof header)||!rows(put)||size!=sizeof header+uint64_t(width)*height*stride||!tmp.close())return false;
+        if(compact){
+            const auto digest=hash.hex();const auto blob=blobs/digest;
+            if(fs::exists(blob)){if(fs::file_size(blob)!=size)return false;}
+            else fs::rename(tmp.path,blob);
+            tmp.file=NorthlightFiles::open(tmp.path.u8string().c_str(),"wb");
+            if(!tmp.file||std::fprintf(tmp.file,"%s%s %llu\n",ReferenceMagic,digest.c_str(),(unsigned long long)size)<=0||!tmp.close())return false;
+        }
+        fs::rename(tmp.path,dest);return true;
+    }catch(...){return false;}
+}
 inline bool image(const std::string& path,unsigned width,unsigned height,unsigned format,unsigned stride,
                   const void* pixels,size_t pitch)noexcept{
     if(!width||!height||!stride||uint64_t(width)*height*stride>64u*1024u*1024u||

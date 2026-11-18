@@ -200,10 +200,10 @@ checks['smoothRemoval: centre and both compile-time tap variants multiply Scene 
     and 'return max(legacyT*max(baseline,.15),scene-min(fog,scene));' in world and '.0001));' not in world[world.index('float3 removalScale('):world.index('float3 smoothRemoval(')])
 wm = json.loads(fp.src('world-shader-build.json').read_text())['shaders']
 # 0.3.185: the removal smoothing (Scene, AO, baseline reads) moved to RemovalSmooth; TemporalLight keeps no s0/s10/s12 read and gains s9.
-checks[f"world manifest: WorldComposite {wm['WorldComposite']['static_instruction_slots']} <= 512 with s10; RemovalSmooth {wm['RemovalSmooth']['static_instruction_slots']} (s10 AO) <= 512; TemporalLight {wm['TemporalLight']['static_instruction_slots']} == 210"] = (
+checks[f"WorldComposite and RemovalSmooth fit SM3 with AO, TemporalLight uses {wm['TemporalLight']['static_instruction_slots']} slots"] = (
     wm['WorldComposite']['static_instruction_slots'] <= 512 and wm['WorldComposite']['samplers'] == [0, 1, 2, 3, 7, 8, 9, 10, 11, 12, 13]  # Current scene depth replaces the lighting-distance dependency on s15.
     and wm['RemovalSmooth']['static_instruction_slots'] <= 512 and wm['RemovalSmooth']['samplers'] == [0, 1, 8, 10, 12, 14, 15]
-    and wm['TemporalLight']['static_instruction_slots'] == 210 and  # Microsoft d3dcompiler_47 (Wine's builtin: 293)
+    and wm['TemporalLight']['static_instruction_slots'] <= 215 and  # Includes the full-shadow history gate.
     wm['TemporalLight']['samplers'] == [1, 8, 9, 14, 15])
 
 # 6. no new key

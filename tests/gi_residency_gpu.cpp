@@ -29,7 +29,7 @@ int main(int argc,char** argv){
             c[116]={0,std::sqrt(1-nz*nz),nz,confidence};c[66][1]=brightness;
             auto pixels=gpu.capture(current,c,32,2),old=gpu.capture(negative,c,32,2);
             for(unsigned y=0;y<2;++y)for(unsigned x=0;x<32;++x){
-                float coverage=mode==0||mode==5?0.f:mode==4?(.25f+(x+.5f)/32*7.5f)/8:mode==6?.5f:1.f;
+                float coverage=mode==0||mode==3||mode==5?0.f:mode==4?(.25f+(x+.5f)/32*7.5f)/8:mode==6?.5f:1.f;
                 const float sky=.5f+.5f*nz,radiance=mode==3?0.f:.1f*(1+brightness);
                 for(unsigned ch=0;ch<3;++ch){
                     const float expected=(1-coverage)*c[18][ch]*sky+coverage*radiance-c[18][ch];
@@ -78,8 +78,8 @@ int main(int argc,char** argv){
         c[82]={float(layout.columns),1.f/layout.width,1.f/layout.height,1.f/layout.columns};
         auto pixels=gpu.capture(current,c,32,2);
         for(unsigned y=0;y<2;++y)for(unsigned x=0;x<32;++x){
-            float fineCoverage=mode==1?(.25f+(x+.5f)/32*7.5f)/8:mode==2?1.f:0.f;
-            float coarseCoverage=mode==4?0.f:mode==5?.5f:1.f;
+            float fineCoverage=mode==1?(.25f+(x+.5f)/32*7.5f)/8:0.f;
+            float coarseCoverage=mode==3||mode==4?0.f:mode==5?.5f:1.f;
             float value=fineCoverage*(mode==2?0:.1f)+(1-fineCoverage)*coarseCoverage*(mode==3||mode==6?0:.3f);
             for(unsigned ch=0;ch<3;++ch){float expected=value+(1-fineCoverage)*(1-coarseCoverage)*c[18][ch]-c[18][ch];
                 if(std::fabs(pixels[(y*32+x)*4+ch]-expected)>=4e-5f)std::fprintf(stderr,"CASCADE mode=%u x=%u ch=%u actual=%g expected=%g\n",mode,x,ch,pixels[(y*32+x)*4+ch],expected);

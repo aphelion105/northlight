@@ -1,6 +1,7 @@
 #pragma once
 #include "utf8_path.h"
 #include "diagnostic_files.h"
+#include "diagnostic_readback.h"
 #include <d3d9.h>
 #include "local_light_selection.h"
 #include <algorithm>
@@ -35,13 +36,14 @@ class Capture {
     unsigned capture_=0,frame_=0,rendererFrame_=0,passes_=0;
     bool complete_=true,finished_=false;
     struct Input {IDirect3DBaseTexture9* identity=nullptr;unsigned snapshot=0;bool known=false;};
-    std::array<std::array<Input,16>,5> groups_{};
+    std::array<std::array<Input,16>,6> groups_{};
     std::array<IDirect3DPixelShader9*,8> shaders_{};unsigned shaderCount_=0;
     Ref<IDirect3DSurface9> nativeResolve_;D3DSURFACE_DESC nativeResolveDesc_{};
     Ref<IDirect3DSurface9> traceTarget_;D3DSURFACE_DESC traceDesc_{};
     unsigned traceDraws_=0,traceSkipped_=0;bool traceImages_=false;
     static unsigned pixelBytes(D3DFORMAT format){
-        return format==D3DFMT_A16B16G16R16F||format==D3DFMT_G32R32F?8:
+        return format==D3DFMT_A32B32G32R32F?16:
+            format==D3DFMT_A16B16G16R16F||format==D3DFMT_G32R32F?8:
             format==D3DFMT_R32F||format==D3DFMT_A8R8G8B8||format==D3DFMT_X8R8G8B8?4:0;
     }
 
@@ -77,6 +79,11 @@ class Capture {
             if(!call("StretchRect-color-resolve",device_->StretchRect(source,nullptr,resolved.p,nullptr,D3DTEXF_NONE)))return false;
             std::fprintf(journal_,"{\"event\":\"color-resolve\",\"name\":\"%s\",\"source_samples\":%u,\"method\":\"StretchRect-NONE\",\"per_sample_image\":false}\n",name,unsigned(desc.MultiSampleType));
             return surface(name,resolved.p,false);
+        }
+        if(desc.Pool==D3DPOOL_DEFAULT&&(desc.Usage&D3DUSAGE_RENDERTARGET)&&uint64_t(desc.Width)*desc.Height*stride>NorthlightDiagnosticReadback::DirectLimit){
+            char output[2048];const bool ok=path(name,"fgr",output)&&call("ReadRenderTarget-strips",NorthlightDiagnosticReadback::strips(device_,source,desc,stride,output));
+            std::fprintf(journal_,"{\"event\":\"file\",\"name\":\"%s.fgr\",\"bytes\":%llu,\"saved\":%s}\n",name,(unsigned long long)(20+uint64_t(desc.Width)*desc.Height*stride),ok?"true":"false");
+            return ok;
         }
         Ref<IDirect3DSurface9> staging;
         if(desc.Pool==D3DPOOL_MANAGED||desc.Pool==D3DPOOL_SYSTEMMEM){staging.p=source;source->AddRef();}
@@ -390,6 +397,16 @@ public:
             if(sampledDepth){std::fprintf(journal_,"{\"event\":\"sampled-depth\",\"group\":%u,\"slot\":%u,\"source_format\":%u,\"export_format\":%u,\"depth_reconstructed\":false}\n",group,slot,unsigned(desc.Format),unsigned(D3DFMT_R32F));depth(name,texture,desc);}
             else{Ref<IDirect3DSurface9> level;if(call("GetSurfaceLevel-input",texture->GetSurfaceLevel(0,&level.p)))surface(name,level.p);}
         }
+    }
+    // Depth and receiver normals already have frame products. Preserve the
+    // resident probe textures and their constants before the GI slots are reused.
+    void giProbeInputs()noexcept{
+        if(!active())return;
+        constexpr unsigned atlasSlots=(15u<<4)|(1u<<8)|(1u<<10)|(1u<<13);
+        inputs(5,atlasSlots);
+        float bank[116][4];
+        if(call("GetPixelShaderConstantF-gi",device_->GetPixelShaderConstantF(0,bank[0],116)))
+            bytes("gi-constants","f32",bank,sizeof bank);
     }
     void skipped(const char* entry,unsigned first,unsigned count,const char* reason)noexcept{
         if(active())std::fprintf(journal_,"{\"event\":\"skipped\",\"entry\":\"%s\",\"first\":%u,\"count\":%u,\"reason\":\"%s\",\"bank_present\":false}\n",entry,first,count,reason);

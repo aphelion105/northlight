@@ -493,8 +493,7 @@ class NorthlightAutoDisplacement {
         Texture item;item.used=++clock;item.version=revision;item.model=model;item.cpuNeeded=cpuNeeded;item.height.width=image.width;item.height.height=image.height;item.height.values.resize(size_t(image.width)*image.height);
         const auto profile=NorthlightMaterialHeight::profile(image,polarity,heightDetails,heightBalance);
         if(model)NorthlightMaterialHeight::modelValues(image,polarity,item.height.values,rgba);
-        else if(profile[1]==0)for(size_t i=0;i<item.height.values.size();++i)item.height.values[i]=NorthlightMaterialHeight::valueWithoutAccent(rgba[i*4]/255.f,rgba[i*4+1]/255.f,rgba[i*4+2]/255.f,profile);
-        else for(size_t i=0;i<item.height.values.size();++i)item.height.values[i]=NorthlightMaterialHeight::value(rgba[i*4]/255.f,rgba[i*4+1]/255.f,rgba[i*4+2]/255.f,profile);
+        else NorthlightMaterialHeight::worldValues(image,rgba,profile,item.height.values);
         item.source=source;source->AddRef();textures.push_back(std::move(item));return &textures.back().height;
     }
     IDirect3DTexture9* heightTexture(IDirect3DTexture9* source,bool model){
@@ -936,9 +935,9 @@ public:
         if(!NorthlightActorDeformation::textureUVs(shader->second.uv,*source,elements,count,constants,uv))return false;
         if(second){if(!NorthlightActorDeformation::textureUVs(shader->second.uv1,*source,elements,count,constants,uv1))return false;
             weights.resize(source->vertexCount);for(unsigned i=0;i<source->vertexCount;++i){NorthlightActorDeformation::Four inputs[16],value;if(!NorthlightActorDeformation::sampledVertexInputsAt(shader->second.blend,*source,elements,count,i,inputs,true)||!NorthlightActorDeformation::evaluateFast(shader->second.blend,inputs,constants,value))return false;if(!std::isfinite(value[3]))return false;weights[i]=value[3];}}
-        unsigned factor=domain==4?1u<<detail:NorthlightDisplacementGeometry::textureFactor(uv,*firstHeight,detail);
-        if(second)factor=std::max(factor,NorthlightDisplacementGeometry::textureFactor(uv1,*second,detail));
-        if(domain==3)factor=std::min(factor,16u);
+        const unsigned factorLimit=domain==4?1u<<detail:domain==3?16u:128u;
+        unsigned factor=NorthlightDisplacementGeometry::textureFactor(*source,uv,*firstHeight,detail,factorLimit);
+        if(second)factor=std::max(factor,NorthlightDisplacementGeometry::textureFactor(*source,uv1,*second,detail,factorLimit));
         IDirect3DTexture9* gpuHeight=nullptr;
         if(wantGPUHeight)gpuHeight=heightTexture(static_cast<IDirect3DTexture9*>(tex.p),domain==4);
         if(wantGPUHeight&&!gpuHeight){firstHeight=height(static_cast<IDirect3DTexture9*>(tex.p),domain==4,true);if(!firstHeight){++heightRejected;return false;}}
@@ -959,7 +958,8 @@ public:
             refreshBudget(memory);if(entry->bytes+source->byteSize()>cacheBudget){++refused;return false;}
             makeRoom(source,entry->bytes,entry->vb,entry->geometryBytes);++subdivisionReuses;
         }else{
-            ++buildsThisFrame;Mesh output;if(!NorthlightDisplacementGeometry::build(*source,elements,count,uv,first,factor,domain==1,u==D3DTADDRESS_CLAMP,v==D3DTADDRESS_CLAMP,output,second,second?&uv1:nullptr,second?&weights:nullptr,shader->second.influences,gpuHeight!=nullptr,color)){++meshRejected;return false;}
+            const bool preferMidpoints=domain!=4&&detail>1&&factor==2;
+            ++buildsThisFrame;Mesh output;if(!NorthlightDisplacementGeometry::build(*source,elements,count,uv,first,factor,domain==1,u==D3DTADDRESS_CLAMP,v==D3DTADDRESS_CLAMP,output,second,second?&uv1:nullptr,second?&weights:nullptr,shader->second.influences,gpuHeight!=nullptr,color,preferMidpoints)){++meshRejected;return false;}
             timing.work(output.primitiveCount,output.byteSize());if(profile)profile->count(P::GeometryBuilt);timing.next(P::GeometryUpload);
             if(builds<8){float peak=0;for(unsigned i=0;i<output.vertexCount;++i){float delta[3];std::memcpy(delta,output.streams[0].bytes.data()+size_t(i)*output.streams[0].stride+stream.stride,12);peak=std::max(peak,std::sqrt(delta[0]*delta[0]+delta[1]*delta[1]+delta[2]*delta[2])*strength);}logf("DISPLACEMENT build domain=%u vertices=%u triangles=%u maxOffset=%.5f VScontrol=%u",domain,output.vertexCount,output.primitiveCount,peak,shaders.find(original)->second.binding.constant);}
             const auto indexBytes=NorthlightDisplacementGeometry::indexElementBytes(output);

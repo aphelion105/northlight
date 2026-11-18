@@ -2034,7 +2034,11 @@ private:
                 // upload plan that would otherwise retry forever. DEFAULT geometry
                 // and cutout textures have bounded upload staging; normal staging
                 // stays entirely in RAM until the atomic GPU commit.
-                bool spoolUpload=coldRecovery;
+                // With no resident pages the entire DEFAULT mesh would disappear at
+                // Reset. The complete file-backed plan can replay immediately and
+                // releases its construction memory at commit. A reset rebuild also
+                // needs a self-contained plan, independent of pre-Reset keys.
+                bool spoolUpload=coldRecovery||restore||!resident||resident->empty();
                 if(!spoolUpload){
                     uint64_t largestTexture=0;for(const auto& material:plan->materials)largestTexture=std::max(largestTexture,material.pixelBytes());
                     auto uploadBudget=NorthlightGeometryMemory::uploadBudget(0,0,0,0);
@@ -6480,6 +6484,7 @@ public:
             if(!check(d->SetRenderTarget(1,prelitDaylightCurrent?prelitDaylightSurface:nullptr),"prelit GI MRT"))return false;
             d->SetRenderState(D3DRS_COLORWRITEENABLE1,15);
             d->SetTexture(8,probePrev); // WorldGI reads previous SH here, not LightingBuffer.
+            if(lightingCapture)lightingCapture->giProbeInputs();
             if(!check(quad(w/2,h/2),"world GI pass"))return false;
             d->SetRenderTarget(1,nullptr);
             d->SetTexture(8,textures[8]);

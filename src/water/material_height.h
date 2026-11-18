@@ -74,6 +74,31 @@ inline float valueWithoutAccent(float r,float g,float b,const std::array<float,4
     const float base=.5f+(r*.299f+g*.587f+b*.114f-p[0])*.7f*p[2];
     return std::clamp(base+p[3],.02f,.98f);
 }
+// Infer height at bilinearly filtered texel corners, as in AutoNormal. Each
+// corner is shared by four output texels, including across a world tile seam.
+inline void worldValues(const Image& image,const unsigned char* rgba,const std::array<float,4>& profile,std::vector<float>& heights){
+    const unsigned width=image.width,height=image.height;
+    std::vector<float> corners(size_t(width)*height);
+    heights.resize(corners.size());
+    for(unsigned y=0;y<height;++y){
+        const size_t row=size_t(y)*width,below=size_t(y+1==height?0:y+1)*width;
+        for(unsigned x=0;x<width;++x){
+            const unsigned right=x+1==width?0:x+1;
+            const auto* a=rgba+4*(row+x);const auto* b=rgba+4*(row+right);
+            const auto* c=rgba+4*(below+x);const auto* d=rgba+4*(below+right);
+            const auto channel=[&](unsigned i){return (a[i]+b[i]+c[i]+d[i])*(1.f/1020);};
+            const float r=channel(0),g=channel(1),blue=channel(2);
+            corners[row+x]=profile[1]==0?valueWithoutAccent(r,g,blue,profile):value(r,g,blue,profile);
+        }
+    }
+    for(unsigned y=0;y<height;++y){
+        const size_t row=size_t(y)*width,above=size_t(y?y-1:height-1)*width;
+        for(unsigned x=0;x<width;++x){
+            const unsigned left=x?x-1:width-1;
+            heights[row+x]=(corners[row+x]+corners[row+left]+corners[above+x]+corners[above+left])*.25f;
+        }
+    }
+}
 // Model albedo contains painted anatomy and skin colour. Only local detail may
 // become model relief; broad lighting/colour regions must not inflate a body.
 inline float modelValue(const Image& im,unsigned x,unsigned y,unsigned polarity,const unsigned char* rgba=nullptr){

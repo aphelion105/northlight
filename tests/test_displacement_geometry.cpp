@@ -41,8 +41,22 @@ int main(){
     assert(build(source,decl,4,uv,h,128,false,false,false,out));assert(out.primitiveCount==32768&&out.vertexCount==16641);
     assert(!build(source,decl,4,uv,h,256,false,false,false,out));assert(!build(source,decl,4,uv,h,8,false,false,false,out,&black));
     Height dense=h;dense.width=dense.height=128;dense.values.assign(128*128,.8f);
-    assert(textureFactor(uv,dense,1)==2&&textureFactor(uv,dense,4)==32&&textureFactor(uv,dense,5)==64);
-    auto tiled=uv;for(auto& p:tiled)for(auto& c:p)c*=4;assert(textureFactor(tiled,dense,4)==128);
+    assert(textureFactor(source,uv,dense,1)==2&&textureFactor(source,uv,dense,4)==32&&textureFactor(source,uv,dense,5)==64);
+    auto tiled=uv;for(auto& p:tiled)for(auto& c:p)c*=4;assert(textureFactor(source,tiled,dense,4)==128);
+    // Disjoint UV islands and unused vertices do not add detail to either face.
+    {Mesh islands=source;islands.vertexCount=7;islands.indices={0,1,2,3,4,5};
+     std::vector<std::array<float,2>> coords={{0,0},{.125f,0},{0,.125f},{42,9},{42.125f,9},{42,9.125f},{1000,1000}};
+     assert(textureFactor(islands,coords,dense,4)==4);
+     islands.indexed=false;assert(textureFactor(islands,coords,dense,4)==4);
+     islands.indexed=true;islands.topology=D3DPT_TRIANGLESTRIP;islands.indices={0,1,2,2,3,3,4,5};islands.primitiveCount=6;
+     assert(textureFactor(islands,coords,dense,4)==4);
+     islands.indices.back()=99;assert(textureFactor(islands,coords,dense,4)==0);}
+    assert(textureFactor(strip,uv,dense,4)==32&&textureFactor(strip,uv,dense,4,4)==4);
+    {Mesh regular;assert(build(source,decl,4,uv,h,2,false,false,false,regular,nullptr,nullptr,nullptr,0,false,nullptr,true));
+     assert(regular.vertexCount==9&&regular.primitiveCount==8);
+     Mesh single=source;single.primitiveCount=1;
+     assert(build(single,decl,4,uv,h,2,false,false,false,regular,nullptr,nullptr,nullptr,0,false,nullptr,true));
+     assert(regular.vertexCount==4&&regular.primitiveCount==3);}
     h.values={0,1,1,0};h.width=h.height=2;assert(std::fabs(h.sample(.5f,.5f)-.5f)<1e-6f);assert(h.sample(0,0,true,true)==0);assert(std::fabs(h.sample(-.25f,.25f)-1)<1e-6f);
     // Varying skin transforms keep the original triangle: interpolating both
     // weights and positions changes its animated shape even at zero height.

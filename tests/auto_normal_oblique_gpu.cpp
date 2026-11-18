@@ -715,7 +715,9 @@ int NORTHLIGHT_OBLIQUE_ENTRY(int argc,char** argv){
         if(std::getenv("NORTHLIGHT_TEST_VARIANT_AUDIT")){QueryPerformanceCounter(&variantEnd);std::printf("MATERIAL_VARIANT_AUDIT stage=mode mode=%u creates=%u total=%u submitMs=%.6f\n",mode,captureDevice.vertexCreates-modeCreates,captureDevice.vertexCreates,double(variantEnd.QuadPart-variantStart.QuadPart)*1000/double(variantHz.QuadPart));}
         assert(bump.finishCaptures());
         if(std::getenv("NORTHLIGHT_TEST_DEFERRED_CAPTURE")){std::printf("MATERIAL_DEFERRED_MODE mode=%u queued=%u flushed=%u\n",mode,MaterialCaptureStateTestAccess::queued(bump),MaterialCaptureStateTestAccess::flushed(bump));assert(MaterialCaptureStateTestAccess::captured(bump,model?4:grass?3:argc>5?2:1)==1);}
-        if(batchTiming||(mode==2&&std::getenv("NORTHLIGHT_TEST_SHARED_TIMING"))){
+        const char* geometryTimingMode=std::getenv("NORTHLIGHT_TEST_DISPLACEMENT_TIMING_MODE");
+        const bool geometryTiming=geometryTimingMode&&(mode==1||mode==5)&&mode==unsigned(std::atoi(geometryTimingMode));
+        if(batchTiming||geometryTiming||(mode==2&&std::getenv("NORTHLIGHT_TEST_SHARED_TIMING"))){
             IDirect3DQuery9 *frequency=nullptr,*start=nullptr,*finish=nullptr,*disjoint=nullptr;
             ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMPFREQ,&frequency));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&start));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&finish));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMPDISJOINT,&disjoint));
             const bool batched=batchTiming&&std::getenv("NORTHLIGHT_TEST_MATERIAL_BATCHED"),packetLimit=std::getenv("NORTHLIGHT_TEST_DEFERRED_LIMIT")!=nullptr;const unsigned draws=batchTiming?(packetLimit?520:std::getenv("NORTHLIGHT_TEST_CAPTURE_DRAWS")?std::atoi(std::getenv("NORTHLIGHT_TEST_CAPTURE_DRAWS")):32):1;
@@ -800,6 +802,7 @@ int NORTHLIGHT_OBLIQUE_ENTRY(int argc,char** argv){
                     if(barrier)bump.setDeferredCapture(deferredEnabled&&i%8!=7);
                     if(deferredPose)for(unsigned bone=0;bone<4;++bone){float pose[4];std::memcpy(pose,bank[31+3*bone],16);pose[3]+=float(i%5)*.04f;ok(d->SetVertexShaderConstantF(31+3*bone,pose,1));}
                     bump.beginDraw();bump.capture(vs,native,!indexed,&geometry);
+                    if(geometryTiming)assert(bump.geometryPrepared()==(mode==5));
                     if(deferredMutation){V expected[4];std::memcpy(expected,floor,sizeof expected);for(auto& v:expected)v.x+=float(i%7)*.025f;MaterialCaptureStateTestAccess::mutation(bump,expected,sizeof expected);}
                     ok(bump.nativeDraw([&]{return bump.geometryDraw(native,true);}));
                     MaterialCaptureStateTestAccess::pressureBounds(bump);
@@ -829,7 +832,7 @@ int NORTHLIGHT_OBLIQUE_ENTRY(int argc,char** argv){
             const auto wait=[](IDirect3DQuery9* q,void* result,DWORD size){const auto began=GetTickCount();HRESULT hr;while((hr=q->GetData(result,size,D3DGETDATA_FLUSH))==S_FALSE){assert(GetTickCount()-began<10000);Sleep(1);}ok(hr);};
             UINT64 hz=0,a=0,b=0;BOOL invalid=TRUE;wait(finish,&b,sizeof b);wait(start,&a,sizeof a);wait(frequency,&hz,sizeof hz);wait(disjoint,&invalid,sizeof invalid);assert(!invalid&&hz&&b>=a);
             std::printf("MATERIAL_BATCH_SWITCHES targets=%llu depths=%llu repeats=%u\n",(unsigned long long)(captureDevice.targetBinds-targetStart),(unsigned long long)(captureDevice.depthBinds-depthStart),repeats);
-            std::printf("%s width=%u height=%u msaa=%u gpuMs=%.6f submitMs=%.6f repeats=%u draws=%u batched=%u\n",batchTiming?"MATERIAL_BATCH_TIMING":"SHARED_POM_TIMING",W,H,unsigned(samples),double(b-a)*1000/double(hz)/repeats,double(cpuEnd.QuadPart-cpuStart.QuadPart)*1000/double(cpuHz.QuadPart)/repeats,repeats,draws,unsigned(batched));
+            std::printf("%s width=%u height=%u msaa=%u gpuMs=%.6f submitMs=%.6f repeats=%u draws=%u batched=%u\n",batchTiming?"MATERIAL_BATCH_TIMING":geometryTiming?"DISPLACEMENT_TIMING":"SHARED_POM_TIMING",W,H,unsigned(samples),double(b-a)*1000/double(hz)/repeats,double(cpuEnd.QuadPart-cpuStart.QuadPart)*1000/double(cpuHz.QuadPart)/repeats,repeats,draws,unsigned(batched));
             if(identicalRewrite)std::printf("MATERIAL_IDENTICAL_REWRITE frames=%u draws=%u resident=%llu up=%llu readBytes=%llu verifiedHits=%llu changed=%u\n",4+repeats,draws,rewriteResident,rewriteUP,rewriteReads,rewriteHits,unsigned(std::getenv("NORTHLIGHT_TEST_REWRITE_CHANGED")!=nullptr));
             if(batchTiming&&deferredEnabled){std::printf("MATERIAL_DEFERRED_BENCH queued=%u flushed=%u mutation=%u barrier=%u\n",MaterialCaptureStateTestAccess::queued(bump),MaterialCaptureStateTestAccess::flushed(bump),unsigned(deferredMutation),unsigned(barrier));assert(((drawRewrite||depthCase==7)?MaterialCaptureStateTestAccess::queued(bump)<=draws:MaterialCaptureStateTestAccess::queued(bump)==(multiStream||(!samples&&(!singleDepthCapable||!model||!indexed||std::getenv("NORTHLIGHT_TEST_MATERIAL_ALPHA_TEST")||std::getenv("NORTHLIGHT_TEST_SINGLE_SEED_FAILURE")))?0:draws-(barrier?draws/8:0)))&&MaterialCaptureStateTestAccess::flushed(bump)==MaterialCaptureStateTestAccess::queued(bump));
 #ifndef NORTHLIGHT_TEST_CAPTURE_BASELINE
