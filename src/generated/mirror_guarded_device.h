@@ -66,8 +66,6 @@ public:
     HRESULT STDMETHODCALLTYPE SetScissorRect(const RECT *rect) override { MirrorGuard lock(m->gate,MirrorSite::Device);return MirrorDevice::SetScissorRect(rect); }
     HRESULT STDMETHODCALLTYPE GetScissorRect(RECT* pRect) override { MirrorGuard lock(m->gate,MirrorSite::Device);return MirrorDevice::GetScissorRect(pRect); }
     WINBOOL STDMETHODCALLTYPE GetSoftwareVertexProcessing() override { MirrorGuard lock(m->gate,MirrorSite::Device);return MirrorDevice::GetSoftwareVertexProcessing(); }
-    HRESULT STDMETHODCALLTYPE SetNPatchMode(float nSegments) override { MirrorGuard lock(m->gate,MirrorSite::Device);return MirrorDevice::SetNPatchMode(nSegments); }
-    float STDMETHODCALLTYPE GetNPatchMode() override { MirrorGuard lock(m->gate,MirrorSite::Device);return MirrorDevice::GetNPatchMode(); }
     HRESULT STDMETHODCALLTYPE CreateVertexDeclaration(const D3DVERTEXELEMENT9 *elements, IDirect3DVertexDeclaration9 **declaration) override { MirrorGuard lock(m->gate,MirrorSite::Device);return MirrorDevice::CreateVertexDeclaration(elements, declaration); }
     HRESULT STDMETHODCALLTYPE CreateVertexShader(const DWORD *byte_code, IDirect3DVertexShader9 **shader) override { MirrorGuard lock(m->gate,MirrorSite::Device);return MirrorDevice::CreateVertexShader(byte_code, shader); }
     HRESULT STDMETHODCALLTYPE CreatePixelShader(const DWORD *byte_code, IDirect3DPixelShader9 **shader) override { MirrorGuard lock(m->gate,MirrorSite::Device);return MirrorDevice::CreatePixelShader(byte_code, shader); }

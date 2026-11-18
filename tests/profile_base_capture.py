@@ -31,22 +31,24 @@ def main():
  def insert(marker,code,before=False):
   nonlocal header
   assert header.count(marker)==1,(marker,header.count(marker));header=header.replace(marker,code+marker if before else marker+code,1)
- insert('if(bad||!source)return;','NorthlightCapturePhases::Scope<8> phase(baseProbe?&baseCapture:nullptr);')
- insert('auto* vs=vertex(source,ps->compactVertex);','phase.next(1);',True)
- insert('State saved(d,ps->control,userMemory);','phase.next(2);',True)
- insert('const float control[]={0,48.f,','phase.next(3);',True)
- insert('if(!deferred||!vs->reads.exact||','NorthlightCapturePhases::Scope<8> phase(baseProbe?&baseRecord:nullptr);',True)
- insert('const auto& mesh=packet->geometry();','phase.next(1);',True)
- insert('if(!admit())return false;','phase.next(2);',True)
- insert('if(geometryCache&&packet->sharedMesh&&packet->sharedMesh->sourceIdentity&&','phase.next(3);',True)
- insert('packet->ps.resize(ps->count*4);','phase.next(4);',True)
- insert('packet->viewport=viewport;','phase.next(5);',True)
- insert('bool ok=!bad;','NorthlightCapturePhases::Scope<8> phase(baseProbe?&baseFlush:nullptr);')
- insert('SavedState saved(d,&batchStates);' if 'SavedState saved(d,&batchStates);' in header else 'State saved(d,0,true);','phase.next(1);',True)
- insert('const Pending* previous=nullptr;','phase.next(2);',True)
- insert('                ok=saved.restore()&&ok;','phase.next(3);',True)
- insert('clearPending();bad|=!ok;return ok;','phase.next(4);',True)
- if compare:header=normal_input.read_text() # Both timed implementations omit phase probes entirely.
+ if compare:
+  header=normal_input.read_text() # Neither timed implementation includes phase probes.
+ else:
+  insert('if(bad||!source)return;','NorthlightCapturePhases::Scope<8> phase(baseProbe?&baseCapture:nullptr);')
+  insert('auto* vs=programs.vertex(source,ps->compactVertex,terrain);' if 'programs.vertex(source' in header else 'auto* vs=vertex(source,ps->compactVertex);','phase.next(1);',True)
+  insert('State saved(d,ps->control,userMemory);','phase.next(2);',True)
+  insert('const float control[]={0,','phase.next(3);',True)
+  insert('if(!deferred||!vs->reads.exact||','NorthlightCapturePhases::Scope<8> phase(baseProbe?&baseRecord:nullptr);',True)
+  insert('const auto& mesh=packet->geometry();','phase.next(1);',True)
+  insert('if(!admit())return false;','phase.next(2);',True)
+  insert('if(geometryCache&&packet->sharedMesh&&packet->sharedMesh->sourceIdentity&&','phase.next(3);',True)
+  insert('packet->ps.resize(ps->count*4);','phase.next(4);',True)
+  insert('packet->viewport=viewport;','phase.next(5);',True)
+  insert('bool ok=!bad;','NorthlightCapturePhases::Scope<8> phase(baseProbe?&baseFlush:nullptr);')
+  insert('SavedState saved(d,&batchStates);' if 'SavedState saved(d,&batchStates);' in header else 'State saved(d,0,true);','phase.next(1);',True)
+  insert('const Pending* previous=nullptr;','phase.next(2);',True)
+  insert('                ok=saved.restore()&&ok;','phase.next(3);',True)
+  insert('clearPending();bad|=!ok;return ok;','phase.next(4);',True)
  (overlay/'model_normal_renderer.h').write_bytes(header.encode())
  if a.range_reference:
   ref=a.range_reference.resolve();text=ref.read_text(encoding='utf-8').replace('NorthlightModelNormalRange','ReferenceModelNormalRange')

@@ -87,6 +87,7 @@ struct IDirect3DStateBlock9:IUnknown {virtual HRESULT GetDevice(IDirect3DDevice9
  X(DrawPrimitiveUP,(D3DPRIMITIVETYPE a,UINT b,const void* c,UINT d),(a,b,c,d)) \
  X(DrawIndexedPrimitiveUP,(D3DPRIMITIVETYPE a,UINT b,UINT c,UINT d,const void* e,D3DFORMAT f,const void* g,UINT h),(a,b,c,d,e,f,g,h)) \
  X(Reset,(D3DPRESENT_PARAMETERS* a),(a)) \
+ X(SetNPatchMode,(float a),(a)) \
  X(SetSoftwareVertexProcessing,(WINBOOL a),(a)) \
  X(DrawPrimitive,(D3DPRIMITIVETYPE a,UINT b,UINT c),(a,b,c)) \
  X(DrawIndexedPrimitive,(D3DPRIMITIVETYPE a,INT b,UINT c,UINT d,UINT e,UINT f),(a,b,c,d,e,f)) \
@@ -106,6 +107,7 @@ struct IDirect3DStateBlock9:IUnknown {virtual HRESULT GetDevice(IDirect3DDevice9
  X(CreateRenderTarget,(UINT a,UINT b,D3DFORMAT c,D3DMULTISAMPLE_TYPE d,DWORD e,WINBOOL f,IDirect3DSurface9** g,HANDLE* h),(a,b,c,d,e,f,g,h)) \
  X(ColorFill,(IDirect3DSurface9* a,const RECT* b,D3DCOLOR c),(a,b,c))
 struct IDirect3DDevice9:IUnknown {
+ virtual float GetNPatchMode()=0;
 #define API_PURE(n,p,a) virtual HRESULT n p=0;
  MIRROR_API_METHODS(API_PURE)
  EXTRA_API_METHODS(API_PURE)
@@ -114,6 +116,7 @@ struct IDirect3DDevice9:IUnknown {
 struct ForwardIDirect3DDevice9:IDirect3DDevice9 {
  IDirect3DDevice9* real;explicit ForwardIDirect3DDevice9(IDirect3DDevice9* r):real(r){}
  HRESULT QueryInterface(REFIID i,void** o)override{return real->QueryInterface(i,o);}ULONG AddRef()override{return real->AddRef();}ULONG Release()override{return real->Release();}
+ float GetNPatchMode()override{return real->GetNPatchMode();}
 #define API_FORWARD(n,p,a) HRESULT n p override{return real->n a;}
  MIRROR_API_METHODS(API_FORWARD)
  EXTRA_API_METHODS(API_FORWARD)

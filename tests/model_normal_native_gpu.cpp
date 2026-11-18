@@ -13,6 +13,18 @@ struct ModelNormalPacketTestAccess {
     template<class T> static bool sourcePolicy(T&,bool,long){return false;}
     template<class T> static auto sourceHits(const T& n,int)->decltype(n.residentSourceHits){return n.residentSourceHits;}
     template<class T> static unsigned sourceHits(const T&,long){return 0;}
+    inline static unsigned targetMatches=0,pixelPeeks=0;
+    template<class T> static auto drawState(T& normals,ExtensionDevice& extension,bool enabled,int)
+        ->decltype(normals.setDrawStateSource(extension),void()){
+        if(enabled)normals.setDrawStateSource(extension);
+        else normals.drawStateSource=nullptr;
+    }
+    template<class T> static void drawState(T&,ExtensionDevice&,bool,long){}
+    template<class T> static auto countDrawState(const T& normals,int)->decltype(normals.knownTargets,void()){
+        targetMatches+=normals.knownTargets;
+        pixelPeeks+=normals.knownPixelShaders;
+    }
+    template<class T> static void countDrawState(const T&,long){}
     static unsigned committed(const NorthlightModelNormals& n){return n.nativeCommittedPackets;}
     static std::string stats(const NorthlightModelNormals& n){std::string text;n.nativeMrt.report(0,[&](const char* format,auto... args){char line[1024];std::snprintf(line,sizeof line,format,args...);text+=line;});return text;}
     static unsigned stat(const NorthlightModelNormals& n,const char* name){const auto text=stats(n);const std::string key=std::string(name)+"=";const auto at=text.find(key);assert(at!=std::string::npos);return unsigned(std::strtoul(text.c_str()+at+key.size(),nullptr,10));}
@@ -123,6 +135,7 @@ int main(int argc,char** argv){
         std::vector<unsigned char> referenceColor,referenceNormals,referenceSky;
         bool evictSource=false,downstreamRead=false;double captureUs=0;
         auto frame=[&](bool mrt,unsigned scenario=0,unsigned fault=0){
+            ModelNormalPacketTestAccess::drawState(*n,extension,mrt,0);
             if(captureSource)worldConsumer.clearFrame();
             n->endFrame();n->enableNativeMrt(mrt);state(color);
             if(scenario==34)assert(n->finishCaptures()); // No audited draw: no new cooldown.
@@ -206,6 +219,7 @@ int main(int argc,char** argv){
                 if(committed&&(scenario==2||scenario==3||scenario==6||scenario==12||scenario==19||scenario==22||(scenario>=14&&scenario<=16))){for(unsigned y=0;y<H;++y)std::memset(expected.data()+size_t(y)*W*8,0,W/2*8);}
                 assert(normals==expected);}
             if(scenario==22){const auto actual=pixels(sky);if(!mrt)referenceSky=actual;else assert(actual==referenceSky);}
+            ModelNormalPacketTestAccess::countDrawState(*n,0);
             assert(!extension.audit());return committed;
         };
         if(timing){
@@ -301,6 +315,6 @@ int main(int argc,char** argv){
     }
     if(vb)vb->Release();if(ib)ib->Release();
     if(captureSource){assert(publishedSources>0);printf("MODEL_NORMAL_SOURCE_PASS published=%u lookupReference=%u\n",publishedSources,lookupReference);}
-    if(!timing){assert(commits>0);std::printf("MODEL_NORMAL_NATIVE_GPU_PASS cases=%u committedFrames=%u RGB=exact normals=exact fallback=whole-frame faults=before-after nativeCalls=once hdrSky=exact fillSuccess=%u fillFailure=%u\n",cases,commits,calls.fillSuccess,calls.fillFailure);}
+    if(!timing){std::printf("MODEL_NORMAL_DRAW_STATE targets=%u pixelShaders=%u\n",ModelNormalPacketTestAccess::targetMatches,ModelNormalPacketTestAccess::pixelPeeks);assert(commits>0);std::printf("MODEL_NORMAL_NATIVE_GPU_PASS cases=%u committedFrames=%u RGB=exact normals=exact fallback=whole-frame faults=before-after nativeCalls=once hdrSky=exact fillSuccess=%u fillFailure=%u\n",cases,commits,calls.fillSuccess,calls.fillFailure);}
     return 0;
 }

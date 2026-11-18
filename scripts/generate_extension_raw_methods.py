@@ -4,7 +4,7 @@ import re
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import northlight_paths  # noqa: E402
-CONTROL = {'BeginStateBlock', 'EndStateBlock', 'CreateStateBlock', 'Reset', 'SetSoftwareVertexProcessing'}
+CONTROL = {'BeginStateBlock', 'EndStateBlock', 'CreateStateBlock', 'Reset', 'SetSoftwareVertexProcessing', 'SetNPatchMode'}
 # 0.3.149: not mirrored, so they already went straight to the backend. Counted
 # pass-through overrides only (per-type call counts on sampled frames). The mock
 # test API has no such methods, so they are left out of that build.

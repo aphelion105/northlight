@@ -11,6 +11,11 @@ NorthlightCapturePhases::Stats<8> baseCapture,baseRecord,baseFlush;
 bool baseProbe=false;
 static double captureTicks(const NorthlightCapturePhases::Stats<8>& s){LARGE_INTEGER hz;QueryPerformanceFrequency(&hz);long long total=0;for(auto t:s.ticks)total+=t;return double(total)*1000/hz.QuadPart;}
 static void capturePrint(const char* group,const NorthlightCapturePhases::Stats<8>& s){LARGE_INTEGER hz;QueryPerformanceFrequency(&hz);for(unsigned i=0;i<8;++i)if(s.ticks[i])std::printf("CAPTURE_PHASE group=%s phase=%u ms=%.9f\n",group,i,double(s.ticks[i])*1000/hz.QuadPart);}
+// Frozen renderer headers from earlier builds may only expose owning getters.
+template<class Normals>
+static auto bindDrawState(Normals& normals,ExtensionDevice& extension,int)
+    -> decltype(normals.setDrawStateSource(extension),void()){normals.setDrawStateSource(extension);}
+template<class Normals> static void bindDrawState(Normals&,ExtensionDevice&,long){}
 struct BaseCaptureCalls:CaptureCalls {
     using CaptureCalls::CaptureCalls;unsigned submissions=0,stateReads=0;
     HRESULT STDMETHODCALLTYPE GetVertexShader(IDirect3DVertexShader9** out)override{++stateReads;return real->GetVertexShader(out);}
@@ -52,10 +57,12 @@ int main(int argc,char** argv){
     NorthlightDrawSnapshot::Frame peer{8u<<20,0};const auto identity=+[](void* p,bool)->uint64_t{return reinterpret_cast<uintptr_t>(p);};const auto version=+[](void*,bool)->uint64_t{return 1;};peer.setIdentityProvider(identity);peer.setVersionProvider(version);peer.setSnapshotCacheLimit(8u<<20);
     NorthlightGpuScene::NativeStore store;NorthlightGpuScene::NativeClient cache(store,NorthlightGpuScene::Consumer::Material);auto normals=std::make_unique<NorthlightModelNormals>(d);
     assert(normals->shareCaptureSources(peer,identity,version,nullptr));normals->setGeometryCache(&cache);normals->setDeferredCapture(true);normals->setTrustedPoseSource(extension.trustedConstantSource());
+    bindDrawState(*normals,extension,0);
     normals->setRasterStateSource(d,[](void* c,const D3DRENDERSTATETYPE* k,unsigned n,DWORD* v){return static_cast<ExtensionDevice*>(static_cast<IDirect3DDevice9*>(c))->knownRenderStates(k,n,v);});
 #ifdef NORTHLIGHT_MODEL_NORMALS_RANGE_REFERENCE
     auto before=std::make_unique<NorthlightModelNormalsReference>(d);
     assert(before->shareCaptureSources(peer,identity,version,nullptr));before->setGeometryCache(&cache);before->setDeferredCapture(true);before->setTrustedPoseSource(extension.trustedConstantSource());
+    bindDrawState(*before,extension,0);
     before->setRasterStateSource(d,[](void* c,const D3DRENDERSTATETYPE* k,unsigned n,DWORD* v){return static_cast<ExtensionDevice*>(static_cast<IDirect3DDevice9*>(c))->knownRenderStates(k,n,v);});
 #endif
     IDirect3DQuery9 *start=nullptr,*end=nullptr,*frequency=nullptr;ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&start));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&end));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMPFREQ,&frequency));

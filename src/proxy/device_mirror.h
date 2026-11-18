@@ -68,9 +68,12 @@ struct DeviceMirror {
     IDirect3DBaseTexture9* textures[Textures]={};bool textureKnown[Textures]={};
     DWORD samplers[Textures][SamplerTypes]={};bool samplerKnown[Textures][SamplerTypes]={};
     DWORD renderStates[RenderStates]={};bool renderStateKnown[RenderStates]={};
+    float nPatchMode=0;
+    bool nPatchKnown=false;
+    unsigned nPatchWrites=0;
     D3DVIEWPORT9 viewport={};bool viewportKnown=false;
     IDirect3DSurface9* targets[Targets]={};bool targetKnown[Targets]={},targetAbsent[Targets]={};
-    unsigned targetWrites=0;
+    unsigned targetWrites=0,pixelShaderWrites=0,viewportWrites=0;
     IDirect3DSurface9* depth=nullptr;bool depthKnown=false;
     float vsFloat[VsFloat][4]={};bool vsFloatKnown[VsFloat]={};
     // Diagnostic setter evidence is independent of successful Get* support.
@@ -152,7 +155,7 @@ struct DeviceMirror {
     // Callers hold gate, including ALL block Apply, Reset, and disable paths.
     void invalidate(){
         constantEpoch.invalidate();if(synced)synced->clearAll();
-        programmableVS=false;
+        nPatchKnown=false;programmableVS=false;
         vertexShaderKnown=pixelShaderKnown=declarationKnown=fvfKnown=indicesKnown=viewportKnown=depthKnown=false;
         for(auto& s:streams)s.known=false;
         std::memset(frequencyKnown,0,sizeof frequencyKnown);std::memset(textureKnown,0,sizeof textureKnown);
@@ -224,13 +227,13 @@ public:
         else if(m->mutations!=serial){m->programmableVS=m->vertexShaderKnown=false;m->forget(DeviceMirror::VertexShaderSlot);}return hr;
     }
     HRESULT STDMETHODCALLTYPE SetPixelShader(IDirect3DPixelShader9* value) override{
-        Guard lock(m->gate);const std::uint64_t serial=m->mutations+1;HRESULT hr=real->SetPixelShader(value);m->pixelShaderKnown=false;
+        Guard lock(m->gate);const std::uint64_t serial=m->mutations+1;++m->pixelShaderWrites;HRESULT hr=real->SetPixelShader(value);--m->pixelShaderWrites;m->pixelShaderKnown=false;
         if(accepted(hr)){m->pixelShader=value;m->pixelShaderKnown=m->written(DeviceMirror::PixelShaderSlot,serial);}else m->forget(DeviceMirror::PixelShaderSlot);return hr;
     }
     HRESULT STDMETHODCALLTYPE GetPixelShader(IDirect3DPixelShader9** out) override{
-        Guard lock(m->gate);if(out&&m->active()&&m->pixelShaderKnown){++m->answered;giveRef(m->pixelShader,out);return D3D_OK;}
-        ++m->forwarded;HRESULT hr=real->GetPixelShader(out);
-        if(out&&m->active()){m->observed(DeviceMirror::PixelShaderSlot,SUCCEEDED(hr)&&*out==m->pixelShader);if(SUCCEEDED(hr)){m->pixelShader=*out;m->pixelShaderKnown=true;}}return hr;
+        Guard lock(m->gate);if(out&&m->active()&&!m->pixelShaderWrites&&!m->targetWrites&&m->pixelShaderKnown){++m->answered;giveRef(m->pixelShader,out);return D3D_OK;}
+        const auto serial=m->mutations;++m->forwarded;HRESULT hr=real->GetPixelShader(out);
+        if(out&&m->active()&&!m->pixelShaderWrites&&!m->targetWrites&&m->mutations==serial){m->observed(DeviceMirror::PixelShaderSlot,SUCCEEDED(hr)&&*out==m->pixelShader);if(SUCCEEDED(hr)){m->pixelShader=*out;m->pixelShaderKnown=true;}}return hr;
     }
     HRESULT STDMETHODCALLTYPE SetVertexDeclaration(IDirect3DVertexDeclaration9* value) override{
         Guard lock(m->gate);const std::uint64_t serial=m->mutations+1;HRESULT hr=real->SetVertexDeclaration(value);m->declarationKnown=false;m->fvfKnown=false;
@@ -315,13 +318,13 @@ public:
             if(SUCCEEDED(hr)){m->renderStates[type]=*out;m->renderStateKnown[type]=true;}}return hr;
     }
     HRESULT STDMETHODCALLTYPE SetViewport(const D3DVIEWPORT9* value) override{
-        Guard lock(m->gate);if(m->synced)m->synced->viewport();const std::uint64_t serial=m->mutations+1;HRESULT hr=real->SetViewport(value);m->viewportKnown=false;
+        Guard lock(m->gate);if(m->synced)m->synced->viewport();const std::uint64_t serial=m->mutations+1;++m->viewportWrites;HRESULT hr=real->SetViewport(value);--m->viewportWrites;m->viewportKnown=false;
         if(accepted(hr)&&value){m->viewport=*value;m->viewportKnown=m->written(DeviceMirror::ViewportSlot,serial,m->isProven(*value));}else m->forget(DeviceMirror::ViewportSlot);return hr;
     }
     HRESULT STDMETHODCALLTYPE GetViewport(D3DVIEWPORT9* out) override{
-        Guard lock(m->gate);if(out&&m->active()&&m->viewportKnown){++m->answered;*out=m->viewport;return D3D_OK;}
-        ++m->forwarded;HRESULT hr=real->GetViewport(out);
-        if(out&&m->active()){const bool same=SUCCEEDED(hr)&&!std::memcmp(out,&m->viewport,sizeof m->viewport);
+        Guard lock(m->gate);if(out&&m->active()&&!m->viewportWrites&&!m->targetWrites&&m->viewportKnown){++m->answered;*out=m->viewport;return D3D_OK;}
+        const auto serial=m->mutations;++m->forwarded;HRESULT hr=real->GetViewport(out);
+        if(out&&m->active()&&!m->viewportWrites&&!m->targetWrites&&m->mutations==serial){const bool same=SUCCEEDED(hr)&&!std::memcmp(out,&m->viewport,sizeof m->viewport);
             if(same&&m->pending[DeviceMirror::ViewportSlot])m->prove(*out);m->observed(DeviceMirror::ViewportSlot,same);if(SUCCEEDED(hr)){m->viewport=*out;m->viewportKnown=true;}}return hr;
     }
     // Target 0 implicitly resets viewport (and scissor): never computed here.
@@ -334,9 +337,9 @@ public:
     }
     HRESULT STDMETHODCALLTYPE GetRenderTarget(DWORD n,IDirect3DSurface9** out) override{
         Guard lock(m->gate);bool valid=n<DeviceMirror::Targets&&out;
-        if(valid&&m->active()&&m->targetKnown[n]){++m->answered;giveRef(m->targets[n],out);return m->targets[n]?D3D_OK:D3DERR_NOTFOUND;}
-        ++m->forwarded;HRESULT hr=real->GetRenderTarget(n,out);
-        if(valid&&m->active()){m->observed(DeviceMirror::TargetSlot+n,SUCCEEDED(hr)&&*out==m->targets[n]);if(SUCCEEDED(hr)&&*out){m->targets[n]=*out;m->targetKnown[n]=true;}}return hr;
+        if(valid&&m->active()&&!m->targetWrites&&m->targetKnown[n]){++m->answered;giveRef(m->targets[n],out);return m->targets[n]?D3D_OK:D3DERR_NOTFOUND;}
+        const auto serial=m->mutations;++m->forwarded;HRESULT hr=real->GetRenderTarget(n,out);
+        if(valid&&m->active()&&!m->targetWrites&&m->mutations==serial){m->observed(DeviceMirror::TargetSlot+n,SUCCEEDED(hr)&&*out==m->targets[n]);if(SUCCEEDED(hr)&&*out){m->targets[n]=*out;m->targetKnown[n]=true;}}return hr;
     }
     HRESULT STDMETHODCALLTYPE SetDepthStencilSurface(IDirect3DSurface9* value) override{
         Guard lock(m->gate);const std::uint64_t serial=m->mutations+1;HRESULT hr=real->SetDepthStencilSurface(value);m->depthKnown=false;
@@ -355,7 +358,7 @@ public:
         ++m->answered;++m->peeks;out=m->targets[n];return true;
     }
     bool peekPixelShader(IDirect3DPixelShader9*& out){
-        Guard lock(m->gate);if(!kMirrorBorrowedPeek||!m->active()||!m->pixelShaderKnown||!m->pixelShader)return false;
+        Guard lock(m->gate);if(!kMirrorBorrowedPeek||!m->active()||!m->pixelShaderKnown||m->pixelShaderWrites||m->targetWrites||!m->pixelShader)return false;
         ++m->answered;++m->peeks;out=m->pixelShader;return true;
     }
     // 0.3.196 (task 12): the mirror holds no reference (Set* stores raw pointers), so a borrowed shader/texture pointer is valid only while it stays bound.
@@ -455,6 +458,7 @@ public:
         if(m->declarationKnown){++m->checkedFields;IDirect3DVertexDeclaration9* p=nullptr;HRESULT hr=real->GetVertexDeclaration(&p);bool same=SUCCEEDED(hr)&&p==m->declaration;if(p)p->Release();if(!same)return mismatch("declaration");}
         if(m->indicesKnown){++m->checkedFields;IDirect3DIndexBuffer9* p=nullptr;HRESULT hr=real->GetIndices(&p);bool same=SUCCEEDED(hr)&&p==m->indices;if(p)p->Release();if(!same)return mismatch("indices");}
         if(m->fvfKnown){++m->checkedFields;DWORD value=0;if(FAILED(real->GetFVF(&value))||value!=m->fvf)return mismatch("fvf");}
+        if(m->nPatchKnown&&!m->nPatchWrites&&!m->targetWrites){++m->checkedFields;const float value=real->GetNPatchMode();if(std::memcmp(&value,&m->nPatchMode,sizeof value))return mismatch("n-patch-mode");}
         if(m->viewportKnown){++m->checkedFields;D3DVIEWPORT9 value={};if(FAILED(real->GetViewport(&value))||std::memcmp(&value,&m->viewport,sizeof value))return mismatch("viewport");}
         for(unsigned i=0;i<DeviceMirror::Streams;++i){
             const auto& s=m->streams[i];if(s.known){++m->checkedFields;IDirect3DVertexBuffer9* p=nullptr;UINT offset=0,stride=0;HRESULT hr=real->GetStreamSource(i,&p,&offset,&stride);bool same=SUCCEEDED(hr)&&p==s.buffer&&offset==s.offset&&stride==s.stride;if(p)p->Release();if(!same)return mismatch("stream");}
@@ -514,6 +518,32 @@ public:
     HRESULT STDMETHODCALLTYPE Reset(D3DPRESENT_PARAMETERS* params) override{
         Guard lock(m->gate);DeviceMirror::TargetWrite write(m);m->invalidate();HRESULT hr=real->Reset(params);m->invalidate();if(SUCCEEDED(hr))m->recording=false;return hr;
     }
+    // A setter may fail after changing state, or normalize its argument.
+    // Learn the returned mode only between writes, including raw/state-block writes.
+    HRESULT STDMETHODCALLTYPE SetNPatchMode(float segments) override{
+        Guard lock(m->gate);
+        ++m->nPatchWrites;
+        m->nPatchKnown=false;
+        const HRESULT hr=real->SetNPatchMode(segments);
+        --m->nPatchWrites;
+        accepted(hr);
+        return hr;
+    }
+    float STDMETHODCALLTYPE GetNPatchMode() override{
+        Guard lock(m->gate);
+        if(m->active()&&!m->targetWrites&&!m->nPatchWrites&&m->nPatchKnown){
+            ++m->answered;
+            return m->nPatchMode;
+        }
+        ++m->forwarded;
+        const auto serial=m->mutations;
+        const float value=real->GetNPatchMode();
+        if(m->active()&&!m->targetWrites&&!m->nPatchWrites&&serial==m->mutations){
+            m->nPatchMode=value;
+            m->nPatchKnown=true;
+        }
+        return value;
+    }
     HRESULT STDMETHODCALLTYPE SetSoftwareVertexProcessing(WINBOOL value) override{
         Guard lock(m->gate);HRESULT hr=real->SetSoftwareVertexProcessing(value);m->invalidate();return hr;
     }
@@ -563,6 +593,16 @@ public:
                 return mirror->heldByThisThread()&&mirror->active()&&!mirror->constantEpoch.overflow()&&expected.valid&&
                     NorthlightConstantEpoch::sameWords(expected,mirror->constantEpoch.live());
             });
+    }
+    // Compare the retained target and copy its viewport under one gate. No
+    // borrowed COM reference escapes and a target write can reset the viewport.
+    bool knownFrameViewport(IDirect3DSurface9* retained,bool& matches,D3DVIEWPORT9& viewport){
+        MirrorGuard lock(m->gate,MirrorSite::Device);
+        if(!kMirrorBorrowedPeek||!m->active()||m->targetWrites||m->viewportWrites||!m->targetKnown[0]||!m->viewportKnown)return false;
+        matches=m->targets[0]==retained;
+        viewport=m->viewport;
+        m->answered+=2;
+        return true;
     }
     // A complete known-only snapshot; unknown slots retain the normal Get path.
     bool knownRenderStates(const D3DRENDERSTATETYPE* keys,unsigned count,DWORD* out){

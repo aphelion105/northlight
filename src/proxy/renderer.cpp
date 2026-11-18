@@ -663,7 +663,7 @@ private:
     NorthlightNameStencil::Mask nameMask;int maskKind=0; /* maskKind: this draw is 1 a name that gets marked, 2 a depth-final draw that unmarks (set by prepareDrawImpl, consumed by nameMaskDraw) */
     IDirect3DSurface9* maskFormatFor=nullptr;unsigned long maskFormatValue=0;unsigned maskFormatLogs=0;bool maskStencil=false;const void* maskDsId=nullptr; /* identities only: the world depth the format verdict is for, and the one whose Clear(Z) also clears stencil */
     void resetTranslucentCensus(){censusDraws=lastOpaqueZAt=clearResolveAt=earlyResolves=earlyResolveAt=earlyResolveUndone=0;}
-    LONGLONG cpuPrep=0,cpuCapture=0,cpuWaterCapture=0,cpuEffects=0,cpuMirrorAudit=0;
+    LONGLONG cpuPrep=0,cpuCapture=0,cpuNormalCapture=0,cpuWaterCapture=0,cpuEffects=0,cpuMirrorAudit=0;
     LONGLONG cpuCleanupOwners[5]={};
     LONGLONG cpuHdrAdmission=0,cpuHdrBoundary=0,cpuHdrTransfer=0,cpuHdrFinish=0;
     unsigned hdrAdmissionCalls=0,hdrTransferCalls=0;
@@ -2041,10 +2041,12 @@ private:
         if(!modelNormals||!modelNormalsNeeded||!enabled||applied||failed)return;
         const auto found=vsHashes.find(vs);
         const bool terrain=world&&world->terrainShader(vs);
-        if(terrain||(found!=vsHashes.end()&&m2ShaderFamily(found->second)==3))
+        if(terrain||(found!=vsHashes.end()&&m2ShaderFamily(found->second)==3)){
+            CpuScope cost(sampledDrawTimers()?&cpuNormalCapture:nullptr);
             modelNormals->capture(vs,draw,userMemory,&geometry.draw,geometry.indices,geometry.format,geometry.vertices,geometry.stride,source?&source->mesh:nullptr,source?source->declaration:nullptr,source?&source->pose:nullptr,
                 source&&!userMemory?&source->mesh:nullptr,source&&!userMemory?&source->declaration:nullptr,terrain,
                 source&&!userMemory?&source->bank:nullptr);
+        }
     }
     template<NorthlightWaterRenderer::UserPointer UserPointer,class Raw,class Draw> void captureGameDraw(IDirect3DVertexShader9* vs,const NorthlightAutoDisplacement::Args& geometry,Raw raw,Draw draw){
         constexpr bool userMemory=UserPointer!=NorthlightWaterRenderer::NoUserPointer;
@@ -3553,6 +3555,7 @@ public:
         surface=std::make_unique<NorthlightSurfaceRenderer>(ext);
         modelNormals=std::make_unique<NorthlightModelNormals>(ext);modelNormals->enableNativeMrt(true);
         autoBump=std::make_unique<NorthlightAutoBump>(ext,gpuScene);if(rootPath[0])autoBump->setPersistentCache(std::filesystem::path(rootPath)/L"Cache"/L"Northlight"/L"Materials-v1",NorthlightBackend::name(selectedBackend),materialCacheBackendIdentity.c_str(),materialCacheAsyncReadback);autoBump->setGeometryTracking(&NorthlightTrackedBuffers::identity,&NorthlightTrackedBuffers::version,&NorthlightTrackedBuffers::captureMetadata);autoBump->configure(world->surfaceSettings());
+        modelNormals->setDrawStateSource(*ext);
         modelNormals->setTrustedPoseSource(ext->trustedConstantSource());
         modelNormals->shareCaptureSources(autoBump->captureSources(),&NorthlightTrackedBuffers::identity,&NorthlightTrackedBuffers::version,&NorthlightTrackedBuffers::captureMetadata);
         modelNormals->setGeometryCache(&gpuScene->materials);
@@ -4121,7 +4124,7 @@ public:
             // so a profile can subtract timer overhead (2 calls per CpuScope).
             LARGE_INTEGER a={},b={},t={};QueryPerformanceCounter(&a);for(unsigned i=0;i<32;++i)QueryPerformanceCounter(&t);QueryPerformanceCounter(&b);
             const double qpcNs=double(b.QuadPart-a.QuadPart)*1e9/double(cpuFrequency.QuadPart)/33.0;
-            logf("CPU capture split frame=%u captureWorld=%.3fms captureWater=%.3fms qpcNs=%.1f",sampleFrame,drawTimed?std::max(0.0,double(cpuCapture-cpuWaterCapture)*ms):-1.0,drawTimed?cpuWaterCapture*ms:-1.0,qpcNs);
+            logf("CPU capture split frame=%u captureWorld=%.3fms captureWater=%.3fms qpcNs=%.1f normalCaptureMs=%.3f",sampleFrame,drawTimed?std::max(0.0,double(cpuCapture-cpuWaterCapture)*ms):-1.0,drawTimed?cpuWaterCapture*ms:-1.0,qpcNs,drawTimed?cpuNormalCapture*ms:-1.0);
             logf("WATER mask draws=%u deferred=%u clears=%u scans=%u readFailures=%u mrt=%u redraw=%u degraded=%u binds=%u longestRun=%u afterEffects=%u",waterDraws,0u,waterClears,waterScans,waterReadFailures,waterMrt,waterRedraws,waterDegraded,waterBinds,waterLongestRun,waterLate); /* 0.3.215: binds = render target 1 binds for the water mask, longestRun = the most MRT draws under one bind (both per frame like the rest); 0.3.214 (water MRT): draws = mrt (the game draw wrote the mask itself) + redraw (second draws; degraded = planned as mrt, made as second draws) */
             if(NorthlightRenderThreadProbe::profiling()){
                 // Extension D3D9 calls of this frame by method, inside renderEffects' raw scope (all
@@ -4164,7 +4167,7 @@ public:
             reportLogCost();
         }
         refreshPipeline();weatherFrame(sampleFrame);
-        cpuPrep=cpuCapture=cpuWaterCapture=cpuEffects=0;cpuCaptureReads=0;cpuDrawHooks=0;
+        cpuPrep=cpuCapture=cpuNormalCapture=cpuWaterCapture=cpuEffects=0;cpuCaptureReads=0;cpuDrawHooks=0;
         cpuHdrAdmission=cpuHdrBoundary=cpuHdrTransfer=cpuHdrFinish=0;hdrAdmissionCalls=hdrTransferCalls=0;
         ++frame;mirrorState.gate.frame.store(frame,std::memory_order_relaxed); /* 0.3.180: the census' frame */
         auroraSources.end();auroraDiagnostic.beginFrame(frame);

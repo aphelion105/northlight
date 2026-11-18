@@ -154,6 +154,8 @@ struct Backend final:IDirect3DDevice9 {
     HRESULT BeginStateBlock()override{return D3DERR_INVALIDCALL;}
     HRESULT EndStateBlock(IDirect3DStateBlock9**)override{return D3DERR_INVALIDCALL;}
     HRESULT Reset(D3DPRESENT_PARAMETERS*)override{return D3DERR_INVALIDCALL;}
+    float GetNPatchMode()override{return 0;}
+    HRESULT SetNPatchMode(float)override{return D3DERR_INVALIDCALL;}
     HRESULT SetSoftwareVertexProcessing(WINBOOL)override{return D3DERR_INVALIDCALL;}
     HRESULT ProcessVertices(UINT,UINT,UINT,IDirect3DVertexBuffer9*,IDirect3DVertexDeclaration9*,DWORD)override{return D3DERR_INVALIDCALL;}
     HRESULT drawResult(const char* name){const bool ok=mutate(name);if(armed)forwardCalls=mutations;armed=false;if(!ok)return D3DERR_INVALIDCALL;if(failDraw){--failDraw;return D3DERR_INVALIDCALL;}return D3D_OK;}

@@ -1,6 +1,7 @@
 #pragma once
 #include <d3d9.h>
 #include "model_normal_programs.h"
+#include "model_normal_draw_state.h"
 #include <array>
 #include "model_normal_native.h"
 #include "draw_snapshot.h"
@@ -24,6 +25,19 @@ class NorthlightModelNormals {
     NorthlightModelNormalPrograms programs;
     IDirect3DDevice9* d;
     NorthlightNativeModelNormals nativeMrt;
+    ExtensionDevice* drawStateSource=nullptr;
+    unsigned knownTargets=0,knownPixelShaders=0;
+
+    Pixel* currentPixel(bool alpha){
+        IDirect3DPixelShader9* shader=nullptr;
+        if(drawStateSource&&drawStateSource->constantMirror()->heldByThisThread()&&drawStateSource->peekPixelShader(shader)){
+            // pixel() retains new programs before calling the backend.
+            ++knownPixelShaders;
+            return programs.pixel(shader,alpha);
+        }
+        NorthlightDrawSnapshot::Ref<IDirect3DPixelShader9> owned;
+        return SUCCEEDED(d->GetPixelShader(owned.out()))&&owned.p?programs.pixel(owned.p,alpha):nullptr;
+    }
     NorthlightModelNormalRange::Cache rangeCache;
     void* poseContext=nullptr;NorthlightConstantEpoch::Reader poseReader=nullptr;NorthlightConstantEpoch::KnownSpan poseSpan=nullptr;unsigned poseBoundsTests=0,poseBoundsCulled=0,poseViewportTests=0,poseViewportCulled=0;
 #ifdef NORTHLIGHT_MODEL_NORMALS_TEST
@@ -407,42 +421,7 @@ class NorthlightModelNormals {
             if(!texturesWerePending&&pendingTextureSlots&&pendingChanged)pendingChanged(pendingContext);return true;
         }catch(const std::bad_alloc&){return false;}
     }
-    struct State {
-        inline static constexpr D3DRENDERSTATETYPE keys[]={D3DRS_ZENABLE,D3DRS_ZWRITEENABLE,D3DRS_ZFUNC,
-            D3DRS_ALPHABLENDENABLE,D3DRS_ALPHATESTENABLE,D3DRS_STENCILENABLE,D3DRS_SCISSORTESTENABLE,
-            D3DRS_SRGBWRITEENABLE,D3DRS_FOGENABLE,D3DRS_COLORWRITEENABLE,D3DRS_WRAP5,D3DRS_WRAP7};
-        static constexpr unsigned Count=sizeof(keys)/sizeof(keys[0]);
-        IDirect3DDevice9* d;IDirect3DVertexShader9* vs=nullptr;IDirect3DPixelShader9* ps=nullptr;
-        IDirect3DSurface9 *rt[4]={},*ds=nullptr;IDirect3DVertexBuffer9* stream=nullptr;IDirect3DIndexBuffer9* index=nullptr;
-        UINT offset=0,stride=0;D3DVIEWPORT9 viewport{};DWORD values[Count]={};float constant[4]={};unsigned control,renderChanged=0,targetChanged=0;bool changed=false,up;
-        State(IDirect3DDevice9* device,unsigned c,bool user):d(device),control(c),up(user){}
-        bool save(bool full=true){
-            if(FAILED(d->GetViewport(&viewport))||FAILED(d->GetRenderTarget(0,&rt[0])))return false;
-            return !full||saveRest();
-        }
-        bool saveRest(){
-            if(FAILED(d->GetVertexShader(&vs))||FAILED(d->GetPixelShader(&ps))||
-               FAILED(d->GetDepthStencilSurface(&ds))||FAILED(d->GetPixelShaderConstantF(control,constant,1)))return false;
-            for(unsigned i=1;i<4;++i){auto hr=d->GetRenderTarget(i,&rt[i]);if(FAILED(hr)&&hr!=D3DERR_NOTFOUND)return false;}
-            for(unsigned i=0;i<Count;++i)if(FAILED(d->GetRenderState(keys[i],values+i)))return false;
-            return !up||(SUCCEEDED(d->GetStreamSource(0,&stream,&offset,&stride))&&SUCCEEDED(d->GetIndices(&index)));
-        }
-        bool restore(){
-            if(!changed)return true;changed=false;
-            auto retry=[](auto call){return SUCCEEDED(call())||SUCCEEDED(call());};bool ok=true;
-            ok=retry([&]{return d->SetDepthStencilSurface(nullptr);})&&ok;
-            for(unsigned i=1;i<4;++i)if(targetChanged&(1u<<i))ok=retry([&]{return d->SetRenderTarget(i,nullptr);})&&ok;
-            for(unsigned i=0;i<4;++i)if(!i||(targetChanged&(1u<<i)))ok=retry([&]{return d->SetRenderTarget(i,rt[i]);})&&ok;
-            ok=retry([&]{return d->SetDepthStencilSurface(ds);})&&ok;
-            ok=retry([&]{return d->SetViewport(&viewport);})&&ok;
-            ok=retry([&]{return d->SetVertexShader(vs);})&&ok;ok=retry([&]{return d->SetPixelShader(ps);})&&ok;
-            ok=retry([&]{return d->SetPixelShaderConstantF(control,constant,1);})&&ok;
-            for(unsigned i=0;i<Count;++i)if(renderChanged&(1u<<i))ok=retry([&]{return d->SetRenderState(keys[i],values[i]);})&&ok;
-            if(up){ok=retry([&]{return d->SetStreamSource(0,stream,offset,stride);})&&ok;ok=retry([&]{return d->SetIndices(index);})&&ok;}
-            return ok;
-        }
-        ~State(){restore();release(vs);release(ps);for(auto*& p:rt)release(p);release(ds);release(stream);release(index);}
-    };
+    using State=NorthlightModelNormalDrawState;
     bool targets(UINT w,UINT h){
         if(w!=width||h!=height){reset(true);width=w;height=h;}
         if(normal&&surface&&depth)return true;
@@ -459,7 +438,7 @@ public:
         snapshots.setLayoutProvider(&declarations,[](void* c,IDirect3DVertexDeclaration9* decl,UINT* extent){return static_cast<NorthlightVertexDeclarations::Cache*>(c)->captureLayout(decl,extent);});
     }
     ~NorthlightModelNormals(){pendingChanged=nullptr;reset();}
-    void endFrame(){peakFloatBanks=peakPackets=0;depthSeeded=0;clearPending();nativeMrt.beginFrame();nativeCommittedPackets=0;streamFence.endFrame();streamedDraws=streamedBatches=streamedDiscards=streamFailures=0;streamedBytes=streamSavedBytes=0;streamBlocked=false;rangeCache.beginFrame();constantStats={};constantReadRegisters=materialBankReads=materialBankRegisters=materialBankChecks=materialBankMismatches=0;poseBoundsTests=poseBoundsCulled=poseViewportTests=poseViewportCulled=0;compactDraws=draws=queued=flushes=immediate=sourceReused=residentSourceHits=residentDraws=handoffs=rangeNarrow=rangeFull=rangeRegisters=packetPixelReadsSkipped=mergedDraws=duplicateDraws=0;sourceReadBytes=upBytes=0;cleared=bad=false;release(frameTarget);}
+    void endFrame(){knownTargets=knownPixelShaders=0;peakFloatBanks=peakPackets=0;depthSeeded=0;clearPending();nativeMrt.beginFrame();nativeCommittedPackets=0;streamFence.endFrame();streamedDraws=streamedBatches=streamedDiscards=streamFailures=0;streamedBytes=streamSavedBytes=0;streamBlocked=false;rangeCache.beginFrame();constantStats={};constantReadRegisters=materialBankReads=materialBankRegisters=materialBankChecks=materialBankMismatches=0;poseBoundsTests=poseBoundsCulled=poseViewportTests=poseViewportCulled=0;compactDraws=draws=queued=flushes=immediate=sourceReused=residentSourceHits=residentDraws=handoffs=rangeNarrow=rangeFull=rangeRegisters=packetPixelReadsSkipped=mergedDraws=duplicateDraws=0;sourceReadBytes=upBytes=0;cleared=bad=false;release(frameTarget);}
     void reset(bool preserveCaptureSources=false){endFrame();nativeMrt.reset();releaseStream();rangeCache.clear();if(!preserveCaptureSources)snapshots.clearSnapshotCache();declarations.clear();spare.clear();floatBanks.clear();spareBytes=0;batchStates.clear();release(surface);release(normal);release(depth);release(depthSeedPS);width=height=0;}
     IDirect3DTexture9* texture()const{return draws&&!bad?normal:nullptr;}
     bool shareCaptureSources(NorthlightDrawSnapshot::Frame& source,NorthlightDrawSnapshot::Frame::IdentityFn identity,
@@ -470,6 +449,7 @@ public:
     void setRasterStateSource(void* context,bool(*reader)(void*,const D3DRENDERSTATETYPE*,unsigned,DWORD*)){rasterContext=context;rasterReader=context==d?reader:nullptr;nativeMrt.setRasterStateSource(context,reader);}
     void setEmptyTargetSource(void* context,bool(*reader)(void*)){nativeMrt.setEmptyTargetSource(context,reader);}
     void setSamplerStateSource(void* context,bool(*reader)(void*,DWORD,unsigned,DWORD*)){samplerContext=context;samplerReader=context==d?reader:nullptr;}
+    void setDrawStateSource(ExtensionDevice& source){drawStateSource=static_cast<IDirect3DDevice9*>(&source)==d?&source:nullptr;}
     void setTrustedPoseSource(NorthlightConstantEpoch::TrustedSource source){for(auto& p:pending)p->constantStamp={};poseContext=source.context();poseReader=source&&source.context()==d?source.reader():nullptr;poseSpan=poseReader?source.span():nullptr;
         constantSource={};if(poseReader){const auto* mirror=static_cast<ExtensionDevice*>(d)->constantMirror();constantSource={&mirror->constantEpoch,mirror};}}
     void setGeometryCache(NorthlightGpuScene::NativeClient* cache){geometryCache=cache;}
@@ -527,7 +507,7 @@ public:
     void setDeferredCapture(bool on,void(*changed)(void*)=nullptr,void* context=nullptr){
         if(!on)finishCaptures();deferred=on;pendingChanged=changed;pendingContext=context;
     }
-    template<class Log> void report(unsigned frame,Log log)const{log("MODEL_NORMALS frame=%u draws=%u queued=%u flushes=%u immediate=%u pending=%zu failed=%u sourceReused=%u sourceReadBytes=%zu sourcePoolBytes=%zu sourcePoolLimitMiB=%zu residentDraws=%u upBytes=%zu handoffs=%u rangeTests=%u rangeCulled=%u rangeSingleTests=%u rangeSingleUniform=%u rangeSingleMixed=%u rangeDeferred=%u poseBoundsTests=%u poseBoundsCulled=%u poseViewportTests=%u poseViewportCulled=%u rangeNarrow=%u rangeFull=%u rangeRegisters=%u packetPixelReadsSkipped=%u compactDraws=%u compactShaders=%u mergedDraws=%u depthSeeded=%u submittedDraws=%u streamedDraws=%u streamedBatches=%u streamedBytes=%zu streamedDiscards=%u streamFailures=%u streamCapacityBytes=%u streamSavedBytes=%zu duplicateDraws=%u pixelShaders=%u sharedPixelShaders=%u vertexShaders=%u sharedVertexShaders=%u rangeMixedCulled=%u residentSourceHits=%u",frame,draws,queued,flushes,immediate,pending.size(),unsigned(bad),sourceReused,sourceReadBytes,snapshots.sharedSourceBytes(),snapshots.sharedSourceLimit()>>20,residentDraws,upBytes,handoffs,rangeCache.tested,rangeCache.culled,rangeCache.singleTests,rangeCache.singleUniform,rangeCache.singleMixed,rangeCache.deferred,poseBoundsTests,poseBoundsCulled,poseViewportTests,poseViewportCulled,rangeNarrow,rangeFull,rangeRegisters,packetPixelReadsSkipped,compactDraws,programs.compactBuilt,mergedDraws,depthSeeded,draws-mergedDraws-nativeCommittedPackets,streamedDraws,streamedBatches,streamedBytes,streamedDiscards,streamFailures,streamVB?StreamVertexBytes+StreamIndexBytes:0,streamSavedBytes,duplicateDraws,programs.pixelBuilt,programs.pixelReused,programs.vertexBuilt,programs.vertexReused,rangeCache.mixedCulled,residentSourceHits);log("MODEL_NORMALS constants frame=%u fetchedRegisters=%u peakFloatBanks=%zu peakPackets=%zu epochHits=%llu blockHits=%llu registersReused=%llu avoidedBytes=%llu selfChecks=%llu mismatches=%llu",frame,constantReadRegisters,peakFloatBanks,peakPackets,(unsigned long long)constantStats.hits,(unsigned long long)constantStats.blockTests,(unsigned long long)constantStats.registersReused,(unsigned long long)constantStats.bytesAvoided,(unsigned long long)constantStats.selfChecks,(unsigned long long)constantStats.selfCheckMismatches);log("MODEL_NORMALS handoff frame=%u bankReads=%u bankRegisters=%u bankChecks=%u bankMismatch=%u",frame,materialBankReads,materialBankRegisters,materialBankChecks,materialBankMismatches);nativeMrt.report(frame,log);}
+    template<class Log> void report(unsigned frame,Log log)const{log("MODEL_NORMALS frame=%u draws=%u queued=%u flushes=%u immediate=%u pending=%zu failed=%u sourceReused=%u sourceReadBytes=%zu sourcePoolBytes=%zu sourcePoolLimitMiB=%zu residentDraws=%u upBytes=%zu handoffs=%u rangeTests=%u rangeCulled=%u rangeSingleTests=%u rangeSingleUniform=%u rangeSingleMixed=%u rangeDeferred=%u poseBoundsTests=%u poseBoundsCulled=%u poseViewportTests=%u poseViewportCulled=%u rangeNarrow=%u rangeFull=%u rangeRegisters=%u packetPixelReadsSkipped=%u compactDraws=%u compactShaders=%u mergedDraws=%u depthSeeded=%u submittedDraws=%u streamedDraws=%u streamedBatches=%u streamedBytes=%zu streamedDiscards=%u streamFailures=%u streamCapacityBytes=%u streamSavedBytes=%zu duplicateDraws=%u pixelShaders=%u sharedPixelShaders=%u vertexShaders=%u sharedVertexShaders=%u rangeMixedCulled=%u residentSourceHits=%u knownTargets=%u knownPixelShaders=%u",frame,draws,queued,flushes,immediate,pending.size(),unsigned(bad),sourceReused,sourceReadBytes,snapshots.sharedSourceBytes(),snapshots.sharedSourceLimit()>>20,residentDraws,upBytes,handoffs,rangeCache.tested,rangeCache.culled,rangeCache.singleTests,rangeCache.singleUniform,rangeCache.singleMixed,rangeCache.deferred,poseBoundsTests,poseBoundsCulled,poseViewportTests,poseViewportCulled,rangeNarrow,rangeFull,rangeRegisters,packetPixelReadsSkipped,compactDraws,programs.compactBuilt,mergedDraws,depthSeeded,draws-mergedDraws-nativeCommittedPackets,streamedDraws,streamedBatches,streamedBytes,streamedDiscards,streamFailures,streamVB?StreamVertexBytes+StreamIndexBytes:0,streamSavedBytes,duplicateDraws,programs.pixelBuilt,programs.pixelReused,programs.vertexBuilt,programs.vertexReused,rangeCache.mixedCulled,residentSourceHits,knownTargets,knownPixelShaders);log("MODEL_NORMALS constants frame=%u fetchedRegisters=%u peakFloatBanks=%zu peakPackets=%zu epochHits=%llu blockHits=%llu registersReused=%llu avoidedBytes=%llu selfChecks=%llu mismatches=%llu",frame,constantReadRegisters,peakFloatBanks,peakPackets,(unsigned long long)constantStats.hits,(unsigned long long)constantStats.blockTests,(unsigned long long)constantStats.registersReused,(unsigned long long)constantStats.bytesAvoided,(unsigned long long)constantStats.selfChecks,(unsigned long long)constantStats.selfCheckMismatches);log("MODEL_NORMALS handoff frame=%u bankReads=%u bankRegisters=%u bankChecks=%u bankMismatch=%u",frame,materialBankReads,materialBankRegisters,materialBankChecks,materialBankMismatches);nativeMrt.report(frame,log);}
     struct DepthSeed {IDirect3DTexture9* texture;float nearZ,farZ,minZ,maxZ;};
 private:
     bool seedProjection(const DepthSeed* seed,float (&projection)[4])const{
@@ -720,13 +700,17 @@ public:
         DWORD states[8]={};if(!renderStates(admissionKeys,states)||!states[0]||!states[1]||states[2]||!(states[3]&7))return;
         const DWORD alpha=states[4],ref=states[5],func=states[6],comparison=states[7];
         if((alpha&&func!=D3DCMP_GREATER&&func!=D3DCMP_GREATEREQUAL)||(comparison!=D3DCMP_LESS&&comparison!=D3DCMP_LESSEQUAL&&comparison!=D3DCMP_EQUAL))return;
-        IDirect3DPixelShader9* native=nullptr;if(FAILED(d->GetPixelShader(&native))||!native)return;
-        auto* ps=programs.pixel(native,alpha!=0);release(native);if(!ps||!ps->shader)return;
+        auto* ps=currentPixel(alpha!=0);if(!ps||!ps->shader)return;
         auto* vs=programs.vertex(source,ps->compactVertex,terrain);if(!vs||!vs->shader)return;
         State saved(d,ps->control,userMemory);bool admissionTried=false,admissionOK=false;
         auto admit=[&]{
             if(admissionTried)return admissionOK;admissionTried=true;
-            if(!saved.save(!deferred)||!saved.rt[0]||(frameTarget&&frameTarget!=saved.rt[0])||saved.viewport.X||saved.viewport.Y)return false;
+            bool sameTarget=false;
+            if(deferred&&frameTarget&&drawStateSource&&drawStateSource->knownFrameViewport(frameTarget,sameTarget,saved.viewport)){
+                ++knownTargets;
+                if(!sameTarget)return false;
+            }else if(!saved.save(!deferred)||!saved.rt[0]||(frameTarget&&frameTarget!=saved.rt[0]))return false;
+            if(saved.viewport.X||saved.viewport.Y)return false;
             if(frameTarget){
                 // The retained surface has immutable dimensions. Reset/endFrame
                 // release this identity before another target can be admitted.
@@ -748,7 +732,7 @@ public:
             if(!finishCaptures())return;
             if(record(vs,ps,control,saved.viewport,admit,geometry,indices,format,vertices,stride,captured,capturedDeclaration,pose,published,publishedDeclaration,materialBank))return;
         }
-        if(deferred&&!saved.saveRest())return;
+        if(deferred&&!saved.saveRest(frameTarget))return;
         // Keep depth-tie ordering when a draw cannot use immutable replay.
         if(!finishCaptures())return;
         ++immediate;

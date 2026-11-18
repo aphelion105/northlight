@@ -44,6 +44,7 @@ struct State {
  Ref<IDirect3DVertexShader9> vs;Ref<IDirect3DPixelShader9> ps;Ref<IDirect3DVertexDeclaration9> decl;
  Ref<IDirect3DIndexBuffer9> ib;std::array<Ref<IDirect3DVertexBuffer9>,16> vb;std::array<UINT,16> offset{},stride{},freq{};
  std::array<Ref<IDirect3DBaseTexture9>,16> textures;std::array<Ref<IDirect3DSurface9>,4> targets;Ref<IDirect3DSurface9> depth;
+ float nPatch=0;
  DWORD fvf=0,rs[256]={},sampler[16][16]={};D3DVIEWPORT9 viewport{};
  float vf[512][4]={},pf[256][4]={};int vi[32][4]={};BOOL vbconst[16]={};
 };
@@ -60,6 +61,7 @@ struct Backend final:IDirect3DDevice9 {
  INT drawBase=0;UINT drawStart=0;struct ProcessArguments {UINT source,destination,count;IDirect3DVertexBuffer9* buffer;IDirect3DVertexDeclaration9* declaration;DWORD flags;} process{};
  void(*onRenderState)(void*)=nullptr;void* callbackContext=nullptr;
  void(*onSetVS)(void*)=nullptr;void(*onGetVS)(void*)=nullptr;void(*onDraw)(void*)=nullptr;
+ void(*onSetPS)(void*)=nullptr;void(*onSetViewport)(void*)=nullptr;void(*onSetNPatch)(void*)=nullptr;
  void(*onGetF)(void*)=nullptr;void(*onSetF)(void*)=nullptr;
  void(*onBeforeSetTarget)(void*)=nullptr;void(*onSetTarget)(void*)=nullptr;void(*onGetTarget)(void*)=nullptr;
  void(*onBeforeReset)(void*)=nullptr;void(*onReset)(void*)=nullptr;
@@ -74,9 +76,13 @@ struct Backend final:IDirect3DDevice9 {
 #define SG Guard guard(*this);++sets
 #define GG Guard guard(*this);if(badGet())return D3DERR_INVALIDCALL
 #define RESOURCE(n,field,T) HRESULT Set##n(T* p)override{SG;edit().field=p;return result();} HRESULT Get##n(T** out)override{GG;return give(state.field.p,out);}
+ unsigned nPatchGets=0;
+ HRESULT SetNPatchMode(float value)override{HRESULT hr;{SG;edit().nPatch=std::max(0.f,value);hr=result();}callback(onSetNPatch);return hr;}
+ float GetNPatchMode()override{Guard guard(*this);++nPatchGets;return state.nPatch;}
  HRESULT SetVertexShader(IDirect3DVertexShader9* p)override{HRESULT hr;{SG;edit().vs=p;hr=result();}callback(onSetVS);return hr;}
  HRESULT GetVertexShader(IDirect3DVertexShader9** p)override{HRESULT hr;{GG;hr=give(state.vs.p,p);}callback(onGetVS);return hr;}
- RESOURCE(PixelShader,ps,IDirect3DPixelShader9)
+ HRESULT SetPixelShader(IDirect3DPixelShader9* p)override{HRESULT hr;{SG;edit().ps=p;hr=result();}callback(onSetPS);return hr;}
+ HRESULT GetPixelShader(IDirect3DPixelShader9** p)override{GG;return give(state.ps.p,p);}
  RESOURCE(Indices,ib,IDirect3DIndexBuffer9)
 #undef RESOURCE
  HRESULT SetVertexDeclaration(IDirect3DVertexDeclaration9* p)override{SG;edit().decl=p;edit().fvf=0;return result();}
@@ -95,7 +101,7 @@ struct Backend final:IDirect3DDevice9 {
  HRESULT GetRenderState(D3DRENDERSTATETYPE s,DWORD* v)override{GG;if(s>=256||!v)return D3DERR_INVALIDCALL;*v=state.rs[s];return D3D_OK;}
  HRESULT SetSamplerState(DWORD n,D3DSAMPLERSTATETYPE s,DWORD v)override{SG;if(n>=16||s>=16)return D3DERR_INVALIDCALL;edit().sampler[n][s]=v&255;return result();}
  HRESULT GetSamplerState(DWORD n,D3DSAMPLERSTATETYPE s,DWORD* v)override{GG;if(n>=16||s>=16||!v)return D3DERR_INVALIDCALL;*v=state.sampler[n][s];return D3D_OK;}
- HRESULT SetViewport(const D3DVIEWPORT9* p)override{SG;if(!p)return D3DERR_INVALIDCALL;edit().viewport=*p;edit().viewport.Width&=0xffff;return result();}
+ HRESULT SetViewport(const D3DVIEWPORT9* p)override{HRESULT hr;{SG;if(!p)return D3DERR_INVALIDCALL;edit().viewport=*p;edit().viewport.Width&=0xffff;hr=result();}callback(onSetViewport);return hr;}
  HRESULT GetViewport(D3DVIEWPORT9* p)override{GG;if(!p)return D3DERR_INVALIDCALL;*p=state.viewport;return D3D_OK;}
  HRESULT SetRenderTarget(DWORD n,IDirect3DSurface9* p)override{callback(onBeforeSetTarget);HRESULT hr;{SG;if(n>=4)return D3DERR_INVALIDCALL;if(p||!retainNullTarget)edit().targets[n]=p;if(!n)edit().viewport={0,0,800,600,0,1};hr=result();}callback(onSetTarget);return hr;}
  HRESULT GetRenderTarget(DWORD n,IDirect3DSurface9** p)override{HRESULT hr;{GG;if(n>=4||!p)return D3DERR_INVALIDCALL;if(state.targets[n].p)hr=give(state.targets[n].p,p);else{if(!preserveEmptyTargetOutput)*p=nullptr;hr=emptyTargetResult;}}callback(onGetTarget);return hr;}
@@ -286,7 +292,7 @@ static void ownerStress(unsigned rounds,bool exclusive=false){
 }
 static void bindingsAndScalars(){
  Backend b;DeviceMirror m;MirrorDevice game(&b,&m);ExtensionDevice ext(&b,&m);
- static_assert(!std::is_copy_constructible<DeviceMirror>::value,"mutex/cache ownership must not copy");
+ captureDrawState();assert(!liveObjects);static_assert(!std::is_copy_constructible<DeviceMirror>::value,"mutex/cache ownership must not copy");
  auto* vs=new Object<IDirect3DVertexShader9>();auto* ps=new Object<IDirect3DPixelShader9>();auto* dec=new Object<IDirect3DVertexDeclaration9>();
  auto* vb=new Object<IDirect3DVertexBuffer9>();auto* ib=new Object<IDirect3DIndexBuffer9>();auto* tex=new Object<IDirect3DBaseTexture9>();auto* surf=new Object<IDirect3DSurface9>();
  assert(SUCCEEDED(game.SetVertexShader(vs)));assert(vs->refs==2);cached(b,[&]{IDirect3DVertexShader9* p=nullptr;assert(SUCCEEDED(ext.GetVertexShader(&p))&&p==vs&&vs->refs==3);p->Release();});assert(vs->refs==2);
@@ -1163,6 +1169,50 @@ static void auxiliaryTargetProofs(){
  assert(SUCCEEDED(b.SetRenderTarget(2,target)));assert(ext.audit()&&!m.enabled&&!ext.emptyAuxiliaryTargets());target->Release();primary->Release();
  std::printf("PASS auxiliary targets: 4500 repeated reads avoided; authoritative null/NOTFOUND; public outputs; binding/failed/null-retained setters; nested re-entry; raw/stateblock/reset/foreign/disabled invalidation\n");
 }
+static void captureDrawState(){
+ Backend backend;DeviceMirror mirror;
+ MirrorDevice game(&backend,&mirror);ExtensionDevice ext(&backend,&mirror);
+ assert(game.SetNPatchMode(-1)==D3D_OK);
+ for(unsigned i=0;i<1000;++i)assert(ext.GetNPatchMode()==0);
+ assert(backend.nPatchGets==1);
+ backend.failNext=true;
+ assert(FAILED(game.SetNPatchMode(3))&&ext.GetNPatchMode()==3&&backend.nPatchGets==2);
+ {ExtensionDevice::RawScope raw(ext);backend.state.nPatch=2;assert(ext.GetNPatchMode()==2);}
+ assert(ext.GetNPatchMode()==2&&backend.nPatchGets==4);
+ backend.callbackContext=&ext;backend.onSetNPatch=[](void* ctx){auto& device=*static_cast<ExtensionDevice*>(ctx);assert(device.GetNPatchMode()==5&&!device.constantMirror()->nPatchKnown);};
+ assert(SUCCEEDED(game.SetNPatchMode(5))&&ext.GetNPatchMode()==5);
+ backend.state.nPatch=4;assert(ext.audit()&&!mirror.enabled);
+ assert(ext.GetNPatchMode()==4);
+
+ DeviceMirror other;ExtensionDevice view(&backend,&other);
+ auto* a=new Object<IDirect3DSurface9>;auto* b=new Object<IDirect3DSurface9>;
+ D3DVIEWPORT9 vp{1,2,30,40,0,1},out{};bool same=false;
+ assert(!view.knownFrameViewport(a,same,out));
+ auto observe=[&]{IDirect3DSurface9* current=nullptr;assert(SUCCEEDED(view.GetRenderTarget(0,&current)));current->Release();assert(SUCCEEDED(view.GetViewport(&out)));};
+ assert(SUCCEEDED(view.SetRenderTarget(0,a))&&SUCCEEDED(view.SetViewport(&vp)));observe();
+ assert(view.knownFrameViewport(a,same,out)&&same&&out.X==1&&out.Width==30);
+ assert(view.knownFrameViewport(b,same,out)&&!same);
+ struct Probe {ExtensionDevice& device;IDirect3DSurface9* target;IDirect3DPixelShader9* pixel;};
+ auto* ps=new Object<IDirect3DPixelShader9>;
+ Probe probe{view,b,ps};backend.callbackContext=&probe;
+ backend.onSetTarget=[](void* ctx){
+  auto& p=*static_cast<Probe*>(ctx);bool same;D3DVIEWPORT9 viewport;IDirect3DSurface9* actual=nullptr;
+  assert(!p.device.knownFrameViewport(p.target,same,viewport));
+  assert(SUCCEEDED(p.device.GetRenderTarget(0,&actual))&&actual==p.target);actual->Release();
+  assert(SUCCEEDED(p.device.GetViewport(&viewport))&&viewport.Width==800);
+ };
+ assert(SUCCEEDED(view.SetRenderTarget(0,b)));assert(!view.knownFrameViewport(a,same,out));observe();
+ assert(view.knownFrameViewport(b,same,out)&&same);
+ backend.onSetViewport=[](void* ctx){auto& p=*static_cast<Probe*>(ctx);D3DVIEWPORT9 vp;bool same;
+  assert(!p.device.knownFrameViewport(p.target,same,vp));assert(SUCCEEDED(p.device.GetViewport(&vp))&&vp.Width==30);};
+ assert(SUCCEEDED(view.SetViewport(&vp)));
+ IDirect3DPixelShader9* previous=nullptr;assert(SUCCEEDED(view.GetPixelShader(&previous))&&!previous);
+ backend.onSetPS=[](void* ctx){auto& p=*static_cast<Probe*>(ctx);IDirect3DPixelShader9* actual=nullptr;
+  assert(!p.device.peekPixelShader(actual));assert(SUCCEEDED(p.device.GetPixelShader(&actual))&&actual==p.pixel);actual->Release();};
+ assert(SUCCEEDED(view.SetPixelShader(ps)));ps->Release();
+ {ExtensionDevice::RawScope raw(view);assert(!view.knownFrameViewport(b,same,out));}
+ assert(!view.knownFrameViewport(b,same,out));a->Release();b->Release();
+}
 int main(int argc,char** argv){
  const auto mode=[&](const char* name){return argc>1&&!std::strcmp(argv[1],name);};
  const unsigned rounds=argc>2?unsigned(std::atoi(argv[2])):10000;
@@ -1176,4 +1226,4 @@ int main(int argc,char** argv){
  if(mode("owner")){ownerIdentity();ownerNesting();foreignWaits();ownerStress(rounds);ownerNesting(true);foreignWaits(true);ownerStress(rounds,true);assert(!liveObjects);return 0;}
  if(mode("threads")){singleGate();gateCensus();rawScopeConcurrency();concurrency();ownerNesting();foreignWaits();ownerStress(rounds);ownerNesting(true);foreignWaits(true);ownerStress(rounds,true);std::puts("PASS threads");return 0;}
  auxiliaryTargetProofs();assert(!liveObjects);
- ownerIdentity();assert(!liveObjects);ownerNesting();assert(!liveObjects);foreignWaits();assert(!liveObjects);ownerStress(rounds);assert(!liveObjects);ownerNesting(true);foreignWaits(true);ownerStress(rounds,true);assert(!liveObjects);gateCensus();assert(!liveObjects);knownScan();assert(!liveObjects);singleGate();writeThroughLearning();assert(!liveObjects);writeThroughImplicitState();assert(!liveObjects);writeThroughDifferential();assert(!liveObjects);rawScopeDispatchArguments();assert(!liveObjects);rawScopeBanksAndReentry();assert(!liveObjects);rawScopeRestoreAndControls();assert(!liveObjects);rawScopeConcurrency();assert(!liveObjects);rawScopeShadowWorkload();assert(!liveObjects);implicitConstantBanks();assert(!liveObjects);constantCertificates();assert(!liveObjects);auditCoverageAndSchedule();assert(!liveObjects);static_assert(!std::is_copy_constructible<DeviceMirror>::value,"mirror cannot copy mutex/state");bindingsAndScalars();assert(!liveObjects);constantBanks();assert(!liveObjects);diagnosticConstantWrites();assert(!liveObjects);constantCapabilities();assert(!liveObjects);recordingFailures();assert(!liveObjects);savedStateIntegration();assert(!liveObjects);crowdedWorkload();assert(!liveObjects);stateBlocks();assert(!liveObjects);implicitAndDisabled();assert(!liveObjects);auditChecks();assert(!liveObjects);auditEveryField();assert(!liveObjects);concurrency();assert(!liveObjects);std::puts("PASS actual device_mirror.h: authoritative cached queries; COM refs; normalized/failed setters; partial exact-bit banks; ALL/partial/recorded stateblocks including failed Apply; UP and Reset failures; target/FVF implicit changes; two proxies; disabled raw bypass; 30000 randomized banks; 8 threads x5000 iterations, serialized backend calls (80072 with learned write-through, 120008 read-through).");}
+ ownerIdentity();assert(!liveObjects);ownerNesting();assert(!liveObjects);foreignWaits();assert(!liveObjects);ownerStress(rounds);assert(!liveObjects);ownerNesting(true);foreignWaits(true);ownerStress(rounds,true);assert(!liveObjects);gateCensus();assert(!liveObjects);knownScan();assert(!liveObjects);singleGate();writeThroughLearning();assert(!liveObjects);writeThroughImplicitState();assert(!liveObjects);writeThroughDifferential();assert(!liveObjects);rawScopeDispatchArguments();assert(!liveObjects);rawScopeBanksAndReentry();assert(!liveObjects);rawScopeRestoreAndControls();assert(!liveObjects);rawScopeConcurrency();assert(!liveObjects);rawScopeShadowWorkload();assert(!liveObjects);implicitConstantBanks();assert(!liveObjects);constantCertificates();assert(!liveObjects);auditCoverageAndSchedule();assert(!liveObjects);captureDrawState();assert(!liveObjects);static_assert(!std::is_copy_constructible<DeviceMirror>::value,"mirror cannot copy mutex/state");bindingsAndScalars();assert(!liveObjects);constantBanks();assert(!liveObjects);diagnosticConstantWrites();assert(!liveObjects);constantCapabilities();assert(!liveObjects);recordingFailures();assert(!liveObjects);savedStateIntegration();assert(!liveObjects);crowdedWorkload();assert(!liveObjects);stateBlocks();assert(!liveObjects);implicitAndDisabled();assert(!liveObjects);auditChecks();assert(!liveObjects);auditEveryField();assert(!liveObjects);concurrency();assert(!liveObjects);std::puts("PASS actual device_mirror.h: authoritative cached queries; COM refs; normalized/failed setters; partial exact-bit banks; ALL/partial/recorded stateblocks including failed Apply; UP and Reset failures; target/FVF implicit changes; two proxies; disabled raw bypass; 30000 randomized banks; 8 threads x5000 iterations, serialized backend calls (80072 with learned write-through, 120008 read-through).");}
