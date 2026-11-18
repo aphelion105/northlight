@@ -18,18 +18,28 @@ static void singleBone(){
         for(unsigned i=0;i<count;++i){float p[]={float(i%3),float(i%5),float(i%7)};auto* v=m.streams[0].bytes.data()+i*16;std::memcpy(v,p,12);v[12]=bone+(mixed&&i==count-1);v[13]=255;v[14]=i%255;v[15]=254;}return std::make_shared<const Mesh>(std::move(m));};
     Cache cache;float bank[1024]={};bank[8]=bank[13]=bank[18]=bank[22]=1;
     for(unsigned b=0;b<75;++b){bank[4*(31+b*3)]=bank[4*(32+b*3)+1]=bank[4*(33+b*3)+2]=1;bank[4*(33+b*3)+3]=80;}
-    auto mesh=source(32,7),mixed=source(32,7,true);assert(cache.outside(mesh,layout,3,bank,Single));assert(!cache.outside(mixed,layout,3,bank,Single));assert(!cache.outside(mixed,layout,3,bank,Single));assert(cache.singleMixed==2);
-    // An immutable mixed source always keeps capture. Its warm rejection
-    // attempt must not fetch a projection/pose that cannot change that fact.
-    unsigned mixedReads=0;
-    for(unsigned draw=0;draw<1000;++draw){cache.beginFrame();assert(!cache.outsideRead(mixed,layout,3,[&](unsigned first,unsigned count,float* out){
-        ++mixedReads;std::memcpy(out,bank+first*4,count*16);return true;
-    },Single));}
-    assert(mixedReads==0);
+    auto mesh=source(32,7),mixed=source(32,7,true);assert(cache.outside(mesh,layout,3,bank,Single));
+    const unsigned secondZ=4*(33+3*8)+3;
+    for(float depth:{80.f,20.f,48.f,-80.f,80.f}){
+        bank[secondZ]=depth;assert(cache.outside(mixed,layout,3,bank,Single)==(depth==80.f));
+    }
+    assert(cache.singleMixed==5&&cache.mixedCulled==2);
+    assert(!cache.outsideRead(mixed,layout,3,[&](unsigned first,unsigned count,float* out){
+        if(first==31+3*8)return false;std::memcpy(out,bank+first*4,count*16);return true;
+    },Single));
+    bank[4*(31+3*8)]=NAN;assert(!cache.outside(mixed,layout,3,bank,Single));bank[4*(31+3*8)]=1;
+    for(unsigned distinct:{8u,9u,76u}){
+        auto many=std::make_shared<Mesh>(*mesh);many->vertexCount=distinct;many->streams[0].bytes.resize(16*distinct);
+        for(unsigned i=0;i<distinct;++i)many->streams[0].bytes[i*16+12]=i;
+        cache.beginFrame();assert(cache.outside(many,layout,3,bank,Single)==(distinct==8));
+        unsigned reads=0;assert(cache.outsideRead(many,layout,3,[&](unsigned first,unsigned count,float* out){
+            ++reads;std::memcpy(out,bank+first*4,count*16);return true;
+        },Single)==(distinct==8));assert(reads==(distinct==8?9u:0u));
+    }
     // The same mesh can expose a different, uniform index lane via a new layout.
     auto lanes=std::make_shared<Mesh>();lanes->vertexCount=32;lanes->streams[0].stride=20;lanes->streams[0].bytes.resize(32*20);
     for(unsigned i=0;i<32;++i){auto* v=lanes->streams[0].bytes.data()+20*i;v[12]=7+(i==31);v[16]=7;}
-    assert(!cache.outside(lanes,layout,3,bank,Single));layout[1].Offset=16;assert(cache.outside(lanes,layout,3,bank,Single));layout[1].Offset=12;
+    bank[secondZ]=20;assert(!cache.outside(lanes,layout,3,bank,Single));layout[1].Offset=16;assert(cache.outside(lanes,layout,3,bank,Single));layout[1].Offset=12;bank[secondZ]=80;
     const auto evaluate=[&](const auto& code){NorthlightActorDeformation::Program p;assert(NorthlightActorDeformation::compile(code,sizeof(code)/4,p,false,2));
         for(unsigned frame=0;frame<100;++frame){cache.beginFrame();bank[4*(33+21)+3]=frame%2?80:20;bank[4*(33+21)]=float(int(frame%7)-3)*.11f;
             const bool reject=cache.outside(mesh,layout,3,bank,Single);assert(reject==bool(frame%2));
@@ -53,7 +63,7 @@ static void singleBone(){
     }
     // A changed immutable source must not inherit a uniform result from its predecessor.
     alignas(Mesh) unsigned char storage[sizeof(Mesh)];auto owner=[&](bool changed){return std::shared_ptr<const Mesh>(new(storage) Mesh(*source(32,7,changed)),[](const Mesh* p){p->~Mesh();});};
-    cache.beginFrame();auto old=owner(false);assert(cache.outside(old,layout,3,bank,Single));old.reset();auto next=owner(true);assert(!cache.outside(next,layout,3,bank,Single));next.reset();
+    bank[secondZ]=20;cache.beginFrame();auto old=owner(false);assert(cache.outside(old,layout,3,bank,Single));old.reset();auto next=owner(true);assert(!cache.outside(next,layout,3,bank,Single));next.reset();bank[secondZ]=80;
     auto uniformAgain=owner(false);assert(cache.outside(uniformAgain,layout,3,bank,Single));uniformAgain.reset();
     bank[4*(33+21)+3]=20;assert(!cache.outside(mesh,layout,3,bank,Single));bank[4*(33+21)+3]=80;assert(cache.outside(mesh,layout,3,bank,Single));
     bank[4*(31+21)]=NAN;assert(!cache.outside(mesh,layout,3,bank,Single));bank[4*(31+21)]=1;

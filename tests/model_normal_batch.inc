@@ -32,10 +32,11 @@ static void normalRange(IDirect3DVertexShader9* shader){
     auto normals=std::make_unique<NorthlightModelNormals>(&extension);normals->setDeferredCapture(true);normals->setTrustedPoseSource(extension.trustedConstantSource());
     NorthlightModelNormalRange::Cache producerRange;
     unsigned cases=0,totalCulled=0,viewportCases=0,viewportCulled=0;
-    for(unsigned scenario=0;scenario<(kind==Envelope?13u:kind==Single?3u:2u);++scenario){
+    for(unsigned scenario=0;scenario<(kind==Envelope?13u:kind==Single?4u:2u);++scenario){
         const bool viewport=kind==Envelope&&scenario>=5,noClip=kind==Envelope&&scenario==10,wireframe=kind==Envelope&&scenario==12;
         const unsigned side=viewport&&scenario<10?scenario-5:0;
-        const bool nearDraw=scenario==1,mixedBones=kind==Single&&scenario==2,stale=kind==Envelope&&(scenario==2||scenario==4||scenario==11),promoted=kind==Envelope&&(scenario==3||scenario==4);
+        const bool mixedNear=kind==Single&&scenario==3;
+        const bool nearDraw=scenario==1||mixedNear,mixedBones=kind==Single&&scenario>=2,stale=kind==Envelope&&(scenario==2||scenario==4||scenario==11),promoted=kind==Envelope&&(scenario==3||scenario==4);
         const auto& source=mixedBones?mixed:uniform;std::vector<unsigned char> reference;
         for(bool enabled:{false,true}){
             const auto samplerBatches=normalSamplerBatches;
@@ -47,6 +48,7 @@ static void normalRange(IDirect3DVertexShader9* shader){
                 // Disjoint screen halves and constant projected size: the near
                 // anchor cannot conceal an incorrectly retained far candidate.
                 for(unsigned bone=0;bone<75;++bone){const unsigned first=31+3*bone;bank[first][0]=bank[first+1][1]=z;bank[first+2][2]=1;bank[first][3]=z*(anchor?-.5f:.5f);bank[first+1][3]=0;bank[first+2][3]=z;}
+                if(mixedNear&&!anchor){bank[34][0]=bank[35][1]=80;bank[34][3]=40;bank[36][3]=80;}
                 if(viewport&&!anchor)for(unsigned bone=0;bone<75;++bone){const unsigned first=31+3*bone;
                     if(side<2)bank[first][3]=z*(side?4.f:-4.f);else if(side<4)bank[first+1][3]=z*(side==2?4.f:-4.f);}
                 ok(extension.SetVertexShaderConstantF(0,bank[0],256));
@@ -89,7 +91,7 @@ static void normalRange(IDirect3DVertexShader9* shader){
             const auto textureReads=calls.textureReads,samplerReads=calls.samplerReads,pixelReads=calls.pixelReads;
             const auto rangeRegisters=normals->testRangeRegisters(),viewportReads=calls.viewportReads;
             capture(viewport?(side==4?-20.f:20.f):nearDraw?20.f:80.f,false);
-            const unsigned culled=enabled&&!nearDraw&&!mixedBones&&!stale&&!noClip&&!wireframe?1u:0u;
+            const unsigned culled=enabled&&!nearDraw&&!stale&&!noClip&&!wireframe?1u:0u;
             if(culled)assert(calls.textureReads==textureReads&&calls.samplerReads==samplerReads);
             if(culled)assert(calls.viewportReads==viewportReads);
             if(culled&&(promoted||viewport))assert(calls.pixelReads==pixelReads);
@@ -115,7 +117,7 @@ static void normalRange(IDirect3DVertexShader9* shader){
             }
         }++cases;viewportCases+=viewport;
     }
-    assert(totalCulled>0);std::printf("MODEL_NORMALS_RANGE_PASS kind=%u cases=%u culled=%u pixels=exact near=retained mixed_or_stale=retained disjoint=1 nearAddsPixels=1 farMatchesAnchor=1 promoted_far_skips_pixel_admission=1\n",unsigned(kind),cases,totalCulled);
+    assert(totalCulled>0);std::printf("MODEL_NORMALS_RANGE_PASS kind=%u cases=%u culled=%u pixels=exact near=retained disjoint=1 nearAddsPixels=1 farMatchesAnchor=1 promoted_far_skips_pixel_admission=1\n",unsigned(kind),cases,totalCulled);
     if(kind==Envelope){assert(viewportCases==8&&viewportCulled==5);std::puts("MODEL_NORMALS_VIEWPORT_PASS cases=8 culled=5 stale=retained clipping_off=retained wireframe=retained pixel_admission=skipped pixels=bitexact");}
     normals.reset();depth->Release();color.read->Release();color.s->Release();color.t->Release();
 }

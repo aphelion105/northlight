@@ -33,6 +33,9 @@ int main(){
     float c[1024],inverse[16]={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};pose(c,100);
     unsigned checks=0;
     for(unsigned groups:{1u,4u,16u,75u}){
+        // Compare geometry under equal admission. A scheduler preemption in
+        // the debug build must not turn the exact reference into Status::Budget.
+        CoarseClock::live=false;
         auto m=weighted(groups,true);E cache(true);warm(cache,*prepared,m,c,inverse);
         B::SkinEnvelope reference,batched;
         for(unsigned v=0;v<m->vertexCount;++v){NorthlightActorDeformation::Four input[16];
@@ -74,11 +77,12 @@ int main(){
         pose(c,0);assert(!cache.coarsePrepared(*prepared,m,c,inverse,8,b)&&!b.valid);
         pose(c,100);c[4*31]=INFINITY;assert(!cache.coarsePrepared(*prepared,m,c,inverse,8,b)&&!b.valid);
         pose(c,100);inverse[15]=2;assert(!cache.coarsePrepared(*prepared,m,c,inverse,8,b)&&!b.valid);inverse[15]=1;
-        cache.beginFrame(false);B::Budget budget;
+        CoarseClock::live=true;cache.beginFrame(false);B::Budget budget;
         for(unsigned i=0;i<5000;++i)cache.coarsePrepared(*prepared,m,c,inverse,8,b);
         assert(cache.stats().coarseAttempts<=4096&&cache.stats().coarseNanoseconds>=100000);
         // Optional work cannot exhaust the original evaluation or build allowance.
         assert(cache.canReady()&&cache.canBuild()&&budget.operations==0&&budget.vertices==0);
+        CoarseClock::live=false;
         assert(cache.calculatePrepared(*prepared,*m,m,c,inverse,budget,b)==B::Status::Valid);
         cache.clear();assert(!cache.coarsePrepared(*prepared,m,c,inverse,8,b)&&!b.valid);
     }

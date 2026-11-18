@@ -127,8 +127,8 @@ for tag, source in cases:
     assert 'MODEL_NORMALS_ALPHA_PASS' in run.stdout and 'MODEL_NORMALS_VALIDATION_PASS' in run.stdout
     if args.shadow_slice:assert 'SHADOW_SLICE_IMAGE_PASS programs=5 cases=320 pixels=bitexact' in run.stdout
     if tag.endswith(('-rigid', '-skinned')):
-        expected = 'kind=1 cases=2' if tag.endswith('-rigid') else 'kind=2 cases=3'
-        assert f'MODEL_NORMALS_RANGE_PASS {expected} culled=1 pixels=exact' in run.stdout, run.stdout
+        expected = 'kind=1 cases=2 culled=1' if tag.endswith('-rigid') else 'kind=2 cases=4 culled=2'
+        assert f'MODEL_NORMALS_RANGE_PASS {expected} pixels=exact' in run.stdout, run.stdout
     groups = {}
     for row in csv.DictReader((out/(tag+'-samples.csv')).open()):
         if float(row['z']) < 1.65:

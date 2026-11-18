@@ -523,20 +523,29 @@ public:
     }
     // Optional material broad phase. Only completed immutable sources and this
     // draw's palette participate; survivors still need the exact aligned bounds.
+    bool canCoarse()const{return stats_.coarseAttempts<4096&&stats_.coarseNanoseconds<100000;}
     bool coarsePrepared(const Prepared& prepared,const std::shared_ptr<const NorthlightDrawSnapshot::Mesh>& owner,
         const float* constants,const float* inverse,float range,Bounds& output){
+        return coarseMaterial(&prepared,owner,constants,inverse,range,output,nullptr);
+    }
+    // The material owner may already have completed this exact source and
+    // layout in its displacement bounds cache while the shared build deferred.
+    bool coarseMaterial(const Prepared* prepared,const std::shared_ptr<const NorthlightDrawSnapshot::Mesh>& owner,
+        const float* constants,const float* inverse,float range,Bounds& output,const SkinEnvelope* local){
         output={};
         if(!owner||!constants||!inverse||!(range>0)||!std::isfinite(range)||
-           std::fabs(constants[4*31+11])<=2*range||stats_.coarseAttempts>=4096||stats_.coarseNanoseconds>=100000)return false;
+           std::fabs(constants[4*31+11])<=2*range||!canCoarse()||(!local&&!prepared))return false;
         const auto start=BoundsClock::now();
         struct Charge {Stats& stats;BoundsClock::time_point start;~Charge(){stats.coarseNanoseconds+=elapsedNs(BoundsClock::now(),start);}} charge{stats_,start};
         ++stats_.coarseAttempts;
-        const auto found=findSource(owner,*prepared.key_,prepared.key_.get());
-        if(found==entries_.end())return false;
-        auto& e=found->second;
-        if(!e.ready||e.unsupported||!e.skin||e.copyDefinitions||!e.skin->usedBones)return false;
-        e.touched=++clock_;
-        if(!e.skin->evaluate(constants,inverse,output))return false;
+        if(!local){
+            const auto found=findSource(owner,*prepared->key_,prepared->key_.get());
+            if(found==entries_.end())return false;
+            auto& e=found->second;
+            if(!e.ready||e.unsupported||!e.skin||e.copyDefinitions)return false;
+            e.touched=++clock_;local=e.skin.get();
+        }
+        if(!local->usedBones||!local->evaluate(constants,inverse,output))return false;
         for(unsigned k=0;k<3;++k){
             const float margin=.01f+64*std::numeric_limits<float>::epsilon()*std::max(std::fabs(output.low[k]),std::fabs(output.high[k]));
             output.low[k]=std::nextafter(output.low[k]-margin,-INFINITY);

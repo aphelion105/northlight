@@ -104,6 +104,14 @@ if a.m2_preflight:
  cpp=cpp.replace('assert(bump.finishCaptures());','assert(bump.finishCaptures()&&receiver.finishCaptures());',1)
  cpp=cpp.replace('r.normal.insert(r.normal.end(),normal.begin(),normal.end());','auto receiverImage=capturedPixels(receiver.texture(),Fixture::W,Fixture::H);r.normal.insert(r.normal.end(),receiverImage.begin(),receiverImage.end());r.normal.insert(r.normal.end(),normal.begin(),normal.end());',1)
  if a.preflight_source:
+  # Both legs must admit the same geometry to isolate snapshot ownership.
+  # GPU timestamps and the measured capture interval still use real clocks.
+  cpp='''#include <chrono>
+struct AdmissionClock : std::chrono::steady_clock {
+    static time_point now() { return time_point{}; }
+};
+#define NORTHLIGHT_REPLAY_BOUNDS_CLOCK AdmissionClock
+'''+cpp
   source=header.read_text(encoding='utf-8').replace('class NorthlightAutoBump {','extern unsigned northlightReadOnlyPolicy;\nclass NorthlightAutoBump {',1)
   marker='displacement.geometryRange(domain)),&geometrySource';assert source.count(marker)==1
   source=source.replace(marker,'displacement.geometryRange(domain)),northlightReadOnlyPolicy==2?&geometrySource:nullptr',1)

@@ -3,8 +3,8 @@
 #include "water_shader_patch.h"
 #include "position_bounds_scan.h"
 
-// Stock rigid or uniform single-bone M2: native clip.w is DP4(c5,view).
-// Mixed bones, modified projection and unknown source/layout keep capture.
+// Stock rigid or single-influence M2: native clip.w is DP4(c5,view).
+// Each vertex selects one bone. All selected transforms must prove it is far.
 namespace NorthlightModelNormalRange {
 enum Kind {None,Rigid,Single,Envelope};
 // A producer may supply its compile(code,count,p,false,2) for the same shader.
@@ -33,19 +33,19 @@ inline Kind classify(const uint32_t* code,size_t count,bool allowEnvelope=false,
 inline bool eligible(const uint32_t* code,size_t count){return classify(code,count)!=None;}
 class Cache {
     using Mesh=NorthlightDrawSnapshot::Mesh;
-    struct Entry {std::weak_ptr<const Mesh> owner;const Mesh* address=nullptr;UINT offset=0,indexOffset=~0u;unsigned bone=0;bool mixed=false;uint64_t used=0;
+    struct Entry {std::weak_ptr<const Mesh> owner;const Mesh* address=nullptr;UINT offset=0,indexOffset=~0u;unsigned char bones[8]={},boneCount=0;uint64_t used=0;
         NorthlightReplayBounds::detail::Value position[3];double magnitude[3]={};};
     Entry entries[512];uint64_t clock=0;unsigned scanVertices=0;double workMilliseconds=0;
 public:
-    unsigned tested=0,culled=0,singleTests=0,singleUniform=0,singleMixed=0,deferred=0;
+    unsigned tested=0,culled=0,singleTests=0,singleUniform=0,singleMixed=0,mixedCulled=0,deferred=0;
     // Includes retained weak control blocks after a source payload dies.
     static_assert(sizeof(entries)+512*(sizeof(NorthlightSourceIdentity::Retained<Mesh>)+32)<(1u<<20),"Bounded rigid proof storage");
-    void beginFrame(){scanVertices=tested=culled=singleTests=singleUniform=singleMixed=deferred=0;workMilliseconds=0;}
+    void beginFrame(){scanVertices=tested=culled=singleTests=singleUniform=singleMixed=mixedCulled=deferred=0;workMilliseconds=0;}
     void clear(){for(auto& e:entries)e={};clock=0;beginFrame();}
     bool outside(const std::shared_ptr<const Mesh>& mesh,const D3DVERTEXELEMENT9* layout,UINT count,const float* bank,Kind kind=Rigid){
         return bank&&outsideRead(mesh,layout,count,[&](unsigned first,unsigned n,float* out){std::memcpy(out,bank+first*4,n*16);return true;},kind);
     }
-    // Only projection c2..c5 and the selected bone's three affine rows enter
+    // Only projection c2..c5 and the selected bones' three affine rows enter
     // this proof. A failed read declines it; accepted draws still capture all
     // shader inputs separately for replay.
     template<class Read> bool outsideRead(const std::shared_ptr<const Mesh>& mesh,const D3DVERTEXELEMENT9* layout,UINT count,Read read,Kind kind=Rigid){
@@ -64,9 +64,12 @@ public:
         for(unsigned i=0;i<4;++i){auto& e=entries[first*4+i];
             if(e.address==mesh.get()&&e.offset==position->Offset&&e.indexOffset==indexOffset&&NorthlightSourceIdentity::sameOwner(e.owner,mesh)){entry=&e;break;}
             if(e.used<replacement->used)replacement=&e;}
-        // A proven mixed source cannot use this uniform-bone rejection, whatever
-        // the current pose/projection. No device reads or timing are needed.
-        if(entry&&entry->mixed){entry->used=++clock;++singleMixed;return false;}
+        // Sources beyond the bounded palette list cannot use this proof.
+        if(entry){
+            singleMixed+=entry->boneCount!=1;
+            if(!entry->boneCount){entry->used=++clock;return false;}
+            bone=entry->bones[0];
+        }
         // Budget cold vertex scans; warm bounds still validate the current pose.
         if(!entry&&(workMilliseconds>=.25||mesh->vertexCount>2048-scanVertices)){++deferred;return false;}
         float projection[16],matrix[12];if(!read(2,4,projection))return false;
@@ -78,35 +81,64 @@ public:
             const auto start=std::chrono::steady_clock::now();
             struct Timer {double& total;std::chrono::steady_clock::time_point start;~Timer(){total+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();}} timer{workMilliseconds,start};
             scanVertices+=mesh->vertexCount;
-            bool mixed=false;if(kind==Single)for(unsigned i=1;i<mesh->vertexCount;++i)if(stream.bytes[size_t(i)*stream.stride+indexOffset]!=bone){mixed=true;break;}
-            if(mixed){entry=replacement;*entry={};entry->owner=mesh;entry->address=mesh.get();entry->offset=position->Offset;entry->indexOffset=indexOffset;entry->mixed=true;}
-            else {
-            float low[3],high[3];if(!NorthlightPositionBounds::scanPositions(stream.bytes.data()+position->Offset,mesh->vertexCount,stream.stride,low,high))return false;
-            entry=replacement;entry->owner=mesh;entry->address=mesh.get();entry->offset=position->Offset;entry->indexOffset=indexOffset;entry->bone=bone;entry->mixed=false;
-            // Source bounds are immutable; prepare their exact interval inputs
-            // once. Pose rows, overflow checks and DP4 still run on every draw.
-            for(unsigned axis=0;axis<3;++axis){const double lo=low[axis],hi=high[axis];const float mid=float((lo+hi)*.5);
-                entry->position[axis]={mid,std::max(double(mid)-lo,hi-double(mid))};entry->magnitude[axis]=std::max(std::fabs(lo),std::fabs(hi));}}}
+            unsigned char bones[sizeof(Entry::bones)]={static_cast<unsigned char>(bone)};unsigned n=1;
+            if(kind==Single){
+                bool seen[75]={};seen[bone]=true;
+                for(unsigned i=1;i<mesh->vertexCount;++i){
+                    const auto next=stream.bytes[size_t(i)*stream.stride+indexOffset];
+                    if(next>=75){n=0;break;}
+                    if(seen[next])continue;
+                    if(n==sizeof bones){n=0;break;}
+                    seen[next]=true;bones[n++]=next;
+                }
+            }
+            if(n){
+                float low[3],high[3];
+                if(!NorthlightPositionBounds::scanPositions(stream.bytes.data()+position->Offset,mesh->vertexCount,stream.stride,low,high))return false;
+                for(unsigned axis=0;axis<3;++axis){
+                    const double lo=low[axis],hi=high[axis];const float mid=float((lo+hi)*.5);
+                    replacement->position[axis]={mid,std::max(double(mid)-lo,hi-double(mid))};
+                    replacement->magnitude[axis]=std::max(std::fabs(lo),std::fabs(hi));
+                }
+            }
+            entry=replacement;std::copy_n(bones,n,entry->bones);entry->boneCount=static_cast<unsigned char>(n);
+            singleMixed+=n!=1;
+            entry->owner=mesh;entry->address=mesh.get();entry->offset=position->Offset;entry->indexOffset=indexOffset;
+        }
         entry->used=++clock;
-        if(entry->mixed){++singleMixed;return false;}singleUniform+=kind==Single;
+        singleUniform+=kind==Single&&entry->boneCount==1;
+        if(!entry->boneCount||!NorthlightFloatChecks::bounded<16,0x49742400u>(projection))return false;
+        // Each bone sees a subset of the same immutable object-space box.
+        // Reuse the first row triplet already read for cold-scan admission.
+        for(unsigned i=0;i<entry->boneCount;++i){
+            if(i&&!read(31+3*entry->bones[i],3,matrix))return false;
+            if(!outsideBone(*entry,matrix,projection[14])){
+                // An animated section crossing the boundary often keeps the
+                // same near bone. Try its current transform first next draw.
+                std::swap(entry->bones[0],entry->bones[i]);return false;
+            }
+        }
+        ++culled;mixedCulled+=entry->boneCount>1;return true;
+    }
+private:
+    static bool outsideBone(const Entry& entry,const float* matrix,float sign){
         // c5 multiplies all four view lanes, including its zero coefficients.
         // Do not infer clip.w from Z when another lane could be NaN/overflow.
         if(!NorthlightFloatChecks::bounded<12>(matrix))return false;
         for(unsigned row=0;row<3;++row){double scale=0;
             for(unsigned axis=0;axis<4;++axis){const float value=matrix[4*row+axis];
-                scale+=std::fabs(double(value))*(axis==3?1:entry->magnitude[axis]);}
+                scale+=std::fabs(double(value))*(axis==3?1:entry.magnitude[axis]);}
             if(!std::isfinite(scale)||scale>1000000)return false;}
-        if(!NorthlightFloatChecks::bounded<16,0x49742400u>(projection))return false; // 1,000,000.f
         // The same interval DP4 operations/error allowance as replay_bounds.h.
         using namespace NorthlightReplayBounds::detail;
         Value sum;double magnitude=0;
-        for(unsigned axis=0;axis<4;++axis){const Value input=axis<3?entry->position[axis]:Value{1,0};
+        for(unsigned axis=0;axis<4;++axis){const Value input=axis<3?entry.position[axis]:Value{1,0};
             const float coefficient=matrix[8+axis];if(!std::isfinite(coefficient))return false;
             const auto term=mul({coefficient,0},input);magnitude+=std::fabs(term.value)+term.error;sum=add(sum,term);}
         sum.error+=roundError(magnitude)*8;
         if(!std::isfinite(sum.value)||!std::isfinite(sum.error))return false;
-        const double lower=projection[14]>0?double(sum.value)-sum.error:-double(sum.value)-sum.error;
-        const bool reject=std::nextafter(lower,-INFINITY)>48.01;culled+=reject;return reject;
+        const double lower=sign>0?double(sum.value)-sum.error:-double(sum.value)-sum.error;
+        return std::nextafter(lower,-INFINITY)>48.01;
     }
 };
 }

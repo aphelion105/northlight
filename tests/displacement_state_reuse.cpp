@@ -489,6 +489,21 @@ void DisplacementStateTestAccess::poseHandoff(const char* path,const std::vector
             for(unsigned i=0;i<5000;++i)g.poseEnvelopes.coarsePrepared(*metadata,source.mesh,g.constants,g.distanceInverseView,8,scratch);
         };refuse();
         assert(!g.prepare(&device.vs,4,1,args,nullptr,&source));assert(source.pose.bounds.valid&&source.pose.outsideRange&&g.poseVerticesThisFrame==(configured.view.kernel.skin?0u:96u));
+        {
+            NorthlightAutoDisplacement::CaptureSource admission;float depth=0,upper=0;
+            // Closed coarse budget must decline before obtaining the raw mesh.
+            assert(!g.nearestMaterialDepth(&device.vs,args,depth,true,nullptr,&upper,&admission,true));
+            assert(g.coarseBudgetSkipped==1&&!admission.mesh&&!admission.bank.bank);
+            // Drop the shared envelope and its program metadata. The prepared
+            // local source is sufficient to prove the far draw on its own.
+            g.endFrame();g.poseEnvelopes.clear();g.poseMetadata.clear();
+            assert(g.nearestMaterialDepth(&device.vs,args,depth,true,nullptr,&upper,&admission,true));
+            assert(g.coarseLocalValid==1&&depth>48&&admission.pose.outsideRange&&!g.poseVerticesThisFrame);
+            float row[4];std::copy_n(device.bank+4*36,4,row);row[3]=2;assert(SUCCEEDED(extension.SetVertexShaderConstantF(36,row,1)));
+            assert(g.nearestMaterialDepth(&device.vs,args,depth,true,nullptr,&upper,&admission,true));
+            assert(depth<8&&!admission.pose.outsideRange&&g.coarseLocalValid==2);
+            row[3]=80;assert(SUCCEEDED(extension.SetVertexShaderConstantF(36,row,1)));
+        }
         const auto entries=g.bounds.size();const auto built=g.poseEnvelopes.stats().completed;unsigned checks=0;
         for(float z:{20.f,48.f,48.005f,80.f,-20.f,-80.f,20.f,80.f}){
             float bank[1024];std::memcpy(bank,device.bank,sizeof bank);bank[22]=z<0?-1.f:1.f;for(unsigned bone=0;bone<4;++bone)bank[4*(33+3*bone)+3]=z;
@@ -624,6 +639,30 @@ void DisplacementStateTestAccess::poseHandoff(const char* path,const std::vector
     for(auto& values:costs)std::sort(values.begin(),values.end());
     std::printf("MATERIAL_PREFLIGHT_PASS actual_prepare draws=%u envelopes=%u/%u cpuMs=%.6f/%.6f range48=proven near_mixed_projection_npatch_wide_range=retained source=retained order=ABBA cacheBytes=%zu\n",
         N,envelopes[0],envelopes[1],costs[0][costs[0].size()/2],costs[1][costs[1].size()/2],sizeof(g.modelRangeProof));
+    // The same buffered sequence on both revisions, including mixed-distance
+    // geometry that must fall through to prepare().
+    for(unsigned v=0;v<96;++v)buffer.bytes[v*32+28]=v%4;
+    g.snapshots.clearSnapshotCache();
+    for(unsigned nearPercent:{0u,25u,100u}){
+        std::vector<double> times;unsigned entered=0;
+        for(unsigned round=0;round<17;++round){
+            g.endFrame();entered=0;float bank[1024];std::copy_n(originalBank,1024,bank);
+            const auto start=std::chrono::steady_clock::now();
+            for(unsigned i=0;i<96;++i){
+                const bool nearBone=i%4*25<nearPercent;
+                bank[4*36+3]=nearBone?2.f:80.f+float(i%5);
+                assert(SUCCEEDED(extension.SetVertexShaderConstantF(0,bank,256)));
+                NorthlightAutoDisplacement::CaptureSource admission;float depth=0;
+                const bool known=g.nearestMaterialDepth(&device.vs,args,depth,true,nullptr,nullptr,&admission,true);
+                if(!known||depth<=48){++entered;g.prepare(&device.vs,4,1,args,nullptr,&admission,48,&admission);}
+                assert(admission.mesh&&admission.declaration==&layout);
+                if(nearBone)assert(!admission.pose.outsideRange);
+            }
+            if(round>=3)times.push_back(std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count());
+        }
+        std::sort(times.begin(),times.end());
+        std::printf("M2_MIXED_CAPTURE draws=96 nearPercent=%u prepare=%u captureMs=%.6f\n",nearPercent,entered,(times[6]+times[7])*.5);
+    }
 }
 void DisplacementStateTestAccess::kernels(){
     using namespace NorthlightActorDeformation;using namespace NorthlightWaterShaderPatch;
