@@ -20,7 +20,8 @@ assert 'const unsigned rebuildMask=pointStaticRebuild(pointSlot().selected,light
 assert 'if(!pointSlot().cacheValid||lightChanged||pointSlot().cacheSource!=light.sourceId)return 63;' in pt
 assert 'if(pointStaticCandidates[face].empty()){drop(pointSlot().cacheSurface[face]);drop(pointSlot().cacheFace[face]);}' in body
 assert 'if(!pointCacheResources(face)||!bindFace(pointSlot().cacheSurface[face],"cube cache target"))return false;' in body
-assert body.index('pointSlot().faceContent[face]=digests?digests[face]')>body.index('"cube static draw"'),'a face key is recorded only after its static draws'
+assert 'pointSlot().faceContent[face]=digests?digests[face]' in pt
+assert body.index('pointRememberStaticFace(face,lightChanged)')>body.index('"cube static draw"'),'a face key is recorded only after its static draws'
 # S1'': no fragment beyond the light's range is stored (every cube caster, one shader), so a
 # face depends only on in-range casters and the sphere + face digest is complete.
 hlsl=fp.src('local_light_effects.hlsl').read_text()

@@ -28,7 +28,8 @@ for name,folder in variants:
     for opt in (['O2','O0'] if name=='current' else ['O2']):
         exe=out/(name+'-'+opt+'.exe');cmd=[str(fp.zig()),'c++','-target','x86-windows-gnu','-'+opt,'-UNDEBUG','-std=c++17','-Wno-microsoft-exception-spec']
         if folder:cmd+=['-I',str(folder)]
-        if name=='current':cmd+=['-DNORTHLIGHT_CAPTURE_ACCELERATION=1']
+        if folder is None or 'constantBankTransfers' in (folder/'auto_displacement_renderer.h').read_text():
+            cmd+=['-DNORTHLIGHT_CAPTURE_ACCELERATION=1']
         cmd+=[*fp.test_include_flags(),str(fp.TESTS/'capture_acceleration.cpp'),'-luser32','-luuid','-o',str(exe)]
         with (out/(exe.stem+'-build.log')).open('w') as log:subprocess.run(cmd,env=fp.zig_env(),stdout=log,stderr=subprocess.STDOUT,check=True,timeout=300)
         r=subprocess.run([str(exe)],text=True,capture_output=True,timeout=120);(out/(exe.stem+'.log')).write_text(r.stdout+r.stderr);print(name,opt,r.stdout+r.stderr,flush=True);r.check_returncode();executables[name,opt]=exe
@@ -48,5 +49,5 @@ if args.baseline_ref:
         values={name:statistics.median(float(r['cpuMs']) for r in rows if r['name']==name) for name in ['baseline','current']}
         summary[stage]={**values,'speedup':values['baseline']/values['current']}
 assert all(sha(Path(path))==value for path,value in inputs.items()),'Inputs changed during run'
-(out/'validation.json').write_text(json.dumps({'pass':True,'inputs':inputs,'baseline_ref':args.baseline_ref,'runs':runs,'summary':summary,'scope':'Synthetic CPU build/copy versus existing immutable VB/IB lease reuse, plus current material constant capture versus ownership transfer of the already captured range bank. No hardware GPU interval or game FPS measurement.'},indent=2)+'\n')
+(out/'validation.json').write_text(json.dumps({'pass':True,'inputs':inputs,'baseline_ref':args.baseline_ref,'runs':runs,'summary':summary,'scope':'CPU subdivision and material constant handoff on synthetic geometry. Each revision uses its available production path, including range-bank ownership transfer on revisions that support it.'},indent=2)+'\n')
 print(json.dumps(summary,indent=2))

@@ -23,21 +23,23 @@ struct Stamp {
 };
 using Reader=bool(*)(void*,Stamp&);
 using KnownSpan=bool(*)(void*,unsigned,unsigned,float*,Stamp&);
+using HeldMatch=bool(*)(void*,const Stamp&);
 // Only ExtensionDevice can construct a source certified to read its mirror.
 class TrustedSource {
     friend class ::ExtensionDevice;
-    void* context_=nullptr;Reader reader_=nullptr;KnownSpan span_=nullptr;
-    TrustedSource(void* context,Reader reader,KnownSpan span):context_(context),reader_(reader),span_(span){}
+    void* context_=nullptr;Reader reader_=nullptr;KnownSpan span_=nullptr;HeldMatch match_=nullptr;
+    TrustedSource(void* context,Reader reader,KnownSpan span,HeldMatch match):context_(context),reader_(reader),span_(span),match_(match){}
 public:
     TrustedSource()=default;
     explicit operator bool()const{return reader_!=nullptr;}
     void* context()const{return context_;}
     Reader reader()const{return reader_;}
     KnownSpan span()const{return span_;}
+    HeldMatch heldMatch()const{return match_;}
 };
 // 0.3.180 (C1): the serial words alone. exact() and banks() also need both stamps valid; an in-place
 // compare with a Clock's live words (whose valid flag is never set) asks its source's valid() instead.
-inline bool sameWords(const Stamp& a,const Stamp& b){
+template<class Epoch> inline bool sameWords(const Epoch& a,const Stamp& b){
     return a.reset==b.reset&&a.floats==b.floats&&a.booleans==b.booleans&&a.integers==b.integers;
 }
 inline bool exact(const Stamp& a,const Stamp& b){return a.valid&&b.valid&&sameWords(a,b);}

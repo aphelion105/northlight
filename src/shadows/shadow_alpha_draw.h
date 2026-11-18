@@ -3,6 +3,50 @@
 #include "shadow_alpha.h"
 
 namespace NorthlightShadowAlpha {
+// A private shadow pass starts with alpha testing off and one R32F target.
+// Its replay shaders write identical depth to COLOR0.r and COLOR1.r. Once a
+// cutout needs native RT0 precision, keep the depth attachment on RT1 through
+// subsequent opaque draws. Only a new native format needs another scope.
+template<class Device,class ModeAt,class Scope,class Submit>
+HRESULT drawSequence(Device* d,size_t count,ModeAt modeAt,Scope scope,Submit submit){
+    size_t at=0;
+    while(at<count){
+        const unsigned mode=modeAt(at);
+        if(!fixed(mode)){
+            const HRESULT hr=submit(at);
+            if(FAILED(hr))return hr;
+            continue;
+        }
+        const HRESULT hr=scope(at,[&]() -> HRESULT {
+            unsigned previous=mode;
+            do {
+                const unsigned next=modeAt(at);
+                if(fixed(next)&&sourceFormat(next)!=sourceFormat(mode))break;
+                if(fixed(previous)!=fixed(next)){
+                    const HRESULT enabled=d->SetRenderState(D3DRS_ALPHATESTENABLE,fixed(next));
+                    if(FAILED(enabled))return enabled;
+                }
+                if(fixed(next)){
+                    if((previous^next)&GreaterEqual){
+                        const HRESULT func=d->SetRenderState(D3DRS_ALPHAFUNC,(next&GreaterEqual)?D3DCMP_GREATEREQUAL:D3DCMP_GREATER);
+                        if(FAILED(func))return func;
+                    }
+                    if(reference(previous)!=reference(next)){
+                        const HRESULT ref=d->SetRenderState(D3DRS_ALPHAREF,reference(next));
+                        if(FAILED(ref))return ref;
+                    }
+                }
+                const HRESULT drawn=submit(at);
+                if(FAILED(drawn))return drawn;
+                // Disabling alpha testing leaves its last comparison intact.
+                previous=fixed(next)?next:(previous&~FixedTest);
+            }while(at<count);
+            return D3D_OK;
+        });
+        if(FAILED(hr))return hr;
+    }
+    return D3D_OK;
+}
 // Alpha-test precision belongs to RT0's format, even when RT0 stores no alpha.
 // Keep that native conversion while writing the actual shadow depth through RT1.
 template<class Device,class Acquire,class Draw> HRESULT draw(Device* d,unsigned mode,Acquire acquire,Draw submit){

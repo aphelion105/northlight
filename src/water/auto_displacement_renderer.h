@@ -61,7 +61,10 @@ class NorthlightAutoDisplacement {
     NorthlightPositionBounds::Cache positionBounds;
     unsigned capturedBoundsHits=0,admissionSnapshotReuses=0,constantBankTransfers=0;
     NorthlightVertexDeclarations::Cache declarations;
-    struct ConstantHandoff {const float* bank=nullptr;NorthlightConstantEpoch::Stamp stamp;};
+    // Only the owner and the four exact epoch words cross the draw handoff.
+    // Per-block write history belongs to the bank that uses it for partial reads.
+    struct ConstantHandoff {const float* bank=nullptr;uint64_t reset=0,floats=0,booleans=0,integers=0;};
+    NorthlightConstantEpoch::HeldMatch heldConstantMatch=nullptr;
     void* constantContext=nullptr;NorthlightConstantEpoch::Reader constantReader=nullptr;NorthlightConstantEpoch::KnownSpan constantSpan=nullptr;bool trustedConstants=false;
     NorthlightConstantEpoch::Stamp constantStamp,rangeConstantStamp;float constantStorage[2][256*4]={};float* constants=constantStorage[0];
     unsigned constantFirst=0,constantCount=0,rangeConstantFirst=0,rangeConstantCount=0;
@@ -86,13 +89,10 @@ class NorthlightAutoDisplacement {
         return true;
     }
     bool readConstants(unsigned first,unsigned count,bool skinned,const ConstantHandoff* admitted=nullptr){
-        if(admitted&&trustedConstants&&admitted->bank==rangeConstants&&first==rangeConstantFirst&&count==rangeConstantCount&&
-           NorthlightConstantEpoch::exact(admitted->stamp,rangeConstantStamp)){
-            NorthlightConstantEpoch::Stamp now;now.requestHeld=true;
-            if(constantReader&&constantReader(constantContext,now)&&now.held&&NorthlightConstantEpoch::exact(rangeConstantStamp,now)){
-                std::swap(constants,rangeConstants);std::swap(constantStamp,rangeConstantStamp);
-                std::swap(constantFirst,rangeConstantFirst);std::swap(constantCount,rangeConstantCount);++constantBankTransfers;return true;
-            }
+        if(admitted&&heldConstantMatch&&admitted->bank==rangeConstants&&first==rangeConstantFirst&&count==rangeConstantCount&&
+           NorthlightConstantEpoch::sameWords(*admitted,rangeConstantStamp)&&heldConstantMatch(constantContext,rangeConstantStamp)){
+            std::swap(constants,rangeConstants);std::swap(constantStamp,rangeConstantStamp);
+            std::swap(constantFirst,rangeConstantFirst);std::swap(constantCount,rangeConstantCount);++constantBankTransfers;return true;
         }
         return readConstantBank(first,count,skinned,constants,constantStamp,constantFirst,constantCount);
     }
@@ -540,7 +540,7 @@ public:
         void clear(){mesh.reset();drop(declaration);pose={};bank={};}
     };
     void publishConstants(CaptureSource& source,const float* bank,const NorthlightConstantEpoch::Stamp& stamp){
-        if(trustedConstants&&stamp.valid)source.bank={bank,stamp};
+        if(trustedConstants&&stamp.valid)source.bank={bank,stamp.reset,stamp.floats,stamp.booleans,stamp.integers};
     }
     struct Admission {
         DWORD z=0,write=0,blend=0,alpha=0,src=0,dst=0,func=0;
@@ -564,7 +564,7 @@ public:
             return found;});}
     ~NorthlightAutoDisplacement(){reset();for(auto& s:shaders){drop(s.second.patched);drop(s.second.gpu);drop(s.second.source);}}
     void tracking(uint64_t(*identity)(void*,bool),uint64_t(*version)(void*,bool),NorthlightCaptureMetadata::Read metadata){positionBounds.tracking(identity,version,metadata);for(auto* frame:{&snapshots,&rangeSnapshots,&skinRangeSnapshots}){frame->setIdentityProvider(identity);frame->setVersionProvider(version);frame->setMetadataProvider(metadata);}}
-    void setConstantEpochSource(void* context,NorthlightConstantEpoch::Reader reader){poseEnvelopes.clearPoseCertificates();constantStamp={};rangeConstantStamp={};constantContext=context;constantReader=reader;constantSpan=nullptr;trustedConstants=false;}
+    void setConstantEpochSource(void* context,NorthlightConstantEpoch::Reader reader){poseEnvelopes.clearPoseCertificates();constantStamp={};rangeConstantStamp={};constantContext=context;constantReader=reader;constantSpan=nullptr;heldConstantMatch=nullptr;trustedConstants=false;}
     void setDistanceView(const float* rows){
         // Draws in the same view share the already validated rotation and inverse.
         if(rows&&distanceViewKnown&&!NorthlightMem::compare(rows,distanceInverseView,12)&&
@@ -580,7 +580,7 @@ public:
         for(unsigned r=0;r<3;++r)for(unsigned k=0;k<3;++k)distanceView[r*3+k]=(double(rows[((r+1)%3)*4+(k+1)%3])*rows[((r+2)%3)*4+(k+2)%3]-double(rows[((r+1)%3)*4+(k+2)%3])*rows[((r+2)%3)*4+(k+1)%3])/determinant;
         for(unsigned r=0;r<3;++r)std::copy_n(rows+r*4,3,distanceInverseView+r*4);distanceViewKnown=true;
     }
-    void setTrustedConstantEpochSource(NorthlightConstantEpoch::TrustedSource source){poseEnvelopes.clearPoseCertificates();constantStamp={};rangeConstantStamp={};trustedConstants=bool(source)&&source.context()==d;constantContext=trustedConstants?source.context():nullptr;constantReader=trustedConstants?source.reader():nullptr;constantSpan=trustedConstants?source.span():nullptr;}
+    void setTrustedConstantEpochSource(NorthlightConstantEpoch::TrustedSource source){poseEnvelopes.clearPoseCertificates();constantStamp={};rangeConstantStamp={};trustedConstants=bool(source)&&source.context()==d;constantContext=trustedConstants?source.context():nullptr;constantReader=trustedConstants?source.reader():nullptr;constantSpan=trustedConstants?source.span():nullptr;heldConstantMatch=trustedConstants?source.heldMatch():nullptr;}
     void shareCaptureSources(NorthlightDrawSnapshot::Frame& capture){snapshots.shareSnapshotPool(capture);snapshots.setReplayContentReuse(true);snapshots.setResidentPeer(&capture);capture.setResidentPeer(&snapshots);skinRangeSnapshots.setResidentPeer(&capture);}
     void reportSources(uint64_t frame)const{
         size_t cpuHeightBytes=0,gpuHeightBytes=0;unsigned gpuOnlyHeights=0,cpuHeights=0;

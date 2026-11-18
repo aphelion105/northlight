@@ -116,6 +116,16 @@ void DisplacementStateTestAccess::acceleration(bool benchmark){
         capture.publishConstants(facts,capture.rangeConstants,capture.rangeConstantStamp);
         bank[124]=1234;assert(SUCCEEDED(extension.SetVertexShaderConstantF(31,bank+124,1)));
         assert(capture.readConstants(0,256,true,&facts.bank)&&capture.constantBankTransfers==transfers&&!std::memcmp(capture.constants,bank,sizeof bank));
+        for(unsigned change=0;change<3;++change){
+            assert(capture.readConstantBank(0,256,true,capture.rangeConstants,capture.rangeConstantStamp,capture.rangeConstantFirst,capture.rangeConstantCount));
+            capture.publishConstants(facts,capture.rangeConstants,capture.rangeConstantStamp);
+            if(change==0)mirror.constantEpoch.writeBool(1);
+            if(change==1)mirror.constantEpoch.writeInt(1);
+            if(change==2)mirror.constantEpoch.invalidate();
+            assert(capture.readConstants(0,256,true,&facts.bank)&&capture.constantBankTransfers==transfers);
+            assert(!std::memcmp(capture.constants,bank,sizeof bank));
+        }
+        assert(capture.readConstantBank(0,256,true,capture.rangeConstants,capture.rangeConstantStamp,capture.rangeConstantFirst,capture.rangeConstantCount));
         capture.publishConstants(facts,capture.rangeConstants,capture.rangeConstantStamp);
 #endif
     }

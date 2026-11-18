@@ -557,7 +557,12 @@ public:
     ExtensionDevice(IDirect3DDevice9* device,DeviceMirror* mirror):MirrorDevice(device,mirror){}
     const DeviceMirror* constantMirror()const{return m;}
     NorthlightConstantEpoch::TrustedSource trustedConstantSource(){
-        return NorthlightConstantEpoch::TrustedSource(static_cast<IDirect3DDevice9*>(this),[](void* context,NorthlightConstantEpoch::Stamp& stamp){return static_cast<ExtensionDevice*>(static_cast<IDirect3DDevice9*>(context))->constantStamp(stamp);},[](void* context,unsigned first,unsigned count,float* out,NorthlightConstantEpoch::Stamp& stamp){return static_cast<ExtensionDevice*>(static_cast<IDirect3DDevice9*>(context))->knownVertexConstantSpan(first,count,out,stamp);});
+        return NorthlightConstantEpoch::TrustedSource(static_cast<IDirect3DDevice9*>(this),[](void* context,NorthlightConstantEpoch::Stamp& stamp){return static_cast<ExtensionDevice*>(static_cast<IDirect3DDevice9*>(context))->constantStamp(stamp);},[](void* context,unsigned first,unsigned count,float* out,NorthlightConstantEpoch::Stamp& stamp){return static_cast<ExtensionDevice*>(static_cast<IDirect3DDevice9*>(context))->knownVertexConstantSpan(first,count,out,stamp);},
+            [](void* context,const NorthlightConstantEpoch::Stamp& expected){
+                const auto* mirror=static_cast<ExtensionDevice*>(static_cast<IDirect3DDevice9*>(context))->constantMirror();
+                return mirror->heldByThisThread()&&mirror->active()&&!mirror->constantEpoch.overflow()&&expected.valid&&
+                    NorthlightConstantEpoch::sameWords(expected,mirror->constantEpoch.live());
+            });
     }
     // A complete known-only snapshot; unknown slots retain the normal Get path.
     bool knownRenderStates(const D3DRENDERSTATETYPE* keys,unsigned count,DWORD* out){

@@ -99,17 +99,20 @@ checks['cascade replay block gated, terrain before, union after']=(render.count(
 checks['probe never on a diagnostic capture frame']='probeRecord=replayProbeActive()&&slot==0&&captureMode==CaptureFresh&&!shadowDiagnosticCapture;' in block
 # Point cube: withReplays gates both replay loops and the schedule's replay count.
 pb=pt[pt.index('    bool renderPointShadow(const NorthlightLocalLights::Light& light,bool fresh=true,bool withReplays=true){'):pt.index('    void renderPointShadows(')]
-candidate_head='if(withReplays)for(size_t i=0;i<replays.size();++i){'
+candidate_head='if(withReplays){\n                pointOrderReplays();'
+draw_head='if(withReplays){\n            float rows[16];'
 count='if(fresh)pointReplayCount=withReplays?replays.size():0;'
 def point_replays_guarded(text):
-    candidates=guarded_block(text,candidate_head);draws=guarded_block(text,'if(withReplays){')
+    candidates=guarded_block(text,candidate_head);draws=guarded_block(text,draw_head)
     once(text,count,'point replay count')
     for needle in ('const auto& bounds=replays[i]->pointBounds;',
                    'pointAppendCandidates(pointReplayCandidates,i,mask,faces);'):once(candidates,needle,'point candidate guard')
-    for needle in ('for(size_t at=0;at<pointReplayCandidates[face].size();){const size_t index=pointReplayCandidates[face][at];const auto& p=replays[index];',
-                   'pointReplayRun(pointReplayCandidates[face],at,replayBindings.skipping())',
+    for needle in ('const auto& candidates=pointReplayCandidates[face];','const auto& p=replays[candidates[at]];',
+                   'pointReplayRun(candidates,at,replayBindings.skipping())','NorthlightShadowAlpha::drawSequence(d,candidates.size(),',
                    '"cube animated draw"'):once(draws,needle,'point draw guard')
-    outside=text.replace(candidates,'').replace(draws,'').replace(count,'')
+    empty='(!withReplays||replays.empty())'
+    once(text,empty,'point geometry-only reuse guard')
+    outside=text.replace(candidates,'').replace(draws,'').replace(count,'').replace(empty,'')
     return (text.index(candidates)+len(candidates)<=text.index(draws)
             and text.index(draws)+len(draws)<text.index('// With no dynamic casters, min(cache, cache) copies the static face')
             and re.search(r'\breplays\b',code(outside)) is None)
@@ -135,7 +138,7 @@ mutations=[
                                   'renderFlashShadows(atmosphere.lights,replaysComplete,true)'),'flash actor switch bypass'),
     (schedules_guarded,body+' consume(replayShadows,replaysComplete);','unreviewed consumer'),
     (point_replays_guarded,pb.replace(candidate_head,candidate_head.removeprefix('if(withReplays)')),'unguarded point candidates'),
-    (point_replays_guarded,pb.replace('if(withReplays){','if(true){'),'unguarded point draws'),
+    (point_replays_guarded,pb.replace(draw_head,draw_head.replace('withReplays','true')),'unguarded point draws'),
     (point_replays_guarded,pb.replace(count,'if(fresh)pointReplayCount=replays.size();'),'unguarded replay count'),
     (point_replays_guarded,pb.replace(candidate_head,'consume(replays[0]->pointBounds);'+candidate_head),'unguarded bounds read'),
     (point_replays_guarded,pb+' for(const auto& p:replays)consume(p);','unguarded replay range'),

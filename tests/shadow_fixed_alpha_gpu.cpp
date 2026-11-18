@@ -3,8 +3,10 @@
 #include <d3d9.h>
 #include <algorithm>
 #include <cassert>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <vector>
@@ -123,6 +125,74 @@ int main(int argc,char** argv){
         if(mismatches)std::printf("MISMATCH local=%u opacity=%g func=%u ref=%u pixels=%u\n",unsigned(pixel==localPS),opacity,unsigned(function),ref,mismatches);++cases;
     }
     assert(oldErrors>0);assert(currentErrors==0);
+    // Mixed packets in one cube face. Each cell has its own draw, so a missed
+    // transition cannot be hidden by a later opaque fullscreen overwrite.
+    const D3DFORMAT otherFormat=nativeFormat==D3DFMT_X8R8G8B8?D3DFMT_A8R8G8B8:D3DFMT_X8R8G8B8;
+    const auto modeAt=[&](size_t index){
+        if(index%5==0)return 0u;
+        return NorthlightShadowAlpha::fixedTestMode(info,true,unsigned(index%4)*63,index%3==0,
+            index%32>=24?otherFormat:nativeFormat);
+    };
+    constexpr unsigned count=128;
+    ok(d->SetRenderTarget(0,shadowTarget));ok(d->SetVertexShader(shadowVS));ok(d->SetPixelShader(localPS));
+    ok(d->SetRenderState(D3DRS_ALPHATESTENABLE,FALSE));ok(d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE));
+    D3DVIEWPORT9 full={0,0,W,W,0,1};ok(d->SetViewport(&full));
+    IDirect3DQuery9* completion=nullptr;ok(d->CreateQuery(D3DQUERYTYPE_EVENT,&completion));
+    const auto batch=[&](bool grouped,bool comparePixels,unsigned& scopes,double& submitMs,double& completeMs){
+        scopes=0;ok(d->Clear(0,nullptr,D3DCLEAR_TARGET,0xffffffff,1,0));
+        D3DRECT seeded={0,0,W/4,W};ok(d->Clear(1,&seeded,D3DCLEAR_TARGET,0,1,0));ok(d->BeginScene());
+        SavedState before(d);
+        const auto started=std::chrono::steady_clock::now();
+        auto scope=[&](size_t i,auto submit){
+            scopes+=NorthlightShadowAlpha::fixed(modeAt(i));
+            return NorthlightShadowAlpha::draw(d,modeAt(i),[&](D3DFORMAT f,UINT w,UINT h){return targets.acquire(f,w,h);},submit);
+        };
+        auto submit=[&](size_t& at){
+            const size_t i=at++;
+            const unsigned mode=modeAt(i);
+            const float material[]={float(NorthlightShadowAlpha::recipe(mode)),float(NorthlightShadowAlpha::fixed(mode)),0,mode?.5f:-1.f};
+            ok(d->SetPixelShaderConstantF(0,material,1));
+            for(unsigned v=0;v<4;++v){
+                quad[v].position[0]=float((i%16)+(v&1))*.125f-1.f-1.f/W;
+                quad[v].position[1]=1.f-float((i/16)+(v>>1))*.25f+1.f/W;
+                quad[v].position[2]=.25f;quad[v].color[3]=.7f;
+            }
+            return d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(Vertex));
+        };
+        if(grouped)ok(NorthlightShadowAlpha::drawSequence(d,count,modeAt,scope,submit));
+        else for(size_t i=0;i<count;)ok(scope(i,[&]{return submit(i);}));
+        ok(d->EndScene());ok(completion->Issue(D3DISSUE_END));
+        const auto submitted=std::chrono::steady_clock::now();
+        HRESULT ready;while((ready=completion->GetData(nullptr,0,D3DGETDATA_FLUSH))==S_FALSE){
+            assert(std::chrono::steady_clock::now()-started<std::chrono::seconds(20));SwitchToThread();}
+        ok(ready);const auto completed=std::chrono::steady_clock::now();
+        submitMs=std::chrono::duration<double,std::milli>(submitted-started).count();
+        completeMs=std::chrono::duration<double,std::milli>(completed-started).count();
+        before.unchanged();std::vector<DWORD> pixels;
+        if(comparePixels){
+            ok(d->GetRenderTargetData(shadowTarget,shadowStage));D3DLOCKED_RECT mapped{};ok(shadowStage->LockRect(&mapped,nullptr,D3DLOCK_READONLY));
+            pixels.resize(W*W);for(unsigned y=0;y<W;++y)std::memcpy(pixels.data()+y*W,static_cast<char*>(mapped.pBits)+y*mapped.Pitch,W*4);
+            ok(shadowStage->UnlockRect());const auto covered=std::count(pixels.begin(),pixels.end(),0x3e800000u);assert(covered>W*W/8&&covered<W*W);
+        }
+        return pixels;
+    };
+    unsigned individual,grouped;double cpu,wall;
+    for(bool blend:{false,true}){
+        ok(d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_ONE));ok(d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_ONE));
+        ok(d->SetRenderState(D3DRS_BLENDOP,D3DBLENDOP_MIN));ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,blend));
+        const auto reference=batch(false,true,individual,cpu,wall);assert(batch(true,true,grouped,cpu,wall)==reference);
+        unsigned preserved=0;for(unsigned y=0;y<W;++y)preserved+=std::count(reference.begin()+y*W,reference.begin()+y*W+W/4,0u);
+        assert(blend?preserved==W*W/4:preserved<W*W/4);
+        assert(individual==102&&grouped==8);
+    }
+    if(std::getenv("NORTHLIGHT_ALPHA_BENCHMARK")){
+        for(unsigned pair=0;pair<16;++pair)for(unsigned side=0;side<2;++side){
+            bool optimized=bool((pair&1)^side);unsigned scopes=0;batch(optimized,false,scopes,cpu,wall);
+            std::printf("ALPHA_TIMING pair=%u grouped=%u scopes=%u submitMs=%.6f completeMs=%.6f\n",pair,unsigned(optimized),scopes,cpu,wall);}
+    }
+    completion->Release();ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE));
+    targets.reset();
+    std::printf("SHADOW_ALPHA_BATCH_PASS draws=%u singleScopes=%u groupedScopes=%u pixels=exact minBlend=1\n",count,individual,grouped);
     // Exercise an existing RT1, non-default masks/viewport, every setup call,
     // unavailable scratch and a failed draw through the production scope.
     IDirect3DSurface9* marker=nullptr;ok(d->CreateRenderTarget(W,W,D3DFMT_R32F,D3DMULTISAMPLE_NONE,0,FALSE,&marker,nullptr));
@@ -131,6 +201,15 @@ int main(int argc,char** argv){
     for(int failure=0;failure<19;++failure){SavedState before(d);FaultDevice fault{d,failure};unsigned draws=0;
         const auto hr=NorthlightShadowAlpha::draw(&fault,mode,[&](D3DFORMAT f,UINT w,UINT h){return targets.acquire(f,w,h);},[&]{++draws;return D3D_OK;});
         assert(FAILED(hr)&&draws==0);before.unchanged();}
+    for(int failure=0;failure<4;++failure){
+        SavedState before(d);FaultDevice transition{d,failure};
+        const unsigned modes[]={mode,0u,NorthlightShadowAlpha::fixedTestMode(info,true,63,true,unsigned(nativeFormat))};
+        unsigned submitted=0;
+        const auto hr=NorthlightShadowAlpha::drawSequence(&transition,3,[&](size_t i){return modes[i];},
+            [&](size_t i,auto draw){return NorthlightShadowAlpha::draw(d,modes[i],[&](D3DFORMAT f,UINT w,UINT h){return targets.acquire(f,w,h);},draw);},
+            [&](size_t& at){++at;++submitted;return D3D_OK;});
+        assert(FAILED(hr)&&submitted==(failure==0?1u:2u));before.unchanged();
+    }
     {SavedState before(d);assert(FAILED(NorthlightShadowAlpha::draw(d,mode,[](D3DFORMAT,UINT,UINT)->IDirect3DSurface9*{return nullptr;},[]{assert(false);return D3D_OK;})));before.unchanged();}
     {SavedState before(d);assert(FAILED(NorthlightShadowAlpha::draw(d,mode,[&](D3DFORMAT f,UINT w,UINT h){return targets.acquire(f,w,h);},[]{return E_FAIL;})));before.unchanged();}
     ok(d->SetRenderTarget(1,nullptr));marker->Release();

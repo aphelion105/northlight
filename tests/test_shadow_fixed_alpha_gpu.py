@@ -21,7 +21,9 @@ parser=argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--backend',type=Path,action='append',required=True)
 parser.add_argument('--output',type=Path,required=True)
 parser.add_argument('--allow-running-game',action='store_true',help='Explicit correctness-only run; records the concurrent game and makes no timing claim')
+parser.add_argument('--timing',action='store_true',help='Measure alternating individual and grouped draws with a GPU completion query')
 args=parser.parse_args()
+if args.timing and args.allow_running_game:parser.error('--timing requires an idle game client')
 out=args.output.resolve();out.mkdir(parents=True,exist_ok=False)
 sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
 sources=[Path(__file__),ROOT/'tests/shadow_fixed_alpha_gpu.cpp',ROOT/'tests/fixtures/shadow_fixed_alpha_before.h']
@@ -35,6 +37,8 @@ try:
         path=out/(version+'.bin');path.write_bytes(data);programs.append(path)
 finally:assets.close()
 env={**fp.zig_env(),'DXVK_LOG_PATH':str(out),'DISABLE_VULKAN_OBS_CAPTURE':'1'}
+env.pop('NORTHLIGHT_ALPHA_BENCHMARK',None)
+if args.timing:env['NORTHLIGHT_ALPHA_BENCHMARK']='1'
 
 def run(tag,command):
     with (out/(tag+'.log')).open('w') as log:
@@ -55,7 +59,11 @@ for index,backend in enumerate(args.backend):
             text=run(tag,[exe,backend,program,format_])
             line=next(line for line in text.splitlines() if line.startswith('SHADOW_FIXED_ALPHA_PASS'))
             assert 'currentMismatchPixels=0 ' in line
+            batch=next(line for line in text.splitlines() if line.startswith('SHADOW_ALPHA_BATCH_PASS '))
+            assert 'singleScopes=102 groupedScopes=8 pixels=exact minBlend=1' in batch
+            timings=[dict(field.split('=',1) for field in row.split()[1:]) for row in text.splitlines() if row.startswith('ALPHA_TIMING ')]
+            assert len(timings)==(32 if args.timing else 0)
             print(backend.name,program.stem,format_,line,flush=True)
-            records.append({'backend':str(backend),'backend_sha256':sha(backend),'program':program.name,'native_format':format_,'log':tag+'.log','result':line,'concurrent_game':[p for p in processes if p['name'].lower().startswith('wow')]})
+            records.append({'backend':str(backend),'backend_sha256':sha(backend),'program':program.name,'native_format':format_,'log':tag+'.log','result':line,'mixed_batch':batch,'timings':timings,'concurrent_game':[p for p in processes if p['name'].lower().startswith('wow')]})
 assert all(sha(ROOT/path)==digest for path,digest in inputs.items()),'Oracle sources changed during validation'
-(out/'validation.json').write_text(json.dumps({'pass':True,'inputs':inputs,'native_programs':{p.name:sha(p) for p in programs},'cases':records,'allow_running_game':args.allow_running_game,'scope':'Exact independent native-vs-shadow binary coverage and R32 depth pixels, stock PS2/PS3 Combiners_Mod, source ARGB8/XRGB8/FP16/FP32 to R32, COLOR0 opacity, >/>= threshold boundaries, frozen-old negative control, full/partial-scissor enabled coverage and in-draw rect preservation, RT0/RT1/viewport/mask/alpha restoration including setup/draw failure, all-eight bounded 256/1024 scratch slots and interleaved format reuse/reset. No timings or game FPS claim.'},indent=2)+'\n')
+(out/'validation.json').write_text(json.dumps({'pass':True,'inputs':inputs,'native_programs':{p.name:sha(p) for p in programs},'cases':records,'allow_running_game':args.allow_running_game,'timing':args.timing,'scope':'Native-vs-shadow binary coverage and R32 depth, stock PS2/PS3, four target formats, threshold boundaries, scissor and state restoration including failures. Mixed 128-draw batches compared bit for bit with and without MIN blending. Optional elapsed intervals cover CPU submission and serialized completion of the component.'},indent=2)+'\n')

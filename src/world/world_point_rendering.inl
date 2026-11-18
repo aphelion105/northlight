@@ -60,7 +60,7 @@
     using PointReplayGroup=NorthlightPointShadow::ReplayGroup;
     std::vector<PointReplayGroup> pointReplayGroups;
     bool pointReplayGroupsReady=false;
-    struct PointCold {unsigned cubes=0,statics=0,shared=0,shaders=0,terrainMemoHits=0,terrainMemoMisses=0,orderPackets=0,orderEligible=0,contentPasses=0;size_t contentRecords=0;int64_t ticks=0,order=0,prepare=0,boundsWait=0,candidates=0,submit=0;} pointCold;
+    struct PointCold {unsigned cubes=0,statics=0,shared=0,shaders=0,terrainMemoHits=0,terrainMemoMisses=0,orderPackets=0,orderEligible=0,contentPasses=0,alphaScopes=0,fixedDraws=0;size_t contentRecords=0;int64_t ticks=0,order=0,prepare=0,boundsWait=0,candidates=0,submit=0;} pointCold;
     template<class Call> HRESULT pointAllocate(unsigned& attempts,Call call){
         ++attempts;const bool timed=NorthlightQuality::renderProfile(quality);const int64_t start=timed?QpcClock::now():0;
         const HRESULT hr=call();if(timed)pointCold.ticks+=QpcClock::now()-start;return hr;
@@ -759,16 +759,16 @@
     }
     // Batch only adjacent compatible casters. Unsupported/alpha packets
     // stay barriers; unique geometry needs no sorting or frame-local allocations.
-    bool pointPaletteDraw(const std::vector<size_t>& candidates,size_t& at,const float* rows,bool& drawn){
-        drawn=false;if(pointPaletteUnavailable||frames<pointPaletteRetryFrame||at+1>=candidates.size())return true;
+    HRESULT pointPaletteDraw(const std::vector<size_t>& candidates,size_t& at,const float* rows,bool& drawn){
+        drawn=false;if(pointPaletteUnavailable||frames<pointPaletteRetryFrame||at+1>=candidates.size())return D3D_OK;
         const auto index=candidates[at];const auto& p=*replays[index];
-        if(!pointPaletteSame(p,*replays[candidates[at+1]]))return true;
+        if(!pointPaletteSame(p,*replays[candidates[at+1]]))return D3D_OK;
         const UINT span=pointPaletteSpan(p);
-        if(!span)return true;
+        if(!span)return D3D_OK;
         size_t end=at+1;
         while(end<candidates.size()){const auto next=candidates[end];
             if(!pointPaletteSame(p,*replays[next])||!pointPaletteSpan(*replays[next]))break;++end;}
-        if(end-at<2||!pointPaletteResources())return true;
+        if(end-at<2||!pointPaletteResources())return D3D_OK;
         const float opaque[]={0,0,0,-1};HRESULT result=d->SetVertexDeclaration(pointPaletteDecl);
         if(SUCCEEDED(result))result=d->SetVertexShader(pointPaletteVS);
         if(SUCCEEDED(result))result=d->SetVertexShaderConstantF(0,rows,4);
@@ -792,7 +792,7 @@
             at+=count;
         }
         for(unsigned stream=0;stream<2;++stream){auto hr=d->SetStreamSourceFreq(stream,1);if(FAILED(hr))hr=d->SetStreamSourceFreq(stream,1);if(FAILED(hr))result=hr;}
-        drawn=true;return pointCheck(result,"cube palette replay");
+        drawn=true;return result;
     }
     PointReplayRun pointReplayRun(const std::vector<size_t>& candidates,size_t& at,bool opaque){
         const auto& first=*replays[candidates[at++]];PointReplayRun run{first.start,first.count,first.min,first.vertices};
@@ -1054,21 +1054,32 @@
             NorthlightReplayDrawState::Cache replayBindings(d);
             // LocalShadowPS reads patched TEXCOORD7 and writes perspective z/w;
             // the directional replay PS assumes orthographic w=1 and is invalid here.
-            for(size_t at=0;at<pointReplayCandidates[face].size();){const size_t index=pointReplayCandidates[face][at];const auto& p=replays[index];
-                bool instanced=false;if(!pointPaletteDraw(pointReplayCandidates[face],at,rows,instanced))return false;
-                if(instanced){replayBindings.invalidate();poseConstants.reset();continue;}
-                if(!pointCheck(replayBindings.geometry(*p),"cube replay geometry state"))return false;
-                if(!poseConstants.prepare(*p,rows,matrix))return false;
+            const auto& candidates=pointReplayCandidates[face];
+            const char* failure="cube animated draw";
+            const auto failed=[&](HRESULT hr,const char* operation){failure=operation;return hr;};
+            const auto submit=[&](size_t& at)->HRESULT {
+                const auto& p=replays[candidates[at]];
+                bool instanced=false;HRESULT hr=pointPaletteDraw(candidates,at,rows,instanced);
+                if(FAILED(hr))return failed(hr,"cube palette replay");
+                if(instanced){replayBindings.invalidate();poseConstants.reset();return D3D_OK;}
+                hr=replayBindings.geometry(*p);if(FAILED(hr))return failed(hr,"cube replay geometry state");
+                if(!poseConstants.prepare(*p,rows,matrix))return failed(E_FAIL,"cube replay pose");
                 const float* desired=poseConstants.desired();
                 auto f=poseConstants.floats;auto b=poseConstants.booleans;auto i=poseConstants.integers;
-                if(f.count&&!pointCheck(d->SetVertexShaderConstantF(f.first,desired+4*f.first,f.count),"cube replay float constants"))return false;
-                if(b.count&&!pointCheck(d->SetVertexShaderConstantB(b.first,p->bools+b.first,b.count),"cube replay bool constants"))return false;
-                if(i.count&&!pointCheck(d->SetVertexShaderConstantI(i.first,p->ints+4*i.first,i.count),"cube replay integer constants"))return false;
-                if(!pointCheck(replayBindings.material(*p),"cube replay material state"))return false;
-                const auto run=pointReplayRun(pointReplayCandidates[face],at,replayBindings.skipping());
-                const HRESULT hr=shadowReplayDraw(*p,[&]{return p->indexed?d->DrawIndexedPrimitive(p->type,p->base,run.min,run.vertices,run.start,run.count):d->DrawPrimitive(p->type,run.start,run.count);});
-                if(!pointCheck(hr,"cube animated draw"))return false;++pointDraws;++pointWork.replay;pointWork.triangles+=run.count;
-            }
+                if(f.count&&FAILED(hr=d->SetVertexShaderConstantF(f.first,desired+4*f.first,f.count)))return failed(hr,"cube replay float constants");
+                if(b.count&&FAILED(hr=d->SetVertexShaderConstantB(b.first,p->bools+b.first,b.count)))return failed(hr,"cube replay bool constants");
+                if(i.count&&FAILED(hr=d->SetVertexShaderConstantI(i.first,p->ints+4*i.first,i.count)))return failed(hr,"cube replay integer constants");
+                if(FAILED(hr=replayBindings.material(*p)))return failed(hr,"cube replay material state");
+                const auto run=pointReplayRun(candidates,at,replayBindings.skipping());
+                hr=p->indexed?d->DrawIndexedPrimitive(p->type,p->base,run.min,run.vertices,run.start,run.count):d->DrawPrimitive(p->type,run.start,run.count);
+                if(SUCCEEDED(hr)){++pointDraws;++pointWork.replay;pointWork.triangles+=run.count;pointCold.fixedDraws+=NorthlightShadowAlpha::fixed(p->alphaMode);}
+                return hr;
+            };
+            const HRESULT replayResult=NorthlightShadowAlpha::drawSequence(d,candidates.size(),
+                [&](size_t at){return replays[candidates[at]]->alphaMode;},
+                [&](size_t at,auto draw){++pointCold.alphaScopes;return shadowReplayDraw(*replays[candidates[at]],draw);},
+                submit);
+            if(!pointCheck(replayResult,failure))return false;
             } /* withReplays */
             } /* dynamic candidates */
             // Preserve the original logical workload weights: coalescing must
@@ -1164,7 +1175,7 @@
         if(coldTimed&&captureFrequency.QuadPart>0){const double scale=1000.0/double(captureFrequency.QuadPart),cpuMs=double(QpcClock::now()-coldStarted)*scale;
             if(cpuMs>=8||profileSampled()){
                 logf("POINT_PHASE rendererFrame=%u prepareMs=%.3f boundsWaitMs=%.3f candidatesMs=%.3f submitMs=%.3f prepareIncludesBoundsAndCandidates=1 terrainMemoHits=%u terrainMemoMisses=%u terrainListSize=%zu totalBatches=%zu contentPasses=%u contentRecords=%zu spatialIndex=%u",rendererFrame,double(pointCold.prepare)*scale,double(pointCold.boundsWait)*scale,double(pointCold.candidates)*scale,double(pointCold.submit)*scale,pointCold.terrainMemoHits,pointCold.terrainMemoMisses,terrainBatchList.size(),batches.size(),pointCold.contentPasses,pointCold.contentRecords,unsigned(bool(pointTree)));
-                logf("POINT_ORDER rendererFrame=%u cpuMs=%.3f packets=%u eligible=%u oncePerFrame=1 alphaBarriers=1",rendererFrame,double(pointCold.order)*scale,pointCold.orderPackets,pointCold.orderEligible);
+                logf("POINT_ORDER rendererFrame=%u cpuMs=%.3f packets=%u eligible=%u oncePerFrame=1 alphaBarriers=1 fixedDraws=%u alphaScopes=%u",rendererFrame,double(pointCold.order)*scale,pointCold.orderPackets,pointCold.orderEligible,pointCold.fixedDraws,pointCold.alphaScopes);
                 // A reused cube may leave the bounds job running. Its mutable
                 // counters are readable only after that job has been joined.
                 const auto* stats=replayBoundsWorker.pending()?nullptr:&replayBoundsCache.envelopeStats();

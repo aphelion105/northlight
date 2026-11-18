@@ -110,7 +110,13 @@ struct PointTerrainCoverageTest {
         must(white->LockRect(0,&lock,nullptr,0));*static_cast<DWORD*>(lock.pBits)=0x00ffffff;must(white->UnlockRect(0));
         for(unsigned i=0;i<w.replays.size();++i)w.replays[i]->cutoff=i==10||i==50||i==90?.5f:-1;
         assert(render(false));const auto mixed=image();assert(render(true));compare(mixed,image());assert(w.pointWork.paletteDraws&&w.pointWork.palettePackets);++comparisons;
-        for(auto& p:w.replays){p->cutoff=-1;p->texture->Release();p->texture=nullptr;}white->Release();
+        // The three transparent packets reject every pixel with either native
+        // alpha testing or shader clip. The opaque neighbours can be instanced.
+        NorthlightShadowAlpha::Info info{};info.outputKnown=true;info.outputMode=NorthlightShadowAlpha::Texture;
+        for(auto& p:w.replays)if(p->cutoff>=0)p->alphaMode=NorthlightShadowAlpha::fixedTestMode(info,false,127,false,D3DFMT_A8R8G8B8);
+        w.pointCold={};assert(render(false));assert(image()==mixed&&w.pointCold.alphaScopes>0);
+        w.pointCold={};assert(render(true));compare(mixed,image());assert(w.pointCold.alphaScopes&&w.pointWork.palettePackets);++comparisons;
+        for(auto& p:w.replays){p->alphaMode=0;p->cutoff=-1;p->texture->Release();p->texture=nullptr;}white->Release();
         assert(render(false));const auto reference=image();
         for(unsigned fault=1;fault<=7;++fault)for(bool after:{false,true}){w.releasePointGPU();calls.fault=fault;calls.after=after;const auto hits=calls.hits;
             const bool result=render(true);assert(calls.hits==hits+1&&!calls.fault);if(fault<=5){assert(result&&!w.pointWork.paletteDraws);compare(reference,image());}

@@ -60,7 +60,7 @@ for method in ('CreateTexture', 'CreateVolumeTexture', 'CreateCubeTexture'):
     line = next(l for l in proxy.splitlines() if f'HRESULT STDMETHODCALLTYPE {method}(' in l and 'ext->' in l)
     assert 'NorthlightReplayDrawState::noteTextureFormat(Format);' in line, method
 assert 'hr=shadowReplayDraw(*p,' in world
-assert point.count('shadowReplayDraw(')==2  # split and merged point runs
+assert 'NorthlightShadowAlpha::drawSequence(d,candidates.size()' in point and 'shadowReplayDraw(*replays[candidates[at]],draw)' in point
 assert 'const HRESULT hr=NorthlightShadowAlpha::draw(d,p.alphaMode,' in world
 print('PASS preconditions: replay/local alpha outputs, cutoff encoding, fixed-PS loops, native alpha wrapper wiring, pass states, float-alpha guard wiring')
 
