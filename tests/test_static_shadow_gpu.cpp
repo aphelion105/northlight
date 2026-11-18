@@ -48,12 +48,42 @@ int main(){float matrix[16]={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};
  // Exact content/order across append ranges, wrap and consecutive cascades.
  auto streamScene=[&](unsigned batches){auto m=model("stream");m->batches.resize(batches,m->batches.front());auto s=snapshot(m,700);for(unsigned i=0;i<s->placements.size();++i){auto& p=s->placements[i];p.translation.x=i*.0001f;p.matrix[0]=1+i*.0001f;}return s;};
  auto checkTransforms=[](const IDirect3DDevice9& d,const Snapshot& s,unsigned batches){assert(d.drawnTransforms.size()==s.placements.size()*batches);size_t n=0;for(unsigned b=0;b<batches;++b)for(const auto& p:s.placements){const auto& actual=d.drawnTransforms[n++];for(unsigned r=0;r<3;++r){for(unsigned c=0;c<3;++c)assert(actual[r*4+c]==p.matrix[r*3+c]);assert(actual[r*4+3]==(r==0?p.translation.x:r==1?p.translation.y:p.translation.z));}}};
- {IDirect3DDevice9 d;d.captureTransforms=true;GpuCache gpu(lifecycleLimits());auto s=streamScene(41);NorthlightLockMeter::state().frameSite[NorthlightLockMeter::Instances].store(0);assert(gpu.update(&d,s,1));assert(d.instanceBuffer->bytes.size()==8192*48);assert(gpu.draw(&d,matrix));assert(gpu.draw(&d,matrix));checkTransforms(d,*s,82);
+ for(bool reference:{false,true}){IDirect3DDevice9 d;d.captureTransforms=true;GpuCache gpu(lifecycleLimits());if(reference)gpu.referencePlans();auto s=streamScene(41);NorthlightLockMeter::state().frameSite[NorthlightLockMeter::Instances].store(0);assert(gpu.update(&d,s,1));assert(d.instanceBuffer->bytes.size()==8192*48);assert(gpu.draw(&d,matrix));assert(gpu.draw(&d,matrix));checkTransforms(d,*s,82);
   unsigned end=0,discards=0;for(const auto& lock:d.instanceBuffer->locks){assert(lock.bytes<=8192*48);if(lock.flags==D3DLOCK_DISCARD){assert(lock.offset==0);if(discards)assert(end+lock.bytes>d.instanceBuffer->bytes.size());++discards;}else{assert(lock.flags==D3DLOCK_NOOVERWRITE&&lock.offset==end);}end=lock.offset+lock.bytes;assert(end<=d.instanceBuffer->bytes.size());}
-  assert(discards>1&&discards<10);assert(gpu.stats().instanceLocks<12&&gpu.stats().instanceDiscards==discards&&gpu.stats().instanceBytes==700*82*48);assert(gpu.stats().drawCalls==123&&gpu.stats().instances==700*41);
+  if(reference){assert(discards>1&&discards<10);assert(gpu.stats().instanceBytes==700*82*48);}
+  else{assert(discards==1&&gpu.stats().instanceLocks==2);assert(gpu.stats().instanceBytes==700*2*48);}
+  assert(gpu.stats().instanceLocks<12&&gpu.stats().instanceDiscards==discards);assert(gpu.stats().drawCalls==123&&gpu.stats().instances==700*41);
   // 0.3.192 (DXVK3): the LOCK METER charges every instance DISCARD at the whole buffer (what DXVK 3.x charges), nothing for NOOVERWRITE appends.
   assert(NorthlightLockMeter::state().frameSite[NorthlightLockMeter::Instances].load()==uint64_t(gpu.stats().instanceDiscards)*(d.instanceBuffer->bytes.size()/48)*48);assert(d.frequencies[0]==1&&d.frequencies[1]==1&&!d.streams[1]);
   gpu.reset();assert(FakeResource::alive==0);d.drawnTransforms.clear();gpu.update(&d,s,2);assert(gpu.draw(&d,matrix));assert(d.instanceBuffer->locks.front().flags==D3DLOCK_DISCARD&&d.instanceBuffer->locks.front().offset==0);checkTransforms(d,*s,41);gpu.reset();assert(FakeResource::alive==0);
+ }
+ // Alternating bounds select equally large but different placement lists on
+ // both depth paths. Compare every submitted transform across ring wraps.
+ {
+  auto m=model("mixed");
+  const auto section=m->batches.front();
+  for(unsigned i=0;i<50;++i){
+      auto batch=section;
+      batch.low.x=batch.high.x=(i%4<2)?-.5f:.5f;
+      m->batches.push_back(batch);
+  }
+  auto s=snapshot(m,700);
+  for(unsigned i=0;i<s->placements.size();++i){
+      auto& p=s->placements[i];
+      p.translation.x=(i%2)?-.8f:.8f;
+      p.translation.y=i*.0001f;
+      p.translation.z=(i%4<2)?-.6f:0.f;
+  }
+  IDirect3DDevice9 device,original;device.captureTransforms=original.captureTransforms=true;
+  GpuCache gpu(lifecycleLimits()),reference(lifecycleLimits());reference.referencePlans();
+  assert(gpu.update(&device,s,1)&&reference.update(&original,s,1));
+  assert(gpu.planDigest(matrix,true)==reference.planDigest(matrix,true));
+  for(unsigned pass=0;pass<3;++pass){
+      assert(gpu.draw(&device,matrix)&&reference.draw(&original,matrix));
+      assert(device.drawnTransforms==original.drawnTransforms);
+      assert(std::equal(std::begin(device.pixelDraws),std::end(device.pixelDraws),std::begin(original.pixelDraws)));
+  }
+  assert(gpu.stats().instanceBytes<reference.stats().instanceBytes&&gpu.stats().instanceDiscards>1);
  }
  // Older offset-less devices and failed larger allocation keep the original path.
  for(unsigned mode=0;mode<2;++mode){IDirect3DDevice9 d;d.captureTransforms=true;d.streamOffsetsSupported=mode!=0;d.failLargeInstanceAllocation=mode==1;GpuCache gpu(lifecycleLimits());auto s=streamScene(2);assert(gpu.update(&d,s,1));assert(d.instanceBuffer->bytes.size()==256*48);assert(gpu.draw(&d,matrix));checkTransforms(d,*s,2);for(const auto& lock:d.instanceBuffer->locks)assert(lock.offset==0&&lock.flags==D3DLOCK_DISCARD);assert(gpu.stats().drawCalls==6);gpu.reset();assert(FakeResource::alive==0);}

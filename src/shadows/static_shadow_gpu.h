@@ -6,6 +6,7 @@
 #include "upload_lock.h"
 #endif
 #include "static_shadow_draw_state.h"
+#include "static_instance_stream.h"
 #include "shadow_alpha_texture.h"
 #include "shadow_bounds.h"
 #include "streaming_budget.h"
@@ -103,19 +104,16 @@ private:
     std::shared_ptr<const OwnerMap> covered_; /* immutable, usually prepared by the GI worker */
     static bool samePlacement(const Placement& a,const Placement& b){return StaticShadow::sameOwner(a,b);}
     bool covered(const Placement& p)const {if(!covered_)return false;auto found=covered_->find(OwnerKey{p.category,p.uid,p.modelKey});if(found==covered_->end())return false;for(const auto& owner:found->second)if(samePlacement(owner,p))return true;return false;}
-    // first: the instance index in the plan's (virtual) concatenated instance
-    // array; data: the same instances in the owning slice's chunk.
-    struct Command {Resource* resource;size_t batch,first;unsigned count,path;CasterBounds bounds;const Instance* data;};
+    // first counts drawn instances; packedFirst addresses their shared stream.
+    struct Command {Resource* resource;size_t batch,first;unsigned count,path;CasterBounds bounds;const Instance* data;size_t packedFirst;};
     struct ModelSlice {
         size_t commandFirst=0,commandCount=0,instanceFirst=0,instanceCount=0;
         uint64_t signature=0,culled=0;CasterBounds bounds;uint32_t chunk=0; /* in the tail padding: metadata caps (sizeof) unchanged */
     };
     struct Plan {
         float matrix[16]{};bool occupied=false,valid=false,fullRebuild=true,pinned=false;uint64_t signature=0,culled=0,used=0; /* pinned: reserved for the plan worker */
-        // 0.3.152: instances live in one chunk per non-empty model slice, in
-        // command order; a reused slice moves its chunk (no copy, no big block).
-        // Commands stay one ordered vector. Metadata is independently capped per slot.
-        std::vector<Command> commands;std::vector<std::vector<Instance>> chunks;size_t instanceCount=0;
+        // Each visible model owns one movable chunk of distinct transform spans.
+        std::vector<Command> commands;std::vector<std::vector<Instance>> chunks;size_t instanceCount=0,packedCount=0;
         std::map<std::string,ModelSlice> models;
         std::set<std::string> dirtyModels;
         size_t metadataBytes=0,dirtyBytes=0;
@@ -425,7 +423,13 @@ private:
             const auto splitStart=std::chrono::steady_clock::now(); /* 0.3.152 split: two clock reads per ready model */
             if(reused){
                 const auto& cached=old->second;
-                for(size_t c=cached.commandFirst;c<cached.commandFirst+cached.commandCount;++c){auto command=previous.commands[c];command.first=slice.instanceFirst+(command.first-cached.instanceFirst);next.commands.push_back(command);}
+                slice.instanceCount=cached.instanceCount;
+                for(size_t c=cached.commandFirst;c<cached.commandFirst+cached.commandCount;++c){
+                    auto command=previous.commands[c];
+                    command.first=slice.instanceFirst+(command.first-cached.instanceFirst);
+                    command.packedFirst=next.packedCount+(command.packedFirst-previous.commands[cached.commandFirst].packedFirst);
+                    next.commands.push_back(command);
+                }
                 if(cached.instanceCount){ctx.chunkMoves.push_back({cached.chunk,next.chunks.size()});next.chunks.push_back(std::move(previous.chunks[cached.chunk]));} /* reserved: no throw */
                 slice.signature=cached.signature;slice.culled=cached.culled;slice.bounds=cached.bounds;++counters.modelPlanReuses;
             }else{
@@ -437,7 +441,8 @@ private:
                     if(!coarseVisible(p,*r,matrix,affine)){slice.culled+=m.batches.size();continue;}
                     candidates.push_back({&p,transform(p)});
                 }
-                if(!candidates.empty())chunk.reserve(candidates.size()*m.batches.size()); /* one allocation per rebuilt slice at most */
+                chunk.reserve(candidates.size());
+                InstanceSpan previousSpan[2];
                 if(!candidates.empty())for(size_t b=0;b<m.batches.size();++b){const auto& batch=m.batches[b];transforms[0].clear();transforms[1].clear();boxes[0].clear();boxes[1].clear();
                     for(const auto& candidate:candidates){const auto& p=*candidate.placement;Vec3 lo,hi;transformBounds(p,batch.low,batch.high,lo,hi);++counters.batchTests;
                         if(affine?NorthlightShadowBounds::directionalClipRejectAffine(lo,hi,matrix):NorthlightShadowBounds::directionalClipReject(lo,hi,matrix)){++slice.culled;continue;}
@@ -445,9 +450,11 @@ private:
                         modelHash=mix(modelHash,p.uid);modelHash=mix(modelHash,p.category);modelHash=mix(modelHash,keyHash);modelHash=mix(modelHash,m.contentRevision);modelHash=mix(modelHash,b);
                         for(float f:candidate.instance.row){uint32_t bits;std::memcpy(&bits,&f,4);modelHash=mix(modelHash,bits);}
                     }
-                    for(unsigned path=0;path<2;++path){const auto& values=transforms[path];const size_t first=slice.instanceFirst+chunk.size();
-                        chunk.insert(chunk.end(),values.begin(),values.end());
-                        for(size_t offset=0;offset<values.size();offset+=InstanceCapacity){const unsigned count=unsigned(std::min<size_t>(InstanceCapacity,values.size()-offset));CasterBounds box;for(unsigned n=0;n<count;++n)box.add(boxes[path][offset+n].first,boxes[path][offset+n].second);next.commands.push_back({r,b,first+offset,count,path,box,nullptr});}
+                    for(unsigned path=0;path<2;++path){const auto& values=transforms[path];if(values.empty())continue;
+                        const size_t first=slice.instanceFirst+slice.instanceCount;
+                        const size_t packed=next.packedCount+previousSpan[path].store(chunk,values,fast);
+                        slice.instanceCount+=values.size();
+                        for(size_t offset=0;offset<values.size();offset+=InstanceCapacity){const unsigned count=unsigned(std::min<size_t>(InstanceCapacity,values.size()-offset));CasterBounds box;for(unsigned n=0;n<count;++n)box.add(boxes[path][offset+n].first,boxes[path][offset+n].second);next.commands.push_back({r,b,first+offset,count,path,box,nullptr,packed+offset});}
                     }
                 }
                 slice.signature=modelHash;
@@ -455,8 +462,9 @@ private:
             (reused?counters.reuseMs:counters.rebuildMs)+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-splitStart).count();
             slice.commandCount=next.commands.size()-slice.commandFirst;
             if(slice.commandCount){if(!reused)next.chunks.push_back(std::move(chunk)); /* reserved: no throw; moving keeps the data pointers */
-                const auto& stored=next.chunks.back();slice.chunk=uint32_t(next.chunks.size()-1);slice.instanceCount=stored.size();next.instanceCount+=slice.instanceCount;
-                for(size_t c=slice.commandFirst;c<next.commands.size();++c)next.commands[c].data=stored.data()+(next.commands[c].first-slice.instanceFirst);}
+                const auto& stored=next.chunks.back();slice.chunk=uint32_t(next.chunks.size()-1);next.instanceCount+=slice.instanceCount;
+                for(size_t c=slice.commandFirst;c<next.commands.size();++c)next.commands[c].data=stored.data()+(next.commands[c].packedFirst-next.packedCount);
+                next.packedCount+=stored.size();}
             else if(chunk.capacity()&&ctx.spare.size()<SpareChunks)ctx.spare.push_back(std::move(chunk));
             next.culled+=slice.culled;
             // Empty/invisible groups do not contribute to the shadow image.
@@ -470,11 +478,6 @@ private:
         }
         next.signature=h;next.valid=true;
     }
-    // Field-exact plan serialization; resources by key/revision plus whether
-    // each is this cache's current ready resource for its key.
-    // Field-exact plan serialization; resources by key/revision plus whether
-    // each is this cache's current ready resource for its key. strict adds the
-    // bookkeeping that never reaches a draw (culled count, empty slices, caps).
     // Field-exact plan serialization; resources by key/revision plus whether
     // each is this cache's current ready resource for its key. strict adds the
     // bookkeeping that never reaches a draw (culled count, empty slices, caps).
@@ -808,7 +811,7 @@ public:
         const auto& plan=prepare(matrix);stats_.culled=plan.culled;
         Resource* bound=nullptr;IDirect3DPixelShader9* boundPixel=nullptr;IDirect3DTexture9* boundTexture=nullptr;
         bool materialBound=false,textureBound=false;DWORD addressU=0,addressV=0;float cutoff=0;
-        size_t uploadedEnd=0,uploadedFirst=0;unsigned uploadedCursor=0;
+        InstanceUploadWindow window;unsigned uploadedCursor=0;
         DrawMode drawMode;const NorthlightShadowBounds::TexelRect* scissor=nullptr;hits_.clear();
         for(size_t c=0;c<plan.commands.size();++c){const auto& command=plan.commands[c];
             if(rects){hits_.clear();NorthlightShadowBounds::TexelRect footprint;const bool known=command.bounds.bounded&&NorthlightShadowBounds::texelFootprint(command.bounds.low,command.bounds.high,matrix,size,margin,footprint);
@@ -827,25 +830,19 @@ public:
             auto* texture=(pixel==opaqueFastPS_||pixel==opaquePS_)?nullptr:r.textures[b.material]->gpu;
             if(!textureBound||boundTexture!=texture){d->SetTexture(0,texture);boundTexture=texture;textureBound=true;}
             bool instanced=canInstance_&&count>1;
-            if(instanced&&c>=uploadedEnd){
+            if(instanced&&c>=window.endCommand){
                 if(instanceCapacity_==InstanceCapacity||instanceCursor_+count>instanceCapacity_)instanceCursor_=0;
-                uploadedCursor=instanceCursor_;uploadedFirst=command.first;uploadedEnd=c+1;
-                // Gather whole existing draw groups into one lock. Never split a
-                // draw or enlarge geometry buffers. Offset-less devices retain
-                // the original single-group DISCARD path.
-                if(instanceCapacity_>InstanceCapacity)while(uploadedEnd<plan.commands.size()){
-                    const auto& next=plan.commands[uploadedEnd];if(next.first+next.count-uploadedFirst>instanceCapacity_-instanceCursor_)break;++uploadedEnd;}
-                const auto& last=plan.commands[uploadedEnd-1];const unsigned n=unsigned(last.first+last.count-uploadedFirst);
+                uploadedCursor=instanceCursor_;
+                window.select(plan.commands,c,instanceCapacity_-instanceCursor_,instanceCapacity_>InstanceCapacity);
+                const unsigned n=unsigned(window.limit-window.first);
                 const DWORD flags=instanceCursor_?D3DLOCK_NOOVERWRITE:D3DLOCK_DISCARD;void* data=nullptr;
                 if(FAILED(instances_->Lock(instanceCursor_*sizeof(Instance),n*sizeof(Instance),&data,flags))||!data){canInstance_=false;instanced=false;}
                 else{++stats_.instanceLocks;stats_.instanceDiscards+=flags==D3DLOCK_DISCARD;if(flags==D3DLOCK_DISCARD)NorthlightLockMeter::discard(NorthlightLockMeter::Instances,std::uint64_t(instanceCapacity_)*sizeof(Instance)); /* 0.3.192 (DXVK3): DXVK 3.x charges the whole buffer */stats_.instanceBytes+=n*sizeof(Instance);
-                    // Commands tile the instances in order: one copy per run of adjacent chunk data.
-                    for(size_t k=c;k<uploadedEnd;){const auto& from=plan.commands[k];size_t run=from.count;while(++k<uploadedEnd&&plan.commands[k].data==from.data+run)run+=plan.commands[k].count;
-                        std::memcpy(static_cast<Instance*>(data)+(from.first-uploadedFirst),from.data,run*sizeof(Instance));}
+                    window.copy(plan.commands,c,static_cast<Instance*>(data));
                     if(FAILED(instances_->Unlock())){canInstance_=false;instanced=false;}else instanceCursor_+=n;
                 }
             }
-            const UINT instanceByteOffset=UINT((uploadedCursor+command.first-uploadedFirst)*sizeof(Instance));
+            const UINT instanceByteOffset=instanced?UINT((uploadedCursor+(command.packedFirst-window.first))*sizeof(Instance)):0;
             if(instanced&&!drawMode.apply(d,true,count,instanceByteOffset,instancedVS_,instancedDecl_,instances_,sizeof(Instance))){canInstance_=false;instanced=false;}
             size_t done=0;
             if(instanced)for(;done<passes;++done){pass(done);if(FAILED(d->DrawIndexedPrimitive(D3DPT_TRIANGLELIST,0,0,r.vertexCount,b.firstIndex,b.indexCount/3))){drawMode.invalidate();canInstance_=false;instanced=false;break;}++stats_.drawCalls;stats_.instances+=count;}
