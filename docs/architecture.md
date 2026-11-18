@@ -12,6 +12,8 @@ For local-light shadow costs and exact reuse of unchanged cube preparation, see
 the [2026-11-17 investigation](local-light-performance-20261117.md).
 For geometry capture reuse, pose certificates and range-bank transfer, see
 the [capture acceleration investigation](capture-acceleration-20261117.md).
+For the current cost of M2 capture and the data the installed game has before
+D3D9 submission, see the [native M2 capture investigation](native-m2-capture-20261118.md).
 
 Independent sky/fog controls, the AO-only HDR specialization and current native
 precipitation ownership are documented in
