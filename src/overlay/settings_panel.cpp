@@ -60,6 +60,7 @@ const std::map<std::string,const char*> Labels={
     {"HDRExposureMode","Exposure mode"},{"HDRPeakMode","Peak mode"},{"HDRWideBloom","Wide soft bloom"},{"HDRBloomStrength","Bloom strength"},{"HDRLegacyExpansion","Legacy highlight expansion (EV)"},
     {"HDRAutoMinEV","Auto exposure minimum (EV)"},{"HDRAutoMaxEV","Auto exposure maximum (EV)"},{"HDRLightAdaptation","Bright adaptation T90 (s)"},{"HDRDarkAdaptation","Dark adaptation T90 (s)"},
     {"NightBrightness","Night brightness (%)"},{"EquipmentLights","Equipment and effect lights"},
+    {"ShadowRefreshCpuMs","Shadow map refresh target (ms)"},
     {"CaptureBudgetMiB","Capture memory (MiB)"},{"ActorShadowBudgetMiB","Character shadow memory (MiB)"},{"MinSkinnedTriangles","Minimum character triangles"},{"LocalLightLimit","Total local lights (0 = off)"},{"GpuBudgetMs","GPU effect budget (ms)"},{"ActorShadowCpuMs","Shadow CPU budget (ms)"},
     {"CommandStream","Separate render thread"},{"StreamFramesAhead","Buffered frames"},{"StreamFrameSkip","Skip delayed frames"},{"StreamOcclusionLocal","Local occlusion results"},{"ReplayJobs","Parallel effect preparation"},{"FrameDrawGates","Skip inactive draw work"},
     {"PointShadowLimit","Of these, shadowed lights"},{"PointShadowDistance","Shadow distance (yd)"},{"PointShadows","Local light shadows"},{"PointShadowRefreshMs","Shadow update interval (ms)"},{"PointShadowFacesPerFrame","Faces updated per light"},{"BlobShadows","Round ground shadows"},{"ShadowProvider","Directional shadow renderer"},{"DisableOriginalTerrainShadows","Disable original terrain shadows"},{"BlobShadowStrength","Ground shadow strength (%)"},
@@ -181,6 +182,7 @@ const std::map<std::string,std::vector<const char*>> Help={
     {"StaticCacheSlices",{"Spreads static shadow cache updates across this many frames. More slices reduce work per update frame but take longer to finish a changed cache. 1 updates it together."}},
     {"ShadowPivotCorrection",{"Keeps nearby shadows aligned when camera zoom or collision moves the view. Leave enabled for normal play; disable only to compare the older shadow positioning."}},
     {"ShadowProvider",{"Northlight uses its own directional cascades and suspends the game's shadow-map preparation and rendering while they are available. Game uses the client's directional shadows and skips Northlight directional passes. AO, GI and local-light shadows keep their own controls. The game's saved Shadow Quality is restored on switching, reset, or leaving the world."}},
+    {"ShadowRefreshCpuMs",{"CPU time target shared by directional and lamp shadow maps. When exceeded, a stationary lamp can keep its previous complete shadow for one extra update. 0 disables this scheduling."}},
     {"PointShadowRefreshMs",{"Minimum interval between ordinary local-light shadow updates. Higher values save rendering work but can make moving shadows lag. 0 allows updates every frame; moved or replaced lights can force a refresh."}},
     {"PointShadowFacesPerFrame",{"Directions updated per local-light shadow cube, out of six. Fewer faces spread the work over more frames but can briefly show different shadow ages across directions. Moved or replaced lights require a full refresh."}},
     {"Weather",{"Enhances the game's current rain, snow and sand weather with Northlight effects. Does not force a storm. Turning it off leaves native game weather and disables the related Northlight enhancements."}},
@@ -257,13 +259,13 @@ const std::vector<Section> QualitySections={
         {"parallax","POM",nullptr,"AutoParallaxDepth AutoParallaxDistance AutoParallaxSteps",""},
         {"pomshadow","POM self-shadowing","AutoParallaxShadows","AutoParallaxShadowStrength AutoParallaxShadowSteps",""},
         {"cavity","Cavity shading","AutoCavity","AutoCavityStrength",""}},false},
-    {"shadows","Shadows","WorldShadows ShadowProvider SoftShadows ShadowStrength ShadowSoftness ShadowContactRadius ActorShadows ActorShadowDetail GrassShadows ActorShadowRadius BlobShadows BlobShadowStrength DisableOriginalTerrainShadows FarShadowInterval NearShadowInterval ShadowDirectionSteps StaticCacheSlices ShadowPivotCorrection",{
+    {"shadows","Shadows","WorldShadows ShadowProvider SoftShadows ShadowStrength ShadowSoftness ShadowContactRadius ActorShadows ActorShadowDetail GrassShadows ActorShadowRadius BlobShadows BlobShadowStrength DisableOriginalTerrainShadows FarShadowInterval NearShadowInterval ShadowRefreshCpuMs ShadowDirectionSteps StaticCacheSlices ShadowPivotCorrection",{
         {"filter","World shadows","WorldShadows","SoftShadows ShadowStrength ShadowSoftness ShadowContactRadius",""},
         {"provider","Directional shadows",nullptr,"ShadowProvider",""},
         {"actors","Character shadows","ActorShadows","ActorShadowRadius ActorShadowDetail GrassShadows","ActorShadowBudgetMiB ActorShadowCpuMs MinSkinnedTriangles CaptureBudgetMiB"},
         {"blobs","Round ground shadows","BlobShadows","BlobShadowStrength",""},
         {"nativeTerrain","Disable original terrain shadows","DisableOriginalTerrainShadows","",""},
-        {"cache","Shadow updates",nullptr,"","FarShadowInterval NearShadowInterval ShadowDirectionSteps StaticCacheSlices ShadowPivotCorrection"}},false},
+        {"cache","Shadow updates",nullptr,"","FarShadowInterval NearShadowInterval ShadowRefreshCpuMs ShadowDirectionSteps StaticCacheSlices ShadowPivotCorrection"}},false},
     {"atmosphere","Atmosphere & weather","WorldFog Godrays Weather AuroraStrength WeatherMemory RainFog RainLens RainLensStrength RainRivulets SnowLens SnowLensStrength SnowFrost SnowFrostStrength SandLens SandLensStrength SandLensSize WeatherWindDirection WeatherWindStrength WeatherCameraMotion FogClouds FogCloudDensity HorizonHaze HorizonHazeStart HorizonHazeBand HorizonHazeTerrain",{
         {"atmosphere","Atmospheric fog","WorldFog","Godrays",""},
         {"fog","Fog banks","FogClouds","FogCloudDensity",""},

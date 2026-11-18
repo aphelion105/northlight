@@ -74,7 +74,7 @@ consumers=['if(replayShadows)selectShadowReplays();','const bool directionalRepl
            'if(directionalShadows&&replayShadows){auto proofs','if(directionalReplayBounds)pointCalculateReplayBounds();']
 schedules=['||!replaysComplete||shadowTransitionFailed||memoryPressure', '!reason&&key.valid&&!pull&&!actorLost&&!transition.state.fading(),shadowDiagnosticCapture!=0,replaysComplete);','if(cascade==0)nearRendered=!environmentReuse&&captureMode==CaptureFresh&&interval>1&&actorShadows;',
            'if(!environmentReuse){if(splitNear||captureMode==CaptureFresh||!actorShadows)reuse.commit(interval,shadowPasses,matrices[cascade]);else captureDemand=true;}',
-           'renderPointShadows(atmosphere.lights,replaysComplete,actorShadows,rendererFrame);else pointReady=false;',
+           'renderPointShadows(atmosphere.lights,replaysComplete,actorShadows,rendererFrame,directionalShadowTime);else pointReady=false;',
            'renderFlashShadows(atmosphere.lights,replaysComplete,actorShadows);else for(auto& s:flashSlots)s.ready=false;']
 def schedules_guarded(text):
     for needle in consumers+schedules:once(text,needle,'render()')
@@ -98,7 +98,7 @@ checks['cascade replay block gated, terrain before, union after']=(render.count(
 # The probe moved before the live dump: legal because it never runs on a diagnostic capture frame.
 checks['probe never on a diagnostic capture frame']='probeRecord=replayProbeActive()&&slot==0&&captureMode==CaptureFresh&&!shadowDiagnosticCapture;' in block
 # Point cube: withReplays gates both replay loops and the schedule's replay count.
-pb=pt[pt.index('    bool renderPointShadow(const NorthlightLocalLights::Light& light,bool fresh=true,bool withReplays=true){'):pt.index('    void renderPointShadows(')]
+pb=pt[pt.index('    bool renderPointShadow('):pt.index('    void renderPointShadows(')]
 candidate_head='if(withReplays){\n                pointOrderReplays();'
 draw_head='if(withReplays){\n            float rows[16];'
 count='if(fresh)pointReplayCount=withReplays?replays.size():0;'
@@ -112,7 +112,9 @@ def point_replays_guarded(text):
                    '"cube animated draw"'):once(draws,needle,'point draw guard')
     empty='(!withReplays||replays.empty())'
     once(text,empty,'point geometry-only reuse guard')
-    outside=text.replace(candidates,'').replace(draws,'').replace(count,'').replace(empty,'')
+    refresh='budget&&withReplays&&!replays.empty()'
+    once(text,refresh,'complete animated cube budget guard')
+    outside=text.replace(candidates,'').replace(draws,'').replace(count,'').replace(empty,'').replace(refresh,'')
     return (text.index(candidates)+len(candidates)<=text.index(draws)
             and text.index(draws)+len(draws)<text.index('// With no dynamic casters, min(cache, cache) copies the static face')
             and re.search(r'\breplays\b',code(outside)) is None)

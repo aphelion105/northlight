@@ -10,6 +10,7 @@
 #include "world_compiled_shaders.h"
 #include "static_shadow_compiled_shaders.h"
 #include "shadow_bounds.h"
+#include "directional_shadow_batches.h"
 #include "world_math.h"
 #include <filesystem>
 #include <chrono>
@@ -86,16 +87,93 @@ static void broadphase(Mesh& mesh,const NorthlightLocalLights::Light& light,size
         for(unsigned v=0;v<2;++v){std::sort(samples[v].begin(),samples[v].end());ms[v]=(samples[v][3]+samples[v][4])*.5;}}
     std::printf("POINT_TREE_SCENE light=%zu exactMasks=1 exactDraws=1 batches=%zu bytes=%zu linearMs=%.6f indexedMs=%.6f\n",index,mesh.batches.size(),mesh.pointTree?mesh.pointTree->bytes():0,ms[0],ms[1]);
 }
+static void directionalBoundaries(IDirect3DPixelShader9* opaque,IDirect3DPixelShader9* cutout){
+    NorthlightDirectionalShadowBatches batches(2);
+    NorthlightShadowBounds::TexelRect a{0,0,8,8},b{8,0,16,8};
+    std::vector<unsigned> sizes;
+    auto submit=[&](const P::Batch& run,auto*,const auto*){sizes.push_back(run.count);return true;};
+    auto add=[&](unsigned start,unsigned page,unsigned material,auto* shader,const auto& rect){
+        P::Batch packet{};packet.start=start;packet.count=1;packet.vertexCount=3;
+        packet.page=page;packet.material=material;
+        assert(batches.add(packet,shader,&rect,shader==opaque,submit));
+    };
+    add(0,0,1,opaque,a);add(3,0,2,opaque,a);add(6,0,2,opaque,a);
+    add(9,0,2,opaque,b);add(12,0,2,cutout,b);add(15,0,3,cutout,b);
+    add(18,1,3,cutout,b);add(24,1,3,cutout,b);add(27,1,3,cutout,b);
+    assert(batches.flush(submit)&&sizes==std::vector<unsigned>({2,1,1,1,1,1,2}));
+}
 static void directional(IDirect3DDevice9* d,Mesh (&mesh)[2],Vec3 center,bool timing){
     IDirect3DVertexShader9* vs=nullptr;ok(d->CreateVertexShader(kShadowCacheVSShader,&vs));IDirect3DPixelShader9* shaders[4]{};const DWORD* codes[]={kStaticCasterPSShader,kStaticCasterOpaquePSShader,kStaticCasterFastPSShader,kStaticCasterOpaqueFastPSShader};for(unsigned i=0;i<4;++i)ok(d->CreatePixelShader(codes[i],&shaders[i]));
     IDirect3DSurface9 *target=nullptr,*depth=nullptr,*staging=nullptr;ok(d->CreateRenderTarget(1024,1024,D3DFMT_R32F,D3DMULTISAMPLE_NONE,0,FALSE,&target,nullptr));ok(d->CreateDepthStencilSurface(1024,1024,D3DFMT_D24S8,D3DMULTISAMPLE_NONE,0,FALSE,&depth,nullptr));ok(d->CreateOffscreenPlainSurface(1024,1024,D3DFMT_R32F,D3DPOOL_SYSTEMMEM,&staging,nullptr));
     IDirect3DQuery9 *event=nullptr,*begin=nullptr,*end=nullptr,*frequency=nullptr,*disjoint=nullptr;ok(d->CreateQuery(D3DQUERYTYPE_EVENT,&event));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&begin));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&end));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMPFREQ,&frequency));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMPDISJOINT,&disjoint));auto wait=[&]{ok(event->Issue(D3DISSUE_END));while(event->GetData(nullptr,0,D3DGETDATA_FLUSH)==S_FALSE)SwitchToThread();};
+    directionalBoundaries(shaders[1],shaders[0]);
     for(float radius:{48.f,192.f})for(float elevation:{.08726646f,.78539816f}){
         const Vec3 direction{std::cos(elevation)*.70710678f,std::cos(elevation)*.70710678f,std::sin(elevation)};float matrix[16];NorthlightWorldMath::shadowMatrix(center,direction,radius,matrix);std::vector<P::Batch> selected[2];uint64_t triangles[2]{};
         for(unsigned v=0;v<2;++v)for(const auto& b:mesh[v].directionalBatches)if(!b.pointOnly&&(!b.terrain||mesh[v].fixedChunks.count({b.chunkX,b.chunkY}))&&!NorthlightShadowBounds::directionalClipRejectAffine(b.boundsLow,b.boundsHigh,matrix)){selected[v].push_back(b);triangles[v]+=b.count;}
-        auto draw=[&](unsigned v){ok(d->SetDepthStencilSurface(nullptr));ok(d->SetRenderTarget(0,target));ok(d->SetDepthStencilSurface(depth));D3DVIEWPORT9 viewport={0,0,1024,1024,0,1};ok(d->SetViewport(&viewport));ok(d->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0xffffffff,1,0));ok(d->SetVertexShader(vs));ok(d->SetVertexShaderConstantF(0,matrix,4));ok(d->BeginScene());unsigned page=UINT_MAX,shader=UINT_MAX;for(const auto& b:selected[v]){const unsigned choice=(NorthlightShadowBounds::depthFullyInsideAffine(b.boundsLow,b.boundsHigh,matrix)?2u:0u)+(mesh[v].uploadedAlphaCutoffs[b.material]<=0?1u:0u);if(shader!=choice){shader=choice;ok(d->SetPixelShader(shaders[choice]));}if(page!=b.page){page=b.page;ok(d->SetStreamSource(0,mesh[v].vertices[page],0,sizeof(NorthlightGI::WorldVertex)));ok(d->SetIndices(mesh[v].indices[page]));}const float material[]={1,1,1,mesh[v].uploadedAlphaCutoffs[b.material]};ok(d->SetPixelShaderConstantF(0,material,1));ok(d->SetTexture(0,mesh[v].materials[b.material]));ok(d->DrawIndexedPrimitive(D3DPT_TRIANGLELIST,0,b.minVertex,b.vertexCount,b.start,b.count));}ok(d->EndScene());};
-        std::vector<float> image[2];for(unsigned v=0;v<2;++v){draw(v);ok(d->GetRenderTargetData(target,staging));D3DLOCKED_RECT lock{};ok(staging->LockRect(&lock,nullptr,D3DLOCK_READONLY));image[v].resize(1024*1024);for(unsigned y=0;y<1024;++y)std::memcpy(image[v].data()+y*1024,static_cast<char*>(lock.pBits)+y*lock.Pitch,1024*4);ok(staging->UnlockRect());}unsigned changed=0;float peak=0;for(size_t i=0;i<image[0].size();++i){assert(std::isfinite(image[0][i])&&std::isfinite(image[1][i]));changed+=image[0][i]!=image[1][i];peak=std::max(peak,std::abs(image[0][i]-image[1][i]));}assert(peak<2e-6f);
-        double ms[2]{};if(timing){std::vector<double> samples[2];for(unsigned block=0;block<24;++block){const unsigned v=(block/2)%2?1-block%2:block%2;draw(v);wait();ok(disjoint->Issue(D3DISSUE_BEGIN));ok(begin->Issue(D3DISSUE_END));for(unsigned n=0;n<4;++n)draw(v);ok(end->Issue(D3DISSUE_END));ok(frequency->Issue(D3DISSUE_END));ok(disjoint->Issue(D3DISSUE_END));wait();UINT64 a=0,b=0,hz=0;BOOL invalid=TRUE;ok(begin->GetData(&a,sizeof a,0));ok(end->GetData(&b,sizeof b,0));ok(frequency->GetData(&hz,sizeof hz,0));ok(disjoint->GetData(&invalid,sizeof invalid,0));assert(!invalid&&hz&&b>=a);if(block>=4)samples[v].push_back(1000.*double(b-a)/double(hz)/4);}for(unsigned v=0;v<2;++v){std::sort(samples[v].begin(),samples[v].end());ms[v]=(samples[v][4]+samples[v][5])*.5;}}
+        auto draw=[&](unsigned v,bool merge){
+            ok(d->SetDepthStencilSurface(nullptr));ok(d->SetRenderTarget(0,target));ok(d->SetDepthStencilSurface(depth));
+            D3DVIEWPORT9 viewport={0,0,1024,1024,0,1};ok(d->SetViewport(&viewport));
+            ok(d->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0xffffffff,1,0));
+            ok(d->SetVertexShader(vs));ok(d->SetVertexShaderConstantF(0,matrix,4));ok(d->BeginScene());
+            unsigned page=UINT_MAX,draws=0,materialId=UINT_MAX;IDirect3DPixelShader9* bound=nullptr;
+            auto submit=[&](const P::Batch& b,IDirect3DPixelShader9* shader,const NorthlightShadowBounds::TexelRect*){
+                if(bound!=shader){ok(d->SetPixelShader(shader));bound=shader;}
+                if(page!=b.page){page=b.page;ok(d->SetStreamSource(0,mesh[v].vertices[page],0,sizeof(NorthlightGI::WorldVertex)));ok(d->SetIndices(mesh[v].indices[page]));}
+                if(!merge||(shader!=shaders[1]&&shader!=shaders[3]&&b.material!=materialId)){
+                    const float material[]={1,1,1,mesh[v].uploadedAlphaCutoffs[b.material]};
+                    ok(d->SetPixelShaderConstantF(0,material,1));ok(d->SetTexture(0,mesh[v].materials[b.material]));
+                    materialId=b.material;
+                }
+                ok(d->DrawIndexedPrimitive(D3DPT_TRIANGLELIST,0,b.minVertex,b.vertexCount,b.start,b.count));
+                ++draws;return true;
+            };
+            NorthlightDirectionalShadowBatches batches(mesh[v].pointPrimitiveLimit);
+            for(const auto& b:selected[v]){
+                const bool opaque=mesh[v].uploadedAlphaCutoffs[b.material]<=0;
+                const unsigned choice=(NorthlightShadowBounds::depthFullyInsideAffine(b.boundsLow,b.boundsHigh,matrix)?2u:0u)+opaque;
+                if(merge)assert(batches.add(b,shaders[choice],nullptr,opaque,submit));
+                else submit(b,shaders[choice],nullptr);
+            }
+            assert(batches.flush(submit));ok(d->EndScene());return draws;
+        };
+        auto pixels=[&]{
+            ok(d->GetRenderTargetData(target,staging));D3DLOCKED_RECT lock{};
+            ok(staging->LockRect(&lock,nullptr,D3DLOCK_READONLY));std::vector<float> result(1024*1024);
+            for(unsigned y=0;y<1024;++y)std::memcpy(result.data()+y*1024,static_cast<char*>(lock.pBits)+y*lock.Pitch,1024*4);
+            ok(staging->UnlockRect());return result;
+        };
+        draw(0,false);const auto original=pixels();
+        const unsigned separate=draw(1,false);const auto reference=pixels();
+        const unsigned merged=draw(1,true);const auto candidate=pixels();
+        assert(!std::memcmp(reference.data(),candidate.data(),reference.size()*sizeof(float))&&merged<=separate);
+        unsigned changed=0;float peak=0;
+        for(size_t i=0;i<original.size();++i){assert(std::isfinite(original[i])&&std::isfinite(reference[i]));changed+=original[i]!=reference[i];peak=std::max(peak,std::abs(original[i]-reference[i]));}assert(peak<2e-6f);
+        struct Times {std::array<double,2> gpu{},cpu{};};
+        auto measure=[&](bool merging){
+            Times result;
+            if(!timing)return result;
+            std::vector<double> gpu[2],cpu[2];
+            for(unsigned block=0;block<24;++block){
+                const unsigned mode=(block/2)%2?1-block%2:block%2;
+                auto submit=[&]{draw(merging?1:mode,merging&&mode);};
+                submit();wait();ok(disjoint->Issue(D3DISSUE_BEGIN));ok(begin->Issue(D3DISSUE_END));
+                const auto start=std::chrono::steady_clock::now();
+                for(unsigned n=0;n<4;++n)submit();
+                const double submitMs=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count()/4;
+                ok(end->Issue(D3DISSUE_END));ok(frequency->Issue(D3DISSUE_END));ok(disjoint->Issue(D3DISSUE_END));wait();
+                UINT64 a=0,b=0,hz=0;BOOL invalid=TRUE;
+                ok(begin->GetData(&a,sizeof a,0));ok(end->GetData(&b,sizeof b,0));ok(frequency->GetData(&hz,sizeof hz,0));
+                ok(disjoint->GetData(&invalid,sizeof invalid,0));assert(!invalid&&hz&&b>=a);
+                if(block>=4){gpu[mode].push_back(1000.*double(b-a)/double(hz)/4);cpu[mode].push_back(submitMs);}
+            }
+            const auto median=[](auto& samples){std::sort(samples.begin(),samples.end());return (samples[4]+samples[5])*.5;};
+            for(unsigned v=0;v<2;++v){result.gpu[v]=median(gpu[v]);result.cpu[v]=median(cpu[v]);}
+            return result;
+        };
+        const auto ms=measure(false).gpu;
+        const auto batchMs=measure(true);
+        std::printf("DIRECTIONAL_BATCH radius=%g elevation=%g beforeDraws=%u afterDraws=%u beforeMs=%.6f afterMs=%.6f beforeCpuMs=%.6f afterCpuMs=%.6f depthExact=1\n",
+            radius,elevation,separate,merged,batchMs.gpu[0],batchMs.gpu[1],batchMs.cpu[0],batchMs.cpu[1]);
         std::printf("SPATIAL_DIRECTIONAL radius=%g elevation=%g changed=%u max=%g oldTriangles=%llu newTriangles=%llu oldDraws=%zu newDraws=%zu oldGpuMs=%g newGpuMs=%g\n",radius,elevation,changed,peak,(unsigned long long)triangles[0],(unsigned long long)triangles[1],selected[0].size(),selected[1].size(),ms[0],ms[1]);
     }
     ok(d->SetDepthStencilSurface(nullptr));target->Release();depth->Release();staging->Release();vs->Release();for(auto* p:shaders)p->Release();for(auto* p:{event,begin,end,frequency,disjoint})p->Release();

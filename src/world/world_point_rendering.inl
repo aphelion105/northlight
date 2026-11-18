@@ -23,6 +23,8 @@
         PointTerrainMemo terrainMemo;
         NorthlightPointShadow::FaceCycle faceCycle;unsigned faceWeights[6]={};
         NorthlightPointShadow::RefreshSchedule schedule;
+        uint64_t completeTerrainRevision=0;
+        bool budgetHeld=false;
         NorthlightLocalLights::Light selected{};std::string map;DWORD retryAt=0;
     };
     std::array<PointSlot,NorthlightPointShadow::MaxLights> pointSlots;
@@ -144,7 +146,7 @@
         else if(!pointShadowPS)d->CreatePixelShader(kLocalShadowPSShader,&pointShadowPS);
         else if(!pointLightingPS)d->CreatePixelShader(kLocalLightingShader,&pointLightingPS);
     }
-    void pointDeviceCaps(){
+    void shadowDeviceCaps(){
         if(pointPrimitiveLimit)return;
         D3DCAPS9 caps{};pointPrimitiveLimit=SUCCEEDED(d->GetDeviceCaps(&caps))&&caps.MaxPrimitiveCount?caps.MaxPrimitiveCount:1;
         IDirect3D9* api=nullptr;D3DDEVICE_CREATION_PARAMETERS creation{};D3DDISPLAYMODE display{};
@@ -159,7 +161,7 @@
     HRESULT prewarmPointPipelines(bool& kicked,HRESULT& restoreStatus){
         kicked=false;restoreStatus=S_OK;auto& slot=pointSlots[0];
         if(slot.ready||slot.cacheValid)return D3DERR_INVALIDCALL;
-        pointDeviceCaps();
+        shadowDeviceCaps();
         HRESULT hr=S_OK;const auto ok=[&](HRESULT value){hr=value;return SUCCEEDED(value);};
         if(!pointShadowVS&&!ok(d->CreateVertexShader(kLocalShadowVSShader,&pointShadowVS)))return hr;
         if(!pointShadowPS&&!ok(d->CreatePixelShader(kLocalShadowPSShader,&pointShadowPS)))return hr;
@@ -298,7 +300,7 @@
     }
     bool pointResources(){
         if(pointSlot().retryAt&&LONG(GetTickCount()-pointSlot().retryAt)<0)return false;
-        pointDeviceCaps();
+        shadowDeviceCaps();
         if(!pointScratch&&!pointCheck(pointAllocate(pointCold.shared,[&]{return d->CreateTexture(PointResolution,PointResolution,1,D3DUSAGE_RENDERTARGET,D3DFMT_R32F,D3DPOOL_DEFAULT,&pointScratch,nullptr);}),"cube scratch"))return false;
         if(!pointScratch)return pointCheck(E_FAIL,"empty cube scratch");
         if(!pointScratchSurface&&!pointCheck(pointScratch->GetSurfaceLevel(0,&pointScratchSurface),"cube scratch surface"))return false;
@@ -427,12 +429,7 @@
         size_t last=candidates[at++];Batch run=pointMeshBatch(last);uint64_t selected=run.count,bridged=0;
         const auto opaque=[&](unsigned material){return material<materials.size()&&material<uploadedAlphaCutoffs.size()&&uploadedAlphaCutoffs[material]<=0;};
         const auto append=[&](Batch& sum,const Batch& next){
-            if(next.page!=sum.page||uint64_t(sum.start)+uint64_t(sum.count)*3!=next.start)return false;
-            const auto low=std::min(sum.minVertex,next.minVertex);
-            const uint64_t high=std::max(uint64_t(sum.minVertex)+sum.vertexCount,uint64_t(next.minVertex)+next.vertexCount);
-            const uint64_t count=uint64_t(sum.count)+next.count;
-            if(high>UINT_MAX||count>UINT_MAX||(pointPrimitiveLimit&&count>pointPrimitiveLimit))return false;
-            sum.count=UINT(count);sum.minVertex=low;sum.vertexCount=UINT(high-low);return true;
+            return NorthlightWorldMeshPages::appendDrawRange(sum,next,pointPrimitiveLimit);
         };
         // Preserve index order and coverage. A gap may bridge only batches
         // proven outside this light/face; excluded or unknown batches stay barriers.
@@ -867,7 +864,8 @@
     // or defer; publishing a static-only cube would erase character shadows.
     // withReplays=false (0.3.158 ActorShadows=0): static cache, terrain and union only; the
     // cube is complete without replays (fresh=true) and the schedule sees none.
-    bool renderPointShadow(const NorthlightLocalLights::Light& light,bool fresh=true,bool withReplays=true){
+    bool renderPointShadow(const NorthlightLocalLights::Light& light,bool fresh=true,bool withReplays=true,const NorthlightShadowRefreshBudget* budget=nullptr){
+        const bool previouslyHeld=std::exchange(pointSlot().budgetHeld,false);
         pointSlot().prewarmed=false;pointSlot().ready=false;pointDraws=pointCulled=pointFacesReused=0;
         // Publication can lead the bounded upload. Its committed same-map
         // pages, materials and meshGeneration remain drawable until the swap.
@@ -906,6 +904,17 @@
         if(geometryUnchanged){
             pointSlot().schedule.commit(updateAt,pointSlot().selected,meshGeneration);
             pointFacesReused=6;pointSlot().ready=true;++pointReuses;return true;
+        }
+        const auto& previous=pointSlot().schedule;
+        if(budget&&withReplays&&!replays.empty()&&!rebuild&&!lightChanged&&previous.complete&&
+           pointSlot().geometryOnlyFaces!=63&&pointSlot().completeTerrainRevision==liveTerrainRevision&&
+           previous.generation==meshGeneration&&quality.pointShadowFacesPerFrame==6&&
+           budget->mayHold(previouslyHeld,updateAt-previous.updatedAt,
+                           NorthlightPointShadow::RefreshSchedule::period(pointReplayCount,quality.pointShadowRefreshMs))){
+            pointSlot().budgetHeld=true;
+            pointSlot().ready=true;
+            ++pointReuses;
+            return true;
         }
         // Only an actual dynamic cube refresh consumes replay bounds. Start
         // before candidate preparation; the first reader below joins the job.
@@ -1172,14 +1181,18 @@
         if(cycling&&!pointSlot().faceCycle.advance()){pointSlot().ready=true;++pointUpdates;return true;} /* stale until the last group */
         if(cycling)pointSlot().schedule.commit(pointSlot().faceCycle.startedAt,pointSlot().selected,pointSlot().faceCycle.generation);
         else pointSlot().schedule.commit(updateAt,pointSlot().selected,meshGeneration);
+        pointSlot().completeTerrainRevision=liveTerrainRevision;
         pointSlot().ready=true;++pointUpdates;
         if(frames==0||(frames%600==0&&NorthlightDiagnostics::enabled()))logf("POINT source=%llu kind=%u range=%.2f faces=%u size=256 draws=%u reusedFaces=%u culled=%u replayBounds=%u boundVertices=%zu boundOperations=%zu",(unsigned long long)pointSlot().selected.sourceId,pointSlot().selected.kind,pointSlot().selected.attenuationEnd,unsigned(__builtin_popcount(faces)),pointDraws,pointFacesReused,pointCulled,pointBoundsValid,pointBoundVertices,pointBoundOperations);
         return true;
     }
-    void renderPointShadows(const NorthlightLocalLightSelection::Selection& lights,bool fresh,bool withReplays,unsigned rendererFrame=0){
+    void renderPointShadows(const NorthlightLocalLightSelection::Selection& lights,bool fresh,bool withReplays,unsigned rendererFrame=0,
+                            NorthlightShadowRefreshBudget::Clock::duration directionalTime={}){
         ++nativeCubeRevision;
         pointReady=false;pointWork={};pointCold={};
         if(!active)return;
+        NorthlightShadowRefreshBudget refreshBudget(quality.shadowRefreshCpuMs,directionalTime);
+        unsigned held=0;
         const bool coldTimed=NorthlightQuality::renderProfile(quality);const int64_t coldStarted=coldTimed?QpcClock::now():0;
         if(pointSelectionMap!=active->map){pointSelection.reset();clearPointKeeps();pointSelectionMap=active->map;}
         const auto picks=pointSelection.update(lights.sources.data(),lights.count,context.camera,NorthlightQuality::localShadowLimit(quality),GetTickCount(),&localScissorView,float(quality.pointShadowDistance));
@@ -1210,13 +1223,16 @@
         for(pointIndex=0;pointIndex<pointSlots.size();++pointIndex){const auto& pick=picks[pointIndex];if(pick.index<0)continue;
             ++selected;
             restorePointSlot(lights.sources[pick.index]);pointSlot().selectionGain=pick.gain;
-            renderPointShadow(lights.sources[pick.index],fresh,withReplays);pointReady|=pointSlot().ready;
+            renderPointShadow(lights.sources[pick.index],fresh,withReplays,&refreshBudget);pointReady|=pointSlot().ready;
+            held+=pointSlot().budgetHeld;
             totalDraws+=pointDraws;totalCulled+=pointCulled;
             if(!pointSlot().ready)pointSelection.defer(pointIndex);
         }
         pointIndex=0;
         pointDraws=totalDraws;pointCulled=totalCulled;pointLogSchedule(pointUpdates==updatesBefore&&pointReuses!=reusesBefore);
         pointWork.selected=selected;
+        if(profileSampled())logf("SHADOW_REFRESH rendererFrame=%u targetMs=%u directionalCpuMs=%.3f heldCubes=%u selected=%u",rendererFrame,
+            quality.shadowRefreshCpuMs,std::chrono::duration<double,std::milli>(directionalTime).count(),held,selected);
         if(pointReportedLimit!=NorthlightQuality::localShadowLimit(quality)||(frames%600==0&&NorthlightDiagnostics::enabled())){
             unsigned ready=0,resident=0,kept=0,staticFaces=0;for(const auto& p:pointSlots){ready+=p.ready;resident+=p.cube!=nullptr;for(auto* t:p.cacheFace)staticFaces+=t!=nullptr;}for(const auto& k:pointKeeps){kept+=k.slot.cacheValid;for(auto* t:k.slot.cacheFace)staticFaces+=t!=nullptr;}
             logf("POINT pool limit=%u selected=%u ready=%u cubeSlots=%u estimatedMiB=%.1f staticKeeps=%u staticFaces=%u",NorthlightQuality::localShadowLimit(quality),selected,ready,resident,resident*1.5+staticFaces*.25+(pointScratch?.25:0)+(pointDepth?.25:0),kept,staticFaces);

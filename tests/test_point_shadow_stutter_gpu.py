@@ -67,6 +67,7 @@ for i,backend in enumerate(backends):
  assert text.count('POINT_SKIN_SOURCE_GPU_PASS ')==2
  assert 'POINT_SINGLE_BONE_CHEAP_GPU_PASS ' in text
  assert 'POINT_WHITE_CUBE_GPU_PASS ' in text
+ if not a.reference_point_from:assert 'SHADOW_REFRESH_GPU_PASS ' in text
  assert text.count('POINT_DIRECT_GPU_PASS ')==10
  assert 'POINT_RECYCLE_GPU_PASS ' in text
  material_bounds=[]

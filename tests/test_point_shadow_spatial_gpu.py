@@ -66,7 +66,9 @@ for backend in a.backend or [Path(os.environ['WINDIR']) / 'SysWOW64/d3d9.dll', f
     assert len(rows) == len(lights) and len(directional) == 4
     broadphase = [dict(re.findall(r'(\w+)=([^ ]+)', line)) for line in run.stdout.splitlines() if line.startswith('POINT_TREE_SCENE ')]
     assert len(broadphase) == len(lights)
-    report['runs'].append({'broadphase': broadphase, 'backend': str(backend), 'backend_sha256': hashlib.sha256(backend.read_bytes()).hexdigest(), 'command': command, 'rows': rows, 'directional': directional})
+    batched = [dict(re.findall(r'(\w+)=([^ ]+)', line)) for line in run.stdout.splitlines() if line.startswith('DIRECTIONAL_BATCH ')]
+    assert len(batched) == 4 and all(row['depthExact'] == '1' for row in batched)
+    report['runs'].append({'broadphase': broadphase, 'backend': str(backend), 'backend_sha256': hashlib.sha256(backend.read_bytes()).hexdigest(), 'command': command, 'rows': rows, 'directional': directional, 'directional_batches': batched})
 assert all(hashlib.sha256(Path(path).read_bytes()).hexdigest() == digest for path, digest in inputs.items()), 'Inputs changed during comparison'
 report['pass'] = True
 (out / 'validation.json').write_text(json.dumps(report, indent=2) + '\n')

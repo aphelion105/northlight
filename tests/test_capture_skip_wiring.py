@@ -34,14 +34,14 @@ for needle,what in [('if(replayShadows)selectShadowReplays();','selection histor
                     ('(replayShadows&&!timedReplay())','GPU cache LRU/probation clock'),
                     ('if(directionalShadows&&replayShadows){auto proofs','static dedup proofs require the selected directional provider'),
                     ('if(directionalReplayBounds)pointCalculateReplayBounds();','directional bounds cache resume cursors'),
-                    ('renderPointShadows(atmosphere.lights,replaysComplete,actorShadows,rendererFrame)','point cube schedule'),
+                    ('renderPointShadows(atmosphere.lights,replaysComplete,actorShadows,rendererFrame,directionalShadowTime)','point cube schedule'),
                     ('if(!environmentReuse){if(splitNear||captureMode==CaptureFresh||!actorShadows)reuse.commit(interval,shadowPasses,matrices[cascade]);else captureDemand=true;}','cascade commit')]:
     once(render,needle,what)
 assert render.count('selectShadowReplays(')==1 and w.count('selectShadowReplays()')==1,'selection runs only from render'
 assert ex.count('finishShadowFate();')==1 and 'finishShadowFate' not in w,'fate frame closes only inside the (gated) selection'
 assert render.count('uploadReplay(')==1 and render.count('timedReplay()')==1,'replay upload only via timedReplay'
 # Point: a frame without replays never commits the schedule.
-body=pt[pt.index('    bool renderPointShadow(const NorthlightLocalLights::Light& light,bool fresh=true,bool withReplays=true){'):pt.index('    bool renderPointLighting(')]
+body=pt[pt.index('    bool renderPointShadow('):pt.index('    bool renderPointLighting(')]
 assert body.index('if(!fresh){')<body.index('pointSlot().schedule.commit('),'no point commit from a skipped frame'
 assert body.index('if(!fresh){')<body.index('if(withReplays)replayBoundsRequest();')<body.index('replayBoundsJoin();'),'point bounds belong to actual fresh cube refreshes'
 assert 'const bool directionalReplayBounds=directionalShadows&&replayShadows&&(sourceActive[0]||sourceActive[1]);' in render
@@ -54,7 +54,7 @@ assert 'if(!pointSlot().schedule.usable||lightChanged)return false;' in body, 'o
 assert 'pointSlot().schedule.due(updateAt,pointSlot().selected,meshGeneration,pointReplayCount' in body and 'if(fresh)pointReplayCount=withReplays?replays.size():0;' in body
 # 0.3.151 face cycles: an incomplete cycle leaves the schedule stale, so the prediction stays due
 # and the next frame captures; a frame without replays neither advances nor commits it.
-pred=pt[pt.index('    bool pointRefreshPredicted()const{'):pt.index('    bool renderPointShadow(const NorthlightLocalLights::Light& light,bool fresh=true,bool withReplays=true){')]
+pred=pt[pt.index('    bool pointRefreshPredicted()const{'):pt.index('    bool renderPointShadow(')]
 assert 'NorthlightPointShadow::selectMany(' in pred and '.count!=0;' in pred
 assert 'void stale(){complete=false;}' in fp.src('point_light_shadow.h').read_text() and 'if(invalidated||!complete||' in fp.src('point_light_shadow.h').read_text()
 assert body.index('if(!fresh){')<body.index('pointSlot().faceCycle.advance()'),'no cycle progress from a skipped frame'

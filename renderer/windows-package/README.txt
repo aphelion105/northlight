@@ -181,6 +181,7 @@ Individual settings (Quality / Balanced / Performance):
   LocalLightLimit       64 / 64 / 64   total lamps lighting at the same time (0..128; 0 disables local lights; lamps in view first; shadowed lamps are a subset; the GPU budget never lowers it)
   PointShadows          1 / 1 / 1      shadows from selected compact local sources, including supported street lamps, torches and braziers; enabled day and night with source visibility and sunlight fading
   PointShadowRefreshMs  0 / 33 / 33    lamp shadow update interval
+  ShadowRefreshCpuMs    3 / 3 / 2      shared CPU time target in ms for directional and lamp shadow updates. A stationary lamp can retain its complete cube for one extra update. 0 disables the target.
   PointShadowFacesPerFrame 6 / 6 / 6   lamp shadow directions updated per frame (1..6; 6 = all at once; lower = smaller spikes, a brief seam at the edge)
   ShadowDirectionSteps  2048/2048/2048 sun direction quantization (fewer jumps)
   StaticCacheSlices     1 / 1 / 1      a partial redraw of the cached shadow is spread over N frames (1..4; 1 = in one frame; a new shadow can appear N-1 frames late)

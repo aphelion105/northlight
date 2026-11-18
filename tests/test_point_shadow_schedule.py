@@ -10,8 +10,8 @@ HERE=Path(__file__).resolve().parent
 pt=fp.src('world_point_rendering.inl').read_text()
 # The same per-face invariants now apply to each independently owned light slot.
 
-body=pt[pt.index('    bool renderPointShadow(const NorthlightLocalLights::Light& light,bool fresh=true,bool withReplays=true){'):pt.index('    bool renderPointLighting(')]
-pred=pt[pt.index('    bool pointRefreshPredicted()const{'):pt.index('    bool renderPointShadow(const NorthlightLocalLights::Light& light,bool fresh=true,bool withReplays=true){')]
+body=pt[pt.index('    bool renderPointShadow('):pt.index('    bool renderPointLighting(')]
+pred=pt[pt.index('    bool pointRefreshPredicted()const{'):pt.index('    bool renderPointShadow(')]
 # 3a: static faces keyed on content; the generation only through the unknown-records fallback.
 assert 'pointCacheSerial' not in pt and pt.count('pointStaticRebuild(')==2
 assert 'NorthlightPointShadow::selectMany(active->localLights.data(),active->localLights.size(),context.camera,NorthlightQuality::localShadowLimit(quality),{},float(quality.pointShadowDistance),true).count!=0||' in pred

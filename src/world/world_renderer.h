@@ -98,6 +98,8 @@
 #include "flight_shadow.h"
 #include "world_dynamic_probes.h"
 #include "shadow_bounds.h"
+#include "shadow_refresh_budget.h"
+#include "directional_shadow_batches.h"
 #include "static_cache_slices.h"
 #include "terrain_shadow_candidates.h"
 #include "legacy_fog.h"
@@ -5564,6 +5566,7 @@ public:
         if(!uploadRegionalFog(field,frameMap))return false;
         int firstSource=sourceActive[0]||!sourceActive[1]?0:1;
         unsigned culledBatches[2]={},drawnBatches[2]={};
+        NorthlightShadowRefreshBudget::Clock::duration directionalShadowTime{};
         size_t replayConstantBytes=0,replayConstantCalls=0,replayPosePrepared=0,replayPoseReused=0;
         nativeSceneFrame.clear();
         if(menuDomain)nativeSceneFrame=menuLights;else if(equipmentLightsOn()&&active)NorthlightNativeLights::frame(active->map.c_str(),context.camera,nativeSceneFrame);
@@ -5699,6 +5702,7 @@ public:
             NorthlightWorldMath::shadowMatrixFrom(slotPlacement[slot].frame,radius*float(ShadowCacheSize)/1024.f,staticSlotMatrix[slot]);
         }
         struct StaticPlanJoin {WorldRenderer& r;~StaticPlanJoin(){try{r.staticCasters.settle();}catch(...){}}} staticPlanJoin{*this}; /* before any return below */
+        const auto directionalStart=NorthlightShadowRefreshBudget::Clock::now();
         if(directionalShadows){const auto kickStart=std::chrono::steady_clock::now();staticPlanKick(slotPlacement,sourceActive);staticKickMs+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-kickStart).count();}
         if(directionalReplayBounds)pointCalculateReplayBounds(); // point-only refreshes prepare on demand
         d->SetSamplerState(0,D3DSAMP_ADDRESSU,D3DTADDRESS_WRAP);d->SetSamplerState(0,D3DSAMP_ADDRESSV,D3DTADDRESS_WRAP);d->SetSamplerState(0,D3DSAMP_MINFILTER,D3DTEXF_LINEAR);d->SetSamplerState(0,D3DSAMP_MAGFILTER,D3DTEXF_LINEAR);d->SetSamplerState(0,D3DSAMP_MIPFILTER,D3DTEXF_NONE);d->SetSamplerState(0,D3DSAMP_SRGBTEXTURE,FALSE);
@@ -5784,6 +5788,25 @@ public:
                 d->SetVertexShader(cachedShadowVS);d->SetVertexShaderConstantF(0,cachedMatrix,4);d->SetPixelShader(cachedShadowPS);
                 IDirect3DPixelShader9* boundCachePS=cachedShadowPS;
                 UINT boundPage=UINT_MAX;const NorthlightShadowBounds::TexelRect* staticScissor=nullptr;
+                shadowDeviceCaps();
+                NorthlightDirectionalShadowBatches cacheBatches(pointPrimitiveLimit);
+                UINT boundCutoutMaterial=UINT_MAX;
+                auto submitBatch=[&](const Batch& batch,IDirect3DPixelShader9* ps,const NorthlightShadowBounds::TexelRect* rect){
+                    if(ps!=boundCachePS){if(!check(d->SetPixelShader(ps),"static cache depth variant"))return false;boundCachePS=ps;}
+                    if(ps!=cachedOpaquePS&&ps!=cachedOpaqueFastPS&&batch.material!=boundCutoutMaterial){
+                        const float material[]={1,1,1,uploadedAlphaCutoffs[batch.material]};
+                        if(!check(d->SetPixelShaderConstantF(0,material,1),"static cache cutoff")||
+                           !check(d->SetTexture(0,materials[batch.material]),"static cache texture"))return false;
+                        boundCutoutMaterial=batch.material;
+                    }
+                    if(!bindMeshPage(batch,boundPage))return false;
+                    if(rect&&rect!=staticScissor){
+                        const RECT r={LONG(rect->left),LONG(rect->top),LONG(rect->right),LONG(rect->bottom)};
+                        if(!check(d->SetScissorRect(&r),"static cache scissor"))return false;
+                        staticScissor=rect;
+                    }
+                    return check(d->DrawIndexedPrimitive(D3DPT_TRIANGLELIST,0,batch.minVertex,batch.vertexCount,batch.start,batch.count),"static shadow cache draw");
+                };
                 /* 0.3.215 (task 45): the flat bitmap answers the per-batch fixed-chunk test without a red-black tree walk (same membership: it falls back to the set off-grid or when it does not describe this set). */
                 const auto& fixedSet=fixedTerrainChunks();const bool fixedBits=fixedTerrainBits.source()==&fixedSet;
                 const bool affine=NorthlightShadowBounds::affineLightMatrix(cachedMatrix);
@@ -5799,15 +5822,13 @@ public:
                     const bool opaque=uploadedAlphaCutoffs[b.material]<=0;
                     IDirect3DPixelShader9* ps=interior?(opaque&&cachedOpaqueFastPS?cachedOpaqueFastPS:cachedFastPS):(opaque?cachedOpaquePS:cachedShadowPS);
                     if(!ps)ps=cachedShadowPS;
-                    if(ps!=boundCachePS){if(!check(d->SetPixelShader(ps),"static cache depth variant"))return -1;boundCachePS=ps;}
-                    float material[]={1,1,1,uploadedAlphaCutoffs[b.material]};d->SetPixelShaderConstantF(0,material,1);d->SetTexture(0,materials[b.material]);
-                    if(!bindMeshPage(b,boundPage))return -1;
+                    const bool textureIndependent=opaque&&(ps==cachedOpaquePS||ps==cachedOpaqueFastPS);
                     for(size_t k=0;k<passes;++k){
-                        if(partial&&staticScissor!=staticDirtyHits[k]){const RECT r={LONG(staticDirtyHits[k]->left),LONG(staticDirtyHits[k]->top),LONG(staticDirtyHits[k]->right),LONG(staticDirtyHits[k]->bottom)};d->SetScissorRect(&r);staticScissor=staticDirtyHits[k];}
-                        if(!check(d->DrawIndexedPrimitive(D3DPT_TRIANGLELIST,0,b.minVertex,b.vertexCount,b.start,b.count),"static shadow cache draw"))return -1;
+                        if(!cacheBatches.add(b,ps,partial?staticDirtyHits[k]:nullptr,textureIndependent,submitBatch))return -1;
                     }
                 }
-                if(real){localDraws=drawnBatches[cascade];localMs=phaseNow()-selectMs;staticStart=phaseNow();}
+                if(!cacheBatches.flush(submitBatch))return -1;
+                if(real){localDraws=cacheBatches.submitted;localMs=phaseNow()-selectMs;staticStart=phaseNow();}
                 const bool ok=drawStaticCasters(cachedMatrix,partial?&staticDirty:nullptr);
                 if(partial){DWORD enabled=FALSE;if(StaticCacheDirtyRectVerify&&SUCCEEDED(d->GetRenderState(D3DRS_SCISSORTESTENABLE,&enabled))&&!enabled)++shadowCacheScissorLeaks;shadowCachePartialSkippedDraws+=unsigned(staticCasters.stats().rectSkipped);}
                 return ok?1:0;
@@ -6105,6 +6126,7 @@ public:
                 (unsigned long long)selection.scanned,terrainCandidates.candidates(),(unsigned long long)selection.membershipChecks,selection.passes,
                 (unsigned long long)selection.reusedMembershipChecks,selection.fallbackPasses,terrainCandidates.bytes(),terrainPrepareMs);}
         shadowFrameReady=directionalShadows;
+        if(directionalShadows)directionalShadowTime=NorthlightShadowRefreshBudget::Clock::now()-directionalStart;
         }else{
             shadowFrameReady=pointReady=false;
             actorValid[0]=actorValid[1]=false;
@@ -6121,7 +6143,7 @@ public:
         // Its elapsed interval can include CPU queue idle; do not bill it to empty point shadows.
         if(profile&&!geometryReady)profile->mark("WorldSetup");
         const unsigned pointUpdatesBefore=pointUpdates;
-        if(geometryReady&&effects.shadows&&debug==0&&quality.pointShadows)renderPointShadows(atmosphere.lights,replaysComplete,actorShadows,rendererFrame);else pointReady=false;
+        if(geometryReady&&effects.shadows&&debug==0&&quality.pointShadows)renderPointShadows(atmosphere.lights,replaysComplete,actorShadows,rendererFrame,directionalShadowTime);else pointReady=false;
         if(lightingCapture)lightingCapture->pointSources(pointSlots,GetTickCount(),pointReady);
         if(pointUpdates!=pointUpdatesBefore&&profileSampled())profilePointUsed(); /* capture waste (RenderProfile) */
         if(geometryReady&&effects.shadows&&debug==0)renderFlashShadows(atmosphere.lights,replaysComplete,actorShadows);else for(auto& s:flashSlots)s.ready=false;

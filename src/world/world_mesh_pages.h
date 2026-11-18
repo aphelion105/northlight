@@ -45,6 +45,18 @@ struct Page {
 struct Batch : NorthlightWorldMesh::Batch {
     uint32_t page=0,minVertex=0,vertexCount=0;
 };
+// Both ranges use page-local indices and the same triangle-list binding.
+inline bool appendDrawRange(Batch& run,const Batch& next,unsigned primitiveLimit){
+    if(run.page!=next.page||uint64_t(run.start)+3ull*run.count!=next.start)return false;
+    const auto low=std::min(run.minVertex,next.minVertex);
+    const uint64_t high=std::max(uint64_t(run.minVertex)+run.vertexCount,uint64_t(next.minVertex)+next.vertexCount);
+    const uint64_t count=uint64_t(run.count)+next.count;
+    if(high>UINT32_MAX||count>UINT32_MAX||(primitiveLimit&&count>primitiveLimit))return false;
+    run.count=uint32_t(count);
+    run.minVertex=low;
+    run.vertexCount=uint32_t(high-low);
+    return true;
+}
 struct PointRange {uint32_t first=0,count=0;};
 // Immutable broad phase, built with the upload pages on the worker. Queries
 // only reject whole distant subtrees; callers keep their original face tests

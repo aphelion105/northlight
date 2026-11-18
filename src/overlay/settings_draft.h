@@ -109,6 +109,7 @@ inline std::vector<std::string> dependencies(const Field& f){
         {"ActorShadowBudgetMiB",{"ActorShadows"}},{"ActorShadowRadius",{"ActorShadows"}},{"ActorShadowCpuMs",{"ActorShadows"}},{"ActorShadowDetail",{"ActorShadows"}},
         {"BlobShadowStrength",{"BlobShadows"}},
         {"LocalLightLimit",{"LocalLights"}},{"EquipmentLights",{"LocalLights"}},{"PointShadows",{"LocalLights","WorldShadows"}},
+        {"ShadowRefreshCpuMs",{"WorldShadows","LocalLights","PointShadows","ActorShadows"}},
         {"PointShadowDistance",{"LocalLights","WorldShadows","PointShadows"}},{"PointShadowLimit",{"LocalLights","WorldShadows","PointShadows"}},{"PointShadowRefreshMs",{"LocalLights","WorldShadows","PointShadows"}},{"PointShadowFacesPerFrame",{"LocalLights","WorldShadows","PointShadows"}},
         {"FogCloudDensity",{"FogClouds"}},{"RainFog",{"Weather"}},{"RainLens",{"Weather"}},{"SnowLens",{"Weather"}},{"RainLensStrength",{"Weather","RainLens"}},{"SnowLensStrength",{"Weather","SnowLens"}},{"RenderProfile",{"Diagnostics"}},
         {"RainDropSize",{"Weather"}},{"SnowFlakeSize",{"Weather"}},{"RainLensSize",{"Weather","RainLens"}},{"SnowLensSize",{"Weather","SnowLens"}},

@@ -10,6 +10,20 @@ For the next gameplay log, zero-weight lighting-filter optimization and separate
 HDR stage timings, see the [2026-11-15 follow-up](pipeline-20261115.md).
 For local-light shadow costs and exact reuse of unchanged cube preparation, see
 the [2026-11-17 investigation](local-light-performance-20261117.md).
+
+Directional world and character shadows share a visibility resolve. The fine
+character map covers 24 yards at 1024² and the near world cascade covers 96
+yards at 1024². Directional maps take priority in the screen's shadow refresh
+budget. `ShadowRefreshCpuMs` measures elapsed CPU submission time for cascades
+and lamp cubes together. Once spent, a stationary lamp can carry a complete
+animated cube across one due refresh if its map, projection, static content,
+mesh and live terrain still match. A cube older than its refresh period plus
+33 ms must update. Required work may exceed the target. `SHADOW_REFRESH` logs
+directional submission time and the number of cubes held on sampled frames.
+
+The static directional cache batches consecutive index ranges within a mesh
+page. The pixel shader, alpha coverage and scissor govern when a draw closes.
+Lamp cube faces use the same page-range and device primitive-limit checks.
 For geometry capture reuse, pose certificates and range-bank transfer, see
 the [capture acceleration investigation](capture-acceleration-20261117.md).
 For the current cost of M2 capture and the data the installed game has before

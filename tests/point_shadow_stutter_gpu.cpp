@@ -573,6 +573,28 @@ struct PointTerrainCoverageTest {
    for(unsigned cycle=0;cycle<2;++cycle){
     w.replays=std::move(actors);for(auto& p:w.replays){p->cutoff=.5f;p->texture=cutout;cutout->AddRef();}
     refresh();assert(w.pointDraws>0&&w.pointSlot().geometryOnlyFaces==0);const auto actorImage=image();
+#ifdef NORTHLIGHT_POINT_OVERLAP_TEST
+    if(!cycle){
+     NorthlightShadowRefreshBudget exhausted(3,std::chrono::milliseconds(5)), unlimited(0,{});
+     w.quality.pointShadowRefreshMs=0;
+     auto due=[&](const NorthlightShadowRefreshBudget& budget,DWORD extraAge=0){
+      const auto period=NorthlightPointShadow::RefreshSchedule::period(w.replays.size());
+      w.pointSlot().schedule.updatedAt=GetTickCount()-period-extraAge;
+      must(d->BeginScene());assert(w.renderPointShadow(light,true,true,&budget));must(d->EndScene());drain();
+      assert(w.pointSlot().ready&&w.pointSlot().schedule.complete);
+     };
+     due(exhausted);assert(w.pointSlot().budgetHeld&&!w.pointDraws&&image()==actorImage);
+     due(exhausted);assert(!w.pointSlot().budgetHeld&&w.pointDraws&&image()==actorImage);
+     const auto draws=w.pointDraws;
+     due(exhausted,80);assert(!w.pointSlot().budgetHeld&&w.pointDraws==draws);
+     due(unlimited);assert(!w.pointSlot().budgetHeld&&w.pointDraws==draws);
+     ++w.liveTerrainRevision;due(exhausted);assert(!w.pointSlot().budgetHeld&&w.pointDraws);
+     ++w.meshGeneration;due(exhausted);assert(!w.pointSlot().budgetHeld&&w.pointDraws);
+     light.position[0]+=.5f;due(exhausted);assert(!w.pointSlot().budgetHeld&&w.pointDraws);
+     light.position[0]-=.5f;due(exhausted);assert(!w.pointSlot().budgetHeld&&image()==actorImage);
+     std::printf("SHADOW_REFRESH_GPU_PASS fullDraws=%u heldDraws=0 nextDue=refreshed expired=moved=terrain=mesh=immediate sixFaces=exact\n",draws);
+    }
+#endif
     w.pointSlot().cacheValid=false;refresh();assert(image()==actorImage);
     actors=std::move(w.replays);refresh();assert(w.pointDraws>0&&image()==terrainImage);refresh();assert(!w.pointDraws);
     for(auto& p:actors){p->texture->Release();p->texture=nullptr;}
