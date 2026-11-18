@@ -43,6 +43,11 @@ adapter='''    NorthlightReplayBounds::Status poseEnvelope(const Program& progra
 marker='    bool distantPoseBounds('
 assert original.count(marker)==1
 control=original.replace(marker,adapter+marker,1)
+# The unrelated subdivision entry point now takes its source mesh explicitly.
+# The oracle below calls poseEnvelope on both classes.
+old_factor='NorthlightDisplacementGeometry::textureFactor(uv'
+assert control.count(old_factor)==2
+control=control.replace(old_factor,'NorthlightDisplacementGeometry::textureFactor(*source,uv')
 # Compare metadata reuse with the same conservative skin-envelope mode. The
 # historical class predates the production switch to aligned skin bounds.
 old_envelopes='NorthlightReplayBounds::EnvelopeCache poseEnvelopes;'

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # northlight-test: requires=windows-exe,zig,client,stormlib
 """Current-pose reuse must equal the former independent SkinEnvelope exactly."""
+import argparse
 import ast
 from pathlib import Path
 import subprocess
@@ -10,6 +11,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
 import client_fixtures
 
+parser=argparse.ArgumentParser(__doc__)
+parser.add_argument('--benchmark',action='store_true')
+args=parser.parse_args()
 out = fp.output_dir()
 out.mkdir(parents=True, exist_ok=True)
 client_fixtures.actor_client_programs(out)
@@ -17,6 +21,7 @@ prefix = (fp.TESTS / 'displacement_state_reuse.cpp').read_text(encoding='utf-8')
 tree = ast.parse((fp.TESTS / 'test_replay_skin_safety.py').read_text(encoding='utf-8'))
 fixture = next(ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'harness' for t in n.targets)).split('int main(')[0]
 source = prefix + fixture + r'''
+#include "material_skin_pose_cases.inc"
 struct DisplacementStateTestAccess {
     static void run(const char* path){
         { // An exhausted range proof must fail before touching the device.
@@ -50,7 +55,7 @@ struct DisplacementStateTestAccess {
                     g.distantPoseBounds(current,owner,declaration,4,low,high,nullptr,nullptr,&reused);}
                 // The material cache uses aligned skin bounds, including when
                 // the requested basis is identity. Compare the same mode.
-                Bounds old;assert(reused.valid&&g.evaluateLocalSkin(independent,current,g.constants,identity,old,true));
+                Bounds old;assert(reused.valid&&NorthlightMaterialSkinBounds::evaluateUncached(independent,current,g.constants,identity,old,true));
                 assert(!std::memcmp(reused.low,old.low,sizeof old.low)&&!std::memcmp(reused.high,old.high,sizeof old.high));
                 enclosed(current,*owner,g.constants,identity,reused);++checked;
                 // A failed current-pose proof must not expose the previous result.
@@ -62,13 +67,24 @@ struct DisplacementStateTestAccess {
         std::printf("MATERIAL_POSE_REUSE_PASS exact_bounds=%u current_palette definitions source_generations budget_failure\n",checked);
     }
 };
-int main(int argc,char** argv){assert(argc==2);DisplacementStateTestAccess::run(argv[1]);}
+int main(int argc,char** argv){assert(argc==2||argc==3);DisplacementStateTestAccess::run(argv[1]);testMaterialSkinPose(load(argv[1]),argc==3);}
 '''
 cpp = out / 'pose-reuse.cpp'
 cpp.write_text(source, encoding='utf-8')
+flags=[]
+if args.benchmark:
+    before=subprocess.check_output(['git','show','97a27c5b:src/water/auto_displacement_renderer.h'],cwd=fp.REPO,text=True)
+    def section(start,end):
+        return before[before.index(start):before.index(end,before.index(start))]
+    reference=('struct PreviousMaterialBounds {\nusing Program=NorthlightActorDeformation::Program;\n'
+        +section('    float distanceInverseView[16]', '    NorthlightActorDeformation::PreparedBindingCache')
+        +section('    void setDistanceView(', '    void setTrustedConstantEpochSource(')
+        +section('    // The rare palette-DEF', '    static unsigned rangeInput(')+'};\n')
+    (out/'previous_material_bounds.h').write_text(reference,encoding='utf-8')
+    flags=['-DNORTHLIGHT_COMPARE_MATERIAL_BOUNDS']
 fixture_path = client_fixtures.four_bone_vs3()
 for opt in ('-O0', '-O2'):
     exe = out / ('pose-reuse' + opt + '.exe')
     subprocess.run([str(fp.zig()), 'c++', '-target', 'x86-windows-gnu', opt, '-UNDEBUG', '-std=c++17',
-                    '-Wno-microsoft-exception-spec', '-I', str(out), *fp.test_include_flags(), str(cpp), '-luser32', '-luuid', '-o', str(exe)], env=fp.zig_env(), check=True)
-    subprocess.run([str(exe), str(fixture_path)], check=True)
+                    '-Wno-microsoft-exception-spec', *flags, '-I', str(out), *fp.test_include_flags(), str(cpp), '-luser32', '-luuid', '-o', str(exe)], env=fp.zig_env(), check=True)
+    subprocess.run([str(exe), str(fixture_path), *(['--benchmark'] if args.benchmark and opt=='-O2' else [])], check=True)

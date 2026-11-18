@@ -15,6 +15,13 @@ the [capture acceleration investigation](capture-acceleration-20261117.md).
 For the current cost of M2 capture and the data the installed game has before
 D3D9 submission, see the [native M2 capture investigation](native-m2-capture-20261118.md).
 
+For skinned material range checks, `material_skin_bounds.h` owns the envelope and
+last world and view bounds of each immutable mesh section. It can reuse both
+bounds when the section's active bone rows, camera basis and floating-point mode
+match. `material_view_bounds.h` owns camera validation, projection and depth limits.
+The capture coordinator shares the resulting bounds with downstream consumers and
+reports section-local reuse and evaluations in `MATERIAL_LOCAL_POSE`.
+
 Independent sky/fog controls, the AO-only HDR specialization and current native
 precipitation ownership are documented in
 [celestial controls and weather ownership](celestial-controls-20261114.md).

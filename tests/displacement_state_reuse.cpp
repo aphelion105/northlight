@@ -36,12 +36,10 @@ struct DisplacementStateTestAccess {
             if(step%17==0)rows[0]=NAN;
             if(step%29==0)rows[5]=1.01f;
             fresh.setDistanceView(nullptr);fresh.setDistanceView(rows);cached.setDistanceView(rows);
-            assert(cached.distanceViewKnown==fresh.distanceViewKnown);
-            assert(!std::memcmp(cached.distanceInverseView,fresh.distanceInverseView,sizeof cached.distanceInverseView));
-            if(fresh.distanceViewKnown)assert(!std::memcmp(cached.distanceView,fresh.distanceView,sizeof cached.distanceView));
-            if(step%11==0){cached.endFrame();assert(!cached.distanceViewKnown);}
+            assert(cached.materialView==fresh.materialView);
+            if(step%11==0){cached.endFrame();assert(!cached.materialView.known());}
         }
-        cached.setDistanceView(nullptr);assert(!cached.distanceViewKnown);
+        cached.setDistanceView(nullptr);assert(!cached.materialView.known());
         std::printf("DISPLACEMENT_VIEW_REUSE_PASS repeated_basis rotation_change invalid_basis ignored_w frame_reset exact_fresh_inverse\n");
     }
     static void conservativeBody(const char* path){
@@ -64,9 +62,9 @@ struct DisplacementStateTestAccess {
             for(unsigned retry=0;retry<100&&!bound.valid;++retry){r.poseEnvelopes.beginFrame(false);r.envelopeBudget.reset();
                 assert(!r.distantPoseBounds(p,owner,layout,4,low,high,nullptr,nullptr,&bound,true,&viewBound));}
             assert(bound.valid);
-            const auto recomputedView=r.distanceBoundsInView(bound);assert(viewBound.valid&&!std::memcmp(viewBound.low,recomputedView.low,12)&&!std::memcmp(viewBound.high,recomputedView.high,12));
+            const auto recomputedView=r.materialView.inView(bound);assert(viewBound.valid&&!std::memcmp(viewBound.low,recomputedView.low,12)&&!std::memcmp(viewBound.high,recomputedView.high,12));
             for(unsigned i=0;i<mesh->vertexCount;++i){Four inputs[16]={},position;assert(sampledVertexInputsAt(p,*mesh,layout,4,i,inputs)&&evaluateFast(p,inputs,r.constants,position));
-                for(unsigned k=0;k<3;++k){const float value=position[0]*inverse[k]+position[1]*inverse[4+k]+position[2]*inverse[8+k];assert(value>=bound.low[k]&&value<=bound.high[k]);}const auto view=r.distanceBoundsInView(bound);for(unsigned k=0;k<3;++k)assert(position[k]>=view.low[k]&&position[k]<=view.high[k]);++checks;}
+                for(unsigned k=0;k<3;++k){const float value=position[0]*inverse[k]+position[1]*inverse[4+k]+position[2]*inverse[8+k];assert(value>=bound.low[k]&&value<=bound.high[k]);}const auto view=r.materialView.inView(bound);for(unsigned k=0;k<3;++k)assert(position[k]>=view.low[k]&&position[k]<=view.high[k]);++checks;}
             // Actual fallback scans retain the 8192-vertex allowance.
             r.poseVerticesThisFrame=0;assert(r.chargePoseVertices(96));assert(r.chargePoseVertices(8096));assert(!r.chargePoseVertices(1));
             assert(r.poseVerticesThisFrame==8192&&r.poseFallbackVertices==0);
@@ -87,19 +85,19 @@ struct DisplacementStateTestAccess {
         std::shared_ptr<const Mesh> source=mesh;NorthlightAutoDisplacement r(nullptr);r.range=8;float minimum=1,maximum=0,oldMinimum=1,oldMaximum=0;
         auto gain=[](const NorthlightReplayBounds::Bounds& b){float d=0;for(unsigned k=0;k<3;++k){float v=b.low[k]>0?b.low[k]:b.high[k]<0?-b.high[k]:0;d+=v*v;}return std::clamp((64-d)/28,0.f,1.f);};
         for(unsigned frame=0;frame<360;++frame){
-            r.endFrame();assert(!r.distanceViewKnown);const float angle=frame*.01745329252f,c=std::cos(angle),s=std::sin(angle);const float inverse[]={c,0,s,0,0,1,0,0,-s,0,c,0};r.setDistanceView(inverse);assert(r.distanceViewKnown);
+            r.endFrame();assert(!r.materialView.known());const float angle=frame*.01745329252f,c=std::cos(angle),s=std::sin(angle);const float inverse[]={c,0,s,0,0,1,0,0,-s,0,c,0};r.setDistanceView(inverse);assert(r.materialView.known());
             for(unsigned bone=0;bone<4;++bone){float rows[]={c,0,s,0,0,1,0,0,-s,0,c,0};std::copy_n(rows,12,r.constants+4*(31+bone*3));}
             NorthlightReplayBounds::Bounds b;float low[3],high[3];
             for(unsigned retry=0;retry<100&&!b.valid;++retry){r.poseEnvelopes.beginFrame(false);r.envelopeBudget.reset();r.distantPoseBounds(p,source,layout,4,low,high,nullptr,nullptr,&b,true);}assert(b.valid);
             const float value=gain(b);minimum=std::min(minimum,value);maximum=std::max(maximum,value);
-            auto view=r.distanceBoundsInView(b);NorthlightReplayBounds::Bounds old;old.valid=true;for(unsigned k=0;k<3;++k){old.low[k]=FLT_MAX;old.high[k]=-FLT_MAX;}
+            auto view=r.materialView.inView(b);NorthlightReplayBounds::Bounds old;old.valid=true;for(unsigned k=0;k<3;++k){old.low[k]=FLT_MAX;old.high[k]=-FLT_MAX;}
             for(unsigned i=0;i<mesh->vertexCount;++i){Four inputs[16]={},position;assert(sampledVertexInputsAt(p,*mesh,layout,4,i,inputs)&&evaluateFast(p,inputs,r.constants,position));for(unsigned k=0;k<3;++k){assert(position[k]>=view.low[k]&&position[k]<=view.high[k]);old.low[k]=std::min(old.low[k],position[k]);old.high[k]=std::max(old.high[k],position[k]);}}
             oldMinimum=std::min(oldMinimum,gain(old));oldMaximum=std::max(oldMaximum,gain(old));
             r.poseVerticesThisFrame=8192;NorthlightReplayBounds::Bounds warm;r.distantPoseBounds(p,source,layout,4,low,high,nullptr,nullptr,&warm,true);assert(warm.valid&&r.poseVerticesThisFrame==8192);
         }
         std::fprintf(stderr,"camera gain min=%g max=%g oldMin=%g oldMax=%g\n",minimum,maximum,oldMinimum,oldMaximum);assert(maximum-minimum<.0001f&&oldMaximum-oldMinimum>.1f);
-        r.setDistanceView(nullptr);assert(!r.distanceViewKnown);for(unsigned i=0;i<16;++i)assert(r.distanceInverseView[i]==float(i%5==0));
-        float invalid[12]={};r.setDistanceView(invalid);assert(!r.distanceViewKnown);r.reset();assert(!r.distanceViewKnown);
+        r.setDistanceView(nullptr);assert(!r.materialView.known());for(unsigned i=0;i<16;++i)assert(r.materialView.inverse()[i]==float(i%5==0));
+        float invalid[12]={};r.setDistanceView(invalid);assert(!r.materialView.known());r.reset();assert(!r.materialView.known());
         std::printf("DISPLACEMENT_CAMERA_BOUNDS_PASS rotations=360 oldGainSpan=%g worldGainSpan=%g enclosedVertices=8640 warmEnvelopeAfterScanBudget=1 unknownViewCleared=1\n",oldMaximum-oldMinimum,maximum-minimum);
     }
     static void cache();
@@ -371,6 +369,7 @@ struct CaptureSurface:IDirect3DSurface9 {
 };
 struct CaptureBackend:Backend {
     float patchMode=0;
+    HRESULT STDMETHODCALLTYPE SetNPatchMode(float value)override{patchMode=value;return D3D_OK;}
     float STDMETHODCALLTYPE GetNPatchMode()override{return patchMode;}
     CaptureShader<IDirect3DVertexShader9> vs;CaptureShader<IDirect3DPixelShader9> ps;CaptureSurface surface;
     struct SkinDeclaration:Declaration {
@@ -465,7 +464,7 @@ void DisplacementStateTestAccess::poseHandoff(const char* path,const std::vector
         std::vector<double> times[2];unsigned cheap[2]={},exact[2]={};
         for(unsigned round=0;round<12;++round)for(bool fast:{false,true,true,false}){
             g.endFrame();
-            if(!fast){NorthlightReplayBounds::Bounds scratch;for(unsigned i=0;i<5000;++i)g.poseEnvelopes.coarsePrepared(*metadata,source.mesh,g.constants,g.distanceInverseView,8,scratch);}
+            if(!fast){NorthlightReplayBounds::Bounds scratch;for(unsigned i=0;i<5000;++i)g.poseEnvelopes.coarsePrepared(*metadata,source.mesh,g.constants,g.materialView.inverse(),8,scratch);}
             const auto start=std::chrono::steady_clock::now();
             for(unsigned draw=0;draw<400;++draw){assert(!g.prepare(&device.vs,4,1,args,nullptr,&source));assert(source.pose.outsideRange&&!g.prepared());}
             times[fast].push_back(std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count());
@@ -476,7 +475,7 @@ void DisplacementStateTestAccess::poseHandoff(const char* path,const std::vector
         g.endFrame();float depth=0,upper=0;
         assert(g.nearestMaterialDepth(&device.vs,args,depth,true,nullptr,&upper,&source,true)&&depth>48&&source.pose.outsideRange);
         assert(!g.poseEnvelopes.stats().ready&&!g.poseVerticesThisFrame&&!g.buildsThisFrame);
-        device.patchMode=1;assert(!g.nearestMaterialDepth(&device.vs,args,depth,true,nullptr,&upper,&source,true));device.patchMode=0;
+        assert(SUCCEEDED(extension.SetNPatchMode(1)));assert(!g.nearestMaterialDepth(&device.vs,args,depth,true,nullptr,&upper,&source,true));assert(SUCCEEDED(extension.SetNPatchMode(0)));
         const auto proof=source.pose;assert(SUCCEEDED(extension.SetVertexShaderConstantF(31,device.bank+124,1)));
         current.requestHeld=true;assert(extension.constantStamp(current)&&!proof.outside(source.mesh.get(),&device.vs,&layout,current));
         std::printf("M2_COARSE_PREPARE_PASS draws=400 beforeMs=%.6f afterMs=%.6f coarse=%u exact=%u early_capture_proof current_epoch no_scan no_geometry\n",times[0][times[0].size()/2],times[1][times[1].size()/2],cheap[1],exact[1]);
@@ -487,7 +486,7 @@ void DisplacementStateTestAccess::poseHandoff(const char* path,const std::vector
         const auto metadata=g.poseMetadata.find(&device.vs,&layout);assert(metadata);
         const auto limit=g.envelopeBudget.maxOperations;auto refuse=[&]{g.endFrame();g.envelopeBudget.maxOperations=0;g.poseEnvelopes.chargeCheapPreparation(UINT64_MAX);
             NorthlightReplayBounds::Bounds scratch;
-            for(unsigned i=0;i<5000;++i)g.poseEnvelopes.coarsePrepared(*metadata,source.mesh,g.constants,g.distanceInverseView,8,scratch);
+            for(unsigned i=0;i<5000;++i)g.poseEnvelopes.coarsePrepared(*metadata,source.mesh,g.constants,g.materialView.inverse(),8,scratch);
         };refuse();
         assert(!g.prepare(&device.vs,4,1,args,nullptr,&source));assert(source.pose.bounds.valid&&source.pose.outsideRange&&g.poseVerticesThisFrame==(configured.view.kernel.skin?0u:96u));
         {
@@ -629,12 +628,12 @@ void DisplacementStateTestAccess::poseHandoff(const char* path,const std::vector
         g.endFrame();float bank[1024];std::memcpy(bank,originalBank,sizeof bank);
         if(fallback==0)bank[(33*4)+3]=20; // In range, so normal/material work stays.
         if(fallback==1)bank[23]=.1f;     // Nonstandard projection cannot prove clip.w.
-        if(fallback==2)device.patchMode=1;
+        if(fallback==2)assert(SUCCEEDED(extension.SetNPatchMode(1)));
         if(fallback==3){buffer.bytes[95*32+28]=1;g.snapshots.clearSnapshotCache();bank[(36*4)+3]=3;}
         assert(SUCCEEDED(extension.SetVertexShaderConstantF(0,bank,256)));
         assert(!g.prepare(&device.vs,4,1,args,nullptr,&source,48));
         assert(!g.modelRangeProof.culled&&g.poseEnvelopes.stats().ready==1);
-        device.patchMode=0;
+        assert(SUCCEEDED(extension.SetNPatchMode(0)));
         assert(SUCCEEDED(extension.SetVertexShaderConstantF(0,originalBank,256)));
     }
     for(auto& values:costs)std::sort(values.begin(),values.end());

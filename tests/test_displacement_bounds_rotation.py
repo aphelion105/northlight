@@ -10,7 +10,7 @@ import sys
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
 
-out=fp.out()/'bounds-rotation'
+out=fp.output_dir()/'bounds-rotation'
 out.mkdir(parents=True,exist_ok=True)
 baseline=(fp.FIXTURES/'displacement-bounds-0be2a10.h').read_bytes()
 (out/'bounds_rotation_baseline.h').write_bytes(baseline)

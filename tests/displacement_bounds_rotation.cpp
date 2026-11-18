@@ -31,7 +31,7 @@ struct DisplacementStateTestAccess {
     }
     template<class Cache>static void insert(Cache& cache,const Owner& mesh,float value,bool skin=false){
         typename Cache::Bounds bound{};bound.low[0]=value;bound.high[2]=value+1;
-        if(skin)bound.skin=std::make_unique<NorthlightReplayBounds::SkinEnvelope>();
+        if(skin)bound.skin=std::make_unique<typename decltype(bound.skin)::element_type>();
         cache.retainBounds(mesh,std::move(bound));
     }
     static void structure(const NorthlightAutoDisplacement& cache){

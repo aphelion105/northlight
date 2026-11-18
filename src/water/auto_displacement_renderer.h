@@ -8,6 +8,8 @@
 #include "displacement_shader_patch.h"
 #include "actor_texture.h"
 #include "material_height.h"
+#include "material_skin_bounds.h"
+#include "material_view_bounds.h"
 #include "replay_bounds.h"
 #include "replay_bounds_metadata.h"
 #include "upload_lock.h"
@@ -50,10 +52,7 @@ class NorthlightAutoDisplacement {
     using Height=NorthlightDisplacementGeometry::Height;
     struct Shader {IDirect3DVertexShader9* patched=nullptr,*source=nullptr,*gpu=nullptr;NorthlightDisplacementPatch::Binding binding,gpuBinding;NorthlightWmoVertexColor::Layout color;bool pending=false,skinned=false;std::vector<uint32_t> modelPosition;std::vector<unsigned> modelRows;unsigned modelInfluences=0;};
     struct Material {Program uv,view,uv1,blend;std::vector<unsigned> uvRegisters[2];bool layered=false,skinned=false,clearPoseInputs=true,envelopeSkin=false;std::uint8_t terrainDepthEligible=0;unsigned rangeRegister=17;uint64_t id=0;unsigned first=0,count=0,influences=0;NorthlightModelNormalRange::Kind rangeKind=NorthlightModelNormalRange::None;};
-    struct LocalSkin : NorthlightReplayBounds::SkinEnvelope {
-        uint64_t program=0;
-        NorthlightDrawSnapshot::Ref<IDirect3DVertexDeclaration9> declaration;
-    };
+    using LocalSkin=NorthlightMaterialSkinBounds;
     struct Bounds {std::weak_ptr<const Mesh> source;float low[3],high[3];uint64_t used=0;size_t bytes=0;std::unique_ptr<LocalSkin> skin;
         const Mesh* key=nullptr;NorthlightIntrusiveLRU::Links<Bounds> lru;};
     using Texture=NorthlightDisplacementStorage::Texture;using Entry=NorthlightDisplacementStorage::Entry;
@@ -110,19 +109,9 @@ class NorthlightAutoDisplacement {
     NorthlightReplayMetadata::Cache<NorthlightReplayBounds::Prepared,IDirect3DVertexShader9,IDirect3DVertexDeclaration9> poseMetadata;
     NorthlightReplayBounds::Budget envelopeBudget;
     bool envelopeBuildContinued=false;
+    LocalSkin::Stats localPoseStats;
     unsigned coarseProgramSkipped=0,coarseBudgetSkipped=0,coarseLocalValid=0;
-    float distanceInverseView[16]={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};
-    bool distanceViewKnown=false;
-    double distanceView[9]={1,0,0,0,1,0,0,0,1};
-    NorthlightReplayBounds::Bounds distanceBoundsInView(const NorthlightReplayBounds::Bounds& world)const{
-        if(!distanceViewKnown||!world.valid)return world;
-        NorthlightReplayBounds::Bounds view;view.valid=true;
-        for(unsigned r=0;r<3;++r){double low=0,high=0,magnitude=0;
-            for(unsigned k=0;k<3;++k){const double a=distanceView[r*3+k]*world.low[k],b=distanceView[r*3+k]*world.high[k];low+=std::min(a,b);high+=std::max(a,b);magnitude+=std::max(std::fabs(a),std::fabs(b));}
-            const double error=(magnitude+1)*32*std::numeric_limits<float>::epsilon();view.low[r]=std::nextafter(float(low-error),-INFINITY);view.high[r]=std::nextafter(float(high+error),INFINITY);}
-        return view;
-    }
-
+    NorthlightMaterialViewBounds materialView;
     NorthlightActorDeformation::PreparedBindingCache poseBindings;
     std::vector<std::unique_ptr<Entry>>& entries=geometry.entries;
     std::unordered_multimap<const Mesh*,Entry*>& sourceLookup=geometry.sourceLookup;
@@ -244,7 +233,7 @@ class NorthlightAutoDisplacement {
     }
     auto retainBounds(const std::shared_ptr<const Mesh>& source,Bounds&& value){
         value.source=source;value.key=source.get();value.used=++clock;
-        value.bytes=sizeof(Bounds)+4*sizeof(void*)+(value.skin?sizeof(LocalSkin):0);
+        value.bytes=sizeof(Bounds)+4*sizeof(void*)+(value.skin?value.skin->bytes():0);
         // Keep exact oldest-use eviction without scanning the rotating working
         // set. Hash-table rehash preserves these non-owning list nodes.
         while(!bounds.empty()&&(boundsBytes+value.bytes>(8u<<20)||bounds.size()>=4096)){
@@ -286,27 +275,15 @@ class NorthlightAutoDisplacement {
         if(skinBounds)*skinBounds={};
         if(viewBounds)*viewBounds={};
         NorthlightReplayBounds::Bounds result;NorthlightReplayBounds::EnvelopeCache::WorkInfo info;
-        if(poseEnvelope(program,source,elements,count,constants,result,shader,declaration,&info,worldAxes?distanceInverseView:nullptr)!=NorthlightReplayBounds::Status::Valid)return false;
+        if(poseEnvelope(program,source,elements,count,constants,result,shader,declaration,&info,worldAxes?materialView.inverse():nullptr)!=NorthlightReplayBounds::Status::Valid)return false;
         if(skinBounds&&info.skin)*skinBounds=result;
         ++poseEnvelopeHits;
-        const auto view=worldAxes?distanceBoundsInView(result):result;
+        const auto view=worldAxes?materialView.inView(result):result;
         if(viewBounds)*viewBounds=view;
-        lastDepthUpper=std::nextafter(std::max(std::fabs(view.low[2]),std::fabs(view.high[2])),INFINITY)+.001f;
+        lastDepthUpper=NorthlightMaterialViewBounds::farthest(view);
         const float origin[3]={};if(!NorthlightReplayBounds::outsideSphere(result,origin,range))return false;
         std::copy(result.low,result.low+3,low);std::copy(result.high,result.high+3,high);
-        lastDepthLower=std::max(0.f,std::nextafter(view.low[2]>0?view.low[2]:view.high[2]<0?-view.high[2]:0,-INFINITY)-.001f);return true;
-    }
-    // The rare palette-DEF path uses the same current register overrides as
-    // the vertex evaluator. Keep its 4 KiB temporary off the ordinary path.
-    __attribute__((noinline)) static bool evaluateSkinWithDefinitions(const NorthlightReplayBounds::SkinEnvelope& skin,const Program& program,const float* constants,const float* inverse,NorthlightReplayBounds::Bounds& result,bool aligned=false){
-        float palette[256*4];std::memcpy(palette+31*4,constants+31*4,(256-31)*4*sizeof(float));
-        for(const auto& definition:program.definitions)if(definition.reg>=31&&definition.reg<256)std::memcpy(palette+4*definition.reg,definition.value.data(),4*sizeof(float));
-        return skin.evaluate(palette,inverse,result,nullptr,nullptr,aligned);
-    }
-    static bool evaluateLocalSkin(const NorthlightReplayBounds::SkinEnvelope& skin,const Program& program,const float* constants,const float* inverse,NorthlightReplayBounds::Bounds& result,bool aligned=false){
-        if(!constants||!inverse){result={};return false;}
-        for(const auto& definition:program.definitions)if(definition.reg>=31&&definition.reg<256)return evaluateSkinWithDefinitions(skin,program,constants,inverse,result,aligned);
-        return skin.evaluate(constants,inverse,result,nullptr,nullptr,aligned);
+        lastDepthLower=NorthlightMaterialViewBounds::nearest(view);return true;
     }
     static unsigned rangeInput(const Program& program){
         unsigned input=16;for(const auto& i:program.inputs){if(i.usage!=D3DDECLUSAGE_POSITION||i.index||i.reg>=16)return 16;input=i.reg;}
@@ -569,21 +546,7 @@ public:
     ~NorthlightAutoDisplacement(){reset();for(auto& s:shaders){drop(s.second.patched);drop(s.second.gpu);drop(s.second.source);}}
     void tracking(uint64_t(*identity)(void*,bool),uint64_t(*version)(void*,bool),NorthlightCaptureMetadata::Read metadata){positionBounds.tracking(identity,version,metadata);for(auto* frame:{&snapshots,&rangeSnapshots,&skinRangeSnapshots}){frame->setIdentityProvider(identity);frame->setVersionProvider(version);frame->setMetadataProvider(metadata);}}
     void setConstantEpochSource(void* context,NorthlightConstantEpoch::Reader reader){poseEnvelopes.clearPoseCertificates();constantStamp={};rangeConstantStamp={};constantContext=context;constantReader=reader;constantSpan=nullptr;heldConstantMatch=nullptr;trustedConstants=false;}
-    void setDistanceView(const float* rows){
-        // Draws in the same view share the already validated rotation and inverse.
-        if(rows&&distanceViewKnown&&!NorthlightMem::compare(rows,distanceInverseView,12)&&
-           !NorthlightMem::compare(rows+4,distanceInverseView+4,12)&&!NorthlightMem::compare(rows+8,distanceInverseView+8,12))return;
-        distanceViewKnown=false;std::fill(distanceInverseView,distanceInverseView+16,0.f);for(unsigned i=0;i<4;++i)distanceInverseView[i*5]=1;
-        if(!rows)return;
-        for(unsigned r=0;r<3;++r)for(unsigned k=0;k<3;++k)if(!std::isfinite(rows[r*4+k]))return;
-        for(unsigned r=0;r<3;++r)for(unsigned k=r;k<3;++k){double dot=0;for(unsigned j=0;j<3;++j)dot+=double(rows[r*4+j])*rows[k*4+j];if(std::fabs(dot-(r==k?1.:0.))>.0001)return;}
-        // Invert the supplied float basis rather than assuming exact orthogonality.
-        // This keeps the returned view bounds conservative despite camera rounding.
-        const double determinant=double(rows[0])*(double(rows[5])*rows[10]-double(rows[6])*rows[9])-double(rows[1])*(double(rows[4])*rows[10]-double(rows[6])*rows[8])+double(rows[2])*(double(rows[4])*rows[9]-double(rows[5])*rows[8]);
-        if(!std::isfinite(determinant)||std::fabs(determinant)<.5)return;
-        for(unsigned r=0;r<3;++r)for(unsigned k=0;k<3;++k)distanceView[r*3+k]=(double(rows[((r+1)%3)*4+(k+1)%3])*rows[((r+2)%3)*4+(k+2)%3]-double(rows[((r+1)%3)*4+(k+2)%3])*rows[((r+2)%3)*4+(k+1)%3])/determinant;
-        for(unsigned r=0;r<3;++r)std::copy_n(rows+r*4,3,distanceInverseView+r*4);distanceViewKnown=true;
-    }
+    void setDistanceView(const float* rows){materialView.set(rows);}
     void setTrustedConstantEpochSource(NorthlightConstantEpoch::TrustedSource source){poseEnvelopes.clearPoseCertificates();constantStamp={};rangeConstantStamp={};trustedConstants=bool(source)&&source.context()==d;constantContext=trustedConstants?source.context():nullptr;constantReader=trustedConstants?source.reader():nullptr;constantSpan=trustedConstants?source.span():nullptr;heldConstantMatch=trustedConstants?source.heldMatch():nullptr;}
     void shareCaptureSources(NorthlightDrawSnapshot::Frame& capture){snapshots.shareSnapshotPool(capture);snapshots.setReplayContentReuse(true);snapshots.setResidentPeer(&capture);capture.setResidentPeer(&snapshots);skinRangeSnapshots.setResidentPeer(&capture);}
     void reportSources(uint64_t frame)const{
@@ -594,6 +557,7 @@ public:
         const auto& boundsWork=positionBounds.maintenance();
         logf("MATERIAL_POSITION_BOUNDS frame=%llu hits=%u scans=%u positionBytes=%zu entries=%zu unknown=%u coldScans=%u revisionScans=%u evictions=%u budgetRejected=%u capturedBoundsHits=%u",(unsigned long long)frame,positionBounds.cacheHits(),positionBounds.scans(),positionBounds.bytesRead(),positionBounds.count(),positionBounds.failures(),boundsWork.coldScans,boundsWork.revisionScans,boundsWork.evictions,boundsWork.budgetRejected,capturedBoundsHits);
         const auto& e=poseEnvelopes.stats();
+        logf("MATERIAL_LOCAL_POSE frame=%llu reused=%u evaluated=%u",(unsigned long long)frame,localPoseStats.reused,localPoseStats.evaluated);
         logf("MATERIAL_POSE_COARSE frame=%llu attempts=%zu valid=%zu culled=%zu cpuMs=%.6f unsupportedSkipped=%u budgetPreflightSkipped=%u localValid=%u",(unsigned long long)frame,e.coarseAttempts,e.coarseValid,e.coarseCulled,double(e.coarseNanoseconds)/1000000.,coarseProgramSkipped,coarseBudgetSkipped,coarseLocalValid);
         const auto& p=poseMetadata.stats();
         logf("MATERIAL_POSE_METADATA frame=%llu hits=%zu misses=%zu prepared=%zu fallbacks=%zu evictions=%zu entries=%zu bytes=%zu",(unsigned long long)frame,p.hits,p.misses,p.prepared,p.fallbacks,p.evictions,poseMetadata.entries(),poseMetadata.bytes());
@@ -697,11 +661,10 @@ public:
             if(coarseOnly){
                 // Envelope classification also proves there are no palette
                 // DEF overrides. Keep the raw immutable owner and exact layout.
-                const LocalSkin* local=nullptr;
+                const NorthlightReplayBounds::SkinEnvelope* local=nullptr;
                 if(shader->second.rangeKind==NorthlightModelNormalRange::Envelope){
                     const auto found=cachedBounds(source);
-                    if(found!=bounds.end()&&found->second.skin&&found->second.skin->program==shader->second.id&&
-                       found->second.skin->declaration.p==decl.p)local=found->second.skin.get();
+                    if(found!=bounds.end()&&found->second.skin&&found->second.skin->matches(shader->second.id,decl.p))local=&found->second.skin->geometry();
                 }
                 const auto prepared=local?nullptr:poseMetadata.find(original,decl.p);
                 const float identity[16]={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};
@@ -709,7 +672,8 @@ public:
                 coarseLocalValid+=local!=nullptr;
             }else if(poseEnvelope(program,source,elements,count,rangeConstants,result,original,decl.p)!=NorthlightReplayBounds::Status::Valid)return false;
             publish(&result);
-            const float lo=result.low[2],hi=result.high[2];if(farthest)*farthest=std::nextafter(std::max(std::fabs(lo),std::fabs(hi)),INFINITY)+.001f;nearest=std::max(0.f,std::nextafter(lo>0?lo:hi<0?-hi:0,-INFINITY)-.001f);
+            if(farthest)*farthest=NorthlightMaterialViewBounds::farthest(result);
+            nearest=NorthlightMaterialViewBounds::nearest(result);
             if(coarseOnly&&nearest>modelRange)poseEnvelopes.coarseCulled();return true;
         }
         auto found=cachedBounds(source);
@@ -746,8 +710,8 @@ public:
         logf("DISPLACEMENT_MEMORY pressure=%u profiled=%u sourcesMs=%.3f capsMs=%.3f geometryMs=%.3f boundsMs=%.3f deferredMiB=%.3f batched=%u",unsigned(on),unsigned(timed),sourcesMs,capsMs,geometryMs,boundsMs,double(deferred)/(1u<<20),unsigned(batch!=nullptr));
     }
     void trimMemory(NorthlightStreaming::CpuRetirement* retirement=nullptr,NorthlightStreaming::CpuRetirementBatch* batch=nullptr){setMemoryPressure(memoryPressure,retirement,batch);}
-    void reset(NorthlightStreaming::CpuRetirementBatch* batch=nullptr,bool preserveCaptureSources=false){coarseLocalValid=coarseBudgetSkipped=coarseProgramSkipped=0;geometryAliases={};nextGeometryAlias=geometryAliasHits=0;setDistanceView(nullptr);modelRangeProof.clear();snapshots.clearIndexCache(nullptr,batch,preserveCaptureSources);rangeSnapshots.clearIndexCache(nullptr,batch,preserveCaptureSources);skinRangeSnapshots.clearIndexCache(nullptr,batch,preserveCaptureSources);positionBounds.clear();current=nullptr;clearModelOverlays();constantStamp={};rangeConstantStamp={};sourceLookup.clear();contentLookup.clear();materialLookup.clear();indexedEntries=true;entries.clear();boundsLRU.clear();bounds.clear();poseEnvelopes.clear();poseMetadata.clear();poseBindings={};envelopeBudget.reset();envelopeBuildContinued=false;boundsBytes=resident=0;for(auto& t:textures){drop(t.gpu);drop(t.source);}textures.clear();declarations.clear();}
-    void endFrame(){setDistanceView(nullptr);modelRangeProof.beginFrame();current=nullptr;clearModelOverlays();if(variantSources)logf("MATERIAL_VARIANT_COLD frame=%u sources=%u cpuBuilt=%u gpuBuilt=%u readFailed=%u sourceBytes=%zu cpuMs=%.6f",frames,variantSources,variantCPU,variantGPU,variantReadFailed,variantBytes,variantMs);variantSources=variantCPU=variantGPU=variantReadFailed=0;variantBytes=0;variantMs=0;if(frames%60==0){MEMORYSTATUSEX memory{};memory.dwLength=sizeof memory;if(GlobalMemoryStatusEx(&memory))refreshBudget(memory);}buildsThisFrame=readsThisFrame=poseVerticesThisFrame=0;for(auto& vertices:poseKernelVertices)vertices=0;poseByteIndexVertices=0;poseEnvelopes.beginFrame(false);poseMetadata.beginFrame();envelopeBudget.reset();envelopeBuildContinued=false;snapshots.clearFrame();rangeSnapshots.clearFrame();skinRangeSnapshots.clearFrame();positionBounds.beginFrame();capturedBoundsHits=admissionSnapshotReuses=geometryAliasHits=constantBankTransfers=coarseLocalValid=coarseBudgetSkipped=coarseProgramSkipped=0;if((draws||snapshotRejected)&&frames%600==0){logf("DISPLACEMENT cached=%zu bytes=%zu builds=%llu hits=%llu draws=%llu triangles=%llu refused=%llu terrain=%u walls=%u grass=%u models=%u stateRejected=%u heightRejected=%u shaderRejected=%u snapshotRejected=%u meshRejected=%u budgetMiB=%zu",entries.size(),resident,(unsigned long long)builds,(unsigned long long)hits,(unsigned long long)draws,(unsigned long long)triangles,(unsigned long long)refused,domainDraws[0],domainDraws[1],domainDraws[2],domainDraws[3],stateRejected,heightRejected,shaderRejected,snapshotRejected,meshRejected,cacheBudget>>20);
+    void reset(NorthlightStreaming::CpuRetirementBatch* batch=nullptr,bool preserveCaptureSources=false){localPoseStats={};coarseLocalValid=coarseBudgetSkipped=coarseProgramSkipped=0;geometryAliases={};nextGeometryAlias=geometryAliasHits=0;setDistanceView(nullptr);modelRangeProof.clear();snapshots.clearIndexCache(nullptr,batch,preserveCaptureSources);rangeSnapshots.clearIndexCache(nullptr,batch,preserveCaptureSources);skinRangeSnapshots.clearIndexCache(nullptr,batch,preserveCaptureSources);positionBounds.clear();current=nullptr;clearModelOverlays();constantStamp={};rangeConstantStamp={};sourceLookup.clear();contentLookup.clear();materialLookup.clear();indexedEntries=true;entries.clear();boundsLRU.clear();bounds.clear();poseEnvelopes.clear();poseMetadata.clear();poseBindings={};envelopeBudget.reset();envelopeBuildContinued=false;boundsBytes=resident=0;for(auto& t:textures){drop(t.gpu);drop(t.source);}textures.clear();declarations.clear();}
+    void endFrame(){localPoseStats={};setDistanceView(nullptr);modelRangeProof.beginFrame();current=nullptr;clearModelOverlays();if(variantSources)logf("MATERIAL_VARIANT_COLD frame=%u sources=%u cpuBuilt=%u gpuBuilt=%u readFailed=%u sourceBytes=%zu cpuMs=%.6f",frames,variantSources,variantCPU,variantGPU,variantReadFailed,variantBytes,variantMs);variantSources=variantCPU=variantGPU=variantReadFailed=0;variantBytes=0;variantMs=0;if(frames%60==0){MEMORYSTATUSEX memory{};memory.dwLength=sizeof memory;if(GlobalMemoryStatusEx(&memory))refreshBudget(memory);}buildsThisFrame=readsThisFrame=poseVerticesThisFrame=0;for(auto& vertices:poseKernelVertices)vertices=0;poseByteIndexVertices=0;poseEnvelopes.beginFrame(false);poseMetadata.beginFrame();envelopeBudget.reset();envelopeBuildContinued=false;snapshots.clearFrame();rangeSnapshots.clearFrame();skinRangeSnapshots.clearFrame();positionBounds.beginFrame();capturedBoundsHits=admissionSnapshotReuses=geometryAliasHits=constantBankTransfers=coarseLocalValid=coarseBudgetSkipped=coarseProgramSkipped=0;if((draws||snapshotRejected)&&frames%600==0){logf("DISPLACEMENT cached=%zu bytes=%zu builds=%llu hits=%llu draws=%llu triangles=%llu refused=%llu terrain=%u walls=%u grass=%u models=%u stateRejected=%u heightRejected=%u shaderRejected=%u snapshotRejected=%u meshRejected=%u budgetMiB=%zu",entries.size(),resident,(unsigned long long)builds,(unsigned long long)hits,(unsigned long long)draws,(unsigned long long)triangles,(unsigned long long)refused,domainDraws[0],domainDraws[1],domainDraws[2],domainDraws[3],stateRejected,heightRejected,shaderRejected,snapshotRejected,meshRejected,cacheBudget>>20);
         logf("DISPLACEMENT snapshots attempts=%llu up=%llu buffered=%llu unknown=%llu arguments=%llu declaration=%llu stream=%llu instancing=%llu indexBuffer=%llu indexRange=%llu vertexRange=%llu budget=%llu lock=%llu unlock=%llu",(unsigned long long)snapshotAttempts,(unsigned long long)snapshotUP,(unsigned long long)(snapshotAttempts-snapshotUP),(unsigned long long)snapshotReasons[0],(unsigned long long)snapshotReasons[1],(unsigned long long)snapshotReasons[2],(unsigned long long)snapshotReasons[3],(unsigned long long)snapshotReasons[4],(unsigned long long)snapshotReasons[5],(unsigned long long)snapshotReasons[6],(unsigned long long)snapshotReasons[7],(unsigned long long)snapshotReasons[8],(unsigned long long)snapshotReasons[9],(unsigned long long)snapshotReasons[10]);}++frames;}
     void registerVariant(IDirect3DVertexShader9* original,const DWORD* code,size_t count,bool skinned=false,bool wmo=false){
         auto old=shaders.find(original);if(old!=shaders.end()){drop(old->second.patched);drop(old->second.gpu);drop(old->second.source);shaders.erase(old);}Shader shader;
@@ -833,11 +797,11 @@ public:
         if(domain==4&&shader->second.envelopeSkin&&std::fabs(constants[4*31+11])>2*range&&d->GetNPatchMode()==0){
             const auto prepared=poseMetadata.find(original,decl.p);
             NorthlightReplayBounds::Bounds coarse;const float origin[3]={};
-            if(prepared&&poseEnvelopes.coarsePrepared(*prepared,source,constants,distanceInverseView,range,coarse)&&
+            if(prepared&&poseEnvelopes.coarsePrepared(*prepared,source,constants,materialView.inverse(),range,coarse)&&
                NorthlightReplayBounds::outsideSphere(coarse,origin,range)){
-                const auto view=distanceBoundsInView(coarse);publishPose(view);
-                lastDepthUpper=std::nextafter(std::max(std::fabs(view.low[2]),std::fabs(view.high[2])),INFINITY)+.001f;
-                lastDepthLower=std::max(0.f,std::nextafter(view.low[2]>0?view.low[2]:view.high[2]<0?-view.high[2]:0,-INFINITY)-.001f);
+                const auto view=materialView.inView(coarse);publishPose(view);
+                lastDepthUpper=NorthlightMaterialViewBounds::farthest(view);
+                lastDepthLower=NorthlightMaterialViewBounds::nearest(view);
                 poseEnvelopes.coarseCulled();++distanceRejected;return false;
             }
         }
@@ -885,25 +849,32 @@ public:
             if(profile)profile->count(P::BoundsVertices,source->vertexCount);
             for(unsigned i=0;i<source->vertexCount;++i){if(size_t(i)*stream.stride+position->Offset+12>stream.bytes.size())return false;float p[3];std::memcpy(p,stream.bytes.data()+size_t(i)*stream.stride+position->Offset,12);for(unsigned k=0;k<3;++k){if(!std::isfinite(p[k]))return false;b.low[k]=std::min(b.low[k],p[k]);b.high[k]=std::max(b.high[k],p[k]);}}
             if(exactSkin){
-                auto envelope=std::make_unique<LocalSkin>();
-                if(envelope->addMesh(shader->second.view,*source,elements,count)){
-                    envelope->program=shader->second.id;envelope->declaration.p=decl.p;decl->AddRef();b.skin=std::move(envelope);
-                }
+                b.skin=LocalSkin::build(shader->second.view,*source,elements,count,shader->second.id,decl.p);
             }
             foundBounds=retainBounds(source,std::move(b));
         }
         NorthlightReplayBounds::Bounds skinBounds;
-        const auto exactEnvelope=[&]{if(reusePose){skinBounds=poseBounds;return true;}if(!exactSkin||!foundBounds->second.skin)return false;P::Scope envelope(profile,P::PoseLocal);return evaluateLocalSkin(*foundBounds->second.skin,shader->second.view,constants,distanceInverseView,skinBounds,true);};
-        if(exactEnvelope()){if(!reusePose)touchBounds(foundBounds->second);std::copy(skinBounds.low,skinBounds.low+3,low);std::copy(skinBounds.high,skinBounds.high+3,high);
+        const auto exactEnvelope=[&]{
+            if(reusePose){skinBounds=poseBounds;return true;}
+            if(!exactSkin)return false;
+            auto& local=foundBounds->second.skin;
+            if(!local||!local->matches(shader->second.id,decl.p))return false;
+            P::Scope envelope(profile,P::PoseLocal);
+            return local->evaluate(shader->second.view,constants,materialView,skinBounds,poseViewBounds,localPoseStats);
+        };
+        if(exactEnvelope()){
+            if(!reusePose)touchBounds(foundBounds->second);
+            std::copy_n(skinBounds.low,3,low);
+            std::copy_n(skinBounds.high,3,high);
             // Reuse the audited, outward-rounded skin envelope for normal capture.
-            const auto view=reusePose?poseViewBounds:distanceBoundsInView(skinBounds);
+            const auto& view=poseViewBounds;
             // A near legacy result cannot reject normal range; leave its existing capture path alone.
             if(!reusePose&&(view.low[2]>48.f||view.high[2]<-48.f))publishPose(view);
-            lastDepthUpper=std::nextafter(std::max(std::fabs(view.low[2]),std::fabs(view.high[2])),INFINITY)+.001f;
-            lastDepthLower=std::max(0.f,std::nextafter(view.low[2]>0?view.low[2]:view.high[2]<0?-view.high[2]:0,-INFINITY)-.001f);}
+            if(!reusePose)lastDepthUpper=NorthlightMaterialViewBounds::farthest(view);
+            lastDepthLower=NorthlightMaterialViewBounds::nearest(view);}
         else if(shader->second.skinned){P::Scope pose(profile,P::PoseFallback);if(!chargePoseVertices(source->vertexCount))return false;poseFallbackVertices+=source->vertexCount;if(profile)profile->count(P::PoseVertices,source->vertexCount);pose.work(source->vertexCount);for(unsigned k=0;k<3;++k){low[k]=FLT_MAX;high[k]=-FLT_MAX;}
             const auto prepared=poseBindings.acquire(shader->second.view,*source,elements,count);if(!prepared)return false;
-            if(shader->second.view.kernel.singleSkin()){if(!NorthlightActorDeformation::singleSkinBoundsPrepared<true>(shader->second.view,*source,*prepared,constants,low,high,distanceViewKnown?distanceInverseView:nullptr))return false;}
+            if(shader->second.view.kernel.singleSkin()){if(!NorthlightActorDeformation::singleSkinBoundsPrepared<true>(shader->second.view,*source,*prepared,constants,low,high,materialView.known()?materialView.inverse():nullptr))return false;}
             else {const bool clearInputs=shader->second.clearPoseInputs;
             const bool byteIndices=NorthlightActorDeformation::weightedByteIndices(shader->second.view,*prepared,constants);
             for(unsigned i=0;i<source->vertexCount;++i){NorthlightActorDeformation::Four input[16],view;if(clearInputs)std::fill(std::begin(input),std::end(input),NorthlightActorDeformation::Four{});
@@ -912,7 +883,7 @@ public:
                     NorthlightActorDeformation::evaluateSkin<false,false,true>(shader->second.view,input,constants,view):
                     NorthlightActorDeformation::evaluateSkin<false,true,true>(shader->second.view,input,constants,view)):
                     !NorthlightActorDeformation::evaluateFast(shader->second.view,input,constants,view))return false;
-                for(unsigned k=0;k<3;++k){const float coordinate=view[0]*distanceInverseView[k]+view[1]*distanceInverseView[4+k]+view[2]*distanceInverseView[8+k];if(!std::isfinite(coordinate))return false;low[k]=std::min(low[k],coordinate);high[k]=std::max(high[k],coordinate);}}
+                for(unsigned k=0;k<3;++k){const float coordinate=view[0]*materialView.inverse()[k]+view[1]*materialView.inverse()[4+k]+view[2]*materialView.inverse()[8+k];if(!std::isfinite(coordinate))return false;low[k]=std::min(low[k],coordinate);high[k]=std::max(high[k],coordinate);}}
             if(byteIndices)poseByteIndexVertices+=source->vertexCount;}
             using K=NorthlightActorDeformation::Kernel;const auto& kernel=shader->second.view.kernel;
             poseKernelVertices[kernel.singleSkin()||kernel.evaluator==K::SingleWorldFirst||kernel.evaluator==K::SingleWorldIndexFirst?1:
