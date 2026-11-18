@@ -7,13 +7,14 @@ method=runpy.run_path(str(ROOT/'tests/test_model_world_context.py'))['method']
 body=method('src/proxy/renderer.cpp','template<class Draw> void captureModelNormals(')
 cpp=r'''
 #include <cassert>
+#include "m2_draw_section.h"
 #include <cstdio>
 #include <map>
 #include "m2_shader_families.h"
 using IDirect3DVertexShader9=int;
 namespace NorthlightAutoDisplacement {
 struct Args {int draw=0,format=0;const void* indices=nullptr;const void* vertices=nullptr;unsigned stride=0;};
-struct CaptureSource {int mesh=0,pose=0;void* declaration=nullptr;};
+struct CaptureSource {int mesh=0,pose=0,bank=0;void* declaration=nullptr;};
 }
 struct Normals {unsigned calls=0;template<class...T>void capture(T&&...){++calls;}};
 struct Map:std::map<IDirect3DVertexShader9*,uint64_t>{unsigned lookups=0;auto find(IDirect3DVertexShader9* p){++lookups;return std::map<IDirect3DVertexShader9*,uint64_t>::find(p);}};

@@ -21,13 +21,14 @@ def method(name, prefix):
     return source[start:end]
 fixture = r'''
 #include <cassert>
+#include "m2_draw_section.h"
 #include <map>
 #include <vector>
 using IDirect3DVertexShader9=int;
 using D3DFORMAT=int;
 namespace NorthlightAutoDisplacement {
 struct Args {int draw=0,indices=0,format=0,vertices=0,stride=0;};
-struct CaptureSource {int mesh=0,pose=0;void* declaration=nullptr;};
+struct CaptureSource {int mesh=0,pose=0,bank=0;void* declaration=nullptr;};
 }
 struct Normals {unsigned captures=0;template<class... A> void capture(A&&...){++captures;}};
 struct Materials {bool enabled=false;bool active()const{return enabled;}};
@@ -115,7 +116,7 @@ with tempfile.TemporaryDirectory(prefix='northlight-normal-consumers-') as tmp:
     path.write_text(fixture)
     exe = path.with_suffix('.exe')
     compiler = [str(fp.zig()), 'c++', '-target', 'x86-windows-gnu'] if os.name == 'nt' else ['clang++']
-    subprocess.run([*compiler, '-std=c++17', '-O2', '-UNDEBUG', str(path), '-o', str(exe)], env=fp.zig_env(), check=True)
+    subprocess.run([*compiler, '-std=c++17', '-O2', '-UNDEBUG', *fp.test_include_flags(), str(path), '-o', str(exe)], env=fp.zig_env(), check=True)
     subprocess.run([str(exe)], check=True)
 print('MODEL_NORMAL_CONSUMERS_PASS materials=absent/off/on lighting-receivers=retained')
 print('MODEL_NORMAL_CANCEL_PASS disabled/unsupported/refused/cancelled zero-state-reads single-submit recovery')

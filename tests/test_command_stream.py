@@ -114,7 +114,7 @@ def stub():
            'constexpr unsigned D3DRTYPE_SURFACE=1,D3DRTYPE_VOLUME=2,D3DRTYPE_TEXTURE=3,D3DRTYPE_VOLUMETEXTURE=4,D3DRTYPE_CUBETEXTURE=5,D3DRTYPE_VERTEXBUFFER=6,D3DRTYPE_INDEXBUFFER=7;']
     out += [f'using {k}={v};' for k, v in SCALARS.items() if k != 'float']
     out.append('using D3DDEVTYPE=unsigned;')
-    out.append('constexpr unsigned D3DPT_TRIANGLELIST=4,D3DRS_ALPHATESTENABLE=15,D3DRS_ALPHABLENDENABLE=27;')
+    out.append('constexpr unsigned D3DPT_TRIANGLELIST=4,D3DRS_ZENABLE=7,D3DRS_ALPHATESTENABLE=15,D3DRS_ZFUNC=23,D3DRS_ALPHABLENDENABLE=27;')
     out += [f'using {e}=unsigned;' for e in ENUMS]
     known = set(SCALARS) | set(ENUMS) | KEYWORDS | {'REFIID', 'REFGUID', 'IUnknown'}
     ifaces = set(EXTRA_IFACES + gf.STREAM_IFACES) | {'IDirect3D9'}

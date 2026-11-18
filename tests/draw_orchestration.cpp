@@ -10,10 +10,11 @@
 #include <stdexcept>
 #include <vector>
 #include "m2_shader_families.h"
+#include "m2_draw_section.h"
 namespace NorthlightWaterRenderer {enum UserPointer:unsigned{NoUserPointer,UserVertices,UserVerticesAndIndices};}
 namespace NorthlightAutoDisplacement {
 struct Args {struct {D3DPRIMITIVETYPE topology;INT base;UINT minimum,vertices,start,primitives;bool indexed;}draw;const void* indices=nullptr;D3DFORMAT format=D3DFMT_UNKNOWN;const void* vertices=nullptr;UINT stride=0;};
-struct CaptureSource {unsigned mesh=0,pose=0;IDirect3DVertexDeclaration9* declaration=nullptr;};
+struct CaptureSource {unsigned mesh=0,pose=0,bank=0;IDirect3DVertexDeclaration9* declaration=nullptr;};
 }
 namespace NorthlightCaptureMetadata {struct PositionBounds {const void* owner=nullptr;IDirect3DVertexShader9* shader=nullptr;bool known=false;};}
 namespace NorthlightSkyComposition {enum class Role{Unknown,Sky,Celestial,Native,Planet};}
@@ -70,7 +71,7 @@ struct Bump {
  }
 };
 struct Normals {
- Env* e;template<class Draw,class Desc>void capture(IDirect3DVertexShader9* vs,Draw draw,bool up,const Desc*,const void*,D3DFORMAT,const void*,UINT,const unsigned* mesh,IDirect3DVertexDeclaration9* decl,const unsigned* pose,unsigned* published=nullptr,IDirect3DVertexDeclaration9** publishedDeclaration=nullptr,bool terrain=false){
+ Env* e;template<class Draw,class Desc>void capture(IDirect3DVertexShader9* vs,Draw draw,bool up,const Desc*,const void*,D3DFORMAT,const void*,UINT,const unsigned* mesh,IDirect3DVertexDeclaration9* decl,const unsigned* pose,unsigned* published=nullptr,IDirect3DVertexDeclaration9** publishedDeclaration=nullptr,bool terrain=false,const unsigned* bank=nullptr){
   assert(vs==shader());assert(mesh&&pose&&(*mesh==0||(*mesh==17&&*pose==23&&decl)));e->action(Normal,{up,*mesh,*pose,bool(decl)});if(e->cfg.componentDraw)draw();
  }
 };

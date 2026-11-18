@@ -223,6 +223,7 @@ HARNESS=r'''
 #include "sky_composition.h"
 #include "quality_settings.h"
 #include <cassert>
+#include <atomic>
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
@@ -342,7 +343,8 @@ struct GateCounts{unsigned blobCalls=0,blobTextures=0,blobClaimed=0;};
 namespace NorthlightParticleCapture{struct Prepared{};}
 namespace NorthlightAutoDisplacement{struct Args{struct{D3DPRIMITIVETYPE t;INT base;UINT min,vertices,start,count;bool indexed;}draw;};}
 struct ExtensionDevice{struct RawScope{explicit RawScope(MockExt&){}};};
-struct BumpMock{void beginDraw(){}void beforeNativeDraw(){}template<class... A> void capture(A&&...){}template<class Draw> HRESULT geometryDraw(Draw draw,bool){return draw();}template<class Draw,class Submit> HRESULT geometryDraw(Draw draw,bool,Submit){return draw();}template<class Draw> HRESULT nativeDraw(Draw draw,IDirect3DVertexShader9*,IDirect3DPixelShader9*){return draw();}};
+namespace NorthlightM2Draw {inline std::atomic<bool> requested{false};}
+struct BumpMock{bool active()const{return false;}void beginDraw(){}void beforeNativeDraw(){}template<class... A> void capture(A&&...){}template<class Draw> HRESULT geometryDraw(Draw draw,bool){return draw();}template<class Draw,class Submit> HRESULT geometryDraw(Draw draw,bool,Submit){return draw();}template<class Draw> HRESULT nativeDraw(Draw draw,IDirect3DVertexShader9*,IDirect3DPixelShader9*){return draw();}};
 struct Base{
     MoreLightsMock* nativeMoreLights=nullptr;
     struct NormalStub{unsigned begins=0;void beginNativeDraw(){++begins;}};NormalStub* modelNormals=nullptr;
