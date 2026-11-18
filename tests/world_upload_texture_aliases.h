@@ -22,7 +22,13 @@ inline void WorldColdUploadTest::textureAliases(UploadFaultDevice& d,D3DPRESENT_
         auto snapshot=make();w.active=snapshot;d.failTextureAt=d.textures+2;
         for(unsigned i=0;i<2000&&!w.meshRetry.waiting;++i){NorthlightStreaming::Budget budget(4u<<20,2);w.upload(budget);assert(SUCCEEDED(d.Present(nullptr,nullptr,nullptr,nullptr)));}
         assert(w.meshRetry.waiting&&d.textures==d.failTextureAt&&!w.pendingMesh&&!w.uploaded.lock());
-        d.failTextureAt=0;w.meshRetry.clear();complete(w,snapshot);
+        d.failTextureAt=0;w.meshRetry.clear();
+        size_t slots=0,maxSlots=0;unsigned materialVisits=0;
+        complete(w,snapshot,[&]{
+            const size_t staged=w.pendingMesh?w.pendingMesh->material:w.materials.size();
+            if(staged>slots){maxSlots=std::max(maxSlots,staged-slots);++materialVisits;slots=staged;}
+        });
+        assert(slots==900);
         auto verify=[&]{
             assert(w.materials.size()==900&&w.materials[0]!=w.materials[899]);
             for(unsigned i=0;i<900;++i){assert(w.uploadedAlphaCutoffs[i]==.1f+.001f*i);if(i<899)assert(w.materials[i]==w.materials[0]);}
@@ -33,6 +39,6 @@ inline void WorldColdUploadTest::textureAliases(UploadFaultDevice& d,D3DPRESENT_
         verify();
         w.reset();assert(SUCCEEDED(d.Reset(&parameters)));w.valid=true;assert(w.resources(128,128,D3DFMT_A16B16G16R16F));
         if(!spooled)snapshot=make();complete(w,snapshot);verify();
-        std::printf("CUTOUT_ALIASES_PASS spooled=%u slots=900 uniqueTextures=2 exactPixels=1 cutoffs=1 failedUploadRollback=1 reset=1 availableMiB=%llu\n",unsigned(spooled),(unsigned long long)(pressure.available()>>20));
+        std::printf("CUTOUT_ALIASES_PASS spooled=%u slots=900 uniqueTextures=2 materialVisits=%u maxSlotsPerVisit=%zu exactPixels=1 cutoffs=1 failedUploadRollback=1 reset=1 availableMiB=%llu\n",unsigned(spooled),materialVisits,maxSlots,(unsigned long long)(pressure.available()>>20));
     }
 }

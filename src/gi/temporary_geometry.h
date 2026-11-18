@@ -17,7 +17,12 @@ class TemporaryGeometryError:public std::runtime_error {public:using std::runtim
 class TemporaryGeometryFile {
     struct Close {void operator()(FILE* file)const{if(file)std::fclose(file);}};
     std::unique_ptr<FILE,Close> file_;mutable std::mutex mutex_;uint64_t size_=0;
-    void seek(uint64_t offset)const{
+    enum class Access { Unknown,Read,Write };
+    mutable Access last_=Access::Unknown;
+    mutable uint64_t next_=0;
+    void position(uint64_t offset,Access access)const{
+        if(last_==access&&next_==offset)return;
+        last_=Access::Unknown;
         if(offset>uint64_t(std::numeric_limits<long>::max())||std::fseek(file_.get(),long(offset),SEEK_SET))throw TemporaryGeometryError("Temporary geometry seek failed");
     }
 public:
@@ -25,17 +30,24 @@ public:
     uint64_t append(const void* data,size_t bytes){
         std::lock_guard<std::mutex> lock(mutex_);const auto offset=size_;
         if(bytes>uint64_t(std::numeric_limits<long>::max())-size_)throw TemporaryGeometryError("Temporary geometry size exceeded");
-        seek(size_);if(bytes&&std::fwrite(data,1,bytes,file_.get())!=bytes)throw TemporaryGeometryError("Temporary geometry write failed");size_+=bytes;return offset;
+        if(!bytes)return offset;
+        position(size_,Access::Write);
+        if(std::fwrite(data,1,bytes,file_.get())!=bytes){last_=Access::Unknown;throw TemporaryGeometryError("Temporary geometry write failed");}
+        size_+=bytes;last_=Access::Write;next_=size_;return offset;
     }
     void write(uint64_t offset,const void* data,size_t bytes){
         std::lock_guard<std::mutex> lock(mutex_);if(offset>size_||bytes>size_-offset)throw TemporaryGeometryError("Temporary geometry write range invalid");
-        if(!bytes)return;seek(offset);if(std::fwrite(data,1,bytes,file_.get())!=bytes)throw TemporaryGeometryError("Temporary geometry write failed");
+        if(!bytes)return;position(offset,Access::Write);
+        if(std::fwrite(data,1,bytes,file_.get())!=bytes){last_=Access::Unknown;throw TemporaryGeometryError("Temporary geometry write failed");}
+        last_=Access::Write;next_=offset+bytes;
     }
     void read(uint64_t offset,void* data,size_t bytes)const{
         std::lock_guard<std::mutex> lock(mutex_);if(offset>size_||bytes>size_-offset)throw TemporaryGeometryError("Temporary geometry read range invalid");
-        if(!bytes)return;seek(offset);if(std::fread(data,1,bytes,file_.get())!=bytes)throw TemporaryGeometryError("Temporary geometry read failed");
+        if(!bytes)return;position(offset,Access::Read);
+        if(std::fread(data,1,bytes,file_.get())!=bytes){last_=Access::Unknown;throw TemporaryGeometryError("Temporary geometry read failed");}
+        last_=Access::Read;next_=offset+bytes;
     }
-    void flush(){std::lock_guard<std::mutex> lock(mutex_);if(std::fflush(file_.get()))throw TemporaryGeometryError("Temporary geometry flush failed");}
+    void flush(){std::lock_guard<std::mutex> lock(mutex_);last_=Access::Unknown;if(std::fflush(file_.get()))throw TemporaryGeometryError("Temporary geometry flush failed");}
     uint64_t size()const{return size_;}
 };
 // Exclusive scratch arrays only: references survive four different block

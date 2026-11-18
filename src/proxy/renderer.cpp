@@ -2212,7 +2212,7 @@ private:
     LONGLONG* hookTimer=nullptr; /* &cpuDrawHooks on a timed RenderProfile sample frame (frame: set before the latch) */
     void latchDrawGates(){
         modelNormalsNeeded=world&&(worldDebug!=0||world->surfaceLightingEnabled()||world->needsDiagnosticFallback());
-        NorthlightM2Draw::requested.store(enabled&&!failed&&(modelNormalsNeeded||(autoBump&&autoBump->active())),std::memory_order_relaxed);
+        NorthlightM2Draw::requested.store(enabled&&!failed&&modelNormalsNeeded,std::memory_order_relaxed);
         NorthlightDrawGates::Inputs in;
         in.sky=celestialDiscs!=nullptr&&celestialEnabled();in.blobs=shadowBlobs!=nullptr&&shadowBlobs->active();in.world=world!=nullptr;in.enabled=enabled;in.failed=failed;
         in.shadowsKey=effectKeys.settings.shadows;in.actorShadows=world&&world->actorShadowsEnabled();

@@ -36,7 +36,16 @@ inline void WorldColdUploadTest::probeReuse(UploadFaultDevice& d,D3DPRESENT_PARA
             }assert(SUCCEEDED(t->UnlockRect(0)));t->PreLoad();
         }
     };
-    populate(1);complete(w,snapshot);exact();
+    populate(1);w.active=snapshot;assert(w.geometryResources(128,128));
+    assert(!w.probeAtlasReady(snapshot->map)&&!w.uploaded.lock());
+    w.stageScreenProbes("different-map");assert(!w.uploadedSerial);
+    w.stageScreenProbes(snapshot->map);assert(w.probeAtlasReady(snapshot->map)&&!w.uploaded.lock());exact();
+    const auto firstMap=snapshot->map;snapshot->map="second-map";
+    assert(!w.probeAtlasReady(firstMap)&&!w.probeAtlasReady(snapshot->map));
+    w.stageScreenProbes(snapshot->map);assert(w.probeAtlasReady(snapshot->map));exact();
+    snapshot->map=firstMap;auto atlas=std::move(snapshot->atlas);
+    w.stageScreenProbes(firstMap);assert(!w.uploadedSerial&&!w.probeAtlasReady(firstMap));
+    snapshot->atlas=std::move(atlas);complete(w,snapshot);exact();
     std::array<IDirect3DTexture9*,6> retained{};for(unsigned c=0;c<6;++c){retained[c]=texture(c);retained[c]->AddRef();}
     poison();populate(2);w.reset();assert(w.keepPressureProbes&&w.resetReplayPending&&w.uploadedSerial==0);
     for(unsigned c=0;c<6;++c)assert(texture(c)==retained[c]);assert(SUCCEEDED(d.Reset(&parameters)));w.valid=true;assert(w.resources(128,128,D3DFMT_A16B16G16R16F));

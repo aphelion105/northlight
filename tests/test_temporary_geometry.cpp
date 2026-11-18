@@ -16,7 +16,7 @@
 #include <new>
 #include <vector>
 #include "memory_footprint.h"
-static int ioFailure=-1,allocationFailure=-1,ioCalls=0,openFiles=0;
+static int ioFailure=-1,allocationFailure=-1,ioCalls=0,openFiles=0,seekCalls=0;
 static bool failIO(){++ioCalls;if(ioFailure<0)return false;if(ioFailure--==0){ioFailure=-1;return true;}return false;}
 void* operator new(size_t size){if(allocationFailure>=0&&allocationFailure--==0){allocationFailure=-1;throw std::bad_alloc();}if(void* p=std::malloc(size?size:1))return p;throw std::bad_alloc();}
 void* operator new[](size_t size){return ::operator new(size);}
@@ -25,7 +25,7 @@ void operator delete(void* p,size_t)noexcept{std::free(p);}void operator delete[
 namespace std {
 static FILE* geometryTestTmpfile(){if(failIO())return nullptr;auto* file=::tmpfile();if(file)++openFiles;return file;}
 static int geometryTestFclose(FILE* file){--openFiles;return ::fclose(file);}
-static int geometryTestFseek(FILE* file,long offset,int origin){return failIO()? -1 : ::fseek(file,offset,origin);}
+static int geometryTestFseek(FILE* file,long offset,int origin){++seekCalls;return failIO()? -1 : ::fseek(file,offset,origin);}
 static size_t geometryTestFread(void* data,size_t size,size_t count,FILE* file){return failIO()? 0 : ::fread(data,size,count,file);}
 static size_t geometryTestFwrite(const void* data,size_t size,size_t count,FILE* file){return failIO()? 0 : ::fwrite(data,size,count,file);}
 static int geometryTestFflush(FILE* file){return failIO()? EOF : ::fflush(file);}
@@ -84,6 +84,19 @@ int main(){
     unsigned allocationRefused=0;
     for(int failure=0;failure<12;++failure){published=previous;allocationFailure=failure;const bool ok=candidate(published);allocationFailure=-1;if(!ok){++allocationRefused;assert(published==previous);}assert(!openFiles);}
     assert(refused&&allocationRefused);
+    {
+        TemporaryGeometryFile file;const uint32_t value=19;uint32_t copy=0;
+        const int before=seekCalls;
+        for(unsigned i=0;i<64;++i)file.append(&value,sizeof value);
+        assert(seekCalls==before+1);
+        for(unsigned i=0;i<64;++i){file.read(i*sizeof value,&copy,sizeof copy);assert(copy==value);}
+        assert(seekCalls==before+2);
+        file.read(0,&copy,sizeof copy);file.write(sizeof value,&value,sizeof value);
+        file.read(2*sizeof value,&copy,sizeof copy);assert(seekCalls==before+5);
+        ioFailure=0;bool failed=false;
+        try{file.read(3*sizeof value,&copy,sizeof copy);}catch(const TemporaryGeometryError&){failed=true;}
+        assert(failed);file.read(3*sizeof value,&copy,sizeof copy);assert(seekCalls==before+6&&copy==value);
+    }
     {TemporaryGeometryFile file;uint32_t value=123;const auto offset=file.append(&value,sizeof value);file.flush();uint32_t read=0;file.read(offset,&read,sizeof read);assert(read==value);
      for(unsigned mode=0;mode<2;++mode){bool failed=false;try{if(mode)file.write(UINT64_MAX,&value,4);else file.read(1,&read,4);}catch(const std::runtime_error&){failed=true;}assert(failed);}}
     {

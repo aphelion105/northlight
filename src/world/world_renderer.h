@@ -375,6 +375,7 @@ private:
     std::weak_ptr<const NorthlightWorldMesh::WorldMeshUploadPlan> uploadedMeshPlan;
     std::vector<float> uploadedAlphaCutoffs;
     uint64_t uploadedSerial=0;
+    std::string uploadedProbeMap;
     std::shared_ptr<const StaticShadow::OwnerSet> uploadedStaticOwners;
     uint64_t staticOwnerGeneration=UINT64_MAX;
     uint64_t meshGeneration=0; // committed mesh identity; content signatures decide shadow reuse
@@ -2826,25 +2827,26 @@ private:
             size_t budget=streamBudget.remainingBytes();
             auto canStage=[&]{return pageBudget.available()&&next.upload.status()==NorthlightWorldMeshPages::Result::Ready;};
             {auto phase=streamingPhases.measure(NorthlightStreaming::PhaseProfile::Materials);
-            unsigned count=0;
-            while(canStage()&&budget&&next.material<payload.materials.size()&&count<16){
+            unsigned uploads=0;
+            while(canStage()&&budget&&next.material<payload.materials.size()){
                 const auto& m=payload.materials[next.material];
                 if(m.textureOwner!=UINT32_MAX){
                     if(m.textureOwner>=next.textures.size()||!next.textures[m.textureOwner])return streamingFailure(E_FAIL,"staged material owner");
                     auto* texture=next.textures[m.textureOwner];texture->AddRef();next.textures.push_back(texture);
-                    ++next.material;++count;++next.textureReuses;continue;
+                    ++next.material;++next.textureReuses;continue;
                 }
                 const auto& pixels=m.pixels();
                 const bool white=m.width==1&&m.height==1&&pixels.size()==4&&
                     pixels[0]==255&&pixels[1]==255&&pixels[2]==255&&pixels[3]==255;
-                if(white&&next.white){next.white->AddRef();next.textures.push_back(next.white);++next.material;++count;continue;}
+                if(white&&next.white){next.white->AddRef();next.textures.push_back(next.white);++next.material;continue;}
                 if(!next.partialTexture){
                     if(auto* reused=reusableMaterial(m,next.material)){
                         if(resetReplayScoped)reused->PreLoad();
-                        reused->AddRef();next.textures.push_back(reused);++next.material;++count;++next.textureReuses;
+                        reused->AddRef();next.textures.push_back(reused);++next.material;++next.textureReuses;
                         if(white){next.white=reused;reused->AddRef();}
                         continue;
                     }
+                    if(uploads>=16)break;
                     if(payload.pages->temporary&&!admitsGrowth("pressure-material",shadowTextureFormat.bytes(m.pixelBytes()),nullptr,true))return streamingFailure(E_OUTOFMEMORY,"pressure-material-admission");
                     HRESULT hr=d->CreateTexture(m.width,m.height,1,0,shadowTextureFormat.value,payload.pages->defaultPool()?D3DPOOL_DEFAULT:D3DPOOL_MANAGED,&next.partialTexture,nullptr);
                     if(FAILED(hr)||!next.partialTexture)return streamingFailure(FAILED(hr)?hr:E_FAIL,"staged material");
@@ -2862,18 +2864,21 @@ private:
                 if(FAILED(hr))return streamingFailure(hr,"staged material lock");
                 if(!lock.pBits||lock.Pitch<INT(rowBytes)){next.partialStaging->UnlockRect(0);return streamingFailure(E_FAIL,"staged material layout");}
                 bool copied=true;
-                std::array<uint8_t,4096*4> sourceRow;
-                if(sourceRowBytes>sourceRow.size()){next.partialStaging->UnlockRect(0);return streamingFailure(E_FAIL,"material width");}
-                for(UINT y=0;y<rows&&copied;++y){
-                    copied=payload.pages->copyMaterial(m,(next.materialRow+y)*sourceRowBytes,sourceRowBytes,sourceRow.data());
-                    if(copied)for(UINT x=0;x<m.width;++x)NorthlightShadowAlphaTexture::write((char*)lock.pBits+y*lock.Pitch,x,shadowTextureFormat.stride,sourceRow[x*4+3]);
+                std::array<uint8_t,4096*4> scratch;
+                if(sourceRowBytes>scratch.size()||!sourceRowBytes){next.partialStaging->UnlockRect(0);return streamingFailure(E_FAIL,"material width");}
+                for(UINT y=0;y<rows&&copied;){
+                    const UINT n=std::min(rows-y,UINT(scratch.size()/sourceRowBytes));
+                    copied=payload.pages->copyMaterial(m,(next.materialRow+y)*sourceRowBytes,n*sourceRowBytes,scratch.data());
+                    for(UINT j=0;copied&&j<n;++j)for(UINT x=0;x<m.width;++x)
+                        NorthlightShadowAlphaTexture::write((char*)lock.pBits+(y+j)*lock.Pitch,x,shadowTextureFormat.stride,scratch[j*sourceRowBytes+x*4+3]);
+                    y+=n;
                 }
                 hr=next.partialStaging->UnlockRect(0);if(!copied)return streamingFailure(E_FAIL,"staged material temporary copy");if(FAILED(hr))return streamingFailure(hr,"staged material unlock");
                 next.materialRow+=rows;budget-=rows*rowBytes;streamBudget.consume(rows*rowBytes);
                 if(next.materialRow==m.height){
                     if(next.partialStaging!=next.partialTexture&&FAILED(hr=d->UpdateTexture(next.partialStaging,next.partialTexture)))return streamingFailure(hr,"material upload");
                     if(next.partialStaging==next.partialTexture)next.partialTexture->PreLoad();
-                    drop(next.partialStaging);auto* t=next.partialTexture;next.partialTexture=nullptr;next.textures.push_back(t);++next.material;++count;++next.textureUploads;
+                    drop(next.partialStaging);auto* t=next.partialTexture;next.partialTexture=nullptr;next.textures.push_back(t);++next.material;++uploads;++next.textureUploads;
                     if(white){next.white=t;t->AddRef();}
                 }
             }
@@ -2936,10 +2941,22 @@ private:
         if((!menuDomain&&(!vertices||!indices))||uploadedMap!=active->map)return false;
         // Mesh staging can precede the scene targets; probe upload waits for them.
         if(!geometryTargetsReady)return true;
+        return uploadProbeAtlas();
+    }
+    bool probeAtlasReady(const std::string& map)const{
+        return geometryTargetsReady&&(geometryGroups&2u)&&active&&active->map==map&&
+               uploadedProbeMap==map&&uploadedSerial&&uploadedSerial==active->serial;
+    }
+    void stageScreenProbes(const std::string& map){
+        if(geometryTargetsReady&&(geometryGroups&2u)&&active&&active->map==map)uploadProbeAtlas();
+    }
+    bool uploadProbeAtlas(){
         // Geometry can be ready before a new map's first GI solve. Shadows
         // may render immediately; GridInfo.w prevents reading the old atlas.
         if(active->serial==0)uploadedSerial=0;
-        if(giWorkEnabled()&&(geometryGroups&2u)&&uploadedSerial!=active->serial){
+        if(giWorkEnabled()&&(geometryGroups&2u)&&active->serial&&(uploadedSerial!=active->serial||uploadedProbeMap!=active->map)){
+            const bool first=!uploadedSerial||uploadedProbeMap!=active->map;
+            uploadedSerial=0; // A partially written atlas cannot certify any snapshot.
             auto phase=streamingPhases.measure(NorthlightStreaming::PhaseProfile::Probes);frameProbeUpload=true; /* 0.3.176 (D3) */
             if(active->atlas.size()!=NorthlightGI::probeLayout().atlasSize())return false;
             traceUpload("probe-enter");
@@ -2977,7 +2994,8 @@ private:
                 if(!check(probePrev->UnlockRect(0),"probe blend unlock"))return false;
             }
             ++probeBlendPublishes;probeBlendSlots+=blendedSlots;
-            uploadedSerial=active->serial;
+            uploadedProbeMap=active->map;uploadedSerial=active->serial;
+            if(first&&NorthlightDiagnostics::enabled())deferLogf("WORLD probe atlas ready map=%s frame=%u tick=%lu staticMesh=%u",uploadedProbeMap.c_str(),unsigned(frames),(unsigned long)GetTickCount(),unsigned(uploaded.lock()==active->bvh));
         }return true;
     }
     // 0.3.176 (D1): this frame's terrain change (sample frames), per-triangle tests, and (RenderProfile
@@ -5441,6 +5459,9 @@ public:
         const bool meshReady=geometryWanted&&ready()&&screenResourcesReady&&upload(streamBudget);
         const bool sceneTargetsReady=meshReady&&geometryResources(w,h);
         const bool geometryReady=sceneTargetsReady&&(hadTargets||upload(streamBudget));
+        // GI owns its textures and solved snapshot. Static shadow pages can still be uploading.
+        if(!geometryReady&&screenResourcesReady&&requirements.probes)stageScreenProbes(lastRequest.map);
+        if(failed)return false;
         const bool fogShadowMapsReady=geometryReady&&applyDirectionalShadows;
         if(geometryReady!=temporalGeometryReady){
             const DWORD now=GetTickCount();
@@ -6191,7 +6212,7 @@ public:
         NorthlightNightFloor::nightAmbient(quality.nightBrightness,NorthlightNightFloor::weight(naturalSky.valid,naturalSky.valid?naturalSky.sun.direction[2]:0.f),c[18],c[19]);
         c[66][0]=float(quality.giPrelitMix)*.01f;c[66][1]=float(quality.giBrightness)*.01f; // GI only; volume passes later own c66 as FogActorBounds.
         c[19][3]=8; /* c19.rgb: NightBrightness light per unit of albedo, from c18's ambient (WorldComposite only; 0 = off); c19.w: probe spacing */
-        c[20][0]=float(NorthlightGI::probeLayout().atlas);c[20][1]=requirements.probes?NorthlightQuality::giIntensity(quality):0.f;c[20][2]=std::max(.01f,std::min(1.f,quality.shadowStrength*.0085f));c[20][3]=geometryReady&&giWorkEnabled()&&uploadedSerial&&uploadedSerial==active->serial?1.f:0.f;
+        c[20][0]=float(NorthlightGI::probeLayout().atlas);c[20][1]=requirements.probes?NorthlightQuality::giIntensity(quality):0.f;c[20][2]=std::max(.01f,std::min(1.f,quality.shadowStrength*.0085f));c[20][3]=requirements.probes&&probeAtlasReady(frameMap)?1.f:0.f;
         DWORD now=GetTickCount();
         c[21][0]=uploadedFogField&&(uploadedFogField->fogCells||uploadedFogField->airCells)?1.f:0.f;c[21][1]=1.2f*wx.shaftGain();c[21][2]=hdrMode?64.f:.38f;c[21][3]=128; /* HDR retains radiance above diffuse white until output mapping. */
         // 0.3.200 (gpu budget): fewer march intervals at reduced levels (c60.x clouds, c64.z WorldFog; both stay 0, the bank unchanged, at level 0).
