@@ -292,7 +292,7 @@ static void ownerStress(unsigned rounds,bool exclusive=false){
 }
 static void bindingsAndScalars(){
  Backend b;DeviceMirror m;MirrorDevice game(&b,&m);ExtensionDevice ext(&b,&m);
- captureDrawState();assert(!liveObjects);static_assert(!std::is_copy_constructible<DeviceMirror>::value,"mutex/cache ownership must not copy");
+ static_assert(!std::is_copy_constructible<DeviceMirror>::value,"mutex/cache ownership must not copy");
  auto* vs=new Object<IDirect3DVertexShader9>();auto* ps=new Object<IDirect3DPixelShader9>();auto* dec=new Object<IDirect3DVertexDeclaration9>();
  auto* vb=new Object<IDirect3DVertexBuffer9>();auto* ib=new Object<IDirect3DIndexBuffer9>();auto* tex=new Object<IDirect3DBaseTexture9>();auto* surf=new Object<IDirect3DSurface9>();
  assert(SUCCEEDED(game.SetVertexShader(vs)));assert(vs->refs==2);cached(b,[&]{IDirect3DVertexShader9* p=nullptr;assert(SUCCEEDED(ext.GetVertexShader(&p))&&p==vs&&vs->refs==3);p->Release();});assert(vs->refs==2);

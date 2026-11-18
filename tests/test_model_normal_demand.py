@@ -19,6 +19,9 @@ struct CaptureSource {int mesh=0,pose=0,bank=0;void* declaration=nullptr;};
 struct Normals {unsigned calls=0;template<class...T>void capture(T&&...){++calls;}};
 struct Map:std::map<IDirect3DVertexShader9*,uint64_t>{unsigned lookups=0;auto find(IDirect3DVertexShader9* p){++lookups;return std::map<IDirect3DVertexShader9*,uint64_t>::find(p);}};
 struct Device {
+ struct CpuScope {explicit CpuScope(unsigned* count){if(count)++*count;}};
+ unsigned cpuNormalCapture=0;
+ bool sampledDrawTimers()const{return true;}
  struct World {bool terrainShader(IDirect3DVertexShader9*)const{return false;}} scene;
  World* world=&scene;
  Normals* modelNormals=nullptr;bool modelNormalsNeeded=false,enabled=false,applied=false,failed=false;Map vsHashes;
@@ -32,7 +35,7 @@ int main(){unsigned cases=0;uint64_t model=0,particle=0;
   if(family)d.vsHashes[&shader]=family==1?particle:model;
   bool called=false;d.captureModelNormals(&shader,[&]{called=true;return 0;},false,args,handoff?&source:nullptr);
   const bool admitted=d.modelNormals&&d.modelNormalsNeeded&&d.enabled&&!d.applied&&!d.failed;
-  assert(!called&&d.vsHashes.lookups==unsigned(admitted)&&normals.calls==unsigned(admitted&&family==2));++cases;
+  assert(!called&&d.vsHashes.lookups==unsigned(admitted)&&normals.calls==unsigned(admitted&&family==2));assert(d.cpuNormalCapture==normals.calls);++cases;
  }
  std::printf("MODEL_NORMAL_DEMAND_PASS cases=%u noLookupWithoutConsumer=1 acceptedModel=1 allGuards=1\n",cases);
 }

@@ -37,6 +37,9 @@ struct Normals {
 };
 struct Materials {bool enabled=false;bool active()const{return enabled;}};
 struct Hook {
+    struct CpuScope {explicit CpuScope(unsigned*){}};
+    unsigned cpuNormalCapture=0;
+    bool sampledDrawTimers()const{return false;}
     struct World {bool ground=false;bool terrainShader(IDirect3DVertexShader9*)const{return ground;}} scene;
     World* world=&scene;
     Normals normals;Normals* modelNormals=&normals;
