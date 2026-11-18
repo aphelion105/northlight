@@ -113,16 +113,27 @@ static void nearImage(const std::vector<unsigned char>& a,const std::vector<unsi
 #endif
 int main(int argc,char**argv){
     assert(argc==5||(argc==6&&(std::string(argv[5])=="--no-timing"||std::string(argv[5])=="--range-only"||std::string(argv[5])=="--cold-only"||std::string(argv[5])=="--stream-only")));std::setvbuf(stdout,nullptr,_IONBF,0);std::string dir=argv[2],tag=argv[3];
-    auto bytes=read(dir+"terrain.bin");unsigned count,samples;Vec3 center;std::memcpy(&count,bytes.data(),4);std::memcpy(&samples,bytes.data()+4,4);std::memcpy(&center,bytes.data()+8,12);assert(bytes.size()==20+count*sizeof(Vertex)+samples*12);auto vertices=(const Vertex*)(bytes.data()+20);auto points=(const Vec3*)(bytes.data()+20+count*sizeof(Vertex));
     WNDCLASSW wc{};wc.lpfnWndProc=DefWindowProcW;wc.lpszClassName=L"NorthlightOfflineShadowCamera";wc.hInstance=GetModuleHandleW(nullptr);assert(RegisterClassW(&wc));auto window=CreateWindowExW(0,wc.lpszClassName,L"",WS_OVERLAPPED,0,0,64,64,nullptr,nullptr,wc.hInstance,nullptr);assert(window);
     auto module=LoadLibraryA(argv[1]);assert(module);auto create=(IDirect3D9*(WINAPI*)(UINT))GetProcAddress(module,"Direct3DCreate9");assert(create);auto api=create(D3D_SDK_VERSION);assert(api);D3DPRESENT_PARAMETERS pp{};pp.Windowed=TRUE;pp.hDeviceWindow=window;pp.BackBufferWidth=pp.BackBufferHeight=64;pp.BackBufferFormat=D3DFMT_X8R8G8B8;pp.SwapEffect=D3DSWAPEFFECT_DISCARD;pp.PresentationInterval=D3DPRESENT_INTERVAL_IMMEDIATE;ok(api->CreateDevice(0,D3DDEVTYPE_HAL,window,D3DCREATE_HARDWARE_VERTEXPROCESSING|D3DCREATE_FPU_PRESERVE,&pp,&d));
-    auto shadowVS=vs(dir+"ShadowVS.bin"),rasterVS=vs(dir+"RasterVS.bin");auto shadowPS=ps(dir+"ShadowPS.bin"),normalPS=ps(dir+"WorldNormals.bin"),fixedNormalPS=ps(dir+"WorldNormalsFixed.bin"),lightingPS=ps(dir+"ActorShadow.bin"),tilePS=ps(dir+"ActorTiles.bin"),rasterPS=ps(dir+"RasterPS.bin");
-    D3DVERTEXELEMENT9 decl[]={{0,0,D3DDECLTYPE_FLOAT3,0,D3DDECLUSAGE_POSITION,0},{0,12,D3DDECLTYPE_FLOAT3,0,D3DDECLUSAGE_NORMAL,0},{0,24,D3DDECLTYPE_FLOAT2,0,D3DDECLUSAGE_TEXCOORD,0},D3DDECL_END()};IDirect3DVertexDeclaration9* declaration=nullptr;ok(d->CreateVertexDeclaration(decl,&declaration));
     auto modelVS=vs(dir+argv[4]);auto modelPS=ps(dir+"ModelPS.bin");auto alphaModelPS=ps(dir+"ModelAlphaPS.bin");
-    auto noDistancePS=ps(dir+"WorldNormalsNoDistance.bin");
     auto sourceMesh=read(dir+"human-0.mesh");unsigned meshVertices,meshIndices;std::memcpy(&meshVertices,sourceMesh.data()+4,4);std::memcpy(&meshIndices,sourceMesh.data()+8,4);assert(sourceMesh.size()==12+meshVertices*48+meshIndices*4);
     D3DVERTEXELEMENT9 modelElements[]={{0,0,D3DDECLTYPE_FLOAT3,0,D3DDECLUSAGE_POSITION,0},{0,12,D3DDECLTYPE_UBYTE4N,0,D3DDECLUSAGE_BLENDWEIGHT,0},{0,16,D3DDECLTYPE_UBYTE4,0,D3DDECLUSAGE_BLENDINDICES,0},{0,20,D3DDECLTYPE_FLOAT3,0,D3DDECLUSAGE_NORMAL,0},{0,32,D3DDECLTYPE_FLOAT2,0,D3DDECLUSAGE_TEXCOORD,0},D3DDECL_END()};
     IDirect3DVertexDeclaration9* modelDecl=nullptr;ok(d->CreateVertexDeclaration(modelElements,&modelDecl));
+#ifdef NORTHLIGHT_MODEL_NORMALS_CONSTANT_TEST
+    // The bank and pixel oracle uses the stock model, independent of terrain.
+    float bank[256][4]={};bank[2][0]=1.275f;bank[3][1]=1.7f;
+    bank[4][2]=500.f/499.5f;bank[4][3]=-.5f*bank[4][2];bank[5][2]=bank[28][3]=1;
+    for(unsigned bone=0;bone<75;++bone){const unsigned r=31+3*bone;
+        bank[r][1]=-1;bank[r+1][2]=1;bank[r+1][3]=-.3f;bank[r+2][0]=-1;bank[r+2][3]=1.25f;}
+    ok(d->SetVertexShaderConstantF(0,bank[0],256));ok(d->SetPixelShader(modelPS));
+    normalConstants(dir,modelDecl,modelVS,sourceMesh,meshVertices,meshIndices);
+    modelDecl->Release();modelVS->Release();modelPS->Release();alphaModelPS->Release();
+    d->Release();api->Release();FreeLibrary(module);DestroyWindow(window);return 0;
+#endif
+    auto bytes=read(dir+"terrain.bin");unsigned count,samples;Vec3 center;std::memcpy(&count,bytes.data(),4);std::memcpy(&samples,bytes.data()+4,4);std::memcpy(&center,bytes.data()+8,12);assert(bytes.size()==20+count*sizeof(Vertex)+samples*12);auto vertices=(const Vertex*)(bytes.data()+20);auto points=(const Vec3*)(bytes.data()+20+count*sizeof(Vertex));
+    auto shadowVS=vs(dir+"ShadowVS.bin"),rasterVS=vs(dir+"RasterVS.bin");auto shadowPS=ps(dir+"ShadowPS.bin"),normalPS=ps(dir+"WorldNormals.bin"),fixedNormalPS=ps(dir+"WorldNormalsFixed.bin"),lightingPS=ps(dir+"ActorShadow.bin"),tilePS=ps(dir+"ActorTiles.bin"),rasterPS=ps(dir+"RasterPS.bin");
+    D3DVERTEXELEMENT9 decl[]={{0,0,D3DDECLTYPE_FLOAT3,0,D3DDECLUSAGE_POSITION,0},{0,12,D3DDECLTYPE_FLOAT3,0,D3DDECLUSAGE_NORMAL,0},{0,24,D3DDECLTYPE_FLOAT2,0,D3DDECLUSAGE_TEXCOORD,0},D3DDECL_END()};IDirect3DVertexDeclaration9* declaration=nullptr;ok(d->CreateVertexDeclaration(decl,&declaration));
+    auto noDistancePS=ps(dir+"WorldNormalsNoDistance.bin");
     if(argc==6&&std::string(argv[5])=="--range-only"){
         ok(d->SetVertexDeclaration(modelDecl));ok(d->SetVertexShader(modelVS));ok(d->SetPixelShader(modelPS));
         IDirect3DTexture9* white=nullptr;ok(d->CreateTexture(1,1,1,0,D3DFMT_A8R8G8B8,D3DPOOL_MANAGED,&white,nullptr));D3DLOCKED_RECT lock{};ok(white->LockRect(0,&lock,nullptr,0));*static_cast<DWORD*>(lock.pBits)=0xffffffff;ok(white->UnlockRect(0));bind(0,white);
@@ -164,10 +175,6 @@ int main(int argc,char**argv){
             if(argc==6&&std::string(argv[5])=="--cold-only"){
                 if(frame<8)continue;normalColdAdmission(modelVS,modelDecl,meshVertices,meshIndices,sourceMesh);return 0;
             }
-#endif
-#ifdef NORTHLIGHT_MODEL_NORMALS_CONSTANT_TEST
-            if(frame<8)continue;
-            normalConstants(dir,modelDecl,modelVS,sourceMesh,meshVertices,meshIndices);return 0;
 #endif
 #ifdef NORTHLIGHT_SHADOW_SLICE_ONLY
             if(frame<8)continue;

@@ -92,6 +92,30 @@ struct PointTerrainCoverageTest {
                 for(auto& p:w.replays)for(unsigned bone=0;bone<21;++bone)p->constantStorage[4*(31+3*bone)+3]+=.05f;bounds(21);}
             assert(render(false));const auto reference=image();const auto oldDraws=w.pointDraws;unsigned weights[6];std::copy_n(w.pointSlot().faceWeights,6,weights);
             assert(render(true));compare(reference,image());assert(std::equal(weights,weights+6,w.pointSlot().faceWeights));assert(w.pointWork.palettePackets>0&&w.pointDraws<oldDraws/2);++comparisons;}
+        // Material-only layout variants keep the same POSITION and BLENDINDICES.
+        // Every variant is a real device declaration, and the scalar reference
+        // uses that native declaration for the draw.
+        const auto oneLayoutDraws=w.pointDraws;
+        for(unsigned variant=0;variant<16;++variant){
+            D3DVERTEXELEMENT9 alternate[std::size(elements)];
+            std::copy_n(elements,std::size(elements),alternate);
+            alternate[5].Usage=D3DDECLUSAGE_TEXCOORD;
+            alternate[5].UsageIndex=BYTE(1+variant%8);
+            alternate[5].Type=variant<8?D3DDECLTYPE_D3DCOLOR:D3DDECLTYPE_UBYTE4N;
+            IDirect3DVertexDeclaration9* materialDecl=nullptr;
+            must(d->CreateVertexDeclaration(alternate,&materialDecl));
+            for(size_t i=variant;i<w.replays.size();i+=16){
+                auto& p=*w.replays[i];p.decl->Release();p.decl=materialDecl;materialDecl->AddRef();
+            }
+            materialDecl->Release();
+        }
+        bounds(21);
+        assert(render(false));const auto materialReference=image();const auto scalarDraws=w.pointDraws;
+        assert(render(true));compare(materialReference,image());
+        std::printf("POINT_PALETTE_MATERIAL layouts=16 individual=%u grouped=%u singleLayout=%u\n",scalarDraws,w.pointDraws,oneLayoutDraws);
+        assert(w.pointDraws==oneLayoutDraws);++comparisons;
+        for(auto& p:w.replays){p->decl->Release();p->decl=decl;decl->AddRef();}
+        bounds(21);
         // Rebase a nonzero range without changing the original vertex bone IDs.
         auto sparse=std::make_shared<NorthlightDrawSnapshot::Mesh>(*source);auto sparseVertices=vertices;for(auto& v:sparseVertices)v.bones[0]=BYTE(v.bones[0]+50);std::memcpy(sparse->streams[0].bytes.data(),sparseVertices.data(),sparse->streams[0].bytes.size());
         must(vb->Lock(8*sizeof(Vertex),UINT(source->streams[0].bytes.size()),&data,0));std::memcpy(data,sparseVertices.data(),sparse->streams[0].bytes.size());must(vb->Unlock());for(auto& p:w.replays)p->shared=sparse;bounds(71);

@@ -76,7 +76,7 @@ class NorthlightModelNormals {
         Vertex* vertex=nullptr;Pixel* pixel=nullptr;
         IDirect3DVertexDeclaration9* declaration=nullptr;
         D3DVIEWPORT9 viewport{};DWORD raster[sizeof(rasterKeys)/sizeof(*rasterKeys)]={};
-        float constantStorage[256*4];const float* constants=constantStorage;
+        float* constantStorage=nullptr;const float* constants=nullptr;
         int intStorage[16*4],pi[16*4];const int* ints=intStorage;
         BOOL boolStorage[16],pb[16];const BOOL* bools=boolStorage;
         NorthlightShaderConstants::Usage constantUsage;NorthlightConstantEpoch::Stamp constantStamp;unsigned projectionKind=2;
@@ -87,7 +87,7 @@ class NorthlightModelNormals {
         NorthlightReplayGPU::Placement placement;bool resident=false,streamed=false,redundant=false,nativeProbed=false,nativeWritten=false;
         const NorthlightDrawSnapshot::Mesh& geometry()const{return sharedMesh?*sharedMesh:mesh;}
         IDirect3DBaseTexture9* textures[16]={};DWORD samplers[16][13]={};
-        void recycle(){resident=streamed=redundant=nativeProbed=nativeWritten=false;for(auto*& b:gpuVertex)release(b);release(gpuIndex);sharedMesh.reset();release(declaration);for(auto*& t:textures)release(t);}
+        void recycle(){constantStorage=nullptr;constants=nullptr;resident=streamed=redundant=nativeProbed=nativeWritten=false;for(auto*& b:gpuVertex)release(b);release(gpuIndex);sharedMesh.reset();release(declaration);for(auto*& t:textures)release(t);}
         ~Pending(){recycle();}
     };
     Pending* nativeCandidate=nullptr;unsigned nativeCommittedPackets=0;
@@ -157,14 +157,16 @@ class NorthlightModelNormals {
             const auto& next=*pending[at];const auto& m=next.geometry();
             if(!next.resident||!next.placement.absoluteIndices||!m.indexed||m.topology!=D3DPT_TRIANGLELIST||
                next.gpuIndex!=first.gpuIndex||std::memcmp(next.gpuVertex,first.gpuVertex,sizeof first.gpuVertex)||
-               m.streams[0].stride!=mesh.streams[0].stride||!sameCapture(first,next))break;
+               m.streams[0].stride!=mesh.streams[0].stride)break;
+            const bool adjacent=uint64_t(first.placement.indexStart)+uint64_t(run.count)*3==next.placement.indexStart;
+            if((!adjacent&&next.placement.indexStart!=first.placement.indexStart)||!sameCapture(first,next))break;
             // Repeating the exact opaque call cannot change this private target.
             // Do not remove it after a different geometry range joined the run.
             if(run.count==mesh.primitiveCount&&run.min==first.placement.minimumVertex()&&run.vertices==mesh.vertexCount&&
                next.placement.indexStart==first.placement.indexStart&&next.placement.vertexBase==first.placement.vertexBase&&
                m.vertexCount==mesh.vertexCount&&m.primitiveCount==mesh.primitiveCount){++run.packets;++at;continue;}
             if(next.redundant)break;
-            if(uint64_t(first.placement.indexStart)+uint64_t(run.count)*3!=next.placement.indexStart)break;
+            if(!adjacent)break;
             const auto low=std::min(run.min,next.placement.minimumVertex());
             const auto high=std::max(uint64_t(run.min)+run.vertices,uint64_t(next.placement.minimumVertex())+m.vertexCount);
             const auto count=uint64_t(run.count)+m.primitiveCount;
@@ -177,6 +179,16 @@ class NorthlightModelNormals {
     NorthlightDrawSnapshot::Frame snapshots{8u<<20,0};
     NorthlightGpuScene::NativeClient* geometryCache=nullptr;
     std::vector<std::unique_ptr<Pending>> pending,spare;
+    // Pointers can outlive the packet that first captured a pose. Banks have
+    // stable addresses until the entire batch finishes. A shared pose leaves
+    // the current write bank available to the next capture.
+    using FloatBank=std::array<float,256*4>;
+    std::vector<std::unique_ptr<FloatBank>> floatBanks;
+    size_t ownedBanks=0,peakFloatBanks=0,peakPackets=0;
+    float* writeBank(){
+        if(ownedBanks==floatBanks.size())floatBanks.push_back(std::unique_ptr<FloatBank>(new FloatBank));
+        return floatBanks[ownedBanks]->data();
+    }
     // Recycled buffers and queued geometry share the same 8 MiB allowance.
     size_t pendingBytes=0,spareBytes=0;unsigned pendingTextureSlots=0;bool deferred=false,sourceSharing=false;
     static size_t packetBytes(const Pending& p){return sizeof(Pending)+p.ps.capacity()*sizeof(float)+p.mesh.capacityBytes()+(p.sharedMesh?p.sharedMesh->capacityBytes():0);}
@@ -244,7 +256,7 @@ class NorthlightModelNormals {
     unsigned constantReadRegisters=0;
     void clearPending(){nativeCandidate=nullptr;const bool hadPending=!pending.empty();
         for(auto& p:pending){p->recycle();spareBytes+=packetBytes(*p);spare.push_back(std::move(p));}
-        pending.clear();pendingBytes=0;pendingTextureSlots=0;snapshots.clearFrame();if(hadPending&&pendingChanged)pendingChanged(pendingContext);}
+        pending.clear();ownedBanks=0;pendingBytes=0;pendingTextureSlots=0;snapshots.clearFrame();if(hadPending&&pendingChanged)pendingChanged(pendingContext);}
     template<class Admit> bool record(Vertex* vs,Pixel* ps,const float* control,const D3DVIEWPORT9& viewport,Admit& admit,const NorthlightDrawSnapshot::Draw* geometry,
                 const void* indices,D3DFORMAT format,const void* vertices,UINT stride,
                 const std::shared_ptr<const NorthlightDrawSnapshot::Mesh>* captured,IDirect3DVertexDeclaration9* capturedDeclaration,const NorthlightPoseBounds::Handoff* pose,
@@ -299,7 +311,7 @@ class NorthlightModelNormals {
                         E::Stamp copied;const bool valid=poseSpan(poseContext,first,n,out,copied)&&E::exact(before,copied);known&=valid;if(valid)rangeRegisters+=n;return valid;
                     },vs->rangeKind);
                     if(known)++rangeNarrow;
-                    else {constantReadRegisters+=256;if(FAILED(d->GetVertexShaderConstantF(0,packet->constantStorage,256)))return false;vsCaptured=true;++rangeFull;rangeRegisters+=256;
+                    else {packet->constantStorage=writeBank();constantReadRegisters+=256;if(FAILED(d->GetVertexShaderConstantF(0,packet->constantStorage,256)))return false;vsCaptured=true;++rangeFull;rangeRegisters+=256;
                         outside=rangeCache.outside(packet->sharedMesh,elements,count,packet->constantStorage,vs->rangeKind);}
                 }
                 if(outside){
@@ -334,8 +346,6 @@ class NorthlightModelNormals {
             // Charge consecutive uses of the same immutable source only once.
             const bool sharedSource=packet->sharedMesh&&!pending.empty()&&pending.back()->sharedMesh==packet->sharedMesh;
             const size_t bytes=packetBytes(*packet)-(sharedSource?packet->sharedMesh->capacityBytes():0);
-            while(!spare.empty()&&bytes+pendingBytes+spareBytes>(8u<<20)){spareBytes-=packetBytes(*spare.back());spare.pop_back();}
-            if(bytes>(8u<<20)-pendingBytes)return false;
             DWORD planes[1]={};const D3DRENDERSTATETYPE planeKeys[]={D3DRS_CLIPPLANEENABLE};
             if(!renderStates(planeKeys,planes)||planes[0]||!renderStates(rasterKeys,packet->raster))return false;
             packet->constantUsage.floats={vs->first,vs->count};packet->constantUsage.booleans={0,vs->reads.b?16u:0u};packet->constantUsage.integers={0,vs->reads.i?16u:0u};
@@ -351,6 +361,7 @@ class NorthlightModelNormals {
             // Only the owning device's typed source authorizes in-place reads.
             // Unheld calls retain the stamped reader's race-checked fallback.
             const auto* previous=pending.empty()?nullptr:pending.back().get();
+            if(!vsCaptured)packet->constantStorage=writeBank();
             if(reader&&constantSource.attached()&&constantSource.mirror->heldByThisThread()){
                 NorthlightReplayCaptureConstants::SelfCheck check{constantStats.blockTests,&constantStats};
                 if(!NorthlightReplayCaptureConstants::captureBlocks(*packet,previous,constantSource,fetch,fetchFloats,&constantStats,true,check))return false;
@@ -363,8 +374,15 @@ class NorthlightModelNormals {
             packet->vertex=vs;packet->pixel=ps;
             std::copy(control,control+4,packet->ps.data()+(ps->control-ps->first)*4);
             unsigned textureSlots=0;for(unsigned i=0;i<16;++i)if(packet->textures[i])textureSlots|=1u<<i;
+            const size_t neededBanks=ownedBanks+(packet->constants==packet->constantStorage);
+            packet->constantStorage=nullptr;
+            constexpr size_t batchLimit=8u<<20;
+            const auto retained=[&]{return bytes+pendingBytes+spareBytes+floatBanks.size()*sizeof(FloatBank);};
+            while(floatBanks.size()>neededBanks&&retained()>batchLimit)floatBanks.pop_back();
+            while(!spare.empty()&&retained()>batchLimit){spareBytes-=packetBytes(*spare.back());spare.pop_back();}
+            if(retained()>batchLimit)return false;
             const bool texturesWerePending=pendingTextureSlots!=0;
-            pending.push_back(std::move(packet));nativeCandidate=pending.back().get();pendingBytes+=bytes;++queued;pendingTextureSlots|=textureSlots;
+            pending.push_back(std::move(packet));ownedBanks=neededBanks;peakFloatBanks=std::max(peakFloatBanks,ownedBanks);peakPackets=std::max(peakPackets,pending.size());nativeCandidate=pending.back().get();pendingBytes+=bytes;++queued;pendingTextureSlots|=textureSlots;
             // Only the first sampled texture changes the write guard. Its
             // callback also ends the native coverage MRT batch.
             if(!texturesWerePending&&pendingTextureSlots&&pendingChanged)pendingChanged(pendingContext);return true;
@@ -502,8 +520,8 @@ public:
         snapshots.setLayoutProvider(&declarations,[](void* c,IDirect3DVertexDeclaration9* decl,UINT* extent){return static_cast<NorthlightVertexDeclarations::Cache*>(c)->captureLayout(decl,extent);});
     }
     ~NorthlightModelNormals(){pendingChanged=nullptr;reset();for(auto* map:{&vertices,&compactVertices})for(auto& v:*map){release(v.second.source);release(v.second.shader);}for(auto& map:pixels)for(auto& v:map){release(v.second.source);release(v.second.shader);}}
-    void endFrame(){depthSeeded=0;clearPending();nativeMrt.beginFrame();nativeCommittedPackets=0;streamFence.endFrame();streamedDraws=streamedBatches=streamedDiscards=streamFailures=0;streamedBytes=streamSavedBytes=0;streamBlocked=false;rangeCache.beginFrame();constantStats={};constantReadRegisters=0;poseBoundsTests=poseBoundsCulled=poseViewportTests=poseViewportCulled=0;compactDraws=draws=queued=flushes=immediate=sourceReused=residentDraws=handoffs=rangeNarrow=rangeFull=rangeRegisters=packetPixelReadsSkipped=mergedDraws=duplicateDraws=0;sourceReadBytes=upBytes=0;cleared=bad=false;release(frameTarget);}
-    void reset(bool preserveCaptureSources=false){endFrame();nativeMrt.reset();releaseStream();rangeCache.clear();if(!preserveCaptureSources)snapshots.clearSnapshotCache();declarations.clear();spare.clear();spareBytes=0;batchStates.clear();release(surface);release(normal);release(depth);release(depthSeedPS);width=height=0;}
+    void endFrame(){peakFloatBanks=peakPackets=0;depthSeeded=0;clearPending();nativeMrt.beginFrame();nativeCommittedPackets=0;streamFence.endFrame();streamedDraws=streamedBatches=streamedDiscards=streamFailures=0;streamedBytes=streamSavedBytes=0;streamBlocked=false;rangeCache.beginFrame();constantStats={};constantReadRegisters=0;poseBoundsTests=poseBoundsCulled=poseViewportTests=poseViewportCulled=0;compactDraws=draws=queued=flushes=immediate=sourceReused=residentDraws=handoffs=rangeNarrow=rangeFull=rangeRegisters=packetPixelReadsSkipped=mergedDraws=duplicateDraws=0;sourceReadBytes=upBytes=0;cleared=bad=false;release(frameTarget);}
+    void reset(bool preserveCaptureSources=false){endFrame();nativeMrt.reset();releaseStream();rangeCache.clear();if(!preserveCaptureSources)snapshots.clearSnapshotCache();declarations.clear();spare.clear();floatBanks.clear();spareBytes=0;batchStates.clear();release(surface);release(normal);release(depth);release(depthSeedPS);width=height=0;}
     IDirect3DTexture9* texture()const{return draws&&!bad?normal:nullptr;}
     bool shareCaptureSources(NorthlightDrawSnapshot::Frame& source,NorthlightDrawSnapshot::Frame::IdentityFn identity,
                             NorthlightDrawSnapshot::Frame::VersionFn version,NorthlightCaptureMetadata::Read metadata){
@@ -529,6 +547,7 @@ public:
     unsigned testRangeRegisters()const{return rangeRegisters;}
     void testConstantReuse(bool enabled){constantReuseEnabled=enabled;for(auto& p:pending)p->constantStamp={};}
     const NorthlightReplayCaptureConstants::Stats& testConstantStats()const{return constantStats;}
+    size_t testPeakFloatBanks()const{return peakFloatBanks;}
     unsigned testConstantReadRegisters()const{return constantReadRegisters;}
     unsigned testNativeCommittedPackets()const{return nativeCommittedPackets;}
 #endif
@@ -569,7 +588,7 @@ public:
     void setDeferredCapture(bool on,void(*changed)(void*)=nullptr,void* context=nullptr){
         if(!on)finishCaptures();deferred=on;pendingChanged=changed;pendingContext=context;
     }
-    template<class Log> void report(unsigned frame,Log log)const{log("MODEL_NORMALS frame=%u draws=%u queued=%u flushes=%u immediate=%u pending=%zu failed=%u sourceReused=%u sourceReadBytes=%zu sourcePoolBytes=%zu sourcePoolLimitMiB=%zu residentDraws=%u upBytes=%zu handoffs=%u rangeTests=%u rangeCulled=%u rangeSingleTests=%u rangeSingleUniform=%u rangeSingleMixed=%u rangeDeferred=%u poseBoundsTests=%u poseBoundsCulled=%u poseViewportTests=%u poseViewportCulled=%u rangeNarrow=%u rangeFull=%u rangeRegisters=%u packetPixelReadsSkipped=%u compactDraws=%u compactShaders=%u mergedDraws=%u depthSeeded=%u submittedDraws=%u streamedDraws=%u streamedBatches=%u streamedBytes=%zu streamedDiscards=%u streamFailures=%u streamCapacityBytes=%u streamSavedBytes=%zu duplicateDraws=%u pixelShaders=%u sharedPixelShaders=%u vertexShaders=%u sharedVertexShaders=%u",frame,draws,queued,flushes,immediate,pending.size(),unsigned(bad),sourceReused,sourceReadBytes,snapshots.sharedSourceBytes(),snapshots.sharedSourceLimit()>>20,residentDraws,upBytes,handoffs,rangeCache.tested,rangeCache.culled,rangeCache.singleTests,rangeCache.singleUniform,rangeCache.singleMixed,rangeCache.deferred,poseBoundsTests,poseBoundsCulled,poseViewportTests,poseViewportCulled,rangeNarrow,rangeFull,rangeRegisters,packetPixelReadsSkipped,compactDraws,compactBuilt,mergedDraws,depthSeeded,draws-mergedDraws-nativeCommittedPackets,streamedDraws,streamedBatches,streamedBytes,streamedDiscards,streamFailures,streamVB?StreamVertexBytes+StreamIndexBytes:0,streamSavedBytes,duplicateDraws,pixelBuilt,pixelReused,vertexBuilt,vertexReused);log("MODEL_NORMALS constants frame=%u fetchedRegisters=%u epochHits=%llu blockHits=%llu registersReused=%llu avoidedBytes=%llu selfChecks=%llu mismatches=%llu",frame,constantReadRegisters,(unsigned long long)constantStats.hits,(unsigned long long)constantStats.blockTests,(unsigned long long)constantStats.registersReused,(unsigned long long)constantStats.bytesAvoided,(unsigned long long)constantStats.selfChecks,(unsigned long long)constantStats.selfCheckMismatches);nativeMrt.report(frame,log);}
+    template<class Log> void report(unsigned frame,Log log)const{log("MODEL_NORMALS frame=%u draws=%u queued=%u flushes=%u immediate=%u pending=%zu failed=%u sourceReused=%u sourceReadBytes=%zu sourcePoolBytes=%zu sourcePoolLimitMiB=%zu residentDraws=%u upBytes=%zu handoffs=%u rangeTests=%u rangeCulled=%u rangeSingleTests=%u rangeSingleUniform=%u rangeSingleMixed=%u rangeDeferred=%u poseBoundsTests=%u poseBoundsCulled=%u poseViewportTests=%u poseViewportCulled=%u rangeNarrow=%u rangeFull=%u rangeRegisters=%u packetPixelReadsSkipped=%u compactDraws=%u compactShaders=%u mergedDraws=%u depthSeeded=%u submittedDraws=%u streamedDraws=%u streamedBatches=%u streamedBytes=%zu streamedDiscards=%u streamFailures=%u streamCapacityBytes=%u streamSavedBytes=%zu duplicateDraws=%u pixelShaders=%u sharedPixelShaders=%u vertexShaders=%u sharedVertexShaders=%u",frame,draws,queued,flushes,immediate,pending.size(),unsigned(bad),sourceReused,sourceReadBytes,snapshots.sharedSourceBytes(),snapshots.sharedSourceLimit()>>20,residentDraws,upBytes,handoffs,rangeCache.tested,rangeCache.culled,rangeCache.singleTests,rangeCache.singleUniform,rangeCache.singleMixed,rangeCache.deferred,poseBoundsTests,poseBoundsCulled,poseViewportTests,poseViewportCulled,rangeNarrow,rangeFull,rangeRegisters,packetPixelReadsSkipped,compactDraws,compactBuilt,mergedDraws,depthSeeded,draws-mergedDraws-nativeCommittedPackets,streamedDraws,streamedBatches,streamedBytes,streamedDiscards,streamFailures,streamVB?StreamVertexBytes+StreamIndexBytes:0,streamSavedBytes,duplicateDraws,pixelBuilt,pixelReused,vertexBuilt,vertexReused);log("MODEL_NORMALS constants frame=%u fetchedRegisters=%u peakFloatBanks=%zu peakPackets=%zu epochHits=%llu blockHits=%llu registersReused=%llu avoidedBytes=%llu selfChecks=%llu mismatches=%llu",frame,constantReadRegisters,peakFloatBanks,peakPackets,(unsigned long long)constantStats.hits,(unsigned long long)constantStats.blockTests,(unsigned long long)constantStats.registersReused,(unsigned long long)constantStats.bytesAvoided,(unsigned long long)constantStats.selfChecks,(unsigned long long)constantStats.selfCheckMismatches);nativeMrt.report(frame,log);}
     struct DepthSeed {IDirect3DTexture9* texture;float nearZ,farZ,minZ,maxZ;};
 private:
     bool seedProjection(const DepthSeed* seed,float (&projection)[4])const{

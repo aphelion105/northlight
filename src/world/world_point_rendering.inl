@@ -709,10 +709,13 @@
         const auto control=NorthlightActorDeformation::singleSkinControl(*p.program,p.constants);
         return control[0]==3&&control[1]==1?span:0;
     }
-    static bool pointPaletteSame(const Replay& a,const Replay& b){
-        return a.count==b.count&&a.index==b.index&&a.start==b.start&&a.base==b.base&&a.min==b.min&&a.vertices==b.vertices&&
-            a.stream[0]==b.stream[0]&&a.offset[0]==b.offset[0]&&a.stride[0]==b.stride[0]&&a.decl==b.decl&&
-            a.originalShader==b.originalShader&&a.boundsWork.paletteSpan==b.boundsWork.paletteSpan&&a.boundsWork.paletteFirst==b.boundsWork.paletteFirst;
+    // Both packets have independently passed pointPaletteSpan. The palette draw
+    // binds its own shader, declaration and instance stream. Only indexed
+    // primitive addresses and the palette window survive from the native draw.
+    static auto pointPaletteGeometry(const Replay& p){
+        return std::make_tuple(reinterpret_cast<uintptr_t>(p.index),p.start,p.count,p.base,
+            reinterpret_cast<uintptr_t>(p.stream[0]),p.offset[0],p.stride[0],
+            p.boundsWork.paletteFirst,p.boundsWork.paletteSpan);
     }
     // Depth-only opaque casters commute. Keep cutouts and unknown bounds as
     // barriers; group compatible geometry once for all lights and cube faces.
@@ -723,20 +726,26 @@
         for(size_t i=0;i<replays.size();++i){pointReplayOrder[i]=i;pointReplayPaletteSpans[i]=static_cast<unsigned char>(pointPaletteSpan(*replays[i]));pointCold.orderEligible+=pointReplayPaletteSpans[i]!=0;}
         pointCold.orderPackets+=unsigned(replays.size());
         const auto opaque=[&](size_t i){const auto& p=*replays[i];return p.pointBounds.valid&&p.cutoff<=-1.f&&!p.alphaMode;};
-        const auto key=[&](size_t i){const auto& p=*replays[i];const auto span=pointReplayPaletteSpans[i];
-            return std::make_tuple(span?0u:1u,reinterpret_cast<uintptr_t>(p.originalShader),reinterpret_cast<uintptr_t>(p.shader),
+        const auto replayKey=[&](size_t i){const auto& p=*replays[i];
+            return std::make_tuple(reinterpret_cast<uintptr_t>(p.originalShader),reinterpret_cast<uintptr_t>(p.shader),
                 reinterpret_cast<uintptr_t>(p.decl),reinterpret_cast<uintptr_t>(p.index),
                 reinterpret_cast<uintptr_t>(p.stream[0]),p.offset[0],p.stride[0],
                 reinterpret_cast<uintptr_t>(p.stream[1]),p.offset[1],p.stride[1],
                 reinterpret_cast<uintptr_t>(p.stream[2]),p.offset[2],p.stride[2],
                 reinterpret_cast<uintptr_t>(p.stream[3]),p.offset[3],p.stride[3],
-                p.type,p.indexed,p.base,span,p.boundsWork.paletteFirst,span?p.count:0u,span?p.start:0u,span?p.min:0u,span?p.vertices:0u,
-                span?0u:p.constantGroup,p.start,i);
+                p.type,p.indexed,p.base,p.constantGroup,p.start,i);
+        };
+        const auto less=[&](size_t a,size_t b){
+            const bool pa=pointReplayPaletteSpans[a]!=0,pb=pointReplayPaletteSpans[b]!=0;
+            if(pa!=pb)return pa;
+            if(!pa)return replayKey(a)<replayKey(b);
+            const auto ga=pointPaletteGeometry(*replays[a]),gb=pointPaletteGeometry(*replays[b]);
+            return ga!=gb?ga<gb:a<b;
         };
         for(size_t first=0;first<pointReplayOrder.size();){
             if(!opaque(first)){++first;continue;}
             size_t end=first+1;while(end<pointReplayOrder.size()&&opaque(end))++end;
-            std::sort(pointReplayOrder.begin()+first,pointReplayOrder.begin()+end,[&](size_t a,size_t b){return key(a)<key(b);});first=end;
+            std::sort(pointReplayOrder.begin()+first,pointReplayOrder.begin()+end,less);first=end;
         }
         pointReplayGroupsReady=false;pointReplayOrderReady=true;if(timed)pointCold.order+=QpcClock::now()-started;
     }
@@ -765,9 +774,10 @@
         // The order builder certifies each immutable packet after replayBoundsJoin().
         const UINT span=pointReplayPaletteSpans[index];
         if(!span)return D3D_OK;
+        const auto geometry=pointPaletteGeometry(p);
         size_t end=at+1;
         while(end<candidates.size()){const auto next=candidates[end];
-            if(pointReplayPaletteSpans[next]!=span||!pointPaletteSame(p,*replays[next]))break;++end;}
+            if(pointReplayPaletteSpans[next]!=span||pointPaletteGeometry(*replays[next])!=geometry)break;++end;}
         if(end-at<2||!pointPaletteResources())return D3D_OK;
         const float opaque[]={0,0,0,-1};HRESULT result=d->SetVertexDeclaration(pointPaletteDecl);
         if(SUCCEEDED(result))result=d->SetVertexShader(pointPaletteVS);

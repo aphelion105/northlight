@@ -8,7 +8,7 @@ static void normalConstants(const std::string& dir,IDirect3DVertexDeclaration9* 
     std::shared_ptr<const NorthlightDrawSnapshot::Mesh> immutable=mesh;
     const NorthlightDrawSnapshot::Draw geometry{D3DPT_TRIANGLELIST,0,0,vertices,0,indices/3,true};
     unsigned beforeReads=0,afterReads=0,nonempty=0,packets=0;uint64_t epochHits=0,blockHits=0;unsigned cases=0;
-    for(unsigned scenario=0;scenario<15;++scenario){std::vector<unsigned char> reference,nextReference;unsigned baselineReads=0;
+    for(unsigned scenario=0;scenario<16;++scenario){std::vector<unsigned char> reference,nextReference;unsigned baselineReads=0;
         for(bool reuse:{false,true}){
             CaptureCalls calls(d);DeviceMirror mirror,foreignMirror;ExtensionDevice extension(&calls,&mirror),foreign(&calls,&foreignMirror);std::unique_ptr<MirrorGuard> held;if(scenario!=12)held=std::make_unique<MirrorGuard>(mirror.gate);
             NorthlightModelNormals normals(&extension);normals.setDeferredCapture(true);normals.testRange(false);normals.testConstantReuse(reuse);normals.setTrustedPoseSource(extension.trustedConstantSource());
@@ -22,10 +22,12 @@ static void normalConstants(const std::string& dir,IDirect3DVertexDeclaration9* 
             if(scenario==13)mirror.enabled=false;
             assert(mirror.heldByThisThread()==(scenario!=12));
             ok(extension.BeginScene());
-            const unsigned drawCount=scenario==14?600:12;packets+=drawCount;
+            const unsigned drawCount=scenario==15?1500:scenario==14?600:12;packets+=drawCount;
+            size_t peakPackets=0;
             for(unsigned draw=0;draw<drawCount;++draw){
                 float bank[1024];std::memcpy(bank,original,sizeof bank);
                 if(scenario==1){bank[11*4+3]=.2f+.05f*draw;ok(extension.SetVertexShaderConstantF(11,bank+11*4,1));}
+                if(scenario==15&&draw%5<2){bank[31*4+3]+=.00001f*draw;ok(extension.SetVertexShaderConstantF(31,bank+31*4,3));}
                 if(scenario==2){bank[31*4+3]+=.005f*draw;ok(extension.SetVertexShaderConstantF(31,bank+31*4,3));}
                 if(scenario==3){bank[2*4]+=.0001f*draw;bank[255*4]=float(draw);ok(extension.SetVertexShaderConstantF(2,bank+8,1));ok(extension.SetVertexShaderConstantF(255,bank+255*4,1));}
                 if(scenario==4||scenario==14)ok(extension.SetVertexShaderConstantF(11,bank+44,1));
@@ -38,8 +40,19 @@ static void normalConstants(const std::string& dir,IDirect3DVertexDeclaration9* 
                 if(scenario==11){int ints[4]={int(draw),0,0,0};BOOL boolean=draw&1;ok(extension.SetVertexShaderConstantI(0,ints,1));ok(extension.SetVertexShaderConstantB(0,&boolean,1));}
                 auto* vertex=scenario==10&&(draw&1)?rigid:single;ok(extension.SetVertexShader(vertex));
                 normals.capture(vertex,[&]{return extension.DrawIndexedPrimitiveUP(D3DPT_TRIANGLELIST,0,vertices,indices/3,mesh->indices.data(),D3DFMT_INDEX32,mesh->streams[0].bytes.data(),48);},true,&geometry,nullptr,D3DFMT_UNKNOWN,nullptr,0,&immutable,declaration);
-                assert(normals.testPendingPackets()==(scenario==14?draw%64:draw)+1);float expected[1024];ok(d->GetVertexShaderConstantF(0,expected,256));ModelNormalPacketTestAccess::exactBank(normals,expected);
+                peakPackets=std::max(peakPackets,normals.testPendingPackets());
+                if(scenario!=15)assert(normals.testPendingPackets()==(scenario==14?draw%64:draw)+1);
+                float expected[1024];ok(d->GetVertexShaderConstantF(0,expected,256));ModelNormalPacketTestAccess::exactBank(normals,expected);
                 if(scenario==14&&draw%64==63)assert(normals.finishCaptures());
+            }
+            if(scenario==15){
+#ifdef NORTHLIGHT_LEGACY_NORMAL_BANKS
+                const size_t banks=peakPackets; // one inline float bank in every reference packet
+#else
+                const auto banks=normals.testPeakFloatBanks();
+                if(reuse)assert(banks==600&&normals.testPendingPackets()==1500);
+#endif
+                std::printf("MODEL_NORMALS_CROWD reuse=%u packets=%u peakBanks=%zu peakPackets=%zu pendingBeforeFinal=%zu floatBankBytes=%zu\n",unsigned(reuse),drawCount,banks,peakPackets,normals.testPendingPackets(),banks*size_t(4096));
             }
             const auto stats=normals.testConstantStats();const auto fetched=normals.testConstantReadRegisters();
             assert(normals.finishCaptures());ok(extension.EndScene());auto image=capturedPixels(normals.texture(),128,128);
