@@ -1,7 +1,7 @@
 # northlight-test: requires=windows-exe,zig slow
 """Material capture allocations: duplicate/unique texture keys, rollback, pressure and leases."""
 from pathlib import Path
-import argparse,hashlib,json,re,subprocess,sys
+import argparse,hashlib,io,json,re,subprocess,sys,zipfile
 ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT));import northlight_paths as fp
 p=argparse.ArgumentParser(__doc__);p.add_argument('--output',type=Path);p.add_argument('--headers',type=Path);p.add_argument('--reference',default='d9b39749');a=p.parse_args()
 out=(a.output or fp.output_dir()/'material-capture-allocations').resolve();out.mkdir(parents=True,exist_ok=True)
@@ -15,7 +15,15 @@ fixture='#ifdef NORTHLIGHT_ALLOCATIONS_REFERENCE\n'+instrument_fixture(reference
 (out/'material_bindings_reference.h').write_text(fixture,encoding='utf-8')
 (out/'material_packet_bindings.h').write_text((fp.TESTS/'test_material_batch_bindings.cpp').read_text().rsplit('int main(',1)[0],encoding='utf-8')
 (out/'packet_batch_fixture.h').write_text((fp.TESTS/'test_material_packet_auxiliary.cpp').read_text().split('void MaterialCaptureStateTestAccess::packetAuxiliary()')[0],encoding='utf-8')
-control=out/'control';control.mkdir(exist_ok=True);(control/'auto_bump_renderer.h').write_bytes(subprocess.check_output(['git','show',a.reference+':src/water/auto_bump_renderer.h'],cwd=ROOT))
+control=out/'control';control.mkdir(exist_ok=True)
+archive=subprocess.check_output(['git','archive','--format=zip',a.reference,'src'],cwd=ROOT)
+with zipfile.ZipFile(io.BytesIO(archive)) as files:
+ for item in files.infolist():
+  path=control/item.filename
+  assert path.resolve().is_relative_to(control)
+  if not item.is_dir():
+   path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(files.read(item))
+control_flags=['-I'+str(control/d.relative_to(ROOT)) for d in fp.SRC_DIRS]+['-I'+str(fp.TESTS)]
 header=(a.headers or fp.src('auto_bump_renderer.h').parent)/'auto_bump_renderer.h'
 texture_intern='deferredTextures.try_emplace(t.texture,t.bytes)' in header.read_text(encoding='utf-8')
 sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
@@ -23,7 +31,8 @@ watched=[header,fp.TESTS/'material_capture_allocations.cpp',Path(__file__),fp.TE
 inputs={str(f.resolve()):sha(f) for f in watched};runs=[];executables={}
 for opt in ['O2','O0']:
  for name,folder in [('control',control),('current',header.parent)]:
-  exe=out/(name+'-'+opt+'.exe');cmd=[fp.zig(),'c++','-target','x86-windows-gnu','-'+opt,'-UNDEBUG','-std=c++17','-Wno-microsoft-exception-spec','-Wno-return-type','-I'+str(folder),'-I'+str(out),*fp.test_include_flags(),fp.TESTS/'material_capture_allocations.cpp','-luser32','-luuid','-o',exe]
+  includes=control_flags if name=='control' else ['-I'+str(folder),*fp.test_include_flags()]
+  exe=out/(name+'-'+opt+'.exe');cmd=[fp.zig(),'c++','-target','x86-windows-gnu','-'+opt,'-UNDEBUG','-std=c++17','-Wno-microsoft-exception-spec','-Wno-return-type','-I'+str(out),*includes,fp.TESTS/'material_capture_allocations.cpp','-luser32','-luuid','-o',exe]
   if name=='control':cmd.insert(2,'-DNORTHLIGHT_ALLOCATIONS_REFERENCE=1')
   if name=='current' and texture_intern:cmd.insert(2,'-DNORTHLIGHT_TEXTURE_INTERN_TEST=1')
   with (out/(name+'-'+opt+'-build.log')).open('w') as log:subprocess.run(list(map(str,cmd)),env=fp.zig_env(),stdout=log,stderr=subprocess.STDOUT,check=True,timeout=300)

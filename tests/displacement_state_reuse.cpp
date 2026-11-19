@@ -440,6 +440,34 @@ void DisplacementStateTestAccess::poseHandoff(const char* path,const std::vector
     device.bank[8]=device.bank[13]=device.bank[18]=device.bank[22]=1;
     for(unsigned b=0;b<4;++b){auto* row=device.bank+4*(31+3*b);row[0]=row[5]=row[10]=1;row[11]=80;}
     NorthlightAutoDisplacement::Args args{{D3DPT_TRIANGLELIST,0,0,96,0,32,false}};NorthlightAutoDisplacement::CaptureSource source;
+    { // A cold shader needs no mesh at all. Once a sibling section is
+      // ready, retain this section's mesh without fetching a useless pose.
+        auto& m=g.materials.at(&device.vs);m.envelopeSkin=true;
+        m.coarseProgramBit=NorthlightReplayBounds::EnvelopeCache::coarseProgramBit(m.view);
+        float nearest=0;assert(!g.nearestMaterialDepth(&device.vs,args,nearest,true,nullptr,nullptr,&source,true));
+        assert(!source.mesh&&!g.rangeConstantStamp.valid&&g.coarseShapeMisses==1);
+        auto sibling=args;sibling.draw.primitives=16;sibling.draw.vertices=48;
+        for(unsigned i=0;i<20&&!g.poseEnvelopes.mayHaveCoarseSource(m.coarseProgramBit);++i){
+            g.endFrame();g.prepare(&device.vs,4,1,sibling);
+        }
+        assert(g.poseEnvelopes.mayHaveCoarseSource(m.coarseProgramBit));
+        NorthlightDrawSnapshot::Mesh scratch;std::shared_ptr<const NorthlightDrawSnapshot::Mesh> resident;
+        assert(g.snapshots.read(&extension,&layout,args.draw,scratch,nullptr,false,&resident)&&resident);
+        assert(!g.nearestMaterialDepth(&device.vs,args,nearest,true,nullptr,nullptr,&source,true));
+        assert(source.mesh&&source.missingCoarseShape==&device.vs&&!source.bank.bank&&!g.rangeConstantStamp.valid);
+        const auto mesh=source.mesh;
+        // Mandatory preparation must still read this draw's pose and publish it.
+        assert(!g.prepare(&device.vs,4,1,args,nullptr,&source,48,&source));
+        assert(source.mesh==mesh&&source.bank.bank);
+        float packet[16],expected[16];std::memcpy(expected,device.bank+4*31,sizeof expected);
+        assert(g.copyCaptureConstants(source.bank,31,4,packet)&&!std::memcmp(packet,expected,sizeof packet));
+        assert(!g.copyCaptureConstants(source.bank,255,2,packet));
+        auto other=source.bank;other.bank=expected;
+        assert(!g.copyCaptureConstants(other,31,4,packet));
+        assert(SUCCEEDED(extension.SetVertexShaderConstantF(31,expected,1)));
+        assert(!g.copyCaptureConstants(source.bank,31,4,packet)&&!std::memcmp(packet,expected,sizeof packet));
+        m.envelopeSkin=m.localSkinBuilt=false;source.clear();g.reset();g.endFrame();
+    }
     for(unsigned frame=0;frame<30&&!source.pose.bounds.valid;++frame){g.endFrame();assert(!g.prepare(&device.vs,4,1,args,nullptr,&source));}
     assert(source.mesh&&source.pose.bounds.valid&&source.pose.outsideRange&&source.pose.source==source.mesh.get()&&!g.buildsThisFrame&&!g.poseVerticesThisFrame);
     NorthlightConstantEpoch::Stamp current;current.requestHeld=true;assert(extension.constantStamp(current)&&source.pose.outside(source.mesh.get(),&device.vs,&layout,current));

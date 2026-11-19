@@ -3,6 +3,7 @@
 // evaluates a pose and cannot spend either evaluation budget.
 class EnvelopeCache {
     const bool alignedSkin_;
+    std::uint64_t readySkinPrograms_=0;
     using Key=std::shared_ptr<const std::vector<std::uint32_t>>;
     struct Binding {unsigned reg;D3DVERTEXELEMENT9 element;};
     using Bindings=std::shared_ptr<const std::vector<Binding>>;
@@ -54,7 +55,7 @@ private:
         Key key;
         Bindings bindings;
         std::unordered_map<std::string,Group> groups;
-        std::unique_ptr<SkinEnvelope> skin;
+        std::shared_ptr<SkinEnvelope> skin;
         size_t vertex=0,index=0,indexCount=0;bool unsupported=false,ready=false;
         std::uint64_t touched=0,programHash=0,lastEvaluationNs=0,serial=0;size_t bytes=0,baseBytes=0;
         unsigned constantFirst=0,constantCount=256,poseSlot[2]={16,16};
@@ -171,7 +172,7 @@ private:
         if(!e.bindings)return false;
         for(const auto& b:*e.bindings){const auto& s=mesh.streams[b.element.Stream];
             if(UINT(b.element.Offset)+NorthlightDrawSnapshot::declarationBytes(b.element.Type)>s.stride||uint64_t(mesh.vertexCount)*s.stride>s.bytes.size())return false;}
-        if(SkinEnvelope::supports(p))e.skin=std::make_unique<SkinEnvelope>();
+        if(SkinEnvelope::supports(p))e.skin=std::make_shared<SkinEnvelope>();
         /* The skin template's own DEF is c0; its evaluator reads only palette
            rows c31..c255. Copying the 3.6 KiB bank then changes no value read. */
         e.copyDefinitions=!p.definitions.empty();
@@ -413,6 +414,7 @@ private:
             ++e.vertex;++budget.vertices;++stats_.buildVertices;
         }
         e.ready=true;pending_=nullptr;++stats_.completed;
+        if(e.skin&&!e.copyDefinitions)readySkinPrograms_|=std::uint64_t(1)<<(e.programHash&63);
         return Status::Valid;
     }
     Status timeBudget(){++stats_.timeDeferred;return Status::Budget;}
@@ -429,7 +431,7 @@ public:
     EnvelopeCache(const EnvelopeCache&)=delete;EnvelopeCache& operator=(const EnvelopeCache&)=delete;
     EnvelopeCache(EnvelopeCache&&)=delete;EnvelopeCache& operator=(EnvelopeCache&&)=delete;
     void clearPoseCertificates(){for(auto& p:poses_)p.serial=0;nextPose_=0;}
-    void clear(){clearPoseCertificates();pending_=nullptr;pendingProgressFrame_=0;entrySerial_=0;entries_.clear();scratch_.clear();bytes_=0;clock_=frame_=0;expensive_={};stats_={};beginFrame();}
+    void clear(){clearPoseCertificates();pending_=nullptr;pendingProgressFrame_=0;entrySerial_=0;readySkinPrograms_=0;entries_.clear();scratch_.clear();bytes_=0;clock_=frame_=0;expensive_={};stats_={};beginFrame();}
     void beginFrame(bool diagnostics=true,size_t packets=0){
         fastOpen_=false;fastCount_=0;
         diagnostics_=diagnostics;terminalBuild_=false;timeBudget_.reset(packets);++frame_;readyNanoseconds_=heavyNanoseconds_=buildNanoseconds_=classifyNanoseconds_=0;readyCalls_=heavyCalls_=buildCalls_=0;stats_={};
@@ -524,28 +526,39 @@ public:
     // Optional material broad phase. Only completed immutable sources and this
     // draw's palette participate; survivors still need the exact aligned bounds.
     bool canCoarse()const{return stats_.coarseAttempts<4096&&stats_.coarseNanoseconds<100000;}
+    // Negative filter only. Hash collisions and evictions simply send the draw
+    // through the exact source/declaration check.
+    static std::uint64_t coarseProgramBit(const NorthlightActorDeformation::Program& program){return std::uint64_t(1)<<(programHash(program)&63);}
+    bool mayHaveCoarseSource(std::uint64_t bit)const{return (readySkinPrograms_&bit)!=0;}
+    // A completed shape is immutable. Pin it across a palette getter, which
+    // may reenter the device. Cold and unsupported sections need no palette.
+    struct CoarseProbe{
+        Stats& stats;BoundsClock::time_point start;
+        ~CoarseProbe(){stats.coarseNanoseconds+=elapsedNs(BoundsClock::now(),start);}
+    };
+    CoarseProbe beginCoarse(){++stats_.coarseAttempts;return {stats_,BoundsClock::now()};}
+    std::shared_ptr<const SkinEnvelope> coarseSource(const Prepared& prepared,const std::shared_ptr<const NorthlightDrawSnapshot::Mesh>& owner){
+        const auto found=findSource(owner,*prepared.key_,prepared.key_.get());
+        std::shared_ptr<const SkinEnvelope> shape;
+        if(found!=entries_.end()){
+            auto& e=found->second;
+            if(e.ready&&!e.unsupported&&!e.copyDefinitions&&e.skin){e.touched=++clock_;shape=e.skin;}
+        }
+        return shape;
+    }
     bool coarsePrepared(const Prepared& prepared,const std::shared_ptr<const NorthlightDrawSnapshot::Mesh>& owner,
         const float* constants,const float* inverse,float range,Bounds& output){
-        return coarseMaterial(&prepared,owner,constants,inverse,range,output,nullptr);
+        output={};
+        if(!owner||!constants||!inverse||!(range>0)||!std::isfinite(range)||
+           std::fabs(constants[4*31+11])<=2*range||!canCoarse())return false;
+        auto charge=beginCoarse();
+        const auto shape=coarseSource(prepared,owner);
+        return shape&&evaluateCoarse(*shape,constants,inverse,output);
     }
     // The material owner may already have completed this exact source and
     // layout in its displacement bounds cache while the shared build deferred.
-    bool coarseMaterial(const Prepared* prepared,const std::shared_ptr<const NorthlightDrawSnapshot::Mesh>& owner,
-        const float* constants,const float* inverse,float range,Bounds& output,const SkinEnvelope* local){
-        output={};
-        if(!owner||!constants||!inverse||!(range>0)||!std::isfinite(range)||
-           std::fabs(constants[4*31+11])<=2*range||!canCoarse()||(!local&&!prepared))return false;
-        const auto start=BoundsClock::now();
-        struct Charge {Stats& stats;BoundsClock::time_point start;~Charge(){stats.coarseNanoseconds+=elapsedNs(BoundsClock::now(),start);}} charge{stats_,start};
-        ++stats_.coarseAttempts;
-        if(!local){
-            const auto found=findSource(owner,*prepared->key_,prepared->key_.get());
-            if(found==entries_.end())return false;
-            auto& e=found->second;
-            if(!e.ready||e.unsupported||!e.skin||e.copyDefinitions)return false;
-            e.touched=++clock_;local=e.skin.get();
-        }
-        if(!local->usedBones||!local->evaluate(constants,inverse,output))return false;
+    bool evaluateCoarse(const SkinEnvelope& shape,const float* constants,const float* inverse,Bounds& output){
+        if(!shape.usedBones||!shape.evaluate(constants,inverse,output))return false;
         for(unsigned k=0;k<3;++k){
             const float margin=.01f+64*std::numeric_limits<float>::epsilon()*std::max(std::fabs(output.low[k]),std::fabs(output.high[k]));
             output.low[k]=std::nextafter(output.low[k]-margin,-INFINITY);

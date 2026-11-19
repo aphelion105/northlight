@@ -68,8 +68,8 @@ if a.m2_preflight:
  source=source.replace(old,old.replace('handoff();','if(northlightReadOnlyPolicy==2)handoff();'),1)
  displacement=fp.src('auto_displacement_renderer.h').read_text(encoding='utf-8')
  displacement=displacement.replace('class NorthlightAutoDisplacement {','extern unsigned northlightReadOnlyPolicy;\nclass NorthlightAutoDisplacement {',1)
- old='if(domain==4&&shader->second.envelopeSkin&&std::fabs';assert displacement.count(old)==1
- displacement=displacement.replace(old,'if(northlightReadOnlyPolicy==2&&domain==4&&shader->second.envelopeSkin&&std::fabs',1)
+ old='if(domain==4&&shader->second.envelopeSkin&&!missingCoarseShape';assert displacement.count(old)==1
+ displacement=displacement.replace(old,'if(northlightReadOnlyPolicy==2&&'+old[3:],1)
  old='if(!captureSource||!trustedConstants)return;';assert displacement.count(old)==1
  displacement=displacement.replace(old,'if(northlightReadOnlyPolicy!=2||!captureSource||!trustedConstants)return;',1)
  (overlay/'auto_displacement_renderer.h').write_text(displacement,encoding='utf-8',newline='\n')

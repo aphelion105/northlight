@@ -29,6 +29,29 @@ void MaterialCaptureStateTestAccess::captureAllocations(){
         std::printf("PACKET_CASE phase=%u draws=%u accepted=%u barriers=%u allocations=%zu hash=%llu endEmpty=%u\n",phase,draws,accepted,barriers,allocations,(unsigned long long)hash,unsigned(b.sparePackets.empty()));
     }
     configure(1);
+    { // Independent poses can share the immutable mesh. Equal bytes in two
+      // different allocations must still consume two shares of the budget.
+        std::vector<std::shared_ptr<NorthlightDrawSnapshot::Mesh>> sections;
+        for(unsigned i=0;i<16;++i){auto section=std::make_shared<NorthlightDrawSnapshot::Mesh>(*original);
+            section->streams[0].bytes.resize(224u<<10);sections.push_back(std::move(section));}
+        for(bool repeated:{false,true}){
+            unsigned batches=1;const unsigned draws=repeated?128:16;
+            for(unsigned i=0;i<draws;++i){
+                source.mesh=sections[repeated?i%2:i];constants[0]=float(i);
+                if(!record()){assert(!b.deferred.empty());clear();++batches;assert(record());}
+                assert(b.deferred.back()->mesh==source.mesh&&b.deferred.back()->pixelConstants[0]==float(i));
+                assert(b.deferredBytes<=b.deferredByteLimit);
+            }
+            clear();
+#ifdef NORTHLIGHT_ALLOCATIONS_REFERENCE
+            assert(batches==(repeated?32u:4u));
+#else
+            assert(batches==(repeated?2u:4u));
+#endif
+            std::printf("MATERIAL_MESH_BATCH_PASS repeated=%u draws=%u batches=%u\n",unsigned(repeated),draws,batches);
+        }
+        source.mesh=original;
+    }
     // Changing constant spans and sampler aliases preserves capture layout.
     model.first=0;model.last=223;model.samplers=65535;assert(record());clear();model.first=model.constant=20;model.last=24;model.samplers=1;assert(record());
     assert(b.deferred.back()->pixelConstants.capacity()==20&&b.deferred.back()->textures.capacity()==1);clear();check();
