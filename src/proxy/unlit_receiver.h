@@ -1,4 +1,5 @@
 #pragma once
+#include <algorithm>
 #include "actor_deformation.h"
 #include "name_stencil.h"
 #include "shader_tags.h"
@@ -7,6 +8,26 @@ namespace NorthlightUnlitReceiver {
 constexpr unsigned long Bit=0x40;
 constexpr unsigned long PrelitBit=0x20;
 constexpr unsigned long AuthoredBit=0x10;
+// Existing stencil bits encode the part of a posed room bank that probes may
+// attenuate. Round down so even full occlusion retains the native direct term.
+inline constexpr unsigned long RoomRef[]={AuthoredBit,AuthoredBit|PrelitBit,AuthoredBit|Bit,PrelitBit};
+inline unsigned long roomStencilMask(unsigned levels){
+    unsigned long mask=0;
+    for(unsigned level=0;level<4;++level)if(levels&(1u<<level))mask|=RoomRef[level];
+    return mask;
+}
+inline unsigned roomAmbientLevel(const float* bank){
+    if(bank[4]==0&&bank[5]==0&&bank[6]==0)return 0;
+    unsigned level=3;
+    for(unsigned c=0;c<3;++c){
+        const float direct=bank[c],ambient=bank[4+c];
+        if(direct>0){
+            const unsigned channel=ambient>=2*direct?2u:2*ambient>=direct?1u:0u;
+            level=std::min(level,channel);
+        }
+    }
+    return level;
+}
 // Prove the live COLOR0 lighting equation independently of shader identity.
 // Material-modified WMO programs retain c10 + dot(normal,-c12)*c11 even when
 // their hash no longer belongs to the stock catalog. Alpha/fog do not qualify.
@@ -88,6 +109,16 @@ inline bool prelitWorldShader(const uint32_t* words,size_t count,uint64_t hash){
 using namespace NorthlightNameStencil;
 inline constexpr Set Mark[]={{StencilEnable,1},{StencilFunc,kCmpAlways},{StencilPass,kOpReplace},{StencilFail,kOpKeep},{StencilZFail,kOpKeep},{StencilRef,Bit},{StencilWriteMask,Bit|PrelitBit|AuthoredBit|kBit},{TwoSidedStencilMode,0}};
 inline constexpr Set MarkPrelit[]={{StencilEnable,1},{StencilFunc,kCmpAlways},{StencilPass,kOpReplace},{StencilFail,kOpKeep},{StencilZFail,kOpKeep},{StencilRef,PrelitBit},{StencilWriteMask,Bit|PrelitBit|AuthoredBit|kBit},{TwoSidedStencilMode,0}};
-inline constexpr Set MarkAuthored[]={{StencilEnable,1},{StencilFunc,kCmpAlways},{StencilPass,kOpReplace},{StencilFail,kOpKeep},{StencilZFail,kOpKeep},{StencilRef,AuthoredBit},{StencilWriteMask,Bit|PrelitBit|AuthoredBit|kBit},{TwoSidedStencilMode,0}};
+using StencilMark=Set[sizeof(Mark)/sizeof(Set)];
+template<unsigned Level>
+inline constexpr StencilMark RoomMark={{StencilEnable,1},{StencilFunc,kCmpAlways},{StencilPass,kOpReplace},{StencilFail,kOpKeep},{StencilZFail,kOpKeep},{StencilRef,RoomRef[Level]},{StencilWriteMask,Bit|PrelitBit|AuthoredBit|kBit},{TwoSidedStencilMode,0}};
+inline constexpr auto& MarkAuthored=RoomMark<0>;
+inline const StencilMark& receiverMark(unsigned kind){
+    if(kind==3)return Mark;
+    if(kind==4)return MarkPrelit;
+    if(kind==6)return RoomMark<1>;
+    if(kind==7)return RoomMark<2>;
+    return MarkAuthored;
+}
 inline constexpr Set Unmark[]={{StencilEnable,1},{StencilFunc,kCmpAlways},{StencilPass,kOpReplace},{StencilFail,kOpKeep},{StencilZFail,kOpKeep},{StencilRef,0},{StencilWriteMask,Bit|PrelitBit|AuthoredBit|kBit},{TwoSidedStencilMode,0}};
 }

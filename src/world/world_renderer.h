@@ -50,6 +50,7 @@
 #include "local_light_trace.h"
 #include "point_light_shadow.h"
 #include "point_transmission_filter.h"
+#include "point_shadow_face_targets.h"
 #include "weather_lens_heat.h"
 #include "fog_ambient.h"
 #include "local_light_compiled_shaders.h"
@@ -416,6 +417,7 @@ private:
     bool unlitShaderRefused=false;IDirect3DSurface9* nameMaskDepth=nullptr,*unlitMaskDepth=nullptr; // 0.3.212 (task 32): non-owning, set per frame before render(), consumed by the composite quad
     IDirect3DSurface9* prelitMaskDepth=nullptr;
     IDirect3DSurface9* authoredMaskDepth=nullptr;
+    unsigned authoredRoomLevels=1;
     IDirect3DPixelShader9 *prelitPS=nullptr,*hdrPrelitPS=nullptr;
     bool prelitShaderRefused=false;
     IDirect3DTexture9* prelitDaylight=nullptr;IDirect3DSurface9* prelitDaylightSurface=nullptr;DWORD prelitDaylightRetryAt=0;
@@ -3332,7 +3334,7 @@ public:
         flushDeferredLogs(); /* 0.3.176 (U0/S0): after every bucketed span of the frame */
         if(profileSampled()){unsigned typed=0,eligible=0;for(const auto& p:replays){typed+=p->boundsWork.paletteSpan!=0;eligible+=pointPaletteSpan(*p)!=0;}
             logf("POINT palette rendererFrame=%u draws=%u packets=%u registers=%u rebasedPackets=%u savedRegisters=%u instanceBytes=%u typedSources=%u eligibleSources=%u disabled=%u retryFrames=%llu",rendererFrame,pointWork.paletteDraws,pointWork.palettePackets,pointWork.paletteRegisters,pointWork.paletteRebased,pointWork.paletteSavedRegisters,pointPaletteIds?unsigned(84*sizeof(float)):0,typed,eligible,unsigned(pointPaletteUnavailable),(unsigned long long)(pointPaletteRetryFrame>frames?pointPaletteRetryFrame-frames:0));}
-        if(profileSampled())logf("POINT workload rendererFrame=%u selected=%u staticDraws=%u terrainDraws=%u liveDraws=%u replayDraws=%u replayMerged=%u unionDraws=%u casterTriangles=%llu clippedGapTriangles=%llu staticRebuiltFaces=%u staticRestores=%u boundsTotal=%zu boundsValid=%u boundsUnbounded=%zu unboundedRigidFacePackets=%u unboundedSkinnedFacePackets=%u whiteLightingSkipped=%u boundsRuns=%u crossGroupMerged=%u duplicateInstances=%u",rendererFrame,pointWork.selected,pointWork.statics,pointWork.terrain,pointWork.live,pointWork.replay,pointWork.replayMerged,pointWork.unions,(unsigned long long)pointWork.triangles,(unsigned long long)pointWork.bridged,pointWork.rebuilt,pointWork.restored,replays.size(),pointBoundsValid,replays.size()-std::min(replays.size(),size_t(pointBoundsValid)),pointWork.unboundedRigid,pointWork.unboundedSkinned,pointWork.whiteLightingSkipped,replayBoundsRuns,pointWork.crossGroupMerged,pointWork.duplicateInstances);
+        if(profileSampled())logf("POINT workload rendererFrame=%u selected=%u staticDraws=%u terrainDraws=%u liveDraws=%u replayDraws=%u replayMerged=%u unionDraws=%u casterTriangles=%llu clippedGapTriangles=%llu staticRebuiltFaces=%u staticRestores=%u boundsTotal=%zu boundsValid=%u boundsUnbounded=%zu unboundedRigidFacePackets=%u unboundedSkinnedFacePackets=%u whiteLightingSkipped=%u boundsRuns=%u crossGroupMerged=%u duplicateInstances=%u pairedStaticFaces=%u",rendererFrame,pointWork.selected,pointWork.statics,pointWork.terrain,pointWork.live,pointWork.replay,pointWork.replayMerged,pointWork.unions,(unsigned long long)pointWork.triangles,(unsigned long long)pointWork.bridged,pointWork.rebuilt,pointWork.restored,replays.size(),pointBoundsValid,replays.size()-std::min(replays.size(),size_t(pointBoundsValid)),pointWork.unboundedRigid,pointWork.unboundedSkinned,pointWork.whiteLightingSkipped,replayBoundsRuns,pointWork.crossGroupMerged,pointWork.duplicateInstances,pointWork.pairedFaces);
         if(profileSampled())logf("NATIVE_DIRECT workload rendererFrame=%u nativeSlots=%u attempts=%u otherMatchedKept=%u unavailableCube=%u submittedTotal=%llu dualSubmittedTotal=%llu tripleSubmittedTotal=%llu fallbackTotal=%llu coldPairs=%u deferredPairs=%u rendererDirect=unchanged",rendererFrame,nativeDirectSlots,nativeDirectMatched,nativeDirectMultiple,nativeDirectMissingCube,(unsigned long long)(nativeDirectRenderer?nativeDirectRenderer->draws:0),(unsigned long long)(nativeDirectRenderer?nativeDirectRenderer->multiDraws:0),(unsigned long long)(nativeDirectRenderer?nativeDirectRenderer->tripleDraws:0),(unsigned long long)(nativeDirectRenderer?nativeDirectRenderer->fallbacks:0),nativeDirectRenderer?nativeDirectRenderer->coldPairs:0,nativeDirectRenderer?nativeDirectRenderer->deferredPairs:0);
         if(profileSampled())logf("NATIVE_DIRECT coverage rendererFrame=%u nativeCounts=%u,%u,%u,%u,%u matchedCounts=%u,%u,%u,%u,%u unclassifiedPreparedBypass=%u unclassifiedPrivateBypass=%u bankMemoHits=%u bankMemoMisses=%u scope=decoded-native-pairs counts=draws-by-slot-count",
             rendererFrame,nativeDirectSlotCounts[0],nativeDirectSlotCounts[1],nativeDirectSlotCounts[2],nativeDirectSlotCounts[3],nativeDirectSlotCounts[4],nativeDirectMatchCounts[0],nativeDirectMatchCounts[1],nativeDirectMatchCounts[2],nativeDirectMatchCounts[3],nativeDirectMatchCounts[4],nativeDirectPreparedBypass,nativeDirectPrivateBypass,nativeDirectBankHits,nativeDirectBankMisses);
@@ -3645,14 +3647,16 @@ public:
     void setEffectCoverage(IDirect3DTexture9* texture,bool emission=false){effectCoverage=texture;effectEmission=emission;}
     void setUnlitMask(IDirect3DSurface9* depthStencil){unlitMaskDepth=depthStencil;}
     void setPrelitMask(IDirect3DSurface9* depthStencil){prelitMaskDepth=depthStencil;}
-    void setAuthoredMask(IDirect3DSurface9* depthStencil){authoredMaskDepth=depthStencil;}
-    bool authoredReceiver(IDirect3DVertexShader9* shader,bool model){
+    void setAuthoredMask(IDirect3DSurface9* depthStencil,unsigned levels=1){authoredMaskDepth=depthStencil;authoredRoomLevels=levels;}
+    bool authoredReceiver(IDirect3DVertexShader9* shader,bool model,unsigned* roomLevel=nullptr){
         if(!hasContext())return false;
         if(!(model||wmoShaders.count(shader))||!nativeLightingShaders.count(shader))return false;
         float values[8];const auto* mirror=constantEpochSource.mirror;
         if(mirror&&mirror->active()&&mirror->vsFloatKnown[10]&&mirror->vsFloatKnown[11])std::memcpy(values,mirror->vsFloat[10],sizeof values);
         else if(FAILED(d->GetVertexShaderConstantF(10,values,2)))return false;
-        return NorthlightUnlitReceiver::lightingOverride(values,context.ambient,context.direct,model);
+        if(!NorthlightUnlitReceiver::lightingOverride(values,context.ambient,context.direct,model))return false;
+        if(roomLevel)*roomLevel=NorthlightUnlitReceiver::roomAmbientLevel(values);
+        return true;
     }
     void setNameMask(IDirect3DSurface9* depthStencil){nameMaskDepth=depthStencil;} /* 0.3.212 (task 32): the world depth-stencil holding this frame's name marks (non-owning, for the next render() only; null: no marks) */
     void setRainMask(IDirect3DTexture9* t){rainMask=t;} /* 0.3.202 (rain): non-owning, for the next render() only */
@@ -7059,7 +7063,8 @@ public:
         if(lightingCapture)lightingCapture->inputs(3,(1u<<7)|(1u<<13),(1u<<7)|(1u<<13)); // Native alpha/emission and rain needed to reproduce final atmosphere.
         bool compositeOk=false;
         {IDirect3DSurface9* maskDepth=authoredMask?authoredMaskDepth:prelitMask?prelitMaskDepth:unlitMask?unlitMaskDepth:nameMaskDepth;
-         const DWORD maskBits=(nameMaskDepth?NorthlightNameStencil::kBit:0)|(unlitMask?NorthlightUnlitReceiver::Bit:0)|(prelitMask?NorthlightUnlitReceiver::PrelitBit:0)|(authoredMask?NorthlightUnlitReceiver::AuthoredBit:0);
+         const unsigned roomPasses=(prelitMask?8u:0u)|(authoredMask?authoredRoomLevels:0u);
+         const DWORD maskBits=(nameMaskDepth?NorthlightNameStencil::kBit:0)|(unlitMask?NorthlightUnlitReceiver::Bit:0)|NorthlightUnlitReceiver::roomStencilMask(roomPasses);
          nameMaskDepth=unlitMaskDepth=prelitMaskDepth=authoredMaskDepth=nullptr;
          {NameMaskCompositeBind mask(d,fullMaterial&&!combinedMaterial?nullptr:maskDepth,maskBits);compositeOk=check(quad(w,h),"world composite");}
          if(compositeOk&&unlitMask){
@@ -7068,14 +7073,16 @@ public:
              NameMaskCompositeBind mask(d,maskDepth,maskBits,NorthlightUnlitReceiver::Bit);
              compositeOk=check(quad(w,h),"unlit atmosphere composite");
          }
-         for(unsigned authored=0;authored<2;++authored)if(compositeOk&&(authored?authoredMask:prelitMask)){
+         if(compositeOk&&roomPasses){
              if(combinedMaterial){d->SetTexture(9,fogResolved?fogBlurred:fog?fog:neutralAO);d->SetSamplerState(9,D3DSAMP_MINFILTER,D3DTEXF_LINEAR);d->SetSamplerState(9,D3DSAMP_MAGFILTER,D3DTEXF_LINEAR);}
-             const float daylightInfo[]={prelitDaylightCurrent?1.f:0.f,float(authored),0,0};d->SetPixelShaderConstantF(81,daylightInfo,1);
              d->SetTexture(14,prelitDaylightCurrent?prelitDaylight:neutralZero);
              d->SetSamplerState(14,D3DSAMP_MINFILTER,D3DTEXF_POINT);d->SetSamplerState(14,D3DSAMP_MAGFILTER,D3DTEXF_POINT);
              d->SetRenderTarget(0,targetSurface);d->SetPixelShader(prelitShader);
-             NameMaskCompositeBind mask(d,maskDepth,maskBits,authored?NorthlightUnlitReceiver::AuthoredBit:NorthlightUnlitReceiver::PrelitBit);
-             compositeOk=check(quad(w,h),"prelit WMO composite");
+             for(unsigned level=0;level<4&&compositeOk;++level)if(roomPasses&(1u<<level)){
+                 const float daylightInfo[]={prelitDaylightCurrent?1.f:0.f,(3-level)/3.f,0,0};d->SetPixelShaderConstantF(81,daylightInfo,1);
+                 NameMaskCompositeBind mask(d,maskDepth,maskBits,NorthlightUnlitReceiver::RoomRef[level]);
+                 compositeOk=check(quad(w,h),"prelit WMO composite");
+             }
          }
          if(profile)profile->mark("WorldComposite");
          if(compositeOk&&fullMaterial&&!combinedMaterial){

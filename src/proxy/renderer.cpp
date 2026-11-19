@@ -659,7 +659,7 @@ private:
     /* Cost of the mask on sample frames only (sampledDrawTimers), CpuScopes like the other per-draw costs: the decision (every 8th world-domain call timed, scaled by calls/timed, so the timer does not dominate a
        cheap test), the name runs (begin, alpha guard, end) and the unmark state wraps. Gross: each scope includes its two clock reads (qpcNs on the CPU timers line). The composite bind is once per frame and not timed. */
     LONGLONG cpuNameDecide=0,cpuNameMark=0,cpuNameUnmark=0;unsigned nameDecideCalls=0,nameDecideTimed=0;bool nameRun=false; /* a run of consecutive name draws keeps STENCILENABLE on (the other stencil states of kMark stay set) */
-    unsigned unlitMarks=0,prelitMarks=0,authoredMarks=0;
+    unsigned unlitMarks=0,prelitMarks=0,authoredMarks=0,roomLevels=0;
     NorthlightNameStencil::Mask nameMask;int maskKind=0; /* maskKind: this draw is 1 a name that gets marked, 2 a depth-final draw that unmarks (set by prepareDrawImpl, consumed by nameMaskDraw) */
     IDirect3DSurface9* maskFormatFor=nullptr;unsigned long maskFormatValue=0;unsigned maskFormatLogs=0;bool maskStencil=false;const void* maskDsId=nullptr; /* identities only: the world depth the format verdict is for, and the one whose Clear(Z) also clears stencil */
     void resetTranslucentCensus(){censusDraws=lastOpaqueZAt=clearResolveAt=earlyResolves=earlyResolveAt=earlyResolveUndone=0;}
@@ -1669,7 +1669,7 @@ private:
             world->setNameMask(maskOn?worldDepth:nullptr);
             world->setEffectCoverage(coverage,effectCoverage.hasEmission());
             world->setPrelitMask(prelitMarks&&maskStencil&&!nameMask.disabled&&worldDebug==0?worldDepth:nullptr);
-            world->setAuthoredMask(authoredMarks&&maskStencil&&!nameMask.disabled&&worldDebug==0?worldDepth:nullptr);
+            world->setAuthoredMask(authoredMarks&&maskStencil&&!nameMask.disabled&&worldDebug==0?worldDepth:nullptr,roomLevels);
             world->setUnlitMask(unlitMarks&&maskStencil&&!nameMask.disabled&&worldDebug==0?worldDepth:nullptr); /* 0.3.212 (task 32) */
             world->setRainMask(rainMaskTex); /* 0.3.202 (rain): RainMask for this frame's composite only (resolved and scrubbed at the top of renderEffects) */
             // Expanded HDR can omit the FP16 world/material intermediate on
@@ -1812,14 +1812,14 @@ private:
         const int kind=maskKind;maskKind=0;
         if(kind!=1)nameMaskRunEnd();
         if(!kind)return rainBlendDraw(rain,claimed,draw);
-        if(kind==3||kind==4||kind==5){
-            const auto& mark=kind==5?NorthlightUnlitReceiver::MarkAuthored:kind==4?NorthlightUnlitReceiver::MarkPrelit:NorthlightUnlitReceiver::Mark;
+        if(kind>=3){
+            const auto& mark=NorthlightUnlitReceiver::receiverMark(kind);
             DWORD previous[sizeof NorthlightUnlitReceiver::Mark/sizeof NorthlightUnlitReceiver::Mark[0]];bool set=false;
             extensionWork("unlit receiver mask",[&]{
                 if((nameMask.cleared||nameMaskClear())&&!claimed)set=maskApply(mark,previous);
             });
             const HRESULT hr=rainBlendDraw(rain,claimed,draw);
-            if(set){maskRestore(mark,previous);if(SUCCEEDED(hr)){if(kind==5)++authoredMarks;else if(kind==4)++prelitMarks;else ++unlitMarks;}}
+            if(set){maskRestore(mark,previous);if(SUCCEEDED(hr)){if(kind>=5){++authoredMarks;roomLevels|=1u<<(kind-5);}else if(kind==4)++prelitMarks;else ++unlitMarks;}}
             return hr;
         }
         if(kind==2){
@@ -1934,25 +1934,26 @@ private:
                 auto rs=[&](D3DRENDERSTATETYPE t){return [this,t,v=DWORD(0),known=false]()mutable{if(!known){v=drawRenderState(t);known=true;}return v;};};
                 auto zw=rs(D3DRS_ZWRITEENABLE);auto ab=rs(D3DRS_ALPHABLENDENABLE);auto sb=rs(D3DRS_SRCBLEND);auto db=rs(D3DRS_DESTBLEND);auto cw=rs(D3DRS_COLORWRITEENABLE);
                 if(aoActorOn){aoActorDrawKnown=true;aoActorDrawSkin=classifyVs(vs).skinned;aoActorDepthWrite=zw()!=FALSE;}
-                const bool authoredReceiver=terrain&&!nameMask.disabled&&worldDebug==0&&!(classifyVs(vs).entry&(kUnlitTag|kPrelitTag))&&
-                    world->authoredReceiver(vs,classifyVs(vs).family==3);
-                if(terrain&&!nameMask.disabled&&worldDebug==0&&((nameMask.armed()&&drawUiHashVS)||nameMask.hasMarks()||unlitMarks||prelitMarks||authoredMarks||authoredReceiver||(classifyVs(vs).entry&(kUnlitTag|kPrelitTag)))){ /* 0.3.212 (task 32): only a UI-hash draw can be a name, only a frame with marks can unmark */
+                if(terrain&&!nameMask.disabled&&worldDebug==0){
+                unsigned roomLevel=0;
+                const auto& receiver=classifyVs(vs);
+                const bool posedRoomModel=!menuScene&&receiver.family==3&&receiver.skinned;
+                const bool authoredReceiver=!(receiver.entry&(kUnlitTag|kPrelitTag))&&
+                    world->authoredReceiver(vs,receiver.family==3,posedRoomModel?&roomLevel:nullptr);
+                if((nameMask.armed()&&drawUiHashVS)||nameMask.hasMarks()||unlitMarks||prelitMarks||authoredMarks||authoredReceiver||(receiver.entry&(kUnlitTag|kPrelitTag))){
                     const bool sampledTimed=sampledDrawTimers()&&(++nameDecideCalls&7)==1;if(sampledTimed)++nameDecideTimed;
                     CpuScope decision(sampledTimed?&cpuNameDecide:nullptr);nameMaskDecide(drawWaterVS,zw,ab,sb,db,cw,viewport);
                     // A WMO's room-light layer can follow its outdoor layer
                     // with INVSRCALPHA/ONE. It still owns authored RGB at this
                     // depth; outdoor subtraction would erase that contribution.
-                    const auto& receiver=classifyVs(vs);
                     if(((receiver.entry&(kUnlitTag|kPrelitTag))||authoredReceiver)&&zw()&&(cw()&7)&&
                        (!ab()||db()==D3DBLEND_ZERO||(authoredReceiver&&receiver.wmo&&NorthlightNativeDirect::independentBlend(sb(),db(),drawRenderState(D3DRS_BLENDOP))))&&
                        nameMaskReady()&&NorthlightUnlitReceiver::stencilFormat(worldDepthDesc.Format,MAKEFOURCC('I','N','T','Z'))&&nameMaskFullViewport(viewport)&&worldDepthBound()){
-                        // A posed M2's room override moves with the model. Let resident
-                        // probes attenuate it, as for a baked receiver. Preserve the
-                        // separate authored fill path for room geometry and menus.
-                        const bool posedRoomModel=authoredReceiver&&!menuScene&&receiver.family==3&&receiver.skinned;
-                        maskKind=(posedRoomModel||(receiver.entry&kPrelitTag))?4:authoredReceiver?5:3;
+                        if((receiver.entry&kPrelitTag)||roomLevel==3)maskKind=4;
+                        else maskKind=authoredReceiver?5+roomLevel:3;
                     }
                     if(maskKind==1&&!nameMask.armed())maskKind=0;}
+                }
                 if(captured&&earlyDepth.earlyCaptured&&NorthlightTranslucentDepth::isUndo(drawWaterVS,zw,ab,sb,db,cw)){captured=false;if(aoActorOn)aoActorMask->resume();earlyDepth.undo();++earlyResolveUndone;++earlyResolveUndoneTotal;} /* undo: later opaque or water Z draw after the early resolve */
                 if(terrain&&!captured&&earlyDepth.armed()&&NorthlightTranslucentDepth::shouldResolve(drawWaterVS,zw,ab,sb,db,cw,[&]{return classifyVs(vs).skinned;})&&earlyDepth.attempt()){ /* 0.3.188 (2A): early depth for translucent actors, every frame, minimum state reads */
                     ExtensionDevice::RawScope raw(*ext);
@@ -4009,7 +4010,7 @@ public:
             logf("NAMEMASK frame=%u marked=%u runs=%u unmarked=%u composite=%d depthFormat=%lu stencil=%d prelit=%u unlit=%u decisions=%u decisionsTimed=%u decideUs=%.1f markUs=%.1f unmarkUs=%.1f cpuUs=%.1f",frame,nameMask.marks,nameMask.runs,nameMask.unmarkDraws,int(nameMask.composited),(unsigned long)(worldDepthDescKnown?worldDepthDesc.Format:D3DFMT_UNKNOWN),int(maskStencil),prelitMarks,unlitMarks,nameDecideCalls,nameDecideTimed,decide,mark,unmark,decide+mark+unmark);
         }
         cpuNameDecide=cpuNameMark=cpuNameUnmark=0;nameDecideCalls=nameDecideTimed=0;
-        nameMask.endFrame();unlitMarks=prelitMarks=authoredMarks=0; /* 0.3.212 (task 32): marks never outlive the frame (the next frame's first Clear(Z) clears the stencil) */
+        nameMask.endFrame();unlitMarks=prelitMarks=authoredMarks=roomLevels=0;
         if(sampled())logf("TRANSLUCENT frame=%u draws=%u lastOpaqueZ=%u clearResolve=%u earlyResolve=%u earlyResolveAt=%u earlyResolveTotal=%u earlyResolveUndone=%u earlyResolveUndoneTotal=%u",frame,censusDraws,lastOpaqueZAt,clearResolveAt,earlyResolves,earlyResolveAt,earlyResolveTotal,earlyResolveUndone,earlyResolveUndoneTotal);
         postEffectWorldDraws=postEffectSkinnedDraws=postEffectDepthWrites=postEffectDepthStateFailures=0;
         spellFrameEnd(); /* task 34: after the frame's diagnostics lines */

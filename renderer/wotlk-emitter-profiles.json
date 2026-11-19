@@ -1,5 +1,14 @@
 {
   "version": 1,
+  "native_anchors": {
+    "world\\generic\\human\\passive doodads\\hanginglanterns\\generalhanginglantern01.m2": {
+      "model_sha256": "9eb75149139e8ad185eb73deb0841a72e851dab673794734d63d71969c4af1ce",
+      "skin_sha256": "d5aa38426fc55118e652e56af1bffd3270d5985e3b558ef477d53d44f2e46d96",
+      "source": 0,
+      "position": [0.01142, 0, 0.38632],
+      "basis": "Center of the additive glow batch inside the rigid lantern, at the tip of the modeled flame. The native light is below the entire replacement mesh."
+    }
+  },
   "profiles": {
     "world\\expansion02\\doodads\\dalaran\\dalaran_sconce_indoor_01.m2": {
       "asset_sha256": "b0714c55c58c08cbd8112241a0de1f8a9ba53e754c16a0cb2a0109258a1ea811",

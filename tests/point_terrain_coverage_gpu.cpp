@@ -4,9 +4,13 @@
 #include <cassert>
 static void must(HRESULT hr){assert(SUCCEEDED(hr));}
 struct PointCopyFaults:ForwardIDirect3DDevice9 {
- using ForwardIDirect3DDevice9::ForwardIDirect3DDevice9;bool fail=false,after=false;unsigned failures=0;
+  using ForwardIDirect3DDevice9::ForwardIDirect3DDevice9;bool fail=false,after=false,failPair=false;unsigned failures=0,copies=0;
+  HRESULT STDMETHODCALLTYPE SetRenderTarget(DWORD slot,IDirect3DSurface9* target)override{
+   if(slot==1&&target&&failPair){failPair=false;return E_FAIL;}
+   return real->SetRenderTarget(slot,target);
+  }
  HRESULT STDMETHODCALLTYPE StretchRect(IDirect3DSurface9* a,const RECT* ar,IDirect3DSurface9* b,const RECT* br,D3DTEXTUREFILTERTYPE f)override{
-  if(!fail)return real->StretchRect(a,ar,b,br,f);fail=false;++failures;if(after)must(real->StretchRect(a,ar,b,br,f));return E_FAIL;
+   ++copies;if(!fail)return real->StretchRect(a,ar,b,br,f);fail=false;++failures;if(after)must(real->StretchRect(a,ar,b,br,f));return E_FAIL;
  }
 };
 struct PointTerrainCoverageTest {
@@ -181,17 +185,21 @@ struct PointTerrainCoverageTest {
   }
   w.pointSubBatches.clear();w.pointSubRanges.clear();w.pointTree.reset();
   std::puts("POINT_SUBRANGE_CANDIDATES_PASS faces=6 pixels=exact coarseFallback=1");
-  const bool minSupported=w.pointMinBlend;
-  if(minSupported)for(unsigned path=0;path<4;++path){
+  const bool minSupported=w.pointMinBlend,pairSupported=w.pointPairedTargets;
+  if(minSupported)for(unsigned path=0;path<(pairSupported?6u:4u);++path){
    auto cached=batch;cached.terrain=false;w.batches={batch,cached};w.terrainBatchListGeneration=UINT64_MAX;w.pointSlot().cacheValid=false;
-   w.pointMinBlend=path!=0;calls.fail=path>=2;calls.after=path==3;const auto failures=calls.failures,unions=w.pointWork.unions;
+   w.pointMinBlend=path!=0;w.pointPairedTargets=path>=4;calls.fail=path==2||path==3;calls.failPair=path==5;calls.after=path==3;
+   const auto failures=calls.failures,unions=w.pointWork.unions,copies=calls.copies,paired=w.pointWork.pairedFaces;
    must(d->BeginScene());assert(w.renderPointShadow(light,true,false));must(d->EndScene());assert(w.pointSlot().ready);
-   if(path>=2)assert(calls.failures==failures+1&&!w.pointMinBlend);else assert(calls.failures==failures);
-   assert((w.pointWork.unions>unions)==(path!=1));
+   if(path==2||path==3)assert(calls.failures==failures+1&&!w.pointMinBlend);else assert(calls.failures==failures);
+   assert((w.pointWork.unions>unions)==(path==0||path==2||path==3));
+   if(path==4){assert(calls.copies==copies&&w.pointWork.pairedFaces>paired);}
+   if(path==5){assert(!calls.failPair&&!w.pointPairedTargets&&calls.copies>copies);}
+   if(path==1||path==4)std::printf("POINT_FACE_SUBMIT path=%u copies=%u paired=%u\n",path,calls.copies-copies,w.pointWork.pairedFaces-paired);
    for(unsigned face=0;face<6;++face){must(d->GetRenderTargetData(w.pointSlot().faces[face],readback));D3DLOCKED_RECT lock{};must(readback->LockRect(&lock,nullptr,D3DLOCK_READONLY));
     for(unsigned y=0;y<256;++y)assert(!std::memcmp(referenceCube.data()+face*256*256+y*256,static_cast<char*>(lock.pBits)+y*lock.Pitch,256*4));must(readback->UnlockRect());}
   }
-  w.pointMinBlend=minSupported;
+  w.pointMinBlend=minSupported;w.pointPairedTargets=pairSupported;
   std::puts(minSupported?"POINT_MIN_BLEND_GPU_PASS cases=4 faces=6 pixels=exact legacy=1 min=1 copyFaultBeforeAfter=1 unionEliminated=1":"POINT_MIN_BLEND_GPU_SKIP unsupported-format legacy-retained");
   w.batches={batch};w.rebuildTerrainLists();
   // The actual pool must spend its full budget on visible sources, even when

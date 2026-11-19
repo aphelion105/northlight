@@ -43,6 +43,24 @@ def fixture(degrees=(0,),times=(0,)):
 
 
 class WorldFixtureEmission(unittest.TestCase):
+    def test_reviewed_bulb_changes_only_the_origin_of_the_pinned_mesh_and_skin(self):
+        from unittest.mock import patch
+        from world_fixture_emission import _reviewed_anchor
+        assets,blob,_,_,_,sources=fixture()
+        path=r'world\anonymous.m2'
+        skin=assets.files[path[:-3]+'00.skin']=b'test skin'
+        digest=lambda b:hashlib.sha256(b).hexdigest()
+        pin={'model_sha256':digest(blob),'skin_sha256':digest(skin),'source':0,
+             'position':[.5,0,4.], 'basis':'test bulb'}
+        with patch('world_fixture_emission._native_anchors',return_value={path:pin}):
+            origin=native_fixture_offsets(assets,path,blob,sources)[0]
+            self.assertEqual(origin['anchor'],sources[0][0])
+            self.assertEqual(origin['offset'],(.5,0.,1.))
+            self.assertFalse(_reviewed_anchor(assets,path,blob,[]))
+            self.assertFalse(_reviewed_anchor(assets,path,blob+b'x',sources))
+            assets.files[path[:-3]+'00.skin']+=b'x'
+            self.assertFalse(_reviewed_anchor(assets,path,blob,sources))
+
     def test_local_physics_is_rotated_and_does_not_bypass_fixed_axis_wrapper(self):
         assets,blob,p,bone,_,sources=fixture((90,));before=bytes(blob)
         record=native_fixture_offsets(assets,'world\\renamed.m2',blob,sources)[0]

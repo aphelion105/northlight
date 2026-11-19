@@ -24,6 +24,11 @@ directional submission time and the number of cubes held on sampled frames.
 The static directional cache batches consecutive index ranges within a mesh
 page. The pixel shader, alpha coverage and scissor govern when a draw closes.
 Lamp cube faces use the same page-range and device primitive-limit checks.
+On a static face rebuild, a second R32F render target can receive the same
+depth as the working cube. The cache detaches before dynamic casters draw.
+The working face keeps its colour and resets its depth buffer. On devices
+without a compatible second target, the existing cache copy and union paths
+remain available. The workload record counts successful paired face writes.
 
 For dynamic lamp shadows, `point_shadow_clip.h` classifies world-space caster
 bounds against the six cube faces. Sparse planes use precomputed support
@@ -260,8 +265,10 @@ correction before the probe residency fade. Measured probe occlusion can also
 attenuate transported baked RGB without subtracting the outdoor light bank.
 Explicit room banks keep their authored fill: their baked, ambient and emissive
 components cannot be separated by the outdoor GI estimate. In the world scene,
-posed M2 receivers with a proven room override use the existing baked-receiver
-path so their carried light responds to resident probe occlusion. GI brightness controls
+posed M2 receivers with a proven room override limit probe occlusion to the
+ambient share of the native material lighting bank. The original draw marks
+this share using the existing stencil bits, rounded down in thirds across RGB.
+The prelit compositor handles only the grades present in the frame. GI brightness controls
 added indirect radiance independently of measured occlusion; current local and
 directional light remain separate. Missing probes and zero prelit mix preserve
 authored illumination.

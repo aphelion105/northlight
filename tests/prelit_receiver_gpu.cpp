@@ -18,6 +18,10 @@ struct PipelineOffTest {
         auto& world=*device.world;lighting(world,true);world.legacyFogKnown=true;
         const float room[]={.43921572f,.41960788f,.47450984f,0,0,0,0,0};
         const float playerRoom[]={.50588214f,.53333312f,.65882325f,0,.28235301f,.29803929f,.36862752f,0};
+        const float innRoom[]={.659f,.604f,.612f,0,.376f,.345f,.349f,0};
+        assert(NorthlightUnlitReceiver::roomAmbientLevel(innRoom)==1);
+        const float tinted[]={0,1,0,0,1,0,1,0};
+        assert(NorthlightUnlitReceiver::roomAmbientLevel(tinted)==0);
         float outdoor[8]{};
         std::copy_n(model?world.context.direct:world.context.ambient,3,outdoor);
         std::copy_n(model?world.context.ambient:world.context.direct,3,outdoor+4);
@@ -42,13 +46,13 @@ struct PipelineOffTest {
             device.prepareDrawImpl([](IDirect3DVertexShader9*){},1);
             std::printf("ROOM_LAYER_ADMISSION variant=%u mask=%d\n",variant,device.maskKind);
             const bool accepted=model?(variant==0||variant==2||variant==4):variant<2;
-            if(accepted)assert(device.maskKind==(model?4:5));
-            else assert(device.maskKind!=4&&device.maskKind!=5);
+            if(accepted)assert(device.maskKind==(model?6:5));
+            else assert(device.maskKind<4);
             DWORD previous=0;screenOk(device.GetRenderState(D3DRS_STENCILENABLE,&previous));
             bool called=false;screenOk(device.nameMaskDraw(false,false,[&]{
                 called=true;DWORD on=0,ref=0;screenOk(device.ext->GetRenderState(D3DRS_STENCILENABLE,&on));
                 screenOk(device.ext->GetRenderState(D3DRS_STENCILREF,&ref));
-                if(accepted)assert(on&&ref==(model?NorthlightUnlitReceiver::PrelitBit:NorthlightUnlitReceiver::AuthoredBit));return S_OK;
+                if(accepted)assert(on&&ref==(model?NorthlightUnlitReceiver::RoomRef[1]:NorthlightUnlitReceiver::AuthoredBit));return S_OK;
             }));assert(called);
             DWORD restored=0;screenOk(device.GetRenderState(D3DRS_STENCILENABLE,&restored));assert(restored==previous);
         }
@@ -154,13 +158,13 @@ int main(int argc,char** argv){
     auto* scene=screenTexture(d,W,H,rgb);auto* hdrBase=screenTexture(d,W,H,linear);auto* depth=screenTexture(d,W,H,z,1);
     unsigned controls=0;
     for(bool hdr:{false,true}){
-        float values[4][2][3]{};
-        for(unsigned variant=0;variant<4;++variant)for(unsigned shadow=0;shadow<2;++shadow){
+        float values[6][2][3]{};
+        for(unsigned variant=0;variant<6;++variant)for(unsigned shadow=0;shadow<2;++shadow){
             WorldRenderer world(d);PipelineOffTest::lighting(world,shadow!=0);
             screenOk(d->SetRenderTarget(0,target));screenOk(d->SetDepthStencilSurface(mask));
             D3DVIEWPORT9 viewport{0,0,W,H,0,1};screenOk(d->SetViewport(&viewport));screenOk(d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE));
-            screenOk(d->Clear(0,nullptr,D3DCLEAR_STENCIL,0,1,variant==3?NorthlightUnlitReceiver::AuthoredBit:variant<2&&marked[variant]?NorthlightUnlitReceiver::PrelitBit:0));
-            screenOk(d->SetDepthStencilSurface(nullptr));if(variant==3)world.setAuthoredMask(mask);else world.setPrelitMask(mask);
+            screenOk(d->Clear(0,nullptr,D3DCLEAR_STENCIL,0,1,variant>=3?NorthlightUnlitReceiver::RoomRef[variant-3]:variant<2&&marked[variant]?NorthlightUnlitReceiver::PrelitBit:0));
+            screenOk(d->SetDepthStencilSurface(nullptr));if(variant>=3)world.setAuthoredMask(mask,7);else world.setPrelitMask(mask);
             assert(renderChecked(world,d,target,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,nullptr,7,hdr?hdrBase:nullptr));
             screenOk(d->GetRenderTargetData(target,read));D3DLOCKED_RECT lock{};screenOk(read->LockRect(&lock,nullptr,D3DLOCK_READONLY));
             for(unsigned c=0;c<3;++c){unsigned short bits;std::memcpy(&bits,static_cast<char*>(lock.pBits)+(H/2)*lock.Pitch+(W/2)*8+c*2,2);values[variant][shadow][c]=screenHalf(bits);}
@@ -172,7 +176,7 @@ int main(int argc,char** argv){
             assert(values[variant][shadow][c]==values[0][0][c]); // Same compositor dither as the unoccluded reference.
             assert(std::fabs(values[variant][shadow][c]-expected)<1.f/255);
         }
-        for(unsigned shadow=0;shadow<2;++shadow)for(unsigned c=0;c<3;++c)assert(values[3][shadow][c]==values[0][0][c]);
+        for(unsigned variant=3;variant<6;++variant)for(unsigned shadow=0;shadow<2;++shadow)for(unsigned c=0;c<3;++c)assert(values[variant][shadow][c]==values[0][0][c]);
         const auto* bad=values[2][1];assert(bad[0]>bad[2]+expected*.05f&&bad[2]<expected*.7f);++controls;
         std::printf("PRELIT_COLOR hdr=%u preserved=%.6f oldMaskLoss=%.6f,%.6f,%.6f\n",unsigned(hdr),values[1][1][0],bad[0],bad[1],bad[2]);
     }

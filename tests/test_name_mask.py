@@ -144,7 +144,9 @@ checks['header: portable, no device calls']=all(x not in h for x in ('d3d9','win
 impl=r[r.index('template<class Capture> void prepareDrawImpl('):r.index('    // Terrain draws run with the game')]
 dom=impl.index('if(worldDomain){');dec=impl.index('nameMaskDecide(');cap=impl.index('capture(vs);')
 checks['prepareDrawImpl: kind reset first; decision in the world domain for terrain frames, armed, no debug view, before capture(vs)']=(
-    '++drawCalls;maskKind=0;' in impl and dom<dec<cap and 'if(terrain&&!nameMask.disabled&&worldDebug==0&&((nameMask.armed()&&drawUiHashVS)||nameMask.hasMarks()||unlitMarks||prelitMarks||authoredMarks||authoredReceiver||(classifyVs(vs).entry&(kUnlitTag|kPrelitTag)))){' in impl and 'nameMaskDecide(drawWaterVS,zw,ab,sb,db,cw,viewport);' in impl)
+    '++drawCalls;maskKind=0;' in impl and dom<impl.index('if(terrain&&!nameMask.disabled&&worldDebug==0){')<dec<cap
+    and 'if((nameMask.armed()&&drawUiHashVS)||nameMask.hasMarks()||unlitMarks||prelitMarks||authoredMarks||authoredReceiver||(receiver.entry&(kUnlitTag|kPrelitTag))){' in impl
+    and 'nameMaskDecide(drawWaterVS,zw,ab,sb,db,cw,viewport);' in impl)
 dc=r[r.index('bool nameMaskReady(){'):r.index('// The bound depth buffer is the frame')]
 checks['decision: the game must not use stencil (disable once), the depth format is checked once per surface and format (logged, a surface without stencil only skips the mask), unmark needs marks, a name needs the full viewport and the world depth']=(
     'nameMask.disable("no stencil' not in r and dc.index('D3DRS_STENCILENABLE')<dc.index('nameMask.disable("the game uses stencil")')<dc.index('worldDepth!=maskFormatFor||format!=maskFormatValue')<dc.index('NAMEMASK world depth surface=%p format=%lu')<dc.index('no stencil bits: no name mask while this surface is the world depth')

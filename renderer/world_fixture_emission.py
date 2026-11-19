@@ -5,8 +5,31 @@ continuous additive emitter on a proven fixed nozzle can supply a mean offset.
 Metal bowls, logs and frames remain ordinary occluders. This is a steady light
 proxy over an authored cycle, not the current particle pose or a particle replay.
 """
+import functools
+import hashlib
+import json
 import math
 import struct
+from pathlib import Path
+
+
+@functools.lru_cache(maxsize=1)
+def _native_anchors():
+    return json.loads(Path(__file__).with_name('wotlk-emitter-profiles.json').read_text())['native_anchors']
+
+
+def _reviewed_anchor(assets,path,blob,sources):
+    """A reviewed replacement mesh can move a native bulb without changing its transport."""
+    pin=_native_anchors().get(path)
+    if not pin or hashlib.sha256(blob).hexdigest()!=pin['model_sha256']:return {}
+    source=next((s for s in sources if s[4]==pin['source'] and s[5]==2 and s[6]==2),None)
+    if source is None:return {}
+    try:skin=assets.read(path[:-3]+'00.skin')
+    except FileNotFoundError:return {}
+    if hashlib.sha256(skin).hexdigest()!=pin['skin_sha256']:return {}
+    position=tuple(pin['position'])
+    return {source[4]:{'position':position,'anchor':source[0],
+                       'offset':tuple(x-y for x,y in zip(position,source[0])),'basis':pin['basis']}}
 
 
 def _axis(q):
@@ -211,7 +234,10 @@ def _opaque_body(assets,path,blob):
 
 def native_fixture_offsets(assets,path,blob,sources):
     """One resolver for placed and live fixtures, independent of draw visibility."""
+    if not sources:return {}
+    reviewed=_reviewed_anchor(assets,path,blob,sources)
     result=_authored_offsets(assets,path,blob,sources)
+    result.update(reviewed)
     if not path.lower().replace('/','\\').startswith('world\\'):return result
     from world_emitter_coverage import particle_sources
     from world_lights_builder import static_bone_point
