@@ -43,6 +43,15 @@ def fixture(degrees=(0,),times=(0,)):
 
 
 class WorldFixtureEmission(unittest.TestCase):
+    def test_optional_anchor_catalog_accepts_older_or_missing_extension(self):
+        from unittest.mock import patch
+        from world_fixture_emission import _native_anchors
+        read=_native_anchors.__wrapped__
+        with patch.object(Path,'read_text',return_value='{"version":1,"profiles":{}}'):
+            self.assertEqual(read(),{})
+        with patch.object(Path,'read_text',side_effect=FileNotFoundError):
+            self.assertEqual(read(),{})
+
     def test_reviewed_bulb_changes_only_the_origin_of_the_pinned_mesh_and_skin(self):
         from unittest.mock import patch
         from world_fixture_emission import _reviewed_anchor

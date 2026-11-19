@@ -15,12 +15,14 @@ from pathlib import Path
 
 @functools.lru_cache(maxsize=1)
 def _native_anchors():
-    return json.loads(Path(__file__).with_name('wotlk-emitter-profiles.json').read_text())['native_anchors']
+    catalog=Path(__file__).with_name('wotlk-emitter-profiles.json')
+    try:return json.loads(catalog.read_text()).get('native_anchors',{})
+    except FileNotFoundError:return {}
 
 
 def _reviewed_anchor(assets,path,blob,sources):
     """A reviewed replacement mesh can move a native bulb without changing its transport."""
-    pin=_native_anchors().get(path)
+    pin=_native_anchors().get(path.lower().replace('/','\\'))
     if not pin or hashlib.sha256(blob).hexdigest()!=pin['model_sha256']:return {}
     source=next((s for s in sources if s[4]==pin['source'] and s[5]==2 and s[6]==2),None)
     if source is None:return {}
