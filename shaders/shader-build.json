@@ -2,6 +2,7 @@
   "source_sha256": "b396e48d7165041c0bef599d2b3b7cb321aec5356f66b4ee4e5d4e0f256d0c8f",
   "rain_source_sha256": "10948a355dc52e824d9ae61b5251a5146a20955295070dbe9ce749dec0eac172",
   "actor_source_sha256": "c32d23350f561010ec4b21f8be5a37515374a0c96e5f3343b0cd749aa2882de6",
+  "water_distance_sha256": "bff8d5dec09cd645b35035f4e6276436a31afef23047b3e2bebd0d508664cbd9",
   "target": "ps_3_0",
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
   "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
@@ -1267,6 +1268,70 @@
         "endrep": 1
       },
       "source_sha256": "b396e48d7165041c0bef599d2b3b7cb321aec5356f66b4ee4e5d4e0f256d0c8f"
+    },
+    "WaterCorrectDistance": {
+      "bytes": 428,
+      "sha256": "a42ee03c8026aade416b9d69d0f40282bf7394ede181d8808ffd52e5fd0962d8",
+      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "target": "ps_2_0",
+      "static_instruction_slots": 15,
+      "temporary_registers": 2,
+      "samplers": [
+        0
+      ],
+      "instructions": {
+        "texld": 1,
+        "mul": 2,
+        "add": 5,
+        "frc": 1,
+        "min": 1,
+        "texkill": 1,
+        "rcp": 1,
+        "cmp": 1,
+        "mov": 1
+      },
+      "source_sha256": "bff8d5dec09cd645b35035f4e6276436a31afef23047b3e2bebd0d508664cbd9"
+    },
+    "WaterMergeDistanceMS": {
+      "bytes": 492,
+      "sha256": "4a5b696828fd5890aadd0347b54363f1649f1234c7aba162ff0b4a397690f091",
+      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "target": "ps_2_0",
+      "static_instruction_slots": 15,
+      "temporary_registers": 2,
+      "samplers": [
+        0,
+        1
+      ],
+      "instructions": {
+        "texld": 2,
+        "mul": 3,
+        "add": 3,
+        "frc": 1,
+        "rcp": 1,
+        "cmp": 1,
+        "texkill": 1,
+        "mov": 2
+      },
+      "source_sha256": "bff8d5dec09cd645b35035f4e6276436a31afef23047b3e2bebd0d508664cbd9"
+    },
+    "WaterMergeDistance": {
+      "bytes": 264,
+      "sha256": "20067b7a8c637995eec9791b436a61d166bea17e711832b492340bf34d00c41d",
+      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "target": "ps_2_0",
+      "static_instruction_slots": 6,
+      "temporary_registers": 2,
+      "samplers": [
+        0
+      ],
+      "instructions": {
+        "texld": 1,
+        "cmp": 1,
+        "texkill": 1,
+        "mov": 2
+      },
+      "source_sha256": "bff8d5dec09cd645b35035f4e6276436a31afef23047b3e2bebd0d508664cbd9"
     }
   }
 }

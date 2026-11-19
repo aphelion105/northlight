@@ -244,6 +244,14 @@ inline bool verifyMrt(const Word* original,std::size_t count,const std::vector<W
     for(std::size_t i=0;i<kMrtSuffixWords;++i)if(mrt[bodyEnd+kMrtDefWords+i]!=suffix[i])return false;
     return true;
 }
+inline void appendCoverageOutput(std::vector<Word>& verifiedMrt) {
+    // Replicate the final verified coverage CMP to oC2, including alpha for
+    // the game's blend factors. Its predicate and operands stay identical.
+    Word coverage[5];
+    std::copy_n(verifiedMrt.end()-6,5,coverage);
+    coverage[1]=dst(8,2);
+    verifiedMrt.insert(verifiedMrt.end()-1,coverage,coverage+5);
+}
 // ps_2_0 that decodes the multisample-resolved render target 1 back into the mask; Python: resolve_shader().
 // s0 = the resolved data (point), r0.x = mean(cover*distance), r0.y = mean cover. Less than half of the samples
 // covered: discard (the mask keeps its cleared 0); else out = (r0.x/r0.y, 1).

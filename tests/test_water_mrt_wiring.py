@@ -61,7 +61,7 @@ for name,body in (('beginMrt',begin),('endMrt',end)):
     checks[f'{name}: no render target 0 and no depth switch, no Clear, no draw']=not re.search(r'SetRenderTarget\(0|SetDepthStencilSurface|Clear\(|DrawPrimitive|DrawIndexed',body)
 checks['beginMrt: clears before it binds; binds render target 1 once (lazily); colour write 1 on; the mask shaders; then nothing else']=(
     begin.index('clearTarget(')<begin.index('SetRenderTarget(1,target)')<begin.index('COLORWRITEENABLE1,15')<begin.index('SetVertexShader(vi->second)')
-    and begin.count('SetRenderTarget(')==1 and 'if(!mrtBound){' in begin and 'if(!mrtCleared){' in begin)
+    and begin.count('SetRenderTarget(')==2 and 'SetRenderTarget(2,compact.coverageTarget())' in begin and 'if(!mrtBound){' in begin and 'if(!mrtCleared){' in begin)
 checks['beginMrt: blend, fog, sRGB and resources can refuse with the device untouched (all reads before the first write)']=(
     begin.index('degrade(2,')<begin.index('degrade(4,')<begin.index('degrade(8,')<begin.index('mrtResources(')<begin.index('clearTarget(') and begin.index('GetRenderState(D3DRS_SRGBWRITEENABLE')<begin.index('mrtResources('))
 checks['endMrt: gives the game its shaders and colour write 1 back; render target 1 stays bound']=('SetPixelShader(mrtPS)' in end and 'SetVertexShader(mrtVS)' in end and 'COLORWRITEENABLE1,mrtPrevWrite1' in end and 'unbindMrt' not in end)

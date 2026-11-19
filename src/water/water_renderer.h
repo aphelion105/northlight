@@ -19,6 +19,7 @@
 #include <vector>
 #include "water_shader_identities.h"
 #include "water_shader_patch.h"
+#include "water_distance_mask.h"
 #include "diagnostics_switch.h"
 class NorthlightWaterRenderer {
     IDirect3DDevice9* d;
@@ -26,17 +27,20 @@ class NorthlightWaterRenderer {
     NorthlightStateBlockPool stateBlocks;
     std::unordered_map<IDirect3DVertexShader9*,IDirect3DVertexShader9*> vertex;
     std::unordered_map<IDirect3DPixelShader9*,IDirect3DPixelShader9*> pixel;
-    struct MrtPixel {IDirect3DPixelShader9* shader;unsigned major;};
+    struct MrtPixel {IDirect3DPixelShader9* shader;unsigned major;IDirect3DPixelShader9* coverage;};
     std::unordered_map<IDirect3DPixelShader9*,MrtPixel> pixelMrt; // 0.3.214 (water MRT): the game's pixel shader -> its MRT variant (and its shader model)
     IDirect3DTexture9 *mask=nullptr,*raw=nullptr;
     IDirect3DSurface9 *maskSurface=nullptr,*depth=nullptr,*rawSurface=nullptr,*twin=nullptr; // raw: the (resolved) render target 1 data; twin: its multisampled twin when the game's target is multisampled
     IDirect3DPixelShader9* resolvePS=nullptr;
+    NorthlightWaterDistanceMask compact;
+    bool compactBackend=false,compactSingle=false,compactMS=false,compactFrame=false,coverageBound=false;
+    DWORD previousCoverageWrite=15;
     UINT width=0,height=0;D3DMULTISAMPLE_TYPE twinType=D3DMULTISAMPLE_NONE;DWORD twinQuality=0;
     // 0.3.214 (water MRT)
     bool mrtVariants=true,mrtCaps=false,mrtFailed=false,mrtBound=false,mrtActive=false,mrtDirty=false,mrtCaptured=false,mrtResolved=false,mrtCleared=false,mrtLogged=false;
     unsigned mrtDraws=0,mrtDegraded=0,mrtSkipMask=0,mrtBinds=0,mrtRun=0,mrtLongestRun=0; /* 0.3.215: binds of render target 1 this frame, the MRT draws of the current bind, the longest such run this frame */DWORD mrtPrevWrite1=15;IDirect3DVertexShader9* mrtVS=nullptr;IDirect3DPixelShader9* mrtPS=nullptr;
     unsigned patchedShaders=0,patchRejects=0,mrtShaders=0;double patchMicroseconds=0;
-    bool maskDemand=true;unsigned dryFrames=0;
+    bool maskDemand=true;unsigned dryFrames=0,fallbackDryFrames=0;
     bool failed=false,captured=false,maskMayBeBound=true;float maskMinZ=0,maskMaxZ=1;unsigned captures=0,maskScans=0,clears=0,readFailures=0;std::uint64_t scanEpoch=~std::uint64_t(0);
     bool check(HRESULT hr,const char* where){if(SUCCEEDED(hr))return true;if(!failed)logf("WATER disabled: %s HRESULT=0x%08lx",where,(unsigned long)hr);failed=true;return false;}
     bool target(UINT w,UINT h,D3DFORMAT fmt,IDirect3DTexture9*& tex,IDirect3DSurface9*& surface){
@@ -72,12 +76,14 @@ public:
     // identities: the generated table; tests inject their own.
     // mrt: build the MRT pixel variants at registration (the host's creation-time setting; tests that pin the second-draw pass to 0.3.140 pass false).
     explicit NorthlightWaterRenderer(IDirect3DDevice9* device,const NorthlightWaterShaderIdentity* table=kWaterShaderIdentities,std::size_t tableCount=std::size(kWaterShaderIdentities),bool mrt=true)
-        :d(device),identities(table),identityCount(tableCount),stateBlocks(device),mrtVariants(mrt){}
-    ~NorthlightWaterRenderer(){reset();drop(resolvePS);for(auto& p:vertex)drop(p.second);for(auto& p:pixel)drop(p.second);for(auto& p:pixelMrt)drop(p.second.shader);}
+        :d(device),identities(table),identityCount(tableCount),stateBlocks(device),compact(device),mrtVariants(mrt){}
+    ~NorthlightWaterRenderer(){reset();drop(resolvePS);for(auto& p:vertex)drop(p.second);for(auto& p:pixel)drop(p.second);for(auto& p:pixelMrt){drop(p.second.shader);drop(p.second.coverage);}}
+    void setDistanceBackend(bool enabled){compactBackend=enabled;}
+    void setDistanceCaps(bool single,bool ms){compactSingle=single;compactMS=ms;}
     NorthlightWaterRenderer(const NorthlightWaterRenderer&)=delete;
     void releaseStateCache(){stateBlocks.clear();}
-    // The host unbinds render target 1 before it resets or releases the device (unbindMrt); mrtBound is cleared here only to match.
-    void reset(){stateBlocks.clear();drop(maskSurface);drop(depth);drop(mask);drop(rawSurface);drop(raw);drop(twin);width=height=dryFrames=0;twinType=D3DMULTISAMPLE_NONE;twinQuality=0;captured=false;captures=0;mrtBound=mrtActive=mrtDirty=mrtCaptured=mrtResolved=mrtCleared=false;}
+    // The host releases MRT bindings before reset.
+    void reset(){stateBlocks.clear();compact.reset();coverageBound=compactFrame=false;drop(maskSurface);drop(depth);drop(mask);drop(rawSurface);drop(raw);drop(twin);width=height=dryFrames=fallbackDryFrames=0;twinType=D3DMULTISAMPLE_NONE;twinQuality=0;captured=false;captures=0;mrtBound=mrtActive=mrtDirty=mrtCaptured=mrtResolved=mrtCleared=false;}
     // Called between frames. Liquid shader identity still serves native draw classification.
     void setMaskDemand(bool needed){
         if(maskDemand==needed)return;
@@ -85,9 +91,13 @@ public:
         if(!needed){unbindMrt();reset();}
     }
     bool maskRequested()const{return maskDemand;}
-    unsigned residentTargets()const{return unsigned(mask!=nullptr)+unsigned(raw!=nullptr)+unsigned(twin!=nullptr)+unsigned(depth!=nullptr);}
+    unsigned residentTargets()const{return compact.targets()+unsigned(mask!=nullptr)+unsigned(raw!=nullptr)+unsigned(twin!=nullptr)+unsigned(depth!=nullptr);}
     static constexpr unsigned DryFrameLimit=120;
     void endFrame(){
+        if(captured)fallbackDryFrames=0;
+        else if(compactFrame&&mask&&++fallbackDryFrames>=DryFrameLimit){
+            stateBlocks.clear();drop(maskSurface);drop(mask);drop(depth);fallbackDryFrames=0;
+        }
         if(captured||mrtCaptured)dryFrames=0;
         else if(width&&++dryFrames>=DryFrameLimit){unbindMrt();reset();}
         if((!captured&&!mrtCaptured)||failed)stateBlocks.clear();
@@ -99,8 +109,9 @@ public:
     bool hasCapturedWater()const{return (captured||mrtResolved)&&!failed;}
     // 0.3.214 (water MRT): an MRT frame's data is only handed out after resolveMask() decoded it.
     IDirect3DTexture9* maskTextureForDepth(float minZ,float maxZ){
-        IDirect3DTexture9* out=(captured||mrtResolved)&&!mrtDirty&&!failed&&mask&&std::isfinite(minZ)&&std::isfinite(maxZ)&&maxZ>minZ&&
-            std::fabs(minZ-maskMinZ)<.0001f&&std::fabs(maxZ-maskMaxZ)<.0001f?mask:nullptr;
+        IDirect3DTexture9* result=compactFrame&&mrtResolved&&!captured?compact.result():mask;
+        IDirect3DTexture9* out=(captured||mrtResolved)&&!mrtDirty&&!failed&&std::isfinite(minZ)&&std::isfinite(maxZ)&&maxZ>minZ&&
+            std::fabs(minZ-maskMinZ)<.0001f&&std::fabs(maxZ-maskMaxZ)<.0001f?result:nullptr;
         if(out)maskMayBeBound=true;
         return out;
     }
@@ -127,7 +138,7 @@ public:
     }
     void registerPixel(IDirect3DPixelShader9* original,std::uint64_t hash,const DWORD* words,std::size_t count){
         auto old=pixel.find(original);if(old!=pixel.end()){drop(old->second);pixel.erase(old);}
-        auto oldMrt=pixelMrt.find(original);if(oldMrt!=pixelMrt.end()){drop(oldMrt->second.shader);pixelMrt.erase(oldMrt);}
+        auto oldMrt=pixelMrt.find(original);if(oldMrt!=pixelMrt.end()){drop(oldMrt->second.shader);drop(oldMrt->second.coverage);pixelMrt.erase(oldMrt);}
         if(failed)return;
         std::vector<NorthlightWaterShaderPatch::Word> patched;const DWORD* code=maskShader(hash,false,words,count,patched);if(!code)return;
         IDirect3DPixelShader9* shader=nullptr;if(!check(d->CreatePixelShader(code,&shader),"water pixel mask shader"))return;
@@ -141,7 +152,14 @@ public:
             IDirect3DPixelShader9* made=nullptr;
             if(!why&&FAILED(d->CreatePixelShader(reinterpret_cast<const DWORD*>(variant.data()),&made)))why="CreatePixelShader refused it";
             if(why){if(mrtShaders++<8)logf("WATER MRT pixel variant skipped hash=%016llx: %s (second draw stays)",(unsigned long long)hash,why);}
-            else{pixelMrt.emplace(original,MrtPixel{made,unsigned((words[0]>>8)&255)});mrt=true;}
+            else{
+                IDirect3DPixelShader9* coverage=nullptr;
+                if(compactBackend){
+                    NorthlightWaterShaderPatch::appendCoverageOutput(variant);
+                    d->CreatePixelShader(reinterpret_cast<const DWORD*>(variant.data()),&coverage);
+                }
+                pixelMrt.emplace(original,MrtPixel{made,unsigned((words[0]>>8)&255),coverage});mrt=true;
+            }
         }
         logf("WATER registered pixel hash=%016llx mrt=%d",(unsigned long long)hash,int(mrt));
     }
@@ -238,7 +256,7 @@ public:
     void setMrtCaps(bool ok){mrtCaps=ok;}
     bool mrtEnabled()const{return mrtVariants&&mrtCaps&&!mrtFailed&&usable();}
     bool isMrtBound()const{return mrtBound;}
-    void unbindMrt(){if(mrtBound){d->SetRenderTarget(1,nullptr);mrtBound=false;}}
+    void unbindMrt(){if(coverageBound){d->SetRenderTarget(2,nullptr);coverageBound=false;}if(mrtBound){d->SetRenderTarget(1,nullptr);mrtBound=false;}}
     enum class Plan {Skip,Redraw,Mrt};
     // captureWater's verdict for a draw it recognised as water (main depth and full viewport already verified): Skip = no mask for this draw (what capture() does silently),
     // Redraw = the second-draw pass, Mrt = the draw writes the mask itself (beginMrt before it, endMrt after).
@@ -266,28 +284,53 @@ public:
         if(!blendKeeps(blend,src,dst,op))return degrade(2,blend,src,dst,op);
         if(fog&&pi->second.major<3)return degrade(4,blend,src,dst,op,fog); // pixel shaders below 3.0 may get table fog after the shader, on every target
         if(srgb)return degrade(8,blend,src,dst,op,fog,srgb);
-        if(!mrtResources(mainWidth,mainHeight,msType,msQuality))return degrade(32);
-        IDirect3DSurface9* target=twin?twin:rawSurface;
+        const bool ms=msType!=D3DMULTISAMPLE_NONE;
+        if(width!=mainWidth||height!=mainHeight){unbindMrt();reset();width=mainWidth;height=mainHeight;}
+        // A frame publishes one distance field. If an intervening draw changes
+        // sample layout, merge its ordinary capture at resolve.
+        if(mrtCaptured&&compactFrame&&!compact.matches(msType,msQuality))return degrade(32);
+        if(compactBackend&&!mrtBound&&!slotFree(1))return degrade(64);
+        if(!mrtCaptured){
+            const bool supported=compactBackend&&(ms?compactMS&&pi->second.coverage:compactSingle);
+            if(supported&&ms&&!slotFree(2))return degrade(64);
+            compactFrame=supported&&compact.prepare(width,height,msType,msQuality);
+            if(compactFrame){drop(rawSurface);drop(raw);drop(twin);}
+            else if(compact.targets())compact.reset();
+        }else if(compactFrame&&ms&&(!pi->second.coverage||(!coverageBound&&!slotFree(2))))return degrade(64);
+        if(compactFrame&&!ms&&!mrtBound&&distanceIsSampled())return degrade(64);
+        if(!compactFrame&&!mrtResources(mainWidth,mainHeight,msType,msQuality))return degrade(32);
+        IDirect3DSurface9* target=compactFrame?compact.distanceTarget():(twin?twin:rawSurface);
         if(!mrtCleared){ // before the target is bound: a Clear would clear render target 0 too
             unbindMrt();
-            if(!clearTarget(target)){mrtFail("clear",D3DERR_INVALIDCALL);return degrade(32);}
+            if(!clearTarget(target)||(compactFrame&&ms&&!clearTarget(compact.coverageTarget()))){mrtFail("clear",D3DERR_INVALIDCALL);return degrade(32);}
             mrtCleared=true;
         }
         if(!mrtBound){
             const HRESULT hr=d->SetRenderTarget(1,target);
             if(FAILED(hr)){mrtFail("bind render target 1",hr);return degrade(32);}
             mrtBound=true;++mrtBinds;mrtRun=0; /* 0.3.215: a new bind starts a new run */
+            if(compactFrame&&ms){
+                if(FAILED(d->SetRenderTarget(2,compact.coverageTarget()))){unbindMrt();return degrade(64);}
+                coverageBound=true;
+            }
+        }
+        if(coverageBound&&(FAILED(d->GetRenderState(D3DRS_COLORWRITEENABLE2,&previousCoverageWrite))||
+            FAILED(d->SetRenderState(D3DRS_COLORWRITEENABLE2,15))))return degrade(64);
+        if(FAILED(d->GetRenderState(D3DRS_COLORWRITEENABLE1,&mrtPrevWrite1))){if(coverageBound)d->SetRenderState(D3DRS_COLORWRITEENABLE2,previousCoverageWrite);return degrade(16);}
+        if(FAILED(d->SetRenderState(D3DRS_COLORWRITEENABLE1,15))||FAILED(d->SetVertexShader(vi->second))||
+            FAILED(d->SetPixelShader(coverageBound?pi->second.coverage:pi->second.shader))){
+            d->SetVertexShader(vs);d->SetPixelShader(ps);d->SetRenderState(D3DRS_COLORWRITEENABLE1,mrtPrevWrite1);
+            if(coverageBound)d->SetRenderState(D3DRS_COLORWRITEENABLE2,previousCoverageWrite);
+            return degrade(16);
         }
         if(!(captured||mrtCaptured)){maskMinZ=vp.MinZ;maskMaxZ=vp.MaxZ;}
         mrtCaptured=true;mrtDirty=true;
-        if(FAILED(d->GetRenderState(D3DRS_COLORWRITEENABLE1,&mrtPrevWrite1)))mrtPrevWrite1=15;
-        d->SetRenderState(D3DRS_COLORWRITEENABLE1,15);
-        d->SetVertexShader(vi->second);d->SetPixelShader(pi->second.shader);
         mrtVS=vs;mrtPS=ps;mrtActive=true;return true;
     }
     void endMrt(bool drawn){
         if(!mrtActive)return;
         mrtActive=false;
+        if(coverageBound)d->SetRenderState(D3DRS_COLORWRITEENABLE2,previousCoverageWrite);
         d->SetPixelShader(mrtPS);d->SetVertexShader(mrtVS);d->SetRenderState(D3DRS_COLORWRITEENABLE1,mrtPrevWrite1);
         if(drawn){++mrtDraws;if(++mrtRun>mrtLongestRun)mrtLongestRun=mrtRun;}
     }
@@ -296,6 +339,11 @@ public:
     bool resolveMask(){
         if(!mrtDirty)return true;
         unbindMrt();mrtDirty=false;
+        if(compactFrame){
+            const HRESULT hr=compact.resolve(width,height,captured?maskSurface:nullptr,stateBlocks);
+            if(FAILED(hr)){mrtResolved=false;mrtFail("compact resolve",hr);return false;}
+            mrtResolved=true;return true;
+        }
         if(failed||mrtFailed||!raw||!rawSurface||!maskSurface||!resolvePS){mrtFailed=true;return false;}
         if(twin){const HRESULT hr=d->StretchRect(twin,nullptr,rawSurface,nullptr,D3DTEXF_NONE);if(FAILED(hr)){mrtFail("resolve",hr);return false;}}
         SavedState save(d,&stateBlocks);if(!save.ok){mrtFail("state save",D3DERR_INVALIDCALL);return false;}
@@ -319,6 +367,21 @@ public:
         mrtResolved=true;maskMayBeBound=true;return true;
     }
 private:
+    bool distanceIsSampled()const{
+        for(unsigned i=0;i<16;++i){
+            IDirect3DBaseTexture9* texture=nullptr;
+            const HRESULT hr=d->GetTexture(i,&texture);
+            const bool conflict=FAILED(hr)||texture==compact.result();
+            drop(texture);if(conflict)return true;
+        }
+        return false;
+    }
+    bool slotFree(DWORD index)const{
+        IDirect3DSurface9* surface=nullptr;
+        const HRESULT hr=d->GetRenderTarget(index,&surface);
+        const bool free=hr==D3DERR_NOTFOUND||(SUCCEEDED(hr)&&!surface);
+        drop(surface);return free;
+    }
     bool mrtResources(UINT w,UINT h,D3DMULTISAMPLE_TYPE type,DWORD quality){
         if(w!=width||h!=height){unbindMrt();reset();width=w;height=h;}
         if(twin&&(type==D3DMULTISAMPLE_NONE||twinType!=type||twinQuality!=quality)){unbindMrt();drop(twin);mrtCleared=false;}
@@ -345,19 +408,14 @@ private:
         }
         return true;
     }
-    // ColorFill first (no target swap); where the driver refuses (multisampled targets), render target 0 is swapped for the Clear and put back with viewport and scissor.
+    // Clear alone if ColorFill is refused: D3DCLEAR_TARGET clears every bound MRT.
     bool clearTarget(IDirect3DSurface9* target){
         if(SUCCEEDED(d->ColorFill(target,nullptr,0)))return true;
-        IDirect3DSurface9* game=nullptr;D3DVIEWPORT9 vp={};RECT scissor={};DWORD scissorOn=0;
-        if(FAILED(d->GetRenderTarget(0,&game))||!game||FAILED(d->GetViewport(&vp))){drop(game);return false;}
-        const bool scissorKnown=SUCCEEDED(d->GetScissorRect(&scissor)),stateKnown=SUCCEEDED(d->GetRenderState(D3DRS_SCISSORTESTENABLE,&scissorOn)); // SetRenderTarget(0) resets the scissor rect too
-        bool ok=false;
-        if(SUCCEEDED(d->SetRenderTarget(0,target))){
-            d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE);ok=SUCCEEDED(d->Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0));
-            if(stateKnown)d->SetRenderState(D3DRS_SCISSORTESTENABLE,scissorOn);
-            d->SetRenderTarget(0,game);
-        }
-        d->SetViewport(&vp);if(scissorKnown)d->SetScissorRect(&scissor);drop(game);return ok;
+        SavedState save(d,&stateBlocks);if(!save.ok)return false;
+        if(FAILED(d->SetDepthStencilSurface(nullptr)))return false;
+        for(unsigned i=1;i<4;++i)if(FAILED(d->SetRenderTarget(i,nullptr)))return false;
+        return SUCCEEDED(d->SetRenderTarget(0,target))&&SUCCEEDED(d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE))
+            &&SUCCEEDED(d->Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0))&&save.restore();
     }
     void mrtFail(const char* where,HRESULT hr){
         if(!mrtFailed)logf("WATER mask MRT disabled: %s HRESULT=0x%08lx (the second-draw pass is used from now on)",where,(unsigned long)hr);

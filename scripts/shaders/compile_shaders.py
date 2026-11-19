@@ -12,6 +12,8 @@ sys.path[:0] = [str(Path(__file__).resolve().parents[2]), str(Path(__file__).res
 import northlight_paths as fp  # noqa: E402
 from shader_compiler import Compiler, DLL_SHA256, COMPATIBLE_DLL_SHA256, bytecode, rows, validate_assembly
 
+WATER_DISTANCE_ENTRIES = ("WaterCorrectDistance", "WaterMergeDistanceMS", "WaterMergeDistance")
+
 
 def main():
     compatible = '--compatible-compiler' in sys.argv
@@ -26,9 +28,13 @@ def main():
     assao_entries = [("ASSAOContactBloom" + quality, "kAssaoContactBloom" + quality + "Shader", "ps_3_0") for quality in ("", "Medium", "Low")]
     names.update(entry for entry, _, _ in assao_entries)
     names.update(entry for entry, _, _ in only_entries)
+    names.update(WATER_DISTANCE_ENTRIES)
     if selected and not set(selected) <= names: raise SystemExit("Unknown shader entry")
     previous = json.loads((fp.SHADERS / "shader-build.json").read_text()) if selected else None
     actor_source = hashlib.sha256((fp.SHADERS / "effects.hlsl").read_bytes() + b"\n" + (fp.SHADERS / "ao_actor.hlsl").read_bytes()).hexdigest()
+    water_source = hashlib.sha256((fp.SHADERS / "water_distance.hlsl").read_bytes()).hexdigest()
+    if previous and previous.get("water_distance_sha256") != water_source and not set(WATER_DISTANCE_ENTRIES) <= set(selected):
+        raise SystemExit("Rebuild all three water distance entries after changing water_distance.hlsl")
     if previous and previous.get('actor_source_sha256') != actor_source and not actor_names <= set(selected):
         raise SystemExit("Actor AO dependencies changed: include all five actor entries in --entries, or rebuild all shaders")
     if previous and previous.get("compiler_sha256") not in ({DLL_SHA256, COMPATIBLE_DLL_SHA256} if compatible else {DLL_SHA256}): raise SystemExit("Retained shaders used another compiler: rebuild all entries")
@@ -37,6 +43,7 @@ def main():
     manifest = {"source_sha256": hashlib.sha256((fp.SHADERS / "effects.hlsl").read_bytes()).hexdigest(),
                 "rain_source_sha256": hashlib.sha256((fp.SHADERS / "rain_mask.hlsl").read_bytes()).hexdigest(),
                 "actor_source_sha256": actor_source,
+                "water_distance_sha256": water_source,
                 "target": "ps_3_0", **compiler.provenance, "game_launched": False, "shaders": {}}
     # 0.3.202 (rain mask MRT): the two rain mask pixel shaders are ps_2_0 (they pair with the game's fixed-function vertex pipeline and write
     # oC1); their manifest entries carry their own "target" and they compile from rain_mask.hlsl. The ps_3_0 entries are unchanged.
@@ -47,13 +54,17 @@ def main():
                                   ("AOBlur", "kAoBlurShader", "ps_3_0"), ("AOBlurNoWater", "kAoBlurNoWaterShader", "ps_3_0"), ("Composite", "kCompositeShader", "ps_3_0"),
                                   ("AOActorPrepare", "kAoActorPrepareShader", "ps_3_0"), ("HBAOActorContactBloom", "kHbaoActorContactBloomShader", "ps_3_0"), ("GTAOActorContactBloom", "kGtaoActorContactBloomShader", "ps_3_0"),
                                   ("HBAOActorOnly", "kHbaoActorOnlyShader", "ps_3_0"), ("GTAOActorOnly", "kGtaoActorOnlyShader", "ps_3_0"),
-                                  ("RainMaskMRT", "kRainMaskMrtShader", "ps_2_0"), ("RainScrub", "kRainScrubShader", "ps_2_0"), *only_entries, *assao_entries):
+                                  ("RainMaskMRT", "kRainMaskMrtShader", "ps_2_0"), ("RainScrub", "kRainScrubShader", "ps_2_0"), *only_entries, *assao_entries,
+                                  *((name, "k" + name + "Shader", "ps_2_0") for name in WATER_DISTANCE_ENTRIES)):
         output = fp.COMPILED / f"{entry}.bin"
         legacy = target == "ps_3_0"
         source_key = "actor_source_sha256" if entry in actor_names else "source_sha256" if legacy else "rain_source_sha256"
+        source = "ao_actor.hlsl" if entry in actor_names else "effects.hlsl" if legacy else "rain_mask.hlsl"
+        if entry in WATER_DISTANCE_ENTRIES:
+            source, source_key = "water_distance.hlsl", "water_distance_sha256"
         compile_entry = not selected or entry in selected or entry not in previous["shaders"]
         if compile_entry:
-            data, words = compiler.compile(fp.SHADERS / ("ao_actor.hlsl" if entry in actor_names else "effects.hlsl" if legacy else "rain_mask.hlsl"), entry, target, output)
+            data, words = compiler.compile(fp.SHADERS / source, entry, target, output)
         else:
             data, words = bytecode(output, target)
             if hashlib.sha256(data).hexdigest() != previous["shaders"][entry]["sha256"]:

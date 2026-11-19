@@ -164,6 +164,14 @@ oracles, including byte equality and malformed-input controls.
    Lighting frames share that pair with WorldNormals/TemporalLight. A producer
    change invalidates history before the pair rotates; fog blur always reads the
    current dry distance and validates water independently.
+   The packaged DXVK backends share one R32F water distance texture across
+   consumers. Without MSAA the game water draw writes it directly. With MSAA
+   the same draw writes distance and binary L8 coverage at the game target's
+   sample count and quality. The hardware resolves both targets. A boundary
+   pass restores the covered-sample mean at half coverage or above and clears
+   smaller fractions. Fully wet and dry pixels already hold their final value.
+   Mixed frames merge into the ordinary redraw mask. A busy auxiliary slot
+   leaves the game binding in place and uses the existing redraw path.
    Local lamp/spell scattering is added to the current final fog after
    atmospheric history and blur: its volume has no receiver depth for surface
    reprojection. Lamp/veil density uses the shared bilinear medium sampler.

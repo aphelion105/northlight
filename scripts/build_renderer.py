@@ -109,6 +109,10 @@ def main(argv=None):
     subprocess.run([sys.executable, str(ROOT/'generate_mirror_resource_forwarders.py')], check=True)
     subprocess.run([sys.executable, str(ROOT/'generate_extension_raw_methods.py')], check=True)
     manifest = json.loads((SHADERS/'shader-build.json').read_text())
+    from shaders.compile_shaders import WATER_DISTANCE_ENTRIES
+    water_hash = hashlib.sha256((SHADERS/'water_distance.hlsl').read_bytes()).hexdigest()
+    if any(manifest['shaders'].get(entry, {}).get('source_sha256') != water_hash for entry in WATER_DISTANCE_ENTRIES):
+        raise SystemExit('Water distance source differs from its offline shader build.')
     # All shader modifications must pass the offline compile/SM3 gate first.
     source_hash = hashlib.sha256((SHADERS/'effects.hlsl').read_bytes()).hexdigest()
     if source_hash not in json.dumps(manifest):

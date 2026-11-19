@@ -84,6 +84,7 @@
   "gpu": {
     "description": "Hidden-device image/state oracles for optional effect layers, capture orchestration and shadows. Requires a configured Windows GPU toolchain and client; does not establish game FPS.",
     "tests": [
+      "test_water_distance_gpu.py",
       "test_range_capture_gpu.py",
       "test_ao_optional_layers_gpu.py",
       "test_draw_orchestration_gpu.py",

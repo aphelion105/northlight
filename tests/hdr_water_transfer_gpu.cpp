@@ -62,6 +62,7 @@ int main(int argc,char** argv){
         for(const auto* original:{&fixture,&client}){
             std::vector<std::uint32_t> derivative;assert(!NorthlightWaterShaderPatch::patchMrt(reinterpret_cast<const std::uint32_t*>(original->data()),original->size(),derivative));
             if(original==&client)assert(NorthlightWaterShaderPatch::fnv1a64(derivative.data(),derivative.size())==0xe79938975a92b584ULL);
+            if(ms&&!nativeBackend)NorthlightWaterShaderPatch::appendCoverageOutput(derivative);
             bool authoredNative=false;IDirect3DPixelShader9 *nativeShader=nullptr,*mrt=nullptr;ok(d->CreatePixelShader(original->data(),&nativeShader));const HRESULT admission=d->CreatePixelShader(reinterpret_cast<const DWORD*>(derivative.data()),&mrt);
             if(FAILED(admission)){
                 assert(nativeBackend&&admission==D3DERR_INVALIDCALL);++rejected;
