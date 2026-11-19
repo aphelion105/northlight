@@ -3261,6 +3261,10 @@ public:
     }
     bool effectsEnabled()const{return NorthlightQuality::pipelineWork(quality);}
     NorthlightFrameRequirements::Plan frameRequirements(bool materials=false,bool diagnostic=false)const{return NorthlightFrameRequirements::make(quality,effects,materials,diagnostic,menuDomain||nativeShadowAvailable);}
+    bool wantsWaterMask(bool materials,bool diagnostic)const{
+        // Capture starts before native shadow-provider availability is known for this frame.
+        return NorthlightFrameRequirements::make(quality,effects,materials,diagnostic).waterMask;
+    }
     bool northlightShadowsRequested()const{return effects.shadows&&quality.shadowProvider;}
     bool directionalShadowWork()const{return northlightShadowsRequested()&&(menuDomain||nativeShadowAvailable);}
     bool nativeShadowReplacementReady()const{

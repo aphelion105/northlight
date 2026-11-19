@@ -410,6 +410,31 @@ struct MrtRun {
 };
 static bool has(const std::vector<std::string>& trace,const std::string& name){for(auto& t:trace)if(t==name)return true;return false;}
 static void mrtPath(){
+    {
+        MrtRun m;m.game();
+        assert(m.begin());m.water.endMrt(true);
+        assert(m.water.residentTargets()==3&&m.water.isMrtBound());
+        m.water.setMaskDemand(false);
+        assert(!m.run.b.s.rt[1]&&!m.water.maskRequested()&&m.water.hasVertex(m.run.vs[0]));
+        const auto objects=m.run.b.arena.size(),events=m.run.b.events.size();
+        assert(m.plan()==NorthlightWaterRenderer::Plan::Skip&&!m.begin());
+        m.water.capture(m.run.vs[0],m.run.ps[0],W,H,m.run.mainDS,m.vp,0,0,[]{assert(false);return D3D_OK;});
+        assert(m.water.resolveMask()&&!m.water.maskTextureForDepth(0,1)&&m.water.residentTargets()==0);
+        assert(m.run.b.arena.size()==objects&&m.run.b.events.size()==events);
+        m.water.setMaskDemand(true);
+        assert(m.water.residentTargets()==0);
+        for(unsigned visit=0;visit<2;++visit){
+            assert(m.begin(D3DMULTISAMPLE_NONE));m.water.endMrt(true);
+            assert(m.water.resolveMask()&&m.water.maskTextureForDepth(0,1));
+            m.water.endFrame();
+            for(unsigned i=1;i<m.water.DryFrameLimit;++i)m.water.endFrame();
+            assert(m.water.residentTargets()==2&&!m.water.maskTextureForDepth(0,1));
+        }
+        m.water.endFrame();
+        assert(m.water.residentTargets()==0&&m.water.maskRequested());
+        assert(m.begin());m.water.endMrt(true);
+        assert(m.water.resolveMask()&&m.water.maskTextureForDepth(0,1));
+    }
     // 1. A frame of consecutive MRT draws on a 4x multisampled game target.
     {MrtRun m;m.game();assert(m.plan()==NorthlightWaterRenderer::Plan::Mrt&&!m.water.maskTextureForDepth(0,1));
     const auto before=m.run.b.snapshot();std::vector<std::string> trace;m.run.b.trace=&trace;
@@ -496,7 +521,8 @@ static void mrtPath(){
     assert(m.water.frameCaptures()==1&&m.water.frameClears()==1&&m.water.frameMrtDraws()==1&&m.water.frameMrtDegraded()==1);
     const size_t fills=m.events(6);assert(m.water.resolveMask()&&m.events(6)==fills&&m.water.maskTextureForDepth(0,1));   // no second mask clear over the second draw's data
     // the viewport range of the frame holds for both paths
-    D3DVIEWPORT9 other{0,0,W,H,.25f,.75f};assert(m.water.plan(m.run.vs[0],m.run.ps[0],W,H,other)==NorthlightWaterRenderer::Plan::Skip);}
+    D3DVIEWPORT9 other{0,0,W,H,.25f,.75f};assert(m.water.plan(m.run.vs[0],m.run.ps[0],W,H,other)==NorthlightWaterRenderer::Plan::Skip);
+    assert(m.water.residentTargets()==4);m.water.setMaskDemand(false);assert(m.water.residentTargets()==0);}
     // 8. A change of the game's multisampling drops the twin and re-creates it; a resolution change re-creates everything. Render target 1 is never left bound to a dropped target.
     {MrtRun m;m.game();assert(m.begin());m.water.endMrt(true);auto* first=m.run.b.s.rt[1];m.water.unbindMrt();m.water.endFrame();
     assert(m.begin(D3DMULTISAMPLE_NONE)&&m.run.b.s.rt[1]!=first);m.water.endMrt(true);m.water.unbindMrt();m.water.endFrame();

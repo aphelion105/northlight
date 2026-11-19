@@ -6,15 +6,22 @@ using NorthlightFrameRequirements::make;
 
 int main() {
     NorthlightQuality::Settings q;
-    q.localLights=q.contactAO=q.weather=0;
+    q.localLights=q.contactAO=q.weather=q.celestialEffects=0;
     NorthlightEffectSwitches::Settings effects{false,false,false};
     auto off=make(q,effects,false);
     assert(!off.geometry&&!off.lighting&&!off.modelNormals&&!off.materials);
     assert(off.screenGroups()==1&&off.geometryGroups()==0);
+    assert(!off.waterMask);
+    q.weather=1;
+    assert(!make(q,effects,false).waterMask);
+    q.weather=0;q.celestialEffects=1;
+    assert(make(q,effects,false).waterMask);
+    q.celestialEffects=0;
 
     q.contactAO=1;
     auto ao=make(q,effects,false);
     assert(ao.ao&&!ao.geometry&&!ao.lighting&&!ao.modelNormals);
+    assert(ao.waterMask);
     assert(ao.screenGroups()==off.screenGroups()&&ao.geometryGroups()==0);
     q.contactAO=0;
 
@@ -23,6 +30,7 @@ int main() {
     assert((potential.screenGroups()&8)&&!actual.materials&&!actual.lighting);
     auto diagnostic=make(q,effects,false,true);
     assert(diagnostic.lighting&&diagnostic.modelNormals&&!diagnostic.materials&&!diagnostic.geometry);
+    assert(diagnostic.waterMask&&potential.waterMask&&!actual.waterMask);
 
     effects.shadows=true;q.shadowProvider=1;
     auto shadow=make(q,effects,false);
@@ -33,6 +41,7 @@ int main() {
     q.shadowProvider=1;
     auto unavailable=make(q,effects,false,false,false);
     assert(!unavailable.shadows&&!unavailable.lighting&&unavailable.geometryGroups()==0);
+    assert(shadow.waterMask&&!game.waterMask&&!unavailable.waterMask);
     effects.shadows=false;
 
     effects.gi=true;q.giStrength=1;
@@ -68,9 +77,11 @@ int main() {
         q.contactAO=q.weather=0;
         auto base=make(q,effects,materials);
         assert(base.distance==(base.lighting||base.fog));
+        assert(base.waterMask==(base.lighting||base.fog));
         q.contactAO=q.weather=1;
         auto layers=make(q,effects,materials);
         assert(!base.ao&&!base.weather&&layers.ao&&layers.weather);
+        assert(layers.waterMask);
         assert(base.screenGroups()==layers.screenGroups());
         assert(base.geometryGroups()==layers.geometryGroups());
         assert(base.geometry==layers.geometry&&base.lighting==layers.lighting);

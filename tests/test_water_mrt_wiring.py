@@ -76,16 +76,21 @@ checks['waterMrtDraw: without a planned draw render target 1 is unbound (if the 
     'if(!waterPending.valid){if(water&&water->isMrtBound())rainMrtUnbind();return chain();}' in planned and planned.index('rainMrtUnbind();return chain();')<planned.index('const PendingWater p=waterPending;'))
 
 # ---- the frame ----
+latch=between(r,'    void latchDrawGates(){','    LONGLONG* sampledHookTimer()')
+checks['the frame latch requests water for enabled consumers, materials and diagnostics']=(
+    'water->setMaskDemand(enabled&&!failed&&world&&world->wantsWaterMask(' in latch
+    and 'autoBump&&autoBump->active(),worldDebug!=0||world->needsDiagnosticFallback()' in latch
+    and cw.index('water->usable()')<cw.index('ext->peekDepthStencilSurface('))
 fx=between(r,'        rainMrtUnbind(); /* 0.3.202 (rain mask MRT) */\n        ExtensionDevice::RawScope rawEffects','        // discs and glare')
 checks['renderEffects: render target 1 unbound, then the water data decoded, then the mask handed out']=(
-    fx.index('rainMrtUnbind();')<fx.index('water->resolveMask()')<fx.index('water->maskTextureForDepth(worldMinDepth,worldMaxDepth)') and 'if(water&&debugMode==0)water->resolveMask();' in fx)
+    fx.index('rainMrtUnbind();')<fx.index('if(water&&water->maskRequested()&&debugMode==0)')<fx.index('water->resolveMask()')<fx.index('water->maskTextureForDepth(worldMinDepth,worldMaxDepth)'))
 resolve=between(w,'    bool resolveMask(){','    bool mrtResources(')
 checks['resolveMask: unbinds, resolves the twin once, clears the mask unless a second draw did, one decode draw inside its own SavedState']=(
     resolve.index('unbindMrt()')<resolve.index('StretchRect(twin')<resolve.index('SavedState save')<resolve.index('SetRenderTarget(0,maskSurface)')<resolve.index('SetViewport(&viewport)')<resolve.index('if(SUCCEEDED(hr)&&!captured)hr=d->Clear(')<resolve.index('NorthlightScreen::drawQuad(')
     and resolve.count('NorthlightScreen::drawQuad(')==1 and resolve.count('StretchRect(')==1 and 'clearTarget(maskSurface)' not in resolve)
 checks['maskTextureForDepth: the min/max Z contract kept; MRT data only after the decode']=('std::fabs(minZ-maskMinZ)<.0001f&&std::fabs(maxZ-maskMaxZ)<.0001f' in w and '(captured||mrtResolved)&&!mrtDirty' in w)
 checks['endFrame / reset: the MRT flags go with the frame and the resources']=('captured=mrtCaptured=mrtResolved=mrtDirty=mrtCleared=false;' in w and 'drop(rawSurface);drop(raw);drop(twin);' in w)
-checks['WATER line: draws = mrt + redraw, with the three counters, the binds and the longest run']=('mrt=%u redraw=%u degraded=%u binds=%u longestRun=%u afterEffects=%u",waterDraws,0u,waterClears,waterScans,waterReadFailures,waterMrt,waterRedraws,waterDegraded,waterBinds,waterLongestRun,waterLate' in r and 'waterDraws=waterRedraws+waterMrt' in r)
+checks['WATER line: draws = mrt + redraw; includes demand and resident targets']=('mrt=%u redraw=%u degraded=%u binds=%u longestRun=%u afterEffects=%u requested=%u targets=%u",waterDraws,0u,waterClears,waterScans,waterReadFailures,waterMrt,waterRedraws,waterDegraded,waterBinds,waterLongestRun,waterLate,waterMaskDemand,waterTargets' in r and 'waterDraws=waterRedraws+waterMrt' in r)
 
 # ---- the other unbind sites (the rain mask's list) still unbind ----
 for site in ('HRESULT STDMETHODCALLTYPE Clear(','HRESULT STDMETHODCALLTYPE StretchRect(','HRESULT STDMETHODCALLTYPE ColorFill(','HRESULT STDMETHODCALLTYPE UpdateSurface(','HRESULT STDMETHODCALLTYPE GetRenderTargetData(','HRESULT STDMETHODCALLTYPE EndScene('):

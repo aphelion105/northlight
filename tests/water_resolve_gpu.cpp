@@ -44,6 +44,20 @@ int main(int argc,char** argv){
     auto legacyWords=NorthlightWaterShaderPatch::resolveShader();assert(legacyWords[15]==NorthlightWaterShaderPatch::src(3,0));legacyWords[15]=NorthlightWaterShaderPatch::src(3,0,0x04);IDirect3DPixelShader9* legacyShader=nullptr;
     const auto legacyResult=d->CreatePixelShader(reinterpret_cast<const DWORD*>(legacyWords.data()),&legacyShader);std::printf("WATER_RESOLVE_LEGACY_SHADER hr=%08lx\n",static_cast<unsigned long>(legacyResult));drop(legacyShader);std::fflush(stdout);
     IDirect3DSurface9* back=nullptr;ok(d->GetRenderTarget(0,&back));auto code=read(argv[2]);IDirect3DPixelShader9* copy=nullptr;ok(d->CreatePixelShader(reinterpret_cast<const DWORD*>(code.data()),&copy));unsigned cases=0,unsupported=0,baselineRefusedClearPixels=0;
+    if(!timing){
+        NorthlightWaterRenderer water(d);
+        WaterResolveTestAccess::prepare(water,3840,2160,0);
+        unsigned long long bytes=0;
+        for(auto* surface:{WaterResolveTestAccess::raw(water),WaterResolveTestAccess::mask(water)}){
+            D3DSURFACE_DESC desc{};ok(surface->GetDesc(&desc));
+            assert(desc.Format==D3DFMT_G32R32F&&desc.MultiSampleType==D3DMULTISAMPLE_NONE);
+            bytes+=8ull*desc.Width*desc.Height;
+        }
+        assert(water.residentTargets()==2&&bytes==132710400);
+        for(unsigned frame=0;frame<water.DryFrameLimit;++frame)water.endFrame();
+        assert(water.residentTargets()==0);
+        std::printf("WATER_MASK_DRY allocatedBytes=%llu residentTargets=%u\n",bytes,water.residentTargets());
+    }
     for(unsigned height:timing?std::vector<unsigned>{1080,2160}:std::vector<unsigned>{64,97})for(unsigned msaa:timing?std::vector<unsigned>{0}:std::vector<unsigned>{0,4}){
         const unsigned h=height,w=timing?h*16/9:h==97?129:96;
         IDirect3DSurface9 *game=nullptr,*aux=nullptr,*depth=nullptr,*staging=nullptr;
@@ -51,6 +65,17 @@ int main(int argc,char** argv){
         ok(d->CreateRenderTarget(w,h,D3DFMT_A8R8G8B8,D3DMULTISAMPLE_TYPE(msaa),0,FALSE,&aux,nullptr));ok(d->CreateDepthStencilSurface(w,h,D3DFMT_D24S8,D3DMULTISAMPLE_TYPE(msaa),0,FALSE,&depth,nullptr));ok(d->CreateOffscreenPlainSurface(w,h,D3DFMT_G32R32F,D3DPOOL_SYSTEMMEM,&staging,nullptr));
         {
         BaselineWaterRenderer before(d);NorthlightWaterRenderer after(d);WaterResolveTestAccess::prepare(before,w,h,msaa);WaterResolveTestAccess::prepare(after,w,h,msaa);
+        if(!timing){
+            assert(after.residentTargets()==2u+unsigned(msaa!=0));
+            WaterResolveTestAccess::pending(after,false);
+            after.setMaskDemand(false);
+            meter.reset();
+            assert(after.resolveMask()&&!after.maskTextureForDepth(0,1)&&after.residentTargets()==0);
+            assert(!meter.fills&&!meter.draws&&!meter.clears&&!meter.targets);
+            after.setMaskDemand(true);
+            assert(after.residentTargets()==0);
+            WaterResolveTestAccess::prepare(after,w,h,msaa);
+        }
         auto fill=[&](IDirect3DSurface9* target,IDirect3DTexture9* input){ok(NorthlightHdr::quadState(d,target,w,h));ok(d->SetTexture(0,input));ok(d->SetPixelShader(copy));ok(NorthlightHdr::drawQuad(d,w,h));ok(d->SetTexture(0,nullptr));};
         const D3DVIEWPORT9 vp={2,3,w-4,h-6,.1f,.9f};const RECT scissor={3,4,LONG(w-5),LONG(h-6)};
         auto seed=[&](IDirect3DTexture9* input,bool refuse){ok(d->SetDepthStencilSurface(nullptr));for(unsigned i=1;i<4;++i)ok(d->SetRenderTarget(i,nullptr));ok(d->SetRenderTarget(0,game));ok(d->SetRenderTarget(1,aux));if(!refuse)ok(d->SetDepthStencilSurface(depth));ok(d->SetViewport(&vp));ok(d->SetScissorRect(&scissor));ok(d->SetRenderState(D3DRS_SCISSORTESTENABLE,TRUE));ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE));ok(d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_DESTCOLOR));ok(d->SetTexture(0,input));};

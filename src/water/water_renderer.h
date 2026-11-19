@@ -36,6 +36,7 @@ class NorthlightWaterRenderer {
     bool mrtVariants=true,mrtCaps=false,mrtFailed=false,mrtBound=false,mrtActive=false,mrtDirty=false,mrtCaptured=false,mrtResolved=false,mrtCleared=false,mrtLogged=false;
     unsigned mrtDraws=0,mrtDegraded=0,mrtSkipMask=0,mrtBinds=0,mrtRun=0,mrtLongestRun=0; /* 0.3.215: binds of render target 1 this frame, the MRT draws of the current bind, the longest such run this frame */DWORD mrtPrevWrite1=15;IDirect3DVertexShader9* mrtVS=nullptr;IDirect3DPixelShader9* mrtPS=nullptr;
     unsigned patchedShaders=0,patchRejects=0,mrtShaders=0;double patchMicroseconds=0;
+    bool maskDemand=true;unsigned dryFrames=0;
     bool failed=false,captured=false,maskMayBeBound=true;float maskMinZ=0,maskMaxZ=1;unsigned captures=0,maskScans=0,clears=0,readFailures=0;std::uint64_t scanEpoch=~std::uint64_t(0);
     bool check(HRESULT hr,const char* where){if(SUCCEEDED(hr))return true;if(!failed)logf("WATER disabled: %s HRESULT=0x%08lx",where,(unsigned long)hr);failed=true;return false;}
     bool target(UINT w,UINT h,D3DFORMAT fmt,IDirect3DTexture9*& tex,IDirect3DSurface9*& surface){
@@ -76,8 +77,23 @@ public:
     NorthlightWaterRenderer(const NorthlightWaterRenderer&)=delete;
     void releaseStateCache(){stateBlocks.clear();}
     // The host unbinds render target 1 before it resets or releases the device (unbindMrt); mrtBound is cleared here only to match.
-    void reset(){stateBlocks.clear();drop(maskSurface);drop(depth);drop(mask);drop(rawSurface);drop(raw);drop(twin);width=height=0;twinType=D3DMULTISAMPLE_NONE;twinQuality=0;captured=false;captures=0;mrtBound=mrtActive=mrtDirty=mrtCaptured=mrtResolved=mrtCleared=false;}
-    void endFrame(){if((!captured&&!mrtCaptured)||failed)stateBlocks.clear();captured=mrtCaptured=mrtResolved=mrtDirty=mrtCleared=false;captures=maskScans=clears=readFailures=mrtDraws=mrtDegraded=mrtBinds=mrtLongestRun=0;}
+    void reset(){stateBlocks.clear();drop(maskSurface);drop(depth);drop(mask);drop(rawSurface);drop(raw);drop(twin);width=height=dryFrames=0;twinType=D3DMULTISAMPLE_NONE;twinQuality=0;captured=false;captures=0;mrtBound=mrtActive=mrtDirty=mrtCaptured=mrtResolved=mrtCleared=false;}
+    // Called between frames. Liquid shader identity still serves native draw classification.
+    void setMaskDemand(bool needed){
+        if(maskDemand==needed)return;
+        maskDemand=needed;
+        if(!needed){unbindMrt();reset();}
+    }
+    bool maskRequested()const{return maskDemand;}
+    unsigned residentTargets()const{return unsigned(mask!=nullptr)+unsigned(raw!=nullptr)+unsigned(twin!=nullptr)+unsigned(depth!=nullptr);}
+    static constexpr unsigned DryFrameLimit=120;
+    void endFrame(){
+        if(captured||mrtCaptured)dryFrames=0;
+        else if(width&&++dryFrames>=DryFrameLimit){unbindMrt();reset();}
+        if((!captured&&!mrtCaptured)||failed)stateBlocks.clear();
+        captured=mrtCaptured=mrtResolved=mrtDirty=mrtCleared=false;
+        captures=maskScans=clears=readFailures=mrtDraws=mrtDegraded=mrtBinds=mrtLongestRun=0;
+    }
     // Explicit retry only after host frame cleanup; no allocation or hot-path work.
     void recover(){if(!failed)return;reset();failed=false;logf("WATER explicit recovery requested");}
     bool hasCapturedWater()const{return (captured||mrtResolved)&&!failed;}
@@ -101,7 +117,7 @@ public:
     // recognizesVertex() split for the host's per-shader tag: hasVertex() only
     // changes in registerVertex(), usable() is the live failure state.
     bool hasVertex(IDirect3DVertexShader9* shader)const{return vertex.find(shader)!=vertex.end();}
-    bool usable()const{return !failed;}
+    bool usable()const{return maskDemand&&!failed;}
     // words/count: the original bytecode (GetFunction), already fetched for the hash.
     void registerVertex(IDirect3DVertexShader9* original,std::uint64_t hash,const DWORD* words,std::size_t count){
         auto old=vertex.find(original);if(old!=vertex.end()){drop(old->second);vertex.erase(old);}
@@ -183,7 +199,7 @@ public:
     // The extension requires DXVK, whose getters always answer: a failed read
     // skips the mask draw without touching state.
     template<class Draw> void capture(IDirect3DVertexShader9* vs,IDirect3DPixelShader9* ps,UINT mainWidth,UINT mainHeight,IDirect3DSurface9* mainDepth,const D3DVIEWPORT9& vp,unsigned userPointer,std::uint64_t stateEpoch,Draw draw){
-        if(failed)return;auto vi=vertex.find(vs);auto pi=pixel.find(ps);if(vi==vertex.end()||pi==pixel.end())return;
+        if(!usable())return;auto vi=vertex.find(vs);auto pi=pixel.find(ps);if(vi==vertex.end()||pi==pixel.end())return;
         if(vp.X||vp.Y||vp.Width!=mainWidth||vp.Height!=mainHeight)return;
         if((captured||mrtCaptured)&&(vp.MinZ!=maskMinZ||vp.MaxZ!=maskMaxZ))return;
         if(stateEpoch!=scanEpoch){scanEpoch=stateEpoch;maskMayBeBound=true;}
@@ -220,14 +236,14 @@ public:
     // StretchRect averages once per frame; resolveMask() turns the averaged (n/N*distance, n/N) back into (distance, 1) for pixels with at least half of their samples covered.
     // The host's one-time device caps verdict: two render targets, independent write masks and bit depths, blending on the extra target, pixel shader 2.0.
     void setMrtCaps(bool ok){mrtCaps=ok;}
-    bool mrtEnabled()const{return mrtVariants&&mrtCaps&&!mrtFailed&&!failed;}
+    bool mrtEnabled()const{return mrtVariants&&mrtCaps&&!mrtFailed&&usable();}
     bool isMrtBound()const{return mrtBound;}
     void unbindMrt(){if(mrtBound){d->SetRenderTarget(1,nullptr);mrtBound=false;}}
     enum class Plan {Skip,Redraw,Mrt};
     // captureWater's verdict for a draw it recognised as water (main depth and full viewport already verified): Skip = no mask for this draw (what capture() does silently),
     // Redraw = the second-draw pass, Mrt = the draw writes the mask itself (beginMrt before it, endMrt after).
     Plan plan(IDirect3DVertexShader9* vs,IDirect3DPixelShader9* ps,UINT mainWidth,UINT mainHeight,const D3DVIEWPORT9& vp)const{
-        if(failed||vertex.find(vs)==vertex.end()||pixel.find(ps)==pixel.end())return Plan::Skip;
+        if(!usable()||vertex.find(vs)==vertex.end()||pixel.find(ps)==pixel.end())return Plan::Skip;
         if(vp.X||vp.Y||vp.Width!=mainWidth||vp.Height!=mainHeight)return Plan::Skip;
         if((captured||mrtCaptured)&&(vp.MinZ!=maskMinZ||vp.MaxZ!=maskMaxZ))return Plan::Skip;
         return mrtEnabled()&&pixelMrt.find(ps)!=pixelMrt.end()?Plan::Mrt:Plan::Redraw;

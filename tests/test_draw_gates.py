@@ -111,7 +111,7 @@ gates_block=member(renderer,'template<class Draw> HRESULT nativeEffectDraw(')+ga
 # 0.3.202 (rain mask MRT): the rain mask members (rainMrtUnbind .. rainBlendDraw) are test_weather_detect's; here only their call surface exists (the hook equivalence runs with rain off)
 _a=gates_block.index('    void rainMrtUnbind(){');_b=gates_block.index('    template<class Draw> HRESULT rainBlendDraw(');_e=gates_block.index('\n    }\n',_b)+7
 checks_rain_stub=(gates_block[_a:_e].count('rainMrtBegin')>=1)
-gates_block=gates_block[:_a]+'    void rainMrtUnbind(){if(rainMrtBound){rainMrtBound=false;}}\n    struct WaterStub{bool isMrtBound()const{return false;}bool hasVertex(void*)const{return false;}};WaterStub* water=nullptr;struct{bool valid=false;}waterPending;bool nextDrawIsWater(){return false;} /* 0.3.214 (water MRT): the water mask never runs here */\n    template<class Raw,class Chain> HRESULT waterMrtDraw(Raw,Chain chain){return chain();}\n    template<class Draw> HRESULT rainBlendDraw(bool rain,bool claimed,Draw draw){(void)rain;return blobFaintDraw(claimed,draw);}\n    template<class Draw> HRESULT nameMaskDraw(bool rain,bool claimed,Draw draw){return rainBlendDraw(rain,claimed,draw);} /* 0.3.212 (task 32) */\n'+gates_block[_e:]
+gates_block=gates_block[:_a]+'    void rainMrtUnbind(){if(rainMrtBound){rainMrtBound=false;}}\n    struct WaterStub{void setMaskDemand(bool){}bool isMrtBound()const{return false;}bool hasVertex(void*)const{return false;}};WaterStub* water=nullptr;struct{bool valid=false;}waterPending;bool nextDrawIsWater(){return false;} /* 0.3.214 (water MRT): the water mask never runs here */\n    template<class Raw,class Chain> HRESULT waterMrtDraw(Raw,Chain chain){return chain();}\n    template<class Draw> HRESULT rainBlendDraw(bool rain,bool claimed,Draw draw){(void)rain;return blobFaintDraw(claimed,draw);}\n    template<class Draw> HRESULT nameMaskDraw(bool rain,bool claimed,Draw draw){return rainBlendDraw(rain,claimed,draw);} /* 0.3.212 (task 32) */\n'+gates_block[_e:]
 # Optional particle/material/HDR and sky-order paths are disabled in this legacy
 # gate equivalence model; their own suites exercise those features.
 particle_start=gates_block.find('    NorthlightParticleCapture::Capture particleCapture;')
@@ -279,6 +279,7 @@ struct MockExt{
     HRESULT DrawPrimitive(D3DPRIMITIVETYPE t,UINT s,UINT c){env->call("DrawPrimitive "+drawName(t,s,c));return env->bit("draw failure",6)?HRESULT(-2005530516):D3D_OK;}
 };
 struct MockWorld{
+    bool wantsWaterMask(bool,bool)const{return false;}
     bool nativeExtra=false;void requestNativeExtra(bool value){nativeExtra=value;}bool ownsNativeExtra()const{return false;}void nativeExtraRgb(bool,float*){}
     unsigned sceneTraceCalls=0;template<class Draw> HRESULT captureNativeSceneDraw(unsigned,unsigned,Draw draw){++sceneTraceCalls;return draw();}
     Env* env=nullptr;bool context=true,actorShadows=true,shadows=true,composited=true;IDirect3DPixelShader9 replacement{9,nullptr};
@@ -344,7 +345,7 @@ namespace NorthlightParticleCapture{struct Prepared{};}
 namespace NorthlightAutoDisplacement{struct Args{struct{D3DPRIMITIVETYPE t;INT base;UINT min,vertices,start,count;bool indexed;}draw;};}
 struct ExtensionDevice{struct RawScope{explicit RawScope(MockExt&){}};};
 namespace NorthlightM2Draw {inline std::atomic<bool> requested{false};}
-struct BumpMock{void beginDraw(){}void beforeNativeDraw(){}template<class... A> void capture(A&&...){}template<class Draw> HRESULT geometryDraw(Draw draw,bool){return draw();}template<class Draw,class Submit> HRESULT geometryDraw(Draw draw,bool,Submit){return draw();}template<class Draw> HRESULT nativeDraw(Draw draw,IDirect3DVertexShader9*,IDirect3DPixelShader9*){return draw();}};
+struct BumpMock{bool active()const{return false;}void beginDraw(){}void beforeNativeDraw(){}template<class... A> void capture(A&&...){}template<class Draw> HRESULT geometryDraw(Draw draw,bool){return draw();}template<class Draw,class Submit> HRESULT geometryDraw(Draw draw,bool,Submit){return draw();}template<class Draw> HRESULT nativeDraw(Draw draw,IDirect3DVertexShader9*,IDirect3DPixelShader9*){return draw();}};
 struct Base{
     MoreLightsMock* nativeMoreLights=nullptr;
     struct NormalStub{unsigned begins=0;void beginNativeDraw(){++begins;}};NormalStub* modelNormals=nullptr;
