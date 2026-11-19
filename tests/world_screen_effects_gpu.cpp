@@ -260,6 +260,12 @@ struct WorldScreenEffectsTest {
         w.rawSourceDirections[0]=w.sourceDirections[0];w.rawSourceDirections[1]=w.sourceDirections[1];
         w.sourceColors[0]=w.sourceGlowColors[0]={.6f,.5f,.4f};w.sourceColors[1]=w.sourceGlowColors[1]={0,0,0};w.sourceWeights[0]=1;w.sourceWeights[1]=0;
     }
+    static void waterMaskProfile(WorldRenderer& w,bool weather,bool contact){
+        fixtureContext(w);
+        w.pipelineActive=true;w.effects={false,false,false};
+        w.quality.localLights=w.quality.autoBump=w.quality.celestialEffects=0;
+        w.quality.weather=weather;w.quality.contactAO=contact;
+    }
     static void sceneOwnership(WorldRenderer& w,IDirect3DDevice9* d){
         auto scene=w.gpuScene;const auto originalLimit=w.captureSources().sharedSourceLimit();
         assert(scene->device==d&&scene->decodedSources&&scene->captureSources==w.captureSources().sharedSources());
@@ -783,6 +789,23 @@ int main(int argc,char** argv){
             D3DLOCKED_RECT lock{};screenOk(readback->LockRect(&lock,nullptr,D3DLOCK_READONLY));std::vector<unsigned char> image(W*H*8);
             for(unsigned y=0;y<H;++y)std::memcpy(image.data()+y*W*8,static_cast<char*>(lock.pBits)+y*lock.Pitch,W*8);screenOk(readback->UnlockRect());return image;
         };
+        {
+            const float wet[]={2.f,1.f,0.f,0.f},occluded[]={0.f,0.f,0.f,.5f};
+            auto* liquid=screenTexture(d,W,H,wet);auto* contact=screenTexture(d,W/2,H/2,occluded);
+            for(bool weather:{false,true})for(bool hdr:{false,true})for(bool contactOn:{false,true}){
+                std::vector<unsigned char> result[2];
+                for(unsigned withMask=0;withMask<2;++withMask){
+                    WorldRenderer sample(d);
+                    WorldScreenEffectsTest::waterMaskProfile(sample,weather,contactOn);
+                    assert(renderChecked(sample,d,out,depth,W,H,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,
+                                         withMask?liquid:nullptr,scene,contactOn?contact:ao,1,hdr?scene:nullptr));
+                    result[withMask]=composedImage();
+                }
+                assert((result[0]!=result[1])==contactOn);
+            }
+            contact->Release();liquid->Release();
+            std::puts("WORLD_WATER_MASK_DEMAND_PASS hdr=2 weather=2 contact=2");
+        }
         for(float altitude:{300.f,-300.f}){
             std::vector<unsigned char> empty[2],history[2],reentry[2],emptyColor[2],reentryColor[2];
             for(unsigned clipped=0;clipped<2;++clipped){
