@@ -12,9 +12,11 @@ import subprocess,tempfile
 HERE=Path(__file__).resolve().parent
 w=fp.src('world_renderer.h').read_text();sky=fp.src('celestial_disc_renderer.h').read_text();r=fp.src('renderer.cpp').read_text()
 draw=w[w.index('    bool drawCelestialTerrain(unsigned body,const float* matrix){'):w.index('    void noteCelestialTerrainReuse(')]
+clear_mesh=w.split('    void clearMesh(',1)[1].split('\n',1)[0]
 checks={
  'terrain list rebuilt only at the mesh commit and cleared with the mesh':w.count('rebuildTerrainLists();')==1 and '++meshGeneration;rebuildTerrainLists();' in w
-    and 'batches.clear();terrainBatchList.clear();shadowTerrainList.clear();terrainBatchListGeneration=UINT64_MAX;' in w and 'rebuildTerrainLists' not in sky and 'rebuildTerrainLists' not in draw,
+    and all(field+'.clear();' in clear_mesh for field in ('batches','terrainBatchList','shadowTerrainList','pointStaticList'))
+    and 'terrainBatchListGeneration=UINT64_MAX;' in clear_mesh and 'rebuildTerrainLists' not in sky and 'rebuildTerrainLists' not in draw,
  'merged runs only with this generation\'s list, per-batch fallback otherwise':'const bool listed=terrainBatchListGeneration==meshGeneration&&terrainBatchListSize==batches.size();' in draw
     and 'NorthlightCelestialTerrain::forEachRun(batches,terrainBatchList,NorthlightWorldMeshPages::PageIndexLimit,accept,emit,runs);' in draw
     and 'DrawIndexedPrimitive(D3DPT_TRIANGLELIST,0,r.minVertex,UINT(r.vertexEnd-r.minVertex),r.start,r.count)' in draw,

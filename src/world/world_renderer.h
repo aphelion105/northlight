@@ -1037,13 +1037,20 @@ private:
     // at the mesh commit (rebuildTerrainLists), valid while terrainBatchListGeneration==meshGeneration.
     // 0.3.175 (S2): shadowTerrainList, the terrain batches outside this generation's fixed chunks
     // (the directional terrain selection then tests only the live chunks), for terrainListFixed.
+    std::vector<uint32_t> pointStaticList;
     std::vector<uint32_t> terrainBatchList,shadowTerrainList;uint64_t terrainBatchListGeneration=UINT64_MAX;size_t terrainBatchListSize=0;const void* terrainListFixed=nullptr;
     void rebuildTerrainLists(){
-        terrainBatchListGeneration=UINT64_MAX;terrainBatchList.clear();shadowTerrainList.clear();
+        terrainBatchListGeneration=UINT64_MAX;terrainBatchList.clear();shadowTerrainList.clear();pointStaticList.clear();
+        if(batches.size()>UINT32_MAX)return;
         const auto& fixed=fixedTerrainChunks();
-        try{for(size_t i=0;i<batches.size()&&i<UINT32_MAX;++i)if(batches[i].terrain){terrainBatchList.push_back(uint32_t(i));
-                if(!fixed.count({batches[i].chunkX,batches[i].chunkY}))shadowTerrainList.push_back(uint32_t(i));}}
-        catch(...){terrainBatchList.clear();shadowTerrainList.clear();return;} /* fallback: the whole batch list */
+        try{
+            for(size_t i=0;i<batches.size();++i){
+                const auto& batch=batches[i];
+                if(!batch.terrain){pointStaticList.push_back(uint32_t(i));continue;}
+                terrainBatchList.push_back(uint32_t(i));
+                if(!fixed.count({batch.chunkX,batch.chunkY}))shadowTerrainList.push_back(uint32_t(i));
+            }
+        }catch(...){terrainBatchList.clear();shadowTerrainList.clear();pointStaticList.clear();return;}
         terrainBatchListSize=batches.size();terrainListFixed=&fixed;terrainBatchListGeneration=meshGeneration;
     }
     // CELESTIAL terrain mask line (rate-limited): the last redraw, and per body (sun, moon) redraws/reuses since the line.
@@ -2499,7 +2506,7 @@ private:
     bool buildingScreenResources=false,screenResourceOom=false,screenResourceRetry=false,screenResourceReported=false;DWORD screenResourceRetryAt=0,screenResourceReportAt=0;
     bool check(HRESULT h,const char* s){if(SUCCEEDED(h))return true;if(buildingScreenResources&&(h==E_OUTOFMEMORY||h==D3DERR_OUTOFVIDEOMEMORY)){screenResourceOom=true;return false;}if(!failed)logf("WORLD DISABLED: %s HRESULT=%08lx",s,(unsigned long)h);failed=true;return false;}
     void clearMaterials(){for(auto& m:materials)drop(m);materials.clear();uploadedTextureBytes=0;uploadedMaterialPixels.reset();materialReuseBytes=0;}
-    void clearMesh(bool keepMaterials=false){staticCasters.settle();dropStaticDirtyJobs();vertices=nullptr;indices=nullptr;if(!keepMaterials)clearMaterials();batches.clear();pointSubBatches.clear();pointSubRanges.clear();pointTree.reset();terrainBatchList.clear();shadowTerrainList.clear();terrainBatchListGeneration=UINT64_MAX;uploadedAlphaCutoffs.clear();uploadedLocalShadowRecords.reset();uploaded.reset();uploadedMeshPlan.reset();}
+    void clearMesh(bool keepMaterials=false){staticCasters.settle();dropStaticDirtyJobs();vertices=nullptr;indices=nullptr;if(!keepMaterials)clearMaterials();batches.clear();pointSubBatches.clear();pointSubRanges.clear();pointTree.reset();pointStaticList.clear();terrainBatchList.clear();shadowTerrainList.clear();terrainBatchListGeneration=UINT64_MAX;uploadedAlphaCutoffs.clear();uploadedLocalShadowRecords.reset();uploaded.reset();uploadedMeshPlan.reset();}
     bool target(UINT w,UINT h,D3DFORMAT fmt,IDirect3DTexture9** t,IDirect3DSurface9** s){return check(d->CreateTexture(w,h,1,D3DUSAGE_RENDERTARGET,fmt,D3DPOOL_DEFAULT,t,nullptr),"world render texture")&&check((*t)->GetSurfaceLevel(0,s),"world render surface");}
     void actorShaderResources(const D3DCAPS9& caps){
         if(!quality.actorShadows||!quality.actorShadowDetail)return;

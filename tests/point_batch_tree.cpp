@@ -88,7 +88,8 @@ static void staticCandidates(){
     const size_t total=parents.size()+children.size();
     std::vector<unsigned char> marks(total),initial(total,63),masks[2];
     for(size_t i=0;i<parents.size();++i)if(parents[i].terrain)initial[i]=i%64;
-    NorthlightPointMesh::Layout layout;layout.prepare(1,parents,total,ranges);
+    std::vector<uint32_t> staticParents;
+    for(size_t i=0;i<parents.size();++i)if(!parents[i].terrain)staticParents.push_back(uint32_t(i));
     const auto classify=[&](const P::Batch& b,unsigned faces){return clip.mask(&b.boundsLow.x,&b.boundsHigh.x,true,faces);};
     std::array<std::vector<size_t>,6> lists[2];unsigned rejected[2];
     const auto run=[&](unsigned variant,unsigned faces,bool indexed){
@@ -99,7 +100,7 @@ static void staticCandidates(){
             for(;mask;mask&=mask-1)lists[variant][__builtin_ctz(mask)].push_back(i);
         };
         if(variant){
-            const auto outside=layout.classifyStatic(parents,children,ranges,indexed?marks.data():nullptr,faces,m,classify,append);
+            const auto outside=NorthlightPointMesh::classifyStatic(parents,children,ranges,indexed?&staticParents:nullptr,indexed?marks.data():nullptr,faces,m,classify,append);
             rejected[1]+=unsigned(outside)*__builtin_popcount(faces);
         }else for(size_t i=0;i<parents.size();++i){
             if(parents[i].terrain)continue;

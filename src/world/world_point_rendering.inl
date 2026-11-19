@@ -57,7 +57,7 @@
     using PointCandidates=std::array<std::vector<size_t>,6>;
     PointCandidates pointStaticCandidates,pointTerrainCandidates,pointLiveCandidates,pointReplayCandidates;
     std::vector<unsigned char> pointBatchMasks;
-    NorthlightPointMesh::Layout pointMeshLayout;
+    std::vector<unsigned char> pointEmptyTerrainMasks;uint64_t pointEmptyTerrainGeneration=UINT64_MAX;
     std::vector<unsigned char> pointNearbyBatches;bool pointNearbyReady=false;
     struct PointPalettePacket {size_t pose;unsigned span;};
     std::vector<size_t> pointReplayOrder;
@@ -70,7 +70,7 @@
     bool pointReplayGroupsReady=false;
     struct PointCold {unsigned cubes=0,statics=0,shared=0,shaders=0,terrainMemoHits=0,terrainMemoMisses=0,orderPackets=0,orderEligible=0,contentPasses=0,alphaScopes=0,fixedDraws=0;
         unsigned facesWithoutCache=0,facesResized=0,facesMoved=0,facesMeshInvalidated=0;
-        size_t contentRecords=0,staticStandaloneSkipped=0;int64_t ticks=0,order=0,prepare=0,boundsWait=0,candidates=0,submit=0;} pointCold;
+        size_t contentRecords=0,staticEmptyCandidates=0;int64_t ticks=0,order=0,prepare=0,boundsWait=0,candidates=0,submit=0;} pointCold;
     template<class Call> HRESULT pointAllocate(unsigned& attempts,Call call){
         ++attempts;const bool timed=NorthlightQuality::renderProfile(quality);const int64_t start=timed?QpcClock::now():0;
         const HRESULT hr=call();if(timed)pointCold.ticks+=QpcClock::now()-start;return hr;
@@ -130,7 +130,7 @@
         for(auto* lists:{&pointStaticCandidates,&pointTerrainCandidates,&pointLiveCandidates,&pointReplayCandidates})
             for(auto& list:*lists)std::vector<size_t>().swap(list);
         std::vector<unsigned char>().swap(pointBatchMasks);
-        pointMeshLayout={};
+        std::vector<unsigned char>().swap(pointEmptyTerrainMasks);
         std::vector<unsigned char>().swap(pointNearbyBatches);pointNearbyReady=false;
         std::vector<PointReplayGroup>().swap(pointReplayGroups);pointReplayGroupsReady=false;std::vector<size_t>().swap(pointReplayOrder);std::vector<PointPalettePacket>().swap(pointReplayPalette);pointReplayOrderReady=false;
     }
@@ -345,7 +345,12 @@
         for(mask&=faces;mask;mask&=mask-1)lists[__builtin_ctz(mask)].push_back(index);
     }
     const std::vector<unsigned char>& emptyTerrainMasks(){
-        return pointMeshLayout.prepare(meshGeneration,batches,pointMeshBatchCount(),pointSubRanges);
+        if(pointEmptyTerrainGeneration!=meshGeneration||pointEmptyTerrainMasks.size()!=pointMeshBatchCount()){
+            pointEmptyTerrainMasks.assign(pointMeshBatchCount(),63);
+            for(size_t i=0;i<batches.size();++i)if(batches[i].terrain)pointEmptyTerrainMasks[i]=0;
+            pointEmptyTerrainGeneration=meshGeneration;
+        }
+        return pointEmptyTerrainMasks;
     }
     void preparePointTerrain(const NorthlightPointShadow::FaceClip& clip,unsigned faces,unsigned staticFaces=63){
         auto& memo=pointSlot().terrainMemo;const auto& light=pointSlot().selected;
@@ -799,12 +804,12 @@
             preparePointTerrain(clip,faces,rebuildMask&faces);
             if(rebuildMask&faces){
                 const unsigned staticFaces=rebuildMask&faces;
-                pointMeshLayout.prepare(meshGeneration,batches,pointMeshBatchCount(),pointSubRanges);
-                const size_t outside=pointMeshLayout.classifyStatic(batches,pointSubBatches,pointSubRanges,
+                const bool listed=terrainBatchListGeneration==meshGeneration&&terrainBatchListSize==batches.size();
+                const size_t outside=NorthlightPointMesh::classifyStatic(batches,pointSubBatches,pointSubRanges,listed?&pointStaticList:nullptr,
                     pointNearbyReady?pointNearbyBatches.data():nullptr,staticFaces,pointBatchMasks,
                     [&](const Batch& b,unsigned mask){return pointMask(b.boundsLow,b.boundsHigh,clip,mask);},
                     [&](size_t i,unsigned mask){pointAppendCandidates(pointStaticCandidates,i,mask,staticFaces);});
-                pointCold.staticStandaloneSkipped+=outside;
+                pointCold.staticEmptyCandidates+=outside;
                 pointCulled+=unsigned(outside)*unsigned(__builtin_popcount(staticFaces));
             }
             for(size_t i=0;i<pointLiveBatches.size();++i){const auto& batch=pointLiveBatches[i];
@@ -1100,7 +1105,7 @@
         }
         if(coldTimed&&captureFrequency.QuadPart>0){const double scale=1000.0/double(captureFrequency.QuadPart),cpuMs=double(QpcClock::now()-coldStarted)*scale;
             if(cpuMs>=8||profileSampled()){
-                logf("POINT_PHASE rendererFrame=%u prepareMs=%.3f boundsWaitMs=%.3f candidatesMs=%.3f submitMs=%.3f prepareIncludesBoundsAndCandidates=1 terrainMemoHits=%u terrainMemoMisses=%u terrainListSize=%zu totalBatches=%zu contentPasses=%u contentRecords=%zu spatialIndex=%u facesWithoutCache=%u facesResized=%u facesMoved=%u facesMeshInvalidated=%u staticStandaloneSkipped=%zu",rendererFrame,double(pointCold.prepare)*scale,double(pointCold.boundsWait)*scale,double(pointCold.candidates)*scale,double(pointCold.submit)*scale,pointCold.terrainMemoHits,pointCold.terrainMemoMisses,terrainBatchList.size(),batches.size(),pointCold.contentPasses,pointCold.contentRecords,unsigned(bool(pointTree)),pointCold.facesWithoutCache,pointCold.facesResized,pointCold.facesMoved,pointCold.facesMeshInvalidated,pointCold.staticStandaloneSkipped);
+                logf("POINT_PHASE rendererFrame=%u prepareMs=%.3f boundsWaitMs=%.3f candidatesMs=%.3f submitMs=%.3f prepareIncludesBoundsAndCandidates=1 terrainMemoHits=%u terrainMemoMisses=%u terrainListSize=%zu totalBatches=%zu contentPasses=%u contentRecords=%zu spatialIndex=%u facesWithoutCache=%u facesResized=%u facesMoved=%u facesMeshInvalidated=%u staticEmptyCandidates=%zu",rendererFrame,double(pointCold.prepare)*scale,double(pointCold.boundsWait)*scale,double(pointCold.candidates)*scale,double(pointCold.submit)*scale,pointCold.terrainMemoHits,pointCold.terrainMemoMisses,terrainBatchList.size(),batches.size(),pointCold.contentPasses,pointCold.contentRecords,unsigned(bool(pointTree)),pointCold.facesWithoutCache,pointCold.facesResized,pointCold.facesMoved,pointCold.facesMeshInvalidated,pointCold.staticEmptyCandidates);
                 logf("POINT_ORDER rendererFrame=%u cpuMs=%.3f packets=%u eligible=%u oncePerFrame=1 alphaBarriers=1 fixedDraws=%u alphaScopes=%u",rendererFrame,double(pointCold.order)*scale,pointCold.orderPackets,pointCold.orderEligible,pointCold.fixedDraws,pointCold.alphaScopes);
                 // A reused cube may leave the bounds job running. Its mutable
                 // counters are readable only after that job has been joined.

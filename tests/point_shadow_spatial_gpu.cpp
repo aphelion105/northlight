@@ -33,7 +33,7 @@ struct Batcher {
 struct Mesh : Batcher {
     std::shared_ptr<const P::PointTree> pointTree;
     std::vector<unsigned char> nearby;
-    NorthlightPointMesh::Layout pointLayout;
+    std::vector<uint32_t> staticParents;
     std::vector<IDirect3DVertexBuffer9*> vertices;
     std::vector<IDirect3DIndexBuffer9*> indices;
     std::vector<Batch> draws[6],directionalBatches;
@@ -41,7 +41,8 @@ struct Mesh : Batcher {
     uint64_t triangles=0;
     ~Mesh(){for(auto* p:vertices)p->Release();for(auto* p:indices)p->Release();for(auto* p:materials)if(p)p->Release();}
     void upload(IDirect3DDevice9* d,const P::Plan& pages,const NorthlightWorldMesh::WorldMeshUploadPlan& plan){
-        pointLayout={};batches=pages.batches;directionalBatches=batches;pointSubBatches=pages.pointSubBatches;pointSubRanges=pages.pointSubRanges;pointTree=pages.pointTree;
+        batches=pages.batches;directionalBatches=batches;pointSubBatches=pages.pointSubBatches;pointSubRanges=pages.pointSubRanges;pointTree=pages.pointTree;
+        staticParents.clear();for(size_t i=0;i<batches.size();++i)if(!batches[i].terrain)staticParents.push_back(uint32_t(i));
         fixedChunks=plan.fixedTerrainChunks;D3DCAPS9 caps{};ok(d->GetDeviceCaps(&caps));pointPrimitiveLimit=caps.MaxPrimitiveCount;
         for(const auto& page:pages.pages){
             IDirect3DVertexBuffer9* vb=nullptr;IDirect3DIndexBuffer9* ib=nullptr;void* data=nullptr;
@@ -62,8 +63,7 @@ struct Mesh : Batcher {
         const bool ready=indexed&&pointTree&&pointTree->nearby(pointMeshBatchCount(),[&](Vec3 lo,Vec3 hi){return NorthlightPointShadow::recordOutsideSphere(lo,hi,light);},nearby);
         for(size_t i=0;i<batches.size();++i){const auto& b=batches[i];if(!b.terrain)continue;pointBatchMasks[i]=static_cast<unsigned char>(ready&&!nearby[i]?0:clip.mask(&b.boundsLow.x,&b.boundsHigh.x,true));}
         if(indexed){
-            pointLayout.prepare(1,batches,pointMeshBatchCount(),pointSubRanges);
-            pointLayout.classifyStatic(batches,pointSubBatches,pointSubRanges,ready?nearby.data():nullptr,63,pointBatchMasks,
+            NorthlightPointMesh::classifyStatic(batches,pointSubBatches,pointSubRanges,&staticParents,ready?nearby.data():nullptr,63,pointBatchMasks,
                 [&](const Batch& b,unsigned faces){return clip.mask(&b.boundsLow.x,&b.boundsHigh.x,true,faces);},
                 [&](size_t i,unsigned mask){for(unsigned f=0;f<6;++f)if(mask&(1u<<f))candidates[f].push_back(i);});
         }else for(size_t i=0;i<batches.size();++i){const auto& b=batches[i];if(b.terrain)continue;const unsigned mask=clip.mask(&b.boundsLow.x,&b.boundsHigh.x,true);pointBatchMasks[i]=static_cast<unsigned char>(mask);
