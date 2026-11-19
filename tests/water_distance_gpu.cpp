@@ -13,7 +13,11 @@ static void logf(const char* fmt,...){va_list args;va_start(args,fmt);std::vfpri
 struct Meter:ForwardIDirect3DDevice9 {
     using ForwardIDirect3DDevice9::ForwardIDirect3DDevice9;
     uint64_t bytes=0;
-    unsigned draws=0,resolves=0;
+    unsigned draws=0,resolves=0,regions=0;
+    bool refuseRegion=false,unknownBounds=false;
+    HRESULT STDMETHODCALLTYPE GetScissorRect(RECT* value)override{
+        return unknownBounds?D3DERR_INVALIDCALL:real->GetScissorRect(value);
+    }
     void record(UINT w,UINT h,D3DFORMAT fmt,unsigned samples){
         const unsigned stride=fmt==D3DFMT_R32F?4:fmt==D3DFMT_L8?1:fmt==D3DFMT_G32R32F?8:0;
         bytes+=uint64_t(w)*h*stride*samples;
@@ -26,7 +30,9 @@ struct Meter:ForwardIDirect3DDevice9 {
     }
     HRESULT STDMETHODCALLTYPE DrawPrimitiveUP(D3DPRIMITIVETYPE t,UINT n,const void* v,UINT stride)override{++draws;return real->DrawPrimitiveUP(t,n,v,stride);}
     HRESULT STDMETHODCALLTYPE StretchRect(IDirect3DSurface9* s,const RECT* a,IDirect3DSurface9* t,const RECT* b,D3DTEXTUREFILTERTYPE f)override{
-        ++resolves;return real->StretchRect(s,a,t,b,f);
+        ++resolves;
+        if(a){++regions;if(refuseRegion)return D3DERR_INVALIDCALL;}
+        return real->StretchRect(s,a,t,b,f);
     }
 };
 static uint64_t query(IDirect3DQuery9* q){uint64_t n;HRESULT hr;while((hr=q->GetData(&n,sizeof(n),D3DGETDATA_FLUSH))==S_FALSE)SwitchToThread();ok(hr);return n;}
@@ -53,8 +59,9 @@ struct Fixture {
         ok(d->CreateVertexDeclaration(elements,&decl));
     }
     ~Fixture(){drop(decl);drop(copy);drop(ps);drop(vs);}
-    HRESULT triangle(float z,float offset,float alpha,unsigned mask){
-        const Pixel v[]={{-z,-z,.5f*z,z},{(1.f+offset)*z,-z,.5f*z,z},{-.63f*z,1.15f*z,.5f*z,z}};
+    HRESULT triangle(float z,float offset,float alpha,unsigned mask,bool slope=false){
+        const float b=slope?1.73f*z:z,c=slope?.615f*z:z;
+        const Pixel v[]={{-z,-z,.5f*z,z},{(1.f+offset)*b,-b,.5f*b,b},{-.63f*c,1.15f*c,.5f*c,c}};
         const float color[4]={.375f,.125f,.75f,alpha};
         ok(d->SetPixelShaderConstantF(0,color,1));ok(d->SetRenderState(D3DRS_MULTISAMPLEMASK,mask));
         return d->DrawPrimitiveUP(D3DPT_TRIANGLELIST,1,v,sizeof(Pixel));
@@ -78,7 +85,11 @@ struct Fixture {
         ok(staging->UnlockRect());drop(staging);drop(out);return data;
     }
 };
-static std::vector<Pixel> run(Fixture& f,IDirect3DSurface9* game,IDirect3DSurface9* depth,D3DSURFACE_DESC desc,bool scalar,int mixed,bool timing){
+enum class Capture { Bare, Wide, Compact };
+enum class Scene { Shore, SmallScissor, SampleMaskStress };
+static std::vector<Pixel> run(Fixture& f,IDirect3DSurface9* game,IDirect3DSurface9* depth,D3DSURFACE_DESC desc,Capture capture,int mixed,bool timing,Scene scene=Scene::Shore){
+    const bool scalar=capture==Capture::Compact,bare=capture==Capture::Bare;
+    const bool nativeCoverage=timing&&scene!=Scene::SampleMaskStress;
     auto* d=f.d;Meter meter(d);NorthlightWaterRenderer water(&meter,f.ids.data(),f.ids.size());
     water.setDistanceBackend(scalar);water.setDistanceCaps(scalar,scalar);water.setMrtCaps(true);
     water.registerVertex(f.vs,f.ids[0].hash,f.vsWords.data(),f.vsWords.size());water.registerPixel(f.ps,f.ids[1].hash,f.psWords.data(),f.psWords.size());
@@ -86,14 +97,16 @@ static std::vector<Pixel> run(Fixture& f,IDirect3DSurface9* game,IDirect3DSurfac
     IDirect3DQuery9 *start=nullptr,*decodeStart=nullptr,*end=nullptr,*freq=nullptr;uint64_t hz=1;
     if(timing){ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&start));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&decodeStart));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&end));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMPFREQ,&freq));ok(freq->Issue(D3DISSUE_END));hz=query(freq);}
     std::vector<double> times,decodeTimes;
+    std::vector<Pixel> output;
     IDirect3DTexture9* result=nullptr;
-    for(unsigned frame=0;frame<(timing?64u:1u);++frame){
+    const unsigned samples=desc.MultiSampleType==D3DMULTISAMPLE_NONMASKABLE?1u<<desc.MultiSampleQuality:std::max(1u,unsigned(desc.MultiSampleType));
+    for(unsigned frame=0;frame<(timing?64u:6u);++frame){
         if(frame)water.endFrame();
         ok(d->BeginScene());ok(NorthlightHdr::quadState(d,game,w,h));ok(d->SetDepthStencilSurface(depth));
         ok(d->SetVertexDeclaration(f.decl));ok(d->SetVertexShader(f.vs));ok(d->SetPixelShader(f.ps));
         ok(d->SetRenderState(D3DRS_MULTISAMPLEANTIALIAS,TRUE));ok(d->SetRenderState(D3DRS_COLORWRITEENABLE2,5));
         if(scalar&&!timing){
-            const unsigned slot=desc.MultiSampleType==D3DMULTISAMPLE_NONE?1:2;
+            const unsigned slot=NorthlightWaterDistanceMask::multisampled(desc.MultiSampleType,desc.MultiSampleQuality)?2:1;
             IDirect3DSurface9* foreign=nullptr;
             ok(d->CreateRenderTarget(w,h,desc.Format,desc.MultiSampleType,desc.MultiSampleQuality,FALSE,&foreign,nullptr));
             ok(d->SetRenderTarget(slot,foreign));
@@ -104,39 +117,67 @@ static std::vector<Pixel> run(Fixture& f,IDirect3DSurface9* game,IDirect3DSurfac
         auto fallback=[&](){water.capture(f.vs,f.ps,w,h,depth,vp,0,0,[&]{return f.triangle(34.125f,.7f,1.f,~0u);});};
         if(mixed==1)fallback();
         if(timing)ok(start->Issue(D3DISSUE_END));
+        if(timing&&scene==Scene::SmallScissor){
+            const RECT bounds{LONG(w/4),LONG(h/2),LONG(w/2),LONG(3*h/4)};
+            ok(d->SetScissorRect(&bounds));ok(d->SetRenderState(D3DRS_SCISSORTESTENABLE,TRUE));
+        }
         for(unsigned layer=0;layer<3;++layer){
-            if(!timing&&layer==2){
+            if(!timing&&frame){
+                const LONG x=LONG(w*(frame==2?2:1)/6+layer*w/12);
+                RECT bounds{x,LONG(h/2),x+LONG(w/16),LONG(3*h/4)};
+                if(frame==3)bounds={x,bounds.top,x,bounds.bottom};
+                ok(d->SetScissorRect(&bounds));ok(d->SetRenderState(D3DRS_SCISSORTESTENABLE,TRUE));
+                meter.unknownBounds=frame==5;
+            }
+            if((!timing&&layer==2)||(nativeCoverage&&!layer)){
                 ok(d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_SRCALPHA));ok(d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_INVSRCALPHA));
                 ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE));
             }
-            assert(water.beginMrt(f.vs,f.ps,w,h,desc.MultiSampleType,desc.MultiSampleQuality,vp));
+            if(!bare)assert(water.beginMrt(f.vs,f.ps,w,h,desc.MultiSampleType,desc.MultiSampleQuality,vp));
             const float z=layer?713.625f:139.789f;
-            ok(f.triangle(z,.32f-float(layer)*.17f,layer==2?.002f:.8f,layer==1?0x5555u:~0u));water.endMrt(true);
+            const float alpha=layer!=2?.8f:(nativeCoverage?.3f:.002f);
+            ok(f.triangle(z,.32f-float(layer)*.17f,alpha,layer==1&&!nativeCoverage?0x5555u:~0u,!timing));water.endMrt(true);
         }
-        if(!timing&&desc.MultiSampleType>D3DMULTISAMPLE_NONMASKABLE){
-            const unsigned samples=unsigned(desc.MultiSampleType);
+        meter.unknownBounds=false;
+        if(!timing&&!frame&&samples>1){
             assert(water.beginMrt(f.vs,f.ps,w,h,desc.MultiSampleType,desc.MultiSampleQuality,vp));
             for(unsigned k=0;k<=samples;++k)f.coverageStrip(k,samples);
             water.endMrt(true);
         }
-        water.unbindMrt();if(mixed==2)fallback();
+        water.unbindMrt();
+        if(!timing)ok(d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE));
+        if(mixed==2)fallback();
         if(timing)ok(decodeStart->Issue(D3DISSUE_END));
-        meter.draws=meter.resolves=0;assert(water.resolveMask());result=water.maskTextureForDepth(0,1);assert(result);
-        D3DSURFACE_DESC image{};ok(result->GetLevelDesc(0,&image));
-        assert(image.Format==(scalar&&!mixed?D3DFMT_R32F:D3DFMT_G32R32F));
+        meter.draws=meter.resolves=meter.regions=0;meter.refuseRegion=!timing&&frame==4;
+        if(!bare){
+            assert(water.resolveMask());result=water.maskTextureForDepth(0,1);assert(result);
+            D3DSURFACE_DESC image{};ok(result->GetLevelDesc(0,&image));
+            assert(image.Format==(scalar&&!mixed?D3DFMT_R32F:D3DFMT_G32R32F));
+        }
+        if(!timing&&scalar){
+            const bool bounded=frame==1||frame==2||frame==4;
+            const int percent=water.frameMaskBoundsPercent();
+            assert(bounded?(percent>0&&percent<=25):percent==(frame==3?0:100));
+            assert(meter.regions==unsigned(samples>1&&bounded));
+            assert(meter.resolves==(samples==1||frame==3?0u:frame==4?3u:2u));
+            assert(meter.draws==unsigned(frame!=3&&(mixed||samples>1)));
+        }
         DWORD write=0;ok(d->GetRenderState(D3DRS_COLORWRITEENABLE2,&write));assert(write==5);
         if(timing)ok(end->Issue(D3DISSUE_END));ok(d->EndScene());
         if(timing){
             const uint64_t finish=query(end),middle=query(decodeStart),begin=query(start);
             if(frame>=16){times.push_back(double(finish-begin)*1000./hz);decodeTimes.push_back(double(finish-middle)*1000./hz);}
+        }else{
+            auto pixels=f.pixels(result,w,h);
+            output.insert(output.end(),pixels.begin(),pixels.end());
         }
     }
     std::sort(times.begin(),times.end());
     std::sort(decodeTimes.begin(),decodeTimes.end());
-    std::printf("WATER mode=%u q=%lu compact=%u mixed=%d size=%ux%u bytes=%llu resolveDraws=%u resolves=%u gpuMs=%.6f resolveMs=%.6f\n",
-        desc.MultiSampleType,desc.MultiSampleQuality,unsigned(scalar),mixed,w,h,(unsigned long long)meter.bytes,meter.draws,meter.resolves,timing?times[times.size()/2]:0.,timing?decodeTimes[decodeTimes.size()/2]:0.);
+    const char* geometry=scene==Scene::SmallScissor?"scissor":(scene==Scene::SampleMaskStress?"sampleMask":"native");
+    std::printf("WATER mode=%u q=%lu compact=%u bare=%u scene=%s mixed=%d size=%ux%u bytes=%llu resolveDraws=%u resolves=%u gpuMs=%.6f resolveMs=%.6f\n",
+        desc.MultiSampleType,desc.MultiSampleQuality,unsigned(scalar),unsigned(bare),geometry,mixed,w,h,(unsigned long long)meter.bytes,meter.draws,meter.resolves,timing?times[times.size()/2]:0.,timing?decodeTimes[decodeTimes.size()/2]:0.);
     std::fflush(stdout);drop(start);drop(decodeStart);drop(end);drop(freq);
-    auto output=timing?std::vector<Pixel>{}:f.pixels(result,w,h);
     if(scalar&&!mixed&&!timing&&desc.MultiSampleType==D3DMULTISAMPLE_NONE){
         water.endFrame();ok(d->SetRenderTarget(0,game));ok(d->SetTexture(3,result));
         assert(!water.beginMrt(f.vs,f.ps,w,h,desc.MultiSampleType,desc.MultiSampleQuality,vp));
@@ -165,10 +206,13 @@ int main(int argc,char** argv){
             ok(d->CreateRenderTarget(w,h,D3DFMT_X8R8G8B8,ms,q,FALSE,&game,nullptr));
             ok(d->CreateDepthStencilSurface(w,h,D3DFMT_D24S8,ms,q,TRUE,&depth,nullptr));
             D3DSURFACE_DESC desc{};ok(game->GetDesc(&desc));++modes;
-            for(int mixed=0;mixed<(timing?1:3);++mixed){
-                auto before=run(f,game,depth,desc,false,mixed,timing);
-                auto after=run(f,game,depth,desc,true,mixed,timing);
-                if(timing){run(f,game,depth,desc,true,mixed,true);run(f,game,depth,desc,false,mixed,true);continue;}
+            if(timing){
+                for(Scene scene:{Scene::Shore,Scene::SmallScissor,Scene::SampleMaskStress})
+                    for(Capture capture:{Capture::Bare,Capture::Wide,Capture::Compact,Capture::Compact,Capture::Wide,Capture::Bare})
+                        run(f,game,depth,desc,capture,0,true,scene);
+            }else for(int mixed=0;mixed<3;++mixed){
+                auto before=run(f,game,depth,desc,Capture::Wide,mixed,false);
+                auto after=run(f,game,depth,desc,Capture::Compact,mixed,false);
                 unsigned wet=0,diff=0;
                 for(size_t i=0;i<before.size();++i){
                     auto a=before[i],b=after[i];bool aw=a[0]>.1f&&a[1]>.003f,bw=b[0]>.1f&&b[1]>.003f;

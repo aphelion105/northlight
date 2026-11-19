@@ -4002,6 +4002,7 @@ public:
         const unsigned sampleFrame=frame;LONGLONG cleanup=0;
         // Read before clearFrame() resets the water renderer's frame counters.
         const unsigned waterMaskDemand=water&&water->maskRequested(),waterTargets=water?water->residentTargets():0;
+        const int waterBoundsPct=sampled()&&water?water->frameMaskBoundsPercent():-1;
         const unsigned waterRedraws=water?water->frameCaptures():0,waterMrt=water?water->frameMrtDraws():0,waterDegraded=water?water->frameMrtDegraded():0,waterDraws=waterRedraws+waterMrt,waterScans=water?water->frameMaskScans():0,waterClears=water?water->frameClears():0,waterReadFailures=water?water->frameReadFailures():0,waterBinds=water?water->frameMrtBinds():0,waterLongestRun=water?water->frameMrtLongestRun():0,waterLate=waterAfterEffects;
         if(sampled())logf("EFFECT trailing world frame=%u worldDraws=%u skinnedDraws=%u depthWrites=%u depthStateFailures=%u waterDraws=%u",frame,postEffectWorldDraws,postEffectSkinnedDraws,postEffectDepthWrites,postEffectDepthStateFailures,waterAfterEffects);
         if(sampled()&&(grassReceiverCensus.before||grassReceiverCensus.after)){
@@ -4135,7 +4136,7 @@ public:
             LARGE_INTEGER a={},b={},t={};QueryPerformanceCounter(&a);for(unsigned i=0;i<32;++i)QueryPerformanceCounter(&t);QueryPerformanceCounter(&b);
             const double qpcNs=double(b.QuadPart-a.QuadPart)*1e9/double(cpuFrequency.QuadPart)/33.0;
             logf("CPU capture split frame=%u captureWorld=%.3fms captureWater=%.3fms qpcNs=%.1f normalCaptureMs=%.3f",sampleFrame,drawTimed?std::max(0.0,double(cpuCapture-cpuWaterCapture)*ms):-1.0,drawTimed?cpuWaterCapture*ms:-1.0,qpcNs,drawTimed?cpuNormalCapture*ms:-1.0);
-            logf("WATER mask draws=%u deferred=%u clears=%u scans=%u readFailures=%u mrt=%u redraw=%u degraded=%u binds=%u longestRun=%u afterEffects=%u requested=%u targets=%u",waterDraws,0u,waterClears,waterScans,waterReadFailures,waterMrt,waterRedraws,waterDegraded,waterBinds,waterLongestRun,waterLate,waterMaskDemand,waterTargets); /* 0.3.215: binds = render target 1 binds for the water mask, longestRun = the most MRT draws under one bind (both per frame like the rest); 0.3.214 (water MRT): draws = mrt (the game draw wrote the mask itself) + redraw (second draws; degraded = planned as mrt, made as second draws) */
+            logf("WATER mask draws=%u deferred=%u clears=%u scans=%u readFailures=%u mrt=%u redraw=%u degraded=%u binds=%u longestRun=%u afterEffects=%u requested=%u targets=%u boundsPct=%d",waterDraws,0u,waterClears,waterScans,waterReadFailures,waterMrt,waterRedraws,waterDegraded,waterBinds,waterLongestRun,waterLate,waterMaskDemand,waterTargets,waterBoundsPct);
             if(NorthlightRenderThreadProbe::profiling()){
                 // Extension D3D9 calls of this frame by method, inside renderEffects' raw scope (all
                 // cascades, the point cube, full-screen passes, DiagReplayProbe); capture reads are mirror answers.

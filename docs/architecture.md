@@ -167,7 +167,15 @@ oracles, including byte equality and malformed-input controls.
    The packaged DXVK backends share one R32F water distance texture across
    consumers. Without MSAA the game water draw writes it directly. With MSAA
    the same draw writes distance and binary L8 coverage at the game target's
-   sample count and quality. The hardware resolves both targets. A boundary
+   sample count and quality. DXVK NONMASKABLE quality zero uses one raster
+   sample and writes R32F directly. The edge shader rejects fully wet and dry
+   pixels before reconstructing the exact coverage fraction.
+   The R32F resolve spans the target to preserve native floating-point rounding.
+   The union of the game water draws' scissor rectangles limits correction.
+   Bounds covering at most a quarter of the target also limit the L8 resolve.
+   Missing or disabled scissor state selects the full target. Sampled WATER
+   diagnostics report the bounding area rounded up as `boundsPct` (−1 when
+   the frame has no compact capture). A boundary
    pass restores the covered-sample mean at half coverage or above and clears
    smaller fractions. Fully wet and dry pixels already hold their final value.
    Mixed frames merge into the ordinary redraw mask. A busy auxiliary slot

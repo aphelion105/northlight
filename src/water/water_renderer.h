@@ -94,6 +94,7 @@ public:
     unsigned residentTargets()const{return compact.targets()+unsigned(mask!=nullptr)+unsigned(raw!=nullptr)+unsigned(twin!=nullptr)+unsigned(depth!=nullptr);}
     static constexpr unsigned DryFrameLimit=120;
     void endFrame(){
+        compact.beginFrame();
         if(captured)fallbackDryFrames=0;
         else if(compactFrame&&mask&&++fallbackDryFrames>=DryFrameLimit){
             stateBlocks.clear();drop(maskSurface);drop(mask);drop(depth);fallbackDryFrames=0;
@@ -121,6 +122,11 @@ public:
     unsigned frameMrtDegraded()const{return mrtDegraded;} // planned as MRT, made as second draws
     unsigned frameMrtBinds()const{return mrtBinds;}
     unsigned frameMrtLongestRun()const{return mrtLongestRun;}
+    int frameMaskBoundsPercent()const{
+        if(!compactFrame||!mrtCaptured||!width||!height)return -1;
+        const auto pixels=std::uint64_t(width)*height;
+        return int((compact.writtenPixels(width,height)*100+pixels-1)/pixels);
+    }
     unsigned frameMaskScans()const{return maskScans;}
     unsigned frameClears()const{return clears;}
     unsigned frameReadFailures()const{return readFailures;}
@@ -278,13 +284,15 @@ public:
         auto vi=vertex.find(vs);auto pi=pixelMrt.find(ps);
         if(vi==vertex.end()||pi==pixelMrt.end())return degrade(1);
         DWORD blend=0,src=0,dst=0,op=0,fog=0,srgb=0;
-        const bool known=SUCCEEDED(d->GetRenderState(D3DRS_ALPHABLENDENABLE,&blend))&&SUCCEEDED(d->GetRenderState(D3DRS_SRCBLEND,&src))&&SUCCEEDED(d->GetRenderState(D3DRS_DESTBLEND,&dst))&&
-            SUCCEEDED(d->GetRenderState(D3DRS_BLENDOP,&op))&&SUCCEEDED(d->GetRenderState(D3DRS_FOGENABLE,&fog))&&SUCCEEDED(d->GetRenderState(D3DRS_SRGBWRITEENABLE,&srgb));
+        const bool known=SUCCEEDED(d->GetRenderState(D3DRS_ALPHABLENDENABLE,&blend))
+            &&(!blend||(SUCCEEDED(d->GetRenderState(D3DRS_SRCBLEND,&src))&&SUCCEEDED(d->GetRenderState(D3DRS_DESTBLEND,&dst))&&SUCCEEDED(d->GetRenderState(D3DRS_BLENDOP,&op))))
+            &&(pi->second.major>=3||SUCCEEDED(d->GetRenderState(D3DRS_FOGENABLE,&fog)))
+            &&SUCCEEDED(d->GetRenderState(D3DRS_SRGBWRITEENABLE,&srgb));
         if(!known)return degrade(16);
         if(!blendKeeps(blend,src,dst,op))return degrade(2,blend,src,dst,op);
         if(fog&&pi->second.major<3)return degrade(4,blend,src,dst,op,fog); // pixel shaders below 3.0 may get table fog after the shader, on every target
         if(srgb)return degrade(8,blend,src,dst,op,fog,srgb);
-        const bool ms=msType!=D3DMULTISAMPLE_NONE;
+        const bool ms=NorthlightWaterDistanceMask::multisampled(msType,msQuality);
         if(width!=mainWidth||height!=mainHeight){unbindMrt();reset();width=mainWidth;height=mainHeight;}
         // A frame publishes one distance field. If an intervening draw changes
         // sample layout, merge its ordinary capture at resolve.
@@ -324,6 +332,7 @@ public:
             return degrade(16);
         }
         if(!(captured||mrtCaptured)){maskMinZ=vp.MinZ;maskMaxZ=vp.MaxZ;}
+        if(compactFrame)compact.includeDraw(width,height);
         mrtCaptured=true;mrtDirty=true;
         mrtVS=vs;mrtPS=ps;mrtActive=true;return true;
     }
