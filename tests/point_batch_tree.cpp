@@ -1,4 +1,4 @@
-#include "world_mesh_pages.h"
+#include "point_mesh_candidates.h"
 #include "point_light_shadow.h"
 #include <cassert>
 #include <cfloat>
@@ -70,7 +70,71 @@ static void replayBenchmark(bool shuffled,bool dense){
     std::printf("POINT_REPLAY_GROUPS shuffled=%u dense=%u packets=%zu lights=%zu directMs=%.6f groupedMs=%.6f\n",
         unsigned(shuffled),unsigned(dense),boxes.size(),clips.size(),(times[0][5]+times[0][6])/2,(times[1][5]+times[1][6])/2);
 }
+// Same conservative broad-phase marks in both paths. Time the work after the
+// tree query and compare the entire gap-merging mask, face order and counters.
+static void staticCandidates(){
+    std::vector<P::Batch> parents(13257),children;
+    std::vector<P::PointRange> ranges(parents.size());
+    for(size_t i=0;i<parents.size();++i){
+        auto& b=parents[i];b.terrain=(i%13)<10;
+        const float x=float(int(i%63)-31);b.boundsLow={x,-1,-1};b.boundsHigh={x+2,2,2};
+        if(!b.terrain&&i%3==0){
+            ranges[i]={uint32_t(children.size()),3};children.insert(children.end(),3,b);
+        }
+    }
+    NorthlightLocalLights::Light light{};light.attenuationEnd=12;
+    float matrix[6][16];for(unsigned f=0;f<6;++f)assert(NorthlightPointShadow::faceMatrix(light.position,.1f,12,f,matrix[f],256));
+    NorthlightPointShadow::FaceClip clip(matrix,light);
+    const size_t total=parents.size()+children.size();
+    std::vector<unsigned char> marks(total),initial(total,63),masks[2];
+    for(size_t i=0;i<parents.size();++i)if(parents[i].terrain)initial[i]=i%64;
+    NorthlightPointMesh::Layout layout;layout.prepare(1,parents,total,ranges);
+    const auto classify=[&](const P::Batch& b,unsigned faces){return clip.mask(&b.boundsLow.x,&b.boundsHigh.x,true,faces);};
+    std::array<std::vector<size_t>,6> lists[2];unsigned rejected[2];
+    const auto run=[&](unsigned variant,unsigned faces,bool indexed){
+        auto& m=masks[variant];m=initial;
+        rejected[variant]=0;for(auto& list:lists[variant])list.clear();
+        auto append=[&](size_t i,unsigned mask){
+            rejected[variant]+=__builtin_popcount(faces&~mask);
+            for(;mask;mask&=mask-1)lists[variant][__builtin_ctz(mask)].push_back(i);
+        };
+        if(variant){
+            const auto outside=layout.classifyStatic(parents,children,ranges,indexed?marks.data():nullptr,faces,m,classify,append);
+            rejected[1]+=unsigned(outside)*__builtin_popcount(faces);
+        }else for(size_t i=0;i<parents.size();++i){
+            if(parents[i].terrain)continue;
+            const unsigned mask=indexed&&!marks[i]?0:classify(parents[i],faces);m[i]=mask;
+            const auto r=ranges[i];
+            if(!r.count){append(i,mask);continue;}
+            if(!mask){std::fill_n(m.begin()+parents.size()+r.first,r.count,0);continue;}
+            for(size_t n=r.first;n<size_t(r.first)+r.count;++n){
+                const size_t j=parents.size()+n;
+                m[j]=indexed&&!marks[j]?0:classify(children[n],mask);
+                append(j,m[j]);
+            }
+        }
+        checksum+=rejected[variant]+lists[variant][0].size();
+    };
+    for(unsigned density:{0u,1u,4u,64u}){
+        for(size_t i=0;i<total;++i)marks[i]=i%64<density;
+        for(bool indexed:{false,true})for(unsigned faces:{1u,21u,42u,63u}){
+            run(0,faces,indexed);run(1,faces,indexed);
+            assert(masks[0]==masks[1]&&lists[0]==lists[1]&&rejected[0]==rejected[1]);
+        }
+    }
+    for(size_t i=0;i<total;++i)marks[i]=i%64==0;
+    std::vector<double> times[2];
+    for(unsigned block=0;block<28;++block){
+        const unsigned variant=block%4==1||block%4==2;const auto start=std::chrono::steady_clock::now();
+        for(unsigned i=0;i<80;++i)run(variant,63,true);
+        if(block>=4)times[variant].push_back(std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-start).count()/80);
+    }
+    for(auto& t:times)std::sort(t.begin(),t.end());
+    std::printf("POINT_STATIC_CANDIDATES parents=%zu markedFraction=1/64 previousUs=%.4f sparseUs=%.4f masksOrderCounts=exact\n",
+        parents.size(),(times[0][5]+times[0][6])*.5,(times[1][5]+times[1][6])*.5);
+}
 int main(){
+    staticCandidates();
     replayBenchmark(false,false);replayBenchmark(false,true);replayBenchmark(true,false);
     std::mt19937 random(12340);std::uniform_real_distribution<float> coordinate(-512,512),extent(0,40);
     std::vector<P::Batch> batches(7657);

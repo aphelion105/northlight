@@ -2,7 +2,7 @@
 #define main unused_water_endpoint_main
 #include "water_fog_endpoint_gpu.cpp"
 #undef main
-#include "world_mesh_pages.h"
+#include "point_mesh_candidates.h"
 #include "shadow_terrain.h"
 #include "point_light_shadow.h"
 #include "point_transmission_filter.h"
@@ -33,6 +33,7 @@ struct Batcher {
 struct Mesh : Batcher {
     std::shared_ptr<const P::PointTree> pointTree;
     std::vector<unsigned char> nearby;
+    NorthlightPointMesh::Layout pointLayout;
     std::vector<IDirect3DVertexBuffer9*> vertices;
     std::vector<IDirect3DIndexBuffer9*> indices;
     std::vector<Batch> draws[6],directionalBatches;
@@ -40,7 +41,7 @@ struct Mesh : Batcher {
     uint64_t triangles=0;
     ~Mesh(){for(auto* p:vertices)p->Release();for(auto* p:indices)p->Release();for(auto* p:materials)if(p)p->Release();}
     void upload(IDirect3DDevice9* d,const P::Plan& pages,const NorthlightWorldMesh::WorldMeshUploadPlan& plan){
-        batches=pages.batches;directionalBatches=batches;pointSubBatches=pages.pointSubBatches;pointSubRanges=pages.pointSubRanges;pointTree=pages.pointTree;
+        pointLayout={};batches=pages.batches;directionalBatches=batches;pointSubBatches=pages.pointSubBatches;pointSubRanges=pages.pointSubRanges;pointTree=pages.pointTree;
         fixedChunks=plan.fixedTerrainChunks;D3DCAPS9 caps{};ok(d->GetDeviceCaps(&caps));pointPrimitiveLimit=caps.MaxPrimitiveCount;
         for(const auto& page:pages.pages){
             IDirect3DVertexBuffer9* vb=nullptr;IDirect3DIndexBuffer9* ib=nullptr;void* data=nullptr;
@@ -60,13 +61,18 @@ struct Mesh : Batcher {
         NorthlightPointShadow::FaceClip clip(matrices,light);pointBatchMasks.assign(pointMeshBatchCount(),63);std::vector<size_t> candidates[6];
         const bool ready=indexed&&pointTree&&pointTree->nearby(pointMeshBatchCount(),[&](Vec3 lo,Vec3 hi){return NorthlightPointShadow::recordOutsideSphere(lo,hi,light);},nearby);
         for(size_t i=0;i<batches.size();++i){const auto& b=batches[i];if(!b.terrain)continue;pointBatchMasks[i]=static_cast<unsigned char>(ready&&!nearby[i]?0:clip.mask(&b.boundsLow.x,&b.boundsHigh.x,true));}
-        for(size_t i=0;i<batches.size();++i){const auto& b=batches[i];if(b.terrain)continue;const unsigned mask=ready&&!nearby[i]?0:clip.mask(&b.boundsLow.x,&b.boundsHigh.x,true);pointBatchMasks[i]=static_cast<unsigned char>(mask);
+        if(indexed){
+            pointLayout.prepare(1,batches,pointMeshBatchCount(),pointSubRanges);
+            pointLayout.classifyStatic(batches,pointSubBatches,pointSubRanges,ready?nearby.data():nullptr,63,pointBatchMasks,
+                [&](const Batch& b,unsigned faces){return clip.mask(&b.boundsLow.x,&b.boundsHigh.x,true,faces);},
+                [&](size_t i,unsigned mask){for(unsigned f=0;f<6;++f)if(mask&(1u<<f))candidates[f].push_back(i);});
+        }else for(size_t i=0;i<batches.size();++i){const auto& b=batches[i];if(b.terrain)continue;const unsigned mask=clip.mask(&b.boundsLow.x,&b.boundsHigh.x,true);pointBatchMasks[i]=static_cast<unsigned char>(mask);
             const auto range=pointSubRanges.empty()?P::PointRange{}:pointSubRanges[i];
             auto append=[&](size_t index,unsigned bits){pointBatchMasks[index]=static_cast<unsigned char>(bits);for(unsigned f=0;f<6;++f)if(bits&(1u<<f))candidates[f].push_back(index);};
             if(!range.count){append(i,mask);continue;}
             const size_t first=batches.size()+range.first;
             if(!mask){std::fill(pointBatchMasks.begin()+first,pointBatchMasks.begin()+first+range.count,0);continue;}
-            for(size_t n=first;n<first+range.count;++n){const auto& sub=pointMeshBatch(n);append(n,ready&&!nearby[n]?0:clip.mask(&sub.boundsLow.x,&sub.boundsHigh.x,true,mask));}
+            for(size_t n=first;n<first+range.count;++n){const auto& sub=pointMeshBatch(n);append(n,clip.mask(&sub.boundsLow.x,&sub.boundsHigh.x,true,mask));}
         }
         triangles=pointWork.bridged=pointBatchesMerged=0;
         for(unsigned f=0;f<6;++f){draws[f].clear();for(size_t at=0;at<candidates[f].size();){auto b=pointBatchRun(candidates[f],at,f);triangles+=b.count;draws[f].push_back(b);}}

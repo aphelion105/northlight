@@ -447,8 +447,13 @@ void DisplacementStateTestAccess::poseHandoff(const char* path,const std::vector
         float nearest=0;assert(!g.nearestMaterialDepth(&device.vs,args,nearest,true,nullptr,nullptr,&source,true));
         assert(!source.mesh&&!g.rangeConstantStamp.valid&&g.coarseShapeMisses==1);
         auto sibling=args;sibling.draw.primitives=16;sibling.draw.vertices=48;
+        // Even pre-registered layout metadata cannot supply a cold shared shape.
+        D3DVERTEXELEMENT9 elements[MAXD3DDECLLENGTH+1];UINT count=MAXD3DDECLLENGTH+1;
+        assert(SUCCEEDED(layout.GetDeclaration(elements,&count)));
+        assert(g.poseMetadata.get(&device.vs,&layout,[&]{return NorthlightReplayBounds::EnvelopeCache::prepareProgram(m.view,elements,count);}));
         for(unsigned i=0;i<20&&!g.poseEnvelopes.mayHaveCoarseSource(m.coarseProgramBit);++i){
             g.endFrame();g.prepare(&device.vs,4,1,sibling);
+            assert(g.poseEnvelopes.stats().coarseAttempts==0);
         }
         assert(g.poseEnvelopes.mayHaveCoarseSource(m.coarseProgramBit));
         NorthlightDrawSnapshot::Mesh scratch;std::shared_ptr<const NorthlightDrawSnapshot::Mesh> resident;

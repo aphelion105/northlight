@@ -838,7 +838,11 @@ public:
         }
         // Palette translation is only a scheduling hint, never a range proof.
         coarseLookupReuses+=missingCoarseShape;
-        if(domain==4&&shader->second.envelopeSkin&&!missingCoarseShape&&poseEnvelopes.canCoarse()&&std::fabs(constants[4*31+11])>2*range&&d->GetNPatchMode()==0){
+        // This late probe reads only the shared cache. No section of this
+        // program can supply it before the first shared envelope is published.
+        if(domain==4&&shader->second.envelopeSkin&&!missingCoarseShape&&
+           poseEnvelopes.mayHaveCoarseSource(shader->second.coarseProgramBit)&&
+           poseEnvelopes.canCoarse()&&std::fabs(constants[4*31+11])>2*range&&d->GetNPatchMode()==0){
             const auto prepared=poseMetadata.find(original,decl.p);
             NorthlightReplayBounds::Bounds coarse;const float origin[3]={};
             if(prepared&&poseEnvelopes.coarsePrepared(*prepared,source,constants,materialView.inverse(),range,coarse)&&

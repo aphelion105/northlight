@@ -69,6 +69,7 @@
 #include "world_mesh_plan.h"
 #include "world_streaming.h"
 #include "world_mesh_pages.h"
+#include "point_mesh_candidates.h"
 #include "world_mesh_page_gpu.h"
 #include "resource_memory_profile.h"
 #include "memory_profile_snapshot.h"
