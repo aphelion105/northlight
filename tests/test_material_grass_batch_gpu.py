@@ -31,7 +31,7 @@ while True:
  level+=1
 Compiler(allow_compatible_binary=True).compile(fp.SHADERS/'auto_normal_preview.hlsl','PreviewBase','ps_3_0',source/'PreviewBase.bin')
 control=out/'control';control.mkdir(exist_ok=True)
-for name in ('auto_bump_renderer.h','auto_displacement_renderer.h'):
+for name in ('auto_bump_renderer.h','auto_displacement_renderer.h','displacement_geometry.h'):
  data=subprocess.check_output(['git','show','af4a7c1c:src/water/'+name])
  if name=='auto_bump_renderer.h':
   # The current fixture supplies WMO provenance; this frozen grass control
