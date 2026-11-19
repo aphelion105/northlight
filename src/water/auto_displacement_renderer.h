@@ -8,7 +8,7 @@
 #include "displacement_shader_patch.h"
 #include "actor_texture.h"
 #include "material_height.h"
-#include "material_skin_bounds.h"
+#include "material_section_bounds.h"
 #include "material_view_bounds.h"
 #include "replay_bounds.h"
 #include "replay_bounds_metadata.h"
@@ -53,7 +53,7 @@ class NorthlightAutoDisplacement {
     struct Shader {IDirect3DVertexShader9* patched=nullptr,*source=nullptr,*gpu=nullptr;NorthlightDisplacementPatch::Binding binding,gpuBinding;NorthlightWmoVertexColor::Layout color;bool pending=false,skinned=false;std::vector<uint32_t> modelPosition;std::vector<unsigned> modelRows;unsigned modelInfluences=0;};
     struct Material {Program uv,view,uv1,blend;std::vector<unsigned> uvRegisters[2];bool layered=false,skinned=false,clearPoseInputs=true,envelopeSkin=false,localSkinBuilt=false;std::uint8_t terrainDepthEligible=0;unsigned rangeRegister=17;uint64_t id=0,coarseProgramBit=UINT64_MAX;unsigned first=0,count=0,influences=0;NorthlightModelNormalRange::Kind rangeKind=NorthlightModelNormalRange::None;};
     using LocalSkin=NorthlightMaterialSkinBounds;
-    struct Bounds {std::weak_ptr<const Mesh> source;float low[3],high[3];uint64_t used=0;size_t bytes=0;std::shared_ptr<LocalSkin> skin;
+    struct Bounds : NorthlightMaterialSectionBounds {std::weak_ptr<const Mesh> source;uint64_t used=0;size_t bytes=0;
         const Mesh* key=nullptr;NorthlightIntrusiveLRU::Links<Bounds> lru;};
     using Texture=NorthlightDisplacementStorage::Texture;using Entry=NorthlightDisplacementStorage::Entry;
     std::shared_ptr<NorthlightGpuScene::Scene> gpuScene;
@@ -109,6 +109,7 @@ class NorthlightAutoDisplacement {
     NorthlightReplayMetadata::Cache<NorthlightReplayBounds::Prepared,IDirect3DVertexShader9,IDirect3DVertexDeclaration9> poseMetadata;
     NorthlightReplayBounds::Budget envelopeBudget;
     bool envelopeBuildContinued=false;
+    unsigned sharedPoseBudgetSkips=0;
     LocalSkin::Stats localPoseStats;
     unsigned coarseProgramSkipped=0,coarseBudgetSkipped=0,coarseLocalValid=0,coarseShapeMisses=0,coarseLookupReuses=0;
     NorthlightMaterialViewBounds materialView;
@@ -231,6 +232,12 @@ class NorthlightAutoDisplacement {
         if(found!=bounds.end()&&(found->second.source.owner_before(source)||source.owner_before(found->second.source))){boundsBytes-=found->second.bytes;boundsLRU.remove(found->second);bounds.erase(found);found=bounds.end();}
         if(found==bounds.end())++boundsMisses;else ++boundsHits;return found;
     }
+    bool resolveObjectBounds(Bounds& b,const Mesh& mesh,UINT offset){
+        if(b.hasPositions(offset))return true;
+        objectBoundsVertices+=mesh.vertexCount;
+        if(profile)profile->count(NorthlightMaterialProfile::BoundsVertices,mesh.vertexCount);
+        return b.scanPositions(mesh,offset);
+    }
     auto retainBounds(const std::shared_ptr<const Mesh>& source,Bounds&& value){
         value.source=source;value.key=source.get();value.used=++clock;
         value.bytes=sizeof(Bounds)+4*sizeof(void*)+(value.skin?value.skin->bytes()+32:0);
@@ -271,9 +278,12 @@ class NorthlightAutoDisplacement {
     }
     bool distantPoseBounds(const Program& program,const std::shared_ptr<const Mesh>& source,const D3DVERTEXELEMENT9* elements,UINT count,float* low,float* high,
         IDirect3DVertexShader9* shader=nullptr,IDirect3DVertexDeclaration9* declaration=nullptr,NorthlightReplayBounds::Bounds* skinBounds=nullptr,bool worldAxes=false,NorthlightReplayBounds::Bounds* viewBounds=nullptr){
-        NorthlightMaterialProfile::Scope timing(profile,NorthlightMaterialProfile::PoseEnvelope);
         if(skinBounds)*skinBounds={};
         if(viewBounds)*viewBounds={};
+        // The first request also advances a pending immutable build. Once it
+        // has run, an exhausted ready budget cannot produce a pose this frame.
+        if(envelopeBuildContinued&&!poseEnvelopes.canReady()){++sharedPoseBudgetSkips;return false;}
+        NorthlightMaterialProfile::Scope timing(profile,NorthlightMaterialProfile::PoseEnvelope);
         NorthlightReplayBounds::Bounds result;NorthlightReplayBounds::EnvelopeCache::WorkInfo info;
         if(poseEnvelope(program,source,elements,count,constants,result,shader,declaration,&info,worldAxes?materialView.inverse():nullptr)!=NorthlightReplayBounds::Status::Valid)return false;
         if(skinBounds&&info.skin)*skinBounds=result;
@@ -576,7 +586,7 @@ public:
         const auto& boundsWork=positionBounds.maintenance();
         logf("MATERIAL_POSITION_BOUNDS frame=%llu hits=%u scans=%u positionBytes=%zu entries=%zu unknown=%u coldScans=%u revisionScans=%u evictions=%u budgetRejected=%u capturedBoundsHits=%u",(unsigned long long)frame,positionBounds.cacheHits(),positionBounds.scans(),positionBounds.bytesRead(),positionBounds.count(),positionBounds.failures(),boundsWork.coldScans,boundsWork.revisionScans,boundsWork.evictions,boundsWork.budgetRejected,capturedBoundsHits);
         const auto& e=poseEnvelopes.stats();
-        logf("MATERIAL_LOCAL_POSE frame=%llu reused=%u evaluated=%u",(unsigned long long)frame,localPoseStats.reused,localPoseStats.evaluated);
+        logf("MATERIAL_LOCAL_POSE frame=%llu reused=%u evaluated=%u sharedBudgetSkips=%u",(unsigned long long)frame,localPoseStats.reused,localPoseStats.evaluated,sharedPoseBudgetSkips);
         logf("MATERIAL_POSE_COARSE frame=%llu attempts=%zu valid=%zu culled=%zu cpuMs=%.6f unsupportedSkipped=%u budgetPreflightSkipped=%u localValid=%u shapeMisses=%u lookupReuses=%u",(unsigned long long)frame,e.coarseAttempts,e.coarseValid,e.coarseCulled,double(e.coarseNanoseconds)/1000000.,coarseProgramSkipped,coarseBudgetSkipped,coarseLocalValid,coarseShapeMisses,coarseLookupReuses);
         const auto& p=poseMetadata.stats();
         logf("MATERIAL_POSE_METADATA frame=%llu hits=%zu misses=%zu prepared=%zu fallbacks=%zu evictions=%zu entries=%zu bytes=%zu",(unsigned long long)frame,p.hits,p.misses,p.prepared,p.fallbacks,p.evictions,poseMetadata.entries(),poseMetadata.bytes());
@@ -719,16 +729,12 @@ public:
         }
         auto found=cachedBounds(source);
         if(found==bounds.end()){
-            if(profile)profile->count(P::BoundsVertices,source->vertexCount);
-            Bounds b;for(unsigned k=0;k<3;++k){b.low[k]=FLT_MAX;b.high[k]=-FLT_MAX;}
-            const auto& stream=source->streams[0];for(unsigned i=0;i<source->vertexCount;++i){
-                if(size_t(i)*stream.stride+position->Offset+12>stream.bytes.size())return false;
-                float p[3];std::memcpy(p,stream.bytes.data()+size_t(i)*stream.stride+position->Offset,12);
-                for(unsigned k=0;k<3;++k){if(!std::isfinite(p[k]))return false;b.low[k]=std::min(b.low[k],p[k]);b.high[k]=std::max(b.high[k],p[k]);}}
+            Bounds b;
+            if(!resolveObjectBounds(b,*source,position->Offset))return false;
             found=retainBounds(source,std::move(b));
-        }
+        }else if(!resolveObjectBounds(found->second,*source,position->Offset))return false;
         auto& b=found->second;touchBounds(b);
-        return nearestViewDepth(program,input,b.low,b.high,rangeConstants,nearest,shader->second.terrainDepthEligible,farthest);
+        return nearestViewDepth(program,input,b.object.low,b.object.high,rangeConstants,nearest,shader->second.terrainDepthEligible,farthest);
     }
     unsigned preparedPrimitives()const{return current?current->primitives:0;}
     void beginDraw(){current=nullptr;preparedSourceIdentity.reset();currentOverlay=false;lastDepthLower=0;lastDepthUpper=INFINITY;}
@@ -751,8 +757,8 @@ public:
         logf("DISPLACEMENT_MEMORY pressure=%u profiled=%u sourcesMs=%.3f capsMs=%.3f geometryMs=%.3f boundsMs=%.3f deferredMiB=%.3f batched=%u",unsigned(on),unsigned(timed),sourcesMs,capsMs,geometryMs,boundsMs,double(deferred)/(1u<<20),unsigned(batch!=nullptr));
     }
     void trimMemory(NorthlightStreaming::CpuRetirement* retirement=nullptr,NorthlightStreaming::CpuRetirementBatch* batch=nullptr){setMemoryPressure(memoryPressure,retirement,batch);}
-    void reset(NorthlightStreaming::CpuRetirementBatch* batch=nullptr,bool preserveCaptureSources=false){localPoseStats={};coarseShapeMisses=coarseLookupReuses=coarseLocalValid=coarseBudgetSkipped=coarseProgramSkipped=0;geometryAliases={};nextGeometryAlias=geometryAliasHits=0;setDistanceView(nullptr);modelRangeProof.clear();snapshots.clearIndexCache(nullptr,batch,preserveCaptureSources);rangeSnapshots.clearIndexCache(nullptr,batch,preserveCaptureSources);skinRangeSnapshots.clearIndexCache(nullptr,batch,preserveCaptureSources);positionBounds.clear();current=nullptr;clearModelOverlays();constantStamp={};rangeConstantStamp={};sourceLookup.clear();contentLookup.clear();materialLookup.clear();indexedEntries=true;entries.clear();boundsLRU.clear();bounds.clear();poseEnvelopes.clear();poseMetadata.clear();poseBindings={};envelopeBudget.reset();envelopeBuildContinued=false;boundsBytes=resident=0;for(auto& t:textures){drop(t.gpu);drop(t.source);}textures.clear();declarations.clear();}
-    void endFrame(){localPoseStats={};setDistanceView(nullptr);modelRangeProof.beginFrame();current=nullptr;clearModelOverlays();if(variantSources)logf("MATERIAL_VARIANT_COLD frame=%u sources=%u cpuBuilt=%u gpuBuilt=%u readFailed=%u sourceBytes=%zu cpuMs=%.6f",frames,variantSources,variantCPU,variantGPU,variantReadFailed,variantBytes,variantMs);variantSources=variantCPU=variantGPU=variantReadFailed=0;variantBytes=0;variantMs=0;if(frames%60==0){MEMORYSTATUSEX memory{};memory.dwLength=sizeof memory;if(GlobalMemoryStatusEx(&memory))refreshBudget(memory);}buildsThisFrame=readsThisFrame=poseVerticesThisFrame=0;for(auto& vertices:poseKernelVertices)vertices=0;poseByteIndexVertices=0;poseEnvelopes.beginFrame(false);poseMetadata.beginFrame();envelopeBudget.reset();envelopeBuildContinued=false;snapshots.clearFrame();rangeSnapshots.clearFrame();skinRangeSnapshots.clearFrame();positionBounds.beginFrame();capturedBoundsHits=admissionSnapshotReuses=geometryAliasHits=constantBankTransfers=coarseShapeMisses=coarseLookupReuses=coarseLocalValid=coarseBudgetSkipped=coarseProgramSkipped=0;if((draws||snapshotRejected)&&frames%600==0){logf("DISPLACEMENT cached=%zu bytes=%zu builds=%llu hits=%llu draws=%llu triangles=%llu refused=%llu terrain=%u walls=%u grass=%u models=%u stateRejected=%u heightRejected=%u shaderRejected=%u snapshotRejected=%u meshRejected=%u budgetMiB=%zu",entries.size(),resident,(unsigned long long)builds,(unsigned long long)hits,(unsigned long long)draws,(unsigned long long)triangles,(unsigned long long)refused,domainDraws[0],domainDraws[1],domainDraws[2],domainDraws[3],stateRejected,heightRejected,shaderRejected,snapshotRejected,meshRejected,cacheBudget>>20);
+    void reset(NorthlightStreaming::CpuRetirementBatch* batch=nullptr,bool preserveCaptureSources=false){localPoseStats={};sharedPoseBudgetSkips=0;coarseShapeMisses=coarseLookupReuses=coarseLocalValid=coarseBudgetSkipped=coarseProgramSkipped=0;geometryAliases={};nextGeometryAlias=geometryAliasHits=0;setDistanceView(nullptr);modelRangeProof.clear();snapshots.clearIndexCache(nullptr,batch,preserveCaptureSources);rangeSnapshots.clearIndexCache(nullptr,batch,preserveCaptureSources);skinRangeSnapshots.clearIndexCache(nullptr,batch,preserveCaptureSources);positionBounds.clear();current=nullptr;clearModelOverlays();constantStamp={};rangeConstantStamp={};sourceLookup.clear();contentLookup.clear();materialLookup.clear();indexedEntries=true;entries.clear();boundsLRU.clear();bounds.clear();poseEnvelopes.clear();poseMetadata.clear();poseBindings={};envelopeBudget.reset();envelopeBuildContinued=false;boundsBytes=resident=0;for(auto& t:textures){drop(t.gpu);drop(t.source);}textures.clear();declarations.clear();}
+    void endFrame(){localPoseStats={};sharedPoseBudgetSkips=0;setDistanceView(nullptr);modelRangeProof.beginFrame();current=nullptr;clearModelOverlays();if(variantSources)logf("MATERIAL_VARIANT_COLD frame=%u sources=%u cpuBuilt=%u gpuBuilt=%u readFailed=%u sourceBytes=%zu cpuMs=%.6f",frames,variantSources,variantCPU,variantGPU,variantReadFailed,variantBytes,variantMs);variantSources=variantCPU=variantGPU=variantReadFailed=0;variantBytes=0;variantMs=0;if(frames%60==0){MEMORYSTATUSEX memory{};memory.dwLength=sizeof memory;if(GlobalMemoryStatusEx(&memory))refreshBudget(memory);}buildsThisFrame=readsThisFrame=poseVerticesThisFrame=0;for(auto& vertices:poseKernelVertices)vertices=0;poseByteIndexVertices=0;poseEnvelopes.beginFrame(false);poseMetadata.beginFrame();envelopeBudget.reset();envelopeBuildContinued=false;snapshots.clearFrame();rangeSnapshots.clearFrame();skinRangeSnapshots.clearFrame();positionBounds.beginFrame();capturedBoundsHits=admissionSnapshotReuses=geometryAliasHits=constantBankTransfers=coarseShapeMisses=coarseLookupReuses=coarseLocalValid=coarseBudgetSkipped=coarseProgramSkipped=0;if((draws||snapshotRejected)&&frames%600==0){logf("DISPLACEMENT cached=%zu bytes=%zu builds=%llu hits=%llu draws=%llu triangles=%llu refused=%llu terrain=%u walls=%u grass=%u models=%u stateRejected=%u heightRejected=%u shaderRejected=%u snapshotRejected=%u meshRejected=%u budgetMiB=%zu",entries.size(),resident,(unsigned long long)builds,(unsigned long long)hits,(unsigned long long)draws,(unsigned long long)triangles,(unsigned long long)refused,domainDraws[0],domainDraws[1],domainDraws[2],domainDraws[3],stateRejected,heightRejected,shaderRejected,snapshotRejected,meshRejected,cacheBudget>>20);
         logf("DISPLACEMENT snapshots attempts=%llu up=%llu buffered=%llu unknown=%llu arguments=%llu declaration=%llu stream=%llu instancing=%llu indexBuffer=%llu indexRange=%llu vertexRange=%llu budget=%llu lock=%llu unlock=%llu",(unsigned long long)snapshotAttempts,(unsigned long long)snapshotUP,(unsigned long long)(snapshotAttempts-snapshotUP),(unsigned long long)snapshotReasons[0],(unsigned long long)snapshotReasons[1],(unsigned long long)snapshotReasons[2],(unsigned long long)snapshotReasons[3],(unsigned long long)snapshotReasons[4],(unsigned long long)snapshotReasons[5],(unsigned long long)snapshotReasons[6],(unsigned long long)snapshotReasons[7],(unsigned long long)snapshotReasons[8],(unsigned long long)snapshotReasons[9],(unsigned long long)snapshotReasons[10]);}++frames;}
     void registerVariant(IDirect3DVertexShader9* original,const DWORD* code,size_t count,bool skinned=false,bool wmo=false){
         auto old=shaders.find(original);if(old!=shaders.end()){drop(old->second.patched);drop(old->second.gpu);drop(old->second.source);shaders.erase(old);}Shader shader;
@@ -886,22 +892,22 @@ public:
         // charges the bounded scan allowance; draw order must not evict a warm pose.
         const bool reusePose=exactSkin&&poseBounds.valid;
         const bool needsBounds=!shader->second.skinned||(exactSkin&&!reusePose);
-        const auto& stream=source->streams[0];auto foundBounds=needsBounds?cachedBounds(source):bounds.end();
+        auto foundBounds=needsBounds?cachedBounds(source):bounds.end();
         if(needsBounds&&foundBounds==bounds.end()){
             // R0 body shaders need the same envelope in both budget paths;
             // switching to vertex bounds changes relief with draw order.
             // Their first source scan retains the existing vertex allowance.
             if(exactSkin&&!shader->second.view.kernel.skin&&!chargePoseVertices(source->vertexCount))return false;
-            Bounds b;for(unsigned i=0;i<3;++i){b.low[i]=FLT_MAX;b.high[i]=-FLT_MAX;}
-            objectBoundsVertices+=source->vertexCount;
-            if(profile)profile->count(P::BoundsVertices,source->vertexCount);
-            for(unsigned i=0;i<source->vertexCount;++i){if(size_t(i)*stream.stride+position->Offset+12>stream.bytes.size())return false;float p[3];std::memcpy(p,stream.bytes.data()+size_t(i)*stream.stride+position->Offset,12);for(unsigned k=0;k<3;++k){if(!std::isfinite(p[k]))return false;b.low[k]=std::min(b.low[k],p[k]);b.high[k]=std::max(b.high[k],p[k]);}}
+            Bounds b;
             if(exactSkin){
                 b.skin=LocalSkin::build(shader->second.view,*source,elements,count,shader->second.id,decl.p);
                 shader->second.localSkinBuilt|=bool(b.skin);
             }
+            // A complete skin already validated POSITION0. The fallback still
+            // rejects malformed positions before retaining a cold section.
+            if(!b.skin&&!resolveObjectBounds(b,*source,position->Offset))return false;
             foundBounds=retainBounds(source,std::move(b));
-        }
+        }else if(!shader->second.skinned&&!resolveObjectBounds(foundBounds->second,*source,position->Offset))return false;
         NorthlightReplayBounds::Bounds skinBounds;
         const auto exactEnvelope=[&]{
             if(reusePose){skinBounds=poseBounds;return true;}
@@ -938,7 +944,7 @@ public:
             poseKernelVertices[kernel.singleSkin()||kernel.evaluator==K::SingleWorldFirst||kernel.evaluator==K::SingleWorldIndexFirst?1:
                 kernel.commutedSkin()||kernel.evaluator==K::WeightedR0Commuted||kernel.evaluator==K::WeightedWorldCommuted?2:
                 kernel.skin||kernel.evaluator==K::WeightedR0||kernel.evaluator==K::WeightedWorld?3:0]+=source->vertexCount;
-        }else{touchBounds(foundBounds->second);const auto& b=foundBounds->second;
+        }else{touchBounds(foundBounds->second);const auto& b=foundBounds->second.object;
             nearestViewDepth(shader->second.view,shader->second.rangeRegister==17?rangeInput(shader->second.view):shader->second.rangeRegister,b.low,b.high,constants,lastDepthLower,shader->second.terrainDepthEligible);
             for(unsigned r=0;r<3;++r){low[r]=high[r]=controls[r][3];for(unsigned k=0;k<3;++k){const float a=controls[r][k]*b.low[k],z=controls[r][k]*b.high[k];low[r]+=std::min(a,z);high[r]+=std::max(a,z);}}}
         float closestSquared=0;for(unsigned r=0;r<3;++r){float v=low[r]>0?low[r]:high[r]<0?high[r]:0;closestSquared+=v*v;}if(closestSquared>=range*range){++distanceRejected;return false;}
@@ -969,6 +975,7 @@ public:
         // height/UV data for a mesh the existing build limit always rejects.
         if(source->primitiveCount>8192){++primitiveRejected;return false;}
         const bool layoutFree=std::none_of(elements,elements+count,[](const D3DVERTEXELEMENT9& e){return e.Usage==D3DDECLUSAGE_TEXCOORD&&e.UsageIndex==6;});
+        const auto& stream=source->streams[0];
         const bool wantGPUHeight=!tex1.p&&gpuVariant&&stream.stride<=232&&count+2<=MAXD3DDECLLENGTH&&layoutFree;
         const auto* firstHeight=height(static_cast<IDirect3DTexture9*>(tex.p),domain==4,!wantGPUHeight);if(!firstHeight){++heightRejected;return false;}Height retainedFirst;const Height* second=nullptr;
         if(tex1.p){retainedFirst=*firstHeight;firstHeight=&retainedFirst;second=height(static_cast<IDirect3DTexture9*>(tex1.p));if(!second)return false;}

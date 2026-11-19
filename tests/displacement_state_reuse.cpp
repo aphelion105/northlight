@@ -131,18 +131,30 @@ struct DisplacementStateTestAccess {
     }
     static void boundsCache(){
         NorthlightAutoDisplacement g(nullptr);std::vector<std::shared_ptr<const Mesh>> sources;
+        {
+            Mesh mesh;mesh.vertexCount=2;auto& stream=mesh.streams[0];stream.stride=24;
+            const float data[]={-0.f,1,2,8,9,10,+0.f,-1,-2,6,5,4};
+            stream.bytes.resize(sizeof data);std::memcpy(stream.bytes.data(),data,sizeof data);
+            NorthlightAutoDisplacement::Bounds section{};
+            assert(!section.object.valid&&g.resolveObjectBounds(section,mesh,0));
+            assert(std::signbit(section.object.low[0])&&section.object.low[2]==-2);
+            assert(g.resolveObjectBounds(section,mesh,0)&&g.objectBoundsVertices==2);
+            assert(g.resolveObjectBounds(section,mesh,12)&&g.objectBoundsVertices==4);
+            assert(section.object.low[0]==6&&section.object.high[2]==10);
+            assert(!g.resolveObjectBounds(section,mesh,24)&&!section.object.valid);
+        }
         for(unsigned i=0;i<64;++i){auto source=std::make_shared<Mesh>();source->streams[0].bytes.resize(512u<<10);sources.push_back(source);
-            NorthlightAutoDisplacement::Bounds b{};b.low[0]=float(i);g.retainBounds(source,std::move(b));}
+            NorthlightAutoDisplacement::Bounds b{};b.object.low[0]=float(i);g.retainBounds(source,std::move(b));}
         assert(g.bounds.size()==64&&g.boundsBytes<(64u<<10));
-        for(unsigned repeat=0;repeat<10;++repeat)for(unsigned i=0;i<sources.size();++i){auto hit=g.cachedBounds(sources[i]);assert(hit!=g.bounds.end()&&hit->second.low[0]==float(i));}
+        for(unsigned repeat=0;repeat<10;++repeat)for(unsigned i=0;i<sources.size();++i){auto hit=g.cachedBounds(sources[i]);assert(hit!=g.bounds.end()&&hit->second.object.low[0]==float(i));}
         std::weak_ptr<const Mesh> weak=sources[0];sources.clear();assert(weak.expired());
         // Same address, different control block: an expired source cannot prove a new mesh.
         alignas(Mesh) unsigned char storage[sizeof(Mesh)];auto first=std::shared_ptr<const Mesh>(new(storage) Mesh,[](const Mesh* p){p->~Mesh();});
         NorthlightAutoDisplacement::Bounds b{};g.retainBounds(first,std::move(b));first.reset();
         auto replacement=std::shared_ptr<const Mesh>(new(storage) Mesh,[](const Mesh* p){p->~Mesh();});assert(g.cachedBounds(replacement)==g.bounds.end());g.reset();assert(!g.boundsBytes&&g.bounds.empty());
         // The live scene thrashes a 1024-entry cap with tiny metadata records.
-        sources.clear();for(unsigned i=0;i<1536;++i){auto source=std::make_shared<Mesh>();sources.push_back(source);NorthlightAutoDisplacement::Bounds bound{};bound.low[0]=float(i);g.retainBounds(source,std::move(bound));}
-        const auto misses=g.boundsMisses;for(unsigned repeat=0;repeat<4;++repeat)for(unsigned i=0;i<sources.size();++i){auto hit=g.cachedBounds(sources[i]);assert(hit!=g.bounds.end()&&hit->second.low[0]==float(i));}
+        sources.clear();for(unsigned i=0;i<1536;++i){auto source=std::make_shared<Mesh>();sources.push_back(source);NorthlightAutoDisplacement::Bounds bound{};bound.object.low[0]=float(i);g.retainBounds(source,std::move(bound));}
+        const auto misses=g.boundsMisses;for(unsigned repeat=0;repeat<4;++repeat)for(unsigned i=0;i<sources.size();++i){auto hit=g.cachedBounds(sources[i]);assert(hit!=g.bounds.end()&&hit->second.object.low[0]==float(i));}
         assert(g.boundsMisses==misses&&g.boundsBytes<(256u<<10));
         for(unsigned i=1536;i<5000;++i){auto source=std::make_shared<Mesh>();sources.push_back(source);NorthlightAutoDisplacement::Bounds bound{};g.retainBounds(source,std::move(bound));}
         assert(g.bounds.size()==4096&&g.boundsBytes<=(8u<<20));g.reset();assert(!g.boundsBytes&&g.bounds.empty());
@@ -471,6 +483,13 @@ void DisplacementStateTestAccess::poseHandoff(const char* path,const std::vector
         assert(!g.copyCaptureConstants(other,31,4,packet));
         assert(SUCCEEDED(extension.SetVertexShaderConstantF(31,expected,1)));
         assert(!g.copyCaptureConstants(source.bank,31,4,packet)&&!std::memcmp(packet,expected,sizeof packet));
+        source.clear();g.reset();g.endFrame();
+        g.poseEnvelopes.chargeCheapPreparation(UINT64_MAX);
+        const auto scanned=g.objectBoundsVertices;
+        assert(!g.prepare(&device.vs,4,1,args,nullptr,&source));
+        auto local=g.cachedBounds(source.mesh);
+        assert(local!=g.bounds.end()&&local->second.skin&&!local->second.object.valid&&g.objectBoundsVertices==scanned);
+        assert(g.resolveObjectBounds(local->second,*source.mesh,0)&&g.objectBoundsVertices==scanned+96);
         m.envelopeSkin=m.localSkinBuilt=false;source.clear();g.reset();g.endFrame();
     }
     for(unsigned frame=0;frame<30&&!source.pose.bounds.valid;++frame){g.endFrame();assert(!g.prepare(&device.vs,4,1,args,nullptr,&source));}

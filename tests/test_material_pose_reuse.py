@@ -36,6 +36,20 @@ struct DisplacementStateTestAccess {
         auto program=load(path);
         if(!program.kernel.skin){std::swap(program.operations[0].source[0],program.operations[0].source[1]);buildKernel(program);}
         assert(program.kernel.skin&&SkinEnvelope::supports(program));
+        {
+            NorthlightAutoDisplacement deferred(nullptr);
+            const auto source=std::make_shared<const Mesh>(geometry(12));
+            deferred.poseEnvelopes.chargeCheapPreparation(UINT64_MAX);
+            float low[3],high[3];Bounds world,view;
+            for(unsigned i=0;i<10;++i){
+                world.valid=view.valid=true;
+                assert(!deferred.distantPoseBounds(program,source,declaration,4,low,high,nullptr,nullptr,&world,true,&view));
+                assert(!world.valid&&!view.valid);
+            }
+            assert(deferred.envelopeBuildContinued&&deferred.sharedPoseBudgetSkips==9);
+            assert(deferred.poseEnvelopes.stats().timeDeferred==1&&!deferred.poseEnvelopes.entries());
+            deferred.endFrame();assert(!deferred.sharedPoseBudgetSkips&&deferred.poseEnvelopes.canReady());
+        }
         NorthlightAutoDisplacement g(nullptr);g.range=12;
         float identity[16]={};for(unsigned k=0;k<4;++k)identity[5*k]=1;
         unsigned checked=0;
