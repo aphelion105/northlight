@@ -291,10 +291,13 @@ class NorthlightAutoBump {
         if(!readStates(keys,values))return false;
         for(unsigned i=0;i<N;++i)saved.states[indices[i]].value=values[i];return true;
     }
-    template<size_t N> bool readStates(const D3DRENDERSTATETYPE(&keys)[N],DWORD(&values)[N]){
-        if(rasterReader&&rasterReader(rasterContext,keys,N,values))return true;
-        for(unsigned i=0;i<N;++i)if(FAILED(d->GetRenderState(keys[i],values+i)))return false;
+    bool readStates(const D3DRENDERSTATETYPE* keys,unsigned count,DWORD* values){
+        if(rasterReader&&rasterReader(rasterContext,keys,count,values))return true;
+        for(unsigned i=0;i<count;++i)if(FAILED(d->GetRenderState(keys[i],values+i)))return false;
         return true;
+    }
+    template<size_t N> bool readStates(const D3DRENDERSTATETYPE(&keys)[N],DWORD(&values)[N]){
+        return readStates(keys,N,values);
     }
     bool nativeMayWriteDepth(){
 #ifdef NORTHLIGHT_MATERIAL_DEPTH_TEST
@@ -724,9 +727,15 @@ public:
             if(source&&geometrySource.mesh&&geometrySource.declaration){source->setGeometry(geometrySource.mesh,geometrySource.declaration);source->pose=geometrySource.pose;source->bank=geometrySource.bank;}
         };
         if((domain==1&&!terrain)||(domain==2&&!walls)||(domain==3&&!grass)||(domain==4&&!modes[3]))return;
-        const D3DRENDERSTATETYPE visibilityKeys[]={D3DRS_COLORWRITEENABLE,D3DRS_ZWRITEENABLE};DWORD visibility[2];
-        if(!readStates(visibilityKeys,visibility))return;
-        const DWORD colorWrite=visibility[0],depthWrite=visibility[1];
+        constexpr unsigned visibilityCount=2,depthCount=5;
+        static constexpr D3DRENDERSTATETYPE admissionKeys[visibilityCount+depthCount]={
+            D3DRS_COLORWRITEENABLE,D3DRS_ZWRITEENABLE,D3DRS_ZENABLE,D3DRS_ZFUNC,
+            D3DRS_ALPHAREF,D3DRS_ALPHAFUNC,D3DRS_STENCILENABLE};
+        DWORD raster[visibilityCount+depthCount];
+        const bool knownRaster=rasterReader&&rasterReader(rasterContext,admissionKeys,visibilityCount+depthCount,raster);
+        if(knownRaster){if(profile)profile->count(P::AdmissionRasterBatch);}
+        else if(!readStates(admissionKeys,visibilityCount,raster))return;
+        const DWORD colorWrite=raster[0],depthWrite=raster[1];
         if(!(colorWrite&7)){++invisibleRejected;return;}
         if(!depthWrite&&domain!=1){
             if(domain==4&&modes[3]==3&&geometry&&ensureVertex(original,v->second))displacement.prepareModelOverlay(original,*geometry);
@@ -734,9 +743,9 @@ public:
         }
         if(!v->second.patched&&(!v->second.pending||v->second.failed))return;
         // Reject real stencil/depth tests before pose scans and snapshots.
-        const D3DRENDERSTATETYPE depthKeys[]={D3DRS_ZENABLE,D3DRS_ZFUNC,D3DRS_ALPHAREF,D3DRS_ALPHAFUNC,D3DRS_STENCILENABLE};DWORD depthState[5];
-        if(!readStates(depthKeys,depthState))return;
-        const DWORD z=depthState[0],zfunc=depthState[1],ref=depthState[2],alphaFunc=depthState[3],stencil=depthState[4];
+        DWORD* const depth=raster+visibilityCount;
+        if(!knownRaster&&!readStates(admissionKeys+visibilityCount,depthCount,depth))return;
+        const DWORD z=depth[0],zfunc=depth[1],ref=depth[2],alphaFunc=depth[3],stencil=depth[4];
         if(!z||zfunc==D3DCMP_ALWAYS||zfunc==D3DCMP_NEVER||!northlightMaterialStencilAllows(d,stencil))return;
         const bool geometryMode=modes[domain-1]==3;bool skipGeometry=false;
         // Unsupported material pairs cannot capture or apply native POM.
