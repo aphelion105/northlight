@@ -8,6 +8,7 @@ contracts. They do not execute HLSL or prove the in-game appearance/GPU timing.
 from __future__ import annotations
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
+from scripts.shaders.shader_sources import world_source_text
 import json
 import math
 import random
@@ -141,7 +142,7 @@ def integrate(distance, sigmas, lit, direct=(1., .8, .6), ambient=(.2, .3, .4), 
 
 
 def main():
-    shader = fp.src('world_effects.hlsl').read_text()
+    shader = world_source_text(fp.src('world_effects.hlsl'))
     cpu = fp.src('world_renderer.h').read_text()
     policy = fp.src('regional_fog.h').read_text()
     # Tie this reference to the actual implementation's interface and essential

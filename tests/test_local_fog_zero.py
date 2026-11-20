@@ -7,6 +7,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
+from scripts.shaders.shader_sources import world_source_text
 
 out = fp.output_dir()
 out.mkdir(parents=True, exist_ok=True)
@@ -45,4 +46,4 @@ assert 'const bool fogActive=effects.fog&&(regionalFogActive||localFogActive);' 
 start = renderer.index('if(effects.fog&&localFogActive){')
 end = renderer.index('// c34 belongs', start)
 assert all(x in renderer[start:end] for x in ('"lamp fog accumulator clear"', '"LocalFogCombine"', '"local fog glow batch"'))
-assert 'float3 lamp=LocalLightColor[i].rgb*(integral*LocalLightFog[i].x*nearGlow);' in (fp.SHADERS / 'world_effects.hlsl').read_text(encoding='utf-8')
+assert 'float3 lamp=LocalLightColor[i].rgb*(integral*LocalLightFog[i].x*nearGlow);' in world_source_text(fp.SHADERS / 'world_effects.hlsl')

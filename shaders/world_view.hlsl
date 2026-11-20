@@ -9,9 +9,17 @@ float4 ScreenSize : register(c33); // full width,height; half-resolution width,h
 
 float2 depthUV(float2 uv) {
     // D3D9 raster centers are integer pixels; texture centers are pixel+.5.
-    // Choose the exact depth texel first, including in odd-sized half-res passes.
     float2 dimensions=ScreenSize.xy;
     return (clamp(floor(uv*dimensions),0,dimensions-1)+.5)*ImageClip.xy;
+}
+float2 halfDepthTexelUV(float2 cell) {
+    // A cell i in floor(size/2) represents full-resolution texel 2i+1,
+    // even for odd sizes. Choose it in cell space: on even sizes the
+    // normalized half-res center falls on a full-res texel boundary.
+    return mad(cell,2,1.5)*ImageClip.xy;
+}
+float2 halfDepthUV(float2 uv) {
+    return halfDepthTexelUV(clamp(floor(uv*ScreenSize.zw),0,ScreenSize.zw-1));
 }
 float normalizedDepth(float2 uv) {
     // Callers pass an explicit depth texel center, never a half-res boundary.

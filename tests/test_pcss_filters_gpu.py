@@ -5,6 +5,7 @@ import argparse,ctypes,hashlib,json,os,subprocess,sys
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
+from scripts.shaders.shader_sources import world_source_text
 sys.path.insert(0,str(fp.SCRIPTS/'shaders'))
 from shader_compiler import Compiler,validate_assembly
 sys.path.insert(0,str(fp.TESTS))
@@ -24,7 +25,7 @@ mutex=api.CreateMutexW(None,0,'Local\\NorthlightOfflineGPU')
 if not mutex or api.WaitForSingleObject(mutex,0) not in (0,128):raise RuntimeError('Another offline GPU test is active')
 try:
     fp.out=lambda:out/'toolchain'
-    source=out/'probe.hlsl';source.write_text((fp.SHADERS/'world_effects.hlsl').read_text().replace('#include "auto_bump_normal.hlsl"',(fp.SHADERS/'auto_bump_normal.hlsl').read_text())+'''
+    source=out/'probe.hlsl';source.write_text(world_source_text(fp.SHADERS/'world_effects.hlsl').replace('#include "auto_bump_normal.hlsl"',(fp.SHADERS/'auto_bump_normal.hlsl').read_text())+'''
 float4 ProbeInfo:register(c80);
 float4 PcssProbe(float2 uv:TEXCOORD0):COLOR0{
  float3 lp=float3((uv.x-.5)*.06,(.5-uv.y)*.06,.6);

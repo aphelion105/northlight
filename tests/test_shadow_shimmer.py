@@ -10,11 +10,12 @@ Writes shadow-shimmer-validation.json to the test output dir.
 """
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
+from scripts.shaders.shader_sources import world_source_text
 import json
 import random
 import re
 
-hlsl = fp.src('world_effects.hlsl').read_text()
+hlsl = world_source_text(fp.src('world_effects.hlsl'))
 w = fp.src('world_renderer.h').read_text()
 checks = {}
 

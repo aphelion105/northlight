@@ -8,6 +8,7 @@ from camera/request-grid origin. Residency scheduling is tested separately.
 """
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
+from scripts.shaders.shader_sources import world_source_text
 from pathlib import Path
 import hashlib
 import itertools
@@ -63,7 +64,7 @@ def sample(atlas,position,grid_origin=(0,0,0),mean=32):
 
 def main():
     shader=fp.src('world_effects.hlsl')
-    source=shader.read_text()
+    source=world_source_text(shader)
     assert 'sampler2D ProbeMetadata : register(s10)' in source
     assert 'float3 grid=p/spacing;' in source
     assert 'cell-GridInfo.x*floor(cell/GridInfo.x)' in source

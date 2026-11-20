@@ -6,6 +6,7 @@ the pass and the fogBlurred<->fogHistory rotation guarded by the fog effect, the
 final buffer, and nothing in the stream or proxy files."""
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
+from scripts.shaders.shader_sources import world_source_text
 import json
 import hashlib
 import re
@@ -13,7 +14,7 @@ import subprocess
 
 w=fp.src('world_renderer.h').read_text()
 resources=fp.src('world_screen_resources.inl').read_text()
-h=(fp.SHADERS/'world_effects.hlsl').read_text()
+h=world_source_text(fp.SHADERS/'world_effects.hlsl')
 py=(fp.REPO/'scripts'/'shaders'/'compile_world_shaders.py').read_text()
 q=fp.src('quality_settings.h').read_text()
 manifest=json.loads((fp.SHADERS/'world-shader-build.json').read_text())['shaders']

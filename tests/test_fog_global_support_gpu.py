@@ -5,6 +5,7 @@ from pathlib import Path
 import sys,os,subprocess,json,struct,argparse,shutil,hashlib
 repo=Path(__file__).resolve().parents[1];sys.path[:0]=[str(repo),str(repo/'scripts/shaders')]
 import northlight_paths as fp
+from scripts.shaders.shader_sources import world_source_at_ref, world_source_bytes
 from shader_compiler import Compiler,validate_assembly
 from windows_gpu_guard import processes
 p=argparse.ArgumentParser();p.add_argument('name',nargs='?',default='fog-global-support');p.add_argument('--reference',type=Path);p.add_argument('--source',type=Path,default=repo/'shaders/world_effects.hlsl');p.add_argument('--size',nargs=2,type=int,default=[512,512]);p.add_argument('--baseline-ref',default='51f0107');p.add_argument('--backend',type=Path);p.add_argument('--entries',nargs='+',default=['WorldFog','WorldFogActor','FogClouds','FogCloudsActor']);p.add_argument('--cases',nargs='+',type=int,default=[0,3,4,7,10,12,13,14,15,16,17,18,19,20,21]);a=p.parse_args()
@@ -20,8 +21,8 @@ if not Path(prefix+'constants.f32').exists():
  put(0,[1/w,1/h,.1,1000]);put(1,[1,1,1,0]);put(2,[1,1,192,1/64]);put(33,[w,h,w//2,h//2]);put(65,[0,0,0,0]);Path(prefix+'constants.f32').write_bytes(struct.pack('<316f',*c))
  image('scene',w,h,21,4,bytes([128,128,128,255])*w*h)
  image('depth',w,h,114,4,struct.pack('<f',.999)*w*h)
-current=a.source.read_bytes()
-reference=a.reference.read_bytes() if a.reference else subprocess.check_output(['git','show',a.baseline_ref+':shaders/world_effects.hlsl'],cwd=repo)
+current=world_source_bytes(a.source)
+reference=world_source_bytes(a.reference) if a.reference else world_source_at_ref(repo, a.baseline_ref)
 os.environ['NORTHLIGHT_OUT']=str(out/'compiler');compiler=Compiler(allow_compatible_binary=True);stats={}
 for label,data in [('old',reference),('new',current)]:
  folder=out/label;folder.mkdir(exist_ok=True);(folder/'world_effects.hlsl').write_bytes(data);shutil.copyfile(repo/'shaders/auto_bump_normal.hlsl',folder/'auto_bump_normal.hlsl')

@@ -10,6 +10,7 @@ compiled-output checks report compile_pending; --require-compiled makes that a f
 """
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
+from scripts.shaders.shader_sources import world_source_bytes, world_source_text
 import hashlib
 import json
 import math
@@ -343,7 +344,7 @@ def main():
     assert abs(cpp['band_k']-band_k) < 1e-4 and abs(cpp['tau2']-tau2) < 1e-5
 
     # 8. Source integration.
-    shader = fp.src('world_effects.hlsl').read_text()
+    shader = world_source_text(fp.src('world_effects.hlsl'))
     cpu = fp.src('world_renderer.h').read_text()
     composite_src = shader.split('float4 worldComposite(', 1)[1].split('// Separate geometry pass:', 1)[0]
     helper = block(shader, 'float3 horizonHaze(')
@@ -385,7 +386,7 @@ def main():
 
     # 9. Compiled output (after compile_world_shaders.py): the others byte-identical.
     manifest = json.loads(fp.src('world-shader-build.json').read_text())
-    source_sha = hashlib.sha256(fp.src('world_effects.hlsl').read_bytes()).hexdigest()
+    source_sha = hashlib.sha256(world_source_bytes(fp.src('world_effects.hlsl'))).hexdigest()
     compiled = manifest['source_sha256'] == source_sha
     unchanged = []
     if compiled:

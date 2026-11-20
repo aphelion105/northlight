@@ -18,15 +18,17 @@ import sys
 ROOT=Path(__file__).resolve().parents[1]
 sys.path[:0]=[str(ROOT),str(ROOT/'scripts/shaders'),str(ROOT/'tests')]
 import northlight_paths as fp
+from scripts.shaders.shader_sources import copy_sources, source_files
 from shader_compiler import Compiler, rows, validate_assembly
 from validate_native_scene_trace import processes
 
 
-def overlay(source):
+def overlay(sources):
     def replace(old,new):
-        nonlocal source
-        assert source.count(old)==1,('Production hook changed',old,source.count(old))
-        source=source.replace(old,new)
+        count=sum(source.count(old) for source in sources.values())
+        assert count==1,('Production hook changed',old,count)
+        name=next(name for name,source in sources.items() if old in source)
+        sources[name]=sources[name].replace(old,new)
     replace('#pragma once','#pragma once\n#include <cassert>\n#include "common_experiment_compiled.h"')
     replace('#include "world_soft_shadows.inl"','#include "world_soft_shadows.inl"\n#include "common_shadow_renderer.inl"')
     replace('        const bool directionalShadows=directionalShadowWork();',
@@ -35,10 +37,10 @@ def overlay(source):
             '        commonExperiment.stamp(1);\n        if(lightingCapture){const unsigned productSource=')
     replace('        bool actorPass[2]={},anyActorPass=false;',
             '        commonExperiment.stamp(2);\n        bool actorPass[2]={},anyActorPass=false;')
-    replace('        if(anyActorPass){\n            d->SetPixelShader(actorTilesPS);',
-            '        if(commonExperiment.enabled&&anyActorPass){if(!commonPrepare(actorPass))return false;}\n        else if(anyActorPass){\n            d->SetPixelShader(actorTilesPS);')
+    replace('        if(anyActorPass){\n            if(!actorMaps.buildTiles(',
+            '        if(commonExperiment.enabled&&anyActorPass){if(!commonPrepare(actorPass))return false;}\n        else if(anyActorPass){\n            if(!actorMaps.buildTiles(')
     replace('                float actorRows[16];NorthlightWorldMath::replayProjection(context.inverseView,am,actorRows);',
-            '                if(commonExperiment.enabled&&!commonWorldCasters(am,unsigned(source),replayConstantBytes,replayConstantCalls))return false;\n                float actorRows[16];NorthlightWorldMath::replayProjection(context.inverseView,am,actorRows);')
+            '                if(commonExperiment.enabled&&!commonWorldCasters(am,unsigned(source),result.replayConstantBytes,result.replayConstantCalls))return false;\n                float actorRows[16];NorthlightWorldMath::replayProjection(context.inverseView,am,actorRows);')
     replace('                d->SetVertexShaderConstantF(0,am,4);d->SetPixelShader(replayPS);',
             '                d->SetVertexShaderConstantF(0,am,4);d->SetPixelShader(commonExperiment.enabled?commonExperiment.replay:replayPS);')
     replace('                if(!check(d->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0xffffffff,1,0),"clear actor shadow"))return false;',
@@ -65,7 +67,7 @@ def overlay(source):
         const bool sharedResolved=sharedResolveRequested&&softResolved;''')
     replace('        if(profileSampled())logf("WORLD_SHADOW_RESOLVE',
             '        commonExperiment.stamp(3);\n        if(profileSampled())logf("WORLD_SHADOW_RESOLVE')
-    return source
+    return sources
 
 
 def main():
@@ -78,12 +80,11 @@ def main():
             fp.TESTS/'fixtures/common_shadow_cascade.hlsl',fp.TESTS/'fixtures/common_shadow_renderer.inl',
             fp.TESTS/'fixtures/common_shadow_benchmark.inl',fp.TESTS/'common_shadow_pipeline_gpu.cpp',Path(__file__)]
     inputs+=[f for f in (fp.REPO/'src').rglob('*') if f.suffix in ('.h','.inl','.cpp')]
-    inputs += [fp.SHADERS/n for n in ('world_effects.hlsl','auto_bump_normal.hlsl')]
+    inputs.extend(source_files(fp.SHADERS/'world_effects.hlsl'))
     hashes=lambda:{str(f.resolve()):hashlib.sha256(f.read_bytes()).hexdigest() for f in inputs}
     before=hashes();report={'scope':'Actual WorldRenderer with authored static geometry and animated replay packets. CPU map/selection and GPU maps+filters totals, plus full renderer interval. Not gameplay FPS. Candidate has no direction-history/fog integration.',
                           'inputs':before,'uncontended_timing_valid':not any(x['name'].lower() in ('wow.exe','wow64.exe') for x in running),'results':[]}
-    for name in ('world_effects.hlsl','auto_bump_normal.hlsl'):
-        shutil.copyfile(fp.SHADERS/name,out/name)
+    copy_sources(fp.SHADERS/'world_effects.hlsl', out)
     source=out/'common.hlsl';shutil.copyfile(fp.TESTS/'fixtures/common_shadow_cascade.hlsl',source)
     compiler=Compiler(allow_compatible_binary=True);header=['#pragma once','#include <windows.h>'];report['shaders']={}
     for name in ('CommonDirectional','CommonReplayPS','CommonBlocks','CommonTiles','CommonSeedDepth'):
@@ -91,7 +92,9 @@ def main():
         report['shaders'][name]=validate_assembly(out/(name+'.bin.asm'),'ps_3_0',slot_limit=1152 if name=='CommonDirectional' else 256)
         header.append(f'static const DWORD k{name}Shader[]={{\n'+'\n'.join(rows(words))+'\n};')
     (out/'common_experiment_compiled.h').write_text('\n'.join(header)+'\n')
-    (out/'world_renderer.h').write_text(overlay(fp.src('world_renderer.h').read_text()))
+    overlay_units=('world_renderer.h','world_directional_pass.inl','world_soft_shadows.inl')
+    for name, text in overlay({name:fp.src(name).read_text() for name in overlay_units}).items():
+        (out/name).write_text(text)
     for name in ('common_shadow_renderer.inl','common_shadow_benchmark.inl'):
         shutil.copyfile(fp.TESTS/'fixtures'/name,out/name)
     fixture=(fp.TESTS/'near_shadow_interval_gpu.cpp').read_text().replace('#include "../src/proxy/renderer.cpp"','#include "renderer.cpp"')

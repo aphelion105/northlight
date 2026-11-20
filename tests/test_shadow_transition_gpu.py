@@ -2,9 +2,10 @@
 # northlight-test: requires=windows-gpu,zig,client
 """Independent scalar PCF/PCSS, current-pose, crop, and production volume endpoints."""
 from pathlib import Path
-import argparse,json,os,shutil,subprocess,sys
+import argparse,json,os,subprocess,sys
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
+from scripts.shaders.shader_sources import copy_sources
 parser=argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--backend',type=Path)
 parser.add_argument('--output',type=Path)
@@ -16,7 +17,7 @@ fp.use_source_modules()
 from shader_compiler import Compiler
 compiler=Compiler(allow_compatible_binary=True)
 probe=out/'numeric-probe';probe.mkdir(exist_ok=True)
-for name in ('world_effects.hlsl','auto_bump_normal.hlsl','shadow_transition.hlsl'):shutil.copy2(fp.SHADERS/name,probe/name)
+copy_sources(fp.SHADERS/'shadow_transition.hlsl', probe)
 probe_source=probe/'shadow_transition_numeric_probe.hlsl'
 probe_source.write_text('#include "shadow_transition.hlsl"\n'+(fp.TESTS/'shadow_transition_numeric_probe.hlsl').read_text(),encoding='utf-8',newline='\n')
 for entry in ('TransitionWorldPoint','TransitionCurrentPoints','TransitionPreviousPoints','TransitionPreviousCoverage','TransitionCurrentQuery','TransitionPreviousQuery'):compiler.compile(probe_source,entry,'ps_3_0',out/(entry+'.bin'))

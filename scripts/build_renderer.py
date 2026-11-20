@@ -124,25 +124,27 @@ def main(argv=None):
         if manifest['shaders'].get(entry, {}).get('source_sha256') != actor_hash:
             raise SystemExit(f'{entry} has stale actor AO dependencies; rebuild all actor shader entries.')
     world_manifest = json.loads((SHADERS/'world-shader-build.json').read_text())
-    if hashlib.sha256((SHADERS/'world_effects.hlsl').read_bytes()).hexdigest() not in json.dumps(world_manifest):
-        raise SystemExit('World shader source differs from offline build.')
-    from shaders.compile_world_shaders import NORMAL_ENTRIES, normal_sources
+    from shaders.shader_sources import source_hashes, world_source_bytes
+    from shaders.compile_world_shaders import ENTRIES, NORMAL_ENTRIES, normal_sources
+    world_source = SHADERS/'world_effects.hlsl'
+    world_hash = hashlib.sha256(world_source_bytes(world_source)).hexdigest()
+    if (world_manifest.get('sources') != source_hashes(world_source) or world_manifest['source_sha256'] != world_hash or
+        any(world_manifest['shaders'][entry]['source_sha256'] != world_hash for entry, _ in ENTRIES if entry not in NORMAL_ENTRIES)):
+        raise SystemExit('World shader source or an include differs from the offline build.')
     normal_inputs=normal_sources()
     if (world_manifest.get('normal_sources')!=normal_inputs or
         any(world_manifest['shaders'][entry]['source_sha256']!=normal_inputs['world_normals.hlsl'] for entry in NORMAL_ENTRIES)):
         raise SystemExit('World normal inputs differ from the offline build. Recompile both normal entries.')
     transition_manifest = json.loads((SHADERS/'shadow-transition-shader-build.json').read_text())
-    for name, digest in transition_manifest['sources'].items():
-        if hashlib.sha256((SHADERS/name).read_bytes()).hexdigest() != digest:
-            raise SystemExit('Shadow transition source differs from offline build; run scripts/shaders/compile_shadow_transition_shaders.py.')
+    if transition_manifest['sources'] != source_hashes(SHADERS/'shadow_transition.hlsl'):
+        raise SystemExit('Shadow transition source differs from offline build; run scripts/shaders/compile_shadow_transition_shaders.py.')
     for name, metadata in transition_manifest['shaders'].items():
         if hashlib.sha256((northlight_paths.COMPILED/(name+'.bin')).read_bytes()).hexdigest() != metadata['sha256']:
             raise SystemExit(f'{name} differs from the validated shadow transition build.')
     local_manifest = json.loads((SHADERS/'local-light-shader-build.json').read_text())
     volume_manifest = json.loads((SHADERS/'fog-volume-shader-build.json').read_text())
-    for name, digest in volume_manifest['sources'].items():
-        if hashlib.sha256((SHADERS/name).read_bytes()).hexdigest() != digest:
-            raise SystemExit('Volume fog source differs from offline build; run scripts/shaders/compile_fog_volume_shaders.py.')
+    if volume_manifest['sources'] != source_hashes(SHADERS/'fog_volume.hlsl'):
+        raise SystemExit('Volume fog source differs from offline build; run scripts/shaders/compile_fog_volume_shaders.py.')
     for name, metadata in volume_manifest['shaders'].items():
         if hashlib.sha256((northlight_paths.COMPILED/(name+'.bin')).read_bytes()).hexdigest() != metadata['sha256']:
             raise SystemExit(f'{name} differs from the validated volume fog build.')

@@ -19,7 +19,8 @@ import random
 import re
 
 effects = fp.src('effects.hlsl').read_text()
-world = fp.src('world_effects.hlsl').read_text()
+from scripts.shaders.shader_sources import world_source_text
+world = world_source_text(fp.src('world_effects.hlsl'))
 renderer = fp.src('renderer.cpp').read_text()
 wr = fp.src('world_renderer.h').read_text()
 checks = {}
@@ -203,8 +204,8 @@ wm = json.loads(fp.src('world-shader-build.json').read_text())['shaders']
 checks[f"WorldComposite and RemovalSmooth fit SM3 with AO, TemporalLight uses {wm['TemporalLight']['static_instruction_slots']} slots"] = (
     wm['WorldComposite']['static_instruction_slots'] <= 512 and wm['WorldComposite']['samplers'] == [0, 1, 2, 3, 7, 8, 9, 10, 11, 12, 13]  # Current scene depth replaces the lighting-distance dependency on s15.
     and wm['RemovalSmooth']['static_instruction_slots'] <= 512 and wm['RemovalSmooth']['samplers'] == [0, 1, 8, 10, 12, 14, 15]
-    and wm['TemporalLight']['static_instruction_slots'] <= 215 and  # Includes the full-shadow history gate.
-    wm['TemporalLight']['samplers'] == [1, 8, 9, 14, 15])
+    and wm['TemporalLight']['static_instruction_slots'] <= 400 and
+    wm['TemporalLight']['samplers'] == [1, 8, 9, 11, 12, 14, 15])
 
 # 6. no new key
 config = [fp.src('quality_settings.h').read_text(), fp.src('windows-package/northlight-quality.ini').read_text(),

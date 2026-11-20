@@ -5,6 +5,7 @@ from pathlib import Path
 import hashlib,json,re,struct,sys
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
+from scripts.shaders.shader_sources import source_hashes, world_source_bytes
 fp.use_source_modules()
 from compile_world_shaders import ENTRIES, NORMAL_ENTRIES, normal_sources
 from shader_compiler import bytecode,validate_assembly,DLL_SHA256,COMPATIBLE_DLL_SHA256
@@ -13,10 +14,14 @@ manifest=json.loads((fp.SHADERS/'world-shader-build.json').read_text())
 assert manifest['normal_sources']==normal_sources()
 assert all(manifest['shaders'][entry]['source_sha256']==manifest['normal_sources']['world_normals.hlsl'] for entry in NORMAL_ENTRIES)
 header=fp.src('world_compiled_shaders.h').read_text()
-assert manifest['source_sha256']==hashlib.sha256((fp.SHADERS/'world_effects.hlsl').read_bytes()).hexdigest()
+assert manifest['source_sha256']==hashlib.sha256(world_source_bytes(fp.SHADERS/'world_effects.hlsl')).hexdigest()
+assert manifest['sources']==source_hashes(fp.SHADERS/'world_effects.hlsl')
+assert manifest['shaders']['WorldCompositeHdr']['source_sha256']==manifest['source_sha256']
+assert 'world_effects_composite.hlsl' in manifest['sources']
 assert manifest['bump_include_sha256']==hashlib.sha256((fp.SHADERS/'auto_bump_normal.hlsl').read_bytes()).hexdigest()
 assert set(manifest['shaders'])=={entry for entry,_ in ENTRIES}
-extended={'ForeverFogActor','ForeverFogActorNoNoise','WorldFogActor','FogCloudsActor'}
+extended={'ForeverFogActor','ForeverFogActorNoNoise','WorldFogActor','FogCloudsActor',
+          'TemporalLightMerged','TemporalLightMergedZeroWeight'}
 tiled={'WorldFogActorTiled','FogCloudsActorTiled','WorldMaterialCompositeHdr'}
 tiled.update(entry for entry,_ in ENTRIES if entry.startswith(('MoonFloorFog','ForeverFogActorTiled')))
 

@@ -6,10 +6,11 @@ the air extinction (sigmaAt) mirrors the shader's; the lighting alpha and the ba
 to render() beyond the fog-cloud pass; every coupling multiplies by a gain that is exactly 1 (or adds exactly 0) without weather; the settings reach the derivation."""
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
+from scripts.shaders.shader_sources import world_source_text
 import re
 
 w=fp.src('world_renderer.h').read_text()
-h=(fp.SHADERS/'world_effects.hlsl').read_text()
+h=world_source_text(fp.SHADERS/'world_effects.hlsl')
 hz=fp.src('horizon_haze.h').read_text()
 dr=fp.src('celestial_disc_renderer.h').read_text()
 rc=fp.src('renderer.cpp').read_text()

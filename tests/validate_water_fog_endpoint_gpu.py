@@ -7,6 +7,7 @@ import sys
 import tempfile
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
+from scripts.shaders.shader_sources import world_source_text
 
 
 def function(source, name):
@@ -21,7 +22,7 @@ def function(source, name):
 
 def main():
     backend = os.environ['NORTHLIGHT_DXVK_D3D9']
-    source = (fp.SHADERS / 'world_effects.hlsl').read_text()
+    source = world_source_text(fp.SHADERS / 'world_effects.hlsl')
     header = '''float4 ImageClip:register(c0);float4 Projection:register(c1);float4 DepthParams:register(c2);float4 WaterInfo:register(c30);
 sampler2D Depth:register(s1);sampler2D WaterMask:register(s11);\n'''
     body = '\n'.join(function(source, name) for name in ('viewDistance', 'waterDistance', 'receiverDistance', 'fogReceiverDistance'))

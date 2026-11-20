@@ -15,6 +15,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT/'scripts/shaders')]
 import northlight_paths as fp
+from scripts.shaders.shader_sources import copy_sources, source_files
 from shader_compiler import Compiler, validate_assembly
 from validate_native_scene_trace import processes
 
@@ -27,16 +28,15 @@ def main():
     args = parser.parse_args()
     running = processes()
     out = args.output.resolve(); out.mkdir(parents=True, exist_ok=False)
-    inputs = [args.shader_source, fp.SHADERS/'world_effects.hlsl',
-              fp.SHADERS/'auto_bump_normal.hlsl', fp.TESTS/'common_shadow_cascade_gpu.cpp',
+    inputs = [args.shader_source, *source_files(fp.SHADERS/'world_effects.hlsl'),
+              fp.TESTS/'common_shadow_cascade_gpu.cpp',
               fp.TESTS/'composite_distance_gpu.cpp', fp.TESTS/'removal_distance_gpu.cpp',
               fp.src('legacy_fog.h'), fp.src('gpu_frame_timer.h'), Path(__file__)]
     hashes = lambda: {str(p.resolve()): hashlib.sha256(p.read_bytes()).hexdigest() for p in inputs}
     before = hashes()
     source=out/'common.hlsl'
     shutil.copyfile(args.shader_source,source)
-    for name in ('world_effects.hlsl','auto_bump_normal.hlsl'):
-        shutil.copyfile(fp.SHADERS/name,out/name)
+    copy_sources(fp.SHADERS/'world_effects.hlsl', out)
     compiler = Compiler(allow_compatible_binary=True)
     report = {'scope':'Authored depth fixture. Stage 0: resolve only. Stage 1: GPU depth union, exact summaries and resolve. Stage 2: summaries and resolve, with a FREE pre-unified depth map. All geometry/raster/cache work is FREE in every stage. An optimistic component comparison, not renderer FPS or runtime acceptance.',
               'inputs':before, 'compiler':compiler.provenance, 'shaders':{}, 'cases':[],

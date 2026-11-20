@@ -5,6 +5,7 @@ import argparse,importlib.util,json,os,struct,subprocess,sys,statistics
 from pathlib import Path
 sys.path[:0]=[str(Path(__file__).resolve().parents[1]),str(Path(__file__).resolve().parents[1]/'scripts/shaders')]
 import northlight_paths as fp
+from scripts.shaders.shader_sources import world_source_at_ref, world_source_bytes
 from shader_compiler import Compiler
 p=argparse.ArgumentParser(description=__doc__);p.add_argument('--prefix',required=True);p.add_argument('--source',type=Path,required=True);p.add_argument('--benchmark',action='store_true');p.add_argument('--actor-entry',action='store_true');p.add_argument('--baseline-source',type=Path);p.add_argument('--same-output',action='store_true');p.add_argument('--output',type=Path,required=True);a=p.parse_args();a.output.mkdir(parents=True,exist_ok=True)
 spec=importlib.util.spec_from_file_location('guard',fp.TESTS/'validate_native_scene_trace.py');guard=importlib.util.module_from_spec(spec);spec.loader.exec_module(guard)
@@ -16,8 +17,8 @@ Out CasterVS(float3 p:POSITION0){Out o;o.position=mul(float4(p,1),Matrix);o.dept
 float4 CasterPS(float z:TEXCOORD0):COLOR0{return float4(z,z,z,1);}
 ''')
 for name,stage in [('CasterVS','vs_3_0'),('CasterPS','ps_3_0')]:compiler.compile(fixture,name,stage,a.output/(name+'.bin'))
-old=a.baseline_source.read_bytes() if a.baseline_source else subprocess.check_output(['git','show','c9a89ea:shaders/world_effects.hlsl'],cwd=fp.REPO)
-for label,source in [('old',old),('new',a.source.read_bytes())]:
+old=world_source_bytes(a.baseline_source) if a.baseline_source else world_source_at_ref(fp.REPO, 'c9a89ea')
+for label,source in [('old',old),('new',world_source_bytes(a.source))]:
  folder=a.output/label;folder.mkdir(exist_ok=True);(folder/'world_effects.hlsl').write_bytes(source);(folder/'auto_bump_normal.hlsl').write_bytes((fp.SHADERS/'auto_bump_normal.hlsl').read_bytes())
  for entry in ['WorldFog','FogClouds']:compiler.compile(folder/'world_effects.hlsl',entry+'Actor' if a.actor_entry and label=='new' else entry,'ps_3_0',folder/(entry+'.bin'))
 if a.benchmark and a.actor_entry:

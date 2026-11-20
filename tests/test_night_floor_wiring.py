@@ -4,10 +4,11 @@
 c19 upload and the shader budget. Source/manifest audit only; no game, Wine or GPU."""
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
+from scripts.shaders.shader_sources import world_source_text
 import json, re
 
 checks = {}
-hlsl = (fp.SHADERS/'world_effects.hlsl').read_text()
+hlsl = world_source_text(fp.SHADERS/'world_effects.hlsl')
 checks['hlsl: one c19 declaration (GridOrigin), no NightFloor alias']=(len(re.findall(r'register\(c19\)', hlsl))==1 and
     'float4 GridOrigin : register(c19);' in hlsl and 'NightFloor' not in hlsl)
 start = hlsl.index('float4 worldCompositeInputs(')

@@ -9,10 +9,11 @@ import sys
 sys.path[:0] = [str(Path(__file__).resolve().parents[1]),
                str(Path(__file__).resolve().parents[1]/'scripts/shaders')]
 import northlight_paths as fp
+from scripts.shaders.shader_sources import world_source_text
 from shader_compiler import Compiler
 
 out = fp.output_dir()
-world = (fp.SHADERS/'world_effects.hlsl').read_text().replace(
+world = world_source_text(fp.SHADERS/'world_effects.hlsl').replace(
     '"auto_bump_normal.hlsl"', '"'+(fp.SHADERS/'auto_bump_normal.hlsl').as_posix()+'"')
 query = '''
 float4 Fixture:register(c116);

@@ -7,6 +7,7 @@ the world's path and constants are the old ones (every change gated by the level
 level; the key is the last one and documented; nothing on the game thread (src/stream) or in the command stream knows about it."""
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
+from scripts.shaders.shader_sources import world_source_text
 import re
 
 w=fp.src('world_renderer.h').read_text()
@@ -14,7 +15,7 @@ r=fp.src('renderer.cpp').read_text()
 t=fp.src('gpu_frame_timer.h').read_text()
 b=fp.src('gpu_budget.h').read_text()
 q=fp.src('quality_settings.h').read_text()
-h=(fp.SHADERS/'world_effects.hlsl').read_text()
+h=world_source_text(fp.SHADERS/'world_effects.hlsl')
 def code(text):return re.sub(r'/\*.*?\*/','',re.sub(r'//[^\n]*','',text),flags=re.S)
 checks={}
 

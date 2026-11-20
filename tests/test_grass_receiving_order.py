@@ -8,6 +8,7 @@ import sys
 import tempfile
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
+from scripts.shaders.shader_sources import world_source_text
 
 renderer = fp.src('renderer.cpp').read_text()
 prepare = renderer[renderer.index('template<class Capture> void prepareDrawImpl('):renderer.index('    // Terrain draws run with the game')]
@@ -27,9 +28,9 @@ assert 'alphaMode=alpha?1:3;if(!alpha)shaderCutoff=0;' in world
 assert '((alpha||alphaMode==1||alphaMode==3)&&!p->texture)' in world
 assert 'terrainShaders.count(shader)||captureShaders.count(shader)||wmoShaders.count(shader)' in world
 assert 'if(vc.world||drawWaterVS)return;' in renderer  # native grass is not a fallback UI candidate
-composite = fp.tracked('world_effects.hlsl').read_text().split('float4 worldComposite(')[1].split('// Separate geometry pass')[0]
+composite = world_source_text(fp.tracked('world_effects.hlsl')).split('float4 worldCompositeInputs(')[1].split('float4 worldComposite(')[0]
 assert 'bool relight=surfaceLighting&&d<.99999&&liquid<=0;' in composite and 'if(relight)' in composite
-shader=fp.tracked('world_effects.hlsl').read_text()
+shader=world_source_text(fp.tracked('world_effects.hlsl'))
 assert 'return worldComposite(uv,pixel,true,false,FogBuffer,effect);' in shader
 assert 'return worldComposite(uv,pixel,false,false,FogBuffer,effect);' in shader
 assert 'GrassShadows' not in composite and 'DetailDoodad' not in composite  # receiving is independent of caster opt-in

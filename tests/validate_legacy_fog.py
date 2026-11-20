@@ -7,6 +7,7 @@ permutation in enabled existing archives, and writes legacy-fog-validation.json.
 """
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp; fp.use_source_modules()
+from scripts.shaders.shader_sources import world_source_bytes
 from pathlib import Path
 import hashlib
 import json
@@ -61,7 +62,7 @@ def main():
         row['recognized' if accepted[source['sha256']]>=0 else 'rejected']+=1
     report={'result':'pass','game_launched':False,'gpu_test':False,'native_tests':tests,
             'helper_sha256':hashlib.sha256(fp.src('legacy_fog.h').read_bytes()).hexdigest(),
-            'shader_sha256':hashlib.sha256(fp.src('world_effects.hlsl').read_bytes()).hexdigest(),
+            'shader_sha256':hashlib.sha256(world_source_bytes(fp.src('world_effects.hlsl'))).hexdigest(),
             'unique_original_shaders':len(codes),'source_variants':len(sources),
             'recognized_fog_shaders':sum(v>=0 for v in accepted.values()),
             'fog_constant_register_counts':{str(r):sum(v==r for v in accepted.values()) for r in sorted(set(accepted.values()))},

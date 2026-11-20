@@ -16,38 +16,40 @@ source audit. Reads files only; no Wine, GPU or game. Writes temporal-history-va
 """
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
+from scripts.shaders.shader_sources import world_source_text
 import json
 import math
 import re
 
-hlsl = fp.src('world_effects.hlsl').read_text()
+hlsl = world_source_text(fp.src('world_effects.hlsl'))
 w = fp.src('world_renderer.h').read_text()
-temporal = hlsl[hlsl.index('TemporalOutput TemporalLight('):hlsl.index('// 1x1 pass: fraction of the source disc')]
+temporal = hlsl[hlsl.index('TemporalOutput temporalLight('):hlsl.index('// Keep current normals/distance')]
 code = re.sub(r'//[^\n]*', '', temporal)
 checks = {}
 
 # ---- 1. source pins ----
 NEAREST_TEST = ['    float2 pq=(clamp(floor(puv*half),0,half-1)+.5)/half;',
-                '    float hz=tex2Dlod(DepthHistory,float4(pq,0,0)).r;',
+                '    float hz=tex2Dlod(historyDepth,float4(pq,0,0)).r;',
                 '    if(abs(hz-w)>max(.25,w*.03))return o;']
 FOOTPRINT = ['    float tol=max(.25,w*.03);',
              '    float2 texel=1/half,corner=(floor(puv*half-.5)+.5)*texel; // CLAMP addressing repeats the border',
-             '    float4 footprint=float4(tex2Dlod(DepthHistory,float4(corner,0,0)).r,',
-             '        tex2Dlod(DepthHistory,float4(corner+float2(texel.x,0),0,0)).r,',
-             '        tex2Dlod(DepthHistory,float4(corner+float2(0,texel.y),0,0)).r,',
-             '        tex2Dlod(DepthHistory,float4(corner+texel,0,0)).r);',
+             '    float4 footprint=float4(tex2Dlod(historyDepth,float4(corner,0,0)).r,',
+             '        tex2Dlod(historyDepth,float4(corner+float2(texel.x,0),0,0)).r,',
+             '        tex2Dlod(historyDepth,float4(corner+float2(0,texel.y),0,0)).r,',
+             '        tex2Dlod(historyDepth,float4(corner+texel,0,0)).r);',
              '    bool agree=all(abs(footprint-w)<=tol);']
-HISTORY = '    float4 history=tex2Dlod(LightHistory,float4(agree?puv:pq,0,0));'
+HISTORY = '    float4 history=tex2Dlod(historyLight,float4(agree?puv:pq,0,0));'
 A1 = ['    float4 tight=clamp(history,lo,hi);',
       '    float still=saturate(2-4*length(puv*half-(base+.5)));',
       '    float margin=.15/max(RemovalInfo.z,1e-4)*RemovalInfo.y*still;',
       '    float loose=clamp(history.a,lo.a-margin,hi.a+margin);',
       '    float3 reach=abs(loose-tight.a)*RemovalInfo.z*TemporalReach.w;',
-      '    o.light=lerp(current,float4(clamp(history.rgb,lo.rgb-reach,hi.rgb+reach),loose),TemporalInfo.x);']
+      '    o.light=lerp(current,float4(clamp(history.rgb,lo.rgb-reach,hi.rgb+reach),loose),historyWeight);']
 checks['TemporalLight: nearest depth test unchanged; history read once, at puv only when the footprint depths agree'] = (
     all(temporal.count(l + '\n') == 1 for l in NEAREST_TEST + FOOTPRINT + [HISTORY])
     and temporal.index(NEAREST_TEST[-1]) < temporal.index(FOOTPRINT[0]) < temporal.index(HISTORY)
-    and code.count('LightHistory') == 1 and code.count('DepthHistory') == 5 and 'pq,0,0)).r' in code)
+    and code.count('tex2Dlod(historyLight,') == 1 and code.count('tex2Dlod(historyDepth,') == 5 and 'pq,0,0)).r' in code
+    and 'return temporalLight(uv,false,DepthHistory,LightHistory);' in hlsl)
 checks['A1 lines unchanged except the F2 gate (full to .25 px, none from .5)'] = (
     all(temporal.count(l + '\n') == 1 for l in A1) and 'saturate(2-length(' not in temporal)
 
@@ -68,7 +70,10 @@ checks['s14 LINEAR (history) and s15 POINT (depth) in the temporal pass; the nor
             [('ADDRESSU','D3DTADDRESS_CLAMP'),('ADDRESSV','D3DTADDRESS_CLAMP'),('MINFILTER','D3DTEXF_POINT'),
              ('MAGFILTER','D3DTEXF_POINT'),('MIPFILTER','D3DTEXF_NONE'),('SRGBTEXTURE','FALSE')])
     and block.index('if(removalDrawn){') < block.index('d->SetSamplerState(15,D3DSAMP_ADDRESSU') < block.index(loop)
-    and w.count(fog_loop) == 1 and 'sampler==14?D3DTEXF_LINEAR' not in w.replace(loop, '').replace(fog_loop, '') and not re.search(r'SetSamplerState\((14|15),D3DSAMP_M(IN|AG)FILTER,D3DTEXF_LINEAR', w))
+    and w.count(fog_loop) == 1
+    and 'd->SetTexture(9,temporalLight[prev]);d->SetTexture(13,temporalDepth[prev]);' in block
+    and block.count('sampler==9?D3DTEXF_LINEAR:D3DTEXF_POINT') == 2
+    and not re.search(r'SetSamplerState\((14|15),D3DSAMP_M(IN|AG)FILTER,D3DTEXF_LINEAR', block))
 keys = {'BilinearHistory', 'TemporalHistory', 'HistoryFilter'}
 config = [fp.src('quality_settings.h').read_text(), fp.src('windows-package/northlight-quality.ini').read_text(),
           fp.src('windows-package/README.txt').read_text(encoding='utf-8')]

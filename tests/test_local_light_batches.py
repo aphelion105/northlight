@@ -4,6 +4,7 @@
 ASan/UBSan), the cost model pinned to the shader manifest, and the renderer wiring."""
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
+from scripts.shaders.shader_sources import world_source_text
 import json,re,subprocess,tempfile
 HERE=Path(__file__).resolve().parent
 with tempfile.TemporaryDirectory(prefix='northlight-light-batches-') as tmp:
@@ -40,7 +41,7 @@ assert 'd->SetPixelShaderConstantF(84,batch.position[0].data(),2*N);d->SetPixelS
 assert loop.count('profileSplit(profile,lightSurface);')==2
 assert 'if(!profile||!profile->recording()||!resume||profileSplitFailed)return;' in cpu  # sample frames only
 assert 'drop(profileSplitSurface);' in cpu and 'drop(localDirect16PS);' in cpu
-shader=fp.src('world_effects.hlsl').read_text()
+shader=world_source_text(fp.src('world_effects.hlsl'))
 lo16=shader[shader.index('float4 LocalDirect16('):shader.index('float3 removalScale(')]
 assert 'uniform float4 LampPos[16]:register(c84),uniform float4 LampColor[16]:register(c100)' in lo16
 assert 'return float4(result*(LocalLightInfo.y*(1-LocalLightInfo.z*sunlit)),0);' in lo16

@@ -22,13 +22,15 @@ void foreverRaymarchResources(){
 bool temporalMergeResources(){
     if(!temporalMergeTried){
         temporalMergeTried=true;
+        D3DCAPS9 caps{};
+        if(FAILED(d->GetDeviceCaps(&caps)))return false;
         // DXVK 3.1.1 benefits from skipping zero-weight reads. Other backends
         // retain the measured predicated shader; only one variant is executed.
-        if(temporalZeroWeightAllowed){
+        if(temporalZeroWeightAllowed&&caps.MaxPixelShader30InstructionSlots>=kTemporalLightMergedZeroWeightShaderSlots){
             if(SUCCEEDED(d->CreatePixelShader(kTemporalLightMergedZeroWeightShader,&temporalMergedPS)))temporalZeroWeightActive=true;
             else drop(temporalMergedPS);
         }
-        if(!temporalMergedPS&&FAILED(d->CreatePixelShader(kTemporalLightMergedShader,&temporalMergedPS)))drop(temporalMergedPS);
+        if(!temporalMergedPS&&caps.MaxPixelShader30InstructionSlots>=kTemporalLightMergedShaderSlots&&FAILED(d->CreatePixelShader(kTemporalLightMergedShader,&temporalMergedPS)))drop(temporalMergedPS);
     }
     return temporalMergedPS!=nullptr;
 }

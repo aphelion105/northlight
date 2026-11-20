@@ -8,6 +8,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
+from scripts.shaders.shader_sources import world_source_text
 sys.path[:0] = [str(fp.SCRIPTS/'shaders'), str(fp.TESTS)]
 from shader_compiler import Compiler
 import windows_gpu_guard
@@ -22,7 +23,7 @@ out = a.output.resolve()
 out.mkdir(parents=True, exist_ok=True)
 compiler = Compiler(allow_compatible_binary=True)
 for name, source in [('old', a.baseline_source), ('new', fp.SHADERS/'world_effects.hlsl')]:
-    text = source.read_text().replace('#include "auto_bump_normal.hlsl"', (fp.SHADERS/'auto_bump_normal.hlsl').read_text())
+    text = world_source_text(source).replace('#include "auto_bump_normal.hlsl"', (fp.SHADERS/'auto_bump_normal.hlsl').read_text())
     shader = out/(name+'.hlsl')
     query = '''
 float4 ProbeNormal:register(c116);

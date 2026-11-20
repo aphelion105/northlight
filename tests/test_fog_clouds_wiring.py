@@ -6,13 +6,14 @@ the pass guarded by the derived frame with every state the later passes read put
 and nothing new on the game thread (stream hooks, proxies, snapshots)."""
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
+from scripts.shaders.shader_sources import world_source_text
 import json
 import hashlib
 import re
 
 w=fp.src('world_renderer.h').read_text()
 resources=fp.src('world_screen_resources.inl').read_text()
-h=(fp.SHADERS/'world_effects.hlsl').read_text()
+h=world_source_text(fp.SHADERS/'world_effects.hlsl')
 py=(fp.REPO/'scripts'/'shaders'/'compile_world_shaders.py').read_text()
 manifest=json.loads((fp.SHADERS/'world-shader-build.json').read_text())['shaders']
 checks={}

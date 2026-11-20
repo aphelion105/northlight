@@ -5,6 +5,7 @@ native equivalence test (0.3.142 cache vs current, software R32F+D24 raster) and
 render-state cache test, at -O2 and under ASan/UBSan. No game, Wine or GPU."""
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
+from scripts.shaders.shader_sources import world_source_text
 import re
 import subprocess
 import tempfile
@@ -18,7 +19,7 @@ world, point, proxy, probe = read('world_renderer.h'), read('world_point_renderi
 # shader masks are enabled only with a nonnegative cutoff and an explicit mode.
 # Fixed alpha testing emits the proved output alpha on RT0; RT1 retains depth.
 for source,material in (('world_effects.hlsl','Material'),('local_light_effects.hlsl','LocalMaterial')):
-    text=read(source)
+    text=world_source_text(fp.src(source)) if source=='world_effects.hlsl' else read(source)
     assert f'if({material}.w>=0)' in text
     assert f'{material}.x==2?diffuse.a:tex2D(' in text
     assert (f'if({material}.x==1)alpha*=diffuse.a;' in text or

@@ -30,29 +30,27 @@ the ground (a light halo). Section 2b checks that on a pinhole-camera scene with
    The 0.3.158 output for the comparison is the emulation's reference (off) path."""
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp; fp.use_source_modules()
+from scripts.shaders.shader_sources import world_source_text
 import json,math,random,re,struct
 
-hlsl=fp.src('world_effects.hlsl').read_text();w=fp.src('world_renderer.h').read_text();q=fp.src('quality_settings.h').read_text();r=fp.src('renderer.cpp').read_text()
+hlsl=world_source_text(fp.src('world_effects.hlsl'));w=fp.src('world_renderer.h').read_text();q=fp.src('quality_settings.h').read_text();r=fp.src('renderer.cpp').read_text()
 w+='\n'+fp.src('world_screen_resources.inl').read_text()
 ini=fp.src('windows-package/northlight-quality.ini').read_text();readme=fp.src('windows-package/README.txt').read_text(encoding='utf-8')
 checks={}
 # ---- 1. wiring ----
-temporal=hlsl[hlsl.index('TemporalOutput TemporalLight('):hlsl.index('// 1x1 pass: fraction of the source disc')]
-old_lines=['    TemporalOutput o;float2 half=ScreenSize.zw;','    float2 base=floor(uv*half);float2 q=(base+.5)/half;',
-    '    float4 current=tex2Dlod(SmoothedLighting,float4(q,0,0));','    float2 duv=depthUV(q);float d=normalizedDepth(duv);float z=viewDistance(d);',
-    '    o.light=current;o.depth=float4(z,0,0,1);','    if(TemporalInfo.x<=0||d>=.99999)return o;','    o.light=lerp(current,float4(clamp(history.rgb,lo.rgb-reach,hi.rgb+reach),loose),TemporalInfo.x);'] # 0.3.170 final line (test_shadow_shimmer)
-# 0.3.185: the guarded call moved to its own half-res pass (RemovalSmooth); TemporalLight reads the result (s9) for current and
-# keeps the 3x3 cross neighbourhood clamp on the RAW LightingBuffer (s8), exactly as before.
-guard='    [branch]if(RemovalInfo.y>0&&d<.99999)current.rgb=smoothRemoval(current,q,base,half,viewDistance(d));\n'
+temporal=hlsl[hlsl.index('TemporalOutput temporalLight('):hlsl.index('// Keep current normals/distance')]
 removal=hlsl[hlsl.index('float4 RemovalSmooth('):hlsl.index('// Temporal stabilization of the half-resolution')]
-raw_clamp='        float4 s=tex2Dlod(LightingBuffer,float4((clamp(base+offset,0,half-1)+.5)/half,0,0));\n'
-checks['TemporalLight: 0.3.158 lines intact, current from SmoothedLighting (s9), no smoothRemoval call, raw s8 neighbourhood']=(all(temporal.count(l+'\n')==1 for l in old_lines)
-    and 'smoothRemoval' not in temporal and temporal.count('tex2Dlod(SmoothedLighting,')==1 and temporal.count(raw_clamp)==1 and temporal.count('tex2Dlod(LightingBuffer,')==1
-    and 'sampler2D SmoothedLighting : register(s9);' in hlsl and hlsl.count('SmoothedLighting')==3)
-checks['RemovalSmooth: half-res copy of LightingBuffer, one guarded smoothRemoval call, alpha untouched']=(removal.count(guard)==1 and hlsl.count('smoothRemoval(')==2
-    and removal.count('tex2Dlod(LightingBuffer,float4(q,0,0))')==1 and removal.rstrip().endswith('return current;\n}'))
+guard='[branch]if(RemovalInfo.y>0&&d<.99999)current.rgb=smoothRemoval(current,q,base,half,viewDistance(d));'
+raw_clamp='tex2Dlod(LightingBuffer,float4((clamp(base+offset,0,half-1)+.5)/half,0,0))'
+checks['TemporalLight uses smoothed current light and a raw-light neighbourhood in the separate route']=(
+    'merged?tex2Dlod(LightingBuffer,float4(q,0,0)):tex2Dlod(SmoothedLighting,float4(q,0,0))' in temporal
+    and raw_clamp in temporal and 'sampler2D SmoothedLighting : register(s9);' in hlsl
+    and 'return temporalLight(uv,false,DepthHistory,LightHistory);' in hlsl)
+checks['RemovalSmooth starts from raw light and leaves alpha untouched']=(
+    guard in removal and 'tex2Dlod(LightingBuffer,float4(q,0,0))' in removal
+    and removal.rstrip().endswith('return current;\n}'))
 checks['RemovalInfo aliases c30 (WaterInfo.x stays the water flag)']=('float4 WaterInfo : register(c30);' in hlsl and 'float4 RemovalInfo : register(c30);' in hlsl
-    and hlsl.count('RemovalInfo.x')==0)
+    and hlsl.count('RemovalInfo.x')==1 and 'if(RemovalInfo.x<.5)return false;' in hlsl)
 const='        const float drawnWeight=std::max(sourceWeights[0],0.f)+std::max(sourceWeights[1],0.f);\n        if(drawnWeight>.001f){c[30][1]=1;c[30][2]=1/drawnWeight;c[30][3]=.75f*std::fabs(projection[0])*float(w/2)*.5f;}\n'
 # 0.3.170: the TemporalReach (c15.w) lines sit between this block and the upload (test_shadow_shimmer).
 upload='        c[30][0]=waterMask?1.f:0.f;d->SetPixelShaderConstantF(0,&c[0][0],68);'
@@ -68,7 +66,7 @@ checks['BaselineLighting (s12): retained through removal/temporal, restored afte
     and w.index('d->SetTexture(12,baselineLight);')<w.index('{   // Temporal stabilization: retain this frame')
     and between.index('SetTexture(12,fogHeightReady?fogHeightTexture:nullptr)')<between.index('SetTexture(12,baselineLight)'))
 # 0.3.185 host: the pass is created, drawn right before the temporal pass with the samplers smoothRemoval reads, released and dumped.
-smoothdraw='if(removalDrawn){if(!check(d->SetRenderTarget(0,smoothSurface),"removal smoothing target"))return false;d->SetPixelShader(removalPS);if(!check(quad(w/2,h/2,false),"removal smoothing pass"))return false;}'
+smoothdraw='if(removalDrawn&&!mergedRemoval){if(!check(d->SetRenderTarget(0,smoothSurface),"removal smoothing target"))return false;d->SetPixelShader(removalPS);if(!check(quad(w/2,h/2,false),"removal smoothing pass"))return false;}'
 checks['RemovalSmooth host: shader, half-res fp16 target, release, F12 dump, drawn before the temporal pass; s9 (idle, rebound later) carries it']=(
     'pixel(kRemovalSmoothShader,removalPS' in w and '&smoothLight,&smoothSurface' not in w and 'drop(smoothSurface)' not in w and 'drop(smoothLight)' not in w and 'drop(removalPS)' in w
     and '*smoothSurface=nullptr' not in w and '*smoothLight=nullptr' not in w and 'auto* const smoothLight=fogBlurred;' in tb
@@ -100,11 +98,11 @@ for needle in ('clamp(RemovalInfo.w/z,3,16)','-1.442695/max(.25,z*.03)','32*Remo
                'return max(legacyT*max(baseline,.15),scene-min(fog,scene));','float3 ratio=current.rgb*legacyT/scale;',
                # 0.3.174: both Scene reads carry the contact AO (s10; a neutral 1 unless the world folds it)
                'tex2Dlod(Scene,float4(q,0,0)).rgb*tex2Dlod(AmbientOcclusion,float4(q,0,0)).a,fog,legacyT);',
-               'tex2Dlod(Scene,float4(tq,0,0)).rgb*tex2Dlod(AmbientOcclusion,float4(tq,0,0)).a,fog,legacyT),-shadowRemovalLimit())*w;total+=w;',
+               'tex2Dlod(Scene,float4(tq,0,0)).rgb*tex2Dlod(AmbientOcclusion,float4(tq,0,0)).a,fog,legacyT),-shadowRemovalLimit())*w;',
                # task 43: a zero-weight tap skips its three removalScale reads (it adds exactly 0; total+=w stays outside the branch)
                '[flatten]if(w>0)sum+=max(light.rgb*legacyT/removalScale(tex2Dlod(BaselineLighting,float4(tq,0,0)).rgb,',
                'float legacyT=max(mad(LegacyFog.w,saturate(pow(max(mad(z*Projection.z,LegacyFog.x,LegacyFog.y),0),LegacyFog.z))-1,1),.001);',
-               'float3 fog=(1-legacyT)*LegacyFogColor.rgb;','sum+=max(light.rgb*legacyT/removalScale(','fog,legacyT),-shadowRemovalLimit())*w;total+=w;',
+               'float3 fog=(1-legacyT)*LegacyFogColor.rgb;','sum+=max(light.rgb*legacyT/removalScale(','fog,legacyT),-shadowRemovalLimit())*w;',
                # 0.3.185 normal weight (cos 50 = .6428, 1/(cos 30 - cos 50) = 4.48) and the centre/tap normal reads
                'float4 centreNormal=tex2Dlod(NormalBuffer,float4(q,0,0));','float4 tapNormal=tex2Dlod(NormalBuffer,float4(tq,0,0));',
                'float agree=saturate((dot(centreNormal.xyz,tapNormal.xyz)-.6428)*5.67);',
@@ -113,9 +111,10 @@ for needle in ('clamp(RemovalInfo.w/z,3,16)','-1.442695/max(.25,z*.03)','32*Remo
                'result=lerp(ratio,sum/total,amount)*scale/legacyT;',
                # the composite terms mirrored above
                'float legacyT=mad(LegacyFog.w,saturate(pow(max(mad(viewZ*Projection.z,LegacyFog.x,LegacyFog.y),0),LegacyFog.z))-1,1);',
-               'float3 fogPart=min((1-legacyT)*LegacyFogColor.rgb,original.rgb);','float3 albedoT=min((hdrMode?hdrSurface:transported)/oldLight,legacyT);',
-               'color=max(color,mad(-shadowRemovalLimit(),transported,original.rgb));'):
-    assert hlsl.count(needle)==1,needle
+               'float3 fogPart=min((1-legacyT)*LegacyFogColor.rgb,original.rgb);','float3 albedoT=boundedAlbedo(hdrMode?hdrSurface:transported,materialLight,legacyT);',
+               'color=max(color,mad(-limit,transported,original.rgb));'):
+    occurrences = 2 if needle.endswith('-shadowRemovalLimit())*w;') or needle.startswith('sum+=') else 1
+    assert hlsl.count(needle)==occurrences,needle
 
 removal_body=hlsl[hlsl.index('float3 smoothRemoval'):hlsl.index('float4 RemovalSmooth')]
 assert removal_body.count('[unroll]for(int sub=0;sub<2;++sub)')==1

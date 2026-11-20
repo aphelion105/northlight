@@ -5,6 +5,7 @@ import argparse,hashlib,json,os,subprocess,sys
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
+from scripts.shaders.shader_sources import world_source_bytes
 from windows_gpu_guard import processes
 parser=argparse.ArgumentParser(__doc__)
 parser.add_argument('--host-only',action='store_true',help='Focused actual-renderer wiring regression; shader fixtures remain a separate full run.')
@@ -16,7 +17,7 @@ out=args.output.resolve();assert not fp.is_client(out);out.mkdir(parents=True,ex
 sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
 entries=['WorldFog','WorldFogActor','WorldFogActorTiled','WorldFogTransition','WorldFogActorTransition','WorldFogActorTiledTransition']
 world=json.loads((fp.SHADERS/'world-shader-build.json').read_text());transition=json.loads((fp.SHADERS/'shadow-transition-shader-build.json').read_text())
-assert world['source_sha256']==sha(fp.SHADERS/'world_effects.hlsl')
+assert world['source_sha256']==hashlib.sha256(world_source_bytes(fp.SHADERS/'world_effects.hlsl')).hexdigest()
 assert all(sha(fp.SHADERS/name)==value for name,value in transition['sources'].items())
 for entry in entries:
  for name in [entry,entry.replace('WorldFog','MoonFloorFog')]:

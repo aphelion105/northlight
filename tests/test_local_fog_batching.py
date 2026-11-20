@@ -13,6 +13,9 @@ import random
 import statistics
 import unittest
 from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from scripts.shaders.shader_sources import world_source_text
 
 BATCH = 4
 FOG_X, FOG_Y = 3.5, 1 / 12                      # near start, near ramp 1/length
@@ -211,7 +214,7 @@ class LocalFogBatching(unittest.TestCase):
 
     def test_model_matches_the_shader(self):
         # Keep the offline radiance law attached to the production shader.
-        h = HLSL.read_text()
+        h = world_source_text(HLSL)
         fog = h[h.index('float4 LocalFog('):h.index('float4 LocalFogCombine(')]
         combine = h[h.index('float4 LocalFogCombine('):]
         combine = combine[:combine.index('\n}\n')]

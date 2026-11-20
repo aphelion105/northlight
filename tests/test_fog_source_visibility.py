@@ -4,7 +4,11 @@ import re
 from pathlib import Path
 root = Path(__file__).resolve().parents[1]
 host = (root / 'src/world/world_renderer.h').read_text()
-shader = (root / 'shaders/world_effects.hlsl').read_text()
+import sys
+sys.path.insert(0,str(root))
+from scripts.shaders.shader_sources import world_source_text
+
+shader = world_source_text(root / 'shaders/world_effects.hlsl')
 assert 'sourceVis' not in host and 'kSourceVisibilityPSShader' not in host
 assert len(re.findall(r'\bSourceVisibility\b', shader)) == 1
 assert len(re.findall(r'\bSourceInfo\.[xy]\b', shader)) == 2

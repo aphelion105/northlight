@@ -5,6 +5,7 @@ import argparse,hashlib,json,os,re,shutil,statistics,subprocess,sys
 ROOT=Path(__file__).resolve().parents[1]
 sys.path[:0]=[str(ROOT),str(ROOT/'tests'),str(ROOT/'scripts')]
 import northlight_paths as fp
+from scripts.shaders.shader_sources import world_source_bytes
 from windows_gpu_guard import processes
 from build_renderer import source_identity
 
@@ -24,7 +25,7 @@ def main():
  processes();out=a.output.resolve();out.mkdir(parents=True,exist_ok=False)
  if a.base_composite:
   manifest=json.loads((ROOT/'shaders/world-shader-build.json').read_text())
-  assert manifest['shaders']['WorldBaseCompositeHdr']['source_sha256']==hashlib.sha256((ROOT/'shaders/world_effects.hlsl').read_bytes()).hexdigest(),'Recompile WorldBaseCompositeHdr before profiling the changed source'
+  assert manifest['shaders']['WorldBaseCompositeHdr']['source_sha256']==hashlib.sha256(world_source_bytes(ROOT/'shaders/world_effects.hlsl')).hexdigest(),'Recompile WorldBaseCompositeHdr before profiling the changed source'
  if a.compare_current:
   if not a.world_header:p.error('--compare-current requires --world-header')
   identity=source_identity(ROOT);reports={}

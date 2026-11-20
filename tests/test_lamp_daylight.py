@@ -6,6 +6,7 @@ sunlit factor (sun 30%, shadow/interior/night unchanged) and source/shader integ
 the point-shadow lamp are unchanged. Not a GPU or appearance test; no game, Wine or GPU."""
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
+from scripts.shaders.shader_sources import world_source_text
 import json
 import subprocess
 import tempfile
@@ -59,7 +60,7 @@ def native():
 
 def main():
     values = native()
-    shader = fp.src('world_effects.hlsl').read_text()
+    shader = world_source_text(fp.src('world_effects.hlsl'))
     cpu = fp.src('world_renderer.h').read_text()
     point = fp.src('world_point_rendering.inl').read_text()
     lighting = shader[shader.index('LightingOutput worldLightingValue('):shader.index('float4 WorldGI(')]
