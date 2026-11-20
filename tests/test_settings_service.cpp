@@ -82,6 +82,10 @@ int main(int argc,char** argv){
         fails([&]{applyChanges(docs,fields,std::string("Q\tQuality\tGIBrightness\t")+value+"\n");});
     auto next=active.quality;next.weather=1;next.commandStream=0;auto applied=liveQualityUpdate(active.quality,next);assert(applied.weather==1&&applied.commandStream==active.quality.commandStream);
     // Preserve the local material and AO schema through the new in-process service.
+    for(const auto* mode:{"0","1"}){
+        const auto selected=applyChanges(docs,fields,std::string("Q\tQuality\tAutoNormalFilter\t")+mode+"\n");
+        assert(liveQualityUpdate(active.quality,configOf(selected,"").quality).autoNormalFilter==unsigned(*mode-'0'));
+    }
     for(const auto* key:{"AutoBumpModels","AutoDisplacementStrength","AutoDisplacementDistance","AutoDisplacementDetail","AutoModelDisplacementStrength","AutoModelDisplacementDistance","AutoModelDisplacementDetail","AutoHeightBalance","AutoMaterialOcclusionDistance","AOQuality"}){
         unsigned found=0;for(const auto& f:fields)if(f.file==0&&f.key==key){++found;assert(f.available&&f.apply=="F");auto changed=applyChanges(docs,fields,f.id()+"\t"+f.factory+"\n");assert(configOf(changed,"").quality.preset==active.quality.preset);}assert(found==1);
     }

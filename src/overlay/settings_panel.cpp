@@ -49,7 +49,7 @@ const std::map<std::string,const char*> Labels={
     {"AutoParallaxDepth","POM depth (%)"},{"AutoParallaxDistance","POM distance (yards)"},{"AutoParallaxSteps","POM trace steps"},
     {"AutoParallaxShadows","POM self-shadowing"},{"AutoParallaxShadowStrength","Self-shadow strength (%)"},{"AutoParallaxShadowSteps","Self-shadow trace steps"},
     {"AutoCavity","Cavity shading"},{"AutoCavityStrength","Cavity strength (%)"},
-    {"AutoHeightPolarity","Height interpretation"},{"AutoHeightDetails","Colored height detail (%)"},
+    {"AutoHeightPolarity","Height interpretation"},{"AutoHeightDetails","Colored height detail (%)"},{"AutoNormalFilter","Material normal filter"},
     {"Preset","Quality preset"},{"Effects","All Northlight effects"},{"WorldShadows","World shadows"},{"WorldFog","Atmospheric fog"},{"LocalLights","Local light illumination"},{"GI","Global illumination"},{"GIStrength","GI influence (120 = full)"},{"GIBrightness","GI brightness adjustment (%)"},{"GIPrelitMix","GI / baked lighting blend (%)"},{"AuroraStrength","Northrend aurora (%)"},
     {"ShadowStrength","Shadow strength (%)"},{"ShadowSoftness","Penumbra size (%)"},{"ShadowContactRadius","Contact filter radius (0.01 texel)"},
     {"SoftShadows","Contact-hardening shadows"},{"ActorShadows","Character shadows"},{"ActorShadowDetail","Detailed character shadows"},{"GrassShadows","Grass shadows"},{"ActorShadowRadius","Character shadow distance"},
@@ -153,6 +153,7 @@ const std::map<std::string,std::vector<const char*>> Help={
     {"LocalLightLimit",{"Total budget for nearby lights illuminating the scene and fog, including shadowed lights and equipment. Shadow settings cannot increase this value. Higher values increase rendering work. Outgoing lights can briefly remain while fading out. 0 disables local illumination and its capture."}},
     {"EquipmentLights",{"Adds local lighting from supported equipped items, mounts and effects. Uses their light records and supported particle emitters; a glowing texture alone does not guarantee a light. Shares the local light limit."}},
     {"AutoBumpDistance",{"How far generated surface normals remain visible. Larger distances add detail to more surfaces and increase the number of pixels that need material shading."}},
+    {"AutoNormalFilter",{"Selects how normals are generated from diffuse textures on terrain, walls, grass and models. Both choices work with the selected material modes."}},
     {"AutoBumpModels",{"Applies material detail to model objects, including characters, creatures and props. Normal maps change lighting; POM adds apparent texture depth; displacement changes nearby geometry. Higher modes can exaggerate painted texture details."}},
     {"AutoParallaxDepth",{"Apparent depth of texture relief when using Normal maps + POM. 0 looks flat; high values can stretch or distort textures at shallow viewing angles. Does not change the object's silhouette."}},
     {"AutoParallaxDistance",{"How far POM texture relief remains visible before fading out. Larger distances shade more pixels with POM and cost more GPU time. Normal map distance is controlled separately."}},
@@ -251,8 +252,8 @@ const std::vector<Section> QualitySections={
         {"ao","Ambient occlusion","ContactAO","AOMethod AOQuality AOStrength AORadius",""},
         {"ambient","Environment",nullptr,"NightBrightness",""},
         {"local","Local illumination","LocalLights","LocalLightLimit PointShadows PointShadowLimit EquipmentLights","PointShadowDistance PointShadowRefreshMs PointShadowFacesPerFrame"}},true},
-    {"materials","Materials & parallax","AutoBump AutoBumpTerrain AutoBumpWalls AutoBumpGrass AutoBumpModels AutoBumpStrength AutoBumpDistance AutoParallaxDepth AutoParallaxDistance AutoParallaxSteps AutoParallaxShadows AutoParallaxShadowStrength AutoParallaxShadowSteps AutoCavity AutoCavityStrength AutoMaterialOcclusionDistance AutoDisplacementStrength AutoDisplacementDistance AutoDisplacementDetail AutoHeightBalance AutoModelDisplacementStrength AutoModelDisplacementDistance AutoModelDisplacementDetail",{
-        {"bump","Material modes","AutoBump","AutoBumpTerrain AutoBumpWalls AutoBumpGrass AutoBumpModels AutoBumpStrength AutoBumpDistance",""},
+    {"materials","Materials & parallax","AutoBump AutoBumpTerrain AutoBumpWalls AutoBumpGrass AutoBumpModels AutoNormalFilter AutoBumpStrength AutoBumpDistance AutoParallaxDepth AutoParallaxDistance AutoParallaxSteps AutoParallaxShadows AutoParallaxShadowStrength AutoParallaxShadowSteps AutoCavity AutoCavityStrength AutoMaterialOcclusionDistance AutoDisplacementStrength AutoDisplacementDistance AutoDisplacementDetail AutoHeightBalance AutoModelDisplacementStrength AutoModelDisplacementDistance AutoModelDisplacementDetail",{
+        {"bump","Material modes","AutoBump","AutoBumpTerrain AutoBumpWalls AutoBumpGrass AutoBumpModels AutoNormalFilter AutoBumpStrength AutoBumpDistance",""},
         {"geometry","Terrain and object displacement",nullptr,"AutoDisplacementStrength AutoDisplacementDistance AutoDisplacementDetail AutoHeightBalance",""},
         {"models","Model displacement",nullptr,"AutoModelDisplacementStrength AutoModelDisplacementDistance AutoModelDisplacementDetail",""},
         {"occlusionrange","Near material shading",nullptr,"AutoMaterialOcclusionDistance",""},
@@ -338,6 +339,7 @@ std::string regionLabel(const std::string& section){
 }
 std::string optionLabel(const Field& f,const std::string& value){
     if(f.file==D::Quality&&f.key=="ShadowProvider")return value=="0"?"Game":"Northlight";
+    if(f.file==D::Quality&&f.key=="AutoNormalFilter")return value=="0"?"Legacy":"Filtered";
     if(D::modeField(f))return value=="0"?"Off":value=="1"?"Normal maps":value=="2"?"Normal maps + POM":"Displacement + normals";
     if(value=="HBAOPlus")return "HBAO+ (D3D9)";
     if(f.file==D::Renderer&&f.key=="Backend"){

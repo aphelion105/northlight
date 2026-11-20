@@ -19,17 +19,41 @@ float4 AutoNormal(float2 uv:TEXCOORD0):COLOR0 {
     return float4(normal.xy*(127.0/255)+128.0/255,center,cavity);
 }
 
+float4 AutoNormalLegacy(float2 uv:TEXCOORD0):COLOR0 {
+    float x=luminance(uv+float2(Texel.x,0))-luminance(uv-float2(Texel.x,0));
+    float y=luminance(uv+float2(0,Texel.y))-luminance(uv-float2(0,Texel.y));
+    float3 normal=normalize(float3(-x*Texel.z,-y*Texel.z,1));
+    float center=luminance(uv);
+    float2 radius=Texel.xy*4;
+    float around=(luminance(uv+float2(radius.x,0))+luminance(uv-float2(radius.x,0))+luminance(uv+float2(0,radius.y))+luminance(uv-float2(0,radius.y)))*.25;
+    return float4(normal.xy*(127.0/255)+128.0/255,center,1-saturate((around-center-.01)*3));
+}
+
 // Broad painted anatomy and skin tones never become model volume. The radius
 // matches modelValue at the bounded CPU height mip (1/32 of the texture).
-float modelHeight(float2 uv){
+float modelHeight(float2 uv,float2 radius){
     float3 weight=float3(.299,.587,.114);
     float center=dot(tex2Dlod(Diffuse,float4(uv,0,0)).rgb,weight);
-    float around=dot(tex2Dlod(Diffuse,float4(uv+float2(1./32,0),0,0)).rgb+tex2Dlod(Diffuse,float4(uv-float2(1./32,0),0,0)).rgb+tex2Dlod(Diffuse,float4(uv+float2(0,1./32),0,0)).rgb+tex2Dlod(Diffuse,float4(uv-float2(0,1./32),0,0)).rgb,weight)*.25;
+    float around=dot(tex2Dlod(Diffuse,float4(uv+float2(radius.x,0),0,0)).rgb+tex2Dlod(Diffuse,float4(uv-float2(radius.x,0),0,0)).rgb+tex2Dlod(Diffuse,float4(uv+float2(0,radius.y),0,0)).rgb+tex2Dlod(Diffuse,float4(uv-float2(0,radius.y),0,0)).rgb,weight)*.25;
     return .5+clamp((center-around)*.7*HeightProfile.z,-.12,.12);
 }
 float4 AutoNormalModel(float2 uv:TEXCOORD0):COLOR0 {
-    float x=modelHeight(uv+float2(Texel.x,0))-modelHeight(uv-float2(Texel.x,0));
-    float y=modelHeight(uv+float2(0,Texel.y))-modelHeight(uv-float2(0,Texel.y));
-    float3 normal=normalize(float3(-x*Texel.z,-y*Texel.z,1));float center=modelHeight(uv);
+    // Average across the slope to soften stair-steps from the diffuse texture.
+    float2 halfTexel=.5*Texel.xy;
+    // A distant tap reproduces a painted edge at an unrelated surface point.
+    // Restrict the normal estimate to nearby texels and keep the height channel.
+    float2 radius=2*Texel.xy;
+    float se=modelHeight(uv+halfTexel,radius),sw=modelHeight(uv+float2(-halfTexel.x,halfTexel.y),radius);
+    float nw=modelHeight(uv-halfTexel,radius),ne=modelHeight(uv+float2(halfTexel.x,-halfTexel.y),radius);
+    float x=(se-sw)+(ne-nw),y=(se-ne)+(sw-nw);
+    float3 normal=normalize(float3(-x*Texel.z,-y*Texel.z,1));float center=modelHeight(uv,float2(1./32,1./32));
+    return float4(normal.xy*(127.0/255)+128.0/255,center,1-saturate((.5-center-.01)*3));
+}
+
+float4 AutoNormalModelLegacy(float2 uv:TEXCOORD0):COLOR0 {
+    const float2 radius=float2(1./32,1./32);
+    float x=modelHeight(uv+float2(Texel.x,0),radius)-modelHeight(uv-float2(Texel.x,0),radius);
+    float y=modelHeight(uv+float2(0,Texel.y),radius)-modelHeight(uv-float2(0,Texel.y),radius);
+    float3 normal=normalize(float3(-x*Texel.z,-y*Texel.z,1));float center=modelHeight(uv,radius);
     return float4(normal.xy*(127.0/255)+128.0/255,center,1-saturate((.5-center-.01)*3));
 }

@@ -156,7 +156,8 @@ struct Settings {
     unsigned autoDisplacementStrength=100,autoDisplacementDistance=12,autoDisplacementDetail=4;
     unsigned autoBumpModels=3,autoModelDisplacementStrength=25,autoModelDisplacementDistance=8,autoModelDisplacementDetail=2;
     unsigned autoHeightPolarity=0,autoHeightDetails=75,autoHeightBalance=50;
-    char origin[126]={'d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d'};
+    unsigned autoNormalFilter=1;
+    char origin[127]={'d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d'};
 };
 struct Key {
     const char* name;unsigned Settings::*field=nullptr;int Settings::*signedField=nullptr;
@@ -251,6 +252,7 @@ inline const Key Keys[]={
     {"AutoHeightPolarity",&Settings::autoHeightPolarity,0,2,{0,0,0}},
     {"AutoHeightDetails",&Settings::autoHeightDetails,0,100,{75,75,75}},
     {"AutoHeightBalance",&Settings::autoHeightBalance,0,100,{50,50,50}},
+    {"AutoNormalFilter",&Settings::autoNormalFilter,0,1,{1,1,1}},
     {"AutoParallaxShadows",&Settings::autoParallaxShadows,0,1,{1,0,0}},
     {"AutoParallaxShadowStrength",&Settings::autoParallaxShadowStrength,0,100,{70,60,50}},
     {"AutoParallaxShadowSteps",&Settings::autoParallaxShadowSteps,4,16,{8,6,4}},

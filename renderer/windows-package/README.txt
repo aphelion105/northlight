@@ -280,6 +280,7 @@ Individual settings (Quality / Balanced / Performance):
   AutoHeightPolarity 0 / 0 / 0   See the quality INI for the allowed range.
   AutoHeightDetails 75 / 75 / 75   See the quality INI for the allowed range.
   AutoHeightBalance 50 / 50 / 50   See the quality INI for the allowed range.
+  AutoNormalFilter 1 / 1 / 1   Generated normals for terrain, walls, grass and models. 0 = legacy, 1 = filtered.
   AutoParallaxShadows 1 / 0 / 0   See the quality INI for the allowed range.
   AutoParallaxShadowStrength 70 / 60 / 50   See the quality INI for the allowed range.
   AutoParallaxShadowSteps 8 / 6 / 4   See the quality INI for the allowed range.

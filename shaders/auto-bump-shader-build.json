@@ -1,5 +1,5 @@
 {
-  "normal_source_sha256": "b6c747672334a0bfaf1668b1a1f8e2c0534d46462009775fdff0a9033ddf011d",
+  "normal_source_sha256": "16c6b3db23989eff94cd4be7e4496195827cca3f97254bd1c23e9a20451db4ab",
   "parallax_source_sha256": {
     "auto_parallax.hlsl": "d256d10b900cfc8e00ed61fd8ee87b950bd40f814bc1a432b3f5cdf3300db727",
     "auto_parallax_prefix.hlsl": "5a5a6f29c2143e998602e1ae0d2687faf2158bb5db09a61b63345f238cefb6cb",
@@ -652,21 +652,21 @@
       }
     },
     "AutoNormalModel": {
-      "sha256": "7118623b229170d403278fcf61c0f0b2bae6378021988fdc8b90a45afa041cfc",
-      "static_instruction_slots": 167,
-      "temporary_registers": 6,
+      "sha256": "b8b9603ae4326de091bcaa004b2776744fd1e3fced4d28b14b16cff3027da437",
+      "static_instruction_slots": 181,
+      "temporary_registers": 9,
       "samplers": [
         0
       ],
       "instructions": {
-        "mov": 7,
-        "mul": 42,
-        "add": 45,
+        "mov": 26,
+        "mul": 27,
+        "add": 55,
         "texldl": 25,
         "dp3": 11,
         "max": 5,
-        "min": 3,
-        "cmp": 3,
+        "min": 4,
+        "cmp": 2,
         "rsq": 1
       }
     },
@@ -938,6 +938,49 @@
         "cmp": 2,
         "max": 1,
         "mov": 1
+      }
+    },
+    "AutoNormalLegacy": {
+      "sha256": "b7ee8f559ffa72688edd680dff9596a54f6cfb09c91ee05b5a09ccac5dc41045",
+      "static_instruction_slots": 497,
+      "temporary_registers": 4,
+      "samplers": [
+        0
+      ],
+      "instructions": {
+        "mov": 31,
+        "mul": 92,
+        "add": 128,
+        "texldl": 9,
+        "rcp": 18,
+        "cmp": 36,
+        "max": 45,
+        "dp3": 10,
+        "if": 18,
+        "min": 27,
+        "else": 18,
+        "endif": 18,
+        "abs": 1,
+        "rsq": 1
+      }
+    },
+    "AutoNormalModelLegacy": {
+      "sha256": "7118623b229170d403278fcf61c0f0b2bae6378021988fdc8b90a45afa041cfc",
+      "static_instruction_slots": 167,
+      "temporary_registers": 6,
+      "samplers": [
+        0
+      ],
+      "instructions": {
+        "mov": 7,
+        "mul": 42,
+        "add": 45,
+        "texldl": 25,
+        "dp3": 11,
+        "max": 5,
+        "min": 3,
+        "cmp": 3,
+        "rsq": 1
       }
     }
   },

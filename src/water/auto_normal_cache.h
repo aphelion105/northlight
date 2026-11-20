@@ -19,14 +19,14 @@ class NorthlightAutoNormalCache {
     std::unordered_map<IDirect3DBaseTexture9*,size_t> lookup[2];
     IDirect3DTexture9* leased[8]={};unsigned leaseCounts[8]={},leaseOverflow=0;
     size_t recent=0;
-    IDirect3DPixelShader9* shader=nullptr,*modelShader=nullptr;
+    IDirect3DPixelShader9* generators[2][2]={}; // [legacy / filtered][world / model]
     std::uint64_t bytes=0,sourceBytes=0,clock=0,budget=32ull<<20;
     unsigned generated=0,builds=0,hits=0,evictions=0,allocations=0,reuses=0;
     struct Refusal {IDirect3DTexture9* source=nullptr;std::uint64_t version=0;bool model=false;};
     Refusal refusals[16];unsigned attempts=0,attemptDeferred=0,refusalHits=0;
     void clearRefusals(){for(auto& refusal:refusals)drop(refusal.source);attempts=0;}
     unsigned generationDeferred=0,budgetRejected=0,visibleDeferred=0,diskPending=0,descriptionRejected=0;
-    unsigned polarity=0,details=75,balance=50,frame=0;bool memoryPressure=false,visibleWorkingSet=false;
+    unsigned polarity=0,details=75,balance=50,frame=0;bool filtered=true,memoryPressure=false,visibleWorkingSet=false;
     UINT vertexConstantCapacity=0; // Immutable for this device, including Reset.
     bool protectedOldest(const Entry& oldest){
         if(!oldest.normal||frame-oldest.lastUsedFrame>1)return false;
@@ -79,9 +79,13 @@ public:
     explicit NorthlightAutoNormalCache(IDirect3DDevice9* device):d(device),states(device){refreshBudget();}
     void setProfiler(NorthlightMaterialProfile* p){profile=p;}
     void setPersistentCache(const std::filesystem::path& path,const char* backend,const char* identity=nullptr,bool asyncReadback=false){try{disk=std::make_unique<NorthlightMaterialMapPersistence>(d,path,backend,identity,asyncReadback);}catch(...){logf("MATERIAL_DISK unavailable; memory cache retained");}}
-    ~NorthlightAutoNormalCache(){reset();drop(shader);drop(modelShader);}
+    ~NorthlightAutoNormalCache(){reset();for(auto& mode:generators)for(auto*& generator:mode)drop(generator);}
     void reset(){clearRefusals();if(disk)disk->reset();states.clear();for(auto& e:entries){drop(e.source);drop(e.normal);}entries.clear();for(auto& index:lookup)index.clear();recent=0;bytes=sourceBytes=0;visibleWorkingSet=false;}
-    void configure(const NorthlightQuality::Settings& s){if(polarity!=s.autoHeightPolarity||details!=s.autoHeightDetails||balance!=s.autoHeightBalance){reset();polarity=s.autoHeightPolarity;details=s.autoHeightDetails;balance=s.autoHeightBalance;}}
+    void configure(const NorthlightQuality::Settings& s){
+        const bool nextFiltered=s.autoNormalFilter!=0;
+        if(polarity==s.autoHeightPolarity&&details==s.autoHeightDetails&&balance==s.autoHeightBalance&&filtered==nextFiltered)return;
+        reset();polarity=s.autoHeightPolarity;details=s.autoHeightDetails;balance=s.autoHeightBalance;filtered=nextFiltered;
+    }
     void refreshBudget(){
         MEMORYSTATUSEX memory{};memory.dwLength=sizeof memory;
         const auto previous=budget;const bool sampled=!memoryPressure&&GlobalMemoryStatusEx(&memory);
@@ -140,7 +144,7 @@ public:
             if(protectedOldest(*oldest)){++visibleDeferred;return nullptr;}
         }
         NorthlightMaterialMapPersistence::Probe persisted;
-        if(disk){try{persisted=disk->probe(source,desc,model,polarity,details,balance,revision);}catch(...){}}
+        if(disk){try{persisted=disk->probe(source,desc,model,polarity,details,balance,revision,filtered);}catch(...){}}
         if(persisted.status==NorthlightMaterialMapPersistence::Status::Pending){
             // Reuse this frame's deferral through the same bounded source index.
             // A null map expires at endFrame; ready jobs are retried next frame.
@@ -168,7 +172,9 @@ public:
             const UINT count=vertexConstantCapacity;if(!count||FAILED(d->GetVertexShaderConstantF(0,vertex.values,count)))return nullptr;vertex.count=count;
         }
         SavedState saved(restored?nullptr:d,&states);if(!restored&&!saved.ok)return nullptr;
-        auto*& selected=model?modelShader:shader;if(!restored&&!selected&&FAILED(d->CreatePixelShader(model?kAutoNormalModelShader:kAutoNormalShader,&selected)))return nullptr;
+        static const DWORD* const programs[2][2]={{kAutoNormalLegacyShader,kAutoNormalModelLegacyShader},{kAutoNormalShader,kAutoNormalModelShader}};
+        auto*& selected=generators[filtered][model];
+        if(!restored&&!selected&&FAILED(d->CreatePixelShader(programs[filtered][model],&selected)))return nullptr;
         IDirect3DTexture9* normal=recycled.texture;recycled.texture=nullptr;IDirect3DSurface9* target=nullptr;
         if(normal)++reuses;
         else{if(FAILED(d->CreateTexture(width,height,0,D3DUSAGE_RENDERTARGET|D3DUSAGE_AUTOGENMIPMAP,D3DFMT_A8R8G8B8,D3DPOOL_DEFAULT,&normal,nullptr)))return nullptr;++allocations;}

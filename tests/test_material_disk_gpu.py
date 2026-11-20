@@ -26,7 +26,8 @@ with tempfile.TemporaryDirectory(prefix='restart-',dir=out) as folder:
     for fmt in a.formats:
         destination=Path(folder)/fmt
         modes=['produce','consume']
-        if a.extended and fmt=='rgba':modes+=['repair','consume','settings','settings-hit','equivalent']
+        if a.extended and fmt=='rgba':
+            modes+=['repair','consume','settings','settings-hit','equivalent','legacy-filter','legacy-filter-hit','consume']
         for index,mode in enumerate(modes):
             if mode=='repair':
                 for file in (destination/'maps').glob('*.nlm'):file.write_bytes(b'interrupted or corrupt cache entry')

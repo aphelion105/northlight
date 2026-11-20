@@ -32,7 +32,7 @@ inline bool same(const Field& f,const std::string& a,const std::string& b){
     return true;
 }
 // Material domains use named modes; grass exposes only its supported range.
-inline bool modeField(const Field& f){return f.file==Quality&&(f.key=="ShadowProvider"||f.key=="AutoBumpTerrain"||f.key=="AutoBumpWalls"||f.key=="AutoBumpGrass"||f.key=="AutoBumpModels");}
+inline bool modeField(const Field& f){return f.file==Quality&&(f.key=="ShadowProvider"||f.key=="AutoBumpTerrain"||f.key=="AutoBumpWalls"||f.key=="AutoBumpGrass"||f.key=="AutoBumpModels"||f.key=="AutoNormalFilter");}
 inline std::vector<std::string> modeOptions(const Field& f){std::vector<std::string> out;for(int i=0;i<=std::atoi(f.high.c_str());++i)out.push_back(std::to_string(i));return out;}
 // Quality keys other than Preset and the named enums carry their per-preset values in options ("quality,balanced,performance").
 inline bool presetValued(const Field& f){return f.file==Quality&&f.key!="Preset"&&f.kind!="enum";}
@@ -102,6 +102,7 @@ inline std::vector<std::string> dependencies(const Field& f){
     static const std::map<std::string,std::vector<std::string>> table={
         {"GIBrightness",{"GI","GIStrength"}},
         {"AutoBumpStrength",{"AutoBump"}},{"AutoBumpDistance",{"AutoBump"}},{"AutoBumpTerrain",{"AutoBump"}},{"AutoBumpWalls",{"AutoBump"}},{"AutoBumpGrass",{"AutoBump"}},{"AutoBumpModels",{"AutoBump"}},{"AutoMaterialOcclusionDistance",{"AutoBump"}},
+        {"AutoNormalFilter",{"AutoBump"}},
         {"AutoParallaxDepth",{"AutoBump"}},{"AutoParallaxDistance",{"AutoBump"}},{"AutoParallaxSteps",{"AutoBump"}},
         {"AutoParallaxShadows",{"AutoBump"}},{"AutoParallaxShadowStrength",{"AutoBump","AutoParallaxShadows"}},{"AutoParallaxShadowSteps",{"AutoBump","AutoParallaxShadows"}},
         {"AutoCavity",{"AutoBump"}},{"AutoCavityStrength",{"AutoBump","AutoCavity"}},
