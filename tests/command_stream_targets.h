@@ -184,7 +184,8 @@ struct TargetExt:FakeDevice {
     HRESULT GetTransform(D3DTRANSFORMSTATETYPE s,D3DMATRIX* m) override{if(unsigned(s)>=512||!m)return D3DERR_INVALIDCALL;*m=xf[s];return D3D_OK;}
     HRESULT SetFVF(DWORD f) override{FakeDevice::SetFVF(f);if(inBlock)return D3D_OK;fvfv=f;return D3D_OK;}
     HRESULT GetFVF(DWORD* f) override{*f=fvfv;return D3D_OK;}
-    HRESULT SetVertexShaderConstantF(UINT r,const float* d,UINT n) override{FakeDevice::SetVertexShaderConstantF(r,d,n);if(inBlock)return D3D_OK;for(UINT i=0;i<n&&r+i<256;++i)std::memcpy(vsF[r+i],d+4*i,16);return D3D_OK;}
+    UINT lastVertexConstantFirst=0,lastVertexConstantCount=0;
+    HRESULT SetVertexShaderConstantF(UINT r,const float* d,UINT n) override{FakeDevice::SetVertexShaderConstantF(r,d,n);lastVertexConstantFirst=r;lastVertexConstantCount=n;if(inBlock)return D3D_OK;for(UINT i=0;i<n&&r+i<256;++i)std::memcpy(vsF[r+i],d+4*i,16);return D3D_OK;}
     HRESULT GetVertexShaderConstantF(UINT r,float* d,UINT n) override{if(r+n>256)return D3DERR_INVALIDCALL;for(UINT i=0;i<n;++i)std::memcpy(d+4*i,vsF[r+i],16);return D3D_OK;}
     HRESULT SetRenderTarget(DWORD i,IDirect3DSurface9* s) override{FakeDevice::SetRenderTarget(i,s);if(inBlock)return D3D_OK;if(i==0)rep(rt0,static_cast<TSurface*>(wrapFake(s)));return D3D_OK;}
     HRESULT GetRenderTarget(DWORD i,IDirect3DSurface9** pp) override{if(i!=0||!rt0)return D3DERR_NOTFOUND;rt0->AddRef();*pp=rt0;return D3D_OK;}
@@ -235,6 +236,7 @@ struct TargetDevice:Counted<FakeDevice> {
     }
     ~TargetDevice() override{gDeviceDeletes.fetch_add(1);if(gActiveTarget==this)gActiveTarget=nullptr;sc->Release();}
     std::string digest(){return ext.digest();}
+    HRESULT GetDeviceCaps(D3DCAPS9* caps) override{*caps={};caps->MaxVertexShaderConst=256;return D3D_OK;}
     // -- state: Device -> unwrap -> ext (a Get reads what ext holds) --
     HRESULT SetRenderState(D3DRENDERSTATETYPE s,DWORD v) override{return ext.SetRenderState(s,v);}
     HRESULT GetRenderState(D3DRENDERSTATETYPE s,DWORD* v) override{return ext.GetRenderState(s,v);}

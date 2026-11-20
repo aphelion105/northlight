@@ -3577,6 +3577,7 @@ public:
         autoBump->setTrustedConstantEpochSource(ext->trustedConstantSource());
         const auto rasterSource=[](void* context,const D3DRENDERSTATETYPE* keys,unsigned count,DWORD* out){return static_cast<ExtensionDevice*>(static_cast<IDirect3DDevice9*>(context))->knownRenderStates(keys,count,out);};
         autoBump->setRasterStateSource(static_cast<IDirect3DDevice9*>(ext),rasterSource);
+        autoBump->setDrawStateSource(*ext);
         world->setCaptureRasterStateSource(static_cast<IDirect3DDevice9*>(ext),rasterSource);
         autoBump->setEmptyTargetSource(static_cast<IDirect3DDevice9*>(ext),[](void* context){return static_cast<ExtensionDevice*>(static_cast<IDirect3DDevice9*>(context))->emptyAuxiliaryTargets();});
         modelNormals->setRasterStateSource(static_cast<IDirect3DDevice9*>(ext),rasterSource);

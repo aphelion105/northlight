@@ -65,7 +65,7 @@ bool decodeSection(std::uintptr_t frame,std::uintptr_t top,Word word,Half half,i
             const auto matrix=palette+64u*index;
             for(unsigned row=0;row<3;++row)for(unsigned col=0;col<4;++col){
                 std::uint32_t sent;
-                std::memcpy(&sent,&bank.v[31+3*b+row][col],sizeof sent);
+                std::memcpy(&sent,bank.at(31+3*b+row)+col,sizeof sent);
                 if(sent!=word(matrix+16*col+4*row)){++stats.paletteMismatch;return false;}
             }
         }

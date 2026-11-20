@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 
 namespace NorthlightEquipmentLights {
 inline constexpr unsigned Capacity=NorthlightLocalLightSelection::Capacity,MemoBanks=64,MaxReadsPerFrame=64,BackgroundReads=32;
@@ -89,19 +90,53 @@ struct Tracker {
     std::array<Entry,Capacity> entries{};unsigned count=0,banks=0,backgroundBanks=0,bankDuplicates=0,observed=0,duplicates=0,dropped=0;std::uint64_t serial=0;std::uint32_t updated=0;
     struct Bank {std::array<std::array<float,9>,4> sources{};unsigned count=0;};
     std::array<Bank,MemoBanks> frameBanks{};
+    std::array<std::uint32_t,MemoBanks> frameFingerprints{};
+    std::array<float,44> lastOrderedBank{};
+    unsigned lastOrderedPoints=0,orderedBankDuplicates=0;
     std::array<NorthlightLocalLights::Light,Capacity> output{};unsigned outputCount=0;
     std::array<std::uint64_t,Capacity> suppressed{};unsigned suppressedCount=0;
     void reset(){count=outputCount=suppressedCount=0;updated=0;nextFrame();}
-    void nextFrame(){banks=backgroundBanks=bankDuplicates=observed=duplicates=dropped=0;}
+    void nextFrame(){banks=backgroundBanks=bankDuplicates=observed=duplicates=dropped=0;lastOrderedPoints=orderedBankDuplicates=0;}
     bool admit(const float* bank,unsigned points=4,bool actor=true){
-        if(!bank||!points||points>4)return false;Bank key;key.count=points;
+        if(!bank||!points||points>4)return false;
+        // The last valid input is still in the ring. Consecutive model sections
+        // often use the same registers and can bypass sorting and lookup.
+        const size_t orderedBytes=(40+points)*sizeof(float);
+        if(lastOrderedPoints==points&&!std::memcmp(lastOrderedBank.data(),bank,orderedBytes)){
+            ++orderedBankDuplicates;++bankDuplicates;return false;
+        }
+        Bank key;key.count=points;
         // Unused point slots and colour/position .w components are not inputs
         // to the proven native lighting expression. Slot order is irrelevant.
         for(unsigned i=0;i<points;++i)for(unsigned k=0;k<3;++k){auto& s=key.sources[i];s[k]=bank[4*i+k];s[3+k]=bank[4*(4+i)+k];s[6+k]=bank[4*(8+k)+i];}
         for(unsigned i=0;i<points;++i)for(float v:key.sources[i])if(!std::isfinite(v))return false;
         std::sort(key.sources.begin(),key.sources.begin()+points);
-        for(unsigned i=0;i<std::min(banks,MemoBanks);++i)if(frameBanks[i].count==points&&std::equal(key.sources.begin(),key.sources.begin()+points,frameBanks[i].sources.begin())){++bankDuplicates;return false;}
-        frameBanks[banks++%MemoBanks]=key;if(!actor)++backgroundBanks;return true;
+        // Scan compact fingerprints before touching the banks. Zero and
+        // subnormal values share a tag because the game's FP mode may compare
+        // them as equal. Matches still need the full comparison.
+        const auto fingerprintWord=[](const float& value){
+            std::uint32_t bits;std::memcpy(&bits,&value,sizeof bits);
+            return (bits&0x7f800000u)?bits:0u;
+        };
+        std::uint32_t fingerprint=points;
+        for(unsigned i=0;i<points;++i){
+            const auto& source=key.sources[i];
+            const auto rgb=fingerprintWord(source[0]),x=fingerprintWord(source[3]);
+            const auto y=fingerprintWord(source[4]),z=fingerprintWord(source[5]);
+            fingerprint=(fingerprint^(rgb<<1)^(x<<2)^(y<<3)^(z<<4))*16777619u;
+        }
+        lastOrderedPoints=points;
+        std::memcpy(lastOrderedBank.data(),bank,orderedBytes);
+        for(unsigned i=0;i<std::min(banks,MemoBanks);++i){
+            if(frameFingerprints[i]!=fingerprint)continue;
+            const auto& entry=frameBanks[i];
+            if(entry.count==points&&
+               std::equal(key.sources.begin(),key.sources.begin()+points,entry.sources.begin())){
+                ++bankDuplicates;return false;
+            }
+        }
+        const unsigned slot=banks++%MemoBanks;
+        frameFingerprints[slot]=fingerprint;frameBanks[slot]=key;if(!actor)++backgroundBanks;return true;
     }
     void observe(const Native& n,std::uint32_t now,const std::vector<NorthlightLocalLights::Light>& fixed,const float* camera=nullptr,std::uint64_t nativeId=0,std::uint32_t flags=0,std::uint32_t fixtureTag=0){
         ++observed;if(staticDuplicate(n,fixed)){++duplicates;return;}
@@ -166,9 +201,11 @@ struct Tracker {
             if(owned(p.id))continue;
             if(std::max({p.color[0],p.color[1],p.color[2]})<.01f||p.attenuation[0]+p.attenuation[1]+p.attenuation[2]<.001f||distance2(p.position,camera)>MaxDistance*MaxDistance)continue;
             Native n;std::copy_n(p.position,3,n.position);std::copy_n(p.color,3,n.color);std::copy_n(p.attenuation,3,n.attenuation);
-            // Scene snapshots identify an actual emitter, including moving
-            // equipment. Anonymous draw-bank observations remain unshadowed.
-            observe(n,now,fixed,camera,p.id,NorthlightLocalLights::CastShadow,p.reserved);
+            // Only identified fixtures get cubes. Equipment keeps its scene
+            // identity so a matching particle cannot replace its light.
+            const auto flags=p.flags&(NorthlightNativeLights::WorldFixture|NorthlightNativeLights::MenuFixture)?
+                NorthlightLocalLights::CastShadow:NorthlightLocalLights::NativeSceneEmitter;
+            observe(n,now,fixed,camera,p.id,flags,p.reserved);
             for(unsigned j=0;j<count;++j)if(entries[j].nativeId==p.id){std::copy_n(p.emitterOffset,3,entries[j].emitterOffset.begin());break;}
         }
         // A draw can have reported the new hue before the scene snapshot

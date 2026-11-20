@@ -23,6 +23,8 @@ HARNESS = r'''
 struct IDirect3DVertexShader9 {};
 using DWORD=std::uint32_t;
 namespace NorthlightDiagnostics {inline bool enabled(){return false;}}
+// Authored room lighting uses a separate proof from the point-light one here.
+namespace NorthlightUnlitReceiver {inline bool nativeLightingShader(const std::uint32_t*,std::size_t,bool){return false;}}
 static void logf(const char*,...){}
 struct Registration {
     bool on=false;
@@ -30,6 +32,7 @@ struct Registration {
     std::unordered_map<IDirect3DVertexShader9*,bool> nativePointOwners;
     std::unordered_set<IDirect3DVertexShader9*> terrainShaders;
     std::unordered_set<IDirect3DVertexShader9*> nativeTerrainPointShaders;
+    std::unordered_set<IDirect3DVertexShader9*> nativeLightingShaders,wmoShaders;
     bool equipmentLightsOn()const{return on;}
     void registerEquipmentShader(IDirect3DVertexShader9* shader,const DWORD* code,size_t count){registerNativePointShader(shader,code,count,true);}
     // PRODUCTION_REGISTRATION

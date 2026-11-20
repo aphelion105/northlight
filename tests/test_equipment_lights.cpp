@@ -11,6 +11,9 @@
 #include <sstream>
 #include <cstdio>
 #include <cstring>
+#if defined(__SSE2__)
+#include <xmmintrin.h>
+#endif
 using namespace NorthlightEquipmentLights;
 static std::array<float,16> identity(){std::array<float,16> m{};m[0]=m[5]=m[10]=m[15]=1;return m;}
 static void bankDecodeParity(){
@@ -43,8 +46,42 @@ static void bankDecodeParity(){
     decodeBank(bank,4,nullptr,camera,values,valid);for(bool v:valid)assert(!v);
     decodeBank(bank,4,matrix.data(),nullptr,values,valid);for(bool v:valid)assert(!v);
 }
+static void bankMemoParity(){
+    Tracker tracker;
+    float onePoint[41]{};
+    onePoint[0]=1;onePoint[40]=.1f;
+    assert(tracker.admit(onePoint,1)&&!tracker.admit(onePoint,1));
+    assert(tracker.orderedBankDuplicates==1);
+    onePoint[1]=-0.f;assert(!tracker.admit(onePoint,1));
+    onePoint[3]=17;assert(!tracker.admit(onePoint,1)); // Ignored W.
+    onePoint[1]=NAN;assert(!tracker.admit(onePoint,1));
+    assert(tracker.banks==1&&tracker.bankDuplicates==3&&tracker.orderedBankDuplicates==1);
+    onePoint[1]=-0.f;assert(!tracker.admit(onePoint,1));
+    assert(tracker.orderedBankDuplicates==2);
+    tracker.nextFrame();assert(tracker.admit(onePoint,1)&&!tracker.orderedBankDuplicates);
+
+    // Equal fingerprints must still compare all points. Push the oldest
+    // canonical bank out of the ring, even if it was read again in between.
+    tracker.nextFrame();float twoPoints[44]{};twoPoints[4]=1000;
+    for(unsigned i=0;i<MemoBanks;++i){twoPoints[2]=float(i);assert(tracker.admit(twoPoints,2));}
+    twoPoints[2]=0;assert(!tracker.admit(twoPoints,2));
+    twoPoints[2]=float(MemoBanks);assert(tracker.admit(twoPoints,2));
+    twoPoints[2]=0;assert(tracker.admit(twoPoints,2));
+    assert(tracker.banks==MemoBanks+2&&tracker.bankDuplicates==1);
+
+#if defined(__SSE2__)
+    const auto csr=_mm_getcsr();
+    _mm_setcsr(csr|0x0040); // Treat denormal inputs as zero, as the client may.
+    tracker.nextFrame();onePoint[16]=0.f;assert(tracker.admit(onePoint,1));
+    volatile float tiny=std::numeric_limits<float>::denorm_min();
+    onePoint[16]=tiny;
+    assert(tracker.admit(onePoint,1)==(tiny!=0.f));
+    _mm_setcsr(csr);
+#endif
+}
 int main(){
     bankDecodeParity();
+    bankMemoParity();
     float camera[3]={100,200,300},bank[44]={};auto inv=identity();inv[12]=100;inv[13]=200;inv[14]=300;
     bank[0]=.2f;bank[1]=.4f;bank[2]=.8f;bank[16]=2;bank[17]=-3;bank[18]=4;bank[32]=1;bank[36]=.2f;bank[40]=.01f;
     Native n;assert(decode(bank,0,inv.data(),camera,n));assert(n.position[0]==102&&n.position[1]==197&&n.position[2]==304);

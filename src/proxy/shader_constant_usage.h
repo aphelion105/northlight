@@ -11,6 +11,7 @@ struct Range {unsigned first=0,count=0;};
 struct Usage {
     Range floats{0,256},booleans{0,16},integers{0,16};
     bool analyzed=false,relativeFloat=false;
+    Range weightedFloats{}; // Fixed rows of an audited c[31..33 + 3 * BLENDINDICES0] shader.
 };
 
 namespace Detail {
@@ -38,6 +39,8 @@ inline Usage analyze(const uint32_t* words,std::size_t wordCount,unsigned projec
     bool floats[256]={},booleans[16]={},integers[16]={};
     bool defFloat[256]={},defBool[16]={},defInt[16]={};
     bool relative=false,executable=false,ended=false;
+    bool palette=major>=2,blendIndices=false,scaleThree=false,hasAddress=false;
+    uint32_t previousIndexMultiply=0;
     std::size_t cursor=1;
     while(cursor<wordCount){
         uint32_t instruction=words[cursor];unsigned op=instruction&65535;
@@ -55,16 +58,20 @@ inline Usage analyze(const uint32_t* words,std::size_t wordCount,unsigned projec
         unsigned length=major==1?unsigned(implicit):(instruction>>24)&15;
         if(length>wordCount-cursor-1)return fallback;
         std::size_t next=cursor+length+1;
+        const uint32_t indexMultiply=previousIndexMultiply;
+        previousIndexMultiply=0;
         if(op==31){
             if(length!=2||executable)return fallback;
             uint32_t destination=words[cursor+2];
             if(!(destination&0x80000000u)||(destination&0x2000u)||Detail::constant(regType(destination)))return fallback;
             // Declaration usage bits are semantics, not register operands.
+            if(regType(destination)==1&&regIndex(destination)==2)
+                blendIndices=(words[cursor+1]&0x000f000fu)==2u&&destination==0x900f0002u;
         }else if(op==81||op==48||op==47){
             if(executable||length!=(op==47?2u:5u))return fallback;
             uint32_t destination=words[cursor+1];unsigned type=regType(destination),index=regIndex(destination);
             if(!(destination&0x80000000u)||(destination&0x2000u))return fallback;
-            if(op==81){if(type!=2||index>=256)return fallback;defFloat[index]=true;}
+            if(op==81){if(type!=2||index>=256)return fallback;defFloat[index]=true;if(!index)scaleThree=words[cursor+2]==0x40400000u;}
             else if(op==48){if(type!=7||index>=16)return fallback;defInt[index]=true;}
             else{if(type!=14||index>=16)return fallback;defBool[index]=true;}
             // DEF/DEFI/DEFB payloads are literal bit patterns. Never inspect
@@ -74,6 +81,12 @@ inline Usage analyze(const uint32_t* words,std::size_t wordCount,unsigned projec
         }else{
             executable=true;int formal=arithmeticOperands(op,major);
             if(formal<0)return fallback;
+            // Match the stock full-vector MUL/MOVA sequence. Any other a0
+            // writer or relative operand invalidates the narrow upload proof.
+            if(op==5&&length==3&&(words[cursor+1]&~31u)==0x800f0000u&&
+               ((words[cursor+2]==0xa0000000u&&words[cursor+3]==0x90e40002u)||
+                (words[cursor+2]==0x90e40002u&&words[cursor+3]==0xa0000000u)))
+                previousIndexMultiply=words[cursor+1];
             std::size_t parameter=cursor+1;
             for(int operand=0;operand<formal;++operand){
                 if(parameter>=next)return fallback;
@@ -82,6 +95,11 @@ inline Usage analyze(const uint32_t* words,std::size_t wordCount,unsigned projec
                 bool indirect=(token&0x2000u)!=0;
                 if(operand==0){
                     if(indirect||Detail::constant(type))return fallback;
+                    if(type==3){
+                        palette=palette&&!hasAddress&&op==46&&length==2&&token==0xb00f0000u&&
+                            indexMultiply&&words[cursor+2]==(0x80e40000u|(indexMultiply&31u));
+                        hasAddress=true;
+                    }
                 }else{
                     // Extended float banks encode c2048/c4096/c6144 rather than
                     // c0..255. They are outside this client's capture contract.
@@ -108,7 +126,9 @@ inline Usage analyze(const uint32_t* words,std::size_t wordCount,unsigned projec
                         // token. Preserve the full float bank for that path.
                         if(major>=2){if(parameter>=next)return fallback;
                             uint32_t address=words[parameter++];unsigned addressType=regType(address);
-                            if(!(address&0x80000000u)||(address&0x2000u)||(addressType!=3&&addressType!=15))return fallback;}
+                            if(!(address&0x80000000u)||(address&0x2000u)||(addressType!=3&&addressType!=15))return fallback;
+                            palette=palette&&hasAddress&&type==2&&index>=31&&index<=33&&rows==1&&
+                                (address==0xb0000000u||address==0xb0550000u||address==0xb0aa0000u||address==0xb0ff0000u);}
                     }
                 }
             }
@@ -131,6 +151,7 @@ inline Usage analyze(const uint32_t* words,std::size_t wordCount,unsigned projec
     }
     Usage result;result.analyzed=true;result.relativeFloat=relative;
     result.floats=relative?Range{0,256}:Detail::range(floats);
+    if(relative&&palette&&blendIndices&&scaleThree&&hasAddress)result.weightedFloats=Detail::range(floats);
     result.booleans=Detail::range(booleans);result.integers=Detail::range(integers);
     return result;
 }

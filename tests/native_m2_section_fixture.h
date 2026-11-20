@@ -17,10 +17,10 @@ static void nativeM2Section(){
     std::unordered_map<unsigned,uint16_t> halves{
         {material+2,0},{section+4,3},{section+6,9},{section+8,7},{section+10,12},
         {section+12,2},{section+14,3},{selection+6,1},{selection+8,0}};
-    struct Bank{float v[256][4]{};bool allKnown(unsigned r,unsigned n)const{return r==31&&n==6;}} bank;
+    struct Bank{float v[256*4]{};float* at(unsigned r){return v+4*r;}const float* at(unsigned r)const{return v+4*r;}bool allKnown(unsigned r,unsigned n)const{return r==31&&n==6;}} bank;
     for(unsigned b=0;b<2;++b)for(unsigned row=0;row<3;++row)for(unsigned col=0;col<4;++col){
         float value=float(b*16+row*4+col);uint32_t bits;std::memcpy(&bits,&value,4);
-        bank.v[31+b*3+row][col]=value;words[palette+64*(1-b)+16*col+4*row]=bits;
+        bank.at(31+b*3+row)[col]=value;words[palette+64*(1-b)+16*col+4*row]=bits;
     }
     ProducerStats stats;Section s{};
     auto match=[&](int base=4,unsigned start=57,unsigned count=4){
@@ -30,7 +30,7 @@ static void nativeM2Section(){
     assert(match()&&s.model==model&&s.material==material&&s.section==section&&s.bones==2&&s.combo==3&&stats.paletteChecks==1);
     assert(!match(0)&&!match(4,7)&&!match(4,57,3));
     words[gxDevice+0x224]=1;assert(match(0));words[gxDevice+0x224]=0;
-    bank.v[34][1]+=1;assert(!match()&&stats.paletteMismatch==1);bank.v[34][1]-=1;
+    bank.at(34)[1]+=1;assert(!match()&&stats.paletteMismatch==1);bank.at(34)[1]-=1;
     halves[material+2]=1;assert(!match());halves[material+2]=0;
     words[ctx+0x4c]=1;assert(!match());words[ctx+0x4c]=0;
     words[batch+4]=0x823a8c;assert(!match());words[batch+4]=0x823a88;

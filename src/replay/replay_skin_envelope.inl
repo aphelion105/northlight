@@ -16,7 +16,7 @@ template<bool Upper> inline float outwardNormal(float value){
 // All other programs retain the general interval evaluator.
 struct SkinEnvelope {
     struct Bone {float low[3]={},high[3]={};bool used=false;};
-    Bone bones[75];unsigned usedBones=0;unsigned char order[75]={}; /* used bones in first-use order */double sumLow=INFINITY,sumHigh=-INFINITY,maxPosition[4]={0,0,0,1};
+    Bone bones[75];unsigned usedBones=0,paletteEnd=0;unsigned char order[75]={}; /* used bones in first-use order */double sumLow=INFINITY,sumHigh=-INFINITY,maxPosition[4]={0,0,0,1};
     static bool supports(const NorthlightActorDeformation::Program& p){
         if((p.major!=2&&p.major!=3)||p.positionRegister>1||p.textureCoordinates||p.operations.size()!=18||p.inputs.size()!=3)return false;
         bool inputs[3]={};for(const auto& i:p.inputs){if(i.reg>=3||i.usage!=i.reg||i.index)return false;inputs[i.reg]=true;}if(!inputs[0]||!inputs[1]||!inputs[2])return false;
@@ -67,8 +67,9 @@ struct SkinEnvelope {
         if(!std::isfinite(sumHi)||sumHi>16)return false; // Pathological inputs stay on the general evaluator.
         sumLow=std::min(sumLow,std::max(0.,sumLo));sumHigh=std::max(sumHigh,sumHi);
         for(unsigned axis=0;axis<3;++axis)maxPosition[axis]=std::max(maxPosition[axis],std::fabs(double(position[axis])));
-        for(unsigned slot=0;slot<4;++slot){auto& b=bones[unsigned(indices[slot])];
-            for(unsigned axis=0;axis<3;++axis){if(!b.used)b.low[axis]=b.high[axis]=position[axis];else{b.low[axis]=std::min(b.low[axis],position[axis]);b.high[axis]=std::max(b.high[axis],position[axis]);}}if(!b.used)order[usedBones++]=(unsigned char)(unsigned(indices[slot]));b.used=true;
+        for(unsigned slot=0;slot<4;++slot){const auto index=unsigned(indices[slot]);auto& b=bones[index];
+            for(unsigned axis=0;axis<3;++axis){if(!b.used)b.low[axis]=b.high[axis]=position[axis];else{b.low[axis]=std::min(b.low[axis],position[axis]);b.high[axis]=std::max(b.high[axis],position[axis]);}}
+            if(!b.used){order[usedBones++]=static_cast<unsigned char>(index);paletteEnd=std::max(paletteEnd,index+1);b.used=true;}
         }return true;
     }
     // supports() proves this kernel reads POSITION0, BLENDWEIGHT0 and

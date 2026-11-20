@@ -1213,11 +1213,49 @@ static void captureDrawState(){
  {ExtensionDevice::RawScope raw(view);assert(!view.knownFrameViewport(b,same,out));}
  assert(!view.knownFrameViewport(b,same,out));a->Release();b->Release();
 }
+static void materialCaptureState(){
+ Backend backend;DeviceMirror mirror;ExtensionDevice ext(&backend,&mirror);
+ auto* color=new Object<IDirect3DSurface9>();auto* depth=new Object<IDirect3DSurface9>();
+ ExtensionDevice::MaterialCaptureState state{};
+ assert(!ext.knownMaterialCaptureState(state)&&!state.color&&!state.depth);
+ assert(SUCCEEDED(ext.SetRenderTarget(0,color))&&SUCCEEDED(ext.SetDepthStencilSurface(depth)));
+ const D3DVIEWPORT9 viewport{0,0,1280,720,0,1};
+ assert(SUCCEEDED(ext.SetViewport(&viewport)));
+ auto warm=[&]{
+  IDirect3DSurface9* surface=nullptr;D3DVIEWPORT9 observed{};DWORD value=0;
+  assert(SUCCEEDED(ext.GetRenderTarget(0,&surface))&&surface==color);surface->Release();
+  assert(SUCCEEDED(ext.GetDepthStencilSurface(&surface))&&surface==depth);surface->Release();
+  assert(SUCCEEDED(ext.GetViewport(&observed))&&ext.emptyAuxiliaryTargets());
+  assert(SUCCEEDED(ext.GetRenderState(D3DRS_ALPHATESTENABLE,&value)));
+  assert(SUCCEEDED(ext.GetRenderState(D3DRS_ALPHABLENDENABLE,&value)));
+ };
+ assert(SUCCEEDED(ext.SetRenderState(D3DRS_ALPHATESTENABLE,TRUE)));
+ assert(SUCCEEDED(ext.SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE)));warm();
+ const auto gets=backend.gets;
+ const unsigned colorRefs=color->refs.load(),depthRefs=depth->refs.load();
+ assert(ext.knownMaterialCaptureState(state)&&backend.gets==gets);
+ assert(state.color==color&&state.depth==depth&&state.viewport.Width==1280&&state.alphaTest&&!state.blend);
+ assert(color->refs==colorRefs+1&&depth->refs==depthRefs+1);
+ state.color->Release();state.depth->Release();state={};
+ assert(SUCCEEDED(ext.SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE)));warm();
+ assert(!ext.knownMaterialCaptureState(state)&&!state.color&&!state.depth);
+ DWORD value=0;
+ assert(SUCCEEDED(ext.SetRenderState(D3DRS_SRCBLEND,D3DBLEND_SRCALPHA))&&SUCCEEDED(ext.GetRenderState(D3DRS_SRCBLEND,&value)));
+ assert(SUCCEEDED(ext.SetRenderState(D3DRS_DESTBLEND,D3DBLEND_INVSRCALPHA))&&SUCCEEDED(ext.GetRenderState(D3DRS_DESTBLEND,&value)));
+ assert(ext.knownMaterialCaptureState(state)&&state.blend&&state.sourceBlend==D3DBLEND_SRCALPHA&&state.destinationBlend==D3DBLEND_INVSRCALPHA);
+ state.color->Release();state.depth->Release();state={};
+ assert(SUCCEEDED(ext.SetRenderTarget(1,depth))&&!ext.knownMaterialCaptureState(state));
+ assert(SUCCEEDED(ext.SetRenderTarget(1,nullptr)));warm();
+ {ExtensionDevice::RawScope raw(ext);assert(!ext.knownMaterialCaptureState(state));}
+ assert(!ext.knownMaterialCaptureState(state)&&!state.color&&!state.depth);
+ color->Release();depth->Release();
+ std::puts("PASS material capture snapshot: complete proof, owned surfaces, blend factors, MRT and raw invalidation");
+}
 int main(int argc,char** argv){
  const auto mode=[&](const char* name){return argc>1&&!std::strcmp(argv[1],name);};
  const unsigned rounds=argc>2?unsigned(std::atoi(argv[2])):10000;
  if(mode("census")){gateCensus();return 0;}
- if(mode("auxiliary")){auxiliaryTargetProofs();assert(!liveObjects);return 0;}
+ if(mode("auxiliary")){auxiliaryTargetProofs();materialCaptureState();assert(!liveObjects);return 0;}
  if(mode("local-lights")){diagnosticConstantWrites();assert(!liveObjects);return 0;}
  if(mode("nesting")){ownerNesting();return 0;}
  if(mode("waits")){foreignWaits();return 0;}
@@ -1225,5 +1263,5 @@ int main(int argc,char** argv){
  if(mode("exclusive")){ownerNesting(true);foreignWaits(true);ownerStress(rounds,true);std::puts("PASS exclusive owner mode");return 0;}
  if(mode("owner")){ownerIdentity();ownerNesting();foreignWaits();ownerStress(rounds);ownerNesting(true);foreignWaits(true);ownerStress(rounds,true);assert(!liveObjects);return 0;}
  if(mode("threads")){singleGate();gateCensus();rawScopeConcurrency();concurrency();ownerNesting();foreignWaits();ownerStress(rounds);ownerNesting(true);foreignWaits(true);ownerStress(rounds,true);std::puts("PASS threads");return 0;}
- auxiliaryTargetProofs();assert(!liveObjects);
+ auxiliaryTargetProofs();materialCaptureState();assert(!liveObjects);
  ownerIdentity();assert(!liveObjects);ownerNesting();assert(!liveObjects);foreignWaits();assert(!liveObjects);ownerStress(rounds);assert(!liveObjects);ownerNesting(true);foreignWaits(true);ownerStress(rounds,true);assert(!liveObjects);gateCensus();assert(!liveObjects);knownScan();assert(!liveObjects);singleGate();writeThroughLearning();assert(!liveObjects);writeThroughImplicitState();assert(!liveObjects);writeThroughDifferential();assert(!liveObjects);rawScopeDispatchArguments();assert(!liveObjects);rawScopeBanksAndReentry();assert(!liveObjects);rawScopeRestoreAndControls();assert(!liveObjects);rawScopeConcurrency();assert(!liveObjects);rawScopeShadowWorkload();assert(!liveObjects);implicitConstantBanks();assert(!liveObjects);constantCertificates();assert(!liveObjects);auditCoverageAndSchedule();assert(!liveObjects);captureDrawState();assert(!liveObjects);static_assert(!std::is_copy_constructible<DeviceMirror>::value,"mirror cannot copy mutex/state");bindingsAndScalars();assert(!liveObjects);constantBanks();assert(!liveObjects);diagnosticConstantWrites();assert(!liveObjects);constantCapabilities();assert(!liveObjects);recordingFailures();assert(!liveObjects);savedStateIntegration();assert(!liveObjects);crowdedWorkload();assert(!liveObjects);stateBlocks();assert(!liveObjects);implicitAndDisabled();assert(!liveObjects);auditChecks();assert(!liveObjects);auditEveryField();assert(!liveObjects);concurrency();assert(!liveObjects);std::puts("PASS actual device_mirror.h: authoritative cached queries; COM refs; normalized/failed setters; partial exact-bit banks; ALL/partial/recorded stateblocks including failed Apply; UP and Reset failures; target/FVF implicit changes; two proxies; disabled raw bypass; 30000 randomized banks; 8 threads x5000 iterations, serialized backend calls (80072 with learned write-through, 120008 read-through).");}

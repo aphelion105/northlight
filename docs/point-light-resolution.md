@@ -16,8 +16,15 @@ A light has two distinct values:
 * The native observation contains identity, original position, colour and native
   attenuation. It is immutable evidence for matching the client's draw slots.
 * The resolved emitter contains the position used by renderer direct lighting,
-  fog and all six point-shadow faces. It retains native identity, colour and
-  energy. Camera orientation and native slot number cannot change this value.
+  fog and all six point-shadow faces when they are rendered. It retains native
+  identity, colour and energy. Camera orientation and native slot number cannot
+  change this value.
+
+The point-shadow scheduler can hold a complete cube for one due frame if an
+identified native emitter moved by at most the smaller of 0.125 world units and
+its range divided by 128. The cube keeps its committed projection origin, while
+direct lighting and fog use the current emitter. A range change, a committed
+geometry or terrain revision, or a second due frame requires a fresh update.
 
 The producer transforms a model-local correction with the actual instance basis,
 including rotation and scale, and copies values into the frame snapshot. Render

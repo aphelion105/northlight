@@ -16,10 +16,10 @@
     // Both packets have independently passed pointPaletteSpan. The palette draw
     // binds its own shader, declaration and instance stream. Only indexed
     // primitive addresses and the palette window survive from the native draw.
-    static auto pointPaletteGeometry(const Replay& p){
-        return std::make_tuple(reinterpret_cast<uintptr_t>(p.index),p.start,p.count,p.base,
+    static PointPaletteGeometry pointPaletteGeometry(const Replay& p){
+        return {reinterpret_cast<uintptr_t>(p.index),p.start,p.count,p.base,
             reinterpret_cast<uintptr_t>(p.stream[0]),p.offset[0],p.stride[0],
-            p.boundsWork.paletteFirst,p.boundsWork.paletteSpan);
+            p.boundsWork.paletteFirst,p.boundsWork.paletteSpan};
     }
     // Depth-only opaque casters commute. Keep cutouts and unknown bounds as
     // barriers; group compatible geometry once for all lights and cube faces.
@@ -27,46 +27,57 @@
         if(pointReplayOrderReady||pointPaletteUnavailable)return;
         const bool timed=NorthlightQuality::renderProfile(quality);const auto started=timed?QpcClock::now():0;
         pointReplayOrder.resize(replays.size());pointReplayPalette.resize(replays.size());
+        pointReplaySortKeys.resize(replays.size());
         for(size_t i=0;i<replays.size();++i){
             pointReplayOrder[i]=i;
-            pointReplayPalette[i]={i,pointPaletteSpan(*replays[i])};
-            pointCold.orderEligible+=pointReplayPalette[i].span!=0;
+            const auto& replay=*replays[i];
+            const unsigned span=pointPaletteSpan(replay);
+            pointReplayPalette[i]={i,span,span?pointPaletteGeometry(replay):PointPaletteGeometry{}};
+            pointCold.orderEligible+=span!=0;
         }
         pointCold.orderPackets+=unsigned(replays.size());
         const auto opaque=[&](size_t i){const auto& p=*replays[i];return p.pointBounds.valid&&p.cutoff<=-1.f&&!p.alphaMode;};
-        const auto replayKey=[&](size_t i){const auto& p=*replays[i];
-            return std::make_tuple(reinterpret_cast<uintptr_t>(p.originalShader),reinterpret_cast<uintptr_t>(p.shader),
+        const auto replayKey=[&](size_t i)->PointReplaySortKey{const auto& p=*replays[i];
+            // Bias D3D's signed 32-bit base vertex so unsigned key order
+            // agrees with the signed order used by DrawIndexedPrimitive.
+            return {reinterpret_cast<uintptr_t>(p.originalShader),reinterpret_cast<uintptr_t>(p.shader),
                 reinterpret_cast<uintptr_t>(p.decl),reinterpret_cast<uintptr_t>(p.index),
                 reinterpret_cast<uintptr_t>(p.stream[0]),p.offset[0],p.stride[0],
                 reinterpret_cast<uintptr_t>(p.stream[1]),p.offset[1],p.stride[1],
                 reinterpret_cast<uintptr_t>(p.stream[2]),p.offset[2],p.stride[2],
                 reinterpret_cast<uintptr_t>(p.stream[3]),p.offset[3],p.stride[3],
-                p.type,p.indexed,p.base,p.constantGroup,p.start,i);
+                static_cast<uintptr_t>(p.type),p.indexed,uint32_t(p.base)^0x80000000u,p.constantGroup,p.start,i};
         };
         const auto less=[&](size_t a,size_t b){
             const bool pa=pointReplayPalette[a].span!=0,pb=pointReplayPalette[b].span!=0;
             if(pa!=pb)return pa;
-            if(!pa)return replayKey(a)<replayKey(b);
-            const auto ga=pointPaletteGeometry(*replays[a]),gb=pointPaletteGeometry(*replays[b]);
+            if(!pa)return pointReplaySortKeys[a]<pointReplaySortKeys[b];
+            const auto& ga=pointReplayPalette[a].geometry;
+            const auto& gb=pointReplayPalette[b].geometry;
             return ga!=gb?ga<gb:a<b;
         };
         for(size_t first=0;first<pointReplayOrder.size();){
             if(!opaque(first)){++first;continue;}
             size_t end=first+1;while(end<pointReplayOrder.size()&&opaque(end))++end;
-            std::sort(pointReplayOrder.begin()+first,pointReplayOrder.begin()+end,less);first=end;
+            if(end-first>1){
+                for(size_t i=first;i<end;++i)
+                    if(!pointReplayPalette[i].span)pointReplaySortKeys[i]=replayKey(i);
+                std::sort(pointReplayOrder.begin()+first,pointReplayOrder.begin()+end,less);
+            }
+            first=end;
         }
         // Certify repeated geometry once after sorting. Each cube face then
         // compares packet identities without re-reading the bone rows.
         for(size_t n=1;n<pointReplayOrder.size();++n){
             const size_t index=pointReplayOrder[n],previous=pointReplayOrder[n-1];
             auto& packet=pointReplayPalette[index];
-            if(!packet.span||packet.span!=pointReplayPalette[previous].span)continue;
+            const auto& prior=pointReplayPalette[previous];
+            if(!packet.span||packet.span!=prior.span||packet.geometry!=prior.geometry)continue;
             const auto& a=*replays[index];
             const auto& b=*replays[previous];
-            if(pointPaletteGeometry(a)!=pointPaletteGeometry(b))continue;
             const unsigned offset=4*(31+3*a.boundsWork.paletteFirst);
             if(a.constants==b.constants||!std::memcmp(a.constants+offset,b.constants+offset,packet.span*48))
-                packet.pose=pointReplayPalette[previous].pose;
+                packet.pose=prior.pose;
         }
         pointReplayGroupsReady=false;pointReplayOrderReady=true;if(timed)pointCold.order+=QpcClock::now()-started;
     }
@@ -93,13 +104,17 @@
         drawn=false;if(pointPaletteUnavailable||frames<pointPaletteRetryFrame||at+1>=candidates.size())return D3D_OK;
         const auto index=candidates[at];const auto& p=*replays[index];
         // The order builder certifies each immutable packet after replayBoundsJoin().
-        const UINT span=pointReplayPalette[index].span;
+        const auto& packet=pointReplayPalette[index];
+        const UINT span=packet.span;
         if(!span)return D3D_OK;
-        const auto geometry=pointPaletteGeometry(p);
         size_t end=at+1;
-        while(end<candidates.size()){const auto next=candidates[end];
-            if(pointReplayPalette[next].span!=span||pointPaletteGeometry(*replays[next])!=geometry)break;++end;}
+        while(end<candidates.size()){
+            const auto& next=pointReplayPalette[candidates[end]];
+            if(next.span!=span||next.geometry!=packet.geometry)break;
+            ++end;
+        }
         if(end-at<2||!pointPaletteResources())return D3D_OK;
+        const UINT capacity=82/span;
         const float opaque[]={0,0,0,-1};HRESULT result=d->SetVertexDeclaration(pointPaletteDecl);
         if(SUCCEEDED(result))result=d->SetVertexShader(pointPaletteVS);
         if(SUCCEEDED(result))result=d->SetVertexShaderConstantF(0,rows,4);
@@ -111,7 +126,6 @@
         if(SUCCEEDED(result))result=d->SetIndices(p.index);
         if(SUCCEEDED(result))result=d->SetStreamSource(1,pointPaletteIds,0,span*sizeof(float));
         if(SUCCEEDED(result))result=d->SetStreamSourceFreq(1,D3DSTREAMSOURCE_INSTANCEDATA|1);
-        const UINT capacity=82/span;
         const size_t poseBytes=size_t(span)*48;
         size_t previousPose=SIZE_MAX;
         while(at<end&&SUCCEEDED(result)){
@@ -168,4 +182,69 @@
             run.count=UINT(count);run.min=low;run.vertices=UINT(high-low);++at;++pointBatchesMerged;++pointWork.replayMerged;
         }
         return run;
+    }
+    static bool pointReplayStateReuse(){
+#ifdef NORTHLIGHT_REPLAY_STAND
+        static const bool reuse=[] {
+            const char* value=std::getenv("NORTHLIGHT_RETRACE_POINT_REPLAY_STATE_REUSE");
+            return !(value&&value[0]=='0'&&value[1]=='\0');
+        }();
+        return reuse;
+#else
+        return true;
+#endif
+    }
+    bool submitPointReplayFace(NorthlightReplayDrawState::Cache& replayBindings,const std::vector<size_t>& candidates,
+                               const float* matrix,[[maybe_unused]] unsigned rendererFrame,[[maybe_unused]] unsigned face){
+        if(candidates.empty())return true;
+        if(!pointReplayStateReuse())replayBindings.invalidate();
+        // Each face clears texture zero on exit and supplies its own projection.
+        replayBindings.beginMaterialPass();
+        ++pointCold.replayFaces;
+        float rows[16];NorthlightWorldMath::replayProjection(context.inverseView,matrix,rows);
+        NorthlightReplayPoses::Pass<BOOL> poseConstants;
+        // LocalShadowPS reads patched TEXCOORD7 and writes perspective z/w;
+        // the directional replay PS assumes orthographic w=1 and is invalid here.
+        const char* failure="cube animated draw";
+        const auto failed=[&](HRESULT hr,const char* operation){failure=operation;return hr;};
+        const auto submit=[&](size_t& at)->HRESULT {
+            const auto& p=replays[candidates[at]];
+            bool instanced=false;HRESULT hr=pointPaletteDraw(candidates,at,rows,instanced);
+            if(FAILED(hr))return failed(hr,"cube palette replay");
+            if(instanced){replayBindings.invalidate();poseConstants.reset();return D3D_OK;}
+            hr=replayBindings.geometry(*p);
+            if(FAILED(hr))return failed(hr,"cube replay geometry state");
+            const size_t first=at;
+            const auto run=pointReplayRun(candidates,at,replayBindings.skipping());
+            NorthlightShaderConstants::Range uploadFloats{};
+            if(p->constantUsage.weightedFloats.count){
+                // A merged range consumes only triangles from these packets.
+                // A larger submesh can reference bones beyond the first one.
+                unsigned paletteEnd=0;
+                for(size_t k=first;k<at;++k){
+                    const auto& part=*replays[candidates[k]];
+                    if(!part.gpuCached||!part.pointBounds.valid||!part.boundsWork.weightedPaletteEnd){paletteEnd=0;break;}
+                    paletteEnd=std::max(paletteEnd,part.boundsWork.weightedPaletteEnd);
+                }
+                uploadFloats=NorthlightReplayPoses::weightedUploadRange(p->constantUsage,paletteEnd);
+            }
+            if(!poseConstants.prepare(*p,rows,matrix,uploadFloats))return failed(E_FAIL,"cube replay pose");
+            const float* desired=poseConstants.desired();
+            auto f=poseConstants.floats;auto b=poseConstants.booleans;auto i=poseConstants.integers;
+            if(f.count&&FAILED(hr=d->SetVertexShaderConstantF(f.first,desired+4*f.first,f.count)))return failed(hr,"cube replay float constants");
+            if(b.count&&FAILED(hr=d->SetVertexShaderConstantB(b.first,p->bools+b.first,b.count)))return failed(hr,"cube replay bool constants");
+            if(i.count&&FAILED(hr=d->SetVertexShaderConstantI(i.first,p->ints+4*i.first,i.count)))return failed(hr,"cube replay integer constants");
+            pointCold.constantCalls+=unsigned(f.count!=0)+unsigned(b.count!=0)+unsigned(i.count!=0);
+            pointCold.constantBytes+=16*(f.count+i.count)+sizeof(BOOL)*b.count;
+            pointCold.weightedConstantDraws+=uploadFloats.count!=0&&uploadFloats.count<p->constantUsage.floats.count;
+            if(FAILED(hr=replayBindings.material(*p)))return failed(hr,"cube replay material state");
+            hr=p->indexed?d->DrawIndexedPrimitive(p->type,p->base,run.min,run.vertices,run.start,run.count):d->DrawPrimitive(p->type,run.start,run.count);
+            if(SUCCEEDED(hr)){++pointDraws;++pointWork.replay;pointWork.triangles+=run.count;pointCold.fixedDraws+=NorthlightShadowAlpha::fixed(p->alphaMode);}
+            return hr;
+        };
+        const HRESULT replayResult=NorthlightShadowAlpha::drawSequence(d,candidates.size(),
+            [&](size_t at){return replays[candidates[at]]->alphaMode;},
+            [&](size_t at,auto draw){++pointCold.alphaScopes;return shadowReplayDraw(*replays[candidates[at]],draw);},
+            submit);
+        return pointCheck(replayResult,failure);
     }

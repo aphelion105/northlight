@@ -575,6 +575,11 @@ private:
         for(std::size_t i=0;i<top.size()&&i<8;++i)put(buf,n,"%s%s=%llu",i?",":"",cmdName((Cmd)top[i].second),(unsigned long long)top[i].first);
         put(buf,n,"]");
         log(buf);avg_=Avg();
+        if(const auto saved=get(s.vertexConstantBytesSaved)){
+            std::snprintf(buf,sizeof buf,"CSTREAM VSC_UPLOAD frame=%llu savedBytes=%llu",
+                (unsigned long long)frames,(unsigned long long)saved);
+            log(buf);
+        }
         if(idleTracking_&&diag_){
             const auto wake=core.q.wakePublicationDiagnostics();char line[384];
             std::snprintf(line,sizeof line,"CSTREAM WAKE_PUBLICATIONS streamFrame=%llu heldBatches=%llu heldCommands=%llu heldBytes=%llu wakeSignals=%llu partialBatches=%llu partialCommands=%llu scope=cumulative-independent-counters duration=unmeasured",

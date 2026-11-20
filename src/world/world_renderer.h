@@ -3855,7 +3855,7 @@ public:
                 if(duplicate){duplicate->light.cube=nullptr;continue;}
                 auto& binding=nativeDirectBindings[nativeDirectBindingCount++];binding={};binding.native=native;binding.authored=authored;binding.selected=&candidate.selected;binding.cube=&candidate.cube;
                 binding.ready=&candidate.ready;binding.usable=&candidate.schedule.usable;binding.gain=&candidate.selectionGain;binding.updated=&candidate.schedule.updatedAt;binding.map=&candidate.map;binding.sourceId=candidate.selected.sourceId;
-                binding.light.cube=candidate.cube;binding.light.cubeIsWhite=pointCubeIsWhite(candidate);binding.light.range=candidate.selected.attenuationEnd;std::memcpy(binding.light.position,candidate.selected.position,12);std::memcpy(binding.light.inverseView,context.inverseView,64);
+                binding.light.cube=candidate.cube;binding.light.cubeIsWhite=pointCubeIsWhite(candidate);binding.light.range=candidate.selected.attenuationEnd;std::memcpy(binding.light.position,candidate.cubeOrigin(),12);std::memcpy(binding.light.inverseView,context.inverseView,64);
             }
             // Last completed selection is available during native submissions.
             // A fresh scene value or proven native bank must agree with it.
@@ -4520,14 +4520,17 @@ public:
         std::vector<uint32_t> compact;
         const bool sliced=NorthlightModelNormalSlice::shadowVertex(output.data(),output.size(),compact)&&compact.size()<output.size();
         HRESULT created=E_FAIL;
+        const auto* submitted=&output;
         if(sliced){++shadowSliceCandidates;created=d->CreateVertexShader(reinterpret_cast<const DWORD*>(compact.data()),replacement.out());}
         if(!sliced||FAILED(created)||!replacement.p){
             if(sliced){++shadowSliceFallback;drop(replacement.p);}
             created=d->CreateVertexShader(reinterpret_cast<const DWORD*>(output.data()),replacement.out());
-        }else{++shadowSliceCreated;shadowSliceWordsBefore+=output.size();shadowSliceWordsAfter+=compact.size();}
+        }else{submitted=&compact;++shadowSliceCreated;shadowSliceWordsBefore+=output.size();shadowSliceWordsAfter+=compact.size();}
         if(SUCCEEDED(created)&&replacement.p){
             CaptureShader metadata;metadata.replacement=replacement.p;metadata.projectionKind=kind;metadata.color0W=info.color0W;metadata.detailDoodad=detail;
             metadata.usage=NorthlightShaderConstants::analyze(words.data(),words.size(),kind);
+            if(metadata.usage.relativeFloat)
+                metadata.usage.weightedFloats=NorthlightShaderConstants::analyze(submitted->data(),submitted->size(),kind).weightedFloats;
             metadata.fog=NorthlightSpellFog::vsFogProven(words.data(),words.size());
             NorthlightActorDeformation::Program program;
             if(NorthlightActorDeformation::compile(words.data(),words.size(),program,false,kind)){
@@ -6215,7 +6218,7 @@ public:
             for(unsigned i=0;i<particleLights.outputCount;++i){const auto& light=particleLights.output[i];
                 if(std::find(particleLights.immediate.begin(),particleLights.immediate.begin()+particleLights.immediateCount,light.sourceId)==particleLights.immediate.begin()+particleLights.immediateCount)continue;
                 logf("PARTICLELIGHT source id=%llu position=(%.3f %.3f %.3f) rgb=(%.4f %.4f %.4f) range=%.2f cameraYards=%.2f",static_cast<unsigned long long>(light.sourceId),light.position[0],light.position[1],light.position[2],light.diffuse[0],light.diffuse[1],light.diffuse[2],light.attenuationEnd,std::sqrt(NorthlightEquipmentLights::distance2(light.position,context.camera)));}
-            logf("EQUIPMENT lights nativePoint=1 attempts=%u banks=%u observed=%u duplicateStatic=%u dropped=%u active=%u output=%u maxLights=%u memoBanks=%u ttlMs=250 falloff=bounded-linear-approx candidates=%u actorCandidates=%u actorReads=%u backgroundReads=%u backgroundBanks=%u duplicateBanks=%u readLimited=%u cachedBanks=%u domainRejected=%u decoded=%u rejected=%u",equipmentCapture.reads,equipmentLights.banks,equipmentLights.observed,equipmentLights.duplicates,equipmentLights.dropped,equipmentLights.count,equipmentLights.outputCount,NorthlightEquipmentLights::Capacity,NorthlightEquipmentLights::MemoBanks,equipmentCapture.candidates,equipmentCapture.actorCandidates,equipmentCapture.actorReads,equipmentCapture.backgroundReads,equipmentLights.backgroundBanks,equipmentLights.bankDuplicates,equipmentCapture.readLimited,equipmentCapture.cached,equipmentCapture.domainRejected,equipmentCapture.decoded,equipmentCapture.rejected);
+            logf("EQUIPMENT lights nativePoint=1 attempts=%u banks=%u observed=%u duplicateStatic=%u dropped=%u active=%u output=%u maxLights=%u memoBanks=%u ttlMs=250 falloff=bounded-linear-approx candidates=%u actorCandidates=%u actorReads=%u backgroundReads=%u backgroundBanks=%u duplicateBanks=%u orderedDuplicates=%u readLimited=%u cachedBanks=%u domainRejected=%u decoded=%u rejected=%u",equipmentCapture.reads,equipmentLights.banks,equipmentLights.observed,equipmentLights.duplicates,equipmentLights.dropped,equipmentLights.count,equipmentLights.outputCount,NorthlightEquipmentLights::Capacity,NorthlightEquipmentLights::MemoBanks,equipmentCapture.candidates,equipmentCapture.actorCandidates,equipmentCapture.actorReads,equipmentCapture.backgroundReads,equipmentLights.backgroundBanks,equipmentLights.bankDuplicates,equipmentLights.orderedBankDuplicates,equipmentCapture.readLimited,equipmentCapture.cached,equipmentCapture.domainRejected,equipmentCapture.decoded,equipmentCapture.rejected);
             for(unsigned i=0;i<equipmentLights.count;++i){const auto& entry=equipmentLights.entries[i];if(entry.gain<=.0001f)continue;
                 const auto light=NorthlightEquipmentLights::light(entry.source,entry.id,entry.gain);
                 const float selfDistance=actorShadowHistory.selfHold()>0?std::sqrt(NorthlightEquipmentLights::distance2(light.position,actorShadowHistory.selfAt())):-1.f;

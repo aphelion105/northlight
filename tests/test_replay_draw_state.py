@@ -46,10 +46,15 @@ loop = world[world.index('d->SetPixelShader(replayPS);')+len('d->SetPixelShader(
 assert 'NorthlightReplayDrawState::Cache replayBindings(d);' in loop
 for forbidden in ('SetTexture(', 'SetSamplerState(', 'SetPixelShader(', 'SetPixelShaderConstantF(', 'SetRenderState('):
     assert forbidden not in loop, forbidden
-cube = point[point.index('NorthlightReplayDrawState::Cache replayBindings(d);'):point.index('pointSlot().faceWeights[face]=pointDraws-faceDraws')]
+point_replays = read('world_point_replays.inl')
+assert 'submitPointReplayFace(replayBindings,pointReplayCandidates[face],matrix,rendererFrame,face)' in point
+setup = point[point.index('auto bindFace='):point.index('            if(rebuildMask&(1u<<face)){', point.index('auto bindFace='))]
+assert 'pointCheck(d->SetPixelShader(pointShadowPS),"cube PS")' in setup
+assert setup.index('if(!worldGeometry)return true;') < setup.index('replayBindings.invalidate();') < setup.index('d->SetVertexDeclaration(shadowDecl)')
+cube = point_replays[point_replays.index('bool submitPointReplayFace('):]
+assert cube.index('replayBindings.beginMaterialPass();') < cube.index('replayBindings.material(*p)')
 for forbidden in ('SetTexture(', 'SetSamplerState(', 'SetPixelShader(', 'SetPixelShaderConstantF(', 'SetRenderState('):
     assert forbidden not in cube, forbidden
-assert 'pointCheck(d->SetPixelShader(pointShadowPS),"cube static PS")' in point
 # Directional pass baseline: LESSEQUAL depth, no blend/alpha test/stencil, all
 # colour channels. The per-draw native alpha wrapper restores this baseline.
 for state in ('{D3DRS_ZFUNC,D3DCMP_LESSEQUAL}', '{D3DRS_ALPHATESTENABLE,FALSE}', '{D3DRS_ALPHABLENDENABLE,FALSE}', '{D3DRS_STENCILENABLE,FALSE}', '{D3DRS_COLORWRITEENABLE,15}'):
@@ -60,7 +65,7 @@ for method in ('CreateTexture', 'CreateVolumeTexture', 'CreateCubeTexture'):
     line = next(l for l in proxy.splitlines() if f'HRESULT STDMETHODCALLTYPE {method}(' in l and 'ext->' in l)
     assert 'NorthlightReplayDrawState::noteTextureFormat(Format);' in line, method
 assert 'hr=shadowReplayDraw(*p,' in world
-assert 'NorthlightShadowAlpha::drawSequence(d,candidates.size()' in point and 'shadowReplayDraw(*replays[candidates[at]],draw)' in point
+assert 'NorthlightShadowAlpha::drawSequence(d,candidates.size()' in cube and 'shadowReplayDraw(*replays[candidates[at]],draw)' in cube
 assert 'const HRESULT hr=NorthlightShadowAlpha::draw(d,p.alphaMode,' in world
 print('PASS preconditions: replay/local alpha outputs, cutoff encoding, fixed-PS loops, native alpha wrapper wiring, pass states, float-alpha guard wiring')
 

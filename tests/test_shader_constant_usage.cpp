@@ -18,6 +18,26 @@ static std::vector<Word> header(){return {0xfffe0200u};}
 static void mov(std::vector<Word>& w,Word source){w.insert(w.end(),{0x02000001u,dest(0,0),source});}
 static Usage finish(std::vector<Word> w,unsigned kind=2){w.push_back(0xffff);return analyze(w.data(),w.size(),kind);}
 static void full(const Usage& u){assert(!u.analyzed&&u.floats.first==0&&u.floats.count==256&&u.booleans.count==16&&u.integers.count==16);}
+static void weighted(){
+    const std::vector<Word> shader={0xfffe0300u,
+        0x0200001fu,0x80000002u,0x900f0002u,
+        0x05000051u,0xa00f0000u,0x40400000u,0x3f800000u,0,0,
+        0x03000005u,0x800f0000u,0xa0000000u,0x90e40002u,
+        0x0200002eu,0xb00f0000u,0x80e40000u,
+        0x03000001u,0x800f0000u,0xa0e42021u,0xb0ff0000u};
+    auto withFixed=shader;mov(withFixed,reg(2,67));
+    const auto u=finish(withFixed);
+    assert(u.relativeFloat&&u.floats.count==256&&u.weightedFloats.first==2&&u.weightedFloats.count==66);
+    for(auto change:std::array<std::pair<size_t,Word>,5>{{{2,1},{6,0x40800000u},
+             {14,0xb0010000u},{18,0xa0e42022u},{19,0xf0ff0800u}}}){
+        auto invalid=shader;invalid[change.first]=change.second;
+        assert(!finish(invalid).weightedFloats.count);
+    }
+    auto secondWriter=shader;
+    secondWriter.insert(secondWriter.end(),{0x0200002eu,0xb00f0000u,0x80e40000u});
+    assert(!finish(secondWriter).weightedFloats.count);
+    std::puts("PASS weighted relative reads certified only for the single audited address writer");
+}
 static void tests(){
     auto w=header();mov(w,reg(2,8));mov(w,reg(2,11));auto u=finish(w);
     assert(u.analyzed&&!u.relativeFloat&&u.floats.first==2&&u.floats.count==10&&u.booleans.count==0&&u.integers.count==0);
@@ -88,4 +108,4 @@ static void corpus(const char* path){
     std::printf("CORPUS total=%u terrainSkipped=%u modelPatchRejected=%u modelSm1Rejected=%u modelEligible=%u analyzed=%u relative=%u fallback=%u BOOLbanks=%u INTbanks=%u avgF=%.3f avgB=%.3f avgI=%.3f captureBytesPercent=%.3f\n",total,terrainSkipped,modelPatchRejected,modelSm1Rejected,eligible,optimized,relative,fallback,boolBanks,intBanks,double(floatCount)/eligible,double(boolCount)/eligible,double(intCount)/eligible,double(floatCount*16+boolCount*4+intCount*16)*100/(eligible*(256.0*16+16*4+16*16)));
     std::puts("PASS original/patched shader constant metadata equivalence for complete eligible corpus");
 }
-int main(int argc,char**argv){tests();if(argc>1)corpus(argv[1]);std::puts("All shader constant usage tests passed");}
+int main(int argc,char**argv){tests();weighted();if(argc>1)corpus(argv[1]);std::puts("All shader constant usage tests passed");}

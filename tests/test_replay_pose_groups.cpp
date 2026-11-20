@@ -93,6 +93,23 @@ static void worldProjection(){
     std::puts("PASS grass world projection preserves captured view/fade and grouping; actors retain view projection");
 }
 static volatile uint64_t sink;
+static void weightedUploads(){
+    Replay a,b;
+    a.constantUsage.booleans={};a.constantUsage.integers={};a.constantUsage.weightedFloats={2,39};
+    for(unsigned i=0;i<1024;++i)a.constants[i]=float(i+1);
+    b=a;++b.constantGroup;b.constants[255*4]=2048;
+    const auto narrow=weightedUploadRange(a.constantUsage,6);
+    assert(sameRange(narrow,{2,47}));
+    assert(sameRange(weightedUploadRange(a.constantUsage,1),{2,39}));
+    assert(!weightedUploadRange(a.constantUsage,0).count&&!weightedUploadRange(a.constantUsage,76).count);
+    float rows[16]={};Pass<int32_t> pass;
+    assert(pass.prepare(a,rows,nullptr,narrow)&&sameRange({pass.floats.first,pass.floats.count},narrow));
+    assert(pass.prepare(a,rows,nullptr,narrow)&&pass.reused==1&&!pass.floats.count);
+    assert(pass.prepare(a,rows)&&pass.floats.count&&pass.desired()[255*4]==a.constants[255*4]);
+    assert(pass.prepare(b,rows,nullptr,narrow)&&!pass.floats.count);
+    assert(pass.prepare(b,rows)&&pass.floats.first==255&&pass.floats.count==1&&pass.desired()[255*4]==2048);
+    std::puts("PASS weighted range preserves wider reads after narrowed draws, including the same pose group");
+}
 static void benchmark(unsigned parts){
     std::vector<Replay> draws(1200);
     for(size_t n=0;n<draws.size();++n){auto& p=draws[n];p.constantUsage.booleans={};p.constantUsage.integers={};
@@ -116,4 +133,4 @@ static void benchmark(unsigned parts){
     double old=run(false),now=run(true);
     std::printf("BENCH native helper only %u parts/pose, 1200 draws x 2 cascades x %u frames including grouping: baseline %.3f ms, grouped %.3f ms, %.3fx; prepares/frame 2400 -> %u; extra persistent bytes/draw %zu\n",parts,frames,old,now,old/now,2400/parts,sizeof(unsigned));
 }
-int main(){equality();reference();worldProjection();benchmark(8);benchmark(4);benchmark(1);}
+int main(){equality();reference();worldProjection();weightedUploads();benchmark(8);benchmark(4);benchmark(1);}

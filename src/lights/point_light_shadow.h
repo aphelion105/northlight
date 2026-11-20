@@ -16,6 +16,18 @@ inline bool sameCube(const NorthlightLocalLights::Light& a,const NorthlightLocal
     return a.sourceId==b.sourceId&&a.attenuationEnd==b.attenuationEnd&&
            a.position[0]==b.position[0]&&a.position[1]==b.position[1]&&a.position[2]==b.position[2];
 }
+// An identified native emitter may hold its complete previous cube for one
+// due frame under budget pressure. Its direct light keeps the current origin.
+inline bool smallNativeCubeMotion(const NorthlightLocalLights::Light& previous,
+                                  const NorthlightLocalLights::Light& current){
+    if((current.sourceId>>52)!=0xfec||previous.sourceId!=current.sourceId||
+       previous.attenuationEnd!=current.attenuationEnd)return false;
+    const float dx=current.position[0]-previous.position[0];
+    const float dy=current.position[1]-previous.position[1];
+    const float dz=current.position[2]-previous.position[2];
+    const float limit=std::min(.125f,current.attenuationEnd/128.f);
+    return dx*dx+dy*dy+dz*dz<=limit*limit;
+}
 struct RefreshSchedule {
     bool complete=false;
     bool usable=false; /* every face holds a complete draw of `light` (complete implies usable) */
@@ -38,6 +50,19 @@ struct RefreshSchedule {
         updatedAt=now;light=current;generation=meshGeneration;complete=usable=true;
     }
 };
+// Hold at most one due update for a stationary cube covering a quarter of
+// the screen or less. Alternating slots split the work across render frames;
+// the wall-clock bound prevents this policy adding long holds during stalls.
+inline bool holdSmallCube(bool previouslyHeld,uint32_t age,uint32_t frame,unsigned slot,long area,uint64_t fullArea){
+    return !previouslyHeld&&age<200&&frame&&area>0&&uint64_t(area)*4<=fullArea&&((frame+slot)&1u);
+}
+inline bool holdSmallMovingCube(bool previouslyHeld,uint32_t age,uint32_t frame,unsigned slot,long area,uint64_t fullArea,
+                               uint32_t period,bool overloadedCrowd=false){
+    // Compatible emitter motion is checked before either path. Under crowd
+    // pressure a single frame can already exceed the ordinary 66 ms window.
+    if(overloadedCrowd)return !previouslyHeld&&age<150&&frame&&area>0&&fullArea&&((frame+slot)&1u);
+    return age<std::clamp(period,33u,67u)+33u&&holdSmallCube(previouslyHeld,age,frame,slot,area,fullArea);
+}
 // 0.3.151 PointShadowFacesPerFrame<6: one refresh of an unchanged light spread
 // over ceil(6/n) fresh frames, each face complete when drawn. Groups are
 // balanced by the previous update's draws per face (longest first onto the

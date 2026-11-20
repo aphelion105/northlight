@@ -80,6 +80,7 @@ SIZES = {'D3DMATRIX': 64, 'D3DMATERIAL9': 68, 'D3DLIGHT9': 104, 'D3DCLIPSTATUS9'
          'D3DGAMMARAMP': 1536, 'D3DRECTPATCH_INFO': 20, 'D3DTRIPATCH_INFO': 16, 'D3DCAPS9': 304}
 # Types the stream reads fields of: real layouts (the same field names as d3d9types.h).
 BODIES = {
+    'D3DCAPS9': 'DWORD MaxVertexShaderConst;unsigned char other[300];',
     'D3DSURFACE_DESC': 'D3DFORMAT Format;D3DRESOURCETYPE Type;DWORD Usage;D3DPOOL Pool;D3DMULTISAMPLE_TYPE MultiSampleType;DWORD MultiSampleQuality;UINT Width;UINT Height;',
     'D3DVOLUME_DESC': 'D3DFORMAT Format;D3DRESOURCETYPE Type;DWORD Usage;D3DPOOL Pool;UINT Width;UINT Height;UINT Depth;',
     'D3DVERTEXBUFFER_DESC': 'D3DFORMAT Format;D3DRESOURCETYPE Type;DWORD Usage;D3DPOOL Pool;UINT Size;DWORD FVF;',

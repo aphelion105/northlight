@@ -12,6 +12,7 @@
 #include "render_thread_probe.h"
 #include "shader_constant_usage.h"
 #include "replay_constants.h"
+#include "device_mirror.h"
 
 // Prototype: one material-height replay per recognised draw; source textures remain intact.
 // Included after drop and logf. Original resources stay intact; displacement draws use private subdivided buffers.
@@ -20,6 +21,7 @@ class NorthlightAutoBump {
     friend struct ShaderOptMaterialVariantTestAccess;
     std::shared_ptr<NorthlightGpuScene::Scene> gpuScene;
     IDirect3DDevice9* d;
+    ExtensionDevice* drawStateSource=nullptr;
     NorthlightStateBlockPool captureStates;
     void* rasterContext=nullptr;bool(*rasterReader)(void*,const D3DRENDERSTATETYPE*,unsigned,DWORD*)=nullptr;
     void* emptyTargetContext=nullptr;bool(*emptyTargetReader)(void*)=nullptr;
@@ -594,6 +596,7 @@ public:
     void setTrustedConstantEpochSource(NorthlightConstantEpoch::TrustedSource source){displacement.setTrustedConstantEpochSource(source);}
     void setRasterStateSource(void* context,bool(*reader)(void*,const D3DRENDERSTATETYPE*,unsigned,DWORD*)){rasterContext=context;rasterReader=context==d?reader:nullptr;}
     void setEmptyTargetSource(void* context,bool(*reader)(void*)){emptyTargetContext=context;emptyTargetReader=context==d?reader:nullptr;}
+    void setDrawStateSource(ExtensionDevice& source){drawStateSource=static_cast<IDirect3DDevice9*>(&source)==d?&source:nullptr;}
     void setSamplerStateSource(void* context,bool(*reader)(void*,DWORD,unsigned,DWORD*)){samplerContext=context;samplerReader=context==d?reader:nullptr;}
     void setVertexIdentity(void* context,VertexIdentity reader){vertexIdentityContext=context;vertexIdentity=reader;}
     template<class Draw,class Submit> HRESULT geometryDraw(Draw draw,bool native,Submit submit){
@@ -768,16 +771,26 @@ public:
         ReplayState saved(d,original,D3DVIEWPORT9{},profile);saved.pixel=nativeSource.p;nativeSource.p=nullptr;auto* native=saved.pixel;NorthlightSharedPOM::Binding sharedBinding(d);
         NativeCapture* model=nullptr;
         saved.stencilEnabled=stencil;
-        D3DVIEWPORT9 viewport{};if(FAILED(d->GetViewport(&viewport))||viewport.X||viewport.Y||viewport.Width<8||viewport.Height<8)return;
-        if(!emptyTargetReader||!emptyTargetReader(emptyTargetContext))
-            for(unsigned i=1;i<4;++i){IDirect3DSurface9* extra=nullptr;d->GetRenderTarget(i,&extra);if(extra){drop(extra);return;}}
-        if(FAILED(d->GetDepthStencilSurface(&saved.depth))||!saved.depth)return;
+        ExtensionDevice::MaterialCaptureState inputs;
+        const bool knownInputs=drawStateSource&&drawStateSource->knownMaterialCaptureState(inputs);
+        D3DVIEWPORT9 viewport{};
+        if(knownInputs){
+            if(profile)profile->count(P::KnownCaptureState);
+            viewport=inputs.viewport;saved.target=inputs.color;saved.depth=inputs.depth;
+        }else if(FAILED(d->GetViewport(&viewport)))return;
+        if(viewport.X||viewport.Y||viewport.Width<8||viewport.Height<8)return;
         saved.states[0].value=depthWrite;saved.states[4].value=colorWrite;
-        // Distant geometry needs admission, not a saved pixel replay state.
-        // Read blend factors only when native blending can reject the draw.
-        const unsigned admissionIndices[]={1,5};
-        if(!readReplayStates(saved,admissionIndices))return;
-        if(saved.states[5].value){const unsigned blendIndices[]={7,8};if(!readReplayStates(saved,blendIndices))return;}
+        if(knownInputs){
+            saved.states[1].value=inputs.alphaTest;saved.states[5].value=inputs.blend;
+            saved.states[7].value=inputs.sourceBlend;saved.states[8].value=inputs.destinationBlend;
+        }else{
+            if(!emptyTargetReader||!emptyTargetReader(emptyTargetContext))
+                for(unsigned i=1;i<4;++i){IDirect3DSurface9* extra=nullptr;d->GetRenderTarget(i,&extra);if(extra){drop(extra);return;}}
+            if(FAILED(d->GetDepthStencilSurface(&saved.depth))||!saved.depth)return;
+            const unsigned admissionIndices[]={1,5};
+            if(!readReplayStates(saved,admissionIndices))return;
+            if(saved.states[5].value){const unsigned blendIndices[]={7,8};if(!readReplayStates(saved,blendIndices))return;}
+        }
         const auto& s=saved.states;
         const bool alpha=s[1].value!=0;
         const bool coverageAlpha=domain==4?alpha:alpha||s[5].value!=0;
@@ -790,7 +803,7 @@ public:
         if(!(s[4].value&7)||(!s[0].value&&domain!=1)||
            (s[5].value&&(s[7].value!=D3DBLEND_SRCALPHA||s[8].value!=D3DBLEND_INVSRCALPHA))||
            (alpha&&alphaFunc!=D3DCMP_GREATER&&alphaFunc!=D3DCMP_GREATEREQUAL))return;
-        if(FAILED(d->GetRenderTarget(0,&saved.target))||!saved.target)return;
+        if(!knownInputs&&(FAILED(d->GetRenderTarget(0,&saved.target))||!saved.target))return;
         if(!sceneColor.read(saved.target))return;
         const auto desc=sceneColor.desc;
         if(desc.Width!=viewport.Width||desc.Height!=viewport.Height){++rejected;return;}

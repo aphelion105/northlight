@@ -10,6 +10,7 @@ preserved, so their owners must resolve any art-layer conflict.
 
 Quality enables `EquipmentLights=1` and `CommandStream=1` by default, including
 live particle lighting for accepted equipment, mount and spell draws.
+Equipment emitters light surfaces and fog without creating point-shadow maps.
 Quality upgrades enable the new equipment/particle bundle and its CommandStream
 dependency once, including old explicit zeros. Later player edits are preserved.
 Balanced and Performance keep equipment lights

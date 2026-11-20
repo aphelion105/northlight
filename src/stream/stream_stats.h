@@ -96,6 +96,7 @@ struct Counters {
     Counter lockNs{0},recordSampledNs{0},snapNs{0},presentBookNs{0};
     Counter cmdSampledNs[kMaxCmdIds]{},cmdSamples[kMaxCmdIds]{};   // the same sampled recording time per command id, and the samples (x16 = calls); the CSTREAM top line
     Counter filteredCalls{0};   // redundant Sets the game side did not record
+    Counter vertexConstantBytesSaved{0}; // Identical outer registers omitted from partial writes.
     Counter stateAnswered{0},stateSynced{0},lockAsync{0};
     Counter coopAnswered{0};   // 0.3.204 (task 21): TestCooperativeLevel calls the game thread answered D3D_OK from StreamCore::coopState (not in stateAnswered)
     Counter eventRequests{0},eventLocal{0},eventPending{0}; // exact EVENT cache hits, queued FLUSH batches and pending local probes

@@ -39,7 +39,9 @@ struct StreamState {
     // 0.3.204 (task 21): the float constant banks as contiguous data (one memcmp / memcpy per Set) plus a known bitmask (word operations). known only ever comes from a game Set.
     struct FloatBank {
         static constexpr UINT kRegs=256;
-        float v[kRegs][4]={};std::uint64_t known[kRegs/64]={};
+        float v[kRegs*4]={};std::uint64_t known[kRegs/64]={};
+        float* at(UINT r){return v+4*r;}
+        const float* at(UINT r)const{return v+4*r;}
         bool allKnown(UINT r,UINT n)const{   // r+n <= kRegs
             if(!n)return true;const UINT end=r+n,first=r/64,last=(end-1)/64;
             const auto low=~std::uint64_t(0)<<(r&63),high=~std::uint64_t(0)>>((0u-end)&63);

@@ -183,6 +183,7 @@ Individual settings (Quality / Balanced / Performance):
   PointShadowRefreshMs  0 / 33 / 33    lamp shadow update interval
   ShadowRefreshCpuMs    3 / 3 / 2      shared CPU time target in ms for directional and lamp shadow updates. A stationary lamp can retain its complete cube for one extra update. 0 disables the target.
   PointShadowFacesPerFrame 6 / 6 / 6   lamp shadow directions updated per frame (1..6; 6 = all at once; lower = smaller spikes, a brief seam at the edge)
+  PointShadowAdaptiveRefresh 0 / 0 / 0  alternate whole-cube updates for small lamps or slightly moving native emitters. Shadows can briefly lag (0..1)
   ShadowDirectionSteps  2048/2048/2048 sun direction quantization (fewer jumps)
   StaticCacheSlices     1 / 1 / 1      a partial redraw of the cached shadow is spread over N frames (1..4; 1 = in one frame; a new shadow can appear N-1 frames late)
   CaptureBudgetMiB      32 / 32 / 32   capture limit for animated geometry, spent on the characters nearest to you first (your own character and mount may use an extra 4 MiB once it is reached)

@@ -604,6 +604,29 @@ public:
         m->answered+=2;
         return true;
     }
+    struct MaterialCaptureState {
+        D3DVIEWPORT9 viewport;
+        IDirect3DSurface9* color;
+        IDirect3DSurface9* depth;
+        DWORD alphaTest,blend,sourceBlend,destinationBlend;
+    };
+    // Only return a complete, known snapshot. The caller owns both surfaces.
+    bool knownMaterialCaptureState(MaterialCaptureState& out){
+        MirrorGuard lock(m->gate,MirrorSite::Device);
+        if(!m->active()||m->targetWrites||m->viewportWrites||!m->viewportKnown||
+           !m->targetKnown[0]||!m->targets[0]||!m->depthKnown||!m->depth)return false;
+        for(unsigned i=1;i<DeviceMirror::Targets;++i)if(!m->targetAbsent[i])return false;
+        const auto* known=m->renderStateKnown;
+        const auto* values=m->renderStates;
+        if(!known[D3DRS_ALPHATESTENABLE]||!known[D3DRS_ALPHABLENDENABLE])return false;
+        const DWORD blend=values[D3DRS_ALPHABLENDENABLE];
+        if(blend&&(!known[D3DRS_SRCBLEND]||!known[D3DRS_DESTBLEND]))return false;
+        out={m->viewport,m->targets[0],m->depth,values[D3DRS_ALPHATESTENABLE],blend,
+            blend?values[D3DRS_SRCBLEND]:0,blend?values[D3DRS_DESTBLEND]:0};
+        out.color->AddRef();out.depth->AddRef();
+        m->answered+=8+(blend?2:0);
+        return true;
+    }
     // A complete known-only snapshot; unknown slots retain the normal Get path.
     bool knownRenderStates(const D3DRENDERSTATETYPE* keys,unsigned count,DWORD* out){
         if(!keys||!out)return false;MirrorGuard lock(m->gate,MirrorSite::Device);

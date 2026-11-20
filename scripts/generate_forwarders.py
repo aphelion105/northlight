@@ -369,6 +369,8 @@ def macro_body(m):
 
 
 def macro_body_inner(m, t, names, this, q):
+    if m.iface == DEVICE and m.name == 'SetVertexShaderConstantF':
+        return f'return this->recordVertexConstants({names});'
     if m.cls in ('record', 'state'):
         obs = f'this->observe({join_args(t, names)});' if m.cls == 'state' else ''
         if (m.iface, m.name) in REDUNDANT:

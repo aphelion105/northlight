@@ -19,6 +19,7 @@ float4 LocalColor : register(c8); // rgb source color*intensity,w attenuation en
 float4 LocalShadow : register(c9); // cube near,far,inverse resolution,PCF angular radius in texels
 float4 LocalGain : register(c10); // direct gain, sunlit cut, directional shadow strength, sun energy
 float4 LocalSun : register(c11); // world direction toward the sun
+float4 LocalShadowOffset : register(c13); // cube origin minus current light origin
 // Shadow VS constants c0..c3 are separately bound, row-major clip matrix.
 row_major float4x4 LocalFaceMatrix : register(c0);
 // Shadow PS uses c0: xyz unused,w alpha cutoff (<0 disables alpha test).
@@ -217,7 +218,10 @@ float4 localLightingValue(float2 uv,int filter) {
     if(relevance<=0)return 0;
     float visibility;
     if(filter==1)visibility=tex2Dlod(LocalResolved,float4(screen,0,0)).r;
-    else visibility=localVisibilityInRange(delta,geometricNormal,distance,filter==2);
+    else {
+        float3 ray=delta-LocalShadowOffset.xyz;
+        visibility=localVisibilityInRange(ray,geometricNormal,length(ray),filter==2);
+    }
     float occlusion=1-visibility;
     return float4(-contribution*(occlusion*relevance*LocalDepthInfo.z),0);
 }

@@ -26,6 +26,7 @@ public:
     struct WorkInfo {
         Kind kind=Kind::Unknown;std::uint64_t programHash=0;size_t groups=0,operations=0;double elapsedUs=0;bool skin=false;
         unsigned paletteSpan=0,paletteFirst=0; // Ready FLOAT3/UBYTE4 source at stream-0 offsets 0/16; no new vertex scan.
+        unsigned weightedPaletteEnd=0; // Highest referenced bone plus one, including zero-weight indices.
     };
     struct Expensive {
         bool valid=false;std::uint64_t frame=0,programHash=0;size_t groups=0,operations=0;double elapsedUs=0;
@@ -635,7 +636,7 @@ private:
         if(inverse[3]!=0||inverse[7]!=0||inverse[11]!=0||inverse[15]!=1)return false;
         if(batched&&!fastOpen_){fastMark_=BoundsClock::now();fastOpen_=true;fastCount_=0;}
         e->touched=++clock_;
-        if(info){info->kind=Kind::Cheap;info->programHash=e->programHash;info->groups=groups;info->operations=operations;info->skin=bool(e->skin);info->paletteSpan=e->paletteSpan;info->paletteFirst=e->paletteSpan?e->paletteFirst:0;}
+        if(info){info->kind=Kind::Cheap;info->programHash=e->programHash;info->groups=groups;info->operations=operations;info->skin=bool(e->skin);info->paletteSpan=e->paletteSpan;info->paletteFirst=e->paletteSpan?e->paletteFirst:0;info->weightedPaletteEnd=e->skin?e->skin->paletteEnd:0;}
         if(individual)individual->evaluation(*e,info,Stage::All,status,groups,operations);
         if(certifiedPose(*e,poseStamp,inverse,output)){
             ++stats_.certifiedPoseHits;budget.operations+=operations;status=Status::Valid;++stats_.ready;stats_.skinValid+=bool(e->skin);stats_.cheapValid+=batched;++stats_.fastValid;
@@ -714,7 +715,7 @@ private:
             // Audited single-bone groups have a fixed small evaluator. Their
             // existing operation/slice caps suffice even above eight bones.
             const bool cheap=(e.skin||((e.singleBone||e.groups.size()<=8)&&operations<=128))&&e.lastEvaluationNs<CheapSliceNanoseconds;
-            if(info){info->kind=cheap?Kind::Cheap:Kind::Heavy;info->programHash=e.programHash;info->groups=groups;info->operations=operations;info->skin=bool(e.skin);info->paletteSpan=e.paletteSpan;info->paletteFirst=e.paletteSpan?e.paletteFirst:0;}
+            if(info){info->kind=cheap?Kind::Cheap:Kind::Heavy;info->programHash=e.programHash;info->groups=groups;info->operations=operations;info->skin=bool(e.skin);info->paletteSpan=e.paletteSpan;info->paletteFirst=e.paletteSpan?e.paletteFirst:0;info->weightedPaletteEnd=e.skin?e.skin->paletteEnd:0;}
             if(budget.operations<=budget.maxOperations&&operations<=budget.maxOperations-budget.operations&&certifiedPose(e,poseStamp,inverse,output)){
                 if(timer.expired()){output={};return timeBudget();}
                 ++stats_.certifiedPoseHits;budget.operations+=operations;++stats_.ready;stats_.skinValid+=bool(e.skin);

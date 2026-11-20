@@ -224,6 +224,7 @@ class NorthlightAutoDisplacement {
     uint64_t snapshotAttempts=0,snapshotUP=0;std::array<uint64_t,size_t(NorthlightDrawSnapshot::Error::Unlock)+1> snapshotReasons{};
     uint64_t subdivisionReuses=0;
     uint64_t distanceRejected=0,poseBudgetRejected=0,poseEnvelopeHits=0,poseFallbackVertices=0,objectBoundsVertices=0,boundsHits=0,boundsMisses=0,primitiveRejected=0,sourceAliases=0;
+    unsigned earlyPoseBudgetRejects=0;
     unsigned poseKernelVertices[4]={},poseByteIndexVertices=0; // Completed fallback vertices, by evaluator (not budget refusals).
     auto cachedBounds(const std::shared_ptr<const Mesh>& source){
         auto found=bounds.find(source.get());
@@ -272,8 +273,12 @@ class NorthlightAutoDisplacement {
         return prepared?poseEnvelopes.calculatePrepared(*prepared,*source,source,bank,basis,envelopeBudget,result,NorthlightReplayBounds::EnvelopeCache::Stage::All,info,certificate):
                         poseEnvelopes.calculate(program,*source,source,elements,count,bank,basis,envelopeBudget,result,NorthlightReplayBounds::EnvelopeCache::Stage::All,info);
     }
+    bool canChargePoseVertices(unsigned vertices)const{return vertices<=8192-poseVerticesThisFrame;}
+    bool modelPoseOverBudget(unsigned vertices,bool localEnvelope)const{
+        return !localEnvelope&&envelopeBuildContinued&&!canChargePoseVertices(vertices)&&!poseEnvelopes.canReady();
+    }
     bool chargePoseVertices(unsigned vertices){
-        if(vertices>8192-poseVerticesThisFrame){++poseBudgetRejected;if(profile)profile->count(NorthlightMaterialProfile::PoseBudget);return false;}
+        if(!canChargePoseVertices(vertices)){++poseBudgetRejected;if(profile)profile->count(NorthlightMaterialProfile::PoseBudget);return false;}
         poseVerticesThisFrame+=vertices;return true;
     }
     bool distantPoseBounds(const Program& program,const std::shared_ptr<const Mesh>& source,const D3DVERTEXELEMENT9* elements,UINT count,float* low,float* high,
@@ -586,7 +591,7 @@ public:
         const auto& boundsWork=positionBounds.maintenance();
         logf("MATERIAL_POSITION_BOUNDS frame=%llu hits=%u scans=%u positionBytes=%zu entries=%zu unknown=%u coldScans=%u revisionScans=%u evictions=%u budgetRejected=%u capturedBoundsHits=%u",(unsigned long long)frame,positionBounds.cacheHits(),positionBounds.scans(),positionBounds.bytesRead(),positionBounds.count(),positionBounds.failures(),boundsWork.coldScans,boundsWork.revisionScans,boundsWork.evictions,boundsWork.budgetRejected,capturedBoundsHits);
         const auto& e=poseEnvelopes.stats();
-        logf("MATERIAL_LOCAL_POSE frame=%llu reused=%u evaluated=%u sharedBudgetSkips=%u",(unsigned long long)frame,localPoseStats.reused,localPoseStats.evaluated,sharedPoseBudgetSkips);
+        logf("MATERIAL_LOCAL_POSE frame=%llu reused=%u evaluated=%u sharedBudgetSkips=%u earlyVertexBudgetRejects=%u",(unsigned long long)frame,localPoseStats.reused,localPoseStats.evaluated,sharedPoseBudgetSkips,earlyPoseBudgetRejects);
         logf("MATERIAL_POSE_COARSE frame=%llu attempts=%zu valid=%zu culled=%zu cpuMs=%.6f unsupportedSkipped=%u budgetPreflightSkipped=%u localValid=%u shapeMisses=%u lookupReuses=%u",(unsigned long long)frame,e.coarseAttempts,e.coarseValid,e.coarseCulled,double(e.coarseNanoseconds)/1000000.,coarseProgramSkipped,coarseBudgetSkipped,coarseLocalValid,coarseShapeMisses,coarseLookupReuses);
         const auto& p=poseMetadata.stats();
         logf("MATERIAL_POSE_METADATA frame=%llu hits=%zu misses=%zu prepared=%zu fallbacks=%zu evictions=%zu entries=%zu bytes=%zu",(unsigned long long)frame,p.hits,p.misses,p.prepared,p.fallbacks,p.evictions,poseMetadata.entries(),poseMetadata.bytes());
@@ -757,8 +762,8 @@ public:
         logf("DISPLACEMENT_MEMORY pressure=%u profiled=%u sourcesMs=%.3f capsMs=%.3f geometryMs=%.3f boundsMs=%.3f deferredMiB=%.3f batched=%u",unsigned(on),unsigned(timed),sourcesMs,capsMs,geometryMs,boundsMs,double(deferred)/(1u<<20),unsigned(batch!=nullptr));
     }
     void trimMemory(NorthlightStreaming::CpuRetirement* retirement=nullptr,NorthlightStreaming::CpuRetirementBatch* batch=nullptr){setMemoryPressure(memoryPressure,retirement,batch);}
-    void reset(NorthlightStreaming::CpuRetirementBatch* batch=nullptr,bool preserveCaptureSources=false){localPoseStats={};sharedPoseBudgetSkips=0;coarseShapeMisses=coarseLookupReuses=coarseLocalValid=coarseBudgetSkipped=coarseProgramSkipped=0;geometryAliases={};nextGeometryAlias=geometryAliasHits=0;setDistanceView(nullptr);modelRangeProof.clear();snapshots.clearIndexCache(nullptr,batch,preserveCaptureSources);rangeSnapshots.clearIndexCache(nullptr,batch,preserveCaptureSources);skinRangeSnapshots.clearIndexCache(nullptr,batch,preserveCaptureSources);positionBounds.clear();current=nullptr;clearModelOverlays();constantStamp={};rangeConstantStamp={};sourceLookup.clear();contentLookup.clear();materialLookup.clear();indexedEntries=true;entries.clear();boundsLRU.clear();bounds.clear();poseEnvelopes.clear();poseMetadata.clear();poseBindings={};envelopeBudget.reset();envelopeBuildContinued=false;boundsBytes=resident=0;for(auto& t:textures){drop(t.gpu);drop(t.source);}textures.clear();declarations.clear();}
-    void endFrame(){localPoseStats={};sharedPoseBudgetSkips=0;setDistanceView(nullptr);modelRangeProof.beginFrame();current=nullptr;clearModelOverlays();if(variantSources)logf("MATERIAL_VARIANT_COLD frame=%u sources=%u cpuBuilt=%u gpuBuilt=%u readFailed=%u sourceBytes=%zu cpuMs=%.6f",frames,variantSources,variantCPU,variantGPU,variantReadFailed,variantBytes,variantMs);variantSources=variantCPU=variantGPU=variantReadFailed=0;variantBytes=0;variantMs=0;if(frames%60==0){MEMORYSTATUSEX memory{};memory.dwLength=sizeof memory;if(GlobalMemoryStatusEx(&memory))refreshBudget(memory);}buildsThisFrame=readsThisFrame=poseVerticesThisFrame=0;for(auto& vertices:poseKernelVertices)vertices=0;poseByteIndexVertices=0;poseEnvelopes.beginFrame(false);poseMetadata.beginFrame();envelopeBudget.reset();envelopeBuildContinued=false;snapshots.clearFrame();rangeSnapshots.clearFrame();skinRangeSnapshots.clearFrame();positionBounds.beginFrame();capturedBoundsHits=admissionSnapshotReuses=geometryAliasHits=constantBankTransfers=coarseShapeMisses=coarseLookupReuses=coarseLocalValid=coarseBudgetSkipped=coarseProgramSkipped=0;if((draws||snapshotRejected)&&frames%600==0){logf("DISPLACEMENT cached=%zu bytes=%zu builds=%llu hits=%llu draws=%llu triangles=%llu refused=%llu terrain=%u walls=%u grass=%u models=%u stateRejected=%u heightRejected=%u shaderRejected=%u snapshotRejected=%u meshRejected=%u budgetMiB=%zu",entries.size(),resident,(unsigned long long)builds,(unsigned long long)hits,(unsigned long long)draws,(unsigned long long)triangles,(unsigned long long)refused,domainDraws[0],domainDraws[1],domainDraws[2],domainDraws[3],stateRejected,heightRejected,shaderRejected,snapshotRejected,meshRejected,cacheBudget>>20);
+    void reset(NorthlightStreaming::CpuRetirementBatch* batch=nullptr,bool preserveCaptureSources=false){localPoseStats={};sharedPoseBudgetSkips=earlyPoseBudgetRejects=0;coarseShapeMisses=coarseLookupReuses=coarseLocalValid=coarseBudgetSkipped=coarseProgramSkipped=0;geometryAliases={};nextGeometryAlias=geometryAliasHits=0;setDistanceView(nullptr);modelRangeProof.clear();snapshots.clearIndexCache(nullptr,batch,preserveCaptureSources);rangeSnapshots.clearIndexCache(nullptr,batch,preserveCaptureSources);skinRangeSnapshots.clearIndexCache(nullptr,batch,preserveCaptureSources);positionBounds.clear();current=nullptr;clearModelOverlays();constantStamp={};rangeConstantStamp={};sourceLookup.clear();contentLookup.clear();materialLookup.clear();indexedEntries=true;entries.clear();boundsLRU.clear();bounds.clear();poseEnvelopes.clear();poseMetadata.clear();poseBindings={};envelopeBudget.reset();envelopeBuildContinued=false;boundsBytes=resident=0;for(auto& t:textures){drop(t.gpu);drop(t.source);}textures.clear();declarations.clear();}
+    void endFrame(){localPoseStats={};sharedPoseBudgetSkips=earlyPoseBudgetRejects=0;setDistanceView(nullptr);modelRangeProof.beginFrame();current=nullptr;clearModelOverlays();if(variantSources)logf("MATERIAL_VARIANT_COLD frame=%u sources=%u cpuBuilt=%u gpuBuilt=%u readFailed=%u sourceBytes=%zu cpuMs=%.6f",frames,variantSources,variantCPU,variantGPU,variantReadFailed,variantBytes,variantMs);variantSources=variantCPU=variantGPU=variantReadFailed=0;variantBytes=0;variantMs=0;if(frames%60==0){MEMORYSTATUSEX memory{};memory.dwLength=sizeof memory;if(GlobalMemoryStatusEx(&memory))refreshBudget(memory);}buildsThisFrame=readsThisFrame=poseVerticesThisFrame=0;for(auto& vertices:poseKernelVertices)vertices=0;poseByteIndexVertices=0;poseEnvelopes.beginFrame(false);poseMetadata.beginFrame();envelopeBudget.reset();envelopeBuildContinued=false;snapshots.clearFrame();rangeSnapshots.clearFrame();skinRangeSnapshots.clearFrame();positionBounds.beginFrame();capturedBoundsHits=admissionSnapshotReuses=geometryAliasHits=constantBankTransfers=coarseShapeMisses=coarseLookupReuses=coarseLocalValid=coarseBudgetSkipped=coarseProgramSkipped=0;if((draws||snapshotRejected)&&frames%600==0){logf("DISPLACEMENT cached=%zu bytes=%zu builds=%llu hits=%llu draws=%llu triangles=%llu refused=%llu terrain=%u walls=%u grass=%u models=%u stateRejected=%u heightRejected=%u shaderRejected=%u snapshotRejected=%u meshRejected=%u budgetMiB=%zu",entries.size(),resident,(unsigned long long)builds,(unsigned long long)hits,(unsigned long long)draws,(unsigned long long)triangles,(unsigned long long)refused,domainDraws[0],domainDraws[1],domainDraws[2],domainDraws[3],stateRejected,heightRejected,shaderRejected,snapshotRejected,meshRejected,cacheBudget>>20);
         logf("DISPLACEMENT snapshots attempts=%llu up=%llu buffered=%llu unknown=%llu arguments=%llu declaration=%llu stream=%llu instancing=%llu indexBuffer=%llu indexRange=%llu vertexRange=%llu budget=%llu lock=%llu unlock=%llu",(unsigned long long)snapshotAttempts,(unsigned long long)snapshotUP,(unsigned long long)(snapshotAttempts-snapshotUP),(unsigned long long)snapshotReasons[0],(unsigned long long)snapshotReasons[1],(unsigned long long)snapshotReasons[2],(unsigned long long)snapshotReasons[3],(unsigned long long)snapshotReasons[4],(unsigned long long)snapshotReasons[5],(unsigned long long)snapshotReasons[6],(unsigned long long)snapshotReasons[7],(unsigned long long)snapshotReasons[8],(unsigned long long)snapshotReasons[9],(unsigned long long)snapshotReasons[10]);}++frames;}
     void registerVariant(IDirect3DVertexShader9* original,const DWORD* code,size_t count,bool skinned=false,bool wmo=false){
         auto old=shaders.find(original);if(old!=shaders.end()){drop(old->second.patched);drop(old->second.gpu);drop(old->second.source);shaders.erase(old);}Shader shader;
@@ -862,6 +867,17 @@ public:
         // Cached geometry may retain an older, byte-identical buffer revision.
         // Overlays must match the source of this frame's successful base draw.
         if(domain==4)preparedSourceIdentity=source->sourceIdentity;
+        const bool exactSkin=shader->second.skinned&&shader->second.envelopeSkin;
+        // The range proofs and the current-draw snapshot handoff are complete.
+        // With the shared pose budget exhausted, this model can only reach the
+        // vertex fallback. Avoid aliasing and geometry-cache probes if even
+        // that fallback must refuse the section. Keep local skin envelopes
+        // and the first request that advances pending shared builds eligible.
+        if(domain==4&&shader->second.skinned&&modelPoseOverBudget(source->vertexCount,exactSkin)){
+            ++sharedPoseBudgetSkips;++earlyPoseBudgetRejects;
+            ++poseBudgetRejected;if(profile)profile->count(P::PoseBudget);
+            return false;
+        }
         if(!args.vertices)source=geometrySource(source,decl.p,shader->second.id,domain);
         const bool equivalent=args.vertices||(domain==1&&material==2);const uint64_t fingerprint=equivalent?sourceFingerprint(*source):0;
         // UP snapshots have fresh identities even when every byte is unchanged.
@@ -885,7 +901,6 @@ public:
         // Skinning without an audited envelope uses posed vertices below, never object-space
         // bounds. Building/scanning/retaining those before a budget refusal was
         // unbounded work with no consumer, especially when the source churned.
-        const bool exactSkin=shader->second.skinned&&shader->second.envelopeSkin;
         // Both body scratch-register layouts use the same evaluator in both caches.
         // Reuse this draw's current-palette result instead of building/evaluating it twice.
         // A current envelope performs no vertex scan. Only the fallback below

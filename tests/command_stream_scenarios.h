@@ -1844,6 +1844,20 @@ static void bindLifetime(){
 static void floatConstantBanks(){
     gTrace.clear();Rig rig(true);auto& q=rig.core().q;IDirect3DDevice9* d=rig.dev;
     float model[2][256][4]={};bool known[2][256]={};std::uint32_t x=987654321u;auto rnd=[&](unsigned n){x=x*1664525u+1013904223u;return (x>>10)%n;};
+    float initial[8*4]={},changed[8*4]={};
+    const std::uint32_t negativeZero=0x80000000;
+    std::memcpy(changed+4*4,&negativeZero,sizeof negativeZero);
+    d->SetVertexShaderConstantF(60,initial,8);
+    rig.sync();CHECK(rig.target->ext.lastVertexConstantFirst==60&&rig.target->ext.lastVertexConstantCount==8);
+    d->SetVertexShaderConstantF(60,changed,8);
+    rig.sync();CHECK(rig.target->ext.lastVertexConstantFirst==(kFilterRedundantState?64u:60u));
+    CHECK(rig.target->ext.lastVertexConstantCount==(kFilterRedundantState?1u:8u));
+    CHECK(std::memcmp(rig.target->ext.vsF[60],changed,sizeof changed)==0);
+    CHECK(d->BeginStateBlock()==D3D_OK);d->SetVertexShaderConstantF(60,changed,8);
+    IDirect3DStateBlock9* captured=nullptr;CHECK(d->EndStateBlock(&captured)==D3D_OK&&captured);
+    rig.sync();CHECK(rig.target->ext.lastVertexConstantFirst==60&&rig.target->ext.lastVertexConstantCount==8);
+    captured->Release();d->SetVertexShaderConstantF(60,initial,8);
+    for(unsigned k=60;k<68;++k)known[0][k]=true;
     unsigned filtered=0,sets=0;
     for(int i=0;i<6000;++i){
         const unsigned bank=rnd(2),edge=rnd(4);UINT r=edge==0?60+rnd(8):edge==1?124+rnd(8):edge==2?250+rnd(6):rnd(256);UINT n=1+rnd(12);if(r+n>256)n=256-r;
@@ -1861,7 +1875,7 @@ static void floatConstantBanks(){
         std::memcpy(model[bank][r],v,n*16);for(UINT k=0;k<n;++k)known[bank][r+k]=true;
     }
     CHECK((kFilterRedundantState?filtered>0:filtered==0)&&sets>3000);
-    // out of range: never filtered, clamped as before (the in-range part is remembered)
+    // Out of range: pass it through and obtain any in-range value from the backend.
     {const float c[8]={1,2,3,4,5,6,7,8};const auto b0=q.recordedSeq();d->SetVertexShaderConstantF(255,c,2);d->SetVertexShaderConstantF(255,c,2);CHECK(q.recordedSeq()==b0+2);float g[4];CHECK(d->GetVertexShaderConstantF(255,g,1)==D3D_OK&&g[0]==1&&g[3]==4);}
     rig.sync();rig.finish();checkClean();
 }

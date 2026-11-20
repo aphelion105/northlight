@@ -21,6 +21,7 @@ struct Settings {
     unsigned farShadowInterval=4,nearShadowInterval=1,localLightLimit=64,pointShadows=1,pointShadowLimit=64,pointShadowRefreshMs=0,shadowDirectionSteps=2048;
     // Camera distance to the light's influence sphere, in yards.
     unsigned pointShadowDistance=48;
+    unsigned pointShadowAdaptiveRefresh=0;
     unsigned shadowRefreshCpuMs=3;
     // Where each value in Keys order came from: 'd' code default (Quality), 'p' Balanced/Performance
     // preset, 'l' legacy shadow-experiment.ini, 'f' northlight-quality.ini key. Not part of ==.
@@ -156,7 +157,7 @@ struct Settings {
     unsigned autoDisplacementStrength=100,autoDisplacementDistance=12,autoDisplacementDetail=4;
     unsigned autoBumpModels=3,autoModelDisplacementStrength=25,autoModelDisplacementDistance=8,autoModelDisplacementDetail=2;
     unsigned autoHeightPolarity=0,autoHeightDetails=75,autoHeightBalance=50;
-    char origin[126]={'d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d'};
+    char origin[127]={'d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d'};
 };
 struct Key {
     const char* name;unsigned Settings::*field=nullptr;int Settings::*signedField=nullptr;
@@ -277,6 +278,7 @@ inline const Key Keys[]={
     {"WeatherWindStrength",&Settings::weatherWindStrength,0,300,{100,100,100}},
     {"WeatherCameraMotion",&Settings::weatherCameraMotion,0,1,{1,1,1}},
     {"PointShadowDistance",&Settings::pointShadowDistance,8,192,{48,48,48}},
+    {"PointShadowAdaptiveRefresh",&Settings::pointShadowAdaptiveRefresh,0,1,{0,0,0}},
     {"SoftShadows",&Settings::softShadows,0,1,{1,1,0}},
     {"ShadowStrength",&Settings::shadowStrength,0,200,{125,125,125}},
     {"ShadowSoftness",&Settings::shadowSoftness,0,200,{50,50,50}},

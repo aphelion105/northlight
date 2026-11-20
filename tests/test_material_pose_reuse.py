@@ -40,6 +40,8 @@ struct DisplacementStateTestAccess {
             NorthlightAutoDisplacement deferred(nullptr);
             const auto source=std::make_shared<const Mesh>(geometry(12));
             deferred.poseEnvelopes.chargeCheapPreparation(UINT64_MAX);
+            deferred.poseVerticesThisFrame=8192;
+            assert(!deferred.modelPoseOverBudget(12,false)); // The first request still advances the pending build.
             float low[3],high[3];Bounds world,view;
             for(unsigned i=0;i<10;++i){
                 world.valid=view.valid=true;
@@ -48,7 +50,12 @@ struct DisplacementStateTestAccess {
             }
             assert(deferred.envelopeBuildContinued&&deferred.sharedPoseBudgetSkips==9);
             assert(deferred.poseEnvelopes.stats().timeDeferred==1&&!deferred.poseEnvelopes.entries());
+            assert(deferred.modelPoseOverBudget(12,false)&&!deferred.modelPoseOverBudget(12,true));
+            deferred.poseVerticesThisFrame-=12;
+            assert(!deferred.modelPoseOverBudget(12,false));
+            deferred.poseVerticesThisFrame+=12;
             deferred.endFrame();assert(!deferred.sharedPoseBudgetSkips&&deferred.poseEnvelopes.canReady());
+            assert(!deferred.modelPoseOverBudget(12,false));
         }
         NorthlightAutoDisplacement g(nullptr);g.range=12;
         float identity[16]={};for(unsigned k=0;k<4;++k)identity[5*k]=1;

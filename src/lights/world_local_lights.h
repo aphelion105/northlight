@@ -12,6 +12,7 @@
 
 namespace NorthlightLocalLights {
 inline constexpr uint32_t Baked=1,CastShadow=2,FirePulse=4,CandlePulse=8,GlassEmitter=16,Flash=32,RequiresNative=64;
+inline constexpr uint32_t NativeSceneEmitter=128; // Runtime provenance for unshadowed, identified M2 emitters.
 struct Light {
     float position[3],diffuse[3],attenuationStart,attenuationEnd;
     uint64_t sourceId;
@@ -24,7 +25,8 @@ inline bool valid(const Light& l) {
     for(float x:l.diffuse) {if(!std::isfinite(x)||x<0||x>10000)return false;peak=std::max(peak,x);}
     return peak>0&&std::isfinite(l.attenuationStart)&&std::isfinite(l.attenuationEnd)&&
         l.attenuationStart>=0&&l.attenuationStart<l.attenuationEnd&&l.attenuationEnd<=2000&&
-        (l.kind==1||l.kind==2||l.kind==3)&&(l.flags&~(CastShadow|FirePulse|CandlePulse|GlassEmitter|Flash|RequiresNative))==(l.kind==1?Baked:0u)&&
+        (l.kind==1||l.kind==2||l.kind==3)&&(l.flags&~(CastShadow|FirePulse|CandlePulse|GlassEmitter|Flash|RequiresNative|NativeSceneEmitter))==(l.kind==1?Baked:0u)&&
+        (!(l.flags&NativeSceneEmitter)||(l.kind==2&&l.flags==NativeSceneEmitter&&(l.sourceId>>52)==0xfec))&&
         (!(l.flags&RequiresNative)||(l.kind==2&&l.flags==(CastShadow|RequiresNative)))&&
         (!(l.flags&Flash)||(l.kind==2&&l.flags==Flash&&(l.sourceId>>52)==0xfed))&&
         (!(l.flags&(FirePulse|CandlePulse))||l.kind==3)&&
@@ -82,7 +84,7 @@ inline bool readFile(const std::string& path,std::vector<Light>& output) {
     if(!candidate.empty())f.read(reinterpret_cast<char*>(candidate.data()),candidate.size()*sizeof(Light));
     if(!f)return false;
     for(size_t i=0;i<candidate.size();++i)
-        if(!valid(candidate[i])||(i&&candidate[i-1].sourceId>=candidate[i].sourceId))return false;
+        if(!valid(candidate[i])||(candidate[i].flags&NativeSceneEmitter)||(i&&candidate[i-1].sourceId>=candidate[i].sourceId))return false;
     if(header[0]==1)for(auto& l:candidate)if(l.kind==2&&!(l.flags&Flash))l=nativeModelTransport(l);
     output.swap(candidate);return true;
 }

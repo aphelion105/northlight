@@ -12,6 +12,12 @@ inline bool sameRange(NorthlightShaderConstants::Range a,NorthlightShaderConstan
 }
 inline bool validRange(NorthlightShaderConstants::Range r,unsigned limit){return r.first<=limit&&r.count<=limit-r.first;}
 
+inline NorthlightShaderConstants::Range weightedUploadRange(const NorthlightShaderConstants::Usage& usage,unsigned paletteEnd){
+    const auto fixed=usage.weightedFloats;
+    if(!fixed.count||!validRange(fixed,256)||!paletteEnd||paletteEnd>75||!sameRange(usage.floats,{0,256}))return {};
+    return {fixed.first,std::max(fixed.first+fixed.count,31+3*paletteEnd)-fixed.first};
+}
+
 template<class Replay> bool sameCaptured(const Replay& a,const Replay& b){
     const auto& x=a.constantUsage;const auto& y=b.constantUsage;
     if(a.projectionKind!=b.projectionKind||(a.projectionKind!=1&&a.projectionKind!=2)||
@@ -37,19 +43,27 @@ template<class Bool> class Pass {
     NorthlightReplayConstants::BoundedDirtyRegisters<Bool,16,1> boolBank_;
     NorthlightReplayConstants::BoundedDirtyRegisters<int,16,4> intBank_;
     unsigned group_=0;
+    NorthlightShaderConstants::Range range_{};
     bool valid_=false;
 public:
     NorthlightReplayConstants::DirtySpan floats,booleans,integers;
     size_t prepared=0,reused=0;
     void reset(){floatBank_.reset();boolBank_.reset();intBank_.reset();valid_=false;}
     const float* desired()const{return floatBank_.data();}
-    template<class Replay> bool prepare(const Replay& p,const float* rows,const float* worldMatrix=nullptr){
+    template<class Replay> bool prepare(const Replay& p,const float* rows,const float* worldMatrix=nullptr,
+                                        NorthlightShaderConstants::Range uploadFloats={}){
         floats={};booleans={};integers={};
-        if(valid_&&group_==p.constantGroup){++reused;return true;}
-        if(!NorthlightReplayConstants::updateProjectedConstants(floatBank_,p.constants,p.constantUsage,p.projectionKind,rows,floats,worldMatrix))return false;
+        auto usage=p.constantUsage;
+        if(uploadFloats.count){
+            if(!validRange(uploadFloats,256)||!validRange(usage.floats,256)||uploadFloats.first<usage.floats.first||
+               uploadFloats.first+uploadFloats.count>usage.floats.first+usage.floats.count)return false;
+            usage.floats=uploadFloats;
+        }
+        if(valid_&&group_==p.constantGroup&&sameRange(range_,usage.floats)){++reused;return true;}
+        if(!NorthlightReplayConstants::updateProjectedConstants(floatBank_,p.constants,usage,p.projectionKind,rows,floats,worldMatrix))return false;
         booleans=boolBank_.update(p.bools,p.constantUsage.booleans);
         integers=intBank_.update(p.ints,p.constantUsage.integers);
-        group_=p.constantGroup;valid_=true;++prepared;return true;
+        group_=p.constantGroup;range_=usage.floats;valid_=true;++prepared;return true;
     }
 };
 }

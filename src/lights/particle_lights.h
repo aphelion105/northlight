@@ -141,7 +141,7 @@ public:
             for(const auto& l:fixed)if(NorthlightEquipmentLights::distance2(s.position,l.position)<.25f*.25f&&
                 NorthlightEquipmentLights::hueClose(s.rgb,l.diffuse)){duplicate=true;break;}
             for(unsigned j=0;native&&j<nativeCount&&j<NativeCapacity&&!duplicate;++j)
-                if((native[j].flags&NorthlightLocalLights::CastShadow)&&NorthlightEquipmentLights::distance2(s.position,native[j].position)<1.f&&
+                if((native[j].flags&(NorthlightLocalLights::CastShadow|NorthlightLocalLights::NativeSceneEmitter))&&NorthlightEquipmentLights::distance2(s.position,native[j].position)<1.f&&
                    NorthlightEquipmentLights::hueClose(s.rgb,native[j].diffuse))duplicate=true;
             if(duplicate)continue;
             // The average colour at the strongest sample's level (at most 1): not the sum of a draw's particles.

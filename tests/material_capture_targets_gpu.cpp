@@ -39,7 +39,10 @@ struct MaterialCaptureStateTestAccess {
             b.cleared=b.occlusionCleared=false;
             for(unsigned i=0;i<meshes.size();++i){auto packet=std::make_unique<NorthlightAutoBump::Deferred>();packet->mesh=meshes[i];packet->tag=19;packet->vertex=vs;vs->AddRef();packet->pixel=ps;ps->AddRef();packet->declaration=declaration;declaration->AddRef();packet->vertexCount=0;packet->vertexFloatOnly=true;
                 packet->vertexCount=256;std::memcpy(packet->vertexConstants,nativeV,sizeof nativeV);packet->vertexConstants[124]=float(i)*.01f;
-                packet->first=128;packet->pixelFloatOnly=true;packet->pixelConstants={float(i%7)/8.f,.5f,.25f,1,.65f,.72f,.8f,1};packet->occlusion=pattern==1||(pattern==2&&(i&1));
+#ifdef NORTHLIGHT_EXPECT_STATE_REUSE
+                packet->pixelFloatOnly=true;
+#endif
+                packet->first=128;packet->pixelConstants={float(i%7)/8.f,.5f,.25f,1,.65f,.72f,.8f,1};packet->occlusion=pattern==1||(pattern==2&&(i&1));
                 packet->viewport=partial?D3DVIEWPORT9{width/8,height/8,width*3/4,height*3/4,.15f,.85f}:D3DVIEWPORT9{0,0,width,height,0,1};
                 NorthlightAutoBump::ReplayState states(&d,nullptr,{});for(unsigned n=0;n<14;++n)packet->states[n]=states.states[n].replay;packet->states[0]=TRUE;packet->states[5]=FALSE;
                 std::fill(packet->raster,packet->raster+NorthlightAutoBump::DeferredRasterCount,0);packet->raster[0]=D3DCULL_NONE;packet->raster[1]=TRUE;packet->raster[2]=D3DCMP_LESSEQUAL;packet->raster[6]=TRUE;packet->raster[7]=~DWORD(0);packet->raster[8]=TRUE;packet->raster[9]=TRUE;packet->raster[12]=D3DSHADE_GOURAUD;packet->raster[13]=D3DFILL_SOLID;packet->raster[14]=TRUE;

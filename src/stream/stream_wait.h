@@ -36,15 +36,21 @@ class QueryPollPause {
     bool checked_=false,spin_=false;
 #endif
 public:
-    void operator()(std::uint64_t,std::uint64_t elapsedNs){
+    void operator()(std::uint64_t remainingNs,std::uint64_t elapsedNs){
 #ifdef _WIN32
         if(!checked_){
             checked_=true;DWORD_PTR process=0,system=0;
             spin_=GetProcessAffinityMask(GetCurrentProcess(),&process,&system)&&(process&(process-1));
         }
-        if(spin_&&elapsedNs<2000000){YieldProcessor();return;}
+        if(spin_&&elapsedNs<2000000){
+            // Amortize clock reads and pause diagnostics while the next poll
+            // is still several microseconds away. Sample singly at the edge.
+            const unsigned batch=remainingNs>=2000?8:1;
+            for(unsigned i=0;i<batch;++i)YieldProcessor();
+            return;
+        }
 #else
-        (void)elapsedNs;
+        (void)remainingNs;(void)elapsedNs;
 #endif
         std::this_thread::yield();
     }

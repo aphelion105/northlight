@@ -72,6 +72,7 @@ struct TestTr {
 struct HostBase {
     Queue q;unsigned observed=0,answered=0;bool answerYes=false;
     Queue& streamQueue(){return q;}
+    HRESULT recordVertexConstants(UINT r,const float* d,UINT n){record_Device_SetVertexShaderConstantF(q,r,d,n);return D3D_OK;}
     struct Scope{};Scope callScope(std::uint16_t){return {};}   // 0.3.204 (task 21): the generated bodies open a timing scope
     template<Cmd C,class... A> bool redundant(CmdTag<C>,A&&...){return false;}
     template<Cmd C,class... A> void observe(CmdTag<C>,A&&...){++observed;}

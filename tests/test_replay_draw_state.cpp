@@ -174,6 +174,23 @@ static Scene makeScene(World& w,std::mt19937& rng,unsigned draws,double opaqueSh
 }
 static unsigned materialCalls(const Calls& c){return c.textures+c.samplers;}
 int main(int argc,char** argv){
+    {
+        IDirect3DDevice9 device;
+        NorthlightReplayDrawState::Cache cache(&device);
+        IDirect3DBaseTexture9 first{},second{};
+        Replay packet;
+        packet.texture=&first;
+        assert(cache.geometry(packet)==D3D_OK&&cache.material(packet)==D3D_OK);
+        assert(device.texture==&first);
+        assert(device.SetTexture(0,nullptr)==D3D_OK);
+        cache.beginMaterialPass();
+        packet.texture=&second;
+        assert(cache.geometry(packet)==D3D_OK&&cache.material(packet)==D3D_OK);
+        assert(device.texture==&second&&device.calls.streams==4&&device.calls.indices==1);
+        cache.invalidate();
+        assert(cache.geometry(packet)==D3D_OK&&device.calls.streams==8);
+        std::puts("PASS face transition retains geometry, restarts material, and resets after an external bind");
+    }
     {IDirect3DDevice9 d;NorthlightReplayDrawState::Cache cache(&d);Replay p;p.cutoff=.5f;
         for(unsigned mode:{0u,1u,2u,0u}){p.alphaMode=mode;const auto before=d.calls.constants;assert(!cache.material(p));assert(d.calls.constants==before+1&&d.c0[0]==float(mode)&&d.c0[3]==.5f);}
         const auto before=d.calls.constants;assert(!cache.material(p));assert(d.calls.constants==before);

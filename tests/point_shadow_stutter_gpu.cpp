@@ -592,6 +592,33 @@ struct PointTerrainCoverageTest {
      ++w.meshGeneration;due(exhausted);assert(!w.pointSlot().budgetHeld&&w.pointDraws);
      light.position[0]+=.5f;due(exhausted);assert(!w.pointSlot().budgetHeld&&w.pointDraws);
      light.position[0]-=.5f;due(exhausted);assert(!w.pointSlot().budgetHeld&&image()==actorImage);
+     const auto originalLight=light;
+     light.sourceId=0xfec0000000000001ull;light.kind=2;
+     due(exhausted);assert(!w.pointSlot().budgetHeld&&image()==actorImage);
+     light.position[0]+=.035f;
+     due(exhausted);assert(w.pointSlot().budgetHeld&&!w.pointDraws&&image()==actorImage);
+     assert(w.pointSlot().cubeOrigin()[0]==originalLight.position[0]&&w.pointSlot().selected.position[0]==light.position[0]);
+     due(exhausted);assert(!w.pointSlot().budgetHeld&&w.pointDraws&&w.pointSlot().cubeOrigin()[0]==light.position[0]);
+     const auto scissor=w.localScissorView;
+     const float distantView[]={1,0,0,0,0,1,0,0,0,0,1,0,0,0,-100,1},projection[]={1,1,1};
+     w.localScissorView=NorthlightLocalLightScissor::view(distantView,projection,.1f,.1f,3840,2160);
+     w.quality.pointShadowAdaptiveRefresh=1;
+     const auto movedImage=image();const float previousOrigin=light.position[0];
+     light.position[0]+=.035f;
+     const auto adapt=[&](unsigned frame){
+      // Beyond the ordinary motion grace period, inside the bounded adaptive hold.
+      w.pointSlot().schedule.updatedAt=GetTickCount()-40;
+      must(d->BeginScene());assert(w.renderPointShadow(light,true,true,&unlimited,frame));must(d->EndScene());drain();
+     };
+     adapt(5);assert(w.pointSlot().budgetHeld&&w.pointAdaptiveMotionHeld==1&&!w.pointDraws&&image()==movedImage);
+     assert(w.pointSlot().cubeOrigin()[0]==previousOrigin);
+     adapt(7);assert(!w.pointSlot().budgetHeld&&w.pointDraws&&w.pointSlot().cubeOrigin()[0]==light.position[0]);
+     const auto adaptiveRefreshDraws=w.pointDraws;
+     const auto currentImage=image();adapt(8);assert(!w.pointSlot().budgetHeld&&image()==currentImage);
+     std::printf("POINT_MOVING_ADAPTIVE_GPU_PASS heldDraws=0 refreshDraws=%u nextDue=refreshed sixFaces=exact\n",adaptiveRefreshDraws);
+     w.localScissorView=scissor;w.quality.pointShadowAdaptiveRefresh=0;
+     light=originalLight;
+     due(exhausted);assert(!w.pointSlot().budgetHeld&&image()==actorImage);
      std::printf("SHADOW_REFRESH_GPU_PASS fullDraws=%u heldDraws=0 nextDue=refreshed expired=moved=terrain=mesh=immediate sixFaces=exact\n",draws);
     }
 #endif
@@ -753,9 +780,55 @@ struct PointTerrainCoverageTest {
   auto skinProgram=std::make_shared<NorthlightActorDeformation::Program>();assert(NorthlightActorDeformation::compile(skinWords.data(),skinWords.size(),*skinProgram));assert(NorthlightReplayBounds::SkinEnvelope::supports(*skinProgram));
   IDirect3DVertexShader9* skinOriginal=nullptr;must(d->CreateVertexShader(reinterpret_cast<const DWORD*>(skinWords.data()),&skinOriginal));
   assert(NorthlightShadowShader::patch(skinWords.data(),skinWords.size(),patched));IDirect3DVertexShader9* skinShader=nullptr;must(d->CreateVertexShader(reinterpret_cast<const DWORD*>(patched.data()),&skinShader));w.actorPrograms[skinOriginal]=skinProgram;
+#ifdef NORTHLIGHT_POINT_OVERLAP_TEST
+  const auto skinUsage=NorthlightShaderConstants::analyze(patched.data(),patched.size(),2);assert(skinUsage.weightedFloats.count);
+#endif
   const D3DVERTEXELEMENT9 skinElements[]={{0,0,D3DDECLTYPE_FLOAT3,0,D3DDECLUSAGE_POSITION,0},{0,12,D3DDECLTYPE_UBYTE4N,0,D3DDECLUSAGE_BLENDWEIGHT,0},{0,16,D3DDECLTYPE_UBYTE4,0,D3DDECLUSAGE_BLENDINDICES,0},D3DDECL_END()};
   IDirect3DVertexDeclaration9* skinDecl=nullptr;must(d->CreateVertexDeclaration(skinElements,&skinDecl));
   struct SkinVertex {float at[3];BYTE weights[4],bones[4];};static_assert(sizeof(SkinVertex)==20);
+#ifdef NORTHLIGHT_POINT_OVERLAP_TEST
+  {
+   const SkinVertex verts[]={{{-3,-1,0},{0,63,127,65},{0,1,2,3}},{{-1,-1,0},{0,63,127,65},{0,1,2,3}},{{-2,1,0},{0,63,127,65},{0,1,2,3}},
+                             {{1,-1,0},{0,63,127,65},{0,1,2,12}},{{3,-1,0},{0,63,127,65},{0,1,2,12}},{{2,1,0},{0,63,127,65},{0,1,2,12}}};
+   const WORD indices[]={0,1,2,3,4,5,3,4,5};
+   IDirect3DVertexBuffer9* vb=nullptr;IDirect3DIndexBuffer9* ib=nullptr;
+   must(d->CreateVertexBuffer(sizeof verts,0,0,D3DPOOL_MANAGED,&vb,nullptr));must(vb->Lock(0,0,&data,0));std::memcpy(data,verts,sizeof verts);must(vb->Unlock());
+   must(d->CreateIndexBuffer(sizeof indices,0,D3DFMT_INDEX16,D3DPOOL_MANAGED,&ib,nullptr));must(ib->Lock(0,0,&data,0));std::memcpy(data,indices,sizeof indices);must(ib->Unlock());
+   for(unsigned i=0;i<2;++i){
+    auto p=std::make_unique<WorldRenderer::Replay>();auto source=std::make_shared<NorthlightDrawSnapshot::Mesh>();
+    source->vertexCount=3;source->primitiveCount=1;source->indexed=true;source->indices={0,1,2};source->streams[0].stride=sizeof(SkinVertex);
+    source->streams[0].bytes.resize(3*sizeof(SkinVertex));std::memcpy(source->streams[0].bytes.data(),verts+3*i,3*sizeof(SkinVertex));p->shared=source;
+    p->originalShader=skinOriginal;skinOriginal->AddRef();p->shader=skinShader;skinShader->AddRef();p->decl=skinDecl;skinDecl->AddRef();
+    p->stream[0]=vb;vb->AddRef();p->stride[0]=sizeof(SkinVertex);p->index=ib;ib->AddRef();p->type=D3DPT_TRIANGLELIST;p->indexed=true;
+    p->min=p->start=3*i;p->vertices=3;p->count=1;p->projectionKind=2;p->constantUsage=skinUsage;p->cutoff=-1;p->gpuCached=true;
+    std::fill(std::begin(p->constantStorage),std::end(p->constantStorage),0.f);
+    for(unsigned bone=0;bone<75;++bone){p->constantStorage[4*(31+3*bone)]=1;p->constantStorage[4*(32+3*bone)+1]=1;p->constantStorage[4*(33+3*bone)+2]=1;}
+    p->constantStorage[4*(33+3*12)+3]=-1.5f;w.replays.push_back(std::move(p));
+   }
+   vb->Release();ib->Release();w.pointPrimitiveLimit=caps.MaxPrimitiveCount;
+   auto& second=*w.replays[1];
+   {
+    w.replayBoundsBegin();w.pointCalculateReplayBounds();assert(w.pointBoundsValid==2);
+    assert(w.replays[0]->boundsWork.weightedPaletteEnd==4&&second.boundsWork.weightedPaletteEnd==13);
+    const auto render=[&]{
+     const float poison[12]={};must(d->SetVertexShaderConstantF(31+3*12,poison,3));
+     w.pointWork={};w.pointCold={};w.pointSlot().schedule.invalidate();
+     must(d->BeginScene());assert(w.renderPointShadow(light,true,true));must(d->EndScene());drain();
+     assert(w.pointWork.replayMerged);
+     return image();
+    };
+    w.replays[0]->constantUsage.weightedFloats={};const auto expected=render();const auto fullBytes=w.pointCold.constantBytes;
+    assert(std::any_of(expected.begin(),expected.end(),[](float depth){return depth<1.f;}));
+    w.replays[0]->constantUsage.weightedFloats=skinUsage.weightedFloats;
+    assert(render()==expected&&w.pointCold.weightedConstantDraws&&w.pointCold.constantBytes<fullBytes);
+    const auto compactBytes=w.pointCold.constantBytes;
+    second.boundsWork.weightedPaletteEnd=0;
+    assert(render()==expected&&!w.pointCold.weightedConstantDraws&&w.pointCold.constantBytes==fullBytes);
+    std::printf("POINT_MERGED_SKIN_GPU_PASS fullBytes=%llu compactBytes=%llu exactFaces=6\n",(unsigned long long)fullBytes,(unsigned long long)compactBytes);
+   }
+   w.replays.clear();w.replayBoundsCache.clear();
+  }
+#endif
   for(unsigned packets:{816u,969u}){
    constexpr unsigned perSource=33;std::vector<SkinVertex> skinVertices;
    for(unsigned i=0;i<packets;++i)for(unsigned n=0;n<perSource;++n)skinVertices.push_back({{(i?1000.f+float(i):0.f)+(n%3==1?1.f:-1.f),n%3==2?1.f:-1.f,0},{0,63,127,65},{0,1,2,3}});
@@ -764,6 +837,9 @@ struct PointTerrainCoverageTest {
    must(d->CreateIndexBuffer(sizeof skinIndices,0,D3DFMT_INDEX16,D3DPOOL_MANAGED,&skinIB,nullptr));must(skinIB->Lock(0,0,&data,0));std::memcpy(data,skinIndices,sizeof skinIndices);must(skinIB->Unlock());
    for(unsigned i=0;i<packets;++i){auto p=std::make_unique<WorldRenderer::Replay>();auto source=std::make_shared<NorthlightDrawSnapshot::Mesh>();source->vertexCount=perSource;source->primitiveCount=perSource/3;source->indexed=true;source->indices.assign(std::begin(skinIndices),std::end(skinIndices));source->streams[0].stride=sizeof(SkinVertex);source->streams[0].bytes.resize(perSource*sizeof(SkinVertex));std::memcpy(source->streams[0].bytes.data(),skinVertices.data()+i*perSource,source->streams[0].bytes.size());p->shared=source;
     p->originalShader=skinOriginal;skinOriginal->AddRef();p->shader=skinShader;skinShader->AddRef();p->decl=skinDecl;skinDecl->AddRef();p->stream[0]=skinVB;skinVB->AddRef();p->stride[0]=sizeof(SkinVertex);p->index=skinIB;skinIB->AddRef();p->type=D3DPT_TRIANGLELIST;p->indexed=true;p->base=INT(i*perSource);p->vertices=perSource;p->count=perSource/3;p->projectionKind=2;p->constantUsage.floats={0,256};p->cutoff=-1;
+#ifdef NORTHLIGHT_POINT_OVERLAP_TEST
+    p->constantUsage=skinUsage;p->gpuCached=true;
+#endif
     std::fill(std::begin(p->constantStorage),std::end(p->constantStorage),0.f);for(unsigned bone=0;bone<75;++bone){p->constantStorage[4*(31+3*bone)]=1;p->constantStorage[4*(32+3*bone)+1]=1;p->constantStorage[4*(33+3*bone)+2]=1;}w.replays.push_back(std::move(p));}
    skinVB->Release();skinIB->Release();w.replayBoundsCache.clear();w.pointSlot().cacheValid=false;
    // Seed an interrupted immutable source, which must remain unbounded.
@@ -777,8 +853,22 @@ struct PointTerrainCoverageTest {
     for(unsigned l=0;l<4;++l){unboundedReference();auto target=light;target.position[0]=float(l)*.25f;target.sourceId=7000+l;w.pointWork={};w.pointSlot().schedule.invalidate();must(d->BeginScene());assert(w.renderPointShadow(target,true,true));must(d->EndScene());drain();const auto expected=image();assert(std::any_of(expected.begin(),expected.end(),[](float v){return v<.99f;}));if(!pose&&!l)before=w.pointWork.replay;
      // A real clock may defer work under driver contention. Every partial
      // result must produce the same image; eventual completion is mandatory.
-     for(unsigned attempt=0;attempt<128;++attempt){w.replayBoundsBegin();w.pointCalculateReplayBounds();w.pointWork={};w.pointSlot().schedule.invalidate();must(d->BeginScene());assert(w.renderPointShadow(target,true,true));must(d->EndScene());drain();assert(image()==expected);if(w.pointBoundsValid==packets)break;assert(attempt<127);}
+     for(unsigned attempt=0;attempt<128;++attempt){w.replayBoundsBegin();w.pointCalculateReplayBounds();w.pointWork={};
+#ifdef NORTHLIGHT_POINT_OVERLAP_TEST
+      w.pointCold={};
+#endif
+      w.pointSlot().schedule.invalidate();must(d->BeginScene());assert(w.renderPointShadow(target,true,true));must(d->EndScene());drain();assert(image()==expected);if(w.pointBoundsValid==packets)break;assert(attempt<127);}
      assert(w.pointBoundsValid==packets);if(!pose&&!l)after=w.pointWork.replay;
+#ifdef NORTHLIGHT_POINT_OVERLAP_TEST
+     assert(w.pointCold.weightedConstantDraws);
+     if(!pose&&!l){
+      const auto compactBytes=w.pointCold.constantBytes;
+      for(auto& p:w.replays)p->constantUsage.weightedFloats={};
+      w.pointWork={};w.pointCold={};w.pointSlot().schedule.invalidate();must(d->BeginScene());assert(w.renderPointShadow(target,true,true));must(d->EndScene());drain();
+      assert(image()==expected&&w.pointWork.replay==after&&compactBytes<w.pointCold.constantBytes);
+      for(auto& p:w.replays)p->constantUsage.weightedFloats=skinUsage.weightedFloats;
+     }
+#endif
      for(auto& p:w.replays)p->pointBounds={};
     }
    }

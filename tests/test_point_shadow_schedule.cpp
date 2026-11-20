@@ -28,6 +28,16 @@ int main(){
     auto changed=light;changed.sourceId++;assert(schedule.due(101,changed,7,1000,false));
     changed=light;changed.position[0]+=.01f;assert(schedule.due(101,changed,7,1000,false));
     changed=light;changed.attenuationEnd+=.1f;assert(schedule.due(101,changed,7,1000,false));
+    {
+        auto native=light;native.sourceId=0xfec0000000000001ull;native.kind=2;
+        auto moved=native;moved.position[0]+=.035f;
+        assert(smallNativeCubeMotion(native,moved)&&!sameCube(native,moved));
+        assert(!smallNativeCubeMotion(light,moved));
+        moved.attenuationEnd+=.01f;assert(!smallNativeCubeMotion(native,moved));
+        moved=native;moved.position[0]+=.2f;assert(!smallNativeCubeMotion(native,moved));
+        native.attenuationEnd=moved.attenuationEnd=1.f;moved.position[0]=native.position[0]+.02f;
+        assert(!smallNativeCubeMotion(native,moved));
+    }
     changed=light;changed.diffuse[0]=.5f;assert(!schedule.due(101,changed,7,1000,false));
     changed=light;changed.attenuationStart+=.5f;changed.flags^=NorthlightLocalLights::CastShadow;
     assert(!schedule.due(101,changed,7,1000,false)&&schedule.due(133,changed,7,1000,false));
@@ -43,6 +53,52 @@ int main(){
         else ++reuses;
     }
     assert(updates==31&&reuses==60);
+    assert(holdSmallCube(false,100,5,0,250,1000));
+    assert(!holdSmallCube(false,100,5,1,250,1000));
+    assert(holdSmallCube(false,100,6,1,250,1000));
+    assert(!holdSmallCube(false,100,5,0,251,1000));
+    assert(!holdSmallCube(false,100,5,0,0,1000));
+    assert(!holdSmallCube(false,100,5,0,20,0));
+    assert(!holdSmallCube(false,200,5,0,250,1000));
+    assert(!holdSmallCube(true,100,5,0,250,1000));
+    assert(holdSmallMovingCube(false,65,5,0,250,1000,33));
+    assert(!holdSmallMovingCube(false,66,5,0,250,1000,33));
+    assert(!holdSmallMovingCube(false,40,5,0,251,1000,33));
+    assert(!holdSmallMovingCube(true,40,5,0,250,1000,33));
+    assert(!holdSmallMovingCube(false,100,5,0,250,1000,400));
+    assert(holdSmallMovingCube(false,149,5,0,1000,1000,33,true));
+    assert(!holdSmallMovingCube(false,150,5,0,1000,1000,33,true));
+    assert(!holdSmallMovingCube(true,100,5,0,1000,1000,33,true));
+    assert(!holdSmallMovingCube(false,100,6,0,1000,1000,33,true));
+    assert(!holdSmallMovingCube(false,100,5,0,0,1000,33,true));
+    {
+        // 44 visible moving emitters at a 100 ms frame interval. All cubes
+        // start complete. The exhausted budget may defer only alternate slots.
+        constexpr unsigned lights=44, frames=12, cadence=100;
+        unsigned redraws[2]={};
+        for(unsigned overload=0;overload<2;++overload){
+            std::array<RefreshSchedule,lights> cubes{};
+            std::array<bool,lights> held{};
+            for(unsigned slot=0;slot<lights;++slot){
+                auto native=light;native.position[0]=0;native.sourceId=0xfec0000000000000ull+slot;
+                cubes[slot].commit(0,native,1);
+            }
+            for(unsigned frame=1;frame<=frames;++frame){
+                unsigned frameRedraws=0;
+                for(unsigned slot=0;slot<lights;++slot){
+                    auto& cube=cubes[slot];auto current=cube.light;current.position[0]=.02f*frame;
+                    const unsigned now=frame*cadence;
+                    assert(cube.due(now,current,1,1280,false));
+                    held[slot]=smallNativeCubeMotion(cube.light,current)&&
+                        holdSmallMovingCube(held[slot],now-cube.updatedAt,frame,slot,1000,1000,33,overload!=0);
+                    if(!held[slot]){cube.commit(now,current,1);++frameRedraws;}
+                }
+                assert(frameRedraws==lights/(1+overload));
+                redraws[overload]+=frameRedraws;
+            }
+        }
+        std::cout<<"crowd point faces: "<<6*redraws[0]<<" -> "<<6*redraws[1]<<'\n';
+    }
     float matrices[6][16];
     for(unsigned face=0;face<6;++face)assert(faceMatrix(light.position,.1f,light.attenuationEnd,face,matrices[face]));
     std::mt19937 rng(118);std::uniform_real_distribution<float> offset(-15,15),extent(0,.5f);

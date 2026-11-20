@@ -30,7 +30,7 @@ static void animatedDrawIdentity(){
         std::copy_n(drawn.color,3,s.lights[0].color);std::swap(s.lights[0].color[0],s.lights[0].color[1]);
         tracker.observeScene(s,now,{},camera);tracker.publish(now);
         assert(tracker.count==1&&tracker.entries[0].nativeId==s.lights[0].id);
-        if(frame){assert(tracker.outputCount==1&&tracker.output[0].flags==NorthlightLocalLights::CastShadow);const auto expected=NorthlightEquipmentLights::light(tracker.entries[0].source,tracker.entries[0].id,tracker.entries[0].gain);
+        if(frame){assert(tracker.outputCount==1&&tracker.output[0].flags==NorthlightLocalLights::NativeSceneEmitter);const auto expected=NorthlightEquipmentLights::light(tracker.entries[0].source,tracker.entries[0].id,tracker.entries[0].gain);
             assert(tracker.output[0].diffuse[0]==expected.diffuse[0]&&tracker.output[0].diffuse[1]==expected.diffuse[1]);}
     }
     // Scene-first observation order and a reused scene identity retain one
@@ -40,7 +40,7 @@ static void animatedDrawIdentity(){
         s.lights[0].position[0]+=.1f;std::copy_n(s.lights[0].position,3,drawn.position);
         tracker.observeScene(s,now,{},camera);tracker.observe(drawn,now,{},camera);tracker.publish(now);
         assert(tracker.count==1&&tracker.entries[0].id==oldId);
-        assert(tracker.outputCount==1&&tracker.output[0].flags==NorthlightLocalLights::CastShadow);
+        assert(tracker.outputCount==1&&tracker.output[0].flags==NorthlightLocalLights::NativeSceneEmitter);
     }
     s.count=0;tracker.observeScene(s,3500,{},camera);tracker.publish(3500);assert(tracker.count==1&&tracker.outputCount==1);
     s.count=1;tracker.observeScene(s,3550,{},camera);tracker.publish(3550);tracker.publish(3600);

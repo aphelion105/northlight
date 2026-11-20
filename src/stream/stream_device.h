@@ -14,6 +14,7 @@
 #include "shader_tags.h"
 #include "native_shadow_control_windows.h"
 #include "m2_draw_12340.h"
+#include "replay_constants.h"
 
 // Redundant-state filtering (a repeated Set of the value the game last set is not recorded) can be compiled out for the tests that need
 // the exact backend trace: -DNORTHLIGHT_STREAM_FILTER=0.
@@ -214,7 +215,6 @@ public:
     bool redundant(CmdTag<Cmd::Device_SetPixelShader>,IDirect3DPixelShader9* s){return filterOn()&&st.psKnown&&st.psSet&&st.ps==ProxyBase::of(s)&&filtered();}
     bool redundant(CmdTag<Cmd::Device_SetVertexDeclaration>,IDirect3DVertexDeclaration9* d){return filterOn()&&st.declKnown&&st.declSet&&st.decl==ProxyBase::of(d)&&filtered();}
     bool redundant(CmdTag<Cmd::Device_SetFVF>,DWORD f){return filterOn()&&st.fvf.known&&st.fvf.fromSet&&st.fvf.v==f&&filtered();}
-    bool redundant(CmdTag<Cmd::Device_SetVertexShaderConstantF>,UINT r,const float* d,UINT n){return sameFloats(st.vsF,r,d,n);}
     bool redundant(CmdTag<Cmd::Device_SetPixelShaderConstantF>,UINT r,const float* d,UINT n){return sameFloats(st.psF,r,d,n);}
     bool redundant(CmdTag<Cmd::Device_SetVertexShaderConstantI>,UINT r,const int* d,UINT n){return sameConstants(st.vsI,16,r,d,n);}
     bool redundant(CmdTag<Cmd::Device_SetPixelShaderConstantI>,UINT r,const int* d,UINT n){return sameConstants(st.psI,16,r,d,n);}
@@ -234,7 +234,7 @@ public:
     // the whole range known (from a game Set) and bytewise equal: one bitmask test and one memcmp
     bool sameFloats(const StreamState::FloatBank& b,UINT r,const float* d,UINT n){
         if(!filterOn()||!d||r>=StreamState::FloatBank::kRegs||n>StreamState::FloatBank::kRegs-r||!n)return false;   // (r+n could wrap)
-        if(!b.allKnown(r,n)||std::memcmp(b.v[r],d,std::size_t(n)*16))return false;
+        if(!b.allKnown(r,n)||std::memcmp(b.at(r),d,std::size_t(n)*16))return false;
         return filtered();}
     template<class Reg,class T> bool sameConstants(const Reg* regs,UINT count,UINT r,const T* d,UINT n){
         if(!filterOn()||!d||r>=count||n>count-r||!n)return false;   // (r+n could wrap)
@@ -267,7 +267,27 @@ public:
     void observe(CmdTag<Cmd::Device_SetFVF>,DWORD f){if(recording)return;st.fvf.set(f);st.declKnown=false;st.declSet=false;}   // the Target builds an implicit declaration: a Get of it syncs
     void observe(CmdTag<Cmd::Device_SetVertexShader>,IDirect3DVertexShader9* s){if(recording)return;StreamState::bind(st.vs,ProxyBase::of(s));st.vsKnown=true;st.vsSet=true;}
     void observe(CmdTag<Cmd::Device_SetPixelShader>,IDirect3DPixelShader9* s){if(recording)return;StreamState::bind(st.ps,ProxyBase::of(s));st.psKnown=true;st.psSet=true;}
-    void observe(CmdTag<Cmd::Device_SetVertexShaderConstantF>,UINT r,const float* d,UINT n){constF(st.vsF,r,d,n);}
+    HRESULT recordVertexConstants(UINT reg,const float* data,UINT count){
+        const UINT limit=caps.MaxVertexShaderConst;
+        const bool validRange=reg<StreamState::FloatBank::kRegs&&count<=StreamState::FloatBank::kRegs-reg&&
+            (!limit||(reg<limit&&count<=limit-reg));
+        if(filterOn()&&data&&count&&validRange&&st.vsF.allKnown(reg,count)){
+            // State-block recording and unknown slots keep their full writes.
+            // Trim only valid hardware ranges, keeping invalid calls intact.
+            if(limit){
+                const auto dirty=NorthlightReplayConstants::Detail::knownFloatSpan(st.vsF.at(reg),data,count);
+                if(!dirty.count){filtered();return D3D_OK;}
+                if(core.timing&&dirty.count!=count)own(core.q.stats.vertexConstantBytesSaved,16ull*(count-dirty.count));
+                reg+=dirty.first;data+=4*dirty.first;count=dirty.count;
+            }else if(!std::memcmp(st.vsF.at(reg),data,std::size_t(count)*16)){
+                filtered();return D3D_OK;
+            }
+        }
+        if(validRange)constF(st.vsF,reg,data,count);
+        else if(!recording&&data&&count)st.vsF.forget();
+        record_Device_SetVertexShaderConstantF(streamQueue(),reg,data,count);
+        return D3D_OK;
+    }
     void observe(CmdTag<Cmd::Device_SetPixelShaderConstantF>,UINT r,const float* d,UINT n){constF(st.psF,r,d,n);}
     void observe(CmdTag<Cmd::Device_SetVertexShaderConstantI>,UINT r,const int* d,UINT n){constI(st.vsI,r,d,n);}
     void observe(CmdTag<Cmd::Device_SetPixelShaderConstantI>,UINT r,const int* d,UINT n){constI(st.psI,r,d,n);}
@@ -827,12 +847,12 @@ private:
         default:break;
         }
     }
-    void constF(StreamState::FloatBank& b,UINT r,const float* d,UINT n){if(recording||!d||r>=StreamState::FloatBank::kRegs)return;if(n>StreamState::FloatBank::kRegs-r)n=StreamState::FloatBank::kRegs-r;std::memcpy(b.v[r],d,std::size_t(n)*16);b.setKnown(r,n);}   // 0.3.204 (task 21): one copy and word-wise bits (a range past the end is clamped, as before)
+    void constF(StreamState::FloatBank& b,UINT r,const float* d,UINT n){if(recording||!d||r>=StreamState::FloatBank::kRegs)return;if(n>StreamState::FloatBank::kRegs-r)n=StreamState::FloatBank::kRegs-r;std::memcpy(b.at(r),d,std::size_t(n)*16);b.setKnown(r,n);}   // 0.3.204 (task 21): one copy and word-wise bits (a range past the end is clamped, as before)
     void constI(StreamState::VsI* regs,UINT r,const int* d,UINT n){if(recording||!d)return;for(UINT i=0;i<n&&r+i<16;++i){regs[r+i].known=true;std::memcpy(regs[r+i].v,d+4*i,16);}}
     void constB(Slot<BOOL>* regs,UINT r,const WINBOOL* d,UINT n){if(recording||!d)return;for(UINT i=0;i<n&&r+i<16;++i)regs[r+i].set(d[i]);}
     bool getF(const StreamState::FloatBank& b,UINT r,float* d,UINT n,HRESULT& hr){
         if(!d||r>StreamState::FloatBank::kRegs||n>StreamState::FloatBank::kRegs-r||!b.allKnown(r,n))return false;   // (r+n could wrap)
-        std::memcpy(d,b.v[r],std::size_t(n)*16);hr=D3D_OK;return hit();}
+        std::memcpy(d,b.at(r),std::size_t(n)*16);hr=D3D_OK;return hit();}
     bool getI(StreamState::VsI* regs,UINT r,int* d,UINT n,HRESULT& hr){
         if(!d||r>16||n>16-r)return false;for(UINT i=0;i<n;++i)if(!regs[r+i].known)return false;
         for(UINT i=0;i<n;++i)std::memcpy(d+4*i,regs[r+i].v,16);hr=D3D_OK;return hit();}
