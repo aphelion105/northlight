@@ -1809,6 +1809,32 @@ float4 WorldUnlitCompositeHdr(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {flo
 float4 WorldPrelitComposite(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {float3 effect;return worldComposite(uv,pixel,true,false,FogBuffer,effect,true);}
 float4 WorldPrelitCompositeHdr(float2 uv:TEXCOORD0,float2 pixel:VPOS):COLOR0 {float3 effect;return worldComposite(uv,pixel,true,true,FogBuffer,effect,true);}
 
+float moonTerrainSpecular(float2 uv,float distance,float3 position,float3 normal,float3 detail){
+    float4 capture=tex2Dlod(BumpMaterial,float4(uv,0,0));
+    if(capture.r>=0||capture.a<=.02||abs(abs(capture.b)/max(capture.a,.02)-distance)>=max(.025,distance*.0015))return 0;
+    float3 eye=-normalize(position);
+    float3 light=MaterialDirection[1].xyz;
+    float2 across=float2(-light.y,light.x);
+    float side=dot(eye.xy,across);
+    float height=eye.z-light.z-dot(normal.xy,light.xy);
+    float lobe=exp2(-180*side*side-5*height*height)*saturate(-4*dot(eye.xy,light.xy));
+    // Static wind ripples in world space. Filter them into a weak sheen at
+    // grazing distances where successive crests cover only a few pixels.
+    float2 ground=Camera.xy+position.xy;
+    float warp=frac(dot(ground,float2(-.068,.15)))-.5;
+    float phase=dot(ground,float2(.79,.40))+1.1*warp*(.5-abs(warp));
+    float crest=saturate(1-3.6*abs(frac(phase)-.5));
+    float surfaceAngle=saturate(dot(normal,eye));
+    float resolved=saturate(surfaceAngle*ScreenSize.y/(22*distance));
+    float crestWeight=resolved*resolved;
+    // Lift partially resolved crests while keeping the grazing fade and near peaks.
+    crestWeight*=1+.8*(1-crestWeight);
+    float ridge=lerp(.26,.17+1.10*crest*crest,crestWeight);
+    float grain=saturate(.88+2*dot(detail-normal,light));
+    float grazing=1-.8*surfaceAngle;grazing*=grazing;
+    float fade=saturate((MaterialColor[1].w-distance)*.0125);
+    return lobe*grazing*ridge*grain*saturate(4*(normal.z-.65))*fade*MaterialDirection[1].w;
+}
 // Full-resolution material relighting. The base composition has already handled
 // shadows, GI, AO and fog; only the normal-dependent directional difference is
 // added here. Both the inferred albedo and atmospheric transmission are bounded.
@@ -1816,8 +1842,9 @@ float4 materialComposite(float2 uv,bool hdrMode,float4 color,float3 effect,bool 
     float2 q=depthUV(uv);float d=reuseInputs?receiver.x:normalizedDepth(q);float z=reuseInputs?receiver.y:viewDistance(d);
     if(d>=.99999||(reuseInputs?receiver.z:waterDistance(q,d))>0||(BumpControl.x<=0&&MaterialOcclusionInfo.x<=0))return color;
     float occlusionRange=MaterialOcclusionInfo.y>0?MaterialOcclusionInfo.y:BumpControl.y;
-    // Outside both effects' support the relighting delta is exactly zero.
-    [branch]if((BumpControl.x<=0||z>=BumpControl.y)&&(MaterialOcclusionInfo.x<=0||z>=occlusionRange))return float4(max(color.rgb,0),color.a);
+    const float specularRange=reuseInputs?0:MaterialColor[1].w;
+    const bool terrainGlint=!reuseInputs&&z<specularRange;
+    [branch]if((BumpControl.x<=0||z>=BumpControl.y)&&(MaterialOcclusionInfo.x<=0||z>=occlusionRange)&&!terrainGlint)return float4(max(color.rgb,0),color.a);
     float3 v=viewPositionDistance(q,z);
     // Camera-relative derivatives avoid losing sub-centimetre detail at large map coordinates.
     float3 relative=v.x*InverseView[0].xyz+v.y*InverseView[1].xyz+v.z*InverseView[2].xyz;
@@ -1837,7 +1864,9 @@ float4 materialComposite(float2 uv,bool hdrMode,float4 color,float3 effect,bool 
         float score=dot(offset,offset)+(gap>max(.025,z*.0015)?100:0);
         if(score<normalScore){normalScore=score;normalUV=candidate;}
     }
-    if(normalScore>=100)return color;
+    // A grazing plane can cross the half-resolution depth tolerance every
+    // other row. The glint has its own full-resolution terrain/depth proof.
+    if(normalScore>=100&&!terrainGlint)return color;
     if(any(floor(normalUV*ScreenSize.zw)!=floor(uv*ScreenSize.zw)))materialUV=normalUV;
     float3 normal=tex2Dlod(NormalBuffer,float4(normalUV,0,0)).xyz;
     float3 detail=autoBumpNormal(q,relative,normal,z,InverseView[0].xyz,InverseView[1].xyz,InverseView[2].xyz);
@@ -1861,7 +1890,10 @@ float4 materialComposite(float2 uv,bool hdrMode,float4 color,float3 effect,bool 
     float3 albedoT=boundedAlbedo(surface,tex2D(BaselineLighting,materialUV).rgb,legacyT);
     float3 cavity=max(AmbientLight.rgb*AmbientLight.w+GridOrigin.rgb,0)*(occlusion.b-1);
     float3 transmission=1-effect;
-    color.rgb=max(color.rgb+albedoT*(delta*visibility+cavity)*tex2D(MaterialFog,uv).a*transmission,0);
+    float3 materialLight=normalScore<100?albedoT*(delta*visibility+cavity):0;
+    [branch]if(terrainGlint)
+        materialLight+=MaterialColor[1].rgb*(moonTerrainSpecular(q,z,relative,normal,detail)*visibility*legacyT*occlusion.g);
+    color.rgb=max(color.rgb+materialLight*tex2D(MaterialFog,uv).a*transmission,0);
     return color;
 }
 float3 materialEffectWeight(float2 uv,bool hdrMode){

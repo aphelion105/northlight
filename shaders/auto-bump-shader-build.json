@@ -5,7 +5,7 @@
     "auto_parallax_prefix.hlsl": "5a5a6f29c2143e998602e1ae0d2687faf2158bb5db09a61b63345f238cefb6cb",
     "auto_material_height.hlsl": "d8b2cf9d1cafc553f336bfcbb83da62eb326a0d9396a68773966ca0a8554b1bd"
   },
-  "source_sha256": "2b5a179504070928dbf621194e4f86002c2221c5461da46cc04b3432cddc631b",
+  "source_sha256": "e5ca972bed7cf30f8ed2401ce4ab2b8015f4572a8fa7c0e8dca75ed014b6b850",
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
   "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
   "shaders": {
@@ -490,17 +490,17 @@
       }
     },
     "BumpTerrainOpaque": {
-      "sha256": "4823c10a29589e1c78534bf1174d23416471bf433d66dade4b19989ecbc51c93",
-      "static_instruction_slots": 304,
+      "sha256": "3735ce7a51c015c645098475bca83b64198d5979aad9c1eb9d8ad0efea34637c",
+      "static_instruction_slots": 306,
       "temporary_registers": 11,
       "samplers": [
         2
       ],
       "instructions": {
         "mov": 22,
-        "mul": 62,
+        "mul": 63,
         "rcp": 11,
-        "add": 66,
+        "add": 67,
         "cmp": 30,
         "texkill": 2,
         "dsx": 2,
@@ -523,22 +523,22 @@
       }
     },
     "BumpTerrainLayer": {
-      "sha256": "612677a2ea7d7ef852059d25b2791f4842c4a97cf2520e3fd7a03769ddf21a25",
-      "static_instruction_slots": 305,
+      "sha256": "c2d1d9112c25916eae0aab076d176da3ec2ecca2574d79d3f7991bee55caed06",
+      "static_instruction_slots": 306,
       "temporary_registers": 12,
       "samplers": [
         1,
         2
       ],
       "instructions": {
-        "mov": 21,
-        "mul": 62,
-        "rcp": 11,
+        "mov": 22,
         "add": 66,
-        "cmp": 30,
         "texkill": 2,
         "texld": 1,
         "dp4": 1,
+        "mul": 62,
+        "rcp": 11,
+        "cmp": 30,
         "dsx": 2,
         "dsy": 2,
         "dp3": 17,
@@ -559,17 +559,17 @@
       }
     },
     "BumpSharedTerrainOpaque": {
-      "sha256": "9ebb5fab2d6777b7aaea95594c617f8fb23ac55e2d375e549945af395323da3f",
-      "static_instruction_slots": 311,
+      "sha256": "5edb4202186fa0f8551bac90f554c379c5474cd51f6f73cea2f1925c387cf4bc",
+      "static_instruction_slots": 313,
       "temporary_registers": 11,
       "samplers": [
         2
       ],
       "instructions": {
         "mov": 25,
-        "mul": 62,
+        "mul": 63,
         "rcp": 11,
-        "add": 69,
+        "add": 70,
         "cmp": 30,
         "texkill": 2,
         "dsx": 2,
@@ -592,22 +592,22 @@
       }
     },
     "BumpSharedTerrainLayer": {
-      "sha256": "7d8e5de729007e5cb1130323d1714f80d8fa638c84108e4ce9506415661a6f98",
-      "static_instruction_slots": 312,
-      "temporary_registers": 13,
+      "sha256": "8b0be9e629a9a842d67e0383de1b6016b10c00660055b7d759218c8f7364573e",
+      "static_instruction_slots": 314,
+      "temporary_registers": 12,
       "samplers": [
         1,
         2
       ],
       "instructions": {
-        "mov": 24,
+        "mov": 26,
+        "mul": 62,
+        "rcp": 11,
         "add": 69,
+        "cmp": 30,
         "texkill": 2,
         "texld": 1,
         "dp4": 1,
-        "mul": 62,
-        "rcp": 11,
-        "cmp": 30,
         "dsx": 2,
         "dsy": 2,
         "dp3": 17,
@@ -823,17 +823,17 @@
       }
     },
     "BumpNormalTerrainOpaque": {
-      "sha256": "cd7552349391297b6bf47e2b448dec21c02dd645c763f2da348350d0e28c3eae",
-      "static_instruction_slots": 151,
+      "sha256": "d05c8a5e31a78a639c17ee29957e09fa68c8cbeb450b6cc302c0b1c74844ec7b",
+      "static_instruction_slots": 153,
       "temporary_registers": 7,
       "samplers": [
         2
       ],
       "instructions": {
-        "add": 32,
+        "add": 33,
         "texkill": 2,
         "rcp": 5,
-        "mul": 38,
+        "mul": 39,
         "dsx": 2,
         "dsy": 2,
         "dp3": 11,
@@ -851,19 +851,23 @@
       }
     },
     "BumpNormalTerrainLayer": {
-      "sha256": "4737443af652186dea827b3de23efb6c1274a64f0ee3aafc435633774ba8dcaa",
-      "static_instruction_slots": 152,
-      "temporary_registers": 7,
+      "sha256": "aab3f766f05d86f05351e101fcc3a3721e457e0d3471c3f971d713bce38bb882",
+      "static_instruction_slots": 153,
+      "temporary_registers": 8,
       "samplers": [
         1,
         2
       ],
       "instructions": {
+        "mov": 10,
+        "add": 32,
+        "texkill": 2,
+        "texld": 1,
+        "dp4": 1,
         "rcp": 5,
         "mul": 38,
         "dsx": 2,
         "dsy": 2,
-        "add": 32,
         "dp3": 11,
         "rsq": 7,
         "cmp": 18,
@@ -871,10 +875,6 @@
         "dp2add": 2,
         "max": 1,
         "nrm": 1,
-        "mov": 9,
-        "texkill": 2,
-        "texld": 1,
-        "dp4": 1,
         "if": 1,
         "else": 1,
         "endif": 1,

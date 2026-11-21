@@ -303,17 +303,19 @@
  290:     mul r1.xy, r1.zwzw, r1
  291:     cmp r0.xy, r0.z, r0, r1
  292:     mul r0.xy, r0, c2.w
- 293:     add oC0.xy, r0, c2.w
- 294:     add r0.x, c2.w, v3.x
- 295:     frc r0.y, r0.x
- 296:     add r0.x, -r0.y, r0.x
- 297:     add r3.z, r0.x, c25.z
- 298:     mov r3.w, c6.x
- 299:     mov oC2, r3
- 300:     mov oC0.w, c6.x
- 301:     mov oC0.z, -v2.w
- 302:     mov oC1.w, c6.x
- 303:     mov oC3, c1.yyyx
+ 293:     add r0.xy, r0, c2.w
+ 294:     mov oC0.x, -r0.x
+ 295:     mul r0.xy, r0.y, c1
+ 296:     add oC0.yw, r0.xxzy, c1.xyzx
+ 297:     add r0.x, c2.w, v3.x
+ 298:     frc r0.y, r0.x
+ 299:     add r0.x, -r0.y, r0.x
+ 300:     add r3.z, r0.x, c25.z
+ 301:     mov r3.w, c6.x
+ 302:     mov oC2, r3
+ 303:     mov oC0.z, -v2.w
+ 304:     mov oC1.w, c6.x
+ 305:     mov oC3, c1.yyyx
 
-// approximately 309 instruction slots used (5 texture, 304 arithmetic)
+// approximately 311 instruction slots used (5 texture, 306 arithmetic)
  

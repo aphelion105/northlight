@@ -1,9 +1,9 @@
 {
   "sources": {
-    "world_effects.hlsl": "de887b71d5fca06a51861adf0908810938624a09fc3087de07c37e0044bb3675",
+    "world_effects.hlsl": "c88e20cfb509b4b30b70d3f700aea1158d6923b9c5bd5a6024f8e0114c45524d",
     "shadow_transition.hlsl": "571ba1c03b3e6c0e36965f2a5107526f16d29b07c23d934982030c0f45de96d1",
     "world_view.hlsl": "6b1f5d511f44bb161a97f104fe1a523fccb5cb6194610b2d9ee75d273b3fcf24",
-    "auto_bump_normal.hlsl": "b5523a51dc6715f11ac2e7ba9ecb46a4973ba6aa23de159e308a8fd24d4e9ebc"
+    "auto_bump_normal.hlsl": "8e6fef6a512ae4ac0ae1328e7d55900e28b7277403e06d3772cafa4c9f8691b9"
   },
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
   "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",

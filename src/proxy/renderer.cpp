@@ -1964,7 +1964,9 @@ private:
                 if(sampled()){const unsigned at=++censusDraws; /* 0.3.188 (task 3): read-only census before capture(vs) so no early return hides a draw; sample frames only */
                     if(!drawWaterVS&&NorthlightTranslucentDepth::opaqueZWrite(zw,ab,sb,db,cw))lastOpaqueZAt=at;}
                 if(world->equipmentLightsOn())world->captureEquipmentLights(vs,worldDepth);
-                if(autoBump&&autoBump->active()){float light[4],inverseView[12];const bool currentView=world->materialLight(light,inverseView);autoBump->setLight(light);autoBump->setInverseView(inverseView,currentView);}
+                if(autoBump&&autoBump->active()){float light[4],inverseView[12];const bool currentView=world->materialLight(light,inverseView);autoBump->setLight(light);autoBump->setInverseView(inverseView,currentView);
+                    autoBump->setTerrainSpecularDistance(currentView&&world->moonTerrainSpecularGain()>0?WorldRenderer::MoonTerrainSpecularDistance:0.f);
+                }
                 {const unsigned long long reads=CpuScope::reads;{CpuScope cap(sampledDrawTimers()?&cpuCapture:nullptr);capture(vs);}if(CpuScope::reads!=reads)cpuCaptureReads+=CpuScope::reads-reads-1;}
                 if(mirrorState.active()&&mirrorAuditSchedule.afterWorldCapture(frame,
                     mirrorState.vsFloatKnown[0]&&mirrorState.vsFloatKnown[DeviceMirror::VsFloat-1])){

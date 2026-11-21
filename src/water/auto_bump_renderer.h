@@ -251,7 +251,7 @@ class NorthlightAutoBump {
     UINT width=0,heightPixels=0;
     bool cleared=false,privateDepthCleared=false,drawn=false,failed=false,occlusionCleared=false,occlusionDrawn=false;
     bool enabled=false,terrain=true,walls=true,grass=true,memoryPressure=false;
-    float strength=.75f,range=48;
+    float strength=.75f,range=48,terrainSpecularDistance=0;
     unsigned modes[4]={2,2,1,3};float pomControl[4]={.018f,16,16,0};
     // An unprepared wall draw still needs relief when mesh subdivision is
     // unsupported or outside its range. Never shift an already displaced draw.
@@ -261,7 +261,7 @@ class NorthlightAutoBump {
     unsigned draws[4]={},frames=0,rejected=0,invisibleRejected=0,noCaptureRequired=0;
     bool pomInRange=true;unsigned rangeTests=0,rangeRejected=0,pomRangeRejected=0;
     float captureRange(unsigned domain)const{
-        if(strength>0)return range;
+        if(strength>0)return domain==1?std::max(range,terrainSpecularDistance):range;
         if(occlusionControl[2]>0)return std::min(range,projection[3]);
         return parallaxMode(domain)&&pomControl[0]>0&&pomInRange&&occlusionControl[0]>0&&occlusionLight[3]>0?std::min({range,pomControl[1],projection[3]}):0;
     }
@@ -609,6 +609,7 @@ public:
     template<class Draw> HRESULT geometryDraw(Draw draw,bool native=false){return geometryDraw(draw,native,[](auto submit,IDirect3DVertexShader9*){return submit();});}
     template<class Submit> bool deferModelOverlay(Submit submit){return displacement.deferModelOverlay(submit);}
     void setProjection(float x,float y,float z){projection[0]=x;projection[1]=y;projection[2]=z;}
+    void setTerrainSpecularDistance(float distance){terrainSpecularDistance=distance;}
     void setInverseView(const float* rows,bool known=true){std::copy(rows,rows+12,captureToWorld);displacement.setDistanceView(known?rows:nullptr);}
     void setLight(const float* light){std::copy(light,light+4,occlusionLight);}
     void configure(const NorthlightQuality::Settings& settings){

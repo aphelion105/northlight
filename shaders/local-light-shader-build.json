@@ -1,6 +1,6 @@
 {
   "derivative_hoist_sha256": "0ed5463a6819a7cd483954a4be2437a350b03d4027c2424b31b0aec6797e8740",
-  "bump_include_sha256": "b5523a51dc6715f11ac2e7ba9ecb46a4973ba6aa23de159e308a8fd24d4e9ebc",
+  "bump_include_sha256": "8e6fef6a512ae4ac0ae1328e7d55900e28b7277403e06d3772cafa4c9f8691b9",
   "source_sha256": "039932f400b97541e522fb71647b7199f88eb3c3eaf6be0162e42aa6474b9bdb",
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
   "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
@@ -66,9 +66,9 @@
     },
     "LocalLighting": {
       "target": "ps_3_0",
-      "bytes": 5964,
-      "sha256": "1eb290f89c1c1f403d75497b518f33ff41162a1befdf4276e118fe01cbea5869",
-      "static_instruction_slots": 367,
+      "bytes": 5976,
+      "sha256": "f932da4f3dd0d74160d01627aa0c7de35387c8a27d41036c3aa7d215e41ac4ec",
+      "static_instruction_slots": 368,
       "temporary_registers": 16,
       "samplers": [
         0,
@@ -93,6 +93,7 @@
         "endif": 12,
         "dp3": 14,
         "rsq": 6,
+        "abs": 1,
         "dp2add": 2,
         "rep": 1,
         "endrep": 1
@@ -135,9 +136,9 @@
     },
     "LocalLightingSoft": {
       "target": "ps_3_0",
-      "bytes": 4176,
-      "sha256": "421a538ea30ecf4cb42d1af34d648013f7163362a3a825353c18ef43644585c5",
-      "static_instruction_slots": 250,
+      "bytes": 4188,
+      "sha256": "3505499ce761ac8e591fd8794ff196cb3844d1616e64e63605a28714efab2230",
+      "static_instruction_slots": 251,
       "temporary_registers": 9,
       "samplers": [
         0,
@@ -162,15 +163,16 @@
         "endif": 10,
         "dp3": 9,
         "rsq": 5,
+        "abs": 1,
         "dp2add": 2
       },
       "cube_instruction_extra_slots": 0
     },
     "LocalLightingPcss": {
       "target": "ps_3_0",
-      "bytes": 7884,
-      "sha256": "8ed45a560fa58a57b1e685b4a5f4d0f193078c091e3f141c6a6f87c74aabfeee",
-      "static_instruction_slots": 511,
+      "bytes": 7896,
+      "sha256": "9019ea8932bdb3114e3385b29961a619d7f617619a22d44198c8c75c7659c6f8",
+      "static_instruction_slots": 512,
       "temporary_registers": 20,
       "samplers": [
         0,
@@ -195,6 +197,7 @@
         "endif": 12,
         "dp3": 16,
         "rsq": 7,
+        "abs": 1,
         "dp2add": 2,
         "nrm": 1,
         "rep": 5,

@@ -3613,6 +3613,12 @@ public:
         temporalZeroWeightAllowed=enabled;drop(temporalMergedPS);temporalMergeTried=temporalZeroWeightActive=false;
     }
     void setModelNormals(IDirect3DTexture9* texture){modelNormals=texture;}
+    static constexpr float MoonTerrainSpecularDistance=128.f;
+    float moonTerrainSpecularGain()const{
+        return hasContext()&&celestialValid&&paletteFrameValid&&NorthlightQuality::foreverCelestial(quality)&&
+            NorthlightGI::dot(sourceColors[1],sourceColors[1])>1e-10f
+            ?framePalette.moonTerrainSpecular*(1-sourceWeights[0]):0.f;
+    }
     bool materialLight(float* light,float* inverseView=nullptr)const{
         if(inverseView)std::memcpy(inverseView,context.inverseView,48);
         std::fill(light,light+4,0.f);if(!hasContext())return false;
@@ -5559,12 +5565,13 @@ public:
         const bool prelitMask=prelitMaskDepth&&prelitShader&&debug==0;
         const bool authoredMask=authoredMaskDepth&&prelitShader&&debug==0;
         const bool fullMaterial=materialWanted&&materialPS;
+        const float moonTerrainSpecular=fullMaterial&&materialBumpGain>0?moonTerrainSpecularGain():0.f;
         const bool normalDiagnosticCapture=debug==0&&gpuNormalDiagnosticRequested;
         if(nativeDiagnosticCapture){nativeDiagnosticCapture->finish(normalDiagnosticCapture&&active&&nativeDiagnosticMap==active->map);nativeDiagnosticCapture.reset();}
         const unsigned shadowDiagnosticCapture=debug==1&&gpuDiagnosticArmed&&gpuDiagnosticCaptures<4?gpuDiagnosticCaptures+1:0;
         const unsigned diagnosticCapture=normalDiagnosticCapture?gpuDiagnosticCaptures+1:shadowDiagnosticCapture;
         // Captures retain the two original passes and their exact input groups.
-        const bool combinedMaterial=hdrMode&&hdrCombineAllowed&&fullMaterial&&hdrCombinedPS&&!diagnosticCapture;
+        const bool combinedMaterial=hdrMode&&hdrCombineAllowed&&fullMaterial&&hdrCombinedPS&&!diagnosticCapture&&moonTerrainSpecular==0;
         // Folded frames without material detail write directly to the game target.
         // Allocate on demand, but retain across invisible captures to avoid camera-turn churn.
         if(!foldScene||(fullMaterial&&!combinedMaterial)){
@@ -6551,8 +6558,9 @@ public:
         }
         if(profileSampled())logf("WORLD screen geometry=%u meshReason=%s material=%u fog=%u regional=%u heightBounds=%u colorScratch=%u map=\"%s\"",unsigned(geometryReady),geometrySkip,unsigned(fullMaterial),unsigned(effects.fog),unsigned(uploadedFogField!=nullptr),unsigned(uploadedFogField&&fogHeightReady),unsigned(color!=nullptr),frameMap.c_str());
         const float bumpControl[]={materialDetail?materialBumpGain:0.f,materialBumpDistance,fullMaterial?1.f:0.f,0};
-        float materialLight[4][4]={{sourceDirections[0].x,sourceDirections[0].y,sourceDirections[0].z,0},{sourceDirections[1].x,sourceDirections[1].y,sourceDirections[1].z,0},{},{}};
+        float materialLight[4][4]={{sourceDirections[0].x,sourceDirections[0].y,sourceDirections[0].z,0},{sourceDirections[1].x,sourceDirections[1].y,sourceDirections[1].z,moonTerrainSpecular},{},{}};
         for(unsigned source=0;source<2;++source)if(sourceActive[source]){materialLight[2+source][0]=sourceColors[source].x;materialLight[2+source][1]=sourceColors[source].y;materialLight[2+source][2]=sourceColors[source].z;}
+        materialLight[3][3]=moonTerrainSpecular>0?MoonTerrainSpecularDistance:0.f;
         d->SetPixelShaderConstantF(74,materialLight[0],4);
         d->SetPixelShaderConstantF(73,bumpControl,1);d->SetTexture(9,materialDetail);
         for(auto state:{D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER})d->SetSamplerState(9,state,D3DTEXF_POINT);

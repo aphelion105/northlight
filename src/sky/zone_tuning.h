@@ -143,6 +143,7 @@ inline std::string valuesJson(const Values& v){
         one((b+"fog_density").c_str(),p.fogDensity[s]);
         one((b+"glow_strength").c_str(),p.glowStrength[s]);triple((b+"glow").c_str(),p.glow[s]);one((b+"glow_mix").c_str(),p.glowMix[s]);
     }
+    one("moon_terrain_specular",p.moonTerrainSpecular);
     one("terrain_radius",v.terrainRadius);one("ground_fog_day_scale",v.fogDay);one("ground_fog_night_scale",v.fogNight);one("ground_fog_day_add",v.fogDayAdd);o+="\"ground_fog_night_add\":"+jsonNumber(v.fogNightAdd)+"}";
     return o;
 }

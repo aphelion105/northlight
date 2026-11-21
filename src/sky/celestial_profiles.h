@@ -16,6 +16,7 @@ struct Profile {
     float gain[2]={3.5f,1.1f};
     float light[2][3]={{1,1,1},{1,1,1}};
     float mix[2]={0,0},strength[2]={1,1};
+    float moonTerrainSpecular=0;
     // Independent artistic volume controls. Identity defaults retain all
     // existing zones; neither control changes surface light or the sun disc.
     float fogGain[2]={1,1},fogHeightScale[2]={1,1};
@@ -28,6 +29,7 @@ struct Profile {
 };
 inline Profile blend(const Profile& a,const Profile& b,float t){
     Profile p; t=std::clamp(t,0.f,1.f);
+    p.moonTerrainSpecular=a.moonTerrainSpecular+(b.moonTerrainSpecular-a.moonTerrainSpecular)*t;
     for(unsigned s=0;s<2;++s){
         for(unsigned c=0;c<3;++c){p.disc[s][c]=a.disc[s][c]+(b.disc[s][c]-a.disc[s][c])*t;p.light[s][c]=a.light[s][c]+(b.light[s][c]-a.light[s][c])*t;p.glow[s][c]=a.glow[s][c]+(b.glow[s][c]-a.glow[s][c])*t;}
         p.glowStrength[s]=a.glowStrength[s]+(b.glowStrength[s]-a.glowStrength[s])*t;p.glowMix[s]=a.glowMix[s]+(b.glowMix[s]-a.glowMix[s])*t;
@@ -74,6 +76,7 @@ inline float* keyTarget(Profile& profile,const std::string& key,unsigned& count,
     else if(name=="glow_strength"){target=&p->glowStrength[s];maximum=4;}
     else if(name=="glow"){target=p->glow[s];count=3;}
     else if(name=="glow_mix")target=&p->glowMix[s];
+    else if(s&&name=="terrain_specular")target=&p->moonTerrainSpecular;
     else return nullptr;
     if(name=="fog_height_scale")minimum=.25f;
     return target;
