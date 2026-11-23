@@ -7,6 +7,8 @@ CPU component proof, not a complete WorldRenderer, native working set or FPS run
 Optional --pairs runs alternating old/current full-boundary timings with setup
 excluded; all cases retain identical ownership, caps and final cache contents.
 """
+
+from source_units import source_text
 import argparse
 import ast
 import hashlib
@@ -61,7 +63,7 @@ source = fp.TESTS / 'test_world_pressure_transition.cpp'
 stub_source = fp.TESTS / 'test_terrain_snapshot.py'
 watched = [p for p in fp.SRC.rglob('*') if p.is_file()] + [source, stub_source, Path(__file__), fp.REPO / 'northlight_paths.py']
 inputs = {str(p.resolve()): sha(p) for p in watched}
-renderer = fp.src('renderer.cpp').read_text(encoding='utf-8')
+renderer = source_text(fp.src('renderer.cpp'), encoding='utf-8')
 world = fp.src('world_memory_guard.inl').read_text(encoding='utf-8')
 scene_policy = method(fp.src('gpu_scene.h').read_text(encoding='utf-8'), 'void setMemoryPressure(bool episode,bool critical)')
 stub = next(ast.literal_eval(node.value) for node in ast.parse(stub_source.read_text()).body

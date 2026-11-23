@@ -6,6 +6,8 @@ self-load refusals, system fallback, re-entry, SHA-256) at -O2 and with
 ASan/UBSan; read-only scans of real DLLs when present; source audit of the
 renderer.cpp wiring and frd9.def against the real d3d9.dll export table.
 No Wine, Windows binary or game is run."""
+
+from source_units import source_text
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
 from pathlib import Path
@@ -42,7 +44,7 @@ def native():
                 print(label,test,out.strip().replace('\n',' | ') or 'PASS')
 
 def audit():
-    src=fp.src('renderer.cpp').read_text()
+    src=source_text(fp.src('renderer.cpp'))
     exports=re.findall(r'extern "C" [^(]*?\bWINAPI (\w+)\(([^)]*)\)\s*\{(.{0,40})',src,re.S)
     names={n for n,_,_ in exports}
     assert names==set(D3D9),sorted(names^set(D3D9))

@@ -50,5 +50,17 @@ void MaterialCaptureStateTestAccess::admissionBatch(){
   }
   if(mode&&test==6)assert(combinedRequests==1&&!visibilityRequests&&!depthRequests);
  }
+ if(!run)for(unsigned test=0;test<3;++test){
+  LimitBackend d;std::array<LimitTexture,8> failed;
+  DeviceMirror mirror;ExtensionDevice ext(&d,&mirror);NorthlightAutoBump b(&ext);setup(b,d,4);
+  b.modes[3]=1;b.setDrawStateSource(ext);
+  IDirect3DBaseTexture9* bound=nullptr;assert(SUCCEEDED(ext.GetTexture(0,&bound))&&bound==&d.texture);bound->Release();
+  if(test!=2)for(auto& texture:failed)assert(!b.normals.resolve(&texture,true));
+  if(test==1)mirror.textureKnown[0]=false;
+  b.capture(&d.vs,[]{assert(false);return E_FAIL;});
+  // A certified miss skips the shader factory. An open quota or an unknown
+  // binding preserves normal admission, including its native shader check.
+  assert((d.ps.reads==0)==(test==0));
+ }
 }
 int main(int argc,char**argv){if(argc>1){run=1;scenario=std::atoi(argv[1]);auto start=std::chrono::steady_clock::now();for(unsigned i=0;i<80;++i)MaterialCaptureStateTestAccess::admissionBatch();std::printf("%.3f\n",std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-start).count());}else{MaterialCaptureStateTestAccess::admissionBatch();puts("MATERIAL_ADMISSION_BATCH_PASS exact state values, all-or-nothing fallback, invalidation, recording, raw, injected failure, changed state, gate modes");}}

@@ -157,7 +157,7 @@
  103:             min r3.w, -r2.w, c11.w
  104:             if_ge r1_abs.w, -r3.w
  107:             else
- 108:               mul r1.xy, r0.z, r1
+ 108:               mul r1.xy, r0.z, r1_abs
  109:               mul r1.xy, r1, c10.x
  110:               add r1.xy, r1, c9.x
  111:               add r0.z, -r1_abs.x, -c9.x

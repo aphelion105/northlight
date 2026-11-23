@@ -2,6 +2,9 @@
 #include "water_fog_endpoint_gpu.cpp"
 #undef main
 #include "sky-background-production.h"
+#include <cstdlib>
+static void logf(const char*,...){}
+#include "world_lighting_capture.h"
 
 static unsigned productionDepthCases(IDirect3D9* api,IDirect3DDevice9* d){
     constexpr unsigned n=8;unsigned cases=0;
@@ -15,8 +18,10 @@ static unsigned productionDepthCases(IDirect3D9* api,IDirect3DDevice9* d){
         ok(d->CreateDepthStencilSurface(n,n,D3DFMT_D24S8,samples,0,TRUE,&depth,nullptr));
         ok(d->CreateTexture(n,n,1,D3DUSAGE_RENDERTARGET,format,D3DPOOL_DEFAULT,&scene,nullptr));ok(scene->GetSurfaceLevel(0,&copy));
         ok(d->CreateOffscreenPlainSurface(n,n,format,D3DPOOL_SYSTEMMEM,&staging,nullptr));
-        Image layer{1,1,D3DFMT_A32B32G32R32F,16,std::vector<unsigned char>(16)};
-        const float values[]={.3f,.3f,.3f,1};std::memcpy(layer.pixels.data(),values,16);layers=texture(d,layer);
+        Image layer{n,n,D3DFMT_A32B32G32R32F,16,std::vector<unsigned char>(n*n*16)};
+        const float values[]={.3f,.3f,.3f,1};
+        for(unsigned i=0;i<n*n;++i)std::memcpy(layer.pixels.data()+i*16,values,16);
+        layers=texture(d,layer);
         SkyBackgroundProduction renderer{d};
         const unsigned stride=format==D3DFMT_A8R8G8B8?4:8;
         auto pixels=[&]{
@@ -38,7 +43,16 @@ static unsigned productionDepthCases(IDirect3D9* api,IDirect3DDevice9* d){
             ok(d->SetRenderState(D3DRS_ZENABLE,TRUE));ok(d->SetRenderState(D3DRS_ZWRITEENABLE,TRUE));ok(d->SetRenderState(D3DRS_ZFUNC,D3DCMP_LESS));
             float projection[]={1,1,1},view[16]{},colors[8][3];for(unsigned i=0;i<4;++i)view[i*5]=1;
             for(auto& color:colors)for(float& c:color)c=.8f;
-            ok(d->BeginScene());assert(renderer.renderSkyBackground(target,scene,nullptr,menu?nullptr:layers,n,n,projection,view,colors,menu));ok(d->EndScene());
+            ok(d->BeginScene());
+            if(const char* path=std::getenv("NORTHLIGHT_TEST_SKY_AUDIT");path&&z==.5f){
+                const unsigned frame=1000+unsigned(format)*10+unsigned(samples)*2+unsigned(menu);
+                const std::string directory=path;
+                NorthlightLightingCapture::Capture audit(d,directory,frame,frame,frame,n,n,"frame-parity-sky");
+                assert(renderer.renderSkyBackground(target,scene,nullptr,menu?nullptr:layers,n,n,projection,view,colors,menu,
+                    [](void* context,HRESULT hr){static_cast<NorthlightLightingCapture::Capture*>(context)->bindings("CelestialSkyPS",0x43u,hr,nullptr,true);},&audit));
+                audit.finish(true);
+            }else assert(renderer.renderSkyBackground(target,scene,nullptr,menu?nullptr:layers,n,n,projection,view,colors,menu));
+            ok(d->EndScene());
             const auto after=pixels();
             for(unsigned y=0;y<n;++y)for(unsigned x=0;x<n;++x){
                 const auto offset=(y*n+x)*stride;

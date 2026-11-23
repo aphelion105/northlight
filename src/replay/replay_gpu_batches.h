@@ -228,7 +228,7 @@ public:
                 if(e.first==frame_){++stats_.warmup;return false;}
                 if(attempts_>=16){++stats_.uploadDeferred;++stats_.attemptDeferred;return false;}
                 if(bytes>UploadLimit-attemptedBytes_){++stats_.uploadDeferred;++stats_.uploadByteDeferred;return false;}
-                if(CreateTimeBudget&&!ignoreTimeBudget_&&attempts_&&stats_.createMs>=createBudgetMs()){++stats_.uploadDeferred;++stats_.timeDeferred;timeDeferredLast_=true;return false;}
+                if(useCreateTimeBudget()&&!ignoreTimeBudget_&&attempts_&&stats_.createMs>=createBudgetMs()){++stats_.uploadDeferred;++stats_.timeDeferred;timeDeferredLast_=true;return false;}
                 if(!admit(bytes)){++stats_.admissionRejected;return false;}
                 const bool batch=batched(*mesh);const size_t committed=batch?reservation(*mesh):bytes;
                 if(!room(committed,true))return false;

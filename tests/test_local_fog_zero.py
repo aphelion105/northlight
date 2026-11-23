@@ -7,6 +7,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
+from scripts.shaders.shader_sources import world_source_text
 
 out = fp.output_dir()
 out.mkdir(parents=True, exist_ok=True)
@@ -40,9 +41,12 @@ subprocess.run([str(fp.zig()), 'c++', '-target', 'x86-windows-gnu', '-O2', '-UND
                 *fp.test_include_flags(), str(cpp), '-o', str(exe)], env=fp.zig_env(), check=True)
 subprocess.run([str(exe)], check=True)
 renderer = fp.src('world_renderer.h').read_text(encoding='utf-8')
-assert 'const bool localFogActive=localDirectCount&&debug==0&&localLights.hasFog(localDirectCount);' in renderer
-assert 'const bool fogActive=effects.fog&&(regionalFogActive||localFogActive);' in renderer
-start = renderer.index('if(effects.fog&&localFogActive){')
-end = renderer.index('// c34 belongs', start)
-assert all(x in renderer[start:end] for x in ('"lamp fog accumulator clear"', '"LocalFogCombine"', '"local fog glow batch"'))
-assert 'float3 lamp=LocalLightColor[i].rgb*(integral*LocalLightFog[i].x*nearGlow);' in (fp.SHADERS / 'world_effects.hlsl').read_text(encoding='utf-8')
+assert renderer.index('if(!renderAtmosphericFog(')<renderer.index('const NorthlightWorldComposite::Input compositeInputs')
+fog = fp.src('world_atmospheric_fog.inl').read_text(encoding='utf-8')
+assert 'const bool localFogActive=localDirectCount&&debug==0&&localLights.hasFog(localDirectCount);' in fog
+assert 'const bool fogActive=effects.fog&&(regionalFogActive||localFogActive);' in fog
+assert fog.index('const bool localFogActive=') < fog.index('if(effects.fog&&localFogActive&&\n           !renderLocalFog(w,h,finalFog.surface,')
+owner = fp.src('world_local_lighting.h').read_text(encoding='utf-8').split('bool drawFog(',1)[1]
+assert all(x in owner for x in ('"lamp fog accumulator clear"', '"LocalFogCombine"', '"local fog glow batch"'))
+assert owner.index('if(!whole&&!area.area()){')<owner.index('"all-batches-clipped"')<owner.index('"lamp fog accumulator clear"')
+assert 'float3 lamp=LocalLightColor[i].rgb*(integral*LocalLightFog[i].x*nearGlow);' in world_source_text(fp.SHADERS / 'world_effects.hlsl')

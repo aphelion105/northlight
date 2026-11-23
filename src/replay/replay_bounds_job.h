@@ -60,7 +60,7 @@ inline Totals schedule(NorthlightReplayBounds::Cache& cache,std::vector<Item>& i
         const std::uint64_t spent=cache.phaseNanoseconds(phase),limit=cache.phaseLimit(phase),until=spent+(limit>spent?(limit-spent)/2:0);
         const auto maxOperations=budget.maxOperations,maxVertices=budget.maxVertices;
         budget.maxOperations=operations;if(maxVertices)budget.maxVertices=vertices;
-        const bool stopped=NorthlightReplayBoundsNear::nearFirst(priority,phase,[&]{return phaseCan()&&cache.phaseNanoseconds(phase)<until;},[&](size_t index){return visit(index,phase);});
+        const bool stopped=NorthlightReplayBoundsNear::nearFirst(priority,phase,[&]{return phaseCan()&&(cache.workOnly()||cache.phaseNanoseconds(phase)<until);},[&](size_t index){return visit(index,phase);});
         budget.maxOperations=maxOperations;budget.maxVertices=maxVertices;
         if(stopped&&phaseCan())++t.nearStops;
     };
@@ -79,7 +79,8 @@ inline Totals schedule(NorthlightReplayBounds::Cache& cache,std::vector<Item>& i
         [&](){return live()&&cache.canBuild()&&buildBudget.vertices<buildBudget.maxVertices&&buildBudget.operations<buildBudget.maxOperations;},[&](size_t index){return visit(index,2);}));
     t.reservedCheapVisited=t.cheapVisited;
     cache.finishReservedTurnsAndLend();
-    cheapBudget.maxOperations=262144-heavyBudget.operations-buildBudget.operations;
+    const size_t operationLimit=cache.operationLimit();
+    cheapBudget.maxOperations=operationLimit-heavyBudget.operations-buildBudget.operations;
     // Retry cold sources after construction: a completed cheap envelope can
     // bound this frame's pose now, instead of replaying into every cube face.
     // calculateCheap never builds a source or evaluates a heavy envelope;
@@ -89,7 +90,7 @@ inline Totals schedule(NorthlightReplayBounds::Cache& cache,std::vector<Item>& i
         [&](){return live()&&cache.canCheap()&&cheapBudget.operations<cheapBudget.maxOperations;},[&](size_t index){return visit(index,3);});
     cache.settleClock();
     const size_t evaluationOperations=cheapBudget.operations+heavyBudget.operations;
-    buildBudget.maxOperations=std::min(buildBudget.maxOperations,evaluationOperations>=262144?size_t(0):262144-evaluationOperations);
+    buildBudget.maxOperations=std::min(buildBudget.maxOperations,evaluationOperations>=operationLimit?size_t(0):operationLimit-evaluationOperations);
     const auto cold=[&](size_t index){return !items[index].bounds.valid&&items[index].work.kind==WorkKind::Cold;};
     if(t.buildVisited||cache.hasPendingBuild())NorthlightReplaySchedule::finishCold(count,cache.buildStart(count),cache,cheapBudget,heavyBudget,buildBudget,live,visit,cold);
     t.boundVertices=buildBudget.vertices;t.boundOperations=cheapBudget.operations+heavyBudget.operations+buildBudget.operations;

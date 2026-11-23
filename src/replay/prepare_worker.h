@@ -153,7 +153,7 @@ inline void pause(){
 template<class Record,class Process=Prepare> class Worker {
 public:
     static constexpr std::uint32_t Capacity=4096; /* the replay cap */
-    static constexpr std::uint32_t WakeBatch=48;  /* a sleeping worker is woken once this many records wait */
+    static constexpr std::uint32_t WakeBatch=48;  /* check for a sleeping worker after this many publications */
     static constexpr double SpinUs=30,WatchdogMs=5; /* the default; tests may raise it (scheduler stalls of a loaded test host) */
     struct Stop {std::uint32_t published=0,done=0;bool failed=false,timedOut=false;double waitMs=-1;};
 private:
@@ -164,16 +164,20 @@ private:
     std::unique_ptr<Slot[]> slots_;std::unique_ptr<Output[]> out_;
     std::atomic<std::uint64_t> word_{0}; /* frame serial << 2 | phase */
     std::atomic<std::uint32_t> published_{0},done_{0};
-    std::atomic<bool> wakeable_{false},failed_{false};std::atomic<std::uint64_t> busyNs_{0};
+    std::atomic<bool> failed_{false};std::atomic<std::uint64_t> busyNs_{0};
     std::mutex mutex_;std::condition_variable wake_;bool blocked_=false,shutdown_=false; /* under mutex_ */
     std::thread thread_;
     Frame frame_;Caches* caches_=nullptr;Process process_;
-    std::uint64_t serial_=0;bool open_=false,abandoned_=false,joined_=false;double watchdogMs_=WatchdogMs;std::uint32_t wakeBatch_=WakeBatch; /* render thread */
+    std::uint64_t serial_=0;bool open_=false,abandoned_=false,joined_=false;double watchdogMs_=WatchdogMs;
+    std::uint32_t wakeBatch_=WakeBatch,untilWake_=WakeBatch; /* render thread */
     // Producer-side counters of the open frame (render thread).
     std::uint32_t wakes_=0;double notifyUs_=0;
-    void notify(){
+    void notify(bool onlyIfBlocked=false){
         const auto start=frame_.timed?Clock::now():Clock::time_point{};
-        {std::lock_guard<std::mutex> lock(mutex_);wake_.notify_one();}++wakes_;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if(!onlyIfBlocked||blocked_){wake_.notify_one();++wakes_;}
+        }
         if(frame_.timed)notifyUs_+=std::chrono::duration<double,std::micro>(Clock::now()-start).count();
     }
     // Worker: one frame. Returns when the frame ends (acknowledged or claimed) or at shutdown.
@@ -199,11 +203,11 @@ private:
                     if(!(i&63)&&std::chrono::duration<double,std::micro>(Clock::now()-spinStart).count()>=SpinUs)break;}}
             if(arrived)continue;
             std::unique_lock<std::mutex> lock(mutex_);
-            // 0.3.179 (T3): the fence pairs with publish()'s at the wake threshold (fence-fence Dekker): either
-            // this re-check sees the record or the producer sees wakeable_ and notifies.
-            blocked_=true;wakeable_.store(true,std::memory_order_relaxed);std::atomic_thread_fence(std::memory_order_seq_cst);
-            wake_.wait(lock,[&]{return shutdown_||word_.load(std::memory_order_seq_cst)!=open||(!failed&&published_.load(std::memory_order_seq_cst)>d);});
-            blocked_=false;wakeable_.store(false,std::memory_order_relaxed);
+            // A qualifying publication takes this mutex. A later wait sees
+            // the new count, and an earlier wait receives the notification.
+            blocked_=true;
+            wake_.wait(lock,[&]{return shutdown_||word_.load(std::memory_order_acquire)!=open||(!failed&&published_.load(std::memory_order_acquire)>d);});
+            blocked_=false;
             if(shutdown_)return;
         }
         // Acknowledge a stop of this frame; a claimed or newer frame is not ours to touch.
@@ -246,7 +250,7 @@ public:
     bool begin(const Frame& frame,Caches& caches){
         if(open_||!ready())return false;
         published_.store(0,std::memory_order_relaxed);done_.store(0,std::memory_order_relaxed);failed_.store(false,std::memory_order_relaxed);busyNs_.store(0,std::memory_order_relaxed);
-        frame_=frame;caches_=&caches;wakes_=0;notifyUs_=0;
+        frame_=frame;caches_=&caches;wakes_=0;notifyUs_=0;untilWake_=wakeBatch_;
         word_.store(word(++serial_,Open),std::memory_order_seq_cst);open_=true;
         notify(); /* once per frame at open */
         return true;
@@ -255,10 +259,10 @@ public:
     // prepares the rest inline).
     bool publish(const Record* record,std::size_t index){
         const std::uint32_t n=published_.load(std::memory_order_relaxed);if(!open_||n>=Capacity)return false;
-        // 0.3.179 (T3): a release store (a plain store on x86 TSO), the slot written before it; the full
-        // fence only at the wake threshold, paired with the worker's before it sleeps.
+        // Publish the slot before deciding whether to wake. Take the mutex
+        // once per batch of published records, independent of consumer timing.
         slots_[n]={record,index};published_.store(n+1,std::memory_order_release);
-        if(n+1-done_.load(std::memory_order_relaxed)>=wakeBatch_){std::atomic_thread_fence(std::memory_order_seq_cst);if(wakeable_.exchange(false))notify();}
+        if(!--untilWake_){untilWake_=wakeBatch_;notify(true);}
         return true;
     }
     std::uint32_t published()const{return published_.load(std::memory_order_relaxed);}

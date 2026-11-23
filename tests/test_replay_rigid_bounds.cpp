@@ -10,6 +10,7 @@ struct BoundsTestClock {
 };
 #define NORTHLIGHT_REPLAY_BOUNDS_CLOCK BoundsTestClock
 #include "replay_bounds.h"
+#include "replay_bounds_job.h"
 #include <cassert>
 #include <cstdio>
 #include <random>
@@ -44,6 +45,38 @@ static void warm(EnvelopeCache& cache,const Prepared& prepared,const std::shared
 static bool same(const Bounds& a,const Bounds& b){return a.valid==b.valid&&(!a.valid||(!std::memcmp(a.low,b.low,12)&&!std::memcmp(a.high,b.high,12)));}
 static uint64_t checksum=14695981039346656037ull;
 static void hash(const Bounds& b){for(const float* part:{b.low,b.high})for(unsigned i=0;i<12;++i){checksum^=reinterpret_cast<const uint8_t*>(part)[i];checksum*=1099511628211ull;}}
+static void fixedWorkSchedule(){
+    using namespace NorthlightReplayBoundsJob;
+    auto p=program(false);
+    auto prepared=EnvelopeCache::prepareProgram(p,declaration,3);
+    assert(prepared);
+    const auto ordinary=mesh(1),heavy=mesh(9);
+    float constants[1024]={};constants[0]=constants[5]=constants[10]=1;
+    const auto run=[&](uint64_t tick){
+        BoundsTestClock::step=tick;
+        Cache cache;std::vector<Item> items(1300);NorthlightReplayBoundsNear::List priority;
+        std::vector<Bounds> bounds;
+        std::vector<size_t> work;
+        for(unsigned frame=0;frame<8;++frame){
+            cache.beginFrame(false,items.size(),true,true,true);
+            priority.begin(inverse,true,nullptr,false);
+            const float at[3]={};
+            for(size_t i=0;i<items.size();++i){items[i]={i%3?ordinary:heavy,prepared,constants,{},{}};priority.consider(i,at,i==0);}
+            constants[3]=float(frame)*.125f;
+            const auto totals=schedule(cache,items,inverse,nullptr,&priority);
+            assert(totals.boundOperations<=cache.operationLimit()&&totals.boundVertices<=16384);
+            work.insert(work.end(),{totals.valid,totals.cheapVisited,totals.heavyVisited,totals.buildVisited,
+                                    totals.boundOperations,totals.boundVertices});
+            for(const auto& item:items)bounds.push_back(item.bounds);
+        }
+        assert(work[0]>0&&work[5]>0);
+        return std::pair{work,bounds};
+    };
+    const auto fast=run(10),slow=run(1000000);
+    assert(fast.first==slow.first&&std::equal(fast.second.begin(),fast.second.end(),slow.second.begin(),same));
+    BoundsTestClock::step=0;
+    std::puts("Fixed shadow bounds: identical cold and warm work and boxes under different clocks");
+}
 static void benchmark(){
     for(bool defined:{false,true}){
         auto p=program(defined);auto m=mesh(1);auto prepared=EnvelopeCache::prepareProgram(p,declaration,3);assert(prepared);
@@ -63,6 +96,7 @@ static void benchmark(){
 }
 int main(int argc,char**){
     if(argc>1){benchmark();return 0;}
+    fixedWorkSchedule();
     std::mt19937 rng(73129);std::uniform_real_distribution<float> value(-3,3);
     size_t comparisons=0,vertices=0,fast=0;
     for(unsigned groups:{1u,8u,9u})for(bool defined:{false,true}){

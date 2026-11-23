@@ -6,10 +6,12 @@ builds. The cache covers only the continents; the builder used to run a full reg
 Now the map is probed once per entry (FindFirstFileW on world-cache/<map>/*.fg3), the error is published
 once, and no build runs until the map changes. The GI worker drops its region only on the first drop.
 Source wiring; the behaviour runs in test_concurrent_geometry_build.py case (h). Writes nothing."""
+
+from source_units import source_text
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
 HERE=Path(__file__).resolve().parent
-w=fp.src('world_renderer.h').read_text();t=(HERE/'test_concurrent_geometry_build.py').read_text()
+w=source_text(fp.src('world_renderer.h'));t=(HERE/'test_concurrent_geometry_build.py').read_text()
 helper=w[w.index('    bool worldCacheHasTiles('):w.index('    NorthlightGeometryMemory::Sample geometryAdmission(')]
 work=w[w.index('    void work() {'):w.index('\n    bool check(HRESULT h,const char* s)')]
 gate=work[work.index('if(r.map!=cacheCheckedMap){'):work.index('auto built=std::make_unique<Built>();')]

@@ -75,6 +75,36 @@ void recreation(const char* mode){
     check(pairs[0]==0x2577928&&pairs[1]==reinterpret_cast<std::uintptr_t>(&first),"new-source-creation-proves-new-kind");
     check(!objects.find(0x257792c)->second.live,"previous-interface-never-revived");
 }
+void surfaceReacquisition(){
+    static const char* backArgs[]={"this","ppBackBuffer"};
+    static const char* targetArgs[]={"this","RenderTargetIndex","ppRenderTarget"};
+    static const char* depthArgs[]={"this","ppZStencilSurface"};
+    static const trace::FunctionSig getters[]={
+        {7,"IDirect3DDevice9::GetBackBuffer",2,backArgs},
+        {8,"IDirect3DSwapChain9::GetBackBuffer",2,backArgs},
+        {9,"IDirect3DDevice9::GetRenderTarget",3,targetArgs},
+        {10,"IDirect3DDevice9::GetDepthStencilSurface",2,depthArgs},
+    };
+    auto& objects=state().objects;
+    constexpr std::uint32_t key=0x60000,aliasKey=0x60004;
+    trace::Pointer old(key),alias(aliasKey);int staging=0,back=0;
+    for(const auto& getter:getters){
+        trace::Call call(&getter,0,0);call.no=10;
+        retrace::addObj(call,old,&staging);observeObject(call,&old,Kind::Surface,0,true);
+        retrace::addObj(call,alias,&staging);observeObject(call,&alias,Kind::Surface,key);
+        retireObject(objects.at(key));retrace::delObj(old);retrace::delObj(alias);
+
+        call.no=11;call.ret=new trace::UInt(0);
+        auto* result=new trace::Array(1);result->values[0]=new trace::Pointer(key);
+        call.args[getter.num_args-1].value=result;
+        retrace::addObj(call,old,&back);outputs(call,nullptr);
+        const auto& observed=objects.at(key);
+        check(observed.live&&observed.kind==Kind::Surface&&observed.replayed==&back&&
+              observed.generation==call.no&&!objects.at(aliasKey).live,"typed-getter-reacquires-released-address");
+        retireObject(objects.at(key));retrace::delObj(old);
+        objects.erase(key);objects.erase(aliasKey);
+    }
+}
 }
 int main(int argc,char** argv){
     using namespace NorthlightNativeRetraceBridge;
@@ -98,5 +128,15 @@ int main(int argc,char** argv){
     trace::Pointer alias(0x30004);retrace::addObj(call,alias,&borrowed);observeObject(call,&alias,Kind::Texture,0x30000);
     ids={};ids.add(0x30004);aliasPairs(call,ids,pairs);
     check(pairs[0]==0x30004&&pairs[1]==reinterpret_cast<std::uintptr_t>(&borrowed),"canonical-interface-alias");
-    collectors();indexInputs();recreation("positive");std::puts("NORTHLIGHT_NATIVE_ALIAS_FIXTURE PASS gpu_calls=0 authored_fixture=1 fps_eligible=0");
+    static const char* markerArgs[]={"col","wszName"};
+    static const trace::FunctionSig witnessSig{6,"D3DPERF_SetMarker",2,markerArgs};
+    trace::Call witness(&witnessSig,0,0);witness.no=8;
+    witness.args[0].value=new trace::UInt(0x4e4c0002u);
+    auto* witnessText=new wchar_t[25];std::wmemcpy(witnessText,L"NLTEX1;00040000;00030000",25);
+    witness.args[1].value=new trace::WString(witnessText);
+    state().created=true;marker(witness,0x30000);state().created=false;
+    ids={};ids.add(0x40000);aliasPairs(witness,ids,pairs);
+    check(pairs[0]==0x40000&&pairs[1]==reinterpret_cast<std::uintptr_t>(&borrowed),"exposed-pointer-uses-retraced-texture");
+    collectors();indexInputs();recreation("positive");surfaceReacquisition();
+    std::puts("NORTHLIGHT_NATIVE_ALIAS_FIXTURE PASS gpu_calls=0 authored_fixture=1 fps_eligible=0");
 }

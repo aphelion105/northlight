@@ -39,7 +39,7 @@ int main(int argc,char** argv){assert(argc==4||argc==5);const bool timing=argc==
         for(auto k:{D3DRS_ALPHATESTENABLE,D3DRS_ALPHABLENDENABLE,D3DRS_STENCILENABLE,D3DRS_SCISSORTESTENABLE})ok(d->SetRenderState(k,FALSE));ok(d->SetRenderState(D3DRS_ZENABLE,TRUE));ok(d->SetRenderState(D3DRS_ZWRITEENABLE,TRUE));ok(d->SetRenderState(D3DRS_ZFUNC,D3DCMP_LESSEQUAL));ok(d->SetRenderState(D3DRS_COLORWRITEENABLE,15));ok(d->SetRenderState(D3DRS_CULLMODE,D3DCULL_NONE));ok(d->SetRenderState(D3DRS_CLIPPING,TRUE));ok(d->SetRenderState(D3DRS_FILLMODE,D3DFILL_SOLID));
         NorthlightAutoDisplacement producer(d);producer.setTrustedConstantEpochSource(extension.trustedConstantSource());producer.registerMaterial(shader,reinterpret_cast<const DWORD*>(words.data()),words.size()/4,4);assert(DisplacementStateTestAccess::registered(producer,shader));
         auto identity=+[](void* p,bool)->uint64_t{return reinterpret_cast<uintptr_t>(p);};auto version=+[](void*,bool)->uint64_t{return 1;};auto& sources=DisplacementStateTestAccess::sources(producer);sources.setIdentityProvider(identity);sources.setVersionProvider(version);sources.setSnapshotCacheLimit(16u<<20);
-        NorthlightModelNormals normals(d);normals.setDeferredCapture(true);normals.setTrustedPoseSource(extension.trustedConstantSource());normals.setGeometryCache(DisplacementStateTestAccess::geometry(producer));assert(normals.shareCaptureSources(sources,identity,version,nullptr));
+        NorthlightModelNormals normals(d);normals.setDeferredCapture(true);normals.setTrustedPoseSource(extension.trustedConstantSource());normals.setDrawStateSource(extension);normals.setGeometryCache(DisplacementStateTestAccess::geometry(producer));assert(normals.shareCaptureSources(sources,identity,version,nullptr));
         NorthlightAutoDisplacement::Args args{{D3DPT_TRIANGLELIST,0,0,Vertices,0,Vertices/3,false}};
         IDirect3DQuery9 *event=nullptr,*begin=nullptr,*end=nullptr,*frequency=nullptr,*disjoint=nullptr;ok(d->CreateQuery(D3DQUERYTYPE_EVENT,&event));
         if(timing){ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&begin));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&end));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMPFREQ,&frequency));ok(d->CreateQuery(D3DQUERYTYPE_TIMESTAMPDISJOINT,&disjoint));}
@@ -64,6 +64,34 @@ int main(int argc,char** argv){assert(argc==4||argc==5);const bool timing=argc==
                             const float inverse[]={1,0,0,0,0,1,0,0,0,0,1,0,-16,4,123,1};
                             const auto world=NorthlightPoseBounds::inWorld(source.pose.bounds,inverse);
                             assert(world.valid&&world.low[2]<=z+123&&world.high[2]>=z+123);
+                             if(i==1){
+                                 NorthlightModelNormals probe(d);
+                                 probe.setTrustedPoseSource(clock);
+                                 // Exercise the early proof independently of normal submission.
+                                 ok(d->SetRenderState(D3DRS_ZWRITEENABLE,FALSE));
+                                 const auto check=[&]{probe.capture(shader,[]{return E_FAIL;},false,&args.draw,nullptr,
+                                     D3DFMT_UNKNOWN,nullptr,0,&source.mesh,source.declaration,&source.pose);};
+                                 check();
+                                 assert(probe.testRangeCulled()==1&&probe.testPoseDeclarationGets()==1);
+                                 probe.setDrawStateSource(extension);
+                                 check();
+                                 assert(probe.testRangeCulled()==2&&probe.testPoseDeclarationPeeks()==1);
+                                 IDirect3DVertexDeclaration9* other=nullptr;
+                                 elements[4].Offset=36;
+                                 ok(d->CreateVertexDeclaration(elements,&other));
+                                 elements[4].Offset=32;
+                                 assert(other!=declaration);
+                                 ok(d->SetVertexDeclaration(other));
+                                 IDirect3DVertexDeclaration9* bound=nullptr;
+                                 ok(d->GetVertexDeclaration(&bound));
+                                 assert(bound==other);
+                                 bound->Release();
+                                 check();
+                                 assert(probe.testRangeCulled()==2&&probe.testPoseDeclarationPeeks()==2&&probe.testPoseDeclarationGets()==1);
+                                 ok(d->SetVertexDeclaration(declaration));
+                                 other->Release();
+                                 ok(d->SetRenderState(D3DRS_ZWRITEENABLE,TRUE));
+                             }
                         }
                     }
                     normals.capture(shader,[&]{return d->DrawPrimitive(D3DPT_TRIANGLELIST,0,Vertices/3);},false,&args.draw,nullptr,D3DFMT_UNKNOWN,nullptr,0,&source.mesh,source.declaration,&source.pose);

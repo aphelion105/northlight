@@ -15,6 +15,26 @@
 
 namespace NorthlightParticleTextures {
 inline std::atomic<bool> enabled{false}; // Set by the device's EquipmentLights quality setting.
+// Only textures admitted by an atlas occupy these replay-thread slots.
+// Cache eviction, pointer reuse and any observed write all force a new tile.
+class AtlasRevisions {
+    struct Slot {const void* texture=nullptr;std::uint64_t stamp=0;};
+    std::array<Slot,32> slots_{};
+    unsigned used_=0,next_=0;
+    std::uint64_t clock_=0;
+public:
+    std::uint64_t get(const void* texture){
+        for(unsigned i=0;i<used_;++i)if(slots_[i].texture==texture)return slots_[i].stamp;
+        unsigned index=used_<slots_.size()?used_++:next_++%unsigned(slots_.size());
+        slots_[index]={texture,++clock_};
+        return clock_;
+    }
+    void change(const void* texture){
+        for(unsigned i=0;i<used_;++i)if(slots_[i].texture==texture){slots_[i].stamp=++clock_;break;}
+    }
+    void reset(){used_=next_=0;}
+};
+inline thread_local AtlasRevisions atlasRevisions;
 inline const std::array<float,256>& linearRGBTable(){static const std::array<float,256> table=[](){std::array<float,256> a{};for(unsigned i=0;i<256;++i){const float s=float(i)/255;a[i]=s<=.04045f?s/12.92f:std::pow((s+.055f)/1.055f,2.4f);}return a;}();return table;}
 // Replay-thread only. Views borrow a complete CPU-uploaded mip until the next
 // cache mutation; no driver lock, readback, COM reference or game-side shadow.
@@ -76,6 +96,7 @@ private:
         // most small mips are never sampled, so decoding waits for lookup().
         std::vector<std::uint8_t> source;std::size_t pitch=0;
         bool held()const{return !pixels.empty()||!source.empty();}
+        View view()const{return {pixels.data(),width,height,mip,format,lifetime,revision,rgbaHash,uploadHash};}
     };
     std::unordered_map<const void*,Entry> entries_;
     Entry* recent_=nullptr;
@@ -116,18 +137,19 @@ public:
     Seen lastMiss()const{return lastMiss_;}
     std::size_t bytes()const{return bytes_;}
     unsigned size()const{unsigned n=0;for(const auto& [raw,e]:entries_)n+=e.held();return n;}
-    void clear(){recent_=nullptr;entries_.clear();bytes_=0;history_.clear();}
+    void clear(){atlasRevisions.reset();recent_=nullptr;entries_.clear();bytes_=0;history_.clear();}
     // Reset loses DEFAULT content, but surviving MANAGED/SYSTEMMEM/SCRATCH
     // textures may never be uploaded again. Entries own CPU bytes only.
-    void reset(){recent_=nullptr;for(auto it=entries_.begin();it!=entries_.end();){auto& e=it->second;
+    void reset(){atlasRevisions.reset();recent_=nullptr;for(auto it=entries_.begin();it!=entries_.end();){auto& e=it->second;
         if(e.pool>=1&&e.pool<=3){++it;continue;}note(e.raw,Invalidated);drop(e);it=entries_.erase(it);++counts.invalidations;}}
-    void erase(const void* raw,const void* owner=nullptr){if(auto* e=find(raw))if(!owner||e->owner==owner){recent_=nullptr;drop(*e);entries_.erase(raw);++counts.releases;note(raw,Released);}}
-    void invalidate(const void* raw){note(raw,Invalidated);if(auto* e=find(raw)){drop(*e);++e->revision;++counts.invalidations;}}
+    void erase(const void* raw,const void* owner=nullptr){atlasRevisions.change(raw);if(auto* e=find(raw))if(!owner||e->owner==owner){recent_=nullptr;drop(*e);entries_.erase(raw);++counts.releases;note(raw,Released);}}
+    void invalidate(const void* raw){atlasRevisions.change(raw);note(raw,Invalidated);if(auto* e=find(raw)){drop(*e);++e->revision;++counts.invalidations;}}
     // Other full mips do not change this mip. Partial/failed writes invalidate
     // the texture conservatively. Only a later complete CPU upload can restore it.
     void upload(const void* raw,const void* owner,unsigned width,unsigned height,unsigned mip,unsigned d3dFormat,
                 const void* source,std::size_t sourceBytes,std::size_t pitch,bool whole,bool success,unsigned pool=0)noexcept{
         if(!enabled.load(std::memory_order_relaxed)){invalidate(raw);return;}
+        atlasRevisions.change(raw);
         ++counts.uploads;
         try{
         if(!success){++counts.failed;invalidate(raw);note(raw,Failed);return;}
@@ -142,6 +164,12 @@ public:
         e.source.assign(static_cast<const std::uint8_t*>(source),static_cast<const std::uint8_t*>(source)+sourceBytes);e.pitch=pitch;
         e.width=width;e.height=height;e.mip=mip;e.format=d3dFormat;e.pool=pool;++e.revision;e.used=++clock_;bytes_+=e.source.size();++counts.retained;note(raw,Held);
         }catch(...){++counts.failed;invalidate(raw);}
+    }
+    // The budget gate may reuse a decoded mip. It never triggers a decode.
+    bool decodedView(const void* raw,View& out){
+        auto* e=find(raw);
+        if(!e||e->pixels.empty())return false;
+        e->used=++clock_;out=e->view();return true;
     }
     bool lookup(const void* raw,View& out){
         out={};if(!enabled.load(std::memory_order_relaxed))return false;auto* e=find(raw);if(!e||!e->held()){++counts.misses;
@@ -165,7 +193,7 @@ public:
             e->rgbaHash=14695981039346656037ull;for(auto byte:decoded){e->rgbaHash^=byte;e->rgbaHash*=1099511628211ull;}
             e->pixels=std::move(decoded);bytes_+=e->pixels.size();++counts.decoded;
         }
-        e->used=++clock_;out={e->pixels.data(),e->width,e->height,e->mip,e->format,e->lifetime,e->revision,e->rgbaHash,e->uploadHash};++counts.hits;return true;
+        e->used=++clock_;out=e->view();++counts.hits;return true;
     }
 };
 static_assert(Cache::PixelBudget+Cache::MaxDimension*Cache::MaxDimension*4<(9u<<20),"particle texture bytes plus decode scratch stay below 9 MiB");
@@ -191,18 +219,40 @@ private:
     };
     std::array<Entry,MaxEntries> entries_{};
     Entry* recent_=nullptr;
-    // An absent identity stays absent until slot() inserts a new record.
-    const void* missing_=nullptr;
+    struct Lookup {Entry* entry=nullptr;const void* absent=nullptr;};
+    std::array<Lookup,256> lookups_{};
     std::size_t bytes_=0;
     std::uint64_t serial_=0,clock_=0;
-    Entry* find(const void* raw){if(raw){if(recent_&&recent_->raw==raw)return recent_;if(missing_==raw)return nullptr;for(auto& e:entries_)if(e.raw==raw){recent_=&e;return &e;}missing_=raw;}return nullptr;}
+    Lookup& memo(const void* raw){
+        const auto key=reinterpret_cast<std::uintptr_t>(raw);
+        return lookups_[((key>>4)^(key>>12)^(key>>20))&(lookups_.size()-1)];
+    }
+    Entry* find(const void* raw){
+        if(!raw)return nullptr;
+        if(recent_&&recent_->raw==raw)return recent_;
+        auto& hint=memo(raw);
+        if(hint.absent==raw)return nullptr;
+        // Entries have fixed addresses, but an eviction can reuse their slots.
+        if(hint.entry&&hint.entry->raw==raw){
+            recent_=hint.entry;
+            return recent_;
+        }
+        for(auto& e:entries_)if(e.raw==raw){hint.entry=&e;recent_=&e;return &e;}
+        hint.absent=raw;
+        return nullptr;
+    }
     void drop(Entry& e){bytes_-=e.pixels.size();std::vector<std::uint8_t>().swap(e.pixels);e.width=e.height=0;}
     Entry* oldest(const Entry* except=nullptr){Entry* result=nullptr;for(auto& e:entries_)if(e.raw && &e!=except&&(!result||e.used<result->used))result=&e;return result;}
     Entry& slot(const void* raw,const void* owner){
         if(auto* e=find(raw)){if(e->owner==owner)return *e;drop(*e);*e={};e->raw=raw;e->owner=owner;e->lifetime=++serial_;e->used=++clock_;return *e;}
         Entry* selected=nullptr;for(auto& e:entries_)if(!e.raw){selected=&e;break;}
         if(!selected){selected=oldest();drop(*selected);++counts.evictions;}
-        *selected={};selected->raw=raw;selected->owner=owner;selected->lifetime=++serial_;selected->used=++clock_;recent_=selected;missing_=nullptr;return *selected;
+        *selected={};selected->raw=raw;selected->owner=owner;selected->lifetime=++serial_;selected->used=++clock_;recent_=selected;
+        auto& hint=memo(raw);
+        hint.entry=selected;
+        // Publish the insertion even if this address previously missed.
+        if(hint.absent==raw)hint.absent=nullptr;
+        return *selected;
     }
     static bool format(unsigned d3d,NorthlightActorTexture::Format& out){
         using F=NorthlightActorTexture::Format;

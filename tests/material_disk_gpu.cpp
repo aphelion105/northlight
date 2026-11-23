@@ -12,7 +12,10 @@ struct DiskMeter:Meter {
     HRESULT STDMETHODCALLTYPE GetRenderTarget(DWORD i,IDirect3DSurface9** out)override{++stateReads;return real->GetRenderTarget(i,out);}
     HRESULT STDMETHODCALLTYPE GetVertexShaderConstantF(UINT first,float* out,UINT count)override{++constantReads;return real->GetVertexShaderConstantF(first,out,count);}
     HRESULT STDMETHODCALLTYPE SetVertexShaderConstantF(UINT first,const float* data,UINT count)override{++constantWrites;return real->SetVertexShaderConstantF(first,data,count);}
-    HRESULT STDMETHODCALLTYPE CreatePixelShader(const DWORD* code,IDirect3DPixelShader9** out)override{if(code==kAutoNormalShader||code==kAutoNormalModelShader)++generatorCreates;return real->CreatePixelShader(code,out);}
+    HRESULT STDMETHODCALLTYPE CreatePixelShader(const DWORD* code,IDirect3DPixelShader9** out)override{
+        if(code==kAutoNormalShader||code==kAutoNormalModelShader||code==kAutoNormalLegacyShader||code==kAutoNormalModelLegacyShader)++generatorCreates;
+        return real->CreatePixelShader(code,out);
+    }
     HRESULT STDMETHODCALLTYPE DrawPrimitiveUP(D3DPRIMITIVETYPE t,UINT n,const void* data,UINT stride)override{++generated;return Meter::DrawPrimitiveUP(t,n,data,stride);}
     HRESULT STDMETHODCALLTYPE GetRenderTargetData(IDirect3DSurface9* a,IDirect3DSurface9* b)override{++readbacks;assert(queuedReadback);return real->GetRenderTargetData(a,b);}
     HRESULT STDMETHODCALLTYPE UpdateSurface(IDirect3DSurface9* a,const RECT* r,IDirect3DSurface9* b,const POINT* p)override{if(failUpload){failUpload=false;++failedUploads;return E_OUTOFMEMORY;}return real->UpdateSurface(a,r,b,p);}
@@ -151,7 +154,7 @@ static std::vector<unsigned char> mipSamples(IDirect3DDevice9* d,IDirect3DTextur
 }
 #ifndef NORTHLIGHT_MATERIAL_DISK_SUPPORT_ONLY
 int main(int argc,char** argv){
-    assert(argc>=4&&argc<=6);const std::string mode=argv[3],format=argc==6?argv[5]:"rgba";const std::filesystem::path root=std::filesystem::u8path(argv[2]);const bool basicCold=mode=="produce"||mode=="repair"||mode=="settings";
+    assert(argc>=4&&argc<=6);const std::string mode=argv[3],format=argc==6?argv[5]:"rgba";const std::filesystem::path root=std::filesystem::u8path(argv[2]);const bool basicCold=mode=="produce"||mode=="repair"||mode=="settings"||mode=="legacy-filter";
     if(std::strstr(argv[1],"dxvk")){const char* existing=std::getenv("DXVK_CONFIG");const auto config=NorthlightDxvkCompatibility::config(existing?existing:"");assert(SetEnvironmentVariableA("DXVK_CONFIG",config.c_str()));}
     auto module=LoadLibraryA(argv[1]);assert(module);auto create=reinterpret_cast<IDirect3D9*(WINAPI*)(UINT)>(GetProcAddress(module,"Direct3DCreate9"));auto api=create(D3D_SDK_VERSION);assert(api);
     HWND window=CreateWindowExW(0,L"STATIC",L"",WS_OVERLAPPED,0,0,64,64,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);assert(window);
@@ -170,6 +173,7 @@ int main(int argc,char** argv){
         if(argc>=5&&std::strlen(argv[4]))im=image(argv[4]);else for(size_t i=0;i<im.pixels.size();i+=4){im.pixels[i]=std::uint8_t(i/4*23);im.pixels[i+1]=std::uint8_t(i/19*13);im.pixels[i+2]=std::uint8_t(i/7*31);im.pixels[i+3]=255;}
         auto source=sourceTexture(raw,im,format);
         NorthlightQuality::Settings settings;if(mode=="settings"||mode=="settings-hit")settings.autoHeightPolarity=2;if(mode=="equivalent"){settings.autoHeightPolarity=1;settings.autoHeightDetails=17;settings.autoHeightBalance=70;}
+        if(mode=="legacy-filter"||mode=="legacy-filter-hit")settings.autoNormalFilter=0;
         cache.configure(settings);reference.configure(settings);
         float constants[1024],restored[1024];for(unsigned i=0;i<1024;++i)constants[i]=float(i+1)*.00013f;
         std::vector<unsigned char> lastExpected,lastMips;

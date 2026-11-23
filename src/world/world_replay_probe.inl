@@ -80,10 +80,10 @@
     // viewport), so every later pass sees the pre-probe device state: image unchanged.
     // Called after replayBoundsJoin() and the sun near replay loop, before the union.
     // Never fails the frame: probe errors count toward disabling the probe only.
-    static constexpr unsigned ReplayProbeSize=1024,ReplayProbeFailureLimit=8;
+    static constexpr unsigned ReplayProbeFailureLimit=8;
     NorthlightRenderThreadProbe::ProbeSchedule replayProbeSchedule;
     std::vector<const Replay*> replayProbeList;
-    IDirect3DTexture9* replayProbeTexture=nullptr;IDirect3DSurface9 *replayProbeSurface=nullptr,*replayProbeDepth=nullptr;
+    NorthlightWorldReplayProbePass replayProbePass;
     bool replayProbeDisabled=false,replayProbeRanThisFrame=false;unsigned replayProbeFailures=0;
     NorthlightRenderThreadProbe::ProbeMode replayProbeMode=NorthlightRenderThreadProbe::ProbeOff;
     uint64_t replayProbeWindow=0;bool replayProbeWindowOpen=false;
@@ -96,8 +96,7 @@
     // Renderer side: the current window (its FRAME cost lines follow the same windows).
     uint64_t probeWindow()const{return replayProbeWindow;}
     NorthlightRenderThreadProbe::ProbeMode probeMode()const{return replayProbeMode;}
-    void dropReplayProbeTargets(){drop(replayProbeSurface);drop(replayProbeTexture);drop(replayProbeDepth);}
-    void releaseReplayProbe(){dropReplayProbeTargets();replayProbeList.clear();}
+    void releaseReplayProbe(){replayProbePass.reset();replayProbeList.clear();}
     // Start of render(): the window of this frame. A finished window is logged by endFrame().
     void replayProbeFrame(){
         replayProbeRanThisFrame=false;
@@ -117,11 +116,10 @@
     }
     template<class Mode> bool replayProbeIssue(const float* rows,const float* worldMatrix,size_t& draws){
         size_t constantBytes=0,constantCalls=0;const char* failedStage=nullptr;HRESULT failedHR=S_OK;
-        NorthlightReplayPoses::Pass<BOOL> probePoses;
-        NorthlightReplayDrawState::Cache probeBindings(d);
+        NorthlightShadowReplay::Pass replayPass(d);
         Mode mode;
         for(const Replay* p:replayProbeList){
-            if(!submitReplay(p,probeBindings,probePoses,rows,worldMatrix,mode,constantBytes,constantCalls,[&](HRESULT h,const char* s){if(SUCCEEDED(h))return true;failedStage=s;failedHR=h;return false;}))break;
+            if(!submitReplay(p,replayPass,rows,worldMatrix,mode,constantBytes,constantCalls,[&](HRESULT h,const char* s){if(SUCCEEDED(h))return true;failedStage=s;failedHR=h;return false;}))break;
             ++draws;
         }
         if(draws==replayProbeList.size())return true;
@@ -131,31 +129,18 @@
     void replayProbe(const float* rows,const float* worldMatrix,double realLoopMs){
         replayProbeStats.realLoop.add(realLoopMs);
         const auto mode=replayProbeMode;if(mode==NorthlightRenderThreadProbe::ProbeOff||captureFrequency.QuadPart<=0)return;
-        if(!replayProbeSurface||!replayProbeDepth){
-            dropReplayProbeTargets();
-            if(FAILED(d->CreateTexture(ReplayProbeSize,ReplayProbeSize,1,D3DUSAGE_RENDERTARGET,D3DFMT_R32F,D3DPOOL_DEFAULT,&replayProbeTexture,nullptr))||
-               FAILED(replayProbeTexture->GetSurfaceLevel(0,&replayProbeSurface))||
-               FAILED(d->CreateDepthStencilSurface(ReplayProbeSize,ReplayProbeSize,D3DFMT_D24S8,D3DMULTISAMPLE_NONE,0,TRUE,&replayProbeDepth,nullptr))){
-                dropReplayProbeTargets();replayProbeFailed("probe targets",E_OUTOFMEMORY);return;}
-        }
         const double ms=1000.0/double(captureFrequency.QuadPart);
-        const int64_t t0=QpcClock::now();int64_t t1=0,t2=0;size_t draws=0;bool complete=false;
-        {
-            SavedState save(d,&stateBlocks);if(!save.ok){replayProbeFailed("probe state save",E_FAIL);return;}
-            const D3DVIEWPORT9 vp={0,0,ReplayProbeSize,ReplayProbeSize,0,1};HRESULT hr=d->SetDepthStencilSurface(nullptr);
-            if(SUCCEEDED(hr))hr=d->SetRenderTarget(0,replayProbeSurface);if(SUCCEEDED(hr))hr=d->SetDepthStencilSurface(replayProbeDepth);
-            if(SUCCEEDED(hr))hr=d->SetViewport(&vp);if(SUCCEEDED(hr))hr=d->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0xffffffff,1,0);
-            if(FAILED(hr)){replayProbeFailed("probe target binding",hr);return;}
-            t1=QpcClock::now();
+        size_t draws=0;bool complete=false;
+        const auto timing=replayProbePass.run<QpcClock>(d,stateBlocks,[&]{
             complete=mode==NorthlightRenderThreadProbe::ProbeFull?replayProbeIssue<NorthlightRenderThreadProbe::Off>(rows,worldMatrix,draws):
                      mode==NorthlightRenderThreadProbe::ProbeState?replayProbeIssue<NorthlightRenderThreadProbe::StateOnly>(rows,worldMatrix,draws):
                      replayProbeIssue<NorthlightRenderThreadProbe::LogicOnly>(rows,worldMatrix,draws);
-            t2=QpcClock::now();
-        } /* SavedState restores targets, depth, viewport and the full state block here */
-        const int64_t t3=QpcClock::now();
-        replayProbeRanThisFrame=true;if(!complete)return;
+        },[&](const char* stage,HRESULT result){replayProbeFailed(stage,result);});
+        replayProbeRanThisFrame=timing.issued;
+        if(!complete)return;
         replayProbeFailures=0;++replayProbeStats.runs;
-        replayProbeStats.save.add(double(t1-t0)*ms);replayProbeStats.issue.add(double(t2-t1)*ms);replayProbeStats.restore.add(double(t3-t2)*ms);replayProbeStats.draws.add(double(draws));
+        replayProbeStats.save.add(double(timing.setup)*ms);replayProbeStats.issue.add(double(timing.issue)*ms);
+        replayProbeStats.restore.add(double(timing.restore)*ms);replayProbeStats.draws.add(double(draws));
     }
     // endFrame(): a finished window, logged after every measured span of the frame.
     void logReplayProbeWindow(){
@@ -163,7 +148,7 @@
         auto& w=replayProbeDone;
         const auto real=w.realLoop.take(),issue=w.issue.take(),save=w.save.take(),restore=w.restore.take(),drawn=w.draws.take();
         if(NorthlightRenderThreadProbe::profiling())logf("WORLD replay probe window=%llu mode=%s seconds=%u frames=%u runs=%u incomplete=%u target=%ux%u draws=%.0f,%.0f,%.0f realLoopMs=%.3f,%.3f,%.3f,%.3f,%.3f issueMs=%.3f,%.3f,%.3f,%.3f,%.3f saveMs=%.3f,%.3f restoreMs=%.3f,%.3f usPerDraw=%.3f (mean,p50,p95,p99,max; draws mean,p50,max; save/restore mean,p95)",
-            (unsigned long long)replayProbeReportWindow,NorthlightRenderThreadProbe::probeModeName(replayProbeReportMode),unsigned(NorthlightRenderThreadProbe::ProbeSchedule::WindowMs/1000),w.frames,w.runs,w.incomplete,ReplayProbeSize,ReplayProbeSize,
+            (unsigned long long)replayProbeReportWindow,NorthlightRenderThreadProbe::probeModeName(replayProbeReportMode),unsigned(NorthlightRenderThreadProbe::ProbeSchedule::WindowMs/1000),w.frames,w.runs,w.incomplete,NorthlightWorldReplayProbePass::Size,NorthlightWorldReplayProbePass::Size,
             drawn.mean,drawn.p50,drawn.max,real.mean,real.p50,real.p95,real.p99,real.max,issue.mean,issue.p50,issue.p95,issue.p99,issue.max,save.mean,save.p95,restore.mean,restore.p95,
             drawn.mean>0?issue.mean*1000.0/drawn.mean:0.0);
         w.reset();

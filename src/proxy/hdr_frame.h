@@ -97,6 +97,7 @@ public:
     IDirect3DSurface9* surface()const{return linear.surface;}
     void beginSkyResidual(){skyResidual=true;skyResolved=false;}
     IDirect3DSurface9* exposureSurface()const{return history[historyIndex].surface;}
+    bool hasExposure()const{return historyReady;}
     std::uint64_t payloadBytes()const{
         std::uint64_t bytes=linear.texture?std::uint64_t(width)*height*8:0;
         for(const auto* target:{&meter64,&meter8,&legacyStatistics,&worldStatistics,&history[0],&history[1]})if(target->texture){const unsigned size=target==&meter64?64:target==&meter8?8:1;bytes+=size*size*8;}
@@ -144,7 +145,8 @@ public:
     }
     HRESULT prepareLegacy(IDirect3DDevice9* device,IDirect3DTexture9* source,IDirect3DTexture9* depth,
                           IDirect3DSurface9* capturedSky,unsigned w,unsigned h,float minDepth,float maxDepth,
-                          const Settings& settings,NorthlightStateBlockPool* pool=nullptr,bool materialize=true){
+                          const Settings& settings,NorthlightStateBlockPool* pool=nullptr,bool materialize=true,
+                          void (*audit)(void*,HRESULT,IDirect3DSurface9*)=nullptr,void* auditContext=nullptr){
         SavedState saved(device,pool);if(!saved.ok)return E_FAIL;
         HRESULT hr=ensure(device,w,h);if(FAILED(hr))return hr;
         const bool preserveSky=capturedSky&&depth&&maxDepth>minDepth;
@@ -161,7 +163,9 @@ public:
             device->SetTexture(0,source);device->SetTexture(1,depth);device->SetTexture(2,nullptr);
             device->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE);device->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_ONE);
             device->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_ONE);device->SetRenderState(D3DRS_BLENDOP,D3DBLENDOP_ADD);device->SetRenderState(D3DRS_COLORWRITEENABLE,7);
-            hr=drawQuad(device,w,h);if(FAILED(hr))return hr;skyResolved=true;
+            hr=drawQuad(device,w,h);
+            if(audit)audit(auditContext,hr,capturedSky);
+            if(FAILED(hr))return hr;skyResolved=true;
         }
         // Inline composition still needs the resolved owned sky, but decodes
         // covered native pixels in the compositor without a full-screen pass.

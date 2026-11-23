@@ -27,7 +27,7 @@ parser.add_argument('--output',type=Path,required=True)
 parser.add_argument('--timing-draws',type=int,action='append',default=[],help='Additionally measure complete 4K capture/submission paths (resident geometry)')
 parser.add_argument('--timing-copies',type=int,default=1,help='Repeat stock geometry within each timing draw (1..32)')
 parser.add_argument('--timing-local',action='store_true',help='Measure the actual three-local-light factory with MRT')
-parser.add_argument('--reference-packet-layout',help='Use this revision’s Pending layout. If its sampler representation differs, use its matching normal renderer and record the wider comparison scope.')
+parser.add_argument('--reference-packet-layout',help='Use this revision’s Pending layout. If its storage representation differs, use its matching normal renderer and report the wider comparison scope.')
 parser.add_argument('--reference-native',help='Use native MRT admission from this git revision for a paired comparison')
 parser.add_argument('--capture-source',action='store_true',help='Read immutable buffered geometry in normals and hand it to the shadow consumer')
 parser.add_argument('--source-lookup-reference',action='store_true',help='Repeat the consumer lookup instead of accepting the same-draw handoff (stand only)')
@@ -76,13 +76,17 @@ if args.reference_packet_layout:
     start='    struct Pending {';end='    Pending* nativeCandidate='
     frozen=previous[previous.index(start):previous.index(end)]
     active=current[current.index(start):current.index(end)]
-    if ('std::vector<SampledStage> sampled;' in frozen)==('std::vector<SampledStage> sampled;' in active):
+    storage_members = ('std::vector<SampledStage> sampled;', 'std::unique_ptr<NonFloatConstants> nonFloat;')
+    if all((member in frozen) == (member in active) for member in storage_members):
         current=current.replace(active,frozen,1)
         packet_reference_scope='Pending layout only'
     else:
         current=previous
-        packet_reference_scope='model_normal_renderer.h including sampler capture and replay'
+        packet_reference_scope='model_normal_renderer.h including capture and replay'
     overlay=out/'layout-reference';overlay.mkdir();(overlay/'model_normal_renderer.h').write_text(current,encoding='utf-8')
+    if current == previous and '#include "model_normal_replay.inl"' in previous:
+        (overlay/'model_normal_replay.inl').write_bytes(subprocess.check_output(
+            ['git','show',args.reference_packet_layout+':src/proxy/model_normal_replay.inl']))
     includes=['-I'+str(overlay)]
 run('compile',[fp.zig(),'c++','-target','x86-windows-gnu','-std=c++17','-O2','-UNDEBUG','-Wno-microsoft-exception-spec','-Wno-return-type',*includes,*fp.test_include_flags(),ROOT/'tests/model_normal_native_gpu.cpp',fp.src('world_gi.cpp'),'-luser32','-o',exe])
 data=bytearray(exe.read_bytes());at=struct.unpack_from('<I',data,0x3c)[0]+22;struct.pack_into('<H',data,at,struct.unpack_from('<H',data,at)[0]|0x20);exe.write_bytes(data)

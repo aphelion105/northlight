@@ -4,10 +4,11 @@
 c19 upload and the shader budget. Source/manifest audit only; no game, Wine or GPU."""
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
+from scripts.shaders.shader_sources import world_source_text
 import json, re
 
 checks = {}
-hlsl = (fp.SHADERS/'world_effects.hlsl').read_text()
+hlsl = world_source_text(fp.SHADERS/'world_effects.hlsl')
 checks['hlsl: one c19 declaration (GridOrigin), no NightFloor alias']=(len(re.findall(r'register\(c19\)', hlsl))==1 and
     'float4 GridOrigin : register(c19);' in hlsl and 'NightFloor' not in hlsl)
 start = hlsl.index('float4 worldCompositeInputs(')
@@ -30,8 +31,9 @@ single = build_lighting.rgb(build_lighting.transform_color(1, 0xC8C8C8, 0, 1, No
 checks['art layer single-key band: x .78, no tint (documented in night_floor.h)']=(all(abs(v/200-.78)<.01 for v in single) and
     'A single-key band gets x .78 with no tint' in header)
 w = fp.src('world_renderer.h').read_text()
-checks['renderer: c19.rgb from nightAmbient() on c18, w=8, old origin upload gone']=('NorthlightNightFloor::nightAmbient(quality.nightBrightness,' in w and
-    '.sun.direction[2]:0.f),c[18],c[19]);' in w and 'c[19][3]=8;' in w and
+bank = fp.src('world_frame_constants.inl').read_text()
+checks['renderer: c19.rgb from nightAmbient() on c18, w=8, old origin upload gone']=('NorthlightNightFloor::nightAmbient(quality.nightBrightness,' in bank and
+    '.sun.direction[2]:0.f),c[18],c[19]);' in bank and 'c[19][3]=8;' in bank and
     'c[19][0]=active->origin' not in w and '#include "night_floor.h"' in w)
 slots = json.loads((fp.SHADERS/'world-shader-build.json').read_text())['shaders']['WorldComposite']['static_instruction_slots']
 checks['manifest: WorldComposite <= 512 slots']=slots <= 512

@@ -13,7 +13,7 @@ Heuristic (over-selects rather than misses):
     chain of what it compiles (production .cpp, headers #included in a harness string or test file),
     so a test compiling a.h is affected by b.h when a.h includes b.h. A header a test only names
     (read as text) is covered itself but its includes are not followed.
-    A shader build manifest (*-shader-build.json) reaches the files it names.
+    A shader source reaches its includes. A shader build manifest reaches the files it names.
   * A test that scans a tree covers every file under it with a matching suffix: `fp.sources(...)`
     (all of src/), and a line that walks a directory (glob, rglob, iterdir, walk) over fp.SRC_DIRS,
     fp.SRC, fp.REPO / 'src' (/ 'group'), fp.SHADERS, fp.GENERATED, fp.GAMEDATA or
@@ -94,13 +94,13 @@ class Graph:
         return self.cache[name]
 
     def builds(self, name, text):
-        """Does a test that names this file build it: a test-side file other than another test, a manifest, or a production .cpp/.hlsl the test passes along (fp.src('x.cpp') not followed by .read_text())."""
+        """Follow dependencies of named shaders, manifests, test support and compiled .cpp files."""
         p = self.index.get(name)
         if p is None:
             return False
         if fp.TESTS in p.parents:
             return not name.startswith('test_') or p.suffix != '.py'
-        return p.suffix == '.json' or (p.suffix in ('.cpp', '.hlsl') and re.search(
+        return p.suffix in ('.json', '.hlsl') or (p.suffix == '.cpp' and re.search(
             r'src\(\s*[\'"](?:[\w/]+/)?' + re.escape(name) + r'[\'"]\s*\)\s*[,\])]', text) is not None)
 
     def reach(self, test):

@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 # northlight-test: requires=cxx
 """Native test of the world-mesh pool trim decision (surplus over twice the windowed largest mesh, consecutive-commit hysteresis, bounded release per commit)."""
+
+from source_units import source_text
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
 import subprocess
@@ -16,7 +18,7 @@ with tempfile.TemporaryDirectory(prefix='mesh-pool-trim-') as temp:
     result.check_returncode()
 
 # Source wiring: the decision runs once per staged commit, after pendingMesh is cleared; the guard keeps its rule.
-w = fp.src('world_renderer.h').read_text()
+w = source_text(fp.src('world_renderer.h'))
 assert '#include "mesh_pool_trim.h"' in w
 commit = w[w.index('WORLD staged mesh committed'):]
 commit = commit[:commit.index('if(!vertices||!indices||uploadedMap!=active->map)return false;')]

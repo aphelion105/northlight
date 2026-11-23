@@ -105,7 +105,8 @@ public:
         }
         skyCount_=0;
     }
-    bool takeProbe(){if(probes>=ProbeLimit){++dropped;return false;}++probes;return true;}
+    bool probeBudgetSpent()const{return probes>=ProbeLimit;}
+    bool takeProbe(){if(probeBudgetSpent()){++dropped;return false;}++probes;return true;}
     bool takeDraw(bool particle=true,bool flash=false){if(flash){if(flashDraws>=4){++dropped;return false;}++flashDraws;return true;}if(draws>=DrawLimit||(!particle&&backgroundDraws>=DrawLimit/2)){++dropped;return false;}++draws;if(!particle)++backgroundDraws;return true;}
     void observe(const Sample& sample,const float* camera){
         for(unsigned k=0;k<3;++k)if(!std::isfinite(sample.position[k])||std::fabs(sample.position[k])>=100000||

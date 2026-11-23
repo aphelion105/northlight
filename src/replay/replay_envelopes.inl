@@ -93,7 +93,9 @@ private:
         auto& pose=poses_[*selected];pose.serial=e.serial;pose.stamp=*stamp;pose.bounds=output;std::memcpy(pose.basis,basis,sizeof pose.basis);
     }
     static constexpr std::uint64_t HeavyNanoseconds=AdaptiveTimeBudget::Heavy,CheapSliceNanoseconds=40000;
-    AdaptiveTimeBudget timeBudget_;bool diagnostics_=true,terminalBuild_=false;
+    AdaptiveTimeBudget timeBudget_;bool diagnostics_=true,terminalBuild_=false,manyPointShadows_=false;
+    bool workOnly_=false,readyClosed_=false;
+    size_t operationLimit_=BaseOperationLimit;
     size_t bytes_=0;
     std::unordered_multimap<std::uint64_t,Entry> entries_;
     std::uint64_t clock_=0,frame_=0,readyNanoseconds_=0,heavyNanoseconds_=0,buildNanoseconds_=0,classifyNanoseconds_=0;
@@ -168,7 +170,9 @@ private:
         if(!mesh.vertexCount||mesh.vertexCount>262144||!mesh.primitiveCount||mesh.primitiveCount>87380||
            (mesh.topology!=D3DPT_TRIANGLELIST&&mesh.topology!=D3DPT_TRIANGLESTRIP))return false;
         e.indexCount=mesh.topology==D3DPT_TRIANGLELIST?size_t(mesh.primitiveCount)*3:size_t(mesh.primitiveCount)+2;
-        if(mesh.indexed){if(mesh.indices.size()<e.indexCount)return false;}else{if(e.indexCount>mesh.vertexCount)return false;e.index=e.indexCount;}
+        if(mesh.indexed){if(mesh.indices.size()<e.indexCount)return false;}
+        else if(e.indexCount>mesh.vertexCount)return false;
+        if(!mesh.indexed||mesh.hasCheckedIndices())e.index=e.indexCount;
         e.bindings=prepared?prepared->bindings_:prepareBindings(p,elements,count);
         if(!e.bindings)return false;
         for(const auto& b:*e.bindings){const auto& s=mesh.streams[b.element.Stream];
@@ -234,7 +238,10 @@ private:
         void mode(bool next){if(next!=building){charge(Clock::now());building=next;}}
         void slice(){sliced=true;sliceStart=checked;}
         bool sliceExpired()const{return sliced&&delta(checked,sliceStart)>=CheapSliceNanoseconds;}
-        bool expired(){checked=Clock::now();return sliceExpired()||bank()+delta(checked,start)>=(building?cache.timeBudget_.buildLimit:heavy?HeavyNanoseconds:cache.timeBudget_.cheapLimit);}
+        bool expired(){
+            if(cache.workOnly_)return false;
+            checked=Clock::now();return sliceExpired()||bank()+delta(checked,start)>=(building?cache.timeBudget_.buildLimit:heavy?HeavyNanoseconds:cache.timeBudget_.cheapLimit);
+        }
         void evaluation(Entry& e,WorkInfo* metadata,Stage phase,Status& status,size_t groupCount,size_t operationCount){
             evaluated=&e;info=metadata;stage=phase;result=&status;groups=groupCount;operations=operationCount;evaluationStart=checked;
         }
@@ -433,8 +440,12 @@ public:
     EnvelopeCache(EnvelopeCache&&)=delete;EnvelopeCache& operator=(EnvelopeCache&&)=delete;
     void clearPoseCertificates(){for(auto& p:poses_)p.serial=0;nextPose_=0;}
     void clear(){clearPoseCertificates();pending_=nullptr;pendingProgressFrame_=0;entrySerial_=0;readySkinPrograms_=0;entries_.clear();scratch_.clear();bytes_=0;clock_=frame_=0;expensive_={};stats_={};beginFrame();}
-    void beginFrame(bool diagnostics=true,size_t packets=0){
+    size_t operationLimit()const{return operationLimit_;}
+    void beginFrame(bool diagnostics=true,size_t packets=0,bool manyPointShadows=false,bool crowdOperations=true,bool workOnly=false){
         fastOpen_=false;fastCount_=0;
+        manyPointShadows_=manyPointShadows;
+        workOnly_=workOnly;readyClosed_=false;
+        operationLimit_=crowdOperationLimit(packets,manyPointShadows&&crowdOperations);
         diagnostics_=diagnostics;terminalBuild_=false;timeBudget_.reset(packets);++frame_;readyNanoseconds_=heavyNanoseconds_=buildNanoseconds_=classifyNanoseconds_=0;readyCalls_=heavyCalls_=buildCalls_=0;stats_={};
         if(pending_&&pending_->owner.expired()){pending_=nullptr;++stats_.pendingOwnerExpired;}
         else if(pending_&&frame_-pendingProgressFrame_>MaxIdleBuildFrames){pending_=nullptr;++stats_.pendingAbandoned;}
@@ -446,15 +457,19 @@ public:
         if(!pending_||!canBuild()||budget.vertices>=budget.maxVertices||budget.operations>=budget.maxOperations)return;
         resumePendingBuild(budget);
     }
-    // Evaluation has finished. Warm only the already admitted immutable source
-    // with the actual unspent total; never publish a pose or admit another one.
-    void continuePendingAfterReady(Budget& budget){
-        if(!timeBudget_.reservedClosed||!pending_||buildCalls_>=2048||budget.vertices>=budget.maxVertices||budget.operations>=budget.maxOperations)return;
+    bool openTerminalBuildBudget(){
         settleClock();
+        if(workOnly_)return true;
         const auto limit=readyNanoseconds_>=timeBudget_.totalLimit||heavyNanoseconds_>=timeBudget_.totalLimit-readyNanoseconds_?
             0:timeBudget_.totalLimit-readyNanoseconds_-heavyNanoseconds_;
-        if(buildNanoseconds_>=limit)return;
+        if(buildNanoseconds_>=limit)return false;
         timeBudget_.cheapLimit=readyNanoseconds_;timeBudget_.buildLimit=limit;
+        return true;
+    }
+    // Evaluation has finished. Warm only the already admitted immutable source
+    // with the remaining budget; never publish a pose or admit another one.
+    void continuePendingAfterReady(Budget& budget){
+        if(!timeBudget_.reservedClosed||!pending_||buildCalls_>=2048||budget.vertices>=budget.maxVertices||budget.operations>=budget.maxOperations||!openTerminalBuildBudget())return;
         const auto vertices=budget.vertices;const auto ns=buildNanoseconds_;
         resumePendingBuild(budget);
         stats_.terminalBuildVertices+=budget.vertices-vertices;stats_.terminalBuildNanoseconds+=buildNanoseconds_-ns;
@@ -464,24 +479,21 @@ public:
             0:timeBudget_.totalLimit-heavyNanoseconds_-buildNanoseconds_;
     }
     template<class Work> bool terminalBuild(Budget& budget,Work work){
-        if(!timeBudget_.reservedClosed||terminalBuild_||buildCalls_>=2048||budget.vertices>=budget.maxVertices||budget.operations>=budget.maxOperations)return false;
-        settleClock();const auto limit=readyNanoseconds_>=timeBudget_.totalLimit||heavyNanoseconds_>=timeBudget_.totalLimit-readyNanoseconds_?
-            0:timeBudget_.totalLimit-readyNanoseconds_-heavyNanoseconds_;
-        if(buildNanoseconds_>=limit)return false;
-        timeBudget_.cheapLimit=readyNanoseconds_;timeBudget_.buildLimit=limit;terminalBuild_=true;
+        if(!timeBudget_.reservedClosed||terminalBuild_||buildCalls_>=2048||budget.vertices>=budget.maxVertices||budget.operations>=budget.maxOperations||!openTerminalBuildBudget())return false;
+        terminalBuild_=true;
         struct Finish {EnvelopeCache& cache;Budget& budget;size_t vertices;std::uint64_t ns;
             ~Finish(){cache.settleClock();cache.terminalBuild_=false;cache.stats_.terminalBuildVertices+=budget.vertices-vertices;
                 cache.stats_.terminalBuildNanoseconds+=cache.buildNanoseconds_-ns;cache.terminalCheap();}
         } finish{*this,budget,budget.vertices,buildNanoseconds_};
         work();return true;
     }
-    void closeTerminalWork(){settleClock();timeBudget_.cheapLimit=readyNanoseconds_;}
+    void closeTerminalWork(){settleClock();timeBudget_.cheapLimit=readyNanoseconds_;readyClosed_=true;}
     bool hasPendingBuild()const{return pending_!=nullptr;}
     size_t pendingBuildVertices()const{return pending_?pending_->vertex:0;}
     size_t pendingBuildIndices()const{return pending_?pending_->index:0;}
     void settleClock(){flushFast(BoundsClock::now());}
     void lendToBuild(Budget& budget){
-        settleClock();timeBudget_.lendToBuild(readyNanoseconds_,heavyNanoseconds_);
+        settleClock();if(!workOnly_)timeBudget_.lendToBuild(readyNanoseconds_,heavyNanoseconds_,manyPointShadows_&&stats_.cold>=128);
         budget.maxVertices=std::max(budget.maxVertices,timeBudget_.buildVertices());
     }
     void finishReservedTurnsAndLend(){
@@ -493,9 +505,10 @@ public:
     }
     void chargeCheapPreparation(std::uint64_t ns)noexcept{readyNanoseconds_+=std::min(ns,std::numeric_limits<std::uint64_t>::max()-readyNanoseconds_);}
     double borrowedMicroseconds()const{return double(timeBudget_.lent())/1000.;}
-    bool canReady()const{return readyCalls_<4096&&readyNanoseconds_<timeBudget_.cheapLimit;}
-    bool canHeavy()const{return !timeBudget_.reservedClosed&&heavyCalls_<2048&&heavyNanoseconds_<HeavyNanoseconds;}
-    bool canBuild()const{return (!timeBudget_.reservedClosed||terminalBuild_)&&buildCalls_<2048&&buildNanoseconds_<timeBudget_.buildLimit;}
+    bool workOnly()const{return workOnly_;}
+    bool canReady()const{return readyCalls_<4096&&(workOnly_?!readyClosed_:readyNanoseconds_<timeBudget_.cheapLimit);}
+    bool canHeavy()const{return !timeBudget_.reservedClosed&&heavyCalls_<2048&&(workOnly_||heavyNanoseconds_<HeavyNanoseconds);}
+    bool canBuild()const{return (!timeBudget_.reservedClosed||terminalBuild_)&&buildCalls_<2048&&(workOnly_||buildNanoseconds_<timeBudget_.buildLimit);}
     bool canWork()const{return canReady()||canBuild();}
     // Time of a phase (0 cheap, 1 heavy, 2 build) spent so far this frame and its limit: the near walk of the bounds job takes half of what is left.
     std::uint64_t phaseNanoseconds(unsigned phase)const{return phase==0?readyNanoseconds_:phase==1?heavyNanoseconds_:buildNanoseconds_;}
@@ -526,7 +539,7 @@ public:
     }
     // Optional material broad phase. Only completed immutable sources and this
     // draw's palette participate; survivors still need the exact aligned bounds.
-    bool canCoarse()const{return stats_.coarseAttempts<4096&&stats_.coarseNanoseconds<100000;}
+    bool canCoarse()const{return stats_.coarseAttempts<4096&&(workOnly_||stats_.coarseNanoseconds<100000);}
     // Negative filter only. Hash collisions and evictions simply send the draw
     // through the exact source/declaration check.
     static std::uint64_t coarseProgramBit(const NorthlightActorDeformation::Program& program){return std::uint64_t(1)<<(programHash(program)&63);}
@@ -626,7 +639,7 @@ private:
         const bool batched=!individual;
         auto found=findSource(owner,*prepared.key_,prepared.key_.get());Entry* e=found==entries_.end()?nullptr:&found->second;
         source=e;
-        if(!e||e->unsupported||!e->ready||(e->skin&&e->copyDefinitions)||e->lastEvaluationNs>=CheapSliceNanoseconds)return false;
+        if(!e||e->unsupported||!e->ready||(e->skin&&e->copyDefinitions)||(!workOnly_&&e->lastEvaluationNs>=CheapSliceNanoseconds))return false;
         const auto& p=prepared.program_;
         const size_t groups=e->skin?e->skin->usedBones:e->groups.size();
         const size_t operations=e->skin?size_t(75)+groups*(alignedSkin_?88:16):groups*p.operations.size();
@@ -714,7 +727,7 @@ private:
             const size_t operations=e.skin?size_t(75)+size_t(e.skin->usedBones)*(alignedSkin_?88:16):e.groups.size()*p.operations.size();
             // Audited single-bone groups have a fixed small evaluator. Their
             // existing operation/slice caps suffice even above eight bones.
-            const bool cheap=(e.skin||((e.singleBone||e.groups.size()<=8)&&operations<=128))&&e.lastEvaluationNs<CheapSliceNanoseconds;
+            const bool cheap=(e.skin||((e.singleBone||e.groups.size()<=8)&&operations<=128))&&(workOnly_||e.lastEvaluationNs<CheapSliceNanoseconds);
             if(info){info->kind=cheap?Kind::Cheap:Kind::Heavy;info->programHash=e.programHash;info->groups=groups;info->operations=operations;info->skin=bool(e.skin);info->paletteSpan=e.paletteSpan;info->paletteFirst=e.paletteSpan?e.paletteFirst:0;info->weightedPaletteEnd=e.skin?e.skin->paletteEnd:0;}
             if(budget.operations<=budget.maxOperations&&operations<=budget.maxOperations-budget.operations&&certifiedPose(e,poseStamp,inverse,output)){
                 if(timer.expired()){output={};return timeBudget();}

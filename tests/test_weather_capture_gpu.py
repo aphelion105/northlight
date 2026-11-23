@@ -11,6 +11,8 @@ import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
+sys.path.insert(0, str(fp.SCRIPTS))
+from shader_pipeline_map import rain_scrub_bindings
 
 parser = argparse.ArgumentParser(__doc__)
 parser.add_argument('--backend', type=Path)
@@ -27,6 +29,9 @@ import windows_gpu_guard
 windows_gpu_guard.processes()
 
 subprocess.run([str(exe), str(backend.resolve()), str(out), '1' if args.backend else '0'], cwd=out, check=True, timeout=180)
+bindings = rain_scrub_bindings(out / 'case-0-21', 42, 37, 23)
+assert bindings['state'] == 'executed'
+assert {sample['format'] for sample in bindings['samplers']} == {int.from_bytes(b'INTZ', 'little')}
 for folder in out.glob('case-*'):
     metadata = json.loads((folder / 'capture-1-weather.json').read_text())
     assert metadata['schema'] == 'northlight-weather-capture-v1'

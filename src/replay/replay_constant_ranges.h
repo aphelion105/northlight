@@ -93,6 +93,13 @@ public:
         const auto inspect=[&](std::size_t a,std::size_t b,const T* source){
             if(a==b)return;
             const std::size_t origin=a;const bool allKnown=knownRange(a,b);
+            if constexpr(std::is_same_v<T,float>&&Width==4){
+                if(allKnown){
+                    const auto dirty=Detail::knownFloatSpan(values_.data()+a*Width,source,unsigned(b-a));
+                    if(dirty.count){first=std::min(first,a+dirty.first);last=std::max(last,a+dirty.first+dirty.count);}
+                    return;
+                }
+            }
             if(allKnown&&!std::memcmp(values_.data()+a*Width,source,(b-a)*RegisterBytes))return;
             const auto same=[&](std::size_t lo,std::size_t hi){
                 return (allKnown||knownRange(lo,hi))&&(hi-lo==1?

@@ -28,7 +28,12 @@ for name, metadata in manifest['shaders'].items():
     assert f'k{name}ShaderSlots = {stats["static_instruction_slots"]};' in header
 assert 'fog-volume-shader-build.json' in (fp.SCRIPTS / 'build_renderer.py').read_text()
 world = fp.src('world_renderer.h').read_text()
-assert 'fogVolume.reset();fogVolumeField.reset();fogVolumeKey=0;' in world
+assert 'releaseFogVolume();' in world
 assert 'for(auto* texture:fogVolume.texture)inventory.texture(texture,PostTargets);' in world
-assert 'else if(effects.fog&&fogTemporalPS&&fogHistory&&debug==0&&!volumeFog)' in world
+fog = fp.src('world_atmospheric_fog.inl').read_text()
+assert 'fogVolume.reset();\n        fogVolumeField.reset();\n        fogVolumeKey=0;' in fog
+assert 'effects.fog&&debug==0,fogActive,volumeFog,useHistory' in fog
+assert fog.index('fogVolume.injectShader(') < fog.index('fogVolume.injection(')
+assert fog.index('prepareFogVolume(in,regionalFogActive,fogActive,') < fog.index('if(!drawAtmosphericFog(')
+assert 'if(in.volumeAtlas){\n            invalidateHistory();\n            return true;' in fp.src('world_fog_screen.h').read_text()
 print(f'PASS {len(expected)} volume kernels: dependency hashes, bytecode, SM3 metrics, lifecycle and memory accounting')

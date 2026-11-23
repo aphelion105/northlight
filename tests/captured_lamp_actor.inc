@@ -16,19 +16,19 @@ static void housingActor(IDirect3DDevice9* d,const std::string& root,const std::
  auto& stream=actor->snapshot.streams[0];stream.stride=48;stream.bytes.assign(bytes.begin()+20,bytes.begin()+20+size_t(h[1])*48);actor->stride[0]=48;
  void* upload=nullptr;must(d->CreateVertexBuffer(UINT(stream.bytes.size()),0,0,D3DPOOL_MANAGED,&actor->stream[0],nullptr));must(actor->stream[0]->Lock(0,0,&upload,0));std::memcpy(upload,stream.bytes.data(),stream.bytes.size());must(actor->stream[0]->Unlock());
  must(d->CreateIndexBuffer(h[2]*4,0,D3DFMT_INDEX32,D3DPOOL_MANAGED,&actor->index,nullptr));must(actor->index->Lock(0,0,&upload,0));std::memcpy(upload,actor->snapshot.indices.data(),size_t(h[2])*4);must(actor->index->Unlock());
- actor->constantUsage=NorthlightShaderConstants::analyze(words.data(),words.size(),2);actor->constantStorage[8]=actor->constantStorage[13]=actor->constantStorage[18]=actor->constantStorage[23]=1;
+ actor->constantUsage=NorthlightShaderConstants::analyze(words.data(),words.size(),2);replayFixtureFloats(*actor)[8]=replayFixtureFloats(*actor)[13]=replayFixtureFloats(*actor)[18]=replayFixtureFloats(*actor)[23]=1;
  float low[3]={INFINITY,INFINITY,INFINITY},high[3]={-INFINITY,-INFINITY,-INFINITY};for(unsigned n=0;n<h[1];++n){float p[3];std::memcpy(p,stream.bytes.data()+n*48,12);for(unsigned k=0;k<3;++k){low[k]=std::min(low[k],p[k]);high[k]=std::max(high[k],p[k]);}}
  actor->shared=std::make_shared<const NorthlightDrawSnapshot::Mesh>(std::move(actor->snapshot));
  constexpr unsigned Size=512,Full=Size*2;
- Fgr normal;normal.w=normal.h=Size;normal.format=D3DFMT_A32B32G32R32F;normal.stride=16;normal.bytes.resize(Size*Size*16);for(unsigned i=0;i<Size*Size;++i){const float n[]={0,0,1,1};std::memcpy(normal.bytes.data()+i*16,n,16);}drop(w.normalBuffer);w.normalBuffer=texture(d,normal);
+ Fgr normal;normal.w=normal.h=Size;normal.format=D3DFMT_A32B32G32R32F;normal.stride=16;normal.bytes.resize(Size*Size*16);for(unsigned i=0;i<Size*Size;++i){const float n[]={0,0,1,1};std::memcpy(normal.bytes.data()+i*16,n,16);}drop(normalTexture(w));normalTexture(w)=texture(d,normal);
  Fgr depth;depth.w=depth.h=Full;depth.format=D3DFMT_R32F;depth.stride=4;depth.bytes.resize(Full*Full*4);const float z=64.f/(64.f-.1f)*(1.f-.1f/9.f);for(unsigned i=0;i<Full*Full;++i)std::memcpy(depth.bytes.data()+i*4,&z,4);auto* depths=texture(d,depth);
  IDirect3DSurface9* target=nullptr;must(d->CreateRenderTarget(Size,Size,D3DFMT_A32B32G32R32F,D3DMULTISAMPLE_NONE,0,FALSE,&target,nullptr));
- must(d->SetRenderTarget(0,w.baselineSurface));must(d->Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0));
+ must(d->SetRenderTarget(0,baselineSurface(w)));must(d->Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0));
  const auto render=[&](const char* name){const auto map=cube(w,l,!omitActor);must(d->SetRenderTarget(0,target));must(d->SetDepthStencilSurface(nullptr));states(d,false);must(d->Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0));w.pointSlot().selectionGain=1;
   must(d->SetVertexShader(nullptr));must(d->SetFVF(D3DFVF_XYZRHW|D3DFVF_TEX1));must(d->BeginScene());assert(w.renderPointLighting(depths,nullptr,Full,Full,.1f,64,0,1,1,0,1,0));must(d->EndScene());
   const auto image=readSurface(d,target,16);save(image,output+"/"+name+".fgr");std::vector<float> energy(Size*Size);for(unsigned i=0;i<energy.size();++i){float p[4];std::memcpy(p,image.bytes.data()+i*16,16);energy[i]=-p[0]-p[1]-p[2];assert(std::isfinite(energy[i])&&energy[i]>=-1e-6f);}return std::make_pair(map,energy);};
  const auto housingOnly=render("housing-only");
- const auto pose=[&](float shift){auto& p=*w.replays.back();for(unsigned bone=0;bone<h[3];++bone){float* c=p.constantStorage+4*(31+3*bone);std::fill(c,c+12,0.f);c[0]=c[5]=c[10]=.9f;c[3]=foot[0]-camera[0]-(low[0]+high[0])*.45f+shift;c[7]=foot[1]-camera[1]-(low[1]+high[1])*.45f;c[11]=foot[2]-camera[2]-low[2]*.9f;}
+ const auto pose=[&](float shift){auto& p=*w.replays.back();for(unsigned bone=0;bone<h[3];++bone){float* c=replayFixtureFloats(p)+4*(31+3*bone);std::fill(c,c+12,0.f);c[0]=c[5]=c[10]=.9f;c[3]=foot[0]-camera[0]-(low[0]+high[0])*.45f+shift;c[7]=foot[1]-camera[1]-(low[1]+high[1])*.45f;c[11]=foot[2]-camera[2]-low[2]*.9f;}
   p.pointBounds={};w.captureMode=WorldRenderer::CaptureFresh;w.shadowSelectionDone=true;for(unsigned n=0;n<8&&!p.pointBounds.valid;++n){w.replayBoundsBegin();w.replayBoundsKick();w.replayBoundsJoin();}assert(p.pointBounds.valid);};
  w.replays.push_back(std::move(actor));pose(0);const auto combined=render("housing-actor");assert(w.pointReplayCount==unsigned(!omitActor));
  w.batches.clear();const auto actorOnly=render("actor-only");w.batches=housing;pose(2);const auto shifted=render("housing-shifted-actor");

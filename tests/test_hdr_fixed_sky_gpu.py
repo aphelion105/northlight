@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 # northlight-test: requires=windows-gpu,zig,client
 """Exact native/HDR pixel proof and isolated four-layer fixed sky timings."""
+
+from source_units import source_text
 import argparse
 import hashlib
 import json
@@ -19,7 +21,7 @@ parser = argparse.ArgumentParser(__doc__)
 parser.add_argument('--output', type=Path, default=fp.output_dir()/'hdr-fixed-sky')
 args = parser.parse_args()
 processes()
-renderer = fp.src('renderer.cpp').read_text(encoding='utf-8')
+renderer = source_text(fp.src('renderer.cpp'), encoding='utf-8')
 assert renderer.count('bool nativeSky=false,skyCaptured=false;') == 4
 assert renderer.count('return submitGameDraw(count,nativeSky,&skyCaptured,') == 4
 assert renderer.count('},false,nativeSky,skyCaptured);') == 1

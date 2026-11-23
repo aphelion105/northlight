@@ -1,6 +1,6 @@
 {
   "derivative_hoist_sha256": "0ed5463a6819a7cd483954a4be2437a350b03d4027c2424b31b0aec6797e8740",
-  "bump_include_sha256": "b5523a51dc6715f11ac2e7ba9ecb46a4973ba6aa23de159e308a8fd24d4e9ebc",
+  "bump_include_sha256": "cb05dd991c89bca3ee07d11f93cfc755a390dc6733a13149e13df9c6ee1f3210",
   "source_sha256": "039932f400b97541e522fb71647b7199f88eb3c3eaf6be0162e42aa6474b9bdb",
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
   "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
@@ -67,7 +67,7 @@
     "LocalLighting": {
       "target": "ps_3_0",
       "bytes": 5964,
-      "sha256": "1eb290f89c1c1f403d75497b518f33ff41162a1befdf4276e118fe01cbea5869",
+      "sha256": "e5db547c8a5152d6cc6f0cc20ca4cd321734f18c48a1f029152c7a42d47e8267",
       "static_instruction_slots": 367,
       "temporary_registers": 16,
       "samplers": [
@@ -136,7 +136,7 @@
     "LocalLightingSoft": {
       "target": "ps_3_0",
       "bytes": 4176,
-      "sha256": "421a538ea30ecf4cb42d1af34d648013f7163362a3a825353c18ef43644585c5",
+      "sha256": "435b0db1bb77797c9aa337b7325c8295c488fc048e4ca8069968dd823ea507c9",
       "static_instruction_slots": 250,
       "temporary_registers": 9,
       "samplers": [
@@ -169,7 +169,7 @@
     "LocalLightingPcss": {
       "target": "ps_3_0",
       "bytes": 7884,
-      "sha256": "8ed45a560fa58a57b1e685b4a5f4d0f193078c091e3f141c6a6f87c74aabfeee",
+      "sha256": "4abcfd8b07b9d3f17cdacef6af8823b9b7524d27b6da823965abedd01203a160",
       "static_instruction_slots": 511,
       "temporary_registers": 20,
       "samplers": [

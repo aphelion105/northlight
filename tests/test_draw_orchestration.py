@@ -1,5 +1,7 @@
 # northlight-test: requires=windows-exe,zig slow
 """Frozen/current production Draw* and drawHook bodies: ordered calls, handoff and faults."""
+
+from source_units import source_text
 from pathlib import Path
 import argparse,hashlib,json,os,subprocess,sys
 ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT));import northlight_paths as fp
@@ -15,12 +17,13 @@ def members(text):
  for optional in ['template<class Capture> void prepareDraw(', 'template<NorthlightWaterRenderer::UserPointer UserPointer,class Raw,class Draw> void captureGameDraw(']:
   if optional in text:signatures.insert(0,optional)
  return '\n'.join(member(text,s) for s in signatures)
-source=fp.src('renderer.cpp');fixture=fp.TESTS/'draw_orchestration.cpp';inputs={str(f):hashlib.sha256(f.read_bytes()).hexdigest() for f in [source,fixture,Path(__file__)]}
-old=subprocess.check_output(['git','show',a.reference+':src/proxy/renderer.cpp'],cwd=ROOT).decode('utf-8');current=source.read_text(encoding='utf-8')
+source=fp.src('renderer.cpp');capture_route=fp.src('draw_capture_route.h');fixture=fp.TESTS/'draw_orchestration.cpp';inputs={str(f):hashlib.sha256(f.read_bytes()).hexdigest() for f in [source,fp.src('device_draw_submission.inl'),capture_route,fixture,Path(__file__)]}
+old=subprocess.check_output(['git','show',a.reference+':src/proxy/renderer.cpp'],cwd=ROOT).decode('utf-8');current=source_text(source)
 assert current.count('if(enabled)spellArgs=NorthlightSpellLayer::DrawArgs::')==4,'native aurora admission needs all four draw tuples even with particle/spell features off'
 before=members(old);after=members(current)
+route=member(capture_route.read_text(encoding='utf-8'),'template<bool userMemory,')
 header=out/'draw_orchestration_routes.h'
-def write_routes(body):header.write_text('struct Reference:Base {\n'+before+'\n};\nstruct Current:Base {\n'+body+'\n};\n',encoding='utf-8',newline='\n')
+def write_routes(body,capture=route):header.write_text('namespace NorthlightDrawCapture {\n'+capture+'\n}\nstruct Reference:Base {\n'+before+'\n};\nstruct Current:Base {\n'+body+'\n};\n',encoding='utf-8',newline='\n')
 write_routes(after)
 runs=[]
 for opt in ['O2'] if a.benchmark else ['O2','O0']:
@@ -32,9 +35,9 @@ if not a.benchmark and 'void captureGameDraw(' in after:
  for label,needle,replacement in [
   ('water-raw','captureWater(vs,UserPointer,draw);','captureWater(vs,UserPointer,raw);'),
   ('terrain-order','if(sharedTerrain)captureWorld(&positions);','if(false)captureWorld(&positions);'),
-  ('up-normal-guard','if(!userMemory||materialCapture)captureModelNormals','if(true)captureModelNormals'),
+  ('up-normal-guard','if(!userMemory||materialCapture){','if(true){'),
   ('hdr-failure','if(SUCCEEDED(hr))hdrReplaySky','if(true)hdrReplaySky')]:
-  assert after.count(needle)==1;write_routes(after.replace(needle,replacement,1));exe=out/(label+'.exe');cmd=[fp.zig(),'c++','-target','x86-windows-gnu','-O2','-UNDEBUG','-std=c++17','-Wno-unused-parameter','-I'+str(out),*fp.test_include_flags(),fixture,'-o',exe]
+  assert after.count(needle)+route.count(needle)==1;write_routes(after.replace(needle,replacement,1),route.replace(needle,replacement,1));exe=out/(label+'.exe');cmd=[fp.zig(),'c++','-target','x86-windows-gnu','-O2','-UNDEBUG','-std=c++17','-Wno-unused-parameter','-I'+str(out),*fp.test_include_flags(),fixture,'-o',exe]
   with (out/(label+'-build.log')).open('w') as log:subprocess.run(list(map(str,cmd)),env=fp.zig_env(),stdout=log,stderr=subprocess.STDOUT,check=True,timeout=300)
   r=subprocess.run([str(exe)],capture_output=True,timeout=300);(out/(label+'.log')).write_bytes(r.stdout+r.stderr);assert r.returncode and b'DRAW_ORCHESTRATION_MISMATCH' in r.stdout,label;runs.append(dict(negative=label,rejected=True));print('Rejected',label,flush=True)
  write_routes(after)

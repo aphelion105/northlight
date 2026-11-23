@@ -7,13 +7,14 @@ import sys
 sys.path[:0] = [str(Path(__file__).resolve().parents[2]), str(Path(__file__).resolve().parent)]
 import northlight_paths as fp
 from shader_compiler import Compiler, rows, validate_assembly
+from shader_sources import source_hashes as include_hashes
 
 ENTRIES = ("ForeverFogNoNoiseTransition", "ForeverFogActorNoNoiseTransition", "ForeverFogTransition", "ForeverFogActorTransition", 'DirectionalShadowTransitionCurrent', 'DirectionalShadowTransitionPrevious', 'WorldFogTransition', 'WorldFogActorTransition', 'WorldFogActorTiledTransition', 'FogCloudsTransition', 'FogCloudsActorTransition', 'FogCloudsActorTiledTransition', 'MoonFloorFogTransition', 'MoonFloorFogActorTransition', 'MoonFloorFogActorTiledTransition')
-SOURCES = ("world_effects.hlsl", "shadow_transition.hlsl", "world_view.hlsl", "auto_bump_normal.hlsl")
+SOURCE = fp.SHADERS / "shadow_transition.hlsl"
 
 
 def source_hashes():
-    return {name: hashlib.sha256((fp.SHADERS / name).read_bytes()).hexdigest() for name in SOURCES}
+    return include_hashes(SOURCE)
 
 
 def main():
@@ -23,7 +24,7 @@ def main():
     manifest = {"sources": before, **compiler.provenance, "game_launched": False, "shaders": {}}
     for entry in ENTRIES:
         output = fp.COMPILED / f"{entry}.bin"
-        data, words = compiler.compile(fp.SHADERS / SOURCES[1], entry, "ps_3_0", output)
+        data, words = compiler.compile(SOURCE, entry, "ps_3_0", output)
         stats = validate_assembly(Path(f"{output}.asm"), "ps_3_0", slot_limit=768)
         header.append(f"static constexpr unsigned k{entry}ShaderSlots = {stats['static_instruction_slots']};")
         header.append(f"static const DWORD k{entry}Shader[] = {{\n" + "\n".join(rows(words)) + "\n};")

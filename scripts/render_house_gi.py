@@ -9,6 +9,7 @@ import subprocess
 import sys
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
+from scripts.shaders.shader_sources import source_files
 
 def main():
     parser=argparse.ArgumentParser(__doc__)
@@ -19,7 +20,7 @@ def main():
     parser.add_argument('--benchmark',action='store_true',help='Measure cold/warm CPU batches, without rendering images.')
     args=parser.parse_args();out=args.output.resolve();out.mkdir(parents=True,exist_ok=True)
     if not 8<=args.rays<=4096:parser.error('--rays must be in 8..4096')
-    inputs=[fp.SCRIPTS/'render_house_gi.cpp',fp.SCRIPTS/'render_house_gi.py',fp.src('probe_local_visibility.h'),fp.src('world_gi.h'),fp.src('world_gi.cpp'),fp.SHADERS/'world_effects.hlsl']
+    inputs=[fp.SCRIPTS/'render_house_gi.cpp',fp.SCRIPTS/'render_house_gi.py',fp.src('probe_local_visibility.h'),fp.src('world_gi.h'),fp.src('world_gi.cpp'),*source_files(fp.SHADERS/'world_effects.hlsl')]
     sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
     hashes={str(p):sha(p) for p in inputs}
     exe=out/'house-gi.exe'

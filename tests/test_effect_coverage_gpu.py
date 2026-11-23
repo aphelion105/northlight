@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 # northlight-test: requires=windows-gpu,zig
 """Native alpha layers retain coverage through early drains and world composition."""
+
+from source_units import source_text
 import os
 from pathlib import Path
 import subprocess
@@ -10,7 +12,7 @@ import northlight_paths as fp
 sys.path.insert(0, str(fp.REPO/'scripts/shaders'))
 from shader_compiler import Compiler
 
-renderer = fp.src('renderer.cpp').read_text()
+renderer = source_text(fp.src('renderer.cpp'))
 world = fp.src('world_renderer.h').read_text()
 assert renderer.count('auto draw=[&]{return submitGameDraw(') == 4
 submission = renderer[renderer.index('    template<class Draw> HRESULT submitGameDraw('):renderer.index('    // 0.3.187: the four draw entry points')]
@@ -30,7 +32,10 @@ assert 'NorthlightSpellLayer::Family::ParticleUnlit)' in coverage
 assert 'COLORWRITEENABLE),nativeOverlay)' in coverage
 assert 'lastVs' not in coverage and 'replay)' in coverage
 # c79 is reused by the normals pass: bind it afresh for the final stage.
-assert world.index('NorthlightEffectCoverage::Capture::bind(d,effectCoverage,effectEmission);') < world.index('bool compositeOk=false;')
+composite=fp.src('world_composite.h').read_text()
+composite_input = world[world.index('const NorthlightWorldComposite::Input compositeInputs{'):world.index('const auto composition=composite.draw(')]
+assert 'effectEmission,prelitDaylightCurrent' in composite_input and 'effectCoverage,materialOcclusion' in composite_input
+assert composite.index('NorthlightEffectCoverage::Capture::bind(d,in.effectCoverage,in.effectEmission);') < composite.index('ok=check(quad(),"world composite");')
 assert 'effectCoverage=nullptr;' in world
 
 out = fp.output_dir()

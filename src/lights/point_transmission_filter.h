@@ -1,10 +1,11 @@
 #pragma once
 
 // Binary coverage masks require nearest sampling; native cutouts retain their filter.
+template<class Device=IDirect3DDevice9>
 struct NorthlightPointTransmissionFilter {
-    IDirect3DDevice9* device=nullptr;
+    Device* device=nullptr;
     DWORD minFilter=0,magFilter=0,changed=0;
-    HRESULT begin(IDirect3DDevice9* value,bool enabled){
+    HRESULT begin(Device* value,bool enabled){
         if(!enabled)return S_OK;
         HRESULT hr=value->GetSamplerState(0,D3DSAMP_MINFILTER,&minFilter);
         if(FAILED(hr))return hr;

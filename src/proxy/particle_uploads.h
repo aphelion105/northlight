@@ -74,5 +74,60 @@ public:
     unsigned bytes(){std::lock_guard<std::mutex> lock(mutex_);return used_;}
 };
 inline Cache& cache(){static Cache value;return value;}
+// The atlas needs the most recent emitter uploads even after the particle
+// light cache has exhausted its frame budget. Keep only its active stream.
+class AtlasUploads {
+    struct Range {unsigned offset=0;std::vector<unsigned char> bytes;};
+    std::array<Range,3> ranges_;
+    std::atomic<const void*> watched_{nullptr};
+    std::mutex mutex_;
+    unsigned next_=0;
+public:
+    bool watching(const void* key)const{return key&&watched_.load(std::memory_order_relaxed)==key;}
+    void watch(const void* key){
+        if(watching(key))return;
+        std::lock_guard<std::mutex> guard(mutex_);
+        if(watching(key))return;
+        for(auto& range:ranges_)range.bytes.clear();
+        watched_.store(key,std::memory_order_relaxed);
+    }
+    void forget(const void* key){
+        if(!watching(key))return;
+        std::lock_guard<std::mutex> guard(mutex_);
+        if(!watching(key))return;
+        for(auto& range:ranges_)range.bytes.clear();
+        watched_.store(nullptr,std::memory_order_relaxed);
+    }
+    void invalidate(const void* key,unsigned offset,unsigned size,bool discard){
+        if(!watching(key))return;
+        std::lock_guard<std::mutex> guard(mutex_);
+        if(!watching(key))return;
+        const auto end=std::uint64_t(offset)+size;
+        for(auto& r:ranges_)if(discard||!size||(r.offset<end&&offset<std::uint64_t(r.offset)+r.bytes.size()))r.bytes.clear();
+    }
+    void write(const void* key,unsigned offset,unsigned size,const unsigned char* bytes){
+        if(!watching(key)||!bytes||!size||size>64u*1024)return;
+        std::lock_guard<std::mutex> guard(mutex_);
+        if(!watching(key))return;
+        auto& range=ranges_[next_++%ranges_.size()];
+        try{range.bytes.assign(bytes,bytes+size);range.offset=offset;}
+        catch(...){range.bytes.clear();}
+    }
+    template<class Read>
+    bool readRange(const void* key,std::uint64_t offset,unsigned size,Read consume){
+        if(!watching(key))return false;
+        std::lock_guard<std::mutex> guard(mutex_);
+        if(!watching(key))return false;
+        for(const auto& r:ranges_)if(offset>=r.offset&&offset-r.offset+size<=r.bytes.size()){
+            consume(r.bytes.data()+std::size_t(offset-r.offset));
+            return true;
+        }
+        return false;
+    }
+    bool read(const void* key,std::uint64_t offset,unsigned size,void* out){
+        return readRange(key,offset,size,[&](const unsigned char* data){std::memcpy(out,data,size);});
+    }
+};
+inline AtlasUploads& atlasUploads(){static AtlasUploads value;return value;}
 struct Pending {unsigned offset=0,size=0;bool active=false;};
 }

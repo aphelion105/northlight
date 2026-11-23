@@ -5,10 +5,12 @@
 #include "saved_state.h"
 #include <array>
 #include <cstdarg>
+#include <cstdlib>
 template<class T> static void drop(T*& p){if(p){p->Release();p=nullptr;}}
 static void logf(const char* fmt,...){va_list args;va_start(args,fmt);std::vfprintf(stderr,fmt,args);va_end(args);std::fputc('\n',stderr);}
 #include "water_renderer.h"
 #include "forwarders.h"
+#include "world_lighting_capture.h"
 
 struct Meter:ForwardIDirect3DDevice9 {
     using ForwardIDirect3DDevice9::ForwardIDirect3DDevice9;
@@ -150,7 +152,19 @@ static std::vector<Pixel> run(Fixture& f,IDirect3DSurface9* game,IDirect3DSurfac
         if(timing)ok(decodeStart->Issue(D3DISSUE_END));
         meter.draws=meter.resolves=meter.regions=0;meter.refuseRegion=!timing&&frame==4;
         if(!bare){
-            assert(water.resolveMask());result=water.maskTextureForDepth(0,1);assert(result);
+            const char* auditDirectory=std::getenv("NORTHLIGHT_TEST_WATER_AUDIT");
+            if(auditDirectory&&!timing&&!frame&&(desc.MultiSampleType==0||desc.MultiSampleType==2)&&mixed<2){
+                const unsigned ticket=420+unsigned(desc.MultiSampleType)*10+unsigned(mixed)*2+unsigned(scalar);
+                const std::string directory=auditDirectory;
+                NorthlightLightingCapture::Capture audit(d,directory,ticket,ticket,ticket,w,h,"frame-parity-atmosphere");
+                bool observed=false;
+                assert(water.resolveMask([&](const char* name,unsigned mask,HRESULT hr,IDirect3DSurface9* source){
+                    audit.bindings(name,mask,hr,source);observed=true;
+                }));
+                if(!observed)audit.bindingSkip("WaterMaskResolve","no-resolve-draw");
+                audit.finish(true);
+            }else assert(water.resolveMask());
+            result=water.maskTextureForDepth(0,1);assert(result);
             D3DSURFACE_DESC image{};ok(result->GetLevelDesc(0,&image));
             assert(image.Format==(scalar&&!mixed?D3DFMT_R32F:D3DFMT_G32R32F));
         }

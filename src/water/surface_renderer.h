@@ -27,7 +27,7 @@ class NorthlightSurfaceRenderer {
     bool check(HRESULT hr,const char* stage){if(SUCCEEDED(hr))return true;if(!failed)logf("SURFACE disabled: %s hr=0x%08lx (native weather retained)",stage,(unsigned long)hr);failed=true;return false;}
     // The caller restores a whole batch; standalone passes own their snapshot.
     std::optional<SavedState> saveState(const SavedState* enclosing){
-        if(enclosing&&enclosing->ok&&enclosing->d==d)return std::nullopt;
+        if(enclosing&&enclosing->coversDevice(d))return std::nullopt;
         return std::optional<SavedState>(std::in_place,d,&stateBlocks);
     }
     HRESULT quad(UINT w,UINT h){D3DVIEWPORT9 vp={0,0,w,h,0,1};d->SetViewport(&vp);return NorthlightScreen::drawQuad(d,w,h);}
@@ -58,6 +58,13 @@ class NorthlightSurfaceRenderer {
         d->SetTexture(sampler,art[index]);d->SetSamplerState(sampler,D3DSAMP_MINFILTER,D3DTEXF_LINEAR);d->SetSamplerState(sampler,D3DSAMP_MAGFILTER,D3DTEXF_LINEAR);d->SetSamplerState(sampler,D3DSAMP_MIPFILTER,D3DTEXF_LINEAR);
     }
 public:
+    struct BindingAudit {
+        void (*record)(void*,const char*,unsigned,HRESULT);
+        void* context;
+        void operator()(const char* entry,unsigned samplers,HRESULT draw)const{
+            if(record)record(context,entry,samplers,draw);
+        }
+    };
     explicit NorthlightSurfaceRenderer(IDirect3DDevice9* device):d(device),stateBlocks(device){}
     ~NorthlightSurfaceRenderer(){reset();for(auto& p:weatherPS)drop(p);for(auto& p:coatingPS)drop(p);for(auto& p:art)drop(p);drop(lensPS);}
     void reset(){drop(roofTexture);uploadedRoof.reset();stateBlocks.clear();failed=lensFailed=weatherUsed=false;lensState={};sandState={};motion={};coatingFailed[0]=coatingFailed[1]=false;for(auto& f:artFailed)f=false;}
@@ -67,7 +74,7 @@ public:
     unsigned lensParticleCount()const{return lensState.count;}
     unsigned lensMergeCount()const{return lensState.merges;}
     float frostCoverage()const{return lensState.frost;}
-    void precipitation(IDirect3DSurface9* targetSurface,IDirect3DTexture9* finalDepth,UINT w,UINT h,const NorthlightSurfaceFrame& context,NorthlightQuality::Preset preset,IDirect3DSurface9* nameDepth,const SavedState* enclosingState=nullptr,std::shared_ptr<const NorthlightWeatherShelter::Roof> roof={}){
+    void precipitation(IDirect3DSurface9* targetSurface,IDirect3DTexture9* finalDepth,UINT w,UINT h,const NorthlightSurfaceFrame& context,NorthlightQuality::Preset preset,IDirect3DSurface9* nameDepth,const SavedState* enclosingState=nullptr,std::shared_ptr<const NorthlightWeatherShelter::Roof> roof={},BindingAudit audit={}){
         if(failed||!finalDepth||context.c[3][0]<=0)return;const bool snow=context.c[3][1]>.5f;if(snow&&!ensureArt(1))return;
         auto saved=saveState(enclosingState);if(saved&&!saved->ok)return;state();unsigned i=(preset==NorthlightQuality::Preset::Performance?2:0)+(snow?1:0);
         weatherUsed=true;
@@ -83,9 +90,14 @@ public:
         const float roofMap[]={roof?roof->x:0,roof?roof->y:0,1.f/NorthlightWeatherShelter::Roof::Span,roof?1.f:0.f};
         d->SetPixelShaderConstantF(12,roofMap,1);d->SetTexture(5,roof?roofTexture:nullptr);
         if(snow)bindArt(1,2);
-        NameMaskCompositeBind protect(d,nameDepth);check(quad(w,h),"supplemental precipitation");
+        NameMaskCompositeBind protect(d,nameDepth);
+        const HRESULT hr=quad(w,h);check(hr,"supplemental precipitation");
+        if(audit.record){
+            const char* entries[]={"RainQuality","SnowQuality","RainPerformance","SnowPerformance"};
+            audit(entries[i],snow?0x2cu:0x28u,hr);
+        }
     }
-    void lens(IDirect3DSurface9* target,IDirect3DTexture9* scene,IDirect3DSurface9* sceneSurface,UINT w,UINT h,bool snow,double time,float visibility,IDirect3DSurface9* nameDepth,float intensity=1.f,float heat=0.f,float size=1.f,bool rivulets=true,float frostVisibility=0.f,const SavedState* enclosingState=nullptr){
+    void lens(IDirect3DSurface9* target,IDirect3DTexture9* scene,IDirect3DSurface9* sceneSurface,UINT w,UINT h,bool snow,double time,float visibility,IDirect3DSurface9* nameDepth,float intensity=1.f,float heat=0.f,float size=1.f,bool rivulets=true,float frostVisibility=0.f,const SavedState* enclosingState=nullptr,BindingAudit audit={}){
         if(lensFailed||!target||!scene||!sceneSurface||target==sceneSurface||!w||!h||(!(visibility>0)&&!(frostVisibility>0)))return;
         lensState.advance(time,intensity,snow,heat,float(w)/float(h),size,rivulets,motion.flow);
         unsigned vertices=visibility>0?lensState.vertices(lensVertices.data(),h,rivulets):0;
@@ -106,16 +118,21 @@ public:
         const D3DVIEWPORT9 viewport={0,0,w,h,0,1};d->SetViewport(&viewport);
         NameMaskCompositeBind protect(d,nameDepth);
         if(vertices){if(snowParticles)bindArt(1,2);d->SetPixelShader(lensPS);d->SetFVF(D3DFVF_XYZRHW|D3DFVF_TEX4|D3DFVF_TEXCOORDSIZE4(2)|D3DFVF_TEXCOORDSIZE4(3));
-            if(FAILED(d->DrawPrimitiveUP(D3DPT_TRIANGLELIST,vertices/3,lensVertices.data(),sizeof(lensVertices[0])))){lensFailed=true;logf("SURFACE lens draw unavailable");}}
+            const HRESULT hr=d->DrawPrimitiveUP(D3DPT_TRIANGLELIST,vertices/3,lensVertices.data(),sizeof(lensVertices[0]));
+            if(FAILED(hr)){lensFailed=true;logf("SURFACE lens draw unavailable");}
+            audit("WeatherLensParticle",0x15u,hr);
+        }
         if(frost>0&&!coatingFailed[0]){
             if(!coatingPS[0]&&FAILED(d->CreatePixelShader(kFrostVignetteShader,&coatingPS[0]))){coatingFailed[0]=true;logf("SURFACE frost shader unavailable");return;}
             const float coating[4]={frost,0,float(lensState.clock.elapsed),1};d->SetPixelShaderConstantF(11,coating,1);
             bindArt(0,1);
             d->SetPixelShader(coatingPS[0]);d->SetFVF(D3DFVF_XYZRHW|D3DFVF_TEX1);
-            if(FAILED(quad(w,h))){coatingFailed[0]=true;logf("SURFACE frost draw unavailable");}
+            const HRESULT hr=quad(w,h);
+            if(FAILED(hr)){coatingFailed[0]=true;logf("SURFACE frost draw unavailable");}
+            audit("FrostVignette",3u,hr);
         }
     }
-    void sandLens(IDirect3DSurface9* target,UINT w,UINT h,double time,float visibility,IDirect3DSurface9* nameDepth,float intensity=1.f,float size=1.f,const SavedState* enclosingState=nullptr){
+    void sandLens(IDirect3DSurface9* target,UINT w,UINT h,double time,float visibility,IDirect3DSurface9* nameDepth,float intensity=1.f,float size=1.f,const SavedState* enclosingState=nullptr,BindingAudit audit={}){
         if(coatingFailed[1]||!target||!w||!h||!(visibility>0))return;
         sandState.advance(time,intensity,float(w)/h,std::clamp(size,.25f,3.f),motion.flow);
         const unsigned vertices=sandState.vertices(lensVertices.data(),h);
@@ -130,11 +147,15 @@ public:
         d->SetRenderState(D3DRS_COLORWRITEENABLE,7);d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE);d->SetRenderState(D3DRS_BLENDOP,D3DBLENDOP_ADD);
         d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_SRCALPHA);d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_INVSRCALPHA);
         NameMaskCompositeBind protect(d,nameDepth);
-        if(FAILED(quad(w,h))){coatingFailed[1]=true;logf("SURFACE sand draw unavailable");}
+        const HRESULT hr=quad(w,h);
+        if(FAILED(hr)){coatingFailed[1]=true;logf("SURFACE sand draw unavailable");}
+        audit("SandLens",0x10u,hr);
         if(vertices&&!coatingFailed[1]){
             if(!lensPS&&FAILED(d->CreatePixelShader(kWeatherLensParticleShader,&lensPS))){coatingFailed[1]=true;return;}
             d->SetPixelShader(lensPS);d->SetFVF(D3DFVF_XYZRHW|D3DFVF_TEX4|D3DFVF_TEXCOORDSIZE4(2)|D3DFVF_TEXCOORDSIZE4(3));
-            if(FAILED(d->DrawPrimitiveUP(D3DPT_TRIANGLELIST,vertices/3,lensVertices.data(),sizeof(lensVertices[0])))){coatingFailed[1]=true;logf("SURFACE sand lens particles unavailable");}
+            const HRESULT particle=d->DrawPrimitiveUP(D3DPT_TRIANGLELIST,vertices/3,lensVertices.data(),sizeof(lensVertices[0]));
+            if(FAILED(particle)){coatingFailed[1]=true;logf("SURFACE sand lens particles unavailable");}
+            audit("WeatherLensParticle",0x15u,particle);
         }
     }
 };

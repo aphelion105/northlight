@@ -2,6 +2,8 @@
 #define NORTHLIGHT_HDR_PIPELINE_LIBRARY
 #include "hdr_pipeline_gpu.cpp"
 #include "hdr_sky_residual.h"
+static void logf(const char*,...){}
+#include "world_lighting_capture.h"
 
 static std::vector<float> pixels(IDirect3DDevice9* d,IDirect3DSurface9* surface){
     D3DSURFACE_DESC desc{};ok(surface->GetDesc(&desc));IDirect3DSurface9* readback=nullptr;
@@ -74,7 +76,18 @@ static void check(DeviceMeter& d,unsigned samples,bool inlineBase){
         }
         ok(d.EndScene());ok(d.StretchRect(native.surface,nullptr,resolved.surface,nullptr,D3DTEXF_NONE));
         const auto source=pixels(&d,resolved.surface);
-        ok(d.BeginScene());ok(frame.prepareLegacy(&d,resolved.texture,depth,target,w,h,0,.94f,settings,nullptr,!inlineBase));ok(d.EndScene());
+        ok(d.BeginScene());
+        if(iteration==0){
+            const unsigned ticket=42+samples+unsigned(inlineBase);
+            const std::string output=".";
+            NorthlightLightingCapture::Capture audit(&d,output,ticket,ticket,ticket,w,h,"frame-parity-atmosphere");
+            ok(frame.prepareLegacy(&d,resolved.texture,depth,target,w,h,0,.94f,settings,nullptr,!inlineBase,
+                [](void* context,HRESULT draw,IDirect3DSurface9* source){
+                    static_cast<NorthlightLightingCapture::Capture*>(context)->bindings("HdrDecodeWorldSky",3u,draw,source);
+                },&audit));
+            audit.finish(true);
+        }else ok(frame.prepareLegacy(&d,resolved.texture,depth,target,w,h,0,.94f,settings,nullptr,!inlineBase));
+        ok(d.EndScene());
         auto before=pixels(&d,frame.surface());
         // A failed inline compositor retries against the same sky: no second
         // source addition and no re-resolve of the old MSAA residual target.

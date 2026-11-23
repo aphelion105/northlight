@@ -154,7 +154,7 @@ struct PointTerrainCoverageTest {
     w.localScissorView=view;if(mode==0)w.localScissorView.valid=false;
     must(d->BeginScene());w.renderPointShadows(w.atmosphere.lights,true,false);must(d->EndScene());drain(fence);
     unsigned ready=0,visible=0;
-    for(const auto& slot:w.pointSlots){if(!slot.ready)continue;++ready;
+    for(const auto& slot:w.pointTargets.slots()){if(!slot.ready)continue;++ready;
      const auto& l=slot.selected;const std::array<std::array<float,4>,1> sphere={{{l.position[0],l.position[1],l.position[2],l.attenuationEnd}}};
      if(!NorthlightLocalLightScissor::batchRect(view,sphere,1).area())continue;++visible;
      for(unsigned face=0;face<6;++face){auto pixels=image(slot.faces[face]);const float* values=reinterpret_cast<const float*>(pixels.data());nonempty+=std::any_of(values,values+256*256,[](float v){return v<1;});
@@ -176,14 +176,14 @@ struct PointTerrainCoverageTest {
    // a reset of selection hysteresis is not an image-quality comparison.
    w.localScissorView=view;must(d->BeginScene());w.renderPointShadows(w.atmosphere.lights,true,false);must(d->EndScene());drain(fence);
    std::map<unsigned,NorthlightLocalLights::Light> selected;reference.clear();
-   for(unsigned index=0;index<w.pointSlots.size();++index){const auto& slot=w.pointSlots[index];if(!slot.ready)continue;selected[index]=slot.selected;
+   for(unsigned index=0;index<w.pointTargets.slots().size();++index){const auto& slot=w.pointTargets.slots()[index];if(!slot.ready)continue;selected[index]=slot.selected;
     for(unsigned face=0;face<6;++face){auto pixels=image(slot.faces[face]);NorthlightBackendLoader::Sha256 hash;hash.update(pixels.data(),pixels.size());
      digests<<limit<<'\t'<<pose<<'\t'<<slot.selected.sourceId<<'\t'<<face<<'\t'<<hash.hex()<<'\n';reference[slot.selected.sourceId][face]=std::move(pixels);}
    }
    for(unsigned recovery=0;recovery<4;++recovery){
     if(recovery<2){w.trimMemory(recovery==1);w.setMemoryPressure(true,recovery==1);}
     else if(recovery==2)w.releasePointGPU();
-    else {++w.meshGeneration;w.rebuildTerrainLists();for(auto& slot:w.pointSlots)slot.cacheValid=false;}
+    else {++w.meshGeneration;w.rebuildTerrainLists();for(auto& slot:w.pointTargets.slots())slot.cacheValid=false;}
     for(const auto& item:selected){w.pointIndex=item.first;must(d->BeginScene());assert(w.renderPointShadow(item.second,true,false));must(d->EndScene());drain(fence);
      for(unsigned face=0;face<6;++face){const auto actual=image(w.pointSlot().faces[face]);const auto& expected=reference.at(item.second.sourceId)[face];
       if(actual!=expected){size_t different=0;for(size_t i=0;i<actual.size();++i)different+=actual[i]!=expected[i];std::printf("RECOVERY_MISMATCH limit=%u pose=%u recovery=%u source=%llu face=%u differentBytes=%zu\n",limit,pose,recovery,(unsigned long long)item.second.sourceId,face,different);std::fflush(stdout);}
@@ -202,7 +202,7 @@ struct PointTerrainCoverageTest {
     w.pointSelection.reset();w.localLightTracker.reset();w.localLightQpc=0;w.atmosphereWork(w.atmosphere,.1f,3840,2160,0);
     drain(fence);const auto rebuilt=w.pointFacesRebuilt;const auto start=Clock::now();
     must(d->BeginScene());w.renderPointShadows(w.atmosphere.lights,true,false);must(d->EndScene());const double submit=milliseconds(start);drain(fence);const double complete=milliseconds(start);
-    unsigned count=0,staticFaces=0;for(const auto& slot:w.pointSlots)if(slot.ready){++count;for(auto* t:slot.cacheFace)staticFaces+=t!=nullptr;
+    unsigned count=0,staticFaces=0;for(const auto& slot:w.pointTargets.slots())if(slot.ready){++count;for(auto* t:slot.cacheFace)staticFaces+=t!=nullptr;
      for(unsigned face=0;face<6;++face){const auto pixels=image(slot.faces[face]);NorthlightBackendLoader::Sha256 hash;hash.update(pixels.data(),pixels.size());faces<<step<<'\t'<<slot.selected.sourceId<<'\t'<<face<<'\t'<<hash.hex()<<'\n';}}
     orbit<<step<<'\t'<<pose<<'\t'<<count<<'\t'<<w.pointDraws<<'\t'<<(w.pointFacesRebuilt-rebuilt)<<'\t'<<staticFaces<<'\t'<<submit<<'\t'<<complete<<'\n';
    }

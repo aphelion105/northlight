@@ -1,12 +1,14 @@
 # northlight-test: requires=windows-gpu,zig,client
 """Production empty-sky admission/replay, exact GPU outputs and no-work checks."""
+
+from source_units import source_text
 import json,os,subprocess,sys
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
 from windows_gpu_guard import processes
 out=fp.output_dir()/'empty-sky';out.mkdir(parents=True,exist_ok=True)
-source=fp.src('renderer.cpp').read_text(encoding='utf-8')
+source=source_text(fp.src('renderer.cpp'), encoding='utf-8')
 methods=source[source.index('    bool hdrSkyHasEmission()const'):source.index('    template<class Draw> void hdrReplayWorldAlpha')]
 methods+=source[source.index('    template<class Draw> void hdrReplaySky'):source.index('    template<class Capture,class Draw> HRESULT drawHook')]
 (out/'empty_sky_device_methods.h').write_text(methods,encoding='utf-8')

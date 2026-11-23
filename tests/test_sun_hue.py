@@ -5,6 +5,8 @@ and source integration. H from the three reference band-10 sunHalo colours must 
 (Brill), orange (Durotar coast 20:00) and orange (Orgrimmar 17:00) with a warm-white hot core,
 and stay near the glow of the reference screenshots. Strength 0 must give today's colours exactly.
 Not a GPU or appearance test; no game, Wine or GPU. Writes sun-hue-validation.json."""
+
+from source_units import source_text
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
 import json
@@ -128,7 +130,7 @@ def native():
 def main():
     values = native()
     hue = fp.src('sun_hue.h').read_text()
-    cpu = fp.src('world_renderer.h').read_text()
+    cpu = source_text(fp.src('world_renderer.h'))
     wmo = fp.src('wmo_context.h').read_text()
     # The contract glow codes against (decisions.md F1).
     assert 'struct GlowHue {' in hue and 'SlotSun=9,SlotSunHalo=10' in hue
@@ -152,7 +154,7 @@ def main():
     assert '?"fallback":g.native>=.5f?"native":"sunHalo"' in cpu
     assert 'float moonStrength=0;' in hue and 'h.moonStrength=normMax(moonTint,h.moon)?1.f:0.f;' in hue
     assert 'value.slotsConsistent=value.slots[1]==packed(bytes,0x17c);' in wmo and '0x1ac);' not in wmo.split('slotsConsistent=',2)[-1][:60] and 'out.slotsProven=slots&&out.slotsConsistent;return true;' in wmo
-    assert 'float skyTransmittance()const{return skyTransmittanceFrame;}' in cpu and cpu.count('a.veil[0]=std::exp(-depth);a.veil[1]=std::exp(-cloudyDepth);') == 1 and cpu.count('skyTransmittanceFrame=cf.active?atmosphere.veil[1]:atmosphere.veil[0];') == 1  # 0.3.200 (jobs): the veil computed in atmosphereWork
+    assert 'float skyTransmittance()const{return skyTransmittanceFrame;}' in cpu and cpu.count('a.veil[0]=std::exp(-depth);a.veil[1]=std::exp(-cloudyDepth);') == 1 and fp.src('world_frame_constants.inl').read_text().count('skyTransmittanceFrame=cf.active?atmosphere.veil[1]:atmosphere.veil[0];') == 1  # 0.3.200 (jobs): the veil computed in atmosphereWork
     result = dict(game_launched=False, gpu_tested=False, native_policy_passed=True, reference_band10=dict(
         brill=[36, 63, 50], durotar=[225, 67, 1], orgrimmar=[195, 75, 3]), hue=values)
     (fp.output_dir()/'sun-hue-validation.json').write_text(json.dumps(result, indent=2)+'\n')

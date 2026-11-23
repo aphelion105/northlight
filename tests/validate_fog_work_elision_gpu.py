@@ -10,6 +10,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
+from scripts.shaders.shader_sources import world_source_at_ref, world_source_bytes
 
 
 def main():
@@ -39,7 +40,7 @@ def main():
             folder = output / variant
             folder.mkdir(exist_ok=True)
             for name in ('world_effects.hlsl', 'auto_bump_normal.hlsl'):
-                data = subprocess.check_output(['git', 'show', f'{args.baseline_ref}:shaders/{name}'], cwd=fp.REPO) if variant == 'old' else (fp.SHADERS / name).read_bytes()
+                data = world_source_at_ref(fp.REPO, args.baseline_ref, name) if variant == 'old' else world_source_bytes(fp.SHADERS / name)
                 (folder / name).write_bytes(data)
             for entry in ('WorldFog', 'FogClouds'):
                 binary = folder / f'{entry}.bin'

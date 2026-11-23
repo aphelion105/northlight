@@ -1,4 +1,8 @@
 // Real shader registration followed by the production SDR/HDR compositor.
+#define NORTHLIGHT_PROBE_ATLAS_OWNER_TEST 1
+#define NORTHLIGHT_REGIONAL_FOG_GPU_TEST 1
+#define NORTHLIGHT_SHADOW_PROGRAM_OWNER_TEST 1
+#define NORTHLIGHT_WORLD_RENDER_TARGET_OWNER_TEST 1
 #define main unused_screen_effects_main
 #include "world_screen_effects_gpu.cpp"
 #undef main
@@ -77,8 +81,16 @@ struct PipelineOffTest {
         if(model){const float captured[]={.9999994f,.8666662f,.4784311f,0,.3764707f,.3254903f,.1803922f,0};std::copy_n(captured,8,room);}
         screenOk(device.SetVertexShaderConstantF(10,room,2));
         assert(world.authoredReceiver(original,model));
+        unsigned roomLevel=4;
+        assert(world.authoredReceiver(original,model,&roomLevel)&&roomLevel==NorthlightUnlitReceiver::roomAmbientLevel(room));
         float outdoor[8]{};std::copy_n(model?world.context.direct:world.context.ambient,3,outdoor);std::copy_n(model?world.context.ambient:world.context.direct,3,outdoor+4);
         screenOk(device.SetVertexShaderConstantF(10,outdoor,2));assert(!world.authoredReceiver(original,model));
+        // A new context can change the classification with the same native bank.
+        const float previous=world.context.ambient[0];
+        world.context.ambient[0]+=.25f;++world.materialLightRevision;
+        assert(world.authoredReceiver(original,model));
+        world.context.ambient[0]=previous;++world.materialLightRevision;
+        assert(!world.authoredReceiver(original,model));
         if(std::getenv("NORTHLIGHT_LIGHTING_BENCH"))for(bool indoor:{false,true}){
             screenOk(device.SetVertexShaderConstantF(10,indoor?room:outdoor,2));volatile unsigned hits=0;
             const auto start=std::chrono::steady_clock::now();

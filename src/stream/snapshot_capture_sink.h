@@ -17,7 +17,9 @@
 namespace NorthlightStream {
 class SnapshotCaptureSink {
 public:
-    static constexpr unsigned Slots=8,MaxRecords=20000;
+    // Buffer short writer stalls while the outer tracer flushes its own file.
+    // Capture remains bounded and fails explicitly if the writer cannot catch up.
+    static constexpr unsigned Slots=32,MaxRecords=20000;
     static constexpr std::uint64_t MaxSessionBytes=256ull<<20;
     enum Failure:unsigned {None=0,Destination=1,Overflow=2,Budget=4,Archive=8,Io=16,Producer=32};
     struct Limits {unsigned records=MaxRecords;std::uint64_t bytes=MaxSessionBytes;};

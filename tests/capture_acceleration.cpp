@@ -4,6 +4,7 @@
 #define main subdivision_reference_main
 #include "displacement_subdivision.cpp"
 #undef main
+#include "draw_world_state.h"
 
 template<class Base,class Description,D3DRESOURCETYPE Type> struct CaptureBuffer:Base {
     unsigned refs=1;std::vector<unsigned char> data;
@@ -26,7 +27,58 @@ using CaptureVB=CaptureBuffer<IDirect3DVertexBuffer9,D3DVERTEXBUFFER_DESC,D3DRTY
 using CaptureIB=CaptureBuffer<IDirect3DIndexBuffer9,D3DINDEXBUFFER_DESC,D3DRTYPE_INDEXBUFFER>;
 static volatile uint64_t accelerationSink=0;
 
+static void heldDrawViewport(){
+    struct Reader {
+        unsigned viewReads=0,depthReads=0;
+        bool viewportOk=true;
+        HRESULT GetViewport(D3DVIEWPORT9* out){++viewReads;*out={0,0,128,128,0,1};return viewportOk?D3D_OK:E_FAIL;}
+        HRESULT GetRenderState(D3DRENDERSTATETYPE key,DWORD* out){assert(key==D3DRS_ZENABLE);++depthReads;*out=FALSE;return D3D_OK;}
+    } reader;
+    DeviceMirror mirror;MirrorGuard held(mirror.gate);
+    mirror.viewport={0,0,128,128,0,.94f};mirror.viewportKnown=true;
+    mirror.renderStateKnown[D3DRS_ZENABLE]=true;mirror.renderStates[D3DRS_ZENABLE]=TRUE;
+    auto query=[&]{return NorthlightDrawPreparation::readHeldWorldState(&reader,mirror,true,0,.94f);};
+    const auto known=query();assert(known.read&&known.inWorld&&known.viewport.MaxZ==.94f&&!reader.viewReads&&!reader.depthReads);
+    ++mirror.targetWrites;
+    const auto duringTarget=query();assert(duringTarget.read&&!duringTarget.inWorld&&duringTarget.viewport.MaxZ==1&&reader.viewReads==1&&reader.depthReads==1);
+    --mirror.targetWrites;mirror.renderStateKnown[D3DRS_ZENABLE]=false;
+    reader.viewportOk=false;
+    assert(!query().read&&reader.viewReads==2&&reader.depthReads==1);
+
+    using NorthlightDrawPreparation::TerrainAdmission;
+    TerrainAdmission terrain;
+    assert(!terrain.matches(mirror));
+    terrain.target=mirror.targets[0]=reinterpret_cast<IDirect3DSurface9*>(1);
+    terrain.depth=mirror.depth=reinterpret_cast<IDirect3DSurface9*>(2);
+    mirror.targetKnown[0]=mirror.depthKnown=true;
+    terrain.viewport=mirror.viewport;
+    std::fill_n(mirror.vsFloatKnown+4,4,true);
+    assert(terrain.matches(mirror));
+    mirror.vsFloat[8][0]=2;
+    assert(terrain.matches(mirror));
+    mirror.vsFloat[4][0]=1;
+    assert(!terrain.matches(mirror));
+    mirror.vsFloat[4][0]=0;
+    mirror.vsFloatKnown[5]=false;
+    assert(!terrain.matches(mirror));
+    mirror.vsFloatKnown[5]=true;
+    mirror.viewport.MaxZ=1;
+    assert(!terrain.matches(mirror));
+    mirror.viewport=terrain.viewport;
+    ++mirror.targetWrites;
+    assert(!terrain.matches(mirror));
+    --mirror.targetWrites;
+    mirror.depthKnown=false;
+    assert(!terrain.matches(mirror));
+    mirror.depthKnown=true;
+    mirror.targets[0]=mirror.depth;
+    assert(!terrain.matches(mirror));
+    mirror.targets[0]=terrain.target;
+    assert(terrain.matches(mirror));
+}
+
 void DisplacementStateTestAccess::acceleration(bool benchmark){
+    heldDrawViewport();
     Fixture fixture(16,false);G::Mesh reference;assert(fixture.build(false,reference,4,false,true,false,4));
     auto changed=fixture;for(float& value:changed.height.values)value=1-value;
     G::Mesh independent;assert(changed.build(false,independent,4,false,true,false,4));equal(reference,independent);
@@ -110,6 +162,10 @@ void DisplacementStateTestAccess::acceleration(bool benchmark){
         }
         std::printf("CAPTURE_ACCEL stage=constants cpuMs=%.6f operations=%u digest=%llu\n",elapsed,reads,(unsigned long long)accelerationSink);
 #ifdef NORTHLIGHT_CAPTURE_ACCELERATION
+        const auto reader=capture.constantReader;
+        capture.constantReader=+[](void*,NorthlightConstantEpoch::Stamp&)->bool{assert(false);return false;};
+        assert(capture.readConstants(0,256,true)&&!std::memcmp(capture.constants,bank,sizeof bank));
+        capture.constantReader=reader;
         // A changed bank between admission and prepare must fetch the new pose.
         const auto transfers=capture.constantBankTransfers;
         assert(capture.readConstantBank(0,256,true,capture.rangeConstants,capture.rangeConstantStamp,capture.rangeConstantFirst,capture.rangeConstantCount));

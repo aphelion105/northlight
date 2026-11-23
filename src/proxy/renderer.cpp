@@ -25,6 +25,7 @@
 #include "mirror_guarded_device.h"
 #include "mirror_resources.h"
 #include "tracked_buffers.h"
+#include "game_particle_pair.h"
 #include "mirror_write_hook.h"
 #include "signatures.h"
 #include "shader_tags.h"
@@ -36,8 +37,10 @@
 #include "compiled_shaders.h"
 #include "projection.h"
 #include "world_draw_domain.h"
+#include "draw_world_state.h"
 #include "extension_guard.h"
 #include "backend_policy.h"
+#include "native_device_caps.h"
 #include "upload_lock.h"
 #include "lock_meter.h"
 #include "replay_copies.h"
@@ -56,6 +59,7 @@
 #include "diagnostic_capture_request.h"
 #include "render_thread_probe.h"
 #include "effects_buckets.h"
+#include "contact_ao_pass.h"
 #include "draw_gates.h"
 #include "weather_state.h"
 #include "ui_boundary.h"
@@ -86,148 +90,14 @@
 // input (northlight_mem.h). no_builtin: its body must not turn back into a memcmp call. Not exported.
 extern "C" __attribute__((no_builtin("memcmp"),no_builtin("bcmp"))) int memcmp(const void* a,const void* b,size_t n){return NorthlightMem::compare(a,b,n);}
 
-static HMODULE selfModule;
-static wchar_t rootPath[MAX_PATH];
-static std::string settingsRecovery; // failure text of the startup journal recovery ("" = fine), logged by the first Device
-// Game folder = directory of the host exe, resolved on first use (never in
-// DllMain: the macOS proxy is preloaded under the loader lock from dlls.txt).
-// backend() calls it first; every export reaches backend() before it logs.
-// The offline stand uses its own module directory: a retracer can virtualize
-// the executable name to the ORIGINAL client, including its installed folder.
-static void ensureRootPath(){
-    static const bool resolved=[]{
-        wchar_t self[MAX_PATH]={};const DWORD m=GetModuleFileNameW(selfModule,self,MAX_PATH);
-#ifdef NORTHLIGHT_REPLAY_STAND
-        const std::wstring root=m&&m<MAX_PATH?NorthlightBackend::directory(self):L"";
-#else
-        wchar_t exe[MAX_PATH]={};const DWORD n=GetModuleFileNameW(nullptr,exe,MAX_PATH);
-        const std::wstring root=NorthlightBackend::gameRoot(n&&n<MAX_PATH?exe:L"",m&&m<MAX_PATH?self:L"");
-#endif
-        if(root.size()<MAX_PATH)wcscpy(rootPath,root.c_str());
-        // Before backend selection, MemorySwitches or any loader reads an INI: finish a settings commit a crash interrupted (one stat when none).
-        if(rootPath[0])settingsRecovery=NorthlightSettings::Store::recoverAtStartup(std::filesystem::path(rootPath));
-        if(rootPath[0]&&settingsRecovery.empty())settingsRecovery=NorthlightSettings::migrateLightLimits(std::filesystem::path(rootPath));
-        if(rootPath[0]&&settingsRecovery.empty())settingsRecovery=NorthlightSettings::migrateHdr(std::filesystem::path(rootPath));
-        return true;
-    }();
-    (void)resolved;
-}
-static FILE* logFile;
+#include "renderer_startup.h"
 static LONG deviceSerial=0,liveDevices=0;
 static NorthlightBackend::Kind selectedBackend=NorthlightBackend::Kind::Legacy;
 static std::string materialCacheBackendIdentity;
 static bool materialCacheAsyncReadback=false;
 static bool backendHdrBaseComposite=false,backendPointPipelinePrewarm=false;
 static bool backendHdrExpandedMaterial=false,backendTemporalZeroWeight=false;
-// Called once, under logLock, before the first open truncates the log.
-struct WindowsLogFiles {
-    DWORD error=0;
-    bool exists(const wchar_t* path){return GetFileAttributesW(path)!=INVALID_FILE_ATTRIBUTES;}
-    bool move(const wchar_t* from,const wchar_t* to){if(MoveFileExW(from,to,MOVEFILE_REPLACE_EXISTING))return true;error=GetLastError();return false;}
-    bool readOnly(const wchar_t* path){const DWORD a=GetFileAttributesW(path);return a!=INVALID_FILE_ATTRIBUTES&&(a&FILE_ATTRIBUTE_READONLY)&&!(a&FILE_ATTRIBUTE_DIRECTORY);}
-    bool makeWritable(const wchar_t* path){const DWORD a=GetFileAttributesW(path);return a!=INVALID_FILE_ATTRIBUTES&&SetFileAttributesW(path,a&~DWORD(FILE_ATTRIBUTE_READONLY))!=FALSE;}
-    // First 16 KiB, shared with a live writer; unreadable = not a session.
-    bool session(const wchar_t* path){
-        HANDLE h=CreateFileW(path,GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
-        if(h==INVALID_HANDLE_VALUE){error=GetLastError();return false;}
-        static char head[16384];DWORD got=0;const bool ok=ReadFile(h,head,sizeof(head),&got,nullptr)!=FALSE;if(!ok)error=GetLastError();CloseHandle(h);
-        return ok&&NorthlightLogRotation::recordedSession(head,got);}
-};
-static NorthlightLogRotation::Result logRotation=NorthlightLogRotation::Result::Missing;static DWORD logRotationError=0;
-static void rotatePreviousLog(){
-    wchar_t current[MAX_PATH],previous[MAX_PATH];
-    if(swprintf(current,MAX_PATH,L"%lsnorthlight-renderer.log",rootPath)<0||swprintf(previous,MAX_PATH,L"%lsnorthlight-renderer.prev.log",rootPath)<0){logRotation=NorthlightLogRotation::Result::Failed;return;}
-    WindowsLogFiles files;logRotation=NorthlightLogRotation::rotate(files,current,previous);logRotationError=files.error;
-}
-static SRWLOCK logLock=SRWLOCK_INIT;
-static bool logRotated=false;
-struct LogCost {
-    unsigned long long calls=0,formattedBytes=0,ioErrors=0;
-    LONGLONG wallTicks=0,maxTicks=0;
-};
-static LogCost logCost;
-static LONGLONG logFrequency=0,logIntervalStart=0;
-// Lines written by the calling thread (RenderProfile: frames that logged are left out of FRAME cost).
-static thread_local unsigned long long threadLogLines=0;
-static thread_local unsigned logFlushBatchDepth=0;
-static thread_local bool logFlushPending=false;
-// Frame-boundary diagnostics become visible together, including on exceptions.
-// Other threads may still flush this stream while the batch is being assembled.
-struct LogFlushBatch {
-    LogFlushBatch(){++logFlushBatchDepth;}
-    ~LogFlushBatch(){
-        if(--logFlushBatchDepth||!logFlushPending)return;
-        logFlushPending=false;
-        LARGE_INTEGER start={};const bool timed=QueryPerformanceCounter(&start)!=0;
-        AcquireSRWLockExclusive(&logLock);
-        if(logFile&&fflush(logFile)!=0)++logCost.ioErrors;
-        LARGE_INTEGER end={};if(timed&&QueryPerformanceCounter(&end)&&end.QuadPart>=start.QuadPart){
-            const auto ticks=end.QuadPart-start.QuadPart;logCost.wallTicks+=ticks;
-            if(ticks>logCost.maxTicks)logCost.maxTicks=ticks;
-        }
-        ReleaseSRWLockExclusive(&logLock);
-    }
-    LogFlushBatch(const LogFlushBatch&)=delete;
-};
-static void logf(const char* fmt, ...) {
-#ifdef NORTHLIGHT_REPLAY_STAND
-    ensureRootPath();
-    if(!rootPath[0]){std::fputs("NORTHLIGHT STAND REPLAY: module root unavailable; file logging refused\n",stderr);return;}
-#endif
-    LARGE_INTEGER start={};const bool timed=QueryPerformanceCounter(&start)!=0;
-    // Render and worker threads share the stream. Hold one lock over opening,
-    // the entire line, flushing and counters; report after releasing this lock.
-    AcquireSRWLockExclusive(&logLock);
-    if(!logFrequency){LARGE_INTEGER frequency={};if(QueryPerformanceFrequency(&frequency))logFrequency=frequency.QuadPart;}
-    if(!logIntervalStart&&timed)logIntervalStart=start.QuadPart;
-    if (!logFile) {
-        if(!logRotated){logRotated=true;rotatePreviousLog();}
-        wchar_t path[MAX_PATH];
-        swprintf(path, MAX_PATH, L"%lsnorthlight-renderer.log", rootPath);
-        logFile = _wfopen(path, L"w");
-    }
-    ++logCost.calls;++threadLogLines;
-    if(logFile){
-        va_list args;va_start(args,fmt);int bytes;
-        if(fmt[0]=='%'&&fmt[1]=='s'&&!fmt[2]){
-            va_list probe;va_copy(probe,args);const char* line=va_arg(probe,const char*);va_end(probe);
-            const size_t length=line?std::strlen(line):size_t(-1);
-            if(length<=0x7fffffffU)bytes=std::fputs(line,logFile)==EOF?-1:int(length);
-            else bytes=vfprintf(logFile,fmt,args);
-        }else{
-            char buffer[2048];va_list copy;va_copy(copy,args);
-            const int length=vsnprintf(buffer,sizeof buffer,fmt,copy);va_end(copy);
-            if(length<0)bytes=-1;
-            else if(size_t(length)<sizeof buffer)bytes=fwrite(buffer,1,size_t(length),logFile)==size_t(length)?length:-1;
-            else bytes=vfprintf(logFile,fmt,args);
-        }
-        va_end(args);
-        if(bytes>=0)logCost.formattedBytes+=unsigned(bytes);else ++logCost.ioErrors;
-        if(fputc('\n',logFile)!=EOF)++logCost.formattedBytes;else ++logCost.ioErrors;
-        if(logFlushBatchDepth)logFlushPending=true;
-        else if(fflush(logFile)!=0)++logCost.ioErrors;
-    }else ++logCost.ioErrors;
-    LARGE_INTEGER end={};
-    if(timed&&QueryPerformanceCounter(&end)&&end.QuadPart>=start.QuadPart){
-        const LONGLONG ticks=end.QuadPart-start.QuadPart;logCost.wallTicks+=ticks;
-        if(ticks>logCost.maxTicks)logCost.maxTicks=ticks;
-    }
-    ReleaseSRWLockExclusive(&logLock);
-}
-static void reportLogCost(){
-    AcquireSRWLockExclusive(&logLock);
-    const LogCost sample=logCost;const LONGLONG frequency=logFrequency;
-    LARGE_INTEGER now={};const bool timed=QueryPerformanceCounter(&now)!=0;
-    const LONGLONG interval=timed&&logIntervalStart&&now.QuadPart>=logIntervalStart?now.QuadPart-logIntervalStart:0;
-    logCost={};logIntervalStart=timed?now.QuadPart:0;
-    ReleaseSRWLockExclusive(&logLock);
-    // Aggregated caller wall time includes lock waits and can overlap between
-    // threads. It is not CPU utilization. Bytes exclude text-mode CRLF growth.
-    if(sample.calls&&frequency>0){const double ms=1000.0/double(frequency);
-        logf("LOGGER intervalMs=%.3f calls=%llu formattedBytes=%llu callerWallMs=%.3f maxCallMs=%.3f ioErrors=%llu",
-            interval*ms,sample.calls,sample.formattedBytes,sample.wallTicks*ms,sample.maxTicks*ms,sample.ioErrors);
-    }
-}
+#include "renderer_log.h"
 // CPU wall-time samples include driver calls but never wait on the GPU.
 // 0.3.175 (S3): the clock of the effects buckets (effects_buckets.h), RenderProfile sample frames only.
 static std::int64_t qpcNow(){LARGE_INTEGER t;QueryPerformanceCounter(&t);return t.QuadPart;}
@@ -297,6 +167,7 @@ template<class T> static uint64_t shaderHash(T* shader, std::vector<DWORD>& word
 }
 
 #include "saved_state.h"
+#include "scene_depth_resolve.h"
 #include "hdr_presentation.h"
 #include "hdr_color.h"
 #include "hdr_sky_foreground.h"
@@ -309,6 +180,7 @@ template<class T> static uint64_t shaderHash(T* shader, std::vector<DWORD>& word
 #include "gpu_budget.h"
 #include "water_renderer.h"
 #include "world_renderer.h"
+#include "frame_parity_capture.h"
 #ifdef NORTHLIGHT_REPLAY_STAND
 #include "stand_api.h"
 #endif
@@ -316,6 +188,8 @@ template<class T> static uint64_t shaderHash(T* shader, std::vector<DWORD>& word
 #include "weather_diagnostics.h"
 #include "auto_bump_renderer.h"
 #include "model_normal_renderer.h"
+#include "game_indexed_pair.h"
+#include "draw_capture_route.h"
 #include "client_latency_diagnostics.h"
 static void logClientLatency(std::uint64_t frame,const char* reason){
     const auto s=NorthlightClientLatency::read(reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr)),NorthlightWorldContext::readSelfLive);
@@ -397,10 +271,15 @@ static void upgradeAutoDepth(IDirect3D9* d3d,UINT adapter,D3DDEVTYPE type,D3DPRE
     if(wanted&&!ok&&!unavailableLogged){unavailableLogged=true;logf("STENCIL depth upgrade unavailable where=%s: D24S8 is not supported for this back buffer format; D24X8 stays",where);}
     if(ok&&pp->EnableAutoDepthStencil&&pp->AutoDepthStencilFormat==D3DFMT_D24X8){pp->AutoDepthStencilFormat=D3DFMT_D24S8;if(!upgradedLogged){upgradedLogged=true;logf("STENCIL depth upgraded D24X8->D24S8 where=%s",where);}}
 }
-class Device final : public GuardedMirrorDevice {
+#include "device_effect_targets.h"
+class Device final : public GuardedMirrorDevice, private NorthlightDeviceEffectTargets {
     friend struct PipelineOffTest;
     LONG refs = 1;
     LONG diagnosticId=0;
+#ifdef NORTHLIGHT_REPLAY_STAND
+    uint64_t captureWorkEpoch=0;
+    unsigned captureWorkRows=0,captureWorkBufferRows=0;
+#endif
     NorthlightFrameIntervals::Window frameIntervals;bool intervalFocus=true; /* every frame since the last FRAME interval line had focus */
     bool extensionFault=false;
     HWND focusWindow=nullptr;bool focusWindowKnown=false;
@@ -408,6 +287,20 @@ class Device final : public GuardedMirrorDevice {
     DeviceMirror mirrorState;
     NorthlightMirrorResources::Registry mirrorResources;
     ExtensionDevice* ext;
+    std::unique_ptr<NorthlightGameIndexedPair> gameIndexedPair;
+    std::optional<MirrorGuard> indexedPairGate;
+    std::unique_ptr<NorthlightGameParticlePair> gameParticlePair;
+    std::optional<MirrorGuard> particlePairGate;
+    unsigned indexedPairStencilKind=0;
+    void flushIndexedPair(){
+        if(FAILED(gameIndexedPair->flush())){mirrorState.invalidate();failed=true;}
+    }
+    void flushParticlePair(bool close=false){
+        if(FAILED(close?gameParticlePair->flush():gameParticlePair->barrier())){mirrorState.invalidate();failed=true;}
+    }
+    void noteIndexedPairSource(IDirect3DVertexShader9* shader,const NorthlightAutoDisplacement::CaptureSource& source){
+        if(indexedPairGate&&!gameIndexedPair->joiningRanges())gameIndexedPair->noteSource(shader,source.declaration,source.mesh);
+    }
     std::unique_ptr<NorthlightNativeMoreLightRenderer> nativeMoreLights;
     NorthlightHdr::Presentation hdr;NorthlightHdr::Color hdrColor;
     NorthlightHdr::OutputMonitor hdrMonitor;NorthlightHdr::OutputChain hdrOutput;
@@ -467,11 +360,8 @@ class Device final : public GuardedMirrorDevice {
     NorthlightGpuBudget::WaitSignal gpuBound,replayWait;std::uint64_t replayWaitPrevNs=0,replaySkipPrev=0,eventGpuWaitPrevNs=0;std::int64_t boundQpc=0,cpuBudgetQpc=0,cpuEffectsQpc=0;NorthlightGpuBudget::Controller cpuBudget;double cpuBudgetLastMs=0;bool boundKnown=false,gpuLimited=true,cpuLimited=true,replayKnown=false;
     std::unique_ptr<NorthlightMemoryDiagnostics::Sampler> memoryDiagnostics; /* also feeds the functional memory guard */
     NorthlightMemoryGuard::Guard memoryGuard;
-    IDirect3DTexture9 *scene = nullptr, *depthTex = nullptr, *ao = nullptr, *aoRaw = nullptr;
-    IDirect3DSurface9 *sceneSurface = nullptr, *aoSurface = nullptr, *aoRawSurface = nullptr, *worldDepth = nullptr;
+    IDirect3DSurface9* worldDepth=nullptr;
     D3DSURFACE_DESC worldDepthDesc={};bool worldDepthDescKnown=false; // 0.3.196 (task 12): worldDepth's desc (a held reference, so the object and its desc are fixed); cleared when worldDepth is dropped
-    IDirect3DPixelShader9 *aoPS = nullptr, *aoBlurPS = nullptr, *aoBlurNoWaterPS = nullptr, *aoContactBloomPS = nullptr, *aoOnlyPS = nullptr, *contactBloomPS = nullptr, *compositePS = nullptr;
-    bool aoBlurNoWaterRefused=false;
     std::unique_ptr<NorthlightAOActorStencil> aoActorMask;
     IDirect3DPixelShader9 *aoActorPreparePS=nullptr, *aoActorPS=nullptr, *aoActorAlphaPS=nullptr;
     unsigned aoActorFrame=~0u;bool aoActorOn=false,aoActorDrawKnown=false,aoActorDrawSkin=false,aoActorDepthWrite=false,aoActorUsed=false;
@@ -540,15 +430,15 @@ class Device final : public GuardedMirrorDevice {
     std::unordered_map<IDirect3DPixelShader9*, int> psTags;
     std::unordered_map<IDirect3DVertexShader9*, uint64_t> vsHashes;
     std::unordered_map<IDirect3DVertexShader9*, unsigned> vsMajor; // 0.3.202 (rain mask MRT): the shader model major version from the version token (0 unknown)
-    // 0.3.196 (task 12): one-entry per-draw vertex shader classification. vsTags, vsHashes and the world's shader maps change only in
+    // Vertex shader classification is reused across interleaved material draws. vsTags, vsHashes and the world's shader maps change only in
     // CreateVertexShader registration and verified screen-text learning, both of which bump vsGeneration
     // (nothing is ever erased, but a freed address can be registered again).
     std::unordered_map<IDirect3DVertexShader9*,NorthlightNativeShadow::Proof> nativeShadowProofs;
     NorthlightNativeShadow::Limiter nativeShadowLimiter;
     NorthlightNativeLocalLight::Probe nativeLocalLightProbe;
     bool nativeLocalDomain=false;
-    struct VsClass {IDirect3DVertexShader9* vs=nullptr;std::uint32_t gen=~0u;int entry=0;bool wmo=false,world=false,skinned=false;unsigned family=0;const NorthlightNativeShadow::Proof* nativeShadow=nullptr;};
-    std::uint32_t vsGeneration=0;VsClass lastVs;unsigned long long vsCacheHits=0,vsCacheMisses=0;
+    struct VsClass {IDirect3DVertexShader9* vs=nullptr;std::uint32_t gen=~0u;int entry=0;bool wmo=false,world=false,skinned=false,terrain=false,authoredLighting=false;unsigned family=0;const NorthlightNativeShadow::Proof* nativeShadow=nullptr;};
+    std::uint32_t vsGeneration=0;VsClass lastVs,vsClasses[64]{};unsigned long long vsCacheHits=0,vsCacheMisses=0;
     int registerNativeShadow(IDirect3DVertexShader9* vs,const std::vector<DWORD>& words){
         NorthlightNativeShadow::Proof proof;
         if(NorthlightNativeShadow::analyze(reinterpret_cast<const uint32_t*>(words.data()),words.size(),proof)){
@@ -558,9 +448,15 @@ class Device final : public GuardedMirrorDevice {
     }
     const VsClass& classifyVs(IDirect3DVertexShader9* vs){
         if(lastVs.vs==vs&&lastVs.gen==vsGeneration){++vsCacheHits;return lastVs;}
+        const auto address=reinterpret_cast<std::uintptr_t>(vs);
+        auto& cached=vsClasses[((address>>3)^(address>>10))&63u];
+        if(cached.vs==vs&&cached.gen==vsGeneration){++vsCacheHits;lastVs=cached;return lastVs;}
         ++vsCacheMisses;auto it=vsTags.find(vs);lastVs.vs=vs;lastVs.gen=vsGeneration;lastVs.entry=it==vsTags.end()?0:it->second;
         lastVs.nativeShadow=nullptr;if(lastVs.entry&kNativeShadowTag){auto proof=nativeShadowProofs.find(vs);if(proof!=nativeShadowProofs.end())lastVs.nativeShadow=&proof->second;}
-        lastVs.wmo=world&&world->recognizesWmo(vs);lastVs.world=world&&world->isWorldShader(vs);lastVs.skinned=world&&world->isSkinnedShader(vs);lastVs.family=unsigned(lastVs.entry>>kFamilyShift)&7u;return lastVs;
+        lastVs.wmo=world&&world->recognizesWmo(vs);lastVs.world=world&&world->isWorldShader(vs);lastVs.skinned=world&&world->isSkinnedShader(vs);lastVs.terrain=world&&world->terrainShader(vs);
+        lastVs.family=unsigned(lastVs.entry>>kFamilyShift)&7u;
+        lastVs.authoredLighting=world&&world->authoredLightingShader(vs,lastVs.family==3,lastVs.wmo);
+        cached=lastVs;return lastVs;
     }
     std::unordered_map<IDirect3DPixelShader9*, uint64_t> psHashes;
     std::unordered_map<void*, NorthlightShaderReads::ReadSet> shaderReads; // Exact API reads for spell replay, UI text identity and HDR admission; creation overwrites reused shader addresses.
@@ -570,9 +466,6 @@ class Device final : public GuardedMirrorDevice {
     std::unordered_map<IDirect3DPixelShader9*, unsigned> psMajor; // the shader model major version from the version token (0 unknown); the spell layer admits ps_2_0 and newer only
     unsigned blobSignatureReports=0;
     NorthlightMirrorAuditSchedule mirrorAuditSchedule;bool mirrorFallbackReported=false;
-    UINT width = 0, height = 0;
-    D3DFORMAT sceneFormat = D3DFMT_UNKNOWN, depthSnapshotFormat = D3DFMT_UNKNOWN;
-    bool df24Refused = false; // the device refused a DF24 depth snapshot: INTZ for the session
     bool terrain = false, captured = false, applied = false, enabled = true,masterEnabled=true;
     bool menuScene=false;
     // 0.3.202 (rain): the rain streak alpha mask (RainMask, s13 of WorldComposite): created on the first mask draw at the effect resources' size; the
@@ -622,11 +515,14 @@ private:
     int traceWorld=-1; /* 0.3.200 (frame trace): this frame's world->render result (-1 not called, 0 skipped, 1 drawn) */
     bool traceApplied=false;DWORD traceAppliedTick=0;unsigned traceAppliedCount=0;
     unsigned frame = 0, appliedFrames = 0, matchedTerrain = 0, matchedUI = 0, projectionRejects = 0;
+    NorthlightFrameParityCapture frameParity;
     unsigned worldSkippedFrames=0;
     // 0.3.169: one line per run of skipped world frames, with the first and last skipReason().
     unsigned worldSkipRun=0,worldSkipEpisodes=0;DWORD worldSkipStart=0;const char* worldSkipFirst="";const char* worldSkipLast="";
     unsigned nonWorldCaptureRejects=0;
     unsigned drawCalls=0, missingVS=0, terrainDraws=0, terrainShadowDraws=0, viewportRejects=0, depthRejects=0, uiDraws=0, uiAfterTerrain=0;
+    NorthlightDrawPreparation::TerrainAdmission terrainAdmission;
+    NorthlightDrawSnapshot::Ref<IDirect3DSurface9> terrainAdmissionTarget;
     unsigned viewportReports=0;
     unsigned postEffectWorldDraws=0,postEffectSkinnedDraws=0,postEffectDepthWrites=0,postEffectDepthStateFailures=0;
     NorthlightDetailShadow::ReceiverCensus grassReceiverCensus;
@@ -667,8 +563,7 @@ private:
     LONGLONG cpuCleanupOwners[5]={};
     LONGLONG cpuHdrAdmission=0,cpuHdrBoundary=0,cpuHdrTransfer=0,cpuHdrFinish=0;
     unsigned hdrAdmissionCalls=0,hdrTransferCalls=0;
-    LONGLONG cpuAOBlurSetup=0,cpuAOBlurSubmit=0;std::uint64_t cpuAOBlurFrame=0;
-    unsigned cpuAOBlurMethod=0,cpuAOBlurWidth=0,cpuAOBlurHeight=0;bool cpuAOBlurPending=false;
+    NorthlightContactAO::BlurTiming cpuAOBlur;
     NorthlightEffectsBuckets::Frame effectsBuckets;bool effectsBucketed=false; /* 0.3.175 (S3): this sample frame's effects split */
     unsigned long long cpuCaptureReads=0; /* 0.3.150: timer clock reads inside cpuCapture, sample frames (an outer pair adds one) */
     LARGE_INTEGER cpuFrequency={};
@@ -680,7 +575,7 @@ private:
     unsigned frameStartDrawCalls=0;std::uint64_t frameStartAnswered=0,frameStartForwarded=0;unsigned long long frameStartScopeReads=0;
     // Counters and timing scopes observe the same rendering path on every profile sample.
     bool gateFrame=false;
-    struct GateCounts {unsigned prep=0,capture=0,water=0,wmo=0,fullPasses=0,audits=0,blobCalls=0,blobTextures=0,blobClaimed=0,bufferCreates=0,processVertices=0;};
+    struct GateCounts {unsigned prep=0,capture=0,water=0,wmo=0,fullPasses=0,audits=0,blobCalls=0,blobTextures=0,blobClaimed=0,bufferCreates=0,processVertices=0,materialViews=0,materialViewUpdates=0;};
     struct TerrainSwapCalls {unsigned getRequests=0,getNative=0,setVS=0,setPS=0,setPSConstants=0,constantRegisters=0,failures=0;};
     TerrainSwapCalls terrainSwapCalls;
     struct GateStart {unsigned missingVS=0,terrain=0,ui=0,shadowSwaps=0;std::uint64_t generations=0,vsHits=0,vsMisses=0;};
@@ -792,13 +687,20 @@ private:
                 if(SUCCEEDED(hr))hr=hdrFrame.prepareLegacy(ext,scene,nullptr,nullptr,desc.Width,desc.Height,0,1,hdrFrameSettings,&stateBlocks);
                 hdrLegacyPrepared=SUCCEEDED(hr);
             }
-            LARGE_INTEGER now{};QueryPerformanceCounter(&now);
+            LARGE_INTEGER now{};
+            if(NorthlightFrameParityClock::enabled())now.QuadPart=NorthlightFrameParityClock::counter(frame,cpuFrequency.QuadPart);
+            else QueryPerformanceCounter(&now);
             const float dt=hdrTick&&cpuFrequency.QuadPart>0?float(double(now.QuadPart-hdrTick)/cpuFrequency.QuadPart):0;hdrTick=now.QuadPart;
             float reference=.18f,camera[3]{};std::string map;
             const bool validWorld=hdrWorldSeen&&!debugMode&&!worldDebug&&world&&world->hdrExposureContext(map,camera,reference);
             bool cut=false;if(validWorld){float distance=0;for(unsigned i=0;i<3;++i){float delta=camera[i]-hdrCamera[i];distance+=delta*delta;}
                 cut=hdrCameraValid&&(map!=hdrMap||distance>1600);hdrMap=map;memcpy(hdrCamera,camera,sizeof camera);hdrCameraValid=true;}
             if(hdrProfile)hdrProfile->mark("HDRPrepare");
+            if(SUCCEEDED(hr)&&frameParity.finalAuditFrame(frame)){
+                NorthlightLightingCapture::Capture audit(ext,frameParity.outputDirectory(),frame,frame,frame,
+                    desc.Width,desc.Height,"frame-parity-hdr-input");
+                audit.finish(audit.imageSaved("hdr-before-finish",hdrSceneReady?hdrPresentBack:hdrFrame.surface()));
+            }
             if(SUCCEEDED(hr))hr=hdrFrame.finish(ext,hdrSceneReady?hdrPresentBack:nullptr,hdrPresentBack,hdrFrameSettings,dt,validWorld,cut,reference,&stateBlocks,aoRaw,aoRawSurface,ao,aoSurface,hdr.logical.SwapEffect==D3DSWAPEFFECT_DISCARD?nullptr:hdrLegacyBack,
                 hdrProfile?+[](void* context,const char* stage){static_cast<NorthlightGpuProfile*>(context)->mark(stage);}:nullptr,hdrProfile);
         }
@@ -821,6 +723,7 @@ private:
     }
     NorthlightProjectedDrawAudit projectedAudit;
     NorthlightEffectCoverage::Capture effectCoverage;bool effectCoverageNative=false,hdrRainDraw=false;
+    unsigned effectCoverageShaderSkips=0;
     NorthlightHdr::SkyForeground hdrSkyForeground{true};
     template<class Draw> HRESULT nativeEffectDraw(bool rain,Draw draw){
         const bool nativeBefore=effectCoverageNative,rainBefore=hdrRainDraw;
@@ -860,7 +763,12 @@ private:
             (!(mirrorState.pixelShaderKnown&&mirrorState.pixelShader)&&
              !(mirrorState.vertexShaderKnown&&mirrorState.vertexShader));
     }
-    template<class Draw> HRESULT effectCoverageDraw(Draw submit,bool replay=false,bool sky=false,bool* skyCaptured=nullptr){
+    static HRESULT paintParticleCoverage(void* context,unsigned mode,IDirect3DPixelShader9* pixel,void* paint,HRESULT(*call)(void*)){
+        auto& owner=*static_cast<Device*>(context);
+        return owner.effectCoverage.draw(owner.ext,NorthlightEffectCoverage::Write(mode),[&]{return call(paint);},false,pixel);
+    }
+    template<class Draw> HRESULT effectCoverageDraw(Draw submit,bool replay=false,bool sky=false,bool* skyCaptured=nullptr,
+                                                     const NorthlightDrawSnapshot::Draw* ordered=nullptr){
         bool foregroundCaptured=false;
         auto native=[&]()->HRESULT{
             if(sky&&skyCaptured&&hdrSkyHasEmission()&&hdr.logical.MultiSampleType==D3DMULTISAMPLE_NONE&&hdrFixedSkyPossible()){
@@ -883,15 +791,21 @@ private:
         const bool blend=drawRenderState(D3DRS_ALPHABLENDENABLE)!=FALSE;
         if(zWrite&&!blend&&!effectCoverage.active())return fallback();
         using namespace NorthlightEffectCoverage;
-        // Replay restores its own shader. Classify the bound draw, not the
-        // last native prepareDraw result. Ordinary lit alpha models retain lighting.
-        IDirect3DVertexShader9* vertex=nullptr;bool releaseVertex=false;
-        if(!ext->peekVertexShader(vertex)){
-            if(FAILED(ext->GetVertexShader(&vertex)))return fallback();
-            releaseVertex=true;
+        unsigned entry=0;
+        // Depth writes cannot be protected overlays or enter a particle batch.
+        // An unknown binding still needs the original getter/failure path.
+        if(!zWrite||!mirrorState.active()||!mirrorState.vertexShaderKnown||!mirrorState.vertexShader){
+            // Replay restores its own shader. Read the binding at submission.
+            IDirect3DVertexShader9* vertex=nullptr;bool releaseVertex=false;
+            if(!ext->peekVertexShader(vertex)){
+                if(FAILED(ext->GetVertexShader(&vertex)))return fallback();
+                releaseVertex=true;
+            }
+            const auto tag=vsTags.find(vertex);entry=tag==vsTags.end()?0u:unsigned(tag->second);
+            if(releaseVertex)drop(vertex);
+        }else if(gateFrame){
+            ++effectCoverageShaderSkips;
         }
-        const auto tag=vsTags.find(vertex);const unsigned entry=tag==vsTags.end()?0u:unsigned(tag->second);
-        if(releaseVertex)drop(vertex);
         const unsigned family=(entry>>kFamilyShift)&7u;
         const DWORD src=blend?drawRenderState(D3DRS_SRCBLEND):0,dst=blend?drawRenderState(D3DRS_DESTBLEND):0,op=blend?drawRenderState(D3DRS_BLENDOP):0;
         const bool additive=blend&&op==D3DBLENDOP_ADD&&dst==D3DBLEND_ONE;
@@ -900,10 +814,18 @@ private:
             (additive&&(family==unsigned(NorthlightSpellLayer::Family::Model)||family==unsigned(NorthlightSpellLayer::Family::Projected)));
         const Write write=classify(effectCoverage.active(),zWrite,blend,src,dst,op,drawRenderState(D3DRS_COLORWRITEENABLE),nativeOverlay);
         if(write==Write::None)return fallback();
-        D3DVIEWPORT9 vp{};DWORD depth=0;
-        if(FAILED(ext->GetViewport(&vp))||!nameMaskFullViewport(vp)||FAILED(ext->GetRenderState(D3DRS_ZENABLE,&depth))||
-           !NorthlightWorldDrawDomain::accepts(projectionValid,depth!=FALSE,worldMinDepth,worldMaxDepth,vp.MinZ,vp.MaxZ)||!worldDepthBound())return fallback();
+        const auto worldState=NorthlightDrawPreparation::readHeldWorldState(ext,mirrorState,projectionValid,worldMinDepth,worldMaxDepth);
+        if(!worldState.inWorld||!nameMaskFullViewport(worldState.viewport)||!worldDepthBound())return fallback();
         effectCoverage.allowMultisample(NorthlightBackend::isPackagedDxvk(selectedBackend));
+        if(ordered&&particlePairGate&&effectCoverage.bothPlanesActive()&&
+           (family==unsigned(NorthlightSpellLayer::Family::Particle)||family==unsigned(NorthlightSpellLayer::Family::ParticleUnlit))){
+            // Bind just the shader that writes the coverage targets around
+            // the combined physical draw.
+            return gameParticlePair->submit({ordered->base,ordered->vertices,ordered->primitives},
+                !spellQueryN&&!spellQueryUnknown&&mirrorState.active(),
+                [&]{return effectCoverage.draw(ext,write,native,replay);},
+                {this,&Device::paintParticleCoverage,unsigned(write)});
+        }
         return effectCoverage.draw(ext,write,native,replay);
         };
         const HRESULT hr=capture();
@@ -1113,6 +1035,7 @@ private:
         {CpuScope cost(cleanupSample?cpuCleanupOwners+3:nullptr);if(autoBump)autoBump->endFrame();}
         {CpuScope cost(cleanupSample?cpuCleanupOwners+4:nullptr);if(modelNormals)modelNormals->endFrame();}
         if(celestialDiscs)celestialDiscs->endFrame();if(shadowBlobs)shadowBlobs->endFrame();
+        terrainAdmission.target=nullptr;drop(terrainAdmissionTarget.p);
         effectCoverage.endFrame();drop(worldDepth);worldDepthDescKnown=false; rainMrtUnbind();terrain = captured = applied = projectionValid = skySeen = menuScene = false;rainMaskCleared=rainMaskDrawn=rainMaskFrame=rainMaskOk=rainDepthOk=false; /* 0.3.202 (rain mask MRT): RT1 never outlives a frame */earlyDepth.reset();resetTranslucentCensus(); /* the TRANSLUCENT line is logged before clearFrame */
     }
     void captureWeatherDiagnostics(const NorthlightSurfaceFrame* constants,IDirect3DSurface9* target,IDirect3DSurface9* nameDepth,const char* unavailable,
@@ -1185,88 +1108,7 @@ private:
             logf("EFFECT_GPU_CAPTURE rendererFrame=%u scopes=%u directory=%s aoRaw=%u aoDenoised=%u world=%u diagnostic=1 fpsEligible=0",frame,scopes,directory.c_str(),unsigned(diagnosticAoRaw),unsigned(diagnosticAo),unsigned(diagnosticWorld));
         }catch(...){logf("EFFECT_GPU_CAPTURE failed rendererFrame=%u diagnostic=1 fpsEligible=0",frame);}
     }
-    void releaseResources(bool preserveCaptureSources=false) {
-        projectedAudit.reset();
-        effectCoverage.reset();
-        if(surface)surface->reset();if(autoBump)autoBump->reset(nullptr,preserveCaptureSources);if(modelNormals)modelNormals->reset(preserveCaptureSources);
-        if(aoActorMask)aoActorMask->reset();aoActorFrame=~0u;aoActorOn=false;
-        drop(aoActorPreparePS);drop(aoActorPS);drop(aoActorAlphaPS);aoActorShaderFailed=false;
-        rainMrtUnbind();stateBlocks.clear();clearFrame();maskFormatFor=nullptr;maskFormatValue=0;maskStencil=false;maskDsId=nullptr; /* 0.3.212 (task 32): the depth may change with the device */
-        drop(sceneSurface); drop(aoSurface); drop(aoRawSurface); drop(scene); drop(depthTex); drop(ao); drop(aoRaw);drop(rainMaskMS);drop(rainMaskSurface);drop(rainMask);drop(rainDepth);rainMaskFailed=false; /* 0.3.202 (rain) */
-        drop(aoPS); drop(aoBlurPS); drop(aoBlurNoWaterPS);aoBlurNoWaterRefused=false;drop(aoContactBloomPS); drop(aoOnlyPS); drop(contactBloomPS); drop(compositePS);drop(rainMrtPS);drop(rainScrubPS); width = height = 0;
-    }
-    bool error(HRESULT hr, const char* stage) {
-        if (SUCCEEDED(hr)) return false;
-        if (!failed) logf("DISABLED: %s failed HRESULT=0x%08lx", stage, (unsigned long)hr);
-        failed = true; return true;
-    }
-    void selectAO(unsigned method,unsigned quality){
-        if(aoMethod!=method||(method&&aoQuality!=quality))drop(aoOnlyPS);
-        if(aoMethod!=method){drop(aoContactBloomPS);drop(aoActorPS);drop(aoActorAlphaPS);aoActorShaderFailed=false;}
-        else if(method&&aoQuality!=quality)drop(aoContactBloomPS);
-        aoMethod=method;aoQuality=quality;
-    }
-    bool resources(UINT w, UINT h, D3DFORMAT format, bool colorOnly=false) {
-        // DXVK 3's 1x depth+stencil RESZ copy can leave INTZ unchanged (proved
-        // with a nonzero sentinel). DF24 copies depth alone, which is all our
-        // snapshots consume; NameMask still uses the original world stencil.
-        // DXVK 2.7.1 has the same ResolveZ and the same copy-path choice (a depth+stencil copy goes through the
-        // shader copy on AMD drivers, depth alone through vkCmdCopyImage), so both packaged DXVKs take DF24.
-        // A frame whose world depth was not bound (bindWorldDepth failed after projectionValid) keeps the current
-        // format: deciding INTZ there recreated every effect resource, and DF24 again on the next frame. A DF24 the
-        // device refused stays INTZ for the session (df24Refused).
-        const D3DFORMAT intz=(D3DFORMAT)MAKEFOURCC('I','N','T','Z'),df24=(D3DFORMAT)MAKEFOURCC('D','F','2','4');
-        const D3DFORMAT depthFormat=!worldDepthDescKnown&&depthSnapshotFormat!=D3DFMT_UNKNOWN?depthSnapshotFormat
-            :NorthlightBackend::isPackagedDxvk(selectedBackend)&&!df24Refused&&worldDepthDescKnown&&worldDepthDesc.MultiSampleType==D3DMULTISAMPLE_NONE?df24:intz;
-        if(!colorOnly){
-            // Method switches replace shaders while keeping the existing scene/depth targets.
-            const DWORD* aoContactShaders[3][5]={
-                {kAoContactBloomShader,kHdaoContactBloomShader,kHbaoPlusContactBloomShader,kGtaoContactBloomShader,kAssaoContactBloomShader},
-                {kAoContactBloomShader,kHdaoContactBloomMediumShader,kHbaoPlusContactBloomMediumShader,kGtaoContactBloomMediumShader,kAssaoContactBloomMediumShader},
-                {kAoContactBloomShader,kHdaoContactBloomLowShader,kHbaoPlusContactBloomLowShader,kGtaoContactBloomLowShader,kAssaoContactBloomLowShader}};
-            if (!aoPS && error(ext->CreatePixelShader(kAoShader, &aoPS), "AO shader")) return false;
-            if (!aoContactBloomPS && error(ext->CreatePixelShader(aoContactShaders[aoQuality][aoMethod], &aoContactBloomPS), "AO contact bloom shader")) return false;
-            if((hdr.active||aoMethod)&&!aoOnlyPS){
-                const DWORD* shaders[3][5]={
-                    {kAoOnlyShader,kHdaoOnlyShader,kHbaoPlusOnlyShader,kGtaoOnlyShader,kAssaoOnlyShader},
-                    {kAoOnlyShader,kHdaoOnlyMediumShader,kHbaoPlusOnlyMediumShader,kGtaoOnlyMediumShader,kAssaoOnlyMediumShader},
-                    {kAoOnlyShader,kHdaoOnlyLowShader,kHbaoPlusOnlyLowShader,kGtaoOnlyLowShader,kAssaoOnlyLowShader}};
-                if(error(ext->CreatePixelShader(shaders[aoQuality][aoMethod],&aoOnlyPS),"AO alpha shader"))return false;
-            }
-            if (!aoBlurPS && error(ext->CreatePixelShader(kAoBlurShader, &aoBlurPS), "AO blur shader")) return false;
-            if(!aoBlurNoWaterPS&&!aoBlurNoWaterRefused&&FAILED(ext->CreatePixelShader(kAoBlurNoWaterShader,&aoBlurNoWaterPS))){drop(aoBlurNoWaterPS);aoBlurNoWaterRefused=true;}
-            if (!contactBloomPS && error(ext->CreatePixelShader(kContactBloomShader, &contactBloomPS), "contact bloom shader")) return false;
-            if (!compositePS && error(ext->CreatePixelShader(kCompositeShader, &compositePS), "composite shader")) return false;
-        }
-        if (sceneSurface && w == width && h == height && format == sceneFormat && (colorOnly || (aoSurface && aoRawSurface && depthTex && depthFormat == depthSnapshotFormat))) return true;
-        // Resource replacement must not invalidate this frame's retained depth surface.
-        if (w!=width || h!=height || format!=sceneFormat) {drop(sceneSurface); drop(scene);}
-        if (w!=width || h!=height || (!colorOnly && depthFormat!=depthSnapshotFormat)) {
-            rainMrtUnbind();rainDepthOk=rainMaskCleared=rainMaskDrawn=false;rainMaskFailed=false;
-            drop(aoSurface); drop(ao); drop(aoRawSurface); drop(aoRaw); drop(depthTex); captured=false;drop(rainMaskMS);drop(rainMaskSurface);drop(rainMask);drop(rainDepth); /* 0.3.202 (rain): the mask follows the effect size */
-        }
-        width = w; height = h; sceneFormat = format;
-        if (!scene && error(ext->CreateTexture(w, h, 1, D3DUSAGE_RENDERTARGET, format, D3DPOOL_DEFAULT, &scene, nullptr), "scene texture")) return false;
-        if (!sceneSurface && error(scene->GetSurfaceLevel(0, &sceneSurface), "scene surface")) return false;
-        if(colorOnly)return true; // HDR conversion needs no depth snapshot, AO targets or effect shaders.
-        depthSnapshotFormat=depthFormat;
-        if (!depthTex) {
-            HRESULT hr=ext->CreateTexture(w, h, 1, D3DUSAGE_DEPTHSTENCIL, depthSnapshotFormat, D3DPOOL_DEFAULT, &depthTex, nullptr);
-            // A DXVK without the DF formats (d3d9.supportDFFormats off) refuses DF24: INTZ, not the effects disabled.
-            if (FAILED(hr) && depthSnapshotFormat==df24) {
-                logf("Depth snapshot DF24 refused HRESULT=0x%08lx: INTZ for this session", (unsigned long)hr);
-                df24Refused=true;depthSnapshotFormat=intz;
-                hr=ext->CreateTexture(w, h, 1, D3DUSAGE_DEPTHSTENCIL, depthSnapshotFormat, D3DPOOL_DEFAULT, &depthTex, nullptr);
-            }
-            if (error(hr, "depth snapshot texture")) return false;
-        }
-        if (!ao && error(ext->CreateTexture(w/2, h/2, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A16B16G16R16F, D3DPOOL_DEFAULT, &ao, nullptr), "half resolution AO texture")) return false;
-        if (!aoRaw && error(ext->CreateTexture(w/2, h/2, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A16B16G16R16F, D3DPOOL_DEFAULT, &aoRaw, nullptr), "half resolution raw AO texture")) return false;
-        if (!aoSurface && error(ao->GetSurfaceLevel(0, &aoSurface), "AO surface")) return false;
-        if (!aoRawSurface && error(aoRaw->GetSurfaceLevel(0, &aoRawSurface), "raw AO surface")) return false;
-        logf("Resources %ux%u, AO %ux%u, format=%u depthSnapshot=%s sourceMSAA=%u", w,h,w/2,h/2,unsigned(format),depthSnapshotFormat==(D3DFORMAT)MAKEFOURCC('D','F','2','4')?"DF24":"INTZ",unsigned(worldDepthDesc.MultiSampleType));
-        return true;
-    }
+#include "device_effect_resources.inl"
     // Swap chain 0's back buffer description only changes through Reset.
     static constexpr bool kCacheBackBufferDesc=true;
     // 0.3.196 (task 12): backSurface is swap chain 0's back buffer identity (no reference; cleared with backDescKnown in Reset, which frees it).
@@ -1307,10 +1149,11 @@ private:
         }
         return ok;
     }
-    bool readProjection(bool wmo=false) {
-        float p[16],raw[16];
+    bool readProjection(bool wmo,float (&raw)[16]) {
+        float transposed[16];
         if (FAILED(ext->GetVertexShaderConstantF(wmo?2:4, raw, 4))) return false;
-        for(unsigned r=0;r<4;++r)for(unsigned c=0;c<4;++c)p[r*4+c]=wmo?raw[c*4+r]:raw[r*4+c];
+        if(wmo)for(unsigned r=0;r<4;++r)for(unsigned c=0;c<4;++c)transposed[r*4+c]=raw[c*4+r];
+        const auto* p=wmo?transposed:raw;
         // Verified Terrain shaders: clip = view.x*c4 + view.y*c5 + view.z*c6 + view.w*c7.
         Projection q;
         if (!decodeProjection(p,q)) return false;
@@ -1332,30 +1175,9 @@ private:
     bool resolveDepthInto(IDirect3DTexture9* target, bool fatal) {
         rainMrtUnbind();
         if (!terrain || !worldDepth || !target || !projectionValid) return false;
-        SavedState saved(ext,&stateBlocks);
-        if (!saved.ok) return false;
-        auto step=[&](HRESULT hr,const char* stage){return fatal?error(hr,stage):FAILED(hr);};
-        // D9VK implements AMD RESZ: POINTSIZE magic 0x7fa05000 copies/resolves
-        // the bound depth surface into texture slot 0, including MSAA sample zero.
-        if (step(ext->SetDepthStencilSurface(worldDepth), "bind scene depth")) return false;
-        if (step(ext->SetTexture(0, target), "bind depth resolve target")) return false;
-        if(selectedBackend==NorthlightBackend::Kind::Native){
-            // AMD's RESZ protocol requires a dummy draw to flush sampler binding
-            // through the native D3D9 runtime. Disable ALL writes, then SavedState
-            // restores the game state (including stream 0 changed by DrawPrimitiveUP).
-            if(step(ext->SetVertexShader(nullptr),"RESZ dummy VS")||step(ext->SetPixelShader(nullptr),"RESZ dummy PS")||
-               step(ext->SetFVF(D3DFVF_XYZ),"RESZ dummy FVF"))return false;
-            const D3DRENDERSTATETYPE states[]={D3DRS_ZENABLE,D3DRS_ZWRITEENABLE,D3DRS_STENCILENABLE,D3DRS_ALPHATESTENABLE,D3DRS_COLORWRITEENABLE,D3DRS_COLORWRITEENABLE1,D3DRS_COLORWRITEENABLE2,D3DRS_COLORWRITEENABLE3};
-            for(auto state:states)if(step(ext->SetRenderState(state,0),"RESZ disable writes"))return false;
-            if(step(ext->SetTextureStageState(0,D3DTSS_COLOROP,D3DTOP_SELECTARG1),"RESZ sampler op")||
-               step(ext->SetTextureStageState(0,D3DTSS_COLORARG1,D3DTA_TEXTURE),"RESZ sampler arg")||
-               step(ext->SetTextureStageState(1,D3DTSS_COLOROP,D3DTOP_DISABLE),"RESZ stage1"))return false;
-            const float dummy[3]={0,0,0};
-            if(step(ext->DrawPrimitiveUP(D3DPT_POINTLIST,1,dummy,sizeof dummy),"RESZ dummy draw"))return false;
-        }
-        ext->SetRenderState(D3DRS_POINTSIZE, 0x3f800000); // trigger on a state change
-        if (step(ext->SetRenderState(D3DRS_POINTSIZE, 0x7fa05000), "RESZ")) return false;
-        return true;
+        return NorthlightSceneDepth::copy(ext,stateBlocks,worldDepth,target,
+            selectedBackend==NorthlightBackend::Kind::Native,fatal,
+            [this](HRESULT hr,const char* stage){return error(hr,stage);});
     }
     HRESULT quad(UINT w, UINT h, bool setViewport=true) {
         if(setViewport){D3DVIEWPORT9 vp={0,0,w,h,0,1};HRESULT hr=ext->SetViewport(&vp);if(FAILED(hr))return hr;}
@@ -1427,295 +1249,58 @@ private:
         context.c[0][0]=1.f/width;context.c[0][1]=1.f/height;context.c[0][2]=nearZ;context.c[0][3]=farZ;
         context.c[1][3]=surfaceTime;context.c[2][0]=worldMinDepth;context.c[2][1]=1.f/(worldMaxDepth-worldMinDepth);return true;
     }
+    unsigned lateWeatherAuditFrame=~0u;
     void surfaceWeather(){
         const bool diagnostic=(NorthlightDiagnosticCapture::pending().load(std::memory_order_relaxed)&NorthlightDiagnosticCapture::Weather)!=0;
-        if(!surface||!world||!applied||!enabled||failed||debugMode||worldDebug||!depthTex||!world->weatherSetting()||world->underwaterScale()<.9f||memoryGuard.capsHalved()){weatherLayerGate=0;if(diagnostic)captureWeatherDiagnostics(nullptr,nullptr,nullptr,"weather-pass-unavailable");return;}
+        std::optional<NorthlightLightingCapture::Capture> audit;
+        if(applied&&lateWeatherAuditFrame!=frame){
+            if(const auto* directory=frameParity.auditDirectory(frame)){
+                audit.emplace(ext,*directory,frame,frame,frame,width,height,"frame-parity-late-weather");
+                lateWeatherAuditFrame=frame;
+            }
+        }
+        auto skip=[&](const char* reason){if(audit){audit->bindingSkip("LateWeather",reason);audit->finish(true);}};
+        if(!surface||!world||!applied||!enabled||failed||debugMode||worldDebug||!depthTex||!world->weatherSetting()||world->underwaterScale()<.9f||memoryGuard.capsHalved()){weatherLayerGate=0;if(diagnostic)captureWeatherDiagnostics(nullptr,nullptr,nullptr,"weather-pass-unavailable");skip("weather-pass-unavailable");return;}
         const auto& weather=world->weather();
-        if((weather.kind!=NorthlightWeather::Kind::Rain&&weather.kind!=NorthlightWeather::Kind::Snow&&weather.kind!=NorthlightWeather::Kind::Sand)||weather.blend<=0){weatherLayerGate=0;if(diagnostic)captureWeatherDiagnostics(nullptr,nullptr,nullptr,"no-active-weather");return;}
+        if((weather.kind!=NorthlightWeather::Kind::Rain&&weather.kind!=NorthlightWeather::Kind::Snow&&weather.kind!=NorthlightWeather::Kind::Sand)||weather.blend<=0){weatherLayerGate=0;if(diagnostic)captureWeatherDiagnostics(nullptr,nullptr,nullptr,"no-active-weather");skip("no-active-weather");return;}
         // World precipitation remains native. Menu scenes use their own
         // atmosphere profile and the captured backdrop's shelter query.
         weatherLayerGate+=(1-weatherLayerGate)*.1f;
-        NorthlightSurfaceFrame context;if(!surfaceContext(context)){if(diagnostic)captureWeatherDiagnostics(nullptr,nullptr,nullptr,"surface-context-unavailable");return;}
+        if(audit)logf("WEATHER_PARITY present=%u phase=%.9g kind=%s blend=%.9g intensity=%.9g layerGate=%.9g",
+            frame,surfaceTime,NorthlightWeather::kindName(weather.kind),double(weather.blend),double(weather.intensity),double(weatherLayerGate));
+        NorthlightSurfaceFrame context;if(!surfaceContext(context)){if(diagnostic)captureWeatherDiagnostics(nullptr,nullptr,nullptr,"surface-context-unavailable");skip("surface-context-unavailable");return;}
         context.c[3][0]=weatherLayerGate*weather.blend*(.35f+.65f*weather.intensity);context.c[3][1]=weather.kind==NorthlightWeather::Kind::Snow?1.f:0.f;
         const auto& q=world->surfaceSettings();const bool snow=weather.kind==NorthlightWeather::Kind::Snow,sand=weather.kind==NorthlightWeather::Kind::Sand;
         const unsigned lensOn=snow?q.snowLens:q.rainLens,strength=snow?q.snowLensStrength:q.rainLensStrength;
         const float frost=snow&&q.snowFrost?context.c[3][0]*float(q.snowFrostStrength)*.01f:0;
         const bool cameraWanted=sand?(q.sandLens&&q.sandLensStrength):((lensOn&&strength)||frost>0);
         const bool menuWeather=menuScene&&world->isMenu()&&!sand;
-        if(!cameraWanted&&!menuWeather&&!diagnostic)return;
+        if(!cameraWanted&&!menuWeather&&!diagnostic){skip("supplemental-weather-disabled");return;}
         surface->setMotion(context,unsigned(weather.kind),q,surfaceTime);
         const bool exposed=(cameraWanted||menuWeather)&&world->supplementalWeatherOutdoors();
         const bool cameraExposed=cameraWanted&&exposed;
-        if(!exposed&&!diagnostic)return;
-        ExtensionDevice::RawScope raw(*ext);SavedState saved(ext,&stateBlocks);if(!saved.ok){if(diagnostic)captureWeatherDiagnostics(nullptr,nullptr,nullptr,"state-save-failed");return;}
+        if(!exposed&&!diagnostic){skip("camera-sheltered");return;}
+        ExtensionDevice::RawScope raw(*ext);SavedState saved(ext,&stateBlocks);if(!saved.ok){if(diagnostic)captureWeatherDiagnostics(nullptr,nullptr,nullptr,"state-save-failed");skip("state-save-failed");return;}
         IDirect3DSurface9* nameDepth=nameMask.armed()&&nameMask.hasMarks()&&maskStencil?worldDepth:nullptr;
         auto* weatherTarget=hdrSceneReady?hdrPresentBack:saved.targets[0];
         if(diagnostic)captureWeatherDiagnostics(&context,weatherTarget,nameDepth,nullptr);
+        struct AuditContext{NorthlightLightingCapture::Capture* capture;bool drew=false;} auditContext{audit?&*audit:nullptr};
+        NorthlightSurfaceRenderer::BindingAudit weatherAudit{};
+        if(audit)weatherAudit={[](void* context,const char* entry,unsigned samplers,HRESULT draw){
+            auto& record=*static_cast<AuditContext*>(context);record.capture->bindings(entry,samplers,draw);record.drew=true;
+        },&auditContext};
         if(menuWeather&&exposed){
             context.c[3][2]=float(snow?q.snowFlakeSize:q.rainDropSize)*.01f;
-            surface->precipitation(weatherTarget,depthTex,width,height,context,q.preset,nameDepth,&saved);
+            surface->precipitation(weatherTarget,depthTex,width,height,context,q.preset,nameDepth,&saved,{},weatherAudit);
         }
         if(cameraExposed){
-            if(sand)surface->sandLens(weatherTarget,width,height,surfaceTime,context.c[3][0]*float(q.sandLensStrength)*.01f,nameDepth,weather.intensity,float(q.sandLensSize)*.01f,&saved);
-            else if(scene&&sceneSurface)surface->lens(weatherTarget,hdrSceneReady?hdrFrame.texture():scene,hdrSceneReady?hdrFrame.surface():sceneSurface,width,height,snow,surfaceTime,lensOn?context.c[3][0]*float(strength)*.01f:0,nameDepth,weather.intensity,snow?world->weatherLensHeat():0.f,float(snow?q.snowLensSize:q.rainLensSize)*.01f,snow||q.rainRivulets!=0,frost,&saved);
+            if(sand)surface->sandLens(weatherTarget,width,height,surfaceTime,context.c[3][0]*float(q.sandLensStrength)*.01f,nameDepth,weather.intensity,float(q.sandLensSize)*.01f,&saved,weatherAudit);
+            else if(scene&&sceneSurface)surface->lens(weatherTarget,hdrSceneReady?hdrFrame.texture():scene,hdrSceneReady?hdrFrame.surface():sceneSurface,width,height,snow,surfaceTime,lensOn?context.c[3][0]*float(strength)*.01f:0,nameDepth,weather.intensity,snow?world->weatherLensHeat():0.f,float(snow?q.snowLensSize:q.rainLensSize)*.01f,snow||q.rainRivulets!=0,frost,&saved,weatherAudit);
             gpuProfile->mark("WeatherLens");
         }
+        if(audit){if(auditContext.drew)audit->finish(true);else skip(exposed?"no-supplemental-draw":"camera-sheltered");}
     }
-    void renderEffects() {
-        if(!enabled&&worldDebug==0&&!diagnostics())return;
-        if(hdr.active&&(!hdrAtUiBoundary||!hdrBackTarget()))return;
-        nameMaskRunEnd(); /* 0.3.212 (task 32): the effect passes and SavedState meet the game's stencil states */
-        CpuScope cpu(sampled()?&cpuEffects:nullptr);
-        using NorthlightEffectsBuckets::Bucket;
-        // 0.3.154: sceneMs end = the last entry before effects apply; the read is billed to cpuEffects.
-        if((gateFrame||NorthlightRenderThreadProbe::profiling())&&!applied){QueryPerformanceCounter(&gateSceneEnd);stallSceneIdle=streamStats?NorthlightStream::get(streamStats->replayIdleNs):0;gateSceneDraws=drawCalls;gateSceneReads=CpuScope::reads;}
-        if(!applied&&worldDebug&&terrain&&world&&(!enabled||failed||!projectionValid)){
-            ExtensionDevice::RawScope raw(*ext);D3DSURFACE_DESC desc{};IDirect3DSurface9* target=nullptr;
-            if(fullViewport(desc,nullptr,true)&&SUCCEEDED(ext->GetRenderTarget(0,&target))&&target){applied=world->emptyDiagnosticView(target,desc.Width,desc.Height,worldDebug);target->Release();}
-            return;
-        }
-        if(!applied&&enabled&&!failed&&!projectionValid&&skySeen){D3DSURFACE_DESC desc{};if(fullViewport(desc,nullptr,true))recoverSkyContext(desc);}
-        if (applied || !enabled || failed || !projectionValid) return;
-        // Keep rare slow frames attributable too. No-op calls after composition
-        // leave the valid first split untouched; raw draw counting stays sampled.
-        effectsBucketed=NorthlightRenderThreadProbe::profiling();
-        {static const unsigned drawMethods[4]={rawMethodIndex("DrawIndexedPrimitive"),rawMethodIndex("DrawPrimitive"),rawMethodIndex("DrawIndexedPrimitiveUP"),rawMethodIndex("DrawPrimitiveUP")};
-         const std::uint32_t* counters[4]={};if(mirrorState.rawCounting)for(unsigned i=0;i<4;++i)counters[i]=drawMethods[i]<ExtensionDevice::RawMethods?&mirrorState.rawMethodCalls[drawMethods[i]]:nullptr;
-         effectsBuckets.begin(effectsBucketed,&qpcNow,counters,4);}
-        struct BucketsEnd {NorthlightEffectsBuckets::Frame& f;~BucketsEnd(){f.end();}} bucketsEnd{effectsBuckets};
-        // task 45: the always-on effects span for the CPU budget (applying frames only; every return path below ends it).
-        struct EffectsSpan { std::int64_t& out; std::int64_t start; ~EffectsSpan(){out=qpcNow()-start;} } effectsSpan{cpuEffectsQpc,qpcNow()};
-        // RenderProfile: every applying frame (two clock reads), the FRAME cost effects series.
-        CpuScope frameCostScope(!sampled()&&NorthlightRenderThreadProbe::profiling()?&cpuEffects:nullptr);
-        // Flush sampled light/caster diagnostics together, inside both CPU spans.
-        LogFlushBatch logBatch;
-        // The scope outlives every SavedState, including nested depth passes.
-        // Game captures remain outside; the device gate stays held throughout.
-        rainMrtUnbind(); /* 0.3.202 (rain mask MRT) */
-        ExtensionDevice::RawScope rawEffects(*ext);
-        // Every early return must leave a blank diagnostic view, including
-        // missing depth/context and device-call failures. Never clear an
-        // intermediate effect target: retain the original frame target here.
-        struct DebugViewEnd {
-            Device& owner;IDirect3DSurface9* target=nullptr;D3DSURFACE_DESC desc{};
-            explicit DebugViewEnd(Device& device):owner(device){
-                if(owner.worldDebug&&owner.world&&SUCCEEDED(owner.ext->GetRenderTarget(0,&target))&&target)
-                    if(FAILED(target->GetDesc(&desc))){target->Release();target=nullptr;}
-            }
-            ~DebugViewEnd(){if(target){if(!owner.diagnosticWorld)owner.world->emptyDiagnosticView(target,desc.Width,desc.Height,owner.worldDebug);target->Release();}}
-        } debugViewEnd(*this);
-        D3DSURFACE_DESC desc;
-        const bool sceneSplit=gpuSceneProfile&&!gpuSceneSplit;
-        if(sceneSplit)gpuSceneProfile->mark("GameScene");
-        if (!fullViewport(desc) || !resources(desc.Width, desc.Height, desc.Format) || !resolveDepth()) return;
-        if(sceneSplit)gpuSceneProfile->mark("DepthResolve");
-        SavedState saved(ext,&stateBlocks);
-        if (!saved.ok) return;
-        IDirect3DTexture9* coverage=effectCoverage.texture(ext,saved.targets[0]);
-        // Include deferred material/model captures; in-scene MRT work is part
-        // of GameScene and cannot be attributed by this interval alone.
-        surfaceTimerOpen=world&&world->gpuBudgetMs()&&gpuTimer->begin(frame);
-        if(autoBump)autoBump->finishCaptures();
-        if(sceneSplit)gpuSceneProfile->mark("MaterialCapture");
-        if(modelNormals){const NorthlightModelNormals::DepthSeed seed{depthTex,nearZ,farZ,worldMinDepth,worldMaxDepth};
-            modelNormals->finishCaptures(true,&seed);}
-        if(sceneSplit){gpuSceneProfile->mark("ModelNormals");gpuSceneSplit=true;}
-        // 0.3.200 (gpu budget): the frame timer brackets every effect pass (closed on every return path by the guard, after the profile's end).
-        if(diagnostics())gpuProfile->beginFrame(frame,NorthlightRenderThreadProbe::sampleFrame(frame)); // otherwise no queries; mark/endFrame are no-ops
-        effectsBuckets.mark(Bucket::Setup);
-        // spellReplay closes profiling after both deferred spells and precipitation.
-        IDirect3DTexture9* rainMaskTex=world&&debugMode==0?rainMaskPrepare():nullptr; /* 0.3.202 (rain mask MRT): the mask resolved and cut by the final depth (own SavedState) */
-        IDirect3DTexture9* waterMask=nullptr;
-        if(water&&water->maskRequested()&&debugMode==0){
-            water->resolveMask();
-            waterMask=water->maskTextureForDepth(worldMinDepth,worldMaxDepth);
-        }
-        gpuProfile->mark("PreCelestial"); /* task 45: the rain and water mask preparation (and GPU work still pending from the game's scene) end here, so CelestialDiscs bills the discs and the terrain mask alone */
-        // discs and glare, then the wrap-ring visibility in the same group of
-        // 1x1 passes before the scene copy; the veil follows water (below).
-        const bool celestial=celestialDiscs&&celestialEnabled()&&!skyLayers.native(frame)&&debugMode==0&&worldDebug==0;float sunElevation=0;
-        auto renderCelestial=[&](IDirect3DSurface9* target){
-            NorthlightCelestial::Context sky;float inverseView[16],projection[3];
-            if(world->celestialContext(sky,inverseView,projection)){sunElevation=sky.sun.direction[2]-sky.horizonSine; /* over the camera's far edge, as the composite's haze band */
-                celestialDiscs->setWeatherGain(world->weatherEffects().discGain()*world->underwaterScale()); /* 0.3.198 (rain): the discs, glare and veil follow the weather */
-                celestialDiscs->setSkyLayers(skyLayers.texture(frame));
-                celestialDiscs->render(target,depthTex,waterMask,width,height,world->legacyFogParameters(),worldMinDepth,worldMaxDepth,nearZ,farZ,projection,inverseView,sky,celestialGlowHue());}
-        };
-        if(celestial&&!hdr.active)renderCelestial(saved.targets[0]);
-        gpuProfile->mark("CelestialDiscs");
-        if(celestial&&!hdr.active){celestialDiscs->renderRing();gpuProfile->mark("CelestialRing");}
-        effectsBuckets.mark(Bucket::Celestial); /* discs, glare, the terrain mask prepare, the ring */
-        if (error(ext->StretchRect(saved.targets[0], nullptr, sceneSurface, nullptr, D3DTEXF_NONE), "copy scene")) return;
-        effectState();
-        const bool linearHdr=hdr.active&&debugMode==0&&worldDebug==0;
-        const bool fold=world&&debugMode==0&&world->screenReady();
-        bool neutralAOPending=false;
-        auto clearNeutralAO=[&]{
-            if(error(ext->SetRenderTarget(0,aoSurface),"neutral AO render target"))return false;
-            if(error(ext->Clear(0,nullptr,D3DCLEAR_TARGET,D3DCOLOR_ARGB(255,0,0,0),1.f,0),"neutral AO clear"))return false;
-            gpuProfile->mark("AOClear");neutralAOPending=false;return true;
-        };
-        float constants[]={1.f/width,1.f/height,nearZ,farZ,scaleX,scaleY,aoStrength,(menuScene||(world&&world->screenReady())?0.f:.12f),.08f,aoRadius,float(debugMode),0,worldMinDepth,1.f/(worldMaxDepth-worldMinDepth),worldMaxDepth,0};
-
-        float waterFlags[]={waterMask?1.f:0.f,0,0,0};
-        auto bindLegacyFog=[&]{
-            auto nativeFog=world?world->legacyFogConstants():NorthlightLegacyFog::Constants{};
-            nativeFog.parameters[0]*=fogForward; // Position() reconstructs positive view distance.
-            ext->SetPixelShaderConstantF(5,nativeFog.parameters,1);ext->SetPixelShaderConstantF(6,nativeFog.color,1);
-        };
-        auto bindEffects=[&](IDirect3DTexture9* ambient){
-            ext->SetPixelShaderConstantF(4,waterFlags,1);ext->SetTexture(3,waterMask);
-            ext->SetPixelShaderConstantF(0,constants,4);
-            bindLegacyFog();
-            ext->SetTexture(0,scene); ext->SetTexture(1,depthTex); ext->SetTexture(2,ambient);
-        };
-        bindEffects(nullptr);
-        if (!contactAO) {
-            // 0.3.201 (task 18) ContactAO=0: no AO and no AOBlur. A ready world gets the bloom with AO 1 straight into `ao` (ContactBloom);
-            // the legacy composite gets a neutral ambient (AO 1, no bounce) from a clear. SetRenderTarget resets the viewport; scissor and depth are off (effectState).
-            if (constants[7]==0.f&&!linearHdr&&constants[8]!=0.f) {
-                if (error(ext->SetRenderTarget(0,aoSurface),"contact bloom render target")) return;
-                ext->SetPixelShader(contactBloomPS);
-                if (error(quad(width/2,height/2,false),"contact bloom pass")) return;
-                gpuProfile->mark("ContactBloom");
-            } else if(linearHdr&&fold)neutralAOPending=true; // The world already owns a 1x1 neutral AO input.
-            else if(!clearNeutralAO())return;
-            effectsBuckets.mark(Bucket::AO);
-        } else {
-            IDirect3DTexture9* actorTexture=aoActorOn?aoActorMask->textureForDepth(worldDepth):nullptr;
-            const bool alphaOnly=linearHdr||constants[7]!=0.f;
-            aoActorUsed=actorTexture&&aoActorShaders(alphaOnly);
-            if(aoActorUsed){
-                ext->SetTexture(4,actorTexture);
-                ext->SetSamplerState(4,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);ext->SetSamplerState(4,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);
-                ext->SetSamplerState(4,D3DSAMP_MINFILTER,D3DTEXF_POINT);ext->SetSamplerState(4,D3DSAMP_MAGFILTER,D3DTEXF_POINT);
-                ext->SetSamplerState(4,D3DSAMP_MIPFILTER,D3DTEXF_NONE);ext->SetSamplerState(4,D3DSAMP_SRGBTEXTURE,FALSE);
-                // Reuse the existing ping-pong target for normals/contact;
-                // no extra model replay or intermediate normal texture is needed.
-                if(error(ext->SetRenderTarget(0,aoSurface),"actor AO preparation target"))return;
-                ext->SetPixelShader(aoActorPreparePS);
-                if(error(quad(width/2,height/2,false),"actor AO preparation pass"))return;
-                gpuProfile->mark("AOActorPrepare");
-            }
-            IDirect3DPixelShader9* contactShader=aoActorUsed?(alphaOnly?aoActorAlphaPS:aoActorPS):(alphaOnly?aoOnlyPS:aoContactBloomPS);
-            if (error(ext->SetRenderTarget(0,aoRawSurface),"AO render target")) return;
-            if(aoActorUsed)ext->SetTexture(2,ao);
-            ext->SetPixelShader(linearHdr||constants[7]==0.f?contactShader:aoPS);
-            if (error(quad(width/2,height/2,false),"AO pass")) return;
-            if (!linearHdr && constants[7]!=0.f && aoMethod) {
-                // Keep the original fallback colour bounce in RGB; replace only AO.
-                // Splitting these kernels keeps GTAO below the ps_3_0 slot limit.
-                ext->SetRenderState(D3DRS_COLORWRITEENABLE,D3DCOLORWRITEENABLE_ALPHA);
-                ext->SetPixelShader(contactShader);
-                const HRESULT aoResult=quad(width/2,height/2,false);
-                ext->SetRenderState(D3DRS_COLORWRITEENABLE,15);
-                if (error(aoResult,"fallback AO alpha pass")) return;
-            }
-            gpuProfile->mark("AO");
-            diagnosticAoRaw=true;
-            // The preparation target becomes the blur destination below.
-            if(aoActorUsed){ext->SetTexture(2,nullptr);ext->SetTexture(4,nullptr);}
-            // 0.3.201 (task 18): the raw IGN-rotated AO is denoised by a half-resolution bilateral pass into `ao`,
-            // which every consumer (legacy composite, world fold) keeps reading. s2 is released afterwards.
-            // Task 43: s0 (LINEAR) carries the raw AO too for the blur's 9-read bilinear early-out (AOBlur never reads Scene); the scene copy is rebound after.
-            const bool timeAOBlur=gpuProfile->recording()&&cpuFrequency.QuadPart>0;
-            const auto aoBlurFrame=gpuProfile->sampledFrame();
-            LONGLONG aoBlurSetup=0,aoBlurSubmit=0;
-            {CpuScope timing(timeAOBlur?&aoBlurSetup:nullptr);
-             if (error(ext->SetRenderTarget(0,aoSurface),"AO blur render target")) return;
-             NorthlightEffectCoverage::Capture::bind(ext,effectCoverage.aoTexture(ext,saved.targets[0]));
-             bindLegacyFog();ext->SetTexture(2,aoRaw);ext->SetTexture(0,aoRaw);ext->SetPixelShader(!waterMask&&aoBlurNoWaterPS?aoBlurNoWaterPS:aoBlurPS);}
-            // Separate state/resource preparation from the draw interval. Both
-            // timestamps still include command-stream gaps and dependencies.
-            gpuProfile->mark("AOBlurSetup");
-            HRESULT aoBlurResult;
-            {CpuScope timing(timeAOBlur?&aoBlurSubmit:nullptr);aoBlurResult=quad(width/2,height/2,false);}
-            if (error(aoBlurResult,"AO blur pass")) return;
-            diagnosticAo=true;
-            ext->SetTexture(2,nullptr);ext->SetTexture(0,scene);
-            gpuProfile->mark("AOBlur");effectsBuckets.mark(Bucket::AO);
-            if(timeAOBlur){cpuAOBlurSetup=aoBlurSetup;cpuAOBlurSubmit=aoBlurSubmit;cpuAOBlurFrame=aoBlurFrame;
-                cpuAOBlurMethod=aoMethod;cpuAOBlurWidth=width/2;cpuAOBlurHeight=height/2;cpuAOBlurPending=true;}
-        }
-        // 0.3.174 FOLD: with a ready world and no effect debug view, WorldComposite applies the
-        // AO and bloom (AOContactBloom: bloom rgb, AO alpha) to the scene copy itself, so the
-        // full-resolution composite and the world's colour copy are skipped. LEGACY (any other
-        // frame) keeps the composite before the world, exactly as before.
-        /* 0.3.212 (task 32): this frame's name marks: the composite quads draw with the world depth-stencil bound and reject marked pixels; no marks, or the feature off: exactly the old calls */
-        const bool maskOn=nameMask.armed()&&nameMask.hasMarks()&&maskStencil&&worldDepth&&worldDebug==0;nameMask.composited=maskOn;
-        IDirect3DSurface9* outputTarget=linearHdr?hdrPresentBack:saved.targets[0];
-        if(linearHdr)hdrFrameSettings=effectiveHdrSettings();
-        const bool inlineHdrBase=linearHdr&&fold&&!maskOn&&!celestial&&hdrFrameSettings.legacyExpansion==0&&
-            (sceneFormat==D3DFMT_A8R8G8B8||sceneFormat==D3DFMT_X8R8G8B8);
-        if(linearHdr){
-            if(error(hdrFrame.prepareLegacy(ext,scene,depthTex,hdrSkyValid?hdrSkyTarget():nullptr,width,height,worldMinDepth,worldMaxDepth,hdrFrameSettings,&stateBlocks,!inlineHdrBase),"HDR legacy decode"))return;
-            gpuProfile->mark("HDRBase");
-            if(celestial){renderCelestial(hdrFrame.surface());celestialDiscs->renderRing();gpuProfile->mark("HDRCelestial");}
-            hdrLegacyPrepared=true;
-            if(maskOn&&error(hdrFrame.copyBase(ext,outputTarget,&stateBlocks),"HDR base"))return;
-        }
-        auto legacyComposite=[&]{
-            if (error(ext->SetRenderTarget(0,outputTarget),"composition render target")) return false;
-            if(linearHdr){if(error(hdrFrame.bindLegacyComposite(ext,scene,depthTex,ao,worldMinDepth,worldMaxDepth,nearZ,farZ),"HDR fallback composite"))return false;}
-            else{ext->SetTexture(2,ao); ext->SetPixelShader(compositePS);}
-            NorthlightEffectCoverage::Capture::bind(ext,coverage,effectCoverage.hasEmission());
-            {NameMaskCompositeBind mask(ext,maskOn?worldDepth:nullptr); /* 0.3.212 (task 32): the same bind as WorldComposite */
-             if (error(quad(width,height),"composition pass")) return false;}
-            gpuProfile->mark("AOComposite");effectsBuckets.mark(Bucket::Composite);return true;
-        };
-        if(!fold&&!legacyComposite())return;
-        if(world&&debugMode==0){
-            auroraSources.end();
-            traceWorld=0;
-            world->setMaterialDetail(autoBump?autoBump->texture():nullptr,autoBump?autoBump->gain():0.f,autoBump?autoBump->distance():48.f,autoBump?autoBump->occlusionTexture():nullptr,autoBump?autoBump->occlusionDistance():8.f,autoBump&&autoBump->active()&&autoBump->hasCaptureResources());
-            world->setModelNormals(modelNormals?modelNormals->texture():nullptr);
-            world->setNameMask(maskOn?worldDepth:nullptr);
-            world->setEffectCoverage(coverage,effectCoverage.hasEmission());
-            world->setPrelitMask(prelitMarks&&maskStencil&&!nameMask.disabled&&worldDebug==0?worldDepth:nullptr);
-            world->setAuthoredMask(authoredMarks&&maskStencil&&!nameMask.disabled&&worldDebug==0?worldDepth:nullptr,roomLevels);
-            world->setUnlitMask(unlitMarks&&maskStencil&&!nameMask.disabled&&worldDebug==0?worldDepth:nullptr); /* 0.3.212 (task 32) */
-            world->setRainMask(rainMaskTex); /* 0.3.202 (rain): RainMask for this frame's composite only (resolved and scrubbed at the top of renderEffects) */
-            // Expanded HDR can omit the FP16 world/material intermediate on
-            // verified DXVK 3.1.1. DXVK 2 regresses with MSAA; retain its guard.
-            const bool hdrMaterialCombine=hdrFrameSettings.legacyExpansion==0||backendHdrExpandedMaterial;
-            // This is the terminal world pass inside saved. Fallback and later
-            // celestial/mask passes bind their own state; saved restores the game.
-            const bool rendered=world->render(outputTarget,depthTex,width,height,sceneFormat,nearZ,farZ,worldMinDepth,worldMaxDepth,worldDebug,gpuProfile.get(),waterMask,fold?scene:nullptr,fold&&!neutralAOPending?ao:nullptr,frame,linearHdr?(inlineHdrBase&&!hdrSkyValid?scene:hdrFrame.texture()):nullptr,inlineHdrBase&&!hdrSkyValid,hdrMaterialCombine,inlineHdrBase&&hdrSkyValid,!contactAO,&saved);
-            diagnosticWorld=rendered;
-            if(world->diagnosticCaptureInLastRender()){
-                gpuDiagnosticFrame=true;
-                logf("WORLD GPU_DIAGNOSTIC_FRAME rendererFrame=%u device=%ld worldRendered=%u hdrSky=%u hdrInlineBase=%u excludeFromFps=1",frame,diagnosticId,unsigned(rendered),unsigned(hdrSkyValid),unsigned(inlineHdrBase));
-            }
-            if(!rendered){
-                if(++worldSkippedFrames<=8||(worldSkippedFrames%120==0&&diagnostics()))
-                    logf("WORLD skipped frame=%u tick=%lu context=%d ready=%d count=%u reason=%s",frame,(unsigned long)GetTickCount(),world->hasContext(),world->ready(),worldSkippedFrames,world->lastSkipReason());
-                worldSkipLast=world->lastSkipReason();if(!worldSkipRun++){worldSkipStart=GetTickCount();worldSkipFirst=worldSkipLast;
-                    if(worldSkipEpisodes<32||diagnostics())logf("WORLD skip episode begin reason=%s",worldSkipFirst);}
-            }else if(traceWorld=1,(worldDrawSeen?0:(worldDrawSeen=true,worldDrawFrame=frame,0)),(frameMarkers?frameMarker(0,frame):void()),worldSkipRun){
-                if(++worldSkipEpisodes<=32||diagnostics())logf("WORLD skip episode reason=%s last=%s frames=%u ms=%lu",worldSkipFirst,worldSkipLast,worldSkipRun,(unsigned long)(GetTickCount()-worldSkipStart));
-                worldSkipRun=0;
-            }
-            // A folded frame the world did not composite (skipped or failed; it left the target
-            // untouched): re-establish the effect state it changed, then the legacy composite.
-            if(fold&&!world->composited){
-                if(inlineHdrBase&&error(hdrFrame.prepareLegacy(ext,scene,depthTex,hdrSkyValid?hdrFrame.surface():nullptr,width,height,worldMinDepth,worldMaxDepth,hdrFrameSettings,&stateBlocks),"HDR fallback decode"))return;
-                effectState();
-                if(neutralAOPending&&!clearNeutralAO())return;
-                bindEffects(ao);if(!legacyComposite())return;
-            }
-        }
-        if(celestial){
-            const auto& haze=world->horizonHazeConstants();
-            // HDR bloom spreads the visible linear source. The old SDR veil
-            // would add a second, amplified halo directly over geometry.
-            if(!linearHdr)celestialDiscs->renderVeil(outputTarget,NorthlightCelestialGlow::hazeAtSun(haze.haze[3],haze.shape[2],sunElevation),world->skyTransmittance());
-            gpuProfile->mark("CelestialVeil");effectsBuckets.mark(Bucket::Veil);
-        }
-        if(maskOn&&nameMask.debug)nameMaskDebugView(outputTarget); /* 0.3.212 (task 32): the last effect pass, the mask itself */
-        hdrSceneReady=linearHdr;
-        applied = true; ++appliedFrames;
-        if (appliedFrames==1) logf("FIRST EFFECT FRAME: near=%.5f far=%.2f scale=%.4f,%.4f depthRange=%.9g..%.9g (before UI)",nearZ,farZ,scaleX,scaleY,worldMinDepth,worldMaxDepth);
-    }
+#include "device_frame_effects.inl"
     /* The guards of every mask decision: the game must not use stencil (a draw seen with STENCILENABLE on disables the feature for the session), the world depth must have stencil bits (checked once per surface and format; one without skips the mask while it is bound). */
     bool nameMaskReady(){
         if(!nameMask.stencilChecked){ /* once per frame: the game's own STENCILENABLE is then known FALSE for the frame's runs */
@@ -1749,6 +1334,7 @@ private:
     // 0.3.212 (task 32): a render state of the current draw. One the mirror knows is read in place: the draw hooks hold the gate, so no lock and no COM call (like weatherProbe's texture read);
     // an unknown one (mirror inactive or not yet observed) goes through GetRenderState as before.
     bool readDrawRenderState(D3DRENDERSTATETYPE t,DWORD& v){
+        if(indexedPairGate)ext->observeIndexedStencil(t);
         if(unsigned(t)<DeviceMirror::RenderStates&&mirrorState.active()&&mirrorState.renderStateKnown[t]){v=mirrorState.renderStates[t];return true;}
         return SUCCEEDED(ext->GetRenderState(t,&v));
     }
@@ -1760,9 +1346,32 @@ private:
         const bool same=SUCCEEDED(ext->GetDepthStencilSurface(&current))&&current==id;drop(current);return same;
     }
     // Sets a table of render states, keeping the values it replaced (read first, in place from the mirror when it knows them); maskRestore() puts them back. False: a read failed, nothing was changed.
-    template<size_t N> bool maskApply(const NorthlightNameStencil::Set (&sets)[N],DWORD (&previous)[N]){
+    template<size_t N> bool maskApply(const NorthlightNameStencil::Set (&sets)[N],DWORD (&previous)[N],bool* indexedDeferred=nullptr){
         for(size_t i=0;i<N;++i)if(!readDrawRenderState(D3DRENDERSTATETYPE(sets[i].state),previous[i]))return false;
+        if(indexedDeferred&&indexedPairGate){
+            ExtensionDevice::IndexedStencil stamp{};
+            unsigned covered=0,changed=0;
+            bool compatible=true;
+            for(size_t i=0;i<N;++i){
+                const unsigned slot=ExtensionDevice::indexedStencilSlot(D3DRENDERSTATETYPE(sets[i].state));
+                if(slot<stamp.size()){
+                    stamp[slot]=sets[i].value;covered|=1u<<slot;
+                    if(previous[i]!=sets[i].value)changed|=1u<<slot;
+                }else if(previous[i]!=sets[i].value){compatible=false;break;}
+            }
+            if(compatible&&covered==(1u<<stamp.size())-1&&ext->beginIndexedStencil(stamp,changed)){
+                *indexedDeferred=true;return true;
+            }
+        }
         for(size_t i=0;i<N;++i)if(previous[i]!=sets[i].value)ext->SetRenderState(D3DRENDERSTATETYPE(sets[i].state),sets[i].value);
+        return true;
+    }
+    bool finishIndexedStencil(bool deferred){
+        if(!deferred)return false;
+        const unsigned changed=ext->endIndexedStencil();
+        if(!changed){++gameIndexedPair->materializedStencils;return false;}
+        ++gameIndexedPair->deferredStencils;
+        for(unsigned bits=changed;bits;bits&=bits-1)gameIndexedPair->skippedStencilSets+=2;
         return true;
     }
     template<size_t N> void maskRestore(const NorthlightNameStencil::Set (&sets)[N],const DWORD (&previous)[N]){
@@ -1817,19 +1426,23 @@ private:
         if(!kind)return rainBlendDraw(rain,claimed,draw);
         if(kind>=3){
             const auto& mark=NorthlightUnlitReceiver::receiverMark(kind);
-            DWORD previous[sizeof NorthlightUnlitReceiver::Mark/sizeof NorthlightUnlitReceiver::Mark[0]];bool set=false;
+            DWORD previous[sizeof NorthlightUnlitReceiver::Mark/sizeof NorthlightUnlitReceiver::Mark[0]];bool set=false,indexedDeferred=false;
             extensionWork("unlit receiver mask",[&]{
-                if((nameMask.cleared||nameMaskClear())&&!claimed)set=maskApply(mark,previous);
+                if((nameMask.cleared||nameMaskClear())&&!claimed)set=maskApply(mark,previous,&indexedDeferred);
             });
+            indexedPairStencilKind=indexedPairGate&&set?unsigned(kind):0;
             const HRESULT hr=rainBlendDraw(rain,claimed,draw);
-            if(set){maskRestore(mark,previous);if(SUCCEEDED(hr)){if(kind>=5){++authoredMarks;roomLevels|=1u<<(kind-5);}else if(kind==4)++prelitMarks;else ++unlitMarks;}}
+            indexedPairStencilKind=0;
+            if(set){if(!finishIndexedStencil(indexedDeferred))maskRestore(mark,previous);if(SUCCEEDED(hr)){if(kind>=5){++authoredMarks;roomLevels|=1u<<(kind-5);}else if(kind==4)++prelitMarks;else ++unlitMarks;}}
             return hr;
         }
         if(kind==2){
-            DWORD previous[sizeof NorthlightUnlitReceiver::Unmark/sizeof NorthlightUnlitReceiver::Unmark[0]];bool set=false;
-            extensionWork("name mask",[&]{CpuScope c(sampledDrawTimers()?&cpuNameUnmark:nullptr);set=maskApply(NorthlightUnlitReceiver::Unmark,previous);});
+            DWORD previous[sizeof NorthlightUnlitReceiver::Unmark/sizeof NorthlightUnlitReceiver::Unmark[0]];bool set=false,indexedDeferred=false;
+            extensionWork("name mask",[&]{CpuScope c(sampledDrawTimers()?&cpuNameUnmark:nullptr);set=maskApply(NorthlightUnlitReceiver::Unmark,previous,&indexedDeferred);});
+            indexedPairStencilKind=indexedPairGate&&set?unsigned(kind):0;
             const HRESULT hr=rainBlendDraw(rain,claimed,draw);
-            if(set)extensionWork("name mask",[&]{CpuScope c(sampledDrawTimers()?&cpuNameUnmark:nullptr);maskRestore(NorthlightUnlitReceiver::Unmark,previous);});
+            indexedPairStencilKind=0;
+            if(set&&!finishIndexedStencil(indexedDeferred))extensionWork("name mask",[&]{CpuScope c(sampledDrawTimers()?&cpuNameUnmark:nullptr);maskRestore(NorthlightUnlitReceiver::Unmark,previous);});
             return hr;
         }
         DWORD alphaPrevious[sizeof NorthlightNameStencil::kAlphaGuard/sizeof NorthlightNameStencil::kAlphaGuard[0]];bool guard=false;
@@ -1874,112 +1487,7 @@ private:
         uiTraceKeys.push_back(key);++uiTraceCount;
         logf("UI_TRIAGE frame=%u draw=%u vs=%016llx ps=%016llx tag=%u fvf=%08lx z=%lu zw=%lu zf=%lu applied=%u hdrUi=%u uiInputs=%u viewport=%lu,%lu,%lu,%lu,%g,%g rows=[%g,%g,%g,%g;%g,%g,%g,%g;%g,%g,%g,%g;%g,%g,%g,%g]",frame,drawCalls,(unsigned long long)vh,(unsigned long long)ph,unsigned(vc.entry&kTagMask),(unsigned long)fvf,(unsigned long)z,(unsigned long)zw,(unsigned long)zf,unsigned(applied),unsigned(hdrUiPhase),unsigned(hdrUiInputs()),(unsigned long)vp.X,(unsigned long)vp.Y,(unsigned long)vp.Width,(unsigned long)vp.Height,vp.MinZ,vp.MaxZ,rows[0],rows[1],rows[2],rows[3],rows[4],rows[5],rows[6],rows[7],rows[8],rows[9],rows[10],rows[11],rows[12],rows[13],rows[14],rows[15]);
     }
-    template<class Capture> void prepareDrawImpl(Capture capture,UINT count) {
-        // Both FrameDrawGates paths enter here, including non-model/early exits.
-        if(modelNormals)modelNormals->beginNativeDraw();
-        if(!gpuFrameStarted){
-            gpuFrameStarted=true;
-            if(gpuSceneProfile&&diagnostics())gpuSceneProfile->beginFrame(frame,NorthlightRenderThreadProbe::sampleFrame(frame));
-            if(materialProfile)materialProfile->beginFrame(frame,world&&NorthlightQuality::renderProfile(world->surfaceSettings())&&NorthlightRenderThreadProbe::sampleFrame(frame));
-        }
-        aoActorBeginFrame();aoActorDrawKnown=aoActorDrawSkin=aoActorDepthWrite=false;
-        ++drawCalls;maskKind=0;nativeLocalDomain=false;if(nameRun)nameMaskRunBreak();traceUiDraw();
-        if(spellOn){spellDomain=false;spellVs=nullptr;} /* task 34: this draw's reads for spellDrawImpl, valid only if this function gets that far */
-        if(failed||!enabled)return;
-        if(applied){
-            const bool sample=sampled();
-            if(sample){
-                DWORD z=0,write=0;if(readDrawRenderState(D3DRS_ZENABLE,z)&&readDrawRenderState(D3DRS_ZWRITEENABLE,write)){if(z&&write)++postEffectDepthWrites;}else ++postEffectDepthStateFailures;
-            }
-            const bool hideNative=drawGates.terrainShadow&&world&&terrain&&!debugMode&&!worldDebug&&!world->nativeTerrainShadowsEnabled();
-            if(sample||hideNative){
-                IDirect3DVertexShader9* late=nullptr;const bool borrowed=ext->peekVertexShader(late); // 0.3.196 (task 12): identity lookup only
-                if((borrowed||(SUCCEEDED(ext->GetVertexShader(&late))&&late))&&world){
-                    if(hideNative)planTerrainShadowSwap(late);
-                    if(sample){
-                    const VsClass& vc=classifyVs(late);
-                    if(vc.world)++postEffectWorldDraws;
-                    if(vc.skinned)++postEffectSkinnedDraws;
-                    if(vc.entry&kWaterTag)++waterAfterEffects;
-                    observeGrassReceiver(late,true);
-                    }
-                }if(!borrowed)drop(late);
-            }return;
-        }
-        CpuScope cpu(sampledDrawTimers()?&cpuPrep:nullptr);if(gateFrame){++gateCounts.prep;weatherProbeDraw(count);} /* 0.3.198 (rain): RenderProfile sample frames only, pre-effects draws */
-        IDirect3DVertexShader9* vs=nullptr;
-        // 0.3.196 (task 12): borrowed (no reference). The shader stays bound through this hook (the game's draw is issued after it); capture AddRefs whatever it keeps,
-        // after renderEffects applied=true stops further use of vs, and resolveDepth's SavedState restores the binding. Released only when not borrowed.
-        const bool borrowedVS=ext->peekVertexShader(vs);
-        if(!borrowedVS&&FAILED(ext->GetVertexShader(&vs))){drawUiHashVS=false;++missingVS;drop(vs);return;}
-        if(!vs){drawUiHashVS=false;
-            ++missingVS;D3DSURFACE_DESC desc{};
-            if((terrain||skySeen)&&fixedUiGeometry()&&fullViewport(desc,nullptr,true)&&hdrBackTarget()&&hdrUiInputs()){
-                hdrAtUiBoundary=true;
-                if(sampled())logf("EFFECT boundary frame=%u draw=%u kind=fixed-ui",frame,drawCalls);
-                renderEffects();spellReplay();
-            }
-            if(spellOn)spellFixedDomain();return;
-        }
-        struct ShaderRelease {IDirect3DVertexShader9*& p;bool borrowed;~ShaderRelease(){if(!borrowed)drop(p);}} shaderRelease{vs,borrowedVS};
-        if(spellOn)spellVs=vs; /* identity only */
-        if(sampled())observeGrassReceiver(vs,false);
-        beforeDraw(vs);planTerrainShadowSwap(vs);
-        if(world&&!applied&&enabled&&!failed&&projectionValid){
-            D3DVIEWPORT9 viewport={};DWORD depthEnabled=FALSE;
-            const bool statesRead=SUCCEEDED(ext->GetViewport(&viewport))&&SUCCEEDED(ext->GetRenderState(D3DRS_ZENABLE,&depthEnabled));
-            const bool worldDomain=statesRead&&NorthlightWorldDrawDomain::accepts(projectionValid,depthEnabled!=FALSE,
-                worldMinDepth,worldMaxDepth,viewport.MinZ,viewport.MaxZ);
-            nativeLocalDomain=worldDomain;
-            if(spellOn){spellDomain=worldDomain;spellZEnable=spellDepthTested(depthEnabled);} /* task 34 */
-            if(worldDomain){if(gateFrame)++gateCounts.capture;
-                /* 0.3.188 (task 3): lazy state reads for the early resolve, its undo and the census, each read at most once per draw */
-                auto rs=[&](D3DRENDERSTATETYPE t){return [this,t,v=DWORD(0),known=false]()mutable{if(!known){v=drawRenderState(t);known=true;}return v;};};
-                auto zw=rs(D3DRS_ZWRITEENABLE);auto ab=rs(D3DRS_ALPHABLENDENABLE);auto sb=rs(D3DRS_SRCBLEND);auto db=rs(D3DRS_DESTBLEND);auto cw=rs(D3DRS_COLORWRITEENABLE);
-                if(aoActorOn){aoActorDrawKnown=true;aoActorDrawSkin=classifyVs(vs).skinned;aoActorDepthWrite=zw()!=FALSE;}
-                if(terrain&&!nameMask.disabled&&worldDebug==0){
-                unsigned roomLevel=0;
-                const auto& receiver=classifyVs(vs);
-                const bool posedRoomModel=!menuScene&&receiver.family==3&&receiver.skinned;
-                const bool authoredReceiver=!(receiver.entry&(kUnlitTag|kPrelitTag))&&
-                    world->authoredReceiver(vs,receiver.family==3,posedRoomModel?&roomLevel:nullptr);
-                if((nameMask.armed()&&drawUiHashVS)||nameMask.hasMarks()||unlitMarks||prelitMarks||authoredMarks||authoredReceiver||(receiver.entry&(kUnlitTag|kPrelitTag))){
-                    const bool sampledTimed=sampledDrawTimers()&&(++nameDecideCalls&7)==1;if(sampledTimed)++nameDecideTimed;
-                    CpuScope decision(sampledTimed?&cpuNameDecide:nullptr);nameMaskDecide(drawWaterVS,zw,ab,sb,db,cw,viewport);
-                    // A WMO's room-light layer can follow its outdoor layer
-                    // with INVSRCALPHA/ONE. It still owns authored RGB at this
-                    // depth; outdoor subtraction would erase that contribution.
-                    if(((receiver.entry&(kUnlitTag|kPrelitTag))||authoredReceiver)&&zw()&&(cw()&7)&&
-                       (!ab()||db()==D3DBLEND_ZERO||(authoredReceiver&&receiver.wmo&&NorthlightNativeDirect::independentBlend(sb(),db(),drawRenderState(D3DRS_BLENDOP))))&&
-                       nameMaskReady()&&NorthlightUnlitReceiver::stencilFormat(worldDepthDesc.Format,MAKEFOURCC('I','N','T','Z'))&&nameMaskFullViewport(viewport)&&worldDepthBound()){
-                        if((receiver.entry&kPrelitTag)||roomLevel==3)maskKind=4;
-                        else maskKind=authoredReceiver?5+roomLevel:3;
-                    }
-                    if(maskKind==1&&!nameMask.armed())maskKind=0;}
-                }
-                if(captured&&earlyDepth.earlyCaptured&&NorthlightTranslucentDepth::isUndo(drawWaterVS,zw,ab,sb,db,cw)){captured=false;if(aoActorOn)aoActorMask->resume();earlyDepth.undo();++earlyResolveUndone;++earlyResolveUndoneTotal;} /* undo: later opaque or water Z draw after the early resolve */
-                if(terrain&&!captured&&earlyDepth.armed()&&NorthlightTranslucentDepth::shouldResolve(drawWaterVS,zw,ab,sb,db,cw,[&]{return classifyVs(vs).skinned;})&&earlyDepth.attempt()){ /* 0.3.188 (2A): early depth for translucent actors, every frame, minimum state reads */
-                    ExtensionDevice::RawScope raw(*ext);
-                    if(resolveDepth()){earlyDepth.success();++earlyResolves;++earlyResolveTotal;if(sampled())earlyResolveAt=censusDraws+1;}}
-                if(sampled()){const unsigned at=++censusDraws; /* 0.3.188 (task 3): read-only census before capture(vs) so no early return hides a draw; sample frames only */
-                    if(!drawWaterVS&&NorthlightTranslucentDepth::opaqueZWrite(zw,ab,sb,db,cw))lastOpaqueZAt=at;}
-                if(world->equipmentLightsOn())world->captureEquipmentLights(vs,worldDepth);
-                if(autoBump&&autoBump->active()){float light[4],inverseView[12];const bool currentView=world->materialLight(light,inverseView);autoBump->setLight(light);autoBump->setInverseView(inverseView,currentView);}
-                {const unsigned long long reads=CpuScope::reads;{CpuScope cap(sampledDrawTimers()?&cpuCapture:nullptr);capture(vs);}if(CpuScope::reads!=reads)cpuCaptureReads+=CpuScope::reads-reads-1;}
-                if(mirrorState.active()&&mirrorAuditSchedule.afterWorldCapture(frame,
-                    mirrorState.vsFloatKnown[0]&&mirrorState.vsFloatKnown[DeviceMirror::VsFloat-1])){
-                    CpuScope auditCost(diagnostics()?&cpuMirrorAudit:nullptr); // the audit itself always runs
-                    if(gateFrame)++gateCounts.audits;
-                    if(const char* field=ext->audit())logf("MIRROR mismatch field=%s frame=%u; cache disabled, rendering retained",field,frame);
-                }
-            }
-            else if(classifyVs(vs).world){
-                if(++nonWorldCaptureRejects<=4||(nonWorldCaptureRejects%3600==0&&diagnostics()))
-                    logf("WORLD non-caster draw rejected: worldDepth=%.7f..%.7f drawDepth=%.7f..%.7f z=%lu states=%d count=%u",worldMinDepth,worldMaxDepth,viewport.MinZ,viewport.MaxZ,(unsigned long)depthEnabled,statesRead,nonWorldCaptureRejects);
-            }
-        }
-        if(!borrowedVS)drop(vs);
-    }
+#include "device_draw_preparation.inl"
     // Terrain draws run with the game's shadow term neutralised while the
     // extension's shadow maps were composited last frame, so the baked ADT
     // shadow (MCSH) and the game's own dynamic shadow map no longer double
@@ -2043,33 +1551,98 @@ private:
     }
     template<class Draw> void captureModelNormals(IDirect3DVertexShader9* vs,Draw draw,bool userMemory,const NorthlightAutoDisplacement::Args& geometry,NorthlightAutoDisplacement::CaptureSource* source=nullptr){
         if(!modelNormals||!modelNormalsNeeded||!enabled||applied||failed)return;
-        const auto found=vsHashes.find(vs);
-        const bool terrain=world&&world->terrainShader(vs);
-        if(terrain||(found!=vsHashes.end()&&m2ShaderFamily(found->second)==3)){
+        const auto& shader=classifyVs(vs);
+        const bool terrain=shader.terrain;
+        if(terrain||shader.family==3){
             CpuScope cost(sampledDrawTimers()?&cpuNormalCapture:nullptr);
+#ifdef NORTHLIGHT_REPLAY_STAND
+            modelNormals->setTraceOrdinal(NorthlightFrameParityClock::fixedProfileWork()&&sampled()?drawCalls:0);
+#endif
             modelNormals->capture(vs,draw,userMemory,&geometry.draw,geometry.indices,geometry.format,geometry.vertices,geometry.stride,source?&source->mesh:nullptr,source?source->declaration:nullptr,source?&source->pose:nullptr,
                 source&&!userMemory?&source->mesh:nullptr,source&&!userMemory?&source->declaration:nullptr,terrain,
                 source&&!userMemory?&source->bank:nullptr);
         }
     }
+#ifdef NORTHLIGHT_REPLAY_STAND
+    struct CaptureWorkState {NorthlightCaptureWork::Work material,normals,world;};
+    const char* captureShaderClass(IDirect3DVertexShader9* vs){
+        const auto& shader=lastVs.vs==vs&&lastVs.gen==vsGeneration?lastVs:classifyVs(vs);
+        if((shader.entry&kTagMask)==1)return "terrain";
+        if(shader.wmo)return "wmo";
+        const auto hash=vsHashes.find(vs);
+        if(hash!=vsHashes.end()&&NorthlightDetailShadow::shader(hash->second))return "terrain_detail";
+        if(shader.family==NorthlightM2Family::kModel)return shader.skinned?"m2_skinning":"m2_other";
+        if(shader.family==NorthlightM2Family::kProjected)return "m2_projected";
+        if(shader.family==NorthlightM2Family::kParticle||shader.family==NorthlightM2Family::kParticleUnlit)return "m2_particle";
+        if((shader.entry&kWaterTag)||shader.family==NorthlightM2Family::kRipples)return "water";
+        return "unknown";
+    }
+    CaptureWorkState captureWorkState()const{
+        return {autoBump?autoBump->captureWork():NorthlightCaptureWork::Work{},
+                modelNormals?modelNormals->captureWork():NorthlightCaptureWork::Work{},
+                world?world->captureWork():NorthlightCaptureWork::Work{}};
+    }
+    static void formatCaptureWork(char (&value)[256],const NorthlightCaptureWork::Work& before,const NorthlightCaptureWork::Work& after){
+        const auto delta=[](size_t newer,size_t older){return static_cast<long long>(newer)-static_cast<long long>(older);};
+        std::snprintf(value,sizeof value,"%lld,%lld,%lld,%lld,%lld,%lld,%lld,%lld,%lld,%lld,%lld",
+            delta(after.chargedBytes,before.chargedBytes),delta(after.hits,before.hits),delta(after.misses,before.misses),
+            delta(after.packets,before.packets),delta(after.geometryReuse,before.geometryReuse),delta(after.bankReuse,before.bankReuse),
+            delta(after.boundsTests,before.boundsTests),delta(after.floatGets,before.floatGets),delta(after.floatHandoff,before.floatHandoff),
+            delta(after.rangeReads,before.rangeReads),delta(after.rangeHandoff,before.rangeHandoff));
+    }
+    static void logCaptureBufferRead(void* context,NorthlightCaptureWork::Route::Lane lane,const void* buffer,bool index,
+            NorthlightCaptureWork::Route::ReadPath path,unsigned offset,unsigned size,bool ok){
+        auto& self=*static_cast<Device*>(context);
+        logf("CAPTURE_WORK_BUFFER device=%ld epoch=%llu frame=%u draw=%u lane=%u buffer=%016llx index=%u path=%c offset=%u size=%u ok=%u",
+            self.diagnosticId,(unsigned long long)self.captureWorkEpoch,self.frame,self.drawCalls,unsigned(lane),
+            (unsigned long long)reinterpret_cast<std::uintptr_t>(buffer),unsigned(index),char(path),offset,size,unsigned(ok));
+        ++self.captureWorkBufferRows;
+    }
+    void logCaptureWork(const NorthlightDrawSnapshot::Draw& range,bool userMemory,const NorthlightCaptureWork::Route& route,
+                        const CaptureWorkState& before,const char* shaderClass,int alphaTest){
+        const auto after=captureWorkState();
+        char material[256],normals[256],worldWork[256];
+        formatCaptureWork(material,before.material,after.material);
+        formatCaptureWork(normals,before.normals,after.normals);
+        formatCaptureWork(worldWork,before.world,after.world);
+        logf("CAPTURE_WORK_DRAW device=%ld epoch=%llu frame=%u draw=%u route=%u up=%u indexed=%u topology=%u base=%d minimum=%u vertices=%u start=%u primitives=%u source=%016llx sourceBytes=%zu pose=%u bank=%u shaderClass=%s alphaTest=%d material=%s normals=%s world=%s",
+            diagnosticId,(unsigned long long)captureWorkEpoch,frame,drawCalls,route.lanes,unsigned(userMemory),unsigned(range.indexed),
+            unsigned(range.topology),range.base,range.minimum,range.vertices,range.start,range.primitives,
+            (unsigned long long)route.source,route.sourceBytes,unsigned(route.pose),unsigned(route.bank),shaderClass,alphaTest,material,normals,worldWork);
+        ++captureWorkRows;
+    }
+#endif
     template<NorthlightWaterRenderer::UserPointer UserPointer,class Raw,class Draw> void captureGameDraw(IDirect3DVertexShader9* vs,const NorthlightAutoDisplacement::Args& geometry,Raw raw,Draw draw){
         constexpr bool userMemory=UserPointer!=NorthlightWaterRenderer::NoUserPointer;
-        const auto& args=geometry.draw;
-        NorthlightAutoDisplacement::CaptureSource source;
-        NorthlightCaptureMetadata::PositionBounds positions;positions.owner=&geometry;positions.shader=vs;
-        auto captureWorld=[&](NorthlightCaptureMetadata::PositionBounds* bounds=nullptr){
-            if constexpr(userMemory)world->captureUP(args.topology,args.minimum,args.vertices,args.primitives,geometry.indices,geometry.format,geometry.vertices,geometry.stride,args.indexed,vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame(frame));
-            else world->capture(args.topology,args.base,args.minimum,args.vertices,args.start,args.primitives,args.indexed,vs,frame%120==0,NorthlightRenderThreadProbe::sampleFrame(frame),bounds,&source.mesh,source.declaration,&source.pose);
-        };
-        // Only buffered indexed terrain publishes bounds before material work.
-        const bool sharedTerrain=!userMemory&&args.indexed&&autoBump&&autoBump->active()&&enabled&&!applied&&!failed&&world->terrainShader(vs);
-        if(sharedTerrain)captureWorld(&positions);
-        const bool materialCapture=autoBump&&enabled&&!applied&&!failed;
-        if(materialCapture)autoBump->capture(vs,raw,userMemory,&geometry,!userMemory&&args.indexed?&positions:nullptr,&source);
-        // UP normals retain their material guard; buffered receivers do not.
-        if(!userMemory||materialCapture)captureModelNormals(vs,raw,userMemory,geometry,&source);
-        if(!sharedTerrain)captureWorld();
-        captureWater(vs,UserPointer,draw);
+        const auto sourceHint=pendingIndexedSource(geometry.draw,vs);
+#ifdef NORTHLIGHT_REPLAY_STAND
+        const bool audit=NorthlightCaptureWork::selected(frame);
+        const auto before=audit?captureWorkState():CaptureWorkState{};
+        NorthlightCaptureWork::Route route;
+        const char* shaderClass=nullptr;
+        int alphaTest=-1;
+        if(audit){
+            route.reportRead=&logCaptureBufferRead;route.context=this;
+            shaderClass=captureShaderClass(vs);
+            if(mirrorState.active()&&mirrorState.renderStateKnown[D3DRS_ALPHATESTENABLE])
+                alphaTest=mirrorState.renderStates[D3DRS_ALPHATESTENABLE]!=FALSE;
+        }
+#endif
+        NorthlightDrawCapture::capture<userMemory>(vs,geometry,frame,world,autoBump,raw,
+            [&]{return enabled&&!applied&&!failed;},
+            [&](auto& source){
+                if constexpr(!userMemory)noteIndexedPairSource(vs,source);
+                captureModelNormals(vs,raw,userMemory,geometry,&source);
+            },
+            [&]{captureWater(vs,UserPointer,draw);}
+#ifdef NORTHLIGHT_REPLAY_STAND
+            ,audit?&route:nullptr
+#endif
+            ,sourceHint?&sourceHint:nullptr
+        );
+#ifdef NORTHLIGHT_REPLAY_STAND
+        if(audit)logCaptureWork(geometry.draw,userMemory,route,before,shaderClass,alphaTest);
+#endif
     }
     template<class Draw> HRESULT terrainShadowDraw(bool claimed,Draw draw){
         if(!shadowSwapOriginal)return claimed?D3D_OK:materialNativeDraw(draw); /* no shadow swap planned */
@@ -2443,12 +2016,15 @@ private:
     }
     // renderEffects: the mask for this frame's composite, or nullptr. Resolves the MSAA twin, then one full-screen pass over the texture: pixels whose depth differs from rainDepth
     // (something was drawn over the rain) get alpha 0, the rest are discarded. Its own SavedState; effectState() sets the common pass state.
-    IDirect3DTexture9* rainMaskPrepare(){
+    IDirect3DTexture9* rainMaskPrepare(NorthlightLightingCapture::Capture* audit=nullptr){
         rainMrtUnbind();
-        if(!rainMaskDrawn||!rainDepthOk||!rainMask||!rainMaskSurface||!rainDepth||!rainScrubPS||!depthTex)return nullptr;
-        if(rainMaskMS){const HRESULT rh=ext->StretchRect(rainMaskMS,nullptr,rainMaskSurface,nullptr,D3DTEXF_NONE);if(FAILED(rh)){rainMaskResolveHr=rh;return nullptr;}} /* logged from the weather update, not inside the AO..world span; averages the samples' alpha: the AA edge */
+        if(!rainMaskDrawn||!rainDepthOk||!rainMask||!rainMaskSurface||!rainDepth||!rainScrubPS||!depthTex){
+            if(audit)audit->bindingSkip("RainScrub",rainMaskDrawn?"inputs-unavailable":"no-rain-mask-draw");
+            return nullptr;
+        }
+        if(rainMaskMS){const HRESULT rh=ext->StretchRect(rainMaskMS,nullptr,rainMaskSurface,nullptr,D3DTEXF_NONE);if(FAILED(rh)){rainMaskResolveHr=rh;if(audit)audit->bindingSkip("RainScrub","resolve-failed");return nullptr;}} /* averages the AA coverage samples */
         SavedState scrub(ext,&stateBlocks);
-        if(!scrub.ok)return nullptr;
+        if(!scrub.ok){if(audit)audit->bindingSkip("RainScrub","state-unavailable");return nullptr;}
         effectState();
         HRESULT hr=ext->SetRenderTarget(0,rainMaskSurface);
         if(SUCCEEDED(hr)){
@@ -2456,6 +2032,9 @@ private:
             for(DWORD s=0;s<2;++s){ext->SetSamplerState(s,D3DSAMP_MINFILTER,D3DTEXF_POINT);ext->SetSamplerState(s,D3DSAMP_MAGFILTER,D3DTEXF_POINT);ext->SetSamplerState(s,D3DSAMP_MIPFILTER,D3DTEXF_NONE);} /* both depths exact, texel for texel */
             ext->SetPixelShader(rainScrubPS);ext->SetRenderState(D3DRS_COLORWRITEENABLE,D3DCOLORWRITEENABLE_RED);
             hr=quad(width,height);
+            if(audit)audit->bindings("RainScrub",3u,hr);
+        }else if(audit){
+            audit->bindingSkip("RainScrub","target-unavailable");
         }
         if(FAILED(hr)){rainMaskResolveHr=hr;return nullptr;}
         return rainMask;
@@ -2479,6 +2058,14 @@ private:
     // frame's sky gate is open, the blob test only while its gate is; the observation follows the draw,
     // so it keeps a region of its own. Gates off: the 0.3.184 regions one by one.
     NorthlightParticleCapture::Capture particleCapture;bool particleOn=false;
+    struct ParticleRouteStats {unsigned draws=0,entered=0,shaderClassifications=0,budgetRejected=0;} particleRouteStats;
+    bool mayPrepareParticleDraw(D3DPRIMITIVETYPE topology,UINT primitives,bool skipped){
+        if(!particleOn||skipped||applied||!enabled||failed||!world||!NorthlightParticleDraw::supported(topology,primitives))return false;
+        const bool routed=particleCapture.route(mirrorState,gateFrame?&particleRouteStats.shaderClassifications:nullptr);
+        const bool budgetRejected=routed&&world->particleProbeBudgetSpent()&&!particleCapture.mayFlash(mirrorState);
+        if(gateFrame){++particleRouteStats.draws;particleRouteStats.entered+=routed&&!budgetRejected;particleRouteStats.budgetRejected+=budgetRejected;}
+        return routed&&!budgetRejected;
+    }
     NorthlightParticleCapture::Prepared prepareParticleDraw(bool skipped){
         NorthlightParticleCapture::Prepared out;
         if(!particleOn||skipped||applied||!enabled||failed||!world)return out;
@@ -2487,7 +2074,7 @@ private:
         if(!ext->peekVertexShader(vs)){if(FAILED(ext->GetVertexShader(ownedVS.out())))return out;vs=ownedVS.p;}
         if(vs&&!particleCapture.known(vs))return out;
         DWORD blend=0,destination=0;if(FAILED(ext->GetRenderState(D3DRS_ALPHABLENDENABLE,&blend))||!blend||
-            FAILED(ext->GetRenderState(D3DRS_DESTBLEND,&destination))||(destination!=D3DBLEND_ONE&&destination!=D3DBLEND_INVSRCALPHA))return out;
+            FAILED(ext->GetRenderState(D3DRS_DESTBLEND,&destination))||!NorthlightParticleDraw::destinationBlend(destination))return out;
         D3DVIEWPORT9 viewport{};DWORD depth=0;
         if(FAILED(ext->GetViewport(&viewport))||FAILED(ext->GetRenderState(D3DRS_ZENABLE,&depth)))return out;
         const bool sky=NorthlightWorldDrawDomain::classify(worldMinDepth,worldMaxDepth,viewport.MinZ,viewport.MaxZ)==NorthlightWorldDrawDomain::Band::Sky;
@@ -2506,7 +2093,7 @@ private:
         return particleCapture.prepare(ext,vs,ps.p,spellArgs,inverse,camera,projection,world->particleFrame(),sky);
     }
     void submitParticleDraw(const NorthlightParticleCapture::Prepared& prepared,bool accepted,bool deferred){
-        if(particleOn&&world)NorthlightParticleCapture::Capture::submit(prepared,accepted,deferred,world->particleFrame());
+        if(prepared.count&&particleOn&&world)NorthlightParticleCapture::Capture::submit(prepared,accepted,deferred,world->particleFrame());
     }
     NorthlightSkyComposition::Capture skyLayers;
     unsigned skyBackgroundFrame=~0u;
@@ -2522,14 +2109,27 @@ private:
         // Menu backdrops can draw last without depth writes (Death Knight ice).
         // Seed their sky here, using hardware MSAA depth, before that artwork.
         skyBackgroundFrame=frame;
-        auto report=[&](const char* result){if(sampled())logf("SKY_BACKGROUND frame=%u draw=%u worldContext=%u result=%s",frame,drawCalls,unsigned(world->hasContext()),result);};
+        std::optional<NorthlightLightingCapture::Capture> audit;
+        if(const auto* directory=frameParity.auditDirectory(frame))
+            audit.emplace(ext,*directory,frame,frame,frame,desc.Width,desc.Height,"frame-parity-sky");
+        bool observed=false;
+        auto report=[&](const char* result){
+            if(sampled())logf("SKY_BACKGROUND frame=%u draw=%u worldContext=%u result=%s",frame,drawCalls,unsigned(world->hasContext()),result);
+            if(audit){if(!observed)audit->bindingSkip("CelestialSkyPS",result);audit->finish(true);}
+        };
         if(!world->atmosphereEnvironment().skyValid){report("palette");return;}
         float view[16],p[3];
         if(!world->skyBackgroundContext(view,p)){report("camera");return;}
         if(!resources(desc.Width,desc.Height,desc.Format,true)){report("resources");return;}
         ExtensionDevice::RawScope raw(*ext);SavedState saved(ext,&stateBlocks);if(!saved.ok){report("state");return;}
         if(FAILED(ext->StretchRect(saved.targets[0],nullptr,sceneSurface,nullptr,D3DTEXF_NONE))){report("copy");return;}
-        report(celestialDiscs->renderSkyBackground(saved.targets[0],scene,nullptr,layers,width,height,p,view,world->atmosphereEnvironment().sky.color,menu)?"drawn":"draw-failed");
+        struct AuditContext{NorthlightLightingCapture::Capture* capture;bool& observed;} auditContext{audit?&*audit:nullptr,observed};
+        const auto record=+[](void* context,HRESULT draw){
+            auto& state=*static_cast<AuditContext*>(context);
+            state.capture->bindings("CelestialSkyPS",0x43u,draw,nullptr,true);state.observed=true;
+        };
+        report(celestialDiscs->renderSkyBackground(saved.targets[0],scene,nullptr,layers,width,height,p,view,world->atmosphereEnvironment().sky.color,menu,
+               audit?record:nullptr,&auditContext)?"drawn":"draw-failed");
     }
     NorthlightAuroraNative::DiagnosticCapture auroraDiagnostic;
     NorthlightAuroraNative::Registry auroraSources;
@@ -2719,64 +2319,7 @@ private:
         hdrSkyReplaying=false;
         if(FAILED(auroraResult)){hdrSkyValid=false;hdrSkyRejected=true;if(celestialDiscs)celestialDiscs->setHdrSkyTarget(nullptr);}
     }
-    template<class Capture,class Draw> HRESULT drawHook(D3DPRIMITIVETYPE t,UINT count,Capture capture,Draw draw,bool* nativeSky=nullptr,bool* skyCaptured=nullptr){
-        skyPlanet.clear();
-        auroraDrawProven=false;auroraDrawScale={};auroraDrawIntensity=1;
-        const HRESULT resumed=hdrResumeWorld();if(FAILED(resumed))return resumed;
-        if(!enabled&&!failed&&!hdr.active&&worldDebug==0&&!diagnostics()){++drawCalls;return draw();}
-        if(gpuScene&&!gpuScene->native.currentFrame(frame)){ExtensionDevice::RawScope raw(*ext);gpuScene->setFrame(frame);}
-        if(autoBump)autoBump->beginDraw();
-        bool claimed=false,rainBlend=false,mist=false,nativeRain=false;
-        auto nativeDraw=[&]{if(autoBump)autoBump->beforeNativeDraw();return nativeEffectDraw(nativeRain,[&]{return aoActorNativeDraw(draw);});};
-        bool linearSky=false;
-        if(hdr.active)extensionWork("HDR sky preparation",[&]{linearSky=hdrSkyAdmission();});
-        if(nativeSky)*nativeSky=linearSky;
-        // 0.3.198 (rain): the whole per-draw cost of weather detection, before any other work and in both gate paths: one pointer comparison.
-        if(weatherDetect.hot&&mirrorState.textureKnown[0]&&mirrorState.textures[0]==weatherDetect.hot){weatherSample.primitives+=count;++weatherSample.draws;nativeRain=weatherDetect.hotKind==NorthlightWeather::Kind::Rain;rainBlend=nativeRain&&world&&world->rainBlendSetting();} /* 0.3.199 (rain): counted after applied too (the rest of the rain); 0.3.202: no boundary here, the effects run at the UI again */
-        else if(weatherDetect.mistArmed)mist=mistDraw(count); /* 0.3.199 (rain mist): a mist puff in rain is skipped; unarmed, one bool test */
-        if(!skyBandSeen&&mirrorState.viewportKnown&&NorthlightWorldDrawDomain::classify(worldMinDepth,worldMaxDepth,mirrorState.viewport.MinZ,mirrorState.viewport.MaxZ)==NorthlightWorldDrawDomain::Band::Sky)skyBandSeen=true; /* Weather diagnostics: sky-band evidence, never an exposure or weather-state gate. */
-        if(rainMrtBound&&!rainBlend)rainMrtUnbind(); /* 0.3.202 (rain mask MRT): every other draw (and all its capture/effect work) meets the game's targets only; dry frames one bool test */
-        waterPending.valid=false; /* 0.3.214 (water MRT): set by this draw's captureWater only */
-        if(water&&water->isMrtBound()&&(rainBlend||applied||!enabled||failed||!nextDrawIsWater()))rainMrtUnbind(); /* the water mask's target 1 stays bound across consecutive water draws only */
-        NorthlightSkyComposition::Role skyRole=NorthlightSkyComposition::Role::Unknown;
-        mirrorState.gate.noteFirst(mirrorState.gate.drawTid);
-        dropTerrainShadowSwap();dropBlobFaint();
-        const bool sky=count<=4&&drawGates.sky;
-        if(!frameDrawGates){
-            extensionWork("draw capture/effects",[&]{prepareDrawImpl(capture,count);composeSkyBackground();});
-            {CpuScope hooks(sampledHookTimer());
-                extensionWork("native sky claim",[&]{skyLayersBefore(t,count,skyRole);skyClaim(t,count,claimed);});
-                if(!claimed&&blobFilterActive())extensionWork("blob shadow filter",[&]{blobFilter(count,claimed);});}
-        }else{
-            const char* stage="draw capture/effects";
-            extensionWork(stage,[&]{
-                prepareDrawImpl(capture,count);
-                composeSkyBackground();
-                CpuScope hooks(sampledHookTimer());
-                stage="skybox cloud order";skyLayersBefore(t,count,skyRole);
-                if(sky){stage="native sky claim";skyClaim(t,count,claimed);}
-                if(!claimed&&drawGates.blob){stage="blob shadow filter";if(blobFilterActive())blobFilter(count,claimed);}
-            });
-        }
-        if(skyRole==NorthlightSkyComposition::Role::Planet)
-            extensionWork("skybox planet scale",[&]{prepareSkyPlanet();});
-        if(skyRole==NorthlightSkyComposition::Role::Celestial){
-            extensionWork("skybox celestial ownership",[&]{if(!claimed)claimed=celestialDiscs->claimSkyArtwork();});
-            skyRole=NorthlightSkyComposition::Role::Unknown;
-        }
-        NorthlightParticleCapture::Prepared particle;
-        if(particleOn)extensionWork("particle light capture",[&]{particle=prepareParticleDraw(claimed||mist||rainBlend||blobOriginal||shadowSwapOriginal);});
-        if(spellOn&&spellGate()&&spellDraw(claimed||mist||blobOriginal||shadowSwapOriginal,rainBlend||mist)){
-            submitParticleDraw(particle,true,true);return D3D_OK;
-        }
-        skyLayersReplay(skyRole,!claimed&&!mist,draw);
-        const HRESULT hr=waterMrtDraw(nativeDraw,[&]{return nameMaskDraw(rainBlend,claimed||mist,nativeDraw);});
-        if(SUCCEEDED(hr))hdrReplaySky(linearSky,claimed||mist||(skyCaptured&&*skyCaptured),draw);
-        if(FAILED(hr)&&skyRole!=NorthlightSkyComposition::Role::Unknown)skyLayers.invalidate();
-        submitParticleDraw(particle,SUCCEEDED(hr)&&!claimed&&!mist&&!blobOriginal&&!shadowSwapOriginal,false);
-        if((!frameDrawGates||sky)&&!claimed){CpuScope hooks(sampledHookTimer());extensionWork("native sky observation",[&]{skyObserve(hr,t,count);});}
-        return hr;
-    }
+#include "device_draw_submission.inl"
     // 0.3.154: blob shadow claim with the profile frame's counts (claim() reads texture 0 for 1..256 primitives).
     NorthlightShadowBlobFilter::Result blobClaim(UINT count){
         if(gateFrame){++gateCounts.blobCalls;if(count&&count<=256)++gateCounts.blobTextures;}
@@ -3281,6 +2824,12 @@ private:
         if(sampled())logf("NATIVE_LOCAL_LIGHT frame=%u draw=%u event=pre-capture contextKnown=0 terrainSeen=%u vs=%016llx shaderReadsExact=%u readRows=%03x knownRows=%03x getRows=%03x writtenRows=%03x finiteRows=%03x bank=c17..27 encoding=44-f32-u32hex slotLimit=4 submission=unproven modelIdentity=unknown values=%s",
             frame,drawCalls-frameStartDrawCalls,unsigned(terrain),(unsigned long long)(hash==vsHashes.end()?0:hash->second),unsigned(exact),unsigned(used),unsigned(sample.known),unsigned(sample.fromGet),unsigned(sample.fromWrite),unsigned(sample.finite),bank);
     }
+    void beginTerrainDepth(){
+        // A terrain write after the early resolve must still reopen the depth capture.
+        if(captured&&earlyDepth.earlyCaptured){earlyDepth.undo();++earlyResolveUndone;++earlyResolveUndoneTotal;}
+        if(captured&&aoActorOn)aoActorMask->resume();
+        terrain=true;captured=false;
+    }
     void beforeDraw(IDirect3DVertexShader9* vs) {
         syncNativeShadowMode();
         const VsClass& vc=classifyVs(vs); const int entry=vc.entry; int tag=entry&kTagMask;
@@ -3291,7 +2840,20 @@ private:
         if(wmo&&projectionValid&&world->hasContext()&&world->hasOriginalFog())return;
         const bool model=tag!=1&&!wmo&&vc.skinned&&(!projectionValid||!world->hasContext());
         if (tag==1||wmo||model) {
-            if(tag==1)++terrainDraws;
+            if(tag==1){
+                ++terrainDraws;
+                if(terrain&&projectionValid&&!menuScene&&worldDepthDescKnown&&terrainAdmission.depth==worldDepth&&
+                   world&&world->hasContext()&&world->hasOriginalFog()&&
+                   terrainAdmission.matches(mirrorState)){
+                    beginTerrainDepth();
+                    uiFallbackDraw(vc,vs);
+                    return;
+                }
+            }
+            terrainAdmission.target=nullptr;
+            drop(terrainAdmissionTarget.p);
+            NorthlightDrawSnapshot::Ref<IDirect3DSurface9> target;
+            if(tag==1&&ext->peekRenderTarget(0,target.p))target.p->AddRef();
             D3DSURFACE_DESC desc={};D3DVIEWPORT9 viewport={};
             if (!fullViewport(desc,&viewport)) return;
             bool screenModel=false;
@@ -3303,7 +2865,8 @@ private:
                 if(!mainWorld&&!screenModel)return;
                 if(screenModel&&menuScene&&projectionValid){world->menuContext(vs);return;}
             }
-            if (!readProjection(wmo||model)) {
+            float rows[16];
+            if (!readProjection(wmo||model,rows)) {
                 if (++projectionRejects==1) {
                     float p[16]={};ext->GetVertexShaderConstantF(4,p,4);
                     logf("Projection rejected: [%g %g %g %g] [%g %g %g %g] [%g %g %g %g] [%g %g %g %g]",p[0],p[1],p[2],p[3],p[4],p[5],p[6],p[7],p[8],p[9],p[10],p[11],p[12],p[13],p[14],p[15]);
@@ -3318,10 +2881,16 @@ private:
             if(!bindWorldDepth(desc))return;
             menuScene=screenModel;
             if(menuScene&&sampled())logf("MENU scene admitted frame=%u effects=%s depthRange=%.9g..%.9g",frame,world->hasContext()?"scene-pipeline":"screen-only",worldMinDepth,worldMaxDepth);
-            if(captured&&earlyDepth.earlyCaptured){earlyDepth.undo();++earlyResolveUndone;++earlyResolveUndoneTotal;} /* 0.3.188 (2A): a terrain draw after the early resolve: the UI-time resolve redoes it */
-            if(captured&&aoActorOn)aoActorMask->resume();
-            terrain=true; captured=false;
-            resources(desc.Width,desc.Height,desc.Format);
+            beginTerrainDepth();
+            if(resources(desc.Width,desc.Height,desc.Format)&&target.p&&world&&world->hasContext()&&world->hasOriginalFog()){
+                NorthlightDrawPreparation::TerrainAdmission proof;
+                proof.target=target.p;proof.depth=worldDepth;proof.viewport=viewport;
+                std::memcpy(proof.projection,rows,sizeof rows);
+                if(proof.matches(mirrorState)){
+                    std::swap(terrainAdmissionTarget.p,target.p);
+                    terrainAdmission=proof;
+                }
+            }
             if(gateFrame)++gateCounts.fullPasses;
         } else if (tag==2) {
             ++uiDraws;
@@ -3555,7 +3124,15 @@ public:
         try{settingsService=NorthlightSettings::acquire(std::filesystem::path(rootPath));settingsRevision=settingsService->revision();if(!settingsRecovery.empty())logf("SETTINGS startup recovery incomplete: %s",settingsRecovery.c_str());}
         catch(const std::exception& e){logf("SETTINGS unavailable: %s",e.what());}
         gpuProfile=std::make_unique<NorthlightGpuProfile>(ext);gpuSceneProfile=std::make_unique<NorthlightGpuProfile>(ext,"GPU frame",12);materialProfile=std::make_unique<NorthlightMaterialProfile>(ext);gpuTimer=std::make_unique<NorthlightGpuFrameTimer>(ext); gpuScene=std::make_shared<NorthlightGpuScene::Scene>(ext);world=std::make_unique<WorldRenderer>(ext,gpuScene);world->setEffectsBuckets(&effectsBuckets);world->setMaterialProfiler(materialProfile.get());
-        if(NorthlightNativeMoreLights::available){nativeMoreLights=std::make_unique<NorthlightNativeMoreLightRenderer>(ext);
+        bool expandedLights=NorthlightNativeMoreLights::available;
+#ifdef NORTHLIGHT_REPLAY_STAND
+        // The trace already carries the game's expanded constant banks.
+        // Only the renderer's private shader variants are needed in the host.
+        wchar_t replayLights[2]={};
+        expandedLights=GetEnvironmentVariableW(L"NORTHLIGHT_RETRACE_NATIVE_MORE_LIGHTS",replayLights,2)==1&&replayLights[0]==L'1';
+        logf("NATIVE more lights replay active=%u",unsigned(expandedLights));
+#endif
+        if(expandedLights){nativeMoreLights=std::make_unique<NorthlightNativeMoreLightRenderer>(ext);
             NorthlightSettings::Documents docs;docs[1]=NorthlightSettings::Document(NorthlightSettings::readImage(std::filesystem::path(rootPath)/L"northlight-renderer.ini").raw);
             const auto config=NorthlightSettings::configOf(docs,"");nativeMoreLights->limits(config.nativeLightLimits[0],config.nativeLightLimits[1]);}
         // Shader parity and buffer lock flags are independent backend contracts.
@@ -3633,7 +3210,7 @@ public:
         memoryDiagnostics.reset();
         spellTeardown();
         mirrorState.beforeDisable=nullptr;mirrorState.disableContext=nullptr;
-        surface.reset();autoBump.reset();modelNormals.reset();
+        surface.reset();autoBump.reset();modelNormals.reset();gameIndexedPair.reset();gameParticlePair.reset();
         dropBlobFaint();shadowBlobs.reset();celestialDiscs.reset();gpuProfile.reset();gpuSceneProfile.reset();materialProfile.reset();gpuTimer.reset();drop(latencyQuery);water.reset();world.reset();gpuScene.reset();releaseResources();
         skyLayers.reset();hdrFrame.reset();hdrColor.reset();hdrSkyForeground.reset();releaseHdrTargets();stateBlocks.clear();nativeMoreLights.reset();ext->Release();ext=nullptr;
         const ULONG backendReferences=real->Release();parent->Release();
@@ -3651,7 +3228,15 @@ public:
             D3DSURFACE_DESC desc{};if(hdrPresentBack&&SUCCEEDED(hdrPresentBack->GetDesc(&desc)))status.payloadBytes+=std::uint64_t(desc.Width)*desc.Height*8*std::max(1u,unsigned(desc.MultiSampleType))*std::max(1u,hdr.logical.BackBufferCount);
             status.peakSource=!hdr.settings.autoPeak?"Manual":display.maximum>=80&&display.maximum<=10000?"Windows calibration / display metadata":"Fallback";
             settingsService->setHdrStatus(std::move(status));}
-        if(writeLog)logf("HDR experimental requested=%u active=%u stream=%u windowed=%u status=0x%08lx reason=%s mode=scRGB source=linear-northlight+legacy lifecycle=additional",unsigned(hdr.settings.requested),unsigned(hdr.active),unsigned(hdr.stream),unsigned(hdr.logical.Windowed),(unsigned long)hdr.lastStatus,hdr.reason);
+        if(!writeLog)return;
+        logf("HDR experimental requested=%u active=%u stream=%u windowed=%u status=0x%08lx reason=%s mode=scRGB source=linear-northlight+legacy lifecycle=additional",unsigned(hdr.settings.requested),unsigned(hdr.active),unsigned(hdr.stream),unsigned(hdr.logical.Windowed),(unsigned long)hdr.lastStatus,hdr.reason);
+        if(!hdr.active){
+            IDirect3DSurface9* back=nullptr;
+            D3DSURFACE_DESC desc{};
+            if(SUCCEEDED(ext->GetBackBuffer(0,0,D3DBACKBUFFER_TYPE_MONO,&back))&&back&&SUCCEEDED(back->GetDesc(&desc)))
+                logf("SDR primary target %ux%u format=%u msaa=%u",desc.Width,desc.Height,unsigned(desc.Format),unsigned(desc.MultiSampleType));
+            if(back)back->Release();
+        }
     }
     HRESULT warmPointPipelinesAtDeviceInit(){
         return backendPointPipelinePrewarm?world->warmPointPipelinesAtDeviceInit():S_OK;
@@ -3699,7 +3284,14 @@ public:
     HRESULT STDMETHODCALLTYPE TestCooperativeLevel() override { Guard mirrorLock(mirrorState.gate);
         const HRESULT status=ext->TestCooperativeLevel();if(status!=D3D_OK)NorthlightWindowHook::invalidate(ext);return status;
     }
-    HRESULT STDMETHODCALLTYPE Reset(D3DPRESENT_PARAMETERS* pp) override { NorthlightWindowHook::invalidate(ext);Guard mirrorLock(mirrorState.gate);
+    HRESULT STDMETHODCALLTYPE Reset(D3DPRESENT_PARAMETERS* pp) override {
+        if(NorthlightStream::inPumpedWait)return D3DERR_INVALIDCALL;
+        NorthlightWindowHook::invalidate(ext);Guard mirrorLock(mirrorState.gate);
+        if(gameIndexedPair)gameIndexedPair->reset();
+        if(gameParticlePair)gameParticlePair->resetAtlas();
+#ifdef NORTHLIGHT_REPLAY_STAND
+        ++captureWorkEpoch;
+#endif
         nativeShadowSampleFrame=~0u;NorthlightNativeShadowControl::release(this);if(!NorthlightStream::streamActive.load(std::memory_order_relaxed))NorthlightNativeShadowControl::producerPresent();
         skyLayers.reset();skyTextures.clear();skyTextureFrame=~0u;auroraDiagnostic.reset();auroraSources.reset();auroraRenderer.reset();auroraFrame=~0u;auroraDrawProven=false;auroraStyle={};
         const bool resetProfile=diagnostics()&&cpuFrequency.QuadPart>0;LARGE_INTEGER resetTicks[10]={};
@@ -3719,7 +3311,7 @@ public:
         resetMark(6);hdrFrame.saveAndReset(ext);hdrColor.reset();hdrSkyForeground.reset();hdrUiPhase=false;releaseHdrTargets();resetMark(7);
         hdrAtUiBoundary=hdrLegacyPrepared=hdrSceneReady=hdrWorldSeen=hdrPresentFallback=hdrLegacySynced=false;hdrSkyValid=hdrSkyRejected=false;hdrTick=0;
         hdr.active=false;HRESULT hr=ext->Reset(pp);resetMark(8);
-        if(SUCCEEDED(hr)){if(nativeMoreLights)nativeMoreLights->deviceReset();hdr.logical=*pp;refreshWindowSize();hr=initHdrTargets();}resetMark(9);
+        if(SUCCEEDED(hr)){frameParity.discardUnfinishedPair();if(nativeMoreLights)nativeMoreLights->deviceReset();hdr.logical=*pp;refreshWindowSize();hr=initHdrTargets();}resetMark(9);
         if(resetProfile){auto ms=[&](unsigned a,unsigned b){return 1000.*double(resetTicks[b].QuadPart-resetTicks[a].QuadPart)/double(cpuFrequency.QuadPart);};
             logf("RESET stages frame=%llu prepareMs=%.3f cachesMs=%.3f resourcesMs=%.3f worldMs=%.3f auxiliaryMs=%.3f overlayMs=%.3f hdrReleaseMs=%.3f backendMs=%.3f hdrTargetsMs=%.3f totalMs=%.3f",(unsigned long long)frame,ms(0,1),ms(1,2),ms(2,3),ms(3,4),ms(4,5),ms(5,6),ms(6,7),ms(7,8),ms(8,9),ms(0,9));}
         if(diagnostics()&&world)logf("RESET capture sources entries=%zu bytes=%zu limit=%zu retainedCPU=1 currentRevisionChecks=1",world->captureSources().snapshotCacheEntries(),world->captureSources().sharedSourceBytes(),world->captureSources().sharedSourceLimit());
@@ -3778,6 +3370,9 @@ public:
             n.prep,n.capture,n.water,missingVS-gateStart.missingVS,terrainDraws-gateStart.terrain,n.wmo,uiDraws-gateStart.ui,n.fullPasses,terrainShadowDraws-gateStart.shadowSwaps,n.audits,
             n.blobCalls,n.blobTextures,n.blobClaimed,gameCalls,perf,generations,n.bufferCreates,n.processVertices,
             acqDevice,acqRegistry,acqResource,acqOther,vsCacheHits-gateStart.vsHits,vsCacheMisses-gateStart.vsMisses,weatherSample.draws,weatherSample.primitives); /* 0.3.198 (rain): derived from the sample, no per-draw counter */
+        if(particleRouteStats.draws)logf("PARTICLE_ROUTE frame=%u draws=%u entered=%u shaderClassifications=%u budgetRejected=%u",
+            sampleFrame,particleRouteStats.draws,particleRouteStats.entered,particleRouteStats.shaderClassifications,particleRouteStats.budgetRejected);
+        if(n.materialViews)logf("MATERIAL_VIEW_SYNC frame=%u requests=%u updates=%u",sampleFrame,n.materialViews,n.materialViewUpdates);
     }
     // The settings window over the finished frame (game UI included): once per presented frame of the implicit swap chain, on both
     // Present paths (Device and SwapChain reach finishFrame), last before the real Present. Closed with nothing pending: atomic loads
@@ -3798,9 +3393,30 @@ public:
         struct InvalidateOnReturn {DeviceMirror& state;~InvalidateOnReturn(){state.invalidate();}} invalidate{mirrorState};
         if(extensionFault){clearFrame();drawOverlay(implicitChain);return;}
         const unsigned finishedFrame=frame;const bool effectsApplied=applied,worldSeen=terrain;
+        const bool parityPending=implicitChain&&frameParity.pending();
+        const bool parityReady=parityPending&&hdr.active&&terrain&&applied&&!menuScene&&captured&&worldDepthDescKnown&&
+            depthSnapshotFormat==(D3DFORMAT)MAKEFOURCC('I','N','T','Z')&&world&&world->ready()&&
+            (!frameParity.requiresWorldGeometry()||world->parityGeometryReady());
+        D3DSURFACE_DESC parityDepth{};
+        const bool parity=parityPending&&frameParity.select(finishedFrame,parityReady);
+        if(parity){parityDepth=worldDepthDesc;gpuDiagnosticFrame=true;}
+        if(parity&&parityReady){
+            ExtensionDevice::RawScope raw(*ext);
+            world->captureProducts(frameParity.outputDirectory(),finishedFrame,finishedFrame,parityDepth.Width,parityDepth.Height,true);
+            world->captureParityLocalSources(frameParity.outputDirectory(),finishedFrame,parityDepth.Width,parityDepth.Height);
+#ifdef NORTHLIGHT_REPLAY_STAND
+            world->capturePointCubes(frameParity.outputDirectory(),finishedFrame,parityDepth.Width,parityDepth.Height);
+#endif
+        }
         monitorPrimary=implicitChain;extensionWork("frame finish",[&]{finishFrameImpl();});
         if(hdr.active&&!hdrUiPhase)extensionWork("HDR frame finish",[&]{if(SUCCEEDED(hdrBegin(true)))hdrBoundaryLog("present",finishedFrame,effectsApplied,worldSeen);});
         drawOverlay(implicitChain);
+        if(parity){
+            ExtensionDevice::RawScope raw(*ext);
+            auto* native=hdr.logical.SwapEffect==D3DSWAPEFFECT_DISCARD&&!hdrLegacySynced?hdrLegacyBack:nullptr;
+            frameParity.save(ext,finishedFrame,hdrPresentBack,depthTex,parityDepth,parityReady&&hdrUiPhase&&!extensionFault,
+                             hdrFrame,hdrFrameSettings,native);
+        }
     }
     // 0.3.198 (rain): frame end, on the finishing thread, under the gate: the frame's sample into the tracker, the state to the
     // world, the hot candidate rotated on every frame it counted no draws, and the WEATHER lines.
@@ -3809,7 +3425,12 @@ public:
         namespace W=NorthlightWeather;
         if(gateFrame){logWeatherProbe(sampleFrame);weatherProbe={};}
         LARGE_INTEGER now={};double dt=0;
-        if(cpuFrequency.QuadPart>0&&QueryPerformanceCounter(&now)){if(weatherTick)dt=double(now.QuadPart-weatherTick)/double(cpuFrequency.QuadPart);weatherTick=now.QuadPart;}
+        const bool fixedClock=NorthlightFrameParityClock::enabled();
+        if(cpuFrequency.QuadPart>0&&(fixedClock||QueryPerformanceCounter(&now))){
+            if(fixedClock)now.QuadPart=NorthlightFrameParityClock::counter(sampleFrame,cpuFrequency.QuadPart);
+            if(weatherTick)dt=double(now.QuadPart-weatherTick)/double(cpuFrequency.QuadPart);
+            weatherTick=now.QuadPart;
+        }
         surfaceTime+=std::clamp(dt,0.,.1);
         if(!mirrorState.enabled){weatherDetect.setOff(true);if(!weatherOffReported){weatherOffReported=true;logf("WEATHER detect=off (mirror inactive)");}}
         weatherSample.kind=weatherSample.draws?weatherDetect.hotKind:W::Kind::None;
@@ -3897,24 +3518,37 @@ public:
         NorthlightFrameIntervals::Report r;const bool focused=intervalFocus;
         const bool have=frameIntervals.takePartial(r);intervalFocus=true;
         if(!diagnostics()||!have)return;
-        logf("FRAME interval device=%ld frame=%u tick=%lu enabled=%d samples=%u meanMs=%.3f p50Ms=%.3f p95Ms=%.3f maxMs=%.3f fps=%.2f gi=%u shadows=%u fog=%u focus=%d complete=0 reason=%s monotonicNs=%llu",
-             diagnosticId,frame,(unsigned long)GetTickCount(),int(mode),r.count,r.meanMs,r.p50Ms,r.p95Ms,r.maxMs,1000.0/r.meanMs,unsigned(effects.gi),unsigned(effects.shadows),unsigned(effects.fog),int(focused),reason,(unsigned long long)NorthlightStream::nowNs());
+        const auto deltas=r.csv();
+        logf("FRAME interval device=%ld frame=%u tick=%lu enabled=%d samples=%u meanMs=%.3f p50Ms=%.3f p95Ms=%.3f maxMs=%.3f fps=%.2f gi=%u shadows=%u fog=%u focus=%d complete=0 reason=%s monotonicNs=%llu qpcHz=%lld lastPresent=%u deltas=%s",
+             diagnosticId,frame,(unsigned long)GetTickCount(),int(mode),r.count,r.meanMs,r.p50Ms,r.p95Ms,r.maxMs,1000.0/r.meanMs,unsigned(effects.gi),unsigned(effects.shadows),unsigned(effects.fog),int(focused),reason,(unsigned long long)NorthlightStream::nowNs(),(long long)r.frequency,r.lastFrame,deltas.data());
     }
     void finishFrameImpl() {
         nameMaskRunEnd(); /* 0.3.212 (task 32) */
         captureEffectDiagnostics();
         const auto frameEffects=effectKeys.settings;const bool frameEnabled=enabled;
-        const bool diagnosticFrame=gpuDiagnosticFrame||nativeCaptureDiagnostic;gpuDiagnosticFrame=false;
+        bool diagnosticFrame=gpuDiagnosticFrame||nativeCaptureDiagnostic;gpuDiagnosticFrame=false;
+#ifdef NORTHLIGHT_REPLAY_STAND
+        if(NorthlightCaptureWork::selected(frame)){
+            diagnosticFrame=true;
+            logf("CAPTURE_WORK_FRAME device=%ld epoch=%llu frame=%u rows=%u bufferRows=%u fpsEligible=0 cpuSourceBytes=%zu gpuSceneBytes=%zu",
+                diagnosticId,(unsigned long long)captureWorkEpoch,frame,captureWorkRows,
+                captureWorkBufferRows,
+                NorthlightSourceIdentity::cpuLiveBytes.load(std::memory_order_relaxed),gpuScene?gpuScene->native.chargedBytes():0);
+            if(world)world->reportReplayCopyMemory(frame);
+            captureWorkRows=captureWorkBufferRows=0;
+        }
+#endif
         if(diagnosticFrame){flushFrameIntervals(nativeCaptureDiagnostic?"native-trace-capture":"gpu-diagnostic-capture",frameEnabled,frameEffects);frameIntervals.reset();intervalFocus=true;}
         // Focus also goes on the FRAME interval line (0 if any frame since the last line lacked it): a background
         // window runs at the client's own frame cap (maxFPSBk), which is not renderer cost.
         D3DDEVICE_CREATION_PARAMETERS cp={};
         if(focusWindowKnown)cp.hFocusWindow=focusWindow;
         else if(SUCCEEDED(ext->GetCreationParameters(&cp))){focusWindow=cp.hFocusWindow;focusWindowKnown=true;}
-        const bool focus=GetForegroundWindow()==cp.hFocusWindow;intervalFocus&=focus;
+        const bool focus=cp.hFocusWindow&&GetForegroundWindow()==cp.hFocusWindow;intervalFocus&=focus;
         LARGE_INTEGER intervalTick={};NorthlightFrameIntervals::Report intervalReport;
-        if(!diagnosticFrame&&diagnostics()&&QueryPerformanceCounter(&intervalTick)&&frameIntervals.sample(intervalTick.QuadPart,cpuFrequency.QuadPart,intervalReport)){
-            logf("FRAME interval device=%ld frame=%u tick=%lu enabled=%d samples=%u meanMs=%.3f p50Ms=%.3f p95Ms=%.3f maxMs=%.3f fps=%.2f gi=%u shadows=%u fog=%u focus=%d",diagnosticId,frame,(unsigned long)GetTickCount(),enabled,intervalReport.count,intervalReport.meanMs,intervalReport.p50Ms,intervalReport.p95Ms,intervalReport.maxMs,1000.0/intervalReport.meanMs,unsigned(frameEffects.gi),unsigned(frameEffects.shadows),unsigned(frameEffects.fog),int(intervalFocus));intervalFocus=true;}
+        if(!diagnosticFrame&&diagnostics()&&QueryPerformanceCounter(&intervalTick)&&frameIntervals.sample(intervalTick.QuadPart,cpuFrequency.QuadPart,frame,intervalReport)){
+            const auto deltas=intervalReport.csv();
+            logf("FRAME interval device=%ld frame=%u tick=%lu enabled=%d samples=%u meanMs=%.3f p50Ms=%.3f p95Ms=%.3f maxMs=%.3f fps=%.2f gi=%u shadows=%u fog=%u focus=%d qpcHz=%lld lastPresent=%u deltas=%s",diagnosticId,frame,(unsigned long)GetTickCount(),enabled,intervalReport.count,intervalReport.meanMs,intervalReport.p50Ms,intervalReport.p95Ms,intervalReport.maxMs,1000.0/intervalReport.meanMs,unsigned(frameEffects.gi),unsigned(frameEffects.shadows),unsigned(frameEffects.fog),int(intervalFocus),(long long)intervalReport.frequency,intervalReport.lastFrame,deltas.data());intervalFocus=true;}
         if(diagnostics()){gpuProfile->poll();if(gpuSceneProfile)gpuSceneProfile->poll();}
         if(materialProfile)materialProfile->poll();if(world)world->pollMaterialProfile();pollProjectedAudit();
         if(diagnostics()&&frame%600==0)logClientLatency(frame,"periodic");
@@ -4013,7 +3647,39 @@ public:
         grassReceiverCensus={};
         if(sampled()&&aoActorOn&&aoActorFrame==frame)logf("AO_ACTOR frame=%u draws=%u valid=%u used=%u captureCpuUs=%.1f",frame,aoActorMask->capturedDraws(),unsigned(aoActorMask->valid()),unsigned(aoActorUsed),
             sampledDrawTimers()&&cpuFrequency.QuadPart>0?double(cpuAoActorCapture)*1e6/double(cpuFrequency.QuadPart):-1.0);
-        if(sampled()&&effectCoverage.draws)logf("EFFECT_COVERAGE frame=%u draws=%u binds=%u active=%u",frame,effectCoverage.draws,effectCoverage.bindings,unsigned(effectCoverage.active()));
+        if(sampled()&&effectCoverage.draws)logf("EFFECT_COVERAGE frame=%u draws=%u binds=%u active=%u pairedDraws=%u resolves=%u reusedResolves=%u maskOverrides=%u shaderLookupsAvoided=%u",frame,effectCoverage.draws,effectCoverage.bindings,unsigned(effectCoverage.active()),effectCoverage.pairedDraws,effectCoverage.resolveCopies(),effectCoverage.resolveReuses(),effectCoverage.writeMaskOverrides(),gateFrame?effectCoverageShaderSkips:0u);
+        if(gameIndexedPair){
+            const auto& pair=*gameIndexedPair;
+            if(sampled())logf("GAME_INDEXED_PAIR frame=%u queued=%u batches=%u drained=%u sourceMisses=%u proofMisses=%u failures=%u saved=%u receiverSaved=%u peak=%u mixedSaved=%u constantBarriers=%u",
+                frame,pair.queuedDraws,pair.batches,pair.drained,pair.sourceMisses,pair.proofMisses,pair.failures,pair.saved,pair.receiverSaved,pair.peak,pair.mixedSaved,pair.constantBarriers);
+            if(sampled())logf("GAME_INDEXED_PAIR_READS frame=%u mirroredFloatReads=%u backendFloatReads=%u stateMisses=%u shaderMisses=%u rangeMisses=%u setupMisses=%u alphaSaved=%u",
+                frame,pair.mirroredFloatReads,pair.backendFloatReads,pair.stateMisses,pair.shaderMisses,pair.rangeMisses,pair.setupMisses,pair.alphaSaved);
+            if(sampled())logf("GAME_INDEXED_STENCIL frame=%u deferred=%u materialized=%u skippedSets=%u",
+                frame,pair.deferredStencils,pair.materializedStencils,pair.skippedStencilSets);
+            if(sampled()){
+                const auto& ranges=pair.indexRangeCache();
+                logf("GAME_INDEXED_RANGES frame=%u queued=%u batches=%u saved=%u drained=%u hits=%u built=%u unavailable=%u bytes=%u buffers=%u",
+                    frame,pair.rangeQueued,pair.rangeBatches,pair.rangeSaved,pair.rangeDrained,ranges.hits,ranges.built,ranges.unavailable,ranges.bytes(),ranges.buffers());
+            }
+            gameIndexedPair->clearCounters();
+        }
+        if(gameParticlePair){
+            auto& pair=*gameParticlePair;
+            if(sampled())logf("GAME_PARTICLE_PAIR frame=%u saved=%u drained=%u proofMisses=%u textureBarriers=%u indexMisses=%u windows=%u atlasSaved=%u atlasBuilt=%u atlasVertexMisses=%u atlasShaderMisses=%u atlasMaterialMisses=%u atlasPrepared=%u atlasTransformMisses=%u routedSaved=%u constantSaved=%u constantMisses=%u",
+                frame,pair.saved,pair.drained,pair.proofMisses,pair.textureBarriers,pair.indexMisses,pair.windows,pair.atlasSaved,pair.atlasBuilt(),
+                pair.atlasVertexMisses,pair.atlasShaderMisses,pair.atlasMaterialMisses,pair.atlasPrepared,pair.atlasTransformMisses,
+                pair.routedSaved,pair.constantSaved,pair.constantMisses);
+            pair.saved=pair.drained=pair.proofMisses=pair.textureBarriers=pair.indexMisses=pair.windows=0;
+            pair.nextFrame();
+        }
+        if(diagnostics()&&modelNormals){
+            const char* domain=menuScene?"menu":world&&world->parityGeometryReady()?"world-ready":"world-loading";
+            modelNormals->reportNativeSections(frame,domain,[](const char* format,auto... args){logf(format,args...);});
+        }
+#ifdef NORTHLIGHT_REPLAY_STAND
+        if(modelNormals&&sampled()&&NorthlightFrameParityClock::fixedProfileWork())
+            modelNormals->reportCoverage(frame,[](const char* format,auto... args){logf(format,args...);});
+#endif
         if(sampled()&&nameMask.armed()){
             const double us=cpuFrequency.QuadPart>0?1e6/double(cpuFrequency.QuadPart):0.0;
             const double decide=nameDecideTimed?double(cpuNameDecide)*double(nameDecideCalls)/double(nameDecideTimed)*us:0.0,mark=double(cpuNameMark)*us,unmark=double(cpuNameUnmark)*us;
@@ -4119,10 +3785,10 @@ public:
         if(sampledFrame&&cpuFrequency.QuadPart>0){
             double ms=1000.0/double(cpuFrequency.QuadPart);
             // Report after rendering: logging must not create a gap inside the GPU stages.
-            if(cpuAOBlurPending){
+            if(cpuAOBlur.pending){
                 logf("AO_SUBMIT frame=%llu method=%u width=%u height=%u blurSetupCpuMs=%.6f blurDrawSubmitCpuMs=%.6f clockReads=4",
-                    (unsigned long long)cpuAOBlurFrame,cpuAOBlurMethod,cpuAOBlurWidth,cpuAOBlurHeight,double(cpuAOBlurSetup)*ms,double(cpuAOBlurSubmit)*ms);
-                cpuAOBlurPending=false;}
+                    (unsigned long long)cpuAOBlur.frame,cpuAOBlur.method,cpuAOBlur.width,cpuAOBlur.height,double(cpuAOBlur.setup)*ms,double(cpuAOBlur.submit)*ms);
+                cpuAOBlur.pending=false;}
             const bool drawTimed=NorthlightRenderThreadProbe::profiling(); // the per-draw scopes (prep, capture, water) need RenderProfile: -1 = not measured
             if(gateFrame&&hdr.active)logf("CPU HDR frame=%u admission=%.6fms boundary=%.6fms finish=%.6fms transferWithNativeDraw=%.6fms admissionCalls=%u transferCalls=%u finishIncludedInBoundary=1 transferIncludesNativeSubmission=1",
                 sampleFrame,std::max(0.0,double(cpuHdrAdmission-cpuHdrBoundary)*ms),cpuHdrBoundary*ms,cpuHdrFinish*ms,cpuHdrTransfer*ms,hdrAdmissionCalls,hdrTransferCalls);
@@ -4137,6 +3803,13 @@ public:
             LARGE_INTEGER a={},b={},t={};QueryPerformanceCounter(&a);for(unsigned i=0;i<32;++i)QueryPerformanceCounter(&t);QueryPerformanceCounter(&b);
             const double qpcNs=double(b.QuadPart-a.QuadPart)*1e9/double(cpuFrequency.QuadPart)/33.0;
             logf("CPU capture split frame=%u captureWorld=%.3fms captureWater=%.3fms qpcNs=%.1f normalCaptureMs=%.3f",sampleFrame,drawTimed?std::max(0.0,double(cpuCapture-cpuWaterCapture)*ms):-1.0,drawTimed?cpuWaterCapture*ms:-1.0,qpcNs,drawTimed?cpuNormalCapture*ms:-1.0);
+#ifdef NORTHLIGHT_REPLAY_STAND
+            const auto copy=NorthlightLockMeter::replayCopyWork();
+            logf("REPLAY COPY work frame=%u legacy=%u readLocks=%llu readBytes=%llu fills=%llu fillBytes=%llu fallbackLocks=%llu servedBytes=%llu evictions=%llu residentBytes=%llu largeBytes=%llu",
+                sampleFrame,unsigned(NorthlightReplayCopies::legacyPartialFills()),(unsigned long long)copy.readLocks,(unsigned long long)copy.readBytes,
+                (unsigned long long)copy.copyFills,(unsigned long long)copy.copyFillBytes,(unsigned long long)copy.copyFallback,
+                (unsigned long long)copy.copyServedBytes,(unsigned long long)copy.copyEvictions,(unsigned long long)copy.copyResidentBytes,(unsigned long long)copy.copyLargeBytes);
+#endif
             logf("WATER mask draws=%u deferred=%u clears=%u scans=%u readFailures=%u mrt=%u redraw=%u degraded=%u binds=%u longestRun=%u afterEffects=%u requested=%u targets=%u boundsPct=%d",waterDraws,0u,waterClears,waterScans,waterReadFailures,waterMrt,waterRedraws,waterDegraded,waterBinds,waterLongestRun,waterLate,waterMaskDemand,waterTargets,waterBoundsPct);
             if(NorthlightRenderThreadProbe::profiling()){
                 // Extension D3D9 calls of this frame by method, inside renderEffects' raw scope (all
@@ -4182,6 +3855,7 @@ public:
         cpuPrep=cpuCapture=cpuNormalCapture=cpuWaterCapture=cpuEffects=0;cpuCaptureReads=0;cpuDrawHooks=0;
         cpuHdrAdmission=cpuHdrBoundary=cpuHdrTransfer=cpuHdrFinish=0;hdrAdmissionCalls=hdrTransferCalls=0;
         ++frame;mirrorState.gate.frame.store(frame,std::memory_order_relaxed); /* 0.3.180: the census' frame */
+        if(world&&(NorthlightFrameParityClock::enabled()||NorthlightFrameParityClock::fixedProfileWork()))world->setParityFrame(frame);
         auroraSources.end();auroraDiagnostic.beginFrame(frame);
         if(diagnostics()&&frame%120==0&&(auroraHdrDraws||auroraNativeDraws))
             logf("AURORA frame=%u hdrDraws=%u addedNativeDraws=%u gain=%.5f phase=%.5f cameraValid=%u nativeHdr=1 legacyEV=%.3f intensity=%.3f",frame,auroraHdrDraws,auroraNativeDraws,auroraStyle.gain,auroraStyle.phase,unsigned(auroraCameraValid),hdrFrameSettings.legacyExpansion,auroraStyle.intensity);
@@ -4192,11 +3866,12 @@ public:
         // Per-type call counts run only through a RenderProfile sample frame.
         mirrorState.rawCounting=sampled()&&NorthlightRenderThreadProbe::profiling();
         terrainSwapCalls={};
+        particleRouteStats={};
         if(mirrorState.rawCounting){std::memset(mirrorState.rawMethodCalls,0,sizeof mirrorState.rawMethodCalls);
             frameStartDrawCalls=drawCalls;frameStartAnswered=mirrorState.answered;frameStartForwarded=mirrorState.forwarded;frameStartScopeReads=CpuScope::reads;}
         gateFrame=mirrorState.rawCounting;
         mirrorState.gate.counting.store(gateFrame,std::memory_order_relaxed);perfCounting.store(gateFrame,std::memory_order_relaxed);
-        if(gateFrame){gateCounts={};gateStart={missingVS,terrainDraws,uiDraws,terrainShadowDraws,NorthlightTrackedBuffers::clock.load(std::memory_order_relaxed),vsCacheHits,vsCacheMisses};
+        if(gateFrame){gateCounts={};effectCoverageShaderSkips=0;gateStart={missingVS,terrainDraws,uiDraws,terrainShadowDraws,NorthlightTrackedBuffers::clock.load(std::memory_order_relaxed),vsCacheHits,vsCacheMisses};
             gateSceneEnd={};gateSceneDraws=0;gateSceneReads=0;for(unsigned s=0;s<MirrorGate::Sites;++s)mirrorState.gate.takeAcquired(MirrorSite(s));perfCalls.store(0,std::memory_order_relaxed);}
         latchDrawGates(); /* 0.3.187: the next frame's draw gates, after every input above */
     }
@@ -4313,26 +3988,41 @@ public:
     }
     HRESULT STDMETHODCALLTYPE CreateVertexShader(const DWORD* code,IDirect3DVertexShader9** out) override { Guard mirrorLock(mirrorState.gate);
         HRESULT hr=ext->CreateVertexShader(code,out);
-        if(SUCCEEDED(hr)&&out&&*out)extensionWork("vertex shader registration",[&]{++vsGeneration;std::vector<DWORD> words;auto h=shaderHash(*out,words);int tag=NorthlightShaderTags::deviceTag(h);tag|=registerNativeShadow(*out,words);if(NorthlightUnlitReceiver::shader(reinterpret_cast<const uint32_t*>(words.data()),words.size(),m2ShaderFamily(h)==3))tag|=kUnlitTag;if(!(tag&kUnlitTag)&&NorthlightUnlitReceiver::prelitWorldShader(reinterpret_cast<const uint32_t*>(words.data()),words.size(),h))tag|=kPrelitTag;vsHashes[*out]=h;if(spellOn||nameMask.setting||(hdr.stream&&hdr.dxvk))shaderReads[static_cast<void*>(*out)]=NorthlightShaderReads::scan(reinterpret_cast<const uint32_t*>(words.data()),words.size());if(spellOn){bool bare=false;const bool ok=NorthlightSpellFog::vsFogProven(reinterpret_cast<const uint32_t*>(words.data()),words.size(),&bare);vsFogProven[*out]=uint8_t(ok?(bare?2:1):0);}uiFallbackForget(*out);vsMajor[*out]=!words.empty()&&(words[0]>>16)==0xFFFEu?unsigned((words[0]>>8)&0xFFu):0u;if(world){world->registerShader(*out,h);world->registerNativePointShader(*out,(m2ShaderFamily(h)==3||world->recognizesWmo(*out)||contains(kTerrainVS,h))?words.data():nullptr,(m2ShaderFamily(h)==3||world->recognizesWmo(*out)||contains(kTerrainVS,h))?words.size():0,m2ShaderFamily(h)==3);particleCapture.registerVertex(*out,m2ShaderFamily(h));}if(autoBump)autoBump->registerVertex(*out,h,words.data(),words.size(),m2ShaderFamily(h),world&&world->recognizesWmo(*out));if(water)water->registerVertex(*out,h,words.data(),words.size());if(nativeMoreLights)nativeMoreLights->registerShader(*out,words.data(),words.size(),contains(kTerrainVS,h));vsTags[*out]=tag|(water&&water->hasVertex(*out)?kWaterTag:0)|int(m2ShaderFamily(h)<<kFamilyShift);if(tag==1)++matchedTerrain;else if(tag==2)++matchedUI;});
+        if(SUCCEEDED(hr)&&out&&*out)mirrorState.particleDraw.shaders=NorthlightParticleDraw::State::Shaders::Dirty;
+        if(SUCCEEDED(hr)&&out&&*out)extensionWork("vertex shader registration",[&]{++vsGeneration;std::vector<DWORD> words;auto h=shaderHash(*out,words);int tag=NorthlightShaderTags::deviceTag(h);tag|=registerNativeShadow(*out,words);if(NorthlightUnlitReceiver::shader(reinterpret_cast<const uint32_t*>(words.data()),words.size(),m2ShaderFamily(h)==3))tag|=kUnlitTag;if(!(tag&kUnlitTag)&&NorthlightUnlitReceiver::prelitWorldShader(reinterpret_cast<const uint32_t*>(words.data()),words.size(),h))tag|=kPrelitTag;vsHashes[*out]=h;if(spellOn||nameMask.setting||(hdr.stream&&hdr.dxvk)||gameParticlePair)shaderReads[static_cast<void*>(*out)]=NorthlightShaderReads::scan(reinterpret_cast<const uint32_t*>(words.data()),words.size());if(spellOn){bool bare=false;const bool ok=NorthlightSpellFog::vsFogProven(reinterpret_cast<const uint32_t*>(words.data()),words.size(),&bare);vsFogProven[*out]=uint8_t(ok?(bare?2:1):0);}uiFallbackForget(*out);vsMajor[*out]=!words.empty()&&(words[0]>>16)==0xFFFEu?unsigned((words[0]>>8)&0xFFu):0u;if(world){world->registerShader(*out,h);world->registerNativePointShader(*out,(m2ShaderFamily(h)==3||world->recognizesWmo(*out)||contains(kTerrainVS,h))?words.data():nullptr,(m2ShaderFamily(h)==3||world->recognizesWmo(*out)||contains(kTerrainVS,h))?words.size():0,m2ShaderFamily(h)==3);particleCapture.registerVertex(*out,m2ShaderFamily(h));}if(autoBump)autoBump->registerVertex(*out,h,words.data(),words.size(),m2ShaderFamily(h),world&&world->recognizesWmo(*out));if(water)water->registerVertex(*out,h,words.data(),words.size());if(nativeMoreLights)nativeMoreLights->registerShader(*out,words.data(),words.size(),contains(kTerrainVS,h));vsTags[*out]=tag|(water&&water->hasVertex(*out)?kWaterTag:0)|int(m2ShaderFamily(h)<<kFamilyShift);if(tag==1)++matchedTerrain;else if(tag==2)++matchedUI;});
         if(SUCCEEDED(hr))mirrorResources.wrap(out);return hr;
     }
     HRESULT STDMETHODCALLTYPE CreatePixelShader(const DWORD* code,IDirect3DPixelShader9** out) override { Guard mirrorLock(mirrorState.gate);
         HRESULT hr=ext->CreatePixelShader(code,out);
-        if(SUCCEEDED(hr)&&out&&*out)extensionWork("pixel shader registration",[&]{std::vector<DWORD> words;auto h=shaderHash(*out,words);uiFallbackForget(*out);hdrColor.forget(*out);effectCoverage.forget(*out);psTags[*out]=contains(kUiPS,h)?2:0;psHashes[*out]=h;if(spellOn||nameMask.setting||(hdr.stream&&hdr.dxvk))shaderReads[static_cast<void*>(*out)]=NorthlightShaderReads::scan(reinterpret_cast<const uint32_t*>(words.data()),words.size());psMajor[*out]=!words.empty()&&(words[0]>>16)==0xFFFFu?unsigned((words[0]>>8)&0xFFu):0u;if(spellOn)psFogReg[*out]=psMajor[*out]==3?NorthlightLegacyFog::ps3FogColorRegister(reinterpret_cast<const uint32_t*>(words.data()),words.size()):-1;if(autoBump)autoBump->registerPixel(*out,h);if(water)water->registerPixel(*out,h,words.data(),words.size());if(world)world->registerPixelShader(*out);particleCapture.registerPixel(*out,words.data(),words.size());});
+        if(SUCCEEDED(hr)&&out&&*out)mirrorState.particleDraw.shaders=NorthlightParticleDraw::State::Shaders::Dirty;
+        if(SUCCEEDED(hr)&&out&&*out)extensionWork("pixel shader registration",[&]{std::vector<DWORD> words;auto h=shaderHash(*out,words);uiFallbackForget(*out);hdrColor.forget(*out);effectCoverage.forget(*out);psTags[*out]=contains(kUiPS,h)?2:0;psHashes[*out]=h;if(spellOn||nameMask.setting||(hdr.stream&&hdr.dxvk)||gameParticlePair)shaderReads[static_cast<void*>(*out)]=NorthlightShaderReads::scan(reinterpret_cast<const uint32_t*>(words.data()),words.size());psMajor[*out]=!words.empty()&&(words[0]>>16)==0xFFFFu?unsigned((words[0]>>8)&0xFFu):0u;if(spellOn)psFogReg[*out]=psMajor[*out]==3?NorthlightLegacyFog::ps3FogColorRegister(reinterpret_cast<const uint32_t*>(words.data()),words.size()):-1;if(autoBump)autoBump->registerPixel(*out,h);if(water)water->registerPixel(*out,h,words.data(),words.size());if(world)world->registerPixelShader(*out);particleCapture.registerPixel(*out,words.data(),words.size());});
         if(SUCCEEDED(hr))mirrorResources.wrap(out);return hr;
     }
     // Keep native and prepared material submissions in one ordering for all Draw* forms.
-    template<class Draw> HRESULT submitGameDraw(UINT count,bool& nativeSky,bool* skyCaptured,Draw submit){
+    template<class Draw> HRESULT submitGameDraw(UINT count,bool& nativeSky,bool* skyCaptured,Draw submit,
+                                               const NorthlightDrawSnapshot::Draw* ordered=nullptr){
         const auto kind=nativeMoreLights?nativeMoreLights->kind(mirrorState.vertexShader):NorthlightNativeMoreLightShader::Kind::None;
         if(world)world->requestNativeExtra(kind!=NorthlightNativeMoreLightShader::Kind::None);
+        const auto handoff=[&](bool terrain,float* bank){if(world)world->nativeExtraRgb(terrain,bank);};
         const auto expanded=[&](auto draw)->HRESULT{if(!nativeMoreLights)return draw();
-            const HRESULT result=nativeMoreLights->draw(kind,&mirrorState,[&](bool terrain,float* bank){if(world)world->nativeExtraRgb(terrain,bank);},draw,world&&world->ownsNativeExtra());
+            const HRESULT result=nativeMoreLights->draw(kind,&mirrorState,handoff,draw,world&&world->ownsNativeExtra());
             if(nativeMoreLights->restoreFailed)failed=true;return result;};
         const auto final=[&]()->HRESULT{return expanded(submit);};
         if(!enabled&&!failed&&!hdr.active&&worldDebug==0&&!diagnostics())return final();
         return hdrDraw([&]{
             auto sceneDraw=[&](){
-            auto raw=[&]{return effectCoverageDraw([&]{return auroraNativeDraw([&]{return nativeLocalSubmit([&]{return skyPlanetNativeDraw(final);});});},false,nativeSky,skyCaptured);};
+            auto raw=[&]{
+                const bool canPair=ordered&&particlePairGate&&gameParticlePair->atlasEnabled()&&!nativeSky&&
+                    (!hdr.active||!hdrSkyHasEmission())&&!auroraDrawProven&&!skyPlanet.ready()&&
+                    !(world&&world->needsDiagnosticFallback())&&
+                    (!autoBump||(!autoBump->nativePOM()&&!autoBump->nativeDisplacement()));
+                IDirect3DVertexShader9* vertex=nullptr;
+                const bool canOrder=canPair&&(kind==NorthlightNativeMoreLightShader::Kind::None||
+                    (kind==NorthlightNativeMoreLightShader::Kind::Model&&ext->peekVertexShader(vertex)&&
+                     nativeMoreLights->keepsModelState(vertex,&mirrorState,handoff,world&&world->ownsNativeExtra())));
+                return effectCoverageDraw([&]{return auroraNativeDraw([&]{return nativeLocalSubmit([&]{return skyPlanetNativeDraw(final);});});},
+                    false,nativeSky,skyCaptured,canOrder?ordered:nullptr);
+            };
             return projectedDraw(count,applied?1u:0u,[&]{
                 return autoBump&&enabled?autoBump->geometryDraw(raw,true,[&](auto prepared,IDirect3DVertexShader9* source){
                     const auto finalPrepared=[&](){return expanded(prepared);};return nativeLocalSubmit(finalPrepared,true,source);
@@ -4344,6 +4034,84 @@ public:
         });
     }
     // 0.3.187: the four draw entry points share drawHook(); each passes its capture and its real draw.
+    void indexedPairScope(bool open,bool mixedConstants,bool joinRanges){
+        if(open){
+            indexedPairGate.emplace(mirrorState.gate,MirrorSite::Device);
+            gameIndexedPair->setMixedConstants(mixedConstants);
+            gameIndexedPair->setJoinRanges(joinRanges);
+            ext->setIndexedPair(this,[](void* context){static_cast<Device*>(context)->flushIndexedPair();},
+                [](void* context,UINT first,const float* values,UINT count){return static_cast<Device*>(context)->gameIndexedPair->allowsConstants(first,values,count);});
+        }else{
+            flushIndexedPair();gameIndexedPair->clearSource();indexedPairStencilKind=0;
+            ext->setIndexedPair(nullptr,nullptr,nullptr);
+            indexedPairGate.reset();
+        }
+    }
+    bool enableIndexedPair(bool& indexedRanges){
+        const char* option=std::getenv("NORTHLIGHT_GAME_PALETTE");
+        if(!option||(std::strcmp(option,"1")&&std::strcmp(option,"2"))||!NorthlightBackend::isPackagedDxvk(selectedBackend))return false;
+        indexedRanges=option[0]=='2';
+        gameIndexedPair=std::make_unique<NorthlightGameIndexedPair>(real,ext,&NorthlightTrackedBuffers::captureMetadata);
+        return true;
+    }
+    bool enableParticlePair(){
+        const char* option=std::getenv("NORTHLIGHT_GAME_PARTICLE_PAIRS");
+        const char* atlas=std::getenv("NORTHLIGHT_GAME_PARTICLE_ATLAS");
+        const char* texturePairs=std::getenv("NORTHLIGHT_GAME_PARTICLE_TEXTURE_PAIRS");
+        const bool useTexturePairs=texturePairs&&!std::strcmp(texturePairs,"1");
+        const bool useAtlas=useTexturePairs||(atlas&&!std::strcmp(atlas,"1"));
+        if((!useAtlas&&(!option||std::strcmp(option,"1")))||!NorthlightBackend::isPackagedDxvk(selectedBackend))return false;
+        gameParticlePair=std::make_unique<NorthlightGameParticlePair>(*ext,mirrorState,shaderReads,useAtlas,useTexturePairs);
+        return true;
+    }
+    bool particlePairScope(const NorthlightOrderedParticles::Window* window){
+        if(window){
+            particlePairGate.emplace(mirrorState.gate,MirrorSite::Device);
+            if(!gameParticlePair->arm(*window)){particlePairGate.reset();return false;}
+            ext->setIndexedPair(this,[](void* context){static_cast<Device*>(context)->flushParticlePair();},
+                [](void* context,UINT first,const float* values,UINT count){return static_cast<Device*>(context)->gameParticlePair->allowsConstants(first,values,count);},
+                [](void* context,DWORD stage,IDirect3DBaseTexture9* texture){return static_cast<Device*>(context)->gameParticlePair->allowsTexture(stage,texture);});
+            return true;
+        }
+        flushParticlePair(true);
+        ext->setIndexedPair(nullptr,nullptr,nullptr);
+        particlePairGate.reset();
+        return false;
+    }
+    void beginIndexedPairDraw(){
+        if(indexedPairGate)gameIndexedPair->clearSource();
+    }
+    std::shared_ptr<const NorthlightDrawSnapshot::Mesh> pendingIndexedSource(const NorthlightDrawSnapshot::Draw& draw,IDirect3DVertexShader9* shader)const{
+        return indexedPairGate?gameIndexedPair->pendingSource(draw,shader):nullptr;
+    }
+    template<class Submit> HRESULT submitIndexedPair(const NorthlightDrawSnapshot::Draw& draw,Submit serial){
+        if(particlePairGate){
+            const HRESULT hr=gameParticlePair->submit({draw.base,draw.vertices,draw.primitives},
+                draw.topology==D3DPT_TRIANGLELIST&&!draw.minimum&&!draw.start&&
+                !failed&&!spellQueryN&&!spellQueryUnknown&&mirrorState.active(),serial);
+            if(FAILED(hr)){mirrorState.invalidate();failed=true;}
+            return hr;
+        }
+        if(!indexedPairGate)return serial();
+        if(spellQueryN||spellQueryUnknown||!mirrorState.active()||!mirrorState.programmableVS||failed){
+            flushIndexedPair();return serial();
+        }
+        const unsigned indexedKind=indexedPairStencilKind;
+        indexedPairStencilKind=0;
+        if(indexedKind&&!gameIndexedPair->joiningRanges()&&!gameIndexedPair->knownSource()&&autoBump){
+            IDirect3DVertexShader9* shader=nullptr;
+            IDirect3DVertexDeclaration9* declaration=nullptr;
+            if(ext->peekVertexShader(shader)&&shader&&ext->peekVertexDeclaration(declaration)&&declaration){
+                NorthlightDrawSnapshot::Mesh unused;
+                std::shared_ptr<const NorthlightDrawSnapshot::Mesh> resident;
+                autoBump->captureSources().read(ext,declaration,draw,unused,nullptr,false,&resident,false,true);
+                gameIndexedPair->noteSource(shader,declaration,resident);
+            }
+        }
+        const HRESULT hr=gameIndexedPair->submit(draw,indexedKind,serial);
+        if(FAILED(hr)){mirrorState.invalidate();failed=true;}
+        return hr;
+    }
     HRESULT STDMETHODCALLTYPE DrawPrimitive(D3DPRIMITIVETYPE t,UINT start,UINT count) override { Guard mirrorLock(mirrorState.gate);
         NorthlightAutoDisplacement::Args geometry{{t,0,0,0,start,count,false}};
         bool nativeSky=false,skyCaptured=false;
@@ -4354,8 +4122,9 @@ public:
     HRESULT STDMETHODCALLTYPE DrawIndexedPrimitive(D3DPRIMITIVETYPE t,INT base,UINT min,UINT vertices,UINT start,UINT count) override { Guard mirrorLock(mirrorState.gate);
         NorthlightAutoDisplacement::Args geometry{{t,base,min,vertices,start,count,true}};
         bool nativeSky=false,skyCaptured=false;
-        auto raw=[&]{return ext->DrawIndexedPrimitive(t,base,min,vertices,start,count);};
-        auto draw=[&]{return submitGameDraw(count,nativeSky,&skyCaptured,raw);};
+        beginIndexedPairDraw();
+        auto raw=[&]{return submitIndexedPair(geometry.draw,[&]{return ext->DrawIndexedPrimitive(t,base,min,vertices,start,count);});};
+        auto draw=[&]{return submitGameDraw(count,nativeSky,&skyCaptured,raw,&geometry.draw);};
         if(enabled)spellArgs=NorthlightSpellLayer::DrawArgs::indexed(t,base,min,vertices,start,count);
         return drawHook(t,count,[&](IDirect3DVertexShader9* vs){captureGameDraw<NorthlightWaterRenderer::NoUserPointer>(vs,geometry,raw,draw);},draw,&nativeSky,&skyCaptured);}
     HRESULT STDMETHODCALLTYPE DrawPrimitiveUP(D3DPRIMITIVETYPE t,UINT count,const void* data,UINT stride) override { Guard mirrorLock(mirrorState.gate);
@@ -4440,6 +4209,8 @@ public:
         options.readBackLock=&NorthlightUpload::readBackLock;
         options.callerModule=&tclCallerModule; /* 0.3.204 (task 21): who calls TestCooperativeLevel (CSTREAM line, Diagnostics only) */
         options.extension=target->extensionDevice();options.rawOf=[target](IUnknown* exposed,unsigned kind){return target->rawOfExposed(exposed,NorthlightStream::Kind(kind));};
+        if(target->enableIndexedPair(options.indexedRanges))options.indexedPair=[target](bool open,bool mixedConstants,bool joinRanges){target->indexedPairScope(open,mixedConstants,joinRanges);};
+        if(target->enableParticlePair())options.particlePair=[target](const NorthlightOrderedParticles::Window* window){return target->particlePairScope(window);};
         NorthlightStream::StreamDevice* stream=nullptr;
         const bool exclusiveOwner=target->setExclusiveOwner(true); /* before the replay thread exists: its calls take the cheap owner entry; a foreign call stays safe */
         try{stream=NorthlightStream::StreamDevice::make(device,this,pp,std::move(options),&reason);}catch(...){reason="exception";}
@@ -4463,16 +4234,11 @@ public:
         }
 #endif
         if(selectedBackend!=NorthlightBackend::Kind::Legacy){
-            D3DDISPLAYMODE mode={};D3DCAPS9 caps={};D3DADAPTER_IDENTIFIER9 id={};
+            D3DADAPTER_IDENTIFIER9 id={};
             real->GetAdapterIdentifier(adapter,0,&id);
-            bool ok=SUCCEEDED(real->GetAdapterDisplayMode(adapter,&mode))&&SUCCEEDED(real->GetDeviceCaps(adapter,type,&caps));
-            auto format=[&](D3DFORMAT f,DWORD usage,D3DRESOURCETYPE rt){return ok&&real->CheckDeviceFormat(adapter,type,mode.Format,usage,rt,f)==D3D_OK;};
-            bool intz=format((D3DFORMAT)MAKEFOURCC('I','N','T','Z'),D3DUSAGE_DEPTHSTENCIL,D3DRTYPE_TEXTURE);
-            bool resz=format((D3DFORMAT)MAKEFOURCC('R','E','S','Z'),D3DUSAGE_RENDERTARGET,D3DRTYPE_SURFACE);
-            bool floatRT=format(D3DFMT_A16B16G16R16F,D3DUSAGE_RENDERTARGET,D3DRTYPE_TEXTURE)&&format(D3DFMT_R32F,D3DUSAGE_RENDERTARGET,D3DRTYPE_TEXTURE);
-            bool sm3=caps.VertexShaderVersion>=D3DVS_VERSION(3,0)&&caps.PixelShaderVersion>=D3DPS_VERSION(3,0);
-            logf("Backend capabilities: adapter=%u GPU=%s vendor=%04lx device=%04lx INTZ=%d RESZ=%d floatRT=%d SM3=%d MSAA=%u",adapter,id.Description,id.VendorId,id.DeviceId,intz,resz,floatRT,sm3,pp?unsigned(pp->MultiSampleType):0);
-            if(!ok||!intz||!resz||!floatRT||!sm3){
+            const auto caps=NorthlightBackend::queryNativeDeviceCaps(real,adapter,type);
+            logf("Backend capabilities: adapter=%u GPU=%s vendor=%04lx device=%04lx INTZ=%d RESZ=%d floatRT=%d SM3=%d MSAA=%u",adapter,id.Description,id.VendorId,id.DeviceId,caps.intz,caps.resz,caps.floatRT,caps.sm3,pp?unsigned(pp->MultiSampleType):0);
+            if(!caps.supported()){
                 if(out)*out=nullptr;
                 logf("UNSUPPORTED BACKEND: required depth/shader/target features missing; no quality-reducing fallback");
 #ifndef NORTHLIGHT_REPLAY_STAND
@@ -4485,6 +4251,9 @@ public:
         upgradeAutoDepth(real,adapter,type,pp,nameMaskWanted||contactAOWanted,"CreateDevice"); // Shared 24-bit depth + reserved stencil; no added bytes over D24X8.
         if(stream)NorthlightStream::streamActive.store(true,std::memory_order_relaxed); /* before the Device exists: worker core budgets read it once */
         if(stream)NorthlightReplayCopies::enabled.store(true,std::memory_order_relaxed); /* 0.3.192 (CS): before the first game buffer is wrapped: the replay-side CPU copies of replay_copies.h; never on with CommandStream=0 */
+#ifdef NORTHLIGHT_REPLAY_STAND
+        if(stream)logf("REPLAY COPY policy legacy=%u",unsigned(NorthlightReplayCopies::legacyPartialFills()));
+#endif
         if(stream)flags|=D3DCREATE_MULTITHREADED; /* DXVK's window-proc hook may touch the swap chain on the game thread while the replay thread presents */
         NorthlightHdr::Presentation presentation;presentation.settings=NorthlightHdr::Settings::load(rootPath);presentation.stream=stream;presentation.dxvk=NorthlightBackend::isPackagedDxvk(selectedBackend);
         if(stream&&presentation.dxvk)presentation.formatsPrepared=NorthlightHdr::unlockFormats(real);
@@ -4516,269 +4285,7 @@ public:
     }
 };
 
-static void configureDxvkCompatibility(const NorthlightBackendLoader::Inspection& info,bool disableFse=false){
-    // Do not edit dxvk.conf or global launcher/Wine settings. Only this client
-    // process receives the required D3D9 compatibility options. Explicit
-    // DXVK_CONFIG assignments remain last and can override them for diagnosis.
-    static bool applied=false;if(applied)return;applied=true;
-    try {
-        const DWORD needed=GetEnvironmentVariableA("DXVK_CONFIG",nullptr,0);
-        std::string existing;
-        if(needed){
-            std::vector<char> buffer(size_t(needed)+1);
-            const DWORD copied=GetEnvironmentVariableA("DXVK_CONFIG",buffer.data(),DWORD(buffer.size()));
-            if(copied>=buffer.size()){logf("DXVK compatibility configuration changed concurrently; defaults not applied");return;}
-            existing.assign(buffer.data(),copied);
-        }
-        const auto combined=NorthlightDxvkCompatibility::config(existing,disableFse);
-        const BOOL set=SetEnvironmentVariableA("DXVK_CONFIG",combined.c_str());
-        // DXVK 1.10.x reads only dxvk.conf/DXVK_CONFIG_FILE: the variable is then inert.
-        // 0.3.189: DXVK 2.x reads cachedDynamicBuffers, >=3.0 cachedWriteOnlyBuffers; each ignores the other's key.
-        logf("DXVK compatibility process defaults applied=%u vendor=1002 cachedDynamicBuffers(2.x)=True cachedWriteOnlyBuffers(>=3.0)=True descriptorHeap=False explicitInlineOverrides=%u dxvk=%s DXVK_CONFIG supported=%u",
-             unsigned(set!=FALSE),unsigned(!existing.empty()),info.dxvkVersion.empty()?"unknown":info.dxvkVersion.c_str(),unsigned(info.dxvkConfigEnv));
-        if(disableFse)logf("DXVK3 engine-name FSE forced=False process-config-applied=%u",unsigned(set!=FALSE));
-    }catch(...){logf("DXVK compatibility defaults unavailable: allocation failure");}
-}
-// Win32 adapter for NorthlightBackendLoader; optional DXVK-only import redirect.
-struct Win32BackendSys {
-    using Module=HMODULE;
-    NorthlightBackend::Kind kind;std::wstring selfPath;BY_HANDLE_FILE_INFORMATION selfId={};bool haveSelfId=false;
-    bool engineNameWorkaround=false,presentWaitWorkaround=false;
-    static bool fileId(const std::wstring& path,BY_HANDLE_FILE_INFORMATION& info,unsigned long& error){
-        HANDLE h=CreateFileW(path.c_str(),FILE_READ_ATTRIBUTES,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
-        if(h==INVALID_HANDLE_VALUE){error=GetLastError();return false;}
-        const bool ok=GetFileInformationByHandle(h,&info)!=FALSE;if(!ok)error=GetLastError();CloseHandle(h);
-        return ok&&!(info.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY);
-    }
-    explicit Win32BackendSys(NorthlightBackend::Kind k):kind(k){
-        wchar_t path[MAX_PATH*2]={};const DWORD n=GetModuleFileNameW(selfModule,path,MAX_PATH*2);
-        if(n&&n<MAX_PATH*2)selfPath=path;
-        unsigned long error=0;haveSelfId=!selfPath.empty()&&fileId(selfPath,selfId,error);
-    }
-    const std::wstring& self(){return selfPath;}
-    std::wstring full(const std::wstring& path){
-        wchar_t out[MAX_PATH*2]={};const DWORD n=GetFullPathNameW(path.c_str(),MAX_PATH*2,out,nullptr);
-        return n&&n<MAX_PATH*2?std::wstring(out):std::wstring();
-    }
-    int identity(const std::wstring& path,unsigned long& error){
-        BY_HANDLE_FILE_INFORMATION info={};if(!fileId(path,info,error))return -1;
-        return haveSelfId&&info.dwVolumeSerialNumber==selfId.dwVolumeSerialNumber&&info.nFileIndexHigh==selfId.nFileIndexHigh&&info.nFileIndexLow==selfId.nFileIndexLow;
-    }
-    bool read(const std::wstring& path,std::vector<unsigned char>& bytes){
-        HANDLE h=CreateFileW(path.c_str(),GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_DELETE,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
-        if(h==INVALID_HANDLE_VALUE)return false;
-        LARGE_INTEGER size={};DWORD got=0;
-        bool ok=GetFileSizeEx(h,&size)&&size.QuadPart>0&&size.QuadPart<=(64ll<<20);
-        if(ok){try{bytes.resize(size_t(size.QuadPart));}catch(...){ok=false;}}
-        ok=ok&&ReadFile(h,bytes.data(),DWORD(bytes.size()),&got,nullptr)&&got==bytes.size();
-        CloseHandle(h);return ok;
-    }
-    void beforeLoad(const std::wstring&,const NorthlightBackendLoader::Inspection& info){
-        // 0.3.175: DXVK_ASYNC is left to the runtime (WoWSilicon enables it). Async forks may skip a
-        // draw while a pipeline compiles; the user test showed far fewer hitches, so it is not forced off.
-        // Only Backend=dxvk/dxvk2 (the Windows package's DXVK: 3.1.1 default, 2.7.1 as dxvk2) gets the
-        // vendor/buffer defaults; legacy (the macOS WoWSilicon DXVK) keeps today's runtime unchanged.
-        const bool requested=GetPrivateProfileIntW(L"Renderer",L"DxvkEngineNameWorkaround",0,(std::wstring(rootPath)+L"northlight-renderer.ini").c_str())==1;
-        const HMODULE ntdll=GetModuleHandleW(L"ntdll.dll");
-        const bool wine=ntdll&&GetProcAddress(ntdll,"wine_get_version");
-        engineNameWorkaround=requested&&NorthlightBackend::isPackagedDxvk(kind)&&info.dxvk&&NorthlightBackend::dxvkMajor(info.dxvkVersion)==3&&!wine;
-        const bool presentWaitRequested=GetPrivateProfileIntW(L"Renderer",L"DxvkPresentWaitWorkaround",1,(std::wstring(rootPath)+L"northlight-renderer.ini").c_str())!=0;
-        presentWaitWorkaround=presentWaitRequested&&NorthlightBackend::isPackagedDxvk(kind)&&info.dxvk&&info.dxvkVersion=="v3.1.1"&&!wine;
-        if(requested)logf("DXVK3 engine-name requested=1 eligible=%u wine=%u backend=%s version=%s",unsigned(engineNameWorkaround),unsigned(wine),NorthlightBackend::name(kind),info.dxvkVersion.c_str());
-        if(NorthlightBackend::isPackagedDxvk(kind))configureDxvkCompatibility(info,engineNameWorkaround);
-    }
-    HMODULE load(const std::wstring& path,unsigned long& error){
-        HMODULE m=LoadLibraryW(path.c_str());error=m?0:GetLastError();
-        if(m&&(engineNameWorkaround||presentWaitWorkaround))logf("DXVK3 compatibility import status=%s engine-name=%u present-wait=%u",NorthlightDxvkEngineName::install(m,&logf,engineNameWorkaround,presentWaitWorkaround),unsigned(engineNameWorkaround),unsigned(presentWaitWorkaround));
-        return m;
-    }
-    bool isSelf(HMODULE m){return m==selfModule;}
-    void* proc(HMODULE m,const char* name){FARPROC f=GetProcAddress(m,name);void* p=nullptr;static_assert(sizeof(p)==sizeof(f));std::memcpy(&p,&f,sizeof p);return p;}
-    bool ownedBySelf(void* address){
-        HMODULE owner=nullptr;
-        return GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,static_cast<LPCWSTR>(address),&owner)&&owner==selfModule;
-    }
-    void release(HMODULE m){FreeLibrary(m);}
-};
-// 0.3.204 (task 21): "module+0xoffset" of a TestCooperativeLevel caller's return address (a diagnostic line, a few calls in a session; game thread only).
-static const char* tclCallerModule(void* address){
-    static char text[300];
-    HMODULE m=nullptr;
-    if(!address||!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,static_cast<LPCWSTR>(address),&m)){
-        std::snprintf(text,sizeof text,"(no module)+0x%llx",(unsigned long long)reinterpret_cast<std::uintptr_t>(address));return text;}
-    wchar_t path[MAX_PATH]={};const DWORD len=GetModuleFileNameW(m,path,MAX_PATH);const wchar_t* base=path;
-    for(const wchar_t* c=path;*c;++c)if(*c==L'\\'||*c==L'/')base=c+1;
-    std::snprintf(text,sizeof text,"%ls+0x%llx",len?base:L"(unknown)",(unsigned long long)(reinterpret_cast<std::uintptr_t>(address)-reinterpret_cast<std::uintptr_t>(m)));
-    return text;
-}
-static std::wstring systemDirectory(){
-    wchar_t dir[MAX_PATH]={};const UINT n=GetSystemDirectoryW(dir,MAX_PATH);
-    return n&&n<MAX_PATH-10?std::wstring(dir):std::wstring();
-}
-static std::wstring systemD3d9(){return NorthlightBackend::defaultPath(NorthlightBackend::Kind::Native,L"",systemDirectory());}
-static void logAttempts(const std::vector<NorthlightBackendLoader::Attempt>& attempts){
-    for(const auto& a:attempts)
-        logf("BACKEND candidate=%ls result=%s error=%lu ours=%u dxvk=%s DXVK_CONFIG=%u scanned=%u",a.path.c_str(),NorthlightBackendLoader::name(a.outcome),
-             a.error,unsigned(a.info.ours),a.info.dxvk?(a.info.dxvkVersion.empty()?"yes":a.info.dxvkVersion.c_str()):"no",unsigned(a.info.dxvkConfigEnv),unsigned(a.info.read));
-}
-// Host exe path only: nothing depends on which wow.exe runs (not read, not hashed).
-static void logHostExecutable(const std::wstring& selfPath){
-    wchar_t exe[MAX_PATH*2]={};const DWORD n=GetModuleFileNameW(nullptr,exe,MAX_PATH*2);
-    logf("HOST exe=%ls module=%ls; executable is never modified",n&&n<MAX_PATH*2?exe:L"(unknown)",selfPath.c_str());
-}
-static std::string fileSha(const std::wstring& path){
-    std::vector<unsigned char> bytes;Win32BackendSys sys(NorthlightBackend::Kind::Invalid);
-    if(!sys.read(path,bytes))return "unreadable";
-    NorthlightBackendLoader::Sha256 h;h.update(bytes.data(),bytes.size());return h.hex();
-}
-// Where this proxy sits and how the game reached it; the game-folder d3d9.dll
-// (WoWSilicon's DXVK on macOS) against the backend copy that is actually used.
-static void logProxyPlacement(Win32BackendSys& sys,const std::wstring& root,const NorthlightBackendLoader::Attempt& backendAttempt,bool loaded){
-#ifdef NORTHLIGHT_REPLAY_STAND
-    (void)backendAttempt;(void)loaded;
-    logf("PROXY module=%ls root=%ls (stand module directory)",sys.selfPath.c_str(),root.c_str());
-    return;
-#endif
-    const auto where=NorthlightBackend::location(sys.selfPath,root);
-    std::vector<unsigned char> dlls;const bool listed=sys.read(root+L"dlls.txt",dlls)&&NorthlightBackend::dllsListed(std::string(dlls.begin(),dlls.end()));
-    logf("PROXY module=%ls root=%ls (host exe directory) location=%s dlls.txt entry mods/d3d9.dll=%u",sys.selfPath.c_str(),root.c_str(),NorthlightBackend::name(where),unsigned(listed));
-    if(where==NorthlightBackend::Location::Other)logf("PROXY WARNING: this module is neither <game>\\d3d9.dll nor <game>\\mods\\d3d9.dll; config, logs and world-cache are read from the host exe directory");
-    const std::wstring game=root+L"d3d9.dll";unsigned long error=0;const int id=sys.identity(game,error);
-    if(id<0){logf("GAME d3d9.dll absent (error=%lu)",error);return;}
-    if(id>0){logf("GAME d3d9.dll = this proxy");return;}
-    const std::string gameSha=fileSha(game);
-    logf("GAME d3d9.dll sha256=%s backend sha256=%s match=%u",gameSha.c_str(),loaded?backendAttempt.info.sha256.c_str():"(none)",unsigned(loaded&&gameSha==backendAttempt.info.sha256));
-    if(loaded&&gameSha!=backendAttempt.info.sha256)
-        logf("GAME WARNING: the game-folder d3d9.dll differs from the backend copy (launcher update or backend switch?). The renderer keeps using %ls.",backendAttempt.path.c_str());
-}
-static HMODULE backend() {
-    static HMODULE cached=[]() -> HMODULE {
-    ensureRootPath();
-#ifdef NORTHLIGHT_REPLAY_STAND
-    if(!rootPath[0])return nullptr; // Never consult the original game folder or current directory.
-#endif
-    wchar_t config[MAX_PATH]={},value[64]={},custom[MAX_PATH]={};
-    swprintf(config,MAX_PATH,L"%lsnorthlight-renderer.ini",rootPath);
-    DWORD attrs=GetFileAttributesW(config),configError=GetLastError();
-    bool exists=attrs!=INVALID_FILE_ATTRIBUTES;
-    GetPrivateProfileStringW(L"Renderer",L"Backend",L"",value,64,config);
-    GetPrivateProfileStringW(L"Renderer",L"BackendPath",L"",custom,MAX_PATH,config);
-    selectedBackend=NorthlightBackend::parse(value,exists);
-    if(!exists&&configError!=ERROR_FILE_NOT_FOUND&&configError!=ERROR_PATH_NOT_FOUND)
-        selectedBackend=NorthlightBackend::Kind::Invalid;
-    const auto configured=selectedBackend;
-#ifndef NORTHLIGHT_REPLAY_STAND
-    const auto artInputs=NorthlightArtInputs::check(rootPath);
-    logf("ART INPUTS status=%s path=%ls",artInputs.status,artInputs.path.c_str());
-    if(artInputs.blocked){
-        const bool russian=PRIMARYLANGID(GetUserDefaultUILanguage())==LANG_RUSSIAN;
-        const auto text=NorthlightArtInputs::message(artInputs,russian);
-        MessageBoxW(nullptr,text.c_str(),russian?L"Northlight РІР‚вЂќ Р Р…РЎС“Р В¶Р Р…Р В° Р С—Р ВµРЎР‚Р ВµРЎРѓР В±Р С•РЎР‚Р С”Р В°":L"Northlight РІР‚вЂќ rebuild required",MB_OK|MB_ICONWARNING|MB_SETFOREGROUND);
-        ExitProcess(ERROR_BAD_ENVIRONMENT);
-    }
-    // The Win32 producer can read ordinary M2 batch arguments only for this
-    // fixed Gx ABI. Stand playback and other clients use ordinary D3D capture.
-#if defined(__i386__)
-    if(GetModuleHandleW(nullptr)==reinterpret_cast<HMODULE>(0x400000)){
-        unsigned char code[0x266];
-        const auto matches=[&](uintptr_t at,size_t n,const char* hash){
-            return NorthlightBlpMipGuard::read(at,code,n)&&NorthlightBlpMipGuard::digest(code,n,hash);
-        };
-        NorthlightM2Draw::verifiedClient=
-            matches(0x6a3620,0xb8,"c293ff9e4d0288696e1f8fe025cc4277d48b9d1ad72dd6a216567a8210d4c953")&&
-            matches(0x8203b0,0x266,"490ca58b8f6fd5811d957dea517e69477308067e06b77c84e63d8dee23299658")&&
-            matches(0x823a5a,0x30,"24ff37d906e2f5cdef5f90fa35c123ce1ac42f7c2e6a8120e160fb0712eba277");
-    }
-    logf("NATIVE_M2 client12340=%u",unsigned(NorthlightM2Draw::verifiedClient));
-#endif
-    // Install before loading the backend (and its worker threads), outside
-    // DllMain. This one-shot guard has no callbacks into the proxy after unload.
-    const bool blpGuard=GetPrivateProfileIntW(L"Renderer",L"BlpMipGuard",1,config)!=0;
-    const char* blpStatus=blpGuard?NorthlightBlpMipGuard::install():"disabled";
-    logf("BLP mip guard status=%s runtime-only=1 limit=allocated-dimensions/16 files-written=0",blpStatus);
-    const bool lightStay=GetPrivateProfileIntW(L"Renderer",L"NativeLightStay",1,config)!=0;
-    logf("NATIVE light stay status=%s requested=%u runtime-only=1 files-written=0 restart-required=1",NorthlightNativeLightStay::install(lightStay),unsigned(lightStay));
-    const bool moreLights=GetPrivateProfileIntW(L"Renderer",L"NativeMoreLights",1,config)!=0;
-    logf("NATIVE more lights status=%s requested=%u max=8 runtime-only=1 files-written=0 shader-path=1",NorthlightNativeMoreLights::install(moreLights),unsigned(moreLights));
-    logf("GLUE lighting selection status=%s scene-source-priority=1 receivers=background+character+pet slots=4+4 deduplicated=1 runtime-only=1",NorthlightGlueLighting::install());
-#else
-    logf("BLP mip guard status=disabled-imported-replay runtime-only=1 files-written=0");
-#endif
-    Win32BackendSys sys(configured);
-    const std::wstring root(rootPath),system=systemD3d9(),overridden=NorthlightBackend::overridePath(custom,root);
-    const auto candidates=NorthlightBackend::candidates(configured,overridden,root,systemDirectory());
-    NorthlightBackendLoader::Result<HMODULE> result=NorthlightBackendLoader::load(sys,candidates,system);
-    HMODULE module=result.module;
-    memmapProcess("backend-loaded",0); /* task 42 (MEMMAP): right after the backend DLL load, before Direct3DCreate9 and any backend CreateDevice; diffs against pre-create/create */
-    const auto& last=result.attempts.empty()?NorthlightBackendLoader::Attempt{}:result.attempts.back();
-    // Only DXVK keeps the legacy (unchecked, no RESZ dummy draw) rules; every
-    // other runtime, including the system fallback, gets the native rules.
-    if(module&&(result.fallback||(configured==NorthlightBackend::Kind::Legacy&&!last.info.dxvk)))selectedBackend=NorthlightBackend::Kind::Native;
-    logf("Northlight renderer 0.3.218; reference sun look (sun glow hue from native/sunHalo band, soft-shoulder glare, veil, sun-tinted haze), native sun/moon suppressed (F1b), lamps dimmed to 30 pct in direct sun, native moon02 skipped by texture identity, no game bytes in the DLL, MEMREAD self-read profile (RenderProfile), soft sun removal in shadow, jump-stable shadow anchor, geometry coverage hold with travel lead, steadier animated shadow edges (near 5x5 tent, still-camera shadow history), native blob shadows kept at BlobShadowStrength (faint texture under modulate blend), bilinear lighting history, near capture reserve for the player and companions, remembered rigid prop shadows (drawn-by-game states, windowed held), AO and bloom folded into the world composite, ground normals reject object tops, both wide samples, batched celestial terrain mask, DXVK async left to the runtime, render-thread terrain upload and rigid bookkeeping trims, moon without the horizon stall, art layer bands retimed to the sun and moon, actor prepare on a worker, trimmed prepare handoff, in-place capture constants, gate thread census, predicted snapshot lookups, word-wise memcmp, owner-thread gate elision; abandoned-frame prepare quarantine; removal smoothing on matching normals in its own pass (35/50 degree gate); per-frame draw gates; translucent depth census; early depth for translucent actors; DXVK 3.1.1 default, dxvk2 (2.7.1) by choice only, no automatic fallback; AO depth texel snap; shadow cascades follow camera zoom and collision; reduced terrain shadow reach under address-space pressure; command-stream replay thread; draw-hook lookup caches; lighter replay retire; fresh texture shadows evict only stale keeps; soft local-light cap with fades; blended GI re-publication; Forever-style rain (storm light bands, weather draw detection); moving fog clouds; GPU budget control; frames ahead and frame skipping in the command stream; replay jobs; AO denoise pass; rain mask (MRT, depth scrub), effect boundary at the UI in rain; UI boundary fallback for font mods; TestCooperativeLevel answered on the game thread; two large buffer shadows (36 MiB allowance); lamp fog glow capped once over all lamps; texture readback diagnostics, texture readbacks without a queue drain; sky light held across the weather rescale; colour-guided lighting upsample and colour-picked contact normals at wall and actor feet; actor shadow map with soft contact-hardening filter; uncached maps skip geometry builds; nearest-first actor capture (radius gate, distance cut), stride-aligned replay bulk; floating names keep the game's colour (stencil mask); instance map names with an apostrophe or a space reach the world context; lamps in view first, screen-coherent lamp batches (16-lamp passes); backend=%s path=%ls loaded=%d error=%lu",
-         NorthlightBackend::name(configured),last.path.c_str(),module!=nullptr,module?0ul:(last.error?last.error:(unsigned long)ERROR_INVALID_PARAMETER));
-    logAttempts(result.attempts);
-    logHostExecutable(sys.selfPath);
-    logf("BACKEND selected=%ls runtime=%s rules=%s BackendPath=%ls fallback=%u",module?last.path.c_str():L"(none)",
-         last.info.dxvk?(last.info.dxvkVersion.empty()?"DXVK (unknown version)":last.info.dxvkVersion.c_str()):"non-DXVK",NorthlightBackend::name(selectedBackend),overridden.empty()?L"(default)":overridden.c_str(),unsigned(result.fallback));
-    // 0.3.192 (DXVK3): the NOOVERWRITE read-back flag only for the backend that actually loaded and is DXVK >= 3 (see upload_lock.h).
-    materialCacheBackendIdentity=last.info.sha256;
-    const bool loadedDxvk=module&&!result.fallback&&last.info.dxvk;
-    const bool verifiedDxvk1=loadedDxvk&&last.info.dxvkVersion=="v1.10.3";
-    const bool verifiedDxvk2=loadedDxvk&&last.info.dxvkVersion=="v2.7.1";
-    const bool dxvk3=loadedDxvk&&NorthlightBackend::dxvkMajor(last.info.dxvkVersion)>=3;
-    // DXVK 1.10.3 has a one-FP16-step compositor difference; retain its ordinary shader.
-    backendHdrBaseComposite=verifiedDxvk2||dxvk3;
-    backendHdrExpandedMaterial=loadedDxvk&&last.info.dxvkVersion=="v3.1.1";
-    backendTemporalZeroWeight=loadedDxvk&&last.info.dxvkVersion=="v3.1.1";
-    backendPointPipelinePrewarm=verifiedDxvk1||verifiedDxvk2||dxvk3;
-    materialCacheAsyncReadback=verifiedDxvk1||verifiedDxvk2||(loadedDxvk&&last.info.dxvkVersion=="v3.1.1");
-    logf("BACKEND_WORK hdrBaseComposite=%u pointPipelinePrewarm=%u asyncMaterialReadback=%u expandedHdrMaterial=%u temporalZeroWeight=%u",unsigned(backendHdrBaseComposite),unsigned(backendPointPipelinePrewarm),unsigned(materialCacheAsyncReadback),unsigned(backendHdrExpandedMaterial),unsigned(backendTemporalZeroWeight));
-    NorthlightStream::dxvk311EventPayload.store(module&&!result.fallback&&last.info.dxvk&&last.info.dxvkVersion=="v3.1.1",std::memory_order_relaxed);
-    logf("CSTREAM EVENT wait=bounded-timer shortSpinUs=2000 queueFence=0 completion=real-GetData csPendingSpinUs=200 backendObservation=trip-final");
-    NorthlightUpload::ReadBackNoOverwrite.store(module&&!result.fallback&&last.info.dxvk&&NorthlightBackend::dxvkMajor(last.info.dxvkVersion)>=3,std::memory_order_relaxed);
-    logf("LOCK METER read-back lock flags readBackLock=0x%x (NOOVERWRITE only on a loaded DXVK >= 3 backend)",unsigned(NorthlightUpload::readBackLock()));
-#ifndef NORTHLIGHT_SOURCE_ID
-#define NORTHLIGHT_SOURCE_ID "unrecorded"
-#endif
-#ifndef NORTHLIGHT_BUILD_UTC
-#define NORTHLIGHT_BUILD_UTC "unrecorded"
-#endif
-    logf("BUILD identity source=%s built=%s",NORTHLIGHT_SOURCE_ID,NORTHLIGHT_BUILD_UTC);
-#ifdef NORTHLIGHT_PROFILE_BUILD
-    logf("NORTHLIGHT PROFILING BUILD optimized=O2 symbols=1");
-#endif
-    logf("MEMORY policy terrain=demand-full/address-space-half normalMiB=32 lowMiB=16");
-    if(result.fallback&&module)logf("BACKEND SELF-LOAD REFUSED: the configured backend resolves to this proxy (or another Northlight build); fell back to the system d3d9 runtime. Fix northlight-renderer.ini Backend/BackendPath.");
-    else if(result.fallback)logf("BACKEND SELF-LOAD REFUSED: the configured backend resolves to this proxy (or another Northlight build) and the system d3d9 fallback FAILED too (expected under Wine with d3d9=n: the system d3d9 is builtin; the fallback is Windows-only). Fix northlight-renderer.ini Backend/BackendPath.");
-    if(module&&last.info.dxvk&&!NorthlightBackend::isPackagedDxvk(configured))
-        logf("DXVK compatibility defaults not applied: Backend=%s keeps the current runtime rules (no vendor 1002, no cachedDynamicBuffers/cachedWriteOnlyBuffers override)",NorthlightBackend::name(configured));
-    logProxyPlacement(sys,root,last,module!=nullptr);
-    logf("LOG previous session log northlight-renderer.prev.log rotation=%s error=%lu",NorthlightLogRotation::name(logRotation),(unsigned long)logRotationError);
-#ifndef NORTHLIGHT_REPLAY_STAND
-    if(!module)MessageBoxW(nullptr,
-        L"Renderer backend could not be loaded. Check northlight-renderer.ini and northlight-renderer.log. No other backend was selected. Restore the previous package or install the correct x86 DXVK DLL.",
-        L"Northlight renderer",MB_OK|MB_ICONERROR);
-#endif
-    return module;
-    }();
-    return cached;
-}
-// A backend proxy that resolved "d3d9.dll" by name calls back into this
-// module. Never re-enter backend(): forward the inner call to the system runtime.
-static HMODULE recursionBackend() {
-    static HMODULE cached=[]() -> HMODULE {
-        Win32BackendSys sys(NorthlightBackend::Kind::Native);NorthlightBackendLoader::Attempt a;
-        HMODULE module=NorthlightBackendLoader::attempt(sys,systemD3d9(),a);
-        logf("BACKEND RECURSION: the backend called back into this d3d9.dll; inner calls are forwarded unwrapped to %ls result=%s error=%lu",a.path.c_str(),NorthlightBackendLoader::name(a.outcome),a.error);
-        return module;
-    }();
-    return cached;
-}
-template<class T> static T procedure(const char* name) {
-    HMODULE module=NorthlightBackendLoader::ExportScope::reentered()?recursionBackend():backend();
-    FARPROC raw=module?GetProcAddress(module,name):nullptr;
-    T fn=nullptr;static_assert(sizeof(fn)==sizeof(raw));std::memcpy(&fn,&raw,sizeof(fn));return fn;
-}
+#include "renderer_backend_windows.h"
 #define NORTHLIGHT_EXPORT NorthlightBackendLoader::ExportScope exportScope
 extern "C" IDirect3D9* WINAPI Direct3DCreate9(UINT sdk) {
     NORTHLIGHT_EXPORT;
@@ -4794,14 +4301,7 @@ extern "C" IDirect3D9* WINAPI Direct3DCreate9(UINT sdk) {
     IDirect3D9* p=fn(sdk);
 #ifdef NORTHLIGHT_EXTERNAL_ASSETS
     if(p&&!NorthlightBackendLoader::ExportScope::reentered()){
-        static const bool resources=[](){
-            std::string error;
-            const bool loaded=NorthlightAssets::initialize(std::filesystem::path(rootPath)/L"northlight-assets.bin",error);
-            logf("RESOURCES %s loaded=%u %s",NorthlightAssets::identity(),unsigned(loaded),error.c_str());
-            if(!loaded)logf("Northlight effects disabled: reinstall the matching northlight-assets.bin; native rendering retained");
-            return loaded;
-        }();
-        if(!resources)return p;
+        if(!rendererAssetsReady())return p;
     }
 #endif
     return p&&!NorthlightBackendLoader::ExportScope::reentered()?new Factory(p):p;

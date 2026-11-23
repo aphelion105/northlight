@@ -11,6 +11,12 @@
 #include <random>
 #include <limits>
 #include <algorithm>
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include "celestial_terrain_pass.h"
+#endif
 struct V{float x,y,z;};
 static void project(V p,const float* m,double* out){
     for(unsigned c=0;c<4;++c)out[c]=double(p.x)*m[c]+double(p.y)*m[4+c]+double(p.z)*m[8+c]+m[12+c];
@@ -121,14 +127,54 @@ static void syntheticRuns(){
     Mask exact(64),page(64);const auto e=draw(plan,list,all,m,Merge::Exact,exact);const auto c=draw(plan,list,all,m,Merge::IgnorePage,page);
     assert(e.runs==2&&e.accepted==3&&c.runs==1&&!(exact==page)); /* the page-crossing counterfactual draws other geometry */
     std::puts("PASS mask runs (synthetic): contiguous same-page batches merge, a page boundary ends a run (counterfactual differs)");
+#ifdef _WIN32
+    using Command=std::array<UINT,5>;
+    struct Device {
+        std::vector<Command> commands;
+        bool failDraw=false;
+        HRESULT DrawIndexedPrimitive(D3DPRIMITIVETYPE type,INT base,UINT min,UINT vertices,UINT start,UINT count){
+            assert(type==D3DPT_TRIANGLELIST&&base==0);
+            commands.push_back({1,min,vertices,start,count});
+            return failDraw?E_FAIL:S_OK;
+        }
+    };
+    const Command bind0{0,0,0,0,0},bind1{0,1,0,0,0},merged{1,0,6,0,2};
+    const Command first{1,0,6,0,1},second{1,0,6,3,1},other{1,0,6,6,1};
+    Device device;
+    bool failBind=false;
+    const auto run=[&](bool listed){
+        device.commands.clear();
+        NorthlightCelestialTerrain::RunStats stats;
+        const auto bind=[&](UINT page,UINT& current){
+            if(page==current)return true;
+            device.commands.push_back({0,page,0,0,0});
+            if(failBind&&page==1)return false;
+            current=page;
+            return true;
+        };
+        const bool result=NorthlightCelestialTerrain::submitMask(&device,plan.batches,list,listed,P::PageIndexLimit,m,bind,stats);
+        if(result)assert(stats.accepted==3&&stats.triangles==3&&stats.runs==(listed?2u:3u));
+        return result;
+    };
+    assert(run(true)&&(device.commands==std::vector<Command>{bind0,merged,bind1,other}));
+    assert(run(false)&&(device.commands==std::vector<Command>{bind0,first,second,bind1,other}));
+    failBind=true;
+    assert(!run(true)&&(device.commands==std::vector<Command>{bind0,merged,bind1}));
+    failBind=false;
+    device.failDraw=true;
+    assert(!run(true)&&(device.commands==std::vector<Command>{bind0,merged}));
+    device.failDraw=false;
+    assert(run(true)&&(device.commands==std::vector<Command>{bind0,merged,bind1,other}));
+    std::puts("PASS celestial mask submission: exact merged and fallback commands, bind/draw failure stops, retry rebinds both pages");
+#endif
 }
 // Loads the near scenes and the far terrain around c the way the renderer's mesh commit does, and plans the pages.
 static bool loadPlan(const std::string& root,NorthlightGI::Vec3 c,const std::vector<std::string>& nearFiles,const std::vector<std::string>& farFiles,P::Plan& plan,const P::Options& paging=P::Options{}){
-    using namespace NorthlightGI;std::string error;WorldScene local,far;
+    using namespace NorthlightGI;std::string error;WorldScene local,distant;
     assert(loadInstancedScenes(nearFiles,root+"/models",c-Vec3(288,288,320),c+Vec3(288,288,320),local,error));
     const float radius=NorthlightShadowTerrain::Radius;
-    assert(loadInstancedScenes(farFiles,root+"/models",c-Vec3(radius,radius,radius),c+Vec3(radius,radius,radius),far,error,1));
-    NorthlightWorldMesh::WorldMeshUploadPlan input;assert(NorthlightShadowTerrain::build(local,far,c,input,error));
+    assert(loadInstancedScenes(farFiles,root+"/models",c-Vec3(radius,radius,radius),c+Vec3(radius,radius,radius),distant,error,1));
+    NorthlightWorldMesh::WorldMeshUploadPlan input;assert(NorthlightShadowTerrain::build(local,distant,c,input,error));
     assert(P::build(input,plan,error,{},paging));return true;
 }
 // Low sun over the Tanaris corridor (azimuth pi/4): how many terrain triangles the per-batch (one chunk x material)

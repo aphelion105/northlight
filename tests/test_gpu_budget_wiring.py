@@ -5,16 +5,19 @@ The frame timer brackets the effects only with GpuBudgetMs > 0 and is read back 
 D3DGETDATA_FLUSH, no wait loop); the controller runs once per frame on the replay thread and hands its level to the world; at level 0
 the world's path and constants are the old ones (every change gated by the level); the shaders' intervals take a zero addend at full
 level; the key is the last one and documented; nothing on the game thread (src/stream) or in the command stream knows about it."""
+
+from source_units import source_text
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
+from scripts.shaders.shader_sources import world_source_text
 import re
 
 w=fp.src('world_renderer.h').read_text()
-r=fp.src('renderer.cpp').read_text()
+r=source_text(fp.src('renderer.cpp'))
 t=fp.src('gpu_frame_timer.h').read_text()
 b=fp.src('gpu_budget.h').read_text()
 q=fp.src('quality_settings.h').read_text()
-h=(fp.SHADERS/'world_effects.hlsl').read_text()
+h=world_source_text(fp.SHADERS/'world_effects.hlsl')
 def code(text):return re.sub(r'/\*.*?\*/','',re.sub(r'//[^\n]*','',text),flags=re.S)
 checks={}
 
@@ -71,17 +74,22 @@ checks['renderer: GPUBUDGET line on RenderProfile sample frames, level changes l
 
 # world: level gated, full level unchanged
 wc=code(w)
-checks['world: budget level is clamped and changed sampling invalidates fog history']=all(s in wc for s in ('const auto next=quality.gpuBudgetMs?std::min(level,NorthlightGpuBudget::MaxLevel):0u;','if(next!=gpuBudgetLevel)fogHistoryValid=false;gpuBudgetLevel=next;'))
+bank=code(fp.src('world_frame_constants.inl').read_text())
+checks['world: budget level is clamped and changed sampling invalidates fog history']=all(s in wc for s in ('const auto next=quality.gpuBudgetMs?std::min(level,NorthlightGpuBudget::MaxLevel):0u;','if(next!=gpuBudgetLevel)fogScreen.invalidateHistory();gpuBudgetLevel=next;'))
 checks['world: the interval constants are written only at a reduced level (bank unchanged at level 0), c60.x only with the clouds active']=(
-    'if(gpuBudgetLevel){if(cf.active)c[60][0]=NorthlightGpuBudget::spacingDelta(c[21][3],NorthlightGpuBudget::cloudSteps(gpuBudgetLevel),40);c[64][2]=NorthlightGpuBudget::spacingDelta(c[21][3],NorthlightGpuBudget::fogSteps(gpuBudgetLevel),48);}' in wc
-    and len(re.findall(r'c\[64\]\[[0-2]\]=',wc))==1 and wc.index('c[21][3]=128;')<wc.index('if(gpuBudgetLevel){')<wc.index('d->SetPixelShaderConstantF(0,&c[0][0],68);'))
-checks['world: the total lamp budget is passed directly; shadow slots cannot expand it']='quality.localLightLimit,float(selectDt)' in wc and 'NorthlightGpuBudget::lightLimit(' not in wc
-cp=wc[wc.index('if(cf.active&&c[21][0]>=.5f){'):wc.index('d->SetPixelShaderConstantF(17,c[17],2);')]
+    'if(gpuBudgetLevel){if(cf.active)c[60][0]=NorthlightGpuBudget::spacingDelta(c[21][3],NorthlightGpuBudget::cloudSteps(gpuBudgetLevel),40);c[64][2]=NorthlightGpuBudget::spacingDelta(c[21][3],NorthlightGpuBudget::fogSteps(gpuBudgetLevel),48);}' in bank
+    and len(re.findall(r'c\[64\]\[[0-2]\]=',wc+bank))==1 and bank.index('c[21][3]=128;')<bank.index('if(gpuBudgetLevel){')<bank.index('screenLighting.bindFrameBank(d,c,shadowTuning,textures);')
+    and wc.index('prepareFrameShaderBank(')<wc.index('publishFrameShaderBank(')
+    and 'd->SetPixelShaderConstantF(0,rows[0],68)' in fp.src('world_screen_lighting.h').read_text())
+atmosphere=code(fp.src('world_atmosphere_frame.inl').read_text())
+checks['world: the total lamp budget is passed directly; shadow slots cannot expand it']='quality.localLightLimit,float(selectDt)' in atmosphere and 'NorthlightGpuBudget::lightLimit(' not in wc+atmosphere
+fog=code(fp.src('world_atmospheric_fog.inl').read_text())
+cp=fog[fog.index('if(in.clouds&&c[21][0]>=.5f){'):fog.index('commands.restoreLighting(')]
 checks['world: the clouds are one draw into the fog at every level (0.3.200: no amortised reuse, it lagged a frame in motion)']=(
-    cp.count('const bool cloudsDrawn=check(quad(w/2,h/2),"fog clouds raymarch");')==1
-    and cp.count('SetPixelShader(!quality.godrays?fogCloudsAmbientPS:cloudFade?(fogActorCurrent?(fogActorTiledCurrent?cloudActorTiledFadePS:cloudActorFadePS):cloudFadePS):(fogActorCurrent?(fogActorTiledCurrent?fogCloudsActorTiledPS:fogCloudsActorPS):fogCloudsPS))')==1
+    cp.count('const bool cloudsDrawn=check(commands.drawClouds(cloudShader,w/2,h/2),"fog clouds raymarch");')==1
+    and cp.count('cloudShader=!quality.godrays?regionalFogGpu.ambientClouds():cloudFade?shadowTransition.cloudsShader(fogActorCurrent,fogActorTiledCurrent):')==1
     and 'const bool cloudFade=quality.godrays&&geometryReady&&shadowVolumeTransitionActive(firstSource);if(cloudFade)bindShadowTransition(firstSource);' in cp
-    and 'cloudBuffer' not in wc and 'cloudAlternate' not in wc and 'amortise' not in cp and 'if(!cloudsDrawn)return false;' in cp)
+    and 'cloudBuffer' not in wc+fog and 'cloudAlternate' not in wc+fog and 'amortise' not in cp and 'if(!cloudsDrawn)return false;' in cp)
 
 # shaders: zero addend at level 0
 hc=code(h)

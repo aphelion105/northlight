@@ -30,6 +30,7 @@ checks={
     not any(n in worker for n in ('actorPrograms','declarationCache','replays','d->','IDirect3DDevice9','context.')),
 }
 w=fp.src('world_renderer.h').read_text();x=fp.src('world_shadow_experiment.inl').read_text();g=fp.src('world_memory_guard.inl').read_text()
+upload=fp.src('world_replay_upload.inl').read_text()
 def body(text,head):
     start=text.index(head);depth=0;i=text.index('{',start)
     while True:
@@ -40,7 +41,7 @@ capture=body(w,'    void captureModel(D3DPRIMITIVETYPE type,')
 select=body(x,'    void selectShadowReplays(){')
 assert w.count('void endFrame(')==1
 end=body(w,'    void endFrame(')
-release=w[w.index('    void releaseGPU(bool keepMesh=false){'):];release=release[:release.index('\n')]
+release=w[w.index('    void releaseGPU(bool keepMesh=false){'):];release=release[:release.index('\n    }\n')]
 reset=w[w.index('    void reset(bool preserveCaptureSources=false){'):];reset=reset[:reset.index('\n')]
 trim=body(g,'    MemoryTrim trimMemory(')
 register=body(w,'    void registerShader(IDirect3DVertexShader9* shader,uint64_t hash){')
@@ -78,7 +79,7 @@ checks.update({
         'for(const auto& s:captureShaders)if(s.second.program)prepareQuarantinedPrograms.push_back(s.second.program);','for(const auto& a:actorPrograms)if(a.second)prepareQuarantinedPrograms.push_back(a.second);',
         'for(const auto& r:retiredPrograms)if(r)prepareQuarantinedPrograms.push_back(r);','prepareQuarantinedDecls.push_back(std::move(prepareDecls));try{prepareDecls=std::make_unique<NorthlightActorPrepare::DeclArena>();}catch(...){}',
         'prepareAbandonedEpoch=prepareEpoch++;')))(body(x,'    void prepareAbandon(){'))
-    and 'if(prepareUnsettled())for(size_t i=fit;i<replays.size();++i)recycleReplay(replays[i].release());' in w
+    and 'if(prepareUnsettled())for(size_t i=fit;i<replays.size();++i)recycleReplay(replays[i].release());' in upload
     and 'if(prepareUnsettled()){for(auto& p:replays)recycleReplay(p.release());for(auto& p:heldShadowReplays)recycleReplay(p.release());}' in w,
  'watchdog re-arm: only in endFrame, after the settled worker released its quarantine, arena, pinned programs and caches; 10 s after the abandon, at most 4 a session; counted in the log and the fields':
     (lambda e:e.index('recycleReplay(p.release());')<e.index('prepareQuarantinedDecls.clear();')<e.index('prepareQuarantinedPrograms.clear();')<e.index('prepareAbandonedCaches.reset();')<e.index('prepareWorker.rearm()'))(body(x,'    void prepareEndFrame(){'))
@@ -100,10 +101,13 @@ checks.update({
     and x.count('prepareDecls->reset()')==1 and 'prepareQuarantinedDecls.push_back(std::move(prepareDecls));' in body(x,'    void prepareAbandon(){') and x.count('prepareQuarantinedDecls.push_back(')==1
     and 'const NorthlightActorPrepare::DeclCopy* declCopy=nullptr;' in w and 'program=nullptr;declCopy=nullptr;' in w
     and w.index('std::unique_ptr<NorthlightActorPrepare::DeclArena> prepareDecls=')<w.index('NorthlightActorPrepare::Worker<Replay> prepareWorker;'),
- 'T3 (0.3.179): a release publish; the seq_cst fence only at the wake threshold, and before the worker sleeps':
-    (lambda h:'slots_[n]={record,index};published_.store(n+1,std::memory_order_release);\n        if(n+1-done_.load(std::memory_order_relaxed)>=wakeBatch_){std::atomic_thread_fence(std::memory_order_seq_cst);if(wakeable_.exchange(false))notify();}' in h
-        and 'blocked_=true;wakeable_.store(true,std::memory_order_relaxed);std::atomic_thread_fence(std::memory_order_seq_cst);\n            wake_.wait(lock,' in h
-        and h.count('std::atomic_thread_fence(std::memory_order_seq_cst)')==2 and 'published_.store(n+1,std::memory_order_seq_cst)' not in h)(fp.src('prepare_worker.h').read_text()),
+ 'publish releases each slot and shares the wait mutex only at the batch boundary':
+    (lambda p:p.index('published_.store(n+1,std::memory_order_release)')<p.index('if(!--untilWake_)')<p.index('notify(true)'))(body(worker,'    bool publish('))
+    and 'untilWake_=wakeBatch_' in body(worker,'    bool begin(')
+    and 'std::lock_guard<std::mutex> lock(mutex_);' in body(worker,'    void notify(')
+    and 'if(!onlyIfBlocked||blocked_){wake_.notify_one();' in body(worker,'    void notify(')
+    and 'std::unique_lock<std::mutex> lock(mutex_);' in body(worker,'    void run(')
+    and 'wake_.wait(lock,' in body(worker,'    void run('),
  'one span per sampled record around real fill and publish; no synthetic replay or self-check':
     'const bool handoff=p->shadowSelected&&p->shadowSkinned,timedHandoff=handoff&&prepareHandoffSample();' in capture
     and capture.index('prepareMeter.start()')<capture.index('prepareFill(*p,metadata);')<capture.index('replays.emplace_back(p.release());preparePublish();if(timedHandoff)prepareMeter.stop(handoffStart);')

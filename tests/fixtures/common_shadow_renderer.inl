@@ -58,8 +58,8 @@ bool commonWorldCasters(const float* matrix,unsigned source,size_t& replayConsta
     d->SetTexture(0,nullptr);
     if(FAILED(d->SetRenderTarget(0,experiment.staticSurface[source]))||
        FAILED(d->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0xffffffff,1,0)))return false;
-    d->SetVertexDeclaration(shadowDecl);d->SetVertexShader(cachedShadowVS);
-    d->SetVertexShaderConstantF(0,matrix,4);d->SetPixelShader(cachedShadowPS);
+    d->SetVertexDeclaration(shadowPrograms.worldLayout());d->SetVertexShader(shadowPrograms.cacheVertex());
+    d->SetVertexShaderConstantF(0,matrix,4);d->SetPixelShader(shadowPrograms.cachePixel());
     d->SetRenderState(D3DRS_ZENABLE,TRUE);d->SetRenderState(D3DRS_ZWRITEENABLE,TRUE);
     d->SetRenderState(D3DRS_ZFUNC,D3DCMP_LESSEQUAL);d->SetRenderState(D3DRS_CULLMODE,D3DCULL_NONE);
     d->SetRenderState(D3DRS_ALPHATESTENABLE,FALSE);d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE);
@@ -78,7 +78,7 @@ bool commonWorldCasters(const float* matrix,unsigned source,size_t& replayConsta
     }
     if(liveDirectionalIndexCount){
         const float opaque[]={1,1,1,-1};d->SetPixelShaderConstantF(0,opaque,1);d->SetTexture(0,nullptr);
-        d->SetVertexDeclaration(liveTerrainDecl);d->SetStreamSource(0,liveTerrainGPU.vertices(),0,sizeof(StaticShadow::Vertex));d->SetIndices(liveIndicesGPU);
+        d->SetVertexDeclaration(shadowPrograms.liveLayout());d->SetStreamSource(0,liveTerrainGPU.vertices(),0,sizeof(StaticShadow::Vertex));d->SetIndices(liveIndicesGPU);
         if(FAILED(d->DrawIndexedPrimitive(D3DPT_TRIANGLELIST,0,0,liveTerrainGPU.vertexCapacity(),UINT(liveIndexBase+liveTerrainIndexCount),UINT(liveDirectionalIndexCount/3))))return false;
         ++experiment.worldDraws;
     }
@@ -91,7 +91,7 @@ bool commonWorldCasters(const float* matrix,unsigned source,size_t& replayConsta
     }else ++experiment.staticReuses;
     // Seed both colour depth and the hardware Z buffer; subsequent animated
     // geometry writes directly into this same final near map. No depth union.
-    if(FAILED(d->SetRenderTarget(0,actorShadowSurface[source])))return false;
+    if(FAILED(d->SetRenderTarget(0,actorMaps.depth(source).surface)))return false;
     d->SetVertexShader(nullptr);d->SetFVF(D3DFVF_XYZRHW|D3DFVF_TEX1);
     d->SetRenderState(D3DRS_CULLMODE,D3DCULL_NONE);d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE);
     d->SetRenderState(D3DRS_ALPHATESTENABLE,FALSE);d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE);d->SetRenderState(D3DRS_COLORWRITEENABLE,15);
@@ -106,13 +106,13 @@ bool commonWorldCasters(const float* matrix,unsigned source,size_t& replayConsta
     for(auto state:{D3DSAMP_ADDRESSU,D3DSAMP_ADDRESSV})d->SetSamplerState(0,state,D3DTADDRESS_WRAP);
     d->SetPixelShader(experiment.replay);
     float rows[16];NorthlightWorldMath::replayProjection(context.inverseView,matrix,rows);
-    NorthlightReplayPoses::Pass<BOOL> poses;NorthlightReplayDrawState::Cache bindings(d);
+    NorthlightShadowReplay::Pass pass(d);
     NorthlightRenderThreadProbe::Off split;
     for(size_t index=0;index<replays.size();++index){
         if(std::binary_search(actorReplays.begin(),actorReplays.end(),uint32_t(index)))continue;
         const auto& p=replays[index];
         if(p->pointBounds.valid&&NorthlightShadowBounds::clipRejectAffine(vec(p->pointBounds.low),vec(p->pointBounds.high),matrix))continue;
-        if(!submitReplay(p.get(),bindings,poses,rows,matrix,split,replayConstantBytes,replayConstantCalls,[&](HRESULT hr,const char* reason){return check(hr,reason);}))return false;
+        if(!submitReplay(p.get(),pass,rows,matrix,split,replayConstantBytes,replayConstantCalls,[&](HRESULT hr,const char* reason){return check(hr,reason);}))return false;
         ++experiment.boundaryDraws;
     }
     return true;
@@ -124,7 +124,7 @@ bool commonPrepare(const bool* active){
         if(!active[source])continue;
         d->SetTexture(13,nullptr);d->SetTexture(10,nullptr);
         if(FAILED(d->SetRenderTarget(0,experiment.blockSurface[source])))return false;
-        d->SetTexture(12,actorShadow[source]);d->SetPixelShader(experiment.blocksPS);
+        d->SetTexture(12,actorMaps.depth(source).texture);d->SetPixelShader(experiment.blocksPS);
         if(FAILED(quad(256,256)))return false;
         if(FAILED(d->SetRenderTarget(0,experiment.tileSurface[source])))return false;
         d->SetTexture(13,experiment.blocks[source]);d->SetPixelShader(experiment.tilesPS);

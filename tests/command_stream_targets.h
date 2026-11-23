@@ -15,6 +15,7 @@ struct TargetKnobs {
     // 0.3.205 (#34): a Target buffer Unlock whose lockSize equals holdUnlockSize parks (inUnlock set) until the test clears holdUnlockSize: the replay thread sits after the memcpy from the game's slice and before the command retires.
     // ALL accesses are relaxed on purpose: a stronger handshake would be a happens-before edge between the replay's read and the game's next write, and TSan would stop seeing the race.
     std::atomic<UINT> holdUnlockSize{0};std::atomic<bool> inUnlock{false};
+    std::atomic<UINT> rejectUploadSize{0};
     bool failCube=true;                       // CreateCubeTexture / CreateVolumeTexture fail (the dead-create path)
 };
 static TargetKnobs gKnobs;
@@ -98,6 +99,7 @@ template<class Base,Kind K> struct TBuffer:Counted<Base> {
     HRESULT QueryInterface(REFIID id,void** out) override{if(!out)return E_POINTER;*out=nullptr;if(id==__uuidof(IUnknown)||id==__uuidof(IDirect3DResource9)||id==__uuidof(IFace)){*out=static_cast<Base*>(this);this->AddRef();return S_OK;}return E_NOINTERFACE;}
     HRESULT Lock(UINT off,UINT size,void** pp,DWORD f) override{
         if(isLocked||off>length)return D3DERR_INVALIDCALL;if(!size)size=length-off;if(off+size>length)return D3DERR_INVALIDCALL;
+        if(size&&size==gKnobs.rejectUploadSize.load(std::memory_order_relaxed))return D3DERR_INVALIDCALL;
         lockOff=off;lockSize=size;lockFlags=f;isLocked=true;*pp=mem.data()+off;return D3D_OK;}
     HRESULT Unlock() override{
         if(const auto& us=NorthlightReplayCopies::unlockSource;us.bytes&&us.size==lockSize)NL_TSAN_READ(us.bytes,lockSize);   // (the replay's memcpy source, see NL_TSAN_READ)

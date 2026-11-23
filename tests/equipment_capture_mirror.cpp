@@ -3,6 +3,7 @@
 #include "device_mirror.h"
 #include "mirror_resource_forwarders.h"
 #include "equipment_lights.h"
+#include "local_light_trace.h"
 #include <cassert>
 #include <chrono>
 #include <cstdio>
@@ -31,6 +32,7 @@ struct CaptureWorld {
     struct {const DeviceMirror* mirror;} constantEpochSource;
     NorthlightEquipmentLights::Tracker equipmentLights;
     NorthlightEquipmentLights::CaptureBudget equipmentCapture;
+    NorthlightLocalLightTrace::InputHash equipmentBankAudit,equipmentDrawAudit;
     std::unordered_map<IDirect3DVertexShader9*,unsigned> equipmentShaders;
     std::string equipmentMap;
     struct Scene {std::string map="Northrend";std::vector<NorthlightLocalLights::Light> localLights;} scene;
@@ -40,9 +42,8 @@ struct CaptureWorld {
     bool equipmentLightsOn()const{return enabled;}
     bool hasContext()const{return knownContext;}
     bool isSkinnedShader(IDirect3DVertexShader9*)const{return actor;}
-#define GetTickCount() tick
+    DWORD visualTime()const{return tick;}
 #include "equipment_capture_body.inc"
-#undef GetTickCount
 };
 int main(){
     using namespace NorthlightEquipmentLights;

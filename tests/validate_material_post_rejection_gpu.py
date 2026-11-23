@@ -13,6 +13,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT / 'scripts/shaders')]
 import northlight_paths as fp
+from scripts.shaders.shader_sources import world_source_at_ref, world_source_bytes
 from shader_compiler import DLL, DLL_SHA256, COMPATIBLE_DLL_SHA256, validate_assembly
 
 ENTRIES = ('MaterialComposite', 'WorldLighting', 'LocalDirect', 'LocalDirect16',
@@ -51,8 +52,7 @@ def main():
         directory.mkdir(exist_ok=True)
         metadata[version] = {'sources': {}, 'shaders': {}}
         for name in ('world_effects.hlsl', 'local_light_effects.hlsl', 'auto_bump_normal.hlsl'):
-            data = subprocess.run(['git', 'show', f'{args.baseline_ref}:shaders/{name}'], cwd=ROOT,
-                                  capture_output=True, check=True).stdout if version == 'old' else (ROOT / 'shaders' / name).read_bytes()
+            data = world_source_at_ref(ROOT, args.baseline_ref, name) if version == 'old' else world_source_bytes(ROOT / 'shaders' / name)
             (directory / name).write_bytes(data)
             metadata[version]['sources'][name] = hashlib.sha256(data).hexdigest()
         (directory / 'helper.hlsl').write_bytes((directory / 'world_effects.hlsl').read_bytes() + HELPER)

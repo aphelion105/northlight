@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 # northlight-test: requires=windows-exe,zig
 """Exercise the actual logger's flush boundary, output, errors and thread isolation."""
+
+from source_units import source_text
 from pathlib import Path
 import argparse,hashlib,json,re,statistics,subprocess,sys
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
 parser=argparse.ArgumentParser(__doc__);parser.add_argument('--benchmark',action='store_true');args=parser.parse_args()
 out=fp.out()/'frame-logging-batch';out.mkdir(exist_ok=True)
-source=fp.src('renderer.cpp').read_text()
+source=source_text(fp.src('renderer.cpp'))
 effects=source[source.index('    void renderEffects() {'):]
 assert effects.index('struct EffectsSpan')<effects.index('LogFlushBatch logBatch;')
 assert effects.index('CpuScope frameCostScope')<effects.index('LogFlushBatch logBatch;')<effects.index('rainMrtUnbind();')

@@ -6,6 +6,8 @@ Builds and runs the static plan proofs (plan equality, plans, incremental, prebu
 randomized synchronous-vs-worker proof (test_static_plan_job.cpp) at -O2 and ASan+UBSan (TSan only
 for the proof that starts the worker thread, test_static_plan_job.cpp),
 then audits the joins: every non-const public GpuCache method settles the worker first."""
+
+from source_units import source_text
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
 from pathlib import Path
@@ -13,8 +15,8 @@ import platform,re,subprocess,sys,tempfile
 HERE=Path(__file__).resolve().parent
 gpu=fp.src('static_shadow_gpu.h').read_text()
 job=fp.src('static_plan_job.h').read_text()
-w=fp.src('world_renderer.h').read_text()
-release=w[w.index('    void releaseGPU(bool keepMesh=false){'):].split('\n',1)[0]
+w=source_text(fp.src('world_renderer.h'))
+release=w[w.index('    void releaseGPU(bool keepMesh=false){'):].split('\n    }\n',1)[0]
 results=[]
 def check(name,ok,detail=''):
     results.append((name,bool(ok)));print(('PASS ' if ok else 'FAIL ')+name+(' | '+detail if detail else ''),flush=True)
@@ -50,7 +52,7 @@ check('worker: one thread, claims under the mutex, steal-back of pending items',
 check('worker: an undequeued job with nothing pending is retracted, not awaited','if(queued_){bool pending=false;for(unsigned i=0;i<count_;++i)pending|=states_[i]==State::Pending;if(!pending){queued_=false;++retractions_;}}' in job)
 check('renderer: slot matrices once per frame, kick before the loop, RAII join before any return',
       w.count('NorthlightWorldMath::shadowCachePlacement(')==1 and 'const float* cachedMatrix=staticSlotMatrix[slot];' in w
-      and w.index('struct StaticPlanJoin {WorldRenderer& r;~StaticPlanJoin(){try{r.staticCasters.settle();}catch(...){}}} staticPlanJoin{*this};')<w.index('staticPlanKick(slotPlacement,sourceActive);staticKickMs+=')<w.index('for(int source=0;source<2;++source){\n          if(!effects.shadows||!sourceActive[source])continue;'))
+      and w.index('struct StaticPlanJoin {WorldRenderer& r;~StaticPlanJoin(){try{r.staticCasters.settle();}catch(...){}}} staticPlanJoin{*this};')<w.index('staticPlanKick(slotPlacement,sourceActive);staticKickMs+=')<w.index('for(int source=0;source<2;++source){\n          if(!directionalShadows||!sourceActive[source])continue;'))
 check('renderer: settled before static updates, device release, key invalidation and mesh clears',
       'staticCasters.settle(); /* 0.3.152: no plan job across the static cache update */' in w
       and release.index('releaseReplayProbe();')<release.index('staticCasters.settle();')<min(release.index(x) for x in ('rigidMemoryClear();','staticCasters.reset();','staticMatcher.clear();','staticM2Memory.clear();','staticScene.reset();','clearMesh();'))

@@ -50,8 +50,9 @@ out = fp.output_dir() / 'fog-volume-admission'
 out.mkdir(parents=True, exist_ok=True)
 cpp, exe = out/'fixture.cpp', out/'fixture.exe'
 cpp.write_text(harness)
-command = [str(fp.zig()), 'c++', '-target', 'x86-windows-gnu', '-std=c++17', '-O2', '-UNDEBUG',
-           *fp.test_include_flags(), str(cpp), '-o', str(exe)]
+compiler = [str(fp.zig()), 'c++', '-target', 'x86-windows-gnu', '-std=c++17', '-O2', '-UNDEBUG',
+            *fp.test_include_flags()]
+command = [*compiler, str(cpp), '-o', str(exe)]
 run = subprocess.run(command, env=fp.zig_env(), capture_output=True, text=True)
 (out/'compile.log').write_text(run.stdout+run.stderr)
 if run.returncode:
@@ -62,3 +63,8 @@ run = subprocess.run([str(exe)], capture_output=True, text=True, timeout=60)
 print(run.stdout+run.stderr)
 run.check_returncode()
 assert 'FOG_ADMISSION_PASS ' in run.stdout
+
+spell = out/'spell-depth.exe'
+subprocess.run([*compiler, str(fp.TESTS/'test_spell_fog_pair.cpp'), '-o', str(spell)], env=fp.zig_env(), check=True)
+subprocess.run([str(spell)], check=True, timeout=60)
+print('SPELL_DEPTH_PASS regional paired rays and imported rays match their references')

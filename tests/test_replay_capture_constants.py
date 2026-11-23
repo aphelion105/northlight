@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-# northlight-test: requires=cxx
-"""0.3.180 (C0-C2) capture constants. Native tests of replay_capture_constants.h at -O2, under
-ASan/UBSan and in the NORTHLIGHT_PALETTE_VALIDATE build: test_replay_capture_constants.cpp (the
+# northlight-test: requires=zig
+"""Native capture constant tests at -O2, under ASan/UBSan (or -O0 on Windows)
+and in the NORTHLIGHT_PALETTE_VALIDATE build: test_replay_capture_constants.cpp (the
 templated captureBlocks() through ReaderSource and ClockSource bit-equal to the 0.3.179 Reader
 overload, C0's verify() cadence, the counterfactual sources) and test_replay_palette_blocks.cpp (the
 Reader overload against full copies). The C2 counterfactual: a fetch that writes the bank must trip the
@@ -11,18 +11,25 @@ import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).reso
 import northlight_paths as fp
 import hashlib,json,re,subprocess,tempfile
 HERE=Path(__file__).resolve().parent
-FILES=['replay_capture_constants.h','captured_constant_epoch.h','world_renderer.h','renderer.cpp','device_mirror.h','model_normal_renderer.h',
+FILES=['replay_capture_constants.h','captured_constant_epoch.h','point_rigid_pose_rows.h','world_renderer.h','renderer.cpp','device_mirror.h','model_normal_renderer.h',
        'test_replay_capture_constants.cpp','test_replay_palette_blocks.cpp','test_replay_capture_constants.py']
 report={'scope':'Native replay_capture_constants.h tests plus a renderer wiring audit; no game, Wine or DLL run.',
         'source_sha256':{n:hashlib.sha256(fp.tracked(n).read_bytes()).hexdigest() for n in FILES},'runs':[]}
 BUILDS=[('O2',['-O2']),('asan+ubsan',['-O1','-g','-fsanitize=address,undefined','-fno-sanitize-recover=all']),
         ('validate',['-O2','-DNORTHLIGHT_PALETTE_VALIDATE=1'])]
-with tempfile.TemporaryDirectory(prefix='northlight-capture-constants-') as tmp:
+windows=sys.platform=='win32'
+compiler=[str(fp.zig()),'c++','-target','x86-windows-gnu'] if windows else ['clang++']
+if windows:BUILDS[1]=('O0',['-O0'])
+with tempfile.TemporaryDirectory(prefix='capture-constants-',dir=fp.output_dir()) as tmp:
     for test in ('test_replay_capture_constants','test_replay_palette_blocks'):
         for label,flags in BUILDS:
-            exe=Path(tmp)/f'{test}-{label}'
-            subprocess.run(['clang++','-std=c++17','-Wall','-Wextra','-Werror',*flags,*fp.test_include_flags(),str(HERE/f'{test}.cpp'),'-o',str(exe)],check=True)
+            exe=Path(tmp)/(f'{test}-{label}'+('.exe' if windows else ''))
+            subprocess.run([*compiler,'-std=c++17','-UNDEBUG','-Wall','-Wextra','-Werror',*flags,*fp.test_include_flags(),
+                            str(HERE/f'{test}.cpp'),'-o',str(exe)],env=fp.zig_env() if windows else None,check=True)
             out=subprocess.run([str(exe)],check=True,capture_output=True,text=True).stdout
+            if test=='test_replay_capture_constants':
+                assert 'SHADOW_PACKET_BANK_PASS ' in out
+                assert 'POINT_RIGID_POSE_PASS ' in out
             print(f'{test} {label}:\n{out}',end='',flush=True);report['runs'].append({'test':test,'build':label,'stdout':out})
             if test=='test_replay_capture_constants' and label=='validate':
                 for mode in ('c2-race-block','c2-race-full'):
@@ -35,7 +42,7 @@ with tempfile.TemporaryDirectory(prefix='northlight-capture-constants-') as tmp:
 read=lambda n:fp.tracked(n).read_text()
 w,r,c=read('world_renderer.h'),read('renderer.cpp'),read('replay_capture_constants.h')
 n=read('model_normal_renderer.h')
-templated=c[c.index('template<class Replay,class Source,class Fetch,class FetchFloats> bool captureBlocks('):c.index('template<class Replay> bool samePose(')]
+templated=c[c.index('template<class Storage=InlineBanks,class Replay,class Source,class Fetch,class FetchFloats,class CheckFloats>'):c.index('template<class Replay> bool samePose(')]
 checks={
  'ModelNormals: own typed source, held gate and original self-check cadence':
    'source&&source.context()==d?source.reader():nullptr' in n
@@ -43,17 +50,21 @@ checks={
    and 'static_cast<ExtensionDevice*>(d)->constantMirror()' in n
    and 'reader&&constantSource.attached()&&constantSource.mirror->heldByThisThread()' in n
    and 'SelfCheck check{constantStats.blockTests,&constantStats};' in n
-   and 'captureBlocks(*packet,previous,constantSource,fetch,fetchFloats,&constantStats,true,check)' in n
-   and 'captureBlocks(*packet,previous,poseContext,reader,fetch,fetchFloats,&constantStats)' in n,
+   and 'const auto* previous=pending.empty()?nullptr:&lastConstants;' in n
+   and 'captureBlocks<NorthlightReplayCaptureConstants::InlineBanks>(bank,previous,constantSource,fetch,fetchFloats,&constantStats,true,check,checkFloats)' in n
+   and 'return vs->terrain?readFloats(first,count,out):fetchFloats(first,count,out);' in n
+   and 'captureBlocks(bank,previous,poseContext,reader,fetch,fetchFloats,&constantStats)' in n
+   and 'packet->constants=bank.constants;packet->ints=bank.ints;packet->bools=bank.bools;' in n
+   and 'lastConstants=bank;' in n,
  'C1: the renderer reads the mirror clock in place (no Reader callback)':'world->setConstantEpochSource({&mirrorState.constantEpoch,&mirrorState});' in r
    and 'constantEpochReader' not in w and 'NorthlightReplayCaptureConstants::ClockSource<DeviceMirror> constantEpochSource;' in w
-   and 'captureBlocks(*p,previous,constantEpochSource,[&]{' in w,
- 'C0: profile Stats on sample frames, self-check by its own flag and serial':'},sample?&constantEpochProfile:nullptr,constantSelfCheck,constantSelfCheckState))return;' in w
+   and 'captureBlocks<NorthlightReplayCaptureConstants::SharedFloatBanks>(*p,previous,constantEpochSource,[&]{' in w,
+ 'C0: profile Stats on sample frames, self-check by its own flag and serial':'},captureFloatRows,sample?&constantEpochProfile:nullptr,constantSelfCheck,constantSelfCheckState,readFloatRows)){' in w
    and 'NorthlightReplayCaptureConstants::SelfCheck constantSelfCheckState{0,&constantEpochStats};' in w,
  'C0: the serial is cleared with the self-check object':'constantEpochStats={};constantEpochProfile={};constantSelfCheckState.serial=0;' in w,
  'C0: samePose keeps its 0.3.179 Stats':'samePose(*replays.back(),*p,sample?&constantEpochStats:nullptr)' in w,
  'C0: verify() on a block hit only by the self-check flag and serial (or the validation build)':
-   'if(ValidateEvery||(selfCheck&&SelfCheckInterval&&check.serial%SelfCheckInterval==0))verify(p,fetchFloats,check.stats);' in templated
+   'if(ValidateEvery||(selfCheck&&SelfCheckInterval&&check.serial%SelfCheckInterval==0))return verify<Storage>(p,checkFloats,check.stats);' in templated
    and 'stats->blockTests%' not in templated,
  'C2: no post-fetch re-read outside the validation assertions':templated.count('source.valid()')==2 and templated.count('source.snapshot()')==6
    and templated.count('if constexpr(ValidateEvery)assert(')==2 and 'raced' not in templated,

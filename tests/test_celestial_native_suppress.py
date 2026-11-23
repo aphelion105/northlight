@@ -6,6 +6,8 @@ checks: the identity map is wired through the mirror registry without
 dereferencing, suppression needs a validated sky context (current planet phase
 or previous render), effects off (Ctrl+Shift+F10) never reaches the claim hooks, and the
 celestial surfaces draw in the native planet phase before clouds. No device or game."""
+
+from source_units import source_text
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
 import json,re,subprocess,tempfile,os
@@ -25,7 +27,7 @@ assert 'exposed_.find(reinterpret_cast<void*>(exposed))' in raw_of
 assert 'shaped(' not in raw_of and 'disable(' not in raw_of  # a number from game memory: never dereferenced, never disables
 assert 'if(found==exposed_.end())return passThroughMiss?exposed:0;' in raw_of  # mirror active: a miss is 0
 
-renderer=fp.src('renderer.cpp').read_text()
+renderer=source_text(fp.src('renderer.cpp'))
 assert 'celestialDiscs->setIdentityMap([this](std::uintptr_t exposed){return mirrorResources.rawOf(exposed,!mirrorState.enabled);});' in renderer
 assert 'if((!early&&!observer.lateDisc(i,suppressed))||' in fp.src('celestial_disc_renderer.h').read_text()
 # F10: every native claim is gated by the effects switch and the pre-effects phase.

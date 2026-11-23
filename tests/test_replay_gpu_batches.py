@@ -3,6 +3,8 @@
 """Paged replay residency (replay_gpu_batches.h) against the per-mesh cache: frame-by-frame
 bit-identical software raster from bound buffers, write-once page regions, committed-byte
 accounting, faults, trims and reset; plus the production wiring. No game, Wine or GPU."""
+
+from source_units import source_text
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
 from pathlib import Path
@@ -17,7 +19,7 @@ virtual HRESULT CreateIndexBuffer(UINT,DWORD,D3DFORMAT,unsigned,IDirect3DIndexBu
 virtual HRESULT SetVertexDeclaration(IDirect3DVertexDeclaration9*)=0;virtual HRESULT SetStreamSource(UINT,IDirect3DVertexBuffer9*,UINT,UINT)=0;
 virtual HRESULT SetIndices(IDirect3DIndexBuffer9*)=0;virtual HRESULT SetVertexShader(IDirect3DVertexShader9*)=0;virtual HRESULT SetTexture(DWORD,IDirect3DBaseTexture9*)=0;
 virtual HRESULT SetSamplerState(DWORD,DWORD,DWORD)=0;virtual HRESULT SetPixelShaderConstantF(UINT,const float*,UINT)=0;''')
-world=fp.src('world_renderer.h').read_text()
+world=source_text(fp.src('world_renderer.h'))
 batched=fp.src('replay_gpu_batches.h').read_text()
 # Production wiring: the selected cache, the shared binding helper, and pool/usage identical to the per-mesh buffers.
 assert 'inline constexpr bool BatchedReplayCache=true;' in batched
@@ -36,11 +38,11 @@ for text in (batched,cache):
     assert 'D3DLOCK_DISCARD' not in text and 'D3DLOCK_NOOVERWRITE' not in text and text.count('->Lock(')==len(locks)
 assert len(re.findall(r'->Lock\(',batched))==3 and len(re.findall(r'->Lock\(',cache))==2
 assert '#include "upload_lock.h"' in cache and 'inline constexpr DWORD FreshBufferLock=NoOverwriteFreshBuffers?DWORD(D3DLOCK_NOOVERWRITE):DWORD(0);' in fp.src('upload_lock.h').read_text()
-# Cascades use the whole packet; point shadows use split-emitter or merged runs.
-assert 'p->indexed?d->DrawIndexedPrimitive(p->type,p->base,p->min,p->vertices,p->start,p->count):d->DrawPrimitive(p->type,p->start,p->count);' in world
-point=fp.src('world_point_rendering.inl').read_text()
-assert 'p->indexed?d->DrawIndexedPrimitive(p->type,p->base,p->min,p->vertices,start,run.second):d->DrawPrimitive(p->type,start,run.second);' in point
-assert 'p->indexed?d->DrawIndexedPrimitive(p->type,p->base,run.min,run.vertices,run.start,run.count):d->DrawPrimitive(p->type,run.start,run.count);' in point
+# Both consumers submit the checked range through the packet's original vertex page.
+point=fp.src('world_point_replays.inl').read_text()
+submit='p->indexed?d->DrawIndexedPrimitive(p->type,p->base,run.min,run.vertices,run.start,run.count):d->DrawPrimitive(p->type,run.start,run.count);'
+assert submit in world and submit in point
+assert 'shadowReplayIndices.begin(frames);' in world and 'shadowReplayIndices.begin(frames);' not in point
 print('PASS wiring: SelectedCache, bindResident, DEFAULT|WRITEONLY buffers, fresh buffers written once with FreshBufferLock, base/start in both replay loops')
 with tempfile.TemporaryDirectory(prefix='northlight-replay-batches-') as tmp:
     p=Path(tmp);(p/'d3d9.h').write_text(stub)

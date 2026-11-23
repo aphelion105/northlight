@@ -7,10 +7,12 @@ job, shutdown draining, interleaved counters. Then a source audit: the header is
 ReplayJobs=0 never touches the pool, and the jobs read only frozen inputs and never call the device."""
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
+from source_units import source_text, world_render_path
 import re,subprocess,tempfile
 HERE=Path(__file__).resolve().parent
 h=fp.src('job_system.h').read_text()
-w=fp.src('world_renderer.h').read_text()
+w=source_text(fp.src('world_renderer.h'))
+bank=fp.src('world_frame_constants.inl').read_text()
 r=fp.src('renderer.cpp').read_text()
 results=[]
 def check(name,ok,detail=''):
@@ -26,7 +28,7 @@ check('the counter decrement is the job\'s last touch; a throw marks it failed',
 check('wait helps (pops and runs) instead of sleeping','while(!counter.done()){Job job;if(pop(job))run(job,1);else std::this_thread::yield();}' in h)
 
 # --- renderer wiring ------------------------------------------------------------------------
-render=w[w.index('    bool render(IDirect3DSurface9* targetSurface,'):]
+render=world_render_path(w)
 check('lazy start on the renderer thread during bounded mesh staging; jobs still start after upload',w.count('replayJobs_.start(')==1 and w.count('jobsStart()')==3
       and 'const unsigned cores=NorthlightStream::cores();' in w and 'if(replayJobs_.start(cores))logf("JOBS workers=%u cores=%u"' in w and 'jobs=jobsStart();' in render
       and 'if(geometryWanted&&screenResourcesReady&&pendingMesh&&!replayJobsTried_&&streamBudget.available())jobsStart();' in render
@@ -40,15 +42,15 @@ check('four jobs: atmosphere, terrain candidates, replay cull, spell fog',kicked
 check('each body inline at its old place with ReplayJobs=0, joined there (or at the first reader) with 1',
       'if(jobs)replayJobs_.wait(atmosphereDone);else atmosphereWork(atmosphere,nearZ,w,h,debug);' in render
       and 'if(!terrainAsync)terrainJob();' in render and render.index('if(!terrainAsync)terrainJob();')<render.index('bucket(NorthlightEffectsBuckets::TerrainSelection);')
-      and render.index('if(jobs)replayJobs_.wait(terrainDone);')<render.index('if(!terrainCandidates.forEach(')
+      and render.index('if(jobs)replayJobs_.wait(terrainDone);')<render.index('return terrainCandidates.forEach(')
       and 'if(jobs&&actorShadows&&!replayCullsKicked)replayCullKickOwn(slot);' in render
       and 'if(!replayBoundsWorker.finished()){++replayCullEarlySkipped;return;}' in w # 0.3.217: the early kick only when the bounds job is finished (no blocking join)
       and 'replayBoundsJoin();++replayCullEarly;replayCullKickSlot(slot);' in w
       and 'for(int slot=fromSlot+1;slot<4;++slot)if(sourceActive[slot/2])replayCullKickSlot(slot);' in w # the early kick covers this slot only
       and 'if(jobs&&!replayCullsKicked){replayCullsKicked=true;replayCullKick(slot,sourceActive);}' in render
-      and render.index('replayCullKickOwn(slot)')<render.index('const int rendered=renderCache(shadowCacheSurface[slot],partialStatic,true);')
+      and render.index('replayCullKickOwn(slot)')<render.index('const int rendered=renderCache(directionalMaps.cache(slot).surface,partialStatic,true);')
       and render.index('replayBoundsJoin(); /* 0.3.143: first pointBounds reader */')<render.index('replayCullKick(slot,sourceActive)')<render.index('const uint8_t* cull=replayCullFor(slot,cachedMatrix,matrices[cascade]);')
-      and render.index('replayCullKickOwn(slot)')<render.index('if(jobs)replayJobs_.wait(terrainDone); /* 0.3.200 (jobs): the candidates')
+      and render.index('replayCullKickOwn(slot)')<render.index('if(jobs)replayJobs_.wait(terrainDone);')
       and 'bool finished(){if(!inFlight_)return false;' in open(HERE.parent/'src/replay/replay_bounds_job.h').read()
       and 'earlyCullKicks=%u earlyCullSkipped=%u' in r
       and '(cull?(cull[index]&1)!=0:StaticShadow::containsBounds(cachedMatrix,p->staticProofLow,p->staticProofHigh))' in render
@@ -56,7 +58,8 @@ check('each body inline at its old place with ReplayJobs=0, joined there (or at 
 check('a later slot uses its job only when both matrices still match',
       '!std::memcmp(job.matrix,matrix,sizeof job.matrix)&&!std::memcmp(job.cached,cached,sizeof job.cached)?job.flags.data():nullptr' in w)
 check('the veil keeps both sums; the bank picks by the final activity (ensureCloudNoise on the renderer thread)',
-      'skyTransmittanceFrame=cf.active?atmosphere.veil[1]:atmosphere.veil[0];' in render and 'cf.active=cf.active&&effects.fog&&debug==0&&fogCloudsPS&&ensureCloudNoise();' in render
+      'skyTransmittanceFrame=cf.active?atmosphere.veil[1]:atmosphere.veil[0];' in bank and 'cf.active=cf.active&&effects.fog&&debug==0&&regionalFogGpu.clouds()&&ensureCloudNoise();' in bank
+      and render.index('prepareAtmosphereConstants(')<render.index('const bool spellWanted=')
       and 'a.veil[0]=std::exp(-depth);a.veil[1]=std::exp(-cloudyDepth);' in w and 'cloudy+=NorthlightFogClouds::sigmaAt(' in w)
 for name in ('void atmosphereWork(AtmosphereFrame& a,float nearZ,UINT w,UINT h,int debug){','void replayCullWork(ReplayCull& job){'):
     start=w.index(name);body=re.sub(r'/\*.*?\*/','',re.sub(r'//[^\n]*','',w[start:w.index('\n    }\n',start)]),flags=re.S)

@@ -1,5 +1,7 @@
 # northlight-test: requires=cxx
 """Exercise the production resource path and frame-boundary AO switch with observed lifetimes."""
+
+from source_units import source_text
 from pathlib import Path
 import re
 import subprocess
@@ -8,7 +10,7 @@ import tempfile
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
 
-source = fp.src('renderer.cpp').read_text(encoding='utf-8')
+source = source_text(fp.src('renderer.cpp'), encoding='utf-8')
 
 def extract(marker):
     start = source.index(marker)

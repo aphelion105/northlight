@@ -2,6 +2,7 @@
 #include "replay_bounds.h"
 #include "water_shader_patch.h"
 #include "position_bounds_scan.h"
+#include "frame_parity_clock.h"
 
 // Stock rigid or single-influence M2: native clip.w is DP4(c5,view).
 // Each vertex selects one bone. All selected transforms must prove it is far.
@@ -49,7 +50,28 @@ public:
     // this proof. A failed read declines it; accepted draws still capture all
     // shader inputs separately for replay.
     template<class Read> bool outsideRead(const std::shared_ptr<const Mesh>& mesh,const D3DVERTEXELEMENT9* layout,UINT count,Read read,Kind kind=Rigid){
-        ++tested;singleTests+=kind==Single;if(!mesh||!layout||!count||count>MAXD3DDECLLENGTH||(kind!=Rigid&&kind!=Single))return false;
+        return outsideView(mesh,layout,count,[&](unsigned first,unsigned rows,float* scratch)->const float*{
+            return read(first,rows,scratch)?scratch:nullptr;
+        },kind);
+    }
+    // Each view remains valid until its scratch array is reused or the proof
+    // returns. A same-draw bank can supply both spans without copying.
+    template<class View> bool outsideView(const std::shared_ptr<const Mesh>& mesh,const D3DVERTEXELEMENT9* layout,UINT count,View view,Kind kind=Rigid){
+        return evaluate(mesh,layout,count,view,kind,nullptr);
+    }
+    template<class Read> bool viewBoundsRead(const std::shared_ptr<const Mesh>& mesh,const D3DVERTEXELEMENT9* layout,UINT count,
+                                            Read read,Kind kind,NorthlightReplayBounds::Bounds& bounds){
+        auto view=[&](unsigned first,unsigned rows,float* scratch)->const float*{
+            return read(first,rows,scratch)?scratch:nullptr;
+        };
+        bounds={};if(!evaluate(mesh,layout,count,view,kind,&bounds)){bounds={};return false;}
+        return bounds.valid;
+    }
+private:
+    template<class View> bool evaluate(const std::shared_ptr<const Mesh>& mesh,const D3DVERTEXELEMENT9* layout,UINT count,View& view,
+                                      Kind kind,NorthlightReplayBounds::Bounds* viewBounds){
+        if(!viewBounds){++tested;singleTests+=kind==Single;}
+        if(!mesh||!layout||!count||count>MAXD3DDECLLENGTH||(kind!=Rigid&&kind!=Single))return false;
         const D3DVERTEXELEMENT9* position=nullptr;for(UINT i=0;i<count;++i)if(layout[i].Stream!=0xff&&layout[i].Usage==D3DDECLUSAGE_POSITION&&!layout[i].UsageIndex){if(position)return false;position=layout+i;}
         if(!position||position->Stream||position->Type!=D3DDECLTYPE_FLOAT3||position->Method!=D3DDECLMETHOD_DEFAULT)return false;
         const auto& stream=mesh->streams[0];if(!mesh->vertexCount||!stream.stride||uint64_t(mesh->vertexCount-1)*stream.stride+position->Offset+12>stream.bytes.size())return false;
@@ -71,11 +93,14 @@ public:
             bone=entry->bones[0];
         }
         // Budget cold vertex scans; warm bounds still validate the current pose.
-        if(!entry&&(workMilliseconds>=.25||mesh->vertexCount>2048-scanVertices)){++deferred;return false;}
-        float projection[16],matrix[12];if(!read(2,4,projection))return false;
+        if(!entry&&(mesh->vertexCount>2048-scanVertices||
+                    (!NorthlightFrameParityClock::fixedProfileWork()&&workMilliseconds>=.25))){++deferred;return false;}
+        float projectionScratch[16],matrixScratch[12];
+        const float* projection=view(2,4,projectionScratch);if(!projection)return false;
         if(projection[12]!=0||projection[13]!=0||projection[15]!=0||(projection[14]!=1&&projection[14]!=-1))return false;
         // Near origins decline this optional proof, even if local vertices are far.
-        if(!read(31+3*bone,3,matrix)||!(projection[14]*matrix[11]>48.01f))return false;
+        const float* matrix=view(31+3*bone,3,matrixScratch);
+        if(!matrix||(!viewBounds&&!(projection[14]*matrix[11]>48.01f)))return false;
         // A bounded warm proof needs no timing calls or cold-scan allowance.
         if(!entry){
             const auto start=std::chrono::steady_clock::now();
@@ -106,22 +131,24 @@ public:
             entry->owner=mesh;entry->address=mesh.get();entry->offset=position->Offset;entry->indexOffset=indexOffset;
         }
         entry->used=++clock;
-        singleUniform+=kind==Single&&entry->boneCount==1;
+        if(!viewBounds)singleUniform+=kind==Single&&entry->boneCount==1;
         if(!entry->boneCount||!NorthlightFloatChecks::bounded<16,0x49742400u>(projection))return false;
         // Each bone sees a subset of the same immutable object-space box.
         // Reuse the first row triplet already read for cold-scan admission.
         for(unsigned i=0;i<entry->boneCount;++i){
-            if(i&&!read(31+3*entry->bones[i],3,matrix))return false;
-            if(!outsideBone(*entry,matrix,projection[14])){
+            if(i){matrix=view(31+3*entry->bones[i],3,matrixScratch);if(!matrix)return false;}
+            if(viewBounds){
+                if(!includeBone(*entry,matrix,*viewBounds))return false;
+            }else if(!outsideBone(*entry,matrix,projection[14])){
                 // An animated section crossing the boundary often keeps the
                 // same near bone. Try its current transform first next draw.
                 std::swap(entry->bones[0],entry->bones[i]);return false;
             }
         }
-        ++culled;mixedCulled+=entry->boneCount>1;return true;
+        if(!viewBounds){++culled;mixedCulled+=entry->boneCount>1;}
+        return true;
     }
-private:
-    static bool outsideBone(const Entry& entry,const float* matrix,float sign){
+    static bool boundedBone(const Entry& entry,const float* matrix){
         // c5 multiplies all four view lanes, including its zero coefficients.
         // Do not infer clip.w from Z when another lane could be NaN/overflow.
         if(!NorthlightFloatChecks::bounded<12>(matrix))return false;
@@ -129,16 +156,37 @@ private:
             for(unsigned axis=0;axis<4;++axis){const float value=matrix[4*row+axis];
                 scale+=std::fabs(double(value))*(axis==3?1:entry.magnitude[axis]);}
             if(!std::isfinite(scale)||scale>1000000)return false;}
+        return true;
+    }
+    static NorthlightReplayBounds::detail::Value boneAxis(const Entry& entry,const float* row){
         // The same interval DP4 operations/error allowance as replay_bounds.h.
         using namespace NorthlightReplayBounds::detail;
         Value sum;double magnitude=0;
         for(unsigned axis=0;axis<4;++axis){const Value input=axis<3?entry.position[axis]:Value{1,0};
-            const float coefficient=matrix[8+axis];if(!std::isfinite(coefficient))return false;
-            const auto term=mul({coefficient,0},input);magnitude+=std::fabs(term.value)+term.error;sum=add(sum,term);}
+            const auto term=mul({row[axis],0},input);magnitude+=std::fabs(term.value)+term.error;sum=add(sum,term);}
         sum.error+=roundError(magnitude)*8;
+        return sum;
+    }
+    static bool outsideBone(const Entry& entry,const float* matrix,float sign){
+        if(!boundedBone(entry,matrix))return false;
+        const auto sum=boneAxis(entry,matrix+8);
         if(!std::isfinite(sum.value)||!std::isfinite(sum.error))return false;
         const double lower=sign>0?double(sum.value)-sum.error:-double(sum.value)-sum.error;
         return std::nextafter(lower,-INFINITY)>48.01;
+    }
+    static bool includeBone(const Entry& entry,const float* matrix,NorthlightReplayBounds::Bounds& view){
+        if(!boundedBone(entry,matrix))return false;
+        for(unsigned axis=0;axis<3;++axis){
+            const auto sum=boneAxis(entry,matrix+4*axis);
+            if(!std::isfinite(sum.value)||!std::isfinite(sum.error))return false;
+            using NorthlightReplayBounds::detail::outwardNormal;
+            const float low=outwardNormal<false>(float(double(sum.value)-sum.error));
+            const float high=outwardNormal<true>(float(double(sum.value)+sum.error));
+            view.low[axis]=view.valid?std::min(view.low[axis],low):low;
+            view.high[axis]=view.valid?std::max(view.high[axis],high):high;
+        }
+        view.valid=true;
+        return true;
     }
 };
 }

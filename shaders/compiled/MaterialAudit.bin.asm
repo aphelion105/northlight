@@ -172,7 +172,7 @@
  128:               else
  129:                 if_ge r2_abs.z, -r3.x
  132:                 else
- 133:                   mul r2.xz, r2.x, r4.xyyw
+ 133:                   mul r2.xz, r2.x, r4_abs.xyyw
  134:                   mul r2.xz, r2, c12.y
  135:                   add r2.xz, r2, c7.x
  136:                   add r0.z, -r2_abs.x, -c7.x

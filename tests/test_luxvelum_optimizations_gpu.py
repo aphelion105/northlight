@@ -5,13 +5,13 @@ import hashlib
 import json
 import os
 import re
-import shutil
 from pathlib import Path
 import subprocess
 import sys
 
 sys.path[:0] = [str(Path(__file__).resolve().parents[1]), str(Path(__file__).resolve().parents[1] / 'scripts')]
 import northlight_paths as fp
+from scripts.shaders.shader_sources import copy_sources
 fp.use_source_modules()
 from shader_compiler import Compiler, validate_assembly
 from windows_gpu_guard import processes
@@ -28,8 +28,7 @@ if baseline_ref:
     env.update(NORTHLIGHT_OPTIMIZATION_BENCHMARK='1', NORTHLIGHT_FOG_BENCHMARK_BASELINE=str(baseline))
 compiler = Compiler(allow_compatible_binary=True)
 reference = (fp.TESTS / 'fixtures/forever_fog_reference.hlsl').read_text()
-for name in ('world_effects.hlsl', 'shadow_transition.hlsl', 'auto_bump_normal.hlsl'):
-    shutil.copyfile(fp.SHADERS / name, out / name)
+copy_sources(fp.SHADERS / 'shadow_transition.hlsl', out)
 for transition in (False, True):
     source = out / ('transition-reference.hlsl' if transition else 'world-reference.hlsl')
     include = 'shadow_transition.hlsl' if transition else 'world_effects.hlsl'

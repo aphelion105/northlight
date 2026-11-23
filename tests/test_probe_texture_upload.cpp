@@ -96,6 +96,38 @@ int main(){
   assert(!std::memcmp(expected[0].probe.sh,current[0].probe.sh,sizeof current[0].probe.sh));
  }
  assert(configureProbeLayout(probeLayoutFor(20)));const unsigned n=probeLayout().atlas;
+ {
+  NorthlightProbeBlend::Mirror mirror;
+  mirror.begin("A");
+  std::vector<ProbeAtlasEntry> publication(probeLayout().atlasSize());
+  auto& entry=publication[0];
+  entry.occupied=entry.probe.valid=true;
+  entry.probe.sh[0]={1,2,3};
+  assert(mirror.publish(publication,1)==0&&mirror.currentDirty()&&mirror.previousDirty());
+  mirror.currentUploaded();mirror.previousUploaded();
+  assert(mirror.publish(publication,1.5f)==0&&!mirror.currentDirty()&&!mirror.previousDirty());
+  // Starting a blend changes the current coefficients and uses the exact same
+  // previous coefficients as the preceding publication.
+  entry.probe.sh[0].x=2;
+  assert(mirror.publish(publication,2)==1&&mirror.currentDirty()&&!mirror.previousDirty());
+  mirror.currentUploaded();
+  entry.probe.sh[0].y=4;
+  assert(mirror.publish(publication,2.15f)==1&&mirror.currentDirty()&&mirror.previousDirty());
+  assert(mirror.previous(0)[0]>1&&mirror.previous(0)[0]<2);
+  mirror.currentUploaded();
+  // A failed previous upload leaves the payload pending across unchanged publications.
+  assert(mirror.publish(publication,2.2f)==0&&!mirror.currentDirty()&&mirror.previousDirty());
+  mirror.previousUploaded();
+  entry.key.x=1;
+  assert(mirror.publish(publication,2.3f)==0&&!mirror.currentDirty()&&mirror.previousDirty());
+  assert(mirror.previous(0)[0]==2&&mirror.previous(0)[4]==4);
+  mirror.previousUploaded();
+  mirror.invalidateUploads();
+  assert(mirror.publish(publication,2.4f)==0&&mirror.currentDirty()&&mirror.previousDirty());
+  mirror.currentUploaded();mirror.previousUploaded();
+  mirror.begin("B");
+  assert(mirror.currentDirty()&&mirror.previousDirty());
+ }
  std::vector<ProbeAtlasEntry> atlas(probeLayout().atlasSize());mutate(atlas,0);
  NorthlightProbeBlend::Mirror blend;NorthlightProbeActivation activation;blend.begin("A");activation.begin("A");blend.publish(atlas,10);
  std::vector<unsigned char> buffers[6];size_t pitches[6];

@@ -3,6 +3,7 @@
 #define NORTHLIGHT_TEST_REAL_NAME_MASK
 #include "surface_effects_gpu.cpp"
 #undef NORTHLIGHT_SURFACE_HELPERS_ONLY
+#include "world_lighting_capture.h"
 #ifdef NORTHLIGHT_EXTERNAL_ASSETS
 #include "resource_shader_checks.h"
 #endif
@@ -99,7 +100,20 @@ int main(int argc,char** argv){
             std::vector<DWORD> result[3];
             for(unsigned occluded=0;occluded<3;++occluded){
                 ok(d->ColorFill(target,nullptr,0xff143250));ok(d->BeginScene());
-                surface.precipitation(target,occluded?maskTexture:skyTexture,W,H,c,preset?NorthlightQuality::Preset::Performance:NorthlightQuality::Preset::Quality,occluded==2?nameDepth:nullptr);
+                auto quality=preset?NorthlightQuality::Preset::Performance:NorthlightQuality::Preset::Quality;
+                if(!band&&!phase&&!occluded){
+                    const unsigned frame=42+snow+2*preset;
+                    const std::string output=".";
+                    NorthlightLightingCapture::Capture audit(d,output,frame,frame,frame,W,H,"frame-parity-late-weather");
+                    surface.precipitation(target,skyTexture,W,H,c,quality,nullptr,nullptr,halfRoof,
+                        {[](void* context,const char* entry,unsigned samplers,HRESULT draw){
+                            static_cast<NorthlightLightingCapture::Capture*>(context)->bindings(entry,samplers,draw);
+                        },&audit});
+                    audit.finish(true);
+                    ok(d->EndScene());surface.endFrame();
+                    ok(d->ColorFill(target,nullptr,0xff143250));ok(d->BeginScene());
+                }
+                surface.precipitation(target,occluded?maskTexture:skyTexture,W,H,c,quality,occluded==2?nameDepth:nullptr);
                 ok(d->EndScene());result[occluded]=readPixels();surface.endFrame();
             }
             for(unsigned at=0;at<W*H;++at){

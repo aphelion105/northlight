@@ -3,6 +3,7 @@
 #include "composite_distance_gpu.cpp"
 #undef main
 #include "effect_coverage.h"
+#include "forwarders.h"
 #include <array>
 using namespace NorthlightEffectCoverage;
 #include "effect_coverage_benchmark.h"
@@ -30,6 +31,11 @@ int main(int argc,char** argv){
     }
     assert(classify(false,false,true,9,3,1,15,false)==Write::None); // Projected modulate shadow.
     assert(classify(true,false,true,9,3,1,15,false)==Write::Modulate);
+    for(bool active:{false,true})for(bool blend:{false,true})
+        for(unsigned src=D3DBLEND_ZERO;src<=D3DBLEND_INVSRCCOLOR2;++src)
+            for(unsigned dst=D3DBLEND_ZERO;dst<=D3DBLEND_INVSRCCOLOR2;++dst)
+                for(unsigned op=D3DBLENDOP_ADD;op<=D3DBLENDOP_MAX;++op)
+                    assert(classify(active,true,blend,src,dst,op,15,true)==classify(active,true,blend,src,dst,op,15,false));
     WNDCLASSW wc{};wc.lpfnWndProc=DefWindowProcW;wc.lpszClassName=L"NorthlightEffectCoverage";wc.hInstance=GetModuleHandleW(nullptr);assert(RegisterClassW(&wc));
     auto window=CreateWindowExW(0,wc.lpszClassName,L"",WS_OVERLAPPED,0,0,N,N,nullptr,nullptr,wc.hInstance,nullptr);assert(window);
     auto module=LoadLibraryA(argv[2]);assert(module);auto create=reinterpret_cast<IDirect3D9*(WINAPI*)(UINT)>(GetProcAddress(module,"Direct3DCreate9"));assert(create);auto api=create(D3D_SDK_VERSION);assert(api);
@@ -92,11 +98,17 @@ int main(int argc,char** argv){
             if(actual!=reference){for(unsigned i=0;i<actual.size();++i)if(actual[i]!=reference[i]){std::printf("native mismatch sm=%u ms=%u premult=%u alpha=%g layers=%u control=%u byte=%u before=%u after=%u\n",sm+2,ms,unsigned(premult),alpha,layers,control,i,unsigned(reference[i]),unsigned(actual[i]));std::fflush(stdout);break;}}
             assert(actual==reference&&submits==layers+(control==3||control==4));auto* mask=capture.texture(d,target);
             if(ms&&!allowMsaa){assert(!mask&&!capture.active()&&capture.draws==0&&capture.bindings==0);++cases;continue;}
+            if(ms&&mask&&!additive){
+                const unsigned copies=capture.resolveCopies(),reused=capture.resolveReuses();
+                assert(capture.aoTexture(d,target)==mask&&capture.aoTexture(d,target)==mask);
+                assert(copies==1&&capture.resolveCopies()==copies&&capture.resolveReuses()==reused+2);
+            }
             if(!mask&&control<6){std::fprintf(stderr,"missing mask sm=%u ms=%u blend=%u alpha=%g layers=%u control=%u draws=%u bindings=%u active=%u emission=%u\n",sm+2,ms,blend,alpha,layers,control,capture.draws,capture.bindings,unsigned(capture.active()),unsigned(capture.hasEmission()));}
             assert(mask||control>=6);
             assert(control>=6&&additive?!capture.active():capture.active());
             assert(capture.draws==(control>=6&&additive?0:layers)+(control==4));
             if(!additive)assert(capture.bindings==1+(control==3||control==4)); // Three-layer early drain binds once.
+            if(additive&&control==3)assert(capture.bindings==2); // Opaque erasure only needs the emission plane.
             if(mask){IDirect3DSurface9* maskSurface=nullptr;ok(mask->GetSurfaceLevel(0,&maskSurface));coverage=pixels(maskSurface);maskSurface->Release();}
             else coverage.assign(N*N*4,0);
             if(!additive&&control==4)for(unsigned y=0;y<N;++y)for(unsigned x=0;x<N;++x){const float value=coverage[(y*N+x)*4+2]/255.f;
@@ -166,7 +178,19 @@ int main(int argc,char** argv){
             }
             ok(outputStage->UnlockRect());
             for(unsigned s=0;s<16;++s)ok(d->SetTexture(s,nullptr));for(auto* t:owned)t->Release();
-            capture.colorWrite(output);assert(control>=6&&additive?!capture.active():capture.active());capture.colorWrite(target);assert(!capture.active()&&!capture.texture(d,target));
+            capture.colorWrite(output);assert(control>=6&&additive?!capture.active():capture.active());
+            if(ms&&allowMsaa&&sm==1&&blend==0&&alpha==.25f&&layers==1&&control==0){
+                const unsigned copies=capture.resolveCopies();
+                baseState();ok(d->SetRenderTarget(0,target));ok(d->SetPixelShader(nativeShader));
+                ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE));ok(d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_SRCALPHA));
+                ok(d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_INVSRCALPHA));
+                const float next[]={.2f,.1f,.04f,.5f};ok(d->SetPixelShaderConstantF(0,next,1));
+                ok(d->BeginScene());ok(capture.draw(d,Write::Alpha,[&]{return quad(.5f);}));ok(d->EndScene());
+                assert(capture.aoTexture(d,target)==mask&&capture.resolveCopies()==copies+1);
+                IDirect3DSurface9* refreshed=nullptr;ok(mask->GetSurfaceLevel(0,&refreshed));
+                assert(pixels(refreshed)[2]>coverage[2]);refreshed->Release();
+            }
+            capture.colorWrite(target);assert(!capture.active()&&!capture.texture(d,target));
         }
         capture.endFrame();depth->Release();aux->Release();auxResolve->Release();if(ms)target->Release();
     }
@@ -196,6 +220,24 @@ int main(int argc,char** argv){
     }
     blur->Release();assert(aoCases==16);
     std::printf("AO_ALPHA_ORDER_PASS cases=%u straight/premultiplied lit alpha below AO; unlit coverage applied once\n",aoCases);
+    struct PixelCalls:ForwardIDirect3DDevice9{
+        using ForwardIDirect3DDevice9::ForwardIDirect3DDevice9;
+        unsigned sets=0,primaryReads=0,auxiliaryMaskSets=0;
+        bool failNext=false;
+        HRESULT STDMETHODCALLTYPE SetPixelShader(IDirect3DPixelShader9* shader)override{
+            ++sets;
+            if(failNext){failNext=false;return E_FAIL;}
+            return real->SetPixelShader(shader);
+        }
+        HRESULT STDMETHODCALLTYPE GetRenderTarget(DWORD slot,IDirect3DSurface9** surface)override{
+            primaryReads+=slot==0;
+            return real->GetRenderTarget(slot,surface);
+        }
+        HRESULT STDMETHODCALLTYPE SetRenderState(D3DRENDERSTATETYPE state,DWORD value)override{
+            auxiliaryMaskSets+=state==D3DRS_COLORWRITEENABLE1||state==D3DRS_COLORWRITEENABLE2||state==D3DRS_COLORWRITEENABLE3;
+            return real->SetRenderState(state,value);
+        }
+    } calls(d);
     for(unsigned sm=0;sm<2;++sm)for(bool alphaFirst:{false,true})for(bool batch:{false,true})for(unsigned modulate=0;modulate<4;++modulate){
         capture.endFrame();std::vector<unsigned char> reference;float expected[3]={};
         for(bool tracked:{false,true}){
@@ -203,12 +245,16 @@ int main(int argc,char** argv){
             ok(d->SetRenderState(D3DRS_ZENABLE,FALSE));ok(d->SetRenderState(D3DRS_ZWRITEENABLE,FALSE));ok(d->SetPixelShader(native[sm]));ok(d->Clear(0,nullptr,D3DCLEAR_TARGET,0x202020,1,0));
             ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE));ok(d->SetRenderState(D3DRS_BLENDOP,D3DBLENDOP_ADD));ok(d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_SRCALPHA));ok(d->BeginScene());
             for(unsigned layer=0;layer<2;++layer){const bool alpha=(layer==0)==alphaFirst;const float rgba[]={alpha?.2f:.3f,alpha?.1f:.15f,alpha?.05f:.04f,alpha?.4f:.5f};ok(d->SetPixelShaderConstantF(0,rgba,1));ok(d->SetRenderState(D3DRS_DESTBLEND,alpha?D3DBLEND_INVSRCALPHA:D3DBLEND_ONE));
-                auto draw=[&]{return quad(.5f);};ok(tracked?capture.draw(d,alpha?Write::Alpha:Write::Additive,draw,batch):draw());}
+                auto draw=[&]{return quad(.5f);};const unsigned before=calls.sets,reads=calls.primaryReads,masks=calls.auxiliaryMaskSets;
+                ok(tracked?capture.draw(&calls,alpha?Write::Alpha:Write::Additive,draw,batch):draw());
+                assert(calls.sets-before==(tracked?2u:0u));
+                assert(calls.primaryReads-reads==unsigned(tracked)&&calls.auxiliaryMaskSets==masks);}
             if(modulate){const float tint[]={.25f,.5f,.75f,.6f};ok(d->SetPixelShaderConstantF(0,tint,1));
                 ok(d->SetRenderState(D3DRS_SRCBLEND,modulate==2?D3DBLEND_ZERO:D3DBLEND_DESTCOLOR));ok(d->SetRenderState(D3DRS_DESTBLEND,modulate==1?D3DBLEND_ZERO:D3DBLEND_SRCCOLOR));
-                auto draw=[&]{return quad(.5f);};ok(tracked?capture.draw(d,Write::Modulate,draw,batch):draw());}
+                auto draw=[&]{return quad(.5f);};ok(tracked?capture.draw(&calls,Write::Modulate,draw,batch):draw());}
             capture.endBatch();ok(d->EndScene());const auto actual=pixels(surface);if(tracked)assert(actual==reference);else reference=actual;
         }
+        assert(capture.pairedDraws==unsigned(!alphaFirst));
         auto* mask=capture.texture(d,surface);assert(mask&&capture.hasEmission());IDirect3DSurface9* ms=nullptr;ok(mask->GetSurfaceLevel(0,&ms));const auto value=pixels(ms);ms->Release();
         const float glow[]={.3f,.15f,.04f},tint[]={.25f,.5f,.75f};
         for(unsigned k=0;k<3;++k){expected[k]=std::round(glow[k]*.5f*255)/255;if(!alphaFirst)expected[k]=std::round(expected[k]*.6f*255)/255;
@@ -217,6 +263,33 @@ int main(int argc,char** argv){
         // Removing an original program invalidates variants chained through its
         // coverage shader before their COM addresses can be reused.
         capture.forget(native[sm]);++mixed;
+    }
+    for(Write write:{Write::Alpha,Write::Additive}){
+        capture.endFrame();baseState();ok(d->SetRenderTarget(0,surface));ok(d->SetPixelShader(native[1]));
+        ok(d->SetRenderState(D3DRS_COLORWRITEENABLE1,D3DCOLORWRITEENABLE_RED));ok(d->BeginScene());
+        const unsigned masks=calls.auxiliaryMaskSets;
+        ok(capture.draw(&calls,write,[&]{
+            DWORD color=0;ok(d->GetRenderState(D3DRS_COLORWRITEENABLE1,&color));
+            assert(color==(write==Write::Alpha?3u:7u));return quad(.5f);
+        }));
+        DWORD restored=0;ok(d->GetRenderState(D3DRS_COLORWRITEENABLE1,&restored));assert(restored==D3DCOLORWRITEENABLE_RED);
+        assert(calls.auxiliaryMaskSets-masks==2&&capture.writeMaskOverrides()==1);
+        ok(d->EndScene());ok(d->SetRenderState(D3DRS_COLORWRITEENABLE1,15));
+    }
+    for(bool batch:{false,true}){
+        capture.endFrame();baseState();ok(d->SetRenderTarget(0,surface));ok(d->SetPixelShader(native[1]));
+        ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE));ok(d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_SRCALPHA));
+        ok(d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_ONE));ok(d->BeginScene());
+        ok(capture.draw(&calls,Write::Additive,[&]{return quad(.5f);},batch));
+        ok(d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_INVSRCALPHA));calls.failNext=true;
+        unsigned submits=0;
+        ok(capture.draw(&calls,Write::Alpha,[&]{
+            ++submits;
+            IDirect3DPixelShader9* bound=nullptr;ok(d->GetPixelShader(&bound));assert(bound==native[1]);bound->Release();
+            for(unsigned slot:{1u,2u}){IDirect3DSurface9* extra=nullptr;assert(d->GetRenderTarget(slot,&extra)==D3DERR_NOTFOUND);}
+            return quad(.5f);
+        },batch));
+        ok(d->EndScene());assert(submits==1&&!capture.active()&&!calls.failNext);
     }
     assert(negativeControls>0&&bannerCounterfactuals>0&&projectedCounterfactuals>0);std::printf("EFFECT_COVERAGE_PASS native=%u composites=%u mixedOrder=%u negativeControls=%u maxError=%g mrtMsaa=%u bannerCounterfactuals=%u projectedCounterfactuals=%u bannerLift=%g sm2 sm3 msaa0 msaa2 alpha premultiplied additive depth alphaTest opaqueOverwrite modulate modulate2x litAlphaErasesProportionally litBannerReceivesFog oldBlanketAlphaDarkControl projectedShadowBelowFog blackZeroEmission nativePixelsExact oneDrawPerInput batchedReplay opaqueOnlyNoDeviceCalls\n",cases,compositeCases,mixed,negativeControls,worst,unsigned(allowMsaa),bannerCounterfactuals,projectedCounterfactuals,bannerLift);
     capture.reset();coverageBenchmark(d,native[1]);for(auto* p:native)p->Release();for(auto* p:nativeMrt)p->Release();for(auto* p:composites)p->Release();surface->Release();stage->Release();output->Release();outputStage->Release();scene->Release();d->Release();api->Release();FreeLibrary(module);DestroyWindow(window);

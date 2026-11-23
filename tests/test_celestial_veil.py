@@ -4,6 +4,8 @@
 sequence (test_celestial_veil.cpp), plus static checks of the call site order
 (after water, before UI, gated like the discs), the raw-depth classification,
 the halo's source-depth occlusion and the slot budgets. No device or game."""
+
+from source_units import source_text
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
 import hashlib,json,os,subprocess,tempfile
@@ -19,7 +21,7 @@ assert native.startswith('PASS'),native
 
 def body(source,start):
     i=source.index(start);return source[i:source.index('\n}\n',i)+3]
-renderer=fp.src('renderer.cpp').read_text()
+renderer=source_text(fp.src('renderer.cpp'))
 effects=renderer[renderer.index('    void renderEffects() {'):renderer.index('template<class Capture> void prepareDraw(')]
 order=['if (applied || !enabled || failed || !projectionValid) return;',
        'const bool celestial=celestialDiscs&&world&&debugMode==0&&worldDebug==0;',

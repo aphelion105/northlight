@@ -1,6 +1,9 @@
 #include "effect_coverage.h"
 #include "screen_quad.h"
 #pragma once
+#include "capture_work_audit.h"
+#include "adt_draw_bounds.h"
+#include <cstdlib>
 #include "utf8_path.h"
 #include "material_profile.h"
 #include "settings_schema.h"
@@ -8,11 +11,12 @@
 #include "weather_shelter.h"
 #include "stream_hooks.h"
 #include "weather_memory.h"
-#include "dither_noise.h"
+#include "world_screen_fallbacks.h"
 #include "name_stencil.h"
 #include "world_context.h"
 #include "effect_switches.h"
 #include "frame_requirements.h"
+#include "frame_parity_clock.h"
 #include "world_camera.h"
 #include "wmo_context.h"
 #include "world_environment.h"
@@ -28,6 +32,8 @@
 #include "night_floor.h"
 #include "regional_fog.h"
 #include "regional_fog_cache.h"
+#include "world_fog_field.h"
+#include "world_moon_floor_fog.h"
 #include "regional_shadow_range.h"
 #include "celestial_profiles.h"
 #if NORTHLIGHT_DEV_TUNING
@@ -44,13 +50,19 @@
 #include "particle_uploads.h"
 #include "equipment_light_proof.h"
 #include "native_direct_ownership.h"
+#include "native_point_submit.h"
 #include "native_local_light_renderer.h"
 #include "local_light_scissor.h"
 #include "local_light_batches.h"
 #include "local_light_trace.h"
 #include "point_light_shadow.h"
+#include "world_point_targets.h"
+#include "world_point_lighting.h"
+#include "point_pipeline_warmup.h"
+#include "point_replay_casters.h"
+#include "point_replay_indices.h"
 #include "point_transmission_filter.h"
-#include "point_shadow_face_targets.h"
+#include "point_shadow_face_pass.h"
 #include "weather_lens_heat.h"
 #include "fog_ambient.h"
 #include "local_light_compiled_shaders.h"
@@ -65,7 +77,8 @@
 #include "shadow_transition.h"
 #include "shadow_transition_math.h"
 #include "shadow_transition_compiled_shaders.h"
-#include "patch_terrain_shadow_coverage.h"
+#include "world_shadow_transition.h"
+#include "terrain_shadow_programs.h"
 #include "world_mesh_plan.h"
 #include "world_streaming.h"
 #include "world_mesh_pages.h"
@@ -87,10 +100,7 @@
 #include "world_probe_cache.h"
 #include "world_probe_progress.h"
 #include "probe_cascade.h"
-#include "probe_activation.h"
-#include "probe_blend.h" // 0.3.197
-#include "probe_texture_upload.h"
-#include "patch_terrain_shadow.h"
+#include "world_probe_atlas.h"
 #include "celestial_time_warp.h"
 #include "cascade_anchor.h"
 #include "actor_shadow_map.h" // 0.3.209 (task 29)
@@ -102,6 +112,7 @@
 #include "shadow_bounds.h"
 #include "shadow_refresh_budget.h"
 #include "directional_shadow_batches.h"
+#include "directional_cache_mesh.h"
 #include "static_cache_slices.h"
 #include "terrain_shadow_candidates.h"
 #include "legacy_fog.h"
@@ -125,27 +136,36 @@
 #include "capture_phase_profile.h"
 #include "world_compiled_shaders.h"
 #include "fog_volume.h"
+#include "world_fog_screen.h"
+#include "world_regional_fog_gpu.h"
+#include "world_atmosphere_commands.h"
+#include "world_forever_fog_shaders.h"
 #include "material_pixel_audit.h"
 #include "patch_shadow_shader.h"
 #include "model_normal_slice.h"
 #include "shadow_alpha.h"
 #include "shadow_alpha_draw.h"
-#include "shadow_alpha_target.h"
+#include "shadow_alpha_replay.h"
 #include "terrain_capture_bounds.h"
 #include "draw_snapshot.h"
+#include "point_rigid_pose_rows.h"
+#include "point_opaque_face_cache.h"
+#include "point_mixed_face_cache.h"
+#include "shadow_palette_pass.h"
 #include "gpu_scene.h"
-#include "replay_bulk_layout.h"
+#include "world_replay_buffers.h"
+#include "live_terrain_indices.h"
 #include "dynamic_ring.h"
 #include "lock_meter.h"
 #include "replay_copies.h"
 #include "vertex_declaration_cache.h"
-#include "replay_draw_state.h"
+#include "shadow_replay_submit.h"
 #include "render_thread_probe.h"
 #include "actor_deformation.h"
 #include "sampled_vertex_cache.h"
 #include "prepare_worker.h"
 #include "shadow_fate.h"
-#include "actor_texture.h"
+#include "actor_texture_read.h"
 #include "actor_scene_job.h"
 #include "worker_actor_memo.h"
 #include <set>
@@ -171,7 +191,7 @@
 #include "static_shadow_dedup.h"
 #include "static_m2_dedup.h"
 #include "static_shadow_coverage.h"
-#include "celestial_terrain.h"
+#include "celestial_terrain_pass.h"
 #include "quality_settings.h"
 #include "diagnostics_switch.h"
 #include "memory_switches.h"
@@ -182,35 +202,24 @@
 #include <cstdarg>
 #include "rigid_memory.h"
 
-// 0.3.212 (task 32): the name mask's composite bind, shared by WorldComposite and the renderer's legacy composite. With a depth-stencil holding this frame's name marks the quad draws with it bound and
-// kComposite set (no depth test, stencil NOTEQUAL on the mark bit, nothing written), so marked pixels keep the game's colour; the replaced depth-stencil and the three states that matter after it (STENCILENABLE,
-// ZENABLE, ZWRITEENABLE; the other stencil states have no effect while STENCILENABLE is off) are restored when the scope ends. No marks (null): no calls. No depth bound before is the normal case:
-// GetDepthStencilSurface then returns D3DERR_NOTFOUND and the previous depth is restored as null.
-struct NameMaskCompositeBind {
-    IDirect3DDevice9* device;IDirect3DSurface9* previousDepth=nullptr;DWORD previous[3]={};bool bound=false;
-    static constexpr D3DRENDERSTATETYPE kRestored[3]={D3DRS_STENCILENABLE,D3DRS_ZENABLE,D3DRS_ZWRITEENABLE};
-    NameMaskCompositeBind(IDirect3DDevice9* d,IDirect3DSurface9* maskDepth,DWORD bits=NorthlightNameStencil::kBit,DWORD reference=0):device(d){
-        if(!maskDepth)return;
-        const HRESULT got=device->GetDepthStencilSurface(&previousDepth);
-        if((SUCCEEDED(got)||got==D3DERR_NOTFOUND)&&SUCCEEDED(device->SetDepthStencilSurface(maskDepth))){
-            bound=true;for(unsigned i=0;i<3;++i)device->GetRenderState(kRestored[i],&previous[i]);
-            for(const auto& set:NorthlightNameStencil::kComposite)device->SetRenderState(D3DRENDERSTATETYPE(set.state),set.value);
-            device->SetRenderState(D3DRS_STENCILFUNC,D3DCMP_EQUAL);device->SetRenderState(D3DRS_STENCILREF,reference);device->SetRenderState(D3DRS_STENCILMASK,bits);
-        }
-    }
-    ~NameMaskCompositeBind(){
-        if(bound){for(unsigned i=0;i<3;++i)device->SetRenderState(kRestored[i],previous[i]);device->SetDepthStencilSurface(previousDepth);}
-        if(previousDepth)previousDepth->Release();
-    }
-    NameMaskCompositeBind(const NameMaskCompositeBind&)=delete;NameMaskCompositeBind& operator=(const NameMaskCompositeBind&)=delete;
-};
+#include "world_composite.h"
+#include "world_light_history.h"
+#include "world_normals_pass.h"
+#include "world_screen_lighting.h"
+#include "world_local_lighting.h"
+#include "world_actor_shadows.h"
+#include "world_flash_shadows.h"
+#include "world_directional_visibility.h"
+#include "world_directional_targets.h"
+#include "world_shadow_programs.h"
+#include "world_replay_probe_pass.h"
+#include "directional_gpu_pass.h"
 
 // Included after SavedState. Worker never accesses D3D or game memory.
-class WorldRenderer {
-    IDirect3DPixelShader9 *hdrFinalPS=nullptr,*hdrUnlitPS=nullptr,*hdrMaterialPS=nullptr;
-    IDirect3DPixelShader9* hdrCombinedPS=nullptr;bool hdrCombineTried=false;
-    IDirect3DPixelShader9* hdrBasePS=nullptr,*hdrAOBasePS=nullptr;bool hdrBaseTried=false,hdrAOBaseTried=false,hdrBaseAllowed=false;
-    D3DFORMAT colorStorageFormat=D3DFMT_UNKNOWN;
+#include "world_publication.h"
+#include "world_mesh_stage.h"
+class WorldRenderer : private NorthlightWorldPublication::State {
+    NorthlightWorldComposite composite;
     friend struct WorldScreenEffectsTest;
     friend struct PipelineOffTest;
     friend struct TerrainCaptureDemandTest;
@@ -220,50 +229,11 @@ class WorldRenderer {
     friend struct GrassShadowTest;
     friend struct PointTerrainCoverageTest;
     friend struct FlashShadowTest;
-    using V=NorthlightGI::Vec3;
-    /* 0.3.137: render-thread commit data built by the GI worker from the same
-       immutable plan (see PreparedCommitData). Null fields fall back to the
-       0.3.136 render-thread copies. */
-    using FixedChunks=std::set<std::pair<int,int>>;
-    struct PreparedCommit {const void* plan=nullptr; /* identity of the source plan; checked at commit */
-        std::shared_ptr<const StaticShadow::OwnerSet> owners;std::shared_ptr<const FixedChunks> fixed;};
-    static constexpr bool PreparedCommitData=StaticShadow::PreparedCoveredOwners;
-    struct Snapshot {
-        std::shared_ptr<NorthlightGI::BVH> bvh;
-        std::shared_ptr<NorthlightWorldMesh::WorldMeshUploadPlan> meshPlan;
-        std::vector<NorthlightGI::ProbeAtlasEntry> atlas;
-        std::shared_ptr<const std::vector<NorthlightGI::ProbeAtlasEntry>> coarseAtlas;
-        std::vector<NorthlightLocalLights::Light> localLights;
-        std::shared_ptr<const NorthlightLightAttachments::Records> lightAttachments;
-        V origin, center;
-        std::string map, message;
-        uint64_t serial=0;
-        std::shared_ptr<const NorthlightRegionalFog::Field> fogField;
-        unsigned validProbes=0;
-        uint64_t requestId=0;
-        DWORD requestedAt=0,queueMs=0,geometryMs=0,actorMs=0,solveMs=0;
-        double actorWorkMs=0,solveWorkMs=0;
-        double actorDecodeMs=0,actorPoseMs=0,actorHashMs=0,actorBvhMs=0;
-        unsigned actorTexturesDecoded=0;size_t actorTextureEncodedBytes=0;
-        size_t retirementBytes=0;
-        std::shared_ptr<const PreparedCommit> prepared; /* paired with meshPlan */
-        unsigned reusedProbes=0,solvedProbes=0,superseded=0,dynamicReused=0,dynamicSolved=0;
-        unsigned processedProbes=0,retargeted=0;
-        uint64_t lightingGeneration=0;
-        NorthlightGI::MovingSolveStats movingStats;size_t pathRecordBytes=0;
-        NorthlightGI::ProbeRelightCache::Stats relightStats;
-        NorthlightGI::ProbeVisibilityCache::Stats visibilityStats;
-        bool staticOnly=false,partial=false;
-    };
-    // probeCenter (0.3.153 GIProbeAhead): probe window origin, solve order and move trigger; geometryCenter (orbit pivot + bounded travel lead):
-    // the region build centre and its refresh trigger; camera (eye) for everything else, including every coverage check.
-    struct Request { std::shared_ptr<const NorthlightActorGeometry::ActorJob> actorJob;uint64_t actorSerial=0; V camera,probeCenter,geometryCenter; NorthlightGI::Lighting light; std::string map; uint64_t id=0,baseId=0;DWORD queuedAt=0;unsigned reason=0;bool enabled=true,giEnabled=true,fogEnabled=true,auroraActive=false,menu=false;NorthlightNativeLights::Snapshot menuLights; };
     std::shared_ptr<const NorthlightAuroraSource::Snapshot> auroraSource;
     std::string auroraSourceMap;
     std::shared_ptr<NorthlightGpuScene::Scene> gpuScene;
     IDirect3DDevice9* d;
-    NorthlightShadowAlpha::Targets shadowAlphaTargets{d};
-    DWORD shadowAlphaRetryAt=0;
+    NorthlightShadowAlpha::ReplayAlpha shadowReplayAlpha{d};
     NorthlightMaterialPixelAudit materialPixelAudit{d};
     std::string root;
     std::shared_ptr<NorthlightGI::SceneSourceCache> sharedSceneSources;
@@ -281,14 +251,9 @@ class WorldRenderer {
     bool staticMemoryExact=true;
     NorthlightMemoryAdmission::Probe admissionProbe;
     unsigned staticDrawFailures=0,staticDedupSkipped=0,staticDedupCursor=0,staticDedupAttempts=0,staticDedupMatches=0;
-    std::thread worker;
-    std::mutex mutex;
-    std::condition_variable wake;
-    bool stopping=false,pending=false;
     NorthlightGeometryMemory::StallWatch generationStall; /* 0.3.156, guarded by mutex: builder marks, render thread reports */
     static constexpr uint32_t GenerationStallLogMs=10000;
-    std::atomic<bool> workerBusy{false};DWORD actorRequestTick=0;
-    std::atomic<unsigned> workerFaultCode{0};
+    DWORD actorRequestTick=0;
     std::atomic<unsigned> geometryBuildEstimateMs{1000}; /* 0.3.169: builder's smoothed build time, read by the render thread's lead */
     bool settingsRequestDirty=false,pipelineActive=true;
 public:
@@ -306,11 +271,11 @@ public:
         const bool shadowTuningChanged=quality.shadowStrength!=effective.shadowStrength||quality.shadowSoftness!=effective.shadowSoftness||quality.shadowContactRadius!=effective.shadowContactRadius;
         const bool nearIntervalChanged=quality.nearShadowInterval!=effective.nearShadowInterval;
         const bool celestialChanged=quality.celestialStyle!=effective.celestialStyle||quality.celestialEffects!=effective.celestialEffects;
-        if(quality.godrays!=effective.godrays){fogHistoryValid=false;fogVolume.valid=false;}
-        if(celestialChanged){celestialLightMotion.reset();temporalValid=fogHistoryValid=false;}
+        if(quality.godrays!=effective.godrays){fogScreen.invalidateHistory();fogVolume.valid=false;}
+        if(celestialChanged){celestialLightMotion.reset();fogScreen.invalidateHistory();history.invalidate();}
         const bool directions=celestialChanged||quality.shadowDirectionSteps!=effective.shadowDirectionSteps||quality.shadowProvider!=effective.shadowProvider;
         const bool giToggle=quality.gi!=effective.gi||quality.worldShadows!=effective.worldShadows||quality.worldFog!=effective.worldFog;
-        if(quality.disableOriginalTerrainShadows!=effective.disableOriginalTerrainShadows)temporalValid=false;
+        if(quality.disableOriginalTerrainShadows!=effective.disableOriginalTerrainShadows)history.invalidate();
         for(const auto& k:NorthlightQuality::Keys)if(NorthlightSettings::liveQuality(k.name))k.set(quality,k.get(effective));
         quality.preset=effective.preset;settingsRequestDirty=settingsRequestDirty||giRequest;
         if(giToggle)setEffects(requestedEffects); /* component hotkeys remain independent of the saved menu state */
@@ -322,10 +287,10 @@ public:
         logf("PROFILE effective diagnostics=%u renderProfile=%u replayProbe=%u period=%u cpuGpuAdditive=0",unsigned(NorthlightDiagnostics::enabled()),unsigned(NorthlightRenderThreadProbe::profiling()),unsigned(NorthlightRenderThreadProbe::probing()),NorthlightRenderThreadProbe::profiling()?NorthlightRenderThreadProbe::ProfilePeriod:NorthlightRenderThreadProbe::SamplePeriod);
         NorthlightWorldContext::SelfReadStats::timed.store(NorthlightQuality::renderProfile(quality),std::memory_order_relaxed);
         if(actorResources)actorSettingsChanged();
-        if(directions){invalidateShadowCache(true);temporalValid=fogHistoryValid=false;shadowsComposited=shadowFrameReady=false;}
-        if(shadowTuningChanged)temporalValid=false;
-        if(softChanged){temporalValid=false;if(!quality.softShadows)releaseSoftShadows();}
-        if(nearIntervalChanged){temporalValid=false;releaseNearEnvironment();}
+        if(directions){invalidateShadowCache(true);fogScreen.invalidateHistory();history.invalidate();shadowsComposited=shadowFrameReady=false;}
+        if(shadowTuningChanged)history.invalidate();
+        if(softChanged){history.invalidate();if(!quality.softShadows)releaseSoftShadows();}
+        if(nearIntervalChanged){history.invalidate();releaseNearEnvironment();}
         staticPrebuild.steps=float(quality.shadowDirectionSteps);
         celestialProfiles=std::move(profiles);paletteFrameValid=false;
     }
@@ -338,23 +303,13 @@ public:
     }
     // 0.3.175 (S3): the renderer's effects buckets (RenderProfile sample frames; marks are no-ops otherwise).
     void setEffectsBuckets(NorthlightEffectsBuckets::Frame* frame){effectsBuckets=frame;}
-    // 0.3.175 (S1): the mask draws this generation's terrain list (terrainBatchList, rebuilt at the
-    // mesh commit, never here) in merged runs (NorthlightCelestialTerrain::forEachRun: exact). A list
-    // of another generation falls back to the whole batch list, one run per batch as before.
     bool drawCelestialTerrain(unsigned body,const float* matrix){
         if(!celestialTerrainGeneration())return false;
         const int64_t started=NorthlightRenderThreadProbe::profiling()?QpcClock::now():0;
-        UINT page=UINT_MAX;NorthlightCelestialTerrain::RunStats runs;
-        const NorthlightCelestialTerrain::Frustum frustum(matrix);
-        auto accept=[&](const Batch& b){return b.terrain&&!frustum.reject(b.boundsLow,b.boundsHigh);};
-        auto emit=[&](const NorthlightCelestialTerrain::Run& r){Batch key;key.page=r.page;
-            return bindMeshPage(key,page)&&SUCCEEDED(d->DrawIndexedPrimitive(D3DPT_TRIANGLELIST,0,r.minVertex,UINT(r.vertexEnd-r.minVertex),r.start,r.count));};
+        NorthlightCelestialTerrain::RunStats runs;
         const bool listed=terrainBatchListGeneration==meshGeneration&&terrainBatchListSize==batches.size();
-        bool ok;
-        if(listed)ok=NorthlightCelestialTerrain::forEachRun(batches,terrainBatchList,NorthlightWorldMeshPages::PageIndexLimit,accept,emit,runs);
-        else{ok=true;for(const auto& b:batches){if(!accept(b))continue;++runs.accepted;++runs.runs;runs.triangles+=b.count;
-            if(!bindMeshPage(b,page)||FAILED(d->DrawIndexedPrimitive(D3DPT_TRIANGLELIST,0,b.minVertex,b.vertexCount,b.start,b.count))){ok=false;break;}}}
-        if(!ok)return false;
+        if(!NorthlightCelestialTerrain::submitMask(d,batches,terrainBatchList,listed,NorthlightWorldMeshPages::PageIndexLimit,matrix,
+            [&](UINT page,UINT& bound){Batch key;key.page=page;return bindMeshPage(key,bound);},runs))return false;
         auto& m=celestialMask;++m.redraws[body&1];m.accepted=runs.accepted;m.runs=runs.runs;m.triangles=runs.triangles;m.candidates=listed?terrainBatchList.size():batches.size();m.listed=listed;
         if(started&&captureFrequency.QuadPart>0){m.ms=double(QpcClock::now()-started)*1000.0/double(captureFrequency.QuadPart);m.peakMs=std::max(m.peakMs,m.ms);}
         const DWORD now=GetTickCount();
@@ -371,9 +326,7 @@ public:
         return code==1?"GI worker allocation failed":code==2?"GI worker exception":code==3?"GI worker unknown exception":"";
     }
 private:
-    Request request,lastRequest;
     bool menuDomain=false;std::string menuIdentity;NorthlightMenu::Snapshot menuSnapshot;NorthlightNativeLights::Snapshot menuLights;
-    std::shared_ptr<Snapshot> published,active;
     std::weak_ptr<Snapshot> observedPublication;
     std::string loggedCacheMessage; // last logged "WORLD cache" message: uncached maps republish the same error per GI request, log it once
     std::weak_ptr<NorthlightGI::BVH> uploaded; // GPU commit must not retain the CPU scene.
@@ -386,11 +339,15 @@ private:
     uint64_t meshGeneration=0; // committed mesh identity; content signatures decide shadow reuse
     NorthlightEffectsBuckets::Frame* effectsBuckets=nullptr;
     void bucket(NorthlightEffectsBuckets::Bucket b){if(effectsBuckets)effectsBuckets->mark(b);}
-    NorthlightProbeActivation probeActivation,coarseActivation;
-    NorthlightProbeBlend::Mirror probeBlend,coarseBlend; // 0.3.197: same-key re-publication blend (probePrev, s8 in the GI pass)
-    NorthlightProbeUpload::LocalVisibilityMirror probeLocalMirror;
     unsigned probeBlendPublishes=0,probeBlendSlots=0; // 0.3.197: per LOCAL log interval
     bool valid=false,failed=false,reportedContext=false;
+    std::uint64_t materialLightRevision=0;
+    struct AuthoredLightingMemo {
+        std::uint64_t revision=~std::uint64_t{0};
+        float bank[8]{};
+        bool authored=false;
+        unsigned roomLevel=0;
+    } authoredLightingMemo[2];
     unsigned traceContext=0; /* 0.3.200 (frame trace): this frame's context path: 0 none, 1 terrain+global light, 2 terrain native light (camera disagreed), 3 WMO */
     unsigned contextRejects=0,frames=0,slowReports=0;
     DWORD diagnosticTick=0;
@@ -407,24 +364,11 @@ private:
     std::unique_ptr<NorthlightLightingCapture::Capture> nativeDiagnosticCapture;
     std::string nativeDiagnosticMap;
     unsigned nativeDiagnosticWmoImages=0,nativeDiagnosticTerrainDraws=0;
-    IDirect3DTexture9* regionalFogTexture=nullptr;
-    IDirect3DTexture9* fogHeightTexture=nullptr;bool fogHeightReady=false;
-    std::array<float,3> fogGlobalHeights{};
-    IDirect3DTexture9* neutralWhite=nullptr; // 0.3.209 (task 29): 1x1 white on s12 (ActorVisibility) for WorldLighting on frames without an ActorShadow pass
-    IDirect3DTexture9* neutralZero=nullptr; // 0.3.202 (rain): 1x1 (0,0,0,0) on s13 (RainMask) when no mask was drawn this frame
-    IDirect3DTexture9* ditherNoise=nullptr; // WorldComposite s2: 64x64 signed blue-noise offsets (dither_noise.h); neutralZero when missing
+    NorthlightWorldFogField regionalFog;
+    NorthlightWorldScreenFallbacks screenFallbacks;
     IDirect3DTexture9* effectCoverage=nullptr; // Frame-local native overlay coverage, borrowed from the proxy.
     bool effectEmission=false;
-    bool unlitShaderRefused=false;IDirect3DSurface9* nameMaskDepth=nullptr,*unlitMaskDepth=nullptr; // 0.3.212 (task 32): non-owning, set per frame before render(), consumed by the composite quad
-    IDirect3DSurface9* prelitMaskDepth=nullptr;
-    IDirect3DSurface9* authoredMaskDepth=nullptr;
-    unsigned authoredRoomLevels=1;
-    IDirect3DPixelShader9 *prelitPS=nullptr,*hdrPrelitPS=nullptr;
-    bool prelitShaderRefused=false;
-    IDirect3DTexture9* prelitDaylight=nullptr;IDirect3DSurface9* prelitDaylightSurface=nullptr;DWORD prelitDaylightRetryAt=0;
     IDirect3DTexture9* rainMask=nullptr; // 0.3.202 (rain): the proxy's rain streak alpha mask (non-owning, set per frame, cleared after the composite)
-    IDirect3DTexture9* neutralAO=nullptr; // 0.3.174: 1x1 (0,0,0,1) on s10 when the proxy does not fold its AO/bloom
-    std::shared_ptr<const NorthlightRegionalFog::Field> uploadedFogField;std::string uploadedFogMap;
     bool fogGeometryReady=false;
     NorthlightWorldContext::TerrainContext context;
     NorthlightCelestial::Context celestial,celestialLight;
@@ -542,25 +486,21 @@ private:
     std::unordered_map<IDirect3DPixelShader9*,FogShader> fogShaders;
     unsigned fogReports=0;
     float projection[3]={1,1,1};
-    IDirect3DTexture9 *shadow[4]={},*probe[5]={},*probePrev=nullptr,*probeLocal=nullptr,*light=nullptr,*fog=nullptr,*fogBlurred=nullptr,*color=nullptr,*baselineLight=nullptr;
-    IDirect3DTexture9 *normalBuffer=nullptr;IDirect3DSurface9* normalSurface=nullptr;
-    bool normalsNoDistanceRefused=false;
-    IDirect3DPixelShader9* lightingUnshadowedPS=nullptr;bool lightingUnshadowedRefused=false;
-    IDirect3DPixelShader9* lightingUnshadowedGIPS=nullptr;bool lightingUnshadowedGIRefused=false;
-    IDirect3DTexture9 *temporalLight[2]={},*temporalDepth[2]={};IDirect3DSurface9 *temporalLightSurface[2]={},*temporalDepthSurface[2]={};
-    unsigned temporalIndex=0;bool temporalValid=false,temporalLighting=false,temporalGeometryReady=false;float previousView[16]={};V previousCamera;std::string temporalMap;
+    NorthlightWorldProbeAtlas probeAtlas;
+    NorthlightWorldNormalsPass worldNormals;
+    NorthlightWorldScreenLighting screenLighting;
+    NorthlightWorldLightHistory history;
+    bool temporalGeometryReady=false;
     bool traceHistory=false;DWORD traceHistoryTick=0,traceGeometryTick=0;unsigned traceHistoryCount=0,traceGeometryCount=0;
-    IDirect3DSurface9 *shadowSurface[4]={},*shadowDepth=nullptr,*lightSurface=nullptr,*fogSurface=nullptr,*fogBlurredSurface=nullptr,*colorSurface=nullptr,*baselineSurface=nullptr;
     // Static shadow cache: per (source,cascade) an R32F map with a 128-texel
     // margin holding static batches only, re-rendered when the snapped light
     // origin travels beyond the margin or the geometry/direction key changes.
     // Per frame only live terrain and replays are drawn (scratch) and united.
-    static constexpr UINT ShadowCacheMargin=128,ShadowCacheSize=1024+2*ShadowCacheMargin;
-    IDirect3DTexture9 *shadowCache[4]={},*shadowScratch=nullptr;
-    IDirect3DSurface9 *shadowCacheSurface[4]={},*shadowCacheDepth=nullptr,*shadowScratchSurface=nullptr;
-    // 0.3.209 (task 29): per-source actor shadow map (R32F 1024, moving casters only, shadows/actor_shadow_map.h) and the half-res visibility it feeds (A8R8G8B8: r sun, g moon; white = lit).
+    static constexpr UINT ShadowCacheMargin=NorthlightWorldDirectionalTargets::CacheMargin;
+    static constexpr UINT ShadowCacheSize=NorthlightWorldDirectionalTargets::CacheSize;
+    NorthlightWorldDirectionalTargets directionalMaps;
+    NorthlightWorldActorShadows actorMaps;
     // Actor maps and near replays share the current pose; the near environment alone may be retained.
-    IDirect3DTexture9 *actorShadow[2]={},*actorVisibility=nullptr,*actorTiles[2]={},*actorTilesMid=nullptr;IDirect3DSurface9 *actorShadowSurface[2]={},*actorVisibilitySurface=nullptr,*actorTilesSurface[2]={},*actorTilesMidSurface=nullptr;
     float actorMatrices[2][16]={};bool actorValid[2]={};unsigned actorCasterCount[2]={};float actorFogBounds[2][4]={{-1,-1,1,1},{-1,-1,1,1}};
     bool nearActorSkip[2]={}; /* final near map omits the current fine actor map's casters */
     NorthlightActorSide::Tracker actorSide[2]; /* diagnostics: which map each skinned caster went to, per source */
@@ -568,7 +508,7 @@ private:
     unsigned replayNearSize=0; /* diagnostics: the bounds job's near list of the last frame */
     unsigned long replayNearStops=0; /* diagnostics: near walks that ended on their budget share */
     V actorCenter[2];bool actorCenterValid[2]={}; /* leashed centre per source (actor_shadow_map.h leash) */unsigned long actorNearSkipped=0,actorDrawn=0;std::vector<uint32_t> actorReplays; /* the near loop's skipped replays: exactly what the actor map draws */DWORD actorShadowLogAt[2]={}; /* per source: the moon's line is not starved by the sun's timer */
-    IDirect3DPixelShader9* unionPS=nullptr;
+    NorthlightWorldShadowPrograms shadowPrograms;
     std::shared_ptr<const NorthlightLocalShadowSignature::Records> uploadedLocalShadowRecords;
     struct ShadowCacheKey {
         bool valid=false,localContentKnown=false;NorthlightWorldMath::ShadowFrame frame;V direction;
@@ -581,128 +521,11 @@ private:
 #include "world_shadow_transition.inl"
     DWORD shadowCacheLogAt=0,shadowPhaseLogAt=0;unsigned shadowCacheRenders=0,shadowCacheReuses=0,culledReplayDraws=0;
     unsigned long long replaySlotTested[4]={},replaySlotBounded[4]={},replaySlotCulled[4]={},replaySlotM2Skipped[4]={}; /* per source*2+cascade, 600-frame window */
-    // Static-model-only content changes redraw just the texels the changed
-    // slices can touch (old and new bounds), under an identical scissor, with the
-    // complete ordered draw list: per pixel this is the full redraw. false=0.3.135.
-    static constexpr bool StaticCacheDirtyRects=true;static constexpr long StaticCacheDirtyMargin=2,StaticCacheDirtyTile=64;static constexpr size_t StaticCacheDirtyMaxRects=8;
-    unsigned shadowCachePartialRenders=0,shadowCacheStaticFullRenders=0,shadowCachePartialSkippedDraws=0,shadowCachePartialRects=0;unsigned long long shadowCachePartialTexels=0;
-    // 0.3.151 StaticCacheSlices>1: per slot, a rect redraw in progress over several frames.
-    NorthlightStaticSlices::Cycle staticSlices[4];unsigned staticSliceBands=0,staticSliceRestarts=0;
-    std::vector<StaticShadow::CasterBounds> staticDirtyScratch;std::vector<NorthlightShadowBounds::TexelRect> staticDirtyFootprints,staticDirty;std::vector<D3DRECT> staticDirtyClears;std::vector<const NorthlightShadowBounds::TexelRect*> staticDirtyHits;std::vector<NorthlightShadowBounds::TexelRect> staticDirtyBounding;std::vector<size_t> staticDirtyCosts;
-    // 0.3.137 direction-step plan prebuild (static_plan_prebuild.h).
-    NorthlightStaticPrebuild::Scheduler staticPrebuild;V rawSourceDirections[2];
-    int staticScissorCaps=-1;unsigned staticDedupUncommitted=0;unsigned shadowCachePartialBounding=0,shadowCacheCostFull=0;unsigned long long shadowCachePartialCalls=0,shadowCachePartialFullCalls=0;
-    // 0.3.152: the buffers and counters of one dirty-rect evaluation: the render
-    // thread's members, or a kicked slot's StaticDirtyJob (on the plan worker).
-    struct DirtyWork {std::vector<StaticShadow::CasterBounds>& scratch;std::vector<NorthlightShadowBounds::TexelRect>& footprints;std::vector<NorthlightShadowBounds::TexelRect>& dirty;std::vector<NorthlightShadowBounds::TexelRect>& bounding;std::vector<size_t>& costs;
-        unsigned& boundingChoices;unsigned& costFull;unsigned long long& calls;unsigned long long& fullCalls;};
-    struct StaticDirtyJob {
-        bool eligible=false,ready=false,result=false;uint64_t frame=0;
-        std::vector<StaticShadow::CasterBounds> scratch;std::vector<NorthlightShadowBounds::TexelRect> footprints,dirty,bounding;std::vector<size_t> costs;
-        unsigned boundingChoices=0,costFull=0;unsigned long long calls=0,fullCalls=0;
-        DirtyWork work(){return {scratch,footprints,dirty,bounding,costs,boundingChoices,costFull,calls,fullCalls};}
-    };
-    StaticDirtyJob staticDirtyJobs[4];float staticSlotMatrix[4][16]={};unsigned long long staticDirtyJobsUsed=0;double staticKickMs=0; /* kickMs: render-thread kick incl. the first slot's prepare */
-    // R3: renderer-side inputs of a worker result (keys, batches, terrain chunks) change only
-    // after a settle; these writers also drop any result not used yet.
-    void dropStaticDirtyJobs(){for(auto& job:staticDirtyJobs)job.ready=false;}
-    // Disjoint texel rects covering every changed static slice (old and new).
-    // 0.3.152: a slot whose plan the plan worker built may already hold the result
-    // (same inputs, frozen since the kick: the slot's key, its plan, the batches).
-    bool staticDirtyRects(const ShadowCacheKey& key,const float* matrix,bool staticChanged=true){
-        staticDirty.clear();staticDirtyFootprints.clear();
-        if(staticScissorCaps<0){D3DCAPS9 caps{};staticScissorCaps=SUCCEEDED(d->GetDeviceCaps(&caps))&&(caps.RasterCaps&D3DPRASTERCAPS_SCISSORTEST)?1:0;}if(!staticScissorCaps)return false;
-        const ptrdiff_t slot=&key-shadowCacheKey;
-        if(slot>=0&&slot<4&&staticChanged){auto& job=staticDirtyJobs[slot];staticCasters.joinPlan(matrix);
-            if(job.ready&&job.frame==staticFrame&&staticCasters.kickedModeCurrent()&&!std::memcmp(staticSlotMatrix[slot],matrix,sizeof staticSlotMatrix[slot])){
-                job.ready=false;staticDirty.swap(job.dirty);shadowCachePartialBounding+=job.boundingChoices;shadowCacheCostFull+=job.costFull;shadowCachePartialCalls+=job.calls;shadowCachePartialFullCalls+=job.fullCalls;++staticDirtyJobsUsed;
-                return job.result;}}
-        return dirtyRectsFrom({staticDirtyScratch,staticDirtyFootprints,staticDirty,staticDirtyBounding,staticDirtyCosts,shadowCachePartialBounding,shadowCacheCostFull,shadowCachePartialCalls,shadowCachePartialFullCalls},
-            key,matrix,staticChanged,staticCasters.stats().instancing,staticCasters);
-    }
-    // The CPU part, for either thread. Plan: the GpuCache or the worker's detached
-    // view (same changedBounds/drawCalls).
-    template<class Plan> bool dirtyRectsFrom(DirtyWork w,const ShadowCacheKey& key,const float* matrix,bool staticChanged,bool instancing,const Plan& plan){
-        w.dirty.clear();w.footprints.clear();size_t models=0;
-        w.scratch.clear();
-        if(staticChanged){try {if(!plan.changedBounds(matrix,key.staticContent,w.scratch,models))return false;}catch(...){return false;}}
-        // Unchanged static content is redrawn inside the rects too: it must be the recorded
-        // content in the same instancing mode (changedBounds checks this when static changed).
-        else if(!key.staticContent.valid||key.staticContent.instancing!=instancing)return false;
-        for(const auto& box:w.scratch){NorthlightShadowBounds::TexelRect footprint;
-            if(!box.bounded||!NorthlightShadowBounds::texelFootprint(box.low,box.high,matrix,long(ShadowCacheSize),StaticCacheDirtyMargin,footprint))return false;
-            w.footprints.push_back(footprint);}
-        NorthlightShadowBounds::dirtyRects(w.footprints,long(ShadowCacheSize),StaticCacheDirtyTile,StaticCacheDirtyMaxRects,w.dirty);
-        // A wide draw is issued once per rect it touches. Pick the cheapest
-        // exact option by draw calls: disjoint rects, their bounding rect, or full.
-        w.bounding.clear();if(w.dirty.size()>1){NorthlightShadowBounds::TexelRect all;for(const auto& r:w.dirty)all=NorthlightShadowBounds::unite(all,r);w.bounding.push_back(all);}
-        const std::vector<const std::vector<NorthlightShadowBounds::TexelRect>*> candidates={nullptr,&w.dirty,w.bounding.empty()?&w.dirty:&w.bounding};
-        try {plan.drawCalls(matrix,candidates,long(ShadowCacheSize),StaticCacheDirtyMargin,w.costs);}catch(...){return false;}
-        /* 0.3.215 (task 45): the flat bitmap answers the per-batch fixed-chunk test without a red-black tree walk (same membership: it falls back to the set off-grid or when it does not describe this set). */
-        const auto& fixedSet=fixedTerrainChunks();const bool fixedBits=fixedTerrainBits.source()==&fixedSet;
-        const bool affine=NorthlightShadowBounds::affineLightMatrix(matrix);
-        for(const auto& b:batches){
-            if(b.pointOnly)continue;if(b.terrain&&!(fixedBits?fixedTerrainBits.contains({b.chunkX,b.chunkY}):fixedSet.count({b.chunkX,b.chunkY})!=0))continue;
-            if(affine&&NorthlightShadowBounds::directionalClipRejectAffine(b.boundsLow,b.boundsHigh,matrix))continue;
-            NorthlightShadowBounds::TexelRect footprint;const bool known=NorthlightShadowBounds::texelFootprint(b.boundsLow,b.boundsHigh,matrix,long(ShadowCacheSize),StaticCacheDirtyMargin,footprint);
-            ++w.costs[0];for(size_t k=1;k<candidates.size();++k)for(const auto& r:*candidates[k])if(!known||NorthlightShadowBounds::intersects(footprint,r))++w.costs[k];
-        }
-        if(w.costs[2]<w.costs[1]){w.dirty.swap(w.bounding);w.costs[1]=w.costs[2];++w.boundingChoices;}
-        if(w.costs[1]>=w.costs[0]){++w.costFull;return false;}
-        w.calls+=w.costs[1];w.fullCalls+=w.costs[0];
-        return true;
-    }
-    // 0.3.152 (static_plan_job.h): with every plan input final for the frame, the
-    // first drawn slot's plan is prepared now and the later slots' missing plans
-    // are built on the plan worker in loop order, joined at each slot's first use
-    // (GpuCache::kickPlans). A later slot that may take the static-models rect path
-    // (valid key and content, no placement reason) gets its
-    // dirty-rect CPU part computed there right after its build. Until the join the
-    // job reads only frozen state: that slot's key, the batches and terrain chunks.
-    void staticPlanKick(const NorthlightWorldMath::ShadowCachePlacement* placements,const bool* sourceActive){
-        int order[4];unsigned count=0;
-        for(int source=0;source<2;++source)if(sourceActive[source])for(int cascade=0;cascade<2;++cascade)order[count++]=source*2+cascade;
-        if(count<2)return;
-        if(staticScissorCaps<0){D3DCAPS9 caps{};staticScissorCaps=SUCCEEDED(d->GetDeviceCaps(&caps))&&(caps.RasterCaps&D3DPRASTERCAPS_SCISSORTEST)?1:0;}
-        for(auto& job:staticDirtyJobs){job.ready=job.eligible=false;job.frame=staticFrame;job.boundingChoices=job.costFull=0;job.calls=job.fullCalls=0;}
-        for(unsigned i=1;i<count;++i){const int slot=order[i];const auto& key=shadowCacheKey[slot];
-            staticDirtyJobs[slot].eligible=StaticCacheDirtyRects&&staticScissorCaps==1&&!placements[slot].reason&&key.valid&&key.staticContent.valid;}
-        const float* later[3];for(unsigned i=1;i<count;++i)later[i-1]=staticSlotMatrix[order[i]];
-        // A throwing changedBounds/drawCalls leaves the slot to the render thread (which returns false only if it throws there too).
-        struct Traced {const StaticShadow::GpuCache::DetachedView& view;bool& threw;
-            bool changedBounds(const float* m,const StaticShadow::GpuCache::ContentRecord& old,std::vector<StaticShadow::CasterBounds>& out,size_t& models)const{try{return view.changedBounds(m,old,out,models);}catch(...){threw=true;throw;}}
-            void drawCalls(const float* m,const std::vector<const std::vector<NorthlightShadowBounds::TexelRect>*>& c,long size,long margin,std::vector<size_t>& out)const{try{view.drawCalls(m,c,size,margin,out);}catch(...){threw=true;throw;}}};
-        try {staticCasters.kickPlans(staticSlotMatrix[order[0]],later,count-1,[this,order,count](unsigned,const StaticShadow::GpuCache::DetachedView& view){
-                for(unsigned i=1;i<count;++i){const int slot=order[i];auto& job=staticDirtyJobs[slot];
-                    if(!job.eligible||std::memcmp(staticSlotMatrix[slot],view.matrix(),sizeof staticSlotMatrix[slot])||view.signature()==shadowCacheKey[slot].staticSignature)continue; /* same signature: no static change */
-                    bool threw=false;
-                    try {const bool result=dirtyRectsFrom(job.work(),shadowCacheKey[slot],staticSlotMatrix[slot],true,false,Traced{view,threw});if(!threw){job.result=result;job.ready=true;}}catch(...){}
-                }});}
-        catch(...){staticCasters.reset();staticOwnerGeneration=UINT64_MAX;staticRetryTick=GetTickCount();} /* the first slot's prepare, as staticSignature() */
-    }
-    // Debug self-check (off): after each rect redraw, render the same slot in full
-    // into a scratch target, read both back and count differing texels.
-    static constexpr bool StaticCacheDirtyRectVerify=false;
-    IDirect3DTexture9* shadowVerify=nullptr;IDirect3DSurface9 *shadowVerifySurface=nullptr,*shadowVerifyRead[2]={};
-    unsigned shadowCacheVerified=0,shadowCacheVerifyMismatches=0,shadowCacheScissorLeaks=0;
-    template<class Render> bool verifyStaticCache(int slot,Render render){
-        if(!shadowVerifySurface&&!target(ShadowCacheSize,ShadowCacheSize,D3DFMT_R32F,&shadowVerify,&shadowVerifySurface))return false;
-        for(auto*& read:shadowVerifyRead)if(!read&&!check(d->CreateOffscreenPlainSurface(ShadowCacheSize,ShadowCacheSize,D3DFMT_R32F,D3DPOOL_SYSTEMMEM,&read,nullptr),"shadow verify readback"))return false;
-        const int full=render(shadowVerifySurface);if(full<0)return false;
-        if(!check(d->GetRenderTargetData(shadowCacheSurface[slot],shadowVerifyRead[0]),"shadow verify read")||!check(d->GetRenderTargetData(shadowVerifySurface,shadowVerifyRead[1]),"shadow verify read"))return false;
-        D3DLOCKED_RECT a{},b{};unsigned long long differing=0;
-        if(SUCCEEDED(shadowVerifyRead[0]->LockRect(&a,nullptr,D3DLOCK_READONLY))){
-            if(SUCCEEDED(shadowVerifyRead[1]->LockRect(&b,nullptr,D3DLOCK_READONLY))){
-                for(UINT y=0;y<ShadowCacheSize;++y){const auto* x=static_cast<const uint32_t*>(a.pBits)+size_t(y)*(a.Pitch/4);const auto* z=static_cast<const uint32_t*>(b.pBits)+size_t(y)*(b.Pitch/4);if(std::memcmp(x,z,ShadowCacheSize*4))for(UINT i=0;i<ShadowCacheSize;++i)differing+=x[i]!=z[i];}
-                shadowVerifyRead[1]->UnlockRect();}
-            shadowVerifyRead[0]->UnlockRect();}
-        ++shadowCacheVerified;if(differing){++shadowCacheVerifyMismatches;logf("WORLD shadow cache VERIFY MISMATCH slot=%d texels=%llu",slot,differing);}
-        return true;
-    }
+#include "world_directional_cache_plan.inl"
     void invalidateShadowCache(bool retainPointStatic=false){
         resetShadowTransitions();staticCasters.settle();dropStaticDirtyJobs();
         for(auto& k:shadowCacheKey){k.valid=false;k.staticContent.valid=false;}for(auto& c:staticSlices)c.reset();
-        for(auto& p:pointSlots){
+        for(auto& p:pointTargets.slots()){
             if(!retainPointStatic)p.cacheValid=false;
             p.ready=false;p.schedule.invalidate();p.faceCycle.reset();p.contentMemo.valid=false;
         }
@@ -710,13 +533,7 @@ private:
         for(int s=0;s<2;++s){farShadow[s].invalidate();nearShadow[s].invalidate();actorValid[s]=false;nearActorSkip[s]=false;actorCenterValid[s]=false;}
     }
     uint64_t liveChunkHash()const{uint64_t h=1469598103934665603ull;for(const auto& c:liveTerrainChunks){h^=uint64_t(uint32_t(c.first))*0x9E3779B97F4A7C15ull+uint64_t(uint32_t(c.second));h*=1099511628211ull;}return h;}
-    IDirect3DPixelShader9 *cachedFastPS=nullptr,*cachedOpaqueFastPS=nullptr,*cachedOpaquePS=nullptr;
-    IDirect3DPixelShader9 *foreverFogActorTiledPS=nullptr,*foreverFogActorTiledNoNoisePS=nullptr;
-    IDirect3DPixelShader9 *foreverFogPS=nullptr,*foreverFogActorPS=nullptr,*foreverFogFadePS=nullptr,*foreverFogActorFadePS=nullptr;
-    IDirect3DPixelShader9 *foreverFogNoNoisePS=nullptr,*foreverFogActorNoNoisePS=nullptr,*foreverFogNoNoiseFadePS=nullptr,*foreverFogActorNoNoiseFadePS=nullptr,*distancePS=nullptr;
-    IDirect3DPixelShader9 *lightingPS=nullptr,*giPS=nullptr,*fogPS=nullptr,*fogActorPS=nullptr,*fogCloudsActorPS=nullptr,*fogBlurPS=nullptr,*localDirectPS=nullptr,*localDirect16PS=nullptr,*removalPS=nullptr,*temporalPS=nullptr,*localFogPS=nullptr,*normalsPS=nullptr,*normalsNoDistancePS=nullptr,*finalPS=nullptr,*unlitPS=nullptr,*materialPS=nullptr,*shadowPS=nullptr,*cachedShadowPS=nullptr,*replayPS=nullptr;
-    IDirect3DPixelShader9 *actorShadowPS=nullptr,*actorUniformPS=nullptr,*actorTilesPS=nullptr; /* 0.3.209 (task 29): optional (with their targets); without them the actor shadow map stays off */
-    IDirect3DPixelShader9 *actorTilesWidePS=nullptr,*fogActorTiledPS=nullptr,*fogCloudsActorTiledPS=nullptr;
+    NorthlightWorldForeverFogShaders foreverFog;
     // 0.3.199 (fog clouds): the moving fog banks' own half-resolution pass (FogClouds), its noise volume and the wind clock. The volume's bytes are
     // generated once per process on a worker thread (first active frame, never DllMain) and shared by every device; the holder is leaked on
     // purpose and the worker detached, so neither DLL unload nor process exit waits on a thread under the loader lock.
@@ -735,34 +552,13 @@ private:
         }
     };
     static FogCloudNoise& fogCloudNoise(){static FogCloudNoise* noise=new FogCloudNoise;return *noise;}
-    IDirect3DPixelShader9* fogCloudsPS=nullptr;IDirect3DVolumeTexture9* cloudNoise=nullptr;bool cloudNoiseFailed=false,cloudNoiseRetry=false,cloudNoiseReported=false;DWORD cloudNoiseRetryAt=0,cloudNoiseReportAt=0;
-    IDirect3DPixelShader9* fogAmbientPS=nullptr;bool fogAmbientRefused=false;
-    IDirect3DPixelShader9* localFlashPS=nullptr;
-    IDirect3DPixelShader9* localDirectSinglePS=nullptr;bool localDirectSingleRefused=false;
-    IDirect3DPixelShader9* localDirectShader(unsigned count){
-        if(count!=1)return localDirectPS;
-        if(!localDirectSinglePS&&!localDirectSingleRefused){
-            if(FAILED(d->CreatePixelShader(kLocalDirect1Shader,&localDirectSinglePS))||!localDirectSinglePS){drop(localDirectSinglePS);localDirectSingleRefused=true;}
-        }
-        return localDirectSinglePS?localDirectSinglePS:localDirectPS;
-    }
-    IDirect3DPixelShader9* fogCloudsAmbientPS=nullptr;bool ambientFogRefused=false;
-    bool ambientFogResources(){
-        if(ambientFogRefused)return false;
-        if(!fogCloudsAmbientPS&&FAILED(d->CreatePixelShader(kFogCloudsAmbientShader,&fogCloudsAmbientPS))){ambientFogRefused=true;return false;}
-        return true;
-    }
+    NorthlightRegionalFogGpu regionalFogGpu;
+    NorthlightWorldLocalLighting localLighting;
     IDirect3DPixelShader9* fogVolumeShader(bool ambientOnly,bool actor,bool tiled=false){
-        if(!ambientOnly)return actor?(tiled&&fogActorTiledPS?fogActorTiledPS:fogActorPS):fogPS;
-        if(!fogAmbientPS&&!fogAmbientRefused){
-            if(FAILED(d->CreatePixelShader(kWorldFogAmbientShader,&fogAmbientPS))||!fogAmbientPS){drop(fogAmbientPS);fogAmbientRefused=true;}
-        }
-        return fogAmbientPS?fogAmbientPS:fogPS;
+        return regionalFogGpu.volumeShader(d,ambientOnly,actor,tiled?actorMaps.fogTiled():nullptr);
     }
     // 0.3.199 (fog temporal): last frame's resolved half-resolution fog (swapped with fogBlurred after the pass, so one extra target is enough), valid only after a frame that ran the pass.
-    IDirect3DPixelShader9* fogTemporalPS=nullptr;IDirect3DTexture9* fogHistory=nullptr;IDirect3DSurface9* fogHistorySurface=nullptr;bool fogHistoryValid=false;
-    bool fogNeutral=false,fogHistoryNeutral=false; // Contents of these owned targets, not effect/settings flags.
-    static constexpr float FogTemporalWeight=.85f; /* history weight in c64.y (0 = pass through) */
+    NorthlightFogScreen fogScreen;
     NorthlightFogVolume fogVolume;
     uint64_t fogVolumeKey=0,fogShadowRevision=0;
     std::shared_ptr<const NorthlightRegionalFog::Field> fogVolumeField;
@@ -780,44 +576,23 @@ private:
     unsigned gpuBudgetLevel=0;
     unsigned cpuBudgetLevel=0; /* task 45: the CPU budget controller's level (ActorShadowCpuMs): 0 = ActorShadowRadius as set */
     NorthlightFogClouds::Wind cloudWind;int64_t cloudQpc=0;float cloudDenseZone=0,cloudLush=1; /* smoothed dense-zone profile at the camera (Duskwood 1), see denseZoneDamp; smoothed lush zone at the camera (forest/grass 1), see derive */
-    // The N^3 volume as L8 (A8R8G8B8 where L8 volumes are missing).
     bool ensureCloudNoise(){
-        if(cloudNoise)return true;
-        auto& noise=fogCloudNoise();
-        if(cloudNoiseFailed||!noise.ready.load(std::memory_order_acquire))return false;
-        const DWORD now=GetTickCount();if(cloudNoiseRetry&&DWORD(now-cloudNoiseRetryAt)<1000)return false;
-        constexpr unsigned N=NorthlightFogClouds::N;
-        if(memoryPressure){
+        if(regionalFogGpu.noise())return true;
+        const auto& noise=fogCloudNoise();
+        const auto* data=noise.ready.load(std::memory_order_acquire)?noise.data.data():nullptr;
+        return regionalFogGpu.ensureNoise(d,data,NorthlightDiagnostics::enabled(),[&](bool report){
+            if(!memoryPressure)return true;
             // Budget for the larger fallback format and three driver/managed copies.
-            const auto budget=NorthlightGeometryMemory::dynamicBudget(uint64_t(N)*N*N*4);
-            bool exact=true;const auto memory=geometryAdmission(budget,&exact);
-            if(!NorthlightGeometryMemory::admits(memory,budget)){
-                cloudNoiseRetry=true;cloudNoiseRetryAt=now;
-                if(NorthlightDiagnostics::enabled()&&(!cloudNoiseReported||DWORD(now-cloudNoiseReportAt)>=60000)){cloudNoiseReported=true;cloudNoiseReportAt=now;logGeometryMemory("cloud-noise-deferred",memory,0,exact,&budget);}
-                return false;
-            }
-        }
-        IDirect3DVolumeTexture9* t=nullptr;bool l8=true;
-        HRESULT hr=d->CreateVolumeTexture(N,N,N,1,0,D3DFMT_L8,D3DPOOL_MANAGED,&t,nullptr);
-        if((FAILED(hr)||!t)&&hr!=E_OUTOFMEMORY&&hr!=D3DERR_OUTOFVIDEOMEMORY){if(t)t->Release();t=nullptr;l8=false;hr=d->CreateVolumeTexture(N,N,N,1,0,D3DFMT_A8R8G8B8,D3DPOOL_MANAGED,&t,nullptr);}
-        D3DLOCKED_BOX box={};
-        if(SUCCEEDED(hr)&&t)hr=t->LockBox(0,&box,nullptr,0);
-        if(FAILED(hr)||!t||!box.pBits){
-            if(t)t->Release();
-            if(hr==E_OUTOFMEMORY||hr==D3DERR_OUTOFVIDEOMEMORY){cloudNoiseRetry=true;cloudNoiseRetryAt=now;}
-            else cloudNoiseFailed=true;
-            if(cloudNoiseFailed||!cloudNoiseReported||DWORD(now-cloudNoiseReportAt)>=60000){cloudNoiseReported=true;cloudNoiseReportAt=now;logf("WORLD fog clouds %s: noise volume HRESULT=%08lx",cloudNoiseFailed?"disabled":"deferred",(unsigned long)hr);}return false;}
-        for(unsigned z=0;z<N;++z)for(unsigned y=0;y<N;++y){
-            const uint8_t* src=noise.data.data()+size_t(N)*(y+size_t(N)*z);
-            uint8_t* row=static_cast<uint8_t*>(box.pBits)+size_t(z)*box.SlicePitch+size_t(y)*box.RowPitch;
-            if(l8)memcpy(row,src,N);else for(unsigned x=0;x<N;++x)reinterpret_cast<uint32_t*>(row)[x]=0xff000000u|src[x]*0x010101u;
-        }
-        t->UnlockBox(0);cloudNoise=t;cloudNoiseRetry=false;logf("WORLD fog clouds noise volume %ux%ux%u %s",N,N,N,l8?"L8":"A8R8G8B8");return true;
+            constexpr unsigned n=NorthlightFogClouds::N;
+            const auto budget=NorthlightGeometryMemory::dynamicBudget(uint64_t(n)*n*n*4);
+            bool exact=true;
+            const auto memory=geometryAdmission(budget,&exact);
+            if(NorthlightGeometryMemory::admits(memory,budget))return true;
+            if(report)logGeometryMemory("cloud-noise-deferred",memory,0,exact,&budget);
+            return false;
+        },[](const char* format,auto... args){logf(format,args...);});
     }
     unsigned localDirectCount=0;float localDirectNearest=0;
-    // 0.3.205 (gh#20): the lamp fog glow batches add their raw sums into localFogAccum (half resolution, like the fog buffer) and localFogCombinePS caps the total once
-    // into the fog buffer.
-    IDirect3DPixelShader9* localFogCombinePS=nullptr;
     // 0.3.197: soft cap, incumbent bias and fades for the local lights (task 13). The clock is the selection's own: its gap and reset policy mirror useHistory.
     NorthlightEquipmentLights::Tracker equipmentLights;std::unordered_map<IDirect3DVertexShader9*,unsigned> equipmentShaders,nativePointShaders;
     std::unordered_set<IDirect3DVertexShader9*> nativeLightingShaders;
@@ -826,18 +601,20 @@ private:
     std::unique_ptr<NorthlightNativeLocalLighting> nativeDirectRenderer;
     void* nativeSamplerContext=nullptr;bool(*nativeSamplerReader)(void*,DWORD,unsigned,DWORD*)=nullptr;
     NorthlightNativeLights::Snapshot nativeDirectScene;unsigned nativeDirectFrame=~0u;
-    bool nativeExtraOwnership=false,nativeExtraRequested=false,nativeExtraOwners=false;
+    NorthlightNativePointSubmit nativePointSubmit;
+    bool nativeExtraRequested=false,nativeExtraOwners=false;
     struct NativeDirectBinding {
         const NorthlightNativeLights::Point* native=nullptr;const NorthlightLocalLights::Light* authored=nullptr;NorthlightNativeLocalDraw light;
         NorthlightNativeLights::Point observed{};bool drawWitness=false;
         const NorthlightLocalLights::Light* selected=nullptr;IDirect3DCubeTexture9* const* cube=nullptr;
+        float selectedPosition[3]={};
         const bool *ready=nullptr,*usable=nullptr;const float* gain=nullptr;const uint32_t* updated=nullptr;const std::string* map=nullptr;uint64_t sourceId=0;float ownerGain=0;
     };
     std::array<NativeDirectBinding,NorthlightPointShadow::MaxLights+NorthlightLocalLightSelection::Slots> nativeDirectBindings{};unsigned nativeDirectBindingCount=0;
     NorthlightNativeDirect::BankMemo nativeDirectBankMemo;unsigned nativeDirectBankHits=0,nativeDirectBankMisses=0;
     std::string nativeDirectMap;float nativeDirectView[16]{};uint64_t nativeDirectStamp=0,nativeCubeRevision=0,nativeDirectCubeRevision=~uint64_t(0);unsigned nativeDirectSceneCount=0;const void *nativeDirectSnapshot=nullptr,*nativeDirectWorld=nullptr;
     unsigned nativeDirectMatched=0,nativeDirectMultiple=0,nativeDirectMissingCube=0,nativeDirectSlots=0,nativeDirectTraces=0;
-    unsigned nativeOwnedDraws=0,nativeOwnedSlots=0,nativeObservedOwnedSlots=0,nativeTerrainOwnedDraws=0;
+    unsigned nativeObservedOwnedSlots=0;
     std::unordered_set<IDirect3DVertexShader9*> nativeTerrainPointShaders;
     std::array<unsigned,7> nativeDirectMissReasons{};
     std::array<unsigned,5> nativeDirectSlotCounts{},nativeDirectMatchCounts{};unsigned nativeDirectPreparedBypass=0,nativeDirectPrivateBypass=0;
@@ -846,28 +623,24 @@ private:
     std::vector<NorthlightLocalLights::Light> attachedLocalLights;
     NorthlightParticleLights::Frame particleLights;std::string particleMap;
     std::string equipmentMap;NorthlightEquipmentLights::CaptureBudget equipmentCapture;
+    NorthlightLocalLightTrace::InputHash equipmentBankAudit,equipmentDrawAudit;
     NorthlightLocalLightSelection::Tracker localLightTracker;std::string localLightMap;V localLightCamera;int64_t localLightQpc=0;double localSelectUsSum=0,localSelectUsMax=0;unsigned localSelectFrames=0;
-    // Additive local light passes add exactly +0 outside their batch's projected
-    // spheres; scissor them there. Counters cover one LOCAL log interval.
-    NorthlightLocalLightScissor::View localScissorView;
-    unsigned localScissorBatches=0,localScissorClipped=0,localScissorSkipped=0;double localScissorCoverage=0;
-    unsigned localOffscreenSum=0,localArranged=0,localWidePasses=0;double localArrangeBefore=0,localArrangeAfter=0; /* LOCAL direct window: off-screen candidates, arranged frames, LocalDirect16 passes, cost model before/after */
-    unsigned localSourceTraces=0;NorthlightLocalLightTrace::Frame sourceTrace;
-    void localSourceBatch(bool volume,unsigned first,unsigned count,const NorthlightLocalLightScissor::Rect& rect,bool drawn,HRESULT result){
-        if(!sourceTrace.wants(first,count))return;
-        NorthlightLocalLightTrace::Row::DrawState state;
-        // State getters are CPU-only and run only for a sampled, tracked batch.
-        // Refused getters remain unknown; successful submission is not a pixel proof.
-        if(drawn){D3DVIEWPORT9 viewport{};DWORD enabled=0;RECT scissor{};
-            if(SUCCEEDED(d->GetViewport(&viewport))){state.known|=1;state.viewport[0]=viewport.X;state.viewport[1]=viewport.Y;state.viewport[2]=viewport.Width;state.viewport[3]=viewport.Height;state.minZ=viewport.MinZ;state.maxZ=viewport.MaxZ;}
-            if(SUCCEEDED(d->GetRenderState(D3DRS_SCISSORTESTENABLE,&enabled))){state.known|=2;state.scissorEnabled=enabled;}
-            if(SUCCEEDED(d->GetScissorRect(&scissor))){state.known|=4;state.scissor={scissor.left,scissor.top,scissor.right,scissor.bottom};}}
-        sourceTrace.batch(volume,first,count,rect,drawn,result,state);
+    unsigned parityFrame=0;
+    DWORD visualTime()const{
+        return NorthlightFrameParityClock::enabled()?NorthlightFrameParityClock::milliseconds(parityFrame):GetTickCount();
     }
+    float visualAnimationSeconds(DWORD processNow)const{
+        const DWORD elapsed=NorthlightFrameParityClock::enabled()
+            ?NorthlightFrameParityClock::milliseconds(parityFrame):DWORD(processNow-animationEpoch);
+        return float(elapsed)*.001f;
+    }
+    NorthlightLocalLightScissor::View localScissorView;
+    unsigned localOffscreenSum=0,localArranged=0;double localArrangeBefore=0,localArrangeAfter=0;
+    unsigned localSourceTraces=0;NorthlightLocalLightTrace::Frame sourceTrace;
     void reportLocalSources(const NorthlightLocalLightTrace::Frame& trace,unsigned capture,unsigned rendererFrame,float directGain,float sunlitCut,float fogGain,UINT w,UINT h,float nearZ,float farZ,float minZ,float maxZ,bool waterReady,int debug){
         if(!trace.enabled)return;
         logf("LOCAL_SOURCE frame=%u frameDomain=world monotonicNs=%llu capture=%u rows=%u omitted=%u nativeTracked=%u nativePublished=%u dynamicPublished=%u nativeSuppressed=%u nativeDuplicateCounter=%u viewKnown=%u directGain=%.6f sunlitCut=%.6f fogGain=%.6f combine=%s upstreamParticleClusters=unmeasured pixelContribution=unmeasured rendererFrame=%u particleProbes=%u particleDraws=%u particleAccepted=%u particlePoints=%u particlePublished=%u selected=%u fullSize=%u,%u depthRange=%.9g,%.9g sceneDepthViewport=%.9g,%.9g camera=%.6f,%.6f,%.6f projection=%.9g,%.9g,%.9g fogEnabled=%u fogField=%u waterReady=%u debug=%d",
-            frames,(unsigned long long)NorthlightStream::nowNs(),capture,trace.count,trace.omitted,equipmentLights.count,equipmentLights.outputCount,particleLights.outputCount,equipmentLights.suppressedCount,equipmentLights.duplicates,unsigned(localScissorView.valid),directGain,sunlitCut,fogGain,NorthlightLocalLightTrace::name(trace.combine),rendererFrame,particleLights.probes,particleLights.draws,particleLights.accepted,particleLights.points,particleLights.immediateCount,localDirectCount,w,h,nearZ,farZ,minZ,maxZ,context.camera[0],context.camera[1],context.camera[2],projection[0],projection[1],projection[2],unsigned(effects.fog),unsigned(bool(uploadedFogField)),unsigned(waterReady),debug);
+            frames,(unsigned long long)NorthlightStream::nowNs(),capture,trace.count,trace.omitted,equipmentLights.count,equipmentLights.outputCount,particleLights.outputCount,equipmentLights.suppressedCount,equipmentLights.duplicates,unsigned(localScissorView.valid),directGain,sunlitCut,fogGain,NorthlightLocalLightTrace::name(trace.combine),rendererFrame,particleLights.probes,particleLights.draws,particleLights.accepted,particleLights.points,particleLights.immediateCount,localDirectCount,w,h,nearZ,farZ,minZ,maxZ,context.camera[0],context.camera[1],context.camera[2],projection[0],projection[1],projection[2],unsigned(effects.fog),unsigned(bool(regionalFog.field())),unsigned(waterReady),debug);
         for(unsigned i=0;i<trace.count;++i){const auto& r=trace.rows[i];
             logf("LOCAL_SOURCE draw frame=%u sourceId=%llu publishedXYZ=%.6f,%.6f,%.6f publishedRGB=%.6f,%.6f,%.6f range=%.6f,%.6f selected=%u slot=%u selectedXYZR=%.6f,%.6f,%.6f,%.6f selectedRGB=%.6f,%.6f,%.6f sigma=%.9g direct=%s directHRESULT=%08x directRect=%ld,%ld,%ld,%ld fog=%s fogHRESULT=%08x fogRect=%ld,%ld,%ld,%ld",
                 frames,(unsigned long long)r.published.sourceId,r.published.position[0],r.published.position[1],r.published.position[2],r.published.diffuse[0],r.published.diffuse[1],r.published.diffuse[2],r.published.attenuationStart,r.published.attenuationEnd,unsigned(r.slot!=~0u),r.slot,
@@ -879,34 +652,6 @@ private:
                     frames,(unsigned long long)r.published.sourceId,volume?"fog":"direct",NorthlightLocalLightTrace::reason(r,volume),state.known,state.viewport[0],state.viewport[1],state.viewport[2],state.viewport[3],state.minZ,state.maxZ,state.scissorEnabled,state.scissor.left,state.scissor.top,state.scissor.right,state.scissor.bottom);}
         }
     }
-    // 0.3.200 (jobs): known = the batch's rect from atmosphereWork (the same batchRect of the same view and positions), else computed here.
-    // RenderProfile sample frames only: a tile-based GPU (Metal under DXVK) writes a timestamp taken inside a render pass when that pass
-    // ends, so the lamp passes, which share the light (and fog) target with the passes around them, showed up in the next target switch
-    // (LocalLights 0.001 ms, RemovalSmooth carrying their cost). A one-pixel clear of its own target ends the pass; `resume` is bound again
-    // (the viewport resets to it; callers set the scissor per draw). It costs one store and load of the target on sample frames, never on others.
-    IDirect3DSurface9* profileSplitSurface=nullptr;bool profileSplitFailed=false;
-    void profileSplit(NorthlightGpuProfile* profile,IDirect3DSurface9* resume){
-        if(!profile||!profile->recording()||!resume||profileSplitFailed)return;
-        if(!profileSplitSurface&&FAILED(d->CreateRenderTarget(1,1,D3DFMT_A8R8G8B8,D3DMULTISAMPLE_NONE,0,FALSE,&profileSplitSurface,nullptr))){profileSplitSurface=nullptr;profileSplitFailed=true;return;}
-        if(SUCCEEDED(d->SetRenderTarget(0,profileSplitSurface)))d->Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0);
-        d->SetRenderTarget(0,resume);
-    }
-    bool localScissor(const NorthlightLocalLightScissor::Rect& r){
-        if(!NorthlightLocalLightScissor::Enabled)return true;
-        // Fail open: without a proven view the batch draws unclipped.
-        if(!localScissorView.valid){d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE);++localScissorBatches;localScissorCoverage+=1;return true;}
-        const double all=double(localScissorView.halfW)*localScissorView.halfH;
-        ++localScissorBatches;localScissorCoverage+=all>0?double(r.area())/all:1.;
-        if(!r.area()){++localScissorSkipped;return false;} // no pixel can change: skip the draw only
-        if(r.area()<all)++localScissorClipped;
-        const RECT clip={r.left,r.top,r.right,r.bottom};d->SetScissorRect(&clip);return true;
-    }
-    template<std::size_t N> bool localScissor(const std::array<NorthlightLocalLightSelection::Constant,N>& position,unsigned count,const NorthlightLocalLightScissor::Rect* known=nullptr){
-        if(!NorthlightLocalLightScissor::Enabled)return true;
-        return localScissor(known?*known:NorthlightLocalLightScissor::batchRect(localScissorView,position,count));
-    }
-    IDirect3DVertexShader9 *shadowVS=nullptr,*cachedShadowVS=nullptr;
-    IDirect3DVertexDeclaration9 *shadowDecl=nullptr,*liveTerrainDecl=nullptr;
     IDirect3DVertexBuffer9* vertices=nullptr; // non-owning aliases of page 0 of the active table; also the "mesh present" flags
     IDirect3DIndexBuffer9* indices=nullptr;
     // 0.3.216 (issue #66): ONE store of page buffers (mesh_buffer_store.h) instead of two full slots. meshStore does all the
@@ -914,9 +659,11 @@ private:
     // `id` (capacities live in the entry). The active table is drawn; a staging build reuses buffers whose key matches a new
     // page, uploads only the misses into idle/new buffers and switches the table atomically at commit. An ACTIVE buffer is
     // never created, written or released (acquireMeshPage/perform check meshStore.writable(id), trims take idle ones only).
-    using MeshBuffers=NorthlightGpuScene::Scene::MeshBuffers;
-    NorthlightMeshBufferStore::Store& meshStore=gpuScene->meshStore;std::vector<MeshBuffers>& meshBuffers=gpuScene->meshBuffers;NorthlightMeshPoolTrim::State& meshPoolTrim=gpuScene->meshPoolTrim;
-    void syncMeshBuffers(){meshBuffers.resize(meshStore.entries().size());}
+    using MeshBuffers=NorthlightWorldMeshPool::Buffers;
+    NorthlightMeshBufferStore::Store& meshStore=gpuScene->meshPages.store;
+    std::vector<MeshBuffers>& meshBuffers=gpuScene->meshPages.buffers;
+    NorthlightMeshPoolTrim::State& meshPoolTrim=gpuScene->meshPages.trimState;
+    void syncMeshBuffers(){gpuScene->meshPages.sync();}
     // 0.3.216 (issue #66): keys of the pages the ACTIVE table holds, published for the geometry worker, which frees the CPU data of
     // every page of a new plan whose key is in it (the GPU has it already). Keys only; guarded by `mutex`. Replaced at each mesh
     // commit, cleared with the pool and whenever an elided page missed at staging (the next plan then elides nothing).
@@ -942,45 +689,16 @@ private:
         return false;
     }
     bool acquireMeshPage(uint32_t id,bool vertex,UINT bytes,D3DPOOL pool=D3DPOOL_MANAGED){
-        if(!meshStore.writable(id)||id>=meshBuffers.size())return false; // only a buffer claimed by this staging, never an active one
-        MeshBuffers& slot=meshBuffers[id];const auto& entry=meshStore.entries()[id];
-        if(vertex?slot.vb&&slot.vbPool==pool&&entry.vbCapacity>=bytes:slot.ib&&slot.ibPool==pool&&entry.ibCapacity>=bytes)return true;
-        // At most 512 KiB per resource, including rounded unused capacity.
-        // Pressure pages are immutable after upload; they need only page-size
-        // padding, rather than the normal pool's larger growth granularity.
-        const UINT capacity=UINT(pool==D3DPOOL_DEFAULT?NorthlightGeometryMemory::roundUp(bytes,4096):NorthlightMeshBufferStore::roundBuffer(bytes));
-        // Driver work can map a new chunk between page calls. Refresh the
-        // cheap aggregate sample before every create, retaining the same
-        // three-capacity allowance without another full VirtualQuery walk.
-        NorthlightGeometryMemory::Sample memory;MEMORYSTATUSEX current={};current.dwLength=sizeof current;
-        memory.valid=GlobalMemoryStatusEx(&current)!=FALSE;
-        memory.available=memory.valid?NorthlightGeometryMemory::corrected(current.ullAvailVirtual):0;memory.largest=0;
-        const auto reserve=pool==D3DPOOL_DEFAULT&&pressureReplayAllocation()?NorthlightGeometryMemory::ResetReplayReserve:NorthlightGeometryMemory::ProcessReserve;
-        if(!NorthlightGeometryMemory::admitsSmallPageGrowth(memory.valid,memory.available,capacity,reserve))return false;
-        // Static DEFAULT buffers still retain staging on DXVK. Dynamic
-        // WRITEONLY pages permit direct device-local mapping where supported.
-        const DWORD usage=D3DUSAGE_WRITEONLY|(pool==D3DPOOL_DEFAULT?D3DUSAGE_DYNAMIC:0);
-        if(vertex){
-            drop(slot.vb);meshStore.setCapacity(id,true,0);
-            if(FAILED(d->CreateVertexBuffer(capacity,usage,0,pool,&slot.vb,nullptr))||!slot.vb){drop(slot.vb);return false;}
-            slot.vbPool=pool;slot.vbFresh=true;meshStore.setCapacity(id,true,capacity);
-        }else{
-            drop(slot.ib);meshStore.setCapacity(id,false,0);
-            if(FAILED(d->CreateIndexBuffer(capacity,usage,D3DFMT_INDEX16,pool,&slot.ib,nullptr))||!slot.ib){drop(slot.ib);return false;}
-            slot.ibPool=pool;slot.ibFresh=true;meshStore.setCapacity(id,false,capacity);
-        }
-        return true;
+        return gpuScene->meshPages.acquire(d,id,vertex,bytes,pool,[&]{return pressureReplayAllocation();});
     }
-    void releaseMeshPool(){for(auto& slot:meshBuffers){drop(slot.vb);drop(slot.ib);}meshBuffers.clear();meshStore.reset();publishResidentPages(std::string());vertices=nullptr;indices=nullptr;meshPoolTrim.reset();}
+    void releaseMeshPool(){gpuScene->meshPages.clear();publishResidentPages(std::string());vertices=nullptr;indices=nullptr;}
     // Frees idle buffers (returns bytes): those not referenced by the active table and not claimed by a staging.
     // Never while a staged upload is pending; the active table (and vertices/indices, which alias its page 0) stays.
     // Order (mesh_buffer_store.h trimIdle): invalid-key buffers first (partial content from a cancelled staging), then
     // the valid ones idle for the longest. maxBytes: stop once this many bytes were released (always at least one
     // buffer when any is idle); unbounded for the memory guard.
     size_t trimMeshPools(uint64_t maxBytes=UINT64_MAX){
-        if(pendingMesh)return 0;
-        const uint64_t freed=meshStore.trimIdle(maxBytes,[&](uint32_t id){if(id<meshBuffers.size()){drop(meshBuffers[id].vb);drop(meshBuffers[id].ib);}});
-        syncMeshBuffers();return size_t(freed);
+        return pendingMesh?0:gpuScene->meshPages.trim(maxBytes);
     }
     // After a staged commit (pendingMesh already cleared): releases idle capacity the next build is unlikely to need,
     // with hysteresis (mesh_pool_trim.h): target = windowMax(mesh) + windowMax(uploaded this commit). Runs once per
@@ -1025,7 +743,7 @@ private:
         if(id>=meshBuffers.size())return false; // also NorthlightMeshBufferStore::None
         auto& page=meshBuffers[id];
         const bool compact=page.vbPool==D3DPOOL_DEFAULT;
-        if(!page.vb||!page.ib||FAILED(d->SetVertexDeclaration(compact?liveTerrainDecl:shadowDecl))||FAILED(d->SetStreamSource(0,page.vb,0,compact?sizeof(StaticShadow::Vertex):sizeof(NorthlightGI::WorldVertex)))||FAILED(d->SetIndices(page.ib)))return false;
+        if(!shadowPrograms.bindMesh(d,page.vb,page.ib,compact,compact?sizeof(StaticShadow::Vertex):sizeof(NorthlightGI::WorldVertex)))return false;
         boundPage=batch.page;return true;
     }
     std::vector<Batch> batches,pointSubBatches;
@@ -1038,8 +756,10 @@ private:
     // 0.3.175 (S2): shadowTerrainList, the terrain batches outside this generation's fixed chunks
     // (the directional terrain selection then tests only the live chunks), for terrainListFixed.
     std::vector<uint32_t> pointStaticList;
+    NorthlightDirectionalCacheMesh directionalCacheMesh;
     std::vector<uint32_t> terrainBatchList,shadowTerrainList;uint64_t terrainBatchListGeneration=UINT64_MAX;size_t terrainBatchListSize=0;const void* terrainListFixed=nullptr;
     void rebuildTerrainLists(){
+        directionalCacheMesh.invalidate();
         terrainBatchListGeneration=UINT64_MAX;terrainBatchList.clear();shadowTerrainList.clear();pointStaticList.clear();
         if(batches.size()>UINT32_MAX)return;
         const auto& fixed=fixedTerrainChunks();
@@ -1052,6 +772,7 @@ private:
             }
         }catch(...){terrainBatchList.clear();shadowTerrainList.clear();pointStaticList.clear();return;}
         terrainBatchListSize=batches.size();terrainListFixed=&fixed;terrainBatchListGeneration=meshGeneration;
+        directionalCacheMesh.publish(batches,meshGeneration,fixed,fixedTerrainBits);
     }
     // CELESTIAL terrain mask line (rate-limited): the last redraw, and per body (sun, moon) redraws/reuses since the line.
     struct CelestialMaskStats {size_t candidates=0;unsigned accepted=0,runs=0,redraws[2]={},reuses[2]={};uint64_t triangles=0;bool listed=false;double ms=0,peakMs=0;DWORD lastLog=0;} celestialMask;
@@ -1060,30 +781,12 @@ private:
     const std::set<std::pair<int,int>>& fixedTerrainChunks()const{static const std::set<std::pair<int,int>> none;return fixedTerrain?*fixedTerrain:none;}
     NorthlightShadowTerrain::FixedChunkBits fixedTerrainBits; /* 0.3.176 (U1c): beside fixedTerrain, filled at the commit */
     std::string uploadedMap;
-    IDirect3DIndexBuffer9* liveIndicesGPU=nullptr;
-    UINT liveIndexBytes=0;
+    NorthlightLiveTerrainIndices liveTerrainIndices;
     NorthlightDynamicRing::FrameFence frameFence; /* 0.3.192 (DXVK3): ONE EVENT query per frame for every upload ring, issued in endFrame() */
     NorthlightDynamicRing::FrameFence& fence(){frameFence.device=d;return frameFence;}
-    NorthlightDynamicRing::Ring liveIndexRing;UINT liveIndexBase=0; /* 0.3.192 (DXVK3): liveIndexBytes = the ring capacity; liveIndexBase = the ring offset of the current lists, in indices */
-    struct PendingMesh {
-        std::shared_ptr<NorthlightGI::BVH> bvh;
-        std::shared_ptr<NorthlightWorldMesh::WorldMeshUploadPlan> plan;
-        std::shared_ptr<const PreparedCommit> prepared; /* from the same snapshot as plan; may be null */
-        std::shared_ptr<NorthlightWorldMesh::UploadPayload> payload; /* 0.3.214 (task 42): pages + cutout textures for the whole staging */
-        std::string map;
-        NorthlightWorldMeshPages::Upload upload;
-        IDirect3DTexture9* white=nullptr;
-        std::vector<IDirect3DTexture9*> textures;
-        size_t material=0,materialRow=0;
-        IDirect3DTexture9* partialTexture=nullptr,*partialStaging=nullptr;
-        DWORD started=GetTickCount();unsigned frames=0,textureUploads=0,textureReuses=0;
-        // The upload cursor owns no GPU data; only textures are owned here.
-        ~PendingMesh(){drop(partialStaging);drop(partialTexture);drop(white);for(auto& t:textures)drop(t);}
-    };
+    using PendingMesh=NorthlightWorldMeshPublication::Pending<PreparedCommit>;
     std::unique_ptr<PendingMesh> pendingMesh;
     NorthlightWorldStreaming::Retry meshRetry;
-    std::shared_ptr<const Snapshot> payloadRebuildSource; // mutex: reuse the immutable local scene after device loss
-    bool geometryRebuild=false; /* guarded by mutex: render thread asks the worker to rebuild the active generation */
     std::weak_ptr<NorthlightGI::BVH> payloadRebuildAsked;DWORD payloadRebuildTick=0;unsigned payloadRebuilds=0;
     unsigned streamingReports=0,preparedOwnerCommits=0;
     std::atomic<unsigned> generationDeferrals{0}; /* worker: canAdmit()==false events */
@@ -1124,13 +827,33 @@ private:
         UINT offset[4]={},stride[4]={};
         IDirect3DIndexBuffer9* index=nullptr;
         IDirect3DBaseTexture9* texture=nullptr;
-        float constantStorage[1024]={};BOOL boolStorage[16]={};int intStorage[64]={};
-        const float* constants=constantStorage;const BOOL* bools=boolStorage;const int* ints=intStorage;
+        using FloatBank=std::array<float,1024>;
+        static constexpr FloatBank emptyConstants{};
+        std::shared_ptr<FloatBank> constantBank;
+        BOOL boolStorage[16]={};int intStorage[64]={};
+        const float* constants=emptyConstants.data();const BOOL* bools=boolStorage;const int* ints=intStorage;
         NorthlightConstantEpoch::Stamp constantStamp;
         Replay()=default;Replay(const Replay&)=delete;Replay& operator=(const Replay&)=delete;
+        float* writableConstants() noexcept{
+            if(constantBank.use_count()!=1)try{
+                auto next=std::make_shared<FloatBank>();
+                if(constantBank)std::memcpy(next->data(),constantBank->data(),sizeof(FloatBank));
+                constantBank=std::move(next);
+            }catch(const std::bad_alloc&){return nullptr;}
+            constantStamp={};constants=constantBank->data();return constantBank->data();
+        }
+        void shareConstants(const Replay& previous) noexcept{
+            constantBank=previous.constantBank;constants=previous.constants;
+        }
+        void dropConstantBank() noexcept{constantBank.reset();constants=emptyConstants.data();constantStamp={};}
+        void resetConstantCapture() noexcept{
+            if(constantBank.use_count()!=1)dropConstantBank();
+            bools=boolStorage;ints=intStorage;constantStamp={};
+        }
         float cutoff=-1;unsigned alphaMode=0;
         NorthlightShaderConstants::Usage constantUsage;
         unsigned constantGroup=0; // exact consecutive banks, rebuilt from this frame's captures
+        unsigned char directionalPaletteEnd=0;
         unsigned projectionKind=2;DWORD addressU=D3DTADDRESS_WRAP,addressV=D3DTADDRESS_WRAP;
         NorthlightDrawSnapshot::Mesh snapshot; // owned copy: DYNAMIC/UP draws and misses the cache could not store
         std::shared_ptr<const NorthlightDrawSnapshot::Mesh> shared; // immutable snapshot: tracked generations or legacy static cache
@@ -1156,14 +879,16 @@ private:
         std::vector<D3DVERTEXELEMENT9> elements;bool declared=false;
         const D3DVERTEXELEMENT9* declarationElements()const{return declCopy?declCopy->elements:elements.data();}
         UINT declarationCount()const{return declCopy?declCopy->count:UINT(elements.size());}
-        size_t retainedBytes()const{return snapshot.capacityBytes()+elements.capacity()*sizeof(D3DVERTEXELEMENT9);}
+        size_t retainedBytes()const{return snapshot.capacityBytes()+elements.capacity()*sizeof(D3DVERTEXELEMENT9)+(constantBank?sizeof(FloatBank):0);}
         uint32_t staticProofMask=0,staticM2Mask=0;uint64_t staticProofRevision=0;std::string staticProofModel;const std::string* staticM2Model=nullptr; /* staticM2Model: the M2 proof's model key, owned by its StaticM2Dedup entry (valid for the frame) */ /* staticM2Mask: slots whose cache holds this rigid M2 (bounds in staticProofLow/High) */
         V staticProofLow,staticProofHigh;
         D3DPRIMITIVETYPE type;INT base;UINT min,vertices,start,count;bool indexed;
-        void releaseResources(bool retainSnapshot=false){NorthlightReplayCaptureConstants::reset(*this);program=nullptr;declCopy=nullptr;prepareStamp=0;declared=false;elements.clear();drop(shader);drop(originalShader);pointBounds={};boundsWork={};boundsPrepared.reset();drop(decl);drop(index);drop(texture);for(auto& s:stream)drop(s);shared.reset();if(!retainSnapshot)snapshot=NorthlightDrawSnapshot::Mesh{};}
+        void releaseResources(bool retainSnapshot=false){if(!retainSnapshot)dropConstantBank();resetConstantCapture();program=nullptr;declCopy=nullptr;prepareStamp=0;declared=false;elements.clear();drop(shader);drop(originalShader);pointBounds={};boundsWork={};boundsPrepared.reset();drop(decl);drop(index);drop(texture);for(auto& s:stream)drop(s);shared.reset();if(!retainSnapshot)snapshot=NorthlightDrawSnapshot::Mesh{};}
         ~Replay(){releaseResources();}
     };
     std::vector<std::unique_ptr<Replay>> replays,freeReplays,heldShadowReplays;
+    std::vector<uint32_t> directionalReplayCandidates,directionalPaletteOrder;
+    NorthlightPointShadow::ReplayIndexBatches shadowReplayIndices;
     /* Sampled-frame instancing audit: geometry identity of each drawn replay in one pass. */
     struct ReplayMeshKey {const void* index;const void* stream;const void* decl;UINT offset,start,count;INT base;unsigned group;
         bool operator<(const ReplayMeshKey& o)const{return std::tie(index,stream,decl,offset,start,count,base,group)<std::tie(o.index,o.stream,o.decl,o.offset,o.start,o.count,o.base,o.group);}
@@ -1178,7 +903,7 @@ private:
     bool shadowSelectionDone=false;
     unsigned replayTriangleBins[6]={},skinnedTriangleBins[6]={},acceptedTriangleBins[6]={},acceptedSkinnedTriangleBins[6]={};
     unsigned smallShadowEarly=0,smallShadowGI=0;
-    size_t pooledSnapshotBytes=0; // Snapshot and overflow declaration storage.
+    size_t pooledSnapshotBytes=0; // Snapshot, overflow declarations and retained float banks.
     NorthlightDrawSnapshot::Frame replaySnapshots;
     // Snapshot lookup stays on Frame's Prefetch default. Profiling must not
     // rotate production algorithms or run key microbenchmarks on this thread.
@@ -1207,11 +932,6 @@ private:
     float actorShadowOrigin[3]={};bool actorShadowOriginValid=false,actorShadowOver=false;unsigned actorShadowTransitions=0,actorShadowCapBinds=0;double actorShadowPrepareMs=0,actorShadowChooseMs=0; /* last frame's shadow pivot ranks the actor quota */
     size_t actorShadowRadiusToggles=0,actorShadowRadiusFlicker=0,actorShadowRadiusRekeyed=0,actorShadowRadiusRekeyFlips=0,actorShadowAttachToFree=0,actorShadowFreeToAttach=0,actorShadowAttachToFreeBeyond=0,actorShadowFreeToAttachBeyond=0; /* ActorShadowRadius per log window: inside<->outside changes, changes within RadiusDwell of the last one, identities kept across a key change */
     NorthlightGpuScene::NativeClient& replayGpuCache=gpuScene->shadows;
-    NorthlightReplayBulk::Layout replayBulkLayout;
-    IDirect3DVertexBuffer9* replayVerticesGPU[4]={};
-    IDirect3DIndexBuffer9* replayIndicesGPU=nullptr;
-    UINT replayVertexBytes[4]={},replayIndexBytes=0; /* 0.3.192 (DXVK3): the ring capacities */
-    NorthlightDynamicRing::Ring replayVertexRing[4],replayIndexRing;
     // 0.3.177 (r83): shared handles: a replay captured with a program keeps it for the frame even if
     // registerShader() erases the entry (the prepare worker reads it without the map).
     std::unordered_map<IDirect3DVertexShader9*,std::shared_ptr<const NorthlightActorDeformation::Program>> actorPrograms;
@@ -1224,6 +944,13 @@ private:
     LONGLONG terrainCaptureTicks=0,replayCaptureTicks=0;
     LARGE_INTEGER captureFrequency={};
     unsigned terrainCaptureCalls=0,terrainUPCalls=0,replayCaptureCalls=0,unknownCaptureCalls=0,captureSourceHandoffs=0;
+    NorthlightAdtBounds::Coverage nativeAdtCoverage;
+#ifdef NORTHLIGHT_REPLAY_STAND
+    unsigned captureProjectionGets=0,captureProjectionLoans=0;
+    unsigned terrainCameraGets=0,terrainCameraBorrows=0;
+    unsigned capturePacketReads=0,capturePacketLoans=0,capturePacketReadRegisters=0,capturePacketLoanRegisters=0;
+    unsigned captureWmoProjectionBorrows=0,captureWmoPacketBorrows=0,captureWmoPacketRegisters=0;
+#endif
     NorthlightDetailShadow::Budget detailBudget;
     unsigned detailCandidates=0,detailMaskRejected=0,detailRangeRejected=0,detailBudgetRejected=0,detailBlendRejected=0;
     unsigned rejSmall=0,rejGate=0,rejCut=0,rejBudget=0,rejOther=0; /* task 43: per frame; WORLD CPU capture line */
@@ -1265,27 +992,39 @@ private:
         if(prepareHeld(*raw)){try{prepareQuarantine.emplace_back(raw);}catch(...){} return;} /* 0.3.177: an abandoned worker may read it; on failure it leaks (0.3.183: its frame's only) */
         std::unique_ptr<Replay> p(raw);
         const size_t limit=replayPoolLimit(),records=freeReplays.size()+1;
-        // Empty Replay records still own their constant banks and metadata.
+        // Count metadata once and charge retained capacity separately.
         if(records>limit/sizeof(Replay)||pooledSnapshotBytes>limit-records*sizeof(Replay))return;
         const size_t available=limit-records*sizeof(Replay)-pooledSnapshotBytes;
         p->releaseResources(true);
         if(p->retainedBytes()>available)p->snapshot=NorthlightDrawSnapshot::Mesh{};
+        if(p->retainedBytes()>available)p->dropConstantBank();
         const size_t capacity=p->retainedBytes();if(capacity>available)return;
         pooledSnapshotBytes+=capacity;
         try{freeReplays.push_back(std::move(p));}catch(...){pooledSnapshotBytes-=capacity;}
     }
     struct ReplayRecycle {WorldRenderer* owner;void operator()(Replay* replay)const{if(replay)owner->recycleReplay(replay);}};
+
+    void logReplayConstantStorage(unsigned rendererFrame)const{
+        NorthlightMemoryFootprint::Counter memory;
+        size_t packets=0;
+        for(const auto* list:{&replays,&heldShadowReplays})for(const auto& p:*list)if(p){
+            ++packets;
+            memory.allocation(NorthlightMemoryFootprint::Metadata,p->constantBank.get(),sizeof(Replay::FloatBank));
+        }
+        logf("MODEL replay banks rendererFrame=%u packets=%zu floatBanks=%zu floatBytes=%llu inlineFloatBytes=%zu complete=%u",
+            rendererFrame,packets,memory.owners(),(unsigned long long)memory.total(),packets*sizeof(Replay::FloatBank),unsigned(memory.complete()));
+    }
     // Immutable for a registered shader. Re-registration replaces the complete
     // record before the pointer can be used for a different shader object.
     struct CaptureShader {
         IDirect3DVertexShader9* replacement=nullptr;
         bool color0W=false,detailDoodad=false;unsigned projectionKind=0;
         NorthlightShaderConstants::Usage usage;
-        bool skinned=false,sm1=false,fog=false;
+        NorthlightPointShadow::RigidPoseRows pointRigidRows;
+        bool skinned=false,sm1=false,fog=false,wmo=false;
         std::shared_ptr<const NorthlightActorDeformation::Program> program; /* 0.3.179 (T1): actorPrograms' object (null: none) */
     };
     std::unordered_map<IDirect3DVertexShader9*,CaptureShader> captureShaders;
-    uint64_t shadowSliceCandidates=0,shadowSliceCreated=0,shadowSliceFallback=0,shadowSliceWordsBefore=0,shadowSliceWordsAfter=0;
     // 0.3.196 (task 12): one-entry lookup cache for repeated draws of the same shader. terrainShaders/captureShaders change only in
     // registerShader (a freed address can be re-registered), which bumps worldShaderGen first, so a stale entry never matches.
     // The cached CaptureShader pointer is a map node (stable across rehash) and is dropped with the generation on any erase.
@@ -1309,18 +1048,7 @@ private:
     // since 0.3.183 prepareQuarantinedPrograms),
     // so it is destroyed first; ~WorldRenderer also joins it explicitly before anything else.
     NorthlightActorPrepare::Worker<Replay> prepareWorker;
-    // Game terrain pixel shaders with their own shadow term neutralised
-    // (patch_terrain_shadow.h); nullptr records a shader the patch rejected.
-    // Bound only for terrain draws while the extension's shadows are active.
-    std::unordered_map<IDirect3DPixelShader9*,IDirect3DPixelShader9*> terrainShadowShaders;
-    std::unordered_map<IDirect3DVertexShader9*,IDirect3DVertexShader9*> terrainCoverageVertices;
-    struct TerrainCoveragePixel {IDirect3DPixelShader9* shader=nullptr;unsigned constants=0;bool known=false;};
-    std::unordered_map<IDirect3DPixelShader9*,std::array<TerrainCoveragePixel,2>> terrainCoveragePixels;
-    float terrainCoverageMatrices[2][16]={},terrainCoverageView[16]={},terrainCoverageRows[24]={};
-    bool terrainCoverageRowsValid=false;
-    unsigned terrainCoverageSources=1;
-    unsigned terrainCoverageReports=0;
-    unsigned terrainShadowPatched=0,terrainShadowRejected=0,terrainShadowReports=0;
+    NorthlightTerrainShadowPrograms terrainShadowPrograms;
     // True only after a render() that drew at least one shadow source and
     // ran the lighting composite; terrain draws of the next frame consult it.
     bool shadowsComposited=false;
@@ -1337,6 +1065,9 @@ private:
     // 0.3.159: the cascade frames use (pivot.x, pivot.y, lowest pivot z of the last second), so a
     // jump leaves every pivot-relative shadow band where it was (cascade_anchor.h).
     NorthlightCascadeAnchor::Anchor cascadeAnchor;std::string cascadeAnchorMap;
+    void resetShadowPivot(){
+        pivotValid=false;pivotDistance=12.f;pivotCorrection.reset();pivotSelfCaptured=false;cascadeAnchor.reset();
+    }
     V shadowPivot(){
         const V eye=vec(context.camera);
         V forward=V(context.inverseView[8],context.inverseView[9],context.inverseView[10])*projection[2];
@@ -1376,6 +1107,7 @@ private:
     static bool different(V a,V b,float e){return NorthlightGI::dot(a-b,a-b)>e*e;}
     static V quantize(V p,float step){return V(std::floor(p.x/step)*step,std::floor(p.y/step)*step,std::floor(p.z/step)*step);}
 #include "world_point_rendering.inl"
+    NorthlightWorldFlashShadows flashShadows;
 #include "world_flash_rendering.inl"
 #include "world_soft_shadows.inl"
 #include "world_near_environment.inl"
@@ -1477,6 +1209,7 @@ private:
         farShadowCoverage=flightCoverage(staticFramePivot,map);
         try {auto request=StaticShadow::makeRequest(map,staticFramePivot,sourceDirections,lit,
                 celestialValid,celestialValid?celestial.dayFraction:0.,staticAllowLoads,NorthlightQuality::foreverCelestial(quality));
+             if(NorthlightFrameParityClock::fixedStaticShadowStream())request.diagnosticTick=visualTime();
              request.groundOffset=staticFramePivot.z-farShadowCoverage.center.z;request.farRadius=farShadowCoverage.radius;staticStream->request(request);
              if(staticRecoveryPaused){staticStream->setPaused(false);staticRecoveryPaused=false;logf("STATIC SHADOW recovery paused=0 reason=geometry-ready");}}
         catch(...){if(staticDrawFailures++<4)logf("STATIC SHADOW request deferred: allocation failure; existing shadows retained");}
@@ -1486,6 +1219,11 @@ private:
         ++staticFrame;
         if(!staticStream)return;
         const DWORD now=GetTickCount();
+        const bool fixed=NorthlightFrameParityClock::fixedStaticShadowStream();
+        if(fixed&&!staticStream->waitIdle(5000)){
+            logf("STATIC_PARITY_FAILURE rendererFrame=%u stage=cpu-timeout",parityFrame);
+            return;
+        }
         auto next=staticStream->snapshot();
         // Never carry another world's casters while its replacement loads.
         if(staticScene&&staticScene->map!=lastRequest.map){staticCasters.reset();staticMatcher.clear();staticM2Memory.clear();staticScene.reset();staticOwnerGeneration=UINT64_MAX;}
@@ -1498,10 +1236,22 @@ private:
         }
         if(staticScene&&(!staticRetryTick||DWORD(now-staticRetryTick)>=1000)){
             auto phase=streamingPhases.measure(NorthlightStreaming::PhaseProfile::StaticCache);
-            try {if(!staticCasters.update(d,staticScene,staticFrame,allowUploads,budget))staticRetryTick=now;else staticRetryTick=0;
-                 streamingPhases.record(NorthlightStreaming::PhaseProfile::StaticPublish,staticCasters.stats().publishFrameMs);}
-            catch(...){staticRetryTick=now;if(staticDrawFailures++<4)logf("STATIC SHADOW upload deferred: allocation failure; base shadows retained");}
+            try {
+                // Both halves consume the same byte allowance independently of
+                // how much of the shared render-thread deadline other passes spent.
+                std::optional<NorthlightStreaming::Budget> fixedBudget;
+                if(fixed)fixedBudget.emplace(2u<<20,std::numeric_limits<double>::infinity());
+                if(!staticCasters.update(d,staticScene,staticFrame,allowUploads,fixed?&*fixedBudget:budget,fixed)){
+                    staticRetryTick=now;
+                    if(fixed)logf("STATIC_PARITY_FAILURE rendererFrame=%u stage=gpu-upload",parityFrame);
+                }else staticRetryTick=0;
+                streamingPhases.record(NorthlightStreaming::PhaseProfile::StaticPublish,staticCasters.stats().publishFrameMs);
+            }catch(...){staticRetryTick=now;if(fixed)logf("STATIC_PARITY_FAILURE rendererFrame=%u stage=gpu-exception",parityFrame);if(staticDrawFailures++<4)logf("STATIC SHADOW upload deferred: allocation failure; base shadows retained");}
         }
+        if(fixed&&staticScene){const auto& g=staticCasters.stats();
+            logf("STATIC_PARITY rendererFrame=%u upload=%u placements=%u cpuModels=%u ready=%u pending=%u bytes=%llu content=%016llx",
+                 parityFrame,unsigned(allowUploads),staticScene->stats.placements,staticScene->stats.models,g.readyModels,g.pendingModels,
+                 (unsigned long long)g.frameBytes,(unsigned long long)staticCasters.readyContentHash());}
         if(staticScene&&NorthlightDiagnostics::enabled()&&(!staticLogTick||DWORD(now-staticLogTick)>=2000)){
             staticLogTick=now;const auto& c=staticScene->stats;const auto& g=staticCasters.stats();
             logf("STATIC INSTANCE STREAM totalLocks=%llu totalDiscards=%llu totalBytes=%llu",
@@ -1527,995 +1277,14 @@ private:
             staticDedupSkipped=staticDedupAttempts=staticDedupMatches=staticM2Skipped=staticM2Verified=staticM2Rejected=0;
         }
     }
-    void work() {
-      // Below-normal priority: the solve competes with the single game thread
-      // for the same performance cores under Rosetta; it is latency-tolerant.
-      SetThreadPriority(GetCurrentThread(),THREAD_PRIORITY_BELOW_NORMAL);
-      try {
-        // GIThreads>1: helpers at the same below-normal priority; probe values are scheduling-independent.
-        std::unique_ptr<NorthlightGI::SolvePool> solvePool;
-        NorthlightQuality::Settings solverQuality;solverQuality.giThreads=quality.giThreads;
-        const unsigned solverThreads=NorthlightQuality::giSolverThreads(solverQuality,NorthlightStream::cores());
-        if(solverThreads>1)solvePool=std::make_unique<NorthlightGI::SolvePool>(solverThreads-1,[]{SetThreadPriority(GetCurrentThread(),THREAD_PRIORITY_BELOW_NORMAL);});
-        if(quality.giThreads>1)logf("QUALITY GI solver threads requested=%u effective=%u cores=%u priority=below-normal",quality.giThreads,solverThreads,NorthlightStream::cores());
-        // 0.3.153: geometry regions are built on their own below-normal thread
-        // while this worker keeps solving camera moves against the published
-        // previous generation. The builder alone owns the local geometry cache,
-        // memory admission, light cache and palette region; it never touches GI
-        // state. Guarded by mutex: the finished build, the worker's request for
-        // one after it dropped its region, and builder exit.
-        struct Built {std::shared_ptr<NorthlightGI::BVH> bvh;std::shared_ptr<NorthlightWorldMesh::WorldMeshUploadPlan> plan;std::shared_ptr<const PreparedCommit> prepared;
-            std::shared_ptr<const NorthlightRegionalFog::Field> fog;std::vector<NorthlightGI::PointLight> lights;std::vector<NorthlightLocalLights::Light> rawLights;
-            std::shared_ptr<const NorthlightLightAttachments::Records> lightAttachments;
-            std::string map;V center;uint64_t id=0;DWORD ms=0;unsigned superseded=0;};
-        std::unique_ptr<Built> builtGeometry;bool geometryWanted=false,builderExit=false;
-        std::condition_variable buildWake;std::thread builder;
-        // Joins before anything the builder uses is destroyed, also when this worker faults.
-        struct BuilderJoin {std::mutex& mutex;std::condition_variable& wake;bool& exit;std::thread& thread;
-            ~BuilderJoin(){{std::lock_guard<std::mutex> lock(mutex);exit=true;}wake.notify_all();if(thread.joinable())thread.join();}} builderJoin{mutex,buildWake,builderExit,builder};
-        builder=std::thread([&]{
-          SetThreadPriority(GetCurrentThread(),THREAD_PRIORITY_BELOW_NORMAL);
-          try {
-          NorthlightGeometryMemory::Generations<NorthlightGI::BVH> generations;
-          // Reuse sources, placement acceleration and shadow preparation under
-          // the former 32 MiB local-cache allowance, including live GI leases.
-          struct Preparation {NorthlightGI::LocalSceneCache geometry{NorthlightGI::LocalSceneCache::Limits{16u*1024u*1024u}};NorthlightWorldMesh::PreparationCache mesh;Preparation(){mesh.setLimit(8u*1024u*1024u);}};
-          auto prepared=std::make_shared<Preparation>();
-          std::atomic_store(&gpuScene->workerPreparation,std::shared_ptr<void>(prepared));
-          struct Unpublish {std::shared_ptr<void>& slot;~Unpublish(){std::atomic_store(&slot,std::shared_ptr<void>{});}} unpublish{gpuScene->workerPreparation};
-          NorthlightGI::LocalSceneCache pressureGeometry{NorthlightGI::LocalSceneCache::Limits{0}};
-          auto& localGeometry=prepared->geometry;auto& meshPreparation=prepared->mesh;
-          auto& sceneSources=*sharedSceneSources;
-          const NorthlightGI::SceneSourceProvider sceneSource=sceneSources.provider();
-          const NorthlightGI::SceneSourceRevision sceneRevision=[&](const std::string& path){return sceneSources.findIdentity(path);};
-          std::string preparationMap;
-          auto resetPreparation=[&]{meshPreparation.reset();sceneSources.reset();localGeometry.reset();};
-          // Independent worker-owned address witness. Every allocation still
-          // queries CURRENT aggregate free memory and a CURRENT free region;
-          // a stale/split witness falls back to the complete address-space walk.
-          NorthlightMemoryAdmission::Probe workerAdmissionProbe;
-          bool workerMemoryExact=true;double workerMemoryMs=0;
-          NorthlightGeometryMemory::Sample lastWorkerMemory;DWORD lastWorkerMemoryAt=0;
-          uint64_t minimumBuildAvailable=UINT64_MAX;bool profileBuildActive=false;
-          auto workerMemory=[&](NorthlightGeometryMemory::Budget budget=NorthlightGeometryMemory::buildBudget()){
-              const auto begin=std::chrono::steady_clock::now();
-              const auto result=geometryAdmissionFor(workerAdmissionProbe,budget,&workerMemoryExact);
-              if(profileBuildActive){lastWorkerMemory=result;lastWorkerMemoryAt=GetTickCount();if(result.valid)minimumBuildAvailable=std::min(minimumBuildAvailable,result.available);}
-              workerMemoryMs+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count();
-              return result;
-          };
-          DWORD memoryReportAt=0,memoryFootprintReportAt=0;
-          DWORD fogAttemptAt=0;std::string fogAttemptMap;
-#if NORTHLIGHT_DEV_TUNING
-          std::shared_ptr<const NorthlightZoneTuning::Overrides> fogTuning;
-#endif
-          NorthlightTerrainReach::State reachState;NorthlightGI::SceneSizeHint terrainSizeHint; /* terrain scene counts of the last build; keyed by reach, reset per map */NorthlightTerrainReach::Episode memoryStall;
-          NorthlightGeometryMemory::EntryLift entryLift,chunkLift,coldLift;
-          std::string entryLiftMap;V entryLiftCenter;
-          // Episode logs (begin on the first memory refusal, end when the build is delivered or dropped).
-          // `required` is the refused check's aggregate floor: published (at most the plain entry floor)
-          // as the memory guard's demand, so the mod's own caches shrink while the builder waits.
-          auto stallBegin=[&](const char* stage,NorthlightGeometryMemory::Sample sample,uint64_t required,uint64_t requiredLargest=0){
-              NorthlightMemMap::deferredRequest.store(true,std::memory_order_relaxed); /* task 42: the Device queues a MEMMAP memory-deferred point (throttled there) */
-              geometryMemoryDemand.store(std::min(required,NorthlightGeometryMemory::buildBudget().available),std::memory_order_relaxed);
-              if(memoryStall.refused(GetTickCount())){
-                  char largest[32];NorthlightGeometryMemory::formatLargestMiB(largest,sizeof largest,sample.largest,workerMemoryExact);
-                  NorthlightGeometryMemory::Budget checked;checked.available=required;checked.largest=requiredLargest;checked.valid=true;
-                  const auto why=NorthlightGeometryMemory::refusal(sample,checked);
-                  logf("WORLD geometry memory stall begin stage=%s availableMiB=%llu largestMiB=%s generations=%zu refused=%s need=%llu",
-                      stage,(unsigned long long)(sample.available>>20),largest,generations.live(),why.limit,(unsigned long long)(why.need>>20));}
-          };
-          auto stallEnd=[&](const char* outcome){
-              geometryMemoryDemand.store(0,std::memory_order_relaxed);
-              uint32_t ms=0;unsigned tries=0;
-              if(memoryStall.end(GetTickCount(),ms,tries))logf("WORLD geometry memory stall end ms=%u attempts=%u outcome=%s",ms,tries,outcome);
-          };
-          auto abandonGeometry=[&](){
-              // A measured peak belongs to the abandoned spatial region. It
-              // must not refuse a different region before that build starts.
-              entryLift.clear();chunkLift.clear();coldLift.clear();terrainSizeHint={};stallEnd("superseded");
-          };
-          NorthlightLocalLights::Cache lightCache(root+"world-cache/lights");
-          NorthlightLightAttachments::Cache lightAttachmentCache(root+"world-cache/lights");
-          // Last delivered region. Any build that does not deliver forces the next
-          // request to build again, as the 0.3.151 worker did without a BVH.
-          std::string builtMap;V builtCenter;bool builtValid=false,wanted=false,retry=false;uint64_t seen=0;unsigned superseded=0;
-          std::string cacheCheckedMap;bool cacheMapHasTiles=true,uncachedPublished=false;unsigned uncachedSkips=0;uint64_t uncachedSkippedId=0;
-          for(;;){
-            Request r;std::shared_ptr<const Snapshot> restore;
-            {std::unique_lock<std::mutex> lock(mutex);buildWake.wait(lock,[&]{return stopping||builderExit||retry||geometryWanted||request.id!=seen;});
-             if(stopping||builderExit)return;r=request;seen=r.id;retry=false;wanted=wanted||geometryWanted;geometryWanted=false;
-             if(payloadRebuildSource){
-                 if(r.enabled&&!r.menu&&payloadRebuildSource->bvh&&NorthlightWorldStreaming::applicable(payloadRebuildSource->map,payloadRebuildSource->center,r.map,r.camera)){
-                     restore=payloadRebuildSource;r.geometryCenter=restore->center;wanted=true;
-                 }else payloadRebuildSource.reset();
-             }}
-            if(!r.enabled||r.menu)continue;
-            profileBuildActive=false;
-            if(workerMemoryTrim.exchange(false,std::memory_order_relaxed))resetPreparation(); /* the entry lift stays: it is a floor on measured free memory, so what a trim freed already counts */
-            if(preparationMap!=r.map){resetPreparation();preparationMap=r.map;}
-            // Publish small authored zone data before expensive geometry work.
-            // No cache reads are performed by the sky or world draw callbacks.
-            int paletteTX=int(std::floor((NorthlightRegionalFog::WorldZero-r.camera.y)/NorthlightRegionalFog::TileSize));
-            int paletteTY=int(std::floor((NorthlightRegionalFog::WorldZero-r.camera.x)/NorthlightRegionalFog::TileSize));
-            std::shared_ptr<const PaletteRegion> paletteRegion;
-            {std::lock_guard<std::mutex> lock(mutex);paletteRegion=publishedPaletteRegion;}
-            if(!paletteRegion||paletteRegion->map!=r.map||paletteRegion->tx!=paletteTX||paletteRegion->ty!=paletteTY){
-                auto next=std::make_shared<PaletteRegion>();next->map=r.map;next->tx=paletteTX;next->ty=paletteTY;
-                next->region=NorthlightRegionalFog::loadRegion(root+"world-cache/fog",r.map,r.camera.x,r.camera.y);
-                paletteRegion=next;
-                {std::lock_guard<std::mutex> lock(mutex);publishedPaletteRegion=next;}
-            }
-            std::shared_ptr<const FogRegion> fogRegion;
-            {std::lock_guard<std::mutex> lock(mutex);fogRegion=publishedFogRegion;}
-#if NORTHLIGHT_DEV_TUNING
-            const auto requestedFogTuning=devSnapshot();
-            const bool fogTuningChanged=requestedFogTuning!=fogTuning;
-#else
-            const bool fogTuningChanged=false;
-#endif
-            // BEGIN FOG FIELD BUILD: independent of GI/shadow entry admission.
-            const bool fogNeeded=r.fogEnabled&&!paletteRegion->region.tiles.empty()&&
-                (!fogRegion||fogRegion->map!=r.map||fogTuningChanged||!NorthlightWorldStreaming::within(fogRegion->center,r.camera,NorthlightRegionalFog::RefreshDistance));
-            const DWORD fogNow=GetTickCount();
-            if(fogNeeded&&(fogAttemptMap!=r.map||!fogAttemptAt||fogNow-fogAttemptAt>=1000)){
-                fogAttemptMap=r.map;fogAttemptAt=fogNow;
-                const auto fogStart=std::chrono::steady_clock::now();
-                bool fogDeferred=false;const auto fogBudget=NorthlightGeometryMemory::inBuildBudget();
-                auto fogMemory=workerMemory(fogBudget);
-                NorthlightGI::AllocationAdmission fogAdmission=[&](uint64_t bytes){
-                    if(bytes<NorthlightGeometryMemory::MiB)return true;
-                    const auto budget=NorthlightGeometryMemory::inBuildBudget(bytes);fogMemory=workerMemory(budget);
-                    if(NorthlightGeometryMemory::admits(fogMemory,budget))return true;fogDeferred=true;return false;
-                };
-                std::string fogError;
-                try{
-                    auto field=std::make_shared<NorthlightRegionalFog::Field>();
-                    const NorthlightRegionalFog::ZoneScale* scale=nullptr;
-#if NORTHLIGHT_DEV_TUNING
-                    const NorthlightRegionalFog::ZoneScale zoneScale=[&](uint32_t zone,float& day,float& nightExtra){NorthlightZoneTuning::fogScale(*requestedFogTuning,r.map,zone,day,nightExtra);};scale=&zoneScale;
-#endif
-                    if(NorthlightGeometryMemory::admits(fogMemory,fogBudget)&&NorthlightRegionalFog::buildCachedField(root+"world-cache",r.map,r.camera,paletteRegion->region,*field,fogError,fogAdmission,sceneSource,scale)){
-                        auto next=std::make_shared<FogRegion>();next->map=r.map;next->center=r.camera;next->field=std::move(field);next->requestId=r.id;
-                        bool accepted=false;
-                        {std::lock_guard<std::mutex> lock(mutex);if(request.map==r.map&&NorthlightWorldStreaming::within(next->center,request.camera,NorthlightRegionalFog::RefreshDistance)){publishedFogRegion=next;fogRegion=std::move(next);accepted=true;}}
-#if NORTHLIGHT_DEV_TUNING
-                        if(accepted)fogTuning=requestedFogTuning;
-#endif
-                        if(!accepted)fogAttemptAt=0;
-                        if(accepted&&NorthlightDiagnostics::enabled())logf("FOG FIELD ready map=\"%s\" request=%llu ground=%u air=%u fog=%u cpuKiB=%zu buildMs=%.3f bvhRequired=0 meshRequired=0",r.map.c_str(),(unsigned long long)r.id,fogRegion->field->groundCells,fogRegion->field->airCells,fogRegion->field->fogCells,sizeof(NorthlightRegionalFog::Field)/1024,std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-fogStart).count());
-                    }else if(NorthlightDiagnostics::enabled())logf("FOG FIELD deferred map=\"%s\" request=%llu memory=%u availableMiB=%llu requiredMiB=%llu reason=%s",r.map.c_str(),(unsigned long long)r.id,unsigned(fogDeferred||!NorthlightGeometryMemory::admits(fogMemory,fogBudget)),(unsigned long long)(fogMemory.available>>20),(unsigned long long)(fogBudget.available>>20),fogError.c_str());
-                }catch(const std::bad_alloc&){logf("FOG FIELD deferred map=\"%s\" reason=allocation; previous field retained",r.map.c_str());}
-            }
-            // END FOG FIELD BUILD
-            if(!wanted&&builtValid&&!NorthlightWorldStreaming::needsGeometry(builtMap,builtCenter,r.map,r.geometryCenter))continue;
-            builtValid=false;
-            auto result=std::make_shared<Snapshot>();result->map=r.map;result->center=r.geometryCenter;
-            DWORD started=GetTickCount();result->requestId=r.id;result->requestedAt=r.queuedAt;result->queueMs=started-r.queuedAt;
-            minimumBuildAvailable=UINT64_MAX;uint64_t maximumObservedCapacity=0;double memoryProfileMs=0;
-            const bool profileThisBuild=NorthlightDiagnostics::enabled()&&(!memoryFootprintReportAt||started-memoryFootprintReportAt>=10000);
-            profileBuildActive=profileThisBuild;
-            if(profileThisBuild)memoryFootprintReportAt=started;
-            bool chunkedLocal=bool(restore),coldRecovery=bool(restore),spoolTerrain=false;
-            auto profileMemory=[&](const char* stage,const NorthlightWorldMesh::WorldMeshUploadPlan* plan=nullptr,const NorthlightGI::WorldScene* scratch=nullptr,const NorthlightWorldMeshPages::Plan* pages=nullptr){
-                if(!profileThisBuild)return;
-                const auto profileStart=std::chrono::steady_clock::now();
-                using namespace NorthlightMemoryFootprint;
-                Counter memory;
-                generations.forEach([&](const NorthlightGI::BVH& bvh){bvh.accountMemory(memory);});
-                localGeometry.accountMemory(memory);sceneSources.accountMemory(memory);meshPreparation.accountMemory(memory);
-                std::shared_ptr<Snapshot> publication;std::shared_ptr<NorthlightWorldMesh::WorldMeshUploadPlan> pendingPlan;
-                {std::lock_guard<std::mutex> lock(mutex);publication=published;if(builtGeometry)pendingPlan=builtGeometry->plan;}
-                if(publication){if(publication->bvh)publication->bvh->accountMemory(memory);if(publication->meshPlan)publication->meshPlan->accountMemory(memory);
-                    NorthlightGI::accountProbeAtlas(memory,publication->atlas);if(publication->coarseAtlas)NorthlightGI::accountProbeAtlas(memory,*publication->coarseAtlas);memory.vector(Metadata,publication->localLights);
-                    if(publication->fogField)memory.allocation(Fog,publication->fogField.get(),sizeof(*publication->fogField));}
-                if(pendingPlan)pendingPlan->accountMemory(memory);
-                if(plan)plan->accountMemory(memory);if(scratch)scratch->accountMemory(memory);if(pages)pages->accountMemory(memory);
-                if(paletteRegion){memory.vector(Fog,paletteRegion->region.tiles);for(const auto& tile:paletteRegion->region.tiles){memory.vector(Fog,tile.water);memory.vector(Fog,tile.indoors);}}
-                if(fogRegion&&fogRegion->field)memory.allocation(Fog,fogRegion->field.get(),sizeof(*fogRegion->field));
-                maximumObservedCapacity=std::max(maximumObservedCapacity,memory.total());
-                logCpuFootprint("builder-reachable",stage,r.id,memory);
-                const auto entryBudget=coldRecovery?coldLift.apply(NorthlightGeometryMemory::coldChunkBuildBudget(),GetTickCount()):chunkedLocal?chunkLift.apply(NorthlightGeometryMemory::chunkBuildBudget(),GetTickCount()):entryLift.apply(NorthlightGeometryMemory::buildBudget(64*NorthlightGeometryMemory::MiB),GetTickCount());
-                NorthlightMemoryProfile::Admission admission;
-                admission.available=lastWorkerMemory.available;admission.largest=lastWorkerMemory.largest;admission.valid=lastWorkerMemory.valid;admission.largestExact=workerMemoryExact;
-                admission.entryRequired=entryBudget.available;admission.largestRequired=entryBudget.largest;
-                admission.reserve=NorthlightGeometryMemory::ProcessReserve;admission.entryHeadroom=coldRecovery?NorthlightGeometryMemory::ColdEntryHeadroom:chunkedLocal?NorthlightGeometryMemory::EntryHeadroom-32*NorthlightGeometryMemory::MiB:NorthlightGeometryMemory::EntryHeadroom;admission.interiorHeadroom=(coldRecovery||spoolTerrain)?NorthlightGeometryMemory::ColdInBuildHeadroom:NorthlightGeometryMemory::InBuildHeadroom;
-                admission.minimumAvailable=minimumBuildAvailable==UINT64_MAX?0:minimumBuildAvailable;admission.maximumKnownCapacity=maximumObservedCapacity;
-                std::strncpy(admission.stage,stage,sizeof(admission.stage)-1);NorthlightMemoryProfile::store().admission(admission);
-                logf("WORLD MEMORY admission stage=%s buildId=%llu processReserveMiB=%llu entryHeadroomMiB=%llu interiorHeadroomMiB=%llu entryRequiredMiB=%llu availableMiB=%llu minObservedAvailableMiB=%llu maxObservedCapacityMiB=%.3f sampleAgeMs=%lu sampleValid=%u sourceChargedInclusiveMiB=%.3f sourceDecodedInclusiveMiB=%.3f sourceUncachedLeaseMiB=%.3f preparationChargedInclusiveMiB=%.3f ledgersNotAdditive=1 peaksAreSampled=1",
-                     stage,(unsigned long long)r.id,(unsigned long long)(NorthlightGeometryMemory::ProcessReserve>>20),(unsigned long long)(admission.entryHeadroom>>20),(unsigned long long)(admission.interiorHeadroom>>20),
-                     (unsigned long long)(entryBudget.available>>20),(unsigned long long)(lastWorkerMemory.available>>20),(unsigned long long)(minimumBuildAvailable==UINT64_MAX?0:minimumBuildAvailable>>20),double(maximumObservedCapacity)/1048576,
-                     (unsigned long)(GetTickCount()-lastWorkerMemoryAt),unsigned(lastWorkerMemory.valid),double(sceneSources.liveBytes())/1048576,double(sceneSources.decodedLiveBytes())/1048576,double(sceneSources.uncachedLeaseBytes())/1048576,double(meshPreparation.stats().bytes)/1048576);
-                memoryProfileMs+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-profileStart).count();
-            };
-            auto publishError=[&](){
-                stallEnd("error"); // the build ends here whatever the publication outcome
-                std::lock_guard<std::mutex> lock(mutex);
-                if(stopping||!request.enabled||request.id!=r.id){++superseded;return false;}
-                // A failed replacement must not replace usable geometry with
-                // an empty error snapshot. Its existing spatial expiry remains.
-                if(published&&published->bvh&&NorthlightWorldStreaming::retained(published->map,published->center,request.map,request.camera)){
-                    logf("WORLD replacement deferred; previous region retained: %s",result->message.c_str());return false;
-                }
-                logf("WORLD geometry unavailable: %s",result->message.c_str());
-                published=result;return true;
-            };
-            // Geometry validity is spatial, independent of the latest GI
-            // request ID. A camera retarget must not discard a usable build.
-            auto currentGeometry=[&](){std::lock_guard<std::mutex> lock(mutex);return !stopping&&request.enabled&&NorthlightWorldStreaming::applicable(r.map,r.geometryCenter,request.map,request.camera);};
-            auto deferBuild=[&](const char* stage,NorthlightGeometryMemory::Sample sample,unsigned delay,const NorthlightGeometryMemory::Budget* budget=nullptr){
-                DWORD now=GetTickCount();if(!memoryReportAt||now-memoryReportAt>=1000){memoryReportAt=now;logGeometryMemory(stage,sample,generations.live(),workerMemoryExact,budget);}
-                profileMemory(stage);
-                // GI retargets inside this region cannot make a failed memory
-                // admission succeed. Keep its backoff; next loop reads latest
-                // state. Stop or a spatially invalid request still wakes now.
-                bool abandoned=false;
-                {std::unique_lock<std::mutex> lock(mutex);retry=true;
-                 buildWake.wait_for(lock,std::chrono::milliseconds(delay),[&]{return stopping||builderExit||!request.enabled||!NorthlightWorldStreaming::applicable(r.map,r.geometryCenter,request.map,request.camera);});
-                 // The request moved on and this region no longer applies: the stalled build is dropped.
-                 abandoned=stopping||builderExit||!request.enabled||!NorthlightWorldStreaming::applicable(r.map,r.geometryCenter,request.map,request.camera);}
-                if(abandoned)abandonGeometry();
-            };
-            // Issue #40: a map without world-cache tiles (dungeons, raids, battlegrounds) is checked
-            // once per entry; its error is published once and no build runs until the map changes.
-            if(r.map!=cacheCheckedMap){
-                if(!cacheMapHasTiles&&NorthlightDiagnostics::enabled())logf("WORLD cache absent end map=\"%s\" skippedBuilds=%u",cacheCheckedMap.c_str(),uncachedSkips);
-                cacheCheckedMap=r.map;cacheMapHasTiles=worldCacheHasTiles(r.map);uncachedPublished=false;uncachedSkips=0;entryLift.clear();chunkLift.clear();coldLift.clear();reachState={};terrainSizeHint={};
-                if(!cacheMapHasTiles)logf("WORLD cache absent map=\"%s\"; geometry builds skipped until the map changes",r.map.c_str());
-            }
-            if(!cacheMapHasTiles){
-                if(!uncachedPublished){result->message="No cached geometry for "+r.map;uncachedPublished=publishError();}
-                else if(r.id!=uncachedSkippedId){uncachedSkippedId=r.id;++uncachedSkips;} /* one count per GI request, not per builder wake */
-                continue;
-            }
-            // Keep the refused attempt's anchor: a stream of small requests
-            // must not carry its peak estimate across arbitrarily far travel.
-            if((entryLift.armed||chunkLift.armed||coldLift.armed)&&!NorthlightWorldStreaming::applicable(entryLiftMap,entryLiftCenter,r.map,r.camera)){
-                entryLift.clear();chunkLift.clear();coldLift.clear();terrainSizeHint={};
-            }
-            auto built=std::make_unique<Built>();
-#if NORTHLIGHT_DEV_TUNING
-            const auto tuning=devSnapshot(); // ONE snapshot per build: the terrain reach and the ground fog scales both use it
-#endif
-            // BEGIN REGION BUILD: tests substitute a synthetic region for this block.
-            {
-                const auto memoryBefore=workerAdmissionProbe.stats();const double memoryMsBefore=workerMemoryMs;
-                auto phaseStart=std::chrono::steady_clock::now();double previousProfileMs=memoryProfileMs;
-                auto phaseElapsed=[&](){const auto now=std::chrono::steady_clock::now();const double ms=std::chrono::duration<double,std::milli>(now-phaseStart).count()-(memoryProfileMs-previousProfileMs);phaseStart=now;previousProfileMs=memoryProfileMs;return std::max(0.,ms);};
-                // Probe with the lifted budget: a witness block below its contiguous floor falls back to a full walk.
-                auto memory=workerMemory(entryLift.apply(NorthlightGeometryMemory::buildBudget(64*NorthlightGeometryMemory::MiB),GetTickCount()));
-                if(!restore&&!generations.canAdmit()&&NorthlightStreaming::RetireOversizedWhenIdle){
-                    // An old generation may be in the reaper queue instead of
-                    // having been freed on the render thread (0.3.137). Wait
-                    // for that destruction (bounded) rather than 100 ms steps.
-                    const auto waitStart=std::chrono::steady_clock::now();
-                    NorthlightStreaming::cpuRetirement().waitIdle(NorthlightStreaming::RetireWaitMs);++generationWaits;
-                    const unsigned us=unsigned(std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-waitStart).count());
-                    unsigned peak=generationWaitPeakUs.load();while(us>peak&&!generationWaitPeakUs.compare_exchange_weak(peak,us)){}
-                }
-                if(!restore&&!generations.canAdmit()){++generationDeferrals;{std::lock_guard<std::mutex> lock(mutex);generationStall.deferred(GetTickCount());}deferBuild("generation-deferred",memory,100);continue;}
-                {std::lock_guard<std::mutex> lock(mutex);generationStall.admitted();}
-                // Reclaim optional caches against the same budget used to admit the build,
-                // including any temporary increase after a previous allocation refusal.
-                const auto plainEntry=restore?NorthlightGeometryMemory::coldInBuildBudget():NorthlightGeometryMemory::buildBudget(64*NorthlightGeometryMemory::MiB);
-                profileMemory("before-entry-reclaim");
-                auto entryBudget=restore?plainEntry:entryLift.apply(plainEntry,GetTickCount());
-                // BEGIN STAGED ENTRY RECLAIM: the offline MPQ episode test uses this exact block.
-                if(!NorthlightGeometryMemory::admits(memory,entryBudget)){
-                    const auto before=memory;const auto sourceBefore=sceneSources.liveBytes(),preparationBefore=meshPreparation.stats().bytes;
-                    unsigned reclaimed=1;sceneSources.trimPayloads();memory=workerMemory(entryBudget);
-                    if(!NorthlightGeometryMemory::admits(memory,entryBudget)){reclaimed=2;localGeometry.reset();memory=workerMemory(entryBudget);}
-                    if(!NorthlightGeometryMemory::admits(memory,entryBudget)){reclaimed=3;resetPreparation();memory=workerMemory(entryBudget);}
-                    if(NorthlightDiagnostics::enabled())logf("WORLD entry reclaim buildId=%llu stage=%u admitted=%u beforeAvailableMiB=%llu afterAvailableMiB=%llu beforeLargestLowerMiB=%llu afterLargestLowerMiB=%llu beforeValid=%u afterValid=%u sourceBeforeMiB=%.3f sourceAfterMiB=%.3f preparationBeforeMiB=%.3f preparationAfterMiB=%.3f requiredAvailableMiB=%llu requiredLargestMiB=%llu",
-                        (unsigned long long)r.id,reclaimed,unsigned(NorthlightGeometryMemory::admits(memory,entryBudget)),
-                        (unsigned long long)(before.available>>20),(unsigned long long)(memory.available>>20),(unsigned long long)(before.largest>>20),(unsigned long long)(memory.largest>>20),unsigned(before.valid),unsigned(memory.valid),
-                        double(sourceBefore)/1048576,double(sceneSources.liveBytes())/1048576,double(preparationBefore)/1048576,double(meshPreparation.stats().bytes)/1048576,
-                        (unsigned long long)(entryBudget.available>>20),(unsigned long long)(entryBudget.largest>>20));
-                }
-                // END STAGED ENTRY RECLAIM
-                // BEGIN CHUNKED ENTRY SELECTION
-                if(!NorthlightGeometryMemory::admits(memory,entryBudget)){
-                    const auto chunkBudget=chunkLift.apply(NorthlightGeometryMemory::chunkBuildBudget(),GetTickCount());
-                    memory=workerMemory(chunkBudget);entryBudget=chunkBudget;chunkedLocal=true;
-                }
-                if(!NorthlightGeometryMemory::admits(memory,entryBudget)){
-                    // A bounded candidate also replaces a retained generation.
-                    // Waiting for that generation to expire made lighting blink
-                    // at every 160-unit boundary below the normal 480 MiB floor.
-                    // A warm build peak does not describe this file-backed candidate.
-                    // Only an earlier cold refusal may raise its entry budget.
-                    const auto cold=coldLift.apply(NorthlightGeometryMemory::coldChunkBuildBudget(),GetTickCount());
-                    memory=workerMemory(cold);entryBudget=cold;coldRecovery=true;
-                }
-                // END CHUNKED ENTRY SELECTION
-                if(!NorthlightGeometryMemory::admits(memory,entryBudget)){stallBegin("build-deferred",memory,entryBudget.available,entryBudget.largest);deferBuild("build-deferred",memory,1000,&entryBudget);continue;}
-                const auto geometryBudget=[&](uint64_t bytes=0){return (coldRecovery||spoolTerrain)?NorthlightGeometryMemory::coldInBuildBudget(bytes):NorthlightGeometryMemory::inBuildBudget(bytes);};
-                const uint64_t entryAvailable=memory.available,entryLargest=memory.largest;
-                geometryMemoryDemand.store(0,std::memory_order_relaxed); // admitted: the build's own use is not a demand (the episode stays open)
-                // A memory refusal after entry: the next entry waits for what this attempt lacked.
-                auto liftEntry=[&](const char* stage,uint64_t required,uint64_t observed,uint64_t requiredLargest){
-                    entryLiftMap=r.map;entryLiftCenter=r.geometryCenter;
-                    auto& lift=coldRecovery?coldLift:chunkedLocal?chunkLift:entryLift;lift.refused(entryAvailable,required,observed,GetTickCount(),requiredLargest);
-                    logf("WORLD geometry entry raised stage=%s requiredAvailableMiB=%llu requiredLargestMiB=%llu entryMiB=%llu refusedMiB=%llu stageRequiredMiB=%llu holdMs=%u",
-                        stage,(unsigned long long)(lift.available>>20),(unsigned long long)(lift.largest>>20),(unsigned long long)(entryAvailable>>20),
-                        (unsigned long long)(observed>>20),(unsigned long long)(required>>20),unsigned(NorthlightGeometryMemory::LiftMs));
-                };
-                if(NorthlightDiagnostics::enabled())logGeometryMemory("before-load",memory,generations.live(),workerMemoryExact,&entryBudget);
-                profileMemory("before-load");
-                std::string error;
-                const V center=r.geometryCenter;
-                int tx=int(std::floor((17066.6666667-center.y)/533.3333333));
-                int ty=int(std::floor((17066.6666667-center.x)/533.3333333));
-                const int giChunkRadius=int((NorthlightQuality::giChunkSide(quality)-1)/2);
-                const float giGeometryRadius=NorthlightQuality::giGeometryRadius(quality);
-                std::vector<std::string> tiles;
-                for(int y=ty-giChunkRadius;y<=ty+giChunkRadius;++y)for(int x=tx-giChunkRadius;x<=tx+giChunkRadius;++x){
-                    char name[MAX_PATH*3];std::snprintf(name,sizeof name,"%sworld-cache/%s/%d_%d.fg3",root.c_str(),r.map.c_str(),x,y);
-                    FILE* f=NorthlightFiles::open(name,"rb");if(f){std::fclose(f);tiles.emplace_back(name);}
-                }
-                bool localDeferred=false;NorthlightGeometryMemory::Sample localSample;uint64_t localRequired=0,localLargest=0;
-                // Interior checks use inBuildBudget (stage entry already reserved the build headroom).
-                NorthlightGI::AllocationAdmission localAdmission=[&](uint64_t bytes){
-                    if(bytes<NorthlightGeometryMemory::MiB)return true;
-                    const auto budget=geometryBudget(bytes);auto sample=workerMemory(budget);
-                    if(NorthlightGeometryMemory::admits(sample,budget))return true;
-                    localDeferred=true;localSample=sample;localRequired=budget.available;localLargest=budget.largest;logGeometryMemory("local-geometry-allocation-deferred",sample,generations.live(),workerMemoryExact,&budget);return false;
-                };
-                auto replacement=restore?restore->bvh:std::make_shared<NorthlightGI::BVH>();
-                if(!restore&&!generations.track(replacement))throw std::runtime_error("Geometry generation admission invariant");
-                const auto sourceBefore=sceneSources.stats();const auto preparationBefore=meshPreparation.stats();
-                std::shared_ptr<const NorthlightGI::BVH> texelReuse;
-                {std::lock_guard<std::mutex> lock(mutex);if(published&&published->map==r.map)texelReuse=published->bvh;}
-                auto buildLocal=[&]{return !tiles.empty()&&(coldRecovery?pressureGeometry:localGeometry).build(tiles,root+"world-cache/models",r.map,center-V(giGeometryRadius,giGeometryRadius,320),center+V(giGeometryRadius,giGeometryRadius,320),*replacement,error,localAdmission,quality.giFastBVH!=0,coldRecovery?NorthlightGI::SceneSourceProvider{}:sceneSource,coldRecovery?NorthlightGI::SceneSourceRevision{}:sceneRevision,chunkedLocal,texelReuse.get());};
-                bool localBuilt=restore||buildLocal();
-                auto noteLocalAllocationFailure=[&]{if(!localBuilt&&!localDeferred&&(error.find("Geometry allocation deferred")!=std::string::npos||error.find("Cannot allocate")!=std::string::npos)){const auto budget=geometryBudget();localSample=workerMemory(budget);localRequired=budget.available;localLargest=budget.largest;localDeferred=true;}};
-                noteLocalAllocationFailure();
-                if(!localBuilt&&localDeferred&&!chunkedLocal){
-                    resetPreparation();chunkedLocal=true;localDeferred=false;const auto budget=chunkLift.apply(NorthlightGeometryMemory::chunkBuildBudget(),GetTickCount());
-                    const auto retryMemory=workerMemory(budget);if(NorthlightGeometryMemory::admits(retryMemory,budget))localBuilt=buildLocal();
-                    else{localDeferred=true;localSample=retryMemory;localRequired=budget.available;localLargest=budget.largest;}
-                }
-                noteLocalAllocationFailure();
-                if(!localBuilt&&localDeferred&&!coldRecovery&&currentGeometry()){
-                    resetPreparation();
-                    const auto budget=coldLift.apply(NorthlightGeometryMemory::coldChunkBuildBudget(),GetTickCount());
-                    if(NorthlightGeometryMemory::admits(workerMemory(budget),budget)){
-                        coldRecovery=chunkedLocal=true;localDeferred=false;
-                        localBuilt=buildLocal();noteLocalAllocationFailure();
-                    }
-                }
-                if(localBuilt)localDeferred=false;
-                if(!localBuilt){
-                    replacement.reset();
-                    if(localDeferred){resetPreparation();liftEntry("local-geometry",localRequired,localSample.available,localLargest);stallBegin("local-geometry",localSample,localRequired,localLargest);deferBuild("local-geometry-retry",workerMemory(),1000);continue;}
-                    result->message=error.empty()?"No cached geometry for "+r.map:error;publishError();continue;
-                }
-                if(coldRecovery&&!restore)replacement->shareMaterialTexels();
-                if(restore)logf("WORLD reset rebuild reused local BVH triangles=%zu cpuMiB=%.2f",replacement->triangleCount(),double(replacement->retainedBytes())/1048576);
-                const auto localStats=(coldRecovery?pressureGeometry:localGeometry).stats();
-                if(NorthlightDiagnostics::enabled())logf("WORLD local incremental: reads=%llu built=%llu reused=%llu reusedTriangles=%llu builtTriangles=%llu retainedMiB=%.2f flatMiB=%.2f bvhMiB=%.2f loadMs=%.3f pieceMs=%.3f assembleMs=%.3f bvhMs=%.3f totalMs=%.3f",
-                    (unsigned long long)localStats.modelReads,(unsigned long long)localStats.pieceBuilds,(unsigned long long)localStats.pieceReuses,
-                    (unsigned long long)localStats.reusedTriangles,(unsigned long long)localStats.builtTriangles,double(localStats.retainedBytes)/1048576,
-                    double(localStats.flatBytes)/1048576,double(localStats.bvhBytes)/1048576,localStats.loadMs,localStats.pieceMs,localStats.assembleMs,localStats.bvhMs,localStats.totalMs);
-                if(!currentGeometry()){++superseded;abandonGeometry();continue;}
-                // The local BVH and its cache are this build's own memory: entry reserved their headroom,
-                // so this gate keeps the in-build floor. The entry floor here refused every attempt that
-                // entered within one BVH of the configured entry floor and rebuilt it each second (0.3.212 player log).
-                spoolTerrain=coldRecovery;
-                // A scratch allocation failure belongs to the shadow plan. Keep the
-                // completed local BVH and retry only the remaining stages on disk.
-                auto spillShadow=[&]{
-                    if(spoolTerrain)return false;
-                    spoolTerrain=true;resetPreparation();
-                    if(NorthlightDiagnostics::enabled())logf("WORLD shadow build switched to temporary storage buildId=%llu retainedLocalTriangles=%zu",(unsigned long long)r.id,replacement->triangleCount());
-                    return true;
-                };
-                auto planBudget=geometryBudget();
-                memory=workerMemory(planBudget);if(NorthlightDiagnostics::enabled())logGeometryMemory("after-bvh",memory,generations.live(),workerMemoryExact,&planBudget);
-                profileMemory("after-bvh");
-                if(!NorthlightGeometryMemory::admits(memory,planBudget)&&spillShadow()){
-                    planBudget=geometryBudget();memory=workerMemory(planBudget);
-                }
-                if(!NorthlightGeometryMemory::admits(memory,planBudget)){
-                    replacement.reset();liftEntry("plan",planBudget.available,memory.available,planBudget.largest);stallBegin("plan",memory,planBudget.available,planBudget.largest);deferBuild("plan-deferred",memory,1000,&planBudget);continue;
-                }
-                // Reduced-reach retry re-enters here with the local BVH (`replacement`, still tracked in
-                // `generations`) kept: it does not depend on the terrain stages.
-                float reach=0,flightReach=0;
-                const double localPhaseMs=phaseElapsed();
-                // The point crop and cache revision are fixed for this build request.
-                bool pointBudgetExceeded=false;
-                terrainStage:
-                auto plan=std::make_shared<NorthlightWorldMesh::WorldMeshUploadPlan>();
-                // GI stays local. Load only authored terrain over the complete
-                // directional caster volume into a separate GPU shadow source.
-                bool terrainDeferred=false;NorthlightGeometryMemory::Sample terrainSample;uint64_t terrainLargest=0,terrainRequired=0,terrainRequiredLargest=0;unsigned terrainChecks=0;
-                NorthlightGI::AllocationAdmission terrainAdmission=[&](uint64_t bytes){
-                    terrainLargest=std::max(terrainLargest,bytes);
-                    // Small metadata cannot fragment a large block. Recheck the applicable
-                    // in-build budget before each large allocation.
-                    if(bytes<NorthlightGeometryMemory::MiB)return true;
-                    ++terrainChecks;
-                    const auto budget=geometryBudget(bytes);auto sample=workerMemory(budget);
-                    if(!NorthlightGeometryMemory::admits(sample,budget)){
-                        // Published BVHs retain their shared pieces. Drop the
-                        // optional owners, then measure what actually became free.
-                        // Admission can run inside meshPreparation itself;
-                        // never reset that memo reentrantly while it is borrowed.
-                        sceneSources.reset();localGeometry.reset();sample=workerMemory(budget);
-                        if(NorthlightDiagnostics::enabled())logf("WORLD geometry optional source/local owners dropped availableMiB=%llu stage=shadow-plan",
-                             (unsigned long long)(sample.available>>20));
-                    }
-                    if(NorthlightGeometryMemory::admits(sample,budget))return true;
-                    terrainDeferred=true;terrainSample=sample;terrainRequired=budget.available;terrainRequiredLargest=budget.largest;logGeometryMemory("shadow-terrain-allocation-deferred",sample,generations.live(),workerMemoryExact,&budget);
-                    logf("WORLD terrain allocation requestMiB=%.2f requiredContiguousMiB=%.2f",double(bytes)/1048576,double(bytes+NorthlightGeometryMemory::ContiguousMargin)/1048576);
-                    return false;
-                };
-#if NORTHLIGHT_DEV_TUNING
-                const uint32_t reachZone=NorthlightRegionalFog::zoneAt(paletteRegion->region,center.x,center.y);
-                const float profileReach=NorthlightZoneTuning::terrainRadius(*tuning,shadowRanges.at(r.map,reachZone),r.map,reachZone);
-#else
-                const float profileReach=shadowRanges.at(r.map,NorthlightRegionalFog::zoneAt(paletteRegion->region,center.x,center.y));
-#endif
-                const auto reachChoice=NorthlightTerrainReach::choose(reachState,std::max(profileReach,flightReach),GetTickCount(),entryAvailable,entryLargest);
-                reach=reachChoice.reach;
-#if NORTHLIGHT_DEV_TUNING
-                devTerrainReach.store(reach);
-#endif
-                if(reachChoice.tierChanged)logf("WORLD shadow terrain reach tier from=%.0f to=%.0f reason=headroom availableMiB=%llu largestMiB=%llu",reachChoice.tierFrom,reach,(unsigned long long)(entryAvailable>>20),(unsigned long long)(entryLargest>>20));
-                if(reachChoice.restored)logf("WORLD shadow terrain reach restored to=%.0f",reach);
-                // Memory refusal of an extended build: rebuild the terrain stages at the base reach now.
-                // Interior allocations use the applicable working guard, so the extended
-                // build falls back only when an interior allocation is refused under that floor. terrainAdmission
-                // re-samples on every call and the refused attempt's allocations are freed (goto destroys them) first.
-                auto retryShadowStage=[&]{
-                    // Restore only once an entry sample covers what this extended attempt lacked.
-                    uint64_t restore=0;
-                    if(!NorthlightGeometryMemory::add(entryAvailable,terrainRequired>terrainSample.available?terrainRequired-terrainSample.available:0,restore))restore=UINT64_MAX;
-                    const bool reduced=NorthlightTerrainReach::memoryRefused(reachState,reach,GetTickCount(),restore,terrainRequiredLargest);
-                    if(reduced){
-                        memoryStall.markReduced();
-                        logf("WORLD shadow terrain reach reduced from=%.0f to=%.0f reason=memory",reach,NorthlightTerrainReach::BaseReach);
-                    }
-                    return spillShadow()||reduced;
-                };
-                const bool extended=reach>NorthlightShadowTerrain::Radius;
-                const int tileReach=int(std::ceil(reach/NorthlightRegionalFog::TileSize));
-                std::function<bool(V,V)> terrainFilter,terrainChunkFilter;
-                if(extended)terrainFilter=[center,flightReach](V lo,V hi){return NorthlightRegionalShadow::selected(center,lo,hi,std::max(NorthlightRegionalShadow::DefaultRadius,flightReach));};
-                if(extended)terrainChunkFilter=[center,flightReach](V lo,V hi){return NorthlightRegionalShadow::selectedChunk(center,lo,hi,std::max(NorthlightRegionalShadow::DefaultRadius,flightReach));};
-                std::vector<std::string> shadowTiles;
-                for(int y=ty-tileReach;y<=ty+tileReach;++y)for(int x=tx-tileReach;x<=tx+tileReach;++x){
-                    const double zero=NorthlightRegionalFog::WorldZero,size=NorthlightRegionalFog::TileSize;
-                    if(terrainFilter&&!terrainFilter(V(float(zero-(y+1)*size),float(zero-(x+1)*size),-100000),V(float(zero-y*size),float(zero-x*size),100000)))continue;
-                    char name[MAX_PATH*3];std::snprintf(name,sizeof name,"%sworld-cache/%s/%d_%d.fg3",root.c_str(),r.map.c_str(),x,y);
-                    FILE* f=NorthlightFiles::open(name,"rb");if(f){std::fclose(f);shadowTiles.emplace_back(name);}
-                }
-                NorthlightGI::WorldScene shadowTerrain;
-                { uint32_t reachBits;std::memcpy(&reachBits,&reach,sizeof reachBits);terrainSizeHint.key=reachBits; } // same map (reset above) and same reach only
-                const bool terrainLoaded=NorthlightGI::loadInstancedScenes(shadowTiles,root+"world-cache/models",V(center.x-reach,center.y-reach,-100000),V(center.x+reach,center.y+reach,center.z+reach),shadowTerrain,error,1,terrainAdmission,terrainFilter,terrainChunkFilter,&terrainSizeHint,spoolTerrain?NorthlightGI::SceneSourceProvider{}:sceneSource,true,chunkedLocal||spoolTerrain,spoolTerrain);
-                if(terrainLoaded)terrainDeferred=false; // Optional reserve/provenance refusals preserve all accepted geometry.
-                const float shadowGround=terrainLoaded?NorthlightFlightShadow::ground(shadowTerrain,center):std::numeric_limits<float>::quiet_NaN();
-                if(!flightReach&&std::isfinite(shadowGround)&&center.z-shadowGround>128){
-                    const auto coverage=NorthlightFlightShadow::coverage(center,shadowGround,4096);
-                    flightReach=NorthlightFlightShadow::terrainReach(coverage.radius);
-                    if(flightReach>NorthlightRegionalShadow::DefaultRadius)goto terrainStage;
-                }
-                NorthlightGI::WorldScene pointTransmission;
-                if(terrainLoaded&&!pointBudgetExceeded){
-                    std::vector<std::string> pointTiles;
-                    for(int py=ty-1;py<=ty+1;++py)for(int px=tx-1;px<=tx+1;++px){
-                        char file[MAX_PATH*3];std::snprintf(file,sizeof file,"%sworld-cache/lights/point-transmission/%s/%d_%d.fg3",root.c_str(),r.map.c_str(),px,py);
-                        FILE* available=NorthlightFiles::open(file,"rb");if(available){std::fclose(available);pointTiles.emplace_back(file);}
-                    }
-                    NorthlightGI::PointTransmissionBudget pointBudget;
-                    // Optional casters must never evict the base scene or mark its terrain as deferred.
-                    NorthlightGI::AllocationAdmission pointAdmission=[&](uint64_t bytes){
-                        if(bytes<NorthlightGeometryMemory::MiB)return true;
-                        const auto budget=geometryBudget(bytes);return NorthlightGeometryMemory::admits(workerMemory(budget),budget);
-                    };
-                    const bool pointLoaded=pointTiles.empty()||NorthlightGI::loadPointTransmission(pointTiles,root+"world-cache/lights/point-transmission/models",
-                        center-V(NorthlightShadowTerrain::LocalHorizontal,NorthlightShadowTerrain::LocalHorizontal,NorthlightShadowTerrain::LocalVertical),
-                        center+V(NorthlightShadowTerrain::LocalHorizontal,NorthlightShadowTerrain::LocalHorizontal,NorthlightShadowTerrain::LocalVertical),pointTransmission,error,pointAdmission,pointBudget);
-                    pointBudgetExceeded=!pointLoaded&&!pointBudget.systemRefused&&pointBudget.lastQuotaRefusal;
-                    if(NorthlightDiagnostics::enabled())logf("POINT_TRANSMISSION worker tiles=%zu triangles=%zu retainedKiB=%zu peakChargedKiB=%llu refusedBytes=%llu systemRefused=%u loaded=%u",
-                        pointTiles.size(),pointTransmission.triangles.size(),pointTransmission.retainedBytes()/1024,(unsigned long long)(pointBudget.peak/1024),(unsigned long long)pointBudget.refusedBytes,unsigned(pointBudget.systemRefused),unsigned(pointLoaded));
-                    // Optional transmission cannot discard an otherwise valid GI/shadow generation.
-                    if(!pointLoaded){pointTransmission=NorthlightGI::WorldScene{};if(NorthlightDiagnostics::enabled())logf("POINT_TRANSMISSION unavailable: %s",error.c_str());error.clear();}
-                }
-                const double terrainLoadMs=phaseElapsed();
-                profileMemory("after-terrain-load",plan.get(),&shadowTerrain);
-                // In the bounded path, release scratch terrain as its last triangle is read.
-                // Point transmission retains the existing retryable path.
-                const bool consumeTerrain=(chunkedLocal||spoolTerrain)&&pointTransmission.triangles.empty();
-                NorthlightWorldMesh::PlanOptions shadowOptions;shadowOptions.alphaOnly=true;
-                bool shadowPlanBuilt=terrainLoaded&&(consumeTerrain
-                    ?NorthlightShadowTerrain::buildConsuming(replacement->scene(),shadowTerrain,center,*plan,error,terrainAdmission,reach,shadowOptions,replacement.get(),spoolTerrain,giGeometryRadius)
-                    :NorthlightShadowTerrain::build(replacement->scene(),shadowTerrain,center,*plan,error,terrainAdmission,reach,shadowOptions,true,replacement.get(),&meshPreparation,&pointTransmission,spoolTerrain,giGeometryRadius));
-                if(!shadowPlanBuilt&&!pointTransmission.triangles.empty()){
-                    if(NorthlightDiagnostics::enabled())logf("POINT_TRANSMISSION assembly refused; retaining base geometry: %s",error.c_str());
-                    pointTransmission=NorthlightGI::WorldScene{};terrainDeferred=false;error.clear();
-                    shadowPlanBuilt=NorthlightShadowTerrain::build(replacement->scene(),shadowTerrain,center,*plan,error,terrainAdmission,reach,shadowOptions,true,replacement.get(),&meshPreparation,nullptr,spoolTerrain,giGeometryRadius);
-                }
-                if(shadowPlanBuilt){terrainDeferred=false; // an oversized reservation may have been refused before a successful fallback
-                    if(plan->pagingChunks&&NorthlightDiagnostics::enabled())logf("WORLD shadow geometry prepared in bounded chunks");
-                }else if(!terrainDeferred&&error=="Geometry allocation deferred"){
-                    const auto budget=geometryBudget();terrainSample=workerMemory(budget);
-                    terrainDeferred=true;terrainRequired=budget.available;terrainRequiredLargest=budget.largest;
-                }
-                if(!terrainLoaded||!shadowPlanBuilt){
-                    if(terrainDeferred){
-                        meshPreparation.reset();
-                        stallBegin("shadow-terrain",terrainSample,terrainRequired,terrainRequiredLargest);
-                        if(retryShadowStage())goto terrainStage;
-                        shadowTerrain=NorthlightGI::WorldScene{};plan.reset();replacement.reset();liftEntry("shadow-terrain",terrainRequired,terrainSample.available,terrainRequiredLargest);deferBuild("shadow-terrain-retry",workerMemory(),1000);continue;}
-                    if(error.rfind("Temporary geometry",0)==0||error=="Paged mesh temporary storage failed"){
-                        shadowTerrain=NorthlightGI::WorldScene{};plan.reset();replacement.reset();
-                        deferBuild("temporary-storage-retry",workerMemory(),1000);continue;
-                    }
-                    result->message=error;publishError();continue;
-                }
-                plan->shadowGround=shadowGround;plan->shadowTerrainReach=reach;
-                const double shadowPlanMs=phaseElapsed();
-                profileMemory("after-shadow-plan",plan.get(),&shadowTerrain);
-                if(NorthlightDiagnostics::enabled())logf("WORLD terrain allocation largestMiB=%.2f checks=%u hinted=%u",double(terrainLargest)/1048576,terrainChecks,terrainSizeHint.hinted?1u:0u);
-                if(NorthlightDiagnostics::enabled())logf("WORLD shadow terrain: localTriangles=%zu shadowTriangles=%u fixedChunks=%zu reach=%.0f tiles=%zu",replacement->triangleCount(),plan->triangleCount,plan->fixedTerrainChunks.size(),reach,shadowTiles.size());
-                if(!currentGeometry()){++superseded;abandonGeometry();continue;}
-                shadowTerrain=NorthlightGI::WorldScene{};pointTransmission=NorthlightGI::WorldScene{}; // merged shadow plan already owns its data
-                auto pages=std::make_shared<NorthlightWorldMeshPages::Plan>();
-                // 0.3.216 (issue #66): pages the GPU already holds (same map, keys published at the last commit) are freed inside
-                // build() the moment they are finished, so the worker's peak holds only the pages that must be uploaded.
-                std::shared_ptr<const NorthlightMeshPageKey::KeySet> resident;
-                {std::lock_guard<std::mutex> lock(mutex);if(residentPages&&residentMap==r.map)resident=residentPages;}
-                // CPU construction can fit while a second managed GPU copy
-                // cannot. Select bounded DEFAULT pages before publishing an
-                // upload plan that would otherwise retry forever. DEFAULT geometry
-                // and cutout textures have bounded upload staging; normal staging
-                // stays entirely in RAM until the atomic GPU commit.
-                // With no resident pages the entire DEFAULT mesh would disappear at
-                // Reset. The complete file-backed plan can replay immediately and
-                // releases its construction memory at commit. A reset rebuild also
-                // needs a self-contained plan, independent of pre-Reset keys.
-                bool spoolUpload=spoolTerrain||!resident||resident->empty();
-                if(!spoolUpload){
-                    uint64_t largestTexture=0;for(const auto& material:plan->materials)largestTexture=std::max(largestTexture,material.bgraBytes());
-                    auto uploadBudget=NorthlightGeometryMemory::uploadBudget(0,0,0,0);
-                    uploadBudget.largest=2*std::max<uint64_t>(NorthlightWorldMeshPages::PageVertexByteLimit,largestTexture)+NorthlightGeometryMemory::ChunkMargin;
-                    const auto uploadMemory=workerMemory(uploadBudget);
-                    spoolUpload=!NorthlightGeometryMemory::admits(uploadMemory,uploadBudget);
-                    if(spoolUpload)logf("WORLD upload staging uses temporary storage availableMiB=%llu requiredMiB=%llu uniqueTextureMiB=%.3f",
-                        (unsigned long long)(uploadMemory.available>>20),(unsigned long long)(uploadBudget.available>>20),double(plan->textureBytes)/1048576);
-                }
-                NorthlightWorldMeshPages::Options pagingOptions;pagingOptions.resident=spoolUpload?nullptr:resident.get();pagingOptions.preparation=spoolUpload?nullptr:&meshPreparation;pagingOptions.spooled=spoolUpload;pagingOptions.deviceLocal=true;
-                if(!NorthlightWorldMeshPages::build(*plan,*pages,error,terrainAdmission,pagingOptions)){
-                    if(!terrainDeferred&&error=="Paged mesh worker allocation failed"){
-                        const auto budget=geometryBudget();terrainSample=workerMemory(budget);
-                        terrainDeferred=true;terrainRequired=budget.available;terrainRequiredLargest=budget.largest;
-                    }
-                    if(terrainDeferred){
-                        meshPreparation.reset();
-                        stallBegin("mesh-page",terrainSample,terrainRequired,terrainRequiredLargest);
-                        if(retryShadowStage())goto terrainStage;
-                        pages.reset();plan.reset();replacement.reset();liftEntry("mesh-page",terrainRequired,terrainSample.available,terrainRequiredLargest);deferBuild("mesh-page-retry",workerMemory(),1000);continue;}
-                    if(error.rfind("Temporary geometry",0)==0||error=="Paged mesh temporary storage failed"){
-                        shadowTerrain=NorthlightGI::WorldScene{};plan.reset();replacement.reset();
-                        deferBuild("temporary-storage-retry",workerMemory(),1000);continue;
-                    }
-                    result->message=error;publishError();continue;
-                }
-                NorthlightWorldMeshPages::ElisionStats elided;
-                profileMemory("after-pages",plan.get(),nullptr,pages.get());
-                for(const auto& page:pages->pages)if(page.elided){++elided.pages;elided.bytes+=uint64_t(page.key.vertexBytes)+page.key.indexBytes;}
-                if(!NorthlightWorldMeshPages::seal(*plan,pages,error,terrainAdmission)){
-                    if(error=="paged ownership temporary storage failed"){
-                        pages.reset();plan.reset();replacement.reset();resetPreparation();
-                        deferBuild("temporary-storage-retry",workerMemory(),1000);continue;
-                    }
-                    if(!terrainDeferred&&error=="paged ownership allocation failed"){
-                        const auto budget=geometryBudget();terrainSample=workerMemory(budget);
-                        terrainDeferred=true;terrainRequired=budget.available;terrainRequiredLargest=budget.largest;
-                    }
-                    if(terrainDeferred){
-                        meshPreparation.reset();
-                        stallBegin("mesh-page-seal",terrainSample,terrainRequired,terrainRequiredLargest);
-                        if(retryShadowStage())goto terrainStage;
-                        pages.reset();plan.reset();replacement.reset();liftEntry("mesh-page-seal",terrainRequired,terrainSample.available,terrainRequiredLargest);deferBuild("mesh-page-seal-retry",workerMemory(),1000);continue;}
-                    result->message=error;publishError();continue;
-                }
-                if(NorthlightDiagnostics::enabled())logf("WORLD mesh pages=%zu batches=%zu originalBatches=%zu vertexMiB=%.2f indexMiB=%.2f maxResourceKiB=512 elidedPages=%zu elidedMiB=%.2f",pages->pages.size(),pages->batches.size(),plan->batches.size(),double(pages->vertexBytes)/1048576,double(pages->indexBytes)/1048576,elided.pages,double(elided.bytes)/1048576);
-                memory=workerMemory();if(NorthlightDiagnostics::enabled())logGeometryMemory("after-plan",memory,generations.live(),workerMemoryExact);
-                profileMemory("after-seal",plan.get());
-                const double pagesMs=phaseElapsed();
-                // Worker-side owner map for the render-thread commit. Failure
-                // only falls back to the 0.3.136 render-thread construction.
-                std::shared_ptr<const PreparedCommit> prepared;
-                if(PreparedCommitData){try {auto next=std::make_shared<PreparedCommit>();next->plan=plan.get();next->owners=StaticShadow::makeOwners(ownerPlacements(*plan));
-                    next->fixed=std::make_shared<const FixedChunks>(plan->fixedTerrainChunks);prepared=std::move(next);}catch(...){prepared.reset();}}
-                built->plan=plan;built->prepared=std::move(prepared);built->bvh=replacement;built->map=r.map;built->center=center;
-                float eye[]={center.x,center.y,center.z};
-                built->lightAttachments=lightAttachmentCache.load(r.map);
-                if(lightCache.loadLights(r.map,eye,520,built->rawLights))for(auto& light:built->rawLights)if(!(light.flags&NorthlightLocalLights::RequiresNative))
-                    built->lights.push_back({vec(light.position),vec(light.diffuse)*3.14159265f,light.attenuationStart,light.attenuationEnd});
-                if(NorthlightDiagnostics::enabled())logf("GI local lights map=\"%s\" count=%zu (indirect only; authored direct light retained)",r.map.c_str(),built->lights.size());
-                built->fog=fogRegion&&fogRegion->map==r.map?fogRegion->field:nullptr;
-                const double environmentMs=phaseElapsed();const auto& memoryAfter=workerAdmissionProbe.stats();
-                if(NorthlightDiagnostics::enabled()){
-                    const auto& sources=sceneSources.stats();const auto& preparation=meshPreparation.stats();
-                    logf("WORLD shared scene buildId=%llu sourceHits=%llu sourceReads=%llu sourceIdentityHits=%llu sourceLoadMs=%.3f sourceIdentityMs=%.3f sourceLiveMiB=%.2f sourceEntries=%zu preparationHits=%llu preparationMisses=%llu preparationReusedTriangles=%llu preparationBuiltTriangles=%llu preparationMiB=%.2f pageMemoHits=%llu reusedMemoPages=%llu reusedMemoMiB=%.2f sourceDecodedLiveMiB=%.2f sourceUncachedLeaseMiB=%.2f optionalLimitMiB=32",
-                         (unsigned long long)r.id,(unsigned long long)(sources.hits-sourceBefore.hits),(unsigned long long)(sources.reads-sourceBefore.reads),
-                         (unsigned long long)(sources.identityHits-sourceBefore.identityHits),sources.loadMs-sourceBefore.loadMs,sources.identityMs-sourceBefore.identityMs,
-                         double(sceneSources.liveBytes())/1048576,sceneSources.entries(),(unsigned long long)(preparation.hits-preparationBefore.hits),
-                         (unsigned long long)(preparation.misses-preparationBefore.misses),(unsigned long long)(preparation.reusedTriangles-preparationBefore.reusedTriangles),
-                         (unsigned long long)(preparation.preparedTriangles-preparationBefore.preparedTriangles),double(preparation.bytes)/1048576,
-                         (unsigned long long)(preparation.pageHits-preparationBefore.pageHits),(unsigned long long)(preparation.reusedPages-preparationBefore.reusedPages),
-                         double(preparation.reusedPageBytes-preparationBefore.reusedPageBytes)/1048576,double(sceneSources.decodedLiveBytes())/1048576,double(sceneSources.uncachedLeaseBytes())/1048576);
-                    logf("WORLD shared acceleration buildId=%llu blasBuilt=%llu blasReused=%llu builtTriangles=%llu reusedTriangles=%llu tlasPieces=%llu legacyFallbacks=%llu sharedLiveMiB=%.2f compatibilityMiB=%.2f tlasKiB=%.2f fallbackTriangles=%llu mandatoryTreeMiB=%.2f",
-                         (unsigned long long)r.id,(unsigned long long)localStats.blasBuilds,(unsigned long long)localStats.blasReuses,
-                         (unsigned long long)localStats.blasTrianglesBuilt,(unsigned long long)localStats.blasTrianglesReused,(unsigned long long)localStats.tlasPieces,
-                         (unsigned long long)localStats.legacyFallbacks,double(localStats.sharedLiveBytes)/1048576,double(localStats.compatibilityBytes)/1048576,double(localStats.tlasBytes)/1024,
-                         (unsigned long long)localStats.fallbackTriangles,double(localStats.mandatoryTreeBytes)/1048576);
-                    logf("WORLD shared terrain chunks buildId=%llu built=%llu reused=%llu builtTriangles=%llu reusedTriangles=%llu",(unsigned long long)r.id,
-                         (unsigned long long)localStats.chunkBuilds,(unsigned long long)localStats.chunkReuses,(unsigned long long)localStats.chunkTrianglesBuilt,(unsigned long long)localStats.chunkTrianglesReused);
-                }
-                if(NorthlightDiagnostics::enabled())logf("WORLD geometry phases buildId=%llu localMs=%.3f terrainLoadMs=%.3f shadowPlanMs=%.3f pagesMs=%.3f environmentMs=%.3f memoryMs=%.3f memoryRequests=%llu witnessHits=%llu fullScans=%llu regionQueries=%llu memoryTimeIncluded=1",
-                    (unsigned long long)r.id,localPhaseMs,terrainLoadMs,shadowPlanMs,pagesMs,environmentMs,workerMemoryMs-memoryMsBefore,
-                    (unsigned long long)(memoryAfter.requests-memoryBefore.requests),(unsigned long long)(memoryAfter.witnessHits-memoryBefore.witnessHits),
-                    (unsigned long long)(memoryAfter.fullScans-memoryBefore.fullScans),(unsigned long long)(memoryAfter.regionQueries-memoryBefore.regionQueries));
-                if(profileThisBuild)logf("WORLD MEMORY diagnostic buildId=%llu cpuMs=%.3f phaseTimesExcludeDiagnostics=1 maxObservedCapacityMiB=%.3f",(unsigned long long)r.id,memoryProfileMs,double(maximumObservedCapacity)/1048576);
-            }
-            // END REGION BUILD
-            built->id=r.id;built->ms=GetTickCount()-started;built->superseded=superseded;
-            geometryBuildEstimateMs.store((3*geometryBuildEstimateMs.load(std::memory_order_relaxed)+unsigned(std::min<DWORD>(built->ms,4000)))/4,std::memory_order_relaxed);
-            // Replaces an unadopted older build; it satisfies every earlier worker request.
-            // The replaced build (tens of MB) is freed after unlocking, never under the mutex.
-            {std::lock_guard<std::mutex> lock(mutex);if(stopping||builderExit)return;
-             if(!request.enabled){++superseded;continue;}
-             std::swap(builtGeometry,built);geometryWanted=false;if(restore&&payloadRebuildSource==restore)payloadRebuildSource.reset();}
-#if NORTHLIGHT_DEV_TUNING
-            {std::lock_guard<std::mutex> lock(devMutex);devBuilt=tuning;} // what the last published build used
-            devBuilds.fetch_add(1,std::memory_order_relaxed);
-#endif
-            wake.notify_one();built.reset();
-            stallEnd(memoryStall.reduced?"reduced":"published");entryLift.clear();chunkLift.clear();coldLift.clear();
-            builtMap=r.map;builtCenter=r.geometryCenter;builtValid=true;wanted=false;superseded=0;
-          }
-          }catch(const std::bad_alloc&){workerFaultCode.store(1);}
-           catch(const std::exception&){workerFaultCode.store(2);}
-           catch(...){workerFaultCode.store(3);}
-        });
-        std::shared_ptr<NorthlightGI::BVH> bvh;std::shared_ptr<NorthlightWorldMesh::WorldMeshUploadPlan> scenePlan;std::shared_ptr<const PreparedCommit> scenePrepared;V sceneCenter;std::shared_ptr<const NorthlightRegionalFog::Field> sceneFog;std::string sceneMap;uint64_t serial=0,sceneBuild=0;
-        std::shared_ptr<Snapshot> previousLighting;
-        NorthlightGI::ProbeCache probeCache;
-        NorthlightGI::CoarseProbeLayer coarseProbes;
-        NorthlightGI::ProbeVisibilityCache visibilityCache;
-        NorthlightGI::ProbeRelightCache relightCache;std::string relightMap;
-        NorthlightGI::DynamicProbeLayer dynamicProbes;
-        std::vector<NorthlightGI::PointLight> sceneLights;
-        std::vector<NorthlightLocalLights::Light> rawSceneLights;
-        std::shared_ptr<const NorthlightLightAttachments::Records> sceneLightAttachments;
-        std::shared_ptr<NorthlightGI::BVH> actors;
-        NorthlightActorGeometry::TexelKeys actorTexelKeys;
-        NorthlightWorkerActorMemo<NorthlightActorGeometry::ActorJob> actorMemo,menuActorMemo;
-        uint64_t solvedActorHash=0,completedActorHash=0,completedBaseId=0,menuGeometryHash=0;
-        std::shared_ptr<NorthlightGI::BVH> probeCacheGeometry;
-        NorthlightGI::Lighting probeCacheLight;NorthlightGI::PreparedLighting preparedLight;
-        NorthlightGI::ProbePublicationCadence publicationCadence;
-        std::vector<NorthlightGI::ProbeAtlasEntry> displayFallback;
-        uint64_t lightingGeneration=0;unsigned superseded=0,retargeted=0;
-        NorthlightGI::MovingSolveStats movingStats;
-        DWORD giMemoryProfileAt=0;
-        auto profileGiMemory=[&](const char* stage,uint64_t id){
-            if(!NorthlightDiagnostics::enabled())return;
-            const DWORD now=GetTickCount();if(giMemoryProfileAt&&now-giMemoryProfileAt<10000)return;giMemoryProfileAt=now;
-            const auto started=std::chrono::steady_clock::now();
-            using namespace NorthlightMemoryFootprint;Counter memory;
-            if(bvh)bvh->accountMemory(memory);if(actors)actors->accountMemory(memory);if(probeCacheGeometry)probeCacheGeometry->accountMemory(memory);
-            if(scenePlan)scenePlan->accountMemory(memory);
-            coarseProbes.accountMemory(memory);probeCache.accountMemory(memory);relightCache.accountMemory(memory);dynamicProbes.accountMemory(memory);visibilityCache.accountMemory(memory);
-            NorthlightGI::accountProbeAtlas(memory,displayFallback);memory.vector(Metadata,sceneLights);memory.vector(Metadata,rawSceneLights);memory.vector(Metadata,actorTexelKeys);
-            if(sceneFog)memory.allocation(Fog,sceneFog.get(),sizeof(*sceneFog));
-            if(previousLighting){NorthlightGI::accountProbeAtlas(memory,previousLighting->atlas);if(previousLighting->coarseAtlas)NorthlightGI::accountProbeAtlas(memory,*previousLighting->coarseAtlas);if(previousLighting->bvh)previousLighting->bvh->accountMemory(memory);if(previousLighting->meshPlan)previousLighting->meshPlan->accountMemory(memory);}
-            logCpuFootprint("gi-worker-reachable",stage,id,memory);
-            logf("WORLD MEMORY probes buildId=%llu cached=%zu capacity=%zu relightInclusiveMiB=%.3f pathInclusiveMiB=%.3f diagnosticMs=%.3f ledgersNotAdditive=1",(unsigned long long)id,probeCache.size(),probeCache.capacity(),double(relightCache.stats().bytes)/1048576,double(dynamicProbes.pathBytes())/1048576,std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count());
-        };
-        // 0.3.153 per geometry swap: passes completed on the previous generation
-        // while the builder ran, and time with no usable region (logged at publication).
-        unsigned concurrentSolves=0;DWORD stallMs=0,stallStart=0;bool stalled=false;std::string stallMap;
-        for(;;){
-            Request r;std::unique_ptr<Built> adopted;
-            {std::unique_lock<std::mutex> lock(mutex);wake.wait(lock,[&]{return stopping||pending||(request.enabled&&builtGeometry);});if(stopping)return;r=request;pending=false;workerBusy=true;if(r.enabled)adopted=std::move(builtGeometry);if(r.enabled&&geometryRebuild){geometryRebuild=false;geometryWanted=true;}} /* 0.3.214 (task 42): render thread lost the GPU mesh and the payload */
-            buildWake.notify_one(); /* the builder follows the same request stream */
-            struct WorkerIdle {std::atomic<bool>& busy;~WorkerIdle(){busy=false;}} idle{workerBusy};
-            if(!r.enabled)continue;
-            profileGiMemory("request",r.id);
-            // No solve runs here: a memory trim or a new map frees the relight slots (1-4 MiB); configure() allocates them again.
-            if(giMemoryTrim.exchange(false,std::memory_order_relaxed)||(!relightMap.empty()&&relightMap!=r.map))relightCache.release();
-            relightMap=r.map;
-            auto result=std::make_shared<Snapshot>();result->map=r.map;result->center=r.camera;
-            DWORD started=GetTickCount();result->requestId=r.id;result->requestedAt=r.queuedAt;result->queueMs=started-r.queuedAt;
-            bool concurrent=false;
-            if(r.menu){
-                adopted.reset();
-                if(!bvh||sceneMap!=r.map||!menuActorMemo.matches(r.actorJob)){
-                    auto geometry=r.actorJob?r.actorJob->resolve():NorthlightActorGeometry::Result{};
-                    if(sceneMap!=r.map||!bvh||geometry.hash!=menuGeometryHash){
-                        auto next=std::make_shared<NorthlightGI::BVH>();std::string error;
-                        if(geometry.scene&&!geometry.scene->triangles.empty()&&!next->build(std::move(*geometry.scene),error,quality.giFastBVH!=0))continue;
-                        bvh=std::move(next);menuGeometryHash=geometry.hash;sceneMap=r.map;sceneCenter=r.camera;
-                        scenePlan=std::make_shared<NorthlightWorldMesh::WorldMeshUploadPlan>();scenePrepared.reset();sceneFog.reset();rawSceneLights.clear();sceneLightAttachments.reset();
-                        actors.reset();actorTexelKeys.clear();actorMemo={};solvedActorHash=0;dynamicProbes.reset(nullptr);
-                    }
-                    menuActorMemo.remember(r.actorJob);
-                }
-                sceneCenter=r.camera;
-                sceneLights.clear();
-                for(unsigned i=0;i<r.menuLights.count;++i){const auto& p=r.menuLights.lights[i];
-                    // Use the same bounded denominator fit as the direct-light owner.
-                    NorthlightEquipmentLights::Native native;std::copy_n(p.position,3,native.position);std::copy_n(p.color,3,native.color);std::copy_n(p.attenuation,3,native.attenuation);
-                    const auto fitted=NorthlightEquipmentLights::light(native,p.id,1.f);
-                    sceneLights.push_back({vec(fitted.position),vec(fitted.diffuse)*3.14159265f,fitted.attenuationStart,fitted.attenuationEnd});
-                }
-                if(!r.actorJob)r.giEnabled=false;
-            }
-            if(!r.menu)menuActorMemo={};
-            if(adopted){
-                bvh=std::move(adopted->bvh);scenePlan=std::move(adopted->plan);scenePrepared=std::move(adopted->prepared);sceneFog=std::move(adopted->fog);
-                sceneLights=std::move(adopted->lights);rawSceneLights=std::move(adopted->rawLights);sceneLightAttachments=std::move(adopted->lightAttachments);sceneMap=std::move(adopted->map);sceneCenter=adopted->center;
-                sceneBuild=adopted->id;superseded+=adopted->superseded;if(stalled){if(stallMap==sceneMap)stallMs+=GetTickCount()-stallStart;stalled=false;} /* an episode begun on another map is not this region's stall */
-            }else if(!r.menu&&(!bvh||NorthlightWorldStreaming::needsGeometry(sceneMap,sceneCenter,r.map,r.geometryCenter))){
-                // The builder is replacing this region. Borrow the published
-                // previous generation and keep its probe cache while the original
-                // 64-unit GI region holds; the new generation clears it on adoption.
-                bool serve;
-                {std::lock_guard<std::mutex> lock(mutex);
-                 serve=bvh&&sceneMap==r.map&&NorthlightWorldStreaming::within(sceneCenter,r.camera,64)&&published&&published->bvh==bvh;
-                 if(!serve){
-                     if(published&&published->bvh==bvh&&bvh){
-                         previousLighting=std::make_shared<Snapshot>(*published);
-                         previousLighting->bvh.reset();previousLighting->meshPlan.reset();
-                     }
-                     geometryWanted=true;
-                 }}
-                if(!serve){
-                    // Release worker ownership, but leave the last published
-                    // complete region available to the renderer until a
-                    // replacement arrives or its unchanged coverage ends.
-                    // Only the first drop has a region to release; adoption resets the probe state again.
-                    if(bvh){
-                        probeCache.clear();probeCacheGeometry.reset();visibilityCache.reset();
-                        dynamicProbes.reset(actors?&actors->scene():nullptr);
-                        scenePlan.reset();scenePrepared.reset();sceneFog.reset();bvh.reset();
-                    }
-                    if(stalled&&stallMap!=r.map)stalled=false; /* the episode began on another map */
-                    if(!stalled){stalled=true;stallStart=started;stallMap=r.map;}
-                    buildWake.notify_one();continue;
-                }
-                concurrent=true;
-            }
-            result->geometryMs=adopted?adopted->ms:GetTickCount()-started;
-            // BEGIN GEOMETRY HANDOFF: runs before actor work and GI request-ID
-            // cancellation. Tests execute this production block with retargets.
-            {std::lock_guard<std::mutex> lock(mutex);
-             if(stopping)return;
-             if(!request.enabled)continue;
-             if(!NorthlightWorldStreaming::applicable(sceneMap,sceneCenter,request.map,request.camera)){
-                 ++superseded;pending=true;continue;
-             }
-             if(!published||published->bvh!=bvh||published->meshPlan!=scenePlan){
-                 auto geometry=std::make_shared<Snapshot>();
-                 if(published&&published->map==sceneMap)*geometry=*published;
-                 else if(previousLighting&&previousLighting->map==sceneMap)*geometry=*previousLighting;
-                 geometry->bvh=bvh;geometry->meshPlan=scenePlan;geometry->prepared=scenePrepared;geometry->retirementBytes=bvh->retainedBytes()+scenePlan->cpuBytes()+sizeof(Snapshot);
-                 geometry->map=sceneMap;geometry->center=sceneCenter;geometry->fogField=sceneFog;geometry->localLights=rawSceneLights;geometry->lightAttachments=sceneLightAttachments;
-                 published=geometry;previousLighting.reset();
-                 if(NorthlightDiagnostics::enabled())logf("WORLD geometry published buildId=%llu latestId=%llu buildMs=%lu cameraLag=%.2f retainedGI=%u refreshDistance=32 coverageDistance=96 concurrentSolves=%u stallMs=%lu",
-                     (unsigned long long)sceneBuild,(unsigned long long)request.id,(unsigned long)result->geometryMs,
-                     std::sqrt(NorthlightGI::dot(request.camera-sceneCenter,request.camera-sceneCenter)),unsigned(geometry->serial!=0),concurrentSolves,(unsigned long)stallMs);
-                 concurrentSolves=0;stallMs=0;
-             }
-             // The geometry is already drawable up to the existing 96-unit
-             // limit. GI still needs its original, stricter 64-unit region.
-             // 0.3.169: a region built ahead (lead) that the eye has not reached
-             // yet waits for the next request instead of re-running this check.
-             // Liveness: waiting needs the lead point within the 32-unit refresh and
-             // the eye beyond 64, so a lead of at least 64-32. Its decay or reversal
-             // (stop, turn back) moves the lead point by more than the reason-128 step,
-             // which issues that next request.
-             static_assert(64-NorthlightWorldStreaming::GeometryRefreshDistance>NorthlightWorldStreaming::GeometryLeadMoveStep,"lead waiting liveness");
-             if(!NorthlightWorldStreaming::within(sceneCenter,request.camera,64)){
-                 pending=NorthlightWorldStreaming::needsGeometry(sceneMap,sceneCenter,request.map,request.geometryCenter);continue;
-             }
-             if(request.id!=r.id){++retargeted;r=request;pending=false;}
-             result->map=sceneMap;result->center=sceneCenter;result->requestId=r.id;result->requestedAt=r.queuedAt;
-            }
-            // END GEOMETRY HANDOFF
-            if(!r.giEnabled)continue; /* GI=0: geometry for shadows only; no actor, probe or atlas work */
-            DWORD actorStarted=GetTickCount();
-            const auto actorWorkStart=std::chrono::steady_clock::now();
-            bool actorsChanged=false;
-            if(!r.menu&&!actorMemo.matches(r.actorJob)){
-              NorthlightActorGeometry::Result resolvedActors;
-              if(r.actorJob)resolvedActors=r.actorJob->resolve(actors?&actors->scene():nullptr,&actorTexelKeys);
-              result->actorTexturesDecoded=resolvedActors.texturesDecoded;result->actorTextureEncodedBytes=resolvedActors.textureEncodedBytes;
-              result->actorDecodeMs=resolvedActors.decodeMs;result->actorPoseMs=resolvedActors.geometryMs;result->actorHashMs=resolvedActors.hashMs;
-              actorsChanged=resolvedActors.hash!=solvedActorHash;
-              if(actorsChanged){
-                const auto bvhStart=std::chrono::steady_clock::now();
-                actors.reset();std::string actorError;
-                if(resolvedActors.scene&&!resolvedActors.scene->triangles.empty()){
-                    auto next=std::make_shared<NorthlightGI::BVH>();auto scene=std::move(*resolvedActors.scene);
-                    if(next->build(std::move(scene),actorError,quality.giFastBVH!=0))actors=next; /* GIFastBVH=0: 0.3.137 tracer */
-                    else logf("GI actor BVH rejected: %s",actorError.c_str());
-                }
-                actorTexelKeys=std::move(resolvedActors.texelKeys);
-                solvedActorHash=resolvedActors.hash;
-                // Pose/packet change only: keep corrections whose nearby actor
-                // bounds are unchanged (0.3.35); the static generation is intact.
-                dynamicProbes.observe(actors?&actors->scene():nullptr);
-                result->actorBvhMs=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-bvhStart).count();
-              }
-              actorMemo.remember(r.actorJob);
-            }
-            result->actorMs=GetTickCount()-actorStarted;
-            result->actorWorkMs=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-actorWorkStart).count();
-            // An unchanged actor packet must not republish/upload an identical
-            // 4096-entry probe atlas every capture interval. Only skip after a
-            // complete solve for this actor generation has actually published.
-            if(r.reason==64&&!actorsChanged&&completedActorHash==solvedActorHash&&completedBaseId==r.baseId&&r.baseId!=0&&probeCacheGeometry==bvh&&coarseProbes.completeFor(r.probeCenter))continue;
-            r.light.points=sceneLights;r.light.movingGeometry=nullptr;
-            // A probe belongs to a fixed world point and a geometry/lighting
-            // generation. Camera motion alone must not recompute that point.
-            const bool visibilityGeometryChanged=probeCacheGeometry!=bvh;
-            if(visibilityGeometryChanged||!NorthlightGI::sameStaticLighting(probeCacheLight,r.light)){
-                if(visibilityGeometryChanged){relightCache.reset();visibilityCache.reset();}
-                probeCache.clear();probeCacheGeometry=bvh;probeCacheLight=r.light;
-                preparedLight=NorthlightGI::prepareLighting(probeCacheLight);
-                relightCache.configure(preparedLight,quality.giRays);
-                publicationCadence.reset();++lightingGeneration;
-                // Keep already displayed same-map GI until replacement probes
-                // are ready. This is display fallback only, never solver input.
-                displayFallback.clear();
-                {std::lock_guard<std::mutex> lock(mutex);
-                 if(published&&published->map==r.map)displayFallback=published->atlas;
-                 else if(previousLighting&&previousLighting->map==r.map)displayFallback=previousLighting->atlas;}
-                // Retain the complete displayed sample while streaming a new
-                // same-map region. Removing only visibility turns its retained
-                // radiance black until the worker reaches that point again.
-                // This atlas never enters the new geometry's solve caches.
-                dynamicProbes.reset(actors?&actors->scene():nullptr);
-            }
-            const auto solveStatic=[&](NorthlightGI::ProbeGridKey key,V p){
-                auto value=relightCache.solve(*bvh,key,p,preparedLight,quality.giRays,NorthlightGI::probeSeed(key));
-                if(value.valid)value.localVisibility=visibilityCache.get(*bvh,key,p);
-                return value;
-            };
-            // Geometry was already handed off before actor work. A second
-            // request-ID gate here discarded useful work on every camera move.
-            result->fogField=sceneFog;result->bvh=bvh;result->meshPlan=scenePlan;result->prepared=scenePrepared;result->retirementBytes=bvh->retainedBytes()+scenePlan->cpuBytes()+sizeof(Snapshot);result->localLights=rawSceneLights;result->lightAttachments=sceneLightAttachments;result->origin=NorthlightGI::probeWindowOrigin(r.probeCenter);
-            result->lightingGeneration=lightingGeneration;
-            result->coarseAtlas=coarseProbes.atlas(r.map);
-            DWORD solveStart=GetTickCount();bool obsolete=false,replaced=false;
-            const auto solveWorkStart=std::chrono::steady_clock::now();
-            // Called with mutex held. A camera-only request may consume this
-            // generation's completed world probes, but a new map, distant BVH
-            // region or changed lighting must never accept this publication.
-            uint64_t checkedRequestId=r.id;bool checkedCompatibility=true;
-            auto compatiblePublication=[&](){
-                if(!request.enabled||!request.giEnabled||probeCacheGeometry!=bvh)return false;
-                if(checkedRequestId==request.id)return checkedCompatibility;
-                checkedRequestId=request.id;
-                auto latestLight=request.light;latestLight.points=sceneLights;latestLight.movingGeometry=nullptr;
-                checkedCompatibility=NorthlightGI::staticFallbackCompatible(r.map,sceneMap,request.map,
-                    r.camera,sceneCenter,request.camera,probeCacheLight,latestLight);
-                return checkedCompatibility;
-            };
-            // World-keyed transport remains valid across a camera retarget.
-            // A different actor packet still cancels its moving correction.
-            auto compatibleTransport=[&](){return compatiblePublication()&&request.actorJob==r.actorJob;};
-            auto publishProgress=[&](){
-                if(!publicationCadence.due(GetTickCount(),result->processedProbes))return;
-                {std::lock_guard<std::mutex> lock(mutex);if(stopping||!compatiblePublication())return;}
-                // Every export owns its storage. Neither subsequent solves nor
-                // cancellation can modify an atlas already seen by rendering.
-                auto progress=std::make_shared<Snapshot>(*result);
-                progress->atlas=probeCache.atlas();progress->dynamicReused=progress->dynamicSolved=0;
-                if(!dynamicProbes.applyCached(progress->atlas,
-                    [&](){std::lock_guard<std::mutex> lock(mutex);return stopping||!compatiblePublication();},
-                    progress->dynamicReused))return;
-                NorthlightGI::retainProbeDisplayFallback(progress->atlas,displayFallback);
-                progress->solveMs=GetTickCount()-solveStart;progress->superseded=superseded;
-                progress->solveWorkMs=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-solveWorkStart).count();
-                progress->retargeted=retargeted;progress->partial=true;progress->staticOnly=progress->dynamicReused==0;
-                progress->relightStats=relightCache.stats();
-                progress->visibilityStats=visibilityCache.stats();
-                std::lock_guard<std::mutex> lock(mutex);if(stopping||!compatiblePublication())return;
-                progress->serial=++serial;published=std::move(progress);publicationCadence.published(GetTickCount());
-            };
-            auto noteSuperseded=[&](){
-                std::lock_guard<std::mutex> lock(mutex);
-                if(!stopping&&request.reason==2&&compatiblePublication())++retargeted;else ++superseded;
-            };
-            const auto order=NorthlightGI::probeSolveOrder(r.probeCenter);
-            std::array<NorthlightGI::Probe,8> prefetched;unsigned prefetchedMask=0;
-            for(unsigned cursor=0;cursor<order.size();++cursor){
-                if(cursor%8==0){
-                    // 0.3.153: a finished build also stops a pass on the previous generation.
-                    {std::lock_guard<std::mutex> lock(mutex);if(stopping)return;obsolete=request.id!=r.id;replaced=builtGeometry!=nullptr;}
-                    if(obsolete||replaced)break;
-                    publishProgress();
-                    // GIThreads>1: solve this group's uncached probes in parallel. A pure,
-                    // per-key-seeded function, consumed below in the original order and cache sequence.
-                    if(solvePool)prefetchedMask=NorthlightGI::prefetchProbeGroup(*solvePool,probeCache,result->origin,order,cursor,
-                        solveStatic,prefetched);
-                }
-                V p=NorthlightGI::probeWindowPosition(result->origin,order[cursor]);
-                NorthlightGI::ProbeGridKey key;
-                if(!NorthlightGI::probeGridKey(p,key))throw std::runtime_error("Invalid world probe coordinate");
-                bool valid=false;
-                if(probeCache.touchValidity(key,valid))++result->reusedProbes;
-                else{const auto probe=prefetchedMask&(1u<<(cursor%8))?prefetched[cursor%8]:solveStatic(key,p);probeCache.putMissing(key,probe);valid=probe.valid;++result->solvedProbes;publicationCadence.solved();}
-                ++result->processedProbes;if(valid)++result->validProbes;
-            }
-            if(obsolete||replaced){
-                if(obsolete)noteSuperseded();publishProgress();
-                // The pending request selects a new nearest-first window and
-                // current actor packet. Its static cache and publication clock
-                // survive camera-only retargeting; no completed probe is lost.
-                continue;
-            }
-            result->atlas=probeCache.atlas();movingStats={};
-            // Preserve all static world slots across pose/culling changes. The
-            // observed actor scene only supplies a local radiance correction.
-            if(!dynamicProbes.apply(result->atlas,
-                [&](NorthlightGI::ProbeGridKey key,V p,NorthlightGI::StaticPathRecord* paths){
-                    if(paths&&actors)return NorthlightGI::solveProbeMoving(*bvh,p,preparedLight,quality.giRays,NorthlightGI::probeSeed(key),*actors,*paths,lightingGeneration,&movingStats);
-                    return NorthlightGI::solveProbePrepared(*bvh,p,preparedLight,quality.giRays,NorthlightGI::probeSeed(key),actors.get());},
-                [&](){std::lock_guard<std::mutex> lock(mutex);return stopping||!compatibleTransport();},
-                result->dynamicReused,result->dynamicSolved)){
-                noteSuperseded();result->atlas.clear();publishProgress();continue;
-            }
-            result->solveMs=GetTickCount()-solveStart;result->superseded=superseded;result->retargeted=retargeted;
-            result->solveWorkMs=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-solveWorkStart).count();
-            result->movingStats=movingStats;result->pathRecordBytes=dynamicProbes.pathBytes();
-            result->relightStats=relightCache.stats();
-            result->visibilityStats=visibilityCache.stats();
-            // Completion and later camera/actor publications retain the same
-            // display-only fallback as partial updates; solved invalid wins.
-            NorthlightGI::retainProbeDisplayFallback(result->atlas,displayFallback);
-            bool publishObsolete=false;
-            {std::lock_guard<std::mutex> lock(mutex);if(stopping)return;
-             if(!compatibleTransport())publishObsolete=true;
-             else{result->serial=++serial;published=result;publicationCadence.published(GetTickCount());completedActorHash=solvedActorHash;completedBaseId=r.baseId;concurrentSolves+=concurrent;}}
-            if(publishObsolete){noteSuperseded();result->atlas.clear();publishProgress();}
-            else coarseProbes.run(r.probeCenter,sceneCenter,NorthlightQuality::giGeometryRadius(quality),*bvh,preparedLight,
-                quality.giRays,lightingGeneration,r.map,
-                [&](){std::lock_guard<std::mutex> lock(mutex);return stopping||request.id!=r.id||builtGeometry!=nullptr;},
-                [&](auto atlas){
-                    auto progress=std::make_shared<Snapshot>(*result);progress->coarseAtlas=std::move(atlas);
-                    std::lock_guard<std::mutex> lock(mutex);if(stopping||!compatiblePublication())return;
-                    progress->serial=++serial;published=std::move(progress);
-                },[](){return GetTickCount();});
-        }
-      }catch(const std::bad_alloc&){workerFaultCode.store(1);}
-       catch(const std::exception&){workerFaultCode.store(2);}
-       catch(...){workerFaultCode.store(3);}
-      // The thread has stopped. Do not allocate a diagnostic snapshot in an
-      // allocation-failure handler. The render thread reports workerFault().
-      workerBusy=false;
-    }
+#include "world_build_pipeline.inl"
     bool buildingScreenResources=false,screenResourceOom=false,screenResourceRetry=false,screenResourceReported=false;DWORD screenResourceRetryAt=0,screenResourceReportAt=0;
     bool check(HRESULT h,const char* s){if(SUCCEEDED(h))return true;if(buildingScreenResources&&(h==E_OUTOFMEMORY||h==D3DERR_OUTOFVIDEOMEMORY)){screenResourceOom=true;return false;}if(!failed)logf("WORLD DISABLED: %s HRESULT=%08lx",s,(unsigned long)h);failed=true;return false;}
     void clearMaterials(){for(auto& m:materials)drop(m);materials.clear();uploadedTextureBytes=0;uploadedMaterialPixels.reset();materialReuseBytes=0;}
-    void clearMesh(bool keepMaterials=false){staticCasters.settle();dropStaticDirtyJobs();vertices=nullptr;indices=nullptr;if(!keepMaterials)clearMaterials();batches.clear();pointSubBatches.clear();pointSubRanges.clear();pointTree.reset();pointStaticList.clear();terrainBatchList.clear();shadowTerrainList.clear();terrainBatchListGeneration=UINT64_MAX;uploadedAlphaCutoffs.clear();uploadedLocalShadowRecords.reset();uploaded.reset();uploadedMeshPlan.reset();}
-    bool target(UINT w,UINT h,D3DFORMAT fmt,IDirect3DTexture9** t,IDirect3DSurface9** s){return check(d->CreateTexture(w,h,1,D3DUSAGE_RENDERTARGET,fmt,D3DPOOL_DEFAULT,t,nullptr),"world render texture")&&check((*t)->GetSurfaceLevel(0,s),"world render surface");}
-    void actorShaderResources(const D3DCAPS9& caps){
-        if(!quality.actorShadows||!quality.actorShadowDetail)return;
-        if(!actorShadowPS&&(FAILED(d->CreatePixelShader(kActorShadowShader,&actorShadowPS))||FAILED(d->CreatePixelShader(kActorTilesShader,&actorTilesPS))||FAILED(d->CreatePixelShader(kActorShadowUniformShader,&actorUniformPS)))){
-            drop(actorShadowPS);drop(actorUniformPS);drop(actorTilesPS);logf("WORLD actor shadow map disabled: shader creation failed");return;
-        }
-        if(!actorTilesWidePS&&actorTilesPS&&fogActorPS&&fogCloudsActorPS&&caps.MaxPixelShader30InstructionSlots>=std::max(kWorldFogActorTiledShaderSlots,kFogCloudsActorTiledShaderSlots)){
-            if(FAILED(d->CreatePixelShader(kActorTilesWideShader,&actorTilesWidePS))||FAILED(d->CreatePixelShader(kWorldFogActorTiledShader,&fogActorTiledPS))||FAILED(d->CreatePixelShader(kFogCloudsActorTiledShader,&fogCloudsActorTiledPS))){drop(actorTilesWidePS);drop(fogActorTiledPS);drop(fogCloudsActorTiledPS);}
-        }
+    void clearMesh(bool keepMaterials=false){staticCasters.settle();dropStaticDirtyJobs();vertices=nullptr;indices=nullptr;if(!keepMaterials)clearMaterials();directionalCacheMesh.invalidate();batches.clear();pointSubBatches.clear();pointSubRanges.clear();pointTree.reset();pointMeshBounds.release();pointStaticList.clear();terrainBatchList.clear();shadowTerrainList.clear();terrainBatchListGeneration=UINT64_MAX;uploadedAlphaCutoffs.clear();uploadedLocalShadowRecords.reset();uploaded.reset();uploadedMeshPlan.reset();}
+    void prepareActorShaders(const D3DCAPS9& caps){
+        if(!actorMaps.createShaders(d,caps,quality.actorShadows&&quality.actorShadowDetail,regionalFogGpu.actorVariants()))
+            logf("WORLD actor shadow map disabled: shader creation failed");
     }
 #include "world_screen_resources.inl"
 #include "world_geometry_resources.inl"
@@ -2584,7 +1353,7 @@ private:
         uploadedStaticOwners.reset();staticOwnerGeneration=UINT64_MAX;
         fixedTerrain.reset();fixedTerrainBits.reset();uploadedTerrain.clear();
         liveTerrainIndexCount=liveDirectionalIndexCount=0;liveTerrainGeneration=0;
-        invalidateShadowCache();temporalValid=fogHistoryValid=false;
+        invalidateShadowCache();fogScreen.invalidateHistory();history.invalidate();
         workerMemoryTrim.store(true,std::memory_order_relaxed);
         logf("WORLD expired mesh released managedMiB=%.2f",double(bytes)/1048576);
     }
@@ -2596,8 +1365,7 @@ private:
         if(!w.owner_before(active->bvh)&&!active->bvh.owner_before(w)&&DWORD(now-payloadRebuildTick)<15000u)return;
         payloadRebuildAsked=active->bvh;payloadRebuildTick=now;++payloadRebuilds;
         deferLogf("WORLD mesh upload payload was released after commit; GPU mesh lost, rebuilding upload from retained local scene map=\"%s\" count=%u",active->map.c_str(),payloadRebuilds);
-        {std::lock_guard<std::mutex> lock(mutex);payloadRebuildSource=active;geometryRebuild=true;pending=true;}
-        wake.notify_one();
+        enqueuePayloadRebuild();
     }
     bool streamingFailure(HRESULT hr,const char* stage,const char* detail=""){
         const auto* plan=pendingMesh?pendingMesh->plan.get():(active?active->meshPlan.get():nullptr);
@@ -2608,102 +1376,28 @@ private:
         retirePendingCpu();pendingMesh.reset();meshRetry.fail(GetTickCount());
         return vertices&&indices&&active&&uploadedMap==active->map;
     }
-    IDirect3DTexture9* moonFloorTexture=nullptr;
-    std::shared_ptr<const NorthlightRegionalFog::Field> moonFloorField;
-    std::string moonFloorMap;bool moonFloorReady=false,moonFloorShadowCurrent=false;float moonFloorMinimum=1e20f;
-    IDirect3DPixelShader9* moonFloorPS[6]={};bool moonFloorShaderTried[6]={};
-    void invalidateMoonFloor(){moonFloorReady=false;moonFloorField.reset();moonFloorMap.clear();moonFloorMinimum=1e20f;}
-    void releaseMoonFloor(){moonFloorShadowCurrent=false;invalidateMoonFloor();drop(moonFloorTexture);for(unsigned i=0;i<6;++i){drop(moonFloorPS[i]);moonFloorShaderTried[i]=false;}}
-    IDirect3DPixelShader9* moonFloorShader(bool actor,bool tiled,bool fading){
-        const unsigned index=(fading?3:0)+(actor?(tiled?2:1):0);
-        if(moonFloorShaderTried[index])return moonFloorPS[index];
-        moonFloorShaderTried[index]=true;
-        const DWORD* code[]={kMoonFloorFogShader,kMoonFloorFogActorShader,kMoonFloorFogActorTiledShader,kMoonFloorFogTransitionShader,kMoonFloorFogActorTransitionShader,kMoonFloorFogActorTiledTransitionShader};
-        const unsigned slots[]={kMoonFloorFogShaderSlots,kMoonFloorFogActorShaderSlots,kMoonFloorFogActorTiledShaderSlots,kMoonFloorFogTransitionShaderSlots,kMoonFloorFogActorTransitionShaderSlots,kMoonFloorFogActorTiledTransitionShaderSlots};
-        const unsigned temps[]={24,26,27,24,27,28};D3DCAPS9 caps{};
-        if(FAILED(d->GetDeviceCaps(&caps))||caps.MaxPixelShader30InstructionSlots<slots[index]||caps.PS20Caps.NumTemps<temps[index])return nullptr;
-        if(FAILED(d->CreatePixelShader(code[index],&moonFloorPS[index])))drop(moonFloorPS[index]);
-        return moonFloorPS[index];
-    }
-    bool ensureMoonFloor(){
-        if(moonFloorField==uploadedFogField&&moonFloorMap==uploadedFogMap)return moonFloorReady;
-        invalidateMoonFloor();moonFloorField=uploadedFogField;moonFloorMap=uploadedFogMap;
-        if(!moonFloorField)return false;
-        constexpr unsigned n=NorthlightRegionalFog::N;
-        for(unsigned y=0;y<n;++y)for(unsigned x=0;x<n;++x){const auto corners=NorthlightRegionalFog::directFloorCorners(*moonFloorField,x,y);for(float z:corners)moonFloorMinimum=std::min(moonFloorMinimum,z);}
-        if(moonFloorMinimum>=1e19f)return false;
-        if(!moonFloorTexture){
-            const auto budget=NorthlightGeometryMemory::dynamicBudget(uint64_t(n)*n*16);
-            if(!NorthlightGeometryMemory::admits(geometryAdmission(budget),budget))return false;
-            if(FAILED(d->CreateTexture(n,n,1,0,D3DFMT_A32B32G32R32F,D3DPOOL_MANAGED,&moonFloorTexture,nullptr))){drop(moonFloorTexture);return false;}
-        }
-        D3DLOCKED_RECT lock{};if(FAILED(moonFloorTexture->LockRect(0,&lock,nullptr,0)))return false;
-        if(!lock.pBits||lock.Pitch<INT(n*16)){moonFloorTexture->UnlockRect(0);return false;}
-        for(unsigned y=0;y<n;++y)for(unsigned x=0;x<n;++x){const auto corners=NorthlightRegionalFog::directFloorCorners(*moonFloorField,x,y);memcpy(static_cast<char*>(lock.pBits)+y*lock.Pitch+x*16,corners.data(),16);}
-        moonFloorReady=SUCCEEDED(moonFloorTexture->UnlockRect(0));return moonFloorReady;
-    }
+    NorthlightWorldMoonFloorFog moonFloorFog;
+    bool moonFloorShadowCurrent=false;
+    void releaseMoonFloor(){moonFloorShadowCurrent=false;moonFloorFog.reset();}
     void moonFloorReuseProof(int slot,NorthlightQuality::CascadeAction action,const char* reason,bool staticChanged,bool sliceBand){
         if(slot==3)moonFloorShadowCurrent=action!=NorthlightQuality::CascadeAction::Render&&!reason&&!staticChanged&&!sliceBand&&!staticSlices[slot].active&&shadowCacheKey[slot].valid;
     }
     bool moonFloorSourceCurrent(int source,bool geometryReady,bool direct,const std::string& map)const{
-        return source==1&&direct&&geometryReady&&directionalShadowWork()&&nativeShadowOwned&&NorthlightGI::dot(sourceColors[1],sourceColors[1])>1e-10f&&shadow[3]&&
-            shadowCacheKey[3].valid&&shadowTransition[3].workingValid&&moonFloorShadowCurrent&&uploadedFogField&&uploadedFogMap==map&&uploadedMap==map&&
+        return source==1&&direct&&geometryReady&&directionalShadowWork()&&nativeShadowOwned&&NorthlightGI::dot(sourceColors[1],sourceColors[1])>1e-10f&&directionalMaps.current(3).texture&&
+            shadowCacheKey[3].valid&&shadowTransition[3].workingValid&&moonFloorShadowCurrent&&regionalFog.field()&&regionalFog.map()==map&&uploadedMap==map&&
             active&&uploaded.lock()==active->bvh&&NorthlightWorldStreaming::applicable(active->map,active->center,map,vec(context.camera));
     }
     HRESULT drawFogVolume(unsigned w,unsigned h,IDirect3DPixelShader9* baseline,bool floorEligible,bool actor,bool tiled,bool fading,IDirect3DTexture9* scene,const float* bounds){
-        IDirect3DPixelShader9* optional=floorEligible?moonFloorShader(actor,tiled,fading):nullptr;
-        bool use=optional&&ensureMoonFloor();
-        const float actorInfo[4]={actor?1.f:0.f,0,0,0};
-        const auto restore=[&]{
-            HRESULT result=S_OK;
-            for(unsigned attempt=0;attempt<2;++attempt){
-                result=S_OK;const auto record=[&](HRESULT hr){if(FAILED(hr)&&SUCCEEDED(result))result=hr;};
-                record(d->SetTexture(0,scene));record(d->SetSamplerState(0,D3DSAMP_MINFILTER,D3DTEXF_LINEAR));record(d->SetSamplerState(0,D3DSAMP_MAGFILTER,D3DTEXF_LINEAR));
-                record(d->SetPixelShaderConstantF(72,actorInfo,1));record(d->SetPixelShaderConstantF(65,bounds,1));record(d->SetPixelShader(baseline));
-                if(SUCCEEDED(result))break;
-            }
-            return result;
-        };
-        if(use){
-            const float support[4]={actorInfo[0],1,1,1};float extended[4];memcpy(extended,bounds,16);extended[0]=std::min(extended[0],moonFloorMinimum-.25f);
-            use=SUCCEEDED(d->SetTexture(0,moonFloorTexture))&&SUCCEEDED(d->SetSamplerState(0,D3DSAMP_MINFILTER,D3DTEXF_POINT))&&
-                SUCCEEDED(d->SetSamplerState(0,D3DSAMP_MAGFILTER,D3DTEXF_POINT))&&SUCCEEDED(d->SetPixelShaderConstantF(72,support,1))&&
-                SUCCEEDED(d->SetPixelShaderConstantF(65,extended,1))&&SUCCEEDED(d->SetPixelShader(optional));
-            if(!use){const HRESULT restored=restore();if(FAILED(restored))return restored;}
-        }
-        if(!use)d->SetPixelShader(baseline);
-        const HRESULT result=quad(w,h);
-        if(use){const HRESULT restored=restore();if(FAILED(restored)&&SUCCEEDED(result))return restored;}
-        return result;
+        const NorthlightWorldMoonFloorFog::Input input{baseline,scene,bounds,regionalFog.field(),regionalFog.map(),floorEligible,actor,tiled,fading};
+        return moonFloorFog.draw(d,input,w,h,[&](const auto& budget){
+            return NorthlightGeometryMemory::admits(geometryAdmission(budget),budget);
+        });
     }
-    bool fogUploadRetry=false,fogUploadReported=false;DWORD fogUploadRetryAt=0,fogUploadReportAt=0;
     bool uploadRegionalFog(const std::shared_ptr<const NorthlightRegionalFog::Field>& field,const std::string& map){
-        if(uploadedFogField==field&&uploadedFogMap==map)return true;
-        invalidateMoonFloor();fogHeightReady=false;fogGlobalHeights={};
-        if(!field){fogUploadRetry=false;uploadedFogField.reset();uploadedFogMap=map;return true;}
-        const DWORD now=GetTickCount();if(fogUploadRetry&&DWORD(now-fogUploadRetryAt)<1000)return false;
-        constexpr unsigned n=NorthlightRegionalFog::N;
-        auto uploadCheck=[&](HRESULT hr,const char* stage){
-            if(SUCCEEDED(hr))return true;
-            if(hr!=E_OUTOFMEMORY&&hr!=D3DERR_OUTOFVIDEOMEMORY)return check(hr,stage);
-            drop(regionalFogTexture);drop(fogHeightTexture);uploadedFogField.reset();fogHeightReady=false;fogUploadRetry=true;fogUploadRetryAt=now;
-            if(!fogUploadReported||DWORD(now-fogUploadReportAt)>=60000){fogUploadReported=true;fogUploadReportAt=now;logf("WORLD regional fog deferred: %s HRESULT=%08lx retryMs=1000",stage,(unsigned long)hr);}return false;
-        };
-        if(!regionalFogTexture&&!uploadCheck(d->CreateTexture(n,n,1,0,D3DFMT_A32B32G32R32F,D3DPOOL_MANAGED,&regionalFogTexture,nullptr),"regional fog field"))return false;
-        D3DLOCKED_RECT lock={};if(!uploadCheck(regionalFogTexture->LockRect(0,&lock,nullptr,0),"regional fog lock"))return false;
-        if(!lock.pBits||lock.Pitch<INT(n*sizeof(NorthlightRegionalFog::Texel))){regionalFogTexture->UnlockRect(0);return check(E_FAIL,"regional fog layout");}
-        for(unsigned y=0;y<n;++y)memcpy(static_cast<char*>(lock.pBits)+y*lock.Pitch,field->texels.data()+y*n,n*sizeof(NorthlightRegionalFog::Texel));
-        if(!uploadCheck(regionalFogTexture->UnlockRect(0),"regional fog unlock"))return false;
-        fogUploadRetry=false;uploadedFogField=field;uploadedFogMap=map;fogGlobalHeights=NorthlightRegionalFog::globalHeightBounds(*field);
-        // Optional acceleration metadata: allocation/lock failure keeps the full march.
-        if(!fogHeightTexture&&FAILED(d->CreateTexture(n,n,1,0,D3DFMT_A32B32G32R32F,D3DPOOL_MANAGED,&fogHeightTexture,nullptr))){drop(fogHeightTexture);return true;}
-        D3DLOCKED_RECT bounds={};
-        if(!fogHeightTexture||FAILED(fogHeightTexture->LockRect(0,&bounds,nullptr,0)))return true;
-        if(bounds.pBits&&bounds.Pitch>=INT(n*16)){
-            for(unsigned y=0;y<n;++y)for(unsigned x=0;x<n;++x){const auto b=NorthlightRegionalFog::heightBounds(*uploadedFogField,x,y);memcpy(static_cast<char*>(bounds.pBits)+y*bounds.Pitch+x*16,b.data(),16);}
-            fogHeightReady=SUCCEEDED(fogHeightTexture->UnlockRect(0));
-        }else fogHeightTexture->UnlockRect(0);
-        return true;
+        return regionalFog.upload(d,field,map,[]{return GetTickCount();},
+            [&](HRESULT hr,const char* stage){return check(hr,stage);},
+            [&](HRESULT hr,const char* stage){logf("WORLD regional fog deferred: %s HRESULT=%08lx retryMs=1000",stage,(unsigned long)hr);},
+            [&]{moonFloorFog.invalidateField();});
     }
     bool frameStaging=false,frameProbeUpload=false; /* 0.3.176 (D3): this frame staged world mesh pages / uploaded the probe atlas */
 #if defined(NORTHLIGHT_WORLD_UPLOAD_TEST)
@@ -2743,314 +1437,10 @@ private:
         if(result!=S_OK)return retry();
         drop(resetReplayQuery);resetReplayPending=false;return true;
     }
-    bool upload(NorthlightStreaming::Budget& streamBudget){
-        if(!shadowTextureFormat.probe(d))return streamingFailure(E_OUTOFMEMORY,"shadow texture format");
-        retiredMaterials.drain(streamBudget);
-        static_assert(sizeof(NorthlightGI::WorldVertex)==32,"FGS vertex layout");
-        releaseOrphanedPending("upload");pressureReplayAllocation();
-        if(menuDomain){
-            if(uploadedMap!=active->map){pendingMesh.reset();clearMesh();releaseMeshPool();uploadedMap=active->map;++meshGeneration;}
-            uploaded=active->bvh;uploadedMeshPlan=active->meshPlan;
-        }else if(uploaded.lock()!=active->bvh&&!pendingMesh&&streamBudget.available()){
-            if(!meshRetry.ready(GetTickCount())||!pressureReplayReady())return uploadedMap==active->map&&vertices&&indices;
-            if(!active->meshPlan)return streamingFailure(D3DERR_INVALIDCALL,"validate plan","missing upload plan");
-            const auto& plan=*active->meshPlan;
-            auto payload=plan.payload.share();
-            if(!payload){requestPayloadRebuild();return uploadedMap==active->map&&vertices&&indices;} /* 0.3.214 (task 42) */
-            uint64_t largestTexture=0;for(const auto& material:payload->materials)largestTexture=std::max(largestTexture,shadowTextureFormat.bytes(material.bgraBytes()));
-            const char* invalid=NorthlightWorldMeshPages::validateSealed(plan);
-            if(invalid||!payload->pages||payload->pages->pages.empty())return streamingFailure(D3DERR_INVALIDCALL,"validate pages",invalid?invalid:"missing pages");
-            // Admit all full-effect targets while the bounded candidate still
-            // has its contiguous witness. Managed probes and cutout textures
-            // then share allocator bins before DEFAULT page mappings fragment VA.
-            if(payload->pages->temporary&&!geometryResources(width,height))return streamingFailure(E_OUTOFMEMORY,"pressure scene targets");
-            // 0.3.216 (issue #66): look every new page up by content key among the store's buffers (active and idle); a hit needs no
-            // upload. Admission below covers what this staging can newly allocate: the bytes of the MISSED pages (a hit or a reused
-            // idle buffer adds no address space) plus the textures, not the whole mesh. All misses (no hit) is the old full copy.
-            std::vector<NorthlightMeshPageKey::Key> pageKeys;pageKeys.reserve(payload->pages->pages.size());
-            std::vector<uint8_t> elidedPages;bool anyElided=false;elidedPages.reserve(payload->pages->pages.size());
-            for(const auto& page:payload->pages->pages){pageKeys.push_back(page.key);elidedPages.push_back(page.elided);anyElided|=page.elided;}
-            const auto compatiblePage=[&](uint32_t id){return id<meshBuffers.size()&&meshBuffers[id].vb&&meshBuffers[id].ib&&(payload->pages->defaultPool()||(meshBuffers[id].vbPool==D3DPOOL_MANAGED&&meshBuffers[id].ibPool==D3DPOOL_MANAGED));};
-            if(!meshStore.beginStaging(pageKeys,anyElided?elidedPages:std::vector<uint8_t>(),compatiblePage)){
-                if(!meshStore.elidedMisses())return streamingFailure(D3DERR_INVALIDCALL,"page staging","staging already open");
-                // An elided page has no CPU data and its buffer is gone (trimmed, replaced, device reset): this plan cannot be
-                // staged. Nothing was claimed. Publish no keys (the rebuilt plan elides nothing, so this cannot repeat) and drop the
-                // payload: the next frame asks the worker for a fresh generation through the payload-rebuild path.
-                if(elidedFallbacks++<12)logf("WORLD elided page missed at staging: misses=%zu of %zu pages, rebuilding the generation without elision (fallback %u)",meshStore.elidedMisses(),pageKeys.size(),elidedFallbacks);
-                {std::lock_guard<std::mutex> lock(mutex);residentPages.reset();residentMap.clear();}
-                active->meshPlan->payload.discard();
-                return uploadedMap==active->map&&vertices&&indices;
-            }
-            syncMeshBuffers();
-            const auto& staged=meshStore.staging();
-            uint64_t missVertexBytes=0,missIndexBytes=0;
-            if(!meshStore.stagingGrowth([&](uint32_t id,bool vertex){return id<meshBuffers.size()&&(vertex?meshBuffers[id].vb&&meshBuffers[id].vbPool==(payload->pages->defaultPool()?D3DPOOL_DEFAULT:D3DPOOL_MANAGED):meshBuffers[id].ib&&meshBuffers[id].ibPool==(payload->pages->defaultPool()?D3DPOOL_DEFAULT:D3DPOOL_MANAGED));},missVertexBytes,missIndexBytes))
-                return streamingFailure(D3DERR_INVALIDCALL,"page staging","invalid growth accounting");
-            auto budget=payload->pages->temporary?NorthlightGeometryMemory::coldUploadBudget(largestTexture):NorthlightGeometryMemory::uploadBudget(payload->pages->defaultPool()?0:missVertexBytes,payload->pages->defaultPool()?0:missIndexBytes,payload->pages->defaultPool()?0:shadowTextureFormat.bytes(active->meshPlan->textureBytes),payload->pages->defaultPool()?0:largestTexture);
-            if(payload->pages->temporary)budget=NorthlightGeometryMemory::replayBudget(budget,pressureReplayAllocation());
-            if(!payload->pages->temporary)budget.largest=2*std::max<uint64_t>(missVertexBytes||missIndexBytes?NorthlightWorldMeshPages::PageVertexByteLimit:0,largestTexture)+NorthlightGeometryMemory::ChunkMargin;
-            NorthlightGeometryMemory::Sample memory;bool exact=true;
-            {auto phase=streamingPhases.measure(NorthlightStreaming::PhaseProfile::Admission);memory=geometryAdmission(budget,&exact);}
-            if(NorthlightDiagnostics::enabled())logGeometryMemory("before-upload",memory,0,exact,&budget);
-            if(!NorthlightGeometryMemory::admits(memory,budget))return streamingFailure(E_OUTOFMEMORY,"upload-admission","address-space reserve or contiguous block");
-            pendingMesh=std::make_unique<PendingMesh>();pendingMesh->bvh=active->bvh;
-            pendingMesh->plan=active->meshPlan;pendingMesh->prepared=active->prepared;pendingMesh->map=active->map;pendingMesh->payload=payload;
-            auto& next=*pendingMesh;next.textures.reserve(payload->materials.size());
-            // The upload cursor runs over the miss list only; its page index maps to a payload page and a claimed buffer in perform().
-            std::vector<NorthlightWorldMeshPages::PageBytes> sizes;sizes.reserve(staged.upload.size());
-            for(uint32_t pageIndex:staged.upload){const auto& page=payload->pages->pages[pageIndex];sizes.push_back({page.key.vertexBytes,page.key.indexBytes,payload->pages->defaultPool()?sizeof(NorthlightGI::WorldVertex):0});}
-            if(!next.upload.begin(std::move(sizes)))return streamingFailure(D3DERR_INVALIDCALL,"page sizes");
-        }
-        if(pendingMesh){frameStaging=true; /* 0.3.176 (D3) */
-            auto& next=*pendingMesh;auto& plan=*next.plan;const auto& payload=*next.payload;
-            ++next.frames;
-            // Each bounded driver operation yields back to the shared deadline.
-            struct PageBudget {
-                NorthlightStreaming::Budget& parent;double limitMs;
-                bool available()const{return parent.available()&&parent.elapsedMs()<limitMs;}
-                size_t chunk(size_t n)const{return available()?parent.chunk(n):0;}
-                void consume(size_t n){parent.consume(n);}
-            } pageBudget{streamBudget,meshStore.table().empty()?1.5:.5};
-            auto perform=[&](NorthlightWorldMeshPages::Step step,size_t cursor,size_t offset,size_t bytes){
-                using S=NorthlightWorldMeshPages::Step;
-                const auto& staging=meshStore.staging();
-                if(!staging.open||cursor>=staging.upload.size())return false;
-                const uint32_t id=staging.uploadBuffer[cursor];
-                if(!meshStore.markWriting(id)||id>=meshBuffers.size())return false; // never an active (drawn) buffer; the old key dies before the first write
-                auto& page=meshBuffers[id];const auto& cpu=payload.pages->pages[staging.upload[cursor]];
-                if(cpu.elided)return false; // an elided page is always a store hit and never in the upload list
-                const auto& entry=meshStore.entries()[id];
-                if(step==S::CreateVertices||step==S::CreateIndices){
-                    const bool vb=step==S::CreateVertices;
-                    const D3DPOOL pool=payload.pages->defaultPool()?D3DPOOL_DEFAULT:D3DPOOL_MANAGED;
-                    const size_t gpuBytes=vb&&pool==D3DPOOL_DEFAULT?bytes/sizeof(NorthlightGI::WorldVertex)*sizeof(StaticShadow::Vertex):bytes;
-                    const bool reuse=vb?page.vb&&page.vbPool==pool&&entry.vbCapacity>=gpuBytes:page.ib&&page.ibPool==pool&&entry.ibCapacity>=gpuBytes;
-                    if(reuse)return true;
-                    auto phase=streamingPhases.measure(NorthlightStreaming::PhaseProfile::Buffers);
-                    return acquireMeshPage(id,vb,UINT(gpuBytes),pool);
-                }
-                if(step==S::PreloadVertices||step==S::PreloadIndices){
-                    auto phase=streamingPhases.measure(NorthlightStreaming::PhaseProfile::Preload);
-                    if(step==S::PreloadVertices)page.vb->PreLoad();else page.ib->PreLoad();return true;
-                }
-                auto phase=streamingPhases.measure(NorthlightStreaming::PhaseProfile::Copies);
-                const bool vb=step==S::CopyVertices;void* data=nullptr;
-                const bool compact=vb&&page.vbPool==D3DPOOL_DEFAULT;
-                const size_t gpuOffset=compact?offset/sizeof(NorthlightGI::WorldVertex)*sizeof(StaticShadow::Vertex):offset;
-                const size_t gpuBytes=compact?bytes/sizeof(NorthlightGI::WorldVertex)*sizeof(StaticShadow::Vertex):bytes;
-                // Newly created pages have never been drawn. Avoid DXVK's
-                // flags-0 synchronization until publication; an idle buffer
-                // from any previous drawable table keeps synchronized Lock(0).
-                const DWORD copyFlags=(vb?page.vbFresh:page.ibFresh)&&(vb?page.vbPool:page.ibPool)==D3DPOOL_DEFAULT?NorthlightUpload::FreshBufferLock:DWORD(0);
-                traceUpload(vb?"page-vertex-lock":"page-index-lock",copyFlags);
-                HRESULT hr=vb?page.vb->Lock(UINT(gpuOffset),UINT(gpuBytes),&data,copyFlags):page.ib->Lock(UINT(offset),UINT(bytes),&data,copyFlags);
-                if(FAILED(hr))return false;
-                bool copied=data!=nullptr;
-                if(compact){
-                    // Both compiled shadow vertex shaders read only position
-                    // and UV. GI/spool/key retain the complete original normals.
-                    std::array<NorthlightGI::WorldVertex,2048> input;size_t done=0,output=0;
-                    while(copied&&done<bytes){const size_t count=std::min(input.size(),(bytes-done)/sizeof(input[0]));
-                        copied=payload.pages->copy(cpu,true,offset+done,count*sizeof(input[0]),input.data());
-                        for(size_t i=0;copied&&i<count;++i){const auto& v=input[i];const StaticShadow::Vertex packed{v.position.x,v.position.y,v.position.z,v.u,v.v};std::memcpy(static_cast<char*>(data)+output,&packed,sizeof packed);output+=sizeof packed;}
-                        done+=count*sizeof(input[0]);
-                    }
-                }else if(copied)copied=payload.pages->copy(cpu,vb,offset,bytes,data);
-                hr=vb?page.vb->Unlock():page.ib->Unlock();return copied&&SUCCEEDED(hr);
-            };
-            while(pageBudget.available()&&next.upload.status()==NorthlightWorldMeshPages::Result::Pending){
-                if(next.upload.advance(perform,pageBudget)==NorthlightWorldMeshPages::Result::Failed)return streamingFailure(E_FAIL,"mesh page upload");
-            }
-            size_t budget=streamBudget.remainingBytes();
-            auto canStage=[&]{return pageBudget.available()&&next.upload.status()==NorthlightWorldMeshPages::Result::Ready;};
-            {auto phase=streamingPhases.measure(NorthlightStreaming::PhaseProfile::Materials);
-            unsigned uploads=0;
-            while(canStage()&&budget&&next.material<payload.materials.size()){
-                const auto& m=payload.materials[next.material];
-                if(m.textureOwner!=UINT32_MAX){
-                    if(m.textureOwner>=next.textures.size()||!next.textures[m.textureOwner])return streamingFailure(E_FAIL,"staged material owner");
-                    auto* texture=next.textures[m.textureOwner];texture->AddRef();next.textures.push_back(texture);
-                    ++next.material;++next.textureReuses;continue;
-                }
-                const bool white=m.whiteMask();
-                if(white&&next.white){next.white->AddRef();next.textures.push_back(next.white);++next.material;continue;}
-                if(!next.partialTexture){
-                    if(auto* reused=reusableMaterial(m,next.material)){
-                        if(resetReplayScoped)reused->PreLoad();
-                        reused->AddRef();next.textures.push_back(reused);++next.material;++next.textureReuses;
-                        if(white){next.white=reused;reused->AddRef();}
-                        continue;
-                    }
-                    if(uploads>=16)break;
-                    if(payload.pages->temporary&&!admitsGrowth("pressure-material",shadowTextureFormat.bytes(m.bgraBytes()),nullptr,true))return streamingFailure(E_OUTOFMEMORY,"pressure-material-admission");
-                    HRESULT hr=d->CreateTexture(m.width,m.height,1,0,shadowTextureFormat.value,payload.pages->defaultPool()?D3DPOOL_DEFAULT:D3DPOOL_MANAGED,&next.partialTexture,nullptr);
-                    if(FAILED(hr)||!next.partialTexture)return streamingFailure(FAILED(hr)?hr:E_FAIL,"staged material");
-                    if(payload.pages->defaultPool())hr=d->CreateTexture(m.width,m.height,1,0,shadowTextureFormat.value,D3DPOOL_SYSTEMMEM,&next.partialStaging,nullptr);
-                    else{next.partialStaging=next.partialTexture;next.partialStaging->AddRef();}
-                    if(FAILED(hr)||!next.partialStaging)return streamingFailure(FAILED(hr)?hr:E_FAIL,"material staging");
-                    next.materialRow=0;
-                }
-                if(!canStage())break;
-                const size_t sourceRowBytes=size_t(m.width)*m.stride(),rowBytes=size_t(m.width)*shadowTextureFormat.stride;
-                if(rowBytes>budget)break;
-                const UINT rows=UINT(std::min({size_t(m.height)-next.materialRow,budget/rowBytes,size_t(64)}));
-                RECT rect={0,LONG(next.materialRow),LONG(m.width),LONG(next.materialRow+rows)};
-                D3DLOCKED_RECT lock={};HRESULT hr=next.partialStaging->LockRect(0,&lock,&rect,0);
-                if(FAILED(hr))return streamingFailure(hr,"staged material lock");
-                if(!lock.pBits||lock.Pitch<INT(rowBytes)){next.partialStaging->UnlockRect(0);return streamingFailure(E_FAIL,"staged material layout");}
-                bool copied=true;
-                std::array<uint8_t,4096*4> scratch;
-                if(sourceRowBytes>scratch.size()||!sourceRowBytes){next.partialStaging->UnlockRect(0);return streamingFailure(E_FAIL,"material width");}
-                if(m.alphaOnly&&shadowTextureFormat.stride==1){
-                    if(size_t(lock.Pitch)==rowBytes)
-                        copied=payload.pages->copyMaterial(m,next.materialRow*rowBytes,rows*rowBytes,lock.pBits);
-                    else for(UINT y=0;y<rows&&copied;++y)
-                        copied=payload.pages->copyMaterial(m,(next.materialRow+y)*rowBytes,rowBytes,static_cast<char*>(lock.pBits)+y*lock.Pitch);
-                }else for(UINT y=0;y<rows&&copied;){
-                    const UINT n=std::min(rows-y,UINT(scratch.size()/sourceRowBytes));
-                    copied=payload.pages->copyMaterial(m,(next.materialRow+y)*sourceRowBytes,n*sourceRowBytes,scratch.data());
-                    for(UINT j=0;copied&&j<n;++j)for(UINT x=0;x<m.width;++x)
-                        NorthlightShadowAlphaTexture::write((char*)lock.pBits+(y+j)*lock.Pitch,x,shadowTextureFormat.stride,scratch[j*sourceRowBytes+(x+1)*m.stride()-1]);
-                    y+=n;
-                }
-                hr=next.partialStaging->UnlockRect(0);if(!copied)return streamingFailure(E_FAIL,"staged material temporary copy");if(FAILED(hr))return streamingFailure(hr,"staged material unlock");
-                next.materialRow+=rows;budget-=rows*rowBytes;streamBudget.consume(rows*rowBytes);
-                if(next.materialRow==m.height){
-                    if(next.partialStaging!=next.partialTexture&&FAILED(hr=d->UpdateTexture(next.partialStaging,next.partialTexture)))return streamingFailure(hr,"material upload");
-                    if(next.partialStaging==next.partialTexture)next.partialTexture->PreLoad();
-                    drop(next.partialStaging);auto* t=next.partialTexture;next.partialTexture=nullptr;next.textures.push_back(t);++next.material;++uploads;++next.textureUploads;
-                    if(white){next.white=t;t->AddRef();}
-                }
-            }
-            }
-            if(streamBudget.available()&&next.upload.status()==NorthlightWorldMeshPages::Result::Ready&&next.material==payload.materials.size()){
-                auto phase=streamingPhases.measure(NorthlightStreaming::PhaseProfile::Commit);
-                traceUpload("commit-enter");
-                // Allocate small commit metadata before releasing the previous GPU set.
-                std::vector<float> cutoffs;cutoffs.reserve(payload.materials.size());
-                // Constant white passes every validated cutoff, including 1. Point and
-                // directional casters can use their existing opaque shader/batching path.
-                for(const auto& material:payload.materials)
-                    cutoffs.push_back(material.alphaOnly&&material.whiteMask()?0.f:material.alphaCutoff);
-                std::vector<Batch> committedBatches=payload.pages->batches,committedPointBatches=payload.pages->pointSubBatches;
-                auto committedPointRanges=payload.pages->pointSubRanges;
-                auto committedPointTree=payload.pages->pointTree;
-                std::string committedMap=next.map;
-                const bool prepared=next.prepared&&next.prepared->plan==next.plan.get()&&next.prepared->owners&&next.prepared->fixed;preparedOwnerCommits+=prepared;
-                auto committedFixed=prepared?next.prepared->fixed:std::make_shared<const FixedChunks>(plan.fixedTerrainChunks);
-                auto committedOwners=prepared?next.prepared->owners:StaticShadow::makeOwners(ownerPlacements(plan));
-                // Retain only a bounded subset of immutable texels, by moving
-                // existing upload storage (no second full BGRA allocation).
-                auto committedPixels=std::make_shared<MaterialPixels>(payload.materials.size());
-                size_t retainedPixels=0;
-                traceUpload("commit-prepared");
-                // Keep the previous complete geometry drawable until publication fits.
-                if(uploadedTextureBytes<=NorthlightStreaming::DeferredRelease<IDirect3DTexture9>::MaxBytes&&
-                   !retiredMaterials.enqueue(materials,uploadedTextureBytes))return vertices&&indices&&uploadedMap==active->map;
-                size_t elidedAtCommit=0;for(const auto& page:payload.pages->pages)elidedAtCommit+=page.elided;
-                for(size_t i=0;i<next.payload->materials.size();++i){
-                    auto& material=next.payload->materials[i];
-                    if(payload.pages->temporary||material.textureOwner!=UINT32_MAX||material.retainedPixelBytes()>MaterialReuseBytes-retainedPixels)continue;
-                    retainedPixels+=size_t(material.retainedPixelBytes());(*committedPixels)[i]=std::move(material);
-                }
-                auto previousPixels=std::move(uploadedMaterialPixels);
-                const size_t previousPixelBytes=materialReuseBytes;
-                const bool coldStart=meshStore.table().empty();clearMesh();const auto stagedPages=meshStore.commit(); /* 0.3.216: atomic switch of the active page table; replaced buffers go idle */
-                for(auto id:meshStore.table())if(id<meshBuffers.size())meshBuffers[id].vbFresh=meshBuffers[id].ibFresh=false;
-                {const uint32_t first=meshStore.bufferOf(0);vertices=first<meshBuffers.size()?meshBuffers[first].vb:nullptr;indices=first<meshBuffers.size()?meshBuffers[first].ib:nullptr;}
-                materials=std::move(next.textures);uploadedTextureBytes=size_t(shadowTextureFormat.bytes(plan.textureBytes));vertexCount=plan.vertexCount;
-                uploadedMaterialPixels=std::move(committedPixels);materialReuseBytes=retainedPixels;
-                if(previousPixels&&!NorthlightStreaming::cpuRetirement().retire(previousPixels,previousPixelBytes+previousPixels->capacity()*sizeof(NorthlightWorldMesh::MaterialUpload)))previousPixels.reset();
-                uploadedLocalShadowRecords=plan.localShadowRecords;
-                batches=std::move(committedBatches);pointSubBatches=std::move(committedPointBatches);pointSubRanges=std::move(committedPointRanges);pointTree=std::move(committedPointTree);uploadedAlphaCutoffs=std::move(cutoffs);
-                // Replaced shared sets may be last owners (~7000 + ~3000 nodes).
-                {auto& reaper=NorthlightStreaming::cpuRetirement();
-                 std::swap(fixedTerrain,committedFixed);std::swap(uploadedStaticOwners,committedOwners);fixedTerrainBits.assign(fixedTerrain.get());
-                 if(committedFixed)retirementBacklog.retire(reaper,committedFixed,committedFixed->size()*48);
-                 if(committedOwners)retirementBacklog.retire(reaper,committedOwners,committedOwners->placements*(sizeof(StaticShadow::Placement)+64));}
-                uploaded=next.bvh;uploadedMeshPlan=next.plan;uploadedMap=std::move(committedMap);
-                publishResidentPages(uploadedMap);
-                ++meshGeneration;rebuildTerrainLists();
-                // Resident staging is freed after publication for both pools.
-                // File-backed pressure generations retain their small Reset source.
-                const uint64_t payloadBytes=payload.pages->temporary?0:plan.payload.discard();const uint64_t releasedBytes=payloadBytes>retainedPixels?payloadBytes-retainedPixels:0;
-                if(NorthlightDiagnostics::enabled())logf("WORLD staged mesh committed: vertices=%u triangles=%zu materials=%zu textureUploads=%u textureReuses=%u retainedMaterialMiB=%.2f stagingFrames=%u stagingMs=%lu releasedPayloadMiB=%.2f pages=%zu reusedPages=%zu uploadedPages=%zu reusedMiB=%.2f uploadedMiB=%.2f elidedPages=%zu deviceLocal=%u fileStaging=%u",vertexCount,size_t(plan.triangleCount),materials.size(),next.textureUploads,next.textureReuses,double(materialReuseBytes)/1048576,next.frames,(unsigned long)(GetTickCount()-next.started),double(releasedBytes)/1048576,
-                    stagedPages.pages,stagedPages.reusedPages,stagedPages.uploadedPages,double(stagedPages.reusedBytes)/1048576,double(stagedPages.uploadedBytes)/1048576,elidedAtCommit,unsigned(payload.pages->defaultPool()),unsigned(bool(payload.pages->temporary)));
-                retirePendingCpu();pendingMesh.reset();meshRetry.clear();payloadRebuildAsked.reset();payloadRebuildTick=0;resetReplaySource.reset();resetReplayPlan.reset();resetReplayScoped=false;
-                trimMeshPoolAfterCommit(coldStart?0:stagedPages.uploadedCapacity); /* a cold start held no buffer idle */
-                traceUpload("commit-complete");
-            }
-        }
-        if((!menuDomain&&(!vertices||!indices))||uploadedMap!=active->map)return false;
-        // Mesh staging can precede the scene targets; probe upload waits for them.
-        if(!geometryTargetsReady)return true;
-        return uploadProbeAtlas();
-    }
-    bool probeAtlasReady(const std::string& map)const{
-        return geometryTargetsReady&&(geometryGroups&2u)&&active&&active->map==map&&
-               uploadedProbeMap==map&&uploadedSerial&&uploadedSerial==active->serial;
-    }
-    void stageScreenProbes(const std::string& map){
-        if(geometryTargetsReady&&(geometryGroups&2u)&&active&&active->map==map)uploadProbeAtlas();
-    }
-    bool uploadProbeAtlas(){
-        // Geometry can be ready before a new map's first GI solve. Shadows
-        // may render immediately; GridInfo.w prevents reading the old atlas.
-        if(active->serial==0)uploadedSerial=0;
-        if(giWorkEnabled()&&(geometryGroups&2u)&&active->serial&&(uploadedSerial!=active->serial||uploadedProbeMap!=active->map)){
-            const bool first=!uploadedSerial||uploadedProbeMap!=active->map;
-            uploadedSerial=0; // A partially written atlas cannot certify any snapshot.
-            auto phase=streamingPhases.measure(NorthlightStreaming::PhaseProfile::Probes);frameProbeUpload=true; /* 0.3.176 (D3) */
-            if(active->atlas.size()!=NorthlightGI::probeLayout().atlasSize())return false;
-            traceUpload("probe-enter");
-            float activationNow=float(DWORD(GetTickCount()-animationEpoch))*.001f;
-            const unsigned n=NorthlightGI::probeLayout().atlas;
-            const std::vector<NorthlightGI::ProbeAtlasEntry> empty(active->coarseAtlas?0:NorthlightGI::probeLayout().atlasSize());
-            const auto& coarse=active->coarseAtlas?*active->coarseAtlas:empty;
-            if(coarse.size()!=active->atlas.size())return false;
-            auto combined=active->atlas;combined.insert(combined.end(),coarse.begin(),coarse.end());
-            if(probeLocalMirror.changed(combined)){
-                if(!probeLocal||!probeLocalMirror.prepare(combined.size()))return false;
-                D3DLOCKED_RECT lock{};
-                if(!check(probeLocal->LockRect(0,&lock,nullptr,D3DLOCK_NO_DIRTY_UPDATE),"probe local visibility upload"))return false;
-                const auto dirty=probeLocalMirror.write(lock.pBits,size_t(lock.Pitch),n,combined,NorthlightGI::ProbeCascadeCount);
-                const RECT rect={LONG(dirty.left),LONG(dirty.top),LONG(dirty.right),LONG(dirty.bottom)};
-                if(!check(probeLocal->UnlockRect(0),"probe local visibility unlock")||!check(probeLocal->AddDirtyRect(&rect),"probe local visibility dirty")){probeLocalMirror.reset();return false;}
-            }
-            probeActivation.begin(active->map);coarseActivation.begin(active->map);
-            probeBlend.begin(active->map);coarseBlend.begin(active->map);
-            unsigned blendedSlots=probePrev?probeBlend.publish(active->atlas,activationNow)+coarseBlend.publish(coarse,activationNow):0;
-            for(unsigned channel=0;channel<5;++channel){
-                D3DLOCKED_RECT lock{};
-                if(!check(probe[channel]->LockRect(0,&lock,nullptr,0),"probe upload"))return false;
-                for(unsigned level=0;level<NorthlightGI::ProbeCascadeCount;++level){
-                    auto* bits=static_cast<char*>(lock.pBits)+size_t(level)*n*(channel==3?6:1)*lock.Pitch;
-                    NorthlightProbeUpload::write(channel,bits,size_t(lock.Pitch),n,level?coarse:active->atlas,
-                        level?coarseBlend:probeBlend,level?coarseActivation:probeActivation,activationNow,probePrev!=nullptr,true);
-                }
-                if(!check(probe[channel]->UnlockRect(0),"probe unlock"))return false;
-            }
-            if(probePrev){D3DLOCKED_RECT lock{};
-                if(!check(probePrev->LockRect(0,&lock,nullptr,0),"probe blend upload"))return false;
-                NorthlightProbeUpload::previous(lock.pBits,size_t(lock.Pitch),n,probeBlend);
-                NorthlightProbeUpload::previous(static_cast<char*>(lock.pBits)+size_t(n)*lock.Pitch,size_t(lock.Pitch),n,coarseBlend);
-                if(!check(probePrev->UnlockRect(0),"probe blend unlock"))return false;
-            }
-            ++probeBlendPublishes;probeBlendSlots+=blendedSlots;
-            uploadedProbeMap=active->map;uploadedSerial=active->serial;
-            if(first&&NorthlightDiagnostics::enabled())deferLogf("WORLD probe atlas ready map=%s frame=%u tick=%lu staticMesh=%u",uploadedProbeMap.c_str(),unsigned(frames),(unsigned long)GetTickCount(),unsigned(uploaded.lock()==active->bvh));
-        }return true;
-    }
+#include "world_mesh_publication.inl"
     // 0.3.176 (D1): this frame's terrain change (sample frames), per-triangle tests, and (RenderProfile
     // sample frames) the arena / index build / lock+copy times; -1: not measured.
     const char* terrainChange="none";size_t terrainTriangleTests=0;double terrainPartMs[3]={-1,-1,-1};
-    // 0.3.192 (DXVK3): (re)creates the live IB at the given ring capacity; on failure no buffer and no ring.
-    bool recreateLiveIndices(UINT capacity){
-        auto& queries=fence();
-        drop(liveIndicesGPU);liveIndexBytes=0;NorthlightDynamicRing::reset(liveIndexRing,0,queries);liveIndexBase=0;
-        if(!check(d->CreateIndexBuffer(capacity,D3DUSAGE_DYNAMIC|D3DUSAGE_WRITEONLY,D3DFMT_INDEX32,D3DPOOL_DEFAULT,&liveIndicesGPU,nullptr),"live index buffer"))return false;
-        liveIndexBytes=capacity;NorthlightDynamicRing::reset(liveIndexRing,capacity,queries);return true;
-    }
     bool uploadLiveTerrain(){
         terrainUploadBytes=0;terrainUploadReused=false;terrainTriangleTests=0;for(auto& ms:terrainPartMs)ms=-1;
         liveTerrainGPU.beginFrame();
@@ -3061,12 +1451,12 @@ private:
         for(const auto& snapshot:frameTerrain){pointRecordTerrain(pointStart,UINT(snapshot->indices.size()/3),snapshot->bounds);pointStart+=UINT(snapshot->indices.size());}
         const bool timedParts=profileSampled();auto partStart=timedParts?std::chrono::steady_clock::now():std::chrono::steady_clock::time_point{};
         auto part=[&](int k){if(!timedParts)return;const auto now=std::chrono::steady_clock::now();terrainPartMs[k]=std::chrono::duration<double,std::milli>(now-partStart).count();partStart=now;};
-        const bool reuse=liveTerrainGeneration==meshGeneration&&frameTerrain==uploadedTerrain && (frameTerrain.empty()||(liveTerrainGPU.vertices()&&liveIndicesGPU));
+        const bool reuse=liveTerrainGeneration==meshGeneration&&frameTerrain==uploadedTerrain && (frameTerrain.empty()||(liveTerrainGPU.vertices()&&liveTerrainIndices.buffer()));
         if(captureSampled)terrainChange=reuse?"none":frameTerrain==uploadedTerrain?"identity":"membership";
         // 0.3.192 (DXVK3): a reuse frame draws the live IB slice again without a place(): re-tag its span with this frame's
         // fence so it stays pending (no NOOVERWRITE overwrite of a slice still drawn) until this frame's draws are submitted.
-        // The newest span is the current lists (place() appends, the older spans are earlier lists); liveIndexBase is untouched.
-        if(reuse){terrainUploadReused=true;if(liveTerrainIndexCount||liveDirectionalIndexCount)NorthlightDynamicRing::touch(liveIndexRing,fence());return true;}
+        // The newest span is the current lists (place() appends, the older spans are earlier lists); the current index base is kept.
+        if(reuse){terrainUploadReused=true;if(liveTerrainIndexCount||liveDirectionalIndexCount)liveTerrainIndices.touch(fence());return true;}
         // Point cubes may retain terrain-only faces across refreshes. Advance
         // before any mutation, including a deferred/failed upload or empty set.
         ++liveTerrainRevision;
@@ -3088,7 +1478,7 @@ private:
         if(terrainResult==S_FALSE){
             // Preserve the existing memory-pressure fallback: the complete
             // cached terrain covers this frame; do not advertise absent live chunks.
-            liveTerrainIndexCount=liveDirectionalIndexCount=0;liveIndexBase=0;liveTerrainChunks.clear();uploadedTerrain.clear();return true;
+            liveTerrainIndexCount=liveDirectionalIndexCount=0;liveTerrainIndices.clearBase();liveTerrainChunks.clear();uploadedTerrain.clear();return true;
         }
         if(!check(terrainResult,"live terrain arena upload"))return false;
         std::optional<NorthlightStreaming::PhaseProfile::Scope> indexPhase;indexPhase.emplace(streamingPhases.peaks[NorthlightStreaming::PhaseProfile::TerrainIndices]);
@@ -3107,29 +1497,15 @@ private:
         indexPhase.reset();part(1);
         if(!liveTerrainIndexCount){uploadedTerrain=frameTerrain;liveTerrainGeneration=meshGeneration;return true;}
         auto indexUpload=streamingPhases.measure(NorthlightStreaming::PhaseProfile::TerrainIndexUpload);
-        UINT ib=UINT((liveTerrainIndexCount+liveDirectionalIndexCount)*sizeof(uint32_t));
-        if(ib>liveIndexBytes){
-            const UINT ibCapacity=NorthlightDynamicRing::ringCapacity(ib);
-            if(!admitsGrowth("live-terrain-index-growth",ibCapacity)){
-                liveTerrainIndexCount=liveDirectionalIndexCount=0;liveIndexBase=0;liveTerrainChunks.clear();uploadedTerrain.clear();return true;
-            }
-            if(!recreateLiveIndices(ibCapacity))return false;
+        const UINT ib=UINT((liveTerrainIndexCount+liveDirectionalIndexCount)*sizeof(uint32_t));
+        const auto uploaded=liveTerrainIndices.upload(d,ib,fence(),
+            [&](UINT capacity){return admitsGrowth("live-terrain-index-growth",capacity);},
+            [&](uint32_t* data){liveTerrainGPU.write(data);},
+            [&](HRESULT result,const char* action){return check(result,action);});
+        if(uploaded==NorthlightLiveTerrainIndices::Upload::Deferred){
+            liveTerrainIndexCount=liveDirectionalIndexCount=0;liveTerrainIndices.clearBase();liveTerrainChunks.clear();uploadedTerrain.clear();return true;
         }
-        // 0.3.192 (DXVK3): the lists are appended to a fence-checked ring (dynamic_ring.h): no DISCARD, so no
-        // full-buffer charge on DXVK 3.x, while an earlier frame's draws may still read their slice.
-        auto& queries=fence();
-        auto slot=NorthlightDynamicRing::place(liveIndexRing,ib,4,queries);
-        if(slot.discarded&&NorthlightDynamicRing::oversized(liveIndexRing,liveIndexRing.peak)){
-            if(!recreateLiveIndices(NorthlightDynamicRing::ringCapacity(liveIndexRing.peak)))return false;
-            slot=NorthlightDynamicRing::place(liveIndexRing,ib,4,queries);NorthlightLockMeter::ringShrink();
-        }
-        if(slot.wrapped)NorthlightLockMeter::ringWrap(slot.fenceReuse,slot.discarded);
-        if(slot.discarded)NorthlightLockMeter::discard(NorthlightLockMeter::LiveIB,liveIndexBytes);
-        void* data=nullptr;
-        if(!check(liveIndicesGPU->Lock(slot.offset,ib,&data,slot.flags),"live index upload"))return false;
-        liveTerrainGPU.write(static_cast<uint32_t*>(data));
-        if(!check(liveIndicesGPU->Unlock(),"live index unlock"))return false;
-        liveIndexBase=slot.offset/sizeof(uint32_t);
+        if(uploaded==NorthlightLiveTerrainIndices::Upload::Failed)return false;
         part(2);
         uploadedTerrain=frameTerrain;liveTerrainGeneration=meshGeneration;terrainUploadBytes=liveTerrainGPU.uploadedBytes+ib;
         return true;
@@ -3158,6 +1534,9 @@ private:
         NorthlightWeatherMemory::configure(quality.weatherMemory!=0); /* WeatherMemory=0: no weather reads, also not in the stream snapshot */
         NorthlightMemorySwitches::configure(quality.memMap!=0); /* task 42: MemMap (also read earlier by the process-level MEMMAP points) */
         NorthlightRenderThreadProbe::configure(NorthlightQuality::renderProfile(quality),NorthlightQuality::replayProbe(quality));
+#ifdef NORTHLIGHT_REPLAY_STAND
+        logf("STAND_PROFILE fixedWork=%u",unsigned(NorthlightFrameParityClock::fixedProfileWork()));
+#endif
         logf("PROFILE effective diagnostics=%u renderProfile=%u replayProbe=%u period=%u cpuGpuAdditive=0",unsigned(NorthlightDiagnostics::enabled()),unsigned(NorthlightRenderThreadProbe::profiling()),unsigned(NorthlightRenderThreadProbe::probing()),NorthlightRenderThreadProbe::profiling()?NorthlightRenderThreadProbe::ProfilePeriod:NorthlightRenderThreadProbe::SamplePeriod);
         NorthlightWorldContext::SelfReadStats::timed.store(NorthlightQuality::renderProfile(quality),std::memory_order_relaxed); /* 0.3.160 */
         // 0.3.153 GIDistance: the probe layout is fixed by the first renderer of the process.
@@ -3165,7 +1544,6 @@ private:
         const auto& layout=NorthlightGI::probeLayout();
         logf("QUALITY GI distance=%u effective=%u grid=%ux%ux%u atlas=%u^3 cacheProbes=%zu configured=%u probeAhead=%u",quality.giDistance,layout.n*4-4,layout.n,layout.n,layout.nz,layout.atlas,layout.atlasSize(),unsigned(layoutConfigured),quality.giProbeAhead);
     }
-    HRESULT quad(UINT w,UINT h,bool setViewport=true){if(setViewport){D3DVIEWPORT9 vp={0,0,w,h,0,1};d->SetViewport(&vp);}return NorthlightScreen::drawQuad(d,w,h);}
 public:
     // Buffer identity for the snapshot cache: a private-data token created on
     // first sight and owned by the COM object, so pointer reuse cannot alias.
@@ -3182,6 +1560,26 @@ public:
         if(nativeDirectRenderer)nativeDirectRenderer->setSamplerStateSource(nativeSamplerContext,nativeSamplerReader);
     }
     NorthlightDrawSnapshot::Frame& captureSources(){return replaySnapshots;}
+    void setParityFrame(unsigned frame){parityFrame=frame;}
+#ifdef NORTHLIGHT_REPLAY_STAND
+    NorthlightCaptureWork::Work captureWork()const{
+        NorthlightCaptureWork::Work work;
+        work.addSnapshots(replaySnapshots);
+        work.packets=replays.size();
+        work.geometryReuse=captureSourceHandoffs;
+        work.bankReuse=captureProjectionLoans;
+        work.floatGets=4*(captureProjectionGets+terrainCameraGets);
+        work.floatHandoff=4*(captureProjectionLoans+terrainCameraBorrows);
+        work.rangeReads=capturePacketReadRegisters;
+        work.rangeHandoff=capturePacketLoanRegisters;
+        return work;
+    }
+    void reportReplayCopyMemory(unsigned rendererFrame)const{
+        const auto memory=geometryMemory();
+        logf("REPLAY COPY memory frame=%u valid=%u availableBytes=%llu largestFreeBytes=%llu",
+            rendererFrame,unsigned(memory.valid),(unsigned long long)memory.available,(unsigned long long)memory.largest);
+    }
+#endif
     HRESULT warmPointPipelinesAtDeviceInit(){
         if(!pipelineActive||!effects.shadows||!quality.localLights||!quality.pointShadows||!quality.localLightLimit||!quality.pointShadowLimit)return S_OK;
         const auto start=std::chrono::steady_clock::now();bool kicked=false;HRESULT restored=S_OK;const HRESULT hr=prewarmPointPipelines(kicked,restored);
@@ -3216,21 +1614,19 @@ public:
         staticCasters.setAdmission([this](size_t bytes){return admitStaticAllocation(bytes);});
         worker=std::thread([this]{work();});}
     ~WorldRenderer(){prepareWorker.join(); /* 0.3.179: first: an abandoned worker may still be inside a record */
-        {std::lock_guard<std::mutex> lock(mutex);stopping=true;}wake.notify_one();if(worker.joinable())worker.join();std::atomic_store(&gpuScene->workerPreparation,std::shared_ptr<void>{});releaseGPU();for(auto& p:captureShaders)drop(p.second.replacement);for(auto& p:terrainShadowShaders)drop(p.second);for(auto& p:terrainCoverageVertices)drop(p.second);for(auto& p:terrainCoveragePixels)for(auto& variant:p.second)drop(variant.shader);}
-    void releaseActorTargetTextures(){for(auto& t:actorShadow)drop(t);for(auto& t:actorShadowSurface)drop(t);for(auto& t:actorTiles)drop(t);for(auto& t:actorTilesSurface)drop(t);drop(actorTilesMid);drop(actorTilesMidSurface);drop(actorVisibility);drop(actorVisibilitySurface);}
-    void releaseActorTargets(){releaseActorTargetTextures();drop(actorShadowPS);drop(actorUniformPS);drop(actorTilesPS);drop(actorTilesWidePS);drop(fogActorTiledPS);drop(fogCloudsActorTiledPS);}
+        stopWorker();std::atomic_store(&gpuScene->workerPreparation,std::shared_ptr<void>{});releaseGPU();for(auto& p:captureShaders)drop(p.second.replacement);}
     void actorSettingsChanged(){
         // Actor controls change dynamic caster coverage, not the shared scene,
         // static maps, GI, terrain/replay buffers or world/fog shader programs.
-        releaseActorTargets();actorTargetsPending=true;
-        temporalValid=fogHistoryValid=false;actorShadowHistory.clear();actorShadowOriginValid=false;
+        actorMaps.settingsChanged();
+        fogScreen.invalidateHistory();history.invalidate();actorShadowHistory.clear();actorShadowOriginValid=false;
         shadowFrameReady=pointReady=false;captureDemand=true;
         for(unsigned source=0;source<2;++source){
             nearShadow[source].invalidate();farShadow[source].invalidate();
             actorValid[source]=nearActorSkip[source]=actorCenterValid[source]=false;actorHold[source].invalidate();
         }
-        for(auto& slot:pointSlots){slot.ready=false;slot.schedule.invalidate();slot.faceCycle.reset();}
-        for(auto& slot:flashSlots)slot.ready=false;
+        for(auto& slot:pointTargets.slots()){slot.ready=false;slot.schedule.invalidate();slot.faceCycle.reset();}
+        flashShadows.invalidate();
     }
     // 0.3.214 (task 42): keepMesh (device Reset, resolution change) keeps what describes the UPLOADED mesh: the MANAGED
     // page pool + material textures (they survive Reset in D3D9 and DXVK), the vertices/indices aliases, batches, terrain
@@ -3238,7 +1634,73 @@ public:
     // too; its cursor continues). Everything else (DEFAULT targets, dynamic rings, queries, state blocks, caches derived from
     // them) is released as before. recover() and the destructor release the mesh as well; the CPU payload is gone by then, so
     // upload() asks the builder for a fresh generation.
-    void releaseGPU(bool keepMesh=false){fogVolume.reset();fogVolumeField.reset();fogVolumeKey=0;screenGroups=geometryGroups=0;shadowAlphaTargets.reset();shadowAlphaRetryAt=0;releaseMoonFloor();if(nativeDiagnosticCapture){nativeDiagnosticCapture->finish(false);nativeDiagnosticCapture.reset();}actorTargetsPending=false;releaseShadowTransitions();releaseNearEnvironment();releaseSoftShadows();drop(hdrBasePS);drop(hdrAOBasePS);hdrBaseTried=hdrAOBaseTried=false;drop(hdrFinalPS);drop(hdrUnlitPS);drop(hdrMaterialPS);drop(hdrCombinedPS);hdrCombineTried=false;colorStorageFormat=D3DFMT_UNKNOWN;drop(resetReplayQuery);resetReplayFence.drop();if(!keepMesh){resetReplaySource.reset();resetReplayPlan.reset();resetReplayScoped=false;resetReplayPending=false;}screenResourceRetry=false;fogUploadRetry=false;NorthlightMemoryProfile::store().invalidateGpu();resourceMemoryProfileAt=0;materialPixelAudit.reset();replayBoundsAbandon();releaseReplayProbe();staticCasters.settle();rigidMemoryClear();admission.reset();admissionOn=false;gatedBodies.clear();prepareQuiesce();prepareCaches->sampled.clear();prepareCaches->bones.clear();prepareCachesStale=false;if(replays.empty()&&heldShadowReplays.empty())prepareFrameRelease(); /* 0.3.179: no replay left to point at them */actorShadowHistory.clear();actorShadowOriginValid=false;replayBoundsMetadata.clear();if(!keepMesh)replayBoundsCache.clear(); /* CPU envelopes validate immutable source, program, declaration and current pose; GPU reset must not make every caster unbounded. */declarationCache.clear();if(!keepMesh)uploadedStaticOwners.reset();staticOwnerGeneration=UINT64_MAX;staticCasters.reset();staticMatcher.clear();staticM2Memory.clear();staticScene.reset();staticRetryTick=0;stateBlocks.clear();uploadedTerrain.clear();liveTerrainIndexCount=liveDirectionalIndexCount=0;if(!keepMesh){fixedTerrain.reset();fixedTerrainBits.reset();}liveTerrainGeneration=0;drop(regionalFogTexture);drop(fogHeightTexture);fogHeightReady=false;drop(neutralAO);drop(neutralZero);drop(ditherNoise);rainMask=nullptr;uploadedFogField.reset();releasePointGPU(keepMesh);releaseFlashGPU();probeActivation.reset();probeBlend.reset();coarseActivation.reset();coarseBlend.reset();drop(baselineSurface);drop(baselineLight);drop(prelitDaylightSurface);drop(prelitDaylight);prelitDaylightRetryAt=0;releaseReplayGPU();liveTerrainGPU.clear();{auto& queries=fence();NorthlightDynamicRing::reset(liveIndexRing,0,queries);queries.drop();}drop(liveIndicesGPU);liveIndexBytes=0;liveIndexBase=0;if(!keepMesh){pendingMesh.reset();clearMesh();}retiredMaterials.clear();if(!keepMesh){releaseMeshPool();uploadedMap.clear();}for(auto& t:shadow)drop(t);for(auto& s:shadowSurface)drop(s);for(auto& t:shadowCache)drop(t);for(auto& s:shadowCacheSurface)drop(s);drop(shadowCacheDepth);drop(shadowVerifySurface);drop(shadowVerify);for(auto& r:shadowVerifyRead)drop(r);drop(shadowScratch);drop(shadowScratchSurface);releaseActorTargets();drop(neutralWhite);actorValid[0]=actorValid[1]=false;actorCenterValid[0]=actorCenterValid[1]=false;drop(unionPS);invalidateShadowCache();if(!keepMesh||!keepPressureProbes){for(auto& t:probe)drop(t);drop(probePrev);drop(probeLocal);probeLocalMirror.reset();}drop(shadowDepth);drop(lightSurface);drop(fogSurface);drop(fogBlurredSurface);drop(fogHistorySurface);drop(fogHistory);drop(fogTemporalPS);fogHistoryValid=fogNeutral=fogHistoryNeutral=false;drop(colorSurface);drop(light);drop(fog);drop(fogBlurred);drop(color);drop(distancePS);drop(foreverFogActorTiledPS);drop(foreverFogActorTiledNoNoisePS);drop(foreverFogNoNoisePS);drop(foreverFogActorNoNoisePS);drop(foreverFogNoNoiseFadePS);drop(foreverFogActorNoNoiseFadePS);drop(foreverFogPS);foreverRaymarchTried=false;drop(foreverFogActorPS);drop(foreverFogFadePS);drop(foreverFogActorFadePS);drop(lightingPS);drop(lightingUnshadowedPS);lightingUnshadowedRefused=false;drop(lightingUnshadowedGIPS);lightingUnshadowedGIRefused=false;drop(giPS);drop(fogPS);drop(fogAmbientPS);fogAmbientRefused=false;drop(fogCloudsAmbientPS);ambientFogRefused=false;drop(fogActorPS);drop(fogCloudsActorPS);drop(fogBlurPS);drop(fogCloudsPS);drop(cloudNoise);drop(localDirectPS);drop(localDirect16PS);drop(localFlashPS);drop(localDirectSinglePS);localDirectSingleRefused=false;drop(profileSplitSurface);profileSplitFailed=false;drop(removalPS);drop(temporalPS);drop(temporalMergedPS);temporalMergeTried=temporalZeroWeightActive=false;drop(localFogPS);drop(localFogCombinePS);drop(normalsPS);drop(normalsNoDistancePS);normalsNoDistanceRefused=false;drop(normalBuffer);drop(normalSurface);for(int i=0;i<2;++i){drop(temporalLight[i]);drop(temporalLightSurface[i]);drop(temporalDepth[i]);drop(temporalDepthSurface[i]);}temporalValid=false;drop(finalPS);drop(unlitPS);unlitShaderRefused=false;drop(prelitPS);drop(hdrPrelitPS);prelitShaderRefused=false;drop(materialPS);drop(shadowPS);drop(replayPS);drop(shadowVS);drop(cachedShadowVS);drop(cachedShadowPS);drop(cachedFastPS);drop(cachedOpaqueFastPS);drop(cachedOpaquePS);drop(shadowDecl);drop(liveTerrainDecl);geometryTargetsReady=false;geometryTargetsRetry=false;width=height=0;uploadedSerial=0;}
+    void releaseGPU(bool keepMesh=false){
+        releaseFogVolume();
+        screenGroups=geometryGroups=0;
+        shadowReplayAlpha.reset();
+        releaseMoonFloor();
+        if(nativeDiagnosticCapture){
+            nativeDiagnosticCapture->finish(false);
+            nativeDiagnosticCapture.reset();
+        }
+        releaseShadowTransitions();releaseNearEnvironment();
+        releaseSoftShadows();
+        composite.reset();
+        drop(resetReplayQuery);resetReplayFence.drop();
+        if(!keepMesh){
+            resetReplaySource.reset();resetReplayPlan.reset();
+            resetReplayScoped=false;resetReplayPending=false;
+        }
+        screenResourceRetry=false;
+        NorthlightMemoryProfile::store().invalidateGpu();resourceMemoryProfileAt=0;
+        materialPixelAudit.reset();replayBoundsAbandon();releaseReplayProbe();
+
+        // Drain workers before invalidating the replay inputs they can read.
+        staticCasters.settle();
+        rigidMemoryClear();
+        admission.reset();admissionOn=false;gatedBodies.clear();
+        prepareQuiesce();
+        prepareCaches->sampled.clear();prepareCaches->bones.clear();prepareCachesStale=false;
+        if(replays.empty()&&heldShadowReplays.empty())prepareFrameRelease(); /* 0.3.179: no replay left to point at them */
+        actorShadowHistory.clear();actorShadowOriginValid=false;
+        replayBoundsMetadata.clear();
+        if(!keepMesh)replayBoundsCache.clear(); /* CPU envelopes validate immutable source, program, declaration and current pose; GPU reset must not make every caster unbounded. */
+        declarationCache.clear();
+        if(!keepMesh)uploadedStaticOwners.reset();
+        staticOwnerGeneration=UINT64_MAX;staticCasters.reset();
+        staticMatcher.clear();staticM2Memory.clear();staticScene.reset();staticRetryTick=0;
+        stateBlocks.clear();
+
+        uploadedTerrain.clear();
+        liveTerrainIndexCount=liveDirectionalIndexCount=0;
+        if(!keepMesh){fixedTerrain.reset();fixedTerrainBits.reset();}
+        liveTerrainGeneration=0;
+        regionalFog.reset();
+        releaseScreenFallbacks();
+        releasePointGPU(keepMesh);
+        flashShadows.reset();
+        probeAtlas.resetHistory();
+        screenLighting.releaseAuxiliaryTargets();
+        releaseReplayGPU();
+        releaseLiveTerrainBuffers();
+        if(!keepMesh){pendingMesh.reset();clearMesh();}
+        retiredMaterials.clear();
+        if(!keepMesh){releaseMeshPool();uploadedMap.clear();}
+
+        releaseShadowMapsOnReset();
+        if(!keepMesh||!keepPressureProbes)probeAtlas.releaseTextures();
+        releaseScreenColorTargets();
+        foreverFog.reset();
+        screenLighting.releaseShaders();
+        regionalFogGpu.reset();
+        localLighting.reset();
+        worldNormals.reset();
+        history.reset();
+        shadowPrograms.releaseCasters();
+        geometryTargetsReady=false;geometryTargetsRetry=false;
+        width=height=0;
+        uploadedSerial=0;
+    }
     // Explicit enable/retry only, called after the wrapper's clearFrame(). This
     // never calls endFrame(), so packet capture and cleanup run exactly once.
     void recover(){meshRetry.clear();if(!failed)return;releaseGPU(true);failed=false;valid=false;streamingReports=0;logf("WORLD explicit recovery requested");}
@@ -3249,7 +1711,7 @@ public:
         if(effects==next)return;
         // Called at the frame boundary; never reuse lighting from a different
         // effect combination. The shared geometry and GI cache stay warm.
-        temporalValid=false;
+        history.invalidate();
         if(effects.shadows!=next.shadows){
             shadowsComposited=false;shadowFrameReady=false;pointReady=false;
             // A switch changes dynamic caster coverage, not static light/mesh
@@ -3271,21 +1733,19 @@ public:
         if(menuDomain||!directionalShadowWork()||!ready()||!fogGeometryReady||!shadowFrameReady||!composited)return false;
         for(unsigned source=0;source<2;++source)if(NorthlightGI::dot(sourceColors[source],sourceColors[source])>1e-10f)
             for(unsigned cascade=0;cascade<2;++cascade){const unsigned slot=source*2+cascade;const char action=cascadeActions[slot];
-                if(!shadow[slot]||(action!='R'&&action!='U'&&!(action=='D'&&shadowTransition[slot].workingValid)))return false;}
+                if(!directionalMaps.current(slot).texture||(action!='R'&&action!='U'&&!(action=='D'&&shadowTransition[slot].workingValid)))return false;}
         return true;
     }
     void setNativeShadowOwnership(bool owned,bool available=true){
         if(nativeShadowOwned==owned&&nativeShadowAvailable==available)return;
         const bool changed=nativeShadowAvailable!=available;nativeShadowOwned=owned;nativeShadowAvailable=available;
-        temporalValid=fogHistoryValid=shadowsComposited=false;
+        fogScreen.invalidateHistory();history.invalidate();shadowsComposited=false;
         if(changed){shadowFrameReady=false;invalidateShadowCache(true);}
     }
     bool surfaceLightingEnabled(bool materials=true)const{return frameRequirements(materials&&quality.autoBump).lighting;}
     void setPipelineEnabled(bool value){
         if(pipelineActive==value)return;pipelineActive=value;setEffects(requestedEffects);settingsRequestDirty=true;
-        {std::lock_guard<std::mutex> lock(mutex);request.enabled=value;
-         if(!value){request.giEnabled=false;++request.id;pending=true;}}
-        if(!value)wake.notify_one();
+        setWorkerEnabled(value);
     }
     void releaseDefaultMesh(){
         // A second Reset may interrupt replay after targets were recreated but
@@ -3312,7 +1772,7 @@ public:
     // were discarded, or a second Reset interrupts their reconstruction.
     // Reuse storage, invalidate history/serial and rewrite current probe data.
     // The new mesh plan still uses the normal 256 MiB admission reserve.
-    void reset(bool preserveCaptureSources=false){keepPressureProbes=true;auroraSource.reset();auroraSourceMap.clear();drop(resetReplayQuery);resetReplayFence.drop();releaseDefaultMesh();weatherShelter.reset();weatherShelterUnavailable=false;lightAttachments.reset();smallShadowBones.clear();equipmentLights.reset();equipmentMap.clear();particleLights.reset();particleMap.clear();shadowsComposited=false;pivotValid=false;pivotDistance=12.f;pivotCorrection.reset();pivotSelfCaptured=false;cascadeAnchor.reset();endFrame();replaySnapshots.clearIndexCache(nullptr,nullptr,preserveCaptureSources);actorJobComplete.reset();actorJobSerial_=0;actorSceneMap_.clear();lastActorCapture=0;terrainBoundsCache.clearPersistent();previousCacheHits=0;freeReplays.clear();pooledSnapshotBytes=0;valid=false;failed=false;releaseGPU(true); /* task 42: the committed MANAGED mesh survives any Reset, failed or not */}
+    void reset(bool preserveCaptureSources=false){keepPressureProbes=true;auroraSource.reset();auroraSourceMap.clear();drop(resetReplayQuery);resetReplayFence.drop();releaseDefaultMesh();weatherShelter.reset();weatherShelterUnavailable=false;lightAttachments.reset();smallShadowBones.clear();equipmentLights.reset();equipmentMap.clear();particleLights.reset();particleMap.clear();shadowsComposited=false;resetShadowPivot();endFrame();replaySnapshots.clearIndexCache(nullptr,nullptr,preserveCaptureSources);actorJobComplete.reset();actorJobSerial_=0;actorSceneMap_.clear();lastActorCapture=0;terrainBoundsCache.clearPersistent();previousCacheHits=0;freeReplays.clear();pooledSnapshotBytes=0;valid=false;failed=false;releaseGPU(true); /* task 42: the committed MANAGED mesh survives any Reset, failed or not */}
     // 0.3.176 (U0/S0): the sample-frame lines of the selection and upload spans (and the RIGID event
     // lines) are formatted where they are today and written here, from endFrame, so no log write (a
     // vfprintf and fflush under the log lock) is inside a bucketed span. The text is the same.
@@ -3342,22 +1802,26 @@ public:
     }
     void endFrame(bool retainPool=true,unsigned rendererFrame=0){
         gpuDiagnosticFrame=false;
+        equipmentBankAudit={};equipmentDrawAudit={};
         if(equipmentLightsOn()){equipmentLights.nextFrame();equipmentCapture.nextFrame();particleLights.nextFrame();NorthlightParticleUploads::cache().nextFrame();}
         flushDeferredLogs(); /* 0.3.176 (U0/S0): after every bucketed span of the frame */
+        if(profileSampled())logPrepareProfile(rendererFrame);
         if(profileSampled()){unsigned typed=0,eligible=0;for(const auto& p:replays){typed+=p->boundsWork.paletteSpan!=0;eligible+=pointPaletteSpan(*p)!=0;}
-            logf("POINT palette rendererFrame=%u draws=%u packets=%u registers=%u rebasedPackets=%u savedRegisters=%u instanceBytes=%u typedSources=%u eligibleSources=%u disabled=%u retryFrames=%llu",rendererFrame,pointWork.paletteDraws,pointWork.palettePackets,pointWork.paletteRegisters,pointWork.paletteRebased,pointWork.paletteSavedRegisters,pointPaletteIds?unsigned(84*sizeof(float)):0,typed,eligible,unsigned(pointPaletteUnavailable),(unsigned long long)(pointPaletteRetryFrame>frames?pointPaletteRetryFrame-frames:0));}
-        if(profileSampled())logf("POINT workload rendererFrame=%u selected=%u staticDraws=%u terrainDraws=%u liveDraws=%u replayDraws=%u replayMerged=%u unionDraws=%u casterTriangles=%llu clippedGapTriangles=%llu staticRebuiltFaces=%u staticRestores=%u boundsTotal=%zu boundsValid=%u boundsUnbounded=%zu unboundedRigidFacePackets=%u unboundedSkinnedFacePackets=%u whiteLightingSkipped=%u boundsRuns=%u crossGroupMerged=%u duplicateInstances=%u pairedStaticFaces=%u",rendererFrame,pointWork.selected,pointWork.statics,pointWork.terrain,pointWork.live,pointWork.replay,pointWork.replayMerged,pointWork.unions,(unsigned long long)pointWork.triangles,(unsigned long long)pointWork.bridged,pointWork.rebuilt,pointWork.restored,replays.size(),pointBoundsValid,replays.size()-std::min(replays.size(),size_t(pointBoundsValid)),pointWork.unboundedRigid,pointWork.unboundedSkinned,pointWork.whiteLightingSkipped,replayBoundsRuns,pointWork.crossGroupMerged,pointWork.duplicateInstances,pointWork.pairedFaces);
+            logf("POINT palette rendererFrame=%u draws=%u packets=%u registers=%u rebasedPackets=%u savedRegisters=%u instanceBytes=%u typedSources=%u eligibleSources=%u disabled=%u retryFrames=%llu",rendererFrame,pointWork.paletteDraws,pointWork.palettePackets,pointWork.paletteRegisters,pointWork.paletteRebased,pointWork.paletteSavedRegisters,shadowPalette.buffer()?NorthlightShadowPalettePass::InstanceBytes:0,typed,eligible,unsigned(shadowPalette.unsupported()),(unsigned long long)shadowPalette.retryIn(frames));}
+        if(profileSampled())logf("POINT workload rendererFrame=%u selected=%u staticDraws=%u terrainDraws=%u liveDraws=%u replayDraws=%u replayMerged=%u unionDraws=%u casterTriangles=%llu clippedGapTriangles=%llu staticRebuiltFaces=%u staticRestores=%u boundsTotal=%zu boundsValid=%u boundsUnbounded=%zu unboundedRigidFacePackets=%u unboundedSkinnedFacePackets=%u whiteLightingSkipped=%u boundsRuns=%u crossGroupMerged=%u duplicateInstances=%u pairedStaticFaces=%u crowdOperations=%u boundsOperations=%zu boundsOperationLimit=%zu",rendererFrame,pointWork.selected,pointWork.statics,pointWork.terrain,pointWork.live,pointWork.replay,pointWork.replayMerged,pointWork.unions,(unsigned long long)pointWork.triangles,(unsigned long long)pointWork.bridged,pointWork.rebuilt,pointWork.restored,replays.size(),pointBoundsValid,replays.size()-std::min(replays.size(),size_t(pointBoundsValid)),pointWork.unboundedRigid,pointWork.unboundedSkinned,pointWork.whiteLightingSkipped,replayBoundsRuns,pointWork.crossGroupMerged,pointWork.duplicateInstances,pointWork.pairedFaces,unsigned(replayCrowdBoundsOperations()),pointBoundOperations,replayBoundsCache.operationLimit());
         if(profileSampled())logf("NATIVE_DIRECT workload rendererFrame=%u nativeSlots=%u attempts=%u otherMatchedKept=%u unavailableCube=%u submittedTotal=%llu dualSubmittedTotal=%llu tripleSubmittedTotal=%llu fallbackTotal=%llu coldPairs=%u deferredPairs=%u rendererDirect=unchanged",rendererFrame,nativeDirectSlots,nativeDirectMatched,nativeDirectMultiple,nativeDirectMissingCube,(unsigned long long)(nativeDirectRenderer?nativeDirectRenderer->draws:0),(unsigned long long)(nativeDirectRenderer?nativeDirectRenderer->multiDraws:0),(unsigned long long)(nativeDirectRenderer?nativeDirectRenderer->tripleDraws:0),(unsigned long long)(nativeDirectRenderer?nativeDirectRenderer->fallbacks:0),nativeDirectRenderer?nativeDirectRenderer->coldPairs:0,nativeDirectRenderer?nativeDirectRenderer->deferredPairs:0);
         if(profileSampled())logf("NATIVE_DIRECT coverage rendererFrame=%u nativeCounts=%u,%u,%u,%u,%u matchedCounts=%u,%u,%u,%u,%u unclassifiedPreparedBypass=%u unclassifiedPrivateBypass=%u bankMemoHits=%u bankMemoMisses=%u scope=decoded-native-pairs counts=draws-by-slot-count",
             rendererFrame,nativeDirectSlotCounts[0],nativeDirectSlotCounts[1],nativeDirectSlotCounts[2],nativeDirectSlotCounts[3],nativeDirectSlotCounts[4],nativeDirectMatchCounts[0],nativeDirectMatchCounts[1],nativeDirectMatchCounts[2],nativeDirectMatchCounts[3],nativeDirectMatchCounts[4],nativeDirectPreparedBypass,nativeDirectPrivateBypass,nativeDirectBankHits,nativeDirectBankMisses);
         if(profileSampled())logf("NATIVE_DIRECT misses rendererFrame=%u decodeIgnored=%u noBinding=%u ambiguous=%u cubeNotReady=%u invalidGain=%u changedCube=%u changedSource=%u",rendererFrame,nativeDirectMissReasons[0],nativeDirectMissReasons[1],nativeDirectMissReasons[2],nativeDirectMissReasons[3],nativeDirectMissReasons[4],nativeDirectMissReasons[5],nativeDirectMissReasons[6]);
-        if(profileSampled())logf("NATIVE_POINT_OWNER rendererFrame=%u draws=%u slots=%u observedMatchedSlots=%u terrainDraws=%u nativeSceneValid=%u nativeRGB=selected-source-handoff source=scene-or-proven-draw-bank alphaPosition=proven rendererDirect=single-owner",rendererFrame,nativeOwnedDraws,nativeOwnedSlots,nativeObservedOwnedSlots,nativeTerrainOwnedDraws,nativeDirectScene.valid);
+        const auto& pointSubmitWork=nativePointSubmit.work();
+        if(profileSampled())logf("NATIVE_POINT_OWNER rendererFrame=%u draws=%u slots=%u observedMatchedSlots=%u terrainDraws=%u nativeSceneValid=%u nativeRGB=selected-source-handoff source=scene-or-proven-draw-bank alphaPosition=proven rendererDirect=single-owner",rendererFrame,pointSubmitWork.draws,pointSubmitWork.slots,nativeObservedOwnedSlots,pointSubmitWork.terrainDraws,nativeDirectScene.valid);
         if(profileSampled()&&NorthlightDiagnostics::enabled()&&nativeDirectRenderer){const auto& r=*nativeDirectRenderer;
             logf("NATIVE_DIRECT recipes rendererFrame=%u requested=%llu,%llu,%llu coldAttempts=%llu,%llu,%llu deferred=%llu,%llu,%llu coldRejected=%llu,%llu,%llu successful=%llu,%llu,%llu legacyFilter=%llu,%llu,%llu samplerBulkHits=%llu samplerBulkFallbacks=%llu samplerGettersSkipped=%llu whiteCubeSkips=%llu whiteCubeBypasses=%llu zeroGainSkips=%llu zeroGainBypasses=%llu counts=cumulative-by-requested-source-count",
                 rendererFrame,(unsigned long long)r.requestsByCount[0],(unsigned long long)r.requestsByCount[1],(unsigned long long)r.requestsByCount[2],(unsigned long long)r.coldAttemptsByCount[0],(unsigned long long)r.coldAttemptsByCount[1],(unsigned long long)r.coldAttemptsByCount[2],(unsigned long long)r.deferredByCount[0],(unsigned long long)r.deferredByCount[1],(unsigned long long)r.deferredByCount[2],(unsigned long long)r.coldRejectedByCount[0],(unsigned long long)r.coldRejectedByCount[1],(unsigned long long)r.coldRejectedByCount[2],(unsigned long long)r.successfulByCount[0],(unsigned long long)r.successfulByCount[1],(unsigned long long)r.successfulByCount[2],(unsigned long long)r.legacyByCount[0],(unsigned long long)r.legacyByCount[1],(unsigned long long)r.legacyByCount[2], (unsigned long long)r.samplerBulkHits,(unsigned long long)r.samplerBulkFallbacks,(unsigned long long)(r.samplerBulkHits*7),(unsigned long long)r.whiteCubeSkips,(unsigned long long)r.whiteCubeBypasses,(unsigned long long)r.zeroGainSkips,(unsigned long long)r.zeroGainBypasses);}
         nativeDirectMissReasons={};nativeDirectSlotCounts={};nativeDirectMatchCounts={};nativeDirectPreparedBypass=nativeDirectPrivateBypass=nativeDirectBankHits=nativeDirectBankMisses=0;
-        nativeDirectSlots=nativeDirectMatched=nativeDirectMultiple=nativeDirectMissingCube=0;nativeOwnedDraws=nativeOwnedSlots=nativeObservedOwnedSlots=nativeTerrainOwnedDraws=0;
-        nameMaskDepth=unlitMaskDepth=prelitMaskDepth=authoredMaskDepth=nullptr;effectCoverage=nullptr;effectEmission=false;
+        nativeDirectSlots=nativeDirectMatched=nativeDirectMultiple=nativeDirectMissingCube=nativeObservedOwnedSlots=0;
+        nativePointSubmit.endFrame();
+        composite.clearMasks();effectCoverage=nullptr;effectEmission=false;
         frameFence.endFrame(); /* 0.3.192 (DXVK3): the one Issue of the frame's fence, after every replay/terrain draw, before any early return; reset() calls endFrame() too */
         NorthlightLockMeter::endFrame();
         if(NorthlightReplayCopies::enabled.load(std::memory_order_relaxed))NorthlightReplayCopies::advanceFrame(); /* 0.3.192 (CS): the CPU copies' thrash/fill time base, once per frame on the replay thread */
@@ -3370,15 +1834,24 @@ public:
         if(!valid||failed||workerFault())stateBlocks.clear();
         /* 0.3.149 RenderProfile lines: after every measured span of the frame */
         if(profileSampled())logRenderProfile();else{replayProfileUsed.clear();replayGiPacked.clear();}
+#ifdef NORTHLIGHT_REPLAY_STAND
+        if(profileSampled())logf("WORLD shadow packet bank rendererFrame=%u reads=%u loans=%u readRegisters=%u loanRegisters=%u",
+            rendererFrame,capturePacketReads,capturePacketLoans,capturePacketReadRegisters,capturePacketLoanRegisters);
+        if(profileSampled()||NorthlightCaptureWork::selected(rendererFrame))
+            logf("WORLD WMO mirror rendererFrame=%u projectionBorrows=%u packetBorrows=%u packetRegisters=%u",
+                 rendererFrame,captureWmoProjectionBorrows,captureWmoPacketBorrows,captureWmoPacketRegisters);
+#endif
         frameStaging=frameProbeUpload=false;
         logReplayProbeWindow();
+        nativeAdtCoverage.flush(&logf);
         for(int slot=0;slot<4;++slot){lastCascadeActions[slot]=cascadeActions[slot];cascadeActions[slot]='-';}
         if(captureSampled&&captureFrequency.QuadPart>0){double ms=1000.0/double(captureFrequency.QuadPart);
             logf("WORLD CPU capture terrain=%.3fms replay=%.3fms terrainCalls=%u terrainUP=%u replayCandidates=%u unknownCalls=%u acceptedReplay=%zu captureSkipped=%u rejSmall=%u rejGate=%u rejCut=%u rejBudget=%u rendererFrame=%u",terrainCaptureTicks*ms,replayCaptureTicks*ms,terrainCaptureCalls,terrainUPCalls,replayCaptureCalls,unknownCaptureCalls,replays.size(),unsigned(captureMode==CaptureSkipped),rejSmall,rejGate,rejCut,rejBudget,rendererFrame);
         }
-        if(captureSampled){logf("WORLD capture cache hits=%llu frameHits=%llu entries=%zu bytes=%llu constantsReadBytes=%zu constantReadCalls=%zu sm1Draws=%u relativeDraws=%u",(unsigned long long)terrainBoundsCache.persistentHits(),(unsigned long long)(terrainBoundsCache.persistentHits()-previousCacheHits),terrainBoundsCache.persistentEntries(),(unsigned long long)terrainBoundsCache.persistentBytes(),capturedConstantBytes,capturedConstantCalls,capturedSM1Draws,capturedRelativeDraws);
+        if(captureSampled){logReplayConstantStorage(rendererFrame);logf("WORLD capture cache hits=%llu frameHits=%llu entries=%zu bytes=%llu constantsReadBytes=%zu constantReadCalls=%zu sm1Draws=%u relativeDraws=%u",(unsigned long long)terrainBoundsCache.persistentHits(),(unsigned long long)(terrainBoundsCache.persistentHits()-previousCacheHits),terrainBoundsCache.persistentEntries(),(unsigned long long)terrainBoundsCache.persistentBytes(),capturedConstantBytes,capturedConstantCalls,capturedSM1Draws,capturedRelativeDraws);
             logf("BUFFER content noChangeWrites=%llu noChangeMiB=%.3f skippedWrites=%llu skippedMiB=%.3f",(unsigned long long)NorthlightTrackedBuffers::noChangeWrites.load(std::memory_order_relaxed),double(NorthlightTrackedBuffers::noChangeBytes.load(std::memory_order_relaxed))/1048576,(unsigned long long)NorthlightTrackedBuffers::skippedWrites.load(std::memory_order_relaxed),double(NorthlightTrackedBuffers::skippedBytes.load(std::memory_order_relaxed))/1048576);
-            logf("BUFFER ranges queries=%llu preserved=%llu coarseFallbacks=%llu pageKiB=%.3f pageBytes=%zu budgetKiB=%zu",(unsigned long long)NorthlightTrackedBuffers::rangeQueries.load(std::memory_order_relaxed),(unsigned long long)NorthlightTrackedBuffers::rangePreserved.load(std::memory_order_relaxed),(unsigned long long)NorthlightTrackedBuffers::rangeFallbacks.load(std::memory_order_relaxed),double(NorthlightBufferRanges::residentBytes.load(std::memory_order_relaxed))/1024,NorthlightBufferRanges::PageBytes,NorthlightBufferRanges::Budget/1024);}
+            const auto ranges=NorthlightTrackedBuffers::rangeStats();
+            logf("BUFFER ranges queries=%llu preserved=%llu coarseFallbacks=%llu pageKiB=%.3f pageBytes=%zu budgetKiB=%zu",(unsigned long long)ranges.queries,(unsigned long long)ranges.preserved,(unsigned long long)ranges.fallbacks,double(NorthlightBufferRanges::residentBytes.load(std::memory_order_relaxed))/1024,NorthlightBufferRanges::PageBytes,NorthlightBufferRanges::Budget/1024);}
         if(captureSampled)logf("WORLD optimized caches terrainTrackedHits=%llu terrainAvoidedBytes=%llu boundsHits=%llu boundsMisses=%llu boundsAvoidedVertices=%llu boundsLookupMs=%.3f staticMaintenanceVisits=%llu staticPublications=%llu",
             (unsigned long long)terrainBoundsCache.trackedHits(),(unsigned long long)terrainBoundsCache.avoidedReadBytes(),
             (unsigned long long)replayBoundsCache.hits(),(unsigned long long)replayBoundsCache.misses(),(unsigned long long)replayBoundsCache.avoidedVertices(),replayBoundsCache.lookupMilliseconds(),
@@ -3448,6 +1921,12 @@ public:
         admission.endFrame(size_t(captureBudgetMiB)*1048576,replaySnapshots.bytesRead());admissionOn=false;rootMemo.clear();rootReads=rootMemoHits=0;gatedBodies.clear(); /* 0.3.211 (task 31): the next frame's cut, after the log read this frame's counters; no-op when no skinned draw armed it */
         previousCacheHits=terrainBoundsCache.persistentHits();capturedConstantBytes=capturedConstantCalls=0;capturedSM1Draws=capturedRelativeDraws=0;
         terrainCaptureTicks=replayCaptureTicks=0;terrainCaptureCalls=terrainUPCalls=replayCaptureCalls=unknownCaptureCalls=captureSourceHandoffs=0;captureSampled=false;
+#ifdef NORTHLIGHT_REPLAY_STAND
+        captureProjectionGets=captureProjectionLoans=0;
+        terrainCameraGets=terrainCameraBorrows=0;
+        capturePacketReads=capturePacketLoans=capturePacketReadRegisters=capturePacketLoanRegisters=0;
+        captureWmoProjectionBorrows=captureWmoPacketBorrows=captureWmoPacketRegisters=0;
+#endif
         rejSmall=rejGate=rejCut=rejBudget=rejOther=0;
         valid=false;traceContext=0;traceFog=0;legacyFogKnown=false;shadowFrameReady=false;legacyFog=NorthlightLegacyFog::Constants{};
         // Bound retained vector capacities across changing scenes. Reuse storage,
@@ -3455,8 +1934,10 @@ public:
         // Give the current scene first claim on the pool, instead of letting
         // unused records from a previous crowded frame monopolize its budget.
         if(retainPool){
-            for(auto& unused:freeReplays){pooledSnapshotBytes-=unused->retainedBytes();unused->snapshot=NorthlightDrawSnapshot::Mesh{};std::vector<D3DVERTEXELEMENT9>().swap(unused->elements);}
-            while(freeReplays.size()>replayPoolLimit()/sizeof(Replay))freeReplays.pop_back();
+            for(auto& unused:freeReplays){pooledSnapshotBytes-=unused->retainedBytes();unused->snapshot=NorthlightDrawSnapshot::Mesh{};std::vector<D3DVERTEXELEMENT9>().swap(unused->elements);pooledSnapshotBytes+=unused->retainedBytes();}
+            while(!freeReplays.empty()&&pooledSnapshotBytes+freeReplays.size()*sizeof(Replay)>replayPoolLimit()){
+                pooledSnapshotBytes-=freeReplays.back()->retainedBytes();freeReplays.pop_back();
+            }
             for(auto& p:replays)recycleReplay(p.release());replays.clear();
             for(auto& p:heldShadowReplays)recycleReplay(p.release());heldShadowReplays.clear();
         }else{
@@ -3471,7 +1952,7 @@ public:
         lastCaptureSkipped=captureMode==CaptureSkipped;actorCaptureDecided=false;actorJob.reset();captureMode=CaptureUndecided;actorVerticesEvaluated=actorDraws=actorSkippedAlpha=0;
         releaseExpiredMesh();
         if(geometryTargetsReady&&(!active||!active->bvh)&&(memoryPressure||geometryMemoryDemand.load(std::memory_order_relaxed))){
-            releaseGeometryTargets();releasePointGPU();releaseFlashGPU();
+            releaseGeometryTargets();releasePointGPU();flashShadows.reset();
             logf("WORLD expired scene targets released reason=memory-pressure-or-demand");
         }
         reclaimInactiveCasters();
@@ -3483,36 +1964,37 @@ public:
         if(!NorthlightDiagnostics::enabled())return;
         const DWORD now=GetTickCount();if(resourceMemoryProfileAt&&now-resourceMemoryProfileAt<10000)return;resourceMemoryProfileAt=now;
         const auto started=std::chrono::steady_clock::now();
-        {NorthlightMemoryFootprint::Counter cpu;probeLocalMirror.accountMemory(cpu);logCpuFootprint("probe-upload-mirror","resources",uploadedSerial,cpu);}
+        {NorthlightMemoryFootprint::Counter cpu;probeAtlas.accountMirror(cpu);logCpuFootprint("probe-upload-mirror","resources",uploadedSerial,cpu);}
         using namespace NorthlightResourceMemory;
         Inventory inventory;
         // Surface aliases of texture levels and borrowed game/material targets
         // are excluded. Inspect each owned resource exactly once.
         for(auto& page:meshBuffers){inventory.buffer(page.vb,Geometry,D3DVERTEXBUFFER_DESC{});inventory.buffer(page.ib,Geometry,D3DINDEXBUFFER_DESC{});}
         for(auto* texture:materials)inventory.texture(texture,Geometry);
-        if(pendingMesh){for(auto* texture:pendingMesh->textures)inventory.texture(texture,Geometry);inventory.texture(pendingMesh->partialTexture,Geometry);inventory.texture(pendingMesh->white,Geometry);}
-        for(auto* texture:probe)inventory.texture(texture,ProbeTextures);inventory.texture(probePrev,ProbeTextures);inventory.texture(probeLocal,ProbeTextures);
-        for(auto* texture:shadow)inventory.texture(texture,ShadowMaps);for(auto* texture:shadowCache)inventory.texture(texture,ShadowMaps);
-        for(auto* texture:actorShadow)inventory.texture(texture,ShadowMaps);for(auto* texture:actorTiles)inventory.texture(texture,ShadowMaps);
-        for(auto* texture:nearEnvironment)inventory.texture(texture,ShadowMaps);
-        for(const auto& transition:shadowTransition){inventory.texture(transition.history,ShadowMaps);inventory.texture(transition.dynamic,ShadowMaps);}
-        for(auto* texture:{shadowScratch,shadowVerify,actorTilesMid,actorVisibility,softVisibility})inventory.texture(texture,ShadowMaps);
-        for(auto* surface:{shadowDepth,shadowCacheDepth})inventory.surface(surface,ShadowMaps);
-        for(auto* surface:shadowVerifyRead)inventory.surface(surface,ShadowMaps);
-        for(unsigned i=0;i<NorthlightShadowAlpha::Targets::Count;++i)inventory.surface(shadowAlphaTargets.surface(i),ShadowMaps);
-        for(const auto& slot:pointSlots){inventory.cube(slot.cube,ShadowMaps);for(auto* texture:slot.cacheFace)inventory.texture(texture,ShadowMaps);}
-        for(const auto& keep:pointKeeps)for(auto* texture:keep.slot.cacheFace)inventory.texture(texture,ShadowMaps);
-        inventory.surface(pointDepth,ShadowMaps);inventory.texture(pointScratch,ShadowMaps);inventory.texture(pointEmpty,ShadowMaps);
-        inventory.buffer(pointPaletteIds,ShadowMaps,D3DVERTEXBUFFER_DESC{});
-        for(const auto& slot:flashSlots)for(auto* texture:slot.map)inventory.texture(texture,ShadowMaps);
-        for(auto* texture:{light,fog,fogBlurred,color,baselineLight,normalBuffer,fogHistory,prelitDaylight})inventory.texture(texture,PostTargets);
+        if(pendingMesh){for(auto* texture:pendingMesh->textures)inventory.texture(texture,Geometry);inventory.texture(pendingMesh->materialUpload.texture(),Geometry);inventory.texture(pendingMesh->white,Geometry);}
+        probeAtlas.visitTextures([&](auto* texture){inventory.texture(texture,ProbeTextures);});
+        directionalMaps.visit([&](auto* texture){inventory.texture(texture,ShadowMaps);},
+                              [&](auto* surface){inventory.surface(surface,ShadowMaps);});
+        actorMaps.forEachTexture([&](IDirect3DTexture9* texture){inventory.texture(texture,ShadowMaps);});
+        for(const auto& transition:shadowTransition.slots()){inventory.texture(transition.history,ShadowMaps);inventory.texture(transition.dynamic,ShadowMaps);}
+        inventory.texture(directionalVisibility.texture(),ShadowMaps);
+        shadowReplayAlpha.forEachSurface([&](auto* surface){inventory.surface(surface,ShadowMaps);});
+        pointTargets.visit([&](auto* cube){inventory.cube(cube,ShadowMaps);},
+            [&](auto* texture){inventory.texture(texture,ShadowMaps);},
+            [&](auto* surface){inventory.surface(surface,ShadowMaps);});
+        pointMixedFaces.visitTextures([&](auto* texture){inventory.texture(texture,ShadowMaps);});
+        inventory.buffer(shadowPalette.buffer(),ShadowMaps,D3DVERTEXBUFFER_DESC{});
+        shadowReplayIndices.buffers([&](auto* buffer){inventory.buffer(buffer,ShadowMaps,D3DINDEXBUFFER_DESC{});});
+        flashShadows.visitTextures([&](auto* texture){inventory.texture(texture,ShadowMaps);});
+        for(auto* texture:{screenLighting.raw().texture,fogScreen.raw().texture,fogScreen.scratch().texture,composite.scratchTexture(),screenLighting.baseline().texture,worldNormals.texture(),fogScreen.history().texture,screenLighting.prelit().texture})inventory.texture(texture,PostTargets);
         for(auto* texture:fogVolume.texture)inventory.texture(texture,PostTargets);
-        for(auto* texture:temporalLight)inventory.texture(texture,PostTargets);for(auto* texture:temporalDepth)inventory.texture(texture,PostTargets);
-        inventory.surface(profileSplitSurface,PostTargets);
-        for(auto* texture:{regionalFogTexture,fogHeightTexture,moonFloorTexture,neutralWhite,neutralZero,neutralAO,ditherNoise})inventory.texture(texture,Noise);
-        inventory.volume(cloudNoise,Noise);
-        for(auto* buffer:replayVerticesGPU)inventory.buffer(buffer,Dynamic,D3DVERTEXBUFFER_DESC{});
-        inventory.buffer(replayIndicesGPU,Dynamic,D3DINDEXBUFFER_DESC{});inventory.buffer(liveIndicesGPU,Dynamic,D3DINDEXBUFFER_DESC{});
+        inventory.texture(history.pending().light.texture,PostTargets);inventory.texture(history.produced().light.texture,PostTargets);
+        inventory.texture(history.pending().distance.texture,PostTargets);inventory.texture(history.produced().distance.texture,PostTargets);
+        inventory.surface(localLighting.profileTarget(),PostTargets);
+        for(auto* texture:{regionalFog.texture(),regionalFog.heightAllocation(),moonFloorFog.texture(),screenFallbacks.white(),screenFallbacks.zero(),screenFallbacks.ao(),screenFallbacks.dither()})inventory.texture(texture,Noise);
+        inventory.volume(regionalFogGpu.noise(),Noise);
+        for(unsigned s=0;s<4;++s)inventory.buffer(replayBuffers.vertexBuffer(s),Dynamic,D3DVERTEXBUFFER_DESC{});
+        inventory.buffer(replayBuffers.indexBuffer(),Dynamic,D3DINDEXBUFFER_DESC{});inventory.buffer(liveTerrainIndices.buffer(),Dynamic,D3DINDEXBUFFER_DESC{});
         gpuScene->native.buffers([&](auto* buffer){using Buffer=std::remove_pointer_t<decltype(buffer)>;if constexpr(std::is_same_v<Buffer,IDirect3DVertexBuffer9>)inventory.buffer(buffer,Geometry,D3DVERTEXBUFFER_DESC{});else inventory.buffer(buffer,Geometry,D3DINDEXBUFFER_DESC{});});
         NorthlightMemoryProfile::Gpu sample;
         sample.managed=inventory.pools[D3DPOOL_MANAGED];sample.defaults=inventory.pools[D3DPOOL_DEFAULT];sample.system=inventory.pools[D3DPOOL_SYSTEMMEM];
@@ -3523,11 +2005,11 @@ public:
         logf("WORLD MEMORY cache-ledgers staticDefaultMiB=%.3f replayDefaultMiB=%.3f liveTerrainDefaultMiB=%.3f captureCpuUniqueMiB=%.3f captureIdentityUniqueMiB=%.3f extraGpuPoolsExcludedFromWorldInventory=1 backingAndResidencyNotMeasured=1",
              double(sample.staticDefaultLedger)/1048576,double(sample.replayDefaultLedger)/1048576,double(sample.liveTerrainDefault)/1048576,double(sample.captureCpu)/1048576,double(sample.captureIdentity)/1048576);
         float layer=0,aboveGround=0;bool inside=false;
-        if(uploadedFogField){const auto& field=*uploadedFogField;const float x=(context.camera[0]-field.originX)/NorthlightRegionalFog::Spacing,y=(context.camera[1]-field.originY)/NorthlightRegionalFog::Spacing;
+        if(regionalFog.field()){const auto& field=*regionalFog.field();const float x=(context.camera[0]-field.originX)/NorthlightRegionalFog::Spacing,y=(context.camera[1]-field.originY)/NorthlightRegionalFog::Spacing;
             inside=x>=0&&y>=0&&x<NorthlightRegionalFog::N-1&&y<NorthlightRegionalFog::N-1;
             if(inside){const auto& cell=field.texels[unsigned(y)*NorthlightRegionalFog::N+unsigned(x)];layer=cell.height;aboveGround=context.camera[2]-cell.ground;}}
         logf("FOG STATE enabled=%u field=%u cameraInField=%u layerTag=%.4f aboveGround=%.2f groundCells=%u airCells=%u geometry=%u sunSource=%u moonSource=%u ambient=%.4f,%.4f,%.4f map=\"%s\" fieldMap=\"%s\" independentField=1",
-             unsigned(effects.fog),unsigned(uploadedFogField!=nullptr),unsigned(inside),layer,aboveGround,uploadedFogField?uploadedFogField->groundCells:0,uploadedFogField?uploadedFogField->airCells:0,unsigned(fogGeometryReady),unsigned(NorthlightGI::dot(sourceColors[0],sourceColors[0])>1e-10f),unsigned(NorthlightGI::dot(sourceColors[1],sourceColors[1])>1e-10f),context.ambient[0],context.ambient[1],context.ambient[2],lastRequest.map.c_str(),uploadedFogMap.c_str());
+             unsigned(effects.fog),unsigned(regionalFog.field()!=nullptr),unsigned(inside),layer,aboveGround,regionalFog.field()?regionalFog.field()->groundCells:0,regionalFog.field()?regionalFog.field()->airCells:0,unsigned(fogGeometryReady),unsigned(NorthlightGI::dot(sourceColors[0],sourceColors[0])>1e-10f),unsigned(NorthlightGI::dot(sourceColors[1],sourceColors[1])>1e-10f),context.ambient[0],context.ambient[1],context.ambient[2],lastRequest.map.c_str(),regionalFog.map().c_str());
         logf("WORLD MEMORY resources scope=world-owned knownManagedLogicalMiB=%.3f knownDefaultLogicalMiB=%.3f knownSystemLogicalMiB=%.3f geometryMiB=%.3f probeTextureMiB=%.3f shadowMapMiB=%.3f postTargetMiB=%.3f noiseMiB=%.3f dynamicMiB=%.3f retiredMaterialLedgerMiB=%.3f materialReuseCpuMiB=%.3f complete=%u unknown=%u inventoryMs=%.3f basis=logical-resource-size residentVramMeasured=0 managedSystemBackingMeasured=0 driverPaddingAndRenameCopiesExcluded=1 staticAndReplayCachesReportedSeparately=1",
              double(inventory.pools[D3DPOOL_MANAGED])/1048576,double(inventory.pools[D3DPOOL_DEFAULT])/1048576,double(inventory.pools[D3DPOOL_SYSTEMMEM])/1048576,
              double(inventory.groups[Geometry])/1048576,double(inventory.groups[ProbeTextures])/1048576,double(inventory.groups[ShadowMaps])/1048576,double(inventory.groups[PostTargets])/1048576,double(inventory.groups[Noise])/1048576,double(inventory.groups[Dynamic])/1048576,
@@ -3566,31 +2048,46 @@ public:
     bool diagnosticCaptureInLastRender()const{return gpuDiagnosticFrame;}
     bool emptyDiagnosticView(IDirect3DSurface9* target,UINT w,UINT h,int debug){
         SavedState saved(d,&stateBlocks);if(!saved.ok)return false;
-        if(FAILED(d->SetDepthStencilSurface(nullptr)))return false;
-        for(unsigned i=1;i<4;++i)if(FAILED(d->SetRenderTarget(i,nullptr)))return false;
-        D3DVIEWPORT9 viewport{0,0,w,h,0,1};
-        if(FAILED(d->SetRenderTarget(0,target))||FAILED(d->SetViewport(&viewport))||FAILED(d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE)))return false;
-        if(FAILED(d->Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0)))return false;
+        if(!composite.clearDiagnostic(d,target,w,h))return false;
         composited=true;lastRenderDebug=debug;shadowsComposited=false;fogGeometryReady=false;return true;
     }
     bool needsDiagnosticFallback()const{return gpuNormalDiagnosticRequested||(gpuDiagnosticFrame&&!composited);}
+#ifdef NORTHLIGHT_REPLAY_STAND
+    void capturePointCubes(const std::string& directory,unsigned frame,UINT width,UINT height){
+        if(!pointShadowAuditEnabled())return;
+        NorthlightLightingCapture::Capture capture(d,directory,frame,frames,frame,width,height,"point-shadow-cubes");
+        capture.pointSources(pointTargets.slots(),GetTickCount(),pointReady);
+        capture.finish(pointReady&&composited&&lastRenderDebug==0);
+    }
+#endif
+    void captureParityLocalSources(const std::string& directory,unsigned frame,UINT width,UINT height){
+        NorthlightLightingCapture::Capture capture(d,directory,frame,frames,frame,width,height,"frame-parity-lights");
+        capture.sources(atmosphere.lights,effects.fog);
+        capture.finish(composited&&lastRenderDebug==0);
+    }
+    bool parityGeometryReady()const{return fogGeometryReady&&(!directionalShadowWork()||shadowFrameReady);}
     void captureProducts(const std::string& directory,unsigned capture,unsigned rendererFrame,UINT w,UINT h,bool current,bool fogOnly=false){
         const bool ready=current&&composited&&lastRenderDebug==0;
         auto image=[&](const char* name,IDirect3DSurface9* surface,bool valid,UINT x,UINT y,D3DFORMAT format){NorthlightWorldDiagnostics::product(d,surface,directory,name,capture,valid,std::max(1u,x),std::max(1u,y),format,rendererFrame);};
         if(!fogOnly){
             const unsigned source=NorthlightGI::dot(sourceColors[0],sourceColors[0])>1e-10f?0:1;
-            const bool shadowCurrent=ready&&fogGeometryReady&&directionalShadowWork()&&(menuDomain||nativeShadowOwned)&&NorthlightGI::dot(sourceColors[source],sourceColors[source])>1e-10f;
-            image("shadow-near",shadowSurface[source*2],shadowCurrent,1024,1024,D3DFMT_R32F);
-            image("shadow-far",shadowSurface[source*2+1],shadowCurrent,1024,1024,D3DFMT_R32F);
-            image("normals",normalSurface,ready,w/2,h/2,D3DFMT_A16B16G16R16F);
-            image("baseline",baselineSurface,ready,w/2,h/2,D3DFMT_A16B16G16R16F);
-            image("current-local-light",lightSurface,ready&&diagnosticLocalLighting,w/2,h/2,D3DFMT_A16B16G16R16F);
-            image("temporal-light",temporalLightSurface[1-temporalIndex],ready,w/2,h/2,D3DFMT_A16B16G16R16F);
-            image("distance",temporalDepthSurface[1-temporalIndex],ready,w/2,h/2,D3DFMT_R32F);
+            const bool shadowCurrent=ready&&fogGeometryReady&&shadowFrameReady&&directionalShadowWork()&&(menuDomain||nativeShadowOwned)&&NorthlightGI::dot(sourceColors[source],sourceColors[source])>1e-10f;
+            image("shadow-near",directionalMaps.current(source*2).surface,shadowCurrent,1024,1024,D3DFMT_R32F);
+            image("shadow-far",directionalMaps.current(source*2+1).surface,shadowCurrent,1024,1024,D3DFMT_R32F);
+            image("normals",worldNormals.surface(),ready,w/2,h/2,D3DFMT_A16B16G16R16F);
+#ifdef NORTHLIGHT_REPLAY_STAND
+            if(std::getenv("NORTHLIGHT_RETRACE_LEGACY_ACTOR_INSET"))
+                image("shadow-actor",actorMaps.depth(source).surface,shadowCurrent&&actorValid[source],NorthlightActorShadowMap::Size,NorthlightActorShadowMap::Size,D3DFMT_R32F);
+            NorthlightWorldDiagnostics::textureProduct(d,modelNormals,directory,"model-normals",capture,ready&&modelNormals,w,h,D3DFMT_A16B16G16R16F,rendererFrame);
+#endif
+            image("baseline",screenLighting.baseline().surface,ready,w/2,h/2,D3DFMT_A16B16G16R16F);
+            image("current-local-light",screenLighting.raw().surface,ready&&diagnosticLocalLighting,w/2,h/2,D3DFMT_A16B16G16R16F);
+            image("temporal-light",history.produced().light.surface,ready,w/2,h/2,D3DFMT_A16B16G16R16F);
+            image("distance",history.produced().distance.surface,ready,w/2,h/2,D3DFMT_R32F);
             NorthlightWorldDiagnostics::textureProduct(d,materialDetail,directory,"material-height",capture,ready&&materialDetail,w,h,D3DFMT_A16B16G16R16F,rendererFrame);
             NorthlightWorldDiagnostics::textureProduct(d,materialOcclusion,directory,"material-occlusion",capture,ready&&materialOcclusion,w,h,D3DFMT_A16B16G16R16F,rendererFrame);
         }
-        image("fog",diagnosticFogResolved?fogBlurredSurface:fogSurface,ready&&effects.fog&&(menuDomain||uploadedFogField),w/2,h/2,D3DFMT_A16B16G16R16F);
+        image("fog",fogScreen.final(diagnosticFogResolved).surface,ready&&effects.fog&&(menuDomain||regionalFog.field()),w/2,h/2,D3DFMT_A16B16G16R16F);
     }
     bool captureSkippedDiagnostic(unsigned rendererFrame,UINT w,UINT h){
         if(!needsDiagnosticFallback())return false;
@@ -3607,12 +2104,22 @@ public:
     }
     void pollMaterialProfile(){materialPixelAudit.poll();}
     void setMaterialDetail(IDirect3DTexture9* texture,float gain,float distance,IDirect3DTexture9* occlusion=nullptr,float occlusionDistance=8,bool captureResident=false){materialDetail=texture;materialBumpGain=gain;materialBumpDistance=distance;materialOcclusion=occlusion;materialOcclusionDistance=occlusionDistance;materialCaptureResident=captureResident||texture!=nullptr;}
-    void setHdrBaseCompositeEnabled(bool enabled){hdrBaseAllowed=enabled;}
-    void setTemporalZeroWeightEnabled(bool enabled){
-        if(temporalZeroWeightAllowed==enabled)return;
-        temporalZeroWeightAllowed=enabled;drop(temporalMergedPS);temporalMergeTried=temporalZeroWeightActive=false;
-    }
+    void setHdrBaseCompositeEnabled(bool enabled){composite.permitBase(enabled);}
+    void setTemporalZeroWeightEnabled(bool enabled){history.permitZeroWeight(enabled);}
     void setModelNormals(IDirect3DTexture9* texture){modelNormals=texture;}
+    static constexpr float MoonTerrainSpecularDistance=128.f;
+    float sunSurfaceSpecularGain()const{
+        if(!hasContext()||!celestialValid||!paletteFrameValid||!NorthlightQuality::foreverCelestial(quality)||
+           NorthlightGI::dot(sourceColors[0],sourceColors[0])<=1e-10f)return 0;
+        return framePalette.sunSurfaceSpecular*std::clamp((sourceWeights[0]-.6f)*2.5f,0.f,1.f);
+    }
+    float moonTerrainSpecularGain()const{
+        return hasContext()&&celestialValid&&paletteFrameValid&&NorthlightQuality::foreverCelestial(quality)&&
+            NorthlightGI::dot(sourceColors[1],sourceColors[1])>1e-10f
+            ?framePalette.moonTerrainSpecular*(1-sourceWeights[0])*
+                (framePalette.sunSurfaceSpecular>0?std::clamp((.6f-sourceWeights[0])*2.5f,0.f,1.f):1.f):0.f;
+    }
+    std::uint64_t materialLightStamp()const{return (materialLightRevision<<1)|std::uint64_t(hasContext());}
     bool materialLight(float* light,float* inverseView=nullptr)const{
         if(inverseView)std::memcpy(inverseView,context.inverseView,48);
         std::fill(light,light+4,0.f);if(!hasContext())return false;
@@ -3657,20 +2164,34 @@ public:
     void setWeather(const NorthlightWeather::State& s){worldWeatherState=s;if(!menuDomain)weatherState=s;}
     bool isMenu()const{return menuDomain;}
     void setEffectCoverage(IDirect3DTexture9* texture,bool emission=false){effectCoverage=texture;effectEmission=emission;}
-    void setUnlitMask(IDirect3DSurface9* depthStencil){unlitMaskDepth=depthStencil;}
-    void setPrelitMask(IDirect3DSurface9* depthStencil){prelitMaskDepth=depthStencil;}
-    void setAuthoredMask(IDirect3DSurface9* depthStencil,unsigned levels=1){authoredMaskDepth=depthStencil;authoredRoomLevels=levels;}
-    bool authoredReceiver(IDirect3DVertexShader9* shader,bool model,unsigned* roomLevel=nullptr){
-        if(!hasContext())return false;
-        if(!(model||wmoShaders.count(shader))||!nativeLightingShaders.count(shader))return false;
-        float values[8];const auto* mirror=constantEpochSource.mirror;
-        if(mirror&&mirror->active()&&mirror->vsFloatKnown[10]&&mirror->vsFloatKnown[11])std::memcpy(values,mirror->vsFloat[10],sizeof values);
-        else if(FAILED(d->GetVertexShaderConstantF(10,values,2)))return false;
-        if(!NorthlightUnlitReceiver::lightingOverride(values,context.ambient,context.direct,model))return false;
-        if(roomLevel)*roomLevel=NorthlightUnlitReceiver::roomAmbientLevel(values);
-        return true;
+    void setUnlitMask(IDirect3DSurface9* depthStencil){composite.setUnlitMask(depthStencil);}
+    void setPrelitMask(IDirect3DSurface9* depthStencil){composite.setPrelitMask(depthStencil);}
+    void setAuthoredMask(IDirect3DSurface9* depthStencil,unsigned levels=1){composite.setAuthoredMask(depthStencil,levels);}
+    bool authoredLightingShader(IDirect3DVertexShader9* shader,bool model,bool wmo)const{
+        return (model||wmo)&&nativeLightingShaders.count(shader);
     }
-    void setNameMask(IDirect3DSurface9* depthStencil){nameMaskDepth=depthStencil;} /* 0.3.212 (task 32): the world depth-stencil holding this frame's name marks (non-owning, for the next render() only; null: no marks) */
+    bool authoredReceiver(IDirect3DVertexShader9* shader,bool model,unsigned* roomLevel=nullptr){
+        return authoredLightingShader(shader,model,wmoShaders.count(shader)!=0)&&authoredReceiverLighting(model,roomLevel);
+    }
+    bool authoredReceiverLighting(bool model,unsigned* roomLevel){
+        if(!hasContext())return false;
+        float native[8];const auto* mirror=constantEpochSource.mirror;
+        const float* values=native;
+        if(mirror&&mirror->active()&&mirror->vsFloatKnown[10]&&mirror->vsFloatKnown[11])values=mirror->vsFloat[10];
+        else if(FAILED(d->GetVertexShaderConstantF(10,native,2)))return false;
+        // Reuse only the arithmetic. The live bank and shader proof still
+        // describe this draw, including fallback reads with the mirror off.
+        auto& memo=authoredLightingMemo[model];
+        if(memo.revision!=materialLightRevision||std::memcmp(memo.bank,values,sizeof memo.bank)){
+            memo.revision=materialLightRevision;
+            std::memcpy(memo.bank,values,sizeof memo.bank);
+            memo.authored=NorthlightUnlitReceiver::lightingOverride(memo.bank,context.ambient,context.direct,model);
+            memo.roomLevel=memo.authored?NorthlightUnlitReceiver::roomAmbientLevel(memo.bank):0;
+        }
+        if(memo.authored&&roomLevel)*roomLevel=memo.roomLevel;
+        return memo.authored;
+    }
+    void setNameMask(IDirect3DSurface9* depthStencil){composite.setNameMask(depthStencil);} /* 0.3.212 (task 32): the world depth-stencil holding this frame's name marks (non-owning, for the next render() only; null: no marks) */
     void setRainMask(IDirect3DTexture9* t){rainMask=t;} /* 0.3.202 (rain): non-owning, for the next render() only */
     const NorthlightWeather::State& weather()const{return weatherState;}
     // 0.3.198 (rain): the settings (Weather 0/1, RainFog 0..2) and the per-frame scalars derived from them and weather():
@@ -3679,7 +2200,7 @@ public:
     unsigned rainFogSetting()const{return quality.rainFog;}
     // 0.3.200 (gpu budget): GpuBudgetMs (0 = off) and the controller's level for the next frames; off forces level 0 (the full path, unchanged).
     unsigned gpuBudgetMs()const{return quality.gpuBudgetMs;}
-    void setGpuBudgetLevel(unsigned level){const auto next=quality.gpuBudgetMs?std::min(level,NorthlightGpuBudget::MaxLevel):0u;if(next!=gpuBudgetLevel)fogHistoryValid=false;gpuBudgetLevel=next;}
+    void setGpuBudgetLevel(unsigned level){const auto next=quality.gpuBudgetMs?std::min(level,NorthlightGpuBudget::MaxLevel):0u;if(next!=gpuBudgetLevel)fogScreen.invalidateHistory();gpuBudgetLevel=next;}
     // task 45: ActorShadowCpuMs (0 = off) and the CPU controller's level; off forces level 0. effectiveActorShadowRadius() is the one place the radius is read
     // for work: the capture admission and the selection use it (the setting itself stays in the logs that describe the setting).
     unsigned actorShadowCpuMs()const{return quality.actorShadowCpuMs;}
@@ -3695,6 +2216,7 @@ public:
     float aoRadius()const{return float(quality.aoRadius)/100.f;}
     bool equipmentLightsOn()const{return pipelineActive&&quality.localLights&&(menuDomain||quality.equipmentLights!=0)&&quality.localLightLimit!=0;}
     NorthlightParticleLights::Frame& particleFrame(){return particleLights;}
+    bool particleProbeBudgetSpent()const{return particleLights.probeBudgetSpent()&&active&&particleMap==active->map;}
     bool particleContext(float* inverseView,float* camera,float* projectionOut){
         if(!equipmentLightsOn()||!hasContext()||!active)return false;
         if(particleMap!=active->map){particleLights.reset();particleMap=active->map;}
@@ -3732,8 +2254,16 @@ public:
         if(std::fabs(q[0]-projection[0])>.005f||std::fabs(q[5]-projection[1])>.005f||std::fabs(q[14]-projection[2])>.005f||std::fabs(q[15])>.001f){++equipmentCapture.domainRejected;return;}
         const float* bank=cached?mirror->vsFloat[17]:readBank;
         if((!cached&&FAILED(d->GetVertexShaderConstantF(17,readBank,11)))||!equipmentLights.admit(bank,it->second,actor))return;
-        const auto now=GetTickCount();
+        const auto now=visualTime();
         NorthlightEquipmentLights::Native values[4];bool valid[4];NorthlightEquipmentLights::decodeBank(bank,it->second,context.inverseView,context.camera,values,valid);
+        if(NorthlightLocalLightTrace::auditInputs()){
+            equipmentBankAudit.add(bank,44);
+            for(unsigned i=0;i<it->second;++i)if(valid[i]){
+                equipmentDrawAudit.add(values[i].position,3);
+                equipmentDrawAudit.add(values[i].color,3);
+                equipmentDrawAudit.add(values[i].attenuation,3);
+            }
+        }
         for(unsigned i=0;i<it->second;++i){if(valid[i]){++equipmentCapture.decoded;equipmentLights.observe(values[i],now,active->localLights,context.camera);}else ++equipmentCapture.rejected;}
     }
     const NorthlightNativeLights::Point* nativeDirectSource(const NorthlightLocalLights::Light& selected,const NorthlightNativeLights::Snapshot& scene)const{
@@ -3806,9 +2336,9 @@ public:
         const HRESULT result=submit();if(nativeDiagnosticCapture)nativeDiagnosticCapture->nativeAfter(token,0,result,terrain?"native-terrain-without-proven-point-bank":"native-wmo-without-proven-point-bank");return result;
     }
     void requestNativeExtra(bool value){nativeExtraRequested=value;}
-    bool ownsNativeExtra()const{return nativeExtraOwnership&&nativeExtraOwners;}
+    bool ownsNativeExtra()const{return nativePointSubmit.ownsExtra()&&nativeExtraOwners;}
     void nativeExtraRgb(bool terrain,float* bank){
-        if(nativeExtraOwnership)NorthlightNativeDirect::ownExtraBank(terrain,bank,context.inverseView,context.camera,nativeDirectBindings.data(),nativeDirectBindingCount);
+        if(nativePointSubmit.ownsExtra())NorthlightNativeDirect::ownExtraBank(terrain,bank,context.inverseView,context.camera,nativeDirectBindings.data(),nativeDirectBindingCount);
     }
     template<class Draw> HRESULT nativeLocalDraw(unsigned rendererFrame,IDirect3DSurface9* mainDepth,Draw submit,bool prepared=false,const NorthlightNativePOM* pom=nullptr,IDirect3DVertexShader9* materialSource=nullptr,const NorthlightNativeDisplacement* displacement=nullptr,const NorthlightEffectCoverage::NativePixel* coverage=nullptr){
         const bool nativeTelemetry=profileSampled();
@@ -3841,7 +2371,7 @@ public:
             nativeDirectCubeRevision=nativeCubeRevision;
             if(menuDomain)nativeDirectScene=menuLights;else NorthlightNativeLights::frame(active->map.c_str(),context.camera,nativeDirectScene);nativeDirectBindingCount=0;nativeExtraOwners=false;
             if(!NorthlightNativeLights::wellFormed(nativeDirectScene))nativeDirectScene.clear();
-            if(quality.pointShadows)for(const auto& candidate:pointSlots){
+            if(quality.pointShadows)for(const auto& candidate:pointTargets.slots()){
                 if(!candidate.cube||!candidate.ready||!candidate.schedule.usable||candidate.map!=active->map)continue;
                 const auto* native=(candidate.selected.sourceId>>52)==0xfec?nativeDirectSource(candidate.selected,nativeDirectScene):nullptr;
                 const NorthlightLocalLights::Light* authored=nullptr;
@@ -3855,12 +2385,13 @@ public:
                 if(duplicate){duplicate->light.cube=nullptr;continue;}
                 auto& binding=nativeDirectBindings[nativeDirectBindingCount++];binding={};binding.native=native;binding.authored=authored;binding.selected=&candidate.selected;binding.cube=&candidate.cube;
                 binding.ready=&candidate.ready;binding.usable=&candidate.schedule.usable;binding.gain=&candidate.selectionGain;binding.updated=&candidate.schedule.updatedAt;binding.map=&candidate.map;binding.sourceId=candidate.selected.sourceId;
+                std::memcpy(binding.selectedPosition,candidate.selected.position,sizeof binding.selectedPosition);
                 binding.light.cube=candidate.cube;binding.light.cubeIsWhite=pointCubeIsWhite(candidate);binding.light.range=candidate.selected.attenuationEnd;std::memcpy(binding.light.position,candidate.cubeOrigin(),12);std::memcpy(binding.light.inverseView,context.inverseView,64);
             }
             // Last completed selection is available during native submissions.
             // A fresh scene value or proven native bank must agree with it.
             const uint32_t ownerNow=GetTickCount();
-            if(light&&normalBuffer&&finalPS&&localDirectPS&&localLightMap==active->map)for(unsigned i=0;i<atmosphere.lights.count;++i){
+            if(screenLighting.raw().texture&&worldNormals.texture()&&composite.standardShader()&&localLighting.directShader()&&localLightMap==active->map)for(unsigned i=0;i<atmosphere.lights.count;++i){
                 const auto& selected=atmosphere.lights.sources[i];const auto* native=nativeDirectSource(selected,nativeDirectScene);
                 NorthlightNativeLights::Point observed;const auto resolved=native?nativeDirectEmitter(selected,*native):std::array<float,3>{};
                 float gain=native?NorthlightNativeDirect::ownershipGain(selected,*native,resolved.data()):0;bool drawWitness=false;
@@ -3916,32 +2447,20 @@ public:
         if(terrainReceiver&&ownerMask){std::copy_n(terrainOriginal,36,terrainOwned);for(unsigned slot=0;slot<3;++slot)if(ownerMask&(1u<<slot))std::copy_n(ownedRGB+4*slot,3,terrainOwned+12*slot+4);}
         // Scope the constant change to the real submit, including private pairs.
         // Captures above the submit still see the original game's input bank.
-        const auto nativeOwnedBefore=nativeOwnedDraws;
-        auto ownedSubmit=[&]()->HRESULT{
-            const auto nativeSubmit=[&]()->HRESULT{const bool previous=nativeExtraOwnership;nativeExtraOwnership=extraCanOwn;
-                struct RestoreExtra {bool& value;bool previous;~RestoreExtra(){value=previous;}} saved{nativeExtraOwnership,previous};return submit();};
-            if(!ownerMask)return nativeSubmit();
-            unsigned first=0,last=4;while(!(ownerMask&(1u<<first)))++first;while(!(ownerMask&(1u<<(last-1))))--last;
-            const unsigned start=terrainReceiver?29+3*first:17+first,count=terrainReceiver?3*(last-first)-2:last-first;
-            const float* original=terrainReceiver?terrainOriginal+12*first+4:originalRGB+4*first;
-            const float* replacement=terrainReceiver?terrainOwned+12*first+4:ownedRGB+4*first;
-            const auto restore=[&]{HRESULT hr=d->SetVertexShaderConstantF(start,original,count);if(FAILED(hr))hr=d->SetVertexShaderConstantF(start,original,count);return hr;};
-            const HRESULT set=d->SetVertexShaderConstantF(start,replacement,count);
-            if(FAILED(set)){const HRESULT back=restore();if(FAILED(back)){failed=true;return back;}return nativeSubmit();}
-            struct Restore {decltype(restore)& action;bool& failed;bool done=false;~Restore(){if(!done&&FAILED(action()))failed=true;}} saved{restore,failed};
-            ++nativeOwnedDraws;if(terrainReceiver)++nativeTerrainOwnedDraws;for(unsigned k=0;k<4;++k)nativeOwnedSlots+=(ownerMask>>k)&1;
-            const HRESULT result=nativeSubmit();const HRESULT back=restore();saved.done=true;if(FAILED(back)){failed=true;return back;}return result;
-        };
+        const auto nativeOwnedBefore=nativePointSubmit.work().draws;
+        const NorthlightNativePointSubmit::Bank submitBank{ownerMask,terrainReceiver,
+            terrainReceiver?terrainOriginal:originalRGB,terrainReceiver?terrainOwned:ownedRGB};
+        const auto ownedSubmit=[&]{return nativePointSubmit.draw(d,submitBank,extraCanOwn,failed,submit);};
         for(unsigned k=0;k<4;++k)if((ownerMask&(1u<<k))&&nativeDirectBindings[unsigned(nativeBindings[k])].drawWitness)++nativeObservedOwnedSlots;
         if(gpuNormalDiagnosticRequested&&candidateMask)for(unsigned slot=0;slot<shader->second;++slot)if(candidateMask&(1u<<slot)){
             captureFocus=true;captureSources[capturedSources++]=nativeDirectBindings[unsigned(nativeBindings[slot])].sourceId;
         }
         for(unsigned slot=0;slot<shader->second;++slot){if(!nativeValid[slot]){if(nativeTelemetry)++nativeDirectMissReasons[0];continue;}const auto& value=nativeValues[slot];
             if(ownerMask&(1u<<slot))continue; // Renderer direct already owns this source, including its cube visibility.
-            if(gpuNormalDiagnosticRequested)for(const auto& candidate:pointSlots)if(candidate.ready&&candidate.schedule.usable)captureFocus|=NorthlightEquipmentLights::distance2(value.position,candidate.selected.position)<.005f*.005f;
+            if(gpuNormalDiagnosticRequested)for(const auto& candidate:pointTargets.slots())if(candidate.ready&&candidate.schedule.usable)captureFocus|=NorthlightEquipmentLights::distance2(value.position,candidate.selected.position)<.005f*.005f;
             const NativeDirectBinding* binding=nativeBindings[slot]>=0?&nativeDirectBindings[unsigned(nativeBindings[slot])]:nullptr;
             if(!binding||!binding->light.cube||!*binding->ready||!*binding->usable||!std::isfinite(*binding->gain)||*binding->cube!=binding->light.cube||
-                *binding->map!=active->map||binding->selected->sourceId!=binding->sourceId||std::memcmp(binding->selected->position,binding->light.position,12)||binding->selected->attenuationEnd!=binding->light.range){++nativeDirectMissingCube;
+                *binding->map!=active->map||binding->selected->sourceId!=binding->sourceId||std::memcmp(binding->selected->position,binding->selectedPosition,sizeof binding->selectedPosition)||binding->selected->attenuationEnd!=binding->light.range){++nativeDirectMissingCube;
                 if(nativeTelemetry){const unsigned reason=!binding?(nativeBindings[slot]==-2?2u:1u):
                     !binding->light.cube||!*binding->ready||!*binding->usable?3u:!std::isfinite(*binding->gain)?4u:*binding->cube!=binding->light.cube?5u:6u;
                     ++nativeDirectMissReasons[reason];}
@@ -3963,13 +2482,13 @@ public:
                 if(nativeCaptureToken)for(unsigned slot=0;slot<shader->second;++slot){const auto& value=nativeValues[slot];const NativeDirectBinding* binding=nativeBindings[slot]>=0?&nativeDirectBindings[unsigned(nativeBindings[slot])]:nullptr;const char* status=nativeValid[slot]?"no-binding":"decode-rejected";const bool ambiguous=nativeBindings[slot]==-2;
                     int physical=-1;uint64_t source=0;
                     if(ambiguous)status="ambiguous-binding";
-                    else if(binding){source=binding->sourceId;for(unsigned i=0;i<pointSlots.size();++i)if(binding->selected==&pointSlots[i].selected){physical=int(i);break;}
-                        status=(ownerMask&(1u<<slot))?"renderer-owned-direct":(candidateMask&(1u<<slot))?"selected-native-source-unmodified":!binding->light.cube?"missing-cube":!*binding->ready?"not-ready":!*binding->usable?"not-usable":!std::isfinite(*binding->gain)?"invalid-gain":*binding->cube!=binding->light.cube?"cube-identity-changed":*binding->map!=active->map?"map-changed":binding->selected->sourceId!=binding->sourceId||std::memcmp(binding->selected->position,binding->light.position,12)||binding->selected->attenuationEnd!=binding->light.range?"source-identity-changed":"matched-ready";}
+                    else if(binding){source=binding->sourceId;for(unsigned i=0;i<pointTargets.slots().size();++i)if(binding->selected==&pointTargets.slots()[i].selected){physical=int(i);break;}
+                        status=(ownerMask&(1u<<slot))?"renderer-owned-direct":(candidateMask&(1u<<slot))?"selected-native-source-unmodified":!binding->light.cube?"missing-cube":!*binding->ready?"not-ready":!*binding->usable?"not-usable":!std::isfinite(*binding->gain)?"invalid-gain":*binding->cube!=binding->light.cube?"cube-identity-changed":*binding->map!=active->map?"map-changed":binding->selected->sourceId!=binding->sourceId||std::memcmp(binding->selected->position,binding->selectedPosition,sizeof binding->selectedPosition)||binding->selected->attenuationEnd!=binding->light.range?"source-identity-changed":"matched-ready";}
                     nativeDiagnosticCapture->nativeSlot(nativeCaptureToken,shader->second,slot,nativeValid[slot],value.position,value.color,value.attenuation,status,source,physical);
                 }
             }catch(...){/* Explicit capture failure must not change the submitted draw. */}
         }
-        if(terrainReceiver||!matched||privateMismatch||(prepared&&!pom&&!displacement)){const HRESULT result=ownedSubmit();if(nativeDiagnosticCapture)nativeDiagnosticCapture->nativeAfter(nativeCaptureToken,0,result,privateMismatch?"material-private-pair-mismatch":nativeOwnedDraws!=nativeOwnedBefore?"renderer-owned-native-source":candidateMask?"selected-native-source-unmodified":terrainReceiver?"terrain-source-unmodified":!matched?"no-matched-ready-source":"prepared-displacement-bypass");return result;}
+        if(terrainReceiver||!matched||privateMismatch||(prepared&&!pom&&!displacement)){const HRESULT result=ownedSubmit();if(nativeDiagnosticCapture)nativeDiagnosticCapture->nativeAfter(nativeCaptureToken,0,result,privateMismatch?"material-private-pair-mismatch":nativePointSubmit.work().draws!=nativeOwnedBefore?"renderer-owned-native-source":candidateMask?"selected-native-source-unmodified":terrainReceiver?"terrain-source-unmodified":!matched?"no-matched-ready-source":"prepared-displacement-bypass");return result;}
         if(!nativeDirectRenderer)try{nativeDirectRenderer=std::make_unique<NorthlightNativeLocalLighting>(d);nativeDirectRenderer->setSamplerStateSource(nativeSamplerContext,nativeSamplerReader);}catch(const std::bad_alloc&){return ownedSubmit();}
         nativeDirectRenderer->setColdTraceSink(NorthlightDiagnostics::enabled()&&NorthlightQuality::renderProfile(quality)?nativeColdTrace:nullptr);
         unsigned captureColdBefore=0,captureDeferredBefore=0;uint64_t captureFallbackBefore=0;
@@ -4011,7 +2530,7 @@ public:
     const float* legacyFogParameters()const{return legacyFog.parameters;}
     const NorthlightLegacyFog::Constants& legacyFogConstants()const{
         if(!legacyFogKnown&&active&&legacyFogHold.has&&legacyFogHold.map==active->map&&
-           DWORD(GetTickCount()-legacyFogHold.lastUpdate)<=NorthlightLegacyFog::Hold::HoldMs)return legacyFogHold.held;
+           DWORD(visualTime()-legacyFogHold.lastUpdate)<=NorthlightLegacyFog::Hold::HoldMs)return legacyFogHold.held;
         return legacyFog;
     }
     bool hasOriginalFog()const{return legacyFogKnown;}
@@ -4026,7 +2545,7 @@ public:
 #endif
         auto target=celestialProfiles.fallback;
         if(region&&region->map==map)target=NorthlightCelestialProfiles::sample(celestialProfiles,region->region,map,camera[0],camera[1]);
-        framePalette=paletteTransition.update(target,map,camera[0],camera[1],double(GetTickCount())*.001);
+        framePalette=paletteTransition.update(target,map,camera[0],camera[1],double(visualTime())*.001);
         paletteFrameMap=map;paletteFrameValid=true;
         DWORD now=GetTickCount();if(NorthlightDiagnostics::enabled()&&(!paletteLogAt||now-paletteLogAt>=10000)){paletteLogAt=now;
             uint32_t zone=region&&region->map==map?NorthlightRegionalFog::zoneAt(region->region,camera[0],camera[1]):0;
@@ -4229,6 +2748,7 @@ public:
         const bool changedDomain=menu?menuIdentity!=map:menuDomain;
         if(changedDomain){
             endFrame();releaseGPU();active.reset();actorJobComplete.reset();actorJob=std::make_shared<NorthlightActorGeometry::ActorJob>();
+            resetShadowPivot(); // The menu model's camera distance cannot seed the World camera.
             actorSceneMap_.clear();lastActorCapture=0;actorCaptureDecided=false;actorVerticesEvaluated=0;
             equipmentLights.reset();particleLights.reset();lightAttachments.reset();weatherShelter.reset();
             underwaterFade={};celestialHeldOk=false;celestialLightMotion.reset();foreverTransition={};apparentHorizon={};
@@ -4242,6 +2762,7 @@ public:
         }
     }
     void updateWorldContext(const char* map,const float* camera,const NorthlightWmoContext::Lighting* global=nullptr,const NorthlightMenu::Snapshot* menu=nullptr){
+        ++materialLightRevision;
         if(!pipelineActive)return;
         beginSceneDomain(map,camera,menu);
         if(unsigned fault=workerFault()){if(!failed)logf("WORLD worker stopped: %s; restart required",workerFaultMessage(fault));failed=true;valid=false;return;}
@@ -4271,7 +2792,8 @@ public:
             {std::lock_guard<std::mutex> lock(mutex);region=publishedPaletteRegion;}
             if(region&&region->map==map)skyEnvironment=NorthlightExpansionAtmosphere::sample(region->region,map,context.camera,celestialValid?celestial.dayFraction:-1.f,storm,context.direct,context.ambient);
         }
-        skyEnvironment=foreverTransition.update(skyEnvironment,map,context.camera,double(GetTickCount64())*.001);
+        const auto atmosphereTick=NorthlightFrameParityClock::enabled()?visualTime():GetTickCount64();
+        skyEnvironment=foreverTransition.update(skyEnvironment,map,context.camera,double(atmosphereTick)*.001);
         }
         const float* renderDirect=skyEnvironment.valid?skyEnvironment.direct:context.direct;
         if(celestialValid){
@@ -4280,7 +2802,7 @@ public:
             const double nativeSun=NorthlightCelestialOrbit::elevationDegrees(celestial.sun.direction[2]);
             const double nativeMoon=NorthlightCelestialOrbit::elevationDegrees(celestial.moon.direction[2]);
             const auto orbit=NorthlightCelestial::resolveRendererSky(celestial,renderDirect,NorthlightQuality::foreverCelestial(quality),map);
-            const auto lightOrbit=celestialLightMotion.update(orbit,celestial.dayFraction,GetTickCount(),
+            const auto lightOrbit=celestialLightMotion.update(orbit,celestial.dayFraction,visualTime(),
                 celestialLightMap!=map||different(celestialLightCamera,vec(camera),40));
             celestialLightMap=map;celestialLightCamera=vec(camera);
             celestialLight=celestial;
@@ -4345,15 +2867,36 @@ public:
             if(length>1e-3f)r.probeCenter=r.camera+view*(float(quality.giProbeAhead)/length);}
         // Keep the region stable under camera orbits; the total eye offset,
         // including travel lead, retains the existing 60-unit safety bound.
+        const bool fixedGi=NorthlightFrameParityClock::fixedGiPublication();
         {const V forward=V(context.inverseView[8],context.inverseView[9],context.inverseView[10])*projection[2];const float length=std::sqrt(NorthlightGI::dot(forward,forward));
          const V pivot=length>1e-6f?r.camera+forward*(pivotDistance/length):r.camera;
-         geometryMotion.update(r.map,r.camera,pivot,GetTickCount());
-         r.geometryCenter=NorthlightWorldStreaming::anchoredCenter(r.camera,pivot,geometryMotion.velocity(),float(geometryBuildEstimateMs.load(std::memory_order_relaxed))*.001f);
+         geometryMotion.update(r.map,r.camera,pivot,fixedGi?visualTime():GetTickCount());
+         const float buildSeconds=fixedGi?1.f:float(geometryBuildEstimateMs.load(std::memory_order_relaxed))*.001f;
+         r.geometryCenter=NorthlightWorldStreaming::anchoredCenter(r.camera,pivot,geometryMotion.velocity(),buildSeconds);
          geometryAnchorOffset=std::sqrt(NorthlightGI::dot(pivot-r.camera,pivot-r.camera));
          geometryLead=std::sqrt(NorthlightGI::dot(r.geometryCenter-r.camera,r.geometryCenter-r.camera));}
         if((menu||giActorWorkEnabled())&&lastRequest.map==r.map&&completedActorSceneMap()==r.map){r.actorJob=completedActorJob();r.actorSerial=actorJobSerial();}
         std::shared_ptr<Snapshot> retiredSnapshot,expiredPublication;
-        {std::lock_guard<std::mutex> lock(mutex);
+        bool admitScene=true;
+        bool expectScene=false;
+#ifdef NORTHLIGHT_REPLAY_STAND
+        // Equipment draw capture consumes the CPU scene before the first GPU
+        // mesh is ready. Match its captured adoption across Reset epochs.
+        const unsigned sceneStart=NorthlightFrameParityClock::replayWorldCheckpoint(parityFrame).scene;
+        admitScene=!sceneStart||menu||parityFrame>=sceneStart;
+        expectScene=!menu&&sceneStart&&parityFrame==sceneStart;
+#endif
+        {std::unique_lock<std::mutex> lock(mutex);
+            if(fixedGi){
+                // Finish runnable probe work before observing its publication.
+                // Geometry remains asynchronous until the recorded stand checkpoint.
+                const bool settled=giSettled.wait_for(lock,std::chrono::seconds(15),[&] {
+                    if(stopping||workerFaultCode.load())return true;
+                    return !pending&&!workerBusy&&(!expectScene||
+                        (published&&published->bvh&&NorthlightWorldStreaming::applicable(published->map,published->center,r.map,r.camera)));
+                });
+                if(!settled)logf("GI_PARITY_FAILURE present=%u stage=cpu-timeout",parityFrame);
+            }
             // The publication is another owner of the old BVH/plan. Retiring only
             // active left it resident indefinitely while the builder waited for VA.
             // BEGIN EXPIRED PUBLICATION
@@ -4363,7 +2906,7 @@ public:
             if(published&&published!=observedPublication.lock()){
                 observedPublication=published;if(!published->message.empty()&&published->message!=loggedCacheMessage)logf("WORLD cache: %s",published->message.c_str());loggedCacheMessage=published->message;
             }
-            if(published&&published!=active&&NorthlightWorldStreaming::adopts(published->map,published->center,bool(published->bvh),active&&active->bvh,r.map,r.camera)){
+            if(admitScene&&published&&published!=active&&NorthlightWorldStreaming::adopts(published->map,published->center,bool(published->bvh),active&&active->bvh,r.map,r.camera)){
                 bool newGI=published->serial&&(!active||active->serial!=published->serial);retiredSnapshot=std::move(active);active=published;
                 if(newGI&&NorthlightDiagnostics::enabled())logf("GI activated tick=%lu id=%llu ageMs=%lu queueMs=%lu geometryMs=%lu actorMs=%lu solveMs=%lu reused=%u solved=%u cancelled=%u origin=(%.1f %.1f %.1f) dynamicReused=%u dynamicSolved=%u staticOnly=%u partial=%u processed=%u generation=%llu retargeted=%u actorTextureDecode=worker actorTextures=%u actorTextureBytes=%zu pathRecorded=%llu pathReplayedRays=%llu pathRetracedRays=%llu pathRecordKB=%zu actorWorkMs=%.3f solveWorkMs=%.3f actorDecodeMs=%.3f actorPoseMs=%.3f actorHashMs=%.3f actorBvhMs=%.3f",(unsigned long)GetTickCount(),(unsigned long long)active->requestId,(unsigned long)(GetTickCount()-active->requestedAt),(unsigned long)active->queueMs,(unsigned long)active->geometryMs,(unsigned long)active->actorMs,(unsigned long)active->solveMs,active->reusedProbes,active->solvedProbes,active->superseded,active->origin.x,active->origin.y,active->origin.z,active->dynamicReused,active->dynamicSolved,unsigned(active->staticOnly),unsigned(active->partial),active->processedProbes,(unsigned long long)active->lightingGeneration,active->retargeted,active->actorTexturesDecoded,active->actorTextureEncodedBytes,(unsigned long long)active->movingStats.recorded,(unsigned long long)active->movingStats.replayed,(unsigned long long)active->movingStats.retraced,active->pathRecordBytes/1024,active->actorWorkMs,active->solveWorkMs,active->actorDecodeMs,active->actorPoseMs,active->actorHashMs,active->actorBvhMs);
             }
@@ -4371,7 +2914,7 @@ public:
                 (different(lastRequest.light.sunDirection,r.light.sunDirection,.02f)?4u:0u)|(different(lastRequest.light.sunIrradiance,r.light.sunIrradiance,.03f)?8u:0u)|((!NorthlightGI::sameAngularSky(lastRequest.light,r.light)||different(lastRequest.light.skyRadiance,r.light.skyRadiance,.01f))?16u:0u)|
                 (lastRequest.light.additionalDirections.empty()||different(lastRequest.light.additionalDirections[0].direction,r.light.additionalDirections[0].direction,.02f)||different(lastRequest.light.additionalDirections[0].irradiance,r.light.additionalDirections[0].irradiance,.03f)?32u:0u)|
                 (NorthlightWorldStreaming::leadMoved(lastRequest.camera,lastRequest.geometryCenter,r.camera,r.geometryCenter)?128u:0u);
-            if(r.reason){r.id=request.id+1;r.baseId=r.id;r.queuedAt=GetTickCount();request=r;lastRequest=r;settingsRequestDirty=false;pending=true;wake.notify_one();
+            if(r.reason){queueRequestLocked(r,GetTickCount(),true);settingsRequestDirty=false;wake.notify_one();
                 if(NorthlightDiagnostics::enabled())logf("GI request tick=%lu id=%llu reason=%u camera=(%.2f %.2f %.2f) sun=(%.5f %.5f %.5f)",(unsigned long)r.queuedAt,(unsigned long long)r.id,r.reason,r.camera.x,r.camera.y,r.camera.z,r.light.sunDirection.x,r.light.sunDirection.y,r.light.sunDirection.z);
             }
             // 0.3.156 watchdog (log only): the builder waited for a free geometry generation
@@ -4418,65 +2961,41 @@ public:
             coverMax=0;
         }
     }
-    IDirect3DPixelShader9* terrainShadowReplacement(IDirect3DPixelShader9* shader){
-        auto found=terrainShadowShaders.find(shader);if(found!=terrainShadowShaders.end())return found->second;
-        IDirect3DPixelShader9* replacement=nullptr;UINT size=0;
-        if(shader&&SUCCEEDED(shader->GetFunction(nullptr,&size))&&size>=8&&size<=65536&&size%4==0){
-            std::vector<uint32_t> code(size/4),output;NorthlightTerrainShadow::PatchInfo info;
-            if(SUCCEEDED(shader->GetFunction(code.data(),&size))&&NorthlightTerrainShadow::patch(code.data(),code.size(),output,&info)){
-                if(FAILED(d->CreatePixelShader(reinterpret_cast<const DWORD*>(output.data()),&replacement)))replacement=nullptr;
-                if(replacement)nativePointPixelOwners[replacement]=NorthlightNativeLocalPatch::pointOwnerPixel(output.data(),output.size());
-                if(replacement&&terrainShadowReports++<4)logf("TERRAIN SHADOW patched ps_%u_%u: replaced=%u shadow=r%u.%u one=c%d.%u instructions=%u",info.major,info.minor,info.replaced,info.shadowRegister,info.shadowComponent,info.oneConstant,info.oneComponent,info.instructions);
-            }
+    void terrainPixelProof(IDirect3DPixelShader9* shader,const uint32_t* words,size_t count){
+        if(words)nativePointPixelOwners[shader]=NorthlightNativeLocalPatch::pointOwnerPixel(words,count);
+        else nativePointPixelOwners.erase(shader);
+    }
+    void terrainVertexProof(IDirect3DVertexShader9* shader,const uint32_t* words,size_t count){
+        if(words)registerNativePointShader(shader,reinterpret_cast<const DWORD*>(words),count,false,true);
+        else{
+            nativePointShaders.erase(shader);
+            nativePointOwners.erase(shader);
+            nativeTerrainPointShaders.erase(shader);
         }
-        if(replacement)++terrainShadowPatched;else ++terrainShadowRejected;
-        terrainShadowShaders[shader]=replacement;return replacement;
+    }
+    IDirect3DPixelShader9* terrainShadowReplacement(IDirect3DPixelShader9* shader){
+        return terrainShadowPrograms.neutral(d,shader,
+            [&](auto* derived,const uint32_t* words,size_t count){terrainPixelProof(derived,words,count);},
+            [](const char* format,auto... args){logf(format,args...);});
     }
     bool terrainShadowCoverage(IDirect3DVertexShader9* vertex,IDirect3DPixelShader9* pixel,
                                IDirect3DVertexShader9*& patchedVertex,IDirect3DPixelShader9*& patchedPixel,
                                unsigned& constants,unsigned& constantCount,float* rows){
-        auto v=terrainCoverageVertices.find(vertex);
-        if(v==terrainCoverageVertices.end()){
-            IDirect3DVertexShader9* shader=nullptr;UINT size=0;std::vector<uint32_t> code,output;
-            if(vertex&&SUCCEEDED(vertex->GetFunction(nullptr,&size))&&size>=8&&size<=65536&&size%4==0){
-                code.resize(size/4);
-                if(SUCCEEDED(vertex->GetFunction(code.data(),&size))&&NorthlightTerrainCoverage::vertex(code.data(),code.size(),output)){
-                    if(FAILED(d->CreateVertexShader(reinterpret_cast<const DWORD*>(output.data()),&shader)))shader=nullptr;
-                    if(shader&&terrainShaders.count(vertex))registerNativePointShader(shader,reinterpret_cast<const DWORD*>(output.data()),output.size(),false,true);
-                }
-            }
-            v=terrainCoverageVertices.emplace(vertex,shader).first;
-        }
-        if(!v->second)return false;
-        auto& result=terrainCoveragePixels[pixel][terrainCoverageSources-1];
-        if(!result.known){
-            result.known=true;UINT size=0;std::vector<uint32_t> code,output;
-            NorthlightTerrainCoverage::PixelInfo proof;
-            if(pixel&&SUCCEEDED(pixel->GetFunction(nullptr,&size))&&size>=8&&size<=65536&&size%4==0){
-                code.resize(size/4);
-                if(SUCCEEDED(pixel->GetFunction(code.data(),&size))&&NorthlightTerrainCoverage::pixel(code.data(),code.size(),output,proof,terrainCoverageSources)){
-                    if(FAILED(d->CreatePixelShader(reinterpret_cast<const DWORD*>(output.data()),&result.shader)))result.shader=nullptr;
-                    if(result.shader)nativePointPixelOwners[result.shader]=NorthlightNativeLocalPatch::pointOwnerPixel(output.data(),output.size());
-                    result.constants=proof.constants;
-                }
-            }
-            if(terrainCoverageReports++<8)logf("TERRAIN SHADOW farCoverage=%u sources=%u psConstants=%u addedSlots=%u",unsigned(result.shader!=nullptr),terrainCoverageSources,result.constants,proof.addedSlots);
-        }
-        if(!result.shader)return false;
-        if(!terrainCoverageRowsValid||std::memcmp(terrainCoverageView,context.inverseView,64)){
-            for(unsigned source=0;source<terrainCoverageSources;++source){float projected[16];NorthlightWorldMath::replayProjection(context.inverseView,terrainCoverageMatrices[source],projected);std::memcpy(terrainCoverageRows+source*12,projected,48);}
-            std::memcpy(terrainCoverageView,context.inverseView,64);terrainCoverageRowsValid=true;
-        }
-        patchedVertex=v->second;patchedPixel=result.shader;constants=result.constants;constantCount=terrainCoverageSources*3;
-        std::memcpy(rows,terrainCoverageRows,constantCount*16);return true;
+        const auto result=terrainShadowPrograms.coverage(d,vertex,pixel,context.inverseView,
+            [&](auto* derived,const uint32_t* words,size_t count){if(!words||terrainShaders.count(vertex))terrainVertexProof(derived,words,count);},
+            [&](auto* derived,const uint32_t* words,size_t count){terrainPixelProof(derived,words,count);},
+            [](const char* format,auto... args){logf(format,args...);});
+        if(!result.pixel)return false;
+        patchedVertex=result.vertex;patchedPixel=result.pixel;constants=result.first;constantCount=result.count;
+        std::memcpy(rows,result.rows,constantCount*16);
+        return true;
     }
     bool terrainShadowActive()const{return directionalShadowWork()&&ready()&&shadowsComposited;}
     bool nativeTerrainShadowsEnabled()const{return !quality.shadowProvider||(effects.shadows&&!nativeShadowOwned)||quality.disableOriginalTerrainShadows==0;}
     bool shadowsRequested()const{return effects.shadows;} /* 0.3.187: changes only in setEffects (frame boundary) */
     void registerPixelShader(IDirect3DPixelShader9* shader){
         fogShaders.erase(shader);nativePointPixelOwners.erase(shader);UINT size=0;
-        {auto old=terrainShadowShaders.find(shader);if(old!=terrainShadowShaders.end()){nativePointPixelOwners.erase(old->second);drop(old->second);terrainShadowShaders.erase(old);}}
-        {auto old=terrainCoveragePixels.find(shader);if(old!=terrainCoveragePixels.end()){for(auto& variant:old->second){nativePointPixelOwners.erase(variant.shader);drop(variant.shader);}terrainCoveragePixels.erase(old);}}
+        terrainShadowPrograms.forgetPixel(shader,[&](auto* derived,const uint32_t* words,size_t count){terrainPixelProof(derived,words,count);});
         if(!shader||FAILED(shader->GetFunction(nullptr,&size))||size<8||size>65536||size%4)return;
         std::vector<uint32_t> code(size/4);if(FAILED(shader->GetFunction(code.data(),&size)))return;
         nativePointPixelOwners[shader]=NorthlightNativeLocalPatch::pointOwnerPixel(code.data(),code.size());
@@ -4484,7 +3003,7 @@ public:
         info.colorRegister=NorthlightLegacyFog::ps3FogColorRegister(code.data(),code.size());info.verified=info.colorRegister>=0;info.alpha=NorthlightShadowAlpha::analyze(code.data(),code.size());fogShaders[shader]=info;
     }
     void registerShader(IDirect3DVertexShader9* shader,uint64_t hash){
-        {auto old=terrainCoverageVertices.find(shader);if(old!=terrainCoverageVertices.end()){nativePointShaders.erase(old->second);nativePointOwners.erase(old->second);nativeTerrainPointShaders.erase(old->second);drop(old->second);terrainCoverageVertices.erase(old);}}
+        terrainShadowPrograms.forgetVertex(shader,[&](auto* derived,const uint32_t* words,size_t count){terrainVertexProof(derived,words,count);});
         ++worldShaderGen; /* 0.3.196 (task 12): before any map changes */
         replayBoundsMetadata.invalidateShader(shader);
         wmoShaders.erase(shader);
@@ -4518,16 +3037,10 @@ public:
         if(!NorthlightShadowShader::patch(shadowInput.data(),shadowInput.size(),output,&info)||!info.texcoord0XY)return;
         NorthlightDrawSnapshot::Ref<IDirect3DVertexShader9> replacement;
         std::vector<uint32_t> compact;
-        const bool sliced=NorthlightModelNormalSlice::shadowVertex(output.data(),output.size(),compact)&&compact.size()<output.size();
-        HRESULT created=E_FAIL;
-        const auto* submitted=&output;
-        if(sliced){++shadowSliceCandidates;created=d->CreateVertexShader(reinterpret_cast<const DWORD*>(compact.data()),replacement.out());}
-        if(!sliced||FAILED(created)||!replacement.p){
-            if(sliced){++shadowSliceFallback;drop(replacement.p);}
-            created=d->CreateVertexShader(reinterpret_cast<const DWORD*>(output.data()),replacement.out());
-        }else{submitted=&compact;++shadowSliceCreated;shadowSliceWordsBefore+=output.size();shadowSliceWordsAfter+=compact.size();}
-        if(SUCCEEDED(created)&&replacement.p){
+        const auto* submitted=shadowPrograms.createCapture(d,output,compact,replacement.p);
+        if(submitted){
             CaptureShader metadata;metadata.replacement=replacement.p;metadata.projectionKind=kind;metadata.color0W=info.color0W;metadata.detailDoodad=detail;
+            metadata.wmo=wmoShaders.count(shader)!=0;
             metadata.usage=NorthlightShaderConstants::analyze(words.data(),words.size(),kind);
             if(metadata.usage.relativeFloat)
                 metadata.usage.weightedFloats=NorthlightShaderConstants::analyze(submitted->data(),submitted->size(),kind).weightedFloats;
@@ -4539,6 +3052,8 @@ public:
                 actorPrograms.emplace(shader,metadata.program);
             }
             if(detail&&(!metadata.program||metadata.skinned||!metadata.color0W))return;
+            if(kind==2&&!metadata.skinned)
+                metadata.pointRigidRows=NorthlightPointShadow::RigidPoseRows::fromProgram(submitted->data(),submitted->size());
             if(NorthlightActorDeformation::compile(words.data(),words.size(),program,true))actorUVPrograms.emplace(shader,std::make_shared<const NorthlightActorDeformation::Program>(std::move(program)));
             // Publish only complete metadata. RAII retains ownership on any
             // compiler/map allocation exception before this transfer.
@@ -4566,7 +3081,7 @@ public:
         appendTerrain(std::make_shared<const NorthlightTerrainCapture::MeshSnapshot>(std::move(snapshot)));
     }
     bool terrainShader(IDirect3DVertexShader9* shader){return lookupShader(shader).terrain;}
-    void capture(D3DPRIMITIVETYPE type,INT base,UINT min,UINT vertexTotal,UINT start,UINT count,bool indexed,IDirect3DVertexShader9* current,bool selfCheck,bool sample,NorthlightCaptureMetadata::PositionBounds* positions=nullptr,const std::shared_ptr<const NorthlightDrawSnapshot::Mesh>* captured=nullptr,IDirect3DVertexDeclaration9* capturedDeclaration=nullptr,const NorthlightPoseBounds::Handoff* pose=nullptr){
+    void capture(D3DPRIMITIVETYPE type,INT base,UINT min,UINT vertexTotal,UINT start,UINT count,bool indexed,IDirect3DVertexShader9* current,bool selfCheck,bool sample,NorthlightCaptureMetadata::PositionBounds* positions=nullptr,const std::shared_ptr<const NorthlightDrawSnapshot::Mesh>* captured=nullptr,IDirect3DVertexDeclaration9* capturedDeclaration=nullptr,const NorthlightPoseBounds::Handoff* pose=nullptr,const NorthlightConstantEpoch::BankHandoff* bank=nullptr){
         if(positions)positions->known=false;
         constantSelfCheck=selfCheck;sample=sample&&NorthlightDiagnostics::enabled();
         if(!ready()||replays.size()>=4096||(type!=D3DPT_TRIANGLELIST&&type!=D3DPT_TRIANGLESTRIP))return;
@@ -4576,188 +3091,43 @@ public:
             if(sample)++terrainCaptureCalls;CpuScope cpu(sample?&terrainCaptureTicks:nullptr);
             ++terrainAttempts;
             if(!indexed){if(terrainFailures++<12)logf("TERRAIN snapshot rejected: non-indexed buffer draw");return;}
-            float projectionRows[16];if(FAILED(d->GetVertexShaderConstantF(4,projectionRows,4))){if(terrainFailures++<12)logf("TERRAIN projection constants unavailable");return;}
-            if(std::fabs(projectionRows[0]-projection[0])>.005f||std::fabs(projectionRows[5]-projection[1])>.005f||std::fabs(projectionRows[11]-projection[2])>.005f){if(terrainFailures++<12)logf("TERRAIN projection mismatch");return;}
+            const auto* mirror=constantEpochSource.mirror;
+            const auto* projectionRows=mirror?mirror->borrowKnownVertexFloats(4,4):nullptr;
+#ifdef NORTHLIGHT_REPLAY_STAND
+            terrainCameraBorrows+=projectionRows!=nullptr;
+            terrainCameraGets+=projectionRows==nullptr;
+#endif
+            float projectionScratch[4][4];
+            if(!projectionRows){
+                if(FAILED(d->GetVertexShaderConstantF(4,projectionScratch[0],4))){if(terrainFailures++<12)logf("TERRAIN projection constants unavailable");return;}
+                projectionRows=projectionScratch;
+            }
+            if(std::fabs(projectionRows[0][0]-projection[0])>.005f||std::fabs(projectionRows[1][1]-projection[1])>.005f||std::fabs(projectionRows[2][3]-projection[2])>.005f){if(terrainFailures++<12)logf("TERRAIN projection mismatch");return;}
+            const auto* viewRows=mirror?mirror->borrowKnownVertexFloats(0,4):nullptr;
             TerrainSnapshot snapshot;NorthlightTerrainCapture::Diagnostics why;
             terrainBoundsCache.profileCapture(sample);
-            if(!terrainBoundsCache.readMeshShared(d,type,base,min,vertexTotal,start,count,context.view,snapshot,&why)){
+            const bool captured=terrainBoundsCache.readMeshShared(d,type,base,min,vertexTotal,start,count,context.view,snapshot,&why,viewRows);
+#ifdef NORTHLIGHT_REPLAY_STAND
+            terrainCameraBorrows+=why.viewChecked&&viewRows;
+            terrainCameraGets+=why.viewChecked&&!viewRows;
+#endif
+            if(!captured){
                 if(terrainFailures++<12)logf("TERRAIN snapshot rejected: %s hr=%08lx vertexUsage=%lx indexUsage=%lx type=%u stride=%u",NorthlightTerrainCapture::rejectName(why.reason),(unsigned long)why.hr,(unsigned long)why.vertexUsage,(unsigned long)why.indexUsage,why.positionType,why.stride);return;}
+            if(const auto* native=NorthlightAdtBounds::current)
+                nativeAdtCoverage.record(*native,why.low,why.high,&logf);
             if(positions){std::copy(why.low,why.low+3,positions->low);std::copy(why.high,why.high+3,positions->high);positions->known=true;}
             appendTerrain(snapshot);return;
         }
-        captureModel(type,base,min,vertexTotal,start,count,indexed,current,sample,nullptr,D3DFMT_INDEX16,nullptr,0,captured,capturedDeclaration,pose);
+        captureModel(type,base,min,vertexTotal,start,count,indexed,current,sample,nullptr,D3DFMT_INDEX16,nullptr,0,captured,capturedDeclaration,pose,bank);
     }
-    void releaseReplayGPU(){replayGpuCache.clear();auto& queries=fence();for(auto& ring:replayVertexRing)NorthlightDynamicRing::reset(ring,0,queries);NorthlightDynamicRing::reset(replayIndexRing,0,queries);queries.drop();for(auto& buffer:replayVerticesGPU)drop(buffer);drop(replayIndicesGPU);for(auto& bytes:replayVertexBytes)bytes=0;replayIndexBytes=0;}
-    bool uploadReplay(bool allowCache=true){
-        NorthlightCapturePhases::Scope<2> phase(captureSampled?&replayUploadPhases:nullptr);
-        if(captureSampled)++replayUploadCalls;
-        if(!allowCache){replayGpuCache.clear();for(auto& p:replays)if(p->gpuCached){for(auto& stream:p->stream)drop(stream);drop(p->index);}}
-        {auto expire=streamingPhases.measure(NorthlightStreaming::PhaseProfile::ReplayExpire);replayGpuCache.beginFrame();}uint64_t cacheGrowthBytes=0;
-        auto bindReplay=[&](Replay& p){
-            auto growthAdmission=[&](size_t bytes){
-                // Pending batches are not allocated yet. Reserve every admitted
-                // mesh plus a stride of batch padding, including failed creates.
-                uint64_t capacity=0;
-                if(!NorthlightGeometryMemory::add(cacheGrowthBytes,bytes,capacity)||
-                   !NorthlightGeometryMemory::add(capacity,p.mesh().streams[0].stride,capacity)||
-                   !admitsGrowth("replay-cache",capacity))return false;
-                cacheGrowthBytes=capacity;return true;
-            };
-            NorthlightReplayGPU::bindResident(replayGpuCache,d,p,allowCache,growthAdmission);
-        };
-        replayTimeDeferredIndices.clear();
-        {auto bind=streamingPhases.measure(NorthlightStreaming::PhaseProfile::ReplayBind);
-        for(size_t i=0;i<replays.size();++i){bindReplay(*replays[i]);
-            if(!replays[i]->gpuCached&&replayGpuCache.timeDeferredLast())replayTimeDeferredIndices.push_back(i);}
-        NorthlightReplayGPU::commitAdmissions(replayGpuCache,replays,bindReplay);}
-        phase.next(1); // Layout, bulk-buffer growth/copy and output bindings.
-        UINT totals[4]={};std::uint64_t totalIndices=0;size_t sharedBulkDraws=0,sharedBulkBytes=0,multiStreamDraws=0;
-        /* 0.3.211 (task 31): a single-stream bulk replay sits at a stride multiple (rel) so every one binds the ring slot start
-           and selects its vertices by BaseVertexIndex/start: same-stride replays share one SetStreamSource. Layout and the
-           address-space prefix fit both go through bulkPlace, so they stay byte-identical. Multi-stream: 16-padded, as before. */
-        auto singleStream=[](const auto& p){const auto& m=p.mesh();return !m.streams[0].bytes.empty()&&m.streams[0].stride&&m.streams[1].bytes.empty()&&m.streams[2].bytes.empty()&&m.streams[3].bytes.empty();};
-        auto bulkPlace=[&](const auto& p,bool single,unsigned s,std::uint64_t total,std::uint64_t& at){ /* single: singleStream(p), computed once per replay */
-            const auto& source=p.mesh().streams[s];
-            if(s==0&&single){at=(total+source.stride-1)/source.stride*source.stride;return at+source.bytes.size();}
-            at=(total+15)&~std::uint64_t(15);return at+((source.bytes.size()+15)&~std::size_t(15));};
-        auto layout=[&](size_t count){
-            for(auto& t:totals)t=0;totalIndices=0;sharedBulkDraws=sharedBulkBytes=multiStreamDraws=0;replayBulkLayout.begin();
-            for(size_t i=0;i<count;++i){auto& p=replays[i];if(p->gpuCached)continue;
-                const size_t owner=replayBulkLayout.add(p->shared.get(),i);
-                if(owner!=i){const auto& first=*replays[owner];
-                    for(unsigned s=0;s<4;++s){p->stride[s]=first.stride[s];p->offset[s]=first.offset[s];}
-                    p->start=first.start;p->base=first.base;p->bulkSingle=first.bulkSingle;++sharedBulkDraws;sharedBulkBytes+=p->mesh().byteSize();continue;
-                }
-                const bool single=p->bulkSingle=singleStream(*p);
-                for(unsigned s=0;s<4;++s){auto& source=p->mesh().streams[s];p->stride[s]=source.stride;
-                    std::uint64_t at=0;const std::uint64_t next=bulkPlace(*p,single,s,totals[s],at);if(next>64u*1024u*1024u)return false;p->offset[s]=UINT(at);totals[s]=UINT(next);}
-                p->start=p->indexed?UINT(totalIndices):0;p->base=0;totalIndices+=p->mesh().indices.size();
-                if(single){const UINT first=p->offset[0]/p->stride[0];if(p->indexed)p->base=INT(first);else p->start=first;} // offset[0] is still relative here
-                else multiStreamDraws+=!p->mesh().streams[1].bytes.empty()||!p->mesh().streams[2].bytes.empty()||!p->mesh().streams[3].bytes.empty();}
-            return totalIndices<=16u*1024u*1024u;
-        };
-        // A creation-time deferral must never force bulk growth (or exceed the
-        // bulk limits): then create those meshes exactly as 0.3.137 would.
-        {const bool fits=layout(replays.size());bool grow=!fits||totalIndices*4>replayIndexBytes;
-         for(unsigned s=0;s<4;++s)grow=grow||totals[s]>replayVertexBytes[s];
-         if(grow&&!replayTimeDeferredIndices.empty()){
-             replayGpuCache.ignoreTimeBudget(true);
-             for(size_t i:replayTimeDeferredIndices){bindReplay(*replays[i]);replayBudgetOverrides+=replays[i]->gpuCached;}
-             replayGpuCache.ignoreTimeBudget(false);
-         }
-         if(!fits||(grow&&!replayTimeDeferredIndices.empty())){if(!layout(replays.size()))return false;}}
-        {const auto& cache=replayGpuCache.stats();streamingPhases.record(NorthlightStreaming::PhaseProfile::ReplayCreate,cache.createMs);
-         replayCreatedPeak=std::max(replayCreatedPeak,cache.created);replayTimeDeferred+=cache.timeDeferred;}
-        {bool grow=totalIndices*4>replayIndexBytes;uint64_t capacity=0;
-         for(unsigned s=0;s<4;++s){if(totals[s]>replayVertexBytes[s])grow=true;capacity+=totals[s]>replayVertexBytes[s]?NorthlightDynamicRing::ringCapacity(totals[s]):replayVertexBytes[s];}
-         capacity+=totalIndices*4>replayIndexBytes?NorthlightDynamicRing::ringCapacity(totalIndices*4):replayIndexBytes;
-         if(grow&&!admitsGrowth("replay-growth",capacity)){
-             // Optional residency must not displace casters that the original
-             // bulk path could fit. Reclaim it before applying the old fallback.
-             if(allowCache&&replayGpuCache.bytes()){
-                 if(captureSampled)++replayUploadFallbacks;
-                 ++replayFallbacks;
-                 phase.stop(); // The recursive retry owns its own interval.
-                 return uploadReplay(false);
-             }
-             // Under address-space pressure draw the prefix of casters that fits
-             // the existing buffers this frame; nothing is allocated.
-             size_t fit=0;UINT running[4]={};std::uint64_t runningIndices=0;
-             for(;fit<replays.size();++fit){auto& p=replays[fit];if(p->gpuCached||!replayBulkLayout.unique(fit))continue;bool ok=true;std::uint64_t nexts[4]={};const bool single=singleStream(*p);
-                 for(unsigned s=0;s<4&&ok;++s){std::uint64_t at=0;nexts[s]=bulkPlace(*p,single,s,running[s],at);ok=nexts[s]<=replayVertexBytes[s];}
-                 if(!ok||(runningIndices+p->mesh().indices.size())*4>replayIndexBytes)break;
-                 for(unsigned s=0;s<4;++s)running[s]=UINT(nexts[s]);runningIndices+=p->mesh().indices.size();}
-             // The bounds job borrows packet constants. Join before truncating
-             // the packet list, while its results still match the whole list.
-             replayBoundsJoin();
-             if(prepareUnsettled())for(size_t i=fit;i<replays.size();++i)recycleReplay(replays[i].release()); /* 0.3.177: quarantined */
-             replays.resize(fit);if(!layout(fit))return false;
-         }}
-        // 0.3.192 (DXVK3): each bulk buffer is a fence-checked ring (dynamic_ring.h): this call's streams are appended at
-        // slot.offset (NOOVERWRITE; DISCARD only while an earlier frame's draws may still read the slice), so a frame
-        // is no longer charged the full 8 MiB buffer as a DXVK 3.x DISCARD. layout() stays relative to 0 and the
-        // ring base is added to the replays once, right before the bindings.
-        auto& queries=fence();UINT vertexBase[4]={},indexBase=0;
-        auto ringSlot=[&](NorthlightDynamicRing::Ring& ring,UINT& capacity,UINT bytes,UINT align,NorthlightLockMeter::Site site,auto&& recreate,NorthlightDynamicRing::Slot& slot){
-            if(capacity<bytes){auto grow=streamingPhases.measure(NorthlightStreaming::PhaseProfile::ReplayGrow);++replayGrowths;
-                const UINT bigger=NorthlightDynamicRing::ringCapacity(bytes);NorthlightDynamicRing::reset(ring,0,queries);capacity=0;
-                if(!recreate(bigger))return false;capacity=bigger;NorthlightDynamicRing::reset(ring,bigger,queries);}
-            slot=NorthlightDynamicRing::place(ring,bytes,align,queries);
-            if(slot.discarded&&NorthlightDynamicRing::oversized(ring,ring.peak)){ // would DISCARD an oversized buffer: a right-sized new one charges nothing
-                const UINT smaller=NorthlightDynamicRing::ringCapacity(ring.peak);NorthlightDynamicRing::reset(ring,0,queries);capacity=0;
-                if(!recreate(smaller))return false;capacity=smaller;NorthlightDynamicRing::reset(ring,smaller,queries);
-                slot=NorthlightDynamicRing::place(ring,bytes,align,queries);NorthlightLockMeter::ringShrink();}
-            if(slot.wrapped)NorthlightLockMeter::ringWrap(slot.fenceReuse,slot.discarded);
-            if(slot.discarded)NorthlightLockMeter::discard(site,capacity);
-            return true;};
-        for(unsigned s=0;s<4;++s){if(!totals[s])continue;
-            NorthlightDynamicRing::Slot slot;
-            if(!ringSlot(replayVertexRing[s],replayVertexBytes[s],totals[s],16,NorthlightLockMeter::ReplayVB,[&](UINT capacity){drop(replayVerticesGPU[s]);
-                    return check(d->CreateVertexBuffer(capacity,D3DUSAGE_DYNAMIC|D3DUSAGE_WRITEONLY,0,D3DPOOL_DEFAULT,&replayVerticesGPU[s],nullptr),"model snapshot vertex buffer");},slot))return false;
-            auto copy=streamingPhases.measure(NorthlightStreaming::PhaseProfile::ReplayCopy);
-            void* memory=nullptr;if(!check(replayVerticesGPU[s]->Lock(slot.offset,totals[s],&memory,slot.flags),"model snapshot vertex lock"))return false;
-            for(size_t i=0;i<replays.size();++i){auto& p=replays[i];if(p->gpuCached||!replayBulkLayout.unique(i))continue;auto& source=p->mesh().streams[s];if(!source.bytes.empty())std::memcpy(static_cast<std::uint8_t*>(memory)+p->offset[s],source.bytes.data(),source.bytes.size());}
-            if(!check(replayVerticesGPU[s]->Unlock(),"model snapshot vertex unlock"))return false;
-            vertexBase[s]=slot.offset;
-        }
-        UINT indexBytes=UINT(totalIndices*4);
-        if(indexBytes){NorthlightDynamicRing::Slot slot;
-            if(!ringSlot(replayIndexRing,replayIndexBytes,indexBytes,4,NorthlightLockMeter::ReplayIB,[&](UINT capacity){drop(replayIndicesGPU);
-                    return check(d->CreateIndexBuffer(capacity,D3DUSAGE_DYNAMIC|D3DUSAGE_WRITEONLY,D3DFMT_INDEX32,D3DPOOL_DEFAULT,&replayIndicesGPU,nullptr),"model snapshot index buffer");},slot))return false;
-            auto copy=streamingPhases.measure(NorthlightStreaming::PhaseProfile::ReplayCopy);
-            void* memory=nullptr;if(!check(replayIndicesGPU->Lock(slot.offset,indexBytes,&memory,slot.flags),"model snapshot index lock"))return false;
-            for(size_t i=0;i<replays.size();++i){auto& p=replays[i];if(!p->gpuCached&&p->indexed&&replayBulkLayout.unique(i)&&!p->mesh().indices.empty()) /* 0.3.211 (task 31): a non-indexed start is now its first vertex */ std::memcpy(static_cast<std::uint32_t*>(memory)+p->start,p->mesh().indices.data(),p->mesh().indices.size()*4);}
-            if(!check(replayIndicesGPU->Unlock(),"model snapshot index unlock"))return false;
-            indexBase=slot.offset/4;
-        }
-        // The copies are done: from here on offset/start are absolute in the ring buffers (shared duplicates included;
-        // gpuCached replays carry their own batch offsets and are never touched).
-        for(auto& p:replays){if(p->gpuCached)continue;const bool single=p->bulkSingle; /* single-stream (laid out above): the bind offset is the slot start, rel went into base/start */
-            for(unsigned s=0;s<4;++s)if(!p->mesh().streams[s].bytes.empty())p->offset[s]=single?vertexBase[s]:p->offset[s]+vertexBase[s];if(p->indexed)p->start+=indexBase;}
-        // 0.3.176 (U3'): a binding already held keeps its reference (no Release/AddRef pair).
-        for(auto& p:replays){if(p->gpuCached)continue;for(unsigned s=0;s<4;++s){IDirect3DVertexBuffer9* const stream=p->mesh().streams[s].bytes.empty()?nullptr:replayVerticesGPU[s];
-                if(p->stream[s]!=stream){drop(p->stream[s]);if(stream){p->stream[s]=stream;stream->AddRef();}}}
-            IDirect3DIndexBuffer9* const index=p->indexed?replayIndicesGPU:nullptr;if(p->index!=index){drop(p->index);if(index){p->index=index;index->AddRef();}}}
-        phase.stop(); // Report I/O is not part of cache/bulk timing.
-        if(captureSampled){size_t bulk=indexBytes;for(auto total:totals)bulk+=total;
-            const auto residency=NorthlightReplayGPU::batchStats(replayGpuCache);
-            deferLogf("GPU_SCENE consumer=shadows worldFrame=%u residentHits=%u crossConsumerHits=%u reusedDrawBytes=%zu ownedBytes=%zu ownedLimitMiB=%zu spareLoans=%u spareLoanedBytes=%zu sceneChargedBytes=%zu sceneLimitBytes=%zu",frames,replayGpuCache.counters().hits,replayGpuCache.counters().crossOwner,replayGpuCache.reused(),replayGpuCache.bytes(),replayGpuCache.limit()>>20,replayGpuCache.counters().loans,replayGpuCache.counters().loanedBytes,gpuScene->native.chargedBytes(),std::min(gpuScene->native.totalLimit(),gpuScene->materials.limit()+gpuScene->shadows.limit()));
-            deferLogf("MODEL GPU cache hits=%u reusedBytes=%zu newBytes=%zu residentBytes=%zu bulkUploadBytes=%zu batches=%zu batchBytes=%zu liveBytes=%zu separateBytes=%zu batchedUploads=%u separateUploads=%u compactions=%u compactedBytes=%zu batchFailures=%u",replayGpuCache.hits(),replayGpuCache.reused(),replayGpuCache.uploaded(),replayGpuCache.bytes(),bulk,
-                residency.batches,residency.batchBytes,residency.liveBytes,residency.separateBytes,residency.batchedUploads,residency.separateUploads,residency.compactions,residency.compactedBytes,residency.batchFailures);
-            deferLogf("MODEL bulk sharing duplicateDraws=%zu avoidedBytes=%zu actualBytes=%zu multiStreamDraws=%zu",sharedBulkDraws,sharedBulkBytes,bulk,multiStreamDraws);
-            const auto population=replayGpuCache.population();const auto& policy=replayGpuCache.stats();
-            deferLogf("MODEL GPU policy entries=%zu resident=%zu probation=%zu countPressure=%u bytePressure=%u roomRejected=%u promotionCountOnly=%u promotionCountRejected=%u evictions=%u warmup=%u uploadDeferred=%u admissionRejected=%u entryLimit=%zu scanPasses=%u scanVisits=%u scanMemoHits=%u attemptDeferred=%u uploadByteDeferred=%u expiredEntries=%u expiredBytes=%zu evictionChecks=%u lruMoves=%u",population.entries,population.resident,population.probation,policy.countPressure,policy.bytePressure,policy.roomRejected,policy.promotionCountOnly,policy.promotionCountRejected,policy.evictions,policy.warmup,policy.uploadDeferred,policy.admissionRejected,replayGpuCache.entryLimit(),policy.scanPasses,policy.scanVisits,policy.scanMemoHits,policy.attemptDeferred,policy.uploadByteDeferred,policy.expiredEntries,policy.expiredBytes,policy.evictionChecks,policy.lruMoves);
-            const auto& cleared=replayGpuCache.clearStats();
-            deferLogf("MODEL GPU clears lifetimeCalls=%llu lifetimeEntries=%llu lifetimeBytes=%llu",(unsigned long long)cleared.calls,(unsigned long long)cleared.entries,(unsigned long long)cleared.bytes);
-            deferLogf("SHADOW shader policy lifetimeCandidates=%llu compactCreated=%llu fullFallback=%llu fullWords=%llu compactWords=%llu",(unsigned long long)shadowSliceCandidates,(unsigned long long)shadowSliceCreated,(unsigned long long)shadowSliceFallback,(unsigned long long)shadowSliceWordsBefore,(unsigned long long)shadowSliceWordsAfter);
-        }
-        return true;
-    }
-    bool actorMaterial(IDirect3DBaseTexture9* base,NorthlightActorTexture::Snapshot& snapshot){
-        if(!base||base->GetType()!=D3DRTYPE_TEXTURE)return false;
-        auto* texture=static_cast<IDirect3DTexture9*>(base);UINT levels=texture->GetLevelCount();if(!levels)return false;
-        D3DSURFACE_DESC desc={};UINT level=0;
-        for(;level<levels;++level){if(FAILED(texture->GetLevelDesc(level,&desc)))return false;if(desc.Width<=128&&desc.Height<=128)break;}
-        if(level==levels||!desc.Width||!desc.Height)return false;
-        using Format=NorthlightActorTexture::Format;Format format;
-        switch(desc.Format){case D3DFMT_A8R8G8B8:format=Format::BGRA8;break;case D3DFMT_X8R8G8B8:format=Format::BGRX8;break;case D3DFMT_R5G6B5:format=Format::RGB565;break;
-        case D3DFMT_DXT1:format=Format::BC1;break;case D3DFMT_DXT3:format=Format::BC2;break;case D3DFMT_DXT5:format=Format::BC3;break;
-        case D3DFMT_A1R5G5B5:format=Format::ARGB1555;break;case D3DFMT_X1R5G5B5:format=Format::XRGB1555;break;case D3DFMT_A4R4G4B4:format=Format::ARGB4444;break;default:return false;}
-        if(desc.Usage&(D3DUSAGE_RENDERTARGET|D3DUSAGE_DEPTHSTENCIL))return false;
-        UINT rows=NorthlightActorTexture::rowCount(desc.Height,format);
-        UINT rowBytes=UINT(NorthlightActorTexture::rowBytes(desc.Width,format));
-        std::vector<std::uint8_t> raw(std::size_t(rows)*rowBytes); // Allocate before taking a game texture lock.
-        D3DLOCKED_RECT locked={};if(FAILED(texture->LockRect(level,&locked,nullptr,D3DLOCK_READONLY)))return false;
-        bool readable=locked.pBits&&locked.Pitch>=INT(rowBytes);
-        if(readable)for(UINT row=0;row<rows;++row)std::memcpy(raw.data()+std::size_t(row)*rowBytes,static_cast<const std::uint8_t*>(locked.pBits)+std::size_t(row)*unsigned(locked.Pitch),rowBytes);
-        HRESULT hr=texture->UnlockRect(level);if(FAILED(hr)||!readable)return false;
-        if(!NorthlightActorTexture::readable(raw.data(),raw.size(),desc.Width,desc.Height,rowBytes,format))return false;
-        snapshot.bytes=std::move(raw);snapshot.width=desc.Width;snapshot.height=desc.Height;snapshot.pitch=rowBytes;snapshot.format=format;return true;
-    }
+#include "world_replay_upload.inl"
     bool giWorkEnabled()const{return NorthlightQuality::giWork(quality,effects.gi);}
     bool giActorWorkEnabled()const{return giWorkEnabled()&&quality.giDynamicProbes;}
+    DWORD actorCaptureClock()const{
+        return NorthlightFrameParityClock::fixedProfileWork()?NorthlightFrameParityClock::milliseconds(parityFrame):visualTime();
+    }
     bool actorCaptureEnabled(){if(!menuDomain&&!giActorWorkEnabled())return false;
-        if(!actorCaptureDecided){actorCaptureDecided=true;actorCaptureDue=!lastActorCapture||GetTickCount()-lastActorCapture>=200;}if(actorCaptureDue&&!actorJob)actorJob=std::make_shared<NorthlightActorGeometry::ActorJob>();return actorCaptureDue;}
+        if(!actorCaptureDecided){actorCaptureDecided=true;actorCaptureDue=!lastActorCapture||actorCaptureClock()-lastActorCapture>=200;}if(actorCaptureDue&&!actorJob)actorJob=std::make_shared<NorthlightActorGeometry::ActorJob>();return actorCaptureDue;}
     void appendActor(IDirect3DVertexShader9* original,const Replay& replay,bool sample=false){
         auto it=actorPrograms.find(original);if(it==actorPrograms.end())return;const auto& program=*it->second;
         if(!menuDomain&&!program.skinned&&!replay.mesh().dynamic)return;
@@ -4779,19 +3149,22 @@ public:
         NorthlightActorTexture::Snapshot texture;
         auto uvProgram=actorUVPrograms.find(original);bool hasUV=uvProgram!=actorUVPrograms.end();
         if(sample&&hasUV)++actorTextureReads;
-        bool textureRead=hasUV&&actorMaterial(replay.texture,texture);
+        bool textureRead=hasUV&&NorthlightActorTexture::read(replay.texture,texture);
         if(replay.cutoff>=0&&!textureRead){++actorSkippedAlpha;return;}
         material.addressU=replay.addressU;material.addressV=replay.addressV;
         phase.next(2); // Immutable packet construction and queueing.
         NorthlightActorGeometry::Packet packet;packet.sharedMesh=replay.shared;if(!packet.sharedMesh)packet.mesh=replay.mesh();packet.sharedPosition=it->second;
         if(hasUV)packet.sharedUV=uvProgram->second;packet.hasUV=hasUV;packet.alphaTest=replay.cutoff>=0&&NorthlightShadowAlpha::recipe(replay.alphaMode)!=NorthlightShadowAlpha::Color;
-        packet.elements.assign(elements,elements+n);std::memcpy(packet.constants.data(),replay.constants,sizeof replay.constantStorage);std::memcpy(packet.inverseView.data(),context.inverseView,64);
+        packet.elements.assign(elements,elements+n);std::memcpy(packet.constants.data(),replay.constants,sizeof packet.constants);std::memcpy(packet.inverseView.data(),context.inverseView,64);
         packet.material=std::move(material);packet.texture=std::move(texture);actorJob->packets.push_back(std::move(packet));++actorDraws;
         if(sample&&NorthlightRenderThreadProbe::profiling())try{replayGiPacked.push_back(&replay);}catch(...){} /* capture waste (RenderProfile) */
     }
     void finishActorScene(){
-        if(!actorCaptureEnabled())return;lastActorCapture=GetTickCount();actorJob->center=vec(context.camera);actorJob->menu=menuDomain;
+        if(!actorCaptureEnabled())return;lastActorCapture=actorCaptureClock();actorJob->center=vec(context.camera);actorJob->menu=menuDomain;
         actorJobComplete=std::move(actorJob);actorCaptureDue=false;++actorJobSerial_;actorSceneMap_=active?active->map:std::string{};
+        if(NorthlightFrameParityClock::enabled()&&NorthlightDiagnostics::enabled())
+            logf("GI_ACTOR_CAPTURE present=%u actor=%llu packets=%zu vertices=%u menu=%u",parityFrame,
+                (unsigned long long)actorJobSerial_,actorJobComplete->packets.size(),actorVerticesEvaluated,unsigned(menuDomain));
         if(captureSampled)deferLogf("WORLD actor packets draws=%u queuedVertices=%u skippedAlpha=%u snapshotReadBytes=%zu material=actual-rgba128-or-neutral035",actorDraws,actorVerticesEvaluated,actorSkippedAlpha,replaySnapshots.bytesRead());
     }
     std::shared_ptr<const NorthlightActorGeometry::ActorJob> completedActorJob()const{return actorJobComplete;}
@@ -4947,7 +3320,7 @@ public:
         return ok;
     }
     NorthlightCaptureAdmission::Admission admission;bool admissionOn=false;std::vector<float> gatedBodies; /* roots of radius-gated bodies, for rigid memory */
-    bool actorCaptureWouldRun()const{return giActorWorkEnabled()&&(actorCaptureDecided?actorCaptureDue:(!lastActorCapture||GetTickCount()-lastActorCapture>=200));}
+    bool actorCaptureWouldRun()const{return giActorWorkEnabled()&&(actorCaptureDecided?actorCaptureDue:(!lastActorCapture||actorCaptureClock()-lastActorCapture>=200));}
     void nearAnchorTake(){
         if(!nearAnchorReady){nearAnchorReady=true;const float forward[3]={context.inverseView[8]*projection[2],context.inverseView[9]*projection[2],context.inverseView[10]*projection[2]};
             nearAnchor=NorthlightNearReserve::anchor(actorShadowHistory.selfHold()>0?actorShadowHistory.selfAt():nullptr,context.camera,forward,pivotDistance);
@@ -4959,7 +3332,7 @@ public:
     bool nearDraw(const float* root){return root&&NorthlightNearReserve::test(nearAnchor,root)!=NorthlightNearReserve::None;}
     bool nearCandidate(bool priority,const float* root){
         return priority&&replaySnapshots.nearReserve()&&!replaySnapshots.countExhausted(priority)&&nearDraw(root);}
-    void captureModel(D3DPRIMITIVETYPE type,INT base,UINT minimum,UINT vertexTotal,UINT start,UINT count,bool indexed,IDirect3DVertexShader9* current,bool sample,const void* userIndices,D3DFORMAT userFormat,const void* userVertices,UINT userStride,const std::shared_ptr<const NorthlightDrawSnapshot::Mesh>* capturedSource=nullptr,IDirect3DVertexDeclaration9* capturedDeclaration=nullptr,const NorthlightPoseBounds::Handoff* pose=nullptr){
+    void captureModel(D3DPRIMITIVETYPE type,INT base,UINT minimum,UINT vertexTotal,UINT start,UINT count,bool indexed,IDirect3DVertexShader9* current,bool sample,const void* userIndices,D3DFORMAT userFormat,const void* userVertices,UINT userStride,const std::shared_ptr<const NorthlightDrawSnapshot::Mesh>* capturedSource=nullptr,IDirect3DVertexDeclaration9* capturedDeclaration=nullptr,const NorthlightPoseBounds::Handoff* pose=nullptr,const NorthlightConstantEpoch::BankHandoff* bank=nullptr){
         if(modelCaptureSkipped())return; /* previous replays/actor packets are not needed this frame */
         const CaptureShader* found=lookupShader(current).capture;if(!found){if(sample)++unknownCaptureCalls;return;}
         const auto& metadata=*found;
@@ -5065,7 +3438,7 @@ public:
                         alphaMode=NorthlightShadowAlpha::fixedTestMode(it->second.alpha,metadata.color0W,ref,alphaFunc==D3DCMP_GREATEREQUAL,unsigned(desc.Format));
                     // Unsupported MRT hardware retains the proved mask recipe
                     // with legacy clip precision, without retrying every map.
-                    if(NorthlightShadowAlpha::fixed(alphaMode)&&!shadowAlphaTargets.supported(desc.Format))
+                    if(NorthlightShadowAlpha::fixed(alphaMode)&&!shadowReplayAlpha.supported(desc.Format))
                         alphaMode=unsigned(NorthlightShadowAlpha::recipe(alphaMode));
                     if(sample&&NorthlightShadowAlpha::fixed(alphaMode))++shaderAlphaCaptured;
                 }
@@ -5091,10 +3464,37 @@ public:
         // Validate the main camera before touching model buffers. Full constant
         // banks are copied only for snapshots that survive range/budget checks.
         phase.next(CaptureProjection);fate.reason=NorthlightShadowFate::Projection;
-        float q[16];const unsigned kind=metadata.projectionKind;
-        if(FAILED(d->GetVertexShaderConstantF(kind==1?4:2,q,4)))return;
-        if(sample){capturedConstantBytes+=64;++capturedConstantCalls;}
-        if(std::fabs(q[0]-projection[0])>.005f||std::fabs(q[5]-projection[1])>.005f||std::fabs(q[kind==1?11:14]-projection[2])>.005f||std::fabs(q[15])>.001f){if(sample&&priority)++skinnedProjectionRejected;if(sample&&!priority)++otherProjectionRejected;return;}
+        float projectionScratch[16];const unsigned kind=metadata.projectionKind,first=kind==1?4:2;
+        const auto* packetBank=bank;
+        const auto* wmoMirror=metadata.wmo&&indexed&&!userIndices&&!userVertices?constantEpochSource.mirror:nullptr;
+        const auto* projectionMirror=wmoMirror;
+#ifdef NORTHLIGHT_REPLAY_STAND
+        static const bool legacyProjectionBank=[]{
+            const char* value=std::getenv("NORTHLIGHT_RETRACE_LEGACY_SHADOW_PROJECTION_BANK");
+            const bool legacy=value&&value[0]=='1'&&!value[1];
+            logf("SHADOW_CAPTURE_PROJECTION policy legacy=%u",unsigned(legacy));
+            return legacy;
+        }();
+        if(legacyProjectionBank){bank=nullptr;projectionMirror=nullptr;}
+#endif
+        const float* q=constantEpochSource.borrow(bank,first,4);
+#ifdef NORTHLIGHT_REPLAY_STAND
+        if(q)++captureProjectionLoans;
+#endif
+        const auto* projectionRows=!q&&projectionMirror?projectionMirror->borrowKnownVertexFloats(first,4):nullptr;
+#ifdef NORTHLIGHT_REPLAY_STAND
+        if(projectionRows)++captureWmoProjectionBorrows;
+#endif
+        if(!q&&!projectionRows){
+#ifdef NORTHLIGHT_REPLAY_STAND
+            ++captureProjectionGets;
+#endif
+            if(FAILED(d->GetVertexShaderConstantF(first,projectionScratch,4)))return;
+            q=projectionScratch;
+            if(sample){capturedConstantBytes+=64;++capturedConstantCalls;}
+        }
+        const auto projectionValue=[q,projectionRows](unsigned index){return q?q[index]:projectionRows[index/4][index%4];};
+        if(std::fabs(projectionValue(0)-projection[0])>.005f||std::fabs(projectionValue(5)-projection[1])>.005f||std::fabs(projectionValue(kind==1?11:14)-projection[2])>.005f||std::fabs(projectionValue(15))>.001f){if(sample&&priority)++skinnedProjectionRejected;if(sample&&!priority)++otherProjectionRejected;return;}
         // A rejected draw returns its record to the pool as well. Exhausted
         // geometry budgets must not allocate/zero a fresh constant bank per draw.
         phase.next(CaptureSnapshot);fate.reason=NorthlightShadowFate::Snapshot;
@@ -5142,18 +3542,53 @@ public:
         p->constantUsage=usage;
         const auto f=usage.floats,b=usage.booleans,i=usage.integers;
         const Replay* previous=replays.empty()?nullptr:replays.back().get();
-        if(!NorthlightReplayCaptureConstants::captureBlocks(*p,previous,constantEpochSource,[&]{
-            if((f.count&&FAILED(d->GetVertexShaderConstantF(f.first,p->constantStorage+4*f.first,f.count)))||
-               (b.count&&FAILED(d->GetVertexShaderConstantB(b.first,p->boolStorage+b.first,b.count)))||
-               (i.count&&FAILED(d->GetVertexShaderConstantI(i.first,p->intStorage+4*i.first,i.count))))return false;
-            if(sample){capturedConstantBytes+=16*f.count+4*b.count+16*i.count;
-                capturedConstantCalls+=(f.count!=0)+(b.count!=0)+(i.count!=0);}
-            return true;
-        },[&](unsigned first,unsigned count,float* out){
+        const auto* packetMirror=wmoMirror;
+#ifdef NORTHLIGHT_REPLAY_STAND
+        static const bool legacyPacketBank=[]{
+            const char* value=std::getenv("NORTHLIGHT_RETRACE_LEGACY_SHADOW_PACKET_BANK");
+            const bool legacy=value&&value[0]=='1'&&!value[1];
+            logf("SHADOW_CAPTURE_PACKET_BANK policy legacy=%u",unsigned(legacy));
+            return legacy;
+        }();
+        if(legacyPacketBank){packetBank=nullptr;packetMirror=nullptr;}
+#endif
+        const auto readFloatRows=[&](unsigned first,unsigned count,float* out){
             if(FAILED(d->GetVertexShaderConstantF(first,out,count)))return false;
+#ifdef NORTHLIGHT_REPLAY_STAND
+            ++capturePacketReads;capturePacketReadRegisters+=count;
+#endif
             if(sample){capturedConstantBytes+=16*count;++capturedConstantCalls;}
             return true;
-        },sample?&constantEpochProfile:nullptr,constantSelfCheck,constantSelfCheckState))return;
+        };
+        const auto captureFloatRows=[&](unsigned first,unsigned count,float* out){
+            if(constantEpochSource.copy(packetBank,first,count,out)){
+#ifdef NORTHLIGHT_REPLAY_STAND
+                ++capturePacketLoans;capturePacketLoanRegisters+=count;
+#endif
+                return true;
+            }
+            if(packetMirror){
+                if(const auto* rows=packetMirror->borrowKnownVertexFloats(first,count)){
+                    std::memcpy(out,rows,std::size_t(count)*sizeof(*rows));
+#ifdef NORTHLIGHT_REPLAY_STAND
+                    ++captureWmoPacketBorrows;captureWmoPacketRegisters+=count;
+#endif
+                    return true;
+                }
+            }
+            return readFloatRows(first,count,out);
+        };
+        if(!NorthlightReplayCaptureConstants::captureBlocks<NorthlightReplayCaptureConstants::SharedFloatBanks>(*p,previous,constantEpochSource,[&]{
+            float* owned=f.count?p->writableConstants():nullptr;
+            if((f.count&&(!owned||!captureFloatRows(f.first,f.count,owned+4*f.first)))||
+               (b.count&&FAILED(d->GetVertexShaderConstantB(b.first,p->boolStorage+b.first,b.count)))||
+               (i.count&&FAILED(d->GetVertexShaderConstantI(i.first,p->intStorage+4*i.first,i.count))))return false;
+            if(sample){capturedConstantBytes+=4*b.count+16*i.count;
+                capturedConstantCalls+=(b.count!=0)+(i.count!=0);}
+            return true;
+        },captureFloatRows,sample?&constantEpochProfile:nullptr,constantSelfCheck,constantSelfCheckState,readFloatRows)){
+            captureShortfall=true;return;
+        }
         p->materialViewBounds={};
         if(kind==2&&pose&&pose->bounds.valid&&borrowSource&&p->shared&&p->shared==*capturedSource&&
            constantEpochSource.attached()&&constantEpochSource.mirror->heldByThisThread()&&
@@ -5217,167 +3652,7 @@ public:
     }
     void takeCullEarly(unsigned& kicked,unsigned& skipped){kicked=replayCullEarly;skipped=replayCullEarlySkipped;replayCullEarly=replayCullEarlySkipped=0;} /* 0.3.217: renderer.cpp's JOBS line */
     NorthlightJobs::Stats takeJobStats(){return replayJobs_.take();} /* renderer.cpp's JOBS line, RenderProfile sample frames */
-    static constexpr float LampFogNear=3.5f; /* c58.x: the lamp glow's near fade start, the scissor view's fog near */
-    // The frame's D3D-free light and fog work. Its inputs are final once upload() has run (the snapshot and its lights, the fog field,
-    // the camera, the celestial state, the settings); its outputs (the tracker, the clouds' clock and state, localScissorView and this
-    // frame) are read only after the join at the constant bank. c holds the bank's c22.w, c31.w and c32 (the same expressions).
-    struct AtmosphereFrame {
-        NorthlightForever::Frame imported;
-        NorthlightLocalLightSelection::Selection lights;NorthlightFogClouds::Frame cf;float c[33][4]={};
-        float airFloor=.0017f,veil[2]={1,1}; /* veil: the sky transmittance toward the sun without / with the clouds' term */
-        float spellTau[2][NorthlightSpellFog::kSamples]={};bool spellValid=false; /* SpellFog: the optical depth along the view axis at kDistance, without / with the clouds' term (the same sigma as the veil) */
-        NorthlightLocalLightScissor::Rect directRects[NorthlightLocalLightSelection::Slots/NorthlightLocalLightSelection::DirectBatchSize],
-            fogRects[NorthlightLocalLightSelection::Slots/NorthlightLocalLightSelection::FogBatchSize];
-    };
-    AtmosphereFrame atmosphere;NorthlightJobs::Counter atmosphereDone;NorthlightNativeLights::Snapshot nativeSceneFrame;
-    void atmosphereWork(AtmosphereFrame& a,float nearZ,UINT w,UINT h,int debug){
-        auto& c=a.c;auto& localLights=a.lights;const auto wx=weatherEffects();
-        a.imported=foreverFogPS?skyEnvironment:NorthlightForever::Frame{};
-        for(auto& layer:a.imported.layer)layer.p[1]*=1+(std::max(layer.p[2],0.f)-1)*layer.flag[0]*(1-(celestialValid?celestial.sunWeight:1.f));
-        if(quality.localLights&&quality.localLightLimit){
-        // 0.3.197: tracked selection. A camera jump (teleport), a long gap (F10 off, loading) or F12 debug snap the
-        // factors without fades; a different map (and a rebuilt device, releasePointGPU) forgets the tracker.
-        if(!active||active->map!=localLightMap)localLightTracker.reset();
-        const int64_t selectT0=QpcClock::now();
-        const double selectDt=localLightQpc&&captureFrequency.QuadPart>0?double(selectT0-localLightQpc)/double(captureFrequency.QuadPart):0;
-        const bool selectContinuous=active&&localLightQpc&&selectDt<=NorthlightLocalLightSelection::MaxGapSeconds&&active->map==localLightMap&&!different(vec(context.camera),localLightCamera,40)&&debug==0;
-        lightAttachments.bind(active?active->lightAttachments:nullptr);
-        if(active)lightAttachments.prune(active->localLights,context.camera);
-        if(active&&equipmentLightsOn())lightAttachments.observeScene(nativeSceneFrame,active->localLights,GetTickCount());
-        else lightAttachments.releaseScene();
-        const auto* currentLights=active?&lightAttachments.apply(active->localLights,attachedLocalLights):nullptr;
-        lightAttachments.forgetInactive(localLightTracker);
-        if(equipmentLightsOn()){
-            if(active&&equipmentMap!=active->map){equipmentLights.reset();equipmentMap=active->map;}
-            if(currentLights)equipmentLights.observeScene(nativeSceneFrame,GetTickCount(),*currentLights,context.camera,lightAttachments.claimedNative.data(),lightAttachments.claimedNativeCount);
-            particleLights.projectSky(context.inverseView,context.camera);
-            equipmentLights.publish(GetTickCount(),currentLights);
-            if(equipmentLights.suppressedCount){
-                auto ids=equipmentLights.suppressed;std::sort(ids.begin(),ids.begin()+equipmentLights.suppressedCount);
-                localLightTracker.forgetSorted(ids.data(),equipmentLights.suppressedCount);
-            }
-            NorthlightEquipmentLights::replaceFadingDuplicates(localLightTracker,equipmentLights.output.data(),equipmentLights.outputCount);
-            if(active)particleLights.publish(equipmentLights.output.data(),equipmentLights.outputCount,*currentLights,context.camera,localLightTracker,selectContinuous?float(selectDt):0.f);
-            else particleLights.reset();
-        }
-        // Same camera, projection, near plane and glow start as c0..c6/c58: the selection prefers lights in view (debug views keep the old order), and
-        // each batch's rect of the direct (8) and fog (4) passes.
-        localScissorView=NorthlightLocalLightScissor::view(context.inverseView,projection,nearZ,LampFogNear,w,h);
-        a.lights=active?localLightTracker.update(*currentLights,context.camera,quality.localLightLimit,float(selectDt),selectContinuous,debug==0?&localScissorView:nullptr,equipmentLightsOn()?particleLights.output.data():nullptr,equipmentLightsOn()?particleLights.outputCount:0,equipmentLightsOn()?particleLights.immediate.data():nullptr,equipmentLightsOn()?particleLights.immediateCount:0,GetTickCount()) /* one shared dynamic cap; particles carry current-frame alpha */:NorthlightLocalLightSelection::Selection{};
-        {const auto arranged=NorthlightLocalLightBatches::arrange(localLights,localScissorView); /* screen-coherent batches (the passes are sums) */
-         if(NorthlightDiagnostics::enabled()){localOffscreenSum+=localLightTracker.offscreen;localArranged+=arranged.arranged;localArrangeBefore+=arranged.before;localArrangeAfter+=arranged.after;}} /* counted with selectUs */
-        if(NorthlightDiagnostics::enabled()){const double us=double(QpcClock::now()-selectT0)*1e6/(captureFrequency.QuadPart>0?double(captureFrequency.QuadPart):1.);localSelectUsSum+=us;localSelectUsMax=std::max(localSelectUsMax,us);++localSelectFrames;} /* selectUs on LOCAL direct */
-        localLightQpc=selectT0;localLightCamera=vec(context.camera);if(active&&localLightMap!=active->map)localLightMap=active->map;
-        }else{
-            // No lamp consumer: skip attachment transforms, copies, selection and scissor batches.
-            a.lights={};localLightTracker.reset();lightAttachments.reset();attachedLocalLights.clear();
-            equipmentLights.reset();particleLights.reset();localLightQpc=0;localLightMap.clear();
-        }
-        // 0.3.199 (fog clouds): the frame clock of the clouds (a gap or the first frame counts as 0; advance() clamps) and the dense-zone damping: where the
-        // regional fog is already thick (the field's profile tag at the camera, Duskwood 1) the rain's extra air and the clouds thin out, the profile
-        // smoothed over ~3 s so a zone border never pops. The air palette scales the dry medium; rain adds its own extinction.
-        const int64_t cloudNow=QpcClock::now();
-        const float cloudDt=cloudQpc&&captureFrequency.QuadPart>0?float(double(cloudNow-cloudQpc)/double(captureFrequency.QuadPart)):0.f;
-        cloudQpc=cloudNow;
-        // The same camera texel says whether the zone is lush (forest/grass): without rain only lush zones get banks (no field, indoors or unknown: unchanged; it starts lush).
-        {float denseTarget=0,lushTarget=cloudLush;
-         if(uploadedFogField){const auto& f=*uploadedFogField;
-             const float fx=(context.camera[0]-f.originX)/NorthlightRegionalFog::Spacing,fy=(context.camera[1]-f.originY)/NorthlightRegionalFog::Spacing;
-             if(fx>=0&&fy>=0&&fx<NorthlightRegionalFog::N-1&&fy<NorthlightRegionalFog::N-1){const unsigned k=unsigned(fy)*NorthlightRegionalFog::N+unsigned(fx);const auto& t=f.texels[k];
-                 if(t.height>0)denseTarget=std::clamp((t.height-2.5f)/2.5f,0.f,1.f);
-                 if(t.height>0)lushTarget=f.lush[k]?1.f:0.f;}}
-         NorthlightFogClouds::smoothDensePair(cloudDenseZone,denseTarget,cloudLush,lushTarget,cloudDt);}
-        const float denseDamp=NorthlightFogClouds::denseZoneDamp(cloudDenseZone);
-        c[31][3]=NorthlightRegionalFog::nightFactor(celestialValid?celestial.dayFraction:-1.f);
-        const auto& volumePalette=paletteFrameValid?framePalette:celestialProfiles.fallback;
-        const float airDensity=NorthlightCelestialProfiles::fogDensity(volumePalette,c[31][3]);
-        const float airFloor=.0017f*airDensity+wx.airExtinction()*denseDamp;
-        a.airFloor=airFloor;
-        static_assert(NorthlightLocalLightSelection::DirectBatchSize==2*NorthlightLocalLightSelection::FogBatchSize,"paired scissor batches");
-        NorthlightLocalLightScissor::pairedBatchRects<NorthlightLocalLightSelection::FogBatchSize>(localScissorView,localLights.position,localLights.count,a.fogRects,a.directRects);
-        // Neutral scattering albedo preserves the zone/source palette. Atmospheric
-        // style is separate from ground fog and surface irradiance.
-        c[22][3]=.0035f+.0031f*c[31][3]; // generic forest day .0035, night .0066 (+20%)
-        // Forest atmosphere follows verified render time, independently of source
-        // visibility. Smooth nightFactor avoids a camera-driven density switch.
-        // STV total air including the shared .0017: .0054 day (2x),
-        // .01245 night (1.5x). Duskwood and general forest air retain their density.
-        c[32][0]=.0055f+.0089f*c[31][3];c[32][1]=.0037f+.00705f*c[31][3];
-        const float volumeHeightScale=NorthlightCelestialProfiles::fogHeightScale(volumePalette,c[31][3]);
-        // One medium for the GPU, lamp glow, celestial veil and spell attenuation.
-        c[22][3]*=airDensity;c[32][0]*=airDensity;c[32][1]*=airDensity;
-        c[32][2]=64.f*volumeHeightScale;c[32][3]=48.f*volumeHeightScale;
-        // Extinction at each picked light for its glow in the fog: same ground
-        // and air policy as the shader, evaluated at the light's own position.
-        // 0.3.199 (fog clouds): the wind advances on the render thread's own clock (a gap or the first frame counts as 0, advance() clamps), the frame's
-        // constants come from the settings and the weather. Inactive (off, no coverage, fog effect off, debug view, noise or shader missing):
-        // c60..c63 keep their zeros, the pass is not drawn and sigmaAt below adds nothing.
-        if(quality.fogClouds)cloudWind.advance(cloudDt,wx.fog);
-        // The noise (and its quantile table) is requested in render() before this, from the settings alone: derive() cannot be active before
-        // the table exists. The device part (ensureCloudNoise) is decided at the bank: here the clouds' term is a candidate and the veil keeps both sums.
-        auto& cf=a.cf;
-        cf=NorthlightFogClouds::derive(a.imported.valid?0:quality.fogClouds,unsigned(std::lround(float(quality.fogCloudDensity)*denseDamp)),wx.fog,c[31][3],cloudWind,context.camera,fogCloudNoise().ready.load(std::memory_order_acquire)?&fogCloudNoise().quantiles:nullptr,cloudLush);
-        const bool cloudCandidate=cf.active&&effects.fog&&debug==0&&fogCloudsPS;
-        const uint8_t* cloudData=cloudCandidate?fogCloudNoise().data.data():nullptr;
-        a.veil[0]=a.veil[1]=1;a.spellValid=false;
-        if(effects.fog&&uploadedFogField){
-            const auto& field=*uploadedFogField;const float night=c[31][3];
-            // cloudy: the same sigma plus the clouds' term (the old sigma+= on an active pass), else the same sigma.
-            NorthlightSpellFog::March medium;medium.night=night;std::memcpy(medium.volume,c[32],16);medium.forestAir=c[22][3];medium.airFloor=airFloor;
-            auto sigmaAt=[&](float lx,float ly,float lz,bool clouds,float& cloudy){
-                float sigma=0;cloudy=0;
-                if(a.imported.valid){const auto fs=NorthlightSpellFog::fieldAt(field,lx,ly);cloudy=fs.coverage>0&&lz>=fs.ground?NorthlightForever::sigma(a.imported,128,lz,fs.ground)*fs.coverage:0;return cloudy;}
-                NorthlightSpellFog::FieldSample sample;
-                sigma=NorthlightSpellFog::sigma(field,medium,lx,ly,lz,sample);cloudy=sigma;
-                if(clouds&&cloudCandidate&&sample.coverage>0&&lz>=sample.ground){const float point[3]={lx,ly,lz};cloudy+=NorthlightFogClouds::sigmaAt(cloudData,cf,context.camera,point,sample.ground,sample.height,sample.coverage);} // Lamp glow excludes clouds; veil samples share the bilinear medium.
-                return sigma;
-            };
-            float unused=0;
-            for(unsigned i=0;i<localLights.count;++i)localLights.fog[i][0]=sigmaAt(localLights.position[i][0],localLights.position[i][1],localLights.position[i][2],false,unused);
-            // the veil's estimate of the composite's fog.a on a sky pixel toward the sun: the
-            // 128-unit volume along the sun ray from the eye, with the shader's near fade.
-            if(field.fogCells||field.airCells){
-                float depth=0,cloudyDepth=0;const V ray=sourceDirections[0];
-                for(unsigned i=0;i<16;++i){const float t=(float(i)+.5f)*8;
-                    const float fade=std::clamp((t-3.5f)/12.f,0.f,1.f);float cloudy=0;
-                    const float sigma=sigmaAt(context.camera[0]+ray.x*t,context.camera[1]+ray.y*t,context.camera[2]+ray.z*t,true,cloudy);
-                    depth+=sigma*fade*fade*(3-2*fade)*8;cloudyDepth+=cloudy*fade*fade*(3-2*fade)*8;}
-                a.veil[0]=std::exp(-depth);a.veil[1]=std::exp(-cloudyDepth);
-                // SpellFog: WorldFog's extinction mirrored term by term (spell_fog_march.h: the bilinear field with its coverage, the night profile, VolumeAir, the forest air, the rain's air extinction,
-                // the near fade, the heights relative to the ground at every step) for the rays a spell draw has: from the eye toward a point at the camera's heading, kDistance away, at the height of
-                // an effect above the ground THERE (a lantern glow, a spell at the player's height), not along the horizontal axis at eye height, which can sit above the ground fog layer that
-                // the world at that distance is seen through. The clouds' bank is added when its pass runs, at the same samples (their coverage as the shader's valid).
-                {V fwd=V(context.inverseView[8],context.inverseView[9],context.inverseView[10])*projection[2];const float fl=std::sqrt(NorthlightGI::dot(fwd,fwd));
-                 if(fl>1e-6f){
-                    NorthlightSpellFog::March m;m.night=night;std::memcpy(m.volume,c[32],16);m.forestAir=c[22][3];m.airFloor=airFloor;
-                    float hx=fwd.x,hy=fwd.y;const float hl=std::sqrt(hx*hx+hy*hy);if(hl>.05f){hx/=hl;hy/=hl;}else{hx=1;hy=0;}
-                    constexpr float kEffectHeight=2.5f;
-                    const float eye[3]={context.camera[0],context.camera[1],context.camera[2]};
-                    const auto noClouds=[](float,float,float,const NorthlightSpellFog::FieldSample&){return 0.f;};
-                    const auto clouds=[&](float x,float y,float z,const NorthlightSpellFog::FieldSample& fs){
-                        if(!cloudCandidate)return 0.f;
-                        const float point[3]={x,y,z};return NorthlightFogClouds::sigmaAt(cloudData,cf,context.camera,point,fs.ground,fs.height,fs.coverage);};
-                    for(unsigned k=0;k<NorthlightSpellFog::kSamples;++k){
-                        const float z=NorthlightSpellFog::kDistance[k];
-                        float to[3]={eye[0]+hx*z,eye[1]+hy*z,eye[2]};
-                        const NorthlightSpellFog::FieldSample g=NorthlightSpellFog::fieldAt(field,to[0],to[1]);
-                        if(g.coverage>0){ // the effect's height above the ground at the end point; the horizontal reach shortens so the ray is z long
-                            const float dz=std::clamp(g.ground+kEffectHeight-eye[2],-.9f*z,.9f*z),dh=std::sqrt(std::max(z*z-dz*dz,1.f));
-                            to[0]=eye[0]+hx*dh;to[1]=eye[1]+hy*dh;to[2]=eye[2]+dz;
-                        }
-                        float t0,t1;
-                        if(cloudCandidate&&!NorthlightSpellFog::cloudRayAboveSupport(fogGlobalHeights,cf.height,eye[2],to[2]))NorthlightSpellFog::opticalDepthPair(field,m,eye,to,24,clouds,t0,t1);
-                        else{t0=NorthlightSpellFog::opticalDepth(field,m,eye,to,24,noClouds);t1=t0;}
-                        if(a.imported.valid){t0=0;for(unsigned j=0;j<48;++j){float aa=z*float(j*j)/2304.f,bb=z*float((j+1)*(j+1))/2304.f,t=(aa+bb)*.5f;
-                            float px=eye[0]+(to[0]-eye[0])*t/z,py=eye[1]+(to[1]-eye[1])*t/z,pz=eye[2]+(to[2]-eye[2])*t/z;
-                            const auto fs=NorthlightSpellFog::fieldAt(field,px,py);if(fs.coverage>0&&pz>=fs.ground)t0+=NorthlightForever::sigma(a.imported,t,pz,fs.ground)*fs.coverage*(bb-aa);}t1=t0;}
-                        if(k){t0=std::max(t0,a.spellTau[0][k-1]);t1=std::max(t1,a.spellTau[1][k-1]);}
-                        a.spellTau[0][k]=t0;a.spellTau[1][k]=t1;
-                    }
-                    a.spellValid=true;}}
-            }
-        }
-    }
+#include "world_atmosphere_frame.inl"
     // The later cascades' replay culling (per packet: the static proof's containment in the slot's cached matrix, bit 0; the pose
     // bounds' clip test against the slot's matrix, bit 1). Kicked after the frame's first bounds join for every later active slot and
     // read at that slot's replay loop when both matrices still match (else the loop tests inline, as before). Reads the packets only.
@@ -5414,41 +3689,25 @@ public:
         return ok&&job.flags.size()==replays.size()&&!std::memcmp(job.matrix,matrix,sizeof job.matrix)&&!std::memcmp(job.cached,cached,sizeof job.cached)?job.flags.data():nullptr;
     }
     void replayCullSettle(){for(auto& job:replayCulls)if(job.kicked){job.kicked=false;replayJobs_.wait(job.done);job.done.clearFailure();}}
-    // Source-format RT0 retains the native alpha conversion; RT1 keeps R32 depth.
     template<class Draw> HRESULT shadowReplayDraw(const Replay& p,Draw submit){
-        bool unavailable=false;
-        const HRESULT hr=NorthlightShadowAlpha::draw(d,p.alphaMode,[&](D3DFORMAT format,UINT width,UINT height)->IDirect3DSurface9*{
-            const auto bytes=NorthlightShadowAlpha::Targets::allocationBytes(format,width,height);
-            if(!bytes||(!shadowAlphaTargets.contains(format,width,height)&&!admitsGrowth("shadow alpha target",bytes))){unavailable=true;return nullptr;}
-            auto* target=shadowAlphaTargets.acquire(format,width,height);unavailable=!target;return target;
-        },submit);
-        if(unavailable){
-            // Discard the entire map job. A later frame retries its current
-            // capture instead of publishing partial maps or disabling effects.
-            shadowAlphaRetryAt=GetTickCount();invalidateShadowCache();
-            for(auto& slot:flashSlots)slot.ready=false;
-            temporalValid=fogHistoryValid=false;skipReason="alpha-target";return E_PENDING;
-        }
-        return hr;
+        return shadowReplayAlpha.draw(p.alphaMode,[&](size_t bytes){
+            return admitsGrowth("shadow alpha target",bytes);
+        },logf,submit);
     }
-    template<class Split,class Check> bool submitReplay(const Replay* p,NorthlightReplayDrawState::Cache& replayBindings,NorthlightReplayPoses::Pass<BOOL>& poseConstants,const float* rows,const float* worldMatrix,Split& split,size_t& replayConstantBytes,size_t& replayConstantCalls,Check&& ok){
-        if constexpr(!Split::Calls)return poseConstants.prepare(*p,rows,worldMatrix); /* DiagReplayProbe logic-only mode: no D3D9 call */
-        if(!ok(replayBindings.geometry(*p),"replay geometry state"))return false;
-        split.mark(NorthlightRenderThreadProbe::State);
-        if(!poseConstants.prepare(*p,rows,worldMatrix))return false;
-        const float* desired=poseConstants.desired();
-        auto f=poseConstants.floats;auto b=poseConstants.booleans;auto i=poseConstants.integers;
-        split.mark(NorthlightRenderThreadProbe::Own);
-        if(f.count){if(!ok(d->SetVertexShaderConstantF(f.first,desired+4*f.first,f.count),"replay float constants"))return false;replayConstantBytes+=f.count*16;++replayConstantCalls;split.constant(NorthlightRenderThreadProbe::Floats);}
-        if(b.count){if(!ok(d->SetVertexShaderConstantB(b.first,p->bools+b.first,b.count),"replay bool constants"))return false;replayConstantBytes+=b.count*4;++replayConstantCalls;split.constant(NorthlightRenderThreadProbe::Bools);}
-        if(i.count){if(!ok(d->SetVertexShaderConstantI(i.first,p->ints+4*i.first,i.count),"replay integer constants"))return false;replayConstantBytes+=i.count*16;++replayConstantCalls;split.constant(NorthlightRenderThreadProbe::Ints);}
-        if(!ok(replayBindings.material(*p),"replay material state"))return false;
-        split.mark(NorthlightRenderThreadProbe::State);
-        HRESULT hr=D3D_OK;
-        if constexpr(Split::Draws)hr=shadowReplayDraw(*p,[&]{return p->indexed?d->DrawIndexedPrimitive(p->type,p->base,p->min,p->vertices,p->start,p->count):d->DrawPrimitive(p->type,p->start,p->count);});
-        split.mark(NorthlightRenderThreadProbe::Draw);
-        return hr==E_PENDING?false:ok(hr,"animated shadow draw");
+    template<class Split,class Check>
+    bool submitReplay(const Replay* p,NorthlightShadowReplay::Pass& pass,const float* rows,const float* worldMatrix,
+                      Split& split,size_t& constantBytes,size_t& constantCalls,const Check& check,
+                      const NorthlightReplayDrawState::Range* grouped=nullptr,ShadowIndexPair* pair=nullptr,
+                      NorthlightShaderConstants::Range uploadFloats={}){
+        return pass.submit(*p,rows,worldMatrix,split,constantBytes,constantCalls,check,
+                           [&](auto draw){return shadowReplayDraw(*p,draw);},grouped,pair,uploadFloats);
     }
+#include "world_directional_replays.inl"
+#include "world_directional_pass.inl"
+#include "world_screen_lighting.inl"
+#include "world_local_lighting.inl"
+#include "world_atmospheric_fog.inl"
+#include "world_frame_constants.inl"
     // 0.3.174: true once this frame's WorldComposite quad has drawn (the proxy's FOLD fallback reads it).
     bool composited=false;
     // foldScene/foldAO (0.3.174 FOLD): the proxy's pre-AO scene copy replaces the world colour
@@ -5456,14 +3715,16 @@ public:
     // removal smoothing and WorldComposite. Null: the proxy composited already (neutral s10).
     // enclosingState transfers restoration to the caller until its enclosing
     // effects scope ends. Later passes must bind their own inputs/state.
-    bool render(IDirect3DSurface9* targetSurface,IDirect3DTexture9* depth,UINT w,UINT h,D3DFORMAT fmt,float nearZ,float farZ,float minZ,float maxZ,int debug,NorthlightGpuProfile* profile,IDirect3DTexture9* waterMask,IDirect3DTexture9* foldScene=nullptr,IDirect3DTexture9* foldAO=nullptr,unsigned rendererFrame=0,IDirect3DTexture9* hdrBase=nullptr,bool hdrBaseEncoded=false,bool hdrCombineAllowed=true,bool hdrSkyBase=false,bool foldAOAlphaNeutral=false,const SavedState* enclosingState=nullptr){
-        const bool directionalShadows=directionalShadowWork();
-        const bool applyDirectionalShadows=directionalShadows&&(menuDomain||nativeShadowOwned);
+    bool render(IDirect3DSurface9* targetSurface,IDirect3DTexture9* depth,UINT w,UINT h,D3DFORMAT fmt,float nearZ,float farZ,float minZ,float maxZ,int debug,NorthlightGpuProfile* profile,IDirect3DTexture9* waterMask,IDirect3DTexture9* foldScene=nullptr,IDirect3DTexture9* foldAO=nullptr,unsigned rendererFrame=0,IDirect3DTexture9* hdrBase=nullptr,bool hdrBaseEncoded=false,bool hdrCombineAllowed=true,bool hdrSkyBase=false,bool foldAOAlphaNeutral=false,const SavedState* enclosingState=nullptr,const std::string* lightHistoryAudit=nullptr){
+        shadowReplayAlpha.beginFrame(GetTickCount());
+        const bool wantsDirectionalShadows=directionalShadowWork();
+        bool directionalDeferred=wantsDirectionalShadows&&shadowReplayAlpha.retryAt();
+        const bool directionalShadows=wantsDirectionalShadows&&!directionalDeferred;
+        bool applyDirectionalShadows=directionalShadows&&(menuDomain||nativeShadowOwned);
         replayBoundsBegin();
         if(!pipelineActive)return debug?emptyDiagnosticView(targetSurface,w,h,debug):false;
         const bool hdrMode=hdrBase&&debug==0;
         shadowsComposited=false;composited=false;lastRenderDebug=debug;gpuDiagnosticFrame=false;fogGeometryReady=false;
-        if(shadowAlphaRetryAt){if(DWORD(GetTickCount()-shadowAlphaRetryAt)<1000){skipReason="alpha-target";return false;}shadowAlphaRetryAt=0;}
         if((debug==1&&!directionalShadows)||(debug==2&&!effects.gi)||(debug==3&&!effects.fog))return emptyDiagnosticView(targetSurface,w,h,debug);
         if(debug!=1)gpuDiagnosticArmed=true;
         const bool materialWanted=materialDetail&&(materialBumpGain>0||materialOcclusion)&&foldScene&&debug==0;
@@ -5481,6 +3742,13 @@ public:
         // so nothing defers or demands a capture. Without drawable geometry, only
         // the GI cadence and diagnostic/demand exceptions consume model captures.
         const bool actorShadows=quality.actorShadows!=0;
+        bool admitGeometry=true;
+#ifdef NORTHLIGHT_REPLAY_STAND
+        const unsigned geometryStart=NorthlightFrameParityClock::replayWorldCheckpoint(rendererFrame).geometry;
+        admitGeometry=!geometryStart||menuDomain||rendererFrame>=geometryStart;
+#endif
+        // Prepare CPU caster bounds while the world mesh is still staging, as
+        // the live client does. geometryReady gates the upload and shadow draws.
         const bool replayShadows=effects.shadows&&freshReplays&&actorShadows&&ready();
         const bool replaysComplete=freshReplays||!actorShadows;
         replayProbeFrame(); /* DiagReplayProbe window of this frame (nothing unless RenderProfile) */
@@ -5494,11 +3762,16 @@ public:
         // 0.3.152 RenderProfile: the upload window after selection and the bounds kick (locks,
         // ready/resources/upload, live terrain) up to the replay upload; logged with WORLD profile frame.
         uploadWindowTicks=-1;const int64_t uploadWindowStart=profileSampled()?QpcClock::now():0;
+        const bool fixedGiActorClock=NorthlightFrameParityClock::enabled();
+        const DWORD actorRequestNow=fixedGiActorClock?visualTime():submissionStart;
         {std::lock_guard<std::mutex> lock(mutex);
-         if(valid&&(menuDomain||giActorWorkEnabled())&&completedActorSceneMap()==lastRequest.map&&!pending&&!workerBusy&&actorJobSerial()!=lastRequest.actorSerial&&submissionStart-actorRequestTick>=250){
+         if(valid&&(menuDomain||giActorWorkEnabled())&&completedActorSceneMap()==lastRequest.map&&!pending&&!workerBusy&&actorJobSerial()!=lastRequest.actorSerial&&actorRequestNow-actorRequestTick>=250){
              Request r=lastRequest;r.actorJob=completedActorJob();r.actorSerial=actorJobSerial();r.reason=64;
              if(menuDomain)r.menuLights=menuLights;
-             r.id=request.id+1;r.queuedAt=submissionStart;request=r;lastRequest=r;pending=true;actorRequestTick=submissionStart;wake.notify_one();
+             queueRequestLocked(r,submissionStart,false);actorRequestTick=actorRequestNow;wake.notify_one();
+             if(fixedGiActorClock&&NorthlightDiagnostics::enabled())
+                 logf("GI_ACTOR_REQUEST present=%u actor=%llu request=%llu base=%llu menu=%u",parityFrame,
+                    (unsigned long long)r.actorSerial,(unsigned long long)r.id,(unsigned long long)r.baseId,unsigned(menuDomain));
          }}
         const bool coldMesh=meshStore.table().empty();
         NorthlightStreaming::Budget streamBudget(coldMesh?4u<<20:2u<<20,coldMesh?2.0:1.0);
@@ -5513,23 +3786,46 @@ public:
         if(geometryWanted&&screenResourcesReady&&pendingMesh&&!geometryTargetsReady)geometryResources(w,h,&streamBudget);
         if(requirements.local&&screenResourcesReady&&pendingMesh&&geometryTargetsReady)prewarmPointResources(atmosphere.lights,localLightMap,streamBudget);
         const bool hadTargets=geometryTargetsReady&&(geometryGroups&requirements.geometryGroups())==requirements.geometryGroups();
-        const bool meshReady=geometryWanted&&ready()&&screenResourcesReady&&upload(streamBudget);
+        bool meshReady=geometryWanted&&ready()&&screenResourcesReady&&upload(streamBudget);
+#ifdef NORTHLIGHT_REPLAY_STAND
+        if(!meshReady&&geometryWanted&&ready()&&screenResourcesReady&&pendingMesh&&!failed&&
+           geometryStart&&rendererFrame==geometryStart&&!menuDomain){
+            // Finish staged work at the recorded Present. Keep the real
+            // allocation guards and refuse the checkpoint if work remains.
+            constexpr size_t bytes=32u<<20;
+            const double timeLimit=NorthlightFrameParityClock::fixedGeometryCheckpoint()?
+                std::numeric_limits<double>::infinity():30.0;
+            NorthlightStreaming::Budget checkpointBudget(bytes,timeLimit);
+            const unsigned texturesBefore=pendingMesh->textureUploads;
+            meshReady=upload(checkpointBudget,true);
+            const size_t materialsRemaining=pendingMesh?pendingMesh->payload->materials.size()-pendingMesh->material:0;
+            const size_t pagesRemaining=pendingMesh?meshStore.staging().upload.size()-pendingMesh->upload.pageIndex():0;
+            logf("REPLAY_GEOMETRY_STAGING present=%u submittedBytes=%zu ready=%u texturesBefore=%u pagesRemaining=%zu materialsRemaining=%zu",
+                 rendererFrame,bytes-checkpointBudget.remainingBytes(),unsigned(meshReady),texturesBefore,pagesRemaining,materialsRemaining);
+        }
+#endif
         const bool sceneTargetsReady=meshReady&&geometryResources(w,h);
-        const bool geometryReady=sceneTargetsReady&&(hadTargets||upload(streamBudget));
+        const bool geometryPrepared=sceneTargetsReady&&(hadTargets||upload(streamBudget));
+        const bool geometryReady=geometryPrepared&&admitGeometry;
+        if(!geometryReady)lightHistoryAudit=nullptr;
+#ifdef NORTHLIGHT_REPLAY_STAND
+        if(geometryStart&&!menuDomain&&rendererFrame==geometryStart)
+            logf("REPLAY_GEOMETRY_CHECKPOINT present=%u ready=%u",rendererFrame,unsigned(geometryReady));
+#endif
         // GI owns its textures and solved snapshot. Static shadow pages can still be uploading.
         if(!geometryReady&&screenResourcesReady&&requirements.probes)stageScreenProbes(lastRequest.map);
         if(failed)return false;
-        const bool fogShadowMapsReady=geometryReady&&applyDirectionalShadows;
         if(geometryReady!=temporalGeometryReady){
             const DWORD now=GetTickCount();
             if(DWORD(now-traceGeometryTick)>=1000){traceGeometryTick=now;traceGeometryCount=0;}
             if(NorthlightDiagnostics::enabled()&&traceGeometryCount++<16)deferLogf("WORLD geometry transition frame=%u rendererFrame=%u tick=%lu ready=%u screen=%u mesh=%u targets=%u",unsigned(frames),rendererFrame,(unsigned long)now,unsigned(geometryReady),unsigned(screenResourcesReady),unsigned(meshReady),unsigned(sceneTargetsReady));
-            temporalValid=fogHistoryValid=false;temporalGeometryReady=geometryReady;
+            fogScreen.invalidateHistory();history.invalidate();temporalGeometryReady=geometryReady;
         }
         fogGeometryReady=geometryReady;
         if(!geometryReady){
             skipReason=!valid?"context":failed?"failed":workerFault()?"fault":!active?"inactive":!active->bvh?"nobvh":
-                !screenResourcesReady?"scene-targets":!meshReady?"mesh":!sceneTargetsReady?"scene-targets":"upload";
+                !screenResourcesReady?"scene-targets":!meshReady?"mesh":!sceneTargetsReady?"scene-targets":
+                geometryPrepared?"capture-checkpoint":"upload";
             // Screen-space effects consume current scene/depth, not the BVH.
             // Keep them alive while the geometry builder is deferred by memory.
             updateStaticCasters(false,&streamBudget);
@@ -5537,43 +3833,28 @@ public:
             if(!screenResourcesReady)return false;
         }
         const char* geometrySkip=geometryReady?"ready":geometryWanted?skipReason:"not-required";
-        // Optional shader failure retains the ordinary compositor and its crash guards.
-        if(hdrMode){
-            if((!hdrFinalPS&&FAILED(d->CreatePixelShader(kWorldCompositeHdrShader,&hdrFinalPS)))||
-               (!hdrUnlitPS&&FAILED(d->CreatePixelShader(kWorldUnlitCompositeHdrShader,&hdrUnlitPS)))||
-               (!hdrMaterialPS&&FAILED(d->CreatePixelShader(kMaterialCompositeHdrShader,&hdrMaterialPS)))){skipReason="hdr-shader";return false;}
-            if(hdrBaseAllowed&&!requirements.lighting&&!hdrAOBaseTried){hdrAOBaseTried=true;
-                if(FAILED(d->CreatePixelShader(kWorldAOCompositeHdrShader,&hdrAOBasePS)))deferLogf("WORLD AO HDR compositor unavailable; ordinary composition retained");}
-            if(hdrBaseAllowed&&!hdrBaseTried){hdrBaseTried=true;if(FAILED(d->CreatePixelShader(kWorldBaseCompositeHdrShader,&hdrBasePS)))deferLogf("WORLD base HDR compositor unavailable; ordinary composition retained");}
-        }
-        if(hdrMode&&hdrCombineAllowed&&materialDetail&&!hdrCombineTried){hdrCombineTried=true;D3DCAPS9 caps{};
-            if(SUCCEEDED(d->GetDeviceCaps(&caps))&&caps.MaxPixelShader30InstructionSlots>=kWorldMaterialCompositeHdrShaderSlots)
-                d->CreatePixelShader(kWorldMaterialCompositeHdrShader,&hdrCombinedPS);
-            logf("WORLD HDR material combinedAvailable=%u deviceSlots=%lu requiredSlots=%u",unsigned(hdrCombinedPS!=nullptr),(unsigned long)caps.MaxPixelShader30InstructionSlots,kWorldMaterialCompositeHdrShaderSlots);
-        }
-        if(!hdrMode&&unlitMaskDepth&&!unlitPS&&!unlitShaderRefused)if(FAILED(d->CreatePixelShader(kWorldUnlitCompositeShader,&unlitPS))){unlitShaderRefused=true;deferLogf("UNLIT receiver shader unavailable; ordinary composition retained");}
-        const bool unlitMask=unlitMaskDepth&&(hdrMode?hdrUnlitPS:unlitPS)&&debug==0;
-        auto*& prelitShader=hdrMode?hdrPrelitPS:prelitPS;
-        if((prelitMaskDepth||authoredMaskDepth)&&!prelitShader&&!prelitShaderRefused)
-            if(FAILED(d->CreatePixelShader(hdrMode?kWorldPrelitCompositeHdrShader:kWorldPrelitCompositeShader,&prelitShader)))prelitShaderRefused=true;
-        const bool prelitMask=prelitMaskDepth&&prelitShader&&debug==0;
-        const bool authoredMask=authoredMaskDepth&&prelitShader&&debug==0;
-        const bool fullMaterial=materialWanted&&materialPS;
+        if(!composite.prepareShaders(d,hdrMode,requirements.lighting,hdrCombineAllowed,materialDetail!=nullptr,
+             [](unsigned available,unsigned long slots,unsigned required){
+                 logf("WORLD HDR material combinedAvailable=%u deviceSlots=%lu requiredSlots=%u",available,slots,required);
+             },
+             [&](const char* message){deferLogf("%s",message);})){skipReason="hdr-shader";return false;}
+        const auto layers=composite.selectLayers(hdrMode,debug==0);
         const bool normalDiagnosticCapture=debug==0&&gpuNormalDiagnosticRequested;
         if(nativeDiagnosticCapture){nativeDiagnosticCapture->finish(normalDiagnosticCapture&&active&&nativeDiagnosticMap==active->map);nativeDiagnosticCapture.reset();}
         const unsigned shadowDiagnosticCapture=debug==1&&gpuDiagnosticArmed&&gpuDiagnosticCaptures<4?gpuDiagnosticCaptures+1:0;
         const unsigned diagnosticCapture=normalDiagnosticCapture?gpuDiagnosticCaptures+1:shadowDiagnosticCapture;
-        // Captures retain the two original passes and their exact input groups.
-        const bool combinedMaterial=hdrMode&&hdrCombineAllowed&&fullMaterial&&hdrCombinedPS&&!diagnosticCapture;
-        // Folded frames without material detail write directly to the game target.
-        // Allocate on demand, but retain across invisible captures to avoid camera-turn churn.
-        if(!foldScene||(fullMaterial&&!combinedMaterial)){
-            const auto wantedFormat=hdrMode?D3DFMT_A16B16G16R16F:fmt;
-            if(color&&colorStorageFormat!=wantedFormat){stateBlocks.clear();drop(colorSurface);drop(color);}
-            if(!color){if(!target(w,h,wantedFormat,&color,&colorSurface))return false;colorStorageFormat=wantedFormat;}
-        }else if(color&&!materialCaptureResident){stateBlocks.clear();drop(colorSurface);drop(color);}
+        const float moonTerrainSpecular=materialWanted&&materialBumpGain>0?moonTerrainSpecularGain():0.f;
+        float sunSurfaceSpecular=materialWanted&&materialBumpGain>0?sunSurfaceSpecularGain():0.f;
+        if(sunSurfaceSpecular>0&&!composite.prepareSolar(d,hdrMode,
+            [&](const char* message){deferLogf("%s",message);}))sunSurfaceSpecular=0;
+        const auto material=composite.selectMaterial(materialWanted,hdrMode,hdrCombineAllowed&&moonTerrainSpecular==0,
+            diagnosticCapture!=0,sunSurfaceSpecular>0);
+        const bool fullMaterial=material.full,combinedMaterial=material.combined;
+        const auto wantedFormat=hdrMode?D3DFMT_A16B16G16R16F:fmt;
+        if(!composite.prepareScratch(d,w,h,wantedFormat,!foldScene||(fullMaterial&&!combinedMaterial),materialCaptureResident,
+             [&](HRESULT hr,const char* step){return check(hr,step);},[&]{stateBlocks.clear();}))return false;
         skipReason="state";
-        const bool callerRestores=enclosingState&&enclosingState->ok&&enclosingState->d==d;
+        const bool callerRestores=enclosingState&&enclosingState->coversDevice(d);
         std::optional<SavedState> save;
         if(!callerRestores){save.emplace(d,&stateBlocks);if(!save->ok)return false;}
         const std::string& frameMap=lastRequest.map;
@@ -5581,12 +3862,11 @@ public:
         {std::lock_guard<std::mutex> lock(mutex);fogRegion=publishedFogRegion;}
         auto field=fogRegion&&fogRegion->map==frameMap?fogRegion->field:
             active&&active->map==frameMap?active->fogField:std::shared_ptr<const NorthlightRegionalFog::Field>{};
-        if(!field&&uploadedFogMap==frameMap)field=uploadedFogField;
+        if(!field&&regionalFog.map()==frameMap)field=regionalFog.field();
         if(!uploadRegionalFog(field,frameMap))return false;
         int firstSource=sourceActive[0]||!sourceActive[1]?0:1;
-        unsigned culledBatches[2]={},drawnBatches[2]={};
-        NorthlightShadowRefreshBudget::Clock::duration directionalShadowTime{};
-        size_t replayConstantBytes=0,replayConstantCalls=0,replayPosePrepared=0,replayPoseReused=0;
+        DirectionalPassResult directionalResult;
+        shadowReplayIndices.begin(frames);
         nativeSceneFrame.clear();
         if(menuDomain)nativeSceneFrame=menuLights;else if(equipmentLightsOn()&&active)NorthlightNativeLights::frame(active->map.c_str(),context.camera,nativeSceneFrame);
         bool jobs=false;
@@ -5604,12 +3884,8 @@ public:
         const unsigned diagnosticFiles=gpuDiagnosticDirectory.empty()?0:diagnosticCapture;
         std::optional<NorthlightLightingCapture::Capture> lightingCapture;
         if(normalDiagnosticCapture){lightingCapture.emplace(d,gpuDiagnosticDirectory,diagnosticCapture,frames,rendererFrame,w,h);
-            lightingCapture->pointSources(pointSlots,GetTickCount(),effects.shadows&&quality.pointShadows&&quality.localLights&&quality.localLightLimit,true);}
-        d->SetDepthStencilSurface(nullptr);for(int i=1;i<4;++i)d->SetRenderTarget(i,nullptr);
-        for(int i=0;i<14;++i)d->SetTexture(i,nullptr);
-        const struct{D3DRENDERSTATETYPE s;DWORD v;} states[]={
-            {D3DRS_ZENABLE,TRUE},{D3DRS_ZWRITEENABLE,TRUE},{D3DRS_ZFUNC,D3DCMP_LESSEQUAL},{D3DRS_ALPHATESTENABLE,FALSE},{D3DRS_ALPHABLENDENABLE,FALSE},{D3DRS_SEPARATEALPHABLENDENABLE,FALSE},{D3DRS_CULLMODE,D3DCULL_NONE},{D3DRS_COLORWRITEENABLE,15},{D3DRS_FOGENABLE,FALSE},{D3DRS_STENCILENABLE,FALSE},{D3DRS_SCISSORTESTENABLE,FALSE},{D3DRS_CLIPPLANEENABLE,0},{D3DRS_SRGBWRITEENABLE,FALSE},{D3DRS_DEPTHBIAS,0},{D3DRS_SLOPESCALEDEPTHBIAS,0},{D3DRS_FILLMODE,D3DFILL_SOLID},{D3DRS_MULTISAMPLEMASK,0xffffffff}};
-        for(auto& s:states)d->SetRenderState(s.s,s.v);
+            lightingCapture->pointSources(pointTargets.slots(),GetTickCount(),effects.shadows&&quality.pointShadows&&quality.localLights&&quality.localLightLimit,true);}
+        prepareWorldShadowState();
         if(geometryReady){
         streamBudget.pause();
         auto timedTerrain=[&]{auto phase=streamingPhases.measure(NorthlightStreaming::PhaseProfile::Terrain);return uploadLiveTerrain();};
@@ -5628,554 +3904,55 @@ public:
         // request gated on cf.active would never start it. One background generation per process; FogClouds=0 or density 0 still does nothing.
         if(quality.fogClouds&&quality.fogCloudDensity&&effects.fog&&debug==0&&!fogCloudNoise().ready.load(std::memory_order_acquire))fogCloudNoise().request();
         if(jobs)replayJobs_.kick(atmosphereDone,atmosphereJob);
-        // 0.3.211 (task 31): the colour gate is the lighting weight gate: a source colour is direct*weight, so a zero-weight moon
-        // draws no cascade, actor map or water moon map (tests/test_moon_cascade_weight.py).
-        // Terrain shadow candidates (the cached terrain chunks the game did not draw live): read by the directional passes' terrain draws.
-        NorthlightTerrainCandidates::Selection<> terrainCandidates(directionalTerrainScratch);double terrainPrepareMs=0;
-        auto terrainJob=[&]{
-            std::chrono::steady_clock::time_point terrainPrepareStart;
-            if(captureSampled)terrainPrepareStart=std::chrono::steady_clock::now();
-            if(directionalShadows&&(sourceActive[0]||sourceActive[1])){
-                // 0.3.175 (S2): this generation's terrain-outside-fixed list, when it belongs to these batches and fixed set.
-                if(terrainBatchListGeneration==meshGeneration&&terrainBatchListSize==batches.size()&&terrainListFixed==&fixedTerrainChunks())
-                    terrainCandidates.prepareListed(batches,shadowTerrainList,fixedTerrainChunks(),liveTerrainChunks,captureSampled);
-                else terrainCandidates.prepare(batches,fixedTerrainChunks(),liveTerrainChunks,captureSampled);}
-            if(captureSampled)terrainPrepareMs=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-terrainPrepareStart).count();
-        };
-        NorthlightJobs::Counter terrainDone;JobJoin terrainJoin{replayJobs_,terrainDone};
-        const bool terrainAsync=jobs&&directionalShadows&&(sourceActive[0]||sourceActive[1]);
-        if(terrainAsync)replayJobs_.kick(terrainDone,terrainJob);
-        {auto phase=streamingPhases.measure(NorthlightStreaming::PhaseProfile::Static);
-         if(!menuDomain)updateStaticCasters(directionalShadows,&streamBudget);
-         if(directionalShadows&&replayShadows){auto proofs=streamingPhases.measure(NorthlightStreaming::PhaseProfile::Proofs);prepareStaticProofs(sourceActive[0]||sourceActive[1]);}}
-        if(profile)profile->mark("StaticCasterUpload");
-        bucket(NorthlightEffectsBuckets::Static);
-        streamingCpuPeakMs=std::max(streamingCpuPeakMs,streamBudget.elapsedMs());
-        streamingBudgetOverruns+=streamBudget.elapsedMs()>1.0;
-        if(captureSampled){logf("WORLD streaming optionalCpuPeakMs=%.3f softBudgetOverruns=%u retiredMaterialMiB=%.2f",streamingCpuPeakMs,streamingBudgetOverruns,double(retiredMaterials.bytes())/1048576);streamingCpuPeakMs=0;streamingBudgetOverruns=0;}
-        if(captureSampled){const auto& p=streamingPhases.peaks;
-            logf("WORLD streaming phases peakMs admission=%.3f buffers=%.3f copies=%.3f preload=%.3f materials=%.3f commit=%.3f probes=%.3f static=%.3f",p[0],p[1],p[2],p[3],p[4],p[5],p[6],p[7]);
-            const auto retired=NorthlightStreaming::cpuRetirement().stats();
-            logf("WORLD streaming subphases peakMs owners=%.3f staticCache=%.3f proofs=%.3f retire=%.3f terrainUpload=%.3f replayUpload=%.3f retireAccepted=%llu retireOversized=%llu retireRefused=%llu retireParked=%zu retireDeferred=%llu retireSynchronous=%llu retireGenerationFrees=%llu generationDeferred=%u preparedOwners=%u",
-                p[8],p[9],p[10],p[11],p[12],p[13],(unsigned long long)retired.accepted,(unsigned long long)retired.oversized,(unsigned long long)retired.refused,
-                retirementBacklog.parked(),(unsigned long long)retirementBacklog.deferred,(unsigned long long)retirementBacklog.synchronous,(unsigned long long)retirementBacklog.generationFrees,generationDeferrals.load(),preparedOwnerCommits);
-            logf("WORLD streaming splits peakMs replayExpire=%.3f replayBind=%.3f replayCreate=%.3f replayGrow=%.3f replayCopy=%.3f terrainArena=%.3f terrainIndices=%.3f terrainIndexUpload=%.3f staticPublish=%.3f replayCreatedPeak=%u replayTimeDeferred=%llu replayGrowths=%llu replayFallbacks=%llu replayBudgetOverrides=%llu terrainRollovers=%u ownerChangesPeak=%zu generationWaits=%u generationWaitPeakMs=%.3f",
-                p[14],p[15],p[16],p[17],p[18],p[19],p[20],p[21],p[22],replayCreatedPeak,(unsigned long long)replayTimeDeferred,(unsigned long long)replayGrowths,(unsigned long long)replayFallbacks,(unsigned long long)replayBudgetOverrides,liveTerrainGPU.rollovers,ownerChangesPeak,generationWaits.load(),generationWaitPeakUs.load()*.001);
-            replayCreatedPeak=0;ownerChangesPeak=0;
-            streamingPhases.clear();}
-        if(captureSampled){const auto& memory=admissionProbe.stats();
-            logf("WORLD memory admission requests=%llu witnessHits=%llu fullScans=%llu regionQueries=%llu statusFailures=%llu malformedRegions=%llu fresh=1",
-                (unsigned long long)memory.requests,(unsigned long long)memory.witnessHits,(unsigned long long)memory.fullScans,
-                (unsigned long long)memory.regionQueries,(unsigned long long)memory.statusFailures,(unsigned long long)memory.malformedRegions);}
-        const V pivot=staticPivotReady?staticFramePivot:shadowPivot();
-        actorShadowOrigin[0]=pivot.x;actorShadowOrigin[1]=pivot.y;actorShadowOrigin[2]=pivot.z;actorShadowOriginValid=true;
-        // Raw pivot above (ActorShadowRadius) and for the static caster request; the cascade frames,
-        // their cache placement and the static prebuild use the jump-stable anchor.
-        const bool anchorNewMap=cascadeAnchorMap!=lastRequest.map;if(anchorNewMap)cascadeAnchorMap=lastRequest.map; /* the requested map: the snapshot can lag */
-        // 0.3.209 (task 29): the actor shadow map is centred on a leashed anchor of the raw pivot (not texel-snapped, not the snapped cascade pivot): the pivot is
-        // camera-derived and drifts while the camera orbits an idle player, so the centre holds still within Leash and is dragged along beyond it. Per source; reset on a new map.
-        const bool actorMapOn=NorthlightQuality::actorShadowMap(quality,directionalShadows)&&actorShadowPS&&actorTilesPS&&actorShadow[0]&&actorShadow[1]&&actorTiles[0]&&actorTiles[1]&&actorTilesMid&&actorVisibility;
-        float actorFrameMatrix[2][16];bool actorFrameOn[2]={}; /* actorMapOn with a finite matrix: checked here once, not per replay in the near loop */
-        for(int source=0;source<2;++source){
-            if(anchorNewMap)actorCenterValid[source]=false;
-            if(!actorMapOn){actorCenterValid[source]=false;memset(actorFrameMatrix[source],0,64);continue;}
-            // The high-detail actor map is redrawn every frame; it need not share the static cache's direction lattice.
-            actorCenter[source]=NorthlightActorShadowMap::leash(actorCenter[source],actorCenterValid[source],pivot,rawSourceDirections[source]);actorCenterValid[source]=true;
-            NorthlightActorShadowMap::matrix(actorCenter[source],pivot,rawSourceDirections[source],actorFrameMatrix[source]);
-            actorFrameOn[source]=NorthlightActorShadowMap::finiteMatrix(actorFrameMatrix[source]);if(!actorFrameOn[source])actorCenterValid[source]=false;
-        }
-        const uint32_t transitionNow=GetTickCount();V slotDirections[4];
-        const int dominantSource=sourceWeights[1]>sourceWeights[0]?1:0;
-        const bool handover=shadowTransitionSource>=0&&shadowTransitionSource!=dominantSource;shadowTransitionSource=dominantSource;
-        const V frameCamera=vec(context.camera),travelCamera=frameCamera-V(cascadeAnchor.cameraX,cascadeAnchor.cameraY,cascadeAnchor.cameraZ);
-        const bool teleported=cascadeAnchor.valid&&NorthlightGI::dot(travelCamera,travelCamera)>NorthlightCascadeAnchor::ResetDistance*NorthlightCascadeAnchor::ResetDistance;
-        const V cascadePivot=cascadeAnchor.update(pivot,frameCamera,transitionNow,anchorNewMap);
-        farShadowCoverage=flightCoverage(cascadePivot,lastRequest.map);
-        const V farPivot=farShadowCoverage.center;const float farRadius=farShadowCoverage.radius;
-        if(memoryPressure||geometryMemoryDemand.load(std::memory_order_relaxed))releaseShadowTransitions();
-        for(int source=0;source<2;++source)for(int cascade=0;cascade<2;++cascade){
-            const int slot=source*2+cascade;auto& f=shadowTransition[slot];const auto& key=shadowCacheKey[slot];
-            const float radius=cascade?farRadius:NorthlightShadowCascades::NearRadius;long ox=0,oy=0;float dz=0;
-            const auto sameBasis=NorthlightWorldMath::shadowFrame(cascade?farPivot:cascadePivot,key.direction,radius);
-            const bool travel=key.valid&&(!NorthlightWorldMath::cacheOffset(sameBasis,key.frame,ox,oy,dz)||std::labs(ox)>long(ShadowCacheMargin)||std::labs(oy)>long(ShadowCacheMargin));
-            const bool jump=key.valid&&different(key.direction,sourceDirections[source],.002f);
-            f.state.request({sourceDirections[source].x,sourceDirections[source].y,sourceDirections[source].z},transitionNow,
-                anchorNewMap||handover||teleported||travel||jump||!directionalShadows||!sourceActive[source]||!key.valid||!replaysComplete||shadowTransitionFailed||memoryPressure);
-            const auto direction=f.state.renderDirection();slotDirections[slot]=V(direction.x,direction.y,direction.z);
-        }
-        NorthlightWorldMath::ShadowFrame cascadeFrames[2][2];
-        for(int source=0;source<2;++source)for(int cascade=0;cascade<2;++cascade){
-            const float radius=cascade==0?NorthlightShadowCascades::NearRadius:farRadius;
-            cascadeFrames[source][cascade]=NorthlightWorldMath::shadowFrame(cascade?farPivot:cascadePivot,slotDirections[source*2+cascade],radius);
-            NorthlightWorldMath::shadowMatrixFrom(cascadeFrames[source][cascade],radius,sourceMatrices[source][cascade]);
-        }
-        struct TransitionFrame {WorldRenderer* owner;bool complete=false;~TransitionFrame(){if(!complete)owner->resetShadowTransitions();}} transitionFrame{this};
-        const uint64_t chunkHash=liveChunkHash();
-        // 0.3.152: each drawn slot's cache placement and matrix, once per frame (the
-        // cascade loop reuses both; a key changes only in its own slot's iteration).
-        NorthlightWorldMath::ShadowCachePlacement slotPlacement[4];
-        for(int source=0;source<2;++source)if(directionalShadows&&sourceActive[source])for(int cascade=0;cascade<2;++cascade){
-            const int slot=source*2+cascade;const float radius=cascade==0?NorthlightShadowCascades::NearRadius:farRadius;const ShadowCacheKey& key=shadowCacheKey[slot];
-            slotPlacement[slot]=NorthlightWorldMath::shadowCachePlacement(cascadeFrames[source][cascade],key.frame,key.valid,
-                !different(key.direction,slotDirections[slot],1e-6f),long(ShadowCacheMargin));
-            NorthlightWorldMath::shadowMatrixFrom(slotPlacement[slot].frame,radius*float(ShadowCacheSize)/1024.f,staticSlotMatrix[slot]);
-        }
-        struct StaticPlanJoin {WorldRenderer& r;~StaticPlanJoin(){try{r.staticCasters.settle();}catch(...){}}} staticPlanJoin{*this}; /* before any return below */
-        const auto directionalStart=NorthlightShadowRefreshBudget::Clock::now();
-        if(directionalShadows){const auto kickStart=std::chrono::steady_clock::now();staticPlanKick(slotPlacement,sourceActive);staticKickMs+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-kickStart).count();}
-        if(directionalReplayBounds)pointCalculateReplayBounds(); // point-only refreshes prepare on demand
-        d->SetSamplerState(0,D3DSAMP_ADDRESSU,D3DTADDRESS_WRAP);d->SetSamplerState(0,D3DSAMP_ADDRESSV,D3DTADDRESS_WRAP);d->SetSamplerState(0,D3DSAMP_MINFILTER,D3DTEXF_LINEAR);d->SetSamplerState(0,D3DSAMP_MAGFILTER,D3DTEXF_LINEAR);d->SetSamplerState(0,D3DSAMP_MIPFILTER,D3DTEXF_NONE);d->SetSamplerState(0,D3DSAMP_SRGBTEXTURE,FALSE);
-        bucket(NorthlightEffectsBuckets::ShadowSetup);
-        if(!terrainAsync)terrainJob();
-        bucket(NorthlightEffectsBuckets::TerrainSelection);
-        // 0.3.200 (jobs): the replay culling is kicked once (replayCullKick; 0.3.217: from the first rendering slot, before its static and terrain draws), joined per slot and here.
-        bool replayCullsKicked=false;struct CullSettle {WorldRenderer& r;~CullSettle(){r.replayCullSettle();}} cullSettle{*this};
-        bool anyShadowCacheRender=false;
-        moonFloorShadowCurrent=false;
-        ++shadowPasses;
-        if(NorthlightStaticPrebuild::Scheduler::Enabled)for(int source=0;source<2;++source)staticPrebuild.observe(source,directionalShadows&&sourceActive[source],rawSourceDirections[source],GetTickCount());
-        for(int source=0;source<2;++source)if(!actorMapOn||!sourceActive[source]){actorValid[source]=false;actorHold[source].invalidate();} /* 0.3.209 (task 29): a source that draws no near map keeps no actor map */
-        for(int source=0;source<2;++source){
-          if(!directionalShadows||!sourceActive[source])continue;
-          auto& matrices=sourceMatrices[source];bool nearRendered=false; /* this source's near map redrawn with fresh replays */
-          for(int cascade=0;cascade<2;++cascade){
-            const auto phaseStart=std::chrono::steady_clock::now();
-            auto phaseNow=[&](){return std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-phaseStart).count();};
-            double selectMs=0,localMs=0,staticMs=0,dynamicMs=0,selectPlanMs=0;const double planBefore=staticCasters.stats().planMs;
-            uint64_t staticDraws=0,staticInstances=0,replayDraws=0,replayTriangles=0;
-            unsigned localDraws=0;
-            const int slot=source*2+cascade;
-            ShadowCacheKey& key=shadowCacheKey[slot];
-            const auto& placement=slotPlacement[slot]; /* 0.3.152: placed once per frame, before the plan kick */
-            long offX=placement.offX,offY=placement.offY;float dz=placement.dz;const char* reason=placement.reason;
-            d->SetSamplerState(0,D3DSAMP_ADDRESSU,D3DTADDRESS_WRAP);d->SetSamplerState(0,D3DSAMP_ADDRESSV,D3DTADDRESS_WRAP);
-            const float* cachedMatrix=staticSlotMatrix[slot];
-            if(!reason&&NorthlightLocalShadowSignature::needsRefresh(key.localContentKnown,key.localContent,key.serial,
-                bool(uploadedLocalShadowRecords),localShadowSignature(key,cachedMatrix),meshGeneration))reason="local-content";
-            bool partialStatic=false;
-            // 0.3.151 StaticCacheSlices>1 (static_cache_slices.h): a rect redraw in horizontal bands,
-            // one per frame. Any other reason redraws everything now. The key keeps the pre-cycle
-            // content until the last band, which takes the rect path below with the cycle's reason.
-            auto& slices=staticSlices[slot];const bool wasSlicing=slices.active;if(reason)slices.reset();
-            bool sliceBand=false; /* an intermediate band: drawn before the cascade action, without a reason */
-            const uint64_t staticNow=reason?0:staticSignature(cachedMatrix);
-            const bool staticChanged=!reason&&key.staticSignature!=staticNow;
-            if(slices.current(staticNow)&&staticChanged&&!shadowDiagnosticCapture&&key.staticContent.valid&&key.staticContent.instancing==staticCasters.stats().instancing){
-                staticDirty=slices.band(); /* unchanged since the cycle (re)started: its next band */
-                if(slices.last()){reason=slices.reason;partialStatic=true;}else sliceBand=true;
-            }else if(staticChanged){reason="static-models";
-                partialStatic=StaticCacheDirtyRects&&key.valid&&staticDirtyRects(key,cachedMatrix);
-                if(partialStatic)reason="static-models-partial";else ++shadowCacheStaticFullRenders;
-                if(NorthlightStaticSlices::sliceable(quality.staticCacheSlices,partialStatic,shadowDiagnosticCapture!=0,StaticCacheDirtyRectVerify)){
-                    staticSliceRestarts+=slices.active;
-                    slices.start(staticDirty,quality.staticCacheSlices,reason,staticNow,long(ShadowCacheSize),StaticCacheDirtyTile,StaticCacheDirtyMaxRects);
-                    staticDirty=slices.band();if(!slices.last()){reason=nullptr;sliceBand=true;}
-                }else if(partialStatic&&slices.active){ /* finish now; drawn bands hold content newer than the key */
-                    staticDirtyFootprints=staticDirty;staticDirtyFootprints.insert(staticDirtyFootprints.end(),slices.drawn.begin(),slices.drawn.end());
-                    NorthlightShadowBounds::dirtyRects(staticDirtyFootprints,long(ShadowCacheSize),StaticCacheDirtyTile,StaticCacheDirtyMaxRects,staticDirty);}
-            }else if(slices.active){ /* content is back at the recorded key: redraw the bands drawn so far */
-                NorthlightShadowBounds::dirtyRects(slices.drawn,long(ShadowCacheSize),StaticCacheDirtyTile,StaticCacheDirtyMaxRects,staticDirty);
-                if(staticDirty.empty())slices.reset();
-                else if(key.staticContent.valid&&key.staticContent.instancing==staticCasters.stats().instancing){reason=slices.reason;partialStatic=true;}
-                else{reason="static-models";++shadowCacheStaticFullRenders;}
+        std::optional<NorthlightLightingCapture::Capture> projectionAudit;
+        if(lightHistoryAudit)projectionAudit.emplace(d,*lightHistoryAudit,rendererFrame,frames,rendererFrame,w,h,"frame-parity-directional");
+        if(!renderDirectional(sourceActive,directionalShadows,directionalReplayBounds,replayShadows,actorShadows,
+                              replaysComplete,jobs,streamBudget,profile,rendererFrame,diagnosticFiles,
+                              shadowDiagnosticCapture,directionalResult,projectionAudit?&*projectionAudit:nullptr)){
+            if(!shadowReplayAlpha.deferIfUnavailable())return false;
+            directionalDeferred=true;applyDirectionalShadows=false;shadowFrameReady=false;
+            for(unsigned source=0;source<2;++source){
+                nearShadow[source].invalidate();farShadow[source].invalidate();
+                actorValid[source]=nearActorSkip[source]=false;
             }
-            selectMs=phaseNow();selectPlanMs=staticCasters.stats().planMs-planBefore;
-            if(reason||sliceBand)anyShadowCacheRender=true;
-            auto& transition=shadowTransition[slot];const bool directionStep=reason&&!std::strcmp(reason,"direction");
-            if(sliceBand||wasSlicing||slices.active||(reason&&!directionStep))transition.state.cancel();
-            bool historyReady=false;
-            // One cache render: the full clear+redraw, or (partial) the identical
-            // ordered sequence limited to the disjoint dirty rects. -1: device failure.
-            // `real` false is the debug self-check's full render into a scratch target;
-            // `band` an intermediate StaticCacheSlices band (counted as a band, not a partial render).
-            double staticStart=0;
-            auto renderCache=[&](IDirect3DSurface9* target,bool partial,bool real,bool band=false)->int{
-                struct ScissorOff {IDirect3DDevice9* d;bool on;~ScissorOff(){if(on)d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE);}} scissorOff{d,partial};
-                d->SetDepthStencilSurface(nullptr);if(!check(d->SetRenderTarget(0,target),"shadow cache target"))return -1;
-                d->SetDepthStencilSurface(shadowCacheDepth);D3DVIEWPORT9 cvp={0,0,ShadowCacheSize,ShadowCacheSize,0,1};d->SetViewport(&cvp);
-                if(partial){
-                    // Same viewport/clip; the scissor only discards fragments, so
-                    // texels inside it are the full redraw and all others hold it already.
-                    // Rects are disjoint, so per-draw scissor switches never reorder a pixel's fragments.
-                    // Explicit clear rects (colour and the shared depth) with the scissor still off.
-                    staticDirtyClears.clear();for(const auto& r:staticDirty){staticDirtyClears.push_back({LONG(r.left),LONG(r.top),LONG(r.right),LONG(r.bottom)});shadowCachePartialTexels+=(unsigned long long)r.area();}
-                    d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE);
-                    if(!staticDirtyClears.empty()&&!check(d->Clear(DWORD(staticDirtyClears.size()),staticDirtyClears.data(),D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0xffffffff,1,0),"clear shadow cache rects"))return -1;
-                    d->SetRenderState(D3DRS_SCISSORTESTENABLE,TRUE);if(!band){++shadowCachePartialRenders;shadowCachePartialRects+=unsigned(staticDirty.size());}
-                }else if(!check(d->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0xffffffff,1,0),"clear shadow cache"))return -1;
-                d->SetVertexDeclaration(shadowDecl);d->SetStreamSource(0,vertices,0,sizeof(NorthlightGI::WorldVertex));for(int i=0;i<4;++i)d->SetStreamSourceFreq(i,1);d->SetIndices(indices);
-                d->SetVertexShader(cachedShadowVS);d->SetVertexShaderConstantF(0,cachedMatrix,4);d->SetPixelShader(cachedShadowPS);
-                IDirect3DPixelShader9* boundCachePS=cachedShadowPS;
-                UINT boundPage=UINT_MAX;const NorthlightShadowBounds::TexelRect* staticScissor=nullptr;
-                shadowDeviceCaps();
-                NorthlightDirectionalShadowBatches cacheBatches(pointPrimitiveLimit);
-                UINT boundCutoutMaterial=UINT_MAX;
-                auto submitBatch=[&](const Batch& batch,IDirect3DPixelShader9* ps,const NorthlightShadowBounds::TexelRect* rect){
-                    if(ps!=boundCachePS){if(!check(d->SetPixelShader(ps),"static cache depth variant"))return false;boundCachePS=ps;}
-                    if(ps!=cachedOpaquePS&&ps!=cachedOpaqueFastPS&&batch.material!=boundCutoutMaterial){
-                        const float material[]={1,1,1,uploadedAlphaCutoffs[batch.material]};
-                        if(!check(d->SetPixelShaderConstantF(0,material,1),"static cache cutoff")||
-                           !check(d->SetTexture(0,materials[batch.material]),"static cache texture"))return false;
-                        boundCutoutMaterial=batch.material;
-                    }
-                    if(!bindMeshPage(batch,boundPage))return false;
-                    if(rect&&rect!=staticScissor){
-                        const RECT r={LONG(rect->left),LONG(rect->top),LONG(rect->right),LONG(rect->bottom)};
-                        if(!check(d->SetScissorRect(&r),"static cache scissor"))return false;
-                        staticScissor=rect;
-                    }
-                    return check(d->DrawIndexedPrimitive(D3DPT_TRIANGLELIST,0,batch.minVertex,batch.vertexCount,batch.start,batch.count),"static shadow cache draw");
-                };
-                /* 0.3.215 (task 45): the flat bitmap answers the per-batch fixed-chunk test without a red-black tree walk (same membership: it falls back to the set off-grid or when it does not describe this set). */
-                const auto& fixedSet=fixedTerrainChunks();const bool fixedBits=fixedTerrainBits.source()==&fixedSet;
-                const bool affine=NorthlightShadowBounds::affineLightMatrix(cachedMatrix);
-                for(auto& b:batches){
-                    if(b.pointOnly)continue;if(b.terrain&&!(fixedBits?fixedTerrainBits.contains({b.chunkX,b.chunkY}):fixedSet.count({b.chunkX,b.chunkY})!=0))continue;
-                    if(affine&&NorthlightShadowBounds::directionalClipRejectAffine(b.boundsLow,b.boundsHigh,cachedMatrix)){if(real)++culledBatches[cascade];continue;}
-                    size_t passes=1;
-                    if(partial){NorthlightShadowBounds::TexelRect footprint;const bool known=NorthlightShadowBounds::texelFootprint(b.boundsLow,b.boundsHigh,cachedMatrix,long(ShadowCacheSize),StaticCacheDirtyMargin,footprint);
-                        staticDirtyHits.clear();for(const auto& r:staticDirty)if(!known||NorthlightShadowBounds::intersects(footprint,r))staticDirtyHits.push_back(&r);
-                        if(staticDirtyHits.empty()){++shadowCachePartialSkippedDraws;continue;}passes=staticDirtyHits.size();}
-                    if(real)++drawnBatches[cascade];
-                    const bool interior=affine&&NorthlightShadowBounds::depthFullyInsideAffine(b.boundsLow,b.boundsHigh,cachedMatrix);
-                    const bool opaque=uploadedAlphaCutoffs[b.material]<=0;
-                    IDirect3DPixelShader9* ps=interior?(opaque&&cachedOpaqueFastPS?cachedOpaqueFastPS:cachedFastPS):(opaque?cachedOpaquePS:cachedShadowPS);
-                    if(!ps)ps=cachedShadowPS;
-                    const bool textureIndependent=opaque&&(ps==cachedOpaquePS||ps==cachedOpaqueFastPS);
-                    for(size_t k=0;k<passes;++k){
-                        if(!cacheBatches.add(b,ps,partial?staticDirtyHits[k]:nullptr,textureIndependent,submitBatch))return -1;
-                    }
-                }
-                if(!cacheBatches.flush(submitBatch))return -1;
-                if(real){localDraws=cacheBatches.submitted;localMs=phaseNow()-selectMs;staticStart=phaseNow();}
-                const bool ok=drawStaticCasters(cachedMatrix,partial?&staticDirty:nullptr);
-                if(partial){DWORD enabled=FALSE;if(StaticCacheDirtyRectVerify&&SUCCEEDED(d->GetRenderState(D3DRS_SCISSORTESTENABLE,&enabled))&&!enabled)++shadowCacheScissorLeaks;shadowCachePartialSkippedDraws+=unsigned(staticCasters.stats().rectSkipped);}
-                return ok?1:0;
-            };
-            if(sliceBand){
-                // Into the cache target only; the cascade's own schedule decides whether this frame's map
-                // unites it. Any failure drops the cycle and the key: a full redraw follows.
-                const int drawn=renderCache(shadowCacheSurface[slot],true,true,true);if(drawn<0)return false;
-                staticMs=phaseNow()-staticStart;staticDraws=staticCasters.stats().drawCalls;staticInstances=staticCasters.stats().instances;
-                if(drawn>0){slices.drew();++staticSliceBands;}else{slices.reset();key.valid=false;key.staticContent.valid=false;}
-                d->SetTexture(0,nullptr);d->SetSamplerState(0,D3DSAMP_ADDRESSU,D3DTADDRESS_WRAP);d->SetSamplerState(0,D3DSAMP_ADDRESSV,D3DTADDRESS_WRAP);
-            }
-            // Retain far cascades or the near environment together with their projection.
-            // Near replays and the fine actor map still draw from this frame's poses.
-            auto& reuse=cascade?farShadow[source]:nearShadow[source];
-            const bool splitNear=cascade==0&&actorShadows&&quality.nearShadowInterval>1&&nearEnvironmentResources(source);
-            const unsigned interval=cascade?quality.farShadowInterval:(actorShadows&&!splitNear?1:quality.nearShadowInterval);
-            const bool pull=cascade==1&&NorthlightQuality::pullFar(quality.nearShadowInterval,interval,shadowPasses,reuse,nearRendered);
-            // 0.3.209 (task 29): a near map drawn with the actor-map skip has no shadow of those casters of its own; once its actor map is gone (the source went
-            // inactive, ActorShadowDetail off, a non-finite frame) it is redrawn instead of reused.
-            const bool actorLost=cascade==0&&!splitNear&&nearActorSkip[source]&&!actorValid[source];
-            const auto action=NorthlightQuality::cascadeAction(reuse,interval,shadowPasses,!reason&&key.valid&&!pull&&!actorLost&&!transition.state.fading(),shadowDiagnosticCapture!=0,replaysComplete);
-            // The optional below-roof path cannot consume an old union during
-            // a content refresh/defer or an unfinished static slice cycle.
-            moonFloorReuseProof(slot,action,reason,staticChanged,sliceBand);
-            cascadeActions[slot]=action==NorthlightQuality::CascadeAction::Render?'R':action==NorthlightQuality::CascadeAction::Defer?'D':'U';
-            const bool environmentReuse=splitNear&&action!=NorthlightQuality::CascadeAction::Render;
-            if(action!=NorthlightQuality::CascadeAction::Render){
-                if(action==NorthlightQuality::CascadeAction::Defer){captureDemand=true;++captureDeferrals;}else ++(cascade?farReuses:nearReuses);
-                memcpy(matrices[cascade],reuse.matrix,64);
-                if(!splitNear){if(profile)profile->mark(source==0?(cascade==0?"SunNear":"SunFar"):(cascade==0?"MoonNear":"MoonFar"));bucket(NorthlightEffectsBuckets::Bucket(NorthlightEffectsBuckets::SunNear+source*2+cascade));continue;}}
-            if(!environmentReuse)reuse.begin(interval);
-            if(cascade==0)actorValid[source]=nearActorSkip[source]=false;
-            if(cascade==0)nearRendered=!environmentReuse&&captureMode==CaptureFresh&&interval>1&&actorShadows;
-            // 0.3.217 (jobs): this slot's matrices (set before the loop), the packets and the static proofs are final here; with the bounds job already finished
-            // its own cull runs on a worker while the slot draws its static cache and terrain. Not finished: nothing here, the old order (inline test) holds.
-            if(jobs&&actorShadows&&!replayCullsKicked)replayCullKickOwn(slot);
-            if(NorthlightStaticPrebuild::Scheduler::Enabled&&reason)staticPrebuild.rerender(source,cascade,cachedMatrix,!std::strcmp(reason,"direction"),staticCasters.planReady(cachedMatrix),[&](const float* m){staticCasters.discardPlan(m);});
-            if(!environmentReuse&&reason){
-                // Static batches only, over the margin extent, keyed for reuse.
-                // Reuse the already selected matrix for content-only refreshes.
-                // The union below retains its integer offset and depth delta.
-                if(directionStep&&transition.state.canPreserveHistory()&&transition.workingValid&&key.valid&&!wasSlicing&&!slices.active&&!shadowTransitionFailed){
-                    // Direction has priority in the cache reason. Independently
-                    // reject simultaneous content changes before retaining old texels.
-                    float oldMatrix[16];NorthlightWorldMath::shadowMatrixFrom(key.frame,(key.frame.texel*512.f)*float(ShadowCacheSize)/1024.f,oldMatrix);
-                    const bool localSame=!NorthlightLocalShadowSignature::needsRefresh(key.localContentKnown,key.localContent,key.serial,
-                        bool(uploadedLocalShadowRecords),localShadowSignature(key,oldMatrix),meshGeneration);
-                    const bool staticSame=key.staticContent.valid&&key.staticContent.instancing==staticCasters.stats().instancing&&key.staticSignature==staticSignature(oldMatrix);
-                    if(localSame&&staticSame)historyReady=preserveShadowStatic(slot);else transition.state.cancel();
-                    if(profile)profile->mark("ShadowHistory");
-                }
-                const int rendered=renderCache(shadowCacheSurface[slot],partialStatic,true);if(rendered<0){transition.state.cancel();return false;}
-                if(slices.active){staticSliceBands+=partialStatic;slices.reset();} /* the last band (or a full/finishing redraw) completes the cycle */
-                const bool staticOK=rendered>0;
-                staticMs=phaseNow()-staticStart;staticDraws=staticCasters.stats().drawCalls;staticInstances=staticCasters.stats().instances;
-                // A rect redraw relies on the recorded content matching what is
-                // in the texture: any doubt (failure, instancing mode flip) forces a full redraw.
-                const bool recordable=StaticCacheDirtyRects&&staticOK&&(!partialStatic||key.staticContent.instancing==staticCasters.stats().instancing);
-                if(recordable){try {staticCasters.record(cachedMatrix,key.staticContent);}catch(...){key.staticContent.valid=false;}}else key.staticContent.valid=false;
-                if(StaticCacheDirtyRectVerify&&partialStatic&&staticOK&&!verifyStaticCache(slot,[&](IDirect3DSurface9* t){return renderCache(t,false,false);}))return false;
-                key.valid=staticOK&&(recordable||!StaticCacheDirtyRects);key.frame=placement.frame;key.direction=slotDirections[slot];key.serial=meshGeneration;key.chunkHash=chunkHash;key.staticSignature=staticSignature(cachedMatrix);key.localContent=localShadowSignature(key,cachedMatrix);key.localContentKnown=bool(uploadedLocalShadowRecords);++shadowCacheRenders;
-                DWORD tick=GetTickCount();if(NorthlightDiagnostics::enabled()&&(!shadowCacheLogAt||tick-shadowCacheLogAt>=1000)){shadowCacheLogAt=tick;logf("WORLD shadow cache rerender source=%d cascade=%d reason=%s anchorRetained=%u prebuilds=%u prebuildHits=%u prebuildMisses=%u prebuildDiscards=%u rendererFrame=%u tick=%lu",source,cascade,reason,unsigned(!placement.reason),staticPrebuild.stats.built,staticPrebuild.stats.hits,staticPrebuild.stats.misses,staticPrebuild.stats.discarded,rendererFrame,(unsigned long)tick);}
-            } else {key.serial=meshGeneration;++shadowCacheReuses;}
-            if(diagnosticFiles){
-                char name[80];std::snprintf(name,sizeof name,"s%d-c%d-static",source,cascade);
-                NorthlightWorldDiagnostics::dump(d,shadowCacheSurface[slot],gpuDiagnosticDirectory,name,diagnosticCapture);
-                NorthlightWorldDiagnostics::shadowFrame(gpuDiagnosticDirectory,diagnosticCapture,source,cascade,cachedMatrix,matrices[cascade],offX,offY,dz,key.serial,key.staticSignature,reason);
-            }
-            // The slot's cache is complete for cachedMatrix now: no intermediate band, no pending cycle, unchanged or just re-rendered, and its content record
-            // describes that texture (staticM2 skip, below). A failed render cleared key.valid / staticContent.valid.
-            const bool cacheCurrent=key.valid&&key.staticContent.valid&&!sliceBand&&!slices.active&&(reason||!staticChanged)&&staticCasters.recordCurrent(key.staticContent,cachedMatrix);
-            const double dynamicStart=phaseNow();
-            // Draw this frame's existing terrain/replays directly into the optional
-            // current-dynamic map. No in-scene StretchRect or extra geometry pass.
-            IDirect3DTexture9* dynamicShadow=(historyReady||transition.state.fading())?transition.dynamic:shadowScratch;
-            IDirect3DSurface9* dynamicSurface=(historyReady||transition.state.fading())?transition.dynamicSurface:shadowScratchSurface;
-            // Dynamic part of this frame: live terrain and replays into the selected map.
-            d->SetDepthStencilSurface(nullptr);if(!check(d->SetRenderTarget(0,dynamicSurface),"shadow scratch target"))return false;
-            d->SetDepthStencilSurface(shadowDepth);D3DVIEWPORT9 vp={0,0,1024,1024,0,1};d->SetViewport(&vp);
-            if(!check(d->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0xffffffff,1,0),"clear shadow"))return false;
-            d->SetVertexDeclaration(shadowDecl);d->SetStreamSource(0,vertices,0,sizeof(NorthlightGI::WorldVertex));for(int i=0;i<4;++i)d->SetStreamSourceFreq(i,1);d->SetIndices(indices);
-            d->SetVertexShader(shadowVS);d->SetVertexShaderConstantF(0,matrices[cascade],4);d->SetPixelShader(shadowPS);
-            const bool replayAffine=NorthlightShadowBounds::affineLightMatrix(matrices[cascade]);
-            if(!environmentReuse){
-            // Cached-mesh terrain chunks that the game did not draw live this frame.
-            UINT terrainBoundPage=UINT_MAX;
-            if(jobs)replayJobs_.wait(terrainDone); /* 0.3.200 (jobs): the candidates' first reader */
-            if(!terrainCandidates.forEach(batches,fixedTerrainChunks(),liveTerrainChunks,[&](const Batch& b){
-                if(replayAffine&&NorthlightShadowBounds::clipRejectAffine(b.boundsLow,b.boundsHigh,matrices[cascade])){++culledBatches[cascade];return true;}
-                ++drawnBatches[cascade];float material[]={1,1,1,uploadedAlphaCutoffs[b.material]};
-                d->SetPixelShaderConstantF(0,material,1);d->SetTexture(0,materials[b.material]);
-                return bindMeshPage(b,terrainBoundPage)&&check(d->DrawIndexedPrimitive(D3DPT_TRIANGLELIST,0,b.minVertex,b.vertexCount,b.start,b.count),"static shadow cache draw");
-            }))return false;
-            if(liveDirectionalIndexCount){
-                float opaque[]={1,1,1,-1};d->SetPixelShaderConstantF(0,opaque,1);d->SetTexture(0,nullptr);
-                if(!check(d->SetVertexDeclaration(liveTerrainDecl),"live terrain declaration")||!check(d->SetStreamSource(0,liveTerrainGPU.vertices(),0,sizeof(StaticShadow::Vertex)),"live terrain vertices"))return false;
-                d->SetIndices(liveIndicesGPU);NorthlightDynamicRing::touch(liveIndexRing,fence()); /* 0.3.192 (DXVK3): drawn this frame */
-                if(!check(d->DrawIndexedPrimitive(D3DPT_TRIANGLELIST,0,0,liveTerrainGPU.vertexCapacity(),UINT(liveIndexBase+liveTerrainIndexCount),UINT(liveDirectionalIndexCount/3)),"live terrain shadow"))return false;
-                if(!check(d->SetVertexDeclaration(shadowDecl),"restore terrain declaration"))return false;
-            }
-            if(diagnosticFiles){
-                char name[80];std::snprintf(name,sizeof name,"s%d-c%d-terrain",source,cascade);
-                NorthlightWorldDiagnostics::dump(d,dynamicSurface,gpuDiagnosticDirectory,name,diagnosticCapture);
-            }
-            if(splitNear){
-                if(!unionShadow(nearEnvironmentSurface[source],dynamicShadow,shadowCache[slot],float(long(ShadowCacheMargin)+offX),float(long(ShadowCacheMargin)-offY),dz,ShadowCacheSize))return false;
-                d->SetDepthStencilSurface(nullptr);if(!check(d->SetRenderTarget(0,dynamicSurface),"near replay target"))return false;
-                d->SetDepthStencilSurface(shadowDepth);d->SetViewport(&vp);
-                // During a fade the old static crop also needs CURRENT live terrain.
-                // Keep the already-rendered terrain/depth and add the same actor draw.
-                if(!historyReady&&!transition.state.fading())
-                    if(!check(d->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0xffffffff,1,0),"clear near replays"))return false;
-                d->SetSamplerState(0,D3DSAMP_ADDRESSU,D3DTADDRESS_WRAP);d->SetSamplerState(0,D3DSAMP_ADDRESSV,D3DTADDRESS_WRAP);
-            }
-            }
-            // Original model transforms and bone palette survive; replace view->clip only.
-            if(actorShadows){ /* 0.3.158: ActorShadows=0 draws no replays; terrain above and the union below stay */
-            replayBoundsJoin(); /* 0.3.143: first pointBounds reader */
-            if(jobs&&!replayCullsKicked){replayCullsKicked=true;replayCullKick(slot,sourceActive);} /* 0.3.200 (jobs): the bounds are final; the later slots; this slot tests inline unless 0.3.217 kicked its own job early */
-            const uint8_t* cull=replayCullFor(slot,cachedMatrix,matrices[cascade]); /* null: tested inline below, as before */
-            float rows[16];NorthlightWorldMath::replayProjection(context.inverseView,matrices[cascade],rows);
-            d->SetPixelShader(replayPS);
-            // Fresh banks after the static pass. Fold the shadow projection into
-            // desired constants first; compare only the shader's captured ranges.
-            NorthlightReplayPoses::Pass<BOOL> poseConstants;
-            NorthlightReplayDrawState::Cache replayBindings(d);
-            if(captureSampled)replayMeshKeys.clear();const size_t constantCallsBefore=replayConstantCalls;
-            // 0.3.149 RenderProfile: a profile sample frame splits this loop into own logic / state
-            // calls / draws (ReplaySplit, clock reads per span: a secondary number) and records the
-            // drawn packets for the capture-waste count; with DiagReplayProbe the sun near map
-            // records them for the probe and is timed as a whole. Every other frame (always with
-            // RenderProfile=0) runs the Off instantiation, whose hooks are empty: the 0.3.148 loop.
-            const bool profiled=profileSampled(),probeRecord=replayProbeActive()&&slot==0&&captureMode==CaptureFresh&&!shadowDiagnosticCapture;
-            // 0.3.209 (task 29): the near cascade leaves the replays wholly inside the actor map's inset to the actor map, which draws
-            // exactly those (actorReplays): no replay is drawn into both. The list is reserved first, so recording a skip never throws.
-            bool nearSkip=cascade==0&&actorFrameOn[source];
-            if(nearSkip){actorReplays.clear();try{actorReplays.reserve(replays.size());}catch(...){nearSkip=false;}}
-            if(cascade==0)nearActorSkip[source]=nearSkip;
-            unsigned nearSkipped=0;
-            const bool sideDiag=nearSkip&&NorthlightDiagnostics::enabled(); /* diagnostics only: the side tracker, the hold counters */
-            if(nearSkip)actorHold[source].begin(sideDiag,unsigned(frames)+1);else if(cascade==0)actorHold[source].invalidate();
-            if(sideDiag)actorSide[source].begin();
-            auto replayLoop=[&](auto& split)->bool{
-              using NorthlightRenderThreadProbe::Own;
-              split.start();
-              for(size_t index=0;index<replays.size();++index){const auto& p=replays[index];
-                // Only full geometric proof plus cached-volume containment can
-                // replace a live rigid draw. Dynamic/alpha/unknown draws survive.
-                if((!environmentReuse||cacheCurrent)&&key.valid&&(p->staticProofMask&(1u<<slot))&&staticCasters.stats().readyModels&&
-                   (cull?(cull[index]&1)!=0:StaticShadow::containsBounds(cachedMatrix,p->staticProofLow,p->staticProofHigh))){
-                    // Diagnostic only (no behaviour change): the proved model must be in
-                    // this slot's committed cache content. Must stay 0 (same-frame commit).
-                    if(key.staticContent.valid&&!key.staticContent.contains(p->staticProofModel,p->staticProofRevision))++staticDedupUncommitted;
-                    ++staticDedupSkipped;continue;
-                }
-                // The actor map takes a caster whose bounds lie fully inside the inset, and keeps a skinned one while they lie within Stay (hysteresis,
-                // actor_side_hold.h). Its identity there: the palette root, or the centre of its valid bounds (a rigid attachment has no root).
-                bool inActor=false;
-                const float* position=p->shadowSkinned?p->position():nullptr; /* once per replay: the hold and the diagnostics share it */
-                if(nearSkip){const float* matrix=actorFrameMatrix[source];const float extent=NorthlightActorShadowMap::insetExtent(p->pointBounds.valid,p->pointBounds.low,p->pointBounds.high,matrix,NorthlightActorShadowMap::Stay);
-                    if(extent<=NorthlightActorShadowMap::Stay){
-                        if(!p->shadowSkinned)inActor=extent<=NorthlightActorShadowMap::Inset;
-                        else{const std::uint64_t model=NorthlightActorSideHold::holdModel(*p);float centre[3];const float* at=position; /* a rigid attachment's model differs from a rooted caster's */
-                            if(!p->captureRootValid){
-                                if(!at){for(unsigned k=0;k<3;++k)centre[k]=.5f*(p->pointBounds.low[k]+p->pointBounds.high[k]);at=centre;}} /* no position at all: the centre of the valid bounds (finite extent) */
-                            inActor=actorHold[source].decide(model,at,extent);
-                            if(inActor&&position)actorHold[source].stamp(model,position,matrix,extent);}}
-                    else if(p->shadowSkinned&&!p->pointBounds.valid&&p->shared){ /* no bounds this frame: stays in the actor map only by the hold's carry rule */
-                        if(position)inActor=actorHold[source].carry(NorthlightActorSideHold::holdModel(*p),position,matrix);}}
-                if(inActor){actorReplays.push_back(uint32_t(index));++nearSkipped;
-                    if(sideDiag&&p->shadowSkinned)(p->shared?actorSide[source].note(NorthlightActorSide::key(p->shared.get(),p->decl,p->count,position!=nullptr,position),true,p->selfShadow,p->captureRootValid):actorSide[source].unkeyed());continue;}
-                if(sideDiag&&p->shadowSkinned){auto& side=actorSide[source];if(p->shared)side.note(NorthlightActorSide::key(p->shared.get(),p->decl,p->count,position!=nullptr,position),false,p->selfShadow,p->captureRootValid,!p->pointBounds.valid);else side.unkeyed();
-                    /* no valid bounds, yet the palette root lies inside the inset: it belongs to the actor map and fell to the near cascade for lack of bounds;
-                       without a shared snapshot (Unsupported) it can never have bounds: unsupportedNear */
-                    if(!p->pointBounds.valid&&p->captureRootValid&&NorthlightActorShadowMap::insideInset(true,p->captureRoot,p->captureRoot,actorFrameMatrix[source])){if(p->shared)side.invalidNear();else side.unsupportedNear();}}
-                // A rigid M2 doodad at its resting pose is in this slot's static cache with the same geometry (prepareStaticM2): drawn there, not twice.
-                // Hard condition: this slot's cache is current for this frame (rendered or unchanged, no band or rect redraw pending) and its
-                // recorded content holds the model at this revision with the replay's box inside the drawn bounds. Otherwise the replay is drawn.
-                if(p->staticM2Mask&(1u<<slot)&&p->staticM2Model&&cacheCurrent&&staticCasters.stats().readyModels&&(cull?(cull[index]&1)!=0:StaticShadow::containsBounds(cachedMatrix,p->staticProofLow,p->staticProofHigh))&&
-                   key.staticContent.containsBox(*p->staticM2Model,p->staticProofRevision,p->staticProofLow,p->staticProofHigh,StaticM2Dedup::BoundsPad)){
-                    ++staticM2Skipped;++replaySlotM2Skipped[slot];continue;
-                }
-                ++replaySlotTested[slot];replaySlotBounded[slot]+=p->pointBounds.valid;
-                if(p->pointBounds.valid&&(cull?(cull[index]&2)!=0:(replayAffine&&NorthlightShadowBounds::clipRejectAffine(V(p->pointBounds.low[0],p->pointBounds.low[1],p->pointBounds.low[2]),V(p->pointBounds.high[0],p->pointBounds.high[1],p->pointBounds.high[2]),matrices[cascade])))){++culledReplayDraws;++replaySlotCulled[slot];continue;}
-                split.mark(Own);
-                if(!submitReplay(p.get(),replayBindings,poseConstants,rows,matrices[cascade],split,replayConstantBytes,replayConstantCalls,[&](HRESULT h,const char* s){return check(h,s);}))return false;
-                split.drawn(p.get());
-                ++replayDraws;replayTriangles+=p->count;
-                if(captureSampled)try{replayMeshKeys.push_back({p->index,p->stream[0],p->decl,p->offset[0],p->start,p->count,p->base,p->constantGroup});}catch(...){}
-              }
-              split.mark(Own);
-              return true;
-            };
-            ReplaySplit split;split.timed=profiled;if(profiled)split.used=&replayProfileUsed;
-            if(probeRecord){replayProbeList.clear();split.record=&replayProbeList;}
-            const int64_t loopStart=probeRecord?QpcClock::now():0;
-            if(profiled||probeRecord){if(!replayLoop(split))return false;}
-            else {NorthlightRenderThreadProbe::Off off;if(!replayLoop(off))return false;}
-            const double realLoopMs=probeRecord&&captureFrequency.QuadPart>0?double(QpcClock::now()-loopStart)*1000.0/double(captureFrequency.QuadPart):0.0;
-            replayPosePrepared+=poseConstants.prepared;replayPoseReused+=poseConstants.reused;
-            if(captureSampled){
-                /* meshRepeats: draws whose geometry range+declaration already appeared in this
-                   pass (an upper bound for instancing: only stream 0 is keyed, so multi-stream
-                   declarations may overcount); exactRepeats also share the pose bank. */
-                std::sort(replayMeshKeys.begin(),replayMeshKeys.end());size_t meshRepeats=0,exactRepeats=0;
-                for(size_t k=1;k<replayMeshKeys.size();++k)if(replayMeshKeys[k].sameMesh(replayMeshKeys[k-1])){++meshRepeats;exactRepeats+=replayMeshKeys[k].group==replayMeshKeys[k-1].group;}
-                const auto& c=replayBindings.counts;
-                logf("WORLD replay bindings source=%d cascade=%d draws=%llu meshRepeats=%zu exactRepeats=%zu declarations=%u streams=%u indices=%u shaders=%u textures=%u samplers=%u cutoffs=%u constantCalls=%zu texturesSkipped=%u samplersSkipped=%u opaqueKept=%u opaqueSkip=%d",
-                    source,cascade,(unsigned long long)replayDraws,meshRepeats,exactRepeats,c.declarations,c.streams,c.indices,c.shaders,c.textures,c.samplers,c.cutoffs,replayConstantCalls-constantCallsBefore,
-                    c.legacyTextures-c.textures,c.legacySamplers-c.samplers,c.opaqueKept,int(replayBindings.skipping()));
-            }
-            if(profiled){const auto& c=replayBindings.counts;keepReplaySplit(slot,split,replayDraws,c.declarations+c.streams+c.indices+c.shaders+c.textures+c.samplers+c.cutoffs);}
-            // DiagReplayProbe: this map's drawn replays once more into a private target (image
-            // unchanged); its GPU time gets its own profile mark in probing windows. Never on a
-            // diagnostic capture frame (probeRecord), so it may precede the live dump below.
-            if(probeRecord&&!split.recordFailed){const bool marks=profile&&replayProbeMode!=NorthlightRenderThreadProbe::ProbeOff;
-                if(marks)profile->mark("SunNearLoop");replayProbe(rows,matrices[cascade],realLoopMs);if(marks)profile->mark("ReplayProbe");}
-            if(cascade==0&&actorFrameOn[source]){ // 0.3.209 (task 29): this source's actor map, in the same iteration as its near map (same replays, same frame)
-                if(profile)profile->mark(source==0?"SunNearReplays":"MoonNearReplays");bucket(NorthlightEffectsBuckets::Bucket(NorthlightEffectsBuckets::SunNear+source*2)); /* the near terrain and replays so far (own mark name: SunNear/MoonNear follow the union); the actor map is billed on its own below */
-                const float* am=actorFrameMatrix[source];
-                d->SetDepthStencilSurface(nullptr);if(!check(d->SetRenderTarget(0,actorShadowSurface[source]),"actor shadow target"))return false;
-                d->SetDepthStencilSurface(shadowDepth);d->SetViewport(&vp);
-                if(!check(d->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0xffffffff,1,0),"clear actor shadow"))return false;
-                float actorRows[16];NorthlightWorldMath::replayProjection(context.inverseView,am,actorRows);
-                d->SetVertexShaderConstantF(0,am,4);d->SetPixelShader(replayPS);
-                NorthlightReplayPoses::Pass<BOOL> actorPoses;NorthlightReplayDrawState::Cache actorBindings(d);
-                NorthlightRenderThreadProbe::Off actorSplit;unsigned drawnHere=0;bool fogBoundsKnown=true;float fogBounds[4]={1,1,-1,-1};
-                // Only the replays the near loop above skipped (static proof already excluded there, all inside the inset): a replay
-                // partly outside it, or without bounds, stays in the near map alone (it was drawn into both before, twice the cost
-                // in crowds and with a low sun, whose long footprint brings many far replays into the map).
-                if(nearSkip)for(const uint32_t index:actorReplays){const auto& p=replays[index];
-                    if(!submitReplay(p.get(),actorBindings,actorPoses,actorRows,am,actorSplit,replayConstantBytes,replayConstantCalls,[&](HRESULT h,const char* s){return check(h,s);}))return false;
-                    ++drawnHere;
-                    if(fogBoundsKnown){float bounds[4];fogBoundsKnown=NorthlightActorShadowMap::fogBounds(p->pointBounds.valid,p->pointBounds.low,p->pointBounds.high,am,bounds);
-                        if(fogBoundsKnown)for(unsigned axis=0;axis<2;++axis){fogBounds[axis]=std::min(fogBounds[axis],bounds[axis]);fogBounds[axis+2]=std::max(fogBounds[axis+2],bounds[axis+2]);}}
-                }
-                if(!fogBoundsKnown||!drawnHere){fogBounds[0]=fogBounds[1]=-1;fogBounds[2]=fogBounds[3]=1;}
-                std::memcpy(actorFogBounds[source],fogBounds,sizeof fogBounds);
-                replayPosePrepared+=actorPoses.prepared;replayPoseReused+=actorPoses.reused;
-                if(diagnosticFiles){char name[80];std::snprintf(name,sizeof name,"s%d-actor",source);NorthlightWorldDiagnostics::dump(d,actorShadowSurface[source],gpuDiagnosticDirectory,name,diagnosticCapture);}
-                memcpy(actorMatrices[source],am,64);actorValid[source]=true;actorCasterCount[source]=drawnHere;
-                if(profile)profile->mark(source==0?"SunActor":"MoonActor");bucket(NorthlightEffectsBuckets::Bucket(NorthlightEffectsBuckets::SunActor+source));
-                actorNearSkipped+=nearSkipped;actorDrawn+=drawnHere;if(sideDiag)actorSide[source].endFrame();
-                const DWORD actorTick=GetTickCount();
-                if(NorthlightDiagnostics::enabled()&&(!actorShadowLogAt[source]||actorTick-actorShadowLogAt[source]>=1000)){actorShadowLogAt[source]=actorTick;
-                    logf("WORLD actor shadow map source=%d drawn=%u nearSkipped=%u of %zu replays; totals drawn=%lu nearSkipped=%lu sideFlipsSinceLog=%u sideFlipFramesSinceLog=%u sideMatchedSinceLog=%u framesSinceLog=%u sideTracked=%u sideUnkeyed=%u invalidBoundsNear=%u unsupportedNear=%u selfSide=%s selfSideFlipsSinceLog=%u holdBand=%u holdOverflows=%lu nearListSize=%u nearWalkStops=%lu sideFlipsRootedSinceLog=%u sideFlipsUnrootedSinceLog=%u invalidBoundsNearSinceLog=%u unrootedNoBounds=%u unrootedNoBoundsSinceLog=%u selfUnrooted=%u selfNoBoundsFramesSinceLog=%u holdCarried=%u holdCarriedTotal=%lu",source,drawnHere,nearSkipped,replays.size(),actorDrawn,actorNearSkipped,
-                        actorSide[source].sideFlips,actorSide[source].sideFlipFrames,actorSide[source].sideMatched,actorSide[source].frames,actorSide[source].tracked,actorSide[source].unkeyedNow,actorSide[source].invalidBoundsNear,actorSide[source].unsupportedNow,NorthlightActorSide::name(actorSide[source].selfSide),actorSide[source].selfFlips,
-                        actorHold[source].bandHeld,actorHold[source].overflows,replayNearSize,replayNearStops,
-                        actorSide[source].sideFlipsRooted,actorSide[source].sideFlipsUnrooted,actorSide[source].invalidBoundsNearSum,actorSide[source].unrootedNoBounds,actorSide[source].unrootedNoBoundsSum,actorSide[source].selfUnrooted,actorSide[source].selfNoBoundsFrames,actorHold[source].carried,actorHold[source].carriedTotal);actorSide[source].resetWindow();}
-            }
-            } /* actorShadows */
-            // Union: min(dynamic scratch, cached static at its integer texel offset + exact depth delta).
-            if(diagnosticFiles){
-                char name[80];std::snprintf(name,sizeof name,"s%d-c%d-live",source,cascade);
-                NorthlightWorldDiagnostics::dump(d,dynamicSurface,gpuDiagnosticDirectory,name,diagnosticCapture);
-            }
-            if(splitNear){
-                if(!unionShadow(shadowSurface[slot],dynamicShadow,nearEnvironment[source],0,0,0,1024))return false;
-            }else if(!unionShadow(shadowSurface[slot],dynamicShadow,shadowCache[slot],float(long(ShadowCacheMargin)+offX),float(long(ShadowCacheMargin)-offY),dz,ShadowCacheSize))return false;
-            if(cascade==1)++fogShadowRevision;
-            if(slot==3)moonFloorShadowCurrent=key.valid&&!sliceBand&&!slices.active;
-            if(!environmentReuse){
-            const V selected=slotDirections[slot];const bool wasFading=transition.state.fading();const uint32_t committedAt=GetTickCount();
-            if(!transition.state.commit({selected.x,selected.y,selected.z},committedAt,historyReady&&key.valid)){
-                transition.state.request({selected.x,selected.y,selected.z},committedAt,true);transition.state.commit({selected.x,selected.y,selected.z},committedAt,false);
-            }
-            if(!wasFading&&transition.state.fading())++shadowTransitionStarts;
-            transition.working=cascadeFrames[source][cascade];transition.workingValid=key.valid;
-            }
-            if(profile)profile->mark(source==0?(cascade==0?"SunNear":"SunFar"):(cascade==0?"MoonNear":"MoonFar"));
-            bucket(NorthlightEffectsBuckets::Bucket(NorthlightEffectsBuckets::SunNear+source*2+cascade));
-            dynamicMs=phaseNow()-dynamicStart;
-            /* Only a frame that ran its capture commits: a skipped frame drew no replays, and a frame
-               without any model draw (undecided) must not be reused for N frames either. */
-            if(!environmentReuse){if(splitNear||captureMode==CaptureFresh||!actorShadows)reuse.commit(interval,shadowPasses,matrices[cascade]);else captureDemand=true;}
-            const double phaseMs=phaseNow();const DWORD phaseTick=GetTickCount();
-            if(captureSampled||(NorthlightDiagnostics::enabled()&&phaseMs>4.0&&(!shadowPhaseLogAt||phaseTick-shadowPhaseLogAt>=1000))){
-                shadowPhaseLogAt=phaseTick;
-                logf("WORLD shadow phase gpuFrame=%llu worldFrame=%u source=%d cascade=%d cache=%s cpuMs=%.3f selectMs=%.3f localMs=%.3f staticMs=%.3f dynamicMs=%.3f localDraws=%u staticDraws=%llu staticInstances=%llu replayDraws=%llu replayTriangles=%llu anchorRetained=%u offsetX=%ld offsetY=%ld depthDelta=%.9f selectPlanMs=%.3f planMs=%.3f",
-                    (unsigned long long)(profile?profile->sampledFrame():0),frames,source,cascade,reason?reason:sliceBand?"static-slice":"reuse",phaseMs,selectMs,localMs,staticMs,dynamicMs,localDraws,
-                    (unsigned long long)staticDraws,(unsigned long long)staticInstances,(unsigned long long)replayDraws,(unsigned long long)replayTriangles,unsigned(!placement.reason),offX,offY,dz,selectPlanMs,staticCasters.stats().planMs-planBefore);
-            }
-        }
-        }
-        transitionFrame.complete=true;
-        if(NorthlightStaticPrebuild::Scheduler::Enabled&&directionalShadows)staticPrebuild.frame(cascadePivot,sourceDirections,sourceActive,!anyShadowCacheRender&&!continuousCelestialShadows&&staticScene&&staticCasters.stats().readyModels,GetTickCount(),
-            [&](int,int cascade,V direction,float* m){const float radius=cascade==0?NorthlightShadowCascades::NearRadius:farRadius;NorthlightWorldMath::shadowMatrixFrom(NorthlightWorldMath::shadowFrame(cascade?farPivot:cascadePivot,direction,radius),radius*float(ShadowCacheSize)/1024.f,m);},
-            [&](const float* m){return staticCasters.planReady(m);},
-            [&](const float* m){try {staticCasters.signature(m);return true;}catch(...){return false;}}, /* a failed early build never resets the cache */
-            [&](const float* m){staticCasters.discardPlan(m);});
-        replayCullSettle();if(jobs)replayJobs_.wait(terrainDone); /* 0.3.200 (jobs): no cascade drew terrain: joined here */
-        if(captureSampled){const auto& selection=terrainCandidates.stats();
-            logf("WORLD terrain selection scanned=%llu candidates=%zu membershipChecks=%llu passes=%u reusedMembershipChecks=%llu fallbackPasses=%u scratchBytes=%zu prepareMs=%.3f",
-                (unsigned long long)selection.scanned,terrainCandidates.candidates(),(unsigned long long)selection.membershipChecks,selection.passes,
-                (unsigned long long)selection.reusedMembershipChecks,selection.fallbackPasses,terrainCandidates.bytes(),terrainPrepareMs);}
-        shadowFrameReady=directionalShadows;
-        if(directionalShadows)directionalShadowTime=NorthlightShadowRefreshBudget::Clock::now()-directionalStart;
+            logf("WORLD directional shadows deferred rendererFrame=%u cause=alpha-target sceneEffectsRetained=1",rendererFrame);
+            if(debug==1)return emptyDiagnosticView(targetSurface,w,h,debug);
+            prepareWorldShadowState();
+        }else if(projectionAudit)projectionAudit->finish(true);
         }else{
             shadowFrameReady=pointReady=false;
             actorValid[0]=actorValid[1]=false;
             if(quality.fogClouds&&quality.fogCloudDensity&&effects.fog&&debug==0&&!fogCloudNoise().ready.load(std::memory_order_acquire))fogCloudNoise().request();
         }
+        if(shadowReplayAlpha.setFallback(directionalDeferred)){
+            fogScreen.invalidateHistory();history.invalidate();
+        }
+        const bool fogShadowMapsReady=geometryReady&&applyDirectionalShadows;
         if(lightingCapture){const unsigned productSource=NorthlightGI::dot(sourceColors[0],sourceColors[0])>1e-10f?0:1;
             for(unsigned slot=0;slot<4;++slot){const auto& reuse=slot%2?farShadow[slot/2]:nearShadow[slot/2];const auto& key=shadowCacheKey[slot];
-                lightingCapture->directional(slot,geometryReady&&directionalShadows&&sourceActive[slot/2],cascadeActions[slot],sourceMatrices[slot/2][slot%2],shadow[slot],productSource,reuse.valid,reuse.pass,key.serial,key.staticSignature);}}
+                lightingCapture->directional(slot,geometryReady&&shadowFrameReady&&sourceActive[slot/2],cascadeActions[slot],sourceMatrices[slot/2][slot%2],directionalMaps.current(slot).texture,productSource,reuse.valid,reuse.pass,key.serial,key.staticSignature);}}
         skipReason="draw";
         // Point shadows use this frame's selected/faded direct-light sources, in daylight too.
         if(jobs)replayJobs_.wait(atmosphereDone);else atmosphereWork(atmosphere,nearZ,w,h,debug);
+        if(NorthlightLocalLightTrace::auditInputs())logLocalLightInputs(rendererFrame,geometryReady);
         bucket(NorthlightEffectsBuckets::Selection); // Atmosphere work/join precedes the point-shadow pass.
         // With no geometry, no upload/cascade mark closes the world setup.
         // Its elapsed interval can include CPU queue idle; do not bill it to empty point shadows.
         if(profile&&!geometryReady)profile->mark("WorldSetup");
         const unsigned pointUpdatesBefore=pointUpdates;
-        if(geometryReady&&effects.shadows&&debug==0&&quality.pointShadows)renderPointShadows(atmosphere.lights,replaysComplete,actorShadows,rendererFrame,directionalShadowTime);else pointReady=false;
-        if(lightingCapture)lightingCapture->pointSources(pointSlots,GetTickCount(),pointReady);
+        if(geometryReady&&effects.shadows&&debug==0&&quality.pointShadows)renderPointShadows(atmosphere.lights,replaysComplete,actorShadows,rendererFrame,directionalResult.directionalShadowTime);else pointReady=false;
+        if(lightingCapture)lightingCapture->pointSources(pointTargets.slots(),GetTickCount(),pointReady);
         if(pointUpdates!=pointUpdatesBefore&&profileSampled())profilePointUsed(); /* capture waste (RenderProfile) */
-        if(geometryReady&&effects.shadows&&debug==0)renderFlashShadows(atmosphere.lights,replaysComplete,actorShadows);else for(auto& s:flashSlots)s.ready=false;
+        if(geometryReady&&effects.shadows&&debug==0)renderFlashShadows(atmosphere.lights,replaysComplete,actorShadows);else flashShadows.invalidate();
         if(profile)profile->mark("PointShadow");
         bucket(NorthlightEffectsBuckets::Point);
         double lightingSetupMs[4]={},spellFitMs=0,spellJoinMs=0;bool spellWorker=false;
         int64_t lightingClock=profileSampled()&&captureFrequency.QuadPart>0?QpcClock::now():0;
         auto lightingMark=[&](unsigned part){if(!lightingClock)return;const int64_t t=QpcClock::now();lightingSetupMs[part]=1000.*double(t-lightingClock)/double(captureFrequency.QuadPart);lightingClock=t;};
-        d->SetDepthStencilSurface(nullptr);d->SetTexture(0,nullptr);
-        if(!foldScene&&!check(d->StretchRect(targetSurface,nullptr,colorSurface,nullptr,D3DTEXF_NONE),"world color copy"))return false;
-        d->SetVertexShader(nullptr);d->SetFVF(D3DFVF_XYZRHW|D3DFVF_TEX1);d->SetStreamSourceFreq(0,1);d->SetRenderState(D3DRS_ZENABLE,FALSE);d->SetRenderState(D3DRS_ZWRITEENABLE,FALSE);
-        d->SetTextureStageState(0,D3DTSS_TEXCOORDINDEX,0);d->SetTextureStageState(0,D3DTSS_TEXTURETRANSFORMFLAGS,D3DTTFF_DISABLE);d->SetRenderState(D3DRS_WRAP0,0);
-        float c[68][4]={};c[0][0]=1.f/w;c[0][1]=1.f/h;c[0][2]=nearZ;c[0][3]=farZ;
+        if(!composite.prepareScreenInput(d,targetSurface,foldScene!=nullptr,
+                                        [&](HRESULT hr,const char* name){return check(hr,name);}))return false;
+        ScreenFrameConstants frameConstants;auto& c=frameConstants.rows;
+        c[0][0]=1.f/w;c[0][1]=1.f/h;c[0][2]=nearZ;c[0][3]=farZ;
         // 0.3.198 (rain): the frame's weather scalars (all 0 and every gain exactly 1 without weather: the bank below is then unchanged).
         // The new constants live in c59.yzw (LocalLightFog[0].yzw; only .x of c59..c66 is read, by LocalFog) and are read by WorldLighting (z)
         // and WorldFog (w); the lamp fog batch overwrites c59..c62 after all three have run, the bank is uploaded whole each frame.
@@ -6183,14 +3960,8 @@ public:
         c[67][0]=c[67][1]=0.f;
         // Temporal history is valid only for the same map, a continuous camera
         // and normal rendering; teleports, F10 and diagnostics restart it.
-        const bool useHistory=temporalValid&&temporalLighting==requirements.lighting&&temporalMap==frameMap&&!different(vec(context.camera),previousCamera,40)&&debug==0;
-        if(useHistory!=traceHistory){
-            const DWORD now=GetTickCount();
-            if(DWORD(now-traceHistoryTick)>=1000){traceHistoryTick=now;traceHistoryCount=0;}
-            if(NorthlightDiagnostics::enabled()&&traceHistoryCount++<16)logf("WORLD history transition frame=%u rendererFrame=%u tick=%lu used=%u valid=%u sameMap=%u cameraContinuous=%u debug=%d geometry=%u",unsigned(frames),rendererFrame,(unsigned long)now,unsigned(useHistory),unsigned(temporalValid),unsigned(temporalMap==frameMap),unsigned(!different(vec(context.camera),previousCamera,40)),debug,unsigned(geometryReady));
-            traceHistory=useHistory;
-        }
-        memcpy(c[53],previousView,64);c[57][0]=useHistory?.75f:0.f;
+        const NorthlightWorldLightHistory::View historyView{frameMap,vec(context.camera),context.view};
+        const bool useHistory=prepareFrameHistory(historyView,requirements.lighting,debug,geometryReady,rendererFrame,c);
         // Up to 16 authored lamps, sent through existing SM3-safe 8-light
         // direct / 4-light fog batches. Never expand the shader register bank.
         const float lampNight=NorthlightRegionalFog::nightFactor(celestialValid?celestial.dayFraction:-1.f);
@@ -6203,55 +3974,13 @@ public:
         lightingMark(0);
         lightingMark(1);
         auto& localLights=atmosphere.lights;
-        sourceTrace.begin(NorthlightDiagnostics::enabled()&&NorthlightQuality::renderProfile(quality)&&
-            (diagnosticCapture||(equipmentLightsOn()&&((localSourceTraces<32&&frames%127==0)||captureSampled))),
-            equipmentLightsOn()?particleLights.output.data():nullptr,equipmentLightsOn()?particleLights.outputCount:0,localLights);
-        if(sourceTrace.enabled)++localSourceTraces;
-        localDirectCount=localLights.count;localDirectNearest=localLights.nearest;
-        if(equipmentLightsOn()&&captureSampled){
-            const auto uploads=NorthlightParticleUploads::cache().stats();
-            logf("PARTICLELIGHT probes=%u distant=%u draws=%u background=%u accepted=%u deferred=%u triangles=%u points=%u output=%u shaderMiss=%u textureMiss=%u bufferMiss=%u stateMiss=%u (blendOp=%u alphaTest=%u colorWrite=%u depth=%u sampler=%u projection=%u) geometryMiss=%u dropped=%u uploadHits=%llu uploadMisses=%llu uploadKiB=%u ttlMs=0 readback=0",particleLights.probes,particleLights.distant,particleLights.draws,particleLights.backgroundDraws,particleLights.accepted,particleLights.deferred,particleLights.triangles,particleLights.points,particleLights.immediateCount,particleLights.shaderMiss,particleLights.textureMiss,particleLights.bufferMiss,particleLights.stateMiss,particleLights.stateWhy[0],particleLights.stateWhy[1],particleLights.stateWhy[2],particleLights.stateWhy[3],particleLights.stateWhy[4],particleLights.stateWhy[5],particleLights.geometryMiss,particleLights.dropped,static_cast<unsigned long long>(uploads.hits),static_cast<unsigned long long>(uploads.misses),NorthlightParticleUploads::cache().bytes()/1024);
-            for(unsigned i=0;i<particleLights.textureMissCount;++i){const auto& m=particleLights.textureMisses[i];
-                static const char* const seen[]={"never","held","large","evicted","invalidated","partial","failed","unsupported","released"};
-                logf("PARTICLELIGHT textureMiss key=%p seen=%s type=%u size=%ux%u levels=%u format=0x%x pool=%u usage=0x%x",m.key,m.seen<9?seen[m.seen]:"?",m.type,m.width,m.height,m.levels,m.format,m.pool,m.usage);}
-            particleLights.textureMissCount=0;
-            for(unsigned i=0;i<particleLights.outputCount;++i){const auto& light=particleLights.output[i];
-                if(std::find(particleLights.immediate.begin(),particleLights.immediate.begin()+particleLights.immediateCount,light.sourceId)==particleLights.immediate.begin()+particleLights.immediateCount)continue;
-                logf("PARTICLELIGHT source id=%llu position=(%.3f %.3f %.3f) rgb=(%.4f %.4f %.4f) range=%.2f cameraYards=%.2f",static_cast<unsigned long long>(light.sourceId),light.position[0],light.position[1],light.position[2],light.diffuse[0],light.diffuse[1],light.diffuse[2],light.attenuationEnd,std::sqrt(NorthlightEquipmentLights::distance2(light.position,context.camera)));}
-            logf("EQUIPMENT lights nativePoint=1 attempts=%u banks=%u observed=%u duplicateStatic=%u dropped=%u active=%u output=%u maxLights=%u memoBanks=%u ttlMs=250 falloff=bounded-linear-approx candidates=%u actorCandidates=%u actorReads=%u backgroundReads=%u backgroundBanks=%u duplicateBanks=%u orderedDuplicates=%u readLimited=%u cachedBanks=%u domainRejected=%u decoded=%u rejected=%u",equipmentCapture.reads,equipmentLights.banks,equipmentLights.observed,equipmentLights.duplicates,equipmentLights.dropped,equipmentLights.count,equipmentLights.outputCount,NorthlightEquipmentLights::Capacity,NorthlightEquipmentLights::MemoBanks,equipmentCapture.candidates,equipmentCapture.actorCandidates,equipmentCapture.actorReads,equipmentCapture.backgroundReads,equipmentLights.backgroundBanks,equipmentLights.bankDuplicates,equipmentLights.orderedBankDuplicates,equipmentCapture.readLimited,equipmentCapture.cached,equipmentCapture.domainRejected,equipmentCapture.decoded,equipmentCapture.rejected);
-            for(unsigned i=0;i<equipmentLights.count;++i){const auto& entry=equipmentLights.entries[i];if(entry.gain<=.0001f)continue;
-                const auto light=NorthlightEquipmentLights::light(entry.source,entry.id,entry.gain);
-                const float selfDistance=actorShadowHistory.selfHold()>0?std::sqrt(NorthlightEquipmentLights::distance2(light.position,actorShadowHistory.selfAt())):-1.f;
-                logf("EQUIPMENT source id=%llu position=(%.3f %.3f %.3f) nativeRGB=(%.4f %.4f %.4f) denominator=(%.4f %.4f %.4f) rgb=(%.4f %.4f %.4f) range=%.2f gain=%.3f cameraYards=%.2f selfYards=%.2f",static_cast<unsigned long long>(light.sourceId),light.position[0],light.position[1],light.position[2],entry.source.color[0],entry.source.color[1],entry.source.color[2],entry.source.attenuation[0],entry.source.attenuation[1],entry.source.attenuation[2],light.diffuse[0],light.diffuse[1],light.diffuse[2],light.attenuationEnd,entry.gain,std::sqrt(NorthlightEquipmentLights::distance2(light.position,context.camera)),selfDistance);}
-        }
-        c[52][0]=float(std::min(localDirectCount,NorthlightLocalLightSelection::DirectBatchSize));c[52][1]=.9f*lampGain;
-        // Near fade: no added fog within 3.5 units of the viewer, full at 15.5.
-        // Same soft ramp, shifted 0.5 world units closer.
-        // Isotropic scattering is much weaker than the diffuse surface response.
-        // Keep the real medium/range; do not amplify it into a luminous sphere.
-        c[58][0]=3.5f;c[58][1]=1.f/12;c[58][2]=.25f*lampGain*wx.lampFogGain();c[58][3]=.12f*lampGain*wx.lampFogGain();
-        const float airFloor=atmosphere.airFloor; /* atmosphereWork: .0017f plus the rain's extra, thinned in dense zones */
-        c[59][2]=std::max(wx.shadowSoften(),1.f-underwaterFade.scale()); /* underwater: the sun correction goes to 0 and the shadow softens fully (the rain path), alpha and baseline keep the true visibility */ c[59][3]=airFloor; /* 0.3.198 (rain): direct shadow softening (0 when dry), air extinction floor (WorldFog) */
-        if(uploadedFogField){c[31][0]=uploadedFogField->originX;c[31][1]=uploadedFogField->originY;}
-        c[31][2]=1.f/(NorthlightRegionalFog::N*NorthlightRegionalFog::Spacing);
-        c[31][3]=atmosphere.c[31][3]; /* nightFactor, atmosphereWork */
-        // Neutral scattering albedo preserves the zone/source palette (c22.w and c32: atmosphereWork, the same expressions).
-        c[22][0]=c[22][1]=c[22][2]=1;c[22][3]=atmosphere.c[22][3];memcpy(c[32],atmosphere.c[32],16);
-        c[65][3]=uploadedFogField&&fogHeightReady?1.f:0.f;
+        recordFrameLocalSources(localLights,diagnosticCapture);
         const auto& volumePalette=paletteFrameValid?framePalette:celestialProfiles.fallback;
-        // 0.3.199 (fog clouds): the frame derived in atmosphereWork; the device part of its activity (the noise volume) is decided here.
         auto& cf=atmosphere.cf;
-        cf.active=cf.active&&effects.fog&&debug==0&&fogCloudsPS&&ensureCloudNoise();
-        if(cf.active){
-            NorthlightFogClouds::shaderConstants(cf,&c[59]); /* c59.y, c60..c63 (host-folded for the shader's early outs) */
-        }
-        c[65][0]=fogGlobalHeights[0]-.25f;
-        c[65][1]=fogGlobalHeights[1]+std::max({fogGlobalHeights[2],6.f,c[32][2],c[32][3],cf.active?c[62][0]:0.f})+.25f;
-        c[65][2]=uploadedFogField&&fogGlobalHeights[2]>0?1.f:0.f;
-        if(profileSampled())logf("WORLD fog clouds active=%d coverage=%.3f threshold=%.3f height=%.1f speed=%.2f dir=(%.2f %.2f) sigmaMax=%.4f lush=%.2f noiseReady=%d",cf.active?1:0,cf.coverage,cf.threshold,cf.height,cloudWind.speed,cloudWind.dir[0],cloudWind.dir[1],cf.sigmaMax,cloudLush,fogCloudNoise().ready.load(std::memory_order_acquire)?1:0);
+        prepareAtmosphereConstants(c,wx,cf,lampGain,debug);
         // The next frame's spell constants can fit while this frame's remaining
         // GPU passes are submitted. Publish before any reader or return.
-        NorthlightSpellFog::Frame spellRaw;const bool spellWanted=quality.spellFog&&effects.fog&&uploadedFogField&&debug==0&&atmosphere.spellValid;
+        NorthlightSpellFog::Frame spellRaw;const bool spellWanted=quality.spellFog&&effects.fog&&regionalFog.field()&&debug==0&&atmosphere.spellValid;
         if(spellWanted){spellRaw.active=true;for(unsigned i=0;i<NorthlightSpellFog::kSamples;++i)spellRaw.tau[i]=atmosphere.spellTau[cf.active?1:0][i];for(unsigned k=0;k<3;++k)spellRaw.scatter[k]=std::max(context.ambient[k],0.f)*.35f;}
         const DWORD spellTick=GetTickCount();const float spellDt=spellFogTick?float(DWORD(spellTick-spellFogTick))*.001f:0.f;spellFogTick=spellTick;
         std::optional<NorthlightSpellFog::PendingUpdate> spellUpdate;
@@ -6275,74 +4004,18 @@ public:
         } spellJoin{replayJobs_,spellDone,spellUpdate,spellFogHold};
         const bool spellAsync=spellUpdate.has_value();
         if(spellAsync)replayJobs_.kick(spellDone,spellJob);else spellJob();
-        skyTransmittanceFrame=cf.active?atmosphere.veil[1]:atmosphere.veil[0]; /* the clouds' term only when the pass is really active (1: no fog field or no fog) */
-        c[33][0]=float(w);c[33][1]=float(h);c[33][2]=float(w/2);c[33][3]=float(h/2);
-        c[1][0]=projection[0];c[1][1]=projection[1];c[1][2]=projection[2];c[1][3]=minZ;
-        c[2][0]=1.f/(maxZ-minZ);c[2][1]=NorthlightShadowCascades::NearRadius;c[2][2]=farMapRadius(firstSource);c[2][3]=1.f/1024;
-        memcpy(c[3],context.inverseView,64);memcpy(c[7],sourceMatrices[firstSource][0],64);memcpy(c[11],sourceMatrices[firstSource][1],64);
-        memcpy(c[15],context.camera,12);memcpy(c[16],context.lightDirection,12);memcpy(c[17],context.direct,12);memcpy(c[18],context.ambient,12);
-        /* Ambient policies follow the selected solar/lunar schedule. */
-        const auto naturalSky=NorthlightForeverSky::evaluateSelected(celestialValid?celestial.dayFraction:-1.,NorthlightQuality::foreverCelestial(quality));
-        c[18][3]=NorthlightTwilightFill::gain(naturalSky.valid,naturalSky.valid?celestial.dayFraction:-1.,
-            naturalSky.valid?naturalSky.sun.direction[2]:0.f,naturalSky.valid?naturalSky.moon.direction[2]:0.f);
-        c[18][3]+=wx.ambientLift(); /* 0.3.198 (rain): a little more sky ambient from the GI pass in rain (+0 when dry; the probes themselves are untouched) */
-        NorthlightNightFloor::nightAmbient(quality.nightBrightness,NorthlightNightFloor::weight(naturalSky.valid,naturalSky.valid?naturalSky.sun.direction[2]:0.f),c[18],c[19]);
-        c[66][0]=float(quality.giPrelitMix)*.01f;c[66][1]=float(quality.giBrightness)*.01f; // GI only; volume passes later own c66 as FogActorBounds.
-        c[19][3]=8; /* c19.rgb: NightBrightness light per unit of albedo, from c18's ambient (WorldComposite only; 0 = off); c19.w: probe spacing */
-        c[20][0]=float(NorthlightGI::probeLayout().atlas);c[20][1]=requirements.probes?NorthlightQuality::giIntensity(quality):0.f;c[20][2]=std::max(.01f,std::min(1.f,quality.shadowStrength*.0085f));c[20][3]=requirements.probes&&probeAtlasReady(frameMap)?1.f:0.f;
-        DWORD now=GetTickCount();
-        c[21][0]=uploadedFogField&&(uploadedFogField->fogCells||uploadedFogField->airCells)?1.f:0.f;c[21][1]=1.2f*wx.shaftGain();c[21][2]=hdrMode?64.f:.38f;c[21][3]=128; /* HDR retains radiance above diffuse white until output mapping. */
-        // 0.3.200 (gpu budget): fewer march intervals at reduced levels (c60.x clouds, c64.z WorldFog; both stay 0, the bank unchanged, at level 0).
-        if(gpuBudgetLevel){if(cf.active)c[60][0]=NorthlightGpuBudget::spacingDelta(c[21][3],NorthlightGpuBudget::cloudSteps(gpuBudgetLevel),40);c[64][2]=NorthlightGpuBudget::spacingDelta(c[21][3],NorthlightGpuBudget::fogSteps(gpuBudgetLevel),48);}
-        memcpy(c[23],context.camera,12);c[24][0]=NorthlightWorldMath::ShadowBiasWorld*NorthlightWorldMath::InverseShadowDepth;c[24][1]=2;c[24][2]=float(debug);c[24][3]=float(DWORD(now-animationEpoch))*.001f;
-        // Readable fog as measured, else the held value, for every c25/c26 reader (WorldComposite, smoothRemoval, FogClouds); render() runs once per frame, so dt is one frame.
-        const auto uploadedFog=legacyFogHold.update(frameMap,legacyFog,legacyFogKnown,now);if(traceFog==0&&!legacyFogKnown&&legacyFogHold.has)traceFog=2;
-        memcpy(c[25],uploadedFog.parameters,16);memcpy(c[26],uploadedFog.color,16);
-        memcpy(c[28],context.lightDirection,12);memcpy(c[29],context.direct,12);
-        c[27][2]=float(DWORD(now-animationEpoch))*.001f;
-        c[27][3]=c[21][0];
-        c[35][0]=NorthlightWorldMath::InverseShadowDepth;
-        // Horizon haze: the game's own fog end, smoothed per map and held while
-        // unknown. Extras in free components c57.yzw / c67.zw; c34 is set for the
-        // final pass only. Fog off (Ctrl+Shift+F7) or HorizonHaze=0: optical depth 0.
-        horizonHazeState.update(frameMap,legacyFog.parameters,legacyFog.color,projection[2],double(now)*.001);
-        const float hazeSun[3]={sourceDirections[0].x,sourceDirections[0].y,sourceDirections[0].z};
-        const float hazeZone=NorthlightCelestialProfiles::horizonHaze(volumePalette,c[31][3]);
-        float hazeLift[3];NorthlightSunHue::horizonLift(glowHueFrame,hazeLift);
-        // The warm lobe toward the sun goes with the sun's light, which ends with its disc (discVisibility).
-        const float hazeSunWeight=underwaterFade.scale()*sourceWeights[0];
-        const auto haze=NorthlightHorizonHaze::constants(horizonHazeState,{quality.horizonHaze,quality.horizonHazeStart,quality.horizonHazeBand,quality.horizonHazeTerrain},
-            farZ,hazeZone,effects.fog&&!atmosphere.imported.valid,celestialValid,hazeSun,hazeSunWeight,hazeLift,wx.hazeTauScale());
-        c[57][1]=haze.shape[0];c[57][2]=haze.shape[1];c[57][3]=haze.shape[2];c[67][2]=haze.sun[0];c[67][3]=haze.sun[1];
-        c[35][1]=haze.lift[0];c[35][2]=haze.lift[1];c[35][3]=haze.lift[2]; /* lift colour = the glow hue (WorldComposite reads c35.yzw) */
-        hazeFrame=haze;
-        {   // The far edge toward the sun for the discs and the glow ring, from the regional field's surface (water over ground).
-            float target=0;
-            if(celestialValid&&uploadedFogField){const auto& field=*uploadedFogField;
-                target=NorthlightApparentHorizon::sine(context.camera,celestial.sun.direction,farZ,[&](float x,float y,float& height){
-                    const auto g=NorthlightSpellFog::fieldAt(field,x,y);height=g.ground;return g.coverage>.5f;});}
-            c[64][3]=apparentHorizon.update(target,now); /* HorizonEdge.w: the composite's haze band starts at the far edge */
-        }
-        // 0.3.159 shadow removal smoothing (TemporalLight smoothRemoval, c30.yzw), always on. The drawn
-        // lighting passes are the sources with a positive weight (plus firstSource at weight 0), so
-        // their summed weight is the lighting-buffer alpha of a fully lit pixel. Without a drawn
-        // weight nothing painted is removed and y stays 0. w: the 0.75-unit disc radius
-        // (1.5 across) in half-res pixels at view distance 1.
-        const float drawnWeight=std::max(sourceWeights[0],0.f)+std::max(sourceWeights[1],0.f);
-        if(drawnWeight>.001f){c[30][1]=1;c[30][2]=1/drawnWeight;c[30][3]=.75f*std::fabs(projection[0])*float(w/2)*.5f;}
-        // 0.3.170 TemporalLight (c15.w, TemporalReach): the largest direct-light channel per unit of
-        // normalised visibility over the drawn, active sources. It bounds how far a flickering shadow
-        // may carry the rgb history outside its neighbourhood (0: exactly the tight clamp).
-        for(int source=0;source<2;++source)if(sourceWeights[source]>0&&sourceActive[source])
-            c[15][3]=std::max(c[15][3],std::max({sourceColors[source].x,sourceColors[source].y,sourceColors[source].z})*drawnWeight/sourceWeights[source]);
+        const ScreenFrameInputs screenInputs{w,h,farZ,minZ,maxZ,debug,firstSource,sourceActive,requirements.probes,hdrMode,frameMap};
+        prepareFrameShaderBank(screenInputs,wx,cf,volumePalette,frameConstants);
+        const auto& haze=frameConstants.haze;
+        const auto& uploadedFog=frameConstants.uploadedFog;
         lightingMark(2);
-        c[30][0]=waterMask?1.f:0.f;d->SetPixelShaderConstantF(0,&c[0][0],68);
-        const float shadowTuning[]={quality.shadowStrength*.01f,quality.shadowSoftness*.01f,quality.shadowContactRadius*.01f,1.f};
-        d->SetPixelShaderConstantF(115,shadowTuning,1);
-        IDirect3DTexture9* textures[]={foldScene?foldScene:color,depth,shadow[0],shadow[1],probe[0],probe[1],probe[2],probe[3],nullptr,nullptr,probe[4],waterMask,nullptr,regionalFogTexture};
-        for(int i=0;i<14;++i){d->SetTexture(i,textures[i]);d->SetSamplerState(i,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(i,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);d->SetSamplerState(i,D3DSAMP_MINFILTER,(i==0||i==9)?D3DTEXF_LINEAR:D3DTEXF_POINT);d->SetSamplerState(i,D3DSAMP_MAGFILTER,(i==0||i==9)?D3DTEXF_LINEAR:D3DTEXF_POINT);d->SetSamplerState(i,D3DSAMP_MIPFILTER,D3DTEXF_NONE);d->SetSamplerState(i,D3DSAMP_SRGBTEXTURE,FALSE);}
+        IDirect3DTexture9* textures[]={foldScene?foldScene:composite.scratchTexture(),depth,directionalMaps.current(0).texture,directionalMaps.current(1).texture,probeAtlas.channel(0),probeAtlas.channel(1),probeAtlas.channel(2),probeAtlas.channel(3),nullptr,nullptr,probeAtlas.channel(4),waterMask,nullptr,regionalFog.texture()};
+        publishFrameShaderBank(frameConstants,waterMask!=nullptr,textures);
+        const auto& shadowTuning=frameConstants.shadowTuning;
         if(lightingCapture)lightingCapture->inputs(0,1u<<1,1u<<1); // Actual full-resolution sampled depth, before any post-process reuses its slot.
-        bool fogActorCurrent=false,fogActorTiledCurrent=false,fogAmbientOnlyCurrent=false,actorTilesWideCurrent[2]={};
+        DirectionalVisibility visibility;
+        const auto& actorTilesWideCurrent=visibility.actorTilesWide;
+        FogBoundSource fogSource;
         auto directionFor=[&](int source,bool volume){
             // Shadow-map history controls visibility, never the sky's light direction.
             if(volume)return rawSourceDirections[source];
@@ -6360,771 +4033,150 @@ public:
             if(volume&&source==0)NorthlightSunHue::fogDirect(rgb.data(),glowHueFrame,rgb.data());
             return rgb;
         };
-        const auto fogActorFor=[&](int source){return quality.godrays&&fogActorPS&&fogCloudsActorPS&&geometryReady&&applyDirectionalShadows&&quality.actorShadows&&quality.actorShadowDetail&&sourceActive[source]&&actorValid[source]&&actorShadow[source]&&actorCasterCount[source]>0;};
+        const auto fogActorFor=[&](int source){return quality.godrays&&regionalFogGpu.actorVariants()&&geometryReady&&applyDirectionalShadows&&quality.actorShadows&&quality.actorShadowDetail&&sourceActive[source]&&actorValid[source]&&actorMaps.depth(source).texture&&actorCasterCount[source]>0;};
         const auto fogGainFor=[&](int source){return quality.godrays?1.2f*volumePalette.fogGain[source]*wx.shaftGain():0.f;};
         auto setSource=[&](int source,bool first,bool volume=false){
-            c[2][2]=farMapRadius(source);d->SetPixelShaderConstantF(2,c[2],1);
-            d->SetTexture(2,geometryReady&&applyDirectionalShadows?shadow[source*2]:neutralWhite);d->SetTexture(3,geometryReady&&applyDirectionalShadows?shadow[source*2+1]:neutralWhite);
+            c[2][2]=farMapRadius(source);
             // Collapse only shadow queries to the centre at depth .5. With a
             // cleared depth of 1, even slope-corrected PCF is exactly unoccluded.
             const float neutralMatrix[16]={0,0,0,0,0,0,0,0,0,0,0,0,0,0,.5f,1};
-            d->SetPixelShaderConstantF(7,geometryReady&&applyDirectionalShadows?sourceMatrices[source][0]:neutralMatrix,4);
-            d->SetPixelShaderConstantF(11,geometryReady&&applyDirectionalShadows?sourceMatrices[source][1]:neutralMatrix,4);
             const V committed=directionFor(source,volume);
-            float dir[4]={committed.x,committed.y,committed.z,source==1?1.f:0.f}; // w selects moon surface relighting
+            const float dir[4]={committed.x,committed.y,committed.z,source==1?1.f:0.f}; // w selects moon surface relighting
             // Match the shadow-render activity threshold exactly. The mandatory
             // ambient-only volume pass must never read an unrendered map for
             // a sub-threshold celestial source.
             const auto rgb=sourceRGB(source,volume);
-            d->SetPixelShaderConstantF(16,dir,1);d->SetPixelShaderConstantF(17,rgb.data(),1);
-            if(volume){
-                const bool fogActor=fogActorFor(source);
-                fogActorCurrent=fogActor;
-                const float fogActorInfo[4]={fogActor?1.f:0.f,0,0,0};
-                d->SetTexture(4,fogActor?actorShadow[source]:neutralWhite);
-                d->SetPixelShaderConstantF(68,fogActor?actorMatrices[source]:neutralMatrix,4);
-                d->SetPixelShaderConstantF(72,fogActorInfo,1);
-                const float wholeActorMap[4]={-1,-1,1,1};d->SetPixelShaderConstantF(66,fogActor?actorFogBounds[source]:wholeActorMap,1);
-                if(profileSampled())logf("FOG_CASTERS frame=%u source=%d static=%u actor=%u actorDraws=%u extraGeometryDraws=0 mapCoverage=%.4f",unsigned(frames),source,unsigned(geometryReady&&applyDirectionalShadows),unsigned(fogActor),fogActor?actorCasterCount[source]:0u,fogActor?(actorFogBounds[source][2]-actorFogBounds[source][0])*(actorFogBounds[source][3]-actorFogBounds[source][1])*.25f:0.f);
-            }
-            if(volume){
-                fogActorTiledCurrent=fogActorCurrent&&actorTilesWideCurrent[source]&&fogActorTiledPS&&fogCloudsActorTiledPS&&NorthlightActorShadowMap::tiledFogRange(actorMatrices[source],c[15],c[24][0]);
-                d->SetTexture(5,fogActorTiledCurrent?actorTiles[source]:textures[5]);
-                if(profileSampled())logf("FOG_ACTOR_TILES frame=%u source=%d enabled=%u wideCurrent=%u",unsigned(frames),source,unsigned(fogActorTiledCurrent),unsigned(actorTilesWideCurrent[source]));
-                c[21][1]=fogGainFor(source);c[21][2]=hdrMode?64.f:source==0?NorthlightSunHue::SunForwardCap:NorthlightSunHue::MoonForwardCap;d->SetPixelShaderConstantF(21,c[21],1);fogAmbientOnlyCurrent=NorthlightFogAmbient::eligible(rgb.data(),c[21][1]);}
-            c[27][0]=first?(volume?1.f:1.f-authoredFill):0.f;c[27][1]=sourceWeights[source];d->SetPixelShaderConstantF(27,c[27],1);
+            c[27][0]=first?(volume?1.f:1.f-authoredFill):0.f;c[27][1]=sourceWeights[source];
+            const bool shadowMaps=geometryReady&&applyDirectionalShadows;
+            const NorthlightWorldScreenLighting::Source bindings{
+                shadowMaps?directionalMaps.current(source*2).texture:screenFallbacks.white(),
+                shadowMaps?directionalMaps.current(source*2+1).texture:screenFallbacks.white(),
+                c[2],shadowMaps?sourceMatrices[source][0]:neutralMatrix,
+                shadowMaps?sourceMatrices[source][1]:neutralMatrix,dir,rgb.data(),c[27]
+            };
+            screenLighting.bindSource(d,bindings,[&]() -> const float* {
+                if(!volume)return nullptr;
+                bindFogActorSource(source,fogActorFor(source),geometryReady&&applyDirectionalShadows,actorTilesWideCurrent[source],
+                                   neutralMatrix,c,textures[5],fogSource);
+                c[21][1]=fogGainFor(source);c[21][2]=hdrMode?64.f:source==0?NorthlightSunHue::SunForwardCap:NorthlightSunHue::MoonForwardCap;
+                fogSource.ambientOnly=NorthlightFogAmbient::eligible(rgb.data(),c[21][1]);
+                return c[21];
+            });
         };
         lightingMark(3);
         bucket(NorthlightEffectsBuckets::LightingSetup);
-        d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_ONE);d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_ONE);d->SetRenderState(D3DRS_BLENDOP,D3DBLENDOP_ADD);
         // Smoothed normals for the lighting, GI and local light passes (s14).
         const bool lightingNeeded=requirements.lighting;
-        const bool prelitDaylightCurrent=(prelitMask||authoredMask)&&lightingNeeded&&
-            ((requirements.probes&&quality.giPrelitMix)||(geometryReady&&applyDirectionalShadows&&(sourceActive[0]||sourceActive[1])))&&prelitDaylightResources(w,h);
+        const bool wantsPrelit=(layers.prelit||layers.authored)&&lightingNeeded&&
+            ((requirements.probes&&quality.giPrelitMix)||(geometryReady&&applyDirectionalShadows&&(sourceActive[0]||sourceActive[1])));
+        const NorthlightWorldScreenLighting::FrameInput lightingFrame{
+            w,h,wantsPrelit,materialOcclusion!=nullptr,materialOcclusionDistance,hdrMode&&hdrSkyBase,atmosphere.imported.valid
+        };
+        const bool prelitDaylightCurrent=screenLighting.prepareFrame(d,lightingFrame,[&]{
+            const auto budget=NorthlightGeometryMemory::defaultTargetBudget();
+            return NorthlightGeometryMemory::admits(geometryAdmission(budget),budget);
+        });
         // Without shadow visibility changes, removal smoothing is a copy.
         // TemporalLight can consume raw light and produce distance itself.
         const bool normalsProduceDistance=lightingNeeded&&applyDirectionalShadows&&c[30][1]>0;
+        const auto checkTemporal=[&](HRESULT hr,const char* pass){return check(hr,pass);};
         const bool anyShadowTransition=geometryReady&&(shadowTransitionActive(0)||shadowTransitionActive(1));
-        auto* const smoothSurface=fogBlurredSurface;
-        bool first=true;
-        const float occlusionInfo[]={materialOcclusion?1.f:0.f,materialOcclusionDistance,hdrMode&&hdrSkyBase?1.f:0.f,atmosphere.imported.valid?1.f:0.f};d->SetPixelShaderConstantF(78,occlusionInfo,1);
+        auto* const smoothSurface=fogScreen.scratch().surface;
         if(lightingNeeded){
-        d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE);d->SetRenderState(D3DRS_COLORWRITEENABLE,15);
-        d->SetTexture(14,nullptr);d->SetTexture(15,nullptr);
-        d->SetRenderState(D3DRS_COLORWRITEENABLE1,15);
-        if(!check(d->SetRenderTarget(0,normalSurface),"world normals target")||
-           !check(d->SetRenderTarget(1,normalsProduceDistance?temporalDepthSurface[temporalIndex]:nullptr),"current distance target"))return false;
-        if(!normalsProduceDistance&&!normalsNoDistancePS&&!normalsNoDistanceRefused){
-            IDirect3DPixelShader9* optional=nullptr;
-            if(SUCCEEDED(d->CreatePixelShader(kWorldNormalsNoDistanceShader,&optional)))normalsNoDistancePS=optional;
-            else {if(optional)optional->Release();normalsNoDistanceRefused=true;}
-        }
-        const float modelNormalInfo[]={modelNormals?1.f:0.f,0,0,0};d->SetPixelShaderConstantF(79,modelNormalInfo,1);
-        d->SetTexture(13,modelNormals); // s13 is still POINT/CLAMP/no mip/no sRGB from the frame-start loop.
-        d->SetPixelShader(!normalsProduceDistance&&normalsNoDistancePS?normalsNoDistancePS:normalsPS);if(!check(quad(w/2,h/2,false),"world normals pass"))return false;
-        d->SetTexture(13,nullptr);
-        if(normalsProduceDistance&&!check(d->SetRenderTarget(1,nullptr),"current distance unbind"))return false;
-        d->SetTexture(14,normalBuffer);d->SetSamplerState(14,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(14,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);d->SetSamplerState(14,D3DSAMP_MINFILTER,D3DTEXF_POINT);d->SetSamplerState(14,D3DSAMP_MAGFILTER,D3DTEXF_POINT);d->SetSamplerState(14,D3DSAMP_MIPFILTER,D3DTEXF_NONE);d->SetSamplerState(14,D3DSAMP_SRGBTEXTURE,FALSE);
-        // Build the actor min-depth tiles first (1024 -> 256 -> 64). Supported
-        // soft-shadow frames filter actors and world together into FP16 visibility
-        // (r sun, g moon). Direction transitions, hard shadows and device failures
-        // retain the separate actor mask. Fog also consumes the depth/tile maps.
-        if(profile)profile->mark("WorldNormals");bucket(NorthlightEffectsBuckets::Lighting); /* 0.3.209 (task 29): the normals pass, so ActorShadow below is billed alone */
-        bool actorPass[2]={},anyActorPass=false;
-        for(int source=0;source<2;++source){
-            actorPass[source]=!((sourceWeights[source]<=0&&source!=firstSource)||!geometryReady||!applyDirectionalShadows||!sourceActive[source]||!actorValid[source]||!actorShadow[source]||!actorShadowPS||!actorTilesPS||!actorTiles[source]||!actorTilesMid||!actorVisibility);
-            anyActorPass=anyActorPass||actorPass[source];
-        }
-        const float actorInfo[4]={1.f,1.f/float(NorthlightActorShadowMap::Size),NorthlightActorShadowMap::Radius,0.f};
-        const bool sharedResolveRequested=anyActorPass&&quality.softShadows&&!anyShadowTransition&&
-            softShadowResources(w,h)&&sharedShadowResources();
-        if(anyActorPass){
-            d->SetPixelShader(actorTilesPS);
-            const UINT mid=NorthlightActorShadowMap::Size/NorthlightActorShadowMap::TileStep,tiles=NorthlightActorShadowMap::Size/NorthlightActorShadowMap::TileTexels;
-            const float midInfo[4]={1.f,1.f/float(mid),NorthlightActorShadowMap::Radius,0.f};
-            for(int source=0;source<2;++source){
-                if(!actorPass[source])continue;
-                if(!check(d->SetRenderTarget(0,actorTilesMidSurface),"actor tile target"))return false;
-                d->SetTexture(12,actorShadow[source]);d->SetPixelShaderConstantF(72,actorInfo,1);
-                if(!check(quad(mid,mid),"actor shadow tile pass"))return false;
-                if(!check(d->SetRenderTarget(0,actorTilesSurface[source]),"actor tile target"))return false;
-                d->SetTexture(12,actorTilesMid);d->SetPixelShaderConstantF(72,midInfo,1);
-                const bool wideFogTiles=quality.godrays&&effects.fog&&actorTilesWidePS&&fogActorTiledPS&&fogCloudsActorTiledPS&&NorthlightActorShadowMap::tiledFogRange(actorMatrices[source],c[15],c[24][0]);
-                if(wideFogTiles)d->SetPixelShader(actorTilesWidePS);
-                if(!check(quad(tiles,tiles),"actor shadow tile pass"))return false;
-                actorTilesWideCurrent[source]=wideFogTiles;
-                if(wideFogTiles)d->SetPixelShader(actorTilesPS);
-            }
-            if(profile)profile->mark("ActorTiles");
-        }
-        const auto resolveActorVisibility=[&]()->bool{
-            if(!anyActorPass)return true;
-            if(!check(d->SetTexture(12,nullptr),"actor visibility unbind")||
-               !check(d->SetRenderTarget(0,actorVisibilitySurface),"actor visibility target")||!check(d->Clear(0,nullptr,D3DCLEAR_TARGET,0xffffffff,1,0),"clear actor visibility"))return false;
-            for(int source=0;source<2;++source){
-                if(!actorPass[source])continue;
-                setSource(source,false);
-                d->SetPixelShaderConstantF(68,actorMatrices[source],4);d->SetPixelShaderConstantF(72,actorInfo,1);
-                d->SetTexture(12,actorShadow[source]);d->SetTexture(10,actorTiles[source]);
-                d->SetRenderState(D3DRS_COLORWRITEENABLE,source?D3DCOLORWRITEENABLE_GREEN:D3DCOLORWRITEENABLE_RED);
-                d->SetPixelShader(quality.softShadows?actorShadowPS:actorUniformPS);
-                if(!check(quad(w/2,h/2),"actor shadow visibility pass"))return false;
-            }
-            d->SetRenderState(D3DRS_COLORWRITEENABLE,15);
-            d->SetTexture(10,textures[10]);
-            return true;
-        };
-        if(!sharedResolveRequested&&!resolveActorVisibility())return false;
-        if(profile)profile->mark("ActorShadow");bucket(NorthlightEffectsBuckets::ActorShadow);
-        bool softResolved=false;
-        if((quality.softShadows||anyShadowTransition)&&geometryReady&&applyDirectionalShadows&&(sourceActive[0]||sourceActive[1])&&softShadowResources(w,h)){
-            // Never sample a texture while it is a render target. A failed
-            // optional resolve retains the original PCF consumer this frame.
-            softResolved=SUCCEEDED(d->SetTexture(15,nullptr))&&SUCCEEDED(d->SetRenderTarget(0,softVisibilitySurface))&&
-                SUCCEEDED(d->Clear(0,nullptr,D3DCLEAR_TARGET,0xffffffff,1,0))&&SUCCEEDED(d->SetPixelShader(sharedResolveRequested?sharedDirectionalPS:directionalSoftPS));
-            for(int source=0;source<2&&softResolved;++source){
-                if(!sourceActive[source]||(sourceWeights[source]<=0&&source!=firstSource))continue;
-                setSource(source,false);
-                if(sharedResolveRequested){
-                    const float info[4]={actorPass[source]?1.f:0.f,actorInfo[1],actorInfo[2],0.f};
-                    softResolved=SUCCEEDED(d->SetPixelShaderConstantF(68,actorMatrices[source],4))&&SUCCEEDED(d->SetPixelShaderConstantF(72,info,1))&&
-                        SUCCEEDED(d->SetTexture(12,actorPass[source]?actorShadow[source]:neutralWhite))&&SUCCEEDED(d->SetTexture(10,actorPass[source]?actorTiles[source]:neutralWhite));
-                    if(!softResolved)break;
-                }
-                const bool fading=shadowTransitionActive(source);
-                if(anyShadowTransition){bindShadowTransition(source);d->SetPixelShader(transitionCurrentPS);d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE);}
-                softResolved=SUCCEEDED(d->SetRenderState(D3DRS_COLORWRITEENABLE,source?D3DCOLORWRITEENABLE_GREEN:D3DCOLORWRITEENABLE_RED))&&SUCCEEDED(quad(w/2,h/2));
-                if(softResolved&&fading){
-                    bindShadowTransition(source,true);d->SetPixelShader(transitionPreviousPS);
-                    d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE);d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_ONE);d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_ONE);
-                    softResolved=SUCCEEDED(quad(w/2,h/2));
-                }
-            }
-            if(anyShadowTransition)for(unsigned sampler=6;sampler<10;++sampler){
-                d->SetTexture(sampler,textures[sampler]);const DWORD filter=sampler==9?D3DTEXF_LINEAR:D3DTEXF_POINT;
-                d->SetSamplerState(sampler,D3DSAMP_MINFILTER,filter);d->SetSamplerState(sampler,D3DSAMP_MAGFILTER,filter);
-            }
-            if(anyShadowTransition)d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE);
-            d->SetRenderState(D3DRS_COLORWRITEENABLE,15);
-            if(profile)profile->mark("ShadowFilter");
-        }
-        const bool sharedResolved=sharedResolveRequested&&softResolved;
-        if(sharedResolveRequested){
-            d->SetTexture(10,textures[10]);
-            // A failed optional shared draw must restore the actor mask before
-            // the ordinary lighting fallback: those casters left the near map.
-            if(!softResolved&&!resolveActorVisibility())return false;
-        }
-        if(profileSampled())logf("WORLD_SHADOW_RESOLVE rendererFrame=%u shared=%u requested=%u actors=%u transitions=%u visibilityBits=%u",rendererFrame,unsigned(sharedResolved),unsigned(sharedResolveRequested),unsigned(actorPass[0])+unsigned(actorPass[1]),unsigned(anyShadowTransition),sharedResolved?16u:8u);
-        if(anyShadowTransition&&!softResolved)releaseShadowTransitions();
-        d->SetTexture(12,!sharedResolved&&anyActorPass?actorVisibility:neutralWhite);
-        // Neutral shadow maps still made the general shader run its PCF loop.
-        // Keep source colors, normals, baseline and temporal stabilization.
-        if(!applyDirectionalShadows&&!lightingUnshadowedPS&&!lightingUnshadowedRefused){
-            IDirect3DPixelShader9* optional=nullptr;
-            if(SUCCEEDED(d->CreatePixelShader(kWorldLightingUnshadowedShader,&optional))&&optional)lightingUnshadowedPS=optional;
-            else {if(optional)optional->Release();lightingUnshadowedRefused=true;}
-        }
-        const bool unshadowedLighting=!applyDirectionalShadows&&lightingUnshadowedPS;
-        // The shader's analytic ambient fallback also applies without a mesh.
-        // GridInfo.w independently guards atlas reads while probes are unavailable.
-        // Dropping this pass during streaming made every unprobed wall brighten.
-        const bool giRequested=requirements.probes;
-        if(unshadowedLighting&&giRequested&&!lightingUnshadowedGIPS&&!lightingUnshadowedGIRefused){
-            IDirect3DPixelShader9* optional=nullptr;
-            if(SUCCEEDED(d->CreatePixelShader(kWorldLightingUnshadowedGIShader,&optional))&&optional)lightingUnshadowedGIPS=optional;
-            else {if(optional)optional->Release();lightingUnshadowedGIRefused=true;}
-        }
-        const bool mergedGI=unshadowedLighting&&giRequested&&lightingUnshadowedGIPS&&c[20][3]<.5f; // The fused fallback has no packed cascade reads.
-        const auto localLayout=NorthlightGI::LocalProbeVisibility::atlas(NorthlightGI::probeLayout().atlas,NorthlightGI::ProbeCascadeCount);
-        const float cascadeInfo[]={0,0,0,1};d->SetPixelShaderConstantF(83,cascadeInfo,1);
-        const float localInfo[]={giRequested&&probeLocal?float(localLayout.columns):0.f,1.f/localLayout.width,1.f/localLayout.height,1.f/localLayout.columns};
-        d->SetPixelShaderConstantF(82,localInfo,1);
-        if(giRequested)d->SetTexture(13,probeLocal);
-        d->SetRenderTarget(0,lightSurface);d->SetPixelShader(unshadowedLighting?lightingUnshadowedPS:sharedResolved?lightingSharedPS:softResolved?lightingSoftPS:lightingPS);
-        if(profileSampled())logf("WORLD_LIGHTING rendererFrame=%u variant=%s shadows=%u geometry=%u gi=%u probes=%u fogShadowMaps=%u shadowTransitionStarts=%u shadowTransitionFailures=%u moonFade=%u,%u moonWeights=%.4f,%.4f",rendererFrame,unshadowedLighting?"unshadowed":softResolved?"soft":"standard",unsigned(applyDirectionalShadows),unsigned(geometryReady),unsigned(giRequested),unsigned(c[20][3]>.5f),unsigned(fogShadowMapsReady),shadowTransitionStarts,shadowTransitionFailures,unsigned(shadowTransition[2].state.fading()),unsigned(shadowTransition[3].state.fading()),shadowTransition[2].state.weight(),shadowTransition[3].state.weight());
-        d->SetTexture(15,softResolved?softVisibility:nullptr);
-        if(softResolved){
-            for(auto state:{D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER})d->SetSamplerState(15,state,D3DTEXF_POINT);
-            d->SetSamplerState(15,D3DSAMP_MIPFILTER,D3DTEXF_NONE);d->SetSamplerState(15,D3DSAMP_SRGBTEXTURE,FALSE);
-            d->SetSamplerState(15,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(15,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);
-        }
-        if(profileSampled())logf("WORLD screen geometry=%u meshReason=%s material=%u fog=%u regional=%u heightBounds=%u colorScratch=%u map=\"%s\"",unsigned(geometryReady),geometrySkip,unsigned(fullMaterial),unsigned(effects.fog),unsigned(uploadedFogField!=nullptr),unsigned(uploadedFogField&&fogHeightReady),unsigned(color!=nullptr),frameMap.c_str());
-        const float bumpControl[]={materialDetail?materialBumpGain:0.f,materialBumpDistance,fullMaterial?1.f:0.f,0};
-        float materialLight[4][4]={{sourceDirections[0].x,sourceDirections[0].y,sourceDirections[0].z,0},{sourceDirections[1].x,sourceDirections[1].y,sourceDirections[1].z,0},{},{}};
-        for(unsigned source=0;source<2;++source)if(sourceActive[source]){materialLight[2+source][0]=sourceColors[source].x;materialLight[2+source][1]=sourceColors[source].y;materialLight[2+source][2]=sourceColors[source].z;}
-        d->SetPixelShaderConstantF(74,materialLight[0],4);
-        d->SetPixelShaderConstantF(73,bumpControl,1);d->SetTexture(9,materialDetail);
-        for(auto state:{D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER})d->SetSamplerState(9,state,D3DTEXF_POINT);
-        // Address, mip and sRGB states still match the frame-start s9 setup.
-        if(!check(d->SetRenderTarget(2,prelitDaylightCurrent?prelitDaylightSurface:nullptr),"prelit daylight target"))return false;
-        d->SetRenderState(D3DRS_COLORWRITEENABLE2,15);
-        const int lastSource=sourceWeights[1]<=0&&firstSource!=1?0:1;
-        // A strength-zero source still subtracts its authored surface share.
-        for(int source=0;source<2;++source){if(sourceWeights[source]<=0&&source!=firstSource)continue;
-            setSource(source,first);d->SetRenderState(D3DRS_ALPHABLENDENABLE,!first);
-            if(mergedGI){d->SetTexture(8,probePrev);d->SetPixelShader(source==lastSource?lightingUnshadowedGIPS:lightingUnshadowedPS);}
-            if(!check(d->SetRenderTarget(1,first?baselineSurface:nullptr),"baseline MRT"))return false;
-            d->SetRenderState(D3DRS_COLORWRITEENABLE1,15);
-            if(!check(quad(w/2,h/2),"celestial shadows pass"))return false;first=false;
-        }
-        d->SetRenderTarget(1,nullptr);d->SetRenderTarget(2,nullptr);
-        if(mergedGI)d->SetTexture(8,textures[8]);
-        d->SetRenderState(D3DRS_COLORWRITEENABLE,15);
-        d->SetTexture(12,baselineLight); // The following lighting consumers use this frame's baseline and visibility.
-        d->SetTexture(15,nullptr);
-        if(profile)profile->mark(mergedGI?"WorldLightingGI":"WorldLighting");
+        if(!worldNormals.draw(d,w/2,h/2,modelNormals,normalsProduceDistance?history.pending().distance.surface:nullptr,
+                              [&](HRESULT hr,const char* name){return check(hr,name);}))return false;
+        if(profile)profile->mark("WorldNormals");
         bucket(NorthlightEffectsBuckets::Lighting);
-        if(giRequested&&!mergedGI){
-            d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE);d->SetRenderState(D3DRS_COLORWRITEENABLE,7);d->SetPixelShader(giPS);
-            // Reuse the existing prelit lighting target in the same GI draw.
-            // RGB carries added bounce; alpha carries resident-probe occlusion.
-            if(!check(d->SetRenderTarget(1,prelitDaylightCurrent?prelitDaylightSurface:nullptr),"prelit GI MRT"))return false;
-            d->SetRenderState(D3DRS_COLORWRITEENABLE1,15);
-            d->SetTexture(8,probePrev); // WorldGI reads previous SH here, not LightingBuffer.
-            if(lightingCapture)lightingCapture->giProbeInputs();
-            if(!check(quad(w/2,h/2),"world GI pass"))return false;
-            d->SetRenderTarget(1,nullptr);
-            d->SetTexture(8,textures[8]);
-        }
-        if(profile)profile->mark("GI"); /* task 43: the GI pass alone; the lamp batches are LocalLights */
-        if(giRequested)d->SetTexture(13,textures[13]); // Regional fog resumes ownership after GI.
-        {   // Temporal stabilization: retain this frame's already produced distance when available.
-            // FogTemporal swaps these owners later in the frame. Refresh the
-            // dead scratch here; never overwrite the persistent fogHistory.
-            auto* const smoothLight=fogBlurred;
-            const unsigned cur=temporalIndex,prev=1-temporalIndex;
-            d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE);d->SetRenderState(D3DRS_COLORWRITEENABLE,15);
-            // 0.3.174: s10 switches from ProbeMetadata (WorldGI, done) to the AO/bloom target for the
-            // removal smoothing and WorldComposite; the frame-start loop rebinds probe[4] POINT.
-            d->SetTexture(10,foldAO?foldAO:neutralAO);d->SetSamplerState(10,D3DSAMP_MINFILTER,D3DTEXF_LINEAR);d->SetSamplerState(10,D3DSAMP_MAGFILTER,D3DTEXF_LINEAR);
-            // Fuse smoothing into temporal accumulation when current distance
-            // exists. Captures retain the intermediate image and old pass.
-            d->SetTexture(8,light); // WorldLighting already bound baselineLight at s12.
-            const bool removalDrawn=normalsProduceDistance; // no source: TemporalLight reads raw light and produces distance itself
-            const bool mergedRemoval=removalDrawn&&!diagnosticCapture&&temporalMergeResources();
-            // s15 was cleared before WorldNormals; TemporalLight binds its own history below.
-            if(removalDrawn){
-                d->SetTexture(15,temporalDepth[temporalIndex]);
-                d->SetSamplerState(15,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(15,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);
-                d->SetSamplerState(15,D3DSAMP_MINFILTER,D3DTEXF_POINT);d->SetSamplerState(15,D3DSAMP_MAGFILTER,D3DTEXF_POINT);d->SetSamplerState(15,D3DSAMP_MIPFILTER,D3DTEXF_NONE);d->SetSamplerState(15,D3DSAMP_SRGBTEXTURE,FALSE);
-            }
-            if(removalDrawn&&!mergedRemoval){if(!check(d->SetRenderTarget(0,smoothSurface),"removal smoothing target"))return false;d->SetPixelShader(removalPS);if(!check(quad(w/2,h/2,false),"removal smoothing pass"))return false;}
-            if(profile)profile->mark("RemovalSmooth");
-            if(removalDrawn&&!mergedRemoval)d->SetTexture(15,nullptr);
-            // WorldNormals and TemporalLight use the same canonical half-grid
-            // depthUV/viewDistance expression. Do not turn the distance read by
-            // RemovalSmooth back into a render target just to overwrite it.
-            if(!check(d->SetRenderTarget(0,temporalLightSurface[cur]),"temporal light target")||
-               !check(d->SetRenderTarget(1,normalsProduceDistance?nullptr:temporalDepthSurface[cur]),"temporal depth target"))return false;
-            d->SetRenderState(D3DRS_COLORWRITEENABLE1,15);
-            // 0.3.171: LightHistory (s14) is read bilinearly at the unrounded reprojection; the depth history
-            // (s15, R32F) stays POINT. The normals setup rebinds s14 POINT every frame.
-            // 0.3.185: SmoothedLighting is s9 (FogBuffer's slot: idle until the blur, which binds it, and the composite
-            // rebinds it; s9 is POINT here, LINEAR again afterwards), s8 stays the raw buffer for the neighbourhood clamp.
-            if(mergedRemoval){
-                // s14/s15 retain current normals/distance; move histories into
-                // idle slots. Regional fog resumes ownership of s13 below.
-                d->SetTexture(9,temporalLight[prev]);d->SetTexture(13,temporalDepth[prev]);
-                for(unsigned sampler:{9u,13u}){d->SetSamplerState(sampler,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(sampler,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);d->SetSamplerState(sampler,D3DSAMP_MINFILTER,sampler==9?D3DTEXF_LINEAR:D3DTEXF_POINT);d->SetSamplerState(sampler,D3DSAMP_MAGFILTER,sampler==9?D3DTEXF_LINEAR:D3DTEXF_POINT);d->SetSamplerState(sampler,D3DSAMP_MIPFILTER,D3DTEXF_NONE);d->SetSamplerState(sampler,D3DSAMP_SRGBTEXTURE,FALSE);}
-            }else{
-                d->SetTexture(9,removalDrawn?smoothLight:light); // WorldLighting set POINT filters.
-                d->SetTexture(14,temporalLight[prev]);d->SetTexture(15,temporalDepth[prev]);
-                for(unsigned sampler=14;sampler<16;++sampler){if(sampler==15&&removalDrawn)continue;d->SetSamplerState(sampler,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(sampler,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);d->SetSamplerState(sampler,D3DSAMP_MINFILTER,sampler==14?D3DTEXF_LINEAR:D3DTEXF_POINT);d->SetSamplerState(sampler,D3DSAMP_MAGFILTER,sampler==14?D3DTEXF_LINEAR:D3DTEXF_POINT);d->SetSamplerState(sampler,D3DSAMP_MIPFILTER,D3DTEXF_NONE);d->SetSamplerState(sampler,D3DSAMP_SRGBTEXTURE,FALSE);}
-            }
-            d->SetPixelShader(mergedRemoval?temporalMergedPS:temporalPS);if(!check(quad(w/2,h/2,false),"temporal light pass"))return false;
-            if(mergedRemoval)d->SetTexture(13,textures[13]);
-            if(profile&&profile->recording())deferLogf("WORLD temporal rendererFrame=%u mergedRemoval=%u removalRequired=%u diagnostic=%u zeroWeight=%u",rendererFrame,unsigned(mergedRemoval),unsigned(removalDrawn),unsigned(diagnosticCapture!=0),unsigned(mergedRemoval&&temporalZeroWeightActive));
-            d->SetRenderTarget(1,nullptr);d->SetTexture(14,nullptr);d->SetTexture(15,nullptr);d->SetTexture(9,nullptr);d->SetSamplerState(9,D3DSAMP_MINFILTER,D3DTEXF_LINEAR);d->SetSamplerState(9,D3DSAMP_MAGFILTER,D3DTEXF_LINEAR);
-            temporalIndex=prev;temporalValid=true;temporalLighting=true;memcpy(previousView,context.view,64);previousCamera=vec(context.camera);temporalMap=frameMap;
-        }
+        if(!resolveDirectionalVisibility(w,h,firstSource,sourceActive,fogShadowMapsReady,anyShadowTransition,
+                                         c[15],c[24][0],textures,rendererFrame,profile,
+                                         [&](int source){setSource(source,false);},visibility))return false;
+        const CelestialLightingInput celestialInputs{
+            w,h,rendererFrame,firstSource,sourceActive,geometryReady,applyDirectionalShadows,requirements.probes,c[20][3],
+            prelitDaylightCurrent,fullMaterial,moonTerrainSpecular,sunSurfaceSpecular,textures[8],textures[13],geometrySkip,frameMap
+        };
+        if(!renderCelestialLighting(celestialInputs,visibility,profile,lightingCapture?&*lightingCapture:nullptr,setSource,lightHistoryAudit))return false;
+        const NorthlightWorldLightHistory::LightingInput temporalInputs{
+            screenLighting.raw().texture,foldAO?foldAO:screenFallbacks.ao(),fogScreen.scratch().texture,textures[13],smoothSurface,
+            normalsProduceDistance,diagnosticCapture!=0
+        };
+        if(!history.resolveLighting(d,historyView,temporalInputs,w/2,h/2,profile,checkTemporal,
+             [&](bool merged,bool removal,bool zeroWeight){
+                 if(profile&&profile->recording())deferLogf("WORLD temporal rendererFrame=%u mergedRemoval=%u removalRequired=%u diagnostic=%u zeroWeight=%u",rendererFrame,unsigned(merged),unsigned(removal),unsigned(diagnosticCapture!=0),unsigned(zeroWeight));
+             }))return false;
         if(profile)profile->mark("TemporalLight");
+        // Now pending holds the previous pair. Local lighting and fog will
+        // overwrite the directional target and can borrow that light slot.
+        if(lightHistoryAudit){
+            gpuDiagnosticFrame=true;
+            const auto captureInput=[&](const char* name,IDirect3DSurface9* surface,bool used,D3DFORMAT format){
+                NorthlightWorldDiagnostics::product(d,surface,*lightHistoryAudit,name,rendererFrame,used,w/2,h/2,format,rendererFrame);
+            };
+            captureInput("history-raw-light",screenLighting.raw().surface,true,D3DFMT_A16B16G16R16F);
+            captureInput("history-prior-light",history.pending().light.surface,useHistory,D3DFMT_A16B16G16R16F);
+            captureInput("history-prior-distance",history.pending().distance.surface,useHistory,D3DFMT_R32F);
+            captureInput("history-directional-visibility",directionalVisibility.surface(),visibility.softResolved,D3DFMT_A16B16G16R16F);
+            if(NorthlightFrameParityClock::auditLightHistoryInterval())
+                captureInput("history-resolved-light",history.produced().light.surface,true,D3DFMT_A16B16G16R16F);
+        }
         }else{
-            temporalValid=false;
-            d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE);d->SetRenderState(D3DRS_COLORWRITEENABLE,15);
-            d->SetRenderTarget(1,nullptr);d->SetTexture(14,nullptr);d->SetTexture(15,nullptr);
-            if(requirements.distance){
-                if(!check(d->SetRenderTarget(0,temporalDepthSurface[temporalIndex]),"fog distance target"))return false;
-                d->SetPixelShader(distancePS);
-                if(!check(quad(w/2,h/2,false),"fog distance pass"))return false;
-                temporalIndex=1-temporalIndex;temporalValid=true;temporalLighting=false;
-                memcpy(previousView,context.view,64);previousCamera=vec(context.camera);temporalMap=frameMap;
-            }
-            d->SetTexture(12,neutralZero);
-            const float noNightLight[]={0,0,0,c[19][3]};d->SetPixelShaderConstantF(19,noNightLight,1);
-            d->SetTexture(10,foldAO?foldAO:neutralAO);d->SetSamplerState(10,D3DSAMP_MINFILTER,D3DTEXF_LINEAR);d->SetSamplerState(10,D3DSAMP_MAGFILTER,D3DTEXF_LINEAR);
+            if(!history.resolveDistance(d,historyView,requirements.distance,w/2,h/2,checkTemporal))return false;
+            screenLighting.bindDistanceOnly(d,screenFallbacks.zero(),foldAO?foldAO:screenFallbacks.ao(),c[19][3]);
         }
         // Preserve diagnostic inputs before recycling the raw directional target.
         if(diagnosticFiles){
             const unsigned capture=diagnosticCapture;const std::string& directory=gpuDiagnosticDirectory;
             using NorthlightWorldDiagnostics::dump;
-            dump(d,lightSurface,directory,"light",capture);
-            if(prelitDaylightCurrent)dump(d,prelitDaylightSurface,directory,"prelit-daylight",capture);
-            dump(d,normalsProduceDistance?smoothSurface:lightSurface,directory,"smoothed-light",capture);
+            dump(d,screenLighting.raw().surface,directory,"light",capture);
+            if(prelitDaylightCurrent)dump(d,screenLighting.prelit().surface,directory,"prelit-daylight",capture);
+            dump(d,normalsProduceDistance?smoothSurface:screenLighting.raw().surface,directory,"smoothed-light",capture);
         }
         bucket(NorthlightEffectsBuckets::PointLighting);
         // The raw directional target is no longer read after temporal resolve.
         // Reuse it for current local light, independent of shadow-removal history.
         const bool currentLocalLighting=debug==0&&(localDirectCount||pointReady);
-        const bool positionalLighting=debug==0&&(pointReady||std::any_of(flashSlots.begin(),flashSlots.end(),[](const FlashSlot& s){return s.ready;}));
-        const bool localMaterialInputs=currentLocalLighting||positionalLighting||fullMaterial||lightingCapture||diagnosticCapture!=0||debug!=0;
-        d->SetTexture(8,nullptr);
-        if(currentLocalLighting){
-            d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE);
-            if(!check(d->SetRenderTarget(0,lightSurface),"current local light target")||
-               !check(d->Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0),"current local light clear"))return false;
-            d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_ONE);d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_ONE);d->SetRenderState(D3DRS_BLENDOP,D3DBLENDOP_ADD);
-            d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE);d->SetRenderState(D3DRS_COLORWRITEENABLE,7);
+        const LocalLightingInput localInputs{
+            w,h,nearZ,farZ,minZ,maxZ,debug,currentLocalLighting,fullMaterial,diagnosticCapture!=0,sourceActive[0],
+            lampSunlitCut,depth,waterMask,c,shadowTuning,textures
+        };
+        auto* const localCapture=lightingCapture?&*lightingCapture:nullptr;
+        std::optional<NorthlightLightingCapture::Capture> pointInputs;
+        if(lightHistoryAudit){
+            static const bool capturePointInputs=[] {
+                const char* value=std::getenv("NORTHLIGHT_FRAME_PARITY_POINT_INPUTS");
+                return value&&std::strcmp(value,"1")==0;
+            }();
+            if(capturePointInputs)pointInputs.emplace(d,*lightHistoryAudit,rendererFrame,frames,rendererFrame,w,h,"point-light-inputs");
         }
-        // Since the frame upload, source/actor/filter passes only overwrite
-        // c7..17/c27 inside c0..67. GI/TemporalLight read constants; c73..78 stay bound.
-        d->SetPixelShaderConstantF(7,&c[7][0],21);
-        // Fog/blur/final inherit the original s9 POINT contract even without local lights.
-        for(auto state:{D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER})d->SetSamplerState(9,state,D3DTEXF_POINT);
-        if(localMaterialInputs){
-            d->SetTexture(9,materialDetail);d->SetTexture(14,normalBuffer);
-            for(auto state:{D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER})d->SetSamplerState(14,state,D3DTEXF_POINT);
-            // TemporalLight changed only filters; address/mip/sRGB are still valid.
-        }
-        constexpr unsigned directInputs=(1u<<1)|(1u<<9)|(1u<<11)|(1u<<12)|(1u<<14),fogInputs=(1u<<1)|(1u<<11);
-        if(lightingCapture){lightingCapture->sources(localLights,effects.fog);lightingCapture->image("lighting-before-local",lightSurface);}
-        if(localDirectCount&&debug==0){
-            profileSplit(profile,lightSurface); /* terminate the preceding render pass before timing local batches */
-            d->SetPixelShader(localDirectPS);d->SetRenderState(D3DRS_SCISSORTESTENABLE,NorthlightLocalLightScissor::Enabled);
-            // s12 still holds current sun visibility from WorldLighting.
-            if(lightingCapture)lightingCapture->inputs(0,directInputs,directInputs);
-            // Two neighbouring 8-lamp batches whose joint rect costs less than both (local_light_batches.h wide()) draw as one LocalDirect16
-            // pass (its lamps in c84..c115, preserving material c73..c78; c52 as for LocalDirect). Without a proven view every rect is the whole target, so pairs merge.
-            constexpr unsigned N=NorthlightLocalLightSelection::DirectBatchSize;IDirect3DPixelShader9* bound=localDirectPS;
-            for(unsigned firstLight=0;firstLight<localDirectCount;){
-                const unsigned index=firstLight/N;
-                const auto flashes=[&](unsigned begin,unsigned end){for(unsigned i=begin;i<std::min(end,localDirectCount);++i)if(localLights.color[i][3]<0)return true;return false;};
-                const bool flashBatch=flashes(firstLight,firstLight+N);
-                const bool pair=localDirect16PS&&firstLight+N<localDirectCount&&!flashBatch&&!flashes(firstLight+N,firstLight+2*N);
-                const NorthlightLocalLightScissor::Rect whole{0,0,long(w/2),long(h/2)};
-                const auto& a=localScissorView.valid?atmosphere.directRects[index]:whole;const auto& b=localScissorView.valid&&pair?atmosphere.directRects[index+1]:whole;
-                if(pair&&NorthlightLocalLightBatches::wide(a,b)){
-                    const auto batch=localLights.directBatch<2*N>(firstLight);const auto joint=NorthlightLocalLightBatches::unite(a,b);
-                    const float info[4]={float(batch.count),c[52][1],lampSunlitCut,0};
-                    if(bound!=localDirect16PS){d->SetPixelShader(localDirect16PS);bound=localDirect16PS;}
-                    d->SetPixelShaderConstantF(84,batch.position[0].data(),2*N);d->SetPixelShaderConstantF(100,batch.color[0].data(),2*N);
-                    d->SetPixelShaderConstantF(52,info,1);++localWidePasses;
-                    const bool drawn=localScissor(joint);const HRESULT hr=drawn?quad(w/2,h/2):S_OK;
-                    localSourceBatch(false,firstLight,batch.count,joint,drawn,hr);
-                    if(lightingCapture)lightingCapture->pass("LocalDirect16",0,directInputs,firstLight,batch.count,drawn,hr);
-                    if(drawn&&!check(hr,"local direct 16-light batch")){d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE);return false;}
-                    firstLight+=2*N;continue;
-                }
-                const auto batch=localLights.directBatch<N>(firstLight);
-                const float info[4]={float(batch.count),c[52][1],lampSunlitCut,0};
-                const auto shader=flashBatch?localFlashPS:localDirectShader(batch.count);
-                if(bound!=shader){d->SetPixelShader(shader);bound=shader;}
-                d->SetPixelShaderConstantF(36,batch.position[0].data(),N);
-                d->SetPixelShaderConstantF(44,batch.color[0].data(),N);
-                d->SetPixelShaderConstantF(52,info,1);
-                const bool drawn=localScissor(atmosphere.directRects[index]);const HRESULT hr=drawn?quad(w/2,h/2):S_OK;
-                localSourceBatch(false,firstLight,batch.count,a,drawn,hr);
-                if(lightingCapture)lightingCapture->pass("LocalDirect",0,directInputs,firstLight,batch.count,drawn,hr);
-                if(drawn&&!check(hr,"local direct light batch")){d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE);return false;}
-                firstLight+=N;
-            }
-            d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE);
-            // LocalDirect16 borrows c100..115 for lamp colors. FlashShadow and
-            // the final compositor need ShadowTuning at c115 again afterwards.
-            d->SetPixelShaderConstantF(115,shadowTuning,1);
-            profileSplit(profile,lightSurface);
-        }
-        if(lightingCapture)lightingCapture->image("lighting-after-local",lightSurface);
-        if(profile)profile->mark("LocalLights");bucket(NorthlightEffectsBuckets::GI);d->SetRenderState(D3DRS_COLORWRITEENABLE,15);
-        if(positionalLighting){
-            renderFlashLighting();
-            const float sunEnergy=sourceActive[0]?std::max({sourceColors[0].x,sourceColors[0].y,sourceColors[0].z}):0.f;
-            bool pointStatePrepared=false;
-            for(pointIndex=0;pointReady&&pointIndex<pointSlots.size();++pointIndex)if(pointSlot().ready)
-                renderPointLighting(depth,waterMask,w,h,nearZ,farZ,minZ,maxZ,c[52][1],lampSunlitCut,c[20][2],sunEnergy,lightingCapture?&*lightingCapture:nullptr,lightingCapture?nullptr:&pointStatePrepared);
-            pointIndex=0;
-            // Point lights overwrite c0..12; flash/local batches also use
-            // c7..16/c36..52. The high world bank c53..67 was never changed.
-            d->SetPixelShaderConstantF(0,&c[0][0],53);
-            for(unsigned sampler=0;sampler<6;++sampler){
-                d->SetTexture(sampler,textures[sampler]);
-                d->SetSamplerState(sampler,D3DSAMP_MINFILTER,sampler==0?D3DTEXF_LINEAR:D3DTEXF_POINT);
-                d->SetSamplerState(sampler,D3DSAMP_MAGFILTER,sampler==0?D3DTEXF_LINEAR:D3DTEXF_POINT);
-            }
-            d->SetRenderState(D3DRS_COLORWRITEENABLE,15);
-        }
-        if(profile)profile->mark("PointLight");
-        d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE);
-        bool fogResolved=false; // The final fog is fogBlurred when the temporal pass runs.
-        // Every view ray ends within c21.w. Unknown bounds fail open; local
-        // lamps have their own longer range, so retain their path independently.
-        if(effects.fog&&!quality.godrays&&!ambientFogResources())return false;
-        const bool regionalFogActive=c[21][0]>=.5f&&(atmosphere.imported.valid||!(c[65][2]>0&&
-            (c[15][2]-c[21][3]>c[65][1]||c[15][2]+c[21][3]<c[65][0])));
-        const bool localFogActive=localDirectCount&&debug==0&&localLights.hasFog(localDirectCount);
-        const bool fogActive=effects.fog&&(regionalFogActive||localFogActive);
-        bool volumeFog=effects.fog&&regionalFogActive&&atmosphere.imported.valid&&debug==0&&!fogVolume.refused;
-        unsigned volumeVariant[2]={};
-        const bool importedNoise=fogActive&&atmosphere.imported.valid&&
-            (atmosphere.imported.layer[0].flag[2]>0||atmosphere.imported.layer[1].flag[2]>0||atmosphere.imported.layer[2].flag[2]>0)&&ensureCloudNoise();
-        // Resolve both sources before writing the first atlas slice.
-        for(int source=0;volumeFog&&source<2;++source){
-            if((!quality.godrays||!sourceActive[source])&&source!=firstSource)continue;
+        if(!renderLocalLighting(localInputs,localLights,atmosphere.directRects,profile,localCapture,pointInputs?&*pointInputs:nullptr))return false;
+        if(pointInputs)pointInputs->finish(true);
+        const auto fogVolumeVariant=[&](int source,bool importedNoise){
             const bool fading=geometryReady&&shadowVolumeTransitionActive(source)&&!NorthlightFogAmbient::eligible(sourceRGB(source,true).data(),fogGainFor(source));
             const bool actor=fogActorFor(source);
-            volumeVariant[source]=(quality.godrays?(fading?4u:0u)+(actor?2u:0u):8u)+(importedNoise?0u:1u);
-            volumeFog=fogVolume.injectShader(d,volumeVariant[source])!=nullptr;
-        }
-        if(volumeFog)volumeFog=fogVolumeResources(w,h);
-        uint64_t volumeKey=14695981039346656037ull;
-        auto volumeHash=[&](const void* p,size_t n){const auto* bytes=static_cast<const unsigned char*>(p);for(size_t i=0;i<n;++i){volumeKey^=bytes[i];volumeKey*=1099511628211ull;}};
-        bool volumeMoving=false;
-        if(volumeFog){
-            volumeHash(c[31],sizeof(float)*3); // The imported medium does not read regional night fraction.
-            volumeHash(atmosphere.imported.layer,sizeof atmosphere.imported.layer);volumeHash(atmosphere.imported.direct,sizeof atmosphere.imported.direct);volumeHash(atmosphere.imported.ambient,sizeof atmosphere.imported.ambient);
-            volumeHash(&quality.godrays,sizeof quality.godrays);
-            if(quality.godrays)for(unsigned source=0;source<2;++source){const V dir=directionFor(source,true);const float xyz[]={dir.x,dir.y,dir.z};volumeHash(xyz,sizeof xyz);}
-            if(quality.godrays){volumeHash(sourceWeights,sizeof sourceWeights);volumeHash(&geometryReady,sizeof geometryReady);
-            volumeHash(sourceActive,sizeof sourceActive);volumeHash(&applyDirectionalShadows,sizeof applyDirectionalShadows);
-            const float fade=underwaterFade.scale();volumeHash(&fade,sizeof fade);}
-            auto* field=uploadedFogField.get();volumeHash(&field,sizeof field);
-            volumeHash(c[0],sizeof(float)*4*7);volumeHash(c[15],sizeof c[15]);
-            bool shadowed=false;
-            for(const auto& layer:atmosphere.imported.layer)if(layer.flag[3]>0&&layer.p[1]>0){
-                shadowed|=layer.flag[0]>0;
-                if(layer.flag[2]>0)for(unsigned axis=0;axis<3;++axis){
-                    volumeMoving|=layer.p[20]>0&&(layer.p[22]>0||layer.p[23]<=0)&&layer.p[11+axis]!=0;
-                    volumeMoving|=layer.p[21]>0&&layer.p[23]>0&&layer.p[14+axis]!=0;
-                }
-            }
-            // A cached quiet fallback must wake when the asynchronous noise
-            // becomes available, including on a stationary windless frame.
-            volumeHash(volumeVariant,sizeof volumeVariant);
-            if(shadowed&&quality.godrays){
-                volumeHash(&fogShadowRevision,sizeof fogShadowRevision);
-                for(unsigned source=0;source<2;++source)volumeMoving|=sourceActive[source]&&
-                    ((geometryReady&&applyDirectionalShadows&&quality.actorShadows&&quality.actorShadowDetail&&actorValid[source]&&actorCasterCount[source])||shadowVolumeTransitionActive(source));
-            }
-            fogVolume.grid(d,std::clamp(farZ,128.f,4000.f));
-        }else fogVolume.valid=false;
-        const bool volumeReuse=volumeFog&&fogVolume.valid&&fogVolume.cacheReady&&useHistory&&!volumeMoving&&volumeKey==fogVolumeKey;
-        const char* volumeReason=volumeReuse?"reuse":!fogVolume.valid?"cold":!useHistory?"history-reset":volumeMoving?"moving":volumeKey!=fogVolumeKey?"inputs":"settle";
-        const bool fogClearSkipped=!fogActive&&fogNeutral;
-        if(lightingCapture&&localDirectCount&&!localFogActive&&debug==0)lightingCapture->skipped("LocalFog",0,localDirectCount,"zero-extinction");
-        if(fogActive){
-        fogNeutral=false; // Invalidate before any producer can partially overwrite the target.
-        d->SetTexture(13,regionalFogTexture); // Model-normal capture used this slot earlier.
-        d->SetTexture(12,fogHeightReady?fogHeightTexture:nullptr);
-        // FogTemporal reads s15 and relies on these modes even when its earlier setup is skipped.
-        d->SetSamplerState(15,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(15,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);d->SetSamplerState(15,D3DSAMP_MINFILTER,D3DTEXF_POINT);d->SetSamplerState(15,D3DSAMP_MAGFILTER,D3DTEXF_POINT);d->SetSamplerState(15,D3DSAMP_MIPFILTER,D3DTEXF_NONE);
-        d->SetRenderTarget(0,fogSurface);d->SetPixelShader(fogPS);first=true;
-        float fogAmbient[4]={0,0,0,c[18][3]};NorthlightSunHue::coolAmbient(c[18],glowHueFrame,sourceWeights[0],fogAmbient);
-        d->SetPixelShaderConstantF(18,fogAmbient,1); /* cooler environment scatter while the sun is up (w kept) */
-        int lastFogSource=firstSource;bool lastFogFirst=true;
-        if(volumeFog&&!volumeReuse){
-            if(!fogVolume.target(d,fogVolume.raw()))return false;
-        }
-        float importedConstants[38][4];
-        if(!volumeReuse&&atmosphere.imported.valid){
-            if(!volumeFog)foreverRaymarchResources();
-            NorthlightForever::constants(atmosphere.imported,importedConstants,std::clamp(farZ,128.f,4000.f),0.f);
-            if(uploadedFogField)importedConstants[0][3]=NorthlightSpellFog::fieldAt(*uploadedFogField,context.camera[0],context.camera[1]).ground;
-            if(!quality.godrays)std::fill_n(importedConstants[9],3,0.f);
-            if(!importedNoise)std::fill_n(importedConstants[34],3,0.f);
-        }
-        if(!volumeReuse)for(int source=0;source<2;++source){if((!quality.godrays||!sourceActive[source])&&source!=firstSource)continue;
-            setSource(source,first,true);const bool fading=geometryReady&&shadowVolumeTransitionActive(source)&&!fogAmbientOnlyCurrent;
-            if(fading)bindShadowTransition(source);
-            auto* volumeShader=fading?(fogActorTiledCurrent?fogActorTiledFadePS:fogActorCurrent?fogActorFadePS:fogFadePS):fogVolumeShader(fogAmbientOnlyCurrent,fogActorCurrent,fogActorTiledCurrent);
-            d->SetRenderState(D3DRS_ALPHABLENDENABLE,!first);d->SetRenderState(D3DRS_COLORWRITEENABLE,first?15:7);
-            const bool floorEligible=!atmosphere.imported.valid&&moonFloorSourceCurrent(source,geometryReady,!fogAmbientOnlyCurrent,frameMap);
-            bool volumeNoise=false;
-            if(atmosphere.imported.valid){
-                const bool actor=fogActorCurrent&&(volumeFog||foreverFogActorPS);
-                importedConstants[11][3]=quality.godrays?sourceWeights[source]*underwaterFade.scale():0.f;
-                const bool noise=importedNoise;
-                bool quietSelected=volumeFog&&!noise;
-                if(volumeFog)volumeShader=fogVolume.inject[volumeVariant[source]];
-                else{
-                    volumeShader=fading?(actor&&foreverFogActorFadePS?foreverFogActorFadePS:foreverFogFadePS):(actor?foreverFogActorPS:foreverFogPS);
-                    if(!fading&&actor&&fogActorTiledCurrent&&foreverFogActorTiledPS)volumeShader=foreverFogActorTiledPS;
-                    if(!volumeShader)volumeShader=foreverFogPS;
-                    if(!noise){
-                        auto* quiet=fading?(actor?foreverFogActorNoNoiseFadePS:foreverFogNoNoiseFadePS):(actor?foreverFogActorNoNoisePS:foreverFogNoNoisePS);
-                        if(!fading&&actor&&fogActorTiledCurrent&&foreverFogActorTiledNoNoisePS)quiet=foreverFogActorTiledNoNoisePS;
-                        if(quiet){volumeShader=quiet;quietSelected=true;} // Creation failure retains the general shader.
-                    }
-                }
-                if(profileSampled())logf("FOG imported worldFrame=%u source=%d noise=%u noNoiseShader=%u actor=%u transition=%u tiledShader=%u cameraAboveGround=%.3f first=%.3f shadow=%.3f,%.3f,%.3f",frames,source,unsigned(noise),unsigned(quietSelected),unsigned(actor),unsigned(fading),unsigned(!volumeFog&&(volumeShader==foreverFogActorTiledPS||volumeShader==foreverFogActorTiledNoNoisePS)),context.camera[2]-importedConstants[0][3],importedConstants[34][3],importedConstants[9][0],importedConstants[9][1],importedConstants[9][2]);
-                d->SetTexture(14,noise?cloudNoise:nullptr);d->SetSamplerState(14,D3DSAMP_ADDRESSU,D3DTADDRESS_WRAP);d->SetSamplerState(14,D3DSAMP_ADDRESSV,D3DTADDRESS_WRAP);d->SetSamplerState(14,D3DSAMP_ADDRESSW,D3DTADDRESS_WRAP);
-                d->SetSamplerState(14,D3DSAMP_MINFILTER,D3DTEXF_LINEAR);d->SetSamplerState(14,D3DSAMP_MAGFILTER,D3DTEXF_LINEAR);d->SetSamplerState(14,D3DSAMP_MIPFILTER,D3DTEXF_NONE);
-                d->SetSamplerState(14,D3DSAMP_SRGBTEXTURE,FALSE);
-                d->SetPixelShaderConstantF(116,importedConstants[0],38);
-                volumeNoise=noise;
-            }
-            if(volumeFog){if(!fogVolume.injection(d,volumeShader,std::clamp(farZ,128.f,4000.f),volumeNoise,first))return false;}
-            else if(!check(drawFogVolume(w/2,h/2,volumeShader,floorEligible,fogActorCurrent,fogActorTiledCurrent,fading,textures[0],c[65]),"celestial volumetric raymarch"))return false;
-            lastFogSource=source;lastFogFirst=first;first=false;
-        }
-        if(volumeFog){
-            d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE);d->SetRenderState(D3DRS_COLORWRITEENABLE,15);
-            // s2 was the near shadow map; only the atlas temporal pass uses it as history.
-            d->SetPixelShaderConstantF(53,c[53],4);
-            if(!volumeReuse){
-                // Once a moving volume stops, compute one exact frame before
-                // caching it; freezing a blended frame would freeze its lag.
-                const bool history=useHistory&&fogVolumeField==uploadedFogField&&(volumeMoving||volumeKey!=fogVolumeKey);
-                if(!fogVolume.integrate(d,std::clamp(farZ,128.f,4000.f),c[1],history))return false;
-                fogVolumeKey=volumeKey;fogVolumeField=uploadedFogField;
-            }else ++fogVolume.reuses;
-            if(!fogVolume.composite(d,fogSurface,w/2,h/2))return false;
-            if(profileSampled())logf("FOG_VOLUME frame=%u grid=%ux%ux64 cached=%u updates=%u reuses=%u reason=%s",frames,fogVolume.cellWidth,fogVolume.cellHeight,unsigned(volumeReuse),fogVolume.updates,fogVolume.reuses,volumeReason);
-            d->SetTexture(0,textures[0]);d->SetTexture(2,textures[2]);
-            d->SetSamplerState(2,D3DSAMP_MINFILTER,D3DTEXF_POINT);d->SetSamplerState(2,D3DSAMP_MAGFILTER,D3DTEXF_POINT);
-            d->SetTexture(14,nullptr);d->SetSamplerState(14,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(14,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);d->SetSamplerState(14,D3DSAMP_ADDRESSW,D3DTADDRESS_CLAMP);
-            d->SetSamplerState(14,D3DSAMP_MINFILTER,D3DTEXF_POINT);d->SetSamplerState(14,D3DSAMP_MAGFILTER,D3DTEXF_POINT);
-        }
-        if(profile)profile->mark("FogMarch");
-        // 0.3.199 (fog clouds): the moving fog banks, a second half-resolution raymarch into the same fog buffer: rgb added (ONE), the fog already
-        // there attenuated by the cloud transmittance (alpha, SRCALPHA); alpha out is the old alpha times it. The first source lights it, ambient once
-        // (c27.x=1 in setSource). Afterwards every state the later passes read is put back exactly as the loop above left it (the last source's
-        // setSource again, blend, write mask, s14 and the alpha-blend operands); inactive frames skip all of this.
-        if(cf.active&&c[21][0]>=.5f){
-            /* 0.3.199 (optimisation): the separate-alpha operands are not saved: the effects run inside the game-state save (SavedState) and with
-               SEPARATEALPHABLENDENABLE back at FALSE below they are ignored. The common sun-only frame drew the source loop once with firstSource
-               and first=true: setSource then already holds this pass's state, so it is neither set here nor put back after. */
-            const bool sameSource=lastFogSource==firstSource&&lastFogFirst;
-            if(!sameSource)setSource(firstSource,true,true);
-            { /* 0.3.199 (fog clouds): the banks' colour (the game fog colour raised to a moonlit grey at night) in c25.w/c26 for this pass only; restored below */
-                float cloudColour[4],cloudFog[4]={c[25][0],c[25][1],c[25][2],1};
-                { /* continuous in the Hold's post-hold w fade: blend the game-fog and the no-fog colour by w (continuous in w; equal to the old result when w is 0 or 1) */
-                  const float fw=c[25][3];NorthlightFogClouds::colour(c[26],fw>0,c[31][3],cloudColour);
-                  if(fw>0&&fw<1){float off[4];NorthlightFogClouds::colour(c[26],false,c[31][3],off);for(int i=0;i<4;++i)cloudColour[i]=off[i]+(cloudColour[i]-off[i])*fw;}}
-                d->SetPixelShaderConstantF(25,cloudFog,1);d->SetPixelShaderConstantF(26,cloudColour,1);}
-            d->SetTexture(14,cloudNoise);d->SetSamplerState(14,D3DSAMP_ADDRESSU,D3DTADDRESS_WRAP);d->SetSamplerState(14,D3DSAMP_ADDRESSV,D3DTADDRESS_WRAP);d->SetSamplerState(14,D3DSAMP_ADDRESSW,D3DTADDRESS_WRAP);
-            const DWORD cloudFilter=D3DTEXF_LINEAR;d->SetSamplerState(14,D3DSAMP_MINFILTER,cloudFilter);d->SetSamplerState(14,D3DSAMP_MAGFILTER,cloudFilter);d->SetSamplerState(14,D3DSAMP_MIPFILTER,D3DTEXF_NONE);d->SetSamplerState(14,D3DSAMP_SRGBTEXTURE,FALSE);
-            d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE);d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_ONE);d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_SRCALPHA);d->SetRenderState(D3DRS_BLENDOP,D3DBLENDOP_ADD);
-            d->SetRenderState(D3DRS_SEPARATEALPHABLENDENABLE,TRUE);d->SetRenderState(D3DRS_SRCBLENDALPHA,D3DBLEND_ZERO);d->SetRenderState(D3DRS_DESTBLENDALPHA,D3DBLEND_SRCALPHA);d->SetRenderState(D3DRS_BLENDOPALPHA,D3DBLENDOP_ADD);
-            const bool cloudFade=quality.godrays&&geometryReady&&shadowVolumeTransitionActive(firstSource);if(cloudFade)bindShadowTransition(firstSource);
-            d->SetRenderState(D3DRS_COLORWRITEENABLE,15);d->SetPixelShader(!quality.godrays?fogCloudsAmbientPS:cloudFade?(fogActorCurrent?(fogActorTiledCurrent?cloudActorTiledFadePS:cloudActorFadePS):cloudFadePS):(fogActorCurrent?(fogActorTiledCurrent?fogCloudsActorTiledPS:fogCloudsActorPS):fogCloudsPS));
-            const bool cloudsDrawn=check(quad(w/2,h/2),"fog clouds raymarch");
-            if(!sameSource)setSource(lastFogSource,lastFogFirst,true);
-            d->SetPixelShaderConstantF(25,c[25],2); /* 0.3.199 (fog clouds): the bank's game fog parameters and colour back for the lamp fog, blur and composite */
-            d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_ONE);d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_ONE);d->SetRenderState(D3DRS_BLENDOP,D3DBLENDOP_ADD);
-            d->SetRenderState(D3DRS_SEPARATEALPHABLENDENABLE,FALSE);
-            d->SetRenderState(D3DRS_ALPHABLENDENABLE,!lastFogFirst);d->SetRenderState(D3DRS_COLORWRITEENABLE,lastFogFirst?15:7);d->SetPixelShader(fogVolumeShader(fogAmbientOnlyCurrent,fogActorCurrent,fogActorTiledCurrent));
-            d->SetTexture(14,nullptr);d->SetSamplerState(14,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(14,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);d->SetSamplerState(14,D3DSAMP_ADDRESSW,D3DTADDRESS_CLAMP);
-            d->SetSamplerState(14,D3DSAMP_MINFILTER,D3DTEXF_POINT);d->SetSamplerState(14,D3DSAMP_MAGFILTER,D3DTEXF_POINT);
-            if(!cloudsDrawn)return false;
-            if(profile)profile->mark("FogClouds");
-        }
-        d->SetTexture(4,textures[4]);
-        d->SetTexture(5,textures[5]);
-        d->SetTexture(12,baselineLight);
-        if(anyShadowTransition)for(unsigned sampler=6;sampler<10;++sampler){
-            d->SetTexture(sampler,textures[sampler]);const DWORD filter=sampler==9?D3DTEXF_LINEAR:D3DTEXF_POINT;
-            d->SetSamplerState(sampler,D3DSAMP_MINFILTER,filter);d->SetSamplerState(sampler,D3DSAMP_MAGFILTER,filter);
-        }
-        d->SetPixelShaderConstantF(17,c[17],2); /* restore the bank's direct/ambient before lamp fog, blur and composite */
-        }else if(fog&&!fogNeutral){
-            // Composite is color * fog.a + fog.rgb: transparent fog is (0,0,0,1).
-            // The owned target remains identical across consecutive inactive frames.
-            d->SetTexture(9,nullptr);D3DVIEWPORT9 vp={0,0,w/2,h/2,0,1};d->SetViewport(&vp);
-            if(!check(d->SetRenderTarget(0,fogSurface),"neutral fog target")||
-               !check(d->Clear(0,nullptr,D3DCLEAR_TARGET,0xff000000,1,0),"neutral fog clear"))return false;
-            fogNeutral=true;
-        }
-        bucket(NorthlightEffectsBuckets::Fog);d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE);d->SetRenderState(D3DRS_COLORWRITEENABLE,15);
-        // Atmospheric fog is complete; local lamp/spell radiance is added after history and blur.
-        // Accumulate it with last frame's resolved fog (reprojected through the previous view still in c53..c56,
-        // depth-checked against the previous frame's distance in temporalDepth[temporalIndex] since TemporalLight already rotated, neighbourhood-clamped).
-        // fog (raw, s9) + fogHistory (s14) -> fogBlurred, then fogBlurred<->fogHistory swap (texture and surface): fogHistory holds this frame's resolved fog for
-        // the next one. History not usable (first frame, map change, camera jump, debug, fog was off last frame): weight 0, a plain copy that makes it valid.
-        // Off (no fog effect, debug, no shader): none of this runs, the sequence and bindings below are the old ones.
-        bool fogHistoryClearSkipped=false;
-        if(effects.fog&&fogTemporalPS&&fogHistory&&debug==0&&!fogActive){
-            // A uniform neutral current frame clamps all history to neutral.
-            // Keep that exact history for the next active frame without a draw.
-            d->SetTexture(14,nullptr);
-            fogHistoryClearSkipped=fogHistoryNeutral&&fogHistoryValid;
-            if(!fogHistoryClearSkipped){
-                if(!check(d->SetRenderTarget(0,fogHistorySurface),"neutral fog history target")||
-                   !check(d->Clear(0,nullptr,D3DCLEAR_TARGET,0xff000000,1,0),"neutral fog history clear"))return false;
-                fogHistoryNeutral=true;
-            }
-            fogHistoryValid=true;
-        }else if(effects.fog&&fogTemporalPS&&fogHistory&&debug==0&&!volumeFog){
-            fogHistoryNeutral=false; // The temporal result becomes the history after the swap.
-            // Wind moves the bank independently of the receiver used for reprojection.
-            const float historyWeight=cf.active?.5f:FogTemporalWeight;
-            const float info[4]={0,fogHistoryValid&&useHistory?historyWeight:0.f,0,0};
-            d->SetPixelShaderConstantF(53,c[53],4);d->SetPixelShaderConstantF(64,info,1);
-            d->SetRenderTarget(0,fogBlurredSurface);d->SetTexture(9,fog);d->SetTexture(14,fogHistory);d->SetTexture(15,temporalDepth[temporalIndex]);
-            for(unsigned sampler=14;sampler<16;++sampler){d->SetSamplerState(sampler,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(sampler,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);d->SetSamplerState(sampler,D3DSAMP_MINFILTER,sampler==14?D3DTEXF_LINEAR:D3DTEXF_POINT);d->SetSamplerState(sampler,D3DSAMP_MAGFILTER,sampler==14?D3DTEXF_LINEAR:D3DTEXF_POINT);d->SetSamplerState(sampler,D3DSAMP_MIPFILTER,D3DTEXF_NONE);d->SetSamplerState(sampler,D3DSAMP_SRGBTEXTURE,FALSE);}
-            d->SetPixelShader(fogTemporalPS);const bool resolved=check(quad(w/2,h/2),"fog temporal pass");
-            d->SetTexture(14,nullptr);d->SetTexture(15,nullptr);d->SetSamplerState(14,D3DSAMP_MINFILTER,D3DTEXF_POINT);d->SetSamplerState(14,D3DSAMP_MAGFILTER,D3DTEXF_POINT);
-            if(!resolved){fogHistoryValid=false;return false;}
-            std::swap(fogBlurred,fogHistory);std::swap(fogBlurredSurface,fogHistorySurface);fogHistoryValid=true;fogResolved=true;
-            if(profile)profile->mark("FogTemporal");
-        }else fogHistoryValid=false;
-        // TemporalLight already rotated the index: 1-index is this frame's
-        // distance, including frames without a directional light source.
-        d->SetTexture(15,requirements.distance?temporalDepth[1-temporalIndex]:nullptr);
-        d->SetSamplerState(15,D3DSAMP_MINFILTER,D3DTEXF_POINT);d->SetSamplerState(15,D3DSAMP_MAGFILTER,D3DTEXF_POINT);
-        d->SetSamplerState(15,D3DSAMP_MIPFILTER,D3DTEXF_NONE);d->SetSamplerState(15,D3DSAMP_SRGBTEXTURE,FALSE);
-        d->SetSamplerState(15,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(15,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);
-        // Separable depth-aware blur: fog -> fogBlurred (horizontal) -> fog (vertical); with the temporal pass the resolved fogHistory -> fog -> fogBlurred (the final fog).
-        if(fogActive){float blur[4]={2,0,0,0};d->SetPixelShader(fogBlurPS);
-         d->SetRenderTarget(0,fogResolved?fogSurface:fogBlurredSurface);d->SetTexture(9,fogResolved?fogHistory:fog);d->SetPixelShaderConstantF(34,blur,1);if(!check(quad(w/2,h/2),"volume blur horizontal"))return false;
-         blur[0]=0;blur[1]=2;d->SetRenderTarget(0,fogResolved?fogBlurredSurface:fogSurface);d->SetTexture(9,fogResolved?fog:fogBlurred);d->SetPixelShaderConstantF(34,blur,1);if(!check(quad(w/2,h/2),"volume blur vertical"))return false;
-         if(profile)profile->mark("FogBlur");}
-        // Local radiance has no receiver depth. Keep it outside atmospheric
-        // history: wall/ground reprojection otherwise drags pieces of a moving
-        // glow through old pixels. The analytic kernel is already smooth;
-        // the final depth-aware upsample handles its half-resolution edges.
-        if(effects.fog&&localFogActive){
-            auto* const currentFogSurface=fogResolved?fogBlurredSurface:fogSurface;
-            if(lightingCapture){lightingCapture->image("fog-before-local",currentFogSurface);lightingCapture->inputs(1,fogInputs,fogInputs);}
-            // 0.3.205 (gh#20): every batch adds its raw glow into localFogAccum and LocalFogCombine caps the total once into the fog buffer (a cap per batch of four
-            // made the glow depend on how the closest-first lights group). A batch adds exactly +0 outside its rect, so only the union of the drawn batches' rects is
-            // cleared and combined, and with no batch on screen neither runs. localScissor fails open (no proven view): then every batch and the combine are unclipped.
-            const unsigned fogBatches=(localDirectCount+NorthlightLocalLightSelection::FogBatchSize-1)/NorthlightLocalLightSelection::FogBatchSize;
-            const bool whole=!NorthlightLocalLightScissor::Enabled||!localScissorView.valid;
-            NorthlightLocalLightScissor::Rect area{};bool any=whole;
-            if(!whole)for(unsigned b=0;b<fogBatches;++b){const auto& r=atmosphere.fogRects[b];if(!r.area())continue;
-                if(any){area.left=std::min(area.left,r.left);area.top=std::min(area.top,r.top);area.right=std::max(area.right,r.right);area.bottom=std::max(area.bottom,r.bottom);}else area=r;
-                any=true;}
-            if(!any){localScissorBatches+=fogBatches;localScissorSkipped+=fogBatches;localSourceBatch(true,0,localDirectCount,area,false,0);sourceTrace.combine=NorthlightLocalLightTrace::Stage::Clipped;
-                if(lightingCapture)lightingCapture->skipped("LocalFog",0,localDirectCount,"all-batches-clipped");} // what localScissor counts for the batches it skips
-            else{
-            // TemporalLight rotated the index after reading the old history.
-            // That pair is dead until next frame's full temporal write; current
-            // lighting reads the other light pair; fog history is already complete.
-            auto* const localFogAccum=temporalLight[temporalIndex];
-            auto* const localFogAccumSurface=temporalLightSurface[temporalIndex];
-            const RECT clip={area.left,area.top,area.right,area.bottom};const D3DRECT cleared={area.left,area.top,area.right,area.bottom};
-            d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE);d->SetRenderState(D3DRS_SEPARATEALPHABLENDENABLE,FALSE);d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_ONE);d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_ONE);d->SetRenderState(D3DRS_BLENDOP,D3DBLENDOP_ADD); // alpha adds like rgb (ONE,ONE): the sum of the lamps' capped peaks
-            if(!check(d->SetRenderTarget(0,localFogAccumSurface),"lamp fog accumulator target")||!check(d->Clear(whole?0:1,whole?nullptr:&cleared,D3DCLEAR_TARGET,0,1,0),"lamp fog accumulator clear"))return false; // scissor is off here
-            if(lightingCapture)lightingCapture->image("fog-local-clear",localFogAccumSurface);
-            d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE);d->SetRenderState(D3DRS_COLORWRITEENABLE,15);d->SetPixelShader(localFogPS);
-            // Analytic lamp glow can reach farther without extending the
-            // celestial raymarch or adding samples to it. Restore after use.
-            const float lampFogInfo[4]={c[21][0],c[21][1],c[21][2],localLights.fogDistance};
-            d->SetPixelShaderConstantF(21,lampFogInfo,1);d->SetRenderState(D3DRS_SCISSORTESTENABLE,NorthlightLocalLightScissor::Enabled);
-            for(unsigned firstLight=0;firstLight<localDirectCount;firstLight+=NorthlightLocalLightSelection::FogBatchSize){
-                const auto batch=localLights.batch<NorthlightLocalLightSelection::FogBatchSize>(firstLight);
-                d->SetPixelShaderConstantF(36,batch.position[0].data(),NorthlightLocalLightSelection::FogBatchSize);
-                d->SetPixelShaderConstantF(44,batch.color[0].data(),NorthlightLocalLightSelection::FogBatchSize);
-                d->SetPixelShaderConstantF(59,batch.fog[0].data(),NorthlightLocalLightSelection::FogBatchSize);
-                const auto& rect=atmosphere.fogRects[firstLight/NorthlightLocalLightSelection::FogBatchSize];
-                const bool drawn=localScissor(batch.position,batch.count,&rect);const HRESULT hr=drawn?quad(w/2,h/2):S_OK;
-                localSourceBatch(true,firstLight,batch.count,whole?NorthlightLocalLightScissor::Rect{0,0,long(w/2),long(h/2)}:rect,drawn,hr);
-                if(lightingCapture)lightingCapture->pass("LocalFog",1,fogInputs,firstLight,batch.count,drawn,hr);
-                if(drawn&&!check(hr,"local fog glow batch")){d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE);return false;}
-            }
-            // The fog buffer is the target again (SetRenderTarget resets the scissor rect, so the union is set after it); s9 (idle here, rebound before every
-            // reader) holds the accumulator for the capping quad.
-            d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE);d->SetRenderState(D3DRS_COLORWRITEENABLE,7);d->SetPixelShader(localFogCombinePS);
-            d->SetTexture(9,localFogAccum);d->SetSamplerState(9,D3DSAMP_MINFILTER,D3DTEXF_POINT);d->SetSamplerState(9,D3DSAMP_MAGFILTER,D3DTEXF_POINT);
-            const bool restored=check(d->SetRenderTarget(0,currentFogSurface),"lamp fog target restore");
-            if(restored&&!whole){d->SetScissorRect(&clip);d->SetRenderState(D3DRS_SCISSORTESTENABLE,TRUE);}
-            if(lightingCapture)lightingCapture->inputs(2,1u<<9); // The actual complete accumulator, before LocalFogCombine reads it.
-            const HRESULT combineResult=restored?quad(w/2,h/2):E_FAIL;
-            const bool combined=restored&&check(combineResult,"local fog glow combine");
-            if(lightingCapture){lightingCapture->pass("LocalFogCombine",2,1u<<9,0,localDirectCount,restored,combineResult);lightingCapture->image("fog-after-local",currentFogSurface);}
-            sourceTrace.combine=combined?NorthlightLocalLightTrace::Stage::Submitted:NorthlightLocalLightTrace::Stage::Failed;
-            d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE);
-            d->SetTexture(9,nullptr);d->SetSamplerState(9,D3DSAMP_MINFILTER,D3DTEXF_LINEAR);d->SetSamplerState(9,D3DSAMP_MAGFILTER,D3DTEXF_LINEAR);
-            d->SetPixelShaderConstantF(21,c[21],1);
-            if(!combined)return false;
-            }
-        }
-        d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE);d->SetRenderState(D3DRS_COLORWRITEENABLE,15);
-        if(profile)profile->mark("Fog");
-        // c34 belongs to the blur above and to HorizonHaze ONLY in the final pass;
-        // set on fog-off frames too, where the blur did not run.
-        d->SetPixelShaderConstantF(34,haze.haze,1);
-        // The base shader samples AO too. Only actual fog/local outputs need the full compositor.
-        const bool baseComposite=hdrBaseAllowed&&hdrMode&&!combinedMaterial&&!fogActive&&!currentLocalLighting&&hdrBasePS;
-        // Only the folded UNORM input has a nonnegative encoded-RGB proof.
-        // Use the held values actually uploaded at c25/c26, including their fade.
-        const bool aoBaseComposite=baseComposite&&!lightingNeeded&&hdrAOBasePS;
-        const bool nativeSurfaceShared=baseComposite&&foldScene&&
-            NorthlightLegacyFog::surfaceFogIsZero(uploadedFog,fmt==D3DFMT_A8R8G8B8||fmt==D3DFMT_X8R8G8B8);
-        // c80 is rebound after all shadow-transition users; rainMask is frame-local.
-        const float compositeWork[]={fogActive?0.f:1.f,currentLocalLighting?0.f:1.f,rainMask?0.f:1.f,nativeSurfaceShared?1.f:0.f};
-        d->SetPixelShaderConstantF(80,compositeWork,1);
-        /* 0.3.202 (rain): RainMask on s13 for the composite only (the loop above already set POINT/CLAMP/no mip/sRGB off on it); the pointer is frame-local, the regional fog field goes back right after the quad */
-        d->SetTexture(13,rainMask?rainMask:neutralZero);rainMask=nullptr; /* never the regional fog field: null when neutralZero could not be created */
-        /* Dither on s2 (ShadowNear, idle after the fog passes): POINT/no mip/sRGB off from the frame-start loop, WRAP for the 64-pixel tile; CLAMP again after the quad */
-        d->SetTexture(2,hdrMode?hdrBase:ditherNoise?ditherNoise:neutralZero);d->SetSamplerState(2,D3DSAMP_ADDRESSU,hdrMode?D3DTADDRESS_CLAMP:D3DTADDRESS_WRAP);d->SetSamplerState(2,D3DSAMP_ADDRESSV,hdrMode?D3DTADDRESS_CLAMP:D3DTADDRESS_WRAP);
-        // Native UNORM scenes can be decoded by the sampler when no expansion
-        // or captured HDR sky requires a separate linear base image.
-        d->SetSamplerState(2,D3DSAMP_SRGBTEXTURE,hdrMode&&hdrBaseEncoded?TRUE:FALSE);
-        d->SetTexture(3,currentLocalLighting?light:neutralZero); // CurrentLocalLighting in WorldComposite only.
-        d->SetRenderTarget(0,fullMaterial&&!combinedMaterial?colorSurface:targetSurface);d->SetTexture(8,lightingNeeded?temporalLight[1-temporalIndex]:neutralZero);d->SetTexture(9,fogResolved?fogBlurred:fog?fog:neutralAO);d->SetPixelShader(aoBaseComposite?hdrAOBasePS:baseComposite?hdrBasePS:hdrMode?hdrFinalPS:finalPS);
-        if(combinedMaterial){
-            d->SetTexture(4,fogResolved?fogBlurred:fog?fog:neutralAO);d->SetTexture(5,foldScene);d->SetTexture(6,materialOcclusion);d->SetTexture(9,materialDetail);d->SetTexture(14,normalBuffer);
-            for(unsigned sampler:{4u,5u,6u,9u,12u,14u}){
-                const DWORD filter=(sampler==6||sampler==9||sampler==14)?D3DTEXF_POINT:D3DTEXF_LINEAR;
-                d->SetSamplerState(sampler,D3DSAMP_MINFILTER,filter);d->SetSamplerState(sampler,D3DSAMP_MAGFILTER,filter);
-                d->SetSamplerState(sampler,D3DSAMP_MIPFILTER,D3DTEXF_NONE);d->SetSamplerState(sampler,D3DSAMP_SRGBTEXTURE,FALSE);
-                d->SetSamplerState(sampler,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(sampler,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);
-            }
-            d->SetPixelShader(hdrCombinedPS);
-        }
-        /* 0.3.212 (task 32): with this frame's name marks the quad draws with the world depth-stencil bound and a stencil test that rejects marked pixels (they keep the game's colour in the target); no marks: the quad as before. */
-        NorthlightEffectCoverage::Capture::bind(d,effectCoverage,effectEmission);
-        if(lightingCapture)lightingCapture->inputs(3,(1u<<7)|(1u<<13),(1u<<7)|(1u<<13)); // Native alpha/emission and rain needed to reproduce final atmosphere.
-        bool compositeOk=false;
-        {IDirect3DSurface9* maskDepth=authoredMask?authoredMaskDepth:prelitMask?prelitMaskDepth:unlitMask?unlitMaskDepth:nameMaskDepth;
-         const unsigned roomPasses=(prelitMask?8u:0u)|(authoredMask?authoredRoomLevels:0u);
-         const DWORD maskBits=(nameMaskDepth?NorthlightNameStencil::kBit:0)|(unlitMask?NorthlightUnlitReceiver::Bit:0)|NorthlightUnlitReceiver::roomStencilMask(roomPasses);
-         nameMaskDepth=unlitMaskDepth=prelitMaskDepth=authoredMaskDepth=nullptr;
-         {NameMaskCompositeBind mask(d,fullMaterial&&!combinedMaterial?nullptr:maskDepth,maskBits);compositeOk=check(quad(w,h),"world composite");}
-         if(compositeOk&&unlitMask){
-             if(combinedMaterial){d->SetTexture(9,fogResolved?fogBlurred:fog?fog:neutralAO);d->SetSamplerState(9,D3DSAMP_MINFILTER,D3DTEXF_LINEAR);d->SetSamplerState(9,D3DSAMP_MAGFILTER,D3DTEXF_LINEAR);}
-             d->SetRenderTarget(0,targetSurface);d->SetPixelShader(hdrMode?hdrUnlitPS:unlitPS);
-             NameMaskCompositeBind mask(d,maskDepth,maskBits,NorthlightUnlitReceiver::Bit);
-             compositeOk=check(quad(w,h),"unlit atmosphere composite");
-         }
-         if(compositeOk&&roomPasses){
-             if(combinedMaterial){d->SetTexture(9,fogResolved?fogBlurred:fog?fog:neutralAO);d->SetSamplerState(9,D3DSAMP_MINFILTER,D3DTEXF_LINEAR);d->SetSamplerState(9,D3DSAMP_MAGFILTER,D3DTEXF_LINEAR);}
-             d->SetTexture(14,prelitDaylightCurrent?prelitDaylight:neutralZero);
-             d->SetSamplerState(14,D3DSAMP_MINFILTER,D3DTEXF_POINT);d->SetSamplerState(14,D3DSAMP_MAGFILTER,D3DTEXF_POINT);
-             d->SetRenderTarget(0,targetSurface);d->SetPixelShader(prelitShader);
-             for(unsigned level=0;level<4&&compositeOk;++level)if(roomPasses&(1u<<level)){
-                 const float daylightInfo[]={prelitDaylightCurrent?1.f:0.f,(3-level)/3.f,0,0};d->SetPixelShaderConstantF(81,daylightInfo,1);
-                 NameMaskCompositeBind mask(d,maskDepth,maskBits,NorthlightUnlitReceiver::RoomRef[level]);
-                 compositeOk=check(quad(w,h),"prelit WMO composite");
-             }
-         }
-         if(profile)profile->mark("WorldComposite");
-         if(compositeOk&&fullMaterial&&!combinedMaterial){
-            NorthlightMaterialProfile::Scope timing(materialProfile,NorthlightMaterialProfile::FinalApply,0,true);timing.work(uint64_t(w)*h);
-            // Reuse the existing full-size colour target; no additional target or replay.
-            d->SetRenderTarget(0,targetSurface);d->SetTexture(0,color);d->SetTexture(4,fogResolved?fogBlurred:fog?fog:neutralAO);d->SetTexture(5,foldScene);d->SetTexture(6,materialOcclusion);d->SetTexture(9,materialDetail);d->SetTexture(14,normalBuffer);
-            for(unsigned sampler:{4u,5u,6u,9u,12u,14u}){
-                const DWORD filter=(sampler==6||sampler==9||sampler==14)?D3DTEXF_POINT:D3DTEXF_LINEAR;
-                d->SetSamplerState(sampler,D3DSAMP_MINFILTER,filter);d->SetSamplerState(sampler,D3DSAMP_MAGFILTER,filter);
-                d->SetSamplerState(sampler,D3DSAMP_MIPFILTER,D3DTEXF_NONE);d->SetSamplerState(sampler,D3DSAMP_SRGBTEXTURE,FALSE);
-                d->SetSamplerState(sampler,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(sampler,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);
-            }
-            d->SetPixelShader(hdrMode?hdrMaterialPS:materialPS);
-            constexpr unsigned materialInputs=(1u<<0)|(1u<<1)|(1u<<4)|(1u<<5)|(1u<<6)|(1u<<7)|(1u<<8)|(1u<<9)|(1u<<10)|(1u<<11)|(1u<<12)|(1u<<13)|(1u<<14);
-            if(lightingCapture)lightingCapture->inputs(3,materialInputs,directInputs|(1u<<7)|(1u<<13));
-            NameMaskCompositeBind mask(d,maskDepth,maskBits);
-            const HRESULT materialResult=quad(w,h);compositeOk=check(materialResult,"full-resolution material light");
-            if(lightingCapture)lightingCapture->pass("MaterialComposite",3,materialInputs,0,0,true,materialResult);
-         }
-         if(profile)profile->mark("MaterialDetail");}
-        if(compositeOk&&fullMaterial){
-            if(combinedMaterial&&(unlitMask||prelitMask||authoredMask)){d->SetTexture(9,materialDetail);d->SetSamplerState(9,D3DSAMP_MINFILTER,D3DTEXF_POINT);d->SetSamplerState(9,D3DSAMP_MAGFILTER,D3DTEXF_POINT);}
+            return (quality.godrays?(fading?4u:0u)+(actor?2u:0u):8u)+(importedNoise?0u:1u);
+        };
+        const AtmosphericFogInput fogInputs{
+            w,h,farZ,debug,firstSource,sourceActive,geometryReady,applyDirectionalShadows,anyShadowTransition,useHistory,
+            requirements.distance,cf.active,atmosphere.imported,frameMap,c,textures
+        };
+        AtmosphericFogResult fogResult;
+        if(!renderAtmosphericFog(fogInputs,fogSource,localLights,atmosphere.fogRects,profile,localCapture,
+                                 [&](int source,bool first){setSource(source,first,true);},fogVolumeVariant,
+                                 [&](int source){return directionFor(source,true);},fogResult))return false;
+        const NorthlightWorldComposite::Input compositeInputs{
+            targetSurface,w,h,fmt,hdrMode,hdrBaseEncoded,lightingNeeded,fogResult.active,currentLocalLighting,
+            effectEmission,prelitDaylightCurrent,layers,material,haze.haze,uploadedFog,
+            foldScene,hdrBase,screenFallbacks.dither(),screenFallbacks.zero(),history.produced().light.texture,
+            fogResult.image.texture?fogResult.image.texture:screenFallbacks.ao(),screenLighting.raw().texture,effectCoverage,materialOcclusion,
+            materialDetail,worldNormals.texture(),screenLighting.prelit().texture,textures[3],textures[7],profile,materialProfile,
+            localCapture,NorthlightWorldLocalLighting::LocalDirectInputs,regionalFog.texture()
+        };
+        const auto composition=composite.draw(d,compositeInputs,rainMask,
+             [&](HRESULT hr,const char* name){return check(hr,name);},[&]{
             if(materialProfile&&materialProfile->recording())logf("MATERIAL_APPLY frame=%llu gain=%.3f normalRange=%.1f occlusion=%u occlusionRange=%.1f sunRGB=%.4f,%.4f,%.4f moonRGB=%.4f,%.4f,%.4f ambientRGB=%.4f,%.4f,%.4f",(unsigned long long)materialProfile->frameNumber(),materialBumpGain,materialBumpDistance,unsigned(materialOcclusion!=nullptr),materialOcclusionDistance,sourceColors[0].x,sourceColors[0].y,sourceColors[0].z,sourceColors[1].x,sourceColors[1].y,sourceColors[1].z,context.ambient[0],context.ambient[1],context.ambient[2]);
-            materialPixelAudit.sample(materialProfile,&stateBlocks,[&](UINT x,UINT y){return quad(x,y);});}
-        d->SetTexture(3,textures[3]);d->SetTexture(7,textures[7]);
-        d->SetTexture(15,nullptr);d->SetTexture(2,nullptr);d->SetSamplerState(2,D3DSAMP_SRGBTEXTURE,FALSE);d->SetSamplerState(2,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d->SetSamplerState(2,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);
-        if(!compositeOk)return false;composited=true;diagnosticFogResolved=fogResolved;diagnosticLocalLighting=currentLocalLighting;d->SetTexture(13,regionalFogTexture);
+            materialPixelAudit.sample(materialProfile,&stateBlocks);
+        });
+        if(!composition.ok)return false;
+        composited=true;diagnosticFogResolved=fogResult.resolved;diagnosticLocalLighting=currentLocalLighting;
         reportLocalSources(sourceTrace,diagnosticCapture,rendererFrame,c[52][1],lampSunlitCut,c[58][2],w,h,nearZ,farZ,minZ,maxZ,waterMask!=nullptr,debug);
         if(diagnosticFiles){
             const unsigned capture=diagnosticCapture;
@@ -7148,7 +4200,7 @@ public:
             }
             // 0.3.174 FOLD: the proxy's scene copy, before AO and bloom (the colour copy was skipped).
             if(foldScene){IDirect3DSurface9* folded=nullptr;if(SUCCEEDED(foldScene->GetSurfaceLevel(0,&folded))){dump(d,folded,directory,"scene",capture);folded->Release();}}
-            else dump(d,colorSurface,directory,"scene",capture);
+            else dump(d,composite.scratchSurface(),directory,"scene",capture);
             logf("WORLD GPU diagnostic capture=%u scene=%s",capture,foldScene?"pre-AO (folded AO/bloom)":"post-AO composite");
         }
         const int64_t spellJoinStart=spellTimed?QpcClock::now():0;
@@ -7160,7 +4212,7 @@ public:
         if(frames%600==0&&NorthlightDiagnostics::enabled())logf("WORLD global light holds=%u predicted=%u mispredicted=%u",globalLightHold.held,globalLightHold.predictedAccepts,globalLightHold.predictedMisses); /* 0.3.207: sky block reads between the copy and the glare darkening; colours matched / not matched by the glow prediction */
         if(captureSampled)logf("VOLUME sources sunRGB=%.5f,%.5f,%.5f moonRGB=%.5f,%.5f,%.5f ambientRGB=%.5f,%.5f,%.5f sunGain=1.2 moonGain=1.2 directCaps=0.38,0.24 airCells=%u airDensity=%.5f,%.5f forestAir=%.4f night=%.3f",
             sourceColors[0].x,sourceColors[0].y,sourceColors[0].z,sourceColors[1].x,sourceColors[1].y,sourceColors[1].z,
-            context.ambient[0],context.ambient[1],context.ambient[2],uploadedFogField?uploadedFogField->airCells:0,c[32][0],c[32][1],c[22][3],c[31][3]);
+            context.ambient[0],context.ambient[1],context.ambient[2],regionalFog.field()?regionalFog.field()->airCells:0,c[32][0],c[32][1],c[22][3],c[31][3]);
         if(profileSampled()){ /* hue candidates (RenderProfile): compare at Brill / Durotar coast / Orgrimmar with the Light DBC */
             const auto& g=glowHueFrame;float fogDirectRGB[3],fogAmbientRGB[3],liftRGB[3],slot[5][3];
             const float sunRGB[3]={sourceGlowColors[0].x,sourceGlowColors[0].y,sourceGlowColors[0].z};NorthlightSunHue::fogDirect(sunRGB,g,fogDirectRGB);NorthlightSunHue::coolAmbient(c[18],g,sourceWeights[0],fogAmbientRGB);NorthlightSunHue::horizonLift(g,liftRGB);
@@ -7173,13 +4225,15 @@ public:
                 g.sun[0],g.sun[1],g.sun[2],g.sunCore[0],g.sunCore[1],g.sunCore[2],g.moon[0],g.moon[1],g.moon[2],liftRGB[0],liftRGB[1],liftRGB[2],
                 fogDirectRGB[0],fogDirectRGB[1],fogDirectRGB[2],fogAmbientRGB[0],fogAmbientRGB[1],fogAmbientRGB[2],NorthlightSunHue::SunForwardCap,NorthlightSunHue::MoonForwardCap);
         }
-        if(frames==1||frames%600==0){if(frames==1||NorthlightDiagnostics::enabled())logf("LOCAL direct lights=%u limit=%u nearestReach=%.1f visibilityEnd=%.1f fogDistance=%.1f strength=%.3f lampGain=%.3f sunlitCut=%.3f available=%zu scissor=%d batches=%u clipped=%u skipped=%u coverage=%.3f fading=%u selectUs=%.1f selectMaxUs=%.1f offscreen=%.1f arranged=%u widePasses=%u arrangedCost=%.3f",localDirectCount,quality.localLightLimit,localDirectNearest,NorthlightLocalLightSelection::VisibilityEnd,localLights.fogDistance,c[52][1],lampGain,lampSunlitCut,active?active->localLights.size():size_t(0),
-            int(NorthlightLocalLightScissor::Enabled),localScissorBatches,localScissorClipped,localScissorSkipped,localScissorBatches?localScissorCoverage/localScissorBatches:1.,
+        if(frames==1||frames%600==0){
+            const auto& scissor=localLighting.scissor().work();
+            if(frames==1||NorthlightDiagnostics::enabled())logf("LOCAL direct lights=%u limit=%u nearestReach=%.1f visibilityEnd=%.1f fogDistance=%.1f strength=%.3f lampGain=%.3f sunlitCut=%.3f available=%zu scissor=%d batches=%u clipped=%u skipped=%u coverage=%.3f fading=%u selectUs=%.1f selectMaxUs=%.1f offscreen=%.1f arranged=%u widePasses=%u arrangedCost=%.3f",localDirectCount,quality.localLightLimit,localDirectNearest,NorthlightLocalLightSelection::VisibilityEnd,localLights.fogDistance,c[52][1],lampGain,lampSunlitCut,active?active->localLights.size():size_t(0),
+            int(NorthlightLocalLightScissor::Enabled),scissor.batches,scissor.clipped,scissor.skipped,scissor.batches?scissor.coverage/scissor.batches:1.,
             localLightTracker.fading,localSelectFrames?localSelectUsSum/localSelectFrames:0.,localSelectUsMax,
-            localSelectFrames?double(localOffscreenSum)/localSelectFrames:0.,localArranged,localWidePasses,localArrangeBefore>0?localArrangeAfter/localArrangeBefore:1.);
-            localScissorBatches=localScissorClipped=localScissorSkipped=0;localScissorCoverage=0;localSelectUsSum=localSelectUsMax=0;localSelectFrames=0;
-            localOffscreenSum=localArranged=localWidePasses=0;localArrangeBefore=localArrangeAfter=0;
-            if(frames>1&&NorthlightDiagnostics::enabled())logf("GI probe blend publishes=%u blendedSlots=%u texture=%d",probeBlendPublishes,probeBlendSlots,int(probePrev!=nullptr));
+            localSelectFrames?double(localOffscreenSum)/localSelectFrames:0.,localArranged,localLighting.widePasses(),localArrangeBefore>0?localArrangeAfter/localArrangeBefore:1.);
+            localLighting.resetWork();localSelectUsSum=localSelectUsMax=0;localSelectFrames=0;
+            localOffscreenSum=localArranged=0;localArrangeBefore=localArrangeAfter=0;
+            if(frames>1&&NorthlightDiagnostics::enabled())logf("GI probe blend publishes=%u blendedSlots=%u texture=%d",probeBlendPublishes,probeBlendSlots,int(probeAtlas.previous()!=nullptr));
             if(active&&frames>1&&NorthlightDiagnostics::enabled()){
                 const auto& r=active->relightStats;
                 logf("GI relight hits=%llu tracedProbes=%llu shapeResets=%llu cacheKiB=%.1f invalidAcrossLight=%llu",(unsigned long long)r.hits,(unsigned long long)r.misses,(unsigned long long)r.resets,double(r.bytes)/1024,(unsigned long long)r.invalidHits);
@@ -7191,7 +4245,7 @@ public:
             probeBlendPublishes=probeBlendSlots=0;}
         if(frames==1||(frames%600==0&&NorthlightDiagnostics::enabled()))logf("HORIZON haze strength=%u start=%u band=%u terrain=%u fog=%u colorKnown=%d fogEnd=%.1f far=%.1f startZ=%.1f tau=%.3f zone=%.3f rgb=%.3f,%.3f,%.3f sun=%.4f,%.4f",
             quality.horizonHaze,quality.horizonHazeStart,quality.horizonHazeBand,quality.horizonHazeTerrain,unsigned(effects.fog),int(horizonHazeState.colorKnown),horizonHazeState.end,farZ,haze.shape[0],
-            haze.haze[3]/NorthlightHorizonHaze::Log2e,hazeZone,haze.haze[0],haze.haze[1],haze.haze[2],haze.sun[0],haze.sun[1]);
+            haze.haze[3]/NorthlightHorizonHaze::Log2e,frameConstants.hazeZone,haze.haze[0],haze.haze[1],haze.haze[2],haze.sun[0],haze.sun[1]);
         if(frames==1||(frames%600==0&&NorthlightDiagnostics::enabled())){ /* every 600 frames with Diagnostics=1 (RenderProfile needs it too), so one test session answers the hue question on stock and HD */
             logf("CELESTIAL native appearance valid=%u coreRGB=%.4f,%.4f,%.4f discRGB=%.4f,%.4f,%.4f glareRGB=%.4f,%.4f,%.4f nativeRadius=%.7f renderedRadius=%.7f",
                 unsigned(celestialValid&&celestial.sun.nativeAppearance),celestial.sun.nativeTint[0],celestial.sun.nativeTint[1],celestial.sun.nativeTint[2],
@@ -7202,31 +4256,33 @@ public:
                 band9[0],band9[1],band9[2],band10[0],band10[1],band10[2],context.direct[0],context.direct[1],context.direct[2],legacyFog.color[0],legacyFog.color[1],legacyFog.color[2]);
         }
         if(frames==1||(frames%600==0&&NorthlightDiagnostics::enabled()))logf("CELESTIAL valid=%d gameDay=%.6f source0Weight=%.4f moonWeight=%.4f authoredFill=%.4f sunZ=%.4f moonZ=%.4f regionalFog=%.4f",celestialValid,celestialValid?celestial.dayFraction:0.f,sourceWeights[0],sourceWeights[1],authoredFill,sourceDirections[0].z,sourceDirections[1].z,c[27][3]);
-        if(frames==1||frames%600==0){if(frames==1||NorthlightDiagnostics::enabled())logf("WORLD shadow batches near=%u far=%u culledNear=%u culledFar=%u liveUploadBytes=%zu cacheRenders=%u cacheReuses=%u culledReplays=%u staticFull=%u staticPartial=%u partialRects=%u partialBounding=%u costFull=%u partialTexelPct=%.1f partialSkippedDraws=%u partialCalls=%llu partialFullCalls=%llu dedupUncommitted=%u verified=%u verifyMismatches=%u scissorLeaks=%u slicedBands=%u sliceRestarts=%u",drawnBatches[0],drawnBatches[1],culledBatches[0],culledBatches[1],terrainUploadBytes,shadowCacheRenders,shadowCacheReuses,culledReplayDraws,
+        if(frames==1||frames%600==0){if(frames==1||NorthlightDiagnostics::enabled())logf("WORLD shadow batches near=%u far=%u culledNear=%u culledFar=%u liveUploadBytes=%zu cacheRenders=%u cacheReuses=%u culledReplays=%u staticFull=%u staticPartial=%u partialRects=%u partialBounding=%u costFull=%u partialTexelPct=%.1f partialSkippedDraws=%u partialCalls=%llu partialFullCalls=%llu dedupUncommitted=%u verified=%u verifyMismatches=%u scissorLeaks=%u slicedBands=%u sliceRestarts=%u",directionalResult.drawnBatches[0],directionalResult.drawnBatches[1],directionalResult.culledBatches[0],directionalResult.culledBatches[1],terrainUploadBytes,shadowCacheRenders,shadowCacheReuses,culledReplayDraws,
             shadowCacheStaticFullRenders,shadowCachePartialRenders,shadowCachePartialRects,shadowCachePartialBounding,shadowCacheCostFull,shadowCachePartialRenders?100.0*double(shadowCachePartialTexels)/(double(shadowCachePartialRenders)*ShadowCacheSize*ShadowCacheSize):0.0,shadowCachePartialSkippedDraws,shadowCachePartialCalls,shadowCachePartialFullCalls,staticDedupUncommitted,shadowCacheVerified,shadowCacheVerifyMismatches,shadowCacheScissorLeaks,staticSliceBands,staticSliceRestarts);
             shadowCacheRenders=shadowCacheReuses=culledReplayDraws=0;shadowCacheStaticFullRenders=shadowCachePartialRenders=shadowCachePartialSkippedDraws=shadowCachePartialRects=shadowCachePartialBounding=shadowCacheCostFull=0;shadowCachePartialTexels=shadowCachePartialCalls=shadowCachePartialFullCalls=0;staticDedupUncommitted=0;staticSliceBands=staticSliceRestarts=0;}
         if(frames==1||frames%600==0){if(frames==1||NorthlightDiagnostics::enabled())logf("SHADOW reuse nearInterval=%u farInterval=%u nearReuses=%u farReuses=%u captureSkippedFrames=%u captureDeferrals=%u captureSkip=%u",
             quality.nearShadowInterval,quality.farShadowInterval,nearReuses,farReuses,captureSkippedFrames,captureDeferrals,unsigned(NorthlightQuality::captureSkipPossible(quality,NorthlightQuality::actorShadowWork(quality,applyDirectionalShadows))));
             nearReuses=farReuses=captureSkippedFrames=captureDeferrals=0;}
-        if(profile&&profile->recording())deferLogf("WORLD composite rendererFrame=%u variant=%s width=%u height=%u fog=%u local=%u aoAlphaNeutral=%u combined=%u rainAbsent=%u nativeSurfaceShared=%u distanceFromNormals=%u fogClearSkipped=%u fogHistoryClearSkipped=%u callerStateShared=%u",rendererFrame,aoBaseComposite?"ao-hdr":baseComposite?"base-hdr":hdrMode?"standard-hdr":"standard-sdr",w,h,unsigned(fogActive),unsigned(currentLocalLighting),unsigned(!foldAO||foldAOAlphaNeutral),unsigned(combinedMaterial),unsigned(compositeWork[2]>.5f),unsigned(nativeSurfaceShared),unsigned(normalsProduceDistance),unsigned(fogClearSkipped),unsigned(fogHistoryClearSkipped),unsigned(callerRestores));
-        if(lightingClock)logf("WORLD lighting setup prefixMs=%.3f atmosphereMs=%.3f constantsMs=%.3f bindingsMs=%.3f spellFitMs=%.3f spellFitRevision=%u spellAsync=%u spellWorker=%u spellJoinMs=%.3f",lightingSetupMs[0],lightingSetupMs[1],lightingSetupMs[2],lightingSetupMs[3],spellFitMs,spellFogHold.out.revision,unsigned(spellAsync),unsigned(spellWorker),spellJoinMs);
+        if(profile&&profile->recording())deferLogf("WORLD composite rendererFrame=%u variant=%s width=%u height=%u fog=%u local=%u aoAlphaNeutral=%u combined=%u rainAbsent=%u nativeSurfaceShared=%u distanceFromNormals=%u fogClearSkipped=%u fogHistoryClearSkipped=%u callerStateShared=%u",rendererFrame,composition.aoBase?"ao-hdr":composition.base?"base-hdr":hdrMode?"standard-hdr":"standard-sdr",w,h,unsigned(fogResult.active),unsigned(currentLocalLighting),unsigned(!foldAO||foldAOAlphaNeutral),unsigned(combinedMaterial),unsigned(composition.rainAbsent),unsigned(composition.nativeSurfaceShared),unsigned(normalsProduceDistance),unsigned(fogResult.clearSkipped),unsigned(fogResult.historyClearSkipped),unsigned(callerRestores));
+        if(lightingClock){
+            const bool imported=atmosphere.imported.valid;
+            const unsigned rays=spellWanted?NorthlightSpellFog::kSamples:0;
+            logf("WORLD lighting setup prefixMs=%.3f atmosphereMs=%.3f constantsMs=%.3f bindingsMs=%.3f spellFitMs=%.3f spellFitRevision=%u spellAsync=%u spellWorker=%u spellJoinMs=%.3f spellRegionalSamples=%u spellImportedSamples=%u",
+                 lightingSetupMs[0],lightingSetupMs[1],lightingSetupMs[2],lightingSetupMs[3],spellFitMs,spellFogHold.out.revision,unsigned(spellAsync),unsigned(spellWorker),spellJoinMs,
+                 imported?0:rays*NorthlightSpellFog::RegionalRaySteps,imported?rays*NorthlightSpellFog::ImportedRaySteps:0);
+        }
         if(captureSampled)logf("WORLD terrain reuse=%u snapshots=%zu uploadBytes=%zu vertexUploadBytes=%zu reusedVertices=%zu arenaMiB=%.2f vertexStride=%zu vertexCapacity=%u rollovers=%u change=%s newOwners=%u directionalBuilds=%u directionalAliases=%u indexCacheMiB=%.2f directionalTriangles=%zu straddlingTriangleTests=%zu collectVisited=%zu terrainMs=%.3f,%.3f,%.3f",unsigned(terrainUploadReused),frameTerrain.size(),terrainUploadBytes,liveTerrainGPU.uploadedBytes,liveTerrainGPU.reusedVertices,double(liveTerrainGPU.bytes())/1048576,sizeof(StaticShadow::Vertex),liveTerrainGPU.vertexCapacity(),liveTerrainGPU.rollovers,
             terrainChange,liveTerrainGPU.newOwners,liveTerrainGPU.directionalBuilds,liveTerrainGPU.directionalAliases,double(liveTerrainGPU.indexBytes())/1048576,liveTerrainGPU.directionalTriangles,terrainTriangleTests,liveTerrainGPU.collectVisited,terrainPartMs[0],terrainPartMs[1],terrainPartMs[2]);
-        if(frames==1||(frames%600==0&&NorthlightDiagnostics::enabled()))logf("WORLD replay constants bytes=%zu previousBytes=%zu calls=%zu previousCalls=%zu",replayConstantBytes,replays.size()*2*(1024*4+16*4+64*4+16*4),replayConstantCalls,replays.size()*2*4);
+        if(frames==1||(frames%600==0&&NorthlightDiagnostics::enabled()))logf("WORLD replay constants bytes=%zu previousBytes=%zu calls=%zu previousCalls=%zu",directionalResult.replayConstantBytes,replays.size()*2*(1024*4+16*4+64*4+16*4),directionalResult.replayConstantCalls,replays.size()*2*4);
         if(frames==1||frames%600==0){
             if(frames==1||NorthlightDiagnostics::enabled())logf("WORLD replay cull tested=%llu,%llu,%llu,%llu bounded=%llu,%llu,%llu,%llu culled=%llu,%llu,%llu,%llu staticM2Skipped=%llu,%llu,%llu,%llu (sun near,far moon near,far)",
                 replaySlotTested[0],replaySlotTested[1],replaySlotTested[2],replaySlotTested[3],replaySlotBounded[0],replaySlotBounded[1],replaySlotBounded[2],replaySlotBounded[3],
                 replaySlotCulled[0],replaySlotCulled[1],replaySlotCulled[2],replaySlotCulled[3],replaySlotM2Skipped[0],replaySlotM2Skipped[1],replaySlotM2Skipped[2],replaySlotM2Skipped[3]);
             for(unsigned n=0;n<4;++n)replaySlotTested[n]=replaySlotBounded[n]=replaySlotCulled[n]=replaySlotM2Skipped[n]=0;}
-        if(frames==1||(frames%600==0&&NorthlightDiagnostics::enabled()))logf("WORLD replay poses draws=%zu groups=%u prepared=%zu reused=%zu scope=directional exact=1",replays.size(),replays.empty()?0:replays.back()->constantGroup+1,replayPosePrepared,replayPoseReused);
+        if(frames==1||(frames%600==0&&NorthlightDiagnostics::enabled()))logf("WORLD replay poses draws=%zu groups=%u prepared=%zu reused=%zu scope=directional exact=1",replays.size(),replays.empty()?0:replays.back()->constantGroup+1,directionalResult.replayPosePrepared,directionalResult.replayPoseReused);
         DWORD elapsed=GetTickCount()-submissionStart;
         if(elapsed>40&&slowReports++<12)logf("WORLD slow submission: %lu ms; replay=%zu liveTerrainChunks=%zu",(unsigned long)elapsed,replays.size(),liveTerrainChunks.size());
         shadowsComposited=geometryReady&&applyDirectionalShadows&&(sourceActive[0]||sourceActive[1])&&debug==0;
-        if(shadowsComposited){
-            terrainCoverageSources=0;
-            for(unsigned source=0;source<2;++source)if(sourceActive[source])std::memcpy(terrainCoverageMatrices[terrainCoverageSources++],sourceMatrices[source][1],64);
-            terrainCoverageRowsValid=false;
-        }
+        if(shadowsComposited)terrainShadowPrograms.publish(sourceActive,sourceMatrices);
         bucket(NorthlightEffectsBuckets::Composite); /* the world composite, temporal and the frame's logs */
         return true;
     }

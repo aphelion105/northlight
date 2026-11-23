@@ -3,16 +3,18 @@
 """0.3.196 (task 12): per-draw overhead removal that must not change a rendering decision.
 
 Native: the real VsClass/classifyVs (renderer.cpp) and the real WorldRenderer::lookupShader (world_renderer.h) compiled over mocks -
-the same shader consecutively costs one lookup, a re-registration (generation bump) at the same address with a new tag invalidates the
+repeated and interleaved shaders reuse their classification, a re-registration (generation bump) at the same address invalidates the
 entry, world == null classifies as non-world; the real NorthlightShadowBlobFilter::claim() body over a mock device - a successful peek
 takes no GetTexture and AddRefs only for a Faint verdict, a failed peek falls back to the old GetTexture path with identical results.
 Source: the peek-with-fallback and the borrowed/owned release in prepareDrawImpl, captureWater, fullViewport and beforeDraw.
 Native clang++, plain -O2 and ASan/UBSan. No device or game."""
+
+from source_units import source_text
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
 import subprocess,tempfile
 
-r=fp.src('renderer.cpp').read_text();w=fp.src('world_renderer.h').read_text();f=fp.src('shadow_blob_filter.h').read_text()
+r=source_text(fp.src('renderer.cpp'));w=fp.src('world_renderer.h').read_text();f=fp.src('shadow_blob_filter.h').read_text()
 def member(text,signature):
     a=text.index(signature);b=text.index('{',a);depth=1;end=b+1
     while depth:
@@ -21,9 +23,13 @@ def member(text,signature):
 cls_block=r[r.index('    struct VsClass {'):r.index('    std::unordered_map<IDirect3DPixelShader9*, uint64_t> psHashes;')]
 lookup_block=w[w.index('    std::uint32_t worldShaderGen=0;'):w.index('    // 0.3.179 (T1): programs erased by registerShader')]
 claim=member(f,'    Result claim(UINT primitiveCount)')
+materials=fp.src('auto_bump_renderer.h').read_text()
+material_input='\n'.join(member(materials,signature) for signature in (
+    'void setInverseView(', 'void setLight(', 'template<class Source> bool syncWorldLighting('))
 
 HARNESS=r'''
 #include <cassert>
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <unordered_map>
@@ -32,11 +38,12 @@ HARNESS=r'''
 #include "native_shadow_observation.h"
 using DWORD=std::uint32_t;
 using uint64_t=std::uint64_t;
-struct IDirect3DVertexShader9{};
+struct alignas(16) IDirect3DVertexShader9{};
 struct World{unsigned wmoCalls=0;std::unordered_map<IDirect3DVertexShader9*,int> wmo;
     bool recognizesWmo(IDirect3DVertexShader9* s){++wmoCalls;return wmo.count(s)!=0;}
     bool isWorldShader(IDirect3DVertexShader9* s){return wmo.count(s)!=0;}
-    bool isSkinnedShader(IDirect3DVertexShader9*){return false;}};
+    bool isSkinnedShader(IDirect3DVertexShader9*){return false;}
+    bool terrainShader(IDirect3DVertexShader9* s){return wmo.count(s)!=0;}};
 struct Cls{
     static constexpr int kFamilyShift=3,kNativeShadowTag=64;
     std::unordered_map<IDirect3DVertexShader9*,int> vsTags;std::unordered_map<IDirect3DVertexShader9*,uint64_t> vsHashes;
@@ -50,6 +57,20 @@ struct Look{
     std::unordered_set<IDirect3DVertexShader9*> terrainShaders;std::unordered_map<IDirect3DVertexShader9*,CaptureShader> captureShaders;
 @LOOK@
     void registerShader(IDirect3DVertexShader9* s,bool terrain,bool capture,int kind){++worldShaderGen;terrainShaders.erase(s);if(terrain)terrainShaders.insert(s);captureShaders.erase(s);if(capture)captureShaders.emplace(s,CaptureShader{kind});}
+};
+struct MaterialSource {
+    std::uint64_t stamp=1;
+    mutable unsigned reads=0;
+    std::uint64_t materialLightStamp()const{return stamp;}
+    bool materialLight(float* light,float* view)const{
+        ++reads;std::fill_n(light,4,float(stamp));std::fill_n(view,12,float(stamp+1));return stamp&1;
+    }
+};
+struct MaterialInput {
+    struct Displacement {bool known=false;unsigned updates=0;void setDistanceView(const float* rows){known=rows!=nullptr;++updates;}} displacement;
+    float captureToWorld[12]={},occlusionLight[4]={};
+    std::uint64_t worldLightStamp=~std::uint64_t(0);
+@MATERIAL@
 };
 // claim() over a mock device
 typedef int HRESULT;typedef unsigned UINT;typedef unsigned DWORD;typedef int INT;
@@ -81,16 +102,16 @@ struct Blob{
 static bool peekBound(void* c,DWORD stage,IDirect3DBaseTexture9*& out){auto* t=*static_cast<IDirect3DTexture9**>(c);if(stage||!t)return false;out=t;return true;}
 int main(){
     {   // classifyVs
-        IDirect3DVertexShader9 a,b;World world;Cls c;c.world=&world;c.registerVS(&a,1);c.registerVS(&b,2);world.wmo[&b]=1;
+        IDirect3DVertexShader9 pair[2];auto& a=pair[0];auto& b=pair[1];World world;Cls c;c.world=&world;c.registerVS(&a,1);c.registerVS(&b,2);world.wmo[&b]=1;
         assert(c.classifyVs(&a).entry==1&&c.vsCacheMisses==1&&c.vsCacheHits==0);
         for(int i=0;i<5;++i)assert(c.classifyVs(&a).entry==1);
         assert(c.vsCacheMisses==1&&c.vsCacheHits==5&&world.wmoCalls==1);                       // one lookup for six consecutive draws
-        assert(c.classifyVs(&b).entry==2&&c.classifyVs(&b).wmo&&c.classifyVs(&b).world&&c.vsCacheMisses==2);
-        assert(c.classifyVs(&a).entry==1&&!c.lastVs.wmo&&c.vsCacheMisses==3);                    // alternating shaders: correct, one entry only
+        assert(c.classifyVs(&b).entry==2&&c.classifyVs(&b).wmo&&c.classifyVs(&b).world&&c.classifyVs(&b).terrain&&c.vsCacheMisses==2);
+        assert(c.classifyVs(&a).entry==1&&!c.lastVs.wmo&&!c.lastVs.terrain&&c.vsCacheMisses==2); // alternating shaders reuse both entries
         c.registerVS(&a,2);                                                                      // freed address registered again with a new tag
-        assert(c.classifyVs(&a).entry==2&&c.vsCacheMisses==4);
+        assert(c.classifyVs(&a).entry==2&&c.vsCacheMisses==3);
         ++c.vsGeneration;c.vsTags[&a]|=256; // screen-text proof invalidates the cached classification
-        assert(c.classifyVs(&a).entry==(2|256)&&c.vsCacheMisses==5);
+        assert(c.classifyVs(&a).entry==(2|256)&&c.vsCacheMisses==4);
         c.world=nullptr;c.registerVS(&b,1);const auto& v=c.classifyVs(&b);assert(v.entry==1&&!v.wmo&&!v.world&&!v.skinned);   // no world: all false
         IDirect3DVertexShader9 unknown;assert(c.classifyVs(&unknown).entry==0);
         c.nativeShadowProofs[&a].major=3;c.registerVS(&a,Cls::kNativeShadowTag);
@@ -99,6 +120,19 @@ int main(){
         assert(c.classifyVs(&a).nativeShadow==proof); // node pointers survive rehash
         assert(c.registerNativeShadow(&a,{})==0);c.registerVS(&a,0);
         assert(!c.classifyVs(&a).nativeShadow&&!c.nativeShadowProofs.count(&a));
+    }
+    {
+        MaterialSource source;MaterialInput input;
+        assert(input.syncWorldLighting(source)&&input.displacement.known&&input.captureToWorld[0]==2&&input.occlusionLight[0]==1);
+        for(unsigned i=0;i<100;++i)assert(!input.syncWorldLighting(source));
+        assert(source.reads==1&&input.displacement.updates==1);
+        source.stamp=3;assert(input.syncWorldLighting(source)&&input.captureToWorld[11]==4);
+        source.stamp=2;assert(input.syncWorldLighting(source)&&!input.displacement.known);
+        source.stamp=3;assert(input.syncWorldLighting(source)&&input.displacement.known);
+        float light[4]={};input.setLight(light);
+        assert(input.syncWorldLighting(source)&&input.occlusionLight[0]==3);
+        float view[12]={};input.setInverseView(view,false);
+        assert(input.syncWorldLighting(source)&&input.displacement.known&&input.captureToWorld[11]==4);
     }
     {   // lookupShader
         IDirect3DVertexShader9 a,b;Look l;l.registerShader(&a,true,false,0);l.registerShader(&b,false,true,7);
@@ -128,12 +162,12 @@ int main(){
     std::printf("PASS vs class cache, shader lookup cache, borrowed blob texture\n");
 }
 '''
-src=HARNESS.replace('@CLS@',cls_block).replace('@LOOK@',lookup_block).replace('@CLAIM@','    '+claim.strip())
+src=HARNESS.replace('@CLS@',cls_block).replace('@LOOK@',lookup_block).replace('@CLAIM@','    '+claim.strip()).replace('@MATERIAL@',material_input)
 with tempfile.TemporaryDirectory(prefix='northlight-vs-cache-') as tmp:
     (Path(tmp)/'t.cpp').write_text(src)
     for label,flags in [('O2',['-O2']),('asan',['-O1','-g','-fsanitize=address,undefined','-fno-sanitize-recover=all'])]:
         exe=Path(tmp)/('test-'+label)
-        subprocess.run(['clang++','-std=c++17','-Wall','-Wextra','-Werror','-Wno-unused-parameter','-Wno-unused-private-field',*flags,*fp.test_include_flags(),str(Path(tmp)/'t.cpp'),'-o',str(exe)],check=True)
+        subprocess.run(['clang++','-std=c++17','-UNDEBUG','-Wall','-Wextra','-Werror','-Wno-unused-parameter','-Wno-unused-private-field',*flags,*fp.test_include_flags(),str(Path(tmp)/'t.cpp'),'-o',str(exe)],check=True)
         print(label,subprocess.check_output([str(exe)],text=True),end='',flush=True)
 
 
@@ -213,7 +247,7 @@ with tempfile.TemporaryDirectory(prefix='northlight-phase3-') as tmp:
     (Path(tmp)/'t.cpp').write_text(src2)
     for label,flags in [('O2',['-O2']),('asan',['-O1','-g','-fsanitize=address,undefined','-fno-sanitize-recover=all'])]:
         exe=Path(tmp)/('test-'+label)
-        subprocess.run(['clang++','-std=c++17','-Wall','-Wextra','-Werror','-Wno-unused-parameter','-Wno-unused-private-field',*flags,str(Path(tmp)/'t.cpp'),'-o',str(exe)],check=True)
+        subprocess.run(['clang++','-std=c++17','-UNDEBUG','-Wall','-Wextra','-Werror','-Wno-unused-parameter','-Wno-unused-private-field',*flags,str(Path(tmp)/'t.cpp'),'-o',str(exe)],check=True)
         print(label,subprocess.check_output([str(exe)],text=True),end='',flush=True)
 
 dm=member(r,'template<class Capture> void prepareDrawImpl(Capture capture,UINT count)');bd=member(r,'    void beforeDraw(IDirect3DVertexShader9* vs)');cw=member(r,'template<class Draw> void captureWater(');fv=member(r,'bool fullViewport(D3DSURFACE_DESC& desc');bw=member(r,'bool bindWorldDepth(const D3DSURFACE_DESC& desc)')
@@ -221,7 +255,7 @@ registration=member(w,'void registerShader(IDirect3DVertexShader9* shader,uint64
 checks={
  'prepareDrawImpl: peekVertexShader with the GetVertexShader fallback, released only when not borrowed':
     'const bool borrowedVS=ext->peekVertexShader(vs);' in dm and 'if(!borrowedVS&&FAILED(ext->GetVertexShader(&vs)))' in dm and 'if(!vs){' in dm
-    and '~ShaderRelease(){if(!borrowed)drop(p);}' in dm and 'if(!borrowedVS&&FAILED(ext->GetVertexShader(&vs))){++missingVS;drop(vs);return;}' in dm,
+    and '~ShaderRelease(){if(!borrowed)drop(p);}' in dm and 'if(!borrowedVS&&FAILED(ext->GetVertexShader(&vs))){drawUiHashVS=false;++missingVS;drop(vs);return;}' in dm,
  'prepareDrawImpl post-effect sampled path: peek with fallback, classifyVs':
     'const bool borrowed=ext->peekVertexShader(late);' in dm and 'classifyVs(late)' in dm and 'if(!borrowed)drop(late);' in dm and 'world->isWorldShader' not in dm and 'world->isSkinnedShader' not in dm,
  'draw path classification through classifyVs (skinned lambda, non-world reject, shadow swap plan, beforeDraw)':

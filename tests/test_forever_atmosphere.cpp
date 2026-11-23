@@ -25,6 +25,21 @@ int main(int argc,char** argv){
     f.layer[0].flag[1]=1;assert(std::fabs(sigma(f,100,150,50)-.01f/std::exp(1.f))<1e-7);
     f.layer[0].p[0]=101;assert(sigma(f,100,0,0)==0);
     Light l;l.params[0]=l.params[2]=7;t.lights.push_back(l);float p[3]={};
+    Frame steady=full;
+    steady.direct[0]=.633675f;steady.ambient[0]=.1002f;steady.ambient[1]=.132868f;
+    steady.layer[0].flag[3]=.37f;steady.layer[0].p[1]=.057f;steady.layer[0].p[4]=.089f;
+    Transition settled;
+    for(unsigned i=0;i<1000;++i){
+        const auto current=settled.update(steady,"Northrend",p,double(i)*.017);
+        assert(current.direct[0]==steady.direct[0]&&current.ambient[0]==steady.ambient[0]&&current.ambient[1]==steady.ambient[1]);
+        assert(current.layer[0].p[1]==steady.layer[0].p[1]&&current.layer[0].p[4]==steady.layer[0].p[4]);
+        assert(current.sky.color[0][0]==steady.sky.color[0][0]);
+    }
+    auto changed=steady;changed.ambient[0]=.68f;
+    const auto first=settled.update(changed,"Northrend",p,17.);
+    assert(first.ambient[0]>steady.ambient[0]&&first.ambient[0]<changed.ambient[0]);
+    assert(settled.update(changed,"Northrend",p,17.).ambient[0]==first.ambient[0]);
+    assert(settled.update(changed,"Azeroth",p,17.).ambient[0]==changed.ambient[0]);
     assert(t.sample("Azeroth",p,0,0).valid);assert(!t.sample("Northrend",p,0,0).valid);
     assert(!t.sample("Azeroth",p,-1,0).valid);assert(!t.sample("Azeroth",p,std::numeric_limits<float>::quiet_NaN(),0).valid);
     assert(!t.load("missing-forever-atmosphere.bin"));assert(t.keys.size()==2);

@@ -254,7 +254,11 @@ class Cache {
         if(oldest!=entries_.end()){bytes_-=oldest->second.bytes;entries_.erase(oldest);}}
 public:
     void clear(){envelopeValid_=fallbackValid_=deferred_=0;replayCursor_=readyCursor_=heavyCursor_=buildCursor_=0;envelopes_.clear();entries_.clear();scratch_.clear();bytes_=0;clock_=hits_=misses_=avoidedVertices_=lookupNanoseconds_=0;lookupCalls_=0;}
-    void beginFrame(bool diagnostics=true,size_t packets=0){envelopeValid_=fallbackValid_=deferred_=0;envelopes_.beginFrame(diagnostics,packets);hits_=misses_=avoidedVertices_=lookupNanoseconds_=0;lookupCalls_=0;}
+    void beginFrame(bool diagnostics=true,size_t packets=0,bool manyPointShadows=false,bool crowdOperations=true,bool workOnly=false){
+        envelopeValid_=fallbackValid_=deferred_=0;envelopes_.beginFrame(diagnostics,packets,manyPointShadows,crowdOperations,workOnly);
+        hits_=misses_=avoidedVertices_=lookupNanoseconds_=0;lookupCalls_=0;
+    }
+    size_t operationLimit()const{return envelopes_.operationLimit();}
     unsigned envelopeValid()const{return envelopeValid_;}
     unsigned fallbackValid()const{return fallbackValid_;}
     unsigned deferred()const{return deferred_;}
@@ -273,6 +277,7 @@ public:
     double borrowedMicroseconds()const{return envelopes_.borrowedMicroseconds();}
     bool canHeavy()const{return envelopes_.canHeavy();}
     bool canBuild()const{return envelopes_.canBuild();}
+    bool workOnly()const{return envelopes_.workOnly();}
     std::uint64_t phaseNanoseconds(unsigned phase)const{return envelopes_.phaseNanoseconds(phase);}
     std::uint64_t phaseLimit(unsigned phase)const{return envelopes_.phaseLimit(phase);}
     void continuePendingBuild(Budget& budget){envelopes_.continuePendingBuild(budget);}

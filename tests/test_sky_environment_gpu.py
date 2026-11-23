@@ -4,8 +4,11 @@ from pathlib import Path
 import os
 import subprocess
 import sys
+import tempfile
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
+sys.path.insert(0, str(fp.SCRIPTS))
+from shader_pipeline_map import sky_background_bindings
 from windows_gpu_guard import processes
 
 processes()
@@ -27,4 +30,16 @@ subprocess.run([str(fp.zig()), 'c++', '-target', 'x86-windows-gnu', '-std=c++17'
 for backend in (Path(os.environ['WINDIR'])/'SysWOW64/d3d9.dll',
                 fp.client_root()/'renderer-backends/dxvk2/dxvk2_d3d9.dll',
                 fp.client_root()/'renderer-backends/dxvk/dxvk_d3d9.dll'):
-    subprocess.run([str(exe), str(fp.COMPILED/'CelestialSkyPS.bin'), str(backend)], cwd=out, check=True, timeout=60)
+    audit_dir = Path(tempfile.mkdtemp(prefix=backend.stem + '-bindings-', dir=out))
+    subprocess.run([str(exe), str(fp.COMPILED/'CelestialSkyPS.bin'), str(backend)], cwd=out,
+                   env={**os.environ, 'NORTHLIGHT_TEST_SKY_AUDIT': str(audit_dir)}, check=True, timeout=60)
+    for frame in (1210, 1211, 2130, 2131):
+        sample = sky_background_bindings(audit_dir, frame, 8, 8)
+        assert sample and sample['state'] == 'executed' and sample['target']['samples'] == 0
+    multisample = False
+    for frame in (1214, 1215, 2134, 2135):
+        if sample := sky_background_bindings(audit_dir, frame, 8, 8):
+            assert sample['state'] == 'executed' and sample['target']['samples'] == 2
+            multisample = True
+    if backend.name != 'd3d9.dll':
+        assert multisample

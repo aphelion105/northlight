@@ -1,5 +1,82 @@
 #pragma once
 #include "patch_terrain_shadow_coverage.h"
+#include "terrain_shadow_programs.h"
+#include <set>
+
+static void terrainShadowProgramsChecks(IDirect3DDevice9* d,D3DPRESENT_PARAMETERS& pp,
+                                        IDirect3DVertexShader9* vertex,IDirect3DPixelShader9* pixel){
+    struct Faults:ForwardIDirect3DDevice9 {
+        using ForwardIDirect3DDevice9::ForwardIDirect3DDevice9;
+        unsigned vertexCalls=0,pixelCalls=0;
+        IUnknown* partial=nullptr;
+        bool failVertex=false,failPixel=false;
+        HRESULT STDMETHODCALLTYPE CreateVertexShader(const DWORD* code,IDirect3DVertexShader9** output) override{
+            ++vertexCalls;
+            const auto hr=real->CreateVertexShader(code,output);
+            if(FAILED(hr)||!failVertex)return hr;
+            partial=*output;partial->AddRef();return E_OUTOFMEMORY;
+        }
+        HRESULT STDMETHODCALLTYPE CreatePixelShader(const DWORD* code,IDirect3DPixelShader9** output) override{
+            ++pixelCalls;
+            const auto hr=real->CreatePixelShader(code,output);
+            if(FAILED(hr)||!failPixel)return hr;
+            partial=*output;partial->AddRef();return E_OUTOFMEMORY;
+        }
+        void checkReleased(){assert(partial&&partial->Release()==0);partial=nullptr;}
+    } faults(d);
+    NorthlightTerrainShadowPrograms programs;
+    std::set<void*> proofs;
+    bool rejectProof=false;
+    const auto notify=[&](auto* shader,const uint32_t* words,size_t count){
+        if(!words){assert(proofs.erase(shader)==1);return;}
+        assert(count&&proofs.insert(shader).second);
+        if(rejectProof){rejectProof=false;throw std::bad_alloc();}
+    };
+    const auto log=[](const char*,auto...){};
+    const float view[16]={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};
+    float matrices[2][2][16]={};
+    matrices[0][1][0]=1;matrices[1][1][0]=2;
+    const auto coverage=[&]{return programs.coverage(&faults,vertex,pixel,view,notify,notify,log);};
+    const auto neutral=[&]{return programs.neutral(&faults,pixel,notify,log);};
+
+    faults.failPixel=true;
+    assert(!neutral());faults.checkReleased();
+    assert(!neutral()&&faults.pixelCalls==1&&proofs.empty());
+    programs.forgetPixel(pixel,notify);
+    faults.failPixel=false;
+    assert(neutral()&&proofs.size()==1);
+
+    faults.failVertex=true;
+    assert(!coverage().pixel);faults.checkReleased();
+    assert(!coverage().pixel&&faults.vertexCalls==1);
+    programs.forgetVertex(vertex,notify);
+    faults.failVertex=false;faults.failPixel=true;
+    assert(!coverage().pixel);faults.checkReleased();
+    assert(proofs.size()==2&&faults.vertexCalls==2);
+    programs.forgetPixel(pixel,notify);
+    faults.failPixel=false;
+    rejectProof=true;
+    assert(!coverage().pixel&&proofs.size()==1);
+    const auto one=coverage();
+    assert(one.vertex&&one.pixel&&one.count==3&&proofs.size()==2);
+    programs.publish({true,true},matrices);
+    const auto two=coverage();
+    assert(two.vertex==one.vertex&&two.pixel&&two.pixel!=one.pixel&&two.count==6);
+    assert(two.rows[0]==1&&two.rows[12]==2&&proofs.size()==3);
+    const auto created=faults.pixelCalls;
+    must(d->SetVertexShader(two.vertex));must(d->SetPixelShader(two.pixel));
+    must(d->SetVertexShader(nullptr));must(d->SetPixelShader(nullptr));
+    must(d->Reset(&pp));
+    const auto after=coverage();
+    assert(after.vertex==two.vertex&&after.pixel==two.pixel&&after.first==two.first&&faults.pixelCalls==created);
+    must(d->SetVertexShader(after.vertex));must(d->SetPixelShader(after.pixel));
+    must(d->SetVertexShader(nullptr));must(d->SetPixelShader(nullptr));
+    programs.forgetPixel(pixel,notify);programs.forgetVertex(vertex,notify);
+    assert(proofs.empty()&&coverage().pixel&&faults.pixelCalls==created+1);
+    programs.forgetPixel(pixel,notify);programs.forgetVertex(vertex,notify);
+    assert(proofs.empty());
+    std::puts("TERRAIN_SHADOW_PROGRAMS_GPU_PASS partialOom=1 cachedFailure=1 proofRollback=1 variants=2 reset=1 sourceReregister=1");
+}
 // Actual terrain VS/PS programs exercise the production scoped submit, including
 // the interleaved position/RGB/falloff registers between selected sources.
 static int nativeTerrainLightChecks(char** argv){
@@ -21,6 +98,7 @@ static int nativeTerrainLightChecks(char** argv){
     for(unsigned i=0;i<2;++i){must(d->SetTexture(i,texture));must(d->SetSamplerState(i,D3DSAMP_MINFILTER,D3DTEXF_POINT));must(d->SetSamplerState(i,D3DSAMP_MAGFILTER,D3DTEXF_POINT));must(d->SetSamplerState(i,D3DSAMP_SRGBTEXTURE,FALSE));}
     must(d->SetVertexShader(vs));must(d->SetPixelShader(ps));must(d->SetVertexDeclaration(declaration));must(d->SetRenderState(D3DRS_CULLMODE,D3DCULL_NONE));must(d->SetRenderState(D3DRS_SRGBWRITEENABLE,FALSE));must(d->SetRenderState(D3DRS_FOGENABLE,FALSE));must(d->SetRenderState(D3DRS_ALPHATESTENABLE,FALSE));must(d->SetRenderState(D3DRS_ZENABLE,FALSE));
     const float camera[]={1545,-4321,21};unsigned cases=0;float worst=0,nativeDifference=0;
+    NorthlightNativePointSubmit owner;
     for(unsigned samples:{0u,2u}){
         DWORD quality=0;must(api->CheckDeviceMultiSampleType(0,D3DDEVTYPE_HAL,D3DFMT_A16B16G16R16F,TRUE,D3DMULTISAMPLE_TYPE(samples),&quality));
         IDirect3DSurface9 *target=nullptr,*resolved=nullptr;must(d->CreateRenderTarget(Size,Size,D3DFMT_A16B16G16R16F,D3DMULTISAMPLE_TYPE(samples),0,FALSE,&target,nullptr));must(d->CreateRenderTarget(Size,Size,D3DFMT_A16B16G16R16F,D3DMULTISAMPLE_NONE,0,FALSE,&resolved,nullptr));
@@ -41,9 +119,9 @@ static int nativeTerrainLightChecks(char** argv){
             auto draw=[&]{return d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,mesh,sizeof(Vertex));};
             auto render=[&](bool owned,bool absent,unsigned faultMode=0){
                 must(d->SetVertexShaderConstantF(28,absent?changed:c[28],9));must(d->Clear(0,nullptr,D3DCLEAR_TARGET,0xff203040,1,0));must(d->BeginScene());
-                NativeOwnerSubmitTest owner(d);HRESULT hr=S_OK;
+                HRESULT hr=S_OK;bool damaged=false;
                 if(faultMode==1)fault.failAt=fault.sets+1;
-                if(owned)hr=owner.draw(mask,rgb,bank,draw,true,c[28],changed);else hr=draw();must(hr);assert(!owner.failed);fault.failAt=0;
+                if(owned)hr=owner.draw(d,{mask,true,c[28],changed},false,damaged,draw);else hr=draw();must(hr);assert(!damaged);fault.failAt=0;
                 float after[36];must(d->GetVertexShaderConstantF(28,after,9));assert(!std::memcmp(after,absent?changed:c[28],sizeof after));
                 must(d->EndScene());must(d->StretchRect(target,nullptr,resolved,nullptr,D3DTEXF_NONE));return pixels(d,resolved,Size);
             };
@@ -52,6 +130,29 @@ static int nativeTerrainLightChecks(char** argv){
         }
         target->Release();resolved->Release();
     }
-    assert(nativeDifference>.02f);std::printf("NATIVE_TERRAIN_OWNER_PASS cases=%u cameras=3 blends=3 msaa=2 rawNativeDifference=%.6g ownedError=%.6g alphaAndNeighboursPreserved=1 exactRestore=1 setFailureFallback=1\n",cases,nativeDifference,worst);
+    assert(nativeDifference>.02f&&owner.work().terrainDraws==cases);
+    IDirect3DSurface9* backbuffer=nullptr;
+    must(d->GetBackBuffer(0,0,D3DBACKBUFFER_TYPE_MONO,&backbuffer));
+    must(d->SetRenderTarget(0,backbuffer));
+    backbuffer->Release();
+    owner.endFrame();
+    must(d->Reset(&pp));
+    assert(!owner.ownsExtra()&&!owner.work().draws);
+    float original[36],replacement[36],actual[36];
+    for(unsigned i=0;i<36;++i)original[i]=replacement[i]=float(i+1);
+    for(unsigned row:{1u,7u})std::fill_n(replacement+4*row,3,0.f);
+    must(d->SetVertexShaderConstantF(28,original,9));
+    bool damaged=false;
+    must(owner.draw(d,{5,true,original,replacement},true,damaged,[&]{
+        assert(owner.ownsExtra());
+        must(d->GetVertexShaderConstantF(28,actual,9));
+        assert(!std::memcmp(actual,replacement,sizeof actual));
+        return S_OK;
+    }));
+    must(d->GetVertexShaderConstantF(28,actual,9));
+    assert(!std::memcmp(actual,original,sizeof actual)&&!damaged&&!owner.ownsExtra());
+    assert(owner.work().draws==1&&owner.work().slots==2&&owner.work().terrainDraws==1);
+    if(std::strcmp(argv[5],"terrain")==0)terrainShadowProgramsChecks(d,pp,vs,ps);
+    std::printf("NATIVE_TERRAIN_OWNER_PASS cases=%u cameras=3 blends=3 msaa=2 rawNativeDifference=%.6g ownedError=%.6g alphaAndNeighboursPreserved=1 exactRestore=1 setFailureFallback=1 reset=1\n",cases,nativeDifference,worst);
     declaration->Release();vs->Release();ps->Release();texture->Release();real->Release();api->Release();FreeLibrary(library);DestroyWindow(hwnd);return 0;
 }

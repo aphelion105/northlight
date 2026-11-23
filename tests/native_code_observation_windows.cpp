@@ -9,6 +9,7 @@
 #include <array>
 #include <iostream>
 #include <iterator>
+#include <thread>
 
 namespace C=NorthlightStream::ClientCodeObservation;
 namespace I=NorthlightStream::ClientImage;
@@ -16,7 +17,24 @@ namespace W=NorthlightWorldContext;
 namespace {
 alignas(4096) const unsigned char Observed[64]={0x17,0x38,0x59,0x7a,0x9b,0xbc,0xdd,0xfe,0x21,0x43,0x65,0x87,0xa9,0xcb,0xed,0x0f};
 constexpr const char* WrapperHash="fdb77d7b79418034a56310ad73035821928cdf12eff34a130f1bc315b5ea00cd";
+constexpr unsigned ReadThreads=4,ReadsPerThread=512;
 void require(bool ok,const char* reason){if(!ok)throw std::runtime_error(reason);}
+void concurrentReads(std::uintptr_t address,const std::array<unsigned char,64>& expected){
+    std::atomic<unsigned> ready{0};
+    std::atomic<bool> start{false},valid{true};
+    std::array<std::thread,ReadThreads> threads;
+    for(auto& thread:threads)thread=std::thread([&]{
+        ++ready;
+        while(!start.load())std::this_thread::yield();
+        std::array<unsigned char,64> bytes{};
+        for(unsigned i=0;i<ReadsPerThread;++i)
+            if(!W::readSelfLive(address,bytes.data(),bytes.size())||bytes!=expected)valid.store(false);
+    });
+    while(ready.load()!=ReadThreads)std::this_thread::yield();
+    start.store(true);
+    for(auto& thread:threads)thread.join();
+    require(valid.load(),"concurrent-live-reads");
+}
 std::filesystem::path environment(const wchar_t* name){
     wchar_t text[4096];const auto size=GetEnvironmentVariableW(name,text,4096);
     require(size&&size<4096,"environment-path");std::filesystem::path path(std::wstring(text,size));
@@ -71,7 +89,8 @@ void moduleList(std::ostream& out){
 int main(int argc,char** argv){
     try{
         require(argc==2,"mode-argument");const std::string mode=argv[1];
-        require(mode=="no-opt-in"||mode=="prefix"||mode=="match"||mode=="duplicate-patch","mode");
+        const bool concurrent=mode=="concurrent";
+        require(mode=="no-opt-in"||mode=="prefix"||mode=="match"||concurrent||mode=="duplicate-patch","mode");
         const auto self=GetModuleHandleW(nullptr);require(reinterpret_cast<std::uintptr_t>(self)==I::View::Base,"actual-fixed-base");
         const auto own=module(self),root=environment(L"NORTHLIGHT_OBSERVER_ROOT"),evidence=environment(L"NORTHLIGHT_OBSERVER_RESULT");
         const auto bytes=read(own);I::View view;I::Error imageError;require(view.open(bytes.data(),bytes.size(),imageError),"own-raw-image");
@@ -106,13 +125,17 @@ int main(int argc,char** argv){
                 require(W::readSelfLive(address,second.data(),second.size())&&second[3]==changed&&second!=first,"source-returns-actual-patched-data");
                 require(patch.restore(),"restore-owned-data-and-protection");restored=true;
                 std::array<unsigned char,64> after{};require(W::readSelfLive(address,after.data(),after.size())&&after==first,"actual-restored-rpm");
-            }else require(W::readSelfLive(address,second.data(),second.size())&&second==first,"actual-second-rpm");
+            }else{
+                if(concurrent)concurrentReads(address,raw);
+                require(W::readSelfLive(address,second.data(),second.size())&&second==first,"actual-second-rpm");
+            }
             session.reset();require(!W::SelfReadStats::observer.load(),"observer-disconnected");
             std::vector<std::filesystem::path> directories;for(const auto& entry:std::filesystem::directory_iterator(root))if(entry.is_directory())directories.push_back(entry.path());
             require(directories.size()==1,"single-capture-directory");const auto proofPath=directories[0]/L"client-code.nlcode";
-            if(mode=="match"){
+            if(mode=="match"||concurrent){
                 const auto encoded=read(proofPath);auto proof=std::make_unique<C::Proof>();C::Error error;
-                require(C::decode(encoded.data(),encoded.size(),view,*proof,error)&&proof->spans()==1&&proof->observations()==2&&
+                const unsigned observations=2+(concurrent?ReadThreads*ReadsPerThread:0);
+                require(C::decode(encoded.data(),encoded.size(),view,*proof,error)&&proof->spans()==1&&proof->observations()==observations&&
                     proof->payloadBytes()==64&&proof->read(address,second.data(),second.size())&&second==first&&!proof->covers(address,16),"actual-observer-proof-decode");decoded=true;
             }else require(!std::filesystem::exists(proofPath),"patched-proof-must-not-publish");
         }

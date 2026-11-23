@@ -40,7 +40,7 @@ struct WorldScreenEffectsTest {
             pcOk(d->SetDepthStencilSurface(nullptr));pcOk(d->SetVertexShader(nullptr));pcOk(d->SetFVF(D3DFVF_XYZRHW|D3DFVF_TEX1));
             for(auto state:{D3DRS_ZENABLE,D3DRS_ZWRITEENABLE,D3DRS_ALPHATESTENABLE,D3DRS_ALPHABLENDENABLE,D3DRS_SCISSORTESTENABLE,D3DRS_SRGBWRITEENABLE,D3DRS_FOGENABLE,D3DRS_STENCILENABLE})pcOk(d->SetRenderState(state,FALSE));
             pcOk(d->SetRenderState(D3DRS_CULLMODE,D3DCULL_NONE));pcOk(d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_ONE));pcOk(d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_ONE));pcOk(d->SetRenderState(D3DRS_BLENDOP,D3DBLENDOP_ADD));
-            pcOk(d->SetRenderTarget(0,w.baselineSurface));pcOk(d->Clear(0,nullptr,D3DCLEAR_TARGET,0x80ffffff,1,0));
+            pcOk(d->SetRenderTarget(0,w.screenLighting.baseline().surface));pcOk(d->Clear(0,nullptr,D3DCLEAR_TARGET,0x80ffffff,1,0));
             IDirect3DTexture9* resolved=nullptr;IDirect3DSurface9* resolveTarget=nullptr;
             pcOk(d->CreateTexture(X,Y,1,D3DUSAGE_RENDERTARGET,D3DFMT_A16B16G16R16F,D3DPOOL_DEFAULT,&resolved,nullptr));pcOk(resolved->GetSurfaceLevel(0,&resolveTarget));
             for(unsigned scene=0;scene<24;++scene){const float z[]={.05f,.1f,.1001f,1.f,5.f,20.f};const float distance=z[scene%6];slot.selected.attenuationEnd=scene%2?64.f:12.f;
@@ -50,7 +50,7 @@ struct WorldScreenEffectsTest {
                 auto* depths=pcTexture(d,W,H,1,std::vector<float>(W*H,depth));std::vector<float> normal(X*Y*4),detail(W*H*4),water(W*H*4);
                 for(unsigned i=0;i<X*Y;++i){normal[4*i]=scene%5==0?.8f:0;normal[4*i+2]=scene%7==0?1.f:scene%5==0?-.6f:-1.f;normal[4*i+3]=1;}
                 for(unsigned i=0;i<W*H;++i){const float cover=scene%3?1.f:0.f;detail[4*i]=.58f*cover;detail[4*i+1]=.41f*cover;detail[4*i+2]=(distance+(scene%3==2?10:0))*cover;detail[4*i+3]=cover;water[4*i]=.5f;water[4*i+1]=.8f;}
-                drop(w.normalBuffer);w.normalBuffer=pcTexture(d,X,Y,4,normal);drop(w.materialDetail);w.materialDetail=pcTexture(d,W,H,4,detail);w.materialBumpGain=1;w.materialBumpDistance=120;
+                drop(w.worldNormals.texture_);w.worldNormals.texture_=pcTexture(d,X,Y,4,normal);drop(w.materialDetail);w.materialDetail=pcTexture(d,W,H,4,detail);w.materialBumpGain=1;w.materialBumpDistance=120;
                 auto* mask=scene%4==0?pcTexture(d,W,H,4,water):nullptr;
                 pcOk(d->SetTexture(1,nullptr));for(unsigned face=0;face<6;++face){pcOk(d->SetRenderTarget(0,slot.faces[face]));pcOk(d->Clear(0,nullptr,D3DCLEAR_TARGET,0xffffffff,1,0));
                     if(face==D3DCUBEMAP_FACE_POSITIVE_Z){D3DRECT rect{0,0,128,256};const float blocker=scene%3?.2f:2.f;const float stored=slot.selected.attenuationEnd/(slot.selected.attenuationEnd-.1f)*(1-.1f/blocker);pcOk(d->Clear(1,&rect,D3DCLEAR_TARGET,D3DCOLOR_COLORVALUE(stored,stored,stored,1),1,0));}}
@@ -58,21 +58,21 @@ struct WorldScreenEffectsTest {
                     auto prepare=[&](bool soft){pcOk(d->SetRenderTarget(0,target));pcOk(d->Clear(0,nullptr,D3DCLEAR_TARGET,0xff8090a0,1,0));w.quality.softShadows=soft;};
                     auto draw=[&](){return w.renderPointLighting(depths,mask,W,H,nearZ,farZ,minZ,maxZ,1.2f,.4f,.7f,0);};
                     prepare(false);meter.suppress=true;pcOk(d->BeginScene());assert(draw());pcOk(d->EndScene());meter.suppress=false;
-                    meter.reset();pcOk(meter.SetRenderTarget(0,resolveTarget));pcOk(d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE));pcOk(d->SetRenderState(D3DRS_COLORWRITEENABLE,15));pcOk(d->SetPixelShader(oldResolve));pcOk(d->BeginScene());pcOk(w.quad(X,Y));
-                    pcOk(meter.SetRenderTarget(0,target));pcOk(d->SetTexture(1,resolved));pcOk(d->SetPixelShader(oldLighting));pcOk(d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE));pcOk(d->SetRenderState(D3DRS_COLORWRITEENABLE,7));pcOk(w.quad(X,Y));pcOk(d->EndScene());
+                    meter.reset();pcOk(meter.SetRenderTarget(0,resolveTarget));pcOk(d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE));pcOk(d->SetRenderState(D3DRS_COLORWRITEENABLE,15));pcOk(d->SetPixelShader(oldResolve));pcOk(d->BeginScene());pcOk(NorthlightScreen::drawViewportQuad(w.d,X,Y));
+                    pcOk(meter.SetRenderTarget(0,target));pcOk(d->SetTexture(1,resolved));pcOk(d->SetPixelShader(oldLighting));pcOk(d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE));pcOk(d->SetRenderState(D3DRS_COLORWRITEENABLE,7));pcOk(NorthlightScreen::drawViewportQuad(w.d,X,Y));pcOk(d->EndScene());
                     assert(meter.draws==2&&meter.targets==2);referenceDraws+=meter.draws;const auto before=pcRead(d,target,true);
                     pcOk(d->SetTexture(1,nullptr));prepare(true);meter.reset();pcOk(d->BeginScene());assert(draw());pcOk(d->EndScene());
-                    assert(meter.draws==1&&!meter.targets&&!meter.getTargets&&!meter.textures&&!w.softVisibility&&!w.directionalSoftPS&&!w.lightingSoftPS);fusedDraws+=meter.draws;
+                    assert(meter.draws==1&&!meter.targets&&!meter.getTargets&&!meter.textures&&!w.directionalVisibility.texture()&&!w.directionalVisibility.filter(false)&&!w.directionalVisibility.lighting(false));fusedDraws+=meter.draws;
                     const auto after=pcRead(d,target,true);assert(before.size()==after.size());
                     for(unsigned i=0;i<before.size();++i){assert(std::isfinite(before[i])&&std::isfinite(after[i]));const float error=std::fabs(before[i]-after[i]);maxError=std::max(maxError,error);differences+=error>0;
                         if(i%4==3)assert(before[i]==after[i]);else{int exponent=0;std::frexp(std::fabs(before[i]),&exponent);const float step=std::max(std::ldexp(1.f,exponent-11),std::ldexp(1.f,-24));assert(error<=step+2e-6f);nonzero+=before[i]<.4f;}}
                     if(scene==11&&format==D3DFMT_A16B16G16R16F){prepare(false);pcOk(d->BeginScene());assert(draw());pcOk(d->EndScene());const auto hard=pcRead(d,target,true);
-                        prepare(true);meter.soft=w.pointSoftLightingPS;meter.failSoft=true;pcOk(d->BeginScene());assert(draw());pcOk(d->EndScene());assert(!meter.failSoft&&slot.ready&&pcRead(d,target,true)==hard);}
+                        prepare(true);meter.soft=w.pointLighting.softShader();meter.failSoft=true;pcOk(d->BeginScene());assert(draw());pcOk(d->EndScene());assert(!meter.failSoft&&slot.ready&&pcRead(d,target,true)==hard);}
                     ++cases;pcOk(d->SetTexture(1,nullptr));target->Release();
                 }
                 for(unsigned sampler=0;sampler<6;++sampler)pcOk(d->SetTexture(sampler,nullptr));depths->Release();drop(mask);
             }
-            pcOk(d->SetRenderTarget(0,w.lightSurface));resolveTarget->Release();resolved->Release();
+            pcOk(d->SetRenderTarget(0,w.screenLighting.raw().surface));resolveTarget->Release();resolved->Release();
         }
         assert(cases==96&&nonzero>0);std::printf("POINT_PCSS_FUSION_PASS cases=%u rgba=checked nonzero=%u changedComponents=%u maxAbsError=%.9g tolerance=one-fp16-step draws=%u->%u target0Switches=2->0 getTarget0=0 auxiliaryTextures=0 alpha=exact\n",cases,nonzero,differences,maxError,referenceDraws,fusedDraws);
         oldResolve->Release();oldLighting->Release();
@@ -97,20 +97,20 @@ struct WorldScreenEffectsTest {
         constexpr unsigned W=1920,H=1080;WorldRenderer w(d);w.valid=true;assert(w.resources(W,H,D3DFMT_A8R8G8B8));
         assert(w.softShadowResources(W,H));w.pointIndex=0;auto& slot=w.pointSlot();
         slot.selected.attenuationEnd=64;slot.selected.diffuse[0]=slot.selected.diffuse[1]=slot.selected.diffuse[2]=1;
-        assert(w.pointResources()&&w.pointSoftShaders());slot.ready=true;
+        assert(w.pointResources()&&w.pointLighting.ensureSoft(w.d,[] {}));slot.ready=true;
         for(unsigned face=0;face<6;++face){pcOk(d->SetRenderTarget(0,slot.faces[face]));pcOk(d->Clear(0,nullptr,D3DCLEAR_TARGET,0xffffffff,1,0));}
         pcOk(d->SetRenderTarget(0,slot.faces[D3DCUBEMAP_FACE_POSITIVE_Z]));D3DRECT halfFace{0,0,128,256};
         pcOk(d->Clear(1,&halfFace,D3DCLEAR_TARGET,D3DCOLOR_COLORVALUE(.97f,.97f,.97f,1),1,0));
         w.projection[0]=w.projection[1]=w.projection[2]=1;for(unsigned k=0;k<4;++k)w.context.inverseView[k*5]=1;
         std::vector<float> normals(W/2*(H/2)*4);for(unsigned i=0;i<W/2*(H/2);++i){normals[i*4+2]=-1;normals[i*4+3]=1;}
-        drop(w.normalBuffer);w.normalBuffer=pcTexture(d,W/2,H/2,4,normals);
+        drop(w.worldNormals.texture_);w.worldNormals.texture_=pcTexture(d,W/2,H/2,4,normals);
         auto* depths=pcTexture(d,W,H,1,std::vector<float>(W*H,(64.f/(64-.1f))*(1-.1f/5)));
-        pcOk(d->SetRenderTarget(0,w.baselineSurface));pcOk(d->Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0));
-        pcOk(d->SetRenderTarget(0,w.lightSurface));pcOk(d->Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0));
+        pcOk(d->SetRenderTarget(0,w.screenLighting.baseline().surface));pcOk(d->Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0));
+        pcOk(d->SetRenderTarget(0,w.screenLighting.raw().surface));pcOk(d->Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0));
         pcOk(d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_ONE));pcOk(d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_ONE));
         // Share an authored immutable cube among ready slots. This measures
         // screen filtering/correction only, never cubemap generation or refresh.
-        for(unsigned i=1;i<64;++i){w.pointSlots[i].selected=slot.selected;w.pointSlots[i].ready=true;w.pointSlots[i].cube=slot.cube;slot.cube->AddRef();}
+        for(unsigned i=1;i<64;++i){w.pointTargets.slots()[i].selected=slot.selected;w.pointTargets.slots()[i].ready=true;w.pointTargets.slots()[i].cube=slot.cube;slot.cube->AddRef();}
         for(unsigned count:{1u,18u,64u}){char label[64];std::snprintf(label,sizeof label,"local_%u_full_screen",count);
             timing(d,label,[&](bool soft){w.quality.softShadows=soft;for(w.pointIndex=0;w.pointIndex<count;++w.pointIndex)assert(w.renderPointLighting(depths,nullptr,W,H,.1f,64,0,1,1,0,1,0));});}
         assert(w.pointDraws==0);w.pointIndex=0;
@@ -126,14 +126,14 @@ struct WorldScreenEffectsTest {
         c[18][0]=c[18][1]=c[18][2]=.2f;c[20][2]=1;c[27][0]=c[27][1]=1;
         c[33][0]=W;c[33][1]=H;c[33][2]=W/2;c[33][3]=H/2;c[35][0]=1.f/200;
         pcOk(d->SetPixelShaderConstantF(0,c[0],79));pcOk(d->SetTexture(1,depths));pcOk(d->SetTexture(2,shadow));pcOk(d->SetTexture(3,shadow));
-        pcOk(d->SetTexture(12,w.neutralWhite));pcOk(d->SetTexture(14,w.normalBuffer));
+        pcOk(d->SetTexture(12,w.screenFallbacks.white()));pcOk(d->SetTexture(14,w.worldNormals.texture_));
         pcOk(d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE));pcOk(d->SetRenderState(D3DRS_COLORWRITEENABLE,15));pcOk(d->SetRenderState(D3DRS_COLORWRITEENABLE1,15));
         timing(d,"directional_with_consumer",[&](bool soft){
             pcOk(d->SetTexture(15,nullptr));pcOk(d->SetRenderTarget(1,nullptr));
-            if(soft){pcOk(d->SetRenderTarget(0,w.softVisibilitySurface));pcOk(d->Clear(0,nullptr,D3DCLEAR_TARGET,0xffffffff,1,0));
-                pcOk(d->SetPixelShader(w.directionalSoftPS));pcOk(w.quad(W/2,H/2));}
-            pcOk(d->SetRenderTarget(0,w.lightSurface));pcOk(d->SetRenderTarget(1,w.baselineSurface));
-            pcOk(d->SetTexture(15,soft?w.softVisibility:nullptr));pcOk(d->SetPixelShader(soft?w.lightingSoftPS:w.lightingPS));pcOk(w.quad(W/2,H/2));
+            if(soft){pcOk(d->SetRenderTarget(0,w.directionalVisibility.surface()));pcOk(d->Clear(0,nullptr,D3DCLEAR_TARGET,0xffffffff,1,0));
+                pcOk(d->SetPixelShader(w.directionalVisibility.filter(false)));pcOk(NorthlightScreen::drawViewportQuad(w.d,W/2,H/2));}
+            pcOk(d->SetRenderTarget(0,w.screenLighting.raw().surface));pcOk(d->SetRenderTarget(1,w.screenLighting.baseline().surface));
+            pcOk(d->SetTexture(15,soft?w.directionalVisibility.texture():nullptr));pcOk(d->SetPixelShader(soft?w.directionalVisibility.lighting(false):w.screenLighting.directionalShader()));pcOk(NorthlightScreen::drawViewportQuad(w.d,W/2,H/2));
         });
         pcOk(d->SetRenderTarget(1,nullptr));for(unsigned sampler=0;sampler<16;++sampler)pcOk(d->SetTexture(sampler,nullptr));
         depths->Release();shadow->Release();
@@ -154,15 +154,15 @@ struct WorldScreenEffectsTest {
             auto* texture=pcTexture(d,1024,1024,1,map);pcOk(d->SetTexture(2,texture));pcOk(d->SetTexture(3,texture));
             float c[81][4]{};c[2][1]=48;c[2][2]=288;c[2][3]=1.f/1024;c[35][0]=1.f/200;c[80][0]=slope;c[80][2]=useNear?1.f:0.f;
             std::vector<float> images[2];unsigned widths[2]{};
-            for(unsigned soft=0;soft<2;++soft){c[80][3]=float(soft);pcOk(d->SetPixelShaderConstantF(0,c[0],81));pcOk(d->SetPixelShader(probe));pcOk(d->BeginScene());pcOk(w.quad(256,32));pcOk(d->EndScene());images[soft]=pcRead(d,target);
+            for(unsigned soft=0;soft<2;++soft){c[80][3]=float(soft);pcOk(d->SetPixelShaderConstantF(0,c[0],81));pcOk(d->SetPixelShader(probe));pcOk(d->BeginScene());pcOk(NorthlightScreen::drawViewportQuad(w.d,256,32));pcOk(d->EndScene());images[soft]=pcRead(d,target);
                 for(unsigned x=0;x<256;++x){float v=images[soft][16*256+x];assert(std::isfinite(v)&&v>=0&&v<=1);widths[soft]+=v>.01f&&v<.99f;}
                 assert(images[soft][16*256+15]<.001f&&images[soft][16*256+240]>.999f);
             }
             if(useNear&&gap==20.f&&slope==0){
                 const float noSoft[4]={1,0,1,1};pcOk(d->SetPixelShaderConstantF(115,noSoft,1));
-                pcOk(d->BeginScene());pcOk(w.quad(256,32));pcOk(d->EndScene());assert(pcRead(d,target)==images[0]);
+                pcOk(d->BeginScene());pcOk(NorthlightScreen::drawViewportQuad(w.d,256,32));pcOk(d->EndScene());assert(pcRead(d,target)==images[0]);
                 const float wideContact[4]={1,0,2.5f,1};pcOk(d->SetPixelShaderConstantF(115,wideContact,1));
-                pcOk(d->BeginScene());pcOk(w.quad(256,32));pcOk(d->EndScene());const auto wide=pcRead(d,target);
+                pcOk(d->BeginScene());pcOk(NorthlightScreen::drawViewportQuad(w.d,256,32));pcOk(d->EndScene());const auto wide=pcRead(d,target);
                 unsigned widePixels=0;for(unsigned x=0;x<256;++x)widePixels+=wide[16*256+x]>.01f&&wide[16*256+x]<.99f;
                 assert(widePixels>widths[0]);const float reset[4]={};pcOk(d->SetPixelShaderConstantF(115,reset,1));
                 std::printf("PCSS_CONTROLS_PASS softnessZero=ordinary contactWidth=%u->%u\n",widths[0],widePixels);
@@ -173,7 +173,7 @@ struct WorldScreenEffectsTest {
             std::printf("PCSS_EDGE near=%u slope=%.3f gap=%.1f pcf=%u pcss=%u\n",unsigned(useNear),slope,gap,widths[0],widths[1]);++cases;
             pcOk(d->SetTexture(2,nullptr));pcOk(d->SetTexture(3,nullptr));texture->Release();
         }
-        probe->Release();pcOk(d->SetRenderTarget(0,w.lightSurface));target->Release();
+        probe->Release();pcOk(d->SetRenderTarget(0,w.screenLighting.raw().surface));target->Release();
         // Real per-source path: optional resolve must preserve the cube and RT,
         // select the right consumer, and survive on/off/on without stale masks.
         w.pointIndex=0;auto& slot=w.pointSlot();slot.selected.attenuationEnd=64;slot.selected.diffuse[0]=slot.selected.diffuse[1]=slot.selected.diffuse[2]=1;
@@ -185,34 +185,34 @@ struct WorldScreenEffectsTest {
         const auto cubeBefore=pcRead(d,slot.faces[D3DCUBEMAP_FACE_POSITIVE_Z]);
         w.projection[0]=w.projection[1]=w.projection[2]=1;for(unsigned k=0;k<4;++k)w.context.inverseView[k*5]=1;
         std::vector<float> normals(64*64*4);for(unsigned i=0;i<64*64;++i){normals[i*4+2]=-1;normals[i*4+3]=1;}
-        drop(w.normalBuffer);w.normalBuffer=pcTexture(d,64,64,4,normals);
+        drop(w.worldNormals.texture_);w.worldNormals.texture_=pcTexture(d,64,64,4,normals);
         const float depth=(64.f/(64-.1f))*(1-.1f/5);auto* depths=pcTexture(d,128,128,1,std::vector<float>(128*128,depth));
-        pcOk(d->SetRenderTarget(0,w.baselineSurface));pcOk(d->Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0));
+        pcOk(d->SetRenderTarget(0,w.screenLighting.baseline().surface));pcOk(d->Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0));
         pcOk(d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_ONE));pcOk(d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_ONE));pcOk(d->SetRenderState(D3DRS_BLENDOP,D3DBLENDOP_ADD));
         std::vector<float> previous[2];unsigned different=0;
-        for(unsigned iteration=0;iteration<4;++iteration){unsigned soft=iteration%2;w.quality.softShadows=soft;pcOk(d->SetRenderTarget(0,w.lightSurface));pcOk(d->Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0));
+        for(unsigned iteration=0;iteration<4;++iteration){unsigned soft=iteration%2;w.quality.softShadows=soft;pcOk(d->SetRenderTarget(0,w.screenLighting.raw().surface));pcOk(d->Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0));
             pcOk(d->BeginScene());assert(w.renderPointLighting(depths,nullptr,128,128,.1f,64,0,1,1,0,1,0));pcOk(d->EndScene());
-            IDirect3DSurface9* current=nullptr;pcOk(d->GetRenderTarget(0,&current));assert(current==w.lightSurface);current->Release();assert(slot.ready&&w.pointDraws==0);
-            auto pixels=pcRead(d,w.lightSurface);for(float v:pixels)assert(std::isfinite(v)&&v<=.0001f&&v>=-1.001f);
+            IDirect3DSurface9* current=nullptr;pcOk(d->GetRenderTarget(0,&current));assert(current==w.screenLighting.raw().surface);current->Release();assert(slot.ready&&w.pointDraws==0);
+            auto pixels=pcRead(d,w.screenLighting.raw().surface);for(float v:pixels)assert(std::isfinite(v)&&v<=.0001f&&v>=-1.001f);
             if(iteration<2)previous[soft]=pixels;else assert(previous[soft]==pixels);
-            if(soft){assert(w.pointSoftLightingPS);for(unsigned i=0;i<pixels.size();++i)different+=std::fabs(pixels[i]-previous[0][i])>.0001f;}
+            if(soft){assert(w.pointLighting.softShader());for(unsigned i=0;i<pixels.size();++i)different+=std::fabs(pixels[i]-previous[0][i])>.0001f;}
         }
         assert(different>0&&cubeBefore==pcRead(d,slot.faces[D3DCUBEMAP_FACE_POSITIVE_Z]));
         // Live Off drops only the optional scratch and invalidates lighting
         // history. Actor/fog maps and completed cube publication stay valid.
-        auto* actor=w.actorShadowPS;auto* tiles=w.actorTilesPS;auto* cube=slot.cube;
+        auto* actor=w.actorMaps.filter_;auto* tiles=w.actorMaps.tilesShader_;auto* cube=slot.cube;
         NorthlightSettings::Config config;config.quality=w.quality;config.celestial=w.celestialProfiles;
-        config.quality.softShadows=0;w.temporalValid=true;w.applyLiveSettings(config);
-        assert(!w.softVisibility&&!w.temporalValid&&w.actorShadowPS==actor&&w.actorTilesPS==tiles&&slot.ready&&slot.cube==cube);
+        config.quality.softShadows=0;w.history.valid_=true;w.applyLiveSettings(config);
+        assert(!w.directionalVisibility.texture()&&!w.history.valid()&&w.actorMaps.filter_==actor&&w.actorMaps.tilesShader_==tiles&&slot.ready&&slot.cube==cube);
         config.quality.softShadows=1;w.applyLiveSettings(config);
         // Directional resolve allocation backoff cannot disable fused point PCSS.
         // An unavailable point shader still reproduces ordinary PCF.
         for(unsigned failure=0;failure<2;++failure){
-            if(failure==0)w.softShadowRetryAt=GetTickCount()+1000;
-            else{w.softShadowRetryAt=0;drop(w.pointSoftLightingPS);w.pointSoftTried=true;}
-            pcOk(d->SetRenderTarget(0,w.lightSurface));pcOk(d->Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0));
+            if(failure==0)w.directionalVisibility.retryAt_=GetTickCount()+1000;
+            else{w.directionalVisibility.retryAt_=0;drop(w.pointLighting.soft_);w.pointLighting.softTried_=true;}
+            pcOk(d->SetRenderTarget(0,w.screenLighting.raw().surface));pcOk(d->Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0));
             pcOk(d->BeginScene());assert(w.renderPointLighting(depths,nullptr,128,128,.1f,64,0,1,1,0,1,0));pcOk(d->EndScene());
-            assert(pcRead(d,w.lightSurface)==previous[failure==0?1:0]&&slot.ready&&slot.cube==cube&&w.pointDraws==0);
+            assert(pcRead(d,w.screenLighting.raw().surface)==previous[failure==0?1:0]&&slot.ready&&slot.cube==cube&&w.pointDraws==0);
         }
         std::printf("PCSS_PIPELINE_PASS edgeCases=%u localChanged=%u cubeUnchanged=1 toggleStable=1 targetRestored=1\n",cases,different);
         std::puts("PCSS_FALLBACK_PASS directionalAllocationIndependent=1 shaderUnavailable=1 liveOff=1 historyInvalidated=1 actorMapsRetained=1 cubeRetained=1");

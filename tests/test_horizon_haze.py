@@ -10,6 +10,7 @@ compiled-output checks report compile_pending; --require-compiled makes that a f
 """
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
+from scripts.shaders.shader_sources import world_source_bytes, world_source_text
 import hashlib
 import json
 import math
@@ -343,7 +344,7 @@ def main():
     assert abs(cpp['band_k']-band_k) < 1e-4 and abs(cpp['tau2']-tau2) < 1e-5
 
     # 8. Source integration.
-    shader = fp.src('world_effects.hlsl').read_text()
+    shader = world_source_text(fp.src('world_effects.hlsl'))
     cpu = fp.src('world_renderer.h').read_text()
     composite_src = shader.split('float4 worldComposite(', 1)[1].split('// Separate geometry pass:', 1)[0]
     helper = block(shader, 'float3 horizonHaze(')
@@ -367,25 +368,32 @@ def main():
         assert decl in shader
     for other in ('HorizonHaze.', 'HorizonShape.', 'HorizonSun.'):
         assert shader.count(other) == helper.count(other), other
-    assert cpu.count('d->SetPixelShaderConstantF(0,&c[0][0],68)') == 1  # One complete world upload; later restores keep c53..67.
-    local_restore=cpu[cpu.index('if(profile)profile->mark("TemporalLight");'):cpu.index('constexpr unsigned directInputs=')]
+    bank = fp.src('world_frame_constants.inl').read_text()
+    screen_lighting = fp.src('world_screen_lighting.h').read_text()
+    assert (cpu+bank+screen_lighting).count('d->SetPixelShaderConstantF(0,rows[0],68)') == 1  # One complete world upload; later restores keep c53..67.
+    local_restore=fp.src('world_local_lighting.h').read_text()
+    assert cpu.index('if(profile)profile->mark("TemporalLight");')<cpu.index('if(!renderLocalLighting(')
     assert 'd->SetPixelShaderConstantF(7,&c[7][0],21);' in local_restore
-    assert 'd->SetPixelShaderConstantF(0,&c[0][0],53);' in cpu
-    upload = cpu.index('c[30][0]=waterMask?1.f:0.f;d->SetPixelShaderConstantF(0,&c[0][0],68);')
-    assert cpu.index('c[57][1]=haze.shape[0];c[57][2]=haze.shape[1];c[57][3]=haze.shape[2];c[67][2]=haze.sun[0];c[67][3]=haze.sun[1];') < upload
-    blur = block(cpu, 'if(fogActive){float blur[4]')
-    assert blur.index('"volume blur horizontal"))return false;') < blur.index('"volume blur vertical"))return false;') < blur.index('profile->mark("FogBlur")')
-    blur_end = cpu.index(blur)+len(blur)
-    assert blur_end < cpu.index('d->SetPixelShaderConstantF(34,haze.haze,1);') < cpu.index('"world composite"')
-    assert 'farZ,hazeZone,effects.fog,celestialValid,hazeSun,hazeSunWeight,hazeLift,wx.hazeTauScale());' in cpu
-    assert 'float hazeLift[3];NorthlightSunHue::horizonLift(glowHueFrame,hazeLift);' in cpu
-    assert cpu.index('c[35][1]=haze.lift[0];c[35][2]=haze.lift[1];c[35][3]=haze.lift[2];') < upload
-    assert 'horizonHazeState.update(frameMap,legacyFog.parameters,legacyFog.color,projection[2],' in cpu
-    assert 'NorthlightCelestialProfiles::horizonHaze(volumePalette,c[31][3])' in cpu
+    assert 'd->SetPixelShaderConstantF(0,&c[0][0],53);' in local_restore
+    assert cpu.index('prepareFrameShaderBank(') < cpu.index('publishFrameShaderBank(')
+    upload = bank.index('screenLighting.bindFrameBank(d,c,shadowTuning,textures);')
+    assert bank.index('c[57][1]=haze.shape[0];c[57][2]=haze.shape[1];c[57][3]=haze.shape[2];c[67][2]=haze.sun[0];c[67][3]=haze.sun[1];') < upload
+    fog = fp.src('world_atmospheric_fog.inl').read_text()
+    blur = block(fp.src('world_fog_screen.h').read_text(), 'bool blur(')
+    assert blur.index('"volume blur horizontal"))return false;') < blur.index('"volume blur vertical"')
+    assert fog.index('if(!fogScreen.blur(') < fog.index('profile->mark("FogBlur")')
+    assert cpu.index('if(!renderAtmosphericFog(') < cpu.index('composite.draw(')
+    composite_host = fp.src('world_composite.h').read_text()
+    assert composite_host.index('d->SetPixelShaderConstantF(34,in.haze,1);') < composite_host.index('"world composite"')
+    assert 'farZ,frame.hazeZone,effects.fog&&!atmosphere.imported.valid,celestialValid,hazeSun,hazeSunWeight,hazeLift,wx.hazeTauScale());' in bank
+    assert 'float hazeLift[3];NorthlightSunHue::horizonLift(glowHueFrame,hazeLift);' in bank
+    assert bank.index('c[35][1]=haze.lift[0];c[35][2]=haze.lift[1];c[35][3]=haze.lift[2];') < upload
+    assert 'horizonHazeState.update(frameMap,legacyFog.parameters,legacyFog.color,projection[2],' in bank
+    assert 'NorthlightCelestialProfiles::horizonHaze(volumePalette,c[31][3])' in bank
 
     # 9. Compiled output (after compile_world_shaders.py): the others byte-identical.
     manifest = json.loads(fp.src('world-shader-build.json').read_text())
-    source_sha = hashlib.sha256(fp.src('world_effects.hlsl').read_bytes()).hexdigest()
+    source_sha = hashlib.sha256(world_source_bytes(fp.src('world_effects.hlsl'))).hexdigest()
     compiled = manifest['source_sha256'] == source_sha
     unchanged = []
     if compiled:

@@ -2,9 +2,11 @@
 # northlight-test:
 """0.3.188 (task 3) translucent depth census: a diagnostics-only, read-only monitor of the early depth resolve per
 sample frame, logged as one TRANSLUCENT line. Source inspection only (stable tokens, not exact one-liners)."""
+
+from source_units import source_text
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
-r=fp.tracked('renderer.cpp').read_text()
+r=source_text(fp.tracked('renderer.cpp'))
 impl=r[r.index('template<class Capture> void prepareDrawImpl('):r.index('    // Terrain draws run with the game')]
 mark='/* 0.3.188 (task 3)'
 dom=impl.index('if(worldDomain){');cen=impl.index('if(sampled()){const unsigned at=++censusDraws;');cap=impl.index('capture(vs);')

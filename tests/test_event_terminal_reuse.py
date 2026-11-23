@@ -2,6 +2,7 @@
 # northlight-test: requires=windows-exe,zig
 """Run the production pending-query loop without a game or GPU."""
 from pathlib import Path
+import os
 import subprocess
 import sys
 import tempfile
@@ -23,9 +24,11 @@ def method(source, signature):
 
 replay = fp.src('replay_thread.h').read_text()
 proxies = fp.src('stream_proxies.h').read_text()
+query = fp.src('stream_query_proxy.inl').read_text()
+assert 'auditedPayload&&eventSpinHistory.sustained()&&adaptiveEventSpin()' in query
 poll = method(replay, 'void pollQueries()')
-terminal = method(proxies, 'void completeEvent(')
-write = method(proxies, 'void writeResult(')
+terminal = method(query, 'void completeEvent(')
+write = method(query, 'void writeResult(')
 issue_start = replay.index('if((a->dwIssueFlags&D3::kIssueEnd)&&!q->dead.load())')
 issue = method(replay[issue_start:], 'if((a->dwIssueFlags&D3::kIssueEnd)&&!q->dead.load())')
 report = method(proxies, 'void reportQueryFrame(')
@@ -76,6 +79,7 @@ std::uint64_t get(const std::atomic<std::uint64_t>& count){return count.load();}
 struct StreamQuery {
     unsigned type=8,dataSize=4;std::uint32_t issueSeen=1,issueSeenEpoch=0;
     bool eventWaitExpired=false;std::uint64_t issueSequence=0,issueReadbacks=0;
+    NorthlightStream::EventSpinHistory eventSpinHistory;
     std::atomic<bool> dead{false};IDirect3DQuery9 driver;IDirect3DQuery9* inner=&driver;
     std::atomic<std::uint32_t> eventDoneGen{0},readyGen{0},resultSeq{0};
     std::atomic<HRESULT> eventStatus{S_FALSE};std::atomic<BOOL> eventValue{FALSE};
@@ -99,6 +103,7 @@ struct QueryReporter {
     struct {void clear(){}} queryBackendThreads;
     std::uint64_t frameNo=0;std::atomic<std::uint64_t> framesReplayed{0};
     NorthlightStream::QueryWaitProfile queryFrame[21]{},queryWait[21]{};unsigned queryWaitFrames=0;
+    NorthlightStream::EventQueueProfile eventQueueFrame;
 ''' + report + report_wait + clear_wait
 checks = r'''
 };
@@ -110,7 +115,8 @@ static void valueIs(const StreamQuery& q,BOOL expected){
     assert(q.resultSize==4&&q.resultSeq.load()==2);
     for(unsigned i=4;i<sizeof q.result;++i)assert(q.result[i]==0);
 }
-int main(){
+int main(int argc,char** argv){
+    assert(argc==2&&NorthlightStream::adaptiveEventSpin()==(argv[1][0]=='1'));
     // Execute the actual reporting gate: the existing cadence is preserved,
     // while one slow trip is reported even outside a sampled frame.
     {QueryReporter r;r.frameNo=128;std::vector<std::string> lines;
@@ -124,7 +130,13 @@ int main(){
      assert(lines[0].find("beforeReplayMs=13.0000 replayMs=6.0000 afterReplayMs=1.0000 tripMs=20.0000")!=std::string::npos);
      r.reportQueryFrame(sink);assert(lines.size()==1);
      r.frameNo=127;r.queryFrame[8].calls=r.queryFrame[9].calls=1;
-     r.reportQueryFrame(sink);assert(lines.size()==3&&r.queryFrame[8].calls==0&&r.queryFrame[9].calls==0);
+     r.queryFrame[8].eventCpuCycles=12345;r.queryFrame[8].eventCpuSamples=2;r.queryFrame[8].eventShortGpuTrips=1;
+     r.eventQueueFrame.record(1000000,1100000,1300000,1700000,1800000,125,80,43);
+     r.reportQueryFrame(sink);assert(lines.size()==5&&r.queryFrame[8].calls==0&&r.queryFrame[9].calls==0);
+     assert(lines[3]=="CSTREAM EVENT_CPU gameFrame=127 cycles=12345 samples=2 legacyGpuSpin=1 shortGpuTrips=1");
+     assert(lines[4].find("samples=1 drained=1 publishMs=0.1000 handoffMs=0.2000 drainMs=0.4000 entryMs=0.1000 queuedCommands=125 retiredCommands=80")!=std::string::npos);
+     assert(r.queryFrame[8].eventCpuSamples==0&&r.queryFrame[8].eventCpuCycles==0);
+     assert(r.eventQueueFrame.samples==0);
      r.queryFrame[8].calls=1;r.queryFrame[8].maxTripNs=100000000;r.reportQueryFrame({});assert(r.queryFrame[8].calls==0);}
     // Exercise both real snprintf formats at maximal counter values. The final
     // backend field must survive; growing the payload must not silently cut it.
@@ -216,7 +228,12 @@ with tempfile.TemporaryDirectory(prefix='event-terminal-') as directory:
             subprocess.run([str(fp.zig()), 'c++', '-target', 'x86-windows-gnu', '-std=c++17',
                             '-UNDEBUG', '-Wall', '-Wextra', '-Werror', *flags, *fp.test_include_flags(),
                             str(cpp), '-o', str(exe)], env=fp.zig_env(), check=True)
-            result = subprocess.run([str(exe)], text=True, capture_output=True)
+            result = subprocess.run([str(exe), '1'], text=True, capture_output=True,
+                                    env={**os.environ, 'NORTHLIGHT_EVENT_ADAPTIVE': '1'})
             print(label, 'original negative control' if negative else 'current production', result.stdout.strip())
             assert result.returncode == (77 if negative else 0), (result.returncode, result.stdout, result.stderr)
             assert ('DUPLICATE_EVENT_DRIVER_READ' in result.stdout) == negative
+            if not negative:
+                for setting, expected in (('0', '0'), ('', '0')):
+                    subprocess.run([str(exe), expected], check=True,
+                                   env={**os.environ, 'NORTHLIGHT_EVENT_ADAPTIVE': setting})

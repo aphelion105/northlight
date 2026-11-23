@@ -6,14 +6,17 @@ the pass and the fogBlurred<->fogHistory rotation guarded by the fog effect, the
 final buffer, and nothing in the stream or proxy files."""
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
+from scripts.shaders.shader_sources import world_source_text
 import json
 import hashlib
 import re
 import subprocess
 
 w=fp.src('world_renderer.h').read_text()
+screen=fp.src('world_fog_screen.h').read_text()
+moon=fp.src('world_moon_floor_fog.h').read_text()
 resources=fp.src('world_screen_resources.inl').read_text()
-h=(fp.SHADERS/'world_effects.hlsl').read_text()
+h=world_source_text(fp.SHADERS/'world_effects.hlsl')
 py=(fp.REPO/'scripts'/'shaders'/'compile_world_shaders.py').read_text()
 q=fp.src('quality_settings.h').read_text()
 manifest=json.loads((fp.SHADERS/'world-shader-build.json').read_text())['shaders']
@@ -39,11 +42,19 @@ checks['HLSL: sky reprojects the direction only, clamp over the neighbourhood, l
     'sky' in body and 'PreviousView[0].xyz' in body and 'min(lo,s)' in body and 'clamp(history,lo,hi)' in body and 'lerp(current,' in body
     and 'if(FogTemporalInfo.y<=0)return current;' in body and 'max(.25,w*.03)' in body)
 
-lamp=w[w.index('if(effects.fog&&localFogActive){'):w.index('// c34 belongs')]
+local_lighting=fp.src('world_local_lighting.h').read_text()
+lamp=local_lighting[local_lighting.index('bool drawFog('):]
+g=fp.src('world_atmospheric_fog.inl').read_text()
+actor_binding=g[g.index('    void bindFogActorSource('):g.index('    struct AtmosphericFogInput')]
+gpu=fp.src('world_atmosphere_commands.h').read_text()
+actor_commands=gpu[gpu.index('    void bindActor('):gpu.index('    void bindProbeOrTiles(')]
 checks['host: current lamp/spell fog follows history and both blur passes, without writing fog history']=(
-    w.index('"volume blur vertical"')<w.index('if(effects.fog&&localFogActive){')<w.index('"local fog glow combine"')
-    and 'currentFogSurface=fogResolved?fogBlurredSurface:fogSurface;' in lamp
-    and 'SetRenderTarget(0,currentFogSurface)' in lamp and 'fogHistorySurface' not in lamp
+    g.index('fogScreen.resolveHistory(')<g.index('fogScreen.blur(')<g.index('if(effects.fog&&localFogActive&&')
+    and w.index('if(!renderAtmosphericFog(')<w.index('const NorthlightWorldComposite::Input compositeInputs')
+    and 'const auto& finalFog=fogScreen.final(fogResolved);' in g
+    and '!renderLocalFog(w,h,finalFog.surface,localLights,fogRects,c[21],lightingCapture))return false;' in g
+    and '"local fog glow combine"' in lamp
+    and 'SetRenderTarget(0,currentFogSurface)' in lamp and 'fogScreen.history()' not in lamp
     and 'SetRenderState(D3DRS_SRCBLEND,D3DBLEND_ONE)' in lamp
     and 'SetRenderState(D3DRS_DESTBLEND,D3DBLEND_ONE)' in lamp)
 local=h[h.index('float4 LocalFog('):h.index('float4 LocalFogCombine(')]
@@ -53,37 +64,52 @@ checks['HLSL: lamp rays rotate without adding/subtracting large world positions'
 
 checks['setting: no key (always on since the game tests)']=('FogTemporal' not in q and 'fogTemporal' not in q)  # the docs side (no FogTemporal in the ini or README.txt) is test_quality_docs
 
-g=w[w.index('bool fogResolved=false;'):]
-pas=g[g.index('if(effects.fog&&fogTemporalPS&&fogHistory&&debug==0&&!volumeFog){'):g.index('// Separable depth-aware blur')]
+pas=screen[screen.index('bool resolveHistory('):screen.index('bool blur(')]
 checks['host: pass and swap guarded by the setting, the shader, the history target, fog and debug==0']=(
-    'std::swap(fogBlurred,fogHistory);std::swap(fogBlurredSurface,fogHistorySurface)' in pas and pas.count('std::swap')==2 and 'else fogHistoryValid=false;' in pas)
+    'effects.fog&&debug==0,fogActive,volumeFog,useHistory,in.clouds,c[53],history.pending().distance.texture' in g
+    and 'if(!in.enabled||!temporalShader_||!history_.texture)' in pas and 'if(in.volumeAtlas)' in pas
+    and 'std::swap(scratch_,history_)' in pas and 'if(!resolved){invalidateHistory();return false;}' in pas)
 checks['host: history weight 0 unless fogHistoryValid&&useHistory; weight constant is c64 only, previous view c53 from the bank']=(
-    'fogHistoryValid&&useHistory?historyWeight:0.f' in pas and 'historyWeight=cf.active?.5f:FogTemporalWeight;' in pas and 'SetPixelShaderConstantF(64,info,1)' in pas and 'SetPixelShaderConstantF(53,c[53],4)' in pas
-    and re.findall(r'SetPixelShaderConstantF\((6[4-7]),',w)==['65','65','66','64'] and 'SetPixelShaderConstantF(66,fogActor?actorFogBounds[source]:wholeActorMap,1)' in w)
-checks['host: reads raw fog s9 + fogHistory s14 + previous depth temporalDepth[temporalIndex] s15, writes fogBlurred; s14/s15 put back']=(
-    'SetRenderTarget(0,fogBlurredSurface)' in pas and 'SetTexture(9,fog)' in pas and 'SetTexture(14,fogHistory)' in pas and 'SetTexture(15,temporalDepth[temporalIndex])' in pas
+    'historyValid_&&in.useHistory?weight:0.f' in pas and 'weight=in.clouds?.5f:.85f;' in pas
+    and 'SetPixelShaderConstantF(64,info,1)' in pas and 'SetPixelShaderConstantF(53,in.previousView,4)' in pas
+    and re.findall(r'SetPixelShaderConstantF\((6[4-7]),',w+moon+actor_commands+screen)==['65','65','66','64']
+    and 'fogActor?actorFogBounds[source]:wholeActorMap,fogActor' in actor_binding
+    and 'SetPixelShaderConstantF(66,bounds,1)' in actor_commands)
+checks['host: reads raw fog s9, fog history s14 and previous distance s15; s14/s15 put back']=(
+    'SetRenderTarget(0,scratch_.surface)' in pas and 'SetTexture(9,raw_.texture)' in pas
+    and 'SetTexture(14,history_.texture)' in pas and 'SetTexture(15,in.previousDistance)' in pas
     and 'SetTexture(14,nullptr)' in pas and 'SetTexture(15,nullptr)' in pas and 'D3DSAMP_MINFILTER,D3DTEXF_POINT' in pas)
 # Worst case: world literal marks, 8 per-source names and 10 proxy marks including HDR base/sky.
 maxMarks=int(re.search(r'MaxMarks=(\d+)',fp.src('gpu_profile.h').read_text())[1])
-checks['host: FogTemporal profile mark after the pass (worst case <= MaxMarks)']=(pas.index('quad(w/2,h/2),"fog temporal pass"')<pas.index('profile->mark("FogTemporal")') and
-    len(set(re.findall(r'profile->mark\("(\w+)"\)',w)))+8+10<=maxMarks)
-bl=g[g.index('// Separable depth-aware blur'):g.index('// Local radiance has no receiver depth.')]
+profile_units=(w+g+local_lighting+fp.src('world_screen_lighting.inl').read_text()
+               +fp.src('world_soft_shadows.inl').read_text()+fp.src('world_directional_pass.inl').read_text())
+checks['host: FogTemporal profile mark after the pass (worst case <= MaxMarks)']=(g.index('fogScreen.resolveHistory(')<g.index('if(fogResolved&&profile)profile->mark("FogTemporal")') and
+    len(set(re.findall(r'profile->mark\("(\w+)"\)',profile_units)))+8+10<=maxMarks)
+bl=screen[screen.index('bool blur('):screen.index('private:')]
 checks['host: blur unchanged when the pass did not run (fog -> fogBlurred -> fog), resolved: fogHistory -> fog -> fogBlurred']=(
-    'SetRenderTarget(0,fogResolved?fogSurface:fogBlurredSurface);d->SetTexture(9,fogResolved?fogHistory:fog)' in bl
-    and 'SetRenderTarget(0,fogResolved?fogBlurredSurface:fogSurface);d->SetTexture(9,fogResolved?fog:fogBlurred)' in bl)
+    'horizontal=resolved?raw_:scratch_' in bl and 'SetRenderTarget(0,horizontal.surface)' in bl
+    and 'SetTexture(9,(resolved?history_:raw_).texture)' in bl
+    and 'SetRenderTarget(0,final(resolved).surface)' in bl and 'SetTexture(9,horizontal.texture)' in bl
+    and 'return resolved?scratch_:raw_' in screen)
+profile_sources=profile_units+fp.src('world_light_history.h').read_text()
 checks['host: FogBlur closes both quads inside the active-fog guard, before c34/composite; worst case fits 48 marks']=(
-    bl.count('profile->mark("FogBlur")')==1 and bl.count('quad(w/2,h/2)')==2
-    and bl.index('if(fogActive){')<bl.index('"volume blur vertical"')<bl.index('profile->mark("FogBlur")')<bl.rindex('}')
-    and maxMarks==48 and len(set(re.findall(r'profile->mark\("(\w+)"\)',w)))+10+8<=maxMarks)
+    bl.count('quad(d,width,height)')==2
+    and bl.index('if(!active)return true;')<bl.index('"volume blur horizontal"')<bl.index('"volume blur vertical"')
+    and g.index('fogScreen.blur(')<g.index('if(fogActive&&profile)profile->mark("FogBlur")')<g.index('result={finalFog,')
+    and maxMarks==48 and len(set(re.findall(r'profile->mark\("(\w+)"\)',profile_sources)))+10+8<=maxMarks)
 products=w[w.index('void captureProducts('):w.index('bool captureSkippedDiagnostic(')]
 checks['host: composite and current-frame diagnostic product read the final buffer']=(
-    'SetTexture(9,fogResolved?fogBlurred:fog?fog:neutralAO);d->SetPixelShader(aoBaseComposite?hdrAOBasePS:baseComposite?hdrBasePS:hdrMode?hdrFinalPS:finalPS)' in g
-    and 'diagnosticFogResolved=fogResolved;' in g and 'captureProducts(directory,capture,rendererFrame,w,h,true);' in g
+    'fogResult.image.texture?fogResult.image.texture:screenFallbacks.ao()' in w
+    and 'd->SetTexture(9,in.fogColor);' in fp.src('world_composite.h').read_text()
+    and 'diagnosticFogResolved=fogResult.resolved;' in w and 'captureProducts(directory,capture,rendererFrame,w,h,true);' in w
     and 'ready=current&&composited&&lastRenderDebug==0;' in products
-    and 'image("fog",diagnosticFogResolved?fogBlurredSurface:fogSurface,ready&&effects.fog&&(menuDomain||uploadedFogField),w/2,h/2,D3DFMT_A16B16G16R16F);' in products
+    and 'image("fog",fogScreen.final(diagnosticFogResolved).surface,ready&&effects.fog&&(menuDomain||regionalFog.field()),w/2,h/2,D3DFMT_A16B16G16R16F);' in products
     and 'NorthlightWorldDiagnostics::product(' in products)
 checks['host: history target created with the others, dropped and invalidated in releaseGPU; shader optional']=(
-    'image(D3DFMT_A16B16G16R16F,fogHistory,fogHistorySurface)' in resources and 'drop(fogHistorySurface);drop(fogHistory);drop(fogTemporalPS);fogHistoryValid=fogNeutral=fogHistoryNeutral=false;' in w and 'if(!fogTemporalPS&&FAILED(d->CreatePixelShader(kFogTemporalShader,&fogTemporalPS)))fogTemporalPS=nullptr;' in resources)
+    'fogScreen.create(pixel,image)' in resources and 'fogScreen.createScratch(image)' in resources
+    and 'image(D3DFMT_A16B16G16R16F,history_.texture,history_.surface)' in screen
+    and 'releaseScreenColorTargets();' in w and 'fogScreen.reset()' in resources and 'historyValid_=rawNeutral_=historyNeutral_=false;' in screen
+    and 'fogScreen.createOptionalHistory(d)' in resources and 'CreatePixelShader(kFogTemporalShader,&temporalShader_)' in screen)
 checks['host: no per-draw work (nothing in src/stream or src/proxy mentions it)']=all(
     not re.search(r'fogTemporal|FogTemporal|fogHistory',p.read_text(errors='ignore')) for d in ('stream','proxy') for p in (fp.REPO/'src'/d).rglob('*') if p.is_file())
 for k,ok in checks.items():print(('PASS ' if ok else 'FAIL ')+k)

@@ -16,7 +16,7 @@
 using HRESULT=int32_t;using LONG=int32_t;using ULONG=uint32_t;using DWORD=uint32_t;using UINT=uint32_t;using INT=int32_t;using BOOL=int32_t;using WORD=uint16_t;using BYTE=uint8_t;using HANDLE=void*;
 #define FALSE 0
 #define TRUE 1
-constexpr HRESULT D3D_OK=0,D3DERR_INVALIDCALL=-1,E_FAIL=-6;
+constexpr HRESULT D3D_OK=0,D3DERR_INVALIDCALL=-1,D3DERR_NOTFOUND=-2,E_FAIL=-6;
 inline bool SUCCEEDED(HRESULT h){return h>=0;}inline bool FAILED(HRESULT h){return h<0;}
 using D3DFORMAT=unsigned;using D3DPOOL=unsigned;using D3DPRIMITIVETYPE=unsigned;using D3DSTATEBLOCKTYPE=unsigned;using D3DRENDERSTATETYPE=unsigned;using D3DSAMPLERSTATETYPE=unsigned;using D3DRESOURCETYPE=unsigned;using D3DTRANSFORMSTATETYPE=unsigned;using D3DTEXTURESTAGESTATETYPE=unsigned;
 constexpr D3DSTATEBLOCKTYPE D3DSBT_ALL=1;
@@ -234,9 +234,9 @@ struct FakeDevice:IDirect3DDevice9{
         if(i==0){auto* f=static_cast<Surface*>(t);s.vp=D3DVIEWPORT9();s.vp.Width=f->w;s.vp.Height=f->h;s.vp.MaxZ=1;s.scissor=RECT();s.scissor.right=int(f->w);s.scissor.bottom=int(f->h);}
         return D3D_OK;
     }
-    HRESULT GetRenderTarget(DWORD i,IDirect3DSurface9** o)override{++calls;if(i>3||!rt[i]){*o=nullptr;return D3DERR_INVALIDCALL;}rt[i]->AddRef();*o=rt[i];return D3D_OK;}
+    HRESULT GetRenderTarget(DWORD i,IDirect3DSurface9** o)override{++calls;if(i>3){*o=nullptr;return D3DERR_INVALIDCALL;}*o=rt[i];if(!*o)return D3DERR_NOTFOUND;(*o)->AddRef();return D3D_OK;}
     HRESULT SetDepthStencilSurface(IDirect3DSurface9* d)override{++calls;++sets;swapRef(ds,d);return D3D_OK;}
-    HRESULT GetDepthStencilSurface(IDirect3DSurface9** o)override{++calls;if(ds)ds->AddRef();*o=ds;return ds?D3D_OK:D3DERR_INVALIDCALL;}
+    HRESULT GetDepthStencilSurface(IDirect3DSurface9** o)override{++calls;if(ds)ds->AddRef();*o=ds;return ds?D3D_OK:D3DERR_NOTFOUND;}
     HRESULT SetViewport(const D3DVIEWPORT9* v)override{++calls;++sets;synced.viewport();s.vp=*v;return D3D_OK;}
     HRESULT GetViewport(D3DVIEWPORT9* v)override{++calls;*v=s.vp;return D3D_OK;}
     HRESULT SetScissorRect(const RECT* r)override{++calls;++sets;s.scissor=*r;return D3D_OK;}

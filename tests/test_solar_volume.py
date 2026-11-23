@@ -8,6 +8,8 @@ contracts. They do not execute HLSL or prove the in-game appearance/GPU timing.
 from __future__ import annotations
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
+from source_units import source_text
+from scripts.shaders.shader_sources import world_source_text
 import json
 import math
 import random
@@ -141,8 +143,12 @@ def integrate(distance, sigmas, lit, direct=(1., .8, .6), ambient=(.2, .3, .4), 
 
 
 def main():
-    shader = fp.src('world_effects.hlsl').read_text()
-    cpu = fp.src('world_renderer.h').read_text()
+    shader = world_source_text(fp.src('world_effects.hlsl'))
+    view = fp.src('world_view.hlsl').read_text()
+    cpu = source_text(fp.src('world_renderer.h'))
+    fog_pass = fp.src('world_atmospheric_fog.inl').read_text()
+    local_lighting = fp.src('world_local_lighting.inl').read_text()
+    local_surface = fp.src('world_local_lighting.h').read_text()
     policy = fp.src('regional_fog.h').read_text()
     # Tie this reference to the actual implementation's interface and essential
     # equations; a future change requires revisiting these numeric expectations.
@@ -150,10 +156,11 @@ def main():
                    'float phasePi=mad(.03,narrow,mad(.033,cosine,.22))', '[loop]for(int i=first;i<49&&max(0,(i-offset)*stepLength)<marchEnd;++i)',
                    'float start=max(0,(i-offset)*stepLength);',
                    'float end=min((i+1-offset)*stepLength,surface);',
-                   'visibility+=(receiver<=z?1:0)*w.x*w.y;', 'float4 ScreenSize : register(c33)',
+                   'visibility+=(receiver<=z?1:0)*w.x*w.y;',
                    'directWeight+=transmittance*absorb*(visibility*lerp(1,heightFade,SunDirection.w))',
                    'float3 directScatter=sunSource*directWeight;', 'directScatter*=cap/(cap+peak)', 'skySource*(1-transmittance)+directScatter'):
         assert anchor in shader, anchor
+    assert 'float4 ScreenSize : register(c33)' in view
     assert 'if(dot(sunSource,1)>0){' in shader and 'float visibility=fogShadowProjected(shadowOrigin+shadowRay*((start+end)*.5));' in shader
     assert '[branch]if(actorIntegration&&FogActorInfo.x>0&&visibility>0)visibility=fogCombineActor(visibility,tiledActor?fogActorShadowTiled(actorOrigin+actorRay*start,actorRay*stepSize):fogActorShadow(actorOrigin+actorRay*start,actorRay*stepSize));' in shader
     assert 'c[32][0]=.0055f+.0089f*c[31][3];c[32][1]=.0037f+.00705f*c[31][3]' in cpu
@@ -162,28 +169,37 @@ def main():
     assert 'airBase=lerp(airBase,FogColor.w,generalForest);' in shader
     # Horizon haze sits between the scene and the local scattering, same debug gate.
     # 0.3.202 (rain mask): the lerp back to the unfogged colour on rain-mask pixels wraps haze + fog mad.
-    assert ('if(PassInfo.z<.5){\n        float3 unfogged=color;\n'
-            '        // Rain streaks were drawn into the scene before the composite: on mask pixels go back toward the unfogged pixel so they are not hazed.\n'
-            '        float rain=0;\n'
-            '        [branch]if(!baseLighting||CompositeWork.z<.5)rain=tex2Dlod(RainMask,float4(uv,0,0)).r;\n'
-            '        color=lerp(mad(horizonHaze(color,centerUV,viewZ,d>=.99999&&liquid<=0,hdrMode,coverageTransmission),fog.a,fog.rgb*coverageTransmission),unfogged,rain);\n'
-            '    }') in shader
+    composite = fp.src('world_effects_composite.hlsl').read_text()
+    assert (composite.index('float3 unfogged=color;') <
+            composite.index('rain=tex2Dlod(RainMask,float4(uv,0,0)).r;') <
+            composite.index('float3 hazed=horizonHaze(color,centerUV,viewZ,d>=.99999&&liquid<=0,hdrMode,coverageTransmission);') <
+            composite.index('float3 fogged=mad(hazed,fog.a,fog.rgb*coverageTransmission);') <
+            composite.index('color=lerp(fogged,unfogged,rain);'))
     assert 'mad(legacyT,fog.rgb,fogPart)' not in shader
     # 0.3.163: fog-pass-only overrides. The sun's forward soft cap .38 -> .95 (moon .24 kept),
     # the sun's c17 takes the glow hue, c18.rgb is cooled (w kept) for the fog loop only and
     # c17/c18 are restored from the bank before lamp fog, blur and composite. WorldFog unchanged.
-    assert 'c[21][1]=1.2f*volumePalette.fogGain[source]*wx.shaftGain();c[21][2]=hdrMode?64.f:source==0?NorthlightSunHue::SunForwardCap:NorthlightSunHue::MoonForwardCap' in cpu
+    assert 'quality.godrays?1.2f*volumePalette.fogGain[source]*wx.shaftGain():0.f' in cpu
+    assert 'c[21][1]=fogGainFor(source);c[21][2]=hdrMode?64.f:source==0?NorthlightSunHue::SunForwardCap:NorthlightSunHue::MoonForwardCap' in cpu
     hue = fp.src('sun_hue.h').read_text()
     assert f'SunForwardCap={SUN_CAP:g}f,MoonForwardCap=.24f'.replace('0.', '.') in hue
     set_source = cpu[cpu.index('auto setSource=[&](int source,bool first,bool volume=false){'):]
     set_source = set_source[:set_source.index('\n        };\n')]
-    assert set_source.index('if(volume&&source==0)NorthlightSunHue::fogDirect(rgb,glowHueFrame,rgb);') < set_source.index('d->SetPixelShaderConstantF(17,rgb,1);')
-    fog_loop = cpu.index('d->SetRenderTarget(0,fogSurface);d->SetPixelShader(fogPS);first=true;')
-    cool = cpu.index('d->SetPixelShaderConstantF(18,fogAmbient,1);')
-    march = cpu.index('"celestial volumetric raymarch"')
-    restore = cpu.index('d->SetPixelShaderConstantF(17,c[17],2);')
-    assert fog_loop < cool < march < restore < cpu.index('d->SetPixelShader(localFogPS);') < cpu.index('"volume blur horizontal"') < cpu.index('"world composite"')
-    assert 'float fogAmbient[4]={0,0,0,c[18][3]};NorthlightSunHue::coolAmbient(c[18],glowHueFrame,sourceWeights[0],fogAmbient);' in cpu
+    assert 'if(volume&&source==0)NorthlightSunHue::fogDirect(rgb.data(),glowHueFrame,rgb.data());' in cpu
+    assert set_source.index('const auto rgb=sourceRGB(source,volume);') < set_source.index('screenLighting.bindSource(d,bindings,')
+    screen = fp.src('world_screen_lighting.h').read_text()
+    assert screen.index('d->SetPixelShaderConstantF(17,source.color,1);') < screen.index('fogInputs()') < screen.index('d->SetPixelShaderConstantF(27,source.weights,1);')
+    fog_loop = fog_pass.index('commands.begin(fogScreen.raw().surface,fogPS,fogAmbient);')
+    cool = fog_pass.index('NorthlightSunHue::coolAmbient(c[18],glowHueFrame,sourceWeights[0],fogAmbient);')
+    fog_gpu = fp.src('world_atmosphere_commands.h').read_text()
+    begin = fog_gpu[fog_gpu.index('void begin('):fog_gpu.index('void sourceMode(')]
+    march = fog_pass.index('"celestial volumetric raymarch"')
+    restore = fog_pass.index('commands.restoreLighting(textures,screenLighting.baseline().texture,anyShadowTransition,c[17]);')
+    assert cool < fog_loop < march < restore
+    assert begin.index('d->SetRenderTarget(0,target);') < begin.index('d->SetPixelShaderConstantF(18,ambient,1);')
+    assert fog_pass.index('if(!drawAtmosphericFog(') < fog_pass.index('if(!fogScreen.blur(') < fog_pass.index('!renderLocalFog(')
+    assert cpu.index('if(!renderAtmosphericFog(') < cpu.index('composite.draw(')
+    assert 'float fogAmbient[4]={0,0,0,c[18][3]};NorthlightSunHue::coolAmbient(c[18],glowHueFrame,sourceWeights[0],fogAmbient);' in fog_pass
     # wrap: SourceVisibilityPS keeps .6 x the clear fraction of an 8-tap ring (2.5/3.5 disc
     # radii, on-screen taps only) when larger than the disc value; WorldFog reads it unchanged.
     visibility = shader[shader.index('float4 SourceVisibilityPS('):shader.index('float4 worldFog(')]
@@ -191,7 +207,7 @@ def main():
                    'current=max(current,.6*ringClear/max(ringTaps,1));', 'return lerp(current,previous,SourceInfo.y).xxxx;'):
         assert anchor in visibility, anchor
     assert visibility.index('current=clear*(1.0/16);') < visibility.index('current=max(current,.6*ringClear')
-    assert cpu.count('NorthlightSunHue::coolAmbient(') == 2 and cpu.count('SetPixelShaderConstantF(18,') == 1  # the fog loop + the sampled log
+    assert fog_gpu.count('SetPixelShaderConstantF(18,') == 1
     # Mulgore daytime: taller air and stronger scatter increase the lit/shadow
     # contrast above ground without moving shadows or adding steps. Unlit air
     # must not acquire direct radiance; the existing soft cap still holds.
@@ -211,17 +227,21 @@ def main():
         moon=integrate(100,[.005]*49,[1.]*49,altitude=height,moon=True)
         assert sun[3][0]>0 and moon[3][0]<=sun[3][0]
         if height==0: assert moon[3]==(0.,0.,0.)
-    assert 'c[33][0]=float(w);c[33][1]=float(h);c[33][2]=float(w/2);c[33][3]=float(h/2)' in cpu
-    bank='d->SetPixelShaderConstantF(0,&c[0][0],68)'
-    assert cpu.count(bank)==1
-    assert 'c[30][0]=waterMask?1.f:0.f;'+bank in cpu
+    frame_constants = fp.src('world_frame_constants.inl').read_text()
+    assert 'c[33][0]=float(w);c[33][1]=float(h);c[33][2]=float(w/2);c[33][3]=float(h/2)' in frame_constants
+    bank='d->SetPixelShaderConstantF(0,rows[0],68)'
+    assert fp.src('world_screen_lighting.h').read_text().count(bank)==1
+    assert frame_constants.index('c[30][0]=waterReady?1.f:0.f;') < frame_constants.index('screenLighting.bindFrameBank(d,c,shadowTuning,textures);')
     temporal=cpu.index('if(profile)profile->mark("TemporalLight");')
-    assert cpu.index(bank)<cpu.index('d->SetPixelShaderConstantF(73,bumpControl,1)')<temporal
-    assert cpu.index('d->SetPixelShaderConstantF(7,&c[7][0],21);',temporal)<cpu.index('constexpr unsigned directInputs=',temporal)
+    assert 'd->SetPixelShaderConstantF(73,in.bumpControl,1)' in fp.src('world_screen_lighting.h').read_text()
+    assert cpu.index('prepareFrameShaderBank(')<cpu.index('publishFrameShaderBank(')<cpu.index('if(!renderCelestialLighting(')<temporal
+    assert local_surface.index('d->SetPixelShaderConstantF(7,&c[7][0],21);') < local_surface.index('if(!direct())')
     assert 'const bool currentLocalLighting=debug==0&&(localDirectCount||pointReady);' in cpu
-    assert cpu.index('d->SetPixelShaderConstantF(0,&c[0][0],53);',cpu.index('if(currentLocalLighting){'))<cpu.index('bool fogResolved=false;')
+    assert local_lighting.index('renderPointLighting(') < local_lighting.index('return localLighting.drawSurface(')
+    assert local_surface.index('points();') < local_surface.index('d->SetPixelShaderConstantF(0,&c[0][0],53);')
+    assert temporal < cpu.index('if(!renderLocalLighting(') < cpu.index('if(!renderAtmosphericFog(')
 
-    assert 'uploadedFogField->fogCells||uploadedFogField->airCells' in cpu
+    assert 'regionalFog.field()->fogCells||regionalFog.field()->airCells' in frame_constants
     assert 'if(cell.height>0&&edge>0)++out.airCells' in policy
     heights = []
     for zone in (10, 33):
@@ -243,7 +263,8 @@ def main():
             assert density((0., 0., 148.), lambda x, y: node(zone), night=night) == (0., 0.)
             assert density((0., 0., 108.), lambda x, y: node(zone, indoor=True), night=night) == (0., 0.)
     assert 'airBase=WeatherInfo.w+airBase*saturate(mad(field.w,1.6,-1))' in shader  # 0.3.198 (rain): c59.w = .0017 + the rain's extra extinction
-    assert 'airBase=airFloor+airBase*std::clamp((t.height-.625f)/.625f,0.f,1.f)' in cpu and 'const float airFloor=.0017f*airDensity+wx.airExtinction()*denseDamp;' in cpu
+    assert 'const float airFloor=.0017f*airDensity+wx.airExtinction()*denseDamp;' in cpu
+    assert 'airBase=m.airFloor+airBase*saturate(s.height*1.6f-1);' in fp.src('spell_fog_march.h').read_text()
     assert 'c[22][3]*=airDensity;c[32][0]*=airDensity;c[32][1]*=airDensity;' in cpu
     # Stormwind has ~90% of Elwynn daytime air at any shared height;
     # indoor/unknown regions remain empty, with no city ground blanket.

@@ -6,6 +6,9 @@
 #include <new>
 #include <unordered_map>
 #include <vector>
+#ifdef NORTHLIGHT_REPLAY_STAND
+#include <cstdlib>
+#endif
 #include "lock_meter.h"
 #include "unlock_source.h"
 /* 0.3.192 (CS): REPLAY-side CPU copies of game buffers. With the command stream active, geometry capture (draw_snapshot.h,
@@ -28,8 +31,9 @@
    Lookup: the capture gets its buffers from ext->GetStreamSource/GetIndices, which return the RAW DXVK buffer (Device::SetStreamSource/SetIndices unwrap
    before forwarding), not the wrapper. attach() therefore registers a Slot under BOTH the raw and the exposed pointer; read() accepts either.
    Only the buffers the capture actually reads get a copy: the Reader (replay_copy_reader.h) fills one with ONE whole-buffer read of the real
-   buffer (the readBackLock() path) on a read of a buffer <= kEagerBytes or a whole-buffer request, else once the buffer was read in 2 distinct recent
-   frames (a whole-buffer read of a big static buffer to serve one small range would cost more than it saves), then it stays current from the replayed writes.
+   buffer (the readBackLock() path) on a read of a buffer <= kEagerBytes or a whole-buffer request. Other regular copies require requests in two
+   distinct recent frames and at least one quarter of the buffer in requested spans. Repeated requests count because they each need a separate lock.
+   The copy then stays current from the replayed writes.
    32-bit address space: a hard cap (kCapBytes = 16 MiB; the LOCK METER read-back volume is ~0.5-1.7 MiB/frame, and the game's whole VB/IB working set
    that capture touches is a fraction of it) with LRU eviction by last capture read; halved under memory pressure (setPressure, from the memory guard's
    per-frame decision); a buffer above cap/4 never gets a copy. Thrash guard in FRAMES (advanceFrame(), once per frame from WorldRenderer::endFrame; a frame
@@ -56,6 +60,17 @@ inline constexpr std::uint64_t kLargeCapBytes=40u<<20,kLargeCopyBytes=24u<<20;
 inline constexpr std::uint64_t kLargeRefillFrames=60,kLargeBackoffFrames=600;
 inline constexpr std::uint64_t kThrashFrames=4,kBackoffFrames=600,kRecentFrames=8;   // frames (advanceFrame) = the time base; kRecentFrames: gap that restarts a buffer's read-frame count
 inline std::atomic<bool> enabled{false};
+inline bool legacyPartialFills(){
+#ifdef NORTHLIGHT_REPLAY_STAND
+    static const bool legacy=[] {
+        const char* value=std::getenv("NORTHLIGHT_RETRACE_LEGACY_COPY_ADMISSION");
+        return value&&std::strcmp(value,"1")==0;
+    }();
+    return legacy;
+#else
+    return false;
+#endif
+}
 
 struct Slot {
     // immutable after attach
@@ -65,6 +80,7 @@ struct Slot {
     std::atomic<unsigned char> state{None};
     std::vector<unsigned char> data;
     bool gpuWritten=false,evicted=false,large=false,dropAtUnpin=false,complete=false;unsigned strikes=0,frames=0,pins=0,listAt=0;std::uint64_t used=0,lastFrame=0,evictedFrame=0,parkUntil=0;   // frames: distinct recent frames with a capture read
+    UINT requestedSpan=0; // Partial regular fill demand, capped at one quarter of the buffer.
 };
 // 0.3.196 (task 12): the outstanding write lock of ONE wrapper (a member of the tracked Buffer, no mutex): noteWrite() fills it at Lock, commitWrite() consumes it at Unlock
 // under ONE store mutex acquisition. `drop`: the lock cannot be mirrored exactly (nested, null pointer, offset past the end): the copy is dropped at Unlock.
@@ -89,7 +105,7 @@ inline void drop(Store& s,Slot& c,Why why){
     const std::uint64_t n=c.size;Slot* last=s.list.back();s.list[c.listAt]=last;last->listAt=c.listAt;s.list.pop_back();
     if(c.large){s.largeUsed-=n;M::state().copyLargeDrops.fetch_add(1,std::memory_order_relaxed);c.large=false;}else s.used-=n;
     c.dropAtUnpin=false;c.state.store(Slot::None);
-    if(why!=Why::Silent){c.evicted=true;c.evictedFrame=s.frame;c.frames=0;}   // a refill needs 2 fresh frames of reads, and counts as a strike when it comes soon
+    if(why!=Why::Silent){c.evicted=true;c.evictedFrame=s.frame;c.frames=0;c.requestedSpan=0;}   // a refill needs 2 fresh frames of reads, and counts as a strike when it comes soon
     if(!c.pins){
         if(why==Why::Evict&&s.recycling&&c.data.capacity()>s.spare.capacity())s.spare.swap(c.data);   // beginFill's own eviction: its fill may take this allocation over
         std::vector<unsigned char>().swap(c.data);}
@@ -174,16 +190,18 @@ inline void advanceFrame(){Store& s=store();std::lock_guard<std::mutex> g(s.m);+
 namespace detail {
 inline void touch(Store& s,Slot& c){   // one capture read in this frame
     if(c.frames&&c.lastFrame==s.frame)return;
-    c.frames=(c.frames&&s.frame-c.lastFrame<=kRecentFrames)?c.frames+1:1;c.lastFrame=s.frame;
+    if(c.frames&&s.frame-c.lastFrame<=kRecentFrames)++c.frames;
+    else {c.frames=1;c.requestedSpan=0;}
+    c.lastFrame=s.frame;
 }
 }
 // The bytes at [off,off+size) of the buffer at its replay position, pinned until unpin(); null when no valid copy (slot is set when the buffer
 // is tracked at all, to let the caller try a fill). key: the raw or the exposed pointer. Not served while any lock is outstanding (a pending write implies one).
-inline const unsigned char* read(const void* key,UINT off,UINT size,Slot*& slot){
+inline const unsigned char* read(const void* key,UINT off,UINT size,Slot*& slot,bool requireComplete=false){
     slot=nullptr;Store& s=store();std::lock_guard<std::mutex> g(s.m);
     auto it=s.registry.find(key);if(it==s.registry.end())return nullptr;
     Slot& c=*it->second;slot=&c;detail::touch(s,c);
-    if(c.state.load()!=Slot::Valid||(c.locks&&c.locks->load())||!size||std::uint64_t(off)+size>c.size)return nullptr;
+    if(c.state.load()!=Slot::Valid||(requireComplete&&!c.complete)||(c.locks&&c.locks->load())||!size||std::uint64_t(off)+size>c.size)return nullptr;
     pinRef(c);c.used=++s.clock;return c.data.data()+off;
 }
 // Drops one pin; the bytes go if the slot was dropped meanwhile. The wrapper reference is released last, outside the mutex (it may be the final one).
@@ -202,8 +220,17 @@ inline bool beginFillLocked(Store& s,Slot& c,UINT requested){
     auto& m=NorthlightLockMeter::state();
     auto refused=[&](std::uint64_t& reason){++reason;if(c.size>s.refusals.largestBuffer)s.refusals.largestBuffer=c.size;m.copyRefused.fetch_add(1,std::memory_order_relaxed);return false;};
     const bool large=c.size>s.cap/4;   // above the regular per-buffer limit: the large allowance or nothing
-    const bool wanted=large?c.frames>=2:(c.size<=kEagerBytes||requested>=c.size||c.frames>=2);   // a big buffer read for a small range: only once it proved to be read in 2 recent frames
-    if(c.state.load()!=Slot::None||c.pins||!wanted)return false;
+    if(c.state.load()!=Slot::None||c.pins)return false;
+    const bool eager=!large&&(c.size<=kEagerBytes||requested>=c.size);
+    if(!eager){
+        if(!large&&!legacyPartialFills()){
+            const UINT threshold=(c.size+3)/4;
+            const UINT remaining=threshold-c.requestedSpan;
+            c.requestedSpan+=requested<remaining?requested:remaining;
+            if(c.requestedSpan<threshold)return false;
+        }
+        if(c.frames<2)return false;
+    }
     if(s.frame<c.parkUntil)return refused(s.refusals.backoff);
     if(c.gpuWritten)return refused(s.refusals.unsafe);
     if(c.locks&&c.locks->load())return refused(s.refusals.locked);
@@ -221,7 +248,7 @@ inline bool beginFillLocked(Store& s,Slot& c,UINT requested){
         if(s.spare.capacity()>=c.size&&s.spare.capacity()-c.size<=std::size_t(c.size)/8)c.data.swap(s.spare);   // evicted a moment ago: same allocation, no malloc/free pair
         c.data.assign(c.size,0);s.list.push_back(&c);
     }catch(...){std::vector<unsigned char>().swap(c.data);return refused(s.refusals.allocation);}
-    c.listAt=unsigned(s.list.size()-1);c.state.store(Slot::Filling);c.used=++s.clock;pinRef(c);c.dropAtUnpin=false;
+    c.listAt=unsigned(s.list.size()-1);c.state.store(Slot::Filling);c.used=++s.clock;pinRef(c);c.dropAtUnpin=false;c.requestedSpan=0;
     if(large){c.large=true;s.largeUsed+=c.size;m.copyLargeGrants.fetch_add(1,std::memory_order_relaxed);}else s.used+=c.size;
     if(recent)++c.strikes;else c.strikes=0;detail::gauges(s);
     return true;

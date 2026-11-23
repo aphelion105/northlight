@@ -32,13 +32,18 @@ inputs={str(path):sha(path) for folder in (fp.SRC,fp.SHADERS) for path in folder
 inputs.update({str(path):sha(path) for path in (Path(__file__),fp.TESTS/'point_shadow_stutter_gpu.cpp')})
 client_fixtures.actor_client_programs(out);inputs[str(out/'actor_client_programs.h')]=sha(out/'actor_client_programs.h')
 reference=[] if a.reference_point_from else ['-DNORTHLIGHT_POINT_OVERLAP_TEST=1','-DNORTHLIGHT_POINT_MATERIAL_BOUNDS_TEST=1']
+fixture=fp.TESTS/'point_shadow_stutter_gpu.cpp'
+target_members={'pointSlots':'pointTargets.slots()', 'pointKeeps':'pointTargets.keeps()',
+                'pointScratch':'pointTargets.scratch()', 'pointDepth':'pointTargets.depth()',
+                'pointEmpty':'pointTargets.empty()'}
 assert not (a.reference_point_from and a.benchmark_preparation_from)
 if a.benchmark_preparation_from:
  overlay=out/'preparation-reference';overlay.mkdir()
  before=subprocess.check_output(['git','show',a.benchmark_preparation_from+':src/world/world_point_rendering.inl'],cwd=fp.REPO).decode()
- first=before.index('    void renderPointShadows(');last=before.index('    bool pointSoftShaders()',first)
+ first=before.index('    void renderPointShadows(');last=before.index('    bool pointSoftShaders()' if '    bool pointSoftShaders()' in before else '    bool renderPointLighting(',first)
  method=before[first:last].replace('void renderPointShadows(', 'void renderPointShadowsReference(',1)
- point=fp.src('world_point_rendering.inl').read_text();marker='    bool pointSoftShaders()'
+ method=re.sub(r'\b(?:'+'|'.join(target_members)+r')\b',lambda match:target_members[match[0]],method)
+ point=fp.src('world_point_rendering.inl').read_text();marker='    bool renderPointLighting('
  assert point.count(marker)==1
  for name,data in [('world_renderer.h',fp.src('world_renderer.h').read_text()),('world_point_rendering.inl',point.replace(marker,method+marker))]:
   target=overlay/name;target.write_text(data,encoding='utf-8',newline='\n');inputs[str(target)]=sha(target)
@@ -48,6 +53,14 @@ if a.reference_point_from:
  for name,path in [('world_renderer.h','src/world/world_renderer.h'),('world_point_rendering.inl','src/world/world_point_rendering.inl')]:
   target=overlay/name;target.write_bytes(subprocess.check_output(['git','show',a.reference_point_from+':'+path],cwd=fp.REPO));inputs[str(target)]=sha(target)
  point=(overlay/'world_point_rendering.inl').read_text()
+ if 'NorthlightWorldPointTargets pointTargets' not in point or 'NorthlightWorldPointLighting pointLighting' not in point:
+  # Keep the historical source intact and adapt only the fixture's inspections.
+  source=fixture.read_text(encoding='utf-8')
+  if 'NorthlightWorldPointTargets pointTargets' not in point:
+   for old,new in target_members.items():source=source.replace(new,old)
+  if 'NorthlightWorldPointLighting pointLighting' not in point:
+   source=source.replace('staged.pointLighting.hardShader()', 'staged.pointLightingPS')
+  fixture=overlay/fixture.name;fixture.write_text(source,encoding='utf-8',newline='\n');inputs[str(fixture)]=sha(fixture)
  reference=['-I',overlay]
  if '#include "world_point_replays.inl"' in point:
   target=overlay/'world_point_replays.inl';target.write_bytes(subprocess.check_output(['git','show',a.reference_point_from+':src/world/world_point_replays.inl'],cwd=fp.REPO));inputs[str(target)]=sha(target)
@@ -57,7 +70,7 @@ if a.reference_point_from:
  if 'geometryOnlyFaces' not in point:reference+=['-DNORTHLIGHT_POINT_TERRAIN_REFERENCE=1']
  if 'preparePointTerrain(' not in point:reference+=['-DNORTHLIGHT_POINT_TERRAIN_MEMO_REFERENCE=1']
  if 'occupiedFaces' not in point:reference+=['-DNORTHLIGHT_POINT_EMPTY_TERRAIN_REFERENCE=1']
-cmd=[fp.zig(),'c++','-target','x86-windows-gnu','-O2','-UNDEBUG','-std=c++17','-Wno-microsoft-exception-spec','-DIMGUI_USER_CONFIG="northlight_imconfig.h"',*reference,'-I',out,*fp.test_include_flags(),fp.TESTS/'point_shadow_stutter_gpu.cpp',*(fp.src(s) for s in sources),'-luser32','-luuid','-o',exe]
+cmd=[fp.zig(),'c++','-target','x86-windows-gnu','-O2','-UNDEBUG','-std=c++17','-Wno-microsoft-exception-spec','-DIMGUI_USER_CONFIG="northlight_imconfig.h"',*reference,'-I',out,*fp.test_include_flags(),fixture,*(fp.src(s) for s in sources),'-luser32','-luuid','-o',exe]
 with (out/'compile.log').open('w') as log:subprocess.run(list(map(str,cmd)),env=env,stdout=log,stderr=subprocess.STDOUT,check=True,timeout=300)
 backends=a.backend or [Path(os.environ['WINDIR'])/'SysWOW64/d3d9.dll',fp.client_root()/'renderer-backends/dxvk2/dxvk2_d3d9.dll',fp.client_root()/'renderer-backends/dxvk/dxvk_d3d9.dll']
 skin_program=client_fixtures.four_bone_vs3();inputs[str(skin_program)]=sha(skin_program)
@@ -72,7 +85,7 @@ for i,backend in enumerate(backends):
  assert 'POINT_WHITE_CUBE_GPU_PASS ' in text
  if not a.reference_point_from:
   assert 'SHADOW_REFRESH_GPU_PASS ' in text and 'POINT_MOVING_ADAPTIVE_GPU_PASS ' in text
-  assert text.count('POINT_MERGED_SKIN_GPU_PASS ')==1 or a.benchmark_preparation_from
+  assert text.count('POINT_MERGED_SKIN_GPU_PASS ')==2 or a.benchmark_preparation_from
  assert text.count('POINT_DIRECT_GPU_PASS ')==10
  assert 'POINT_RECYCLE_GPU_PASS ' in text
  material_bounds=[]

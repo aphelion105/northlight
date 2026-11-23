@@ -29,6 +29,8 @@ AOBlur exactly as written in shaders/effects.hlsl, on synthetic raw-D24 depth su
   (5) source and wiring audits (effects.hlsl, shader-build.json, compile_shaders.py, renderer.cpp).
 Run this file to regenerate its JSON report.
 """
+
+from source_units import source_text
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
 import hashlib
@@ -425,9 +427,11 @@ def check_passthrough():
 
 def audit_source():
     text = fp.src('effects.hlsl').read_text()
-    assert 'float4 AOBlur(float2 uv:TEXCOORD0):COLOR0{return aoBlur(uv,true);}' in text
-    assert 'float4 AOBlurNoWater(float2 uv:TEXCOORD0):COLOR0{return aoBlur(uv,false);}' in text
-    blur = text[text.index('float4 aoBlur('):text.index('float4 Composite(')]
+    assert 'float4 AOBlur(float2 uv:TEXCOORD0):COLOR0{return aoBlurCoverage(uv,true);}' in text
+    assert 'float4 AOBlurNoWater(float2 uv:TEXCOORD0):COLOR0{return aoBlurCoverage(uv,false);}' in text
+    blur = text[text.index('float4 aoBlur('):text.index('float4 aoBlurCoverage(')]
+    coverage = text[text.index('float4 aoBlurCoverage('):text.index('float4 AOBlur(')]
+    assert coverage.index('float4 ambient=aoBlur(uv,water);') < coverage.index('tex2Dlod(EffectCoverage,')
     assert 'float2 o=float2(x-2,y-2);' in blur, '25 taps in row order'
     assert 'float rowWeight=abs(y-2)>1.5?.5:1;' in blur, '.5 row edge weights'
     assert '(a.x > 1.5 ? 0.5 : 1.0) * rowWeight' in blur, '.5 column edge weights'
@@ -541,22 +545,25 @@ def check_early_out():
 
 
 def audit_wiring():
-    text = fp.src('renderer.cpp').read_text()
-    fn = text[text.index('SetRenderTarget(0,aoRawSurface)')-400:]
+    text = source_text(fp.src('renderer.cpp'))
+    contact = fp.src('contact_ao_pass.h').read_text()
+    fn = contact[contact.index('IDirect3DPixelShader9* contactShader='):]
     a = fn.index('SetRenderTarget(0,aoRawSurface)')
     seq = [fn.index(s, a) for s in ('quad(width/2,height/2,false),"AO pass"', 'SetRenderTarget(0,aoSurface)', 'SetTexture(2,aoRaw)',
                                     'SetTexture(0,aoRaw)', 'SetPixelShader(!waterMask&&aoBlurNoWaterPS?aoBlurNoWaterPS:aoBlurPS)', 'gpuProfile->mark("AOBlurSetup")',
                                     'aoBlurResult=quad(width/2,height/2,false)', 'error(aoBlurResult,"AO blur pass")',
-                                    'ext->SetTexture(2,nullptr);ext->SetTexture(0,scene);',
-                                    'auto legacyComposite', 'world->render(')]
+                                    'ext->SetTexture(2,nullptr);ext->SetTexture(0,scene);')]
     assert seq == sorted(seq), seq
-    assert 'contactShader=aoActorUsed?(alphaOnly?aoActorAlphaPS:aoActorPS):(alphaOnly?aoOnlyPS:aoContactBloomPS);' in fn[:a]
-    assert 'SetPixelShader(linearHdr||constants[7]==0.f?contactShader:aoPS)' in fn[a:seq[0]]
-    assert 'ext->SetTexture(2,ao); ext->SetPixelShader(compositePS)' in fn
-    assert re.search(r'fold\?scene:nullptr,fold\?ao:nullptr,frame[,)]', fn), 'the world fold reads the blurred ao'
-    fallback = fn[fn.index('if(fold&&!world->composited){'):]
-    assert 'effectState();bindEffects(ao);if(!legacyComposite())return;' in fallback, 'fold fallback binds ao'
-    assert 'aoRaw' not in fn[seq[2]+len('SetTexture(2,aoRaw)'):].split('legacyComposite')[0].split('SetTexture(2,nullptr)')[1]
+    assert 'contactShader=aoActorUsed?actor.contact:(alphaOnly?aoOnlyPS:aoContactBloomPS);' in fn[:a]
+    assert 'SetPixelShader(linearHdr||bounce==0.f?contactShader:aoPS)' in fn[a:seq[0]]
+    call = text.index('NorthlightContactAO::render<CpuScope>')
+    composite, world_call = text.index('auto legacyComposite', call), text.index('world->render(', call)
+    assert call < composite < world_call
+    assert 'ext->SetTexture(2,ao); ext->SetPixelShader(compositePS)' in text[composite:world_call]
+    assert 'fold?scene:nullptr,fold&&!neutralAOPending?ao:nullptr,frame,' in text[world_call:], 'the world fold reads the blurred ao'
+    fallback = text[text.index('if(fold&&!world->composited){', world_call):]
+    assert re.search(r'effectState\(\);\s*if\(neutralAOPending&&!clearNeutralAO\(\)\)return;\s*bindEffects\(ao\);if\(!legacyComposite\(\)\)return;',fallback), 'fold fallback binds ao'
+    assert 'aoRaw' not in fn[seq[-1]:]
     for fmt in (r'!ao && error\(ext->CreateTexture\(w/2, h/2, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A16B16G16R16F, D3DPOOL_DEFAULT, &ao,',
                 r'!aoRaw && error\(ext->CreateTexture\(w/2, h/2, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A16B16G16R16F, D3DPOOL_DEFAULT, &aoRaw,'):
         assert re.search(fmt, text), fmt
@@ -571,22 +578,23 @@ def audit_wiring():
 def audit_contact_ao():
     """0.3.201 (task 18) ContactAO=0: no AO pass and no AOBlur; a ready world with bloom gets ContactBloom (bloom, AO 1) straight into ao; zero bloom uses a neutral clear,
     the legacy path a neutral clear; ContactAO=1 keeps the raw AO then AOBlur sequence checked by audit_wiring."""
-    text = fp.src('renderer.cpp').read_text()
-    fn = text[text.index('bindEffects(nullptr);\n        if (!contactAO) {'):text.index('// 0.3.174 FOLD:')]
-    off, on = fn.split('        } else {\n            IDirect3DTexture9* actorTexture=', 1)
-    on = '            IDirect3DTexture9* actorTexture=' + on
-    assert 'constants[7]==0.f' in off
-    ready, legacy = off.split('} else {', 1)
-    assert 'SetRenderTarget(0,aoSurface)' in ready and 'SetPixelShader(contactBloomPS)' in ready and 'quad(width/2,height/2,false)' in ready
+    text = source_text(fp.src('renderer.cpp'))
+    contact = fp.src('contact_ao_pass.h').read_text()
+    start = contact.index('    if (!contactAO) {')
+    off, on = contact[start:].split('    } else {\n        const bool alphaOnly=', 1)
+    assert 'bounce==0.f' in off
+    assert 'SetRenderTarget(0,aoSurface)' in off and 'SetPixelShader(contactBloomPS)' in off and 'quad(width/2,height/2,false)' in off
     assert 'aoRaw' not in off and 'aoPS' not in off and 'aoBlurPS' not in off and 'aoContactBloomPS' not in off, 'off path runs neither AO nor AOBlur'
-    assert 'aoActor' not in off, 'off path must not run actor preparation or actor AO'
+    assert 'selectActor' not in off, 'off path must not run actor preparation or actor AO'
+    assert '} else if(linearHdr&&fold)neutralAOPending=true;' in off and 'else if(!clearNeutral(' in off
+    legacy = contact[contact.index('bool clearNeutral('):contact.index('bool render(')]
     assert 'SetRenderTarget(0,aoSurface)' in legacy and 'ext->Clear(0,nullptr,D3DCLEAR_TARGET,D3DCOLOR_ARGB(255,0,0,0),1.f,0)' in legacy
     assert 'quad(' not in legacy and 'D3DCLEAR_ZBUFFER' not in legacy and 'D3DCLEAR_STENCIL' not in legacy
     assert off.count('effectsBuckets.mark(Bucket::AO)') == 1 and on.count('effectsBuckets.mark(Bucket::AO)') == 1
-    assert 'contactShader=aoActorUsed?(alphaOnly?aoActorAlphaPS:aoActorPS):(alphaOnly?aoOnlyPS:aoContactBloomPS);' in on
-    assert 'SetPixelShader(linearHdr||constants[7]==0.f?contactShader:aoPS)' in on and 'SetPixelShader(!waterMask&&aoBlurNoWaterPS?aoBlurNoWaterPS:aoBlurPS)' in on and 'contactBloomPS' not in on
+    assert 'contactShader=aoActorUsed?actor.contact:(alphaOnly?aoOnlyPS:aoContactBloomPS);' in on
+    assert 'SetPixelShader(linearHdr||bounce==0.f?contactShader:aoPS)' in on and 'SetPixelShader(!waterMask&&aoBlurNoWaterPS?aoBlurNoWaterPS:aoBlurPS)' in on and 'contactBloomPS' not in on
     assert 'if(aoActorUsed){ext->SetTexture(2,nullptr);ext->SetTexture(4,nullptr);}' in on, 'unbind preparation before the blur writes its target'
-    assert 'bool contactAO=true;' in text and 'contactAO=world->contactAO();' in text
+    assert re.search(r'\bbool contactAO=true[,;]', text) and 'contactAO=world->contactAO();' in text
     assert 'drop(contactBloomPS)' in text and 'CreatePixelShader(kContactBloomShader, &contactBloomPS)' in text
     assert 'bool contactAO()const{return quality.contactAO!=0;}' in fp.src('world_renderer.h').read_text()
     hlsl = fp.src('effects.hlsl').read_text()

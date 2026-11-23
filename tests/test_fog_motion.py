@@ -3,6 +3,7 @@
 """Offline movement, world anchoring and ground-fade regressions; no GPU/game."""
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
+from scripts.shaders.shader_sources import world_source_text
 import hashlib
 import json
 import math
@@ -45,7 +46,7 @@ def march(camera_x, schedule, shadow):
 
 
 def main():
-    shader = fp.src('world_effects.hlsl').read_text()
+    shader = world_source_text(fp.src('world_effects.hlsl'))
     fog = shader.split('float4 worldFog(', 1)[1].split('// Glow of', 1)[0]
     for contract in ('frac(major.y*(major.x<0?-1:1)/spacing)',
                      'float altitude=p.z-field.x;',

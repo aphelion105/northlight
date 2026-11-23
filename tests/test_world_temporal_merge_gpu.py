@@ -11,6 +11,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
+from scripts.capture_files import read_bytes
 from windows_gpu_guard import processes
 
 out = fp.output_dir() / 'world-temporal-merge'
@@ -58,6 +59,7 @@ for rgba in ((.125 + 2**-12, .25, .5, 1), (.125, .25, .5, 1 + 2**-10), (math.nan
         raise AssertionError('zero-weight comparison accepted an invalid control')
 inputs = {str(p): sha(p) for p in [Path(__file__), fp.TESTS / 'world_temporal_merge_gpu.cpp',
           fp.TESTS / 'world_removal_alias_gpu.cpp', fp.TESTS / 'world_screen_effects_gpu.cpp',
+          fp.SCRIPTS / 'capture_files.py',
           *(p for p in (fp.REPO / 'src').rglob('*') if p.suffix in ('.cpp', '.h', '.inl')),
           *(p for _, p in backends)]}
 report = {'pass': False, 'inputs': inputs, 'runs': [], 'comparisons': [],
@@ -80,17 +82,20 @@ try:
                    '-Wno-microsoft-exception-spec', '-DIMGUI_USER_CONFIG="northlight_imconfig.h"',
                    *fp.test_include_flags(), '-I' + str(fp.TESTS), fp.TESTS / 'world_temporal_merge_gpu.cpp',
                    *(fp.src(s) for s in sources), '-luser32', '-luuid', '-o', exe], out)
+    modes = {'reference': 'r', 'merged': 'm', 'zero-weight': 'z'}
     for name, backend in backends:
-        for mode in ('reference', 'merged', 'zero-weight'):
-            folder = out / name / mode
+        for mode, directory in modes.items():
+            folder = out / name / directory
             folder.mkdir(parents=True, exist_ok=True)
-            text = run('gpu', [exe, backend, folder, mode], folder)
+            # Diagnostics append a session directory and SHA-256 blob names.
+            # Keep paths inside the child process relative to its own output.
+            text = run('gpu', [exe, backend, '.', mode], folder)
             result = next(line for line in text.splitlines() if line.startswith('WORLD_TEMPORAL_MERGE_PASS'))
             report['runs'].append({'backend': name, 'mode': mode, 'result': result})
             print(name, result, flush=True)
 
         def images(mode):
-            folder = out / name / mode
+            folder = out / name / modes[mode]
             paths = [p for p in folder.rglob('*.fgr') if not p.name.endswith('-removal.fgr')]
             result = {('diagnostics/' if 'northlight-diagnostics' in p.parts else '') + p.name: p for p in paths}
             assert len(result) == len(paths), 'ambiguous image identity'
@@ -100,14 +105,14 @@ try:
         assert merged_images.keys() == optimized_images.keys()
         zero_differences = []
         for key, path in merged_images.items():
-            difference = zero_weight_difference(path.read_bytes(), optimized_images[key].read_bytes())
+            difference = zero_weight_difference(read_bytes(path), read_bytes(optimized_images[key]))
             if difference['channels']:
                 zero_differences.append({'image': key, **difference})
         before, after = images('reference'), images('merged')
         assert before.keys() == after.keys() and len(before) >= 180
         differences = []
         for key, path in before.items():
-            a, b = path.read_bytes(), after[key].read_bytes()
+            a, b = read_bytes(path), read_bytes(after[key])
             assert a[:20] == b[:20] and len(a) == len(b), key
             if a == b:
                 continue

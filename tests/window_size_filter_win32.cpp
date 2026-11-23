@@ -8,6 +8,7 @@
 #include <thread>
 #include <vector>
 #include "settings_overlay.h"
+#include "stream_wait.h"
 
 static void ok(HRESULT hr){assert(SUCCEEDED(hr));}
 static std::atomic<HWND> foregroundFact{nullptr};
@@ -27,7 +28,7 @@ extern "C" void NorthlightWindowSizeTestClosing(IDirect3DDevice9* owner,HWND win
 struct Game {
     HWND window=nullptr;IDirect3DDevice9* device=nullptr;IDirect3DSurface9* shadow=nullptr;
     unsigned sizes=0,resets=0,other=0,lastOther=0,chainCalls=0,width=320,height=180;
-    bool gpuWrites=true,unicode=true;WNDPROC chainPrevious=nullptr;
+    bool gpuWrites=true,unicode=true,echoSize=false;WNDPROC chainPrevious=nullptr;
 };
 static LRESULT CALLBACK gameProcedure(HWND window,UINT message,WPARAM wparam,LPARAM lparam){
     auto* game=reinterpret_cast<Game*>(GetWindowLongPtrW(window,GWLP_USERDATA));
@@ -38,6 +39,11 @@ static LRESULT CALLBACK gameProcedure(HWND window,UINT message,WPARAM wparam,LPA
             // The real client synchronously enters Device::Reset here. Its
             // invalidation must not erase the post-forward size proof.
             ++game->resets;NorthlightWindowHook::invalidate(game->device);game->width=width;game->height=height;
+            if(game->echoSize){
+                game->echoSize=false;
+                NorthlightStream::PumpScope wait;
+                SendMessageW(window,WM_SIZE,wparam,lparam);
+            }
             if(game->shadow&&game->gpuWrites)ok(game->device->ColorFill(game->shadow,nullptr,0));
         }
         return 0;
@@ -62,6 +68,10 @@ static void size(Game& game,WPARAM state=SIZE_RESTORED,unsigned width=0,unsigned
     SendMessageW(game.window,WM_SIZE,state,MAKELPARAM(width?width:game.width,height?height:game.height));
 }
 static void forward(Game& game,WPARAM state=SIZE_RESTORED){const auto before=game.sizes;size(game,state);assert(game.sizes==before+1);}
+static void dispatchPosted(HWND window){
+    MSG message{};
+    while(PeekMessageW(&message,window,0,0,PM_REMOVE))DispatchMessageW(&message);
+}
 static void suppressed(Game& game){const auto before=game.sizes;size(game);if(game.sizes!=before)std::fprintf(stderr,"UNEXPECTED_SIZE_FORWARD case=%u unicode=%u size=%ux%u lastOther=%u iconic=%u zoomed=%u\n",currentCase?*currentCase:0,unsigned(game.unicode),game.width,game.height,game.lastOther,unsigned(IsIconic(game.window)),unsigned(IsZoomed(game.window)));assert(game.sizes==before);}
 static void publish(Game& game,bool windowed=true,HRESULT status=D3D_OK){NorthlightWindowHook::presented(game.device,game.window,game.width,game.height,windowed,status);}
 static void healthy(Game& game){if(game.shadow)ok(game.device->ColorFill(game.shadow,nullptr,0xff72a4d6));publish(game);}
@@ -105,6 +115,25 @@ int main(int argc,char** argv){
         RECT rectangle={0,0,LONG(game.width+16),LONG(game.height+8)};assert(AdjustWindowRect(&rectangle,WS_OVERLAPPEDWINDOW,FALSE));const auto resized=game.resets;
         assert(SetWindowPos(game.window,nullptr,0,0,rectangle.right-rectangle.left,rectangle.bottom-rectangle.top,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE));assert(game.resets>resized);healthy(game);suppressed(game);++cases;
         const auto mismatch=game.sizes;size(game,SIZE_RESTORED,game.width-1,game.height);assert(game.sizes==mismatch+1);RECT client{};assert(GetClientRect(game.window,&client));game.width=unsigned(client.right-client.left);game.height=unsigned(client.bottom-client.top);forward(game);healthy(game);suppressed(game);++cases;
+        const auto beforeDeferred=game.sizes;
+        const auto originalWidth=game.width;
+        {
+            NorthlightStream::PumpScope wait;
+            size(game,SIZE_RESTORED,originalWidth+1,game.height);
+            size(game,SIZE_RESTORED,originalWidth+2,game.height);
+            assert(game.sizes==beforeDeferred);
+        }
+        game.echoSize=true;
+        dispatchPosted(game.window);
+        assert(game.sizes==beforeDeferred+1&&game.width==originalWidth+2&&!game.echoSize);
+        {
+            NorthlightStream::PumpScope wait;
+            size(game,SIZE_RESTORED,originalWidth+3,game.height);
+        }
+        size(game,SIZE_RESTORED,originalWidth,game.height);
+        dispatchPosted(game.window);
+        assert(game.sizes==beforeDeferred+2&&game.width==originalWidth);
+        healthy(game);suppressed(game);++cases;
         // A publisher alternates two individually wrong sizes. Torn width/height
         // reads must never synthesize the real client dimensions and swallow.
         game.gpuWrites=false;NorthlightWindowHook::invalidate(game.device);const auto race=game.sizes;const unsigned w=game.width,h=game.height;std::atomic<bool> stop{false};

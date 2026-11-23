@@ -12,6 +12,8 @@ overlay before the extension device; the ImGui licence ships in the packages.
 Behaviour (native clang++, tests/test_settings_overlay.cpp): overlay_input.h routing (mouse moves and
 key-ups always reach the game, hotkey swallowed, presses only over the window) and settings_draft.h.
 """
+
+from source_units import source_text
 import os
 import re
 import subprocess
@@ -54,7 +56,7 @@ for name in OVERLAY:
     check(not addresses, f'{name}: client address literal(s) {addresses}')
 
 # SettingsOverlay=0: read once at device creation; create() returns before hooking the window.
-renderer = fp.src('renderer.cpp').read_text()
+renderer = source_text(fp.src('renderer.cpp'))
 check(re.search(r'GetPrivateProfileIntW\(L"Renderer",L"SettingsOverlay",1,config\)', renderer) is not None, 'renderer.cpp: [Renderer] SettingsOverlay read')
 check('overlay=NorthlightOverlay::create(ext,on,hotkey,settingsService,' in renderer, 'renderer.cpp: overlay created with the SettingsOverlay gate and key')
 check('GetPrivateProfileStringW(L"Renderer",L"SettingsOverlayKey"' in renderer, 'renderer.cpp: [Renderer] SettingsOverlayKey read')

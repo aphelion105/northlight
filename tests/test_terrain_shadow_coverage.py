@@ -1,5 +1,7 @@
 # northlight-test: requires=cxx
 """Execute the generated terrain handoff arithmetic; never starts a device/game."""
+
+from source_units import source_text
 from pathlib import Path
 import argparse,os, subprocess, sys, tempfile
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
@@ -10,7 +12,7 @@ with tempfile.TemporaryDirectory(prefix='northlight-terrain-coverage-') as tempo
     exe=Path(temporary)/'test-coverage'
     subprocess.run([*compiler,'-std=c++17','-O2','-UNDEBUG',*fp.test_include_flags(),str(Path(__file__).with_suffix('.cpp')),str(fp.src('world_gi.cpp')),'-o',str(exe)],check=True)
     subprocess.run([str(exe)],check=True)
-    source=subprocess.check_output(['git','show',args.source_ref+':src/proxy/renderer.cpp'],cwd=fp.REPO).decode() if args.source_ref else fp.src('renderer.cpp').read_text(encoding='utf-8')
+    source=subprocess.check_output(['git','show',args.source_ref+':src/proxy/renderer.cpp'],cwd=fp.REPO).decode() if args.source_ref else source_text(fp.src('renderer.cpp'), encoding='utf-8')
     start=source.index('template<class Draw> HRESULT terrainShadowDraw(')
     end=source.index('{',start);depth=1;end+=1
     while depth:

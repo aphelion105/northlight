@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 # northlight-test: requires=windows-exe,zig
 """Staged entry reclaim: execute the actual worker block and source lease lifecycle."""
+
+from source_units import source_text
 from pathlib import Path
 import subprocess
 import sys
@@ -8,7 +10,7 @@ import tempfile
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
 
-source=fp.src('world_renderer.h').read_text()
+source=source_text(fp.src('world_renderer.h'))
 block=source.split('// BEGIN STAGED ENTRY RECLAIM:')[1].split('\n',1)[1].split('// END STAGED ENTRY RECLAIM')[0]
 # Global trim and map/reset keep the original complete release operation.
 assert 'workerMemoryTrim.exchange(false,std::memory_order_relaxed))resetPreparation()' in source

@@ -162,7 +162,7 @@
  115:                 min r6.w, -r5.w, c15.x
  116:                 if_ge r3_abs.w, -r6.w
  119:                 else
- 120:                   mul r0.xy, r0.w, r0
+ 120:                   mul r0.xy, r0.w, r0_abs
  121:                   mul r0.xy, r0, c13.y
  122:                   add r0.xy, r0, c9.y
  123:                   add r0.w, -r0_abs.x, -c9.y

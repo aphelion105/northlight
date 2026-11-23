@@ -37,14 +37,19 @@ inline std::uint64_t identity(void* buffer,bool index){
 inline std::atomic<uint64_t> clock{1};
 inline std::atomic<uint64_t> noChangeWrites{0},noChangeBytes{0};
 inline std::atomic<uint64_t> skippedWrites{0},skippedBytes{0};
-inline std::atomic<uint64_t> rangeQueries{0},rangePreserved{0},rangeFallbacks{0};
 inline std::mutex mutex;
+struct RangeStats {uint64_t queries=0,preserved=0,fallbacks=0;};
+inline RangeStats bufferRangeStats; // guarded by the registry mutex
+inline RangeStats rangeStats(){
+    std::lock_guard<std::mutex> guard(mutex);
+    return bufferRangeStats;
+}
 struct Record {
     void* raw=nullptr;void* exposed=nullptr;
     IUnknown* object=nullptr;
     std::atomic<uint64_t> revision{0};
     std::atomic<unsigned> locks{0};
-    bool index=false;
+    bool index=false,rangeObserved=false,rangeAllocationFailed=false;
     D3DPOOL pool=D3DPOOL_DEFAULT;bool poolKnown=false;
     NorthlightCaptureMetadata::Info metadata;
     std::unique_ptr<NorthlightBufferRanges::Revisions> ranges;
@@ -93,7 +98,7 @@ inline void captureMetadata(const NorthlightCaptureMetadata::Request* requests,N
         output[i].revision=record.locks.load(std::memory_order_acquire)?0:record.revision.load(std::memory_order_relaxed);   // 0.3.196 (task 12): acquire pairs with the unlock's release
         const auto& request=requests[i];
         if(output[i].revision&&request.bytes){
-            rangeQueries.fetch_add(1,std::memory_order_relaxed);
+            ++bufferRangeStats.queries;
             uint64_t begin=request.begin,bytes=request.bytes;
             if(request.indexElements){
                 const uint64_t width=record.metadata.format==D3DFMT_INDEX16?2:record.metadata.format==D3DFMT_INDEX32?4:0;
@@ -101,10 +106,10 @@ inline void captureMetadata(const NorthlightCaptureMetadata::Request* requests,N
                 begin*=width;bytes*=width;
             }
             if(begin>=record.metadata.size||bytes>record.metadata.size-begin){output[i].revision=0;continue;}
-            if(!record.ranges)record.ranges=NorthlightBufferRanges::Revisions::create(record.metadata.size,output[i].revision);
+            record.rangeObserved=true;
             if(record.ranges){const auto whole=output[i].revision;output[i].revision=record.ranges->revision(whole,begin,bytes);
-                if(output[i].revision!=whole)rangePreserved.fetch_add(1,std::memory_order_relaxed);}
-            else rangeFallbacks.fetch_add(1,std::memory_order_relaxed);
+                if(output[i].revision!=whole)++bufferRangeStats.preserved;}
+            else if(record.rangeAllocationFailed)++bufferRangeStats.fallbacks;
         }
     }
 }
@@ -137,7 +142,11 @@ template<class T> void expose(T** out){
 }
 inline void written(void* p){
     std::lock_guard<std::mutex> guard(mutex);auto it=records.find(p);
-    if(it!=records.end()){it->second->revision=clock.fetch_add(1);NorthlightReplayCopies::invalidate(it->second->copy,true);NorthlightParticleUploads::cache().forget(it->second->raw);} // GPU ProcessVertices invalidates both replay-position CPU stores.
+    if(it!=records.end()){
+        auto& r=*it->second;
+        r.revision=clock.fetch_add(1);NorthlightReplayCopies::invalidate(r.copy,true);
+        NorthlightParticleUploads::cache().forget(r.raw);NorthlightParticleUploads::atlasUploads().forget(r.raw);
+    }
 }
 // The layer's markGuard callback: raw or exposed pointer of a wrapped buffer; anything else is ignored (the layer holds a reference, the record cannot be recycled).
 inline void markSpellGuard(void* buffer,bool on){
@@ -202,6 +211,7 @@ public:
         {std::lock_guard<std::mutex> guard(mutex);records.erase(record.raw);records.erase(record.exposed);}
         NorthlightReplayCopies::detach(record.copy);
         NorthlightParticleUploads::cache().forget(record.raw);
+        NorthlightParticleUploads::atlasUploads().forget(record.raw);
         this->real->Release();owner->Release();
     }
     ULONG STDMETHODCALLTYPE AddRef() override{return InterlockedIncrement(&refs);}
@@ -236,6 +246,7 @@ public:
            ((flags==0&&!(record.metadata.usage&D3DUSAGE_DYNAMIC))||(discardBytes&&flags==D3DLOCK_NOOVERWRITE))&&
            NorthlightReplayCopies::enabled.load(std::memory_order_relaxed)&&NorthlightReplayCopies::unchangedWrite(record.copy,offset,size,source.bytes)){
             *data=const_cast<unsigned char*>(source.bytes);source.skipped=true;
+            NorthlightParticleUploads::atlasUploads().write(record.raw,offset,size,source.bytes);
             noChangeWrites.fetch_add(1,std::memory_order_relaxed);noChangeBytes.fetch_add(size,std::memory_order_relaxed);
             skippedWrites.fetch_add(1,std::memory_order_relaxed);skippedBytes.fetch_add(size,std::memory_order_relaxed);return D3D_OK;
         }
@@ -271,10 +282,14 @@ public:
            (!(flags&D3DLOCK_DISCARD)||(!offset&&(!size||size==record.metadata.size)))){
             previousWriteRevision=previousRevision;pendingWriteRevision=record.revision.load(std::memory_order_relaxed);
         }
-        if(NorthlightParticleUploads::enabled.load(std::memory_order_relaxed)&&!(flags&D3DLOCK_READONLY)){
+        auto& atlas=NorthlightParticleUploads::atlasUploads();
+        const bool lights=NorthlightParticleUploads::enabled.load(std::memory_order_relaxed);
+        if((lights||atlas.watching(record.raw))&&!(flags&D3DLOCK_READONLY)){
             auto& uploads=NorthlightParticleUploads::cache();
             const bool valid=record.metadata.known&&offset<=record.metadata.size&&(!size||std::uint64_t(offset)+size<=record.metadata.size);
-            uploads.invalidate(record.raw,offset,size,(flags&D3DLOCK_DISCARD)||lockedBefore||!valid);
+            const bool discard=(flags&D3DLOCK_DISCARD)||lockedBefore||!valid;
+            if(lights)uploads.invalidate(record.raw,offset,size,discard);
+            atlas.invalidate(record.raw,offset,size,discard);
             particleWrite={offset,valid?(size?size:UINT(record.metadata.size-offset)):0,!lockedBefore&&valid};
         }
         HRESULT hr=this->real->Lock(offset,size,data,flags);
@@ -306,9 +321,13 @@ public:
         if(particleWrite.active){
             const auto source=NorthlightReplayCopies::unlockSource;
             if(SUCCEEDED(hr)&&record.locks.load(std::memory_order_relaxed)==1&&source.bytes&&(!source.target||source.target==record.exposed)&&source.off<=particleWrite.offset&&
-               std::uint64_t(particleWrite.offset-source.off)+particleWrite.size<=source.size)
-                NorthlightParticleUploads::cache().write(record.raw,record.metadata.identity,particleWrite.offset,
-                    source.bytes+(particleWrite.offset-source.off),particleWrite.size,(record.metadata.usage&D3DUSAGE_DYNAMIC)!=0);
+               std::uint64_t(particleWrite.offset-source.off)+particleWrite.size<=source.size){
+                const auto* bytes=source.bytes+(particleWrite.offset-source.off);
+                if(NorthlightParticleUploads::enabled.load(std::memory_order_relaxed))
+                    NorthlightParticleUploads::cache().write(record.raw,record.metadata.identity,particleWrite.offset,
+                        bytes,particleWrite.size,(record.metadata.usage&D3DUSAGE_DYNAMIC)!=0);
+                NorthlightParticleUploads::atlasUploads().write(record.raw,particleWrite.offset,particleWrite.size,bytes);
+            }
             else NorthlightParticleUploads::cache().forget(record.raw);
         }else if(FAILED(hr))NorthlightParticleUploads::cache().forget(record.raw);
         particleWrite={};
@@ -319,9 +338,18 @@ public:
             if(same&&record.revision.compare_exchange_strong(expected,previousWriteRevision,std::memory_order_relaxed)){
                 noChangeWrites.fetch_add(1,std::memory_order_relaxed);noChangeBytes.fetch_add(bytes,std::memory_order_relaxed);
             }
-            if(record.ranges&&record.locks.load(std::memory_order_relaxed)==1&&rangeWrite){
+            if(record.locks.load(std::memory_order_relaxed)==1&&rangeWrite){
                 const auto current=record.revision.load(std::memory_order_relaxed);
-                if(current!=rangePrevious)record.ranges->publish(rangePrevious,current,rangeBegin,rangeBytes,rangeWhole);
+                const bool whole=rangeWhole||rangeBytes==record.metadata.size;
+                if(current!=rangePrevious){
+                    // Draws can keep using the whole-resource stamp until the
+                    // first partial write to a previously observed buffer.
+                    if(!record.ranges&&record.rangeObserved&&!whole&&rangePrevious&&current>rangePrevious){
+                        record.ranges=NorthlightBufferRanges::Revisions::create(record.metadata.size,rangePrevious);
+                        record.rangeAllocationFailed=!record.ranges;
+                    }
+                    if(record.ranges)record.ranges->publish(rangePrevious,current,rangeBegin,rangeBytes,whole);
+                }
             }
             record.locks.fetch_sub(1,std::memory_order_release);
         }

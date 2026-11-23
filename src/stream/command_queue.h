@@ -92,10 +92,14 @@ enum class WaitKind {Sync,Present,Backpressure};
 enum class ExpressKind {Readback,Query};
 
 // 0.3.206 (task 31): a unit of work for the replay thread's next command boundary (Queue::runExpress). Lives on the poster's stack.
-constexpr std::uint16_t kExpressIdle=0xFFFF;   // ExpressTask::behindCmd: the replay thread was idle (slept / empty queue) when the task was served
-// behindCmd / startNs are written by the replay thread before it clears the mailbox (the poster reads them after that handshake): the last command executed, and nowNs() at serve start (only when `timed`).
-struct ExpressTask {void (*fn)(void*);void* arg;bool (*ready)(void*);bool timed;std::uint16_t behindCmd;std::uint64_t startNs;};
-struct ExpressTimes {std::uint16_t behindCmd=kExpressIdle;std::uint64_t startNs=0;};   // what a timed runExpress hands back
+constexpr std::uint16_t kExpressIdle=0xFFFF;
+// The producer initializes this before posting and reads it after the mailbox
+// clears. Replay writes the boundaries between those two handshakes.
+struct ExpressTimes {
+    std::uint16_t behindCmd=kExpressIdle,seenBehindCmd=kExpressIdle;
+    std::uint64_t startNs=0,postedNs=0,seenNs=0,seenSeq=0,serveSeq=0;
+};
+struct ExpressTask {void (*fn)(void*);void* arg;bool (*ready)(void*);ExpressTimes* times;std::uint64_t afterSeq;};
 // Counts observations, not elapsed time: a held publication proves work existed
 // while replay was asleep; it does not make the whole queue-idle span avoidable.
 struct WakePublicationDiagnostics {std::uint64_t heldBatches=0,heldCommands=0,heldBytes=0,wakeSignals=0,partialBatches=0,partialCommands=0;};
@@ -128,7 +132,8 @@ class Queue {
     bool idleTracking_=false;   // configured by the producer before the consumer starts; immutable during replay
     // Consumer-private.
     alignas(kLine) Chunk* rchunk_;
-    std::uint32_t rpos_=0;
+    std::uint32_t rpos_=0,rpublished_=0;
+    std::uint64_t rseq_=0;
     std::uint64_t lastSignalledSeq_=0,bpSignalledRec_=~std::uint64_t(0);   // 0.3.196 (task 12): wakeWaiters' memory (consumer only)
 #ifdef NORTHLIGHT_STREAM_CHECK_WAIT
     std::atomic<unsigned> backstopSignals_{0};
@@ -235,15 +240,21 @@ class Queue {
         for(;;){
             const std::uint32_t e=rchunk_->end.load(std::memory_order_acquire);
             if(!e||rpos_<e)return;
-            Chunk* n=rchunk_->next.load(std::memory_order_acquire);recycle(rchunk_);rchunk_=n;rpos_=0;
+            Chunk* n=rchunk_->next.load(std::memory_order_acquire);recycle(rchunk_);rchunk_=n;rpos_=rpublished_=0;
             std::atomic_thread_fence(std::memory_order_seq_cst);   // 0.3.196 (task 12): once per chunk; the chunk is returned before bpWaiting_ is read (retire no longer fences per command)
             if(bpWaiting_.load())progress_.set();
         }
     }
+    // One acquire covers the entire immutable prefix. Replay and indexed
+    // lookahead need to reload only when they reach its end.
+    bool published(std::uint32_t offset){
+        if(offset<rpublished_)return true;
+        rpublished_=rchunk_->published.load(std::memory_order_acquire);
+        return offset<rpublished_;
+    }
     const CommandHeader* peek(){
         for(;;){
-            const std::uint32_t pub=rchunk_->published.load(std::memory_order_acquire);
-            if(rpos_<pub)return reinterpret_cast<const CommandHeader*>(rchunk_->data+rpos_);
+            if(published(rpos_))return reinterpret_cast<const CommandHeader*>(rchunk_->data+rpos_);
             const std::uint32_t e=rchunk_->end.load(std::memory_order_acquire);
             if(!e||rpos_<e)return nullptr;
             advance();
@@ -339,6 +350,12 @@ public:
             publishLazy(); // A sleeping replay needs the ready prefix, not a full batch.
         }
     }
+    // Producer only. A committed tail can be amended until it is published.
+    void* unpublishedTailPayload(std::uint16_t id){
+        if(open_||!openSize_||openSize_>wpos_-pubPos_)return nullptr;
+        auto* h=reinterpret_cast<CommandHeader*>(wchunk_->data+wpos_-openSize_);
+        return h->id==id&&!(h->flags&kFlagBlock)?h+1:nullptr;
+    }
     // Makes everything committed visible to the consumer and wakes it if it sleeps.
     void publish(){
         if(wpos_==pubPos_){if(lazyWake_)wake();return;}   // 0.3.200 (pipeline): an automatic publish held its wake back: this explicit one delivers it
@@ -395,15 +412,15 @@ public:
     // queue to drain: dependencies must already be replayed, or ready must defer until they are. A deferred task must leave published commands to make progress, or become ready on a drained queue.
     // One poster at a time (the game thread). Counted in syncNs (comparable with the
     // drain waits) and expressNs, with separate readback/query counters. The query caller owns syncCalls/census. Wake handshake: store the mailbox, fence, wake a sleeper (the consumer sets sleeping_, fences, re-checks the mailbox).
-    void runExpress(void (*fn)(void*),void* arg,ExpressTimes* times=nullptr,ExpressKind kind=ExpressKind::Readback,bool (*ready)(void*)=nullptr){   // times: Diagnostics only (the replay thread then reads the clock once at serve start)
-        ExpressTask t{fn,arg,ready,times!=nullptr,kExpressIdle,0};
+    void runExpress(void (*fn)(void*),void* arg,ExpressTimes* times=nullptr,ExpressKind kind=ExpressKind::Readback,bool (*ready)(void*)=nullptr,std::uint64_t afterSeq=0){
+        ExpressTask t{fn,arg,ready,times,afterSeq};
         const auto t0=nowNs();
+        if(times){*times={};times->postedNs=t0;}
         express_.store(&t,std::memory_order_release);
         std::atomic_thread_fence(std::memory_order_seq_cst);
         if(sleeping_.load()&&sleeping_.exchange(false))consumerEv_.set();
         while(express_.load(std::memory_order_acquire)!=nullptr)expressDone_.waitPumped(50);   // the timeout only bounds a missed wake
         const auto ns=nowNs()-t0;
-        if(times){times->behindCmd=t.behindCmd;times->startNs=t.startNs;}
         add(stats.syncNs,ns);add(stats.expressNs,ns);
         if(kind==ExpressKind::Query){add(stats.expressQueries);add(stats.queryExpressNs,ns);}
         else{add(stats.expressReadbacks);add(stats.readbackExpressNs,ns);}
@@ -555,12 +572,12 @@ public:
         const std::uint16_t fl=h->flags;   // h dies with its chunk (advance() below)
         if(fl&kFlagBlock)freeBlock(blockOf(h));
         rpos_+=h->size;
-        const std::uint64_t n=replayed_.load(std::memory_order_relaxed)+1;
+        const std::uint64_t n=++rseq_;
         // 0.3.196 (task 12): release store (the Present ring and everything the replay thread wrote for this command is visible to a producer that reads replayed_ seq_cst), no per-command locked
         // instruction. Dekker with waitReplayed (waitSeq_ store -> replayed_ load): only a command the producer may wait for pays the fence before it reads waitSeq_.
         replayed_.store(n,std::memory_order_release);
         if(fl&kFlagWaitTarget)std::atomic_thread_fence(std::memory_order_seq_cst);
-        advance();
+        if(rpos_>=rpublished_)advance();
         // 0.3.200 (pipeline): the signal is remembered (lastSignalledSeq_/bpSignalledRec_, as wakeWaiters does), so neither a later retire nor the idle backstop
         // signals the same wait again while the producer has not yet run (a SetEvent each); the backstop's forced pre-sleep signal stays.
         const std::uint64_t w=waitSeq_.load();
@@ -568,15 +585,36 @@ public:
         else if(bpWaiting_.load()){const std::uint64_t rec=recorded_.load();if(n>=rec&&rec!=bpSignalledRec_){bpSignalledRec_=rec;progress_.set();}}   // drained: nothing more to free, let the producer re-evaluate
     }
     std::uint64_t replayedSeq()const{return replayed_.load();}
+    // Consumer-only lookahead. Keep the run inside one published chunk so
+    // retiring its first command cannot invalidate the unretired tail.
+    const CommandHeader* publishedAfter(const CommandHeader* h){
+        const auto* next=reinterpret_cast<const unsigned char*>(h)+h->size;
+        const auto offset=static_cast<std::uint32_t>(next-rchunk_->data);
+        return published(offset)?reinterpret_cast<const CommandHeader*>(next):nullptr;
+    }
     // 0.3.206 (task 31): the replay loop, between two commands: runs a posted express task (one acquire load when none).
-    void serveExpress(std::uint16_t lastCmd){   // lastCmd: the command the replay loop executed last, or kExpressIdle when it slept since
+    template<class Barrier> void serveExpress(std::uint16_t lastCmd,Barrier barrier){
         ExpressTask* t=express_.load(std::memory_order_acquire);
-        if(!t||(t->ready&&!t->ready(t->arg)))return;
-        t->behindCmd=lastCmd;if(t->timed)t->startNs=nowNs();
+        if(!t)return;
+        auto* times=t->times;
+        if(times&&t->ready&&!times->seenNs){
+            times->seenNs=nowNs();times->seenSeq=rseq_;times->seenBehindCmd=lastCmd;
+        }
+        // A known predecessor needs only the consumer's retirement counter.
+        // Inspect query generation/device state once that command has run.
+        if(t->ready&&(t->afterSeq>rseq_||!t->ready(t->arg)))return;
+        // A posted task with an unreplayed predecessor does not observe the
+        // backend yet. Drain deferred draws only when the task can run.
+        barrier();
+        if(times){
+            times->behindCmd=lastCmd;times->startNs=nowNs();
+            if(t->ready)times->serveSeq=rseq_;
+        }
         t->fn(t->arg);
         express_.store(nullptr,std::memory_order_release);   // t dies with the poster's wait
         expressDone_.set();
     }
+    void serveExpress(std::uint16_t lastCmd){serveExpress(lastCmd,[]{});}
     // The Block of a kFlagBlock command and the caller part of its payload (after the slot).
     static Block* blockOf(const CommandHeader* h){Block* b=nullptr;if(h->flags&kFlagBlock)std::memcpy(&b,h+1,sizeof b);return b;}
     static const unsigned char* payload(const CommandHeader* h){return reinterpret_cast<const unsigned char*>(h+1)+((h->flags&kFlagBlock)?kBlockSlot:0);}

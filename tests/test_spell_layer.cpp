@@ -215,6 +215,27 @@ static void testFrameState(){
     s.begin(true,true);CHECK(s.mode()==Mode::Cooldown);s.begin(true,true);CHECK(s.mode()==Mode::Cooldown);s.begin(true,false);CHECK(s.mode()==Mode::Armed);
     s.fallback(true);s.begin(true,true);CHECK(s.mode()==Mode::Cooldown&&s.cooldownLeft()==kCooldownFrames); // pressure does not count the cooldown down
     s.begin(false,false);CHECK(s.mode()==Mode::Off);
+    auto waitCooldown=[&](unsigned frames){
+        s.begin(true,true);
+        CHECK(s.mode()==Mode::Cooldown&&s.cooldownLeft()==frames);
+        for(unsigned left=frames;left>0;--left){
+            s.begin(true,false);
+            CHECK(s.mode()==Mode::Cooldown&&s.cooldownLeft()==left-1);
+        }
+        s.begin(true,false);CHECK(s.mode()==Mode::Armed);
+    };
+    s.begin(true,false);
+    for(unsigned frames:{kCooldownFrames,2*kCooldownFrames,kMaxCapacityCooldownFrames,kMaxCapacityCooldownFrames}){
+        s.deferred();s.fallback(true,Reason::Capacity);
+        s.close(); // The effects boundary after an overflow does not shorten the cooldown.
+        waitCooldown(frames);
+    }
+    s.deferred();s.close();s.begin(true,false);
+    s.fallback(true,Reason::Capacity);waitCooldown(kCooldownFrames);
+    s.fallback(true,Reason::BufWrite);waitCooldown(kCooldownFrames);
+    s.fallback(true,Reason::Capacity);waitCooldown(kCooldownFrames);
+    s.fallback(true,Reason::Capacity);s.reset();s.begin(true,false);CHECK(s.mode()==Mode::Armed);
+    s.fallback(true,Reason::Capacity);waitCooldown(kCooldownFrames);
     Counters a,b;a.deferred[1]=2;a.hazards[3]=1;a.arenaHigh=5;a.conflictBytes=7;b.deferred[1]=1;b.arenaHigh=9;a.add(b);
     CHECK(a.deferred[1]==3&&a.totalDeferred()==3&&a.totalHazards()==1&&a.arenaHigh==9&&a.conflictBytes==7);
 }
@@ -863,6 +884,11 @@ static void testCapacity(){
     CHECK(p.lay->deferredTags==std::vector<int>({1,2,3,4}));
     CHECK(c.hazards[unsigned(Reason::Capacity)]==1&&c.totalHazards()==1&&c.flushes==1&&c.replayedDraws==4);
     checkEquivalent(p);CHECK(p.lay->order()==p.ref->order());                 // 1-4 flushed at the 5th, 5 and 6 in place, all before the effects
+    Layer& layer=p.lay->layer;
+    for(unsigned i=0;i<kCooldownFrames;++i){layer.beginFrame(false);CHECK(layer.mode()==Mode::Cooldown);}
+    layer.beginFrame(false);CHECK(layer.armed());
+    sCapacity(*p.lay);CHECK(layer.frameCounters().hazards[unsigned(Reason::Capacity)]==1);
+    layer.beginFrame(false);CHECK(layer.mode()==Mode::Cooldown&&layer.cooldownLeft()==2*kCooldownFrames-1);
     Opts a;a.arena=128;                                                       // UP bytes: 64 per quad
     Pair u=runBoth([](Rig& r){for(int i=0;i<3;++i){uint8_t v[64];const Bytes b2=Rig::quad(i+1);std::memcpy(v,b2.data(),64);r.issue(DrawArgs::primitiveUP(D3DPT_TRIANGLESTRIP,2,v,16));}r.boundary();},a);
     CHECK(u.lay->deferredTags.size()==2&&u.lay->layer.totalCounters().hazards[unsigned(Reason::Capacity)]==1);checkEquivalent(u);CHECK(u.lay->order()==u.ref->order());
@@ -2228,7 +2254,7 @@ static void testMinimalFallback(){
     for(auto sc:{sGetFails,sGetSamplerFails,sGetStreamFails,sGetLightFails}){
         Opts o;Pair p=runBoth(sc,o);const Counters& c=p.lay->layer.totalCounters();
         CHECK(c.restoreFallbacks==(gMinimal?1u:0u)&&c.replayedDraws==c.recorded&&c.recorded>=1&&c.replaySkipped==0&&c.restoreSets==0);
-        CHECK(p.lay->dev.blocksCreated>=1&&p.lay->dev.applies==1&&p.lay->dev.captures==0);
+        CHECK(p.lay->dev.blocksCreated>=1&&p.lay->dev.applies==1&&p.lay->dev.captures==1);
         checkEquivalent(p);
     }
     // with no failing Get the same scenario never touches a state block

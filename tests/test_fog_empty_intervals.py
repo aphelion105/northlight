@@ -2,8 +2,11 @@
 import math
 import random
 from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from scripts.shaders.shader_sources import world_source_text
 
-shader = (Path(__file__).resolve().parents[1] / 'shaders/world_effects.hlsl').read_text()
+shader = world_source_text(Path(__file__).resolve().parents[1] / 'shaders/world_effects.hlsl')
 assert shader.count('[branch]if(surface<=max(FogRange.x,0))return float4(0,0,0,1);') == 3  # Regional, clouds and the optional moon-floor volume.
 
 rng = random.Random(21)

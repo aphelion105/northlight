@@ -63,6 +63,13 @@ inline const char* install(HMODULE image=GetModuleHandleW(nullptr)){
     if(!VirtualProtect(thunk,sizeof Selection,PAGE_EXECUTE_READ,&ignored)||!FlushInstructionCache(GetCurrentProcess(),thunk,sizeof Selection)){
         VirtualFree(thunk,0,MEM_RELEASE);return "thunk-publication-failed";
     }
+    // WoW unloads its video-probe DLL before opening the real device. The
+    // published thunk writes to this module's observation for the life of WoW.
+    HMODULE owner=nullptr;
+    if(!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_PIN,
+                           reinterpret_cast<LPCWSTR>(&NorthlightMenu::observation),&owner)){
+        VirtualFree(thunk,0,MEM_RELEASE);return "observer-module-pin-failed";
+    }
     PausedThreads threads;
     if(const auto* error=threads.pause(base+SetupRva,SetupSize)){VirtualFree(thunk,0,MEM_RELEASE);return error;}
     unsigned char current[SetupSize];

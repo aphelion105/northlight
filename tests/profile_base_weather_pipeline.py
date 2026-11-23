@@ -1,10 +1,13 @@
 # northlight-test: requires=windows-gpu,zig manual timing
 """Measure the production base WorldRenderer on frozen inputs; no release DLL or game launch."""
+
+from source_units import source_text
 from pathlib import Path
 import argparse,hashlib,json,os,re,shutil,statistics,subprocess,sys
 ROOT=Path(__file__).resolve().parents[1]
 sys.path[:0]=[str(ROOT),str(ROOT/'tests'),str(ROOT/'scripts')]
 import northlight_paths as fp
+from scripts.shaders.shader_sources import world_source_bytes
 from windows_gpu_guard import processes
 from build_renderer import source_identity
 
@@ -24,7 +27,7 @@ def main():
  processes();out=a.output.resolve();out.mkdir(parents=True,exist_ok=False)
  if a.base_composite:
   manifest=json.loads((ROOT/'shaders/world-shader-build.json').read_text())
-  assert manifest['shaders']['WorldBaseCompositeHdr']['source_sha256']==hashlib.sha256((ROOT/'shaders/world_effects.hlsl').read_bytes()).hexdigest(),'Recompile WorldBaseCompositeHdr before profiling the changed source'
+  assert manifest['shaders']['WorldBaseCompositeHdr']['source_sha256']==hashlib.sha256(world_source_bytes(ROOT/'shaders/world_effects.hlsl')).hexdigest(),'Recompile WorldBaseCompositeHdr before profiling the changed source'
  if a.compare_current:
   if not a.world_header:p.error('--compare-current requires --world-header')
   identity=source_identity(ROOT);reports={}
@@ -73,7 +76,7 @@ def main():
  world=world.replace(marker,marker+'if(profile)profile->mark("WorldStateCapture");')
  (overlay/'world_renderer.h').write_bytes(world.encode())
  if not caller_state_api:
-  proxy=(ROOT/'src/proxy/renderer.cpp').read_text();marker='inlineHdrBase&&hdrSkyValid,!contactAO,&saved);';assert proxy.count(marker)==1
+  proxy=source_text(ROOT/'src/proxy/renderer.cpp');marker='inlineHdrBase&&hdrSkyValid,!contactAO,&saved);';assert proxy.count(marker)==1
   (overlay/'renderer.cpp').write_bytes(proxy.replace(marker,'inlineHdrBase&&hdrSkyValid,!contactAO);').encode())
  sources=['world_gi.cpp','world_mesh_plan.cpp','static_shadow_scene.cpp','settings_overlay.cpp','settings_panel.cpp','imgui.cpp','imgui_draw.cpp','imgui_tables.cpp','imgui_widgets.cpp','imgui_impl_dx9.cpp']
  exe=out/'base-weather.exe';env={k:v for k,v in fp.zig_env().items() if not k.startswith(('NORTHLIGHT_','DXVK_'))}
@@ -95,7 +98,7 @@ def main():
  def run(label,cmd):
   processes();r=subprocess.run(list(map(str,cmd)),cwd=out,env=env,capture_output=True,text=True,timeout=300);(out/(label+'.log')).write_bytes((r.stdout+r.stderr).encode());print(label,r.returncode,flush=True);r.check_returncode();return r.stdout
  try:
-  run('compile',[fp.zig(),'c++','-target','x86-windows-gnu','-O2','-UNDEBUG','-std=c++17','-Wno-microsoft-exception-spec','-DIMGUI_USER_CONFIG="northlight_imconfig.h"',*(['-DNORTHLIGHT_TEST_WORLD_ENCLOSING_STATE'] if caller_state_api else []),*(['-DNORTHLIGHT_AO_BASE_TEST'] if 'hdrAOBasePS' in world else []),'-I'+str(overlay),*fp.test_include_flags(),ROOT/'tests/base_weather_pipeline_gpu.cpp',*(fp.src(name) for name in sources),'-luser32','-luuid','-o',exe])
+  run('compile',[fp.zig(),'c++','-target','x86-windows-gnu','-O2','-UNDEBUG','-std=c++17','-Wno-microsoft-exception-spec','-DIMGUI_USER_CONFIG="northlight_imconfig.h"',*(['-DNORTHLIGHT_TEST_WORLD_ENCLOSING_STATE'] if caller_state_api else []),*(['-DNORTHLIGHT_AO_BASE_TEST'] if 'hdrAOBasePS' in world or 'NorthlightWorldComposite composite' in world else []),'-I'+str(overlay),*fp.test_include_flags(),ROOT/'tests/base_weather_pipeline_gpu.cpp',*(fp.src(name) for name in sources),'-luser32','-luuid','-o',exe])
   settings=out/'settings';settings.mkdir();(settings/'northlight-renderer.ini').write_bytes(b'[Renderer]\nSettingsOverlay=0\nExperimentalHDR=0\n')
   text=run('baseline',[exe,a.backend.resolve(),settings,a.capture/'capture-1-scene.fgr',a.capture/'capture-1-depth.fgr',a.capture/'capture-1-constants.f32',out/'baseline-output'])
   assert 'BASE_WEATHER_PROFILE_PASS' in text

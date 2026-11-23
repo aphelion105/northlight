@@ -19,6 +19,7 @@ import sys
 sys.path[:0] = [str(Path(__file__).resolve().parents[1]),
                str(Path(__file__).resolve().parents[1] / 'scripts/shaders')]
 import northlight_paths as fp
+from scripts.shaders.shader_sources import world_source_at_ref, world_source_bytes, world_source_text
 from shader_compiler import Compiler, validate_assembly
 
 
@@ -81,8 +82,8 @@ def main():
             folder = output / variant
             folder.mkdir(exist_ok=True)
             for name in ('world_effects.hlsl', 'auto_bump_normal.hlsl'):
-                data = (subprocess.check_output(['git', 'show', f'{args.baseline_ref}:shaders/{name}'], cwd=fp.REPO)
-                        if variant == 'old' else (fp.SHADERS / name).read_bytes())
+                data = (world_source_at_ref(fp.REPO, args.baseline_ref, name)
+                        if variant == 'old' else world_source_bytes(fp.SHADERS / name))
                 (folder / name).write_bytes(data)
             for entry in ('WorldFog', 'WorldFogActor', 'FogClouds', 'FogCloudsActor'):
                 binary = folder / (entry + '.bin')
@@ -97,7 +98,7 @@ def main():
                 assert old['instructions'].get(opcode, 0) == new['instructions'].get(opcode, 0)
             if not entry.endswith('Actor'):
                 assert old['sha256'] == new['sha256'], 'Non-actor bytecode changed'
-        source = (fp.SHADERS / 'world_effects.hlsl').read_text()
+        source = world_source_text(fp.SHADERS / 'world_effects.hlsl')
         helper = source[source.index('sampler2D FogActorMap'):source.index('\nfloat2 probeUV')]
         condition = 'actorIntegration&&FogActorInfo.x>0&&visibility>0'
         assert source.count('if(' + condition + ')') == 2
@@ -135,8 +136,8 @@ float4 WorldFog(float2 uv:TEXCOORD0):COLOR0{
     report['source_sha256'] = {}
     for variant in ('old', 'new'):
         for name in ('world_effects.hlsl', 'auto_bump_normal.hlsl'):
-            expected = (subprocess.check_output(['git', 'show', f'{args.baseline_ref}:shaders/{name}'], cwd=fp.REPO)
-                        if variant == 'old' else (fp.SHADERS / name).read_bytes())
+            expected = (world_source_at_ref(fp.REPO, args.baseline_ref, name)
+                        if variant == 'old' else world_source_bytes(fp.SHADERS / name))
             assert (output / variant / name).read_bytes() == expected, 'Stale compiled source: ' + variant + '/' + name
             report['source_sha256'][variant + '/' + name] = hashlib.sha256(expected).hexdigest()
         for entry in ('WorldFog', 'WorldFogActor', 'FogClouds', 'FogCloudsActor'):

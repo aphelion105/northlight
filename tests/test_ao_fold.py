@@ -10,8 +10,11 @@ with a neutral (0,0,0,1) s10. A folded frame the world did not composite gets th
 composite afterwards. Float64 emulation plus a source/assembly audit; no game, Wine or GPU.
 Writes ao-fold-validation.json.
 """
+
+from source_units import source_text
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp; fp.use_source_modules()
+from scripts.shaders.shader_sources import world_source_text
 from shader_compiler import instructions
 import json
 import math
@@ -19,8 +22,8 @@ import random
 import re
 
 effects = fp.src('effects.hlsl').read_text()
-world = fp.src('world_effects.hlsl').read_text()
-renderer = fp.src('renderer.cpp').read_text()
+world = world_source_text(fp.src('world_effects.hlsl'))
+renderer = source_text(fp.src('renderer.cpp'))
 wr = fp.src('world_renderer.h').read_text()
 checks = {}
 rng = random.Random(174)
@@ -144,6 +147,7 @@ def function_text(text, signature):
 
 # 4. wiring
 effects_cpp = function_text(renderer, '    void renderEffects() {')
+contact_cpp = fp.src('contact_ao_pass.h').read_text()
 fold_line = 'const bool fold=world&&debugMode==0&&world->screenReady();'
 legacy_before = 'if(!fold&&!legacyComposite())return;'
 render_call = 'world->render(outputTarget,depthTex,width,height,sceneFormat,nearZ,farZ,worldMinDepth,worldMaxDepth,worldDebug,gpuProfile.get(),waterMask,fold?scene:nullptr,fold&&!neutralAOPending?ao:nullptr,frame,'
@@ -151,10 +155,10 @@ legacy_after = 'if(fold&&!world->composited){'
 checks['proxy: FOLD condition, legacy composite before render only when not folding, after it only if not composited'] = (
     all(effects_cpp.count(s) == 1 for s in (fold_line, legacy_before, render_call, legacy_after))
     and 'if(neutralAOPending&&!clearNeutralAO())return;\n                bindEffects(ao);if(!legacyComposite())return;' in effects_cpp.split(legacy_after,1)[1]
-    and effects_cpp.index(fold_line) < effects_cpp.index('gpuProfile->mark("AO");') < effects_cpp.index(legacy_before)
+    and effects_cpp.index(fold_line) < effects_cpp.index('NorthlightContactAO::render<CpuScope>') < effects_cpp.index(legacy_before)
     < effects_cpp.index(render_call) < effects_cpp.index(legacy_after) < effects_cpp.index('celestialDiscs->renderVeil(')
-    and 'contactShader=aoActorUsed?(alphaOnly?aoActorAlphaPS:aoActorPS):(alphaOnly?aoOnlyPS:aoContactBloomPS);' in effects_cpp
-    and 'ext->SetPixelShader(linearHdr||constants[7]==0.f?contactShader:aoPS);' in effects_cpp)
+    and 'contactShader=aoActorUsed?actor.contact:(alphaOnly?aoOnlyPS:aoContactBloomPS);' in contact_cpp
+    and 'ext->SetPixelShader(linearHdr||bounce==0.f?contactShader:aoPS);' in contact_cpp)
 checks['menu: proven scene context uses the shared pipeline; screen-only fallback has no guessed colour bounce'] = (
     'if(world&&debugMode==0)' in effects_cpp and
     '(menuScene||(world&&world->screenReady())?0.f:.12f)' in effects_cpp and
@@ -166,18 +170,26 @@ checks['proxy: one shared effect-state setup, used before the AO pass and before
     and 'D3DRS_MULTISAMPLEANTIALIAS,TRUE' in function_text(renderer, '    void effectState() {')
     and 'kAoContactBloomShader' in renderer and 'kAoContactShader' not in renderer)
 render_fn = wr[wr.index('    bool render(IDirect3DSurface9* targetSurface'):]
-temporal = render_fn[render_fn.index('{   // Temporal stabilization'):render_fn.index('temporalIndex=prev;temporalValid=true;')]
+compositor = fp.src('world_composite.h').read_text()
+screen_lighting = fp.src('world_screen_lighting.h').read_text()
+temporal = function_text(fp.src('world_light_history.h').read_text(), 'bool resolveLighting(')
 checks['world: copy skipped only with foldScene, Scene s0 = foldScene, s10 = AO or neutral LINEAR before the temporal quad'] = (
-    'if(!foldScene&&!check(d->StretchRect(targetSurface,nullptr,colorSurface,nullptr,D3DTEXF_NONE),"world color copy"))return false;' in render_fn
-    and 'IDirect3DTexture9* textures[]={foldScene?foldScene:color,' in render_fn
-    and temporal.count('d->SetTexture(10,foldAO?foldAO:neutralAO);d->SetSamplerState(10,D3DSAMP_MINFILTER,D3DTEXF_LINEAR);d->SetSamplerState(10,D3DSAMP_MAGFILTER,D3DTEXF_LINEAR);') == 1
-    and temporal.index('SetTexture(10,') < temporal.index('quad(w/2,h/2,false),"temporal light pass"')
-    and 'd->SetTexture(10,foldAO?foldAO:neutralAO);' in render_fn[render_fn.index('}else{\n            temporalValid=false;'):render_fn.index('"world composite"')])
+    'if(!foldedScene&&!check(d->StretchRect(target,nullptr,colorSurface_,nullptr,D3DTEXF_NONE),"world color copy"))return false;' in compositor
+    and render_fn.index('prepareWorldShadowState();')<render_fn.index('renderDirectional(')<render_fn.index('composite.prepareScreenInput(d,targetSurface,foldScene!=nullptr,')<render_fn.index('publishFrameShaderBank(')
+    and 'IDirect3DTexture9* textures[]={foldScene?foldScene:composite.scratchTexture(),' in render_fn
+    and 'screenLighting.raw().texture,foldAO?foldAO:screenFallbacks.ao(),fogScreen.scratch().texture' in render_fn
+    and temporal.count('d->SetTexture(10,in.ao);d->SetSamplerState(10,D3DSAMP_MINFILTER,D3DTEXF_LINEAR);d->SetSamplerState(10,D3DSAMP_MAGFILTER,D3DTEXF_LINEAR);') == 1
+    and temporal.index('SetTexture(10,') < temporal.index('NorthlightScreen::drawQuad(d,width,height),"temporal light pass"')
+    and 'screenLighting.bindDistanceOnly(d,screenFallbacks.zero(),foldAO?foldAO:screenFallbacks.ao(),c[19][3]);' in render_fn[render_fn.index('history.resolveDistance('):render_fn.index('if(!renderLocalLighting(')]
+    and 'd->SetTexture(10,ao);' in screen_lighting)
 checks['world: composited cleared at entry, set right after the WorldComposite quad; neutral 1x1 (0,0,0,1) created and released'] = (
     'shadowsComposited=false;composited=false;lastRenderDebug=debug;' in render_fn
-    and 'compositeOk=check(quad(w,h),"world composite");' in render_fn and render_fn.index('compositeOk=check(quad(w,h),"world composite");')<render_fn.index('if(!compositeOk)return false;') < render_fn.index('composited=true;') # 0.3.212: the quad inside the name mask's composite bind
-    and 'CreateTexture(1,1,1,0,D3DFMT_A8R8G8B8,D3DPOOL_MANAGED,&neutralAO,nullptr)' in fp.src('world_screen_resources.inl').read_text()
-    and '*static_cast<DWORD*>(lock.pBits)=0xff000000u;' in fp.src('world_screen_resources.inl').read_text() and 'drop(neutralAO);' in wr)
+    and 'ok=check(quad(),"world composite");' in compositor
+    and render_fn.index('composite.draw(')<render_fn.index('if(!composition.ok)return false;')<render_fn.index('composited=true;')
+    and 'CreateTexture(1,1,1,0,D3DFMT_A8R8G8B8,D3DPOOL_MANAGED,&texture,nullptr)' in fp.src('world_screen_fallbacks.h').read_text()
+    and 'solid(d,ao_,0xff000000u,' in fp.src('world_screen_fallbacks.h').read_text()
+    and 'releaseScreenFallbacks();' in wr and 'screenFallbacks.releaseScreen();' in fp.src('world_screen_resources.inl').read_text()
+    and 'releaseScreen(){drop(ao_);' in fp.src('world_screen_fallbacks.h').read_text())
 checks['diagnostic capture: the folded scene dump is labelled pre-AO'] = 'foldScene?"pre-AO (folded AO/bloom)":"post-AO composite"' in wr
 
 # 5. shaders: WorldComposite folds, smoothRemoval reads the AO, removalScale has no floor
@@ -199,12 +211,13 @@ checks['smoothRemoval: centre and both compile-time tap variants multiply Scene 
     and 'if(skipZeroTaps){' in world and '[branch]if(w>0)' in world and '[flatten]if(w>0)' in world
     and 'return max(legacyT*max(baseline,.15),scene-min(fog,scene));' in world and '.0001));' not in world[world.index('float3 removalScale('):world.index('float3 smoothRemoval(')])
 wm = json.loads(fp.src('world-shader-build.json').read_text())['shaders']
-# 0.3.185: the removal smoothing (Scene, AO, baseline reads) moved to RemovalSmooth; TemporalLight keeps no s0/s10/s12 read and gains s9.
+# RemovalSmooth owns the scene and AO reads. TemporalLight also samples the
+# receiver baseline and water mask for the local GI crease filter.
 checks[f"WorldComposite and RemovalSmooth fit SM3 with AO, TemporalLight uses {wm['TemporalLight']['static_instruction_slots']} slots"] = (
     wm['WorldComposite']['static_instruction_slots'] <= 512 and wm['WorldComposite']['samplers'] == [0, 1, 2, 3, 7, 8, 9, 10, 11, 12, 13]  # Current scene depth replaces the lighting-distance dependency on s15.
     and wm['RemovalSmooth']['static_instruction_slots'] <= 512 and wm['RemovalSmooth']['samplers'] == [0, 1, 8, 10, 12, 14, 15]
-    and wm['TemporalLight']['static_instruction_slots'] <= 215 and  # Includes the full-shadow history gate.
-    wm['TemporalLight']['samplers'] == [1, 8, 9, 14, 15])
+    and wm['TemporalLight']['static_instruction_slots'] <= 400 and
+    wm['TemporalLight']['samplers'] == [1, 8, 9, 11, 12, 14, 15])
 
 # 6. no new key
 config = [fp.src('quality_settings.h').read_text(), fp.src('windows-package/northlight-quality.ini').read_text(),

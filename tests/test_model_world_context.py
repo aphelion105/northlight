@@ -31,6 +31,7 @@ def method(file, signature):
 MODEL = method('src/world/world_renderer.h', 'bool modelContext(')
 MENU = method('src/world/world_renderer.h', 'bool menuContext(')
 BEFORE = method('src/proxy/renderer.cpp', 'void beforeDraw(')
+TERRAIN_DEPTH = method('src/proxy/renderer.cpp', 'void beginTerrainDepth(')
 PROJECTION = method('src/proxy/renderer.cpp', 'bool readProjection(')
 assert 'metadata.fog=NorthlightSpellFog::vsFogProven' in (ROOT / 'src/world/world_renderer.h').read_text()
 
@@ -46,9 +47,13 @@ HARNESS = r'''
 #include "world_camera.h"
 #include "wmo_context.h"
 #include "world_draw_domain.h"
+#include "draw_world_state.h"
 #include "ui_boundary.h"
 void logf(const char*,...){}
 namespace NorthlightDiagnostics {bool enabled(){return false;}}
+namespace NorthlightDrawSnapshot {
+template<class T>struct Ref {T* p=nullptr;~Ref(){if(p)p->Release();}};
+}
 template<class T>void drop(T*& p){p=nullptr;}
 bool cameraOK=true,lightOK=true,contextOK=true;
 float angle=0;
@@ -77,6 +82,7 @@ struct Ext {
     HRESULT GetViewport(D3DVIEWPORT9* p){*p=vp;return S_OK;}
     HRESULT GetRenderState(D3DRENDERSTATETYPE t,DWORD* p){*p=t==D3DRS_ZENABLE?z:t==D3DRS_ZFUNC?zf:0;return states?S_OK:E_FAIL;}
     bool peekPixelShader(IDirect3DPixelShader9*& p){p=nullptr;return true;}
+    bool peekRenderTarget(DWORD,IDirect3DSurface9*&){return false;}
     HRESULT GetPixelShader(IDirect3DPixelShader9** p){*p=nullptr;return E_FAIL;}
 };
 struct World {
@@ -115,6 +121,19 @@ struct Device {
     struct Counts{unsigned wmo=0,fullPasses=0;} gateCounts;
     bool gateFrame=false,projectionValid=false,terrain=false,captured=false,drawWaterVS=false,drawUiHashVS=false;
     bool viewportOK=true,depthOK=true,hashBoundaryThisFrame=false,zFuncAware=true;
+    bool worldDepthDescKnown=false;
+    IDirect3DSurface9* worldDepth=nullptr;
+    NorthlightDrawPreparation::TerrainAdmission terrainAdmission;
+    NorthlightDrawSnapshot::Ref<IDirect3DSurface9> terrainAdmissionTarget;
+    struct {
+        unsigned targetWrites=0,viewportWrites=0;
+        bool targetKnown[1]{},depthKnown=false,viewportKnown=false;
+        IDirect3DSurface9* targets[1]{};
+        IDirect3DSurface9* depth=nullptr;
+        D3DVIEWPORT9 viewport{};
+        const float* projection=nullptr;
+        const float* borrowKnownVertexFloats(unsigned,unsigned) const{return projection;}
+    } mirrorState;
     bool skySeen=false,applied=false,hdrAtUiBoundary=false,menuScene=false;
     bool ortho=false,uiInputs=false,backTarget=true;struct {bool active=false;} hdr;
     bool orthographicUiGeometry(){return ortho;}bool hdrUiInputs(){return uiInputs;}
@@ -132,11 +151,12 @@ struct Device {
     bool uiTextVs(IDirect3DVertexShader9*,int){return false;}
     bool fullViewport(D3DSURFACE_DESC& d,D3DVIEWPORT9* p=nullptr,bool=false){d.Width=1920;d.Height=1080;d.Format=D3DFMT_A8R8G8B8;if(p)*p=state.vp;return viewportOK;}
     bool bindWorldDepth(const D3DSURFACE_DESC&){++binds;return depthOK;}
-    void resources(UINT,UINT,D3DFORMAT){++allocations;}
+    bool resources(UINT,UINT,D3DFORMAT){++allocations;return true;}
     void uiFallbackDraw(const VsClass&,IDirect3DVertexShader9*){}
     unsigned effects=0,spells=0;
     bool sampled(){return false;}void renderEffects(){++effects;applied=true;}void spellReplay(){++spells;}
 __PROJECTION__
+__TERRAIN_DEPTH__
 __BEFORE__
 };
 int main(){
@@ -220,6 +240,20 @@ int main(){
     for(int tag:{1,0}){Device p;p.vc.entry=tag;p.vc.wmo=tag==0;p.vc.skinned=false;p.beforeDraw(shader);assert(p.terrain&&p.projectionValid);++cases;}
     for(bool on:{false,true}){Device p;p.aoActorOn=on;p.captured=true;p.vc.entry=1;p.vc.skinned=false;
         p.beforeDraw(shader);assert(p.terrain&&!p.captured&&p.actorAO.resumes==unsigned(on));++cases;}
+    {Device p;p.vc.entry=1;p.vc.skinned=false;p.terrain=p.projectionValid=true;
+        p.world->valid=p.world->legacyFogKnown=true;
+        p.captured=p.aoActorOn=p.earlyDepth.earlyCaptured=true;
+        p.terrainAdmission.target=p.mirrorState.targets[0]=reinterpret_cast<IDirect3DSurface9*>(1);
+        p.terrainAdmission.depth=p.mirrorState.depth=p.worldDepth=reinterpret_cast<IDirect3DSurface9*>(2);
+        p.worldDepthDescKnown=p.mirrorState.targetKnown[0]=p.mirrorState.depthKnown=p.mirrorState.viewportKnown=true;
+        p.terrainAdmission.viewport=p.mirrorState.viewport=p.state.vp;
+        std::copy_n(p.state.rows,16,p.terrainAdmission.projection);
+        p.mirrorState.projection=p.state.rows;
+        p.beforeDraw(shader);
+        assert(!p.binds&&!p.allocations&&!p.captured&&p.earlyResolveUndone==1&&p.actorAO.resumes==1);
+        p.state.rows[0]=1.3f;
+        p.beforeDraw(shader);assert(p.binds==1&&p.allocations==1&&p.scaleX==1.3f);++cases;
+    }
     std::printf("production context/gate: %u cases passed; no terrain dependency; sky/UI/bad camera rejected\n",cases);
 }
 '''
@@ -230,7 +264,8 @@ if __name__ == '__main__':
     compiler = [zig, 'c++', '-target', 'x86-windows-gnu'] if zig else shlex.split(os.environ.get('CXX', 'c++'))
     with tempfile.TemporaryDirectory(prefix='model-context-', dir=fp.output_dir()) as tmp:
         source = Path(tmp) / 'test.cpp'
-        source.write_text(HARNESS.replace('__MODEL__', MODEL).replace('__MENU__', MENU).replace('__BEFORE__', BEFORE).replace('__PROJECTION__', PROJECTION))
+        source.write_text(HARNESS.replace('__MODEL__', MODEL).replace('__MENU__', MENU).replace('__BEFORE__', BEFORE)
+                          .replace('__PROJECTION__', PROJECTION).replace('__TERRAIN_DEPTH__', TERRAIN_DEPTH))
         binary = Path(tmp) / ('test.exe' if os.name == 'nt' else 'test')
         subprocess.run([*compiler, '-std=c++17', '-O2', '-UNDEBUG', *includes, str(source), '-luser32', '-o', str(binary)], check=True)
         subprocess.run([str(binary)], check=True)

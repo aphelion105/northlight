@@ -54,19 +54,19 @@
           dcl_2d s1
           dcl_2d s2
           dcl_2d s3
-   0:     mov r0.xy, c0
-   1:     mul r0.x, r0.x, c22.y
-   2:     rcp r0.z, r0.x
-   3:     add r0.x, r0.x, c7.y
-   4:     cmp r0.x, r0.x, r0.z, c7.x
-   5:     mov r0.z, -v4.w
-   6:     add r1.x, r0.z, c22.y
-   7:     mul_sat r0.x, r0.x, r1.x
-   8:     rcp r1.x, c21.x
-   9:     rcp r1.y, c21.y
-  10:     mul r1.xy, r1, v4
-  11:     add r2, r0.z, c20.y
-  12:     texkill r2
+   0:     mov r0.z, -v4.w
+   1:     add r1, r0.z, c20.y
+   2:     texkill r1
+   3:     mov r0.xy, c0
+   4:     mul r0.x, r0.x, c22.y
+   5:     rcp r1.x, r0.x
+   6:     add r0.x, r0.x, c7.y
+   7:     cmp r0.x, r0.x, r1.x, c7.x
+   8:     add r1.x, r0.z, c22.y
+   9:     mul_sat r0.x, r0.x, r1.x
+  10:     rcp r1.x, c21.x
+  11:     rcp r1.y, c21.y
+  12:     mul r1.xy, r1, v4
   13:     mul r1.z, c21.z, v4.w
   14:     dsy r2.xy, v0
   16:     dp2add r1.w, r2, r2, c0.y
@@ -448,38 +448,40 @@
  457:     mul r1.xyz, r0.y, r1
  458:     mul r2.xyz, r0.y, r2
  459:     dp3 r1.w, r2, r1
- 460:     add r2.w, c2.w, v5.x
- 461:     frc r3.x, r2.w
- 462:     add r2.w, r2.w, -r3.x
- 463:     add r8.z, r2.w, c25.z
- 464:     mov r8.w, c7.x
- 465:     mov oC2, r8
- 466:     mov oC3.xy, r6
- 467:     mul r0.y, r0.y, r1.w
- 468:     cmp r3.z, r1.w, r0.y, c0.y
- 469:     add r0.y, r2.z, c7.x
- 470:     rcp r1.w, r0.y
- 471:     add r0.y, r0.y, c6.z
- 472:     cmp r0.y, r0.y, r1.w, c6.w
- 473:     add r1.xyz, r1, -r2
- 474:     dp2add r1.w, r2, r1, c0.y
- 476:     mad r0.y, r1.w, r0.y, r1.z
- 477:     mad r3.xy, -r2, r0.y, r1
- 478:     dp3 r0.y, r3_abs, c7.x
- 479:     rcp r1.x, r0.y
- 480:     add r0.y, r0.y, c3.y
- 481:     cmp r0.y, r0.y, r1.x, c3.z
- 482:     mul r1.xyz, r0.y, r3
- 483:     add r2.xy, -r1_abs.yxzw, c7.x
- 484:     cmp r2.zw, r1.xyxy, c7.x, c7.y
- 485:     mul r2.xy, r2.zwzw, r2
- 486:     cmp r1.xy, r1.z, r1, r2
- 487:     mul r1.xy, r1, c2.w
- 488:     add oC0.xy, r1, c2.w
- 489:     mad_sat r0.w, r0.x, v2.w, c20.w
- 490:     mov oC0.zw, r0
- 491:     mov oC1.w, r0.w
- 492:     mov oC3.zw, c1.xyyx
+ 460:     mad_sat r0.w, r0.x, v2.w, c20.w
+ 461:     mov oC0.zw, r0
+ 462:     mov oC1.w, r0.w
+ 463:     add r0.x, c2.w, v5.x
+ 464:     frc r0.z, r0.x
+ 465:     add r0.x, -r0.z, r0.x
+ 466:     add r8.z, r0.x, c25.z
+ 467:     mov r8.w, c7.x
+ 468:     mov oC2, r8
+ 469:     mov oC3.xy, r6
+ 470:     mul r0.x, r0.y, r1.w
+ 471:     cmp r0.z, r1.w, r0.x, c0.y
+ 472:     add r0.w, r2.z, c7.x
+ 473:     rcp r1.w, r0.w
+ 474:     add r0.w, r0.w, c6.z
+ 475:     cmp r0.w, r0.w, r1.w, c6.w
+ 476:     add r1.xyz, r1, -r2
+ 477:     dp2add r1.w, r2, r1, c0.y
+ 479:     mad r0.w, r1.w, r0.w, r1.z
+ 480:     mad r0.xy, -r2, r0.w, r1
+ 481:     dp3 r0.w, r0_abs, c7.x
+ 482:     rcp r1.x, r0.w
+ 483:     add r0.w, r0.w, c3.y
+ 484:     cmp r0.w, r0.w, r1.x, c3.z
+ 485:     mul r0.xyz, r0.w, r0
+ 486:     add r1.xy, -r0_abs.yxzw, c7.x
+ 487:     cmp r1.zw, r0.xyxy, c7.x, c7.y
+ 488:     mul r1.xy, r1.zwzw, r1
+ 489:     cmp r0.xy, r0.z, r0, r1
+ 490:     mul r0.xy, r0, c2.w
+ 491:     add r0.xy, r0, c2.w
+ 492:     cmp oC0.y, c20.x, r0.y, -r0.y
+ 493:     mov oC0.x, r0.x
+ 494:     mov oC3.zw, c1.xyyx
 
-// approximately 505 instruction slots used (12 texture, 493 arithmetic)
+// approximately 507 instruction slots used (12 texture, 495 arithmetic)
  

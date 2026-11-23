@@ -16,3 +16,4 @@ for index,backend in enumerate(backends):
  env={**os.environ,'DXVK_LOG_PATH':str(out),'DISABLE_VULKAN_OBS_CAPTURE':'1'}
  p=subprocess.run([str(exe),str(backend),str(settings)+os.sep],cwd=out,env=env,capture_output=True,text=True,timeout=120)
  (out/f'gpu-{index}.log').write_text(p.stdout+p.stderr);print(p.stdout+p.stderr);assert p.returncode==0,p.returncode
+ assert 'POINT_STATIC_ALLOCATION_RECOVERY_PASS unpublished=1 exactFaces=6' in p.stdout

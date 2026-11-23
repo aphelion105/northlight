@@ -64,7 +64,7 @@ struct Mesh : Batcher {
         for(size_t i=0;i<batches.size();++i){const auto& b=batches[i];if(!b.terrain)continue;pointBatchMasks[i]=static_cast<unsigned char>(ready&&!nearby[i]?0:clip.mask(&b.boundsLow.x,&b.boundsHigh.x,true));}
         if(indexed){
             NorthlightPointMesh::classifyStatic(batches,pointSubBatches,pointSubRanges,&staticParents,ready?nearby.data():nullptr,63,pointBatchMasks,
-                [&](const Batch& b,unsigned faces){return clip.mask(&b.boundsLow.x,&b.boundsHigh.x,true,faces);},
+                [&](size_t,const Batch& b,unsigned faces){return clip.mask(&b.boundsLow.x,&b.boundsHigh.x,true,faces);},
                 [&](size_t i,unsigned mask){for(unsigned f=0;f<6;++f)if(mask&(1u<<f))candidates[f].push_back(i);});
         }else for(size_t i=0;i<batches.size();++i){const auto& b=batches[i];if(b.terrain)continue;const unsigned mask=clip.mask(&b.boundsLow.x,&b.boundsHigh.x,true);pointBatchMasks[i]=static_cast<unsigned char>(mask);
             const auto range=pointSubRanges.empty()?P::PointRange{}:pointSubRanges[i];

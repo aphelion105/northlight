@@ -329,6 +329,12 @@ static void constantBanks(){
  for(unsigned j=0;j<64;++j)integers[j]=int(rng());for(unsigned j=0;j<16;++j)bools[j]=j%3?7:0;
  assert(SUCCEEDED(game.SetVertexShaderConstantF(3,values,2)));unsigned reads=b.gets;assert(SUCCEEDED(ext.GetVertexShaderConstantF(3,out,2))&&b.gets==reads+1&&!std::memcmp(values,out,32));
  assert(SUCCEEDED(ext.GetVertexShaderConstantF(2,out,4))&&b.floatReadRegisters==6);cached(b,[&]{assert(SUCCEEDED(ext.GetVertexShaderConstantF(2,out,4)));});
+ assert(!m.borrowKnownVertexFloats(2,4));
+ {MirrorGuard held(m.gate);const auto* borrowed=m.borrowKnownVertexFloats(2,4);
+  assert(borrowed);
+  for(unsigned row=0;row<4;++row)assert(!std::memcmp(borrowed[row],out+4*row,sizeof borrowed[row]));
+  assert(!m.borrowKnownVertexFloats(1,5)&&!m.borrowKnownVertexFloats(255,2)&&!m.borrowKnownVertexFloats(2,0));
+  {ExtensionDevice::RawScope raw(ext);assert(!m.borrowKnownVertexFloats(2,4));}}
  assert(SUCCEEDED(game.SetVertexShaderConstantI(4,integers,2)));reads=b.gets;assert(SUCCEEDED(ext.GetVertexShaderConstantI(4,outi,2))&&b.gets==reads+1&&!std::memcmp(integers,outi,32));
  assert(SUCCEEDED(game.SetVertexShaderConstantB(1,bools,7)));reads=b.gets;assert(SUCCEEDED(ext.GetVertexShaderConstantB(1,outb,7))&&b.gets==reads+1);for(unsigned i=0;i<7;++i)assert(outb[i]==(bools[i]!=0));
  cached(b,[&]{assert(SUCCEEDED(ext.GetVertexShaderConstantB(1,outb,7)));});
@@ -924,9 +930,13 @@ static void writeThroughImplicitState(){
  IDirect3DVertexDeclaration9* gotDecl=nullptr;DWORD fvf=0;
  for(DWORD n=0;n<DeviceMirror::TrustAfter;++n){assert(SUCCEEDED(game.SetVertexDeclaration(dec)));assert(SUCCEEDED(ext.GetVertexDeclaration(&gotDecl))&&gotDecl==dec);gotDecl->Release();}
  assert(SUCCEEDED(game.SetVertexDeclaration(dec)));reads=b.gets;assert(SUCCEEDED(ext.GetVertexDeclaration(&gotDecl))&&gotDecl==dec&&b.gets==reads);gotDecl->Release();
- assert(SUCCEEDED(game.SetFVF(0x142)));reads=b.gets;assert(SUCCEEDED(ext.GetVertexDeclaration(&gotDecl))&&!gotDecl&&b.gets==reads+1);assert(SUCCEEDED(ext.GetFVF(&fvf))&&fvf==0x142);
+ const auto declarationRefs=dec->refs.load();
+ assert(ext.peekVertexDeclaration(gotDecl)&&gotDecl==dec&&dec->refs==declarationRefs&&b.gets==reads);
+ assert(SUCCEEDED(game.SetFVF(0x142))&&!ext.peekVertexDeclaration(gotDecl));reads=b.gets;
+ assert(SUCCEEDED(ext.GetVertexDeclaration(&gotDecl))&&!gotDecl&&b.gets==reads+1);assert(SUCCEEDED(ext.GetFVF(&fvf))&&fvf==0x142);
  assert(SUCCEEDED(game.SetVertexDeclaration(dec)));reads=b.gets;assert(SUCCEEDED(ext.GetFVF(&fvf))&&fvf==0&&b.gets==reads+1);
- assert(SUCCEEDED(game.SetVertexDeclaration(nullptr)));reads=b.gets;assert(SUCCEEDED(ext.GetVertexDeclaration(&gotDecl))&&!gotDecl&&b.gets==reads+1);
+ assert(SUCCEEDED(game.SetVertexDeclaration(nullptr))&&!ext.peekVertexDeclaration(gotDecl));reads=b.gets;
+ assert(SUCCEEDED(ext.GetVertexDeclaration(&gotDecl))&&!gotDecl&&b.gets==reads+1);
  // Streams: null keeps the backend's retained binding; UP draws unbind.
  IDirect3DVertexBuffer9* gotVB=nullptr;UINT offset=0,stride=0;
  for(UINT n=0;n<DeviceMirror::TrustAfter;++n){assert(SUCCEEDED(game.SetStreamSource(0,vb,n*4,32)));assert(SUCCEEDED(ext.GetStreamSource(0,&gotVB,&offset,&stride))&&gotVB==vb);gotVB->Release();}
@@ -1169,7 +1179,44 @@ static void auxiliaryTargetProofs(){
  assert(SUCCEEDED(b.SetRenderTarget(2,target)));assert(ext.audit()&&!m.enabled&&!ext.emptyAuxiliaryTargets());target->Release();primary->Release();
  std::printf("PASS auxiliary targets: 4500 repeated reads avoided; authoritative null/NOTFOUND; public outputs; binding/failed/null-retained setters; nested re-entry; raw/stateblock/reset/foreign/disabled invalidation\n");
 }
+static void particleDrawState(){
+ using namespace NorthlightParticleDraw;
+ using ParticleState=NorthlightParticleDraw::State;
+ using Shaders=ParticleState::Shaders;
+ Backend backend;DeviceMirror mirror;
+ MirrorDevice game(&backend,&mirror);ExtensionDevice ext(&backend,&mirror);
+ auto& state=mirror.particleDraw;
+ const unsigned alpha=blendSlot(D3DRS_ALPHABLENDENABLE),dst=blendSlot(D3DRS_DESTBLEND);
+ DWORD value=123;
+ assert(SUCCEEDED(game.SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE)));
+ assert(SUCCEEDED(ext.GetRenderState(D3DRS_ALPHABLENDENABLE,&value))&&!value&&state.rejectedBlend==alpha);
+ backend.callbackContext=&state;
+ backend.onRenderState=[](void* ctx){assert(static_cast<ParticleState*>(ctx)->writes==1);};
+ assert(SUCCEEDED(game.SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE))&&!state.writes&&!state.rejectedBlend);
+ assert(SUCCEEDED(ext.GetRenderState(D3DRS_ALPHABLENDENABLE,&value))&&value==TRUE);
+ assert(SUCCEEDED(game.SetRenderState(D3DRS_DESTBLEND,D3DBLEND_ZERO)));
+ assert(SUCCEEDED(ext.GetRenderState(D3DRS_DESTBLEND,&value))&&value==D3DBLEND_ZERO&&state.rejectedBlend==dst);
+ state.shaders=Shaders::Reject;
+ auto* shader=new Object<IDirect3DVertexShader9>;
+ assert(SUCCEEDED(game.SetVertexShader(shader))&&state.shaders==Shaders::Dirty);
+ state.shaders=Shaders::Reject;
+ IDirect3DVertexShader9* read=nullptr;
+ assert(SUCCEEDED(ext.GetVertexShader(&read))&&read==shader&&state.shaders==Shaders::Dirty);
+ read->Release();shader->Release();
+ assert(SUCCEEDED(game.SetVertexShader(nullptr)));
+ {ExtensionDevice::RawScope raw(ext);assert(!state.rejectedBlend&&state.shaders==Shaders::Dirty&&!mirror.active());}
+ assert(SUCCEEDED(ext.GetRenderState(D3DRS_DESTBLEND,&value))&&state.rejectedBlend==dst);
+ IDirect3DStateBlock9* block=nullptr;
+ assert(SUCCEEDED(game.BeginStateBlock())&&!state.rejectedBlend&&!mirror.active());
+ assert(SUCCEEDED(game.SetRenderState(D3DRS_DESTBLEND,D3DBLEND_ONE)));
+ assert(SUCCEEDED(game.EndStateBlock(&block))&&SUCCEEDED(block->Apply())&&!state.rejectedBlend);
+ block->Release();
+ assert(SUCCEEDED(ext.GetRenderState(D3DRS_DESTBLEND,&value))&&value==D3DBLEND_ONE);
+ D3DPRESENT_PARAMETERS pp{};
+ assert(SUCCEEDED(game.Reset(&pp))&&!state.rejectedBlend&&state.shaders==Shaders::Dirty);
+}
 static void captureDrawState(){
+ particleDrawState();
  Backend backend;DeviceMirror mirror;
  MirrorDevice game(&backend,&mirror);ExtensionDevice ext(&backend,&mirror);
  assert(game.SetNPatchMode(-1)==D3D_OK);

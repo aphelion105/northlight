@@ -4,6 +4,15 @@
 #include <numeric>
 struct TargetGpuMeter:ForwardIDirect3DDevice9 {
     unsigned binds=0,writes=0,constantReads=0,constantRegisters=0;explicit TargetGpuMeter(IDirect3DDevice9* d):ForwardIDirect3DDevice9(d){}
+    unsigned indexed=0,instanceFailures=0;bool failInstanceBind=false;
+    HRESULT STDMETHODCALLTYPE DrawIndexedPrimitive(D3DPRIMITIVETYPE type,INT base,UINT min,UINT vertices,UINT start,UINT count)override{
+        ++indexed;return real->DrawIndexedPrimitive(type,base,min,vertices,start,count);
+    }
+    HRESULT STDMETHODCALLTYPE SetStreamSourceFreq(UINT slot,UINT frequency)override{
+        const auto hr=real->SetStreamSourceFreq(slot,frequency);
+        if(failInstanceBind&&slot==0&&(frequency&D3DSTREAMSOURCE_INDEXEDDATA)){ok(hr);failInstanceBind=false;++instanceFailures;return E_FAIL;}
+        return hr;
+    }
     HRESULT STDMETHODCALLTYPE GetVertexShaderConstantF(UINT first,float* out,UINT count)override{++constantReads;constantRegisters+=count;return real->GetVertexShaderConstantF(first,out,count);}
     HRESULT STDMETHODCALLTYPE GetPixelShaderConstantF(UINT first,float* out,UINT count)override{++constantReads;constantRegisters+=count;return real->GetPixelShaderConstantF(first,out,count);}
     HRESULT STDMETHODCALLTYPE SetRenderTarget(DWORD n,IDirect3DSurface9* value)override{binds+=n==1;return real->SetRenderTarget(n,value);}
@@ -15,6 +24,9 @@ struct MaterialCaptureStateTestAccess {
         IDirect3DSurface9* staging=nullptr;ok(d->CreateOffscreenPlainSurface(width,height,format,D3DPOOL_SYSTEMMEM,&staging,nullptr));ok(d->GetRenderTargetData(target,staging));D3DLOCKED_RECT lock{};ok(staging->LockRect(&lock,nullptr,D3DLOCK_READONLY));
         std::vector<unsigned char> data(size_t(width)*height*bpp);for(unsigned y=0;y<height;++y)std::memcpy(data.data()+size_t(y)*width*bpp,static_cast<char*>(lock.pBits)+size_t(y)*lock.Pitch,width*bpp);ok(staging->UnlockRect());drop(staging);return data;
     }
+#ifdef NORTHLIGHT_EXPECT_STATE_REUSE
+#include "material_palette_targets.inc"
+#endif
     static Result run(TargetGpuMeter& d,IDirect3DVertexShader9* vs,IDirect3DPixelShader9* ps,IDirect3DVertexDeclaration9* declaration,unsigned width,unsigned height,unsigned pattern,bool partial,bool fallback,bool timing){
         NorthlightAutoBump b(&d);b.width=width;b.heightPixels=height;
         D3DCAPS9 caps{};ok(d.GetDeviceCaps(&caps));assert(caps.PrimitiveMiscCaps&D3DPMISCCAPS_INDEPENDENTWRITEMASKS);b.independentCaptureWrites=!fallback;
@@ -81,6 +93,9 @@ int main(int argc,char** argv){
         IDirect3DDevice9* raw=nullptr;ok(api->CreateDevice(0,D3DDEVTYPE_HAL,window,D3DCREATE_HARDWARE_VERTEXPROCESSING|D3DCREATE_FPU_PRESERVE,&pp,&raw));{
             TargetGpuMeter d(raw);IDirect3DVertexShader9* vs=nullptr;IDirect3DPixelShader9* ps=nullptr;auto v=read(folder+"vs.bin"),p=read(folder+"ps.bin");ok(d.CreateVertexShader(reinterpret_cast<DWORD*>(v.data()),&vs));ok(d.CreatePixelShader(reinterpret_cast<DWORD*>(p.data()),&ps));
             const D3DVERTEXELEMENT9 elements[]={{0,0,D3DDECLTYPE_FLOAT4,D3DDECLMETHOD_DEFAULT,D3DDECLUSAGE_POSITION,0},D3DDECL_END()};IDirect3DVertexDeclaration9* decl=nullptr;ok(d.CreateVertexDeclaration(elements,&decl));
+#ifdef NORTHLIGHT_EXPECT_STATE_REUSE
+            if(!samples&&!timing)MaterialCaptureStateTestAccess::paletteReplay(d);
+#endif
             for(unsigned fallback=0;fallback<2;++fallback)for(unsigned partial=0;partial<2;++partial)for(unsigned pattern=0;pattern<3;++pattern){if(timing&&(fallback||partial))continue;
                 const auto result=MaterialCaptureStateTestAccess::run(d,vs,ps,decl,timing?1920:256,timing?1080:128,pattern,partial,fallback,timing);
                 const auto stem=std::to_string(samples)+"-"+std::to_string(fallback)+"-"+std::to_string(partial)+"-"+std::to_string(pattern);

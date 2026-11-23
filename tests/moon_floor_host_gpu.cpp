@@ -65,14 +65,14 @@ struct WorldScreenEffectsTest {
   w.moonFloorShadowCurrent=true;assert(w.uploadRegionalFog(field,"fixture"));assert(w.moonFloorSourceCurrent(1,true,true,"fixture"));
   constexpr unsigned W=128,H=96;IDirect3DSurface9 *target=nullptr,*readback=nullptr;assert(SUCCEEDED(d.real->CreateRenderTarget(W,H,D3DFMT_A32B32G32R32F,D3DMULTISAMPLE_NONE,0,FALSE,&target,nullptr)));assert(SUCCEEDED(d.real->CreateOffscreenPlainSurface(W,H,D3DFMT_A32B32G32R32F,D3DPOOL_SYSTEMMEM,&readback,nullptr)));
   auto texture=[&](unsigned width,unsigned height,float value){IDirect3DTexture9*t=nullptr;assert(SUCCEEDED(d.real->CreateTexture(width,height,1,0,D3DFMT_R32F,D3DPOOL_MANAGED,&t,nullptr)));D3DLOCKED_RECT l{};assert(SUCCEEDED(t->LockRect(0,&l,nullptr,0)));for(unsigned y=0;y<height;++y)for(unsigned x=0;x<width;++x)memcpy(static_cast<char*>(l.pBits)+y*l.Pitch+x*4,&value,4);t->UnlockRect(0);return t;};
-  auto* depth=texture(W,H,1000.f/(1000-.1f)*(1-.1f/12));auto* shadow=texture(1024,1024,1);drop(w.shadow[3]);w.shadow[3]=shadow;shadow->AddRef();auto* zero=texture(1,1,0);
+  auto* depth=texture(W,H,1000.f/(1000-.1f)*(1-.1f/12));auto* shadow=texture(1024,1024,1);drop(w.directionalMaps.current_[3].texture);w.directionalMaps.current_[3].texture=shadow;shadow->AddRef();auto* zero=texture(1,1,0);
   float c[108][4]{};c[0][0]=1.f/W;c[0][1]=1.f/H;c[0][2]=.1f;c[0][3]=1000;c[1][0]=c[1][1]=c[1][2]=1;c[2][0]=1;c[2][2]=192;c[2][3]=1.f/1024;
   for(unsigned i=0;i<4;++i)c[3+i][i]=1;c[6][2]=c[15][2]=4;c[11][0]=c[12][1]=1.f/192;c[13][2]=-1.f/192;c[14][2]=.5f;c[14][3]=1;
   c[16][2]=c[16][3]=1;c[17][0]=.5f;c[17][1]=.35f;c[17][2]=.8f;c[21][0]=c[21][1]=1;c[21][2]=.4f;c[21][3]=128;c[22][0]=c[22][1]=c[22][2]=1;c[22][3]=.0066f;c[24][0]=.00001f;c[27][0]=1;
   c[31][0]=field->originX;c[31][1]=field->originY;c[31][2]=1.f/512;c[31][3]=1;c[32][0]=.0144f;c[32][1]=.01075f;c[32][2]=64;c[32][3]=48;c[33][0]=W*2;c[33][1]=H*2;c[33][2]=W;c[33][3]=H;c[58][0]=2;c[58][1]=1.f/8;c[59][3]=.0017f;
-  c[65][0]=w.fogGlobalHeights[0]-.25f;c[65][1]=w.fogGlobalHeights[1]+64;c[65][2]=c[65][3]=1;
+  c[65][0]=w.regionalFog.globalHeights()[0]-.25f;c[65][1]=w.regionalFog.globalHeights()[1]+64;c[65][2]=c[65][3]=1;
   double energy[3]{};for(unsigned mode=0;mode<3;++mode){D3DLOCKED_RECT l{};shadow->LockRect(0,&l,nullptr,0);for(unsigned y=0;y<1024;++y)for(unsigned x=0;x<1024;++x){float worldX=((x+.5f)/1024-.5f)*384;float z=mode==2?.5f-24.f/192:((std::fmod(worldX+1000.f,8.f)>=3.f&&std::fmod(worldX+1000.f,8.f)<5.f)?1.f:.5f-24.f/192);memcpy(static_cast<char*>(l.pBits)+y*l.Pitch+x*4,&z,4);}shadow->UnlockRect(0);
-   d.real->SetRenderTarget(0,target);d.real->SetTexture(0,scene);d.real->SetTexture(1,depth);d.real->SetTexture(3,shadow);d.real->SetTexture(11,zero);d.real->SetTexture(12,w.fogHeightTexture);d.real->SetTexture(13,w.regionalFogTexture);
+   d.real->SetRenderTarget(0,target);d.real->SetTexture(0,scene);d.real->SetTexture(1,depth);d.real->SetTexture(3,shadow);d.real->SetTexture(11,zero);d.real->SetTexture(12,w.regionalFog.heightTexture());d.real->SetTexture(13,w.regionalFog.texture());
    for(unsigned slot=0;slot<16;++slot){d.real->SetSamplerState(slot,D3DSAMP_MINFILTER,slot==0||slot==13?D3DTEXF_LINEAR:D3DTEXF_POINT);d.real->SetSamplerState(slot,D3DSAMP_MAGFILTER,slot==0||slot==13?D3DTEXF_LINEAR:D3DTEXF_POINT);d.real->SetSamplerState(slot,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);d.real->SetSamplerState(slot,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);}
    d.real->SetPixelShaderConstantF(0,c[0],108);d.real->BeginScene();assert(SUCCEEDED(w.drawFogVolume(W,H,baseline,mode!=0&&w.moonFloorSourceCurrent(1,true,true,"fixture"),false,false,false,scene,c[65])));d.real->EndScene();assert(SUCCEEDED(d.real->GetRenderTargetData(target,readback)));readback->LockRect(&l,nullptr,D3DLOCK_READONLY);for(unsigned y=0;y<H;++y)for(unsigned x=0;x<W;++x){auto* v=reinterpret_cast<float*>(static_cast<char*>(l.pBits)+y*l.Pitch)+4*x;assert(std::isfinite(v[0])&&v[3]==1);energy[mode]+=v[0];}readback->UnlockRect();
   }
@@ -81,13 +81,15 @@ struct WorldScreenEffectsTest {
  }
  static void run(MoonDevice& d){
   auto w=std::make_unique<WorldRenderer>(&d);auto field=std::make_shared<NorthlightRegionalFog::Field>();
+  auto& floor=w->moonFloorFog;
   for(unsigned i=0;i<4096;++i){field->texels[i]={24,0,0,32};field->directFloor[i]=0;}
-  w->uploadedFogField=field;w->uploadedFogMap=w->uploadedMap="fixture";w->active=std::make_shared<WorldRenderer::Snapshot>();w->active->map="fixture";
+  w->regionalFog.field_=field;w->regionalFog.map_=w->uploadedMap="fixture";w->active=std::make_shared<WorldRenderer::Snapshot>();w->active->map="fixture";
   w->active->bvh=std::make_shared<NorthlightGI::BVH>();w->uploaded=w->active->bvh;w->moonFloorShadowCurrent=true;
   w->effects.shadows=true;w->sourceColors[1]={1,1,1};w->shadowCacheKey[3].valid=true;w->shadowTransition[3].workingValid=true;
-  assert(SUCCEEDED(d.real->CreateTexture(1,1,1,0,D3DFMT_A32B32G32R32F,D3DPOOL_MANAGED,&w->shadow[3],nullptr)));
+  assert(SUCCEEDED(d.real->CreateTexture(1,1,1,0,D3DFMT_A32B32G32R32F,D3DPOOL_MANAGED,&w->directionalMaps.current_[3].texture,nullptr)));
   assert(w->moonFloorSourceCurrent(1,true,true,"fixture"));assert(!w->moonFloorSourceCurrent(0,true,true,"fixture"));assert(!w->moonFloorSourceCurrent(1,false,true,"fixture"));assert(!w->moonFloorSourceCurrent(1,true,false,"fixture"));assert(!w->moonFloorSourceCurrent(1,true,true,"other"));
-  w->neutralShadowMaps=true;assert(!w->moonFloorSourceCurrent(1,true,true,"fixture"));w->neutralShadowMaps=false;
+  w->nativeShadowAvailable=false;assert(!w->moonFloorSourceCurrent(1,true,true,"fixture"));w->nativeShadowAvailable=true;
+  w->nativeShadowOwned=false;assert(!w->moonFloorSourceCurrent(1,true,true,"fixture"));w->nativeShadowOwned=true;
   w->shadowTransition[3].workingValid=false;assert(!w->moonFloorSourceCurrent(1,true,true,"fixture"));w->shadowTransition[3].workingValid=true;
   using Action=NorthlightQuality::CascadeAction;
   NorthlightQuality::ShadowMapReuse reuse;reuse.valid=true;reuse.pass=0;
@@ -113,15 +115,19 @@ struct WorldScreenEffectsTest {
   };
   d.real->SetFVF(D3DFVF_XYZRHW|D3DFVF_TEX1);d.real->SetVertexShader(nullptr);d.real->SetRenderState(D3DRS_ZENABLE,FALSE);d.real->SetRenderState(D3DRS_CULLMODE,D3DCULL_NONE);
   assert(SUCCEEDED(d.real->BeginScene()));
-  assert(SUCCEEDED(draw(false))&&d.drawn==baseline&&!w->moonFloorTexture);
-  d.slots=512;for(unsigned mode=0;mode<6;++mode)assert(SUCCEEDED(draw(true,mode%3!=0,mode%3==2,mode>=3))&&d.drawn==baseline&&!w->moonFloorTexture);d.slots=65535;w->releaseMoonFloor();
+  assert(SUCCEEDED(draw(false))&&d.drawn==baseline&&!floor.texture());
+  d.slots=512;for(unsigned mode=0;mode<6;++mode)assert(SUCCEEDED(draw(true,mode%3!=0,mode%3==2,mode>=3))&&d.drawn==baseline&&!floor.texture());d.slots=65535;w->releaseMoonFloor();
   d.failShader=true;assert(SUCCEEDED(draw(true))&&d.drawn==baseline);d.failShader=false;w->releaseMoonFloor();
-  denyMoonMemory=true;assert(SUCCEEDED(draw(true))&&d.drawn==baseline&&!w->moonFloorTexture);denyMoonMemory=false;w->invalidateMoonFloor();
-  d.failTexture=true;assert(SUCCEEDED(draw(true))&&d.drawn==baseline&&!w->moonFloorReady);d.failTexture=false;w->invalidateMoonFloor();
-  for(unsigned mode=0;mode<6;++mode){assert(SUCCEEDED(draw(true,mode%3!=0,mode%3==2,mode>=3)));assert(d.drawn==w->moonFloorPS[mode]&&d.support[1]==1&&d.bounds[0]==-.25f&&d.sampled==w->moonFloorTexture&&d.filter==D3DTEXF_POINT);}
-  auto* retained=w->moonFloorTexture;unsigned allocations=d.allocations;assert(w->ensureMoonFloor()&&d.allocations==allocations);
+  denyMoonMemory=true;assert(SUCCEEDED(draw(true))&&d.drawn==baseline&&!floor.texture());denyMoonMemory=false;floor.invalidateField();
+  d.failTexture=true;assert(SUCCEEDED(draw(true))&&d.drawn==baseline&&!floor.ready_);d.failTexture=false;floor.invalidateField();
+  for(unsigned mode=0;mode<6;++mode){assert(SUCCEEDED(draw(true,mode%3!=0,mode%3==2,mode>=3)));assert(d.drawn==floor.shaders_[mode]&&d.support[1]==1&&d.bounds[0]==-.25f&&d.sampled==floor.texture()&&d.filter==D3DTEXF_POINT);}
+  auto* retained=floor.texture();unsigned allocations=d.allocations;assert(SUCCEEDED(draw(true))&&floor.ready_&&d.allocations==allocations);
   D3DLOCKED_RECT lock{};assert(SUCCEEDED(retained->LockRect(0,&lock,nullptr,D3DLOCK_READONLY)));for(unsigned i=0;i<4;++i)assert(static_cast<float*>(lock.pBits)[i]==0);retained->UnlockRect(0);
-  for(unsigned failure=1;failure<=3;++failure){MoonTexture fault(retained);fault.failure=failure;w->invalidateMoonFloor();w->moonFloorTexture=&fault;assert(!w->ensureMoonFloor()&&!w->moonFloorReady);w->moonFloorTexture=retained;w->invalidateMoonFloor();assert(w->ensureMoonFloor());}
+  for(unsigned failure=1;failure<=3;++failure){
+   MoonTexture fault(retained);fault.failure=failure;floor.invalidateField();floor.texture_=&fault;
+   assert(SUCCEEDED(draw(true))&&d.drawn==baseline&&!floor.ready_);
+   floor.texture_=retained;floor.invalidateField();assert(SUCCEEDED(draw(true))&&floor.ready_);
+  }
   d.failDraw=true;assert(FAILED(draw(true)));d.failDraw=false;d.failBind=true;assert(SUCCEEDED(draw(true))&&d.drawn==baseline);
   for(unsigned kind=1;kind<=6;++kind){
    d.restoreKind=kind;d.restoreFailures=1;assert(SUCCEEDED(draw(true))&&d.restoreFailures==0);
@@ -130,9 +136,9 @@ struct WorldScreenEffectsTest {
    d.restoreFailures=0;assert(SUCCEEDED(draw(false)));
   }
   d.restoreKind=0;
-  auto unknown=std::make_shared<NorthlightRegionalFog::Field>();w->uploadedFogField=unknown;assert(SUCCEEDED(draw(true))&&d.drawn==baseline&&!w->moonFloorReady);assert(w->moonFloorTexture==retained);
-  w->uploadedFogField=field;assert(SUCCEEDED(draw(true))&&w->moonFloorReady);assert(w->uploadRegionalFog(nullptr,"other")&&!w->moonFloorReady&&!w->moonFloorField);
-  assert(SUCCEEDED(draw(true))&&d.drawn==baseline);w->releaseMoonFloor();assert(!w->moonFloorTexture&&!w->moonFloorReady);for(auto*p:w->moonFloorPS)assert(!p);
+  auto unknown=std::make_shared<NorthlightRegionalFog::Field>();w->regionalFog.field_=unknown;assert(SUCCEEDED(draw(true))&&d.drawn==baseline&&!floor.ready_);assert(floor.texture()==retained);
+  w->regionalFog.field_=field;assert(SUCCEEDED(draw(true))&&floor.ready_);assert(w->uploadRegionalFog(nullptr,"other")&&!floor.ready_&&!floor.field_);
+  assert(SUCCEEDED(draw(true))&&d.drawn==baseline);w->releaseMoonFloor();assert(!floor.texture()&&!floor.ready_);for(auto*p:floor.shaders_)assert(!p);
   d.real->EndScene();cityImage(*w,d,baseline,scene);d.real->SetTexture(0,nullptr);d.real->SetPixelShader(nullptr);scene->Release();baseline->Release();
   std::puts("MOON_HOST_PASS checkedRestoreRetry=1 persistentRestoreFailClosed=1 drawCountZeroOrOne=1 deferredContent=blocked slicedContent=blocked stagedOldMesh=blocked signatureReuse=preserved sourceIdentity=1 caps512Fallback=1 sixVariants=1 createFailure=1 admissionFailure=1 lockLayoutUnlockFailure=1 shaderFailure=1 bindFailure=1 drawFailureRestore=1 samplerRestore=1 constantsRestore=1 fieldReplacement=1 missingFloor=1 mapInvalidation=1 boundedAllocation=1 reset=1");
  }

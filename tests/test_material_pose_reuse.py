@@ -24,6 +24,41 @@ source = prefix + fixture + r'''
 #include "material_skin_pose_cases.inc"
 struct DisplacementStateTestAccess {
     static void run(const char* path){
+        {
+            float clip[16]={.75f,0,0,0, 0,1,0,0, 0,0,1,-.1f, 0,0,1,0};
+            Bounds box;box.valid=true;box.low[0]=box.low[1]=-.25f;box.high[0]=box.high[1]=.25f;
+            box.low[2]=20;box.high[2]=21;
+            const auto fits=[&](float pixels,float protect=8){return NorthlightMaterialViewBounds::fitsScreen(box,clip,16./9.,pixels,protect);};
+            assert(fits(24)&&!fits(12)&&!fits(24,20));
+            box.low[0]=-.70f;box.high[0]=.70f;assert(!fits(24)&&fits(64));
+            box.low[0]=10;box.high[0]=10.01f;box.high[2]=40;
+            assert(!fits(24)); // Perspective can widen a thin off-centre depth span.
+            box.low[0]=-.25f;box.high[0]=.25f;box.low[2]=-21;box.high[2]=-20;
+            assert(!fits(24));clip[14]=-1;clip[10]=-1;assert(fits(24));
+            clip[12]=1;assert(!fits(24));clip[12]=0;box.low[0]=NAN;assert(!fits(24));
+        }
+        {
+            auto mesh=std::make_shared<Mesh>();mesh->vertexCount=2;mesh->streams[0].stride=16;
+            mesh->streams[0].bytes.resize(32);
+            const float position[]={-1,0,0, 1,0,0};
+            std::memcpy(mesh->streams[0].bytes.data(),position,12);
+            std::memcpy(mesh->streams[0].bytes.data()+16,position+3,12);
+            mesh->streams[0].bytes[28]=1;
+            D3DVERTEXELEMENT9 layout[]={{0,0,D3DDECLTYPE_FLOAT3,0,D3DDECLUSAGE_POSITION,0},
+                {0,12,D3DDECLTYPE_UBYTE4,0,D3DDECLUSAGE_BLENDINDICES,0},D3DDECL_END()};
+            float rows[256*4]={};rows[22]=1;
+            for(unsigned bone=0;bone<2;++bone){auto* matrix=rows+4*(31+3*bone);
+                matrix[0]=matrix[5]=matrix[10]=1;matrix[11]=20;matrix[3]=float(bone)*2;}
+            const auto read=[&](unsigned first,unsigned count,float* out){std::memcpy(out,rows+4*first,count*16);return true;};
+            using namespace NorthlightModelNormalRange;
+            NorthlightModelNormalRange::Cache cache;Bounds view;
+            assert(cache.viewBoundsRead(mesh,layout,3,read,Single,view));
+            assert(view.low[0]<=-1&&view.high[0]>=3&&view.low[2]<=20&&view.high[2]>=20);
+            rows[4*34+3]=10;
+            assert(cache.viewBoundsRead(mesh,layout,3,read,Single,view)&&view.high[0]>=11);
+            const auto missing=[&](unsigned first,unsigned count,float* out){return first!=34&&read(first,count,out);};
+            assert(!cache.viewBoundsRead(mesh,layout,3,missing,Single,view)&&!view.valid);
+        }
         { // An exhausted range proof must fail before touching the device.
             NorthlightAutoDisplacement g(nullptr);auto* key=reinterpret_cast<IDirect3DVertexShader9*>(uintptr_t(1));
             g.materials[key].skinned=g.materials[key].view.skinned=true;

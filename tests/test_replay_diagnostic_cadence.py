@@ -5,7 +5,7 @@ import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).reso
 import northlight_paths as fp
 import subprocess, tempfile
 
-source=fp.src('world_point_rendering.inl').read_text()
+source=fp.src('world_shadow_bounds.inl').read_text()
 start=source.index('    unsigned replayBoundsLogFrame=')
 end=source.index('    // A metadata fallback',start)
 sampler=source[start:end]

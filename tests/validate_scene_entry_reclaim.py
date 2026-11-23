@@ -6,6 +6,8 @@ The private reserve-only ballast represents unrelated process address usage;
 it is released on refusal and after each successful build. No game, GPU,
 settings, installed binaries, fixture assets or memory floors are modified.
 """
+
+from source_units import source_text
 import argparse
 import hashlib
 import io
@@ -88,7 +90,7 @@ with zipfile.ZipFile(io.BytesIO(archive)) as z:
     for entry in z.infolist():
         target=baseline/entry.filename;assert target.resolve().is_relative_to(baseline.resolve())
         if not entry.is_dir():target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(z.read(entry))
-source=fp.src('world_renderer.h').read_text()
+source=source_text(fp.src('world_renderer.h'))
 baseline_world=(baseline/'src/world/world_renderer.h').read_text()
 old='if(!NorthlightGeometryMemory::admits(memory,plainEntry)){resetPreparation();memory=workerMemory(plainEntry);}'
 assert baseline_world.count(old)==1 and '// BEGIN STAGED ENTRY RECLAIM:' not in baseline_world,'Frozen baseline does not ship the old entry policy'

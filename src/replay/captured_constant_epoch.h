@@ -29,6 +29,9 @@ struct BankHandoff {
     const float* bank=nullptr;
     std::uint64_t reset=0,floats=0,booleans=0,integers=0;
     unsigned first=0,count=0;
+    bool covers(unsigned start,unsigned rows)const{
+        return bank&&start<=256&&first<=start&&count<=256-first&&rows<=256-start&&start+rows<=first+count;
+    }
 };
 // Only ExtensionDevice can construct a source certified to read its mirror.
 class TrustedSource {

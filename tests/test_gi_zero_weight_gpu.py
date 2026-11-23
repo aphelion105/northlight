@@ -1,5 +1,5 @@
 # northlight-test: requires=windows-gpu,zig,client timing
-"""Compare every MRT of production GI against frozen bytecode; optional ABBA/AA.
+"""Compare every GI output with and without skipping zero-support visibility.
 
 Synthetic resident/missing/occluded/fading probes, not a gameplay FPS test.
 """
@@ -17,6 +17,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT/'tests')]
 import northlight_paths as fp
+from scripts.shaders.shader_sources import source_files
 from validate_shader_optimizations_gpu import image
 from windows_gpu_guard import processes
 
@@ -87,7 +88,7 @@ def main():
     p = argparse.ArgumentParser(__doc__)
     p.add_argument('--output', type=Path, default=fp.output_dir()/'gi-zero-weight-gpu')
     p.add_argument('--candidate', type=Path, default=fp.COMPILED)
-    p.add_argument('--reference', default='423f4dadec4334a6516b51ff08c48a399a45f09b')
+    p.add_argument('--reference', help='Use bytecode from this git revision as the reference.')
     p.add_argument('--backend', type=Path, action='append')
     p.add_argument('--benchmark', action='store_true')
     p.add_argument('--control', action='store_true')
@@ -97,16 +98,29 @@ def main():
     processes()
     out = a.output.resolve(); out.mkdir(parents=True, exist_ok=True)
     reference = out/'reference'; reference.mkdir(exist_ok=True)
-    for entry in ('WorldGI', 'WorldLightingUnshadowedGI'):
-        (reference/f'{entry}.bin').write_bytes(subprocess.check_output(['git', 'show', f'{a.reference}:shaders/compiled/{entry}.bin'], cwd=ROOT))
+    entries = ('WorldGI', 'WorldLightingUnshadowedGI')
+    shader_inputs = ()
+    if a.reference:
+        for entry in entries:
+            (reference/f'{entry}.bin').write_bytes(subprocess.check_output(['git', 'show', f'{a.reference}:shaders/compiled/{entry}.bin'], cwd=ROOT))
+    else:
+        sys.path.insert(0, str(fp.SCRIPTS/'shaders'))
+        from shader_compiler import Compiler
+        world = fp.SHADERS/'world_effects.hlsl'
+        shader_inputs = source_files(world)
+        source = reference/'reference.hlsl'
+        source.write_text(f'#define GI_FORCE_VISIBILITY_READS\n#include "{world.as_posix()}"\n')
+        compiler = Compiler(allow_compatible_binary=True)
+        for entry in entries:
+            compiler.compile(source, entry, 'ps_3_0', reference/f'{entry}.bin')
     backends = a.backend or [Path(os.environ['WINDIR'])/'SysWOW64/d3d9.dll', fp.client_root()/'renderer-backends/dxvk2/dxvk2_d3d9.dll', fp.client_root()/'renderer-backends/dxvk/dxvk_d3d9.dll']
     candidate = reference if a.control else a.candidate.resolve()
     sha = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
-    inputs = {str(path): sha(path) for path in [Path(__file__), ROOT/'tests/shader_optimizations_gpu.cpp', ROOT/'tests/composite_distance_gpu.cpp', *backends, *[candidate/f'{e}.bin' for e in ('WorldGI', 'WorldLightingUnshadowedGI')]]}
+    inputs = {str(path): sha(path) for path in [Path(__file__), ROOT/'tests/shader_optimizations_gpu.cpp', ROOT/'tests/composite_distance_gpu.cpp', *backends, *shader_inputs, *[candidate/f'{e}.bin' for e in entries], *[reference/f'{e}.bin' for e in entries]]}
     cases, count = fixtures(out, a.benchmark, a.fp32)
     exe = out/'gi-oracle.exe'
     subprocess.run([str(fp.zig()), 'c++', '-target', 'x86-windows-gnu', '-O2', '-UNDEBUG', '-std=c++17', *fp.test_include_flags(), str(ROOT/'tests/shader_optimizations_gpu.cpp'), '-luser32', '-o', str(exe)], env=fp.zig_env(), check=True)
-    report = dict(pass_=False, scope=__doc__, reference=a.reference, inputs=inputs, control=a.control, benchmark=a.benchmark, output_bits=32 if a.fp32 else 16, runs=[])
+    report = dict(pass_=False, scope=__doc__, reference=a.reference or 'all probe visibility reads', inputs=inputs, control=a.control, benchmark=a.benchmark, output_bits=32 if a.fp32 else 16, runs=[])
     try:
         for i, backend in enumerate(backends):
             processes()

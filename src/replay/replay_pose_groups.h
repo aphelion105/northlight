@@ -18,6 +18,41 @@ inline NorthlightShaderConstants::Range weightedUploadRange(const NorthlightShad
     return {fixed.first,std::max(fixed.first+fixed.count,31+3*paletteEnd)-fixed.first};
 }
 
+template<class Replay> unsigned weightedPacketPaletteEnd(const Replay& p){
+    return p.constantUsage.weightedFloats.count&&p.gpuCached&&p.pointBounds.valid?
+        p.boundsWork.weightedPaletteEnd:0;
+}
+
+// A merged draw may read bones from any member. A missing proof selects the full bank.
+template<class PaletteAt> NorthlightShaderConstants::Range weightedRunUploadRange(
+        const NorthlightShaderConstants::Usage& usage,size_t count,PaletteAt paletteAt){
+    if(!usage.weightedFloats.count)return {};
+    unsigned paletteEnd=0;
+    for(size_t i=0;i<count;++i){
+        const unsigned end=paletteAt(i);
+        if(!end)return {};
+        paletteEnd=std::max(paletteEnd,end);
+    }
+    return weightedUploadRange(usage,paletteEnd);
+}
+
+// Keep a single range across consecutive draws with the same captured pose.
+// Growing the range partway through a pose would issue another setter call.
+template<class Packets> void groupDirectionalPalettes(Packets& packets){
+    constexpr unsigned unproven=76;
+    for(size_t first=0;first<packets.size();){
+        const auto group=packets[first]->constantGroup;
+        size_t next=first;
+        unsigned paletteEnd=0;
+        do {
+            const unsigned end=weightedPacketPaletteEnd(*packets[next++]);
+            paletteEnd=std::max(paletteEnd,end&&end<unproven?end:unproven);
+        }while(next<packets.size()&&packets[next]->constantGroup==group);
+        const auto provenEnd=static_cast<unsigned char>(paletteEnd<unproven?paletteEnd:0);
+        for(;first<next;++first)packets[first]->directionalPaletteEnd=provenEnd;
+    }
+}
+
 template<class Replay> bool sameCaptured(const Replay& a,const Replay& b){
     const auto& x=a.constantUsage;const auto& y=b.constantUsage;
     if(a.projectionKind!=b.projectionKind||(a.projectionKind!=1&&a.projectionKind!=2)||
@@ -34,8 +69,9 @@ template<class Replay> bool sameCaptured(const Replay& a,const Replay& b){
            (!x.integers.count||a.ints==b.ints||!std::memcmp(a.ints+4*x.integers.first,b.ints+4*x.integers.first,x.integers.count*4*sizeof(a.ints[0])));
 }
 
-// One instance per uninterrupted replay pass with a fixed projection. Discard
-// on any external constant writes, restore/reset, cascade or cube-face change.
+// One instance per uninterrupted replay pass. A new projection drops pose
+// equality while retaining known registers. Track exact external prefix writes
+// and reset after untracked writes or state restoration.
 // Group IDs must identify exact sameCaptured() banks within this frame. Shader
 // switches are safe: DEF literals never mutate the API constant register bank.
 template<class Bool> class Pass {
@@ -49,6 +85,8 @@ public:
     NorthlightReplayConstants::DirtySpan floats,booleans,integers;
     size_t prepared=0,reused=0;
     void reset(){floatBank_.reset();boolBank_.reset();intBank_.reset();valid_=false;}
+    void beginProjection(){valid_=false;}
+    void recordFloatPrefix(const float* values,unsigned count){floatBank_.update(values,{0,count});valid_=false;}
     const float* desired()const{return floatBank_.data();}
     template<class Replay> bool prepare(const Replay& p,const float* rows,const float* worldMatrix=nullptr,
                                         NorthlightShaderConstants::Range uploadFloats={}){

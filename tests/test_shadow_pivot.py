@@ -7,10 +7,11 @@ clears it, ShadowPivotCorrection is a quality key (default 1, 0..1) that is in t
 the WORLD camera line reports the source. No game or GPU."""
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
+from source_units import source_text
 import re,subprocess,tempfile
 HERE=Path(__file__).resolve().parent
 ROOT=HERE.parent
-w=fp.src('world_renderer.h').read_text();e=fp.src('world_shadow_experiment.inl').read_text();h=fp.src('shadow_pivot.h').read_text();q=fp.src('quality_settings.h').read_text()
+w=source_text(fp.src('world_renderer.h'));e=fp.src('world_shadow_experiment.inl').read_text();h=fp.src('shadow_pivot.h').read_text();q=fp.src('quality_settings.h').read_text()
 ini=(ROOT/'renderer/windows-package/northlight-quality.ini').read_text();readme=(ROOT/'renderer/windows-package/README.txt').read_text()
 pivot=w[w.index('    V shadowPivot(){'):w.index('    std::unordered_map<IDirect3DVertexShader9*,WmoShaderSignature> wmoShaders;')]
 checks={}

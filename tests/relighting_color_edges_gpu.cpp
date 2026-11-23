@@ -99,6 +99,19 @@ int main(int argc,char** argv){
             ++cases;
         }ps->Release();
     }
+    // Half-grid raster interpolation can round either way at the boundary
+    // between full-resolution depth texels. Distinct parity values prove
+    // that reconstruction selects (2x+1, 2y+1) at both odd and even sizes.
+    auto* distancePS=shader(gpu.d,dir+"/WorldDistance.bin");
+    for(const auto size:{std::array<unsigned,2>{3840,120},{1919,1079}}){
+        const auto [w,h]=size;
+        gpu.image(1,w,h,[](unsigned x,unsigned y){return Pixel{.125f*(1+(x&1)+2*(y&1)),0,0,0};});
+        const auto result=gpu.run(distancePS,constants(w,h),w/2,h/2);
+        const float expected=.2f*100.f/(100.f-.5f*(100.f-.2f));
+        for(size_t i=0;i<result.size();i+=4)failures+=!std::isfinite(result[i])||std::fabs(result[i]-expected)>1e-5f;
+        ++cases;
+    }
+    distancePS->Release();
     std::printf("RELIGHTING_COLOR_EDGES cases=%u hueError=%.8g edgeError=%.8g failures=%u\n",cases,hueError,edgeError,failures);
     return failures?1:0;
 }

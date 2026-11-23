@@ -3,6 +3,7 @@
 #include "equipment_light_proof.h"
 #include "local_light_selection.h"
 #include "quality_settings.h"
+#include "frame_parity_clock.h"
 #ifdef NDEBUG
 #undef NDEBUG
 #endif
@@ -15,6 +16,11 @@
 #include <xmmintrin.h>
 #endif
 using namespace NorthlightEquipmentLights;
+static_assert(NorthlightFrameParityClock::milliseconds(0)==1000);
+static_assert(NorthlightFrameParityClock::milliseconds(282)==5700);
+static_assert(NorthlightFrameParityClock::milliseconds(290)==5833);
+static_assert(NorthlightFrameParityClock::counter(60,10000000)-NorthlightFrameParityClock::counter(0,10000000)==10000000);
+static_assert(NorthlightFrameParityClock::counter(282,10000000)-NorthlightFrameParityClock::counter(281,10000000)==166667);
 static std::array<float,16> identity(){std::array<float,16> m{};m[0]=m[5]=m[10]=m[15]=1;return m;}
 static void bankDecodeParity(){
     auto matrix=identity();float camera[]={-8565,1011,95},bank[44]{};

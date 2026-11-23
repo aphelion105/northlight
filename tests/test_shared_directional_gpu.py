@@ -14,6 +14,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT/'scripts/shaders')]
 import northlight_paths as fp
+from scripts.shaders.shader_sources import source_files, world_source_bytes
 from shader_compiler import Compiler, validate_assembly
 from validate_native_scene_trace import processes
 
@@ -25,14 +26,14 @@ def main():
     p.add_argument('--output', type=Path, default=fp.output_dir()/'shared-directional')
     a = p.parse_args()
     running = processes()
-    inputs = [a.shader_source, fp.SHADERS/'auto_bump_normal.hlsl',
+    inputs = [a.shader_source, *source_files(fp.SHADERS/'world_effects.hlsl'),
               fp.TESTS/'shared_directional_gpu.cpp', fp.TESTS/'composite_distance_gpu.cpp',
               fp.src('gpu_frame_timer.h'), Path(__file__)]
     hashes = lambda: {str(path.resolve()): hashlib.sha256(path.read_bytes()).hexdigest() for path in inputs}
     before = hashes()
     out = a.output.resolve(); out.mkdir(parents=True, exist_ok=False)
     source = out/'shared.hlsl'
-    source.write_bytes(a.shader_source.read_bytes() + b'\nsampler2D ReferenceActor:register(s8);\nsampler2D ReferenceWorld:register(s9);\nfloat4 CombineReference(float2 uv:TEXCOORD0):COLOR0 {float v=min(tex2Dlod(ReferenceActor,float4(uv,0,0)).r,tex2Dlod(ReferenceWorld,float4(uv,0,0)).r);return float4(v,v,v,1);}\n')
+    source.write_bytes(world_source_bytes(a.shader_source) + b'\nsampler2D ReferenceActor:register(s8);\nsampler2D ReferenceWorld:register(s9);\nfloat4 CombineReference(float2 uv:TEXCOORD0):COLOR0 {float v=min(tex2Dlod(ReferenceActor,float4(uv,0,0)).r,tex2Dlod(ReferenceWorld,float4(uv,0,0)).r);return float4(v,v,v,1);}\n')
     (out/'auto_bump_normal.hlsl').write_bytes((fp.SHADERS/'auto_bump_normal.hlsl').read_bytes())
     compiler = Compiler(allow_compatible_binary=True)
     report = {'scope':'Authored 1920x1080 resolve workload; no gameplay FPS claim. Baseline timing excludes the comparison-only combine draw.',

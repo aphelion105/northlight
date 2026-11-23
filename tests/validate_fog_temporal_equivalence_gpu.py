@@ -15,6 +15,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT / 'scripts/shaders')]
 import northlight_paths as fp
+from scripts.shaders.shader_sources import world_source_at_ref, world_source_bytes
 from shader_compiler import DLL, DLL_SHA256, COMPATIBLE_DLL_SHA256, validate_assembly
 
 
@@ -64,10 +65,10 @@ def main():
             source_folder.mkdir(exist_ok=True)
             for filename in ('world_effects.hlsl', 'auto_bump_normal.hlsl'):
                 if name == 'old':
-                    data = ((args.baseline_dir / filename).read_bytes() if args.baseline_dir else
-                            subprocess.check_output(['git', 'show', f'{args.baseline_ref}:shaders/{filename}'], cwd=ROOT))
+                    data = (world_source_bytes(args.baseline_dir / filename) if args.baseline_dir else
+                            world_source_at_ref(ROOT, args.baseline_ref, filename))
                 else:
-                    data = (args.source if filename == 'world_effects.hlsl' else ROOT / 'shaders' / filename).read_bytes()
+                    data = world_source_bytes(args.source if filename == 'world_effects.hlsl' else ROOT / 'shaders' / filename)
                 (source_folder / filename).write_bytes(data)
             binary = source_folder / f'{args.entry}.bin'
             subprocess.run([str(compiler), str(source_folder / 'world_effects.hlsl'), args.entry, 'ps_3_0', str(binary)], check=True)

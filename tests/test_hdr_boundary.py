@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 # northlight-test: requires=zig
 """Execute the production HDR boundary methods with a CPU-only colour ownership mock."""
+
+from source_units import source_text
 import json
 import os
 import subprocess
@@ -10,7 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
 
-source = fp.src('renderer.cpp').read_text()
+source = source_text(fp.src('renderer.cpp'))
 start = source.index('    bool orthographicUiGeometry(){')
 end = source.index('    bool sampledDrawTimers()', start)
 methods = source[start:end]

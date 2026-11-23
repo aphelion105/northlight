@@ -3,6 +3,8 @@
 """MEMMAP address-space snapshots (0.3.192): host test of the pure grouping/diff/format logic of
 address_space_snapshot.h with fake region lists (-O2 and ASan/UBSan), and a source pin of the five
 lifecycle call sites in renderer.cpp, the allowed-API set and the line formats. No game, Wine or DLL is run."""
+
+from source_units import source_text
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
 import re,subprocess,tempfile
@@ -13,7 +15,7 @@ with tempfile.TemporaryDirectory(prefix='memmap-') as folder:
         subprocess.run(['clang++','-std=c++17','-Wall','-Wextra','-Werror',*flags,*fp.test_include_flags(),str(HERE/'test_memmap_diagnostics.cpp'),'-o',str(exe)],check=True)
         r=subprocess.run([str(exe)],capture_output=True,text=True,timeout=60);print(r.stdout,r.stderr,flush=True);r.check_returncode()
 
-r=fp.src('renderer.cpp').read_text();h=fp.src('address_space_snapshot.h').read_text()
+r=source_text(fp.src('renderer.cpp'));h=fp.src('address_space_snapshot.h').read_text()
 def body(s,start,end):a=s.index(start);return s[a:s.index(end,a)]
 dtor=body(r,'    ~Device() {','    HRESULT STDMETHODCALLTYPE QueryInterface')
 ctor=body(r,'        diagnosticId=InterlockedIncrement(&deviceSerial);','    ~Device() {')
@@ -49,7 +51,7 @@ checks['MemMap: memmapProcess/memmap/memmapAsync/memmapSchedule return first whe
     'if(!memmapEnabled())return;' in body(r,'static void memmapProcess(','// Sampler thread entry')
     and 'if(!NorthlightMemorySwitches::memMap())return;' in asyn and 'if(!NorthlightMemorySwitches::memMap()||!worldDrawSeen)return;' in sched
     and r.count('NorthlightMemMap::snapshot(')==2 and 'deferredRequest.exchange' in sched.split('worldDrawSeen)return;')[1])
-checks['MemMap: loadQuality stores the final value']='NorthlightMemorySwitches::configure(quality.memMap!=0)' in fp.src('world_renderer.h').read_text()
+checks['MemMap: loadQuality stores the final value']='NorthlightMemorySwitches::configure(quality.memMap!=0)' in source_text(fp.src('world_renderer.h'))
 for k,v in checks.items():print(('PASS ' if v else 'FAIL ')+k)
 assert all(checks.values())
 # task 42: new points and their threads
@@ -68,8 +70,8 @@ checks2={
  'memory-deferred: first refusal, then at most once per 10 minutes':'point="memory-deferred"' in sched and 'now-memmapDeferredAt>=600000' in sched and 'deferredRequest.exchange(false' in sched,
  'no per-frame cost when nothing is due (one relaxed load, clock every 32nd frame)':'(frame&31)' in sched and sched.count('GetTickCount()')==1 and 'memmapSchedule(); /* task 42' in fin,
  'a stale refusal of an earlier device is cleared at creation':'deferredRequest.store(false' in ctor2,
- 'worker-side refusal sets the flag with a relaxed store only':all('NorthlightMemMap::deferredRequest.store(true,std::memory_order_relaxed)' in w for w in (fp.src('world_renderer.h').read_text(),)) and fp.src('world_renderer.h').read_text().count('deferredRequest.store(true')==2,
- 'northlight tally: in-world stream atomics and world plain reads, skipped sources named':all(x in r for x in ('streamQueueMiB=','streamBufShadowMiB=','tallySkipped=staticShadowCpuGpu,localScene,replayCaches(need locks)','world->memmapTally(')) and 'meshPoolMiB=%.1f' in fp.src('world_renderer.h').read_text(),
+ 'worker-side refusal sets the flag with a relaxed store only':all('NorthlightMemMap::deferredRequest.store(true,std::memory_order_relaxed)' in w for w in (source_text(fp.src('world_renderer.h')),)) and source_text(fp.src('world_renderer.h')).count('deferredRequest.store(true')==2,
+ 'northlight tally: in-world stream atomics and world plain reads, skipped sources named':all(x in r for x in ('streamQueueMiB=','streamBufShadowMiB=','tallySkipped=staticShadowCpuGpu,localScene,replayCaches(need locks)','world->memmapTally(')) and 'meshPoolMiB=%.1f' in source_text(fp.src('world_renderer.h')),
  'async sampler carries the job without holding its mutex while it runs':'bool requestJob(' in fp.src('async_memory_diagnostics.h').read_text() and 'lock.unlock();\n                try{if(job)job(context,local,size);}' in fp.src('async_memory_diagnostics.h').read_text(),
  'diff list raised to 48 and diff-classes line present':'DiffCap=48' in h and 'emitDiffClasses(sink,label,d)' in h,
  'owner marks in top/diff lists (owner=stack/heap)':'" owner=%s"' in h and 'tagStacks(cur,spans,got)' in h and 'tagHeaps(cur,heapBases,heapHave)' in h and h.index('tagHeaps(cur,heapBases,heapHave)')<h.index('report(sink,label,cur'),

@@ -5,11 +5,13 @@ A recognised water draw writes the liquid mask itself through render target 1 (t
 target 0 / depth switch, no second draw); render target 1 is unbound lazily before anything else that draws, clears or changes
 targets (the rain mask owns the same target); every refusal keeps the 0.3.140 second-draw pass. Also: the appearance passes
 (reflection / composite, NorthlightWaterContext, kWaterEffectsEnabled, their shaders and tools) are gone."""
+
+from source_units import source_text
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
 import re
 
-r=fp.src('renderer.cpp').read_text();w=fp.src('water_renderer.h').read_text()
+r=source_text(fp.src('renderer.cpp'));w=fp.src('water_renderer.h').read_text()
 checks={}
 def between(text,a,b):
     i=text.index(a);return text[i:text.index(b,i)]
@@ -84,7 +86,7 @@ checks['the frame latch requests water for enabled consumers, materials and diag
 fx=between(r,'        rainMrtUnbind(); /* 0.3.202 (rain mask MRT) */\n        ExtensionDevice::RawScope rawEffects','        // discs and glare')
 checks['renderEffects: render target 1 unbound, then the water data decoded, then the mask handed out']=(
     fx.index('rainMrtUnbind();')<fx.index('if(water&&water->maskRequested()&&debugMode==0)')<fx.index('water->resolveMask()')<fx.index('water->maskTextureForDepth(worldMinDepth,worldMaxDepth)'))
-resolve=between(w,'    bool resolveMask(){','    bool mrtResources(')
+resolve=between(w,'    bool resolveMask(','    bool mrtResources(')
 checks['resolveMask: unbinds, resolves the twin once, clears the mask unless a second draw did, one decode draw inside its own SavedState']=(
     resolve.index('unbindMrt()')<resolve.index('StretchRect(twin')<resolve.index('SavedState save')<resolve.index('SetRenderTarget(0,maskSurface)')<resolve.index('SetViewport(&viewport)')<resolve.index('if(SUCCEEDED(hr)&&!captured)hr=d->Clear(')<resolve.index('NorthlightScreen::drawQuad(')
     and resolve.count('NorthlightScreen::drawQuad(')==1 and resolve.count('StretchRect(')==1 and 'clearTarget(maskSurface)' not in resolve)

@@ -12,7 +12,7 @@ constexpr std::size_t kMaxCmdIds=512;   // size of the sync census; command_stre
 // Fixed storage; disabled/ordinary frames read no additional clocks.
 struct ReplayFrameProfile {
     struct Entry {std::uint64_t ns=0;unsigned calls=0,observed=0;};
-    struct Upload {std::uint64_t lockNs=0,copyNs=0,unlockNs=0,maxLockNs=0,maxCopyNs=0,maxUnlockNs=0,bytes=0;unsigned calls=0,skipped=0,failed=0,clockReads=0;} upload;
+    struct Upload {std::uint64_t lockNs=0,copyNs=0,unlockNs=0,maxLockNs=0,maxCopyNs=0,maxUnlockNs=0,bytes=0;unsigned calls=0,skipped=0,failed=0,clockReads=0,coalesced=0;} upload;
     Entry entries[kMaxCmdIds]{};
     static constexpr unsigned StatePrefix=8,StateStride=16;
     std::uint64_t frame=0,totalNs=0,maxNs=0;unsigned calls=0,observed=0,maxId=0;bool enabled=false;
@@ -65,6 +65,7 @@ struct Counters {
     Counter qiMisses{0},foreignEntries{0},foreignPointers{0};
     Counter shadowRefused{0},shadowRefusedBytes{0},shadowLate{0};   // DYNAMIC buffers refused a shadow at creation; shadows granted later at a DISCARD lock
     Counter lockRecordedBytes{0},wholeLockBytes{0};   // bytes copied into the queue by shadow/staged unlocks; the part from whole-buffer locks (size 0)
+    Counter particleUploadTrims{0},particleUploadBytesSaved{0},particleUploadEmpty{0};
     // Per-level texture shadows (own cap, outside the queue budget): locks served from a shadow, shadows made from a fresh
     // lock (nothing to read back) or from one synchronous readback, refusals by the cap.
     Counter texShadowEvicted{0},texShadowFreshUseful{0},texShadowHits{0},texShadowFresh{0},texShadowReadbacks{0},texShadowRefused{0},texShadowRefusedBytes{0};

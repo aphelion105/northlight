@@ -11,22 +11,26 @@ The behaviour itself runs in test_concurrent_geometry_build.py case (d).
 change, never on the 96-unit applicable(); adoption uses the same limit (adopts) so a held
 snapshot and an unadoptable build cannot fill both generations, and the builder's error
 publication keeps a retained region. Hold/retire and skip-episode diagnostics are wired."""
+
+from source_units import source_text
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
 import re
 from pathlib import Path
 HERE=Path(__file__).resolve().parent
-w=fp.src('world_renderer.h').read_text();r=fp.src('renderer.cpp').read_text();g=fp.src('geometry_memory.h').read_text()
+w=source_text(fp.src('world_renderer.h'));r=source_text(fp.src('renderer.cpp'));g=fp.src('geometry_memory.h').read_text()
+clock=fp.src('frame_parity_clock.h').read_text()
 t=(HERE/'test_concurrent_geometry_build.py').read_text()
 def method(signature,text=w):
     start=text.index(signature);end=text.index('\n    }\n',start);return text[start:end]
-render=method('    bool render(IDirect3DSurface9* targetSurface');upload=method('    bool upload(NorthlightStreaming::Budget& streamBudget){')
+render=method('    bool render(IDirect3DSurface9* targetSurface');upload=method('    bool upload(NorthlightStreaming::Budget& streamBudget')
 context=method('    void updateWorldContext(');helper=method('    void releaseOrphanedPending(const char* site){')
 gate='const bool screenResourcesReady=screenReady()&&resources(w,h,fmt,requirements);'
-upload_gate='const bool geometryReady=sceneTargetsReady&&(hadTargets||upload(streamBudget));'
+upload_gate='const bool geometryPrepared=sceneTargetsReady&&(hadTargets||upload(streamBudget));'
+use_gate='const bool geometryReady=geometryPrepared&&admitGeometry;'
 reset='active.reset();expiredMeshPending|=heldDrawable;}'
 retire='const char* retired=active&&!NorthlightWorldStreaming::retained(active->map,active->center,r.map,r.camera)?(active->map!=r.map?"map":"retired"):nullptr;'
-adopt='if(published&&published!=active&&NorthlightWorldStreaming::adopts(published->map,published->center,bool(published->bvh),active&&active->bvh,r.map,r.camera)){'
+adopt='if(admitScene&&published&&published!=active&&NorthlightWorldStreaming::adopts(published->map,published->center,bool(published->bvh),active&&active->bvh,r.map,r.camera)){'
 builder=w[w.index('    void work() {'):w.index('\n    bool check(HRESULT h,const char* s)')]
 error=builder[builder.index('auto publishError='):builder.index('// Geometry validity is spatial')]
 admission='if(!restore&&!generations.canAdmit()){++generationDeferrals;'
@@ -36,7 +40,7 @@ admission='if(!restore&&!generations.canAdmit()){++generationDeferrals;'
 cancel_paths=(helper,method('    bool streamingFailure('),method('    void releaseDefaultMesh(){'))
 retire_pending='retirePendingCpu();';clear_pending='pendingMesh.reset();'
 retirement_order=all(body.index('meshStore.cancel();')<body.index(retire_pending)<body.index(clear_pending) for body in cancel_paths)
-commit=upload[upload.index('meshStore.commit()'):]
+commit=method('    bool commitStagedMesh(')
 commit_order=commit.index(retire_pending)<commit.index(clear_pending)
 
 checks={
@@ -51,6 +55,21 @@ checks={
   and helper.count('logf("WORLD pending mesh released orphan=')==1,
  'upload() uses the helper before staging':upload.count('releaseOrphanedPending("upload");')==1 and upload.index('releaseOrphanedPending("upload");')<upload.index('if(uploaded.lock()!=active->bvh&&!pendingMesh'),
  'render(): release before the ready() and upload gates':render.count('releaseOrphanedPending("render");')==1 and render.count(gate)==1 and render.count(upload_gate)==1 and render.index('releaseOrphanedPending("render");')<render.index(gate)<render.index(upload_gate),
+ 'render(): stage geometry independently of capture checkpoint admission':render.count(use_gate)==1 and render.index(upload_gate)<render.index(use_gate),
+ 'render(): only the stand can finish pending staging on the exact checkpoint':
+  re.search(r'#ifdef NORTHLIGHT_REPLAY_STAND\s+if\(!meshReady&&geometryWanted&&ready\(\)&&screenResourcesReady&&pendingMesh&&!failed&&\s*geometryStart&&rendererFrame==geometryStart&&!menuDomain\)\{[^}]*meshReady=upload\(checkpointBudget,true\);[^}]*\}\s*#endif',render) is not None
+  and 'bool replayCheckpoint=false' in upload and render.index('meshReady=upload(checkpointBudget,true);')<render.index(use_gate),
+ 'fixed streaming checkpoint drops both time cutoffs and keeps work limits':
+  re.search(r'constexpr size_t bytes=32u<<20;\s*const double timeLimit=NorthlightFrameParityClock::fixedGeometryCheckpoint\(\)\?\s*'
+            r'std::numeric_limits<double>::infinity\(\):30\.0;\s*NorthlightStreaming::Budget checkpointBudget\(bytes,timeLimit\);',render) is not None
+  and re.search(r'bool fixedGeometryCheckpoint\(\)\{\s*return enabled\(\)\|\|fixedProfileWork\(\);',clock) is not None
+  and 'fixedCheckpoint=replayCheckpoint&&NorthlightFrameParityClock::fixedGeometryCheckpoint();' in upload
+  and re.search(r'checkpointPageMs=fixedCheckpoint\?\s*'
+                r'std::numeric_limits<double>::infinity\(\):28\.0;',upload) is not None
+  and 'textureLimit=fixedCheckpoint?next.payload->materials.size()-next.material:replayCheckpoint?32u:16u;' in upload
+  and 'stageMeshMaterials(next,pageBudget,streamBudget,textureLimit)' in upload
+  and 'if((fixedCheckpoint||streamBudget.available())&&next.upload.status()==NorthlightWorldMeshPages::Result::Ready&&' in upload
+  and 'next.material==next.payload->materials.size()&&!commitStagedMesh(next)' in upload,
  'updateWorldContext(): release right after the out-of-range active.reset()':
   context.count(reset)==1 and context.count('releaseOrphanedPending("range");')==1 and context.index(reset)<context.index('releaseOrphanedPending("range");')<context.index('logf("WORLD camera tick='), # 0.3.200 added an earlier GetTickCount() local; anchor on the camera line
  '0.3.169 retire on the hard limit or a map change, then the release rule (A2, A5)':
@@ -60,6 +79,12 @@ checks={
  '0.3.169 adoption uses the same hard limit and never takes an error snapshot over a drawable one (A1, A3)':
   context.count(adopt)==1 and context.index(adopt)<context.index(retire)
   and 'inline bool adopts(' in fp.src('world_streaming.h').read_text() and 'return (drawable||!activeDrawable)&&retained(map,center,currentMap,camera);' in fp.src('world_streaming.h').read_text(),
+ 'only the stand delays first World CPU scene adoption in the selected epoch':
+  re.search(r'bool admitScene=true;\s*bool expectScene=false;\s*#ifdef NORTHLIGHT_REPLAY_STAND.*?'
+            r'const unsigned sceneStart=NorthlightFrameParityClock::replayWorldCheckpoint\(parityFrame\)\.scene;\s*'
+            r'admitScene=!sceneStart\|\|menu\|\|parityFrame>=sceneStart;\s*'
+            r'expectScene=!menu&&sceneStart&&parityFrame==sceneStart;\s*#endif',
+            context, re.S) is not None,
  '0.3.169 builder error publication keeps a retained region (A3)':
   'if(published&&published->bvh&&NorthlightWorldStreaming::retained(published->map,published->center,request.map,request.camera)){' in error,
  '0.3.169 handoff and builder coverage checks stay at 96 (A6)':
@@ -84,7 +109,7 @@ checks={
  'fixture region mirrors the production admission marks':'generationStall.deferred(GetTickCount());}deferBuild("generation-deferred"' in t and 'generationStall.admitted();}' in t,
  'watchdog: render thread, inside the request mutex block, once per episode, log only':
   context.count('generationStall.due(GetTickCount(),GenerationStallLogMs)')==1 and context.count('logf("WORLD geometry stalled ')==1
-  and context.index('{std::lock_guard<std::mutex> lock(mutex);')<context.index('generationStall.due(')<context.index('{auto phase=streamingPhases.measure(NorthlightStreaming::PhaseProfile::Retire);')
+  and context.index('{std::unique_lock<std::mutex> lock(mutex);')<context.index('generationStall.due(')<context.index('{auto phase=streamingPhases.measure(NorthlightStreaming::PhaseProfile::Retire);')
   and re.search(r'\bpublished(=[^=]|\.reset\(|\s*=\s*nullptr)',re.sub(r'"[^"]*"','""',context[context.index('generationStall.due('):context.index('{auto phase=streamingPhases.measure(NorthlightStreaming::PhaseProfile::Retire);')])) is None
   and 'GenerationStallLogMs=10000' in w,
  'StallWatch is portable and episode-based':'struct StallWatch {' in g and 'void deferred(uint32_t now){if(!armed){armed=true;since=now;}}' in g and 'void admitted(){armed=false;reported=false;}' in g,

@@ -6,17 +6,34 @@
 #include "scene_pressure_fixture.h"
 #include "world_upload_fault_device.h"
 #include "world_upload_alpha_readback.h"
+struct WorldScreenEffectsTest {
+ static void replaceProbeChannel(NorthlightWorldProbeAtlas& atlas,unsigned channel,IDirect3DTexture9* texture){
+  drop(atlas.current_[channel]);atlas.current_[channel]=texture;texture->AddRef();
+ }
+};
 struct AddressBallast {
  std::vector<void*> blocks;
  ~AddressBallast(){for(void* p:blocks)assert(VirtualFree(p,0,MEM_RELEASE));}
  uint64_t available()const{MEMORYSTATUSEX m{};m.dwLength=sizeof m;assert(GlobalMemoryStatusEx(&m));return m.ullAvailVirtual;}
  uint64_t largest()const{MEMORY_BASIC_INFORMATION m{};uintptr_t p=0;uint64_t best=0;while(VirtualQuery(reinterpret_cast<void*>(p),&m,sizeof m)){if(m.State==MEM_FREE)best=std::max<uint64_t>(best,m.RegionSize);uintptr_t end=reinterpret_cast<uintptr_t>(m.BaseAddress)+m.RegionSize;if(end<=p)break;p=end;}return best;}
- void fill(unsigned mib,bool fragment=true){const uint64_t target=(uint64_t(mib)<<20)+4*1024*1024;while(available()>target+65536){size_t n=size_t(std::min<uint64_t>(16ull<<20,(available()-target)&~65535ull));void* p=VirtualAlloc(nullptr,n,MEM_RESERVE,PAGE_NOACCESS);assert(p);blocks.push_back(p);}
+ void fill(unsigned mib,bool fragment=true){
+  // Keep one free span large enough for the real upload after the coarse
+  // reservations. Releasing it before splitting also caps a merged neighbour.
+  constexpr size_t uploadSpan=48u<<20;
+  void* witness=fragment?VirtualAlloc(nullptr,uploadSpan,MEM_RESERVE,PAGE_NOACCESS):nullptr;
+  const uint64_t target=(uint64_t(mib)<<20)+4*1024*1024-(witness?uploadSpan:0);
+  while(available()>target+65536){
+   const size_t n=size_t(std::min<uint64_t>(16ull<<20,(available()-target)&~65535ull));
+   void* p=VirtualAlloc(nullptr,n,MEM_RESERVE,PAGE_NOACCESS);assert(p);blocks.push_back(p);
+  }
+  if(witness)assert(VirtualFree(witness,0,MEM_RELEASE));
   // Split large free spans using only allocation-granularity reservations.
   // Aggregate free space remains above the requested entry floor throughout.
   for(unsigned pass=0;fragment&&pass<256&&largest()>(96ull<<20);++pass){MEMORY_BASIC_INFORMATION m{};uintptr_t p=0;bool split=false;while(VirtualQuery(reinterpret_cast<void*>(p),&m,sizeof m)){uintptr_t end=reinterpret_cast<uintptr_t>(m.BaseAddress)+m.RegionSize;if(m.State==MEM_FREE&&m.RegionSize>(96u<<20)){uintptr_t mid=(reinterpret_cast<uintptr_t>(m.BaseAddress)+m.RegionSize/2+65535)&~uintptr_t(65535);void* q=VirtualAlloc(reinterpret_cast<void*>(mid),65536,MEM_RESERVE,PAGE_NOACCESS);if(q){blocks.push_back(q);split=true;break;}}if(end<=p)break;p=end;}if(!split)break;}
   while(available()>(uint64_t(mib)<<20)+384*1024){void* p=VirtualAlloc(nullptr,65536,MEM_RESERVE,PAGE_NOACCESS);assert(p);blocks.push_back(p);}
-  assert(available()>=(uint64_t(mib)<<20)&&(!fragment||largest()<=(96ull<<20))&&largest()>=(33ull<<20));
+  const auto entry=available(),span=largest();
+  std::printf("ADDRESS_BALLAST targetMiB=%u availableMiB=%.3f largestMiB=%.3f reservedWitness=%u\n",mib,entry/1048576.,span/1048576.,unsigned(witness!=nullptr));
+  assert(entry>=(uint64_t(mib)<<20)&&(!fragment||span<=(96ull<<20))&&span>=(33ull<<20));
  }
 };
 struct VaSampler {
@@ -100,7 +117,7 @@ struct WorldColdUploadTest {
   do{const bool audit=meter.auditAllocations;meter.auditAllocations=false;ready=w.resources(width,height,D3DFMT_A16B16G16R16F);meter.auditAllocations=audit;if(ready)break;
    if(observe)observe();assert(!w.failed);assert(SUCCEEDED(w.d->Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0)));assert(SUCCEEDED(w.d->Present(nullptr,nullptr,nullptr,nullptr)));Sleep(1);
   }while(DWORD(GetTickCount()-started)<30000);
-  assert(ready&&w.width==width&&w.height==height&&w.liveTerrainDecl);
+  assert(ready&&w.width==width&&w.height==height&&w.shadowPrograms.liveLayout());
  }
  static void complete(WorldRenderer& w,const std::shared_ptr<WorldRenderer::Snapshot>& next,const std::function<void()>& observe={}){
   w.active=next;const auto started=GetTickCount();unsigned iterations=0;
@@ -119,7 +136,7 @@ struct WorldColdUploadTest {
   }return snapshot;
  }
  static void reportMeshReferences(WorldRenderer& w){if(!std::getenv("NORTHLIGHT_TRACE_ALLOCATIONS"))return;unsigned maxVB=0,maxIB=0;uint64_t capacities=0;for(const auto& page:w.meshBuffers){if(page.vb){page.vb->AddRef();maxVB=std::max(maxVB,unsigned(page.vb->Release()));}if(page.ib){page.ib->AddRef();maxIB=std::max(maxIB,unsigned(page.ib->Release()));}}for(const auto& entry:w.meshStore.entries())capacities+=entry.capacity();std::printf("MESH_PUBLIC_REFERENCES maxVB=%u maxIB=%u resourceCapacityMiB=%.6f\n",maxVB,maxIB,double(capacities)/1048576);}
- static void preloadProbes(WorldRenderer& w){for(unsigned i=0;i<5;++i){w.traceUpload("probe-before-preload",i);w.probe[i]->PreLoad();w.traceUpload("probe-after-preload",i);}w.traceUpload("probe-before-preload",5);w.probePrev->PreLoad();w.traceUpload("probe-after-preload",5);assert(w.uploadedSerial==w.active->serial&&w.uploadedSerial!=0);}
+ static void preloadProbes(WorldRenderer& w){for(unsigned i=0;i<5;++i){w.traceUpload("probe-before-preload",i);w.probeAtlas.channel(i)->PreLoad();w.traceUpload("probe-after-preload",i);}w.traceUpload("probe-before-preload",5);w.probeAtlas.previous()->PreLoad();w.traceUpload("probe-after-preload",5);assert(w.uploadedSerial==w.active->serial&&w.uploadedSerial!=0);}
  static void actual(UploadFaultDevice& d,unsigned target,D3DPRESENT_PARAMETERS& parameters,const std::string& worldCache,bool warm=false,NorthlightGI::Vec3 center={5139.84f,-56.93f,380.31f}){
   const bool diagnoseTransient=std::getenv("NORTHLIGHT_DIAGNOSE_TRANSIENT")!=nullptr;
   Spooling=true;auto renderer=std::make_unique<WorldRenderer>(&d);auto& w=*renderer;w.quality.actorShadows=w.quality.actorShadowDetail=1;w.quality.pointShadowLimit=128;w.valid=true;assert(w.resources(3840,2160,D3DFMT_A16B16G16R16F));auto* baselineTexture=warmBackend(d);
@@ -137,7 +154,7 @@ struct WorldColdUploadTest {
     if(warm&&!faultObserved&&d.failAt&&d.indices==d.failAt&&w.meshStore.table()==oldTable&&w.uploaded.lock()==prior.bvh){faultObserved=true;d.failAt=0;w.meshRetry.failedAt-=1000;}
     else{trace(w,"actual-refusal");assert(false&&"real scene GPU upload refused");}
    }}
-  assert(w.uploaded.lock()==snapshot->bvh&&built.plan->payload.live()&&faultObserved==warm);const auto cutoutOwners=w.materials;preloadProbes(w);const auto afterUpload=observe();assert(afterUpload>=NorthlightGeometryMemory::ProcessReserve);trace(w,"actual-upload-complete");stage="geometry-targets";assert(w.geometryResources(3840,2160)&&w.geometryTargetsReady&&w.actorVisibility&&w.probePrev);observe();for(unsigned resetPass=0;resetPass<3;++resetPass){const auto resetCycleStarted=GetTickCount();if(resetPass==1&&target==307&&!warm&&ballast.available()>(249ull<<20)){ballast.fill(248);std::printf("ACTUAL_RESET_REPEAT_PRESSURE controlledTargetMiB=248 separateFromInitialEntry=1\n");}std::printf("ACTUAL_RESET_REPEAT pass=%u availableMiB=%.3f\n",resetPass+1,double(ballast.available())/1048576);stage="reset";trace(w,"actual-before-reset");reportMeshReferences(w);std::array<IDirect3DTexture9*,6> retainedProbes;for(unsigned i=0;i<5;++i)retainedProbes[i]=w.probe[i];retainedProbes[5]=w.probePrev;w.reset();assert(w.pressureReplayAllocation());trace(w,"actual-renderer-reset");trace(w,"actual-release-not-forced");assert(SUCCEEDED(d.Reset(&parameters)));trace(w,"actual-device-reset");w.valid=true;screenResources(w,3840,2160,d,[&]{observe();});trace(w,"actual-reset-resources");complete(w,snapshot,[&]{observe();});assert(w.materials.size()==cutoutOwners.size()&&lastCommitTextureUploads>0);preloadProbes(w);observe();for(unsigned i=0;i<5;++i)assert(w.probe[i]==retainedProbes[i]);assert(w.probePrev==retainedProbes[5]);assert(w.geometryResources(3840,2160)&&w.geometryTargetsReady&&w.actorVisibility&&w.probePrev);observe();assert(SUCCEEDED(d.Present(nullptr,nullptr,nullptr,nullptr)));drain(d);const auto resetCycleMs=DWORD(GetTickCount()-resetCycleStarted);std::printf("ACTUAL_RESET_REPEAT_COMPLETE pass=%u wallMs=%lu\n",resetPass+1,(unsigned long)resetCycleMs);assert(resetCycleMs<5000&&"Reset replay must not wait for backend allocator garbage collection");}const auto settled=ballast.available();sampler.end();d.auditAllocations=false;std::printf("ACTUAL_FINAL_RESERVE availableMiB=%.3f badAdmissions=%u\n",double(settled)/1048576,d.badAdmissions);std::printf("ACTUAL_PAGE_LOCKS fresh=%u synchronized=%u firstPublicationTracked=1\n",freshPageLocks,synchronizedPageLocks);assert(freshPageLocks);assert(d.badAdmissions==0&&w.uploaded.lock()==snapshot->bvh&&w.geometryTargetsReady);
+  assert(w.uploaded.lock()==snapshot->bvh&&built.plan->payload.live()&&faultObserved==warm);const auto cutoutOwners=w.materials;preloadProbes(w);const auto afterUpload=observe();assert(afterUpload>=NorthlightGeometryMemory::ProcessReserve);trace(w,"actual-upload-complete");stage="geometry-targets";assert(w.geometryResources(3840,2160)&&w.geometryTargetsReady&&w.actorMaps.visibility().texture&&w.probeAtlas.previous());observe();for(unsigned resetPass=0;resetPass<3;++resetPass){const auto resetCycleStarted=GetTickCount();if(resetPass==1&&target==307&&!warm&&ballast.available()>(249ull<<20)){ballast.fill(248);std::printf("ACTUAL_RESET_REPEAT_PRESSURE controlledTargetMiB=248 separateFromInitialEntry=1\n");}std::printf("ACTUAL_RESET_REPEAT pass=%u availableMiB=%.3f\n",resetPass+1,double(ballast.available())/1048576);stage="reset";trace(w,"actual-before-reset");reportMeshReferences(w);std::array<IDirect3DTexture9*,6> retainedProbes;for(unsigned i=0;i<5;++i)retainedProbes[i]=w.probeAtlas.channel(i);retainedProbes[5]=w.probeAtlas.previous();w.reset();assert(w.pressureReplayAllocation());trace(w,"actual-renderer-reset");trace(w,"actual-release-not-forced");assert(SUCCEEDED(d.Reset(&parameters)));trace(w,"actual-device-reset");w.valid=true;screenResources(w,3840,2160,d,[&]{observe();});trace(w,"actual-reset-resources");complete(w,snapshot,[&]{observe();});assert(w.materials.size()==cutoutOwners.size()&&lastCommitTextureUploads>0);preloadProbes(w);observe();for(unsigned i=0;i<5;++i)assert(w.probeAtlas.channel(i)==retainedProbes[i]);assert(w.probeAtlas.previous()==retainedProbes[5]);assert(w.geometryResources(3840,2160)&&w.geometryTargetsReady&&w.actorMaps.visibility().texture&&w.probeAtlas.previous());observe();assert(SUCCEEDED(d.Present(nullptr,nullptr,nullptr,nullptr)));drain(d);const auto resetCycleMs=DWORD(GetTickCount()-resetCycleStarted);std::printf("ACTUAL_RESET_REPEAT_COMPLETE pass=%u wallMs=%lu\n",resetPass+1,(unsigned long)resetCycleMs);assert(resetCycleMs<5000&&"Reset replay must not wait for backend allocator garbage collection");}const auto settled=ballast.available();sampler.end();d.auditAllocations=false;std::printf("ACTUAL_FINAL_RESERVE availableMiB=%.3f badAdmissions=%u\n",double(settled)/1048576,d.badAdmissions);std::printf("ACTUAL_PAGE_LOCKS fresh=%u synchronized=%u firstPublicationTracked=1\n",freshPageLocks,synchronizedPageLocks);assert(freshPageLocks);assert(d.badAdmissions==0&&w.uploaded.lock()==snapshot->bvh&&w.geometryTargetsReady);
   std::printf("ACTUAL_SCENE_READY afterSubmissionMiB=%.3f minimumBoundaryMiB=%.3f sampledBackendMinimumMiB=%.3f samples=%llu lowBoundarySamples=%u productionWallMs=%lu admittedResources=%u badAdmissions=%u lowestAdmissionMiB=%.3f recoveryAdmissions=%u lowestRecoveryAdmissionMiB=%.3f\n",double(settled)/1048576,double(minimum)/1048576,double(sampler.minimum.load())/1048576,(unsigned long long)sampler.samples.load(),lowBoundarySamples,(unsigned long)DWORD(GetTickCount()-productionStarted),d.auditedAllocations,d.badAdmissions,double(d.lowestAdmissionAvailable)/1048576,d.recoveryAdmissions,double(d.lowestRecoveryAdmission)/1048576);
   std::printf("ACTUAL_SCENE_PRODUCTION_COMPLETE minimumMiB=%.3f beforeOracleMiB=%.3f\n",double(minimum)/1048576,double(ballast.available())/1048576);{
    auto payload=built.plan->payload.share();assert(payload&&payload->materials.size()==w.materials.size());std::array<uint8_t,65536> expected{};uint64_t compared=0;

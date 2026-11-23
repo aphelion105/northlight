@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# northlight-test: requires=cxx
+# northlight-test: requires=zig
 """0.3.209 (task 29) actor shadow map: native model test of actor_shadow_map.h (clang++, plain and ASan/UBSan) and a wiring
 audit of world_renderer.h / quality_settings.h (static source analysis): the actor map is drawn in the near
 map's iteration (cascade 0), including retained-environment frames, only cascade 0 skips replays inside the inset, ActorShadowDetail=0
@@ -7,14 +7,16 @@ map's iteration (cascade 0), including retained-environment frames, only cascade
 visibility for the WorldLighting loop only (0.3.214: the water appearance pass that also received the maps is gone). No game or GPU."""
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
-import re,subprocess,tempfile
+from source_units import source_text, world_render_path
+import os,re,subprocess
 HERE=Path(__file__).resolve().parent
-w=fp.src('world_renderer.h').read_text();q=fp.src('quality_settings.h').read_text()
+w=source_text(fp.src('world_renderer.h'));q=fp.src('quality_settings.h').read_text()
 geometry=fp.src('world_geometry_resources.inl').read_text()
 screen=fp.src('world_screen_resources.inl').read_text()
 h=fp.src('actor_shadow_map.h').read_text()
-actor_shaders=w[w.index('    void actorShaderResources('):w.index('#include "world_screen_resources.inl"')]
-render=w[w.index('    bool render(IDirect3DSurface9* targetSurface'):]
+owner=fp.src('world_actor_shadows.h').read_text()
+actor=fp.src('world_directional_actor_draw.inl').read_text()
+render=world_render_path(w)
 checks={}
 checks['constants: Radius 12, Inset .80, Size 1024; unsnapped centre (XY from the leashed centre, depth from the pivot); matrix rows from shadowMatrixFrom']=('inline constexpr float Radius=12.f;' in h and 'inline constexpr float Inset=.80f;' in h and 'inline constexpr unsigned Size=1024;' in h
     and 'f.cx=dot(center,f.x);f.cy=dot(center,f.y);' in h and 'NorthlightWorldMath::shadowMatrixFrom(frame(center,pivot,sun),Radius,m);' in h
@@ -26,13 +28,14 @@ checks['quality: ActorShadowDetail 0..1, presets 1/1/0, actorShadowMap needs Act
 # Frame matrices from the raw pivot, before the cascade anchor (the anchor test keeps every later `pivot` out).
 raw=render.index('NorthlightActorShadowMap::leash(actorCenter[source],actorCenterValid[source],pivot,rawSourceDirections[source])')
 checks['matrix from the raw pivot, before the anchored cascade pivot; off = nothing computed']=(raw<render.index('cascadeAnchor.update(')
-    and 'const bool actorMapOn=NorthlightQuality::actorShadowMap(quality,directionalShadows)&&actorShadowPS&&actorTilesPS&&actorShadow[0]&&actorShadow[1]&&actorTiles[0]&&actorTiles[1]&&actorTilesMid&&actorVisibility;' in render
+    and 'const bool actorMapOn=NorthlightQuality::actorShadowMap(quality,directionalShadows)&&actorMaps.ready(0)&&actorMaps.ready(1);' in render
     and 'actorFrameOn[source]=NorthlightActorShadowMap::finiteMatrix(actorFrameMatrix[source]);if(!actorFrameOn[source])actorCenterValid[source]=false;' in render
     and 'NorthlightActorShadowMap::matrix(actorCenter[source],pivot,rawSourceDirections[source],actorFrameMatrix[source]);' in render
     and 'if(anchorNewMap)actorCenterValid[source]=false;' in render and render.index('if(anchorNewMap)actorCenterValid[source]=false;')<raw
-    and 'actorCenterValid[s]=false;' in w and 'actorCenterValid[0]=actorCenterValid[1]=false;' in w and w.count('actorCenterValid[0]=actorCenterValid[1]=false;')==1) # releaseGPU (reset() calls it)
+    and 'actorCenterValid[s]=false;' in w and 'releaseShadowMapsOnReset();' in w
+    and (w+geometry).count('actorCenterValid[0]=actorCenterValid[1]=false;')==1)
 checks['leash: 1.5 yd, 40 yd jump re-centre; diagnostic dump s%d-actor']=('inline constexpr float Leash=1.5f;' in h and 'inline constexpr float JumpDistance=40.f;' in h
-    and 'std::snprintf(name,sizeof name,"s%d-actor",source);NorthlightWorldDiagnostics::dump(d,actorShadowSurface[source]' in w)
+    and 'std::snprintf(name,sizeof name,"s%d-actor",source);NorthlightWorldDiagnostics::dump(d,actorMaps.depth(source).surface' in actor)
 checks['a source without a near map keeps no actor map']='if(!actorMapOn||!sourceActive[source]){actorValid[source]=false;actorHold[source].invalidate();}' in render
 # Pairing: invalid when the near map is redrawn, valid only after the actor draw; a reused/deferred near map continues before any of it.
 loop=render[render.index('        for(int source=0;source<2;++source){\n          if(!directionalShadows||!sourceActive[source])continue;'):]
@@ -40,21 +43,25 @@ reuse=loop.index('if(action!=NorthlightQuality::CascadeAction::Render){')
 begin=loop.index('reuse.begin(interval);')
 invalid=loop.index('if(cascade==0)actorValid[source]=nearActorSkip[source]=false;')
 draw=loop.index('if(cascade==0&&actorFrameOn[source]){')
-valid=loop.index('memcpy(actorMatrices[source],am,64);actorValid[source]=true;')
-union=loop.index('if(!unionShadow(shadowSurface[slot],dynamicShadow,nearEnvironment[source],0,0,0,1024))return false;')
+submit=loop.index('if(!drawDirectionalActors(gpuPass,source,context.inverseView,actorFrameMatrix[source],nearSkip,sideDiag,')
+union=loop.index('if(!unionShadow(directionalMaps.current(slot).surface,dynamicShadow,directionalMaps.nearEnvironment(source).texture,0,0,0,1024))return false;')
 checks['actor map is current: only unsplit reuse continues; actor draw precedes final union and environment commit']=(
-    reuse<begin<invalid<draw<valid<union and loop.index('continue;',reuse)<begin and 'if(!splitNear){' in loop[reuse:begin] and 'if(!environmentReuse)reuse.begin(interval);' in loop
-    and 'reuse.commit(interval,shadowPasses,matrices[cascade])' in loop and valid<loop.index('reuse.commit(interval,shadowPasses,matrices[cascade])'))
-actor=loop[draw:loop.index('} /* actorShadows */')]
-checks['transition dynamic target retains baseline scratch and current poses without extra actor replay']=('dynamicShadow=(historyReady||transition.state.fading())?transition.dynamic:shadowScratch' in loop and 'dynamicSurface=(historyReady||transition.state.fading())?transition.dynamicSurface:shadowScratchSurface' in loop and 'if(!historyReady&&!transition.state.fading())' in loop)
+    reuse<begin<invalid<draw<submit<union and loop.index('continue;',reuse)<begin and 'if(!splitNear){' in loop[reuse:begin] and 'if(!environmentReuse)reuse.begin(interval);' in loop
+    and actor.index('runDirectionalReplays(')<actor.index('memcpy(actorMatrices[source],am,64);actorValid[source]=true;')
+    and submit<loop.index('reuse.commit(interval,shadowPasses,matrices[cascade])'))
+checks['transition dynamic target retains baseline scratch and current poses without extra actor replay']=('dynamicShadow=(historyReady||transition.state.fading())?transition.dynamic:directionalMaps.scratch().texture' in loop and 'dynamicSurface=(historyReady||transition.state.fading())?transition.dynamicSurface:directionalMaps.scratch().surface' in loop and 'beginNearReplay(dynamicSurface,historyReady||transition.state.fading())' in loop)
 checks['actor draw: own target, shared 1024 depth, cleared white/1, cascade replay machinery, actor matrix, exactly the near-skipped replays']=(
-    'actorShadowSurface[source]' in actor and 'd->SetDepthStencilSurface(shadowDepth);' in actor and '0xffffffff,1,0' in actor
-    and 'replayProjection(context.inverseView,am,actorRows)' in actor and 'submitReplay(p.get(),actorBindings,actorPoses,actorRows,' in actor
-    and 'if(nearSkip)for(const uint32_t index:actorReplays){const auto& p=replays[index];' in actor and 'for(size_t index=0;index<replays.size();++index)' not in actor and 'staticProofMask' not in actor and 'actorFrameMatrix[source]' in actor and 'const float* am=actorFrameMatrix[source];' in actor)
+    'gpuPass.beginActor(actorMaps.depth(source).surface)' in actor and '},directionalMaps.depth());' in render
+    and '0xffffffff,1,0' in fp.src('directional_gpu_pass.h').read_text()
+    and 'replayProjection(inverseView,am,actorRows)' in actor and 'submitReplay(p.get(),actorPass,actorRows,' in actor
+    and 'if(nearSkip){' in actor and 'runDirectionalReplays(actorReplays,actorRows,am,actorPass,actorReplayWork,actorIssue,actorTrack)' in actor
+    and 'else for(const uint32_t index:actorReplays)' in actor and 'for(size_t index=0;index<replays.size();++index)' not in actor
+    and 'staticProofMask' not in actor)
 # The near skip: cascade 0 only, valid bounds only (insideInset rejects invalid bounds), actor matrix.
 checks['near skip: cascade 0 only, never the far map, by the inset test on valid bounds']=(
     'bool nearSkip=cascade==0&&actorFrameOn[source];' in loop and 'if(nearSkip){actorReplays.clear();try{actorReplays.reserve(replays.size());}catch(...){nearSkip=false;}}' in loop
-    and 'NorthlightActorShadowMap::insetExtent(p->pointBounds.valid,p->pointBounds.low,p->pointBounds.high,matrix,NorthlightActorShadowMap::Stay);' in loop
+    and 'InsetProjection actorInset(nearSkip?actorFrameMatrix[source]:nullptr' in loop
+    and 'actorInset.extent(p->pointBounds.valid,p->pointBounds.low,p->pointBounds.high,NorthlightActorShadowMap::Stay);' in loop
     and 'if(inActor){actorReplays.push_back(uint32_t(index));++nearSkipped;' in loop and 'extent<=NorthlightActorShadowMap::Inset' in loop
     and loop.count('insideInset(')==1 and 'insideInset(true,p->captureRoot,p->captureRoot,actorFrameMatrix[source])){if(p->shared)side.invalidNear();else side.unsupportedNear();}' in loop and 'if(!valid||!low||!high||!m)return false;' in h
     and h.count('std::isfinite(m[i])')==1 and h.index('std::isfinite(m[i])')<h.index('inline bool insideInset(')) # the matrix once per frame (finiteMatrix), not per replay
@@ -68,55 +75,77 @@ checks['near map with skipped casters is redrawn, not reused, once its actor map
 checks['profile marks: the near replays before the actor map have their own name (SunNear/MoonNear stay unique)']=(
     'profile->mark(source==0?"SunNearReplays":"MoonNearReplays")' in loop and loop.count('"SunNear"')==2)
 # Shared soft shadows resolve both maps together. Hard shadows and failed resolves use the separate visibility target.
-light=render[render.index('bool actorPass[2]'):render.index('if(profile)profile->mark(mergedGI?"WorldLightingGI":"WorldLighting");')]
-checks['visibility target and clear only on a frame with an ActorShadow pass (a valid actor map of a drawn, active source); otherwise neutralWhite']=(
-    light.index('actorPass[source]=!(')<light.index('if(anyActorPass){')<light.index('if(!anyActorPass)return true;')
-    and '||!applyDirectionalShadows||!sourceActive[source]||!actorValid[source]||!actorShadow[source]||!actorShadowPS||!actorTilesPS||!actorTiles[source]||!actorTilesMid||!actorVisibility);' in light
-    and 'if(!sharedResolveRequested&&!resolveActorVisibility())return false;' in light and 'if(!softResolved&&!resolveActorVisibility())return false;' in light
-    and 'if(!actorPass[source])continue;' in light and light[:light.index('bool softResolved=')].count('0xffffffff')==1)
-checks['every ActorTiles pass (own 64x64 target per source, own mark) before the visibility clear, so the visibility target is cleared and drawn without a switch; tiles on s10 (restored after)']=(
-    light.index('d->SetPixelShader(actorTilesPS);')<light.index('if(!check(quad(tiles,tiles),"actor shadow tile pass"))return false;')<light.index('if(profile)profile->mark("ActorTiles");')
-    <light.index('"clear actor visibility"')<light.index('d->SetTexture(12,actorShadow[source]);d->SetTexture(10,actorTiles[source]);')<light.index('d->SetPixelShader(quality.softShadows?actorShadowPS:actorUniformPS);')
-    and light.index('d->SetRenderTarget(0,actorTilesMidSurface)')<light.index('if(!check(quad(mid,mid),"actor shadow tile pass"))return false;')<light.index('d->SetRenderTarget(0,actorTilesSurface[source])')
-    <light.index('d->SetTexture(12,actorTilesMid);d->SetPixelShaderConstantF(72,midInfo,1);')<light.index('if(!check(quad(tiles,tiles),"actor shadow tile pass"))return false;') # two 4x4 steps: 1024 -> 256 -> 64
-    and light.count('SetRenderTarget(0,actorVisibilitySurface)')==1
-    and '!makeTarget(count,count,D3DFMT_R32F,&actorTiles[0],&actorTilesSurface[0])||!makeTarget(count,count,D3DFMT_R32F,&actorTiles[1],&actorTilesSurface[1])' in geometry
-    and 'd->SetTexture(10,textures[10]);' in light and light.index('d->SetPixelShader(quality.softShadows?actorShadowPS:actorUniformPS);')<light.index('d->SetTexture(10,textures[10]);'))
-checks['ActorShadow pass: c68..c71 matrix, c72 info, actor map on s12, RED sun / GREEN moon, mask restored']=(
-    'SetPixelShaderConstantF(68,actorMatrices[source],4)' in light and 'SetPixelShaderConstantF(72,actorInfo,1)' in light and 'const float actorInfo[4]={1.f,1.f/float(NorthlightActorShadowMap::Size),NorthlightActorShadowMap::Radius,0.f};' in light
-    and 'd->SetTexture(12,actorShadow[source]);d->SetTexture(10,actorTiles[source]);' in light and 'source?D3DCOLORWRITEENABLE_GREEN:D3DCOLORWRITEENABLE_RED' in light and 'D3DRS_COLORWRITEENABLE,15' in light)
+resolve=fp.src('world_soft_shadows.inl').read_text()
+screen_lighting=fp.src('world_screen_lighting.inl').read_text()
+atmospheric_fog=fp.src('world_atmospheric_fog.inl').read_text()
+screen_owner=fp.src('world_screen_lighting.h').read_text()
+light=screen_owner[:screen_owner.index('if(profile)profile->mark(mergedGI?"WorldLightingGI":"WorldLighting");')]
+distance_only=screen_owner[screen_owner.index('static void bindDistanceOnly('):screen_owner.index('template<class Pixel>')]
+before_local=render[render.index('history.resolveLighting('):render.index('if(!renderLocalLighting(')]
+tiles=owner[owner.index('bool buildTiles('):owner.index('bool resolveVisibility(')]
+visibility=owner[owner.index('bool resolveVisibility('):owner.index('private:')]
+checks['separate resolve only for admitted actor sources, including failed shared resolution']=(
+    resolve.index('actorPass[source]=!(')<resolve.index('if(anyActorPass){')<resolve.index('!anyActorPass||actorMaps.resolveVisibility(')
+    and '||!mapsReady||!sourceActive[source]||!actorValid[source]||!actorMaps.ready(source));' in resolve
+    and 'const bool fogShadowMapsReady=geometryReady&&applyDirectionalShadows;' in render
+    and 'resolveDirectionalVisibility(w,h,firstSource,sourceActive,fogShadowMapsReady,anyShadowTransition,' in render
+    and 'if(!sharedResolveRequested&&!resolveActorVisibility())return false;' in resolve
+    and 'if(!softResolved&&!resolveActorVisibility())return false;' in resolve
+    and 'if(!active[source])continue;' in visibility and visibility.count('0xffffffff')==1)
+checks['tile reduction uses shared scratch, then a per-source target, then marks the pass']=(
+    tiles.index('SetRenderTarget(0,tileScratch_.surface)')<tiles.index('drawViewportQuad(d,Mid,Mid)')<
+    tiles.index('SetRenderTarget(0,tiles(source).surface)')<tiles.index('SetTexture(12,tileScratch_.texture)')<
+    tiles.index('drawViewportQuad(d,Tiles,Tiles)')<tiles.index('wideCurrent[source]=wide;')
+    and resolve.index('actorMaps.buildTiles(')<resolve.index('profile->mark("ActorTiles")')<resolve.index('actorMaps.resolveVisibility(')
+    and 'square(Tiles,tiles_[0])&&square(Tiles,tiles_[1])' in owner)
+checks['ActorShadow binds its matrix and inputs, resolves sun red or moon green, and restores the borrowed slot']=(
+    visibility.index('"clear actor visibility"')<visibility.index('SetPixelShaderConstantF(68,matrices[source],4)')<
+    visibility.index('SetTexture(12,depth(source).texture);d->SetTexture(10,tiles(source).texture)')<
+    visibility.index('SetPixelShader(soft?filter_:uniform_)')<visibility.index('SetTexture(10,restoreMetadata)')
+    and 'SetPixelShaderConstantF(72,Info,1)' in visibility
+    and 'source?D3DCOLORWRITEENABLE_GREEN:D3DCOLORWRITEENABLE_RED' in visibility
+    and 'D3DRS_COLORWRITEENABLE,15' in visibility)
 checks['s12: actor visibility for WorldLighting, then baseline visibility for later lighting readers']=(
-    light.index('d->SetTexture(12,!sharedResolved&&anyActorPass?actorVisibility:neutralWhite);')<light.index('d->SetPixelShader(unshadowedLighting?lightingUnshadowedPS:sharedResolved?lightingSharedPS:softResolved?lightingSoftPS:lightingPS);')
-    and 'd->SetTexture(12,baselineLight); // The following lighting consumers use this frame\'s baseline and visibility.' in light and light.rstrip().endswith('d->SetTexture(15,nullptr);')
-    and 'textures[]={foldScene?foldScene:color,depth,shadow[0],shadow[1],probe[0],probe[1],probe[2],probe[3],nullptr,nullptr,probe[4],waterMask,nullptr,' in render
+    resolve.index('actorMaps.bindLightingVisibility(d,!sharedResolved&&anyActorPass,screenFallbacks.white());')<resolve.index('result.sharedResolved=sharedResolved;')
+    and 'd->SetTexture(12,useMask?visibility_.texture:neutral);' in owner
+    and render.index('if(!worldNormals.draw(')<render.index('},visibility))return false;')<render.index('if(!renderCelestialLighting(celestialInputs,visibility,')<render.index('history.resolveLighting(')
+    and 'd->SetPixelShader(unshadowedLighting?unshadowed_:in.softResolved?in.resolvedLighting:directional_);' in light
+    and 'directionalVisibility.lighting(visibility.sharedResolved)' in screen_lighting
+    and 'd->SetTexture(12,baseline_.texture);' in light and light.rstrip().endswith('d->SetTexture(15,nullptr);')
+    and 'textures[]={foldScene?foldScene:composite.scratchTexture(),depth,directionalMaps.current(0).texture,directionalMaps.current(1).texture,probeAtlas.channel(0),probeAtlas.channel(1),probeAtlas.channel(2),probeAtlas.channel(3),nullptr,nullptr,probeAtlas.channel(4),waterMask,nullptr,' in render
     # The no-lighting branch substitutes zero. No subsequent pass may inherit
     # the actor mask as a lighting baseline.
-    and re.findall(r'SetTexture\(12,([^)]*)\)', render[render.index('if(profile)profile->mark(mergedGI?"WorldLightingGI":"WorldLighting");'):render.index('        if(positionalLighting){')]) == ['neutralZero']
-    and render.index('d->SetTexture(12,baselineLight);',render.index('"fog clouds raymarch"'))<render.index('        if(effects.fog&&localFogActive){'))
-checks['resources: maps, tiles and visibility only with the shaders (ActorShadowDetail=1) and optional (a failure turns the map off, not the renderer); neutral white mandatory 1x1; released with the rest']=(
-    "releaseActorTargets();logf(\"WORLD actor shadow map disabled: render targets unavailable\");" in geometry and 'actorVisibility,&actorVisibilitySurface))return false;' not in geometry
-    and '||!makeTarget(w/2,h/2,D3DFMT_A8R8G8B8,&actorVisibility,&actorVisibilitySurface)' in geometry
-    and 'if(!quality.actorShadows||!quality.actorShadowDetail)return;' in actor_shaders
-    and 'if(!actorShadowPS&&(FAILED(d->CreatePixelShader(kActorShadowShader,&actorShadowPS))||FAILED(d->CreatePixelShader(kActorTilesShader,&actorTilesPS))||FAILED(d->CreatePixelShader(kActorShadowUniformShader,&actorUniformPS))))' in actor_shaders
-    and 'drop(actorShadowPS);drop(actorUniformPS);drop(actorTilesPS);logf("WORLD actor shadow map disabled: shader creation failed");return;' in actor_shaders
-    and 'actorShaderResources(caps);' in screen and 'if(actorTargetsPending){D3DCAPS9 caps={};d->GetDeviceCaps(&caps);actorShaderResources(caps);}' in geometry
-    and 'void releaseActorTargetTextures(){for(auto& t:actorShadow)drop(t);for(auto& t:actorShadowSurface)drop(t);for(auto& t:actorTiles)drop(t);for(auto& t:actorTilesSurface)drop(t);drop(actorTilesMid);drop(actorTilesMidSurface);drop(actorVisibility);drop(actorVisibilitySurface);}' in w
-    and 'void releaseActorTargets(){releaseActorTargetTextures();drop(actorShadowPS);drop(actorUniformPS);drop(actorTilesPS);drop(actorTilesWidePS);drop(fogActorTiledPS);drop(fogCloudsActorTiledPS);}' in w
-    and 'releaseActorTargets();drop(neutralWhite);' in w and '*static_cast<DWORD*>(lock.pBits)=0xffffffffu;neutralWhite->UnlockRect(0);' in screen
+    and before_local.count('screenLighting.bindDistanceOnly(')==1 and 'SetTexture(12,' not in before_local
+    and re.findall(r'SetTexture\(12,([^)]*)\)', distance_only) == ['neutralZero']
+    and atmospheric_fog.index('"fog clouds raymarch"')<atmospheric_fog.index('commands.restoreLighting(textures,screenLighting.baseline().texture')<atmospheric_fog.index('if(!drawAtmosphericFog(')<atmospheric_fog.index('        if(effects.fog&&localFogActive&&'))
+checks['actor targets follow optional shader admission and release through their owner']=(
+    'if(!actorMaps.createTargets(w,h,makeTarget))' in geometry
+    and 'if(deferred||hr==E_OUTOFMEMORY||hr==D3DERR_OUTOFVIDEOMEMORY)return false;' in geometry
+    and geometry.index('actorMaps.dropResources();')<geometry.index('WORLD actor shadow map disabled: render targets unavailable')
+    and 'if(!filter_)return true;' in owner
+    and 'allocate(w/2,h/2,D3DFMT_A8R8G8B8,&visibility_.texture,&visibility_.surface)' in owner
+    and 'quality.actorShadows&&quality.actorShadowDetail,regionalFogGpu.actorVariants()' in w
+    and 'drop(filter_);drop(uniform_);drop(tilesShader_);' in owner
+    and 'prepareActorShaders(caps);' in screen and 'if(actorMaps.pending())' in geometry
+    and 'actorMaps.releaseTextures();' in geometry and 'actorMaps.settingsChanged();' in w
+    and 'releaseShadowMapsOnReset();' in w and 'actorMaps.reset();\n        screenFallbacks.releaseShadow();' in geometry
+    and 'drop(tileScratch_.texture);drop(tileScratch_.surface);' in owner
+    and 'drop(visibility_.texture);drop(visibility_.surface);' in owner
+    and 'solid(d,white_,0xffffffffu,' in fp.src('world_screen_fallbacks.h').read_text()
     and 'nearShadow[s].invalidate();actorValid[s]=false;' in w)
 # Hysteresis hold and the near-first bounds order: wired once, gated diagnostics, shown on the actor map log line.
-hold=fp.src('actor_side_hold.h').read_text();job=fp.src('replay_bounds_job.h').read_text();near=fp.src('replay_bounds_near.h').read_text();point=fp.src('world_point_rendering.inl').read_text()
+hold=fp.src('actor_side_hold.h').read_text();job=fp.src('replay_bounds_job.h').read_text();near=fp.src('replay_bounds_near.h').read_text();point=fp.src('world_shadow_bounds.inl').read_text()
 checks['hold: per-source table, begun with the diagnostics flag (or invalidated when the pass does not run); skinned casters take the root or the valid bounds centre as identity, others today\'s rule']=(
-    'NorthlightActorSideHold::Hold actorHold[2];' in w and 'if(!actorMapOn||!sourceActive[source]){actorValid[source]=false;actorHold[source].invalidate();}' in w and 'if(nearSkip)actorHold[source].begin(sideDiag,unsigned(frames)+1);else if(cascade==0)actorHold[source].invalidate();' in loop
-    and 'if(!p->shadowSkinned)inActor=extent<=NorthlightActorShadowMap::Inset;' in loop and 'const float* position=p->shadowSkinned?p->position():nullptr;' in loop and 'const std::uint64_t model=NorthlightActorSideHold::holdModel(*p);float centre[3];const float* at=position;' in loop and 'return p.captureRootValid?h:~h;' in hold and loop.count('holdModel(*p)')==2 and 'if(!p->captureRootValid){' in loop and 'if(!at){for(unsigned k=0;k<3;++k)centre[k]=.5f*(p->pointBounds.low[k]+p->pointBounds.high[k]);at=centre;}}' in loop
+    'NorthlightActorSideHold::Hold actorHold[2];' in w and 'if(!actorMapOn||!sourceActive[source]){actorValid[source]=false;actorHold[source].invalidate();}' in w and 'if(nearSkip)actorHold[source].begin(sideDiag||actorParity,unsigned(frames)+1);else if(cascade==0)actorHold[source].invalidate();' in loop
+    and 'if(!p->shadowSkinned)inActor=extent<=NorthlightActorShadowMap::Inset;' in loop and 'const float* position=p->shadowSkinned?p->position():nullptr;' in loop and 'const auto model=NorthlightActorSideHold::holdModel(*p);float centre[3];const float* at=position;' in loop and 'return p.captureRootValid?Model{h,placement}:Model{~h,~placement};' in hold and loop.count('holdModel(*p)')==2 and 'if(!p->captureRootValid){' in loop and 'if(!at){for(unsigned k=0;k<3;++k)centre[k]=.5f*(p->pointBounds.low[k]+p->pointBounds.high[k]);at=centre;}}' in loop
     and 'inActor=actorHold[source].decide(model,at,extent);' in loop and loop.count('actorHold[source].decide(')==1
     and 'if(inActor&&position)actorHold[source].stamp(model,position,matrix,extent);' in loop and 'else if(p->shadowSkinned&&!p->pointBounds.valid&&p->shared){' in loop
     and 'inActor=actorHold[source].carry(NorthlightActorSideHold::holdModel(*p),position,matrix);' in loop and loop.count('actorHold[source].carry(')==1)
 checks['hold diagnostics: overflow and band counters only when the pass was begun with diagnostics']=(
     'void begin(bool diagnostics=false,unsigned realFrame=0){advance(1);real_=realFrame?realFrame:frame_;diagnostics_=diagnostics;bandHeld=0;carried=0;}' in hold and 'if(diagnostics_)++overflows;' in hold and 'if(diagnostics_&&!inside)++bandHeld;' in hold)
 checks['actor map log line: hold band, overflows, near list size and near walk stops']=(
-    ' holdBand=%u holdOverflows=%lu nearListSize=%u nearWalkStops=%lu sideFlipsRootedSinceLog=%u sideFlipsUnrootedSinceLog=%u invalidBoundsNearSinceLog=%u unrootedNoBounds=%u unrootedNoBoundsSinceLog=%u selfUnrooted=%u selfNoBoundsFramesSinceLog=%u holdCarried=%u holdCarriedTotal=%lu"' in loop
-    and 'actorHold[source].bandHeld,actorHold[source].overflows,replayNearSize,replayNearStops,' in loop and 'actorSide[source].sideFlipsRooted,actorSide[source].sideFlipsUnrooted,' in loop and 'actorHold[source].carried,actorHold[source].carriedTotal);' in loop
+    ' holdBand=%u holdOverflows=%lu nearListSize=%u nearWalkStops=%lu sideFlipsRootedSinceLog=%u sideFlipsUnrootedSinceLog=%u invalidBoundsNearSinceLog=%u unrootedNoBounds=%u unrootedNoBoundsSinceLog=%u selfUnrooted=%u selfNoBoundsFramesSinceLog=%u holdCarried=%u holdCarriedTotal=%lu"' in actor
+    and 'actorHold[source].bandHeld,actorHold[source].overflows,replayNearSize,replayNearStops,' in actor and 'actorSide[source].sideFlipsRooted,actorSide[source].sideFlipsUnrooted,' in actor and 'actorHold[source].carried,actorHold[source].carriedTotal);' in actor
     and 'if(NorthlightDiagnostics::enabled()){replayNearSize=unsigned(replayBoundsWorker.nearList().size());replayNearStops+=result.totals.nearStops;}' in point)
 checks['bounds near-first: the list is filled by gather with the items, walks rotate per phase and take at most half of a phase budget']=(
     'priority->consider(i,p.position(),p.selfShadow)' in job and 'schedule(*cache_,items_,inverse_,&cancel_,priority_.on?&priority_:nullptr)' in job
@@ -141,9 +170,14 @@ checks['ring 0 is the self: the selection marks the self\'s draws every frame (n
     and 'if(NorthlightDiagnostics::enabled())for(const auto& a:actorShadowScratch.actors)if(a.self)' not in sel and 'p->selfShadow=false;std::memcpy(p->anchor' in rigidm)
 for name,ok in checks.items():print(('PASS ' if ok else 'FAIL ')+name)
 assert all(checks.values())
-with tempfile.TemporaryDirectory(prefix='northlight-actormap-') as tmp:
-    for label,flags in [('O2',['-O2']),('asan',['-O1','-g','-fsanitize=address,undefined'])]:
-        exe=Path(tmp)/('test-'+label)
-        subprocess.run(['clang++','-std=c++17','-Wall','-Wextra','-Werror',*flags,*fp.test_include_flags(),str(HERE/'test_actor_shadow_map.cpp'),str(fp.src('world_gi.cpp')),'-o',str(exe)],check=True)
-        print(label,subprocess.check_output([str(exe)],text=True),end='',flush=True)
+out=fp.output_dir()
+compiler=[str(fp.zig()),'c++','-target','x86-windows-gnu'] if os.name=='nt' else ['clang++']
+variants=[('O2',['-O2']),('O0',['-O0'])] if os.name=='nt' else [
+    ('O2',['-O2']),('asan',['-O1','-g','-fsanitize=address,undefined'])]
+for label,flags in variants:
+    exe=out/('test-'+label+('.exe' if os.name=='nt' else ''))
+    subprocess.run([*compiler,'-std=c++17','-Wall','-Wextra','-Werror','-UNDEBUG',*flags,*fp.test_include_flags(),
+                    str(HERE/'test_actor_shadow_map.cpp'),str(fp.src('world_gi.cpp')),'-o',str(exe)],
+                   env=fp.zig_env(),check=True)
+    print(label,subprocess.check_output([str(exe)],text=True),end='',flush=True)
 print('PASS actor shadow map: model and wiring')

@@ -415,7 +415,9 @@ void Streamer::request(const Request& r){
     {std::lock_guard<std::mutex> lock(s.mutex);bool mapChanged=!s.hasRequest||s.requested.map!=r.map;bool changed=mapChanged||distance2(s.requested.center,r.center)>=32*32||s.requested.allowLoads!=r.allowLoads;
     changed=changed||std::fabs(s.requested.groundOffset-r.groundOffset)>=32||s.requested.farRadius!=r.farRadius;
     for(unsigned i=0;i<2;++i)if(r.active[i]!=s.requested.active[i]||(r.active[i]&&NorthlightGI::dot(NorthlightGI::normalized(r.directions[i]),NorthlightGI::normalized(s.requested.directions[i]))<.999847695f))changed=true;
-    if(!changed&&s.published&&(s.published->stats.pendingModels||s.published->stats.pendingTiles)&&s.doneSerial==s.requestSerial&&Clock::now()>=s.retryAfter)changed=true;
+    if(!changed&&s.published&&(s.published->stats.pendingModels||s.published->stats.pendingTiles)&&s.doneSerial==s.requestSerial){
+        changed=r.diagnosticTick?uint32_t(r.diagnosticTick-s.requested.diagnosticTick)>=500:Clock::now()>=s.retryAfter;
+    }
     if(!changed)return;
     if(mapChanged){++s.generation;retired=std::move(s.published);}
     s.requested=r;s.hasRequest=true;++s.requestSerial;}

@@ -3,7 +3,7 @@
 """Native production readback/worker scene parity against the backed-up 0.3.127 code.
 
 No game or D3D device is launched. The fixture supplies thread-checked fake
-textures while compiling the actual actorMaterial methods and old/new resolvers.
+textures while compiling the actual texture readers and old/new resolvers.
 """
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
@@ -48,6 +48,7 @@ struct IDirect3DTexture9:IDirect3DBaseTexture9 {
 fixture = literal(HERE / 'test_actor_deformation.py', 'harness').split('int main(')[0]
 harness = fixture + r'''
 #include "actor_scene_job.h"
+#include "actor_texture_read.h"
 #include "before_actor_texture.h"
 #include "before_actor_scene_job.h"
 #include <future>
@@ -59,7 +60,9 @@ struct BeforeReader { using V=NorthlightGI::Vec3;
 BEFORE_MATERIAL_METHOD
 };
 struct CurrentReader {
-CURRENT_MATERIAL_METHOD
+ bool actorMaterial(IDirect3DBaseTexture9* base,NorthlightActorTexture::Snapshot& snapshot){
+  return NorthlightActorTexture::read(base,snapshot);
+ }
 };
 struct Texture:IDirect3DTexture9 {
  std::thread::id renderThread=std::this_thread::get_id();
@@ -182,7 +185,6 @@ int main(){
 }
 '''
 harness = harness.replace('BEFORE_MATERIAL_METHOD', material_method((BASE / 'world_renderer.h').read_text()).replace('NorthlightActorTexture::', 'NorthlightActorTextureBefore::'))
-harness = harness.replace('CURRENT_MATERIAL_METHOD', material_method(fp.src('world_renderer.h').read_text()))
 FIXTURE.mkdir(parents=True, exist_ok=True)
 (FIXTURE / 'd3d9.h').write_text(stub)
 (FIXTURE / 'test.cpp').write_text(harness)
@@ -198,7 +200,7 @@ for name, flags in [('O2', ['-O2']), ('ASan-UBSan', ['-O1', '-g', '-fsanitize=ad
     (OUT / ('actor-texture-worker-' + name + '.txt')).write_text(completed.stdout + completed.stderr)
     print(name + ':\n' + completed.stdout, end='')
 report = {
-    'source_sha256': {name: hashlib.sha256(fp.tracked(name).read_bytes()).hexdigest() for name in ['actor_texture.h', 'actor_scene_job.h', 'world_renderer.h', 'actor_deformation.h', 'world_gi.h', 'world_gi.cpp', Path(__file__).name]},
+    'source_sha256': {name: hashlib.sha256(fp.tracked(name).read_bytes()).hexdigest() for name in ['actor_texture.h', 'actor_texture_read.h', 'actor_scene_job.h', 'world_renderer.h', 'actor_deformation.h', 'world_gi.h', 'world_gi.cpp', Path(__file__).name]},
     'baseline_sha256': json.loads((BASE / 'sha256.json').read_text()),
     'actual_production_readback_methods': True,
     'actual_production_old_and_new_scene_resolvers': True,

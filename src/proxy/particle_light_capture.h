@@ -1,5 +1,6 @@
 #pragma once
 #include "particle_light_proof.h"
+#include "particle_draw_state.h"
 #include "particle_texture_stats.h"
 #include "particle_uploads.h"
 #include "particle_lights.h"
@@ -54,7 +55,50 @@ class Capture {
     }
 public:
     NorthlightEmission::Catalog catalog;
+    unsigned emission(const NorthlightParticleTextures::View& image)const{
+        return catalog.identify(image.uploadHash,image.width,image.height,image.format)|
+            catalog.identify(image.rgbaHash,image.width,image.height,0);
+    }
     bool known(IDirect3DVertexShader9* shader)const{return families_.count(shader)!=0;}
+    template<class Mirror> bool route(Mirror& mirror,unsigned* classifications=nullptr)const{
+        using Shaders=NorthlightParticleDraw::State::Shaders;
+        auto& state=mirror.particleDraw;
+        if(!mirror.active()||state.writes||mirror.targetWrites)return true;
+        if(state.rejectedBlend)return false;
+        if(state.shaders==Shaders::Dirty){
+            const bool vs=mirror.vertexShaderKnown,ps=mirror.pixelShaderKnown;
+            auto* vertex=mirror.vertexShader;auto* pixel=mirror.pixelShader;
+            const auto found=ps&&pixel?pixels_.find(pixel):pixels_.end();
+            const bool reject=(vs&&vertex&&!known(vertex))||
+                (ps&&pixel&&found==pixels_.end())||(vs&&ps&&bool(vertex)!=bool(pixel));
+            state.shaders=reject?Shaders::Reject:Shaders::Inspect;
+            state.samplers=0;
+            if(!reject&&vs&&ps){
+                if(!pixel)state.samplers=1; // Fixed function samples stage zero.
+                else{
+                    const auto& material=found->second;
+                    state.samplers=1u<<material.sampler;
+                    if(material.samples==2)state.samplers|=1u<<material.secondSampler;
+                }
+            }
+            if(classifications)++*classifications;
+        }
+        return state.shaders!=Shaders::Reject;
+    }
+    // Once the ordinary frame budget is spent, only a possible flash can
+    // reach geometry. Leave undecoded textures and unproven bindings to capture.
+    template<class Mirror> bool mayFlash(const Mirror& mirror)const{
+        using Shaders=NorthlightParticleDraw::State::Shaders;
+        const auto& state=mirror.particleDraw;
+        if(!mirror.active()||state.writes||mirror.targetWrites||state.shaders!=Shaders::Inspect||!state.samplers)return true;
+        for(unsigned stage=0,samplers=state.samplers;samplers;++stage,samplers>>=1){
+            if(!(samplers&1))continue;
+            NorthlightParticleTextures::View image;
+            if(!mirror.textureKnown[stage]||!NorthlightParticleTextures::cache().decodedView(mirror.textures[stage],image)||
+               (emission(image)&(NorthlightEmission::Lightning|NorthlightEmission::SkyLightning)))return true;
+        }
+        return false;
+    }
     void registerVertex(IDirect3DVertexShader9* shader,unsigned family){
         vertices_.erase(shader);
         if(family==1||family==2||family==3)families_[shader]=family;else families_.erase(shader);
@@ -69,11 +113,11 @@ public:
                      const float* projection,NorthlightParticleLights::Frame& frame,bool sky=false){
         using namespace NorthlightSpellLayer;Prepared result;std::memcpy(result.camera,camera,12);result.sky=sky;
         const bool fixed=!vs&&!ps;
-        if((!fixed&&(!vs||!ps||!families_.count(vs)))||!args.primCount||unsigned(args.prim)<4||unsigned(args.prim)>6)return result;
+        if((!fixed&&(!vs||!ps||!families_.count(vs)))||!NorthlightParticleDraw::supported(args.prim,args.primCount))return result;
         DWORD blend=0,src=0,dst=0,op=0,alpha=0,mask=0,z=0;
         if(FAILED(device->GetRenderState(D3DRS_ALPHABLENDENABLE,&blend))||!blend||
-           FAILED(device->GetRenderState(D3DRS_SRCBLEND,&src))||(src!=D3DBLEND_ONE&&src!=D3DBLEND_SRCALPHA)||
-           FAILED(device->GetRenderState(D3DRS_DESTBLEND,&dst))||(dst!=D3DBLEND_ONE&&dst!=D3DBLEND_INVSRCALPHA))return result;
+           FAILED(device->GetRenderState(D3DRS_SRCBLEND,&src))||!NorthlightParticleDraw::sourceBlend(src)||
+           FAILED(device->GetRenderState(D3DRS_DESTBLEND,&dst))||!NorthlightParticleDraw::destinationBlend(dst))return result;
         const bool particle=fixed||families_.at(vs)!=3;
         using F=NorthlightParticleLights::Frame;
         if(FAILED(device->GetRenderState(D3DRS_BLENDOP,&op))||op!=D3DBLENDOP_ADD){frame.refuse(F::BlendOp);return result;}
@@ -124,7 +168,7 @@ public:
                 if(miss.type==D3DRTYPE_TEXTURE){D3DSURFACE_DESC d{};auto* t=static_cast<IDirect3DTexture9*>(texture.p);miss.levels=t->GetLevelCount();
                     if(SUCCEEDED(t->GetLevelDesc(0,&d))){miss.width=d.Width;miss.height=d.Height;miss.format=unsigned(d.Format);miss.pool=unsigned(d.Pool);miss.usage=unsigned(d.Usage);}}
                 frame.missTexture(miss);return result;}
-            sourceKind|=catalog.identify(image.uploadHash,image.width,image.height,image.format)|catalog.identify(image.rgbaHash,image.width,image.height,0);
+            sourceKind|=emission(image);
         }
         if(sky&&!(sourceKind&NorthlightEmission::SkyLightning))return result;
         if(dst!=D3DBLEND_ONE&&(!sourceKind||src!=D3DBLEND_SRCALPHA))return result;
@@ -203,6 +247,10 @@ public:
         if(indexed&&(!indexSize||(up&&!args.indexData))){++frame.geometryMiss;return result;}
         NorthlightParticleLights::Draw draw{indexed,up?0:args.baseVertex,args.minIndex,args.numVertices,up?0:args.first};
         struct Point {Four position,color;float uv[2],uv1[2];};
+        // Strips, fans and indexed triangles share vertices. The captured
+        // streams, palette and declaration stay fixed throughout this draw.
+        struct VertexSample {std::uint64_t index;Point point;};
+        VertexSample vertexSamples[8];unsigned sampledVertices=0;
         const auto load=[&](std::uint64_t relative,Point& point){
             std::uint32_t index=0;
             if(indexed){
@@ -214,6 +262,9 @@ public:
                 if(indexSize==2){std::uint16_t small;std::memcpy(&small,bytes,2);index=small;}else std::memcpy(&index,bytes,4);
             }
             std::uint64_t vertexIndex=0;if(!draw.vertex(relative,index,vertexIndex))return false;
+            const unsigned slot=unsigned(vertexIndex)&7;
+            auto& sample=vertexSamples[slot];
+            if((sampledVertices&(1u<<slot))&&sample.index==vertexIndex){std::memcpy(&point,&sample.point,sizeof point);return true;}
             Four inputs[16]{};std::array<std::array<unsigned char,256>,4> data;bool read[4]{};
             for(unsigned i=0;i<bindingCount;++i){const auto& b=bindings[i];const unsigned s=b.element.Stream;
                 if(!read[s]){
@@ -227,11 +278,12 @@ public:
             }
             if(fixed){
                 point.position={};for(unsigned j=0;j<4;++j)for(unsigned k=0;k<4;++k)point.position[j]+=inputs[0][k]*fixedMatrix[k*4+j];
-                point.color=inputs[1];point.uv[0]=inputs[2][0];point.uv[1]=inputs[2][1];return true;
-            }
-            return NorthlightActorDeformation::evaluateFast<true>(program->position,inputs,constants,point.position)&&
-                NorthlightParticleLightProof::evaluateVertex(program->material,inputs,constants,point.color,point.uv,
-                    material.uv==1||(material.samples==2&&material.secondUv==1)?point.uv1:nullptr);
+                point.color=inputs[1];point.uv[0]=inputs[2][0];point.uv[1]=inputs[2][1];
+            }else if(!NorthlightActorDeformation::evaluateFast<true>(program->position,inputs,constants,point.position)||
+                !NorthlightParticleLightProof::evaluateVertex(program->material,inputs,constants,point.color,point.uv,
+                    material.uv==1||(material.samples==2&&material.secondUv==1)?point.uv1:nullptr))return false;
+            sample.index=vertexIndex;std::memcpy(&sample.point,&point,sizeof point);sampledVertices|=1u<<slot;
+            return true;
         };
         const unsigned samples=std::min(args.primCount,NorthlightParticleLights::TrianglesPerDraw);
         const float bary[4][3]={{1.f/3,1.f/3,1.f/3},{.6f,.2f,.2f},{.2f,.6f,.2f},{.2f,.2f,.6f}};

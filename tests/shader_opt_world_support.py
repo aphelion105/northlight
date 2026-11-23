@@ -4,6 +4,9 @@ Run directly with Python; shader compilation and GPU equivalence remain separate
 """
 from itertools import product
 from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from scripts.shaders.shader_sources import world_source_text
 import math
 import struct
 
@@ -36,7 +39,7 @@ def water_receiver(z, water, coverage, ready):
 
 
 def main():
-    hlsl = (ROOT / "shaders/world_effects.hlsl").read_text()
+    hlsl = world_source_text(ROOT / "shaders/world_effects.hlsl")
     blur = hlsl.split("float4 FogBlur(", 1)[1].split("\n}", 1)[0]
     receiver = hlsl.split("float blurReceiverDistance(", 1)[1].split("\n}", 1)[0]
     material = hlsl.split("float4 materialComposite(", 1)[1].split("\n}", 1)[0]

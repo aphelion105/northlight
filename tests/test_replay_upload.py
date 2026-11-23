@@ -50,10 +50,10 @@ template<class T,class D>struct Buffer:T{
 struct FakeQuery:IDirect3DQuery9{unsigned refs=1,issued=~0u;unsigned AddRef()override{return ++refs;}unsigned Release()override{auto n=--refs;if(!n)delete this;return n;}
  HRESULT Issue(DWORD)override{assert(issued==~0u);issued=frameNow;++issues;return D3D_OK;}HRESULT GetData(void* out,DWORD bytes,DWORD flags)override{assert(!out&&!bytes&&!flags);return issued!=~0u&&frameNow>=issued+1+queryLatency?S_OK:S_FALSE;}}; /* 0.3.192: the frame fence is Issued at the END of frame N and completes at frame N+1+queryLatency; never before it was issued */
 struct Device:IDirect3DDevice9{
- unsigned calls=0,failAt=0;bool lockFail=false;
+ unsigned calls=0,failAt=0;bool lockFail=false,partialCreate=false;
  HRESULT CreateQuery(D3DQUERYTYPE,IDirect3DQuery9** out)override{*out=new FakeQuery;++creates;return D3D_OK;}
- HRESULT CreateVertexBuffer(UINT n,DWORD usage,UINT,unsigned,IDirect3DVertexBuffer9** out,void*)override{if(++calls==failAt)return E_POINTER;auto p=new Buffer<IDirect3DVertexBuffer9,D3DVERTEXBUFFER_DESC>(n);p->fail=lockFail;p->dynamic=usage&D3DUSAGE_DYNAMIC;*out=p;return D3D_OK;}
- HRESULT CreateIndexBuffer(UINT n,DWORD usage,D3DFORMAT format,unsigned,IDirect3DIndexBuffer9** out,void*)override{if(++calls==failAt)return E_POINTER;auto p=new Buffer<IDirect3DIndexBuffer9,D3DINDEXBUFFER_DESC>(n);p->desc.Format=format;p->fail=lockFail;p->dynamic=usage&D3DUSAGE_DYNAMIC;*out=p;return D3D_OK;}
+ HRESULT CreateVertexBuffer(UINT n,DWORD usage,UINT,unsigned,IDirect3DVertexBuffer9** out,void*)override{const bool fail=++calls==failAt;if(fail&&!partialCreate)return E_POINTER;auto p=new Buffer<IDirect3DVertexBuffer9,D3DVERTEXBUFFER_DESC>(n);p->fail=lockFail;p->dynamic=usage&D3DUSAGE_DYNAMIC;*out=p;return fail?E_POINTER:D3D_OK;}
+ HRESULT CreateIndexBuffer(UINT n,DWORD usage,D3DFORMAT format,unsigned,IDirect3DIndexBuffer9** out,void*)override{const bool fail=++calls==failAt;if(fail&&!partialCreate)return E_POINTER;auto p=new Buffer<IDirect3DIndexBuffer9,D3DINDEXBUFFER_DESC>(n);p->desc.Format=format;p->fail=lockFail;p->dynamic=usage&D3DUSAGE_DYNAMIC;*out=p;return fail?E_POINTER:D3D_OK;}
  HRESULT GetVertexShaderConstantF(UINT,float*,UINT)override{return E_POINTER;}HRESULT GetVertexDeclaration(IDirect3DVertexDeclaration9**)override{return E_POINTER;}HRESULT GetStreamSourceFreq(UINT,UINT*)override{return E_POINTER;}HRESULT GetStreamSource(UINT,IDirect3DVertexBuffer9**,UINT*,UINT*)override{return E_POINTER;}HRESULT GetIndices(IDirect3DIndexBuffer9**)override{return E_POINTER;}
 };
 std::shared_ptr<const NorthlightDrawSnapshot::Mesh> meshS(unsigned bytes,unsigned stride,bool multi){auto m=std::make_shared<NorthlightDrawSnapshot::Mesh>();m->streams[0].stride=stride;m->streams[0].bytes.resize(bytes);if(multi){m->streams[1].stride=8;m->streams[1].bytes.resize(80);}m->indices={0,1,2};for(unsigned i=0;i<bytes;++i)m->streams[0].bytes[i]=(i*7+stride)%251;return m;} /* 0.3.211 (task 31): any stride, single- or multi-stream regardless of SINGLE_STREAM */
@@ -82,9 +82,8 @@ int main(){
 }
 '''
 
-source=fp.src('world_renderer.h').read_text()
-start=source.index('    bool uploadReplay(bool allowCache=true){');end=source.index('    bool actorMaterial',start)
-method=source[start:end]
+source=fp.src('world_replay_upload.inl').read_text()
+method=source[source.index('    void releaseReplayGPU(){'):]
 # Legacy cache variants exercise the unchanged bulk/ring algorithm. The native
 # scene's additional ownership telemetry is verified by test_shared_gpu_wiring.
 import re
@@ -100,6 +99,11 @@ bool QueryPerformanceCounter(LARGE_INTEGER* out){out->QuadPart=std::chrono::stea
 #include "streaming_phase_profile.h"
 #include "dynamic_ring.h"
 #include "lock_meter.h"
+#include "world_replay_buffers.h"
+struct NorthlightWorldReplayBuffersTest {
+ static const auto& vertices(const NorthlightWorldReplayBuffers& b){return b.vertexRings_;}
+ static const auto& indices(const NorthlightWorldReplayBuffers& b){return b.indexRing_;}
+};
 struct NativeCacheStorage {NorthlightGpuScene::NativeStore store;};
 struct NativeCache:NativeCacheStorage,NorthlightGpuScene::NativeClient {
  NativeCache():NorthlightGpuScene::NativeClient(store,NorthlightGpuScene::Consumer::Shadow){}
@@ -119,13 +123,19 @@ class WorldRenderer {public:
  };
  IDirect3DDevice9* d;REPLAY_CACHE replayGpuCache;
  NorthlightReplayBulk::Layout replayBulkLayout;
+ NorthlightReplayBulk::DrawList replayBulkDraws;
  std::vector<std::unique_ptr<Replay>> replays;
- IDirect3DVertexBuffer9* replayVerticesGPU[4]={};IDirect3DIndexBuffer9* replayIndicesGPU=nullptr;
- UINT replayVertexBytes[4]={},replayIndexBytes=0;NorthlightDynamicRing::Ring replayVertexRing[4],replayIndexRing;bool captureSampled=false;
+ NorthlightWorldReplayBuffers replayBuffers;
+ const auto& vertexRings()const{return NorthlightWorldReplayBuffersTest::vertices(replayBuffers);}
+ const auto& indexRing()const{return NorthlightWorldReplayBuffersTest::indices(replayBuffers);}
+ bool captureSampled=false;
  NorthlightStreaming::PhaseProfile streamingPhases;unsigned replayCreatedPeak=0;uint64_t replayTimeDeferred=0;uint64_t replayGrowths=0,replayFallbacks=0,replayBudgetOverrides=0;std::vector<size_t> replayTimeDeferredIndices; /* 0.3.138 split timers */
  NorthlightCapturePhases::Stats<2> replayUploadPhases;
  unsigned replayUploadCalls=0,replayUploadFallbacks=0;
- unsigned shadowSliceCandidates=0,shadowSliceCreated=0,shadowSliceFallback=0,shadowSliceWordsBefore=0,shadowSliceWordsAfter=0;
+ struct CapturePrograms {
+  struct Work {uint64_t candidates=0,compactCreated=0,fullFallback=0,fullWords=0,compactWords=0;};
+  Work captureWork()const{return {};}
+ } shadowPrograms;
  NorthlightDynamicRing::FrameFence frameFence; /* the production member of WorldRenderer */
  NorthlightDynamicRing::FrameFence& fence(){frameFence.device=d;return frameFence;}
  /* One frame: the production call, then the frame fence's Issue (WorldRenderer::endFrame). autoFrame: frames advance by themselves (tests that do not set frameNow). */
@@ -144,7 +154,7 @@ class WorldRenderer {public:
  bool prepareUnsettled()const{return preparePending;}void recycleReplay(Replay* raw){assert(!boundsPending);delete raw;}
  static UINT roundBuffer(UINT bytes,size_t){return bytes;} // exact allocations in fake device
  explicit WorldRenderer(IDirect3DDevice9* dev):d(dev){}
- ~WorldRenderer(){for(auto& ring:replayVertexRing)NorthlightDynamicRing::clearSpans(ring,frameFence);NorthlightDynamicRing::clearSpans(replayIndexRing,frameFence);frameFence.drop();replays.clear();replayGpuCache.clear();for(auto& p:replayVerticesGPU)drop(p);drop(replayIndicesGPU);}
+ ~WorldRenderer(){replays.clear();releaseReplayGPU();}
  void add(std::shared_ptr<const NorthlightDrawSnapshot::Mesh> m,bool cached){
   auto p=std::make_unique<Replay>();if(cached)p->shared=m;else p->snapshot=*m;replays.push_back(std::move(p));}
  // 0.3.176 (U3'): at a frame boundary every live buffer holds its owner's reference (the cache entry,
@@ -165,6 +175,26 @@ class WorldRenderer {public:
 main=r"""
 };
 int main(){Device d;auto a=mesh(),b=mesh(480),c=mesh(96);
+ // Refused vertex allocation, refused index allocation after a vertex copy,
+ // and a lock failure must never publish an incomplete packet.
+ for(unsigned fault:{0u,1u,2u}){
+  WorldRenderer world(&d);auto packet=meshS(240,24,false);world.add(packet,false);
+  d.partialCreate=fault!=0;d.failAt=fault?d.calls+fault:0;d.lockFail=fault==0;
+  const auto before=issues;
+  assert(!world.uploadReplay(false));
+  const auto& p=*world.replays[0];assert(!p.stream[0]&&!p.index&&!p.offset[0]&&!p.start);
+  if(fault==1)assert(!world.replayBuffers.vertexBuffer(0)&&world.replayBuffers.vertexCapacity(0)==0);
+  if(fault==2)assert(!world.replayBuffers.indexBuffer()&&world.replayBuffers.indexCapacity()==0);
+  world.releaseReplayGPU();
+  assert(!alive&&registry.empty()&&!world.frameFence.current&&issues==before);
+  d.partialCreate=false;d.failAt=0;d.lockFail=false;
+  assert(world.upload(false));world.verify();world.balance();
+  world.releaseReplayGPU();
+  assert(!world.replayBuffers.vertexBuffer(0)&&!world.replayBuffers.indexBuffer());
+  world.verify(); // Published packet references survive the owner's reset.
+ }
+ assert(!alive&&registry.empty());
+ puts("PASS bulk upload refusal and reset: no partial bindings, exact retry, packet references retained");
  if constexpr(std::is_same<REPLAY_CACHE,NativeCache>::value){
   WorldRenderer world(&d);
   for(unsigned i=0;i<3;++i){auto m=std::const_pointer_cast<NorthlightDrawSnapshot::Mesh>(meshS(240,24,false));
@@ -205,8 +235,8 @@ int main(){Device d;auto a=mesh(),b=mesh(480),c=mesh(96);
                   NorthlightGeometryMemory::Sample{256ull<<20,79ull<<20,true},
                   NorthlightGeometryMemory::Sample{942ull<<20,79ull<<20,false}}){
   WorldRenderer world(&d);auto x=meshS(24*1024,24,false);world.add(x,true);assert(world.upload());world.verify();
-  const auto capacity=world.replayVertexBytes[0];world.cacheMemory=memory;
-  assert(world.upload());world.verify();assert(world.replays.size()==1&&!world.replays[0]->gpuCached&&world.replayVertexBytes[0]==capacity);
+  const auto capacity=world.replayBuffers.vertexCapacity(0);world.cacheMemory=memory;
+  assert(world.upload());world.verify();assert(world.replays.size()==1&&!world.replays[0]->gpuCached&&world.replayBuffers.vertexCapacity(0)==capacity);
   world.cacheMemory={942ull<<20,79ull<<20,true};world.cacheGrowthRequests.clear();
   assert(world.upload());world.verify();assert(world.replays[0]->gpuCached&&world.cacheGrowthRequests[0]==x->byteSize()+24);
  }
@@ -215,16 +245,16 @@ int main(){Device d;auto a=mesh(),b=mesh(480),c=mesh(96);
  // Every draw survives and sees its original bytes, with one shared upload.
  {WorldRenderer world(&d);for(unsigned i=0;i<4096;++i)world.add(a,true);
   assert(world.upload());world.verify();assert(world.replays.size()==4096);
-  assert(world.replayVertexBytes[0]==(a->streams[0].bytes.empty()?0u:NorthlightDynamicRing::ringCapacity(a->streams[0].bytes.size())));
-  assert(world.replayVertexBytes[1]==(a->streams[1].bytes.empty()?0u:NorthlightDynamicRing::ringCapacity(a->streams[1].bytes.size())));
-  assert(world.replayIndexBytes==NorthlightDynamicRing::ringCapacity(a->indices.size()*4));
+  assert(world.replayBuffers.vertexCapacity(0)==(a->streams[0].bytes.empty()?0u:NorthlightDynamicRing::ringCapacity(a->streams[0].bytes.size())));
+  assert(world.replayBuffers.vertexCapacity(1)==(a->streams[1].bytes.empty()?0u:NorthlightDynamicRing::ringCapacity(a->streams[1].bytes.size())));
+  assert(world.replayBuffers.indexCapacity()==NorthlightDynamicRing::ringCapacity(a->indices.size()*4));
   for(auto& p:world.replays)assert(p->offset[0]==0&&p->start==0&&!p->gpuCached);
  }
  assert(alive==0);
  // Non-indexed draws share vertex ranges without inventing index buffers.
  {WorldRenderer world(&d);auto nonindexed=std::make_shared<NorthlightDrawSnapshot::Mesh>(*a);nonindexed->indices.clear();nonindexed->indexed=false;
   world.add(nonindexed,true);world.add(nonindexed,true);for(auto& p:world.replays)p->indexed=false;
-  assert(world.upload());world.verify();assert(world.replayIndexBytes==0);
+  assert(world.upload());world.verify();assert(world.replayBuffers.indexCapacity()==0);
  }
  assert(alive==0);
  // Under hard memory pressure the prefix fit counts UNIQUE bytes; repeated
@@ -241,13 +271,13 @@ int main(){Device d;auto a=mesh(),b=mesh(480),c=mesh(96);
   assert(world.upload());world.verify();assert(WorldRenderer::addr(*world.replays[0])==WorldRenderer::addr(*world.replays[2])&&world.replays[0]->base==world.replays[2]->base);
   assert(WorldRenderer::addr(*world.replays[1])!=WorldRenderer::addr(*world.replays[0])&&WorldRenderer::addr(*world.replays[3])!=WorldRenderer::addr(*world.replays[0]));
   world.replays.clear();auto fresh=mesh(672);world.add(fresh,true);world.add(fresh,true);world.add(a,true);
-  assert(world.upload());world.verify();assert(world.replays[0]->offset[0]==world.replayVertexRing[0].spans.back().begin&&world.replays[1]->offset[0]==world.replays[0]->offset[0]); /* 0.3.192: absolute = the ring base of this call + the layout offset 0 */
+  assert(world.upload());world.verify();assert(world.replays[0]->offset[0]==world.vertexRings()[0].spans.back().begin&&world.replays[1]->offset[0]==world.replays[0]->offset[0]); /* 0.3.192: absolute = the ring base of this call + the layout offset 0 */
  }
  assert(alive==0);
  for(bool sampled:{false,true}){WorldRenderer world(&d);world.captureSampled=sampled;
   world.add(a,true);world.add(b,false);world.add(c,true);assert(world.upload());world.verify();assert(!world.replays[0]->gpuCached);
   world.replays.clear();world.add(c,true);world.add(b,false);world.add(a,true);assert(world.upload());world.verify();assert(world.replays[0]->gpuCached&&!world.replays[1]->gpuCached&&world.replays[2]->gpuCached);
-  auto* persistent=world.replays[2]->stream[0];world.replays.clear();world.add(a,true);world.add(c,true);assert(world.upload());world.verify();assert(world.replays[0]->stream[0]==persistent&&world.replayGpuCache.uploaded()==0);
+  auto* persistent=world.replays[2]->stream[0];world.replays.clear();world.add(a,true);world.add(c,true);assert(world.upload());world.verify();assert(world.replays[0]->stream[0]==persistent&&world.replayGpuCache.uploaded()==0&&world.replayBulkDraws.size()==0);
   // Mutated/new immutable snapshot falls back without disturbing warm peers.
   auto changed=mesh(336);world.replays.clear();world.add(changed,true);world.add(a,true);assert(world.upload());world.verify();assert(!world.replays[0]->gpuCached&&world.replays[1]->gpuCached);
   // Optional residency is evicted before the old bulk path can drop a caster.
@@ -275,10 +305,10 @@ int main(){Device d;auto a=mesh(),b=mesh(480),c=mesh(96);
  {const double saved=NorthlightReplayGPU::createBudgetMs();NorthlightReplayGPU::createBudgetMs()=0;
   WorldRenderer world(&d);std::vector<std::shared_ptr<const NorthlightDrawSnapshot::Mesh>> ms;for(unsigned i=0;i<6;++i)ms.push_back(mesh(96+48*i));
   for(auto& m:ms)world.add(m,true);assert(world.upload());world.verify(); /* warmup: all bulk */
-  const UINT capacity=world.replayVertexBytes[0],indexCapacity=world.replayIndexBytes;
+  const UINT capacity=world.replayBuffers.vertexCapacity(0),indexCapacity=world.replayBuffers.indexCapacity();
   world.replays.clear();for(auto& m:ms)world.add(m,true);auto fresh=mesh((2u<<20)-512);world.add(fresh,true); /* new mesh: bulk this frame; fits the 0.3.192 ring capacity alone, not together with the six deferred ones */
   assert(world.upload());world.verify();
-  assert(world.replayBudgetOverrides==5&&world.replayVertexBytes[0]==capacity&&world.replayIndexBytes==indexCapacity);
+  assert(world.replayBudgetOverrides==5&&world.replayBuffers.vertexCapacity(0)==capacity&&world.replayBuffers.indexCapacity()==indexCapacity);
   for(size_t i=0;i<6;++i)assert(world.replays[i]->gpuCached);assert(!world.replays[6]->gpuCached);
   /* Fits: deferral stays in effect, no forced creation. */
   world.replays.clear();auto other=mesh(96);world.add(other,true);world.add(fresh,true);assert(world.upload());world.verify();assert(world.replayBudgetOverrides==5);
@@ -324,7 +354,7 @@ int main(){Device d;auto a=mesh(),b=mesh(480),c=mesh(96);
  struct Roles{unsigned discards[5]={},locks[5]={};UINT first[5]={};bool seen[5]={};};
  auto roles=[&](WorldRenderer& world,size_t from){Roles r;std::map<const void*,unsigned> perBuffer;
   for(size_t i=from;i<dynLog.size();++i){const auto& l=dynLog[i];++perBuffer[l.buffer];assert(perBuffer[l.buffer]==1); /* one Lock, so at most one DISCARD, per buffer and call */
-   int role=-1;for(unsigned s=0;s<4;++s)if(l.buffer==world.replayVerticesGPU[s])role=int(s);if(l.buffer==world.replayIndicesGPU)role=4;
+   int role=-1;for(unsigned s=0;s<4;++s)if(l.buffer==world.replayBuffers.vertexBuffer(s))role=int(s);if(l.buffer==world.replayBuffers.indexBuffer())role=4;
    assert(role>=0);++r.locks[role];r.discards[role]+=l.flags==D3DLOCK_DISCARD;r.first[role]=l.first;r.seen[role]=true;assert(l.first%(role==4?4u:16u)==0);}
   return r;};
  // The same non-cached set for 50 frames, the Replay objects kept: verify() every frame, offsets advance and wrap, no DISCARD
@@ -334,7 +364,7 @@ int main(){Device d;auto a=mesh(),b=mesh(480),c=mesh(96);
   unsigned advances=0,wraps=0;UINT previous=0;
   for(unsigned f=0;f<50;++f){frameNow=f;const size_t from=dynLog.size();assert(world.upload());world.verify();world.balance();
    const auto r=roles(world,from);assert(r.seen[0]&&r.seen[4]&&!r.discards[0]&&!r.discards[1]&&!r.discards[4]);
-   const UINT base=world.replays[0]->offset[0];assert(base==r.first[0]&&WorldRenderer::addr(*world.replays[1])==base+614400&&base+614640<=world.replayVertexBytes[0]);
+   const UINT base=world.replays[0]->offset[0];assert(base==r.first[0]&&WorldRenderer::addr(*world.replays[1])==base+614400&&base+614640<=world.replayBuffers.vertexCapacity(0));
    advances+=base>previous;wraps+=f&&!base;previous=base;}
   assert(advances>=30&&wraps>=8&&world.replayGrowths==1+(SINGLE_STREAM?0u:1u)+1); /* streams 0 (and 1) and the index buffer, created once */
  }
@@ -348,10 +378,10 @@ int main(){Device d;auto a=mesh(),b=mesh(480),c=mesh(96);
   queryLatency=0;}
  // Shared duplicates with a non-zero ring base: every duplicate carries the owner's absolute offset and index start.
  {WorldRenderer world(&d);dynLog.clear();queryLatency=0;frameNow=0;auto shared=mesh(64*1024),equal=mesh(64*1024);
-  world.add(mesh(100*1024),false);assert(world.upload());world.verify();assert(world.replayVertexRing[0].cursor==100*1024&&world.replayIndexRing.cursor==12);
+  world.add(mesh(100*1024),false);assert(world.upload());world.verify();assert(world.vertexRings()[0].cursor==100*1024&&world.indexRing().cursor==12);
   frameNow=1;world.replays.clear();world.add(shared,true);world.add(shared,true);world.add(equal,true);world.add(shared,true);world.add(a,false);
   assert(world.upload());world.verify();world.balance();
-  const UINT base=world.replayVertexRing[0].spans.back().begin,ibBase=world.replayIndexRing.spans.back().begin;assert(base==100*1024&&ibBase==12);
+  const UINT base=world.vertexRings()[0].spans.back().begin,ibBase=world.indexRing().spans.back().begin;assert(base==100*1024&&ibBase==12);
   assert(!world.replays[0]->gpuCached&&!world.replays[2]->gpuCached);
   if(SINGLE_STREAM){ /* 0.3.211 (task 31): every replay binds the slot start; vertices are selected by base at stride multiples (65536 -> 65544 -> 131088) */
    for(auto& p:world.replays)assert(p->offset[0]==base);
@@ -361,21 +391,21 @@ int main(){Device d;auto a=mesh(),b=mesh(480),c=mesh(96);
   for(const auto& l:dynLog)assert(l.flags==D3DLOCK_NOOVERWRITE);}
  // Pressure-fit prefix (growth refused) with a non-zero base, then a wrap that reuses the start after the fence.
  {WorldRenderer world(&d);dynLog.clear();queryLatency=0;frameNow=0;world.add(mesh(1536*1024),false);assert(world.upload());world.verify();
-  const UINT capacity=world.replayVertexBytes[0];assert(capacity==NorthlightDynamicRing::ringCapacity(1536*1024)&&capacity==(6u<<20));
+  const UINT capacity=world.replayBuffers.vertexCapacity(0);assert(capacity==NorthlightDynamicRing::ringCapacity(1536*1024)&&capacity==(6u<<20));
   frameNow=1;world.replays.clear();auto fresh=mesh(4096);world.add(fresh,true);world.add(fresh,true);world.add(fresh,true);world.add(mesh(6<<20),false);world.denyAllGrowth=true;
-  assert(world.upload());world.verify();assert(world.replays.size()==3&&world.replayVertexBytes[0]==capacity);
+  assert(world.upload());world.verify();assert(world.replays.size()==3&&world.replayBuffers.vertexCapacity(0)==capacity);
   assert(world.replays[0]->offset[0]==1536*1024&&world.replays[1]->offset[0]==1536*1024&&world.replays[2]->offset[0]==1536*1024&&world.replays[0]->start>0);
-  frameNow=2;world.replays.clear();world.add(mesh(4608*1024),false);assert(world.upload());world.verify();assert(world.replays[0]->offset[0]==0&&world.replayVertexBytes[0]==capacity);
+  frameNow=2;world.replays.clear();world.add(mesh(4608*1024),false);assert(world.upload());world.verify();assert(world.replays[0]->offset[0]==0&&world.replayBuffers.vertexCapacity(0)==capacity);
   for(const auto& l:dynLog)assert(l.flags==D3DLOCK_NOOVERWRITE);}
  // The frame fence: one CreateQuery for all the rings placed in a frame (up to four vertex streams and the index buffer), its Issue only at the
  // frame end, no query and no Issue in a frame without a placement, and the spans of the frame are not done before that Issue.
  {WorldRenderer world(&d);queryLatency=0;frameNow=0;world.add(mesh(),false);const unsigned c0=creates,i0=issues;
   assert(world.uploadReplay());assert(creates==c0+1&&issues==i0);
-  for(auto& r:world.replayVertexRing)for(auto& sp:r.spans)assert(sp.query&&!world.fence().done(sp.query));
-  assert(!world.replayIndexRing.spans.empty()&&!world.fence().done(world.replayIndexRing.spans.back().query));
+  for(auto& r:world.vertexRings())for(auto& sp:r.spans)assert(sp.query&&!world.fence().done(sp.query));
+  assert(!world.indexRing().spans.empty()&&!world.fence().done(world.indexRing().spans.back().query));
   world.frameFence.endFrame();assert(issues==i0+1);
   frameNow=1;world.replays.clear();assert(world.uploadReplay());world.frameFence.endFrame();assert(creates==c0+1&&issues==i0+1);
-  assert(world.fence().done(world.replayIndexRing.spans.back().query));}
+  assert(world.fence().done(world.indexRing().spans.back().query));}
  // gpuCached replays keep their batch/entry offsets, starts and bases untouched while a bulk replay moves with the ring.
  {WorldRenderer world(&d);dynLog.clear();queryLatency=0;frameNow=0;world.add(mesh(),true);world.add(mesh(96),true);world.add(mesh(300*1024),false);
   struct Snap{IDirect3DVertexBuffer9* stream[4];IDirect3DIndexBuffer9* index;UINT offset[4],start;INT base;};std::vector<Snap> kept;UINT bulkOffset=0;unsigned bulkMoves=0;
@@ -407,11 +437,18 @@ int main(){Device d;auto a=mesh(),b=mesh(480),c=mesh(96);
  // Shared duplicates of an indexed single-stream owner copy base as well (see the ring-base case above); a pressure-fit prefix
  // of mixed strides must come from the same placement as the layout, so nothing is allocated.
  {WorldRenderer world(&d);dynLog.clear();queryLatency=0;frameNow=0;world.add(meshS(1536*1024,24,true),false);assert(world.upload());world.verify();
-  const UINT capacity=world.replayVertexBytes[0];const auto growths=world.replayGrowths;frameNow=1;world.replays.clear();
+  const UINT capacity=world.replayBuffers.vertexCapacity(0);const auto growths=world.replayGrowths;frameNow=1;world.replays.clear();
   for(unsigned i=0;i<220;++i)world.add(meshS(i%3==0?36*1000+7:i%3==1?44*900+3:24*1500+11,i%3==0?36:i%3==1?44:24,i%7==6),false);
   world.denyAllGrowth=true;assert(world.upload());world.verify();world.balance();
-  assert(world.replays.size()>10&&world.replays.size()<220&&world.replayVertexBytes[0]==capacity&&world.replayGrowths==growths);
-  for(unsigned s=1;s<4;++s)assert(world.replayVertexBytes[s]<=NorthlightDynamicRing::ringCapacity(1<<20));}
+  assert(world.replays.size()>10&&world.replays.size()<220&&world.replayBuffers.vertexCapacity(0)==capacity&&world.replayGrowths==growths);
+  for(unsigned s=1;s<4;++s)assert(world.replayBuffers.vertexCapacity(s)<=NorthlightDynamicRing::ringCapacity(1<<20));}
+ // Above the bounded ordered list, the same bulk buffers use the scalar walk.
+ {WorldRenderer world(&d);const size_t count=NorthlightReplayBulk::Layout::Limit+3;
+  auto shared=mesh();for(size_t i=0;i<count;++i)world.add(shared,true);
+  assert(world.upload(false));world.verify();
+  assert(!world.replayBulkDraws.indexed()&&world.replayBulkDraws.size()==count);
+  assert(WorldRenderer::addr(*world.replays[0])==WorldRenderer::addr(*world.replays[1]));
+  assert(WorldRenderer::addr(*world.replays[0])!=WorldRenderer::addr(*world.replays.back()));}
  assert(alive==0&&freshLocks>0&&!plainLocks&&!overlaps);puts("PASS production uploadReplay: mixed cache/bulk offsets, reordered draws, all-cached zero upload, modified geometry, allocation-failure fallback and COM cleanup; creation time bound keeps bulk bytes identical and never forces bulk growth");
 }
 """

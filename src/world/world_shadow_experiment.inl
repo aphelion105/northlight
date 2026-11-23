@@ -97,6 +97,13 @@
     // RenderProfile diagnostics of the frame (appended to MODEL shadow actors); -1: not measured.
     struct PrepareStats {const char* mode="inline";std::uint32_t published=0,workerRecords=0,joinInline=0,wakes=0,staleClears=0,resync=0;
         double workerMs=-1,joinWaitMs=-1,joinInlineMs=-1,notifyUs=-1;} prepareStats;
+    void logPrepareProfile(unsigned rendererFrame)const{
+        const auto& p=prepareStats;
+        logf("MODEL_PREPARE rendererFrame=%u opened=%u worker=%u watchdog=%u published=%u workerRecords=%u joinInlineRecords=%u wakes=%u notifyUs=%.1f workerMs=%.3f joinWaitMs=%.3f joinInlineMs=%.3f handoffUs=%.1f handoffSamples=%u resync=%u rearms=%u",
+             rendererFrame,unsigned(prepareOpened),unsigned(std::strcmp(p.mode,"worker")==0),unsigned(std::strcmp(p.mode,"watchdog")==0),
+             p.published,p.workerRecords,p.joinInline,p.wakes,p.notifyUs,p.workerMs,p.joinWaitMs,p.joinInlineMs,
+             prepareMeter.on()?prepareMeter.correctedUs():-1.0,prepareMeter.samples(),p.resync,prepareRearms);
+    }
     unsigned prepareFaults=0;
     // 0.3.179 (M1): the capture-side handoff, RenderProfile sample frames only; the phase from the frame serial.
     NorthlightActorPrepare::HandoffMeter<std::chrono::steady_clock> prepareMeter;bool prepareMeterBegun=false;std::uint32_t prepareFrameSerial=0;

@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-# northlight-test: requires=cxx
+# northlight-test: requires=zig
 """Run the production expiry and end-frame release blocks against counted owners.
 
 The Dalaran log kept one expired published BVH and the active managed page table
 while admission needed 768 MiB and trimIdle freed zero. Model the same ownership
 graph and reserve; no game, GPU, real address-space allocation or lower limits.
 """
+
+from source_units import source_text
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -14,7 +16,7 @@ import json
 import subprocess
 import tempfile
 
-source = fp.src('world_renderer.h').read_text()
+source = source_text(fp.src('world_renderer.h'))
 expiry = source.split('// BEGIN EXPIRED PUBLICATION\n', 1)[1].split('// END EXPIRED PUBLICATION', 1)[0]
 start = source.index('    void releaseExpiredMesh(){')
 release = source[start:source.index('\n    }', start) + 6]
@@ -50,7 +52,9 @@ struct Harness {
  std::shared_ptr<int> uploadedStaticOwners,fixedTerrain,fixedTerrainBits;
  std::string uploadedMap="Northrend",uploadedTerrain="resident";
  unsigned liveTerrainIndexCount=7,liveDirectionalIndexCount=8,liveTerrainGeneration=9;
- bool expiredMeshPending=false,expiredMeshMapChanged=false,memoryPressure=false,temporalValid=true,fogHistoryValid=true;
+ bool expiredMeshPending=false,expiredMeshMapChanged=false,memoryPressure=false;
+    struct {bool valid=true;void invalidateHistory(){valid=false;}} fogScreen;
+    struct {bool valid=true;void invalidate(){valid=false;}} history;
  std::atomic<bool> workerMemoryTrim{false};std::atomic<uint64_t> geometryMemoryDemand{0};
  unsigned meshClears=0,poolReleases=0,invalidates=0;
  void clearMesh(){++meshClears;resident-=uploadedTextureBytes;uploadedTextureBytes=0;}
@@ -70,7 +74,7 @@ int main(){
  // Preserve both ordinary coverage and the full 96..160-unit hold.
  for(float distance:{0.f,96.f,120.f,160.f}){Harness h;h.install();auto old=h.active;h.r.camera=Vec3(distance,0,0);
   h.range();h.endFrame();assert(h.active==old&&h.published==old&&!h.expiredPublication);
-  assert(h.poolReleases==0&&h.temporalValid&&resident==228*MiB);}
+  assert(h.poolReleases==0&&h.history.valid&&resident==228*MiB);}
  assert(resident==0);
  // Actual log failure: publication is a second owner. Cleanup before endFrame
  // must not free pages still used by replay; after frame retirement it recovers
@@ -84,7 +88,7 @@ int main(){
   assert(admits({totalFreeAndReclaimable-resident,115*MiB,true},buildBudget(64*MiB)));
   assert(h.uploadedMap.empty()&&h.uploadedTerrain.empty()&&h.staticOwnerGeneration==UINT64_MAX);
   assert(h.liveTerrainIndexCount==0&&h.liveDirectionalIndexCount==0&&h.liveTerrainGeneration==0);
-  assert(h.invalidates==1&&!h.temporalValid&&!h.fogHistoryValid&&h.workerMemoryTrim.load());h.endFrame();assert(h.poolReleases==1);}
+  assert(h.invalidates==1&&!h.history.valid&&!h.fogScreen.valid&&h.workerMemoryTrim.load());h.endFrame();assert(h.poolReleases==1);}
  assert(resident==0);
  // Preserve legitimate worker ownership; expiry drops no reference behind its
  // back and the weak generation expires only after the worker is finished.
@@ -122,12 +126,13 @@ int main(){
 '''.replace('EXPIRY', expiry).replace('RELEASE', release)
 
 runs = []
+compiler = [str(fp.zig()), 'c++', '-target', 'x86-windows-gnu'] if sys.platform == 'win32' else ['clang++']
 with tempfile.TemporaryDirectory(prefix='northlight-expired-world-') as directory:
     root = Path(directory)
     (root / 'test.cpp').write_text(fixture)
     for mode, flags in [('optimized', ['-O2']), ('debug', ['-O0', '-g'])]:
-        binary = root / mode
-        subprocess.run(['clang++', '-std=c++17', '-UNDEBUG', *flags, *fp.test_include_flags(), str(root / 'test.cpp'), '-o', str(binary)], check=True)
+        binary = root / (mode + ('.exe' if sys.platform == 'win32' else ''))
+        subprocess.run([*compiler, '-std=c++17', '-UNDEBUG', *flags, *fp.test_include_flags(), str(root / 'test.cpp'), '-o', str(binary)], env=fp.zig_env(), check=True)
         result = subprocess.run([str(binary)], capture_output=True, text=True, check=True)
         print(mode, result.stdout.strip())
         runs.append({'mode': mode, 'stdout': result.stdout})

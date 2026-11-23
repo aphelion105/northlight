@@ -5,9 +5,10 @@ and the shadow cascades, the actor maps and the capture skip all gate a source o
 colour. So no moon cascade is drawn on a frame whose moon lighting weight is zero. No game or GPU."""
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
+from source_units import source_text
 import subprocess,tempfile
 HERE=Path(__file__).resolve().parent
-w=fp.src('world_renderer.h').read_text()
+w=source_text(fp.src('world_renderer.h'))
 gate='NorthlightGI::dot(sourceColors[0],sourceColors[0])>1e-10f'
 checks={
     'cascades gate on the colour':'bool sourceActive[2]={'+gate in w,
@@ -15,7 +16,7 @@ checks={
     'capture skip uses the same test':'in.sourceActive[source]=NorthlightGI::dot(sourceColors[source],sourceColors[source])>1e-10f;' in w,
     'colours are the celestial direct*weight':'resolvedSources.sources[1].color=vec(celestialLight.moonColor);' in w,
     'static proofs use current source demand':'prepareStaticProofs(sourceActive[0]||sourceActive[1]);' in w,
-    'static cache stays warm for reentry':'updateStaticCasters(effects.shadows,&streamBudget);' in w,
+    'static cache stays warm for reentry':'if(!menuDomain)updateStaticCasters(directionalShadows,&streamBudget);' in w,
 }
 proofs=w[w.index('void prepareStaticProofs(bool directionalActive){'):w.index('void prepareStaticM2(){')]
 assert proofs.index('p->staticProofMask=p->staticM2Mask=0;')<proofs.index('if(!directionalActive)return;')<proofs.index('StaticShadowDedup::Budget budget;')

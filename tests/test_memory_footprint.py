@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 # northlight-test: requires=windows-exe,zig
 """CPU-only x86 memory inventories: real BVH/mesh ownership and fake D3D descriptions."""
+
+from source_units import source_text
 from pathlib import Path
 import subprocess
 import sys
@@ -8,7 +10,7 @@ import tempfile
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
 
-source=fp.src('world_renderer.h').read_text()
+source=source_text(fp.src('world_renderer.h'))
 for stage in ['before-entry-reclaim','before-load','after-bvh','after-terrain-load','after-shadow-plan','after-pages','after-seal']:
     assert f'profileMemory("{stage}"' in source,stage
 assert 'scopeTotalsNotAdditive=1' in source and 'residentVramMeasured=0' in source

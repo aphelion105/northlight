@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # northlight-test: requires=windows-exe,zig
-"""Compare metadata lookup hints with linear lookup, including miss invalidation."""
+"""Compare metadata lookup with the previous single-miss cache and check invalidation."""
 import argparse
 import hashlib
 import json
@@ -24,10 +24,23 @@ def once(text, old, new):
 def run(output):
     output.mkdir(parents=True, exist_ok=True)
     source = fp.src('particle_texture_stats.h').read_text()
-    reference = once(source, '    // An absent identity stays absent until slot() inserts a new record.\n    const void* missing_=nullptr;\n', '')
-    reference = once(reference, 'if(missing_==raw)return nullptr;', '')
-    reference = once(reference, 'missing_=raw;', '')
-    reference = once(reference, 'recent_=selected;missing_=nullptr;', '')
+    memo_storage = '    struct Lookup {Entry* entry=nullptr;const void* absent=nullptr;};\n    std::array<Lookup,256> lookups_{};\n'
+    memo_lookup = source[source.index('    Lookup& memo('):source.index('    void drop(Entry& e)',source.index('    Lookup& memo('))]
+    memo_publish = ('        auto& hint=memo(raw);\n        hint.entry=selected;\n'
+                    '        // Publish the insertion even if this address previously missed.\n'
+                    '        if(hint.absent==raw)hint.absent=nullptr;\n')
+    reference = once(source, memo_storage, '    const void* missing_=nullptr;\n')
+    reference = once(reference, memo_lookup, '''    Entry* find(const void* raw){
+        if(raw){
+            if(recent_&&recent_->raw==raw)return recent_;
+            if(missing_==raw)return nullptr;
+            for(auto& e:entries_)if(e.raw==raw){recent_=&e;return &e;}
+            missing_=raw;
+        }
+        return nullptr;
+    }
+''')
+    reference = once(reference, memo_publish, '        missing_=nullptr;\n')
     reference = reference.replace('NorthlightParticleTextures', 'MaterialLookupReferenceParticles').replace('NorthlightMaterialTextures', 'MaterialLookupReference')
     (output/'material_texture_lookup_reference.h').write_text(reference)
     results = []
@@ -36,7 +49,7 @@ def run(output):
         if label == 'stale-miss-control':
             include = output/'stale-miss'
             include.mkdir(exist_ok=True)
-            (include/'particle_texture_stats.h').write_text(once(source, 'recent_=selected;missing_=nullptr;', 'recent_=selected;'))
+            (include/'particle_texture_stats.h').write_text(once(source, '        if(hint.absent==raw)hint.absent=nullptr;\n', ''))
         exe = output/(label+'.exe')
         subprocess.run([str(fp.zig()), 'c++', '-target', 'x86-windows-gnu', '-std=c++17', *flags, '-UNDEBUG',
                         '-I'+str(include), '-I'+str(output), *fp.test_include_flags(),

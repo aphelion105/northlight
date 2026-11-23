@@ -4,13 +4,15 @@
 refusal, logs the stall episodes; stage entry uses buildBudget (512 MiB, raised by entryLift after a refusal that
 followed entry), then bounded chunked/cold entry if needed. Interior allocations and the after-bvh gate
 use the matching in-build budget while preserving the process reserve; stalls publish the guard's demand."""
+
+from source_units import source_text
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
 import re
 
-w = fp.src('world_renderer.h').read_text()
+w = source_text(fp.src('world_renderer.h'))
 g = fp.src('geometry_memory.h').read_text()
-r = fp.src('renderer.cpp').read_text()
+r = source_text(fp.src('renderer.cpp'))
 f = fp.src('terrain_reach_fallback.h').read_text()
 assert 'constexpr uint64_t ProcessReserve=256*MiB;' in g and 'constexpr uint64_t ContiguousMargin=32*MiB;' in g
 assert 'constexpr uint64_t EntryHeadroom=256*MiB;' in g and 'budgetWith(EntryHeadroom,largestAllocation)' in g and 'add(ProcessReserve,headroom,b.available)' in g and 'add(largestAllocation,ContiguousMargin,b.largest)' in g

@@ -1,5 +1,6 @@
 // northlight-test: requires=cxx
 #include "particle_texture_stats.h"
+#include "particle_atlas_texels.h"
 #ifdef NDEBUG
 #undef NDEBUG
 #endif
@@ -10,7 +11,47 @@
 using namespace NorthlightParticleTextures;
 static const void* key(unsigned n){return reinterpret_cast<const void*>(std::uintptr_t(n));}
 static void close(float a,float b){assert(std::fabs(a-b)<.00001f);}
+static void atlasMipGutters(){
+    using namespace NorthlightParticleAtlas;
+    using Format=NorthlightActorTexture::Format;
+    struct Layout {Format format;unsigned blockBytes,alphaBits;};
+    const Layout formats[]={{Format::BC1,8,0},{Format::BC2,16,4},{Format::BC3,16,3}};
+    for(const auto& layout:formats)for(unsigned w:{8u,4u,2u,1u})for(bool wrap:{false,true}){
+        const unsigned rows=(w+3)/4,pitch=rows*layout.blockBytes,atlasPitch=w*WidthScale/4*layout.blockBytes;
+        std::vector<std::uint8_t> packed(atlasPitch*rows);
+        std::vector<std::uint8_t> sources[2];
+        for(unsigned tile=0;tile<2;++tile){
+            std::vector<std::uint8_t> compressed(pitch*rows);
+            for(unsigned i=0;i<compressed.size();++i)compressed[i]=std::uint8_t(211*i+73*tile+67);
+            assert(NorthlightActorTexture::decode(compressed.data(),compressed.size(),w,w,pitch,layout.format,sources[tile]));
+            tileRows(compressed.data(),pitch,packed.data(),atlasPitch,w,w,tile,wrap,layout.blockBytes,layout.alphaBits);
+        }
+        for(unsigned tile=0;tile<2;++tile){
+            const unsigned halfPitch=atlasPitch/2,halfWidth=WidthScale*w/2;
+            std::vector<std::uint8_t> half(rows*halfPitch),pixels;
+            for(unsigned y=0;y<rows;++y)
+                std::memcpy(half.data()+y*halfPitch,packed.data()+y*atlasPitch+tile*halfPitch,halfPitch);
+            assert(NorthlightActorTexture::decode(half.data(),half.size(),halfWidth,w,halfPitch,layout.format,pixels));
+            for(unsigned y=0;y<w;++y)for(int x=-int(8*w);x<int(8*w);++x){
+                const unsigned index=wrap?unsigned(x)&(w-1):unsigned(std::clamp(x,0,int(w)-1));
+                assert(!std::memcmp(sources[tile].data()+4*(w*y+index),pixels.data()+4*(halfWidth*y+8*w+x),4));
+            }
+        }
+    }
+    const unsigned char bits[]={1,2,3,4};
+    Cache cache;
+    const auto before=atlasRevisions.get(key(42));
+    cache.upload(key(42),key(43),1,1,0,21,bits,4,4,true,true);
+    const auto uploaded=atlasRevisions.get(key(42));
+    assert(uploaded!=before);
+    cache.erase(key(42),key(43));
+    const auto released=atlasRevisions.get(key(42));
+    assert(released!=uploaded);
+    cache.reset();
+    assert(atlasRevisions.get(key(42))!=released);
+}
 int main(){
+    atlasMipGutters();
     Cache c;View v;float rgba[4]{};const std::uint8_t atlas[]={0,0,255,255,255,0,0,0};
     c.upload(key(1),key(10),2,1,0,21,atlas,sizeof atlas,8,true,true);assert(c.bytes()==0&&!c.counts.uploads&&!c.lookup(key(1),v));
     enabled.store(true);

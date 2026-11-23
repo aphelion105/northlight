@@ -20,7 +20,7 @@ struct WorldScreenEffectsTest {
    must(d->BeginScene());assert(w->render(target,depth,64,64,D3DFMT_A8R8G8B8,1,2000,0,1,1,nullptr,nullptr));must(d->EndScene());
   }
   for(unsigned source=0;source<2;++source){
-   const auto before=image(d,old.shadowSurface[source*2+1]),after=image(d,fixed.shadowSurface[source*2+1]);
+   const auto before=image(d,old.directionalMaps.current(source*2+1).surface),after=image(d,fixed.directionalMaps.current(source*2+1).surface);
    const auto count=[](const auto& pixels){return std::count_if(pixels.begin(),pixels.end(),[](float v){return v<.999f;});};
    assert(count(before)==0&&count(after)>100);
   }
@@ -46,7 +46,7 @@ struct WorldScreenEffectsTest {
   assert(w.resources(64,64,D3DFMT_A8R8G8B8)&&w.geometryResources(64,64));
  }
  static void pose(WorldRenderer& w,float x){
-  if(!w.replays.empty()){w.replays[0]->constantStorage[4*31+3]=x;w.captureMode=WorldRenderer::CaptureFresh;w.shadowSelectionDone=true;return;}
+  if(!w.replays.empty()){w.replays[0]->writableConstants()[4*31+3]=x;w.captureMode=WorldRenderer::CaptureFresh;w.shadowSelectionDone=true;return;}
   auto p=std::make_unique<WorldRenderer::Replay>();
   std::vector<uint32_t> original={0xfffe0300};
   auto op=[&](unsigned code,std::initializer_list<uint32_t> args){original.push_back(code|(unsigned(args.size())<<24));original.insert(original.end(),args);};
@@ -59,15 +59,15 @@ struct WorldScreenEffectsTest {
   op(1,{0xe0030001,0x90e40003});original.push_back(0xffff);
   must(w.d->CreateVertexShader(reinterpret_cast<const DWORD*>(original.data()),&p->originalShader));
   auto program=std::make_shared<NorthlightActorDeformation::Program>();assert(NorthlightActorDeformation::compile(original.data(),original.size(),*program));w.actorPrograms[p->originalShader]=program;
-  for(unsigned i=0;i<16;++i)p->constantStorage[8+i]=i%5==0?1.f:0.f;
-  p->constantStorage[4*31]=p->constantStorage[4*32+1]=p->constantStorage[4*33+2]=1;
+  for(unsigned i=0;i<16;++i)p->writableConstants()[8+i]=i%5==0?1.f:0.f;
+  p->writableConstants()[4*31]=p->writableConstants()[4*32+1]=p->writableConstants()[4*33+2]=1;
   std::vector<uint32_t> patched;assert(NorthlightShadowShader::patch(original.data(),original.size(),patched));must(w.d->CreateVertexShader(reinterpret_cast<const DWORD*>(patched.data()),&p->shader));
   D3DVERTEXELEMENT9 elements[]={{0,0,D3DDECLTYPE_FLOAT3,0,D3DDECLUSAGE_POSITION,0},{0,12,D3DDECLTYPE_UBYTE4,0,D3DDECLUSAGE_BLENDINDICES,0},{0,16,D3DDECLTYPE_FLOAT2,0,D3DDECLUSAGE_TEXCOORD,0},D3DDECL_END()};must(w.d->CreateVertexDeclaration(elements,&p->decl));
   struct Vertex{float x,y,z;uint32_t bone;float u,v;};const Vertex face[]={{-1,-1,2,0,0,0},{1,-1,2,0,1,0},{-1,1,2,0,0,1},{-1,1,2,0,0,1},{1,-1,2,0,1,0},{1,1,2,0,1,1}};
   std::vector<Vertex> vertices;for(unsigned i=0;i<12;++i)vertices.insert(vertices.end(),std::begin(face),std::end(face));
   auto& mesh=p->snapshot;mesh.streams[0].bytes.resize(vertices.size()*sizeof(Vertex));std::memcpy(mesh.streams[0].bytes.data(),vertices.data(),mesh.streams[0].bytes.size());mesh.streams[0].stride=sizeof(Vertex);mesh.vertexCount=72;mesh.primitiveCount=24;p->shared=std::make_shared<const NorthlightDrawSnapshot::Mesh>(std::move(mesh));
   p->stride[0]=sizeof(Vertex);p->vertices=72;p->count=24;p->type=D3DPT_TRIANGLELIST;p->indexed=false;p->projectionKind=2;p->constantUsage.floats={2,32};
-  p->shadowSkinned=true;p->constantStorage[4*31+3]=x;
+  p->shadowSkinned=true;p->writableConstants()[4*31+3]=x;
   w.replays.push_back(std::move(p));w.captureMode=WorldRenderer::CaptureFresh;w.shadowSelectionDone=true;
   for(unsigned warm=0;warm<8&&!w.replays[0]->pointBounds.valid;++warm){w.replayBoundsBegin();w.replayBoundsKick();w.replayBoundsJoin();}
  }
@@ -78,7 +78,7 @@ struct WorldScreenEffectsTest {
   auto draw=[&]{w.captureMode=WorldRenderer::CaptureFresh;w.shadowSelectionDone=true;must(d->BeginScene());const bool ok=w.render(target,depth,64,64,D3DFMT_A8R8G8B8,1,1000,0,1,0,nullptr,nullptr);must(d->EndScene());assert(ok&&!w.replayBoundsWorker.pending());};
   draw();assert(!w.replayBoundsResolved&&!w.replayBoundsRuns&&!w.pointBoundsValid&&!w.pointBoundOperations);
   const NorthlightLocalLights::Light light{{0,0,6},{1,.4f,.1f},1,12,171,3,NorthlightLocalLights::CastShadow};
-  w.replays[0]->constantStorage[4*31+3]=.5f;
+  w.replays[0]->writableConstants()[4*31+3]=.5f;
   w.active->localLights.push_back(light);auto second=light;second.sourceId=172;second.position[0]=2;w.active->localLights.push_back(second);
   w.localLightQpc=0; // Publish both authored lights immediately, independent of driver speed/fade time.
   draw();std::printf("BOUNDS_DEMAND_STATE resolved=%u runs=%u updates=%u valid=%u packets=%zu\n",unsigned(w.replayBoundsResolved),w.replayBoundsRuns,w.pointUpdates,w.pointBoundsValid,w.replays.size());std::fflush(stdout);
@@ -87,11 +87,10 @@ struct WorldScreenEffectsTest {
   const auto updates=w.pointUpdates;draw();assert(!w.replayBoundsResolved&&!w.replayBoundsRuns&&w.pointUpdates==updates);
   // Flash is another shadow consumer; it shares the same frame result with cubes.
   NorthlightLocalLightSelection::Selection flashes;flashes.count=2;for(unsigned i=0;i<2;++i)flashes.sources[i]={{float(i),0,-1000},{4,2,1},.5f,2000,700+i,2,NorthlightLocalLights::Flash};
-  w.replayBoundsBegin();must(d->BeginScene());w.renderFlashShadows(flashes,true,true);must(d->EndScene());w.replayBoundsJoin();assert(w.replayBoundsResolved&&w.replayBoundsRuns==1&&w.flashSlots[0].ready&&w.flashSlots[1].ready);
+  w.replayBoundsBegin();must(d->BeginScene());w.renderFlashShadows(flashes,true,true);must(d->EndScene());w.replayBoundsJoin();assert(w.replayBoundsResolved&&w.replayBoundsRuns==1&&w.flashShadows.slots_[0].ready&&w.flashShadows.slots_[1].ready);
   w.pointSlot().schedule.invalidate();must(d->BeginScene());assert(w.renderPointShadow(light,true,true));must(d->EndScene());assert(w.replayBoundsRuns==1);
   w.replayBoundsBegin();must(d->BeginScene());w.renderFlashShadows(flashes,false,true);must(d->EndScene());assert(!w.replayBoundsResolved&&!w.replayBoundsRuns);
   const auto frame=w.frames;w.replayBoundsBegin();assert(w.frames==frame&&!w.replayBoundsResolved&&!w.replayBoundsRuns);
-  w.shadowAlphaRetryAt=GetTickCount();must(d->BeginScene());assert(!w.render(target,depth,64,64,D3DFMT_A8R8G8B8,1,1000,0,1,0,nullptr,nullptr));must(d->EndScene());assert(w.frames==frame&&!w.replayBoundsResolved&&!w.replayBoundsRuns);w.shadowAlphaRetryAt=0;
   std::puts("BOUNDS_DEMAND_GPU_PASS noConsumer=zero twoPoints=once cachedCube=zero twoFlashes=once pointAndFlash=once skippedCapture=zero");
  }
  static void alphaResourceRetry(IDirect3DDevice9* d,IDirect3DTexture9* depth,IDirect3DSurface9* target){
@@ -100,28 +99,36 @@ struct WorldScreenEffectsTest {
    if(!p.texture){IDirect3DTexture9* white=nullptr;must(d->CreateTexture(1,1,1,0,D3DFMT_A8R8G8B8,D3DPOOL_MANAGED,&white,nullptr));D3DLOCKED_RECT lock{};must(white->LockRect(0,&lock,nullptr,0));*static_cast<DWORD*>(lock.pBits)=0xffffffff;must(white->UnlockRect(0));p.texture=white;}
    p.cutoff=128.f/255;p.alphaMode=NorthlightShadowAlpha::FixedTest|NorthlightShadowAlpha::GreaterEqual|(128u<<8)|(unsigned(D3DFMT_X8R8G8B8)<<18);
   };
-  auto draw=[&](WorldRenderer& w){must(d->BeginScene());const bool result=w.render(target,depth,64,64,D3DFMT_A8R8G8B8,1,1000,0,1,1,nullptr,nullptr);must(d->EndScene());return result;};
+  auto draw=[&](WorldRenderer& w,int debug=1){must(d->BeginScene());const bool result=w.render(target,depth,64,64,D3DFMT_A8R8G8B8,1,1000,0,1,debug,nullptr,nullptr);must(d->EndScene());return result;};
   capture(reference,0);capture(retained,0);assert(draw(reference)&&draw(retained));
-  assert(retained.shadowAlphaTargets.bytes()>0&&!retained.failed);
-  // A cold scratch allocation is denied. Cancel the entire map job, leaving
-  // no published map or composite; repeated calls during the pause do no work.
-  retained.shadowAlphaTargets.reset();retained.memoryPressureUntil=GetTickCount()+1000;
-  capture(retained,4);assert(!draw(retained)&&!retained.failed&&!retained.composited);
-  assert(retained.shadowAlphaRetryAt&&retained.shadowAlphaTargets.bytes()==0);
+  const auto scratch=retained.shadowReplayAlpha.bytes();assert(scratch>0&&!retained.failed);
+  retained.setMemoryPressure(true,true);retained.memoryPressureUntil=GetTickCount()+1000;
+  capture(retained,2);assert(draw(retained)&&retained.composited&&retained.shadowFrameReady&&!retained.shadowReplayAlpha.retryAt());
+  assert(retained.shadowReplayAlpha.bytes()==scratch);
+  // A cold scratch allocation is denied. Keep the normal scene composite
+  // and the complete static cache, while withholding the unfinished maps.
+  retained.nativeShadowOwned=true;
+  assert(retained.shadowReplayAlpha.trimTargets()==scratch);retained.memoryPressureUntil=GetTickCount()+1000;
+  capture(retained,4);assert(draw(retained,0)&&!retained.failed&&retained.composited&&!retained.shadowsComposited&&!retained.shadowFrameReady);
+  const auto retry=retained.shadowReplayAlpha.retryAt();assert(retry&&retained.shadowReplayAlpha.fallback()&&retained.shadowReplayAlpha.bytes()==0);
+  assert(retained.shadowCacheKey[0].valid);
   for(unsigned source=0;source<2;++source)assert(!retained.nearShadow[source].valid&&!retained.farShadow[source].valid&&!retained.actorValid[source]);
-  for(const auto& slot:retained.pointSlots)assert(!slot.ready);
-  for(const auto& slot:retained.flashSlots)assert(!slot.ready);
-  retained.memoryPressureUntil=0;capture(retained,14);assert(!draw(retained)&&!retained.failed&&!retained.composited);
+  for(const auto& slot:retained.pointTargets.slots())assert(!slot.ready);
+  assert(!retained.flashShadows.ready());
+  retained.memoryPressureUntil=0;capture(retained,14);assert(draw(retained,0)&&retained.composited&&!retained.shadowFrameReady);
+  assert(retained.shadowReplayAlpha.retryAt()==retry&&retained.shadowReplayAlpha.bytes()==0&&retained.shadowCacheKey[0].valid);
+  retained.shadowReplayAlpha.beginFrame(retry+999);assert(retained.shadowReplayAlpha.retryAt()==retry);
+  retained.shadowReplayAlpha.beginFrame(retry+1000);assert(!retained.shadowReplayAlpha.retryAt());
   // Resume with the newly captured pose, not the packet from the refused job.
-  retained.shadowAlphaRetryAt=0;reference.invalidateShadowCache();capture(reference,14);
-  assert(draw(reference)&&draw(retained)&&!retained.failed);
+  retained.setMemoryPressure(false,false);reference.invalidateShadowCache();capture(reference,14);
+  assert(draw(reference)&&draw(retained)&&!retained.failed&&!retained.shadowReplayAlpha.fallback()&&retained.shadowFrameReady);
   for(unsigned source=0;source<2;++source){
-   assert(image(d,reference.shadowSurface[source*2])==image(d,retained.shadowSurface[source*2]));
-   assert(image(d,reference.shadowSurface[source*2+1])==image(d,retained.shadowSurface[source*2+1]));
-   assert(retained.actorValid[source]&&image(d,reference.actorShadowSurface[source])==image(d,retained.actorShadowSurface[source]));
+   assert(image(d,reference.directionalMaps.current(source*2).surface)==image(d,retained.directionalMaps.current(source*2).surface));
+   assert(image(d,reference.directionalMaps.current(source*2+1).surface)==image(d,retained.directionalMaps.current(source*2+1).surface));
+   assert(retained.actorValid[source]&&image(d,reference.actorMaps.depth(source).surface)==image(d,retained.actorMaps.depth(source).surface));
   }
-  assert(!retained.shadowAlphaTargets.supported(D3DFMT_A8));
-  std::puts("ALPHA_RESOURCE_RETRY_PASS deniedJob=1 cooldown=1 currentPoseRecovery=1 noPartialMaps=1 worldRetained=1 unsupportedFormat=1");
+  assert(!retained.shadowReplayAlpha.supported(D3DFMT_A8));
+  std::puts("ALPHA_RESOURCE_RETRY_PASS warmRetained=1 deniedJob=1 cooldown=1 currentPoseRecovery=1 noPartialMaps=1 worldRetained=1 unsupportedFormat=1");
  }
  static void actorSettings(IDirect3DDevice9* d,IDirect3DTexture9* depth,IDirect3DSurface9* target){
   WorldRenderer reference(d),retained(d);setup(reference,1,1);setup(retained,1,1);
@@ -132,40 +139,94 @@ struct WorldScreenEffectsTest {
   must(d->SetRenderTarget(0,point.cacheSurface[0]));must(d->Clear(0,nullptr,D3DCLEAR_TARGET,D3DCOLOR_COLORVALUE(.25f,.25f,.25f,1),1,0));
   const auto staticPixels=image(d,point.cacheSurface[0]);assert(staticPixels[0]>0&&staticPixels[0]<1);
   retained.staticStream.reset();retained.staticScene=std::make_shared<StaticShadow::Snapshot>();
-  auto shared=[&](){std::vector<const void*> objects={retained.vertices,retained.indices,retained.shadowDecl,retained.liveTerrainDecl,retained.lightingPS,retained.finalPS,retained.giPS,retained.fogPS,retained.fogActorPS,retained.cloudNoise,retained.baselineLight,retained.light,retained.normalBuffer,retained.fog,retained.fogBlurred,retained.fogHistory,retained.shadowDepth,retained.shadowCacheDepth,retained.shadowScratch,retained.staticScene.get(),point.cube,point.cacheFace[0]};
-   for(auto* texture:retained.shadow)objects.push_back(texture);for(auto* texture:retained.shadowCache)objects.push_back(texture);for(auto* texture:retained.probe)objects.push_back(texture);objects.push_back(retained.probePrev);return objects;};
+  auto shared=[&](){std::vector<const void*> objects={retained.vertices,retained.indices,retained.shadowPrograms.worldLayout(),retained.shadowPrograms.liveLayout(),retained.screenLighting.directionalShader(),retained.composite.standardShader(),retained.screenLighting.giShader(),retained.regionalFogGpu.base(),retained.regionalFogGpu.actor(),retained.regionalFogGpu.noise(),retained.screenLighting.baseline().texture,retained.screenLighting.raw().texture,retained.worldNormals.texture(),retained.fogScreen.raw().texture,retained.fogScreen.scratch().texture,retained.fogScreen.history().texture,retained.directionalMaps.depth(),retained.directionalMaps.cacheDepth(),retained.directionalMaps.scratch().texture,retained.staticScene.get(),point.cube,point.cacheFace[0]};
+   for(unsigned slot=0;slot<4;++slot){objects.push_back(retained.directionalMaps.current(slot).texture);objects.push_back(retained.directionalMaps.cache(slot).texture);}retained.probeAtlas.visitTextures([&](auto* texture){objects.push_back(texture);});return objects;};
   const auto original=shared();unsigned cases=0;
   for(const auto& state:std::array<std::pair<unsigned,unsigned>,4>{{{0,1},{1,1},{1,0},{1,1}}}){
-   retained.temporalValid=retained.fogHistoryValid=true;point.ready=point.schedule.usable=true;point.faceCycle.start(1,point.faceWeights,GetTickCount(),retained.meshGeneration);
+   retained.history.valid_=retained.fogScreen.historyValid_=true;point.ready=point.schedule.usable=true;point.faceCycle.start(1,point.faceWeights,GetTickCount(),retained.meshGeneration);
    for(auto* w:{&reference,&retained}){
     NorthlightSettings::Config config;config.quality=w->quality;config.celestial=w->celestialProfiles;
     config.quality.actorShadows=state.first;config.quality.actorShadowDetail=state.second;w->applyLiveSettings(config);
    }
-   assert(shared()==original&&retained.geometryTargetsReady&&retained.actorTargetsPending);
-   assert(!retained.temporalValid&&!retained.fogHistoryValid&&!point.ready&&!point.schedule.usable&&!point.faceCycle.active()&&point.cacheValid);
+   assert(shared()==original&&retained.geometryTargetsReady&&retained.actorMaps.pending());
+   assert(!retained.history.valid()&&!retained.fogScreen.historyValid_&&!point.ready&&!point.schedule.usable&&!point.faceCycle.active()&&point.cacheValid);
    for(unsigned source=0;source<2;++source)assert(!retained.nearShadow[source].valid&&!retained.farShadow[source].valid&&!retained.actorValid[source]&&!retained.nearActorSkip[source]);
-   assert(!retained.actorShadow[0]&&!retained.actorShadow[1]&&!retained.actorShadowPS);
-   assert(retained.resources(64,64,D3DFMT_A8R8G8B8)&&retained.geometryResources(64,64)&&!retained.actorTargetsPending);
+   retained.actorMaps.forEachTexture([](auto* texture){assert(!texture);});assert(!retained.actorMaps.filter_);
+   assert(retained.resources(64,64,D3DFMT_A8R8G8B8)&&retained.geometryResources(64,64)&&!retained.actorMaps.pending());
    assert(shared()==original&&image(d,point.cacheSurface[0])==staticPixels);
-   if(state.first&&state.second)assert(retained.actorShadowPS&&retained.actorShadow[0]&&retained.actorShadow[1]&&retained.actorTiles[0]&&retained.actorVisibility);
-   else assert(!retained.actorShadowPS&&!retained.actorShadow[0]&&!retained.actorVisibility);
+   if(state.first&&state.second)assert(retained.actorMaps.ready(0)&&retained.actorMaps.ready(1));
+   else assert(!retained.actorMaps.filter_&&!retained.actorMaps.depth(0).texture&&!retained.actorMaps.visibility().texture);
    // The control retains the old full rebuild. Warm the same captured pose so
    // the oracle compares shadow coverage, independent of cold bounds scheduling.
    reference.releaseGPU(true);assert(reference.resources(64,64,D3DFMT_A8R8G8B8)&&reference.geometryResources(64,64));
    for(unsigned warm=0;warm<8;++warm){reference.replayBoundsBegin();reference.replayBoundsKick();reference.replayBoundsJoin();}
    draw(reference);draw(retained);
    for(unsigned source=0;source<2;++source){
-    assert(image(d,reference.shadowSurface[source*2])==image(d,retained.shadowSurface[source*2]));
-    assert(image(d,reference.shadowSurface[source*2+1])==image(d,retained.shadowSurface[source*2+1]));
-    if(state.first&&state.second){assert(retained.actorValid[source]&&retained.actorCasterCount[source]>0);assert(image(d,reference.actorShadowSurface[source])==image(d,retained.actorShadowSurface[source]));}
+    assert(image(d,reference.directionalMaps.current(source*2).surface)==image(d,retained.directionalMaps.current(source*2).surface));
+    assert(image(d,reference.directionalMaps.current(source*2+1).surface)==image(d,retained.directionalMaps.current(source*2+1).surface));
+    if(state.first&&state.second){assert(retained.actorValid[source]&&retained.actorCasterCount[source]>0);assert(image(d,reference.actorMaps.depth(source).surface)==image(d,retained.actorMaps.depth(source).surface));}
    }
    assert(image(d,point.cacheSurface[0])==staticPixels);++cases;
   }
   for(unsigned sampler=0;sampler<16;++sampler)must(d->SetTexture(sampler,nullptr));must(d->SetDepthStencilSurface(nullptr));must(d->SetRenderTarget(0,target));
-  retained.releaseGPU(true);assert(!retained.geometryTargetsReady&&!retained.actorTargetsPending&&!retained.light&&!retained.lightingPS&&!retained.probe[0]&&!point.cube&&!retained.staticScene);
+  retained.releaseGPU(true);assert(!retained.geometryTargetsReady&&!retained.actorMaps.pending()&&!retained.screenLighting.raw().texture&&!retained.screenLighting.directionalShader()&&!retained.probeAtlas.channel(0)&&!point.cube&&!retained.staticScene);
   assert(retained.resources(64,64,D3DFMT_A8R8G8B8)&&retained.geometryResources(64,64));
-  retained.reset();assert(!retained.geometryTargetsReady&&!retained.actorTargetsPending&&!retained.light&&!retained.lightingPS&&!retained.probe[0]);
-  std::printf("ACTOR_SETTINGS_PASS cases=%u sharedObjects=%zu pointStaticPixels=exact nearFarActorMaps=exact fullRelease=1 reset=1\n",cases,original.size());std::fflush(stdout);
+  retained.reset();assert(!retained.geometryTargetsReady&&!retained.actorMaps.pending()&&!retained.screenLighting.raw().texture&&!retained.screenLighting.directionalShader()&&!retained.probeAtlas.channel(0));
+  D3DCAPS9 caps={};must(d->GetDeviceCaps(&caps));
+  auto& actor=retained.actorMaps;
+  assert(actor.createShaders(d,caps,true,false));
+  auto* filter=actor.filter_;
+  unsigned allocations=0;
+  auto allocate=[&](UINT w,UINT h,D3DFORMAT format,IDirect3DTexture9** texture,IDirect3DSurface9** surface){
+   if(*texture)return true;
+   if(++allocations==2)return false;
+   return retained.target(w,h,format,texture,surface);
+  };
+  assert(!actor.createTargets(64,64,allocate)&&allocations==2);
+  auto* first=actor.depth(0).texture;
+  assert(first&&!actor.ready(0)&&!actor.ready(1));
+  assert(actor.createTargets(64,64,allocate)&&allocations==7&&actor.depth(0).texture==first&&actor.ready(0)&&actor.ready(1));
+  actor.releaseTextures();assert(actor.filter_==filter);
+  actor.forEachTexture([](auto* texture){assert(!texture);});
+  actor.reset();
+  NorthlightWorldDirectionalTargets staged;
+  unsigned allocationsLeft=0;
+  std::vector<std::pair<UINT,D3DFORMAT>> allocationOrder;
+  const auto take=[&](UINT w,UINT h,D3DFORMAT format){
+   assert(w==h);
+   if(!allocationsLeft)return false;
+   --allocationsLeft;allocationOrder.emplace_back(w,format);return true;
+  };
+  const auto allocateMap=[&](UINT w,UINT h,D3DFORMAT format,IDirect3DTexture9** texture,IDirect3DSurface9** surface){
+   return (*texture&&*surface)||(take(w,h,format)&&retained.target(w,h,format,texture,surface));
+  };
+  const auto allocateDepth=[&](UINT w,UINT h,IDirect3DSurface9** surface,const char*){
+   return *surface||(take(w,h,D3DFMT_D24S8)&&
+       SUCCEEDED(d->CreateDepthStencilSurface(w,h,D3DFMT_D24S8,D3DMULTISAMPLE_NONE,0,TRUE,surface,nullptr)));
+  };
+  IDirect3DTexture9* firstMap=nullptr;
+  for(unsigned frame=0;frame<11;++frame){
+   allocationsLeft=1;
+   assert(staged.create(allocateMap,allocateDepth)==(frame==10));
+   if(frame==0)firstMap=staged.current(0).texture;
+   assert(firstMap&&staged.current(0).texture==firstMap&&allocationOrder.size()==frame+1);
+  }
+  const std::vector<std::pair<UINT,D3DFORMAT>> expected={
+      {1024,D3DFMT_R32F},{1024,D3DFMT_R32F},{1024,D3DFMT_R32F},{1024,D3DFMT_R32F},{1024,D3DFMT_D24S8},
+      {1280,D3DFMT_R32F},{1280,D3DFMT_R32F},{1280,D3DFMT_R32F},{1280,D3DFMT_R32F},{1280,D3DFMT_D24S8},
+      {1024,D3DFMT_R32F}};
+  assert(allocationOrder==expected);
+  unsigned invalidations=0;
+  assert(staged.prepareNear(d,0,[]{return true;},[&]{++invalidations;})&&invalidations==1);
+  auto* retainedNear=staged.nearEnvironment(0).texture;
+  assert(staged.prepareNear(d,0,[]{return false;},[&]{++invalidations;})&&invalidations==1);
+  assert(retainedNear&&staged.nearEnvironment(0).texture==retainedNear);
+  staged.releaseNear();
+  assert(!staged.nearEnvironment(0).texture&&staged.current(0).texture==firstMap);
+  staged.releaseMaps();
+  staged.visit([](auto* texture){assert(!texture);},[](auto* surface){assert(!surface);});
+  std::puts("DIRECTIONAL_TARGETS_PASS stagedAllocations=11 retainedNear=1 pressureRelease=1");
+  std::printf("ACTOR_SETTINGS_PASS cases=%u sharedObjects=%zu pointStaticPixels=exact nearFarActorMaps=exact fullRelease=1 reset=1 stagedRetry=1 trimRetainsShaders=1\n",cases,original.size());std::fflush(stdout);
  }
  static void interiorDaylight(IDirect3DDevice9* d,unsigned msaa,bool hdr){
   IDirect3DTexture9 *depth=nullptr,*scene=nullptr;IDirect3DSurface9 *mask=nullptr,*target=nullptr,*read=nullptr,*resolved=nullptr;
@@ -197,19 +258,19 @@ struct WorldScreenEffectsTest {
    const NorthlightGI::WorldVertex roof[]={{{x,-20,z},{0,0,1},0,0},{{20,-20,z},{0,0,1},1,0},{{x,20,z},{0,0,1},0,1},{{20,20,z},{0,0,1},1,1}};
    void* bytes=nullptr;must(w.vertices->Lock(0,sizeof roof,&bytes,0));std::memcpy(bytes,roof,sizeof roof);must(w.vertices->Unlock());
    w.batches[0].boundsLow={x,-20,z};w.batches[0].boundsHigh={20,20,z};
-   if(mode==3){pose(w,-1);auto& p=*w.replays[0];p.constantStorage[4*31]=p.constantStorage[4*32+1]=.25f;p.constantStorage[4*33+3]=-1;}
-   if(mode==4)w.prelitDaylightRetryAt=GetTickCount()+60000;
+   if(mode==3){pose(w,-1);auto& p=*w.replays[0];p.writableConstants()[4*31]=p.writableConstants()[4*32+1]=.25f;p.writableConstants()[4*33+3]=-1;}
+   if(mode==4)w.screenLighting.prelitRetryAt_=GetTickCount()+60000;
    must(d->SetRenderTarget(0,target));must(d->SetDepthStencilSurface(mask));D3DVIEWPORT9 vp{0,0,64,64,0,1};must(d->SetViewport(&vp));
    must(d->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_STENCIL,0xff404040,1,NorthlightUnlitReceiver::PrelitBit));must(d->SetDepthStencilSurface(nullptr));
    w.setPrelitMask(mask);must(d->BeginScene());assert(w.render(target,depth,64,64,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,nullptr,0,hdr?scene:nullptr,hdr));must(d->EndScene());
-   if(mode<4)assert(w.prelitDaylightSurface);else assert(!w.prelitDaylightSurface);
+   assert((w.screenLighting.prelit().surface!=nullptr)==(mode<4));
    if(msaa)must(d->StretchRect(target,nullptr,resolved,nullptr,D3DTEXF_NONE));
    must(d->GetRenderTargetData(msaa?resolved:target,read));must(read->LockRect(&lock,nullptr,D3DLOCK_READONLY));
    const auto* row=reinterpret_cast<uint16_t*>(static_cast<char*>(lock.pBits)+32*lock.Pitch);
    pixels[mode][0]=half(row[16*4]);pixels[mode][1]=half(row[48*4]);
    must(read->UnlockRect());
    // A following frame without caster coverage must not reuse the last daylight.
-   w.effects.shadows=false;w.setPrelitMask(mask);w.temporalValid=false;
+   w.effects.shadows=false;w.setPrelitMask(mask);w.history.invalidate();
    must(d->BeginScene());assert(w.render(target,depth,64,64,D3DFMT_A16B16G16R16F,1,1000,0,1,0,nullptr,nullptr,scene,nullptr,0,hdr?scene:nullptr,hdr));must(d->EndScene());
    if(msaa)must(d->StretchRect(target,nullptr,resolved,nullptr,D3DTEXF_NONE));
    must(d->GetRenderTargetData(msaa?resolved:target,read));must(read->LockRect(&lock,nullptr,D3DLOCK_READONLY));
@@ -234,17 +295,17 @@ struct WorldScreenEffectsTest {
   for(unsigned detail:{0u,1u})for(unsigned interval:{2u,4u,16u}){
    auto reference=std::make_unique<WorldRenderer>(d),retained=std::make_unique<WorldRenderer>(d);setup(*reference,1,detail);setup(*retained,interval,detail);std::vector<float> previous;
    for(unsigned frame=0;frame<21;++frame){const float x=frame%3==0?0.f:frame%3==1?14.f:-4.f;
-    if(frame==18){retained->releaseNearEnvironment();for(auto& retry:retained->nearEnvironmentRetry)retry=GetTickCount()+60000;}
-    if(frame>=19){NorthlightSettings::Config config;config.quality=retained->quality;config.quality.nearShadowInterval=frame==19?1:interval;retained->temporalValid=true;retained->applyLiveSettings(config);assert(!retained->temporalValid&&!retained->nearEnvironment[0]&&!retained->nearShadow[0].valid);}
+    if(frame==18){retained->releaseNearEnvironment();for(auto& retry:retained->directionalMaps.nearRetry_)retry=GetTickCount()+60000;}
+    if(frame>=19){NorthlightSettings::Config config;config.quality=retained->quality;config.quality.nearShadowInterval=frame==19?1:interval;retained->history.valid_=true;retained->applyLiveSettings(config);assert(!retained->history.valid()&&!retained->directionalMaps.nearEnvironment(0).texture&&!retained->nearShadow[0].valid);}
     for(auto* w:{reference.get(),retained.get()}){pose(*w,x);must(d->BeginScene());const bool ok=w->render(target,depth,64,64,D3DFMT_A8R8G8B8,1,1000,0,1,1,nullptr,nullptr);must(d->EndScene());if(!ok)std::printf("render failed: %s\n",w->skipReason);assert(ok);}
-    for(unsigned source=0;source<2;++source){const auto expected=image(d,reference->shadowSurface[source*2]);const auto actual=image(d,retained->shadowSurface[source*2]);
+    for(unsigned source=0;source<2;++source){const auto expected=image(d,reference->directionalMaps.current(source*2).surface);const auto actual=image(d,retained->directionalMaps.current(source*2).surface);
      if(expected!=actual){std::printf("NEAR_MISMATCH detail=%u interval=%u frame=%u source=%u\n",detail,interval,frame,source);std::fflush(stdout);}assert(expected==actual);
      assert(std::any_of(actual.begin(),actual.end(),[](float v){return v<1.f;}));
-     if(detail){if(frame==0)assert(reference->actorCasterCount[source]>0&&retained->actorCasterCount[source]>0);assert(reference->replays[0]->pointBounds.valid&&retained->replays[0]->pointBounds.valid);assert(reference->actorValid[source]&&retained->actorValid[source]);assert(image(d,reference->actorShadowSurface[source])==image(d,retained->actorShadowSurface[source]));}
+     if(detail){if(frame==0)assert(reference->actorCasterCount[source]>0&&retained->actorCasterCount[source]>0);assert(reference->replays[0]->pointBounds.valid&&retained->replays[0]->pointBounds.valid);assert(reference->actorValid[source]&&retained->actorValid[source]);assert(image(d,reference->actorMaps.depth(source).surface)==image(d,retained->actorMaps.depth(source).surface));}
      if(!detail&&source==0){if(!previous.empty()){assert(previous!=actual);++changes;}previous=actual;}++cases;
     }
    }
-   assert(retained->nearEnvironment[0]&&retained->nearEnvironment[1]);
+   assert(retained->directionalMaps.nearEnvironment(0).texture&&retained->directionalMaps.nearEnvironment(1).texture);
    assert(retained->nearReuses>0);reuses+=retained->nearReuses;
    std::printf("NEAR_INTERVAL_CASE detail=%u interval=%u nearReuses=%u farReuses=%u\n",detail,interval,retained->nearReuses,retained->farReuses);std::fflush(stdout);
   }

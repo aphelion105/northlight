@@ -13,9 +13,9 @@ struct LayerMeter:ForwardIDirect3DDevice9 {
 };
 struct PipelineOffTest {
     static unsigned stage(const WorldRenderer& w,IDirect3DPixelShader9* p){
-        if(p==w.normalsPS||p==w.normalsNoDistancePS)return 0;
-        if(p==w.lightingPS||p==w.lightingUnshadowedPS||p==w.lightingUnshadowedGIPS)return 1;
-        if(p==w.removalPS)return 2;if(p==w.temporalPS)return 3;
+        if(WorldScreenEffectsTest::isNormalShader(w,p))return 0;
+        if(WorldScreenEffectsTest::isLightingShader(w,p))return 1;
+        if(p==WorldScreenEffectsTest::removalShader(w))return 2;if(p==WorldScreenEffectsTest::historyShader(w))return 3;
         return 4;
     }
     static void policy(Device& d){
@@ -52,7 +52,7 @@ struct PipelineOffTest {
         w.quality.contactAO=1;w.quality.nightBrightness=w.quality.horizonHaze=w.quality.fogClouds=0;
         w.quality.localLightLimit=8;w.quality.localLights=mode==4;w.quality.autoBump=mode==5;w.quality.weather=mode==6;
         w.effects={mode==1,mode==2,mode==3};w.lastRequest.map="OfflineOptionalLayers";
-        w.frames=7;w.temporalValid=false;w.gpuDiagnosticCaptures=4;
+        w.frames=7;WorldScreenEffectsTest::historyValid(w)=false;w.gpuDiagnosticCaptures=4;
     }
     static void render(WorldRenderer& w,IDirect3DDevice9* d,IDirect3DSurface9* out,IDirect3DTexture9* depth,IDirect3DTexture9* scene,IDirect3DTexture9* ao,IDirect3DTexture9* water,unsigned W,unsigned H,bool hdr){
         assert(SUCCEEDED(d->BeginScene()));
@@ -64,31 +64,31 @@ struct PipelineOffTest {
         for(bool nativeMode:{false,true}){
             w.releaseGPU(true);configure(w,2);w.quality.shadowProvider=nativeMode?0:1;w.nativeShadowOwned=w.nativeShadowAvailable=nativeMode;
             render(w,meter.real,out,depth,scene,ao,nullptr,W,H,false);
-            assert(w.screenGroups==1&&!w.normalsPS&&!w.shadowPS&&!w.shadow[0]&&!w.shadow[1]&&!w.actorShadow[0]&&!w.shadowsComposited);
+            assert(w.screenGroups==1&&WorldScreenEffectsTest::normalShadersAbsent(w)&&!w.shadowPrograms.casterPixel()&&!w.directionalMaps.current_[0].texture&&!w.directionalMaps.current_[1].texture&&WorldScreenEffectsTest::actorDepthAbsent(w,0)&&!w.shadowsComposited);
             assert(w.nativeTerrainShadowsEnabled());
         }
         w.quality.shadowProvider=1;w.nativeShadowOwned=w.nativeShadowAvailable=true;
         assert(!w.nativeShadowReplacementReady()); // Neither a warm target nor an empty publication authorizes handoff.
         {
-            auto active=w.active;auto* a=w.shadow[0];auto* b=w.shadow[1];
+            auto active=w.active;auto* a=w.directionalMaps.current_[0].texture;auto* b=w.directionalMaps.current_[1].texture;
             w.active=std::make_shared<WorldRenderer::Snapshot>();w.active->bvh=std::make_shared<NorthlightGI::BVH>();
             w.fogGeometryReady=w.shadowFrameReady=w.composited=true;w.nativeShadowOwned=false;
-            w.shadow[0]=w.shadow[1]=scene;w.cascadeActions[0]='R';w.cascadeActions[1]='U';assert(w.nativeShadowReplacementReady());
+            w.directionalMaps.current_[0].texture=w.directionalMaps.current_[1].texture=scene;w.cascadeActions[0]='R';w.cascadeActions[1]='U';assert(w.nativeShadowReplacementReady());
             w.cascadeActions[0]='D';w.shadowTransition[0].workingValid=false;assert(!w.nativeShadowReplacementReady());
             w.shadowTransition[0].workingValid=true;assert(w.nativeShadowReplacementReady());
-            w.shadow[1]=nullptr;assert(!w.nativeShadowReplacementReady());w.shadow[1]=scene;
+            w.directionalMaps.current_[1].texture=nullptr;assert(!w.nativeShadowReplacementReady());w.directionalMaps.current_[1].texture=scene;
             w.quality.shadowProvider=0;assert(!w.nativeShadowReplacementReady());w.quality.shadowProvider=1;
             w.composited=false;assert(!w.nativeShadowReplacementReady());
-            w.shadow[0]=a;w.shadow[1]=b;w.active=active;w.nativeShadowOwned=true;w.fogGeometryReady=w.shadowFrameReady=false;w.shadowTransition[0].workingValid=false;
+            w.directionalMaps.current_[0].texture=a;w.directionalMaps.current_[1].texture=b;w.active=active;w.nativeShadowOwned=true;w.fogGeometryReady=w.shadowFrameReady=false;w.shadowTransition[0].workingValid=false;
         }
         w.releaseGPU(true);configure(w,0);render(w,meter.real,out,depth,scene,ao,nullptr,W,H,false);
-        assert(w.screenGroups==1&&w.finalPS&&!w.normalBuffer&&!w.light&&!w.baselineLight&&!w.fog&&!w.fogBlurred&&!w.fogHistory);
-        for(unsigned i=0;i<2;++i)assert(!w.temporalLight[i]&&!w.temporalDepth[i]);
-        auto* composite=w.finalPS;
+        assert(w.screenGroups==1&&w.composite.standardShader()&&WorldScreenEffectsTest::normalTargetsAbsent(w)&&WorldScreenEffectsTest::lightingTargetsAbsent(w)&&!WorldScreenEffectsTest::fogTargets(w).raw.texture&&!WorldScreenEffectsTest::fogTargets(w).scratch.texture&&!WorldScreenEffectsTest::fogTargets(w).history.texture);
+        assert(WorldScreenEffectsTest::lightTargetsAbsent(w)&&!w.history.pending().distance.texture&&!w.history.produced().distance.texture);
+        auto* composite=w.composite.standardShader();
         {
             WorldRenderer::Replay packet;WorldRenderer::CaptureShader metadata;
             metadata.program=std::make_shared<NorthlightActorDeformation::Program>();
-            packet.decl=w.shadowDecl;packet.decl->AddRef();w.prepareFill(packet,metadata);
+            packet.decl=w.shadowPrograms.worldLayout();packet.decl->AddRef();w.prepareFill(packet,metadata);
             assert(packet.declared&&packet.declCopy&&packet.elements.capacity()==0);
             auto arena=std::move(w.prepareDecls);w.prepareFill(packet,metadata);
             assert(packet.declared&&!packet.declCopy&&packet.declarationCount()>0);
@@ -98,15 +98,15 @@ struct PipelineOffTest {
             assert(packet.declared&&packet.declCopy&&packet.elements.empty()&&packet.declarationCount()==count);
         }
         configure(w,2);render(w,meter.real,out,depth,scene,ao,nullptr,W,H,false);
-        auto* lighting=w.light;assert(lighting&&!w.fog);
+        auto* lighting=w.screenLighting.raw().texture;assert(lighting&&!WorldScreenEffectsTest::fogTargets(w).raw.texture);
         configure(w,3);render(w,meter.real,out,depth,scene,ao,nullptr,W,H,false);
-        assert(w.fog&&w.light==lighting&&w.finalPS==composite);
+        assert(WorldScreenEffectsTest::fogTargets(w).raw.texture&&w.screenLighting.raw().texture==lighting&&w.composite.standardShader()==composite);
         configure(w,0);render(w,meter.real,out,depth,scene,ao,nullptr,W,H,false);
-        assert(w.light==lighting&&w.finalPS==composite);
+        assert(w.screenLighting.raw().texture==lighting&&w.composite.standardShader()==composite);
         configure(w,4);render(w,meter.real,out,depth,scene,ao,nullptr,W,H,false);
-        assert(!w.localFogPS);
+        assert(!w.localLighting.localFogPS);
         configure(w,3);w.quality.localLights=1;render(w,meter.real,out,depth,scene,ao,nullptr,W,H,false);
-        assert(w.localFogPS&&w.localFogCombinePS);
+        assert(w.localLighting.localFogPS&&w.localLighting.localFogCombinePS);
         std::puts("OPTIONAL_RESOURCES_PASS coldAoTargets=0 warmReuse=1 shadowsThenFog=1");
 #endif
         // Start the paired image sequence from the same resource state.
@@ -116,7 +116,7 @@ struct PipelineOffTest {
             configure(w,mode);std::fill(std::begin(meter.passes),std::end(meter.passes),0);
             render(w,meter.real,out,depth,scene,ao,nullptr,W,H,hdr);
 #ifndef NORTHLIGHT_OPTIONAL_LAYER_REFERENCE
-            if(mode==0||mode==5||mode==6){assert(!meter.passes[0]&&!meter.passes[1]&&!meter.passes[2]&&!meter.passes[3]&&meter.passes[4]==1&&!w.temporalValid);}
+            if(mode==0||mode==5||mode==6){assert(!meter.passes[0]&&!meter.passes[1]&&!meter.passes[2]&&!meter.passes[3]&&meter.passes[4]==1&&!WorldScreenEffectsTest::historyValid(w));}
             else assert(meter.passes[0]&&meter.passes[1]&&meter.passes[3]);
             if(mode!=2)assert(!meter.passes[2]);
 #endif

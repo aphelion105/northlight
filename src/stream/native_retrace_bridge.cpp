@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cwchar>
 #include <map>
 #include <memory>
 #include <new>
@@ -90,7 +91,7 @@ bool path(const unsigned char* bytes,unsigned n,wchar_t* output){
 
 // Avoid RTTI and unchecked Value conversion/asserts on malformed transports.
 struct Value : trace::Visitor {
-    bool number=false;std::uint64_t integer=0;const wchar_t* wide=nullptr;
+    bool number=false;std::uint64_t integer=0;const wchar_t* wide=nullptr;const trace::Struct* structure=nullptr;
     void visit(trace::Null*) override {number=true;}
     void visit(trace::Bool* x) override {number=true;integer=x->value?1:0;}
     void visit(trace::SInt* x) override {number=true;integer=std::uint64_t(x->value);}
@@ -103,7 +104,7 @@ struct Value : trace::Visitor {
     void visit(trace::Float*) override {}
     void visit(trace::Double*) override {}
     void visit(trace::String*) override {}
-    void visit(trace::Struct*) override {}
+    void visit(trace::Struct* x) override {structure=x;}
     void visit(trace::Array*) override {}
     void visit(trace::Blob*) override {}
 };
@@ -111,13 +112,31 @@ bool number(trace::Value* v,std::uint64_t& n){if(!v)return false;Value out;v->vi
 trace::Value* arg(trace::Call& c,unsigned i){return i<c.args.size()?c.args[i].value:nullptr;}
 int named(trace::Call& c,const char* name){for(unsigned i=0;i<c.args.size();++i)if(c.sig->arg_names&&c.sig->arg_names[i]&&!std::strcmp(c.sig->arg_names[i],name))return int(i);return -1;}
 trace::Value* output(trace::Call& c,unsigned i){auto* v=arg(c,i);const auto* a=v?v->toArray():nullptr;return a&&a->values.size()==1?a->values[0]:nullptr;}
+bool iunknown(trace::Value* v){
+    Value guid;if(v)v->visit(guid);
+    if(!guid.structure||guid.structure->members.size()!=4)return false;
+    const auto& fields=guid.structure->members;
+    std::uint64_t part=0;
+    for(unsigned i=0;i<3;++i)if(!number(fields[i],part)||part)return false;
+    const auto* bytes=fields[3]?fields[3]->toArray():nullptr;
+    const unsigned expected[]={0xc0,0,0,0,0,0,0,0x46};
+    if(!bytes||bytes->values.size()!=std::size(expected))return false;
+    for(unsigned i=0;i<std::size(expected);++i)if(!number(bytes->values[i],part)||part!=expected[i])return false;
+    return true;
+}
 
 enum class Kind {Factory,Device,Swap,Texture,Cube,VolumeTexture,Surface,Volume,VertexBuffer,IndexBuffer,Declaration,VertexShader,PixelShader,StateBlock,Query};
-struct Object {Kind kind;std::uint32_t canonical;bool live=true,issued=false;unsigned queryType=0;void* replayed=nullptr;};
+struct Object {Kind kind;std::uint32_t canonical;bool live=true,issued=false;unsigned queryType=0;void* replayed=nullptr;unsigned generation=0;};
+struct ExposedTexture {std::uint32_t key;unsigned generation;};
 struct Original {const char* name=nullptr;retrace::Callback callback=nullptr;};
 struct State {
     bool active=false,selected=false,installed=false,created=false,released=false,complete=false,markerPending=false;
     bool factoryStarted=false,lastStatusValid=false;
+    bool probeFactoryUsed=false;
+    std::uint32_t probeFactory=0;
+    unsigned probeIdentity=0;
+    std::uint32_t lastTextureCreated=0;
+    std::map<std::uint32_t,ExposedTexture> exposedTextures;
     unsigned originalCount=0,next=0;DWORD owner=0;
     std::uint64_t draws=0,presents=0,resets=0,queryCalls=0,queryPolls=0,queryEarlyReady=0;
     std::uint64_t planBytes=0;unsigned peBytes=0,count=0;
@@ -163,32 +182,32 @@ bool kindMatches(const char* name,Kind kind){
     for(const auto& type:types)if(is(type.name))return type.kind==kind;return false;
 }
 void inputObjects(trace::Call& c){
-    static const char* names[]={"pTexture","pSourceTexture","pDestinationTexture","pSourceSurface","pDestinationSurface","pDestSurface","pRenderTarget","pNewZStencil","pStreamData","pIndexData","pShader","pDecl","pSurface","pSrcSurface","pDstSurface"};
+    static const char* names[]={"pTexture","pSourceTexture","pDestinationTexture","pSourceSurface","pDestinationSurface","pDestSurface","pRenderTarget","pNewZStencil","pStreamData","pIndexData","pShader","pDecl","pSurface","pSrcSurface","pDstSurface","pCursorBitmap"};
     for(const char* name:names){const int i=named(c,name);if(i<0)continue;
         // UP carries copied index bytes; only SetIndices takes a COM object.
         if(!std::strcmp(name,"pIndexData")&&!std::strcmp(c.name(),"IDirect3DDevice9::DrawIndexedPrimitiveUP"))continue;
         const auto key=scalar(c,unsigned(i));if(!key)continue;const auto& value=object(c,unsigned(i));
         if((std::strstr(name,"Texture")&&(value.kind!=Kind::Texture&&value.kind!=Kind::Cube&&value.kind!=Kind::VolumeTexture))||
-           ((std::strstr(name,"Surface")||!std::strcmp(name,"pRenderTarget")||!std::strcmp(name,"pNewZStencil"))&&value.kind!=Kind::Surface)||
+           ((std::strstr(name,"Surface")||!std::strcmp(name,"pRenderTarget")||!std::strcmp(name,"pNewZStencil")||!std::strcmp(name,"pCursorBitmap"))&&value.kind!=Kind::Surface)||
            (!std::strcmp(name,"pStreamData")&&value.kind!=Kind::VertexBuffer)||(!std::strcmp(name,"pIndexData")&&value.kind!=Kind::IndexBuffer)||
            (!std::strcmp(name,"pDecl")&&value.kind!=Kind::Declaration)||(!std::strcmp(name,"pShader")&&value.kind!=(std::strstr(c.name(),"Pixel")?Kind::PixelShader:Kind::VertexShader)))reject("input-object-kind",&c);
     }
 }
-void observeObject(trace::Call& c,trace::Value* value,Kind kind,std::uint32_t canonical=0,bool creation=false){
+void observeObject(trace::Call& c,trace::Value* value,Kind kind,std::uint32_t canonical=0,bool creation=false,bool acquiredSurface=false){
     std::uint64_t old=0;if(!number(value,old)||!old||old>UINT32_MAX)reject("object-result",&c);
     auto& s=state();const auto key=std::uint32_t(old);auto i=s.objects.find(key);
     void* replayed=retrace::toObjPointer(c,*value);if(!replayed)reject("missing-replayed-object",&c);
     if(i!=s.objects.end()){
-        if(creation&&!i->second.live){
+        if((creation||acquiredSurface)&&!i->second.live){
             if(canonical&&canonical!=key)reject("object-reuse-or-kind",&c);
-            // A source Create after final Release starts a new lifetime. Only
-            // this slot is replaced; the previous interface aliases stay dead.
-            i->second=Object{kind,key,true,false,0,replayed};return;
+            // A source Create or a typed surface acquisition after final
+            // Release starts a new lease. Previous interface aliases stay dead.
+            i->second=Object{kind,key,true,false,0,replayed,c.no};return;
         }
         if(creation||!i->second.live||i->second.kind!=kind||i->second.replayed!=replayed||(canonical&&i->second.canonical!=canonical))reject("object-reuse-or-kind",&c);
     }else{
         if(s.objects.size()>=65536)reject("object-budget",&c);
-        s.objects.emplace(key,Object{kind,canonical?canonical:key,true,false,0,replayed});
+        s.objects.emplace(key,Object{kind,canonical?canonical:key,true,false,0,replayed,c.no});
     }
 }
 std::uint32_t retireObject(Object& receiver){
@@ -200,13 +219,16 @@ bool texture(Kind kind){return kind==Kind::Texture||kind==Kind::Cube||kind==Kind
 void aliasPairs(trace::Call& c,const NativeIds& identities,std::uint64_t* pairs){
     auto& s=state();
     for(unsigned i=0;i<identities.count;++i){
-        const auto old=identities.ids[i];auto found=s.objects.find(old);
+        const auto old=identities.ids[i];const auto exposed=s.exposedTextures.find(old);
+        const auto key=exposed==s.exposedTextures.end()?old:exposed->second.key;
+        auto found=s.objects.find(key);
         if(found==s.objects.end())reject("alias-missing-object",&c);
         const auto& current=found->second;if(!current.live)reject("alias-dead-object",&c);
+        if(exposed!=s.exposedTextures.end()&&current.generation!=exposed->second.generation)reject("alias-exposed-generation",&c);
         if(!texture(current.kind))reject("alias-object-kind",&c);
         const auto owner=s.objects.find(current.canonical);
         if(owner==s.objects.end()||!owner->second.live||!texture(owner->second.kind)||owner->second.kind!=current.kind)reject("alias-canonical-lifetime",&c);
-        trace::Pointer original(old);void* replayed=retrace::toObjPointer(c,original);
+        trace::Pointer original(key);void* replayed=retrace::toObjPointer(c,original);
         if(!replayed||replayed!=current.replayed)reject("alias-replayed-generation",&c);
         pairs[2*i]=old;pairs[2*i+1]=reinterpret_cast<std::uintptr_t>(replayed);
     }
@@ -251,9 +273,33 @@ unsigned drawApi(const char* name){
     if(!std::strcmp(name,"IDirect3DDevice9::DrawPrimitiveUP"))return 3;
     if(!std::strcmp(name,"IDirect3DDevice9::DrawIndexedPrimitiveUP"))return 4;return 0;
 }
-void marker(trace::Call& c){
+void marker(trace::Call& c,std::uint32_t createdTexture){
     auto& s=state();if(!s.created||s.markerPending||c.args.size()!=2)reject("marker-order",&c);
-    if(scalar(c,0)!=0x4e4c0001u)return;
+    const auto color=scalar(c,0);
+    if(color==0x4e4c0002u){
+        Value value;if(auto* a=arg(c,1))a->visit(value);
+        const wchar_t* text=value.wide;
+        if(!text||std::wcslen(text)!=24||std::wmemcmp(text,L"NLTEX1;",7)||text[15]!=L';'||!createdTexture)
+            reject("texture-witness-format-or-order",&c);
+        std::uint32_t keys[2]={0,0};
+        for(unsigned k=0;k<2;++k)for(unsigned i=0;i<8;++i){
+            const wchar_t digit=text[7+k*9+i];
+            if(!((digit>=L'0'&&digit<=L'9')||(digit>=L'a'&&digit<=L'f')))reject("texture-witness-digit",&c);
+            keys[k]=(keys[k]<<4)|unsigned(digit<=L'9'?digit-L'0':digit-L'a'+10);
+        }
+        const auto target=s.objects.find(keys[1]);
+        if(!keys[0]||(keys[0]&3)||keys[1]!=createdTexture||target==s.objects.end()||!target->second.live||!texture(target->second.kind))
+            reject("texture-witness-object",&c);
+        const auto old=s.exposedTextures.find(keys[0]);
+        if(old!=s.exposedTextures.end()){
+            const auto live=s.objects.find(old->second.key);
+            if(live!=s.objects.end()&&live->second.live&&live->second.generation==old->second.generation)
+                reject("texture-witness-already-live",&c);
+        }else if(s.exposedTextures.size()>=65536)reject("texture-witness-budget",&c);
+        s.exposedTextures[keys[0]]={keys[1],target->second.generation};
+        return;
+    }
+    if(color!=0x4e4c0001u)return;
     Value text;if(auto* a=arg(c,1))a->visit(text);if(!text.wide)reject("marker-string",&c);
     const auto* r=s.record();if(!r||c.no!=u64(r+Record::MarkerCall))reject("marker-call",&c);
     char expected[512];const int n=std::snprintf(expected,sizeof expected,
@@ -288,7 +334,7 @@ void query(trace::Call& c){
 }
 void outputs(trace::Call& c,Object* receiver){
     struct Result {const char* name;Kind kind;};
-    static const Result names[]={{"ppTexture",Kind::Texture},{"ppVolumeTexture",Kind::VolumeTexture},{"ppCubeTexture",Kind::Cube},{"ppSurface",Kind::Surface},{"ppBackBuffer",Kind::Surface},{"ppRenderTarget",Kind::Surface},{"ppZStencilSurface",Kind::Surface},{"ppVolume",Kind::Volume},{"ppStreamData",Kind::VertexBuffer},{"ppVertexBuffer",Kind::VertexBuffer},{"ppIndexBuffer",Kind::IndexBuffer},{"ppIndexData",Kind::IndexBuffer},{"ppDecl",Kind::Declaration},{"ppShader",Kind::VertexShader},{"ppStateBlock",Kind::StateBlock},{"ppQuery",Kind::Query},{"pSwapChain",Kind::Swap}};
+    static const Result names[]={{"ppTexture",Kind::Texture},{"ppVolumeTexture",Kind::VolumeTexture},{"ppCubeTexture",Kind::Cube},{"ppSurface",Kind::Surface},{"ppSurfaceLevel",Kind::Surface},{"ppCubeMapSurface",Kind::Surface},{"ppBackBuffer",Kind::Surface},{"ppRenderTarget",Kind::Surface},{"ppZStencilSurface",Kind::Surface},{"ppVolume",Kind::Volume},{"ppStreamData",Kind::VertexBuffer},{"ppVertexBuffer",Kind::VertexBuffer},{"ppIndexBuffer",Kind::IndexBuffer},{"ppIndexData",Kind::IndexBuffer},{"ppDecl",Kind::Declaration},{"ppShader",Kind::VertexShader},{"ppStateBlock",Kind::StateBlock},{"ppQuery",Kind::Query},{"pSwapChain",Kind::Swap}};
     if(!c.ret||!successful(c))return;
     const char* method=std::strstr(c.name(),"::");method=method?method+2:c.name();
     for(const auto& result:names){const int i=named(c,result.name);if(i<0)continue;
@@ -300,7 +346,16 @@ void outputs(trace::Call& c,Object* receiver){
             const auto it=state().objects.find(std::uint32_t(key));if(it==state().objects.end()||!it->second.live||(it->second.kind!=Kind::Texture&&it->second.kind!=Kind::Cube&&it->second.kind!=Kind::VolumeTexture))reject("texture-alias",&c);kind=it->second.kind;
         }
         const bool creation=!std::strncmp(method,"Create",6)||!std::strcmp(method,"EndStateBlock");
-        observeObject(c,value,kind,0,creation);
+        // These typed getters acquire a surface from a validated live owner.
+        // An implicit target after Reset can reuse a released surface's address.
+        const bool acquiredSurface=kind==Kind::Surface&&(!std::strcmp(c.name(),"IDirect3DTexture9::GetSurfaceLevel")||
+            !std::strcmp(c.name(),"IDirect3DCubeTexture9::GetCubeMapSurface")||
+            !std::strcmp(c.name(),"IDirect3DDevice9::GetBackBuffer")||
+            !std::strcmp(c.name(),"IDirect3DSwapChain9::GetBackBuffer")||
+            !std::strcmp(c.name(),"IDirect3DDevice9::GetRenderTarget")||
+            !std::strcmp(c.name(),"IDirect3DDevice9::GetDepthStencilSurface"));
+        observeObject(c,value,kind,0,creation,acquiredSurface);
+        if(creation&&texture(kind))state().lastTextureCreated=std::uint32_t(key);
         if(kind==Kind::Query&&!std::strcmp(method,"CreateQuery")){
             auto& q=state().objects.find(std::uint32_t(key))->second;q.queryType=scalar(c,1);
             if(q.queryType!=D3DQUERYTYPE_EVENT&&q.queryType!=D3DQUERYTYPE_OCCLUSION)reject("query-create-type",&c);
@@ -314,6 +369,7 @@ void dispatch(trace::Call& c){
     auto& s=state();retrace::Callback original=nullptr;for(unsigned i=0;i<s.originalCount;++i)if(!std::strcmp(s.originals[i].name,c.name())){original=s.originals[i].callback;break;}
     if(!original)reject("callback-identity",&c);
     if(!s.active){original(c);return;}
+    const auto createdTexture=s.lastTextureCreated;s.lastTextureCreated=0;
     if(s.complete||c.thread_id!=s.h32(Header::TraceThread)||(s.owner&&s.owner!=GetCurrentThreadId())||(c.flags&trace::CALL_FLAG_INCOMPLETE)||std::strstr(c.name(),"9Ex"))reject("call-owner-or-domain",&c);
     const char* name=c.name();const bool first=!std::strcmp(name,"Direct3DCreate9");
     const bool create=!std::strcmp(name,"IDirect3D9::CreateDevice");const unsigned draw=drawApi(name);
@@ -321,15 +377,39 @@ void dispatch(trace::Call& c){
     const bool reset=!std::strcmp(name,"IDirect3DDevice9::Reset");const bool getData=!std::strcmp(name,"IDirect3DQuery9::GetData");
     Object* receiver=nullptr;
     if(std::strstr(name,"::")){receiver=&object(c,0);if(!s.factoryStarted||!kindMatches(name,receiver->kind))reject("call-before-factory-or-kind",&c);inputObjects(c);}
-    if(first)factory(c);
+    if(first){
+        if(!s.factoryStarted)factory(c);
+        else{
+            const auto key=returned(c);
+            if(!s.created||s.draws||s.markerPending||s.probeFactoryUsed||!key||key>UINT32_MAX||
+               key==s.h64(Header::Factory)||key==s.h64(Header::Device))reject("extra-factory",&c);
+            s.probeFactoryUsed=true;s.probeFactory=std::uint32_t(key);
+        }
+    }
+    if(receiver&&s.probeFactory&&scalar(c,0)==s.probeFactory){
+        if(s.draws)reject("probe-factory-after-draw",&c);
+        if(s.probeIdentity==1){
+            if(std::strcmp(name,"IDirect3D9::Release")||returned(c)!=1)reject("probe-identity-release",&c);
+            s.probeIdentity=2;
+        }else if(!s.probeIdentity&&!std::strcmp(name,"IDirect3D9::QueryInterface")){
+            std::uint64_t identity=0;
+            if(returned(c)!=S_OK||!iunknown(arg(c,1))||!number(output(c,2),identity)||identity!=s.probeFactory)
+                reject("probe-identity",&c);
+            s.probeIdentity=1;
+        }else if(std::strcmp(name,"IDirect3D9::CheckDeviceMultiSampleType")&&
+           std::strcmp(name,"IDirect3D9::CheckDeviceFormat")&&std::strcmp(name,"IDirect3D9::EnumAdapterModes")&&
+           std::strcmp(name,"IDirect3D9::GetAdapterModeCount")&&
+           (std::strcmp(name,"IDirect3D9::Release")||returned(c)!=0))reject("probe-factory-call",&c);
+    }
     if(create){if(s.created||c.no!=s.h64(Header::CreateCall)||scalar(c,0)!=s.h64(Header::Factory)||!successful(c))reject("device-create",&c);std::uint64_t key=0;if(!number(output(c,6),key)||key!=s.h64(Header::Device))reject("device-result",&c);}
     if(draw||present||reset){if(!s.created||s.released||!successful(c))reject("failed-or-unowned-work",&c);if(draw||reset||!std::strcmp(name,"IDirect3DDevice9::Present")){if(scalar(c,0)!=s.h64(Header::Device))reject("work-device",&c);}}
     if(draw){
+        if(s.probeFactory)reject("probe-factory-not-retired",&c);
         ++s.draws;const auto* r=s.record();
         if(r&&u64(r+Record::Draw)==s.draws){if(!s.markerPending||c.no!=u64(r+Record::TargetCall)||draw!=u32(r+Record::Api)||s.presents!=u64(r+Record::Frame)||s.resets!=u32(r+Record::Epoch))reject("target-draw",&c);}
         else if(s.markerPending||(r&&u64(r+Record::Draw)<s.draws))reject("missed-target",&c);
     }
-    if(!std::strcmp(name,"D3DPERF_SetMarker"))marker(c);
+    if(!std::strcmp(name,"D3DPERF_SetMarker"))marker(c,createdTexture);
     if(getData)query(c);else original(c);
     if(first)observeObject(c,c.ret,Kind::Factory,0,true);
     if(create){observeObject(c,output(c,6),Kind::Device,0,true);s.created=true;}
@@ -344,6 +424,7 @@ void dispatch(trace::Call& c){
     const char* method=std::strstr(name,"::");
     if(receiver&&method&&!std::strcmp(method+2,"Release")&&returned(c)==0){
         const auto canonical=retireObject(*receiver);
+        if(s.probeFactory&&canonical==s.probeFactory)s.probeFactory=0;
         if(canonical==s.h64(Header::Device)){if(c.no!=s.h64(Header::FinalRelease))reject("device-release-call",&c);s.released=true;checkStatus(c,s.next);}
     }
 }

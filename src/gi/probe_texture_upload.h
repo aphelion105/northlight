@@ -14,6 +14,7 @@ namespace NorthlightProbeUpload {
 // Light-only publications skip both LockRect and the managed texture upload.
 class LocalVisibilityMirror {
     using Payload=std::shared_ptr<const NorthlightGI::ProbeLocalVisibility>;
+    using Atlas=std::vector<NorthlightGI::ProbeAtlasEntry>;
     std::vector<Payload> values_;
     bool ready_=false;
     static const Payload& payload(const NorthlightGI::ProbeAtlasEntry& e){static const Payload none;return e.occupied&&e.probe.valid?e.probe.localVisibility:none;}
@@ -24,12 +25,14 @@ public:
         if(values_.size()==count)return true;
         try{values_.assign(count,nullptr);ready_=false;return true;}catch(const std::bad_alloc&){return false;}
     }
-    bool changed(const std::vector<NorthlightGI::ProbeAtlasEntry>& atlas)const{
-        if(!ready_||values_.size()!=atlas.size())return true;
-        for(size_t i=0;i<atlas.size();++i)if(values_[i]!=payload(atlas[i]))return true;
+    bool changed(const Atlas& primary,const Atlas& secondary={})const{
+        if(!ready_||values_.size()!=primary.size()+secondary.size())return true;
+        size_t slot=0;
+        for(const auto* bank:{&primary,&secondary})
+            for(const auto& entry:*bank)if(values_[slot++]!=payload(entry))return true;
         return false;
     }
-    Dirty write(void* bits,size_t pitch,unsigned n,const std::vector<NorthlightGI::ProbeAtlasEntry>& entries,unsigned layers=1){
+    Dirty write(void* bits,size_t pitch,unsigned n,const Atlas& primary,unsigned layers=1,const Atlas& secondary={}){
         const auto layout=NorthlightGI::LocalProbeVisibility::atlas(n,layers);
         Dirty dirty{layout.width,layout.height,0,0};
         const std::array<uint16_t,4> missing={0,0,0,0xbc00}; // w=-1: fail closed
@@ -38,14 +41,17 @@ public:
                 std::memcpy(static_cast<char*>(bits)+y*pitch+x*8,missing.data(),8);
             dirty={0,0,layout.width,layout.height};
         }
-        for(size_t i=0;i<entries.size();++i){auto p=payload(entries[i]);
+        size_t slot=0;
+        for(const auto* bank:{&primary,&secondary})for(const auto& entry:*bank){
+            const size_t i=slot++;
+            const auto& p=payload(entry);
             if((ready_&&p==values_[i])||(!ready_&&!p))continue;
             const unsigned x=unsigned(i%layout.columns)*9,y=unsigned(i/layout.columns)*9;
             for(unsigned row=0;row<9;++row){auto* dst=static_cast<char*>(bits)+(y+row)*pitch+x*8;
                 if(p)std::memcpy(dst,p->texels.data()+row*9,9*8);
                 else for(unsigned col=0;col<9;++col)std::memcpy(dst+col*8,missing.data(),8);}
             dirty.left=std::min(dirty.left,x);dirty.top=std::min(dirty.top,y);
-            dirty.right=std::max(dirty.right,x+9);dirty.bottom=std::max(dirty.bottom,y+9);values_[i]=std::move(p);
+            dirty.right=std::max(dirty.right,x+9);dirty.bottom=std::max(dirty.bottom,y+9);values_[i]=p;
         }
         ready_=true;return dirty;
     }

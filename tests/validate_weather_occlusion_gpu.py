@@ -12,6 +12,8 @@ import json
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
+sys.path.insert(0, str(fp.SCRIPTS))
+from shader_pipeline_map import late_weather_bindings
 
 parser = argparse.ArgumentParser(__doc__)
 parser.add_argument('--backend', type=Path, help='System D3D9 by default; optional plain x86 DXVK DLL')
@@ -48,7 +50,7 @@ if args.external_assets:
     (asset_dir/'resource_shader_checks.h').write_text('\n'.join(checks)+'\n')
     asset_flags = ['-I', str(asset_dir), '-DNORTHLIGHT_EXTERNAL_ASSETS=1']
     asset_sources = [str(fp.src('renderer_assets.cpp'))]
-world = fp.src('world_renderer.h').read_text(encoding='utf-8')
+world = fp.src('world_composite.h').read_text(encoding='utf-8')
 start = world.index('struct NameMaskCompositeBind {')
 end = world.index('\n};', start) + 3
 (out / 'lens_name_mask.h').write_text('#include "name_stencil.h"\n' + world[start:end] + '\n', encoding='utf-8')
@@ -70,3 +72,9 @@ if args.capture:
                 str((args.capture.parent/metadata['depth_file']).resolve()),
                 str((args.capture.parent/metadata['scene_file']).resolve()), str(args.roof.resolve())]
 subprocess.run(command, cwd=out, check=True, timeout=180)
+for frame, entry in enumerate(('RainQuality', 'SnowQuality', 'RainPerformance', 'SnowPerformance'), 42):
+    sample = late_weather_bindings(out, frame, 320, 180)
+    assert sample and sample['state'] == 'executed' and len(sample['passes']) == 1
+    draw = sample['passes'][0]
+    assert draw['entry'] == entry and draw['target']['samples'] == 0
+    assert any(slot['slot'] == 5 and slot['present'] for slot in draw['samplers'])

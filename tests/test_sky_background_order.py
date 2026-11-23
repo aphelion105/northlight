@@ -1,12 +1,14 @@
 # northlight-test: requires=zig
 """Run the production sky boundary with native foreground/grade ownership."""
+
+from source_units import source_text
 from pathlib import Path
 import subprocess
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
 
-source = fp.src('renderer.cpp').read_text()
+source = source_text(fp.src('renderer.cpp'))
 start = source.index('    void composeSkyBackground(){')
 end = source.index('    NorthlightAuroraNative::DiagnosticCapture', start)
 method = source[start:end]
@@ -25,12 +27,14 @@ fixture = r'''
 #include <cassert>
 #include <cstdio>
 #include <cstring>
+#include <optional>
 #include <string>
 #include "world_draw_domain.h"
 struct Texture {};
 struct Surface {int color=10;};
 struct D3DSURFACE_DESC {unsigned Width=8,Height=8,Format=21;};
 struct D3DVIEWPORT9 {float MinZ=0,MaxZ=.94f;};
+using HRESULT=int;
 constexpr unsigned D3DTEXF_NONE=0;
 #define FAILED(x) ((x)<0)
 namespace NorthlightCelestial {struct Context {};}
@@ -61,6 +65,14 @@ struct Device {
 };
 struct ExtensionDevice {struct RawScope {explicit RawScope(Device&) {}};};
 struct SavedState {bool ok=true;Surface* targets[1];SavedState(Device* d,int*):targets{&d->target}{}};
+namespace NorthlightLightingCapture {
+struct Capture {
+    template<class... Args> explicit Capture(Args&&...){}
+    void bindings(const char*,unsigned,HRESULT,Surface*,bool){}
+    void bindingSkip(const char*,const char*){}
+    void finish(bool){}
+};
+}
 struct Fixture {
     unsigned frame=1,skyBackgroundFrame=~0u,width=8,height=8,debugMode=0,worldDebug=0,drawCalls=0;
     bool enabled=true,failed=false,applied=false,full=true,back=true,resourceOk=true,menuScene=false;
@@ -69,10 +81,12 @@ struct Fixture {
     Surface* sceneSurface=&device.copy;Texture* scene=&texture;Texture texture;
     struct Layers {bool available=true;Texture image;Texture* textureAt(){return available?&image:nullptr;}Texture* texture(unsigned){return textureAt();}} skyLayers;
     World worldStorage;World* world=&worldStorage;
+    struct {const std::string* auditDirectory(unsigned)const{return nullptr;}} frameParity;
     struct Celestial {
         unsigned draws=0;bool menuDraw=false;
-        bool renderSkyBackground(Surface* target,Texture*,Texture* depth,Texture*,unsigned,unsigned,const float*,const float*,const float[8][3],bool menu=false){
-            assert(!depth);target->color=20;++draws;menuDraw=menu;return true;
+        bool renderSkyBackground(Surface* target,Texture*,Texture* depth,Texture*,unsigned,unsigned,const float*,const float*,const float[8][3],bool menu,
+                                 void (*audit)(void*,HRESULT),void* context){
+            assert(!depth);target->color=20;++draws;menuDraw=menu;if(audit)audit(context,0);return true;
         }
     } celestialStorage;Celestial* celestialDiscs=&celestialStorage;
     bool fullViewport(D3DSURFACE_DESC&,D3DVIEWPORT9* out,bool){*out=vp;return full;}

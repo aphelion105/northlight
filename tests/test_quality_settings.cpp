@@ -1,4 +1,5 @@
 #include "quality_settings.h"
+#include "frame_parity_clock.h"
 #include "local_light_selection.h"
 #include "point_light_shadow.h"
 #include "world_math.h"
@@ -9,6 +10,10 @@
 #include <fstream>
 #include <random>
 using namespace NorthlightQuality;
+static_assert(NorthlightFrameParityClock::farShadowBoundary(368,4));
+static_assert(!NorthlightFrameParityClock::farShadowBoundary(371,4));
+static_assert(!NorthlightFrameParityClock::farShadowBoundary(368,1));
+static_assert(!NorthlightFrameParityClock::farShadowBoundary(368,0));
 static Settings parse(const char* own,const char* legacy,std::vector<std::string>& problems){
     std::istringstream a(std::string(own?own:"")+"\n[Quality]\nLocalLightLimitsVersion=2\n"),b(legacy?legacy:"");return load(own?&a:nullptr,legacy?&b:nullptr,problems);
 }

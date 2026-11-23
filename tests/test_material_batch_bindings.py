@@ -21,7 +21,7 @@ span_begin=header.index('            auto floatConstants=[&]')
 span_end=header.index('            // An omitted bank',span_begin)
 span=header[span_begin:span_end]
 assert 'const bool comparablePixel=' in span and span.count('floatConstants(')==2
-full_constants='''            if(needed(previous&&previous->vertexFirst==packet->vertexFirst&&previous->vertexCount==packet->vertexCount&&!std::memcmp(previous->vertexConstants,packet->vertexConstants,packet->vertexCount*16)))step(d->SetVertexShaderConstantF(packet->vertexFirst,packet->vertexConstants,packet->vertexCount));
+full_constants='''            if(needed(originalVertexState&&previous&&previous->vertexFirst==packet->vertexFirst&&previous->vertexCount==packet->vertexCount&&!std::memcmp(previous->vertexConstants,packet->vertexConstants,packet->vertexCount*16)))step(d->SetVertexShaderConstantF(packet->vertexFirst,packet->vertexConstants,packet->vertexCount));
             if(needed(previous&&previous->first==packet->first&&previous->pixelConstants.size()==packet->pixelConstants.size()&&!std::memcmp(previous->pixelConstants.data(),packet->pixelConstants.data(),packet->pixelConstants.size()*sizeof(float))))step(d->SetPixelShaderConstantF(packet->first,packet->pixelConstants.data(),UINT(packet->pixelConstants.size()/4)));
 '''
 old=old.replace(span,full_constants)

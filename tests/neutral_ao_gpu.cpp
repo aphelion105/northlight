@@ -17,7 +17,7 @@ struct NeutralMeter:ForwardIDirect3DDevice9 {
     HRESULT STDMETHODCALLTYPE DrawPrimitiveUP(D3DPRIMITIVETYPE t,UINT n,const void* p,UINT stride)override;
 };
 struct PipelineOffTest {
-    static bool final(WorldRenderer& w,IDirect3DPixelShader9* p){return p&&(p==w.hdrFinalPS||p==w.hdrBasePS);}
+    static bool final(WorldRenderer& w,IDirect3DPixelShader9* p){return WorldScreenEffectsTest::isHdrWorldComposite(w,p);}
     static std::vector<unsigned char> read(IDirect3DDevice9* d,IDirect3DSurface9* p){D3DSURFACE_DESC desc{};screenOk(p->GetDesc(&desc));IDirect3DSurface9* staging=nullptr;
         screenOk(d->CreateOffscreenPlainSurface(desc.Width,desc.Height,desc.Format,D3DPOOL_SYSTEMMEM,&staging,nullptr));screenOk(d->GetRenderTargetData(p,staging));D3DLOCKED_RECT lock{};screenOk(staging->LockRect(&lock,nullptr,D3DLOCK_READONLY));
         const unsigned bytes=desc.Format==D3DFMT_A16B16G16R16F?8:4;std::vector<unsigned char> result(desc.Width*desc.Height*bytes);

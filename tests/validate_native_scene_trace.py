@@ -13,7 +13,6 @@ from ctypes import wintypes
 import json
 import os
 from pathlib import Path
-import re
 import shutil
 import subprocess
 import sys
@@ -23,6 +22,7 @@ import time
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
 sys.path.insert(0,str(fp.SCRIPTS))
+from compile_native_replay_plan import calls
 from prepare_native_scene import digest, pe32, tool_runtime
 
 
@@ -87,6 +87,23 @@ def loaded_modules(pid):
     finally:
         api.CloseHandle(handle)
     return result
+
+
+def x86_module_hashes(paths):
+    windows = Path(os.environ['WINDIR'])
+    system32 = windows / 'System32'
+    # https://learn.microsoft.com/windows/win32/winprog64/file-system-redirector
+    unredirected = tuple(system32 / name for name in ('catroot', 'catroot2', 'DriverStore',
+                                                      'drivers/etc', 'logfiles', 'spool'))
+    hashes = {}
+    for name in paths:
+        path = Path(name)
+        # The x86 process can report System32 even when its loader opened SysWOW64.
+        if (ctypes.sizeof(ctypes.c_void_p) == 8 and path.is_relative_to(system32)
+                and not any(path.is_relative_to(folder) for folder in unredirected)):
+            path = windows / 'SysWOW64' / path.relative_to(system32)
+        hashes[str(path)] = digest(path)
+    return hashes
 
 
 def run(command, folder, env, name, report, binary=False):
@@ -167,24 +184,9 @@ def pnm_images(data):
     return images
 
 
-def coverage(text):
-    rows = []
-    for line in text.splitlines():
-        match = re.match(r'^(\d+)\s+@([0-9a-fA-F]+)\s+(\w+(?:::\w+)?)\((.*)$', line)
-        if match:
-            rows.append({'call': int(match[1]), 'thread': int(match[2], 16),
-                         'method': match[3], 'arguments_and_result': match[4]})
-        elif line.strip():
-            # The official dumper renders shader-disassembly strings over
-            # several lines. Keep their complete text on the owning call.
-            if not rows or re.match(r'^\d+\s+@', line):
-                raise ValueError('Unexpected official trace-dump record: ' + line[:160])
-            rows[-1]['arguments_and_result'] += '\n' + line
-    if not rows or len({r['call'] for r in rows}) != len(rows):
-        raise ValueError('Empty or duplicate call-number trace')
-    if any(' // incomplete' in r['arguments_and_result'] for r in rows):
-        raise ValueError('Trace contains an incomplete call')
-    counts = Counter(r['method'].split('::')[-1] for r in rows)
+def coverage(path, aa):
+    rows = list(calls(path))
+    counts = Counter(r['name'].split('::')[-1] for r in rows)
     required = {'CreateDevice': 1, 'CreateTexture': 2, 'CreateVertexBuffer': 2, 'CreateIndexBuffer': 2,
                 'CreateVertexDeclaration': 2, 'CreateVertexShader': 2, 'CreatePixelShader': 2,
                 'CreateRenderTarget': 2, 'CreateDepthStencilSurface': 2, 'CreateQuery': 4,
@@ -197,17 +199,33 @@ def coverage(text):
             raise ValueError(f'Missing actual positive call coverage: {method} {counts[method]} < {minimum}')
     if counts['Present'] != 6 or counts['Reset'] != 1:
         raise ValueError('The captured complete sequence differs from the authored source')
-    if not any('D3DQUERYTYPE_EVENT' in r['arguments_and_result'] for r in rows if r['method'].endswith('::CreateQuery')):
+    reset_index, = (i for i, r in enumerate(rows) if r['name'] == 'IDirect3DDevice9::Reset')
+    reset = rows[reset_index]
+    if not reset['text'].endswith(' = D3D_OK'):
+        raise ValueError('The captured Reset did not succeed')
+    sample = 'D3DMULTISAMPLE_2_SAMPLES' if aa else 'D3DMULTISAMPLE_NONE'
+    present_apis = ('IDirect3DDevice9::Present', 'IDirect3DSwapChain9::Present')
+    for epoch in (rows[:reset_index], rows[reset_index + 1:]):
+        if sum(r['name'] in present_apis and r['text'].endswith(' = D3D_OK') for r in epoch) != 3:
+            raise ValueError('Expected three frames on each side of Reset')
+        for method, fmt in (('CreateRenderTarget', 'D3DFMT_A8R8G8B8'),
+                            ('CreateDepthStencilSurface', 'D3DFMT_D24S8')):
+            if not any(r['name'] == f'IDirect3DDevice9::{method}'
+                       and f'Format = {fmt},' in r['text'] and f'MultiSample = {sample},' in r['text']
+                       and r['text'].endswith(' = D3D_OK') for r in epoch):
+                raise ValueError(f'Trace lost the authored {fmt}/{sample} {method} on one side of Reset')
+    if not any('D3DQUERYTYPE_EVENT' in r['text'] for r in rows if r['name'].endswith('::CreateQuery')):
         raise ValueError('No actual EVENT query creation')
-    if not any('D3DQUERYTYPE_OCCLUSION' in r['arguments_and_result'] for r in rows if r['method'].endswith('::CreateQuery')):
+    if not any('D3DQUERYTYPE_OCCLUSION' in r['text'] for r in rows if r['name'].endswith('::CreateQuery')):
         raise ValueError('No actual occlusion query creation')
-    if not any(r['method'] == 'memcpy' and 'blob(' in r['arguments_and_result'] for r in rows):
+    if not any(r['name'] == 'memcpy' and 'blob(' in r['text'] for r in rows):
         raise ValueError('Writable Lock uploads were not serialized into the trace')
     return {'counts': dict(sorted(counts.items())), 'calls': len(rows),
             'threads': sorted({r['thread'] for r in rows}),
-            'present_calls': [r['call'] for r in rows if r['method'].endswith('::Present')],
+            'reset_call': reset['call'],
+            'present_calls': [r['call'] for r in rows if r['name'] in present_apis],
             'all_call_ids_unique': True, 'actual_upload_blob': True,
-            'raw_depth_equivalence_validated': False, 'rows': rows}
+            'raw_depth_equivalence_validated': False}
 
 
 def main():
@@ -216,6 +234,7 @@ def main():
     parser.add_argument('--backend-dll', type=Path, required=True)
     parser.add_argument('--backend-kind', choices=('native', 'dxvk', 'dxvk2'), required=True)
     parser.add_argument('--northlight-dll', type=Path, required=True)
+    parser.add_argument('--northlight-assets', type=Path, help='Defaults to northlight-assets.bin beside the DLL')
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     if os.name != 'nt':
@@ -226,9 +245,11 @@ def main():
     tools = tool_runtime(args.tool_root)
     for path in (args.backend_dll, args.northlight_dll):
         pe32(path)
+    assets = args.northlight_assets or args.northlight_dll.with_name('northlight-assets.bin')
     source = fp.TESTS / 'native_scene_trace_smoke.cpp'
     inputs = {str(p.resolve()): digest(p) for p in (source, Path(__file__),
-              fp.SCRIPTS / 'prepare_native_scene.py', args.backend_dll, args.northlight_dll)}
+              fp.SCRIPTS / 'compile_native_replay_plan.py', fp.SCRIPTS / 'prepare_native_scene.py',
+              args.backend_dll, args.northlight_dll, assets)}
     inputs.update(tools['files'])
     if any(Path(p) == output or Path(p).is_relative_to(output) for p in inputs):
         raise ValueError('Private output must not replace inputs')
@@ -247,10 +268,12 @@ def main():
 
     def northlight_config(folder, backend):
         (folder / 'northlight-renderer.ini').write_text(
-            f'[Renderer]\nBackend={args.backend_kind}\nBackendPath={backend.as_posix()}\n')
+            f'[Renderer]\nBackend={args.backend_kind}\nBackendPath={backend.as_posix()}\n'
+            'HDRPipelineVersion=2\nExperimentalHDR=0\n')
         (folder / 'northlight-quality.ini').write_text(
             '[Quality]\nPreset=Performance\nCommandStream=1\nStreamFramesAhead=1\nStreamFrameSkip=0\n'
             'Diagnostics=0\nRenderProfile=0\nGI=0\nActorShadows=0\nContactAO=0\nWeather=0\n')
+        copy(assets, folder / 'northlight-assets.bin')
 
     try:
         report['processes_initial'] = processes()
@@ -289,6 +312,7 @@ def main():
                         northlight_config(capture, Path('native_scene_backend.dll'))
                 trace = folder / 'source.trace'
                 env = dict(os.environ, TRACE_FILE=str(trace), APITRACE_FORCE_MODULE_PATH=str(forced),
+                           DISABLE_VULKAN_OBS_CAPTURE='1',
                            DXVK_LOG_PATH=str(capture), DXVK_CONFIG_FILE=str(capture / 'dxvk.conf'),
                            DXVK_SHADER_CACHE_PATH=str(capture / 'shader-cache'),
                            DXVK_STATE_CACHE_PATH=str(capture / 'state-cache'))
@@ -298,19 +322,18 @@ def main():
                 original = json.loads((capture / 'source.json').read_text())
                 if original['frames'] != 6 or original['msaa'] != aa or original['nonzero_occlusions'] != 6:
                     raise ValueError('Authored source did not complete all positive controls')
-                module_hashes = {p: digest(p) for p in original['modules']}
+                module_hashes = x86_module_hashes(original['modules'])
                 if inputs[str(args.backend_dll.resolve())] not in module_hashes.values():
                     raise ValueError('Original process did not positively load the selected backend')
                 if layer != 'backend-only' and inputs[str(args.northlight_dll.resolve())] not in module_hashes.values():
                     raise ValueError('Original process did not positively load the chosen Northlight build')
+                if inputs[str(tracer.resolve())] not in module_hashes.values():
+                    raise ValueError('Original process did not positively load the selected tracer')
                 if not trace.is_file() or not trace.stat().st_size:
                     raise ValueError('Official tracer did not produce a nonempty trace')
-                text = run([cli, 'dump', '--color=never', '--thread-ids=1', trace], folder,
-                           dict(os.environ), 'dump', report)
-                proof = coverage(text)
-                if aa and not any('D3DMULTISAMPLE_2_SAMPLES' in r['arguments_and_result']
-                                  for r in proof['rows'] if r['method'].endswith('::CreateRenderTarget')):
-                    raise ValueError('Trace lost the authored MSAA target')
+                run([cli, 'dump', '--color=never', '--thread-ids=true', trace], folder,
+                    dict(os.environ), 'dump', report)
+                proof = coverage(folder / 'dump.stdout', aa)
                 copy(retracer, replay / 'd3dretrace.exe')
                 for dependency in tools['retrace_dependencies']:
                     copy(dependency, replay / Path(dependency).name)
@@ -320,13 +343,16 @@ def main():
                     northlight_config(replay, Path('native_scene_backend.dll'))
                 else:
                     copy(args.backend_dll, replay / 'd3d9.dll')
-                clean_env = dict(os.environ, DXVK_LOG_PATH=str(replay),
+                clean_env = dict(os.environ, DXVK_LOG_PATH=str(replay), DISABLE_VULKAN_OBS_CAPTURE='1',
                                  DXVK_CONFIG_FILE=str(capture / 'dxvk.conf'),
                                  DXVK_SHADER_CACHE_PATH=str(replay / 'shader-cache'),
                                  DXVK_STATE_CACHE_PATH=str(replay / 'state-cache'))
                 clean_env.pop('APITRACE_FORCE_MODULE_PATH', None); clean_env.pop('TRACE_FILE', None)
+                # apitrace can snapshot both its frame boundaries and Present. Select
+                # the captured Present calls once and replay through final Release.
+                selection = ','.join(map(str, [*proof['present_calls'], 0xffffffff]))
                 pixels = run([replay / 'd3dretrace.exe', '--headless', '--query-handling=run',
-                              '-s', '-', trace], replay, clean_env, 'retrace', report, binary=True)
+                              '-s', '-', '-S', selection, trace], replay, clean_env, 'retrace', report, binary=True)
                 actual = pnm_images(pixels)
                 expected = [pnm_images((capture / im['path']).read_bytes())[0] for im in original['images']]
                 if len(actual) != 6 or actual != expected:
@@ -336,11 +362,11 @@ def main():
                 northlight_observed = layer != 'above-northlight' or inputs[str(args.northlight_dll.resolve())] in replay_modules.values()
                 if not backend_observed or not northlight_observed:
                     raise ValueError('Replay module observation did not prove the intended private chain')
-                proof.pop('rows')
                 record = {'layer': layer, 'replay_label': 'baked-backend-replay' if layer == 'below-northlight' else layer,
                           'msaa': aa, 'source_module_sha256': module_hashes,
                           'trace_sha256': digest(trace), 'trace_bytes': trace.stat().st_size,
                           'positive_coverage': proof, 'exact_rgb_frames': 6,
+                          'snapshot_selection': selection,
                           'depth_visibility_guard': True, 'raw_depth_equivalence_validated': False,
                           'complete_sequence': True, 'query_handling': 'run', 'looped': False,
                           'world_context_activated': False, 'full_scene_fps_claimed': False}

@@ -5,6 +5,8 @@
 Native part: name_stencil.h (the name blend predicate over lazy state reads, the state tables, the depth-format verdict, the per-frame clear/mark bookkeeping) and the depth format upgrade of stream_hooks.h are driven
 through the glue shape renderer.cpp uses (Clear hook, mark/unmark, composite) over fake draw sequences. Source part: the wiring in renderer.cpp, stream_device.h and world_renderer.h (name decision by the UI-hash vertex
 shader and the perspective c3, duplicate stencil draw with restore, unmark wrap, Clear flag addition, composite stencil state, guards, depth upgrade) and the keys. Windows x86 O0/O2; native ASan/UBSan elsewhere. No device or game."""
+
+from source_units import source_text
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
 import os,re,subprocess,tempfile
@@ -137,7 +139,7 @@ with tempfile.TemporaryDirectory(prefix='northlight-name-mask-') as tmp:
         print(label,subprocess.check_output([str(exe)],text=True),end='',flush=True)
 
 # source checks
-r=fp.tracked('renderer.cpp').read_text();q=fp.src('quality_settings.h').read_text();w=fp.src('world_renderer.h').read_text();h=fp.src('name_stencil.h').read_text()
+r=source_text(fp.tracked('renderer.cpp'));q=fp.src('quality_settings.h').read_text();w=fp.src('world_renderer.h').read_text();h=fp.src('name_stencil.h').read_text()
 sd=fp.src('stream_device.h').read_text();sh=fp.src('stream_hooks.h').read_text()
 checks={}
 checks['header: portable, no device calls']=all(x not in h for x in ('d3d9','windows.h','ext->','#include <vector>','new ','malloc'))
@@ -163,7 +165,9 @@ checks['the boundary keeps its own test: tag 2, orthographic rows, depth state a
     'NorthlightUiBoundary::accepts(zw!=0,rows,zf==D3DCMP_ALWAYS,z!=0)' in r and 'fullViewport(desc,nullptr,true)' in r and 'SUCCEEDED(ext->GetVertexShaderConstantF(0,rows,4))' in r)
 indexed=r[r.index('HRESULT STDMETHODCALLTYPE DrawIndexedPrimitive('):r.index('HRESULT STDMETHODCALLTYPE DrawPrimitiveUP(')]
 checks['draw states: a mirror-known render state is read in place under the gate of the draw hook (no lock, no COM call), the same active() and known test as GetRenderState, else GetRenderState']=(
-    'v=drawRenderState(t);known=true;' in impl and 'if(unsigned(t)<DeviceMirror::RenderStates&&mirrorState.active()&&mirrorState.renderStateKnown[t]){v=mirrorState.renderStates[t];return true;}' in r
+    'return drawRenderState(type);' in impl and 'NorthlightDrawPreparation::lazyState(readState,type)' in impl
+    and 'if(!known){value=read(type);known=true;}' in fp.src('draw_world_state.h').read_text()
+    and 'if(unsigned(t)<DeviceMirror::RenderStates&&mirrorState.active()&&mirrorState.renderStateKnown[t]){v=mirrorState.renderStates[t];return true;}' in r
     and 'return SUCCEEDED(ext->GetRenderState(t,&v));' in r and 'DWORD drawRenderState(D3DRENDERSTATETYPE t){DWORD v=0;readDrawRenderState(t,v);return v;}' in r and indexed.index('Guard mirrorLock(mirrorState.gate);')<indexed.index('auto draw=')<indexed.index('return drawHook(') and 'ext->DrawIndexedPrimitive(' in indexed)
 checks['hash UI boundary draws and everything after applied are never marked (prepareDrawImpl returns once applied; the decision sits after beforeDraw)']=(
     impl.index('if(applied){')<impl.index('beforeDraw(vs);')<impl.index('nameMaskDecide('))
@@ -182,6 +186,8 @@ checks['run: begin clears if needed then applies kMark once (nameRun), end resto
     run.index('if(nameRun)return true;')<run.index('nameMask.needsClear()&&!nameMaskClear()')<run.index('readDrawRenderState(D3DRS_STENCILPASS,pass)')<run.index('for(const auto& set:NorthlightNameStencil::kMark)ext->SetRenderState(')<run.index('SetRenderState(D3DRS_STENCILENABLE,TRUE)')<run.index('nameRun=true;++nameMask.runs;')
     and 'nameRun=false;CpuScope c(sampledDrawTimers()?&cpuNameMark:nullptr);ext->SetRenderState(D3DRS_STENCILENABLE,FALSE);' in run and 'nameRunPrevious' not in r and 'kMarkProbe[0].value' in run and 'if(!ext->peekVertexShader(vs)||!vs||!uiTextVs(vs,classifyVs(vs).entry))nameMaskRunEnd();' in run)
 effectRun=r[r.index('void renderEffects() {'):r.index('/* The guards of every mask decision')]
+reset=r[r.index('Reset(D3DPRESENT_PARAMETERS* pp) override'):]
+reset=reset[:reset.index('\n    }')]
 checks['run ends before anything that could draw or clear with stencil on: prepareDrawImpl (any non-UI-hash draw), nameMaskDraw (non-name), Clear, EndScene, Reset, renderEffects, finishFrameImpl']=(
     '++drawCalls;maskKind=0;nativeLocalDomain=false;if(nameRun)nameMaskRunBreak();' in impl and 'if(kind!=1)nameMaskRunEnd();' in r
     and 'nameMaskRunEnd(); /* 0.3.212 (task 32): a run of names never spans a Clear */' in r[r.index('HRESULT STDMETHODCALLTYPE Clear('):][:700]
@@ -189,11 +195,13 @@ checks['run ends before anything that could draw or clear with stencil on: prepa
     and effectRun.index('nameMaskRunEnd();')<effectRun.index('SavedState saved(')
     and 'if(hdr.active&&(!hdrAtUiBoundary||!hdrBackTarget()))return;' in effectRun
     and 'void finishFrameImpl() {\n        nameMaskRunEnd();' in r
-    and (lambda reset: reset.index('nameMaskRunEnd();')<reset.index('rainMrtUnbind();'))(r[r.index('Reset(D3DPRESENT_PARAMETERS* pp) override'):][:900]))
+    and reset.index('nameMaskRunEnd();')<reset.index('rainMrtUnbind();'))
 checks['the stencil-in-use guard reads the game\'s STENCILENABLE once per frame (reset at the frame end and Reset), so a run knows the value to restore']='if(!nameMask.stencilChecked){' in r and 'nameMask.stencilChecked=true;' in r and 'FAILED(ext->GetRenderState(D3DRS_STENCILENABLE,&stencilOn))' in r
 md=r[r.index('HRESULT nameMaskDraw('):r.index('    bool spellDepthTested(')]
+unmark_apply=md.index('maskApply(NorthlightUnlitReceiver::Unmark,previous,&indexedDeferred)')
+unmark_draw=md.index('rainBlendDraw(rain,claimed,draw)',unmark_apply)
 checks['draw: unmark states around the game draw; a name draws with the run set and the alpha guard only when its alpha test is off; counted only after a successful draw']=(
-    md.index('maskApply(NorthlightUnlitReceiver::Unmark,previous)')<md.index('rainBlendDraw(rain,claimed,draw)',md.index('maskApply(NorthlightUnlitReceiver::Unmark'))<md.index('maskRestore(NorthlightUnlitReceiver::Unmark,previous)')
+    unmark_draw<md.index('finishIndexedStencil(indexedDeferred)',unmark_draw)<md.index('maskRestore(NorthlightUnlitReceiver::Unmark,previous)')
     and md.index('nameMaskRunBegin()')<md.index('readDrawRenderState(D3DRS_ALPHATESTENABLE,alphaTest)')<md.index('maskApply(NorthlightNameStencil::kAlphaGuard,alphaPrevious)')<md.index('const HRESULT hr=rainBlendDraw(rain,claimed,draw);',md.index('kAlphaGuard'))<md.index('maskRestore(NorthlightNameStencil::kAlphaGuard,alphaPrevious)')<md.index('if(SUCCEEDED(hr)&&nameRun)nameMask.noteMark();')
     and 'if(!kind)return rainBlendDraw(rain,claimed,draw);' in md and 'if(claimed||!nameMask.armed())return rainBlendDraw(rain,claimed,draw);' in md)
 hook=r[r.index('template<class Capture,class Draw> HRESULT drawHook('):];hook=hook[:hook.index('\n    }\n')+7]
@@ -211,14 +219,17 @@ checks['viewport: a world-depth Clear(Z) is the full clear only with a viewport 
 checks['renderEffects: marks only with an armed feature, a stencil depth, the world depth and no debug view; the world gets the surface for its composite, the legacy composite binds it around its quad with the shared bind']=(
     'const bool maskOn=nameMask.armed()&&nameMask.hasMarks()&&maskStencil&&worldDepth&&worldDebug==0;' in re_ and 'world->setNameMask(maskOn?worldDepth:nullptr);' in re_
     and re_.index('{NameMaskCompositeBind mask(ext,maskOn?worldDepth:nullptr);')<re_.index('if (error(quad(width,height),"composition pass")) return false;}'))
-bind=w[w.index('struct NameMaskCompositeBind {'):w.index('class WorldRenderer {')]
+composite=fp.src('world_composite.h').read_text()
+bind=composite[composite.index('struct NameMaskCompositeBind {'):composite.index('class NorthlightWorldComposite {')]
 checks['composite bind (one helper for both composites): the world depth-stencil and kComposite only with marks; D3DERR_NOTFOUND counts as no depth bound; the three states and the previous depth-stencil restored at scope end']=(
     'if(!maskDepth)return;' in bind and 'got==D3DERR_NOTFOUND' in bind and bind.index('GetDepthStencilSurface(&previousDepth)')<bind.index('SetDepthStencilSurface(maskDepth)')<bind.index('GetRenderState(kRestored[i],&previous[i])')<bind.index('NorthlightNameStencil::kComposite')
     <bind.index('~NameMaskCompositeBind(){')<bind.index('SetRenderState(kRestored[i],previous[i])')<bind.index('SetDepthStencilSurface(previousDepth)')<bind.index('previousDepth->Release()')
     and '{D3DRS_STENCILENABLE,D3DRS_ZENABLE,D3DRS_ZWRITEENABLE}' in bind)
-comp=w[w.index('IDirect3DSurface9* maskDepth=authoredMask?'):w.index('if(!compositeOk)return false;composited=true;')]
+submit=composite[composite.index('auto* maskDepth=layers.authored?'):]
 checks['WorldComposite: the pointer consumed, the quad inside the bind scope']=(
-    'nameMaskDepth=unlitMaskDepth=prelitMaskDepth=authoredMaskDepth=nullptr;' in comp and 'void setNameMask(IDirect3DSurface9* depthStencil){nameMaskDepth=depthStencil;}' in w and 'nameMaskQpc' not in w)
+    'nameMaskDepth_=unlitMaskDepth_=prelitMaskDepth_=authoredMaskDepth_=nullptr;' in composite
+    and submit.index('clearMasks();')<submit.index('NameMaskCompositeBind mask(d,separateMaterial?nullptr:maskDepth,maskBits);ok=check(quad(),"world composite");')
+    and 'composite.setNameMask(depthStencil);' in w and 'nameMaskQpc' not in w)
 checks['debug view: the last effect pass before applied=true when the frame has marks, stencil EQUAL on the bit, ZENABLE off, nothing written']=(
     'if(maskOn&&nameMask.debug)nameMaskDebugView(outputTarget);' in r and r.index('nameMaskDebugView(outputTarget);')<r.index('applied = true; ++appliedFrames;')
     and 'IDirect3DSurface9* outputTarget=linearHdr?hdrPresentBack:saved.targets[0];' in r

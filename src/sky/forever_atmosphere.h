@@ -5,6 +5,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <fstream>
 #include <filesystem>
 #include <vector>
@@ -92,11 +93,23 @@ public:
 };
 class Transition {
     Frame previous;std::string map;float position[3]={};double tick=0;
+    static bool sameFrame(const Frame& a,const Frame& b){
+        return a.valid==b.valid&&a.skyValid==b.skyValid&&
+            std::memcmp(a.direct,b.direct,sizeof a.direct)==0&&
+            std::memcmp(a.ambient,b.ambient,sizeof a.ambient)==0&&
+            std::memcmp(a.sky.color,b.sky.color,sizeof a.sky.color)==0&&
+            std::memcmp(a.layer,b.layer,sizeof a.layer)==0;
+    }
 public:
     Frame update(const Frame& target,const std::string& nextMap,const float* p,double now){
         float distance=0;for(unsigned c=0;c<3;++c){float v=p[c]-position[c];distance+=v*v;}
         if(!target.valid||!previous.valid||nextMap!=map||distance>256*256||now<tick||now-tick>2)previous=target;
-        else{Frame blended;float w=float(1-std::exp(-std::min(now-tick,.25)/.35));add(blended,previous,1-w);add(blended,target,w);previous=blended;}
+        // Weighted accumulation can round even a stationary frame differently
+        // at different render cadences. Keep an exact value in both no-op cases.
+        else if(now>tick&&!sameFrame(previous,target)){
+            Frame blended;float w=float(1-std::exp(-std::min(now-tick,.25)/.35));
+            add(blended,previous,1-w);add(blended,target,w);previous=blended;
+        }
         map=nextMap;std::copy_n(p,3,position);tick=now;return previous;
     }
 };

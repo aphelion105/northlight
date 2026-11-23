@@ -8,6 +8,7 @@ depth range and planar shadow PCF. Run this file to regenerate its JSON report.
 """
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
+from scripts.shaders.shader_sources import world_source_bytes
 import hashlib
 import json
 import math
@@ -130,7 +131,7 @@ def run():
                     normal_cases+=1
     report={
         'result':'pass', 'game_launched':False, 'gpu_test':False,
-        'source_sha256':hashlib.sha256(fp.src('world_effects.hlsl').read_bytes()).hexdigest(),
+        'source_sha256':hashlib.sha256(world_source_bytes(fp.src('world_effects.hlsl'))).hexdigest(),
         'test_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         'projection_cases':count,'maximum_projection_error':maximum_projection_error,
         'viewport_depth_range':[0,.94], 'mappings':mappings,

@@ -1,3 +1,4 @@
+#include "directional_cache_mesh.h"
 #include "point_mesh_candidates.h"
 #include "point_light_shadow.h"
 #include <cassert>
@@ -91,8 +92,11 @@ static void staticCandidates(){
     std::vector<uint32_t> staticParents;
     for(size_t i=0;i<parents.size();++i)if(!parents[i].terrain)staticParents.push_back(uint32_t(i));
     const auto classify=[&](const P::Batch& b,unsigned faces){return clip.mask(&b.boundsLow.x,&b.boundsHigh.x,true,faces);};
+    NorthlightPointMesh::PreparedBounds prepared;
+    prepared.prepare(1,parents,children);
+    assert(prepared.size()==total);
     std::array<std::vector<size_t>,6> lists[2];unsigned rejected[2];
-    const auto run=[&](unsigned variant,unsigned faces,bool indexed){
+    const auto run=[&](unsigned variant,unsigned faces,bool indexed,bool usePrepared=false){
         auto& m=masks[variant];m=initial;
         rejected[variant]=0;for(auto& list:lists[variant])list.clear();
         auto append=[&](size_t i,unsigned mask){
@@ -100,7 +104,10 @@ static void staticCandidates(){
             for(;mask;mask&=mask-1)lists[variant][__builtin_ctz(mask)].push_back(i);
         };
         if(variant){
-            const auto outside=NorthlightPointMesh::classifyStatic(parents,children,ranges,indexed?&staticParents:nullptr,indexed?marks.data():nullptr,faces,m,classify,append);
+            const auto outside=NorthlightPointMesh::classifyStatic(parents,children,ranges,indexed?&staticParents:nullptr,indexed?marks.data():nullptr,faces,m,
+                [&](size_t index,const P::Batch& batch,unsigned requested){
+                    return usePrepared?prepared.mask(index,batch,clip,requested):classify(batch,requested);
+                },append);
             rejected[1]+=unsigned(outside)*__builtin_popcount(faces);
         }else for(size_t i=0;i<parents.size();++i){
             if(parents[i].terrain)continue;
@@ -121,6 +128,8 @@ static void staticCandidates(){
         for(bool indexed:{false,true})for(unsigned faces:{1u,21u,42u,63u}){
             run(0,faces,indexed);run(1,faces,indexed);
             assert(masks[0]==masks[1]&&lists[0]==lists[1]&&rejected[0]==rejected[1]);
+            run(1,faces,indexed,true);
+            assert(masks[0]==masks[1]&&lists[0]==lists[1]&&rejected[0]==rejected[1]);
         }
     }
     for(size_t i=0;i<total;++i)marks[i]=i%64==0;
@@ -133,8 +142,80 @@ static void staticCandidates(){
     for(auto& t:times)std::sort(t.begin(),t.end());
     std::printf("POINT_STATIC_CANDIDATES parents=%zu markedFraction=1/64 previousUs=%.4f sparseUs=%.4f masksOrderCounts=exact\n",
         parents.size(),(times[0][5]+times[0][6])*.5,(times[1][5]+times[1][6])*.5);
+    for(size_t i=0;i<total;++i)marks[i]=i%4==0;
+    for(auto& t:times)t.clear();
+    for(unsigned block=0;block<28;++block){
+        const bool reuse=block%4==1||block%4==2;
+        const auto start=std::chrono::steady_clock::now();
+        for(unsigned i=0;i<80;++i)run(1,63,true,reuse);
+        if(block>=4)times[reuse].push_back(std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-start).count()/80);
+    }
+    for(auto& t:times)std::sort(t.begin(),t.end());
+    std::printf("POINT_MESH_BOUNDS batches=%zu rawUs=%.4f reusedUs=%.4f masksOrderCounts=exact\n",
+        total,(times[0][5]+times[0][6])*.5,(times[1][5]+times[1][6])*.5);
+    const size_t index=staticParents[0];
+    parents[index].boundsLow.x=std::numeric_limits<float>::quiet_NaN();
+    prepared.prepare(2,parents,children);
+    assert(prepared.mask(index,parents[index],clip,21)==21);
+    prepared.release();assert(prepared.size()==0);
+    assert(prepared.mask(index,parents[index],clip,21)==classify(parents[index],21));
+}
+static void directionalCacheMesh(){
+    std::vector<P::Batch> batches(13257);
+    const std::set<std::pair<int,int>> fixed{{1,2},{-1,-1}},other{{2,2}};
+    NorthlightShadowTerrain::FixedChunkBits bits;
+    bits.assign(&fixed);
+    for(size_t i=0;i<batches.size();++i){
+        auto& b=batches[i];
+        b.start=uint32_t(i);
+        b.pointOnly=i%11==0;
+        b.terrain=i%7!=0;
+        b.chunkX=i%53==0?-1:int(i%29);
+        b.chunkY=b.chunkX<0?-1:2;
+    }
+    NorthlightDirectionalCacheMesh prepared,scalar;
+    prepared.publish(batches,5,fixed,bits);
+    const auto compareOrder=[&](uint64_t generation,const auto& chunks,size_t limit){
+        std::vector<uint32_t> expected,actual;
+        for(const auto& b:batches){
+            if(b.pointOnly||(b.terrain&&!chunks.count({b.chunkX,b.chunkY})))continue;
+            expected.push_back(b.start);
+            if(expected.size()==limit)break;
+        }
+        const bool completed=prepared.visit(batches,generation,chunks,bits,[&](const auto& b){
+            actual.push_back(b.start);
+            return actual.size()!=limit;
+        });
+        assert(actual==expected&&completed==(expected.size()!=limit));
+        return expected.size();
+    };
+    assert(prepared.published()&&prepared.retained()==compareOrder(5,fixed,SIZE_MAX));
+    compareOrder(5,fixed,5);
+    compareOrder(5,other,SIZE_MAX);
+    batches[0].pointOnly=false;
+    compareOrder(6,fixed,SIZE_MAX);
+    batches[0].pointOnly=true;
+
+    std::vector<double> times[2];
+    uint64_t sums[2]={};
+    for(unsigned block=0;block<28;++block){
+        const bool reuse=block%4==1||block%4==2;
+        const auto start=std::chrono::steady_clock::now();
+        for(unsigned i=0;i<160;++i)
+            (reuse?prepared:scalar).visit(batches,5,fixed,bits,[&](const auto& b){sums[reuse]+=b.start;return true;});
+        if(block>=4)times[reuse].push_back(std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-start).count()/160);
+    }
+    assert(sums[0]==sums[1]&&sums[0]);
+    for(auto& t:times)std::sort(t.begin(),t.end());
+    std::printf("DIRECTIONAL_CACHE_MESH total=%zu retained=%zu scalarUs=%.4f indexedUs=%.4f order=exact\n",
+        batches.size(),prepared.retained(),(times[0][5]+times[0][6])*.5,(times[1][5]+times[1][6])*.5);
+    batches.resize(65537);
+    prepared.publish(batches,7,fixed,bits);
+    assert(!prepared.published());
+    compareOrder(7,fixed,SIZE_MAX);
 }
 int main(){
+    directionalCacheMesh();
     staticCandidates();
     replayBenchmark(false,false);replayBenchmark(false,true);replayBenchmark(true,false);
     std::mt19937 random(12340);std::uniform_real_distribution<float> coordinate(-512,512),extent(0,40);

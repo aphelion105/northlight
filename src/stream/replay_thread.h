@@ -21,6 +21,7 @@
 #include "snapshot_store.h"
 #include "stream_hooks.h"
 #include "unlock_source.h"
+#include "../proxy/ordered_particle_indices.h"
 #ifdef NORTHLIGHT_REPLAY_STAND
 #include "stand_inputs.h"
 #endif
@@ -140,6 +141,9 @@ public:
     SnapshotPool snapshots;
     std::function<void()> threadStart;                  // runs on the replay thread before the first command (owner handoff)
     std::function<void(const char*)> log;               // diagnostics line sink; may be empty
+    std::function<void(bool,bool,bool)> indexedPair;     // native submit scope, mixed constants, or ordered index ranges
+    std::function<bool(const NorthlightOrderedParticles::Window*)> particlePair;
+    bool indexedRanges=false;
     bool (*diagnostics)()=nullptr;                      // Diagnostics on: per-call timers and the sync-only audit (asked per frame)
     bool (*idleProfiling)()=nullptr;                    // RenderProfile: latched before the replay thread starts
     unsigned sampleEvery=600;
@@ -353,16 +357,24 @@ private:
     // 0.3.204 (task 21): the zero-copy unlock: the bytes are read straight from the game-side slice (it stays untouched until this command retires).
     void unlockBufferRef(const CommandHeader* h){
         const auto* a=reinterpret_cast<const UnlockBufferRefArgs*>(Queue::payload(h));
-        writeBuffer(a->proxy,a->off,a->size,a->flags,a->src+a->off);
+        writeBuffer(a->proxy,a->off,a->size,a->flags,a->src+a->off,a->firstSize);
     }
-    void writeBuffer(ProxyBase* p,UINT off,UINT size,DWORD fl,const unsigned char* data){
+    void writeBuffer(ProxyBase* p,UINT off,UINT size,DWORD fl,const unsigned char* data,UINT firstSize=0){
         if(!p->inner||p->dead.load()){add(core.q.stats.replayFailures);return;}
         void* dst=nullptr;const DWORD flags=fl&~D3::kLockReadOnly;
         NorthlightReplayCopies::UnlockSourceScope source(data,off,size,p->inner);   // the replay-side CPU copy is fed from these bytes, not read back from the mapped pointer
         const bool timed=replayProfile_.enabled;const auto start=timed?nowNs():0;
         const HRESULT hr=p->kind==Kind::VertexBuffer?static_cast<IDirect3DVertexBuffer9*>(p->inner)->Lock(off,size,&dst,flags):static_cast<IDirect3DIndexBuffer9*>(p->inner)->Lock(off,size,&dst,flags);
         const auto locked=timed?nowNs():0;
-        if(FAILED(hr)||!dst){add(core.q.stats.replayFailures);if(timed)replayProfile_.recordUpload(size,locked-start,0,0,false,true,2);return;}
+        if(FAILED(hr)||!dst){
+            if(timed)replayProfile_.recordUpload(size,locked-start,0,0,false,true,2);
+            if(firstSize&&FAILED(hr)){
+                writeBuffer(p,off,firstSize,fl,data);
+                writeBuffer(p,off+firstSize,size-firstSize,fl,data+firstSize);
+            }else add(core.q.stats.replayFailures);
+            return;
+        }
+        if(timed&&firstSize)++replayProfile_.upload.coalesced;
         if(source.skipped()){if(timed)replayProfile_.recordUpload(size,locked-start,0,0,true,false,2);return;}
         std::memcpy(dst,data,size);
         const auto copied=timed?nowNs():0;
@@ -587,6 +599,12 @@ private:
             log(line);
         }
         logZeroCopy();
+        const auto& uploadStats=core.q.stats;
+        if(const auto trims=get(uploadStats.particleUploadTrims)){
+            char particle[186];std::snprintf(particle,sizeof particle,"CSTREAM PARTICLE_UPLOAD frames=%llu trims=%llu bytesSaved=%llu empty=%llu",
+                (unsigned long long)core.framesReplayed.load(),(unsigned long long)trims,
+                (unsigned long long)get(uploadStats.particleUploadBytesSaved),(unsigned long long)get(uploadStats.particleUploadEmpty));log(particle);
+        }
         logCallTop();
     }
     // 0.3.204 (task 21, Diagnostics only): the generated calls that cost the game thread the most since the previous line (sampled 1 in 16), per frame:
@@ -633,8 +651,8 @@ private:
             double(p.maxNs)/1e6,cmdName((Cmd)p.maxId),p.observed,ReplayFrameProfile::StateStride);
         for(unsigned i=0;i<count;++i)put(buf,n,"%s%s:%.4fms/%u/%u",i?",":"",cmdName((Cmd)top[i]),double(p.entries[top[i]].ns)/1e6,p.entries[top[i]].calls,p.entries[top[i]].observed);
         log(buf);
-        const auto& u=p.upload;if(u.calls){std::snprintf(buf,sizeof buf,"CSTREAM UPLOAD frame=%llu calls=%u bytes=%llu skipped=%u failed=%u lockMs=%.4f copyMs=%.4f unlockMs=%.4f maxLockMs=%.4f maxCopyMs=%.4f maxUnlockMs=%.4f clockReads=%u",
-            (unsigned long long)p.frame,u.calls,(unsigned long long)u.bytes,u.skipped,u.failed,double(u.lockNs)/1e6,double(u.copyNs)/1e6,double(u.unlockNs)/1e6,double(u.maxLockNs)/1e6,double(u.maxCopyNs)/1e6,double(u.maxUnlockNs)/1e6,u.clockReads);log(buf);}
+        const auto& u=p.upload;if(u.calls){std::snprintf(buf,sizeof buf,"CSTREAM UPLOAD frame=%llu calls=%u bytes=%llu skipped=%u failed=%u lockMs=%.4f copyMs=%.4f unlockMs=%.4f maxLockMs=%.4f maxCopyMs=%.4f maxUnlockMs=%.4f clockReads=%u coalesced=%u",
+            (unsigned long long)p.frame,u.calls,(unsigned long long)u.bytes,u.skipped,u.failed,double(u.lockNs)/1e6,double(u.copyNs)/1e6,double(u.unlockNs)/1e6,double(u.maxLockNs)/1e6,double(u.maxCopyNs)/1e6,double(u.maxUnlockNs)/1e6,u.clockReads,u.coalesced);log(buf);}
     }
     void activateSnapshot(GameSnapshot* s){
         playback_.reset();
@@ -668,7 +686,10 @@ private:
                 if(diag_&&a->Stage<StreamState::kTSStages&&unsigned(a->Type)<StreamState::kTSTypes){auditTss_[a->Stage][a->Type]=a->Value;note(StreamState::bitTss(a->Stage,unsigned(a->Type)));}}
             else if(h->id==(std::uint16_t)Cmd::Query_Issue){const auto* a=reinterpret_cast<const Args_Query_Issue*>(h+1);
                 auto* q=static_cast<StreamQuery*>(a->self);
-                if((a->dwIssueFlags&D3::kIssueEnd)&&!q->dead.load()){++q->issueSeen;q->issueSeenEpoch=core.queryEpoch.load(std::memory_order_relaxed);q->eventWaitExpired=false;
+                if((a->dwIssueFlags&D3::kIssueEnd)&&!q->dead.load()){
+                    const auto epoch=core.queryEpoch.load(std::memory_order_relaxed);
+                    q->eventSpinHistory.next(q->issueSeenEpoch==epoch,q->eventWaitExpired);
+                    ++q->issueSeen;q->issueSeenEpoch=epoch;q->eventWaitExpired=false;
                     if(std::find(pending_.begin(),pending_.end(),q)==pending_.end())pending_.push_back(q);}}
             else if(h->id==(std::uint16_t)Cmd::Device_DrawPrimitive||h->id==(std::uint16_t)Cmd::Device_DrawIndexedPrimitive){
                 ++draws_;if(current_&&(draws_&31)==0){SnapshotStats::ageDraws.fetch_add(draws_>=current_->triggerDraw?draws_-current_->triggerDraw:0,std::memory_order_relaxed);SnapshotStats::ageSamples.fetch_add(1,std::memory_order_relaxed);}}   // game_snapshot.h noteAge, sampled
@@ -717,12 +738,66 @@ private:
         default:add(core.q.stats.replayFailures);return;
         }
     }
+    const CommandHeader* openParticlePair(const CommandHeader* head){
+        using NorthlightOrderedParticles::Draw;
+        using NorthlightOrderedParticles::Window;
+        const auto& first=*reinterpret_cast<const Args_Device_DrawIndexedPrimitive*>(head+1);
+        if(first.arg0!=D3DPT_TRIANGLELIST||first.startIndex||first.MinVertexIndex)return nullptr;
+        const Draw a{first.BaseVertexIndex,first.NumVertices,first.primCount};
+        if(!a.quadList())return nullptr;
+        const auto* next=core.q.publishedAfter(head);
+        if(!next)return nullptr;
+        Window window{a,{}};
+        if(next->id==unsigned(Cmd::UnlockBuffer)||next->id==unsigned(Cmd::UnlockBufferRef)){
+            const bool ref=next->id==unsigned(Cmd::UnlockBufferRef);
+            const auto* upload=reinterpret_cast<const UnlockBufferArgs*>(Queue::payload(next));
+            const auto* source=reinterpret_cast<const UnlockBufferRefArgs*>(Queue::payload(next));
+            const auto* proxy=ref?source->proxy:upload->proxy;
+            if(proxy->kind!=Kind::VertexBuffer||!proxy->raw||(ref?source->flags:upload->flags)!=D3::kLockNoOverwrite)
+                return nullptr;
+            window.uploadBuffer=proxy->raw;
+            window.uploadOffset=ref?source->off:upload->off;
+            window.uploadBytes=ref?source->size:upload->size;
+            next=core.q.publishedAfter(next);
+        }
+        if(next&&next->id==unsigned(Cmd::Device_SetVertexShaderConstantF)){
+            const auto& values=*reinterpret_cast<const Args_Device_SetVertexShaderConstantF*>(next+1);
+            if(values.reg_idx>=256||!values.count||values.count>256-values.reg_idx)return nullptr;
+            window.firstConstant=values.reg_idx;
+            window.constantCount=values.count;
+            if(values.data!=kNoPayload)
+                window.nextConstants=reinterpret_cast<const float*>(reinterpret_cast<const unsigned char*>(&values)+values.data);
+            next=core.q.publishedAfter(next);
+        }
+        if(next&&next->id==unsigned(Cmd::Device_SetTexture)){
+            const auto& texture=*reinterpret_cast<const Args_Device_SetTexture*>(next+1);
+            if(texture.Stage>=16)return nullptr;
+            window.textureStage=texture.Stage;
+            if(texture.Stage==0&&texture.pTexture){
+                const auto* proxy=ProxyBase::of(texture.pTexture);
+                if(proxy&&proxy->kind==Kind::Texture)window.nextTexture=proxy->raw;
+            }
+            next=core.q.publishedAfter(next);
+        }
+        if(!next||next->id!=head->id)return nullptr;
+        const auto& second=*reinterpret_cast<const Args_Device_DrawIndexedPrimitive*>(next+1);
+        if(second.arg0!=first.arg0||second.startIndex||second.MinVertexIndex)return nullptr;
+        window.second={second.BaseVertexIndex,second.NumVertices,second.primCount};
+        return (a.follows(window.second)||(window.nextTexture&&window.second.quadList()))&&particlePair(&window)?next:nullptr;
+    }
     void loop(){
         Queue& q=core.q;
+        const CommandHeader* indexedTail=nullptr;
+        const CommandHeader* particleTail=nullptr;
+        const auto endPair=[&]{
+            if(indexedTail){indexedPair(false,false,false);indexedTail=nullptr;}
+            if(particleTail){particlePair(nullptr);particleTail=nullptr;}
+        };
         std::uint16_t lastCmd=kExpressIdle;   // the id of the last command executed (an express readback records what it waited behind), kExpressIdle after an idle wait
         for(;;){
             const CommandHeader* h=q.next(false);
             if(!h){
+                endPair();
                 const auto before=lastCmd;
                 lastCmd=kExpressIdle;
                 q.serveExpress(lastCmd);
@@ -739,12 +814,51 @@ private:
                 if(!h){if(stopNow_.load())return;continue;}
             }
             else if(idleTracking_&&diag_&&idleProfile_.open())finishIdle(nowNs(),idlePoint(),h->id);
-            // Selecting a command acquires its publication before the mailbox
-            // check, so a future END cannot pass an earlier posted query task.
-            q.serveExpress(lastCmd);
+            // The batch that published this command has already been acquired.
+            // A future END cannot pass an earlier posted query task.
+            q.serveExpress(lastCmd,endPair);
             if(h->id==(std::uint16_t)Cmd::Stop){q.retire(h);if(idleTracking_)logIdleGaps();return;}
             if(!frameOpen_)beginFrame();   // 0.3.200 (frame skip)
             const unsigned id=h->id;bool stateOnly=false;
+            if(particlePair&&!indexedTail&&!particleTail&&!skipping_&&id==(unsigned)Cmd::Device_DrawIndexedPrimitive)
+                particleTail=openParticlePair(h);
+            if(indexedPair&&!indexedTail&&!particleTail&&!skipping_&&id==(unsigned)Cmd::Device_DrawIndexedPrimitive){
+                const auto& draw=*reinterpret_cast<const Args_Device_DrawIndexedPrimitive*>(h+1);
+                if(draw.arg0==D3DPT_TRIANGLELIST){
+                    const auto* tail=h;
+                    bool mixedConstants=false,joinRanges=false;
+                    for(unsigned instances=1;instances<32;++instances){
+                        const auto* next=q.publishedAfter(tail);
+                        bool mixedGap=false;
+                        const bool noStateCommands=next&&next->id==id;
+                        while(!joinRanges&&next&&next->id==(unsigned)Cmd::Device_SetVertexShaderConstantF){
+                            const auto& constants=*reinterpret_cast<const Args_Device_SetVertexShaderConstantF*>(next+1);
+                            if(constants.reg_idx>=256||!constants.count||constants.count>256-constants.reg_idx)break;
+                            mixedGap|=constants.reg_idx<31;
+                            next=q.publishedAfter(next);
+                        }
+                        if(!next||next->id!=id)break;
+                        const auto& following=*reinterpret_cast<const Args_Device_DrawIndexedPrimitive*>(next+1);
+                        if(draw.arg0!=following.arg0||draw.BaseVertexIndex!=following.BaseVertexIndex)break;
+                        const bool sameRange=draw.MinVertexIndex==following.MinVertexIndex&&draw.NumVertices==following.NumVertices&&
+                            draw.startIndex==following.startIndex&&draw.primCount==following.primCount;
+                        if(indexedRanges&&instances==1&&!sameRange&&noStateCommands){
+                            // A packed index buffer needs a bind and a restore.
+                            // Two adjacent ranges can instead keep the game's buffer.
+                            const bool contiguous=std::uint64_t(draw.startIndex)+3ull*draw.primCount==following.startIndex;
+                            const auto* third=q.publishedAfter(next);
+                            if(contiguous)joinRanges=true;
+                            else if(third&&third->id==id){
+                                const auto& thirdDraw=*reinterpret_cast<const Args_Device_DrawIndexedPrimitive*>(third+1);
+                                joinRanges=thirdDraw.arg0==draw.arg0&&thirdDraw.BaseVertexIndex==draw.BaseVertexIndex;
+                            }
+                        }
+                        if(!joinRanges&&!sameRange)break;
+                        tail=next;mixedConstants|=mixedGap;
+                    }
+                    if(tail!=h){indexedPair(true,mixedConstants,joinRanges);indexedTail=tail;}
+                }
+            }
             if(replayProfile_.enabled)switch(Cmd(id)){
                 case Cmd::Device_SetTexture:case Cmd::Device_SetTextureStageState:case Cmd::Device_SetSamplerState:
                 case Cmd::Device_SetRenderState:case Cmd::Device_SetVertexShader:case Cmd::Device_SetPixelShader:
@@ -756,6 +870,7 @@ private:
             const bool timed=replayProfile_.sample(id,stateOnly);
             const auto started=timed?nowNs():0;
             execute(h);
+            if(h==indexedTail||h==particleTail)endPair();
             if(timed){const auto ended=nowNs();replayProfile_.record(id,ended>=started?ended-started:0);}
             lastCmd=h->id;
             q.retire(h);

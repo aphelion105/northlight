@@ -4,14 +4,17 @@
 plain and ASan/UBSan: the listed selection with the chunk bitmap equals the set rule, same order) and a
 wiring audit of world_renderer.h (the terrain-outside-fixed list rebuilt at the mesh commit only, used
 only for the batches and fixed set it was built from). No game or GPU."""
+
+from source_units import source_text
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
 import subprocess,tempfile
 HERE=Path(__file__).resolve().parent
-w=fp.src('world_renderer.h').read_text()
+w=source_text(fp.src('world_renderer.h'))
 checks={
- 'list built with the terrain list at the mesh commit, against the committed fixed set':'if(!fixed.count({batches[i].chunkX,batches[i].chunkY}))shadowTerrainList.push_back(uint32_t(i));' in w
-    and 'terrainBatchListSize=batches.size();terrainListFixed=&fixed;terrainBatchListGeneration=meshGeneration;' in w and w.count('rebuildTerrainLists();')==1,
+ 'list built with the terrain list at the mesh commit, against the committed fixed set':'if(!fixed.count({batch.chunkX,batch.chunkY}))shadowTerrainList.push_back(uint32_t(i));' in w
+    and 'terrainBatchListSize=batches.size();terrainListFixed=&fixed;terrainBatchListGeneration=meshGeneration;' in w
+    and w.count('rebuildTerrainLists();')==1 and '++meshGeneration;rebuildTerrainLists();' in w,
  'listed selection only for its generation, batches and fixed set; the set rule otherwise':'if(terrainBatchListGeneration==meshGeneration&&terrainBatchListSize==batches.size()&&terrainListFixed==&fixedTerrainChunks())\n                    terrainCandidates.prepareListed(batches,shadowTerrainList,fixedTerrainChunks(),liveTerrainChunks,captureSampled);\n                else terrainCandidates.prepare(batches,fixedTerrainChunks(),liveTerrainChunks,captureSampled);' in w, # 0.3.200 (jobs): inside terrainJob
  'live chunks: retained storage plus bitmap':'NorthlightTerrainCandidates::ChunkSet liveTerrainChunks;' in w,
 }

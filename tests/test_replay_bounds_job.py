@@ -25,9 +25,13 @@ def literal(path, name):
 stub = literal(HERE / 'test_terrain_snapshot.py', 'stub')
 fixture = literal(HERE / 'test_replay_skin_safety.py', 'harness').split('int main(')[0]
 fixture = fixture.replace('static Status finish(', '[[maybe_unused]] static Status finish(').replace('static Mesh geometry(', '[[maybe_unused]] static Mesh geometry(').replace('static void palette(', '[[maybe_unused]] static void palette(').replace('static size_t enclosed(', '[[maybe_unused]] static size_t enclosed(')
-point = fp.src('world_point_rendering.inl').read_text()
+point = fp.src('world_shadow_bounds.inl').read_text()
 # The renderer's own kick/join/abandon glue, compiled verbatim below.
 glue = point[point.index('    NorthlightReplayBoundsJob::Worker replayBoundsWorker;'):point.index('    void pointCalculateReplayBounds(){')]
+# The fixture exercises the base workload without a live local-light selection.
+glue = (glue[:glue.index('    bool replayBoundsManyPointShadows()')] +
+        '    bool replayBoundsManyPointShadows()const{return false;}\n' +
+        glue[glue.index('    static bool replayCrowdBoundsOperations()'):])
 # Compile the production synchronous schedule as the oracle for its worker.
 # Exclude the diagnostic logging tail; World::legacyPass stores its totals below.
 _sync = point.index('    void pointCalculateReplayBounds(){')
@@ -52,6 +56,8 @@ inline std::atomic<std::int64_t> TestClock::ticks{1000000},TestClock::step{1000}
 harness = r"""
 #include "replay_bounds_job.h"
 #include "replay_bounds_metadata.h"
+#include "frame_parity_clock.h"
+#include "pose_bounds_handoff.h"
 #include <unordered_map>
 #include <algorithm>
 #include <cstring>
@@ -70,7 +76,7 @@ struct FakeDecl:IDirect3DVertexDeclaration9 {
 static const bool diagnosticsOff=(NorthlightDiagnostics::configure(false),true);
 struct Packet {
     IDirect3DVertexShader9* originalShader=nullptr;IDirect3DVertexDeclaration9* decl=nullptr;
-    NorthlightReplayBounds::Bounds pointBounds;WorkInfo boundsWork;std::shared_ptr<const Prepared> boundsPrepared;
+    NorthlightReplayBounds::Bounds pointBounds,materialViewBounds;WorkInfo boundsWork;std::shared_ptr<const Prepared> boundsPrepared;
     std::shared_ptr<const Mesh> shared;Mesh snapshot;const float* constants=nullptr;unsigned otherState=0;bool captureRootValid=false;float captureRoot[3]={};bool anchorValid=false;float anchor[3]={};bool selfShadow=false;
     const float* position()const{return captureRootValid?captureRoot:anchorValid?anchor:nullptr;}
     const Mesh& mesh()const{return shared?*shared:snapshot;}
@@ -84,7 +90,9 @@ struct World {
     NorthlightReplayMetadata::Cache<Prepared,IDirect3DVertexShader9,IDirect3DVertexDeclaration9> replayBoundsMetadata;
     DeclarationCache declarationCache;Context context;unsigned frames=0,logs=0;float actorMatrices[2][16]={};bool actorValid[2]={};unsigned replayNearSize=0;unsigned long replayNearStops=0; /* the actor maps as last drawn: none, no near-first order */
     struct History {unsigned hold=0;float at[3]={};unsigned selfHold()const{return hold;}const float* selfAt()const{return at;}} actorShadowHistory;
-    unsigned pointBoundsValid=0;size_t pointBoundVertices=0,pointBoundOperations=0;Totals visits;
+    bool pointReplayOrderReady=false;
+    struct PointReplayCasters {void invalidate(){}} pointReplayCasters;
+    unsigned pointBoundsValid=0,pointMaterialBoundsUsed=0;size_t pointBoundVertices=0,pointBoundOperations=0;Totals visits;
     explicit World(std::unordered_map<IDirect3DVertexShader9*,std::shared_ptr<const Program>>& programs):actorPrograms(programs){}
     void pointLogReplayBounds(const Totals& t,double,double,double,double,double,bool){visits=t;++logs;}
     void legacyPass(){

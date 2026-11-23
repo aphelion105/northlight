@@ -1,0 +1,831 @@
+{
+  "objects": {
+    "M2 section": {
+      "aliases": ["M2"],
+      "passes": ["draw-handoff", "material-capture", "model-normals", "shadow-caster-admission"],
+      "admission": "Draw adapters retain indexed arguments, declaration and current shader. The normal replay admits terrain or M2 vertex family 3. Buffered draws can share inputs independently of material admission. UP carries its own draw memory and retains the material guard.",
+      "fallback": "Re-read through the normal capture path on a stale bank or mesh proof. Unknown families stay on native submission. The 12340 native section in queued dispatch is diagnostic evidence, separate from the working D3D capture handoff."
+    },
+    "ADT": {
+      "passes": ["draw-handoff", "material-capture", "model-normals", "scene-inputs", "static-caster-geometry", "shadow-caster-admission"],
+      "admission": "Recognized terrain with a buffered indexed draw and active material capture gives the world capture the first chance to publish PositionBounds. Other draws retain the ordinary material, normals and world order. World capture and ModelNormals share known camera rows from the device mirror under the draw gate. The sampled native audit certifies the prepared ADT range against its Gx submission, then checks that its native bounds cover MCVT heights and submitted positions.",
+      "fallback": "Absent bounds use the existing material range path. Unsupported normal or material admission keeps native geometry and allows screen normals from depth/scene."
+    },
+    "WMO group": {
+      "aliases": ["WMO"],
+      "passes": ["static-caster-geometry", "shadow-caster-admission"],
+      "admission": "Resident map groups can supply static geometry with material cutouts. Live replay admission independently checks the captured shader, geometry, depth/blend and alpha state. Cache ownership and a successful current static submission determine exclusion from duplicate live replay. The sampled native audit associates the prepared range with the submitting WMO group and its local bounds.",
+      "fallback": "When cache ownership is unproven, eligible live packets remain in the replay set. Unsupported native draws continue through the game draw."
+    },
+    "Water": {
+      "aliases": ["Liquid"],
+      "passes": ["water-draw"],
+      "admission": "Registered client water shaders with matching main scene depth, viewport and draw state can publish positive view distance.",
+      "fallback": "Use the private second draw when the patched MRT is refused. If capture or resolve cannot publish, consumers use ordinary scene depth."
+    },
+    "Weather": {
+      "aliases": ["Rain", "Snow", "Sand"],
+      "passes": ["native-weather", "rain-mask-capture", "weather-menu-precipitation", "weather-lens"],
+      "admission": "World weather follows observed native draws and proven weather context. Menu precipitation and optional lens effects obey the menu profile, visibility and shelter gates.",
+      "fallback": "Unsupported rain MRT state preserves the native draw. Absent precipitation, an indoor camera or failed supplemental resources can skip optics."
+    },
+    "Sky": {
+      "aliases": ["Skybox", "Aurora"],
+      "passes": ["sky-layer-capture", "sky-background", "hdr-sky-foreground", "aurora-emission", "celestial-terrain", "celestial-disc"],
+      "admission": "Sky viewport band, main target, material role and current camera decide whether native sky layers, an owned disc or aurora emission can be captured.",
+      "fallback": "Unproven sky ownership keeps the native artwork. Failed optional HDR foreground work preserves the ordinary scene and restores draw state."
+    },
+    "Particles": {
+      "aliases": ["Spell particles"],
+      "passes": ["native-effect-coverage", "hdr-particle-transfer"],
+      "admission": "Recognized native draw and proven target, shader and blend mode can supply effect coverage or use an HDR output epilogue.",
+      "fallback": "Unsupported effects retain the native submit. The compositor can run without auxiliary coverage."
+    },
+    "UI": {
+      "aliases": ["Interface"],
+      "passes": ["hdr-ui-transfer"],
+      "admission": "A proven main-target UI boundary finishes the world HDR frame before ordinary interface draws.",
+      "fallback": "Offscreen or unproven UI retains the original native route. HDR can finish at Present if no earlier boundary is proven."
+    }
+  },
+  "modes": {
+    "AO-only": {
+      "admission": "Contact AO is requested with world lighting, fog and local lighting inactive.",
+      "passes": {"scene-inputs": [], "contact-ao": ["HBAOPlusOnly", "GTAOOnly", "ASSAOOnly"], "contact-ao-blur": ["AOBlur", "AOBlurNoWater"], "world-composite": ["WorldAOCompositeHdr"]},
+      "outputs": {"screen-ao": "contact-ao-blur", "composite-color": "world-composite"},
+      "fallback": "The AO method and optional actor path are configured independently. Folded HDR requires base compositor admission; otherwise retain the standard composite."
+    },
+    "fog-only": {
+      "admission": "Fog requires receiver distance while world lighting does not require normals or temporal light.",
+      "passes": {"scene-inputs": [], "fog-distance": ["WorldDistance"], "fog-raymarch": ["WorldFog", "WorldFogAmbient", "ForeverFog"], "fog-screen-temporal": ["FogTemporal"], "fog-blur-horizontal": ["FogBlur"], "fog-blur-vertical": ["FogBlur"], "world-composite": ["WorldComposite", "WorldCompositeHdr"]},
+      "outputs": {"current-distance": "fog-distance", "fog-color": "fog-blur-vertical"},
+      "fallback": "Imported atmosphere may select the atlas instead of this raymarch route. Changing the distance producer invalidates the incompatible history."
+    },
+    "Menu": {
+      "admission": "A supported lit menu model establishes camera/depth and a recognized menu atmosphere profile.",
+      "passes": {"sky-background": ["CelestialSkyPS"], "scene-inputs": [], "weather-menu-precipitation": ["RainQuality", "SnowQuality", "RainPerformance", "SnowPerformance"], "weather-lens": ["WeatherLensParticle", "FrostVignette"], "hdr-ui-transfer": ["HdrUi-ps_2_0", "HdrUi-ps_3_0"]},
+      "outputs": {"native-scene-color": "sky-background", "late-weather-color": "weather-menu-precipitation"},
+      "fallback": "Without menu scene proof, keep eligible screen effects. Supplemental precipitation requires active weather and exposure."
+    },
+    "2x MSAA": {
+      "admission": "Main color/depth share the active sample type and quality. Post-effect consumers use single-sample exports.",
+      "passes": {"scene-inputs": [], "water-draw": [], "water-compact-correct": ["WaterCorrectDistance"], "water-compact-merge": ["WaterMergeDistanceMS"], "rain-mask-capture": ["RainMaskMRT"], "rain-mask-scrub": ["RainScrub"], "sky-layer-capture": [], "hdr-output": ["HdrWorldLinearOnly", "HdrWorldLinear"]},
+      "outputs": {"scene-depth": "scene-inputs", "water-mask": "water-compact-correct", "rain-mask": "rain-mask-scrub", "sky-layer-color": "sky-layer-capture", "hdr-present": "hdr-output"},
+      "fallback": "Admitted water can use compact distance plus coverage, the legacy auxiliary MRT or the second draw. Native normal seeding requires its own sample compatibility."
+    }
+  },
+  "resources": {
+    "shared-draw": {"shape": "CPU draw-local mesh, vertex declaration, pose and constant bank", "lifetime": "CaptureSource retains the declaration for the draw. Consumers copy or retain queued inputs before it expires. Mesh aliases require range, declaration and version proofs. A bank needs matching write generation and covered register span."},
+    "native-scene": {"shape": "Full-resolution color snapshot in the game target format, single sample", "lifetime": "Device owns scene/sceneSurface. It publishes current color after the resolve and releases effect targets on Reset or size/format change."},
+    "native-world-depth": {"shape": "Current game depth/stencil attachment at the world sample count", "lifetime": "Device holds the proven main-world surface and depth range for the frame. Temporary targets and failed signatures cannot become the source for scene, water or rain capture."},
+    "native-scene-color": {"shape": "Game color target at the active scene sample count", "lifetime": "Original scene draws and admitted celestial work precede the Device color snapshot. World effects consume the resolved scene rather than sampling the attached target."},
+    "scene-depth": {"shape": "Full-resolution single-sample INTZ, or DF24 on the supported 1x DXVK path", "lifetime": "Device owns depthTex. RESZ reads the held current world depth surface. At 2x MSAA the INTZ snapshot is the sampled input. The Device clears captured each frame and releases depthTex on Reset/resize."},
+    "model-normals": {"shape": "Full-resolution RGBA16F, view normal XYZ and distance W, single sample", "lifetime": "Model normals owns normal/surface plus a private D24S8. It publishes current contents after capture finish. The WorldRenderer holds a borrowed texture for the composite call."},
+    "material-detail": {"shape": "Full-resolution RGBA16F height/detail target, single sample", "lifetime": "AutoBump owns height/target. The getter admits current drawn content and WorldRenderer borrows it for this frame."},
+    "material-occlusion": {"shape": "Full-resolution A8R8G8B8, single sample", "lifetime": "AutoBump owns occlusionMap/occlusionTarget. The getter requires a current occlusion draw."},
+    "world-normals": {"shape": "Half-resolution RGBA16F, world normal XYZ and confidence W, single sample", "lifetime": "NorthlightWorldNormalsPass retains the target across frames and overwrites it during the normals draw. Reset, resize or trim releases the target. The distance attachment is borrowed from lighting history."},
+    "current-distance": {"shape": "Half-resolution R32F, single sample", "lifetime": "NorthlightWorldLightHistory owns the texture and surface. WorldNormals RT1, TemporalLight RT1 or fog-only WorldDistance RT0 produces the current distance. The pair advances after a successful resolve."},
+    "previous-distance": {"shape": "Previous half-resolution R32F from the same ping-pong pair", "lifetime": "The history owner validates map, camera and lighting domain. Fog reprojects from the previous slot after the distance pair advances."},
+    "directional-light": {"shape": "Half-resolution RGBA16F, single sample", "lifetime": "NorthlightWorldScreenLighting owns this directional and GI target. Local lighting borrows the allocation after the last temporal read."},
+    "baseline-light": {"shape": "Half-resolution RGBA16F, single sample", "lifetime": "NorthlightWorldScreenLighting owns this target. The first directional source writes RT1 and later consumers read the result from s12."},
+    "prelit-daylight": {"shape": "Half-resolution RGBA16F, single sample", "lifetime": "NorthlightWorldScreenLighting allocates this optional target for stencil-selected rooms. The directional and GI passes write its current irradiance. Without a current result, the compositor binds neutral zero."},
+    "smoothed-light": {"shape": "Half-resolution RGBA16F, single sample", "lifetime": "RemovalSmooth borrows the fog screen scratch before fog. The temporal shader can sample raw light instead; the merged path removes before resolving history."},
+    "temporal-light": {"shape": "Half-resolution RGBA16F, single sample", "lifetime": "NorthlightWorldLightHistory publishes the resolved light slot for world composition. Local fog can borrow the old light image after its history reads."},
+    "previous-light": {"shape": "Previous half-resolution RGBA16F in the other ping-pong slot", "lifetime": "Previous lighting, bilinear reprojection. Rejected history gets no weight. References stop at the prior frame."},
+    "lighting-probes": {"shape": "World GI atlas, metadata, previous atlas and visibility banks", "lifetime": "Published GI resources are independently ready. Neutral/analytic fallback stays available during streaming."},
+    "static-caster-mesh": {"shape": "Resident ADT and WMO map batches and qualified static M2 instances", "lifetime": "World mesh and static caster owners publish committed VB/IB and draw ranges. Cache exclusion requires matching map, range/material and a ready shadow generation."},
+    "live-terrain-casters": {"shape": "Current ADT vertices and a dynamic INDEX32 slice", "lifetime": "NorthlightLiveTerrainIndices owns the index buffer and publishes the slice base after Unlock. The directional, flash and point passes borrow that slice under the shared frame EVENT. A directional alias or point face subset must match its originating generation and ranges."},
+    "shadow-replay-packets": {"shape": "Geometry and draw ranges, declaration, captured program, pose constants, bounds and alpha state", "lifetime": "Capture and replay retain draw inputs for the current caster set. The patched vertex program preserves original deformation before reprojecting to light space. Pose and alpha equivalence gate grouping. Map/device invalidation retires stale references."},
+    "caster-alpha": {"shape": "Captured or authored material texture and matching cutoff/alpha test", "lifetime": "Binds only for caster paths requiring coverage. A native fixed-alpha replay scopes the compatible color/depth target and preserves the original texture and alpha test."},
+    "cascade-static": {"shape": "Four 1280x1280 R32F targets with a shared single-sample D24S8", "lifetime": "NorthlightWorldDirectionalTargets owns two cached cascades per celestial source. WorldRenderer schedules refresh and reuse using the map generation, static commits and projection offset."},
+    "cascade-dynamic": {"shape": "1024x1024 R32F dynamic scratch or retained per-cascade transition target", "lifetime": "NorthlightWorldDirectionalTargets reuses scratch for one cascade at a time. During an admitted fade, the slot uses a separate dynamic allocation. Both paths pair with single-sample D24S8."},
+    "cascade-history": {"shape": "Optional 1024x1024 R32F previous static-only depth per transitioning cascade", "lifetime": "WorldRenderer retains previous static projection and depth. A fade reuses current moving casters and cancels on failed publication, invalidation or target trim."},
+    "cascade-near-environment": {"shape": "Optional 1024x1024 R32F near depth per celestial source", "lifetime": "The directional target owner keeps the union of static and live terrain before replay. Reuse requires the near environment key and current static publication."},
+    "neutral-shadow": {"shape": "Fully lit white texture", "lifetime": "NorthlightWorldScreenFallbacks owns the white texture borrowed by shadow and fog passes. History copy binds it on s0 so only static depth reaches the retained slot. The shadow reset releases it."},
+    "cascade-near": {"shape": "1024x1024 R32F final near depth per source, single sample", "lifetime": "The directional target owner holds the near slot. The near-environment split combines static and terrain in a reusable intermediate before adding current replays."},
+    "cascade-far": {"shape": "1024x1024 R32F final far depth per source, single sample", "lifetime": "The directional target owner holds the far slot. Its validity follows the source, committed projection and static/dynamic refresh."},
+    "actor-shadow-depth": {"shape": "1024x1024 R32F depth per eligible celestial source, single sample", "lifetime": "NorthlightWorldActorShadows owns the targets; WorldRenderer redirects eligible near-cascade replays to each map using the directional D24S8. Actor validity and projection govern readers."},
+    "actor-tiles-mid": {"shape": "256x256 R32F scratch reduction, single sample", "lifetime": "NorthlightWorldActorShadows reuses this scratch for each source after its final reduction consumes the intermediate."},
+    "actor-tiles": {"shape": "64x64 R32F minimum-depth tiles per source, single sample", "lifetime": "ActorTiles or the wider fog-aware second step writes the per-source texture. Readers require the current actor projection."},
+    "actor-visibility": {"shape": "Half-resolution A8R8G8B8, sun R and moon G, single sample", "lifetime": "Separate actor resolve publishes the mask for ordinary lighting. A successful shared resolve supplies both visibilities separately in directional-visibility."},
+    "directional-visibility": {"shape": "Half-resolution RGBA16F, single sample", "lifetime": "NorthlightWorldDirectionalVisibility owns the optional target and shader pairs. The target clears before soft, shared or transition draws and is sampled only after a successful resolve."},
+    "point-static-face": {"shape": "Up to six 256x256 R32F 2D textures per light, single sample", "lifetime": "PointCubeCache retains faces and their generation keys; invalid cache faces can be rebuilt within the frame budget. Eviction and reset release texture and surface aliases."},
+    "flash-near-map": {"shape": "1024x1024 R32F color depth, up to two source slots", "lifetime": "Flash owner allocates on demand, invalidates readiness per frame and releases on geometry trim and Reset."},
+    "flash-far-map": {"shape": "1024x1024 R32F color depth, up to two source slots", "lifetime": "Shares the near map's publication and resource lifetime."},
+    "point-dynamic-face": {"shape": "Shared 256x256 R32F scratch with single-sample D24S8", "lifetime": "Borrowed for one face. The min-blend or copied-static path can draw dynamic casters directly into the cube instead."},
+    "point-cube": {"shape": "Six 256x256 R32F render-target faces per selected light, single sample", "lifetime": "NorthlightWorldPointTargets owns the slots. Each slot holds its cube and COM face aliases. Consumers use a committed source and projection. An incomplete rebuild cannot publish a partially updated cube."},
+    "local-light": {"shape": "Half-resolution RGBA16F, single sample", "lifetime": "Borrows the raw target from NorthlightWorldScreenLighting after TemporalLight. Composite uses neutral zero where no local draw ran."},
+    "screen-ao-raw": {"shape": "Half-resolution RGBA16F, RGB bounce or contact bloom and alpha AO", "lifetime": "Device owns aoRaw/aoRawSurface. Contact AO writes it and AOBlur samples the same allocation on s0 and s2 before restoring the scene binding."},
+    "screen-ao": {"shape": "Half-resolution RGBA16F AO and pre-weighted contact bloom", "lifetime": "Device owns ao/aoSurface. AOBlur, ContactBloom or a neutral clear writes it. The world binds it to s10 for removal and composition or uses its neutral texture. The legacy composite can materialize the neutral clear late."},
+    "actor-ao-mask": {"shape": "Screen coverage derived from reserved scene stencil bit 0x40", "lifetime": "NorthlightAOActorStencil exposes current coverage only for the matching depth surface. A missing mask or optional shader leaves regular contact AO available."},
+    "actor-ao-guide": {"shape": "Half-resolution contact guide aliasing ao/aoSurface", "lifetime": "AOActorPrepare temporarily writes the blur destination. AO samples this alias on s2, then releases it before AOBlur overwrites it with screen-ao."},
+    "water-compact-distance": {"shape": "Full-resolution R32F view distance, with a matching multisample RT1 when admitted", "lifetime": "NorthlightWaterDistanceMask owns the single-sample texture and optional multisample twin. Direct single-sample reads, coverage correction and mixed merges share this storage."},
+    "water-compact-coverage": {"shape": "L8 full-resolution coverage, with a matching multisample RT2", "lifetime": "Exists for the compact MSAA route. Resolve may restrict the L8 copy to the written region while keeping the full R32F resolve."},
+    "water-legacy-mrt": {"shape": "Legacy G32R32F distance and coverage with optional matching multisample twin", "lifetime": "Water renderer decodes the resolved input once into the private mask. Native end and effect boundaries release auxiliary target bindings."},
+    "water-mask": {"shape": "Full-resolution single-sample water distance, R32F compact or G32R32F legacy/fallback", "lifetime": "Current depth range and a successful capture or resolve gate visibility. Nonpositive distance uses the scene endpoint. Device lends the mask to AO, fog and celestial effects."},
+    "weather-state": {"shape": "Frame weather kind, blend and intensity with exposure/shelter and mode", "lifetime": "Updates from recognized native observations and applicable overrides. Menu uses its own profile. The current weather state drives atmospheric settings and optional optics."},
+    "weather-roof": {"shape": "Optional R32F uploaded shelter-height texture", "lifetime": "SurfaceRenderer updates it with the current weather roof snapshot. Release/reset drops the cache."},
+    "weather-art": {"shape": "Managed L8 frost, precipitation and noise textures", "lifetime": "SurfaceRenderer loads the embedded art on demand and reuses textures across frames."},
+    "weather-lens-scene": {"shape": "Frame scene-copy texture in native SDR or linear HDR storage", "lifetime": "Borrowed from existing scene storage. Lens optics copies the current output only when it will draw and samples the disjoint texture."},
+    "late-weather-color": {"shape": "Weather contribution on the current SDR target or HDR presentation target", "lifetime": "Supplemental precipitation and lens optics run after deferred effects under saved state with optional name stencil."},
+    "rain-native-texture": {"shape": "Recognized stage-0 native rain texture", "lifetime": "The original draw owns the texture and diffuse inputs. The mask shader may replace exactly the supported fixed-function modulation."},
+    "rain-depth-snapshot": {"shape": "Full-resolution single-sample depth snapshot at the first admitted rain draw", "lifetime": "Device uses the known world depth and invalidates the snapshot each frame. Final depth comparisons remove later occlusions."},
+    "rain-mask-raw": {"shape": "A8R8G8B8 coverage in alpha, optional matching multisample RT1", "lifetime": "Rain draws accumulate the auxiliary alpha mask under supported MRT blending. The MSAA path resolves the twin before scrub."},
+    "rain-mask": {"shape": "Current coverage in the red channel of A8R8G8B8", "lifetime": "RainScrub preserves source alpha while writing the red visibility bit to the same allocation. Final composition samples s13 and then restores regional fog."},
+    "effect-coverage": {"shape": "Current native alpha/coverage", "lifetime": "Bound by the Device/WorldRenderer immediately before final composition; guards pixels with native effects already in the scene."},
+    "dither-tile": {"shape": "64x64 A32B32G32R32F, single sample", "lifetime": "NorthlightWorldScreenFallbacks owns the managed blue-noise tile and releases it with the screen targets. SDR s2 wraps. HDR binds its scene base on s2."},
+    "fog-regional-field": {"shape": "Managed regional height and density texture with ground, extinction and layer height", "lifetime": "WorldRenderer publishes the texture for the current fog field identity. s13 is rebound from regional fog to rain mask only for final composition."},
+    "fog-height-bounds": {"shape": "Regional fog height support texture", "lifetime": "WorldRenderer binds the optional current height bounds on s12. Without matching height data the raymarch uses the general interval path."},
+    "fog-direct-floor": {"shape": "RGBA32F with four direct-fog floor corners per regional cell", "lifetime": "Managed moon-floor texture follows the uploaded field and map. The optional draw requires a current far moon cascade and compatible shader resources."},
+    "fog-cloud-noise": {"shape": "Tiled L8 volume texture", "lifetime": "WorldRenderer admits the asynchronously prepared noise on demand. Quiet imported variants can run while the texture is unavailable."},
+    "fog-volume-raw": {"shape": "RGBA16F atlas of 64 cells along each depth column", "lifetime": "NorthlightFogVolume writes coefficients into raw() for the current imported atmosphere. Atlas dimensions are eight times the cell-grid width and height."},
+    "fog-volume-history": {"shape": "Resolved coefficients in the same three-atlas pool", "lifetime": "Zero temporal weight promotes the raw atlas without a draw. Otherwise VolumeTemporal writes a disjoint atlas and rotates history after success."},
+    "fog-volume-previous": {"shape": "Previous coefficient atlas in the same pool", "lifetime": "Read only with valid imported volume history and matching field. Current screen depth participates later in VolumeResolve."},
+    "fog-volume-prefix": {"shape": "RGBA16F accumulated radiance and transmittance in the atlas pool", "lifetime": "Seven alternating prefix draws leave a retained result. An unchanged, settled atmosphere can reuse the committed result."},
+    "fog-raw": {"shape": "Half-resolution RGBA16F atmospheric radiance and transmittance", "lifetime": "Raymarch or atlas resolve writes the raw NorthlightFogScreen image, with the optional companion cloud or regional pass. Local lamp glow is added after the screen filters."},
+    "fog-previous": {"shape": "Previous half-resolution RGBA16F fog history", "lifetime": "The previous texture is read only with a usable history weight. Inactive fog initializes neutral history and invalid mode or camera transitions reject temporal weight."},
+    "fog-current-history": {"shape": "Half-resolution RGBA16F reprojected atmospheric fog", "lifetime": "FogTemporal writes scratch then rotates the image pair into history. Blur reads the current history, and the next frame treats it as previous."},
+    "fog-horizontal": {"shape": "Half-resolution RGBA16F horizontal blur scratch", "lifetime": "Uses the raw allocation after the history swap, or scratch on the non-temporal path. The vertical pass consumes it immediately."},
+    "fog-lamp-accum": {"shape": "Half-resolution RGBA16F borrowed temporal-light texture", "lifetime": "The just-retired temporal light slot holds additive lamp radiance only after temporal lighting reads complete. Clear and combine are scoped to the union of affected rectangles."},
+    "fog-color": {"shape": "Half-resolution RGBA16F final fog", "lifetime": "Vertical blur publishes fog or fogBlurred, then optional local fog adds to the same surface. Compose uses neutral fog if the pass is unavailable."},
+    "hdr-linear-base": {"shape": "Full-resolution RGBA16F working scene, or native UNORM sampled as sRGB in the inline route", "lifetime": "HDR frame owns the prepared linear texture; the Device can pass the existing scene texture for the proven encoded base."},
+    "hdr-sky": {"shape": "Full-resolution linear sky residual, with optional MSAA twin", "lifetime": "Owned celestial or aurora emission writes linear headroom. Admitted native foreground attenuates it. The Device resolves and consumes it only with valid captured sky."},
+    "sky-layer-color": {"shape": "Full-resolution RGBA16F sky layer capture, with optional MSAA twin", "lifetime": "NorthlightSkyComposition captures admitted native layers against the current scene target. Retains coverage across temporary offscreen work, invalidates on replacement or failed replay."},
+    "sky-background-copy": {"shape": "Full-resolution native color snapshot before foreground", "lifetime": "The temporary copy uses sceneSurface before the main scene snapshot overwrites it. It supplies the early background draw only."},
+    "sky-background-optional-depth": {"shape": "Optional sampled depth attachment for the background shader", "lifetime": "The production Device passes null at s0 and leaves c10.w zero. The live attachment supplies hardware depth and per-sample rejection."},
+    "sky-native-layer-textures": {"shape": "Native sky texture stages 0 and 1 and material role", "lifetime": "These inputs belong to the current client draw. Capture and HDR foreground variants require supported native state and restore it after replay."},
+    "celestial-disc-art": {"shape": "Managed A8R8G8B8 sun and moon textures", "lifetime": "Celestial renderer owns the generated or loaded art and leases only the selected body texture for the current draw."},
+    "celestial-terrain-mask": {"shape": "A8R8G8B8 target per active body", "lifetime": "Optional terrain occlusion is valid for the current camera/body. Missing terrain proof leaves depth-based occlusion available."},
+    "celestial-halo-previous": {"shape": "Previous 1x1 RGBA16F visibility per body and ring", "lifetime": "The halo and ring choose the previous slot independently and weight it only with valid history."},
+    "celestial-halo": {"shape": "Current 1x1 RGBA16F halo visibility", "lifetime": "Admitted halo sampling publishes the next slot before drawing the disc or veil."},
+    "celestial-ring": {"shape": "Current 1x1 RGBA16F ring visibility", "lifetime": "Late ring sampling writes its own next slot. Unavailable ring can bind the admitted halo fallback."},
+    "sky-fog-transmittance": {"shape": "CPU scalar estimate of attenuation towards the sun", "lifetime": "WorldRenderer updates it with the admitted fog/cloud profile; the SDR veil reads the current value."},
+    "composite-color": {"shape": "Full-resolution SDR or linear HDR composite destination", "lifetime": "NorthlightWorldComposite borrows the destination and owns the scratch result used by the standalone material pass. HDR may compose into the MSAA presentation target before HDR finishing."},
+    "composite-scratch": {"shape": "Full-resolution scene format or RGBA16F for HDR, single sample", "lifetime": "NorthlightWorldComposite owns the texture and surface. The ordinary composite writes it when a separate material draw follows. The renderer can also use it for the legacy scene copy."},
+    "hdr-exposure": {"shape": "1x1 HDR exposure history", "lifetime": "HDR frame owns the metering ping-pong; final output samples the current history index."},
+    "hdr-bloom": {"shape": "Reduced-resolution HDR bloom or neutral texture", "lifetime": "HDR frame owns bloom allocations and reads the current selected base, wide or neutral product at finish."},
+    "hdr-present": {"shape": "Full-resolution scRGB RGBA16F, output swap-chain sample count", "lifetime": "Device/OutputChain owns hdrPresentBack. Finish publishes world color before deferred effects and UI. Reset/output change releases the surface."},
+    "terrain-layer-textures": {"shape": "Terrain alpha and generated normal texture inputs", "lifetime": "Material capture chooses textures for the recognized draw. Dynamic patched shaders retain validated original sampler bindings."},
+    "native-normal-seed": {"shape": "Scene-depth seed in private D24S8", "lifetime": "Copies resolved current depth for eligible deferred model-normal captures; unsupported seed keeps the normal fallback."}
+  },
+  "passes": {
+    "draw-handoff": {
+      "owner": "NorthlightDrawCapture::capture",
+      "code": {"src/proxy/draw_capture_route.h": ["void capture(IDirect3DVertexShader9*", "NorthlightAutoDisplacement::CaptureSource source;", "if(!userMemory||materialCapture){", "captureModelNormals(source);"], "src/proxy/renderer.cpp": ["NorthlightDrawCapture::capture<userMemory>"], "src/water/auto_displacement_renderer.h": ["struct CaptureSource {", "void publishConstants("], "src/world/draw_snapshot.h": ["bool readShared("], "src/proxy/model_normal_renderer.h": ["++materialBankReads;materialBankRegisters+=count", "MODEL_NORMALS handoff frame="]},
+      "writes": {"shared-draw": "Only published when the current draw supplies proof"},
+      "fallback": "A shared snapshot miss leaves the normal consumer's existing read path available. Draw ordering and the UP guard stay with the original adapters.",
+      "tests": ["test_capture_handoff.py", "test_model_normal_consumers.py", "test_draw_orchestration.py"]
+    },
+    "scene-inputs": {
+      "owner": "Device::renderEffects / NorthlightSceneDepth::copy",
+      "code": {"src/proxy/renderer.cpp": ["bool resolveDepth()", "NorthlightSceneDepth::copy(ext,stateBlocks,worldDepth,target,"], "src/proxy/device_frame_effects.inl": ["|| !resolveDepth()) return;"], "src/proxy/scene_depth_resolve.h": ["SavedState saved(ext,&stateBlocks)", "0x7fa05000), \"RESZ\""]},
+      "reads": ["native-scene-color", "native-world-depth"],
+      "writes": {"native-scene": "Current scene copy/resolve", "scene-depth": "Current RESZ snapshot before effects"},
+      "fallback": "Invalid projection, viewport or failed resolve blocks the screen-effects route.",
+      "tests": ["test_draw_orchestration_gpu.py", "test_saved_state.py", "test_northrend_frame_parity.py"]
+    },
+    "material-capture": {
+      "owner": "NorthlightAutoBump::capture",
+      "code": {"src/water/auto_bump_renderer.h": ["const DWORD* normalCodes[]", "IDirect3DTexture9* occlusionTexture()const"], "src/proxy/device_frame_effects.inl": ["world->setMaterialDetail(autoBump?autoBump->texture()"]},
+      "source": "auto_bump_capture.hlsl",
+      "entries": {"BumpNormalTerrainOpaque": "Terrain normal/capture variant for the opaque domain", "BumpNormalTerrainLayer": "Terrain normal/capture variant with layer mask"},
+      "reads": ["shared-draw"],
+      "writes": {"material-detail": "Current material coverage only", "material-occlusion": "Optional, when occlusion captured"},
+      "fallback": "Unknown or absent capture preserves the native draw; a missing texture reaches WorldRenderer as null.",
+      "tests": ["test_material_admission_source_gpu.py", "test_capture_handoff.py"]
+    },
+    "normal-depth-seed": {
+      "owner": "NorthlightModelNormals::finishCaptures",
+      "code": {"src/proxy/model_normal_renderer.h": ["D3DFMT_D24S8,D3DMULTISAMPLE_NONE"], "src/proxy/model_normal_replay.inl": ["CreatePixelShader(kModelNormalDepthSeedShader", "SetVertexShaderConstantF(dirty.first"], "src/proxy/device_frame_effects.inl": ["modelNormals->finishCaptures(true,&seed,materialDepth)"]},
+      "source": "auto_bump_capture.hlsl",
+      "entries": {"ModelNormalDepthSeed": "Optional depth seed on the deferred capture path"},
+      "bindings": {"Diffuse": "scene-depth"},
+      "writes": {"native-normal-seed": "Private depth-stencil; not a world-depth write"},
+      "fallback": "If the seed is unavailable, retain the selective replay path.",
+      "tests": ["test_model_normal_depth_seed_gpu.py"]
+    },
+    "model-normals": {
+      "owner": "NorthlightModelNormals / NorthlightNativeModelNormals",
+      "code": {"src/proxy/renderer.cpp": ["void captureModelNormals("], "src/proxy/device_frame_effects.inl": ["world->setModelNormals(modelNormals?modelNormals->texture()"], "src/proxy/model_normal_native.h": ["return fallback(\"target-msaa\")"], "src/water/native_material_capture_patch.h": ["receiver?(alpha?kModelNormalCaptureShader:kModelNormalOpaqueShader)"]},
+      "source": "auto_bump_capture.hlsl",
+      "entries": {"ModelNormalCapture": "Native PS patch template for alpha-tested normals", "ModelNormalOpaque": "Native PS patch template for opaque normals"},
+      "reads": ["shared-draw", "native-normal-seed"],
+      "writes": {"model-normals": "Native MRT with a compatible target or deferred/replayed geometry"},
+      "fallback": "Unsupported target samples, pair or draw retain the original submission and replay; no model output lets the world reconstruct normals from scene data.",
+      "tests": ["test_model_normal_native_gpu.py", "test_model_normal_consumers.py", "test_model_normals_gpu.py"]
+    },
+    "ao-actor-prepare": {
+      "owner": "NorthlightContactAO::render / NorthlightAOActorStencil",
+      "source": "ao_actor.hlsl",
+      "code": {"src/proxy/contact_ao_pass.h": ["ext->SetTexture(4,actor.texture)", "ext->SetPixelShader(actor.prepare)"], "src/proxy/device_frame_effects.inl": ["if(texture&&aoActorShaders(alphaOnly))return"]},
+      "entries": {"AOActorPrepare": "Eligible high-quality HBAO+ or GTAO frame with a current actor mask"},
+      "bindings": {"AOActorMask": "actor-ao-mask"},
+      "writes": {"actor-ao-guide": "RT0 borrowed from the denoised AO destination"},
+      "fallback": "If the optional mask or shaders are unavailable, skip the preparation draw.",
+      "tests": ["test_ao_actor_gpu.py", "test_ao_blur.py"]
+    },
+    "contact-ao": {
+      "owner": "NorthlightContactAO::render",
+      "source": "effects.hlsl",
+      "code": {"src/proxy/contact_ao_pass.h": ["if (!contactAO)", "SetRenderTarget(0,aoRawSurface)", "SetPixelShader(linearHdr||bounce==0.f?contactShader:aoPS)"], "src/proxy/device_effect_resources.inl": ["aoContactShaders[aoQuality][aoMethod]"], "src/proxy/device_frame_effects.inl": ["NorthlightContactAO::render<CpuScope>"]},
+      "entries": {
+        "AO": "Legacy SDR bounce, with an alpha replacement draw for an enabled alternate method",
+        "AOOnly": "SSAO alpha-only variant", "HDAOOnly": "HDAO alpha-only", "HDAOOnlyMedium": "HDAO alpha-only Medium", "HDAOOnlyLow": "HDAO alpha-only Low",
+        "HBAOPlusOnly": "HBAO+ alpha-only", "HBAOPlusOnlyMedium": "HBAO+ alpha-only Medium", "HBAOPlusOnlyLow": "HBAO+ alpha-only Low",
+        "GTAOOnly": "GTAO alpha-only", "GTAOOnlyMedium": "GTAO alpha-only Medium", "GTAOOnlyLow": "GTAO alpha-only Low",
+        "ASSAOOnly": "ASSAO alpha-only", "ASSAOOnlyMedium": "ASSAO alpha-only Medium", "ASSAOOnlyLow": "ASSAO alpha-only Low",
+        "AOContactBloom": "SSAO with folded SDR contact bloom", "HDAOContactBloom": "HDAO with contact bloom", "HDAOContactBloomMedium": "HDAO with contact bloom Medium", "HDAOContactBloomLow": "HDAO with contact bloom Low",
+        "HBAOPlusContactBloom": "HBAO+ with contact bloom", "HBAOPlusContactBloomMedium": "HBAO+ with contact bloom Medium", "HBAOPlusContactBloomLow": "HBAO+ with contact bloom Low",
+        "GTAOContactBloom": "GTAO with contact bloom", "GTAOContactBloomMedium": "GTAO with contact bloom Medium", "GTAOContactBloomLow": "GTAO with contact bloom Low",
+        "ASSAOContactBloom": "ASSAO with contact bloom", "ASSAOContactBloomMedium": "ASSAO with contact bloom Medium", "ASSAOContactBloomLow": "ASSAO with contact bloom Low",
+        "HBAOActorOnly": "HBAO+ alpha-only with the actor guide", "GTAOActorOnly": "GTAO alpha-only with the actor guide",
+        "HBAOActorContactBloom": "HBAO+ and bloom with the actor guide", "GTAOActorContactBloom": "GTAO and bloom with the actor guide",
+        "ContactBloom": "AO disabled with a ready SDR bloom input"
+      },
+      "entry_sources": {"HBAOActorOnly": "ao_actor.hlsl", "GTAOActorOnly": "ao_actor.hlsl", "HBAOActorContactBloom": "ao_actor.hlsl", "GTAOActorContactBloom": "ao_actor.hlsl"},
+      "bindings": {"Ambient": "actor-ao-guide", "AOActorMask": "actor-ao-mask"},
+      "writes": {"screen-ao-raw": "RT0 with contact AO enabled", "screen-ao": "RT0 with ContactBloom or a standalone neutral clear"},
+      "fallback": "Folded HDR with ContactAO disabled uses the world's neutral texture. A failed world composite clears the legacy AO target before using it.",
+      "tests": ["test_ao_fold.py", "test_ao_blur.py", "test_neutral_ao_gpu.py"]
+    },
+    "contact-ao-blur": {
+      "owner": "NorthlightContactAO::render",
+      "source": "effects.hlsl",
+      "code": {"src/proxy/contact_ao_pass.h": ["bindBlurInputs();", "SetTexture(2,aoRaw)", "SetTexture(0,aoRaw)", "gpuProfile->mark(\"AOBlurSetup\")"]},
+      "entries": {"AOBlur": "Bilateral blur with water depth support", "AOBlurNoWater": "Optional blur when the current water mask is absent"},
+      "bindings": {"AmbientLinear": "screen-ao-raw", "Ambient": "screen-ao-raw"},
+      "writes": {"screen-ao": "RT0 denoised result on the actor guide allocation"},
+      "fallback": "Use the normal blur if the specialization is unavailable. Target or draw failure exits through the Device's saved-state boundary.",
+      "tests": ["test_ao_blur.py", "test_ao_submit_profile.py", "test_ao_pipeline_gpu.py"]
+    },
+    "world-normals": {
+      "owner": "NorthlightWorldNormalsPass::draw",
+      "code": {"src/world/world_renderer.h": ["const bool normalsProduceDistance=", "if(!worldNormals.draw("], "src/world/world_normals_pass.h": ["d->SetTexture(13,modelNormals)", "?normalsOnly_:shader_)"]},
+      "source": "world_normals.hlsl",
+      "entries": {"WorldNormals": "Lighting needs smoothed normals; RT1 is bound only when directional removal needs distance early. Also used if the optional one-output shader fails.", "WorldNormalsNoDistance": "Lighting without an early distance producer; optional shader admission"},
+      "writes": {"world-normals": "RT0", "current-distance": "RT1 when normalsProduceDistance"},
+      "fallback": "Missing model capture reconstructs from depth/scene; optional no-distance shader failure retains WorldNormals with RT1 detached.",
+      "tests": ["test_model_normal_consumers.py", "test_world_screen_effects_gpu.py"]
+    },
+    "fog-distance": {
+      "owner": "NorthlightWorldLightHistory::resolveDistance",
+      "code": {"src/world/world_light_history.h": ["\"fog distance target\"", "d->SetPixelShader(distanceShader_)", "NorthlightScreen::drawQuad(d,width,height),\"fog distance pass\"", "publish(view,false)"], "src/world/world_screen_lighting.h": ["static void bindDistanceOnly(", "d->SetTexture(12,neutralZero)"], "src/world/world_renderer.h": ["history.resolveDistance(d,historyView,requirements.distance", "screenLighting.bindDistanceOnly("]},
+      "entries": {"WorldDistance": "Fog-only or another distance demand while lighting is inactive"},
+      "writes": {"current-distance": "RT0 when requirements.distance and lighting is inactive"},
+      "fallback": "Absent distance demand skips the write. Reentering lighting revalidates the history domain.",
+      "tests": ["test_frame_requirements.py", "test_world_screen_effects_gpu.py"]
+    },
+    "static-caster-geometry": {
+      "owner": "WorldRenderer mesh publication / StaticCasters",
+      "code": {"src/world/world_renderer.h": ["void updateStaticCasters(", "bool drawStaticCasters("], "src/shadows/static_shadow_gpu.h": ["canInstance_=caps.MaxStreams>=2&&SUCCEEDED"]},
+      "writes": {"static-caster-mesh": "Resident terrain, world model and proven static instance ranges"},
+      "fallback": "Static caster submission can fall back to ordinary instances. Only current, successfully covered ranges may suppress a live shadow packet.",
+      "tests": ["test_static_shadow_coverage.py", "test_static_shadow_grouping.py", "test_live_terrain_gpu.py"]
+    },
+    "shadow-caster-admission": {
+      "owner": "WorldRenderer draw capture and replay preparation",
+      "code": {"src/world/world_renderer.h": ["NorthlightShadowShader::patch(shadowInput.data()", "shadowPrograms.createCapture(d,output", "captureShaders.emplace(shader,metadata)", "terrainBoundsCache.readMeshShared", "p->shadowSkinned=priority;p->shadowSelected"], "src/world/world_shadow_programs.h": ["NorthlightModelNormalSlice::shadowVertex(full.data()"], "src/shadows/shadow_replay_submit.h": ["bool submit("], "src/world/world_directional_replays.inl": ["bool runDirectionalReplays("], "src/world/world_point_replays.inl": ["static bool pointReplayBatchState("]},
+      "reads": ["shared-draw"],
+      "writes": {"live-terrain-casters": "Recognized current ADT ranges", "shadow-replay-packets": "Admitted caster geometry and captured pose", "caster-alpha": "Proven texture and material cutout state"},
+      "fallback": "Unknown bounds keep eligible draws in the conservative caster set. Incompatible pose, range or coverage prevents grouping. The native draw remains independent of replay admission.",
+      "tests": ["test_capture_handoff.py", "test_replay_draw_state.py", "test_point_replay_admission.py", "test_shadow_fixed_alpha_gpu.py"]
+    },
+    "cascade-static-depth": {
+      "owner": "WorldRenderer static cascade cache / StaticCasters",
+      "code": {"src/world/world_directional_cache_draw.inl": ["cache.bind(target,directionalMaps.cacheDepth())", "drawStaticCasters(cachedMatrix"], "src/shadows/directional_gpu_pass.h": ["class CachePass", "clear shadow cache rects"], "src/world/world_shadow_programs.h": ["vertex(d,kShadowCacheVSShader", "pixel(d,kStaticCasterPSShader", "CachePixel cachePixel(bool"], "src/shadows/static_shadow_gpu.h": ["CreateVertexShader(kStaticCasterVSShader"]},
+      "source": "static_shadow_effects.hlsl",
+      "entry_sources": {"ShadowCacheVS": "world_effects.hlsl"},
+      "entries": {"ShadowCacheVS": "Cached map geometry", "StaticCasterVS": "Single prepared instance", "StaticCasterInstancedVS": "Prepared instance groups with two supported streams", "StaticCasterPS": "General cached depth and cutout", "StaticCasterFastPS": "Optional fast textured depth", "StaticCasterOpaquePS": "Optional opaque depth without cutout sampler", "StaticCasterOpaqueFastPS": "Optional fast opaque depth"},
+      "bindings": {"Alpha": "caster-alpha"},
+      "reads": ["static-caster-mesh"],
+      "writes": {"cascade-static": "RT0; whole map or certified dirty rectangles"},
+      "fallback": "Optional fast/instanced variants retain general shaders. Restart or render full cache when dirty rectangles or incremental reuse cannot be proved.",
+      "tests": ["test_static_shadow_selection.py", "test_static_shadow_coverage.py", "test_shadow_transition_build.py"]
+    },
+    "cascade-live-depth": {
+      "owner": "NorthlightDirectionalShadow::GpuPass / WorldRenderer directional replay",
+      "code": {"src/world/world_directional_pass.inl": ["IDirect3DSurface9* dynamicSurface=", "gpuPass.beginCascade(dynamicSurface", "submitReplay(p.get(),replayPass", "runDirectionalReplays(directionalReplayCandidates", "replayProbe(rows,matrices[cascade],realLoopMs)", "WORLD directional replay rendererFrame="], "src/shadows/directional_gpu_pass.h": ["directional terrain cutoff", "live terrain shadow"], "src/world/world_shadow_programs.h": ["pixel(d,kShadowPSShader", "vertex(d,kShadowVSShader"], "src/world/world_directional_replays.inl": ["shadowPalette.submit(d,first"], "src/world/world_replay_probe_pass.h": ["class NorthlightWorldReplayProbePass", "SavedState save(d,&states)"]},
+      "entry_sources": {"LocalPaletteShadowVS": "local_light_effects.hlsl"},
+      "entries": {"ShadowVS": "Dynamic terrain and prepared positions", "ShadowPS": "Dynamic terrain and cached-mesh fallback depth", "ShadowReplayPS": "Directional replay depth with optional alpha sampling", "LocalPaletteShadowVS": "Shared current-pose palette instancing for admitted opaque casters"},
+      "bindings": {"Scene": "caster-alpha"},
+      "reads": ["static-caster-mesh", "live-terrain-casters", "shadow-replay-packets"],
+      "writes": {"cascade-dynamic": "RT0 scratch or the current dynamic transition target"},
+      "fallback": "Keep unsupported grouping on ordinary draws. The fixed-alpha route scopes native coverage. Near replay only yields casters to the actor map when actor coverage is proven.",
+      "tests": ["test_common_shadow_cascade_gpu.py", "test_live_terrain_gpu.py", "test_shadow_fixed_alpha_gpu.py", "test_replay_draw_state.py", "test_directional_gpu_pass.py"]
+    },
+    "cascade-union": {
+      "owner": "NorthlightWorldDirectionalTargets::merge",
+      "code": {"src/world/world_directional_pass.inl": ["unionShadow(directionalMaps.current(slot).surface"], "src/world/world_directional_targets.h": ["static bool merge(", "d->SetTexture(0,live);d->SetTexture(1,cached)"]},
+      "entries": {"ShadowUnion": "Minimum of current replay/dynamic depth and projected static or retained near-environment depth"},
+      "bindings": {"Scene": "cascade-dynamic", "Depth": "cascade-static"},
+      "binding_alternatives": {"Depth": {"cascade-near-environment": "Near slot with the terrain/environment split active"}},
+      "writes": {"cascade-near": "RT0 near slot, with optional near-environment intermediate", "cascade-far": "RT0 far slot"},
+      "fallback": "Without near split use static cache plus current dynamic depth directly. Publication follows successful draw and checks the slot projection.",
+      "tests": ["test_common_shadow_cascade_gpu.py", "test_shadow_transition_build.py"]
+    },
+    "cascade-near-environment-union": {
+      "owner": "NorthlightWorldDirectionalTargets::merge",
+      "code": {"src/world/world_directional_pass.inl": ["unionShadow(directionalMaps.nearEnvironment(source).surface"], "src/world/world_directional_targets.h": ["bool prepareNear(", "static bool merge("]},
+      "entries": {"ShadowUnion": "Optional first near union, immediately after dynamic terrain and before actor replay"},
+      "bindings": {"Scene": "cascade-dynamic", "Depth": "cascade-static"},
+      "writes": {"cascade-near-environment": "RT0; committed static plus current terrain"},
+      "fallback": "Without a valid environment allocation and reuse key, render dynamic terrain and replays in the ordinary cascade scratch.",
+      "tests": ["test_common_shadow_cascade_gpu.py", "test_shadow_transition_build.py"]
+    },
+    "cascade-history-copy": {
+      "owner": "WorldRenderer::preserveShadowStatic",
+      "code": {"src/world/world_shadow_transition.inl": ["bool preserveShadowStatic("], "src/world/world_shadow_transition.h": ["SetTexture(1,crop.cache)", "drawViewportQuad(d,1024,1024)"]},
+      "entries": {"ShadowUnion": "Copy prior static depth into the fade slot; s0 is neutral white"},
+      "bindings": {"Scene": "neutral-shadow", "Depth": "cascade-static"},
+      "writes": {"cascade-history": "RT0 previous static depth projected into the retained slot"},
+      "fallback": "Refused or failed history allocation keeps the ordinary no-fade shadow update.",
+      "tests": ["test_shadow_transition_build.py", "test_shadow_transition_gpu.py"]
+    },
+    "actor-map-depth": {
+      "owner": "NorthlightDirectionalShadow::GpuPass / WorldRenderer actor caster replay",
+      "code": {"src/world/world_directional_pass.inl": ["actorFrameOn[source])", "drawDirectionalActors(gpuPass,source,context.inverseView"], "src/world/world_directional_actor_draw.inl": ["gpuPass.beginActor(actorMaps.depth(source).surface)", "submitReplay(p.get(),actorPass", "runDirectionalReplays(actorReplays"]},
+      "entry_sources": {"LocalPaletteShadowVS": "local_light_effects.hlsl"},
+      "entries": {"ShadowReplayPS": "Replay packets redirected from the near cascade", "LocalPaletteShadowVS": "Shared current-pose palette instancing for admitted opaque actor casters"},
+      "bindings": {"Scene": "caster-alpha"},
+      "reads": ["shadow-replay-packets"],
+      "writes": {"actor-shadow-depth": "RT0 source slot with directional D24S8"},
+      "fallback": "Casters outside the actor inset or without the required coverage proof stay in the near map. Held bounds are used only under the actor hold contract.",
+      "tests": ["test_actor_shadow_map.py", "test_actor_shadow_selection.py", "test_shadow_fixed_alpha_gpu.py", "test_directional_gpu_pass.py"]
+    },
+    "actor-tiles-first": {
+      "owner": "NorthlightWorldActorShadows::buildTiles",
+      "code": {"src/world/world_actor_shadows.h": ["SetRenderTarget(0,tileScratch_.surface)", "SetTexture(12,depth(source).texture);d->SetPixelShaderConstantF(72"], "src/world/world_soft_shadows.inl": ["actorMaps.buildTiles(d,actorPass"]},
+      "entries": {"ActorTiles": "First 4x4 minimum reduction"},
+      "bindings": {"ActorMap": "actor-shadow-depth"},
+      "writes": {"actor-tiles-mid": "RT0 intermediate"},
+      "fallback": "Skip when no current actor map is admitted.",
+      "tests": ["test_actor_shadow_map.py", "test_fog_actor_tiles.py"]
+    },
+    "actor-tiles-final": {
+      "owner": "NorthlightWorldActorShadows::buildTiles",
+      "code": {"src/world/world_actor_shadows.h": ["SetRenderTarget(0,tiles(source).surface)", "SetTexture(12,tileScratch_.texture)", "if(wide)d->SetPixelShader(tilesWide_)"]},
+      "entries": {"ActorTiles": "Second 4x4 minimum reduction", "ActorTilesWide": "Second step widens the footprint when the tiled fog range and optional shaders are ready"},
+      "bindings": {"ActorMap": "actor-tiles-mid"},
+      "writes": {"actor-tiles": "RT0 source tile texture"},
+      "fallback": "Ordinary tile reduction when fog or extended shader admission fails.",
+      "tests": ["test_actor_shadow_map.py", "test_fog_actor_tiles.py"]
+    },
+    "actor-visibility-resolve": {
+      "owner": "NorthlightWorldActorShadows::resolveVisibility",
+      "code": {"src/world/world_soft_shadows.inl": ["actorMaps.resolveVisibility(d,w/2,h/2,actorPass", "if(!softResolved&&!resolveActorVisibility())"], "src/world/world_actor_shadows.h": ["SetTexture(12,depth(source).texture);d->SetTexture(10,tiles(source).texture)", "SetPixelShader(soft?filter_:uniform_)"]},
+      "entries": {"ActorShadow": "Separate soft character filter when shared resolution is unavailable or fails", "ActorShadowUniform": "Separate ordinary character filter"},
+      "writes": {"actor-visibility": "RT0 sun or moon channel"},
+      "fallback": "A proven shared resolve replaces this mask. Without current actor inputs, ordinary lighting binds neutral white.",
+      "tests": ["test_actor_shadow_map.py", "test_shared_directional_gpu.py"]
+    },
+    "cascade-visibility-resolve": {
+      "owner": "NorthlightWorldDirectionalVisibility",
+      "code": {"src/world/world_renderer.h": ["if(!resolveDirectionalVisibility("], "src/world/world_directional_visibility.h": ["CreatePixelShader(kUnifiedDirectionalShadowShader", "SetRenderTarget(0,surface_)", "SetPixelShader(filter(input.shared))", "SetPixelShader(input.previous)", "SetTexture(12,item.actorDepth)"], "src/world/world_shadow_transition.h": ["CreatePixelShader(kDirectionalShadowTransitionCurrentShader", "SetTexture(1,crop.cache)", "SetTexture(6+cascade,fade?f.history:white)"], "src/world/world_soft_shadows.inl": ["directionalVisibility.resolve(d,input,textures,bindSource", "bindShadowTransition(source,previous)", "WORLD_SHADOW_RESOLVE rendererFrame="]},
+      "entry_sources": {"DirectionalShadowTransitionCurrent": "shadow_transition.hlsl", "DirectionalShadowTransitionPrevious": "shadow_transition.hlsl"},
+      "entries": {"DirectionalShadow": "Optional directional soft visibility", "UnifiedDirectionalShadow": "Shared directional and actor resolve when maps and shader budget are ready and no transition is active", "DirectionalShadowTransitionCurrent": "Current contribution during a live directional fade", "DirectionalShadowTransitionPrevious": "Add previous static visibility with current dynamic casters on a fading source"},
+      "writes": {"directional-visibility": "RT0; RGBA16F with the selected source channel and shared actor/world route"},
+      "fallback": "Ordinary map sampling on soft resolve failure. Failed shared resolution restores the separate actor visibility mask. Failed transition resolution releases the optional history.",
+      "tests": ["test_shared_directional_gpu.py", "test_shadow_transition_build.py", "test_shadow_transition_gpu.py"]
+    },
+    "point-face-depth": {
+      "owner": "NorthlightPointShadow::FacePass / WorldRenderer::renderPointShadow",
+      "code": {"src/world/world_point_rendering.inl": ["bool renderPointShadow(", "facePass.beginStatic(", "facePass.beginDynamic(", "pointMixedFaces.store("], "src/shadows/point_shadow_face_pass.h": ["cube PS", "cube dynamic target", "bool drawMeshRanges(", "bool drawLiveTerrain("], "src/shadows/point_mixed_face_cache.h": ["class MixedFaceCache", "proof_.match("], "src/world/world_point_targets.h": ["CreateCubeTexture(Size,1", "CreateDepthStencilSurface(Size,Size"], "src/world/world_point_replays.inl": ["shadowPalette.submit(d,p"], "src/shadows/shadow_palette_pass.h": ["CreateVertexShader(kLocalPaletteShadowVSShader"]},
+      "source": "local_light_effects.hlsl",
+      "entries": {"LocalShadowVS": "Static and uploaded point geometry transform", "LocalPaletteShadowVS": "Admitted current-pose palette instancing", "LocalShadowPS": "Range-limited point caster depth with optional cutout"},
+      "bindings": {"LocalAlpha": "caster-alpha"},
+      "reads": ["static-caster-mesh", "live-terrain-casters", "shadow-replay-packets"],
+      "writes": {"point-static-face": "RT0 static cache refresh", "point-dynamic-face": "RT0 scratch for explicit union", "point-cube": "RT0 direct min-blend or copied-static path with current dynamic casters"},
+      "fallback": "Incompatible caster state uses per-packet replay. When direct blending/copy is unavailable use scratch and explicit union. Keep only a compatible committed cube on budget failure.",
+      "tests": ["test_point_palette_gpu.py", "test_point_terrain_coverage_gpu.py", "test_point_shadow_schedule.py", "test_point_replay_admission.py", "test_point_face_pass.py"]
+    },
+    "point-face-union": {
+      "owner": "NorthlightPointShadow::FacePass / NorthlightWorldPointTargets",
+      "code": {"src/world/world_point_rendering.inl": ["facePass.resolve(staticOnly"], "src/shadows/point_shadow_face_pass.h": ["SetTexture(0,staticOnly?cached:scratch)", "cube union shader"], "src/world/point_pipeline_warmup.h": ["SetPixelShader(shaders.unionPixel)"], "src/shadows/point_cube_cache.h": ["CubeResolution=256"]},
+      "entries": {"ShadowUnion": "Explicit point face min-union, or static-only copy when both samplers refer to the static face"},
+      "bindings": {"Scene": "point-dynamic-face", "Depth": "point-static-face"},
+      "binding_alternatives": {"Scene": {"point-static-face": "Static-only copy passes the static face on both slots"}},
+      "writes": {"point-cube": "RT0 face; consumers see the cube only after a successful publication"},
+      "fallback": "On supported direct min-blend or copied-static draws the explicit union can be bypassed.",
+      "tests": ["test_point_shadow_visibility_gpu.py", "test_point_shadow_spatial_gpu.py", "test_point_shadow_schedule.py", "test_point_face_pass.py"]
+    },
+    "flash-caster-depth": {
+      "owner": "NorthlightWorldFlashShadows::render",
+      "code": {"src/world/world_flash_shadows.h": ["SetRenderTarget(0,s.surface[cascade])", "SetDepthStencilSurface(pipeline.depth)", "s.ready=renderFlashMap(", "class CasterCommands"], "src/world/world_flash_rendering.inl": ["flashShadows.render(d,slot++", "drawFlashCasters(matrix,withReplays,casters)"]},
+      "entries": {"ShadowPS": "Opaque and cutout static casters", "ShadowReplayPS": "Deferred current-pose actor casters"},
+      "bindings": {"Scene": "caster-alpha"},
+      "reads": ["static-caster-mesh", "live-terrain-casters", "shadow-replay-packets"],
+      "writes": {"flash-near-map": "First RT0 cascade with borrowed directional depth", "flash-far-map": "Second RT0 cascade; both maps must finish before publication"},
+      "fallback": "A missing current capture or incomplete map suppresses the optional shadow correction.",
+      "tests": ["test_flash_shadow_gpu.py", "test_near_shadow_interval_gpu.py"]
+    },
+    "flash-shadow-correction": {
+      "owner": "NorthlightWorldFlashShadows::drawLighting",
+      "code": {"src/world/world_flash_shadows.h": ["SetPixelShader(flashShadowPS)", "SetTexture(2,s.map[0])", "SetTexture(3,s.map[1])"], "src/world/world_local_lighting.inl": ["direct,[&]{renderFlashLighting();},points"], "src/world/world_local_lighting.h": ["if(in.positional)flash();"]},
+      "entries": {"FlashShadow": "Subtract occluded radiance from the already lit receiver"},
+      "bindings": {"ShadowNear": "flash-near-map", "ShadowFar": "flash-far-map"},
+      "writes": {"local-light": "RT0 correction after the direct local-light pass"},
+      "fallback": "Retain direct flash light if the optional shadow pair is unavailable.",
+      "tests": ["test_flash_shadow_gpu.py"]
+    },
+    "world-local-lighting": {
+      "owner": "NorthlightWorldLocalLighting",
+      "code": {"src/world/world_renderer.h": ["if(!renderLocalLighting(localInputs"], "src/world/world_local_lighting.inl": ["localLighting.drawDirect(", "renderFlashLighting();"], "src/world/world_local_lighting.h": ["d->SetPixelShader(localDirectPS);d->SetRenderState", "localDirectSinglePS?localDirectSinglePS:localDirectPS"], "src/world/world_local_scissor.h": ["bool apply(", "bool applySphere("], "src/world/world_point_rendering.inl": ["pointLighting.draw(d,pass"], "src/world/world_point_lighting.h": ["SetTexture(1,in.cube)", "SetPixelShader(soft_)", "scissor.applySphere("]},
+      "entry_sources": {"LocalLighting": "local_light_effects.hlsl", "LocalLightingPcss": "local_light_effects.hlsl"},
+      "entries": {"LocalLighting": "Additive local receiver with a committed point cube; ordinary filtering", "LocalLightingPcss": "Optional PCSS receiver with the same cube and receiver inputs", "LocalDirect": "Unshadowed direct-light packet", "LocalDirect1": "Optional one-light specialization", "LocalDirect16": "Available large direct-light packet", "LocalFlash": "Direct batch with a flash source and its current emission"},
+      "bindings": {"LocalDepth": "scene-depth", "LocalCube": "point-cube", "LocalWater": "water-mask", "LocalNormals": "world-normals", "LocalBaseline": "baseline-light"},
+      "writes": {"local-light": "Additive half-resolution RT0 after directional temporal reads"},
+      "fallback": "PCSS shader failure retains ordinary filtering. Unshadowed batching and neutral local lighting remain available according to local admission and frame demand.",
+      "tests": ["test_local_light_batches.py", "test_local_direct_batches_gpu.py", "test_local_shadow_receiver_gpu.py", "test_pcss_filters_gpu.py"]
+    },
+    "world-lighting": {
+      "owner": "NorthlightWorldScreenLighting::draw",
+      "code": {"src/world/world_renderer.h": ["if(!renderCelestialLighting(", "screenLighting.bindSource(d,bindings,", "screenLighting.prepareFrame(d,lightingFrame,"], "src/world/world_screen_lighting.inl": ["return screenLighting.draw(", "directionalVisibility.lighting(visibility.sharedResolved)", "probeAtlas.localVisibility(),probeAtlas.previous()"], "src/world/world_screen_lighting.h": ["static void bindFrameBank(", "d->SetPixelShaderConstantF(115,shadowTuning,1)", "static void bindSource(", "bool prepareFrame(", "d->SetPixelShaderConstantF(78,occlusionInfo,1)", "const bool unshadowedLighting=", "const bool mergedGI=", "first?baseline_.surface:nullptr"], "src/world/world_probe_atlas.h": ["bool create(IDirect3DDevice9*", "bool upload(const std::string&", "bool uploadVisibility("]},
+      "entries": {"WorldLighting": "Ordinary directional route", "WorldLightingSoft": "Soft visibility ready", "WorldLightingShared": "Shared actor/world soft visibility ready", "WorldLightingUnshadowed": "Directional shadows off and optional shader created", "WorldLightingUnshadowedGI": "Last source on optional unshadowed fused GI route without packed cascade reads", "WorldGI": "Separate GI for GI demand without fused GI"},
+      "writes": {"directional-light": "RT0; accumulates directional and admitted GI", "baseline-light": "RT1 on the first directional source", "prelit-daylight": "Optional RT2 during directional lighting and RT1 during separate GI"},
+      "fallback": "Optional shader or visibility failure retains the ordinary shader with appropriate masks. Incomplete probes retain the analytic ambient path.",
+      "tests": ["test_world_screen_effects_gpu.py", "test_world_lighting_gi_gpu.py"]
+    },
+    "removal-smooth": {
+      "owner": "NorthlightWorldLightHistory::resolveLighting",
+      "code": {"src/world/world_light_history.h": ["\"removal smoothing pass\"", "d->SetTexture(9,removalDrawn?in.smoothLight:in.rawLight)"]},
+      "entries": {"RemovalSmooth": "Separate filter when removal is required and merged removal is unavailable or diagnostic capture needs the intermediate"},
+      "writes": {"smoothed-light": "RT0 borrowed from fogBlurred before fog"},
+      "fallback": "Temporal reads raw light without removal, or performs removal in the merged route.",
+      "tests": ["test_world_screen_effects_gpu.py"]
+    },
+    "temporal-light": {
+      "owner": "NorthlightWorldLightHistory::resolveLighting",
+      "code": {"src/world/world_light_history.h": ["d->SetPixelShader(mergedRemoval?mergedShader_:lightingShader_)", "in.distanceFromNormals?nullptr:pending().distance.surface", "caps.MaxPixelShader30InstructionSlots>=kTemporalLightMergedZeroWeightShaderSlots", "CreatePixelShader(kTemporalLightMergedShader", "NorthlightScreen::drawQuad(d,width,height),\"temporal light pass\"", "publish(view,true)"], "src/world/world_renderer.h": ["history.resolveLighting(d,historyView,temporalInputs"]},
+      "entries": {"TemporalLight": "Standard temporal pass with smoothed or raw current light and a depth-gated GI crease filter", "TemporalLightMerged": "Optional fused removal and temporal pass", "TemporalLightMergedZeroWeight": "Optional backend route skips reads with zero weight"},
+      "writes": {"temporal-light": "Current RT0 ping-pong", "current-distance": "RT1 when WorldNormals did not write distance"},
+      "fallback": "Invalid history gets zero weight; optional fused creation refusal retains the separate filter and ordinary temporal pass.",
+      "tests": ["test_world_screen_effects_gpu.py", "test_world_temporal_merge_gpu.py", "test_world_lighting_gi_gpu.py", "test_fog_temporal_wiring.py"]
+    },
+    "hdr-decode": {
+      "owner": "NorthlightHdr::Frame::prepareLegacy",
+      "code": {"src/proxy/hdr_frame.h": ["HRESULT prepareLegacy(", "device->SetPixelShader(decode)"], "src/proxy/device_frame_effects.inl": ["const bool inlineHdrBase="]},
+      "source": "hdr_effects.hlsl",
+      "entries": {"HdrDecodeWorld": "Legacy-to-linear HDR base with optional captured sky and depth"},
+      "bindings": {"HdrScene": "native-scene", "HdrAux": "scene-depth", "HdrExtra": "hdr-sky"},
+      "writes": {"hdr-linear-base": "Prepared float target; inline path instead shares native scene"},
+      "fallback": "Inline sampling for a proven encoded base; failed ancillary HDR work falls back through Device HDR boundary handling.",
+      "tests": ["test_world_screen_effects_gpu.py", "verify_hdr_frame_gpu.py"]
+    },
+    "fog-world-inputs": {
+      "owner": "NorthlightWorldFogField for regional textures, NorthlightRegionalFogGpu for cloud noise and NorthlightWorldMoonFloorFog for floor inputs",
+      "code": {"src/world/world_renderer.h": ["bool ensureCloudNoise("], "src/world/world_regional_fog_gpu.h": ["bool ensureNoise(", "D3DFMT_L8,D3DPOOL_MANAGED"], "src/world/world_moon_floor_fog.h": ["bool ensureMoonFloor("], "src/world/world_atmosphere_frame.inl": ["const bool cloudCandidate=", "localLights.fog[i][0]=sigmaAt("], "src/world/world_frame_constants.inl": ["skyTransmittanceFrame=cf.active?"], "src/world/world_atmospheric_fog.inl": ["regionalFog.bindVolumeInputs(d)"], "src/world/world_fog_field.h": ["d->SetTexture(13,texture_)", "d->SetTexture(12,heightTexture())"], "src/world/world_composite.h": ["d->SetTexture(13,in.restoreRegionalFog)"]},
+      "reads": ["weather-state"],
+      "writes": {"fog-regional-field": "Current region's managed fog field", "fog-height-bounds": "Optional supported height interval", "fog-direct-floor": "Same field's prepared moon floor corners", "fog-cloud-noise": "Ready noise volume", "sky-fog-transmittance": "Current CPU atmospheric attenuation for the legacy veil"},
+      "fallback": "Missing height support keeps the general interval. Noise or moon-floor failure uses the ordinary eligible fog path.",
+      "tests": ["test_fog_clouds_wiring.py", "test_moon_floor_gpu.py", "test_fog_casters_wiring.py"]
+    },
+    "fog-raymarch": {
+      "owner": "NorthlightAtmosphereCommands and the selected fog shader owners",
+      "code": {"src/world/world_renderer.h": ["IDirect3DPixelShader9* fogVolumeShader(", "HRESULT drawFogVolume("], "src/world/world_regional_fog_gpu.h": ["void createOptional(", "IDirect3DPixelShader9* volumeShader("], "src/world/world_atmospheric_fog.inl": ["foreverFog.select(", "celestial volumetric raymarch"], "src/world/world_atmosphere_commands.h": ["void bindActor(", "void bindImportedVolume(", "d->SetPixelShaderConstantF(116,constants,38)"], "src/world/world_forever_fog_shaders.h": ["void createRaymarchVariants(", "Selection select("], "src/world/world_shadow_transition.inl": ["bool shadowVolumeTransitionActive("]},
+      "entry_sources": {"WorldFogTransition": "shadow_transition.hlsl", "WorldFogActorTransition": "shadow_transition.hlsl", "WorldFogActorTiledTransition": "shadow_transition.hlsl", "MoonFloorFogTransition": "shadow_transition.hlsl", "MoonFloorFogActorTransition": "shadow_transition.hlsl", "MoonFloorFogActorTiledTransition": "shadow_transition.hlsl", "ForeverFogTransition": "shadow_transition.hlsl", "ForeverFogNoNoiseTransition": "shadow_transition.hlsl", "ForeverFogActorTransition": "shadow_transition.hlsl", "ForeverFogActorNoNoiseTransition": "shadow_transition.hlsl"},
+      "entries": {
+        "WorldFog": "Regional field and far cascade", "WorldFogAmbient": "God rays disabled or a provably ambient source", "WorldFogActor": "Regional with current actor depth", "WorldFogActorTiled": "Regional with current actor depth and admitted tiles",
+        "WorldFogTransition": "Regional during a directional fade", "WorldFogActorTransition": "Directional fade with actor depth", "WorldFogActorTiledTransition": "Directional fade with actor depth and tiles",
+        "MoonFloorFog": "Current far moon map and matching regional floor", "MoonFloorFogActor": "Moon floor and actor depth", "MoonFloorFogActorTiled": "Moon floor and actor tiles",
+        "MoonFloorFogTransition": "Moon floor with directional fade", "MoonFloorFogActorTransition": "Moon floor fade with actor depth", "MoonFloorFogActorTiledTransition": "Moon floor fade with actor tiles",
+        "ForeverFog": "Imported atmosphere raymarch when atlas unavailable", "ForeverFogNoNoise": "Quiet imported raymarch", "ForeverFogActor": "Imported raymarch with actor depth", "ForeverFogActorNoNoise": "Quiet imported raymarch with actor depth",
+        "ForeverFogActorTiled": "Imported tiled actor raymarch outside a fade", "ForeverFogActorTiledNoNoise": "Quiet imported tiled actor raymarch",
+        "ForeverFogTransition": "Imported raymarch during a directional fade", "ForeverFogNoNoiseTransition": "Quiet imported fade", "ForeverFogActorTransition": "Imported fade with actor depth", "ForeverFogActorNoNoiseTransition": "Quiet imported fade with actor depth"
+      },
+      "writes": {"fog-raw": "RT0; first source writes transmittance, additional sources add RGB"},
+      "fallback": "Atlas refusal keeps the imported raymarch. Actor or tile refusal uses the applicable simpler shader, and optional moon-floor or quiet shader failure keeps the baseline route.",
+      "tests": ["test_fog_ambient.py", "test_fog_casters_wiring.py", "test_moon_floor_gpu.py", "test_fog_volume_admission.py"]
+    },
+    "fog-cloud-overlay": {
+      "owner": "NorthlightAtmosphereCommands::drawClouds",
+      "code": {"src/world/world_frame_constants.inl": ["cf.active=cf.active&&effects.fog"], "src/world/world_atmospheric_fog.inl": ["regionalFogGpu.ambientClouds():cloudFade?", "commands.endClouds(c[25],lastFogFirst"], "src/world/world_atmosphere_commands.h": ["HRESULT drawClouds(", "d->SetPixelShaderConstantF(25,fogParameters,2)", "restoreNoiseSlot();"]},
+      "entry_sources": {"FogCloudsTransition": "shadow_transition.hlsl", "FogCloudsActorTransition": "shadow_transition.hlsl", "FogCloudsActorTiledTransition": "shadow_transition.hlsl"},
+      "entries": {"FogClouds": "Current cloud field and far visibility", "FogCloudsAmbient": "Ambient cloud route with god rays off", "FogCloudsActor": "Clouds with current actor depth", "FogCloudsActorTiled": "Clouds with usable current actor tile map", "FogCloudsTransition": "Cloud fade over current and prior static cascades", "FogCloudsActorTransition": "Cloud fade with actor depth", "FogCloudsActorTiledTransition": "Cloud fade with actor tiles"},
+      "writes": {"fog-raw": "RT0 companion pass; respects the source blend order"},
+      "fallback": "Inactive weather profile, refused noise or absent cloud shader skips the cloud overlay.",
+      "tests": ["test_fog_clouds_wiring.py", "test_fog_actor_tiles.py", "test_shadow_transition_build.py"]
+    },
+    "fog-volume-inject": {
+      "owner": "NorthlightFogVolume::injection",
+      "code": {"src/sky/fog_volume.h": ["bool injection(", "kVolumeInjectShader,kVolumeInjectQuietShader", "if(noisy)"], "src/world/world_atmospheric_fog.inl": ["volumeVariant[source]=", "fogVolume.injection(d,volumeShader"]},
+      "source": "fog_volume.hlsl",
+      "entries": {"VolumeInject": "Noisy imported source", "VolumeInjectQuiet": "Noise-free imported source", "VolumeInjectActor": "Noisy imported source with actor depth", "VolumeInjectActorQuiet": "Quiet imported actor source", "VolumeInjectAmbient": "Noisy ambient source while god rays are disabled", "VolumeInjectAmbientQuiet": "Quiet ambient source", "VolumeInjectTransition": "Noisy directional fade", "VolumeInjectQuietTransition": "Quiet fade", "VolumeInjectActorTransition": "Noisy actor fade", "VolumeInjectActorQuietTransition": "Quiet actor fade"},
+      "writes": {"fog-volume-raw": "Atlas RT0; noisy route uses two samples per cell"},
+      "fallback": "Insufficient size, shader slots or resource admission retains the imported raymarch. Unchanged settled input can skip injection.",
+      "tests": ["test_fog_volume_build.py", "test_fog_volume_admission.py", "test_fog_volume_gpu.py"]
+    },
+    "fog-volume-temporal": {
+      "owner": "NorthlightFogVolume::integrate",
+      "code": {"src/sky/fog_volume.h": ["cacheReady=pass[2]==0", "history=input", "SetTexture(2,texture[history])"]},
+      "source": "fog_volume.hlsl",
+      "entries": {"VolumeTemporal": "Valid history with nonzero weight"},
+      "bindings": {"VolumeInput": "fog-volume-raw", "VolumeHistory": "fog-volume-previous"},
+      "writes": {"fog-volume-history": "Disjoint atlas; zero weight promotes the raw allocation directly"},
+      "fallback": "A partially written integration sequence is invalidated before reuse.",
+      "tests": ["test_fog_volume_build.py", "test_fog_volume_gpu.py"]
+    },
+    "fog-volume-prefix": {
+      "owner": "NorthlightFogVolume::integrate",
+      "code": {"src/sky/fog_volume.h": ["for(unsigned step=0;step<7;++step)", "d->SetPixelShader(prefix)", "result=source;valid=true"]},
+      "source": "fog_volume.hlsl",
+      "entries": {"VolumePrefix": "Initialize optical integral, then accumulate across six depth strides"},
+      "bindings": {"VolumeInput": "fog-volume-history"},
+      "binding_alternatives": {"VolumeInput": {"fog-volume-prefix": "Subsequent scan steps read the prior step from the other scratch atlas"}},
+      "writes": {"fog-volume-prefix": "Rotating scratch atlases; publish the last result only"},
+      "fallback": "A valid settled result is reusable until projection, lighting, field or noise conditions change.",
+      "tests": ["test_fog_volume_build.py", "test_fog_volume_gpu.py"]
+    },
+    "fog-volume-resolve": {
+      "owner": "NorthlightFogVolume::composite",
+      "code": {"src/sky/fog_volume.h": ["bool composite(", "SetTexture(0,texture[result]);d->SetPixelShader(resolve)"], "src/world/world_atmospheric_fog.inl": ["fogVolume.composite(d,fogScreen.raw().surface"]},
+      "source": "fog_volume.hlsl",
+      "entries": {"VolumeResolve": "Sample the integrated volume at scene or water receiver depth"},
+      "bindings": {"VolumeInput": "fog-volume-prefix"},
+      "writes": {"fog-raw": "Half-resolution RT0"},
+      "fallback": "Missing atlas admission selects the direct raymarch before rendering.",
+      "tests": ["test_fog_volume_gpu.py", "validate_water_fog_endpoint_gpu.py"]
+    },
+    "fog-screen-temporal": {
+      "owner": "NorthlightFogScreen::resolveHistory",
+      "code": {"src/world/world_fog_screen.h": ["bool resolveHistory(", "d->SetPixelShader(temporalShader_)", "std::swap(scratch_,history_)", "neutral fog history clear"], "src/world/world_atmospheric_fog.inl": ["fogScreen.resolveHistory(d,fogHistoryInput"]},
+      "entries": {"FogTemporal": "Reproject and clamp the direct atmospheric path; imported atlas history is separate"},
+      "bindings": {"FogBuffer": "fog-raw", "FogHistory": "fog-previous"},
+      "writes": {"fog-current-history": "Current fog after the successful texture and surface swap"},
+      "fallback": "Invalid reprojection gets zero weight. Inactive fog retains neutral history and the atlas path bypasses this pass.",
+      "tests": ["test_fog_temporal_wiring.py", "test_fog_temporal_disocclusion_gpu.py"]
+    },
+    "fog-blur-horizontal": {
+      "owner": "NorthlightFogScreen::blur",
+      "code": {"src/world/world_fog_screen.h": ["volume blur horizontal", "d->SetTexture(15,currentDistance)"], "src/world/world_atmospheric_fog.inl": ["fogScreen.blur(d,w/2,h/2,in.distance?history.produced().distance.texture"]},
+      "entries": {"FogBlur": "Horizontal depth-aware blur"},
+      "bindings": {"FogBuffer": "fog-raw"},
+      "binding_alternatives": {"FogBuffer": {"fog-current-history": "When screen temporal published a current result"}},
+      "writes": {"fog-horizontal": "One horizontal filtered intermediate"},
+      "fallback": "Skip both blur draws for neutral fog.",
+      "tests": ["test_fog_temporal_wiring.py", "test_fog_volume_gpu.py"]
+    },
+    "fog-blur-vertical": {
+      "owner": "NorthlightFogScreen::blur",
+      "code": {"src/world/world_fog_screen.h": ["volume blur vertical", "d->SetRenderTarget(0,final(resolved).surface)"]},
+      "entries": {"FogBlur": "Vertical depth-aware blur reads the horizontal result"},
+      "bindings": {"FogBuffer": "fog-horizontal"},
+      "writes": {"fog-color": "Current filtered fog"},
+      "fallback": "Neutral fog is available without running the blur.",
+      "tests": ["test_fog_temporal_wiring.py", "test_fog_volume_gpu.py"]
+    },
+    "fog-local-accumulate": {
+      "owner": "NorthlightWorldLocalLighting::drawFog",
+      "code": {"src/world/world_atmospheric_fog.inl": ["!renderLocalFog(w,h,finalFog.surface"], "src/world/world_local_lighting.inl": ["const auto& scratch=history.pending().light"], "src/world/world_local_lighting.h": ["d->SetPixelShader(localFogPS)"]},
+      "entries": {"LocalFog": "Analytic lamp glow with nonzero extinction and admitted scissor"},
+      "writes": {"fog-lamp-accum": "RT0 accumulates batches without using atmospheric history"},
+      "fallback": "Zero extinction or an entirely clipped set skips accumulation and combine.",
+      "tests": ["test_local_fog_batching.py", "test_local_fog_gpu.py"]
+    },
+    "fog-local-combine": {
+      "owner": "NorthlightWorldLocalLighting::drawFog",
+      "code": {"src/world/world_local_lighting.h": ["d->SetPixelShader(localFogCombinePS)", "d->SetTexture(9,localFogAccum)"]},
+      "entries": {"LocalFogCombine": "Cap the sum once over the union, then add RGB to the filtered atmospheric target"},
+      "bindings": {"FogBuffer": "fog-lamp-accum"},
+      "reads": ["fog-color"],
+      "writes": {"fog-color": "In-place additive blend, with atmospheric alpha preserved"},
+      "fallback": "Without local fog, the filtered atmospheric target is final.",
+      "tests": ["test_local_fog_batching.py", "test_local_fog_gpu.py"]
+    },
+    "water-draw": {
+      "owner": "Device::captureWater / NorthlightWaterRenderer",
+      "code": {"src/proxy/renderer.cpp": ["void captureWater(", "HRESULT waterMrtDraw("], "src/water/water_renderer.h": ["NorthlightWaterShaderPatch::patchMrt(", "bool beginMrt(", "if(FAILED(d->SetRenderTarget(2,compact.coverageTarget())))", "void endMrt("]},
+      "reads": ["native-world-depth"],
+      "writes": {"water-compact-distance": "RT1 on the proven compact path", "water-compact-coverage": "RT2 on the compact multisampled path", "water-legacy-mrt": "RT1 on the ordinary MRT route", "water-mask": "Private second draw for the refused MRT route"},
+      "fallback": "Patched client shaders require registration and known target/blend/fog state. Restore the original shaders and continue with a second draw on refusal.",
+      "tests": ["test_ui_water_boundary.py", "test_water_mrt_wiring.py", "test_water_distance_gpu.py"]
+    },
+    "water-legacy-resolve": {
+      "owner": "NorthlightWaterRenderer::resolveMask",
+      "code": {"src/water/water_renderer.h": ["bool resolveMask(", "if(twin){const HRESULT hr=d->StretchRect(twin", "d->SetPixelShader(resolvePS)", "IDirect3DTexture9* maskTextureForDepth("]},
+      "reads": ["water-legacy-mrt"],
+      "writes": {"water-mask": "Decode resolved legacy target, preserving valid private fallback pixels"},
+      "fallback": "A failed resolve does not publish MRT data. Consumers only accept a mask for the current depth range.",
+      "tests": ["test_water_mrt_wiring.py", "test_water_distance_gpu.py", "validate_water_fog_endpoint_gpu.py"]
+    },
+    "water-compact-correct": {
+      "owner": "NorthlightWaterDistanceMask::resolve",
+      "code": {"src/water/water_distance_mask.h": ["device->StretchRect(distanceMS,nullptr,resolved", "D3DBLEND_DESTCOLOR", "ms?mergeMS:mergeSingle"], "src/water/water_renderer.h": ["compact.resolve(width,height,captured?maskSurface:nullptr", "compact.result()"]},
+      "source": "water_distance.hlsl",
+      "entries": {"WaterCorrectDistance": "Normalize the compact averaged distance using resolved coverage and destination blending"},
+      "bindings": {"CoverageOrDistance": "water-compact-coverage"},
+      "reads": ["water-compact-distance"],
+      "writes": {"water-mask": "Aliases compact distance. The single-sample path publishes it directly without a correction draw."},
+      "fallback": "Failed correction cannot publish a compact result.",
+      "tests": ["test_water_distance_gpu.py", "validate_water_fog_endpoint_gpu.py"]
+    },
+    "water-compact-merge": {
+      "owner": "NorthlightWaterDistanceMask::resolve",
+      "code": {"src/water/water_distance_mask.h": ["device->SetTexture(0,distanceMS?coverage:distance)", "mixedTarget&&distanceMS&&SUCCEEDED(hr)", "mixedTarget?(distanceMS?mergeMS:mergeSingle):correct"]},
+      "source": "water_distance.hlsl",
+      "entries": {"WaterMergeDistanceMS": "Merge resolved compact coverage and distance into the existing fallback image", "WaterMergeDistance": "Merge single-sample compact distance into the fallback image"},
+      "bindings": {"CoverageOrDistance": "water-compact-distance", "ResolvedDistance": "water-compact-distance"},
+      "entry_bindings": {"WaterMergeDistanceMS": {"CoverageOrDistance": "water-compact-coverage"}},
+      "writes": {"water-mask": "RT0 mixed mask; uncovered pixels keep the previous fallback draw"},
+      "fallback": "No compact correction or data is published after a failed mixed resolve.",
+      "tests": ["test_water_distance_gpu.py", "validate_water_fog_endpoint_gpu.py"]
+    },
+    "native-weather": {
+      "owner": "Device native weather observation",
+      "code": {"src/proxy/device_draw_submission.inl": ["mirrorState.textures[0]==weatherDetect.hot"], "src/proxy/renderer.cpp": ["void weatherFrame(unsigned", "const bool menuWeather=menuScene&&world->isMenu()"]},
+      "reads": ["rain-native-texture"],
+      "writes": {"weather-state": "Native draw evidence, resolved weather and profile inputs", "native-scene-color": "Original world precipitation color"},
+      "fallback": "No admitted native texture or weather source leaves supplemental routes subject to current weather proof.",
+      "tests": ["test_weather_detect.py", "test_weather_memory.py", "test_weather_exterior.py"]
+    },
+    "rain-mask-capture": {
+      "owner": "Device::rainMrtBegin / rainMaskStart",
+      "code": {"src/proxy/renderer.cpp": ["void rainMaskCaps()", "bool rainMaskStart(", "bool rainMrtBegin()", "kRainMaskMrtShader"]},
+      "source": "rain_mask.hlsl",
+      "entries": {"RainMaskMRT": "Supported stage-0 fixed-function rain with independent write masks and matching world targets"},
+      "bindings": {"Scene": "rain-native-texture"},
+      "reads": ["native-world-depth"],
+      "writes": {"native-scene-color": "RT0 keeps native rain color", "rain-mask-raw": "RT1 alpha coverage at the current sample count", "rain-depth-snapshot": "RESZ snapshot before the first mask draw"},
+      "fallback": "Target, state, caps and allocation refusal keep the native precipitation draw without the mask.",
+      "tests": ["test_rain_mask.py", "test_weather_wiring.py"]
+    },
+    "rain-mask-scrub": {
+      "owner": "Device::rainMaskPrepare",
+      "code": {"src/proxy/renderer.cpp": ["IDirect3DTexture9* rainMaskPrepare(", "ext->StretchRect(rainMaskMS,nullptr,rainMaskSurface", "ext->SetTexture(0,depthTex);ext->SetTexture(1,rainDepth)", "ext->SetPixelShader(rainScrubPS)", "audit->bindings(\"RainScrub\",3u,hr)"]},
+      "source": "rain_mask.hlsl",
+      "entries": {"RainScrub": "Compare final scene depth against rain-time depth and write the red visibility bit"},
+      "bindings": {"Scene": "scene-depth", "Depth": "rain-depth-snapshot"},
+      "reads": ["rain-mask-raw"],
+      "writes": {"rain-mask": "RT0 red channel of the resolved alpha mask allocation"},
+      "fallback": "Skip publication if the twin resolve or scrub fails. World composition binds neutral zero.",
+      "tests": ["test_rain_mask.py", "test_weather_effects_wiring.py"]
+    },
+    "weather-menu-precipitation": {
+      "owner": "Device::surfaceWeather / NorthlightSurfaceRenderer::precipitation",
+      "code": {"src/proxy/renderer.cpp": ["if(menuWeather&&exposed)", "surface->precipitation(weatherTarget"], "src/water/surface_renderer.h": ["const DWORD* shaders[]={kRainQualityShader", "d->SetTexture(3,finalDepth)", "d->SetTexture(5,roof?roofTexture:nullptr)"]},
+      "source": "surface_effects.hlsl",
+      "entries": {"RainQuality": "Admitted menu rain quality preset", "SnowQuality": "Admitted menu snow quality preset", "RainPerformance": "Admitted menu rain performance preset", "SnowPerformance": "Admitted menu snow performance preset"},
+      "bindings": {"FinalDepth": "scene-depth", "WeatherRoof": "weather-roof", "SnowMaterial": "weather-art"},
+      "reads": ["weather-state"],
+      "writes": {"late-weather-color": "Blended menu weather on the post-effect target"},
+      "fallback": "World precipitation remains native. Inactive, sheltered or refused menu precipitation skips the supplemental draw.",
+      "tests": ["test_menu_scene.py", "test_weather_sparse_roof_gpu.py", "validate_weather_occlusion_gpu.py"]
+    },
+    "weather-lens": {
+      "owner": "Device::surfaceWeather / NorthlightSurfaceRenderer lens",
+      "code": {"src/proxy/renderer.cpp": ["const bool cameraExposed=", "surface->sandLens(weatherTarget", "surface->lens(weatherTarget"], "src/water/surface_renderer.h": ["CreatePixelShader(kWeatherLensParticleShader", "CreatePixelShader(kFrostVignetteShader", "CreatePixelShader(kSandLensShader"]},
+      "source": "surface_effects.hlsl",
+      "entries": {"WeatherLensParticle": "Dynamic rain drops, rivulets, flakes or sand particles", "FrostVignette": "Admitted snow frost coating", "SandLens": "Admitted sand coating"},
+      "bindings": {"LensScene": "weather-lens-scene", "SnowMaterial": "weather-art", "FrostMaterial": "weather-art", "WeatherNoise": "weather-art"},
+      "reads": ["weather-state", "composite-color"],
+      "writes": {"late-weather-color": "Optional post-effect optics"},
+      "fallback": "Exposure, strength, visible particles and available scene storage gate each branch. Failed optional optics leave the underlying frame.",
+      "tests": ["test_weather_lens.py", "test_weather_textures.py", "test_weather_capture_gpu.py"]
+    },
+    "sky-layer-capture": {
+      "owner": "Device::skyLayersBefore / NorthlightSkyComposition::Capture",
+      "code": {"src/proxy/renderer.cpp": ["void skyLayersBefore(", "skyLayers.preserveNative()", "void skyLayersReplay("], "src/sky/sky_composition_renderer.h": ["bool prepare(IDirect3DDevice9*", "if(samples_&&!msaa_", "bool draw(IDirect3DDevice9*"]},
+      "reads": ["sky-native-layer-textures"],
+      "writes": {"sky-layer-color": "Scene-matched background and coverage, resolved from the optional multisample twin"},
+      "fallback": "Native material or failed replay keeps authored sky. Temporary offscreen targets do not erase current main-sky coverage.",
+      "tests": ["test_sky_background_order.py", "test_sky_material_catalog.py", "test_celestial_composition_gpu.py"]
+    },
+    "sky-background": {
+      "owner": "Device::composeSkyBackground / NorthlightCelestialDisc::renderSkyBackground",
+      "code": {"src/proxy/renderer.cpp": ["void composeSkyBackground()", "renderSkyBackground(saved.targets[0],scene,nullptr,layers"], "src/sky/celestial_disc_renderer.h": ["bool renderSkyBackground(", "SetTexture(6,layers?layers:scene)"]},
+      "source": "celestial_disc_effects.hlsl",
+      "entries": {"CelestialSkyPS": "Recompose sky before native foreground; menu can seed its sky via hardware depth"},
+      "bindings": {"DiscTexture": "sky-background-copy", "DiscDepth": "sky-background-optional-depth"},
+      "reads": ["native-world-depth"],
+      "binding_alternatives": {"DiscSkyLayers": {"sky-background-copy": "The admitted menu path can draw without captured layers"}},
+      "writes": {"sky-background-copy": "Snapshot before foreground in reusable scene storage", "native-scene-color": "Prepared background on the native target"},
+      "fallback": "Invalid palette, camera or captured world layers retains the native sky.",
+      "tests": ["test_sky_background_order.py", "test_celestial_composition_gpu.py", "test_menu_scene.py"]
+    },
+    "hdr-sky-foreground": {
+      "owner": "Device::hdrReplaySky / NorthlightHdr::SkyForeground",
+      "code": {"src/proxy/renderer.cpp": ["bool hdrSkyAdmission()", "void hdrReplaySky(", "hdrSkyForeground.draw(ext,hdrSkyTarget()"], "src/proxy/hdr_sky_foreground.h": ["kHdrSkyResidualPs2:kHdrSkyResidualPs3"], "src/proxy/hdr_color.h": ["mrt?kHdrFixedSky2"]},
+      "source": "hdr_effects.hlsl",
+      "entries": {"HdrSkyResidual-ps_2_0": "SM2 epilogue for admitted linear residual coverage", "HdrSkyResidual-ps_3_0": "SM3 epilogue for admitted residual coverage", "HdrFixedSky2": "Fixed-function two-stage sky synthesis with admitted native target"},
+      "bindings": {"HdrScene": "sky-native-layer-textures", "HdrAux": "sky-native-layer-textures"},
+      "reads": ["hdr-sky", "sky-native-layer-textures"],
+      "writes": {"hdr-sky": "Attenuate existing linear headroom by current native foreground"},
+      "fallback": "Skip replay with no owned emission. If MRT and replay cannot be admitted, preserve native color and reject the optional residual route as needed.",
+      "tests": ["test_hdr_fixed_sky_admission.py", "test_hdr_sky_residual_gpu.py", "test_hdr_empty_sky_gpu.py"]
+    },
+    "aurora-emission": {
+      "owner": "NorthlightAuroraNative::Renderer / Device aurora submit",
+      "code": {"src/proxy/renderer.cpp": ["!auroraRenderer.prepare(ext)", "auroraRenderer.draw(ext,false", "auroraRenderer.draw(ext,true"], "src/sky/aurora_emission_patch.h": ["kAuroraLinearPs2:kAuroraLinearPs3"]},
+      "source": "aurora_emission.hlsl",
+      "entries": {"AuroraLegacy-ps_2_0": "Legacy emission epilogue on captured SM2 output", "AuroraLegacy-ps_3_0": "Legacy emission epilogue on captured SM3 output", "AuroraLinear-ps_2_0": "Linear residual emission epilogue on SM2 output", "AuroraLinear-ps_3_0": "Linear residual emission epilogue on SM3 output"},
+      "reads": ["sky-native-layer-textures"],
+      "writes": {"native-scene-color": "Optional native aurora emission, keeping original geometry", "hdr-sky": "Optional linear residual from the same proved aurora batch"},
+      "fallback": "Unproved batch, patch or resource keeps the native draw.",
+      "tests": ["test_aurora_native_capture_gpu.py", "test_aurora_transport.py"]
+    },
+    "celestial-terrain": {
+      "owner": "NorthlightCelestialDisc terrain occlusion",
+      "code": {"src/sky/celestial_disc_renderer.h": ["CreateVertexShader(kCelestialTerrainVSShader", "SetRenderTarget(0,terrainSurface[body])"]},
+      "source": "celestial_disc_effects.hlsl",
+      "entries": {"CelestialTerrainVS": "Project prepared terrain coverage from the camera", "CelestialTerrainPS": "Write terrain silhouette to the active body mask"},
+      "reads": ["static-caster-mesh"],
+      "writes": {"celestial-terrain-mask": "Optional per-body terrain coverage"},
+      "fallback": "Missing terrain proof or target leaves scene-depth visibility available.",
+      "tests": ["test_celestial_terrain.py", "test_celestial_controls_gpu.py"]
+    },
+    "celestial-visibility": {
+      "owner": "NorthlightCelestialDisc halo and ring visibility",
+      "code": {"src/sky/celestial_disc_renderer.h": ["CreatePixelShader(kCelestialHaloVisibilityPSShader", "SetRenderTarget(0,haloSurface[i][next])", "SetRenderTarget(0,ringSurface[next])"]},
+      "source": "celestial_disc_effects.hlsl",
+      "entries": {"CelestialHaloVisibilityPS": "Update temporal point visibility for the disc halo or the late sun ring"},
+      "bindings": {"DiscHaloVisibility": "celestial-halo-previous"},
+      "writes": {"celestial-halo": "Next 1x1 body history", "celestial-ring": "Next 1x1 ring history"},
+      "fallback": "Invalid history starts at current visibility. Failed optional visibility leaves the applicable simpler disc route.",
+      "tests": ["test_celestial_composition_gpu.py", "test_celestial_veil.py"]
+    },
+    "celestial-disc": {
+      "owner": "NorthlightCelestialDisc native claim and captured sky background",
+      "code": {"src/sky/celestial_disc_renderer.h": ["bool drawDisc(", "hdrSkyWritten=true;drawDisc(", "SetTexture(5,ring?ringVisibility[ringIndex]:halo)"], "src/proxy/device_frame_effects.inl": ["celestialDiscs->render(target,depthTex,waterMask"]},
+      "source": "celestial_disc_effects.hlsl",
+      "entries": {"CelestialDiscPS": "Admitted early or late sun/moon disc and glare"},
+      "bindings": {"DiscTexture": "celestial-disc-art"},
+      "binding_alternatives": {"DiscRingVisibility": {"celestial-halo": "Use the admitted halo when the ring is unavailable"}},
+      "writes": {"native-scene-color": "Owned disc or composed sky on the appropriate native target", "hdr-sky": "Optional owned linear disc emission"},
+      "fallback": "Preserve native artwork on failed claim. Late discs use the available depth, water and terrain occlusion proofs.",
+      "tests": ["test_celestial_native_suppress.py", "test_celestial_composition_gpu.py", "test_sky_background_order.py"]
+    },
+    "celestial-veil": {
+      "owner": "NorthlightCelestialDisc::renderVeil",
+      "code": {"src/sky/celestial_disc_renderer.h": ["bool renderVeil(", "CreatePixelShader(kCelestialVeilPSShader"], "src/proxy/device_frame_effects.inl": ["if(!linearHdr)celestialDiscs->renderVeil"]},
+      "source": "celestial_disc_effects.hlsl",
+      "entries": {"CelestialVeilPS": "Late legacy SDR veil attenuated by the current atmospheric profile"},
+      "reads": ["sky-fog-transmittance"],
+      "writes": {"composite-color": "Additive SDR veil after world composition"},
+      "fallback": "Linear HDR keeps bloom as its halo route. Missing glare state suppresses the optional veil.",
+      "tests": ["test_celestial_veil.py", "test_celestial_controls_gpu.py"]
+    },
+    "native-effect-coverage": {
+      "owner": "Device native particle/effect coverage",
+      "code": {"src/proxy/renderer.cpp": ["NorthlightParticleCapture::Prepared prepareParticleDraw(", "effectCoverage.allowMultisample(", "return effectCoverage.draw(ext,write,native,replay)"], "src/proxy/device_frame_effects.inl": ["effectCoverage.texture(ext,saved.targets[0])"]},
+      "reads": ["native-world-depth"],
+      "writes": {"effect-coverage": "Optional native alpha and emission coverage associated with the current scene target"},
+      "fallback": "Unknown blend or target uses the original submit and preserves neutral scene-effect inputs.",
+      "tests": ["test_particle_light_capture.py", "test_effect_coverage_gpu.py"]
+    },
+    "hdr-particle-transfer": {
+      "owner": "Device deferred spell replay / NorthlightHdr::Color",
+      "code": {"src/proxy/renderer.cpp": ["const bool linearCurrent=hdr.active&&hdrSceneReady&&hdrUiPhase"], "src/proxy/hdr_color.h": ["const bool particle=variant==3", "kHdrParticlePs2:kHdrParticlePs3"]},
+      "source": "hdr_effects.hlsl",
+      "entries": {"HdrParticle-ps_2_0": "SM2 transfer epilogue for a proven particle output", "HdrParticle-ps_3_0": "SM3 transfer epilogue for a proven particle output"},
+      "reads": ["hdr-present"],
+      "writes": {"hdr-present": "Blend deferred particles onto the admitted output target"},
+      "fallback": "Unknown particle family keeps the ordinary draw or existing legacy layer route.",
+      "tests": ["verify_hdr_particle_gpu.py", "test_particle_lighting_gpu.py", "test_hdr_boundary.py"]
+    },
+    "hdr-ui-transfer": {
+      "owner": "Device HDR UI boundary / NorthlightHdr::Color",
+      "code": {"src/proxy/renderer.cpp": ["extensionWork(\"HDR UI preparation\"", "extensionWork(\"HDR UI draw\""], "src/proxy/hdr_color.h": ["legacyLayer(IDirect3DDevice9*", "template<class Draw> HRESULT draw(IDirect3DDevice9*"]},
+      "source": "hdr_effects.hlsl",
+      "entries": {"HdrUi-ps_2_0": "SM2 UI transfer epilogue", "HdrUi-ps_3_0": "SM3 UI transfer epilogue"},
+      "reads": ["hdr-present", "late-weather-color"],
+      "writes": {"hdr-present": "Late UI on the admitted presentation target"},
+      "fallback": "Offscreen draws remain native. Unsupported direct transfer can use the existing legacy layer path.",
+      "tests": ["test_hdr_boundary.py", "test_ui_water_boundary.py"]
+    },
+    "world-composite": {
+      "owner": "NorthlightWorldComposite::draw",
+      "code": {"src/world/world_composite.h": ["const bool baseComposite=", "const bool aoBaseComposite=", "const bool separateMaterial=", ">=kWorldMaterialCompositeHdrShaderSlots", "d->SetPixelShader(aoBaseComposite?hdrAOBasePS_:baseComposite?hdrBasePS_:in.hdr?hdrFinalPS_:finalPS_)", "d->SetPixelShader(hdrCombinedPS_)", "d->SetTexture(3,in.localLighting?in.localLight:in.neutralZero)", "d->SetTexture(8,in.lighting?in.temporalLight:in.neutralZero)", "d->SetTexture(13,rainMask?rainMask:in.neutralZero)"], "src/world/world_renderer.h": ["composite.prepareShaders(", "composite.draw(d,compositeInputs"]},
+      "entries": {"WorldComposite": "SDR world composite", "WorldCompositeHdr": "Full HDR world composite", "WorldBaseCompositeHdr": "Eligible HDR base when combined material, fog and local light are absent", "WorldAOCompositeHdr": "HDR base without world lighting", "WorldMaterialCompositeHdr": "Combined HDR material/world route with enough PS3 slots, ready material and no diagnostic capture", "WorldUnlitComposite": "SDR overlay for stencil-selected unlit receivers", "WorldUnlitCompositeHdr": "HDR overlay for stencil-selected unlit receivers", "WorldPrelitComposite": "SDR overlay for stencil-selected room daylight levels", "WorldPrelitCompositeHdr": "HDR overlay for stencil-selected room daylight levels", "MaterialComposite": "Separate SDR material pass", "MaterialCompositeHdr": "Separate HDR material pass when combined composition is unavailable or disabled", "MaterialSolarComposite": "Separate SDR material pass with direct sunlight glints on depth-matched opaque terrain or WMO", "MaterialSolarCompositeHdr": "Separate HDR material pass with direct sunlight glints on depth-matched opaque terrain or WMO"},
+      "bindings": {"LightingBuffer": "temporal-light", "PrelitDaylight": "prelit-daylight", "MaterialSource": "native-scene"},
+      "entry_bindings": {"MaterialComposite": {"Scene": "composite-scratch"}, "MaterialCompositeHdr": {"Scene": "composite-scratch"}, "MaterialSolarComposite": {"Scene": "composite-scratch"}, "MaterialSolarCompositeHdr": {"Scene": "composite-scratch"}},
+      "writes": {"composite-color": "Full-size RT0", "composite-scratch": "RT0 for the ordinary composite when standalone material follows"},
+      "fallback": "Specialized variants fall back to full HDR, and missing optional inputs use neutral textures. A refused overlay shader leaves the ordinary composite active. Device can fall back to legacy composition.",
+      "tests": ["test_world_screen_effects_gpu.py", "test_ao_fold.py"]
+    },
+    "hdr-output": {
+      "owner": "NorthlightHdr::Frame::finish / Device::hdrBegin",
+      "code": {"src/proxy/hdr_frame.h": ["HRESULT finish(", "device->SetPixelShader(legacyDestination?output:outputOnly)"], "src/proxy/renderer.cpp": ["hdrOutput.present(src,dst,window,dirty,flags)"]},
+      "source": "hdr_effects.hlsl",
+      "entries": {"HdrWorldLinear": "Output writer when a legacy destination is retained", "HdrWorldLinearOnly": "Output without legacy destination"},
+      "bindings": {"HdrScene": "composite-color", "HdrAux": "hdr-exposure", "HdrExtra": "hdr-bloom"},
+      "writes": {"hdr-present": "Composed output before UI, overlay and Present"},
+      "fallback": "HDR activation and finish failures are handled by the Device and the backend keeps the original presentation path.",
+      "tests": ["verify_hdr_frame_gpu.py", "test_northrend_frame_parity.py"]
+    }
+  },
+  "samplers": {
+    "Scene": "native-scene", "Depth": "scene-depth", "ModelNormals": "model-normals", "NormalBuffer": "world-normals",
+    "BumpMaterial": "material-detail", "MaterialOcclusion": "material-occlusion", "GeneratedNormal": "terrain-layer-textures", "LayerMask": "terrain-layer-textures",
+    "CurrentDistance": "current-distance", "DepthHistory": "previous-distance", "MergedDepthHistory": "previous-distance",
+    "LightingBuffer": "directional-light", "BaselineLighting": "baseline-light", "SmoothedLighting": "smoothed-light", "LightHistory": "previous-light", "MergedLightHistory": "previous-light",
+    "ProbeR": "lighting-probes", "ProbeG": "lighting-probes", "ProbeB": "lighting-probes", "ProbePrevious": "lighting-probes", "ProbeVisibility": "lighting-probes", "ProbeMetadata": "lighting-probes", "LocalVisibility": "lighting-probes",
+    "ShadowNear": "cascade-near", "ShadowFar": "cascade-far", "ActorVisibility": "actor-visibility", "DirectionalVisibility": "directional-visibility",
+    "ActorMap": "actor-shadow-depth", "ActorTileMap": "actor-tiles",
+    "PreviousStaticNear": "cascade-history", "PreviousStaticFar": "cascade-history", "CurrentDynamicNear": "cascade-dynamic", "CurrentDynamicFar": "cascade-dynamic",
+    "EffectCoverage": "effect-coverage", "HdrLinearBase": "hdr-linear-base", "CurrentLocalLighting": "local-light", "FogBuffer": "fog-color", "MaterialFog": "fog-color",
+    "AmbientOcclusion": "screen-ao", "WaterMask": "water-mask", "RainMask": "rain-mask", "DitherNoise": "dither-tile",
+    "RegionalFog": "fog-regional-field", "FogHeightBounds": "fog-height-bounds", "DirectFogFloor": "fog-direct-floor",
+    "CloudNoise": "fog-cloud-noise", "FogActorMap": "actor-shadow-depth", "FogActorTiles": "actor-tiles",
+    "DiscDepth": "scene-depth", "DiscWater": "water-mask", "DiscHaloVisibility": "celestial-halo",
+    "DiscTerrain": "celestial-terrain-mask", "DiscRingVisibility": "celestial-ring", "DiscSkyLayers": "sky-layer-color"
+  }
+}

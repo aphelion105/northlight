@@ -11,7 +11,8 @@ inline void WorldColdUploadTest::workerReset(UploadFaultDevice& d,unsigned targe
     {NorthlightStreaming::Budget budget(4u<<20,2);assert(w.upload(budget));}
     preloadProbes(w);drain(d);
     std::array<IDirect3DTexture9*,7> probes{};
-    for(unsigned i=0;i<5;++i)probes[i]=w.probe[i];probes[5]=w.probePrev;probes[6]=w.probeLocal;
+    for(unsigned i=0;i<5;++i)probes[i]=w.probeAtlas.channel(i);
+    probes[5]=w.probeAtlas.previous();probes[6]=w.probeAtlas.localVisibility();
     for(auto* texture:probes){assert(texture);texture->AddRef();}
     const auto capture=(std::filesystem::path(rootPath)/L"reset-capture").u8string();
     std::filesystem::create_directories(std::filesystem::u8path(capture));assert(NorthlightDiagnosticFiles::enable(capture));
@@ -48,9 +49,9 @@ inline void WorldColdUploadTest::workerReset(UploadFaultDevice& d,unsigned targe
     pressure.fill(273);
     const auto targetEntry=pressure.available();
     Spooling=true;complete(w,recovered);drain(d);
-    assert(w.geometryResources(3840,2160)&&w.actorVisibility);
-    for(unsigned i=0;i<5;++i)assert(w.probe[i]==probes[i]);
-    assert(w.probePrev==probes[5]&&w.probeLocal==probes[6]);const auto after=pressure.available();
+    assert(w.geometryResources(3840,2160)&&w.actorMaps.visibility().texture);
+    for(unsigned i=0;i<5;++i)assert(w.probeAtlas.channel(i)==probes[i]);
+    assert(w.probeAtlas.previous()==probes[5]&&w.probeAtlas.localVisibility()==probes[6]);const auto after=pressure.available();
     assert(after>=NorthlightGeometryMemory::ProcessReserve);
     const auto wall=DWORD(GetTickCount()-start);assert(wall<5000&&"Recovery must not wait for driver allocator garbage collection");
     w.geometryMemoryDemand.store(0);w.requestStaticCasters("Northrend");assert(!w.staticRecoveryPaused&&w.worldMeshDrawable());

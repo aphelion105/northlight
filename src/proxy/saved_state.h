@@ -77,6 +77,7 @@ struct SavedState {
     }
     SavedState(const SavedState&)=delete;
     SavedState& operator=(const SavedState&)=delete;
+    bool coversDevice(IDirect3DDevice9* device)const{return d==device&&ok&&!restored;}
     bool restore(){
         if(restored)return restoreOK;
         restored=true;

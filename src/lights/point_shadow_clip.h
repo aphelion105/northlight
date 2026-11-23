@@ -2,6 +2,7 @@
 #include "world_local_lights.h"
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 
 namespace NorthlightPointShadow {
@@ -163,30 +164,18 @@ class FaceClip {
     Face faces[6];
     double safetyScale=0;
     double sphere[4]={};bool sphereValid=false;
-public:
-    explicit FaceClip(const float (&matrices)[6][16],unsigned requested=63){
-        for(unsigned face=0;face<6;++face)if(requested&(1u<<face))faces[face].prepare(matrices[face],safetyScale);
-        safetyScale*=8; // Four coordinates; each clip-plane term combines at most two matrix coefficients.
+    bool outsideSphere(const float* lo,const float* hi)const{
+        double distance=0;
+        for(unsigned axis=0;axis<3;++axis){
+            const double delta=std::max({double(lo[axis])-sphere[axis],sphere[axis]-hi[axis],0.});
+            distance+=delta*delta;
+        }
+        return distance>sphere[3];
     }
-    FaceClip(const float (&matrices)[6][16],const NorthlightLocalLights::Light& light,unsigned requested=63):FaceClip(matrices,requested){
-        sphereValid=std::isfinite(light.attenuationEnd)&&light.attenuationEnd>=0;
-        sphere[3]=double(light.attenuationEnd)*light.attenuationEnd;
-        for(unsigned axis=0;axis<3;++axis){sphere[axis]=light.position[axis];sphereValid=sphereValid&&std::isfinite(sphere[axis]);}
-    }
-    unsigned mask(const float* lo,const float* hi,bool valid,unsigned requested=63)const{
-        requested&=63;if(!requested)return 0;
-        double extent[3];if(!valid)return requested;
-        if(sphereValid){if(!lo||!hi)return requested;double distance=0;
-            for(unsigned axis=0;axis<3;++axis){
-                if(!std::isfinite(lo[axis])||!std::isfinite(hi[axis])||lo[axis]>hi[axis])return requested;
-                const double delta=std::max({double(lo[axis])-sphere[axis],sphere[axis]-hi[axis],0.});distance+=delta*delta;}
-            if(distance>sphere[3])return 0;
-            for(unsigned axis=0;axis<3;++axis)extent[axis]=std::max(std::fabs(double(lo[axis])),std::fabs(double(hi[axis])));
-        }else if(!detail::bounds(lo,hi,extent))return requested;
+    unsigned planeMask(const float* lo,const float* hi,const double* extent,double maxExtent,unsigned requested)const{
         // One upper bound proves every component/plane is below its overflow
         // guard. The factor-two slack covers rounding; extreme inputs keep the
         // original individual guards and their fail-open masks.
-        const double maxExtent=std::max({1.,extent[0],extent[1],extent[2]});
         const bool bounded=safetyScale*maxExtent<=std::numeric_limits<float>::max()/64.;
         const float corners[]={lo[0],hi[0],lo[1],hi[1],lo[2],hi[2]};
         unsigned mask=requested;
@@ -199,6 +188,50 @@ public:
             if(outside)mask&=~(1u<<index);
         }
         return mask;
+    }
+public:
+    // A world-space box stays fixed across all light projections in a frame.
+    class PreparedBounds {
+        friend class FaceClip;
+        float low_[3]={},high_[3]={};
+        double extent_[3]={},maxExtent_=1.;
+        bool valid_=false;
+    public:
+        PreparedBounds(const float* lo,const float* hi,bool known){
+            valid_=known&&detail::bounds(lo,hi,extent_);
+            if(!valid_)return;
+            std::copy_n(lo,3,low_);
+            std::copy_n(hi,3,high_);
+            maxExtent_=std::max({1.,extent_[0],extent_[1],extent_[2]});
+        }
+    };
+    explicit FaceClip(const float (&matrices)[6][16],unsigned requested=63){
+        for(unsigned face=0;face<6;++face)if(requested&(1u<<face))faces[face].prepare(matrices[face],safetyScale);
+        safetyScale*=8; // Four coordinates; each clip-plane term combines at most two matrix coefficients.
+    }
+    FaceClip(const float (&matrices)[6][16],const NorthlightLocalLights::Light& light,unsigned requested=63):FaceClip(matrices,requested){
+        sphereValid=std::isfinite(light.attenuationEnd)&&light.attenuationEnd>=0;
+        sphere[3]=double(light.attenuationEnd)*light.attenuationEnd;
+        for(unsigned axis=0;axis<3;++axis){sphere[axis]=light.position[axis];sphereValid=sphereValid&&std::isfinite(sphere[axis]);}
+    }
+    unsigned mask(const PreparedBounds& bounds,unsigned requested=63)const{
+        requested&=63;
+        if(!requested||!bounds.valid_)return requested;
+        if(sphereValid&&outsideSphere(bounds.low_,bounds.high_))return 0;
+        return planeMask(bounds.low_,bounds.high_,bounds.extent_,bounds.maxExtent_,requested);
+    }
+    unsigned mask(const float* lo,const float* hi,bool valid,unsigned requested=63)const{
+        requested&=63;if(!requested)return 0;
+        double extent[3];if(!valid)return requested;
+        if(sphereValid){if(!lo||!hi)return requested;double distance=0;
+            for(unsigned axis=0;axis<3;++axis){
+                if(!std::isfinite(lo[axis])||!std::isfinite(hi[axis])||lo[axis]>hi[axis])return requested;
+                const double delta=std::max({double(lo[axis])-sphere[axis],sphere[axis]-hi[axis],0.});distance+=delta*delta;}
+            if(distance>sphere[3])return 0;
+            for(unsigned axis=0;axis<3;++axis)extent[axis]=std::max(std::fabs(double(lo[axis])),std::fabs(double(hi[axis])));
+        }else if(!detail::bounds(lo,hi,extent))return requested;
+        const double maxExtent=std::max({1.,extent[0],extent[1],extent[2]});
+        return planeMask(lo,hi,extent,maxExtent,requested);
     }
 };
 }

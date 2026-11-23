@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 # northlight-test: requires=windows-exe,zig
 """Run the actual worker entry selection against bounded memory samples."""
+
+from source_units import source_text
 from pathlib import Path
 import subprocess,sys,tempfile
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
-source=fp.src('world_renderer.h').read_text()
+source=source_text(fp.src('world_renderer.h'))
 block=source.split('// BEGIN CHUNKED ENTRY SELECTION')[1].split('// END CHUNKED ENTRY SELECTION')[0]
 failure=source.split('                auto noteLocalAllocationFailure=')[1].split('\n',1)[0]
 lift=next(line.strip() for line in source.splitlines() if 'auto& lift=coldRecovery?' in line)

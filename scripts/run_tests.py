@@ -115,6 +115,14 @@ def probe(name):
         return None if r.returncode == 0 else 'Lua 5.1 test runtime missing (lupa.lua51)'
     if name == 'windows-exe':
         return None if os.name == 'nt' else 'The host cannot execute Windows test programs'
+    if name == 'release-inputs':
+        if os.name != 'nt':
+            return 'The package live gate needs Windows'
+        package = os.environ.get('NORTHLIGHT_RELEASE_PACKAGE')
+        stage = os.environ.get('NORTHLIGHT_LIVE_STAGE')
+        if not package or not Path(package).is_file() or not stage or not (Path(stage) / 'baseline.json').is_file():
+            return 'Set NORTHLIGHT_RELEASE_PACKAGE and NORTHLIGHT_LIVE_STAGE to the ZIP and private stage'
+        return None
     if name in ('lldb', 'objdump'):
         return None if shutil.which(name) else f'{name} is not on PATH'
     if name == 'windows-gpu':

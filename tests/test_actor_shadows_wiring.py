@@ -9,12 +9,15 @@ off at load (effective()). Blob shadows: the filter was bypassed at 0 only until
 0.3.193 BlobShadowStrength (0..100) decides, at both values: 0 hides, 100 draws the game's blob, between a faint texture. ActorShadows=1:
 with the component enabled both predicates are freshReplays, the replay blocks run as before. The decision and
 schedule model is exercised in test_quality_settings.cpp."""
+
+from source_units import source_text, world_render_path
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
 import re
-w=fp.src('world_renderer.h').read_text();pt=fp.src('world_point_rendering.inl').read_text()
+w=source_text(fp.src('world_renderer.h'));pt=fp.src('world_point_rendering.inl').read_text()
 flash=fp.src('world_flash_rendering.inl').read_text()
-q=fp.src('quality_settings.h').read_text();r=fp.src('renderer.cpp').read_text()
+flash_owner=fp.src('world_flash_shadows.h').read_text()
+q=fp.src('quality_settings.h').read_text();r=source_text(fp.src('renderer.cpp'))
 def once(text,needle,what):assert text.count(needle)==1,f'{what}: expected exactly one {needle!r} (found {text.count(needle)})'
 def code(text):return re.sub(r'/\*.*?\*/','',re.sub(r'//[^\n]*','',text),flags=re.S)
 
@@ -42,7 +45,8 @@ checks['effective() forces exactly the two replay keys']=('inline Settings effec
     and '{"ShadowFateDiagnostics",&Settings::shadowFateDiagnostics},{"DiagReplayProbe",&Settings::diagReplayProbe}};' in q)
 checks['actorShadowWork']='inline bool actorShadowWork(const Settings& s,bool shadows){return shadows&&s.actorShadows&&(s.shadowProvider||(s.localLights&&s.localLightLimit&&s.pointShadows&&s.pointShadowLimit));}' in q
 # loadQuality: effective() right after the QUALITY/warning lines, before anything reads the settings.
-lq=w[w.index('    void loadQuality(){'):w.index('    HRESULT quad(UINT w,UINT h,')]
+quality_start=w.index('    void loadQuality(){')
+lq=w[quality_start:w.index('\npublic:',quality_start)]
 eff='quality=NorthlightQuality::effective(quality);'
 checks['effective() applied once in loadQuality, after the QUALITY line, before configure()']=(w.count('NorthlightQuality::effective(')==1 and eff in lq
     and lq.index('logf("QUALITY %s file=%s')<lq.index('logf("QUALITY warning')<lq.index(eff)<lq.index('NorthlightDiagnostics::configure(')<lq.index('NorthlightRenderThreadProbe::configure(')
@@ -56,7 +60,16 @@ checks['capture decision uses actorShadowWork']=('const bool shadows=shadowCaptu
     and '!NorthlightQuality::actorShadowWork(quality,effects.shadows)' in demand
     and 'in.shadows=shadows;' in dec and 'effects.shadows' not in dec)
 # render(): the three predicates, defined once, and their ActorShadows=1 reductions.
-render=w[w.index('    bool render(IDirect3DSurface9* targetSurface'):] # the last member of WorldRenderer
+render=world_render_path(w)
+entry=w[w.index('    bool render(IDirect3DSurface9* targetSurface'):]
+checks['directional failure returns before capture and point shadows unless the alpha target can be retried']=(
+    entry.index('if(geometryReady){\n        streamBudget.pause();')<
+    entry.index('if(jobs)replayJobs_.kick(atmosphereDone,atmosphereJob);')<
+    entry.index('if(!renderDirectional(')<
+    entry.index('if(!shadowReplayAlpha.deferIfUnavailable())return false;')<
+    entry.index('directionalDeferred=true;applyDirectionalShadows=false;shadowFrameReady=false;')<
+    entry.index('lightingCapture->directional(')<
+    entry.index('renderPointShadows(atmosphere.lights,'))
 body=code(render)
 defs={}
 for name in ('freshReplays','actorShadows','replayShadows','replaysComplete'):
@@ -68,14 +81,19 @@ checks['ActorShadows=1 reduces both to freshReplays; 0: consumers off, schedules
     value(defs['replayShadows'],f,True)==f and value(defs['replaysComplete'],f,True)==f and value(defs['replayShadows'],f,False) is False and value(defs['replaysComplete'],f,False) is True
     for f in (False,True))
 checks['unavailable geometry never consumes shadow replays']=all(value(defs['replayShadows'],f,a,False) is False for f in (False,True) for a in (False,True))
+geometry_block=guarded_block(entry,'if(geometryReady){\n        streamBudget.pause();')
+checks['stand gates replay upload and submission on captured geometry admission']=(
+    'const bool geometryReady=geometryPrepared&&admitGeometry;' in entry
+    and geometry_block.index('(replayShadows&&!timedReplay())')<geometry_block.index('if(!renderDirectional('))
 checks['disabled component never selects shadow replays']=all(value(defs['replayShadows'],f,a,g,False) is False for f in (False,True) for a in (False,True) for g in (False,True))
 # Consumers (replayShadows) and schedules/commits (replaysComplete, actorShadows).
 consumers=['if(replayShadows)selectShadowReplays();','const bool directionalReplayBounds=directionalShadows&&replayShadows&&(sourceActive[0]||sourceActive[1]);','if(directionalReplayBounds)replayBoundsKick();','(replayShadows&&!timedReplay())',
+           'if(!renderDirectional(sourceActive,directionalShadows,directionalReplayBounds,replayShadows,actorShadows,\n                              replaysComplete,jobs,',
            'if(directionalShadows&&replayShadows){auto proofs','if(directionalReplayBounds)pointCalculateReplayBounds();']
-schedules=['||!replaysComplete||shadowTransitionFailed||memoryPressure', '!reason&&key.valid&&!pull&&!actorLost&&!transition.state.fading(),shadowDiagnosticCapture!=0,replaysComplete);','if(cascade==0)nearRendered=!environmentReuse&&captureMode==CaptureFresh&&interval>1&&actorShadows;',
+schedules=['||!replaysComplete||shadowTransition.failed()||memoryPressure', '!reason&&key.valid&&!pull&&!actorLost&&!transition.state.fading(),shadowDiagnosticCapture!=0,replaysComplete);','if(cascade==0)nearRendered=!environmentReuse&&captureMode==CaptureFresh&&interval>1&&actorShadows;',
            'if(!environmentReuse){if(splitNear||captureMode==CaptureFresh||!actorShadows)reuse.commit(interval,shadowPasses,matrices[cascade]);else captureDemand=true;}',
-           'renderPointShadows(atmosphere.lights,replaysComplete,actorShadows,rendererFrame,directionalShadowTime);else pointReady=false;',
-           'renderFlashShadows(atmosphere.lights,replaysComplete,actorShadows);else for(auto& s:flashSlots)s.ready=false;']
+           'renderPointShadows(atmosphere.lights,replaysComplete,actorShadows,rendererFrame,directionalResult.directionalShadowTime);else pointReady=false;',
+           'renderFlashShadows(atmosphere.lights,replaysComplete,actorShadows);else flashShadows.invalidate();']
 def schedules_guarded(text):
     for needle in consumers+schedules:once(text,needle,'render()')
     remainder=text
@@ -83,40 +101,56 @@ def schedules_guarded(text):
     # Only the definitions may remain: an unreviewed consumer still fails.
     return remainder.count('replayShadows')==1 and remainder.count('replaysComplete')==1
 checks['consumers gated on replayShadows, schedules on replaysComplete']=schedules_guarded(body)
-checks['crossfade uses current-frame capture only and retains baseline scratch outside fades']=('dynamicShadow=(historyReady||transition.state.fading())?transition.dynamic:shadowScratch' in body and '||!replaysComplete||shadowTransitionFailed||memoryPressure' in body)
+checks['crossfade uses current-frame capture only and retains baseline scratch outside fades']=('dynamicShadow=(historyReady||transition.state.fading())?transition.dynamic:directionalMaps.scratch().texture' in body and '||!replaysComplete||shadowTransition.failed()||memoryPressure' in body)
 checks['no bare freshReplays consumer left in render()']=body.count('freshReplays')==3 # its definition and the two predicates
 # The cascade replay block: skipped whole with ActorShadows=0; terrain before it and the union after it stay.
 start=render.index('            if(actorShadows){ /* 0.3.158');end=render.index('            } /* actorShadows */')
 block=render[start:end]
 checks['cascade replay block gated, terrain before, union after']=(render.count('if(actorShadows){')==1 and render.count('} /* actorShadows */')==1
     and code(block).count('{')==code(block).count('}')+1
-    and all(x in block for x in ('replayBoundsJoin(); /* 0.3.143: first pointBounds reader */','d->SetPixelShader(replayPS);','auto replayLoop=[&](auto& split)->bool{',
+    and all(x in block for x in ('replayBoundsJoin(); /* 0.3.143: first pointBounds reader */','gpuPass.bindReplayShader(shadowPrograms.replay());','auto replayLoop=[&](auto& split)->bool{',
         'keepReplaySplit(slot,split,','replayProbe(rows,matrices[cascade],realLoopMs);'))
-    and render.index('"live terrain shadow"')<start and end<render.index('if(!unionShadow(shadowSurface[slot],dynamicShadow,nearEnvironment[source],0,0,0,1024))return false;')
-    and render.count('submitReplay(')==2 and all(start<m.start()<end for m in re.finditer(r'submitReplay\(',render)) and # 0.3.209 (task 29): the actor map's loop is the second
-    render.count('replayLoop(')==2 and all(start<m.start()<end for m in re.finditer(r'replayLoop\(',render)))
+    and render.index('gpuPass.liveTerrain(')<start and end<render.index('if(!unionShadow(directionalMaps.current(slot).surface,dynamicShadow,directionalMaps.nearEnvironment(source).texture,0,0,0,1024))return false;')
+    and render.count('submitReplay(')==1 and start<render.index('submitReplay(')<end
+    and render.count('runDirectionalReplays(')==1 and start<render.index('runDirectionalReplays(')<end
+    and render.count('replayLoop(')==2 and all(start<m.start()<end for m in re.finditer(r'replayLoop\(',render)))
+actor_draw=fp.src('world_directional_actor_draw.inl').read_text(encoding='utf-8')
+checks['only the gated near cascade hands casters to the actor map']=(
+    render.count('drawDirectionalActors(')==1 and 'drawDirectionalActors(' in block
+    and 'drawDirectionalActors(' in guarded_block(block,'if(cascade==0&&actorFrameOn[source]){')
+    and actor_draw.count('submitReplay(')==1
+    and 'runDirectionalReplays(actorReplays,' in guarded_block(actor_draw,'if(nearSkip){'))
 # The probe moved before the live dump: legal because it never runs on a diagnostic capture frame.
 checks['probe never on a diagnostic capture frame']='probeRecord=replayProbeActive()&&slot==0&&captureMode==CaptureFresh&&!shadowDiagnosticCapture;' in block
 # Point cube: withReplays gates both replay loops and the schedule's replay count.
 pb=pt[pt.index('    bool renderPointShadow('):pt.index('    void renderPointShadows(')]
 candidate_head='if(withReplays){\n                pointOrderReplays();'
-draw_head='if(withReplays){\n            float rows[16];'
+draw_head='if(withReplays&&!submitPointReplayFace(replayPass,replayPackets,matrix,rendererFrame,face,check))return false;'
+point_draws=guarded_block(fp.src('world_point_replays.inl').read_text(),'    bool submitPointReplayFace(')
 count='if(fresh)pointReplayCount=withReplays?replays.size():0;'
+replay_at='const auto replayAt=[&](size_t index)->const Replay&{return *replays[index];};'
 def point_replays_guarded(text):
-    candidates=guarded_block(text,candidate_head);draws=guarded_block(text,draw_head)
+    candidates=guarded_block(text,candidate_head)
+    once(text,draw_head,'point draw guard')
+    once(text,'submitPointReplayFace(','point face submission')
     once(text,count,'point replay count')
-    for needle in ('const auto& bounds=replays[i]->pointBounds;',
+    once(text,replay_at,'point proof reads from the selected replay list')
+    once(text,'const bool proveOpaque=opaqueEnabled&&!geometryOnly','opaque proof requires candidates')
+    once(text,'const bool split=mixedEnabled&&withReplays','mixed proof is actor-gated')
+    for needle in ('const auto& bounds=replay.pointBounds;',
+                   'pointReplayCasters.prepare(replays.size()',
+                   'pointReplayCasters.classify(clip,faces',
                    'pointAppendCandidates(pointReplayCandidates,i,mask,faces);'):once(candidates,needle,'point candidate guard')
-    for needle in ('const auto& candidates=pointReplayCandidates[face];','const auto& p=replays[candidates[at]];',
-                   'pointReplayRun(candidates,at,replayBindings.skipping())','NorthlightShadowAlpha::drawSequence(d,candidates.size(),',
-                   '"cube animated draw"'):once(draws,needle,'point draw guard')
+    for needle in ('const auto& p=replays[candidates[at]];',
+                   'pointReplayRun(candidates,at,replayPass.skipping())','NorthlightShadowAlpha::drawSequence(d,candidates.size(),',
+                   '"cube animated draw"'):once(point_draws,needle,'point face submissions')
     empty='(!withReplays||replays.empty())'
     once(text,empty,'point geometry-only reuse guard')
     refresh='budget&&withReplays&&!replays.empty()'
     once(text,refresh,'complete animated cube budget guard')
-    outside=text.replace(candidates,'').replace(draws,'').replace(count,'').replace(empty,'').replace(refresh,'')
-    return (text.index(candidates)+len(candidates)<=text.index(draws)
-            and text.index(draws)+len(draws)<text.index('// With no dynamic casters, min(cache, cache) copies the static face')
+    outside=text.replace(candidates,'').replace(draw_head,'').replace(count,'').replace(replay_at,'').replace(empty,'').replace(refresh,'')
+    return (text.index(candidates)+len(candidates)<=text.index(draw_head)
+        and text.index(draw_head)+len(draw_head)<text.index('if(!facePass.resolve(staticOnly')
             and re.search(r'\breplays\b',code(outside)) is None)
 checks['point: both replay loops and the count gated on withReplays']=point_replays_guarded(pb)
 
@@ -124,11 +158,17 @@ def flash_replays_guarded(text):
     draw=guarded_block(text,'if(withReplays){')
     for needle in ('replayBoundsJoin();','for(const auto& p:replays){','submitReplay(p.get(),'):
         once(draw,needle,'flash replay guard')
-    maps='s.ready=renderFlashMap(s,0,withReplays)&&renderFlashMap(s,1,withReplays);'
-    once(text,maps,'both flash cascades');once(text,'if(!fresh){captureDemand=true;continue;}','fresh flash maps')
-    return (text.index('if(!fresh){captureDemand=true;continue;}')<text.index('if(!flashResources(s))continue;')<text.index(maps)
+    callback='drawFlashCasters(matrix,withReplays,casters);'
+    once(text,callback,'both flash cascades');once(text,'if(!fresh){captureDemand=true;continue;}','fresh flash maps')
+    return (text.index('if(!fresh){captureDemand=true;continue;}')<text.index('flashShadows.render(')<text.index(callback)
             and re.search(r'\breplays\b',code(text.replace(draw,''))) is None)
+
+def flash_cascades_guarded(text):
+    maps='s.ready=renderFlashMap(d,s,0,pipeline,drawStatic,drawScene)&&renderFlashMap(d,s,1,pipeline,drawStatic,drawScene);'
+    once(text,maps,'both flash cascades share the guarded caster path')
+    return text.index('if(!flashResources(d,s,pipeline))return;')<text.index('prepare();')<text.index(maps)
 checks['flash: fresh maps and both actor cascades gated']=flash_replays_guarded(flash)
+checks['flash: resources before replay preparation and both draws']=flash_cascades_guarded(flash_owner)
 
 # Negative controls use modified source strings; production files are never edited.
 assert point_replays_guarded(pb.replace(candidate_head,candidate_head+' /* } */ const char* brace="}";'))
@@ -145,7 +185,8 @@ mutations=[
     (point_replays_guarded,pb.replace(candidate_head,'consume(replays[0]->pointBounds);'+candidate_head),'unguarded bounds read'),
     (point_replays_guarded,pb+' for(const auto& p:replays)consume(p);','unguarded replay range'),
     (flash_replays_guarded,flash.replace('if(withReplays){','if(true){'),'unguarded flash actors'),
-    (flash_replays_guarded,flash.replace('renderFlashMap(s,1,withReplays)','renderFlashMap(s,1,true)'),'far flash switch bypass'),
+    (flash_replays_guarded,flash.replace('drawFlashCasters(matrix,withReplays,casters)','drawFlashCasters(matrix,true,casters)'),'flash switch bypass'),
+    (flash_cascades_guarded,flash_owner.replace('renderFlashMap(d,s,1,pipeline,drawStatic,drawScene)','true'),'missing far flash draw'),
     (flash_replays_guarded,flash.replace('if(!fresh){captureDemand=true;continue;}',''),'stale flash map'),
 ]
 for audit,text,label in mutations:rejected(audit,text,label)

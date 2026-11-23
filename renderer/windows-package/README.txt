@@ -183,7 +183,7 @@ Individual settings (Quality / Balanced / Performance):
   PointShadowRefreshMs  0 / 33 / 33    lamp shadow update interval
   ShadowRefreshCpuMs    3 / 3 / 2      shared CPU time target in ms for directional and lamp shadow updates. A stationary lamp can retain its complete cube for one extra update. 0 disables the target.
   PointShadowFacesPerFrame 6 / 6 / 6   lamp shadow directions updated per frame (1..6; 6 = all at once; lower = smaller spikes, a brief seam at the edge)
-  PointShadowAdaptiveRefresh 0 / 0 / 0  alternate whole-cube updates for small lamps or slightly moving native emitters. Shadows can briefly lag (0..1)
+  PointShadowAdaptiveRefresh 0 / 0 / 0  alternate whole-cube updates for small stationary lamps; shadows from moving casters can briefly lag (0..1)
   ShadowDirectionSteps  2048/2048/2048 sun direction quantization (fewer jumps)
   StaticCacheSlices     1 / 1 / 1      a partial redraw of the cached shadow is spread over N frames (1..4; 1 = in one frame; a new shadow can appear N-1 frames late)
   CaptureBudgetMiB      32 / 32 / 32   capture limit for animated geometry, spent on the characters nearest to you first (your own character and mount may use an extra 4 MiB once it is reached)
@@ -260,7 +260,7 @@ Individual settings (Quality / Balanced / Performance):
   AOQuality 0 / 0 / 0   High=0, Medium=1, Low=2. High preserves the current image; Medium/Low reduce HDAO/HBAO+/GTAO samples and can add noise or shimmer. SSAO is unchanged. Apply in Lighting & AO.
   AOStrength 100 / 100 / 100   See the quality INI for the allowed range.
   AORadius 200 / 200 / 200   See the quality INI for the allowed range.
-  PointShadowLimit 64 / 64 / 64   Allowed 16..128.
+  PointShadowLimit 64 / 64 / 64   Allowed 1..128.
   PointShadowDistance 48 / 48 / 48   local light shadow distance from the camera in yards (8..192), measured to the edge of the light's influence; applies on Save; Shadow light sources still caps the count
   AutoBump 1 / 0 / 0   See the quality INI for the allowed range.
   AutoBumpStrength 75 / 60 / 40   See the quality INI for the allowed range.
@@ -275,12 +275,14 @@ Individual settings (Quality / Balanced / Performance):
   AutoDisplacementDistance 12 / 8 / 6   See the quality INI for the allowed range.
   AutoDisplacementDetail 4 / 3 / 2   See the quality INI for the allowed range.
   AutoBumpModels 3 / 1 / 1   See the quality INI for the allowed range.
+  AutoBumpModelMinPixels 0 / 0 / 0   Screen-size cutoff for distant skinned material detail, relative to 1080p. 0 disables the cutoff.
   AutoModelDisplacementStrength 25 / 15 / 10   See the quality INI for the allowed range.
   AutoModelDisplacementDistance 8 / 6 / 4   See the quality INI for the allowed range.
   AutoModelDisplacementDetail 2 / 2 / 1   See the quality INI for the allowed range.
   AutoHeightPolarity 0 / 0 / 0   See the quality INI for the allowed range.
   AutoHeightDetails 75 / 75 / 75   See the quality INI for the allowed range.
   AutoHeightBalance 50 / 50 / 50   See the quality INI for the allowed range.
+  AutoNormalFilter 1 / 1 / 1   Generated normals for terrain, walls, grass and models. 0 = legacy, 1 = filtered.
   AutoParallaxShadows 1 / 0 / 0   See the quality INI for the allowed range.
   AutoParallaxShadowStrength 70 / 60 / 50   See the quality INI for the allowed range.
   AutoParallaxShadowSteps 8 / 6 / 4   See the quality INI for the allowed range.

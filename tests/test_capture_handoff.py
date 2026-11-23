@@ -22,12 +22,63 @@ prefix = prefix.replace('struct Device:IDirect3DDevice9{', 'struct Device:IDirec
 prefix = prefix.replace('override{*out=freq[s]', 'override{++geometryCalls;*out=freq[s]')
 prefix = prefix.replace('override{*out=&vb[s]', 'override{++geometryCalls;*out=&vb[s]')
 prefix = prefix.replace('override{*out=&ib;', 'override{++geometryCalls;*out=&ib;')
-source = prefix + r'''
+source = '#define NORTHLIGHT_REPLAY_STAND\n' + prefix + r'''
+static void readAudit(){
+ using namespace NorthlightCaptureWork;
+ using Path=Route::ReadPath;
+ struct Event{Route::Lane lane;const void* buffer;bool index;Path path;unsigned offset,size;bool ok;};
+ std::vector<Event> events;
+ Route audit;
+ audit.context=&events;
+ audit.reportRead=[](void* out,Route::Lane lane,const void* buffer,bool index,Path path,unsigned offset,unsigned size,bool ok){
+    static_cast<std::vector<Event>*>(out)->push_back({lane,buffer,index,path,offset,size,ok});
+ };
+ Device d;
+ namespace Copies=NorthlightReplayCopies;
+ Copies::enabled.store(true);
+ Copies::Slot slot;
+ Copies::attach(slot,&d.ib,&d.ib,&d.ib,UINT(d.ib.bytes.size()),nullptr);
+ auto readIndex=[&]{
+    Copies::Reader<IDirect3DIndexBuffer9> reader(&d.ib);void* bytes=nullptr;
+    assert(SUCCEEDED(reader.lock(2,6,&bytes))&&!std::memcmp(bytes,d.ib.bytes.data()+2,6));
+    assert(SUCCEEDED(reader.unlock()));
+ };
+ auto readVertex=[&]{
+    Copies::Reader<IDirect3DVertexBuffer9> reader(&d.vb[0]);void* bytes=nullptr;
+    const auto hr=reader.lock(8,24,&bytes);
+    if(SUCCEEDED(hr))assert(SUCCEEDED(reader.unlock()));
+    return hr;
+ };
+ {
+    BufferReads scope(&audit,Route::Material);
+    readIndex();
+    {BufferReads disabled(nullptr,Route::World);readIndex();}
+    {BufferReads nested(&audit,Route::Normals);assert(SUCCEEDED(readVertex()));}
+    d.vb[0].failLock=true;assert(FAILED(readVertex()));
+ }
+ readIndex();
+ assert(events.size()==4&&d.ib.locks==1);
+ assert(events[0].lane==Route::Material&&events[0].buffer==&d.ib&&events[0].index&&
+    events[0].path==Path::Fill&&events[0].offset==0&&events[0].size==d.ib.bytes.size()&&events[0].ok);
+ assert(events[1].path==Path::Copy&&events[1].offset==2&&events[1].size==6&&events[1].ok);
+ assert(events[2].lane==Route::Normals&&events[2].buffer==&d.vb[0]&&!events[2].index&&
+    events[2].path==Path::Buffer&&events[2].offset==8&&events[2].size==24&&events[2].ok);
+ assert(events[3].lane==Route::Material&&events[3].path==Path::Buffer&&!events[3].ok);
+ const auto before=NorthlightLockMeter::replayCopyWork();
+ assert(before.readLocks==2&&before.readBytes==32&&before.copyFills==1&&before.copyFillBytes==8);
+ NorthlightLockMeter::takeInterval();
+ const auto after=NorthlightLockMeter::replayCopyWork();
+ assert(after.readLocks==before.readLocks&&after.readBytes==before.readBytes&&
+    after.copyFillBytes==before.copyFillBytes&&after.copyServedBytes==before.copyServedBytes);
+ Copies::detach(slot);
+ Copies::enabled.store(false);
+}
 static uint64_t revision=1;
 static uint64_t identity(void* p,bool){return uint64_t(reinterpret_cast<uintptr_t>(p));}
 static uint64_t version(void*,bool){return revision;}
 static void configure(Frame& f){f.setIdentityProvider(identity);f.setVersionProvider(version);f.setSnapshotCacheLimit(1u<<20);}
 int main(){
+ readAudit();
  unsigned checks=0;
  for(unsigned kind=0;kind<4;++kind){Device d;Draw draw{D3DPT_TRIANGLELIST,-3,7,3,1,1,true};
   if(kind==1)d.indices({999,7,9,8},true);

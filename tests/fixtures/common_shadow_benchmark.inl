@@ -44,8 +44,8 @@ static void commonActors(WorldRenderer& w){
     std::vector<std::unique_ptr<WorldRenderer::Replay>> actors;
     for(unsigned i=0;i<48;++i){
         pose(w,0);auto p=std::move(w.replays[0]);w.replays.clear();
-        p->constantStorage[4*31]=.25f;p->constantStorage[4*32+1]=.4f;
-        p->constantStorage[4*33+3]=20;
+        p->writableConstants()[4*31]=.25f;p->writableConstants()[4*32+1]=.4f;
+        p->writableConstants()[4*33+3]=20;
         p->captureRootValid=true;
         if(i%4==1){p->texture=w.materials[1];p->texture->AddRef();p->cutoff=.5f;}
         actors.push_back(std::move(p));
@@ -69,16 +69,16 @@ static void commonFrame(WorldRenderer& w,unsigned scenario,unsigned frame){
     for(unsigned i=0;i<w.replays.size();++i){auto& p=*w.replays[i];
         p.constantGroup=i+1; // Distinct captured bone banks, as in real capture.
         const float x=float(int(i%8)-4)*3+(scenario?std::sin(frame*.07f+i*.3f)*.5f:0),y=float(int(i/8)-3)*3;
-        p.constantStorage[4*31+3]=x-travel;p.constantStorage[4*32+3]=y;
+        p.writableConstants()[4*31+3]=x-travel;p.writableConstants()[4*32+3]=y;
         p.captureRoot[0]=x;p.captureRoot[1]=y;p.captureRoot[2]=8;
     }
     w.captureMode=WorldRenderer::CaptureFresh;w.shadowSelectionDone=true;
     if(scenario==3&&frame%8==0){++w.meshGeneration;w.invalidateShadowCache();}
 }
 static void commonSaveVisibility(WorldRenderer& w,const char* folder,const char* name){
-    D3DSURFACE_DESC desc{};must(w.softVisibilitySurface->GetDesc(&desc));assert(desc.Format==D3DFMT_A16B16G16R16F);
+    D3DSURFACE_DESC desc{};must(w.directionalVisibility.surface()->GetDesc(&desc));assert(desc.Format==D3DFMT_A16B16G16R16F);
     IDirect3DSurface9* read=nullptr;must(w.d->CreateOffscreenPlainSurface(desc.Width,desc.Height,desc.Format,D3DPOOL_SYSTEMMEM,&read,nullptr));
-    must(w.d->GetRenderTargetData(w.softVisibilitySurface,read));D3DLOCKED_RECT data{};must(read->LockRect(&data,nullptr,D3DLOCK_READONLY));
+    must(w.d->GetRenderTargetData(w.directionalVisibility.surface(),read));D3DLOCKED_RECT data{};must(read->LockRect(&data,nullptr,D3DLOCK_READONLY));
     std::ofstream file(std::string(folder)+"/"+name,std::ios::binary);file<<"P5\n"<<desc.Width<<" "<<desc.Height<<"\n255\n";
     for(unsigned y=0;y<desc.Height;++y)for(unsigned x=0;x<desc.Width;++x){
         uint16_t bits;std::memcpy(&bits,static_cast<char*>(data.pBits)+y*data.Pitch+x*8,2);
@@ -112,23 +112,23 @@ static void commonBenchmark(IDirect3DDevice9* device,const char* folder){
     // Warm both routes; ensure the new fine map contains real world geometry
     // and never loses a pixel covered by the old detailed actor map.
     for(unsigned frame=0;frame<8;++frame)draw(0,0);wait();
-    const auto actors=image(device,w.actorShadowSurface[0]);const auto nearBefore=image(device,w.shadowSurface[0]);
+    const auto actors=image(device,w.actorMaps.depth(0).surface);const auto nearBefore=image(device,w.directionalMaps.current(0).surface);
     assert(w.actorCasterCount[0]>0);
     commonSaveVisibility(w,folder,"baseline-visibility.pgm");
-    w.commonExperiment.enabled=true;draw(0,0);wait();const auto common=image(device,w.actorShadowSurface[0]);
+    w.commonExperiment.enabled=true;draw(0,0);wait();const auto common=image(device,w.actorMaps.depth(0).surface);
     unsigned actorPixels=0,worldPixels=0;for(size_t i=0;i<actors.size();++i){
         if(actors[i]<.999f){++actorPixels;assert(std::fabs(common[i])<=actors[i]+2e-6f);}
         else worldPixels+=std::fabs(common[i])<.999f;
     }
-    assert(actorPixels&&worldPixels&&nearBefore==image(device,w.shadowSurface[0]));
+    assert(actorPixels&&worldPixels&&nearBefore==image(device,w.directionalMaps.current(0).surface));
     commonSaveVisibility(w,folder,"common-visibility.pgm");
-    draw(0,0);wait();assert(common==image(device,w.actorShadowSurface[0]));
-    w.commonExperiment.valid[0]=false;draw(0,0);wait();assert(common==image(device,w.actorShadowSurface[0]));
+    draw(0,0);wait();assert(common==image(device,w.actorMaps.depth(0).surface));
+    w.commonExperiment.valid[0]=false;draw(0,0);wait();assert(common==image(device,w.actorMaps.depth(0).surface));
     std::printf("COMMON_MAP_COVERAGE actorPixels=%u additionalWorldPixels=%u unchangedCoarseMap=1\n",actorPixels,worldPixels);std::fflush(stdout);
     unsigned coverageCases=0;
     for(unsigned scenario=0;scenario<4;++scenario)for(unsigned frame:{0u,15u,31u}){
-        w.commonExperiment.enabled=false;draw(scenario,frame);wait();const auto old=image(device,w.actorShadowSurface[0]);
-        w.commonExperiment.enabled=true;draw(scenario,frame);wait();const auto now=image(device,w.actorShadowSurface[0]);
+        w.commonExperiment.enabled=false;draw(scenario,frame);wait();const auto old=image(device,w.actorMaps.depth(0).surface);
+        w.commonExperiment.enabled=true;draw(scenario,frame);wait();const auto now=image(device,w.actorMaps.depth(0).surface);
         for(size_t i=0;i<old.size();++i){assert(std::isfinite(now[i])&&std::fabs(now[i])<=1);
             if(old[i]<.999f)assert(std::fabs(now[i])<=old[i]+2e-6f);}
         ++coverageCases;
@@ -141,12 +141,15 @@ static void commonBenchmark(IDirect3DDevice9* device,const char* folder){
         for(unsigned warm=0;warm<4;++warm)draw(scenario,0);wait();
         w.commonExperiment.worldDraws=w.commonExperiment.boundaryDraws=w.commonExperiment.staticRenders=w.commonExperiment.staticReuses=0;meter.draws=meter.mapDraws=meter.filterDraws=meter.staticRefreshes=0;
         meter.maps.clear();meter.filters.clear();meter.caches.clear();
-        for(auto* surface:w.shadowSurface)meter.maps.push_back(surface);
-        for(auto* surface:w.shadowCacheSurface){meter.maps.push_back(surface);meter.caches.push_back(surface);}
-        for(auto* surface:w.actorShadowSurface)meter.maps.push_back(surface);
+        for(unsigned slot=0;slot<4;++slot){
+            meter.maps.push_back(w.directionalMaps.current(slot).surface);
+            auto* cached=w.directionalMaps.cache(slot).surface;
+            meter.maps.push_back(cached);meter.caches.push_back(cached);
+        }
+        for(unsigned source=0;source<2;++source)meter.maps.push_back(w.actorMaps.depth(source).surface);
         for(auto* surface:w.commonExperiment.staticSurface)meter.maps.push_back(surface);
-        meter.maps.push_back(w.shadowScratchSurface);
-        meter.filters={w.actorTilesMidSurface,w.actorTilesSurface[0],w.actorTilesSurface[1],w.softVisibilitySurface,
+        meter.maps.push_back(w.directionalMaps.scratch().surface);
+        meter.filters={w.actorMaps.tileScratch_.surface,w.actorMaps.tiles(0).surface,w.actorMaps.tiles(1).surface,w.directionalVisibility.surface(),
                        w.commonExperiment.blockSurface[0],w.commonExperiment.blockSurface[1],w.commonExperiment.tileSurface[0],w.commonExperiment.tileSurface[1]};
         const auto beforeActors=w.actorDrawn;
         must(device->BeginScene());assert(timer.begin(measured++));must(device->EndScene());

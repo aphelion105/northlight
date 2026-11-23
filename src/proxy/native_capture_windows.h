@@ -28,8 +28,8 @@ class Session {
     static inline std::atomic<bool> codeFault_{false};
     static void observe(std::uintptr_t address,const void* bytes,std::size_t size,bool ok) noexcept {
         try{
-            std::unique_lock<std::mutex> lock(codeLock_,std::try_to_lock);
-            if(!lock.owns_lock()){codeFault_.store(true,std::memory_order_relaxed);return;}
+            // Explicit capture checks every read, including concurrent reads.
+            std::lock_guard<std::mutex> lock(codeLock_);
             if(codeOwner_)codeOwner_->code_.record(codeOwner_->clientView_,address,bytes,size,ok);
         }catch(...){codeFault_.store(true,std::memory_order_relaxed);}
     }

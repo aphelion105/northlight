@@ -3,6 +3,9 @@
 #include "world_lighting_capture_gpu.cpp"
 #undef main
 #include "weather_diagnostics.h"
+#include "compiled_shaders.h"
+#include "saved_state.h"
+#include "screen_quad.h"
 #include <filesystem>
 #include <limits>
 
@@ -52,6 +55,34 @@ int main(int argc,char** argv){
         }
         ++cases;
         if(!samples&&format==D3DFMT_A8R8G8B8){
+            {
+                SavedState saved(d);assert(saved.ok);
+                Ref<IDirect3DPixelShader9> rainScrub;
+                ok(d->CreatePixelShader(kRainScrubShader,&rainScrub.p));
+                ok(d->SetDepthStencilSurface(nullptr));
+                for(unsigned slot=1;slot<4;++slot)ok(d->SetRenderTarget(slot,nullptr));
+                ok(d->SetRenderTarget(0,single.p));
+                ok(d->SetVertexShader(nullptr));ok(d->SetFVF(D3DFVF_XYZRHW|D3DFVF_TEX1));
+                ok(d->SetPixelShader(rainScrub.p));
+                ok(d->SetRenderState(D3DRS_ZENABLE,FALSE));
+                ok(d->SetRenderState(D3DRS_STENCILENABLE,FALSE));
+                ok(d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE));
+                ok(d->SetRenderState(D3DRS_CULLMODE,D3DCULL_NONE));
+                ok(d->SetRenderState(D3DRS_FILLMODE,D3DFILL_SOLID));
+                for(unsigned slot:{0u,1u}){
+                    ok(d->SetTexture(slot,depth.p));
+                    ok(d->SetSamplerState(slot,D3DSAMP_MINFILTER,D3DTEXF_POINT));
+                    ok(d->SetSamplerState(slot,D3DSAMP_MAGFILTER,D3DTEXF_POINT));
+                }
+                const auto directory=folder.u8string();
+                ok(d->BeginScene());
+                const HRESULT draw=NorthlightScreen::drawViewportQuad(d,W,H);ok(draw);
+                NorthlightLightingCapture::Capture bindings(d,directory,42,42,42,W,H,"frame-parity-atmosphere");
+                bindings.bindings("RainScrub",3u,draw);
+                assert(bindings.finish(true));
+                ok(d->EndScene());
+            }
+            before.same(d);
             const auto missing=root/"missing-mask";std::filesystem::create_directory(missing);ok(d->BeginScene());assert(!NorthlightWeatherDiagnostics::capture(d,missing.u8string(),frame,depth.p,rt[0].p,nullptr));ok(d->EndScene());before.same(d);
             const auto failure=root/"failed-mask";std::filesystem::create_directory(failure);meter.arm("GetRenderTargetData",3);
             ok(d->BeginScene());assert(!NorthlightWeatherDiagnostics::capture(d,failure.u8string(),frame,depth.p,rt[0].p,stencil.p));ok(d->EndScene());assert(meter.triggered);before.same(d);

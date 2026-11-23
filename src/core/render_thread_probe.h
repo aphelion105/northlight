@@ -8,6 +8,10 @@
 #include <atomic>
 #include <cstdint>
 #include <vector>
+#ifdef NORTHLIGHT_REPLAY_STAND
+#include <cstdio>
+#include <cstdlib>
+#endif
 
 namespace NorthlightRenderThreadProbe {
 // Stored once by WorldRenderer::loadQuality() during device creation, before the
@@ -25,7 +29,20 @@ inline void configure(bool profile,bool probe){profileFlag.store(profile,std::me
 // frame%120==60) never use this.
 constexpr unsigned SamplePeriod=120,ProfilePeriod=127;
 inline bool profileFrame(unsigned frame){return frame%ProfilePeriod==0;}
-inline bool sampleFrame(unsigned frame,bool profile){return profile?profileFrame(frame):frame%SamplePeriod==0;}
+inline bool sampleFrame(unsigned frame,bool profile){
+#ifdef NORTHLIGHT_REPLAY_STAND
+    struct Window {unsigned first=0,last=0,step=0;};
+    static const Window window=[] {
+        Window parsed;char trailing=0;
+        const char* value=std::getenv("NORTHLIGHT_RETRACE_PROFILE_FRAMES");
+        if(!value||std::sscanf(value,"%u:%u:%u%c",&parsed.first,&parsed.last,&parsed.step,&trailing)!=3||
+           parsed.last<parsed.first||!parsed.step)return Window{};
+        return parsed;
+    }();
+    if(window.step)return frame>=window.first&&frame<=window.last&&(frame-window.first)%window.step==0;
+#endif
+    return profile?profileFrame(frame):frame%SamplePeriod==0;
+}
 inline bool sampleFrame(unsigned frame){return sampleFrame(frame,profiling());}
 
 // Nearest-rank percentiles (the value at index ceil(q*n)-1 after sorting);

@@ -17,9 +17,9 @@ with tempfile.TemporaryDirectory(prefix='event-cs-pause-') as folder:
         return exe
     subprocess.run([str(build('current',[]))],check=True,timeout=60)
     header=fp.src('query_poll.h').read_text()
-    guard='if((backend==EventPendingKind::Untouched&&elapsed>=200000)||expired'
+    guard='backend==EventPendingKind::Untouched||'
     assert header.count(guard)==1
-    (folder/'query_poll.h').write_text(header.replace(guard,'if((false&&backend==EventPendingKind::Untouched)||expired'))
+    (folder/'query_poll.h').write_text(header.replace(guard,''))
     control=subprocess.run([str(build('old-policy',['-I',str(folder)]))],capture_output=True,text=True,timeout=60)
     assert control.returncode!=0 and 'elapsed<200000' in control.stderr,control.stdout+control.stderr
     print('EVENT_CS_NEGATIVE_PASS removing_only_cpu_pending_rule_fails_200us_spin_bound',flush=True)

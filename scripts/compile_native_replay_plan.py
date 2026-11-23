@@ -21,10 +21,22 @@ from prepare_native_scene import digest, inspect_snapshot, pe32, tool_runtime, u
 
 HEADER_BYTES, RECORD_BYTES, MAX_RECORDS = 256, 80, 20000
 MAX_TOTAL = 256 << 20
-MAX_DUMP_BYTES, MAX_TRACE_CALLS = 512 << 20, 2000000
+# The 128-player Dalaran trace exceeds 512 MiB and 2.5M filtered calls.
+MAX_DUMP_BYTES, MAX_TRACE_CALLS = 768 << 20, 3_500_000
 CALL = re.compile(r'^(\d+)\s+@([0-9a-fA-F]+)\s+(\w+(?:::\w+)?)\((.*)$')
 MARKER = re.compile(r'NLSNAP1;session=([A-Za-z0-9-]{1,64});record=(\d+);device=([0-9a-f]+);frame=(\d+);epoch=(\d+);thread=(\d+);trigger=([1234]);draw=(\d+);bytes=(\d+);crc=([0-9a-f]{8})')
+TEXTURE_WITNESS = re.compile(r'col = (?:0x4e4c0002|1313603586), wszName = L?"NLTEX1;([0-9a-f]{8});([0-9a-f]{8})"\)')
 DRAW_APIS = {name: number for number, name in enumerate(('DrawPrimitive', 'DrawIndexedPrimitive', 'DrawPrimitiveUP', 'DrawIndexedPrimitiveUP'), 1)}
+TEXTURE_OUTPUTS = {'CreateTexture': 'ppTexture', 'CreateCubeTexture': 'ppCubeTexture',
+                   'CreateVolumeTexture': 'ppVolumeTexture'}
+# The official parser still walks the whole trace. Keep every call whose name
+# join() inspects, including the Ex and extra swap-chain refusal paths. This
+# avoids dumping large shader constants and texture upload calls to text.
+JOIN_CALLS = ('^(Direct3DCreate9(Ex)?|D3DPERF_SetMarker|IDirect3D9::.*|'
+              'IDirect3DDevice9::(' + '|'.join((*DRAW_APIS, *TEXTURE_OUTPUTS)) + '|Reset|Present|Release|CreateAdditionalSwapChain)|'
+              'IDirect3DSwapChain9::(Present|Reset|Release))$|Ex::')
+PROBE_FACTORY_CALLS = ('IDirect3D9::CheckDeviceMultiSampleType', 'IDirect3D9::CheckDeviceFormat',
+                       'IDirect3D9::EnumAdapterModes', 'IDirect3D9::GetAdapterModeCount')
 
 
 def load_json(path, limit=65536):
@@ -282,28 +294,69 @@ def snapshot_inputs(root):
     return session, journal[1:-1], packets, hashes, identities
 
 
-def join(rows, session, journal):
+def join(rows, session, journal, present_frames=(), checkpoint_frames=()):
     factory = device = None
     factory_call = create_call = final_release = None
     trace_thread = os_thread = None
     draws = presents = resets = used = 0
+    requested_presents = set(present_frames)
+    requested_checkpoints = set(checkpoint_frames)
+    requested_world = requested_presents | requested_checkpoints
+    present_calls = {}
+    checkpoints = {}
+    epoch_first_present = 0
+    present_epoch = None
+    present_epoch_first = None
+    world_epochs = {}
     pending = None
     records, trigger_seen = [], set()
+    probe_factory = None
+    probe_used = False
+    probe_identity = 0
+    last_texture = texture_witnesses = 0
     for row in rows:
         name, text, call, thread = row['name'], row['text'], row['call'], row['thread']
+        previous_texture, last_texture = last_texture, 0
         if 'Ex::' in name or name in ('Direct3DCreate9Ex', 'IDirect3DDevice9::CreateAdditionalSwapChain'):
             raise ValueError('Ex/multiple swap chains are outside the validated import protocol')
         if name == 'Direct3DCreate9':
-            if factory is not None:
-                raise ValueError('Multiple factories/reused capture session')
             match = re.search(r'\) = (0x[0-9a-fA-F]+)\s*$', text)
             if not match or not 0 < int(match[1], 16) <= 0xffffffff:
                 raise ValueError('Invalid factory return identity')
-            factory, factory_call, trace_thread = int(match[1], 16), call, thread
+            key = int(match[1], 16)
+            if factory is None:
+                factory, factory_call, trace_thread = key, call, thread
+            elif device is None or draws or pending or probe_used or thread != trace_thread or key in (factory, device):
+                raise ValueError('Unexpected extra factory outside the startup capability probe')
+            else:
+                probe_factory = key
+                probe_used = True
         elif name == 'IDirect3D9::CreateDevice':
             if device is not None or factory is None or pointer(text, 'this') != factory or thread != trace_thread:
                 raise ValueError('Unmatched or multiple device creation')
             result(text); device = pointer(text, 'ppReturnedDeviceInterface'); create_call = call
+        elif name.startswith('IDirect3D9::') and probe_factory is not None and pointer(text, 'this') == probe_factory:
+            if draws or thread != trace_thread:
+                raise ValueError('Auxiliary factory outlived the startup capability probe')
+            if probe_identity == 1:
+                if name != 'IDirect3D9::Release' or not text.endswith(') = 1'):
+                    raise ValueError('Startup probe did not balance its IUnknown reference')
+                probe_identity = 2
+            elif name == 'IDirect3D9::QueryInterface' and not probe_identity:
+                if (', riid = IID_IUnknown, ' not in text or not text.endswith(') = S_OK') or
+                        pointer(text, 'ppvObj') != probe_factory):
+                    raise ValueError('Startup probe queried an unexpected COM identity')
+                probe_identity = 1
+            elif name == 'IDirect3D9::Release' and text.endswith(') = 0'):
+                probe_factory = None
+            elif name not in PROBE_FACTORY_CALLS:
+                raise ValueError(f'Unsupported startup capability probe call {name} at {call}')
+        elif name == 'D3DPERF_SetMarker' and 'NLTEX1;' in text:
+            match = TEXTURE_WITNESS.fullmatch(text)
+            if (not match or thread != trace_thread or pending or final_release is not None or not previous_texture or
+                    not 0 < int(match[1], 16) or int(match[1], 16) & 3 or int(match[2], 16) != previous_texture):
+                raise ValueError(f'Texture witness has no matching texture creation at call {call}')
+            texture_witnesses += 1
         elif name == 'D3DPERF_SetMarker' and 'NLSNAP1' in text:
             if pending is not None or device is None or final_release is not None or used >= len(journal):
                 raise ValueError('Marker has no unique live target Draw')
@@ -328,9 +381,16 @@ def join(rows, session, journal):
             if source_tid != os_thread or (frame, trigger) in trigger_seen:
                 raise ValueError('Producer identity changed or trigger repeated within a frame')
             trigger_seen.add((frame, trigger))
+            if trigger == 2 and frame in requested_world:
+                world_epochs[frame] = epoch
             pending = (call, key, draw, frame, epoch, trigger, source_tid, size, crc)
         elif name.startswith('IDirect3DDevice9::') or name.startswith('IDirect3DSwapChain9::'):
             method = name.split('::')[1]
+            if method in TEXTURE_OUTPUTS:
+                if name.startswith('IDirect3DDevice9::') and device is not None and thread == trace_thread and final_release is None:
+                    if text.endswith(') = D3D_OK') and pointer(text, 'this') == device:
+                        last_texture = pointer(text, TEXTURE_OUTPUTS[method])
+                continue
             if method not in DRAW_APIS and method not in ('Reset', 'Present', 'Release'):
                 continue
             receiver = pointer(text, 'this')
@@ -353,13 +413,26 @@ def join(rows, session, journal):
                 result(text)
                 if pending:
                     raise ValueError('Marker crossed a Present')
+                if presents in requested_world and world_epochs.get(presents) != resets:
+                    raise ValueError(f'Present {presents} has no authenticated World snapshot in its Reset epoch')
+                if presents in requested_presents:
+                    if present_epoch is not None and present_epoch != resets:
+                        raise ValueError('Frame parity Presents cross a Reset boundary')
+                    present_epoch = resets
+                    present_epoch_first = epoch_first_present
+                    present_calls[presents] = call
+                if presents in requested_checkpoints:
+                    checkpoints[presents] = dict(trace_call=call, epoch=resets, epoch_first_present=epoch_first_present)
                 presents += 1
             elif method == 'Reset':
                 result(text)
                 if pending:
                     raise ValueError('Marker crossed a Reset')
                 resets += 1
+                epoch_first_present = presents
             else:
+                if probe_factory is not None:
+                    raise ValueError('The startup capability probe factory must retire before the first draw')
                 result(text); draws += 1
                 if pending:
                     marker, key, draw, frame, epoch, trigger, source_tid, size, crc = pending
@@ -369,11 +442,24 @@ def join(rows, session, journal):
                     used += 1; pending = None
                 elif not used:
                     raise ValueError('Capture did not begin before the first Draw')
-    if pending or used != len(journal) or not used or final_release is None or not presents:
+    if pending or probe_factory is not None or used != len(journal) or not used or final_release is None or not presents:
         raise ValueError('Trace/session is not complete through final device release')
-    return {'factory_call': factory_call, 'create_call': create_call, 'factory': factory, 'device': device,
-            'draws': draws, 'presents': presents, 'resets': resets, 'final_release': final_release,
-            'trace_thread': trace_thread, 'os_thread': os_thread}, records
+    summary = {'factory_call': factory_call, 'create_call': create_call, 'factory': factory, 'device': device,
+               'draws': draws, 'presents': presents, 'resets': resets, 'final_release': final_release,
+               'trace_thread': trace_thread, 'os_thread': os_thread}
+    if texture_witnesses:
+        summary['texture_witnesses'] = texture_witnesses
+    if requested_presents:
+        if present_calls.keys() != requested_presents:
+            raise ValueError('Frame parity requires every selected Present in the trace')
+        summary['selected_presents'] = present_calls
+        summary['selected_present_epoch'] = present_epoch
+        summary['selected_epoch_first_present'] = present_epoch_first
+    if requested_checkpoints:
+        if checkpoints.keys() != requested_checkpoints:
+            raise ValueError('World checkpoint Present is missing from the trace')
+        summary['world_checkpoints'] = checkpoints
+    return summary, records
 
 
 def compile_plan(args):
@@ -392,9 +478,17 @@ def compile_plan(args):
     authored = host.get('authored_transport', False)
     if type(authored) is not bool or authored != bool(getattr(args, 'allow_authored_transport', False)):
         raise ValueError('Authored transport requires an explicit matching compiler opt-in')
-    if (host.get('wrapper_sha256') != digest(Path(tools['root']) / 'lib/wrappers/d3d9.dll') or
+    wrapper = getattr(args, 'capture_wrapper', None)
+    if wrapper is not None:
+        wrapper = wrapper.resolve()
+        pe32(wrapper)
+        if authored or b'NORTHLIGHT_APITRACE_D3D9_TARGET\0' not in wrapper.read_bytes():
+            raise ValueError('Private wrapper must use the dedicated real-game D3D9 target override')
+        inputs[str(wrapper)] = digest(wrapper)
+    expected_wrapper = wrapper or Path(tools['root']) / 'lib/wrappers/d3d9.dll'
+    if (host.get('wrapper_sha256') != digest(expected_wrapper) or
             Path(host.get('trace_path', '')).resolve() != trace):
-        raise ValueError('Capture must identify the exact official outer wrapper and trace')
+        raise ValueError('Capture must identify the exact outer wrapper and trace')
     if authored:
         producer = Path(host.get('producer_exe_path', '')).resolve()
         if (not producer.is_file() or host.get('producer_exe_sha256') != digest(producer) or
@@ -422,19 +516,23 @@ def compile_plan(args):
         raise ValueError('Private output must not overlap capture/source inputs')
     output.mkdir(parents=True)
     command = [str(Path(tools['root']) / 'bin/apitrace.exe'), 'dump', '--color=never', '--thread-ids=true',
-               '--multiline=false', str(trace)]
+               '--multiline=false']
+    if not authored:
+        command.extend(['--verbose', '--grep=' + JOIN_CALLS])
+    command.append(str(trace))
     report = {'format': 1, 'command': command, 'inputs': inputs, 'diagnostic': True, 'fps_eligible': False,
               'scene_ready': False, 'authored_transport_only': authored, 'typed_resource_aliases_required': aliases_required,
               'typed_resource_aliases_runtime_validated': False, 'record_resource_identities': identities,
               'client_code_proof_required': bool(code_proof), 'client_code_observation': code_summary,
-              'client_code_runtime_validation_pending': bool(code_proof), 'pass': False}
+              'client_code_runtime_validation_pending': bool(code_proof), 'join_calls_only': not authored, 'pass': False}
     try:
         env = os.environ.copy(); env['TEMP'] = env['TMP'] = str(output)
         code = dump_trace(command, output, env)
         report['dump_exit_code'] = code
         if code or (output / 'dump.stderr').read_bytes().strip():
             raise ValueError('Official parser failed or emitted a warning; evidence preserved')
-        summary, records = join(calls(output / 'trace.dump'), session, journal)
+        summary, records = join(calls(output / 'trace.dump'), session, journal, getattr(args, 'present_frame', ()),
+                                getattr(args, 'checkpoint_frame', ()))
         paths = (str(dll).encode('utf-8'), str(trace).encode('utf-8'))
         if any(not 0 < len(p) <= 4096 for p in paths):
             raise ValueError('Import path length exceeds protocol')
@@ -473,6 +571,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for option in ('trace', 'snapshot-dir', 'client', 'stand-dll', 'tool-root', 'output'):
         parser.add_argument('--' + option, type=Path, required=True)
+    parser.add_argument('--capture-wrapper', type=Path, help='Explicit private apitrace wrapper used by a real game capture')
+    parser.add_argument('--present-frame', type=int, action='append', default=[],
+                        help='Certify a zero-based Present ordinal and its World snapshot for image parity')
+    parser.add_argument('--checkpoint-frame', type=int, action='append', default=[],
+                        help='Certify a World checkpoint Present in its original Reset epoch')
     parser.add_argument('--allow-authored-transport', action='store_true',
                         help='Admit a truthfully labelled authored producer with a separate data-only client PE; never FPS acceptance')
     print(json.dumps(compile_plan(parser.parse_args()), indent=2))

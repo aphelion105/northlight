@@ -110,6 +110,58 @@ def main():
                        'presents': 1, 'resets': 0, 'final_release': 5, 'trace_thread': 2, 'os_thread': 99}
     assert records[0][:5] == (2, 3, 0x20000, 1, 0)
     checks.append('nested-dispatch-preserves-marker-before-parent')
+    world_journal = [dict(journal[0], trigger=2)]
+    world_rows = rows[:2] + [dict(rows[2], text=rows[2]['text'].replace('trigger=1', 'trigger=2'))] + rows[3:]
+    assert plan.join(world_rows, 'fixture', world_journal, [0])[0]['selected_presents'] == {0: 4}
+    check('parity-present-missing-world-marker', lambda: plan.join(rows, 'fixture', journal, [0]), True)
+    check('parity-present-outside-trace', lambda: plan.join(world_rows, 'fixture', world_journal, [1]), True)
+    reset = row(5, 'IDirect3DDevice9::Reset', 'this = 0x20000) = D3D_OK')
+    release = dict(world_rows[-1], call=6)
+    trailing_reset = plan.join(world_rows[:-1] + [reset, release], 'fixture', world_journal, [0])[0]
+    assert trailing_reset['selected_present_epoch'] == 0 and trailing_reset['selected_epoch_first_present'] == 0
+    assert trailing_reset['resets'] == 1
+    checks.append('parity-present-before-trailing-reset')
+    check('parity-present-with-world-marker-from-previous-epoch', lambda: plan.join(
+        world_rows[:-2] + [dict(reset, call=4), dict(world_rows[-2], call=5), release],
+        'fixture', world_journal, [0]), True)
+    after_reset = [dict(world_rows[2], call=8, text=world_rows[2]['text'].replace('record=0', 'record=1')
+                        .replace('frame=0;epoch=0', 'frame=1;epoch=1').replace('draw=1;', 'draw=2;')),
+                   dict(world_rows[3], call=7), dict(world_rows[4], call=9), dict(release, call=10)]
+    reset_journal = world_journal + [dict(world_journal[0], record=1, frame=1, epoch=1, draw_ordinal=2)]
+    reset_rows = world_rows[:-1] + [reset] + after_reset
+    post_reset = plan.join(reset_rows, 'fixture', reset_journal, [1])[0]
+    assert post_reset['selected_present_epoch'] == 1 and post_reset['selected_epoch_first_present'] == 1
+    check('parity-presents-cross-reset', lambda: plan.join(reset_rows, 'fixture', reset_journal, [0, 1]), True)
+    multi = plan.join(reset_rows, 'fixture', reset_journal, [1], [0, 1])[0]
+    assert multi['selected_presents'] == {1: 9}
+    assert multi['world_checkpoints'] == {0: dict(trace_call=4, epoch=0, epoch_first_present=0),
+                                          1: dict(trace_call=9, epoch=1, epoch_first_present=1)}
+    check('checkpoint-missing-world-marker', lambda: plan.join(rows, 'fixture', journal, [], [0]), True)
+    check('checkpoint-outside-trace', lambda: plan.join(reset_rows, 'fixture', reset_journal, [1], [2]), True)
+    probe = [row(10, 'Direct3DCreate9', 'SDKVersion = 32) = 0x30000'),
+             row(11, 'IDirect3D9::CheckDeviceMultiSampleType', 'this = 0x30000) = D3DERR_NOTAVAILABLE'),
+             row(12, 'IDirect3D9::Release', 'this = 0x30000) = 0')]
+    check('closed-startup-probe-factory', lambda: plan.join(rows[:2] + probe + rows[2:], 'fixture', journal))
+    identity = row(15, 'IDirect3D9::QueryInterface', 'this = 0x30000, riid = IID_IUnknown, ppvObj = &0x30000) = S_OK')
+    balance = row(16, 'IDirect3D9::Release', 'this = 0x30000) = 1')
+    check('balanced-startup-probe-iunknown', lambda: plan.join(
+        rows[:2] + probe[:1] + [identity, balance] + probe[1:] + rows[2:], 'fixture', journal))
+    check('unbalanced-startup-probe-iunknown', lambda: plan.join(
+        rows[:2] + probe[:1] + [identity] + probe[1:] + rows[2:], 'fixture', journal), True)
+    check('unproved-startup-probe-iunknown', lambda: plan.join(rows[:2] + probe[:1] + [
+        dict(identity, text=identity['text'].replace('&0x30000', '&0x40000')), balance] + probe[1:] + rows[2:],
+        'fixture', journal), True)
+    check('unretired-startup-probe-factory', lambda: plan.join(rows[:2] + probe[:-1] + rows[2:], 'fixture', journal), True)
+    check('unexpected-probe-factory-command', lambda: plan.join(rows[:2] + [probe[0],
+          row(11, 'IDirect3D9::GetDeviceCaps', 'this = 0x30000) = D3D_OK'), probe[2]] + rows[2:], 'fixture', journal), True)
+    check('late-probe-factory', lambda: plan.join(rows[:4] + probe + rows[4:], 'fixture', journal), True)
+    texture = row(20, 'IDirect3DDevice9::CreateTexture', 'this = 0x20000, ppTexture = &0x30000) = D3D_OK')
+    witness = row(21, 'D3DPERF_SetMarker', 'col = 0x4e4c0002, wszName = L"NLTEX1;00040000;00030000")')
+    assert plan.join(rows[:2] + [texture, witness] + rows[2:], 'fixture', journal)[0]['texture_witnesses'] == 1
+    checks.append('typed-texture-witness-after-create')
+    check('missing-texture-creation', lambda: plan.join(rows[:2] + [witness] + rows[2:], 'fixture', journal), True)
+    bad_witness = dict(witness, text=witness['text'].replace('00030000', '00030004'))
+    check('wrong-texture-witness', lambda: plan.join(rows[:2] + [texture, bad_witness] + rows[2:], 'fixture', journal), True)
     menu_rows = copy.deepcopy(rows); menu_journal = copy.deepcopy(journal)
     menu_rows[2]['text'] = menu_rows[2]['text'].replace('trigger=1;', 'trigger=4;')
     menu_journal[0]['trigger'] = 4

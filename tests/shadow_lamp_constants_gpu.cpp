@@ -14,9 +14,9 @@ struct LampConstantMeter:ForwardIDirect3DDevice9 {
 struct PipelineOffTest {
     static unsigned stage(const WorldRenderer& w,IDirect3DPixelShader9* p){
         if(!p)return 0;
-        if(p==w.localDirect16PS)return 1;
-        if(p==w.localDirectPS)return 2;
-        if(p==w.finalPS||p==w.hdrFinalPS||p==w.hdrCombinedPS||p==w.materialPS||p==w.hdrMaterialPS)return 3;
+        if(p==w.localLighting.localDirect16PS)return 1;
+        if(p==w.localLighting.localDirectPS)return 2;
+        if(WorldScreenEffectsTest::isWorldOrMaterialComposite(w,p))return 3;
         return 0;
     }
     static void setup(WorldRenderer& w,unsigned W,unsigned H,bool wide,IDirect3DTexture9* detail){
@@ -37,7 +37,7 @@ struct PipelineOffTest {
         w.setMaterialDetail(detail,1,48,nullptr,8);
         assert(w.resources(W,H,D3DFMT_A16B16G16R16F,w.frameRequirements(detail!=nullptr)));
         // Warm resources retain the production fallback to two ordinary batches.
-        if(!wide)drop(w.localDirect16PS);
+        if(!wide)drop(w.localLighting.localDirect16PS);
     }
     static unsigned selected(const WorldRenderer& w){return w.localDirectCount;}
 };

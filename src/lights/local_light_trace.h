@@ -1,9 +1,27 @@
 #pragma once
 #include "local_light_selection.h"
+#include "frame_parity_clock.h"
 
 // Sampled submission ledger. Successful draw submission says nothing about a
 // light's pixel contribution; that requires the matching scene/depth capture.
 namespace NorthlightLocalLightTrace {
+// Ordered input hashes for paired runs. Keep submission diagnostics separate:
+// these include warm-up frames and require no GPU readback.
+inline bool auditInputs(){
+    static const bool enabled=[] {
+        const char* value=std::getenv("NORTHLIGHT_FRAME_PARITY_LIGHT_HISTORY");
+        return NorthlightFrameParityClock::enabled()&&value&&std::strcmp(value,"1")==0;
+    }();
+    return enabled;
+}
+struct InputHash {
+    unsigned long long value=14695981039346656037ull;
+    template<class T> void add(const T* data,std::size_t count){
+        const auto* bytes=reinterpret_cast<const unsigned char*>(data);
+        for(std::size_t i=0;i<count*sizeof(T);++i)value=(value^bytes[i])*1099511628211ull;
+    }
+};
+
 using Rect=NorthlightLocalLightScissor::Rect;
 enum class Stage {NotSelected,NotReached,Clipped,Submitted,Failed};
 inline const char* name(Stage stage){

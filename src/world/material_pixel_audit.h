@@ -1,5 +1,6 @@
 #pragma once
 #include "material_profile.h"
+#include "screen_quad.h"
 #include "world_compiled_shaders.h"
 
 // Diagnostic grid only; never reads back the full material targets or waits for
@@ -22,7 +23,7 @@ public:
             logf("MATERIAL_PIXELS frame=%llu grid=%ux%u valid=%lu normalChanged=%lu cavity=%lu selfShadow=%lu rawCaptured=%lu depthMismatch=%lu sceneNormalRange=%lu sceneNormalFull=%lu sceneOcclusionRange=%lu sampled_grid=1",(unsigned long long)s.frame,W,H,(unsigned long)value[0],(unsigned long)value[1],(unsigned long)value[2],(unsigned long)value[3],(unsigned long)value[4],(unsigned long)value[5],(unsigned long)value[6],(unsigned long)value[7],(unsigned long)value[8]);
         }
     }
-    template<class Quad> void sample(NorthlightMaterialProfile* profile,NorthlightStateBlockPool* pool,Quad quad){
+    void sample(NorthlightMaterialProfile* profile,NorthlightStateBlockPool* pool){
         if(!profile||!profile->recording()||failed)return;
         Slot* slot=nullptr;for(auto& s:slots)if(!s.pending){slot=&s;break;}if(!slot)return;
         NorthlightMaterialProfile::Scope timing(profile,NorthlightMaterialProfile::VisibilityAudit,0,true);timing.work(uint64_t(W)*H*Counts);
@@ -33,9 +34,11 @@ public:
         float control[4]={};if(FAILED(d->GetPixelShaderConstantF(73,control,1)))return;
         if(FAILED(d->SetDepthStencilSurface(nullptr))||FAILED(d->SetRenderTarget(0,target))||FAILED(d->SetPixelShader(shader)))return;
         for(auto key:{D3DRS_ZENABLE,D3DRS_ZWRITEENABLE,D3DRS_STENCILENABLE,D3DRS_ALPHATESTENABLE,D3DRS_ALPHABLENDENABLE,D3DRS_COLORWRITEENABLE,D3DRS_SCISSORTESTENABLE})if(FAILED(d->SetRenderState(key,FALSE)))return;
+        const D3DVIEWPORT9 viewport{0,0,W,H,0,1};
         for(unsigned i=0;i<Counts;++i){control[3]=float(i);
             if(FAILED(d->SetPixelShaderConstantF(73,control,1))||FAILED(slot->query[i]->Issue(D3DISSUE_BEGIN))){disable();return;}
-            const HRESULT drawn=quad(W,H),ended=slot->query[i]->Issue(D3DISSUE_END);
+            d->SetViewport(&viewport);
+            const HRESULT drawn=NorthlightScreen::drawQuad(d,W,H),ended=slot->query[i]->Issue(D3DISSUE_END);
             if(FAILED(drawn)||FAILED(ended)){disable();return;}
         }
         slot->frame=profile->frameNumber();slot->pending=true;

@@ -6,9 +6,12 @@ import subprocess,sys
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
 out=fp.output_dir();out.mkdir(parents=True,exist_ok=True)
-source=fp.src('world_renderer.h').read_text();begin=source.index('    IDirect3DPixelShader9* localDirectShader(unsigned count){');end=source.index('\n    IDirect3DPixelShader9* fogVolumeShader(',begin)
-assert 'localDirectShader(batch.count)' in source
-assert 'drop(localDirectSinglePS);localDirectSingleRefused=false;' in source
+source=fp.src('world_local_lighting.h').read_text()
+begin=source.index('    IDirect3DPixelShader9* localDirectShader(IDirect3DDevice9* d,unsigned count){')
+end=source.index('\n    }\n',begin)+len('\n    }\n')
+assert 'localDirectShader(d,batch.count)' in source
+assert 'localLighting.reset();' in fp.src('world_renderer.h').read_text()
+assert 'drop(localDirectSinglePS);\n        localDirectSingleRefused=false;' in source
 method=source[begin:end]
 harness=r'''
 #include <cassert>
@@ -22,15 +25,16 @@ static void drop(IDirect3DPixelShader9*& p){if(p)p->Release();p=nullptr;}
 struct Device {unsigned mode=0,calls=0;IDirect3DPixelShader9 shader;
  HRESULT CreatePixelShader(const DWORD* code,IDirect3DPixelShader9** p){assert(code==kLocalDirect1Shader);++calls;*p=mode<2?&shader:nullptr;return mode==1||mode==3?HRESULT(-1):0;}
 };
+using IDirect3DDevice9=Device;
 struct Renderer {
- Device* d;IDirect3DPixelShader9 fallback;IDirect3DPixelShader9* localDirectPS=&fallback,*localDirectSinglePS=nullptr;bool localDirectSingleRefused=false;
+ IDirect3DPixelShader9 fallback;IDirect3DPixelShader9* localDirectPS=&fallback,*localDirectSinglePS=nullptr;bool localDirectSingleRefused=false;
  METHOD
 };
-int main(){for(unsigned mode=0;mode<4;++mode){Device device;device.mode=mode;Renderer w;w.d=&device;
- for(unsigned count=0;count<137;++count)if(count!=1)assert(w.localDirectShader(count)==w.localDirectPS);assert(!device.calls);
- auto* first=w.localDirectShader(1);assert(device.calls==1);if(!mode)assert(first==&device.shader&&!w.localDirectSingleRefused);else assert(first==w.localDirectPS&&w.localDirectSingleRefused&&!w.localDirectSinglePS);
- for(unsigned i=0;i<1000;++i)assert(w.localDirectShader(1)==first);assert(device.calls==1);assert(device.shader.releases==(mode==1));
- drop(w.localDirectSinglePS);w.localDirectSingleRefused=false;assert(w.localDirectShader(1)==first&&device.calls==2);
+int main(){for(unsigned mode=0;mode<4;++mode){Device device;device.mode=mode;Renderer w;
+ for(unsigned count=0;count<137;++count)if(count!=1)assert(w.localDirectShader(&device,count)==w.localDirectPS);assert(!device.calls);
+ auto* first=w.localDirectShader(&device,1);assert(device.calls==1);if(!mode)assert(first==&device.shader&&!w.localDirectSingleRefused);else assert(first==w.localDirectPS&&w.localDirectSingleRefused&&!w.localDirectSinglePS);
+ for(unsigned i=0;i<1000;++i)assert(w.localDirectShader(&device,1)==first);assert(device.calls==1);assert(device.shader.releases==(mode==1));
+ drop(w.localDirectSinglePS);w.localDirectSingleRefused=false;assert(w.localDirectShader(&device,1)==first&&device.calls==2);
  }std::puts("PASS production single-light selector: 4 HRESULT/null modes, exact count, cached reuse, failure release, retry reset, full shader fallback");}
 '''.replace('METHOD',method)
 (out/'selector.cpp').write_text(harness)

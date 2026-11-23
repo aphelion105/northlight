@@ -4,6 +4,8 @@
 src/world/world_renderer.h and src/proxy/renderer.cpp sits inside `#if NORTHLIGHT_DEV_TUNING` (the shipped build
 compiles none of it and keeps its #else lines), the macro is only ever used as a plain `#if`, the overlay header is included
 only there, and the shared sources keep the identity defaults (buildField's zoneScale is null by default)."""
+
+from source_units import source_text
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
 import re
@@ -35,7 +37,7 @@ for name in ('world_renderer.h', 'renderer.cpp'):
     assert not bad, f'{name}: dev tuning code outside #if NORTHLIGHT_DEV_TUNING: {bad[:3]}'  # the shipped DLL must contain none of it
     uses = re.findall(r'^\s*#\s*(?:if|ifdef|ifndef|elif)\b[^\n]*NORTHLIGHT_DEV_TUNING[^\n]*$', text, flags=re.M)
     assert all(re.fullmatch(r'\s*#\s*if NORTHLIGHT_DEV_TUNING\s*', u) for u in uses), f'{name}: use only a plain #if NORTHLIGHT_DEV_TUNING'
-w = fp.src('world_renderer.h').read_text()
+w = source_text(fp.src('world_renderer.h'))
 assert w.count('#if NORTHLIGHT_DEV_TUNING') >= 6, 'the dev hooks (include, members, constructor, palette, worker reach and fog) exist'
 # Release builds use the authored reach and the independent cached fog field with identity scale.
 assert 'const float profileReach=shadowRanges.at(r.map,NorthlightRegionalFog::zoneAt(paletteRegion->region,center.x,center.y));' in w

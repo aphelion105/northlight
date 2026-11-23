@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 # northlight-test: requires=windows-exe,zig
 """Compile actual loader/device gates, including fallback and lock-policy independence."""
+
+from source_units import source_text
 import argparse
 import hashlib
 import json
@@ -17,7 +19,7 @@ p.add_argument('--before', type=Path)
 a = p.parse_args()
 out = fp.output_dir()
 renderer = fp.src('renderer.cpp')
-source = renderer.read_text(encoding='utf-8')
+source = source_text(renderer)
 
 
 def gates(text):
@@ -105,6 +107,6 @@ if a.before:
     negative = run('old-backend-gates', a.before.read_text(encoding='utf-8'))
     assert negative.returncode and 'Assertion failed:' in negative.stdout+negative.stderr
     print('BACKEND_WORK_NEGATIVE_PASS old-backend-gates')
-assert renderer.read_text(encoding='utf-8') == source
+assert source_text(renderer) == source
 (out/'validation.json').write_text(json.dumps(dict(pass_=True, renderer_sha256=hashlib.sha256(renderer.read_bytes()).hexdigest(),
     negative_control=bool(a.before), scope='Actual loader assignments and Device selectors; GPU pixel/state equivalence tested separately.'), indent=2)+'\n', encoding='utf-8')

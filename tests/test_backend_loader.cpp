@@ -1,6 +1,7 @@
 // Guarded backend loading (backend_loader.h) against a fake file system and
 // loader. Optional argv: real files to scan, as "expect:path" (dxvk-<version>[+env], ours, plain).
 #include "backend_loader.h"
+#include "dxvk_compatibility.h"
 #include <cassert>
 #include <cstdio>
 #include <fstream>
@@ -121,8 +122,20 @@ static void hashing(){
     Sha256 million;std::string a(1000,'a');for(int i=0;i<1000;++i)million.update(a.data(),a.size());
     assert(million.hex()=="cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0");
 }
+static void compatibilityReload(){
+    using NorthlightDxvkCompatibility::config;
+    const std::string overrides="d3d9.customVendorId = 10de; dxvk.allowFse = True;";
+    const auto initial=config(overrides);
+    assert(initial.find("d3d9.customVendorId = 1002;")==0);
+    assert(initial.substr(initial.size()-overrides.size())==overrides);
+    assert(config(initial)==initial&&initial.size()<260);
+    const auto forced=config(initial,true);
+    assert(forced==initial+"; dxvk.allowFse = False; ");
+    assert(config(forced,true)==forced&&config(forced)==forced&&forced.size()<260);
+    assert(config(config(""))==config(""));
+}
 int main(int argc,char** argv){
-    inspection();loading();reentry();hashing();
+    inspection();loading();reentry();hashing();compatibilityReload();
     for(int i=1;i<argc;++i){   // real binaries, scanned read-only
         std::string arg=argv[i];const size_t colon=arg.find(':');const std::string expect=arg.substr(0,colon),path=arg.substr(colon+1);
         std::ifstream f(path,std::ios::binary);assert(f);std::vector<unsigned char> d((std::istreambuf_iterator<char>(f)),{});

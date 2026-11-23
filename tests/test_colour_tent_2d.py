@@ -17,8 +17,9 @@ is the original one (a confidence-0 centre skips the normal test; an always-on t
 spots in game). The tent and the colour normals together clear most of the staircase. No game, Wine or GPU."""
 import sys; from pathlib import Path; sys.path.insert(0,str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp; fp.use_source_modules()
+from scripts.shaders.shader_sources import world_source_text
 import json,math
-hlsl=fp.src('world_effects.hlsl').read_text()
+hlsl=world_source_text(fp.src('world_effects.hlsl'))
 W,H=1920,1080;F=1217.;HW,HH=W//2,H//2
 CH=1.7;AMB=.3;LEGACY=.9;ALB_G=.94;ALB_W=.6
 def norm(v):

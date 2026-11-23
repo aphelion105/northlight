@@ -130,7 +130,6 @@ private:
                 // Aligned bounds below compose the camera basis before extrema.
                 // Their view-axis box was discarded; keep only validation/maxima.
                 if constexpr(!Aligned){
-                    const double l0=b.low[0],l1=b.low[1],l2=b.low[2],h0=b.high[0],h1=b.high[1],h2=b.high[2];
 #if defined(__SSE2__)
                     // Pair X/Y with the same sum order. SSE min/max's second
                     // operand wins ties, as std::min/max's first operand does.
@@ -141,16 +140,32 @@ private:
                     for(unsigned j=0;j<3;++j){const auto x=_mm_mul_pd(coefficients[j],_mm_set1_pd(b.low[j])),y=_mm_mul_pd(coefficients[j],_mm_set1_pd(b.high[j]));
                         a01=_mm_add_pd(a01,_mm_min_pd(y,x));c01=_mm_add_pd(c01,_mm_max_pd(y,x));}
                     _mm_storeu_pd(lo,_mm_min_pd(a01,_mm_loadu_pd(lo)));_mm_storeu_pd(hi,_mm_max_pd(c01,_mm_loadu_pd(hi)));
-                    constexpr unsigned scalarAxis=2;
+
+                    // Pair lower and upper endpoints for Z, preserving the
+                    // first-product tie rule for both endpoints.
+                    const auto row2=_mm_loadu_ps(rows+8);
+                    auto z=_mm_cvtps_pd(_mm_shuffle_ps(row2,row2,_MM_SHUFFLE(3,3,3,3)));
+                    const __m128d zCoefficients[]={
+                        _mm_cvtps_pd(_mm_shuffle_ps(row2,row2,_MM_SHUFFLE(0,0,0,0))),
+                        _mm_cvtps_pd(_mm_shuffle_ps(row2,row2,_MM_SHUFFLE(1,1,1,1))),
+                        _mm_cvtps_pd(_mm_shuffle_ps(row2,row2,_MM_SHUFFLE(2,2,2,2)))};
+                    for(unsigned j=0;j<3;++j){
+                        const auto ends=_mm_mul_pd(zCoefficients[j],_mm_set_pd(b.high[j],b.low[j]));
+                        const auto reversed=_mm_shuffle_pd(ends,ends,1);
+                        z=_mm_add_pd(z,_mm_unpacklo_pd(_mm_min_pd(reversed,ends),_mm_max_pd(reversed,ends)));
+                    }
+                    const auto old=_mm_set_pd(hi[2],lo[2]);
+                    const auto ends=_mm_shuffle_pd(_mm_min_pd(z,old),_mm_max_pd(z,old),2);
+                    _mm_storel_pd(lo+2,ends);_mm_storeh_pd(hi+2,ends);
 #else
-                    constexpr unsigned scalarAxis=0;
-#endif
-                    for(unsigned axis=scalarAxis;axis<3;++axis){const float* row=rows+4*axis;const double r0=row[0],r1=row[1],r2=row[2];
+                    const double l0=b.low[0],l1=b.low[1],l2=b.low[2],h0=b.high[0],h1=b.high[1],h2=b.high[2];
+                    for(unsigned axis=0;axis<3;++axis){const float* row=rows+4*axis;const double r0=row[0],r1=row[1],r2=row[2];
                         const double x0=r0*l0,y0=r0*h0,x1=r1*l1,y1=r1*h1,x2=r2*l2,y2=r2*h2;
                         const double a=((double(row[3])+std::min(x0,y0))+std::min(x1,y1))+std::min(x2,y2);
                         const double c=((double(row[3])+std::max(x0,y0))+std::max(x1,y1))+std::max(x2,y2);
                         lo[axis]=std::min(lo[axis],a);hi[axis]=std::max(hi[axis],c);
                     }
+#endif
                 }
             }
             if constexpr(!Aligned)for(unsigned axis=0;axis<3;++axis){low[axis]=lo[axis];high[axis]=hi[axis];}
@@ -236,7 +251,26 @@ private:
                 output.low[axis]=detail::outwardNormal<false>(float(lo-error));output.high[axis]=detail::outwardNormal<true>(float(hi+error));
             }output.valid=true;return true;
         }
-        for(unsigned axis=0;axis<3;++axis){detail::Value world={inverse[12+axis],0};double scale=std::fabs(world.value);
+#if defined(__SSE2__)
+        detail::IntervalPair worldXY{_mm_cvtps_pd(_mm_loadu_ps(inverse+12)),_mm_setzero_pd()};
+        auto scaleXY=detail::pairAbs(worldXY.value);
+        for(unsigned j=0;j<3;++j){
+            const auto term=detail::pairMul(_mm_cvtps_pd(_mm_loadu_ps(inverse+4*j)),view[j]);
+            scaleXY=_mm_add_pd(scaleXY,_mm_add_pd(detail::pairAbs(term.value),term.error));
+            worldXY=detail::pairAdd(worldXY,term);
+        }
+        worldXY.error=_mm_add_pd(worldXY.error,_mm_add_pd(_mm_mul_pd(detail::pairRoundError(scaleXY),_mm_set1_pd(8)),_mm_set1_pd(.001)));
+        double values[2],errors[2];_mm_storeu_pd(values,worldXY.value);_mm_storeu_pd(errors,worldXY.error);
+        for(unsigned axis=0;axis<2;++axis){
+            if(!std::isfinite(values[axis])||!std::isfinite(errors[axis])||std::fabs(values[axis])+errors[axis]>1000000)return false;
+            output.low[axis]=detail::outwardNormal<false>(float(values[axis]-errors[axis]));
+            output.high[axis]=detail::outwardNormal<true>(float(values[axis]+errors[axis]));
+        }
+        constexpr unsigned scalarAxis=2;
+#else
+        constexpr unsigned scalarAxis=0;
+#endif
+        for(unsigned axis=scalarAxis;axis<3;++axis){detail::Value world={inverse[12+axis],0};double scale=std::fabs(world.value);
             for(unsigned j=0;j<3;++j){auto term=detail::mul(view[j],{inverse[4*j+axis],0});scale+=std::fabs(term.value)+term.error;world=detail::add(world,term);}
             world.error+=detail::roundError(scale)*8+.001;
             if(!std::isfinite(world.value)||!std::isfinite(world.error)||std::fabs(world.value)+world.error>1000000)return false;

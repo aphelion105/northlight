@@ -191,6 +191,37 @@ int main(int argc,char** argv){
         assert(cache.geometry(packet)==D3D_OK&&device.calls.streams==8);
         std::puts("PASS face transition retains geometry, restarts material, and resets after an external bind");
     }
+    {
+        IDirect3DDevice9 device;
+        NorthlightReplayDrawState::Cache cache(&device);
+        IDirect3DIndexBuffer9 original{},alternate{},paired{};
+        Replay packet;
+        packet.index=&original;
+        assert(cache.geometry(packet)==D3D_OK&&device.ib==&original);
+        assert(cache.geometry(packet,&paired)==D3D_OK&&device.ib==&paired);
+        assert(cache.geometry(packet)==D3D_OK&&device.ib==&original);
+        device.failAt=device.seen+1;
+        assert(FAILED(cache.geometry(packet,&paired))&&device.ib==&original);
+        device.failAt=0;
+        packet.index=&alternate;
+        assert(cache.geometry(packet)==D3D_OK&&device.ib==&alternate);
+        assert(device.calls.indices==5&&device.calls.streams==8);
+        std::puts("PASS index override binds only for its draw and invalidates geometry on failure");
+    }
+    {
+        using NorthlightReplayDrawState::Range;
+        using NorthlightReplayDrawState::appendAdjacent;
+        Range run{12,2,30,8};
+        assert(appendAdjacent(run,{18,1,24,6},3));
+        assert(run.start==12&&run.count==3&&run.min==24&&run.vertices==14);
+        assert(!appendAdjacent(run,{21,1,22,3},3)); // Device primitive limit
+        assert(!appendAdjacent(run,{24,1,22,3},10)); // Gap
+        assert(!appendAdjacent(run,{18,1,22,3},10)); // Old range cannot swallow a repeat
+        assert(!appendAdjacent(run,{21,1,UINT32_MAX,2},10));
+        assert(!appendAdjacent(run,{21,0,20,3},10));
+        assert(appendAdjacent(run,{21,1,37,5},10));
+        assert(run.start==12&&run.count==4&&run.min==24&&run.vertices==18);
+    }
     {IDirect3DDevice9 d;NorthlightReplayDrawState::Cache cache(&d);Replay p;p.cutoff=.5f;
         for(unsigned mode:{0u,1u,2u,0u}){p.alphaMode=mode;const auto before=d.calls.constants;assert(!cache.material(p));assert(d.calls.constants==before+1&&d.c0[0]==float(mode)&&d.c0[3]==.5f);}
         const auto before=d.calls.constants;assert(!cache.material(p));assert(d.calls.constants==before);

@@ -20,6 +20,9 @@ class NorthlightWaterDistanceMask {
             &&SUCCEEDED(image->GetSurfaceLevel(0,&level));
     }
 public:
+    struct NoBindingAudit {
+        void operator()(const char*,unsigned,HRESULT,IDirect3DSurface9*)const noexcept{}
+    };
     explicit NorthlightWaterDistanceMask(IDirect3DDevice9* d):device(d){}
     ~NorthlightWaterDistanceMask(){reset();drop(correct);drop(mergeMS);drop(mergeSingle);}
     void reset(){
@@ -76,7 +79,8 @@ public:
     IDirect3DSurface9* distanceTarget()const{return distanceMS?distanceMS:resolved;}
     IDirect3DSurface9* coverageTarget()const{return coverageMS;}
     IDirect3DTexture9* result()const{return distance;}
-    HRESULT resolve(UINT w,UINT h,IDirect3DSurface9* mixedTarget,NorthlightStateBlockPool& pool){
+    template<class Audit=NoBindingAudit>
+    HRESULT resolve(UINT w,UINT h,IDirect3DSurface9* mixedTarget,NorthlightStateBlockPool& pool,const Audit& audit={}){
         if(!distance)return D3DERR_INVALIDCALL;
         if(!distanceMS&&!mixedTarget)return S_OK;
         const auto area=writtenPixels(w,h);
@@ -117,6 +121,11 @@ public:
             if(SUCCEEDED(hr))hr=device->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE);
         }
         if(SUCCEEDED(hr))hr=device->SetPixelShader(mixedTarget?(distanceMS?mergeMS:mergeSingle):correct);
-        return SUCCEEDED(hr)?NorthlightScreen::drawQuad(device,w,h):hr;
+        if(SUCCEEDED(hr)){
+            hr=NorthlightScreen::drawQuad(device,w,h);
+            audit(mixedTarget?(distanceMS?"WaterMergeDistanceMS":"WaterMergeDistance"):"WaterCorrectDistance",
+                  mixedTarget&&distanceMS?3u:1u,hr,distanceMS?distanceMS:resolved);
+        }
+        return hr;
     }
 };

@@ -3,17 +3,21 @@
 """Execute the production worker publication/solve tail using deterministic requests.
 Native CPU only: no Windows, Wine, game, D3D, geometry loading or actor capture.
 """
+
+from source_units import source_text
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
 import hashlib,json,subprocess
 from pathlib import Path
 HERE=Path(__file__).resolve().parent
-source=fp.src('world_renderer.h').read_text()
+source=source_text(fp.src('world_renderer.h'))
 start=source.index('            r.light.points=sceneLights;r.light.movingGeometry=nullptr;')
 end=source.index('\n        }\n      }catch(const std::bad_alloc&)',start)
 body=source[start:end]
 start=source.index('    struct Snapshot {');end=source.index('\n    struct Request ',start)
 snapshot=source[start:end]
+publication=fp.src('world_publication.h').read_text()
+publish=publication[publication.index('    void publishProbesLocked('):publication.rindex('\n};')]
 fixture=r'''
 #include "world_probe_progress.h"
 #include "probe_cascade.h"
@@ -51,6 +55,7 @@ static Probe fixtureMoving(const BVH& bvh,Vec3 p,const PreparedLighting& light,u
 struct Fixture {
  struct PreparedCommit {int tag=0;};
 SNAPSHOT
+PUBLISH_METHOD
  struct Request {std::shared_ptr<const int> actorJob;V camera,probeCenter;NorthlightGI::Lighting light;std::string map="Azeroth";uint64_t id=1,baseId=1;DWORD queuedAt=0;unsigned reason=1;bool enabled=true,giEnabled=true;};
  // The production relight cache answers repeated keys without solving; this tail test counts every solve and advances its clock
  // per solve, so it uses a pass-through with the same interface (the cache itself: test_probe_blend_equivalence / world_probe_cache).
@@ -83,7 +88,7 @@ SNAPSHOT
  Fixture(){std::string error;assert(bvh->build({},error));}
  void observe(){if(published&&published->serial&&(observed.empty()||observed.back().value!=published))observed.push_back({published,now,hash(*published)});}
  void next(V camera,unsigned reason=2){request.camera=request.probeCenter=camera;++request.id;request.baseId=request.id;request.reason=reason;request.queuedAt=now;pending=true;}
- void run(unsigned maxRequests=16){
+ void run(unsigned maxRequests=16,bool fixedGi=false){
   for(unsigned iteration=0;iteration<maxRequests&&pending;++iteration){
    Request r=request;pending=false;auto result=std::make_shared<Snapshot>();result->map=r.map;result->center=r.camera;result->requestId=r.id;result->requestedAt=r.queuedAt;
    BODY
@@ -101,6 +106,10 @@ int main(){
  reset();Fixture cold;onTick=[&]{cold.observe();};cold.run();assert(!cold.pending&&cold.published&&!cold.published->partial&&cold.published->processedProbes==W&&cold.completedBaseId==1);assert(cold.observed.front().value->partial&&cold.observed.front().value->processedProbes==8&&cold.observed.front().at==8);const unsigned interval=NorthlightGI::ProbePublicationCadence::IntervalMs;assert(cold.observed.size()>5&&cold.observed.size()<=W/interval+3);
  DWORD lastTick=0;for(const auto& o:cold.observed)if(o.value->partial){if(lastTick)assert(o.at-lastTick>=interval);lastTick=o.at;assert(o.value->lightingGeneration==1);}cold.immutable();
  assert(cold.published->lightAttachments==cold.sceneLightAttachments);
+ {reset();Fixture fixed;onTick=[&]{fixed.observe();};fixed.run(16,true);
+  assert(fixed.observed.size()==1&&fixed.published->processedProbes==W&&!fixed.published->partial);
+  assert(fixed.published->coarseAtlas&&occupied(*fixed.published->coarseAtlas)>0&&fixed.completedBaseId==1);
+  fixed.immutable();onTick={};}
  // Streaming a replacement BVH must retain visibility with its display-only
  // colour until that exact world point is solved in the new generation.
  {reset();Fixture region;region.run();auto oldRegion=region.published;
@@ -168,14 +177,14 @@ int main(){
   assert(NorthlightGI::configureProbeLayout(NorthlightGI::ProbeLayout{}));}
  afterSolve={};onTick={};std::puts("PASS extracted production worker: first8 before2744 completion; bounded cadence;8 camera retargets; old display coverage retained across lighting reset; no cross-map/light/distant publication; last-static and mid-dynamic cancellation; completion flags; shutdown; immutable exports; build handoff stops the old pass; concurrent solves counted; GIProbeAhead window; GIDistance=68 layout");
 }
-'''.replace('SNAPSHOT',snapshot).replace('BODY',body)
+'''.replace('SNAPSHOT',snapshot).replace('PUBLISH_METHOD',publish).replace('BODY',body)
 report={'status':'pass','game_launched':False,'render_device_created':False,'scope':'actual production solve/publication tail; deterministic request/clock fixture; geometry and actor loaders not executed','runs':[],'sha256':{n:hashlib.sha256(fp.tracked(n).read_bytes()).hexdigest() for n in ['world_renderer.h','world_probe_progress.h','world_dynamic_probes.h','world_probe_cache.h','world_gi.h','world_gi.cpp','test_progressive_gi_worker.py','test_world_probe_progress.cpp']}}
 path=fp.output_dir();(path/'worker.cpp').write_text(fixture)
 for target in ['worker','helpers','activation','packing','no-final-fallback','clear-after-final','drop-visibility']:
  negative=target in ('no-final-fallback','clear-after-final','drop-visibility')
  if negative:
   if target=='drop-visibility':broken=fixture.replace('dynamicProbes.reset(actors?&actors->scene():nullptr);','for(auto& entry:displayFallback)entry.probe.localVisibility.reset();dynamicProbes.reset(actors?&actors->scene():nullptr);')
-  else:broken=fixture.replace('NorthlightGI::retainProbeDisplayFallback(result->atlas,displayFallback);','') if target=='no-final-fallback' else fixture.replace('published=result;publicationCadence.published(GetTickCount());','published=result;displayFallback.clear();publicationCadence.published(GetTickCount());')
+  else:broken=fixture.replace('NorthlightGI::retainProbeDisplayFallback(result->atlas,displayFallback);','') if target=='no-final-fallback' else fixture.replace('commitResult();publicationCadence.published(GetTickCount());','commitResult();displayFallback.clear();publicationCadence.published(GetTickCount());')
   assert broken!=fixture;(path/'negative.cpp').write_text(broken)
  cpp=path/'worker.cpp' if target=='worker' else HERE/({'activation':'test_probe_activation.cpp','packing':'test_probe_texture_upload.cpp'}.get(target,'test_world_probe_progress.cpp'))
  if negative:cpp=path/'negative.cpp'

@@ -155,9 +155,11 @@ struct Settings {
     // while the viewer is inside a building); 0 = the texture/draw detector only, as before.
     unsigned weatherMemory=1;
     unsigned autoDisplacementStrength=100,autoDisplacementDistance=12,autoDisplacementDetail=4;
+    unsigned autoBumpModelMinPixels=0;
     unsigned autoBumpModels=3,autoModelDisplacementStrength=25,autoModelDisplacementDistance=8,autoModelDisplacementDetail=2;
     unsigned autoHeightPolarity=0,autoHeightDetails=75,autoHeightBalance=50;
-    char origin[127]={'d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d'};
+    unsigned autoNormalFilter=1;
+    char origin[129]={'d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d','d'};
 };
 struct Key {
     const char* name;unsigned Settings::*field=nullptr;int Settings::*signedField=nullptr;
@@ -232,7 +234,7 @@ inline const Key Keys[]={
     {"AOMethod",&Settings::aoMethod,0,4,{0,0,0}},
     {"AOStrength",&Settings::aoStrength,0,200,{100,100,100}},
     {"AORadius",&Settings::aoRadius,10,1000,{200,200,200}},
-    {"PointShadowLimit",&Settings::pointShadowLimit,16,128,{64,64,64}},
+    {"PointShadowLimit",&Settings::pointShadowLimit,1,128,{64,64,64}},
     {"AutoBump",&Settings::autoBump,0,1,{1,0,0}},
     {"AutoBumpStrength",&Settings::autoBumpStrength,0,150,{75,60,40}},
     {"AutoBumpDistance",&Settings::autoBumpDistance,8,96,{48,36,24}},
@@ -246,12 +248,14 @@ inline const Key Keys[]={
     {"AutoDisplacementDistance",&Settings::autoDisplacementDistance,4,24,{12,8,6}},
     {"AutoDisplacementDetail",&Settings::autoDisplacementDetail,1,5,{4,3,2}},
     {"AutoBumpModels",&Settings::autoBumpModels,0,3,{3,1,1}},
+    {"AutoBumpModelMinPixels",&Settings::autoBumpModelMinPixels,0,256,{0,0,0}},
     {"AutoModelDisplacementStrength",&Settings::autoModelDisplacementStrength,0,100,{25,15,10}},
     {"AutoModelDisplacementDistance",&Settings::autoModelDisplacementDistance,2,16,{8,6,4}},
     {"AutoModelDisplacementDetail",&Settings::autoModelDisplacementDetail,1,4,{2,2,1}},
     {"AutoHeightPolarity",&Settings::autoHeightPolarity,0,2,{0,0,0}},
     {"AutoHeightDetails",&Settings::autoHeightDetails,0,100,{75,75,75}},
     {"AutoHeightBalance",&Settings::autoHeightBalance,0,100,{50,50,50}},
+    {"AutoNormalFilter",&Settings::autoNormalFilter,0,1,{1,1,1}},
     {"AutoParallaxShadows",&Settings::autoParallaxShadows,0,1,{1,0,0}},
     {"AutoParallaxShadowStrength",&Settings::autoParallaxShadowStrength,0,100,{70,60,50}},
     {"AutoParallaxShadowSteps",&Settings::autoParallaxShadowSteps,4,16,{8,6,4}},

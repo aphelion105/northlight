@@ -275,10 +275,12 @@
  267:     mul r1.xy, r1.zwzw, r1
  268:     cmp r0.xy, r0.z, r0, r1
  269:     mul r0.xy, r0, c2.w
- 270:     add oC0.xy, r0, c2.w
- 271:     mov oC0.w, c7.x
- 272:     mov oC0.z, -v1.w
- 273:     mov oC1.w, c7.x
+ 270:     add r0.xy, r0, c2.w
+ 271:     cmp oC0.y, c20.x, r0.y, -r0.y
+ 272:     mul r0.xy, r0.x, c1
+ 273:     add oC0.xw, r0.xyzy, c1.yyzx
+ 274:     mov oC0.z, -v1.w
+ 275:     mov oC1.w, c7.x
 
-// approximately 279 instruction slots used (5 texture, 274 arithmetic)
+// approximately 281 instruction slots used (5 texture, 276 arithmetic)
  

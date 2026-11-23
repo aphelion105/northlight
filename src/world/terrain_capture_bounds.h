@@ -76,7 +76,7 @@ struct Diagnostics {
     UINT firstIndex=0,lastIndex=0;
     unsigned viewComponent=0;
     float viewDelta=0,low[3]={},high[3]={};
-    bool dynamicSnapshot=false,userPointerSnapshot=false,contentCacheHit=false,trackedCacheHit=false;
+    bool dynamicSnapshot=false,userPointerSnapshot=false,contentCacheHit=false,trackedCacheHit=false,viewChecked=false;
 };
 struct Limits {
     unsigned maxEntries=2048;
@@ -692,7 +692,7 @@ public:
     bool readMeshShared(IDirect3DDevice9* device,D3DPRIMITIVETYPE topology,INT base,
                   UINT minimum,UINT vertexCount,UINT start,UINT primitiveCount,
                   const float* expectedWorldToView,std::shared_ptr<const MeshSnapshot>& output,
-                  Diagnostics* diagnostics=nullptr){
+                  Diagnostics* diagnostics=nullptr,const float (*knownView)[4]=nullptr){
         NorthlightCapturePhases::Scope<PhaseCount> phase(profileCapture_?&capturePhases_:nullptr,StatePhase);
         output.reset();Diagnostics detail;
         auto reject=[&](RejectReason reason,HRESULT hr=D3DERR_INVALIDCALL){
@@ -704,13 +704,19 @@ public:
         if(snapshots>=limits.maxEntries)return reject(RejectReason::CaptureLimit);
         HRESULT hr=D3D_OK;
         if(expectedWorldToView){
-            float actual[16];hr=device->GetVertexShaderConstantF(0,actual,4);
-            if(FAILED(hr))return reject(RejectReason::ViewRead,hr);
+            detail.viewChecked=true;
+            float actual[4][4];
+            if(!knownView){
+                hr=device->GetVertexShaderConstantF(0,actual[0],4);
+                if(FAILED(hr))return reject(RejectReason::ViewRead,hr);
+                knownView=actual;
+            }
             bool valid=true;
             for(unsigned i=0;i<16;++i){
-                const float difference=std::fabs(actual[i]-expectedWorldToView[i]);
+                const float value=knownView[i/4][i%4];
+                const float difference=std::fabs(value-expectedWorldToView[i]);
                 if(difference>detail.viewDelta){detail.viewDelta=difference;detail.viewComponent=i;}
-                if(!std::isfinite(actual[i])||!std::isfinite(expectedWorldToView[i])||
+                if(!std::isfinite(value)||!std::isfinite(expectedWorldToView[i])||
                    difference>(i>=12&&i<=14?.03f:.0003f))valid=false;
             }
             if(!valid)return reject(RejectReason::ViewMismatch);

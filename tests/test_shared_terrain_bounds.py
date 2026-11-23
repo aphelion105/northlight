@@ -19,12 +19,14 @@ p.add_argument('--output', type=Path)
 args = p.parse_args()
 world = fp.src('world_renderer.h').read_text()
 start = world.index('    void capture(D3DPRIMITIVETYPE type,INT base,UINT min,UINT vertexTotal,')
-publisher = world[start:world.index('    void releaseReplayGPU()', start)]
+publisher = world[start:world.index('#include "world_replay_upload.inl"', start)]
 device = fp.src('renderer.cpp').read_text()
 start = device.index('template<NorthlightWaterRenderer::UserPointer UserPointer,class Raw,class Draw> void captureGameDraw(')
 end=device.index('{',start)+1;depth=1
 while depth:depth+=(device[end]=='{')-(device[end]=='}');end+=1
 route=device[start:end]
+capture=fp.src('draw_capture_route.h').read_text()
+capture_namespace=capture[capture.index('namespace NorthlightDrawCapture {'):]
 fixture = ast.parse((fp.TESTS / 'test_terrain_snapshot.py').read_text())
 values = {n.targets[0].id: ast.literal_eval(n.value) for n in fixture.body
           if isinstance(n, ast.Assign) and isinstance(n.targets[0], ast.Name)
@@ -33,27 +35,50 @@ if os.name=='nt':
     values['stub']=values['stub'].replace('#include <climits>','#include <climits>\n#include <windows.h>\n#undef E_POINTER\n#undef FAILED\n#undef SUCCEEDED').replace('using DWORD=unsigned;using HRESULT=std::int32_t;','')
 values['stub']=values['stub'].replace('enum D3DFORMAT{','enum D3DFORMAT{D3DFMT_UNKNOWN=0,')
 source = values['harness'].split('int main(){')[0] + r'''
+#include <cstdarg>
 #include <string>
+#include "adt_draw_bounds.h"
+#include "captured_constant_epoch.h"
 struct IDirect3DVertexShader9 {};
 namespace NorthlightDrawSnapshot {struct Mesh;}
 namespace NorthlightPoseBounds {struct Handoff {};}
-static void logf(const char*,...){}
+static unsigned adtSummaries=0,adtCompared=0,adtContained=0,adtExamples=0;
+static void logf(const char* format,...){
+ if(std::strncmp(format,"NATIVE_ADT_EXTENTS ",19)==0){++adtExamples;return;}
+ if(std::strcmp(format,"NATIVE_ADT_COVERAGE producerFrame=%llu compared=%u contained=%u"))return;
+ va_list args;va_start(args,format);
+ const auto stamp=va_arg(args,unsigned long long);assert(stamp==127+adtSummaries);
+ adtCompared=va_arg(args,unsigned);adtContained=va_arg(args,unsigned);va_end(args);
+ ++adtSummaries;
+}
 struct CpuScope {explicit CpuScope(long long*){}};
 namespace NorthlightRenderThreadProbe {static bool sampleFrame(unsigned){return true;}}
 namespace NorthlightWaterRenderer {enum UserPointer:unsigned{NoUserPointer,UserVertices,UserVerticesAndIndices};}
 struct CaptureDevice:Device {
  bool projectionBad=false;
+ unsigned viewGets=0,projectionGets=0;
  HRESULT GetVertexShaderConstantF(UINT first,float* out,UINT count)override{
+  if(first==0)++viewGets;else ++projectionGets;
   assert((first==0||first==4)&&count==4);std::memcpy(out,view,64);if(first==4&&projectionBad)out[0]=2;return 0;
+ }
+};
+struct CameraMirror {
+ using Row=float[4];
+ Row rows[8]{};bool viewKnown=true,projectionKnown=true;
+ const Row* borrowKnownVertexFloats(unsigned first,unsigned count)const{
+  assert((first==0||first==4)&&count==4);
+  return (first==0?viewKnown:projectionKnown)?rows+first:nullptr;
  }
 };
 struct World {
  struct {bool shadows=true;} effects;
  using TerrainSnapshot=std::shared_ptr<const MeshSnapshot>;
  CaptureDevice* d;FrameCache terrainBoundsCache;std::vector<int> replays;
+ NorthlightAdtBounds::Coverage nativeAdtCoverage;
  bool readyValue=true,terrain=true,constantSelfCheck=false,captureSampled=false;
  unsigned calls=0,models=0,terrainCaptureCalls=0,terrainAttempts=0,terrainFailures=0;
  long long terrainCaptureTicks=0;float projection[3]={1,1,0};struct {float view[16];} context;
+ struct {const CameraMirror* mirror=nullptr;} constantEpochSource;
  TerrainSnapshot accepted;std::vector<std::string>* events=nullptr;
  explicit World(CaptureDevice& device):d(&device){std::memcpy(context.view,d->view,64);}
  bool ready()const{return readyValue;}
@@ -65,13 +90,19 @@ struct World {
  PUBLISHER
 };
 struct Geometry {struct {D3DPRIMITIVETYPE topology;INT base;UINT minimum,vertices,start,primitives;bool indexed;} draw;const void* indices=nullptr;D3DFORMAT format=D3DFMT_UNKNOWN;const void* vertices=nullptr;UINT stride=0;};
-struct NormalSource {bool captured=false;std::shared_ptr<const NorthlightDrawSnapshot::Mesh> mesh;IDirect3DVertexDeclaration9* declaration=nullptr;NorthlightPoseBounds::Handoff pose;};
+struct NormalSource {
+ bool captured=false;
+ std::shared_ptr<const NorthlightDrawSnapshot::Mesh> mesh;
+ IDirect3DVertexDeclaration9* declaration=nullptr;
+ NorthlightPoseBounds::Handoff pose;
+ NorthlightConstantEpoch::BankHandoff bank;
+};
 namespace NorthlightAutoDisplacement {using Args=Geometry;using CaptureSource=NormalSource;}
 struct Bump {
  std::vector<std::string>* events;unsigned calls=0;bool hint=false,activeValue=true;
  bool active()const{return activeValue;}
- template<class Draw>void capture(IDirect3DVertexShader9* vs,Draw draw,bool up,const Geometry* geometry,const NorthlightCaptureMetadata::PositionBounds* bounds,NormalSource* source){
-  assert(source);source->captured=true;
+ template<class Draw>void capture(IDirect3DVertexShader9* vs,Draw draw,bool up,const Geometry* geometry,const NorthlightCaptureMetadata::PositionBounds* bounds,NormalSource* source,const std::shared_ptr<const NorthlightDrawSnapshot::Mesh>* batchSource=nullptr){
+  assert(source&&!batchSource);source->captured=true;
   events->push_back("bump");++calls;assert(!up&&bounds&&bounds->owner==geometry&&bounds->shader==vs&&"SHARED_BOUND_OWNER_MISMATCH");hint=bounds->known;assert(draw()==42);
  }
 };
@@ -81,10 +112,13 @@ struct Native {
   assert(t==D3DPT_TRIANGLELIST&&base==-3&&min==7&&vertices==3&&start==1&&count==1);events->push_back("native");++calls;return 42;
  }
 };
+CAPTURE_NAMESPACE
 struct Route {
  World* world;Bump* autoBump;Native* ext;std::vector<std::string>* events;
  bool enabled=true,applied=false,failed=false;unsigned frame=127;
  template<class T>void captureWater(IDirect3DVertexShader9*,unsigned,T){events->push_back("water");}
+ template<class Source>void noteIndexedPairSource(IDirect3DVertexShader9*,const Source&){}
+ template<class Draw>std::shared_ptr<const NorthlightDrawSnapshot::Mesh> pendingIndexedSource(const Draw&,IDirect3DVertexShader9*){return {};}
  template<class Draw>void captureModelNormals(IDirect3DVertexShader9*,Draw,bool up,const Geometry&,const NormalSource* source){
   assert(!up&&source&&source->captured==bool(autoBump&&enabled&&!applied&&!failed));events->push_back("normals");
  }
@@ -101,6 +135,24 @@ int main(){
  {CaptureDevice d;fill(d);World w(d);NorthlightCaptureMetadata::PositionBounds out;out.known=true;
   const auto capture=[&]{w.capture(D3DPT_TRIANGLELIST,-3,7,3,1,1,true,&vs,false,true,&out);};
   capture();assert(out.known&&out.low[2]==3&&out.high[2]==5&&w.accepted);
+  assert(d.viewGets==1&&d.projectionGets==1);
+  CameraMirror live;std::memcpy(live.rows,d.view,64);std::memcpy(live.rows+4,d.view,64);w.constantEpochSource.mirror=&live;
+  capture();assert(out.known&&out.low[2]==3&&out.high[2]==5&&d.viewGets==1&&d.projectionGets==1);
+  live.rows[3][0]=1;capture();assert(!out.known&&d.viewGets==1&&d.projectionGets==1&&"FAILED_CAPTURE_PUBLISHED_BOUND");
+  live.viewKnown=false;capture();assert(out.known&&d.viewGets==2&&d.projectionGets==1);
+  live.rows[4][0]=2;capture();assert(!out.known&&d.viewGets==2&&d.projectionGets==1&&"FAILED_CAPTURE_PUBLISHED_BOUND");
+  live.projectionKnown=false;capture();assert(out.known&&d.viewGets==3&&d.projectionGets==2);
+  w.constantEpochSource.mirror=nullptr;
+  NorthlightAdtBounds::Evidence native{{-10201,-1181,2},{-10197,-1177,6},127};
+  {NorthlightAdtBounds::Scope scope(&native);capture();assert(out.high[2]==5);}
+  native.high[2]=4;
+  {NorthlightAdtBounds::Scope scope(&native);capture();capture();assert(out.high[2]==5&&adtSummaries==0);}
+  native.producerFrame=128;native.high[2]=6;
+  {NorthlightAdtBounds::Scope scope(&native);capture();}
+  assert(adtSummaries==1&&adtCompared==3&&adtContained==1&&adtExamples==1);
+  w.nativeAdtCoverage.flush(&logf);
+  w.nativeAdtCoverage.flush(&logf);
+  assert(adtSummaries==2&&adtCompared==1&&adtContained==1&&adtExamples==1);
   d.put(4,{-10200,-1180,30});capture();assert(out.known&&out.low[2]==4&&out.high[2]==30&&"STALE_SHARED_BOUND");
   for(unsigned fail=0;fail<5;++fail){out.known=true;w.readyValue=fail!=0;d.projectionBad=fail==1;d.vb.failLock=fail==2;d.view[12]=fail==3?1.f:0.f;w.terrain=fail!=4;capture();assert(!out.known&&"FAILED_CAPTURE_PUBLISHED_BOUND");}
  }
@@ -121,7 +173,7 @@ int main(){
 publisher = publisher.replace('        if(positions)positions->known=false;',
                               '        ++calls;if(events)events->push_back("world");\n        if(positions)positions->known=false;')
 assert publisher.count('++calls;') == 1
-source = source.replace('PUBLISHER', publisher).replace('ROUTE', route)
+source = source.replace('PUBLISHER', publisher).replace('CAPTURE_NAMESPACE', capture_namespace).replace('ROUTE', route)
 with tempfile.TemporaryDirectory(prefix='shared-terrain-bounds-') as tmp:
     out = args.output or Path(tmp)
     out.mkdir(parents=True, exist_ok=True)
@@ -150,4 +202,5 @@ with tempfile.TemporaryDirectory(prefix='shared-terrain-bounds-') as tmp:
         assert result.returncode != 0 and marker in result.stderr, result
     print('PASS stale failed proof and missing terrain publisher controls rejected')
     (out / 'validation.json').write_text(json.dumps({'pass': True, 'world_source_sha256': hashlib.sha256(world.encode()).hexdigest(),
-        'renderer_source_sha256': hashlib.sha256(device.encode()).hexdigest(), 'game_launched': False}, indent=2) + '\n')
+        'renderer_source_sha256': hashlib.sha256(device.encode()).hexdigest(),
+        'capture_source_sha256': hashlib.sha256(capture.encode()).hexdigest(), 'game_launched': False}, indent=2) + '\n')

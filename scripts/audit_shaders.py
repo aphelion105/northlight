@@ -14,6 +14,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import northlight_paths as fp
+import shader_pipeline_map as pipeline
 
 
 def inventory():
@@ -64,8 +65,14 @@ def inventory():
 def main():
     parser = argparse.ArgumentParser(__doc__)
     parser.add_argument('--output', type=Path, default=fp.output_dir() / 'shader-audit')
+    parser.add_argument('--query', help='Show shader dependencies, object consumers or a selected mode')
+    parser.add_argument('--replay', type=Path, help='Attach validated shadow, fog and distance outputs from an audited replay')
     args = parser.parse_args()
     report = inventory()
+    world = pipeline.build(report)
+    if args.replay:
+        world['replay_shadow_products'] = pipeline.replay_shadow_products(args.replay)
+    selection = pipeline.query(world, args.query) if args.query else None
     args.output.mkdir(parents=True, exist_ok=True)
     (args.output / 'inventory.json').write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
     lines = ['| Manifest / entry | Slots / temps | Bytes | Runtime reference |',
@@ -74,6 +81,13 @@ def main():
         refs = row['runtime_references']
         lines.append(f"| {row['manifest']} / {row['entry']} | {row['slots']} / {row['temporaries']} | {row['bytes']} | {refs[0] if refs else 'REVIEW: no lexical reference'} |")
     (args.output / 'inventory.md').write_text('\n'.join(lines) + '\n', encoding='utf-8')
+    (args.output / 'pipeline.json').write_text(json.dumps(world, indent=2) + '\n', encoding='utf-8')
+    (args.output / 'pipeline.md').write_text(pipeline.markdown(world), encoding='utf-8')
+    (args.output / 'pipeline.mmd').write_text(pipeline.mermaid(world), encoding='utf-8')
+    if selection is not None:
+        (args.output / 'query.json').write_text(json.dumps(selection, indent=2) + '\n', encoding='utf-8')
+        print(json.dumps(selection, indent=2))
+        return
     print(f"{len(report['entries'])} entries; {len(report['sources'])} HLSL sources; {args.output}")
     for row in report['entries']:
         if not row['runtime_references']:

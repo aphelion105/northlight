@@ -8,6 +8,7 @@ from camera/request-grid origin. Residency scheduling is tested separately.
 """
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
+from scripts.shaders.shader_sources import world_source_text
 from pathlib import Path
 import hashlib
 import itertools
@@ -63,7 +64,7 @@ def sample(atlas,position,grid_origin=(0,0,0),mean=32):
 
 def main():
     shader=fp.src('world_effects.hlsl')
-    source=shader.read_text()
+    source=world_source_text(shader)
     assert 'sampler2D ProbeMetadata : register(s10)' in source
     assert 'float3 grid=p/spacing;' in source
     assert 'cell-GridInfo.x*floor(cell/GridInfo.x)' in source
@@ -77,10 +78,10 @@ def main():
     assert 'weight*=saturate((PassInfo.w-metadata.w)*(1/.45));' in body
     blend_header=fp.src('probe_blend.h').read_text()
     assert 'BlendSeconds=.3f' in blend_header and '(1/.3)' in body
-    renderer=fp.src('world_renderer.h').read_text()
+    renderer=fp.src('world_screen_lighting.inl').read_text()
     gi_pass=renderer.index('"world GI pass"')
-    assert renderer.index('SetTexture(8,probePrev)')<gi_pass<renderer.index('SetTexture(8,textures[8])',gi_pass)
-    assert renderer[gi_pass:].split('SetTexture(8,textures[8])',1)[0].count('\n')<=2  # restored right after the GI quad
+    assert renderer.rindex('SetTexture(8,probePrev)',0,gi_pass)<gi_pass<renderer.index('SetTexture(8,in.probeBinding)',gi_pass)
+    assert renderer[gi_pass:].split('SetTexture(8,in.probeBinding)',1)[0].count('\n')<=2  # restored right after the GI quad
 
     atlas={}
     for key in itertools.product(range(-20,-12),range(-4,4),range(-2,6)):

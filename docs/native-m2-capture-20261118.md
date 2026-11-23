@@ -50,6 +50,12 @@ For normals, a draw can copy constants directly from the material calculation wh
 
 An experimental last-pose cache for material bounds hit twice in 9,073 sampled evaluations. It avoided zero coarse range queries. The build after that recording removes the comparisons and per-mesh storage. `NATIVE_M2` reports producer matches. `MODEL_NORMALS handoff` (previously `NATIVE_M2_NORMALS`) reports reused constant spans and sampled comparisons with a fresh device read. The receiver accepts a loan for the same non-UP draw when its requested rows are covered and the held device mirror certifies the generation. This proof is independent of the engine caller. The stock-client section decoder now runs on the existing 1-in-127 diagnostic cadence.
 
+### Grouped doodad audit for build 12340
+
+The type-2 dispatch enters `0x820ae0` from `0x823a9a`. Its shader branch starts the palette upload at c31 and submits at `0x820d4e`. It loops in the dispatcher’s index order, reads the shared section’s bone selections from each current instance, and writes three float4 rows per matrix. It multiplies the section’s index count and the shared pool’s vertex extent by the size of the current slice. The software branch has a separate submission at `0x820f19`.
+
+The sampled producer validates the additional code signatures and caller chain. It compares the exact triangle and vertex range after applying pool offsets, then checks the complete slice’s palette bits in submit order against the current D3D9 constant bank. The test fixture supplies a two-instance slice starting at a nonzero offset and rejects swapped instances, stale ranges, unknown registers and a different caller. Results stay in diagnostics on the producer. [Decoder](../src/stream/m2_draw_12340.h) · [Fixture](../tests/native_m2_section_fixture.h)
+
 ## Cold entry in the same recording
 
 From the first Northrend camera sample to the static geometry transition, 15.969 seconds elapsed. The CPU region build reported 9.110 seconds. GPU staging reported 6.688 seconds over 192 visits for 242 pages, 1,367 material slots and 180 new textures. The CPU had published a solved GI snapshot by 9.250 seconds. The previous renderer held its atlas until the static mesh was drawable. Screen lighting and weather had separate readiness conditions.

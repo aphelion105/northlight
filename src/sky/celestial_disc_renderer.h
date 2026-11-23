@@ -204,7 +204,8 @@ public:
         ownFrame=frames;suppressed|=3;return true;
     }
     bool renderSkyBackground(IDirect3DSurface9* target,IDirect3DTexture9* scene,IDirect3DTexture9* depth,
-        IDirect3DTexture9* layers,UINT width,UINT height,const float* projection,const float* inverseView,const float colors[8][3],bool menu=false){
+        IDirect3DTexture9* layers,UINT width,UINT height,const float* projection,const float* inverseView,const float colors[8][3],bool menu=false,
+        void (*audit)(void*,HRESULT)=nullptr,void* auditContext=nullptr){
         if(!target||!scene||(!layers&&!menu))return false;
         SavedState saved(d);if(!saved.ok||!saved.depth)return false;
         D3DSURFACE_DESC desc{},depthDesc{};
@@ -239,7 +240,9 @@ public:
         for(unsigned k=0;k<6;++k)std::copy_n(colors[k],3,c[51+k]);
         d->SetPixelShaderConstantF(0,c[0],57);
         const struct V{float x,y,z,w,u,v;} quad[]={{-.5f,-.5f,1,1,0,0},{width-.5f,-.5f,1,1,1,0},{-.5f,height-.5f,1,1,0,1},{width-.5f,height-.5f,1,1,1,1}};
-        return SUCCEEDED(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(V)));
+        const HRESULT hr=d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(V));
+        if(audit)audit(auditContext,hr);
+        return SUCCEEDED(hr);
     }
     void setTerrainSource(std::function<uint64_t()> epoch,std::function<bool(unsigned,const float*)> draw,std::function<void(unsigned)> reuse=nullptr){terrainEpoch=std::move(epoch);terrainDraw=std::move(draw);terrainReuse=std::move(reuse);}
     explicit NorthlightCelestialDiscRenderer(IDirect3DDevice9* device,std::string sourceRoot="world-cache/celestial"):d(device),root(std::move(sourceRoot)){}

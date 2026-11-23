@@ -1,5 +1,8 @@
 // Actual deferred packets and GPU output, with the reuse path disabled as control.
 static void normalConstants(const std::string& dir,IDirect3DVertexDeclaration9* declaration,IDirect3DVertexShader9* single,const std::vector<unsigned char>& source,unsigned vertices,unsigned indices){
+#ifdef NORTHLIGHT_TEST_LARGE_NORMAL_BATCH
+    ModelNormalPacketTestAccess::duplicateProbe();
+#endif
     SavedState saved(d);assert(saved.ok);auto output=target(128,128,D3DFMT_A8R8G8B8,4);
     IDirect3DSurface9* depth=nullptr;ok(d->CreateDepthStencilSurface(128,128,D3DFMT_D24S8,D3DMULTISAMPLE_NONE,0,FALSE,&depth,nullptr));
     float original[1024];ok(d->GetVertexShaderConstantF(0,original,256));auto rigid=vs(dir+"model-vs3-rigid.bin");
@@ -8,6 +11,12 @@ static void normalConstants(const std::string& dir,IDirect3DVertexDeclaration9* 
     std::shared_ptr<const NorthlightDrawSnapshot::Mesh> immutable=mesh;
     const NorthlightDrawSnapshot::Draw geometry{D3DPT_TRIANGLELIST,0,0,vertices,0,indices/3,true};
     unsigned beforeReads=0,afterReads=0,nonempty=0,packets=0;uint64_t epochHits=0,blockHits=0;unsigned cases=0;
+    constexpr unsigned oldPacketLimit=2048;
+#ifdef NORTHLIGHT_TEST_LARGE_NORMAL_BATCH
+    constexpr unsigned crowdDraws=2300;
+#else
+    constexpr unsigned crowdDraws=1500;
+#endif
     unsigned scenarioCount=16;
 #ifdef NORTHLIGHT_TEST_M2_BANK
     scenarioCount+=4; // current, stale, incomplete, and deliberately incorrect material loans
@@ -26,7 +35,7 @@ static void normalConstants(const std::string& dir,IDirect3DVertexDeclaration9* 
             if(scenario==13)mirror.enabled=false;
             assert(mirror.heldByThisThread()==(scenario!=12));
             ok(extension.BeginScene());
-            const unsigned drawCount=scenario==15?1500:scenario==14?600:12;packets+=drawCount;
+            const unsigned drawCount=scenario==15?crowdDraws:scenario==14?600:12;packets+=drawCount;
             size_t peakPackets=0;
             for(unsigned draw=0;draw<drawCount;++draw){
                 float bank[1024];std::memcpy(bank,original,sizeof bank);
@@ -65,13 +74,15 @@ static void normalConstants(const std::string& dir,IDirect3DVertexDeclaration9* 
                 if(scenario!=15)assert(normals.testPendingPackets()==(scenario==14?draw%64:draw)+1);
                 float expected[1024];ok(d->GetVertexShaderConstantF(0,expected,256));ModelNormalPacketTestAccess::exactBank(normals,expected);
                 if(scenario==14&&draw%64==63)assert(normals.finishCaptures());
+                // In the large case the control finishes at the old boundary.
+                if(scenario==15&&!reuse&&draw+1==oldPacketLimit)assert(normals.finishCaptures());
             }
             if(scenario==15){
 #ifdef NORTHLIGHT_LEGACY_NORMAL_BANKS
                 const size_t banks=peakPackets; // one inline float bank in every reference packet
 #else
                 const auto banks=normals.testPeakFloatBanks();
-                if(reuse)assert(banks==600&&normals.testPendingPackets()==1500);
+                if(reuse)assert(banks==crowdDraws*2/5&&normals.testPendingPackets()==crowdDraws);
 #endif
                 std::printf("MODEL_NORMALS_CROWD reuse=%u packets=%u peakBanks=%zu peakPackets=%zu pendingBeforeFinal=%zu floatBankBytes=%zu\n",unsigned(reuse),drawCount,banks,peakPackets,normals.testPendingPackets(),banks*size_t(4096));
             }

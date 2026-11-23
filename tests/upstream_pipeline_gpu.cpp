@@ -71,7 +71,9 @@ struct PipelineCompareTest {
   LARGE_INTEGER tick{};QueryPerformanceCounter(&tick);w.localLightQpc=tick.QuadPart-w.captureFrequency.QuadPart/60;
 #if NORTHLIGHT_COMPARE_PR
   w.pointSelection.updatedAt=GetTickCount()-100; // Deterministic steady-state selection fade.
-  for(auto& p:w.pointSlots)p.schedule.updatedAt=GetTickCount()-1000;
+  const auto slot=w.pointIndex;
+  for(w.pointIndex=0;w.pointIndex<NorthlightPointShadow::MaxLights;++w.pointIndex)w.pointSlot().schedule.updatedAt=GetTickCount()-1000;
+  w.pointIndex=slot;
 #else
   w.pointSchedule.updatedAt=GetTickCount()-1000;
 #endif
