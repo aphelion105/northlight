@@ -2496,9 +2496,9 @@
     },
     "world\\expansion02\\doodads\\generic\\irondwarf\\id_lamppost.m2": {
       "position": [
-        0.04,
-        -0.003,
-        3.805
+        -0.54,
+        -0.61,
+        3.7
       ],
       "rgb": [
         0.4553191547158506,
@@ -2507,9 +2507,9 @@
       ],
       "intensity": 1.15,
       "start": 1.0,
-      "end": 10.0,
+      "end": 8.8,
       "family": "wotlk_lantern",
-      "position_basis": "v264 unlit additive skin batch: spells\\genericglow64.blp",
+      "position_basis": "At the outer corner of the lower glass. Halls of Lightning and Northrend captures show blue spill on the snow and occlusion by the metal post.",
       "asset_sha256": "6b2325ac001f29eafa962e1b8b55afa60d71c91ea6bed122d96ad936f37cdb06",
       "variants": {
         "1cee9e63cd5c2d201614e714c5174d3c2a9ca61e8fa8acd21fb603491f4e3352": {
