@@ -85,17 +85,33 @@
             }else water->resolveMask();
             waterMask=water->maskTextureForDepth(worldMinDepth,worldMaxDepth);
         }else if(atmosphereAudit)atmosphereAudit->bindingSkip("WaterMaskResolve","mask-not-requested");
+        IDirect3DTexture9* hdrDecodeDepth=depthTex;
+        bool hdrWaterShaded=false,hdrWaterFinalized=false;
 #ifdef NORTHLIGHT_WATER
-        if(cooperativeWaterEnabled&&!hdr.active&&debugMode==0&&worldDebug==0){
+        if(cooperativeWaterEnabled&&debugMode==0&&worldDebug==0){
             prepareCooperativeWater(desc,saved.viewport,false);
             if(cooperativeWater.Current()){
-                if(cooperativeWater.Liquid()&&waterMask&&weatherSample.draws==0)
-                    cooperativeWater.Composite(depthTex,waterMask,worldDepth,nearZ,farZ,worldMinDepth,worldMaxDepth,false);
+                auto* liquidMask=cooperativeWater.Liquid()?tideglassCoverage(waterMask):nullptr;
+                const bool keepRain=liquidMask&&snapshotTideglassRain(saved.targets[0],rainMaskTex);
+                if(liquidMask){
+                    cooperativeWater.Composite(depthTex,liquidMask,worldDepth,nearZ,farZ,worldMinDepth,worldMaxDepth,false);
+                    WaterHostSurfaceStatus status{};
+                    const bool shaded=cooperativeWater.SurfaceStatus(status)&&status.outcome==WaterHostSurfaceShaded;
+                    if(shaded&&keepRain)restoreTideglassRain(saved.targets[0],rainMaskTex);
+                    if(shaded&&hdr.active&&cooperativeWater.SurfaceDepth()){
+                        hdrWaterShaded=true;
+                        hdrDecodeDepth=cooperativeWater.SurfaceDepth();
+                    }
+                }
                 if(cooperativeWater.HasSurface()&&cooperativeWater.CompositeSurfaces(depthTex,worldDepth)){
                     if(!resolveDepthInto(depthTex,false)||
-                       !cooperativeWater.RefreshLiquidDepth(depthTex,waterMask,nearZ,farZ,worldMinDepth,worldMaxDepth))return;
+                       !cooperativeWater.RefreshLiquidDepth(depthTex,liquidMask,nearZ,farZ,worldMinDepth,worldMaxDepth))return;
                     if(auto* effectsMask=cooperativeWater.EffectsMask(depthTex,worldDepth,waterMask))waterMask=effectsMask;
+                    if(hdr.active)hdrDecodeDepth=cooperativeWater.SurfaceDepth();
                 }
+                // Tideglass takes encoded game colour. HDR decodes that result once.
+                if(hdr.active)
+                    hdrWaterFinalized=cooperativeWater.WorldDone(worldDepth,saved.targets[0],depthTex,&saved.viewport);
             }
         }
 #endif
@@ -159,7 +175,7 @@
         const bool maskOn=nameMask.armed()&&nameMask.hasMarks()&&maskStencil&&worldDepth&&worldDebug==0;nameMask.composited=maskOn;
         IDirect3DSurface9* outputTarget=linearHdr?hdrPresentBack:saved.targets[0];
         if(linearHdr)hdrFrameSettings=effectiveHdrSettings();
-        const bool inlineHdrBase=linearHdr&&fold&&!maskOn&&!celestial&&hdrFrameSettings.legacyExpansion==0&&
+        const bool inlineHdrBase=linearHdr&&!hdrWaterShaded&&!hdrWaterFinalized&&fold&&!maskOn&&!celestial&&hdrFrameSettings.legacyExpansion==0&&
             (sceneFormat==D3DFMT_A8R8G8B8||sceneFormat==D3DFMT_X8R8G8B8);
         if(linearHdr){
             struct HdrSkyAudit{NorthlightLightingCapture::Capture* capture;bool drew=false;} skyAudit{atmosphereAudit?&*atmosphereAudit:nullptr};
@@ -167,7 +183,7 @@
                 auto& audit=*static_cast<HdrSkyAudit*>(context);
                 audit.capture->bindings("HdrDecodeWorldSky",3u,draw,source);audit.drew=true;
             };
-            if(error(hdrFrame.prepareLegacy(ext,scene,depthTex,hdrSkyValid?hdrSkyTarget():nullptr,width,height,worldMinDepth,worldMaxDepth,hdrFrameSettings,&stateBlocks,!inlineHdrBase,
+            if(error(hdrFrame.prepareLegacy(ext,scene,hdrDecodeDepth,hdrSkyValid&&!hdrWaterFinalized?hdrSkyTarget():nullptr,width,height,worldMinDepth,worldMaxDepth,hdrFrameSettings,&stateBlocks,!inlineHdrBase,
                    atmosphereAudit?recordSky:nullptr,&skyAudit),"HDR legacy decode"))return;
             if(atmosphereAudit&&!skyAudit.drew)atmosphereAudit->bindingSkip("HdrDecodeWorldSky",hdrSkyValid?"no-sky-decode-draw":"no-captured-sky");
             gpuProfile->mark("HDRBase");
@@ -233,7 +249,7 @@
             gpuProfile->mark("CelestialVeil");effectsBuckets.mark(Bucket::Veil);
         }
 #ifdef NORTHLIGHT_WATER
-        if(cooperativeWater.Current()&&weatherSample.draws==0)
+        if(!hdr.active&&cooperativeWater.Current())
             cooperativeWater.WorldDone(worldDepth,outputTarget,depthTex,&saved.viewport);
 #endif
         if(maskOn&&nameMask.debug)nameMaskDebugView(outputTarget); /* 0.3.212 (task 32): the last effect pass, the mask itself */

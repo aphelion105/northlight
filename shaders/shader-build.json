@@ -1,6 +1,6 @@
 {
   "source_sha256": "b396e48d7165041c0bef599d2b3b7cb321aec5356f66b4ee4e5d4e0f256d0c8f",
-  "rain_source_sha256": "10948a355dc52e824d9ae61b5251a5146a20955295070dbe9ce749dec0eac172",
+  "rain_source_sha256": "00b99d09baeb2473c07aab9d0bdf667fb7f962b4d06aaa66a8c183262a9d6ffa",
   "actor_source_sha256": "c32d23350f561010ec4b21f8be5a37515374a0c96e5f3343b0cd749aa2882de6",
   "water_distance_sha256": "6b41da3272f69d9b79964b6f5bbf3a8546b5e8d09ecf7a99d7b2d8f34fc77405",
   "target": "ps_3_0",
@@ -710,7 +710,7 @@
         "mul": 1,
         "mov": 3
       },
-      "source_sha256": "10948a355dc52e824d9ae61b5251a5146a20955295070dbe9ce749dec0eac172"
+      "source_sha256": "00b99d09baeb2473c07aab9d0bdf667fb7f962b4d06aaa66a8c183262a9d6ffa"
     },
     "RainScrub": {
       "bytes": 348,
@@ -730,7 +730,41 @@
         "texkill": 1,
         "mov": 2
       },
-      "source_sha256": "10948a355dc52e824d9ae61b5251a5146a20955295070dbe9ce749dec0eac172"
+      "source_sha256": "00b99d09baeb2473c07aab9d0bdf667fb7f962b4d06aaa66a8c183262a9d6ffa"
+    },
+    "TideglassCoverage": {
+      "bytes": 256,
+      "sha256": "e006c6b4bdd1f91613c53cdb0e12e34753ad96e149e47ccff29596a31673a488",
+      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "target": "ps_2_0",
+      "static_instruction_slots": 5,
+      "temporary_registers": 1,
+      "samplers": [
+        0
+      ],
+      "instructions": {
+        "texld": 1,
+        "mov": 3,
+        "cmp": 1
+      },
+      "source_sha256": "00b99d09baeb2473c07aab9d0bdf667fb7f962b4d06aaa66a8c183262a9d6ffa"
+    },
+    "TideglassRetainRain": {
+      "bytes": 272,
+      "sha256": "aa0e04c39b55129a3cd13d82c7a7a575e1fbf579439142e1857df2929e30bdf2",
+      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "target": "ps_2_0",
+      "static_instruction_slots": 4,
+      "temporary_registers": 2,
+      "samplers": [
+        0,
+        1
+      ],
+      "instructions": {
+        "texld": 2,
+        "mov": 2
+      },
+      "source_sha256": "00b99d09baeb2473c07aab9d0bdf667fb7f962b4d06aaa66a8c183262a9d6ffa"
     },
     "AOOnly": {
       "bytes": 4620,

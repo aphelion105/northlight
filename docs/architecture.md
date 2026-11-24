@@ -10,9 +10,14 @@ The producer captures Tideglass camera and liquid inputs at the existing World
 snapshot and shares them with the matching UI boundary. Direct mode reads these
 inputs on the device's calling thread. The D3D9 device uses the existing water
 distance and coverage mask and lends the resolved depth to Tideglass.
-Liquid shading runs before the SDR effects copy. The underwater pass runs on
-the completed world target before UI, including frames without a visible
-liquid draw. Frame completion closes the Tideglass session, Reset releases
+Liquid shading runs on the legacy scene before the effects copy. The core
+resolves multisampled colour into its snapshot textures and keeps the game's
+multisampled targets for liquid shading. A conversion at the handoff expands
+the compact distance mask into the distance and coverage channels the core
+expects. The rain mask retains streaks from the native scene at the composite
+boundary. The underwater pass runs before HDR decode, or on the completed
+world target in SDR, including frames without a visible liquid draw.
+Frame completion closes the Tideglass session, Reset releases
 default-pool resources, and teardown destroys the context on the device owner.
 
 [Device adapter](../src/proxy/device_tideglass.inl) ·

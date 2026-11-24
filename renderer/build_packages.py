@@ -447,7 +447,7 @@ def build(platform, version, dll, variants, out, stormlib_dir, atmosphere=None, 
     text = readme.read_text(encoding='utf-8').replace('__RELEASE_VERSION__', version)
     if water_info:
         text += ('\nTideglass adds scenery reflections, water waves and foam, slime, magma, '
-                 'and an underwater view. It runs in SDR with multisampling disabled. '
+                 'and an underwater view in SDR and HDR, including with multisampling. '
                  'Open Water in the Northlight settings to tune it. To return to native water, '
                  'clear Use Tideglass, save, and restart the game.\n')
     tree.add('README.txt', text.replace('\n', '\r\n').encode('utf-8') if platform == 'windows' else text.encode('utf-8'))

@@ -1712,11 +1712,11 @@ private:
         D3DSURFACE_DESC desc={};D3DVIEWPORT9 viewport={};if(!fullViewport(desc,&viewport))return;
         IDirect3DPixelShader9* ps=nullptr;struct PixelRelease {IDirect3DPixelShader9*& p;~PixelRelease(){drop(p);}} releasePS{ps};
         if(FAILED(ext->GetPixelShader(&ps))||!ps)return;
-        if(!waterCapsChecked)waterMrtCaps(desc);
+        if(!waterCapsChecked)waterMrtCaps();
         const auto plan=water->plan(vs,ps,desc.Width,desc.Height,viewport);
         if(plan==NorthlightWaterRenderer::Plan::Skip)return;
 #ifdef NORTHLIGHT_WATER
-        if(cooperativeWaterEnabled&&!hdr.active&&desc.MultiSampleType==D3DMULTISAMPLE_NONE){
+        if(cooperativeWaterEnabled&&(!hdr.active||legacyTideglassTarget())){
             const auto kind=cooperativeLiquidKind(desc,viewport);
             if(kind==WaterHostLiquidSlime||kind==WaterHostLiquidMagma||kind==WaterHostLiquidFade)
                 cooperativeSurfaceDraw=kind;
@@ -1734,18 +1734,14 @@ private:
     // 0.3.214 (water MRT): once per device, the caps the MRT mask needs: two render targets with independent write masks and bit depths (G32R32F next to the game's target),
     // blending on the extra target (the game's own blend applies to it: the format must be a post-pixel-shader blending render target) and pixel shader 2.0.
     // Without them every water draw keeps the second-draw pass.
-    void waterMrtCaps([[maybe_unused]] const D3DSURFACE_DESC& desc){
+    void waterMrtCaps(){
         waterCapsChecked=true;D3DCAPS9 caps={};const bool got=SUCCEEDED(ext->GetDeviceCaps(&caps));
         static constexpr DWORD kUsageQueryPostPixelShaderBlending=0x00080000; /* D3DUSAGE_QUERY_POSTPIXELSHADERBLENDING (the MinGW header lacks it) */
         IDirect3D9* d3d=nullptr;D3DDEVICE_CREATION_PARAMETERS creation={};D3DDISPLAYMODE mode={};
         const HRESULT formatHr=SUCCEEDED(ext->GetDirect3D(&d3d))&&d3d&&SUCCEEDED(ext->GetCreationParameters(&creation))&&SUCCEEDED(ext->GetDisplayMode(0,&mode))?
             d3d->CheckDeviceFormat(creation.AdapterOrdinal,creation.DeviceType,mode.Format,D3DUSAGE_RENDERTARGET|kUsageQueryPostPixelShaderBlending,D3DRTYPE_SURFACE,D3DFMT_G32R32F):D3DERR_INVALIDCALL;
         const auto blendTarget=[&](D3DFORMAT fmt){return SUCCEEDED(formatHr)&&SUCCEEDED(d3d->CheckDeviceFormat(creation.AdapterOrdinal,creation.DeviceType,mode.Format,D3DUSAGE_RENDERTARGET|kUsageQueryPostPixelShaderBlending,D3DRTYPE_TEXTURE,fmt));};
-        bool scalar=blendTarget(D3DFMT_R32F);
-#ifdef NORTHLIGHT_WATER
-        if(cooperativeWaterEnabled&&!hdr.active&&desc.MultiSampleType==D3DMULTISAMPLE_NONE)
-            scalar=false; // The core requires both distance and coverage.
-#endif
+        const bool scalar=blendTarget(D3DFMT_R32F);
         water->setDistanceCaps(scalar,scalar&&got&&caps.NumSimultaneousRTs>=3&&blendTarget(D3DFMT_L8));
         drop(d3d);
         const bool ok=got&&SUCCEEDED(formatHr)&&caps.NumSimultaneousRTs>=2&&(caps.PrimitiveMiscCaps&D3DPMISCCAPS_INDEPENDENTWRITEMASKS)&&(caps.PrimitiveMiscCaps&D3DPMISCCAPS_MRTINDEPENDENTBITDEPTHS)&&(caps.PrimitiveMiscCaps&D3DPMISCCAPS_MRTPOSTPIXELSHADERBLENDING)&&caps.PixelShaderVersion>=D3DPS_VERSION(2,0);
@@ -1824,7 +1820,7 @@ private:
             autoBump&&autoBump->active(),worldDebug!=0||world->needsDiagnosticFallback());
         if(water)water->setMaskDemand(enabled&&!failed&&(waterEffects
 #ifdef NORTHLIGHT_WATER
-            ||(cooperativeWaterEnabled&&!hdr.active)
+            ||cooperativeWaterEnabled
 #endif
         ));
         modelNormalsNeeded=world&&(worldDebug!=0||world->surfaceLightingEnabled()||world->needsDiagnosticFallback());
@@ -3171,7 +3167,7 @@ public:
         if(*waterAtStartup&&!cooperativeWaterEnabled)
             logf("TIDEGLASS water-core.dll is missing, unreadable or incompatible. Using native water until restart.");
         if(cooperativeWaterEnabled)
-            logf("TIDEGLASS cooperative integration active for SDR without MSAA.");
+            logf("TIDEGLASS cooperative integration active.");
 #endif
         try{settingsService=NorthlightSettings::acquire(std::filesystem::path(rootPath),waterAtStartup);settingsRevision=settingsService->revision();if(!settingsRecovery.empty())logf("SETTINGS startup recovery incomplete: %s",settingsRecovery.c_str());}
         catch(const std::exception& e){logf("SETTINGS unavailable: %s",e.what());}
@@ -3258,6 +3254,7 @@ public:
     ~Device() {
 #ifdef NORTHLIGHT_WATER
         cooperativeWater.Shutdown();
+        releaseTideglassTargets();
 #endif
         NorthlightNativeShadowControl::release(this);if(!NorthlightStream::streamActive.load(std::memory_order_relaxed))NorthlightNativeShadowControl::producerPresent();
         NorthlightWindowHook::detach(ext);
@@ -3370,6 +3367,7 @@ public:
         hdrAtUiBoundary=hdrLegacyPrepared=hdrSceneReady=hdrWorldSeen=hdrPresentFallback=hdrLegacySynced=false;hdrSkyValid=hdrSkyRejected=false;hdrTick=0;
 #ifdef NORTHLIGHT_WATER
         cooperativeWater.Lost();
+        releaseTideglassTargets();
         waterCapsChecked=false;
 #endif
         hdr.active=false;HRESULT hr=ext->Reset(pp);resetMark(8);

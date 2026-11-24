@@ -41,6 +41,7 @@
 #include "ps_lava_bake_foam.h"
 #include "ps_lava_bake_flow.h"
 #include "ps_snapshot.h"
+#include "ps_reflection_capture_copy.h"
 #include "ps_underwater.h"
 #include "ps_underwater_foam.h"
 #include "ps_underwater_shared.h"
@@ -469,8 +470,7 @@ bool Renderer::EnsureSceneTargets(IDirect3DDevice9* dev, const D3DSURFACE_DESC& 
         return true;
     SafeRelease(m_sceneBefore);
     SafeRelease(m_sceneWithWater);
-    if (desc.MultiSampleType != D3DMULTISAMPLE_NONE ||
-        FAILED(dev->CreateTexture(desc.Width, desc.Height, 1, D3DUSAGE_RENDERTARGET, desc.Format, D3DPOOL_DEFAULT,
+    if (FAILED(dev->CreateTexture(desc.Width, desc.Height, 1, D3DUSAGE_RENDERTARGET, desc.Format, D3DPOOL_DEFAULT,
                                   &m_sceneBefore, nullptr)) ||
         FAILED(dev->CreateTexture(desc.Width, desc.Height, 1, D3DUSAGE_RENDERTARGET, desc.Format, D3DPOOL_DEFAULT,
                                   &m_sceneWithWater, nullptr)))
@@ -2378,7 +2378,7 @@ bool Renderer::CompositeScene::Capture(IDirect3DDevice9* dev, IDirect3DTexture9*
         z.Width != r.m_snapshotWidth || z.Height != r.m_snapshotHeight ||
         colour.Width != z.Width || colour.Height != z.Height ||
         colour.Width != r.m_sceneDesc.Width || colour.Height != r.m_sceneDesc.Height ||
-        colour.Format != r.m_sceneDesc.Format || colour.MultiSampleType != D3DMULTISAMPLE_NONE)
+        colour.Format != r.m_sceneDesc.Format)
         return r.Skip("deferred composite has no matching pre-liquid scene");
     if (r.m_compositeDesc.Width != colour.Width || r.m_compositeDesc.Height != colour.Height ||
         r.m_compositeDesc.Format != colour.Format) {
@@ -2506,7 +2506,26 @@ bool Renderer::CompositeWater(IDirect3DDevice9* dev, IDirect3DTexture9* depthTex
         if(attempted&&(!shaded||!restored)){
             IDirect3DSurface9* baseline=nullptr;
             recovered=original&&m_sceneWithWater&&SUCCEEDED(m_sceneWithWater->GetSurfaceLevel(0,&baseline));
-            if(recovered)recovered=SUCCEEDED(dev->StretchRect(baseline,nullptr,original,nullptr,D3DTEXF_NONE));
+            if(recovered){
+                D3DSURFACE_DESC target={};
+                recovered=SUCCEEDED(original->GetDesc(&target));
+                if(recovered&&target.MultiSampleType==D3DMULTISAMPLE_NONE)
+                    recovered=SUCCEEDED(dev->StretchRect(baseline,nullptr,original,nullptr,D3DTEXF_NONE));
+                else if(recovered){
+                    // D3D9 cannot StretchRect a single-sample source back into MSAA.
+                    ScreenPassState rollback;
+                    IDirect3DPixelShader9* copy=nullptr;
+                    const D3DVIEWPORT9 vp={0,0,target.Width,target.Height,0,1};
+                    const float grid[]={1.f/target.Width,1.f/target.Height,0.f,0.f};
+                    recovered=SUCCEEDED(p_ps_reflection_capture_copy.Create(dev,&copy))&&
+                        rollback.Capture(dev,m_state)&&SetFullscreenState(dev)&&
+                        SUCCEEDED(dev->SetRenderTarget(0,original))&&SUCCEEDED(dev->SetViewport(&vp))&&
+                        BindPointTexture(dev,0,m_sceneWithWater)&&SUCCEEDED(dev->SetPixelShader(copy))&&
+                        SUCCEEDED(dev->SetPixelShaderConstantF(1,grid,1))&&SUCCEEDED(DrawScreenTriangle(dev));
+                    recovered=rollback.Restore()&&recovered;
+                    SafeRelease(copy);
+                }
+            }
             SafeRelease(baseline);
         }
         SafeRelease(original);

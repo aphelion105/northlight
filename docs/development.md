@@ -200,11 +200,13 @@ client's archive chain. With the art layer enabled, the combo package uses
 daylight lighting underwater. Water settings are under **Water** in the
 in-game overlay. Changing **Use Tideglass** requires a restart.
 
-This integration uses SDR with MSAA off. Northlight uses native water in HDR,
-with MSAA, or when the DLL is disabled, missing or incompatible. When native
-precipitation is present, it retains the native water and underwater passes
-to preserve the streaks. Verify water, underwater and special liquids on a
-private stage before treating a package as ready for release.
+Tideglass runs with SDR and HDR output, including multisampled targets.
+The HDR path uses the legacy scene before Northlight decodes it into linear
+colour. MSAA scene snapshots resolve to single-sample textures while liquid
+shading writes to the original target. During rain, the depth-scrubbed rain
+mask retains streaks over the composited water. Northlight uses native water
+when the DLL is disabled, missing or incompatible. The vendored core carries
+local changes for multisample snapshots and state restoration.
 
 ## Test
 
