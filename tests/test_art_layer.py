@@ -78,6 +78,12 @@ def model_checks(view, folder, result):
     view_files = tables | set(view_textures)
     sky_files = sky_payload_files(result['files'])
     assert all(n.lower().endswith(('.m2','.skin','.anim','.blp','.dbc')) for n in sky_files)
+    tint_step, = (s for s in result['steps'] if s['step'] == 'atrium_flower_tint')
+    tint_asset = build_art_layer.ATRIUM_WMO
+    if 'skipped' not in tint_step:
+        view_files.add(tint_asset)
+    else:
+        assert tint_asset not in result['files']
     view_files |= sky_files
     models = set(result['files']) - view_files - metadata
     assert metadata <= set(result['files']), result['files']
@@ -99,6 +105,14 @@ def model_checks(view, folder, result):
                     assert hashlib.sha256(blob).hexdigest() == result['files'][name]
                     if name.lower() == 'textures\\moon02.blp':
                         assert not any(decode_blp(blob,4096)[2]), 'Native moon texture stays transparent'
+                if tint_asset in view_files:
+                    original = assets.read(tint_asset)
+                    patched = archive.read(tint_asset)
+                    offset = build_art_layer.ATRIUM_FLOWER_TINT_OFFSET
+                    assert hashlib.sha256(original).hexdigest() == tint_step['source_sha256']
+                    assert hashlib.sha256(patched).hexdigest() == result['files'][tint_asset]
+                    assert original[offset:offset + 4] == bytes((209, 113, 114, 255))
+                    assert patched == original[:offset] + bytes((4, 2, 2, 255)) + original[offset + 4:]
                 for name, data in view_textures.items():
                     assert (assets.read(name) if name in dropped else archive.read(name)) == data
                 payload = archive.read(world_emitter_index.ARCHIVE_PATH)
@@ -131,7 +145,7 @@ stock = out / 'stock'
 shutil.rmtree(stock, ignore_errors=True)
 r = build_art_layer.build(client, stock, cache, archives='stock')
 stock_models = model_checks('stock', stock, r)
-skipped = {s['step']: s['skipped'] for s in r['steps'] if 'skipped' in s and s['step'] not in model_steps}
+skipped = {s['step']: s['skipped'] for s in r['steps'] if 'skipped' in s and s['step'] not in model_steps | {'atrium_flower_tint'}}
 assert set(skipped) == {'orgrimmar', 'outdoor_sun', 'outdoor_moon'}, r['steps']
 sky_skipped = {s['step']: s['sky_clone_skipped'] for s in r['steps'] if 'sky_clone_skipped' in s}
 assert set(sky_skipped) == {'mulgore', 'stormwind'}, r['steps']
