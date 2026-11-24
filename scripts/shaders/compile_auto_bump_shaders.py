@@ -13,7 +13,7 @@ entries=('BumpOpaque','BumpLayer','BumpWall','BumpGrass','BumpWallOpaque','BumpC
 entries+=tuple('BumpNormal'+name for name in ('Opaque','Layer','Grass','TerrainOpaque','TerrainLayer','Native'))
 entries+=('BumpFusedNative','BumpFusedPackedNative','BumpClearMS','BumpMergeMS','BumpMergePackedMS')
 entries+=('ModelNormalCapture','ModelNormalOpaque','ModelNormalDepthSeed')
-entries+=('AutoNormalLegacy','AutoNormalModelLegacy')
+entries+=('AutoNormalLegacy','AutoNormalModelLegacy','CanopyResponse')
 for entry in entries:
     entrySource=fp.SHADERS/'auto_normal_generate.hlsl' if entry.startswith('AutoNormal') else fp.SHADERS/'auto_parallax_prefix.hlsl' if entry.startswith('Parallax') else fp.SHADERS/'auto_bump_shared.hlsl' if entry.startswith('BumpShared') else source
     path=fp.COMPILED/(entry+'.bin')

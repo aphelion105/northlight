@@ -184,6 +184,7 @@ template<class T> static uint64_t shaderHash(T* shader, std::vector<DWORD>& word
 #include "gpu_budget.h"
 #include "water_renderer.h"
 #include "world_renderer.h"
+#include "native_canopy_lighting.h"
 #include "frame_parity_capture.h"
 #ifdef NORTHLIGHT_REPLAY_STAND
 #include "stand_api.h"
@@ -4149,6 +4150,34 @@ public:
         if(SUCCEEDED(hr)&&out&&*out)extensionWork("pixel shader registration",[&]{std::vector<DWORD> words;auto h=shaderHash(*out,words);uiFallbackForget(*out);hdrColor.forget(*out);effectCoverage.forget(*out);psTags[*out]=contains(kUiPS,h)?2:0;psHashes[*out]=h;if(spellOn||nameMask.setting||(hdr.stream&&hdr.dxvk)||gameParticlePair)shaderReads[static_cast<void*>(*out)]=NorthlightShaderReads::scan(reinterpret_cast<const uint32_t*>(words.data()),words.size());psMajor[*out]=!words.empty()&&(words[0]>>16)==0xFFFFu?unsigned((words[0]>>8)&0xFFu):0u;if(spellOn)psFogReg[*out]=psMajor[*out]==3?NorthlightLegacyFog::ps3FogColorRegister(reinterpret_cast<const uint32_t*>(words.data()),words.size()):-1;if(autoBump)autoBump->registerPixel(*out,h);if(water)water->registerPixel(*out,h,words.data(),words.size());if(world)world->registerPixelShader(*out);particleCapture.registerPixel(*out,words.data(),words.size());});
         if(SUCCEEDED(hr))mirrorResources.wrap(out);return hr;
     }
+    NorthlightTreeCanopy::NativeLighting canopyLighting;
+    NorthlightTreeCanopy::CrownLighting crownLighting;
+    unsigned canopyReportFrame=~0u;
+    template<class Draw> HRESULT submitCanopy(const Draw& draw){
+        if(!world||!enabled||applied||failed||!terrain||worldDebug||debugMode||hdrUiPhase||
+           !mirrorState.textureKnown[0]||!NorthlightTreeCanopy::contains(mirrorState.textures[0])||
+           !drawRenderState(D3DRS_ZWRITEENABLE)||!drawRenderState(D3DRS_ZENABLE))return draw();
+        IDirect3DPixelShader9* pixel=nullptr;
+        if(!ext->peekPixelShader(pixel)||!pixel)return draw();
+        float light[3][4]={};unsigned body=0;
+        if(!world->treeCanopyLight(light,body))return draw();
+        bool directional=false,crown=false;
+        const auto fallback=[&](){
+            if(light[0][2]<=.0001f)return draw();
+            const float tint[]={light[2][0]*light[0][2],light[2][1]*light[0][2],light[2][2]*light[0][2],0.f};
+            return crownLighting.draw(ext,pixel,tint,draw,crown);
+        };
+        IDirect3DVertexShader9* vertex=nullptr;
+        const HRESULT result=ext->peekVertexShader(vertex)&&vertex?
+            canopyLighting.draw(ext,vertex,pixel,light[0],draw,fallback,directional):fallback();
+        if(canopyLighting.restoreFailed||crownLighting.restoreFailed)failed=true;
+        if((directional||crown)&&diagnostics()&&sampled()&&canopyReportFrame!=frame){
+            canopyReportFrame=frame;
+            logf("TREE_CANOPY frame=%u mode=%s body=%u viewLight=%.4f,%.4f,%.4f crown=%.4f transmission=%.4f reflection=%.4f",
+                frame,directional?"directional":"crown",body,light[1][0],light[1][1],light[1][2],light[0][2],light[1][3],light[2][3]);
+        }
+        return result;
+    }
     // Keep native and prepared material submissions in one ordering for all Draw* forms.
     template<class Draw> HRESULT submitGameDraw(UINT count,bool& nativeSky,bool* skyCaptured,Draw submit,
                                                const NorthlightDrawSnapshot::Draw* ordered=nullptr){
@@ -4159,7 +4188,8 @@ public:
             const HRESULT result=nativeMoreLights->draw(kind,&mirrorState,handoff,draw,world&&world->ownsNativeExtra());
             if(nativeMoreLights->restoreFailed)failed=true;return result;};
         const auto final=[&]()->HRESULT{return expanded([&]{
-            return autoBump?autoBump->submitNativeMaterial(submit,effectCoverage.nativePixel()):submit();
+            const auto tinted=[&]{return submitCanopy(submit);};
+            return autoBump?autoBump->submitNativeMaterial(tinted,effectCoverage.nativePixel()):tinted();
         });};
         if(!enabled&&!failed&&!hdr.active&&worldDebug==0&&!diagnostics())return final();
         return hdrDraw([&]{

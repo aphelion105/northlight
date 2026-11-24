@@ -27,7 +27,7 @@ struct UnlockImageArgs {ProxyBase* proxy;UINT level,face;DWORD flags;UINT hasRec
 enum ImageRoute:UINT{RouteSurface=0,RouteTexture=1,RouteCube=2,RouteVolumeTexture=3,RouteVolume=4};
 
 inline ProxyBase* particleTextureRoot(ProxyBase* p){if(p&&p->kind==Kind::Surface)p=p->parent;return p&&p->kind==Kind::Texture?p:nullptr;}
-inline void invalidateParticleTexture(ProxyBase* p,bool material=true){if(auto* root=particleTextureRoot(p)){NorthlightParticleTextures::cache().invalidate(root->raw);if(material)NorthlightMaterialTextures::cache().invalidate(root->raw);}}
+inline void invalidateParticleTexture(ProxyBase* p,bool material=true){if(auto* root=particleTextureRoot(p)){NorthlightParticleTextures::cache().invalidate(root->raw);NorthlightTreeCanopy::forget(root->raw);if(material)NorthlightMaterialTextures::cache().invalidate(root->raw);}}
 inline void captureParticleTexture(const UnlockImageArgs& a,const unsigned char* src,bool success){
     auto* root=particleTextureRoot(a.proxy);if(!root||a.flags&D3::kLockReadOnly)return;
     // Only immutable creation metadata is read here, on the replay thread.
@@ -37,6 +37,7 @@ inline void captureParticleTexture(const UnlockImageArgs& a,const unsigned char*
     if(!(root->info.usage&(D3::kUsageDS|D3::kUsageRT))&&((root->info.usage&D3::kUsageDynamic)||((root->info.usage&D3::kUsageAutoGen)&&root->info.fmt==21)||(root->info.levels==1&&root->info.fmt==21&&root->info.w>=256&&root->info.h>=256))){auto& cache=NorthlightMaterialTextures::cache();if(whole)cache.upload(root->raw,root,w,h,level,root->info.fmt,src,std::size_t(a.rows)*a.pitch,a.pitch,true,success,root->info.pool);else if(a.hasRect&&a.slices==1)cache.updateRect(root->raw,root,w,h,level,root->info.fmt,src,std::size_t(a.rows)*a.pitch,a.pitch,unsigned(a.l),unsigned(a.t),unsigned(a.r),unsigned(a.b),success);else cache.invalidate(root->raw);}
     if(root->info.usage&(D3::kUsageRT|D3::kUsageDS|D3::kUsageAutoGen)){NorthlightParticleTextures::cache().invalidate(root->raw);return;}
     NorthlightParticleTextures::cache().upload(root->raw,root,w,h,level,root->info.fmt,src,std::size_t(a.rows)*a.pitch,a.pitch,whole,success,root->info.pool);
+    NorthlightTreeCanopy::upload(root->raw,level,root->info.fmt,w,h,src,a.rows,a.pitch,whole&&success);
 }
 
 // Both need StreamCore::texMutex held. A shadow is game-side memory and no queued command refers to it (Unlock copies the rows into a Block).
