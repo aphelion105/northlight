@@ -13,8 +13,8 @@ int main(int argc,char** argv){
     auto module=LoadLibraryA(argv[2]);assert(module);auto create=reinterpret_cast<IDirect3D9*(WINAPI*)(UINT)>(GetProcAddress(module,"Direct3DCreate9"));assert(create);auto api=create(D3D_SDK_VERSION);assert(api);
     D3DPRESENT_PARAMETERS pp{};pp.Windowed=TRUE;pp.hDeviceWindow=window;pp.BackBufferWidth=pp.BackBufferHeight=N;pp.BackBufferFormat=D3DFMT_X8R8G8B8;pp.SwapEffect=D3DSWAPEFFECT_DISCARD;pp.PresentationInterval=D3DPRESENT_INTERVAL_IMMEDIATE;
     IDirect3DDevice9* d=nullptr;ok(api->CreateDevice(0,D3DDEVTYPE_HAL,window,D3DCREATE_HARDWARE_VERTEXPROCESSING|D3DCREATE_FPU_PRESERVE,&pp,&d));
-    IDirect3DPixelShader9* shaders[3]{};const char* entries[]={"LocalDirect.bin","LocalDirect16.bin","LocalLighting.bin"};
-    for(unsigned i=0;i<3;++i){auto code=read(i==1&&argc>3&&!badBank?argv[3]:compiled+"/"+entries[i]);ok(d->CreatePixelShader(reinterpret_cast<const DWORD*>(code.data()),&shaders[i]));}
+    IDirect3DPixelShader9* shaders[5]{};const char* entries[]={"LocalDirect.bin","LocalDirect16.bin","LocalLighting.bin","LocalDirectGlint.bin","LocalDirect16Glint.bin"};
+    for(unsigned i=0;i<5;++i){auto code=read(i==1&&argc>3&&!badBank?argv[3]:compiled+"/"+entries[i]);ok(d->CreatePixelShader(reinterpret_cast<const DWORD*>(code.data()),&shaders[i]));}
     IDirect3DCubeTexture9* cube=nullptr;ok(d->CreateCubeTexture(4,1,0,D3DFMT_R32F,D3DPOOL_MANAGED,&cube,nullptr));
     for(unsigned face=0;face<6;++face){D3DLOCKED_RECT lock{};ok(cube->LockRect(D3DCUBEMAP_FACES(face),0,&lock,nullptr,0));for(unsigned y=0;y<4;++y)std::memset(static_cast<char*>(lock.pBits)+y*lock.Pitch,0,16);ok(cube->UnlockRect(D3DCUBEMAP_FACES(face),0));}
     for(unsigned s=0;s<16;++s){for(auto key:{D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER})ok(d->SetSamplerState(s,key,D3DTEXF_POINT));ok(d->SetSamplerState(s,D3DSAMP_MIPFILTER,D3DTEXF_NONE));for(auto key:{D3DSAMP_ADDRESSU,D3DSAMP_ADDRESSV,D3DSAMP_ADDRESSW})ok(d->SetSamplerState(s,key,D3DTADDRESS_CLAMP));ok(d->SetSamplerState(s,D3DSAMP_SRGBTEXTURE,FALSE));}
@@ -73,6 +73,60 @@ int main(int argc,char** argv){
             if(!fp16&&count==16&&detailMode==0&&strength==1&&domain==0){const auto flat=render(true,0,shadow);for(unsigned at=0;at<wide.size();++at)bumpChanges+=std::fabs(wide[at]-flat[at])>.001f;}
             if(!fp16&&count==16&&detailMode==0&&strength==0&&domain==0&&shadow){const auto lit=render(true,0,false);for(unsigned at=0;at<wide.size();++at)shadowChanges+=lit[at]-wide[at]>.001f;}
             for(unsigned s=0;s<16;++s)ok(d->SetTexture(s,nullptr));for(auto t:owned)t->Release();++cases;
+        }
+        if(!fp16&&!badBank){
+            const float z=10,nearZ=.2f,farZ=1000,depthValue=farZ/(farZ-nearZ)*(1-nearZ/z);
+            float c[75][4]{};
+            c[0][0]=c[0][1]=1.f/full;c[0][2]=nearZ;c[0][3]=farZ;c[1][0]=c[1][1]=c[1][2]=1;c[2][0]=1;
+            c[3][0]=c[4][1]=c[5][2]=c[6][3]=1;
+            c[33][0]=c[33][1]=full;c[33][2]=c[33][3]=N;c[52][1]=1;
+            c[73][0]=.00001f;c[73][1]=40;c[73][2]=1;
+            float lamp[2][4]={{0,0,5,20},{1,.55f,.2f,1.f/19}};
+            auto* depth=texture(d,solid(depthValue));auto* normal=texture(d,solid(0,0,-1,1));
+            auto* base=texture(d,solid(0,0,0,1));
+            ok(d->SetTexture(1,depth));ok(d->SetTexture(12,base));ok(d->SetTexture(14,normal));
+            ok(d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE));
+            auto reflection=[&](unsigned shader,float r,float g,float materialZ,float gain){
+                c[52][3]=gain;
+                ok(d->SetPixelShaderConstantF(0,c[0],75));
+                ok(d->SetPixelShaderConstantF(84,c[36],16));ok(d->SetPixelShaderConstantF(100,c[36],16));
+                ok(d->SetPixelShaderConstantF(157,lamp[0],2));
+                auto* detail=texture(d,solid(r,g,materialZ,1));ok(d->SetTexture(9,detail));
+                ok(d->SetPixelShader(shaders[shader]));
+                ok(d->BeginScene());ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(Vertex)));ok(d->EndScene());
+                const auto result=pixels();
+                ok(d->SetTexture(9,nullptr));detail->Release();
+                return result;
+            };
+            const auto terrain=reflection(3,-.5f,.5f,z,.4f);
+            const auto stone=reflection(4,.5f,-.5f,z,.4f);
+            const auto foliage=reflection(4,-.5f,-.5f,z,.4f);
+            const auto untagged=reflection(4,.5f,.5f,z,.4f);
+            const auto stale=reflection(4,.5f,-.5f,z+1,.4f);
+            const auto disabled=reflection(4,.5f,-.5f,z,0);
+            const unsigned center=(N/2*N+N/2)*4;
+            // A well just beyond the stone face still gives the rough rim a little blue spill.
+            lamp[0][2]=12;
+            lamp[1][0]=.25f;lamp[1][1]=.5f;lamp[1][2]=1.f;
+            const auto normalStone=reflection(4,.5f,-.5f,z,.56f);
+            const auto moonwellStone=reflection(4,.5f,-.5f,z,-.56f);
+            const auto moonwellTerrain=reflection(4,-.5f,.5f,z,-.56f);
+            if(!(normalStone[center+2]==0&&moonwellTerrain[center+2]==0&&
+                 moonwellStone[center+2]>.025f&&moonwellStone[center+2]>moonwellStone[center+1]&&
+                 moonwellStone[center+1]>moonwellStone[center])){
+                std::printf("FAIL moonwell spill: regular=%g moonwell=%g/%g/%g terrain=%g\n",
+                    normalStone[center+2],moonwellStone[center],moonwellStone[center+1],moonwellStone[center+2],moonwellTerrain[center+2]);
+                ++failures;
+            }
+            if(!(terrain[center]>.05f&&std::fabs(terrain[center]-stone[center])<1e-6f&&
+                 stone[center]>stone[center+1]&&stone[center+1]>stone[center+2]&&
+                 foliage[center]==0&&untagged[center]==0&&stale[center]==0&&disabled[center]==0)){
+                std::printf("FAIL reflected receiver center: terrain=%g stone=%g/%g/%g foliage=%g untagged=%g stale=%g disabled=%g\n",
+                    terrain[center],stone[center],stone[center+1],stone[center+2],foliage[center],untagged[center],stale[center],disabled[center]);
+                ++failures;
+            }
+            for(unsigned s=0;s<16;++s)ok(d->SetTexture(s,nullptr));
+            depth->Release();normal->Release();base->Release();
         }
         staging->Release();target->Release();
     }

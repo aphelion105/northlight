@@ -52,6 +52,7 @@ public:
         NorthlightLightingCapture::Capture* lightingCapture;
         unsigned directInputs;
         IDirect3DTexture9* restoreRegionalFog=nullptr;
+        float materialResponse[4]={};
     };
     struct Result {bool ok,base,aoBase,rainAbsent,nativeSurfaceShared;};
 
@@ -254,6 +255,8 @@ public:
             d->SetRenderTarget(0,in.target);
             d->SetTexture(0,color_);
             bindMaterial(d,in);
+            // Volume fog uses c154 earlier in the frame.
+            if(in.material.solar&&!check(d->SetPixelShaderConstantF(154,in.materialResponse,1),"material response controls"))return {false,baseComposite,aoBaseComposite,rainAbsent,nativeSurfaceShared};
             d->SetPixelShader(in.material.solar?solarMaterialPS_[in.hdr]:in.hdr?hdrMaterialPS_:materialPS_);
             constexpr unsigned materialInputs=(1u<<0)|(1u<<1)|(1u<<4)|(1u<<5)|(1u<<6)|(1u<<7)|(1u<<8)|(1u<<9)|(1u<<10)|(1u<<11)|(1u<<12)|(1u<<13)|(1u<<14);
             if(in.lightingCapture)in.lightingCapture->inputs(3,materialInputs,in.directInputs|(1u<<7)|(1u<<13));

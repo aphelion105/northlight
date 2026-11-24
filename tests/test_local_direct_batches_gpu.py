@@ -16,6 +16,6 @@ subprocess.run([str(exe),str(fp.COMPILED),backend],cwd=out,check=True,timeout=90
 host=fp.src('world_local_lighting.h').read_text()
 assert 'd->SetPixelShaderConstantF(84,batch.position[0].data(),2*N);d->SetPixelShaderConstantF(100,batch.color[0].data(),2*N);' in host
 source=world_source_text(fp.src('world_effects.hlsl'))
-wide=source[source.index('float4 LocalDirect16('):source.index('float3 removalScale(')]
+wide=source[source.index('float4 localDirectWide('):source.index('float3 removalScale(')]
 assert 'autoBumpNormal(uv,p,smoothNormal,viewDistance(d),InverseView[0].xyz,InverseView[1].xyz,InverseView[2].xyz)' in wide
 assert 'LampPos[16]:register(c84)' in wide and 'LampColor[16]:register(c100)' in wide

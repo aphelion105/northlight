@@ -60,7 +60,7 @@ try:
         includes=['-I',str(overlay),*includes]
     selected_header=Path(reference_header) if reference_header else sourceRoot/fp.src('world_renderer.h').relative_to(fp.REPO)
     selected_text=selected_header.read_text()
-    solar_material='sunSurfaceSpecularGain()' in selected_text
+    solar_material='float sunSurfaceSpecularGain(' in selected_text
     if solar_material:includes+=['-DNORTHLIGHT_SOLAR_MATERIAL_TEST=1']
     probe_atlas_owner='NorthlightWorldProbeAtlas probeAtlas' in selected_text
     if probe_atlas_owner:includes+=['-DNORTHLIGHT_PROBE_ATLAS_OWNER_TEST=1']

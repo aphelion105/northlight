@@ -31,3 +31,21 @@ float3 autoBumpNormal(float2 uv,float3 position,float3 normal,float distance,flo
     float3 blended=lerp(normal,mapped*magnitude,BumpControl.x*fade);
     return blended*(magnitude*rsqrt(max(dot(blended,blended),1e-8)));
 }
+
+// Only identified solid receivers contribute to reflected local light.
+bool materialDepthMatches(float4 capture,float distance){
+    float cover=saturate(capture.a);
+    return cover>.02&&abs(abs(capture.b)-distance*cover)<max(.025,distance*.0015)*cover;
+}
+float materialLampResponse(float2 uv,float z,float3 eye,float3 normal,float3 light,bool rim=false){
+    if(BumpControl.x<=0||z>=BumpControl.y)return 0;
+    float4 capture=tex2Dlod(BumpMaterial,float4(uv,0,0));
+    if((capture.r<0)==(capture.g<0)||!materialDepthMatches(capture,z))return 0;
+    float3 halfVector=normalize(light+eye);
+    float alignment=saturate(dot(normal,halfVector));
+    float facing=saturate(4*dot(normal,light));
+    float lobe=pow(max(alignment,.00001),38)*facing;
+    // Broad spill from the blue water onto rough stone, including the grazing faces of the rim.
+    if(rim&&capture.g<0)lobe=max(lobe,(.20+.5*alignment*alignment)*(.45+.55*facing));
+    return lobe*saturate((BumpControl.y-z)/12);
+}

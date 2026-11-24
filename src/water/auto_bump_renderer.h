@@ -287,7 +287,7 @@ class NorthlightAutoBump {
     bool cleared=false,privateDepthCleared=false,drawn=false,failed=false,occlusionCleared=false,occlusionDrawn=false;
     bool enabled=false,terrain=true,walls=true,grass=true,memoryPressure=false;
     float strength=.75f,range=48,terrainSpecularDistance=0;
-    bool sunSurfaceSpecular=false;
+    bool solidMaterialSpecular=false;
     unsigned modes[4]={2,2,1,1},modelMinPixels=0;float pomControl[4]={.018f,16,16,0};
     // An unprepared wall draw still needs relief when mesh subdivision is
     // unsupported or outside its range. Never shift an already displaced draw.
@@ -757,7 +757,7 @@ public:
     template<class Submit> bool deferModelOverlay(Submit submit){return displacement.deferModelOverlay(submit);}
     void setProjection(float x,float y,float z){projection[0]=x;projection[1]=y;projection[2]=z;}
     void setTerrainSpecularDistance(float distance){terrainSpecularDistance=distance;}
-    void setSunSurfaceSpecular(bool enabled){sunSurfaceSpecular=enabled;}
+    void setSolidMaterialSpecular(bool enabled){solidMaterialSpecular=enabled;}
     void setInverseView(const float* rows,bool known=true){worldLightStamp=~std::uint64_t(0);std::copy(rows,rows+12,captureToWorld);displacement.setDistanceView(known?rows:nullptr);}
     void setLight(const float* light){worldLightStamp=~std::uint64_t(0);std::copy(light,light+4,occlusionLight);}
     template<class Source> bool syncWorldLighting(const Source& source){
@@ -852,6 +852,7 @@ public:
         ((modes[0]==2||modes[1]==2||modes[1]==3||modes[2]==2||modes[3]==2)&&pomControl[0]>0)||
         ((modes[0]==3||modes[1]==3||modes[2]==3||modes[3]==3)&&displacement.hasDisplacement()))&&!failed;}
     IDirect3DTexture9* texture()const{return active()&&drawn?(fusedM2MsaaComplete?(fusedM2DepthBase?fusedM2Merged:fusedM2Resolved):height):nullptr;}
+    bool capturedFoliage()const{return draws[2]!=0;}
     bool hasCaptureResources()const{return height!=nullptr;}
     bool capturedThisFrame()const{return active()&&drawn&&deferred.empty();}
     IDirect3DTexture9* occlusionTexture()const{return active()&&drawn&&occlusionDrawn?occlusionMap:nullptr;}
@@ -1161,7 +1162,7 @@ public:
         }
         DWORD addressU=D3DTADDRESS_WRAP,addressV=D3DTADDRESS_WRAP;d->GetSamplerState(0,D3DSAMP_ADDRESSU,&addressU);d->GetSamplerState(0,D3DSAMP_ADDRESSV,&addressV);
         if(domain==2&&!coverageAlpha)++opaqueCoverage;
-        const bool solarStructure=domain==2&&sunSurfaceSpecular&&(material==5||opaqueWall);
+        const bool solarStructure=domain==2&&solidMaterialSpecular&&(material==5||opaqueWall);
         const float constants[]={domain==1?.18f:domain==2?(solarStructure?-.14f:.14f):.06f,materialRange,alpha?(float(ref)+(alphaFunc==D3DCMP_GREATER?.5f:0.f))/255.f:.001f,domain==4?(alpha?1.f:0.f):(coverageAlpha?0.f:1.f)};
         float pom[4];std::copy(pomControl,pomControl+4,pom);if(!pomInRange||!parallaxMode(domain)||!parallax.supports(saved.pixel,material))pom[0]=0;
         float occult[4];std::copy(occlusionControl,occlusionControl+4,occult);occult[3]=needsOcclusion&&occlusionTarget?occlusionDistance():0.f;if(pom[0]<=0||occlusionLight[3]<=0)occult[0]=0;
