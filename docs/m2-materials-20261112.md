@@ -1,10 +1,10 @@
-# M2 material cost вЂ” 12 November 2026
+# M2 material cost — 12 November 2026
 
 ## Last game run
 
 Input: `<client>/northlight-renderer.log`, preserved under
 `<out>/m2-optimization-20261112/before-renderer.log`.
-The run used renderer 0.3.217, DXVK 3.1.1, 3840Г—2160, and RenderProfile=1.
+The run used renderer 0.3.217, DXVK 3.1.1, 3840×2160, and RenderProfile=1.
 `log-analysis.json` beside the preserved log contains its SHA-256 and the
 individual foreground intervals. Background intervals at about 30 FPS are
 excluded; they do not measure the material switch.
