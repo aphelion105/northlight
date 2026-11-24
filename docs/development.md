@@ -238,6 +238,21 @@ and the rules for writing a test are in [tests/README.md](../tests/README.md). W
 toolchain or archive you can still build the DLL (given zig) and run most tests, which are pure
 Python or native C++.
 
+### Offline GI transport benchmark
+
+On Windows with a hardware D3D11 adapter, compare the CPU GI solver and
+experimental GPU transport variants on the same cached Northrend geometry.
+
+```powershell
+python scripts/benchmark_gi.py --output <new-output-folder>
+```
+
+The harness runs the frozen CPU reference and the current solver in ABBA order
+for surface and grid probe layouts. It checks exact CPU output and equality
+across GPU variants, then records timings and CPU/GPU parity per layout.
+A parity rejection is retained in the report. These component results do not
+establish compatibility with the production renderer or in-game FPS.
+
 ## Machine configuration
 
 Nothing in the code names a machine path. Each setting comes from, in order, an environment
