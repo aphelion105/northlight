@@ -12,7 +12,18 @@ void* operator new(std::size_t n){allocations.fetch_add(1,std::memory_order_rela
 void operator delete(void* p)noexcept{std::free(p);}
 void operator delete(void* p,std::size_t)noexcept{std::free(p);}
 #endif
+// A helper that cannot start must not std::terminate: copying init into helper 1 throws, as a failed thread start would.
+// Larger than std::function's small buffer, so moving the function never copies it; only the per-helper capture does.
+struct ThrowOnSecondCopy {
+ static std::atomic<unsigned> copies,ran;char pad[64]={};
+ ThrowOnSecondCopy()=default;ThrowOnSecondCopy(ThrowOnSecondCopy&&)noexcept{}
+ ThrowOnSecondCopy(const ThrowOnSecondCopy&){if(copies.fetch_add(1)+1==2)throw std::runtime_error("helper start");}
+ void operator()()const{ran.fetch_add(1);}
+};
+std::atomic<unsigned> ThrowOnSecondCopy::copies{0},ThrowOnSecondCopy::ran{0};
 int main(){unsigned cases=0;
+ {bool thrown=false;try{NorthlightGI::SolvePool pool(3,ThrowOnSecondCopy{});}catch(const std::runtime_error&){thrown=true;}
+  assert(thrown&&ThrowOnSecondCopy::copies==2&&ThrowOnSecondCopy::ran==1);} // helper 0 started and was joined
  for(unsigned helpers=0;helpers<5;++helpers){NorthlightGI::SolvePool pool(helpers,nullptr);
   for(unsigned generation=0;generation<2000;++generation){std::array<unsigned,128> hits{};std::array<unsigned,12> capture{};capture[7]=generation;
    const unsigned count=generation%129;const auto job=[&,capture](size_t i){assert(capture[7]==generation);++hits[i];};static_assert(sizeof job>2*sizeof(void*),"exercise heap-sized captures");
