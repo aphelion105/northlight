@@ -709,6 +709,32 @@ class Install(Base):
         self.assertEqual(tree(self.client), self.before)
         self.assertFalse((self.client / 'world-cache').exists())
 
+    def test_tideglass_payload_and_archive_list_are_transactional(self):
+        manifest_path = self.pkg_root / 'payload-manifest.json'
+        manifest = json.loads(manifest_path.read_text())
+        for name, data in {'water-core.dll': b'cooperative core',
+                           'water.ini': b'[Water]\nWaveStrength=1\n',
+                           'water-host.ini': b'[WaterIntegration]\nEnable=1\n'}.items():
+            (self.pkg_root / 'payload' / name).write_bytes(data)
+            manifest.append({'path': name, 'sha256': sha(data), 'preserve': name.endswith('.ini')})
+        manifest_path.write_text(json.dumps(manifest))
+        info_path = self.pkg_root / 'BUILD-INFO.json'
+        info = json.loads(info_path.read_text())
+        info['tideglass'] = {'core_sha256': sha(b'cooperative core')}
+        info_path.write_text(json.dumps(info))
+        self.installer().install(self.client)
+        archives = self.client / 'northlight-water-archives.txt'
+        self.assertIn('./Data/common.mpq', archives.read_text().splitlines())
+        self.assertIn('./Data/patch-z.mpq', archives.read_text().splitlines())
+        self.assertIn('--tideglass', next(args for script, args in self.calls if script == 'build_art_layer.py'))
+        settings = self.client / 'water.ini'
+        edited = b'[Water]\nWaveStrength=2\n'
+        settings.write_bytes(edited)
+        self.installer().install(self.client)
+        self.assertEqual(settings.read_bytes(), edited)
+        self.installer().uninstall(self.client)
+        self.assertEqual(tree(self.client), {**self.before, 'water.ini': edited})
+
     def version_package(self, n):
         """A copy of the package whose renderer DLL and celestial-profiles.ini differ (on macOS the package
         records hold only the ini files, so the DLL alone would not stack)."""

@@ -86,6 +86,9 @@ public:
     // here. This is outside the allocation/IO/wait-free completion contract.
     using SnapshotObserved=SnapshotCompleted;
     struct Options {
+#ifdef NORTHLIGHT_WATER
+        std::function<WaterHostFrameRef(const D3DVIEWPORT9&)> captureWater;
+#endif
         std::size_t budget=BudgetBytes;
         bool (*capture)(GameSnapshot&,Trigger,std::uint64_t)=nullptr;   // game_snapshot.h capture() in the DLL; null = no snapshots
         SnapshotCompleted snapshotCompleted=nullptr;void* snapshotSink=nullptr;
@@ -525,6 +528,9 @@ public:
         m2Grouped={};
         worldBatches={};
         policy.onPresent();takeReplayFailure();
+#ifdef NORTHLIGHT_WATER
+        worldWaterFrame={};
+#endif
         UINT dirtyBytes=0;
         if(dirty){dirtyBytes=dirty->rdh.dwSize+dirty->rdh.nCount*UINT(sizeof(RECT));if(sizeof(PresentArgs)+dirtyBytes>MaxInlinePayload)dirtyBytes=0;}
         auto* a=static_cast<PresentArgs*>(q.reserve((std::uint16_t)(swap?Cmd::SwapPresent:Cmd::Present),std::uint32_t(sizeof(PresentArgs)+dirtyBytes),kFlagWaitTarget));   // 0.3.196 (task 12): the next Present waits for this one's seq
@@ -798,10 +804,17 @@ private:
         for(unsigned i=1;i<StreamState::kRTs;++i)if(!st.rtKnown[i]||st.rt[i])return true;
         return false;}
 
+#ifdef NORTHLIGHT_WATER
+    std::function<WaterHostFrameRef(const D3DVIEWPORT9&)> captureWaterFrame;
+    WaterHostFrameRef worldWaterFrame;
+#endif
     StreamDevice(IDirect3DDevice9* target,IDirect3D9* par,const D3DPRESENT_PARAMETERS* p,Options opt)
         :coreOwner(new StreamCore(opt.budget)),core(*coreOwner),replayer(core,SnapshotPool::capFor(clampFramesAhead(opt.framesAhead))),parent(par),framesAhead_(clampFramesAhead(opt.framesAhead)),capture(opt.capture),snapshotCompleted(opt.snapshotCompleted),snapshotSink(opt.snapshotSink),snapshotObserved(opt.snapshotObserved){
         core.target=target;core.game=this;core.framesAhead=framesAhead_;core.logLine=nullptr;core.callerModule=opt.callerModule;core.queryCaller=opt.queryCaller;core.occlusionLocal=opt.occlusionLocal;callerLog=opt.log;callerDiag=opt.diagnostics;core.readBackLock=opt.readBackLock;st.core=&core;
         if(opt.cursorApi)cursor=*opt.cursorApi;
+#ifdef NORTHLIGHT_WATER
+        captureWaterFrame = std::move(opt.captureWater);
+#endif
         core.queryThreadLog=opt.log;
         restoreOwner=opt.threadStart;replayer.frameSkip=opt.frameSkip!=0;replayer.threadStart=std::move(opt.threadStart);replayer.log=opt.log;replayer.diagnostics=opt.diagnostics;replayer.idleProfiling=opt.idleProfiling;filter=opt.filterRedundant;
         replayer.indexedPair=std::move(opt.indexedPair);
@@ -889,6 +902,11 @@ private:
         const std::uint64_t t0=core.timing?nowNs():0;   // 0.3.204 (task 21): snapshot capture time (acquire + capture + record), Diagnostics only
         GameSnapshot* s=replayer.snapshots.acquire();if(!s)return;
         if(!capture(*s,t,drawOrdinal)){replayer.snapshots.release(s);if(t0)own(core.q.stats.snapNs,nowNs()-t0);return;}
+#ifdef NORTHLIGHT_WATER
+        if(t==Trigger::World&&captureWaterFrame&&st.viewport.known)
+            worldWaterFrame=captureWaterFrame(st.viewport.v);
+        if(t==Trigger::World||t==Trigger::Ui)s->waterFrame=worldWaterFrame;
+#endif
         if(snapshotCompleted)snapshotCompleted(snapshotSink,*s,reinterpret_cast<std::uintptr_t>(this),core.presentsRecorded.load(std::memory_order_relaxed),core.queryEpoch.load(std::memory_order_acquire),Replayer::currentTid());
         if(snapshotObserved)snapshotObserved(snapshotSink,*s,reinterpret_cast<std::uintptr_t>(this),core.presentsRecorded.load(std::memory_order_relaxed),core.queryEpoch.load(std::memory_order_acquire),Replayer::currentTid());
         Queue& q=core.q;auto* p=static_cast<GameSnapshot**>(q.reserve((std::uint16_t)Cmd::Snapshot,sizeof(GameSnapshot*)));*p=s;q.commit();

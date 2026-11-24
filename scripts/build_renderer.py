@@ -24,6 +24,9 @@ def source_identity(repo=northlight_paths.REPO):
     digest = hashlib.sha256()
     paths = [p for folder in ('src', 'shaders') for p in (repo/folder).rglob('*') if p.is_file()]
     paths += [repo/'scripts/build_renderer.py', repo/'northlight_paths.py']
+    water_manifest = repo/'tideglass/source.json'
+    if water_manifest.is_file():
+        paths.append(water_manifest)
     assets_builder = repo/'scripts/build_renderer_assets.py'
     if assets_builder.is_file():
         paths.append(assets_builder)
@@ -92,6 +95,8 @@ def check_compiler(zig, env):
 
 def main(argv=None):
     arguments = sys.argv[1:] if argv is None else argv
+    from tideglass_source import verify
+    verify()
     dev_tuning = '--dev-tuning' in arguments
     stand_replay = '--stand-replay' in arguments
     profile_symbols = '--profile-symbols' in arguments
@@ -211,6 +216,12 @@ def main(argv=None):
                '-DIMGUI_USER_CONFIG="northlight_imconfig.h"',
                *[str(northlight_paths.src(n)) for n in OVERLAY_SOURCES],
                '-luser32', '-luuid', '-o', str(output_dll)]
+    water = northlight_paths.REPO / 'tideglass'
+    command[command.index('-luser32'):command.index('-luser32')] = [
+        '-DNORTHLIGHT_WATER=1',
+        *['-I' + str(water / folder) for folder in ('src', 'integrations', 'generated')],
+        str(water / 'src/surface_depth.cpp'), str(water / 'src/screen_pass.cpp'),
+    ]
     if profile_symbols:
         command[command.index('-shared'):command.index('-shared')] = ['-g', '-DNORTHLIGHT_PROFILE_BUILD=1']
     if dev_tuning:

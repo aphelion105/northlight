@@ -407,6 +407,7 @@ test_pipeline_all_off_gpu.py
 test_pipeline_bindings_cpu.py
 test_pipeline_capture_buffers.py
 test_pipeline_wave_cpu.py
+test_player_water_core.py
 test_point_batch_tree.py
 test_point_clip_prepared.py
 test_point_face_pass.py
@@ -642,6 +643,7 @@ test_translucent_depth_census.py
 test_ui_boundary.py
 test_ui_water_boundary.py
 test_uncached_map_skip_wiring.py
+test_underwater_daylight.py
 test_underwater_fade.py
 test_unlisted_archive.py
 test_unlit_receiver.py

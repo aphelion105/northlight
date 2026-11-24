@@ -54,7 +54,7 @@ checks['waterMrtDraw: begin, the one chain draw, end - all in extensionWork; a r
     and 'if(water->isMrtBound())rainMrtUnbind();' in mrtDraw and mrtDraw.index('rainMrtUnbind()')<mrtDraw.index('water->capture('))
 checks['waterMrtDraw: no pending plan = the plain chain (after the unbind, see below)']='if(!waterPending.valid){if(water&&water->isMrtBound())rainMrtUnbind();return chain();}' in mrtDraw
 checks['the only water->capture( calls are the two fallbacks; all adapters use shared captureWater']=r.count('water->capture(')==2 and r.count('captureWater(vs,UserPointer,draw);')==1 and r.count('captureGameDraw<NorthlightWaterRenderer::')==4
-caps=between(r,'    void waterMrtCaps(){','    // The next draw uses a water vertex shader')
+caps=between(r,'    void waterMrtCaps(','    // The next draw uses a water vertex shader')
 checks['caps: two targets, independent write masks and bit depths, MRT blending, a blendable G32R32F target, ps_2_0 - else the second-draw pass with a log line']=all(s in caps for s in ('NumSimultaneousRTs>=2','D3DPMISCCAPS_INDEPENDENTWRITEMASKS','D3DPMISCCAPS_MRTINDEPENDENTBITDEPTHS','D3DPMISCCAPS_MRTPOSTPIXELSHADERBLENDING','D3DPS_VERSION(2,0)','D3DUSAGE_RENDERTARGET|kUsageQueryPostPixelShaderBlending','0x00080000','D3DFMT_G32R32F','WATER mask MRT disabled: caps','water->setMrtCaps(ok)'))
 
 # ---- the MRT path never switches target 0 or depth ----
@@ -80,7 +80,7 @@ checks['waterMrtDraw: without a planned draw render target 1 is unbound (if the 
 # ---- the frame ----
 latch=between(r,'    void latchDrawGates(){','    LONGLONG* sampledHookTimer()')
 checks['the frame latch requests water for enabled consumers, materials and diagnostics']=(
-    'water->setMaskDemand(enabled&&!failed&&world&&world->wantsWaterMask(' in latch
+    'waterEffects=world&&world->wantsWaterMask(' in latch and 'water->setMaskDemand(enabled&&!failed&&(waterEffects' in latch
     and 'autoBump&&autoBump->active(),worldDebug!=0||world->needsDiagnosticFallback()' in latch
     and cw.index('water->usable()')<cw.index('ext->peekDepthStencilSurface('))
 fx=between(r,'        rainMrtUnbind(); /* 0.3.202 (rain mask MRT) */\n        ExtensionDevice::RawScope rawEffects','        // discs and glare')

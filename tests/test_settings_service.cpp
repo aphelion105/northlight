@@ -108,13 +108,28 @@ int main(int argc,char** argv){
      bool found=false;for(const auto& f:fields)if(f.file==2&&f.section=="default"&&f.key=="sun_fog_density"){
          found=true;assert(f.apply=="F"&&f.low=="0"&&f.high=="4"&&f.factory=="1");}assert(found);
      fails([&]{applyChanges(docs,fields,"C\tdefault\tsun_fog_density\t4.1\n");});}
+    {
+        const auto initial=factoryDocuments();
+        const auto config=configOf(initial,"");
+        const auto ordinary=schema(initial,initial,config,"");
+        const auto combined=schema(initial,initial,config,"","native,dxvk","",true);
+        assert(std::none_of(ordinary.begin(),ordinary.end(),[](const Field& f){return f.file>=WaterFile;}));
+        const auto edit=applyChanges(initial,combined,"W\tWater\tWaveStrength\t2.5\nH\tWaterIntegration\tEnable\t0\n");
+        assert(explicitValue(edit[WaterFile],"Water","WaveStrength")=="2.5");
+        const auto saved=schema(edit,initial,config,"","native,dxvk","",true);
+        for(const auto& f:saved){
+            if(f.key=="WaveStrength")assert(f.apply=="S"&&f.saved=="2.5");
+            if(f.file==WaterHostFile&&f.key=="Enable")assert(f.apply=="R"&&f.saved=="0"&&f.active=="1");
+        }
+        fails([&]{applyChanges(initial,combined,"W\tWater\tWaveStrength\t5\n");});
+    }
     // HDR mode and grading both participate in live preview and Revert.
     {unsigned hdrFields=0;for(const auto& f:fields)if(f.file==1&&f.section=="Renderer"&&f.key!="Backend"&&f.key.rfind("Native",0)!=0){++hdrFields;assert(f.available&&f.apply=="F");auto edited=applyChanges(docs,fields,f.id()+"\t"+f.factory+"\n");assert(configOf(edited,"").hdr.size()==NorthlightHdrSettingsContract::Count);}assert(hdrFields==NorthlightHdrSettingsContract::Count);
      auto unavailable=fields;for(auto& f:unavailable)if(f.key=="HDRMaxNits")f.available=false;fails([&]{applyChanges(docs,unavailable,"R\tRenderer\tHDRMaxNits\t600\n");});
      Document hdrDoc("[Renderer]\nHDRContrast=1.35\nHDRExposure=-1.25\nHDRPaperWhite=240\n");auto g=configOf({Document(""),hdrDoc,Document(""),Document("")},"");assert(g.hdr[4]==1.35f&&g.hdr[5]==-1.25f&&g.hdr[1]==240);}
     // Wide bloom is opt-in, persisted globally while HDR is off, and live.
     {using namespace NorthlightHdrSettingsContract;
-     assert(configOf(std::array<Document,4>{},"").hdr[WideBloom]==0);
+     assert(configOf(Documents{},"").hdr[WideBloom]==0);
      auto path=root/"wide-bloom";std::filesystem::create_directories(path);Store wide(path);auto before=wide.read();auto documentsBefore=documents(before);
      auto config=configOf(documentsBefore,"");auto available=schema(documentsBefore,documentsBefore,config,"");
      bool checkbox=false;for(const auto& f:available)if(f.key=="HDRWideBloom"){checkbox=true;assert(f.kind=="check"&&f.factory=="0"&&f.apply=="F");}assert(checkbox);

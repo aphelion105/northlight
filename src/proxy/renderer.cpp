@@ -90,6 +90,9 @@
 // input (northlight_mem.h). no_builtin: its body must not turn back into a memcmp call. Not exported.
 extern "C" __attribute__((no_builtin("memcmp"),no_builtin("bcmp"))) int memcmp(const void* a,const void* b,size_t n){return NorthlightMem::compare(a,b,n);}
 
+#ifdef NORTHLIGHT_WATER
+#include "../../tideglass/integrations/northlight/water_bridge.h"
+#endif
 #include "renderer_startup.h"
 static LONG deviceSerial=0,liveDevices=0;
 static NorthlightBackend::Kind selectedBackend=NorthlightBackend::Kind::Legacy;
@@ -346,6 +349,10 @@ class Device final : public GuardedMirrorDevice, private NorthlightDeviceEffectT
     std::unique_ptr<NorthlightCelestialDiscRenderer> celestialDiscs;
     std::unique_ptr<NorthlightShadowBlobFilter> shadowBlobs;
     std::unique_ptr<NorthlightWaterRenderer> water;
+#ifdef NORTHLIGHT_WATER
+    NorthlightWaterBridge cooperativeWater;
+    bool cooperativeWaterEnabled=false;
+#endif
     std::unique_ptr<NorthlightGpuProfile> gpuProfile,gpuSceneProfile;
     std::unique_ptr<NorthlightMaterialProfile> materialProfile;
     bool gpuFrameStarted=false,gpuSceneSplit=false,gpuEffectsSplit=false;
@@ -1030,6 +1037,12 @@ private:
         std::fill(std::begin(cpuCleanupOwners),std::end(cpuCleanupOwners),0);
         const bool cleanupSample=sampled()&&NorthlightRenderThreadProbe::profiling();
         {CpuScope cost(cleanupSample?cpuCleanupOwners:nullptr);if(world)world->endFrame(!extensionFault,frame);}
+#ifdef NORTHLIGHT_WATER
+        if(cooperativeWaterEnabled){
+            ExtensionDevice::RawScope raw(*ext);
+            cooperativeWater.End();
+        }
+#endif
         {CpuScope cost(cleanupSample?cpuCleanupOwners+1:nullptr);if(water)water->endFrame();}
         {CpuScope cost(cleanupSample?cpuCleanupOwners+2:nullptr);if(surface)surface->endFrame();}
         {CpuScope cost(cleanupSample?cpuCleanupOwners+3:nullptr);if(autoBump)autoBump->endFrame();}
@@ -1686,6 +1699,7 @@ private:
     // description and viewport read here are reused by the mask capture.
     // 0.3.214 (water MRT): a draw the MRT conditions hold for is only planned here (waterPending); waterMrtDraw binds render target 1 and the mask variants of its shaders
     // right before the game's own draw. Everything else keeps the second-draw pass, made here as before.
+#include "device_tideglass.inl"
     template<class Draw> void captureWater(IDirect3DVertexShader9* vs,unsigned userPointer,Draw draw){
         if(!water||!drawWaterVS)return;
         /* a water draw that is not planned as MRT (any gate below) must not meet render target 1 left bound by the previous water draw */
@@ -1698,9 +1712,18 @@ private:
         D3DSURFACE_DESC desc={};D3DVIEWPORT9 viewport={};if(!fullViewport(desc,&viewport))return;
         IDirect3DPixelShader9* ps=nullptr;struct PixelRelease {IDirect3DPixelShader9*& p;~PixelRelease(){drop(p);}} releasePS{ps};
         if(FAILED(ext->GetPixelShader(&ps))||!ps)return;
-        if(!waterCapsChecked)waterMrtCaps();
+        if(!waterCapsChecked)waterMrtCaps(desc);
         const auto plan=water->plan(vs,ps,desc.Width,desc.Height,viewport);
         if(plan==NorthlightWaterRenderer::Plan::Skip)return;
+#ifdef NORTHLIGHT_WATER
+        if(cooperativeWaterEnabled&&!hdr.active&&desc.MultiSampleType==D3DMULTISAMPLE_NONE){
+            const auto kind=cooperativeLiquidKind(desc,viewport);
+            if(kind==WaterHostLiquidSlime||kind==WaterHostLiquidMagma||kind==WaterHostLiquidFade)
+                cooperativeSurfaceDraw=kind;
+            if(kind==WaterHostLiquidSlime||kind==WaterHostLiquidMagma)return;
+            prepareCooperativeWater(desc,viewport);
+        }
+#endif
         /* the twin must match the game's depth buffer too (D3D9: every bound target and the depth share multisample type and quality) */
         const bool sameMs=worldDepthDescKnown&&worldDepthDesc.MultiSampleType==desc.MultiSampleType&&worldDepthDesc.MultiSampleQuality==desc.MultiSampleQuality;
         if(plan==NorthlightWaterRenderer::Plan::Mrt&&sameMs){waterPending={vs,ps,userPointer,desc.Width,desc.Height,desc.MultiSampleType,desc.MultiSampleQuality,viewport,true};return;}
@@ -1711,14 +1734,18 @@ private:
     // 0.3.214 (water MRT): once per device, the caps the MRT mask needs: two render targets with independent write masks and bit depths (G32R32F next to the game's target),
     // blending on the extra target (the game's own blend applies to it: the format must be a post-pixel-shader blending render target) and pixel shader 2.0.
     // Without them every water draw keeps the second-draw pass.
-    void waterMrtCaps(){
+    void waterMrtCaps([[maybe_unused]] const D3DSURFACE_DESC& desc){
         waterCapsChecked=true;D3DCAPS9 caps={};const bool got=SUCCEEDED(ext->GetDeviceCaps(&caps));
         static constexpr DWORD kUsageQueryPostPixelShaderBlending=0x00080000; /* D3DUSAGE_QUERY_POSTPIXELSHADERBLENDING (the MinGW header lacks it) */
         IDirect3D9* d3d=nullptr;D3DDEVICE_CREATION_PARAMETERS creation={};D3DDISPLAYMODE mode={};
         const HRESULT formatHr=SUCCEEDED(ext->GetDirect3D(&d3d))&&d3d&&SUCCEEDED(ext->GetCreationParameters(&creation))&&SUCCEEDED(ext->GetDisplayMode(0,&mode))?
             d3d->CheckDeviceFormat(creation.AdapterOrdinal,creation.DeviceType,mode.Format,D3DUSAGE_RENDERTARGET|kUsageQueryPostPixelShaderBlending,D3DRTYPE_SURFACE,D3DFMT_G32R32F):D3DERR_INVALIDCALL;
         const auto blendTarget=[&](D3DFORMAT fmt){return SUCCEEDED(formatHr)&&SUCCEEDED(d3d->CheckDeviceFormat(creation.AdapterOrdinal,creation.DeviceType,mode.Format,D3DUSAGE_RENDERTARGET|kUsageQueryPostPixelShaderBlending,D3DRTYPE_TEXTURE,fmt));};
-        const bool scalar=blendTarget(D3DFMT_R32F);
+        bool scalar=blendTarget(D3DFMT_R32F);
+#ifdef NORTHLIGHT_WATER
+        if(cooperativeWaterEnabled&&!hdr.active&&desc.MultiSampleType==D3DMULTISAMPLE_NONE)
+            scalar=false; // The core requires both distance and coverage.
+#endif
         water->setDistanceCaps(scalar,scalar&&got&&caps.NumSimultaneousRTs>=3&&blendTarget(D3DFMT_L8));
         drop(d3d);
         const bool ok=got&&SUCCEEDED(formatHr)&&caps.NumSimultaneousRTs>=2&&(caps.PrimitiveMiscCaps&D3DPMISCCAPS_INDEPENDENTWRITEMASKS)&&(caps.PrimitiveMiscCaps&D3DPMISCCAPS_MRTINDEPENDENTBITDEPTHS)&&(caps.PrimitiveMiscCaps&D3DPMISCCAPS_MRTPOSTPIXELSHADERBLENDING)&&caps.PixelShaderVersion>=D3DPS_VERSION(2,0);
@@ -1793,8 +1820,13 @@ private:
     LONGLONG cpuDrawHooks=0; /* RenderProfile sample frames: per-draw work outside prepareDraw (CPU profile drawHooks=) */
     LONGLONG* hookTimer=nullptr; /* &cpuDrawHooks on a timed RenderProfile sample frame (frame: set before the latch) */
     void latchDrawGates(){
-        if(water)water->setMaskDemand(enabled&&!failed&&world&&world->wantsWaterMask(
-            autoBump&&autoBump->active(),worldDebug!=0||world->needsDiagnosticFallback()));
+        const bool waterEffects=world&&world->wantsWaterMask(
+            autoBump&&autoBump->active(),worldDebug!=0||world->needsDiagnosticFallback());
+        if(water)water->setMaskDemand(enabled&&!failed&&(waterEffects
+#ifdef NORTHLIGHT_WATER
+            ||(cooperativeWaterEnabled&&!hdr.active)
+#endif
+        ));
         modelNormalsNeeded=world&&(worldDebug!=0||world->surfaceLightingEnabled()||world->needsDiagnosticFallback());
         NorthlightM2Draw::requested.store(enabled&&!failed&&modelNormalsNeeded,std::memory_order_relaxed);
         NorthlightDrawGates::Inputs in;
@@ -2988,6 +3020,17 @@ private:
     }
 public:
     // 0.3.192 (CS): the replay thread takes over as owner thread (called on it, before its first command and before CreateDevice returns).
+#ifdef NORTHLIGHT_WATER
+    WaterHostFrameRef captureNativeWater(const D3DVIEWPORT9& viewport){
+        if(!cooperativeWaterEnabled)return {};
+        return CaptureNorthlightWater(viewport,[](void* context,std::uintptr_t exposed)->std::uintptr_t{
+            auto* owner=static_cast<Device*>(context);
+            const auto inner=reinterpret_cast<std::uintptr_t>(
+                NorthlightStream::innerOfActive(reinterpret_cast<const void*>(exposed)));
+            return owner->mirrorResources.rawOf(inner,!owner->mirrorState.enabled);
+        },this);
+    }
+#endif
     void adoptOwnerThread(){mirrorState.gate.ownerTid=MirrorGuard::threadId();}
     void setNativeCaptureDiagnostic(bool enabled){nativeCaptureDiagnostic=enabled;}
     // 0.3.192 (CS): direct replay (stream mode). The extension device runs the same MirrorDevice methods on the same real device and mirror as the
@@ -3121,7 +3164,16 @@ public:
         parent->AddRef(); QueryPerformanceFrequency(&cpuFrequency);
         {const bool loaded=particleCapture.catalog.read(std::filesystem::path(rootPath)/L"northlight-emission.bin");
          logf("EMISSION catalog loaded=%u identities=%u",unsigned(loaded),particleCapture.catalog.size());}
-        try{settingsService=NorthlightSettings::acquire(std::filesystem::path(rootPath));settingsRevision=settingsService->revision();if(!settingsRecovery.empty())logf("SETTINGS startup recovery incomplete: %s",settingsRecovery.c_str());}
+        std::optional<bool> waterAtStartup;
+#if defined(NORTHLIGHT_WATER) && !defined(NORTHLIGHT_REPLAY_STAND)
+        waterAtStartup=northlightWaterSettings.Enabled();
+        cooperativeWaterEnabled=northlightWaterSettings.Open();
+        if(*waterAtStartup&&!cooperativeWaterEnabled)
+            logf("TIDEGLASS water-core.dll is missing, unreadable or incompatible. Using native water until restart.");
+        if(cooperativeWaterEnabled)
+            logf("TIDEGLASS cooperative integration active for SDR without MSAA.");
+#endif
+        try{settingsService=NorthlightSettings::acquire(std::filesystem::path(rootPath),waterAtStartup);settingsRevision=settingsService->revision();if(!settingsRecovery.empty())logf("SETTINGS startup recovery incomplete: %s",settingsRecovery.c_str());}
         catch(const std::exception& e){logf("SETTINGS unavailable: %s",e.what());}
         gpuProfile=std::make_unique<NorthlightGpuProfile>(ext);gpuSceneProfile=std::make_unique<NorthlightGpuProfile>(ext,"GPU frame",12);materialProfile=std::make_unique<NorthlightMaterialProfile>(ext);gpuTimer=std::make_unique<NorthlightGpuFrameTimer>(ext); gpuScene=std::make_shared<NorthlightGpuScene::Scene>(ext);world=std::make_unique<WorldRenderer>(ext,gpuScene);world->setEffectsBuckets(&effectsBuckets);world->setMaterialProfiler(materialProfile.get());
         bool expandedLights=NorthlightNativeMoreLights::available;
@@ -3204,6 +3256,9 @@ public:
         memmap("create");
     }
     ~Device() {
+#ifdef NORTHLIGHT_WATER
+        cooperativeWater.Shutdown();
+#endif
         NorthlightNativeShadowControl::release(this);if(!NorthlightStream::streamActive.load(std::memory_order_relaxed))NorthlightNativeShadowControl::producerPresent();
         NorthlightWindowHook::detach(ext);
         logf("DEVICE lifetime event=destroy-begin id=%ld tick=%lu",diagnosticId,(unsigned long)GetTickCount());
@@ -3313,7 +3368,14 @@ public:
         if(overlay)overlay->invalidate(); /* its D3DPOOL_DEFAULT buffers and font texture; recreated by its next draw */
         resetMark(6);hdrFrame.saveAndReset(ext);hdrColor.reset();hdrSkyForeground.reset();hdrUiPhase=false;releaseHdrTargets();resetMark(7);
         hdrAtUiBoundary=hdrLegacyPrepared=hdrSceneReady=hdrWorldSeen=hdrPresentFallback=hdrLegacySynced=false;hdrSkyValid=hdrSkyRejected=false;hdrTick=0;
+#ifdef NORTHLIGHT_WATER
+        cooperativeWater.Lost();
+        waterCapsChecked=false;
+#endif
         hdr.active=false;HRESULT hr=ext->Reset(pp);resetMark(8);
+#ifdef NORTHLIGHT_WATER
+        if(SUCCEEDED(hr))cooperativeWater.Restored();
+#endif
         if(SUCCEEDED(hr)){frameParity.discardUnfinishedPair();if(nativeMoreLights)nativeMoreLights->deviceReset();hdr.logical=*pp;refreshWindowSize();hr=initHdrTargets();}resetMark(9);
         if(resetProfile){auto ms=[&](unsigned a,unsigned b){return 1000.*double(resetTicks[b].QuadPart-resetTicks[a].QuadPart)/double(cpuFrequency.QuadPart);};
             logf("RESET stages frame=%llu prepareMs=%.3f cachesMs=%.3f resourcesMs=%.3f worldMs=%.3f auxiliaryMs=%.3f overlayMs=%.3f hdrReleaseMs=%.3f backendMs=%.3f hdrTargetsMs=%.3f totalMs=%.3f",(unsigned long long)frame,ms(0,1),ms(1,2),ms(2,3),ms(3,4),ms(4,5),ms(5,6),ms(6,7),ms(7,8),ms(8,9),ms(0,9));}
@@ -4121,7 +4183,7 @@ public:
         auto raw=[&]{return ext->DrawPrimitive(t,start,count);};
         auto draw=[&]{return submitGameDraw(count,nativeSky,&skyCaptured,raw);};
         if(enabled)spellArgs=NorthlightSpellLayer::DrawArgs::primitive(t,start,count);
-        return drawHook(t,count,[&](IDirect3DVertexShader9* vs){captureGameDraw<NorthlightWaterRenderer::NoUserPointer>(vs,geometry,raw,draw);},draw,&nativeSky,&skyCaptured);}
+        return drawHook(t,count,[&](IDirect3DVertexShader9* vs){captureGameDraw<NorthlightWaterRenderer::NoUserPointer>(vs,geometry,raw,draw);},draw,&nativeSky,&skyCaptured,&geometry);}
     HRESULT STDMETHODCALLTYPE DrawIndexedPrimitive(D3DPRIMITIVETYPE t,INT base,UINT min,UINT vertices,UINT start,UINT count) override { Guard mirrorLock(mirrorState.gate);
         NorthlightAutoDisplacement::Args geometry{{t,base,min,vertices,start,count,true}};
         bool nativeSky=false,skyCaptured=false;
@@ -4129,21 +4191,21 @@ public:
         auto raw=[&]{return submitIndexedPair(geometry.draw,[&]{return ext->DrawIndexedPrimitive(t,base,min,vertices,start,count);});};
         auto draw=[&]{return submitGameDraw(count,nativeSky,&skyCaptured,raw,&geometry.draw);};
         if(enabled)spellArgs=NorthlightSpellLayer::DrawArgs::indexed(t,base,min,vertices,start,count);
-        return drawHook(t,count,[&](IDirect3DVertexShader9* vs){captureGameDraw<NorthlightWaterRenderer::NoUserPointer>(vs,geometry,raw,draw);},draw,&nativeSky,&skyCaptured);}
+        return drawHook(t,count,[&](IDirect3DVertexShader9* vs){captureGameDraw<NorthlightWaterRenderer::NoUserPointer>(vs,geometry,raw,draw);},draw,&nativeSky,&skyCaptured,&geometry);}
     HRESULT STDMETHODCALLTYPE DrawPrimitiveUP(D3DPRIMITIVETYPE t,UINT count,const void* data,UINT stride) override { Guard mirrorLock(mirrorState.gate);
         NorthlightAutoDisplacement::Args geometry{{t,0,0,0,0,count,false},nullptr,D3DFMT_UNKNOWN,data,stride};
         bool nativeSky=false,skyCaptured=false;
         auto raw=[&]{return ext->DrawPrimitiveUP(t,count,data,stride);};
         auto draw=[&]{return submitGameDraw(count,nativeSky,&skyCaptured,raw);};
         if(enabled)spellArgs=NorthlightSpellLayer::DrawArgs::primitiveUP(t,count,data,stride);
-        return drawHook(t,count,[&](IDirect3DVertexShader9* vs){captureGameDraw<NorthlightWaterRenderer::UserVertices>(vs,geometry,raw,draw);},draw,&nativeSky,&skyCaptured);}
+        return drawHook(t,count,[&](IDirect3DVertexShader9* vs){captureGameDraw<NorthlightWaterRenderer::UserVertices>(vs,geometry,raw,draw);},draw,&nativeSky,&skyCaptured,&geometry);}
     HRESULT STDMETHODCALLTYPE DrawIndexedPrimitiveUP(D3DPRIMITIVETYPE t,UINT min,UINT vertices,UINT count,const void* indices,D3DFORMAT fmt,const void* data,UINT stride) override { Guard mirrorLock(mirrorState.gate);
         NorthlightAutoDisplacement::Args geometry{{t,0,min,vertices,0,count,true},indices,fmt,data,stride};
         bool nativeSky=false,skyCaptured=false;
         auto raw=[&]{return ext->DrawIndexedPrimitiveUP(t,min,vertices,count,indices,fmt,data,stride);};
         auto draw=[&]{return submitGameDraw(count,nativeSky,&skyCaptured,raw);};
         if(enabled)spellArgs=NorthlightSpellLayer::DrawArgs::indexedUP(t,min,vertices,count,indices,fmt,data,stride);
-        return drawHook(t,count,[&](IDirect3DVertexShader9* vs){captureGameDraw<NorthlightWaterRenderer::UserVerticesAndIndices>(vs,geometry,raw,draw);},draw,&nativeSky,&skyCaptured);}
+        return drawHook(t,count,[&](IDirect3DVertexShader9* vs){captureGameDraw<NorthlightWaterRenderer::UserVerticesAndIndices>(vs,geometry,raw,draw);},draw,&nativeSky,&skyCaptured,&geometry);}
 };
 
 static bool hdrGamePresentation(IDirect3DDevice9* owner,D3DPRESENT_PARAMETERS* out){return static_cast<Device*>(owner)->gamePresentation(out);}
@@ -4179,6 +4241,9 @@ public:
         options.frameSkip=frameSkip; /* 0.3.200 (frame skip): StreamFrameSkip, read with CommandStream */
         options.occlusionLocal=occlusionLocal; /* StreamOcclusionLocal, read with CommandStream */
         options.capture=&NorthlightStream::capture;
+#ifdef NORTHLIGHT_WATER
+        options.captureWater=[target](const D3DVIEWPORT9& viewport){return target->captureNativeWater(viewport);};
+#endif
 #ifndef NORTHLIGHT_REPLAY_STAND
         if(NorthlightDiagnostics::enabled()){
             const auto& range=NorthlightStream::codeRange();

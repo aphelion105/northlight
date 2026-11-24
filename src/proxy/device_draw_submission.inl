@@ -1,5 +1,9 @@
 // Coordinates the single native submission and its capture and replay adapters.
-    template<class Capture,class Draw> HRESULT drawHook(D3DPRIMITIVETYPE t,UINT count,Capture capture,Draw draw,bool* nativeSky=nullptr,bool* skyCaptured=nullptr){
+    template<class Capture,class Draw> HRESULT drawHook(D3DPRIMITIVETYPE t,UINT count,Capture capture,Draw draw,bool* nativeSky=nullptr,bool* skyCaptured=nullptr,[[maybe_unused]] const NorthlightAutoDisplacement::Args* geometry=nullptr){
+#ifdef NORTHLIGHT_WATER
+        cooperativeSurfaceDraw=WaterHostLiquidUnknown;
+        cooperativeDrawArgs=geometry;
+#endif
         skyPlanet.clear();
         auroraDrawProven=false;auroraDrawScale={};auroraDrawIntensity=1;
         const HRESULT resumed=hdrResumeWorld();if(FAILED(resumed))return resumed;
@@ -51,7 +55,13 @@
             submitParticleDraw(particle,true,true);return D3D_OK;
         }
         skyLayersReplay(skyRole,!claimed&&!mist,draw);
-        const HRESULT hr=waterMrtDraw(nativeDraw,[&]{return nameMaskDraw(rainBlend,claimed||mist,nativeDraw);});
+        auto submit=[&]{return waterMrtDraw(nativeDraw,[&]{return nameMaskDraw(rainBlend,claimed||mist,nativeDraw);});};
+#ifdef NORTHLIGHT_WATER
+        const HRESULT hr=cooperativeWaterEnabled
+            ? cooperativeSurface(t,geometry?geometry->stride:0,particleSkipped,submit) : submit();
+#else
+        const HRESULT hr=submit();
+#endif
         if(SUCCEEDED(hr))hdrReplaySky(linearSky,claimed||mist||(skyCaptured&&*skyCaptured),draw);
         if(FAILED(hr)&&skyRole!=NorthlightSkyComposition::Role::Unknown)skyLayers.invalidate();
         submitParticleDraw(particle,SUCCEEDED(hr)&&!claimed&&!mist&&!blobOriginal&&!shadowSwapOriginal,false);

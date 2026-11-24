@@ -4,6 +4,21 @@ The current renderer is an x86 D3D9 proxy in the client process. This map descri
 the implemented boundaries. Historical investigations and release reports remain
 in `renderer/docs/`; they do not replace the current contracts or prove current performance.
 
+## Tideglass
+
+The producer captures Tideglass camera and liquid inputs at the existing World
+snapshot and shares them with the matching UI boundary. Direct mode reads these
+inputs on the device's calling thread. The D3D9 device uses the existing water
+distance and coverage mask and lends the resolved depth to Tideglass.
+Liquid shading runs before the SDR effects copy. The underwater pass runs on
+the completed world target before UI, including frames without a visible
+liquid draw. Frame completion closes the Tideglass session, Reset releases
+default-pool resources, and teardown destroys the context on the device owner.
+
+[Device adapter](../src/proxy/device_tideglass.inl) ·
+[Snapshot ownership](../src/stream/stream_device.h) ·
+[Frame effects](../src/proxy/device_frame_effects.inl)
+
 ## Shader and resource navigation
 
 The pipeline map follows M2 sections and ADT terrain through material capture,

@@ -85,6 +85,20 @@
             }else water->resolveMask();
             waterMask=water->maskTextureForDepth(worldMinDepth,worldMaxDepth);
         }else if(atmosphereAudit)atmosphereAudit->bindingSkip("WaterMaskResolve","mask-not-requested");
+#ifdef NORTHLIGHT_WATER
+        if(cooperativeWaterEnabled&&!hdr.active&&debugMode==0&&worldDebug==0){
+            prepareCooperativeWater(desc,saved.viewport,false);
+            if(cooperativeWater.Current()){
+                if(cooperativeWater.Liquid()&&waterMask&&weatherSample.draws==0)
+                    cooperativeWater.Composite(depthTex,waterMask,worldDepth,nearZ,farZ,worldMinDepth,worldMaxDepth,false);
+                if(cooperativeWater.HasSurface()&&cooperativeWater.CompositeSurfaces(depthTex,worldDepth)){
+                    if(!resolveDepthInto(depthTex,false)||
+                       !cooperativeWater.RefreshLiquidDepth(depthTex,waterMask,nearZ,farZ,worldMinDepth,worldMaxDepth))return;
+                    if(auto* effectsMask=cooperativeWater.EffectsMask(depthTex,worldDepth,waterMask))waterMask=effectsMask;
+                }
+            }
+        }
+#endif
         gpuProfile->mark("PreCelestial"); /* task 45: the rain and water mask preparation (and GPU work still pending from the game's scene) end here, so CelestialDiscs bills the discs and the terrain mask alone */
         // discs and glare, then the wrap-ring visibility in the same group of
         // 1x1 passes before the scene copy; the veil follows water (below).
@@ -218,6 +232,10 @@
             if(!linearHdr)celestialDiscs->renderVeil(outputTarget,NorthlightCelestialGlow::hazeAtSun(haze.haze[3],haze.shape[2],sunElevation),world->skyTransmittance());
             gpuProfile->mark("CelestialVeil");effectsBuckets.mark(Bucket::Veil);
         }
+#ifdef NORTHLIGHT_WATER
+        if(cooperativeWater.Current()&&weatherSample.draws==0)
+            cooperativeWater.WorldDone(worldDepth,outputTarget,depthTex,&saved.viewport);
+#endif
         if(maskOn&&nameMask.debug)nameMaskDebugView(outputTarget); /* 0.3.212 (task 32): the last effect pass, the mask itself */
         hdrSceneReady=linearHdr;
         if(atmosphereAudit){

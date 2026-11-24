@@ -180,6 +180,32 @@ and the `shaders/*-shader-build.json` manifest. Every shader uses the one toolch
 `scripts/shaders/shader_compiler.py` (IEEE strict, O3; Wine's builtin compiler is refused).
 `build_environment.py` keeps the Wine prefix outside the client folder.
 
+## Tideglass
+
+The optional Tideglass 0.1.0 core uses the cooperative D3D9 API. The export
+under `tideglass/` comes from the upstream combo release and is checked against
+its SHA-256 manifest before build or packaging. Build the 32-bit core with
+CMake, Ninja and the i686 LLVM-MinGW tools on PATH. The combo command also
+builds the regular Northlight renderer with the pinned Zig toolchain.
+
+```powershell
+python scripts/build_combo.py --storm-source <clean-pinned-StormLib-checkout>
+python renderer/build_packages.py --platform windows --version 0.3.218-tideglass-0.1.0 --water-core <out>/tideglass/water-core.dll
+python tests/verify_packages.py <out>/packages/Northlight-0.3.218-tideglass-0.1.0-Windows.zip
+```
+
+Omit `--storm-source` to let CMake fetch the pinned revision. The installer
+preserves both water INIs and generates the reflection archive list from the
+client's archive chain. With the art layer enabled, the combo package uses
+daylight lighting underwater. Water settings are under **Water** in the
+in-game overlay. Changing **Use Tideglass** requires a restart.
+
+This integration uses SDR with MSAA off. Northlight uses native water in HDR,
+with MSAA, or when the DLL is disabled, missing or incompatible. When native
+precipitation is present, it retains the native water and underwater passes
+to preserve the streaks. Verify water, underwater and special liquids on a
+private stage before treating a package as ready for release.
+
 ## Test
 
 ```sh

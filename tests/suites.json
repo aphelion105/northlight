@@ -5,6 +5,7 @@
       "test_project_harness.py",
       "test_affected_tests.py",
       "test_build_source_identity.py",
+      "test_player_water_core.py",
       "test_renderer_assets.py",
       "test_dev_tuning_build.py",
       "test_capture_skip_wiring.py",
@@ -210,6 +211,7 @@
     "tests": [
       "test_northlight_install.py",
       "test_windows_installer.py",
+      "test_underwater_daylight.py",
       "test_linux_package.py",
       "test_entrypoints_isolated.py",
       "test_install_delivery.py",

@@ -22,6 +22,9 @@ static void ensureRootPath(){
         if(rootPath[0])settingsRecovery=NorthlightSettings::Store::recoverAtStartup(std::filesystem::path(rootPath));
         if(rootPath[0]&&settingsRecovery.empty())settingsRecovery=NorthlightSettings::migrateLightLimits(std::filesystem::path(rootPath));
         if(rootPath[0]&&settingsRecovery.empty())settingsRecovery=NorthlightSettings::migrateHdr(std::filesystem::path(rootPath));
+#ifdef NORTHLIGHT_WATER
+        northlightWaterSettings.ConfigureRoot(root);
+#endif
         return true;
     }();
     (void)resolved;

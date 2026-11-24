@@ -19,6 +19,10 @@
 #include <windows.h>
 #endif
 
+#ifdef NORTHLIGHT_WATER
+#include "host_client.h"
+#endif
+
 namespace NorthlightStream {
 #ifdef NORTHLIGHT_REPLAY_STAND
 namespace StandInputs {class Session;}
@@ -107,7 +111,14 @@ public:
     unsigned long hits=0,misses=0; // this activation, flushed by ScopedPlayback
     // Only record() writes payloads; reads require a fully initialized FIFO.
     GameSnapshot()noexcept{}
-    void clear(){keyCount_=copyCount_=0;used_=0;overflowed_=false;mode=Mode::Idle;triggerKind=0;triggerDraw=0;hits=misses=0;
+#ifdef NORTHLIGHT_WATER
+    WaterHostFrameRef waterFrame;
+#endif
+    void clear(){
+#ifdef NORTHLIGHT_WATER
+        waterFrame = {};
+#endif
+        keyCount_=copyCount_=0;used_=0;overflowed_=false;mode=Mode::Idle;triggerKind=0;triggerDraw=0;hits=misses=0;
         nativeLights.clear();menu.clear();menuCaptureReject=0;
 #ifdef NORTHLIGHT_REPLAY_STAND
         aliases_={};

@@ -20,6 +20,8 @@
 !/src/
 !/shaders/
 !/tests/
+!/tideglass/
+!/licenses/
 !/northlight.local.ini.example
 # out/ (build and test output) and northlight.local.ini (machine config) stay ignored by the rule above.
 
