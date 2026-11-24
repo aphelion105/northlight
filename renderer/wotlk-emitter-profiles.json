@@ -35,6 +35,22 @@
     ]
   },
   "profiles": {
+    "world\\expansion02\\doodads\\nexus\\nexus_blueenergywell.m2": {
+      "asset_sha256": "875649cdb5fc8e0e39ff81385d838fb45f01c7b50f7732291895918d13d46cc5",
+      "family": "wotlk_energy",
+      "position": [-0.003073544936760816, -0.00043131465050020283, 12.073616120940263],
+      "position_basis": "Two points follow the measured upper and lower beam centers. Reduce the lower point and cap scaled reach to preserve stone detail while keeping blue spill in the Nexus and the Oculus.",
+      "rgb": [0.026220637511206273, 0.44210920219549366, 1],
+      "intensity": 0.7257875642376002,
+      "start": 1,
+      "end": 8.519316664132166,
+      "max_world_end": 14,
+      "casts_shadows": false,
+      "emitters": [
+        {"position": [-0.003073544936760816, -0.00043131465050020283, 12.073616120940263], "rgb": [0.026220637511206273, 0.44210920219549366, 1], "intensity": 0.7257875642376002, "start": 1, "end": 8.519316664132166},
+        {"position": [-0.0030735200077945204, -0.00043129735203043277, 6.390657111191075], "rgb": [0.02622063751120627, 0.44210920219549354, 1], "intensity": 2.011701574088493, "start": 1, "end": 15.475408964857198}
+      ]
+    },
     "world\\generic\\activedoodads\\instanceportal\\instanceportal_purpledifficulty.m2": {
       "asset_sha256": "d006229fe866495d4bac993d1467edbf67d1623c50ee64e4b3fa47a13c6c0294",
       "family": "wotlk_energy",
