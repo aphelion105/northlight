@@ -21,9 +21,10 @@ namespace NorthlightGI {
 class SolvePool {
 public:
     SolvePool(unsigned helpers,std::function<void()> init){
-        for(unsigned i=0;i<helpers;++i)threads_.emplace_back([this,init]{if(init)init();loop();});
+        // A helper that cannot start must not leave the started ones joinable (std::terminate): join them, then report it.
+        try{for(unsigned i=0;i<helpers;++i)threads_.emplace_back([this,init]{if(init)init();loop();});}catch(...){stop();throw;}
     }
-    ~SolvePool(){{std::lock_guard<std::mutex> lock(mutex_);stopping_=true;}wake_.notify_all();for(auto& t:threads_)t.join();}
+    ~SolvePool(){stop();}
     SolvePool(const SolvePool&)=delete;SolvePool& operator=(const SolvePool&)=delete;
     unsigned helpers()const{return unsigned(threads_.size());}
     // Runs job(0..count-1) on the caller plus the helpers; returns when all
@@ -37,6 +38,7 @@ public:
         job_=nullptr;if(error_){auto e=error_;error_=nullptr;std::rethrow_exception(e);}
     }
 private:
+    void stop(){{std::lock_guard<std::mutex> lock(mutex_);stopping_=true;}wake_.notify_all();for(auto& t:threads_)t.join();}
     bool claim(size_t& index){
         if(fastClaim_){index=next_.fetch_add(1,std::memory_order_relaxed);return index<count_;}
         index=next_.load(std::memory_order_relaxed);
