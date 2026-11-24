@@ -35,6 +35,18 @@
     ]
   },
   "profiles": {
+    "world\\generic\\activedoodads\\instanceportal\\instanceportal_purpledifficulty.m2": {
+      "asset_sha256": "d006229fe866495d4bac993d1467edbf67d1623c50ee64e4b3fa47a13c6c0294",
+      "family": "wotlk_energy",
+      "position": [0, 0, 2.7368576245212872],
+      "position_basis": "Keep the measured glow center inside the portal. A placement range cap reduces spill on surrounding stone in Sunwell Plateau and Magisters' Terrace while preserving the nearby magenta effect.",
+      "rgb": [1, 0.11799588288495906, 0.9702753512807162],
+      "intensity": 0.5762212255290476,
+      "start": 1,
+      "end": 7.590923695631827,
+      "max_world_end": 14,
+      "casts_shadows": false
+    },
     "world\\expansion01\\doodads\\generic\\naga\\distiller\\na_distiller.m2": {
       "asset_sha256": "d3ab34d9666efb3372e19d8e3535cb10a04c221a8126e88b4ed73ab465a8c094",
       "family": "wotlk_energy",
