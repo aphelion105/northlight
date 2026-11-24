@@ -2109,6 +2109,26 @@ public:
         materialOcclusion=occlusion;materialOcclusionDistance=occlusionDistance;
         materialCaptureResident=captureResident||texture!=nullptr;materialFoliageCaptured=texture&&foliageCaptured;
     }
+    bool treeCanopyLight(float (&light)[3][4],unsigned& body)const{
+        if(!hasContext()||menuDomain||!paletteFrameValid||!celestialValid||!NorthlightQuality::foreverCelestial(quality)||
+           std::abs(projection[0])<.001f||std::abs(projection[1])<.001f)return false;
+        body=sourceWeights[1]>sourceWeights[0]?1:0;
+        const auto& direction=sourceDirections[body];
+        const float gain=framePalette.foliageTransmission[body]*sourceWeights[body];
+        if(gain<=.0001f)return false;
+        light[0][0]=1.f/projection[0];light[0][1]=1.f/projection[1];
+        for(unsigned row=0;row<3;++row)
+            light[1][row]=NorthlightGI::dot(direction,vec(context.inverseView+row*4));
+        light[1][2]*=projection[2];
+        const float back=std::clamp(light[1][2],0.f,1.f);
+        const float lowSun=body?1.f:std::clamp((.8f-direction.z)*2.2f,0.f,1.f);
+        light[0][2]=gain*lowSun*back*.35f;
+        light[1][3]=gain*.22f;
+        const auto& color=sourceColors[body];
+        light[2][0]=color.x;light[2][1]=color.y;light[2][2]=color.z;
+        light[2][3]=gain*(body?.65f:.54f);
+        return color.x+color.y+color.z>.0001f;
+    }
     bool solidMaterialSpecularWanted()const{
         return paletteFrameValid&&NorthlightQuality::foreverCelestial(quality)&&
             (framePalette.sunSurfaceSpecular>0||framePalette.sunWetStoneSpecular>0||framePalette.localSurfaceSpecular>0);

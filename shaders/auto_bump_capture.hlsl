@@ -252,3 +252,34 @@ CaptureResult BumpNormalTerrainOpaque(float2 uv:TEXCOORD0,float3 normal:TEXCOORD
 CaptureResult BumpNormalTerrainLayer(float2 uv:TEXCOORD0,float2 maskUV:TEXCOORD1,float3 normal:TEXCOORD5,float4 p:TEXCOORD7){clip(BumpCapture.y-p.w);float alpha=saturate(dot(tex2D(LayerMask,maskUV),NativeLayerMask));clip(alpha-BumpCapture.z);return captureValue(normalMaterialValue(GeneratedNormal,uv,p,normal),p,alpha,true,true);}
 CaptureResult BumpNormalGrass(float2 uv:TEXCOORD0,float4 fade:COLOR1,float4 p:TEXCOORD7){clip(BumpCapture.y-p.w);float alpha=tex2D(Diffuse,uv).a*fade.x;clip(alpha-BumpCapture.z);return captureValue(normalMaterialValue(GeneratedNormal,uv,p),p,alpha,true,false,true);}
 #endif
+
+// Native canopy epilogue. Reconstruct the leaf plane from interpolated clip
+// position so the highlight follows both the actual geometry and the eye.
+float4 CanopyProjection:register(c40); // reciprocal projection X/Y, broad crown transmission
+float4 CanopyLight:register(c41); // view-space direction, transmission strength
+float4 CanopyRadiance:register(c42); // source RGB, reflection strength
+float4 CanopyResponse(float4 nativeColor:COLOR0,float4 clipPosition:TEXCOORD7):COLOR0 {
+    float3 p=float3(clipPosition.xy*CanopyProjection.xy,clipPosition.w);
+    float3 plane=cross(ddx(p),ddy(p));
+    float planeLength=dot(plane,plane);
+    float3 n=plane*rsqrt(max(planeLength,1e-12));
+    float3 v=-normalize(p);
+    float facing=dot(n,v);
+    n=facing<0?-n:n;
+    float incident=dot(n,CanopyLight.xyz);
+    float grazing=1-saturate(abs(facing));
+    float back=saturate(-dot(v,CanopyLight.xyz))*saturate(-incident);
+    float transmission=back*(.20+.80*grazing*grazing)*CanopyLight.w;
+
+    float3 halfway=v+CanopyLight.xyz;
+    halfway*=rsqrt(max(dot(halfway,halfway),1e-6));
+    float lobe=saturate(dot(n,halfway));
+    float lobe2=lobe*lobe;
+    float lobe4=lobe2*lobe2;
+    float reflection=lobe4*lobe4*saturate(incident*3)*CanopyRadiance.w;
+    float fade=saturate((75-clipPosition.w)/45);
+    float coverage=saturate(nativeColor.a*1.5);
+    float textureWeight=saturate(.25+2*max(nativeColor.r,max(nativeColor.g,nativeColor.b)));
+    float response=(max(transmission,CanopyProjection.z)+reflection)*fade*coverage*textureWeight*(planeLength>1e-12);
+    return float4(nativeColor.rgb+CanopyRadiance.rgb*response,nativeColor.a);
+}

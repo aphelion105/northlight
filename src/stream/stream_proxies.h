@@ -35,6 +35,7 @@
 #include "tex_readback_diag.h"
 #include "atlas_upload_proof.h"
 #include "particle_texture_stats.h"
+#include "tree_canopy_textures.h"
 #include "particle_upload_range_12340.h"
 
 namespace NorthlightStream {
@@ -196,14 +197,14 @@ public:
     std::function<IUnknown*(IUnknown*,Kind)> rawOf;
     static bool takesRaw(Kind k){return k==Kind::Surface||k==Kind::Texture||k==Kind::CubeTexture||k==Kind::VolumeTexture||k==Kind::VertexBuffer||k==Kind::IndexBuffer||k==Kind::VertexShader||k==Kind::PixelShader||k==Kind::VertexDeclaration;}
     void bindInner(ProxyBase* p,IUnknown* inner){
-        if(p->kind==Kind::Texture)NorthlightParticleTextures::cache().erase(p->raw,p);if(p->kind==Kind::Texture)NorthlightMaterialTextures::cache().erase(p->raw);
+        if(p->kind==Kind::Texture){NorthlightParticleTextures::cache().erase(p->raw,p);NorthlightMaterialTextures::cache().erase(p->raw);NorthlightTreeCanopy::forget(p->raw);}
         {std::lock_guard<std::mutex> l(m_);p->inner=inner;byInner_[inner]=p;}
         p->raw=rawOf&&inner&&takesRaw(p->kind)?rawOf(inner,p->kind):nullptr;
     }   // the newest proxy of an object wins identity
-    void unbindInner(ProxyBase* p){if(p->kind==Kind::Texture)NorthlightParticleTextures::cache().erase(p->raw,p);if(p->kind==Kind::Texture)NorthlightMaterialTextures::cache().erase(p->raw);p->raw=nullptr;std::lock_guard<std::mutex> l(m_);if(p->inner){auto i=byInner_.find(p->inner);if(i!=byInner_.end()&&i->second==p)byInner_.erase(i);}}
+    void unbindInner(ProxyBase* p){if(p->kind==Kind::Texture){NorthlightParticleTextures::cache().erase(p->raw,p);NorthlightMaterialTextures::cache().erase(p->raw);NorthlightTreeCanopy::forget(p->raw);}p->raw=nullptr;std::lock_guard<std::mutex> l(m_);if(p->inner){auto i=byInner_.find(p->inner);if(i!=byInner_.end()&&i->second==p)byInner_.erase(i);}}
     ProxyBase* findInner(const void* inner){std::lock_guard<std::mutex> l(m_);auto i=byInner_.find(inner);return i==byInner_.end()?nullptr:i->second;}
     // Replay thread (destroy): forget the proxy; the inner entry only if it still names this proxy.
-    void erase(ProxyBase* p){if(p->kind==Kind::Texture)NorthlightParticleTextures::cache().erase(p->raw,p);if(p->kind==Kind::Texture)NorthlightMaterialTextures::cache().erase(p->raw);std::lock_guard<std::mutex> l(m_);byProxy_.erase(p->unk);if(p->inner){auto i=byInner_.find(p->inner);if(i!=byInner_.end()&&i->second==p)byInner_.erase(i);}}
+    void erase(ProxyBase* p){if(p->kind==Kind::Texture){NorthlightParticleTextures::cache().erase(p->raw,p);NorthlightMaterialTextures::cache().erase(p->raw);NorthlightTreeCanopy::forget(p->raw);}std::lock_guard<std::mutex> l(m_);byProxy_.erase(p->unk);if(p->inner){auto i=byInner_.find(p->inner);if(i!=byInner_.end()&&i->second==p)byInner_.erase(i);}}
     // The Target-level object behind a proxy pointer the game stored in its own memory (an opaque value, never dereferenced).
     const void* innerOf(const void* maybeProxy){std::lock_guard<std::mutex> l(m_);auto i=byProxy_.find(maybeProxy);return i==byProxy_.end()||!i->second->inner?maybeProxy:static_cast<const void*>(i->second->inner);}
 #ifdef NORTHLIGHT_REPLAY_STAND

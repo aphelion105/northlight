@@ -692,7 +692,7 @@ private:
         case Cmd::Device_UpdateTexture:destination=reinterpret_cast<const Args_Device_UpdateTexture*>(h+1)->pDestinationTexture;break;
         case Cmd::Device_StretchRect:destination=reinterpret_cast<const Args_Device_StretchRect*>(h+1)->dst_surface;break;
         case Cmd::Device_ColorFill:destination=reinterpret_cast<const Args_Device_ColorFill*>(h+1)->surface;break;
-        case Cmd::Texture_GenerateMipSubLevels:{auto* proxy=particleTextureRoot(ProxyBase::of(reinterpret_cast<const Args_Texture_GenerateMipSubLevels*>(h+1)->self));if(proxy){NorthlightParticleTextures::cache().invalidate(proxy->raw);NorthlightParticleTextures::View view;if(NorthlightMaterialTextures::cache().lookup(proxy->raw,view)&&view.mip)NorthlightMaterialTextures::cache().invalidate(proxy->raw);}return;}
+        case Cmd::Texture_GenerateMipSubLevels:{auto* proxy=particleTextureRoot(ProxyBase::of(reinterpret_cast<const Args_Texture_GenerateMipSubLevels*>(h+1)->self));if(proxy){NorthlightParticleTextures::cache().invalidate(proxy->raw);NorthlightTreeCanopy::forget(proxy->raw);NorthlightParticleTextures::View view;if(NorthlightMaterialTextures::cache().lookup(proxy->raw,view)&&view.mip)NorthlightMaterialTextures::cache().invalidate(proxy->raw);}return;}
         default:return;
         }
         // Full-copy material snapshots are compared after the real HRESULT in
