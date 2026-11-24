@@ -1,10 +1,10 @@
-# Renderer throughput r51 РІР‚вЂќ 2026-11-08
+# Renderer throughput r51 — 2026-11-08
 
 ## Input and diagnosis
 
 Frozen gameplay input: `out/perf-20261108-r51/game.log` (1,265,229 bytes), SHA-256 `d7cd013c9a0fb2be0ed847739c03a7e8ffad0148f66178ec407b98d7f80c4450`; original file modified 20:15:34 local time. The DLL identifies source `0f567a79c9c895539594d21508827f6e5ce37b5c3d9c74f17d0e8ea202021323` (r50), DXVK 3.1.1.
 
-The early foreground section runs near 100РІР‚вЂњ115 FPS with zero scene capture. Frames 1321РІР‚вЂњ2041 run near 30 FPS with focus lost and still zero scene capture. Those samples cannot be used as the cost of the active world pipeline. The active-world transition appears around frame 2627. Its 120-frame window has a 2,473 ms maximum and a 380 ms p95. The subsequent foreground world windows are approximately 25 FPS / 39РІР‚вЂњ42 ms. This is a different scene/workload from r50's input; option toggles are sequential, not a controlled effect benchmark.
+The early foreground section runs near 100–115 FPS with zero scene capture. Frames 1321–2041 run near 30 FPS with focus lost and still zero scene capture. Those samples cannot be used as the cost of the active world pipeline. The active-world transition appears around frame 2627. Its 120-frame window has a 2,473 ms maximum and a 380 ms p95. The subsequent foreground world windows are approximately 25 FPS / 39–42 ms. This is a different scene/workload from r50's input; option toggles are sequential, not a controlled effect benchmark.
 
 | Active-world sample | Total extension CPU | Capture CPU | Effects CPU | Total GPU timestamp span | GameScene span | Final normals flush |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -19,7 +19,7 @@ Earlier material/normal replays are inside GameScene. Timestamp spans can includ
 
 At frame 2924, available 32-bit virtual space is 348 MiB (largest block 162 MiB), while free physical RAM is over 9 GiB. The critical boundary costs 26.256 ms overall. Its trim reports 21.635 ms, including 12.682 ms clearing 90.8 MiB of snapshots and 3.516 ms clearing replay pools. At frame 3541, another critical boundary costs 7.136 ms. Raising every cache allowance would worsen this virtual-address-space pressure.
 
-After the first trim, the shared GPU scene sits within a few bytes of its 32 MiB aggregate cap. ModelNormals frame 3048 has 1,525 resident and 250 streamed logical draws; it streams 7,922,484 bytes while avoiding another 3,608,136 bytes through source reuse. Frames 3175РІР‚вЂњ3429 continue to stream about 7РІР‚вЂњ8 MiB. UP bytes remain zero: the r49 fallback stream works, but repeated misses still consume CPU, bandwidth and command submissions.
+After the first trim, the shared GPU scene sits within a few bytes of its 32 MiB aggregate cap. ModelNormals frame 3048 has 1,525 resident and 250 streamed logical draws; it streams 7,922,484 bytes while avoiding another 3,608,136 bytes through source reuse. Frames 3175–3429 continue to stream about 7–8 MiB. UP bytes remain zero: the r49 fallback stream works, but repeated misses still consume CPU, bandwidth and command submissions.
 
 The largest late EVENT is game frame 2926: 56.8662 ms total, 53.1769 ms before replay and 3.6763 ms replay, just after the critical trim. Game frame 2852 reports 45.1459 ms (12.7370 before replay, 32.3484 replay). Backend fence calls remain zero. These changes address some workload feeding those waits; they do not claim that every EVENT or the cold world-entry spike is eliminated.
 

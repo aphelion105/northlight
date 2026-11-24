@@ -154,7 +154,7 @@ oracles, including byte equality and malformed-input controls.
 1. **One native submit owner.** Four `Draw*` adapters preserve their D3D9 argument
    tuples. `drawHook` owns preparation, fault boundaries and the shared tail.
    `captureGameDraw` preserves terrain-before-material ordering and the current
-   material в†’ normal в†’ world в†’ water sequence. Raw and wrapped callbacks have
+   material → normal → world → water sequence. Raw and wrapped callbacks have
    different consumers; UP draws retain their separate memory/lifetime rules.
 2. **Potential demand and available inputs are separate phases.**
    `NorthlightFrameRequirements::make` is the shared consumer plan. Capture can
@@ -361,5 +361,5 @@ pass executor; moving resources into files did not complete its decomposition.
 The GPU controller includes deferred captures/effects, while in-scene capture
 remains outside that interval. The CPU controller does not cover all distributed
 draw-hook work. These controllers do not prove a total Northlight budget.
-Component tests and worker timings cannot establish game FPS or a 2вЂ“3 ms total.
+Component tests and worker timings cannot establish game FPS or a 2–3 ms total.
 That claim needs matched live routes with identical quality, output and current poses.

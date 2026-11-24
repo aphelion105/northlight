@@ -5,7 +5,7 @@ Capture 1 completed at renderer frame 8496. A real device Reset followed at
 8497; the next frames had no uploaded world mesh. The resident upload payload
 had already been discarded, so recovery tried to build another complete local
 BVH while retaining the old scene. Available x86 address space was approximately
-232вЂ“282 MiB after Reset, below the new-scene entry requirement. This explains the
+232–282 MiB after Reset, below the new-scene entry requirement. This explains the
 missing Northlight shadows after capture. It does not establish why the client
 requested Reset. The supplied capture used 4K/MSAA 2; the standalone pressure
 validation explicitly uses 4K/MSAA 8.

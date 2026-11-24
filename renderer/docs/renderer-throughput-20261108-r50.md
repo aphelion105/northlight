@@ -1,4 +1,4 @@
-# Renderer throughput r50 РІР‚вЂќ 2026-11-08
+# Renderer throughput r50 — 2026-11-08
 
 ## Latest gameplay evidence
 
@@ -23,7 +23,7 @@ Material profiling at frame 1270 reports 2,309 pose-envelope evaluations taking 
 
 Earlier normal/material replays are inside GameScene. The final ModelNormals bucket is not the entire capture GPU cost; the capped microprofile does not cover every draw. Sequential option changes also change the workload, so these samples do not isolate an effect's causal FPS cost.
 
-The startup EVENT reaches 193.936 ms (168.936 ms before replay and 24.980 ms replay), with additional early 50РІР‚вЂњ66 ms waits. These occur in early frames with the interval focus flag at zero. That flag records any focus loss within its window; it does not prove that the whole interval ran in the background. These samples do not isolate the steady-frame cost, and r50 does not claim to eliminate them or turn the whole run into a steady 60 FPS.
+The startup EVENT reaches 193.936 ms (168.936 ms before replay and 24.980 ms replay), with additional early 50–66 ms waits. These occur in early frames with the interval focus flag at zero. That flag records any focus loss within its window; it does not prove that the whole interval ran in the background. These samples do not isolate the steady-frame cost, and r50 does not claim to eliminate them or turn the whole run into a steady 60 FPS.
 
 ## Changes
 
