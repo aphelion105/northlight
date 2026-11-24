@@ -1,6 +1,6 @@
 #pragma once
 // SPDX-License-Identifier: MIT
-// F12-armed, synchronous observation immediately before the real game draw.
+// Hotkey-armed, synchronous observation immediately before the real game draw.
 // No setters, rendering, retained COM objects, or periodic buffer readbacks.
 #include "utf8_path.h"
 #include "device_mirror.h"
@@ -39,7 +39,7 @@ template<class Buffer> bool read(Buffer* buffer,unsigned offset,unsigned size,By
         struct Pin {NorthlightReplayCopies::Slot* slot;~Pin(){NorthlightReplayCopies::unpin(*slot);}} pin{slot};
         std::memcpy(out.data.data(),bytes,size);out.source="valid-replay-CPU-copy";out.hr=S_OK;return true;
     }
-    void* bytes=nullptr;out.flags=NorthlightUpload::readBackLock();out.source="F12-backend-read-lock";out.hr=buffer->Lock(offset,size,&bytes,out.flags);
+    void* bytes=nullptr;out.flags=NorthlightUpload::readBackLock();out.source="diagnostic-backend-read-lock";out.hr=buffer->Lock(offset,size,&bytes,out.flags);
     if(FAILED(out.hr)){out.data.clear();return false;}
     struct Unlock {Buffer* buffer;Bytes& out;~Unlock(){out.unlockHr=buffer->Unlock();}} unlock{buffer,out};
     if(!bytes){out.hr=E_POINTER;out.data.clear();return false;}

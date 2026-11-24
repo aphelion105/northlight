@@ -1,6 +1,7 @@
 // Client-local D3D9 extension. Signature-gated world context and BLP loop guard; no game launch code.
 #define WIN32_LEAN_AND_MEAN
 #include "utf8_path.h"
+#include "ui_draw_diagnostic.h"
 #include <windows.h>
 #include <d3d9.h>
 #include <cstdio>
@@ -588,6 +589,9 @@ private:
     struct GateStart {unsigned missingVS=0,terrain=0,ui=0,shadowSwaps=0;std::uint64_t generations=0,vsHits=0,vsMisses=0;};
     GateCounts gateCounts;GateStart gateStart;
     LARGE_INTEGER gateSceneEnd={};LONGLONG gatePresentDone=0;unsigned gateSceneDraws=0;unsigned long long gateSceneReads=0;
+    static constexpr int NormalsView=NorthlightEffectSwitches::NormalsView,SsaoView=NorthlightEffectSwitches::SsaoView;
+    NorthlightUiDrawDiagnostic::Window uiDrawDiagnostic;
+    bool key4=false;
     const int debugMode = 0;int worldDebug=0;bool gpuDiagnosticFrame=false,nativeCaptureDiagnostic=false;
     bool diagnosticAoRaw=false,diagnosticAo=false,diagnosticWorld=false;
     NorthlightEffectSwitches::Hotkeys effectKeys;
@@ -968,6 +972,50 @@ private:
         const bool known=SUCCEEDED(ext->GetVertexShader(&vs))&&SUCCEEDED(ext->GetPixelShader(&ps));
         const bool ui=known&&(!vs||safe(vs,true))&&(ps?safe(ps,false):fixedPixels());
         drop(vs);drop(ps);return ui;
+    }
+    void armUiDrawDiagnostic(){
+        try{
+            const auto directory=NorthlightWorldDiagnostics::directory(std::filesystem::path(rootPath).u8string());
+            if(!directory.empty()){
+                uiDrawDiagnostic.arm(directory+"/ui",frame+1);
+                logf("UI_DRAW diagnostic armed directory=%s",directory.c_str());
+                return;
+            }
+        }catch(...){}
+        logf("UI_DRAW diagnostic directory unavailable");
+    }
+    void captureUiDraw()noexcept try{
+        if(!uiDrawDiagnostic.probe(frame))return;
+        // Reads through the backend preserve the mirror for the comparison.
+        auto* backend=ext->real;
+        D3DSURFACE_DESC desc{};
+        if(!fullViewport(desc,nullptr,true,false)||!hdrBackTarget())return;
+        NorthlightUiDrawDiagnostic::Ref<IDirect3DVertexShader9> vs;
+        if(FAILED(backend->GetVertexShader(vs.out())))return;
+        if(vs.p){
+            const auto& shader=classifyVs(vs.p);
+            if(shader.world||shader.wmo||shader.skinned||(shader.entry&kWaterTag))return;
+            if(!orthographicUiGeometry()){
+                if((shader.entry&kTagMask)!=2&&!uiFallback.isBoundary(reinterpret_cast<std::uintptr_t>(vs.p),0))return;
+                DWORD z=1,write=1,function=0;float rows[16];
+                if(FAILED(ext->GetRenderState(D3DRS_ZENABLE,&z))||
+                   FAILED(ext->GetRenderState(D3DRS_ZWRITEENABLE,&write))||
+                   FAILED(ext->GetRenderState(D3DRS_ZFUNC,&function))||
+                   FAILED(ext->GetVertexShaderConstantF(0,rows,4))||
+                   !NorthlightUiBoundary::accepts(write!=0,rows,function==D3DCMP_ALWAYS,z!=0))return;
+            }
+        }else if(!fixedUiGeometry())return;
+        if(!hdrUiInputs())return;
+        NorthlightUiDrawDiagnostic::Ref<IDirect3DBaseTexture9> texture;
+        if(FAILED(backend->GetTexture(0,texture.out()))||!texture.p||texture.p->GetType()!=D3DRTYPE_TEXTURE||
+           NorthlightSpellLayer::isRenderTargetTexture(texture.p)||!uiDrawDiagnostic.claim(texture.p,frame))return;
+        gpuDiagnosticFrame=true;
+        const auto prefix=uiDrawDiagnostic.prefix+"-"+std::to_string(uiDrawDiagnostic.captured);
+        const bool saved=NorthlightUiDrawDiagnostic::capture(backend,mirrorState,spellArgs,prefix,frame,texture.p);
+        logf("UI_DRAW diagnostic captured=%u rendererFrame=%u path=%s",unsigned(saved),frame,prefix.c_str());
+    }catch(...){
+        uiDrawDiagnostic.left=0;
+        logf("UI_DRAW diagnostic capture failed");
     }
     HRESULT hdrResumeWorld(){
         if(!hdr.active||!hdrUiPhase||applied||!hdrBackTarget())return S_OK;
@@ -1548,7 +1596,7 @@ private:
         // Factory provenance names the original material and bound private pair
         // for POM and supported skinned displacement.
         auto native=[&](){
-            return modelNormals?modelNormals->nativeDraw(draw,nativeLocalDomain&&enabled&&!applied&&!failed&&projectionValid&&!debugMode&&!worldDebug,
+            return modelNormals?modelNormals->nativeDraw(draw,nativeLocalDomain&&enabled&&!applied&&!failed&&projectionValid&&!debugMode&&(!worldDebug||worldDebug==NormalsView),
                 [&](IDirect3DVertexShader9* original,IDirect3DVertexShader9* bound,IDirect3DPixelShader9* pixel)->unsigned{
                     using M=NorthlightNativeModelNormals;
                     if(world&&world->nativeReceiverPair(original,bound,pixel))return M::PairValid|M::OuterRestoresVertex|M::OuterRestoresPixel;
@@ -1834,7 +1882,7 @@ private:
             ||cooperativeWaterEnabled
 #endif
         ));
-        modelNormalsNeeded=world&&(worldDebug!=0||world->surfaceLightingEnabled()||world->needsDiagnosticFallback());
+        modelNormalsNeeded=world&&worldDebug!=SsaoView&&(worldDebug!=0||world->surfaceLightingEnabled()||world->needsDiagnosticFallback());
         NorthlightM2Draw::requested.store(enabled&&!failed&&modelNormalsNeeded,std::memory_order_relaxed);
         NorthlightDrawGates::Inputs in;
         in.sky=celestialDiscs!=nullptr&&celestialEnabled();in.blobs=shadowBlobs!=nullptr&&shadowBlobs->active();in.world=world!=nullptr;in.enabled=enabled;in.failed=failed;
@@ -3242,7 +3290,7 @@ public:
         modelNormals->setSamplerStateSource(static_cast<IDirect3DDevice9*>(ext),[](void* context,DWORD stage,unsigned mask,DWORD* out){return static_cast<ExtensionDevice*>(static_cast<IDirect3DDevice9*>(context))->knownSamplerStates(stage,mask,out);});
         world->setNativeSamplerStateSource(static_cast<IDirect3DDevice9*>(ext),[](void* context,DWORD stage,unsigned mask,DWORD* out){return static_cast<ExtensionDevice*>(static_cast<IDirect3DDevice9*>(context))->knownSamplerStates(stage,mask,out);});
         world->setConstantEpochSource({&mirrorState.constantEpoch,&mirrorState}); /* 0.3.180 (C1): read in place under the draw's gate */
-        char skyRoot[MAX_PATH*3];WideCharToMultiByte(CP_UTF8,0,rootPath,-1,skyRoot,sizeof skyRoot,nullptr,nullptr);celestialDiscs=std::make_unique<NorthlightCelestialDiscRenderer>(ext,std::string(skyRoot)+"world-cache/celestial");celestialDiscs->setTerrainSource([this]{return world->celestialTerrainGeneration();},[this](unsigned body,const float* matrix){return world->drawCelestialTerrain(body,matrix);},[this](unsigned body){world->noteCelestialTerrainReuse(body);});celestialDiscs->setIdentityMap([this](std::uintptr_t exposed){return mirrorResources.rawOf(exposed,!mirrorState.enabled);});celestialDiscs->setHdrSkyCapture([this]()->IDirect3DSurface9*{return hdrSkyDraw()?hdrSkyTarget():nullptr;});shadowBlobs=std::make_unique<NorthlightShadowBlobFilter>(ext,world->blobShadowStrength());shadowBlobs->setTexturePeek([](void* e,DWORD stage,IDirect3DBaseTexture9*& out){return static_cast<ExtensionDevice*>(e)->peekTexture(stage,out);},ext); /* 0.3.196 (task 12): borrowed stage-0 identity */water=std::make_unique<NorthlightWaterRenderer>(ext);water->setDistanceBackend(NorthlightBackend::isPackagedDxvk(selectedBackend)); logf("D3D9 device wrapped. Ctrl+Shift+F7 fog; F8 GI; F9 shadows; F10 all effects; F12 world debug (all with Ctrl+Shift); Ctrl+Shift+F11 settings. Components start ON; GI cache stays warm.");
+        char skyRoot[MAX_PATH*3];WideCharToMultiByte(CP_UTF8,0,rootPath,-1,skyRoot,sizeof skyRoot,nullptr,nullptr);celestialDiscs=std::make_unique<NorthlightCelestialDiscRenderer>(ext,std::string(skyRoot)+"world-cache/celestial");celestialDiscs->setTerrainSource([this]{return world->celestialTerrainGeneration();},[this](unsigned body,const float* matrix){return world->drawCelestialTerrain(body,matrix);},[this](unsigned body){world->noteCelestialTerrainReuse(body);});celestialDiscs->setIdentityMap([this](std::uintptr_t exposed){return mirrorResources.rawOf(exposed,!mirrorState.enabled);});celestialDiscs->setHdrSkyCapture([this]()->IDirect3DSurface9*{return hdrSkyDraw()?hdrSkyTarget():nullptr;});shadowBlobs=std::make_unique<NorthlightShadowBlobFilter>(ext,world->blobShadowStrength());shadowBlobs->setTexturePeek([](void* e,DWORD stage,IDirect3DBaseTexture9*& out){return static_cast<ExtensionDevice*>(e)->peekTexture(stage,out);},ext); /* 0.3.196 (task 12): borrowed stage-0 identity */water=std::make_unique<NorthlightWaterRenderer>(ext);water->setDistanceBackend(NorthlightBackend::isPackagedDxvk(selectedBackend)); logf("D3D9 device wrapped. Ctrl+Shift+F4 UI capture; F7 fog; F8 GI; F9 shadows; F10 all effects; F12 world debug (shadows/GI/volume/normals/SSAO, all with Ctrl+Shift); Ctrl+Shift+F11 settings. Components start ON; GI cache stays warm.");
         refreshWindowSize();NorthlightWindowHook::attach(ext,sizeGuardWindow,diagnostics()?+[](const char* line){logf("%s",line);}:nullptr);
         {wchar_t config[MAX_PATH],key[64]={};char hotkey[64]={};const bool named=swprintf(config,MAX_PATH,L"%lsnorthlight-renderer.ini",rootPath)>=0; /* read once, here */
          const bool on=!named||GetPrivateProfileIntW(L"Renderer",L"SettingsOverlay",1,config)!=0; /* 0 = no settings input; window stability remains independent */
@@ -3617,7 +3665,7 @@ public:
         nameMaskRunEnd(); /* 0.3.212 (task 32) */
         captureEffectDiagnostics();
         const auto frameEffects=effectKeys.settings;const bool frameEnabled=enabled;
-        bool diagnosticFrame=gpuDiagnosticFrame||nativeCaptureDiagnostic;gpuDiagnosticFrame=false;
+        bool diagnosticFrame=gpuDiagnosticFrame||nativeCaptureDiagnostic||worldDebug>=NormalsView;gpuDiagnosticFrame=false;
 #ifdef NORTHLIGHT_REPLAY_STAND
         if(NorthlightCaptureWork::selected(frame)){
             diagnosticFrame=true;
@@ -3672,14 +3720,22 @@ public:
         if(!overlay||!overlay->masterHotkey(focus,masterPressed))masterPressed=k10&&!key10;
         bool retry=masterPressed&&!masterEnabled;
         if(masterPressed){flushFrameIntervals("master-change",frameEnabled,frameEffects);masterEnabled=!masterEnabled;frameIntervals.reset();frameCost.reset();stallFrames.reset();mirrorResources.queryProfile={};logf("Effects %s tick=%lu device=%llu rendererFrame=%u monotonicNs=%llu",masterEnabled?"ON":"OFF",(unsigned long)GetTickCount(),(unsigned long long)diagnosticId,frame,(unsigned long long)NorthlightStream::nowNs());}
+        const bool alt=(GetAsyncKeyState(VK_MENU)&0x8000)!=0;
+        const bool k4=focus&&modifiers&&!alt&&(GetAsyncKeyState(VK_F4)&0x8000);
+        if(k4&&!key4)armUiDrawDiagnostic();
+        key4=k4;
         bool k12=focus&&modifiers&&(GetAsyncKeyState(VK_F12)&0x8000);
         if(k12&&!key12){
-            if(GetAsyncKeyState(VK_MENU)&0x8000){
+            if(alt){
                 const char* reason=worldDebug?"debug-view":!world?"renderer-unavailable":nullptr;
                 const bool accepted=!reason&&world->requestNormalGpuDiagnosticCapture();
                 if(accepted)NorthlightDiagnosticCapture::request(NorthlightDiagnosticCapture::Weather);
                 logf("WORLD normal GPU capture request rendererFrame=%u accepted=%u reason=%s",frame,unsigned(accepted),reason?reason:accepted?"queued":"budget-or-pending");
-            }else{worldDebug=(worldDebug+1)%4;logf("World debug %d tick=%lu (0 normal,1 shadows,2 GI,3 volume)",worldDebug,(unsigned long)GetTickCount());}
+            }else{
+                worldDebug=(worldDebug+1)%(SsaoView+1);
+                static const char* const views[]={"scene","shadows","GI","fog volume","normals","SSAO"};
+                logf("World debug %d (%s) tick=%lu",worldDebug,views[worldDebug],(unsigned long)GetTickCount());
+            }
         }
         key12=k12;key10=k10;
         uiFallbackEndFrame();
@@ -4214,7 +4270,7 @@ public:
         bool nativeSky=false,skyCaptured=false;
         auto raw=[&]{return ext->DrawPrimitive(t,start,count);};
         auto draw=[&]{return submitGameDraw(count,nativeSky,&skyCaptured,raw);};
-        if(enabled)spellArgs=NorthlightSpellLayer::DrawArgs::primitive(t,start,count);
+        if(enabled||uiDrawDiagnostic.left)spellArgs=NorthlightSpellLayer::DrawArgs::primitive(t,start,count);
         return drawHook(t,count,[&](IDirect3DVertexShader9* vs){captureGameDraw<NorthlightWaterRenderer::NoUserPointer>(vs,geometry,raw,draw);},draw,&nativeSky,&skyCaptured,&geometry);}
     HRESULT STDMETHODCALLTYPE DrawIndexedPrimitive(D3DPRIMITIVETYPE t,INT base,UINT min,UINT vertices,UINT start,UINT count) override { Guard mirrorLock(mirrorState.gate);
 #ifdef NORTHLIGHT_PROFILE_BUILD
@@ -4241,7 +4297,7 @@ public:
             return ext->DrawIndexedPrimitive(t,base,min,vertices,start,count);
         });};
         auto draw=[&]{return submitGameDraw(count,nativeSky,&skyCaptured,raw,&geometry.draw);};
-        if(enabled)spellArgs=NorthlightSpellLayer::DrawArgs::indexed(t,base,min,vertices,start,count);
+        if(enabled||uiDrawDiagnostic.left)spellArgs=NorthlightSpellLayer::DrawArgs::indexed(t,base,min,vertices,start,count);
         const auto result=drawHook(t,count,[&](IDirect3DVertexShader9* vs){captureGameDraw<NorthlightWaterRenderer::NoUserPointer>(vs,geometry,raw,draw);},draw,&nativeSky,&skyCaptured,&geometry);
 #ifdef NORTHLIGHT_PROFILE_BUILD
         if(timing)timing->ns+=NorthlightStream::nowNs()-drawStart;
@@ -4252,14 +4308,14 @@ public:
         bool nativeSky=false,skyCaptured=false;
         auto raw=[&]{return ext->DrawPrimitiveUP(t,count,data,stride);};
         auto draw=[&]{return submitGameDraw(count,nativeSky,&skyCaptured,raw);};
-        if(enabled)spellArgs=NorthlightSpellLayer::DrawArgs::primitiveUP(t,count,data,stride);
+        if(enabled||uiDrawDiagnostic.left)spellArgs=NorthlightSpellLayer::DrawArgs::primitiveUP(t,count,data,stride);
         return drawHook(t,count,[&](IDirect3DVertexShader9* vs){captureGameDraw<NorthlightWaterRenderer::UserVertices>(vs,geometry,raw,draw);},draw,&nativeSky,&skyCaptured,&geometry);}
     HRESULT STDMETHODCALLTYPE DrawIndexedPrimitiveUP(D3DPRIMITIVETYPE t,UINT min,UINT vertices,UINT count,const void* indices,D3DFORMAT fmt,const void* data,UINT stride) override { Guard mirrorLock(mirrorState.gate);
         NorthlightAutoDisplacement::Args geometry{{t,0,min,vertices,0,count,true},indices,fmt,data,stride};
         bool nativeSky=false,skyCaptured=false;
         auto raw=[&]{return ext->DrawIndexedPrimitiveUP(t,min,vertices,count,indices,fmt,data,stride);};
         auto draw=[&]{return submitGameDraw(count,nativeSky,&skyCaptured,raw);};
-        if(enabled)spellArgs=NorthlightSpellLayer::DrawArgs::indexedUP(t,min,vertices,count,indices,fmt,data,stride);
+        if(enabled||uiDrawDiagnostic.left)spellArgs=NorthlightSpellLayer::DrawArgs::indexedUP(t,min,vertices,count,indices,fmt,data,stride);
         return drawHook(t,count,[&](IDirect3DVertexShader9* vs){captureGameDraw<NorthlightWaterRenderer::UserVerticesAndIndices>(vs,geometry,raw,draw);},draw,&nativeSky,&skyCaptured,&geometry);}
 };
 

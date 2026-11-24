@@ -49,6 +49,8 @@
         if(sceneSplit)gpuSceneProfile->mark("DepthResolve");
         SavedState saved(ext,&stateBlocks);
         if (!saved.ok) return;
+        const bool normalsView=worldDebug==NormalsView;
+        const bool ssaoView=worldDebug==SsaoView;
         IDirect3DTexture9* coverage=effectCoverage.texture(ext,saved.targets[0]);
         // Include deferred material/model captures; in-scene MRT work is part
         // of GameScene and cannot be attributed by this interval alone.
@@ -73,12 +75,12 @@
         if(diagnostics())gpuProfile->beginFrame(frame,NorthlightRenderThreadProbe::sampleFrame(frame)); // otherwise no queries; mark/endFrame are no-ops
         effectsBuckets.mark(Bucket::Setup);
         // spellReplay closes profiling after both deferred spells and precipitation.
-        const auto* lightAudit=world&&debugMode==0?frameParity.lightHistoryAudit(frame):nullptr;
+        const auto* lightAudit=world&&debugMode==0&&!normalsView&&!ssaoView?frameParity.lightHistoryAudit(frame):nullptr;
         std::optional<NorthlightLightingCapture::Capture> atmosphereAudit;
         if(lightAudit)atmosphereAudit.emplace(ext,*lightAudit,frame,frame,frame,width,height,"frame-parity-atmosphere");
-        IDirect3DTexture9* rainMaskTex=world&&debugMode==0?rainMaskPrepare(atmosphereAudit?&*atmosphereAudit:nullptr):nullptr;
+        IDirect3DTexture9* rainMaskTex=world&&debugMode==0&&!normalsView&&!ssaoView?rainMaskPrepare(atmosphereAudit?&*atmosphereAudit:nullptr):nullptr;
         IDirect3DTexture9* waterMask=nullptr;
-        if(water&&water->maskRequested()&&debugMode==0){
+        if(water&&water->maskRequested()&&debugMode==0&&!normalsView){
             if(atmosphereAudit){
                 bool recorded=false;
                 const bool resolved=water->resolveMask([&](const char* entry,unsigned mask,HRESULT hr,IDirect3DSurface9* source){
@@ -136,6 +138,14 @@
         if (error(ext->StretchRect(saved.targets[0], nullptr, sceneSurface, nullptr, D3DTEXF_NONE), "copy scene")) return;
         if(atmosphereAudit)atmosphereAudit->image("scene-input-color",sceneSurface);
         effectState();
+        if(normalsView){
+            if(world)world->setModelNormals(modelNormals?modelNormals->texture():nullptr);
+            diagnosticWorld=world&&world->render(saved.targets[0],depthTex,width,height,sceneFormat,nearZ,farZ,
+                    worldMinDepth,worldMaxDepth,worldDebug,gpuProfile.get(),nullptr,scene);
+            gpuProfile->mark("WorldNormalsView");
+            applied=true;
+            return;
+        }
         const bool linearHdr=hdr.active&&debugMode==0&&worldDebug==0;
         const bool fold=world&&debugMode==0&&world->screenReady();
         bool neutralAOPending=false;
@@ -143,6 +153,11 @@
         auto clearNeutralAO=[&]{return NorthlightContactAO::clearNeutral(ext,gpuProfile.get(),aoSurface,neutralAOPending,effectError);};
         float constants[]={1.f/width,1.f/height,nearZ,farZ,scaleX,scaleY,aoStrength,(menuScene||(world&&world->screenReady())?0.f:.12f),.08f,aoRadius,float(debugMode),0,worldMinDepth,1.f/(worldMaxDepth-worldMinDepth),worldMaxDepth,0};
 
+        if(ssaoView){
+            if(constants[6]<=0.f)constants[6]=.6f;
+            constants[7]=constants[8]=0.f;
+            constants[10]=1.f; // Composite's bilateral AO visualization.
+        }
         float waterFlags[]={waterMask?1.f:0.f,0,0,0};
         auto bindLegacyFog=[&]{
             auto nativeFog=world?world->legacyFogConstants():NorthlightLegacyFog::Constants{};
@@ -158,16 +173,17 @@
         bindEffects(nullptr);
         if(!NorthlightContactAO::render<CpuScope>(ext,gpuProfile.get(),effectsBuckets,
             {scene,ao,aoRaw,waterMask,aoSurface,aoRawSurface},
-            {aoPS,aoOnlyPS,aoContactBloomPS,contactBloomPS,aoBlurPS,aoBlurNoWaterPS},
-            {width,height,aoMethod,contactAO,linearHdr,fold,cpuFrequency.QuadPart>0,constants[7],constants[8]},
+            {aoPS,aoOnlyPS,ssaoView?aoPS:aoContactBloomPS,contactBloomPS,aoBlurPS,aoBlurNoWaterPS},
+            {width,height,ssaoView?0u:aoMethod,ssaoView||contactAO,linearHdr,fold,cpuFrequency.QuadPart>0,constants[7],constants[8]},
             {neutralAOPending,aoActorUsed,diagnosticAoRaw,diagnosticAo,cpuAOBlur},effectError,
             [this](unsigned w,unsigned h,bool viewport){return quad(w,h,viewport);},
-            [this](bool alphaOnly)->NorthlightContactAO::Actor{
+            [this,ssaoView](bool alphaOnly)->NorthlightContactAO::Actor{
+                if(ssaoView)return {};
                 auto* texture=aoActorOn?aoActorMask->textureForDepth(worldDepth):nullptr;
                 if(texture&&aoActorShaders(alphaOnly))return {texture,aoActorPreparePS,alphaOnly?aoActorAlphaPS:aoActorPS};
                 return {};
             },[&]{
-                NorthlightEffectCoverage::Capture::bind(ext,effectCoverage.aoTexture(ext,saved.targets[0]));
+                NorthlightEffectCoverage::Capture::bind(ext,ssaoView?nullptr:effectCoverage.aoTexture(ext,saved.targets[0]));
                 bindLegacyFog();
             }))return;
         // 0.3.174 FOLD: with a ready world and no effect debug view, WorldComposite applies the
@@ -203,6 +219,13 @@
              if (error(quad(width,height),"composition pass")) return false;}
             gpuProfile->mark("AOComposite");effectsBuckets.mark(Bucket::Composite);return true;
         };
+        if(ssaoView){
+            diagnosticWorld=legacyComposite();
+            if(diagnosticWorld&&world)world->render(outputTarget,depthTex,width,height,sceneFormat,nearZ,farZ,
+                    worldMinDepth,worldMaxDepth,worldDebug,gpuProfile.get(),waterMask);
+            applied=true;
+            return;
+        }
         if(!fold&&!legacyComposite())return;
         if(world&&debugMode==0){
             auroraSources.end();

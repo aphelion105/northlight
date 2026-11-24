@@ -1410,6 +1410,82 @@ static IDirect3DTexture9* screenTexture(IDirect3DDevice9* d,unsigned w,unsigned 
     IDirect3DTexture9* t=nullptr;screenOk(d->CreateTexture(w,h,1,0,channels==4?D3DFMT_A32B32G32R32F:D3DFMT_R32F,D3DPOOL_MANAGED,&t,nullptr));D3DLOCKED_RECT l{};screenOk(t->LockRect(0,&l,nullptr,0));
     for(unsigned y=0;y<h;++y)for(unsigned x=0;x<w;++x)std::memcpy(static_cast<char*>(l.pBits)+y*l.Pitch+x*channels*4,value,channels*4);screenOk(t->UnlockRect(0));return t;
 }
+#ifdef NORTHLIGHT_INSPECTION_VIEW_GPU_TEST
+struct PipelineOffTest {
+    static void inspectionViews(IDirect3D9* api,D3DPRESENT_PARAMETERS pp,unsigned msaa){
+        pp.BackBufferWidth=640;pp.BackBufferHeight=360;
+        pp.MultiSampleType=D3DMULTISAMPLE_TYPE(msaa);
+        IDirect3DDevice9* backend=nullptr;
+        screenOk(api->CreateDevice(0,D3DDEVTYPE_HAL,pp.hDeviceWindow,
+            D3DCREATE_HARDWARE_VERTEXPROCESSING|D3DCREATE_FPU_PRESERVE,&pp,&backend));
+        NorthlightHdr::Presentation presentation;presentation.logical=pp;presentation.settings.requested=false;
+        backend->AddRef();
+        auto* proxy=new Device(backend,api,presentation);
+        auto& renderer=*proxy;
+        const UINT width=pp.BackBufferWidth,height=pp.BackBufferHeight;
+        const auto format=pp.BackBufferFormat;
+        IDirect3DSurface9 *back=nullptr,*resolved=nullptr,*read=nullptr;
+        screenOk(backend->GetBackBuffer(0,0,D3DBACKBUFFER_TYPE_MONO,&back));
+        if(pp.MultiSampleType!=D3DMULTISAMPLE_NONE)
+            screenOk(backend->CreateRenderTarget(width,height,format,D3DMULTISAMPLE_NONE,0,FALSE,&resolved,nullptr));
+        screenOk(backend->CreateOffscreenPlainSurface(width,height,format,D3DPOOL_SYSTEMMEM,&read,nullptr));
+        const float flat=.8f;
+        auto* depth=screenTexture(backend,width,height,&flat,1);
+        D3DLOCKED_RECT lock{};
+        screenOk(depth->LockRect(0,&lock,nullptr,0));
+        for(UINT y=0;y<height;++y){
+            auto* row=reinterpret_cast<float*>(static_cast<char*>(lock.pBits)+y*lock.Pitch);
+            for(UINT x=width/2;x<width;++x)row[x]=y<height/2?.78f:1.f;
+        }
+        screenOk(depth->UnlockRect(0));
+        for(const int mode:{Device::NormalsView,Device::SsaoView}){
+            renderer.clearFrame();
+            WorldScreenEffectsTest::fixtureContext(*renderer.world);
+            renderer.world->setPipelineEnabled(true);
+            renderer.enabled=renderer.projectionValid=true;
+            renderer.worldDebug=mode;
+            renderer.nearZ=renderer.scaleX=renderer.scaleY=1.f;
+            renderer.farZ=1000.f;renderer.worldMinDepth=0.f;renderer.worldMaxDepth=1.f;
+            renderer.contactAO=false;renderer.selectAO(3,2);
+            screenOk(backend->SetRenderTarget(0,back));
+            screenOk(backend->SetDepthStencilSurface(nullptr));
+            assert(renderer.resources(width,height,format));
+            depth->AddRef();drop(renderer.depthTex);renderer.depthTex=depth;
+            renderer.captured=true;
+            screenOk(backend->ColorFill(back,nullptr,0xff204060));
+            screenOk(backend->BeginScene());
+            renderer.renderEffects();renderer.spellReplay();
+            screenOk(backend->EndScene());
+            assert(renderer.applied&&renderer.diagnosticWorld&&!renderer.failed);
+            if(resolved)screenOk(backend->StretchRect(back,nullptr,resolved,nullptr,D3DTEXF_NONE));
+            screenOk(backend->GetRenderTargetData(resolved?resolved:back,read));
+            screenOk(read->LockRect(&lock,nullptr,D3DLOCK_READONLY));
+            const auto pixel=[&](UINT x,UINT y){
+                return static_cast<const unsigned char*>(lock.pBits)+y*lock.Pitch+x*4;
+            };
+            const auto* surface=pixel(width/4,height/4);
+            const auto* sky=pixel(width*3/4,height*3/4);
+            if(mode==Device::NormalsView){
+                assert(surface[2]>=127&&surface[2]<=128&&surface[1]>=127&&surface[1]<=128&&surface[0]<=1);
+                assert(!sky[0]&&!sky[1]&&!sky[2]);
+            }else{
+                assert(renderer.diagnosticAoRaw&&renderer.diagnosticAo&&!renderer.contactAO&&renderer.aoMethod==3);
+                assert(surface[0]>=250&&sky[0]==255&&sky[1]==255&&sky[2]==255);
+                bool darkContact=false;
+                for(UINT y=0;y<height;++y)for(UINT x=0;x<width;++x){
+                    const auto* color=pixel(x,y);
+                    assert(color[0]==color[1]&&color[1]==color[2]);
+                    darkContact|=color[0]<245;
+                }
+                assert(darkContact);
+            }
+            screenOk(read->UnlockRect());
+        }
+        proxy->Release();depth->Release();read->Release();drop(resolved);back->Release();backend->Release();
+        std::puts("WORLD_INSPECTION_GPU_PASS normals=1 ssao=1 separate=1 configuredAoOff=1");
+    }
+};
+#endif
 #ifdef NORTHLIGHT_WORLD_SCREEN_INPUT_TEST
 static void screenInputCommands(IDirect3DDevice9* d,IDirect3DSurface9* color){
     enum Command {Depth,Texture,Copy,Vertex,Fvf,Frequency,State,Stage,Rows,Sampler,Target,Viewport,DiagnosticClear};
@@ -1873,6 +1949,9 @@ int main(int argc,char** argv){
         screenInputCommands(d,out);
         assert(state.restore());
     }
+#endif
+#ifdef NORTHLIGHT_INSPECTION_VIEW_GPU_TEST
+    PipelineOffTest::inspectionViews(api,pp,msaa);
 #endif
     // Capture stores positive-hemisphere normal detail relative to its reference.
     const float rgb[]={.4f,.4f,.4f,1},ambient[]={0,0,0,1},normal[]={.7f,.6f,20,1},z[]={1000.f/999.f-1000.f/(999.f*20)};

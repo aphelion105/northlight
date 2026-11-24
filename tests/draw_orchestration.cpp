@@ -100,6 +100,8 @@ struct Base {
  Env env;Ext extStorage{&env};Ext* ext=&extStorage;World worldStorage{&env};World* world=&worldStorage;Bump bumpStorage{&env};BumpHandle autoBump{&bumpStorage};Normals normalStorage{&env};Normals* modelNormals=&normalStorage;
  NorthlightBackend::Kind selectedBackend=NorthlightBackend::Kind::Dxvk;bool indexedPairGate=false,particlePairGate=false;
  bool menuScene=false,enabled=true,applied=false,failed=false,modelNormalsNeeded=true,frameDrawGates=true,particleOn=false,spellOn=false,skyBandSeen=false,rainMrtBound=false,blobOriginal=false,shadowSwapOriginal=false,extensionFault=false;
+ struct { unsigned left=0; } uiDrawDiagnostic;
+ void captureUiDraw(){}
  unsigned worldDebug=0,drawCalls=0,frame=120;LONGLONG ticks=0;float worldMinDepth=0,worldMaxDepth=.9f,nearZ=.22f;void* worldDepth=nullptr;struct{bool active=false;}hdr;struct{bool valid=false;}waterPending;
  struct WaterState{bool bound=false;bool isMrtBound()const{return bound;}}waterStorage;WaterState* water=&waterStorage;
  struct {bool sky=true,blob=false;}drawGates;struct {Gate gate;bool textureKnown[1]={};const void* textures[1]={};bool viewportKnown=true;struct {float MinZ=0,MaxZ=1;}viewport={};}mirrorState{{&env}};

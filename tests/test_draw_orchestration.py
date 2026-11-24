@@ -19,7 +19,7 @@ def members(text):
  return '\n'.join(member(text,s) for s in signatures)
 source=fp.src('renderer.cpp');capture_route=fp.src('draw_capture_route.h');fixture=fp.TESTS/'draw_orchestration.cpp';inputs={str(f):hashlib.sha256(f.read_bytes()).hexdigest() for f in [source,fp.src('device_draw_submission.inl'),capture_route,fixture,Path(__file__)]}
 old=subprocess.check_output(['git','show',a.reference+':src/proxy/renderer.cpp'],cwd=ROOT).decode('utf-8');current=source_text(source)
-assert current.count('if(enabled)spellArgs=NorthlightSpellLayer::DrawArgs::')==4,'native aurora admission needs all four draw tuples even with particle/spell features off'
+assert current.count('if(enabled||uiDrawDiagnostic.left)spellArgs=NorthlightSpellLayer::DrawArgs::')==4,'native aurora admission needs all four draw tuples even with particle/spell features off'
 before=members(old);after=members(current)
 route=member(capture_route.read_text(encoding='utf-8'),'template<bool userMemory,')
 header=out/'draw_orchestration_routes.h'

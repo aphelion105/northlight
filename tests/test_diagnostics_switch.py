@@ -159,7 +159,7 @@ KEEP={
  'D3D9 device wrapped':'start-up','MEMORY async sampler':'error','MEMMAP skipped':'rare warning (task 42): an in-world MEMMAP point dropped because the sampler still had one queued (points are minutes apart)','MEMORY guard':'warning: low address space (pressure/trim/after-trim/recovery, cooldown-limited)',
  'LOG previous session':'start-up: previous log rotation result','DEVICE lifetime':'one-off: device create/destroy',
  'Reset HRESULT':'one-off: Reset','Effects components':'user-triggered: Ctrl+Shift+F7..F9','Effects %s':'user-triggered: Ctrl+Shift+F10',
- 'World debug':'user-triggered: Ctrl+Shift+F12',
+ 'World debug':'user-triggered: Ctrl+Shift+F12', 'UI_DRAW diagnostic':'bounded capture requested by Ctrl+Shift+F4',
  'CLIENT latency':'indirect: logClientLatency() is called only from the diagnostics()-gated 600-frame block and the queryCaller lambda, which returns unless NorthlightDiagnostics::enabled()',
  'CSTREAM EVENT caller':'gated: the queryCaller lambda returns first unless NorthlightDiagnostics::enabled()',
  'FRAME slow':'gated: presented() logs it only when PresentTicks::on, i.e. profiling() (RenderProfile, which needs Diagnostics)','MEMORY frame':'gated: diagnostics() in the same condition','MEMORY sample failed':'gated: diagnostics() in the same condition',

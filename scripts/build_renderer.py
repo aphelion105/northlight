@@ -147,7 +147,7 @@ def main(argv=None):
     normal_inputs=normal_sources()
     if (world_manifest.get('normal_sources')!=normal_inputs or
         any(world_manifest['shaders'][entry]['source_sha256']!=normal_inputs['world_normals.hlsl'] for entry in NORMAL_ENTRIES)):
-        raise SystemExit('World normal inputs differ from the offline build. Recompile both normal entries.')
+        raise SystemExit('World normal inputs differ from the offline build. Recompile all normal entries.')
     transition_manifest = json.loads((SHADERS/'shadow-transition-shader-build.json').read_text())
     if transition_manifest['sources'] != source_hashes(SHADERS/'shadow_transition.hlsl'):
         raise SystemExit('Shadow transition source differs from offline build; run scripts/shaders/compile_shadow_transition_shaders.py.')

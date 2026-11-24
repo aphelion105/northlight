@@ -1,6 +1,6 @@
 {
   "normal_sources": {
-    "world_normals.hlsl": "9970f887b46cdc2b5d1487afa76913377149b6ca5577fac401ca9fd5b7e7a342",
+    "world_normals.hlsl": "4760736963a72c90ff537ab8b3b7f0e69b6d4ace9353b2bf54ae98f5b29036ef",
     "world_view.hlsl": "bbcbc95ee157a8b196befc2ec01ff9d890b6ed349447c5aba582ac7aed919ce8"
   },
   "sources": {
@@ -502,7 +502,7 @@
         "endrep": 3
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "9970f887b46cdc2b5d1487afa76913377149b6ca5577fac401ca9fd5b7e7a342"
+      "source_sha256": "4760736963a72c90ff537ab8b3b7f0e69b6d4ace9353b2bf54ae98f5b29036ef"
     },
     "WorldNormalsNoDistance": {
       "target": "ps_3_0",
@@ -535,7 +535,30 @@
         "endrep": 3
       },
       "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
-      "source_sha256": "9970f887b46cdc2b5d1487afa76913377149b6ca5577fac401ca9fd5b7e7a342"
+      "source_sha256": "4760736963a72c90ff537ab8b3b7f0e69b6d4ace9353b2bf54ae98f5b29036ef"
+    },
+    "WorldNormalsView": {
+      "target": "ps_3_0",
+      "bytes": 672,
+      "sha256": "4f4b04bbc2358eb7517114086b85314989f41b68507b117a92d559d5a703453b",
+      "static_instruction_slots": 18,
+      "temporary_registers": 3,
+      "samplers": [
+        1,
+        14
+      ],
+      "instructions": {
+        "mul": 4,
+        "frc": 1,
+        "add": 6,
+        "max": 1,
+        "mov": 2,
+        "min": 1,
+        "texld": 2,
+        "cmp": 1
+      },
+      "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
+      "source_sha256": "4760736963a72c90ff537ab8b3b7f0e69b6d4ace9353b2bf54ae98f5b29036ef"
     },
     "WorldLighting": {
       "target": "ps_3_0",

@@ -3716,6 +3716,20 @@ public:
 #include "world_local_lighting.inl"
 #include "world_atmospheric_fog.inl"
 #include "world_frame_constants.inl"
+
+    // Called with the scene/depth samplers and fullscreen state set by the device.
+    bool renderNormalsView(IDirect3DSurface9* target,UINT w,UINT h,D3DFORMAT fmt,float nearZ,float farZ,
+                           float minZ,float maxZ,IDirect3DTexture9* scene,IDirect3DTexture9* depth){
+        NorthlightFrameRequirements::Plan needs;
+        needs.lighting=true;
+        if(!screenReady()||!resources(w,h,fmt,needs))return false;
+        ScreenFrameConstants frameConstants;
+        auto& c=frameConstants.rows;
+        setScreenCamera(c,w,h,nearZ,farZ,minZ,maxZ);
+        if(FAILED(d->SetTexture(0,scene))||FAILED(d->SetTexture(1,depth))||
+           FAILED(d->SetPixelShaderConstantF(0,c[0],7))||FAILED(d->SetPixelShaderConstantF(33,c[33],1)))return false;
+        return worldNormals.drawView(d,target,w,h,kWorldNormalsViewShader,modelNormals);
+    }
     // 0.3.174: true once this frame's WorldComposite quad has drawn (the proxy's FOLD fallback reads it).
     bool composited=false;
     // foldScene/foldAO (0.3.174 FOLD): the proxy's pre-AO scene copy replaces the world colour
@@ -3724,6 +3738,14 @@ public:
     // enclosingState transfers restoration to the caller until its enclosing
     // effects scope ends. Later passes must bind their own inputs/state.
     bool render(IDirect3DSurface9* targetSurface,IDirect3DTexture9* depth,UINT w,UINT h,D3DFORMAT fmt,float nearZ,float farZ,float minZ,float maxZ,int debug,NorthlightGpuProfile* profile,IDirect3DTexture9* waterMask,IDirect3DTexture9* foldScene=nullptr,IDirect3DTexture9* foldAO=nullptr,unsigned rendererFrame=0,IDirect3DTexture9* hdrBase=nullptr,bool hdrBaseEncoded=false,bool hdrCombineAllowed=true,bool hdrSkyBase=false,bool foldAOAlphaNeutral=false,const SavedState* enclosingState=nullptr,const std::string* lightHistoryAudit=nullptr){
+        if(debug==NorthlightEffectSwitches::NormalsView||debug==NorthlightEffectSwitches::SsaoView){
+            lastRenderDebug=debug;shadowsComposited=false;fogGeometryReady=false;gpuDiagnosticFrame=false;
+            history.invalidate();fogScreen.invalidateHistory();
+            // The device has already composited the SSAO view.
+            composited=debug==NorthlightEffectSwitches::SsaoView||
+                (pipelineActive&&renderNormalsView(targetSurface,w,h,fmt,nearZ,farZ,minZ,maxZ,foldScene,depth));
+            return composited;
+        }
         shadowReplayAlpha.beginFrame(GetTickCount());
         const bool wantsDirectionalShadows=directionalShadowWork();
         bool directionalDeferred=wantsDirectionalShadows&&shadowReplayAlpha.retryAt();

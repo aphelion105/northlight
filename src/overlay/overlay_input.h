@@ -26,7 +26,7 @@ struct Modifiers { bool ctrl=false,shift=false,alt=false; };
 struct Hotkey { unsigned vk=VkF11; Modifiers mods{true,true,false}; };
 inline bool operator==(const Hotkey& a,const Hotkey& b){return a.vk==b.vk&&a.mods.ctrl==b.mods.ctrl&&a.mods.shift==b.mods.shift&&a.mods.alt==b.mods.alt;}
 // "Ctrl+Shift+F11" (case-insensitive, '+' separated, spaces ignored; Control and Alt/Menu accepted). false: malformed, a key
-// other than F1..F12, a repeated part, or a combination Northlight already uses (Ctrl+Shift+F7..F10, F12).
+// other than F1..F12, a repeated part, or a combination Northlight already uses (Ctrl+Shift+F4, F7..F10, F12).
 inline bool parseHotkey(const std::string& text,Hotkey& out){
     Hotkey k;k.vk=0;k.mods={};std::string part;bool sawCtrl=false,sawShift=false,sawAlt=false;
     auto take=[&](std::string p)->bool{
@@ -41,7 +41,7 @@ inline bool parseHotkey(const std::string& text,Hotkey& out){
     };
     for(char c:text){if(c=='+'){if(!take(part))return false;part.clear();}else part+=c;}
     if(!take(part)||!k.vk)return false;
-    if(k.mods.ctrl&&k.mods.shift&&!k.mods.alt&&((k.vk>=VkF1+6&&k.vk<=VkF1+9)||k.vk==VkF1+11))return false;
+    if(k.mods.ctrl&&k.mods.shift&&!k.mods.alt&&(k.vk==VkF1+3||(k.vk>=VkF1+6&&k.vk<=VkF1+9)||k.vk==VkF1+11))return false;
     out=k;return true;
 }
 inline std::string hotkeyName(const Hotkey& k){

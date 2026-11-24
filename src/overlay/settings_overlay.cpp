@@ -605,7 +605,7 @@ std::unique_ptr<Overlay> create(IDirect3DDevice9* device,bool enabled,const char
     }
     In::Hotkey hotkey;
     if(key&&*key&&!In::parseHotkey(key,hotkey)){
-        std::snprintf(line,sizeof line,"OVERLAY SettingsOverlayKey=%.64s not usable (F1..F12 with Ctrl/Shift/Alt, not Ctrl+Shift+F7..F10/F12); using %s",key,In::hotkeyName(hotkey).c_str());
+        std::snprintf(line,sizeof line,"OVERLAY SettingsOverlayKey=%.64s not usable (F1..F12 with Ctrl/Shift/Alt, reserved Ctrl+Shift+F4/F7..F10/F12); using %s",key,In::hotkeyName(hotkey).c_str());
         if(log)log(line);
     }
     hook.hotkey.store(pack(hotkey));

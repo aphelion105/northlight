@@ -2,6 +2,21 @@
 
 Run commands from the repository root. Start with [the architecture map](architecture.md) when changing runtime ownership or pass dependencies.
 
+## In-game inspection
+
+**Ctrl+Shift+F12** cycles through shadows, GI, fog volume, normals, SSAO, and
+the regular scene. Each view requires Northlight effects to be enabled.
+
+- **Normals** encodes world-space XYZ in RGB, including captured M2 normals.
+  The sky is black.
+- **SSAO** displays the filtered occlusion factor in grayscale. White means
+  unoccluded. The view runs SSAO even when Contact AO is off or another method
+  is selected.
+
+**Ctrl+Shift+F4** captures up to four textured UI draws with distinct stage-zero
+textures. Reports, geometry, and shader inputs go to a session under the
+client's diagnostic directory.
+
 ## Layout
 
 | Path | Contents |

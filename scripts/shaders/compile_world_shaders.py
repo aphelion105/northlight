@@ -14,7 +14,7 @@ import northlight_paths as fp  # noqa: E402
 from shader_compiler import Compiler, DLL_SHA256, COMPATIBLE_DLL_SHA256, bytecode, rows, validate_assembly
 from shader_sources import WORLD_PART, source_hashes, world_source_bytes
 
-ENTRIES = (("WorldAOCompositeHdr", "ps_3_0"), ("FogCloudsAmbient", "ps_3_0"), ("ForeverFogNoNoise", "ps_3_0"), ("ForeverFogActorNoNoise", "ps_3_0"), ("ForeverFogActorTiled", "ps_3_0"), ("ForeverFogActorTiledNoNoise", "ps_3_0"), ("WorldDistance", "ps_3_0"), ("ForeverFog", "ps_3_0"), ("ForeverFogActor", "ps_3_0"), ("DirectionalShadow", "ps_3_0"), ("WorldLightingSoft", "ps_3_0"), ("ActorShadowUniform", "ps_3_0"), ("WorldNormals", "ps_3_0"), ("WorldNormalsNoDistance", "ps_3_0"), ("WorldLighting", "ps_3_0"), ("WorldLightingUnshadowed", "ps_3_0"), ("WorldLightingUnshadowedGI", "ps_3_0"), ("ActorShadow", "ps_3_0"), ("ActorTiles", "ps_3_0"), ("WorldGI", "ps_3_0"), ("WorldFog", "ps_3_0"), ("WorldFogAmbient", "ps_3_0"), ("WorldFogActor", "ps_3_0"), ("FogBlur", "ps_3_0"), ("FogClouds", "ps_3_0"), ("FogCloudsActor", "ps_3_0"), ("FogTemporal", "ps_3_0"), ("LocalDirect", "ps_3_0"), ("LocalDirect1", "ps_3_0"), ("LocalDirect16", "ps_3_0"), ("LocalFlash", "ps_3_0"), ("FlashShadow", "ps_3_0"), ("RemovalSmooth", "ps_3_0"), ("TemporalLight", "ps_3_0"), ("TemporalLightMerged", "ps_3_0"), ("TemporalLightMergedZeroWeight", "ps_3_0"), ("LocalFog", "ps_3_0"), ("LocalFogCombine", "ps_3_0"), ("SourceVisibilityPS", "ps_3_0"),
+ENTRIES = (("WorldAOCompositeHdr", "ps_3_0"), ("FogCloudsAmbient", "ps_3_0"), ("ForeverFogNoNoise", "ps_3_0"), ("ForeverFogActorNoNoise", "ps_3_0"), ("ForeverFogActorTiled", "ps_3_0"), ("ForeverFogActorTiledNoNoise", "ps_3_0"), ("WorldDistance", "ps_3_0"), ("ForeverFog", "ps_3_0"), ("ForeverFogActor", "ps_3_0"), ("DirectionalShadow", "ps_3_0"), ("WorldLightingSoft", "ps_3_0"), ("ActorShadowUniform", "ps_3_0"), ("WorldNormals", "ps_3_0"), ("WorldNormalsNoDistance", "ps_3_0"), ("WorldNormalsView", "ps_3_0"), ("WorldLighting", "ps_3_0"), ("WorldLightingUnshadowed", "ps_3_0"), ("WorldLightingUnshadowedGI", "ps_3_0"), ("ActorShadow", "ps_3_0"), ("ActorTiles", "ps_3_0"), ("WorldGI", "ps_3_0"), ("WorldFog", "ps_3_0"), ("WorldFogAmbient", "ps_3_0"), ("WorldFogActor", "ps_3_0"), ("FogBlur", "ps_3_0"), ("FogClouds", "ps_3_0"), ("FogCloudsActor", "ps_3_0"), ("FogTemporal", "ps_3_0"), ("LocalDirect", "ps_3_0"), ("LocalDirect1", "ps_3_0"), ("LocalDirect16", "ps_3_0"), ("LocalFlash", "ps_3_0"), ("FlashShadow", "ps_3_0"), ("RemovalSmooth", "ps_3_0"), ("TemporalLight", "ps_3_0"), ("TemporalLightMerged", "ps_3_0"), ("TemporalLightMergedZeroWeight", "ps_3_0"), ("LocalFog", "ps_3_0"), ("LocalFogCombine", "ps_3_0"), ("SourceVisibilityPS", "ps_3_0"),
            ("WorldComposite", "ps_3_0"), ("WorldUnlitComposite", "ps_3_0"), ("MaterialComposite", "ps_3_0"),
            ("WorldCompositeHdr", "ps_3_0"), ("WorldBaseCompositeHdr", "ps_3_0"), ("WorldUnlitCompositeHdr", "ps_3_0"), ("MaterialCompositeHdr", "ps_3_0"),
            ("MaterialSolarComposite", "ps_3_0"), ("MaterialSolarCompositeHdr", "ps_3_0"),
@@ -25,7 +25,7 @@ ENTRIES = (("WorldAOCompositeHdr", "ps_3_0"), ("FogCloudsAmbient", "ps_3_0"), ("
            ("UnifiedDirectionalShadow", "ps_3_0"), ("WorldLightingShared", "ps_3_0"))
 
 
-NORMAL_ENTRIES = {"WorldNormals", "WorldNormalsNoDistance"}
+NORMAL_ENTRIES = {"WorldNormals", "WorldNormalsNoDistance", "WorldNormalsView"}
 
 def normal_sources():
     return source_hashes(fp.SHADERS/"world_normals.hlsl")
@@ -46,7 +46,7 @@ def main():
     if selected and normal_inputs["world_view.hlsl"]!=previous.get("normal_sources",{}).get("world_view.hlsl"):
         raise SystemExit("Shared world view changed: rebuild all world shaders")
     if selected and not NORMAL_ENTRIES<=set(selected) and normal_inputs!=previous.get("normal_sources"):
-        raise SystemExit("World normal inputs changed: rebuild both normal entries")
+        raise SystemExit("World normal inputs changed: rebuild all normal entries")
     if selected and {entry for entry, _ in ENTRIES} - NORMAL_ENTRIES - set(selected):
         # The expanded digest covers edits to pass modules. Retained entries
         # cannot share a new manifest when an external include has changed.

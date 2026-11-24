@@ -7,7 +7,7 @@
         skyPlanet.clear();
         auroraDrawProven=false;auroraDrawScale={};auroraDrawIntensity=1;
         const HRESULT resumed=hdrResumeWorld();if(FAILED(resumed))return resumed;
-        if(!enabled&&!failed&&!hdr.active&&worldDebug==0&&!diagnostics()){++drawCalls;return draw();}
+        if(!enabled&&!failed&&!hdr.active&&worldDebug==0&&!diagnostics()){++drawCalls;if(uiDrawDiagnostic.left)captureUiDraw();return draw();}
         if(gpuScene&&!gpuScene->native.currentFrame(frame)){ExtensionDevice::RawScope raw(*ext);gpuScene->setFrame(frame);}
         if(autoBump)autoBump->beginDraw();
         struct MaterialDrawScope {
@@ -15,7 +15,11 @@
             ~MaterialDrawScope(){if(material)material->endNativeMaterialDraw();}
         } materialDraw{autoBump.get()};
         bool claimed=false,rainBlend=false,mist=false,nativeRain=false;
-        auto nativeDraw=[&]{if(autoBump)autoBump->beforeNativeDraw();return nativeEffectDraw(nativeRain,[&]{return aoActorNativeDraw(draw);});};
+        auto nativeDraw=[&]{
+            if(autoBump)autoBump->beforeNativeDraw();
+            if(uiDrawDiagnostic.left&&!claimed&&!mist&&!nativeRain)captureUiDraw();
+            return nativeEffectDraw(nativeRain,[&]{return aoActorNativeDraw(draw);});
+        };
         bool linearSky=false;
         if(hdr.active)extensionWork("HDR sky preparation",[&]{linearSky=hdrSkyAdmission();});
         if(nativeSky)*nativeSky=linearSky;

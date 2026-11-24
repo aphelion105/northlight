@@ -115,3 +115,11 @@ float4 WorldNormalsNoDistance(float2 uv:TEXCOORD0):COLOR0 {
     float2 c=halfDepthUV(uv);float d=normalizedDepth(c);
     return worldNormalValue(c,d,viewDistance(d));
 }
+
+sampler2D WorldNormalImage : register(s14);
+
+float4 WorldNormalsView(float2 uv:TEXCOORD0):COLOR0 {
+    float3 normal=tex2D(WorldNormalImage,uv).xyz;
+    float3 color=normalizedDepthFlat(depthUV(uv))>=.99999?float3(0,0,0):saturate(normal*.5+.5);
+    return float4(color,1);
+}

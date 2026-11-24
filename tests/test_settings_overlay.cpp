@@ -157,7 +157,7 @@ static void routing(){
         CHECK(In::parseHotkey(" alt + f5 ",k)&&k.vk==In::VkF1+4&&k.mods.alt&&!k.mods.ctrl&&!k.mods.shift&&In::hotkeyName(k)=="Alt+F5");
         CHECK(In::parseHotkey("Control+F1",k)&&k.vk==In::VkF1&&k.mods.ctrl);
         CHECK(In::parseHotkey("Ctrl+Shift+Alt+F12",k)&&k.vk==In::VkF1+11);
-        for(const char* bad:{"","Ctrl+Shift","F13","F0","Ctrl+Ctrl+F2","Ctrl+X","Ctrl++F2","Ctrl+Shift+F7","Ctrl+Shift+F10","Ctrl+Shift+F12","F1+F2"}){
+        for(const char* bad:{"","Ctrl+Shift","F13","F0","Ctrl+Ctrl+F2","Ctrl+X","Ctrl++F2","Ctrl+Shift+F4","Ctrl+Shift+F7","Ctrl+Shift+F10","Ctrl+Shift+F12","F1+F2"}){
             In::Hotkey before;CHECK(!In::parseHotkey(bad,before)&&before==In::Hotkey{});}
         In::State s;CHECK(In::parseHotkey("Alt+F5",s.hotkey));
         In::Modifiers alt;alt.alt=true;In::Modifiers hot2;hot2.ctrl=hot2.shift=true;
