@@ -1,4 +1,4 @@
-Northlight 0.3.216-test.20261102.8 вЂ” complete Windows installer
+Northlight 0.3.216-test.20261102.8 — complete Windows installer
 
 Combined implementation: f4750cde8b1ffc227f08ee00155d382732bf9fb3.
 Parents: 66fa8d897804915f90ea53a8a1c2f84b5c89d03e and

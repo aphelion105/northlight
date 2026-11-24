@@ -10,7 +10,7 @@ static void put(Queue& q,uint64_t value){std::memcpy(q.reserve(7,8),&value,8);q.
 static void take(Queue& q,uint64_t value){const auto* h=q.next(false);assert(h&&h->id==7&&h->size==16);uint64_t got;std::memcpy(&got,h+1,8);assert(got==value);q.retire(h);}
 template<class F> static void until(F predicate){const auto end=nowNs()+5000000000ull;while(!predicate()){assert(nowNs()<end);std::this_thread::yield();}}
 int main(){
- static_assert(BudgetBytes==(16u<<20)&&kMaxBudgetBytes==(32u<<20));
+ static_assert(BudgetBytes==(16u<<20)&&kMaxBudgetBytes==(20u<<20));
  for(unsigned n:{1u,2u,8u,63u,64u,65u,127u,128u,256u}){
   Queue q;q.trackIdlePublications(true);q.testSparseSleep();
   for(unsigned i=0;i<n;++i)put(q,i);

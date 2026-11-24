@@ -7,8 +7,9 @@ float3 autoBumpNormal(float2 uv,float3 position,float3 normal,float distance,flo
     float4 detail=tex2Dlod(BumpMaterial,float4(uv,0,0));
     float magnitudeSquared=dot(normal,normal);
     float3 neutral=normal*(sqrt(magnitudeSquared)*rsqrt(max(magnitudeSquared,1e-8)));
-    [branch]if(detail.a<=.02)return neutral;
-    float inverseCover=1/max(detail.a,.001);
+    float cover=saturate(detail.a);
+    [branch]if(cover<=.02)return neutral;
+    float inverseCover=1/max(cover,.001);
     float capturedZ=abs(detail.b)*inverseCover;
     [branch]if(abs(capturedZ-distance)>=max(.025,distance*.0015))return neutral;
     float2 oct=abs(detail.rg)*inverseCover*2-1;

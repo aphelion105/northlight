@@ -29,6 +29,33 @@ def packets():
     assert struct.unpack_from('<4f', update, 20) == struct.unpack('<4f', struct.pack('<4f', *server.SPAWN))
     assert update[76] == 3  # Update-mask block count follows the header and movement speeds.
     assert len(update) == 77 + 12 + 13 * 4
+    flying = server.player_create(flying=True)
+    assert flying[:10] == update[:10]
+    assert struct.unpack_from('<I', flying, 10) == (0x03000400,)
+    assert flying[14:36] == update[14:36]
+    assert struct.unpack_from('<f', flying, 36) == (0.,)
+    assert flying[40:] == update[36:]
+    teleport = server.teleport_packet((1., 2., 3., 4.), 123, 7, flying=True)
+    assert teleport[:2] == b'\x01\x01'
+    assert struct.unpack_from('<IIHI5fI', teleport, 2) == (7, 0x03000400, 0, 123, 1., 2., 3., 4., 0., 0)
+    prior, block = server.gameobject_block(5, 2753, (1., 2., 3.), scale=.5)
+    assert prior == (0xf110 << 48) | (930001 << 24) | 5
+    header = b'\x03' + server.packed_guid(prior) + b'\x05'
+    movement = struct.Struct('<HB8fIQ')
+    assert block.startswith(header)
+    assert movement.unpack_from(block, len(header)) == (0x350, 0, 1., 2., 3., 1., 2., 3., 0., 0., 5, 0)
+    values = block[len(header) + movement.size:]
+    assert struct.unpack_from('<BI', values) == (1, 0x2211f)
+    assert struct.unpack_from('<8I', values, 5)[4:6] == (0x3f000000, 2753)
+    assert server.gameobject_updates(None, block) == [(0x0A9, struct.pack('<I', 1) + block)]
+    _, following = server.gameobject_block(6, 754, (1., 2., 3.))
+    assert server.gameobject_updates(prior, following) == [
+        (0x0AA, struct.pack('<QB', prior, 0)), (0x0A9, struct.pack('<I', 1) + following)]
+    assert server.gameobject_updates(prior) == [(0x0AA, struct.pack('<QB', prior, 0))]
+    assert server.turn_packet((1., 2., 3., 0.), 123) == struct.pack(
+        '<2BIIHI4fI', 1, 1, 1, 0, 0, 123, 1., 2., 3., 1.0471975511965976, 0)
+    assert server.turn_packet((1., 2., 3., 0.), 123, flying=True) == struct.pack(
+        '<2BIIHI5fI', 1, 1, 1, 0x03000400, 0, 123, 1., 2., 3., 1.0471975511965976, 0., 0)
     key = bytes(range(40))
     initial = server.cipher(key, server.SERVER_KEY)
     # Independent known answer for ARC4-drop1024 with HMAC-SHA1 header key.
@@ -64,8 +91,8 @@ def crowd_packets():
         return fields, offset
 
     assert len(server.crowd_roster()) == 128
-    for size, batches in ((50, [32, 18]), (100, [32, 32, 32, 4]), (128, [32, 32, 32, 32])):
-        roster = server.crowd_roster(size)
+    for size, batches in ((50, [32, 18]), (100, [32, 32, 32, 4]), (512, [32] * 16), (128, [32] * 4)):
+        roster = server.scene_roster('m2-stress') if size == 512 else server.crowd_roster(size)
         packets = server.crowd_packets(roster)
         assert [struct.unpack_from('<I', packet)[0] for packet in packets] == batches
         assert len({row[0] for row in roster.values()}) == size
@@ -78,9 +105,18 @@ def crowd_packets():
             offset = 4
             for _ in range(count):
                 guid, (_, position, appearance, outfit) = next(players)
-                assert struct.unpack_from('<BBBBH', packet, offset) == (3, 1, guid, 4, 0x20)
-                assert struct.unpack_from('<4f', packet, offset + 16) == struct.unpack('<4f', struct.pack('<4f', *position))
-                fields, offset = field_values(packet, offset + 72)
+                assert packet[offset] == 3
+                mask = packet[offset + 1]
+                cursor = offset + 2
+                decoded = 0
+                for byte in range(8):
+                    if mask & (1 << byte):
+                        assert packet[cursor]
+                        decoded |= packet[cursor] << (8 * byte)
+                        cursor += 1
+                assert decoded == guid and struct.unpack_from('<BH', packet, cursor) == (4, 0x20)
+                assert struct.unpack_from('<4f', packet, cursor + 13) == struct.unpack('<4f', struct.pack('<4f', *position))
+                fields, offset = field_values(packet, cursor + 69)
                 assert fields[0] == guid and fields[0x7A] == 1
                 assert fields[0x43] == appearance[4] and fields[0x44] == appearance[2]
                 assert fields[0x43] != fields[0x44]
@@ -163,6 +199,7 @@ def intervals():
     state = scan(lines)
     assert state['first_camera_tick'] == 400 and state['gi_tick'] == 500 and state['static_tick'] == 1000
     assert [row['tick'] for row in warm_windows(state, 2)] == ['8000', '9500']
+    assert [row['tick'] for row in warm_windows(state, 2, skip_intervals=len(state['frames']) - 1)] == ['9500']
     assert warm_windows(state, 0) == []
     assert runner.frame_timing.summarize(warm_windows(state, 2)) == {'state': 'unavailable'}
     closed_log = lines + ['WORLD geometry transition tick=9700 ready=0',
@@ -775,6 +812,18 @@ def native_m2_audit():
                'eligible=2700 queued=2400 immutable=2400 fallback=300 rangeMismatch=0 '
                'coverageMismatch=0 paletteChecks=150 paletteMismatch=0 paletteUnavailable=0 auditUs=423.1')
     assert runner.observe_native_m2([client, producer, normals], 1)['ready']
+    roster = server.scene_roster('m2-stress')
+    spawn = server.spawn_record(roster, b''.join(server.crowd_packets(roster)))
+    events = [spawn, *(f'CROWD_NAME guid={guid}' for guid in list(roster)[:384])]
+    dense_producer = producer.replace('matched=2800', 'matched=6500').replace('ordinary=2900', 'ordinary=6600').replace('gxDraws=3200', 'gxDraws=6700')
+    dense_normals = normals.replace('seen=2700', 'seen=6000').replace('fallback=300', 'fallback=3600')
+    lines = [client, dense_producer, dense_normals, dense_producer.replace('127', '254'), dense_normals.replace('127', '254')]
+    stress = runner.observe_m2_stress(lines, events, roster, spawn)
+    assert stress['ready'] and stress['native_m2_draws'] == [6000, 6000]
+    assert not runner.observe_m2_stress(lines[:-2], events, roster, spawn)['ready']
+    assert not runner.observe_m2_stress(lines, events[1:], roster, spawn)['ready']
+    assert not runner.observe_m2_stress(lines, events[:-1] + ['CROWD_NAME guid=10000'], roster, spawn)['ready']
+    assert not runner.observe_m2_stress(lines[:-1] + [lines[-1].replace('world-ready', 'world-loading')], events, roster, spawn)['ready']
     grouped_client = 'NATIVE_M2 groupedClient12340=1'
     grouped = ('NATIVE_M2 grouped producerFrame=127 shaderDraws=2 softwareDraws=1 alphaTested=1 '
                'matched=1 multiInstance=1 instances=3 triangles=448 rangeMismatch=0 paletteUnavailable=1 paletteMismatch=0')

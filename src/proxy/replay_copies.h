@@ -33,7 +33,7 @@
    Only the buffers the capture actually reads get a copy: the Reader (replay_copy_reader.h) fills one with ONE whole-buffer read of the real
    buffer (the readBackLock() path) on a read of a buffer <= kEagerBytes or a whole-buffer request. Other regular copies require requests in two
    distinct recent frames and at least one quarter of the buffer in requested spans. Repeated requests count because they each need a separate lock.
-   The copy then stays current from the replayed writes.
+   The copy stays current from replayed writes. Unused large copies expire.
    32-bit address space: a hard cap (kCapBytes = 16 MiB; the LOCK METER read-back volume is ~0.5-1.7 MiB/frame, and the game's whole VB/IB working set
    that capture touches is a fraction of it) with LRU eviction by last capture read; halved under memory pressure (setPressure, from the memory guard's
    per-frame decision); a buffer above cap/4 never gets a copy. Thrash guard in FRAMES (advanceFrame(), once per frame from WorldRenderer::endFrame; a frame
@@ -58,6 +58,7 @@ inline constexpr UINT kEagerBytes=64u<<10;
 inline constexpr unsigned kMaxStrikes=3;                 // refills within kThrashFrames of an eviction/invalidation before the buffer is left on the fallback
 inline constexpr std::uint64_t kLargeCapBytes=40u<<20,kLargeCopyBytes=24u<<20;
 inline constexpr std::uint64_t kLargeRefillFrames=60,kLargeBackoffFrames=600;
+inline constexpr std::uint64_t kUnusedCopyFrames=240,kUnusedCopySweepFrames=60;
 inline constexpr std::uint64_t kThrashFrames=4,kBackoffFrames=600,kRecentFrames=8;   // frames (advanceFrame) = the time base; kRecentFrames: gap that restarts a buffer's read-frame count
 inline std::atomic<bool> enabled{false};
 inline bool legacyPartialFills(){
@@ -80,6 +81,7 @@ struct Slot {
     std::atomic<unsigned char> state{None};
     std::vector<unsigned char> data;
     bool gpuWritten=false,evicted=false,large=false,dropAtUnpin=false,complete=false;unsigned strikes=0,frames=0,pins=0,listAt=0;std::uint64_t used=0,lastFrame=0,evictedFrame=0,parkUntil=0;   // frames: distinct recent frames with a capture read
+    std::uint64_t lastWriteReuseFrame=0;
     UINT requestedSpan=0; // Partial regular fill demand, capped at one quarter of the buffer.
 };
 // 0.3.196 (task 12): the outstanding write lock of ONE wrapper (a member of the tracked Buffer, no mutex): noteWrite() fills it at Lock, commitWrite() consumes it at Unlock
@@ -151,11 +153,13 @@ inline void writeLocked(const Slot& c,PendingWrite& w,unsigned before,UINT off,U
     w.active=true;w.drop=false;w.discard=(flags&D3DLOCK_DISCARD)!=0;w.off=off;w.end=UINT(end);w.ptr=static_cast<const unsigned char*>(ptr);
 }
 // Replay-thread preflight only: do not fill/touch the capture cache or allocate.
-inline bool unchangedWrite(const Slot& c,UINT off,UINT size,const unsigned char* bytes){
+inline bool unchangedWrite(Slot& c,UINT off,UINT size,const unsigned char* bytes){
     if(c.state.load()!=Slot::Valid)return false;
     Store& s=store();std::lock_guard<std::mutex> g(s.m);
-    return c.state.load()==Slot::Valid&&c.complete&&!(c.locks&&c.locks->load())&&
+    const bool same=c.state.load()==Slot::Valid&&c.complete&&!(c.locks&&c.locks->load())&&
         bytes&&size&&std::uint64_t(off)+size<=c.size&&!std::memcmp(c.data.data()+off,bytes,size);
+    if(same&&c.large)c.lastWriteReuseFrame=s.frame;
+    return same;
 }
 // A rejected write Lock, a failed Unlock, a GPU write: the copy no longer mirrors the buffer.
 inline void invalidate(Slot& c,bool gpuWrite=false){
@@ -179,14 +183,29 @@ inline bool beforeUnlock(Slot& c,PendingWrite& w,unsigned before,bool compare=fa
     if(p.end>p.off){   // the stream's own replayed write names its source bytes (cached memory, see unlock_source.h); a pass-through lock is read back from the mapped pointer
         const UnlockSource& u=unlockSource;
         const unsigned char* from=u.bytes&&(!u.target||u.target==c.exposed)&&u.off==p.off&&u.size==p.end-p.off?u.bytes:p.ptr;
-        if(compare&&c.complete&&!std::memcmp(c.data.data()+p.off,from,p.end-p.off))return true;
+        if(compare&&c.complete&&!std::memcmp(c.data.data()+p.off,from,p.end-p.off)){
+            if(c.large)c.lastWriteReuseFrame=s.frame;
+            return true;
+        }
         std::memcpy(c.data.data()+p.off,from,p.end-p.off);
         if(!p.off&&p.end==c.size)c.complete=true;}
     return false;
 }
 // ---- reader side (replay_copy_reader.h) ----
-// Once per frame (replay thread, WorldRenderer::endFrame): the time base of the thrash guard and of the deferred fill.
-inline void advanceFrame(){Store& s=store();std::lock_guard<std::mutex> g(s.m);++s.frame;}
+// Once per frame on replay. Reclaim large copies after the geometry cache warms
+// up. Keep regular entries ready for small reads, and keep pinned or useful large copies.
+inline void advanceFrame(){
+    Store& s=store();std::lock_guard<std::mutex> g(s.m);
+    ++s.frame;
+    if(!s.largeUsed||s.frame%kUnusedCopySweepFrames)return;
+    for(std::size_t i=0;i<s.list.size();){
+        Slot& c=*s.list[i];
+        if(c.large&&!c.pins&&c.state.load()==Slot::Valid&&s.frame-c.lastFrame>=kUnusedCopyFrames&&
+           s.frame-c.lastWriteReuseFrame>=kUnusedCopyFrames)
+            detail::drop(s,c,detail::Why::Silent);
+        else ++i;
+    }
+}
 namespace detail {
 inline void touch(Store& s,Slot& c){   // one capture read in this frame
     if(c.frames&&c.lastFrame==s.frame)return;

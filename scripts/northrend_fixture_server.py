@@ -35,11 +35,13 @@ PRIME = 0x894B645E89E1535BBDAD5B8B290650530801B18EBFBF5E8FAB3C82872A3E9BB7
 GENERATOR = 7
 SERVER_KEY = bytes.fromhex('cc98ae04e897eaca12ddc09342915357')
 CLIENT_KEY = bytes.fromhex('c2b3723cc6aed9b5343c53ee2f4367ce')
-SCENES = ('solo', 'crowd', 'rain', 'shoreline', 'interior', 'terrain')
+SCENES = ('solo', 'crowd', 'm2-stress', 'rain', 'shoreline', 'interior', 'terrain')
 RAIN_STATE = 5  # Heavy rain in the 3.3.5 SMSG_WEATHER state table.
 CROWD_SIZES = range(50, 129)
 DEFAULT_CROWD_SIZE = 128
+M2_STRESS_SIZE = 512
 CROWD_BATCH_SIZE = 32
+FLIGHT_FLAGS = 0x03000400  # Can fly, flying and gravity disabled.
 
 # Race, sex, native display, class, clothed CreatureDisplayInfo, main hand,
 # off hand, permanent enchant. The native MPQs supply each armored model,
@@ -57,23 +59,35 @@ OUTFITS = (
 LOCAL_APPEARANCE = (1, 0, 49, 1, 49)
 
 
-def crowd_roster(count=DEFAULT_CROWD_SIZE):
-    if count not in CROWD_SIZES:
-        raise ValueError('The stress scene needs 50–128 players')
+def crowd_roster(count=DEFAULT_CROWD_SIZE, *, stress=False):
+    if count not in ((M2_STRESS_SIZE,) if stress else CROWD_SIZES):
+        raise ValueError(f'The M2 stress scene needs {M2_STRESS_SIZE} players' if stress else 'The crowd needs 50–128 players')
     forward_x, forward_y = math.cos(SPAWN[3]), math.sin(SPAWN[3])
     roster = {}
-    columns = 12
+    columns = 32 if stress else 12
     for index in range(count):
         row, column = divmod(index, columns)
         outfit = OUTFITS[(column * 3 + row) % len(OUTFITS)]
-        depth = 5.5 + 2.1 * row + .28 * (column % 3)
-        side = (column - (columns - 1) / 2) * 1.3 + (row % 2 - .5) * .65
+        if stress:
+            depth = 8 + 1.35 * row + .28 * (column % 3)
+            side = ((column - (columns - 1) / 2) / columns) * depth * 1.2 + (row % 2 - .5) * .28
+            name_row, name_column = divmod(index, 26)
+        else:
+            depth = 5.5 + 2.1 * row + .28 * (column % 3)
+            side = (column - (columns - 1) / 2) * 1.3 + (row % 2 - .5) * .65
+            name_row, name_column = row, column
         position = (SPAWN[0] + depth * forward_x + side * forward_y,
                     SPAWN[1] + depth * forward_y - side * forward_x,
                     SPAWN[2], SPAWN[3] + math.pi + .18 * (column % 3 - 1))
-        name = f'Fixture{chr(65 + row)}{chr(97 + column)}'.encode('ascii') + b'\0'
+        name = f'Fixture{chr(65 + name_row)}{chr(97 + name_column)}'.encode('ascii') + b'\0'
         roster[index + 2] = (name, position, outfit[:5], outfit[5:])
     return roster
+
+
+def scene_roster(scene, crowd_size=DEFAULT_CROWD_SIZE):
+    if scene == 'm2-stress':
+        return crowd_roster(M2_STRESS_SIZE, stress=True)
+    return crowd_roster(crowd_size) if scene == 'crowd' else {}
 
 
 def outfit_count(roster):
@@ -211,7 +225,12 @@ def field_values(data):
         f'<{len(data)}I', *(data[index] for index in sorted(data)))
 
 
-def player_block(guid, position, appearance, outfit=()):
+def packed_guid(guid):
+    raw = struct.pack('<Q', guid)
+    return bytes((sum(1 << i for i, byte in enumerate(raw) if byte),)) + bytes(byte for byte in raw if byte)
+
+
+def player_block(guid, position, appearance, outfit=(), *, flying=False):
     # OBJECT, UNIT and PLAYER fields from the 12340 update table.
     race, sex, native_display, player_class, display = appearance
     data = {
@@ -228,12 +247,38 @@ def player_block(guid, position, appearance, outfit=()):
         data.update({0x139: main_hand, 0x13A: enchant})
         if off_hand:
             data[0x13B] = off_hand
-    movement = struct.pack('<IHI4fI9f', 0, 0, 0, *position, 0, 2.5, 7, 4.5, 4.7, 2.5, 7, 4.5, 3.14, 3.14)
-    return struct.pack('<BBBBH', 3, 1, guid, 4, 0x21 if guid == 1 else 0x20) + movement + field_values(data)
+    flight_flags = FLIGHT_FLAGS if flying else 0
+    movement = struct.pack('<IHI4f', flight_flags, 0, 0, *position)
+    if flying:
+        # Build 12340 includes pitch between position and fall time while flying.
+        movement += struct.pack('<f', 0.)
+    movement += struct.pack('<I9f', 0, 2.5, 7, 4.5, 4.7, 2.5, 7, 4.5, 3.14, 3.14)
+    return b'\x03' + packed_guid(guid) + struct.pack('<BH', 4, 0x21 if guid == 1 else 0x20) + movement + field_values(data)
 
 
-def player_create(spawn=SPAWN):
-    return struct.pack('<I', 1) + player_block(1, spawn, LOCAL_APPEARANCE)
+def player_create(spawn=SPAWN, *, flying=False):
+    return struct.pack('<I', 1) + player_block(1, spawn, LOCAL_APPEARANCE, flying=flying)
+
+
+def gameobject_block(counter, display, position, *, scale=1.):
+    entry = 930001  # Local fixture entry. The client resolves the supplied DBC display.
+    guid = (0xf110 << 48) | (entry << 24) | counter
+    fields = {0: guid & 0xffffffff, 1: guid >> 32, 2: 0x21, 3: entry,
+              4: as_field_float(scale), 8: display, 13: as_field_float(1),
+              17: int.from_bytes(bytes((1, 5, 0, 255)), 'little')}
+    # Stationary GameObject, zero rotation, no transport.
+    movement = struct.pack('<HB8fIQ', 0x350, 0, *position, *position, 0., 0., counter, 0)
+    block = b'\x03' + packed_guid(guid) + b'\x05' + movement + field_values(fields)
+    return guid, block
+
+
+def gameobject_updates(previous_guid, block=b''):
+    packets = []
+    if previous_guid is not None:
+        packets.append((0x0AA, struct.pack('<QB', previous_guid, 0)))
+    if block:
+        packets.append((0x0A9, struct.pack('<I', 1) + block))
+    return packets
 
 
 def crowd_create(roster):
@@ -248,15 +293,23 @@ def crowd_packets(roster):
             for start in range(0, len(players), CROWD_BATCH_SIZE)]
 
 
-def turn_packet(spawn, move_time):
-    x, y, z, heading = spawn
+def teleport_packet(position, move_time, sequence, *, flying=False):
     # MSG_MOVE_TELEPORT_ACK server message: packed GUID, sequence and movement status.
-    return bytes((1, 1)) + struct.pack('<IIHI4fI', 1, 0, 0, move_time, x, y, z,
-                                        (heading + math.pi / 3) % math.tau, 0)
+    flags = FLIGHT_FLAGS if flying else 0
+    status = struct.pack('<IHI4f', flags, 0, move_time, *position)
+    if flying:
+        status += struct.pack('<f', 0.)
+    return packed_guid(1) + struct.pack('<I', sequence) + status + struct.pack('<I', 0)
 
 
-def world(sock, session, scene, crowd_size=DEFAULT_CROWD_SIZE, return_to_menu=None, camera_turn=None):
-    roster = crowd_roster(crowd_size) if scene == 'crowd' else {}
+def turn_packet(spawn, move_time, *, flying=False):
+    position = (*spawn[:3], (spawn[3] + math.pi / 3) % math.tau)
+    return teleport_packet(position, move_time, 1, flying=flying)
+
+
+def world(sock, session, scene, crowd_size=DEFAULT_CROWD_SIZE, return_to_menu=None, camera_turn=None, *,
+          flying=False, camera_route=None, camera_updates=None):
+    roster = scene_roster(scene, crowd_size)
     spawn = spawn_for(scene)
     outgoing = incoming_cipher = lambda data: data
     with sock.makefile('rb') as incoming:
@@ -302,7 +355,13 @@ def world(sock, session, scene, crowd_size=DEFAULT_CROWD_SIZE, return_to_menu=No
         in_world = False
         named = set()
         weather_triggered = set()
-        turn_pending = False
+        pending_camera = None
+        route_sequence = 1
+        def send_camera_updates(sequence):
+            if camera_updates:
+                for opcode, payload in camera_updates.get(sequence, ()):
+                    send(opcode, payload)
+
         def end_world():
             send(0x04C, bytes(4) + b'\x01')
             send(0x04D, b'')
@@ -310,19 +369,28 @@ def world(sock, session, scene, crowd_size=DEFAULT_CROWD_SIZE, return_to_menu=No
             weather_triggered.clear()
             print('PLAYER_LOGOUT', flush=True)
         while True:
-            if in_world and (return_to_menu is not None or camera_turn is not None):
+            if in_world and (return_to_menu is not None or camera_turn is not None or camera_route is not None):
                 if return_to_menu is not None and return_to_menu.is_file():
                     return_to_menu.unlink()
                     return_to_menu = None
                     end_world()
                     in_world = False
                     continue
-                if camera_turn is not None and camera_turn.is_file():
+                if pending_camera is None and camera_turn is not None and camera_turn.is_file():
                     camera_turn.unlink()
                     camera_turn = None
-                    send(0x0C7, turn_packet(spawn, (time.monotonic_ns() // 1_000_000) & 0xFFFFFFFF))
-                    turn_pending = True
+                    now = (time.monotonic_ns() // 1_000_000) & 0xFFFFFFFF
+                    send(0x0C7, turn_packet(spawn, now, flying=flying))
+                    pending_camera = 1
                     print('CAMERA_TURN_SENT sequence=1', flush=True)
+                if camera_route is not None and pending_camera is None and not camera_route.empty():
+                    route_sequence += 1
+                    position = camera_route.get_nowait()
+                    now = (time.monotonic_ns() // 1_000_000) & 0xFFFFFFFF
+                    send(0x0C7, teleport_packet(position, now, route_sequence, flying=flying))
+                    send_camera_updates(route_sequence)
+                    pending_camera = route_sequence
+                    print(f'CAMERA_ROUTE_SENT sequence={route_sequence}', flush=True)
                 if not select.select([sock], [], [], .25)[0]:
                     continue
             opcode, body = receive()
@@ -335,7 +403,11 @@ def world(sock, session, scene, crowd_size=DEFAULT_CROWD_SIZE, return_to_menu=No
                 send(0x236, struct.pack('<I4f', MAP, *spawn))
                 send(0x042, login_clock())
                 send(0x12A, bytes(5))  # Initial spell and cooldown counts.
-                send(0x0A9, player_create(spawn))
+                send(0x0A9, player_create(spawn, flying=flying))
+                send_camera_updates(1)
+                if flying:
+                    send(0x343, packed_guid(1) + struct.pack('<I', 0))  # SMSG_MOVE_SET_CAN_FLY
+                    print('PLAYER_FLIGHT_ENABLED', flush=True)
                 if roster:
                     crowd = crowd_packets(roster)
                     for index, packet in enumerate(crowd):
@@ -350,9 +422,11 @@ def world(sock, session, scene, crowd_size=DEFAULT_CROWD_SIZE, return_to_menu=No
                 in_world = True
             elif opcode == 0x1DC and len(body) == 8:
                 send(0x1DD, body[:4])
-            elif opcode == 0x0C7 and turn_pending and len(body) == 10 and body[:6] == b'\x01\x01\x01\x00\x00\x00':
-                turn_pending = False
-                print('CAMERA_TURN_ACK sequence=1', flush=True)
+            elif (opcode == 0x0C7 and pending_camera is not None and len(body) == 10 and
+                  body[:6] == packed_guid(1) + struct.pack('<I', pending_camera)):
+                label = 'CAMERA_TURN_ACK' if pending_camera == 1 else 'CAMERA_ROUTE_ACK'
+                print(f'{label} sequence={pending_camera}', flush=True)
+                pending_camera = None
             elif scene in ('rain', 'shoreline') and in_world and (opcode, len(body)) in ((0x1F4, 4), (0x391, 8)):
                 if opcode not in weather_triggered:
                     body = rain_packet()
@@ -363,7 +437,7 @@ def world(sock, session, scene, crowd_size=DEFAULT_CROWD_SIZE, return_to_menu=No
                 guid = little(body)
                 if guid == 1 or guid in roster:
                     name, _, (race, sex, _, player_class, _), _ = roster.get(guid, (PLAYER, spawn, LOCAL_APPEARANCE, ()))
-                    send(0x051, bytes((1, guid, 0)) + name + bytes((0, race, sex, player_class, 0)))
+                    send(0x051, packed_guid(guid) + b'\0' + name + bytes((0, race, sex, player_class, 0)))
                     if guid != 1 and guid not in named:
                         named.add(guid)
                         print(f'CROWD_NAME guid={guid}', flush=True)
@@ -396,6 +470,7 @@ def main():
     parser.add_argument('--scene', choices=SCENES, default='solo')
     parser.add_argument('--return-to-menu', type=Path, help='Private runner marker for a server-initiated logout')
     parser.add_argument('--camera-turn', type=Path, help='Private runner marker for a same-position heading change')
+    parser.add_argument('--flying', action='store_true', help='Spawn the local player in flight with gravity disabled')
     parser.add_argument('--crowd-size', type=int, choices=CROWD_SIZES, default=DEFAULT_CROWD_SIZE, metavar='50..128')
     args = parser.parse_args()
     session = {}
@@ -404,7 +479,8 @@ def main():
         thread = threading.Thread(target=serve, args=(auth, lambda sock: login(sock, port, session)), daemon=True)
         thread.start()
         print(f'READY auth={auth.getsockname()[1]} world={port}', flush=True)
-        serve(game, lambda sock: world(sock, session, args.scene, args.crowd_size, args.return_to_menu, args.camera_turn))
+        serve(game, lambda sock: world(sock, session, args.scene, args.crowd_size, args.return_to_menu,
+                                       args.camera_turn, flying=args.flying))
 
 
 if __name__ == '__main__':

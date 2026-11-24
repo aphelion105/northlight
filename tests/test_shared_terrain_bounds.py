@@ -101,11 +101,16 @@ namespace NorthlightAutoDisplacement {using Args=Geometry;using CaptureSource=No
 struct Bump {
  std::vector<std::string>* events;unsigned calls=0;bool hint=false,activeValue=true;
  bool active()const{return activeValue;}
+ void allowNativeM2Fusion(bool,void*,float){}
  template<class Draw>void capture(IDirect3DVertexShader9* vs,Draw draw,bool up,const Geometry* geometry,const NorthlightCaptureMetadata::PositionBounds* bounds,NormalSource* source,const std::shared_ptr<const NorthlightDrawSnapshot::Mesh>* batchSource=nullptr){
   assert(source&&!batchSource);source->captured=true;
   events->push_back("bump");++calls;assert(!up&&bounds&&bounds->owner==geometry&&bounds->shader==vs&&"SHARED_BOUND_OWNER_MISMATCH");hint=bounds->known;assert(draw()==42);
  }
 };
+namespace NorthlightBackend {
+ enum class Kind{Dxvk};
+ bool isPackagedDxvk(Kind){return true;}
+}
 struct Native {
  std::vector<std::string>* events;unsigned calls=0;
  int DrawIndexedPrimitive(D3DPRIMITIVETYPE t,INT base,UINT min,UINT vertices,UINT start,UINT count){
@@ -116,6 +121,8 @@ CAPTURE_NAMESPACE
 struct Route {
  World* world;Bump* autoBump;Native* ext;std::vector<std::string>* events;
  bool enabled=true,applied=false,failed=false;unsigned frame=127;
+ NorthlightBackend::Kind selectedBackend=NorthlightBackend::Kind::Dxvk;
+ struct{bool active=false;}hdr{};bool indexedPairGate=false,particlePairGate=false;void* worldDepth=nullptr;float nearZ=.22f;
  template<class T>void captureWater(IDirect3DVertexShader9*,unsigned,T){events->push_back("water");}
  template<class Source>void noteIndexedPairSource(IDirect3DVertexShader9*,const Source&){}
  template<class Draw>std::shared_ptr<const NorthlightDrawSnapshot::Mesh> pendingIndexedSource(const Draw&,IDirect3DVertexShader9*){return {};}

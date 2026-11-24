@@ -363,12 +363,12 @@ def sdr_stand_profile(settings):
     return updated
 
 
-def warm_windows(state, count, *, background=False):
+def warm_windows(state, count, *, background=False, skip_intervals=0):
     if not state['static_tick']:
         return []
     # Allow two seconds of stabilization plus a complete 120-frame window.
     earliest = state['static_tick'] + 2000
-    windows = [row for row in state['frames'] if row.get('focus') == ('0' if background else '1') and row.get('enabled') == '1'
+    windows = [row for row in state['frames'][skip_intervals:] if row.get('focus') == ('0' if background else '1') and row.get('enabled') == '1'
                and row.get('samples') == '120' and row.get('complete') != '0'
                and int(row['tick']) - round(120 * float(row['meanMs'])) >= earliest]
     return windows[:count]
@@ -473,9 +473,23 @@ def observe_crowd(lines, events, roster, expected_spawn):
                 sample[name] = max(sample[name], int(fields[field]))
     # Each name request confirms the client instantiated the corresponding player.
     spawned = expected_spawn in events
-    return {'players': len(roster), 'outfits': fixture.outfit_count(roster), 'client_name_requests': len(named),
+    return {'players': len(roster), 'outfits': fixture.outfit_count(roster),
+            'client_name_requests': len(named & roster.keys()),
             'spawn_sha256': expected_spawn.rsplit('=', 1)[1] if spawned else None,
             'peak_lights': sample, 'ready': spawned and named == roster.keys() and all(sample.values())}
+
+
+def observe_m2_stress(lines, events, roster, expected_spawn):
+    audit = observe_native_m2(lines, 2)
+    # Player name requests can lag well behind visible rendering. Require
+    # most of the hashed roster and qualify density with the native M2 census.
+    dense = [sample['seen'] for row in audit['samples'] if (sample := row['normals'])['seen'] >= 6000 and
+             sample['domain'] == 'world-ready' and sample['immutable'] > 0 and
+             sample['paletteChecks'] > 0 and not sample['paletteUnavailable']]
+    crowd = observe_crowd(lines, events, roster, expected_spawn)
+    return dict(crowd, native_m2_draws=dense,
+                ready=bool(crowd['spawn_sha256'] and crowd['client_name_requests'] * 4 >= len(roster) * 3 and
+                           audit['verified_client'] and len(dense) >= 2))
 
 
 def child_environment(run):
@@ -560,7 +574,7 @@ def verify_far_shadow_alignment(lines, aligned):
         raise ValueError('The renderer log does not confirm the requested far-shadow cadence')
 
 
-def process_windows(pid):
+def process_windows(pid, window_class=None):
     user = ctypes.windll.user32
     windows = []
     callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
@@ -570,7 +584,9 @@ def process_windows(pid):
         owner = wintypes.DWORD()
         user.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
         if owner.value == pid and user.IsWindowVisible(hwnd):
-            windows.append(hwnd)
+            name = ctypes.create_unicode_buffer(256)
+            if not window_class or (user.GetClassNameW(hwnd, name, len(name)) and name.value == window_class):
+                windows.append(hwnd)
         return True
 
     user.EnumWindows(visit, 0)
@@ -657,10 +673,10 @@ class ParityResize:
         return len(self.steps) == 2
 
 
-def close_client(process):
+def close_client(process, window_class=None):
     if process.poll() is not None:
         return False
-    for hwnd in process_windows(process.pid):
+    for hwnd in process_windows(process.pid, window_class):
         ctypes.windll.user32.PostMessageW(hwnd, 0x0010, 0, 0)  # WM_CLOSE
     try:
         process.wait(timeout=12)
@@ -803,7 +819,11 @@ def run_client(args):
         if digest(mutable.get(relative, client / relative)) != inputs[relative]:
             raise ValueError(f'Frozen runtime input differs from the stage manifest: {relative}')
     wrapper = args.capture_wrapper.resolve() if args.capture_wrapper else None
-    background = getattr(args, 'background', False)
+    scene = getattr(args, 'scene', 'solo')
+    private_desktop = scene == 'm2-stress'
+    game_window_class = 'GxWindowClassD3d' if private_desktop else None
+    timeout = args.timeout if args.timeout is not None else (240 if private_desktop else 90)
+    background = private_desktop or getattr(args, 'background', False)
     camera_turn = getattr(args, 'camera_turn', False)
     if camera_turn and (args.windows or args.target != 'world' or args.manual):
         raise ValueError('--camera-turn requires an automated World run with --windows 0')
@@ -837,13 +857,12 @@ def run_client(args):
         pe32(candidate)
         assets_hash = digest(assets)
         renderer_hash = digest(candidate)
-    scene = getattr(args, 'scene', 'solo')
     spawn = fixture.spawn_for(scene)
     requested_crowd_size = getattr(args, 'crowd_size', None)
     if requested_crowd_size is not None and scene != 'crowd':
         raise ValueError('--crowd-size requires --scene crowd')
     crowd_size = fixture.DEFAULT_CROWD_SIZE if requested_crowd_size is None else requested_crowd_size
-    roster = fixture.crowd_roster(crowd_size) if scene == 'crowd' else {}
+    roster = fixture.scene_roster(scene, crowd_size)
     packets = fixture.crowd_packets(roster)
     trace_budget_gib = 2 + len(packets)
     trace_budget = trace_budget_gib << 30
@@ -912,6 +931,10 @@ def run_client(args):
     original = run / 'staged-d3d9.dll'
     original_assets = run / 'staged-northlight-assets.bin'
     env = child_environment(run)
+    if getattr(args, 'dxvk_direct_adapter', False):
+        with (run / 'dxvk.conf').open('a', encoding='ascii') as config:
+            config.write('d3d9.enumerateByDisplays = False\n')
+        report['dxvk_adapter_enumeration'] = 'direct'
     images = run / 'frame-parity'
     if frame_parity:
         prepare_parity_images(images, getattr(args, 'raw_parity', False))
@@ -933,7 +956,7 @@ def run_client(args):
             env['NORTHLIGHT_FRAME_PARITY_SHADOW_BOUNDS'] = '1'
         if fixed_gi:
             env['NORTHLIGHT_FRAME_PARITY_GI_PUBLICATION'] = '1'
-    server = process = None
+    server = process = desktop = None
     process_start_ns = 0
     log = client / LOG
     realmlist = client / REALMLIST
@@ -953,7 +976,7 @@ def run_client(args):
             server_args.extend(('--return-to-menu', str(logout_signal)))
         if camera_turn:
             server_args.extend(('--camera-turn', str(turn_signal)))
-        if roster:
+        if scene == 'crowd':
             server_args.extend(('--crowd-size', str(crowd_size)))
         with fixture_log.open('x', encoding='utf-8') as output:
             server = subprocess.Popen(server_args, cwd=run,
@@ -1055,25 +1078,34 @@ def run_client(args):
             old = client / name
             if old.exists():
                 old.replace(run / ('prior-' + name))
-        with (run / 'client.stdout').open('xb') as output:
-            process_start_ns = time.time_ns()
+        process_start_ns = time.time_ns()
+        if private_desktop:
+            from northrend_private_desktop import Desktop
+            desktop = Desktop()
+            report['private_desktop'] = desktop.name
+            process = desktop.launch([str(client / 'Wow.exe'), '-d3d9'], client, env, run / 'client.stdout')
+        else:
             startup = None
             if background:
                 startup = subprocess.STARTUPINFO()
                 startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
                 startup.wShowWindow = 4  # SW_SHOWNOACTIVATE
-            process = subprocess.Popen([str(client / 'Wow.exe'), '-d3d9'], cwd=client, env=env,
-                                       stdout=output, stderr=subprocess.STDOUT, startupinfo=startup)
+            with (run / 'client.stdout').open('xb') as output:
+                process = subprocess.Popen([str(client / 'Wow.exe'), '-d3d9'], cwd=client, env=env,
+                                           stdout=output, stderr=subprocess.STDOUT, startupinfo=startup)
         report['client_pid'] = process.pid
         print(f'Launched isolated Wow.exe PID {process.pid}', flush=True)
         start = time.monotonic()
         actions = {}
         focus_retry = start
         world_ready = False
+        stress_skip_intervals = 0
         logout_line = None
         before_turn = None
         turn_sent = False
-        while process.poll() is None and time.monotonic() - start < args.timeout:
+        while process.poll() is None and time.monotonic() - start < timeout:
+            if desktop is not None:
+                desktop.confirm_inactive()
             lines = log_lines(log)
             state = scan(lines, spawn)
             events = log_lines(fixture_log)
@@ -1089,7 +1121,8 @@ def run_client(args):
             if mode == 'smoke':
                 world_ready = world_ready and state['gi_tick']
             if roster:
-                report['crowd'] = observe_crowd(lines, events, roster, expected_spawn)
+                observation = observe_m2_stress if private_desktop else observe_crowd
+                report['crowd'] = observation(lines, events, roster, expected_spawn)
                 world_ready = world_ready and report['crowd']['ready']
             if scene in ('rain', 'shoreline'):
                 report['rain'] = observed_rain(lines, events)
@@ -1130,7 +1163,11 @@ def run_client(args):
                 report['checkpoint'] = 'menu-character-ready' if package_runtime else 'device'
                 break
             if args.target == 'world' and world_ready and parity_ready:
-                windows = warm_windows(state, args.windows, background=background) if args.windows else []
+                if private_desktop and not stress_skip_intervals:
+                    # The first interval emitted after admission can include loading frames.
+                    stress_skip_intervals = len(state['frames']) + 1
+                windows = warm_windows(state, args.windows, background=background,
+                                       skip_intervals=stress_skip_intervals) if args.windows else []
                 if windows and len(windows) >= len(timing_windows):
                     timing_line_count, timing_windows = len(lines), windows
                 if wrapper or len(windows) == args.windows:
@@ -1142,7 +1179,7 @@ def run_client(args):
                     report['checkpoint'] = 'northrend-static-ready'
                     break
             if args.target == 'world' and not args.manual and state['identity']:
-                handles = process_windows(process.pid)
+                handles = process_windows(process.pid, game_window_class)
                 if handles:
                     now = time.monotonic()
                     if (package_runtime and not background and not timing_windows and now >= focus_retry and
@@ -1187,9 +1224,16 @@ def run_client(args):
     except (OSError, ValueError) as error:
         report['error'] = str(error)
     finally:
-        if process is not None:
-            report['forced_shutdown'] = close_client(process)
-            report['exit_code'] = process.returncode
+        try:
+            if process is not None:
+                report['forced_shutdown'] = close_client(process, game_window_class)
+                report['exit_code'] = process.returncode
+        finally:
+            if desktop is not None:
+                if process is not None:
+                    process.close()
+                report['background_samples'] = desktop.samples
+                desktop.close()
         if server is not None and server.poll() is None:
             server.terminate()
             server.wait(timeout=10)
@@ -1232,6 +1276,13 @@ def run_client(args):
             report['log_sha256'] = digest(frozen_log)
             lines = log_lines(frozen_log)
             state = scan(lines, spawn)
+            if private_desktop and 'checkpoint' in report:
+                try:
+                    report['crowd'] = observe_m2_stress(lines, log_lines(fixture_log), roster, expected_spawn)
+                    if not report['crowd']['ready']:
+                        raise ValueError('The closed log did not confirm the M2 stress scene')
+                except ValueError as error:
+                    report.setdefault('error', str(error))
             if env.get(DXVK_ADAPTER_ENV) and state.get('backend') != 'non-DXVK':
                 try:
                     report['dxvk_adapter'] = dxvk_adapter(run / DXVK_LOG, env[DXVK_ADAPTER_ENV])
@@ -1255,10 +1306,13 @@ def run_client(args):
             # Recheck the live observation in the closed log. A later Reset can
             # start another warm-up during the run or while the client closes.
             timing_state = scan(lines[:timing_line_count], spawn) if timing_windows else None
-            report['windows'] = warm_windows(timing_state, args.windows, background=background) if timing_state else []
+            report['windows'] = warm_windows(timing_state, args.windows, background=background,
+                                             skip_intervals=stress_skip_intervals) if timing_state else []
             report['frame_intervals'] = len(state['frames'])
             if timing_windows:
                 report['timing_checkpoint'] = {'log_lines': timing_line_count, 'static_tick': timing_state['static_tick']}
+                if private_desktop:
+                    report['timing_checkpoint']['skipped_intervals'] = stress_skip_intervals
                 if report['windows'] != timing_windows:
                     report.setdefault('error', 'The closed log changed the selected live Present windows')
             if report['windows']:
@@ -2745,10 +2799,12 @@ def main():
     run.add_argument('--scene', choices=fixture.SCENES, default='solo')
     run.add_argument('--crowd-size', type=int, choices=fixture.CROWD_SIZES, metavar='50..128',
                      help=f'Remote players in the crowd (default {fixture.DEFAULT_CROWD_SIZE})')
-    run.add_argument('--timeout', type=int, default=90, choices=range(5, 301), metavar='SECONDS')
+    run.add_argument('--timeout', type=int, choices=range(5, 301), metavar='SECONDS',
+                     help='Timeout in seconds (90 by default, 240 for m2-stress)')
     run.add_argument('--windows', type=int, default=3, choices=range(11), metavar='COUNT',
                      help='Number of warm timing windows. Use 0 for a graphics readiness smoke.')
     run.add_argument('--background', action='store_true', help='Launch without requesting focus and time background windows')
+    run.add_argument('--dxvk-direct-adapter', action='store_true', help='Use DXVK adapters without enumerating connected displays')
     run.add_argument('--return-to-menu', action='store_true',
                      help='After World readiness, require a completed logout and a fresh character menu')
     run.add_argument('--camera-turn', action='store_true', help='Require a confirmed heading change after cold World entry')

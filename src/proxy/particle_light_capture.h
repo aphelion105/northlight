@@ -93,9 +93,8 @@ public:
         }
         return state.shaders!=Shaders::Reject;
     }
-    // Once the ordinary frame budget is spent, only a possible flash can
-    // reach geometry. Leave undecoded textures and unproven bindings to capture.
-    template<class Mirror> bool mayFlash(const Mirror& mirror)const{
+    // Reject only when every sampled mip and its binding are already proven.
+    template<class Mirror> bool mayEmit(const Mirror& mirror,unsigned emissionMask)const{
         using Shaders=NorthlightParticleDraw::State::Shaders;
         const auto& state=mirror.particleDraw;
         if(!mirror.active()||state.writes||mirror.targetWrites||state.shaders!=Shaders::Inspect||!state.samplers)return true;
@@ -103,7 +102,7 @@ public:
             if(!(samplers&1))continue;
             NorthlightParticleTextures::View image;
             if(!mirror.textureKnown[stage]||!NorthlightParticleTextures::cache().decodedView(mirror.textures[stage],image)||
-               (emission(image)&(NorthlightEmission::Lightning|NorthlightEmission::SkyLightning)))return true;
+               (emission(image)&emissionMask))return true;
         }
         return false;
     }

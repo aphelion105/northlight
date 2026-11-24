@@ -230,6 +230,7 @@ HARNESS=r'''
 #include <cstdint>
 #include <cstdio>
 #include <map>
+#include <memory>
 #include <new>
 #include <random>
 #include <string>
@@ -314,7 +315,7 @@ struct MockSky{
     bool earlyValid=false;unsigned earlyWidth=0,earlyHeight=0;
     bool nativeClaimPossible(D3DPRIMITIVETYPE t,UINT c){env->call("nativeClaimPossible "+drawName(t,0,c),"fault claim gate");const bool r=env->bit("claim possible");if(!r)++claimGate;return r;}
     bool claimNativeGlare(D3DPRIMITIVETYPE,UINT){env->call("claimNativeGlare","fault glare");return env->bit("glare",4);}
-    template<class Palette> bool claimNativeDraw(D3DPRIMITIVETYPE,UINT,bool skyPhase,Palette palette,bool skyboxTrigger=false,bool forever=false){assert(!skyboxTrigger&&!forever);env->call("claimNativeDraw "+std::to_string(skyPhase),"fault claim draw");if(env->bit("palette"))palette("map",nullptr);return env->bit("claim draw",3);}
+    template<class Palette> bool claimNativeDraw(D3DPRIMITIVETYPE,UINT,bool skyPhase,Palette palette,bool skyboxTrigger=false,bool forever=false,bool replaceBackground=false){assert(!skyboxTrigger&&!forever&&!replaceBackground);env->call("claimNativeDraw "+std::to_string(skyPhase),"fault claim draw");if(env->bit("palette"))palette("map",nullptr);return env->bit("claim draw",3);}
     bool nativeObservePossible(HRESULT hr,D3DPRIMITIVETYPE,UINT){env->call("nativeObservePossible "+std::to_string(hr));return SUCCEEDED(hr)&&env->bit("observe possible");}
     void observeNativeDraw(HRESULT hr,D3DPRIMITIVETYPE,UINT,bool){env->call("observeNativeDraw "+std::to_string(hr),"fault observe");}
 };
@@ -352,7 +353,10 @@ namespace NorthlightAutoDisplacement{struct Args{struct{D3DPRIMITIVETYPE t;INT b
 struct ExtensionDevice{struct RawScope{explicit RawScope(MockExt&){}};};
 namespace NorthlightM2Draw {inline std::atomic<bool> requested{false};}
 struct BumpMock{bool active()const{return false;}void beginDraw(){}void beforeNativeDraw(){}template<class... A> void capture(A&&...){}template<class Draw> HRESULT geometryDraw(Draw draw,bool){return draw();}template<class Draw,class Submit> HRESULT geometryDraw(Draw draw,bool,Submit){return draw();}template<class Draw> HRESULT nativeDraw(Draw draw,IDirect3DVertexShader9*,IDirect3DPixelShader9*){return draw();}
+    void endNativeMaterialDraw(){}
+    template<class Draw> HRESULT submitNativeMaterial(Draw draw,const void*){return draw();}
     bool nativePOM()const{return false;}bool nativeDisplacement()const{return false;}};
+using NorthlightAutoBump=BumpMock;
 struct Base{
     MoreLightsMock* nativeMoreLights=nullptr;
     struct ParticlePairMock{bool atlasEnabled()const{return false;}};ParticlePairMock* gameParticlePair=nullptr;
@@ -363,7 +367,8 @@ struct Base{
     Trace trace;Env env;MockExt extObj;MockWorld worldObj;MockSky skyObj;MockBlobs blobsObj;
     MockExt* ext=&extObj;MockWorld* world=&worldObj;MockSky* celestialDiscs=nullptr;MockBlobs* shadowBlobs=nullptr;
     MirrorStateMock mirrorState;
-    BumpMock* autoBump=nullptr;struct{bool capsHalved()const{return false;}}memoryGuard;
+    std::unique_ptr<BumpMock> autoBump;struct{bool capsHalved()const{return false;}}memoryGuard;
+    struct{const void* nativePixel()const{return nullptr;}}effectCoverage;
     template<class Draw> HRESULT hdrDraw(Draw draw){return draw();}
     template<class Draw> HRESULT nativeLocalSubmit(Draw draw,bool=false,IDirect3DVertexShader9* =nullptr){return draw();}
     template<class Draw> HRESULT submitCanopy(const Draw& draw){return draw();} // Canopy shading is outside the draw-gate model.
@@ -375,6 +380,7 @@ struct Base{
     struct {void clear(){}bool ready()const{return false;}} skyPlanet;void prepareSkyPlanet(){}
     void skyLayersBefore(D3DPRIMITIVETYPE,UINT,NorthlightSkyComposition::Role&){}
     void composeSkyBackground(){}
+    bool replacesWorldSkyBackground()const{return false;}
     template<class Draw> void skyLayersReplay(NorthlightSkyComposition::Role,bool,Draw){}
     bool auroraDrawProven=false;std::array<float,3> auroraDrawScale{};float auroraDrawIntensity=1;
     template<class Draw> HRESULT auroraNativeDraw(Draw draw){return draw();} // Aurora is inactive in this gate fixture.

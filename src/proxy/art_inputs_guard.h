@@ -87,16 +87,12 @@ inline Result check(std::wstring root){
     if(!actual.empty())return {"archive-added",actual.begin()->first,true};
     return {"current",L"",false};
 }
-inline std::wstring message(const Result& result,bool russian){
+inline std::wstring message(const Result& result){
     const bool removed=std::strcmp(result.status,"archive-removed")==0;
     const bool added=std::strcmp(result.status,"archive-added")==0;
     const bool changed=std::strcmp(result.status,"archive-changed")==0;
-    const std::wstring detail=(russian?(removed?L"Удалён архив: ":added?L"Добавлен архив: ":changed?L"Изменён архив: ":L"Проверка данных: "):
-        (removed?L"Removed archive: ":added?L"Added archive: ":changed?L"Changed archive: ":L"Data check: "))+result.path;
-    return russian?
-        L"Набор MPQ изменился после сборки данных Northlight.\n\n"+detail+
-        L"\n\nНужна пересборка: запустите установщик Northlight для этой папки игры. Дождитесь завершения и снова запустите WoW.\n\nИгра будет закрыта до загрузки несовместимых моделей.":
-        L"The MPQ files have changed since Northlight data was built.\n\n"+detail+
+    const std::wstring detail=(removed?L"Removed archive: ":added?L"Added archive: ":changed?L"Changed archive: ":L"Data check: ")+result.path;
+    return L"The MPQ files have changed since Northlight data was built.\n\n"+detail+
         L"\n\nRebuild required: run the Northlight installer for this game folder, let it finish, then start WoW again.\n\nThe game will close before incompatible models are loaded.";
 }
 } // namespace NorthlightArtInputs

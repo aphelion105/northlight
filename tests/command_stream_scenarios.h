@@ -1503,7 +1503,7 @@ static void smallStagedLocksUseScratch(){
 // second Present waits); the snapshot pool and the clamp follow n.
 static void framesAheadPacing(){
     static_assert(SnapshotPool::capFor(1)==SnapshotPool::DefaultCap&&SnapshotPool::capFor(3)*sizeof(GameSnapshot)<=(1u<<20),"pool per framesAhead, under 1 MiB");
-    static_assert(budgetForFramesAhead(1)==BudgetBytes&&budgetForFramesAhead(2)==(32u<<20)&&budgetForFramesAhead(3)==(32u<<20)&&budgetForFramesAhead(0)==BudgetBytes&&budgetForFramesAhead(9)==kMaxBudgetBytes,"budget: +16 MiB per extra frame, 32 MiB at most");
+    static_assert(budgetForFramesAhead(1)==BudgetBytes&&budgetForFramesAhead(2)==(20u<<20)&&budgetForFramesAhead(3)==(20u<<20)&&budgetForFramesAhead(0)==BudgetBytes&&budgetForFramesAhead(9)==kMaxBudgetBytes,"queue budget: 16 MiB for one frame, 20 MiB at most");
     for(unsigned n:{1u,2u,3u,7u}){
         const unsigned want=clampFramesAhead(n);
         gTrace.clear();StreamDevice::Options opt;opt.framesAhead=n;Rig rig(true,opt);auto& q=rig.core().q;
@@ -1715,10 +1715,14 @@ static void zeroCopyRenames(UINT len=10000000){   // (10 MB: three ring slices f
     CHECK(get(s.lockRecordedBytes)==14u*8192+2u*64&&get(s.zeroCopyBytes)==14u*8192&&s.blockBytes.load()==0&&get(s.bytes)<(256u<<10));   // 14 x 8 KiB went through the queue as references: only the two small inline copies were copied
     z.frame(2,true);z.frame(3,true);   // three DISCARD cycles with the replay held: no wait, the ring grew to its 3 slices
     CHECK(get(s.renames)==3&&get(s.renameAllocs)==3&&get(s.renameWaits)==0&&s.ringSlices.load()==3&&z.held()==4u*z.L&&s.ringBytes.load()==3*std::int64_t(z.L));
-    // the 5th busy cycle finds all four slices busy and the ring full: it waits for the OLDEST slice's readers (frame 0), exactly
+    // The fifth busy cycle stages the DISCARD for a regular ring and waits for the oldest slice on a large ring.
     std::thread rel;z.releaseLater(rel);
     z.frame(4,true);rel.join();
-    CHECK(get(s.waitMax)==1&&get(s.waitBudget)+get(s.waitDrain)+get(s.waitAlloc)==0&&get(s.renameWaits)==1&&get(s.renameWaitNs)>=30000000ull&&get(s.renames)==4&&get(s.renameAllocs)==3&&get(s.syncNs)>=get(s.renameWaitNs));
+    if(z.large){
+        CHECK(get(s.waitMax)==1&&get(s.waitBudget)+get(s.waitDrain)+get(s.waitAlloc)==0&&get(s.renameWaits)==1&&get(s.renameWaitNs)>=30000000ull&&get(s.renames)==4&&get(s.renameAllocs)==3&&get(s.syncNs)>=get(s.renameWaitNs));
+    }else{
+        CHECK(get(s.stagedDiscards)==1&&get(s.renameWaits)==0&&get(s.renameAllocs)==3&&get(s.zcOverlapStaged)>0);
+    }
     z.present();for(unsigned f=5;f<10;++f){z.frame(f);z.present();}
     z.verify();CHECK(get(s.renameAllocs)==3&&z.held()==4u*z.L);
     // idle trimming: the ring's slices free for kLargeIdleFrames frames go at a Present; the current slice stays
@@ -1748,7 +1752,7 @@ static void zeroCopyRingBudget(){
     z.vb->Release();z.rig->sync();z.present();z.rig->sync();CHECK(z.held()==0&&s.ringSlices.load()==0&&s.retiredBytes.load()==0);z.rig->finish();checkClean();
 }
 // The ring is sized by the buffer's DISCARDs per frame: n x (framesAhead+1) + 1 slices, never below framesAhead+2, never above kRingHardMax. A buffer that DISCARDs 4 times a frame (framesAhead=3: the replay may
-// be 3 frames behind) grows its ring far past framesAhead+2 = 5 slices without waiting, until the hard maximum; then the next DISCARD waits for the oldest slice. Every replayed unlock is exact.
+// be 3 frames behind) grows its ring far past framesAhead+2 = 5 slices without waiting. A short DISCARD at the hard maximum stages its bytes.
 static void zeroCopyAdaptiveRing(){
     static_assert(StreamCore::allowedSlices(2,1)==4&&StreamCore::allowedSlices(2,0)==4&&StreamCore::allowedSlices(3,1)==5&&StreamCore::allowedSlices(3,3)==13-1&&StreamCore::allowedSlices(2,3)==10&&StreamCore::allowedSlices(1,9)==StreamCore::kRingHardMax,"ring size rule");
     ZcRig z(512u<<10,3);auto& s=*z.s;z.hold();unsigned k=0;
@@ -1756,8 +1760,8 @@ static void zeroCopyAdaptiveRing(){
     for(unsigned f=0;f<3;++f){for(int i=0;i<4;++i)cycle();z.present();}   // 3 frames x 4 DISCARDs; 3 Presents do not wait yet (framesAhead 3)
     CHECK(k==12&&get(s.renames)==11&&get(s.renameWaits)==0&&s.ringSlices.load()==11&&get(s.maxRing)==11&&z.held()==12u*z.L&&get(s.maxDiscards)==4);   // 12 slices: the hard maximum, reached without a wait
     CHECK(get(s.renameAllocs)==11&&z.buf().ring.size()+1==StreamCore::kRingHardMax);
-    std::thread rel;z.releaseLater(rel);cycle();rel.join();   // the 13th DISCARD finds all 12 busy and the ring at its allowed size
-    CHECK(get(s.renameWaits)==1&&get(s.waitMax)==1&&get(s.renameAllocs)==11&&s.ringSlices.load()==11);
+    std::thread rel;z.releaseLater(rel);cycle();rel.join();
+    CHECK(get(s.stagedDiscards)==1&&get(s.renameWaits)==0&&get(s.waitMax)==0&&get(s.renameAllocs)==11&&s.ringSlices.load()==11);
     z.verify();
     // idle trimming returns the ring's memory once the burst is over
     z.core->frameNo+=240;z.presentToTrim();z.rig->sync();CHECK(s.ringSlices.load()==0&&z.held()==z.L);   // (idle trimming)
@@ -1773,8 +1777,10 @@ static void zeroCopyRegularRingBudget(){
     CHECK(k==10&&get(s.renames)==9&&get(s.renameWaits)==0&&get(s.waitBudget)==0&&s.ringSlices.load()==9&&s.ringRegularBytes.load()==9*std::int64_t(2u<<20));
     IDirect3DVertexBuffer9* b2=nullptr;CHECK(z.d->CreateVertexBuffer(2u<<20,D3::kUsageDynamic,0,(D3DPOOL)0,&b2,nullptr)==D3D_OK&&shadowOn(b2));
     BufModel m2(2u<<20);m2.write(b2,0,8192,0x61,D3::kLockDiscard);   // pending (the replay is held): its next DISCARD needs a ring slice
-    std::thread rel;z.releaseLater(rel);m2.write(b2,0,8192,0x62,D3::kLockDiscard);rel.join();   // 18 + 2 MiB fits: one more slice, no wait
+    m2.write(b2,0,8192,0x62,D3::kLockDiscard);   // 18 + 2 MiB fills the regular allowance.
     CHECK(get(s.waitBudget)==0&&s.ringSlices.load()==10);
+    std::thread rel;z.releaseLater(rel);m2.write(b2,0,8192,0x63,D3::kLockDiscard);rel.join();
+    CHECK(get(s.waitBudget)==0&&get(s.renameWaits)==0&&s.ringSlices.load()==11&&s.ringRegularBytes.load()==22*std::int64_t(1u<<20));
     z.rig->sync();CHECK(z.m.same(targetBytes(z.vb))&&m2.same(targetBytes(b2)));   // (no verify(): the trace holds b2's unlocks too)
     b2->Release();z.vb->Release();z.rig->sync();z.present();z.rig->sync();CHECK(s.ringSlices.load()==0);z.rig->finish();checkClean();
 }
@@ -1988,6 +1994,7 @@ static void zeroCopyNestedDuringWait(){
         gKnobs.hold.store(false);};
     void* p=nullptr;const auto rw=get(s.renameWaits);
     z.core->frameNo+=1;   // (a new frame: one DISCARD, so the ring may not grow)
+    z.q->setPressure(true);   // Force the wait path while the existing readers still own their slices.
     CHECK(z.vb->Lock(0,8192,&p,D3::kLockDiscard)==D3D_OK&&gNestCalls>=1);pumpHook=nullptr;
     CHECK(gNestHr==D3DERR_INVALIDCALL&&get(s.renameWaits)==rw+1&&!shadowOn(z.vb)&&p);
     std::memset(p,0x5D,8192);std::memset(z.m.bytes.data(),0x5D,8192);z.exp.push_back({0,0x5D});CHECK(z.vb->Unlock()==D3D_OK);   // (staged: the buffer has no shadow now)
@@ -2018,6 +2025,35 @@ static bool zcSliceTruth(ZcRig& z){
     const bool same=std::memcmp(p,z.m.bytes.data(),z.L)==0;z.vb->Unlock();return same;
 }
 static std::int64_t zcPatchMB(ZcRig& z){return z.s->zcPatchBytes.load();}
+static void trimmedOverlapUpload(){
+    ZcRig z(512u<<10);auto& stats=*z.s;z.hold();
+    constexpr UINT reservation=NorthlightGx12340::ParticleUploadReservation;
+    z.w(0,reservation,0x41,D3::kLockDiscard);
+    auto& scratch=z.core->scratch;
+    for(bool useScratch:{true,false}){
+        unsigned char held[LockScratch::kSlots]{};
+        if(!useScratch)for(auto& slot:held)CHECK(scratch.take(reservation,slot)!=nullptr);
+        for(UINT used:{0u,96u}){
+            const auto recorded=z.q->recordedSeq();
+            const auto recordedBytes=get(stats.lockRecordedBytes);
+            void* p=nullptr;
+            CHECK(z.vb->Lock(0,reservation,&p,D3::kLockNoOverwrite)==D3D_OK&&p);
+            CHECK(z.buf().stageSeq);
+            if(useScratch)CHECK(z.buf().mode==BufferState::Scratch&&get(stats.blockBytes)==0);
+            else CHECK(z.buf().mode==BufferState::Staged&&get(stats.blockBytes)>=reservation);
+            const auto slot=z.buf().scratchSlot;
+            std::memset(p,0x62,used);std::memset(z.m.bytes.data(),0x62,used);
+            // Exercise Unlock after the verified caller trims the reservation.
+            z.buf().size=used;
+            CHECK(z.vb->Unlock()==D3D_OK&&get(stats.blockBytes)==0);
+            if(useScratch)CHECK(!scratch.busy[slot].load());
+            CHECK(z.q->recordedSeq()==recorded+unsigned(used!=0)&&get(stats.lockRecordedBytes)==recordedBytes+used);
+        }
+        if(!useScratch)for(auto slot:held)scratch.give(slot);
+    }
+    gKnobs.hold.store(false);z.verify();CHECK(zcSliceTruth(z));
+    z.vb->Release();z.rig->sync();z.rig->finish();checkClean();
+}
 static void zeroCopyOverlap(UINT len){
     {   // (a) the parked whole ref and a NOOVERWRITE lock inside it: staged, no wait; the patch reaches the slice once the replay has passed; (f) the zerocopy line
         ZcRig z(len,3);auto& s=*z.s;const UINT L=z.L;
@@ -2272,7 +2308,7 @@ static void streamTests(bool threadsOnly){
     coalescedBufferUploads();zeroCopyRenames();zeroCopyRingBudget();zeroCopyAdaptiveRing();zeroCopyRetire();zeroCopyPumpedLock(0);zeroCopyPumpedLock(1);
     for(UINT len:{512u<<10,2u<<20}){zeroCopyRenames(len);zeroCopyRetire(len);zeroCopyPumpedLock(0,len);zeroCopyPumpedLock(1,len);}   // 0.3.204 (task 21): the same for DYNAMIC buffers in the regular shadow cap
     for(UINT len:{15000000u,512u<<10}){zeroCopyOverlap(len);zeroCopyOverlapNoOverwriteLoop(len);zeroCopyOverlapSteady(len);zeroCopyOverlapPumped(len,false);zeroCopyOverlapPumped(len,true);}
-    zeroCopyOverlapPatchCap();   // 0.3.205 (#34): overlapping NOOVERWRITE locks, in the large allowance and the regular cap
+    zeroCopyOverlapPatchCap();trimmedOverlapUpload();   // overlapping NOOVERWRITE locks
     zeroCopyRegularEviction();zeroCopyRegularRingBudget();zeroCopyReasons();zeroCopyPressureMidStream();zeroCopyTwoLargeRings();zeroCopyNestedDuringWait();bindLifetime();floatConstantBanks();
     equivalence(20000,12345);equivalence(20000,987654321);equivalence(20000,24680,2);equivalence(20000,13579,3);   // 0.3.200 (pipeline): 2 and 3 frames ahead
     (void)threadsOnly;

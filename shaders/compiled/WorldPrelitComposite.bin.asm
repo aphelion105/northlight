@@ -325,7 +325,7 @@
  229:       mov r6.y, c8.y
  230:       max r9.xyz, c18, r6.y
  231:       min r6.xyz, r9, r7
- 232:       add r9.xy, r2_abs.zxzw, -c81.y
+ 232:       add r9.xy, r2_abs.zxzw, -c81.zyzw
  233:       cmp r6.xyz, r9.x, r7, r6
  234:       rcp r11.x, r6.x
  235:       rcp r11.y, r6.y

@@ -471,6 +471,28 @@ static void copiesTests(){
   assert(served()==s0+5&&fallback()==f0&&b.raw->readLocks==0);
   // an index buffer, raw as well
   freeVB(b);}
+ // A large copy can retire while the game writes. Regular entries, pins and useful comparisons stay.
+ {constexpr UINT bytes=8u<<20;const auto ordinary=m.copyResidentBytes.load(),large=m.copyLargeBytes.load();
+  VB idle=makeVB(owner,bytes),pinned=makeVB(owner,bytes),matched=makeVB(owner,bytes);
+  VB small=makeVB(owner,4096);assert(readSame(small,0,64));
+  for(unsigned i=0;i<2;++i){
+   assert(readSame(idle,0,64)&&readSame(pinned,0,64)&&readSame(matched,0,64));C::advanceFrame();}
+  assert(m.copyLargeBytes.load()==large+3*bytes);
+  C::Slot* pinnedSlot=nullptr;const auto* held=C::read(pinned.raw,0,64,pinnedSlot);assert(held&&pinnedSlot);
+  C::Slot* matchedSlot=nullptr;assert(C::read(matched.raw,0,64,matchedSlot)&&matchedSlot);C::unpin(*matchedSlot);
+  for(unsigned f=0;f<C::kUnusedCopyFrames+C::kUnusedCopySweepFrames;++f){
+   replayWrite(idle,0,64,D3DLOCK_NOOVERWRITE,f);
+   assert(C::unchangedWrite(*matchedSlot,0,64,matched.raw->mem.data()));
+   C::advanceFrame();}
+  assert(m.copyLargeBytes.load()==large+2*bytes&&!std::memcmp(held,pinned.raw->mem.data(),64));
+  assert(m.copyResidentBytes.load()==ordinary+4096);
+  C::unpin(*pinnedSlot);
+  for(unsigned f=0;f<C::kUnusedCopySweepFrames;++f)C::advanceFrame();
+  assert(m.copyLargeBytes.load()==large+bytes);
+  idle.raw->readLocks=0;assert(readSame(idle,0,64)&&idle.raw->readLocks==1);
+  C::advanceFrame();assert(readSame(idle,0,64)&&idle.raw->readLocks==2&&m.copyLargeBytes.load()==large+2*bytes);
+  freeVB(idle);freeVB(pinned);freeVB(matched);freeVB(small);
+  assert(m.copyLargeBytes.load()==large&&m.copyResidentBytes.load()==ordinary);}
  // R2: a working set above the cap does not refill every frame: fills per frame are bounded, the rest takes the small-range locks
  {C::setPressure(true);const UINT big=1u<<20;std::vector<VB> v;for(int i=0;i<12;++i){v.push_back(makeVB(owner,big));replayWrite(v.back(),0,4096,0,30+i);} // 12 MiB > the 8 MiB pressure cap; each is <= cap/4
   const auto fills0=m.copyFills.load(),fb0=fallback();unsigned frames=100,maxPerFrame=0;
@@ -557,6 +579,36 @@ static void spellHookTests(){
  raw->AddRef();vb->Release();assert(raw->refs==1);raw->Release();
  puts("PASS spell layer write hook: marked buffers only, non-READONLY only, before the real lock, raw key, usage and outstanding locks, unmark and removal");
 }
+template<class T> static void materialReadLeaseTests(){
+ using namespace NorthlightTrackedBuffers;
+ constexpr bool index=std::is_same<T,IDirect3DIndexBuffer9>::value;
+ Device owner;
+ auto* raw=new Raw<T>;raw->desc.Pool=D3DPOOL_MANAGED;raw->desc.Usage=0;raw->desc.Size=64;
+ T* buffer=raw;wrap<T,Forward<T>>(&buffer,&owner,index);
+ unsigned writes=0;
+ struct Context {
+  Raw<T>* raw;unsigned* writes;unsigned before;NorthlightCaptureMetadata::ReadLease lease{nullptr,nullptr};
+ } context{raw,&writes,0};
+ const MaterialWriteHook hook{+[](void* value){
+  auto& state=*static_cast<Context*>(value);
+  assert(state.raw->lockCalls==state.before&&materialWriter(state.raw).beforeWrite);
+  ++*state.writes;state.lease.reset();
+ },&context};
+ const unsigned exact=index?32:64;
+ assert(!guardMaterialRead(raw,!index,exact,hook)&&!guardMaterialRead(raw,index,exact+1,hook));
+ context.lease=guardMaterialRead(raw,index,exact,hook);assert(context.lease&&materialWriter(raw).beforeWrite);
+ void* data=nullptr;
+ assert(buffer->Lock(0,4,&data,D3DLOCK_READONLY)==S_OK&&writes==0);
+ assert(!guardMaterialRead(raw,index,exact,hook)&&buffer->Unlock()==S_OK);
+ context.before=raw->lockCalls;
+ assert(buffer->Lock(0,4,&data,0)==S_OK&&writes==1&&!materialWriter(raw).beforeWrite&&buffer->Unlock()==S_OK);
+ context.lease=guardMaterialRead(raw,index,exact,hook);assert(context.lease);
+ buffer->Release();assert(owner.refs==1&&materialWriter(raw).beforeWrite);
+ buffer=raw;raw->AddRef();wrap<T,Forward<T>>(&buffer,&owner,index);
+ context.before=raw->lockCalls;
+ assert(buffer->Lock(0,4,&data,0)==S_OK&&writes==2&&!materialWriter(raw).beforeWrite&&buffer->Unlock()==S_OK);
+ buffer->Release();assert(owner.refs==1);
+}
 template<class T> static void managedResetTests(){
  using namespace NorthlightTrackedBuffers;Device owner;constexpr bool index=std::is_same<T,IDirect3DIndexBuffer9>::value;
  for(unsigned kind=0;kind<3;++kind){auto* raw=new Raw<T>;raw->desc.Pool=kind==0?D3DPOOL_DEFAULT:D3DPOOL_MANAGED;raw->desc.Usage=0;raw->failDesc=kind==2;T* buffer=raw;wrap<T,Forward<T>>(&buffer,&owner,index);
@@ -632,6 +684,7 @@ int main(){using namespace NorthlightTrackedBuffers;Device owner;
  puts("PASS buffer COM ownership, VB/IB identity, normal/DISCARD/NOOVERWRITE writes, READONLY, nested failed lock, failed unlock, ProcessVertices invalidation and reset");
  metadataTests();mirrorExposure();discardMeterTests();copiesTests();unchangedWriteTests<IDirect3DVertexBuffer9>();unchangedWriteTests<IDirect3DIndexBuffer9>();skippedUploadTests<IDirect3DVertexBuffer9>();skippedUploadTests<IDirect3DIndexBuffer9>();spellHookTests();
  managedResetTests<IDirect3DVertexBuffer9>();managedResetTests<IDirect3DIndexBuffer9>();
+ materialReadLeaseTests<IDirect3DVertexBuffer9>();materialReadLeaseTests<IDirect3DIndexBuffer9>();
  rangeRevisionTests<IDirect3DVertexBuffer9>();rangeRevisionTests<IDirect3DIndexBuffer9>();
  {Device device;auto* raw=new Raw<IDirect3DIndexBuffer9>;raw->desc.Format=D3DFMT_INDEX32;raw->desc.Size=8192;IDirect3DIndexBuffer9* buffer=raw;wrap<IDirect3DIndexBuffer9,ForwardIDirect3DIndexBuffer9>(&buffer,&device,true);
   const auto before=rangeStats();

@@ -238,8 +238,10 @@ public:
             d->SetSamplerState(14,D3DSAMP_MAGFILTER,D3DTEXF_POINT);
             d->SetRenderTarget(0,in.target);
             d->SetPixelShader(in.hdr?hdrPrelitPS_:prelitPS_);
-            for(unsigned level=0;level<4&&ok;++level)if(roomPasses&(1u<<level)){
-                const float daylightInfo[]={in.prelitDaylightCurrent?1.f:0.f,(3-level)/3.f,0,0};
+            for(unsigned level=0;level<NorthlightUnlitReceiver::RoomLevelCount&&ok;++level)if(roomPasses&(1u<<level)){
+                const float occlusionShare=NorthlightUnlitReceiver::RoomAmbientShare[level];
+                const bool roomAlbedo=occlusionShare<.5f||level==NorthlightUnlitReceiver::RoomSharedTint;
+                const float daylightInfo[]={in.prelitDaylightCurrent?1.f:0.f,1.f-occlusionShare,roomAlbedo?1.f:0.f,0};
                 d->SetPixelShaderConstantF(81,daylightInfo,1);
                 NameMaskCompositeBind mask(d,maskDepth,maskBits,NorthlightUnlitReceiver::RoomRef[level]);
                 ok=check(quad(),"prelit WMO composite");

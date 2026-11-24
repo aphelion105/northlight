@@ -70,11 +70,24 @@ struct World {
 };
 struct Bump {
  Env* e;bool active()const{return e->cfg.materialActive;}void beginDraw(){e->event(BeginBump);}void beforeNativeDraw(){e->event(BeforeNative);}
+ void allowNativeM2Fusion(bool,void*,float){}void endNativeMaterialDraw(){}
  template<class Draw>void capture(IDirect3DVertexShader9* vs,Draw draw,bool up,const NorthlightAutoDisplacement::Args* g,const NorthlightCaptureMetadata::PositionBounds* pos,NorthlightAutoDisplacement::CaptureSource* source,const std::shared_ptr<const NorthlightDrawSnapshot::Mesh>* hint=nullptr){
   assert(!hint);
   assert(vs==shader()&&g&&source);if(pos)assert(pos->owner==g&&pos->shader==vs);if(e->owner)assert(e->owner==g);e->action(Material,{up,bool(pos),pos&&pos->known,g->draw.indexed});source->mesh=17;source->pose=23;source->bank=29;source->declaration=reinterpret_cast<IDirect3DVertexDeclaration9*>(2);if(e->cfg.componentDraw)draw();
  }
 };
+using NorthlightAutoBump=Bump;
+struct BumpHandle {
+ Bump* pointer;
+ Bump* get()const{return pointer;}
+ Bump* operator->()const{return pointer;}
+ explicit operator bool()const{return pointer!=nullptr;}
+ BumpHandle& operator=(Bump* value){pointer=value;return *this;}
+};
+namespace NorthlightBackend {
+ enum class Kind{Dxvk};
+ bool isPackagedDxvk(Kind){return true;}
+}
 struct Normals {
  Env* e;template<class Draw,class Desc>void capture(IDirect3DVertexShader9* vs,Draw draw,bool up,const Desc*,const void*,D3DFORMAT,const void*,UINT,const unsigned* mesh,IDirect3DVertexDeclaration9* decl,const unsigned* pose,unsigned* published=nullptr,IDirect3DVertexDeclaration9** publishedDeclaration=nullptr,bool terrain=false,const unsigned* bank=nullptr){
   assert(vs==shader());assert(mesh&&pose&&(*mesh==0||(*mesh==17&&*pose==23&&decl)));e->action(Normal,{up,*mesh,*pose,bool(decl)});if(e->cfg.componentDraw)draw();
@@ -84,9 +97,10 @@ struct Base {
  LONGLONG cpuNormalCapture=0;
  bool sampledDrawTimers()const{return env.cfg.diagnostics;}
  bool auroraDrawProven=true;std::array<float,3> auroraDrawScale{1,2,3};float auroraDrawIntensity=2;
- Env env;Ext extStorage{&env};Ext* ext=&extStorage;World worldStorage{&env};World* world=&worldStorage;Bump bumpStorage{&env};Bump* autoBump=&bumpStorage;Normals normalStorage{&env};Normals* modelNormals=&normalStorage;
+ Env env;Ext extStorage{&env};Ext* ext=&extStorage;World worldStorage{&env};World* world=&worldStorage;Bump bumpStorage{&env};BumpHandle autoBump{&bumpStorage};Normals normalStorage{&env};Normals* modelNormals=&normalStorage;
+ NorthlightBackend::Kind selectedBackend=NorthlightBackend::Kind::Dxvk;bool indexedPairGate=false,particlePairGate=false;
  bool menuScene=false,enabled=true,applied=false,failed=false,modelNormalsNeeded=true,frameDrawGates=true,particleOn=false,spellOn=false,skyBandSeen=false,rainMrtBound=false,blobOriginal=false,shadowSwapOriginal=false,extensionFault=false;
- unsigned worldDebug=0,drawCalls=0,frame=120;LONGLONG ticks=0;float worldMinDepth=0,worldMaxDepth=.9f;struct{bool active=false;}hdr;struct{bool valid=false;}waterPending;
+ unsigned worldDebug=0,drawCalls=0,frame=120;LONGLONG ticks=0;float worldMinDepth=0,worldMaxDepth=.9f,nearZ=.22f;void* worldDepth=nullptr;struct{bool active=false;}hdr;struct{bool valid=false;}waterPending;
  struct WaterState{bool bound=false;bool isMrtBound()const{return bound;}}waterStorage;WaterState* water=&waterStorage;
  struct {bool sky=true,blob=false;}drawGates;struct {Gate gate;bool textureKnown[1]={};const void* textures[1]={};bool viewportKnown=true;struct {float MinZ=0,MaxZ=1;}viewport={};}mirrorState{{&env}};
  struct {const void* hot=nullptr;NorthlightWeather::Kind hotKind=NorthlightWeather::Kind::None;bool mistArmed=false;}weatherDetect;struct {unsigned primitives=0,draws=0;}weatherSample;

@@ -366,6 +366,17 @@ private:
         const bool timed=replayProfile_.enabled;const auto start=timed?nowNs():0;
         const HRESULT hr=p->kind==Kind::VertexBuffer?static_cast<IDirect3DVertexBuffer9*>(p->inner)->Lock(off,size,&dst,flags):static_cast<IDirect3DIndexBuffer9*>(p->inner)->Lock(off,size,&dst,flags);
         const auto locked=timed?nowNs():0;
+#ifdef NORTHLIGHT_PROFILE_BUILD
+        if(timed){
+            auto& sample=replayProfile_.locks[p->kind==Kind::IndexBuffer][flags&D3::kLockNoOverwrite?2:flags&D3::kLockDiscard?1:0];
+            const auto elapsed=locked-start;
+            ++sample.calls;sample.ns+=elapsed;sample.bytes+=size;sample.capacityBytes+=p->info.length;
+            if(elapsed>sample.maxNs){
+                sample.maxNs=elapsed;sample.slowBytes=size;sample.slowCapacity=p->info.length;
+                sample.slowFlags=flags;sample.slowUsage=p->info.usage;sample.slowPool=p->info.pool;
+            }
+        }
+#endif
         if(FAILED(hr)||!dst){
             if(timed)replayProfile_.recordUpload(size,locked-start,0,0,false,true,2);
             if(firstSize&&FAILED(hr)){
@@ -443,7 +454,7 @@ private:
         core.availableTextureMem.store(core.target->GetAvailableTextureMem());
         pollQueries();
         const std::uint64_t frames=core.framesReplayed.fetch_add(1)+1;
-        const std::uint64_t depth=core.q.depth(),bytes=get(core.q.stats.highWaterBytes);
+        const std::uint64_t depth=core.q.depth(),bytes=core.q.liveBytes();
         avg_.depth+=double(depth);avg_.bytes+=double(bytes);++avg_.n;if(depth>avg_.maxDepth)avg_.maxDepth=depth;if(bytes>avg_.maxBytes)avg_.maxBytes=bytes;
         const bool diag=diagnostics&&diagnostics();
         const bool audit=diag_;diag_=diag;   // the next frame records the audit state iff diagnostics are on now; switched on mid-frame: starts clean next frame
@@ -601,9 +612,10 @@ private:
         logZeroCopy();
         const auto& uploadStats=core.q.stats;
         if(const auto trims=get(uploadStats.particleUploadTrims)){
-            char particle[186];std::snprintf(particle,sizeof particle,"CSTREAM PARTICLE_UPLOAD frames=%llu trims=%llu bytesSaved=%llu empty=%llu",
+            char particle[208];std::snprintf(particle,sizeof particle,"CSTREAM PARTICLE_UPLOAD frames=%llu trims=%llu bytesSaved=%llu empty=%llu stagedTrims=%llu",
                 (unsigned long long)core.framesReplayed.load(),(unsigned long long)trims,
-                (unsigned long long)get(uploadStats.particleUploadBytesSaved),(unsigned long long)get(uploadStats.particleUploadEmpty));log(particle);
+                (unsigned long long)get(uploadStats.particleUploadBytesSaved),(unsigned long long)get(uploadStats.particleUploadEmpty),
+                (unsigned long long)get(uploadStats.particleStagedTrims));log(particle);
         }
         logCallTop();
     }
@@ -616,11 +628,11 @@ private:
         const double inv=gf?1.0/double(gf):0.0;
         if(log&&(un|rn|rw|ww|get(s.zcSkipPool)|get(s.zcSkipNoShadow)|get(s.zcSkipSmall)|get(s.zcSkipPressure)|get(s.zcSkipOther)|ol|oc)){
             char buf[kLine];
-            std::snprintf(buf,sizeof buf,"CSTREAM zerocopy[per frame]: unlocks=%.1f MB=%.2f renames=%.2f allocs=%.2f renameWaits=%.2f renameWaitMs=%.3f writeWaits=%.2f writeWaitMs=%.3f retiredMB=%.1f ringMB=%.1f slices=%lld maxRing=%llu maxDiscards=%llu waitWhy[max=%llu budget=%llu drain=%llu alloc=%llu] copyUnderPressure[unlocks=%llu MB=%.1f] notZeroCopy[pool=%llu noShadow=%llu small=%llu pressure=%llu other=%llu overlap=%llu] overlap[locks=%.2f waits=%.2f waitMs=%.3f copies=%.2f copyMB=%.2f patchMB=%.1f]",
+            std::snprintf(buf,sizeof buf,"CSTREAM zerocopy[per frame]: unlocks=%.1f MB=%.2f renames=%.2f allocs=%.2f renameWaits=%.2f renameWaitMs=%.3f writeWaits=%.2f writeWaitMs=%.3f retiredMB=%.1f ringMB=%.1f slices=%lld maxRing=%llu maxDiscards=%llu waitWhy[max=%llu budget=%llu drain=%llu alloc=%llu] copyUnderPressure[unlocks=%llu MB=%.1f] notZeroCopy[pool=%llu noShadow=%llu small=%llu pressure=%llu other=%llu overlap=%llu] overlap[locks=%.2f waits=%.2f waitMs=%.3f copies=%.2f copyMB=%.2f patchMB=%.1f] stagedDiscardsTotal=%llu",
                 double(un-lastZcUnlocks_)*inv,double(by-lastZcBytes_)/1048576.0*inv,double(rn-lastRenames_)*inv,double(ra-lastRenameAllocs_)*inv,double(rw-lastRenameWaits_)*inv,double(rwn-lastRenameWaitNs_)/1e6*inv,double(ww-lastWriteWaits_)*inv,double(wwn-lastWriteWaitNs_)/1e6*inv,
                 double(std::max<std::int64_t>(0,s.retiredBytes.load()))/1048576.0,double(std::max<std::int64_t>(0,s.ringBytes.load()))/1048576.0,(long long)std::max<std::int64_t>(0,s.ringSlices.load()),(unsigned long long)get(s.maxRing),(unsigned long long)core.q.stats.maxDiscards.exchange(0),(unsigned long long)get(s.waitMax),(unsigned long long)get(s.waitBudget),(unsigned long long)get(s.waitDrain),(unsigned long long)get(s.waitAlloc),(unsigned long long)get(s.copyPressureUnlocks),double(get(s.copyPressureBytes))/1048576.0,
                 (unsigned long long)get(s.zcSkipPool),(unsigned long long)get(s.zcSkipNoShadow),(unsigned long long)get(s.zcSkipSmall),(unsigned long long)get(s.zcSkipPressure),(unsigned long long)get(s.zcSkipOther),(unsigned long long)get(s.zcSkipOverlap),
-                double(ol-lastOvLocks_)*inv,double(ow-lastOvWaits_)*inv,double(ovWn-lastOvWaitNs_)/1e6*inv,double(oc-lastOvCopies_)*inv,double(ocb-lastOvCopyBytes_)/1048576.0*inv,double(std::max<std::int64_t>(0,s.zcPatchBytes.load()))/1048576.0);
+                double(ol-lastOvLocks_)*inv,double(ow-lastOvWaits_)*inv,double(ovWn-lastOvWaitNs_)/1e6*inv,double(oc-lastOvCopies_)*inv,double(ocb-lastOvCopyBytes_)/1048576.0*inv,double(std::max<std::int64_t>(0,s.zcPatchBytes.load()))/1048576.0,(unsigned long long)get(s.stagedDiscards));
             log(buf);
         }
         lastZcUnlocks_=un;lastZcBytes_=by;lastRenames_=rn;lastRenameWaits_=rw;lastRenameWaitNs_=rwn;lastWriteWaits_=ww;lastWriteWaitNs_=wwn;lastRenameAllocs_=ra;lastOvLocks_=ol;lastOvWaits_=ow;lastOvWaitNs_=ovWn;lastOvCopies_=oc;lastOvCopyBytes_=ocb;
@@ -653,6 +665,20 @@ private:
         log(buf);
         const auto& u=p.upload;if(u.calls){std::snprintf(buf,sizeof buf,"CSTREAM UPLOAD frame=%llu calls=%u bytes=%llu skipped=%u failed=%u lockMs=%.4f copyMs=%.4f unlockMs=%.4f maxLockMs=%.4f maxCopyMs=%.4f maxUnlockMs=%.4f clockReads=%u coalesced=%u",
             (unsigned long long)p.frame,u.calls,(unsigned long long)u.bytes,u.skipped,u.failed,double(u.lockNs)/1e6,double(u.copyNs)/1e6,double(u.unlockNs)/1e6,double(u.maxLockNs)/1e6,double(u.maxCopyNs)/1e6,double(u.maxUnlockNs)/1e6,u.clockReads,u.coalesced);log(buf);}
+#ifdef NORTHLIGHT_PROFILE_BUILD
+        constexpr const char* modes[]={"plain","discard","nooverwrite"};
+        for(unsigned kind=0;kind<2;++kind)for(unsigned mode=0;mode<3;++mode){
+            const auto& a=p.locks[kind][mode];if(!a.calls)continue;
+            std::snprintf(buf,sizeof buf,"CSTREAM LOCK frame=%llu kind=%s mode=%s calls=%u ms=%.4f bytes=%llu capacityBytes=%llu maxMs=%.4f slowBytes=%u slowCapacity=%u slowFlags=0x%x slowUsage=0x%x slowPool=%u",
+                (unsigned long long)p.frame,kind?"ib":"vb",modes[mode],a.calls,double(a.ns)/1e6,
+                (unsigned long long)a.bytes,(unsigned long long)a.capacityBytes,double(a.maxNs)/1e6,a.slowBytes,a.slowCapacity,a.slowFlags,a.slowUsage,a.slowPool);log(buf);
+        }
+        for(unsigned group=0;group<10;++group){
+            const auto& a=p.indexed[group];if(!a.calls)continue;
+            std::snprintf(buf,sizeof buf,"CSTREAM INDEXED frame=%llu group=%u calls=%u primitives=%llu ms=%.4f originalSubmits=%u originalSubmitMs=%.4f",
+                (unsigned long long)p.frame,group,a.calls,(unsigned long long)a.primitives,double(a.ns)/1e6,a.submits,double(a.submitNs)/1e6);log(buf);
+        }
+#endif
     }
     void activateSnapshot(GameSnapshot* s){
         playback_.reset();
@@ -869,7 +895,13 @@ private:
             }
             const bool timed=replayProfile_.sample(id,stateOnly);
             const auto started=timed?nowNs():0;
+#ifdef NORTHLIGHT_PROFILE_BUILD
+            if(timed&&id==(unsigned)Cmd::Device_DrawIndexedPrimitive)sampledIndexedReplay=&replayProfile_;
+#endif
             execute(h);
+#ifdef NORTHLIGHT_PROFILE_BUILD
+            sampledIndexedReplay=nullptr;
+#endif
             if(h==indexedTail||h==particleTail)endPair();
             if(timed){const auto ended=nowNs();replayProfile_.record(id,ended>=started?ended-started:0);}
             lastCmd=h->id;

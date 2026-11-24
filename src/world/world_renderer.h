@@ -2567,12 +2567,14 @@ public:
     // the sun, i.e. the fog.a the composite applies there. 1 with fog off or where the field has no air.
     float skyTransmittance()const{return skyTransmittanceFrame;}
     float underwaterScale()const{return underwaterFade.scale();}
-    const NorthlightForever::Frame& atmosphereEnvironment()const{return skyEnvironment;}
+    const NorthlightForever::SkyKey* celestialSkyPalette()const{
+        return skyEnvironment.skyValid&&(isMenu()||NorthlightQuality::foreverCelestial(quality))?&skyEnvironment.sky:nullptr;
+    }
     // The first foreground draw need not establish a world context. Reuse only
     // its validated projection/palette; read this frame's camera without marking
     // world capture valid or depending on the visibility of a celestial disc.
     bool skyBackgroundContext(float* inverseView,float* projectionOut)const{
-        if(!pipelineActive||failed||workerFault()||!skyEnvironment.skyValid)return false;
+        if(!pipelineActive||failed||workerFault()||!celestialSkyPalette())return false;
         if(hasContext())memcpy(inverseView,context.inverseView,64);
         else{
             char map[64]={};NorthlightWorldCamera::Camera camera;
@@ -2799,7 +2801,9 @@ public:
         const auto atmosphereTick=NorthlightFrameParityClock::enabled()?visualTime():GetTickCount64();
         skyEnvironment=foreverTransition.update(skyEnvironment,map,context.camera,double(atmosphereTick)*.001);
         }
-        const float* renderDirect=skyEnvironment.valid?skyEnvironment.direct:context.direct;
+        const auto* selectedSky=celestialSkyPalette();
+        const float* renderDirect=selectedSky?skyEnvironment.direct:context.direct;
+        const float* renderAmbient=selectedSky?skyEnvironment.ambient:context.ambient;
         if(celestialValid){
             // Selected placement is shared by discs, shadows and fog.
             const float nativeSunAlpha=celestial.sun.alpha,nativeMoonAlpha=celestial.moon.alpha;
@@ -2817,7 +2821,7 @@ public:
             NorthlightCelestialProfiles::apply(palette,renderDirect,celestial);
             NorthlightCelestialProfiles::apply(palette,renderDirect,celestialLight);
             continuousCelestialShadows=false; // Native-speed orbit: ordinary cache policy, no accelerated phases.
-            if(++celestialOrbitReports%600==1&&(celestialOrbitReports==1||NorthlightDiagnostics::enabled()))logf("CELESTIAL orbit gameDay=%.6f sun=%.2f->%.2f moon=%.2f->%.2f schedule=%s weights=%.3f/%.3f nativeAlpha=%.3f/%.3f rendererAlpha=%.1f/%.1f",celestial.dayFraction,nativeSun,orbit.sun.elevation,nativeMoon,orbit.moon.elevation,NorthlightQuality::celestialStyleName(NorthlightQuality::foreverCelestial(quality)),celestial.sunWeight,celestial.moonWeight,nativeSunAlpha,nativeMoonAlpha,celestial.sun.alpha,celestial.moon.alpha);
+            if(++celestialOrbitReports%600==1&&(celestialOrbitReports==1||NorthlightDiagnostics::enabled()))logf("CELESTIAL orbit gameDay=%.6f sun=%.2f->%.2f moon=%.2f->%.2f schedule=%s weights=%.3f/%.3f nativeAlpha=%.3f/%.3f rendererAlpha=%.3f/%.3f map=%s nativePlanets=%u skyboxCover=%.3f",celestial.dayFraction,nativeSun,orbit.sun.elevation,nativeMoon,orbit.moon.elevation,NorthlightQuality::celestialStyleName(NorthlightQuality::foreverCelestial(quality)),celestial.sunWeight,celestial.moonWeight,nativeSunAlpha,nativeMoonAlpha,celestial.sun.alpha,celestial.moon.alpha,map,unsigned(celestial.nativePlanets),celestial.skyboxCover);
         }
         if(!celestialValid){celestialLightMotion.reset();continuousCelestialShadows=false;}
         // glow hue: the light slots of this frame's proven read, else held for 2 s on the same map.
@@ -2828,8 +2832,8 @@ public:
         glowHueFrame=NorthlightSunHue::compute(lightSlotsValid?lightSlots:nullptr,glowPalette.disc[1]);
         celestialGlowHueFrame=glowHueFrame;
         if(celestialValid&&NorthlightCelestial::luminousAppearance(celestial.sun))celestialGlowHueFrame=NorthlightSunHue::compute(lightSlotsValid?lightSlots:nullptr,glowPalette.disc[1],celestial.sun.nativeTint);
-        if(quality.celestialEffects&&skyEnvironment.skyValid){
-            float solar[3];const auto& colors=skyEnvironment.sky.color;
+        if(quality.celestialEffects&&selectedSky){
+            float solar[3];const auto& colors=selectedSky->color;
             const float* tint=std::max({colors[6][0],colors[6][1],colors[6][2]})>1.f/255?colors[6]:colors[7];
             if(NorthlightSunHue::normMax(tint,solar)){
                 glowHueFrame=NorthlightSunHue::compute(nullptr,glowPalette.disc[1],solar);
@@ -2860,7 +2864,7 @@ public:
         if(celestialValid){sourceGlowColors[0]=vec(celestialLight.sunGlowColor);sourceGlowColors[1]=vec(celestialLight.moonGlowColor);}
         if(menu){rawSourceDirections[0]=sourceDirections[0]=vec(context.lightDirection);sourceGlowColors[0]=sourceColors[0];sourceGlowColors[1]=V();}
         if(!menu)requestStaticCasters(map);
-        Request r;r.menu=menu!=nullptr;if(menu)r.menuLights=menuLights;r.map=map;r.camera=vec(camera);r.light.sunDirection=sourceDirections[0];r.light.sunIrradiance=sourceColors[0]*3.14159265f;r.light.skyRadiance=vec(skyEnvironment.valid?skyEnvironment.ambient:context.ambient);r.light.maxBounces=quality.giBounces;r.giEnabled=giWorkEnabled();r.fogEnabled=effects.fog;
+        Request r;r.menu=menu!=nullptr;if(menu)r.menuLights=menuLights;r.map=map;r.camera=vec(camera);r.light.sunDirection=sourceDirections[0];r.light.sunIrradiance=sourceColors[0]*3.14159265f;r.light.skyRadiance=vec(renderAmbient);r.light.maxBounces=quality.giBounces;r.giEnabled=giWorkEnabled();r.fogEnabled=effects.fog;
         if(auroraSourceMap==map&&NorthlightAurora::style(map,quality.auroraStrength,celestialValid,celestial.dayFraction,NorthlightQuality::foreverCelestial(quality)).enabled)r.light.aurora=auroraSource;
         r.auroraActive=bool(r.light.aurora);
         r.light.additionalDirections.push_back({sourceDirections[1],sourceColors[1]*3.14159265f});

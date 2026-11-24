@@ -33,6 +33,7 @@ static unsigned productionDepthCases(IDirect3D9* api,IDirect3DDevice9* d){
         // Geometry may precede the sky boundary. Include the native world,
         // horizon and sky depth intervals, plus independent texture colours.
         for(bool menu:{false,true})for(float z:{.5f,.94f,.9985f,.9999f}){
+            ++renderer.frames;
             ok(d->SetRenderTarget(0,target));ok(d->SetDepthStencilSurface(depth));
             D3DVIEWPORT9 vp={0,0,n,n,0,.94f};ok(d->SetViewport(&vp));
             ok(d->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,D3DCOLOR_XRGB(80,110,140),1,0));
@@ -52,6 +53,9 @@ static unsigned productionDepthCases(IDirect3D9* api,IDirect3DDevice9* d){
                     [](void* context,HRESULT hr){static_cast<NorthlightLightingCapture::Capture*>(context)->bindings("CelestialSkyPS",0x43u,hr,nullptr,true);},&audit));
                 audit.finish(true);
             }else assert(renderer.renderSkyBackground(target,scene,nullptr,menu?nullptr:layers,n,n,projection,view,colors,menu));
+            const bool replaced=!menu&&format==D3DFMT_A8R8G8B8;
+            assert((renderer.replacedSkyFrame==renderer.frames)==replaced);
+            if(replaced)assert(renderer.replacedSkyGradient[0][0]==colors[0][0]);
             ok(d->EndScene());
             const auto after=pixels();
             for(unsigned y=0;y<n;++y)for(unsigned x=0;x<n;++x){
@@ -124,11 +128,14 @@ int main(int argc,char** argv){
     Vertex quad[]={{-.5f,-.5f,0,1,0,0},{size-.5f,-.5f,0,1,1,0},{-.5f,size-.5f,0,1,0,1},{size-.5f,size-.5f,0,1,1,1}};
     auto decode=[](double x){return x<=.04045?x/12.92:std::pow((x+.055)/1.055,2.4);};
     unsigned cases=0;
-    for(bool depthTest:{false,true})for(float elevation:{0.f,1.f})for(bool hdr:{false,true})for(float transmission:{0.f,.5f,1.f})for(float depth:{.5f,1.f})for(float sky:{.1f,.8f}){
+    for(bool capturedBackground:{false,true})for(bool depthTest:{false,true})for(float elevation:{0.f,1.f})
+    for(bool hdr:{false,true})for(float transmission:{0.f,.5f,1.f})for(float depth:{.5f,1.f})for(float sky:{.1f,.8f}){
         // Native background .3 plus foreground .2. Replacing the background
         // must preserve the foreground, an independent HDR residual and geometry.
-        const float native=.2f+.3f*transmission;
-        IDirect3DTexture9* inputs[]={texture(d,rgba(depth,0,0,0)),texture(d,rgba(native,native,native,1)),texture(d,rgba(.3f*transmission,.3f*transmission,.3f*transmission,transmission))};
+        // A transmission-only capture also has to handle a bright native sky.
+        const float native=capturedBackground?.2f+.3f*transmission:.75f;
+        const float background=capturedBackground?.3f*transmission:0.f;
+        IDirect3DTexture9* inputs[]={texture(d,rgba(depth,0,0,0)),texture(d,rgba(native,native,native,1)),texture(d,rgba(background,background,background,transmission))};
         unsigned i=0;for(unsigned slot:{0u,1u,6u}){ok(d->SetTexture(slot,inputs[i++]));for(auto state:{D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER})ok(d->SetSamplerState(slot,state,D3DTEXF_POINT));ok(d->SetSamplerState(slot,D3DSAMP_SRGBTEXTURE,FALSE));}
         float c[57][4]{};c[0][0]=c[0][1]=1.f/size;c[1][0]=c[1][1]=1e12f;c[1][2]=1;c[2][0]=c[3][1]=c[4][2]=1;c[4][0]=1-elevation;c[4][2]=elevation;c[10][0]=hdr?2:0;c[10][3]=depthTest?1:0;
         for(unsigned row=51;row<57;++row)c[row][0]=c[row][1]=c[row][2]=sky+.01f*(row-51);
@@ -136,7 +143,8 @@ int main(int argc,char** argv){
         ok(d->Clear(0,nullptr,D3DCLEAR_TARGET,0xffffffff,1,0));
         ok(d->BeginScene());ok(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(Vertex)));ok(d->EndScene());ok(d->GetRenderTargetData(target,staging));
         const double gradient=sky+(elevation==0?.04:0);
-        const double expected=depthTest&&depth<1?1:hdr?1+decode(.2+gradient*transmission)-decode(native):.2+gradient*transmission;
+        const double replacement=capturedBackground?.2+gradient*transmission:native+(gradient-native)*transmission;
+        const double expected=depthTest&&depth<1?1:hdr?1+decode(replacement)-decode(native):replacement;
         D3DLOCKED_RECT lock{};ok(staging->LockRect(&lock,nullptr,D3DLOCK_READONLY));
         for(unsigned y=0;y<size;++y)for(unsigned x=0;x<size;++x){float rgb[3];std::memcpy(rgb,static_cast<char*>(lock.pBits)+y*lock.Pitch+x*16,12);for(float value:rgb)assert(std::isfinite(value)&&std::abs(value-expected)<2e-5);}
         ok(staging->UnlockRect());i=0;for(unsigned slot:{0u,1u,6u}){d->SetTexture(slot,nullptr);inputs[i++]->Release();}++cases;

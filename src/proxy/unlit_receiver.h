@@ -8,25 +8,45 @@ namespace NorthlightUnlitReceiver {
 constexpr unsigned long Bit=0x40;
 constexpr unsigned long PrelitBit=0x20;
 constexpr unsigned long AuthoredBit=0x10;
-// Existing stencil bits encode the part of a posed room bank that probes may
-// attenuate. Round down so even full occlusion retains the native direct term.
-inline constexpr unsigned long RoomRef[]={AuthoredBit,AuthoredBit|PrelitBit,AuthoredBit|Bit,PrelitBit};
+// Existing stencil bits encode the part of a room bank that probes may
+// attenuate. Round down when the directional and ambient colours differ.
+inline constexpr unsigned RoomAmbientQuarter=4;
+inline constexpr unsigned RoomSharedTint=5;
+inline constexpr unsigned long RoomRef[]={AuthoredBit,AuthoredBit|PrelitBit,AuthoredBit|Bit,PrelitBit,
+                                         AuthoredBit|PrelitBit|Bit,PrelitBit|Bit};
+inline constexpr float RoomAmbientShare[]={0.f,1.f/3.f,2.f/3.f,1.f,.25f,.8f};
+inline constexpr unsigned RoomLevelCount=sizeof(RoomRef)/sizeof(RoomRef[0]);
 inline unsigned long roomStencilMask(unsigned levels){
     unsigned long mask=0;
-    for(unsigned level=0;level<4;++level)if(levels&(1u<<level))mask|=RoomRef[level];
+    for(unsigned level=0;level<RoomLevelCount;++level)if(levels&(1u<<level))mask|=RoomRef[level];
     return mask;
 }
 inline unsigned roomAmbientLevel(const float* bank){
-    if(bank[4]==0&&bank[5]==0&&bank[6]==0)return 0;
+    const float ambient=bank[4]+bank[5]+bank[6];
+    if(ambient==0)return 0;
+    const float direct=bank[0]+bank[1]+bank[2];
+    if(direct>0){
+        // The indoor M2 bank can split one authored room tint across its
+        // directional and omnidirectional terms. Both belong to the baked
+        // receiver. Keep a small share of the native tint so dark probes
+        // cannot erase the material's shape in rooms with no measured bounce.
+        const float scale=ambient/direct;
+        constexpr float colorStep=1.f/255.f;
+        if(std::fabs(bank[4]-scale*bank[0])<=colorStep&&
+           std::fabs(bank[5]-scale*bank[1])<=colorStep&&
+           std::fabs(bank[6]-scale*bank[2])<=colorStep)return RoomSharedTint;
+    }
     unsigned level=3;
+    bool quarter=true;
     for(unsigned c=0;c<3;++c){
         const float direct=bank[c],ambient=bank[4+c];
         if(direct>0){
             const unsigned channel=ambient>=2*direct?2u:2*ambient>=direct?1u:0u;
             level=std::min(level,channel);
+            quarter&=3*ambient>=direct;
         }
     }
-    return level;
+    return !level&&quarter?RoomAmbientQuarter:level;
 }
 // Prove the live COLOR0 lighting equation independently of shader identity.
 // Material-modified WMO programs retain c10 + dot(normal,-c12)*c11 even when
@@ -118,6 +138,8 @@ inline const StencilMark& receiverMark(unsigned kind){
     if(kind==4)return MarkPrelit;
     if(kind==6)return RoomMark<1>;
     if(kind==7)return RoomMark<2>;
+    if(kind==5+RoomAmbientQuarter)return RoomMark<RoomAmbientQuarter>;
+    if(kind==5+RoomSharedTint)return RoomMark<RoomSharedTint>;
     return MarkAuthored;
 }
 inline constexpr Set Unmark[]={{StencilEnable,1},{StencilFunc,kCmpAlways},{StencilPass,kOpReplace},{StencilFail,kOpKeep},{StencilZFail,kOpKeep},{StencilRef,0},{StencilWriteMask,Bit|PrelitBit|AuthoredBit|kBit},{TwoSidedStencilMode,0}};

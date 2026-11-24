@@ -23,6 +23,7 @@ end = source.index('\n    }', start) + len('\n    }')
 (out/'sky-background-production.h').write_text(
     '#include "saved_state.h"\n#include "celestial_disc_compiled_shaders.h"\n'
     'struct SkyBackgroundProduction {IDirect3DDevice9* d;IDirect3DPixelShader9* skyBackgroundPS=nullptr;\n'
+    '    float replacedSkyGradient[6][4]{};unsigned frames=0,replacedSkyFrame=~0u;\n'
     + source[start:end] + '\n};\n', encoding='utf-8', newline='\n')
 subprocess.run([str(fp.zig()), 'c++', '-target', 'x86-windows-gnu', '-std=c++17', '-O2', '-UNDEBUG',
                 '-Wno-return-type', '-I'+str(out), *fp.test_include_flags(), str(fp.TESTS/'sky_environment_gpu.cpp'),

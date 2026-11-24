@@ -5,7 +5,7 @@
     "auto_parallax_prefix.hlsl": "5a5a6f29c2143e998602e1ae0d2687faf2158bb5db09a61b63345f238cefb6cb",
     "auto_material_height.hlsl": "d8b2cf9d1cafc553f336bfcbb83da62eb326a0d9396a68773966ca0a8554b1bd"
   },
-  "source_sha256": "95ba5a5fcc41320dca036a892e9961f4f5ef446099e7bea5b9304cd5c350ba1a",
+  "source_sha256": "98aa054ac1c0d2e936fc35ddb4fd4d1bb852083429f135f6251acba622116d31",
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
   "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
   "shaders": {
@@ -907,6 +907,120 @@
         "else": 1,
         "endif": 1,
         "mad": 2
+      }
+    },
+    "BumpFusedNative": {
+      "sha256": "09dbf10dc8fb5a8637264d6f7b35918405712c7db91e39efafbfb4fa462b7657",
+      "static_instruction_slots": 121,
+      "temporary_registers": 6,
+      "samplers": [
+        2
+      ],
+      "instructions": {
+        "rcp": 5,
+        "mul": 34,
+        "dsx": 2,
+        "dsy": 2,
+        "add": 28,
+        "dp3": 6,
+        "rsq": 4,
+        "cmp": 13,
+        "texldd": 1,
+        "dp2add": 2,
+        "max": 1,
+        "nrm": 1,
+        "if": 1,
+        "mov": 4,
+        "else": 1,
+        "endif": 1,
+        "frc": 1,
+        "mad": 2
+      }
+    },
+    "BumpFusedPackedNative": {
+      "sha256": "f36416f85d365f45ca71928458c149e43faf3136a421deded5c0f6fc865adc6a",
+      "static_instruction_slots": 245,
+      "temporary_registers": 7,
+      "samplers": [
+        2
+      ],
+      "instructions": {
+        "rcp": 6,
+        "mul": 53,
+        "dsx": 2,
+        "dsy": 2,
+        "texldd": 1,
+        "if": 3,
+        "add": 69,
+        "else": 2,
+        "mov": 5,
+        "endif": 3,
+        "max": 5,
+        "log": 3,
+        "frc": 10,
+        "exp": 9,
+        "cmp": 35,
+        "dp3": 6,
+        "rsq": 4,
+        "dp2add": 5,
+        "nrm": 1,
+        "mad": 2
+      }
+    },
+    "BumpClearMS": {
+      "sha256": "206a8ebdf45988c40144ca73c5f0a4fdd48aa89437d5d74b0266cc1250978fe4",
+      "static_instruction_slots": 1,
+      "temporary_registers": 0,
+      "samplers": [],
+      "instructions": {
+        "mov": 1
+      }
+    },
+    "BumpMergeMS": {
+      "sha256": "9ad4e863698099b4a0931297e7152fba299234dcfd588153186c8952743009f2",
+      "static_instruction_slots": 38,
+      "temporary_registers": 4,
+      "samplers": [
+        0,
+        1,
+        2
+      ],
+      "instructions": {
+        "texld": 3,
+        "mul": 7,
+        "if": 1,
+        "mov": 2,
+        "else": 1,
+        "add": 10,
+        "rcp": 2,
+        "cmp": 8,
+        "min": 1,
+        "endif": 1
+      }
+    },
+    "BumpMergePackedMS": {
+      "sha256": "76370597ce7b3106649f20efaee535b03b438dc94df3ade531ec487da4885859",
+      "static_instruction_slots": 100,
+      "temporary_registers": 4,
+      "samplers": [
+        0,
+        1,
+        2
+      ],
+      "instructions": {
+        "texld": 3,
+        "mul": 25,
+        "if": 1,
+        "mov": 4,
+        "else": 1,
+        "cmp": 14,
+        "add": 34,
+        "exp": 4,
+        "log": 1,
+        "frc": 7,
+        "rcp": 2,
+        "min": 1,
+        "endif": 1
       }
     },
     "ModelNormalCapture": {

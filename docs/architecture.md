@@ -792,7 +792,7 @@ oracles, including byte equality and malformed-input controls.
 1. **One native submit owner.** Four `Draw*` adapters preserve their D3D9 argument
    tuples. `drawHook` owns preparation, fault boundaries and the shared tail.
    `captureGameDraw` preserves terrain-before-material ordering and the current
-   material в†’ normal в†’ world в†’ water sequence. Raw and wrapped callbacks have
+   material → normal → world → water sequence. Raw and wrapped callbacks have
    different consumers; UP draws retain their separate memory/lifetime rules.
 2. **Potential demand and available inputs are separate phases.**
    `NorthlightFrameRequirements::make` is the shared consumer plan. Capture can
@@ -939,11 +939,13 @@ visibility also gates this daylight. Missing coverage/resources retain authored
 lighting. GI replaces outdoor ambient on ordinary lit receivers, clamping its
 correction before the probe residency fade. Measured probe occlusion can also
 attenuate transported baked RGB without subtracting the outdoor light bank.
-Explicit room banks keep their authored fill: their baked, ambient and emissive
-components cannot be separated by the outdoor GI estimate. In the world scene,
-posed M2 receivers with a proven room override limit probe occlusion to the
-ambient share of the native material lighting bank. The original draw marks
-this share using the existing stencil bits, rounded down in thirds across RGB.
+Posed M2 receivers with a proven room override use the baked receiver path when
+the native ambient and directional terms carry the same room tint. This lets
+probe occlusion affect both terms, with removal capped at 80% of the native
+room light so materials remain legible where probes measure very little bounce.
+Different-coloured terms limit probe occlusion to the native ambient share.
+The original draw marks that share using the existing stencil bits, rounded
+down to one quarter, one third or two thirds across RGB.
 The prelit compositor handles only the grades present in the frame. GI brightness controls
 added indirect radiance independently of measured occlusion; current local and
 directional light remain separate. Missing probes and zero prelit mix preserve
@@ -1021,5 +1023,5 @@ capture admission and publication across the GPU owners.
 The GPU controller includes deferred captures/effects, while in-scene capture
 remains outside that interval. The CPU controller does not cover all distributed
 draw-hook work. These controllers do not prove a total Northlight budget.
-Component tests and worker timings cannot establish game FPS or a 2вЂ“3 ms total.
+Component tests and worker timings cannot establish game FPS or a 2–3 ms total.
 That claim needs matched live routes with identical quality, output and current poses.

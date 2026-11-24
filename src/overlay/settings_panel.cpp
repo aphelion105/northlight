@@ -42,7 +42,7 @@ const std::map<std::string,const char*> Labels={
     {"ReflectionScenery","Reflections"},{"ReflectionResolution","Reflection resolution"},{"ShortReflectionDistance","Reflection distance"},{"Clarity","Water clarity"},{"Reflection","Reflection strength"},{"NearReflection","Near reflection strength"},
     {"Underwater","Underwater effects"},{"UnderwaterVisibility","Visibility (yards)"},{"UnderwaterScenery","Underwater scenery"},
     {"Slime","Slime surface"},{"Lava","Magma and fel magma surfaces"},
-    {"CelestialStyle","Celestial placement & size"},
+    {"CelestialStyle","Sky style"},
     {"CelestialEffects","Enhanced sun, moon & sky"},{"Godrays","Sun & moon godrays"},
     {"NativeLightStay","Keep off-screen lights"},
     {"NativeMoreLights","Expand native light slots"},{"NativeModelLightLimit","Lights per model / building"},{"NativeTerrainLightLimit","Lights per terrain chunk"},
@@ -88,7 +88,7 @@ const std::map<std::string,const char*> CelestialLabels={
 const std::map<std::string,std::vector<const char*>> Help={
     {"CelestialEffects",{"Replaces the sun, moon, glare and sky background independently of AO, shadows and other effects. Off preserves the native sky and skips Northlight sky capture and composition. HDR output remains separate."}},
     {"Godrays",{"Directional sunlight and moonlight scattered through atmospheric fog. Off skips directional fog shading, shadow sampling and extra source passes while retaining fog density, ambient scattering and local lights. Requires Atmospheric fog."}},
-    {"CelestialStyle",{"Default follows the game. Forever uses imported daily orbit and horizon size curves for the sun and primary moon; light, shadows and rays follow the selected placement. Applies to every region."}},
+    {"CelestialStyle",{"Default uses the game's sky colors and celestial placement. Forever uses imported colors in Eastern Kingdoms and Kalimdor and approximated regional sky colors in Northrend and Outland. Northrend shares the Forever sun and moon curves. Outland keeps its native sun visibility and skybox planets."}},
     {"RainRivulets",{"Falling drops and their wet trails collect nearby beads into longer curved streams, conserving water. Off keeps drops independent."}},
     {"SnowFrost",{"Crystalline ice grows from the screen edges with accumulated snow and storm intensity. Nearby fire melts it. Independent of Snow on camera; requires Enhanced weather."}},
     {"SandLens",{"Dust grains and sparse deposits on the camera lens. They stay in glass coordinates, ignore scene geometry and receive optional inertial forces during camera turns. Shelter hides the effect."}},

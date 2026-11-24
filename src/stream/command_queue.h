@@ -4,8 +4,8 @@
 // D3D: the generated record/dispatch code (command_stream.inl) sits on top.
 //
 // Memory: 1 MiB chunks from a pool (no heap allocation on the hot path once warmed), plus pooled power-of-two Blocks for
-// payloads above MaxInlinePayload. Everything counts against one budget (chunks in use + live blocks + registered
-// shadow bytes); when a request would exceed it the producer publishes and waits until the consumer frees memory.
+// payloads above MaxInlinePayload. The queue budget covers live chunks and blocks.
+// When a request would exceed it the producer publishes and waits for replay to free space.
 //
 // Publishing: a committed command becomes visible to the consumer at publish(). commit() publishes immediately for a sleeping consumer, otherwise every 64
 // commands or 64 KiB, and a chunk switch publishes the closed chunk. Callers publish explicitly at BeginScene/EndScene/
@@ -38,13 +38,13 @@ constexpr std::size_t MaxInlinePayload=ChunkBytes/4;   // larger payloads travel
 // rings are freed after 60 idle frames, idle pools are kept small: kPoolMaxChunks, kMaxPooledBlockBytes, PoolTuner).
 // 0.3.216 (issue #66 follow-up): memory pressure never refuses a shadow, a large grant or a ring slice, never drops one and never waits for a slice: each of those turned a buffer lock into a synchronous round trip to the replay thread
 // (hundreds per frame, an unplayable game), which costs more than the memory. Pressure only halves the queue budget and frees pooled chunks, Blocks, scratch, spare level allocations and free ring slices. WORST CASE game-side under pressure
-// (every cap at its maximum at once, which no session approaches): buffer shadows 32 (adaptive regular max) + large allowance 36 + rings 20 (regular) + 36 (large) + texture shadows 16 + queue 16 (the halved 32) = 156 MiB, plus the replay-side
-// copies' 16+16 MiB (replay_copies.h; halved under pressure) = ~172-188 MiB. The same without pressure but with the queue at 32: 172 + 16.
+// (every cap at its maximum at once, which no session approaches): buffer shadows 32 (adaptive regular max) + large allowance 36 + rings 20 (regular) + 36 (large) + texture shadows 16 + queue 10 (the halved 20) = 150 MiB, plus the replay-side
+// copies' 16+16 MiB (replay_copies.h; halved under pressure).
 constexpr std::size_t BudgetBytes=std::size_t(16)<<20;
 // 0.3.200 (pipeline): StreamFramesAhead (1..kMaxFramesAhead) frames may be in flight; the queue budget grows by BudgetBytes per extra frame up to
-// kMaxBudgetBytes (32 MiB; halved under memory pressure). 1 = BudgetBytes, the 0.3.199 queue.
+// kMaxBudgetBytes (20 MiB; halved under memory pressure). 1 = BudgetBytes, the 0.3.199 queue.
 constexpr unsigned kMaxFramesAhead=3;
-constexpr std::size_t kMaxBudgetBytes=std::size_t(32)<<20;
+constexpr std::size_t kMaxBudgetBytes=std::size_t(20)<<20;
 constexpr unsigned clampFramesAhead(unsigned n){return n<1?1:n>kMaxFramesAhead?kMaxFramesAhead:n;}
 constexpr std::size_t budgetForFramesAhead(unsigned n){return BudgetBytes*clampFramesAhead(n)<kMaxBudgetBytes?BudgetBytes*clampFramesAhead(n):kMaxBudgetBytes;}
 constexpr std::size_t TextureShadowBudgetBytes=std::size_t(16)<<20;   // per-level texture shadows; not halved under pressure (0.3.216); evictable (LRU)
@@ -54,7 +54,8 @@ constexpr std::size_t TextureShadowBudgetBytes=std::size_t(16)<<20;   // per-lev
 // (and none in the first interval). Pressure changes nothing here (0.3.216). Growth is game-thread; the cap is read by any thread.
 constexpr std::size_t ShadowBudgetBytes=std::size_t(16)<<20;
 // 0.3.205: the ring budget of regular-cap buffers (live + retired slices; was ShadowBudgetBytes, 16 MiB): in crowds several skinning buffers of 2-3 MiB DISCARD many times a frame and the 16 MiB ring
-// made them wait for a slice the replay thread still read (waitWhy budget). Rings are dropped under memory pressure and freed after 60 idle frames, so the extra 4 MiB is only held while they are busy.
+// made them wait for a slice the replay thread still read (waitWhy budget). Regular rings can also borrow unused large-ring capacity.
+// Free slices are dropped under memory pressure and after 60 idle frames.
 constexpr std::size_t RingRegularBudgetBytes=std::size_t(20)<<20;
 constexpr std::size_t kShadowBudgetMaxBytes=std::size_t(32)<<20,kShadowGrowStep=std::size_t(4)<<20;
 constexpr std::uint64_t kShadowHotFrames=60,kShadowGrowFrames=60;
@@ -435,12 +436,12 @@ public:
 #endif
     // A pooled Block of at least bytes (capacity is the power of two above), budgeted. nullptr when the request alone
     // exceeds the budget, or still does not fit once the consumer has drained: the caller takes the sync pass-through.
-    Block* tryAllocBlock(std::size_t bytes){
+    Block* tryAllocBlock(std::size_t bytes,bool wait=true){
         const unsigned k=blockClass(bytes?bytes:1);
         // The open write chunk is always in flight (inflight() counts it): a class that cannot fit beside it never fits, so refuse now instead of draining the whole queue first.
         if(k>=kBlockClasses||(std::size_t(1)<<(k+kMinBlockShift))+ChunkBytes>budget()){own(stats.blockRefused);return nullptr;}
         const std::size_t cap=std::size_t(1)<<(k+kMinBlockShift);
-        backpressure(cap);
+        if(wait)backpressure(cap);
         if(over(cap)){own(stats.blockRefused);return nullptr;}
         Block* b=nullptr;
         {std::lock_guard<std::mutex> l(pool_);auto& v=freeBlocks_[k];if(!v.empty()){b=v.back();v.pop_back();pooledBlockBytes_-=cap;stats.blockPoolBytes.fetch_sub(cap,std::memory_order_relaxed);}}
@@ -509,6 +510,7 @@ public:
         for(Block* x:b)::operator delete(x);
     }
     // Every byte the queue holds from the process: chunks (in use and pooled), live and pooled Blocks. (Shadows are accounted by their owners.)
+    std::size_t liveBytes()const{return inflight();}
     std::size_t reservedBytes()const{return std::size_t(get(stats.chunksHeap))*sizeof(Chunk)+std::size_t(get(stats.blockBytes))+std::size_t(get(stats.blockPoolBytes));}
 
     // ---- Consumer ----

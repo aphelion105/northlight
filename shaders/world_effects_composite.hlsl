@@ -170,7 +170,7 @@ float4 worldCompositeInputs(float2 uv,float2 pixel,bool surfaceLighting,bool hdr
         // A room-bank receiver has no regional directional light in its native
         // base. Including that light in the divisor suppresses lamp contrast.
         float3 ambientBase=min(oldLight,max(AmbientLight.rgb,.15));
-        float3 materialLight=prelit&&PrelitDaylightInfo.y>.5?ambientBase:oldLight;
+        float3 materialLight=prelit&&PrelitDaylightInfo.z>.5?ambientBase:oldLight;
         float3 albedoT=boundedAlbedo(hdrMode?hdrSurface:transported,materialLight,legacyT);
         // Prelit RGB retains authored illumination at zero GI blend. Resident
         // probes attenuate that layer and add bounce independently of daylight.
@@ -344,10 +344,13 @@ float4 materialComposite(float2 uv,bool hdrMode,float4 color,float3 effect,bool 
     float3 occlusion=1;
     [branch]if(MaterialOcclusionInfo.x>0&&z<occlusionRange){
         float4 material=tex2Dlod(BumpMaterial,float4(q,0,0)),occ=tex2Dlod(MaterialOcclusion,float4(q,0,0));
-        float capturedZ=abs(material.b)/max(material.a,.001);
-        float valid=material.a>.02&&occ.a>.02&&abs(capturedZ-z)<max(.025,z*.0015);
+        bool packed=material.a>1;
+        float cover=saturate(material.a);
+        float capturedZ=abs(material.b)/max(cover,.001);
+        float valid=min(cover,packed?1:occ.a)>.02&&abs(capturedZ-z)<max(.025,z*.0015);
         float fade=saturate((occlusionRange-z)/max(occlusionRange*.25,1));
-        occlusion=lerp(1,saturate(occ.rgb/max(occ.a,.001)),valid*fade);
+        float3 value=packed?float3(1,1,mad(material.a,256.0/255,-257.0/255)):saturate(occ.rgb/max(occ.a,.001));
+        occlusion=lerp(1,value,valid*fade);
     }
     float3 delta=0;
     [unroll]for(int i=0;i<2;++i)
@@ -400,9 +403,11 @@ float4 MaterialAudit(float2 uv:TEXCOORD0):COLOR0 {
         clip(z<limit?1:-1);return 0;
     }
     float4 material=tex2Dlod(BumpMaterial,float4(q,0,0));
-    float valid=material.a>.02&&abs(abs(material.b)/max(material.a,.001)-z)<max(.025,z*.0015);
+    bool packed=material.a>1;
+    float cover=saturate(material.a);
+    float valid=cover>.02&&abs(abs(material.b)/max(cover,.001)-z)<max(.025,z*.0015);
     if(BumpControl.w>3.5){
-        clip(material.a>.02?1:-1);
+        clip(cover>.02?1:-1);
         if(BumpControl.w>4.5)clip(valid?-1:1);
         return 0;
     }
@@ -417,8 +422,8 @@ float4 MaterialAudit(float2 uv:TEXCOORD0):COLOR0 {
     if(BumpControl.w>1.5){
         float occlusionRange=MaterialOcclusionInfo.y>0?MaterialOcclusionInfo.y:BumpControl.y;
         float4 occ=tex2Dlod(MaterialOcclusion,float4(q,0,0));
-        float3 value=saturate(occ.rgb/max(occ.a,.001));
-        clip((MaterialOcclusionInfo.x>0&&z<occlusionRange&&occ.a>.02)?1:-1);
+        float3 value=packed?float3(1,1,mad(material.a,256.0/255,-257.0/255)):saturate(occ.rgb/max(occ.a,.001));
+        clip((MaterialOcclusionInfo.x>0&&z<occlusionRange&&(packed||occ.a>.02))?1:-1);
         clip((BumpControl.w<2.5?value.b:min(value.r,value.g))<.999?1:-1);
     }
     return 0;

@@ -66,7 +66,7 @@
             }
             }
             return !needs.probes||probeAtlas.create(d,[&](uint64_t bytes){return allocate()&&admit(bytes);},required,
-                [](const char* format,auto... args){logf(format,args...);});
+                static_cast<void(*)(const char*,...)>(&logf));
         };
         if(!make()){
             if(deferred)return false;

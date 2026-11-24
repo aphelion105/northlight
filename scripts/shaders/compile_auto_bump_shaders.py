@@ -11,6 +11,7 @@ manifest={'normal_source_sha256':hashlib.sha256((fp.SHADERS/'auto_normal_generat
 manifest['shared_source_sha256']=hashlib.sha256((fp.SHADERS/'auto_bump_shared.hlsl').read_bytes()).hexdigest()
 entries=('BumpOpaque','BumpLayer','BumpWall','BumpGrass','BumpWallOpaque','BumpComposite','BumpNative','BumpSharedOpaque','BumpSharedLayer','BumpSharedWall','BumpSharedGrass','BumpSharedWallOpaque','BumpSharedComposite','BumpSharedNative','BumpTerrainOpaque','BumpTerrainLayer','BumpSharedTerrainOpaque','BumpSharedTerrainLayer','AutoNormal','AutoNormalModel','ParallaxUV','ParallaxSharedUV')
 entries+=tuple('BumpNormal'+name for name in ('Opaque','Layer','Grass','TerrainOpaque','TerrainLayer','Native'))
+entries+=('BumpFusedNative','BumpFusedPackedNative','BumpClearMS','BumpMergeMS','BumpMergePackedMS')
 entries+=('ModelNormalCapture','ModelNormalOpaque','ModelNormalDepthSeed')
 entries+=('AutoNormalLegacy','AutoNormalModelLegacy')
 for entry in entries:

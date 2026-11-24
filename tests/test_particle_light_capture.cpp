@@ -177,23 +177,25 @@ static void mirrorAdmission(NorthlightParticleCapture::Capture& capture,Shader& 
     blend(D3DRS_ALPHABLENDENABLE,FALSE);assert(!route());
     blend(D3DRS_ALPHABLENDENABLE,FALSE,false);assert(route()&&classifications==8);
 
-    assert(capture.mayFlash(mirror)); // Unknown texture.
+    constexpr unsigned flashes=NorthlightEmission::Lightning|NorthlightEmission::SkyLightning;
+    assert(capture.mayEmit(mirror,flashes)&&capture.mayEmit(mirror,~0u)); // Unknown texture.
     assert(state.samplers==1);
     mirror.textureKnown[0]=true;mirror.textures[0]=texture;
-    assert(!capture.mayFlash(mirror)); // Decoded ordinary texture.
-    {State::Write write(state,true);assert(capture.mayFlash(mirror));}
+    assert(!capture.mayEmit(mirror,flashes)&&!capture.mayEmit(mirror,~0u)); // Decoded ordinary texture.
+    {State::Write write(state,true);assert(capture.mayEmit(mirror,flashes)&&capture.mayEmit(mirror,~0u));}
     const auto path=std::filesystem::path(std::string(fixture)+".flash-catalog");
     const uint32_t header[]{1,24,1};
-    for(const unsigned kind:{NorthlightEmission::Lightning,NorthlightEmission::SkyLightning}){
+    for(const unsigned kind:{0u,unsigned(NorthlightEmission::Lightning),unsigned(NorthlightEmission::SkyLightning)}){
         const NorthlightEmission::Entry entry{image.rgbaHash,image.width,image.height,0,NorthlightEmission::Glow|kind};
         std::ofstream out(path,std::ios::binary);out.write("NLE1",4);
         out.write(reinterpret_cast<const char*>(header),sizeof header);
         out.write(reinterpret_cast<const char*>(&entry),sizeof entry);out.close();
         NorthlightParticleCapture::Capture flashCapture;
-        assert(flashCapture.catalog.read(path)&&flashCapture.mayFlash(mirror));
+        assert(flashCapture.catalog.read(path)&&flashCapture.mayEmit(mirror,~0u));
+        assert(flashCapture.mayEmit(mirror,flashes)==bool(kind));
     }
     std::filesystem::remove(path);
-    mirror.textures[0]=nullptr;assert(capture.mayFlash(mirror));
+    mirror.textures[0]=nullptr;assert(capture.mayEmit(mirror,flashes));
 }
 int main(int argc,char** argv){
     assert(argc==2||argc==3);const bool influenceOnly=argc==3&&std::strcmp(argv[2],"--view-influence-only")==0;assert(argc==2||influenceOnly);

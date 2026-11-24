@@ -31,6 +31,11 @@ static Context ctx(Block& b){Context c;c.skyboxCover=-1;assert(b.decoded(c));ret
 int main() {
     const uint32_t P=0x1a2b3c40;
     {Block b;Context c=ctx(b);assert(c.skyboxCover==0&&c.nativePlanets&&!skyboxFrame(c));} // null pointers
+    {Block b;Context c=ctx(b);FrameMode mode;
+     assert(mode.decide(c,0,true)&&mode.skybox());
+     assert(mode.decide(c,1));
+     mode.endFrame();
+     assert(!mode.decide(c,2)&&!mode.skybox());}
     {Block b;b.skybox(0,1);b.blend(0,0,1,0);Context c=ctx(b);assert(c.skyboxCover==0&&c.nativePlanets&&!skyboxFrame(c));} // weight without a model
     {Block b;b.skybox(P,1);Context c=ctx(b);assert(c.skyboxCover==1&&!c.nativePlanets&&skyboxFrame(c));} // full skybox: no native planets
     {Block b;b.skybox(P,.995f);Context c=ctx(b);assert(!c.nativePlanets&&skyboxFrame(c));}

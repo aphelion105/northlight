@@ -51,7 +51,7 @@ struct LogFlushBatch {
     }
     LogFlushBatch(const LogFlushBatch&)=delete;
 };
-static void logf(const char* fmt, ...) {
+__attribute__((format(printf,1,2))) static void logf(const char* fmt, ...) {
 #ifdef NORTHLIGHT_REPLAY_STAND
     ensureRootPath();
     if(!rootPath[0]){std::fputs("NORTHLIGHT STAND REPLAY: module root unavailable; file logging refused\n",stderr);return;}

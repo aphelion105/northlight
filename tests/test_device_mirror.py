@@ -66,7 +66,7 @@ checks={
    and proxy['renderer.cpp'].count('MirrorGuard lock(resources->gate(),MirrorSite::SwapChain);')==3,
  'tracked buffers report Lock/Unlock/Release':proxy['tracked_buffers.h'].count('if(census)census->noteBuffer();')==3 and proxy['renderer.cpp'].count('&bufferEscape,&mirrorState.gate)')==4,
 }
-# 0.3.182 (D1, r88 В§3.3) needles: the seq_cst Dekker as decided, the exit on the recorded mode, no OS
+# 0.3.182 (D1, r88 §3.3) needles: the seq_cst Dekker as decided, the exit on the recorded mode, no OS
 # barrier, no per-entry GetCurrentThreadId, a compile-time switch only, the counterfactuals off.
 dtor=guard[guard.index('~MirrorGuard()'):guard.index('MirrorGuard(const MirrorGuard&)=delete;')]
 owner=guard[guard.index('OwnerEntry enterOwner(){'):guard.index('void exitOwner()')];ownerReal=owner[owner.index('#else'):owner.index('#endif')]

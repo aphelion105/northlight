@@ -18,7 +18,7 @@ command = [str(fp.zig()), 'c++', *(['-target', 'x86-windows-gnu'] if os.name == 
            '-std=c++17', '-O2', '-UNDEBUG', '-Wall', '-Wextra', '-Werror',
            *fp.test_include_flags(), str(fp.TESTS / 'diagnostic_files.cpp'), '-o', str(binary)]
 subprocess.run(command, env=fp.zig_env(), check=True)
-folder = out / 'unicode-\u0442\u0435\u0441\u0442'
+folder = out / 'unicode-\u00dcber-\u4e16\u754c'
 subprocess.run([str(binary), str(out)], check=True)
 raw, compact = folder / 'raw', folder / 'compact'
 for p in raw.iterdir():

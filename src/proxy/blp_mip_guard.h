@@ -82,6 +82,8 @@ struct PausedThreads {
             thread.paused=true;
             CONTEXT context={};context.ContextFlags=CONTEXT_CONTROL;
             if(!GetThreadContext(handle,&context))return "thread-context-failed";
+            // The signature-checked original decoder's only call returns are
+            // at +0x68, +0xd9 and +0x103, all outside the rewritten bytes.
             if(uintptr_t(context.Eip)>=begin&&uintptr_t(context.Eip)-begin<size)return "decoder-busy";
         }
         // A thread that exited or could not be enumerated is a reason to skip

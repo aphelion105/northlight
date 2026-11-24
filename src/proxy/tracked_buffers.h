@@ -54,6 +54,7 @@ struct Record {
     NorthlightCaptureMetadata::Info metadata;
     std::unique_ptr<NorthlightBufferRanges::Revisions> ranges;
     std::atomic<bool> spellGuard{false}; // task 34: the spell layer guards bytes of this buffer; set/cleared through markSpellGuard, tested (relaxed) by Buffer::Lock
+    std::atomic<bool> materialGuarded{false};
     NorthlightReplayCopies::Slot copy; // 0.3.192 (CS): the replay-side CPU copy (replay_copies.h); attached only while the stream is active
 };
 inline std::unordered_map<void*,Record*> records;
@@ -61,6 +62,54 @@ inline std::unordered_map<void*,Record*> records;
 // Buffer::Lock BEFORE the lock is forwarded, only for non-READONLY locks of a marked buffer, with the RAW buffer (the key the layer guards).
 struct SpellHook {void (*write)(void* context,void* rawBuffer,UINT offset,UINT size,DWORD flags,DWORD usage,unsigned outstandingLocks)=nullptr;void* context=nullptr;};
 inline SpellHook spellHook;
+struct MaterialWriteHook {void (*beforeWrite)(void*)=nullptr;void* context=nullptr;};
+struct MaterialReadGuard {MaterialWriteHook hook;unsigned readers=0;};
+inline std::unordered_map<void*,MaterialReadGuard> materialGuards;
+inline MaterialWriteHook materialWriter(void* raw){
+    std::lock_guard<std::mutex> guard(mutex);
+    const auto it=materialGuards.find(raw);
+    return it==materialGuards.end()?MaterialWriteHook{}:it->second.hook;
+}
+inline NorthlightCaptureMetadata::ReadLease guardMaterialRead(void* raw,bool index,uint64_t endByte,MaterialWriteHook hook){
+    const auto release=[](void* retained){
+        {
+            std::lock_guard<std::mutex> guard(mutex);
+            const auto pending=materialGuards.find(retained);
+            if(!--pending->second.readers){
+                materialGuards.erase(pending);
+                const auto wrapped=records.find(retained);
+                if(wrapped!=records.end())wrapped->second->materialGuarded.store(false,std::memory_order_relaxed);
+            }
+        }
+        static_cast<IDirect3DResource9*>(retained)->Release();
+    };
+    std::lock_guard<std::mutex> guard(mutex);
+    const auto it=records.find(raw);
+    if(it==records.end()||!hook.beforeWrite)return {nullptr,release};
+    auto& buffer=*it->second;
+    if(buffer.raw!=raw||buffer.index!=index||!buffer.metadata.known||!buffer.poolKnown||
+       (buffer.pool!=D3DPOOL_MANAGED&&buffer.pool!=D3DPOOL_DEFAULT)||
+       (buffer.metadata.usage&D3DUSAGE_DYNAMIC)||buffer.locks.load(std::memory_order_relaxed)||
+       !buffer.revision.load(std::memory_order_relaxed))return {nullptr,release};
+    if(index){
+        if(endByte>buffer.metadata.size)return {nullptr,release};
+        if(buffer.metadata.format==D3DFMT_INDEX16)endByte*=2;
+        else if(buffer.metadata.format==D3DFMT_INDEX32)endByte*=4;
+        else return {nullptr,release};
+    }
+    if(!endByte||endByte>buffer.metadata.size)return {nullptr,release};
+    // Keep the native resource alive without retaining its proxy Device.
+    // GetStreamSource/GetIndices may wrap the same resource again.
+    auto [pending,inserted]=materialGuards.try_emplace(raw,MaterialReadGuard{hook});
+    if(!inserted&&(pending->second.hook.context!=hook.context||
+                   pending->second.hook.beforeWrite!=hook.beforeWrite))return {nullptr,release};
+    ++pending->second.readers;
+    buffer.materialGuarded.store(true,std::memory_order_relaxed);
+    auto* resource=index?static_cast<IDirect3DResource9*>(static_cast<IDirect3DIndexBuffer9*>(raw)):
+                         static_cast<IDirect3DResource9*>(static_cast<IDirect3DVertexBuffer9*>(raw));
+    resource->AddRef();
+    return {resource,release};
+}
 // Lock-free input resolution for our own wrappers. The first Buffer class
 // built for an interface publishes one immutable {final vtable, Record offset}
 // pair. A live input (the caller owns a COM reference, so its registration
@@ -200,6 +249,7 @@ public:
         if(NorthlightReplayCopies::enabled.load(std::memory_order_relaxed))NorthlightReplayCopies::attach(record.copy,record.raw,record.exposed,this,record.metadata.size,&record.locks); // size 0 (descriptor unknown): never copied
         {std::lock_guard<std::mutex> guard(mutex);
          bool first=false;
+         record.materialGuarded.store(materialGuards.count(record.raw)!=0,std::memory_order_relaxed);
          try{first=records.emplace(record.raw,&record).second;records.emplace(record.exposed,&record);}catch(...){if(first)records.erase(record.raw);NorthlightReplayCopies::detach(record.copy);throw;}}
         owner->AddRef();
         // Identical for every instance of this final class; first class wins.
@@ -253,8 +303,14 @@ public:
         // Mark before entering the driver. Even failed writes conservatively
         // invalidate the old generation. READONLY never advances a generation.
         // Task 34: first of all, before the revision or the lock count move: a deferred draw may read the bytes this write replaces (spell_layer.h onBufferWrite).
-        if(record.spellGuard.load(std::memory_order_relaxed)&&!(flags&D3DLOCK_READONLY)&&spellHook.write)
-            spellHook.write(spellHook.context,record.raw,offset,size,flags,record.metadata.usage,record.locks.load(std::memory_order_relaxed));
+        if(!(flags&D3DLOCK_READONLY)){
+            if(record.materialGuarded.load(std::memory_order_relaxed)){
+                const auto hook=materialWriter(record.raw);
+                if(hook.beforeWrite)hook.beforeWrite(hook.context);
+            }
+            if(record.spellGuard.load(std::memory_order_relaxed)&&spellHook.write)
+                spellHook.write(spellHook.context,record.raw,offset,size,flags,record.metadata.usage,record.locks.load(std::memory_order_relaxed));
+        }
         // Publish lock admission and its generation together with metadata reads.
         // Driver calls and capture callbacks stay outside the registry lock.
         uint64_t previousRevision;unsigned lockedBefore;

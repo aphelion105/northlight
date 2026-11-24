@@ -63,19 +63,19 @@ int main(int argc,char** argv){
     ok(d->SetTexture(0,nearDepth));const auto blocked=capture(halo,c),oldBlocked=capture(oldHalo,c);
     for(unsigned p=0;p<N*N;++p)if(clear[p*4]<.999f||blocked[p*4]!=0||oldBlocked[p*4]!=0)++failures;
     c[46][0]=1;ok(d->SetTexture(4,one));const auto mountain=capture(halo,c);for(unsigned p=0;p<N*N;++p)if(mountain[p*4]!=0)++failures;
-    // Cloud transmission gates only the solar optical halo, not world fog.
+    // Cloud transmission gates both optical halos. World fog uses its own shadowing.
     // Source geometry remains independently authoritative; no stale history at zero.
     unsigned cloudCases=0,oldCloudLeaks=0;
-    for(float transmission:{0.f,.05f,.25f,.5f,.8f,1.f}){
+    for(unsigned body:{0u,1u})for(float transmission:{0.f,.05f,.25f,.5f,.8f,1.f}){
         Image cloudImage{1,1,D3DFMT_A32B32G32R32F,16,std::vector<unsigned char>(16)};
         const float layer[]={.2f,.3f,.4f,transmission};std::memcpy(cloudImage.pixels.data(),layer,16);auto cloud=texture(d,cloudImage);
-        ok(d->SetTexture(6,cloud));c[46][0]=0;ok(d->SetTexture(0,one));c[49][3]=1;c[45][0]=0;
-        const auto solar=capture(halo,c),oldSolar=capture(oldHalo,c);
-        for(unsigned p=0;p<N*N;++p){if(std::fabs(solar[p*4]-transmission)>2e-6)++failures;if(transmission==0&&oldSolar[p*4]>.99f)++oldCloudLeaks;}
+        ok(d->SetTexture(6,cloud));c[46][0]=0;ok(d->SetTexture(0,one));c[49][3]=1;c[45][0]=0;c[11][3]=body?0.f:1.f;
+        const auto visible=capture(halo,c),oldVisible=capture(oldHalo,c);
+        for(unsigned p=0;p<N*N;++p){if(std::fabs(visible[p*4]-transmission)>2e-6)++failures;if(transmission==0&&oldVisible[p*4]>.99f)++oldCloudLeaks;}
         for(unsigned j=13;j<29;++j)c[j][0]=-1;
         const auto partial=capture(halo,c);for(unsigned p=0;p<N*N;++p)if(std::fabs(partial[p*4]-.75f*transmission)>2e-6)++failures;
         for(unsigned j=13;j<29;++j)c[j][0]=.5f;
-        c[49][3]=0;const auto moon=capture(halo,c);for(unsigned p=0;p<N*N;++p)if(moon[p*4]<.999f)++failures;
+        c[49][3]=0;const auto noCapture=capture(halo,c);for(unsigned p=0;p<N*N;++p)if(noCapture[p*4]<.999f)++failures;
         c[49][3]=1;c[45][0]=1;c[45][1]=.2f;c[45][2]=.3f;ok(d->SetTexture(3,one));
         const auto history=capture(halo,c);const float expected=transmission==0?0:1+(transmission-1)*.2f;
         for(unsigned p=0;p<N*N;++p)if(std::fabs(history[p*4]-expected)>2e-6)++failures;
@@ -84,7 +84,7 @@ int main(int argc,char** argv){
         ok(d->SetTexture(6,nullptr));cloud->Release();cloudCases+=6;
     }
     if(!oldCloudLeaks)++failures;
-    std::printf("solar cloud GPU cases=%u oldOpaqueCloudLeaks=%u failures=%u\n",cloudCases,oldCloudLeaks,failures);
+    std::printf("sun/moon halo cloud GPU cases=%u oldOpaqueCloudLeaks=%u failures=%u\n",cloudCases,oldCloudLeaks,failures);
     if(!baselineDim||shaftContrast<.02)++failures;
     std::printf("fog/halo GPU cases=%u baselineDimChannels=%u shaftContrast=%g maxOcclusionError=%g failures=%u\n",cases+3,baselineDim,shaftContrast,maxError,failures);
     for(unsigned s=0;s<16;++s)d->SetTexture(s,nullptr);d->SetPixelShader(nullptr);zero->Release();one->Release();nearDepth->Release();regional->Release();shadow->Release();oldFog->Release();fog->Release();oldHalo->Release();halo->Release();target->Release();staging->Release();d->Release();api->Release();FreeLibrary(module);DestroyWindow(window);UnregisterClassW(wc.lpszClassName,wc.hInstance);return failures?1:0;

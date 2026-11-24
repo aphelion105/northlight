@@ -6,13 +6,10 @@
         unsigned instances=0;
     };
 
-    static bool sameMaterialPaletteState(const Deferred& a,const Deferred& b){
-        const auto& x=*a.mesh;const auto& y=*b.mesh;
-        return b.resident&&y.indexed&&y.topology==x.topology&&a.gpuVertex[0]==b.gpuVertex[0]&&a.gpuIndex==b.gpuIndex&&
-            a.placement.baseVertex()==b.placement.baseVertex()&&a.placement.minimumVertex()==b.placement.minimumVertex()&&
-            a.placement.indexStart==b.placement.indexStart&&x.vertexCount==y.vertexCount&&x.primitiveCount==y.primitiveCount&&
-            x.streams[0].stride==y.streams[0].stride&&a.tag==b.tag&&a.vertex==b.vertex&&a.pixel==b.pixel&&a.declaration==b.declaration&&
-            !b.vertexFirst&&b.vertexCount==256&&a.vertexFloatOnly==b.vertexFloatOnly&&a.pixelFloatOnly==b.pixelFloatOnly&&
+    static bool sameMaterialCaptureState(const Deferred& a,const Deferred& b){
+        return a.tag==b.tag&&a.vertex==b.vertex&&a.pixel==b.pixel&&a.declaration==b.declaration&&
+            a.vertexFirst==b.vertexFirst&&a.vertexCount==b.vertexCount&&
+            a.vertexFloatOnly==b.vertexFloatOnly&&a.pixelFloatOnly==b.pixelFloatOnly&&
             (a.vertexFloatOnly||(!std::memcmp(a.vertexInt,b.vertexInt,sizeof a.vertexInt)&&!std::memcmp(a.vertexBool,b.vertexBool,sizeof a.vertexBool)))&&
             (a.pixelFloatOnly||(!std::memcmp(a.pixelInt,b.pixelInt,sizeof a.pixelInt)&&!std::memcmp(a.pixelBool,b.pixelBool,sizeof a.pixelBool)))&&
             a.first==b.first&&a.pixelConstants.size()==b.pixelConstants.size()&&
@@ -25,12 +22,38 @@
             });
     }
 
+    static bool sameMaterialPaletteGeometry(const Deferred& a,const Deferred& b){
+        if(a.gpuVertex[0]!=b.gpuVertex[0]||a.gpuIndex!=b.gpuIndex)return false;
+        if(a.sourceReady&&b.sourceReady){
+            // Both packets passed the live range check. Instance the original
+            // range with its stream offset, rather than the compact snapshot.
+            const auto& x=a.sourceDraw;const auto& y=b.sourceDraw;
+            return a.sourceOffset==b.sourceOffset&&a.sourceStride==b.sourceStride&&x.topology==y.topology&&
+                x.base==y.base&&x.minimum==y.minimum&&x.vertices==y.vertices&&x.start==y.start&&x.primitives==y.primitives;
+        }
+        if(!a.resident||!b.resident)return false;
+        const auto& x=*a.mesh;const auto& y=*b.mesh;
+        return y.indexed&&y.topology==x.topology&&
+            a.placement.baseVertex()==b.placement.baseVertex()&&a.placement.minimumVertex()==b.placement.minimumVertex()&&
+            a.placement.indexStart==b.placement.indexStart&&x.vertexCount==y.vertexCount&&x.primitiveCount==y.primitiveCount&&
+            x.streams[0].stride==y.streams[0].stride;
+    }
+
+    static bool sameMaterialPaletteState(const Deferred& a,const Deferred& b){
+        return sameMaterialPaletteGeometry(a,b)&&sameMaterialCaptureState(a,b);
+    }
+
     MaterialPaletteDraw planMaterialPalette(size_t at){
         using namespace NorthlightModelNormalPaletteShader;
         if(materialPalette.unavailable||at+1>=deferred.size())return {};
         const auto& first=*deferred[at];
+        if(!first.mesh)return {};
         const auto& mesh=*first.mesh;
-        if(!first.resident||!first.gpuVertex[0]||!first.gpuIndex||!mesh.indexed||mesh.topology!=D3DPT_TRIANGLELIST||
+#ifdef NORTHLIGHT_PROFILE_BUILD
+        static const bool skipSourcePalette=[](){const char* value=std::getenv("NORTHLIGHT_GAME_SKIP_MATERIAL_SOURCE_PALETTE");return value&&value[0]=='1'&&!value[1];}();
+        if(first.sourceReady&&skipSourcePalette)return {};
+#endif
+        if(!(first.resident||first.sourceReady)||!first.gpuVertex[0]||!first.gpuIndex||!mesh.indexed||mesh.topology!=D3DPT_TRIANGLELIST||
            first.vertexFirst||first.vertexCount!=256||first.states[5]||!sameMaterialPaletteState(first,*deferred[at+1]))return {};
         const auto* program=materialPalette.program(first.vertex,first.states[2]?nullptr:first.pixel); // ReplayState's FOGENABLE
         if(!program){++paletteShaderRefusals;return {};}
@@ -72,8 +95,14 @@
             SUCCEEDED(d->SetStreamSourceFreq(0,D3DSTREAMSOURCE_INDEXEDDATA|batch.instances));
         HRESULT draw=D3D_OK;
         if(submitted){
-            draw=d->DrawIndexedPrimitive(mesh.topology,placement.baseVertex(),placement.minimumVertex(),mesh.vertexCount,placement.indexStart,mesh.primitiveCount);
-            if(SUCCEEDED(draw)){++paletteDraws;palettePackets+=batch.instances;}
+            if(first.sourceReady){
+                const auto& original=first.sourceDraw;
+                draw=d->DrawIndexedPrimitive(original.topology,original.base,original.minimum,original.vertices,original.start,original.primitives);
+            }else draw=d->DrawIndexedPrimitive(mesh.topology,placement.baseVertex(),placement.minimumVertex(),mesh.vertexCount,placement.indexStart,mesh.primitiveCount);
+            if(SUCCEEDED(draw)){
+                ++paletteDraws;palettePackets+=batch.instances;
+                if(first.sourceReady){++sourceDraws;sourcePaletteSaved+=batch.instances-1;}
+            }
         }
         bool restored=SUCCEEDED(d->SetStreamSourceFreq(0,1));
         restored=SUCCEEDED(d->SetStreamSourceFreq(1,1))&&restored;

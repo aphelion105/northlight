@@ -37,11 +37,29 @@ inline NorthlightForever::Frame at(const std::string& map,uint32_t zone,float da
     // Map 530 also contains blood elf/draenei starting areas. Never apply an
     // Outland fallback to an unknown zone, missing tile or another continent.
     if(!p)return f;
-    f.valid=true;storm=std::isfinite(storm)?std::clamp(storm,0.f,1.f):0;
+    f.valid=f.skyValid=true;storm=std::isfinite(storm)?std::clamp(storm,0.f,1.f):0;
     const float daylight=std::clamp(float(std::sin((day-.25f)*6.28318530718f))*4,0.f,1.f);
     const float dusk=std::max(0.f,1-std::fabs(day-.76f)/.075f)*(1-storm);
     const float density=(p->night+(1-p->night)*daylight)*(1+(p->storm-1)*storm);
     const float nightColor[3]={.48f,.59f,.78f},sunset[3]={1.f,.67f,.37f};
+    const bool northrend=map=="Northrend";
+    const float dawn=std::max(0.f,1-std::fabs(day-.24f)/.075f)*(1-storm);
+    const float twilight=northrend?std::max(dawn,dusk):0.f;
+    const float polarBlue[3]={.18f,.37f,.68f},overcast[3]={.50f,.55f,.61f};
+    const float haze[6]={0,.20f,.45f,.68f,.86f,1};
+    for(unsigned c=0;c<3;++c){
+        const float zenith=northrend?.65f*polarBlue[c]+.35f*p->color[c]:.62f*p->color[c];
+        const float night=northrend?.19f*nightColor[c]:.58f;
+        const float level=night+(1-night)*daylight;
+        const float horizon=p->color[c]*level;
+        for(unsigned band=0;band<6;++band){
+            const float color=zenith*level*(1-haze[band])+horizon*haze[band];
+            const float warm=twilight*(.10f+.30f*haze[band]);
+            const float wet=storm*.45f;
+            f.sky.color[band][c]=(color*(1-warm)+sunset[c]*warm)*(1-wet)+overcast[c]*level*wet;
+        }
+        if(northrend)f.sky.color[6][c]=f.sky.color[7][c]=1-(1-sunset[c])*twilight;
+    }
     for(unsigned i=0;i<3;++i){auto& l=f.layer[i];
         l.flag[0]=1;l.flag[1]=1;l.flag[2]=i==1?1:0;l.flag[3]=1;
         l.p[0]=i==0?8.f:0.f;l.p[1]=(i==0?p->density:i==1?p->groundDensity:p->density*.7f*storm)*density;
@@ -63,12 +81,17 @@ inline NorthlightForever::Frame sample(const NorthlightRegionalFog::Region& regi
     for(unsigned c=0;c<3;++c)if(!std::isfinite(position[c])||std::fabs(position[c])>100000)return result;
     const double gx=(WorldZero-position[1])/ChunkSize-.5,gy=(WorldZero-position[0])/ChunkSize-.5;
     const double ix=std::floor(gx),iy=std::floor(gy);const float u=float(gx-ix),v=float(gy-iy);
+    float skyCoverage=0;
     for(unsigned row=0;row<2;++row)for(unsigned col=0;col<2;++col){
         const auto zone=zoneAtChunk(region,int(ix)+int(col),int(iy)+int(row));
-        NorthlightForever::add(result,at(map,zone,day,storm),(col?u:1-u)*(row?v:1-v));
+        const auto frame=at(map,zone,day,storm);
+        const float weight=(col?u:1-u)*(row?v:1-v);
+        NorthlightForever::add(result,frame,weight);
+        if(frame.skyValid)skyCoverage+=weight;
     }
-    // These profiles author only the medium. Preserve the client's regional
-    // lighting, including Outland's coloured sky, instead of publishing black.
+    // Missing neighboring tiles taper fog density without darkening the sky.
+    if(skyCoverage>0&&skyCoverage<1)for(auto& color:result.sky.color)for(float& channel:color)channel/=skyCoverage;
+    // The gradient is authored. The client's regional light budget stays authoritative.
     if(result.valid){std::copy_n(direct,3,result.direct);std::copy_n(ambient,3,result.ambient);}
     return result;
 }

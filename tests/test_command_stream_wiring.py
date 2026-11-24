@@ -40,10 +40,13 @@ create=r[r.index('HRESULT STDMETHODCALLTYPE CreateDevice(UINT adapter'):];create
 device=r[r.index('class Device final'):r.index('class Factory final')]
 checks['CreateDevice: stream flag read before the real create, streamActive before the Device, MULTITHREADED added only when streaming']=(
     'unsigned framesAhead=1,frameSkip=0;bool nameMaskWanted=false,occlusionLocal=false,contactAOWanted=false;const bool stream=NorthlightStream::commandStreamRequested(rootPath,&framesAhead,&frameSkip,&nameMaskWanted,&occlusionLocal,&contactAOWanted);' in create
-    and create.index('streamActive.store(true')<create.index('real->CreateDevice(adapter,type,window,flags,pp,out)')<create.index('new Device(*out,this,presentation)')
+    and create.index('real->CreateDevice(adapter,type,window,flags,pp,out)')<create.index('streamSetup(stream&&SUCCEEDED(hr)&&out&&*out)')<create.index('new Device(*out,this,presentation)')
     and 'if(stream)flags|=D3DCREATE_MULTITHREADED;' in create)
 checks['CreateDevice: any stream failure logs CSTREAM disabled and returns the Device unchanged']=(
-    'logf("CSTREAM disabled reason=%s",reason);return device;' in r and 'streamActive.store(false' in r and 'catch(...){reason="exception";}' in r)
+    'logf("CSTREAM disabled reason=%s",reason);return device;' in r and 'catch(...){reason="exception";}' in r
+    and '~StreamSetup(){rollback();}' in create
+    and 'streamActive.store(previousActive' in create and 'enabled.store(previousCopies' in create
+    and create.index('streamSetup.rollback()')<create.index('->disableHdrStream()'))
 checks['the Device has no CommandStream branch (the stream sits in front of it)']=('commandStream' not in device.lower() and 'NorthlightStream::StreamDevice' not in device)
 checks['the owner handoff runs on the replay thread through the one Device method']=('options.threadStart=[target]{target->adoptOwnerThread();};' in r and r.count('void adoptOwnerThread(){mirrorState.gate.ownerTid=MirrorGuard::threadId();}')==1)
 checks['memory pressure reaches the stream only through the hook atomic']=('NorthlightStream::memoryPressure.store(memoryCaps==1' in r and 'inline std::atomic<bool> memoryPressure{false};' in hooks)

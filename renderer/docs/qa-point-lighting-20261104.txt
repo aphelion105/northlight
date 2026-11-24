@@ -1,90 +1,90 @@
-QA: исчезновение света от фонарей и подозрение на тени молний
+QA report on missing lamp light and possible lightning shadow issues
 2026-11-04
 
-Результат
+Result
 
-В присланном кадре свет фонарей присутствует до теневой коррекции, но почти
-полностью вычитается после неё. Совпадающая локальная модель объясняет этот
-эффект: источник заключён в непрозрачную светящуюся оболочку, которая сама
-попадает в его карту теней. Для молний аналогичный отказ не воспроизведён.
-Исправлен общий механизм владения оболочкой M2-фонаря (см. проверку ниже).
-Шейдеры для этого исправления, MPQ и установленная DLL не изменялись.
+In the sent frame, the lights are present until shadow corrected, but almost
+The matching local model explains this.
+Effect: the source is trapped in a non-translutable light shell, which itself
+For lightning, the same refusal is not repeated.
+The general ownership of the M2-phone shell has been corrected (see verification below).
+The sheaders for this correction, MPQ and the DLL installed did not change.
 
-Данные кадра
+Data frame
 
 - qa_report/session-2944-27084328-0, capture 1, renderer frame 2462.
-- Карта Azeroth, камера (-8992.593, 786.972, 109.516), Штормград.
+- Azeroth map, camera-8992.593, 786.972, 109.516), Stormgrad.
 - Renderer 0.3.217, source c6e39e2f72605c1fdcf36c7e4112fa09fff12dedb541ec5cda9885183ad94cde,
-  сборка 2026-11-03 21:06:10 UTC, DXVK 3.1.1.
-- Выбраны 64 локальных источника; журнал point pool сообщает 16/16 готовых
-  источников теней. PointShadows=1, SoftShadows=1, PointShadowLimit=64.
-- lighting-after-local: средняя линейная яркость RGB = 0.7322375195.
-- current-local-light: средняя линейная яркость RGB = 0.0004808458.
-- Разница: вычтено 99.9343% суммарной линейной яркости локального света;
-  изменены 919392 из 921600 пикселей. Веса RGB: 0.2126/0.7152/0.0722.
-  Это промежуточная радиансная величина, не яркость итогового изображения.
-- Lighting journal экспортирует LocalDirect/LocalFog/composite, но не
-  per-source point-коррекции, кубы point shadows или карты flash shadows.
+  assembly 2026-11-03 21:06:10 UTC, DXVK 3.1.1.
+- 64 local sources selected; point post log reports 16/16 ready
+  PointShadows=1, SoftShadows=1, PointShadowLimit=64.
+- Lighting-affer-local: mean linear luminance RGB = 0.7322375195.
+- Current-local-light: mean linear luminance RGB = 0.0004808458.
+- Variance: 99.9343% total linear luminance of local light subtracted;
+  modified 919392 from 921600 Pixels. RGB weights: 0.2126/0.7152/0.0722.
+  It's an intermediate radiance value, not a brightness of the final image.
+- Lighting journal exports LocalDirect/LocalFog/composite but not
+  per-source point correction, point shadows cubes or flash shadows cards.
 
-Самозатенение фонаря
+Self-intrusion of the lamp
 
-Источник 2050184488017038238: (-8989.830078, 780.141724, 107.163330),
-kind=2 (native M2), flags=2 (CastShadow). ID, координаты, цвет и радиусы
-совпадают с установленным локальным FGL. Из 16 последних источников в POINT
-15 принадлежат одной модели:
+Source 2050184488017038238:(-8989.830078, 780.141724, 107.163330)
+kind=2 (native M2), flags=2 (CastShadow). ID, coordinates, colour and radius
+It's consistent with the local FGL. From 16 the latest sources in the POINT
+15 belong to the same model:
 world/generic/human/passive doodads/lamps/stormwindstreetlamp01.m2.
-В локальном клиенте M2 и SKIN предоставлены Data/patch-D.mpq.
+Local client M2 and SKIN provided Data/patch-D.mpq.
 
-Локальная позиция источника: (0, 0, 4.33415985).
-FGS2 содержит 16 треугольников светящейся оболочки и 288 треугольников корпуса.
-Оба материала непрозрачны (alpha cutoff=0). Оболочка соответствует native
-материалу flags=1 (unlit), blend=0. Unlit не означает прозрачность для теней.
+Local position of source: (0, 0, 4.33415985).
+FGS2 contains 16 triangles of the luminous envelope and 288 triangles of the shell.
+Both materials are not transparent (alpha cutoff=0).
+"Flags" = 1 (unlit), "blend"=0. Unlit does not mean transparency for shadows.
 
-4096 равномерно распределённых по сфере лучей из источника пересекают его
-собственную модель во всех 4096 направлениях. Ближайшее пересечение находится
-в 0.3135..0.6872 мировых единицах. Диагностическое исключение только оболочки
-оставляет заблокированными 1502 направления: корпус продолжает давать тени.
+4096 evenly distributed over the sphere of beams from the source cross it
+The nearest intersection is in all 4096 directions.
+In 0.3135..0.6872 world units, diagnostic exclusion of the shell only
+Leaves 1502 directions blocked: the shell continues to produce shadows.
 
-Текущий world_scene_builder.py:390-400 сохраняет эту непрозрачную геометрию.
-world_point_rendering.inl:416 исключает лишь точно сопоставленный ownGlass;
-wmo_lamp_shadow.h:12 допускает kind=1/3 с GlassEmitter и 8 треугольниками.
-Этому native M2 с flags=2 и 16 треугольниками исключение не соответствует.
-Captured replays также добавляются в pointReplayCandidates без исключения
-собственной светящейся поверхности.
+Current world_scene_builder.py:390-400 retains this non-transparency geometry.
+world_point_rendering.inl:416 excludes only the accurately compared unGlass;
+wmo_lamp_shadow.h:12 allows kind=1/3 with GlassEmitter and 8 triangles.
+This native M2 with flags=2 and 16 triangles does not correspond to the exception.
+Captured replays are also added to the pointReplayCandidates without exception
+your own glowing surface.
 
-Направление исправления: привязать светящуюся оболочку к точному экземпляру
-и источнику M2 и исключать её только из его собственной point-карты, включая
-повторную native-геометрию. Сохранить корпус и затенение от других источников.
-Глобальное удаление unlit-геометрии или всего фонаря здесь некорректно.
+Correction direction: attach the luminous envelope to the exact copy
+and source M2 and exclude it only from his own point card, including
+Re-native geometry, save the hull and shade from other sources.
+The global removal of unlit geometry or the whole lamp is incorrect.
 
-Локальный FGS2 SHA256:
+Local FGS2 SHA256:
 a366a14e9bcff93d0334a2b546dce2bf5bd3295a6206c2e8226320932671abb6.
-В QA нет хеша геометрического кэша тестера: совпадение источников и локальная
-геометрия подтверждают механизм, но не заменяют исходные GPU-кубы тестера.
+QA has no geometric cache tester: source match and local
+Geometry confirms the machine, but does not replace the original GPU cubes of the tester.
 
-Молнии
+Lightning
 
-В захваченной selection нет источников с флагом Flash. Weather capture имеет
-status=unavailable, reason=no-active-weather; само по себе это не исключает
-небесные разряды, поскольку они захватываются из sky-моделей отдельно.
-Поэтому этот QA не позволяет проверить конкретную вспышку в указанных зонах.
+There are no Flash flag sources in the seized selection.
+status=unavailable, reson=no-active-weather; in itself this does not rule out
+Celestial levels, because they're taken from the scy models separately.
+Therefore, this QA does not allow a specific flash to be verified in the specified areas.
 
-На текущем рабочем дереве выполнены:
-- python tests/test_flash_shadow_gpu.py: PASS на native D3D9 и DXVK 3.
-  Production cascades, alpha cutout, движущийся native replay, точное вычитание
-  света, исчезновение вспышки и два источника. Lit=0.0129498, shadowed=0;
-  после удаления препятствия освещённость восстанавливается.
-- python tests/test_sky_lightning_coverage.py: PASS при O0 и O2.
-  17 моделей, 254 batches, 27 с дополнительной маской; 47168 проверок временной
-  шкалы на каждую сборку. Включены icecrownsky, icecrownstormysky,
-  icecrowncitadelsky, icecrownarthasdeathsky, netherstormskybox и
-  dragonblightscarletskybox. Проверка использует view without='z'.
+In the current working tree, the following have been accomplished:
+- Python tests/test_flash_shadow_gpu.py: PASS on native D3D9 and DXVK 3.
+  Production cascades, Alpha Cutout, moving native replay, exact subtraction
+  Lit=0.0129498, shadowed=0;
+  When the barrier is removed, the light is restored.
+- python tests/test_sky_lightning_coverage.py: PASS at O0 and O2.
+  17 Models, 254 batches, 27 with additional mask; 47168 temporary checks
+  The scales for each assembly are included.
+  eskrowncitadelsky, iccrawnarthasdeathsky, netherstormskybox and
+  Dragonblightscarletskybox. The test uses a view without='z'.
 
-Это отдельные проверки захвата и рендеринга, не воспроизведение полного
-игрового кадра. Для локализации зонального сбоя нужен захват во время видимого
-разряда с опубликованным Flash-источником и входами его теневого прохода.
+These are separate checks of capture and redding, not full reproduction.
+The location of the area malfunction requires a capture during the visible event.
+It's published by Flash Source and the entrances to its shadow aisle.
 
-Воспроизводимость
+Reproduction
 
 python .local/qa-point-20261104/analyze.py
 .local/qa-point-20261104/analysis.json
@@ -96,69 +96,69 @@ python .local/qa-point-20261104/analyze.py
 .local/out/test-output/test_flash_shadow_gpu/flash-shadow-gpu/gpu-1.log
 .local/out/test-output/test_sky_lightning_coverage/all-sky-flashes/validation.json
 
-Сборка Zig и GPU-тесты запускались вне restricted sandbox согласно AGENTS.md.
-Игровой процесс не запускался. Исходные QA-файлы не изменялись.
+Zig and GPU tests were launched outside the retried sandbox according to AGENTS.md.
+The game process has not been started. The original QA files have not changed.
 
-Исправление и совместимость с модпаками
+Correction and compatibility with fashion packages
 
-FGS-builder использует выигравшие в цепочке MPQ модель, SKIN и сведения об
-источнике. Общий m2_sources разрешает встроенные источники и источники
-Northlight одинаково для FGS и FGL. Это существенно для штатной модели:
-у неё нет встроенного M2 light; у модели из patch-D он есть.
-Новых списков имён моделей, текстур или SHA-пинов в исправлении нет.
+FGS-buyler uses MPQ, SKIN, and SKIN winning models
+The general m2_sources allow fixed sources and sources.
+Northlight is the same for FGS and FGL. This is essential for the regular model:
+She doesn't have a built-in M2 Light; the patch-D model has it.
+There are no new lists of models' names, textures or SHA-pins in the correction.
 
-Для статической opaque/unlit-оболочки с одним источником внутри сохраняется
-тег этого источника. В FGS3 он превращается в точный sourceId данного
-экземпляра. Оболочка исключается только из собственного point-куба.
-Каркас, соседние объекты и тени от других источников сохраняются; независимый
-декодер солнечных теней читает ту же оболочку как обычную opaque-геометрию.
-Для повторного игрового draw требуется совпадение всех его треугольников
-с геометрией оболочки в мировых координатах. Одного совпадения bounds мало.
+For static opaque/unlit- shell with one source inside retained
+This source's tag. In FGS3, it becomes the exact sourceId of a given source.
+The shell is excluded only from its own point cube.
+Carcass, adjacent sites and shadows from other sources; independent
+The decoder of the sun's shadow reads the same shell as normal opaque-geometrics.
+The replay draw requires a match of all its triangles.
+With the geometry of the envelope in the world coordinates, there's not a single match between the bows.
 
-Проверены stock и active MPQ, неизвестное имя модели и изменённые пропорции.
-stock: 8 треугольников оболочки, 82 каркаса; 4096 -> 1345 перекрытых лучей.
-active: 16 оболочки, 288 каркаса; 4096 -> 1501 перекрытых лучей.
-На GPU active: открылись 249276 из 393216 texels куба; 143940 остались
-перекрыты каркасом. Чужой sourceId даёт прежний куб побитно. Добавление
-повторного native draw оболочки даёт исправленный куб побитно.
-Результаты совпали для native D3D9 и DXVK.
+Checked stock and active MPQ, unknown model name and altered proportions.
+stock: 8 envelope triangles, 82 framework; 4096 -> 1345 closed beams.
+action: 16 casings, 288 framework; 4096 -> 1501 closed beams.
+On GPU action: Open 249276 of 393216 textels cube; 143940 remain
+It's closed with a frame. A foreign sourceId gives the old cube a broken one.
+The re-native draw envelope gives the corrected cube a broken cube.
+The results were consistent with the Native D3D9 and DXVK.
 
-Проверка моделей с lamp/lantern в имени (только способ отбора для аудита,
-не runtime-условие): 17 распознанных моделей из stock и 33 из active.
-Размеры оболочек от 5 до 508 треугольников; во всех этих моделях остаётся
-отдельная затеняющая геометрия. Перечень: .local/qa-lamp-preview-20261104/lamp-coverage.json.
-Это не обещание распознать произвольную некорректную модель. Движущиеся,
-неоднозначные или неотличимые от каркаса оболочки сохраняют затенение.
+Verification of models with lamp/lantern in name (only the method of selection for auditing,
+Not runtime condition: 17 recognized models from stock and 33 from action.
+Dimensions of shell from 5 to 508 triangles; all these models remain
+A separate shaded geometry. List: .local/qa-lamp-preview-20261104/lamp-coverage.json.
+It's not a promise to recognize an arbitrary wrong model.
+Indifferent or indistinguishable sheaths retain shade.
 
-Проверки:
-- python tests/test_m2_lamp_self_shadow.py: x86 O0/O2, sourceId, повторный
-  cache load, paging, лучи, независимый directional loader.
-- python tests/test_m2_lamp_self_shadow_gpu.py: 4 варианта x 2 backend.
-- python tests/test_wmo_lamp_runtime.py: прежние WMO-фонари, stock/active.
-- python tests/test_world_emitter_index.py: 14 тестов.
-- python tests/test_install_world_cache.py: инвалидация и обновление кэша.
-- python scripts/build_renderer.py: production renderer/frd9.dll собрана.
+Checks:
+- python tests/test_m2_lamp_self_shadow.py: x86 O0/O2, sourceId, repeat
+  Cache load, paging, beams, independent directional loader.
+- python tests/test_m2_lamp_self_shadow_gpu.py: 4 version x 2 backend.
+- python tests/test_wmo_lamp_runtime.py: former WMO phony stock/active.
+- python tests/test_world_emitter_index.py: 14 tests.
+- python tests/test_install_world_cache.py: cache disability and updating.
+- python scripts/build_renderer.py: production renderer/frd9.dll collected.
 
-Для применения требуется пересборка world-cache штатным установщиком:
-старый FGS не содержит привязки M2-оболочки к источнику. Зависимости scene
-fingerprint обновлены; проверка свежести кэша не обходится. Рабочий игровой
-кэш при проверках не подменялся: использовалась отдельная копия.
+Application requires a re-assembly of world-case by the regular installer:
+The old FGS does not include a reference to the M2 shell to the source.
+fingerprint updated; cache freshness test is not cost.
+Cash was not replaced during checks: a separate copy was used.
 
-Превью данного кадра
+I'm gonna take this shot.
 
 python tests/render_lamp_self_shadow.py --capture qa_report/session-2944-27084328-0 --output .local/qa-lamp-preview-20261104
 
-before.png — исходный lighting-final-scene из QA.
-after.png — GPU-реконструкция изменения света 15 затронутых фонарей.
-Кубы построены production renderer из локального scene cache; correction
-рассчитана по исходным depth/normals и световым константам. Парная разница
-WorldComposite перенесена на записанный вход MaterialComposite, затем
-выполнен сохранённый MaterialComposite shader. Цветовая основа кадра сохранена.
-Средняя абсолютная ошибка контрольного MaterialComposite относительно
-записанного результата: 0.000114 RGB (менее 1/255).
+before.png is the source lighting-final-scene of QA.
+after.png - GPU-reconstruction of the variation of the light 15 of the affected lamps.
+Cuba built production renderer from local scene cache; control
+calculated from reference depth/normals and light constants.
+The WorldComposition was moved to the recorded entrance of the Material Composite, then
+The color base of the frame is saved.
+Average absolute error of the control Material Composite relative to
+recorded result: 0.000114 RGB (less than 1/255.
 
-Это иллюстрация исправления, а не новый скриншот запущенной игры: capture не
-содержит исходные анимированные casters/stencil. В реконструкции используется
-обычный PCF, в исходной игре был SoftShadows=1. Полное воспроизведение кадра
-и точная форма динамических/мягких теней этим превью не подтверждаются.
-Параметры и sourceId: .local/qa-lamp-preview-20261104/validation.json.
+This is an illustration of the correction, not a new screen shot of the game launched: Capture not
+contains original animated casters/stencil. The reconstruction is used
+A typical PCF, in the original game was SoftShadows=1.
+and the exact shape of dynamic/soft shadows is not confirmed by this advantage.
+Parameters and sourceId: .local/qa-lamp-preview-20261104/validation.json.

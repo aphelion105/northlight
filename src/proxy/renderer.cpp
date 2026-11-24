@@ -1158,7 +1158,7 @@ private:
         if(viewport)*viewport=vp;
         if(!ok&&!quiet){
             ++viewportRejects;
-            if(viewportReports++<8)logf("VIEWPORT GATE: rt=%ux%u fmt=%u msaa=%u back=%ux%u vp=(%u,%u %ux%u z=%.9g..%.9g) HRESULTs=%08lx,%08lx,%08lx",desc.Width,desc.Height,unsigned(desc.Format),unsigned(desc.MultiSampleType),bd.Width,bd.Height,vp.X,vp.Y,vp.Width,vp.Height,vp.MinZ,vp.MaxZ,(unsigned long)rtHR,(unsigned long)backHR,(unsigned long)vpHR);
+            if(viewportReports++<8)logf("VIEWPORT GATE: rt=%ux%u fmt=%u msaa=%u back=%ux%u vp=(%lu,%lu %lux%lu z=%.9g..%.9g) HRESULTs=%08lx,%08lx,%08lx",desc.Width,desc.Height,unsigned(desc.Format),unsigned(desc.MultiSampleType),bd.Width,bd.Height,vp.X,vp.Y,vp.Width,vp.Height,vp.MinZ,vp.MaxZ,(unsigned long)rtHR,(unsigned long)backHR,(unsigned long)vpHR);
         }
         return ok;
     }
@@ -1627,6 +1627,17 @@ private:
 #endif
     template<NorthlightWaterRenderer::UserPointer UserPointer,class Raw,class Draw> void captureGameDraw(IDirect3DVertexShader9* vs,const NorthlightAutoDisplacement::Args& geometry,Raw raw,Draw draw){
         constexpr bool userMemory=UserPointer!=NorthlightWaterRenderer::NoUserPointer;
+#ifdef NORTHLIGHT_PROFILE_BUILD
+        static const bool fusedM2Enabled=[]{
+            const auto* value=std::getenv("NORTHLIGHT_GAME_M2_FUSED_CAPTURE");
+            return !value||value[0]!='0'||value[1];
+        }();
+#else
+        constexpr bool fusedM2Enabled=true;
+#endif
+        if constexpr(!userMemory)if(autoBump&&fusedM2Enabled)
+            autoBump->allowNativeM2Fusion(NorthlightBackend::isPackagedDxvk(selectedBackend)&&
+                                         !hdr.active&&!indexedPairGate&&!particlePairGate,worldDepth,nearZ);
         const auto sourceHint=pendingIndexedSource(geometry.draw,vs);
 #ifdef NORTHLIGHT_REPLAY_STAND
         const bool audit=NorthlightCaptureWork::selected(frame);
@@ -1852,7 +1863,7 @@ private:
         if(count<=4&&celestialDiscs&&celestialEnabled()&&debugMode==0&&worldDebug==0&&!applied&&celestialDiscs->nativeClaimPossible(t,count)){D3DSURFACE_DESC desc;D3DVIEWPORT9 vp={};if(fullViewport(desc,&vp)&&NorthlightWorldDrawDomain::skyClaimPossible(worldMinDepth,worldMaxDepth,vp.MinZ,vp.MaxZ)){ /* viewport band pre-filter: no texture-identity read for a draw outside the sky band */
             skySeen=true;
             claimed=celestialDiscs->claimNativeGlare(t,count);
-            if(!claimed)claimed=celestialDiscs->claimNativeDraw(t,count,true,[&](const char* map,const float* camera){return world->celestialPalette(map,camera);},false,NorthlightQuality::foreverCelestial(world->surfaceSettings()));}}
+            if(!claimed)claimed=celestialDiscs->claimNativeDraw(t,count,true,[&](const char* map,const float* camera){return world->celestialPalette(map,camera);},false,NorthlightQuality::foreverCelestial(world->surfaceSettings()),replacesWorldSkyBackground());}}
     }
     void recoverSkyContext(const D3DSURFACE_DESC& desc){
         if(projectionValid||!skySeen||!world||!celestialDiscs->earlyValid||
@@ -2090,19 +2101,23 @@ private:
     bool mayPrepareParticleDraw(D3DPRIMITIVETYPE topology,UINT primitives,bool skipped){
         if(!particleOn||skipped||applied||!enabled||failed||!world||!NorthlightParticleDraw::supported(topology,primitives))return false;
         const bool routed=particleCapture.route(mirrorState,gateFrame?&particleRouteStats.shaderClassifications:nullptr);
-        const bool budgetRejected=routed&&world->particleProbeBudgetSpent()&&!particleCapture.mayFlash(mirrorState);
+        const bool budgetRejected=routed&&world->particleProbeBudgetSpent()&&
+            !particleCapture.mayEmit(mirrorState,NorthlightEmission::Lightning|NorthlightEmission::SkyLightning);
         if(gateFrame){++particleRouteStats.draws;particleRouteStats.entered+=routed&&!budgetRejected;particleRouteStats.budgetRejected+=budgetRejected;}
         return routed&&!budgetRejected;
     }
     NorthlightParticleCapture::Prepared prepareParticleDraw(bool skipped){
         NorthlightParticleCapture::Prepared out;
         if(!particleOn||skipped||applied||!enabled||failed||!world)return out;
-        NorthlightDrawSnapshot::Ref<IDirect3DVertexShader9> ownedVS;NorthlightDrawSnapshot::Ref<IDirect3DPixelShader9> ps;
+        NorthlightDrawSnapshot::Ref<IDirect3DVertexShader9> ownedVS;NorthlightDrawSnapshot::Ref<IDirect3DPixelShader9> ownedPS;
         IDirect3DVertexShader9* vs=nullptr;
         if(!ext->peekVertexShader(vs)){if(FAILED(ext->GetVertexShader(ownedVS.out())))return out;vs=ownedVS.p;}
         if(vs&&!particleCapture.known(vs))return out;
         DWORD blend=0,destination=0;if(FAILED(ext->GetRenderState(D3DRS_ALPHABLENDENABLE,&blend))||!blend||
             FAILED(ext->GetRenderState(D3DRS_DESTBLEND,&destination))||!NorthlightParticleDraw::destinationBlend(destination))return out;
+        // Ordinary alpha blends need a catalogued emitter. A decoded, known
+        // shader pair can fail that proof before the viewport and camera work.
+        if(destination!=D3DBLEND_ONE&&!particleCapture.mayEmit(mirrorState,~0u))return out;
         D3DVIEWPORT9 viewport{};DWORD depth=0;
         if(FAILED(ext->GetViewport(&viewport))||FAILED(ext->GetRenderState(D3DRS_ZENABLE,&depth)))return out;
         const bool sky=NorthlightWorldDrawDomain::classify(worldMinDepth,worldMaxDepth,viewport.MinZ,viewport.MaxZ)==NorthlightWorldDrawDomain::Band::Sky;
@@ -2117,14 +2132,16 @@ private:
             std::fill(camera,camera+3,0.f);projection[0]=q[0];projection[1]=q[5];projection[2]=q[14];
         }else if(!worldDepth||!NorthlightWorldDrawDomain::accepts(projectionValid,depth!=0,worldMinDepth,worldMaxDepth,viewport.MinZ,viewport.MaxZ)||
             !worldDepthBound()||!world->particleContext(inverse,camera,projection))return out;
-        if(FAILED(ext->GetPixelShader(ps.out())))return out;
-        return particleCapture.prepare(ext,vs,ps.p,spellArgs,inverse,camera,projection,world->particleFrame(),sky);
+        IDirect3DPixelShader9* ps=nullptr;
+        if(!ext->peekPixelShader(ps)){if(FAILED(ext->GetPixelShader(ownedPS.out())))return out;ps=ownedPS.p;}
+        return particleCapture.prepare(ext,vs,ps,spellArgs,inverse,camera,projection,world->particleFrame(),sky);
     }
     void submitParticleDraw(const NorthlightParticleCapture::Prepared& prepared,bool accepted,bool deferred){
         if(prepared.count&&particleOn&&world)NorthlightParticleCapture::Capture::submit(prepared,accepted,deferred,world->particleFrame());
     }
     NorthlightSkyComposition::Capture skyLayers;
     unsigned skyBackgroundFrame=~0u;
+    bool replacesWorldSkyBackground()const{return skyLayers.ready(frame)&&!world->isMenu()&&world->celestialSkyPalette();}
     void composeSkyBackground(){
         if(skyBackgroundFrame==frame||!celestialDiscs||!celestialEnabled()||applied||debugMode||worldDebug)return;
         const bool menu=menuScene&&world->isMenu()&&world->hasContext();
@@ -2145,7 +2162,8 @@ private:
             if(sampled())logf("SKY_BACKGROUND frame=%u draw=%u worldContext=%u result=%s",frame,drawCalls,unsigned(world->hasContext()),result);
             if(audit){if(!observed)audit->bindingSkip("CelestialSkyPS",result);audit->finish(true);}
         };
-        if(!world->atmosphereEnvironment().skyValid){report("palette");return;}
+        const auto* palette=world->celestialSkyPalette();
+        if(!palette){report("palette");return;}
         float view[16],p[3];
         if(!world->skyBackgroundContext(view,p)){report("camera");return;}
         if(!resources(desc.Width,desc.Height,desc.Format,true)){report("resources");return;}
@@ -2156,7 +2174,7 @@ private:
             auto& state=*static_cast<AuditContext*>(context);
             state.capture->bindings("CelestialSkyPS",0x43u,draw,nullptr,true);state.observed=true;
         };
-        report(celestialDiscs->renderSkyBackground(saved.targets[0],scene,nullptr,layers,width,height,p,view,world->atmosphereEnvironment().sky.color,menu,
+        report(celestialDiscs->renderSkyBackground(saved.targets[0],scene,nullptr,layers,width,height,p,view,palette->color,menu,
                audit?record:nullptr,&auditContext)?"drawn":"draw-failed");
     }
     NorthlightAuroraNative::DiagnosticCapture auroraDiagnostic;
@@ -2394,6 +2412,16 @@ private:
     static unsigned spellTextureGeneration(void*){return NorthlightMirrorResources::generation.load(std::memory_order_relaxed);}
     static void spellMarkGuard(void*,void* raw,bool on){NorthlightTrackedBuffers::markSpellGuard(raw,on);}
     static void spellBufferHook(void* context,void* raw,UINT offset,UINT size,DWORD flags,DWORD usage,unsigned locks){static_cast<Device*>(context)->spellBufferWrite(raw,offset,size,flags,usage,locks);}
+    static void materialBufferHook(void* context){
+        auto& device=*static_cast<Device*>(context);
+        if(device.autoBump)device.extensionWork("material buffer write",[&]{
+            ExtensionDevice::RawScope raw(*device.ext);
+            device.autoBump->beforeSourceWrite();
+        });
+    }
+    static NorthlightCaptureMetadata::ReadLease materialGuardBuffer(void* context,void* buffer,bool index,uint64_t end){
+        return NorthlightTrackedBuffers::guardMaterialRead(buffer,index,end,{&Device::materialBufferHook,context});
+    }
     static void spellTextureHook(void* context,void* texture){static_cast<Device*>(context)->spellTextureWrite(texture);}
     static void spellQueryHook(void* context,void* query,DWORD flags){static_cast<Device*>(context)->spellQueryIssue(static_cast<IDirect3DQuery9*>(query),flags);}
     void spellSync(){effectCoverage.endBatch();NorthlightMirrorWrite::pending.store(spell.pending()||(autoBump&&autoBump->pendingTextures())||(modelNormals&&modelNormals->pendingTextures())?1u:0u,std::memory_order_relaxed);} /* what the resource proxies test per texture write */
@@ -3231,7 +3259,7 @@ public:
         // Resource proxies and the command-stream writer serialize Lock/Unlock
         // and device-copy hazards. Without that contract retain immediate alpha capture.
         const bool guardedCapture=spellOn&&mirrorState.active()&&NorthlightStream::streamActive.load(std::memory_order_relaxed);
-        autoBump->setTextureWriteGuard(guardedCapture,&Device::materialPendingChanged,this);
+        autoBump->setTextureWriteGuard(guardedCapture,&Device::materialPendingChanged,this,&Device::materialGuardBuffer);
         modelNormals->setDeferredCapture(guardedCapture,&Device::materialPendingChanged,this);
         logf("CAPTURE_BATCH_POLICY material=1 modelNormals=%u textureGuard=%u sourceLockFlags=0x%x scope=immutable-snapshots",unsigned(guardedCapture),unsigned(guardedCapture),unsigned(NorthlightUpload::readBackLock()));
         mirrorState.beforeDisable=&Device::materialMirrorEscape;mirrorState.disableContext=this;
@@ -4042,8 +4070,12 @@ public:
         // 0.3.192 (DXVK3): NOOVERWRITE read-backs skip the needsReadback wait of a buffer ProcessVertices wrote; the game is not expected to use it.
         if(NorthlightLockMeter::processVertices()&&NorthlightUpload::ReadBackNoOverwrite.load(std::memory_order_relaxed))logf("LOCK METER warning: ProcessVertices called while the NOOVERWRITE read-back flag is on (first call src=%u dest=%u count=%u)",src,dest,count);
         if(gateFrame)++gateCounts.processVertices; /* 0.3.154: up to two generations */
-        NorthlightTrackedBuffers::written(buffer);
         auto* rawBuffer=NorthlightTrackedBuffers::unwrap(buffer);
+        if(autoBump){
+            const auto hook=NorthlightTrackedBuffers::materialWriter(rawBuffer);
+            if(hook.beforeWrite)hook.beforeWrite(hook.context);
+        }
+        NorthlightTrackedBuffers::written(buffer);
         if(spellOn&&spell.pending()){extensionWork("spell buffer write",[&]{spell.onBufferGpuWrite(static_cast<void*>(rawBuffer));});spellSync();spellEventDone("gpuwrite",[&](char* buf,size_t n){std::snprintf(buf,n,"buffer=%p",static_cast<void*>(rawBuffer));});} /* task 34: a GPU-side write to a guarded buffer */
         HRESULT hr=ext->ProcessVertices(src,dest,count,rawBuffer,mirrorResources.unwrap(decl),flags);
         mirrorState.invalidate();
@@ -4070,7 +4102,9 @@ public:
         const auto expanded=[&](auto draw)->HRESULT{if(!nativeMoreLights)return draw();
             const HRESULT result=nativeMoreLights->draw(kind,&mirrorState,handoff,draw,world&&world->ownsNativeExtra());
             if(nativeMoreLights->restoreFailed)failed=true;return result;};
-        const auto final=[&]()->HRESULT{return expanded(submit);};
+        const auto final=[&]()->HRESULT{return expanded([&]{
+            return autoBump?autoBump->submitNativeMaterial(submit,effectCoverage.nativePixel()):submit();
+        });};
         if(!enabled&&!failed&&!hdr.active&&worldDebug==0&&!diagnostics())return final();
         return hdrDraw([&]{
             auto sceneDraw=[&](){
@@ -4183,13 +4217,36 @@ public:
         if(enabled)spellArgs=NorthlightSpellLayer::DrawArgs::primitive(t,start,count);
         return drawHook(t,count,[&](IDirect3DVertexShader9* vs){captureGameDraw<NorthlightWaterRenderer::NoUserPointer>(vs,geometry,raw,draw);},draw,&nativeSky,&skyCaptured,&geometry);}
     HRESULT STDMETHODCALLTYPE DrawIndexedPrimitive(D3DPRIMITIVETYPE t,INT base,UINT min,UINT vertices,UINT start,UINT count) override { Guard mirrorLock(mirrorState.gate);
+#ifdef NORTHLIGHT_PROFILE_BUILD
+        NorthlightStream::ReplayFrameProfile::IndexedDraw* timing=nullptr;
+        if(auto* profile=NorthlightStream::sampledIndexedReplay){
+            const auto& shader=classifyVs(mirrorState.vertexShader);
+            timing=&profile->indexed[shader.terrain?8:shader.wmo?9:shader.family];
+            ++timing->calls;timing->primitives+=count;
+        }
+        const auto drawStart=timing?NorthlightStream::nowNs():0;
+#endif
         NorthlightAutoDisplacement::Args geometry{{t,base,min,vertices,start,count,true}};
         bool nativeSky=false,skyCaptured=false;
         beginIndexedPairDraw();
-        auto raw=[&]{return submitIndexedPair(geometry.draw,[&]{return ext->DrawIndexedPrimitive(t,base,min,vertices,start,count);});};
+        auto raw=[&]{return submitIndexedPair(geometry.draw,[&]{
+#ifdef NORTHLIGHT_PROFILE_BUILD
+            if(timing){
+                const auto submitStart=NorthlightStream::nowNs();
+                const auto result=ext->DrawIndexedPrimitive(t,base,min,vertices,start,count);
+                timing->submitNs+=NorthlightStream::nowNs()-submitStart;++timing->submits;
+                return result;
+            }
+#endif
+            return ext->DrawIndexedPrimitive(t,base,min,vertices,start,count);
+        });};
         auto draw=[&]{return submitGameDraw(count,nativeSky,&skyCaptured,raw,&geometry.draw);};
         if(enabled)spellArgs=NorthlightSpellLayer::DrawArgs::indexed(t,base,min,vertices,start,count);
-        return drawHook(t,count,[&](IDirect3DVertexShader9* vs){captureGameDraw<NorthlightWaterRenderer::NoUserPointer>(vs,geometry,raw,draw);},draw,&nativeSky,&skyCaptured,&geometry);}
+        const auto result=drawHook(t,count,[&](IDirect3DVertexShader9* vs){captureGameDraw<NorthlightWaterRenderer::NoUserPointer>(vs,geometry,raw,draw);},draw,&nativeSky,&skyCaptured,&geometry);
+#ifdef NORTHLIGHT_PROFILE_BUILD
+        if(timing)timing->ns+=NorthlightStream::nowNs()-drawStart;
+#endif
+        return result;}
     HRESULT STDMETHODCALLTYPE DrawPrimitiveUP(D3DPRIMITIVETYPE t,UINT count,const void* data,UINT stride) override { Guard mirrorLock(mirrorState.gate);
         NorthlightAutoDisplacement::Args geometry{{t,0,0,0,0,count,false},nullptr,D3DFMT_UNKNOWN,data,stride};
         bool nativeSky=false,skyCaptured=false;
@@ -4280,7 +4337,7 @@ public:
         NorthlightStream::StreamDevice* stream=nullptr;
         const bool exclusiveOwner=target->setExclusiveOwner(true); /* before the replay thread exists: its calls take the cheap owner entry; a foreign call stays safe */
         try{stream=NorthlightStream::StreamDevice::make(device,this,pp,std::move(options),&reason);}catch(...){reason="exception";}
-        if(!stream){NorthlightStream::streamActive.store(false,std::memory_order_relaxed);NorthlightReplayCopies::enabled.store(false,std::memory_order_relaxed);target->setExclusiveOwner(false);target->adoptOwnerThread(); /* the gate owner is this thread again (a replay thread that ran has been joined) */
+        if(!stream){target->setExclusiveOwner(false);target->adoptOwnerThread(); /* the gate owner is this thread again (a replay thread that ran has been joined) */
 #ifdef NORTHLIGHT_REPLAY_STAND
             if(auto* context=NorthlightStream::StandInputs::currentContext())context->reject();
 #endif
@@ -4315,8 +4372,6 @@ public:
         }
         unsigned framesAhead=1,frameSkip=0;bool nameMaskWanted=false,occlusionLocal=false,contactAOWanted=false;const bool stream=NorthlightStream::commandStreamRequested(rootPath,&framesAhead,&frameSkip,&nameMaskWanted,&occlusionLocal,&contactAOWanted); /* 0.3.192 (CS): CommandStream=0 or an unreadable ini is the old path below; 0.3.200 (pipeline): StreamFramesAhead from the same read; 0.3.212 (task 32): NameMask too */
         upgradeAutoDepth(real,adapter,type,pp,nameMaskWanted||contactAOWanted,"CreateDevice"); // Shared 24-bit depth + reserved stencil; no added bytes over D24X8.
-        if(stream)NorthlightStream::streamActive.store(true,std::memory_order_relaxed); /* before the Device exists: worker core budgets read it once */
-        if(stream)NorthlightReplayCopies::enabled.store(true,std::memory_order_relaxed); /* 0.3.192 (CS): before the first game buffer is wrapped: the replay-side CPU copies of replay_copies.h; never on with CommandStream=0 */
 #ifdef NORTHLIGHT_REPLAY_STAND
         if(stream)logf("REPLAY COPY policy legacy=%u",unsigned(NorthlightReplayCopies::legacyPartialFills()));
 #endif
@@ -4332,6 +4387,24 @@ public:
         const char* captureReason=nullptr;
         auto nativeCapture=SUCCEEDED(hr)&&out&&*out&&stream?NorthlightNativeCapture::Session::fromEnvironment(selfModule,captureReason):std::shared_ptr<NorthlightNativeCapture::Session>{};
 #endif
+        // Device construction reads the worker budget and may wrap buffers.
+        struct StreamSetup {
+            bool pending;
+            bool previousActive=false,previousCopies=false;
+            explicit StreamSetup(bool requested):pending(requested){
+                if(pending){
+                    previousActive=NorthlightStream::streamActive.exchange(true,std::memory_order_relaxed);
+                    previousCopies=NorthlightReplayCopies::enabled.exchange(true,std::memory_order_relaxed);
+                }
+            }
+            void rollback(){
+                if(!pending)return;
+                NorthlightReplayCopies::enabled.store(previousCopies,std::memory_order_relaxed);
+                NorthlightStream::streamActive.store(previousActive,std::memory_order_relaxed);
+                pending=false;
+            }
+            ~StreamSetup(){rollback();}
+        } streamSetup(stream&&SUCCEEDED(hr)&&out&&*out);
         if(SUCCEEDED(hr)&&out&&*out){auto* device=new Device(*out,this,presentation);*out=device;hr=device->warmPointPipelinesAtDeviceInit();if(SUCCEEDED(hr))hr=device->initHdrTargets();if(FAILED(hr)){device->Release();*out=nullptr;return hr;}}
         if(SUCCEEDED(hr)&&out&&*out&&stream){
             IDirect3DDevice9* device=*out;*out=startStream(device,pp,framesAhead,frameSkip,occlusionLocal
@@ -4340,9 +4413,10 @@ public:
 #endif
             );
             if(*out==device){
+                streamSetup.rollback();
                 static_cast<Device*>(device)->disableHdrStream();
                 logf("HDR fallback: CommandStream startup failed");
-            }
+            }else streamSetup.pending=false;
         }
         /* task 45: the game's own thread (the CreateDevice caller) at ABOVE_NORMAL, the replay thread's level, so the replay and its effects no longer
            preempt it for the cores (Wine on macOS maps thread priorities to Mach thread policies). Only the scheduling of this thread changes. */

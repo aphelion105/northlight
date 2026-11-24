@@ -36,7 +36,7 @@ hooks=re.findall(r'if\(count<=4&&celestialDiscs&&celestialEnabled\(\)&&debugMode
 assert len(hooks)==1,len(hooks)
 # item 8: viewport-band pre-filter ahead of the texture-identity claim
 assert 'skyClaimPossible(worldMinDepth,worldMaxDepth,vp.MinZ,vp.MaxZ)' in renderer and renderer.index('skyClaimPossible(')<renderer.index('claimNativeGlare(t,count)')
-assert renderer.count('skyClaim(t,count,claimed);')==2 and renderer.count('return drawHook(t,count,')==4
+assert renderer.count('skyClaim(t,count,claimed);')==2 and renderer.count('drawHook(t,count,')==4
 effects=renderer[renderer.index('    void renderEffects() {'):renderer.index('    bool nameMaskReady(){')]
 assert effects.index('if (applied || !enabled || failed || !projectionValid) return;')<effects.index('celestialDiscs->render(')
 
@@ -53,7 +53,8 @@ assert 'if(i==1)continue;' in late  # never repaint an unattenuated lunar halo a
 assert 'MoonGlareSupport:4.f' in claim and 'surfaceVisible' in claim and 'glareVisible' in claim
 assert 'disc,glareBounds,nullptr,nullptr,0,earlyWorldMaxDepth,1,2,nullptr,false,bodies[i]->emission,true)' in claim
 assert '(occlude&&!fullGlare?0.f:NorthlightCelestialGlow::SunCoreWeight)' in host
-assert host.count('ownFrame=frames;')==3 and 'observer.finishObservations();ownFrame=renderFrame=frames;' in host
+assert host.count('ownFrame=frames;')==3
+assert late.index('observer.finishObservations();')<late.index('ownFrame=renderFrame=frames;')
 assert 'bool owning()const{return ownFrame==frames||ownFrame+1==frames;}' in host
 glare=host[host.index('    bool claimNativeGlare('):host.index('    bool drawDisc(')]
 assert 'const unsigned owned=drawnEarly|drawnLate|offscreenOwned|suppressed|suppressedPrevious|lateOwnedPrevious;' in glare

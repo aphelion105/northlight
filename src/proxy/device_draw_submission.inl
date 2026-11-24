@@ -10,6 +10,10 @@
         if(!enabled&&!failed&&!hdr.active&&worldDebug==0&&!diagnostics()){++drawCalls;return draw();}
         if(gpuScene&&!gpuScene->native.currentFrame(frame)){ExtensionDevice::RawScope raw(*ext);gpuScene->setFrame(frame);}
         if(autoBump)autoBump->beginDraw();
+        struct MaterialDrawScope {
+            NorthlightAutoBump* material;
+            ~MaterialDrawScope(){if(material)material->endNativeMaterialDraw();}
+        } materialDraw{autoBump.get()};
         bool claimed=false,rainBlend=false,mist=false,nativeRain=false;
         auto nativeDraw=[&]{if(autoBump)autoBump->beforeNativeDraw();return nativeEffectDraw(nativeRain,[&]{return aoActorNativeDraw(draw);});};
         bool linearSky=false;

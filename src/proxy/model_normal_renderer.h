@@ -279,7 +279,9 @@ class NorthlightModelNormals {
     }
     // Recycled buffers and queued geometry share the same 8 MiB allowance.
     size_t pendingBytes=0,spareBytes=0;unsigned pendingTextureSlots=0;bool deferred=false,sourceSharing=false;
-    static size_t packetBytes(const Pending& p){return sizeof(Pending)+(p.nonFloat?sizeof(NonFloatConstants):0)+p.ps.capacity()*sizeof(float)+p.sampled.capacity()*sizeof(SampledStage)+p.mesh.capacityBytes()+(p.sharedMesh?p.sharedMesh->capacityBytes():0);}
+    std::array<const NorthlightDrawSnapshot::Mesh*,1024> chargedSources{};
+    size_t sharedMeshBytesAvoided=0;
+    static size_t packetBytes(const Pending& p){return sizeof(Pending)+(p.nonFloat?sizeof(NonFloatConstants):0)+p.ps.capacity()*sizeof(float)+p.sampled.capacity()*sizeof(SampledStage)+p.mesh.capacityBytes();}
     // A miss uploads into a bounded append ring instead of one UP allocation
     // per packet. Reuse only completed spans; DISCARD preserves in-flight draws.
     static constexpr UINT StreamVertexBytes=3u<<20,StreamIndexBytes=1u<<20;
@@ -370,6 +372,7 @@ class NorthlightModelNormals {
 #endif
     }
     void clearPending(){nativeCandidate=nullptr;const bool hadPending=!pending.empty();
+        if(hadPending)chargedSources.fill(nullptr);
         for(auto& p:pending){p->recycle();spareBytes+=packetBytes(*p);spare.push_back(std::move(p));}
         pending.clear();lastConstants={};ownedBanks=0;pendingBytes=0;pendingTextureSlots=0;
 #ifdef NORTHLIGHT_REPLAY_STAND
@@ -511,10 +514,14 @@ class NorthlightModelNormals {
                 bank.intStorage=packet->nonFloat->vertexInts;
                 bank.boolStorage=packet->nonFloat->vertexBools;
             }else packet->nonFloat.reset();
-            // Earlier packets retain their leases until the entire batch clears.
-            // Charge consecutive uses of the same immutable source only once.
-            const bool sharedSource=packet->sharedMesh&&!pending.empty()&&pending.back()->sharedMesh==packet->sharedMesh;
-            const size_t bytes=packetBytes(*packet)-(sharedSource?packet->sharedMesh->capacityBytes():0);
+            // Every published pointer still has an owning packet in this batch.
+            // A slot collision may charge a repeat again, so the limit remains conservative.
+            const auto* shared=packet->sharedMesh.get();
+            const auto key=reinterpret_cast<std::uintptr_t>(shared);
+            auto& charged=chargedSources[((key>>4)^(key>>14))&(chargedSources.size()-1)];
+            const bool sharedSource=shared&&charged==shared;
+            const size_t sharedBytes=shared?shared->capacityBytes():0;
+            const size_t bytes=packetBytes(*packet)+(sharedSource?0:sharedBytes);
             DWORD planes[1]={};const D3DRENDERSTATETYPE planeKeys[]={D3DRS_CLIPPLANEENABLE};
             if(!renderStates(planeKeys,planes)||planes[0]||!renderStates(rasterKeys,packet->raster))return false;
             bank.constantUsage.floats={vs->first,vs->count};bank.constantUsage.booleans={0,vs->reads.b?16u:0u};bank.constantUsage.integers={0,vs->reads.i?16u:0u};
@@ -589,6 +596,7 @@ class NorthlightModelNormals {
             packet->traceOrdinal=traceOrdinal;
 #endif
             pending.push_back(std::move(packet));ownedBanks=neededBanks;peakFloatBanks=std::max(peakFloatBanks,ownedBanks);peakPackets=std::max(peakPackets,pending.size());nativeCandidate=pending.back().get();pendingBytes+=bytes;++queued;pendingTextureSlots|=textureSlots;
+            if(shared){charged=shared;if(sharedSource)sharedMeshBytesAvoided+=sharedBytes;}
             lastConstants=bank;peakBatchBytes=std::max(peakBatchBytes,total);
             if(nativeSection){
                 const auto begin=std::chrono::steady_clock::now();
@@ -635,7 +643,7 @@ public:
         snapshots.setLayoutProvider(&declarations,[](void* c,IDirect3DVertexDeclaration9* decl,UINT* extent){return static_cast<NorthlightVertexDeclarations::Cache*>(c)->captureLayout(decl,extent);});
     }
     ~NorthlightModelNormals(){pendingChanged=nullptr;reset();}
-    void endFrame(){declarationGets=sharedDeclarations=poseDeclarationGets=poseDeclarationPeeks=0;knownTargets=knownPixelShaders=0;peakFloatBanks=peakPackets=peakBatchBytes=0;depthSeeded=0;clearPending();
+    void endFrame(){declarationGets=sharedDeclarations=poseDeclarationGets=poseDeclarationPeeks=0;knownTargets=knownPixelShaders=0;peakFloatBanks=peakPackets=peakBatchBytes=sharedMeshBytesAvoided=0;depthSeeded=0;clearPending();
         paletteWork={};
         release(sharedDepth);
         nativeSections={};nativeSectionAuditTime={};
@@ -751,7 +759,7 @@ public:
         log("MODEL_NORMALS range bank frame=%u reads=%u borrowed=%u legacy=%u",
             frame,rangeRegisters,rangeBankRegisters,unsigned(legacyRangeBank()));
         const size_t depthBytes=size_t(width)*height*4; // D24S8 logical allocation
-        log("MODEL_NORMALS memory frame=%u peakBatchBytes=%zu limitBytes=%zu packetBytes=%zu privateDepthBytes=%zu sharedDepthBytes=%zu",frame,peakBatchBytes,batchLimit,sizeof(Pending),depth?depthBytes:0,sharedDepth?depthBytes:0);nativeMrt.report(frame,log);
+        log("MODEL_NORMALS memory frame=%u peakBatchBytes=%zu limitBytes=%zu packetBytes=%zu privateDepthBytes=%zu sharedDepthBytes=%zu sharedMeshBytesAvoided=%zu",frame,peakBatchBytes,batchLimit,sizeof(Pending),depth?depthBytes:0,sharedDepth?depthBytes:0,sharedMeshBytesAvoided);nativeMrt.report(frame,log);
     }
     struct DepthSeed {IDirect3DTexture9* texture;float nearZ,farZ,minZ,maxZ;};
     static bool legacyDeclarations(){

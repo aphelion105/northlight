@@ -27,7 +27,7 @@ template<class F> static void until(F&& predicate){
     while(!predicate()){assert(nowNs()<deadline);std::this_thread::yield();}
 }
 static void checks(){
-    static_assert(BudgetBytes==(16u<<20)&&kMaxBudgetBytes==(32u<<20),"queue caps unchanged");
+    static_assert(BudgetBytes==(16u<<20)&&kMaxBudgetBytes==(20u<<20),"queue caps");
     for(unsigned n:{64u,128u,192u,256u}){
         Queue q;q.trackIdlePublications(true);q.rotationArmSleep();
         const auto clocks=rotationClockReads;

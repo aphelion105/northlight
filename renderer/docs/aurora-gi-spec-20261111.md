@@ -32,7 +32,7 @@ changes neither rays, bounce count, probe range, capture nor solver work.
 Signed integer support belongs in the quality key registry; existing unsigned
 keys must continue rejecting negative values, overflow and trailing junk.
 
-## Aurora source Р В Р вЂ Р В РІР‚С™Р Р†Р вЂљРЎСљ selected option B
+## Aurora source — selected option B
 
 ### Ownership and source identity
 

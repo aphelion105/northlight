@@ -2973,14 +2973,22 @@ bool Renderer::SaveRenderTarget(IDirect3DDevice9* dev, const std::string& path)
     }
     IDirect3DSurface9* target = nullptr;
     IDirect3DSurface9* copy = nullptr;
+    IDirect3DTexture9* resolved = nullptr;
+    IDirect3DSurface9* resolvedSurface = nullptr;
     D3DSURFACE_DESC desc = {};
     D3DLOCKED_RECT locked = {};
     bool ok = SUCCEEDED(dev->GetRenderTarget(0, &target)) && SUCCEEDED(target->GetDesc(&desc)) &&
-              (desc.Format == D3DFMT_X8R8G8B8 || desc.Format == D3DFMT_A8R8G8B8) &&
-              SUCCEEDED(dev->CreateOffscreenPlainSurface(desc.Width, desc.Height, desc.Format, D3DPOOL_SYSTEMMEM,
-                                                         &copy, nullptr)) &&
-              SUCCEEDED(dev->GetRenderTargetData(target, copy)) &&
-              SUCCEEDED(copy->LockRect(&locked, nullptr, D3DLOCK_READONLY));
+              (desc.Format == D3DFMT_X8R8G8B8 || desc.Format == D3DFMT_A8R8G8B8);
+    if (ok && desc.MultiSampleType != D3DMULTISAMPLE_NONE)
+    {
+        ok = SUCCEEDED(dev->CreateTexture(desc.Width, desc.Height, 1, D3DUSAGE_RENDERTARGET, desc.Format,
+                                          D3DPOOL_DEFAULT, &resolved, nullptr)) &&
+             CopyToTexture(dev, target, resolved) && SUCCEEDED(resolved->GetSurfaceLevel(0, &resolvedSurface));
+    }
+    ok = ok && SUCCEEDED(dev->CreateOffscreenPlainSurface(desc.Width, desc.Height, desc.Format, D3DPOOL_SYSTEMMEM,
+                                                           &copy, nullptr)) &&
+         SUCCEEDED(dev->GetRenderTargetData(resolvedSurface ? resolvedSurface : target, copy)) &&
+         SUCCEEDED(copy->LockRect(&locked, nullptr, D3DLOCK_READONLY));
     // Restoring a positive CaptureFrame can re-trigger an older request. Both
     // this exclusive open and the early check preserve evidence across restarts.
     const int fd = ok ? _open(path.c_str(), _O_CREAT | _O_EXCL | _O_WRONLY | _O_BINARY, _S_IREAD | _S_IWRITE) : -1;
@@ -3007,6 +3015,8 @@ bool Renderer::SaveRenderTarget(IDirect3DDevice9* dev, const std::string& path)
     }
     if (ok)
         copy->UnlockRect();
+    SafeRelease(resolvedSurface);
+    SafeRelease(resolved);
     SafeRelease(copy);
     SafeRelease(target);
     if (written)

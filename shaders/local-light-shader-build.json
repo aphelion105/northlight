@@ -1,6 +1,6 @@
 {
   "derivative_hoist_sha256": "0ed5463a6819a7cd483954a4be2437a350b03d4027c2424b31b0aec6797e8740",
-  "bump_include_sha256": "cb05dd991c89bca3ee07d11f93cfc755a390dc6733a13149e13df9c6ee1f3210",
+  "bump_include_sha256": "c2911ff97e9f2233a3f48085a129851292983cc4630bd1cf235564238b317715",
   "source_sha256": "039932f400b97541e522fb71647b7199f88eb3c3eaf6be0162e42aa6474b9bdb",
   "compiler": "Microsoft d3dcompiler_47 10.0.17134.12 IEEE strict",
   "compiler_sha256": "4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3",
@@ -66,9 +66,9 @@
     },
     "LocalLighting": {
       "target": "ps_3_0",
-      "bytes": 5964,
-      "sha256": "e5db547c8a5152d6cc6f0cc20ca4cd321734f18c48a1f029152c7a42d47e8267",
-      "static_instruction_slots": 367,
+      "bytes": 5976,
+      "sha256": "7452a5cb1c2fffa08cc55fb21f235a1f022ae1695d56f2a99bc2ad08e300e815",
+      "static_instruction_slots": 368,
       "temporary_registers": 16,
       "samplers": [
         0,
@@ -85,7 +85,7 @@
         "mul": 77,
         "max": 8,
         "min": 4,
-        "mov": 27,
+        "mov": 28,
         "texldl": 6,
         "if": 12,
         "else": 12,
@@ -135,9 +135,9 @@
     },
     "LocalLightingSoft": {
       "target": "ps_3_0",
-      "bytes": 4176,
-      "sha256": "435b0db1bb77797c9aa337b7325c8295c488fc048e4ca8069968dd823ea507c9",
-      "static_instruction_slots": 250,
+      "bytes": 4188,
+      "sha256": "06a5c3da938f17ee582816a24e49de5f25c28dbb909ef6fd14fde639e222bed7",
+      "static_instruction_slots": 251,
       "temporary_registers": 9,
       "samplers": [
         0,
@@ -154,7 +154,7 @@
         "mul": 58,
         "max": 4,
         "min": 2,
-        "mov": 15,
+        "mov": 16,
         "texldl": 6,
         "if": 10,
         "else": 10,
@@ -168,9 +168,9 @@
     },
     "LocalLightingPcss": {
       "target": "ps_3_0",
-      "bytes": 7884,
-      "sha256": "4abcfd8b07b9d3f17cdacef6af8823b9b7524d27b6da823965abedd01203a160",
-      "static_instruction_slots": 511,
+      "bytes": 7896,
+      "sha256": "08b85ab455a9b44e0273e698fda9bd57d503cde31a8e099886d387e9ab1271f3",
+      "static_instruction_slots": 512,
       "temporary_registers": 20,
       "samplers": [
         0,
@@ -187,7 +187,7 @@
         "mul": 108,
         "max": 14,
         "min": 6,
-        "mov": 43,
+        "mov": 44,
         "texldl": 7,
         "if": 12,
         "else": 12,

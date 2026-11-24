@@ -4,6 +4,10 @@
         using NorthlightModelNormalSlice::src;
         constexpr UINT size=64;
         NorthlightAutoBump b(&d);b.width=b.heightPixels=size;b.independentCaptureWrites=true;
+        b.setTextureWriteGuard(true,nullptr,nullptr,+[](void*,void*,bool,uint64_t){
+            return NorthlightCaptureMetadata::ReadLease{nullptr,nullptr};
+        });
+        assert(!b.guardSourceRead);
         ok(d.CreateTexture(size,size,1,D3DUSAGE_RENDERTARGET,D3DFMT_A16B16G16R16F,D3DPOOL_DEFAULT,&b.height,nullptr));
         ok(b.height->GetSurfaceLevel(0,&b.target));
         ok(d.CreateTexture(size,size,1,D3DUSAGE_RENDERTARGET,D3DFMT_A8R8G8B8,D3DPOOL_DEFAULT,&b.occlusionMap,nullptr));
@@ -38,11 +42,41 @@
         mesh->streams[0].stride=sizeof(Vertex);mesh->streams[0].bytes.resize(sizeof vertices);
         std::memcpy(mesh->streams[0].bytes.data(),vertices,sizeof vertices);
 
-        const auto render=[&](bool palette,bool fault,unsigned changedRegister,bool readsLighting=false,bool fog=false){
+        constexpr UINT vertexOffset=sizeof(Vertex),sourceBytes=vertexOffset+sizeof vertices;
+        constexpr WORD sourceIndices[]={0,1,2,3};
+        const NorthlightDrawSnapshot::Draw sourceDraw{D3DPT_TRIANGLELIST,-1,1,3,1,1,true};
+        Ref<IDirect3DVertexBuffer9> vb;Ref<IDirect3DIndexBuffer9> ib;
+        ok(d.CreateVertexBuffer(sourceBytes,0,0,D3DPOOL_MANAGED,vb.out(),nullptr));
+        ok(d.CreateIndexBuffer(sizeof sourceIndices,0,D3DFMT_INDEX16,D3DPOOL_MANAGED,ib.out(),nullptr));
+        void* bytes=nullptr;
+        ok(vb.p->Lock(vertexOffset,sizeof vertices,&bytes,0));std::memcpy(bytes,vertices,sizeof vertices);ok(vb.p->Unlock());
+        ok(ib.p->Lock(0,0,&bytes,0));std::memcpy(bytes,sourceIndices,sizeof sourceIndices);ok(ib.p->Unlock());
+        b.setGeometryTracking(+[](void* buffer,bool){return uint64_t(reinterpret_cast<std::uintptr_t>(buffer));},
+            +[](void*,bool){return uint64_t(1);},
+            +[](const NorthlightCaptureMetadata::Request* requests,NorthlightCaptureMetadata::Info* out,unsigned count){
+                for(unsigned i=0;i<count;++i){const auto& request=requests[i];
+                    out[i]={uint64_t(reinterpret_cast<std::uintptr_t>(request.buffer)),1,
+                        request.index?UINT(sizeof sourceIndices):sourceBytes,0,request.index?D3DFMT_INDEX16:D3DFMT_VERTEXDATA,true};}
+            });
+        ok(d.SetVertexDeclaration(decl.p));ok(d.SetStreamSource(0,vb.p,vertexOffset,sizeof(Vertex)));ok(d.SetIndices(ib.p));
+        NorthlightDrawSnapshot::Mesh local;
+        std::shared_ptr<const NorthlightDrawSnapshot::Mesh> gameMesh;
+        assert(b.deferredSnapshots.read(&d,decl.p,sourceDraw,local,nullptr,false,&gameMesh)&&gameMesh&&gameMesh->sourceIdentity);
+
+        const auto render=[&](bool palette,bool fault,unsigned changedRegister,bool readsLighting=false,bool fog=false,bool nativeSource=false,bool guardedSource=false){
             b.materialPalette.unavailable=!palette;d.indexed=d.instanceFailures=0;d.failInstanceBind=fault;
             for(unsigned i=0;i<3;++i){
                 auto p=std::make_unique<NorthlightAutoBump::Deferred>();
                 p->mesh=mesh;p->tag=19;p->vertex=vs.p;vs->AddRef();p->pixel=readsLighting?litPs.p:ps.p;p->pixel->AddRef();p->declaration=decl.p;decl->AddRef();
+                if(nativeSource){
+                    p->mesh=gameMesh;p->sourceDraw=sourceDraw;p->sourceOffset=vertexOffset;p->sourceStride=sizeof(Vertex);
+                    p->gpuVertex[0]=vb.p;vb.p->AddRef();p->gpuIndex=ib.p;ib.p->AddRef();
+                    if(guardedSource){
+                        p->mesh.reset();
+                        p->guardedVertex={vb.p,+[](void*){}};
+                        p->guardedIndex={ib.p,+[](void*){}};
+                    }
+                }
                 p->vertexFloatOnly=p->pixelFloatOnly=true;p->occlusion=true;
                 std::fill_n(p->vertexConstants,1024,0.f);
                 // c0 is a shader literal. c3 and c255 are unread.
@@ -68,6 +102,7 @@
             auto result=pixels(&d,b.target,size,size,D3DFMT_A16B16G16R16F,8);
             const auto aux=pixels(&d,b.occlusionTarget,size,size,D3DFMT_A8R8G8B8,4);result.insert(result.end(),aux.begin(),aux.end());
             const unsigned saved=b.palettePackets-b.paletteDraws;
+            if(nativeSource)assert(b.sourcePaletteSaved==saved);
             b.endFrame();
             return std::make_pair(std::move(result),saved);
         };
@@ -86,5 +121,14 @@
         const auto fogReference=render(false,false,3,false,true);
         const auto fogCandidate=render(true,false,3,false,true);
         assert(d.indexed==3&&fogCandidate.second==0&&fogCandidate.first==fogReference.first);
+        const auto sourceReference=render(false,false,3,false,false,true);
+        assert(d.indexed==3&&sourceReference.first==render(false,false,3).first);
+        const auto sourceFault=render(true,true,3,false,false,true);
+        assert(d.indexed==3&&d.instanceFailures==1&&sourceFault.first==sourceReference.first);
+        const auto sourceCandidate=render(true,false,3,false,false,true);
+        assert(d.indexed==1&&sourceCandidate.second==2&&sourceCandidate.first==sourceReference.first);
+        const auto guardedCandidate=render(true,false,3,false,false,true,true);
+        assert(d.indexed==3&&guardedCandidate.first==sourceReference.first);
+        std::puts("MATERIAL_SOURCE_PALETTE_GPU_PASS draws=3->1 offset=exact negativeBase=exact index16=exact rollback=exact");
         std::puts("MATERIAL_PALETTE_GPU_PASS unreadDraws=3->1 liveDraws=3->2 linkedColorDraws=3->3 fogFallback=1 equalNormalAndOcclusion=1 partialBindFallback=1");
     }

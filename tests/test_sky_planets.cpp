@@ -38,15 +38,15 @@ int main(){
         ++cases;
     }
     assert(cases>=15&&rings>=2);
-    NorthlightCelestial::Context c;float direct[]={1,.8f,.6f};
+    const float direct[]={1,.8f,.6f};
     for(unsigned hour=0;hour<24;++hour)for(bool forever:{false,true}){
-        c.dayFraction=hour/24.f;
-        c.sun.direction[2]=c.moon.direction[2]=1;c.sun.nativeAngularRadius=.12f;c.moon.nativeAngularRadius=.15f;
         for(const char* map:{"Expansion01","Northrend","Azeroth","Expansion01","Northrend"}){
-            NorthlightCelestial::resolveRendererSky(c,direct,forever,map);
-            assert(c.sun.angularRadius==(forever?NorthlightForeverSky::sunRadius(c.dayFraction):.12f));
-            assert(c.moon.angularRadius==(forever?NorthlightForeverSky::moonRadius(c.dayFraction):.15f));
+            NorthlightCelestial::Context c;c.dayFraction=hour/24.f;
+            c.sun.direction[2]=c.moon.direction[2]=1;c.sun.nativeAngularRadius=.12f;c.moon.nativeAngularRadius=.15f;
             const bool outland=std::strcmp(map,"Expansion01")==0;
+            NorthlightCelestial::resolveRendererSky(c,direct,forever,map);
+            assert(c.sun.angularRadius==(forever&&!outland?NorthlightForeverSky::sunRadius(c.dayFraction):.12f));
+            assert(c.moon.angularRadius==(forever&&!outland?NorthlightForeverSky::moonRadius(c.dayFraction):.15f));
             assert(c.lunarBody!=outland&&c.moon.alpha==(outland?0.f:1.f));
             // The smoothed light path retains night illumination without
             // resurrecting an ordinary moon disc in Outland.
@@ -57,6 +57,16 @@ int main(){
                 assert(visible.moonWeight==c.moonWeight);
                 assert(!std::memcmp(visible.moonColor,c.moonColor,sizeof c.moonColor));
             }
+        }
+        NorthlightCelestial::Context outland;outland.dayFraction=hour/24.f;
+        outland.sun.direction[2]=1;outland.sun.nativeAngularRadius=.12f;
+        for(float alpha:{0.f,.4f,1.f})for(float cover:{0.f,.75f,1.f})for(bool nativePlanets:{false,true}){
+            auto sky=outland;sky.sun.alpha=alpha;sky.skyboxCover=cover;sky.nativePlanets=nativePlanets;
+            const auto orbit=NorthlightCelestial::resolveRendererSky(sky,direct,forever,"Expansion01");
+            const float expected=nativePlanets&&cover<1?alpha:0;
+            assert(orbit.sun.direction[2]==1&&sky.sun.alpha==expected&&sky.moon.alpha==0);
+            NorthlightCelestial::applyRendererPolicy(sky,direct);
+            assert(sky.sun.alpha==expected&&sky.moon.alpha==0);
         }
     }
     std::printf("PASS %u authored planet meshes (%u rings), anchor/attribute preservation, no accumulation and map/style transitions\n",cases,rings);

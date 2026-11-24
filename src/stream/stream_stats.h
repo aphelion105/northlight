@@ -13,12 +13,27 @@ constexpr std::size_t kMaxCmdIds=512;   // size of the sync census; command_stre
 struct ReplayFrameProfile {
     struct Entry {std::uint64_t ns=0;unsigned calls=0,observed=0;};
     struct Upload {std::uint64_t lockNs=0,copyNs=0,unlockNs=0,maxLockNs=0,maxCopyNs=0,maxUnlockNs=0,bytes=0;unsigned calls=0,skipped=0,failed=0,clockReads=0,coalesced=0;} upload;
+#ifdef NORTHLIGHT_PROFILE_BUILD
+    struct BufferLock {
+        std::uint64_t ns=0,bytes=0,capacityBytes=0,maxNs=0;
+        unsigned calls=0,slowBytes=0,slowCapacity=0,slowFlags=0,slowUsage=0,slowPool=0;
+    } locks[2][3]{};
+    struct IndexedDraw {
+        std::uint64_t ns=0,submitNs=0,primitives=0;
+        unsigned calls=0,submits=0;
+    } indexed[10]{};
+#endif
     Entry entries[kMaxCmdIds]{};
     static constexpr unsigned StatePrefix=8,StateStride=16;
     std::uint64_t frame=0,totalNs=0,maxNs=0;unsigned calls=0,observed=0,maxId=0;bool enabled=false;
     void begin(bool diagnostics,std::uint64_t id){
         enabled=diagnostics&&id%127==0;frame=id;
-        if(enabled){for(auto& e:entries)e={};totalNs=maxNs=0;calls=observed=maxId=0;upload={};}
+        if(!enabled)return;
+        for(auto& e:entries)e={};totalNs=maxNs=0;calls=observed=maxId=0;upload={};
+#ifdef NORTHLIGHT_PROFILE_BUILD
+        for(auto& kind:locks)for(auto& lock:kind)lock={};
+        for(auto& draw:indexed)draw={};
+#endif
     }
     bool sample(unsigned id,bool stateOnly){
         if(!enabled||id>=kMaxCmdIds)return false;
@@ -39,6 +54,9 @@ struct ReplayFrameProfile {
         if(lock>u.maxLockNs)u.maxLockNs=lock;if(copy>u.maxCopyNs)u.maxCopyNs=copy;if(unlock>u.maxUnlockNs)u.maxUnlockNs=unlock;
     }
 };
+#ifdef NORTHLIGHT_PROFILE_BUILD
+inline thread_local ReplayFrameProfile* sampledIndexedReplay=nullptr;
+#endif
 using Counter=std::atomic<std::uint64_t>;
 inline void add(Counter& c,std::uint64_t n=1){c.fetch_add(n,std::memory_order_relaxed);}
 inline void own(Counter& c,std::uint64_t n=1){c.store(c.load(std::memory_order_relaxed)+n,std::memory_order_relaxed);}
@@ -65,7 +83,7 @@ struct Counters {
     Counter qiMisses{0},foreignEntries{0},foreignPointers{0};
     Counter shadowRefused{0},shadowRefusedBytes{0},shadowLate{0};   // DYNAMIC buffers refused a shadow at creation; shadows granted later at a DISCARD lock
     Counter lockRecordedBytes{0},wholeLockBytes{0};   // bytes copied into the queue by shadow/staged unlocks; the part from whole-buffer locks (size 0)
-    Counter particleUploadTrims{0},particleUploadBytesSaved{0},particleUploadEmpty{0};
+    Counter particleUploadTrims{0},particleUploadBytesSaved{0},particleUploadEmpty{0},particleStagedTrims{0};
     // Per-level texture shadows (own cap, outside the queue budget): locks served from a shadow, shadows made from a fresh
     // lock (nothing to read back) or from one synchronous readback, refusals by the cap.
     Counter texShadowEvicted{0},texShadowFreshUseful{0},texShadowHits{0},texShadowFresh{0},texShadowReadbacks{0},texShadowRefused{0},texShadowRefusedBytes{0};
@@ -82,6 +100,7 @@ struct Counters {
     // 0.3.204 (task 21): zero-copy buffer unlocks (see unlockBuffer): unlocks recorded as a reference into the large buffer's slice (no copy into the queue) and their bytes, DISCARD renames to the spare slice,
     // spare slices allocated for them, and the waits (count, ns) for a slice the replay thread still reads (a busy spare at a rename, or a non-DISCARD/NOOVERWRITE write lock). Game thread.
     Counter zeroCopyUnlocks{0},zeroCopyBytes{0},renames{0},renameAllocs{0},renameWaits{0},renameWaitNs{0},writeWaits{0},writeWaitNs{0};   // rename*: DISCARD renames; write*: waits of the other write locks (flags 0) for a slice's readers
+    Counter stagedDiscards{0};   // small writes queued when every permitted slice is busy
     Counter waitMax{0},waitBudget{0},waitDrain{0},waitAlloc{0},maxRing{0},maxDiscards{0};   // why a DISCARD rename had to wait (ring at its allowed size / budget refused / draining the current slice under memory pressure / allocation failed); the largest ring (non-current slices) in use; the largest per-frame DISCARD count of a buffer (reset by each zerocopy line)
     // 0.3.205 (#34): NOOVERWRITE write locks whose range overlapped bytes the replay thread had not read yet (a zero-copy ref or an unapplied patch), the waits (count, ns) of the few that could not be staged (no Block, the patches
     // already hold a whole buffer, memory pressure, a READONLY lock over a patch), the NOOVERWRITE unlocks staged for that reason and their bytes (zcOverlapStaged, zcOverlapCopyBytes; zcSkipOverlap: those of 4 KiB or more, the not-zero-copy reason). Game thread.
@@ -118,7 +137,7 @@ struct Counters {
     Counter blocksLive{0},blockBytes{0};
     std::atomic<std::int64_t> shadowBytes{0},texShadowBytes{0},largeShadowBytes{0};   // largeShadowBytes: the large allowance, NOT part of shadowBytes (shadowAdmit's cap); 0.3.204 (task 21): also the spare and the retired slices
     std::atomic<std::int64_t> retiredBytes{0},ringBytes{0},ringSlices{0};   // 0.3.204 (task 21): live bytes of retired slices (dropped while the replay thread may still read them) and of ring slices (the buffers' non-current slices); NOT part of shadowBytes/largeShadowBytes (so they never block a shadow grant), but in memory() and under their own budget:
-    std::atomic<std::int64_t> ringLargeBytes{0},ringRegularBytes{0},retiredLargeBytes{0},retiredRegularBytes{0};   // the ring budget per kind (live + retired): regular <= ShadowBudgetBytes, large <= LargeShadowBudgetBytes
+    std::atomic<std::int64_t> ringLargeBytes{0},ringRegularBytes{0},retiredLargeBytes{0},retiredRegularBytes{0};   // live and retired slices share the total ring budget
     std::atomic<std::int64_t> zcPatchBytes{0};   // 0.3.205 (#34): live bytes of staged overlap locks waiting to be written into their slice (BufferState::patches; each buffer's at most its length)
     std::atomic<std::int64_t> rangeShadowBytes{0};
     Counter rangeShadowHits{0},rangeShadowStores{0},rangeShadowRefused{0};

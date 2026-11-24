@@ -366,7 +366,7 @@
  274:       mov r6.y, c8.y
  275:       max r12.xyz, c18, r6.y
  276:       min r6.xyz, r12, r7
- 277:       add r12.xy, r2_abs.zxzw, -c81.y
+ 277:       add r12.xy, r2_abs.zxzw, -c81.zyzw
  278:       cmp r6.xyz, r12.x, r7, r6
  279:       rcp r14.x, r6.x
  280:       rcp r14.y, r6.y

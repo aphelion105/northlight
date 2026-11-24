@@ -114,12 +114,14 @@ struct Tracker {
     struct Bank {std::array<std::array<float,9>,4> sources{};unsigned count=0;};
     std::array<Bank,MemoBanks> frameBanks{};
     std::array<std::uint32_t,MemoBanks> frameFingerprints{};
+    static_assert(MemoBanks==64);
+    std::array<std::uint64_t,MemoBanks> bankBuckets{};
     std::array<float,44> lastOrderedBank{};
     unsigned lastOrderedPoints=0,orderedBankDuplicates=0;
     std::array<NorthlightLocalLights::Light,Capacity> output{};unsigned outputCount=0;
     std::array<std::uint64_t,Capacity> suppressed{};unsigned suppressedCount=0;
     void reset(){count=outputCount=suppressedCount=0;updated=0;nextFrame();}
-    void nextFrame(){banks=backgroundBanks=bankDuplicates=observed=duplicates=dropped=0;lastOrderedPoints=orderedBankDuplicates=0;}
+    void nextFrame(){banks=backgroundBanks=bankDuplicates=observed=duplicates=dropped=0;lastOrderedPoints=orderedBankDuplicates=0;bankBuckets.fill(0);}
     bool admit(const float* bank,unsigned points=4,bool actor=true){
         if(!bank||!points||points>4)return false;
         // The last valid input is still in the ring. Consecutive model sections
@@ -134,9 +136,8 @@ struct Tracker {
         for(unsigned i=0;i<points;++i)for(unsigned k=0;k<3;++k){auto& s=key.sources[i];s[k]=bank[4*i+k];s[3+k]=bank[4*(4+i)+k];s[6+k]=bank[4*(8+k)+i];}
         for(unsigned i=0;i<points;++i)for(float v:key.sources[i])if(!std::isfinite(v))return false;
         std::sort(key.sources.begin(),key.sources.begin()+points);
-        // Scan compact fingerprints before touching the banks. Zero and
-        // subnormal values share a tag because the game's FP mode may compare
-        // them as equal. Matches still need the full comparison.
+        // Zero and subnormal values share a tag because the game's FP mode
+        // may compare them as equal. Matches still need the full comparison.
         const auto fingerprintWord=[](const float& value){
             std::uint32_t bits;std::memcpy(&bits,&value,sizeof bits);
             return (bits&0x7f800000u)?bits:0u;
@@ -150,7 +151,12 @@ struct Tracker {
         }
         lastOrderedPoints=points;
         std::memcpy(lastOrderedBank.data(),bank,orderedBytes);
-        for(unsigned i=0;i<std::min(banks,MemoBanks);++i){
+        const auto bucket=[](std::uint32_t hash){return (hash^(hash>>8)^(hash>>16)^(hash>>24))&(MemoBanks-1);};
+        auto& matches=bankBuckets[bucket(fingerprint)];
+        // Each bit names one resident ring slot. Hash collisions and equal
+        // fingerprints are resolved without changing the FIFO eviction order.
+        for(std::uint64_t pending=matches;pending;pending&=pending-1){
+            const unsigned i=unsigned(__builtin_ctzll(pending));
             if(frameFingerprints[i]!=fingerprint)continue;
             const auto& entry=frameBanks[i];
             if(entry.count==points&&
@@ -159,6 +165,9 @@ struct Tracker {
             }
         }
         const unsigned slot=banks++%MemoBanks;
+        const auto bit=std::uint64_t{1}<<slot;
+        if(banks>MemoBanks)bankBuckets[bucket(frameFingerprints[slot])]&=~bit;
+        matches|=bit;
         frameFingerprints[slot]=fingerprint;frameBanks[slot]=key;if(!actor)++backgroundBanks;return true;
     }
     void observe(const Native& n,std::uint32_t now,const std::vector<NorthlightLocalLights::Light>& fixed,const float* camera=nullptr,std::uint64_t nativeId=0,std::uint32_t flags=0,std::uint32_t fixtureTag=0,const StaticLightIndex* fixedIndex=nullptr){

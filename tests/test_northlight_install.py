@@ -309,7 +309,7 @@ class Preflight(Base):
         self.assertIn('--locale', self.refused())
 
     def test_non_ascii_path(self):
-        moved = self.base / 'Игра-Äpfel-世界-🎮' / 'WoW'
+        moved = self.base / 'Spiel-Äpfel-世界-🎮' / 'WoW'
         moved.parent.mkdir(parents=True); self.client.rename(moved); self.client = moved
         self.installer().install(self.client, instances='classic-raids')
         report = self.installer().install(self.client)

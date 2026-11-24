@@ -4,10 +4,10 @@ The latest client log is the r56 build (`a38d722dd348d3137fc5b5fb36ed8491774cdac
 
 ## What the log establishes
 
-- Foreground frame windows 2447РІР‚вЂњ2807 average 23.175РІР‚вЂњ26.997 ms (37РІР‚вЂњ43 FPS). The scene remains expensive after geometry warms up.
+- Foreground frame windows 2447–2807 average 23.175–26.997 ms (37–43 FPS). The scene remains expensive after geometry warms up.
 - At frame 2794 the GPU timestamp intervals are GameScene 11.352 ms, ModelNormals 1.555 ms and Effects 4.710 ms. At frame 2540, the CPU profile records capture 4.043 ms and effects 2.869 ms. These overlapping CPU/GPU intervals cannot be added into a utilization percentage or interpreted as exclusive GPU execution.
-- The largest sampled EFFECT component outside AO is RemovalSmooth: 0.617 ms at 2667 and 1.400 ms at 2794. WorldComposite is about 0.46РІР‚вЂњ0.50 ms. AO is unchanged.
-- The largest post-startup EVENT wait, 154.4993 ms at frame 784, is in the pre-world/unfocused section. The world section still includes a 44.6915 ms wait at 2423 and approximately 10РІР‚вЂњ12 ms waits in warmed samples. This iteration does not change synchronization or claim these waits are eliminated. Accumulated scheduler pause time is not independently removable GPU wait time.
+- The largest sampled EFFECT component outside AO is RemovalSmooth: 0.617 ms at 2667 and 1.400 ms at 2794. WorldComposite is about 0.46–0.50 ms. AO is unchanged.
+- The largest post-startup EVENT wait, 154.4993 ms at frame 784, is in the pre-world/unfocused section. The world section still includes a 44.6915 ms wait at 2423 and approximately 10–12 ms waits in warmed samples. This iteration does not change synchronization or claim these waits are eliminated. Accumulated scheduler pause time is not independently removable GPU wait time.
 - By frame 2400, `HDR_WORK` reports 1,659 compatibility layers and 13,760,409,600 layer pixels: each layer is charged a complete 4K surface. The log includes fixed-function sky draws with FVF `0x152`, stage-0 `COUNT2`, texture/diffuse MODULATE for RGB and alpha, and SRCALPHA/ONE blending. These were rejected by the old direct-UV guard solely because their vertices were not pretransformed.
 
 ## Change

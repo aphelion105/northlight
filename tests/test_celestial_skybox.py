@@ -19,9 +19,12 @@ host=fp.src('celestial_disc_renderer.h').read_text()
 claim=host[host.index('template<class Palette> bool claimNativeDraw('):host.index('    bool claimNativeGlare(')]
 late=host[host.index('    bool render(IDirect3DSurface9*'):host.index('    bool renderRing(')]
 # One decision per frame: the claim decides from its context read, render() only when no claim did; endFrame resets it.
-assert 'if(!skyboxTrigger&&skyMode.skybox())return claimSuppress(body);' in claim and 'else if(skyboxFrame(currentSky))return claimSuppress(body);' in claim
-assert claim.index('else if(skyboxFrame(currentSky))')<claim.index('resolveRendererSky(')<claim.index('drawDisc(')  # ordinary planet claims retain the skybox fallback
-assert 'const bool skybox=skyboxFrame(context);' in late
+assert 'if(!skyboxTrigger&&skyMode.skybox())return claimSuppress(body);' in claim and 'else if(skyboxFrame(currentSky,replaceBackground))return claimSuppress(body);' in claim
+assert claim.index('else if(skyboxFrame(currentSky,replaceBackground))')<claim.index('resolveRendererSky(')<claim.index('drawDisc(')  # ordinary planet claims retain the skybox fallback
+assert 'const bool skybox=skyboxFrame(context,replaceBackground);' in late
+assert late.index('if(skyMode.replacingBackground&&!skyLayers)return false;')<late.index('renderFrame=frames')
+glare=host[host.index('if(!haloResources())return false;\n            const float cloudControl'):host.index('const float skyControl[]=')]
+assert 'const float cloudControl[]={0,0,0,skyLayers?1.f:0.f};' in glare and 'SetTexture(6,skyLayers)' in glare
 assert 'void endFrame(){' in host and 'skyMode.endFrame();}' in host
 assert 'bool claimSuppress(int body){\n        if(!NorthlightCelestial::suppressNative(renderFrame,frames))return false;' in host  # as the pre-planet-phase F1b: needs a render() last frame
 assert 'ownFrame=renderFrame=frames;' in late

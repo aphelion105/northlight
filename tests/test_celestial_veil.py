@@ -5,14 +5,13 @@ sequence (test_celestial_veil.cpp), plus static checks of the call site order
 (after water, before UI, gated like the discs), the raw-depth classification,
 the halo's source-depth occlusion and the slot budgets. No device or game."""
 
-from source_units import source_text
 import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 import northlight_paths as fp
 import hashlib,json,os,subprocess,tempfile
 HERE=Path(__file__).resolve().parent
 
 with tempfile.TemporaryDirectory(prefix='northlight-celestial-veil-') as tmp:
-    binary=str(Path(tmp)/'test')
+    binary=str(Path(tmp)/('test.exe' if os.name=='nt' else 'test'))
     command=([str(fp.zig()),'c++','-target','x86-windows-gnu','-std=c++17','-O2','-UNDEBUG'] if os.name=='nt' else
              ['c++','-std=c++17','-O1','-g','-fsanitize=address,undefined','-fno-omit-frame-pointer'])
     subprocess.run([*command,*fp.test_include_flags(),str(HERE/'test_celestial_veil.cpp'),'-o',binary],env=fp.zig_env(),check=True)
@@ -21,22 +20,21 @@ assert native.startswith('PASS'),native
 
 def body(source,start):
     i=source.index(start);return source[i:source.index('\n}\n',i)+3]
-renderer=source_text(fp.src('renderer.cpp'))
-effects=renderer[renderer.index('    void renderEffects() {'):renderer.index('template<class Capture> void prepareDraw(')]
+effects=fp.src('device_frame_effects.inl').read_text()
 order=['if (applied || !enabled || failed || !projectionValid) return;',
-       'const bool celestial=celestialDiscs&&world&&debugMode==0&&worldDebug==0;',
+       'const bool celestial=celestialDiscs&&celestialEnabled()&&!skyLayers.native(frame)&&debugMode==0&&worldDebug==0;',
        'if(celestial&&!hdr.active)renderCelestial(saved.targets[0]);',
        'gpuProfile->mark("CelestialDiscs");',
        'if(celestial&&!hdr.active){celestialDiscs->renderRing();gpuProfile->mark("CelestialRing");}',
        'ext->StretchRect(saved.targets[0], nullptr, sceneSurface',
+       'if(celestial){renderCelestial(hdrFrame.surface());celestialDiscs->renderRing();gpuProfile->mark("HDRCelestial");}',
        'world->render(outputTarget,',
-       'if(linearHdr){renderCelestial(outputTarget);celestialDiscs->renderRing();}',
        'if(!linearHdr)celestialDiscs->renderVeil(outputTarget,NorthlightCelestialGlow::hazeAtSun(haze.haze[3],haze.shape[2],sunElevation),world->skyTransmittance());',
        'gpuProfile->mark("CelestialVeil");',
        'applied = true;']
 at=[effects.index(s) for s in order]
 assert at==sorted(at),list(zip(order,at))
-veil_site=effects[effects.index('        if(celestial){\n            if(linearHdr)'):effects.index('applied = true;')]
+veil_site=effects[effects.index('        if(celestial){\n            const auto& haze'):effects.index('applied = true;')]
 assert 'if(celestial){' in veil_site and 'SetRenderTarget' not in veil_site
 assert 'IDirect3DSurface9* outputTarget=linearHdr?hdrPresentBack:saved.targets[0];' in effects
 
@@ -54,8 +52,8 @@ assert 'const float cloudControl[]={0,0,0,skyLayers?1.f:0.f};' in ring
 assert 'd->SetPixelShaderConstantF(49,cloudControl,1);d->SetTexture(6,skyLayers);' in ring
 assert 'for(unsigned k:{0u,2u,3u,4u,6u})' in ring
 draw=host[host.index('    bool drawDisc('):host.index('    // Call only for the original draw')]
-assert draw.index('const float cloudControl[]={0,0,0,!i&&skyLayers?1.f:0.f};')<draw.index('"halo visibility draw"')
-assert 'd->SetPixelShaderConstantF(49,cloudControl,1);d->SetTexture(6,!i?skyLayers:nullptr);' in draw
+assert draw.index('const float cloudControl[]={0,0,0,skyLayers?1.f:0.f};')<draw.index('"halo visibility draw"')
+assert 'd->SetPixelShaderConstantF(49,cloudControl,1);d->SetTexture(6,skyLayers);' in draw
 
 shader_path=fp.src('celestial_disc_effects.hlsl');shader=shader_path.read_text()
 # Disc and ring share source-depth occlusion, including immediate full coverage.

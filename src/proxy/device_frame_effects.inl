@@ -54,7 +54,10 @@
         // of GameScene and cannot be attributed by this interval alone.
         surfaceTimerOpen=world&&world->gpuBudgetMs()&&gpuTimer->begin(frame);
         IDirect3DSurface9* materialDepth=nullptr;
-        if(autoBump&&autoBump->finishCaptures())materialDepth=autoBump->completedPrivateDepth();
+        if(autoBump&&autoBump->finishCaptures()){
+            materialDepth=autoBump->completedPrivateDepth();
+            if(!autoBump->finishFusedM2(worldDepth,depthTex,nearZ,farZ,worldMinDepth,worldMaxDepth))return;
+        }
         if(sceneSplit)gpuSceneProfile->mark("MaterialCapture");
         if(modelNormals){const NorthlightModelNormals::DepthSeed seed{depthTex,nearZ,farZ,worldMinDepth,worldMaxDepth};
             const bool timed=sceneSplit&&NorthlightRenderThreadProbe::sampleFrame(frame)&&cpuFrequency.QuadPart>0;
@@ -124,7 +127,7 @@
             if(world->celestialContext(sky,inverseView,projection)){sunElevation=sky.sun.direction[2]-sky.horizonSine; /* over the camera's far edge, as the composite's haze band */
                 celestialDiscs->setWeatherGain(world->weatherEffects().discGain()*world->underwaterScale()); /* 0.3.198 (rain): the discs, glare and veil follow the weather */
                 celestialDiscs->setSkyLayers(skyLayers.texture(frame));
-                celestialDiscs->render(target,depthTex,waterMask,width,height,world->legacyFogParameters(),worldMinDepth,worldMaxDepth,nearZ,farZ,projection,inverseView,sky,celestialGlowHue());}
+                celestialDiscs->render(target,depthTex,waterMask,width,height,world->legacyFogParameters(),worldMinDepth,worldMaxDepth,nearZ,farZ,projection,inverseView,sky,celestialGlowHue(),replacesWorldSkyBackground());}
         };
         if(celestial&&!hdr.active)renderCelestial(saved.targets[0]);
         gpuProfile->mark("CelestialDiscs");

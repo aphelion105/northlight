@@ -16,7 +16,7 @@ static void words(const std::string& path,std::initializer_list<uint32_t> data){
 }
 int main(int argc,char** argv){
     assert(argc==2);namespace fs=std::filesystem;
-    const auto root=fs::u8path(argv[1])/fs::u8path(u8"Игра Ä 世界 🎮");fs::create_directories(root);
+    const auto root=fs::u8path(argv[1])/fs::u8path(u8"Spiel Ä 世界 🎮");fs::create_directories(root);
     const auto path=[&](const char* name){return (root/fs::u8path(name)).u8string();};
     // Real readers must decode UTF-8 irrespective of the Windows ANSI code page.
     words(path("scene.fgs"),{0x32534746,2,0,0,0});

@@ -26,11 +26,11 @@ struct BufferState {
     // DISCARD locks per frame (StreamCore::frameNo): discNow in frame discFrame, discMax the largest count of the last kDiscardWindowFrames frames (it decays); they size the ring (StreamCore::allowedSlices).
     std::uint64_t discFrame=0,discMaxFrame=0;unsigned discNow=0,discMax=0;
     // 0.3.205 (#34): the zero-copy refs of the CURRENT slice the replay thread has not passed, in seq order, with their hull pendMin/pendMax (a quick "no overlap" exit). Each reads its range of the slice until it retires:
-    // a NOOVERWRITE lock overlapping one would write bytes the replay thread is still reading. Such a lock is staged instead (prepareSliceWrite, lockBuffer): the game writes a Block, its unlock queues that Block, and the
+    // a NOOVERWRITE lock overlapping one would write bytes the replay thread is still reading. Such a lock is staged instead (prepareSliceWrite, lockBuffer): the game writes scratch or a Block, its unlock queues the data, and the
     // bytes wait here as a patch until the replay thread has passed seq (every ref that read the range); applyPatches then writes them into the slice. Patches are in creation order; one that overlaps an earlier one has a
     // seq >= the earlier one's (overlapSeq counts unapplied patches too), so applying every passed one in order keeps the newest bytes. While a patch is unapplied no lock gets the slice's pointer over its range and no
     // ref or copy is recorded from it (such a lock is staged too). patchBytes: their sum, at most the buffer's length (else the lock waits); patchMinSeq: their lowest seq (applyPatches has nothing to do below it).
-// stageSeq: the current Staged lock is such an overlap stage (0 = an ordinary one).
+    // stageSeq: a staged lock waits for this earlier reader before applying its patch (0 = an ordinary staged lock).
     struct PendingRef {std::uint64_t seq;UINT off,end;};
     std::vector<PendingRef> pend;UINT pendMin=0,pendMax=0;
     struct Patch {std::uint64_t seq;UINT off;std::vector<unsigned char> bytes;};
@@ -278,7 +278,7 @@ inline unsigned noteDiscard(StreamCore& c,BufferState& s){
 constexpr std::size_t kZeroCopyMin=4096;   // a smaller range keeps the inline copy (cheaper than a reference and its bookkeeping)
 // Game thread: a write lock of a DYNAMIC buffer's current slice (s.shadow). The replay thread may still read that slice for zero-copy unlocks recorded earlier (s.sliceSeq), so:
 // no pending reader: as it is. DISCARD (the contents are undefined): the game gets another slice of the buffer's ring, the old one stays (renamed) for its readers: the oldest free one (its readers retired); else a new one if the
-// ring has room (framesAhead+2 slices in all), memory allows (the ring budget: regular rings up to the base buffer-shadow cap, large rings up to the large allowance, both apart from the shadows' own caps) and the allocation succeeds; else the game waits for the OLDEST busy slice (exact).
+// ring has room, the separate ring budget allows it and the allocation succeeds; else the game waits for the oldest busy slice.
 // NOOVERWRITE: the D3D9 contract says the game writes only bytes the GPU does not read, but the replay thread's zero-copy unlocks (refs) read game-side bytes of ranges the GPU never uses: a NOOVERWRITE lock overlapping the range of an
 // unreplayed ref (or of an unapplied patch) returns that seq in `stage` (counted zcOverlapLocks), and lockBuffer stages the lock instead of handing out the slice (0.3.205, #34: no wait; the cost is copies of the locked bytes only).
 // A NOOVERWRITE lock over no such range: as it is. Any other write: waits for the readers (exact).
@@ -302,11 +302,18 @@ inline bool prepareSliceWrite(ProxyBase& self,BufferState& s,DWORD eff,bool& zc,
         for(std::size_t i=0;i<s.ring.size();++i)if(rep>=s.ring[i].seq&&(pick==s.ring.size()||s.ring[i].seq<s.ring[pick].seq))pick=i;
         if(pick==s.ring.size()&&s.ring.size()+1>=allowed)atMax=true;
         else if(pick==s.ring.size()){
-            // 0.3.204 (task 21): ring slices have a fixed budget of their own (not the adaptive cap, not counted in shadowBytes/largeShadowBytes): regular rings (live + retired) up to RingRegularBudgetBytes,
-            // large rings up to the large allowance
-            const auto rb=s.large?q.stats.ringLargeBytes.load(std::memory_order_relaxed)+q.stats.retiredLargeBytes.load(std::memory_order_relaxed)
-                                 :q.stats.ringRegularBytes.load(std::memory_order_relaxed)+q.stats.retiredRegularBytes.load(std::memory_order_relaxed);
-            const bool room=(rb>0?std::size_t(rb):0)+len<=(s.large?LargeShadowBudgetBytes:RingRegularBudgetBytes);
+            // A resource released on the replay thread can move its slices to the retire list.
+            std::lock_guard<std::mutex> lock(c.texMutex);
+            const auto regular=std::size_t(q.stats.ringRegularBytes.load(std::memory_order_relaxed)+
+                                           q.stats.retiredRegularBytes.load(std::memory_order_relaxed));
+            const auto large=std::size_t(q.stats.ringLargeBytes.load(std::memory_order_relaxed)+
+                                         q.stats.retiredLargeBytes.load(std::memory_order_relaxed));
+            // A busy regular ring can borrow unused space from the large allowance.
+            // Keep at least 20 MiB available to large rings and count retired slices too.
+            constexpr std::size_t regularBorrowBytes=16u<<20;
+            const auto regularLimit=RingRegularBudgetBytes+(pressure?0:regularBorrowBytes);
+            const bool room=(s.large?large+len<=LargeShadowBudgetBytes:regular+len<=regularLimit)&&
+                regular+large+len<=RingRegularBudgetBytes+LargeShadowBudgetBytes;
             if(!room)noRoom=true;
             else{
                 try{BufferState::Slice sl;sl.mem.resize(len+kLockSlack);sl.frame=c.frameNo;s.ring.push_back(std::move(sl));pick=s.ring.size()-1;}catch(...){pick=s.ring.size();allocFailed=true;}   // (resize: uninitialized, the contents of a DISCARD are undefined)
@@ -314,6 +321,17 @@ inline bool prepareSliceWrite(ProxyBase& self,BufferState& s,DWORD eff,bool& zc,
             }
         }
         if(pick==s.ring.size()){   // none free, none allowed: why (the zerocopy line's waitWhy)
+            // A short DISCARD can start in a queued block while the old readers keep their slice.
+            // Keep their sequence and ranges intact for the staged write and following appends.
+            if(!s.large&&!pressure&&!inPumpedWait&&s.size&&s.size<=MaxInlinePayload-kLockSlack){
+                if(Block* block=q.tryAllocBlock(s.size+kLockSlack,false)){
+                    dropPatches(q,s);
+                    std::memset(block->data(),0,s.size);
+                    s.stage=block;
+                    stage=s.sliceSeq;
+                    return true;
+                }
+            }
             own(atMax?q.stats.waitMax:noRoom?q.stats.waitBudget:allocFailed?q.stats.waitAlloc:q.stats.waitMax);
             if(s.ring.empty()){if(!waitSliceSeq(c,s.sliceSeq,SliceWait::Rename))return false;clearPending(s);dropPatches(q,s);return true;}   // no second slice: the readers must finish before the game overwrites this one
             pick=0;for(std::size_t i=1;i<s.ring.size();++i)if(s.ring[i].seq<s.ring[pick].seq)pick=i;   // the oldest busy one
@@ -355,10 +373,18 @@ inline HRESULT lockBuffer(ProxyBase& self,BufferState& s,UINT off,UINT size,void
         // the buffer is busy while prepareSliceWrite may wait (a PUMPED wait): a nested Lock of it fails as a double lock, evictions and ring trimming skip it; a nested ProcessVertices
         // can still drop its shadow (checked below)
         s.mode=BufferState::Shadow;bool ok=prepareSliceWrite(self,s,eff,zc,stage);s.mode=BufferState::Free;
-        if(s.shadowOn&&ok&&stage){   // 0.3.205 (#34): a NOOVERWRITE lock over bytes the replay thread still reads: the game writes a staged Block with the range's current bytes (its unlock keeps them as a patch)
-            Block* b=nullptr;
-            if(s.patchBytes+size<=length&&(b=q.tryAllocBlock(size+kLockSlack))){
-                readSliceRange(s,b->data(),off,size);b->used=size;s.mode=BufferState::Staged;s.stage=b;s.stageSeq=stage;touchBufferShadow(*self.core,s);*pp=b->data();own(q.stats.lockAsync);return D3D_OK;
+        if(s.shadowOn&&ok&&stage){   // The unlock keeps a patch for the held slice until its earlier readers finish.
+            Block* b=s.stage;
+            if(!b&&s.patchBytes+size<=length){
+                if(unsigned char* scratch=self.core->scratch.take(size,s.scratchSlot)){
+                    readSliceRange(s,scratch,off,size);
+                    s.mode=BufferState::Scratch;s.stageSeq=stage;touchBufferShadow(*self.core,s);
+                    *pp=scratch;own(q.stats.lockAsync);return D3D_OK;
+                }
+            }
+            if(b||(s.patchBytes+size<=length&&(b=q.tryAllocBlock(size+kLockSlack)))){
+                if(!(eff&D3::kLockDiscard))readSliceRange(s,b->data(),off,size);
+                b->used=size;s.mode=BufferState::Staged;s.stage=b;s.stageSeq=stage;touchBufferShadow(*self.core,s);*pp=b->data();own(q.stats.lockAsync);return D3D_OK;
             }
             // no Block or the patches already hold a whole buffer: the exact wait (the range is free once the replay thread has passed `stage` and the passed patches are in)
             s.mode=BufferState::Shadow;ok=waitSliceSeq(*self.core,stage,SliceWait::Overlap);s.mode=BufferState::Free;
@@ -451,27 +477,42 @@ inline HRESULT unlockBufferImpl(ProxyBase& self,BufferState& s,bool& zcDone,bool
         }
         s.written=true;
         return D3D_OK;}
-    case BufferState::Scratch:{
-        noteRecorded(self,s,s.size);
-        rememberBufferRange(self,s,self.core->scratch.slot[s.scratchSlot].data());
-        auto* a=static_cast<UnlockBufferArgs*>(q.reserve((std::uint16_t)Cmd::UnlockBuffer,std::uint32_t(sizeof(UnlockBufferArgs)+s.size)));
-        *a=UnlockBufferArgs{&self,s.off,s.size,s.flags,1};std::memcpy(a+1,self.core->scratch.slot[s.scratchSlot].data(),s.size);q.commit();
-        self.core->scratch.give(s.scratchSlot);s.mode=BufferState::Free;s.written=true;return D3D_OK;}
+    case BufferState::Scratch:
     case BufferState::Staged:{
+        const bool scratch=s.mode==BufferState::Scratch;
+        auto& slots=self.core->scratch;
+        Block* block=s.stage;
+        const unsigned char* data=scratch?slots.slot[s.scratchSlot].data():block->data();
+        if(!s.size){
+            if(scratch)slots.give(s.scratchSlot);
+            else q.freeBlock(block);
+            s.stage=nullptr;s.stageSeq=0;s.mode=BufferState::Free;return D3D_OK;
+        }
         noteRecorded(self,s,s.size);
-        rememberBufferRange(self,s,s.stage->data());
-        if(const std::uint64_t ov=s.stageSeq){   // 0.3.205 (#34): an overlap stage: the slice gets these bytes once the replay thread has passed ov (applyPatches); copied before the commit hands the Block over
+        rememberBufferRange(self,s,data);
+        if(const std::uint64_t ov=s.stageSeq){   // Apply this patch only after readers of the old slice have passed.
             s.stageSeq=0;overlapStaged=true;
             if(s.shadowOn){
                 bool kept=false;
-                try{s.patches.push_back(BufferState::Patch{ov,s.off,std::vector<unsigned char>(s.stage->data(),s.stage->data()+s.size)});kept=true;}catch(...){}
+                try{s.patches.push_back(BufferState::Patch{ov,s.off,std::vector<unsigned char>(data,data+s.size)});kept=true;}catch(...){}
                 if(kept){s.patchBytes+=s.size;if(!s.patchMinSeq||ov<s.patchMinSeq)s.patchMinSeq=ov;q.stats.zcPatchBytes.fetch_add(std::int64_t(s.size),std::memory_order_relaxed);}
-                else if(waitSliceSeq(*self.core,ov,SliceWait::Overlap)){if(s.shadowOn){applyPatches(q,s);std::memcpy(s.shadow.data()+s.off,s.stage->data(),s.size);}}   // no memory for the patch: the exact wait, then the slice directly
+                else if(waitSliceSeq(*self.core,ov,SliceWait::Overlap)){if(s.shadowOn){applyPatches(q,s);std::memcpy(s.shadow.data()+s.off,data,s.size);}}   // no memory for the patch: the exact wait, then the slice directly
                 else if(s.shadowOn){std::lock_guard<std::mutex> l(self.core->texMutex);dropShadowLocked(self,s);}   // (nested in a pumped wait: the shadow goes, the bytes are in the queue)
             }
         }
-        auto* a=static_cast<UnlockBufferArgs*>(q.reserveWithBlock((std::uint16_t)Cmd::UnlockBuffer,sizeof(UnlockBufferArgs),s.stage));
-        *a=UnlockBufferArgs{&self,s.off,s.size,s.flags,0};q.commit();s.stage=nullptr;s.mode=BufferState::Free;s.written=true;return D3D_OK;}
+        const UnlockBufferArgs upload{&self,s.off,s.size,s.flags,0};
+        s.mode=BufferState::Busy;
+        if(scratch||(s.size<block->used&&s.size<=MaxInlinePayload-sizeof(UnlockBufferArgs)-16)){
+            auto* a=static_cast<UnlockBufferArgs*>(q.reserve((std::uint16_t)Cmd::UnlockBuffer,sizeof(UnlockBufferArgs)+upload.size));
+            *a=upload;a->inlineData=1;
+            std::memcpy(a+1,data,upload.size);
+            if(scratch)slots.give(s.scratchSlot);
+            else q.freeBlock(block);
+        }else{
+            auto* a=static_cast<UnlockBufferArgs*>(q.reserveWithBlock((std::uint16_t)Cmd::UnlockBuffer,sizeof(UnlockBufferArgs),block));
+            *a=upload;
+        }
+        q.commit();s.stage=nullptr;s.mode=BufferState::Free;s.written=true;return D3D_OK;}
     default:{
         HRESULT hr=D3DERR_INVALIDCALL;
         if(s.mode==BufferState::Pass&&s.passData&&!(s.flags&D3::kLockReadOnly))rememberBufferRange(self,s,s.passData);
@@ -489,7 +530,8 @@ inline HRESULT unlockBuffer(ProxyBase& self,BufferState& s){
         Counters& st=self.core->q.stats;
         const bool underPressure=cp&&m==BufferState::Shadow&&sz>=kZeroCopyMin&&self.info.pool==D3::kPoolDefault;
         if(underPressure){own(st.copyPressureUnlocks);own(st.copyPressureBytes,sz);}   // would have been zero-copy: copied because of memory pressure
-        if(ovl){own(st.zcOverlapStaged);own(st.zcOverlapCopyBytes,sz);}   // 0.3.205 (#34): a NOOVERWRITE unlock staged because its range overlapped bytes the replay thread still read (the reason: small below kZeroCopyMin, else overlap)
+        if(ovl&&(fl&D3::kLockDiscard))own(st.stagedDiscards);
+        else if(ovl){own(st.zcOverlapStaged);own(st.zcOverlapCopyBytes,sz);}
         if(ovl)own(sz>=kZeroCopyMin?st.zcSkipOverlap:st.zcSkipSmall);
         else own(self.info.pool!=D3::kPoolDefault?st.zcSkipPool:m!=BufferState::Shadow?st.zcSkipNoShadow:sz<kZeroCopyMin?st.zcSkipSmall:underPressure?st.zcSkipPressure:st.zcSkipOther);
     }
@@ -512,13 +554,15 @@ struct StreamVertexBuffer final:IDirect3DVertexBuffer9,ProxyBase {
     HRESULT STDMETHODCALLTYPE Unlock() override{
         using namespace NorthlightGx12340;
         constexpr DWORD usage=D3::kUsageDynamic|D3::kUsageWriteOnly;
-        if(verifiedParticleUpload&&buf.mode==BufferState::Shadow&&buf.size==ParticleUploadReservation&&
+        const bool staged=(buf.mode==BufferState::Staged||buf.mode==BufferState::Scratch)&&buf.stageSeq;
+        if(verifiedParticleUpload&&(buf.mode==BufferState::Shadow||staged)&&buf.size==ParticleUploadReservation&&
            info.pool==D3::kPoolDefault&&(info.usage&usage)==usage&&buf.off%ParticleVertexBytes==0&&
            (buf.flags==D3::kLockNoOverwrite||buf.flags==D3::kLockDiscard)){
             unsigned used;
             if(particleUploadBytes(__builtin_frame_address(0),used)&&used<buf.size&&(used||buf.flags==D3::kLockNoOverwrite)){
                 auto& stats=core->q.stats;
                 own(stats.particleUploadTrims);own(stats.particleUploadBytesSaved,buf.size-used);
+                if(staged)own(stats.particleStagedTrims);
                 if(!used)own(stats.particleUploadEmpty);
                 buf.size=used;
             }

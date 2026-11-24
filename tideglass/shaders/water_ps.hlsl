@@ -245,11 +245,10 @@ float3 Refracted(float2 pixel, float3 world, float3 normal, float thickness, flo
             colour = tex2Dlod(sUnderwaterScene, float4(sceneUv, 0, 0)).rgb;
             bentHit = tex2Dlod(sUnderwaterThickness, float4(sceneUv, 0, 0));
         }
-        // The water's depth there: where the fill made it up (round a character's body), the depth of the water it
-        // was filled from, as its colour is; this pixel's own (the few inches over a submerged arm) left the sand filled
-        // in round the body almost untinted, a bright copy of the body's outline. (The shore's ground is kept, not
-        // filled, see underwater_scene_ps.) Bent onto nothing, this pixel's own.
-        bentThickness = bentHit.r > 2.5 ? bentHit.g : thickness;
+        // A filled texel provides background colour. Its borrowed depth can be much deeper than the water here,
+        // producing a dark copy of the occluder's outline along a shallow bank. Use the receiving path there,
+        // blending at the boundary where the half-resolution state mixes known (3) and filled (4) texels.
+        bentThickness = bentHit.r > 2.5 ? lerp(bentHit.g, thickness, saturate(bentHit.r - 3.0)) : thickness;
         colour = BlurredBottom(bent, world, bentThickness, surfaceDepth, colour);
         // Bent onto nothing (dry land along the shore with no water near to fill it from): the foam's colour rather
         // than dark.

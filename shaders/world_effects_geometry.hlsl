@@ -13,7 +13,7 @@ float4 EffectCoverageInfo : register(c79);
 // Final passes: neutral volume fog (x), local light (y), absent rain mask (z),
 // zero native surface-fog term in an encoded nonnegative scene (w).
 float4 CompositeWork : register(c80); // zero retains the complete calculation
-float4 PrelitDaylightInfo : register(c81); // x: this frame produced the separate prelit daylight image.
+float4 PrelitDaylightInfo : register(c81); // x: separate daylight current, y: protected native share, z: room albedo divisor.
 sampler2D LightingBuffer : register(s8);
 sampler2D PrelitDaylight : register(s14); // Prelit composite only: independent, shadowed celestial irradiance.
 sampler2D ProbePrevious : register(s8); // 0.3.197: WorldGI only: previous SH R|G|B in three horizontal thirds of a 3n*n x n texture

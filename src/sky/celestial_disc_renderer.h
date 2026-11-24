@@ -99,6 +99,8 @@ private:
     // Screen-edge fade per body, and whether the halo value is a live measurement to hold.
     NorthlightCelestialGlow::Fade edge[2];bool haloWritten[2]={};unsigned haloFrame[2]={};
     IDirect3DTexture9* skyLayers=nullptr; // borrowed, current frame only
+    float replacedSkyGradient[6][4]{};
+    unsigned replacedSkyFrame=~0u;
     bool loaded=false,failed=false;unsigned frames=0,drawn=0;
     NorthlightCelestialDisc::Placement earlyPlacement[2];
     NorthlightCelestialDisc::SkyBand skyBand;
@@ -115,10 +117,10 @@ private:
     // Zone skyboxes: the game skips its planets under a full one and draws a partial one over them, so the planet-phase
     // claim never shows the body. Such a frame keeps the late (world-depth) disc and glare. Decided once per frame.
     NorthlightCelestial::FrameMode skyMode;int skyModePrevious=-1;unsigned skyModeLogs=0,renderFrame=~0u;bool skyboxUnverifiedLogged=false;
-    bool skyboxFrame(const NorthlightCelestial::Context& c){
+    bool skyboxFrame(const NorthlightCelestial::Context& c,bool replaceBackground=false){
         if(skyMode.decided())return skyMode.skybox();
         if(!skyboxUnverifiedLogged&&!NorthlightCelestial::skyboxVerified()){skyboxUnverifiedLogged=true;logf("CELESTIAL skybox signatures unverified: late disc path for the session");}
-        const bool skybox=skyMode.decide(c,GetTickCount());
+        const bool skybox=skyMode.decide(c,GetTickCount(),replaceBackground);
         if(int(skybox)!=skyModePrevious){
             if(NorthlightDiagnostics::enabled()&&skyModeLogs++<32)logf("CELESTIAL skyboxMode=%s skybox=%.2f nativePlanets=%d switches=%u frame=%u",skybox?"late":"native",c.skyboxCover,c.nativePlanets?1:0,skyMode.switches,frames);
             skyModePrevious=int(skybox);
@@ -241,6 +243,10 @@ public:
         d->SetPixelShaderConstantF(0,c[0],57);
         const struct V{float x,y,z,w,u,v;} quad[]={{-.5f,-.5f,1,1,0,0},{width-.5f,-.5f,1,1,1,0},{-.5f,height-.5f,1,1,0,1},{width-.5f,height-.5f,1,1,1,1}};
         const HRESULT hr=d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(V));
+        if(SUCCEEDED(hr)&&!menu&&!hdr){
+            std::memcpy(replacedSkyGradient,c[51],sizeof replacedSkyGradient);
+            replacedSkyFrame=frames;
+        }
         if(audit)audit(auditContext,hr);
         return SUCCEEDED(hr);
     }
@@ -252,7 +258,7 @@ public:
     void setHdrSkyCapture(std::function<IDirect3DSurface9*()> begin){beginHdrSky=std::move(begin);}
     ~NorthlightCelestialDiscRenderer(){reset();}
     NorthlightCelestialDiscRenderer(const NorthlightCelestialDiscRenderer&)=delete;
-    void reset(){skyLayers=nullptr;earlySkyOk=false;earlySkyMap.clear();for(auto& s:ringSurface)drop(s);for(auto& t:ringVisibility)drop(t);drop(veilPS);ringIndex=0;ringHistory={};ringWritten=false;sunGlare=Glare{};glow=NorthlightCelestialGlow::Hue{};
+    void reset(){skyLayers=nullptr;replacedSkyFrame=~0u;earlySkyOk=false;earlySkyMap.clear();for(auto& s:ringSurface)drop(s);for(auto& t:ringVisibility)drop(t);drop(veilPS);ringIndex=0;ringHistory={};ringWritten=false;sunGlare=Glare{};glow=NorthlightCelestialGlow::Hue{};
         for(unsigned i=0;i<2;++i){edge[i]={};haloWritten[i]=false;haloFrame[i]=0;}
         for(auto& t:terrainMask)drop(t);for(auto& t:terrainSurface)drop(t);drop(terrainVS);drop(terrainPS);for(unsigned i=0;i<2;++i){terrainReady[i]=false;terrainGeneration[i]=0;std::fill(terrainCamera[i],terrainCamera[i]+3,0.f);terrainNear[i]=0;}maskFarClip=0;skyBand={};for(auto& h:haloHistory)h={};for(auto& body:haloSurface)for(auto& s:body)drop(s);for(auto& body:haloVisibility)for(auto& t:body)drop(t);drop(haloPS);haloIndex[0]=haloIndex[1]=0;for(auto& p:earlyPlacement)p.valid=false;for(auto& t:texture)drop(t);drop(ps);drop(skyBackgroundPS);observer.reset();loaded=false;failed=false;drawn=0;earlyValid=false;drawnEarly=drawnSkyboxEarly=0;earlyWidth=earlyHeight=0;glareRead=false;drawnLate=offscreenOwned=0;suppressed=suppressedPrevious=lateOwnedPrevious=0;ownFrame=~0u;skyMode.reset();skyModePrevious=-1;renderFrame=~0u;}
     // Ownership: once the renderer has a validated sky context,
@@ -281,7 +287,7 @@ public:
         if(!glare&&!draw)++claimGate;return glare||draw;
     }
     bool nativeObservePossible(HRESULT result,D3DPRIMITIVETYPE type,UINT count){return SUCCEEDED(result)&&!failed&&count&&count<=4&&skyTriangles(type);}
-    template<class Palette> bool claimNativeDraw(D3DPRIMITIVETYPE type,UINT count,bool skyPhase,Palette palette,bool skyboxTrigger=false,bool forever=false){
+    template<class Palette> bool claimNativeDraw(D3DPRIMITIVETYPE type,UINT count,bool skyPhase,Palette palette,bool skyboxTrigger=false,bool forever=false,bool replaceBackground=false){
         if(!earlyValid||failed||!skyPhase||(!skyboxTrigger&&count>4)||!count||
            (type!=D3DPT_TRIANGLELIST&&type!=D3DPT_TRIANGLESTRIP&&type!=D3DPT_TRIANGLEFAN)||!load()){++claimGate;return false;}
         IDirect3DBaseTexture9* source=nullptr;int body=-1;
@@ -304,7 +310,7 @@ public:
         }else if(earlySkyOk&&earlySkyMap==map&&DWORD(now-earlySkyAt)<=2000){currentSky=earlySkyHeld;++claimSkyHeld;}
         else{++claimCamera;return false;}
         if(skyboxTrigger){if(!NorthlightCelestial::skyboxVerified()||!skyboxFrame(currentSky))return false;}
-        else if(skyboxFrame(currentSky))return claimSuppress(body);
+        else if(skyboxFrame(currentSky,replaceBackground))return claimSuppress(body);
         NorthlightCelestial::resolveRendererSky(currentSky,neutralDirect,forever,map);
         NorthlightCelestialProfiles::apply(palette(map,camera.camera),neutralDirect,currentSky);
         IDirect3DSurface9* target=nullptr;D3DSURFACE_DESC desc={};
@@ -441,8 +447,8 @@ public:
         if(!check(d->SetPixelShaderConstantF(47,c[47],2),"glow constants"))return false;
         if(glare&&occlude){
             if(!haloResources())return false;
-            const float cloudControl[]={0,0,0,!i&&skyLayers?1.f:0.f};
-            d->SetPixelShaderConstantF(49,cloudControl,1);d->SetTexture(6,!i?skyLayers:nullptr);
+            const float cloudControl[]={0,0,0,skyLayers?1.f:0.f};
+            d->SetPixelShaderConstantF(49,cloudControl,1);d->SetTexture(6,skyLayers);
             auto history=haloHistory[i];history.advance(GetTickCount(),frames,width,height,inverseView+12,haloDay,c[45]);
             // Holding: no pass; the history stays continuous, so the next
             // measurement blends from the held value with the usual 60/140 ms.
@@ -475,11 +481,13 @@ public:
                 std::memcpy(g.constants,c,sizeof c);std::memcpy(g.bounds,bounds,sizeof g.bounds);g.depth=depth;g.water=water;g.width=width;g.height=height;g.fade=fade;}
         }
         const bool compose=skyLayers&&occlude&&fullGlare;
-        const float skyControl[]={compose?1.f:0.f,emission,disc.opacity*weatherGain.load(std::memory_order_relaxed),!i&&skyLayers?1.f:0.f};
+        const bool palette=compose&&!hdr&&replacedSkyFrame==frames;
+        const float skyControl[]={compose?1.f:0.f,emission,disc.opacity*weatherGain.load(std::memory_order_relaxed),palette?1.f:0.f};
         d->SetPixelShaderConstantF(49,skyControl,1);
         if(compose){
             float tint[4]{};NorthlightCelestialGlow::surfaceTint(glow,i,disc.tint,hdr,tint);
             d->SetPixelShaderConstantF(50,tint,1);d->SetTexture(6,skyLayers);d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_ONE);
+            if(palette)d->SetPixelShaderConstantF(51,replacedSkyGradient[0],6);
         }
         if(!glare&&frames%600==0&&NorthlightDiagnostics::enabled())logf("CELESTIAL disc body=%u early=%d depth=%.7f band=%.3f..%.3f worldMax=%.7f screen=(%d,%d)-(%d,%d) direction=(%.3f,%.3f,%.3f)",i,occlude?0:1,spriteDepth,skyViewport.MinZ,skyViewport.MaxZ,maxZ,bounds[0],bounds[1],bounds[2],bounds[3],disc.direction[0],disc.direction[1],disc.direction[2]);
         if(!check(d->SetPixelShaderConstantF(0,c[0],18),"constants")||!check(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,vertices,sizeof(V)),"disc draw")){if(glare&&!i)sunGlare.valid=false;return false;}
@@ -498,11 +506,16 @@ public:
     }
     bool render(IDirect3DSurface9* target,IDirect3DTexture9* depth,IDirect3DTexture9* water,UINT width,UINT height,const float* legacyFog,
                 float minZ,float maxZ,float nearZ,float farZ,const float* projection,const float* inverseView,const NorthlightCelestial::Context& context,
-                const NorthlightCelestialGlow::Hue& hue){
+                const NorthlightCelestialGlow::Hue& hue,bool replaceBackground=false){
         glow=hue;
         if(failed||!target||!depth||!width||!height||!projection||!inverseView||!std::isfinite(minZ)||!std::isfinite(maxZ)||maxZ<=minZ||
            !std::isfinite(nearZ)||!std::isfinite(farZ)||nearZ<=0||farZ<=nearZ||!load())return false;
-        observer.finishObservations();ownFrame=renderFrame=frames;maskFarClip=farZ;
+        observer.finishObservations();
+        const bool skybox=skyboxFrame(context,replaceBackground);
+        // A palette replacement owns the background. If the mask was lost
+        // after the early claim, don't paint a disc over unmeasured clouds.
+        if(skyMode.replacingBackground&&!skyLayers)return false;
+        ownFrame=renderFrame=frames;maskFarClip=farZ;
         haloDay=context.dayFraction; // the discs end at the true horizon, as the native billboard (no far-edge offset)
         NorthlightCelestialDisc::Disc disc[2];int bounds[2][4];
         const NorthlightCelestial::Body* bodies[]={&context.sun,&context.moon};
@@ -512,7 +525,6 @@ public:
         for(unsigned i=0;i<2;++i)std::memcpy(tint[i],bodies[i]->tint,12);
         // Remember what the sky-phase draw needs next frame.
         std::memcpy(earlyProjection,projection,12);earlyWorldMaxDepth=maxZ;earlyWidth=width;earlyHeight=height;earlyValid=true;
-        const bool skybox=skyboxFrame(context);
         for(unsigned i=0;i<2;++i){
             if(NorthlightCelestial::lateBody(skybox,(drawnEarly>>i)&1,(offscreenOwned>>i)&1,observer.lateDisc(i,suppressed),context.skyboxCover>0,(drawnSkyboxEarly>>i)&1)){
                 // Skybox frame, or a body the planet phase did not cover (e.g. an interior skybox the sky snapshot missed): the

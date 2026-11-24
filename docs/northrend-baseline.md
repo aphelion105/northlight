@@ -4,7 +4,7 @@ The Windows fixture runs the actual x86 WoW 3.3.5a client against a single Pytho
 
 ## Stage and measure
 
-Run from the repository root. Create one private stage and reuse it for subsequent runs. The stage links MPQs and the selected Northrend world-cache inputs to the installed files. On Windows without symbolic-link privileges it uses same-volume NTFS hard links. The executable, DLLs, logs, realm configuration and writable client state live in the private tree. The runner checks the linked input hashes before each live run. The live trace budget starts at 2 GiB and adds 1 GiB per crowd update packet, up to 6 GiB for 128 players. The frozen live and replay config carries the installed HDR settings, per-display profiles, `DxvkEngineNameWorkaround` and `DxvkPresentWaitWorkaround`. The fixture disables the Northlight settings window and WoW tutorials. Run GPU commands outside the restricted Windows sandbox as described in [AGENTS.md](../AGENTS.md).
+Run from the repository root. Create one private stage and reuse it for subsequent runs. The stage links MPQs and the selected Northrend world-cache inputs to the installed files. On Windows without symbolic-link privileges it uses same-volume NTFS hard links. The executable, DLLs, logs, realm configuration and writable client state live in the private tree. The runner checks the linked input hashes before each live run. The live trace budget starts at 2 GiB and adds 1 GiB per crowd update packet. The frozen live and replay config carries the installed HDR settings, per-display profiles, `DxvkEngineNameWorkaround` and `DxvkPresentWaitWorkaround`. The fixture disables the Northlight settings window and WoW tutorials. Run GPU commands outside the restricted Windows sandbox as described in [AGENTS.md](../AGENTS.md).
 
 ```powershell
 python scripts/run_northrend_baseline.py stage --backend <DXVK-x86-D3D9.dll> --output <stage> --resolution 3840x2160 --msaa 2
@@ -62,6 +62,16 @@ python scripts/run_northrend_baseline.py run --stage <parity-stage> --output <pa
 ```
 
 For a binary A/B, pass `--live-dll` and `--live-assets` to an untraced `run`. The runner verifies the loaded shader bundle, records both candidate hashes and restores the staged files after the client exits.
+
+### M2 stress benchmark
+
+`--scene m2-stress` places 512 equipped characters in 16 dense rows within the starting view. The runner uses an inactive Windows desktop and starts timing after it verifies the spawn hash, name queries for at least three-quarters of the roster, and two ready-world samples with at least 6,000 audited M2 draws each. The report records those draw counts alongside the background frame times. Use a stage with `Diagnostics=1` and use the same staged quality and video settings on both sides of an A/B. Allow time for the roster and complete 120-frame timing windows.
+
+```powershell
+python scripts/run_northrend_baseline.py run --stage <stage> --output <stage>/m2-stress-run --scene m2-stress --timeout 240
+```
+
+Use `--windows 0` to check scene readiness or `--dxvk-direct-adapter` when DXVK cannot enumerate a display on the inactive desktop.
 
 For the native M2 diagnostic, run the same stage with `--windows 0 --native-m2-audit-samples 3` and Diagnostics enabled in its frozen profile. The report joins the game-thread decoder with accepted model-normal packets by producer frame. It requires a verified client, repeated ready-world samples with a versioned source, and matching audited palette rows. Loading samples and rejected draws remain visible in the report. The warm samples do not require foreground focus or provide FPS evidence. The imported replay lacks the original M2 call stack.
 
