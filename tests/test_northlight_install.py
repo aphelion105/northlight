@@ -384,7 +384,7 @@ class RunningCheck(unittest.TestCase):
         # a tool (not our ancestor) that only mentions WoWSilicon in its arguments is not WoWSilicon
         self.assertEqual(mig.busy(self.LAUNCHER + [(80, 1, '/usr/bin/less', 'less /Volumes/Games/WoWSilicon.log')], 61), [])
 
-    @unittest.skipUnless(shutil.which('ps'), 'The macOS process probe needs POSIX ps')
+    @unittest.skipUnless(sys.platform != 'win32' and shutil.which('ps'), 'The macOS process probe needs POSIX ps')
     def test_this_host_runs(self):
         self.assertIsInstance(mig.running(), list)
 
