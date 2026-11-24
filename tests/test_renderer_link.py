@@ -6,6 +6,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import northlight_paths as fp
 fp.use_source_modules()
+import os
 import struct
 from unittest import mock
 import build_renderer
@@ -26,3 +27,10 @@ assert dll.with_suffix('.pdb').is_file()
 pe = struct.unpack_from('<I', data, 0x3c)[0]
 assert struct.unpack_from('<H', data, pe+4)[0] == 0x14c
 print('PASS COFF removal: unused function/data gone; referenced export, x86 DLL and PDB retained; spaced paths')
+# From the cache's parent (the repository root by default) Zig prints its cache inputs relative to the working directory.
+os.chdir(Path(fp.zig_env()['ZIG_GLOBAL_CACHE_DIR']).parent)
+relative = out/'relative.dll'
+with mock.patch.object(build_renderer.northlight_paths, 'out', return_value=out):
+    build_renderer.link_renderer(command[:-1] + [str(relative)], fp.zig_env(), relative)
+assert b'NL_KEPT_CONTROL' in relative.read_bytes() and b'NL_DEAD_CONTROL' not in relative.read_bytes()
+print('PASS relink from the Zig cache parent: relative cache inputs')

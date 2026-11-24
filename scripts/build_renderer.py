@@ -51,9 +51,14 @@ def link_renderer(command, env, output_dll):
     if len(lines) != 1:
         raise SystemExit(f'Expected one Zig 0.15.2 COFF link command; see {log}')
     # The pinned Zig driver prints raw arguments without quoting spaces. Its
-    # COFF switches are uppercase (except -lldmingw); input files are absolute.
+    # COFF switches are uppercase (except -lldmingw); input files are absolute,
+    # except its cache files, printed relative to the working directory when under it.
     # Split at argument starts, not at arbitrary whitespace inside a path.
-    linker = re.split(r' (?=-[A-Z]|-lldmingw\b|[A-Za-z]:[\\/]|/)', lines[0])
+    try:
+        cache = '|' + re.escape(os.path.relpath(env['ZIG_GLOBAL_CACHE_DIR'])) + r'[\\/]'
+    except ValueError:   # the cache is on another drive: Zig prints it absolute
+        cache = ''
+    linker = re.split(r' (?=-[A-Z]|-lldmingw\b|[A-Za-z]:[\\/]|/' + cache + ')', lines[0])
     if linker[0] != 'lld-link' or '-OUT:' + str(output_dll) not in linker or any(
             not Path(arg).is_file() for arg in linker[1:] if not arg.startswith('-')):
         raise SystemExit(f'Cannot safely reconstruct Zig COFF inputs; see {log}')
